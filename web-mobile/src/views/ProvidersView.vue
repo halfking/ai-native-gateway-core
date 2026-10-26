@@ -154,12 +154,14 @@ const summary = computed(() => {
         type="button"
         class="data-card provider-card"
         :aria-label="t('providers.openDetail', { name: providerName(p) })"
+        :data-provider-name="providerName(p)"
+        tabindex="0"
         @click="selectedProvider = p"
       >
         <div class="card-row">
           <span class="provider-card__name">
             <StatusDot :tone="tone(p)" />
-            {{ providerName(p) }}
+            <span>{{ providerName(p) }}</span>
           </span>
           <span class="badge" :class="badge(p).cls">{{ badge(p).label }}</span>
         </div>

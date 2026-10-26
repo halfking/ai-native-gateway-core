@@ -22,6 +22,9 @@
 /.kiro/
 /.security-audit/
 
+# 2026-10-17: 审计验证轮的一次性运行产物（逐条核验记录/探针输出），机器本地
+/.audit-validation/
+
 # 2026-09-25: TRAE IDE tool cache (commit-msg drafts, session scratch)
 /.trae/
 
@@ -68,6 +71,11 @@ Dockerfile.local
 .agents/
 .audit/
 .audit-workspace/
+# 2026-10-17：审计轮把提交信息暂存到 .audit<批次号>/（.audit148/ … .audit152/）。
+# 原先只忽略 `.audit/` 与 `.audit-workspace/` 两个**无编号**形态，
+# 于是每个「批」会话各漏一个进仓库（实测 5 个目录 / 6 个文件，
+# 分别由 5 个不同提交带入）。`.audit*` 一并覆盖，避免 批153 起继续漏。
+.audit*/
 .kiro/
 .security-audit/
 .vite/
@@ -432,3 +440,10 @@ docs/audit/**/ctr_snapshot_*.log
 # 产出一个 3.5MB 同名二进制，`git add -A` 会把它捡进去（§9.257 真的发生了）。
 # 构建用 `go build -o /tmp/xxx` 或 `go vet` / `go test`，不要裸 `go build <pkg>`。
 /sql_source_indirection_audit
+
+# ── 2026-10-20: Mavis 桌面端 canvas 运行时产物 ───────────────────
+# /.mavis/canvas-assets/*.png 是 visual-explainer 等技能生成的**预览图**，
+# 属机器本地运行时产物（换机无意义），不是项目源文件。
+# 登记原因同 §9.258：`git add -A` 会把它捡进去（该目录 2026-10-20 时 1 个 PNG / 196K，
+# 随轮次增长会变成几十 MB 的图片集）。⇒ 显式忽略。
+/.mavis/

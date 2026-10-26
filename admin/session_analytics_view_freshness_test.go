@@ -84,10 +84,38 @@ func TestRequireFreshSessionViews_NoDBFailsClosed(t *testing.T) {
 	}
 }
 
-// sessionMeasuredRefreshSeconds 是 245 线上实测的一轮耗时（2026-10-08 00:32:46
-// → 00:33:50，三个视图 10.6s / 19.6s / 33.3s）。它不是配置项，是**量出来的**，
-// 用来把下面的算术钉在真实数值上，而不是拍一个「余量」。
-const sessionMeasuredRefreshSeconds = 64 * time.Second
+// sessionMeasuredRefreshSeconds 是**一轮**（三个视图全部）的实测耗时上限。
+// 它不是配置项，是**量出来的**，用来把下面的算术钉在真实数值上，而不是拍一个「余量」。
+//
+// ★ 2026-10-22 重新定标（252 共享库，两台实例 journalctl 逐轮实测）：
+//
+//	154 02:00 轮（全成功）：34.28s + 6.19s + 3.75s =  44.22s
+//	245 03:00 轮：client_stats 跑满 180.31s 被语句上限杀掉
+//	              + task_stats 151.49s + matrix 7.45s    = 339.25s
+//	154 04:00 轮（最坏）：client_stats 271.11s（91s 等锁 + 180.11s 被杀）
+//	              + task_stats 182.33s（被杀）+ matrix 65.40s = 518.84s
+//
+//	⇒ 取实测最坏一轮 **520s**，向上取整到 10s 的整数倍。
+//
+// ★ 为什么旧值 64s 必须换掉：那个数来自 2026-10-08 00:32 的**一轮全成功**
+//
+//	且**恰好是最便宜的一轮**（10.6/19.6/33.3s）。而「成功轮」的读数本身
+//	**系统性偏便宜** —— 贵的轮次会被语句上限杀掉、根本产不出一轮成果，
+//	于是量具只看得见便宜的轮。⇒ 旧值让下面的算术以为「一轮只要 1 分钟」，
+//	而现实是 8.7 分钟。
+//
+// ★ 换掉之后的算术结论（见 TestSessionMvFreshnessBudget_Arithmetic）：
+//
+//	稳态最坏年龄 = 60min + 520s = 68m40s  < 预算 90min  ✔ 仍然放行
+//	漏一轮的年龄 = 120min + 520s = 128m40s > 预算 90min  ✔ 仍然拦截
+//	⇒ **90min 的新鲜度预算不用改**（它本来就设计成「容忍恰好一轮失败」），
+//	  ⇒ 也就不需要降低数据质量门槛。
+//
+// ⚠ 诚实边界：520s 是**实测最坏**而不是**理论最坏**。若上线后实测一轮
+//
+//	超过 1800s（= 预算 90min 与间隔 60min 的差额），下面的算术会失效 ⇒
+//	届时必须重新定标**并**重新审视 90min 这个预算（那才是属主决策）。
+const sessionMeasuredRefreshSeconds = 520 * time.Second
 
 // routingMeasuredRefreshSeconds 取 pg_stat_statements / 252 日志里
 // routing_analytics_7d CONCURRENTLY 均值上沿（~26s），留一点余量。

@@ -1,0 +1,40 @@
+{
+  "baseline": "aa888f9b80ad08490df8d3f8a5508bf52f6152f0",
+  "combined_sha256": "5d9178fcbc5f698cb54133ebe7226b42e975f5fd3563f5df7a2f9fe03a2207d4",
+  "files": [
+    {
+      "path": "bg/credential_probe_v2.go",
+      "sha256": "365f5eb95b4ed3b54db5abb4600a6b158a022c21a35718054ced2c986cb196b8"
+    },
+    {
+      "path": "bg/credential_probe_response_validation.go",
+      "sha256": "4b666e4ddb420b85474c8050aabf876a06304283aa585e699081dea3653a9b13"
+    },
+    {
+      "path": "bg/credential_probe_response_validation_test.go",
+      "sha256": "28ab9fa79b87a01f089c57e2c64e7d6846a4fc370dde1cf5698a52eb47019a40"
+    },
+    {
+      "path": "bg/credential_probe_classification_211_test.go",
+      "sha256": "3820e2938fc6cbd319fbb78fd0ff5b8b8d661ca357671c69595cce982815d0c6"
+    },
+    {
+      "path": "bg/credential_probe_v2_capability_concurrency_test.go",
+      "sha256": "4be9b47afda1b2edce2a35f09043f67fb346180a407d1220d7dd5840bf85da29"
+    },
+    {
+      "path": "bg/credential_probe_v2_test.go",
+      "sha256": "4319f9d3450e0963bccfd92dcc5f6b1f02159940dbc4df676a086e0e5308c1c2"
+    },
+    {
+      "path": "bg/probe_responses_fallback_test.go",
+      "sha256": "4471b939acc0dd05cb636048fbf8126d3be1740d298ff473888e52b25276ea35"
+    }
+  ],
+  "verification": {
+    "focused": "probe-all-focused.log",
+    "package": "probe-bg-final-current.log",
+    "vet": "probe-vet-final.log",
+    "mutations": "probe-mutations.json"
+  }
+}

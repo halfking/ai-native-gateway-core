@@ -4,7 +4,7 @@ import { showOpsPlatform } from './edition'
 
 export type NavItem = {
   path: string
-  label: string
+  label?: string
   labelKey?: string  // i18n key, if present will be used via t(labelKey)
   icon: string
   /** super_admin only */
@@ -55,14 +55,17 @@ export type NavItem = {
 
 export type NavGroup = {
   id: string
-  label: string
+  label?: string
   labelKey?: string  // i18n key for group title
   items: NavItem[]
 }
 
 /** Top-level sidebar links (no accordion group). Used for default-tenant platform ops. */
 export const NAV_PRIMARY_ITEMS: NavItem[] = [
-  { path: '/dashboard', label: '总览', labelKey: 'nav.item.overview', icon: '📊', platformOps: true, exact: true },
+  // 2026-10-16: live-topology home. Placed before "Overview" — it is a NEW entry;
+  // `/` and `/dashboard` stay untouched (the old home page is fully preserved, ADR §7 G7).
+  { path: '/live', labelKey: 'nav.item.liveTopology', icon: '🛰', platformOps: true, exact: true },
+  { path: '/dashboard', labelKey: 'nav.item.overview', icon: '📊', platformOps: true, exact: true },
 ]
 
 /**
@@ -84,7 +87,7 @@ export function resolveNavItemActivation(
 ): {
   path: string
   labelKey?: string
-  label: string
+  label?: string
   icon: string
   external?: boolean
   exact?: boolean
@@ -116,71 +119,67 @@ export function resolveNavItemActivation(
 export const NAV_GROUPS: NavGroup[] = [
   {
     id: 'tenant-portal',
-    label: '我的服务',
     labelKey: 'nav.group.tenantPortal',
     items: [
-      { path: '/tenant/models', label: '标准模型', labelKey: 'nav.item.tenantModels', icon: '🤖', tenantOnly: true },
-      { path: '/tenant/account', label: '我的账户', labelKey: 'nav.item.tenantAccount', icon: '💰', tenantOnly: true },
-      { path: '/tenant/pricing', label: '套餐与充值', labelKey: 'nav.item.tenantPricing', icon: '💳', tenantOnly: true },
-      { path: '/tenant/usage', label: '我的消耗', labelKey: 'nav.item.tenantUsage', icon: '📉', tenantOnly: true },
+      { path: '/tenant/models', labelKey: 'nav.item.tenantModels', icon: '🤖', tenantOnly: true },
+      { path: '/tenant/account', labelKey: 'nav.item.tenantAccount', icon: '💰', tenantOnly: true },
+      { path: '/tenant/pricing', labelKey: 'nav.item.tenantPricing', icon: '💳', tenantOnly: true },
+      { path: '/tenant/usage', labelKey: 'nav.item.tenantUsage', icon: '📉', tenantOnly: true },
     ],
   },
   {
     id: 'models-routing',
-    label: '模型与路由',
     labelKey: 'nav.group.modelsRouting',
     items: [
-      { path: '/models', label: '模型与目录', labelKey: 'nav.item.models', icon: '🏷️', platformOps: true, hideForTenant: true },
-      { path: '/routing-v2', label: '路由全景', labelKey: 'nav.item.routingOverview', icon: '🗺️', super: true, hideForTenant: true, exact: true },
-      { path: '/routing-v2/credentials', label: '凭据监控', labelKey: 'nav.item.credentialMonitor', icon: '📊' },
+      { path: '/models', labelKey: 'nav.item.models', icon: '🏷️', platformOps: true, hideForTenant: true },
+      { path: '/routing-v2', labelKey: 'nav.item.routingOverview', icon: '🗺️', super: true, hideForTenant: true, exact: true },
+      { path: '/routing-v2/credentials', labelKey: 'nav.item.credentialMonitor', icon: '📊' },
       // 2026-10-02 整合轮：原四项（人工标注/标注统计/任务档案/路由调参）收敛
       // 为 AUTO 路由闭环统一工作台。标注两页签全员可用；任务档案/调参审批
       // 页签 super_admin 专属（宿主 AutoRoutingOpsView normalizeTab 门控）。
-      { path: '/routing-v2/auto-ops', label: 'AUTO 路由运营', labelKey: 'nav.item.autoOps', icon: '♻️' },
+      { path: '/routing-v2/auto-ops', labelKey: 'nav.item.autoOps', icon: '♻️' },
       // 2026-09-07: /probe-health folded into 凭据监控「探测健康」tab
       // (/routing-v2/credentials?tab=probe-health); standalone menu entry removed.
       // 2026-10-02: 「系统自检」菜单入口去掉（看板横条仍可进 /dashboard?tab=selfcheck）。
-      { path: '/providers', label: '供应商', labelKey: 'nav.item.providers', icon: '🔌', providerConsole: true },
+      { path: '/providers', labelKey: 'nav.item.providers', icon: '🔌', providerConsole: true },
       // 2026-09-26 审计轮 F1：对账报表落地轮漏挂菜单入口（只能手敲 URL），
       // 本项 = 供应商结算对帐（goal #2）。页面内含 provider/internal 双视角
       // 切换；结算报表（internal 视角）入口见「租户用户」组同名项。
-      { path: '/admin/reconciliation', label: '供应商对账', labelKey: 'nav.item.reconciliation', icon: '🧾', super: true, hideForTenant: true },
+      { path: '/admin/reconciliation', labelKey: 'nav.item.reconciliation', icon: '🧾', super: true, hideForTenant: true },
       // 2026-10-02 看板轮：全页用量趋势分析（按模型分线 + 供应商/租户/API Key/
       // 模型/指标过滤）。看板「用量趋势」卡时间范围右侧「更多」按钮跳同一页；
       // 路由 meta 仅 requiresAuth（服务端按角色收租户范围），菜单入口超管可见。
-      { path: '/admin/usage-trends', label: '用量趋势分析', labelKey: 'nav.item.usageTrends', icon: '📈', super: true, hideForTenant: true },
-      { path: '/pricing', label: '成本价格', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true },
-      { path: '/model-pricing', label: '定价管理', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true },
-      { path: '/free-pool', label: '免费资源', labelKey: 'nav.item.freePool', icon: '🎁', super: true, hideForTenant: true },
-      { path: '/free-discovery', label: '免费发现', labelKey: 'nav.item.freeDiscovery', icon: '🔍', super: true, hideForTenant: true },
+      { path: '/admin/usage-trends', labelKey: 'nav.item.usageTrends', icon: '📈', super: true, hideForTenant: true },
+      { path: '/pricing', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true },
+      { path: '/model-pricing', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true },
+      { path: '/free-pool', labelKey: 'nav.item.freePool', icon: '🎁', super: true, hideForTenant: true },
+      { path: '/free-discovery', labelKey: 'nav.item.freeDiscovery', icon: '🔍', super: true, hideForTenant: true },
     ],
   },
   {
     id: 'tenant-users',
-    label: '租户用户',
     labelKey: 'nav.group.tenantUsers',
     items: [
-      { path: '/tenants', label: '租户管理', labelKey: 'nav.item.tenants', icon: '🏢', super: true, hideForTenant: true },
-      { path: '/users', label: '用户管理', labelKey: 'nav.item.users', icon: '👤' },
-      { path: '/keys', label: 'API 密钥', labelKey: 'nav.item.keys', icon: '🔑' },
-      { path: '/key-applications', label: '密钥申请', labelKey: 'nav.item.keyApplications', icon: '📬', super: true, hideForTenant: true },
-      { path: '/audit-logs', label: '审计日志', labelKey: 'nav.item.auditLogs', icon: '📋', super: true, hideForTenant: true },
+      { path: '/tenants', labelKey: 'nav.item.tenants', icon: '🏢', super: true, hideForTenant: true },
+      { path: '/users', labelKey: 'nav.item.users', icon: '👤' },
+      { path: '/keys', labelKey: 'nav.item.keys', icon: '🔑' },
+      { path: '/key-applications', labelKey: 'nav.item.keyApplications', icon: '📬', super: true, hideForTenant: true },
+      { path: '/audit-logs', labelKey: 'nav.item.auditLogs', icon: '📋', super: true, hideForTenant: true },
       // 2026-09-26 审计轮 F1：租户结算报表（goal #1）入口，直开 internal
       // 视角（按租户/人员/模型分组 + 积分/内部价口径）。当前后端
       // /api/admin/report-rollup/* 仍 superAdmin-only——非超管租户侧自助
       // 查看自身租户报表需独立鉴权轮（设计文档 §11 G2 登记），故先以
       // super 门控挂载，不虚标已对租户开放。
-      { path: '/admin/reconciliation?view=internal', label: '结算报表', labelKey: 'nav.item.settlementReport', icon: '📑', super: true, hideForTenant: true },
+      { path: '/admin/reconciliation?view=internal', labelKey: 'nav.item.settlementReport', icon: '📑', super: true, hideForTenant: true },
     ],
   },
   {
     id: 'requests-sessions',
-    label: '请求与会话',
     labelKey: 'nav.group.requestsSessions',
     items: [
-      { path: '/request-logs', label: '请求日志', labelKey: 'nav.item.requestLogs', icon: '📋' },
-      { path: '/dispatch/waterfall', label: '队列瀑布图', labelKey: 'nav.item.dispatchWaterfall', icon: '📊', platformOps: true, hideForTenant: true },
-      { path: '/admin/turns', label: '轮次列表', labelKey: 'nav.item.turns', icon: '🔄', super: true, hideForTenant: true },
+      { path: '/request-logs', labelKey: 'nav.item.requestLogs', icon: '📋' },
+      { path: '/dispatch/waterfall', labelKey: 'nav.item.dispatchWaterfall', icon: '📊', platformOps: true, hideForTenant: true },
+      { path: '/admin/turns', labelKey: 'nav.item.turns', icon: '🔄', super: true, hideForTenant: true },
       // 2026-10-01 R85-C P1：会话聚合观测「可交付未交付」——
       // cmd/gateway/main.go:6901-6906 的 /api/admin/session-analytics 三端点
       // 与真库 session_dim（121 万行）均已就绪，但本组原先没有任何入口挂载，
@@ -189,10 +188,10 @@ export const NAV_GROUPS: NavGroup[] = [
       // 挂载列表页即让整族可达：/clients/:id 与 /tasks/:id 是其子路由，
       // 由 UserProfileListView / UserProfileView 内部跳转。
       // 权限对齐 router.ts:257 的 meta.requiresAuth（任何已登录用户）。
-      { path: '/admin/session-analytics/users', label: '会话分析中心', labelKey: 'nav.item.sessionAnalytics', icon: '📊' },
+      { path: '/admin/session-analytics/users', labelKey: 'nav.item.sessionAnalytics', icon: '📊' },
       // T9 — 请求注册表 + 连接注册台（mock stage）
-      { path: '/admin/request-registry', label: '请求注册表', labelKey: 'nav.item.requestRegistry', icon: '📑', super: true, hideForTenant: true },
-      { path: '/admin/connection-registry', label: '连接注册台', labelKey: 'nav.item.connectionRegistry', icon: '🔗', super: true, hideForTenant: true },
+      { path: '/admin/request-registry', labelKey: 'nav.item.requestRegistry', icon: '📑', super: true, hideForTenant: true },
+      { path: '/admin/connection-registry', labelKey: 'nav.item.connectionRegistry', icon: '🔗', super: true, hideForTenant: true },
       // V5.1: plugin-runtime nav (ai-session-manager etc.) is now injected
       // dynamically via /api/v1/plugin-nav. See mergeRemotePluginNav in
       // AppTopbar.vue — the request-sessions group above is the merge target.
@@ -200,56 +199,53 @@ export const NAV_GROUPS: NavGroup[] = [
   },
   {
     id: 'data-ops',
-    label: '数据运维',
     labelKey: 'nav.group.dataOps',
     items: [
-      { path: '/admin/settings', label: '系统设置', labelKey: 'nav.item.settings', icon: '⚙️', super: true, hideForTenant: true },
-      { path: '/admin/proxy', label: '代理管理', labelKey: 'nav.item.proxy', icon: '🌐', super: true, hideForTenant: true },
-      { path: '/admin/data-lifecycle', label: '数据生命周期', labelKey: 'nav.item.dataLifecycle', icon: '💾', platformOps: true, hideForTenant: true },
-      { path: '/format-anomalies', label: '格式异常监控', labelKey: 'nav.item.formatAnomalies', icon: '⚠️', super: true, hideForTenant: true },
-      { path: '/model-integrity', label: '模型完整性监控', labelKey: 'nav.item.modelIntegrity', icon: '🛰️', super: true, hideForTenant: true },
-      { path: '/admin/modules', label: '模块管理', labelKey: 'nav.item.modules', icon: '🧩', super: true, hideForTenant: true },
-      { path: '/admin/prompt-injection', label: '提示词注入检测', labelKey: 'nav.item.promptInjection', icon: '🛡️', super: true, hideForTenant: true },
-      { path: '/admin/compression', label: '压缩管理', labelKey: 'nav.item.compression', icon: '📦', platformOps: true, hideForTenant: true },
-      { path: '/admin/modules?module=wechat_bot', label: '微信机器人', labelKey: 'nav.item.wechatBot', icon: '💬', super: true, hideForTenant: true },
-      { path: '/admin/agents', label: 'Agent Registry', labelKey: 'nav.item.agents', icon: '🤖', super: true, hideForTenant: true },
+      { path: '/admin/sanitize-rules', labelKey: 'sanitizeRules.title', icon: '🔒' },
+      { path: '/admin/settings', labelKey: 'nav.item.settings', icon: '⚙️', super: true, hideForTenant: true },
+      { path: '/admin/proxy', labelKey: 'nav.item.proxy', icon: '🌐', super: true, hideForTenant: true },
+      { path: '/admin/data-lifecycle', labelKey: 'nav.item.dataLifecycle', icon: '💾', platformOps: true, hideForTenant: true },
+      { path: '/format-anomalies', labelKey: 'nav.item.formatAnomalies', icon: '⚠️', super: true, hideForTenant: true },
+      { path: '/model-integrity', labelKey: 'nav.item.modelIntegrity', icon: '🛰️', super: true, hideForTenant: true },
+      { path: '/admin/modules', labelKey: 'nav.item.modules', icon: '🧩', super: true, hideForTenant: true },
+      { path: '/admin/prompt-injection', labelKey: 'nav.item.promptInjection', icon: '🛡️', super: true, hideForTenant: true },
+      { path: '/admin/compression', labelKey: 'nav.item.compression', icon: '📦', platformOps: true, hideForTenant: true },
+      { path: '/admin/modules?module=wechat_bot', labelKey: 'nav.item.wechatBot', icon: '💬', super: true, hideForTenant: true },
+      { path: '/admin/agents', labelKey: 'nav.item.agents', icon: '🤖', super: true, hideForTenant: true },
       // 非核心节点：合并站点/激活/许可/协议 →「更新与激活」
-      { path: '/customer/update-activate', label: '更新与激活', labelKey: 'nav.item.updateActivate', icon: '🔄' },
-      { path: '/customer/offline-activation', label: '离线激活', labelKey: 'nav.item.licenseOffline', icon: '🔌', notActivatedOnly: true },
-      { path: '/maintain/tenant/telemetry', label: '数据采集范围', labelKey: 'nav.item.telemetryScope', icon: '📡', external: true },
+      { path: '/customer/update-activate', labelKey: 'nav.item.updateActivate', icon: '🔄' },
+      { path: '/customer/offline-activation', labelKey: 'nav.item.licenseOffline', icon: '🔌', notActivatedOnly: true },
+      { path: '/maintain/tenant/telemetry', labelKey: 'nav.item.telemetryScope', icon: '📡', external: true },
     ],
   },
   {
     id: 'opsplatform',
-    label: '运维中心',
     labelKey: 'nav.group.opsplatform',
     items: [
       // Dynamically shown only when ai-native-maintain is reachable.
-      { path: '/maintain/ops/overview', label: '运维总览', labelKey: 'nav.item.opsOverview', icon: '🧭', super: true, hideForTenant: true, opsPlatform: true, external: true },
-      { path: '/maintain/ops/center', label: '中心运维', labelKey: 'nav.item.opsCenter', icon: '🖥️', super: true, hideForTenant: true, opsPlatform: true, external: true },
-      { path: '/maintain/ops/downloads', label: '发布与下载', labelKey: 'nav.item.opsDownloads', icon: '📦', super: true, hideForTenant: true, opsPlatform: true, external: true },
-      { path: '/maintain/ops/licenses', label: 'License管理', labelKey: 'nav.item.opsLicenses', icon: '🔑', super: true, hideForTenant: true, opsPlatform: true, external: true },
-      { path: '/maintain/ops/faults', label: '故障管理', labelKey: 'nav.item.opsFaults', icon: '⚠️', super: true, hideForTenant: true, opsPlatform: true, external: true },
-      { path: '/maintain/ops/autoupdate', label: '自动更新', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', super: true, hideForTenant: true, opsPlatform: true, external: true, activateWhenNotActivated: true },
-      { path: '/ops/vibecoding', label: 'VibeCoding', labelKey: 'nav.item.opsVibeCoding', icon: '💻', super: true, hideForTenant: true, opsPlatform: true },
+      { path: '/maintain/ops/overview', labelKey: 'nav.item.opsOverview', icon: '🧭', super: true, hideForTenant: true, opsPlatform: true, external: true },
+      { path: '/maintain/ops/center', labelKey: 'nav.item.opsCenter', icon: '🖥️', super: true, hideForTenant: true, opsPlatform: true, external: true },
+      { path: '/maintain/ops/downloads', labelKey: 'nav.item.opsDownloads', icon: '📦', super: true, hideForTenant: true, opsPlatform: true, external: true },
+      { path: '/maintain/ops/licenses', labelKey: 'nav.item.opsLicenses', icon: '🔑', super: true, hideForTenant: true, opsPlatform: true, external: true },
+      { path: '/maintain/ops/faults', labelKey: 'nav.item.opsFaults', icon: '⚠️', super: true, hideForTenant: true, opsPlatform: true, external: true },
+      { path: '/maintain/ops/autoupdate', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', super: true, hideForTenant: true, opsPlatform: true, external: true, activateWhenNotActivated: true },
+      { path: '/ops/vibecoding', labelKey: 'nav.item.opsVibeCoding', icon: '💻', super: true, hideForTenant: true, opsPlatform: true },
     ],
   },
   {
     id: 'guide',
-    label: '接入指南',
     labelKey: 'nav.group.guide',
     items: [
-      { path: '/examples', label: '接入示例', labelKey: 'nav.item.examples', icon: '📝' },
-      { path: '/examples#auto-config', label: '自动配置', icon: '🛠️' },
-      { path: '/maintain/ops/autoupdate', label: '自动更新', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', external: true, opsPlatform: true, activateWhenNotActivated: true },
-      { path: '/maintain/donate', label: '赞助与捐赠', labelKey: 'nav.item.supportDonate', icon: '💖', external: true },
+      { path: '/examples', labelKey: 'nav.item.examples', icon: '📝' },
+      { path: '/examples#auto-config', labelKey: 'nav.item.autoConfig', icon: '🛠️' },
+      { path: '/maintain/ops/autoupdate', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', external: true, opsPlatform: true, activateWhenNotActivated: true },
+      { path: '/maintain/donate', labelKey: 'nav.item.supportDonate', icon: '💖', external: true },
     ],
   },
   {
     id: 'chat',
-    label: '对话',
     labelKey: 'nav.group.chat',
-    items: [{ path: '/chat', label: '对话', labelKey: 'nav.item.chat', icon: '💬' }],
+    items: [{ path: '/chat', labelKey: 'nav.item.chat', icon: '💬' }],
   },
 ]
 
@@ -301,7 +297,7 @@ export function isNavItemActive(path: string, currentPath: string, exact?: boole
 // 每个 group 含 items；同时附 group.titleKey 给 i18n（nav.group.*）。
 export type TopbarNavGroup = {
   id: string
-  label: string
+  label?: string
   labelKey?: string
   items: NavItem[]
   /** Topbar 上的"展开所有子项"按钮（用于 chat / guide 等只有 1 个 item 的 group 折叠显示） */
@@ -345,7 +341,6 @@ export function remoteNavToNavItems(entries: RemoteNavEntry[]): NavItem[] {
   if (!entries || entries.length === 0) return []
   return entries.map((e) => ({
     path: e.route_url,
-    label: e.label_key,
     labelKey: e.label_key || undefined,
     icon: e.icon || '🧩',
     super: e.super,
@@ -395,7 +390,6 @@ export function mergeRemotePluginNav(groups: NavGroup[], entries: RemoteNavEntry
   if (synthetic && synthetic.length > 0) {
     out.push({
       id: 'plugins',
-      label: '插件',
       labelKey: 'nav.group.plugins',
       items: synthetic,
     })

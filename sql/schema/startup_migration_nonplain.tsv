@@ -1,0 +1,85 @@
+# startup_migration_nonplain.tsv — 「非三位数字前缀」startup 迁移的**投递登记册**
+#
+# ── 为什么要这份册子（2026-10-22 R82 轮实测复现，2026-10-22 R83 轮扩面）────────
+#
+# 仓库里有两道门决定「一条 startup 迁移在自己的视野里吗」，而**两道都靠解析文件名**：
+#
+#   ① scripts/apply-db-revision-sequence_test.sh（投递路径契约门）
+#      canonical_delivery_path_check: `[[ "$name" =~ ^[0-9]{3}_.*\.sql$ ]] || continue`
+#   ② installer/cmd/llm-gw-installer/migration_embed_sync_gate_test.go（强制 embed 门）
+#      migrationNumber(): `strconv.Atoi(name[:idx])` 失败即 `continue`
+#
+# ⇒ **文件名里解析不出「纯三位数字前缀」的迁移，对这两道门完全隐形。**
+#
+# ★★ 实测复现（2026-10-22）：在工作树里新建 `912b_zzz_probe_delivery.sql` ⇒
+#   两道门**都绿** ⇒ 该迁移既不在通道 files=()、也不在 embeddata/StartupFiles
+#   ⇒ **升级库拿不到、新装库也拿不到，而没有任何一道门会红**。
+#   （`NNNb_` / `NNNpN_` **是本仓正在使用的命名约定**，已交付件有 8 条：
+#    361b / 487b / 487c / 680b / 682b / 683b / 706b / 707b。）
+#
+# ★★★ R83 轮实测出的**第二个宇宙**（R82 轮的遗漏）：
+#   R82 轮的登记册只穷举了 **canonical 目录**（`sql/migrations/startup/`）
+#   ⇒ ⇒ **installer 的 embeddata 目录**（`installer/cmd/llm-gw-installer/embeddata/startup/`）
+#   是**另一个独立的文件宇宙**，而它里面有**非前缀名**的文件：
+#   `session_turns_hot_bootstrap.sql` —— ★ **canonical 目录里根本没有这个文件**
+#   ⇒ ⇒ R82 轮的门在**这个宇宙上仍然是瞎的** ⇒ ⇒ 本册子改为**覆盖两个宇宙**。
+#
+# ── 修法的性质 ────────────────────────────────────────────────────────────────
+#
+# 与 R81 轮的 L11-b 门**完全同款**：把「手挑的扫描根清单」换成
+# ★ **穷举全目录 ＋ 显式清单**。
+#   · **穷举**：canonical 目录（**递归**）与 embeddata 目录（平铺）**各穷举一次**；
+#   · **显式清单**：本文件逐条写明**非纯数字前缀**那部分（当前 15 条）的投递处置。
+#
+# 门会做**双向**核对：
+#   · 目录里有、册子里没有 ⇒ **红**（漏登记 ⇒ 会静默不投递）；
+#   · 册子里有、目录里没有 ⇒ **红**（陈旧条目 ⇒ 登记册自己漂移）。
+#
+# ── 格式 ─────────────────────────────────────────────────────────────────────
+#
+#   <键> <TAB> <投递腿> <TAB> <效果落点> <TAB> <理由>
+#
+#   键 = 相对路径 + **宇宙前缀**：
+#     canonical/<相对 sql/migrations/startup/ 的路径>   （子目录件带前缀，如 up/x.sql）
+#     embeddata/<相对 embeddata/startup/ 的路径>
+#
+#   投递腿（**相对于这个键**）：
+#     channel    只走部署通道腿（scripts/apply-db-revision-sequence.sh 的 files=()）
+#     installer  只走安装器腿（dbinit StartupFiles ＋ embeddata 副本）
+#     both       两条腿都走
+#     none       有意不投递（**效果落点列必须写清效果落在哪里**）
+#
+#   效果落点（**仅 none 需要**；逗号分隔；每项 `kind:对象`）：
+#     baseline:<表>          该表在 sql/schema/01-schema.sql 里
+#     baseline:<表>.<列>     该列在基线的该表里（★ 列级 ⇒ 能抓「引用了不存在的列」）
+#     baseline-index:<索引>  该索引在基线里
+#     retired:<对象>         该对象在**迁移 890 自己列出的**退役清单里
+#                            （门从 890 的 FOREACH 数组里**解析**，不手工维护）
+#     bootstrap:<文件>       效果由该 bootstrap 文件承载（安装器的非编号交付件）
+#
+#   理由 = 散文（给人读），**不参与机械核对** ⇒ 机器能核的只有「效果落点」那几列。
+#
+# ── 维护规则 ─────────────────────────────────────────────────────────────────
+#
+# 新增一条**非纯数字前缀**的 startup 迁移时：
+#   ① 在本册子加一行（**两个宇宙里都存在的就要加两行**），写清投递腿、效果落点、理由；
+#   ② 投递腿是 channel/both ⇒ 把它加进 scripts/apply-db-revision-sequence.sh 的 files=()；
+#   ③ 投递腿是 installer/both ⇒ 把它加进 StartupFiles 并把**逐字节相同**的副本放进
+#      installer/cmd/llm-gw-installer/embeddata/startup/；
+#   ④ 跑 `bash scripts/apply-db-revision-sequence_test.sh` 与 installer 模块的门。
+#
+canonical/2026-07-13-multimodal-token-fields-hot.sql	none	retired:request_logs_hot,retired:request_logs,baseline:usage_ledger_hot.reasoning_tokens,baseline:usage_ledger_hot.image_tokens,baseline:usage_ledger_hot.audio_tokens,baseline:usage_ledger_hot.video_tokens,baseline:usage_ledger_hot.provider_tokens	文件名是日期而不是编号（2026-07-13 的补丁件）。它给三张表加 5 个多模态 token 列：request_logs_hot / request_logs 属 v1 族（已随 890 退役）；**usage_ledger_hot 是幸存的正典账本**（不是 v1 族）⇒ 那 5 列**在基线里**（01-schema.sql 的 usage_ledger_hot）⇒ 新装库不缺 ⇒ 不需要投递。★ R83 轮订正：R82 轮的理由写的是「同名列在会话族基线里（session_turns.reasoning_tokens 等）」⇒ **实测 session_turns 这 5 列全缺** ⇒ 那句是错的（多模态列在 usage_ledger / usage_ledger_hot，不在会话族）。
+canonical/328a_request_logs_bodies_table.sql	none	baseline:request_logs_bodies,retired:request_logs_bodies	v1 族 request_logs_bodies 的建表件（正文的 body 分表，正文阶段 1）。★ 两条现状同时成立：**基线里就有这张表**（01-schema.sql）⇒ 新装库拿得到；**而 890 又把它退役了**（它在 890 的 DROP TABLE 数组里）⇒ 升级库走退役脚本那条路 ⇒ 不需要再投递。替代物是会话族的 session_bodies / session_bodies_hot。
+canonical/361b_provider_models_source_prelude.sql	both	-	provider_models.source 的前置补列（原出处是 domain/361，domain 通道安装器不跑 ⇒ host-first 部署只走 startup 通道时会缺列，ensure 链在 db open 即 42703）。canonical 宇宙里：既在通道 files=()、也在安装器 StartupFiles（+ embeddata 副本）⇒ 两条腿都走。
+canonical/395b_dedup_provider_models_and_aliases.sql	none	baseline:provider_models,baseline:model_aliases,baseline-index:uq_provider_models_canonical_raw_name	provider_models / model_aliases 的历史去重件（395 的唯一索引因存量重复而失败后的补救）。去重后的形态**已并入基线**：唯一索引 uq_provider_models_canonical_raw_name 见 01-schema.sql；新装库无重复行可去；升级库在 395/395c 链上早已应用。
+canonical/395c_canonical_raw_name_unprefix.sql	none	baseline:provider_models,baseline-index:uq_provider_models_canonical_raw_name	同族：canonical_raw_name 去厂商前缀，并把唯一索引加宽到 (provider_id, canonical_raw_name, raw_model_name)。加宽后的形态**就是**基线里那个唯一索引（01-schema.sql）。
+canonical/478p2_affinity_indexes.sql	none	retired:request_logs_hot,bootstrap:session_turns_hot_bootstrap.sql	给 v1 族 request_logs_hot 建 gw_session_id / task_type 两个索引。★ 两个现状同时成立：① 索引所在的表**随 v1 族退役**（在 890 的 DROP TABLE 数组里）⇒ 索引随表消失；② **效果没有丢** —— 会话族的等价索引由 bootstrap 交付：session_turns_hot_bootstrap.sql 建 idx_session_turns_hot_tenant_session_turn (tenant_id, session_id, turn_no DESC)（覆盖 settle worker 的 session_id 过滤，bg/auto_route_settle_sql.go 用 SessionKeyCol=session_id）与 idx_session_turns_hot_tenant_task_type (tenant_id, task_type, ts DESC)。
+canonical/487b_request_logs_hot_system_fingerprint.sql	channel	-	v1 族 request_logs_hot 的 system_fingerprint 列。**只登记通道腿**：v1 族在通道里并未被删除（890 在 files=() 中是注释掉的，v1 族退役由显式的 scripts/retire-request-logs-v1-family.sh 交付）⇒ 升级库仍要它。★ 通道按文件内容的 sha256 记账（public.gateway_db_revision_sequences.content_sha256）⇒ 已应用过的文件不会重放 ⇒ v1 族退役后再跑通道不会因此报错。
+canonical/487c_request_logs_hot_raw_model_name.sql	channel	-	v1 族 request_logs_hot 的 raw_model_name 列，供 request_logs_with_current_month 包装链读。同上：只走通道腿（按 sha256 记账 ⇒ 已应用的不重放）。
+canonical/680b_request_logs_helper_view_column_resync.sql	channel	-	v1 族 request_logs_with_current_month 三层包装链的冷启动重同步。同上：只走通道腿。
+canonical/682b_model_offers_context_window_columns_prelude.sql	channel	-	model_offers 视图重建（682）要读 cmb.context_window_source / context_window_updated_at，而基线只建了 context_window_override ⇒ host-first 部署（Go ensure 链还没启动过）会在 682 中断。只走通道腿。
+canonical/683b_session_dim_table_prelude.sql	channel	-	session_dim 表的前置件：357 的聚合视图要 LEFT JOIN session_dim，而基线不建这张表、350 又故意不在通道里 ⇒ host-first 部署必须由 683b 建出来。只走通道腿。
+canonical/706b_session_turns_hot_prelude.sql	channel	-	706 的前置件：通道腿跑在 Go ensure 链首次启动之前 ⇒ public.session_turns_hot 还不存在 ⇒ 706b 先建它，707 才敢 ALTER。注册 526 本身不可行（硬契约 + 列清单早于 706 的加宽）。只走通道腿。
+canonical/707b_session_bodies_hot_prelude.sql	channel	-	707 的前置件：public.session_bodies_hot 由 614 建、614 不在通道里 ⇒ 707b 先建它，708 才敢 ALTER。理由同 706b。只走通道腿。
+embeddata/361b_provider_models_source_prelude.sql	installer	-	★ embeddata 宇宙里的同一件（canonical/361b 的逐字节副本）。它在 embeddata 里 ⇒ 由安装器腿交付（StartupFiles + embeddata 副本）⇒ 它**不在**通道 files=() 里（通道的条目指向 canonical 路径）⇒ 这个宇宙里只算安装器腿。
+embeddata/session_turns_hot_bootstrap.sql	installer	bootstrap:session_turns_hot_bootstrap.sql	★★ **R83 轮实测出的第二宇宙的代表件**：非前缀名、**canonical 目录里根本没有这个文件**（只在 embeddata 里）⇒ R82 轮的登记册（只穷举 canonical）**看不见它** ⇒ ⇒ 本册子改为覆盖两个宇宙。它由安装器腿交付（StartupFiles + embeddata 副本）⇒ **它是 session_turns_hot 这张表及其 11 个索引的载体**（settle worker 读的就是这张表）⇒ ⇒ 效果落点就是它自己。

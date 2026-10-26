@@ -34,8 +34,8 @@ func (w *WeeklyPeakRollup) Start(ctx context.Context) {
 func (w *WeeklyPeakRollup) Stop() {
 	if w.cancel != nil {
 		w.cancel()
+		<-w.done
 	}
-	<-w.done
 }
 
 func (w *WeeklyPeakRollup) run(ctx context.Context) {

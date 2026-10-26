@@ -385,7 +385,7 @@ run_all() {
 render() {
   local matrix="$RESULTS_DIR/matrix.json"
   local report="$STRESS/REPORT.md"
-  [[ -s "$matrix" ]] || { err "无 $matrix，先跑 all"; return 1; }
+  [[ -s "$matrix" ]] || { err "无 ${matrix}，先跑 all"; return 1; }
   python3 - "$matrix" "$report" <<'PY'
 import json, sys, pathlib, datetime
 matrix_p, report_p = sys.argv[1], sys.argv[2]

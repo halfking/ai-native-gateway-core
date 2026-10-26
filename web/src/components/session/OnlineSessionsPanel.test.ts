@@ -9,6 +9,7 @@ import {
   SessionObsApiError,
   type OnlineSessionsResponse,
 } from '../../api/sessionTurnsTree'
+import { testI18n } from '../../test-utils/i18n'
 
 const fetchOnlineSessionsMock = vi.fn()
 
@@ -48,7 +49,7 @@ function page(over: Partial<OnlineSessionsResponse> = {}): OnlineSessionsRespons
 }
 
 function mountPanel() {
-  return mount(OnlineSessionsPanel)
+  return mount(OnlineSessionsPanel, { global: { plugins: [testI18n] } })
 }
 
 beforeEach(() => {

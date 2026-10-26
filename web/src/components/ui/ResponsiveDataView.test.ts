@@ -26,7 +26,8 @@ const i18n = createI18n({
   missingWarn: false,
   messages: {
     'zh-CN': {
-      hyper: { dataView: { table: '表格', cards: '卡片' }, list: { empty: '默认空态文案' } },
+      hyper: { dataView: { table: '表格', cards: '卡片' } },
+      common: { empty: { noResult: '默认空态文案' } },
     },
   },
 })
@@ -97,7 +98,7 @@ describe('ResponsiveDataView：#empty 插槽的不变式（切片十四加插槽
     expect(box.find('a.cta').text()).toBe('去购买积分')
   })
 
-  it('emptyText 为空串时回落到 hyper.list.empty（既有行为未变）', () => {
+  it('emptyText 为空串时回落到 common.empty.noResult（共享组件的兜底空态）', () => {
     const w = mount(ResponsiveDataView, {
       props: { rows: [], titleKey: 'id', empty: true, emptyText: '' },
       global: { plugins: [i18n] },

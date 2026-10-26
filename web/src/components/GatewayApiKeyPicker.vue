@@ -50,7 +50,7 @@ function goKeys(action?: string) {
           :disabled="loading"
           @click="emit('select', k.id)"
         >
-          {{ loading ? '加载中…' : '使用此密钥' }}
+          {{ loading ? $t('common.feedback.loading') : $t('common.terms.useThisKey') }}
         </button>
       </li>
     </ul>
@@ -59,10 +59,10 @@ function goKeys(action?: string) {
     </div>
     <div class="key-picker__actions">
       <button type="button" class="btn btn-ghost btn-sm" @click="goKeys('create')">
-        签发新密钥
+        {{ $t('common.terms.issueNewKey') }}
       </button>
       <button type="button" class="btn btn-ghost btn-sm" @click="goKeys()">
-        前往 API 密钥管理
+        {{ $t('common.terms.goToKeyManagement') }}
       </button>
     </div>
   </div>

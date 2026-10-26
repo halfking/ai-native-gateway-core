@@ -11,6 +11,8 @@ import type { CredentialLifecycleStatus } from './providers'
 // algorithm rewrite (algorithm_version field in RoutingPolicy);
 // the v1 endpoints are gone.
 
+export type StreamMode = 'both' | 'stream_only' | 'non_stream_only'
+
 export interface RoutingCandidate {
   rank: number
   provider_id: number
@@ -52,6 +54,8 @@ export interface RoutingCandidate {
   runtime_block_reason?: string | null
   manual_priority?: number
   priority?: boolean
+  // Optional during rolling upgrades; callers default a missing legacy field to both.
+  stream_mode?: StreamMode
   active_sessions?: number
   consecutive_failures?: number
   // R7: credential-level consecutive_failures (separate from cmb).
@@ -157,6 +161,7 @@ export interface CandidateBindingPatch {
   routing_tier?: number
   weight?: number
   priority?: boolean
+  stream_mode?: StreamMode
 }
 export function patchCandidateBinding(
   credentialId: number,

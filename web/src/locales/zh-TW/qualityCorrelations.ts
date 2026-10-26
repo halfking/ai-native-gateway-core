@@ -1,13 +1,13 @@
 // Auto-synced from en-US (zh-TW)
 export default {
   title: 'Quality Correlations',
-  subtitle: 'Cross-references request features with outcomes (success, latency, quality).',
+  subtitle: '把請求特徵與結果（成功、延遲、品質）交叉比對。',
   filter: {
     window: 'Window',
     bucketBy: 'Bucket by',
     refresh: 'Refresh',
     loading: 'Loading…',
-    days: { d1: '1 day', d7: '7 days', d30: '30 days', d90: '90 days' },
+    days: { d1: '1 天', d7: '7 天', d30: '30 天', d90: '90 天' },
     by: {
       prompt_length: 'Prompt length',
       tools: 'Tool count',
@@ -25,7 +25,7 @@ export default {
   },
   breakdown: {
     title: 'Breakdown by {by}',
-    empty: 'No data — try lowering the days or expanding the filter.',
+    empty: '沒有資料 — 試著減少天數或放寬篩選條件。',
     headers: {
       bucket: 'Bucket',
       samples: 'Samples',
@@ -36,14 +36,13 @@ export default {
     },
   },
   insights: {
-    title: 'What predicts quality? (Pearson correlation)',
-    hint: 'Each predictor is correlated with avg_quality across buckets.',
-    empty: 'Not enough samples for insights.',
+    title: '什麼在預測品質？（皮爾森相關）',
+    hint: '每個預測因子都與各分桶的平均品質做相關性分析。',
     buckets: '{n} buckets',
     samples: '{n} samples',
 
-    emptyInsufficient: '至少需要 30 个样本才能计算有意义的相关性。',
+    emptyInsufficient: '至少需要 30 個樣本才能計算有意義的相關性。',
 
-    emptyUnexpected: '无洞察（异常）。请检查服务端日志。',
+    emptyUnexpected: '無洞察（異常）。請檢查服務端日誌。',
   },
 }

@@ -28,7 +28,50 @@ type HealthCheckDef struct {
 	// 等于把「schema 崩了」说成「一切正常」。所以只对本文件里显式声明
 	// Optional 的那几条生效，其余保持原样（中止）。
 	Optional bool
+
+	// SkipWhen 是**前提守卫**：返回 (true, reason) 时本轮**不发 SQL**，
+	// 直接把这条检查记为「未执行」。
+	//
+	// 它与 Optional 的区别：Optional 应对的是「对象还不存在」（42P01，
+	// 依赖表/视图缺失）；SkipWhen 应对的是「对象在，但**它要问的问题已经
+	// 不再可判定**」——例如源表被停写，写入侧守卫会让源永远不再前进，
+	// 于是「有没有新出现的坏行」这个问题**结构上无法回答**。
+	//
+	// 为什么必须把「未执行」做成可观测的（而不是安静 return 0）：
+	// 「跳过」与「扫了没发现问题」在 findings 计数上**完全不可区分**，
+	// 运维会读到「没有负成本」，而真相是「这个问题已经不可判定」。
+	// reason 必须登记在 s4ScanSkipReasons 闭集里，否则 recordS4ScanSkipState
+	// 会拒写（宁可吵闹不可谎报）。
+	//
+	// 刻意做成**逐检查**的守卫而不是 worker 级的门：健康检查器一个 worker
+	// 跑十几条检查，只有一条读冻结源时，把整个 worker 停掉是错的。
+	SkipWhen func() (bool, string)
 }
+
+// ★ 2026-10-20（迁移 890 + 并行审计轮 D0）：`recordedCostComparability`
+// **这道前提守卫退役**（连同它唯一的常量用法 `s4ScanSkipReasonStopWrite`
+// 在本文件里的引用）。
+//
+// 旧守卫守的是：「源表被停写 ⇒ 不再有新行 ⇒ 『有没有新出现的负成本』这个问题
+// 结构上无法回答 ⇒ 跳过并把『跳过』做成可观测，而不是安静 return 0」。
+//
+// 退役理由（两个前提同时消失，而守卫仍然闭合）：
+//   ① 源已随 890 从 v1 族迁到**会话族**（`db.SessionFamilyTurnsSourceSQL()`，
+//      写入路径无条件）⇒ 「源不再前进」不再成立；
+//   ② 守卫读的是 `settings.RequestLogsWriteEnabled()`，而该键的**代码默认**
+//      已被改成 false（origin/main 的 D0）⇒ 在任何未显式配置它的环境上，
+//      这条检查**永久不发 SQL** ⇒ 「不可判定」被当成「没问题」上报。
+//
+// ⇒ 守卫退役 ⇒ 检查**恒执行**。它现在的真实语义是：
+//   「会话族里有没有负成本行」——而这**是**可判定的（源在前进）。
+//
+// ⚠ SkipWhen 这个**机制**本身保留（别的检查可能还要用）：退役的是这条检查
+//   的前提守卫，不是机制。机制的价值恰恰在于「跳过必须可观测」：
+//   `llm_gateway_bg_s4_scan_skipped_last_run{worker,reason}`。
+//
+// （退役记录：纯函数 `recordedCostComparability` 与本文件的
+//   `requestLogsWriteEnabled` 变量一并删除 —— 它们的唯一用途就是这道守卫，
+//   留着就成了「看起来还在防守」的僵尸判据。）
 
 func AllHealthChecks() []HealthCheckDef {
 	return []HealthCheckDef{
@@ -808,17 +851,56 @@ SELECT
 		// bg/data/model_baseline_prices.json 刻意是空的（models: []），
 		// 基准价当前 0 条 ⇒ 算不出金额。能确定的是**有多少行的成本是负的**、
 		// **偏移了多少美元**，那就只报这两个。
-		{CheckID: "recorded_cost_is_negative", Severity: "warning", Optional: true, Query: `
+		{CheckID: "recorded_cost_is_negative", Severity: "warning", Optional: true,
+			// 2026-10-20（R51 续轮）：S4 停写期间**不发 SQL**。
+			// 理由与实测见 recordedCostComparability 的注释：源不再前进 ⇒
+			// 「有没有新出现的负成本」不可判定；且续轮实测该查询已恒返回 0 行
+			// （表被运维清到 339K 行），每 ~7.5 分钟白扫一次。
+			// 「跳过了」通过 s4ScanSkipMetrics 族可观测，不被读成「没有问题」。
+			// ★ 2026-10-20（890 + D0）：本检查的**前提守卫已退役**
+			// （理由见文件里 recordedCostComparability 的退役记录）⇒
+			// 这条检查**恒执行**。
+			//
+			// 「有没有负成本」现在**是**可判定的问题：源已随 890 迁到会话族，
+			// 写入路径无条件 ⇒ 源在前进。
+			//
+			// ⚠ 保留 SkipWhen 的**机制**（不是保留这道守卫）：如果将来某条
+			// 检查的源又出现「不再前进」的情形，SkipWhen + 闭集 reason
+			// 正是「把不可判定说成没问题」的对治手段。
+			Query: `
 WITH neg AS (
     SELECT r.credential_id,
-           r.outbound_model,
+           -- ★ 890（v1 族退役）：源换成会话族（hot ∪ parent，30 天窗必须
+           -- 读两个存储面）。模型名列用 rl.raw_model_name —— 会话族里它就是
+           -- v1 outbound_model 的同义列（COALESCE(outbound_model, client_model)），
+           -- 保留 outbound_model 这个别名是为了外层报文逐字不变。
+           r.raw_model_name AS outbound_model,
            count(*)::int      AS neg_rows,
            sum(r.cost_usd)    AS neg_usd,
            sum(COALESCE(r.cache_read_tokens, 0) - COALESCE(r.prompt_tokens, 0)) AS excess_cache
-      FROM public._request_logs r
+           -- ★ 2026-10-20（890 + D0）：**源形态从宽源改成窄源**。
+           --   旧写法用 db.SessionFamilyTurnsSourceSQL()：那是给「日志列表」型
+           --   读方准备的**宽源** —— 118 列投影 + 与 session_turn_details* 的
+           --   LEFT JOIN。对本检查（一个窄聚合：6 列、按 2 列分组）它是纯浪费：
+           --     · 宽投影把每行的宽度推到 ~677 字节（实测 EXPLAIN），
+           --     · **details 的 LEFT JOIN 更贵**：即使 turns 侧被过滤到 0 行，
+           --       哈希连接仍要**扫完整个 details 面**来建哈希表 ⇒
+           --       慢查的真正来源不是 turns 表，而是 details 表。
+           --   ⇒ 改成直接读会话族两张表、只取本检查真正用到的 6 列。
+           --   同款窄读的先例：domains/streaming/anomaly_harvester.go:228。
+           --   配套的索引（cost_usd < 0 的部分索引）见迁移 891。
+      FROM (
+            SELECT credential_id, raw_model_name, cost_usd,
+                   cache_read_tokens, prompt_tokens, ts
+              FROM public.session_turns_hot
+            UNION ALL
+            SELECT credential_id, raw_model_name, cost_usd,
+                   cache_read_tokens, prompt_tokens, ts
+              FROM public.session_turns
+           ) r
      WHERE r.cost_usd < 0
        AND r.ts > now() - interval '30 days'
-     GROUP BY r.credential_id, r.outbound_model
+     GROUP BY r.credential_id, r.raw_model_name
 )
 SELECT neg.credential_id::text || '|' || neg.outbound_model,
        'credential#' || neg.credential_id || ':' || neg.outbound_model,
@@ -1084,9 +1166,41 @@ func RunChecks(
 // 42P01 分支的办法就是能只跑一条。没有这个拆分，「表不存在会不会中止整轮」
 // 只能靠读代码猜。
 func runChecks(ctx context.Context, db *pgxpool.Pool, checks []HealthCheckDef) (newCritical, newWarning int, err error) {
+	return runChecksWithRecorder(ctx, db, checks, nil)
+}
+
+// healthCheckSkipRecorder 接收「本轮因前提消失而没有执行」的检查。
+//
+// 形态与 bg/ledger_reconciliation.go 的 markSkipped 一致（同一个方法名），
+// 所以 *LedgerReconciler 与 *RoutingHealthChecker 都能直接满足它。
+type healthCheckSkipRecorder interface {
+	markSkipped(reason string)
+}
+
+// runChecksWithRecorder 是带跳过记录器的内核。
+//
+// recorder 为 nil 时行为与旧的 runChecks 完全一致（跳过的检查安静略过，
+// 不发布任何指标）——这是给那些不关心「本轮有没有检查没跑」的调用方
+// （绝大多数单测）保留的窄路径。
+func runChecksWithRecorder(ctx context.Context, db *pgxpool.Pool, checks []HealthCheckDef, recorder healthCheckSkipRecorder) (newCritical, newWarning int, err error) {
 	now := time.Now()
 
 	for _, chk := range checks {
+		// 前提守卫：**先判守卫再发 SQL**。顺序是这件事的全部意义 ——
+		// 守卫的作用就是让这次扫描**根本不出现在数据库的负载里**。
+		if chk.SkipWhen != nil {
+			if skip, reason := chk.SkipWhen(); skip {
+				if recorder != nil {
+					recorder.markSkipped(reason)
+				}
+				slog.Info("routing health check skipped: precondition no longer holds",
+					"check_id", chk.CheckID, "reason", reason,
+					"detail", "该检查要问的问题已不可判定（源不再前进），本轮未发出 SQL；"+
+						"这不等于「没有问题」，只是「这个问题已无法回答」")
+				continue
+			}
+		}
+
 		rows, qErr := db.Query(ctx, chk.Query)
 		if qErr != nil {
 			// 缺表（42P01）且这条检查显式声明 Optional ⇒ 跳过并继续，

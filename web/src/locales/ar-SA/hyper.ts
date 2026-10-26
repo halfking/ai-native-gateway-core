@@ -3,15 +3,10 @@
 export default {
   bottomNav: {
     ariaLabel: 'التنقل الرئيسي',
-    home: 'الرئيسية',
-    dashboard: 'لوحة المعلومات',
-    requests: 'الطلبات',
-    models: 'النماذج',
     more: 'المزيد',
   },
   account: {
     title: 'الحساب',
-    profile: 'الملف الشخصي',
     language: 'اللغة',
     theme: 'المظهر',
     help: 'مساعدة',
@@ -24,7 +19,6 @@ export default {
     close: 'إغلاق',
   },
   dataView: {
-    switchTo: 'التبديل إلى {mode}',
     table: 'جدول',
     cards: 'بطاقات',
   },
@@ -34,14 +28,6 @@ export default {
     loadingMore: 'جارٍ التحميل…',
     retry: 'إعادة المحاولة',
     allLoaded: 'تم تحميل {count} كلها',
-    loadFailed: 'فشل التحميل. اضغط لإعادة المحاولة.',
-    empty: 'لا توجد سجلات',
-  },
-  focus: {
-    enter: 'عرض مُركَّز',
-    exit: 'إنهاء التركيز',
-  },
-  desktopOnly: {
-    banner: 'هذه الصفحة مصممة لسطح المكتب. يمكنك قراءتها هنا؛ التحرير الكبير يتم على سطح المكتب.',
+    loadFailed: 'فشل التحميل. أعد المحاولة.',
   },
 }

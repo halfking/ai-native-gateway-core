@@ -2,6 +2,29 @@ package sessionv2mirror
 
 // abandoned_turn.go — the "started but never reached a terminal record" landing
 // pad, applied to session_turns.is_abandoned (migration 821, audit §9.92/§9.93).
+
+//
+// # ★★ 登记债：触发源随 v1 族退役而消失（2026-10-21 记录）
+//
+// 本 pad 的**触发条件**是「telemetry 侧发现 v1 没有 t0 行」⇒ 该事实由
+// `updateRequestLog` 的 upsert-race 分支执行 `SELECT EXISTS(...)` 查 v1 表得出。
+//
+// ★ 迁移 890（v1 族退役）把 v1 族整族 DROP，并**删掉了那段认领逻辑** ⇒
+//   **现在没有任何代码会设置 `entry.T0Missing = true`** ⇒
+//   ⇒ 本 pad **恒不触发**：`session_turns.is_abandoned` 从此恒为 NULL/false。
+//
+// ⇒ 这**不是 bug**（v1 族退役是既定决策），而是一条**能力缺失登记债**：
+//
+//	「有没有 t0」这个事实，在 v1 退役后**没有判据源**了。
+//	会话族自己的对应事实是「turn_no 是否从 1 开始连续」——
+//	但把它换算成「abandoned」需要一次语义设计（什么算「开始了却没到终态」）
+//	⇒ 不在本轮范围（与 `internal/trace.FlushToPG` 的 R52「停写即丢弃」同口径）。
+//
+// ⇒ 本 pad 的**代码与接线都保留**（hook.go 仍在 w.Write 之后调用它），
+//   因为它一旦有了新的判据源就能复活；把它删掉会让「复活」变成一次考古。
+//
+// ★ 本文件因此带**显式退役登记**，`internal/sessionv2mirror/` 的门会核它
+//   （见 abandoned_turn_gate_test.go 的 TestAbandonedTurnTriggerSourceIsRetired）。
 //
 // # Why this lives here and not in telemetry
 //
@@ -94,6 +117,19 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+// # ★ 机器可读的退役标记（2026-10-21）
+//
+// 下面的退役登记是**给人读的**注释；这一枚常量是**给机器钉的**。
+//
+// ★ 为什么两者都要：登记若只写在注释里，门只能查「某个关键词在不在」
+//
+//	—— 而**全文别处也会出现同一个词** ⇒ 门会恒绿、变成没有牙的门。
+//	实测：把登记段首句整句抹掉，门**仍然绿**（因为别处还有「退役」二字）。
+//	⇒ 登记必须**同时**落成一枚常量：门钉它的**值**，抹掉/改写它就红。
+//
+// ★ 它是**包级常量**（不是局部变量）⇒ 即便当前无人引用，Go 也不会报未使用。
+const abandonedTurnTriggerRetired = "v1-family-retired@2026-10-20"
 
 // abandonedTurnOps counts outcomes of the landing pad.
 //

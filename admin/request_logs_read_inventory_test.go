@@ -3,284 +3,158 @@ package admin
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 )
 
-// requestLogsReadInventory is the **complete** list of production files that read
-// the _request_logs family, with the number of read call sites in each.
+// requestLogsReadInventory 是「仍读**已退役 v1 族**的生产文件」清单。
 //
-// # 为什么要有这张表
+// # 这张表现在是空的（迁移 890，2026-10-20）
 //
-// 审计 §5.5.5「会话域视图依赖的最终分类」覆盖 14 个文件，而实际读
-// `_request_logs*` 的生产文件有 104 个、237 个调用点（2026-10-01 实测）。
-// §5.5.8 的标题写的是「第一版表不完整，逐条补齐」——**但那张表从未覆盖到
-// 其余 90 个文件，且它自称补全过**。没有任何机制会在这个缺口扩大时报红。
+// 迁移 890 把 v1 族**物理删除**了（10 张底表 + 4 张 v1-only 视图 + 序列/索引/RLS）。
+// v1 读方随之归零 ⇒ 这张表随之清空。
 //
-// S4（`storage.request_logs_write_enabled=false`）会让这 237 处全部读到
-// 不再增长的数据。在逐点评估完成之前，**这张表的作用不是分类，是钉住覆盖面**：
-// 新增一个读 _request_logs 的文件、或某个文件的读点数变了，这道门立刻变红，
-// 逼迫做一次显式复核，而不是让清单在无人察觉的情况下继续漂移。
+// 但「清空」不是「删掉这张表」：它现在守的是**反向**的不变式 ——
+//
+//	**不许出现新的已退役 v1 族读方。**
+//
+// 这正是本表从建表起就在守的东西（§8.5 的原话：「新增一个读 _request_logs 的文件
+// ⇒ 有人开始读一张 S4 将停写的表；某个文件的读点数变了 ⇒ 这张表已陈旧，
+// 而它的下游每一个数都跟着陈旧」），只是 890 之后那张表**不存在了**，
+// 于是不变式从「不许有新的」升级成「一个都不许有」。
 //
 // # 口径（换正则就不是这个数，改这里之前先读审计 §8.5）
 //
 //	grep -rniE "(from|join)[[:space:]]+_request_logs(_[a-z_]+)?\b" --include=*.go . \
 //	  | grep -v "_test\.go" | grep -v "^\./docs"
 //
+// ⚠ **2026-10-20（迁移 890）收窄**：原来 `(_[a-z_]+)?` 把 **canonical 视图**
+// `request_logs_with_current_month` 也算成 v1 读点 —— 而 890 之后那张视图**仍然存在**
+// （内容换成会话族两臂体，118 列同名同序）⇒ 读它**不是**读 v1。
+// ⇒ 扫描口径改成「**已退役**的 v1 族关系」闭合集（retiredV1RelationNames：
+// 5 张底表 × 两种拼写 + 4 张 v1-only 视图）。
+//
+// ⚠ 这个收窄**不是**「把扫描器改窄让它变绿」：
+//   - 收窄后的集合是**更严格**的定义（只认真 v1），不是更宽；
+//   - 少算的是「canonical 视图读方」——它们本来就不属于 v1 退役范围；
+//   - 判据的区分力由 TestRetiredV1ReferencesAreAllAccountedFor 与
+//     TestSessionFamilySourceShapeMatchersHaveTeeth 守着（阳性对照：真 v1 必须命中；
+//     canonical 视图必须不命中）。
+//
+// # 扫描器扫不到的两类（都不是「v1 读方」，登记在别处）
+//
+//	① **切换层读方**（§9.49）：把表名收进 Go 标识符再拼进 SQL ——
+//	   `maas.requestLogsSource(days)`、`db.SessionBodiesSourceSQL()`、
+//	   `admin.logsSourceFromSQL()`。⇒ 登记在 indirectRequestLogsReaders。
+//	② **已退役关系的残留引用**：890 之后仍引用被删关系的位置 ——
+//	   登记在 retiredV1ReferenceExceptions（生产缺陷台账，本轮只报告不修）。
+//
+// # 历史（保留口径变更的理由，不删）
+//
+// 审计 §5.5.5「会话域视图依赖的最终分类」覆盖 14 个文件，而实际读
+// `_request_logs*` 的生产文件有 104 个、237 个调用点（2026-10-01 实测）。
+// §5.5.8 的标题写的是「第一版表不完整，逐条补齐」——**但那张表从未覆盖到
+// 其余 90 个文件，且它自称补全过**。没有任何机制会在这个缺口扩大时报红。
+//
 //	2026-10-01 实测：**277 命中 − 40 条注释行 = 237 真实调用点 / 104 个文件**。
-//	注释行必须排除：40 条里 36 条是小写 `from`，不剔会得 277 而非 237。
-//
-//	2026-10-05 加 `join`（理由见 requestLogsReadPattern 的注释）：
-//	**109 文件 / 271 调用点**。差的 3 文件是只 JOIN 不 FROM 的活读方，
-//	差 31 调用点是已登记文件里此前未被计入的 JOIN 腿。
-//
-// ⚠ 这两个数**都是历史值**：仓库每天在动，`TestRequestLogsReadInventoryIsComplete`
-// 的红绿以本门当前扫描结果为准，本注释只记录口径变更的历史与理由。
+//	2026-10-05 加 `join` ⇒ **109 文件 / 271 调用点**。
+//	2026-10-20（890 之后）收窄到「已退役关系」⇒ **0 文件 / 0 调用点**。
 //
 // ★★ **§9.259：这张表**不是**读方全集，别拿它当退役工作量。**
 //
-// 它只按 `(from|join)\s+_request_logs…` **行扫描**，所以**看不见走切换层的读方** ——
-// 那些把表名当 Go 字符串返回的 `maas.requestLogsSource(days)`、
-// `db.SessionBodiesSourceSQL()`、`admin.logsSourceFromSQL()` 都在行扫描之外。
-//
-// 实测两个总体的关系（2026-10-06）：
-//
-//	本表（字面量）        108 文件 / 256 调用点
-//	间接读方（§9.258 桶）  22 文件（含 3 处手验的 src.TurnsTable）
-//	交集                   14 文件
-//	★ 并集               **116 文件**
-//
-// ⇒ **8 个只在间接总体、不在本表的读 v1 文件**：`maas/usage.go`、
-// `maas/consumption_detail.go`、`maas/credit_buckets.go`、`admin/usage_credits.go`、
-// `admin/session_compare.go`、`admin/session_export.go`、`bg/auto_route_settle_sql.go`、
-// `admin/dashboard_board_queries.go`（§9.260 起，读 composer 建的 v1 臂视图）。
-// （R48-A10 订正：上文 107/254/21/114/7 是 §9.264 加 v1_write_liveness 行时漏同步的旧数。）
-// 它们登记在 `cmd/tools/sql_source_indirection_audit` 的 `indirectSiteAssessments`
-// （那是拼接点清单），**两张表各有各的口径，不是一张表的两半**。
-// ⇒ 退役排期要用**并集**，详见审计 §9.259。
+// 它只按 `(from|join)\s+…` **行扫描**，所以**看不见走切换层的读方**。
+// 两张表各有各的口径，不是一张表的两半 ⇒ 退役排期要用**并集**
+// （allKnownRequestLogsReaderFiles）。
 //
 // # 刻意不自动分类
 //
 // 我试过按「语句窗口内有无 gw_session_id / request_id =」自动分 A/B/C/D，
-// 拿 §5.5.5 已人工核定的 14 个点交叉验证，**判错 5 个**，且错得最重的
-// `session_turns_tree.go` / `session_turns_unified.go`（`parent_request_id
-// = ANY` 被判成「无会话头谓词」）。**所以这道门只数个数，不下判定。**
+// 拿 §5.5.5 已人工核定的 14 个点交叉验证，**判错 5 个**。**所以这道门只数个数，不下判定。**
 var requestLogsReadInventory = map[string]int{
-	"admin/analytics.go":                    2,
-	"admin/attachments_routes.go":           2,
-	"admin/attempt_quality_api.go":          1,
-	"admin/auto_route.go":                   1,
-	"admin/auto_route_outcome_freshness.go": 1,
-	"admin/auto_route_correlations.go":      5,
-	"admin/auto_title_generator.go":         2,
-	"admin/body_resolver.go":                4,
-	// admin/compression_sessions.go 于 2026-10-13（S4 波 4）移出 v1 族：整只端点会话族化。
-	"admin/compression_stats.go":          4,
-	"admin/credential_monitor.go":         4,
-	"admin/credential_monitor_heatmap.go": 1,
-	"admin/credential_success_rate.go":    2,
-	"admin/data_lifecycle.go":             16,
-	"admin/data_lifecycle_attachments.go": 6,
-	// admin/data_lifecycle_blobs.go 于 2026-10-13（S4 波 4）出列：会话臂治理。
-	"admin/data_lifecycle_metrics.go":   1,
-	"admin/diagnostics_credential.go":   1,
-	"admin/live_stream_sse.go":          2,
-	"admin/logs.go":                     4,
-	"admin/logs_summary.go":             2,
-	"admin/memora_handlers.go":          4,
-	"admin/model_routing_diagnostic.go": 1,
-	"admin/model_status.go":             2,
-	"admin/no_topic_session.go":         4,
-	"admin/probe_history.go":            1,
-	"admin/provider_diagnose.go":        2,
-	"admin/provider_models.go":          2,
-	"admin/providers.go":                1,
-	// admin/quality_correlations.go 于 2026-10-13（S4 波 4）出列：会话族重写。
-	"admin/request_trace.go":   4,
-	"admin/route_incidents.go": 1,
-	// admin/routing.go 于 2026-10-13（S3 波 3 停写切换）除名：唯一的 v1 读点
-	// popularModelsHotSQL 改读会话族原生源（SessionFamilyTurnsSourceSQL），
-	// 文件内已无 _request_logs 家族引用（钉桩 routing_popular_models_test）。
-	// 2026-10-05：只 JOIN 不 FROM，此前对本门**完全不可见**（假零）。
-	// 会话对比 API 的 bodies 腿；turn 腿早已走会话族。
-	"admin/session_analytics_breakdown.go":  2,
-	"admin/session_analytics_timeseries.go": 3,
-	"admin/session_bodies_batch.go":         2,
-	"admin/session_detail_v2.go":            2,
-	// 同上：只剩 JOIN 不 FROM。
-	// ⚠ §9.230 起**会话导出/对比那两个**（原 session_compare.go / session_export.go）
-	// 已不在本表：它们的 bodies 腿改走 db.SessionBodiesSourceSQL()，源码里不再有
-	// v1 关系名字面量。v1 那一臂的登记在 indirectRequestLogsReaders
-	// （admin/session_bodies_source.go）。
-	"admin/session_extract.go":        3,
-	"admin/session_management_api.go": 1,
-	// admin/session_online.go 于 2026-10-15 出列：在线列表改读 session_summaries
-	// （旧 JOIN request_logs_with_current_month 生产 52s/0 行）。
-	"admin/session_sanitize_matches.go": 2,
-	"admin/session_summary_v2.go":       1,
-	"admin/session_tenant.go":           4,
-	"admin/session_timeline_query.go":   1,
-	"admin/session_title.go":            1,
-	"admin/session_turns_tree.go":       1,
-	"admin/session_turns_unified.go":    1,
-	"admin/swim_lane_init.go":           1,
-	"admin/telemetry.go":                1,
-	// 2026-10-13 S3 波 3：4→8——logsTable 补两条会话腿后，双子排除的
-	// NOT EXISTS（_request_logs_hot/request_logs 各 ×2）计入引用计数。
-	"admin/tenants.go":        8,
-	"admin/top_problems.go":   2,
-	"admin/unified_detail.go": 6,
-	"admin/usage.go":          3,
-	// 2026-10-02: usage trend-series detail 路径读当月视图（与 board fallback 同源）。
-	"admin/usage_trend_series.go": 2,
-	// 2026-10-03: usage_enhanced.go 读 _request_logs 两处，但扫描器只数到 1 处 ——
-	//
-	//   ① usageCacheEconomics 的压缩请求数（"FROM _request_logs rl"，SQL 字面量）
-	//   ② usageCostTrend 的 work_type / intent 基表（planCostTrend 里的
-	//      Go 字符串 BaseTable: "_request_logs rl"）
-	//
-	// ② 不是 SQL 文本，requestLogsReadPattern 的 `from\s+_request_logs` 看不见它。
-	// 本表登记的是**扫描器测到的值** 1，不是真实调用点数 2 —— 别把它读成
-	// 「这里只读了一处」。
-	//
-	// ② 这条路径由另一道门从结构上覆盖：planCostTrend 的维度归属断言
-	// （TestPlanCostTrend_DimensionProvenance）直接断言 work_type/intent 的
-	// 基表就是 _request_logs rl，比 grep 计数强。扫描器看不见 ≠ 没有覆盖。
-	// 要把 ② 也数进来，得把模式扩到「裸表名字符串」，那会改动本表其余条目
-	// （审计 §8.5），留给需要它的那一轮单独评估。
-	"admin/usage_enhanced.go":           1,
-	"admin/work_types.go":               4,
-	"autoroute/recommend_v2.go":         2,
-	"bg/auto_index_refresher.go":        4,
-	"bg/auto_route_affinity_worker.go":  2,
-	"bg/candidate_failure_monitor.go":   2,
-	"bg/credential_recovery.go":         2,
-	"bg/credential_selfcheck.go":        3,
-	"bg/daily_probe_audit.go":           1,
-	"bg/integrity_fingerprint_drift.go": 1,
-	"bg/integrity_fingerprint_probe.go": 2,
-	"bg/ledger_reconciliation.go":       1,
-	"bg/lite_retention_worker.go":       2,
-	"bg/model_probe.go":                 3,
-	"bg/model_tier.go":                  1,
-	"bg/passive_probe_listener.go":      4,
-	"bg/shared_pick.go":                 1,
-	"bg/stats_minute_rollup.go":         3,
-	"bg/stats_minute_rollup_retire.go":  3,
-	"bg/today_success_probe.go":         1,
-	"cmd/compression-bench/main.go":     2,
-	// §9.265：v1 写入腿存活读数。行存在性判据，**只按计数用**
-	// （v1_hot_rows / v1_parent_rows 两处 FROM），不看列。
-	// 取源分层：它读的是「v1 还在不在写」这个事实本身 ⇒ 消费面属 ③。
-	"cmd/gateway/v1_write_liveness.go":         2,
-	"cmd/gateway/dual_read_validator.go":       6, // 4 + §9.235 的 2 处存在性探测（L428/L430 `EXISTS(… FROM _request_logs_hot/request_logs WHERE ts >= h.b AND ts < h.b + interval '1 hour')`，只数「该小时有没有 v1」）；§9.235 漏登记，门当场转红但被当成基线混过去了
-	"cmd/gateway/main_v3_wiring.go":            1,
-	"cmd/gateway/output_compliance_control.go": 1,
-	"cmd/gateway/waterfall_by_request.go":      1,
-	"cmd/gateway/waterfall_db.go":              1,
-	// cmd/scenario_driver/main.go 于 2026-10-13（S4 波 4）移出 v1 族：断言改数会话族热表。
-	"cmd/tools/backfill_session_bodies/main.go": 2,
-	// 第 6 处 = HasV1RowsInRange（§R44/移交.1 端边界守门的实测探测，R45 轮加入）：
-	// LIMIT 1，家族过滤（tenant + 会话头）与同文件 LoadV1TimeRange 逐字一致——
-	// 探测必须对「窗口声称要比对的行」作答，母表腿是有意的。生命周期与该 loader
-	// 其余 5 处同面：S4 停写 _request_logs 时 v1 校验器连同探测一起退役。
-	// ★ §9.259：原写 6，**复核后改为 5**。
-	// 复核过程（这张表的用途是逼人复核，不是照抄实测改数）：
-	//   1. 逐行数该文件的非注释 v1 FROM/JOIN 命中 = 5（154/162/193/521/659）；
-	//      另有 5 行是注释（13/130/131/172/621），必须剔除。
-	//   2. 在多个历史提交上各数一次（`263ee5d00` / `3a1a4846e`）**都是 5**
-	//      ⇒ 「过期」不是本轮引入的，这张表自 48h 审计线
-	//      （`e387213b3` 把 SQL 抽成 `buildSessionRangeQuery`）之后就一直是 5。
-	//   3. 性质：这是**一次性迁移工具**（§9.256 待拍板项 4），
-	//      S4 停写后应**随 v1 一起退役**，不是要迁的读方。
-	"cmd/tools/validate_sessions_v2/loader.go": 5,
-	"cmd/traffic-replay/main.go":               1,
-	"db/db.go":                                 2,
-	"db/probe_views_unified.go":                3,
-	"discovery/discovery.go":                   1,
-	"domains/analysis/optimizer.go":            3,
-	// domains/analysis/request_summary.go 于 2026-10-13（S3 波 2 停写切换）
-	// 除名：loadRequestLogs 改读会话族原生源（SessionFamilyTurnsForSessionSQL），
-	// 与 _request_logs 族再无任何关系引用——不再是本清单（_request_logs 读方）的成员。
-	"domains/attachments/handler.go":                  1,
-	"domains/credentialstate/popularity_tracker.go":   1,
-	"domains/hooks/goal/history_store.go":             2,
-	"domains/hooks/observability/telemetry/client.go": 4,
-	"domains/providerprofile/adapters.go":             4,
-	"domains/routeincident/store.go":                  1,
-	"domains/sessionforensics/export.go":              3,
-	"domains/sessionsummary/summarizer.go":            3,
-	"domains/sessionsummary/system_prompt_prefix.go":  1,
-	"domains/streaming/anomaly_harvester.go":          1,
-	// domains/streaming/model_alternatives.go 于 2026-10-13（S3 波 2 停写切换）
-	// 除名：usage_7d 热面改读会话族原生源（SessionFamilyTurnsSourceSQL），
-	// 同上，不再是 _request_logs 读方。
-	"internal/collector/gateway_adapters.go":     3,
-	"internal/quality/minute_aggregator.go":      1,
-	"internal/summarystore/store.go":             1,
-	"internal/trace/trace.go":                    2,
-	"storage/sqlite/request_log_store.go":        2,
-	"tests/session_audit/cmd/audit-test/main.go": 1,
-	"tests/test_popularity_tracker.go":           2,
+	// 890 之后：已退役 v1 族的读方为零。
+	// ⚠ **不要在这里手填「已知的例外」** —— 已退役关系的残留引用登记在
+	// retiredV1ReferenceExceptions（那是生产缺陷台账，不是 v1 读方清单）。
 }
 
-// TestRequestLogsReadInventoryIsComplete fails when the set of production files
-// reading _request_logs drifts away from the table above.
+// TestRequestLogsReadInventoryIsComplete 守「已退役 v1 族的读方为零」这条不变式。
 //
-// It fails on BOTH directions, and that is the point:
+// # 890 之后这张门的语义变了（2026-10-20）
 //
-//   - a new file appears  → someone started reading the table S4 would stop
-//     writing; it has not been assessed;
-//   - a listed file loses a call site (or disappears) → the table is stale and
-//     every number downstream of it is stale too.
+// 建表时它守的是**双向漂移**：「新增读方」与「清单陈旧」都要红。
+// 890 把 v1 族删掉之后，读方总体归零 ⇒ 清单随之清空 ⇒
 //
-// A guard that only fires on additions looks like coverage while the real risk
-// is drift in both directions.
+//	**清单必须为空，且实测读方必须为空。**
+//
+// 实测读方 = 扫描结果 − 已退役关系的**具名例外**
+// （retiredV1ReferenceExceptions：那是 890 已删、但生产侧还没改的残留引用，
+//
+//	属生产缺陷台账，登记在别处；它们运行时会 42P01，已在审计文档里报告）。
+//
+// # 为什么要留一道「清单为空」的门
+//
+// 清空一张表，最省事的做法是**把门一起删掉**——那样「不许有新的 v1 读方」
+// 这条不变式就没人守了。⇒ 门保留，判据从「清单 ⊆ 实测」翻成「**实测必须为空**」。
+//
+// # 阳性对照
+//
+// 「实测为空」这条断言最典型的失效形态是**扫描器坏了**（模式写错 / 路径写错
+// ⇒ 恒空 ⇒ 恒绿）。⇒ 扫描器的区分力由 TestRetiredV1ReferencesAreAllAccountedFor
+// 的模式级对照钉住（真 v1 必须命中、canonical 视图必须不命中），
+// 本门另加一条：**例外台账里登记的文件必须真的被扫描命中**（见下），
+// 保证扫描器不是恒空的。
 func TestRequestLogsReadInventoryIsComplete(t *testing.T) {
 	root := repoRootFromCaller(t)
 	actual := scanRequestLogsReaders(t, root)
-
-	var missing, stale []string
-	for file, n := range actual {
-		want, ok := requestLogsReadInventory[file]
-		switch {
-		case !ok:
-			missing = append(missing, file)
-		case want != n:
-			stale = append(stale, file+": table says "+strconv.Itoa(want)+
-				", code has "+strconv.Itoa(n))
-		}
-	}
-	for file, want := range requestLogsReadInventory {
-		if _, ok := actual[file]; !ok {
-			stale = append(stale, file+": table says "+strconv.Itoa(want)+", code has 0")
-		}
-	}
-	sort.Strings(missing)
-	sort.Strings(stale)
 
 	total := 0
 	for _, n := range actual {
 		total += n
 	}
-	t.Logf("_request_logs readers: %d files / %d call sites (table: %d files / %d call sites)",
-		len(actual), total, len(requestLogsReadInventory), sumInventory())
+	t.Logf("已退役 v1 族读方：实测 %d 文件 / %d 调用点（清单 %d 文件 / %d 调用点；"+
+		"另有 %d 个已具名的残留引用见 retiredV1ReferenceExceptions）",
+		len(actual), total, len(requestLogsReadInventory), sumInventory(),
+		len(retiredV1ReferenceExceptions))
 
-	if len(missing) > 0 {
-		t.Errorf("%d production file(s) read _request_logs but are absent from "+
-			"requestLogsReadInventory — S4 would silently stop feeding them:\n  %s\n"+
-			"Add them to the table with their call-site count and assess each one "+
-			"(audit §8.5); do not paper over this by widening the scan.",
-			len(missing), strings.Join(missing, "\n  "))
+	// ① 清单必须为空：v1 族已删，任何登记项都是陈旧的退役台账。
+	if len(requestLogsReadInventory) > 0 {
+		var files []string
+		for f := range requestLogsReadInventory {
+			files = append(files, f)
+		}
+		sort.Strings(files)
+		t.Errorf("requestLogsReadInventory 仍有 %d 条登记 —— 890 之后 v1 族已物理删除，"+
+			"这张表必须为空（残留引用登记在 retiredV1ReferenceExceptions）：\n  %s",
+			len(files), strings.Join(files, "\n  "))
 	}
-	if len(stale) > 0 {
-		t.Errorf("requestLogsReadInventory is stale — every count derived from it is stale too:\n  %s\n"+
-			"Re-scan and re-review the affected file(s) before updating the table.",
-			strings.Join(stale, "\n  "))
+
+	// ② 实测读方（扣除已具名例外）必须为空。
+	var unregistered []string
+	for file := range actual {
+		if _, ok := retiredV1ReferenceExceptions[file]; ok {
+			continue
+		}
+		unregistered = append(unregistered, file)
+	}
+	sort.Strings(unregistered)
+	if len(unregistered) > 0 {
+		t.Errorf("%d 个生产文件读**已退役**的 v1 族关系（未登记为已知例外）：\n  %s\n"+
+			"890 已经把它们从库里删了 ⇒ 这些代码运行时会 42P01。"+
+			"处置：生产侧改指（会话族 / canonical 视图），或具名登记进 retiredV1ReferenceExceptions。",
+			len(unregistered), strings.Join(unregistered, "\n  "))
+	}
+
+	// ③ 阳性对照（扫描器不是恒空的）：例外台账登记的文件必须真的被扫到。
+	//
+	// ⚠ 这一条只在例外台账非空时有内容；台账清空后本条自动空转 ——
+	// 那时扫描器的区分力由 TestRetiredV1ReferencesAreAllAccountedFor 的
+	// 模式级对照继续守着。
+	for file := range retiredV1ReferenceExceptions {
+		if _, ok := actual[file]; !ok {
+			t.Errorf("retiredV1ReferenceExceptions 登记了 %s，但扫描器在它身上测到 0 处 —— "+
+				"要么生产侧已修（请把它从例外台账删掉），要么扫描器看不见它（扫描器坏了）。", file)
+		}
 	}
 }
 
@@ -337,12 +211,43 @@ func sumInventory() int {
 // 标识符里而不在本表，登记在间接表。⇒ 本表从 109 降到 107，**不是读方变少了**。
 // `_?` 前缀（迁移 860）：v1 底表物理名已带待删除标志前缀，源码字面量同步；
 // 后缀通配的既有语义不变（canonical 视图读方本来就经 `(_[a-z_]+)?` 计入）。
-var requestLogsReadPattern = regexp.MustCompile(`(?i)(from|join)\s+_?request_logs(_[a-z_]+)?\b`)
+// ★ 2026-10-20（迁移 890，v1 族真删）：扫描口径从「任何 request_logs* 关系」
+// 收窄为「**已退役的 v1 族关系**」。
+//
+// 原来 `(_[a-z_]+)?` 把 **canonical 视图** `request_logs_with_current_month`
+// 也算成 v1 读点 —— 而 890 之后那张视图**仍然存在**，内容是会话族两臂体
+// （118 列同名同序）⇒ 读它**不是**读 v1。
+//
+// ⇒ 「v1 读方总体」必须只由**已退役**的关系构成（retiredV1RelationNames：
+// 5 张 v1 底表 × 两种拼写 + 4 张 v1-only 视图）。
+//
+// ⚠ 这个收窄**不是**「把扫描器改窄让它变绿」：
+//   - 收窄后的集合是**更严格**的定义（只认真 v1），不是更宽；
+//   - 少算的是「canonical 视图读方」——它们本来就不属于 v1 退役范围；
+//   - 判据的区分力由 TestRetiredV1ReferencesAreAllAccountedFor 守着
+//     （阳性对照：真 v1 必须命中；canonical 视图必须不命中）。
+var requestLogsReadPattern = retiredV1ReadPattern
+
+// sqliteStorageFace 是**与 PG 的 v1 族同名不同物**的存储面目录。
+//
+// `storage/sqlite/request_log_store.go` 里的 `request_logs` 是它自己那张
+// **SQLite** 表（列是 request_id / tenant_id / session_id / ts / method /
+// path / status_code / duration_ms / has_body，参数占位符是 `?`），
+// 与 PostgreSQL 侧被 890 删除的 118 列 v1 族毫无关系。
+//
+// ⇒ 它命中 retiredV1RelationNames 里的 "request_logs" 是**同名假阳性**：
+// 把它算成 v1 读方，会让「v1 读方总体」永远清不干净。
+//
+// ⚠ 为什么按**路径**排除而不是按「有没有 `?` 占位符」：
+// 后者是启发式（一个 PG SQL 里出现 `?` 也可能是 JSON 操作符），
+// 而前者是**结构性**事实（另一个存储引擎、另一个 schema）。
+var sqliteStorageFace = "storage/sqlite/"
 
 func scanRequestLogsReaders(t *testing.T, root string) map[string]int {
 	t.Helper()
 	out := map[string]int{}
-	skipDir := map[string]bool{".git": true, "docs": true, "node_modules": true, "vendor": true}
+	skipDir := map[string]bool{".git": true, "docs": true, "node_modules": true, "vendor": true,
+		".audit": true, ".audit-validation": true, ".audit-workspace": true}
 
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -366,6 +271,11 @@ func scanRequestLogsReaders(t *testing.T, root string) map[string]int {
 		if err != nil {
 			return err
 		}
+		rel = filepath.ToSlash(rel)
+		// SQLite 存储面有自己的 request_logs 表 ⇒ 同名假阳性，排除。
+		if strings.HasPrefix(rel, sqliteStorageFace) {
+			return nil
+		}
 		n := 0
 		for _, line := range strings.Split(string(src), "\n") {
 			if !requestLogsReadPattern.MatchString(line) {
@@ -381,7 +291,7 @@ func scanRequestLogsReaders(t *testing.T, root string) map[string]int {
 			n++
 		}
 		if n > 0 {
-			out[filepath.ToSlash(rel)] = n
+			out[rel] = n
 		}
 		return nil
 	})

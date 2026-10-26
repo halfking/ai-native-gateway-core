@@ -849,11 +849,403 @@ var handoffPartitionAmAware863 []byte
 //go:embed embeddata/startup/864_model_aliases_bare_raw_name_active_idx.sql
 var modelAliasesBareRawNameActiveIdx864 []byte
 
+//go:embed embeddata/startup/865_session_bodies_kind_reconcile.sql
+var sessionBodiesKindReconcile865 []byte
+
+//go:embed embeddata/startup/866_sanitize_rule_management.sql
+var sanitizeRuleManagement866 []byte
+
+//go:embed embeddata/startup/867_session_summaries_last_request_at_idx.sql
+var sessionSummariesLastRequestAtIdx867 []byte
+
+//go:embed embeddata/startup/868_credential_model_stream_mode.sql
+var credentialModelStreamMode868 []byte
+
+//go:embed embeddata/startup/869_promote_session_turns_trace_events.sql
+var promoteSessionTurnsTraceEvents869 []byte
+
+// 870（2026-10-17 24h 审计轮慢 SQL）：usage_ledger 月度对账覆盖索引。
+// 建在父表上以级联到现存与未来分区；实测 10 月分区 313,546 行
+// 36,480.768ms → 10,082.199ms（−72%）、缓冲 −81%，转 Index Only Scan。
+//
+//go:embed embeddata/startup/870_usage_ledger_recon_cover_idx.sql
+var usageLedgerReconCover870 []byte
+
+// 871：route_incident_events 的 created_at 首列索引。
+// 建它的理由不是「查询慢」而是「无法安全地按时间留存」——原四个索引全把
+// created_at 放末位，范围条件只能全索引扫描，实测冷缓存 25.7s vs
+// statement_timeout 30s。必须 CONCURRENTLY，且带 dbinit:no-transaction 标记。
+//
+//go:embed embeddata/startup/871_route_incident_events_created_at_idx.sql
+var routeIncidentEventsCreatedAtIdx871 []byte
+
+//go:embed embeddata/startup/872_credential_model_index_partitions_heap.sql
+var cmiPartitionsHeap872 []byte
+
+//go:embed embeddata/startup/873_usage_ledger_ts_cover_cache_agg_idx.sql
+var usageLedgerCoverCacheAgg873 []byte
+
+//go:embed embeddata/startup/874_session_turns_client_request_id_idx.sql
+var sessionTurnsClientRequestIdIdx874 []byte
+
+//go:embed embeddata/startup/875_ursm_snapshot_empty_response_rate_5m.sql
+var ursmSnapshotEmptyResponseRate5m875 []byte
+
+//go:embed embeddata/startup/876_drop_prefix_covered_parent_indexes.sql
+var dropPrefixCoveredParentIndexes876 []byte
+
+//go:embed embeddata/startup/877_session_turns_search_text_trgm.sql
+var sessionTurnsSearchTextTrgm877 []byte
+
+//go:embed embeddata/startup/878_supplier_errors_partition_indexes.sql
+var supplierErrorsPartitionIndexes878 []byte
+
+//go:embed embeddata/startup/879_drop_session_summaries_redundant_session_key_uidx.sql
+var dropSessionSummariesRedundantSessionKeyUidx879 []byte
+
+//go:embed embeddata/startup/881_drop_attack_vectors_embedding_index.sql
+var dropAttackVectorsEmbeddingIndex881 []byte
+
+//go:embed embeddata/startup/880_session_write_timeout_budget.sql
+var sessionWriteTimeoutBudget880 []byte
+
+//go:embed embeddata/startup/882_request_logs_cost_negative_partial_idx.sql
+var requestLogsCostNegativePartialIdx882 []byte
+
+//go:embed embeddata/startup/883_session_family_cost_view_metrics.sql
+var sessionFamilyCostViewMetrics883 []byte
+
+//go:embed embeddata/startup/884_session_family_v_analytics_views.sql
+var sessionFamilyVAnalyticsViews884 []byte
+
+//go:embed embeddata/startup/890_drop_request_logs_v1_family.sql
+var dropRequestLogsV1Family890 []byte
+
+//go:embed embeddata/startup/891_session_turns_cost_negative_partial_idx.sql
+var sessionTurnsCostNegativePartialIdx891 []byte
+
+//go:embed embeddata/startup/892_ursm_snapshot_slot_daily.sql
+var ursmSnapshotSlotDaily892 []byte
+
+//go:embed embeddata/startup/885_session_turns_host_tags.sql
+var sessionTurnsHostTags885 []byte
+
+//go:embed embeddata/startup/886_session_bodies_storage_comment.sql
+var sessionBodiesStorageComment886 []byte
+
+//go:embed embeddata/startup/887_session_turns_search_text_fts.sql
+var sessionTurnsSearchTextFTS887 []byte
+
+//go:embed embeddata/startup/888_session_family_join_index_gaps.sql
+var sessionFamilyJoinIndexGaps888 []byte
+
+//go:embed embeddata/startup/889_session_turns_tools_population.sql
+var sessionTurnsToolsPopulation889 []byte
+
+// ★ 2026-10-21（R60 轮）：以下 5 条**此前从未被登记** ⇒ 全新安装的库缺
+// provider_models.source 等 5 个列 ⇒ db.Open 的 ensure 链直接 42703
+// ⇒ 「全新安装 = 装完即炸」（已实测复现 db::TestEnsureAsrCatalogSeed_RealDB
+// 与 sql-migrations-startup::TestMigration715FreshChainApplyMigrations 两条真库门）。
+// 全部是 ADD COLUMN / CREATE TABLE IF NOT EXISTS ⇒ 幂等。
+// 逐条理由与依赖顺序见 installer/internal/dbinit/runner.go 的 StartupFiles 注释。
+//
+//go:embed embeddata/startup/361b_provider_models_source_prelude.sql
+var providerModelsSourcePrelude361b []byte
+
+//go:embed embeddata/startup/375_offline_requests_status.sql
+var offlineRequestsStatus375 []byte
+
+//go:embed embeddata/startup/376_offline_activation_code.sql
+var offlineActivationCode376 []byte
+
+//go:embed embeddata/startup/387_session_analysis_inference.sql
+var sessionAnalysisInference387 []byte
+
+//go:embed embeddata/startup/427_task_type_centroids_model.sql
+var taskTypeCentroidsModel427 []byte
+
+//go:embed embeddata/startup/893_fresh_install_partition_prereq.sql
+var freshInstallPartitionPrereq893 []byte
+
+//go:embed embeddata/startup/894_rebind_candidate_failure_logs_diagnosis_view.sql
+var rebindCandidateFailureLogsDiagnosisView894 []byte
+
+//go:embed embeddata/startup/895_domain_chain_startup_images.sql
+var domainChainStartupImages895 []byte
+
+//go:embed embeddata/startup/896_offline_activation_requests_columns_reassert.sql
+var offlineActivationRequestsColumnsReassert896 []byte
+
+// 897（2026-10-23，会话族 final_success 自愈轮）：给 session_turns 族的 hot 排水
+// 补上 final_success 自愈步（与 695 给 v1 request_logs 族加的 demote 步逐字同款）。
+// ★ 那个族后来被 890 退役 ⇒ ⇒ 自愈没随族迁走 ⇒ ⇒ 真正有同款病灶的会话族一直
+// 缺这一步 ⇒ ⇒ 批次撞 uq_session_turns_final_success ⇒ 23505 整批回滚 ⇒
+// hot 表无限涨 + 父表停止接收冷行。
+// ★ 函数体 = 869（生产现行体）整段 + 一处 demote 插入 ⇒ ⇒ 零语义变更。
+//
+//go:embed embeddata/startup/897_session_turns_promote_final_success_self_heal.sql
+var sessionTurnsPromoteFinalSuccessSelfHeal897 []byte
+
+// 898（2026-10-23，会话族 hot 排水轮）：补上 public.session_bodies_hot 的
+// **ts 首列索引**。
+// ★ 该 hot 表的 6 个索引中没有一个以 ts 为首列 ⇒ 批次选取走 Seq Scan + Sort
+//
+//	（实测 cost 1602~1623）；★ 对照组 session_turns_hot 有
+//	idx_session_turns_hot_ts (ts, id, partition_date) ⇒ Index Only Scan。
+//
+// ★ ★ 交付缺口（带精确失败点）：614 @ 6973a9fb8（= 生产 schema_migrations
+//
+//	记账时刻那一版）把该索引定义成带 `WHERE ts > now() - interval '8 hours'`
+//	谓词的 partial index ⇒ now() 非 IMMUTABLE ⇒ PG 拒绝 ⇒ **从未建成**，
+//	且其后同文件的 idx_session_bodies_hot_partition_date 也从未执行；而其
+//	前面的 _lookup / _request 建成了 ⇒ 与生产现状逐条吻合。⇒ 修好了的
+//	614（368202126）因**台账已记 applied**而永远到不了生产，⇒ 且 614
+//	不在通道 files=() ⇒ 通道也不补 ⇒ **双通道都到不了**。
+//
+// ★ 形态照抄仓内样板 idx_session_turns_hot_ts ⇒ (ts, id, partition_date)。
+// ★ 用 CONCURRENTLY：hot 表是活写表，普通 CREATE INDEX 会阻断写入。
+// ⚠ 诚实边界：实测批次选取只花 30ms（Sort 未溢写）⇒ 本索引**不**是 60s
+//
+//	超时的解（60s 在写侧，实测 ≈79ms/行）⇒ 它消除的是「批次选取随表体量
+//	线性劣化」这个放大器。
+//
+//go:embed embeddata/startup/898_session_bodies_hot_ts_index.sql
+var sessionBodiesHotTsIndex898 []byte
+
+// 899（2026-10-23，会话族 hot 排水轮）：把
+// promote_session_bodies_hot_to_partition 的**生产现行体**下沉成迁移
+// （★ session_bodies 族的 copy-gap 修复）。
+// ★ 活库上装的是**裸 ON CONFLICT DO NOTHING** + reconciled CTE 的形态
+//
+//	（实测 src_len=3486）⇒ 逐字等于 db/db.go 的
+//	ensureSessionBodiesPromoteDrain（每次网关启动都重装）⇒ ⇒ **这个形态
+//	只活在 Go 源码里，不在任何迁移里**。
+//
+// ★ 而仓内四版迁移（615/626/638/708）全是带仲裁目标的
+//
+//	`ON CONFLICT (id, partition_date)` ⇒ ⇒ 「只跑迁移不启 Go」会把它装回
+//	生产 ⇒ ⇒ 23505 复发 + 毒丸行卡死 hot 窗口 ⇒ ⇒ 修法在通道路径上无效。
+//
+// ★ 函数体逐字等于生产现行体 ⇒ 语义零变更。
+//
+//go:embed embeddata/startup/899_session_bodies_promote_body_sink.sql
+var sessionBodiesPromoteBodySink899 []byte
+
+// 900（2026-10-23，llmgo 生产页面修复轮）：把 FreeDiscovery 数据模型
+// （084 + 087 的列）**再投递**给升级通道库与新装链。
+// ★ 交付缺口：升级通道（deploy-lib/db-changelog.sh）只把 version ≥ 412 视为
+//
+//	pending ⇒ 084（<412）从未到达任何生产库；db-changelog 084 行自证
+//	「applied+verified (本地 llm-gateway 库, psql 手动应用)」⇒ 只在本地
+//	开发库手动应用过。⇒ 生产共享库实测无 provider_templates /
+//	discovery_tasks / discovery_results ⇒ R39 的
+//	ProviderTemplatesProvisioned()=false ⇒ /api/free-discovery/* 一律 503
+//	"database disabled"（245 journal 逐字佐证）。
+//
+// ★ 形态：逐字复用 084 的幂等 DDL + 并入 087 的三个健康反馈列
+//
+//	（ADD COLUMN IF NOT EXISTS）；新装链此前同样缺这三张表（084 不在任何
+//	通道）⇒ 本迁移同时补齐新装路径；升级库全 no-op。
+//
+//go:embed embeddata/startup/900_freediscovery_schema_reassert.sql
+var freediscoverySchemaReassert900 []byte
+
+// 901（2026-10-23，llmgo 生产页面修复轮）：给分区父表 public.usage_ledger
+// 补 (api_key_id, ts DESC) WHERE api_key_id IS NOT NULL 部分索引。
+// ★ usage_ledger_2026_09（742 MB）/ _2026_10（345 MB）的既有四组索引首列
+//
+//	全是 request_id / tenant_id / ts，没有 api_key_id ⇒ /api/usage/{id}
+//	三端点的 `WHERE api_key_id=$1 AND ts 范围` 只能走 ts 首列索引 +
+//	api_key_id Filter ⇒ EXPLAIN ANALYZE 实测「7 天窗口 0 行的 key 73」
+//	耗 6,983 ms（每 worker 移除 64,822 行）⇒ keys 详情页使用统计在负载
+//	窗口整体超时（"query failed"）。
+//
+// ★ 形态照抄 hot 侧既有样板 usage_ledger_hot_api_key_id_ts_idx（逐列一致）；
+//
+//	普通 CREATE INDEX（父表不支持 CONCURRENTLY）+ lock_timeout=60s /
+//	statement_timeout=10min（891 同款）。
+//
+//go:embed embeddata/startup/901_usage_ledger_api_key_id_ts_idx.sql
+var usageLedgerApiKeyIdTsIdx901 []byte
+
+// 902（2026-10-24，R146 存储效率轮 §143.102 / P5 落地）：stats_event_dedup
+// 索引合并 —— pkey 换体 UNIQUE(event_id) INCLUDE(occurred_at)，
+// 删除严格冗余的 (event_id, occurred_at) 复合索引（845 所建）。
+// ★ 冗余的机制证明：pkey(event_id) 保证全表 event_id 唯一 ⇒ 复合键第二列
+//
+//	从来没有「同 event_id 第二行」可排序；151 MB 那条相对 pkey 的唯一增值是
+//	covering（把 occurred_at 装进索引元组）⇒ INCLUDE 体 pkey 完整承接。
+//
+// ★ 三处消费方逐个过（本地一次性库实测，脚本
+//
+//	scripts/local/143102_p5_dedup_pkey_include_local_experiment.sql）：
+//	ON CONFLICT (event_id) 仍工作、四处双列等值 JOIN 仍 Index Only、
+//	唯一性不变式仍强制。
+//
+// ★ 252 实测（2026-10-24 只读）：旧索引合计 pkey 114 MB + 复合 151 MB =
+//
+//	265 MB ⇒ 合并后单条 INCLUDE 体 ≈ 旧复合体量（~151 MB，两值都进索引
+//	元组）⇒ 净省 ≈ 旧 pkey 的 114 MB（表 409 MB → ~295 MB）。
+//
+// ★ 幂等：换体段按目录态判定（pkey 已带 INCLUDE ⇒ 跳过）；兜底 DROP
+//
+//	保证重跑不留孤儿 tmp（实验阶段 4 抓出无守卫重跑留 20 MB 孤儿后补）。
+//
+//go:embed embeddata/startup/902_stats_event_dedup_pkey_include.sql
+var statsEventDedupPkeyInclude902 []byte
+
+//go:embed embeddata/startup/902_stats_event_dedup_pkey_include.down.sql
+var statsEventDedupPkeyInclude902Down []byte
+
+// 903（2026-10-24，R84 慢端点归因轮）：public.sessions 补
+// (updated_at DESC, session_id DESC) 索引。
+// ★ 根因：会话列表的排序键 (updated_at DESC, session_id DESC) **没有任何
+//
+//	索引能提供该序** ⇒ 规划器只能 Seq Scan + top-N Sort ⇒ Sort 必须把
+//	439,106 行全部物化才能吐出第一行 ⇒ Limit 无法提前停 ⇒ 整条 JOIN 链跑满。
+//
+// ★ 实测（252 EXPLAIN ANALYZE，生产只读）：生产查询原样 32,089.911 ms；
+//
+//	只加本索引（事务内建索引后 ROLLBACK，生产零持久变更）⇒ 3.639 ms，
+//	shared hit 9,876,509 → 640。
+//
+// ★ 口径零变化：本迁移**不改任何查询**；同一 REPEATABLE READ 快照内
+//
+//	两个结果集 22 行（含表头）逐字一致。
+//
+// ★ 普通 CREATE INDEX（分区父表不支持 CONCURRENTLY）+ lock_timeout=60s
+//
+//	/ statement_timeout=10min（891/901 同款）。public.sessions 是热写表
+//	（session_aggregator.go:216 每请求一次 upsert）⇒ 构建期持 SHARE 锁
+//	阻塞该分区写 ⇒ 该迁移应落在低峰窗口。
+//
+//go:embed embeddata/startup/903_sessions_updated_at_session_id_index.sql
+var sessionsUpdatedAtSessionIdIndex903 []byte
+
+//go:embed embeddata/startup/903_sessions_updated_at_session_id_index.down.sql
+var sessionsUpdatedAtSessionIdIndex903Down []byte
+
+// 904（2026-10-27，R89 inspector-stats 慢端点归因轮）：给
+// public.session_dim / public.session_summaries 补两条**部分索引**。
+// ★ 病灶（252 生产只读实测，2026-10-27）：GET
+//
+//	/api/admin/sessions/inspector-stats 的 L2/L3 两条聚合腿**都没有时间窗**
+//	⇒ 都是全表聚合：L3 `status='closed' AND closed_at >= CURRENT_DATE`
+//	要全扫 90 万行 session_dim 再丢掉 100%（Rows Removed by Filter: 301,024）；
+//	L2 `AVG(health_score) WHERE health_score IS NOT NULL` 要全扫 86 万行
+//	session_summaries 再丢掉 55 万行（Rows Removed by Filter: 184,361）。
+//	★ 根因：session_dim 的 7 条既有索引没有一条含 closed_at；
+//	session_summaries 的 19 条里只有 health_score IS **NULL** 侧的
+//	idx_session_summaries_health_pending ⇒ NOT NULL 侧无索引可承接。
+//
+// ★ 修复效果（事务内建索引 + EXPLAIN ANALYZE + ROLLBACK，生产零持久变更）：
+//
+//	L2 389.373 ms → 119.706 ms（Parallel Seq Scan → Parallel Index Only Scan）
+//	L3 195.432 ms →   0.100 ms（Parallel Seq Scan → Index Only Scan）
+//	索引体积 8,192 B + 2,120 kB。
+//
+// ★ 口径零变化：本迁移**不改任何查询**，只加索引 ⇒ 结果集取值不变。
+// ★ 两张表都**不是分区表**（relkind='r'）⇒ 可用普通 CREATE INDEX；
+//
+//	仍不用 CONCURRENTLY（startup 迁移默认在事务里跑）。
+//	两张都是热写表 ⇒ 构建期持 SHARE 锁阻塞该表写入 ⇒ 落在低峰窗口。
+//
+//go:embed embeddata/startup/904_inspector_stats_partial_indexes.sql
+var inspectorStatsPartialIndexes904 []byte
+
+//go:embed embeddata/startup/904_inspector_stats_partial_indexes.down.sql
+var inspectorStatsPartialIndexes904Down []byte
+
+// 905（2026-10-24，R92 稀有过滤 500@30s 轮）：给 public.session_turns
+// （分区父表）与 public.session_turns_hot 补两条 **model 维度复合索引**。
+// ★ 病灶（252 生产只读实测，2026-10-24）：GET /api/admin/turns/sessions
+//   带 `?model=` 时**恒 500@30s**（角色级 statement_timeout=30s）。
+//   ★ build 2841（R90 的两腿 EXISTS 已上线）直连 REPEAT=3 实测：
+//     ?limit=20                       200 200 200   0.878 0.155 0.111 s
+//     ?limit=20&api_key_id=105        200 200 200   9.576 0.216 0.151 s
+//     ?limit=20&model=deepseek-ai%2F…  500 500 500  30.008 30.007 30.018 s
+//     ?limit=20&provider=14           200 200 200   0.358 0.100 0.080 s
+//     ?limit=20&status_code=500       200 200 200   0.554 0.181 0.153 s
+//   ⇒ ★★ R90「四条全修」的结论被证伪：只有 model 那条仍 500。
+// ★ 真因不是「形状」而是**稀有过滤值 ⇒ 外层会话深扫**：该 model 命中
+//   458 轮 / **30 个会话**，而 public.sessions 有 441,112 个会话；
+//   列表是 `ORDER BY s.updated_at DESC LIMIT 21` ⇒ 必须扫到凑够 21 行
+//   ⇒ EXPLAIN 实测外层 Rows Removed by Filter: 72,455 + 277,899 = 350,354。
+// ★ 修复效果（事务内建索引 + EXPLAIN ANALYZE + ROLLBACK，生产零持久变更）：
+//   model（稀有） 30,008 ms → **8.0 ms**；provider='14' 358 ms → **48.6 ms**。
+// ★ 只给 model 建索引：provider n_distinct=20、status_code n_distinct=8
+//   ⇒ **没有选择性** ⇒ 给它们建索引会让规划器更倾向「轮次驱动 + 大哈希构建」
+//   ⇒ 实测退化到 **10,080 ms**。
+// ★ 分区父表不支持 CREATE INDEX CONCURRENTLY ⇒ 用普通 CREATE INDEX；
+//   仍不用 CONCURRENTLY（startup 迁移默认在事务里跑）。
+//   实测构建时长 18,512 ms（父表）+ 28 ms（hot）⇒ ★ 这 ~18.5 秒里
+//   session_turns 的写入被 SHARE 锁阻塞 ⇒ 落在低峰窗口。
+//
+//go:embed embeddata/startup/905_turns_session_model_index.sql
+var turnsSessionModelIndex905 []byte
+
+//go:embed embeddata/startup/905_turns_session_model_index.down.sql
+var turnsSessionModelIndex905Down []byte
+
+//go:embed embeddata/startup/906_turns_api_key_numeric_partial_index.sql
+var turnsApiKeyNumericPartialIndex906 []byte
+
+//go:embed embeddata/startup/906_turns_api_key_numeric_partial_index.down.sql
+var turnsApiKeyNumericPartialIndex906Down []byte
+
+// ★ R96：routing_analytics_source 换成「会话族两腿 + LATERAL 回定位」
+//   ⇒ 消除刷新链里 45 万行 session_turn_details 顺序扫
+//   （252 实测中位 4,482.8 ms → 2,270.8 ms；口径逐行等价 EXCEPT ALL 0/0）。
+//   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（实测 245 ms，保留 OID ⇒ matview 依赖不动）。
+
+//go:embed embeddata/startup/907_routing_analytics_source_lateral.sql
+var routingAnalyticsSourceLateral907 []byte
+
+//go:embed embeddata/startup/907_routing_analytics_source_lateral.down.sql
+var routingAnalyticsSourceLateral907Down []byte
+// 908（2026-10-24，R147 存储效率续轮）：删除 route_incident_events 的
+// 零消费方索引 idx_route_incident_events_type_created (event_type,
+// created_at DESC)。★ 判决链：全仓 Go 代码无任何 event_type 谓词查询本表；
+// 历史上唯一使用者（30 天留存 DELETE）已被 871 的 created_at 首列索引取代；
+// 不背书任何约束；写路径每次 INSERT 白维护它（同表 uq_idem 5.2 天 42 万次
+// 扫描的热表）。★ 配套 db/db.go ensure 同批删除同名 CREATE（防复活）；
+// baseline 刻意保留（718 先例：fresh-install 链建出→908 删掉）。
+// 252 实测 110 MB / idx_scan=1（5.2 天窗口）。
+//
+//go:embed embeddata/startup/908_route_incident_events_type_created_drop.sql
+var routeIncidentEventTypeCreatedDrop908 []byte
+
+//go:embed embeddata/startup/908_route_incident_events_type_created_drop.down.sql
+var routeIncidentEventTypeCreatedDrop908Down []byte
+
+//go:embed embeddata/startup/909_session_summaries_search_trgm_indexes.sql
+var sessionSummariesSearchTrgmIndexes909 []byte
+
+//go:embed embeddata/startup/909_session_summaries_search_trgm_indexes.down.sql
+var sessionSummariesSearchTrgmIndexes909Down []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
 //go:embed embeddata/startup/852_models_canonical_column_set_reconcile.sql
 var modelsCanonicalColumnSetReconcile852 []byte
+
+// 489/490 (wired 2026-10-20)：853 自己在文件头声明依赖「489/490_credential_probe_queue_*」
+// （队列表本体），而**那两条从未进入 fresh-install 链** ⇒ 新装环境在 853 处报
+//
+//	ERROR:  relation "public.credential_probe_queue" does not exist
+//
+// 并**中止整个安装**（真库临时库实测，2026-10-20；pristine HEAD 同样失败 ⇒ 既有缺陷）。
+// 489 是「startup mirror of domain migrations 343/347/349」，490 补齐运行时列；
+// 两条都幂等（CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS /
+// CREATE INDEX IF NOT EXISTS），且自包含（不引用其它关系）⇒ 可直接登记。
+// 853 的 runner 注释本来就写着「once 489/490 create the queue」—— 事实是它们没被登记。
+//
+//go:embed embeddata/startup/489_credential_probe_queue_startup_backfill.sql
+var credentialProbeQueueStartupBackfill489 []byte
+
+//go:embed embeddata/startup/490_credential_probe_queue_runtime_columns.sql
+var credentialProbeQueueRuntimeColumns490 []byte
 
 //go:embed embeddata/startup/853_credential_probe_queue_automatic.sql
 var credentialProbeQueueAutomatic853 []byte
@@ -1139,8 +1531,68 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/862_partition_family_leading_ts_idx.sql":                                partitionFamilyLeadingTsIdx862,
 	"startup/863_handoff_partition_am_aware.sql":                                     handoffPartitionAmAware863,
 	"startup/864_model_aliases_bare_raw_name_active_idx.sql":                         modelAliasesBareRawNameActiveIdx864,
+	"startup/865_session_bodies_kind_reconcile.sql":                                  sessionBodiesKindReconcile865,
+	"startup/866_sanitize_rule_management.sql":                                       sanitizeRuleManagement866,
+	"startup/867_session_summaries_last_request_at_idx.sql":                          sessionSummariesLastRequestAtIdx867,
+	"startup/868_credential_model_stream_mode.sql":                                   credentialModelStreamMode868,
+	"startup/869_promote_session_turns_trace_events.sql":                             promoteSessionTurnsTraceEvents869,
+	"startup/870_usage_ledger_recon_cover_idx.sql":                                   usageLedgerReconCover870,
+	"startup/871_route_incident_events_created_at_idx.sql":                           routeIncidentEventsCreatedAtIdx871,
+	"startup/872_credential_model_index_partitions_heap.sql":                         cmiPartitionsHeap872,
+	"startup/873_usage_ledger_ts_cover_cache_agg_idx.sql":                            usageLedgerCoverCacheAgg873,
+	"startup/874_session_turns_client_request_id_idx.sql":                            sessionTurnsClientRequestIdIdx874,
+	"startup/875_ursm_snapshot_empty_response_rate_5m.sql":                           ursmSnapshotEmptyResponseRate5m875,
+	"startup/876_drop_prefix_covered_parent_indexes.sql":                             dropPrefixCoveredParentIndexes876,
+	"startup/877_session_turns_search_text_trgm.sql":                                 sessionTurnsSearchTextTrgm877,
+	"startup/878_supplier_errors_partition_indexes.sql":                              supplierErrorsPartitionIndexes878,
+	"startup/879_drop_session_summaries_redundant_session_key_uidx.sql":              dropSessionSummariesRedundantSessionKeyUidx879,
+	"startup/880_session_write_timeout_budget.sql":                                   sessionWriteTimeoutBudget880,
+	"startup/881_drop_attack_vectors_embedding_index.sql":                            dropAttackVectorsEmbeddingIndex881,
+	"startup/882_request_logs_cost_negative_partial_idx.sql":                         requestLogsCostNegativePartialIdx882,
+	"startup/883_session_family_cost_view_metrics.sql":                               sessionFamilyCostViewMetrics883,
+	"startup/884_session_family_v_analytics_views.sql":                               sessionFamilyVAnalyticsViews884,
+	"startup/890_drop_request_logs_v1_family.sql":                                    dropRequestLogsV1Family890,
+	"startup/891_session_turns_cost_negative_partial_idx.sql":                        sessionTurnsCostNegativePartialIdx891,
+	"startup/892_ursm_snapshot_slot_daily.sql":                                       ursmSnapshotSlotDaily892,
+	"startup/885_session_turns_host_tags.sql":                                        sessionTurnsHostTags885,
+	"startup/886_session_bodies_storage_comment.sql":                                 sessionBodiesStorageComment886,
+	"startup/887_session_turns_search_text_fts.sql":                                  sessionTurnsSearchTextFTS887,
+	"startup/888_session_family_join_index_gaps.sql":                                 sessionFamilyJoinIndexGaps888,
+	"startup/889_session_turns_tools_population.sql":                                 sessionTurnsToolsPopulation889,
+	"startup/361b_provider_models_source_prelude.sql":                                providerModelsSourcePrelude361b,
+	"startup/375_offline_requests_status.sql":                                        offlineRequestsStatus375,
+	"startup/376_offline_activation_code.sql":                                        offlineActivationCode376,
+	"startup/387_session_analysis_inference.sql":                                     sessionAnalysisInference387,
+	"startup/427_task_type_centroids_model.sql":                                      taskTypeCentroidsModel427,
+	"startup/893_fresh_install_partition_prereq.sql":                                 freshInstallPartitionPrereq893,
+	"startup/894_rebind_candidate_failure_logs_diagnosis_view.sql":                   rebindCandidateFailureLogsDiagnosisView894,
+	"startup/895_domain_chain_startup_images.sql":                                    domainChainStartupImages895,
+	"startup/896_offline_activation_requests_columns_reassert.sql":                   offlineActivationRequestsColumnsReassert896,
+	"startup/897_session_turns_promote_final_success_self_heal.sql":                  sessionTurnsPromoteFinalSuccessSelfHeal897,
+	"startup/898_session_bodies_hot_ts_index.sql":                                    sessionBodiesHotTsIndex898,
+	"startup/899_session_bodies_promote_body_sink.sql":                               sessionBodiesPromoteBodySink899,
+	"startup/900_freediscovery_schema_reassert.sql":                                  freediscoverySchemaReassert900,
+	"startup/901_usage_ledger_api_key_id_ts_idx.sql":                                 usageLedgerApiKeyIdTsIdx901,
+	"startup/902_stats_event_dedup_pkey_include.sql":                                 statsEventDedupPkeyInclude902,
+	"startup/902_stats_event_dedup_pkey_include.down.sql":                            statsEventDedupPkeyInclude902Down,
+	"startup/903_sessions_updated_at_session_id_index.sql":                          sessionsUpdatedAtSessionIdIndex903,
+	"startup/903_sessions_updated_at_session_id_index.down.sql":                     sessionsUpdatedAtSessionIdIndex903Down,
+	"startup/904_inspector_stats_partial_indexes.sql":                              inspectorStatsPartialIndexes904,
+	"startup/904_inspector_stats_partial_indexes.down.sql":                         inspectorStatsPartialIndexes904Down,
+	"startup/905_turns_session_model_index.sql":                                    turnsSessionModelIndex905,
+	"startup/905_turns_session_model_index.down.sql":                               turnsSessionModelIndex905Down,
+	"startup/906_turns_api_key_numeric_partial_index.sql":                     turnsApiKeyNumericPartialIndex906,
+	"startup/906_turns_api_key_numeric_partial_index.down.sql":                turnsApiKeyNumericPartialIndex906Down,
+	"startup/907_routing_analytics_source_lateral.sql":                    routingAnalyticsSourceLateral907,
+	"startup/907_routing_analytics_source_lateral.down.sql":               routingAnalyticsSourceLateral907Down,
+	"startup/908_route_incident_events_type_created_drop.sql":                        routeIncidentEventTypeCreatedDrop908,
+	"startup/908_route_incident_events_type_created_drop.down.sql":                   routeIncidentEventTypeCreatedDrop908Down,
+	"startup/909_session_summaries_search_trgm_indexes.sql":                        sessionSummariesSearchTrgmIndexes909,
+	"startup/909_session_summaries_search_trgm_indexes.down.sql":                   sessionSummariesSearchTrgmIndexes909Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
+	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,
+	"startup/490_credential_probe_queue_runtime_columns.sql":                         credentialProbeQueueRuntimeColumns490,
 	"startup/853_credential_probe_queue_automatic.sql":                               credentialProbeQueueAutomatic853,
 	"startup/854_session_turns_advisory_lock_key.sql":                                sessionTurnsAdvisoryLockKey854,
 	"startup/855_session_analytics_time_window.sql":                                  sessionAnalyticsTimeWindow855,

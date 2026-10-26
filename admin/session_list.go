@@ -301,7 +301,10 @@ func parseIntParam(s string, def int) int {
 
 type SessionDetail struct {
 	SessionSummary
-	RequestLogs []RequestLogBrief `json:"_request_logs"`
+	// ★ 2026-10-24：键名从 "_request_logs" 改成 "request_logs" —— 这里的行
+	//   全部来自**会话族**（session_turns 轮次），v1 族早已退役 ⇒ 旧键名
+	//   指向一个不存在的表。前端未消费该字段 ⇒ 改名无破坏面。
+	RequestLogs []RequestLogBrief `json:"request_logs"`
 }
 
 type RequestLogBrief struct {

@@ -22,11 +22,24 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import vm from 'node:vm'
 
+// 「调用点参数 → 占位符名」的静态解析（2026-10-21 审计轮新增）。
+// 在此再导出 ⇒ 调用方可以只依赖 scanner 这一入口，不必知道模块拆分。
+export {
+  scanCallSiteParams,
+  scanAllCallSiteParams,
+  scanCallSiteParamsInSource,
+  listSourceFiles,
+  maskSource,
+  splitSfcBlocks,
+  type CallSiteParamRef,
+  type CallSiteKeyKind,
+} from './callSiteParams.ts'
+
 // ---------------------------------------------------------------------------
 // 类型定义
 // ---------------------------------------------------------------------------
 
-export type CallKind = 't' | 'tc' | '$t' | 'i18n.t' | 'helper'
+export type CallKind = 't' | 'tc' | '$t' | 'i18n.t' | 'helper' | 'key-prop'
 
 export interface KeyReference {
   /** 源文件绝对路径 */
@@ -101,7 +114,10 @@ function loadModuleFile(locale: string, moduleName: string, localesDir: string):
   return evalAsCjs(code, absPath)
 }
 
-function loadLocale(locale: string, localesDir: string): Record<string, unknown> {
+/** 取某语种的**运行时真值**（模块名 → 模块对象）。
+ *  导出供 localeValueQuality.ts 复用 —— 避免第二套加载逻辑（两套量具互相抵消比
+ *  一个明显错的量具更危险，见 hardcodedCjk.ts 头注释「朴素版与解析器版的差」）。 */
+export function loadLocale(locale: string, localesDir: string): Record<string, unknown> {
   const indexPath = join(localesDir, locale, 'index.ts')
   if (!existsSync(indexPath)) return {}
   const src = readFileSync(indexPath, 'utf8')
@@ -127,16 +143,20 @@ function loadLocale(locale: string, localesDir: string): Record<string, unknown>
 }
 
 /** 把嵌套对象扁平化为点路径集合。
- *  数组也被视为叶子节点 — Vue i18n 允许 `t('foo.bar')` 返回整个数组
- *  供 `v-for` 渲染（如 sessions.list.tableHeaders、modulesView.integration.feishuSteps）。
- *  若跳过数组，这些引用会被误报为 missing key。 */
+ *  数组也被视为叶子节点 — **键存在性**口径上，数组算一个键（跳过它会让引用扫描
+ *  把这些键误报成 missing key）。
+ *  ⚠️ **但「键存在」≠「能经 t() 取到」**：vue-i18n 9 的 `t()` **不支持数组型消息** ——
+ *     实测（vue-i18n 9.14.5）`t(<policy.tableHeaders>)` 返回的是**键路径字符串**，
+ *     于是 `v-for` 会把键名逐字符渲染出来。
+ *     ⇒ 数组型键必须走 `i18n.ts` 的 `localeArray()`（从消息树直取），
+ *       并由 `scripts/i18n-array-key-guard.mjs` 把关（禁止再出现「数组键经 t() 消费」）。 */
 export function collectLeafKeys(obj: unknown, prefix = ''): Set<string> {
   const keys = new Set<string>()
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return keys
   for (const [k, v] of Object.entries(obj)) {
     const path = prefix ? `${prefix}.${k}` : k
     if (Array.isArray(v)) {
-      // 数组作为整体值被引用（t('path') 返回数组），记录其路径为有效 key
+      // 数组作为整体值被引用（t(<path>) 能取到数组），记录其路径为有效 key
       keys.add(path)
     } else if (typeof v === 'object' && v !== null) {
       const nested = collectLeafKeys(v, path)
@@ -225,6 +245,32 @@ export function detectHelpers(srcDir: string, srcRoot?: string): HelperMap {
 
 /** 匹配 t('literal') / tc('literal') / $t('literal') / i18n.t('literal') */
 const T_CALL_RE = /\b(\$?t|tc|i18n\.t)\s*\(\s*(['"])([a-zA-Z][a-zA-Z0-9_.\-]*)\2/g
+/**
+ * ★ 匹配「**属性承载**的 i18n 键」：`labelKey: 'nav.item.xxx'` / `titleKey: '…'` / `hintKey: '…'`
+ *
+ * ★★ 为什么必须收进来（2026-10-25 实测，★ 这一族此前**完全隐形**）：
+ *   `navLabel(item.labelKey, …)`（AppTopbar / AppNavDrawer / AppBottomNav）会在运行时取键，
+ *   而 `labelKey` 的值是**配置里的字符串字面量** ⇒ **静态可解析** ⇒ 以前只是没人告诉扫描器。
+ *   ⇒ 后果：这些键**从不进「按源语言生成工单」的那道工序** ⇒ 实测 zh-TW 30 条 / ja-JP 9 条
+ *     在**用户可见的顶栏/侧栏/日期区间**上一直显示中文，而 6 个拉丁语种早已本地化。
+ *   ⇒ ★ 仓内 `localeValueQuality.ts` 把这一族记成「运行时拼键（不可静态解析）」⇒ ★ **但那是过期的定性**：
+ *     真正动态的是 `t('prefix.' + key)`；属性承载的这一族**是静态的**。
+ *
+ * ★ 属性名清单是**证据推导**的，不是泛化 `*Key` 规则 —— 泛化会误吃 `apiKey` / `noKey` /
+ *   `dedup_key` / `copiedFullKey` 这类**业务字段**（它们不是 i18n 键）。
+ *   实测（2026-10-25，全 src 扫描）：承载 i18n 键的属性名**只有 3 个**
+ *   —— `labelKey`(97 去重) / `titleKey`(9) / `hintKey`(4)。
+ */
+const KEY_PROP_RE = /\b(labelKey|titleKey|hintKey)\s*:\s*(['"])([a-zA-Z][a-zA-Z0-9_.\-]*)\2/g
+/**
+ * ★ 「属性承载键 + 运行时前缀」形态：`t(\`sessions.config.${layer.labelKey}\`)`
+ *   ⇒ 此时 `labelKey: 'x'` 里的 `'x'` 是**后缀**，真键是 `<前缀>.x`。
+ *   ⚠️ **不解析前缀就会产生假引用**：把 `promptInjectionFieldBasic` 当成键，
+ *     而真键是 `sessions.config.promptInjectionFieldBasic` ⇒ parity 门会误报 29 处「键缺失」。
+ *   ⇒ 故：命中前缀形态的文件里，属性键一律**加上前缀**再入引用集。
+ *   实测（2026-10-25）：全仓**只有** `components/PromptInjectionConfigPanel.vue` 用这个形态。
+ */
+const PROP_PREFIX_RE = /\b(?:\$?t|tc|i18n\.t)\s*\(\s*`([^`]*?)\$\{[^}]*\b(?:labelKey|hintKey|titleKey)\b[^}]*\}`/g
 /** 匹配 HELPER('literal')（HELPER 在 helperMap 中） */
 function helperCallRe(name: string): RegExp {
   return new RegExp(`\\b${name}\\s*\\(\\s*(['"])([a-zA-Z][a-zA-Z0-9_\\.\\-]*)\\1`, 'g')
@@ -256,7 +302,34 @@ export function scanFile(absFile: string, helpers?: HelperMap): KeyReference[] {
     })
   }
 
-  // 2) 该文件内定义的 helpers
+  // 2) ★ 属性承载的 i18n 键（labelKey / titleKey / hintKey）—— 静态可解析的「运行时拼键」
+  //    ★ 先还原「运行时前缀」形态（t(`prefix.${layer.labelKey}`)）—— 不还原会把后缀当整键。
+  const propPrefixes = new Set<string>()
+  PROP_PREFIX_RE.lastIndex = 0
+  while ((m = PROP_PREFIX_RE.exec(src)) !== null) propPrefixes.add(m[1])
+
+  KEY_PROP_RE.lastIndex = 0
+  while ((m = KEY_PROP_RE.exec(src)) !== null) {
+    const suffix = m[3]
+    const { line, column } = offsetToLineCol(src, m.index)
+    const resolved = propPrefixes.size
+      ? [...propPrefixes].map((p) => `${p}${suffix}`)
+      : [suffix]
+    for (const key of resolved) {
+      out.push({
+        file: absFile,
+        line,
+        column,
+        key,
+        raw: suffix,
+        kind: 'key-prop',
+        helper: m[1],
+        snippet: m[0],
+      })
+    }
+  }
+
+  // 3) 该文件内定义的 helpers
   for (const [name, prefix] of localHelpers) {
     const re = helperCallRe(name)
     re.lastIndex = 0

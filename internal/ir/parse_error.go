@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -35,7 +36,7 @@ func jsonTypeName(v any) string {
 		return "null"
 	case string:
 		return "string"
-	case float64:
+	case float64, json.Number:
 		return "number"
 	case bool:
 		return "boolean"

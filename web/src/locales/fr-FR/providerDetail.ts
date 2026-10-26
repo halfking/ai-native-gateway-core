@@ -59,15 +59,15 @@ export default {
     },
     empty: "Aucun identifiant",
     labelFallback: "Identifiant #{id}",
-    fingerprintTitle: "Pour rapprochement amont uniquement — pas la clé complète",
+    fingerprintTitle: "Pour rapprochement amont uniquement: pas la clé complète",
     fingerprintUnparsed: "Impossible d'analyser",
     viewErrorDetail: "Voir les erreurs du fournisseur",
-    rowMeta: "#{id} · {trust}",
+    rowMeta: "#{id}: {trust}",
     cellUnset: "Non défini",
     noLimit: "Aucune limite",
     slotUsage: "Slot {used}/{limit}",
     requestCountSuffix: "requêtes",
-    addCredTitle: "Ajouter un identifiant — {name}",
+    addCredTitle: "Ajouter un identifiant: {name}",
     addCredApiKey: "Clé API",
     addCredLabel: "Étiquette (optionnel)",
     addCredLabelPlaceholder: "ex. clé de production",
@@ -115,7 +115,7 @@ export default {
     drawerFpSlotSuggestPrefix: "Suggéré : ",
     drawerFpSlotSuggestTitle: "Suggéré {n} (concurrence ÷ 4, min 1)",
     drawerFpSlotHintAuto: "Suggéré {n} (concurrence ÷ 4, plancher, min 1)",
-    drawerFpSlotHintTouched: "Remplacé manuellement — les changements de concurrence n'ajusteront pas cette valeur automatiquement",
+    drawerFpSlotHintTouched: "Remplacé manuellement: les changements de concurrence n'ajusteront pas cette valeur automatiquement",
     drawerFpSlotReset: "Réinitialiser à la valeur suggérée",
     drawerFpSlotResetTitle: "Restaurer la valeur auto-dérivée de la concurrence",
     drawerFpSlotFull: "Plein",
@@ -155,7 +155,7 @@ export default {
     apiKeyRotateConfirmLabel: "Confirmer la nouvelle API Key",
     apiKeyRotateSubmit: "Valider",
     apiKeyRotating: "Envoi…",
-    apiKeyRotateMismatch: "Les deux saisies ne correspondent pas — veuillez ressaisir.",
+    apiKeyRotateMismatch: "Les deux saisies ne correspondent pas: veuillez ressaisir.",
     apiKeyRotateMissing: "Veuillez saisir une nouvelle API Key.",
     apiKeyRotateSuccess: "API Key modifiée",
     apiKeyRotateFailed: "Échec de la modification",
@@ -263,14 +263,14 @@ export default {
     supplier: 'Fournisseur', errorCode: 'Code d’erreur', requestId: 'ID de requête',
     stage: 'Étape', retry: 'Réessai', latency: 'Durée',
     openRequestTitle: 'Ouvrir le détail de la requête',
-    title: "供应商错误明细", selectCredential: "请先从凭据列表选择凭据", windowTitle: "统计时间窗口",
-    lastHour: "最近 1 小时", lastDay: "最近 24 小时", lastWeek: "最近 7 天", loading: "加载错误明细中…",
-    loadFailed: "加载供应商错误明细失败", credential: "凭据", health: "健康状态", availability: "可用状态", circuit: "熔断状态",
-    consecutiveFailures: "连续失败", balance: "余额", summary: "错误分布", errorKind: "错误类型", count: "次数",
+    title: "Détail des erreurs fournisseur", selectCredential: "Sélectionnez d'abord un identifiant dans la liste", windowTitle: "Fenêtre temporelle",
+    lastHour: "Dernière heure", lastDay: "Dernières 24 heures", lastWeek: "7 derniers jours", loading: "Chargement des erreurs fournisseur…",
+    loadFailed: "Échec du chargement des erreurs fournisseur", credential: "Identifiant", health: "État de santé", availability: "Disponibilité", circuit: "Coupe-circuit",
+    consecutiveFailures: "Échecs consécutifs", balance: "Solde", summary: "Répartition des erreurs", errorKind: "Type d'erreur", count: "Nombre",
     statusCodes: "Types de codes statut", retryableCount: "Réessayables", stageDist: "Répartition par étape", lastSeen: "Dernière occurrence", noErrors: "Aucune erreur dans cette fenêtre", recentFailures: "Échecs récents",
-    time: "时间", model: "模型", kind: "错误类型", httpStatus: "HTTP 状态", message: "错误消息", upstreamPreview: "上游响应预览",
-    noRecentFailures: "没有最近失败记录", qualityScores: "最近 7 天供应商质量评分", date: "日期", totalScore: "综合评分",
-    availabilityScore: "可用性评分", stabilityScore: "稳定性评分", noQualityScores: "暂无质量评分",
+    time: "Heure", model: "Modèle", kind: "Type d'erreur", httpStatus: "Statut HTTP", message: "Message", upstreamPreview: "Aperçu de la réponse amont",
+    noRecentFailures: "Aucun échec récent", qualityScores: "Qualité du fournisseur sur les 7 derniers jours", date: "Date", totalScore: "Score global",
+    availabilityScore: "Score de disponibilité", stabilityScore: "Score de stabilité", noQualityScores: "Aucun score de qualité",
   },
   models: {
     title: "Modèles ({n})",
@@ -286,7 +286,7 @@ export default {
     clearFailed: "Échec de l'effacement",
     clearMessage: "{n} liaisons de modèles effacées",
     refreshLocalBtn: "Actualiser",
-    refreshLocalTitle: "Recharger uniquement depuis le cache local — n'appelle pas le fournisseur",
+    refreshLocalTitle: "Recharger uniquement depuis le cache local. N'appelle pas le fournisseur",
     refreshLocalLoading: "Chargement…",
     refreshFailed: "Échec de la lecture depuis le fournisseur",
     refreshStatusFailed: "Échec de la requête du statut d'actualisation",
@@ -332,9 +332,8 @@ export default {
     drawerOutboundHint: "Certains fournisseurs (ex. Volcano Ark) nécessitent un ID de point d'accès (ex. ep-20241227XXXX) comme champ de modèle au lieu du nom brut. Sans cela, la vérification est ignorée (code d'erreur : endpoint_id_required).",
     drawerOutboundPlaceholder: "ep-XXXXXXXX",
     drawerOutboundSend: "Sera envoyé :",
-    drawerOutboundUnset: "Non défini — utilisera",
+    drawerOutboundUnset: "Non défini: utilisera",
     drawerSectionContextWindow: "Fenêtre de contexte (tokens)",
-    drawerContextWindowHint: "Remplacement au niveau de l'identifiant pour cet identifiant × modèle. Chaîne : ce remplacement > remplacement catalogue > catalogue. Laisser vide, saisir 0, ou cliquer sur « Effacer » pour retirer le remplacement et utiliser la valeur catalogue. La modification n'est appliquée que si vous changez réellement la valeur ; enregistrer d'autres champs (ex. nom standardisé) n'écrase pas un remplacement existant.",
     drawerContextWindowPlaceholder: "ex. 200000",
     drawerContextWindowClearBtn: "Effacer",
     drawerContextWindowClearTitle: "Retirer le remplacement au niveau de l'identifiant et revenir à la valeur catalogue",
@@ -350,8 +349,8 @@ export default {
     checkStatusWarning: "⚠ Avertissement",
     checkStatusError: "✗ Erreur",
     phaseLabel: {
-      phase1: "Phase 1 — liste de modèles :",
-      phase2: "Phase 2 — test de chat :"
+      phase1: "Phase 1: liste de modèles :",
+      phase2: "Phase 2: test de chat :"
     },
     phase1ModelsOk: "✓ Liste de modèles récupérée OK",
     phase1ManifestFallback: "⚠ Utilisation du fallback manifest (API injoignable)",
@@ -368,7 +367,7 @@ export default {
     phase2InOfferOnly: "✓ Modèle présent dans la liste",
     checkFailedPrefix: "Échec de la requête de vérification : {msg}",
     offerNotInList: "La liste de modèles de cet identifiant ne contient pas ce modèle",
-    drawTitle: "offre #{id} · identifiant #{credId} {credLabel}",
+    drawTitle: "offre #{id}: identifiant #{credId} {credLabel}",
     drawToggleDisable: "Désactiver cette liaison",
     drawToggleEnable: "Activer cette liaison",
     drawToggleLoading: "En cours…",
@@ -406,24 +405,25 @@ export default {
     refreshSummaryFailed: "Échec {n}",
     refreshSummaryEmpty: "Aucun changement",
     creds: {
-      labelFallback: "凭据 #{id}"
+      labelFallback: "Identifiant #{id}"
     },
     overview: {
-      chipAvailable: "可用",
-      chipUnavailable: "不可用"
+      chipAvailable: "Disponible",
+      chipUnavailable: "Indisponible"
     }
 ,
-    probeAllRecoveredHint: '✓ {n} model(s) probed OK; node_probe_state auto-recovered, routing candidates re-enabled',
+    probeAllRecoveredHint: '✓ {n} modèles sondés sans problème ; node_probe_state rétabli automatiquement, candidats de routage réactivés',
 
     resetNodeProbeBtn: 'Clear failed probes',
 
     resetNodeProbeLoading: 'Clearing…',
 
-    resetNodeProbeTitle: 'Clear node_probe_state rows where last_direct_ok=FALSE (force-recover routing). Use when Probe all shows OK but routing candidates remain blocked.',
+    resetNodeProbeTitle: 'Efface les lignes node_probe_state dont last_direct_ok vaut FALSE et rétablit le routage. À utiliser quand « Sonder tout » affiche OK alors que les candidats de routage restent bloqués.',
 
-    resetNodeProbeConfirm: 'Clear all failed node_probe_state rows for this provider?',
+    resetNodeProbeConfirm: 'Effacer toutes les lignes en échec de node_probe_state pour ce fournisseur ?',
 
-    resetNodeProbeDone: '✓ Cleared {n} failed node_probe_state rows; routing candidates re-enabled',
+    resetNodeProbeDone: '✓ {n} lignes en échec de node_probe_state effacées, candidats de routage réactivés',
+    repairFailed: 'La réparation n’a pas pu aboutir. Veuillez réessayer.',
   },
   settings: {
     overrideTitle: "🎛️ Configuration du mode pass-through",
@@ -446,7 +446,7 @@ export default {
     optionOnRecommended: "Activé (recommandé)",
     optionOff2: "Désactivé",
     compressionHint: "Lorsqu'il est désactivé, les requêtes sont transmises à l'amont sans compression de contexte. Convient aux fournisseurs avec de grandes fenêtres de contexte (ex. NVIDIA).",
-    cacheHint: "Lorsqu'il est désactivé, les sessions et réponses ne sont pas mises en cache — chaque appel va à l'API amont. Convient aux scénarios de pass-through complet.",
+    cacheHint: "Lorsqu'il est désactivé, les sessions et réponses ne sont pas mises en cache. Chaque appel va à l'API amont. Convient aux scénarios de pass-through complet.",
     formatHint: "Laisser activé pour prendre en charge la conversion de protocole Anthropic ↔ OpenAI. Lorsqu'il est désactivé, seul le protocole natif est pris en charge.",
     editTitle: "Modifier le fournisseur",
     fieldDisplayName: "Nom d'affichage",
@@ -504,7 +504,7 @@ export default {
     modelPlaceholder: "Sélectionner un modèle…",
     modelPickerTitle: "Filtrer les logs du fournisseur par modèle",
     credentialAll: "Tous les identifiants",
-    credentialsLoadFailed: 'Échec du chargement de la liste des identifiants — un filtre vide ne signifie pas qu’il n’y a aucun enregistrement',
+    credentialsLoadFailed: 'Échec du chargement de la liste des identifiants. Un filtre vide ne signifie pas qu’il n’y a aucun enregistrement',
     credentialTitle: "Identifiant",
     resultAll: "Tous",
     resultOk: "Succès",
@@ -536,7 +536,7 @@ export default {
     runningDiag: "Diagnostic en cours…",
     starting: "Démarrage…",
     pollingHint: "Vérification des identifiants, veuillez patienter…",
-    taskRunning: "Tâche de diagnostic #{id} en cours — généralement 30–60 secondes…",
+    taskRunning: "Tâche de diagnostic #{id} en cours: généralement 30–60 secondes…",
     errorTimeout: "Délai de diagnostic dépassé",
     errorDiag: "Échec du diagnostic",
     summaryTotalCreds: "Total des identifiants",
@@ -560,14 +560,14 @@ export default {
     credColModels: "Vérif. Models",
     credColChat: "Vérif. Chat",
     probeFailed: "Échec",
-    probeMetaModels: "{status} · {count} modèles · {latency} ms",
+    probeMetaModels: "{status}, {count} modèles, {latency} ms",
     // 2026-09-04: non-JSON probe hint (parity backfill).
-    probeNonJson: "{status} · réponse non JSON",
-    probeMetaChat: "{status} · {latency} ms"
+    probeNonJson: "{status}: réponse non JSON",
+    probeMetaChat: "{status}: {latency} ms"
   },
   probe: {
     consensusTitle: "Mécanisme de consensus",
-    consensusDesc: "{n} succès consécutifs → marqué comme rétabli · {n} échecs consécutifs → confirmé comme cassé (arrêt des vérifications)",
+    consensusDesc: "{n} succès consécutifs → marqué comme rétabli, {n} échecs consécutifs → confirmé comme cassé (arrêt des vérifications)",
     consensusFallback: "Intervalles de backoff : 1m → 5m → 15m → 60m (croissant)",
     refresh: "Actualiser",
     refreshLoading: "…",
@@ -612,7 +612,7 @@ export default {
       healthyConfirmed: "Rétabli",
       brokenConfirmed: "Cassé confirmé"
     },
-    historyMeta: "100 derniers enregistrements · scheduler auto / manuel",
+    historyMeta: "100 derniers enregistrements: scheduler auto / manuel",
     endpointIdBadge: "ID de point d'accès requis",
     endpointIdDetail: "Ce modèle (ex. Volcano Ark minimax-m3 / glm-5.1) doit être appelé via un ID de point d'accès de déploiement (ex. <code>ep-XXXXXXXX</code>) au lieu de son nom de modèle brut. Allez à",
     endpointIdLink: "Liste des modèles → modifier outbound_model_name",
@@ -623,8 +623,7 @@ export default {
     loadFailed: "Échec du chargement",
     triggerFailed: "Échec du déclenchement"
   },
-  tableCol: {},
-  models_creds_labelFallback: "凭据 #{id}",
-  models_overview_chipAvailable: "可用",
-  models_overview_chipUnavailable: "不可用"
+  quality: {
+    loadFailed: 'Le chargement du profil de qualité a échoué. Veuillez réessayer.',
+  },
 }

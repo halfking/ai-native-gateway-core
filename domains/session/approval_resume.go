@@ -289,15 +289,14 @@ func (h *ApprovalResumeHandler) markSessionState(record *sessionaudit.ApprovalRe
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	st, _, err := h.sessionCache.GetOrLoad(ctx, record.TenantID, record.SessionID)
-	if err != nil || st == nil {
-		// 没有 state：新建一个只含 v6 字段的最小条目
-		st = &compression.SessionState{SchemaVersion: 1}
-	}
-	st.SetApprovalResult(state)
-	if err := h.sessionCache.Set(ctx, record.TenantID, record.SessionID, st, nil); err != nil {
-		slog.Warn("approval_resume: cache write approval result failed",
-			"approval_id", record.ID, "session_id", record.SessionID, "error", err)
+	if err := h.sessionCache.Update(ctx, record.TenantID, record.SessionID, func(st *compression.SessionState, body []byte) (*compression.SessionState, []byte, error) {
+		if st == nil {
+			st = &compression.SessionState{SchemaVersion: 1}
+		}
+		st.SetApprovalResult(state)
+		return st, body, nil
+	}); err != nil {
+		slog.Warn("approval_resume: cache write approval result failed", "approval_id", record.ID, "session_id", record.SessionID, "error", err)
 	}
 }
 

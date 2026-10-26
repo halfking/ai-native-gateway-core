@@ -1,14 +1,14 @@
 // connectionRegistry.ts — connection registry view
 export default {
   title: 'Connection Registry',
-  subtitle: 'Streaming client SSE connections (process-local live + recent closed audit)',
+  subtitle: 'Connexions SSE des clients de streaming (actif en mémoire, audit des fermetures récentes)',
   apiDegraded: 'Connection registry API fetch failed',
   liveCount: 'Live {count} / capacity {capacity}',
-  historyNote: 'Closed records are process-local audit only (not persisted)',
+  historyNote: 'Les enregistrements clos sont audités en mémoire seulement, ils ne sont pas conservés',
   search: 'Lookup',
   openJourney: 'Open journey',
   searchPlaceholder: 'Enter request_id to lookup connection…',
-  filterPlaceholder: 'Filter list (request_id / protocol / client)…',
+  filterPlaceholder: 'Filtrer la liste (request_id / protocole / client)…',
   sections: {
     live: 'Live connections',
     closed: 'Recently closed',
@@ -26,17 +26,4 @@ export default {
     live: 'No live streaming connections',
     closed: 'No recently closed connections',
   },
-  viewTimeline: 'View node recovery timeline',
-  recoverAt: 'Recover at {time} ({delta})',
-  detail: {
-    lastError: 'Last error',
-    lastErrorAt: 'Last error at',
-    recoverAt: 'Recover at',
-  },
-  state: {
-    connected: 'Connected',
-    connecting: 'Connecting',
-    disconnected: 'Disconnected',
-  },
-  inFlight: 'In flight {count}',
 }

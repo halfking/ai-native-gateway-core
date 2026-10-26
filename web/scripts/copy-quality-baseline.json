@@ -1,0 +1,18 @@
+{
+  "metric": "findings per (tree, locale); web=src/locales/<locale>/**, web-mobile=src/i18n/<locale>.ts; source面单独成桶 <tree>/source；棘轮只许降不许升",
+  "updated": "2026-10-25",
+  "perGroup": {
+    "web-mobile/en-US": 0,
+    "web-mobile/source": 0,
+    "web-mobile/zh-CN": 0,
+    "web/ar-SA": 0,
+    "web/de-DE": 0,
+    "web/en-US": 0,
+    "web/es-ES": 0,
+    "web/fr-FR": 0,
+    "web/ja-JP": 0,
+    "web/source": 0,
+    "web/zh-CN": 0,
+    "web/zh-TW": 0
+  }
+}

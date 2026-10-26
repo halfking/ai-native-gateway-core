@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import OperationAgreementDialog from '../../components/lifecycle/OperationAgreementDialog.vue'
 import UpdateActivateSiteCard from '../../components/lifecycle/UpdateActivateSiteCard.vue'
@@ -24,7 +25,8 @@ import {
   resolveHardwareHash,
   setInstanceId,
 } from '../../utils/deviceFingerprint'
-import { SITE_TITLE } from '../../config/brand'
+
+const { t } = useI18n()
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
@@ -154,7 +156,7 @@ async function loadCatalog() {
     catalogError.value = ''
   } catch (e: unknown) {
     catalog.value = null
-    catalogError.value = e instanceof Error && e.message ? e.message : '版本目录加载失败'
+    catalogError.value = e instanceof Error && e.message ? e.message : t('customer.updateActivate.catalogLoadFailed')
   } finally {
     catalogLoading.value = false
   }
@@ -168,7 +170,7 @@ async function loadModules() {
     modules.value = Array.isArray(res.items) ? res.items : []
   } catch (e) {
     modules.value = []
-    modulesError.value = (e as Error).message || '无法加载模块清单'
+    modulesError.value = (e as Error).message || t('customer.updateActivate.modulesLoadFailed')
   } finally {
     modulesLoading.value = false
   }
@@ -215,7 +217,7 @@ function onAgreementCancelled() {
     localStorage.removeItem(AGREEMENT_KEY)
   } catch { /* ignore */ }
   agreementAccepted.value = false
-  error.value = '未同意用户协议，无法继续激活。'
+  error.value = t('customer.updateActivate.agreementRequired')
 }
 
 async function performQuickActivate() {
@@ -230,7 +232,7 @@ async function performQuickActivate() {
       device_name: deviceName.value.trim(),
     })
     if (!result.activated) {
-      throw new Error(result.error || result.message || '激活失败')
+      throw new Error(result.error || result.message || t('customer.updateActivate.activateFailed'))
     }
     markBootstrapActivated()
     message.value = result.message || '已同意并完成激活'
@@ -334,9 +336,8 @@ onMounted(async () => {
   <div class="ua-page">
     <header class="ua-page__header">
       <div>
-        <p class="eyebrow">UPDATE &amp; ACTIVATE</p>
-        <h1>更新与激活</h1>
-        <p>{{ SITE_TITLE }} — 站点信息、一键激活、版本升级与已开通模块。</p>
+        <h1>{{ t('nav.item.updateActivate') }}</h1>
+        <p>{{ t('app.brand.siteTitle') }} · {{ t('customer.updateActivate.summary') }}</p>
       </div>
       <div class="ua-page__actions">
         <RouterLink
@@ -442,13 +443,6 @@ onMounted(async () => {
   gap: 16px;
   align-items: flex-start;
   margin-bottom: 20px;
-}
-.eyebrow {
-  margin: 0 0 6px;
-  color: var(--accent-h);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
 }
 .ua-page__header h1 { margin: 0 0 8px; font-size: 24px; }
 .ua-page__header p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }

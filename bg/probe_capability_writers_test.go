@@ -19,7 +19,7 @@ func TestNodeProbeDirectPersistsNativeResponsesVerdict(t *testing.T) {
 		{
 			name:          "native success",
 			responsesCode: http.StatusOK,
-			responsesBody: `{"id":"resp_1","object":"response","status":"completed","output":[]}`,
+			responsesBody: `{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`,
 			wantSupported: true,
 		},
 		{
@@ -48,7 +48,7 @@ func TestNodeProbeDirectPersistsNativeResponsesVerdict(t *testing.T) {
 			t.Cleanup(srv.Close)
 
 			sink := &recordingResponsesCapabilitySink{}
-			worker := NewNodeProbeWorker(nil, nil, nil, "", srv.URL, nil)
+			worker := NewNodeProbeWorker(nil, nil, nil, "", srv.URL, nil, 0)
 			worker.probeClient = srv.Client()
 			worker.SetResponsesCapabilitySink(sink)
 			worker.resolveDirectTargetFn = func(context.Context, int, string) (string, string, string, string, int, error) {

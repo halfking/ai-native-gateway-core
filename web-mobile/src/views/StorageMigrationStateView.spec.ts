@@ -27,8 +27,8 @@ import {
  *
  * | 行 | 端点 | 档位 | 前端那一层是什么 |
  * |---|---|---|---|
- * | `:1129` | `storage/config`（批 124）| `h.superAdmin` ⇒ **服务端是真门** | **体验兜底** |
- * | `:1132` | `storage/migration-state`（**本族**）| `admin(...)` ⇒ **服务端没有门** | **唯一的门** |
+ * | `:1172` | `storage/config`（批 124）| `h.superAdmin` ⇒ **服务端是真门** | **体验兜底** |
+ * | `:1175` | `storage/migration-state`（**本族**）| `admin(...)` ⇒ **服务端没有门** | **唯一的门** |
  *
  * ⇒ ★★ 「相邻两行两种档位」这件事在批 124 只是**警示**，
  *   在本族是**本族结论的直接依据**。
@@ -227,15 +227,15 @@ describe('① 权限档「admin」（服务端无角色下限 ⇒ 前端是唯�
     expect(sup).toMatch(/case "user"/)
   })
 
-  it('①-5 ★★★★★★ 读 Go 源码：`:1129`（superAdmin）与 `:1132`（admin）相邻两行两种档位', () => {
+  it('①-5 ★★★★★★ 读 Go 源码：`:1182`（superAdmin）与 `:1185`（admin）相邻两行两种档位', () => {
     // ★★★ 本族结论的直接依据：档位由**那一行**决定，不由前缀决定。
     const lines = goSrc('admin/handler.go').split('\n')
     const mig = lines.findIndex((l) => l.includes('"/api/admin/storage/migration-state"'))
-    expect(mig + 1, '模块头原写 :1111（整块漂 21 行）').toBe(1132)
+    expect(mig + 1, '模块头原写 :1111 → :1140（批153）→ :1175（12h-audit 20261017）→ :1182（2026-10-21 views 行号订正轮）→ 实为 :1185（2026-10-26 行号漂移订正轮）').toBe(1185)
     expect(lines[mig]).toMatch(/admin\(h\.handleMigrationState\)/)
     const cfg = lines.findIndex((l) => l.includes('"/api/admin/storage/config"'))
     expect(lines[cfg]).toMatch(/h\.superAdmin\(h\.handleStorageConfig\)/)
-    // ★ 相邻：1129 与 1132 之间只隔着 test-path 那一行
+    // ★ 相邻：1182 与 1185 之间只隔着 test-path 那一行
     expect(cfg).toBeLessThan(mig)
     expect(mig - cfg).toBeLessThanOrEqual(3)
   })

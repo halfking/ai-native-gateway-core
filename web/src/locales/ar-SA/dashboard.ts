@@ -7,7 +7,6 @@ tabs: {
     liveStream: 'تدفق الطلبات المباشر',
     sessionStats: 'الجلسات والإحصائيات',
     selfcheck: 'الفحص الذاتي',
-    systemmonitor: 'مراقبة النظام',
   },
 v2: {
     quickApiKey: 'API Key',
@@ -17,18 +16,12 @@ v2: {
     refreshData: 'Refresh data',
     retry: 'Retry',
     reloadAria: 'Reload data',
-    degradedViewLabel: 'View',
-    degradedHint: 'Data view {view} is not initialized yet. Run the aggregation migration first.',
-    emptyTitle: 'No request data yet',
-    emptyHint: 'After configuring providers, send a call via /v1/chat/completions to see the live stream here.',
-    modelsPage: 'Models',
     totalTokensShort: 'Total Tokens',
     totalCredits: 'Credits charged',
     creditsSub: 'Pricing × tokens',
-    creditsDegraded: 'عرض نقاط الائتمان {view} غير مهيّأ — هذا الرقم غير موثوق',
-    summaryDegraded: "عرض التجميع {view} غير مهيّأ — أرقام الطلبات/التوكنات/التكلفة أدناه غير متاحة وليست صفرًا. لا تستخدمها كاستنتاج.",
+    creditsDegraded: 'عرض نقاط الائتمان {view} غير مهيّأ: هذا الرقم غير موثوق',
+    summaryDegraded: "عرض التجميع {view} غير مهيّأ: أرقام الطلبات/التوكنات/التكلفة أدناه غير متاحة وليست صفرًا. لا تستخدمها كاستنتاج.",
     modelCount: 'Models',
-    sessionCompression: 'Session compression',
   },
   range: {
     today: "اليوم",
@@ -66,7 +59,7 @@ v2: {
     providerScore: 'تقييم {n}',
     providerPlan: 'باقة',
     providerStatsTitle: 'إحصاءات استخدام المزوّدين',
-    providerStatsHint: 'مرتبط بالنطاق الزمني · انقر صفًا للتفاصيل',
+    providerStatsHint: 'مرتبط بالنطاق الزمني: اختر أي صف لعرض التفاصيل',
     providerExport: 'تصدير Excel',
     filterRange: 'النطاق الزمني',
     filterGran: 'الدقة',
@@ -85,25 +78,35 @@ v2: {
     distTitle: 'تحليل التوزيع',
     distTop: 'الأفضل {n}',
     distOthers: '{n} أخرى',
-    distDrillHint: 'انقر نوع خطأ → تعميق حسب النموذج/المزوّد/العميل',
-    empty: 'No data',
+    distDrillHint: 'اختر نوع خطأ → تعميق حسب النموذج/المزوّد/العميل',
+    /**
+     * الحالات الفارغة (الدفعة 14 · «حالات فارغة»).
+     * ★ كان هنا مفتاح واحد `empty` («No data») تشاركه ستّ بطاقات مختلفة
+     *   (المزوّدون / تحليل التوزيع / توزيع النماذج / المخططات / جدول الاستخدام / بطاقتا مهام اللوحة)
+     *   ⇒ جملة واحدة تغطّي ستّ دلالات، فلم يستطع المستخدم معرفة أهو «لا يوجد فعلًا»
+     *   أم «تمّت التصفية» أم «الحساب فشل». ⇒ الآن كل بطاقة لها مفتاحها.
+     *   · emptyNoResult* = لا نتائج (تم البحث فعلًا، ولم نجد شيئًا)
+     *   · emptyFailed*    = فشل/مجهول (الخادم لم يُرجع ⇒ لا يجوز القول «لا يوجد»)
+     */
+    emptyNoResultProviders: 'لا توجد بيانات المزوّدين في الفترة المحدّدة.',
+    emptyNoResultDist: 'لا توجد بيانات يمكن ترتيبها في الفترة المحدّدة.',
+    emptyNoResultDrill: 'لا توجد طلبات فاشلة ضمن هذا النوع من الأخطاء.',
+    emptyNoResultModelDist: 'لا توجد بيانات النماذج في الفترة المحدّدة.',
+    emptyNoResultModelTrend: 'لا توجد بيانات اتجاهات النماذج في الفترة المحدّدة.',
+    emptyNoResultTrend: 'لا توجد بيانات اتجاهات الاستخدام في الفترة المحدّدة.',
+    emptyNoResultDiscovery: 'لا توجد سجلات تشغيل لمهمة اكتشاف النماذج بعد.',
+    emptyNoResultProbe: 'لا توجد سجلات تشغيل لدورات الفحص بعد.',
     bgTasks: 'Background tasks',
     discoveryStatus: 'Model discovery',
-    probeChecks: 'Probes (10m)',
     selfcheckTitle: 'Self-check',
-    selfcheckLast: 'Last status',
-    selfcheckRate: '24h success rate',
-    selfcheckHint: 'Click for details →',
-    pieClients: 'Client types',
-    pieDegraded: "غير متاح — {reason}. الترتيب الفارغ هنا يعني «لم يتم الحساب»، وليس «لا توجد بيانات».",
+    pieClients: 'أنواع العملاء',
+    pieDegraded: "غير متاح: {reason}. الترتيب الفارغ هنا يعني «لم يتم الحساب»، وليس «لا توجد بيانات».",
     pieDegradedGeneric: "فشل استعلام الترتيب",
-    drillFailed: "تعذّر تحميل هذا التفصيل — {reason}. القائمة الفارغة هنا لا تعني عدم وجود أخطاء.",
+    drillFailed: "تعذّر تحميل هذا التفصيل: {reason}. القائمة الفارغة هنا لا تعني عدم وجود أخطاء.",
     pieClientIp: 'عنوان IP للعميل',
-    pieIdentity: 'Identity hash',
-    pieModels: 'Model usage',
-    pieErrors: 'Error types',
-    pieTenants: 'Tenant usage',
-    pieProviders: 'Provider usage',
+    pieIdentity: 'بصمة الهوية',
+    pieErrors: 'أنواع الأخطاء',
+    pieTenants: 'استخدام المستأجرين',
     metricRequests: 'Requests',
     metricTokens: 'Tokens',
     metricToggle: 'المقياس',
@@ -119,181 +122,73 @@ v2: {
     trendMore: 'المزيد',
     trendMoreTitle: 'فتح تحليل اتجاهات الاستخدام في صفحة كاملة',
     trendOthers: 'أخرى',
-    filterProvider: 'Provider ID',
-    allProviders: 'All',
 
-    rangeCustomTab: 'Custom',
 
-    rangeFrom: 'From',
 
-    rangeTo: 'To',
 
-    rangePicker: 'Statistics period',
 
     rangeCustom: '{start} to {end}',
   },
-  proxyWarning: {
-    title: "⚠ وكيل الخروج غير قابل للوصول",
-    detail: "فشل اختبار الوكيل المُكوّن {proxy}، تم الرجوع تلقائيًا إلى وضع الاتصال المباشر. قد تفشل النماذج الأجنبية (Anthropic / OpenAI / OpenRouter / GitHub Copilot، إلخ).",
-    detailHealthy: "تعافى الوكيل {proxy}.",
-    hint: "بعد تعافي الوكيل، سيقوم النظام بإعادة تمكينه تلقائيًا"
-  },
-  backgroundTasks: {
-    title: "المهام الخلفية قيد التنفيذ",
-    running: "اكتشاف النماذج ({trigger})",
-    startedAt: "بدأ {time}",
-    heartbeat: "نبضة {time}",
-    slow: "قد تتباطأ صفحة الإدارة",
-    detailsLink: "عرض التفاصيل"
-  },
-  discovery: {
-    latest: "آخر اكتشاف للنماذج:",
-    failuresTitle: "اكتشاف النماذج · اختبارات فاشلة في آخر 6 ساعات",
-    failuresTally: "{n} فشل · {m} نماذج",
-    summary: "عرض قائمة الفشل",
-    meta: "{n} مرة · يشمل {m} بيانات اعتماد · آخر {date} · خطأ {code}"
-  },
   stat: {
     totalRequests: "إجمالي الطلبات",
-    inLastDays: "آخر {days} يوم",
-    totalTokens: "إجمالي استخدام الرموز",
-    prompt: "إدخال {n}",
-    completion: "إكمال {n}",
     totalCost: "التكلفة الإجمالية",
-    costUnit: "USD",
     successRate: "معدل النجاح",
     avgLatency: "متوسط الكمون {n} ms",
-    apiKeys: "مفاتيح API المدمجة",
-    enabledActive: "مفعّل {enabled} · نشط {active}",
     models: "عدد النماذج",
     activeInDays: "آخر {days} يوم نشط {n}",
-    providers: "المزودون / بيانات الاعتماد",
-    enabledCredentials: "مفعّل {enabled} · بيانات اعتماد {total}",
-    offline: "الموارد غير المتصلة",
-    modelsCredentials: "نماذج {models} · بيانات اعتماد {creds}",
-    // 2026-08-06: متوسط حجم الطلب / متوسط حجم الاستجابة / الذروة (محاذاة مع zh-CN)
     avgRequestSize: "متوسط حجم الطلب",
     avgResponseSize: "متوسط حجم الاستجابة",
     maxLabel: "ذروة",
   },
   table: {
-    hotKeysTitle: "ترتيب مفاتيح API الأكثر استخدامًا",
-    byModelTitle: "الإحصاءات حسب النموذج",
-    colKey: "المفتاح",
-    colApplication: "التطبيق",
-    colOwner: "المستخدم المسؤول",
-    colRequests: "عدد الطلبات",
-    colTokens: "استخدام الرموز",
-    colCost: "التكلفة (USD)",
-    colLastUsed: "آخر استخدام",
     colModel: "النموذج",
-    colProvider: "المزود"
-  },
-  compression: {
-    title: "🤖 ضغط الجلسات",
-    delta: "تدريجي",
-    sliding: "منزلق",
-    outboundTokens: "≈ {n} رمز صادر"
-  },
-  empty: {
-    firstUse: "🚀 لا توجد بيانات طلبات حتى الآن. بعد تكوين المزود، ابدأ الاتصال عبر /v1/chat/completions."
   },
   loading: "جاري التحميل…",
-  noData: "لا توجد بيانات في هذه الفترة",
-  costSuffix: "USD",
-  viewFailedRequests: "عرض الطلبات الفاشلة",
   liveStream: {
     title: "تدفق الطلبات المباشر",
     groupByQueue: "حسب قائمة المعالجة",
     controlsAria: "عناصر التحكم في تدفق الطلبات المباشر",
-    connected: "متصل",
-    disconnected: "إعادة الاتصال...",
     pause: "إيقاف مؤقت",
     resume: "استئناف",
-    filterAll: "جميع الحالات",
-    filterSuccess: "الناجحة فقط",
-    filterFailure: "الفاشلة فقط",
-    filterInProgress: "قيد التنفيذ",
-    filterGroupFailures: "تصنيف الفشل",
-    filterFailure5xx: "الخادم / المنبع (5xx)",
-    filterFailure4xx: "العميل / المصادقة (4xx)",
-    filterFailureTimeout: "انتهت المهلة / الشبكة",
-    filterFailureNotFound: "التوجيه / نموذج غير موجود",
-    filterFailureOther: "أعطال أخرى",
-    idleLabel: "خامل {duration}",
-    countTooltip: "{buffer} في المخزن / {visible} مرئية على الشاشة",
-    countAria: "{buffer} طلب في المخزن، {visible} مرئية",
     legendButton: 'مفتاح الرموز',
     legend: {
-      title: "مفتاح الرموز",
-      model: "عائلة النموذج",
-      status: "الحالة",
-      openai: "OpenAI",
-      anthropic: "Anthropic",
-      domestic: "محلي",
-      oss: "مفتوح المصدر",
-      other: "أخرى",
       success: "نجح",
       inProgress: "قيد التنفيذ",
-      failure: "فشل"
-,
       cancelled: 'Cancelled',
     },
     tooltip: {
-      model: "النموذج",
-      provider: "المزود",
-      status: "الحالة",
-      latency: "الكمون",
-      tokens: "الرموز",
-      cost: "التكلفة",
-      error: "خطأ",
-      time: "الوقت"
-,
-      vendor: 'Vendor',
 
-      requestId: 'ID',
 
-      errorKind: 'Error type',
 
-      errorRawCode: 'Raw code',
 
       statusValue: {
         success: 'Success',
         inProgress: 'In progress',
         cancelled: 'Cancelled by user',
-        idle: 'Idle (heartbeat placeholder)',
         failure: 'Request failed',
       },
 
       tokenFormat: '{p} + {c}',
-      cache: 'التخزين المؤقت',
       cacheFormat: 'قراءة {r} / كتابة {w} ({pct})',
-      sessionId: 'الجلسة',
     },
-    connecting: "...جارٍ الاتصال",
-    reconnecting: "...جارٍ إعادة الاتصال",
-    unsupported: "البث المباشر غير مدعوم في هذا المتصفح",
-    empty: "لا توجد طلبات مباشرة",
 
     emptyWaiting: 'في انتظار بيانات البث المباشر للطلبات…',
     emptyConnecting: 'جارٍ الاتصال بالبث المباشر، سيتم التحميل تلقائيًا بعد الاتصال…',
-    groupByCredential: 'حسب بيانات الاعتماد', groupByVendor: 'حسب المورّد', groupByProvider: 'حسب المزوّد', groupByModel: 'حسب النموذج',
+    groupByCredential: 'حسب بيانات الاعتماد', groupByProvider: 'حسب المزوّد', groupByModel: 'حسب النموذج',
     modeSmall: 'صغير',
     modeLarge: 'كبير',
     modeSmallTitle: 'وضع صغير: أعمدة عمودية، تستوعب المزيد من الطلبات (افتراضي)',
     modeLargeTitle: 'وضع كبير: بطاقات بتفاصيل طلب أكثر',
-    probeAll: 'الكل', probeOnly: 'عمليات الفحص فقط',
-    probeAllTitle: 'عرض جميع الطلبات (افتراضي)', probeOnlyTitle: 'عرض طلبات الفحص فقط',
     // 2026-08-06: فلاتر الأعمال / الفحص + العناوين (محاذاة مع zh-CN)
     business: 'الأعمال',
     probe: 'فحص',
     businessTitle: 'عرض طلبات الأعمال الحقيقية فقط',
     probeTitle: 'عرض طلبات الفحص فقط',
-    cacheWindow: 'ذاكرة التخزين المؤقت / النافذة', connectionDetailTitle: 'انقر لعرض تفاصيل الاتصال',
+    cacheWindow: 'ذاكرة التخزين المؤقت / النافذة', connectionDetailTitle: 'عرض تفاصيل الاتصال',
     dimensionCredential: 'بيانات الاعتماد', dimensionVendor: 'المورّد', dimensionProvider: 'المزوّد', dimensionModel: 'النموذج',
     statusOpen: 'متصل', statusConnecting: 'جارٍ الاتصال', statusReconnecting: 'جارٍ إعادة الاتصال',
     statusUnsupported: 'غير مدعوم', statusClosed: 'غير متصل',
-    queueStreamConnecting: 'جارٍ الاتصال بالبث المباشر — ستتحدث بيانات هذه المنطقة تلقائيًا بعد الاتصال…',
+    queueStreamConnecting: 'جارٍ الاتصال بالبث المباشر: ستتحدث بيانات هذه المنطقة تلقائيًا بعد الاتصال…',
     queueStreamClosed: 'انقطع اتصال البث المباشر، تجري إعادة الاتصال تلقائيًا…',
     queueStreamUnsupported: 'هذا المتصفح لا يدعم البث المباشر (EventSource)؛ لا يمكن لهذه المنطقة استقبال البيانات في الوقت الفعلي.',
     queueStreamAwaiting: 'تم الاتصال بالبث المباشر، جارٍ استقبال أول البيانات…',
@@ -335,11 +230,7 @@ v2: {
 
     idleHoursMinutes: 'خامل {h} ساعة {m} دقيقة',
 
-    idleReasonNoTraffic: 'لا توجد حركة مرور (5 دقائق خاملة)',
-    // 2026-07-24: Multi-dimension filters
     filterStatus: 'الحالة',
-    filterAllOptions: 'الكل',
-    filterEmpty: 'لا توجد خيارات متاحة',
     filterModel: 'النموذج',
     filterGroup: 'تصفية',
     filterProvider: 'المزود',
@@ -351,13 +242,6 @@ v2: {
       success: 'نجح',
       failure: 'فشل',
       rate_limited: 'محدود',
-    },
-    vendor: {
-      openai: 'OpenAI',
-      anthropic: 'Anthropic',
-      domestic: 'محلي',
-      oss: 'مفتوح المصدر',
-      other: 'أخرى',
     },
   },
   charts: {
@@ -374,60 +258,25 @@ v2: {
     closedSessions: "جلسات مغلقة",
     costUSD: "التكلفة (دولار أمريكي)",
     sessionCount: "عدد الجلسات",
-    sessionTrend: "اتجاه الجلسات"
+    sessionTrend: "اتجاه الجلسات",
+    /** حالة فارغة: مخطط توزيع الصحة فارغ (كان يستخدم المفتاح العام `dashboard.noData`). */
+    emptyNoResultHealthGrade: 'لا توجد بيانات توزيع الصحة في الفترة المحدّدة.',
+    /** حالة فارغة: مخطط اتجاه الجلسات فارغ (كان يستخدم المفتاح العام `dashboard.noData`). */
+    emptyNoResultSessionTrend: 'لا توجد بيانات اتجاهات الجلسات في الفترة المحدّدة.',
   },
 
-  moduleStats: {
-    executions: 'عمليات التنفيذ',
-    cacheHitRate: 'معدل إصابة ذاكرة التخزين المؤقت',
-    rate: 'المعدل',
-    totalModules: 'إجمالي الوحدات',
-    totalExecutions: 'إجمالي عمليات التنفيذ',
-    avgCacheHitRate: 'متوسط معدل إصابة ذاكرة التخزين المؤقت',
-    avgDuration: 'متوسط المدة',
 
-    title: 'إحصائيات تنفيذ الوحدات',
-
-    successRate: 'معدل النجاح',
-  },
-
-  errors: {
-    trendTitle: 'اتجاه الأخطاء',
-    errorCount: 'عدد الأخطاء',
-    totalCount: 'إجمالي الطلبات',
-    errorRate: 'معدل الخطأ',
-    count: 'العدد',
-    rate: 'المعدل',
-    totalErrors: 'إجمالي الأخطاء',
-    topErrors: 'أهم الأخطاء',
-
-    title: 'إحصائيات الأخطاء',
-
-    totalRequests: 'إجمالي الطلبات',
-
-    avgLatency: 'متوسط تأخير الخطأ',
-  },
 
   performance: {
-    throughput: 'معدل النقل',
-    requests: 'الطلبات',
-    p50: 'تأخير P50',
-    p95: 'تأخير P95',
-    p99: 'تأخير P99',
-    latencyDist: 'توزيع التأخير',
-    slowQueries: 'الاستعلامات البطيئة',
 
-    title: 'مقاييس الأداء',
 
     avgLatency: 'متوسط التأخير',
 
-    latency: 'التأخير',
   },
 
   providerUsage: {
     title: 'استخدام المورد',
-    subtitle: '{period} — استهلاك جميع الموردين (جاهز للتسوية)',
-    periodHint: 'الفترة الحالية: {period}',
+    subtitle: '{period}: استهلاك جميع الموردين (جاهز للتسوية)',
     more: 'المزيد',
     search: 'البحث عن الاسم أو الرمز أو المعرّف…',
     back: 'العودة إلى القائمة',
@@ -448,6 +297,8 @@ v2: {
     periodRange: '{start} إلى {end}',
     modelBreakdown: 'حسب النموذج',
     dailyBreakdown: 'تفصيل النموذج اليومي',
+    /** حالة فارغة: لا توجد سجلات استهلاك (لها وحدها صياغة خاصة في `dataLifecycle.usageCost.degraded.title`). */
+    emptyNoResult: 'لا توجد سجلات استهلاك في الفترة المحدّدة.',
   },
   statsRow: {
     totalSessions: "Total Sessions",
@@ -460,5 +311,11 @@ v2: {
     avgLatency: "Avg Latency",
     totalRequests: "Total Requests",
     totalTokens: "Total Tokens",
+  },
+  requestTile: {
+    childRequestsTitle: 'الطلبات الفرعية: {count} (توسيع للعرض)',
+    childRequestsEmpty: 'الطلبات الفرعية (لا توجد بيانات مرسلة، توسيع للعرض)',
+    actionTrailTitle: 'سجل الإجراءات: {count} (توسيع للعرض)',
+    actionTrailEmpty: 'سجل الإجراءات (لا توجد بيانات مرسلة، توسيع للعرض)',
   },
 }

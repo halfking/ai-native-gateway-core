@@ -185,21 +185,42 @@ func (h *Handler) handleTags(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 }
 
-func (h *Handler) listTags(ctx context.Context, w http.ResponseWriter) {
-	rows, err := h.db.Query(ctx, `
+// listTagsSQL 是「标签列表」API 的 SQL。提成包级常量是为了让**真库执行门**
+// 能直接跑它（admin/session_family_runtime_sql_test.go）。
+//
+// ★ 2026-10-20 修两处（都是真库执行门打出来的，不是读代码看出来的）：
+//
+//  1. `ARRAY_AGG(canonical_name ORDER BY canonical_name)[1:5]`
+//     **缺外层括号** ⇒ PG 不允许直接给聚合表达式下标 ⇒
+//     ERROR: syntax error at or near "[" (42601)
+//     正确写法是 `(ARRAY_AGG(...))[1:5]`（仓内 bg/integrity_fingerprint_drift.go
+//     与 catalog/vendor_sweep_test.go 都是这个形态）。
+//
+//  2. `COALESCE(mc.tags,'[]'::jsonb)` —— models_canonical.tags 的真实类型是
+//     **text[]**（sql/objects/tables/models_canonical.sql:
+//     `tags text[] DEFAULT '{}'::text[] NOT NULL`）⇒ jsonb 字面量与它不可比
+//     ⇒ ERROR: COALESCE types text[] and jsonb cannot be matched (42804)。
+//     正确写法是 `'{}'::text[]`。
+//
+// 两处错误都被 `if err != nil { writeJSON(200, 空列表) }` 吞掉 ⇒
+// 接口返回 200 + 空标签列表 ⇒ 页面上看不出报错，只看得到「没有标签」。
+const listTagsSQL = `
 		WITH unnested AS (
-			SELECT mc.id, mc.canonical_name, UNNEST(COALESCE(mc.tags,'[]'::jsonb)) AS tag
+			SELECT mc.id, mc.canonical_name, UNNEST(COALESCE(mc.tags,'{}'::text[])) AS tag
 			FROM models_canonical mc
-			WHERE mc.tags IS NOT NULL AND mc.tags != '[]'::jsonb
+			WHERE mc.tags IS NOT NULL AND mc.tags != '{}'::text[]
 			AND COALESCE(mc.status,'active') = 'active'
 		)
 		SELECT tag,
 		       COUNT(*) AS canonical_count,
-		       ARRAY_AGG(canonical_name ORDER BY canonical_name)[1:5] AS samples
+		       (ARRAY_AGG(canonical_name ORDER BY canonical_name))[1:5] AS samples
 		FROM unnested
 		GROUP BY tag
 		ORDER BY tag
-	`)
+`
+
+func (h *Handler) listTags(ctx context.Context, w http.ResponseWriter) {
+	rows, err := h.db.Query(ctx, listTagsSQL)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"namespaces": []any{}})
 		return

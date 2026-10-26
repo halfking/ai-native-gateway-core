@@ -1,7 +1,7 @@
 // Auto-synced from en-US (fr-FR)
 export default {
   title: 'Routing Overrides Audit',
-  subtitle: 'Every change to the routing_overrides table is recorded with actor, action, and row state.',
+  subtitle: 'Chaque modification de la table routing_overrides est enregistrée avec l\'auteur, l\'action et l\'état de la ligne.',
   summary: {
     total: 'Total',
     inserts: 'Inserts',
@@ -19,13 +19,11 @@ export default {
     limit: 'Limit',
     refresh: 'Refresh',
     loading: 'Loading…',
-    days: { d1: '1 day', d7: '7 days', d30: '30 days', d90: '90 days' },
+    days: { d1: '1 jour', d7: '7 jours', d30: '30 jours', d90: '90 jours' },
     limits: { l50: '50', l200: '200', l500: '500', l1000: '1000' },
   },
   actions: {
     insert: 'Create',
-    update: 'Update',
-    delete: 'Delete',
   },
   table: {
     title: 'Audit entries ({n})',
@@ -40,8 +38,6 @@ export default {
       actor: 'Actor',
     },
     details: 'Details',
-    before: 'Before',
-    after: 'After',
   },
 
   expand: {

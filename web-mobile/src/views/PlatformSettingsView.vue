@@ -57,7 +57,7 @@ import {
   type SettingsHistoryResponse,
 } from '@/api/platformSettings'
 
-useHyperPage({ title: () => t('ps.title') })
+useHyperPage({ title: () => (allowed.value ? t('ps.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

@@ -1,5 +1,8 @@
-// Command traffic-replay replays historical _request_logs through
+// Command traffic-replay replays historical request rows through
 // the REAL auto-route pipeline (HeuristicClassifier + Score + Decider),
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：历史样本改取**会话族**
+// （见 loadHistoricalRows 的说明）。
 // surfacing "what would have happened" if the new pattern /
 // weight / override were live during the historical window.
 //
@@ -42,9 +45,10 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
-// requestRow is one row from _request_logs that we replay.
+// requestRow is one historical request row that we replay.
 type requestRow struct {
 	RequestID      string
 	TaskType       string
@@ -97,7 +101,7 @@ func main() {
 	if len(rows) == 0 {
 		log.Fatal("no historical rows match the filter")
 	}
-	log.Printf("loaded %d historical _request_logs rows", len(rows))
+	log.Printf("loaded %d historical request rows", len(rows))
 
 	// Build the live pipeline (real Decider + tuning store + overrides).
 	decider, overrideStore := buildPipeline(ctx, db, *withLLM)
@@ -116,25 +120,44 @@ func main() {
 	printReport(rows, results)
 }
 
-// loadHistoricalRows fetches the replay set from request_logs.
-// We use task_type_chosen (P7.2.1 column) and the original
-// outbound_model for the comparison.
+// loadHistoricalRows fetches the replay set from the request store.
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：数据源改指**会话族**。
+//
+// 原来这一段读 v1 宽族。那一族被 DROP 之后，任何提到它的语句都会 42P01
+// ⇒ 工具直接跑不起来。⇒ 改用 db.SessionFamilyTurnsSourceSQL()（turns 腿，
+// 含 734 details 的 LEFT JOIN）与 db.SessionFamilyBodiesSourceSQL()（bodies 腿）。
+//
+// 列映射（1:1，读方不用改）：
+//
+//	v1 outbound_model  → 会话族 outbound_model（= session_turns.model）
+//	v1 client_model    → 会话族**没有**这一列（canonical 投影里恒 NULL）
+//	v1 request_body    → 会话族 request_body（= session_bodies.request_delta）
+//	v1 request_preview → 会话族 request_preview ✔
+//
+// ⚠ 一处**语义**变化，写明不藏：会话族存的是**每轮增量**（request_delta），
+// 而 v1 存的是**累积正文**。⇒ 重放时从正文解析出来的信号（工具数 / 图片 /
+// 代码块）只覆盖**本轮新增**的部分；「最后一条用户消息」这个主信号仍然来自
+// request_preview（会话族侧 600/890 有值），所以重放结论的方向不变，但
+// 「这一轮带了几个工具」这类信号会比 v1 口径**偏小**。宁可让信号偏小，
+// 也不要拿累积正文冒充增量（那会让两个口径的字节数被拿去除）。
 func loadHistoricalRows(ctx context.Context, db *sql.DB, days int, taskType string, maxSamples int) ([]requestRow, error) {
 	q := `
 		SELECT
-		    request_id,
-		    COALESCE(task_type_chosen, task_type, 'unknown') AS task,
-		    COALESCE(outbound_model, 'unknown') AS chosen_model,
-		    success,
-		    COALESCE(latency_ms, 0)::int,
-		    COALESCE(prompt_tokens, 0)::int,
-		    COALESCE(request_body, '{}'::jsonb)::text::bytea AS body,
-		    COALESCE(request_preview, '') AS preview
-		FROM _request_logs
-		WHERE is_auto_request = TRUE
-		  AND ts >= NOW() - INTERVAL '1 day' * $1
-		  AND ($2 = '' OR COALESCE(task_type_chosen, task_type) = $2)
-		ORDER BY ts DESC
+		    rl.request_id,
+		    COALESCE(rl.task_type_chosen, rl.task_type, 'unknown') AS task,
+		    COALESCE(rl.outbound_model, 'unknown') AS chosen_model,
+		    rl.success,
+		    COALESCE(rl.latency_ms, 0)::int,
+		    COALESCE(rl.prompt_tokens, 0)::int,
+		    COALESCE(rb.request_body, '{}'::jsonb)::text::bytea AS body,
+		    COALESCE(rl.request_preview, '') AS preview
+		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
+		LEFT JOIN ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` rb ON rb.request_id = rl.request_id
+		WHERE rl.is_auto_request = TRUE
+		  AND rl.ts >= NOW() - INTERVAL '1 day' * $1
+		  AND ($2 = '' OR COALESCE(rl.task_type_chosen, rl.task_type) = $2)
+		ORDER BY rl.ts DESC
 		LIMIT $3
 	`
 	rows, err := db.QueryContext(ctx, q, days, taskType, maxSamples)

@@ -95,7 +95,7 @@ const hasData = computed(() => (props.data?.length ?? 0) > 0)
     </div>
     <div v-loading="loading" class="trend-card__body">
       <canvas v-show="hasData" ref="canvasRef" />
-      <div v-if="!loading && !hasData" class="trend-card__empty">{{ $t('dashboard.board.empty') }}</div>
+      <div v-if="!loading && !hasData" class="trend-card__empty">{{ $t('dashboard.board.emptyNoResultTrend') }}</div>
     </div>
   </div>
 </template>

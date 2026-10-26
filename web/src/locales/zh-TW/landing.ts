@@ -1,174 +1,123 @@
 // landing.ts — 落地頁文案（未登錄首頁）。
 //
-// 2026-07-05: 更新為中性化、全球化的產品定位。
+// 2026-10-25 改寫（impeccable craft-floor / STYLE 輪）：
+// 對齊 zh-CN / en-US 的新版樣板。原稿是三段式行銷串（`內核開源 · 企業級 · 私有部署`）、
+// 形容詞代替事實（高可用體系 / 智慧 / 護盾）、破折號代替標點、每段恰好三件事。
+// 規則見倉庫根目錄 DESIGN.md §7「Voice」。
+//
+// 事實紀律：只保留產品確實做到的事（Apache 2.0 / 40 MB 映像檔 / 200 併發 P99 < 500 ms /
+// RLS 列層級安全 / 43 輪稽核 L1=0 / k3s + Docker / 三套入向協定 / 15 天試用）。
+// 台灣用語：伺服器、資料庫、資料、憑證、稽核、協定、映像檔。
 export default {
-  kicker: '內核開源 · 企業級 · 私有部署',
-  title: 'AI-Native組織核心網關',
-  subtitle: 'AI-Native 組織核心網關。統一治理、全球 LLM 接入、合規與資料主權 — 內核開源、私有化部署。',
-  featuresTitle: '核心能力',
-  featuresSubtitle: '覆蓋從接入到營運的關鍵環節',
+  // 只在 PublicPageShell 頁腳用到（品牌名 + 本項），已不再作為標題上方的小標籤渲染。
+  kicker: 'Apache 2.0 開源核心',
+  brandTitle: 'AI-Native 組織核心閘道',
+  title: '把公司裡所有的大模型呼叫，收進一個能管、能查、能關的入口',
+  subtitle:
+    'OpenAI、Anthropic、Responses 三套協定接進同一個閘道，依租戶與模型選路，計費、稽核、限流都在這一處。部署在你自己的機器上，資料不出門。',
+  featuresTitle: '核心功能',
+  featuresSubtitle: '接入、選路、計費、稽核，都在這一個入口裡',
+  // 功能導軌（右欄）的六條：每一條都驗得掉，不寫形容詞。
   heroPoints: [
-    '內核開源 · Apache 2.0',
-    '企業級治理',
-    '全球 LLM 接入',
-    '資料安全防護',
-    'AI 會話資產化',
-    '私有化部署',
+    '核心採 Apache 2.0 授權',
+    '資料面以 Go 撰寫，映像檔 40 MB',
+    '併發 200，P99 低於 500 ms',
+    '三套入向協定統一接入',
+    'PostgreSQL RLS 列層級隔離',
+    'k3s 或 Docker，裝在自己的機器上',
   ],
   features: {
     smartRouting: {
-      title: '智慧路由與憑證池',
-      description: '按租戶、模型與任務類型自動選路；多憑證指紋池 + 自適應探測，故障秒級切換、封號率趨零。',
+      title: '依租戶與任務選路',
+      description: '依租戶、模型、任務類型自動選路。上游出問題時，探測到就換下一個，憑證指紋池負責輪替。',
     },
     safety: {
-      title: '呼叫安全防護',
-      description: 'LLM-as-judge 提示詞注入檢測（v1 可觀測模式）+ 敏感資料脫敏規劃，企業級合規防線。',
+      title: '提示注入與敏感資料',
+      description: 'LLM-as-judge 偵測提示詞注入（v1 只觀測、不攔截），敏感欄位依規則遮蔽。',
       badge: 'beta',
     },
     cache: {
-      title: '快取對齊與降本',
-      description: 'Prompt 前綴穩定化 + 語意快取，最大化 KV Cache 命中率，降低 Token 算力開銷。',
+      title: '快取與成本',
+      description: '前綴穩定化加上語意快取，KV Cache 命中率提高，token 的花費就降下來。',
     },
     agent: {
-      title: 'Agent 與 MCP 網關',
-      description: 'Agent 註冊中心、A2A 協定、MCP 工具託管與協定轉換——從 LLM 代理升級為智慧體編排入口。',
-      badge: '即將上線',
+      title: 'Agent 與 MCP 接入',
+      description: 'Agent 註冊中心、A2A 協定、MCP 工具託管與協定轉換，從代理 LLM 走向編排 Agent。',
+      badge: '即將推出',
     },
     observability: {
-      title: '全鏈路可觀測',
-      description: '請求日誌、路由決策稽核、OTel 鏈路追蹤、SIEM/CEF 事件匯出，企業合規就緒。',
+      title: '每一筆請求都留痕',
+      description: '請求日誌、路由決策稽核、OTel 鏈路追蹤、SIEM/CEF 事件匯出。出事時查得到來龍去脈。',
     },
     billing: {
-      title: 'MaaS 計費體系',
-      description: '套餐 + 積分 + 三池錢包（訂閱 / 信用 / 儲值），面向租戶自助的完整商業化閉環。',
+      title: '用量與帳單對得上',
+      description: '方案、點數、三池錢包（訂閱、信用、儲值）。租戶自己就能查用量，不用問管理員。',
     },
     multiProtocol: {
-      title: '多協定相容',
-      description: 'OpenAI Chat / Anthropic Messages / Responses 三套入向統一歸一，開源與商業模型無縫接入。',
+      title: '三套協定，一個入口',
+      description: 'OpenAI Chat、Anthropic Messages、Responses 入向統一。客戶端照舊寫，閘道不用改。',
     },
     multiTenant: {
-      title: '多租戶隔離',
-      description: 'PostgreSQL RLS 行級安全 + 43 輪稽核 L1=0，租戶間資料零洩漏，每租戶獨立策略與配額。',
+      title: '租戶之間不串',
+      description: 'PostgreSQL RLS 列層級安全，43 輪稽核 L1=0，每個租戶各自有策略與配額。',
     },
   },
-  advantagesTitle: '為什麼選擇 LLM Gateway',
-  advantagesSubtitle: '面向全球企業的企業級 AI 網關',
+  advantagesTitle: '為什麼自己部署',
+  advantagesSubtitle: '資料要留在自己家裡，帳也要自己看得懂',
   advantages: {
     openSource: {
-      title: '內核開源',
-      description: '資料面、控制面、認證鑑權、路由排程全部開源，零黑盒，企業可稽核、可客製、可演進',
+      title: '核心開源',
+      description: '資料面、控制面、認證、路由排程全部開源，Apache 2.0。改得動，也審得清。',
     },
     private: {
-      title: '私有化部署',
-      description: '完全私有部署，資料不出企業，k3s + Docker 雙形態，零外部依賴',
+      title: '私有部署',
+      description: '裝在你自己的機器上，k3s 與 Docker 兩種形式，不依賴任何外部服務。',
     },
     antiBan: {
-      title: '高可用體系',
-      description: '多憑證輪換 + 智慧探測 + 自動故障切換，保障服務連續性',
+      title: '上游封鎖也不會斷',
+      description: '多憑證輪替加上主動探測：某張憑證被封，自動換下一張繼續跑。',
     },
     perf: {
-      title: 'Go 高效能資料面',
-      description: '原生 Go 實作，40MB 輕量映像，200 並發 P99 < 500ms，SSE 串流穩定中繼',
+      title: '扛得住的 Go 資料面',
+      description: '原生 Go，映像檔 40 MB，併發 200 時 P99 仍低於 500 ms，SSE 串流轉發穩定。',
     },
   },
-  footer: 'LLM Gateway · 內核開源 · 企業級部署 · 資料主權',
-  ariaPoints: '核心亮點',
+  footer: '核心採 Apache 2.0 授權開源，部署在你自己的機器上。',
   roadmap: {
     title: '產品演進路線',
-    subtitle: '從 LLM 資料面到企業 Agent 網關，持續建構',
+    subtitle: '從 LLM 資料面走到企業 Agent 閘道',
     v31: {
       phase: 'v3.1',
       title: 'API Hub 資產中心 + MCP 工具託管',
-      description: '統一登記 LLM 端點、MCP 服務與 Agent，開發者自助發現與複用。',
+      description: 'LLM 端點、MCP 服務與 Agent 統一登記，開發者自助查找與再利用。',
     },
     v32: {
       phase: 'v3.2',
-      title: '安全防護 GA + SIEM 對接 + SpecBoost',
-      description: '提示詞注入攔截、敏感資料脫敏、API 描述智慧富集提升 Function Calling 準確率。',
+      title: '注入攔截正式版 + SIEM 串接 + SpecBoost',
+      description: '提示詞注入從只觀測升級為可攔截，敏感資料遮蔽，API 描述自動豐富化以提高 Function Calling 準確率。',
     },
     v40: {
       phase: 'v4.0',
-      title: 'Agent 註冊中心 + A2A 協定網關',
-      description: '跨智慧體任務委派與編排，OpenClaw 與業務 Agent 統一接入。',
+      title: 'Agent 註冊中心 + A2A 協定閘道',
+      description: '智慧體之間互相委派任務，OpenClaw 與自建 Agent 走同一個入口接進來。',
     },
     v50: {
       phase: 'v5.0',
-      title: '行業方案 GA',
-      description: '客服、HR、銷售、物流四大行業範本，開箱即用的智慧體方案。',
+      title: '產業方案正式版',
+      description: '客服、人資、銷售、物流四套範本，裝上就能用。',
     },
   },
-
-  brandTitle: 'AI-Native 组织核心网关',
-
-  brandSubtitle: '开轩启圭 · 私有化部署',
-
-  activateBanner: {
-    title: '网关尚未激活',
-    desc: '检测到本实例未绑定有效 License。点击右侧按钮打开激活向导，可在线激活或走离线流程。',
-    action: '立即激活',
-  },
-
-  downloadCta: {
-    title: '私有化部署 · 5 分钟上手',
-    subtitle: '多平台离线包，无需注册即可下载；安装后免费试用 15 天',
-    download: '立即下载',
-    support: '支持开源',
-    activate: '已有安装包？去激活',
-    note: '捐赠完全自愿，不影响下载与功能使用',
-  },
-
-  deployFlow: {
-    title: '下载 · 安装 · 激活 · 登录',
-    subtitle: '与 License 激活向导打通的私有化部署全流程',
-    steps: {
-      download: {
-        title: '下载离线安装包',
-        description: '按平台选择 tar.gz / 安装器，无需注册即可获取限时下载链接。',
-        action: '前往下载页',
-      },
-      install: {
-        title: '安装到目标环境',
-        description: '解压后在服务器执行安装器，完成 k3s / Docker 部署与基础配置。',
-        hint: 'llm-gw-installer install --target /opt/kx-gateway',
-      },
-      activate: {
-        title: '激活 License',
-        description: '在线输入 License Key 或走离线 activation.req → activation.resp 流程，支持 15 天试用。',
-        action: '打开激活向导',
-        offlineAction: '离线激活门户',
-      },
-      login: {
-        title: '登录控制面',
-        description: '激活完成后使用管理员账号登录，进入租户治理、路由与可观测控制台。',
-        action: '登录控制面',
-      },
-    },
-    notes: [
-      '下载与捐赠完全解耦，跳过捐赠不影响任何功能',
-      '离线环境请使用「离线激活门户」提交 activation.req',
-      '激活向导路径：/activate · 与安装器 CLI 命令互通',
-    ],
-  },
-
-  guestNavAria: '产品导航',
-
-  navDownload: '下载',
-
-  navSetup: '安装激活',
-
-  navActivate: '在线激活',
-
-  navLicense: '许可状态',
-
-  navAgreement: '用户协议',
-
-  navSupport: '技术支持',
-
-  ctaLogin: '登录控制面',
-
-  ctaDownload: '下载安装包',
-
-  ctaActivate: '激活 License',
-
-  ctaAgreement: '查看用户协议',
+  // 2026-07-21: guest-nav aria + 頂部 7 個下載/啟用連結（App.vue L197-203）。
+  guestNavAria: '產品導覽',
+  navDownload: '下載',
+  navSetup: '安裝與啟用',
+  navActivate: '線上啟用',
+  navLicense: '授權狀態',
+  navAgreement: '使用者協議',
+  navSupport: '技術支援',
+  // 2026-07-21: 落地頁主 CTA（LandingView.vue L109-119）。
+  ctaLogin: '登入控制面',
+  ctaDownload: '下載安裝包',
+  ctaActivate: '啟用 License',
+  ctaAgreement: '檢視使用者協議',
 }

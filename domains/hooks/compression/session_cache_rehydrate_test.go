@@ -4,44 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
-	"time"
 )
 
 type rehydrateRedis struct {
+	*fakeRedis
 	fields map[string]map[string]string
 }
 
 func newRehydrateRedis() *rehydrateRedis {
-	return &rehydrateRedis{fields: make(map[string]map[string]string)}
-}
-
-func (r *rehydrateRedis) HSet(_ context.Context, key string, values ...any) error {
-	fields := make(map[string]string, len(values)/2)
-	for i := 0; i+1 < len(values); i += 2 {
-		name, ok := values[i].(string)
-		if !ok {
-			continue
-		}
-		fields[name] = values[i+1].(string)
-	}
-	r.fields[key] = fields
-	return nil
-}
-
-func (r *rehydrateRedis) HGetAll(_ context.Context, key string) (map[string]string, error) {
-	src := r.fields[key]
-	out := make(map[string]string, len(src))
-	for key, value := range src {
-		out[key] = value
-	}
-	return out, nil
-}
-
-func (r *rehydrateRedis) Expire(context.Context, string, time.Duration) error { return nil }
-
-func (r *rehydrateRedis) Del(_ context.Context, key string) error {
-	delete(r.fields, key)
-	return nil
+	inner := newFakeRedis()
+	return &rehydrateRedis{fakeRedis: inner, fields: inner.store}
 }
 
 type rehydrateDB struct {
@@ -72,7 +44,7 @@ func TestSessionCache_L2MetadataHitRehydratesBodyFromL3(t *testing.T) {
 		TokenEstimate:    42,
 		SummaryMarker:    "[smm_v1:abc]",
 	}
-	requireNoError(t, cache.saveToRedis(ctx, "tenant-1", "session-1", state))
+	requireNoError(t, redis.HSet(ctx, legacyRedisKey("tenant-1", "session-1"), encodeSessionStateFields(state)...))
 
 	gotState, gotBody, err := cache.GetOrLoad(ctx, "tenant-1", "session-1")
 	requireNoError(t, err)

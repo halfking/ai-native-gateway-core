@@ -141,7 +141,7 @@ export default {
     },
   },
   edit: {
-    title: 'تحرير المزود — {name}',
+    title: 'تحرير المزود: {name}',
     catalogCode: 'كود الكتالوج',
     vendor: 'المُصنّع',
     headerProfile: 'Header Profile',
@@ -173,10 +173,9 @@ export default {
     },
   },
   credential: {
-    drawerTitle: 'إدارة بيانات الاعتماد — {name}',
+    drawerTitle: 'إدارة بيانات الاعتماد: {name}',
     refresh: 'تحديث',
     addBtn: '+ بيانات اعتماد',
-    empty: 'لا توجد بيانات اعتماد، انقر فوق «+ بيانات اعتماد» لإضافة',
     table: {
       id: 'بيانات الاعتماد',
       status: 'الحالة',
@@ -196,7 +195,7 @@ export default {
       disabled: 'معطّل',
     },
     row: {
-      idTrustLine: '#{id} · {trust}',
+      idTrustLine: '#{id}: {trust}',
       healthProbeModel: 'Probe {model}',
       apiOk: 'API أخضر',
       apiOkTitle: 'تم التحقق من قائمة النماذج API بنجاح',
@@ -209,11 +208,11 @@ export default {
       slotFull: 'ممتلئة',
       slotFree: 'متبقي {free}',
       slotUnlimited: 'غير محدود (0=غير محدود)',
-      usageSeparator: 'مرة · ',
+      usageSeparator: 'مرة: ',
       balanceLabel: 'الرصيد',
       // migration 721 (2026-09-18): balance provenance + on-demand refresh.
       balanceSourceApi: 'استقصاء عبر API',
-      balanceSourceManual: 'إدخال يدوي · لا استقصاء تلقائي لمدة 24 ساعة',
+      balanceSourceManual: 'إدخال يدوي: لا استقصاء تلقائي لمدة 24 ساعة',
       balanceRefreshTooltip: 'استدعاء API رصيد المزوّد الآن (GET بدون استهلاك توكن)',
       balanceRefreshFailed: 'فشل استقصاء الرصيد',
       balanceUnsupported: 'لا يوفر هذا المزوّد API رصيد عام (اعتمادات الخطة تظهر في حقول حصة الخطة)',
@@ -227,7 +226,7 @@ export default {
       disable: 'حذف',
     },
     addDialog: {
-      title: 'إضافة بيانات اعتماد — {name}',
+      title: 'إضافة بيانات اعتماد: {name}',
       apiKeyLabel: 'مفتاح API',
       apiKeyPlaceholder: 'sk-…',
       tagsLabel: 'العلامات (اختياري)',
@@ -248,23 +247,23 @@ export default {
       saveFailed: 'فشل حفظ بيانات الاعتماد',
       toggleFailed: 'فشلت العملية',
     },
+    empty: 'لا توجد بيانات اعتماد. اختر «+ بيانات اعتماد» لإضافة.',
   },
   check: {
     providerStarted: 'تم بدء الفحص',
     providerRunning: 'قيد الفحص بالفعل',
     providerFailed: 'فشل الفحص',
-    credentialStatusPrefix: 'الحالة: {status} · ',
+    credentialStatusPrefix: 'الحالة: {status}: ',
     credentialModels: 'واجهة النماذج طبيعية',
     credentialProbeOk: 'اجتياز الفحص',
     credentialUnreachable: 'غير متاح',
     credentialFailed: 'فشل الفحص',
-    diagnoseFailed: 'فشل التشخيص',
+    diagnoseFailed: 'تعذّر إتمام التشخيص. أعد المحاولة.',
   },
   diagnose: {
-    title: 'تشخيص المزود — التقاط الطلب/الاستجابة الفعلي',
+    title: 'تشخيص المزود: التقاط الطلب/الاستجابة الفعلي',
     subtitle: '(بيانات الاعتماد معمواة)',
     loading: 'جاري التشخيص…',
-    summary: 'إجمالي {n} من بيانات الاعتماد، انقر فوق صف لتوسيع تفاصيل الطلب/الاستجابة',
     table: {
       credential: 'بيانات الاعتماد',
       modelSource: 'مصدر النموذج',
@@ -294,6 +293,7 @@ export default {
     errHeader: '⚠️ خطأ',
     modelsHeader: '✅ النماذج التي تم تحليلها ({n})',
     modelsTruncated: '… إجمالي {n}',
+    summary: 'إجمالي {n} من بيانات الاعتماد. اختر أي صف لعرض تفاصيل الطلب/الاستجابة.',
   },
   bgStatus: {
     panelTitle: 'حالة المهام الخلفية',
@@ -326,7 +326,7 @@ export default {
     day: 'أيام مضت',
   },
   error: {
-    loadFailed: 'فشل التحميل',
+    loadFailed: 'تعذّر تحميل قائمة المزوّدين. أعد المحاولة.',
   },
   common: {
     button: {
@@ -368,15 +368,15 @@ export default {
   emergencyFailed: 'فشلت الصيانة الطارئة',
   // ── 2026-09-05: علامة تبويب الإعدادات · شرائح حالة دورة الحياة + حالة التعطيل اليدوي ──
   lifecycleTitle: 'دورة الحياة',
-  lifecycleHint: 'انقر على حالة للحفظ فورًا؛ الخروج من «نشط» يتطلب تأكيدًا',
+  lifecycleHint: 'اختر حالة ثم احفظ فورًا؛ الخروج من «نشط» يتطلب تأكيدًا',
   lifecycleLabelActive: 'نشط',
   lifecycleLabelDisabled: 'معطّل',
   lifecycleLabelSuspended: 'معلّق',
   lifecycleLabelRetired: 'متقاعد',
-  lifecycleHintActive: 'active · يشارك في التوجيه بشكل طبيعي',
-  lifecycleHintDisabled: 'disabled · معطّل يدويًا، مستثنى من التوجيه',
-  lifecycleHintSuspended: 'suspended · إيقاف مؤقت، مستثنى من التوجيه',
-  lifecycleHintRetired: 'retired · متقاعد نهائيًا، لا يمكن استعادته من هنا',
+  lifecycleHintActive: 'active: يشارك في التوجيه بشكل طبيعي',
+  lifecycleHintDisabled: 'disabled: معطّل يدويًا، مستثنى من التوجيه',
+  lifecycleHintSuspended: 'suspended: إيقاف مؤقت، مستثنى من التوجيه',
+  lifecycleHintRetired: 'retired: متقاعد نهائيًا، لا يمكن استعادته من هنا',
   lifecycleCurrent: 'الحالي',
   lifecycleChangeConfirm: 'هل تريد تغيير دورة الحياة من «نشط» إلى «{label}» ({value})؟\nلن يتلقى هذا المعرف أي حركة مرور؛ يمكنك العودة إلى «نشط» في أي وقت.',
   lifecycleChangeDone: 'تم تغيير دورة الحياة إلى «{label}».',

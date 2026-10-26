@@ -2,8 +2,10 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, markAuthHydrated, setJwtToken, setUserInfo, authBearer } from './store'
+import { Menu } from '@element-plus/icons-vue'
+import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, markAuthHydrated, setJwtToken, setUserInfo, authBearer, userInfoFromAuthMe } from './store'
 import { logout as apiLogout } from './api/auth'
+import { throttledFetch, isMaintenanceEnvelopeCode, envelopeCodeOfObject } from './api/_core'
 import { getAuthMe } from './api/admin'
 import LoginModal from './components/LoginModal.vue'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
@@ -30,7 +32,7 @@ import { useWindowClass, getWindowClass } from './composables/useWindowClass'
 import { installHyper, navigation, type NavigationScope } from './lib/shell/hyper'
 import { navDrawerOpen } from './composables/useAppNav'
 import { detectTheme, logoSrc } from './theme'
-import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from './config/brand'
+import { SITE_LOGO_SIZE, SITE_TITLE_LINE_ONE } from './config/brand'
 import { useLoginModal } from './composables/useLoginModal'
 import { onMaintainAvailabilityChange, probeMaintainAvailable } from './config/edition'
 import { loadCredentialLabels, clearCredentialLabels } from './composables/useCredentialLabels'
@@ -104,12 +106,45 @@ onMounted(async () => {
       try {
         const me = await getAuthMe()
         const meAny = me as any
+        // 2026-10-23 修正：旧判据直接读 `meAny.id` / `meAny.username`，
+        // 而 `/api/auth/me` 的**现行**响应把用户嵌在 `.user` 下
+        // （实测 245 生产：`{"access_token":…,"user":{"id":41,…}}`）⇒
+        // 恒判「形状异常」⇒ 落进下面的 `clearJwt()` ⇒ **每次冷启都被登出**
+        // （/live 等 requiresAuth 路由当场把用户弹回登录页）。
+        // 身份口径改与 setUserInfo 同源（userInfoFromAuthMe 同时认嵌套与扁平两种形态）。
+        const user = userInfoFromAuthMe(me)
+        if (!user) {
+          // 仍要把**维护信封的 code** 带走：否则本 throw 出来的裸 Error 没有 code，
+          // `isMaintenanceEnvelopeCode(undefined)` 恒 false ⇒ 维护窗口照样清状态。
+          // （这就是 2026-10-22 那次修正没关掉的那半扇门。）
+          throw Object.assign(new Error('unexpected /api/auth/me payload shape'), {
+            status: 200,
+            code: envelopeCodeOfObject(me),
+          })
+        }
         if (meAny?.access_token) {
           setJwtToken(meAny.access_token)
         }
-        setUserInfo(me)
-      } catch {
-        clearJwt()
+        setUserInfo(user)
+      } catch (e) {
+        // 2026-10-22 审计修正：旧实现对**任何**失败都 clearJwt() ⇒ 清掉
+        //   userInfo + localStorage ⇒ 维护窗口/断网/5xx 都把用户踢回登录页
+        //   （移动端同一处缺陷 web-mobile/src/stores/auth.ts 已在本轮修）。
+        //   瞬时故障（维护态信封 / 断网 / 5xx）**不清任何状态**：
+        //   HttpOnly 会话 cookie 还在，服务端恢复后下一次冷启水合即可自愈。
+        const err = e as { status?: unknown; code?: unknown }
+        const status = err?.status
+        const code = err?.code
+        // ★ 2026-10-22 R107 轮（12h 审计）：判据从内联表达式提成**导出函数**
+        //   `isMaintenanceEnvelopeCode`（./api/_core）——
+        //   原内联判据在 .vue 的 setup 体里 ⇒ **桌面端这条决策逻辑没有任何测试
+        //   覆盖**（envelope_code.test.ts 只测了 code 的**提取**）
+        //   ⇒ 改坏它测试套件仍然全绿，而症状就是「维护窗口把用户踢回登录页」。
+        //   ⇒ 口径与移动端 web-mobile/src/api/client.ts 的 isMaintenanceMode 一致。
+        const maintenance = isMaintenanceEnvelopeCode(code)
+        const transient =
+          status === 0 || (typeof status === 'number' && status >= 500 && status !== 501)
+        if (!maintenance && !transient) clearJwt()
       }
     }
   } finally {
@@ -140,7 +175,7 @@ async function loadVersion() {
   if (!isLoggedIn.value) return
   const token = authBearer()
   try {
-    const resp = await fetch('/api/system/version', {
+    const resp = await throttledFetch('/api/system/version', {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       credentials: 'same-origin',
     })
@@ -316,27 +351,27 @@ async function handleChangePasswordSuccess() {
   </div>
   <div v-else class="guest-layout">
     <header class="guest-header">
-      <a href="/" class="guest-brand" :aria-label="SITE_TITLE">
+      <a href="/" class="guest-brand" :aria-label="t('app.brand.siteTitle')">
         <img
           :src="brandLogo"
           :width="SITE_LOGO_SIZE"
           :height="SITE_LOGO_SIZE"
-          alt="开轩启圭"
+          :alt="t('app.brand.alt')"
           class="guest-brand-img"
         />
         <span class="guest-brand-text">
           <span>{{ SITE_TITLE_LINE_ONE }}</span>
-          <span>{{ SITE_TITLE_LINE_TWO }}</span>
+          <span>{{ t('app.brand.siteTitleLineTwo') }}</span>
         </span>
       </a>
       <button
         v-if="!isTablet"
         type="button"
         class="btn btn-ghost btn-sm guest-hamburger"
-        :aria-label="t('landing.guestNavAria', '产品导航')"
+        :aria-label="t('landing.guestNavAria')"
         aria-haspopup="dialog"
         @click="navDrawerOpen = true"
-      >☰</button>
+      ><Menu /></button>
       <nav v-else class="guest-nav" :aria-label="t('landing.guestNavAria') || '产品导航'">
         <a href="/customer/update-activate">{{ t('landing.navDownload') }}</a>
         <a href="/bootstrap">{{ t('landing.navSetup') || '安装激活' }}</a>

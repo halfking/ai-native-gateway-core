@@ -80,7 +80,7 @@ func expectTurnBodiesHappyPath(mock pgxmock.PgxPoolIface, req *ProcessedRequest)
 		WithArgs(req.TenantID, req.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
-		WithArgs(anyArgs(99)...).
+		WithArgs(anyArgs(101)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(anyArgs(12)...).
@@ -152,7 +152,7 @@ func TestSessionWriterMirror_WriteFailsNoMirror(t *testing.T) {
 		WithArgs(req.TenantID, req.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
-		WithArgs(anyArgs(99)...).
+		WithArgs(anyArgs(101)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(anyArgs(12)...).
@@ -203,7 +203,7 @@ func TestSessionWriterMirror_FinalFull(t *testing.T) {
 		WithArgs(req.TenantID, req.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
-		WithArgs(anyArgs(99)...).
+		WithArgs(anyArgs(101)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(anyArgs(12)...).
@@ -255,7 +255,7 @@ func TestSessionWriterMirror_CommitFailsNoMirror(t *testing.T) {
 		WithArgs(req.TenantID, req.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
-		WithArgs(anyArgs(99)...).
+		WithArgs(anyArgs(101)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(anyArgs(12)...).

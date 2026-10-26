@@ -1,6 +1,6 @@
 // requestJourneyDetail.ts — T9 request journey detail view (English)
 export default {
-  backToList: '← 返回列表',
+  backToList: '← 返回清單',
   title: 'Request Journey Detail',
   loading: 'Loading journey…',
   error: 'Failed to load journey detail',
@@ -8,8 +8,6 @@ export default {
   routingTitle: 'Routing attempts timeline',
   actionTitle: 'Action timeline (SSE)',
   traceTitle: 'Failure trace & AI prompt',
-  openTrace: 'Open failure trace',
-  closeTrace: 'Close failure trace',
   scopeAll: 'Super-admin global ingress',
   observationDegraded: 'Observation degraded',
 }

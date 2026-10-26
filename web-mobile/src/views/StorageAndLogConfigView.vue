@@ -1,13 +1,13 @@
 <script setup lang="ts">
 // StorageAndLogConfigView — 存储配置 + 日志轮转配置（2026-10-14，第一百二十四批）。
 //
-// GET /api/admin/storage/config   （admin/handler.go:1129 h.superAdmin）
-// GET /api/admin/logs/config      （admin/handler.go:1135 h.superAdmin）
+// GET /api/admin/storage/config   （admin/handler.go:1182 h.superAdmin）
+// GET /api/admin/logs/config      （admin/handler.go:1188 h.superAdmin）
 //
 // ══ 权限 ══════════════════════════════════════════════════════════════════
 // ★★★★★ `requiresRole: 'super_admin'` —— 而且**服务端是真门**（第二类）。
 //
-//   `h.superAdmin` → `SuperAdminMiddleware`（`admin/auth.go:376`）逐字：
+//   `h.superAdmin` → `SuperAdminMiddleware`（`admin/auth.go:467`）逐字：
 //     `if claims.Role != "super_admin" { 403 "super_admin role required for this endpoint" }`
 //   ⇒ ★★ 越权请求**会被服务端挡下来** ⇒ 视图内这一层兜的是**体验**
 //     （不发请求、不显示一屏 403），**不是**安全边界。
@@ -15,7 +15,7 @@
 //   ⚠️ 与批 122 / 123 两族**性质不同**：那两族服务端**根本没有**角色下限
 //   （`AdminMiddleware` 只认证），前端那一层是唯一的门；本族不是。
 //
-//   ★★ 权限必须**逐行**读：`:1129`（superAdmin）与 `:1132`（admin，
+//   ★★ 权限必须**逐行**读：`:1172`（superAdmin）与 `:1175`（admin，
 //      storage/migration-state）**相邻两行却是两种档位**
 //   ⇒ **绝不能按 `/api/admin/storage/` 前缀推权限**。
 //
@@ -36,7 +36,7 @@ import {
   type LogConfigResponse,
 } from '@/api/storageAndLogConfig'
 
-useHyperPage({ title: () => t('slc.title') })
+useHyperPage({ title: () => (allowed.value ? t('slc.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

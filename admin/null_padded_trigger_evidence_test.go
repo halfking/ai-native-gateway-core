@@ -92,8 +92,19 @@ func TestNullPaddedFamilyHitsAreVisible(t *testing.T) {
 		t.Fatalf("补位列清单为空（实测 6 列，由 db.RequestLogsViewPaddedSessionColumns() 派生）：" +
 			"判据退化成「没有命中」，下面的报告与结论全部无效")
 	}
+	// ★ 890 之后（2026-10-20）：**分类表为空是正确状态**，不是「无分类可报」。
+	//
+	// 原来这里是一条地板（分类表为空 ⇒ Fatal），因为那时停写分级表覆盖了全部
+	// v1 读方。890 之后 v1 族被物理删除 ⇒ 读方总体归零 ⇒ 分级表随之清空。
+	//
+	// ⇒ 地板翻成：**报告必须为空**（没有 v1 读方 ⇒ 没有 null-padded 族的成员），
+	// 而「抽取器还有效」这条能力由下面的**阳性对照**守住。
+	//
+	// ⚠ 没有阳性对照的话，「报告为空」与「抽取器坏了」无法区分 —— 那正是
+	// 201 号 §102 记的那类恒真陷阱。
 	if len(requestLogsStopWriteClassification) == 0 {
-		t.Fatal("分类表为空：本测试是它的附属报告，无分类可报")
+		t.Logf("★ 890 之后停写分级表为空（v1 族已物理删除）—— 这是正确状态，" +
+			"本门改守「报告为空 + 抽取器仍有效」。")
 	}
 
 	cols := make([]string, 0, len(sessionArmNullPaddedColumns))
@@ -132,10 +143,51 @@ func TestNullPaddedFamilyHitsAreVisible(t *testing.T) {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].file < rows[j].file })
 
-	// 覆盖下限：报告不得为空（实测 14）。
-	if len(rows) == 0 {
-		t.Fatalf("`%s` 族一条命中都没有：要么该族已清空（请更新本门），"+
-			"要么 nullPaddedPredicateHit / sourceFamilyOf 失效（此时下面的结论无效）", familyViewNullPadded)
+	// ★ 890 之后（2026-10-20）：报告**必须为空**（没有 v1 读方 ⇒ 没有该族成员）。
+	//
+	// 原来这里是一条「报告不得为空（实测 14）」的下限。890 之后该族没有成员。
+	// ⇒ 下限翻成：**空必须是因为抽取器还有效**，由下面的阳性对照证明。
+	if len(rows) > 0 {
+		var names []string
+		for _, r := range rows {
+			names = append(names, r.file)
+		}
+		sort.Strings(names)
+		t.Errorf("`%s` 族仍有 %d 个成员 —— 890 之后没有 v1 读方：\n  %s",
+			familyViewNullPadded, len(rows), strings.Join(names, "\n  "))
+	}
+
+	// ★ 阳性对照：两个抽取器仍然有效（合成源码）。
+	//
+	// ⚠ 没有这一条，「报告为空」与「抽取器坏了」无法区分 —— 201 号 §102 记的
+	// 恒真陷阱。合成样本刻意取一个**补位列**放在形似 SQL 的字面量里。
+	probeCol := ""
+	for c := range sessionArmNullPaddedColumns {
+		probeCol = c
+		break
+	}
+	if probeCol == "" {
+		t.Fatal("补位列清单为空 —— 无法做阳性对照")
+	}
+	synth := "package synth\n\nfunc q() string {\n\treturn `SELECT " + probeCol +
+		" FROM request_logs_with_current_month rl WHERE " + probeCol + " IS NOT NULL`\n}\n"
+	hit, via := nullPaddedPredicateHit(synth)
+	if !hit {
+		t.Errorf("阳性对照失败：nullPaddedPredicateHit 在合成源码上没命中补位列 %q —— "+
+			"抽取器坏了，本门「报告为空」是空洞的", probeCol)
+	} else if via != probeCol {
+		t.Errorf("阳性对照失败：nullPaddedPredicateHit 的 via = %q，期望 %q", via, probeCol)
+	}
+	litHits, litCount, ok := nullPaddedLiteralEvidence(synth, []string{probeCol})
+	if !ok {
+		t.Error("阳性对照失败：nullPaddedLiteralEvidence 解析合成源码失败 —— 抽取器坏了")
+	} else if litCount == 0 || len(litHits) != 1 || litHits[0] != probeCol {
+		t.Errorf("阳性对照失败：nullPaddedLiteralEvidence 在合成源码上得到 hits=%v literals=%d，"+
+			"期望恰好命中 %q", litHits, litCount, probeCol)
+	}
+	if fam := sourceFamilyOf(synth, false); fam != familyViewNullPadded {
+		t.Errorf("阳性对照失败：sourceFamilyOf 把合成源码判成 %q，期望 %q —— 族分类器坏了",
+			fam, familyViewNullPadded)
 	}
 
 	var sqlEvidence, needsReview, parseFailed []string
@@ -247,21 +299,14 @@ func TestNullPaddedFamilyHitsAreVisible(t *testing.T) {
 // 哪些命中是噪音」变成一份有名有姓的清单**：本门**不能**判 SQL-LIT 那一半
 // （跨表 `id` 分不出来），所以这一半也不能自动接受。
 var nullPaddedNonSqlOnlyJustified = map[string]string{
-	"admin/attachments_routes.go": "via=id。命中只在 :65 的注释散文「the request " +
-		"id is in the path」；本文件对 _request_logs 族的唯一读点（attachmentOwnedByTenant，" +
-		"已双腿化）只判 EXISTS/JOIN 上的 request_id 与 tenant_id，从不引用 id 列。",
-	"admin/credential_monitor_heatmap.go": "via=credits_rate_multiplier。命中只在 :306-318 " +
-		"那段**注释**里（解释 815 三列与 §9.27 的自纠过程，正文写着「真库该视图现为 118 列…」）。" +
-		"该文件按 :317 自陈「代码用的是共享谓词、始终正确——错的只是这段描述」" +
-		"⇒ 列名出现在注释里，恰恰是**描述**过期，不是代码在过滤补位列。",
-	"admin/memora_handlers.go": "via=id。命中是 :107-108 的**注释散文**（guessed ID）与 " +
-		":168/:663 的 **Go map 键**（`\"id\": fact.ID` / `\"id\": b.ID`，那是 L1 Memora 事实的 " +
-		"JSON 响应字段名，与 SQL 无关）。本文件对 _request_logs 族的读点只产出 " +
-		"COUNT(*) 与 client_model，**既不选也不按 id 过滤**。",
-	"admin/route_incidents.go": "via=id。`id` 在本文件是 **route incident 的 Go 标识符**：" +
-		":8/:118 的路由文档 `{id}`、:132 `id := parts[0]`、以及各 handler 的 `id string` 形参；" +
-		"其 SQL 用的是 `incident_id` 与 `inc.ID`（:647/:782/:799/:548），" +
-		"对 _request_logs 族的读点不引用 id 列。",
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空**。
+	//
+	// 五条登记的对象都是「被分类器分进 reads_view_with_null_padded_predicate 族的
+	// 文件」——而 890 之后 **没有任何生产文件再读 v1** ⇒ 那个族**没有成员**
+	// ⇒ 「已证假阳性」的清单随之清空。
+	//
+	// ⚠ 本表**保留**（不删）：它守的是「凡被本族收下的命中，若其 via 列在任何
+	// 形似 SQL 的字面量里都不出现，就必须逐条具名」这条规矩。
 }
 
 func fmtCounts(label string, n int) string {

@@ -3,8 +3,8 @@ import { req, type RequestOptions } from './client'
 /**
  * connectionRegistry.ts — 流式连接注册台两条**只读**端点（2026-10-07，第七十二批）。
  *
- * GET /api/admin/connection-registry           → admin/handler.go:1024
- * GET /api/admin/connection-registry/{id}      → admin/handler.go:1025
+ * GET /api/admin/connection-registry           → admin/handler.go:1083
+ * GET /api/admin/connection-registry/{id}      → admin/handler.go:1084
  *
  * 注册在 `admin(connection_registry.go:47 / :65)` ⇒ **admin 档**，tenant_admin 可用
  * ⇒ 抽屉席**不设** `requiresRole`。

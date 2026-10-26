@@ -6,21 +6,42 @@ package admin
 //
 // 退役 `_request_logs` 的第一前提是**停写**。停写开关是
 // `settings.storage.request_logs_write_enabled`
-// （`settings/key_request_logs_write_enabled.go`，`Default: true`、HotReload）。
+// （`settings/key_request_logs_write_enabled.go`，HotReload）。
 //
 // 而停写的**前置条件**是「所有读点都已逐点评估」——由
 // `requestLogsStopWriteClassification` 这张登记表与
 // `TestRequestLogsStopWriteClassificationProgress` 维护。
 //
-// ★ **现状（实测，2026-10-05）**：
-//	- 该键在 `settings_kv` 里**没有行** ⇒ 取默认 **true** ⇒ **仍在双写**；
-//	- 真库 `_request_logs_hot` 的 `max(ts)` 距测量时刻 **86 秒** ⇒ 确实在写；
-//	- 逐点评估进度 **106/107**，未评估 **1** 个 ⇒ 门自己的日志写着
-//	  「缺口仍在，**S4 灰度前置条件未达成**」。
+// # ★★ 2026-10-20 订正：本文件此前描述的是**旧默认值**，已与代码相反
 //
-// ⇒ **「退役已就绪」目前是不成立的**，而这一点此前散落在三个地方
-// （开关默认值、写方代码、分类门日志），没有任何一处把它**合起来说**。
+// 本文件最初写于 2026-10-05，那时停写开关的**代码默认是 `true`**
+// （`spec_storage.go` 的 `Default: true` + 访问器 `GetPlatformBool(..., true)`
+// 回退）。**G-0 已把代码默认翻成 `false`**（`settings/spec_storage.go:136`
+// `Default: false` + `settings/key_request_logs_write_enabled.go:43-45`
+// 访问器在 `Global == nil` 时回退 **false**），
+// 而本文件的抬头「现状」段与下面的**阳性对照断言**仍按旧默认写。
 //
+// ⇒ 后果是实测出来的：**带 `TEST_DATABASE_URL` 跑这道门会红**（2026-10-20 实测，
+// 红在阳性对照：「库里没有该行时应当取默认 true……实测 false」），
+// 而**常规 CI 形态下这道门是 Skip 的**（`TEST_DATABASE_URL` 未设 ⇒ 跳过）
+// ⇒ 没人看见它红。
+//
+// ★ **教训（已写进 LESSONS）**：**被 Skip 的门里的断言也会腐烂** ——
+// 「常规 CI 绿」不等于「门里的陈述是真的」。凡是需要 DSN 的门，
+// 它的断言必须与代码默认值**同步**复核，且要有**可重跑的脚本**真跑它
+// （`scripts/audit/verify-stop-write-interlock-realdb.sh`）。
+//
+// # 现状（实测，2026-10-20 复核）
+//
+//	- **代码默认 = false**（G-0）：未显式配置 ⇒ **不双写**；
+//	- **生产已显式写 false**：两个库组各一行（`settings_kv`）：
+//	  {154, 245, 252} 共用的那个库 updated 2026-10-13 20:18:27；
+//	  211 的独立库 updated 2026-10-13 07:01:08；
+//	- 逐点评估进度 **107/107**，未评估 **0** 个 ⇒ 本门当前**绿**。
+//
+// ⇒ 「退役已就绪」与「开关已关」现在**同时**成立；本门继续守着的是
+// 「**别在未达成时把它翻回来**」这个转换。
+
 // # 为什么是「互锁」而不是「状态灯」
 //
 // 一条「还没就绪所以报红」的门会**长期红**，而长期红的门等于没有门。
@@ -222,7 +243,7 @@ func TestStopWriteInterlock_UnclassifiedReadersKeepTheFlagOn(t *testing.T) {
 	// ---- 阳性对照：接线真的能读出库里的值吗 ----
 	// 没有这一步，下面那句「读到 true」可能是 fallback 而不是真值，
 	// 整道互锁就成了**恒真**的门。
-	t.Run("阳性对照：种 false 进去必须读到 false，删掉必须读回 true", func(t *testing.T) {
+	t.Run("阳性对照：种 false 进去必须读到 false，删掉必须读回 false（缺行 ⇒ 默认 false）", func(t *testing.T) {
 		if _, err := pool.Exec(ctx,
 			"INSERT INTO public.settings_kv (key, value) VALUES ($1, 'false'::jsonb)", key); err != nil {
 			t.Fatalf("seed false: %v", err)
@@ -235,8 +256,14 @@ func TestStopWriteInterlock_UnclassifiedReadersKeepTheFlagOn(t *testing.T) {
 		if _, err := pool.Exec(ctx, "DELETE FROM public.settings_kv WHERE key = $1", key); err != nil {
 			t.Fatalf("unset: %v", err)
 		}
-		if !settings.RequestLogsWriteEnabled() {
-			t.Fatal("库里没有该行时应当取默认 true（Default: true = 维持双写），实测 false —— " +
+		// ★ 2026-10-20 订正：这一条原先断言「删掉必须读回 **true**」
+		// （那时的代码默认是 true）。G-0 把默认翻成 false 之后，正确的
+		// 预期是「删掉必须读回 **false**」——**缺行 ⇒ 不双写**。
+		// 保留这条断言的理由不变：它证明「读到 false」是**真读到了库里的
+		// false**，而不是「接线没挂上、恰好回退了默认值」——因为没有行时
+		// 读到的也是 false，只有**种进去**的那一次才区分得了这两种情况。
+		if settings.RequestLogsWriteEnabled() {
+			t.Fatal("库里没有该行时应当取默认 false（Default: false = 不双写），实测 true —— " +
 				"默认语义与 spec 漂移了")
 		}
 	})
@@ -277,7 +304,7 @@ func TestStopWriteInterlock_UnclassifiedReadersKeepTheFlagOn(t *testing.T) {
 		// ★ 这一条必须**独立接到 TEST_DATABASE_URL 本身**。
 		// 第一版直接复用了上面那次 wireSettingsTo(t, pool)，
 		// 而那个 pool 指的是**一次性库** ⇒ 这条「真实不变量」读的是
-		// 一次性库（里面当然没有设置行，于是读到默认 true）——
+		// 一次性库（里面当然没有设置行，于是读到**代码默认**）——
 		// **量具读的不是被检验对象**，而且它会永远绿。
 		// 判据红了先怀疑判据；这里是我自己的判据指错了对象。
 		real, err := pgxpool.New(ctx, dsn)
@@ -295,14 +322,16 @@ func TestStopWriteInterlock_UnclassifiedReadersKeepTheFlagOn(t *testing.T) {
 
 		todo := unclassifiedStopWriteReaders(t)
 		t.Logf("未评估读方 %d 个：%v", len(todo), todo)
-		enabled := settings.RequestLogsWriteEnabled() // 真实 store，缺行 ⇒ 默认 true
-		t.Logf("真实开关 storage.request_logs_write_enabled = %v（缺行时取默认 true = 维持双写）", enabled)
+		enabled := settings.RequestLogsWriteEnabled() // 真实 store；缺行 ⇒ 代码默认 false
+		t.Logf("真实开关 storage.request_logs_write_enabled = %v（缺行时取代码默认 false = 不双写）", enabled)
 		if msg := stopWriteInterlockViolation(todo, enabled); msg != "" {
 			t.Error(msg)
 		}
 		// 自证：这条读的是**真实库**而不是一次性库——两个库不同源，
 		// 若解析其实还落在一次性库上，这里种一行 false 应当读不出变化。
-		// 因此反向验证：真实库里若本来就没有该行，读到的必须是默认 true。
+		// 因此反向验证：真实库里若本来就没有该行，读到的必须是代码默认
+		// （false）。★ 注意：生产上该行**是有的**（2026-10-13 显式写 false），
+		// 所以这一行的意义是「量具没指错对象」，不是「生产缺行」。
 		var rows int
 		if err := real.QueryRow(ctx,
 			"SELECT count(*) FROM public.settings_kv WHERE key = $1",
@@ -310,8 +339,21 @@ func TestStopWriteInterlock_UnclassifiedReadersKeepTheFlagOn(t *testing.T) {
 			t.Logf("（无法读真实 settings_kv：%v —— 本条只报状态，不报违规）", err)
 		} else {
 			t.Logf("真实库 settings_kv 里该键的行数 = %d", rows)
-			if rows == 0 && !enabled {
-				t.Error("真实库里没有该行，却读到 false —— 默认语义不符（应回落到 true）")
+			// ★ 2026-10-21 订正（R88 轮 · 形态量具线）：这条断言原先写的是
+			//   「没有该行却读到 false ⇒ 违规（应回落到 true）」——那是 **G-0 之前**的契约。
+			//   2026-10-20 的 c2fae70ea「request_logs 停写门的代码默认由 true 改为 false」
+			//   之后，正确预期是「没有该行 ⇒ 读到**代码默认 false**」。
+			//   ⇒ 同一文件里**上面那条**子断言（:259-268「删掉必须读回 false」）
+			//     在 2026-10-20 的 a2ac50e37 里已经按新契约改过，**唯独漏了本条**
+			//     ⇒ ⇒ 这就是「同一作者、同一轮、同族漏项」的第 N 例。
+			//   ⇒ ★ 而本条的**自相矛盾**就在它自己的注释里：上面三行写着
+			//     「真实库里若本来就没有该行，读到的必须是代码默认（false）」
+			//     ⇒ 断言却要求它读到 true ⇒ ⇒ 断言与自己的注释对着干。
+			//   ⇒ 订正后判据仍然**有牙**：代码默认若被翻回 true（spec 的 Default 变了），
+			//     「缺行 ⇒ 读到 true」⇒ 本条立即转红（变异 M1 实测）。
+			if rows == 0 && enabled {
+				t.Error("真实库里没有该行，却读到 true —— 与 spec 不符" +
+					"（Default: false = 不双写；c2fae70ea 起代码默认是 false）")
 			}
 		}
 	})

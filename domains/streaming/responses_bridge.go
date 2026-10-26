@@ -663,6 +663,11 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			return
 		}
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			// Capture before Responses wire-index renumber (r1028b) — same
+			// reason as the OpenAI→Responses leg below.
+			if capture != nil {
+				capture.ObserveChunk(chunk)
+			}
 			// Anthropic content_block index → Responses output_index BEFORE any
 			// index-keyed scaffold state (see renumberToolOutputIndexes).
 			scaffold.renumberToolOutputIndexes(chunk)
@@ -699,7 +704,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			pc.append(sseLine)
 		}
 		if capture != nil {
-			capture.ObserveChunk(chunk)
+			if chunk.Type != ir.ChunkTypeDelta || chunk.Delta == nil {
+				capture.ObserveChunk(chunk)
+			}
 			if written {
 				capture.RecordChunkSent()
 			}
@@ -718,7 +725,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 				emittedContent = true
 			}
 			for _, tc := range chunk.Delta.ToolCalls {
-				if tc.Arguments != "" || tc.Name != "" {
+				if tc.Name != "" {
 					emittedContent = true
 					break
 				}
@@ -735,6 +742,13 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			}
 			for _, tc := range chunk.Delta.ToolCalls {
 				state := scaffold.toolStates[tc.Index]
+				// After toolHold.adjust: phantoms / pre-name fragments must
+				// not open toolStates. Args-only deltas AFTER a named state
+				// exists still append (arg-first hold releases name, then
+				// more argument chunks arrive without repeating Name).
+				if tc.Name == "" && (state == nil || state.Name == "") {
+					continue
+				}
 				if state == nil {
 					state = &responsesToolTerminalState{}
 					scaffold.toolStates[tc.Index] = state
@@ -1136,6 +1150,13 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 			return
 		}
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			// Capture chat-shaped tool_calls BEFORE Responses wire-index
+			// renumbering. Renumber maps tools to output_index 1..N (message
+			// occupies 0); observing after renumber pads a nil slot that
+			// session_bodies persisted as an empty MiniMax-looking phantom.
+			if capture != nil {
+				capture.ObserveChunk(chunk)
+			}
 			// OpenAI tool_calls[].index → Responses output_index BEFORE any
 			// index-keyed scaffold state (see renumberToolOutputIndexes).
 			scaffold.renumberToolOutputIndexes(chunk)
@@ -1172,7 +1193,9 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 			pc.append(sseLine)
 		}
 		if capture != nil {
-			capture.ObserveChunk(chunk)
+			if chunk.Type != ir.ChunkTypeDelta || chunk.Delta == nil {
+				capture.ObserveChunk(chunk)
+			}
 			if written {
 				capture.RecordChunkSent()
 			}
@@ -1189,6 +1212,12 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 			}
 			for _, tc := range chunk.Delta.ToolCalls {
 				state := scaffold.toolStates[tc.Index]
+				// After toolHold.adjust: phantoms / pre-name fragments must
+				// not open toolStates. Args-only deltas AFTER a named state
+				// exists still append (r1028b).
+				if tc.Name == "" && (state == nil || state.Name == "") {
+					continue
+				}
 				if state == nil {
 					state = &responsesToolTerminalState{}
 					scaffold.toolStates[tc.Index] = state
@@ -1207,16 +1236,23 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		}
 	}
 
-	// audit R21 (2026-09-13): Q2 empty-stream parity — the last of the six
-	// bridges without an empty gate. A clean OpenAI upstream end with zero
-	// semantic output (role/usage-only choices + [DONE]) previously rendered
-	// a legal-but-empty response.completed and returned success, so the
-	// executor never failed over. Classify on accumulated semantic state
-	// (text / reasoning / tool calls), not on chunkCount — scaffolding and
-	// empty deltas must not mask an empty response. Interrupted paths and
-	// the holdback window are untouched (transparent failover semantics).
+	// audit R21 (2026-09-13) + Magpie emptyReply parity (2026-10-16):
+	// agent-visible semantic output matches Magpie saidAnything / ZCode
+	// empty_model_response — non-empty assistant text OR a named tool call.
+	// Reasoning-only and nameless/phantom toolStates must NOT mask empty:
+	// otherwise the bridge writes response.completed (or incomplete) and the
+	// executor never retries / switches candidates the way Magpie does on
+	// "an empty reply (the model answered nothing; try again)".
 	responsesHasSemanticOutput := func() bool {
-		return fullText.Len() > 0 || scaffold.reasoningText.Len() > 0 || len(scaffold.toolStates) > 0
+		if fullText.Len() > 0 {
+			return true
+		}
+		for _, state := range scaffold.toolStates {
+			if state != nil && state.Name != "" {
+				return true
+			}
+		}
+		return false
 	}
 	returnEmptyOutcome := func() StreamOutcome {
 		if capture != nil {
@@ -1260,6 +1296,13 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 					// fail the turn as eof_without_done (a tool_calls round
 					// that already carried its full arguments must reach the
 					// client's tool executor).
+					//
+					// Magpie emptyReply: finish_reason with zero agent-visible
+					// output is empty (retry / next candidate), not a cut
+					// stream — mirrors [DONE] empty gate below.
+					if finishReason != "" && !responsesHasSemanticOutput() {
+						return returnEmptyOutcome()
+					}
 					if finishReason != "" && responsesHasSemanticOutput() {
 						slog.Info("openai_to_responses: upstream EOF without [DONE] after finish_reason — benign non-compliant close (§11.6 parity)",
 							"request_id", requestID,
@@ -1367,7 +1410,14 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 			return StreamOutcome{ChunkCount: chunkCount}
 		}
 
-		rawFrame := []byte(line)
+		// r1028b: MiniMax prepends empty tool_calls slots before real
+		// tools. Magpie/ZCode hit this bridge (/v1/responses), not chat
+		// SSE — strip before parse so IR / capture / SerializeResponses
+		// never see nameless phantoms.
+		trimmed = stripPhantomToolCallsFromSSELine(trimmed)
+		payload = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(trimmed), "data:"))
+
+		rawFrame := []byte(trimmed)
 		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), rawFrame)
 		diagnosticCollector.observeRaw([]byte(payload))
 

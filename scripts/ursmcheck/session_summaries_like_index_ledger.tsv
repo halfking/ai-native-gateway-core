@@ -1,0 +1,55 @@
+# session_summaries 的 LIKE/ILIKE 查询列 · 索引覆盖待办台账
+#
+# ★ 为什么有这张台账（2026-10-27 R154 轮，生产实证）：
+#   `admin/session_catalog_usage.go` 的 `catalogSearchSQL` 用
+#   `likeContains(q)`（★ 生成 `%q%`，★ **中缀匹配**）对 session_summaries
+#   的 **三列**做 OR 的 ILIKE。★ 生产 252 实测（868,711 行）：
+#     · EXPLAIN（不带 ANALYZE）⇒ **Parallel Seq Scan on session_summaries**
+#     · EXPLAIN ANALYZE ⇒ **Execution Time = 40,415.968 ms（40.4 秒）**
+#     · Planning Time = 16.679 ms（★ 不是规划问题，★ 是执行问题）
+#     · Rows Removed by Filter = 289,543 × 3 workers ⇒ ★ 扫了约 260 万行
+#     · Buffers: shared hit=34,435 read=17,177
+#   ⇒ ★★ 而 `mergeCatalogSearch` 的 ctx 超时是 **2 秒**
+#     （`admin/session_catalog_usage.go`：`context.WithTimeout(ctx, 2*time.Second)`）
+#     ⇒ ⇒ ★★★ **它每次都超时** ⇒ ⇒ **静默降级成「没搜到」**
+#     （★ `slog.Warn("catalog search failed")` ⇒ 用户看不到「超时」，★ 只看到「空结果」）
+#
+# ★ 为什么「加一列 OR 就把索引优化掉」：
+#   · `session_summaries` 上 session_key 只有**等值**索引（pkey / (tenant_id, session_key)）
+#     ⇒ ★ **没有任何 trigram 索引** ⇒ `%q%` 用不上
+#   · `title` / `primary_model` **一个索引都没有**（★ 生产 pg_indexes 实测 = 0）
+#   ⇒ ★★ 三列 OR ⇒ ★★ 规划器必须能把**每一列**变成可索引条件 ⇒ ★★ **放弃全部索引 ⇒ Seq Scan**
+#   ⇒ ★★ 对照实测（同一张表、同一条件）：
+#       只有 session_key 一列 ILIKE ⇒ Parallel Index Only Scan using session_summaries_pkey
+#       三列 OR                ⇒ **Parallel Seq Scan**
+#
+# ★ 本台账的语义（R156 轮订正，★ 原措辞与门自相矛盾）：
+#   **「源码里对 session_summaries 做 LIKE/ILIKE 的每一个列，它当前的索引状态是什么」**。
+# ★ verdict 取值：
+#     needs-index   ★ **仓内尚无** trigram（GIN gin_trgm_ops）索引 ⇒ ★ 该列不可索引
+#     indexed       ★ **仓内已交付** trigram 索引（★ 由迁移 909 建出）⇒ ★ 该列可索引
+#     accepted-risk ★ 属主明确接受该形态的代价（★ 需在 reason 里写清为什么）
+#
+# ★★★ **verdict 是【可机器验证】的**（★ R156 轮新增 ⇒ ★ 台账不许撒谎）：
+#   门断言 ★ `verdict == indexed` ⟺ **该列在迁移 909 的索引清单里**
+#         ★ `verdict == needs-index` ⟺ **该列不在迁移 909 的索引清单里**
+#   ⇒ ⇒ 说 indexed 而迁移没建 ⇒ **红**；★ 迁移建了而台账说 needs-index ⇒ **红**。
+#
+# ★★★ **「台账只许缩小」的正确形式**（★ R156 轮订正 R154 轮那句措辞）：
+#   ★ 台账**必须**为源码里的**每一个** LIKE 列留一行
+#     （★ 门有「集合相等」判据 ⇒ ★ 删行 ⇒ 门红 ⇒ ★★ 那时唯一的出路就是**撒谎**
+#       ⇒ ★★ **撒谎的台账比没有台账更坏** ⇒ ★ 所以「删掉已修的行」这条规则被撤销）；
+#   ⇒ ★★ **真正的「只许缩小」= 待办集（needs-index 行数）只许减少**：
+#     ★ 迁移 909 一落地 ⇒ ★ 三行全部 needs-index → indexed ⇒ ★ **待办集归零**；
+#   ⇒ ★★ R154 轮写的「加了索引的列从台账里删掉」与「集合相等」判据**自相矛盾**
+#     ⇒ ★ R156 轮订正为上面的形式。
+#
+# ★ 诚实边界：★ `indexed` 指的是**仓内已交付**（迁移 909 在册），
+#   ★ **不等于生产已应用** ⇒ ★ 生产状态看每行的 evidence 列。
+#
+# ★ 主键 = (file, fingerprint, occ)；fingerprint = sha256(file|列名)[:12] ⇒ 唯一且抗行号漂移。
+# ★ 人工裁决（verdict/reason/evidence）是 SSOT。
+file	line	occ	scope	kind	usage	volume	writer	verdict	reason	evidence	owner	fingerprint
+admin/session_catalog_usage.go	97	1	<top>	ilike-substring	catalog-search	session_summaries	session_key	indexed	★ 已被迁移 909 覆盖：★ `idx_session_summaries_session_key_trgm`（★ GIN gin_trgm_ops，★ 裸列表达式）⇒ ★ 该列的 `%q%` 中缀匹配**可索引** ⇒ ★ 三列 OR 具备走 BitmapOr 的条件。★ 原缺陷：★ session_key 只有**等值**索引（pkey / unique(tenant_id, session_key)）⇒ ★ `%q%` 用不上 ⇒ ★ 且它是三列 OR 的其中一支 ⇒ ★ 规划器因此放弃全部索引。★ 写放大≈0：★ session_key 是主键、★ **从不随请求变化** ⇒ ★ 请求路径的 UPDATE 不触碰被索引列 ⇒ ★ PG 不重写索引项	★ 缺陷读数（252 生产，R154 轮只读）：EXPLAIN ⇒ Parallel Seq Scan；EXPLAIN ANALYZE ⇒ Execution Time 40415.968 ms；★ 对照「只查这一列」⇒ Index Only Scan using session_summaries_pkey。★ **修复读数**：仓内迁移 `909_session_summaries_search_trgm_indexes.sql`（★ sha256 `77d829d0289cb3e0b16dfa93b16c70addcbf84d265f58b3e4996680ac4cb8e6b`）★ 已 7 点登记 ⇒ ★ **生产 252 / 211 尚未应用**（★ pending ⇒ ★ 需属主授权后随部署生效 ⇒ ★ **本行不声称生产已修**）	owner/	aa9ba1183908
+admin/session_catalog_usage.go	98	1	<top>	ilike-substring	catalog-search	session_summaries	title	indexed	★ 已被迁移 909 覆盖：★ `idx_session_summaries_title_trgm`（★ GIN gin_trgm_ops，★ 裸列表达式）⇒ ★ 该列的 `%q%` 中缀匹配**可索引**。★ 原缺陷：★ title **零索引**（★ 252 生产 pg_indexes 实测 = 0）⇒ ★ OR 的第二支 ⇒ ★ 规划器无法把它变成索引条件 ⇒ ★ 三列 OR 退化为 Seq Scan。★ ★★ **Go 侧必须同步去掉 COALESCE**（★ PG 的表达式索引匹配是**逐字**的 ⇒ ★ `COALESCE(title,'') ILIKE` 用不上裸列索引）⇒ ★ 口径等价**可证**（★ 模式串永不为空 ⇒ ★ `'' ILIKE 模式串` 恒假 ⇒ ★ NULL 行两边同样不通过 ⇒ ★ 行集不变）	★ 缺陷读数（252 生产，R154 轮只读）：pg_indexes ⇒ title 索引数 = 0；★ EXPLAIN ⇒ Filter 含 (COALESCE(title,'') ~~* '%probe%')。★ **修复读数**：仓内迁移 `909_session_summaries_search_trgm_indexes.sql`（★ sha256 `77d829d0289cb3e0b16dfa93b16c70addcbf84d265f58b3e4996680ac4cb8e6b`）★ 已 7 点登记 ⇒ ★ **生产 252 / 211 尚未应用**（★ pending ⇒ ★ 本行不声称生产已修）	owner/	d0686f440977
+admin/session_catalog_usage.go	99	1	<top>	ilike-substring	catalog-search	session_summaries	primary_model	indexed	★ 已被迁移 909 覆盖：★ `idx_session_summaries_primary_model_trgm`（★ GIN gin_trgm_ops，★ 裸列表达式）⇒ ★ 该列的 `%q%` 中缀匹配**可索引**。★ 原缺陷：★ primary_model **零索引**（★ 252 生产 pg_indexes 实测 = 0）⇒ ★ OR 的第三支 ⇒ ★ 同上 ⇒ ★ 三列 OR 退化为 Seq Scan。★ ★★ **Go 侧必须同步去掉 COALESCE**（★ 同上：★ 表达式索引匹配是逐字的）⇒ ★ 口径等价**可证**（★ 同上）	★ 缺陷读数（252 生产，R154 轮只读）：pg_indexes ⇒ primary_model 索引数 = 0；★ EXPLAIN ⇒ Filter 含 (COALESCE(primary_model,'') ~~* '%probe%')。★ **修复读数**：仓内迁移 `909_session_summaries_search_trgm_indexes.sql`（★ sha256 `77d829d0289cb3e0b16dfa93b16c70addcbf84d265f58b3e4996680ac4cb8e6b`）★ 已 7 点登记 ⇒ ★ **生产 252 / 211 尚未应用**（★ pending ⇒ ★ 本行不声称生产已修）	owner/	a4f6060b7c90

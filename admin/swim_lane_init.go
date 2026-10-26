@@ -47,7 +47,16 @@ type SwimLaneStats struct {
 // HandleSwimLaneInit 处理泳道初始化请求
 // GET /api/admin/dashboard/swim-lane-init?hours=1
 func (h *Handler) HandleSwimLaneInit(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "db not available")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
 
 	// 解析参数
 	hoursStr := r.URL.Query().Get("hours")
@@ -59,7 +68,11 @@ func (h *Handler) HandleSwimLaneInit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 查询数据
-	requests, stats, err := h.fetchSwimLaneData(ctx, hours)
+	tenantID := GetTenantID(r)
+	if IsSuperAdminOrLegacy(r) {
+		tenantID = ""
+	}
+	requests, stats, err := h.fetchSwimLaneDataForTenant(ctx, hours, tenantID)
 	if err != nil {
 		writeInternalTextErr(w, "Failed to fetch swim lane data", err)
 		return
@@ -77,6 +90,10 @@ func (h *Handler) HandleSwimLaneInit(w http.ResponseWriter, r *http.Request) {
 
 // fetchSwimLaneData 从数据库查询泳道初始化数据
 func (h *Handler) fetchSwimLaneData(ctx context.Context, hours int) ([]SwimLaneRequest, SwimLaneStats, error) {
+	return h.fetchSwimLaneDataForTenant(ctx, hours, "")
+}
+
+func (h *Handler) fetchSwimLaneDataForTenant(ctx context.Context, hours int, tenantID string) ([]SwimLaneRequest, SwimLaneStats, error) {
 	// 查询最近N小时的请求数据
 	since := time.Now().Add(-time.Duration(hours) * time.Hour)
 
@@ -110,11 +127,15 @@ func (h *Handler) fetchSwimLaneData(ctx context.Context, hours int) ([]SwimLaneR
 		LEFT JOIN credentials      c  ON c.id  = rl.credential_id
 		LEFT JOIN providers        p  ON p.id  = c.provider_id
 		WHERE rl.ts >= $1
-		ORDER BY rl.ts DESC
-		LIMIT 500
 	`
+	args := []any{since}
+	if tenantID != "" {
+		query += " AND rl.tenant_id = $2"
+		args = append(args, tenantID)
+	}
+	query += " ORDER BY rl.ts DESC LIMIT 500"
 
-	rows, err := h.db.Query(ctx, query, since)
+	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, SwimLaneStats{}, err
 	}
@@ -146,7 +167,7 @@ func (h *Handler) fetchSwimLaneData(ctx context.Context, hours int) ([]SwimLaneR
 			&req.CompletionTokens,
 		)
 		if err != nil {
-			continue
+			return nil, SwimLaneStats{}, err
 		}
 
 		req.Timestamp = requestAt.Format(time.RFC3339)

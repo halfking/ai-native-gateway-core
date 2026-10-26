@@ -124,6 +124,23 @@ func (r *Registry) NavEntries(opts ViewerOpts) []NavEntry {
 	return out
 }
 
+// Snapshot 返回全部插件状态的只读拷贝（含非 ready 的）。
+// NavEntries 会按角色过滤并隐藏非 ready 插件 —— 那对菜单是对的，但对
+// 「网关里现在装了哪些插件」这类运维视图是丢信息：failed/degraded 恰恰
+// 是最需要被看到的状态。拷贝避免调用方拿到内部指针后绕过锁改状态。
+func (r *Registry) Snapshot() []PluginState {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]PluginState, 0, len(r.plugins))
+	for _, st := range r.plugins {
+		out = append(out, *st)
+	}
+	return out
+}
+
 func visible(n *Nav, opts ViewerOpts) bool {
 	if n.Super && !opts.IsSuper {
 		return false

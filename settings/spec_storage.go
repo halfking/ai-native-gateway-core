@@ -107,21 +107,35 @@ func StorageSpecs() []*Spec {
 			Category:        CategoryStorage,
 			Default:         false,
 			Description:     "会话最后完整快照（final_full）+ 停写 outbound_body",
-			DescriptionLong: "开启后 SessionWriterV2 每轮把完整 outbound upsert 进 session_bodies(kind='final_full', turn_no=0) 一行，并停止逐轮写 outbound_body（差集读端优先读 final_full、未命中回退旧行）。关闭时完全回到旧行为。**生产实测（2026-10-02）：真实流量 98~99.9% 为单轮会话，存储收益近似为零——payload 不变、每会话反增 1 行 + 索引项 + 1 次冷启动探测；且中间轮 outbound_body 会永久丢失，构成审计/取证回退。故保持默认关闭**，仅在流量转向多轮形态时按 storage-optimization-plan §4-12 重新评估。",
+			DescriptionLong: "开启后 SessionWriterV2 每轮把完整 outbound upsert 进 session_bodies(kind='final_full', turn_no=0) 一行，并停止逐轮写 outbound_body（差集读端优先读 final_full、未命中回退旧行）。关闭时完全回到旧行为。**2026-10-21 复测（§143.56）：收益要分三层口径看——①「毛额」= 现有逐轮 outbound 总体积（252 共享库 1,814 MB / 211 394 MB），门开了这些行一条都不会消失（门只影响新增写入）；②「毛节省」= 被收敛的副本数×平均正文体积（252 407 MB / 211 28 MB）；③「净收益」= ②−每会话新增 1 行 final_full 的成本（实测 589 B/行 ⇒ 252 ≈ +369 MB、211 ≈ +9 MB）。2026-10-02 那条「98~99.9% 为单轮会话、收益近似为零」的结论已不成立：单轮会话确实占 99.6%，但那 0.4% 的多轮会话贡献了绝大多数被收敛的副本。取舍：中间轮 outbound_body 永久丢失（252 实测受影响会话 300 个 = 0.12%；最后一轮的完整 outbound 不丢，保留在 final_full 行里）。**门是库级设置** ⇒ 在共享库上打开会同时切该库的所有网关实例。**未显式配置时保持关闭**。",
 			DangerLevel:     Dangerous,
 			HotReload:       true,
 		},
 		{
 			// 存储优化方案 v2 S2（migration 710 轮）：_request_logs 停写 gate。
-			// S2 仅登记（默认 true = 继续双写）；S4 落 telemetry client 分支化
-			// 后由本开关一键停写/回切（plan §4 S2/S4 行、§7）。
+			//
+			// 2026-10-20（D0）：Default 由 true 改为 false。理由是审计记录的
+			// 事实：「上一轮真库 0 行」只是**生产配置事实**（某台机器在
+			// settings_kv 里显式写了 false），**不是代码事实**——本行的
+			// Default: true 与访问器的 GetPlatformBool(..., true) 回退
+			// 意味着任何**未显式配置**的环境（新装、克隆、灾备、lite 形态）
+			// 仍然继续双写 _request_logs 宽族。
+			//
+			// 改成 false 之后，「未显式配置 ⇒ 不双写」成为**代码事实**。
+			// 代价（必须写在这里，不能只写进 commit message）：
+			//  · 关闭侧（v1=false）要求 session 六表族是唯一事实源，因此
+			//    启动期安全检查（cmd/gateway/session_write_safety.go）要求
+			//    「sessions_v2.enabled && sessions_v2.shadow_write」或
+			//    「本键显式为 true」二者之一，否则以 ErrNoRequestWriteSource
+			//    **拒绝启动**（这是有意的 fail-loud，不是静默丢数据）。
+			//  · 重新打开（回切）方式见 DescriptionLong。
 			Key:             "storage.request_logs_write_enabled",
 			Type:            TypeBool,
 			Scope:           ScopePlatform,
 			Category:        CategoryStorage,
-			Default:         true,
-			Description:     "_request_logs 主账本写入（S4 停写 gate）",
-			DescriptionLong: "存储优化方案 v2：开启时 telemetry/admin ingest 维持 _request_logs(_hot) 与 bodies 双写（现状）；S4 落地写分支后关闭即停写，session 六表族成为唯一事实源。关闭前提：dual_read_validator 对账 7 天零漂移（plan §4 S2 退出条件）。回切即重新开启，热表结构不动、无数据丢失窗口。",
+			Default:         false,
+			Description:     "v1 主账本写入（S4 停写 gate）",
+			DescriptionLong: "存储优化方案 v2 的写面闸。**代码默认自 2026-10-20 起为 false**——未显式配置的环境不双写。★ 2026-10-24：v1 `_request_logs` 族已随迁移 890 **物理删除** ⇒ 本键打开时也**没有落库对象**（写面已被 890 关闭，不是本键关的）；会话族（sessions/session_turns/session_bodies/…）是唯一事实源。键保留只为兼容既有配置与历史审计记录；关闭侧前提：PG 可用且 sessions_v2.enabled + sessions_v2.shadow_write 打开，否则启动期安全检查会以 ErrNoRequestWriteSource 拒绝启动（fail-loud）。",
 			DangerLevel:     Dangerous,
 			HotReload:       true,
 		},
@@ -138,7 +152,7 @@ func StorageSpecs() []*Spec {
 			Category:        CategoryStorage,
 			Default:         false,
 			Description:     "admin 日志读端原生 session_turns（S3 波1）",
-			DescriptionLong: "开启后 /api/logs 列表与详情直接读 session_turns(_hot) 的 710 会话分支投影（113 列与视图逐列同形），跳过视图的 v1 冻结分支 UNION ALL 与反连接开销。响应契约不变，可随时关闭回切视图。注意：镜像链启用前的 _request_logs 历史窗口在原生模式下不可见。",
+			DescriptionLong: "开启后 /api/logs 列表与详情直接读 session_turns(_hot) 的 710 会话分支投影（113 列与视图逐列同形），跳过 canonical 视图的反连接开销。响应契约不变，可随时关闭回切视图。★ 2026-10-24：v1 族已随 890 退役 ⇒ canonical 视图**不再有 v1 冻结分支**，两条路的行集已等价；本键现在是纯粹的读面省时开关。",
 			DangerLevel:     Warning,
 			HotReload:       true,
 		},

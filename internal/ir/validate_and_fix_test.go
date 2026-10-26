@@ -176,8 +176,10 @@ func TestValidateAndFixRequest_Comprehensive(t *testing.T) {
 		t.Errorf("expected system message first, got %s", fixed.Messages[0].Role)
 	}
 
-	// Should have removed empty assistant and orphaned tool
-	expectedCount := 6 // system, user, assistant(tc), tool, user, assistant(tc-fixed)
+	// The two answers to call_valid are ambiguous across the user notice.
+	// Preserve both for the outbound typed rejection instead of silently deleting
+	// a real answer. Only the empty assistant is removed on this path.
+	expectedCount := 7 // system, user, assistant(tc), tool, user, tool, assistant(tc-fixed)
 	if len(fixed.Messages) != expectedCount {
 		t.Errorf("expected %d messages after fixes, got %d", expectedCount, len(fixed.Messages))
 	}

@@ -27,7 +27,7 @@ export default {
   },
 
   pagination: {
-    summary: '<strong>{total}</strong> total, showing {start} - {end}',
+    summary: '<strong>{total}</strong> 件、{start} - {end} を表示',
     prev: '← Previous',
     next: 'Next →',
   },
@@ -37,7 +37,6 @@ export default {
     status: 'Status',
     model: 'Model',
     interpretation: 'Interpretation',
-    usage: 'Usage',
     latency: 'Latency',
     provider: 'Provider',
     outboundModel: 'Outbound Model',
@@ -45,14 +44,9 @@ export default {
     candidateChain: 'Candidate Chain',
     blockReason: 'Block Reason',
     error: 'Error',
-    loading: 'Loading…',
     noData: 'No decision records',
   },
 
-  status: {
-    success: 'Success',
-    failed: 'Failed',
-  },
 
   detail: {
     title: 'Decision detail',
@@ -72,14 +66,8 @@ export default {
     usage: 'Usage',
     costCalc: 'Cost (USD)',
     trace: 'Decision trace',
-    plannedCandidates: 'Planned candidates',
-    blockedCandidates: 'Blocked candidates',
-    failedAttempts: 'Failed attempts',
     errorInfo: 'Error info',
   },
 
   loading: 'Loading…',
-  error: {
-    loadFailed: 'Failed to load',
-  },
 }

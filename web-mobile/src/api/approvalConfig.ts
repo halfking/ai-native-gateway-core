@@ -5,9 +5,9 @@
 //   GET /api/admin/tenant-approval-config/{code}/approval-config/stats
 //
 // ⚠️⚠️⚠️ 路径是 **`tenant-approval-config`（单数 tenant）**，不是 `tenants`：
-//     `cmd/gateway/main.go:7367` 起的注册用的是
+//     `cmd/gateway/main.go:7542` 起的注册用的是
 //         mux.HandleFunc("/api/admin/tenant-approval-config/", …)
-//     而 `/api/admin/tenants/` 归 `admin/handler.go:926-927` 的
+//     而 `/api/admin/tenants/` 归 `admin/handler.go:985` 的
 //     `h.superAdmin(h.handleTenants)` 所有。
 //     ★ 打**复数** `/api/admin/tenants/{code}/approval-config` 会落进
 //       `handleTenants` 的 `unknown sub-resource: approval-config` **404** 分支。

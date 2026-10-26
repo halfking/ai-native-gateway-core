@@ -21,6 +21,7 @@ import { useHyperPage } from '@/hyper'
 import AppIcon from '@/components/common/AppIcon.vue'
 import CredentialOpsSheet, { type OpsModel } from '@/components/credential/CredentialOpsSheet.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
+import { useAuthStore } from '@/stores/auth'
 import { t } from '@/i18n'
 import {
   fetchCredentialHeatmap,
@@ -39,6 +40,14 @@ import {
 
 useHyperPage({ title: () => t('heatmap.title') })
 const router = useRouter()
+
+// 2026-10-20 写侧角色门：CredentialOpsSheet 里的四个动作
+// （模型上下线 / 凭据恢复 / 凭据降级 / 自动并发）打到的后端端点
+// 全部要求 super_admin（RequireSuperAdminForWrite / h.superAdmin），
+// 而本页的热力图读侧是 h.admin（tenant_admin 可用）⇒ 读得到、点不动。
+// 口径与移动端 NodesView 一致（v-if 隐藏整条写入口）。
+const auth = useAuthStore()
+const isSuperAdmin = computed(() => auth.role === 'super_admin')
 
 interface Range {
   key: string
@@ -159,6 +168,8 @@ const opsOpen = ref(false)
 const opsCred = ref<{ id: number; label: string; models: OpsModel[] } | null>(null)
 
 function openOps(c: HeatmapCredential): void {
+  // 写侧角色门：入口已隐藏，这里是第二道（防程序化调用）。
+  if (!isSuperAdmin.value) return
   opsCred.value = {
     id: c.credential_id,
     label: c.label || String(c.credential_id),
@@ -228,7 +239,7 @@ async function onOpsDone(): Promise<void> {
           <span class="badge badge--muted">{{ t('heatmap.modelCount', { n: modelsOf(c).length }) }}</span>
         </div>
         <p v-if="c.provider_name" class="hm__cred-provider">{{ c.provider_name }}</p>
-        <button type="button" class="hm__ops-link" @click="openOps(c)">{{ t('credOps.title') }}</button>
+        <button v-if="isSuperAdmin" type="button" class="hm__ops-link" @click="openOps(c)">{{ t('credOps.title') }}</button>
         <button type="button" class="hm__timeline-link" @click="openTimeline(c.credential_id)">
           {{ t('heatmap.openTimeline') }}
         </button>

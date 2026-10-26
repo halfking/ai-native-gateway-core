@@ -1,6 +1,7 @@
 package transformation
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,8 +13,14 @@ import (
 // 3. 确保最后一条消息是 user
 func FixAnthropicMessages(body []byte) ([]byte, error) {
 	var req map[string]interface{}
-	if err := json.Unmarshal(body, &req); err != nil {
+	// Arbitrary extensions and tool inputs must never pass through float64.
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&req); err != nil {
 		return nil, err
+	}
+	if !json.Valid(body) {
+		return nil, fmt.Errorf("invalid anthropic request JSON")
 	}
 
 	messagesRaw, ok := req["messages"]
@@ -42,6 +49,9 @@ func FixAnthropicMessages(body []byte) ([]byte, error) {
 		)
 	}
 
+	if toolFixed == 0 && merged == 0 {
+		return body, nil
+	}
 	req["messages"] = messages
 	return json.Marshal(req)
 }

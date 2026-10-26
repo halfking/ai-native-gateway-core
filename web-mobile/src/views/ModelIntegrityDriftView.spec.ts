@@ -393,7 +393,7 @@ describe('⑥ 指针型数字键', () => {
 
 describe('⑦ context 的三条消失路径', () => {
   it('⑦-1 ★★★★ 键缺失 ⇒ 显示「无法判定」，**不是**「不存在」', async () => {
-    // ★★★ jsoncol.Decode（internal/jsoncol/jsoncol.go:57-79）有**三条路**让键消失：
+    // ★★★ jsoncol.Decode（internal/jsoncol/jsoncol.go:57-75）有**三条路**让键消失：
     //   列是 NULL、列是 JSON `null`、**列里的 JSON 解析失败**（只留 Warn、dst 不动）。
     //   ⇒ 说「没有上下文」是在替后端下结论，而那三种情况里只有一种是「真的没有」。
     mFetch.mockResolvedValue(payload({ events: [rec()] }))
@@ -657,26 +657,32 @@ describe('⑪ 排序与跨租户信号', () => {
   })
 })
 
-// ── ⑫ superAdmin 档 ⇒ 视图内部不得有角色分支 ──────────────────────────────
+// ── ⑫ superAdmin 档 ⇒ 批 150 补视图内兜底 ──────────────────────────────
 
-describe('⑫ superAdmin 档的处置', () => {
-  it('⑫-1 ★★★★★ 视图源码**不 import** auth store ⇒ 结构上就不可能有角色分支', () => {
-    // ★★ 比批 109 那条「页面上不得出现某段文案」强一个量级：
-    //   批 109 量的是**文案**，写文案的人照样能加一个 `v-if`。
-    //   这里量的是**依赖**：视图压根没拿身份 ⇒ 渲染不可能随身份变。
+describe('⑫ superAdmin 档的处置（批 150：兜底已补上）', () => {
+  it('⑫-1 ★★★★★ 视图源码**真的**接了 `useAuthStore` 与 `modelIntegrityDriftRoleIsAllowed`', () => {
+    // ★ 反向钉：批 149 之前**没有**这条；批 150 补的兜底靠这两条
+    //   ⇒ 任何把 import 拿掉或把 helper 拿掉的提交立刻红。
+    //   比「看 v-if 是否还在」强一个量级：v-if 可能只是装饰，import 没了就
+    //   真的没有身份可读。
     const src = stripComments(
       readFileSync(join(process.cwd(), 'src/views/ModelIntegrityDriftView.vue'), 'utf8'),
     )
-    expect(src).not.toMatch(/from\s+['"]@\/stores\/auth['"]/)
-    expect(src).not.toMatch(/\buseAuthStore\b/)
-    // ★★★ 第一版直接对**原文**匹配 `super_admin`，立刻被视图头注释里那句
-    //   「抽屉席须设 requiresRole: 'super_admin'」打红 ——
-    //   而那正是**文档**，不是行为。⇒ 角色断言必须先剥注释。
-    expect(src).not.toMatch(/super_admin|isSuperAdmin|tenant_admin/)
+    expect(src, '视图必须 import `@/stores/auth` 才能拿 role').toMatch(/from\s+['"]@\/stores\/auth['"]/)
+    expect(src, '视图必须 import `modelIntegrityDriftRoleIsAllowed`').toMatch(/modelIntegrityDriftRoleIsAllowed/)
+    expect(src, '视图必须 import `useAuthStore`').toMatch(/\buseAuthStore\b/)
+    // ★ `super_admin` 在源码里**只**允许在注释/role 字符串字面量/role helper 调用三处出现：
+    //   - role 字符串字面量（`role === 'super_admin'` 之类）——本视图没这种字面量
+    //   - role helper 内（`modelIntegrityDriftRoleIsAllowed` 内部）——这是 API 模块的事
+    //   ⇒ 视图里**不得**有 role 字面量比较（这正是 ⑫ 之前能证明的事）
+    //   现在加上：视图必须**有** `allowed` 计算属性
+    expect(src, '视图必须定义 `allowed` computed（兜底的核心）').toMatch(/const\s+allowed\s*=\s*computed/)
+    expect(src, '视图必须有 `v-if="!allowed"` 占位（兜底的可观测形态）').toMatch(/v-if\s*=\s*["']!allowed["']/)
   })
 
-  it('⑫-2 ★★★★★ 同一份载荷下换角色重挂 ⇒ 渲染逐字节相同', () => {
-    // ★ 行为层的复核：即便有人绕过 store 直接读别处，两次渲染也必须完全一致。
+  it('⑫-2 ★★★★★ 同一份载荷下换角色重挂 ⇒ 渲染**逐字节不同**（兜底真的生效）', () => {
+    // ★ 行为层的复核：批 150 之前这是"逐字节相同"（证伪兜底存在），
+    //   现在是"逐字节不同"（证明兜底真的换了渲染分支）。
     mFetch.mockResolvedValue(payload({ events: [rec({ tenant_id: 'tenant-b' })] }))
     authState.role = 'tenant_admin'
     authState.userInfo = { role: 'tenant_admin', tenant_id: 't-1' }
@@ -685,8 +691,33 @@ describe('⑫ superAdmin 档的处置', () => {
     authState.userInfo = { role: 'super_admin', tenant_id: 't-1' }
     const b = mount(ModelIntegrityDriftView)
     return flushPromises().then(() => {
-      expect(a.html()).toBe(b.html())
+      // ★ 批 150 反向：super_admin vs tenant_admin 的渲染**必**不同 ——
+      //   `a` 是 tenant_admin 挂的：必须看到 `<p data-testid="mid-denied">`（兜底占位），
+      //   `b` 是 super_admin 挂的：必须看到 `<div class="mid">`（正常形态）。
+      //   用 includes 锁住两段**差别**而不是 `toBe` 锁住全文（全文还有动态属性 data-v-xxx 难比）。
+      expect(a.html(), 'tenant_admin 渲染必须真的走兜底占位').toContain('data-testid="mid-denied"')
+      expect(a.html(), 'tenant_admin 渲染不能漏出 mid 主体').not.toContain('class="mid"')
+      expect(b.html(), 'super_admin 渲染必须看到 mid 主体').toContain('class="mid"')
+      expect(b.html(), 'super_admin 渲染不能误出兜底占位').not.toContain('data-testid="mid-denied"')
     })
+  })
+
+  it('⑫-2b ★★★★★ 视图**不**发任何请求（兜底真的挡住）', async () => {
+    // ★ 双层证据：⑫-2 证"渲染换分支"，⑫-2b 证"连请求都没发"。
+    //   后者更接近用户实际感受：错角色深链**完全没碰**后端（连 403 都不发）。
+    //   不需要点按钮 —— `v-else` 在 mount 时就不挂载 button 那一支，
+    //   `v-if="!allowed"` 永远走 denied 分支。
+    authState.role = 'tenant_admin'
+    authState.userInfo = { role: 'tenant_admin', tenant_id: 't-1' }
+    mFetch.mockClear()
+    const w = await mountView()
+    await flushPromises()
+    expect(mFetch, '错角色挂载时 fetchModelIntegrityFingerprintDrift 不应被调用').not.toHaveBeenCalled()
+    expect(hasId(w, 'mid-denied'), '占位必须出现').toBe(true)
+    expect(hasId(w, 'mid-load'), '主体按钮**不能**出现（否则用户会点下去）').toBe(false)
+    // 还原默认角色给后续用例
+    authState.role = 'super_admin'
+    authState.userInfo = { role: 'super_admin', tenant_id: 't-1' }
   })
 
   it('⑫-3 ★ 跨租户标记照常渲染（判读信号 ≠ 披露门控）', async () => {

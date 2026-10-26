@@ -15,13 +15,11 @@ export default {
   },
   table: {
     createdAt: 'Created at',
-    id: 'ID',
     username: 'Username',
     displayName: 'Display Name',
     email: 'Email',
     tenant: 'Tenant',
     role: 'Role',
-    mustChangePassword: 'Must Change Password',
     status: 'Status',
     lastLogin: 'Last Login',
     actions: 'Actions',
@@ -39,7 +37,6 @@ export default {
   },
   mustChangePassword: {
     pending: 'Pending',
-    completed: 'Completed',
   },
   status: {
     enabled: 'Enabled',
@@ -62,7 +59,7 @@ export default {
       submit: 'Create',
     },
     reset: {
-      title: 'Reset Password — {name}',
+      title: 'Reset Password: {name}',
       newPassword: 'New Password',
       passwordPlaceholder: 'At least 8 characters',
       confirmPassword: 'Confirm New Password',
@@ -84,6 +81,7 @@ export default {
     resetPasswordMismatch: 'Passwords do not match',
     resetPasswordComplexity: 'Password does not meet complexity requirements',
     toggleFailed: 'Operation failed',
+    changePasswordFailed: 'The password could not be changed. Please retry.',
   },
   passwordMatch: {
     matched: '✓ Passwords match',
@@ -138,5 +136,6 @@ export default {
     keyCount: 'API keys',
     viewAllLogs: 'View all in logs',
     requests: 'Requests',
+    loadStatsFailed: 'The user stats could not be loaded. Please retry.',
   },
 }

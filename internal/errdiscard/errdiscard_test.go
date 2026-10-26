@@ -12,6 +12,9 @@ import (
 // 门报出的是**候选**不是判决：每条都要人判断「调用方丢弃之后结果被怎么用」。
 // 这里逐条钉住，是为了让「新增一条同类」和「误报了一条」都能立刻看出来。
 var knownCandidates = []string{
+	// The discarded value is the returned grouping map; both errors are checked,
+	// logged and trigger resetFilterOptionGroups. Same multi-return false positive as lite retention.
+	"admin/turns_filter_options.go",
 	// admin/work_types.go:167 —— 有意决策。fetchL1Counts 的上抛是**承重**的：
 	// 它把「半个 map」换成 nil，使 mergeL1TaskTypes(nil) 走调用方自己文档化的
 	// canonical-only 回退；降级成 warn 反而会让半个 map 被当全量用。

@@ -18,14 +18,25 @@ import (
 // and outcome folding for the recovery worker.
 
 type durableRunnerExecSpy struct {
-	captured *executors.ExecParams
-	result   *executors.ExecuteResult
-	execErr  error
+	captured          *executors.ExecParams
+	result            *executors.ExecuteResult
+	execErr           error
+	streamBody        []byte
+	streamContentType string
 }
 
 func (s *durableRunnerExecSpy) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
 	copied := *params
 	s.captured = &copied
+	if len(s.streamBody) > 0 {
+		if params.W == nil {
+			return nil, errors.New("streaming durable attempt has no response sink")
+		}
+		params.W.Header().Set("Content-Type", s.streamContentType)
+		if _, err := params.W.Write(s.streamBody); err != nil {
+			return nil, err
+		}
+	}
 	return s.result, s.execErr
 }
 
@@ -148,6 +159,34 @@ func TestDurableAttemptRunnerRebuildsAndExecutes(t *testing.T) {
 
 // A revoked/expired key is a permanent terminal: the runner folds it as
 // AuthRevoked so AggregateTaskOutcome fails the task instead of retrying.
+func TestDurableAttemptRunnerReplaysStreamingSnapshotAsSSE(t *testing.T) {
+	profile := "p1"
+	verifier := &durableRunnerVerifierFake{info: &authentication.KeyInfo{
+		ID: 42, TenantID: "tenant-1", ApplicationID: 7, DefaultClientProfile: &profile,
+	}}
+	exec := &durableRunnerExecSpy{
+		result:            &executors.ExecuteResult{},
+		streamBody:        []byte("data: {\"type\":\"response.completed\"}\n\ndata: [DONE]\n\n"),
+		streamContentType: "text/event-stream",
+	}
+	runner := NewDurableAttemptRunner(exec, &durableRunnerResolverFake{cands: []provider.Candidate{{ProviderID: 3}}}, verifier)
+	snapshot := durableRunnerSnapshotVariant(t, func(s *DurableRequestSnapshotV1) { s.Stream = true })
+
+	attempt, err := runner.Run(context.Background(), &durable.Task{ID: "task-stream", AttemptCount: 1}, snapshot)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !exec.captured.IsStream || exec.captured.W == nil {
+		t.Fatalf("runner did not preserve streaming transport: %+v", exec.captured)
+	}
+	if got, want := attempt.ContentType, "text/event-stream"; got != want {
+		t.Fatalf("ContentType = %q, want %q", got, want)
+	}
+	if string(attempt.Body) != string(exec.streamBody) {
+		t.Fatalf("stored stream body = %q, want %q", attempt.Body, exec.streamBody)
+	}
+}
+
 func TestDurableAttemptRunnerRevokedKeyIsTerminal(t *testing.T) {
 	exec := &durableRunnerExecSpy{}
 	verifier := &durableRunnerVerifierFake{err: &authentication.InvalidKeyError{Message: "revoked"}}

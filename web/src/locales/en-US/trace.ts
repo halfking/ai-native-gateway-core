@@ -2,9 +2,7 @@
 export default {
   modal: {
     title: 'Request Trace',
-    openButton: '🔗 Trace',
     close: 'Close',
-    tooltip: 'View end-to-end timeline of this request',
     snapshotTitle: 'Failure Context Snapshot',
     candidates: 'Candidates',
     routingState: 'Routing',
@@ -16,8 +14,6 @@ export default {
     failedCount: 'failed',
   },
   detail: {
-    basicInfo: 'Basic Info',
-    requestId: 'Request ID',
     finalStatus: 'Status',
     failedAtStage: 'Failed At',
     totalDuration: 'Duration',
@@ -26,11 +22,9 @@ export default {
     sourcePostgres: 'PostgreSQL (history)',
     eventCount: 'Events',
     copyJson: 'Copy JSON',
-    copySuccess: 'Copied',
     statusSuccess: 'Success',
     statusFailed: 'Failed',
     statusTimeout: 'Timeout',
-    statusSkipped: 'Skipped',
     statusInProgress: 'In progress',
   },
   empty: {
@@ -39,7 +33,6 @@ export default {
     hint1: 'Trace is emitted only when instrumentation is enabled (default: on)',
     hint2: 'In-progress requests: trace data is in Redis and viewable in real-time',
     hint3: 'Completed requests: trace data is persisted to request_logs.trace_events (JSONB)',
-    hint4: 'If empty here, possible causes: flush not completed, or trace was not emitted',
   },
   aiPrompt: {
     button: '🤖 Generate AI Prompt',
@@ -74,16 +67,5 @@ export default {
     module_upstream: 'Upstream',
     module_session: 'Session',
   },
-  failureHint: {
-    upstream_timeout: 'Upstream timeout',
-    upstream_unreachable: 'Unreachable',
-    upstream_reset: 'Connection reset',
-    upstream_io_error: 'Network I/O error',
-    upstream_network_error: 'Network error',
-    upstream_5xx: 'Upstream 5xx',
-    upstream_4xx: 'Upstream 4xx',
-    upstream_rate_limit: 'Upstream rate limit (429)',
-    upstream_auth_error: 'Upstream auth (401/403)',
-    upstream_not_found: 'Upstream 404',
-  },
+  generateFailed: 'The summary could not be generated. Please retry.',
 }

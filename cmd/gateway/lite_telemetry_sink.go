@@ -225,7 +225,16 @@ func (s *liteRequestLogSink) PersistRequestLog(ctx context.Context, entry *telem
 			ClientModel:  strPtrValue(entry.ClientModel),
 			CredentialID: intPtrStr(entry.CredentialID),
 			Success:      &entry.Success,
-			StatusCode:   intPtrValue(entry.UpstreamStatusCode),
+			// 2026-10-16: the turn's client-facing status, not the provider's.
+			// storage.TurnDetails.StatusCode is the per-turn status sibling of
+			// Success/ErrorKind (session_turn_details_hot has no status_code at
+			// all — this is the lite SQLite projection of the same turn), and the
+			// very same entry's turn row is written a few lines above via
+			// liteEntryStatusCode. Leaving this one on UpstreamStatusCode made two
+			// rows written from one entry disagree about the same turn, and kept
+			// the 401→NULL loss alive on the details surface. 0 still lands as NULL
+			// (TurnDetails: "零值字段落 NULL"), so in-progress rows are unaffected.
+			StatusCode:   liteEntryStatusCode(entry),
 			ErrorKind:    strPtrValue(entry.ErrorKind),
 			LatencyMs:    intPtrValue(entry.LatencyMs),
 			CostUSD:      floatPtrValue(entry.CostUSD),
@@ -425,9 +434,16 @@ func liteEntryTerminal(entry *telemetry.RequestLogEntry) bool {
 	return entry.ErrorKind != nil && *entry.ErrorKind != ""
 }
 
-// liteEntryStatusCode 推导 lite request_logs 行的状态码：优先上游实测
-// 状态码；终态按成败取 200/500；in_progress 占位记 0（未定）。
+// liteEntryStatusCode 推导 lite request_logs 行的状态码：优先客户端实收
+// 状态码（ClientStatusCode），其次上游实测状态码；终态按成败取 200/500；
+// in_progress 占位记 0（未定）。200/500 只是「无实收信息」的兜底，不代表
+// 客户端真收到了 500——网关自造失败（鉴权/额度/会话/策略）没有上游，
+// 早期版本因此把 401 全部落成 500。与 internal/sessionv2mirror.statusCode
+// 同一判据，改一处必须同改另一处。
 func liteEntryStatusCode(entry *telemetry.RequestLogEntry) int {
+	if entry.ClientStatusCode != nil {
+		return *entry.ClientStatusCode
+	}
 	if entry.UpstreamStatusCode != nil {
 		return *entry.UpstreamStatusCode
 	}

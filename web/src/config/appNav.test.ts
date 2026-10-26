@@ -140,10 +140,13 @@ describe('guide group migrated items', () => {
   })
 
   it('links 自动配置 to the generator section on 接入示例', () => {
+    // 2026-10-27（第 10 增量）：菜单项不再带硬编码中文 `label`（语言包是唯一真值）
+    // ⇒ 断言改成钉 i18n 键；键在 8 语种都存在由 i18n-key-parity-count 门保证。
     expect(guide.items[1]).toMatchObject({
       path: '/examples#auto-config',
-      label: '自动配置',
+      labelKey: 'nav.item.autoConfig',
     })
+    expect(guide.items[1].label).toBeUndefined()
   })
 
   it('redirects guide 自动更新 to ACTIVATE_REDIRECT_PATH when not activated', () => {

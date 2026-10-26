@@ -5,12 +5,12 @@ import { req, type RequestOptions } from './client'
  *
  * GET /api/admin/storage/migration-state
  *
- * - **注册**：`mux.HandleFunc` 直挂在 `admin/handler.go:1111`
+ * - **注册**：`mux.HandleFunc` 直挂在 `admin/handler.go:1140`
  *   ```go
  *   mux.HandleFunc("/api/admin/storage/migration-state", admin(h.handleMigrationState))
  *   ```
- *   ⇒ ★★ **admin 档**（`h.admin` = `AdminMiddleware`，`handler.go:880`）
- *   ⇒ ★★★ **与批 93 的 `storage/config`（`:1108`，**superAdmin** 档）同前缀、
+ *   ⇒ ★★ **admin 档**（`h.admin` = `AdminMiddleware`，`handler.go:901`）
+ *   ⇒ ★★★ **与批 93 的 `storage/config`（`:1137`，**superAdmin** 档）同前缀、
  *     相邻两行、两种档位** ⇒ 再次印证「不能按前缀推权限」。
  * - **实现**：`admin/storage_migration.go:401-421`（handler）· `:425-427`（分发入口）·
  *   `:99-112`（`getMigration`）· `:48-64`（`migrationRun`）· `:40-45`（状态枚举）。
@@ -101,11 +101,23 @@ import { req, type RequestOptions } from './client'
  *     ⇒ ★★ 相应地，**心跳停更在本响应里查不出来** —— 迁移 goroutine 卡死时
  *       `status` 仍是 `running`、计数不再变，**没有「卡住」信号**。
  *
- * (11) ★★★ **v1 冻结告示对本端点是噪音**：`writeJSON` 是中央出口、无条件调
- *     `applyV1FreezeNotice`（`handler.go:1483`），而告示判据是
- *     `request_logs` 写门（`v1_freeze_notice.go:228-229`）⇒ ⇒
- *     响应头 `X-LLM-Gateway-V1-Data-Frozen` 可能出现，但**迁移状态与 request_logs 无关**
- *     ⇒ ⇒ ★★ **移动端不要在本页挂「v1 数据已停更」横幅**（告示在**响应头**里，不在 body）。
+ * (11) ★★★★★ **第 129 批整条重写**：上一版说「告示挂在 `writeJSON` 中央出口
+ *     （`applyV1FreezeNotice`，`handler.go:1483`），所以本端点的响应里可能出现
+ *     响应头 `X-LLM-Gateway-V1-Data-Frozen`」。**那个前提已经不存在了** ——
+ *     r1033 把告示判据从「v1 停写门」换成「session_turns 新鲜度」，
+ *     而新判据**要查 DB**，所以后端明确不再挂中央出口：
+ *     ```go
+ *     // admin/data_horizon.go 文件头：「挂中央出口等于每个 JSON 响应都打一次库」
+ *     func applyDataHorizonHeader(w http.ResponseWriter, notice *DataHorizonNotice)  // :174
+ *     ```
+ *     它只由 `handleDataHorizon`（`:193`）自己调 ⇒ ⇒
+ *     ★★ **本端点的响应里不可能再出现任何数据地平线响应头**
+ *     （既没有 `X-LLM-Gateway-V1-Data-Frozen`，也没有新名
+ *      `X-LLM-Gateway-Data-Horizon`）。
+ *     ⇒ ⇒ ★★★ 移动端在本页挂「数据已断流」横幅是**双重错误**：
+ *     一是头压根不会出现，二是**迁移状态与 session_turns 新鲜度无关**。
+ *     ⇒ 结论比上一版更强：不是「不要在本页挂」，而是「**本页没有任何途径**
+ *     拿到这个告示**」—— 要看告示只能去 `/data-horizon` 端点。
  *
  * ★★ **本模块明确声明的校验边界**：
  *   校验顶层 2 键、每个槽位「null 或 run 对象」、`migrationRun` 的 11 恒在键与类型、
@@ -373,7 +385,7 @@ export function migrationStateContainsRunId(s: MigrationStateResponse, runId: st
  * ⇒ 载荷里没有「别人的东西」⇒ 按批 119 的边界**不过度限制**。
  *
  * **（乙）但需要 `'admin'`** —— 服务端**没有角色下限**。
- * 注册行 `admin/handler.go:1132` 的 `admin(...)` 是 `admin/handler.go:925` 的
+ * 注册行 `admin/handler.go:1140` 的 `admin(...)` 是 `admin/handler.go:933` 的
  * 局部别名 `admin := h.admin`，而 `h.admin` = `AdminMiddleware`
  * （`admin/auth.go:85` 起，全文**无任何 `claims.Role` 比对**）
  * + `pkg/identity/verifier.go` 的 `supportedRole` **接受 `"user"`**
@@ -381,8 +393,8 @@ export function migrationStateContainsRunId(s: MigrationStateResponse, runId: st
  *   而「本机附件目录正从 A 搬到 B」**没理由给普通用户看**。
  *
  * ⚠️★★ 与第一百二十四批（`storageAndLogConfig`）**结论相反且只隔一行**：
- *   `:1129`（storage/config）是 `h.superAdmin` ⇒ **服务端是真门**；
- *   `:1132`（本族）是 `admin(...)` ⇒ **服务端没有门**。
+ *   `:1137`（storage/config）是 `h.superAdmin` ⇒ **服务端是真门**；
+ *   `:1140`（本族）是 `admin(...)` ⇒ **服务端没有门**。
  * ⇒ ★★ 前端这一层在批 124 是**体验兜底**，在本族**是唯一的门**。
  *   前端严于后端是**兜底不是修复**。
  *

@@ -4,4 +4,7 @@
 export default {
   exportFailedPrep: 'Export fehlgeschlagen: Detail laden oder Audit fehlgeschlagen',
   exportNoChannel: 'Export fehlgeschlagen: kein nutzbarer Kanal in dieser Umgebung',
+  timelineLoadFailed: 'Daten der letzten 24 Stunden konnten nicht geladen werden. Bitte erneut versuchen.',
+  detailLoadFailed: 'Details konnten nicht geladen werden. Bitte erneut versuchen.',
+  auditLogLoadFailed: 'Audit-Protokoll konnte nicht geladen werden. Bitte erneut versuchen.',
 }

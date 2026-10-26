@@ -95,6 +95,38 @@ func TestUpstreamContext_SurvivalStreamKeepsClientCancellationWithoutDeadline(t 
 	}
 }
 
+func TestUpstreamContext_DetachedSurvivalKeepsDeadlineWhileIgnoringClientCancel(t *testing.T) {
+	clientCtx, cancelClient := context.WithCancel(context.Background())
+	defer cancelClient()
+	deadline := time.Now().Add(40 * time.Millisecond)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(clientCtx)
+	params := &ExecParams{
+		R:                          req,
+		IsStream:                   true,
+		StreamSurvivesClientCancel: true,
+		SurvivalDeadline:           deadline,
+	}
+
+	upstreamCtx, upstreamCancel := (&Executor{}).upstreamContext(params, time.Second)
+	defer upstreamCancel()
+	cancelClient()
+	if err := upstreamCtx.Err(); err != nil {
+		t.Fatalf("detached survival context followed client cancellation: %v", err)
+	}
+	gotDeadline, ok := upstreamCtx.Deadline()
+	if !ok || gotDeadline.Sub(deadline) > time.Millisecond || deadline.Sub(gotDeadline) > time.Millisecond {
+		t.Fatalf("deadline = %v (present=%v), want survival deadline %v", gotDeadline, ok, deadline)
+	}
+	select {
+	case <-upstreamCtx.Done():
+		if !errors.Is(upstreamCtx.Err(), context.DeadlineExceeded) {
+			t.Fatalf("detached survival context error = %v, want deadline exceeded", upstreamCtx.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached survival context did not enforce survival deadline")
+	}
+}
+
 // TestUpstreamContext_NonStreamRetainsDeadline verifies the 2026-08-04
 // change did not affect non-streaming requests: those still get the timeout
 // as a hard deadline (there is no streaming read loop to provide stall

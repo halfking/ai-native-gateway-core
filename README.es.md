@@ -19,7 +19,7 @@ AI Native Gateway es una **pasarela LLM nativa de IA, de código abierto y autoa
 - **Normalización de protocolos**: compatibilidad con OpenAI, Anthropic, Gemini y Responses API — un único punto de acceso para todos los modelos
 - **Enrutado inteligente de dos capas**: L1 elige el modelo (clasificación de tareas → scoring de 6 dimensiones), L2 elige la credencial (fallback de tier → ronda de facturación → scoring P2C → ejecutar / abrir circuito)
 - **Gobernanza de sesión**: sesiones sticky (persistentes), replay de sesión con contenido completo, compresión automática de prompts y ciclo de vida de datos de 4 niveles — la conversación, y no solo la petición, es un objeto gestionado de primer nivel
-- **Multi-tenancy**: aislamiento de tenants mediante RLS de PostgreSQL en 38+ tablas, con cuotas, medición y facturación MaaS por tenant
+- **Multi-tenancy**: aislamiento de tenants mediante RLS de PostgreSQL en 90+ tablas, con cuotas, medición y facturación MaaS por tenant
 - **Gestión de credenciales**: pools multi-credencial con disfraz de huella digital, sondeo adaptativo y apertura automática del circuito
 - **Observabilidad**: flujos de peticiones en tiempo real, analítica de enrutado (mapa de calor + Sankey), seguimiento de costes, OTel + Prometheus
 - **Privacidad**: despliegue 100 % privado — todos los datos permanecen dentro de su infraestructura
@@ -55,7 +55,7 @@ Construido con **Go + PostgreSQL + Redis**, hoy en producción sobre k3s (dos in
 |------|-------------|
 | **Protocolo** | Compatibilidad con OpenAI / Anthropic / Gemini / Responses + relé SSE con comprobaciones de integridad |
 | **Enrutado** | Enrutado de dos capas (modelo → credencial) + sesiones sticky + auto-enrutado con políticas coste/calidad |
-| **Multi-tenancy** | Túnel de identidad (IP/MAC/ClientID virtuales) + pools de credenciales + RLS en 38+ tablas |
+| **Multi-tenancy** | Túnel de identidad (IP/MAC/ClientID virtuales) + pools de credenciales + RLS en 90+ tablas |
 | **Gobernanza de tráfico** | Límites de tokens (TPM/RPM) + caché semántica + compresión de prompts + algoritmos de ventana deslizante |
 | **Auditoría** | Auditoría de punta a punta + DLQ + fallback a disco + OTel + Prometheus |
 | **Credenciales** | Multi-credencial + pool de huellas + sondeo adaptativo + desactivación manual |
@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 15+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 90+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -104,16 +104,17 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | Ruta | Rol |
 |------|-----|
 | `cmd/gateway/` | Raíz de composición — entrada de producción de binario único (plano de datos + control) |
-| `domains/` | 67 dominios DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, seguridad… |
+| `domains/` | 68 dominios DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, seguridad… |
 | `admin/` + `web/` | API REST de administración + SPA Vue 3 + TypeScript (Element Plus, ECharts) |
+| `web-mobile/` | Frontend móvil (Vue 3 + TypeScript): segunda UI de producción; el despliegue se niega a arrancar sin su build `dist/` |
 | `bg/` | Workers en segundo plano — sondeo, limpieza del ciclo de vida, agregación de estadísticas, mantenimiento de particiones |
 | `storage/` | Fábrica de almacenamiento de doble modo (`full`: PG+Redis / `lite`: SQLite+ficheros+KV en proceso) |
 | `internal/` | Infraestructura transversal — IR, strip de campos del proveedor, espejo de sesión, outbox, telemetría… |
-| `sql/migrations/` + `db/migrations/` | Migraciones idempotentes (serie de arranque actualmente en 863) |
+| `sql/migrations/` + `db/migrations/` | Migraciones idempotentes (serie de arranque actualmente en 907) |
 | `installer/` | Módulo instalador/actualizador autónomo multiplataforma |
 | `scripts/`, `deploy/` | Herramientas de build, despliegue, espejo y verificación |
 
-Instantánea de escala (escaneo de código del 2026-10-06): **~4,967 ficheros Go · 2,728 ficheros de test · 1,016 SQLs de migración · 67 paquetes de dominio · 44 binarios** bajo `cmd/`.
+Instantánea de escala (escaneo de código del 2026-10-22 @31466a01d): **~5,680 ficheros Go · 3,333 ficheros de test · 1,119 SQLs de migración · 68 paquetes de dominio · 44 binarios** bajo `cmd/` (recuentos sin `vendor/` ni `installer/`; SQLs de migración = árbol completo de `sql/migrations/`; binarios = paquetes main según `go list`).
 
 **Lecturas adicionales**
 
@@ -131,7 +132,7 @@ La mayoría de las pasarelas tratan cada petición como un evento aislado. AI Na
 - **Vinculación sticky de sesión**: las sesiones se fijan a credenciales para que el contexto de la conversación sobreviva a cambios de modelo y failovers — sin pérdida silenciosa de contexto a mitad de tarea
 - **Auditoría y replay a nivel de sesión**: los system prompts y las respuestas completos se conservan y son reproducibles por sesión (13,000+ sesiones en producción), cubriendo tipo de tarea, modelo del cliente, modelo de salida, proveedor, tokens, latencia y motivo de fin — segmentable por clave / tenant / rango temporal para diagnóstico y cumplimiento
 - **Compresión automática de prompts**: cuando una petición se acerca a la ventana de contexto real del proveedor (disparador ~80 %), se ejecuta compresión a nivel de mensaje antes del dispatch — las sesiones largas de agentes caben en ventanas más pequeñas en lugar de fallar. Cada evento de compresión (estrategia, umbral, tamaños antes/después) se registra en la petición
-- **Inteligencia de metadatos de sesión**: etiquetado automático de tipo de trabajo (10 tipos de trabajo), atribución de proyecto y extracción de título convierten el tráfico bruto en conocimiento buscable
+- **Inteligencia de metadatos de sesión**: etiquetado automático de tipo de trabajo (27 tipos de trabajo), atribución de proyecto y extracción de título convierten el tráfico bruto en conocimiento buscable
 - **Túnel de identidad**: el tráfico de agentes se atribuye mediante IP/MAC/ClientID virtuales, de modo que el aislamiento multi-tenant se mantiene incluso cuando muchos agentes comparten un mismo egress
 - **Ciclo de vida de datos de 4 niveles**: caliente (0–7 d) / templado (7–30 d) / frío (30–90 d) / caducado (>90 d) con vista previa del archivo — «esto es exactamente lo que se moverá» antes de ejecutar
 
@@ -166,12 +167,12 @@ Todos los módulos siguientes están entregados y funcionando en el despliegue d
 ### Monitor de credenciales — salud multi-fuente × multi-credencial
 
 ![Credential Monitor](docs/assets/screenshots/credential-monitor.png)
-*Una matriz de disponibilidad 2-D en vivo (19 credenciales × 18 modelos en producción) muestra de un vistazo qué credencial rompe qué modelo. Latencia P95 por credencial, tasa de éxito con ventana deslizante de 1 hora y uso de slots de concurrencia. El pool de huellas (50+ User-Agents, 35 variantes de Accept-Language, 11 perfiles uTLS) + el sondeo adaptativo esquivan automáticamente el control de riesgo del upstream — los fallos disparan el breaker, sin intervención humana*
+*Una matriz de disponibilidad 2-D en vivo (19 credenciales × 18 modelos en producción) muestra de un vistazo qué credencial rompe qué modelo. Latencia P95 por credencial, tasa de éxito con ventana deslizante de 1 hora y uso de slots de concurrencia. El pool de huellas (42 User-Agents, 35 variantes de Accept-Language) + el sondeo adaptativo esquivan automáticamente el control de riesgo del upstream — los fallos disparan el breaker, sin intervención humana*
 
 ### Configuración de tipos de trabajo — clasificación automática de tareas
 
 ![Work Types](docs/assets/screenshots/work-types.png)
-*Clasificación automática de tareas (10 tipos de trabajo) con distribución de 24 h, modelos principales y estadísticas de decisiones de enrutado — configurable por tipo de trabajo en la UI de administración*
+*Clasificación automática de tareas (27 tipos de trabajo) con distribución de 24 h, modelos principales y estadísticas de decisiones de enrutado — configurable por tipo de trabajo en la UI de administración*
 
 ### Pool de recursos gratuito
 
@@ -362,11 +363,11 @@ Para el diseño completo del instalador, véase [installer/README.md](installer/
 | **Residencia de datos** | Los datos salen de su perímetro | Todos los datos permanecen dentro de su infraestructura |
 | **Facturación** | Por uso (USD) | Planes + créditos + paquetes booster — pensado para la PYME china, listo para Alipay |
 | **Modelos upstream** | Unos pocos grandes proveedores | Amplia cobertura de modelos + modelos domésticos chinos + modelos locales |
-| **Pool de huellas de credenciales** | Básico | 50+ User-Agents · 35 Accept-Language · 11 perfiles uTLS |
+| **Pool de huellas de credenciales** | Básico | 42 User-Agents · 35 Accept-Language |
 | **Gobernanza de sesión** | Logs a nivel de petición | Sesiones sticky + replay completo + compresión + ciclo de vida de 4 niveles |
 | **Pasarela de herramientas MCP** | Parcial | Entrega completa prevista para el T3 2026 |
 | **Amigable con China** | Limitada | UI completa en chino + modelos domésticos + Alipay |
-| **Auditoría multi-tenant** | Estándar | RLS en 38+ tablas · auditorías de tenant con L1 = 0 |
+| **Auditoría multi-tenant** | Estándar | RLS en 90+ tablas · auditorías de tenant con L1 = 0 |
 
 ### vs. alternativas concretas
 
@@ -434,7 +435,7 @@ Véase [ROADMAP.md](ROADMAP.md) para todos los detalles.
 | Ciclo de vida de sesión | [docs/session-lifecycle.md](docs/session-lifecycle.md) — ciclo de vida del procesamiento de sesiones, totalmente diagramado |
 | Arquitectura (gradación de evidencia) | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — autoridad interna (gradación CURRENT/SHADOW/PARALLEL) |
 | Arquitectura (visión general) | [docs/architecture.md](docs/architecture.md) — diseño del sistema y componentes |
-| Requisitos | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×19 dominios / NFR×13 |
+| Requisitos | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×16 dominios / NFR×13 |
 | Catálogo de funciones | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md) — mapa función → código → API → página de administración |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — especificaciones del plano de datos y la API de administración |
 | Entorno | [docs/environment.md](docs/environment.md) — entornos de despliegue y variables |
@@ -468,7 +469,7 @@ Protección de información sensible: `.githooks/pre-push` ejecuta automáticame
 
 ## ✅ CI y puertas (desde 2026-09-14)
 
-- **Puerta oficial = `./verify.sh` local**: obligatorio antes de commit/despliegue (`go test ./...` completo, verificación de checksums de migraciones, cumplimiento de privacidad, vet, build, build del frontend). Los merge a main y las releases se rigen por él.
+- **Puerta oficial = `./verify.sh` local**: obligatorio antes de commit/despliegue (`go test ./...` completo, verificación de checksums de migraciones, cumplimiento de privacidad, vet, build; el build del frontend solo con `--web`). Los merge a main y las releases se rigen por él.
 - **Puerta ligera de codeup Flow**: el único remoto es codeup; `.github/workflows/` no se ejecuta en codeup; `.workflow/main-verify.yml` ofrece la configuración de pipeline como código (build + `go vet ./autoroute/...` + suite offline de auto matching con 60 casos); debe importarse una vez desde la página «Pipeline» del repositorio de codeup y después se dispara automáticamente con cada push/PR.
 - La regresión offline de auto matching puede relanzarse por separado: `go test ./autoroute/ -run 'TestAutoMatchingSuiteHeuristic|TestPromptClassificationMatrix'` (puramente offline, sin red).
 
@@ -478,7 +479,7 @@ Protección de información sensible: `.githooks/pre-push` ejecuta automáticame
 
 ¡Aceptamos contribuciones! Véase [CONTRIBUTING.md](CONTRIBUTING.md) para la configuración del desarrollo, el estilo de código y el proceso de pull requests.
 
-Los cambios multi-tenant deben pasar los tres linters: `lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant`.
+Los cambios multi-tenant deben pasar la puerta RLS (`make test-rls` — PostgreSQL real, requiere `TEST_DATABASE_URL`) y la suite de pruebas unitarias (`make test` — el mismo `go test ./...` que ejecuta CI mediante `verify.sh`).
 
 ## 🔐 Seguridad
 

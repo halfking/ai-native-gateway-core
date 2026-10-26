@@ -10,6 +10,4 @@ export default {
   routingTitle: '路由尝试时间线',
   actionTitle: '动作时间线（SSE）',
   traceTitle: '失败追踪与 AI 提示词',
-  openTrace: '打开失败追踪',
-  closeTrace: '关闭失败追踪',
 }

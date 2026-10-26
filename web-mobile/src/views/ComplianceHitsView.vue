@@ -18,7 +18,7 @@
 //     ⇒ 500 时渲染成「后端扫描失败」，**绝不**退化成「队列为空」。
 // (6) ★★★ `review-queue` 响应**没有 total**；默认条数 queue=20 / records=50 / feedback=20。
 // (7) ★★★★★★ **`feedback` 的响应键是 `feedback`，不是 `items`。**
-//     后端 `listFeedback`（admin/output_compliance_handler.go:711）写的是
+//     后端 `listFeedback`（admin/output_compliance_handler.go:712）写的是
 //     `"feedback": items`，而同 handler 的 `review-queue`（:602）写的是 `"items"`
 //     ⇒ 同族两个列表端点**键不同名**。本页两个面板各取各的键。
 //     ★ 本模块第一版把这里写成了 `items`，而夹具也照着 `items` 写 ⇒ 用例全绿、

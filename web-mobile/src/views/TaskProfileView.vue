@@ -4,7 +4,7 @@
 // GET /api/admin/task-profile
 // GET /api/admin/task-profile/corrections/stats
 //
-// ★★ admin 档（`admin/handler.go:1413` 用 `admin` 挂载 `RegisterTaskProfileRoutes`）
+// ★★ admin 档（`admin/handler.go:1488` 用 `admin` 挂载 `RegisterTaskProfileRoutes`）
 //   ⇒ 抽屉席**不设** requiresRole（与 `credential-model-state` 那一席相反）。
 //
 // ⚠️★ 这一页存在的理由：批 98/99 把这两个端点的 API 层做完了，

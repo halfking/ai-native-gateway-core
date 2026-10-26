@@ -5,66 +5,23 @@ import (
 	"log/slog"
 )
 
-// 2026-10-07 (audit §10.97): `ALTER TABLE … ADD COLUMN IF NOT EXISTS` does NOT
-// spare the lock. PostgreSQL must take ACCESS EXCLUSIVE on the parent table and
-// on every partition before it can check whether the column exists, so a column
-// that has been in place for months still costs a full exclusive pass on every
-// boot. On production this statement measured 420 calls with a mean of 2,289 ms
-// and a worst single call of 104,322 ms — against _request_logs, the busiest
-// table in the database, with 5 monthly partitions there (6 relations locked)
-// for a statement that changes nothing. That is 16 minutes of cumulative
-// blocking on the hottest table over a 25.9 day window.
-//
-// The same shape is applied to work_type in db.go (workTypeRequestLogsCurrent);
-// this is the remaining unguarded _request_logs DDL in the startup path.
-const maasRequestLogsDDL = `
-		ALTER TABLE _request_logs
-		    ADD COLUMN IF NOT EXISTS credits_charged BIGINT;
-
-		CREATE INDEX IF NOT EXISTS idx_request_logs_credits_charged
-		    ON _request_logs (tenant_id, ts DESC)
-		    WHERE credits_charged IS NOT NULL AND credits_charged > 0;`
-
-// maasRequestLogsCurrent reports whether _request_logs already carries the
-// credits_charged column and its index, i.e. whether maasRequestLogsDDL would
-// be a pure no-op. Both are checked because the DDL is applied as one unit: the
-// index cannot be created before the column exists.
-func (d *DB) maasRequestLogsCurrent(ctx context.Context) bool {
-	var missing int
-	err := d.pool.QueryRow(ctx, `
-		SELECT
-		  (SELECT count(*) FROM (VALUES ('credits_charged')) AS want(name)
-		   WHERE to_regclass('public._request_logs') IS NOT NULL
-		     AND NOT EXISTS (
-		       SELECT 1 FROM information_schema.columns
-		        WHERE table_schema='public' AND table_name='_request_logs'
-		          AND column_name = want.name))
-		  +
-		  (SELECT count(*) FROM (VALUES ('idx_request_logs_credits_charged')) AS want(name)
-		   WHERE NOT EXISTS (
-		       SELECT 1 FROM pg_indexes
-		        WHERE schemaname='public' AND indexname = want.name))
-	`).Scan(&missing)
-	if err != nil {
-		// A failed probe must not be read as "current": that would skip DDL on
-		// a database that genuinely needs it. Fall through to applying it.
-		slog.Warn("maas _request_logs probe failed; applying DDL", "error", err)
-		return false
-	}
-	return missing == 0
-}
-
 // EnsureMaasSchema applies MaaS billing tables and pricing v2 columns (idempotent).
 func (d *DB) EnsureMaasSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	if d.maasRequestLogsCurrent(ctx) {
-		slog.Info("maas schema ensured (pricing v2 columns); _request_logs credits_charged " +
-			"column and index already present, DDL skipped")
-	} else if _, err := d.pool.Exec(ctx, maasRequestLogsDDL); err != nil {
-		return err
-	}
+	// ★ 2026-10-24（v1 → session_turns 替换轮）：本函数原来还有一条 v1 腿 ——
+	// 给 _request_logs 补 credits_charged 列 + idx_request_logs_credits_charged
+	// 索引。那条腿随 **890（v1 族退役）**失效：族不存在 ⇒ ALTER 一张不存在
+	// 的表 = 42P01 ⇒ 整个 EnsureMaasSchema 失败 ⇒ boot 失败 ⇒ 网关
+	// 「就绪但没有数据库」（readyz 在 SetDepsOptional(true) 下仍返 200）。
+	// 它此前靠一道显式存在性闸 + catalog 短路挡着。
+	//
+	// ⇒ 现在 v1 腿整条删除：credits_charged 由**会话族**提供
+	//   （session_turns.credits_charged，由迁移链建；canonical 视图按 v1
+	//   同名列投影 ⇒ maas.RequestLogCreditsSQL 与所有读方零改动）。
+	// ⇒ 只保留下面这批定价表（maas_settings / model_credit_rates）——
+	//   它们不是 v1 族，且是计费的价格来源。
 	_, err := d.pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS maas_settings (
 		    id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),

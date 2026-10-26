@@ -76,7 +76,7 @@ function apply() {
       <div class="lsfd-dialog" role="dialog" :aria-label="title">
         <header class="lsfd-head">
           <h3 class="lsfd-title">{{ title }}</h3>
-          <button type="button" class="lsfd-close" aria-label="关闭" @click="close">×</button>
+          <button type="button" class="lsfd-close" :aria-label="$t('common.close')" @click="close">×</button>
         </header>
 
         <div class="lsfd-toolbar">
@@ -86,7 +86,7 @@ function apply() {
             :class="{ 'lsfd-all--active': isAll }"
             @click="selectAll"
           >
-            全部
+            {{ $t('common.all') }}
           </button>
           <span class="lsfd-count">已选 {{ selectedCount }}</span>
           <input
@@ -115,8 +115,8 @@ function apply() {
         </div>
 
         <footer class="lsfd-foot">
-          <button type="button" class="lsfd-btn lsfd-btn--ghost" @click="close">取消</button>
-          <button type="button" class="lsfd-btn lsfd-btn--primary" @click="apply">确定</button>
+          <button type="button" class="lsfd-btn lsfd-btn--ghost" @click="close">{{ $t('common.button.cancel') }}</button>
+          <button type="button" class="lsfd-btn lsfd-btn--primary" @click="apply">{{ $t('common.button.ok') }}</button>
         </footer>
       </div>
     </div>

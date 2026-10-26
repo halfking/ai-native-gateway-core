@@ -14,7 +14,14 @@ export function requestDetailPath(
 ): string {
   const id = String(requestId || '').trim()
   if (!id) return ''
-  if (router) {
+  const qs = new URLSearchParams()
+  if (query?.mode) qs.set('mode', query.mode)
+  if (query?.tab) qs.set('tab', query.tab)
+  const q = qs.toString()
+  // Fallback shape, also used when the named route cannot be resolved (see below).
+  const fallback = `/request-detail/${encodeURIComponent(id)}${q ? `?${q}` : ''}`
+  if (!router) return fallback
+  try {
     const loc = router.resolve({
       name: 'request-detail',
       params: { requestId: id },
@@ -24,12 +31,14 @@ export function requestDetailPath(
       },
     })
     return loc.href
+  } catch {
+    // ★ `router.resolve({name})` **throws** when the named route is not registered
+    // (vue-router 4 raises a "No match for" Error). This runs inside a click
+    // handler, so a throw would surface as an unhandled error and the user would
+    // get no navigation at all. The path form is equivalent apart from a
+    // non-default `base`, and the caller can retry — never drop the click.
+    return fallback
   }
-  const qs = new URLSearchParams()
-  if (query?.mode) qs.set('mode', query.mode)
-  if (query?.tab) qs.set('tab', query.tab)
-  const q = qs.toString()
-  return `/request-detail/${encodeURIComponent(id)}${q ? `?${q}` : ''}`
 }
 
 /** Open request detail in a new tab; returns false if popup blocked / empty id. */

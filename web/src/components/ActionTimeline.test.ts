@@ -65,7 +65,15 @@ describe('ActionTimeline (OBS-FE2)', () => {
     const wrapper = mount(ActionTimeline, { props: { requestId: 'req-3' } })
 
     expect(wrapper.find('.at-row--retry').exists()).toBe(true)
-    expect(wrapper.text()).toContain('⭐r2')
+    // ★ 2026-10-25：这里原来断言 `wrapper.text()` 含 '⭐r2'。
+    //   ⭐ 是 **emoji 顶替图标系统** —— craft-floor 的硬禁项；2026-10-25 那轮
+    //   把它换成了 Element Plus 的真图标 <StarFilled />（渲染为内联 <svg>）。
+    //   ⇒ 旧断言在要求一个被禁的形态，且**永远红**（emoji 不是文本节点）。
+    //   新断言更强：既钉住「重试序号还在」，也钉住「星标是真图标」，
+    //   并反向钉住「渲染输出里不再有 emoji」。
+    expect(wrapper.find('.at-retry').text()).toContain('r2')
+    expect(wrapper.find('.at-retry svg').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('⭐')
     expect(wrapper.find('.at-row--error').exists()).toBe(true)
     expect(wrapper.text()).toContain('rate_limit')
     expect(wrapper.find('.at-row--terminal').exists()).toBe(true)

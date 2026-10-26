@@ -10,6 +10,7 @@ import FilterInput from '../components/FilterInput.vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useActionMessage } from '../composables/useActionMessage'
+import { Setting } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -598,7 +599,7 @@ onBeforeUnmount(() => {
     <!-- 2026-09-12: 页头收敛到 ui/PageHeader（方案 §4.5.2）；移动端标题与操作区自动堆叠 -->
     <PageHeader :title="t('keys.list.title')">
       <template #actions>
-        <button class="btn btn-ghost" @click="openDefaultLimits">⚙ 默认限制</button>
+        <button class="btn btn-ghost" @click="openDefaultLimits"><Setting /> 默认限制</button>
         <button class="btn btn-primary" @click="openNew">+ 签发密钥</button>
       </template>
     </PageHeader>

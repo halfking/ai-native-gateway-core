@@ -2,9 +2,18 @@
 //
 // 2026-07-01: 会话附件管理端点。
 //
-// 这些端点查询 _request_logs.attachments JSONB 列（migration 325），
-// 提供附件列表、统计、清理预览/执行、单项查看能力。附件实体文件存储在
-// 文件系统（LLM_GATEWAY_ATTACHMENT_DIR），此处只管理数据库中的元数据引用。
+// 这些端点查询附件元数据 JSONB 列，提供附件列表、统计、清理预览/执行、
+// 单项查看能力。附件实体文件存储在文件系统（LLM_GATEWAY_ATTACHMENT_DIR），
+// 此处只管理数据库中的元数据引用。
+//
+// 2026-10-20（迁移 890，v1 族整体退役）：附件元数据列的落点从 v1 宽表的
+// attachments 列换成会话族特征层的 `session_turn_details.attachments`
+// （734 特征层，镜像桥从 telemetry 入口补采，仍在写）。
+// 读端一律走会话族原生源 db.SessionFamilyTurnsSourceSQL()（它把
+// session_turns 的 request_id/ts/tenant_id/success 与 details 层的
+// client_model/attachments 拼在一行，列名与 v1 宽表同名同义）；
+// 写端（cleanup/execute）改清 `session_turn_details_hot` 的 attachments 列
+// —— 与 v1 时代「只清 hot 表、不动月分区」的范围**一一对应**。
 //
 // 端点（详见 handler.go 路由注册）：
 //   GET  /api/admin/attachments                列出含附件的请求（分页）
@@ -14,7 +23,7 @@
 //   POST /api/admin/attachments/cleanup/execute 清理过期附件元数据（super_admin）
 //   GET  /api/admin/attachments/{request_id}    查看某请求的附件详情
 //
-// 注意：本端点只清理 _request_logs.attachments 列（置 NULL），
+// 注意：本端点只清理附件元数据列（置 NULL），
 // 不删除文件系统中的实体文件（文件由 hash 命名可去重，删除需额外确认）。
 //
 // audit-data-closure-2 (2026-08-31): all read endpoints now apply an
@@ -45,7 +54,43 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
+
+// attachmentsPresencePredicate 是「该请求有附件」的会话族谓词。
+//
+// ★ 为什么不是 `rl.attachments IS NOT NULL`（2026-10-21 实测改判）：
+//
+//  1. **语义**：会话族特征层 `session_turn_details.attachments` 在
+//     2026-09-06～09-20 那一段历史分区里，空附件被写成 **JSON `null`**
+//     （jsonb 标量），而不是 SQL NULL；2026-09-21 起才改成 SQL NULL。
+//     ⇒ 生产实测（252 共享库，2026-10-21）：`attachments IS NOT NULL`
+//     命中 **454,963** 行（其中 446,891 行是 JSON null ⇒ 根本没有附件），
+//     而「真的有附件（非空数组）」只有 **8,072** 行。
+//     ⇒ 旧谓词既**语义错**（把无附件的请求列进来），又**极慢**。
+//
+//  2. **性能**：谓词落在 LEFT JOIN 的**右表**（details 侧）⇒ 规划器无法
+//     用会话族的任何索引去满足 `ORDER BY ts DESC LIMIT 50`，只能
+//     全扫 session_turns(1,067,701 行) + session_turn_details(1,055,459 行)
+//     再 hash join + top-N sort。
+//     生产实测（252，EXPLAIN ANALYZE）：
+//     旧谓词 `rl.attachments IS NOT NULL` ⇒ **Execution Time 17,582 ms**
+//     （255k buffers + 17k temp 溢写）⇒ 撞 10s ctx deadline ⇒ HTTP 500
+//     本谓词 `rl.attachment_count > 0`  ⇒ **Execution Time 1,317 ms**
+//     （13.4×）⇒ 谓词被下推进两臂，用上分区部分索引
+//     `session_turns_2026_09_heap_attachment_count_idx` /
+//     `session_turns_2026_10_attachment_count_idx`（谓词逐字相同）。
+//
+//  3. **不丢行**：`{attachment_count > 0}` ⊇ `{details 有非空数组}`
+//     （实测 8,090 ⊃ 8,072，差 18 行是 count>0 但 details 无数组），
+//     ⇒ 换成它只会**多**出行，不会少掉真正带附件的请求。
+//
+//  4. **不能用 `rl.has_attachments IS TRUE`**：那一列是
+//     `CASE WHEN attachment_count IS NULL THEN NULL WHEN >0 THEN true
+//     ELSE false END`，规划器**推不出**它蕴含索引谓词
+//     `attachment_count > 0`（NULL 分支），⇒ 部分索引用不上 ⇒ 退回全扫。
+const attachmentsPresencePredicate = "rl.attachment_count > 0"
 
 // attachmentRow 是 attachments 列表查询的单行结果。
 type attachmentRow struct { //nolint:unused
@@ -167,25 +212,29 @@ func (h *Handler) handleDataLifecycleAttachments(w http.ResponseWriter, r *http.
 	limitIdx := len(args) + 1
 	offsetIdx := len(args) + 2
 	args = append(args, limit, offset)
-	where := "WHERE attachments IS NOT NULL" + tenantPred
+	// 列名带 rl. 前缀：FROM 是会话族原生源（子查询），限定名免得与子查询
+	// 内部的列名混淆。
+	where := "WHERE " + attachmentsPresencePredicate + tenantPred
 	if !since.IsZero() {
 		args = append(args, since)
-		where += " AND ts >= $" + strconv.Itoa(len(args))
+		where += " AND rl.ts >= $" + strconv.Itoa(len(args))
 	}
 	if !until.IsZero() {
 		args = append(args, until)
-		where += " AND ts < $" + strconv.Itoa(len(args))
+		where += " AND rl.ts < $" + strconv.Itoa(len(args))
 	}
 
-	query := fmt.Sprintf(`
-		SELECT request_id, ts, tenant_id,
-		       COALESCE(client_model, ''), success, attachments::text
-		FROM _request_logs
-		%s
-		ORDER BY ts DESC
-		LIMIT $%d OFFSET $%d`,
-		where, limitIdx, offsetIdx,
-	)
+	// ⚠ 这里**不能**用 fmt.Sprintf 把会话族 SQL 拼进格式串：那份投影里含
+	// `LIKE 'sys:%'`，`%` 会被当成动词吃掉、查询在运行期被写坏
+	// （admin/session_view_dependency_risk_test.go 的 TestNoSprintfOnNativeSourceSQL
+	// 就是钉这一条）。故用字符串拼接 + strconv.Itoa 写占位符编号。
+	// 占位符编号用 fmt.Sprintf 拼在**不含会话族 SQL** 的尾巴上（那里没有 % 动词）。
+	tail := fmt.Sprintf("\n\t\tORDER BY rl.ts DESC\n\t\tLIMIT $%d OFFSET $%d", limitIdx, offsetIdx)
+	query := `
+		SELECT rl.request_id, rl.ts, rl.tenant_id,
+		       COALESCE(rl.client_model, ''), COALESCE(rl.success, false), rl.attachments::text
+		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
+		` + where + tail
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
@@ -239,22 +288,28 @@ func (h *Handler) handleDataLifecycleAttachmentStats(w http.ResponseWriter, r *h
 	// (18k+ rows in _request_logs_hot); jsonb_array_elements raises
 	// `cannot extract elements from a scalar` on it, so gate the LATERAL on
 	// array-ness (jsonb_typeof is NULL for SQL NULL → also excluded here).
-	where := "WHERE attachments IS NOT NULL AND jsonb_typeof(attachments) = 'array'" + tenantPred
+	//
+	// 2026-10-21: 谓词换成 attachmentsPresencePredicate（= `rl.attachment_count > 0`）：
+	//  ① 它与「details 有非空数组」等价（jsonb_typeof='array' 已蕴含 NOT NULL），
+	//     ⇒ 结果集不变；② 它逐字等于分区部分索引的谓词 ⇒ 规划器可下推并用上索引，
+	//     生产实测 942ms → 量级下降（旧谓词在 LEFT JOIN 右表侧，扫全表）。
+	where := "WHERE " + attachmentsPresencePredicate +
+		" AND jsonb_typeof(rl.attachments) = 'array'" + tenantPred
 	if !since.IsZero() {
 		args = append(args, since)
-		where += " AND ts >= $" + strconv.Itoa(len(args))
+		where += " AND rl.ts >= $" + strconv.Itoa(len(args))
 	}
 	if !until.IsZero() {
 		args = append(args, until)
-		where += " AND ts < $" + strconv.Itoa(len(args))
+		where += " AND rl.ts < $" + strconv.Itoa(len(args))
 	}
 	if !since.IsZero() {
 		args = append(args, since)
-		where += " AND ts >= $" + strconv.Itoa(len(args))
+		where += " AND rl.ts >= $" + strconv.Itoa(len(args))
 	}
 	if !until.IsZero() {
 		args = append(args, until)
-		where += " AND ts < $" + strconv.Itoa(len(args))
+		where += " AND rl.ts < $" + strconv.Itoa(len(args))
 	}
 
 	// audit-data-closure-2: defensively filter malformed-size elements at
@@ -262,18 +317,19 @@ func (h *Handler) handleDataLifecycleAttachmentStats(w http.ResponseWriter, r *h
 	// aggregate. The previous COALESCE/SUM/::bigint cast would raise
 	// `invalid input syntax for type bigint` for any bad element and
 	// HTTP 500 the whole stats call.
-	query := fmt.Sprintf(`
+	// ⚠ 同上：会话族 SQL 走字符串拼接，不进 fmt.Sprintf 的格式串。
+	query := `
 		SELECT elem->>'type' AS type,
 		       elem->>'content_type' AS content_type,
 		       COUNT(*) AS cnt,
 		       COALESCE(SUM(CASE WHEN elem->>'size' ~ '^[0-9]+$'
 		                         THEN (elem->>'size')::bigint
 		                         ELSE 0 END), 0) AS total_bytes
-		FROM _request_logs,
-		     LATERAL jsonb_array_elements(attachments) AS elem
-		%s
+		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl,
+		     LATERAL jsonb_array_elements(rl.attachments) AS elem
+		` + where + `
 		GROUP BY type, content_type
-		ORDER BY cnt DESC`, where)
+		ORDER BY cnt DESC`
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
@@ -353,19 +409,19 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupPreview(w http.ResponseWri
 
 	var count int64
 	var totalSize int64
-	err := h.db.QueryRow(ctx, fmt.Sprintf(`
+	// ⚠ 同上：会话族 SQL 走字符串拼接，不进 fmt.Sprintf 的格式串。
+	err := h.db.QueryRow(ctx, `
 		SELECT COUNT(*),
 		       COALESCE(SUM(CASE WHEN elem->>'size' ~ '^[0-9]+$'
 		                         THEN (elem->>'size')::bigint
 		                         ELSE 0 END), 0)
-		FROM _request_logs,
-		     LATERAL jsonb_array_elements(attachments) AS elem
-		WHERE attachments IS NOT NULL
-		  AND jsonb_typeof(attachments) = 'array'
-		  AND ts < NOW() - make_interval(days => $%d::int)
-		  %s`,
-		daysIdx, tenantPred,
-	), args...).Scan(&count, &totalSize)
+		FROM `+dbpkg.SessionFamilyTurnsSourceSQL()+` rl,
+		     LATERAL jsonb_array_elements(rl.attachments) AS elem
+		WHERE `+attachmentsPresencePredicate+`
+		  AND jsonb_typeof(rl.attachments) = 'array'
+		  AND rl.ts < NOW() - make_interval(days => $`+strconv.Itoa(daysIdx)+`::int)
+		  `+tenantPred,
+		args...).Scan(&count, &totalSize)
 	if err != nil {
 		slog.Warn("attachments: cleanup preview query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -486,7 +542,7 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 			    SELECT r.tenant_id, r.request_id, r.ts,
 			           COALESCE(att->>'hash', att->>'sha256',
 			                    att->>'id', att->>'url') AS hash
-			    FROM _request_logs_hot r,
+			    FROM session_turn_details_hot r,
 			         LATERAL jsonb_array_elements(r.attachments) AS att
 			    WHERE r.attachments IS NOT NULL
 			      AND jsonb_typeof(r.attachments) = 'array'
@@ -512,8 +568,10 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 		// args slice is `[olderThanDays, tenant_id?]` so the make_interval
 		// parameter (daysIdx) is $1 when no tenant is in scope and $2 when
 		// tenant_id pre-occupies $1.
+		// 2026-10-20（迁移 890）：清理目标从 v1 hot 宽表换成会话族特征层的
+		// hot 表。范围与 v1 时代**一一对应**（只清 hot 腿、不动月分区）。
 		updateSQL := fmt.Sprintf(`
-			UPDATE _request_logs_hot
+			UPDATE session_turn_details_hot
 			SET attachments = NULL
 			WHERE attachments IS NOT NULL
 			  AND ts < NOW() - make_interval(days => $%d::int)
@@ -528,7 +586,7 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 		// Skipped count: elements in the same window whose identity
 		// fields are all absent.
 		skipSQL := fmt.Sprintf(`
-			SELECT count(*) FROM _request_logs_hot r,
+			SELECT count(*) FROM session_turn_details_hot r,
 			    LATERAL jsonb_array_elements(r.attachments) AS att
 			WHERE r.attachments IS NOT NULL
 			  AND jsonb_typeof(r.attachments) = 'array'
@@ -624,13 +682,15 @@ func (h *Handler) handleDataLifecycleAttachmentItem(w http.ResponseWriter, r *ht
 	var tenantID, clientModel string
 	var success bool
 	var attText string
-	query := fmt.Sprintf(`
-		SELECT ts, tenant_id, COALESCE(client_model, ''), success,
-		       COALESCE(attachments::text, '[]')
-		FROM _request_logs
-		WHERE request_id = $1
-		  %s
-		ORDER BY ts DESC LIMIT 1`, tenantPred)
+	// ⚠ 同上：会话族 SQL 走字符串拼接，不进 fmt.Sprintf 的格式串。
+	query := `
+		SELECT rl.ts, rl.tenant_id, COALESCE(rl.client_model, ''),
+		       COALESCE(rl.success, false),
+		       COALESCE(rl.attachments::text, '[]')
+		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
+		WHERE rl.request_id = $1
+		  ` + tenantPred + `
+		ORDER BY rl.ts DESC LIMIT 1`
 	err := h.db.QueryRow(ctx, query, args...).Scan(&ts, &tenantID, &clientModel, &success, &attText)
 	if err != nil {
 		writeLookupErr(w, "request not found", err)

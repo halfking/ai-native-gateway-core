@@ -1,174 +1,145 @@
 // landing.ts — Landing page copy (guest homepage).
 //
-// 2026-07-05: Updated to neutral, global positioning.
+// 2026-10-25 rewrite (impeccable craft-floor / STYLE pass).
+// Rebuilt from the zh-CN / en-US samples. The previous draft was still the
+// English marketing text: "Core Open Source · Enterprise-Grade · Private
+// Deployment", adjectives standing in for facts, em dashes doing the job of
+// punctuation, and every description a tidy "X + Y + Z".
+// Rules live in DESIGN.md §7 "Voice" at the repo root.
+//
+// Fact discipline: this version claims only what the product actually does
+// (Apache 2.0 / 40 MB image / 200 concurrent with P99 under 500 ms / RLS
+// row-level security / 43 audit rounds with zero L1 findings / k3s and Docker
+// / three inbound protocols / 15-day trial). No new capability is implied.
+//
+// RTL note: this file carries no directional control characters (U+202B to
+// U+202E). The browser derives direction from the page, not from the copy.
 export default {
-  kicker: 'Core Open Source · Enterprise-Grade · Private Deployment',
-  title: 'LLM Gateway — Enterprise Open Source AI Gateway',
-  subtitle: 'Core open source enterprise AI gateway. Unified governance, global LLM access, compliance and data sovereignty — all core open source.',
-  featuresTitle: 'Core Capabilities',
-  featuresSubtitle: 'Covering key aspects from access to operations',
+  // Rendered only in the PublicPageShell footer (brand name + this). It is no
+  // longer used as a small label above the heading (craft-floor bans kickers).
+  kicker: 'نواة مفتوحة المصدر برخصة Apache 2.0',
+  brandTitle: 'بوابة المؤسسات المبنية على الذكاء الاصطناعي',
+  // already says that. It says what the thing does instead.
+  title:
+    'بوابة واحدة لكل استدعاءات نماذج الذكاء الاصطناعي في مؤسستك، ترى فيها الاستهلاك وتحتسبه وتوقفه',
+  subtitle:
+    'بروتوكولات OpenAI وAnthropic وResponses تدخل في البوابة نفسها. التوجيه حسب المستأجر والنموذج، والفوترة والتدقيق وحدود المعدل في مكان واحد. تعمل على أجهزتك الخاصة، فلا يغادر البيانات الشبكة.',
+  featuresTitle: 'ما تفعله البوابة',
+  featuresSubtitle: 'الاستقبال والتوجيه والفوترة والتدقيق، كلها في مدخل واحد',
+  // The six capability facts on the right-hand rail. Every one is checkable.
   heroPoints: [
-    'Core Open Source · Apache 2.0',
-    'Enterprise Governance',
-    'Global LLM Access',
-    'Data Security Shield',
-    'AI Session Asset Management',
-    'Private Deployment',
+    'النواة برخصة Apache 2.0',
+    'مستوى البيانات بلغة Go، حجم الصورة 40 ميغابايت',
+    '200 طلب متزامن، وزمن P99 أقل من 500 مللي ثانية',
+    'ثلاثة بروتوكولات واردة، ومنفذ واحد',
+    'عزل على مستوى الصف عبر PostgreSQL RLS',
+    'k3s أو Docker، على أجهزتك الخاصة',
   ],
   features: {
     smartRouting: {
-      title: 'Smart Routing & Credential Pool',
-      description: 'Auto-routing by tenant, model and task type; multi-credential fingerprint pool + adaptive probing, failover in seconds, near-zero ban rate.',
+      title: 'التوجيه حسب المستأجر ونوع المهمة',
+      description:
+        'يُختار المسار من المستأجر والنموذج ونوع المهمة. حين يتعطل مزوّد، تكتشفه الفحوص الخلفية فينتقل الطلب إلى المزوّد التالي، وتتكفل مجموعة بصمات بيانات الاعتماد بالتناوب.',
     },
     safety: {
-      title: 'Call Security Shield',
-      description: 'LLM-as-judge prompt injection detection (v1 observability mode) + sensitive data masking planning, enterprise compliance defense.',
+      title: 'حقن التعليمات والبيانات الحساسة',
+      description:
+        'يرصد LLM-as-judge حقن التعليمات في النماذج، والإصدار v1 يراقب فقط ولا يوقف، وتُخفى الحقول الحساسة وفق قواعد معيّنة.',
       badge: 'beta',
     },
     cache: {
-      title: 'Cache Alignment & Cost Reduction',
-      description: 'Prompt prefix stabilization + semantic caching, maximize KV Cache hit rate, reduce token compute overhead.',
+      title: 'التخزين المؤقت والتكلفة',
+      description:
+        'تثبيت البادئات مع تخزين دلالي. كلما ارتفعت نسبة إصابة KV Cache قلت عدد الرموز التي تُحتسب.',
     },
     agent: {
-      title: 'Agent & MCP Gateway',
-      description: 'Agent registry, A2A protocol, MCP tool hosting and protocol conversion — upgrade from LLM proxy to agent orchestration gateway.',
-      badge: 'Coming Soon',
+      title: 'دخول الوكلاء وأدوات MCP',
+      description:
+        'سجل الوكلاء وبروتوكول A2A واستضافة أدوات MCP وتحويل البروتوكولات. ينتقل المنتج من مجرد تمرير الطلبات إلى نموذج LLM إلى تنسيق الوكلاء.',
+      badge: 'قريبًا',
     },
     observability: {
-      title: 'Full-Chain Observability',
-      description: 'Request logs, routing decision audit, OTel tracing, SIEM/CEF event export, enterprise compliance ready.',
+      title: 'كل طلب يترك أثرًا',
+      description:
+        'سجلات الطلبات، وتدقيق قرارات التوجيه، وتتبّع OTel، وتصدير الأحداث بصيغة SIEM وCEF. عند وقوع عطل يمكن تتبّع ما جرى.',
     },
     billing: {
-      title: 'MaaS Billing System',
-      description: 'Plan + credits + three-pool wallet (subscription / credit / recharge), complete commercialization loop for tenant self-service.',
+      title: 'الاستخدام يطابق الفاتورة',
+      description:
+        'خطط وأرصدة ومحفظة بثلاثة مجمعات: اشتراك، ورصيد، وشحن. يطّلع المستأجرون على استهلاكهم بأنفسهم بدل سؤال المسؤول.',
     },
     multiProtocol: {
-      title: 'Multi-Protocol Compatibility',
-      description: 'OpenAI Chat / Anthropic Messages / Responses three inbound protocols unified, seamless access to open source and commercial models.',
+      title: 'منفذ واحد، ثلاثة بروتوكولات',
+      description:
+        'يُوحَّد OpenAI Chat وAnthropic Messages وResponses عند الدخول. لا يتغير عميلك ولا تتغير البوابة.',
     },
     multiTenant: {
-      title: 'Multi-Tenant Isolation',
-      description: 'PostgreSQL RLS row-level security + 43 rounds of audit L1=0, zero data leakage between tenants, independent policy and quota per tenant.',
+      title: 'المستأجرون لا يختلطون',
+      description:
+        'أمان على مستوى الصف عبر PostgreSQL RLS، و43 جولة تدقيق بلا أي ملاحظة من المستوى الأول، وسياسة وحصة مستقلة لكل مستأجر.',
     },
   },
-  advantagesTitle: 'Why Choose LLM Gateway',
-  advantagesSubtitle: 'Enterprise AI gateway for global enterprises',
+  advantagesTitle: 'لماذا تنشره بنفسك',
+  advantagesSubtitle: 'البيانات تبقى عندك، والفاتورة تبقى مفهومة',
   advantages: {
     openSource: {
-      title: 'Core Open Source',
-      description: 'Data plane, control plane, authentication, routing scheduler all open source. Zero black box, enterprise auditable, customizable, and evolvable',
+      title: 'النواة مفتوحة',
+      description:
+        'مستوى البيانات، ومستوى التحكم، والمصادقة، ومجدول التوجيه كلها منشورة برخصة Apache 2.0. تستطيع تعديلها وتستطيع تدقيقها.',
     },
     private: {
-      title: 'Private Deployment',
-      description: 'Fully private deployment, data stays in enterprise, k3s + Docker dual form, zero external dependencies',
+      title: 'أجهزتك الخاصة',
+      description: 'يُثبَّت على أجهزتك، بشكل k3s أو Docker، دون الاعتماد على أي خدمة خارجية.',
     },
     antiBan: {
-      title: 'High Availability System',
-      description: 'Multi-credential rotation + intelligent probing + automatic failover, ensuring service continuity',
+      title: 'الحظر ليس انقطاعًا',
+      description:
+        'تناوب بيانات الاعتماد مع الفحص النشط: إذا حُظر أحدها، تتولى البيانات التالية المهمة.',
     },
     perf: {
-      title: 'Go High-Performance Data Plane',
-      description: 'Native Go implementation, 40MB lightweight image, 200 concurrency P99 < 500ms, SSE streaming stable relay',
+      title: 'مستوى بيانات يتحمّل الضغط',
+      description:
+        'Go أصلي، حجم الصورة 40 ميغابايت، ويبقى زمن P99 أقل من 500 مللي ثانية عند 200 طلب متزامن، مع تمرير SSE مستقر.',
     },
   },
-  footer: 'LLM Gateway · Core Open Source · Enterprise Deployment · Data Sovereignty',
-  ariaPoints: 'Key Highlights',
+  footer: 'نواة مفتوحة برخصة Apache 2.0، تعمل على أجهزتك.',
   roadmap: {
-    title: 'Product Roadmap',
-    subtitle: 'From LLM data plane to enterprise Agent gateway, continuous build',
+    title: 'إلى أين يتجه المشروع',
+    subtitle: 'من مستوى بيانات لنماذج LLM إلى بوابة لوكلاء المؤسسات',
     v31: {
       phase: 'v3.1',
-      title: 'API Hub Asset Center + MCP Tool Hosting',
-      description: 'Unified registration of LLM endpoints, MCP services and Agents, developer self-service discovery and reuse.',
+      title: 'مركز أصول API Hub واستضافة أدوات MCP',
+      description:
+        'تُسجَّل نقاط نهاية LLM وخدمات MCP والوكلاء في مكان واحد، فيعثر عليها المطورون ويعيدون استخدامها من تلقاء أنفسهم.',
     },
     v32: {
       phase: 'v3.2',
-      title: 'Security Shield GA + SIEM Integration + SpecBoost',
-      description: 'Prompt injection blocking, sensitive data masking, API description intelligent enrichment to improve Function Calling accuracy.',
+      title: 'حظر الحقن، والتكامل مع SIEM، وSpecBoost',
+      description:
+        'ينتقل رصد حقن التعليمات من المراقبة إلى الحظر، وتُخفى البيانات الحساسة، وتُثرى وصفات واجهات API تلقائيًا لرفع دقة استدعاء الدوال.',
     },
     v40: {
       phase: 'v4.0',
-      title: 'Agent Registry + A2A Protocol Gateway',
-      description: 'Cross-agent task delegation and orchestration, unified access to OpenClaw and business Agents.',
+      title: 'سجل الوكلاء وبوابة بروتوكول A2A',
+      description: 'يفوّض الوكلاء المهام فيما بينهم، ويدخل OpenClaw ووكيل المؤسسة من المدخل نفسه.',
     },
     v50: {
       phase: 'v5.0',
-      title: 'Industry Solution GA',
-      description: 'Four industry templates for customer service, HR, sales, logistics, out-of-the-box agent solutions.',
+      title: 'حلول قطاعية متاحة',
+      description: 'قوالب لخدمة العملاء والموارد البشرية والمبيعات واللوجستيات. ثبّتها فتعمل.',
     },
   },
-
-  brandTitle: 'AI-Native Organization Core Gateway',
-
-  brandSubtitle: 'Qigui · Self-hosted',
-
-  activateBanner: {
-    title: 'Gateway not activated',
-    desc: 'No valid license on this instance. Open the activation wizard for online or offline activation.',
-    action: 'Activate now',
-  },
-
-  downloadCta: {
-    title: 'Self-hosted · Deploy in 5 minutes',
-    subtitle: 'Offline packages for every platform — no signup required. 15-day free trial after install.',
-    download: 'Download now',
-    support: 'Support us',
-    activate: 'Already installed? Activate',
-    note: 'Donation is voluntary and never blocks downloads or features',
-  },
-
-  deployFlow: {
-    title: 'Download · Install · Activate · Sign in',
-    subtitle: 'End-to-end private deployment integrated with the License activation wizard',
-    steps: {
-      download: {
-        title: 'Download offline package',
-        description: 'Pick your platform/arch artifact — no signup required for a time-limited download URL.',
-        action: 'Go to download',
-      },
-      install: {
-        title: 'Install on target environment',
-        description: 'Extract and run the installer on your server to deploy via k3s or Docker.',
-        hint: 'llm-gw-installer install --target /opt/kx-gateway',
-      },
-      activate: {
-        title: 'Activate License',
-        description: 'Online License Key or offline activation.req → activation.resp flow; 15-day trial available.',
-        action: 'Open activation wizard',
-        offlineAction: 'Offline activation portal',
-      },
-      login: {
-        title: 'Sign in to control plane',
-        description: 'After activation, sign in with admin credentials to manage tenants, routing, and observability.',
-        action: 'Sign in',
-      },
-    },
-    notes: [
-      'Donation is optional and never blocks downloads or features',
-      'Air-gapped sites should use the offline activation portal for activation.req',
-      'Activation wizard: /activate · interoperates with installer CLI commands',
-    ],
-  },
-
-  guestNavAria: 'Product navigation',
-
-  navDownload: 'Download',
-
-  navSetup: 'Install & Activate',
-
-  navActivate: 'Activate',
-
-  navLicense: 'License',
-
-  navAgreement: 'User Agreement',
-
-  navSupport: 'Support',
-
-  ctaLogin: 'Sign in',
-
-  ctaDownload: 'Download',
-
-  ctaActivate: 'Activate License',
-
-  ctaAgreement: 'View Agreement',
+  // 2026-07-21: guest-nav aria + top download/activation links (App.vue L197-203).
+  guestNavAria: 'تنقّل المنتج',
+  navDownload: 'تنزيل',
+  navSetup: 'تثبيت وتفعيل',
+  navActivate: 'تفعيل عبر الإنترنت',
+  navLicense: 'حالة الترخيص',
+  navAgreement: 'اتفاقية المستخدم',
+  navSupport: 'الدعم',
+  // 2026-07-21: landing primary CTAs (LandingView.vue L109-119).
+  ctaLogin: 'تسجيل الدخول',
+  ctaDownload: 'نزّل حزمة التثبيت',
+  ctaActivate: 'فعّل الترخيص',
+  ctaAgreement: 'اطلع على الاتفاقية',
 }

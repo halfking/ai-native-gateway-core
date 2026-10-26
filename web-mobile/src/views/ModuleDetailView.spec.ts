@@ -69,7 +69,7 @@ function mod(over: Record<string, unknown> = {}): ModuleWithStatus {
   } as ModuleWithStatus
 }
 
-/** 抄自 `GET /api/admin/modules/{key}`（admin/modules.go:836-839）。 */
+/** 抄自 `GET /api/admin/modules/{key}`（admin/modules.go:846-849）。 */
 function detailOf(over: Record<string, unknown> = {}): ModuleDetail {
   return {
     module: mod(),

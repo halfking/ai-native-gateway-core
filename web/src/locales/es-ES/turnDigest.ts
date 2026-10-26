@@ -21,9 +21,6 @@ export default {
   },
   events: {
     header: 'Eventos clave',
-    error: 'Error',
-    warning: 'Advertencia',
-    info: 'Información',
   },
   toolUsage: 'Uso de herramientas',
   toolCount: '{n} veces',

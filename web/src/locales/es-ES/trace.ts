@@ -3,9 +3,7 @@
 export default {
   modal: {
     title: 'Detalle de la traza',
-    openButton: '🔗 Traza',
     close: 'Cerrar',
-    tooltip: 'Ver línea de tiempo de extremo a extremo de esta solicitud',
     snapshotTitle: 'Instantánea de contexto de fallo',
     candidates: 'Candidatos',
     routingState: 'Enrutamiento',
@@ -17,8 +15,6 @@ export default {
     failedCount: 'fallos',
   },
   detail: {
-    basicInfo: 'Información básica',
-    requestId: 'ID de solicitud',
     finalStatus: 'Estado final',
     failedAtStage: 'Fase de fallo',
     totalDuration: 'Duración total',
@@ -27,11 +23,9 @@ export default {
     sourcePostgres: 'PostgreSQL (histórico)',
     eventCount: 'Eventos',
     copyJson: 'Copiar JSON',
-    copySuccess: 'Copiado',
     statusSuccess: 'Éxito',
     statusFailed: 'Fallido',
     statusTimeout: 'Tiempo agotado',
-    statusSkipped: 'Omitido',
     statusInProgress: 'En curso',
   },
   empty: {
@@ -41,7 +35,6 @@ export default {
     hint2: 'Completadas hace < 10 min: todavía en Redis',
     hint3: 'Ya volcadas a PostgreSQL: mostradas como respaldo',
 
-    hint4: 'If empty here, possible causes: flush not completed, or trace was not emitted',
   },
   aiPrompt: {
     button: '🤖 Generar prompt de IA',
@@ -76,16 +69,5 @@ export default {
     module_upstream: 'Upstream',
     module_session: 'Sesión',
   },
-  failureHint: {
-    upstream_timeout: 'Tiempo agotado upstream',
-    upstream_unreachable: 'Upstream inalcanzable',
-    upstream_reset: 'Conexión reiniciada',
-    upstream_io_error: 'Error de E/S de red',
-    upstream_network_error: 'Error de red',
-    upstream_5xx: 'Upstream 5xx',
-    upstream_4xx: 'Upstream 4xx',
-    upstream_rate_limit: 'Límite upstream (429)',
-    upstream_auth_error: 'Auth upstream (401/403)',
-    upstream_not_found: 'Upstream 404',
-  },
+  generateFailed: 'No se pudo generar el resumen. Vuelva a intentarlo.',
 }

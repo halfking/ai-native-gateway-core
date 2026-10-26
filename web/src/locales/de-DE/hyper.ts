@@ -3,15 +3,10 @@
 export default {
   bottomNav: {
     ariaLabel: 'Hauptnavigation',
-    home: 'Start',
-    dashboard: 'Übersicht',
-    requests: 'Anfragen',
-    models: 'Modelle',
     more: 'Mehr',
   },
   account: {
     title: 'Konto',
-    profile: 'Profil',
     language: 'Sprache',
     theme: 'Design',
     help: 'Hilfe',
@@ -24,7 +19,6 @@ export default {
     close: 'Schließen',
   },
   dataView: {
-    switchTo: 'Zu {mode} wechseln',
     table: 'Tabelle',
     cards: 'Karten',
   },
@@ -34,14 +28,6 @@ export default {
     loadingMore: 'Wird geladen…',
     retry: 'Erneut versuchen',
     allLoaded: 'Alle {count} geladen',
-    loadFailed: 'Laden fehlgeschlagen. Zum Wiederholen tippen.',
-    empty: 'Keine Einträge',
-  },
-  focus: {
-    enter: 'Fokusansicht',
-    exit: 'Fokus beenden',
-  },
-  desktopOnly: {
-    banner: 'Diese Seite ist für Desktop ausgelegt. Hier können Sie lesen; umfangreiche Bearbeitungen gehören auf den Desktop.',
+    loadFailed: 'Laden fehlgeschlagen. Bitte erneut versuchen.',
   },
 }

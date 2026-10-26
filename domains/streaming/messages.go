@@ -74,6 +74,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w, r, journeyWriter := beginRequestJourney(w, r, h.chatHandler)
 	defer finishRequestJourney(r, journeyWriter)
 	r = markExplicitStreamSession(r)
+	r = h.chatHandler.pinRules(r)
 	if h.chatHandler.sanitizeInputMiddleware != nil {
 		var authorized bool
 		r, authorized = h.chatHandler.prepareSanitizeRequest(r)
@@ -886,7 +887,12 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			if logCtx != nil {
 				logCtx.SetRoute(providerID, credentialID)
 				logCtx.SetError(blockCode, blockMessage)
-				logCtx.failAndMark(blockCode, blockMessage, providerID, credentialID)
+				// Render-then-emit: nativeStreamWriter.finish() already wrote the
+				// protocol terminal through writeTrustedTerminal, which sets
+				// Content-Type and writes the frame but never calls WriteHeader —
+				// so the committed stream carried HTTP 200 and the block travels
+				// as an SSE error frame. 200 is what the client received.
+				logCtx.failAndMark(blockCode, blockMessage, providerID, credentialID, http.StatusOK)
 			} else {
 				latency := int(time.Since(startTime).Milliseconds())
 				h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
@@ -897,6 +903,28 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	if errors.Is(execErr, errorsx.ErrOutputPolicyBlocked) {
+		const code, message = "output_policy_blocked", "Response blocked by output policy"
+		attemptErrCode, attemptErrMsg = code, message
+		auditBuilder.Success(false)
+		rt.Emit(state.EventFailed)
+		providerID, credentialID := failureAttribution(execErr, candidates)
+		if logCtx != nil {
+			logCtx.SetRoute(providerID, credentialID)
+			if ee, ok := execErr.(*executors.ExecuteError); ok {
+				logCtx.ApplyQueueTimestampsFromError(ee)
+			}
+			// http.StatusForbidden is the argument writeAnthropicError writes on the line below.
+			logCtx.failAndMark(code, message, providerID, credentialID, http.StatusForbidden)
+		} else {
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
+				providerID, credentialID, code, message, latency, upstreamBody, keyInfo, r)
+		}
+		*attemptLogged = true
+		writeAnthropicError(w, http.StatusForbidden, code, message)
+		return
+	}
 	if execErr != nil {
 		// SP-02: state machine — executor failed (skip when the failure was a
 		// client cancel, since r.Context() cancellation has already driven
@@ -1717,7 +1745,7 @@ func mapAnthropicStopReason(finishReason string) string {
 	case "length", "max_tokens":
 		return "max_tokens"
 	case "content_filter":
-		return "end_turn"
+		return "refusal"
 	default:
 		return "end_turn"
 	}

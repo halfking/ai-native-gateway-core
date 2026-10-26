@@ -3,6 +3,7 @@ package credential
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -164,6 +165,10 @@ func (w *Writer) SetCredentialUnavailable(ctx context.Context, credentialID int,
 	}
 	// P0-C：PenaltyNone（client_bug / shape / content_filter…）永不冷却凭据。
 	if errorsx.PenaltyOf(failure.Kind).Target == errorsx.PenaltyNone {
+		// 防归责矩阵被改导致静默失效：留下 debug 级轨迹，便于事后
+		// grep 凭据冷却缺位的根因（按口径应是 client-side 错误）。
+		slog.Debug("credential/writer: skipping cool for PenaltyNone",
+			"kind", failure.Kind, "credential_id", credentialID)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -226,8 +231,20 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 	if !w.Enabled() {
 		return ErrNoDatabase
 	}
+	// 2026-10-24 magpie 19 类 rest 词表轮（§6-P0-4）：首字节超时的归责是
+	// 「**第一次放过**（长 prompt 哪儿都慢）→ 反复发生才罚 → **罚在模型粒度**
+	// 而不是账号 → 退避递增」。静态表判 PenaltyNone（第一次绝不罚），
+	// 「反复才罚」由慢启动休息器承担 ⇒ 必须**在 PenaltyNone 短路之前**接管，
+	// 否则这个 kind 会被当成"不罚"直接放行，休息器永远收不到事件。
+	if failure.Kind == errorsx.KindFirstByteTimeout {
+		return w.writeSlowRest(ctx, credentialID, rawModel, failure)
+	}
 	// P0-C：归责 none 的失败不写冷却/配额态（避免形状 400 级联摘节点）。
 	if errorsx.PenaltyOf(failure.Kind).Target == errorsx.PenaltyNone {
+		// 与 SetCredentialUnavailable 同样的防静默失效轨迹：
+		// 万一 errorsx.PenaltyOf 误判 kind 归 none，本路径不会被日志暴露。
+		slog.Debug("credential/writer: skipping WriteOnError cool for PenaltyNone",
+			"kind", failure.Kind, "credential_id", credentialID, "raw_model", rawModel)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -436,6 +453,43 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		// log here would multiply noise during incidents without adding signal.
 		return nil
 	}
+}
+
+// writeSlowRest applies the magpie slow-start (first-byte timeout) rest policy.
+//
+// Contract (magpie internal/gateway/routing.go:314-318 + :1135-1173):
+//
+//	① 第一次放过      —— 长 prompt 哪儿都慢，第一次不罚任何人；
+//	② 反复才罚        —— 阈值 slowRests=2；
+//	③ 罚在模型粒度    —— 休息键 = (凭据, 模型)，**不动账号**；
+//	④ 退避递增        —— 1min → 2min → 4min…（30min 遗忘窗后归零）。
+//
+// ★ 休息落在**模型粒度** ⇒ 与账号级的「凭据不可用」是两回事：
+//
+//	本函数**不写** credentials.availability_state（同一账号的其它模型照常服务）。
+func (w *Writer) writeSlowRest(ctx context.Context, credentialID int, rawModel string, failure Failure) error {
+	tracker := DefaultSlowRest()
+	if tracker == nil {
+		return nil
+	}
+	key := SlowRestKey(credentialID, rawModel)
+	decision := tracker.Observe(key)
+	if !decision.Rest {
+		// ★ 第一次（及任何未达阈值的次数）：放过 ⇒ **不写任何冷却**。
+		// 留 debug 轨迹：万一归责口径被改，这里能看出"本该罚却没罚"。
+		slog.Debug("credential/writer: first-byte timeout forgiven (magpie slow: once nobody rests)",
+			"credential_id", credentialID, "raw_model", rawModel,
+			"slow_count", decision.Count, "threshold", SlowRests)
+		return nil
+	}
+	detail := trimDetail(failure.Detail)
+	// reason 里带上退避阶段，便于从 DB 直接看出"这是第几次慢启动"，
+	// 与 breaker 的 unavailable_reason 习惯一致（auto_<kind>_<phase>）。
+	reason := "auto_" + string(errorsx.KindFirstByteTimeout) + "_" + decision.By
+	slog.Info("credential/writer: first-byte timeout rest (model-scoped)",
+		"credential_id", credentialID, "raw_model", rawModel,
+		"slow_count", decision.Count, "until", decision.Until.UTC().Format(time.RFC3339), "by", decision.By)
+	return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, reason, decision.Until, detail)
 }
 
 // writeModelLevelFailureOnly applies a per-(credential, model) failure ONLY to

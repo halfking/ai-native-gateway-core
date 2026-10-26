@@ -43,7 +43,37 @@ const ResponsesProbeMaxOutputTokens = 32
 // max_tokens=10 撞上同一个 ≥16 下限（"Invalid 'max_output_tokens': must
 // be greater than or equal to 16, got 10"）→ 探针 3 连败 → 节点停 5 分钟
 // → 用户流量 db_empty 连坐。两条腿同一个中转、同一个下限，统一取 32。
-const ProbePingMaxTokens = ResponsesProbeMaxOutputTokens
+//
+// ★★ 2026-10-27（R152 轮 · D9b）：**32 对推理模型必然不足** ⇒ 探针拿到的
+// 响应里**没有 assistant 正文** ⇒ 判定 `probe_response_inconclusive`
+// ⇒ ★★ **故意不写回** ⇒ 状态永不改变 ⇒ ★★★ **永久 broken_confirmed**
+// ⇒ ⇒ ★★ **「超时判死 = 入口、内容预算不足 = 出不来」⇒ 两者组合 = 不可逆封禁**。
+//
+// ★★ R151 轮的 2×2 正交消融（本地实测）：
+//
+//	臂 A（只放宽超时 30 s → 180 s）⇒ **无效**：仍 inconclusive、仍不写回；
+//	臂 C（超时 180 s **+** 内容预算 32 → **1024**）⇒ ★★ **判定翻转**
+//	    （last_direct_ok=true / consecutive_failures=0 / state=healthy_confirmed）
+//	    ⇒ Goal 点名的 glm-5.3-flash 随即 10/10 全成功。
+//
+// ⇒ ⇒ ★★ **两个门槛必须一起放宽**（只放宽一个无效；只放宽内容预算救不了已被判死的对）。
+//
+// ⚠ 为什么是 **1024** 而不是更大：
+// ① 探针**必须**拿到 assistant 正文才可能判定成功 ⇒ 预算得容得下模型的
+//
+//	推理开销**加上**一段极短的回答；
+//
+// ② R151 实测：臂 C 的 1024 让探针判定翻转 ⇒ **1024 对探针这一档够用**；
+// ③ ★★ 但**用户请求**那一档仍可能不够 —— 实测 `max_tokens=1024` 的用户请求
+//
+//	仍被推理吃光（completion_tokens == reasoning_tokens == 1024、finish_reason=length）
+//	⇒ ⇒ ★★ **同一个数字在「探针」与「用户请求」两处的含义不同**：
+//	探针要的是「模型有没有正常应答」，用户请求要的是「正文长度」；
+//	⇒ ⇒ ★★ 用户请求那一档属于**另一件事**（R150 §6.3 P2/D10），不要混为一谈。
+//
+// ⚠ 成本：探针每轮最多 1024 输出 token（探针频率 = 每对每 30 s 上限）
+// ⇒ ★★ 这是「用一点 token 换一个不再被永久误杀」的交换。
+const ProbePingMaxTokens = 1024
 
 // responsesUnsupportedStatuses are the HTTP statuses under which a
 // /v1/responses rejection can carry the relay's "this model/vendor does not

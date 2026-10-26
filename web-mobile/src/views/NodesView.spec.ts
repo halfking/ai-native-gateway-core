@@ -256,10 +256,10 @@ describe('NodesView 凭据卡的模型计数', () => {
  *
  * 钉的是**契约**，不是渲染细节：
  *   ① 权限分档：探测/强恢走 h.superAdmin，tenant_admin 点下去必定 403
- *      （后端 admin/handler.go:880-888 注释明写 tenant_admin 对 /api/admin/** 403）
+ *      （后端 admin/handler.go:896-904 注释明写 tenant_admin 对 /api/admin/** 403）
  *      ⇒ 非 super_admin 时**不该**看到这两个按钮，也不能只靠后端报错来兜。
  *   ② reason 必填：set/clear-manual-disabled 对空串直接 400
- *      （admin/credential_monitor.go:1785-1792）⇒ 提交必须带上非空 reason。
+ *      （admin/credential_monitor.go:1838-1858）⇒ 提交必须带上非空 reason。
  *   ③ 探测语义：后端 202 异步返回「已提交」不是「探测通过」
  *      （admin/credential_state_handlers.go:30-51）⇒ 文案不能说成通过。
  */

@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { getProviders, type Provider } from '../api'
+import { useI18n } from 'vue-i18n'
+import { CaretBottom } from '@element-plus/icons-vue'
+
+const { t } = useI18n()
 
 const props = withDefaults(defineProps<{
   modelValue: string | number | null
@@ -73,7 +77,7 @@ async function loadProviders() {
   try {
     providers.value = await getProviders()
   } catch (e: unknown) {
-    loadErr.value = e instanceof Error ? e.message : '加载供应商失败'
+    loadErr.value = e instanceof Error ? e.message : t('providers.error.loadFailed')
   } finally {
     loading.value = false
   }
@@ -121,10 +125,10 @@ onMounted(() => {
           type="button"
           class="pp-clear"
           :disabled="disabled"
-          title="清空"
+          :title="$t('common.terms.clear')"
           @click.stop="clearValue"
         >×</button>
-        <span class="pp-caret">▾</span>
+        <span class="pp-caret"><CaretBottom /></span>
       </span>
     </button>
 
@@ -133,7 +137,7 @@ onMounted(() => {
         <div class="pp-dialog" role="dialog" :aria-label="title" @click.stop>
           <header class="pp-header">
             <h3 class="pp-title">{{ title }}</h3>
-            <button type="button" class="pp-close" aria-label="关闭" @click="closeDialog">×</button>
+            <button type="button" class="pp-close" :aria-label="$t('common.close')" @click="closeDialog">×</button>
           </header>
 
           <div class="pp-toolbar">
@@ -141,7 +145,7 @@ onMounted(() => {
           </div>
 
           <div class="pp-body">
-            <div v-if="loading" class="pp-status">加载中…</div>
+            <div v-if="loading" class="pp-status">{{ $t('common.feedback.loading') }}</div>
             <div v-else-if="loadErr" class="pp-status pp-err">{{ loadErr }}</div>
             <div v-else-if="!filteredProviders.length" class="pp-status">没有匹配的供应商</div>
             <div v-else class="pp-list">

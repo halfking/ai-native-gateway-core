@@ -48,6 +48,20 @@ var publicRootRefRe = regexp.MustCompile(`(?:src|href)="/([^"]+)"`)
 
 // rootPublicFiles 列出 web/public 下的**根级文件**（不进子目录，public 子目录
 // 不在豁免范围，见 TestAuthMiddleware_RootAssetBypassDoesNotLeakNeighbors）。
+//
+// ★ 点开头的文件（`.DS_Store` 等 **OS/编辑器产物**）**不在本门范围**：
+//
+//	① 它们被 `.gitignore` 排除（实测 `git check-ignore web/public/.DS_Store`
+//	   ⇒ 命中 `.gitignore:122`）⇒ **永远进不了仓** ⇒ 「显式登记」这个要求
+//	   对它们**不适用**（登记了也没用，它不会被提交）；
+//	② 它们**不是构建期产物**（`buildTimeOnlyPublicAssets` 的语义是
+//	   「由构建链生成、浏览器运行期不请求」），登记进去是**语义错配**；
+//	③ ★ 本门存在的目的（2026-07-10 起）是要逼人对「**会被匿名可达**的
+//	   公开资产」做显式决定 ⇒ 而点文件**不会被匿名可达**
+//	   （不在 `ExactPaths` ⇒ 鉴权中间件直接拒）。
+//
+// ⇒ ★ 2026-10-24 之前这里没排除点文件 ⇒ ⇒ **每个 macOS 检出上这道门都是红的**
+// ⇒ ⇒ 一道天天红的门 ⇒ 慢慢就没人信它了（与 LESSONS §357「门没人跑」同族）。
 func rootPublicFiles(t *testing.T) []string {
 	t.Helper()
 	entries, err := os.ReadDir(filepath.Join("..", "web", "public"))
@@ -58,6 +72,9 @@ func rootPublicFiles(t *testing.T) []string {
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
+		}
+		if strings.HasPrefix(e.Name(), ".") {
+			continue // ★ OS/编辑器产物（见上方说明）
 		}
 		files = append(files, e.Name())
 	}

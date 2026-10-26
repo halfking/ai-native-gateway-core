@@ -7,7 +7,7 @@
 // ══ 权限 ══════════════════════════════════════════════════════════════════
 // ★★★★ `requiresRole: 'admin'` —— **不是** super_admin，也**不是**不设。
 //
-//   注册 `admin/handler.go:1001` / `:1002` 两行都是 `admin(...)`，
+//   注册 `admin/handler.go:1034` / `:1035` 两行都是 `admin(...)`（批153 收口 :1009/:1010 后，12h-audit 20261017 轮再漂 25 行），
 //   而 `admin` 是 `handler.go:925` 的**局部别名** `admin := h.admin`
 //   ⇒ `h.admin` = `AdminMiddleware` —— ★ **没有任何角色下限**
 //   ⇒ 「admin 档」在注册行里的真实含义是「**已认证**」，不是「管理员」。
@@ -25,7 +25,7 @@
 //        ⇒ 客户端这一层要补的是**角色下限**，不是数据隔离。
 //
 //   ⚠️ 前端严于后端是**兜底不是修复**。
-//   ★★ 同族 `:1005-:1011` 的 vacuum / vacuum-full / reindex（六个）
+//   ★★ 同族 `:1013-:1019` 的 vacuum / vacuum-full / reindex（六个）
 //      全是 `h.superAdmin` 且全是**写操作**（锁表）⇒ 本页**一条都不碰**。
 import { computed, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
@@ -43,7 +43,7 @@ import {
   type StorageTableSizes,
 } from '@/api/dataLifecycleStorage'
 
-useHyperPage({ title: () => t('dls.title') })
+useHyperPage({ title: () => (allowed.value ? t('dls.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

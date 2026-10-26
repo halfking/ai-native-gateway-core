@@ -68,6 +68,13 @@ func AllErrorKinds() []ErrorKind {
 		KindNoAvailableChannel,
 		KindCircuitOpen,
 		KindFpSlotSaturated,
+		// 2026-10-24 magpie 19 类 rest 词表轮（restclasses.go）：这三个 kind
+		// 是为了让 magpie 的 slow / loop / restricted 三类**能被真正判出来**
+		// 而新增的 —— 此前它们分别与 KindStreamTimeout / KindEmptyResponse /
+		// KindAuth 同形，判据无法表达。各自的生产者见 restclasses.go 的注释。
+		KindFirstByteTimeout,
+		KindReplyLoop,
+		KindAccountRestricted,
 	}
 }
 
@@ -81,6 +88,23 @@ func PenaltyOf(kind ErrorKind) Penalty {
 		KindCanceled, KindCircuitOpen, KindFpSlotSaturated:
 		// circuit_open / fp_slot_saturated 是网关侧状态，再记一次冷却无意义。
 		return Penalty{Target: PenaltyNone}
+
+	// —— 不罚：首字节超时（magpie 的 slow）——
+	//
+	// ★ magpie 的契约是「**第一次放过**（长 prompt 哪儿都慢）→ 反复发生才罚
+	//   → **罚在模型粒度**而不是账号 → 退避递增」（routing.go:314-318、
+	//   :1135-1173）。静态表只能表达「不罚」这一半；「第二次才罚」由
+	//   domains/credential/slowrest.go 的**有状态**模型粒度休息器承担。
+	//   ⇒ 这里判 none，才不会在第一次就摘掉绑定。
+	case KindFirstByteTimeout:
+		return Penalty{Target: PenaltyNone}
+
+	// —— 绑定级：回复陷入循环 ——
+	//
+	// ★ magpie 的 failLoop 理由是「**是模型转圈，不是账号的锅**」
+	//   （routing.go:319-321）⇒ 休息粒度取 (凭据, 模型)，**不罚账号**。
+	case KindReplyLoop:
+		return Penalty{Target: PenaltyBinding}
 
 	// —— 绑定级：模型不存在 / 弃用 / 限流 / 瞬时 / 空响应 ——
 	case KindModelNotFound, KindModelDeprecated:
@@ -100,6 +124,12 @@ func PenaltyOf(kind ErrorKind) Penalty {
 	case KindQuota, KindQuotaBalance:
 		return Penalty{Target: PenaltyCredential, Fuse: true, Permanent: true}
 	case KindQuotaPeriodic:
+		return Penalty{Target: PenaltyCredential, Fuse: true, Permanent: false}
+	case KindAccountRestricted:
+		// ★ 账号被**厂商限制**（magpie 的 restricted）：罚账号级，但**不是永久** ——
+		//   magpie 的理由是「等申诉，不是等时间」（routing.go:322-325、:982-985）。
+		//   Permanent=true 会把一个**厂商解除限制后还能回来**的账号永久摘掉 ⇒ 不能给永久。
+		//   与 KindAuth 的差别正在这里：凭据不对（auth）是永久的，账号被限制不是。
 		return Penalty{Target: PenaltyCredential, Fuse: true, Permanent: false}
 
 	// —— provider 级：整站不可达 ——

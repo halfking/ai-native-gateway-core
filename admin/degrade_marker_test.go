@@ -83,6 +83,9 @@ var degradeHelpers = []string{
 // 关键设计：这里**登记计数而不是登记「已覆盖」**。下一轮从确切数字起步，
 // 而不是从零开始重新搜索 —— 未知边界的范围，比已知的更大。
 var degradeMarkerOutOfScope = map[string]string{
+	"domains/ursm/v2/persist/retention_partition.go": "后台分区 DROP 的 42P01 返回 errPartitionGoneAlready，" +
+		"不是 HTTP 200 空载荷；调用方显式跳过已被对端删除的分区且不虚记回收。" +
+		"由 TestSnapshotRetentionDoesNotCountPartitionAlreadyGone 与 TestSnapshotRetentionRealDropErrorStillDegrades 正反把守",
 	"admin/aggregate_read_guard.go":     "内部读守卫，不直接产出页面载荷（writeAggRowsErr/writeLookupErr 写 503 + analytics_view_missing，不是 200+空）",
 	"admin/dashboard_board_aux.go":      "运维 chip 查询：三处 _= 已于 2026-10-03 改为记录错误并恒发 degraded；经 TestBoardOpsQueriesReportDegradation 把守",
 	"admin/dashboard_board_fallback.go": "饼图逐维度降级账本（boardPieDegradation），经 TestBoardPieDegradationLedger + TestBoardPiesDegradationReachesPayload 把守",

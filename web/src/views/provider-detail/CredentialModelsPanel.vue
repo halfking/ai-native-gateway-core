@@ -171,10 +171,10 @@ function thinkingLabel(o: ModelOffer) {
 <template>
   <div class="cred-models">
     <div class="toolbar">
-      <button class="btn btn-sm" :disabled="loading || busy" @click="onRefreshDb">刷新</button>
+      <button class="btn btn-sm" :disabled="loading || busy" @click="onRefreshDb">{{ $t('common.button.refresh') }}</button>
       <button class="btn btn-sm btn-primary" :disabled="!canManage || busy" @click="onFetchUpstream">从上游拉取</button>
       <button class="btn btn-sm" :disabled="!canManage || busy" @click="showAdd = true">手工加入</button>
-      <button class="btn btn-sm btn-danger-outline" :disabled="!canManage || busy || empty" @click="onClear">清空</button>
+      <button class="btn btn-sm btn-danger-outline" :disabled="!canManage || busy || empty" @click="onClear">{{ $t('common.terms.clear') }}</button>
       <label class="protect-opt">
         <input v-model="includeProtected" type="checkbox" :disabled="!canManage" />
         清空含手工保护
@@ -197,9 +197,9 @@ function thinkingLabel(o: ModelOffer) {
         <thead>
           <tr>
             <th>模型身份</th>
-            <th>可用</th>
-            <th>来源</th>
-            <th>模态</th>
+            <th>{{ $t('common.terms.available') }}</th>
+            <th>{{ $t('common.terms.source') }}</th>
+            <th>{{ $t('common.terms.modality') }}</th>
             <th>思考</th>
             <th>Context</th>
             <th>Pricing / 1M</th>
@@ -207,7 +207,7 @@ function thinkingLabel(o: ModelOffer) {
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td colspan="8">加载中…</td></tr>
+          <tr v-if="loading"><td colspan="8">{{ $t('common.feedback.loading') }}</td></tr>
           <tr
             v-for="o in sortedOffers"
             :key="o.id"
@@ -225,7 +225,7 @@ function thinkingLabel(o: ModelOffer) {
               />
               <span v-if="o.admin_protected" class="tag">保护</span>
             </td>
-            <td>{{ o.available ? '是' : '否' }}</td>
+            <td>{{ o.available ? $t('common.button.yes') : $t('common.button.no') }}</td>
             <td>{{ o.source || o.availability_source || '—' }}</td>
             <td>{{ o.modality || '—' }}</td>
             <td>{{ thinkingLabel(o) }}</td>
@@ -262,7 +262,7 @@ function thinkingLabel(o: ModelOffer) {
           <input v-model="addForm.raw_model_name" placeholder="供应商返回的模型名" />
         </div>
         <div class="form-group">
-          <label>标准名</label>
+          <label>{{ $t('common.terms.standardName') }}</label>
           <input v-model="addForm.standardized_name" placeholder="默认从原名规范化" />
         </div>
         <div class="form-group">
@@ -271,7 +271,7 @@ function thinkingLabel(o: ModelOffer) {
         </div>
         <div class="form-group" style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
           <div>
-            <label>模态</label>
+            <label>{{ $t('common.terms.modality') }}</label>
             <select v-model="addForm.modality">
               <option value="text">text</option>
               <option value="vision">vision</option>
@@ -296,7 +296,7 @@ function thinkingLabel(o: ModelOffer) {
           <span>支持思考能力</span>
         </label>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-          <button class="btn btn-ghost" @click="showAdd = false">取消</button>
+          <button class="btn btn-ghost" @click="showAdd = false">{{ $t('common.button.cancel') }}</button>
           <button class="btn btn-primary" :disabled="busy" @click="onAdd">加入</button>
         </div>
       </div>

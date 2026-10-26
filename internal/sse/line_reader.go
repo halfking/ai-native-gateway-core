@@ -74,6 +74,15 @@ func (r *LineReader) ReadLine() (string, error) {
 			return string(line), nil
 		}
 		if err != nil {
+			// A buffer boundary mid-line (the fragment filled the underlying
+			// bufio window without a terminator) is NOT a read failure: keep
+			// accumulating up to the limit. Before 2026-10-16 this fell
+			// through to the error return, so any physical SSE line at or
+			// over the reader's buffer size (64 KiB default) killed the
+			// stream with a spurious "bufio: buffer full" read_error.
+			if err == bufio.ErrBufferFull {
+				continue
+			}
 			if err == io.EOF && len(line) > 0 {
 				return string(line), nil
 			}

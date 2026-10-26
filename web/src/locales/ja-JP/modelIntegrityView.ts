@@ -70,7 +70,6 @@ export default {
     requestId: 'Request ID',
     actual: '実際',
     status: 'ステータス',
-    actions: '操作',
     loading: '読み込み中...',
     noData: '整合性イベントが見つかりません',
     viewDetail: '詳細',

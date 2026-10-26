@@ -1,0 +1,162 @@
+# R99 轮 · 段十四（§19.20.75）· 「作用域模型盲区」候选清单（**五条件收敛版**）
+#
+# ★★★★★★ **本文件是 `scripts/audit/measure-pipefail-scope-drop.py` 的【逐字产物】**
+#   ⇒ ★ **禁止手改**；★ **改了生成器就必须重跑本文件**；★ 门判据⑤保证二者逐字一致
+#   ⇒ ★ 引用本文件任何计数都必须带【时点 + 树】（本文件随仓内形态漂移）
+#
+# ★ 口径（三条同时成立）：
+#   ① 该行命中「变量写端 → 单管道 → 早退消费者」形态（echo/printf + 变量展开 | grep -[qm]/head）
+#   ② **顶层**（<top> 作用域）`set -o pipefail` 在该行之前已启用且未被关闭
+#      ⇒ 真实 shell 语义下该行受 pipefail 覆盖（`set -o pipefail` 是进程级选项，函数体继承）
+#   ③ 对方量具 `measure-pipefail-race-surface.py` 的 after_pf=False
+#      ⇒ 它的轴 2 要求「启用点与管道点作用域完全相同」⇒ 函数体里的点被**静默丢弃**
+#
+# 列：file	line	scope	kind	usage	write_end_form	verdict_hint	consumer	exit_consumed	full_line
+# ★ usage = 对方 classify_usage 的读数：judgment=退出码被当判据消费｜bare=未被消费｜value=从管道取值
+#     ★ ★ judgment **不等于真缺陷面** ⇒ 还要看 exit_consumed + write_end_form + 人工回读
+# ★ exit_consumed = **本清单自算**（段十四新增）：管道退出码是否【真的】被消费
+#     consumed  = 被消费（if/elif/while/until 判据 ｜ &&/|| 左侧 ｜ x="$(管道)" 赋值）
+#     discarded = **被丢弃** ⇒ 假非零只是一条被忽略的退出码 ⇒ **无危害**
+#     ★ ★ 对方的 `usage=judgment` 在 `echo "$(管道)"` 这种形态上会**误判**（命令替换的退出码
+#        被丢弃）⇒ 本轮实测到 **2 处假阳性**（pg-error-classifier.sh:151、scan-secrets.sh:196）
+# ★ write_end_form = **写端输出的行数形态**（危害成立的必要条件之一）：
+#     bulk   = 变量来自无上界的多行来源（命令替换里是 cat/awk/grep/sed/find/docker logs/go test…）
+#     scalar = 变量来自单条记录 / 单行标量（read / head -1 / grep -m1 / 字面量）
+#     unknown= 静态判不了 ⇒ 必须人工回读源码
+# ★ verdict_hint：bulk ⇒ real-defect-candidate（**只是分诊线索**）｜scalar ⇒ safe-single-line｜unknown ⇒ needs-human-read
+#     ★ ★ 它**只说明「多行」，不说明「能超 64 KiB」** ⇒ 抽样核对抓到两个方向的错
+#       （假阳性 scripts/audit-all-tables.sh:268：单条 SQL 结果；假阴性 scripts/health-check-154.sh:138：
+#        HTTP 响应体可能多行但远小于 64 KiB ⇒ 人工回读结论 = 无害）⇒ **代理只可分诊、不可定性**
+#
+# ★★★★★★ **危害成立的【五个必要条件】（段十三三条 + 段十四两条，缺一即无害）**：
+#   ① 写端输出【多行】（grep 按行匹配 ⇒ 必须读到行尾才敢判 ⇒ 单行时它读完整条 ⇒ 写端也写完 ⇒ 无害）
+#   ② 写端可能【超管道缓冲 64 KiB】（★ 段十三只写了「多行」⇒ 漏了「上界」这一维）
+#   ③ 命中【靠前】（命中在末尾 ⇒ grep 也要读到末尾 ⇒ 写端写完 ⇒ 无害）
+#   ④ ★★ **管道退出码【真被消费】**（段十四新增 ⇒ 对方的 usage=judgment 会误判 `echo "$(管道)"`）
+#   ⑤ 消费者【早退】（grep -q / head -c）
+#   ⇒ ★ **118 → 110 的收敛**（★ 段十四当时的树）：118 候选 ⇒ 条件④后 89 ⇒ 逐处人工回读
+#     ⇒ **真缺陷面 8 处**（已改 herestring：verify-g1-route-contract.sh:127、
+#     verify-l11b-cost-view-rowset.sh:175、deploy-seamless.sh:1401/1403/1405/1407、
+#     verify-ursm-v2-rollout.sh:112、verify-local-deployment.sh:333）
+#   ⇒ ★★ **当前树上是 120 行 / 43 文件** ⇒ 与 110 的差额 **+10 = 对方的两笔提交**
+#     （R82 `459d80a3c` 引入 verify-nonplain-migration-delivery.sh 的 9 处管道
+#       ＋ R75 `dea4eda4d` 引入 ursm-snapshot-slot-refresh.sh 的 1 处）
+#     ⇒ ★ **不是**本轮扫描口径变化（口径的差值「剥注释 −2 / 顶层收紧 ±0」**不变**）
+#
+# ★★ **机制依据（可重跑，bash 5.3.9/darwin-arm64）**：`scripts/audit/probe-pipefail-sigpipe-shape.sh`
+#   ⇒ 多行 + 超管道缓冲(64 KiB) + 命中靠前 ⇒ 写端被 SIGPIPE ⇒ 管道退出码 141
+#     ⇒ pipefail ⇒ 假非零 ⇒ 判定塌成「没匹配」
+#   ⇒ ★★ **段十四实测的两条边界事实**（段十三的表格说「任意」是过宽表述）：
+#     · `head -c` 消费者**同样要求写端 > 64 KiB**（60,000 B ⇒ 0；70,000 B ⇒ 141）
+#       ⇒ ★ **且紧邻边界【有竞态】**：70,000 B 连跑 8 次 ⇒ 0 出现 3 次、141 出现 5 次
+#         ⇒ **边界读数不可钉进门**（只可钉 100 KB / 200 KB 这类远离边界的点）
+#     · `grep -q` 的同一边界是【确定的】：65,537 B ⇒ 0、70,000 B ⇒ 141（6/6 稳定）
+#
+# ★★ **四变体单变量对照（同一棵树、逐项开关、含量具排除）＝真实归因**
+#    （★ 段十四**定稿时在当前树重测** ⇒ 不抄旧值）：
+#      A 段十一口径（不剥注释 + 顶层宽松）= 122 处 / 44 文件
+#      B 只剥注释                        = 120 处 / 43 文件 ⇒ **剥注释 = −2**
+#      C 只收紧顶层                      = 122 处 / 44 文件 ⇒ **顶层收紧 = ±0**
+#      D 段十四现状（剥注释 + 顶层收紧）   = 120 处 / 43 文件
+#      ⇒ ⇒ ★ **差值不变**（剥注释 −2、顶层收紧 ±0）⇒ ★ **差值是结构性的、绝对值随树漂移**
+#      ⇒ ⇒ ★ 引用任何计数都必须带口径 + 带时点 + 带【树】（同一棵树上 A 与 D 差 2；跨轮次全部变）
+#      ⇒ ⇒ ★ 那 2 条幽灵注释行已定位到具体站点：scripts/audit/verify-session-family-p0-realdb.sh:116/124
+#
+# ★ 本版相对段十一那版的三处修正：① 剥注释（多报 2 条）② 顶层覆盖判据收紧为「只认 <top> 作用域」
+#   （口径该严谨，但实测不改任何一条的归属）③ 加 write_end_form / verdict_hint 两列
+#   ④ ★★ 段十四：加 exit_consumed 列 + 修掉 8 处真缺陷 ⇒ 118 → 110 行 / 42 → 41 文件
+#   ⑤ ★★ 段十四定稿：并入对方的 R82/R75 共 10 处新站点 ⇒ 110 → 120 行 / 41 → 43 文件
+#
+# ★★★★★★ **本文件【禁止手改】** ⇒ 它是本生成器的【逐字产物】
+#   ⇒ ★ **改了生成器就必须重跑本文件**（`python3 scripts/audit/measure-pipefail-scope-drop.py`）
+#     ⇒ 否则仓内形态与本清单【脱节】⇒ 而这种脱节**行数基线挡不住**（行数可能不变、内容已过期）
+#   ⇒ ★ 由 §19.20.75 的门判据⑤保证：**清单 ↔ 生成器产出必须逐字一致**（强判据）
+#   ⇒ ★★ 本轮就栽在这上面：段十四初版清单是【跨一次 merge 未重跑】的过期值（110 vs 实际 120）
+#     ⇒ 而当时的门只比【行数】、基线又是【从清单抄的】⇒ ★ **门绿、量具瞎了**（自证）
+#
+# ★★ **量具自身被显式排除**：`scripts/audit/probe-pipefail-sigpipe-shape.sh`（段十三）
+#   与 `scripts/audit/probe-pipefail-harm-conditions.sh`（段十四）
+#   （它的测试管道**故意**要制造 SIGPIPE ⇒ 命中被测形态是【设计如此】
+#     ⇒ 不排除的话，消费方会把它当成待修的缺陷 ⇒ ★ 扫描面必须显式排除量具自身）
+scripts/.coverage-820-probe.sh	33	covered	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s\n' "$startup_files"  | grep -Fxq "$name" && { echo StartupFiles; return; }
+scripts/.coverage-820-probe.sh	34	covered	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s\n' "$sequence_files" | grep -Fxq "$name" && { echo sequence; return; }
+scripts/.coverage-820-probe.sh	35	covered	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s\n' "$ensure_allowlist" | grep -Fxq "$name" && { echo ensure_allowlist; return; }
+scripts/.mutate-840-throttle.sh	57	mutate	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -qE "FAIL"; then
+scripts/.mutate-841-retention.sh	48	run	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -qE "build failed|cannot find|undefined:|syntax error"; then
+scripts/.mutate-841-retention.sh	52	run	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if [[ -n "$want" ]] && ! echo "$out" | grep -q "$want"; then
+scripts/252-monitor/ursm-snapshot-health.sh	321	sql_failed	var-write	bare	unknown	needs-human-read	grep-q	discarded	sql_failed() { printf '%s\n' "$1" | grep -qE '^\s*(ERROR|FATAL)'; }
+scripts/252-monitor/ursm-snapshot-slot-refresh.sh	157	sql_failed	var-write	bare	unknown	needs-human-read	grep-q	discarded	sql_failed() { printf '%s\n' "$1" | grep -qE '^\s*(ERROR|FATAL)'; }
+scripts/audit-all-tables.sh	268	audit_request_wal	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$updated" | grep -q "completed"; then
+scripts/audit-all-tables.sh	87	audit_usage_ledger	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$updated" | grep -q "0.999"; then
+scripts/audit/q-usage.sh	184	run_self_test	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s' "$out" | grep -q "轮转"; then
+scripts/audit/verify-g1-route-contract.sh	129	expect_red	var-write	bare	bulk	real-defect-candidate	head	discarded	echo "$output" | head -10
+scripts/audit/verify-l11b-cost-view-rowset.sh	316	expect_red	var-write	bare	bulk	real-defect-candidate	head	discarded	echo "$output" | head -10
+scripts/audit/verify-nonplain-migration-delivery.sh	533	expect_red_go	var-write	bare	unknown	needs-human-read	head	discarded	echo "$output" | head -12
+scripts/audit/verify-stop-write-interlock-realdb.sh	87	verdict	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$1" | grep -qE '^--- FAIL:|^FAIL'; then echo FAIL
+scripts/audit/verify-stop-write-interlock-realdb.sh	88	verdict	var-write	judgment	unknown	needs-human-read	grep-q	consumed	elif echo "$1" | grep -qE '^--- PASS:|^ok |^PASS'; then echo PASS
+scripts/audit/verify-v1-retirement-red-gates.sh	109	expect_red	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "${out}" | grep -qE 'build failed|undefined:|cannot use|syntax error|declared and not used'; then
+scripts/audit/verify-v1-retirement-red-gates.sh	118	expect_red	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "${got}" | grep -qxF "${name}"; then
+scripts/checks/install-entrypoints-test.sh	32	contains	var-write	judgment	unknown	needs-human-read	grep-q	consumed	contains() { if printf '%s' "$2" | grep -qF -- "$3"; then ok "$1"; else bad "$1 (输出里没有 '$3')"; fi; }
+scripts/checks/install-entrypoints-test.sh	33	absent	var-write	judgment	unknown	needs-human-read	grep-q	consumed	absent()   { if printf '%s' "$2" | grep -qF -- "$3"; then bad "$1 (输出里不该有 '$3')"; else ok "$1"; fi; }
+scripts/configure-journald.sh	316	do_verify	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if ! printf '%s' "$merged" | grep -qE '^\s*SystemMaxUse\s*='; then
+scripts/deploy-local-lib.sh	1220	dl_shared_root	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s\n' "$probed" | grep -qx "$declared"; then
+scripts/deploy-local-lib.sh	1223	dl_shared_root	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$probed" | grep -qx "$other"; then
+scripts/deploy-seamless.sh	250	remote_probe	var-write	value	unknown	needs-human-read	grep-q	consumed	body=$(remote_ssh "deadline=\$((\$(date +%s)+${timeout})); while [ \"\$(date +%s)\" -lt \"\$deadline\" ]; do out=\$(curl -sS --max-time 2 -w '\n%{http_code}' '${url}' 2>&1); code=\$(printf '%s' \"\$out\" | tail -n1); body=\$(printf '%s' \"\$out\" | sed '\$d'); if printf '%s' \"\$code\" | grep -qE '^[0-9]+\$' && [ \"\$code\" -ge 200 ] && [ \"\$code\" -lt 400 ]; then printf '%s\n__CURL_OK__' \"\$body\"; exit 0; fi; sleep 1; done; printf 'probe timeout after ${timeout}s, last attempt: %s\n__CURL_FAIL__' \"\$out\"; exit 1" 2>&1) || {
+scripts/deploy-seamless.sh	321	detect_active_side	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$line" | grep -q ":${contract_active}[[:space:]]"; then
+scripts/health-check-154.sh	138	check_api_health	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if [[ -n "$health_response" ]] && echo "$health_response" | grep -q "healthy"; then
+scripts/init-deploy-record.sh	86	detect_frontend_changes	var-write	bare	bulk	real-defect-candidate	head	discarded	echo "$fe_changes" | head -30 > "$RECORD_DIR/verify/frontend-changes.txt"
+scripts/local-deploy-test.sh	640	verify_l1_health	var-write	bare	scalar	safe-single-line	head	discarded	echo "    body: $(echo "$body" | head -c 200)"
+scripts/local-deploy-test.sh	820	run_smoke_script	var-write	bare	scalar	safe-single-line	head	discarded	fail "smoke: v1 models 响应异常: $(echo "$mbody" | head -c 120)"
+scripts/local-models/modelctl.sh	54	is_running	var-write	bare	bulk	real-defect-candidate	grep-q	discarded	echo "$body" | grep -qE '"(data|object|id)"'
+scripts/local-r112-smoke.sh	49	check	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -q "$expected"; then
+scripts/local-r112-smoke.sh	54	check	var-write	bare	unknown	needs-human-read	head	discarded	echo "    actual: $(echo "$out" | head -3 | tr '\n' ' ' | cut -c1-200)"
+scripts/local-r112-smoke.sh	59	check	var-write	bare	unknown	needs-human-read	head	discarded	echo "    output: $(echo "$out" | head -3 | tr '\n' ' ' | cut -c1-200)"
+scripts/pre-commit-check.sh	81	run_check	var-write	bare	unknown	needs-human-read	head	discarded	echo "$out" | head -10 | sed 's/^/         /'
+scripts/rollback-154.sh	100	check_backup_exists	var-write	value	scalar	safe-single-line	head	consumed	local latest_backup=$(echo "$backups" | head -1)
+scripts/rollback-154.sh	242	verify_rollback	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if [[ -n "$health" ]] && echo "$health" | grep -q "healthy"; then
+scripts/rollback-154.sh	322	select_backup	var-write	bare	scalar	safe-single-line	head	discarded	echo "$backups" | head -1
+scripts/sanitize-e2e-154.sh	110	run_scenario	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$cb" | grep -q 'SENSITIVE:'; then
+scripts/sanitize-e2e-154.sh	112	run_scenario	var-write	bare	unknown	needs-human-read	head	discarded	note "$(printf '%s' "$cb" | head -c 200)"
+scripts/sanitize-e2e-154.sh	123	run_scenario	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$cb" | grep -qF "$v"; then leaked="$leaked $v"; fi
+scripts/sanitize-e2e-154.sh	155	run_scenario	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$rc" | grep -q 'SENSITIVE:'; then
+scripts/sanitize-e2e-154.sh	164	run_scenario	var-write	bare	unknown	needs-human-read	head	discarded	note "$(printf '%s' "$rc" | head -c 200)"
+scripts/sanitize-e2e-154.sh	167	run_scenario	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if printf '%s' "$rc_text" | grep -qF "li.si@example.org"; then
+scripts/sanitize-e2e-154.sh	181	run_scenario	var-write	bare	unknown	needs-human-read	head	discarded	note "$(printf '%s' "$rd" | head -c 200)"
+scripts/sanitize-e2e-154.sh	183	run_scenario	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$cd" | grep -q '\[REDACTED\]'; then
+scripts/sanitize-e2e-154.sh	185	run_scenario	var-write	bare	unknown	needs-human-read	head	discarded	note "$(printf '%s' "$cd" | head -c 200)"
+scripts/sanitize-e2e-154.sh	76	run_scenario	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$c1" | grep -q 'SENSITIVE:'; then
+scripts/sanitize-e2e-154.sh	78	run_scenario	var-write	bare	unknown	needs-human-read	head	discarded	note "$(printf '%s' "$c1" | head -c 200)"
+scripts/sanitize-e2e-154.sh	87	run_scenario	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$c2" | grep -q 'SENSITIVE:'; then
+scripts/sanitize-e2e-154.sh	89	run_scenario	var-write	bare	unknown	needs-human-read	head	discarded	note "$(printf '%s' "$c2" | head -c 200)"
+scripts/sanitize-e2e-154.sh	93	run_scenario	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$c2" | grep -q "$a_phone"; then
+scripts/scan-secrets.sh	199	record_finding	var-write	judgment	scalar	safe-single-line	head	discarded	[[ "$ln" != "0" ]] && echo "    $(echo "$content" | head -c 200)"
+scripts/scan-secrets.sh	223	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$base" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
+scripts/scan-secrets.sh	257	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$content" | grep -qiE -e "$wl" 2>/dev/null; then whitelisted=1; break; fi
+scripts/scan-secrets.sh	265	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$content" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
+scripts/scan-secrets.sh	302	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(data|sops)":' || return 1
+scripts/scan-secrets.sh	303	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '\bENC\[' || return 1
+scripts/scan-secrets.sh	304	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(mac|lastmodified|version)":' || return 1
+scripts/scan-secrets.sh	305	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(age|pgp|kms)":' || return 1
+scripts/test-e2e-bodies.sh	104	test_e2e_001	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$API_RESPONSE" | grep -q "request_id"; then
+scripts/test-e2e-bodies.sh	192	test_perf_001	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$EXPLAIN_OUTPUT" | grep -qi "Index Scan"; then
+scripts/test-runtime-tc.sh	90	tc6	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$used_cred" | grep -q "^$test_cred_id|"; then
+scripts/upload/upload-to-cloudreve.sh	101	login_v4	var-write	bare	bulk	real-defect-candidate	head	discarded	log_err "v4 登录失败: $(echo "$resp" | head -c 200)"
+scripts/ursm-redis-db-migrate.sh	260	verify_count	var-write	value	unknown	needs-human-read	head	discarded	cur="$(printf '%s\n' "$batch" | head -1)"
+scripts/verify-local-deployment.sh	169	verify_l1_health	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$HEALTH_RESPONSE" | grep -q '"status":"ok"'; then
+scripts/verify-local-deployment.sh	196	verify_l1_health	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$READY_RESPONSE" | grep -q '"status":"ready"'; then
+scripts/verify-local-deployment.sh	209	verify_l1_health	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$VERSION_RESPONSE" | grep -q '"version"'; then
+scripts/verify-local-deployment.sh	245	verify_l2_dependencies	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$READY_RESPONSE" | grep -qE '"database".*"ok"|"connected".*true'; then
+scripts/verify-local-deployment.sh	269	verify_l2_dependencies	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$READY_RESPONSE" | grep -qE '"redis".*"ok"|"connected".*true'; then
+scripts/verify-local-deployment.sh	312	verify_l3_functional	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$ADMIN_RESPONSE" | grep -qE '"error"|"message"'; then
+scripts/verify-local-deployment.sh	351	verify_l3_functional	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$INDEX_RESPONSE" | grep -qE '<html|<!DOCTYPE'; then
+sql/migrations/timeout-optimization/run_migrations.sh	195	verify_migrations	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "${exists}" | grep -q "t"; then
+sql/migrations/timeout-optimization/run_migrations.sh	210	verify_migrations	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "${exists}" | grep -q "t"; then
+tests/deploy_nocgo_build_test.sh	149	test_cgo_only_package_fails_nocgo	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$err" | grep -q "sqlite3"; then
+tests/deploy_nocgo_build_test.sh	183	test_nocgo_dep_graph_no_sqlite3	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s\n' "$deps" | grep -q "github.com/mattn/go-sqlite3"; then
+tests/deploy_nocgo_build_test.sh	201	test_nocgo_dep_graph_no_sqlite3	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$deps" | grep -q "github.com/kaixuan/llm-gateway-go/storage/sqlite"; then
+tests/deploy_promotion_test.sh	269	test_gate_refuses_promotion_on_245_failure	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$log" | grep -q "refusing 154"; then
+tests/deploy_sops_test.sh	273	test_scan_secrets_does_not_exempt_non_sops	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -qE '\[BLOCK\]'; then
+tests/lib/fake-remote-host.sh	117	fake_host_setup	var-write	bare	scalar	safe-single-line	grep-q	consumed	echo "$base" | grep -qE '^[0-9]{3}_' || continue
+tests/rotate_credentials_test.sh	118	test_list	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -q "SSH_PASS_252" && echo "$out" | grep -q "PG_PASS_KAIXUAN1"; then
+tests/rotate_credentials_test.sh	168	test_dry_run_no_io	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! echo "$out" | grep -q "Dry-run:.*1"; then
+tests/routing/layer1_direct/test_protocol_conversion.sh	191	test_streaming_conversion	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$output" | grep -q '"choices"'; then

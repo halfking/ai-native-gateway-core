@@ -290,7 +290,7 @@ func TestSessionCompressor_LayeredCacheBehaviour(t *testing.T) {
 			"openai", 128_000, false)
 		// 验证 L2 写入了
 		fields, _ := l2.HGetAll(context.Background(),
-			"session:sc:"+tenantID+":"+sessionID+"_l2:v1")
+			"session:sc:"+tenantID+":"+sessionID+"_l2:v2")
 		if len(fields) == 0 {
 			t.Errorf("L2 should have been written after turn 1")
 		}

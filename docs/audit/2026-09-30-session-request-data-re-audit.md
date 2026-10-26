@@ -4719,7 +4719,19 @@ live 分支只写了 `Reason` 忘了把 `Stale` 设回 `false` ⇒ 该字段**�
 | `errors_out` | 3 | 响亮失败，灰度立刻可见（**可接受**） |
 | `validator_dual_read` | 1 | §9.35 的新鲜度探针 |
 
-**⇒ 灰度前必须处理的静默档：**57** 条**（`silently_empty` + `silently_degraded_content` + `silently_frozen`；计数口径 = countSilentStopWriteEffects 的三档 switch，见下方 2026-10-13 订正）
+**⇒ 灰度前必须处理的静默档：**0** 条**（`silently_empty` + `silently_degraded_content` + `silently_frozen`；计数口径 = countSilentStopWriteEffects 的三档 switch，见下方 2026-10-13 订正）
+
+2026-10-19 来源登记核对：providers.go 已移除 request-log 读点，原 error-rate 静默空档出列，57→56；租户四臂源抽出另登记为聚合退化，仍不纳入这三个静默档的计数。
+
+> ⚠ **S4 清单归零订正（2026-10-20，迁移 885「v1 族真删」轮）：56 → 0。**
+> 885 把 v1 族**物理删除**了（10 张底表 + 4 张 v1-only 视图 + 序列/索引/RLS），
+> 而「停写 v1 之后会怎样」这个问题的**对象**（v1 读点）随之归零：
+> 停写分级表 `requestLogsStopWriteClassification` 已清空，读点清单
+> `requestLogsReadInventory` 与间接表 `indirectRequestLogsReaders` 同为空。
+> ⇒ 三个静默档的条数**归零**；S4 灰度这个动作本身随 v1 一起退役。
+> ⚠ **口径没变**：`countSilentStopWriteEffects` 仍然逐个列举那三个档，
+> 只是登记表里一条都没有。门（`TestAuditDocSilentClaimMatchesRegistry`）从登记表
+> 实时计算，本句是它的对账面 ⇒ 数字必须跟着登记表走。
 
 > ⚠ **S4 波 4 补记（2026-10-13，blob 会话臂 + quality 会话族重写轮）：58 → 57。**
 > −1：admin/quality_correlations.go 除名——五个分桶整体会话族化

@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/kaixuan/llm-gateway-go/internal/testguard"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -68,9 +69,25 @@ func openSupplierPG(t *testing.T) (*pgx.Conn, func()) {
 	if dsn == "" {
 		t.Skipf("%s not set — offline mode; run with a citus_columnar-enabled PostgreSQL", supplierPGDSNEnv)
 	}
+	// ★★★ R87 轮：**目标库守卫**，必须在建连之前、也就是在 bootstrapSupplierSchema
+	// 的那一串 DROP 之前。
+	//
+	//   bootstrapSupplierSchema 会无条件 DROP 掉
+	//   supplier_errors / supplier_errors_hot / supplier_error_stats /
+	//   supplier_errors_unified —— 全是**产品表**（文件头自己写明「在干净库上建」）。
+	//   而 DSN 走的是 TEST_PG_DSN / LLM_GATEWAY_SUPPLIER_PG_DSN，
+	//   ★ 事实源把 TEST_PG_DSN 指向**产品库** ⇒⇒ 在产品库上跑这条腿
+	//   ⇒⇒ 产品表的 supplier_errors 族被清空。
+	//
+	//   ⇒ 守卫的放行条件：库名是一次性库，或目标是本仓的本地审计容器
+	//     （回环 + 15433/55432 —— 文件头给的 55432 正是其中之一）。
+	//   ⇒ 不满足 ⇒ **跳过**（环境不满足，不是代码缺陷）。
+	target := testguard.RequireIsolatedTarget(t, dsn)
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, dsn)
 	require.NoError(t, err)
+	// 守卫的第二层：连接落到的库必须就是 DSN 指名的那个（DSN 撒谎 ⇒ 失败）。
+	testguard.RequireDatabaseMatchesDSN(t, conn, target)
 	cleanup := func() { _ = conn.Close(ctx) }
 	return conn, cleanup
 }

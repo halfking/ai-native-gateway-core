@@ -1,13 +1,6 @@
 // Auto-translated draft (es-ES) · 2026-07-02 · please review
 // errors.ts — Textos de error de API. Resolver por ApiError.code primero, luego por estado HTTP.
 export default {
-  code: {
-    unauthorized: 'No autorizado, vuelva a iniciar sesión',
-    forbidden: 'Acceso denegado',
-    not_found: 'Recurso no encontrado',
-    rate_limited: 'Demasiadas solicitudes, reintente en breve',
-    internal: 'Error interno del servidor',
-  },
   byStatus: {
     400: 'Solicitud incorrecta',
     401: 'No autorizado, vuelva a iniciar sesión',

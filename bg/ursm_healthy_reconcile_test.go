@@ -147,7 +147,8 @@ func TestUrsmlHealthyReconcileNeverWritesUnverifiedPairs(t *testing.T) {
 // TestUrsmlHealthyReconcileSkipsClosedGate：ready 门关着时（recovery 持有命名空间）
 // 既不读视图也不写 —— 写会与 bootstrap/recovery 打架。
 // ★ 判据必须真的能失败：这里播种了健康行；若门检查被绕过，流程会走到视图读
-//   （seen 非空）并产生写入（变异验证以此变红）。
+//
+//	（seen 非空）并产生写入（变异验证以此变红）。
 func TestUrsmlHealthyReconcileSkipsClosedGate(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {

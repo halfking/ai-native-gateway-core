@@ -139,7 +139,7 @@ export default {
     },
   },
   edit: {
-    title: 'Editar proveedor — {name}',
+    title: 'Editar proveedor: {name}',
     catalogCode: 'Código de catálogo',
     vendor: 'Proveedor',
     headerProfile: 'Header Profile',
@@ -171,10 +171,9 @@ export default {
     },
   },
   credential: {
-    drawerTitle: 'Gestionar credenciales — {name}',
+    drawerTitle: 'Gestionar credenciales: {name}',
     refresh: 'Actualizar',
     addBtn: '+ Credencial',
-    empty: 'Aún no hay credenciales — haga clic en "+ Credencial" para añadir',
     table: {
       id: 'Credencial',
       status: 'Estado',
@@ -194,7 +193,7 @@ export default {
       disabled: 'Desactivada',
     },
     row: {
-      idTrustLine: '#{id} · {trust}',
+      idTrustLine: '#{id}: {trust}',
       healthProbeModel: 'Sonda {model}',
       apiOk: 'API OK',
       apiOkTitle: 'API de lista de modelos validada',
@@ -207,11 +206,11 @@ export default {
       slotFull: 'Lleno',
       slotFree: 'libres {free}',
       slotUnlimited: 'ilimitado (0 = sin tope)',
-      usageSeparator: ' llamadas · ',
+      usageSeparator: ' llamadas: ',
       balanceLabel: 'Saldo',
       // migration 721 (2026-09-18): balance provenance + on-demand refresh.
       balanceSourceApi: 'Sondeo por API',
-      balanceSourceManual: 'Entrada manual · sin sondeos automáticos durante 24h',
+      balanceSourceManual: 'Entrada manual: sin sondeos automáticos durante 24h',
       balanceRefreshTooltip: 'Consultar ahora la API de saldo del proveedor (GET, sin tokens)',
       balanceRefreshFailed: 'Falló el sondeo de saldo',
       balanceUnsupported: 'El proveedor no expone API de saldo (los planes se ven en los campos de cuota del plan)',
@@ -225,7 +224,7 @@ export default {
       disable: 'Eliminar',
     },
     addDialog: {
-      title: 'Añadir credencial — {name}',
+      title: 'Añadir credencial: {name}',
       apiKeyLabel: 'Clave API',
       apiKeyPlaceholder: 'sk-…',
       tagsLabel: 'Etiquetas (opcional)',
@@ -246,23 +245,23 @@ export default {
       saveFailed: 'Error al guardar la credencial',
       toggleFailed: 'Operación fallida',
     },
+    empty: 'Aún no hay credenciales: seleccione «+ Credencial» para añadir.',
   },
   check: {
     providerStarted: 'Comprobación iniciada',
     providerRunning: 'Ya en curso',
     providerFailed: 'Comprobación fallida',
-    credentialStatusPrefix: 'Estado: {status} · ',
+    credentialStatusPrefix: 'Estado: {status}: ',
     credentialModels: 'Interfaz de modelos OK',
     credentialProbeOk: 'Sonda superada',
     credentialUnreachable: 'Inaccesible',
     credentialFailed: 'Comprobación fallida',
-    diagnoseFailed: 'Diagnóstico fallido',
+    diagnoseFailed: 'No se pudo completar el diagnóstico. Vuelva a intentarlo.',
   },
   diagnose: {
-    title: 'Diagnóstico del proveedor — captura de solicitud/respuesta',
+    title: 'Diagnóstico del proveedor: captura de solicitud/respuesta',
     subtitle: '(credenciales sanitizadas)',
     loading: 'Diagnosticando…',
-    summary: '{n} credenciales — haga clic en una fila para expandir los detalles de solicitud/respuesta',
     table: {
       credential: 'Credencial',
       modelSource: 'Origen del modelo',
@@ -292,6 +291,7 @@ export default {
     errHeader: '⚠️ Error',
     modelsHeader: '✅ Modelos analizados ({n})',
     modelsTruncated: '… {n} en total',
+    summary: '{n} credenciales: seleccione cualquier fila para ampliar los detalles de solicitud/respuesta',
   },
   bgStatus: {
     panelTitle: 'Estado de tareas en segundo plano',
@@ -324,7 +324,7 @@ export default {
     day: 'hace d',
   },
   error: {
-    loadFailed: 'Error al cargar',
+    loadFailed: 'No se pudo cargar la lista de proveedores. Vuelva a intentarlo.',
   },
   common: {
     button: {
@@ -366,15 +366,15 @@ export default {
   emergencyFailed: 'Falló el mantenimiento de emergencia',
   // ── 2026-09-05: pestaña de configuración · chips de estado del ciclo de vida + estado de deshabilitado manual ──
   lifecycleTitle: 'Ciclo de vida',
-  lifecycleHint: 'Haga clic en un estado para guardarlo al instante; salir de «Activo» pide confirmación',
+  lifecycleHint: 'Selecciona un estado para guardarlo al instante; salir de «Activo» pide confirmación',
   lifecycleLabelActive: 'Activo',
   lifecycleLabelDisabled: 'Deshabilitado',
   lifecycleLabelSuspended: 'Suspendido',
   lifecycleLabelRetired: 'Retirado',
-  lifecycleHintActive: 'active · participa en el enrutamiento con normalidad',
-  lifecycleHintDisabled: 'disabled · deshabilitado manualmente, excluido del enrutamiento',
-  lifecycleHintSuspended: 'suspended · en pausa temporal, excluido del enrutamiento',
-  lifecycleHintRetired: 'retired · retirado definitivamente, no recuperable aquí',
+  lifecycleHintActive: 'active: participa en el enrutamiento con normalidad',
+  lifecycleHintDisabled: 'disabled: deshabilitado manualmente, excluido del enrutamiento',
+  lifecycleHintSuspended: 'suspended: en pausa temporal, excluido del enrutamiento',
+  lifecycleHintRetired: 'retired: retirado definitivamente, no recuperable aquí',
   lifecycleCurrent: 'Actual',
   lifecycleChangeConfirm: '¿Cambiar el ciclo de vida de «Activo» a «{label}» ({value})?\nLa credencial dejará de recibir tráfico; puede volver a «Activo» en cualquier momento.',
   lifecycleChangeDone: 'Ciclo de vida cambiado a «{label}».',

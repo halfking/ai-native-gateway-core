@@ -156,6 +156,7 @@ onBeforeUnmount(() => {
       :total-turns="snapshot?.total_turns as number | undefined"
       :total-cost="snapshot?.total_cost_usd as number | undefined"
       :summary-generated-at="snapshot?.summary_generated_at as string | undefined"
+      :duration-ms="snapshot?.duration_ms as number | undefined"
       @summary-updated="snapshot = $event"
     />
     <div class="list">

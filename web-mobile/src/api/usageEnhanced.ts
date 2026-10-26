@@ -3,14 +3,14 @@ import { req, type RequestOptions } from './client'
 /**
  * usageEnhanced.ts — 用量成本增强面的三条**只读**端点（2026-10-08，第七十批）。
  *
- * GET /api/admin/usage/cost-trend       （handler.go:1289 `h.admin` 前缀子路由）
+ * GET /api/admin/usage/cost-trend       （handler.go:1332 `h.admin` 前缀子路由）
  * GET /api/admin/usage/period-compare
  * GET /api/admin/usage/cache-economics
  *
  * ⚠️⚠️⚠️ ★★★★★★ **本条已于 2026-10-14（第一百二十二批）整体订正。**
  *
  *   **原文（两处错）**：
- *   ① 行号写 `handler.go:1267` ⇒ **实为 `:1289`**（漂 22 行；
+ *   ① 行号写 `handler.go:1267` ⇒ 实为 `:1297`（批 153 收口），12h-audit 20261017 轮再漂至 **`:1332`**（
  *      `:1267` 其实是 `if h.errorsTrendHandlers == nil {`，与本族毫无关系）；
  *   ② 「三条都挂在 `h.admin(h.HandleUsageAdmin)` 这个前缀子路由上
  *      ⇒ tenant_admin 可用 ⇒ **抽屉席不设 `requiresRole`**」。
@@ -21,7 +21,7 @@ import { req, type RequestOptions } from './client'
  *   错的是从它推出「所以不需要 `requiresRole`」—— 因为**它漏了第三类主体**。
  *
  *   ★★★★ **`h.admin` 没有任何角色下限。** 逐字链：
- *     `h.admin` = `AdminMiddleware`（`admin/handler.go:894` → `admin/auth.go:85-140`）
+ *     `h.admin` = `AdminMiddleware`（`admin/handler.go:901` → `admin/auth.go:85-140`）
  *     —— 全文**只有**「验 JWT」+「强制改密码」两件事，
  *     **没有任何 `IsSuperAdminOrLegacy` / `IsTenantAdmin` / 角色比较**；
  *     而 `identity.Verify`（`pkg/identity/verifier.go:111`）里的 `supportedRole`

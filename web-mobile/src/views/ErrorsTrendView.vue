@@ -62,7 +62,7 @@ import {
   type ErrorsTrendPoint,
 } from '@/api/errorsTrend'
 
-useHyperPage({ title: () => t('et.title') })
+useHyperPage({ title: () => (allowed.value ? t('et.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

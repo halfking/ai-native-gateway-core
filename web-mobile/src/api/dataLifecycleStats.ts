@@ -86,7 +86,7 @@ export interface DataSegment {
   percent_of_total: number
 }
 
-/** admin/data_lifecycle.go:33-38。★ `tenant_id` 可能是 `COALESCE(..., 'default')` 的 'default'（:187）。 */
+/** admin/data_lifecycle.go:54-59。★ `tenant_id` 可能是 `COALESCE(..., 'default')` 的 'default'（:270）。 */
 export interface TenantDataStats {
   tenant_id: string
   rows: number

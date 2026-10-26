@@ -57,6 +57,7 @@ func nativeComplianceDeltaFrame(protocol, text string) []byte {
 }
 
 func TestRealComplianceStreamCapAndFlushFailureRenderOneProtocolTerminal(t *testing.T) {
+	r1013RequireComplianceOn(t)
 	for _, tc := range []struct{ protocol, terminal string }{
 		{"anthropic-messages", "event: error\n"},
 		{"openai-responses", "event: response.failed\n"},
@@ -111,6 +112,9 @@ func (nativePhoneChecker) Check(_ context.Context, _, output string) (*outputcom
 }
 
 func TestNativeHandlersApplyRealOutputComplianceBeforeNonStreamWrite(t *testing.T) {
+	// Optional OC defaults off (2026-10-17); these tests assert the redaction
+	// path when the module is explicitly enabled.
+	r1013RequireComplianceOn(t)
 	for _, tc := range []struct {
 		name, protocol string
 		write          func(*ChatHandler, *httptest.ResponseRecorder, nativeResponseInterception) []byte
@@ -139,6 +143,7 @@ func TestNativeHandlersApplyRealOutputComplianceBeforeNonStreamWrite(t *testing.
 }
 
 func TestNativeStreamRealOutputComplianceRedactsCrossFramePhoneBeforeWire(t *testing.T) {
+	r1013RequireComplianceOn(t)
 	for _, tc := range []struct{ protocol, event, terminal string }{
 		{"anthropic-messages", "content_block_delta", "event: message_stop\n"},
 		{"openai-responses", "response.output_text.delta", "event: response.completed\n"},
@@ -172,6 +177,7 @@ func TestNativeStreamRealOutputComplianceRedactsCrossFramePhoneBeforeWire(t *tes
 }
 
 func TestRestoredSensitiveFrameIsHeldUntilRealOutputComplianceApproval(t *testing.T) {
+	r1013RequireComplianceOn(t)
 	for _, tc := range []struct {
 		protocol, first, terminal string
 	}{

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/internal/probekind"
 )
 
 func intPtr(v int) *int { return &v }
@@ -127,9 +128,20 @@ func TestFromTelemetryEntryExcludesProbeTraffic(t *testing.T) {
 }
 
 // TestProbeActorSetMatchesSQLPredicate pins the Go actor list to the SQL one.
-// bg is not importable here (bg imports this package), so the SQL constant is
-// read from its source file. If someone adds an actor to the SQL predicate and
-// forgets the Go list, live and rolled-up numbers disagree silently.
+//
+// 2026-10-23 审计（口径收敛）：SQL 谓词的 actor 列表不再手写字面量，
+// 改为从 internal/probekind 渲染（bg/probe_policy.go 的
+// ProbeTrafficExclusionPredicateView）。⇒ **本门原来那套"grep 源码里的
+// '<actor>' 字面量"的读法失效了**：字面量不再出现在源码里，门会永远红
+// （读数错误，不是行为错误）。
+//
+// 新的读法（量具跟着口径一起换）：
+//   ① bg 的谓词确实由 probekind.SQLActorList() 渲染 —— 读 bg 源码断言
+//      它引用了 SQLActorList()，且不含任何硬编码 actor 字面量；
+//   ② probekind.SQLActorList() 的输出与 Go 侧 probeGatewayActors 逐个
+//      对得上（两侧同源于 probekind ⇒ 必然一致，这里是回归保护）。
+//
+// bg 不能被 stats import（bg imports stats ⇒ 循环），所以 ① 仍走源码读取。
 func TestProbeActorSetMatchesSQLPredicate(t *testing.T) {
 	path := filepath.Join("..", "..", "bg", "probe_policy.go")
 	src, err := os.ReadFile(path)
@@ -144,29 +156,24 @@ func TestProbeActorSetMatchesSQLPredicate(t *testing.T) {
 	}
 	body := string(src)[idx:]
 
+	// ① 谓词必须由 probekind 渲染。
+	if !strings.Contains(body, "probekind.SQLActorList()") {
+		t.Error("ProbeTrafficExclusionPredicateView must render its actor list from\n" +
+			"  probekind.SQLActorList(); a hand-written literal list is exactly what\n" +
+			"  drifted before (self-check-worker / model-quality-worker were missing).")
+	}
+
+	// ② 渲染结果必须与 Go 侧一致。
+	rendered := probekind.SQLActorList()
 	for _, actor := range probeGatewayActors {
-		if !strings.Contains(body, "'"+actor+"'") {
-			t.Errorf("actor %q is in the Go list but missing from the SQL predicate; "+
+		if !strings.Contains(rendered, "'"+actor+"'") {
+			t.Errorf("actor %q is in the Go list but missing from the rendered SQL list; "+
 				"the live writer and the rollup writer must classify the same rows", actor)
 		}
 	}
 
-	// Reverse direction: every actor quoted inside the predicate's NOT IN list
-	// must exist on the Go side, or a probe class leaks into the live path.
-	// Bound the scan to the const's own final literal ("…'))\"") — a bare
-	// LastIndex("')") would run past the declaration into the next const and
-	// parse that one's actors too.
-	open := strings.Index(body, "origin_actor, '') NOT IN ('")
-	if open < 0 {
-		t.Fatal("origin_actor NOT IN arm not found in the SQL predicate")
-	}
-	rest := body[open+len("origin_actor, '') NOT IN ('"):]
-	end := strings.Index(rest, `'))"`)
-	if end < 0 {
-		t.Fatal("could not delimit the origin_actor NOT IN list")
-	}
-	list := rest[:end]
-	for _, part := range strings.Split(list, ",") {
+	// 反向：渲染结果里的每个 actor 都要在 Go 侧存在，或漏一个就泄漏。
+	for _, part := range strings.Split(rendered, ",") {
 		actor := strings.Trim(strings.TrimSpace(part), "'")
 		if actor == "" {
 			continue
@@ -179,7 +186,7 @@ func TestProbeActorSetMatchesSQLPredicate(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("actor %q appears in the SQL predicate but not in the Go probeGatewayActors list", actor)
+			t.Errorf("actor %q appears in the rendered SQL list but not in the Go probeGatewayActors list", actor)
 		}
 	}
 }

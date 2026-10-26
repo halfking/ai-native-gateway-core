@@ -51,7 +51,7 @@ function mockWindowClass(cls: 'compact' | 'medium' | 'expanded' | 'large'): void
 const i18n = createI18n({
   legacy: false,
   locale: 'zh-CN',
-  messages: { 'zh-CN': { hyper: { dataView: { table: '表格', cards: '卡片' }, list: { empty: '暂无记录' } } } },
+  messages: { 'zh-CN': { hyper: { dataView: { table: '表格', cards: '卡片' } }, common: { empty: { noResult: '暂无记录' } } } },
 })
 
 const ROWS = [

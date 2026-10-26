@@ -211,14 +211,23 @@ func TestSelfcheckUsesSharedRecentModelSource(t *testing.T) {
 		"recentmodels.Read",
 		// 2026-09-20 探测量策略：SQL 回退窗口从 7 天对齐到 3 天使用范围
 		"interval '3 days'",
-		// R50：双臂探测排除（quality_flags + origin_stage）——单臂旧拼写
-		// 已被 TestProbeExclusionPredicateCallSitesR50 一并禁用。
-		`fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")`,
+		// ★ 2026-10-20（迁移 890，v1 族退役）：读源换成会话族热腿 ⇒ 探针
+		// 排除谓词必须换成**会话族**那条（origin_stage + task_type +
+		// origin_actor）。会话族**没有 quality_flags** 列 ⇒ 用 v1 那条
+		// 物理谓词每次都 42703。
+		`fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")`,
 		"unavailable_recover_at <= now()",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("self-check picker missing %q", want)
 		}
+	}
+	// 负向断言：会话族读面不得再用引用 quality_flags 的 v1 物理谓词。
+	// ⚠ 正向对照就是上面那条会话族谓词断言（同一文件里必须用会话族那条）。
+	// ⚠ 边界：`probeTrafficExclusionPredicateSession,` 里不含
+	// `probeTrafficExclusionPredicate,`（逗号位置不同）⇒ 不会误判。
+	if strings.Contains(body, "fmt.Sprintf(probeTrafficExclusionPredicate,") {
+		t.Fatal("credential_selfcheck.go 的读面已迁到会话族，不得再使用引用 quality_flags 的 v1 物理谓词")
 	}
 	if strings.Contains(body, "credential_most_used_model") || strings.Contains(body, "rng.Shuffle") {
 		t.Fatal("self-check must not use the old 24h or random model fallback")

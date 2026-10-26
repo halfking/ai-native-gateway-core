@@ -18,6 +18,7 @@ import {
   ElTag,
 } from 'element-plus'
 import {
+  BOOTSTRAP_REQUIRE_KEY,
   bootstrapApi,
   markBootstrapActivated,
   type BootstrapStatus,
@@ -215,7 +216,7 @@ function onAgreementCancelled() {
   showAgreementDialog.value = false
   if (pendingActivation.value) {
     pendingActivation.value = false
-    error.value = '未同意用户协议，无法继续激活。'
+    error.value = '请先同意用户协议，再继续激活'
   }
 }
 
@@ -311,7 +312,7 @@ async function copyInstanceId() {
           if (result.body && result.body.code === 'issue.cooldown') {
             throw new Error(`中心冷却中（${result.body.message || ''}）。请稍后重试，每次失败都会清除冷却。`)
           }
-          throw new Error(detail || '在线激活失败')
+          throw new Error(detail || '在线激活没能完成，请重试')
         }
         message.value = result.mode === 'online'
           ? '在线激活成功。'
@@ -334,7 +335,7 @@ async function copyInstanceId() {
         if (result.body && result.body.code === 'issue.cooldown') {
           throw new Error(`中心冷却中（${result.body.message || ''}）。请稍后重试。`)
         }
-        throw new Error(detail || '离线激活失败')
+        throw new Error(detail || '离线激活没能完成，请重试')
       }
       message.value = result.message || '离线激活成功。'
       registerResult.value = {
@@ -388,6 +389,15 @@ function finish() {
 }
 
 function skipToLogin() {
+  // Soft-skip: router.beforeEach redirects to /bootstrap whenever
+  // status.activated=false unless the local "don't force bootstrap" flag
+  // is set. Without writing it, 「稍后再说」bounces right back here and
+  // the admin console (e.g. /admin/sanitize-rules) is unreachable.
+  try {
+    localStorage.setItem(BOOTSTRAP_REQUIRE_KEY, '0')
+  } catch {
+    /* ignore quota / private mode */
+  }
   router.push({ path: '/', query: { login: '1' } })
 }
 
@@ -419,7 +429,6 @@ onMounted(async () => {
   <div class="lifecycle-page bootstrap-wizard">
     <header class="lifecycle-page__header">
       <div>
-        <p class="eyebrow">FIRST BOOT</p>
         <h1>本地网关安装激活</h1>
         <p>本机通过 IP:端口访问即可激活；可完全离线完成。联网时将自动向中心注册，不阻塞本地使用。</p>
       </div>
@@ -620,7 +629,7 @@ onMounted(async () => {
         <template #header>未同意用户协议</template>
         <p class="muted">
           激活本机 License 必须先阅读并同意 <a href="/user-agreement.html" target="_blank" rel="noopener">用户协议</a>。
-          点击下方按钮弹出协议确认窗口，勾选并"同意并继续"后才能进入后续步骤。
+          在下方确认协议后会弹出确认窗口，勾选并"同意并继续"后才能进入后续步骤。
         </p>
         <div class="wizard-actions">
           <button type="button" class="btn btn-primary" @click="openAgreementDialog">阅读并同意用户协议</button>
@@ -647,13 +656,6 @@ onMounted(async () => {
   gap: 16px;
   align-items: flex-start;
   margin-bottom: 20px;
-}
-.eyebrow {
-  margin: 0 0 6px;
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
 }
 .lifecycle-page__header h1 { margin: 0 0 8px; font-size: 24px; letter-spacing: -0.03em; }
 .lifecycle-page__header p { margin: 0; color: var(--kx-muted); font-size: 14px; line-height: 1.6; max-width: 60ch; }

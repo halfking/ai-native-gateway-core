@@ -37,7 +37,6 @@ export default {
   insights: {
     title: '什么预测质量？（Pearson 相关）',
     hint: '每个预测因子与各分桶的平均质量相关。|r| 越大，该特征对质量的预测力越强。',
-    empty: '样本不足，无法生成洞察。',
     emptyInsufficient: '至少需要 30 个样本才能计算有意义的相关性。',
     emptyUnexpected: '无洞察（异常）。请检查服务端日志。',
     buckets: '{n} 个分桶',

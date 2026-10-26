@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -26,7 +28,49 @@ type Client struct {
 	searchTimeout      time.Duration
 	smartSearchBaseURL string
 	smartSearchAPIKey  string
+	addPath            string
+	searchPath         string
+	healthPath         string
+	projectID          string
 }
+
+// Route defaults (2026-10-20, audit D1 — the gateway→memora push chain was
+// pointed at routes memora never registered).
+//
+// memora's real route table, verified against the memora checkout
+// (memora/internal/memory/handler.go:73-108, `group := r.Group("/api")`):
+//
+//	POST /api/add           → h.Add     (handler.go:86)
+//	POST /api/memory/add    → h.Add     (handler.go:87)
+//	POST /api/search        → h.Search  (handler.go:83)
+//	POST /api/memory/search → h.Search  (handler.go:84)
+//	GET  /api/health        → h.Health  (handler.go:88)
+//
+// `/product/add` 与 `/product/search` 是 **MemOS** 的路径（见本文件
+// SmartSearch 的注释与 2026-06-20 的双主机设计），**memora 全仓没有任何
+// /product/* 路由**。旧客户端把 add/search 都打在这两个路径上 ⇒ 人工
+// 抽取端点（admin/session_extract.go）推 memora 必然 404，整条
+// 「会话数据 → 记忆」链从未走通。
+//
+// 因此：默认走 memora 真实路径，MemOS 旧路径保留为**显式 opt-in**
+// （ClientConfig.LegacyMemOSPaths 或环境变量 LLM_GATEWAY_MEMORA_LEGACY_MEMOS_PATHS）。
+const (
+	// DefaultAddPath is memora's add route (memora/internal/memory/handler.go:87).
+	DefaultAddPath = "/api/memory/add"
+	// DefaultSearchPath is memora's search route (memora/internal/memory/handler.go:83).
+	DefaultSearchPath = "/api/search"
+	// DefaultHealthPath is memora's health route (memora/internal/memory/handler.go:88).
+	DefaultHealthPath = "/api/health"
+	// LegacyMemOSAddPath is the MemOS-era add route. Not registered by memora;
+	// reachable only through the explicit legacy opt-in.
+	LegacyMemOSAddPath = "/product/add"
+	// LegacyMemOSSearchPath is the MemOS-era search route. Not registered by
+	// memora; reachable only through the explicit legacy opt-in.
+	LegacyMemOSSearchPath = "/product/search"
+	// LegacyMemOSPathsEnv opts the whole client back into the MemOS route
+	// set. Values accepted: 1 / true / yes / on (case-insensitive).
+	LegacyMemOSPathsEnv = "LLM_GATEWAY_MEMORA_LEGACY_MEMOS_PATHS"
+)
 
 // ClientConfig configures a new Client. All fields are optional.
 type ClientConfig struct {
@@ -45,6 +89,25 @@ type ClientConfig struct {
 	// smart_search route. Empty = reuse APIKey (when SmartSearchBaseURL
 	// == BaseURL). Required when SmartSearchBaseURL is set and differs.
 	SmartSearchAPIKey string
+	// AddPath overrides the add route. Empty = DefaultAddPath, or
+	// LegacyMemOSAddPath when the legacy opt-in is on.
+	AddPath string
+	// SearchPath overrides the search route. Empty = DefaultSearchPath, or
+	// LegacyMemOSSearchPath when the legacy opt-in is on.
+	SearchPath string
+	// HealthPath overrides the route used by Ping. Empty = DefaultHealthPath,
+	// or LegacyMemOSSearchPath (the pre-2026-10-20 behaviour) when the
+	// legacy opt-in is on.
+	HealthPath string
+	// LegacyMemOSPaths selects the MemOS-era /product/* routes instead of
+	// memora's real ones. Also enabled by LLM_GATEWAY_MEMORA_LEGACY_MEMOS_PATHS.
+	LegacyMemOSPaths bool
+	// ProjectID is sent as the X-Project-ID header. memora's project scope
+	// is fail-closed: /api/add and /api/search answer
+	// 400 "project_id is required (000035 contract)" without it
+	// (memora/internal/memory/handler.go:208-211, 335-338; the header is
+	// read by memora's ProjectScope middleware).
+	ProjectID string
 }
 
 // NewClient builds a Client from the given config.
@@ -66,6 +129,21 @@ func NewClient(cfg ClientConfig) *Client {
 	if smartKey == "" {
 		smartKey = cfg.APIKey
 	}
+	addPath, searchPath, healthPath := DefaultAddPath, DefaultSearchPath, DefaultHealthPath
+	if cfg.LegacyMemOSPaths || legacyMemOSPathsFromEnv() {
+		// MemOS 形态：add 打 /product/add，search 打 /product/search，
+		// Ping 仍打 GET /product/search（2026-10-20 之前的实现）。
+		addPath, searchPath, healthPath = LegacyMemOSAddPath, LegacyMemOSSearchPath, LegacyMemOSSearchPath
+	}
+	if cfg.AddPath != "" {
+		addPath = cfg.AddPath
+	}
+	if cfg.SearchPath != "" {
+		searchPath = cfg.SearchPath
+	}
+	if cfg.HealthPath != "" {
+		healthPath = cfg.HealthPath
+	}
 	return &Client{
 		baseURL:            cfg.BaseURL,
 		apiKey:             cfg.APIKey,
@@ -74,7 +152,38 @@ func NewClient(cfg ClientConfig) *Client {
 		http:               &http.Client{Timeout: cfg.AddTimeout},
 		smartSearchBaseURL: smartBase,
 		smartSearchAPIKey:  smartKey,
+		addPath:            addPath,
+		searchPath:         searchPath,
+		healthPath:         healthPath,
+		projectID:          cfg.ProjectID,
 	}
+}
+
+// legacyMemOSPathsFromEnv reports whether the MemOS route set was explicitly
+// requested through the environment. Anything other than a recognised truthy
+// value (including an empty variable) keeps the memora-real defaults.
+func legacyMemOSPathsFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(LegacyMemOSPathsEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// AddPath returns the resolved add route (for status display / diagnostics).
+func (c *Client) AddPath() string {
+	if c == nil {
+		return ""
+	}
+	return c.addPath
+}
+
+// SearchPath returns the resolved search route (for status display / diagnostics).
+func (c *Client) SearchPath() string {
+	if c == nil {
+		return ""
+	}
+	return c.searchPath
 }
 
 // Disabled reports whether the client is configured to no-op.
@@ -101,13 +210,14 @@ func (c *Client) Ping(ctx context.Context) error {
 	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(cctx, http.MethodGet,
-		c.baseURL+"/product/search", nil)
+		c.baseURL+c.healthPath, nil)
 	if err != nil {
 		return err
 	}
 	if c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
+	c.setProjectHeader(req, c.projectID)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -159,7 +269,7 @@ func (c *Client) addMessageOnce(ctx context.Context, userID string, messages []m
 	cctx, cancel := context.WithTimeout(ctx, c.addTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(cctx, http.MethodPost,
-		c.baseURL+"/product/add", &buf)
+		c.baseURL+c.addPath, &buf)
 	if err != nil {
 		return err
 	}
@@ -167,6 +277,11 @@ func (c *Client) addMessageOnce(ctx context.Context, userID string, messages []m
 	if c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
+	// memora 的 project scope 是 fail-closed 的：缺 project_id 直接 400
+	// （memora/internal/memory/handler.go:335-338）。人工抽取路径把
+	// project_id 放在 info 里（admin/session_extract.go:196-202），所以这里
+	// 优先用 info 里的 project_id，其次用 client 级默认值。
+	c.setProjectHeader(req, projectIDFromInfo(info, c.projectID))
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -336,7 +451,7 @@ func (c *Client) searchWithTimeout(ctx context.Context, userID, query string, to
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(cctx, http.MethodPost,
-		c.baseURL+"/product/search", &buf)
+		c.baseURL+c.searchPath, &buf)
 	if err != nil {
 		return nil, err
 	}
@@ -344,6 +459,7 @@ func (c *Client) searchWithTimeout(ctx context.Context, userID, query string, to
 	if c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
+	c.setProjectHeader(req, c.projectID)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
@@ -355,7 +471,29 @@ func (c *Client) searchWithTimeout(ctx context.Context, userID, query string, to
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("memos search status=%d", resp.StatusCode)
 	}
+	// Two response shapes must be understood (2026-10-20, audit D1):
+	//
+	//   - memora: c.JSON(200, gin.H{"query":…, "results":[…], "count": n})
+	//     (memora/internal/memory/handler.go:231; item shape is
+	//     memora/internal/memory/service.go:420-437 → id/content/tags/score).
+	//   - MemOS:  {"code":0,"data":{"text_mem":[{"cube_id":…,"memories":[…]}]}}
+	//     (the historical /product/search shape).
+	//
+	// Decoding only the MemOS shape would make the fixed route return
+	// **zero results against memora** — the path fix would look like it
+	// worked while silently returning nothing.
 	var raw struct {
+		Query string `json:"query"`
+		// memora shape
+		Results []struct {
+			ID        string   `json:"id"`
+			Content   string   `json:"content"`
+			Tags      []string `json:"tags"`
+			MemCubeID *string  `json:"mem_cube_id"`
+			Score     *float64 `json:"score"`
+		} `json:"results"`
+		Count int `json:"count"`
+		// MemOS shape
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 		Data    struct {
@@ -377,6 +515,31 @@ func (c *Client) searchWithTimeout(ctx context.Context, userID, query string, to
 		return nil, err
 	}
 	out := make([]memory.Memory, 0, topK)
+	for _, r := range raw.Results {
+		txt := r.Content
+		if txt == "" {
+			continue
+		}
+		score := 0.0
+		if r.Score != nil {
+			score = *r.Score
+		}
+		cubeID := ""
+		if r.MemCubeID != nil {
+			cubeID = *r.MemCubeID
+		}
+		out = append(out, memory.Memory{
+			ID:     r.ID,
+			Text:   txt,
+			Tags:   r.Tags,
+			Score:  score,
+			CubeID: cubeID,
+		})
+	}
+	if len(out) > 0 {
+		return out, nil
+	}
+	// MemOS shape fallback.
 	for _, cube := range raw.Data.TextMem {
 		for _, m := range cube.Memories {
 			txt := m.Memory
@@ -403,4 +566,27 @@ func (c *Client) searchWithTimeout(ctx context.Context, userID, query string, to
 		}
 	}
 	return out, nil
+}
+
+// setProjectHeader sets memora's X-Project-ID header when a project is known.
+// Empty = header omitted (memora then answers 400 "project_id is required").
+func (c *Client) setProjectHeader(req *http.Request, projectID string) {
+	if req == nil || projectID == "" {
+		return
+	}
+	req.Header.Set("X-Project-ID", projectID)
+}
+
+// projectIDFromInfo extracts the per-call project id carried in the info map
+// (the manual extraction path puts it there) and falls back to the client
+// level default.
+func projectIDFromInfo(info map[string]any, fallback string) string {
+	if info != nil {
+		if raw, ok := info["project_id"]; ok {
+			if s, ok := raw.(string); ok && strings.TrimSpace(s) != "" {
+				return strings.TrimSpace(s)
+			}
+		}
+	}
+	return fallback
 }

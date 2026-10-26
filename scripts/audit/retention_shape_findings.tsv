@@ -1,0 +1,93 @@
+# retention_shape_findings.tsv —— 留存形态与可回收空间 登记册
+#
+# 产出轮次：§143.59（2026-10-22）刷新。**首次产出：§143.43（2026-10-21）**。
+# reading-date: 2026-10-22
+#
+# ★ 本表是**某个时点的生产快照**，不是活数据：§143.44 在两实例上做了真实写入
+#   （211 分区化 + VACUUM FULL；252 VACUUM FULL + DROP 10 个空日分区）
+#   ⇒ 绝对字节数 / relkind / 行数全部变化 ⇒ §143.43 的读数已整体失效。
+#   ⇒ **每次对这两个族做生产写入，都必须回来刷新本表**（否则门钉住的是一个
+#     已经不存在的世界，而门自己不会知道）。
+#   复现命令：bash ~/.mavis-tools/lgwp-prod.sh scripts/audit/refresh_retention_registry.sql 300   （252）
+#             ssh 211 'docker exec -i acc-pg17 psql -U acc_super -d llm_gateway -f -' < scripts/audit/refresh_retention_registry.sql
+#
+# ★ ★ §143.59 的三条订正（**本表已按订正后的形态重写**）：
+#
+#   ① **「钉绝对字节数」对按天增长的族是错误的钉法** ⇒ 本表**不再被门按绝对值钉住**。
+#      实测依据：252 快照族 10,193,199,104 B（§143.58 读数，00:23）
+#      → 9,508,798,464 B（§143.59 读数，01:54）⇒ **1.5 小时内 −6.7%**
+#      （7 天窗口的日分区到期被删 ⇒ 方向还是**下降**）
+#      ⇒ ⇒ 门改成 **量级档位 + 相对量（族 ÷ 库总量）+ 读数日期戳 + 陈旧度上限**。
+#      ⇒ **静态对象**（legacy 锚点、空分区）仍钉绝对值 —— 它们**不增长**，
+#         对它们钉绝对值是对的。
+#   ② **「观察 ≥7 天后人工 DROP」有两种语义**（观察期 vs 数据超期）：
+#      252 的 legacy 2,836,620 行**全部超期** ⇒ 纯回收；
+#      211 的 legacy 6,065,757 行里**只有 47,482 行超 7 天** ⇒
+#      观察期结束就 DROP 它 = **主动放弃 6,018,275 行仍在窗口内的历史**。
+#      ⇒ 本表在 evidence 里**分别陈述**这两侧的性质，不合并成一句话。
+#   ③ **覆盖面缺口已闭合**：§143.58 盘点出的「没有自动回收路径」的大对象里，
+#      **第一大对象（route_incident_events，1.13 GB）在旧表里根本没有行**。
+#      ⇒ §143.59 新增 scope `RETENTION_GAP_OBJECT` + 新列 `mechanism_state`
+#      （把 §143.58 的**四种失效形态**编码成可重算的判据）：
+#        NONE        = 压根没有机制
+#        NOT_WIRED   = 机制实现完整但生产零调用方（形态 B：死代码）
+#        TARGET_EMPTY= 机制在跑但目标集恒空（形态 C）
+#        NOT_YET_DUE = 机制在跑但当前无对象到期（形态 A）
+#        OUT_OF_SCOPE= 按设计不在机制范围内（形态 D）
+#
+# ★ 本表是**事实层**，不是结论层：verdict 列必须能被
+#   admin/retention_shape_verdict.go 的 ClassifyRetentionShape() **重算出来**
+#   （admin/section_14343_retention_shape_test.go 逐行重算 + 钉住量级/相对量）。
+#   登记册不可能自说自话。
+#
+# ★ **量具口径（§143.45 实测踩到的坑）**：
+#   `pg_total_relation_size(parent)` 对**分区父表返回 0**（父表自己没有存储）
+#   ⇒ **族总量必须逐分区求和**。两实例实测均如此：
+#     252 快照族父表 0 B / 子分区合计 9,508,798,464 B；
+#     211 快照族父表 0 B / 子分区合计 2,278,760,448 B。
+#   ⇒ 表里分区父表行的 total_bytes 一律是**子分区求和**的结果，不是父表函数的返回值。
+#
+# ★ `ttl_registered` 的口径 = **生产**事实（settings_kv 里有没有那个键，值无关）。
+#   §143.44 已在**仓内**登记 usage_facts（TTL=365 + 按日 DROP），但**尚未部署**
+#   ⇒ 两实例的 settings_kv 里仍无 `lifecycle.usage_facts_ttl_days`
+#   ⇒ 本列仍是 no（生产缺口**未闭合**）⇒ verdict 仍是 GAP_NO_RETENTION。
+#   ⇒ ★ 仓内闭合 ≠ 生产闭合：这两件事必须分开记账，混在一起就会谎报生产状态。
+#   ⇒ 同理：`lifecycle.session_summaries_ttl_days` 仓内有（默认 90、HotReload），
+#     生产 settings_kv **也没有** ⇒ 该族 ttl_registered = no。
+#
+# 列：
+#   instance        211 / 252 / both
+#   scope           SNAPSHOT_FAMILY | SNAPSHOT_OBJECT | USAGE_FACTS_FAMILY |
+#                   USAGE_FACTS_OBJECT | STRUCTURAL_GAP |
+#                   RETENTION_GAP_OBJECT | REFERENCE_TOTAL
+#   object          对象名（USAGE_FACTS_OBJECT 的多分区行用区间表示；
+#                   REFERENCE_TOTAL 行 = 库名）
+#   relkind         p=分区父表 r=普通表 -=不适用（对象已不存在 / 机制缺口 / 库级）
+#   rows            实测行数（EXISTS/count(*) 口径，不是 n_live_tup 估算）
+#   total_bytes     pg_total_relation_size（分区父表行 = 子分区求和，见上方口径；
+#                   REFERENCE_TOTAL 行 = pg_database_size）
+#   reclaimable_bytes  当前机制**实际**能回收的字节（口径见 evidence）；
+#                   机制未生效的对象一律 0（不是"估算能回收多少"）
+#   ttl_registered  yes/no —— 该族在**生产**是否有留存登记（值无关判据：settings_kv 里有没有那个键）
+#   mechanism_state ACTIVE | NONE | NOT_WIRED | TARGET_EMPTY | NOT_YET_DUE | OUT_OF_SCOPE
+#   verdict         必须等于 ClassifyRetentionShape 的输出
+#   method          回收手段（NONE 表示当前不回收）
+#   evidence        读数来源与关键中间量
+#
+instance	scope	object	relkind	rows	total_bytes	reclaimable_bytes	ttl_registered	mechanism_state	verdict	method	evidence
+252	REFERENCE_TOTAL	public.llm_gateway	-	0	31848617651	0	no	OUT_OF_SCOPE	REFERENCE_TOTAL	NONE	★ 相对量锚点：pg_database_size，2026-10-22 01:54+08 实测；快照族 ÷ 库 = 9,508,798,464 / 31,848,617,651 = 29.86%（§143.59 新增口径：门改钉【比值】而不是会自然过期的绝对字节）
+211	REFERENCE_TOTAL	public.llm_gateway	-	0	8306914995	0	no	OUT_OF_SCOPE	REFERENCE_TOTAL	NONE	★ 相对量锚点：pg_database_size，2026-10-22 01:55+08 实测；快照族 ÷ 库 = 2,278,760,448 / 8,306,914,995 = 27.43%
+252	SNAPSHOT_FAMILY	public.ursm_node_snapshot_min	p	30355931	9508798464	0	yes	ACTIVE	PARTITION_DROP_ACTIVE	NONE	8 个日分区（族总量 = 逐分区求和，父表 pg_total_relation_size = 0）；生产日志 mode=partition-drop；★ §143.59 读数 9,508,798,464 B（2026-10-22 01:54+08）—— 较 §143.58 的 10,193,199,104 B **1.5 小时降 6.7%**（日分区到期被删）⇒ 本行**不再被门按绝对值钉住**，改钉量级档位 + 相对量
+211	SNAPSHOT_FAMILY	public.ursm_node_snapshot_min	p	6875996	2278760448	0	yes	ACTIVE	PARTITION_DROP_ACTIVE	NONE	§143.44 已分区化（830 列驱动 + 历史搬运 6,065,757 行）；10 个日分区（族总量 = 逐分区求和）；生产日志 mode=partition-drop（2026-10-20T20:29:30Z 起）⇒ 相对量 27.43%
+252	SNAPSHOT_OBJECT	public.ursm_node_snapshot_min_legacy	r	2836620	893845504	0	yes	OUT_OF_SCOPE	NOT_RECLAIMABLE	NONE	迁移 830 的回滚锚点：830 down 以 RENAME 把它换回原名，删它就断了唯一退路；heap 620,847,104 B + index 272,801,792 B；★ §143.59 复读：2,836,620 行 / 893,845,504 B 与 §143.43 读数**逐字相同** ⇒ 静态对象（不增长）⇒ 仍钉绝对值
+211	SNAPSHOT_OBJECT	public.ursm_node_snapshot_min_legacy	r	6065757	1902911488	0	yes	OUT_OF_SCOPE	NOT_RECLAIMABLE	NONE	830 步骤 3 保留的回滚锚点；★ §143.59 复读：6,065,757 行 / 1,902,911,488 B 与 §143.45 读数逐字相同 ⇒ 静态对象；⚠ **两侧性质不同**：252 的 2,836,620 行**全部超 7 天**（纯回收）；211 的 6,065,757 行里**只有 47,482 行超 7 天** ⇒ 观察期结束就 DROP 它 = 主动放弃 6,018,275 行仍在窗口内的历史
+252	USAGE_FACTS_FAMILY	public.usage_facts	p	282758	260259840	0	no	NONE	GAP_NO_RETENTION	TTL_DECIDED_PENDING_DEPLOY	生产 settings_kv 仍无 lifecycle.usage_facts_ttl_days（值无关判据）⇒ **生产缺口未闭合**；但**仓内已登记**（§143.44：lifecycle.usage_facts_ttl_days 默认 365 + 按日 DROP helper）⇒ 属主已拍板 365，待部署；§143.59 刷新：族总量 260,259,840 B（18 个日分区 20261006..20261023 + default，逐分区求和）
+211	USAGE_FACTS_FAMILY	public.usage_facts	p	92859	84385792	0	no	NONE	GAP_NO_RETENTION	TTL_DECIDED_PENDING_DEPLOY	同 252：生产 settings_kv 无该键 ⇒ 生产缺口未闭合；仓内已登记（§143.44，TTL=365）；§143.59 刷新：族总量 84,385,792 B（12 个日分区 20261011..20261022 + default）
+252	USAGE_FACTS_OBJECT	public.usage_facts_default	r	0	57344	57344	yes	OUT_OF_SCOPE	RECLAIMABLE_NOW	VACUUM_FULL	§143.44 已 VACUUM FULL：83,492,864 → 57,344 B（heap 0 B + index 57,344 B 的最小尺寸）⇒ 纯索引膨胀已回收；剩余 57,344 B 是索引空页的最小尺寸
+211	USAGE_FACTS_OBJECT	public.usage_facts_20261011	r	0	65536	65536	yes	OUT_OF_SCOPE	RECLAIMABLE_NOW	DROP_EMPTY_DAY_PARTITION	空日分区（仅索引 57,344 B）
+252	USAGE_FACTS_OBJECT	public.usage_facts_20260926..20261005	-	0	0	0	yes	OUT_OF_SCOPE	NOT_RECLAIMABLE	ALREADY_RECLAIMED	§143.44 已 DROP 这 10 个空日分区（属主授权；库 −119,685,120 B）⇒ 对象已不存在 ⇒ 0 行 0 字节 ⇒ 无事可做
+both	STRUCTURAL_GAP	public.ursm_node_snapshot_min（新装库形态）	-	0	0	0	no	OUT_OF_SCOPE	STRUCTURAL_GAP_NO_AUTO_PATH	MANUAL_830_MIGRATION	830 是 manual-by-design（.sql.skip，既未注册进 installer 也未进启动序列）⇒ 新装库永远是非分区形态 ⇒ 每个新环境都会重现 211 的 bloat 形态（属主未拍板）
+252	RETENTION_GAP_OBJECT	public.route_incident_events	r	1832998	1213685760	0	no	NOT_WIRED	MECHANISM_NOT_WIRED	WIRE_WORKER_OWNER_DECISION	★ §143.59 新增覆盖：**没有自动回收路径的第一大对象**。留存 worker 实现完整（domains/routeincident/retention.go：批次 DELETE + advisory lock + 无操作也打日志）+ created_at 首列索引**在**（实测 1 个）+ 行为门齐，但 NewEventRetentionWorker **生产零调用方** ⇒ §143.58 形态 B（死代码）；数据年龄 2026-07-13 起，超 30 天 582,345 行 / 超 90 天 15,315 行 ⇒ **一旦接线即可回收**；本轮按既定范式**不擅自接线**（属主决策）⇒ 钉住现状 + 反向断言
+211	RETENTION_GAP_OBJECT	public.route_incident_events	r	215915	154738688	0	no	NOT_WIRED	MECHANISM_NOT_WIRED	WIRE_WORKER_OWNER_DECISION	同 252（worker 零调用方 ⇒ 形态 B）；⚠ 但 211 上最早行 2026-10-12 ⇒ **超 30 天行 = 0** ⇒ 即使接线也暂时无事可做 ⇒ 211 侧收益远小于 252
+252	RETENTION_GAP_OBJECT	public.session_summaries	r	832953	866000896	0	no	TARGET_EMPTY	MECHANISM_TARGET_EMPTY	FIX_ARCHIVER_OR_TTL	★ §143.59 新增覆盖：trimmer **已接线在跑**（bg/session_summaries_trimmer.go，删 archived_at IS NOT NULL 且超 TTL 的行），但它要删的那一类**恒为空** —— 实测 archived 行数 = **0**（归档器 domains/sessionarchive 从未归档）⇒ §143.58 形态 C：每轮执行、每轮删 0 行；生产 settings_kv 无 lifecycle.session_summaries_ttl_days（仓内有，默认 90、HotReload）⇒ 归档口径属属主决策
+211	RETENTION_GAP_OBJECT	public.session_summaries	r	80076	97951744	0	no	TARGET_EMPTY	MECHANISM_TARGET_EMPTY	FIX_ARCHIVER_OR_TTL	同 252（形态 C：目标集恒空 ⇒ trimmer 空转）；生产 settings_kv 同样无 lifecycle.session_summaries_ttl_days

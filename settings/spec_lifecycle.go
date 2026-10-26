@@ -31,7 +31,6 @@ func LifecycleSpecs() []*Spec {
 		// 2026-07-14: _request_logs_bodies 月度分区保留天数。
 		// 请求/响应 body 仅用于调试/导出，常规运营很少看 >1 天的 body。
 		// 超过此天数的月度分区会被 drop_old_request_logs_bodies_partitions() 自动 DROP。
-		{Key: "lifecycle.request_logs_bodies_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(365), Default: 7, DangerLevel: Warning, HotReload: true, Description: "_request_logs_bodies 保留天数", DescriptionLong: "_request_logs_bodies 月度分区保留天数。body 仅用于调试，超过此天数的分区会被自动 DROP。默认 7 天。", Unit: "天"},
 
 		// 2026-09-27 (R67 session-storage 审计子任务 7, handoff §9): _request_logs
 		// 主表 archive 流水线。331 把 archive_request_logs 整族移除后，主表的
@@ -43,7 +42,12 @@ func LifecycleSpecs() []*Spec {
 		// 范围 7-365：下限对齐业务对账最低窗口，上限是一年（合规最长期）。
 		// 消费点：bg.PartitionManager.runCleanup 周期调用；SQL 侧另有 [7,365]
 		// 硬守卫，越界 RAISE EXCEPTION（失败即停，不静默）。
-		{Key: "lifecycle.request_logs_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(7), Max: floatPtr(365), Default: 30, DangerLevel: Warning, HotReload: true, Description: "_request_logs 归档 TTL（天）", DescriptionLong: "_request_logs 归档阈值（天）。超过此时长的月分区，其摘要字段（11 列，不含大 JSONB）由 archive_request_logs_default（迁移 754）落进 request_logs_archive_YYYY_MM 供对账/合规回溯。**注意：这是摘要抽取，不是数据搬移** —— 源分区一个字节都不会被删除（迁移 754 内无任何 DELETE；R68 禁止 DROP 父表月分区，见 654/337 事故复盘），因此本键**不会让 _request_logs 主表变小**，主表仍由运维另行处置。每日 03:00 本地时区扫一次。默认 30 天（7-365）。", Unit: "天"},
+		// ★ 2026-10-24（v1 → session_turns 替换轮）：v1 族已随 890 物理删除 ⇒
+		//   archive_request_logs_default 与 request_logs_archive_* 都不存在 ⇒
+		//   本键的归档腿**不可达**（bg/partition_manager.go 的归档体被
+		//   v1LifecycleRetired() 恒 true 挡住）。键与默认值保留（既有配置不丢），
+		//   但描述必须说实话 —— 否则运维以为它在回收 v1 的空间。
+		{Key: "lifecycle.request_logs_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(7), Max: floatPtr(365), Default: 30, DangerLevel: Warning, HotReload: true, Description: "请求日志归档 TTL（天）", DescriptionLong: "请求日志归档阈值（天）。★ 2026-10-24：v1 `_request_logs` 族已随迁移 890 物理删除，其归档函数与归档表一并消失 ⇒ **本键的归档腿当前不可达**（bg/partition_manager.go 的归档体被 v1LifecycleRetired() 恒 true 挡住）。键与默认值保留，避免既有配置失效；会话族（session_turns / session_bodies）的历史窗口由各自的生命周期键管理。默认 30 天（7-365）。", Unit: "天"},
 
 		// 2026-09-27 (R67 session-storage 审计子任务 2, handoff §4;
 		// 语义按 2026-09-27 批判式审计修正, R72 审计轮补分批):
@@ -83,5 +87,76 @@ func LifecycleSpecs() []*Spec {
 		{Key: "lifecycle.request_wal_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(30), Default: 1, DangerLevel: Warning, HotReload: true, Description: "request_wal 保留天数", DescriptionLong: "request_wal 月度分区保留天数。默认 1 天。", Unit: "天"},
 		{Key: "lifecycle.credit_ledger_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(30), Default: 1, DangerLevel: Warning, HotReload: true, Description: "credit_ledger 保留天数", DescriptionLong: "credit_ledger 月度分区保留天数。默认 1 天。", Unit: "天"},
 		{Key: "lifecycle.tool_usage_stats_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(30), Default: 1, DangerLevel: Warning, HotReload: true, Description: "tool_usage_stats 保留天数", DescriptionLong: "tool_usage_stats 月度分区保留天数。默认 1 天。", Unit: "天"},
+
+		// 2026-10-21（§143.44）：usage_facts —— **两实例上唯一没有任何留存的族**。
+		//
+		// 证据（值无关判据）：211 与 252 的 settings_kv 里 11 个
+		// `lifecycle.*_ttl_days` 键**完全一致**，其中**没有** usage_facts
+		// ⇒ 该族逐日分区 + DEFAULT 分区**无界增长**（252 ≈1.5 MB/天）。
+		//
+		// ★ 保留期 = **365 天**（属主 2026-10-21 定）：它是**计费事实**族，
+		//   保留期属于账期/审计语义（年审窗口），不是技术参数。
+		//   回收方式 = 按日分区 DROP（bg/partition_manager.go 的
+		//   dropOldDailyStatePartitions；既有月度 SQL helper 只认
+		//   ^<parent>_\d{4}_\d{2}$，对日分区名一个都不匹配）。
+		{Key: "lifecycle.usage_facts_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 365, DangerLevel: Warning, HotReload: true, Description: "usage_facts 保留天数", DescriptionLong: "usage_facts 按日分区（usage_facts_YYYYMMDD）的保留天数。默认 365 天（计费事实族，对齐年度审计/账期窗口）。超过保留期的**整个日分区**被 DROP 回收空间（不是逐行 DELETE）。", Unit: "天"},
+
+		// ====================================================================
+		// 2026-10-21 R72f（属主决策项 #10 的前半）：补注册 10 个**只出现在读方**
+		// 的键。★ 它们此前从未 Register ⇒ `Global.Spec(key)` 返回 nil ⇒
+		// `GetPlatformInt` 直接回退 fallback ⇒ ⇒ **写 settings_kv 完全无效**。
+		//
+		// ★ 每个键的 Default 都与读方的 fallback **逐字对齐**
+		//   （见各行注释里的读方位置）⇒ ⇒ ⇒ 「kv 无行时」注册前后行为一致。
+		// ★ ★★ 2026-10-22 12h 审计轮（B1）：**本块原先登记的三个
+		//   `_request_logs_bodies` 键已全部删除**：
+		//     · lifecycle.request_logs_bodies_retention_hours
+		//     · lifecycle.request_logs_bodies_promote_batch_size
+		//     · lifecycle.request_logs_bodies_ttl_days（前两者之外，本轮顺带查出）
+		//   理由（**代码级可证**）：
+		//     · 读方在 bg/partition_manager.go 的 `case "_request_logs_bodies":`
+		//       分支里，而那条 promoteSpec 于 8531596a6 被删 ⇒ 该分支**不可达**；
+		//       `cleanupOldRequestLogsBodies` 同样已被删（读方 grep 为空）。
+		//     · 迁移 890 真删了 `request_logs_bodies{,_hot}` / `_request_logs_bodies{,_hot}`
+		//       ⇒ 被治理的表**根本不存在**。
+		//   ⇒ ⇒ 这三个键注册后是**「写了没人读」**的旋钮：管理员在 UI 上改它们，
+		//     后台**一行代码都不看** ⇒ 属于「看起来可控、实际不可控」的最坏形态。
+		//   ⇒ ⇒ 附带订正：本块原先断言「注册后保留期从 24h 变 8h ⇒ 上线前必须知情」，
+		//     而这句话**在 890 之后就不成立了**（值落进一个死分支，没有任何保留期变化）
+		//     ⇒ 它曾作为「属主知情接受」的材料 ⇒ 一条**假的**行为变化说明被签过字。
+		//   ⇒ ⇒ 真要保留这组旋钮，正确做法是**改指向会话族 bodies 链**
+		//     （promote_session_bodies_hot_to_partition / session_bodies），而不是留着死键。
+		//
+		// ★★ R107 轮（12h 审计）补记：**B1 那次只删了 1 个（ttl_days）**，
+		//   另 2 个（retention_hours / promote_batch_size）**仍留在本块里**，
+		//   且其中一条**仍带着那句已被自己证伪的「保留期从 24h 变 8h」说明**
+		//   ⇒ 「注释说三个都删了、代码只删了一个」⇒ 注释与实现口径不一致。
+		//   ⇒ 本轮把剩下 2 个一并删除 ⇒ 注释与实现这才对齐。
+		//   ★ 删除的**安全性**已逐条核实（不是「看着像死键就删」）：
+		//     · 读侧不可达：`_request_logs_bodies` 在 promoteSpecs()/ensureSpecs()
+		//       里**一个条目都没有**（全文件仅 partition_manager.go:2331 的 case 标签
+		//       出现过该名字）⇒ resolvePromoteConfig 的该分支**永远不会被调用**。
+		//     · 表已不存在：迁移 890 的步骤 5 DROP 清单里确有
+		//       'request_logs_bodies' / '_request_logs_bodies' /
+		//       'request_logs_bodies_hot' / '_request_logs_bodies_hot'。
+		//     · 读侧 nil-安全：Registry.Spec(key) 对未注册键返回 nil
+		//       （不是 error）⇒ GetPlatformInt 直接落 fallback。
+		//     · 写侧会**如实报错**：settings/store_db.go 的 Set/SetTenant 对未注册键
+		//       返回 "unknown setting: <key>" ⇒ 211/252 里那条已存在的 kv 行（值 8）
+		//       在 UI 上再写会**显式失败**，而不是继续被静默吞掉
+		//       ⇒ 这正是「去掉假旋钮」应有的可见后果。
+		//   ⏳ 残留（已登记，未在本轮动）：bg/partition_manager.go:2331 的
+		//     `case "_request_logs_bodies":` 分支本体还在（连同它读的两个键名）。
+		//     它现在**既无注册键也无表**，是一段纯死代码；删它属纯清理，
+		//     但与「旋钮改指向会话族 bodies 链」这个属主决策耦合 ⇒ 留给那一轮一起做。
+		// ====================================================================
+		{Key: "lifecycle.analysis_events_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 7, DangerLevel: Warning, HotReload: true, Description: "analysis_events 保留天数", DescriptionLong: "analysis_events 的清理保留天数。读方：bg/partition_manager.go（fallback 7）。", Unit: "天"},
+		{Key: "lifecycle.credential_model_index_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 7, DangerLevel: Warning, HotReload: true, Description: "credential_model_index 保留天数", DescriptionLong: "credential_model_index 的冷分区裁剪保留天数。读方：bg/partition_manager.go:1288（fallback 7）。★ 与 §143.21 的「冷族 TTL 空文」问题同源：冷月分区已转 heap ⇒ 7 天 TTL 在冷族上是空文。", Unit: "天"},
+		{Key: "lifecycle.provider_error_details_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 30, DangerLevel: Warning, HotReload: true, Description: "provider_error_details 保留天数", DescriptionLong: "provider_error_details 的保留天数。读方：bg/partition_manager.go（fallback 30）。", Unit: "天"},
+		{Key: "lifecycle.routing_feedback_log_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 14, DangerLevel: Warning, HotReload: true, Description: "routing_feedback_log 保留天数", DescriptionLong: "routing_feedback_log 的保留天数。读方：bg/partition_manager.go（fallback 14）。", Unit: "天"},
+		{Key: "lifecycle.routing_optimization_metrics_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 30, DangerLevel: Warning, HotReload: true, Description: "routing_optimization_metrics 保留天数", DescriptionLong: "routing_optimization_metrics 的保留天数。读方：bg/partition_manager.go（fallback 30）。", Unit: "天"},
+		{Key: "lifecycle.session_project_backfill_batches", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(10000), Default: 50, DangerLevel: Warning, HotReload: true, Description: "project_dim 回填单轮最大批数", DescriptionLong: "project_dim 回填 worker 单轮最多跑多少批。读方：bg/project_backfill_worker.go:167（fallback 50）。★ 代码侧另有 ≥1 的安全下限。", Unit: "批"},
+		{Key: "lifecycle.stats_event_inbox_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 7, DangerLevel: Warning, HotReload: true, Description: "stats_event_inbox 保留天数", DescriptionLong: "stats_event_inbox 的保留天数。读方：bg/partition_manager.go（fallback 7）。", Unit: "天"},
+		{Key: "lifecycle.supplier_error_stats_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 30, DangerLevel: Warning, HotReload: true, Description: "supplier_error_stats 保留天数", DescriptionLong: "supplier_error_stats 的保留天数。读方：bg/partition_manager.go（fallback 30）。", Unit: "天"},
 	}
 }

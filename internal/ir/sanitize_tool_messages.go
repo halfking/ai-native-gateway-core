@@ -1,47 +1,31 @@
 package ir
 
-import "log/slog"
+import (
+	"log/slog"
 
-// SanitizeToolMessages removes orphaned tool messages that would cause
-// tool_call_id_mismatch errors (MiniMax 2013, OpenAI item_reference).
-//
-// Problem: When a conversation has tool→assistant→user sequences (skipping
-// the required assistant.tool_calls), downstream providers reject the request
-// because they can't match tool.tool_call_id back to any assistant.tool_calls[].id.
-//
-// Fix: Walk messages and remove any tool message whose tool_call_id doesn't
-// match a preceding assistant.tool_calls[].id within a valid scope.
-//
-// Scope rules:
-//  1. tool messages must reference the immediately preceding assistant's tool_calls
-//  2. Once we see a new assistant or user message, all prior tool_calls are "closed"
-//  3. A tool message referencing a closed or non-existent call_id is orphaned → remove
-//
-// 2026-10-13: consecutive assistant messages that EACH carry tool_calls are a
-// parallel tool call split across messages (ZCode/agent clients emit one
-// assistant message per parallel call). Rule 2 used to close the previous
-// scope on each such message, so the results of every call but the last were
-// removed as "orphaned" — the sanitizer itself then produced the MiniMax
-// "tool call result does not follow tool call (2013)" 400 it exists to
-// prevent (raw-log evidence: request d717f89a8c79123c7ca7cd69ff2cbf9d,
-// pre_messages=11 → post_messages=9 with tool results f7/f8 dropped).
-// Such messages are now MERGED into the preceding assistant message — the
-// canonical OpenAI parallel-call form — and their ids stay in the active
-// scope so all results survive.
-//
-// 2026-07-12: Created to fix MiniMax "tool id not found (2013)" and similar
-// errors caused by malformed conversation histories from AI SDK retries or
-// client-side tool-call state bugs.
-//
-// 2026-07-18: Added requestID parameter so each removal is correlated to the
-// gateway request that produced it. Pass "" when not in a request context
-// (e.g. unit tests). All slog lines now carry "request_id" so downstream
-// `journalctl _SYSTEMD_UNIT=... | grep <req_id>` works.
+	"github.com/kaixuan/llm-gateway-go/internal/toolhistory"
+)
+
+// SanitizeToolMessages repairs interrupted local call batches before removing
+// genuinely orphaned tool messages. A user notice between matching answers is
+// kept after those answers rather than closing their batch prematurely.
+// Consecutive assistant call records remain one parallel batch and are merged
+// into the canonical Chat shape. Ambiguous duplicate calls/results are preserved
+// for the outbound wire validator's typed rejection; no actual call is deleted.
+// requestID correlates structural fixes without logging result/argument payloads.
 func SanitizeToolMessages(messages []Message, requestID string) []Message {
 	if len(messages) == 0 {
 		return messages
 	}
 	log := slog.With("request_id", requestID)
+	repaired, err := reconcileToolResults(messages)
+	if err != nil {
+		// The outbound wire validator reports this typed ambiguity. Keep every
+		// actual call and answer here; deleting one would conceal the error.
+		log.Warn("sanitize_tool_messages: preserving ambiguous history", "error", err)
+		return messages
+	}
+	messages = repaired
 
 	// Track the set of valid tool_call_ids from the most recent assistant message
 	activeToolCallIds := make(map[string]bool)
@@ -65,18 +49,6 @@ func SanitizeToolMessages(messages []Message, requestID string) []Message {
 				for _, tc := range msg.ToolCalls {
 					if tc.ID != "" {
 						activeToolCallIds[tc.ID] = true
-						// Skip duplicate ids — a provider-visible assistant
-						// message with repeated tool_call ids is invalid.
-						dup := false
-						for _, existing := range last.ToolCalls {
-							if existing.ID == tc.ID {
-								dup = true
-								break
-							}
-						}
-						if dup {
-							continue
-						}
 					}
 					last.ToolCalls = append(last.ToolCalls, tc)
 					mergedCallCount++
@@ -165,3 +137,74 @@ func SanitizeToolMessages(messages []Message, requestID string) []Message {
 
 // Message interface helpers (already exist in ir package, these are just stubs for reference)
 // Real implementation uses the existing Message interface methods.
+
+// reconcileToolResults collects a whole local batch before classifying a user
+// notice as a boundary. Otherwise a resize notice can orphan a later real answer.
+func reconcileToolResults(messages []Message) ([]Message, error) {
+	messages = expandToolResultMessages(messages)
+	out := make([]Message, 0, len(messages))
+	for i := 0; i < len(messages); {
+		if messages[i].Role != "assistant" || len(messages[i].ToolCalls) == 0 {
+			out = append(out, messages[i])
+			i++
+			continue
+		}
+		endCalls := i + 1
+		for endCalls < len(messages) && messages[endCalls].Role == "assistant" && len(messages[endCalls].ToolCalls) > 0 {
+			endCalls++
+		}
+		end := endCalls
+		for end < len(messages) && messages[end].Role != "assistant" {
+			end++
+		}
+		var ids []string
+		known := map[string]bool{}
+		for _, m := range messages[i:endCalls] {
+			for _, c := range m.ToolCalls {
+				ids = append(ids, c.ID)
+				known[c.ID] = true
+			}
+		}
+		var answers, rest []Message
+		var answerIDs []string
+		restSeen, interleaved := false, false
+		for _, m := range messages[endCalls:end] {
+			if m.Role == "tool" && known[m.ToolCallID] {
+				answers = append(answers, m)
+				answerIDs = append(answerIDs, m.ToolCallID)
+				if restSeen {
+					interleaved = true
+				}
+			} else {
+				rest = append(rest, m)
+				restSeen = true
+			}
+		}
+		plan, err := toolhistory.Pair(ids, answerIDs)
+		if err != nil {
+			return nil, err
+		}
+		missing := false
+		for _, n := range plan {
+			if n < 0 {
+				missing = true
+			}
+		}
+		if !missing && !interleaved {
+			out = append(out, messages[i:end]...)
+			i = end
+			continue
+		}
+		out = append(out, messages[i:endCalls]...)
+		for n, id := range ids {
+			if plan[n] >= 0 {
+				out = append(out, answers[plan[n]])
+				continue
+			}
+			out = append(out, Message{Role: "tool", ToolCallID: id, Content: []ContentBlock{{Type: "tool_result", ToolResult: &ToolResult{ToolUseID: id, IsError: true, Content: []ContentBlock{{Type: "text", Text: toolhistory.Interrupted}}}}}})
+		}
+		out = append(out, rest...)
+		i = end
+	}
+	return out, nil
+}

@@ -15,16 +15,9 @@ export default {
   filter: {
     actorLabel: 'Acteur',
     actorPlaceholder: 'Correspondance partielle sur le nom d\'utilisateur',
-    actorAria: 'Filtre acteur',
     actionLabel: 'Action',
     actionPlaceholder: 'ex. user.* ou auth.*',
-    actionAria: 'Filtre action',
     fromLabel: 'De',
-    fromAria: 'Heure de début',
-    toLabel: 'À',
-    toAria: 'Heure de fin',
-    query: 'Rechercher',
-    reset: 'Réinitialiser',
   },
   table: {
     headers: {
@@ -34,14 +27,6 @@ export default {
       target: 'Cible',
       details: 'Détails',
     },
-  },
-  pagination: {
-    total: '{n} entrées',
-    pageOf: '· Page {page} / {total}',
-    perPage: 'Par page',
-    previous: 'Précédent',
-    next: 'Suivant',
-    dash: '—',
   },
   detail: {
     titleWithId: 'Détail d\'audit #{id}',
@@ -68,13 +53,8 @@ export default {
     'authentication.login_failed': 'Échec de connexion',
     'authentication.logout': 'Déconnexion',
   },
-  errors: {
-    loadFailed: 'Échec du chargement',
-  },
 
   // 扁平键（供 Vue 组件直接使用）
   loadFailed: 'Échec du chargement',
   dash: '—',
-  refreshing: 'Refreshing…',
-  refresh: 'Refresh',
 }

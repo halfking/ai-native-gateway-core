@@ -28,13 +28,55 @@ import (
 //
 // ⚠ **这三行是 §9.226.3 的快照，已过期**。当前实测见
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
-// 2026-10-06 / §9.257 更新）：
+// 2026-10-21 / R65 轮更新）：
 //
-//	全仓拼接点 73 处（v1 6 文件/12 处、canonical 12/18、unresolved 9/16、v1arm 15/27）
-//	（2026-10-05 832/833 收口轮：+2 全部来自 modalityVerifyAddressableSource
-//	共用常量的两个引用点，见清单 bg/modality_verification.go 条目；v1 桶不动）
-//	（2026-10-07 全量门首跑：+1 拼接点 / +1 v1 臂视图处数，方向=变大=「把看
-//	不见变成看得见」，按门规同步数字；归属当日 main 侧 Go 增量，未逐点溯源）
+//	全仓拼接点 147 处（v1 0 文件/0 处、canonical 59/125、unresolved 13/22、v1arm 0/0）
+//
+//	（2026-10-25 R152 轮刷新：142 → 147。★ 不是只改数字 —— 逐站点对拍过：
+//	  净增 5 处 = admin/compression_sessions.go +1、admin/compression_stats.go +2
+//	  （R76/R77 把 SQL 构造搬进函数后，同一批会话族源在更多调用点上被拼接）、
+//	  db/request_logs_view_schema.go +2（R92/R93/R94 改写后第一次进入扫描范围，
+//	  已补登记判定：唯二入参是 session_turns_hot / session_turns）。
+//	  ⇒ 无桶变小 ⇒ 不是「扫描范围被改小 / 解析失败被吞」；
+//	  ⇒ 5 处 resolved 全是会话族 ⇒ 无 v1 读方。）
+//
+//	（2026-10-20 迁移 890 收口轮：v1 桶 -2 文件/-5 处、v1 臂桶 -16 文件/-27 处、
+//	canonical 桶 +29 文件/+72 处、unresolved 一栏未动（12 文件/19 处）。
+//	⚠ **三处变小/变大的成因逐条核过**（门规：「某一桶变小 ⇒ 先怀疑扫描范围被改小
+//	或解析失败被吞」）：
+//	  · v1 -2 文件/-5 处 = admin/tenants.go（切到会话族两臂，4 处）
+//	    + cmd/tools/backfill_session_bodies/main.go（工具退役，1 处）——
+//	    两处都**逐行读过源码**，不是扫描盲区；
+//	  · v1 臂 -16 文件/-27 处 = 推导集合本身空了（composer 不再定义任何含 v1 臂
+//	    的视图，4 张 v1-only 视图随 890 删除）⇒ 那 16 个文件整体落进 canonical，
+//	    不是「看不见了」。
+//	    ⚠★ **2026-10-21 订正（§19.10 跨会话订正）**：原文在这里写的是
+//	    「sql/objects/views/ 里的 canonical 视图已是会话两臂体」——
+//	    **这句在 10-20 09:58（e9a96c26c）之后就不成立了**：
+//	    那 5 张分析视图**必须回到 v1 fallback 体**（基线是**逐语句**应用的，
+//	    而 CREATE VIEW 会**急切校验**它引用的关系 ⇒ 写成会话族形态会让
+//	    **全新安装**在基线阶段就报 42P01 并中止），
+//	    部署形态由迁移 883/884 换上（两条路径跑完启动序列后形态一致）。
+//	    ⇒ ★★ **「源里出现过某个形态」≠「源错了」**：源可能是**某个时点的快照**；
+//	    判源之前先问「这个源是哪个时点的形态、被用在哪一步」；
+//	    ★ **判据的「不该有」必须带时点限定**，否则它会要求一个**打挂另一条路径**
+//	      的改动（那道旧门 `TestComposerDefinesNoV1ArmView` 就是这么生的：写它的时候
+//	      前提就已经是假的 ⇒ 它**生来就红**）。
+//	  · canonical +29 文件/+72 处 = 890 把一批读面从 v1 **字面量**改写成会话族
+//	    **拼接调用** ⇒ 方向=变大=「把看不见变成看得见」，按门规改数字即可。
+//	    这批新文件（17 个）逐个读过源码确认读的是会话族。）
+//
+//	（2026-10-21 R65 轮：canonical +2 文件/+6 处、总处数 +6 ⇒ 135→141。
+//	★ 逐条核过（逐站点 diff，见下面的 `documentedSnapshot` 说明段）：
+//	  · **+7 处** = 三个**新增文件**：admin/attempt_quality_api.go（1 处）、
+//	    admin/auto_route.go（1 处）、admin/auto_route_correlations.go（5 处）——
+//	    三处都读 `dbpkg.SessionFamilyTurnsSourceSQL()` ⇒ 会话族 ⇒ canonical；
+//	  · **−1 处** = bg/routing_health_checks.go 那个拼接点被 8531596a6 改写成
+//	    **纯字面量**（`public.session_turns_hot` UNION ALL `public.session_turns`）——
+//	    本工具量的是「**关系名不是字面量**的拼接点」（resolve.go:Site 定义），
+//	    所以它**离开了本工具的口径**；而它的目标是**会话族**不是 v1
+//	    ⇒ ⇒ **不是「又看不见了」**，只是读法从「间接（拼接调用）」变成「直接（字面量）」。
+//	    ⇒ 这一条**特意单独核过**：桶变小必须先排除「解析失败被吞」。)
 //
 // ★ **§9.257 的实测结论，是本工具最要紧的一条**：
 // 修完跨包解析后，unresolved 从 53 处降到 14 处（**多解析出 39 处**），
@@ -60,12 +102,11 @@ import (
 // ⇒ **本工具只管关系名不是字面量的拼接点**；把字面量改成拼接会让桶看起来在恶化，
 // 但那是把「看不见」变成「看得见且已定级」，方向上是变好。
 //
-// 其中 6 个 v1 文件里有 **4 个在四张登记表里一处都没有**：
+// 其中 3 个 v1 文件里有 **3 个在四张登记表里一处都没有**：
 //
 //	maas/usage.go  maas/consumption_detail.go  maas/credit_buckets.go
-//	admin/usage_credits.go
 //
-// 这四个走 `requestLogsSource(days)` / `requestLogsFromClause(days)` 切换层，
+// 这三个走**自己包内**的切换层 `requestLogsSource(days)`（maas/usage.go:66-71），
 // 而 `ClampUsageDays` 对 `days < 1` 返回 **1** ⇒ 默认分支是
 // **`_request_logs_hot AS r`，一张 v1 底表**。
 // `maas/usage.go` 唯一的 `from _request_logs` 文本在**第 27 行的注释里**
@@ -73,6 +114,10 @@ import (
 // 按 AST 抽列的 exposure 门也只覆盖直接读方 ⇒ **四道门全部看不见**。
 //
 // 而这是**计费/用量**路径（`credits_charged` / `cost_usd` 聚合）。
+//
+// ★ 2026-10-20（迁移 890）：这三个是**全仓仅剩的 v1 基表读点** —— 迁移把 v1 族
+// 整族删了，而这三个读点的取源函数**没跟着改** ⇒ 它们的默认支指向一张**已不存在**
+// 的表（42P01）。本工具的 reads-v1 桶因此**不是空的**，这是事实而不是工具误报。
 //
 // # 这道门为什么是**三桶都管**，而不是只管 v1 那一桶
 //
@@ -151,77 +196,85 @@ type siteAssessment struct {
 // indirectSiteAssessments 是全仓三桶的**判定清单**。键是仓库相对路径。
 // 判定依据是逐个文件读源码，不是抄工具输出。
 var indirectSiteAssessments = map[string]siteAssessment{
+	// ⚠ 2026-10-20（迁移 890）：原先挂在 map 顶部的 bg/candidate_failure_monitor.go
+	// 条目已移到下方「§9.233 新进 unresolved 桶」那一组里——它现在的判定依据
+	// （源从 v1-only 视图换成会话族热腿）属于 890 的改写，与那组同源。
 
-	// ── 读 v1 宽族基表（6 文件 / 12 处）──────────────────────────────────
-	// 这 6 个里有 **4 个在 admin 侧四张登记表里一处都没有**（§9.227）。
+	// ── 读 v1 宽族基表（3 文件 / 6 处）──────────────────────────────────
+	// ★ 2026-10-20（迁移 890）之后，这一桶是**全仓仅剩**的 v1 基表读点集合。
+	// 迁移把 v1 族（`_request_logs*` 及其分区）整族删了，而这三个读点的取源
+	// 函数**没跟着改** ⇒ 它们的默认支指向一张**已不存在**的表。
+	// ⇒ 「v1 桶非空」是**事实**，不是工具误报；这三条也是本清单里最该先处置的。
+	//
+	// ⚠ 下面 3 个在 admin 侧四张登记表里一处都没有（§9.227）。
 	// 它们全部走切换层，而切换层的表名以 Go 字符串进 SQL；
 	// `maas/usage.go` 唯一的 `from _request_logs` 文本在**第 27 行的注释里**，
 	// 所以按行扫描的 requestLogsReadInventory 看不见它。
-	"admin/tenants.go": {
-		Verdict:    verdictReadsV1,
-		ResolvesTo: "_request_logs_hot",
-		Via: "logsTable 是段 UNION 子查询：`(SELECT … FROM _request_logs_hot UNION ALL " +
-			"SELECT … FROM _request_logs) -- sqlreadguard:allow …`（tenants.go:770），" +
-			"用在 `FROM `+logsTable+` 的租户 credits/tokens/latency 聚合上（798/809/826/873/916）。" +
-			"⚠ 两张表都在，登记只写第一个是因为 v1Tables 是集合查询；" +
-			"另一张是 _request_logs。",
-		Consequence: "DROP 后这 5 个聚合**返回 0/NULL 而不是报错**：" +
-			"COALESCE(SUM(...),0) 把「读不到」变成「这个租户没花过钱」。" +
-			"⚠ 这是本清单里最危险的一条——它伪造的是**计费数字**。",
-	},
-	"admin/usage_credits.go": {
-		Verdict:    verdictReadsV1,
-		ResolvesTo: "_request_logs_hot",
-		Via: "requestLogsFromClause(days)（usage_credits.go:120）：days<=7 返回 " +
-			"`_request_logs_hot AS r`，否则 `request_logs_with_current_month AS r`。" +
-			"默认支在 149 行的 `FROM `+logsTable+`。",
-		Consequence: "同 tenants.go：credits 聚合读不到时 COALESCE 成 0，" +
-			"租户用量页显示 0 credits 而非报错。",
-	},
 	"maas/usage.go": {
-		Verdict:    verdictReadsV1,
-		ResolvesTo: "_request_logs_hot",
-		Via: "requestLogsSource(days)（usage.go:66）：days<=7 → `_request_logs_hot AS r`。" +
-			"⚠ **默认支就是 v1 底表**：`ClampUsageDays`（usage.go:39）对 days<1 返回 **1**，" +
-			"所以不传 days 或传 0 的调用全部落在 v1 一支。" +
-			"用在 106/116/134/170 四处 `FROM `+logsTable+`（TotalRequests/TotalCredits/按模型/趋势）。",
+		Verdict: verdictCanonicalOnly,
+		Via: "requestLogsSource(days)（usage.go:66-71）：**恒**返回 " +
+			"`request_logs_with_current_month AS r`（canonical 视图，890 后是会话两臂体）。" +
+			"用在 106/116/134/170 四处 `FROM `+logsTable+`（TotalRequests/TotalCredits/按模型/趋势）。" +
+			"★ 890 之后**两个分支合并成一个**：原 `days<=7 → _request_logs_hot AS r` 那支" +
+			"（v1 底表，42P01）已删除——canonical 视图本身就是会话族两臂体" +
+			"（`session_turns_hot ∪ session_turns` + details），已覆盖热窗 + 冷窗。",
 		Consequence: "租户用量/计费 API（QueryUsageSummary 及 WithCost）。" +
-			"DROP 后请求数与 credits 变 0，**对外仍然是 200 + 一份合法 JSON**。" +
-			"⚠ 与 tenants.go 叠加：两条路径都伪造 0 的话，" +
-			"「这个租户从没调用过」会被当成事实。",
+			"⚠ **口径变化**（不是纯重构）：canonical 视图**不含镜像链建立之前的历史**" +
+			"（那批行只存在于 v1 族，已随 890 删除）⇒ 7 天窗的请求数与 credits 会**变少**。" +
+			"那是「那段历史已经不在库里了」，不是计数缺陷。" +
+			"⇒ 读面口径与会话族一致（会话族的 27.6% request_id 覆盖率缺口一并登记）。",
 	},
 	"maas/consumption_detail.go": {
-		Verdict:    verdictReadsV1,
-		ResolvesTo: "_request_logs_hot",
-		Via: "同一套 requestLogsSource(days)（usage.go:66），" +
-			"消费明细查询在 81 行 `FROM ` + logsTable + `。默认支同为 v1 底表。",
-		Consequence: "消费明细按小时/按模型分组；读不到时**返回空分组而不是报错**，" +
-			"页面上表现为「这段时间没有消费」。",
+		Verdict: verdictCanonicalOnly,
+		Via: "同一套 requestLogsSource(days)（usage.go:66-71，现恒返回 canonical 视图），" +
+			"消费明细查询在 81 行 `FROM ` + logsTable + `。",
+		Consequence: "消费明细按小时/按模型分组。★ 890 之后源从 v1 底表换成 canonical 视图" +
+			"⇒ 镜像链建立之前的历史不再计入（那段行随 v1 族一起消失）。" +
+			"错误处理未变：源不可用时仍是 `return ConsumptionDetail{}, fmt.Errorf(...)`" +
+			"（consumption_detail.go:100-103）⇒ **响亮失败**（500），不是空分组。",
 	},
 	"maas/credit_buckets.go": {
-		Verdict:    verdictReadsV1,
-		ResolvesTo: "_request_logs_hot",
-		Via: "同一套 requestLogsSource(days)，49 行 `FROM `+logsTable+`，" +
-			"写入小时级 credit 桶（ON CONFLICT DO UPDATE）。",
+		Verdict: verdictCanonicalOnly,
+		Via: "同一套 requestLogsSource(days)（usage.go:66-71，现恒返回 canonical 视图），" +
+			"47 行 `FROM `+logsTable+`，写入小时级 credit 桶（ON CONFLICT DO UPDATE）。",
 		Consequence: "⚠ **与其它几条不同类**：它不是读后展示，而是**写聚合桶**。" +
-			"DROP 后桶会被写成 0（或被 ON CONFLICT 更新成 0），" +
-			"而**已有的小时桶会被覆盖** ⇒ 不可逆。",
-	},
-	"cmd/tools/backfill_session_bodies/main.go": {
-		Verdict:    verdictReadsV1,
-		ResolvesTo: "_request_logs_bodies",
-		Via: "bodiesTable := \"_request_logs_bodies\"，`--use-hot` 时改成 " +
-			"\"_request_logs_bodies_hot\"（main.go:88-90），96 行 " +
-			"`SELECT request_body, response_body FROM ` + bodiesTable + ` WHERE request_id = $1`。",
-		Consequence: "⚠ **与运行时读方不同类**：这是**迁移工具**，" +
-			"DROP 后它没有任何替代源 ⇒ session_bodies 的回填**永久做不了**。" +
-			"它必须在 DROP 之前跑完（或被废弃并留档），不是「换个源」的问题。",
+			"★ 890 之后源从 v1 底表换成 canonical 视图 ⇒ 桶里会**继续写入会话族的 credits**" +
+			"（不再是 42P01，也不再有「桶被写成 0」那条不可逆后果）。" +
+			"⚠ 口径随之变化：镜像链建立之前的历史的 credits 不再回填进桶" +
+			"（那段行随 v1 族一起消失）⇒ 桶的起点是会话族开始记录的时刻。",
 	},
 
-	// ── 读 canonical 视图 / 会话族（4 文件 / 5 处）────────────────────────
+	// ── 读 canonical 视图 / 会话族（54 文件 / 110 处）─────────────────────
 	// ⚠ 「读 canonical 视图」**不等于**「退役后照常工作」：视图的 v1 臂在
 	// DROP 时消失。admin/logs.go 与 admin/usage_enhanced.go 都是这一类，
 	// 且它们的读法是 struct 字段 ⇒ 四道门全都看不见。
+	"admin/tenants.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "logsTable := tenantStatsLogsTableSQL(settings.RequestLogsWriteEnabled())（tenants.go:795）。" +
+			"★ 2026-10-20（迁移 890）该函数从**四臂**（会话 hot/父表 + v1 hot/父表）" +
+			"收敛成**两臂**（只有 session_turns_hot ∪ session_turns，" +
+			"见 admin/tenant_stats_logs_table.go:30-53）——v1 两臂与那两条对 v1 的" +
+			"NOT EXISTS 双子反连接一起删了（反连接的对象已随 890 退役）。" +
+			"4 处 `FROM `+logsTable+`（828/847/880/914）是租户 credits/按模型/按应用/按天聚合；" +
+			"第 5 处（813）是 usageTable = \"usage_ledger_with_current_month\"，与 v1 无关。",
+		Consequence: "与 v1 退役**无关**：四段聚合现在只读会话族两臂，冻结点已退化为常数 " +
+			"-infinity（db/v1_freeze_cutoff.go）⇒ 谓词恒真。" +
+			"⚠ 真正的后果是**口径变化**而不是失效：v1 族的历史行随 890 一起没了，" +
+			"而会话族只镜像**有会话头**的流量（探针/自检回环、in_progress 占位、标题/摘要生成器回环都不镜像）" +
+			"⇒ 无会话头的流量在这四段聚合里**不计入**。" +
+			"★ 与本条目退役前那版（「COALESCE(SUM(...),0) 把读不到变成没花过钱 ⇒ 伪造计费数字」）" +
+			"**形态不同**：现在是**总体变小**，不是伪造；而且查询是响亮的（没有静默 0 的路径）。",
+	},
+	"admin/usage_credits.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "requestLogsFromClause(days)：短窗（days<=7）经 `db.SessionFamilyTurnsHotSourceSQL()` 取会话族热腿；" +
+			"长窗（days>7）仍读 canonical 视图 `request_logs_with_current_month`" +
+			"（usage_credits.go:167 的 `FROM `+logsTable+`）。" +
+			"★ 2026-10-20（迁移 890）之后该视图**没有 v1 臂了**：它的体只剩 session_turns_hot ∪ session_turns 两臂。",
+		Consequence: "两个分支都只读会话族行 ⇒ v1 退役对它**无影响**（视图还在，且行集里已没有 v1 那部分）。" +
+			"⚠ 与退役前那版（「长窗仍含 v1 历史臂，DROP 时历史行减少」）**形态不同**：那是「少行」，" +
+			"现在是「那一部分行本来就不存在」——历史行随 890 一起被删，不是被读丢的。",
+	},
 	"admin/auto_route_tuning.go": {
 		Verdict: verdictCanonicalOnly,
 		Via: "viewName := \"tuning_signals_daily\"，days<=7 时改成 " +
@@ -231,20 +284,11 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"真关系名，所以这条不是误报。",
 	},
 	"admin/dashboard_board_queries.go": {
-		// ★ §9.260：由 canonical-only 改为 reads-v1-arm。**不是原来写错了** ——
-		// 原文的 Via 与 Consequence 都准确地写着「带 v1 臂 / 少掉 v1 那部分行」，
-		// 只有 Verdict 标签是 §9.257 之前那条推导路径的产物。
-		// 改动理由：`…_without_customer_id` 是 composer **运行时**建的视图、
-		// 仓库里没有 DDL 文件 ⇒ §9.258 的推导器认不出它，这个文件被判成 canonical。
-		// 推导器补全后（§9.260）它正确落进 v1 臂桶，而清单标签与工具判定**矛盾** ⇒ 门红。
-		Verdict: verdictReadsV1Arm,
-		Via: "logsTable 解析为 `request_logs_with_current_month_without_customer_id AS r`" +
-			"（119 行）—— canonical 视图的包装视图，**带 v1 臂**。",
-		Consequence: "⚠ 视图的 v1 臂在 DROP 时消失 ⇒ 看板的这张表会少掉 v1 那部分行。" +
-			"归 D29-d 切换清单，**不是** DROP 前的 blocker。" +
-			"★ §9.260：这个包装视图由 composer 运行时创建、**仓库里没有 DDL 文件**，" +
-			"所以只看 sql/objects/views/ 的推导器认不出它 —— " +
-			"真库 pg_class 里有 4 个 _request_logs*_with_current_month* 视图且**全部含 v1 臂**。",
+		Verdict: verdictCanonicalOnly,
+		Via: "fallbackBoardSummary 与 queryBoardCreditsExcludingProbes 共用 " +
+			"boardRequestLogsFromClause；r1033（f5f7b1d1b）将其改为 " +
+			"`db.SessionFamilyTurnsSourceSQL() AS r`，直接投影会话族，不再读 v1 包装视图。",
+		Consequence: "两处聚合均不依赖 v1 基表或 v1 历史臂；v1 DROP 不改变该读源。",
 	},
 	"admin/provider_cred_lifecycle.go": {
 		Verdict:     verdictCanonicalOnly,
@@ -263,122 +307,134 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"那是另一个更大的改动。",
 	},
 
-	// ── 工具解析不出、人读过源码确认不是 v1（14 文件）────────────────────
+	// ── 工具解析不出、人读过源码确认不是 v1 ─────────────────────────────
 	// 绝大多数是**跨包调用**（db.SessionFamilyTurns*SQL / probemode.GuardStateTable），
 	// 工具的 *ast.SelectorExpr 分支明写「不猜」。
+	//
+	// ★★ 2026-10-20（迁移 890）之后有一组**共同形态**，先在这里说一次，
+	// 下面的条目只写各自的差异：
+	//
+	//	「bodies 腿经切换层 `db.SessionBodiesSourceSQL()` 取源」——
+	//	而该切换层**今天仍是**：
+	//
+	//	    func SessionBodiesSourceSQL() string {
+	//	        if settings.GetPlatformBool(SessionBodiesNativeReadSetting, false) {
+	//	            return SessionFamilyBodiesSourceSQL()   // 会话侧
+	//	        }
+	//	        return "request_logs_bodies_with_current_month"  // ★ v1-only 视图
+	//	    }
+	//
+	//	而 `request_logs_bodies_with_current_month` **已被迁移 890 删除**
+	//	（890 第 4 步「删 v1-only 视图」显式列名它）。
+	//	⇒ 默认臂指向一个**已不存在**的关系 ⇒ 该臂运行期 **42P01**（响亮失败）。
+	//
+	//	⚠⚠ **本工具看不见这一条**（这正是它要被发现的地方）：
+	//	  · 那个名字**不是 v1 基表**（不在 v1Tables 里）⇒ 不进 reads-v1 桶；
+	//	  · 它的 DDL 文件已随 890 从 sql/objects/views/ 删除 ⇒ viewsWithV1Arm
+	//	    **推导不出**它 ⇒ 不进 v1-arm 桶。
+	//	⇒ 工具只能把它判成 canonical-only。**清单必须替工具说这句**，
+	//	否则「canonical-only」会被读成「退役后照常工作」。
 	"admin/logs.go": {
-		Verdict: verdictReadsV1Arm,
-		Via: "logsFrom := logsSourceFromSQL()（logs.go:630）。logs_turns_source.go:62-68：" +
-			"`storage.admin_logs_native_turns_read` 平台开关为 **false（默认）** 时返回 " +
-			"`request_logs_with_current_month rl`，为 true 才返回会话族源。" +
-			"6 处拼接点（632/633/675/677/726/730）。",
-		Consequence: "⚠ **默认支是 canonical 视图的 v1 臂**。DROP 后日志列表的" +
-			"v1 那部分行消失（不是缺列，是少行）。" +
-			"归 D29-d 切换清单；灰度开关转 true 即可整体切到会话族。" +
-			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_with_current_month`，" +
-			"部署形态是 `session_turns(_hot) 投影 UNION ALL frozen v1 臂`（三臂，db/request_logs_view_schema.go:207）。\n" +
-			"⇒ 退役后**关系名还在**、但 v1 臂的行消失 ⇒ 日志列表**少行**，不报错、不缺列。" +
-			"⚠ 本开关保持默认 false 的理由不是「镜像不完整」，而是原生源**不是全量日志视图的等价替代**" +
-			"（真库实测 27.6% 的 request_id 在原生源查不到，见 logs_turns_source.go 的注释）。",
+		Verdict: verdictCanonicalOnly,
+		Via: "9 处：① 6 处 `FROM `/`JOIN ` + logsFrom（669/671/682/685/732/736），" +
+			"logsFrom := logsSourceFromSQL()（admin/logs_turns_source.go:60-68）——" +
+			"开关 `storage.admin_logs_native_turns_read` 默认 false 时返回 " +
+			"`request_logs_with_current_month rl`，打开才返回会话族原生源；" +
+			"② 2 处 bodies 腿（1152/1198）`dbpkg.SessionFamilyBodiesSourceSQL()`" +
+			"（**固定**会话族，已不走开关）；③ 1 处 turnsSrc（1279）" +
+			"`dbpkg.SessionFamilyTurnsSourceSQL()` / Hot 版（按窗口选）。",
+		Consequence: "★ 迁移 890 之后 canonical 视图**没有 v1 臂**（体只剩 session_turns_hot ∪ session_turns 两臂）" +
+			"⇒ 日志列表/聚合看到的是**只有会话族行**的视图。" +
+			"⚠ 口径损失要记在案：原生源**不是**全量日志视图的等价替代" +
+			"（真库实测 27.6% 的 request_id 在原生源查不到 —— 无会话头流量：探针/自检按设计排除、" +
+			"in_progress 占位、标题/摘要生成器回环，见 logs_turns_source.go:40-55）" +
+			"⇒ **默认支（视图）比原生支全**，开关打开反而少 27.6% 的行。" +
+			"★ 退役前那版的后果（「v1 那部分行消失 ⇒ 少行」）已不适用：那一部分行随 890 一起被删，" +
+			"不是被读丢的。",
 	},
 	"admin/usage_enhanced.go": {
 		Verdict: verdictCanonicalOnly,
 		Via: "baseTable 来自 planCostTrend 的 `BaseTable: \"request_logs_with_current_month rl\"`" +
 			"（usage_enhanced.go:120），168 行 `\"FROM \" + baseTable + plan.JoinClause`。" +
 			"⚠ 这是**裸表名字符串**，按行扫描与 AST 抽列两道门都看不见" +
-			"（admin/request_logs_read_inventory_test.go 的注释已把它登记为已知缺口）。",
-		Consequence: "维度归因报表（用量趋势的成本拆分）会少掉 v1 臂的行。" +
+			"（admin/request_logs_read_inventory_test.go 的注释已把它登记为已知缺口）。" +
+			"★ 890 之后该视图已是会话两臂体 ⇒ 只看得到会话族行。",
+		Consequence: "维度归因报表（用量趋势的成本拆分）只覆盖**会话族行**；v1 那部分历史随 890 一起没了。" +
 			"与 logs.go 同属切换清单项。",
 	},
 	// ── §9.232：bodies 腿改走切换层的消费点（7 文件 / 10 处）──────────────
 	// ⚠ §9.233 起这些调用**全部变成跨包**（切换层下沉到 db），原先「同包函数调用」
 	// 的说法不再成立；工具仍判 unresolved（`resolve` 的 CallExpr 只查 env.funcs），
 	// 但理由从「同包函数」变成「跨包函数」——结论不变，成因变了，必须改写而非留旧句。
+	//
+	// ★ 2026-10-20（迁移 890）：这批的**判定全部改写**：
+	//   · 工具改判 canonical-only（推导集合空了 ⇒ 第四桶恒为 0）；
+	//   · 而人读的结论也变了：**默认臂指向的视图被 890 删了**（见本节开头那段）。
+	// ⇒ 「canonical-only」在这里**不等于**「退役后照常工作」——
+	//	开关默认关 ⇒ 默认臂 42P01。这正是「工具的桶」与「人的结论」必须分开写的原因。
 	"admin/auto_title_generator.go": {
-		Verdict: verdictReadsV1Arm,
-		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（1 处，§9.232 从字面量 v1 bodies 改走切换层）。" +
-			"跨包函数调用 ⇒ 工具判 unresolved（`resolve` 的 CallExpr 只查 env.funcs，" +
-			"而 §9.233 起切换层住在 db 包的 db.SessionBodiesSourceSQL()）。" +
-			"**默认支读 v1**（request_logs_bodies_with_current_month）⇒ 条件性读 v1。" +
-			"消费点由 admin 侧 indirectSourceConsumers 机器识别；切换层登记在" +
-			"admin/request_logs_indirect_readers_test.go（切换层在 db/request_logs_view_schema.go）。",
-		Consequence: "停写/DROP 后 bodies 腿静默变空、接口仍 200，与迁移前完全一致——" +
-			"开关默认关。开关打开后本条免疫，但 bodies 退役门仍红 ⇒ 开关开不了。" +
-			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
-			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
-			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
+		Verdict: verdictCanonicalOnly,
+		Via: "841 行 `LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb`（1 处，§9.232 从字面量 v1 bodies 改走切换层）。" +
+			"跨包函数调用 ⇒ 工具判 canonical-only（该函数的两臂解析出的是会话族 bodies 与 " +
+			"`request_logs_bodies_with_current_month`，**都不是 v1 基表**；后者又不是任何视图的 v1 臂" +
+			"——890 已删掉它的 DDL ⇒ 推导器认不出它）。" +
+			"消费点由 admin 侧 indirectSourceConsumers 机器识别；切换层在 db/request_logs_view_schema.go:788-793。",
+		Consequence: "★ **默认臂指向已被 890 删除的视图** `request_logs_bodies_with_current_month`" +
+			"⇒ 开关 `storage.session_bodies_native_read`（默认 **false**）下这条 JOIN **42P01**，" +
+			"接口报错——是**响亮失败**，不是静默少行（与本条目退役前那版「静默变空、接口仍 200」相反）。" +
+			"⇒ 处置：把 bodies 切换层的默认臂改指会话族（或强制翻开关），" +
+			"⚠ 但翻开关前必须成对翻写端 `storage.session_turns_bodies_enabled`" +
+			"（admin/v1_bodies_read_path_test.go 的文件头记着：只翻读端会读到**空正文**）。",
 	},
 	"admin/compression_stats.go": {
-		Verdict: verdictReadsV1Arm,
-		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（3 处，§9.232/§9.237；" +
-			"第 3 处在**包级 var** compressionStatsEstimatedOrigSQL 里，该常量**因此由 const 改成 var**——" +
-			"函数调用不能出现在 const 声明中）。" +
-			"⚠ §9.237 起这一处**被工具看见了**：此前包级 var 的点位不在枚举范围内，" +
-			"清单只能靠人工注明；现在 3 与 2 都是工具自己数的。" +
-			"**默认支读 v1** ⇒ 条件性读 v1。消费点机器识别；切换层见 admin 侧登记。",
-		Consequence: "停写后 with_outbound / compressed / estimated_original_tokens / " +
-			"summary_mode_rows 静默归 0（压缩率与省 token 数变 0%，而 total 与 strategy " +
-			"分布仍有数、接口 200）——停写分类表把本文件记为 silently_degraded_content。" +
-			"⚠ 换源时要连分项一起看，只看 total 会被骗过去。" +
-			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
-			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
-			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
+		Verdict: verdictCanonicalOnly,
+		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（3 处：62/151/272 行的 JOIN，" +
+			"拼接点在 53/144/269；§9.232/§9.237。第 3 处在**包级 var** compressionStatsEstimatedOrigSQL 里，" +
+			"该常量**因此由 const 改成 var**——函数调用不能出现在 const 声明中）。" +
+			"**默认臂读 `request_logs_bodies_with_current_month`**（890 已删的 v1-only 视图）。",
+		Consequence: "★ 与本条目退役前那版（「静默归 0、接口 200」）**形态相反**：现在默认臂 42P01，" +
+			"压缩统计查询**直接报错**。⇒ 处置同 auto_title_generator（bodies 切换层默认臂改指会话族）。" +
+			"⚠ 换源时要连分项一起看（with_outbound / compressed / estimated_original_tokens / summary_mode_rows），" +
+			"只看 total 会被骗过去。",
 	},
 	"admin/logs_summary.go": {
-		Verdict: verdictReadsV1Arm,
-		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（2 处，§9.232）。" +
-			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
-		Consequence: "同 compression_stats：正文两列静默变空、计数类仍有数。" +
-			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
-			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
-			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
+		Verdict: verdictCanonicalOnly,
+		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（2 处：202/264 行的 JOIN，拼接点在 199/261；§9.232）。" +
+			"**默认臂读 `request_logs_bodies_with_current_month`**（890 已删的 v1-only 视图）。",
+		Consequence: "★ 默认臂 42P01（视图已被 890 删除）⇒ 正文两列的查询**直接报错**，" +
+			"而不是本条目退役前那版的「静默变空、计数类仍有数」。",
 	},
 	"admin/memora_handlers.go": {
-		Verdict: verdictReadsV1Arm,
-		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（1 处，§9.232）。" +
-			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
-		Consequence: "停写分类表记 degraded_content，且该条目历史上因「同一文件取更危险档」" +
-			"被改判过一次（§9.35）——改它之前先读那条 Note。" +
-			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
-			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
-			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
+		Verdict: verdictCanonicalOnly,
+		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（1 处：812 行的 JOIN，拼接点在 792；§9.232）。" +
+			"**默认臂读 `request_logs_bodies_with_current_month`**（890 已删的 v1-only 视图）。",
+		Consequence: "★ 默认臂 42P01（视图已被 890 删除）⇒ 记忆面板的正文查询**直接报错**。" +
+			"⚠ 停写分类表记 degraded_content，且该条目历史上因「同一文件取更危险档」被改判过一次（§9.35）" +
+			"——改它之前先读那条 Note。",
 	},
 	"admin/no_topic_session.go": {
-		Verdict: verdictReadsV1Arm,
-		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（2 处，§9.232）。" +
-			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
-		Consequence: "降级的是**正文两列、不是行数**：bodies 无 session 臂时新会话的 " +
-			"request_body/response_body 恒为空串，而 message_count 仍非零、接口 200、" +
-			"消息列表结构齐全 ⇒ 消费方拿到「有轮次、无正文」的会话。" +
-			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
-			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
-			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
+		Verdict: verdictCanonicalOnly,
+		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（2 处：147/322 行的 JOIN，拼接点在 137/319；§9.232）。" +
+			"**默认臂读 `request_logs_bodies_with_current_month`**（890 已删的 v1-only 视图）。",
+		Consequence: "★ 默认臂 42P01（视图已被 890 删除）⇒ 查询**直接报错**。" +
+			"（退役前那版写的是「降级的是正文两列、不是行数」，那是「表还在但被清空」时代的形态。）",
 	},
 	"admin/session_sanitize_matches.go": {
-		Verdict: verdictReadsV1Arm,
-		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（1 处，§9.232）。" +
-			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
-		Consequence: "bodies 腿取不到时匹配依据变空 ⇒ 结果变少但不报错。" +
-			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
-			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
-			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
+		Verdict: verdictCanonicalOnly,
+		Via: "226 行 `LEFT JOIN ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` rb`（拼接点在 182；§9.232）。" +
+			"★ 2026-10-20（890）该腿已**固定**为会话族源（不再经开关），" +
+			"所以它**没有**上面那组「默认臂 42P01」的问题。",
+		Consequence: "与 v1 无关（会话族直连）。" +
+			"⚠ 与本条目退役前那版（「bodies 腿取不到时匹配依据变空 ⇒ 结果变少但不报错」）**形态不同**：现在取不到就是报错。",
 	},
 	"admin/session_compare.go": {
-		Verdict: verdictReadsV1Arm,
-		Via: "221/902 行 `FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl`，会话族。" +
-			"跨包调用 ⇒ 工具判 unresolved；读源码确认是会话族。" +
-			"⚠ §9.230 起 **902 行那条 bodies 拼接点也进了 unresolved 桶**：",
-		Consequence: "turn 腿与 v1 无关。⚠ 但 **bodies 腿仍条件性读 v1**——" +
-			"§9.230 把它改成经 `dbpkg.SessionBodiesSourceSQL()` 取源，工具解析不出那个函数" +
-			"（它的一臂是跨包调用 `db.SessionFamilyBodiesSourceSQL() + \" rb\"`，" +
-			"`resolve` 对 *ast.SelectorExpr 返回 nil ⇒ 整个函数不进 env.funcs），" +
-			"所以是 unresolved 而非 reads-v1。" +
-			"**默认支是 v1**（`request_logs_bodies_with_current_month`）。" +
-			"已登记在 admin/request_logs_indirect_readers_test.go" +
-			"（切换层在 db/request_logs_view_schema.go）与 admin/request_logs_bodies_retirement_gate_test.go。" +
-			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
-			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
-			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
+		Verdict: verdictCanonicalOnly,
+		Via: "2 处：① 215/959 行 `FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl`，会话族；" +
+			"② 963/964 行 `LEFT JOIN ` + db.SessionBodiesSourceSQL() + ` rb`（拼接点在 963）——" +
+			"**默认臂读 `request_logs_bodies_with_current_month`**（890 已删的 v1-only 视图）。",
+		Consequence: "turn 腿与 v1 无关。★ **bodies 腿**：默认臂 42P01（视图已被 890 删除）⇒ 会话对比接口**直接报错**，" +
+			"而不是本条目退役前那版的「COALESCE 成 `{}` 而接口仍 200」。" +
+			"已登记在 admin/request_logs_indirect_readers_test.go 与 admin/request_logs_bodies_retirement_gate_test.go。",
 	},
 	"admin/session_list.go": {
 		Verdict: verdictNonV1ByInspection,
@@ -389,25 +445,31 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	// ── S4 波 4（2026-10-13）新增的会话族拼接点 ──────────────────────────
 	// ── S4 波 4（2026-10-13）补登：波 2/波 3 引入但当时未进本清单的 8 文件 ──
 	// （pristine HEAD 本门已红 8 条；本轮补齐使其复绿。判定依据=逐文件读拼接点。）
+	//
+	// ★ 2026-10-20（迁移 890）：这批条目的**行号与机制**都随 v1 族退役重写过了
+	// （v1 字面腿被删、会话族拼接点搬家）。逐条按今天的源码核对过。
 	"admin/body_resolver.go": {
 		Verdict:     verdictNonV1ByInspection,
-		Via:         ":254 lookupControlledBody 阶段3 会话族兜底腿 `FROM ` + dbpkg.SessionFamilyBodiesSourceSQL()（S4 停写交接加）。",
-		Consequence: "本拼接点与 v1 无关；阶段1/2 的 v1 字面腿由 bodies 退役门管辖。",
+		Via:         ":215-220 lookupControlledBody 主查询 `FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl` + `LEFT JOIN ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` rb`（JOIN 键由 (request_id, ts) 改成 request_id 单键——会话族正文源**刻意不投影 ts**）；:237 阶段3 会话族兜底腿 `FROM ` + dbpkg.SessionFamilyBodiesSourceSQL()。",
+		Consequence: "本拼接点与 v1 无关。★ 890 之后本文件**没有任何 v1 腿**：原阶段1/2 的 v1 字面腿（v1 hot 主行 JOIN v1 hot 正文表 / canonical 视图 JOIN v1 bodies 视图）已随 890 删除 ⇒ 本条从「阶段1/2 由 bodies 退役门管辖」变成「**整条读法只剩会话族**」。",
 	},
 	"admin/routing.go": {
 		Verdict:     verdictNonV1ByInspection,
-		Via:         ":2684 popularModelsHotSQL `FROM ` + db.SessionFamilyTurnsSourceSQL()（S3 波 3 会话族原生源）。",
+		Via:         ":2729 popularModelsHotSQL `FROM ` + db.SessionFamilyTurnsSourceSQL()（S3 波 3 会话族原生源）。",
 		Consequence: "与 v1 无关；模型列回退链 client→outbound→canonical。",
 	},
 	"admin/unified_detail.go": {
 		Verdict:     verdictNonV1ByInspection,
-		Via:         ":296 pgBodyReader.loadOutboundBody 阶段3 会话族兜底腿（S4 停写交接加）。",
-		Consequence: "本拼接点与 v1 无关；hot/view 字面腿由 bodies 退役门管辖。",
+		Via:         ":272 pgBodyReader.loadOutboundBody 会话族兜底腿 `FROM ` + dbpkg.SessionFamilyBodiesSourceSQL()（S4 停写交接加）。",
+		Consequence: "本拼接点与 v1 无关。★ 890 之后 hot/view 字面腿也一并没了 ⇒ 本文件只剩会话族一条腿。",
 	},
 	"cmd/gateway/main_v3_wiring.go": {
-		Verdict:     verdictNonV1ByInspection,
-		Via:         ":104-105 lastOutboundSessionSQL：SessionFamilyTurnsForSessionSQL() turns 腿 + SessionFamilyBodiesSourceSQL() bodies 腿（压缩缓存 L3 冷启动回退）。",
-		Consequence: "与 v1 无关（两会话族源直连）。",
+		Verdict: verdictNonV1ByInspection,
+		Via: ":159-181 lastOutboundSessionSQL：SessionFamilyTurnsForSessionSQL() turns 腿 + " +
+			"SessionFamilyBodiesSourceSQL() bodies 腿（LEFT JOIN）+ " +
+			"public.session_bodies_unified 快照腿（LEFT JOIN LATERAL，kind='final_full'）" +
+			"（压缩缓存 L3 冷启动回退，§143.55 补上 final_full 读侧）。",
+		Consequence: "与 v1 无关（两会话族源直连 + 会话族 bodies 视图）。",
 	},
 	"domains/analysis/request_summary.go": {
 		Verdict:     verdictNonV1ByInspection,
@@ -416,12 +478,12 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	},
 	"domains/hooks/goal/history_store.go": {
 		Verdict:     verdictNonV1ByInspection,
-		Via:         ":86-87 historySessionSQL：SessionFamilyTurnsForSessionSQL() + SessionFamilyBodiesSourceSQL()（主路径）。",
-		Consequence: "本拼接点与 v1 无关；historyV1SQL 回退臂（v1 字面量）由 bodies 退役门管辖，随 v1 退役删除。",
+		Via:         ":89-92 historySessionSQL：SessionFamilyTurnsForSessionSQL() + SessionFamilyBodiesSourceSQL()（主路径）。",
+		Consequence: "本拼接点与 v1 无关。★ 890 之后 historyV1SQL 回退臂（v1 字面量）**已被删掉** ⇒ 本文件只剩会话族一条路。",
 	},
 	"domains/streaming/model_alternatives.go": {
 		Verdict:     verdictNonV1ByInspection,
-		Via:         ":255 `FROM ` + db.SessionFamilyTurnsSourceSQL()（S3 波 2 会话族化）。",
+		Via:         ":184 `FROM ` + db.SessionFamilyTurnsSourceSQL()（S3 波 2 会话族化）。",
 		Consequence: "与 v1 无关。",
 	},
 	"internal/summarystore/store.go": {
@@ -433,82 +495,72 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Verdict: verdictNonV1ByInspection,
 		Via: "countSQL + 主查询 + LATERAL 三段：SessionFamilyTurnsSourceSQL() ×3、" +
 			"SessionFamilyBodiesSourceSQL() ×3（2026-10-13 S4 波 4 会话族化，" +
-			"原 v1 视图两腿整体替换）。",
+			"原 v1 视图两腿整体替换；拼接点在 115/144/149）。",
 		Consequence: "与 v1 无关。退役门登记见 admin/request_logs_bodies_retirement_gate_test.go" +
 			"（该文件已整体出列 v1 族）。",
 	},
 	// 2026-10-14（S4 退役改名轮）：data_lifecycle 趋势端点跨族 + 冻结点切分。
 	"admin/data_lifecycle.go": {
 		Verdict: verdictCanonicalOnly,
-		Via: "dataLifecycleTrendSQL 无租户支经 `+ dbpkg.V1FreezeCutoffSQL +` 与 " +
-			"`+ dbpkg.SessionBodiesHasOutboundPredicate(\"s\") +` 拼接（V1FreezeCutoffSQL 是 " +
-			"db 包常量，读 v1 两表 max(ts)——工具按跨包常量判 canonical-only；" +
-			"它实际是**冻结点标量**，语义上属于跨族切分的一部分）。带租户支经 " +
-			"dataLifecycleCompressedExists（EXISTS v1 视图 ∪ 会话族源）。",
-		Consequence: "DROP v1 后 V1FreezeCutoffSQL 退化为常数（v1 两表不存在 ⇒ " +
-			"该 SQL 报错，响亮失败）；趋势端点的处置随 v1 存储治理面板一并评估" +
-			"（退役门 Tier ② 登记在案）。",
+		Via: "dataLifecycleTrendSQL 的会话腿经 `+ dbpkg.V1FreezeCutoffSQL +` 拼接（data_lifecycle.go:214）；" +
+			"带租户支另经 dataLifecycleCompressedExists（:33）——它是 `EXISTS (SELECT 1 FROM ` + " +
+			"dbpkg.SessionFamilyBodiesSourceSQL() + ` sb …)`，**跨族的 v1 腿已在 890 删除**。" +
+			"⚠ V1FreezeCutoffSQL 现在是**常数** `(SELECT '-infinity'::timestamptz)`" +
+			"（db/v1_freeze_cutoff.go 的 890 一节）⇒ 谓词恒真；工具按跨包常量判 canonical-only。",
+		Consequence: "★ 与本条目退役前那版（「DROP v1 后 V1FreezeCutoffSQL 退化为常数、v1 两表不存在 ⇒ 该 SQL 报错，响亮失败」）" +
+			"**形态不同**：现在它**已经是**那个常数，不再有任何报错路径。" +
+			"⇒ 趋势端点只覆盖会话族行；v1 族的历史行随 890 一起没了。" +
+			"趋势端点的处置随 v1 存储治理面板一并评估（退役门 Tier ② 登记在案）。",
 	},
 	// S4 波 4 补记（2026-10-13）：quality_correlations 重写后经切换层取 bodies。
 	"admin/quality_correlations.go": {
-		Verdict: verdictReadsV1Arm,
-		Via: "buildBreakdownQuery：`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb` ×5 个" +
-			"分桶查询（2026-10-13 S4 波 4 从 _request_logs 基表字面量改来）；turns 腿是 " +
-			"SessionFamilyTurnsSourceSQL()（canonical，含 v1 臂）。工具判 reads-v1-arm。" +
-			"默认支 = 切换层 v1 臂（native_read=false 时）。",
-		Consequence: "DROP v1 后切换层删 v1 臂 ⇒ 分桶只由会话族供数；探针流量按 R51" +
-			"本就不在会话族（口径变更已拍板登记，退役门条目）。分桶读的是 " +
-			"rb.outbound_body（完整上游请求对象），列在四列合同内。",
+		Verdict: verdictCanonicalOnly,
+		Via: "buildBreakdownQuery：turns 腿 `FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl`（:249）、" +
+			"bodies 腿 `LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb`（:255-256）" +
+			"（2026-10-13 S4 波 4 从 _request_logs 基表字面量改来）。" +
+			"★ 890 之后 bodies 腿的**默认臂指向已被删除的视图** `request_logs_bodies_with_current_month`。",
+		Consequence: "turns 腿与 v1 无关。★ **bodies 腿默认臂 42P01**（视图已被 890 删除）⇒ 分桶查询直接报错，" +
+			"而不是本条目退役前那版的「切到会话族供数」。探针流量按 R51 本就不在会话族" +
+			"（口径变更已拍板登记，退役门条目）。分桶读的是 rb.outbound_body（完整上游请求对象），列在四列合同内。",
 	},
 	"admin/session_bodies_batch.go": {
 		Verdict: verdictNonV1ByInspection,
 		Via: "主批量取数器 sessionBodiesByRequestIDSQL = `FROM ` +" +
-			"dbpkg.SessionFamilyBodiesSourceSQL() + ` rb`（2026-10-13 S4 波 4，" +
-			"消费方 session_compare 的 turns 腿是会话族）。",
-		Consequence: "本拼接点与 v1 无关。⚠ 同文件的 v1BodiesByRequestIDSQL/" +
-			"sessionBodiesByRequestIDAndTSSQL 仍是 v1 视图**字面量**（summary 回退" +
-			"路径专用 + 无生产调用方的守形钉子），由 bodies 退役门与守形门管辖，" +
-			"随 v1 表 DROP 退役。",
+			"dbpkg.SessionFamilyBodiesSourceSQL() + ` rb`（2026-10-13 S4 波 4；拼接点在 78/107）。",
+		Consequence: "本拼接点与 v1 无关。★ 890 之后**没有遗留的 v1 字面腿**了：" +
+			"v1BodiesByRequestIDSQL 现在也是 `FROM ` + dbpkg.SessionFamilyBodiesSourceSQL()，" +
+			"sessionBodiesByRequestIDAndTSSQL 内联会话族两腿——标识符里的 \"v1\" 现在只是**历史名**" +
+			"（文件头自己这么写）。⇒ 退役门登记的那条「DROP 时直接删除」已随 890 执行完毕。",
 	},
 	"admin/session_export.go": {
-		Verdict: verdictReadsV1Arm,
-		Via: "227 行 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl`，会话族。" +
-			"跨包调用 ⇒ 工具判 unresolved。" +
-			"⚠ §9.230 起同一行的 bodies 拼接点也进 unresolved 桶：",
-		Consequence: "turn 腿与 v1 无关。⚠ **bodies 腿仍条件性读 v1**——" +
-			"§9.230 把它改成经 `dbpkg.SessionBodiesSourceSQL()` 取源（默认支 = " +
-			"`request_logs_bodies_with_current_month`）。" +
-			"⚠ 写法是 COALESCE(rb.request_body,'{}') ⇒ 默认支下 DROP 后" +
-			"**导出的会话包每条正文都是 {}**，而且**不报错**。" +
-			"已登记在 admin/request_logs_indirect_readers_test.go" +
-			"与 admin/request_logs_bodies_retirement_gate_test.go。" +
-			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
-			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
-			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
+		Verdict: verdictCanonicalOnly,
+		Via: "2 处：① :217 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl`（会话族）；" +
+			"② :230-235 `LEFT JOIN ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` rb`（拼接点在 230）。" +
+			"★ 2026-10-20（890）该 bodies 腿已从 `db.SessionBodiesSourceSQL()`（带 v1 臂的运行时开关）" +
+			"改成**固定的会话族源** ⇒ 它**没有**那组「默认臂 42P01」的问题。",
+		Consequence: "与 v1 无关（两条腿都是会话族直连）。⚠ 与本条目退役前那版" +
+			"（「COALESCE(rb.request_body,'{}') ⇒ 导出的会话包每条正文都是 {}，而且不报错」）**形态不同**：现在取不到就报错，" +
+			"不会产出「结构自洽、正文全空」的包。已登记在 admin/request_logs_indirect_readers_test.go" +
+			"与 admin/request_logs_bodies_retirement_gate_test.go。",
 	},
 	"admin/session_online.go": {
 		Verdict: verdictNonV1ByInspection,
-		Via: "448 行 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl`，会话族。" +
-			"⚠ 同文件 112 行那个 `JOIN request_logs_with_current_month rl` **是 v1 视图**，" +
-			"但它是字面量、被 exposure/inventory 门覆盖，不在本清单范围（本清单只管" +
-			"关系名不是字面量的拼接点）。",
+		Via: ":448 行 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl`，会话族。" +
+			"★ 2026-10-20（890）之后同文件那个 `JOIN request_logs_with_current_month rl` 的 v1 视图腿" +
+			"**已被删掉**（今天文件里只剩注释提到那个名字）⇒ 本文件现在只剩会话族一条路。",
 		Consequence: "与 v1 无关。",
 	},
 	"admin/session_title.go": {
-		Verdict: verdictReadsV1Arm,
+		Verdict: verdictCanonicalOnly,
 		Via: "**两个拼接点，一句话说不清所以必须写全**：\n" +
-			"  ① 323 行 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` t` → 会话族，与 v1 无关；\n" +
-			"  ② 189 行 `LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` ` → **条件性读 v1**（§9.232 从字面量迁移过来）。\n" +
-			"⚠ 原条目只写了 ①、结论是「与 v1 无关」——迁移前那**确实成立**（bodies 腿是字面量，\n" +
-			"由 exposure / bodies 退役门管，不在本清单范围）。\n" +
-			"迁移后 ② 进了本工具的 unresolved 桶，而**若仍沿用「与 v1 无关」就会让清单说谎**。\n" +
-			"⇒ 本条目已由 verdictNonV1ByInspection 改为 verdictUnresolvedTool。",
-		Consequence: "① 会话族腿不受影响。② 停写/DROP 后 bodies 腿静默变空、接口仍 200 —— " +
-			"语料从全文降级为 preview 片段（request_preview/response_preview 兜底），" +
-			"语料短到 40 rune 以下才显式 400。开关默认关 ⇒ 与迁移前完全一致。" +
-			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
-			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
-			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
+			"  ① :325 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` t` → 会话族，与 v1 无关；\n" +
+			"  ② :189-192 `LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` ` → **默认臂指向已被 890 删除的视图**" +
+			"`request_logs_bodies_with_current_month`（§9.232 从字面量迁移过来，890 未改）。\n" +
+			"⚠ 原条目只写了 ①、结论是「与 v1 无关」——迁移前那**确实成立**（bodies 腿是字面量，" +
+			"由 exposure / bodies 退役门管，不在本清单范围）。" +
+			"迁移后 ② 进了本工具的桶，而**若仍沿用「与 v1 无关」就会让清单说谎**。",
+		Consequence: "① 会话族腿不受影响。② ★ **默认臂 42P01**（视图已被 890 删除）⇒ 标题生成查询**直接报错**，" +
+			"而不是本条目退役前那版的「bodies 腿静默变空、接口仍 200，语料从全文降级为 preview 片段」。",
 	},
 	"admin/session_turns_tree.go": {
 		Verdict:     verdictNonV1ByInspection,
@@ -521,21 +573,73 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Consequence: "与 v1 无关。",
 	},
 	"bg/auto_route_settle_sql.go": {
-		Verdict:    verdictReadsV1,
-		ResolvesTo: "_request_logs_hot",
-		Via: "`FROM ` + src.TurnsTable + ` rl`（73/99/120 行）。src 来自 " +
-			"settleSourceFor(logsWriteEnabled)（auto_route_settle_source.go:66-77）：" +
-			"写门**开着** ⇒ _request_logs_hot，**关掉** ⇒ session_turns_hot。" +
-			"⚠ 工具对 *ast.SelectorExpr（struct 字段）返回 nil ⇒ 判 unresolved；" +
-			"这里靠读源码定级。已登记在 admin/request_logs_indirect_readers_test.go。",
-		Consequence: "条件性：S4 关上写门后自动切到会话族。" +
-			"⚠ **切换那一刻之前**，结算仍读 v1 底表 ⇒ 退役顺序上它必须排在 S4 之后。",
-	},
-	"bg/credential_recovery.go": {
 		Verdict: verdictNonV1ByInspection,
-		Via: "625 行 `FROM ` + probeGuardStateTable() + ``，是探针锁护航状态表，" +
-			"不在 v1 族。",
-		Consequence: "与 v1 无关。",
+		Via: "`FROM ` + src.TurnsTable + ` rl`（73/99/120 行）。src 来自 " +
+			"settleSourceFor(logsWriteEnabled)（auto_route_settle_source.go:80-87）。" +
+			"★ 2026-10-20（890）该函数**恒返回会话族**（TurnsTable = \"session_turns_hot\"、" +
+			"SessionKeyCol = \"session_id\"、Family = settleFamilySession），**v1 臂整条删除**——" +
+			"理由记在文件头：v1 族没了以后「写门开着 ⇒ 读 v1」这条分支**永远走不到**，" +
+			"而 `settings.RequestLogsWriteEnabled()` 在 settings 存储未初始化时回落**代码默认**" +
+			"（★ 2026-10-20 订正：G-0 已把代码默认翻成 `false`，这条理由已从「当前风险」" +
+			"降级为「历史动机」；v1 臂删除仍是对的，它是纵深防御）⇒ 留着它就是新装/早启进程直接 42P01。",
+		Consequence: "与 v1 无关（结算三条腿同源同表，都读会话族热表）。" +
+			"⚠ 与本条目退役前那版（「条件性：S4 关上写门后自动切到会话族；切换那一刻之前仍读 v1 底表」）" +
+			"**形态不同**：现在是**恒**会话族，没有「切换那一刻」。",
+	},
+	// 2026-10-17 审计轮补登（df9a213de 漏项）。
+	//
+	// 漏登的性质值得记：df9a213de 把本文件的 `FROM _request_logs_hot` 字面量
+	// 改成 `FROM ` + bg.ActiveSettleTurnsTable()，并在提交信息里写明
+	// 「已按仓库既有的间接读方登记表归族并同步计数」——**它确实登了，
+	// 但只登进了 admin/request_logs_indirect_readers_test.go（:115），
+	// 漏了本清单**。两张登记表各管一件事（前者是「停写后果」六族分档，
+	// 后者是本工具三桶的判定来源），改读法时必须**同时**动两张。
+	"admin/auto_route_outcome_freshness.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "124 行 `SELECT MAX(ts) FROM ` 拼的是 bg.ActiveSettleTurnsTable()" +
+			"（bg/auto_route_settle_source.go:101-103），后者 = " +
+			"settleSourceFor(settings.RequestLogsWriteEnabled()).TurnsTable。" +
+			"★ 2026-10-20（890）settleSourceFor **恒返回会话族**（session_turns_hot）" +
+			"⇒ 本探针现在盯的正是结算 worker 真在读的那张表（这正是它被改写的原意）。" +
+			"⚠ 工具对跨包函数调用 + 方法链返回空 calleeName ⇒ 判 unresolved；" +
+			"这里靠读源码定级。与 bg/auto_route_settle_sql.go **完全同形**：" +
+			"同一个 settleSourceFor、同一张 turns 表。",
+		Consequence: "与 v1 无关（探针与结算腿同源同门，都读会话族热表）。" +
+			"⚠ 与本条目退役前那版（「条件性：写门开着 ⇒ 读 v1 底表 ⇒ 退役顺序上必须排在 S4 之后」）" +
+			"**形态不同**：现在没有 v1 那一支。",
+	},
+	// ★ 2026-10-21（R65 轮，跨会话订正 §19.10 的连带补登）：这 3 个文件是
+	// 890 真删轮把读面换成**会话族原生源**时改的，但 890 轮的清单登记**漏了它们**
+	// （那一轮自己登了 17 个新进桶文件，漏了这 3 个 ⇒ 清单门与快照门一直红）。
+	// 三个文件的拼接点都指向 db.SessionFamilyTurnsSourceSQL()（会话族原生源：
+	// hot ∪ parent + details 特征层 LEFT JOIN）⇒ 与 v1 退役**无关**。
+	"admin/attempt_quality_api.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "146 行 `FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl`。" +
+			"★ 890 真删轮从 `request_logs_with_current_month_without_request_class_due_at`" +
+			"（那张包装视图**直读 v1 族**，真库实测其定义体第一行就是 `FROM _request_logs_hot`）" +
+			"换成会话族原生源 ⇒ 旧读面在 v1 停写后恒 0 行、删族后会变 42P01。",
+		Consequence: "质量指标端点（请求量 / 成功率 / token 汇总）现在读会话族全量 ⇒ " +
+			"与 v1 退役**无关**。★ 口径提示：provider_id 来自 details 特征层，" +
+			"**没有 details 行的轮次 provider_id 为 NULL** ⇒ 按 provider 过滤时" +
+			"那部分行本来就不该计入（会话族既定口径，见 db/retirement_column_exposure.go）。",
+	},
+	"admin/auto_route.go": {
+		Verdict: verdictCanonicalOnly,
+		Via:     "156 行 `FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` r`（同源同上）。",
+		Consequence: "自动路由任务列表（ts / request_id / task_type / auto_* / 凭据 / 裁决 / 延迟）" +
+			"⇒ 读会话族 ⇒ 与 v1 退役**无关**。",
+	},
+	"admin/auto_route_correlations.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "5 处拼接点（132 / 153 / 174 / 195 / 239 行）全是 `FROM ` + " +
+			"dbpkg.SessionFamilyTurnsSourceSQL() + ` …`（按模型 / 按策略 / 按任务类型 / " +
+			"模型×任务类型 / top-3 裁决五段查询）。★ 890 真删轮从那两张**直读 v1 族**的" +
+			"包装视图换过来 ⇒ 旧读面恒返回空（不报错）、删族后会 42P01。",
+		Consequence: "自动路由相关性分析端点 ⇒ 读会话族 ⇒ 与 v1 退役**无关**。" +
+			"★ 这 5 段依赖的 model_chosen / strategy_used / task_type_chosen 三列" +
+			"来自会话族原生源自带的 details 特征层 LEFT JOIN ⇒ 无 details 行的轮次这三列为 NULL，" +
+			"而查询本来就用 IS NOT NULL 过滤。",
 	},
 	"credentialhealth/checker.go": {
 		Verdict:     verdictNonV1ByInspection,
@@ -586,12 +690,9 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Consequence: "与 v1 无关——退役 v1 时本读点无需动作。" +
 			"⚠ 常量同时被 bg/routing_health_checks.go:481 引用（同一读点的第二处），两条目同源。",
 	},
-	"bg/routing_health_checks.go": {
-		Verdict: verdictNonV1ByInspection,
-		Via: "1 处（481）`FROM ` + modalityVerifyAddressableSource + ` pp`——" +
-			"modality_gate_readiness_floor 检查的 reachable 集合，与 dueTargets 同一份常量。",
-		Consequence: "与 v1 无关。",
-	},
+	// ⚠ 2026-10-20（890）：bg/routing_health_checks.go 条目已移到下方
+	// 「§9.233 新进 unresolved 桶」那一组——它现在多了一个会话族拼接点
+	//（893 行），旧条目只写了 modality 那一处。
 
 	// ── §9.233：切换层下沉到 db 之后**新进** unresolved 桶的跨包读方 ────────
 	// 这三个文件在 §9.232 结束时是「看得见但换不了」：它们在 admin 之外，
@@ -611,61 +712,238 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	// 那两处由 admin 侧 allKnownRequestLogsReaderFiles / retirementExposurePopulation
 	// 与 TestV1BodiesScanIncludesSwitchConsumers 覆盖——**但覆盖它的是另一组门，不是本工具**。
 	"bg/passive_probe_listener.go": {
-		Verdict: verdictReadsV1Arm,
+		Verdict: verdictCanonicalOnly,
 		Via: "183 行 `LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb`" +
-			"（1 处，§9.233 从字面量 v1 bodies 改走切换层）。" +
-			"跨包调用（db 包）⇒ 工具判 unresolved。" +
-			"**默认支读 v1**（request_logs_bodies_with_current_month）⇒ 条件性读 v1。",
+			"（拼接点在 170；§9.233 从字面量 v1 bodies 改走切换层）。" +
+			"★ 890 之后该切换层的**默认臂指向已被删除的视图** `request_logs_bodies_with_current_month`。",
 		Consequence: "被动探针错误面板；`MAX(response_body)` 只取前 200 字符做卡片摘要。" +
-			"停写/DROP 后 bodies 腿变 NULL ⇒ COALESCE 到 ''，卡片照常渲染、摘要为空，**不报错**。" +
-			"开关默认关 ⇒ 与迁移前逐字一致。" +
-			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
-			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
-			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
+			"★ **默认臂 42P01**（视图已被 890 删除）⇒ 该 INSERT 整条失败、**不报错给用户**" +
+			"（worker 侧静默）——与本条目退役前那版的「COALESCE 到 ''、卡片照常渲染、摘要为空」**形态相反**。" +
+			"⚠ 这一条比其它 bodies 读方更隐蔽：错误被 worker 吞掉 ⇒ 面板只是**不再更新**。",
 	},
 	"domains/sessionsummary/summarizer.go": {
-		Verdict: verdictReadsV1Arm,
+		Verdict: verdictCanonicalOnly,
 		Via: "652/695 行 `LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb`" +
-			"（2 处，§9.233 迁移）。跨包调用 ⇒ 工具判 unresolved。" +
-			"**默认支读 v1** ⇒ 条件性读 v1。",
-		Consequence: "会话摘要的语料源。停写/DROP 后 `request_body->'messages'->-1->>'content'`" +
-			"取不到 ⇒ COALESCE 到 ''，摘要退化成**只有元数据没有语料**，接口仍 200。" +
-			"开关默认关 ⇒ 与迁移前逐字一致。" +
-			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
-			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
-			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
+			"（拼接点在 644/689；§9.233 迁移）。" +
+			"★ 890 之后该切换层的**默认臂指向已被删除的视图** `request_logs_bodies_with_current_month`。",
+		Consequence: "会话摘要的语料源。★ **默认臂 42P01**（视图已被 890 删除）⇒ 摘要查询**直接报错**，" +
+			"而不是本条目退役前那版的「COALESCE 到 ''，摘要退化成只有元数据没有语料，接口仍 200」。",
 	},
 	"domains/sessionsummary/system_prompt_prefix.go": {
-		Verdict: verdictReadsV1Arm,
-		Via: "178 行 `JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb`（1 处，§9.233 迁移；" +
-			"注意是 **INNER** JOIN 不是 LEFT）。跨包调用 ⇒ 工具判 unresolved。" +
-			"**默认支读 v1** ⇒ 条件性读 v1。",
-		Consequence: "⚠ **这是本批里唯一的 INNER JOIN** ⇒ 停写/DROP 后不是「字段变空」，" +
-			"而是**整个系统提示词前缀查不到任何一行**（rl 有行但 rb 无行 ⇒ 被 JOIN 滤掉）。" +
-			"降级形态与其它 LEFT JOIN 的读方**不同类**：不会退化成空串，而是直接没有前缀。" +
-			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
-			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
-			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
+		Verdict: verdictCanonicalOnly,
+		Via: "178 行 `JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb`（拼接点在 175；§9.233 迁移；" +
+			"注意是 **INNER** JOIN 不是 LEFT）。" +
+			"★ 890 之后该切换层的**默认臂指向已被删除的视图** `request_logs_bodies_with_current_month`。",
+		Consequence: "⚠ **这是本批里唯一的 INNER JOIN**，而 INNER JOIN 的降级形态与其它 LEFT JOIN **不同类**：" +
+			"不是「字段变空」，而是**整个系统提示词前缀查不到任何一行**（rl 有行但 rb 无行 ⇒ 被 JOIN 滤掉）。" +
+			"★ 但 890 之后它**先撞上 42P01**（默认臂的视图已被删）⇒ 报错在前，滤空在后。" +
+			"处置与其它 bodies 读方同：把切换层默认臂改指会话族。",
 	},
 	"domains/sessionforensics/export.go": {
-		Verdict: verdictReadsV1Arm,
+		Verdict: verdictCanonicalOnly,
 		Via: "**两处都在包级 `var` 里**（forensicsExportMessagesSQL 与 ...SQLAlt，各 1 处 bodies 腿，" +
-			"`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb ON rb.request_id = rl.request_id`）。" +
+			"`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb ON rb.request_id = rl.request_id`；" +
+			"拼接点在 47/67）。" +
 			"§9.232 前它们是 `const`；§9.233 因函数调用不能出现在 const 里改成 `var`，" +
 			"**就是这个形状让它们掉出了本工具的枚举范围**（点位只扫 FuncDecl）⇒ §9.237 才被重新看见。" +
-			"跨包调用 ⇒ 工具判 unresolved。**默认支读 v1** ⇒ 条件性读 v1。" +
+			"★ 890 之后该切换层的**默认臂指向已被删除的视图** `request_logs_bodies_with_current_month`。" +
 			"⚠ 文件刻意保留两份字面量并由 TestForensicsExportSQLVariantsStayInSync 强制同步，**该设计保留**。",
-		Consequence: "★ **本清单里后果描述最尖锐的一条**，且与 admin 侧停写分类" +
-			"（request_logs_stop_write_classification_test.go 里本文件的 Note）**独立得出同一结论**：" +
-			"停写/DROP 后 bodies 无 session 臂 ⇒ `COALESCE(rb.request_body,'{}')` 恒为字面量 `{}`，" +
-			"而 `respBody != nil && *respBody != \"\"` 仍然成立 ⇒ " +
-			"**产出一份结构自洽、逐轮齐全、正文全空的证据包**。" +
-			"不是导出失败、不是报错：710 的 session 臂保证 turn 编号连续，" +
-			"所以**跳过与报错都不触发**——这正是该文件注释自己判定「比导出失败危险得多」的那种形态。" +
-			"开关默认关 ⇒ 与迁移前逐字一致。" +
-			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
-			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
-			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
+		Consequence: "★ **默认臂 42P01**（视图已被 890 删除）⇒ 导出**直接失败**，" +
+			"而不是本条目退役前那版的「产出一份结构自洽、逐轮齐全、正文全空的证据包」" +
+			"（那形态是「表还在但被清空」时代的产物；现在导出是响亮失败，反而更安全）。",
+	},
+	"bg/candidate_failure_monitor.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "2 处（290、295）：① `(SELECT max(ts) FROM ` + checkStalenessLastRequestSurface + ` rl`，" +
+			"② `(SELECT max(id) FROM ` + checkStalenessLastRequestSurface + ` rl`" +
+			"（aee31a117 的 S4 停写假阳性二分类给 staleness 查询加的第二个子查询，" +
+			"读的是**同一张**会话族热腿）；" +
+			"而 `var checkStalenessLastRequestSurface = db.SessionFamilyTurnsHotSourceSQL()`" +
+			"（candidate_failure_monitor.go:267）。" +
+			"★ 2026-10-20（890）它**从 v1-only 视图**（`request_logs_with_current_month_without_request_class_due_at`，" +
+			"已被 890 删除）换成**会话族热腿**，并显式加了探针排除谓词" +
+			"（v1-only 腿原来顺带把探针流量挡在外面）。" +
+			"⚠ 工具判 unresolved：包级 var 的值是**跨包函数调用**，而 globals 收集阶段的 " +
+			"env.crossAlias 是按包内最后一个文件设的 ⇒ 解析不到。靠读源码定级。",
+		Consequence: "与 v1 无关（读会话族热腿）。" +
+			"⚠ 与本条目退役前那版（「读 v1-only 视图 ⇒ 移除中间层 v1 视图会让 staleness 检查每 tick 报警」）" +
+			"**形态不同**：源已换成会话族热腿，v1-only 视图被删**不再影响它**。",
+	},
+	"bg/credential_recovery.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "2 处：① 534 行 `FROM ` + probeGuardStateTable(...) + ` mps`——探针锁护航状态表，不在 v1 族；" +
+			"② 1720 行 `FROM ` + db.SessionFamilyTurnsSourceSQL() + ` r`（lookbackCandidateSQL，" +
+			"★ 890 之后从 v1 族换成会话族 hot ∪ parent 两个存储面）。",
+		Consequence: "与 v1 无关。",
+	},
+	"bg/routing_health_checks.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "2 处：① 481 行 `FROM ` + modalityVerifyAddressableSource + ` pp`——" +
+			"modality_gate_readiness_floor 检查的 reachable 集合，与 dueTargets 同一份常量（全是现行表）；" +
+			"② 893 行 `FROM ` + db.SessionFamilyTurnsSourceSQL() + ` r`（负成本流量检查，" +
+			"★ 890 之后从 v1 族换成会话族 hot ∪ parent）。",
+		Consequence: "与 v1 无关。",
+	},
+
+	// ── 2026-10-20（迁移 890）**新进** canonical 桶的会话族读点（17 文件）────
+	// 这 17 个文件在 890 之前**一条都不进本工具**：它们的取源是 v1 族的
+	// **字面量**（`FROM _request_logs_hot` / `FROM _request_logs`），而本工具
+	// 只管「关系名不是字面量的拼接点」⇒ 迁移前它们是**看不见**的。
+	// 890 把它们改写成**会话族拼接调用**（`+ db.SessionFamilyTurns*SQL() +`）⇒
+	// 进桶。
+	//
+	// ⇒ **「canonical 桶变大」在这里是正确信号**：方向是「把看不见变成看得见」。
+	// 下面每一条的 Via 都是**逐文件读源码**写出来的（不是抄工具输出）。
+	"admin/data_lifecycle_attachments.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "4 处（199/281/373/646）`FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl`——" +
+			"附件列表与附件字节统计的取数。⚠ 刻意**不用** fmt.Sprintf 拼会话族 SQL" +
+			"（那份投影含 `LIKE 'sys:%'`，`%` 会被当成动词吃掉）。",
+		Consequence: "与 v1 无关（只读会话族）。⚠ 口径：v1 族的历史行随 890 一起没了，" +
+			"而会话族只镜像有会话头的流量 ⇒ 附件统计不覆盖无会话头的流量。",
+	},
+	"admin/provider_diagnose.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "2 处（251/534）`FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl`——" +
+			"provider 错误分类聚合。★ 890 之后从 `_request_logs_hot` 腿换成会话族：" +
+			"provider_id 在会话族里只存在于 details 层（session_turns 没有这一列）" +
+			"⇒ 必须走带 details LEFT JOIN 的族源。",
+		Consequence: "与 v1 无关。⚠ 窗口仍覆盖 hot ∪ 母表两腿（promote 会把 8h 前的行搬进月分区，" +
+			"只读热表会漏掉已 promote 的那一段）。",
+	},
+	"autoroute/recommend_v2.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "2 处（394/547）`FROM ` + db.SessionFamilyTurnsSourceSQL() + ` rl`——" +
+			"最近一次任务取样与模型用量计数。★ 890 之后从 v1 母表（48h 窗跨过 hot 保留期）" +
+			"换成会话族同款两个存储面。",
+		Consequence: "与 v1 无关。⚠ 口径：会话族只镜像有会话头的流量 ⇒ " +
+			"无会话头的流量不进入推荐样本。",
+	},
+	"bg/auto_index_refresher.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "1 处（802）`FROM ` + db.SessionFamilyTurnsHotSourceSQL() + ` t`——" +
+			"rollupModelTaskIndexSQL（包级 var，因为投影源由函数生成、const 表达式里不能调函数）。" +
+			"★ 890 之后从 v1 热表换成会话族热腿。",
+		Consequence: "与 v1 无关。",
+	},
+	"bg/credential_selfcheck.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "2 处（598/644）`FROM ` + db.SessionFamilyTurnsHotSourceSQL() + ` t`——" +
+			"近窗模型使用集合与自检回退样本。★ 890 之后从 v1 热表换成会话族热腿。",
+		Consequence: "与 v1 无关。",
+	},
+	"bg/integrity_fingerprint_probe.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "2 处（36/50）`FROM ` + db.SessionFamilyTurnsHotSourceSQL() / db.SessionFamilyTurnsSourceSQL() + ` t`——" +
+			"指纹流量存在性探测（hot 臂 + 母表臂）。★ 890 之后从 v1 族换成会话族两个存储面。",
+		Consequence: "与 v1 无关。",
+	},
+	"bg/ledger_reconciliation.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "1 处（350）`FROM ` + db.SessionFamilyTurnsHotSourceSQL() + ` t`——usageCreditSQL 的用量腿。" +
+			"★ 890 之后从 v1 族换成会话族热腿。",
+		Consequence: "与 v1 无关。⚠ 该 SQL 的注释仍写着「不该在 S4 停写期间运行」——" +
+			"890 之后 v1 腿已经不存在，这条约束的**前提**变了（两腿都在会话族时，" +
+			"对账的两侧才是同一总体）。",
+	},
+	"bg/model_probe.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "3 处（416/500/926）`FROM ` + db.SessionFamilyTurnsHotSourceSQL() + ` t`——" +
+			"模型探针的静态/近期使用证据与失败证据子查询。★ 890 之后从 v1 热表换成会话族热腿。",
+		Consequence: "与 v1 无关。",
+	},
+	"bg/model_tier.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "1 处（170）`FROM ` + db.SessionFamilyTurnsHotSourceSQL() + ` t`——探针窗口内的原始模型集合。" +
+			"★ 890 之后从 v1 热表换成会话族热腿。",
+		Consequence: "与 v1 无关。",
+	},
+	"bg/today_success_probe.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "1 处（145）`FROM ` + db.SessionFamilyTurnsHotSourceSQL() + ` t`——" +
+			"今日两连成功早停探针的最近使用时间。★ 890 之后从 v1 热表换成会话族热腿。",
+		Consequence: "与 v1 无关。",
+	},
+	"cmd/compression-bench/main.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "2 处（242/252）：`FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl` 与 " +
+			"`JOIN ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` b ON b.request_id = rl.request_id`——" +
+			"压缩率基准工具的取数。★ 890 之后两腿都是会话族（原来 v1 那条 ts 等值 JOIN 搬不过来：" +
+			"会话族正文源**刻意不投影 ts**）。",
+		Consequence: "与 v1 无关。⚠ 这是**离线基准工具**，不是在线读面 ⇒ 它的失败不会影响网关。",
+	},
+	"cmd/traffic-replay/main.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "2 处（145/155）：`FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl` 与 " +
+			"`LEFT JOIN ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` rb`——历史行回放取数。",
+		Consequence: "与 v1 无关。⚠ 文件头记着一条口径损失：会话族的 request_preview（600/890 有值）" +
+			"仍是「最后一条用户消息」主信号，但「这一轮带了几个工具」会比 v1 口径**偏小**" +
+			"（宁可让信号偏小，也不要拿累积正文冒充增量）。",
+	},
+	"discovery/discovery.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "1 处（1200）`FROM ` + db.SessionFamilyTurnsSourceSQL() + ` rl`——" +
+			"model_offers 可用性刷新的取数。★ 890 之后从 v1 族换成会话族。",
+		Consequence: "与 v1 无关。",
+	},
+	"domains/analysis/optimizer.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "3 处（191/204/205）`FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl`——" +
+			"会话统计的 turns 聚合。⚠ 口径损失（如实登记）：outbound_token_est 在会话族里**恒为 NULL**" +
+			"（会话族没有这个事实来源，投影里是 NULL 补位）⇒ 第三条聚合恒为 0。",
+		Consequence: "与 v1 无关。⚠ 那条恒 0 的聚合是**读源换族的代价**，不是 890 的退役后果。",
+	},
+	"domains/analysis/projectattr/store.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "2 处（252/295）`FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl`——" +
+			"项目归因信号的取数（包级 var：投影源由函数生成，const 表达式里不能调函数）。",
+		Consequence: "与 v1 无关。",
+	},
+	"domains/credentialstate/popularity_tracker.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "1 处（92）`FROM ` + db.SessionFamilyTurnsHotSourceSQL() + ` t`——模型热度榜的取数。" +
+			"★ 890 之后从 v1 热表换成会话族热腿；顺带把过滤列从 created_at 改成 ts" +
+			"（v1 热表**没有 created_at 这一列** ⇒ 那条查询**一直**在报 42703、热度榜从未产出过）。",
+		Consequence: "与 v1 无关。⚠ 这条是**修复**（原来一直报错），不是退役风险。",
+	},
+	"domains/providerprofile/adapters.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "4 处（141/179/209/259）`FROM ` + db.SessionFamilyTurnsHotSourceSQL() + ` t`——" +
+			"凭据画像的请求总数/错误类型分布/限流命中率/时间分桶。",
+		Consequence: "与 v1 无关。⚠ 口径：只读会话族热表 ⇒ 无会话头的流量（探针/自检回环）不计入画像。",
+	},
+
+	// ── 2026-10-25（R152 轮）：新进 unresolved 桶的 1 个文件 ──────────────────
+	// 触发：R92/R93/R94 三轮（369531475 / a073b6558 / f204e4c6a）把
+	// 「会话列表 enrich」从 v1 视图改写成会话族原生源，并把它抽进
+	// db/request_logs_view_schema.go ⇒ 该文件第一次进入本工具的扫描范围。
+	//
+	// ⚠ **文件名有误导性**：文件名叫 `request_logs_view_schema.go`，但它**不是**
+	//   v1 族的读方 —— 它是 canonical 视图 `request_logs_with_current_month`
+	//   的**会话两臂形态**定义与自愈逻辑（890 之后该视图只剩 session_turns_hot
+	//   ∪ session_turns 两臂）。★ 文件头第 33 行自陈「下面**没有**任何
+	//   `_request_logs` 字面量」，本轮**逐条核对属实**（见下）。
+	"db/request_logs_view_schema.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "2 处（271、274），都在 `SessionFamilyLatestTurnPerSessionSQL(extraPred string)` 的" +
+			"**内层闭包** `leg := func(src string) string { … }` 里：" +
+			"① 271 行 `\"FROM (SELECT session_id, max(turn_no) AS turn_no FROM \" + src + \" t \"`、" +
+			"② 274 行 `\"JOIN \" + src + \" t ON t.session_id = l.session_id AND t.turn_no = l.turn_no\"`。" +
+			"★ `src` 是**形参** ⇒ 工具解析不到 ⇒ 判 unresolved。" +
+			"★★ **唯一的两个调用点在 276 行**：`leg(\"public.session_turns_hot\")` 与 " +
+			"`leg(\"public.session_turns\")` ⇒ **两个入参都是会话族字面量**，没有任何第三个入参。" +
+			"⚠ 工具判 unresolved 的原因与 bg/candidate_failure_monitor.go 同族：**跨作用域形参**，" +
+			"不是「解析失败被吞」。",
+		Consequence: "与 v1 无关（读会话族 hot ∪ 父表）。" +
+			"★ **该文件全篇无 v1 关系读点**，逐条核对过：" +
+			"(a) 两处拼接点的形参入参只有 session_turns_hot / session_turns 两个（271/274/276 行）；" +
+			"(b) 全文出现 `_request_logs` 的地方**只有三类**，没有一处是关系名——" +
+			"注释/文档（24/33/35/84/119/415/451/548/662/671/732/1030/1034/1085/1158/1198 行）、" +
+			"**对视图定义文本的探针谓词**（74 行 `strpos(pg_get_viewdef(...), '_request_logs') > 0`，" +
+			"那是「视图体里还有没有 v1 臂」的**检测器**，不是读 v1 表）、" +
+			"以及日志文案里的字面量（610 行 COMMENT ON VIEW 的文本）。" +
+			"⇒ 890 删掉 v1 族之后，本文件**不受任何影响**；" +
+			"反而是它**主动**保证 canonical 视图不再长回 v1 臂（bodyHasV1Arm 探针 + 不做 DDL 的退化分支）。",
 	},
 }
 
@@ -1005,6 +1283,27 @@ func TestManifestHasNoStillUnknownEntries(t *testing.T) {
 //
 // ⇒ 这道门只做一件事：**注释里的数字与实测不一致时立刻红**。
 // 它不判断漂移是好是坏（那要人判断），只保证「人至少被叫过来看一眼」。
+//
+// # ★ 2026-10-20（迁移 890）：「v1 桶非空」与「v1 臂桶非空」两条**取反**
+//
+// 迁移把 v1 族整族删了 ⇒ 这两个桶**理应**归零，而「归零」在输出里与
+// 「分类器坏了」**长得一模一样**。所以这两条不能删——删了就等于把
+// 「工具还能不能看见 v1」这个唯一的自检信号一起删掉。
+//
+// ⇒ 换成**等价强度**的三件事：
+//
+//	① 总体非 0（保留原条款）；
+//	② **解析率不能塌**：canonical 桶非空，且「可静态解析的站点数」不低于门槛
+//	   ⇒ 挡住「抽取器/解析器整体坏掉 ⇒ 全部落进 unresolved」这个形态；
+//	③ **正向对照**：把**合成的** v1 站点喂给**同一个**分类器，它必须落进
+//	   reads-v1 / v1-arm 桶 ⇒ 证明「v1 桶为空」是**仓库的状态**，不是
+//	   **工具的失明**。
+//
+// ③ 是这道门的关键：没有它，「v1 桶空了」既可以解释成「v1 退役干净了」，
+// 也可以解释成「分类器认不出 v1 了」——而这两件事的处置完全相反。
+// ⚠ 推导**层**（viewsWithV1Arm 还能不能认出含 v1 臂的视图）由
+// resolve_test.go 的 TestV1ArmViewsIncludeComposerDefinedOnes 承担，
+// 那道门用两段合成夹具做正向对照 ⇒ 两层合起来才覆盖「看不见 v1」的全部形态。
 type bucketSnapshot struct {
 	TotalSites int
 	V1Files    int
@@ -1032,6 +1331,83 @@ type bucketSnapshot struct {
 // 12/18 → 22/36、unresolved 9/16 → 10/17、总数 73 → 92。方向全部是
 // 「把看不见变成看得见」与「字面量 → 拼接」，无桶变小；v1 桶 6/12 一动不动
 // （★ 与 §9.256 结论一致：解析率再怎么变，v1 基表读方数不变）。
+//
+// ★★ 2026-10-20（迁移 890，v1 族整体退役）更新 —— **这一版是「退役之后」的形状**，
+// 三个桶的**语义**都变了，所以这一版的注释不是在上一版上打补丁，而是重写：
+//
+//	总数 95 → **141 处（71 文件）**
+//	v1      5/11 → **0/0**    （文件 / 处数）★ 全仓 v1 基表读面归零
+//	v1 臂  16/27 → 0/0
+//	canonical 25/38 → **59/122**
+//	unresolved 12/19 → 12/19（**未变**）
+//
+// # 逐项判方向（门规：桶变小 ⇒ 先怀疑扫描范围被改小 / 解析失败被吞）
+//
+//	① **v1 5/11 → 0/0**（清零）—— 三个成因都核过，每一条都读过源码：
+//	   · admin/tenants.go 的 4 处：取源函数 tenantStatsLogsTableSQL 从四臂
+//	     （会话 hot/父表 + v1 hot/父表）收敛成**两臂**（只剩会话族）——
+//	     逐行读过 admin/tenant_stats_logs_table.go:30-53；
+//	   · cmd/tools/backfill_session_bodies/main.go 的 1 处：该工具**退役**（文件还在，
+//	     但 main.go 已不读 v1 族，改成报「v1 family retired」后退出）⇒
+//	     审计不再报出它 ⇒ 清单里那条判定**已删**；
+//	   · maas 的 3 个文件（usage.go / consumption_detail.go / credit_buckets.go）
+//	     共 6 处：包内切换层 `requestLogsSource(days)` 的 `days<=7` 支返回
+//	     `_request_logs_hot AS r`（v1 底表）⇒ **这 6 处是 890 之后仅剩的
+//	     v1 基表读点**，而它们指向一张**已被删**的表 ⇒ 42P01。
+//	     ★ 本轮**改掉了**：`requestLogsSource` 的两个分支合并成一个
+//	     （恒返回 canonical 视图 —— 它本身就是会话族两臂体，已覆盖热窗+冷窗）。
+//	     ⇒ v1 桶归零，且归零的**原因**是「读点被改掉」，不是「扫描变瞎了」：
+//	       那 3 个文件仍然被报出（只是落在 canonical 桶）⇒ 文件数不变。
+//	② **v1 臂 -16 文件 / -27 处**（变小）—— 成因是**推导集合本身空了**：
+//	   · composer（db/request_logs_view_schema.go）现在只定义一个视图
+//	     `request_logs_with_current_month`，而它的体是**会话两臂**
+//	     （canonicalSessionOnlyDDL，:561-587）⇒ 没有任何 v1 臂；
+//	   · 4 张 v1-only 视图（…_without_customer_id / …_without_request_class_due_at /
+//	     request_logs_bodies_with_current_month / request_logs_bodies_progress）
+//	     随 890 删除 ⇒ 它们的 DDL 文件也不在对象库里了。
+//	   ⇒ 那 16 个文件整体落进 canonical 桶（**没有**一个变成「看不见」）。
+//	   ⚠★ **2026-10-21 订正**：本段原先还有一句「sql/objects/views/ 里的同名 DDL
+//	   已重新采集为会话两臂体」——**它在 10-20 09:58（e9a96c26c）之后就不成立**：
+//	   那 5 张分析视图（customer_cost_view / model_cost_per_task_view /
+//	   v_continuation_effectiveness / v_node_switch_analysis / v_timeout_effectiveness）
+//	   **必须回到 v1 fallback 体** —— 基线是**逐语句**应用的，而 CREATE VIEW 会
+//	   **急切校验**它引用的关系 ⇒ 若写成会话族形态（session_turns_hot /
+//	   session_turn_details*），**全新安装**会在基线阶段就报 42P01 并中止
+//	   （实测见 §19.10 跨会话订正）⇒ 部署形态改由**迁移 883 / 884** 换上。
+//	   ⇒ 源文件是「**基线时点**的形态」，不是「部署形态」；
+//	   ⇒ 判据因此必须**分两个时点**（见 resolve_test.go 的
+//	   TestDeploymentTimeHasNoV1ArmView 门 17 + v1arm_deployment.go）。
+//	③ **canonical +32 文件 / +78 处**（变大）—— 方向=变大=「把看不见变成看得见」：
+//	   890 把一批读面从 v1 族**字面量**（`FROM _request_logs_hot`）改写成会话族
+//	   **拼接调用**（`+ db.SessionFamilyTurns*SQL() +`）⇒ 它们第一次进本工具。
+//	   新进桶的 17 个文件逐个读过源码确认读的是会话族（见清单里那 17 条）；
+//	   再加 maas 那 3 个文件（v1 → canonical 的重分类）。
+//	④ **unresolved 12 文件 / 19 处**（**未变**）—— 一个数都没动。
+//	⑤ **2026-10-21（R65 轮）canonical +2 文件 / +6 处（总处数 135 → 141）** ——
+//	   ★ 这一条是**逐站点 diff** 出来的（不是「总数对不上，猜一猜」）：
+//	   在 `5f64031cb`（写下 135/57/116 的那次提交）跑一次本工具、存下报告，
+//	   与当前 HEAD 的报告**逐行 diff** ⇒ 精确得到：
+//	  · **+7 处 / +3 文件** = 三个新增文件：
+//	    admin/attempt_quality_api.go:146、admin/auto_route.go:156、
+//	    admin/auto_route_correlations.go:132/153/174/195/239
+//	    ⇒ 三处都读 `dbpkg.SessionFamilyTurnsSourceSQL()`（**逐行读过源码**）
+//	    ⇒ 会话族 ⇒ canonical ⇒ 方向=变大=「把看不见变成看得见」；
+//	  · **−1 处 / −1 文件** = bg/routing_health_checks.go 的拼接点被 8531596a6
+//	    改写成**纯字面量**（`public.session_turns_hot` UNION ALL
+//	    `public.session_turns`）⇒ 本工具的 Site 定义是「**关系名不是字面量**的
+//	    拼接点」（resolve.go）⇒ 它**离开了本工具的口径**。
+//	    ⚠ 桶变小必须先排除「解析失败被吞」—— 这次排除的依据是**读法**：
+//	    目标表是**会话族**（不是 v1）⇒ 没有 v1 读点被藏起来；
+//	    且同一文件在 unresolved 桶里仍有一处（行号平移）⇒ 该文件没被跳过。
+//	  ⇒ 净 +6 处 / +2 文件；unresolved 12/19 **未变**（逐行 diff 确认只是行号平移）。
+//
+// # 一致性自检（0 + 0 + 59 + 12 = 71 = 总文件数 ✔）
+//
+// 实测 71 个文件 = v1 0 + canonical 59 + unresolved 12 = 71，**不多不少**
+// （上一版是「多出 1」：bg/routing_health_checks.go 同时落在 canonical 与
+// unresolved 两桶 —— 2026-10-21 那次改写把它的 canonical 拼接点变成了纯字面量，
+// 于是它只剩 unresolved 一处 ⇒ 差集归零）。
+// 处数自检：0 + 0 + 122 + 20 = 142 = 总数 ✔
 var documentedSnapshot = bucketSnapshot{
 	// 同日晚间二次：compression_sessions 的 LATERAL 性能修复消除 2 处拼接
 	//（LATERAL 体重跑 canonical 全源改单趟 CTE，e01ffed39）→ 94→92、
@@ -1039,26 +1415,75 @@ var documentedSnapshot = bucketSnapshot{
 	// 2026-10-14（S4 退役改名轮）：data_lifecycle 趋势端点跨族化新增 1 处
 	// V1FreezeCutoffSQL 拼接（工具判 canonical）→ 92→93、canonical 23→24 文件 /
 	// 35→36 处。文件集合其余不变。
-	TotalSites: 93,
-	V1Files:    6,
-	V1Sites:    12,
-	// ★ §9.258：第四桶是**退役工作量的主体**，而前两桶都不是。
-	// ⚠ 这里的 25 处**不含** 3 处 `src.TurnsTable` —— 那个操作数是 struct 字段，
-	// 静态推不出，留在 unresolved 桶；但手验确认它读 v1 基表。
-	// ⇒ **真实退役读方清单 = 12 + 26 + 3 = 41 处**，不是 37（25→26 随 §9.260 同步，R48-A4）.
-	// §9.260：v1 臂视图 25 → 26 处（14 → 15 文件）。
-	// 真因不是「多了一个读方」，而是**推导器补全了**：§9.258 只读
-	// sql/objects/views/，而 `request_logs_with_current_month_without_customer_id`
-	// 与 `…_without_request_class_due_at` 是 composer **运行时**建的、没有 DDL 文件
-	// ⇒ 读它们的读方被判成 canonical（把有风险的报成安全）。
-	// 真库 pg_class 里 4 个 _request_logs*_with_current_month* 视图**全部含 v1 臂**。
-	// （2026-10-07 全量门首跑：V1ArmSites 26→27，方向=变大，同上注释。）
-	V1ArmFiles: 16,
-	V1ArmSites: 28,
-	CanonFiles: 24,
-	CanonSites: 36,
-	UnresFiles: 10,
-	UnresSites: 17,
+	// 2026-10-15（r1033，f5f7b1d1b）：board_queries 两处从 v1 臂切到会话族；
+	// usage_credits 的短窗从 v1 基表切到会话族、长窗仍有 v1 臂。
+	// 因此 v1 -1/文件 -1、v1 臂净 -1、canonical +2/文件 +1，总数不变。
+	// 已逐读 board_time_range.go / usage_credits.go / dashboard_board_queries.go，
+	// 不是扫描范围缩小或解析错误被吞。
+	// 2026-10-17（审计轮补登）：df9a213de 把 admin/auto_route_outcome_freshness.go
+	// 的 `FROM _request_logs_hot` **字面量**改成 `FROM ` + bg.ActiveSettleTurnsTable()
+	// ⇒ 该拼接点从「不进本工具」变成「跨包调用不可静态解析」，落进 unresolved。
+	// 三项 +1（总数 93→94 / unresolved 文件 10→11 / 处数 17→18），
+	// v1、v1 臂、canonical 三桶**均不变**。
+	// 方向 = **变大 = 把看不见变成看得见**（正是门注释允许的「改数字即可」那一类）；
+	// 已逐读该文件 124 行确认不是扫描范围缩小或解析错误被吞。
+	// ⚠ 同批发现 df9a213de 提交信息声称「已按仓库既有的间接读方登记表归族并
+	// 同步计数」是**不实**的：它只登了 admin/request_logs_indirect_readers_test.go，
+	// 漏了本清单。详见本文件 admin/auto_route_outcome_freshness.go 条目的注释。
+	// 2026-10-19: staleness changed a literal FROM into a named view constant.
+	// One additional unresolved site, not a newly introduced reader.
+	//
+	// ★ 2026-10-20（迁移 890）：上面对「逐项判方向」的整段说明就是本版的依据。
+	//
+	// ★ 2026-10-21（R65 轮）：135 → 141（canonical 57 → 59 文件 / 116 → 122 处）。
+	//   成因逐站点核过（见上面第 ⑤ 条）：+7 处来自三个新增的会话族读方文件，
+	//   −1 处是一个拼接点被改写成纯字面量（离开了本工具的口径，目标仍是会话族）。
+	//   ⇒ 方向=变大=「把看不见变成看得见」+ 一处「读法变了」；无桶变小 ⇒ 改数字即可。
+	// ★ 2026-10-21（B4 轮）：141 → 142，unresolved 19 → 20 处。
+	//   成因：`bg/candidate_failure_monitor.go` 的 aee31a117（S4 停写假阳性
+	//   二分类）给 staleness 查询**加了第二个** `max(id)` 子查询，
+	//   它与既有的 `max(ts)` 子查询读**同一张**会话族热腿
+	//   （`checkStalenessLastRequestSurface`）⇒ 新增 1 处拼接点。
+	//   ⇒ 方向 = **变大**（同一操作数、同一张表、同一个文件）
+	//   ⇒ 不是「新增读方」，也不是「扫描范围变了」⇒ 改数字即可（无桶变小）。
+	// ★ 2026-10-25（R152 轮）：142 → 147（canonical 122 → 125 处、
+	//   unresolved 12 文件/20 处 → 13 文件/22 处；**文件数 canonical 仍 59**，
+	//   v1 与 v1 臂两桶**逐字未动**）。
+	//   ★ **本轮没有只改数字**：逐站点对拍过（把快照所在的 a2ac50e37 与今天
+	//   各自的桶落盘后做逐文件逐类 diff），5 处净增的来源是三个文件：
+	//   ① admin/compression_sessions.go 3 → 4 处、② admin/compression_stats.go 3 → 5 处
+	//      —— R76/R77 两轮把 SQL 构造搬进 `compressionSessionsSQL()` 等函数后，
+	//      **同一批会话族源**（public.session_turns / public.session_turn_details /
+	//      public.session_bodies*）在**更多调用点**上被拼接 ⇒ 方向 = 变大
+	//      =「把看不见变成看得见」，**不是新增读方**（与 B4 轮同族）；
+	//   ③ db/request_logs_view_schema.go **新进 unresolved 桶（2 处）** ——
+	//      R92/R93/R94 三轮把「会话列表 enrich」改写成会话族原生源后，
+	//      该文件第一次进入扫描范围 ⇒ 本轮**补登记**了它的判定
+	//      （唯一两个调用点的入参都是 session_turns_hot / session_turns）。
+	//   ⚠ **方向判据逐条核过**：没有任何一个桶变小 ⇒ 不是「扫描范围被改小/
+	//     解析失败被吞」；全部 5 处的 resolved 关系名都是会话族 ⇒ 无 v1 读方。
+	TotalSites: 147,
+	V1Files:    0,
+	V1Sites:    0,
+	// ★ v1 臂桶**归零**：不是「推导器坏了」，是**没有任何视图还有 v1 臂**。
+	// 归零之后第四桶恒为 0，而 0 与「推导器坏了」在输出里长得一模一样 ⇒
+	// 由 resolve_test.go 的 TestV1ArmViewsIncludeComposerDefinedOnes 承担
+	// 「取反 + 正向对照」：那个测试现在断言 composer **不得**定义任何 v1 臂视图，
+	// 并用两段合成夹具证明推导器**仍能**认出来（见该测试的注释）。
+	//
+	// ⚠★ 2026-10-21 订正：上面那句「composer 不得定义任何 v1 臂视图」的**范围**
+	// 原来被写成了「全仓」⇒ 它要求 `sql/objects/views/` 的 5 个基线形态视图
+	// 也不能有 v1 臂 ⇒ 而那 5 个视图**必须**有 v1 臂（基线逐语句应用 ⇒ 新装 42P01）
+	// ⇒ 那道门**生来就红**，且按它去改源会**打挂全新安装路径**。
+	// ⇒ 现在判据**分两个时点**：部署时点不得有 v1 臂（门 17），
+	// 基线时点允许（那 5 个视图以 `dbinit:baseline-v1-fallback` 声明豁免，
+	// 且豁免要过三道可证伪的腿：切换迁移存在 / 在启动链里 / 排在 v1 退役之前）。
+	V1ArmFiles: 0,
+	V1ArmSites: 0,
+	CanonFiles: 59,
+	CanonSites: 125,
+	UnresFiles: 13,
+	UnresSites: 22,
 }
 
 func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {
@@ -1102,26 +1527,73 @@ func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {
 		len(diff), strings.Join(diff, "\n  "))
 }
 
+// resolvedSitesFloor 是「可静态解析的站点数」的下限（ratchet）。
+//
+// 取 50 的理由：当前实测 122 处（v1 0 + v1 臂 0 + canonical 122），
+// 门槛取**不到一半**，这样日常增删读方不会误报；但「解析器整体坏掉
+// ⇒ 全部落进 unresolved（19 处）」这个形态一定会撞到它。
+const resolvedSitesFloor = 50
+
 func TestRepoAuditIsNotSilentlyVacuous(t *testing.T) {
 	root := repoRoot(t)
 	v1, v1arm, canonical, unresolved, total := measureBuckets(t, root)
 	if total == 0 {
 		t.Fatal("全仓审计报出 0 个拼接点 —— 这不是「仓库里没有间接读点」，" +
 			"是审计坏了（WalkDir 范围 / 解析失败被 continue 吞掉 / 模式被改）。" +
-			"在这种状态下上面那道门会因「清单有 27 条而实测 0」报出一堆噪音，" +
+			"在这种状态下上面那道门会因「清单有几十条而实测 0」报出一堆噪音，" +
 			"把真正的病因埋在最后。")
 	}
-	if len(v1) == 0 {
-		t.Errorf("全仓审计**一个 v1 读点都没解析出来**（%d 处全部落在 canonical/unresolved）—— "+
-			"要么仓库真的干净了（那要有人明确确认），要么 isV1Relation 又坏了。", total)
+
+	// ② 解析率不能塌。
+	//
+	// ⚠ 这一条**代替**了退役前那两条「v1 桶非空」「v1 臂桶非空」——
+	// 890 之后那两桶理应为空，而「空」与「分类器坏了」在输出里长得一样。
+	// ⇒ 这里守住的是**另一个方向**的塌陷：解析器整体坏掉、所有站点都掉进
+	// unresolved 桶（那样 canonical 桶会空，而清单门只会报「判定矛盾」）。
+	if len(canonical) == 0 {
+		t.Errorf("canonical 桶**一个文件都没有**（%d 处全部落在 v1/v1 臂/unresolved）——\n"+
+			"要么仓库真的没有任何可静态解析的拼接点了（那要有人明确确认），\n"+
+			"要么解析器坏了：isV1Relation / fromRelationRE 被改窄是最常见的形态。", total)
 	}
-	if len(v1arm) == 0 {
-		t.Errorf("全仓审计**一个 v1 臂视图读点都没解析出来**（%d 处全部落在 v1/canonical/unresolved）——\n"+
-			"要么 sql/objects/views/ 下的 DDL 真的一处 FROM v1 基表都没有（那要有人明确确认），\n"+
-			"要么 viewsWithV1Arm 坏了：最可能的是 fromRelationRE 的捕获范围被改窄、"+
-			"不再吃 schema 限定名（§9.258 踩过一次，第四桶恒为 0）。", total)
+	resolvedSites := sumMap(v1) + sumMap(v1arm) + sumMap(canonical)
+	if resolvedSites < resolvedSitesFloor {
+		t.Errorf("可静态解析的站点数 %d 处 < 门槛 %d（总拼接点 %d 处）——\n"+
+			"解析率塌了：大量站点掉进了 unresolved 桶。\n"+
+			"方向检查：unresolved %d 文件 / %d 处。\n"+
+			"⚠ 门规：某一桶变大到「几乎全部」时，先怀疑**解析失败被吞**"+
+			"（AuditRepo 里的 `continue`），那不是「变干净了」，是「又看不见了」。",
+			resolvedSites, resolvedSitesFloor, total,
+			len(unresolved), sumMap(unresolved))
 	}
+
+	// ③ 正向对照：分类器**仍认得** v1 关系。
+	//
+	// ★ 这是整道门存在的理由。迁移 890 之后 v1 桶非空**只**因为 maas 三个
+	// 文件还没改；而「v1 桶空了」与「工具认不出 v1 了」必须长得不一样。
+	// ⇒ 用**合成的**站点喂**同一个** Site.Classification()：
+	//   · 基表名（带别名形态）必须落进 reads-v1；
+	//   · v1 臂视图名（在 v1ArmViews 集合里）必须落进 v1-arm。
+	// 这两条判据与仓库现状**无关** ⇒ 它们是这道门的「仪器自检」。
+	if got := (Site{Resolved: []string{"_request_logs_hot AS r"}}).Classification(); got != ClassReadsV1 {
+		t.Errorf("★ 正向对照失败：合成的 v1 基表站点（`_request_logs_hot AS r`）被判成 %v，"+
+			"而不是 reads-v1。\n"+
+			"⇒ **分类器认不出 v1 了**：全仓 v1 桶为空就**不能**再被解释成「v1 退役干净了」。\n"+
+			"查 isV1Relation / v1Tables。", got)
+	}
+	if got := (Site{
+		Resolved:   []string{"request_logs_with_current_month rl"},
+		v1ArmViews: map[string]bool{"request_logs_with_current_month": true},
+	}).Classification(); got != ClassReadsV1Arm {
+		t.Errorf("★ 正向对照失败：合成的「v1 臂视图」站点被判成 %v，而不是 reads-v1-arm。\n"+
+			"⇒ **分类器认不出 v1 臂视图了**：v1 臂桶为空就**不能**再被解释成「没有视图还有 v1 臂」。\n"+
+			"查 ReadsV1ArmView / Site.v1ArmViews 的挂载。", got)
+	}
+
 	t.Logf("v1 %d 文件/%d 处，v1 臂 %d 文件/%d 处，canonical %d 文件/%d 处，unresolved %d 文件/%d 处",
 		len(v1), sumMap(v1), len(v1arm), sumMap(v1arm),
 		len(canonical), sumMap(canonical), len(unresolved), sumMap(unresolved))
+	if len(v1) == 0 && len(v1arm) == 0 {
+		t.Logf("★ v1 与 v1 臂两桶皆空 —— 这在 890 之后是**预期**状态（v1 族已整体退役）。" +
+			"它的可信度由上面两条正向对照保证：分类器仍认得 v1 关系。")
+	}
 }

@@ -9,10 +9,26 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// patternConfig mirrors the rule families in configs/sensitive_patterns.yaml.
+//
+// r1039（2026-10-20）：新增 Medical 一族。
+//
+// ★ 缺陷本体：`medical:` 整族此前**从未被加载**——`parsePatternConfig` 只遍历
+// PII / Secret / Financial 三族，于是 `medical_record` / `diagnosis` /
+// `medication` 三条规则**静默失效**：病历号、诊断、用药信息以明文出网关。
+// 运维读 YAML 会合理地以为这些规则是活的（它们写着 `enabled: true`）。
+//
+// ⇒ 现在按「YAML 里写了 enabled+patterns 的族就是规则源」统一加载。
+//
+// ★ 非规则段（global / whitelist / custom_rules / redaction_methods /
+// performance / audit）**不是**规则源：它们没有 `patterns:` 映射，检测器
+// 也不解析它们。逐条理由见 configs/sensitive_patterns.yaml 里的就地注释，
+// 以及 security/sanitize/r1039_yaml_rule_coverage_test.go 的白名单说明。
 type patternConfig struct {
 	PII       patternCategory `yaml:"pii"`
 	Secret    patternCategory `yaml:"secret"`
 	Financial patternCategory `yaml:"financial"`
+	Medical   patternCategory `yaml:"medical"`
 }
 
 type patternCategory struct {
@@ -21,8 +37,11 @@ type patternCategory struct {
 }
 
 type patternDefinition struct {
-	Regex string `yaml:"regex"`
-	Group int    `yaml:"group"`
+	Regex  string   `yaml:"regex"`
+	Group  int      `yaml:"group"`
+	Kind   string   `yaml:"kind"`
+	Scopes []string `yaml:"scopes"`
+	Action string   `yaml:"action"`
 }
 
 // NewPatternDetectorFromFile loads the shared sensitive-pattern configuration.
@@ -37,6 +56,9 @@ func NewPatternDetectorFromFile(path string) (*PatternDetector, error) {
 
 // BuildFromFile replaces detector rules only after the file fully validates.
 func (d *PatternDetector) BuildFromFile(path string) error {
+	if d.RuleManager() != nil {
+		return fmt.Errorf("sensitive patterns are version managed; publish through rule management")
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read sensitive pattern config failed: %w (path=%s)", err, path)
@@ -72,6 +94,15 @@ func parsePatternConfig(data []byte) ([]patternEntry, error) {
 		return nil, fmt.Errorf("parse YAML failed: %w", err)
 	}
 	entries := make([]patternEntry, 0)
+	// Every family that declares `enabled` + `patterns` in the YAML is a rule
+	// source. r1039 added `medical` here: the family was fully written in the
+	// config file and never loaded, so medical PII passed through in
+	// plaintext while the file claimed `enabled: true`.
+	//
+	// The generic guard (security/sanitize/r1039_yaml_rule_coverage_test.go)
+	// fails when a family or a pattern in the YAML is missing from this list,
+	// so the next silently-dead family is caught by a test instead of by an
+	// audit.
 	for _, category := range []struct {
 		config patternCategory
 		name   string
@@ -79,6 +110,7 @@ func parsePatternConfig(data []byte) ([]patternEntry, error) {
 		{config.PII, "pii"},
 		{config.Secret, "secret"},
 		{config.Financial, "financial"},
+		{config.Medical, "medical"},
 	} {
 		if !category.config.Enabled {
 			continue
@@ -111,11 +143,16 @@ func parsePatternConfig(data []byte) ([]patternEntry, error) {
 			// a deployment may legitimately name its own short-token rule
 			// `api_key`, and that rule means exactly what it says.
 			vendorKeyShape := isVendorKeyShapeRegex(pattern.Regex)
+			kind, scopes, action, err := patternMetadata(category.name, name, pattern)
+			if err != nil {
+				return nil, err
+			}
 			entries = append(entries, patternEntry{
 				sType:          sensitiveTypeForPattern(category.name, name),
 				regex:          re,
 				group:          pattern.Group,
 				vendorKeyShape: vendorKeyShape,
+				id:             category.name + "." + name, kind: kind, scopes: scopes, action: action,
 			})
 		}
 	}
@@ -135,7 +172,7 @@ func sensitiveTypeForPattern(category, name string) SensitiveType {
 		return TypeEmail
 	case "bank_card":
 		return TypeCreditCard
-	case "account":
+	case "account", "credential_pair_account":
 		return TypeAccount
 	case "server_ip", "server_ipv6":
 		return TypeServerIP

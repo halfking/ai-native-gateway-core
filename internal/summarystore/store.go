@@ -262,21 +262,12 @@ func (s *Store) LastSummarized(ctx context.Context, sessionKey string) (time.Tim
 var countTurnsSessionSQL = `SELECT COUNT(*)::int FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
 		WHERE rl.success = TRUE`
 
-// v1FallbackCountSQL 是会话族计数为 0 时的 v1 回退腿（_request_logs 分区
-// 父表，服务镜像链启用前的历史会话）。走父表而不是裸 hot 表：CountTotalTurns
-// 原实现只读 _request_logs_hot，promote 排空的行本来就数不到——回退腿
-// 不应复制这个缺口；分区父表 hot∪各月分区都在，行数口径与 canonical
-// 视图一致（252 生产实测 legacy 会话 638==638 对拍）。
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 回退腿**整条删除**。
 //
-// ★ 2026-10-13 252 审计轮：从 request_logs_with_current_month 视图收窄到
-// 父表直读。回退腿只在会话族腿返回 0 时执行——此时本会话在
-// session_turns(_hot) 中不存在任何行，视图 v1 臂的 NOT EXISTS 反连接对
-// 这些行恒不命中（无可反连接对象），而视图的 turns 两臂 + details join
-// 是 leg 1 刚刚证明为空的纯重复扫描（252 实测：单次 1.0-5.6s × 29 次
-// /10.2h，自动摘要滚动门每轮完成都会触发）。父表直读只探
-// _request_logs 各分区索引（252 实测 119ms/638 行），接触面缩小约 4×。
-const v1FallbackCountSQL = `SELECT COUNT(*)::int FROM _request_logs
-		WHERE gw_session_id = $1 AND success = TRUE`
+// 它当初服务的是「镜像链启用前的历史会话」（计数只数得到 v1 母表的行）。
+// v1 族被整体 DROP 后：① 那条 SQL 必然 42P01；② 那些历史会话**本身**
+// 也随 v1 族一起消失 ⇒ 回退腿没有任何可回退的对象。
+// ⇒ countTurnsSessionSQL 成为唯一计数腿；会话族 0 行就是 0 行。
 
 // CountNewTurns returns the number of successful turns for the session whose
 // ts > since. Used by the rolling-gate trigger to decide whether enough new
@@ -299,7 +290,7 @@ func (s *Store) CountNewTurns(ctx context.Context, sessionKey string, since time
 	if err != nil && !strings.Contains(err.Error(), "no rows") {
 		return 0, err
 	}
-	err = s.pool.QueryRow(ctx, v1FallbackCountSQL+` AND ts > $2`, sessionKey, since).Scan(&n)
+	// ★ 890：v1 回退腿已删（见上方说明）⇒ 会话族计数就是全部计数。
 	return n, err
 }
 
@@ -325,6 +316,6 @@ func (s *Store) CountTotalTurns(ctx context.Context, sessionKey string) (int, er
 	if err != nil && !strings.Contains(err.Error(), "no rows") {
 		return 0, err
 	}
-	err = s.pool.QueryRow(ctx, v1FallbackCountSQL, sessionKey).Scan(&n)
+	// ★ 890：v1 回退腿已删（见上方说明）⇒ 会话族计数就是全部计数。
 	return n, err
 }

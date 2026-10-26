@@ -79,7 +79,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"  //nolint:depguard // request lifecycle observation
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"   //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
-	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/security" //nolint:depguard // 2026-10-18 topology plugins source（v2Deps.SecurityRegistry 类型）
+	"github.com/kaixuan/llm-gateway-go/domains/session"  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/sessionarchive" //nolint:depguard // M5: session_summaries archival
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -120,6 +121,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
+	"github.com/kaixuan/llm-gateway-go/internal/tooloffer"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/licensing"
 	"github.com/kaixuan/llm-gateway-go/maas"
@@ -223,6 +225,11 @@ func main() {
 	// Idempotency: metrics.SetGlobal uses atomic.Pointer.Store so
 	// repeated calls (e.g. main reload) are safe.
 	metrics.SetGlobal(metrics.NewPrometheusRecorder())
+
+	// r1037（2026-10-20，211）：装载「硬阻断清单」。默认清单里 egress/output 一律
+	// 不终止回合（形状匹配只记录/遮蔽），要拦的规则由环境变量显式开。
+	// 必须在任何请求进来之前装载，否则前几秒的请求会走默认值。
+	loadHardBlockPolicy()
 
 	// 2026-08-18 fix: explicitly register credential reveal-failure metric.
 	// The provider package's init() already calls this, but main()-time
@@ -581,6 +588,10 @@ func main() {
 	memGrowthThreshold := float64(positiveIntEnv("LLM_GATEWAY_MEM_GROWTH_THRESHOLD_MB", 10))
 	goroutineThreshold := positiveIntEnv("LLM_GATEWAY_GOROUTINE_THRESHOLD", 10000)
 	fdGrowthThreshold := float64(positiveIntEnv("LLM_GATEWAY_FD_GROWTH_THRESHOLD", 100))
+	// 泄漏判定的趋势窗口。相邻采样的 RSS 差值 100% 被 GC 锯齿支配（实测 245 上
+	// 产生 6646 条误报），所以内存/FD 走跨窗口趋势而不是瞬时速率；窗口越长越
+	// 抗噪、但发现越迟，故留成 env 供现场调节。
+	leakWindow := positiveDurationEnv("LLM_GATEWAY_LEAK_WINDOW", 10*time.Minute)
 
 	resourceMonitorCfg := monitor.ResourceMonitorConfig{
 		LogDir:             persistentLogDir,
@@ -593,6 +604,7 @@ func main() {
 		MemGrowthThreshold: memGrowthThreshold,
 		GoroutineThreshold: goroutineThreshold,
 		FDGrowthThreshold:  fdGrowthThreshold,
+		LeakWindow:         leakWindow,
 	}
 
 	resourceMonitor, err = monitor.InitResourceMonitor(resourceMonitorCfg)
@@ -608,7 +620,8 @@ func main() {
 			"interval", resourceMonitorInterval,
 			"mem_growth_threshold_mb_per_min", memGrowthThreshold,
 			"goroutine_threshold", goroutineThreshold,
-			"fd_growth_threshold_per_min", fdGrowthThreshold)
+			"fd_growth_threshold_per_min", fdGrowthThreshold,
+			"leak_window", leakWindow)
 	}
 
 	// ── Columnar invariant check (Phase 23 / 03, 2026-07-02) ────────
@@ -1344,29 +1357,82 @@ func main() {
 				// 也根本分不出来。成功一次即清零。
 				flushFailStreak := 0
 
+				// yieldedToPeer 记录本实例当前是否在让位，仅用于让「角色切换」
+				// 各打一条日志（首次让位 / 恢复写入）。让位本身不记 streak。
+				yieldedToPeer := false
+
+				// 2026-10-18（§10.110.55）：一轮 Collect+Flush 的预算与耗时
+				// 在 persist.RunCycle 里集中编排。
+				// 默认 Preset=false ⇒ 与改动前**同构**（两阶段共用同一个 ctx，
+				// 总预算仍是 30s），只多出 collect_took / flush_budget 两个观测值
+				// —— §40 §四要的正是这两个数，此前任何日志里都没有。
+				// ⚠️ 不要单独打开 Preset：实测它会**减少**写入量（Collect 超时
+				// 时 return nil, err，一行都交不出来），详见 persist/cycle.go 头注释。
+				cycleTimeouts := persist.CycleTimeoutsFromEnv()
+
+				// 2026-10-18（§10.110.61）：跨实例写入者守卫。
+				// 实测这张表有三个并发写入者（245@8781 / 154@8782 /
+				// 245@8782 残留），跑两个进程那台机 persist 成功率只有 15~17%。
+				// 守卫保证同一时刻只有一个写入者；URSM_V2_PERSIST_WRITER_GUARD=0
+				// 可关（关掉即恢复三写入者，仅供回退）。
+				writerGuardOn := os.Getenv("URSM_V2_PERSIST_WRITER_GUARD") != "0"
+				var writerLocker persist.WriterLocker
+				if writerGuardOn {
+					writerLocker = persist.NewPgWriterLocker(dbConn.Pool())
+				}
+
 				for {
 					select {
 					case <-ticker.C:
-						ctx, timeoutCancel := context.WithTimeout(persistCtx, 30*time.Second)
-						rows, err := persistWriter.Collect(ctx)
-						if err != nil {
-							slog.Warn("ursm.v2: persist collect failed", "error", err)
-							timeoutCancel()
+						var outcome persist.CycleOutcome
+						if writerGuardOn {
+							outcome = persist.RunCycleGuarded(persistCtx, persistWriter, writerLocker, cycleTimeouts)
+						} else {
+							outcome = persist.RunCycle(persistCtx, persistWriter, cycleTimeouts)
+						}
+
+						// 让位是**预期行为**，不是失败：既不计入 streak 也不打 Warn。
+						// 但角色切换（开始/停止让位）各打一次 Info —— 否则
+						// 「谁在写」在日志里完全不可见，而那正是 §10.110.60 里
+						// 陈旧槽位抢到锁就静默接管的风险面。
+						if outcome.YieldedToPeer {
+							if !yieldedToPeer {
+								slog.Info("ursm.v2: persist writer yielded to peer",
+									"note", "another instance is the snapshot writer; this instance idles")
+							}
+							yieldedToPeer = true
 							continue
 						}
-						if err := persistWriter.Flush(ctx, rows); err != nil {
+						if yieldedToPeer {
+							slog.Info("ursm.v2: persist writer resumed",
+								"note", "peer stopped writing; this instance took the snapshot lock")
+							yieldedToPeer = false
+						}
+
+						if outcome.CollectErr != nil {
+							slog.Warn("ursm.v2: persist collect failed",
+								"error", outcome.CollectErr,
+								"collect_took", outcome.CollectTook,
+								"preset", outcome.PresetApplied)
+							continue
+						}
+						if outcome.FlushErr != nil {
 							flushFailStreak++
-							lvl, msg, args := ursmPersistFlushFailure(flushFailStreak, err)
-							slog.Log(ctx, lvl, msg, args...)
+							lvl, msg, args := ursmPersistFlushFailure(flushFailStreak, outcome.FlushErr)
+							args = append(args,
+								"collect_took", outcome.CollectTook,
+								"flush_budget", outcome.FlushBudget,
+								"preset", outcome.PresetApplied,
+								"guard", outcome.GuardState())
+							slog.Log(persistCtx, lvl, msg, args...)
 						} else {
 							if flushFailStreak > 0 {
 								slog.Info("ursm.v2: persist flush recovered",
-									"after_streak", flushFailStreak, "rows", len(rows))
+									"after_streak", flushFailStreak, "rows", outcome.Rows)
 							}
 							flushFailStreak = 0
-							slog.Debug("ursm.v2: persist flushed", "rows", len(rows))
+							slog.Debug("ursm.v2: persist flushed", "rows", outcome.Rows)
 						}
-						timeoutCancel()
 
 					case <-persistCtx.Done():
 						slog.Info("ursm.v2: persist writer stopped")
@@ -1518,6 +1584,12 @@ func main() {
 		slog.Info("settings: provider-level resolver initialised")
 	} else {
 		slog.Info("settings: registry disabled (no DB)")
+	}
+
+	if err := validateSessionWriteSafety(dbConn != nil && dbConn.Enabled()); err != nil {
+		slog.Error("unsafe request storage configuration", "error", err)
+		slog.Error("accepted configurations:\n" + validSessionWriteConfigExamples())
+		os.Exit(1)
 	}
 
 	// ── Dynamic Timeout Config (Phase 2, 2026-07-23) ────────────────────
@@ -1703,7 +1775,7 @@ func main() {
 				case "doubao":
 					stripFn = streaming.StripDoubaoFieldsBody
 				case "minimax":
-					stripFn = streaming.StripMinimaxFieldsBody
+					stripFn = streaming.NewMiniMaxStreamFieldStripper()
 				case "zhipu", "glm":
 					stripFn = streaming.StripZhipuFieldsBody
 				case "sensenova":
@@ -1716,6 +1788,7 @@ func main() {
 					Anomaly:   routingExec.AnomalyReporter,
 					Semantic:  routingExec.SemanticAnalyzer,
 				}
+				resp.Body = streaming.NewXMLToolCallCoercingBodyWithNames(resp.Body, tooloffer.FromContext(ctx))
 				outcome := streaming.StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 					ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, vendorCode, pc, diagnostics,
 				)
@@ -1731,7 +1804,9 @@ func main() {
 			routingExec.ProbeOneFlight = executors.NewRedisProbeOneFlight(fpSlotRedis, "")
 		}
 		routingExec.ParamLedger = paramLedger
-		routingExec.XMLCoerceNonStream = streaming.CoerceXMLToolCallsInChatResponse
+		routingExec.XMLCoerceNonStreamWithContext = func(ctx context.Context, body []byte) []byte {
+			return streaming.CoerceXMLToolCallsInChatResponseWithNames(body, tooloffer.FromContext(ctx))
+		}
 		routingExec.QualityProcessNonStream = streaming.WrapQualityProcessNonStream()
 		routingExec.QualitySetMode = streaming.WrapSetQualityFixModeOnContext()
 		// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
@@ -1927,7 +2002,7 @@ func main() {
 			// passthrough loop), so minimax-m3 wrapper tokens leaked into
 			// client-visible text. Coerce at the body-reader seam so the
 			// bridge converts a real tool_calls delta instead of text.
-			resp.Body = streaming.NewXMLToolCallCoercingBody(resp.Body, toolsRequested)
+			resp.Body = streaming.NewXMLToolCallCoercingBodyWithNames(resp.Body, tooloffer.FromContext(ctx))
 			// 审计 R3 #2 (2026-09-09)：透传 executor 基于请求体的 input_tokens 估算值，
 			// 写入 message_start.usage.input_tokens（此前恒 0）。
 			outcome := streaming.StreamOpenAIToAnthropicSSEWithDiagnostics(ctx, w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics, inputTokensEstimate)
@@ -1987,7 +2062,7 @@ func main() {
 			}
 			// 2026-09-23 (leak fix): see the OpenAIToAnthropicStream wiring
 			// above — coerce XML/minimax tool-call text before conversion.
-			resp.Body = streaming.NewXMLToolCallCoercingBody(resp.Body, toolsRequested)
+			resp.Body = streaming.NewXMLToolCallCoercingBodyWithNames(resp.Body, tooloffer.FromContext(ctx))
 			outcome := streaming.StreamOpenAIToResponsesSSEWithDiagnostics(ctx, w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
@@ -1999,7 +2074,7 @@ func main() {
 		routingExec.StripDeepSeekFields = streaming.StripDeepSeekFieldsBody
 		routingExec.StripDoubaoFields = streaming.StripDoubaoFieldsBody
 		// Write-time 客户端可见脱敏（2026-07-09，增强 1）
-		routingExec.RedactBodyFn = buildRedactBodyFn(dbConn.Stdlib())
+		routingExec.RedactBodyWithContextFn = buildRedactBodyWithContextFn(dbConn.Stdlib())
 		routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		routingExec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		routingExec.StreamRetryThreshold = cfg.StreamRetryThreshold
@@ -2171,6 +2246,13 @@ func main() {
 		} else {
 			slog.Info("memora context-compression oracle disabled (set LLM_GATEWAY_MEMORA_BASE_URL to enable)")
 		}
+		// G-2（审计）：结构化会话分析产出 → memora 的 v2 落地域
+		// （POST /api/v2/session-analysis，契约 v1.1）。**独立于**上面那个
+		// 「上下文压缩 oracle」开关：那条链用的是 memora 的 v1 通用记忆入口，
+		// 而这条链用的是 v2 的会话分析契约面（端点、鉴权、幂等键都不同）。
+		// ⇒ 装在 if/else **之外**，这样「配了 memora 但没开分析推送」
+		//   与「完全没配 memora」两种情形都得到明确的禁用态（而不是漏装）。
+		installSessionAnalysisPusher(os.Getenv("LLM_GATEWAY_MEMORA_BASE_URL"))
 		if dbConn != nil && dbConn.Enabled() {
 			routingExec.State = credential.NewWriter(dbConn.Pool())
 			routingExec.DB = dbConn
@@ -2730,12 +2812,18 @@ func main() {
 			requestdetail.CaptureFromEntry(entry)
 			fwd.emit(entry)
 		})
+
 		slog.Info("telemetry onEmitted forwarder wired → live stream SSE hub (pre-DB in_progress projection) + request detail capture")
 		// 阶段二: persisted → 最终状态补偿。经同一转发器 FIFO 发布(顺序保证
 		// 见上), 回调在 telemetry worker 上仍只做非阻塞投递 —— 比 旧直发
 		// Publish 回调更轻, 不会拖慢 telemetry 落库 worker。
-		telemetryClient.AddOnRequestLogPersisted(fwd.persist)
+		horizonCanary := dataHorizonCanaryHook(hub, nil)
+		telemetryClient.AddOnRequestLogPersisted(func(entry *telemetry.RequestLogEntry) {
+			horizonCanary(entry)
+			fwd.persist(entry)
+		})
 		telemetryClient.AddOnRequestLogPersisted(requestdetail.ClearAfterPersist)
+
 		slog.Info("telemetry onPersisted wired → live stream SSE hub via forwarder FIFO (post-commit compensation) + request detail clear")
 	} else {
 		slog.Warn("live stream hub created but telemetryClient is nil; no data will flow to swim lanes")
@@ -3876,7 +3964,8 @@ func main() {
 	// credentialstate 提交回调消费），保留；suspiciousProbe 从未被构造（NewSuspiciousProbeRunner
 	// 零调用方），已于 2026-09-04 随死代码清理第二批删除。
 	var modelProbe *bg.ModelProbeRunner
-	var modelAvailabilityCache *bg.ModelAvailabilityCache
+	// Construct before starting any probe workers that receive this pointer.
+	modelAvailabilityCache := bg.NewModelAvailabilityCache(fpSlotRedis, 4*time.Hour)
 	var modelAvailabilityReader *bg.ModelAvailabilityReader
 	var modelAvailabilityBackfill *bg.AvailabilityCacheBackfill
 	var modelAvailabilityKeyCounter *bg.AvailabilityKeyCounter
@@ -4590,7 +4679,7 @@ func main() {
 
 				// B. node_probe — error-triggered 5s/30s/60s/5m/1h/2h/24h
 				// backoff, direct + gateway two rounds.
-				nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
+				nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc(), settings.ErrorProbeTimeoutMs())
 				nodeProbeWorker.SetResponsesCapabilitySink(fpSlots)
 				if ursmV2Mgr != nil && (ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative || ursmV2Mgr.StrictCanary()) {
 					nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
@@ -4854,7 +4943,7 @@ func main() {
 		// active probes must continue to provide recovery evidence. Start the
 		// worker independently and route its final state through the v2 sink.
 		if stateManager == nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative && shouldStartNewProbeWorkers(selfCheckAPIKey) {
-			nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
+			nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc(), settings.ErrorProbeTimeoutMs())
 			nodeProbeWorker.SetResponsesCapabilitySink(fpSlots)
 			nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
 			nodeProbeWorker.SetEmitter(newProbeEmitter())
@@ -5221,6 +5310,15 @@ func main() {
 		// channel that no consumer ever drains.
 		admin.StartIngester(dbConn.Pool())
 		admin.SetIngesterRedisClient(fpSlotRedis)
+		// 2026-10-17：预热 /storage 与 /storage/tables 的两份快照。
+		// stale-while-revalidate（1233e7931）消掉了"每 30s 破一次 2 秒"，
+		// 但进程启动后的**第一个**请求仍无快照可读、仍要同步付全额聚合，
+		// 实测 /storage/tables 首调 2.82s 仍超任务规定的 2 秒门槛。
+		// 启动后台先采好，首调即退化为纯读。失败只记 warning，
+		// 请求路径自己会同步采集兜底，不会 500。
+		if adminHandler != nil {
+			adminHandler.PrewarmStorageSnapshots(context.Background())
+		}
 		// 2026-10-01 F5：admin HTTP ingest（/api/telemetry/request-log）是
 		// _request_logs_bodies_hot 的第三落库点（方案 §3-H3 只点了 telemetry
 		// client 与 session v2），补接热区请求侧镜像。闭包与前两处同源
@@ -5316,7 +5414,6 @@ func main() {
 		// Health tracking workers (2026-06-22): sliding window aggregation,
 		// auto-scaleup, and auto-recovery. Run in both modes.
 		if fpSlotRedis != nil {
-			modelAvailabilityCache = bg.NewModelAvailabilityCache(fpSlotRedis, 4*time.Hour)
 			callHistoryAggregator = bg.NewCallHistoryAggregator(fpSlotRedis, dbConn.Pool(), 1*time.Minute)
 			// R36 (2026-09-17 audit, R34 遗留#4): single-writer election —
 			// instance-local watermarks + replace ON CONFLICT make dual
@@ -5639,7 +5736,15 @@ func main() {
 
 			// v2.1 (P7.5): TuningViewRefresher keeps the materialised
 			// views (tuning_signals_5m + daily) up to date.
+			//
+			// 2026-10-20（R51 96h 轮）：接上 Redis 令牌桶做**跨实例
+			// leader 选举**。此前本 worker 无任何协调且 ticker 是进程
+			// 启动相位 ⇒ 两个实例各刷各的，实测 24.4 次/小时（名义 12）。
+			// 详见 bg/tuning_view_refresher.go 文件头的实测数据与根因。
+			// 未配置 Redis 时 distlock.NewRedisManager 仍返回 manager，
+			// 但 Enabled() 为 false ⇒ 自动退到 Postgres advisory lock。
 			tuningViewRefresher := bg.NewTuningViewRefresher(dbConn.Pool())
+			tuningViewRefresher.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
 			tuningViewRefresher.Start(context.Background())
 			defer func() {
 				tuningViewRefresher.Stop()
@@ -6260,6 +6365,9 @@ func main() {
 	if adminHandler != nil {
 		adminHandler.SetSensitiveWordEngine(swEngine)
 		adminHandler.SetSanitizePatternDetector(sanitizePatternDetector)
+		if sanitizePatternDetector != nil {
+			adminHandler.SetSanitizeRuleManager(sanitizePatternDetector.RuleManager())
+		}
 		slog.Info("admin: sensitive word engine wired", "words", swEngine.LoadedWordCount())
 	}
 
@@ -6418,7 +6526,14 @@ func main() {
 		})
 		pluginBases := ScanAndStartPluginsWithRegistry(sup, pluginRegistry, pluginManifests)
 		for _, manifest := range pluginManifests {
-			pluginCapabilities.RegisterManifest(manifest)
+			// ★ 2026-10-24 P0-2：manifest 声明**未实现**的插件能力 ⇒ 声明即拒
+			//   （该能力永远不被授予 ⇒ 走那条路由必然 403 capability_denied）。
+			//   其余能力照常登记 ⇒ 一个多声明了一条用不了的能力的插件，
+			//   不会因此失去它本来能用的能力。
+			if err := pluginCapabilities.RegisterManifest(manifest); err != nil {
+				slog.Warn("plugin manifest declares unimplemented capabilities",
+					"error", err)
+			}
 		}
 		pluginActivations := make(map[string]pluginruntime.Activation, len(pluginManifests))
 		for _, manifest := range pluginManifests {
@@ -6686,11 +6801,13 @@ func main() {
 	// postflight. The 4 v1 handlers above stay registered as the
 	// fallback inside v2DispatchHandler; the Pipeline re-routes
 	// through them on a stage error or feature-flag off path.
+	var v2SecurityRegistry *security.Registry
 	if v2DispatchEnabled {
 		// Pass the engine in so the Pipeline's sensitive-word plugins scan with
 		// the SAME instance the admin handler reloads. Assigning it to v2Deps
 		// afterwards was a dead wire: buildV2DispatchPipeline had already run.
 		if _, v2Deps, ok := v2DispatchMux(chatRouteHandler, messagesRouteHandler, responsesRouteHandler, swEngine); ok && v2Deps != nil {
+			v2SecurityRegistry = v2Deps.SecurityRegistry
 
 			// PR-V4-09 / PR-V4-10: 注入 DB pool + ApprovalManager + Publisher +
 			// IntentStore 后再启动 Loop 和 Flusher。
@@ -6713,6 +6830,19 @@ func main() {
 			mux.Handle("/v1/responses", v2DispatchHandler(v2Deps, responsesRouteHandler))
 			slog.Info("v2 pipeline: 4 v1 endpoints overridden with Pipeline wrappers")
 		}
+	}
+
+	// 2026-10-18: 实时拓扑「在用插件」清单。v2 管线开启时读治理注册中心；
+	// 关闭（默认）时回退报告 v1 数据面真实装配的守卫（脱敏检测器/敏感词/
+	// 输出合规，见 topology_plugins_wiring.go）。external 注册中心未配插件
+	// 目录时为 nil —— 对应清单为空；端点只在完全没装配时才走 degraded 信封。
+	if adminHandler != nil {
+		adminHandler.SetTopologyPlugins(topologyPluginsAdapter{
+			builtin:   v2SecurityRegistry,
+			external:  pluginRegistry,
+			swEngine:  swEngine,
+			sanitizer: sanitizePatternDetector,
+		})
 	}
 
 	if sessionMgr != nil {
@@ -7460,6 +7590,20 @@ func main() {
 		adminHandler.RegisterProbeDashboardRoutes(mux, wrapAdmin)
 		slog.Info("Phase 3.8 probe health dashboard API enabled (/api/admin/probe/*)")
 
+		// Model status page — 24h traffic availability (Statuspage-style).
+		//
+		// ★ 2026-10-21（R72 轮）：本调用点曾被**合并静默冲掉**——
+		//   引入提交 0174ec0aa 把它放在 RegisterProbeDashboardRoutes 旁边，
+		//   而合并提交 d2cbaf88b 的 main.go 改动里只有一行
+		//   `- adminHandler.RegisterModelStatusRoutes(mux, wrapAdmin)`，
+		//   **没有对应的新增** ⇒ handler 与注册函数都还在，路由却没了。
+		//   后果：/api/admin/model-status 恒 404（实测于本机 8782）。
+		//   该缺陷不会让任何现有测试变红（没有测试断言「端点存在」），
+		//   所以只能靠「注册函数有调用点」这条静态门兜住（见
+		//   admin/admin_route_mount_test.go）。
+		adminHandler.RegisterModelStatusRoutes(mux, wrapAdmin)
+		slog.Info("model status API enabled (/api/admin/model-status)")
+
 		// Phase 3.9 (2026-07-02, Task D2): Approval Request Query API
 		// Provides REST API for querying, approving, and rejecting approval requests
 		// with statistics support. Complements the existing admin approval handlers.
@@ -7580,6 +7724,15 @@ func main() {
 	handler := middleware.NewBuilder().
 		Add(middleware.NewRecoveryMiddleware()).
 		Add(middleware.NewRequestIDMiddleware()).
+		// 2026-10-16：Logging 必须排在 Auth **之外**。此前它挂在 Auth
+		// 内侧，于是 AuthMiddleware 拒掉的请求（401 missing_key /
+		// invalid_key）不产生任何 http_request 记录——客户端拿着网关发的
+		// X-Request-Id 去网关日志里查，命中 0 次（实测 19d7d64a… 在 154
+		// 两份实例日志中均为 0），只剩 nginx access log 可查。
+		// 紧跟 RequestID 之后：RequestIDMiddleware 会把生成的 id 写回
+		// r.Header["X-Request-Id"]，再往内排会让本记录的 request_id 退化成
+		// 客户端原值/空值。
+		Add(middleware.NewLoggingMiddleware()).
 		Add(middleware.NewLocaleMiddleware(cfg.DefaultLanguage)). // i18n: before auth so auth errors localize too
 		Add(middleware.NewCORSMiddleware(cfg.CORSOrigins)).
 		Add(middleware.NewPrometheusMiddleware()).
@@ -7587,16 +7740,25 @@ func main() {
 		Add(middleware.NewAuthMiddleware(cfg.APIKey)).
 		Add(middleware.NewOriginMiddlewareWithTrustedProxies(
 			middleware.ParseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs))).
-		Add(middleware.NewLoggingMiddleware()).
 		Add(middleware.NewSecurityHeadersMiddleware()).
 		Build().
-		Then(publicSurface)
+		// ★ 2026-10-24（P2-2 续）：内层探针 —— 量「业务耗时」，
+		//   外层（LedgerMiddleware，见下）量「总耗时」⇒ 两者相减 = **主链自身的开销**
+		//   ⇒ 扩展点台账里的 p99 才是「中间件链的耗时」，而不是 LLM 请求的耗时。
+		Then(middleware.LedgerInnerProbe(publicSurface))
 
 	slog.Info("CHECKPOINT: after middleware build, before http.Server init")
 
 	// R49-A1: maintain/mobile 组合已上移进链（见上方 publicSurface），
 	// 此处不再在链外二次包裹。
-	finalHandler := handler
+	//
+	// ★ 2026-10-24（P2-2 续）：把**主链**接进扩展点台账。
+	//   ⇒ 读端 `/api/admin/extension-points` 的 `http_middleware_chain` 一行
+	//   才有真实的调用次数 / p99 / 拒绝数。
+	//   ⇒ 口径：p99 量的是**主链自身的开销**（整段 − 内层处理），
+	//   **不是**整个请求的耗时（后者会被 LLM 调用主导 ⇒ 对"扩展点耗时"没有意义）。
+	//   ⇒ 纯观测：不改状态码、不改响应体、不吞错误。
+	finalHandler := middleware.LedgerMiddleware(handler)
 
 	// 2026-08-11 (479): 构建 V2 多层队列调度 Pipeline 并注入 executor。
 	// Pipeline 长生命周期；adapters 在请求时惰性读取 routingExec 字段，
@@ -8028,6 +8190,8 @@ func main() {
 		if stateManager != nil {
 			stateManager.Stop()
 		}
+
+		stopSanitizeRules()
 
 		// 2. Stop hub/background producers before closing their dependencies.
 		// Forwarder must stop FIRST so its consumer exits before the hub

@@ -38,7 +38,7 @@ export default {
     generating: 'Generiere…',
     generateConfirm: 'Menschliche Korrekturen der letzten {days} Tage lesen und Schwellen-/Schlagwort-Vorschläge entwerfen (mit Inline-Backtest quantifiziert; nichts wird automatisch angewendet)?',
     generateDone: '{n} Vorschlag(sentwurf)ufe generiert (ausstehend)',
-    generateNone: 'Zu wenige Korrekturen im Zeitraum oder identische ausstehende Vorschläge vorhanden — nichts generiert',
+    generateNone: 'Zu wenige Korrekturen im Zeitraum oder identische ausstehende Vorschläge vorhanden. Nichts generiert',
     analyze: 'Signalanalyse ausführen',
     analyzing: 'Analysiere…',
     analyzeConfirm: 'Feedback-Analyzer jetzt ausführen (qualitätsgetriebene Vorschläge aus tuning_signals)?',

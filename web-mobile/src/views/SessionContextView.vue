@@ -4,7 +4,7 @@
 //   GET  /api/system/session-context/{taskId}/extraction-status
 //   POST /api/system/session-context/titles/batch        ← ★ 只读语义但**只能 POST**
 //
-// ⚠️ 前缀是 `/api/system/…`，不是 `/api/admin/…`（`admin/handler.go:1296`）
+// ⚠️ 前缀是 `/api/system/…`，不是 `/api/admin/…`（`admin/handler.go:1368`）
 // 档位 `h.admin(...)` ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** `requiresRole`。
 //
 // ★★★★★★★★ `extraction-status` 是**异形端点**：A 形只有 2 个键、B 形有 8 个键。

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/probekind"
 	"github.com/kaixuan/llm-gateway-go/recentmodels"
 )
 
@@ -61,14 +62,28 @@ func TestProbePolicyPredicatesShape(t *testing.T) {
 	}
 	// 冻结 113 列视图变体（R49 自纠；R52 审计补全 actor）：origin_stage 不在
 	// 视图契约内，视图读面只能用 flags+task_type+origin_actor 三臂（全部
-	// 113 列在册）。gateway actor 全集为四：node-probe-worker（legacy runOne）、
-	// probe-service（队列 gateway 轮）、credential-selfcheck-worker（自检
-	// HTTP）+ active-probe-worker（历史行兼容）——缺一即该轮流量被视图扫描
-	// 当"使用"计入（INV-3 泄漏）。
+	// 113 列在册）。
+	//
+	// 2026-10-23 审计：actor 列表不再硬编码，改由 internal/probekind 渲染
+	// —— 此前 Go 侧（domains/stats/minute_entry.go）与 SQL 侧各写一份，
+	// 漂移过一次（self-check-worker / model-quality-worker 只在 Go 侧缺席 ⇒
+	// stats 把它们写出的探测行当业务流量计入，板上"总请求数"虚高）。
+	// 本断言改为"形状 + 列表来源"两段：形状仍钉死，列表交给
+	// probekind.SQLActorList()（它与 domains/stats 侧同源）。
 	if got, want := ProbeTrafficExclusionPredicateView,
 		"(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE) AND COALESCE(%s.task_type, '') <> 'probe_triggered'"+
-			" AND COALESCE(%s.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker', 'probe-service', 'credential-selfcheck-worker'))"; got != want {
+			" AND COALESCE(%s.origin_actor, '') NOT IN ("+probekind.SQLActorList()+"))"; got != want {
 		t.Fatalf("probeTrafficExclusionView = %q, want %q", got, want)
+	}
+	// 形状不变式：三条臂、三个 format 动词、actor 臂在、origin_stage 臂不在。
+	if got := strings.Count(ProbeTrafficExclusionPredicateView, "%s"); got != 3 {
+		t.Errorf("view predicate has %d format verbs, want 3", got)
+	}
+	if !strings.Contains(ProbeTrafficExclusionPredicateView, "origin_actor") {
+		t.Error("view predicate lost its origin_actor arm")
+	}
+	if strings.Contains(ProbeTrafficExclusionPredicateView, "origin_stage") {
+		t.Error("view predicate must not have an origin_stage arm (not in the 113-column contract)")
 	}
 	if probeUsageWindowInterval != "interval '3 days'" {
 		t.Fatalf("usage window = %q, want 3 days", probeUsageWindowInterval)
@@ -98,6 +113,10 @@ func TestPumpDueStatesSQLErrorEvidenceGate(t *testing.T) {
 // TestFeaturedCycleErrorGated pins the 2026-09-20 re-scope of the 常用模型
 // deep-ping: 3-day per-credential usage (probe traffic excluded), credential
 // failure evidence, and the two-consecutive-success gate.
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：usage 证据源从 v1 热表换成**会话族热腿**，
+// 探针排除谓词随之从 v1 物理双臂（quality_flags + origin_stage）换成**会话族**
+// 三臂（origin_stage + task_type + origin_actor）——会话族没有 quality_flags 列。
 func TestFeaturedCycleErrorGated(t *testing.T) {
 	src, err := readSource("model_probe.go")
 	if err != nil {
@@ -118,13 +137,22 @@ func TestFeaturedCycleErrorGated(t *testing.T) {
 	for _, want := range []string{
 		`credentialFailureEvidenceSQL("c.id", probeFailureEvidenceWindowSQL)`,
 		`credentialTwoProbeSuccessGateSQL("c.id")`,
-		"SELECT 1 FROM _request_logs_hot rl",
+		// ★ 890：usage 证据源是会话族热腿（v1 热表已 DROP）。
+		"SELECT 1 FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl",
 		"probeUsageWindowInterval",
-		`fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")`,
+		// ★ 890：会话族没有 quality_flags ⇒ 必须用会话族那条谓词。
+		`fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("featuredCycle SQL missing policy fragment %q", want)
 		}
+	}
+	// 负向：不得再用 v1 物理谓词（它引用 quality_flags ⇒ 会话族 42703）。
+	// ⚠ 正向对照：上面那条会话族谓词断言。
+	// ⚠ 边界：`probeTrafficExclusionPredicateSession,` 里不含
+	// `probeTrafficExclusionPredicate,` ⇒ 不会误判。
+	if strings.Contains(body, "fmt.Sprintf(probeTrafficExclusionPredicate,") {
+		t.Error("featuredCycle 的读面是会话族，不得使用引用 quality_flags 的 v1 物理谓词")
 	}
 }
 
@@ -220,23 +248,29 @@ func readSource(name string) (string, error) {
 // TestProbeExclusionPredicateCallSitesR50 pins the R50 closure of the probe
 // traffic exclusion — PER READ FACE (R49 自审轮勘误)：排除闭合按读面分治，
 // 不变量不是"都用物理双臂谓词"，而是"读面对象有什么列就用什么谓词"：
-//   - 物理表（_request_logs_hot，428 起有 origin_stage 且网关探测轮落值）→
-//     probeTrafficExclusionPredicate（flags + origin_stage='business'）；
+//   - 会话族原生源（session_turns_hot，**没有 quality_flags**）→
+//     probeTrafficExclusionPredicateSession（origin_stage + task_type +
+//     origin_actor）；
 //   - canonical 冻结 113 列视图（request_logs_with_current_month，
-//     origin_stage 不在契约）→ ProbeTrafficExclusionPredicateView
-//     （flags + task_type + origin_actor）。R50 首版把物理谓词铺到
+//     仍投影 quality_flags / task_type / origin_actor）→
+//     ProbeTrafficExclusionPredicateView。R50 首版把物理谓词铺到
 //     shared_pick/passive_probe_listener 的视图查询上，必 42703——本测试
 //     按读面分治后的真实不变量钉桩。
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 族整体被 DROP ⇒ 原先「物理 v1 表」
+// 这一类读面**整类消失**，直接读 v1 物理表的调用点全部改读会话族原生源 ⇒
+// 本门的「physical」一栏改成「session」（会话族谓词），「view」一栏不变
+// （canonical 视图仍投影那三列，视图谓词照旧可用）。
 func TestProbeExclusionPredicateCallSitesR50(t *testing.T) {
 	cases := []struct {
-		file     string
-		physical int // minimum physical-predicate (_request_logs_hot) sites
-		view     int // minimum view-predicate (frozen 113-col contract) sites
+		file    string
+		session int // minimum session-family predicate sites (native session readers)
+		view    int // minimum view-predicate (frozen 113-col contract) sites
 	}{
-		{"credential_selfcheck.go", 1, 0}, // selfcheckRecentFallback — hot
-		{"model_probe.go", 2, 0},          // featuredCycle + watchdog — hot
-		{"today_success_probe.go", 1, 0},  // recovery recheck — hot
-		{"model_tier.go", 1, 0},           // Top-N usage — hot
+		{"credential_selfcheck.go", 1, 0}, // recentUsageModels + selfcheckRecentFallback — session
+		{"model_probe.go", 2, 0},          // featuredCycle + watchdog — session
+		{"today_success_probe.go", 1, 0},  // recovery recheck — session
+		{"model_tier.go", 1, 0},           // Top-N usage — session
 		{"daily_probe_audit.go", 0, 1},    // 72h usage — canonical view
 		{"shared_pick.go", 0, 1},          // most-used pick — canonical view
 		{"passive_probe_listener.go", 0, 3},
@@ -246,12 +280,34 @@ func TestProbeExclusionPredicateCallSitesR50(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", tc.file, err)
 		}
-		if got := strings.Count(src, `fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")`); got < tc.physical {
-			t.Errorf("%s has %d physical dual-arm exclusion sites, want >= %d", tc.file, got, tc.physical)
+		if got := strings.Count(src, `fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")`); got < tc.session {
+			t.Errorf("%s has %d session-family exclusion sites, want >= %d", tc.file, got, tc.session)
 		}
 		if got := strings.Count(src, `fmt.Sprintf(ProbeTrafficExclusionPredicateView, "rl", "rl", "rl")`); got < tc.view {
 			t.Errorf("%s has %d frozen-view exclusion sites, want >= %d", tc.file, got, tc.view)
 		}
+	}
+	// ★ 890 之后新增的一条**方向性**门：直读会话族原生源的读面**不得**用
+	// 视图谓词（视图谓词引用 quality_flags，会话族没有这一列 ⇒ 每次 42703）。
+	// ⚠ 正向对照：上表里 session 一栏 > 0 的那几个文件都必须命中会话族谓词。
+	// ⚠ 边界：`ProbeTrafficExclusionPredicateView,` 与
+	// `probeTrafficExclusionPredicateSession,` 是两个不同的标识符 ⇒ 不互含。
+	for _, file := range []string{
+		"credential_selfcheck.go",
+		"model_probe.go",
+		"today_success_probe.go",
+		"model_tier.go",
+	} {
+		src, err := readSource(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if strings.Contains(src, "ProbeTrafficExclusionPredicateView") {
+			t.Errorf("%s 直读会话族原生源（无 quality_flags 列），不得使用引用 quality_flags 的视图谓词", file)
+		}
+		// 反向：canonical 视图读面不得用会话族谓词？—— 会话族谓词的三列
+		// （origin_stage / task_type / origin_actor）在 canonical 视图里都在，
+		// 所以那不是 42703 风险；这里只做记录，不断言。
 	}
 	// The selfcheck usage scan must NOT carry the old single-arm spelling.
 	selfcheckSrc, err := readSource("credential_selfcheck.go")
@@ -259,7 +315,7 @@ func TestProbeExclusionPredicateCallSitesR50(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(selfcheckSrc, "AND NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)") {
-		t.Errorf("credential_selfcheck.go still has a single-arm usage scan; use probeTrafficExclusionPredicate")
+		t.Errorf("credential_selfcheck.go still has a single-arm usage scan; use probeTrafficExclusionPredicateSession")
 	}
 }
 
@@ -327,8 +383,12 @@ func TestFilterRecentEntriesByUsage(t *testing.T) {
 
 // TestSelfcheckPrimaryGatedByThreeDayUsage pins the R52 wiring: pickModels must
 // narrow the shared 7d Redis ranking through recentInUsageWindow before primary
-// selection, and the filter query must carry the physical dual-arm exclusion
+// selection, and the filter query must carry the probe traffic exclusion
 // (probe traffic must not keep a model "in-window").
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：过滤查询的读面已迁到会话族 ⇒ 排除谓词
+// 必须用会话族那条（origin_stage + task_type + origin_actor）；会话族没有
+// quality_flags 列，用 v1 那条会 42703。
 func TestSelfcheckPrimaryGatedByThreeDayUsage(t *testing.T) {
 	src, err := readSource("credential_selfcheck.go")
 	if err != nil {
@@ -337,7 +397,7 @@ func TestSelfcheckPrimaryGatedByThreeDayUsage(t *testing.T) {
 	for _, want := range []string{
 		"w.recentInUsageWindow(queryCtx, credentialID, tenant, recentmodels.Read(queryCtx, w.redis, tenant, 10))",
 		"probeUsageWindowInterval",
-		`fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")`,
+		`fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("credential_selfcheck.go missing 3-day primary gate fragment %q", want)

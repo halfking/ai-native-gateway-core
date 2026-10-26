@@ -704,6 +704,18 @@ type sessionSnapshotV2 struct {
 	Topic               string     `json:"topic,omitempty"`
 	Intent              string     `json:"intent,omitempty"`
 	UserTags            []string   `json:"user_tags,omitempty"`
+	// DurationMs 是 sessions.duration_ms —— 877 起由**每轮刷新**写入的
+	// 已流逝时长（updated_at - created_at），不是 706 原注释承诺的
+	// 「关闭时 closed_at - created_at」（那个语义从未兑现：其唯一写入方
+	// CloseSession 全仓零调用方）。
+	//
+	// ★ 为什么它必须出现在这个响应里：877 修好了「该列恒为 NULL」，
+	//   但**没有任何读侧引用它**——一列只写不读，等于没有契约。
+	//   本字段是它的第一个消费方：会话详情页顶栏显示"已进行多久"。
+	//   注意它与 created_at/updated_at 并非冗余：那两个是**行**的时间戳，
+	//   而本列是网关**自己维护**的时长口径（写入点与读出点同源），
+	//   未来 CloseSession 接线后它会在同一时刻写 closed_at 与 duration_ms。
+	DurationMs *int64 `json:"duration_ms,omitempty"`
 	// SessionAnalysis 是 migration 567 的 session_analysis_metadata 读侧投影
 	// （LEFT JOIN LATERAL 命中时非空）。与 turns_sessions / session_detail_v2
 	// 的 SessionAnalysis 字段保持同一形状，前端 SessionSummaryBar 可直接复用。
@@ -745,6 +757,7 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 			       COALESCE(s.topic, '') AS topic,
 			       COALESCE(s.intent, '') AS intent,
 			       COALESCE(s.user_tags, ARRAY[]::text[]) AS user_tags,
+			       s.duration_ms,
 			       sam.status, sam.schema_version, sam.input_hash,
 			       sam.source_task_id, sam.updated_at, sam.payload
 		FROM public.sessions s
@@ -778,6 +791,7 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 		&snap.LastRequestSummary, &snap.LastResponseSummary,
 		&snap.CreatedAt, &snap.UpdatedAt, &snap.ClosedAt, &snap.Status,
 		&snap.TaskType, &snap.ClientType, &snap.Topic, &snap.Intent, &userTags,
+		&snap.DurationMs,
 		&saStatus, &saSchemaVersion, &saInputHash, &saSourceTaskID, &saUpdatedAt, &saPayloadRaw)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

@@ -46,13 +46,23 @@
 #   TestKnownStartupGapsManifestIsAnnotated — an entry without one is a build
 #   failure, and so is an entry naming a file that is not registered.
 #
-# KNOWN DRIFT, recorded here because it affects anyone comparing the two
-# 01-schema.sql files: sql/schema/01-schema.sql (what the audit harness applies)
-#   and installer/cmd/llm-gw-installer/embeddata/01-schema.sql (what the
-#   installer actually applies) are NOT the same file. Beyond whitespace they
-#   differ by four objects the installer's copy is missing:
-#   bump_credentials_governor_revision(), notify_credentials_governor_revision(),
-#   credentials_governor_revision_seq, credentials_revision_idx. That drift does
-#   not change the count above, but it does mean the gate database is not
-#   byte-identical to an installer-built one. Unifying the two copies is tracked
-#   as an open item in docs/audit/2026-10-01-round44-closure.md §7.
+# KNOWN DRIFT — **CLOSED 2026-10-21 (R60 round), original note kept below.**
+#   The original note said the two 01-schema.sql files were NOT the same file:
+#   sql/schema/01-schema.sql (what the audit harness applies) and
+#   installer/cmd/llm-gw-installer/embeddata/01-schema.sql (what the installer
+#   actually applies) differed by four objects the installer's copy was missing
+#   (bump_credentials_governor_revision(), notify_credentials_governor_revision(),
+#   credentials_governor_revision_seq, credentials_revision_idx).
+#
+#   ⇒ **Measured 2026-10-21: that drift is GONE.** The two files are now
+#   byte-identical (md5 5f8cd4df495a2b6a85491a792f03cea6 for both), and all four
+#   objects are present in BOTH copies (grep counts 4/6/4/2 in each).
+#   ⇒ So the gate database IS byte-identical to an installer-built baseline now,
+#   and "unifying the two copies" (open item in
+#   docs/audit/2026-10-01-round44-closure.md §7) is **done, not open**.
+#   ⇒ ★ The original wording is kept above so the history stays readable; do NOT
+#   read it as the current state. Anyone comparing the two files today should
+#   get the same md5.
+#
+#   (Historical: docs/audit/2026-10-01-round44-closure.md §7 recorded the drift
+#   as an open item; it was closed before 2026-10-21.)

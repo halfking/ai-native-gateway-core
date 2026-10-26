@@ -252,8 +252,12 @@ func (s *RedisStore) ResolveFilter(ctx context.Context, f Filter, notes string) 
 	return n, nil
 }
 
-func (s *RedisStore) LearnedParams(ctx context.Context, providerCode, outboundModel string) []string {
+func (s *RedisStore) LearnedParams(ctx context.Context, key LearnedKey) []string {
 	if s.rdb == nil {
+		return nil
+	}
+	key = key.normalized()
+	if !key.valid() {
 		return nil
 	}
 	all, err := s.loadAll(ctx)
@@ -261,8 +265,6 @@ func (s *RedisStore) LearnedParams(ctx context.Context, providerCode, outboundMo
 		return nil
 	}
 	cutoff := s.nowFn().Add(-learnedTTL)
-	providerCode = strings.ToLower(providerCode)
-	outboundModel = strings.ToLower(outboundModel)
 	set := map[string]bool{}
 	for _, rec := range all {
 		if rec.Trigger != TriggerParamRejected || rec.Resolved || rec.Param == "" {
@@ -271,8 +273,9 @@ func (s *RedisStore) LearnedParams(ctx context.Context, providerCode, outboundMo
 		if rec.RecoveredCount == 0 || rec.LastSeen.Before(cutoff) {
 			continue
 		}
-		if strings.ToLower(rec.ProviderCode) != providerCode ||
-			strings.ToLower(rec.OutboundModel) != outboundModel {
+		if rec.ProviderID != key.ProviderID ||
+			strings.ToLower(strings.TrimSpace(rec.OutboundModel)) != key.OutboundModel ||
+			strings.ToLower(strings.TrimSpace(rec.Protocol)) != key.ActualWire {
 			continue
 		}
 		for _, p := range strings.Split(rec.Param, ",") {

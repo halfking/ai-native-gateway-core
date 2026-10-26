@@ -45,6 +45,15 @@ import (
 // auto_cool_hot_realdb_test.go（计划断言钉「只读 hot、不触碰视图」）。
 // 豁免以 _hot 后缀放行 + 读点数钉死（下方案数断言），新读点必须先过
 // 对拍门再扩名单——与 opslog_trimmer/integrity_fingerprint 两个先例同款。
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 族（_request_logs*）整族被 DROP
+// ⇒ 「读 v1 族」不再是另一种读面，而是一个**必须为零**的违规（提及即 42P01）。
+// ⇒ 本门从「v1 读面要么是 canonical 视图、要么是 hot 表」**收紧**为
+// 「这三个文件里不得再有任何 `FROM _request_logs*`」。
+//
+// ⚠ 而**同一条纪律**（近窗读不读冷裸父表）在会话族上仍然成立，只是对象换了：
+// 会话族的冷面是 `session_turns`（分区父表），热面是 `session_turns_hot`
+// ⇒ 近窗读必须落在热腿或 canonical 视图上，不能落在冷父表上。
 func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 	re := regexp.MustCompile(`(?i)FROM\s+_?request_logs(\w*)`)
 	for _, file := range []string{
@@ -58,19 +67,16 @@ func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 		}
 		src := string(contents)
 		matches := re.FindAllStringSubmatch(src, -1)
-		if len(matches) == 0 {
-			t.Fatalf("%s: no _request_logs reads found — query surface moved?", file)
-		}
+		// ★ 890：v1 族已退役 ⇒ 唯一还允许的 v1 名字是 canonical **视图**
+		// request_logs_with_current_month（890 之后它是会话两臂体）。
+		// 任何其它后缀（裸父表 / _hot / _bodies…）都是已 DROP 的族。
 		for _, m := range matches {
-			// 2026-10-13: hot 双写表是合法近窗面（见头注 doctrine 演进）。
-			if m[1] == "_hot" {
+			if m[1] == "_with_current_month" {
 				continue
 			}
-			if m[1] != "_with_current_month" {
-				t.Fatalf("%s reads the cold %q surface — recent-window reads must "+
-					"use request_logs_with_current_month (2026-09-10 minimax-prod-v2 "+
-					"incident doctrine)", file, m[0])
-			}
+			t.Fatalf("%s 仍读已退役的 v1 族 %q —— 迁移 890 把它整族 DROP 了，"+
+				"提及即整条语句 42P01（近窗读改读会话族热腿或 canonical 视图）",
+				file, m[0])
 		}
 	}
 
@@ -78,6 +84,9 @@ func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 	// 1 处 _request_logs_hot（auto-cool win 的 v1 臂）+ 1 处
 	// candidate_failure_logs_hot（cfl 臂）读点。数字变了=有新近窗读点或
 	// 旧读点被改面，必须先过 auto_cool_hot_realdb_test.go 对拍门再改这里。
+	//
+	// ★ 890：v1 hot 读点归零（那条臂随 v1 族一起退役）；cfl 臂读点数不变；
+	// 同时新增**会话族热腿**的读点钉子（近窗纪律在会话族上的落点）。
 	monSrc, err := os.ReadFile("candidate_failure_monitor.go")
 	if err != nil {
 		t.Fatalf("read candidate_failure_monitor.go: %v", err)
@@ -85,7 +94,12 @@ func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 	for _, pin := range []struct {
 		re   string
 		want int
-	}{{`(?i)FROM\s+_request_logs_hot\b`, 1}, {`(?i)FROM\s+candidate_failure_logs_hot\b`, 1}} {
+	}{
+		{`(?i)FROM\s+_request_logs_hot\b`, 0},          // ★ 890：v1 族已退役 ⇒ 归零
+		{`(?i)FROM\s+candidate_failure_logs_hot\b`, 1}, // cfl 族未退役，读点不变
+		{`(?i)FROM\s+session_turns_hot\b`, 1},          // ★ 890：auto-cool 腿读会话族热腿
+		{`db\.SessionFamilyTurnsHotSourceSQL\(\)`, 1},  // ★ 890：staleness 源读会话族热腿
+	} {
 		if got := len(regexp.MustCompile(pin.re).FindAllStringSubmatch(string(monSrc), -1)); got != pin.want {
 			t.Fatalf("candidate_failure_monitor.go hot 读点数变化 (%s): got=%d want=%d — "+
 				"先过对拍门再改 recent_surface_reads_test.go 的钉子", pin.re, got, pin.want)

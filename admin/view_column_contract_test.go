@@ -495,7 +495,8 @@ func unquoteDoubleQuoted(literal string) (string, error) {
 // distinguishes the two.
 func TestViewColumnContract_SourcelessColumnRefs(t *testing.T) {
 	root := repoRootFromCaller(t)
-	skipDir := map[string]bool{".git": true, "docs": true, "node_modules": true, "vendor": true}
+	skipDir := map[string]bool{".git": true, "docs": true, "node_modules": true, "vendor": true,
+		".audit": true, ".audit-validation": true, ".audit-workspace": true}
 
 	type derived struct {
 		contract viewColumnContract

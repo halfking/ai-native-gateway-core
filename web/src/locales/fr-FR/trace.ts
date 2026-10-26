@@ -3,9 +3,7 @@
 export default {
   modal: {
     title: 'Détail de la trace',
-    openButton: '🔗 Trace',
     close: 'Fermer',
-    tooltip: "Voir la chronologie de bout en bout de cette requête",
     snapshotTitle: 'Capture du contexte d’échec',
     candidates: 'Candidats',
     routingState: 'Routage',
@@ -17,8 +15,6 @@ export default {
     failedCount: 'échecs',
   },
   detail: {
-    basicInfo: 'Informations de base',
-    requestId: 'ID de requête',
     finalStatus: 'Statut final',
     failedAtStage: 'Étape en échec',
     totalDuration: 'Durée totale',
@@ -27,11 +23,9 @@ export default {
     sourcePostgres: 'PostgreSQL (historique)',
     eventCount: 'Événements',
     copyJson: 'Copier le JSON',
-    copySuccess: 'Copié',
     statusSuccess: 'Succès',
     statusFailed: 'Échec',
     statusTimeout: 'Délai dépassé',
-    statusSkipped: 'Ignoré',
     statusInProgress: 'En cours',
   },
   empty: {
@@ -41,7 +35,6 @@ export default {
     hint2: 'Terminées il y a < 10 min : encore dans Redis',
     hint3: 'Déjà vidées dans PostgreSQL : affichées en repli',
 
-    hint4: 'If empty here, possible causes: flush not completed, or trace was not emitted',
   },
   aiPrompt: {
     button: '🤖 Générer un prompt IA',
@@ -76,16 +69,5 @@ export default {
     module_upstream: 'Amont',
     module_session: 'Session',
   },
-  failureHint: {
-    upstream_timeout: 'Délai amont dépassé',
-    upstream_unreachable: 'Amont injoignable',
-    upstream_reset: 'Connexion réinitialisée',
-    upstream_io_error: 'Erreur E/S réseau',
-    upstream_network_error: 'Erreur réseau',
-    upstream_5xx: 'Amont 5xx',
-    upstream_4xx: 'Amont 4xx',
-    upstream_rate_limit: 'Limite amont (429)',
-    upstream_auth_error: 'Auth amont (401/403)',
-    upstream_not_found: 'Amont 404',
-  },
+  generateFailed: 'Le résumé n’a pas pu être généré. Veuillez réessayer.',
 }

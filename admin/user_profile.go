@@ -15,6 +15,34 @@ import (
 // ── Response types ────────────────────────────────────────────────────
 
 // UserProfileSummary 用户画像摘要
+// userProfileBaseStatsSQL 是用户画像的基础聚合（%s = WHERE 子句）。
+//
+// 2026-10-20 复核轮：这段聚合原先用裸 SUM/MIN/MAX，于是**该 owner 一行都
+// 没有**时返回全 NULL ⇒ Scan 到非空的 Go 标量（int64 / float64 / time.Time）
+// 报 "cannot scan NULL into *int64" ⇒ GET
+// /api/admin/session-analytics/users/{owner} 恒 500（实测）。
+// 「该 owner 没有会话」是**正常状态**，不是错误 ⇒ 聚合值一律 COALESCE 到 0；
+// 时间戳用可空指针接收后落成零值（零值时间 = 从未出现，不是 1970 事实）。
+//
+// 提为包级常量是为了让真库判据能**逐字**跑它
+// （见 user_profile_null_aggregate_test.go），而不是让判据自己抄一份。
+const userProfileBaseStatsSQL = `
+		SELECT
+			COUNT(DISTINCT so.gw_session_id) AS session_count,
+			COALESCE(SUM(so.request_count), 0) AS total_requests,
+			COALESCE(SUM(so.total_cost_usd), 0) AS total_cost_usd,
+			COALESCE(CASE WHEN COUNT(DISTINCT so.gw_session_id) > 0
+				THEN SUM(so.total_cost_usd) / COUNT(DISTINCT so.gw_session_id)
+				ELSE 0 END, 0) AS avg_cost,
+			COALESCE(SUM(so.success_count), 0) AS total_success,
+			COALESCE(SUM(so.error_count), 0) AS total_errors,
+			MIN(so.first_seen_at) AS first_seen_at,
+			MAX(so.last_seen_at) AS last_seen_at,
+			COUNT(DISTINCT so.end_user_id) FILTER (WHERE so.end_user_id IS NOT NULL AND so.end_user_id <> '') AS end_user_count
+		FROM session_owners so
+		WHERE %s
+	`
+
 type UserProfileSummary struct {
 	OwnerUser         string    `json:"owner_user"`
 	SessionCount      int       `json:"session_count"`
@@ -33,7 +61,15 @@ type UserProfileSummary struct {
 // UserProfileDetailResponse 用户画像详情
 type UserProfileDetailResponse struct {
 	UserProfileSummary
-	DailyCostTrend []DailyCostPoint    `json:"daily_cost_trend"`
+	DailyCostTrend []DailyCostPoint `json:"daily_cost_trend"`
+	// Degraded 恒发（2026-10-20 部署后复验轮）：字段缺失与 false 在 API 语义上
+	// **无法区分**（前端读到 undefined 与 false 都会当「服务端确认过是好的」）
+	// ⇒ 不能用 omitempty，否则这个标记自己废掉一半。
+	//
+	// 什么时候会 true：schema 落后于代码（生产共享库缺 session_owners）⇒
+	// 降级成 200 + 空载荷，而不是整页 500。口径与同文件的列表端点一致。
+	Degraded       bool                `json:"degraded"`
+	DegradedReason string              `json:"degraded_reason,omitempty"`
 	TopTasks       []TaskRankItem      `json:"top_tasks"`
 	TopEndUsers    []EndUserRankItem   `json:"top_end_users"`
 	RecentSessions []RecentSessionItem `json:"recent_sessions"`
@@ -271,34 +307,64 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 		baseArgs = append(baseArgs, tenantID)
 	}
 
-	err := h.db.QueryRow(ctx, fmt.Sprintf(`
-		SELECT
-			COUNT(DISTINCT so.gw_session_id) AS session_count,
-			SUM(so.request_count) AS total_requests,
-			SUM(so.total_cost_usd) AS total_cost_usd,
-			CASE WHEN COUNT(DISTINCT so.gw_session_id) > 0
-				THEN SUM(so.total_cost_usd) / COUNT(DISTINCT so.gw_session_id)
-				ELSE 0 END AS avg_cost,
-			SUM(so.success_count) AS total_success,
-			SUM(so.error_count) AS total_errors,
-			MIN(so.first_seen_at) AS first_seen_at,
-			MAX(so.last_seen_at) AS last_seen_at,
-			COUNT(DISTINCT so.end_user_id) FILTER (WHERE so.end_user_id IS NOT NULL AND so.end_user_id <> '') AS end_user_count
-		FROM session_owners so
-		WHERE %s
-	`, baseWhere), baseArgs...).Scan(
+	// 2026-10-20 复核轮：这个聚合在**该 owner 一行都没有**时返回全 NULL 的
+	// SUM / MIN / MAX ⇒ Scan 到非空的 Go 标量（int64 / float64 / time.Time）
+	// 报 "cannot scan NULL into *int64" ⇒ 端点 500。
+	// 「该 owner 没有会话」是**正常状态**，不是错误：聚合值一律 COALESCE 到 0，
+	// 时间戳用可空指针接收后落成零值（零值时间 = 从未出现，不是 1970 事实）。
+	var firstSeenAt, lastSeenAt *time.Time
+	err := h.db.QueryRow(ctx, fmt.Sprintf(userProfileBaseStatsSQL, baseWhere), baseArgs...).Scan(
 		&resp.SessionCount, &resp.TotalRequests, &resp.TotalCost,
 		&resp.AvgCostPerSession,
 		&resp.TotalSuccess, &resp.TotalErrors,
-		&resp.FirstSeenAt, &resp.LastSeenAt, &resp.EndUserCount,
+		&firstSeenAt, &lastSeenAt, &resp.EndUserCount,
 	)
 	if err == pgx.ErrNoRows {
 		writeError(w, http.StatusNotFound, "owner not found")
 		return
 	}
 	if err != nil {
+		// 2026-10-20 部署后复验轮（245/154 生产）：详情端点恒 500，根因是
+		// **生产共享库缺 session_owners**（迁移 358 的版本号低于部署通道的
+		// 账本对账下限 412 ⇒ 存量库永远拿不到它）⇒ 基础聚合直接 42P01。
+		//
+		// 口径与同文件的**列表端点**一致（见上方 handleUserAnalyticsList）：
+		// schema 落后于代码 ⇒ 降级成 200 + 空载荷 + 自报家门的 degraded 标记，
+		// 而不是整页 500。理由是「没有会话」与「聚合表没迁移」在页面上都长成
+		// 一个空列表 ⇒ 不自报家门就是撒谎。
+		//
+		// ⚠ 降级载荷用**同一个结构体**构造 ⇒ 正常路径与降级路径的 JSON 形状
+		// 由编译器保证一致（不会出现「降级时少几个字段」的前端崩溃）。
+		if IsSchemaBehindError(err) {
+			reason := ReportSchemaBehind(slog.Default(), "userProfile.detail", err)
+			writeJSON(w, http.StatusOK, &UserProfileDetailResponse{
+				UserProfileSummary: UserProfileSummary{
+					OwnerUser:   ownerUser,
+					ModelsUsed:  []string{},
+					FirstSeenAt: time.Time{},
+					LastSeenAt:  time.Time{},
+				},
+				DailyCostTrend: []DailyCostPoint{},
+				TopTasks:       []TaskRankItem{},
+				TopEndUsers:    []EndUserRankItem{},
+				RecentSessions: []RecentSessionItem{},
+				HealthDist:     HealthDistribution{},
+				// ★ 与同文件的列表端点（:208 `"degraded": true`）**同口径**：
+				// 降级路径必须**自报家门** —— 只写 reason 不写标志 ⇒ 前端按
+				// `degraded:false` 当正常数据处理 ⇒ 比不报更坏（谎报降级状态）。
+				Degraded:       true,
+				DegradedReason: reason,
+			})
+			return
+		}
 		writeInternalErr(w, "stats query", err)
 		return
+	}
+	if firstSeenAt != nil {
+		resp.FirstSeenAt = *firstSeenAt
+	}
+	if lastSeenAt != nil {
+		resp.LastSeenAt = *lastSeenAt
 	}
 
 	// 额外：models_used（通过 session_dim 关联 session_summaries）

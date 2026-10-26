@@ -7,7 +7,7 @@
 //
 // 数据来源:
 //   - 优先: Redis (request:trace:{request_id}, 进行中或刚完成的请求)
-//   - 兜底: PostgreSQL (_request_logs.trace_events, 已 flush 的历史)
+//   - 兜底: PostgreSQL (session trace_events 优先，legacy 仅历史回退)
 //
 // 设计参考 docs/design/request-trace-system.md, 复用 route_incidents.go
 // 的"store + handler"分层与注册风格(参见 admin/route_incidents.go)。
@@ -182,21 +182,17 @@ func (h *RequestTraceHandler) loadTrace(ctx context.Context, requestID string) (
 func (h *RequestTraceHandler) requestTraceState(ctx context.Context, requestID string) (traceLoadState, error) {
 	var status string
 	var traceEvents []byte
-	// 2026-07-20: 与 LoadFromPG 同步 — 同时查 hot + 分区表。
-	// 最近 7 天的请求只写在 _request_logs_hot(参 migration 341 hot_table_independence)。
-	// 2026-10-13 S3 波 2（登记，不改）：trace_events 不在 canonical 118 列契约
-	// （镜像从不写它，视图刻意未投影），此查询只能留在 v1 双腿上——服务
-	// 停写前历史；新请求的 PG trace 兜底缺席，链路事件以 Redis（进行中/刚
-	// 完成）为唯一来源，trace 家族迁移属独立工作项。
+	// 与 LoadFromPG 一致：session 父行（即使无事件）优先。
+	//
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的 legacy 兜底腿
+	// （v1 hot ∪ v1 母表）删除。会话族是唯一事实源，legacy 轮次随 v1 表
+	// 一起消失，找不到就是找不到（traceStateMissing），不再去别处找。
 	err := h.db.QueryRow(ctx, `
-		SELECT COALESCE(request_status, ''), trace_events
-		FROM (
-			SELECT request_status, trace_events, ts FROM _request_logs_hot WHERE request_id = $1
+		SELECT COALESCE(request_status, ''), trace_events FROM (
+			SELECT request_status, trace_events, ts, 0 AS priority FROM session_turns_hot WHERE request_id = $1
 			UNION ALL
-			SELECT request_status, trace_events, ts FROM _request_logs WHERE request_id = $1
-		) t
-		ORDER BY ts DESC NULLS LAST
-		LIMIT 1
+			SELECT request_status, trace_events, ts, 1 AS priority FROM session_turns WHERE request_id = $1
+		) t ORDER BY priority, ts DESC NULLS LAST LIMIT 1
 	`, requestID).Scan(&status, &traceEvents)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return traceStateMissing, nil
@@ -249,7 +245,17 @@ func (h *RequestTraceHandler) handleAIPrompt(w http.ResponseWriter, r *http.Requ
 	}
 
 	trace, _, err := h.loadTrace(ctx, requestID)
-	if err != nil || trace == nil {
+	if err != nil {
+		if errors.Is(err, errTraceNotReady) {
+			writeAdminError(w, http.StatusAccepted, "not_ready", "trace is still being persisted; retry shortly")
+		} else if errors.Is(err, errTraceUnavailable) {
+			writeAdminError(w, http.StatusConflict, "trace_unavailable", "request exists but trace data is unavailable")
+		} else {
+			writeAdminError(w, http.StatusInternalServerError, "load_failed", "unable to load request trace")
+		}
+		return
+	}
+	if trace == nil {
 		writeAdminError(w, http.StatusNotFound, "not_found",
 			"trace not found, cannot generate prompt")
 		return

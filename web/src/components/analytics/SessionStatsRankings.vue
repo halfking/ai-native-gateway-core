@@ -70,7 +70,7 @@ function openTask(id: string) {
   <div class="rankings-row">
     <div class="detail-card">
       <div class="detail-card__header">{{ t('sessions.stats.topClients') }}</div>
-      <p v-if="!topClients.length" class="empty-hint">{{ t('dashboard.noData') }}</p>
+      <p v-if="!topClients.length" class="empty-hint">{{ t('sessions.stats.emptyNoResultTopClients') }}</p>
       <div v-else class="table-wrap">
         <table class="data-table">
           <thead>
@@ -94,7 +94,7 @@ function openTask(id: string) {
     </div>
     <div class="detail-card">
       <div class="detail-card__header">{{ t('sessions.stats.topTasks') }}</div>
-      <p v-if="!topTasks.length" class="empty-hint">{{ t('dashboard.noData') }}</p>
+      <p v-if="!topTasks.length" class="empty-hint">{{ t('sessions.stats.emptyNoResultTopTasks') }}</p>
       <div v-else class="table-wrap">
         <table class="data-table">
           <thead>

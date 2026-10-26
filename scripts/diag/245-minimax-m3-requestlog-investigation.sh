@@ -93,7 +93,7 @@ if [[ -d "$LOG_DIR" ]]; then
     | grep -E 'client_disconnect|stream_interrupted|EOF|reset by peer|status=5|status 5' \
     | tail -50 > "$OUT_DIR/log-minimax-error-context.txt"
   cnt=$(wc -l < "$OUT_DIR/log-minimax-error-context.txt" | tr -d ' ')
-  echo "  命中行数: $cnt（详情见 $OUT_DIR/log-minimax-error-context.txt）"
+  echo "  命中行数: ${cnt}（详情见 $OUT_DIR/log-minimax-error-context.txt）"
 else
   warn "日志目录不存在"
 fi

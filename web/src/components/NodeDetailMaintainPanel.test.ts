@@ -3,7 +3,7 @@ import { createI18n } from 'vue-i18n'
 import { describe, expect, it } from 'vitest'
 import NodeDetailMaintainPanel from './NodeDetailMaintainPanel.vue'
 import zhCNProviders from '../locales/zh-CN/providers'
-import type { RoutingCandidate } from '../api/routing'
+import type { RoutingCandidate, StreamMode } from '../api/routing'
 import type { CredentialLifecycleStatus } from '../api/providers'
 
 // Priority flag vs sort order contract: the settings form must expose BOTH
@@ -44,6 +44,7 @@ function mountPanel(props: Partial<InstanceType<typeof NodeDetailMaintainPanel>[
       priorityFlag: true,
       routingTier: 2,
       weight: 100,
+      streamMode: 'both' as StreamMode,
       modelActionReason: '',
       selectedModelStatus: null,
       ...props,
@@ -78,6 +79,24 @@ describe('NodeDetailMaintainPanel priority flag', () => {
   })
 })
 
+describe('NodeDetailMaintainPanel stream mode', () => {
+  it('renders the three transport options and emits update on change', async () => {
+    const wrapper = mountPanel()
+    const select = wrapper.find('.nd-stream-mode select')
+    expect(select.exists()).toBe(true)
+    const options = select.findAll('option')
+    expect(options.map(o => o.attributes('value'))).toEqual(['both', 'stream_only', 'non_stream_only'])
+
+    await select.setValue('non_stream_only')
+    expect(wrapper.emitted('update:streamMode')).toEqual([['non_stream_only']])
+  })
+
+  it('keeps the select disabled for read-only viewers', () => {
+    const wrapper = mountPanel({ canEdit: false })
+    expect((wrapper.find('.nd-stream-mode select').element as HTMLSelectElement).disabled).toBe(true)
+  })
+})
+
 describe('NodeDetailMaintainPanel lifecycle state chips', () => {
   it('renders every lifecycle state as a clickable chip with the current one marked', () => {
     const wrapper = mountPanel({ lifecycle: 'active' })
@@ -88,8 +107,9 @@ describe('NodeDetailMaintainPanel lifecycle state chips', () => {
       expect.stringContaining('暂停'),
       expect.stringContaining('退役'),
     ])
-    // No native select anymore — the lifecycle must be a direct-manipulation chip group.
-    expect(wrapper.find('select').exists()).toBe(false)
+    // No native select in the lifecycle group anymore — it must stay a
+    // direct-manipulation chip group (the stream-mode select lives elsewhere).
+    expect(wrapper.find('.nd-lifecycle-row select').exists()).toBe(false)
     const current = chips.find(c => c.classes().includes('is-current'))
     expect(current).toBeDefined()
     expect(current!.text()).toContain('在用')

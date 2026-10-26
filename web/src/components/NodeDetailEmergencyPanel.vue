@@ -146,10 +146,10 @@ async function request(action: EmergencyRepairAction, label: string) {
 .nd-em-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .nd-em-card { border: 1px solid var(--kx-border); border-radius: 8px; padding: 10px; background: var(--kx-surface-soft, transparent); }
 .nd-em-card.disabled { opacity: 0.5; }
-.nd-em-card.danger { border-left: 3px solid var(--kx-danger); }
-.nd-em-card.success { border-left: 3px solid var(--kx-success); }
-.nd-em-card.warning { border-left: 3px solid var(--kx-warning); }
-.nd-em-card.info { border-left: 3px solid var(--accent); }
+.nd-em-card.danger { border: 1px solid var(--kx-danger); }
+.nd-em-card.success { border: 1px solid var(--kx-success); }
+.nd-em-card.warning { border: 1px solid var(--kx-warning); }
+.nd-em-card.info { border: 1px solid var(--accent); }
 .nd-em-card strong { display: block; font-size: 13px; margin-bottom: 4px; }
 .nd-em-card p { margin: 0 0 8px; font-size: 11px; color: var(--kx-muted); }
 @media (max-width: 768px) { .nd-em-grid { grid-template-columns: 1fr; } }

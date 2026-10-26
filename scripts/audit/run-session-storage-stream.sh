@@ -2,7 +2,7 @@
 # Disposable loopback services; no production schema, credentials or providers.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-require_coherence=0
+require_coherence=1
 # Keep the array nonempty for macOS Bash 3 with set -u.
 test_args=(-p=2)
 for arg in "$@"; do
@@ -42,7 +42,20 @@ export SESSION_AUDIT_REQUIRE_COHERENCE="$require_coherence"
 unset TEST_PG_URL TEST_DB_URL TEST_DATABASE_URL TEST_SESSION_V2_DATABASE_URL SESSION_AUDIT_WORKER SESSION_AUDIT_SESSION
 export TEST_PG_URL="postgres://postgres@$pg_addr/postgres?sslmode=disable"
 echo "Session storage audit: disposable Redis/PG, coherence gate=$require_coherence"
-echo 'OBSERVATION tests measure remaining gaps; PASS does not certify coherence.'
+echo 'Required contracts: warm/cold generation, cross-instance updates, and exact state/body pairing.'
 go test "${test_args[@]}" -tags=integration -timeout=120s \
   ./security/sanitize ./domains/hooks/compression ./domains/session/v2 ./domains/streaming \
   -run '^TestStorageAudit' -count=1 -v
+
+# Ingest/settings fixtures recreate public, so give each a separate database
+# inside this disposable container. Never inherit a developer's external DSN.
+docker exec "$pg_id" createdb -U postgres session_ingest_test
+docker exec "$pg_id" createdb -U postgres session_settings_test
+export TEST_SESSION_INGEST_DATABASE_URL="postgres://postgres@$pg_addr/session_ingest_test?sslmode=disable"
+export TEST_SESSION_INGEST_PG_CONTAINER="$pg_id"
+export TEST_SESSION_SETTINGS_DATABASE_URL="postgres://postgres@$pg_addr/session_settings_test?sslmode=disable"
+export TEST_SESSION_INGEST_ISOLATED=1
+go test "${test_args[@]}" -tags=integration -timeout=180s \
+  ./internal/sessionv2mirror -run '^TestSessionIngest' -count=1 -v
+go test "${test_args[@]}" -tags=integration -timeout=120s \
+  ./settings -run '^TestSessionWriteSettings' -count=1 -v

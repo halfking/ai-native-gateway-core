@@ -44,8 +44,8 @@ func (c *SettingsAuditCleaner) Start(ctx context.Context) {
 func (c *SettingsAuditCleaner) Stop() {
 	if c.cancel != nil {
 		c.cancel()
+		<-c.done
 	}
-	<-c.done
 }
 
 func (c *SettingsAuditCleaner) run(ctx context.Context) {

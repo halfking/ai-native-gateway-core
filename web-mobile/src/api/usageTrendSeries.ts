@@ -132,15 +132,15 @@ export const TREND_TOP_MAX = 20
 export const TREND_MAX_MODELS = 20
 
 /**
- * ★ admin/usage_trend_series.go:524 / :554 / :592 三处 SQL 都写死 `LIMIT 100`。
+ * ★ admin/usage_trend_series.go:527 / :557 / :595 三处 SQL 都写死 `LIMIT 100`。
  * ★ **响应里没有任何字段回显这个上限** ⇒ 达到上限时只能提示「可能还有更多」。
  */
 export const TREND_MODELS_SQL_LIMIT = 100
 
-/** admin/usage_trend_series.go:42 `usageTrendOthersKey = "__others__"`。 */
+/** admin/usage_trend_series.go:45 `usageTrendOthersKey = "__others__"`。 */
 export const TREND_OTHERS_KEY = '__others__'
 
-/** admin/usage_trend_series.go:22-24 `usageTrendModelExpr` 的兜底常量。 */
+/** admin/usage_trend_series.go:52 `usageTrendModelExpr` 的兜底常量。 */
 export const TREND_UNKNOWN_MODEL = '__unknown__'
 
 /** admin/usage_enhanced.go:466 同一套 `YYYY-MM` 无关；本族用 `usage.go:1452` 的 `YYYY-MM-DD`。 */
@@ -262,7 +262,7 @@ export function trendSourceValid(v: string): v is TrendSource {
 }
 
 /**
- * admin/usage_trend_series.go:407 / :588 —— 对外 `source` 名对应的**真实读面**。
+ * admin/usage_trend_series.go:410 / :591 —— 对外 `source` 名对应的**真实读面**。
  *
  * ★ 对外少 `_without_customer_id` 后缀（见文件头第 (7) 条）
  *   ⇒ 想拿真实表名必须走这个映射，**不能**直接拿 `source` 当表名用。

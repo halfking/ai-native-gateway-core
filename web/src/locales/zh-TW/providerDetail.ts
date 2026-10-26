@@ -40,7 +40,7 @@ export default {
     credUnreachable: "無法連線",
     modelErrors: "模型 & 錯誤",
     modelAvailable: "可用模型",
-    modelUnavailable: "不可用",
+    modelUnavailable: "無法使用",
     errorRate24h: "24h 錯誤率"
   },
   creds: {
@@ -62,7 +62,7 @@ export default {
     fingerprintTitle: "與上游平台核對用，非完整金鑰",
     fingerprintUnparsed: "無法解析",
     viewErrorDetail: "TODO",
-    rowMeta: "#{id} · {trust}",
+    rowMeta: "#{id}：{trust}",
     cellUnset: "未設定",
     noLimit: "不限",
     slotUsage: "槽 {used}/{limit}",
@@ -104,7 +104,7 @@ export default {
     drawerSectionBalanceFloor: '額度下限守衛',
     drawerFloorUsd: '貨幣餘額下限（USD）',
     drawerFloorTokens: '套餐剩餘 token 下限',
-    drawerFloorPercent: '套餐已用百分比阈值（超限即摘出，%）',
+    drawerFloorPercent: '套餐已用百分比門檻（超限即摘出，%）',
     floorPlaceholderZeroClears: '0 = 清除下限',
     floorHint: '低於下限的憑據會被自動摘出路由池（不寫手工停用）；儲值或窗口重置、額度回到滯回帶後自動回池。留空 = 不修改，0 = 清除。',
     planQuotaProbeTitle: '套餐探測',
@@ -153,8 +153,8 @@ export default {
     apiKeyRotateModelLabel: "綁定模型（用於自動探活驗證新 key）",
     apiKeyRotateNewKeyLabel: "新 API Key",
     apiKeyRotateConfirmLabel: "再次輸入新 API Key",
-    apiKeyRotateSubmit: "提交修改",
-    apiKeyRotating: "提交中…",
+    apiKeyRotateSubmit: "送出修改",
+    apiKeyRotating: "送出中…",
     apiKeyRotateMismatch: "兩次輸入的新密鑰不一致，請重新輸入",
     apiKeyRotateMissing: "請輸入新 API Key",
     apiKeyRotateSuccess: "API Key 已修改",
@@ -220,7 +220,7 @@ export default {
       untested: "未探測",
       modelsOk: "模型介面正常",
       probeOk: "探活通過",
-      unavailable: "不可用"
+      unavailable: "無法使用"
     },
     statuses: {
       active: "可用",
@@ -294,7 +294,7 @@ export default {
     probeAllTitle: "對清單中所有模型發起探測，驗證可用性",
     probingModels: "正在探測模型…",
     probeResultOk: "✅ 成功 {n}",
-    probeResultUnavailable: "❌ 模型不可用 {n}",
+    probeResultUnavailable: "❌ 模型無法使用 {n}",
     probeResultProviderErr: "⚠️ 供應商問題 {n}",
     probeResultSkipped: "⏭️ 跳過 {n}",
     probeResultsDetails: "查看詳細結果 ({n})",
@@ -333,7 +333,6 @@ export default {
     drawerOutboundSend: "將傳送：",
     drawerOutboundUnset: "未設定 — 將使用",
     drawerSectionContextWindow: "上下文視窗（token）",
-    drawerContextWindowHint: "本憑證 × 模型的覆寫。解析優先順序：本覆寫 > 模型目錄級覆寫 > 模型目錄。留空、填 0 或點擊「清除」即可移除覆寫，使用目錄值。僅當你真正變更此欄位時儲存才會生效；只儲存其他欄位（如標準化名）不會誤刪現有覆寫。",
     drawerContextWindowPlaceholder: "例如 200000",
     drawerContextWindowClearBtn: "清除",
     drawerContextWindowClearTitle: "移除憑證級覆寫，回退到模型目錄值",
@@ -367,7 +366,7 @@ export default {
     phase2InOfferOnly: "✓ 模型在清單中",
     checkFailedPrefix: "檢查請求失敗: {msg}",
     offerNotInList: "該憑證的模型清單中未找到此模型",
-    drawTitle: "offer #{id} · 憑據 #{credId} {credLabel}",
+    drawTitle: "offer #{id}：憑據 #{credId} {credLabel}",
     drawToggleDisable: "停用此綁定",
     drawToggleEnable: "啟用此綁定",
     drawToggleLoading: "處理中…",
@@ -387,7 +386,7 @@ export default {
     saveFailed: "儲存失敗",
     probeCategory: {
       ok: "成功",
-      unavailable: "模型不可用",
+      unavailable: "模型無法使用",
       providerError: "供應商問題",
       skipped: "已跳過"
     },
@@ -405,24 +404,25 @@ export default {
     refreshSummaryFailed: "失敗 {n}",
     refreshSummaryEmpty: "無變化",
     creds: {
-      labelFallback: "凭据 #{id}"
+      labelFallback: "憑證 #{id}"
     },
     overview: {
       chipAvailable: "可用",
-      chipUnavailable: "不可用"
+      chipUnavailable: "無法使用"
     }
 ,
-    probeAllRecoveredHint: '✓ {n} 个模型探测成功；node_probe_state 已自动恢复，路由候选已重新可用',
+    probeAllRecoveredHint: '✓ {n} 個模型探測成功；node_probe_state 已自動復原，路由候選已重新可用',
 
-    resetNodeProbeBtn: '清失败探测状态',
+    resetNodeProbeBtn: '清失敗探測狀態',
 
     resetNodeProbeLoading: '清除中…',
 
-    resetNodeProbeTitle: '清除 node_probe_state 中 last_direct_ok=FALSE 的行（force-recover routing）。当全面探测显示 ok 但路由候选仍显示 blocked 时使用。',
+    resetNodeProbeTitle: '清除 node_probe_state 中 last_direct_ok=FALSE 的列（force-recover routing）。當全面探測顯示 ok 但路由候選仍顯示 blocked 時使用。',
 
-    resetNodeProbeConfirm: '确认清空该供应商所有失败的 node_probe_state 行？',
+    resetNodeProbeConfirm: '確認清空該供應商所有失敗的 node_probe_state 列？',
 
-    resetNodeProbeDone: '✓ 已清除 {n} 行失败的 node_probe_state，路由候选立即恢复',
+    resetNodeProbeDone: '✓ 已清除 {n} 列失敗的 node_probe_state，路由候選立即復原',
+    repairFailed: '修復沒能完成，請重試',
   },
   settings: {
     overrideTitle: "🎛️ 透通模式設定",
@@ -559,14 +559,14 @@ export default {
     credColModels: "Models 探測",
     credColChat: "Chat 探測",
     probeFailed: "失敗",
-    probeMetaModels: "{status} · {count} 模型 · {latency}ms",
+    probeMetaModels: "{status}，{count} 模型，{latency}ms",
     // 2026-09-04: non-JSON probe hint (parity backfill).
-    probeNonJson: "{status} · 非JSON回應",
-    probeMetaChat: "{status} · {latency}ms"
+    probeNonJson: "{status}：非JSON回應",
+    probeMetaChat: "{status}：{latency}ms"
   },
   probe: {
     consensusTitle: "共識機制",
-    consensusDesc: "連續 {n} 次成功 → 標記為已恢復 · 連續 {n} 次失敗 → 確認失敗（停止探測）",
+    consensusDesc: "連續 {n} 次成功 → 標記為已恢復：連續 {n} 次失敗 → 確認失敗（停止探測）",
     consensusFallback: "回退間隔：1m → 5m → 15m → 60m（逐級）",
     refresh: "重新整理",
     refreshLoading: "…",
@@ -611,7 +611,7 @@ export default {
       healthyConfirmed: "已恢復",
       brokenConfirmed: "確認失敗"
     },
-    historyMeta: "最近 100 條 · scheduler 自動 / manual 手動",
+    historyMeta: "最近 100 條：scheduler 自動 / manual 手動",
     endpointIdBadge: "需設定 endpoint ID",
     endpointIdDetail: "此模型（如火山方舟 minimax-m3 / glm-5.1）必須用 deployment endpoint ID（如 <code>ep-XXXXXXXX</code>）呼叫，而非原始模型名。請前往",
     endpointIdLink: "模型清單 → 編輯 outbound_model_name",
@@ -622,8 +622,7 @@ export default {
     loadFailed: "載入失敗",
     triggerFailed: "觸發失敗"
   },
-  tableCol: {},
-  models_creds_labelFallback: "凭据 #{id}",
-  models_overview_chipAvailable: "可用",
-  models_overview_chipUnavailable: "不可用"
+  quality: {
+    loadFailed: '品質畫像沒能載入出來，請重試',
+  },
 }

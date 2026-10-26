@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,13 +27,15 @@ import (
 
 var errNoTelemetryDB = errors.New("telemetry database not configured")
 
-// requestLogsWriteEnabled 报告 _request_logs 宽表家族（_request_logs_hot 主行 +
-// _request_logs_bodies_hot 正文）当前是否允许写入 —— S4 停写 gate（存储优化
-// 方案 v2，settings 键 storage.request_logs_write_enabled，默认 true = 维持
-// 现状双写；HotReload 即时生效）。关停后本包与 admin ingest 只停宽表行，
-// usage_ledger 计费、api_keys 计数、outbox 会话事件照常；session 六表族
-// （sessionv2mirror）成为唯一事实源，日志读端走 session 家族投影。与 Lite
-// sink（cmd/gateway/lite_telemetry_sink.go）同一键、同一默认。
+// requestLogsWriteEnabled 报告宽表家族的写入开关 —— S4 停写 gate（存储优化
+// 方案 v2，settings 键 storage.request_logs_write_enabled，★ **代码默认 =
+// false** ⇒ 未显式配置即**不双写**；HotReload 即时生效）。
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 宽表的 PG 写入分支已整段删除，本包
+// 剩下的唯一消费点是**文件系统**正文镜像（persistRequestLog →
+// mirrorRequestBodies）——它不碰 PG。usage_ledger 计费、api_keys 计数、
+// outbox 会话事件照常；session 六表族（sessionv2mirror）是唯一事实源。
+// 与 Lite sink（cmd/gateway/lite_telemetry_sink.go）同一键、同一默认。
 func requestLogsWriteEnabled() bool {
 	return settings.RequestLogsWriteEnabled()
 }
@@ -68,8 +69,8 @@ func pgErrorDiagnostics(err error) string {
 	return strings.Join(fields, "; ")
 }
 
-// heapPartitionNameRE 白名单: request_logs_<YYYY>_<MM>, 仅允许数字+下划线.
-var heapPartitionNameRE = regexp.MustCompile(`^request_logs_[0-9]{4}_[0-9]{2}$`)
+// ★ 2026-10-20（迁移 890，v1 族退役）：heapPartitionNameRE（宽表月度分区名
+// 白名单）随 claimSessionFinalSuccessExec 整条删除——它只用于拼 v1 分区名。
 
 // quoteIdent 是 pgx.Identifier 等价的轻量版, 用于动态拼分区名 (避免注入).
 func quoteIdent(name string) string {
@@ -124,7 +125,7 @@ type requestLogSinkHolder struct {
 //   - direction 取 "req"（上行请求 body）/ "resp"（下行响应 body）/
 //     "out"（流式终态 outbound body），与 storage/file 的
 //     DirRequest/DirResponse/DirOutput 字面值一一对应；
-//   - payload 与 _request_logs_bodies_hot 落库同源换算（strPtrToJSON /
+//   - payload 与会话族正文落库同源换算（strPtrToJSON /
 //     jsonOrNull），空载荷（"null"/"{}"）已在调用侧跳过；
 //   - at 是镜像文件日期分区取样时刻（对位 PG 侧 ts=now() 的语义）。
 //
@@ -154,7 +155,7 @@ type Client struct {
 	stopped     atomic.Bool
 
 	// onPersisted hooks run after every successful INSERT/UPDATE of a
-	// _request_logs row. Consumers use AddOnRequestLogPersisted to register.
+	// request-log row. Consumers use AddOnRequestLogPersisted to register.
 	onPersisted []func(entry *RequestLogEntry)
 
 	// onEmitted is invoked immediately when EmitRequestLog is called,
@@ -174,7 +175,7 @@ type Client struct {
 	degraded          atomic.Bool
 
 	// outboxWriter (optional): writes request.completed events to outbox_events
-	// in the same transaction as _request_logs INSERT for Gateway → ASM delivery.
+	// in the same transaction as the request-log write for Gateway → ASM delivery.
 	// Phase 3 WP4: Business write point integration.
 	outboxWriter OutboxWriter
 
@@ -186,17 +187,9 @@ type Client struct {
 	failRetried   uint64
 	failFallback  uint64
 
-	// 2026-08-25: heap _request_logs 月度分区名缓存 (columnar-safe claim).
-	// request_logs_* 部分月份是 columnar (citus_columnar), 其上 NOT EXISTS 关联
-	// 会触发 SQLSTATE 0A000 ("UPDATE and CTID scans not supported for
-	// ColumnarScan") —— 即使我们只 UPDATE heap 的 _request_logs_hot, planner
-	// 对半连接 NOT EXISTS 仍可能生成 ctid-over-columnar 计划, 整事务回滚.
-	// 这里缓存 pg_class.relam='h' 的 request_logs_* 月度分区名, 每 5 分钟
-	// 刷新, claim 时动态拼装 NOT EXISTS 的 FROM 列表, 只查 heap 分区.
-	// 没有 heap 月份分区时退化为跳过 (依赖 hot 表 8h 保留窗口 + 唯一索引兜底).
-	heapPartitionsMu       sync.RWMutex
-	heapPartitions         []string
-	heapPartitionsCachedAt time.Time
+	// ★ 2026-10-20（迁移 890，v1 族退役）：原 v1 月度分区名缓存
+	// （heapPartitionsMu / heapPartitions / heapPartitionsCachedAt）随
+	// claimSessionFinalSuccess 整条删除——它只服务于 v1 的认领半连接。
 }
 
 type DecisionLogEntry struct {
@@ -242,7 +235,7 @@ const (
 	RequestLogUpdate RequestLogOp = "update"
 )
 
-// Request log lifecycle status stored in _request_logs.request_status.
+// Request log lifecycle status stored in the request-log row's request_status.
 const (
 	RequestStatusInProgress  = "in_progress"
 	RequestStatusSuccess     = "success"
@@ -251,14 +244,18 @@ const (
 )
 
 type RequestLogEntry struct {
-	Op            RequestLogOp `json:"op,omitempty"`
-	RequestID     string       `json:"request_id"`
-	EventAt       *time.Time   `json:"event_at,omitempty"`
-	TenantID      string       `json:"tenant_id"`
-	ApplicationID *int         `json:"application_id,omitempty"`
-	APIKeyID      *int         `json:"api_key_id,omitempty"`
-	EndUserID     *string      `json:"end_user_id,omitempty"`
-	CustomerID    *int64       `json:"customer_id,omitempty"`
+	// SessionV2WriteRequired records this request's already-selected fact source.
+	// Once a transaction skips V1, later configuration changes must not cancel
+	// its V2 persistence. JSON preserves the decision through fallback/outbox.
+	SessionV2WriteRequired bool         `json:"session_v2_write_required,omitempty"`
+	Op                     RequestLogOp `json:"op,omitempty"`
+	RequestID              string       `json:"request_id"`
+	EventAt                *time.Time   `json:"event_at,omitempty"`
+	TenantID               string       `json:"tenant_id"`
+	ApplicationID          *int         `json:"application_id,omitempty"`
+	APIKeyID               *int         `json:"api_key_id,omitempty"`
+	EndUserID              *string      `json:"end_user_id,omitempty"`
+	CustomerID             *int64       `json:"customer_id,omitempty"`
 	// RequestClass 是请求类型（V6-W1.6 R8，migration 610）：immediate|scheduled。
 	// nil 落库为 'immediate'（列 NOT NULL DEFAULT，INSERT 侧 COALESCE）；
 	// 由 handler 从 ExecParams.DispatchDueAt（X-Gw-Due-At 头）推导并盖章。
@@ -267,9 +264,10 @@ type RequestLogEntry struct {
 	DueAt *time.Time `json:"due_at,omitempty"`
 	// SystemFingerprint 是上游 X-System-Fingerprint 响应头（2026-09-12 挂账
 	// 闭环）：此前仅被 integrity detector 写入 context JSONB，603 建的专用列
-	// 全表零行、7 天漂移检测器空转。现由 handler emitTelemetry 盖章，经
-	// persistSystemFingerprint 落 _request_logs_hot 专用列，697 起随 promote
-	// 进月度分区。nil = 上游未返回该头。
+	// 全表零行、7 天漂移检测器空转。现由 handler emitTelemetry 盖章。
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 宽表的专用列写入点已删除，值由
+	// 会话族的镜像写入路径承接（s1a_fields.go）。
+	// nil = 上游未返回该头。
 	SystemFingerprint *string `json:"system_fingerprint,omitempty"`
 	ClientModel       *string `json:"client_model,omitempty"`
 	OutboundModel     *string `json:"outbound_model,omitempty"`
@@ -336,12 +334,12 @@ type RequestLogEntry struct {
 	GwTaskID           *string `json:"gw_task_id,omitempty"`
 	// AgentRole/ParentSessionID（R50 F15，2026-09-21）：会话角色归因三列的
 	// 前两列（第三列 parent_task_id 复用 GwTaskID）。与下方 Mirror-only
-	// 维度同款契约：_request_logs 持久化 SQL 不落这些字段，仅作进程内 +
+	// 维度同款契约：宽表持久化 SQL 不落这些字段，仅作进程内 +
 	// session_mirror_outbox JSON 载荷传输，供 sessionv2mirror 桥进
 	// public.sessions 的 agent_role / parent_session_id 列（730）。
 	AgentRole       *string `json:"agent_role,omitempty"`
 	ParentSessionID *string `json:"parent_session_id,omitempty"`
-	// Mirror-only transport dimensions. The _request_logs persistence SQL ignores
+	// Mirror-only transport dimensions. The wide-table persistence SQL ignores
 	// these fields; onPersisted consumers use them to build the V2 request DTO.
 	ProjectID       *string `json:"project_id,omitempty"`
 	Namespace       *string `json:"namespace,omitempty"`
@@ -357,7 +355,7 @@ type RequestLogEntry struct {
 	WorkType       *string  `json:"work_type,omitempty"`
 
 	// 2026-09-29 X-Gw-Test-Mode (see streaming/auto_route.go) is held in the
-	// RequestLogContext for now — persistence into _request_logs is tracked
+	// RequestLogContext for now — persistence into the request-log row is tracked
 	// separately as a follow-up migration so this commit stays a runtime-only
 	// change. Test traffic is observable today via:
 	//   1. the X-Gw-Mock-Marker response header on every mock-mode reply,
@@ -377,8 +375,8 @@ type RequestLogEntry struct {
 
 	// Wave 3 B1 (2026-09-22): peak/off-peak rate multiplier resolved at the
 	// request start time and applied to the charge. Stamped into
-	// usage_ledger(_hot).rate_multiplier and
-	// _request_logs(_hot).credits_rate_multiplier (migration 736) so billing
+	// usage_ledger(_hot).rate_multiplier and the request-log row's
+	// credits_rate_multiplier (migration 736) so billing
 	// replay can reconcile the exact factor used. nil/1.0 = no multiplier.
 	RateMultiplier *float64 `json:"rate_multiplier,omitempty"`
 
@@ -414,7 +412,7 @@ type RequestLogEntry struct {
 	// 2026-08-05: X-Gw-Submit-Mode client header (delta | snapshot | full |
 	// attachment_only). Carried through so the sessionv2mirror hook can feed
 	// the V2 SubmitModeDetector's P0 (explicit-header) path instead of relying
-	// solely on LCS inference. NOT a _request_logs column — mirror-only transport
+	// solely on LCS inference. NOT a request-log column — mirror-only transport
 	// field; the telemetry persist path ignores it.
 	SubmitModeHeader *string `json:"submit_mode_header,omitempty"`
 
@@ -430,7 +428,7 @@ type RequestLogEntry struct {
 
 	// 2026-06-19 T-NEW-7: the upstream finish_reason (stop, tool_calls,
 	// length, end_turn, function_call, max_tokens, …). Stored in
-	// _request_logs.upstream_finish_reason — the SOLE home for the
+	// the request-log row's upstream_finish_reason — the SOLE home for the
 	// finish_reason.  Distinct from FailureDetailCode which is now
 	// reserved for actual failure / interruption codes.  Populated for
 	// BOTH success and failure rows.
@@ -443,7 +441,7 @@ type RequestLogEntry struct {
 	ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
 
 	// 2026-06-26: client-supplied X-Request-Id. Persisted in
-	// _request_logs.client_request_id for debug / cross-system tracing.
+	// the request-log row's client_request_id for debug / cross-system tracing.
 	// Distinct from RequestID (which is now ALWAYS a server-generated
 	// UUID, see migration 054 and the requestid_mw / handler fixes) so
 	// that client retries reusing the same id do not collapse into a
@@ -457,8 +455,23 @@ type RequestLogEntry struct {
 	ClientEndpoint     *string `json:"client_endpoint,omitempty"`
 	StreamChunkErrors  *int    `json:"stream_chunk_errors,omitempty"`
 
+	// 2026-10-16: the HTTP status the CLIENT actually received, set by the
+	// gateway on the exits where it authors the error response itself
+	// (RequestLogContext.SetClientStatus). Distinct from
+	// UpstreamStatusCode, which is what the provider returned — for a
+	// gateway-authored rejection (401 / 402 / 403 / 5xx) there is no upstream
+	// status at all, so session_turns.status_code used to fall through to a
+	// hard-coded 500 and every auth rejection was persisted as if the upstream
+	// had 500'd (260/260 invalid_key rows on the local PG).
+	//
+	// NOT a request-log column: like SubmitModeHeader this is a
+	// mirror-only transport field consumed by the session v2 mirror and the
+	// lite sink. nil means "no client status was recorded for this exit" and
+	// consumers must fall back to their own derivation — it never means 500.
+	ClientStatusCode *int `json:"client_status_code,omitempty"`
+
 	// 2026-07-01: 附件元数据（migration 325）
-	// 从请求体中提取的 base64/data-URI 附件元数据，存储到 _request_logs.attachments JSONB。
+	// 从请求体中提取的 base64/data-URI 附件元数据，存储到请求行的 attachments JSONB。
 	// 附件实体文件已保存到文件系统（按 SHA256 hash 去重），此处仅记录路径、大小、类型等元信息。
 	Attachments json.RawMessage `json:"attachments,omitempty"`
 
@@ -515,25 +528,29 @@ type RequestLogEntry struct {
 	// The durable form of the fact is the is_abandoned column (migration 821).
 	T0Missing bool `json:"-"`
 
-	// FinalSuccessClaimed is set by claimSessionFinalSuccessExec when the
-	// final-success claim was actually **granted** (the v1 UPDATE matched a
-	// row), so the session family can carry the same mark (audit §9.203).
+	// FinalSuccessClaimed marks that this request **qualified** for the
+	// session's single final success, so the session family can carry the same
+	// mark (audit §9.203).
 	//
-	// Why this must ride on the entry: the v1 claim is a SQL UPDATE inside the
-	// telemetry transaction, while the session turn is written by the mirror
-	// hook afterwards and asynchronously (hook.go dispatches to a bounded
-	// goroutine pool; shadowWriteDispatchAsync defaults to true). A marker
-	// issued from the telemetry side therefore races the turn insert and
+	// ★ 2026-10-20（迁移 890，v1 族退役）：它不再由 v1 认领（事务内的 UPDATE
+	// ... SET is_final_success=TRUE）授予——那条路径随 v1 族一起落库。现在由
+	// 本包的资格判定（shouldClaimFinalSuccess）直接置位，真正的**仲裁**交给
+	// 会话族：session_turns 的 partial 唯一索引
+	// （uq_session_turns_hot_final_success）保证一个会话只有一个最终成功，
+	// internal/sessionv2mirror 的 markTurnFinalSuccess 在 w.Write 返回之后
+	// 给那一行打标（23505 = 本会话别的轮次已认领 ⇒ 第一个认领者站住）。
+	//
+	// Why the fact must ride on the entry: the session turn is written by the
+	// mirror hook afterwards and asynchronously (hook.go dispatches to a
+	// bounded goroutine pool; shadowWriteDispatchAsync defaults to true). A
+	// marker issued from the telemetry side therefore races the turn insert and
 	// loses — it would match 0 rows on essentially every attempt. Same shape
 	// as T0Missing/is_abandoned, same placement: flag here, apply after
 	// w.Write has returned.
 	//
-	// ⚠ Unlike T0Missing this one IS serialised. claimSessionFinalSuccessExec
-	// registers a session_mirror_outbox compensation row in the same
-	// transaction when the claim is granted, and the outbox is exactly the
-	// repair path for a mirror write that never landed — so the replay must
-	// be able to see that the replayed turn is supposed to be the final
-	// success. The durable form of the fact is the session_turns column.
+	// ⚠ Unlike T0Missing this one IS serialised, so the replay path can see
+	// that a replayed turn is supposed to be the final success. The durable
+	// form of the fact is the session_turns column.
 	FinalSuccessClaimed bool `json:"final_success_claimed,omitempty"`
 
 	T1TotalEnqueuedAt *time.Time `json:"t1_total_enqueued_at,omitempty"`
@@ -549,7 +566,7 @@ type RequestLogEntry struct {
 	// RequestType (2026-08-13, V3.2 BE-A3) classifies the row for the
 	// homepage live-stream parent/child tree:
 	//   main / title_gen / summary / sensitive_check / compression / other
-	// Persisted to _request_logs.request_type (migration 510).
+	// Persisted to the request-log row's request_type (migration 510).
 	RequestType *string `json:"request_type,omitempty"`
 
 	// DiscardEvents (2026-08-19) is the JSONB array of attempt-discard
@@ -558,8 +575,9 @@ type RequestLogEntry struct {
 	// SummaryAsMap under "discard_events", and the per-request log path
 	// (request_log_pipeline.go) copies it onto this field. The current
 	// upsert SQL does not yet include the column — operators read the
-	// The streaming survival/recovery path appends structured discard events;
-	// the telemetry upsert persists them in _request_logs_hot.discard_events.
+	// The streaming survival/recovery path appends structured discard events.
+	// ★ 2026-10-20（迁移 890，v1 族退役）：discard_events 列只存在于 v1 族，
+	// 会话族没有对应列 ⇒ 这批事件在本包**不再落库**（字段与 JSON 形状保留）。
 	DiscardEvents json.RawMessage `json:"discard_events,omitempty"`
 }
 
@@ -630,10 +648,11 @@ func (c *Client) pgEnabled() bool {
 }
 
 // findRecentGatewaySessionSQL 是会话粘滞查找（请求热路径）。2026-10-13
-// S3 波 2（停写切换）：_request_logs_hot 已停写，新流量的 gw_session_id 只落
+// S3 波 2（停写切换）：v1 宽表已停写，新流量的 gw_session_id 只落
 // session_turns_hot（api_key_id/identity_hash 由 707 S1a 加列，
-// idx_session_turns_hot_ts 供窗口过滤）。两族热表 UNION 单次往返；回滚写门
-// 后 v1 腿自动恢复供数。两腿窗口都 ≤ 热表保留期，不需要 parent 腿。
+// idx_session_turns_hot_ts 供窗口过滤）。
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 那条 UNION 腿整段删除——v1 族随 890
+// 落库后读它必然 42P01。窗口 ≤ 热表保留期，不需要 parent 腿。
 // 提升为包级变量是给形状钉桩用的。
 var findRecentGatewaySessionSQL = `
 		SELECT session_id FROM (
@@ -644,14 +663,6 @@ var findRecentGatewaySessionSQL = `
 			  AND t.identity_hash = $3
 			  AND t.session_id LIKE 'gw\_%'
 			  AND t.ts >= NOW() - ($4 * INTERVAL '1 second')
-			UNION ALL
-			SELECT r.gw_session_id AS session_id, r.ts AS ts
-			FROM public._request_logs_hot r
-			WHERE r.tenant_id = $1
-			  AND r.api_key_id = $2
-			  AND r.identity_hash = $3
-			  AND r.gw_session_id LIKE 'gw\_%'
-			  AND r.ts >= NOW() - ($4 * INTERVAL '1 second')
 		) recent_session
 		ORDER BY ts DESC
 		LIMIT 1
@@ -668,8 +679,8 @@ func (c *Client) FindRecentGatewaySession(ctx context.Context, tenantID, identit
 	defer cancel()
 
 	var sessionID string
-	// 2026-07-05 migration 341: 会话查找窗口（默认 5 分钟）落在 _request_logs_hot
-	// 的 0-7 天热数据范围内，查询 _hot 表（独立 heap 表，性能最优）即可。
+	// 会话查找窗口（默认 5 分钟）落在会话族热表的保留期内，查热表
+	// （独立 heap 表，性能最优）即可。
 	// 符合 docs/partition/partition-standards.md 查询规范。
 	err := c.dbPool.QueryRow(queryCtx, findRecentGatewaySessionSQL, tenantID, apiKeyID, identityHash, int(since.Seconds())).Scan(&sessionID)
 	if err != nil {
@@ -816,7 +827,7 @@ func (c *Client) SetOnRequestLogPersisted(fn func(entry *RequestLogEntry)) {
 }
 
 // AddOnRequestLogPersisted appends a hook invoked after each successful
-// INSERT/UPDATE of a _request_logs row. Hooks run on the telemetry worker
+// INSERT/UPDATE of a request-log row. Hooks run on the telemetry worker
 // goroutine and must be cheap and non-blocking.
 //
 // 2026-07-27 concurrency fix: append under lifecycleMu.Lock(). The worker
@@ -1167,7 +1178,7 @@ func (c *Client) insertDecisionLog(entry *DecisionLogEntry) error {
 }
 
 // firePersistedHooks invokes the onPersisted hooks (panic-isolated) after a
-// successful INSERT/UPDATE of a _request_logs row. Shared by persistRequestLog
+// successful INSERT/UPDATE of a request-log row. Shared by persistRequestLog
 // (worker/sync paths) and ReplayFallback (degraded-recovery replay path).
 func (c *Client) firePersistedHooks(entry *RequestLogEntry) {
 	c.lifecycleMu.RLock()
@@ -1190,10 +1201,9 @@ func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 	// H3 请求侧镜像（2026-09-24 方案 §3-H3）：在任何 PG 往返（含 tx.Begin）
 	// 与 degraded 早退之前 fire-and-forget 投递三件套镜像——PG 不可用、
 	// degraded 回落、lite sink 路径下镜像仍持续写入（H3 验收项「PG 不可用时
-	// 镜像仍写入」）。显式复用 requestLogsWriteEnabled()（S4 停写 gate，与
-	// _request_logs_bodies_hot 正文家族同键同门，insert/update 两个落库点
-	// 快照的是同一设置），停写时镜像同步停，避免「停写却仍落盘」语义分裂。
-	// 空载荷在 helper 内逐项跳过；三件套换算与 upsertRequestLogBodies 同源。
+	// 镜像仍写入」）。显式复用 requestLogsWriteEnabled()（S4 停写 gate），
+	// 停写时镜像同步停，避免「停写却仍落盘」语义分裂。
+	// 空载荷在 helper 内逐项跳过；三件套换算与会话族正文落库同源。
 	if requestLogsWriteEnabled() {
 		c.mirrorRequestBodies(entry)
 	}
@@ -1245,9 +1255,8 @@ func (entry *RequestLogEntry) releaseBodies() {
 	entry.OutboundBody = nil
 }
 
-// mirrorRequestBodies 把 _request_logs_bodies_hot 的三件套（request/response/
-// outbound）按与 upsertRequestLogBodies（insert/update 两个落库点）完全相同
-// 的换算函数投递给热区镜像：
+// mirrorRequestBodies 把三件套（request/response/outbound）按与会话族正文
+// 落库完全相同的换算函数投递给热区镜像：
 //
 //	requestBody  = strPtrToJSON(entry.RequestBody)  → "req"
 //	responseBody = strPtrToJSON(entry.ResponseBody) → "resp"
@@ -1273,8 +1282,8 @@ func (c *Client) mirrorRequestBodies(entry *RequestLogEntry) {
 	if tenant == "" {
 		return
 	}
-	// _request_logs_hot.ts 由 INSERT 侧 now() 生成，_request_logs_bodies_hot
-	// 复制该 ts；entry.EventAt 目前无 emitter 盖章（仅 merge / ReplayFallback
+	// 镜像文件的日期分区取样时刻对位 PG 侧的 ts=now() 语义；
+	// entry.EventAt 目前无 emitter 盖章（仅 merge / ReplayFallback
 	// 反序列化可能携带），非 nil 时优先采用以对齐重放语义。
 	at := time.Now()
 	if entry.EventAt != nil {
@@ -1320,12 +1329,12 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	normalizeRequestClassAndDueAt(entry, false)
 	// Defence-in-depth: scrub any invalid UTF-8 from all string-valued fields
 	// before INSERT.  PostgreSQL rejects invalid bytes with SQLSTATE 22021,
-	// which (because we wrap usage_ledger + _request_logs + api_keys updates
-	// in a single transaction) causes the entire row to be dropped — exactly
-	// the symptom reported in the 2026-06-11 incident where glm-5.1 calls
-	// succeeded for the client but no _request_logs row was written.  Even
-	// after fixing the upstream truncation sites, this layer guarantees that
-	// no future regression can silently lose rows.
+	// which (because we wrap usage_ledger + api_keys updates in a single
+	// transaction) causes the entire row to be dropped — exactly the symptom
+	// reported in the 2026-06-11 incident where glm-5.1 calls succeeded for
+	// the client but no request-log row was written.  Even after fixing the
+	// upstream truncation sites, this layer guarantees that no future
+	// regression can silently lose rows.
 	sanitizeRequestLogEntry(entry)
 	totalTokens := total(entry.PromptTokens, entry.CompletionTokens)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1337,12 +1346,15 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
-	// S4 停写门控：每事务读一次，快照贯穿整个写入路径。
-	logsWrite := requestLogsWriteEnabled()
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 宽表写入分支整段删除 ⇒ 停写键
+	// （storage.request_logs_write_enabled）在本函数**不再门控任何 PG 写入**；
+	// 会话族（sessionv2mirror）成为唯一 SSOT ⇒ 会话写入**恒为必需**。
+	entry.SessionV2WriteRequired = true
 
-	// §9.51：进程内指纹 arm 必须在门控**之外**——它记录的是「本实例见过带
-	// 指纹的请求」，不是「值落进了 v1」。放在 persistSystemFingerprint 里
-	// 会被下面的 if logsWrite 一起关掉（详见 observeSystemFingerprint）。
+	// §9.51：进程内指纹 arm 必须与持久化写入解耦——它记录的是「本实例见过带
+	// 指纹的请求」，不是「值落进了哪张表」。此前 arm 落在 v1 的落列函数里，
+	// 会被停写门一起关掉（详见 observeSystemFingerprint）。
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 写入分支整段删除后，这里已无门控。
 	observeSystemFingerprint(entry)
 
 	// INSERT directly targets usage_ledger_hot (the canonical write
@@ -1391,514 +1403,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	if err != nil {
 		return err
 	}
-	// S4 停写门控（storage.request_logs_write_enabled，与 Lite sink 同门）：关停后本段
-	// 宽表家族（_request_logs_hot 主行 UPSERT、protocol/fingerprint 增补、
-	// _request_logs_bodies_hot 正文）整体跳过；usage_ledger 已在上方写入，api_keys
-	// 计数与 outbox 会话开启事件在门控外照常提交。
-	if logsWrite {
-		// 2026-07-05 migration 341: INSERT directly targets _request_logs_hot
-		// (独立热表，0-7 天数据窗口)。所有 INSERT/UPDATE/DELETE 统一写入 _hot 表，
-		// 后台 partition_manager 会定期调用 promote_request_logs_hot_to_partition()
-		// 将冷数据（>7 天）迁移到月度分区。热表采用 heap 存储，支持高频写入；
-		// 月度分区采用 columnar 存储，优化归档查询性能。
-		//
-		// The ON CONFLICT (request_id) clause catches same-row upserts
-		// from race conditions (e.g. async retry landing on the same
-		// request_id). 热表 PRIMARY KEY (request_id) (migration 455) 覆盖冲突目标。
-		// 2026-07-16: JSONB columns use $N::text::jsonb to fix pgx binary protocol 22P02.
-		_, err = tx.Exec(ctx, `
-			INSERT INTO _request_logs_hot (
-				request_id, ts, tenant_id, application_id, api_key_id,
-				end_user_id, client_model, outbound_model,
-				-- 2026-07-27: 标准模型名(全小写),见 458 迁移。NULL = 没匹配到 canonical row。
-				-- Column order intentionally matches the Go arg list below so $N
-				-- placeholders stay strictly sequential (a duplicated/shifted $N
-				-- here previously produced a 90-arg-vs-89-placeholder mismatch
-				-- that rejected every business-row INSERT).
-				canonical_model,
-				credential_id, provider_id, canonical_id,
-				client_profile, request_mode, affinity_hit,
-				prompt_tokens, completion_tokens,
-				cache_read_tokens, cache_write_tokens,
-				-- audit-ir-multimodal (2026-07-13): multimodal and reasoning token fields
-				reasoning_tokens, image_tokens, audio_tokens, video_tokens, provider_tokens,
-				total_tokens,
-				cost_usd, cost_display, cost_currency,
-				latency_ms, success, request_status, error_kind, search_text,
-				identity_hash, response_checksum,
-				transform_rule_id, egress_protocol, failure_stage, failure_detail_code,
-				request_preview, transform_summary, response_preview,
-				stream_first_chunk_ms, stream_chunk_count, stream_done_received,
-				stream_interrupted,
-				usage_source,
-				gw_session_id, gw_task_id,
-				api_key_prefix, api_key_owner_user, application_code,
-				is_auto_request, task_type, auto_profile, auto_decision, auto_confidence,
-				work_type, credits_charged,
-				-- Round 47 compression v7 T2: parent-child chain (4 columns).
-				parent_request_id, compression_reason, compression_strategy, compression_meta,
-				-- 2026-08-19: token-band observability (1 column).
-				token_band,
-				-- v3 (2026-06-19) T23: session-level outbound body (4 columns).
-				outbound_msg_count, outbound_token_est, outbound_msg_hashes,
-				-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-				quality_flags, quality_fix_actions, quality_score,
-				-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
-				-- (db/migrations/018_upstream_finish_reason.sql). The new column is
-				-- the SOLE home for the upstream finish_reason.
-				upstream_finish_reason,
-				-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-				tool_calls,
-				-- 2026-06-26: client-supplied X-Request-Id (debug only;
-				-- _request_logs.request_id is server-generated, see migration 454).
-				client_request_id,
-				-- 2026-06-30: upstream diagnostics (migration 320).
-				upstream_status_code, client_timeout, client_endpoint,
-				stream_chunk_errors, stream_chunks_sent,
-				-- 2026-07-01: 附件元数据 (migration 325). JSONB 数组,
-				-- 存储从请求体提取的 base64/data-URI 附件元数据(路径/类型/大小/hash),
-				-- 附件实体文件已落盘,此处仅记录元信息。
-				attachments,
-				-- 2026-07-14 (migration 341): client-side origin. client_ip / client_forwarded_for
-				-- were added by 2026-07-11-observability-fields.sql; origin_stage / origin_actor
-				-- by migration 341. All four are populated by middleware/origin_mw.go for every
-				-- business row and by the probe workers (self_check / node_probe / system_health).
-				client_ip, client_forwarded_for, origin_stage, origin_actor,
-				-- 2026-07-19 (migration 350): routing attempts tracking.
-				routing_attempts, routing_summary,
-				-- 2026-07-27: 客户端感知扩展 (主表 GROUP BY 统计需要).
-				-- agent_name/agent_type 来自 telemetry.ExtractAgentName + 语义 fallback.
-				-- client_protocol 来自 URL path routing.
-				-- virtual_client_id 来自 identity.BuildIdentityFromRequest.
-				-- 之前这些字段只在侧表 request_context_attrs 写入,主表永远 NULL.
-				agent_name, agent_type, client_protocol, virtual_client_id,
-		-- V3.1 (migration 491): 9-stage dispatch queue timestamps.
-				t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
-				t3_model_enqueued_at, t4_model_dequeued_at,
-				t5_cred_enqueued_at, t6_cred_dequeued_at,
-				t7_forward_start_at, t8_response_start_at, t9_response_end_at,
-			-- 2026-08-19: streaming discard audit events.
-			discard_events,
-			customer_id,
-			-- V6-W1.6 R8 (migration 610): request class + scheduled due time.
-			request_class, due_at,
-			-- Wave 3 B1 (migration 736): peak/off-peak charge multiplier;
-			-- appended last so the 102 existing $N placeholders stay put.
-			credits_rate_multiplier
-		) VALUES (
-			$1, now(), $2, $3, $4,
-			$5, $6, $7,
-			$8, $9, $10,
-			$11,
-			$12, $13, $14,
-			$15, $16,
-			$17, $18,
-			-- audit-ir-multimodal (2026-07-13): $19-$23 multimodal tokens
-			$19, $20, $21, $22, $23,
-			$24,
-			$25, $26, $27,
-			$28, $29, $30, $31, $32,
-			$33, $34,
-			$35, $36, $37, $38,
-			$39, $40, $41,
-			$42, $43, $44,
-			$45,
-			$46, $47,
-			$48, $49, $50,
-			$51, $52, $53, $54, $55::text::jsonb, $56,
-			$57, $58,
-			$59, $60, $61, $62::text::jsonb,
-			-- 2026-08-19: token-band observability.
-			$63,
-			-- v3 (2026-06-19) T23: session-level outbound body.
-			$64, $65, $66::text::jsonb,
-			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-			$67::text[], $68::text::jsonb, $69,
-			-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
-			$70,
-			-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-			$71::text::jsonb,
-			-- 2026-06-26: client-supplied X-Request-Id.
-			$72,
-			-- 2026-06-30: upstream diagnostics (migration 320).
-			$73, $74, $75,
-			$76, $77,
-			-- 2026-07-01: 附件元数据 (migration 325).
-			$78::text::jsonb,
-			-- 2026-07-14 (migration 341): client-side origin.
-			$79, $80, $81, $82,
-			-- 2026-07-19 (migration 350): routing attempts tracking.
-			$83::text::jsonb, $84,
-			-- 2026-07-27: 客户端感知字段(主表 INSERT 必填).
-			$85, $86, $87, $88,
-			-- V3.1 queue timestamps (migration 491): 9-stage dispatch queue timestamps.
-			$89, $90, $91, $92, $93, $94, $95, $96, $97, $98,
-			-- 2026-08-19: streaming discard audit events.
-			$99::text::jsonb,
-			-- 2026-08-25 (migration 507): customer metadata.
-			$100,
-			-- V6-W1.6 R8 (migration 610): request class + due time. $101 stays
-			-- a bare placeholder (placeholder-alignment guard); the NOT NULL
-			-- default is resolved arg-side by requestClassArg.
-			$101, $102,
-			-- Wave 3 B1: credits_rate_multiplier (nullable pointer arg).
-			$103
-		)
-
-					-- 2026-08-06 fix: INSERT targets _request_logs_hot (NOT the partitioned parent).
-					-- Migration 455 (2026-07-23) gave _request_logs_hot PRIMARY KEY (request_id),
-					-- so ON CONFLICT must be (request_id). Using (request_id, ts) here triggers
-					-- SQLSTATE 42P10 "no unique or exclusion constraint matching the ON CONFLICT specification".
-					ON CONFLICT (request_id) DO UPDATE SET
-					ts = EXCLUDED.ts,
-				tenant_id = EXCLUDED.tenant_id,
-				application_id = EXCLUDED.application_id,
-				api_key_id = EXCLUDED.api_key_id,
-				end_user_id = EXCLUDED.end_user_id,
-				client_model = EXCLUDED.client_model,
-				outbound_model = EXCLUDED.outbound_model,
-				-- 2026-07-27: 标准名同步刷新(允许 EXCLUDED 覆盖,让 canonical rename 追溯完整)
-				canonical_model = EXCLUDED.canonical_model,
-				credential_id = EXCLUDED.credential_id,
-				provider_id = EXCLUDED.provider_id,
-				canonical_id = EXCLUDED.canonical_id,
-				client_profile = EXCLUDED.client_profile,
-				request_mode = EXCLUDED.request_mode,
-				affinity_hit = COALESCE(EXCLUDED.affinity_hit, _request_logs_hot.affinity_hit),
-				prompt_tokens = EXCLUDED.prompt_tokens,
-				completion_tokens = EXCLUDED.completion_tokens,
-				cache_read_tokens = EXCLUDED.cache_read_tokens,
-				cache_write_tokens = EXCLUDED.cache_write_tokens,
-				total_tokens = EXCLUDED.total_tokens,
-				cost_usd = EXCLUDED.cost_usd,
-				cost_display = EXCLUDED.cost_display,
-				cost_currency = EXCLUDED.cost_currency,
-				latency_ms = EXCLUDED.latency_ms,
-				success = EXCLUDED.success,
-				request_status = EXCLUDED.request_status,
-				error_kind = CASE
-					WHEN EXCLUDED.success = TRUE THEN NULL
-					ELSE EXCLUDED.error_kind
-				END,
-				search_text = EXCLUDED.search_text,
-				identity_hash = EXCLUDED.identity_hash,
-				response_checksum = EXCLUDED.response_checksum,
-				transform_rule_id = EXCLUDED.transform_rule_id,
-				egress_protocol = EXCLUDED.egress_protocol,
-				failure_stage = EXCLUDED.failure_stage,
-				failure_detail_code = EXCLUDED.failure_detail_code,
-				request_preview = EXCLUDED.request_preview,
-				transform_summary = EXCLUDED.transform_summary,
-				response_preview = EXCLUDED.response_preview,
-				stream_first_chunk_ms = EXCLUDED.stream_first_chunk_ms,
-				stream_chunk_count = EXCLUDED.stream_chunk_count,
-				stream_done_received = EXCLUDED.stream_done_received,
-				stream_interrupted = EXCLUDED.stream_interrupted,
-				usage_source = EXCLUDED.usage_source,
-				gw_session_id = EXCLUDED.gw_session_id,
-				gw_task_id = EXCLUDED.gw_task_id,
-				api_key_prefix = EXCLUDED.api_key_prefix,
-				api_key_owner_user = EXCLUDED.api_key_owner_user,
-				application_code = EXCLUDED.application_code,
-				is_auto_request = EXCLUDED.is_auto_request,
-				task_type = EXCLUDED.task_type,
-				auto_profile = EXCLUDED.auto_profile,
-				auto_decision = EXCLUDED.auto_decision,
-				auto_confidence = EXCLUDED.auto_confidence,
-				work_type = EXCLUDED.work_type,
-				credits_charged = EXCLUDED.credits_charged,
-				parent_request_id = EXCLUDED.parent_request_id,
-				compression_reason = EXCLUDED.compression_reason,
-				compression_strategy = EXCLUDED.compression_strategy,
-				compression_meta = EXCLUDED.compression_meta,
-				-- 2026-08-24 Phase 1: outbound_body routes to _request_logs_bodies_hot
-				-- only. The main table keeps its prior value (typically NULL); an
-				-- UPDATE that bound outbound_body here would re-introduce the
-				-- duplicate TOAST/WAL/storage cost we are eliminating.
-				outbound_msg_count = EXCLUDED.outbound_msg_count,
-				outbound_token_est = EXCLUDED.outbound_token_est,
-				outbound_msg_hashes = EXCLUDED.outbound_msg_hashes,
-			quality_flags = EXCLUDED.quality_flags,
-			quality_fix_actions = EXCLUDED.quality_fix_actions,
-			quality_score = EXCLUDED.quality_score,
-			upstream_finish_reason = EXCLUDED.upstream_finish_reason,
-			tool_calls = EXCLUDED.tool_calls,
-			client_request_id = COALESCE(EXCLUDED.client_request_id, _request_logs_hot.client_request_id),
-			-- 2026-06-30: upstream diagnostics (migration 320)
-			upstream_status_code = EXCLUDED.upstream_status_code,
-			client_timeout = EXCLUDED.client_timeout,
-			client_endpoint = EXCLUDED.client_endpoint,
-			stream_chunk_errors = EXCLUDED.stream_chunk_errors,
-			-- 2026-07-05 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
-			-- streamChunksSentArg() coerces nil pointer to 0 so the explicit
-			-- INSERT never trips SQLSTATE 23502 even when the caller does
-			-- not set the field (e.g. /api/telemetry/request-log HTTP path).
-			stream_chunks_sent = COALESCE(EXCLUDED.stream_chunks_sent, 0),
-			-- 2026-07-01 / 2026-08-22: attachments — prefer a real JSON value from
-			-- EXCLUDED. First-write-wins against SQL NULL is correct, but an early
-			-- in_progress INSERT that bound JSON null ('null'::jsonb) must not
-			-- permanently block the completion path's real attachment metadata.
-			attachments = CASE
-				WHEN EXCLUDED.attachments IS NOT NULL
-					AND jsonb_typeof(EXCLUDED.attachments) <> 'null'
-				THEN EXCLUDED.attachments
-				ELSE _request_logs_hot.attachments
-			END,
-			-- 2026-08-22: routing_attempts / routing_summary were INSERT-only and
-			-- missing from DO UPDATE SET, so EmitRequestLogUpdate success rows
-			-- never persisted tracker output (same class as t0..t9 gap).
-			routing_attempts = CASE
-				WHEN EXCLUDED.routing_attempts IS NOT NULL
-					AND jsonb_typeof(EXCLUDED.routing_attempts) <> 'null'
-				THEN EXCLUDED.routing_attempts
-				ELSE _request_logs_hot.routing_attempts
-			END,
-			routing_summary = COALESCE(EXCLUDED.routing_summary, _request_logs_hot.routing_summary),
-			-- 2026-07-14 (migration 341): origin metadata. First-write-wins:
-			-- the first writer (usually the origin middleware) keeps its value;
-			-- later replays must not overwrite the real client IP / origin label.
-			client_ip           = COALESCE(_request_logs_hot.client_ip, EXCLUDED.client_ip),
-			client_forwarded_for = COALESCE(_request_logs_hot.client_forwarded_for, EXCLUDED.client_forwarded_for),
-			origin_stage        = COALESCE(_request_logs_hot.origin_stage, EXCLUDED.origin_stage),
-			origin_actor        = COALESCE(_request_logs_hot.origin_actor, EXCLUDED.origin_actor),
-			-- 2026-07-27: 客户端感知字段 — first-write-wins (避免后续 retry / 补写覆盖)
-			-- origin_mw / fillAttemptMeta 阶段提取的真实值。
-			agent_name          = COALESCE(_request_logs_hot.agent_name, EXCLUDED.agent_name),
-			agent_type          = COALESCE(_request_logs_hot.agent_type, EXCLUDED.agent_type),
-			client_protocol     = COALESCE(_request_logs_hot.client_protocol, EXCLUDED.client_protocol),
-			virtual_client_id   = COALESCE(_request_logs_hot.virtual_client_id, EXCLUDED.virtual_client_id),
-			-- V3.1 queue timestamps: prefer newer non-null values from EXCLUDED.
-			t0_arrived_at        = COALESCE(EXCLUDED.t0_arrived_at, _request_logs_hot.t0_arrived_at),
-			t1_total_enqueued_at = COALESCE(EXCLUDED.t1_total_enqueued_at, _request_logs_hot.t1_total_enqueued_at),
-			t2_total_dequeued_at = COALESCE(EXCLUDED.t2_total_dequeued_at, _request_logs_hot.t2_total_dequeued_at),
-			t3_model_enqueued_at = COALESCE(EXCLUDED.t3_model_enqueued_at, _request_logs_hot.t3_model_enqueued_at),
-			t4_model_dequeued_at = COALESCE(EXCLUDED.t4_model_dequeued_at, _request_logs_hot.t4_model_dequeued_at),
-			t5_cred_enqueued_at  = COALESCE(EXCLUDED.t5_cred_enqueued_at, _request_logs_hot.t5_cred_enqueued_at),
-			t6_cred_dequeued_at  = COALESCE(EXCLUDED.t6_cred_dequeued_at, _request_logs_hot.t6_cred_dequeued_at),
-			t7_forward_start_at  = COALESCE(EXCLUDED.t7_forward_start_at, _request_logs_hot.t7_forward_start_at),
-			t8_response_start_at = COALESCE(EXCLUDED.t8_response_start_at, _request_logs_hot.t8_response_start_at),
-				t9_response_end_at   = COALESCE(EXCLUDED.t9_response_end_at, _request_logs_hot.t9_response_end_at),
-				discard_events       = COALESCE(EXCLUDED.discard_events, _request_logs_hot.discard_events),
-				-- V6-W1.6 R8 (migration 610): class never regresses to NULL;
-				-- due_at keeps the first non-null value.
-				request_class        = COALESCE(EXCLUDED.request_class, _request_logs_hot.request_class),
-				due_at               = COALESCE(EXCLUDED.due_at, _request_logs_hot.due_at),
-				-- Wave 3 B1: first-write-wins on the multiplier (charge path
-				-- stamps it once; later enrichments must not clear it).
-				credits_rate_multiplier = COALESCE(_request_logs_hot.credits_rate_multiplier, EXCLUDED.credits_rate_multiplier)
-			-- 2026-07-27 (L-2): terminal-state guard, mirroring the WAL guard in
-
-			-- request_logger.go Update(). Without this, the deferred client-
-			-- disconnect safety net could regress a row that already reached a
-			-- terminal state: the handler writes success=TRUE / request_status=
-			-- 'success' via the completion path, then the disconnect probe fires
-			-- EmitRequestLogUpdate with success=FALSE / 'client_disconnect' right
-			-- after the client reads the good response — clobbering the success
-			-- row (split-brain vs the WAL, which already had this guard).
-			--
-			-- Skip the UPDATE entirely when the existing row is already terminal
-			-- (success=TRUE OR request_status IN ('success','failure')) AND the
-			-- incoming update is NOT itself terminal-success (a legitimate later
-			-- enrichment of an already-success row, e.g. token accounting from a
-			-- slower path, is still allowed). The failure→success promotion case
-			-- is intentionally NOT allowed here: a disconnect probe must never
-			-- upgrade a failure, and a success is written by the authoritative
-			-- completion path before any probe fires.
-			WHERE NOT (
-				_request_logs_hot.request_status = 'failure'
-				OR (
-					(_request_logs_hot.success = TRUE
-					 OR _request_logs_hot.request_status = 'success')
-					AND NOT (
-						EXCLUDED.success = TRUE
-						AND EXCLUDED.request_status = 'success'
-					)
-				)
-			)
-		`,
-			entry.RequestID,
-			nonEmpty(entry.TenantID, "default"),
-			entry.ApplicationID,
-			entry.APIKeyID,
-			entry.EndUserID,
-			entry.ClientModel,
-			entry.OutboundModel,
-			entry.CanonicalModel,
-			entry.CredentialID,
-			entry.ProviderID,
-			entry.CanonicalID,
-			entry.ClientProfile,
-			entry.RequestMode,
-			entry.AffinityHit,
-			entry.PromptTokens,
-			entry.CompletionTokens,
-			entry.CacheReadTokens,
-			entry.CacheWriteTokens,
-			// audit-ir-multimodal (2026-07-13): multimodal token fields
-			entry.ReasoningTokens,
-			entry.ImageTokens,
-			entry.AudioTokens,
-			entry.VideoTokens,
-			entry.ProviderTokens,
-			totalTokens,
-			entry.CostUSD,
-			entry.CostDisplay,
-			entry.CostCurrency,
-			entry.LatencyMs,
-			entry.Success,
-			entry.RequestStatus,
-			entry.ErrorKind,
-			searchText(entry),
-			entry.IdentityHash,
-			entry.ResponseChecksum,
-			entry.TransformRuleID,
-			entry.EgressProtocol,
-			entry.FailureStage,
-			entry.FailureDetailCode,
-			entry.RequestPreview,
-			entry.TransformSummary,
-			entry.ResponsePreview,
-			entry.StreamFirstChunkMs,
-			entry.StreamChunkCount,
-			entry.StreamDoneReceived,
-			entry.StreamInterrupted,
-			nonEmptyPtr(entry.UsageSource, "llm"),
-			entry.GwSessionID,
-			entry.GwTaskID,
-			entry.APIKeyPrefix,
-			entry.APIKeyOwnerUser,
-			entry.ApplicationCode,
-			entry.IsAutoRequest,
-			entry.TaskType,
-			entry.AutoProfile,
-			strPtrToJSON(entry.AutoDecision),
-			entry.AutoConfidence,
-			entry.WorkType,
-			entry.CreditsCharged,
-			// Round 47 compression v7 T2: parent-child chain payload.
-			entry.ParentRequestID,
-			entry.CompressionReason,
-			entry.CompressionStrategy,
-			jsonOrNull(entry.CompressionMeta),
-			// 2026-08-19: token-band observability.
-			entry.TokenBand,
-			entry.OutboundMsgCount,
-			entry.OutboundTokenEst,
-			jsonOrNull(entry.OutboundMsgHashes),
-			// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-			// quality_flags is always encoded as a PostgreSQL text array;
-			// quality_fix_actions is JSONB.
-			//
-			// 2026-08-20 nil-语义约定（与 UPSERT 路径共用）：
-			//
-			//   entry.QualityFlags == nil     → qualityFlagsArg 返回 "{}" 字面量
-			//   entry.QualityFlags == []string{} → qualityFlagsArg 返回 "{}" 字面量
-			//   两者在 SQL 列上结果相同；区别仅在 SQL 日志 / audit 表里看到的
-			//   文本是否带 array 维度。这是"未提供"与"显式清空"在 INSERT
-			//   路径上唯一的语义差异，由 qualityFlagsArg 集中处理。
-			//
-			//   entry.QualityFixActions == nil     → "{}" （与 DEFAULT 一致）
-			//   entry.QualityFixActions == []byte("{}") → "{}"
-			//   两者在 SQL 列上结果完全相同；qualityActionsArgStr 不区分"未提供"
-			//   与"显式清空"——这是 NOT NULL DEFAULT 的设计选择：调用方若需要
-			//   区分，要么修改 schema 为 NULLABLE，要么改为单独字段承载。
-			qualityFlagsArg(entry.QualityFlags),
-			qualityActionsArgStr(entry.QualityFixActions),
-			entry.QualityScore,
-			// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
-			// (db/migrations/018_upstream_finish_reason.sql). The new column is
-			// the SOLE home for the upstream finish_reason.
-			entry.UpstreamFinishReason,
-			// 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-			jsonOrNull(entry.ToolCalls),
-			// 2026-06-26: client-supplied X-Request-Id (debug only).
-			entry.ClientRequestID,
-			// 2026-06-30: upstream diagnostics (migration 320).
-			entry.UpstreamStatusCode,
-			entry.ClientTimeout,
-			entry.ClientEndpoint,
-			entry.StreamChunkErrors,
-			// 2026-07-05 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
-			// streamChunksSentArg() coerces nil pointer to 0 so the explicit
-			// INSERT never trips SQLSTATE 23502 even when the caller does
-			// not set the field (e.g. /api/telemetry/request-log HTTP path).
-			streamChunksSentArg(entry.StreamChunksSent),
-			// 2026-07-01: 附件元数据 (migration 325)。为空时写入 NULL。
-			attachmentsArgStr(entry.Attachments),
-			// 2026-07-14 (migration 341): client-side origin.
-			// client_ip / client_forwarded_for are written for every business
-			// row by middleware/origin_mw.go; origin_stage / origin_actor are
-			// written by the new probe workers (credential-selfcheck,
-			// node-probe, system-health). All four accept NULL (the columns
-			// are nullable) so legacy emitters don't break.
-			entry.ClientIP,
-			entry.ClientForwardedFor,
-			entry.OriginStage,
-			entry.OriginActor,
-			// 2026-07-19 (migration 350): routing attempts tracking
-			// 2026-08-22: use nullableJSONArg so an empty in_progress INSERT stores
-			// SQL NULL (not JSON null); completion UPDATE can then COALESCE/CASE-fill.
-			nullableJSONArg(entry.RoutingAttempts),
-			entry.RoutingSummary,
-			// 2026-07-27: 客户端感知字段 ($85-$88,与上面 INSERT 列表对齐)
-			entry.AgentName,
-			entry.AgentType,
-			entry.ClientProtocol,
-			entry.VirtualClientID,
-			// V3.1 (migration 491): $89–$98 queue timestamps
-			entry.T0ArrivedAt,
-			entry.T1TotalEnqueuedAt,
-			entry.T2TotalDequeuedAt,
-			entry.T3ModelEnqueuedAt,
-			entry.T4ModelDequeuedAt,
-			entry.T5CredEnqueuedAt,
-			entry.T6CredDequeuedAt,
-			entry.T7ForwardStartAt,
-			entry.T8ResponseStartAt,
-			entry.T9ResponseEndAt,
-			// 2026-08-19: discard audit events are JSONB and nullable.
-			nullableJSONArg(entry.DiscardEvents),
-			// 2026-08-25 (migration 507): customer metadata ($100 ↔ customer_id,
-			// the LAST column — keep aligned with the INSERT column list above).
-			entry.CustomerID,
-			// V6-W1.6 R8 (migration 610): $101 ↔ request_class (arg-side
-			// 'immediate' default for the NOT NULL column), $102 ↔ due_at.
-			requestClassArg(entry.RequestClass),
-			entry.DueAt,
-			// Wave 3 B1 (migration 736): $103 ↔ credits_rate_multiplier.
-			entry.RateMultiplier,
-		)
-
-		if err != nil {
-			return err
-		}
-		if err := upsertProtocolMetadata(ctx, tx, entry); err != nil {
-			return err
-		}
-		if err := persistSystemFingerprint(ctx, tx, entry); err != nil {
-			return err
-		}
-
-		// 2026-07-22 Ticket #10: Persist full bodies in request_logs_bodies_hot.
-		// 2026-08-24 Phase 1 body storage optimization: outbound_body now also
-		// routes to _request_logs_bodies_hot (dedup) — main table keeps NULL for
-		// all three body columns. The hot table is the sole full-body write path.
-		err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, stringValue(entry.ApplicationCode),
-			strPtrToJSON(entry.RequestBody),
-			strPtrToJSON(entry.ResponseBody),
-			jsonOrNull(entry.OutboundBody),
-		)
-		if err != nil {
-			slog.Error("persist _request_logs_bodies_hot failed",
-				"request_id", entry.RequestID,
-				"has_request_body", entry.RequestBody != nil,
-				"has_response_body", entry.ResponseBody != nil,
-				"has_outbound_body", len(entry.OutboundBody) > 0,
-				"error", err,
-			)
-			return err
-		}
-	}
+	// ★ 2026-10-20（迁移 890，v1 族退役）：本段 v1 宽表写入分支（主行 UPSERT
+	// + protocol/fingerprint 增补 + v1 正文族）整段删除——v1 族随 890 落库后写
+	// 它必然 42P01。usage_ledger 计费、api_keys 计数与 outbox 会话开启事件照常
+	// 提交；会话族镜像承接本请求的事实落点。
 
 	if entry.APIKeyID != nil && *entry.APIKeyID > 0 && entry.Success {
 		var promptAdd, completionAdd int64
@@ -1926,13 +1434,11 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		}
 	}
 
-	// v4 T7 (2026-08-18, migration 532): terminal-success rows with a
-	// gw_session_id claim the session's single final-success marker in the
-	// same transaction. Best-effort: any failure (incl. a lost concurrent
-	// claim, SQLSTATE 23505 from uq_request_logs_hot_final_success_session)
-	// degrades to a normal success row — never fails the business write.
-	if logsWrite && shouldClaimFinalSuccess(entry) {
-		claimSessionFinalSuccess(ctx, c, tx, entry)
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 的终态成功认领整段删除（见
+	// updateRequestLog 同处说明）⇒ 认领资格直接挂到 entry 上，由会话族自己
+	// 仲裁（session_turns 的 partial 唯一索引 + markTurnFinalSuccess）。
+	if shouldClaimFinalSuccess(entry) {
+		entry.FinalSuccessClaimed = true
 	}
 
 	// Publish only the session opener here. The request is provisional until
@@ -2052,29 +1558,18 @@ func buildRequestCompletedEvent(ctx context.Context, tx pgx.Tx, entry *RequestLo
 	)
 }
 
-// _request_logs row that still carries usage_source='estimated' with the real
-// LLM-reported usage contained in entry, marking the row usage_source=
-// 'corrected'. It is the write-side counterpart of the estimation fallback in
-// relay/handler.go: emitTelemetry estimates tokens when the upstream never
-// sent a usage block; when the real numbers later arrive for the same
-// request_id (retry success / writeback paths), the regular UPDATE cannot
-// replace them — its COALESCE semantics preserve the already-stored estimates.
+// CorrectEstimatedUsage 把 entry 里的真实用量校正到「估算值」上。
 //
-// Only estimated rows are touched: llm rows keep their authoritative values
-// and corrected rows keep the first correction (idempotent). Returns the
-// number of rows corrected so callers can gate follow-ups (e.g. the
-// format-anomalies actual_tokens backfill) on an actual transition.
-// The caller is expected to invoke this off the request hot path (async,
-// best-effort); a DB error is returned, never retried here.
+// ★ 2026-10-20（迁移 890，v1 族退役）：本函数**不再改写任何行**——它校正的是
+// v1 宽表的 usage_source 列，v1 族随 890 落库后写它必然 42P01。签名与返回值
+// 保持不变（调用方 domains/streaming/usage_backfill.go 用返回的修正行数门控
+// 后续动作），恒返回 (0, nil) = 「本次没有发生校正」。
+//
+// ⚠ 校正这件事本身并没有消失：usage_ledger_hot 的用量由 telemetry 的写入路径
+// 直接写权威值，本函数只是历史兼容入口。
 func (c *Client) CorrectEstimatedUsage(ctx context.Context, entry *RequestLogEntry) (int64, error) {
 	if c == nil || c.requestLogDatabase() == nil {
 		return 0, errNoTelemetryDB
-	}
-	// R52：S4 停写门控补网。F3 的"六个包裹点"覆盖了 INSERT 与 final-claim
-	// UPDATE，但本函数的 usage 校正 UPDATE 游离在门外——停写（宽表冻结/
-	// 迁移窗口）期间仍可改写存量行，撞"宽表停写"契约。停写期直接跳过。
-	if !requestLogsWriteEnabled() {
-		return 0, nil
 	}
 	if entry == nil || entry.RequestID == "" {
 		return 0, nil
@@ -2082,30 +1577,7 @@ func (c *Client) CorrectEstimatedUsage(ctx context.Context, entry *RequestLogEnt
 	if entry.PromptTokens == nil && entry.CompletionTokens == nil {
 		return 0, nil
 	}
-	totalTokens := total(entry.PromptTokens, entry.CompletionTokens)
-	tag, err := c.requestLogDatabase().Exec(ctx, `
-		UPDATE _request_logs_hot
-		   SET prompt_tokens     = COALESCE($2, prompt_tokens),
-		       completion_tokens = COALESCE($3, completion_tokens),
-		       total_tokens      = COALESCE($4, total_tokens),
-		       cache_read_tokens = COALESCE($5, cache_read_tokens),
-		       cache_write_tokens = COALESCE($6, cache_write_tokens),
-		       usage_source      = 'corrected'
-		 WHERE request_id = $1
-		   AND usage_source = 'estimated'
-		   AND ($2::int IS NOT NULL OR $3::int IS NOT NULL)
-	`,
-		entry.RequestID,
-		entry.PromptTokens,
-		entry.CompletionTokens,
-		totalTokens,
-		entry.CacheReadTokens,
-		entry.CacheWriteTokens,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return tag.RowsAffected(), nil
+	return 0, nil
 }
 
 func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
@@ -2125,12 +1597,15 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
-	// S4 停写门控：每事务读一次，快照贯穿整个写入路径。
-	logsWrite := requestLogsWriteEnabled()
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 宽表写入分支整段删除 ⇒ 停写键
+	// （storage.request_logs_write_enabled）在本函数**不再门控任何 PG 写入**；
+	// 会话族（sessionv2mirror）成为唯一 SSOT ⇒ 会话写入**恒为必需**。
+	entry.SessionV2WriteRequired = true
 
-	// §9.51：进程内指纹 arm 必须在门控**之外**——它记录的是「本实例见过带
-	// 指纹的请求」，不是「值落进了 v1」。放在 persistSystemFingerprint 里
-	// 会被下面的 if logsWrite 一起关掉（详见 observeSystemFingerprint）。
+	// §9.51：进程内指纹 arm 必须与持久化写入解耦——它记录的是「本实例见过带
+	// 指纹的请求」，不是「值落进了哪张表」。此前 arm 落在 v1 的落列函数里，
+	// 会被停写门一起关掉（详见 observeSystemFingerprint）。
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 写入分支整段删除后，这里已无门控。
 	observeSystemFingerprint(entry)
 
 	// 审计 §9.93：此处原有的 `if requestLogEntryTerminal(entry) { settleAbandonedTurn(...) }`
@@ -2194,422 +1669,11 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		}
 	}
 
-	// S4 停写门控（storage.request_logs_write_enabled，与 Lite sink 同门）：关停后本段
-	// 宽表家族（_request_logs_hot 主行 UPDATE 与回落 INSERT、bodies 正文、protocol/
-	// fingerprint 增补）整体跳过；usage_ledger 已在上方刷新，api_keys 计数与 outbox
-	// request-completed 会话事件在门控外照常提交。
-	if logsWrite {
-		var updated pgconn.CommandTag
-		updated, err = tx.Exec(ctx, `
-			-- 2026-07-23 migration 455: _request_logs_hot PK changed from (request_id, ts)
-			-- to (request_id). With request_id as the unique key, the CTE (which found
-			-- the latest row among duplicates) is no longer needed. Direct UPDATE by
-			-- request_id is now deterministic.
-			UPDATE _request_logs_hot
-			   SET client_model = COALESCE($2, client_model),
-			       outbound_model = COALESCE($3, outbound_model),
-			       credential_id = COALESCE($4, credential_id),
-			       provider_id = COALESCE($5, provider_id),
-			       canonical_id = COALESCE($6, canonical_id),
-			       client_profile = COALESCE($7, client_profile),
-			       request_mode = COALESCE($8, request_mode),
-			       affinity_hit = COALESCE($9, _request_logs_hot.affinity_hit),
-			       end_user_id = COALESCE($10, end_user_id),
-			       prompt_tokens = COALESCE($11, prompt_tokens),
-			       completion_tokens = COALESCE($12, completion_tokens),
-			       total_tokens = COALESCE($13, total_tokens),
-			       cache_read_tokens = COALESCE($14, cache_read_tokens),
-			       cache_write_tokens = COALESCE($15, cache_write_tokens),
-			       -- audit-ir-multimodal (2026-07-13): multimodal token fields
-			       reasoning_tokens = COALESCE($16, reasoning_tokens),
-			       image_tokens = COALESCE($17, image_tokens),
-			       audio_tokens = COALESCE($18, audio_tokens),
-			       video_tokens = COALESCE($19, video_tokens),
-			       provider_tokens = COALESCE($20, provider_tokens),
-			       cost_usd = COALESCE($21, cost_usd),
-			       cost_display = COALESCE($22, cost_display),
-			       cost_currency = COALESCE($23, cost_currency),
-			       stream_first_chunk_ms = COALESCE($24, stream_first_chunk_ms),
-			       stream_chunk_count = COALESCE($25, stream_chunk_count),
-			       stream_done_received = COALESCE($26, stream_done_received),
-			       stream_interrupted = COALESCE($27, stream_interrupted),
-			       response_checksum = COALESCE($28, response_checksum),
-			       response_preview = COALESCE($29, response_preview),
-			       -- 2026-07-22: request_body and response_body removed from main table UPDATE.
-			       -- These fields are now stored in _request_logs_bodies_hot side table.
-			       failure_stage = COALESCE($30, failure_stage),
-			       failure_detail_code = COALESCE($31, failure_detail_code),
-			       transform_rule_id = COALESCE($32, transform_rule_id),
-			       egress_protocol = COALESCE($33, egress_protocol),
-			       request_preview = COALESCE($34, request_preview),
-			       transform_summary = COALESCE($35, transform_summary),
-			       -- CO-2 (2026-08-15): 'corrected' is terminal in the
-			       -- estimated → corrected state machine. A generic UPDATE
-			       -- carrying usage_source='llm' racing the correction
-			       -- backfill must not downgrade the row back to 'llm'.
-			       usage_source = CASE
-			           WHEN usage_source = 'corrected' THEN usage_source
-			           ELSE COALESCE(NULLIF($36, ''), usage_source)
-			       END,
-			       success = COALESCE($37, success),
-			       request_status = COALESCE($38, request_status),
-			       -- 2026-06-20: clear error_kind on success to prevent
-			       -- cross-request pollution (e.g. a previous failure's
-			       -- error_kind leaking into a later successful UPDATE).
-			       error_kind = CASE
-			           WHEN COALESCE($37, success) = TRUE THEN NULL
-			           ELSE COALESCE($39, error_kind)
-			       END,
-			       latency_ms = COALESCE($40, latency_ms),
-			       identity_hash = COALESCE($41, identity_hash),
-			       search_text = COALESCE($42, search_text),
-			       gw_session_id = COALESCE($43, gw_session_id),
-			       gw_task_id = COALESCE($44, gw_task_id),
-			       api_key_prefix = COALESCE($45, api_key_prefix),
-			       api_key_owner_user = COALESCE($46, api_key_owner_user),
-			       application_code = COALESCE($47, application_code),
-			       is_auto_request = COALESCE($48, is_auto_request),
-			       task_type = COALESCE($49, task_type),
-			       auto_profile = COALESCE($50, auto_profile),
-			       auto_decision = COALESCE($51::text::jsonb, auto_decision),
-			       auto_confidence = COALESCE($52, auto_confidence),
-			       work_type = COALESCE($53, work_type),
-			       credits_charged = COALESCE($54, credits_charged),
-	-- Round 47 compression v7 T2: parent-child chain payload.
-				       parent_request_id = COALESCE($55, parent_request_id),
-				       compression_reason = COALESCE($56, compression_reason),
-				       compression_strategy = COALESCE($57, compression_strategy),
-				       compression_meta = COALESCE($58::text::jsonb, compression_meta),
-				       -- 2026-08-19: token-band observability.
-				       token_band = COALESCE($59, token_band),
-				       -- 2026-08-24 Phase 1: outbound_body is removed from the main
-				       -- table UPDATE. The dedicated _request_logs_bodies_hot
-				       -- table is the sole outbound_body owner; outbound_body is
-				       -- written via upsertRequestLogBodies in the same tx. The
-				       -- previously-bound $60 placeholder is gone; downstream
-				       -- placeholders are shifted by -1 (the column still exists
-				       -- on the table but is no longer assigned here).
-				       outbound_msg_count = COALESCE($60, outbound_msg_count),
-				       outbound_token_est = COALESCE($61, outbound_token_est),
-				       outbound_msg_hashes = COALESCE($62::text::jsonb, outbound_msg_hashes),
-				       -- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-				       quality_flags        = COALESCE($63::text[], quality_flags),
-				       quality_fix_actions  = COALESCE($64::text::jsonb, quality_fix_actions),
-				       quality_score        = COALESCE($65, quality_score),
-			   -- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
-			   -- (db/migrations/018_upstream_finish_reason.sql). The new column is
-			   -- the SOLE home for the upstream finish_reason.
-			   upstream_finish_reason = COALESCE($66, upstream_finish_reason),
-			   -- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-			   tool_calls = COALESCE($67::text::jsonb, tool_calls),
-			   -- 2026-06-26: client-supplied X-Request-Id (debug only). COALESCE so
-			   -- a late success UPDATE does not blank a value set on INSERT.
-			   client_request_id = COALESCE($68, client_request_id),
-			   -- 2026-06-30: upstream diagnostics (migration 320).
-			   upstream_status_code = COALESCE($69, upstream_status_code),
-			   client_timeout = COALESCE($70, client_timeout),
-			   client_endpoint = COALESCE($71, client_endpoint),
-			   stream_chunk_errors = COALESCE($72, stream_chunk_errors),
-			   stream_chunks_sent = COALESCE($73, stream_chunks_sent),
-			   -- 2026-07-14 (migration 341): origin metadata. First-write-wins
-			   -- (see INSERT path rationale) — middleware/origin_mw.go sets
-			   -- client_ip / client_forwarded_for on the inbound row and the
-			   -- probe workers set origin_stage / origin_actor on probe rows.
-			   client_ip            = COALESCE($74, client_ip),
-			   client_forwarded_for = COALESCE($75, client_forwarded_for),
-				   origin_stage         = COALESCE($76, origin_stage),
-				   origin_actor         = COALESCE($77, origin_actor),
-				   -- 2026-07-27: client perception fields. First-write-wins keeps
-				   -- values extracted on the inbound row when a later completion,
-				   -- failure, or disconnect update carries only partial metadata.
-				   agent_name           = COALESCE(agent_name, $78),
-				   agent_type           = COALESCE(agent_type, $79),
-				   client_protocol      = COALESCE(client_protocol, $80),
-				   virtual_client_id    = COALESCE(virtual_client_id, $81),
-				   -- V3.1 queue timestamps (migration 491): success path uses
-				   -- EmitRequestLogUpdate; without these columns t0..t9 stayed NULL
-				   -- forever after the in_progress INSERT (2026-08-22 diagnose).
-				   t0_arrived_at        = COALESCE($82, t0_arrived_at),
-				   t1_total_enqueued_at = COALESCE($83, t1_total_enqueued_at),
-				   t2_total_dequeued_at = COALESCE($84, t2_total_dequeued_at),
-				   t3_model_enqueued_at = COALESCE($85, t3_model_enqueued_at),
-				   t4_model_dequeued_at = COALESCE($86, t4_model_dequeued_at),
-				   t5_cred_enqueued_at  = COALESCE($87, t5_cred_enqueued_at),
-				   t6_cred_dequeued_at  = COALESCE($88, t6_cred_dequeued_at),
-				   t7_forward_start_at  = COALESCE($89, t7_forward_start_at),
-				   t8_response_start_at = COALESCE($90, t8_response_start_at),
-				   t9_response_end_at   = COALESCE($91, t9_response_end_at),
-				   discard_events       = COALESCE($92::text::jsonb, discard_events),
-				   -- 2026-08-22: completion UPDATE must carry routing + attachments
-				   -- (+ canonical refresh). Same class as t0..t9 gap — emitTelemetry
-				   -- sets these on reqLog then EmitRequestLogUpdate.
-				   canonical_model      = COALESCE($93, canonical_model),
-				   routing_attempts     = CASE
-				       WHEN $94::text IS NOT NULL AND $94::text <> '' AND $94::text <> 'null'
-				       THEN $94::text::jsonb
-				       ELSE routing_attempts
-				   END,
-				   routing_summary      = COALESCE($95, routing_summary),
-				attachments          = CASE
-				       WHEN $96::text IS NOT NULL AND $96::text <> '' AND $96::text <> 'null'
-				       THEN $96::text::jsonb
-					ELSE attachments
-				END
-				, customer_id = COALESCE($97, customer_id)
-				-- V6-W1.6 R8 (migration 610): request class + due time.
-				--
-				-- $98 必须显式 ::text（2026-10-02 真库取证，审计 §9.74.2）。
-				-- 裸参数出现在 CASE 的 WHEN 判据里**没有类型上下文**：PG 解析
-				-- WHEN 条件时还不知道 CASE 的结果类型，而 WHEN 条件不属于与
-				-- THEN/ELSE 一起做共同类型归并的那部分，$98 停在 unknown，
-				-- 整条语句直接被拒：
-				--     ERROR: could not determine data type of parameter $98
-				-- 同一张表的逐条 PREPARE 对照（不声明参数类型，即 pgx 的真实路径）：
-				--     CASE WHEN $1     IS NULL ...              → ERROR
-				--     CASE WHEN $1::text IS NULL ...              → OK（WHEN 加 cast 即够）
-				--     CASE WHEN $1 IS NULL ... ELSE $1::text     → 仍 ERROR（ELSE 救不了 WHEN）
-				--     COALESCE($1, request_class)                → OK（COALESCE 实参同批定类型）
-				-- 影响面：这是**生产写入路径**。request_class/due_at 一带上，整条
-				-- UPDATE 失败，而失败被 persist 侧记为 WARN 后吞掉——不崩、不告警，
-				-- 只是 scheduled 请求的 class/due_at 永远不落库。
-				-- 发现它的是 TestRequestClassPGRoundTrip（需 TEST_PG_DSN）。
-				--
-				-- $99 同理必须显式 ::timestamptz（2026-10-03 裁决，用户拍板解耦）。
-				-- 此前 due_at 的判据**复用 $98**，是 608 迁移「class 与 due_at 一起
-				-- 下发」的历史遗留耦合：class 为 NULL 时 due_at 也被连带跳过。
-				-- 两个字段语义独立（scheduled 请求可带 due_at 而不带 class），
-				-- 继续绑在一起会让 due_at 在这类请求上永远不落库。
-				-- ⚠ 改判据时**必须同族一起改**：那条按字面量钉 SQL 的门
-				-- （request_class_sql_test.go）钉的正是这个旧耦合，不同步它就会
-				-- 报一条「missing assignment」——那是契约变了门必须跟着变，
-				-- 不是回归（审计 §9.90.1）。
-				, request_class = CASE WHEN $98::text IS NULL THEN request_class ELSE $98 END
-				, due_at = CASE WHEN $99::timestamptz IS NULL THEN due_at ELSE $99 END
-				-- Wave 3 B1 (migration 736): peak/off-peak charge multiplier;
-				-- COALESCE keeps the prior value when the update carries none.
-				, credits_rate_multiplier = COALESCE($100, credits_rate_multiplier)
-			   WHERE request_id = $1
-
-			     AND NOT (
-					(_request_logs_hot.request_status = 'failure' AND NOT (
-						COALESCE($37, FALSE) = TRUE AND $38 = 'success'
-					))
-					OR (
-						(_request_logs_hot.success = TRUE
-						 OR _request_logs_hot.request_status = 'success')
-						AND NOT (
-							COALESCE($37, FALSE) = TRUE
-							AND $38 = 'success'
-						)
-					)
-				)
-			 RETURNING _request_logs_hot.ts
-	`,
-			entry.RequestID,
-			entry.ClientModel,
-			entry.OutboundModel,
-			entry.CredentialID,
-			entry.ProviderID,
-			entry.CanonicalID,
-			entry.ClientProfile,
-			entry.RequestMode,
-			entry.AffinityHit,
-			entry.EndUserID,
-			entry.PromptTokens,
-			entry.CompletionTokens,
-			totalTokens,
-			entry.CacheReadTokens,
-			entry.CacheWriteTokens,
-			// audit-ir-multimodal (2026-07-13): multimodal token fields
-			entry.ReasoningTokens,
-			entry.ImageTokens,
-			entry.AudioTokens,
-			entry.VideoTokens,
-			entry.ProviderTokens,
-			entry.CostUSD,
-			entry.CostDisplay,
-			entry.CostCurrency,
-			entry.StreamFirstChunkMs,
-			entry.StreamChunkCount,
-			entry.StreamDoneReceived,
-			entry.StreamInterrupted,
-			entry.ResponseChecksum,
-			entry.ResponsePreview,
-			// 2026-07-22: request_body and response_body removed from main table UPDATE.
-			// These fields are now stored in _request_logs_bodies_hot side table.
-			entry.FailureStage,
-			entry.FailureDetailCode,
-			entry.TransformRuleID,
-			entry.EgressProtocol,
-			entry.RequestPreview,
-			entry.TransformSummary,
-			nonEmptyPtr(entry.UsageSource, ""),
-			boolptr(entry.Success),
-			entry.RequestStatus,
-			entry.ErrorKind,
-			entry.LatencyMs,
-			entry.IdentityHash,
-			searchText(entry),
-			entry.GwSessionID,
-			entry.GwTaskID,
-			entry.APIKeyPrefix,
-			entry.APIKeyOwnerUser,
-			entry.ApplicationCode,
-			entry.IsAutoRequest,
-			entry.TaskType,
-			entry.AutoProfile,
-			strPtrToJSON(entry.AutoDecision),
-			entry.AutoConfidence,
-			entry.WorkType,
-			entry.CreditsCharged,
-			// Round 47 compression v7 T2: parent-child chain payload.
-			entry.ParentRequestID,
-			entry.CompressionReason,
-			entry.CompressionStrategy,
-			string(jsonOrNull(entry.CompressionMeta)),
-			// 2026-08-19: token-band observability.
-			entry.TokenBand,
-			// 2026-08-24 Phase 1: outbound_body is removed from the main table UPDATE
-			// bind list. The dedicated _request_logs_bodies_hot table is the sole
-			// outbound_body store; outbound_body is written via
-			// upsertRequestLogBodies below (same transaction). This re-aligns the
-			// placeholders: what was previously $60 (outbound_body) is now removed,
-			// and outbound_msg_count / outbound_token_est / outbound_msg_hashes
-			// (below) shift to $60/$61/$62. Subsequent placeholders (quality_flags
-			// → $63 etc.) are also shifted by -1.
-			entry.OutboundMsgCount,
-			entry.OutboundTokenEst,
-			string(jsonOrNull(entry.OutboundMsgHashes)),
-			// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-			// quality_flags is always encoded as a PostgreSQL text array;
-			// quality_fix_actions is JSONB.
-			qualityFlagsArg(entry.QualityFlags),
-			string(qualityActionsArgStr(entry.QualityFixActions)),
-			entry.QualityScore,
-			// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
-			// (db/migrations/018_upstream_finish_reason.sql). The new column is
-			// the SOLE home for the upstream finish_reason.
-			entry.UpstreamFinishReason,
-			// 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-			string(jsonOrNull(entry.ToolCalls)),
-			// 2026-06-26: client-supplied X-Request-Id (debug only).
-			entry.ClientRequestID,
-			// 2026-06-30: upstream diagnostics (migration 320).
-			entry.UpstreamStatusCode,
-			entry.ClientTimeout,
-			entry.ClientEndpoint,
-			entry.StreamChunkErrors,
-			entry.StreamChunksSent,
-			// 2026-07-14 (migration 341): client-side origin.
-			entry.ClientIP,
-			entry.ClientForwardedFor,
-			entry.OriginStage,
-			entry.OriginActor,
-			entry.AgentName,
-			entry.AgentType,
-			entry.ClientProtocol,
-			entry.VirtualClientID,
-			entry.T0ArrivedAt,
-			entry.T1TotalEnqueuedAt,
-			entry.T2TotalDequeuedAt,
-			entry.T3ModelEnqueuedAt,
-			entry.T4ModelDequeuedAt,
-			entry.T5CredEnqueuedAt,
-			entry.T6CredDequeuedAt,
-			entry.T7ForwardStartAt,
-			entry.T8ResponseStartAt,
-			entry.T9ResponseEndAt,
-			nullableJSONArg(entry.DiscardEvents),
-			entry.CanonicalModel,
-			nullableJSONArg(entry.RoutingAttempts),
-			entry.RoutingSummary,
-			attachmentsArgStr(entry.Attachments),
-			entry.CustomerID,
-			// V6-W1.6 R8 (migration 610): a nil $98 preserves both fields;
-			// otherwise $98/$99 are written as one invariant-preserving pair.
-			entry.RequestClass,
-			entry.DueAt,
-			// Wave 3 B1 (migration 736): $100 ↔ credits_rate_multiplier.
-			entry.RateMultiplier,
-		)
-
-		if err != nil {
-			return err
-		}
-		if updated.RowsAffected() == 0 {
-			var exists bool
-			if err := tx.QueryRow(ctx, `
-				SELECT EXISTS (
-					SELECT 1 FROM _request_logs_hot WHERE request_id = $1
-				)
-			`, entry.RequestID).Scan(&exists); err != nil {
-				return err
-			}
-			if rbErr := tx.Rollback(ctx); rbErr != nil {
-				slog.Warn("telemetry update rollback failed", "request_id", entry.RequestID, "error", rbErr)
-			}
-			if exists {
-				return nil
-			}
-			// ★ 审计 §9.92：这里就是「请求开始了却从没有终态」在**会话族内**
-			// 的落点判据，而且是免费的——上面的 EXISTS 查询本来就在跑。
-			//
-			// 判据的确切含义：UPDATE 命中 0 行，且 v1 侧 `request_id` 根本不存在。
-			// ⇒ 这个请求**从来没有过 t0 记录**（_request_logs_hot 上 request_id
-			//   是唯一键、每 id 恒 1 行，所以「不存在」= t0 从未落库，而不是
-			//   「已落但被覆盖」——这一点是实测的，见 §9.92.2）。
-			//
-			// 为什么它等价于「遗弃」：正常流程必有 t0（insertRequestLog）先落一行
-			// in_progress，t1 的 UPDATE 必然命中 1 行。命中 0 行意味着
-			// ① t0 所在的进程在 INSERT 前就死了（崩溃/被杀/部署重启），
-			// ② 或这条路径从不发 t0（客户端断连、流式路径直接终态、探针半路夭折）。
-			// 两种情况都符合「请求开始了（已产生事件/已消耗上游）却没走完」。
-			//
-			// ⚠ 判据必须**正向**（exists==false 才置位）。写成 `if exists` 会
-			// 把**每一次正常完成**都标成遗弃——那是方向反了，且比例约 100%，
-			// 不会触发任何阈值告警，只会安静地污染整张表。
-			//
-			// ⚠⚠ 这里**只置标志，不写库**（审计 §9.93 的自我修正）。
-			// 终态 turn 由 sessionv2mirror 派发到有界 goroutine 池异步写入
-			// （hook.go 的 shadowWriteDispatchAsync 默认 true），
-			// 而本分支是同步的 ⇒ 在这里 UPDATE session_turns 必然命中 0 行。
-			// 第一版正是这么写的，落点因此几乎记不到任何东西。
-			// 正确形态：把「v1 侧无 t0」这个**事实**挂到 entry 上，
-			// 由 mirror 在 `w.Write` 返回**之后**给那一行打标——
-			// 同一 goroutine，行必然已存在，无竞态。
-			//
-			// ⚠⚠⚠ 必须设在 **entry**（调用方持有的那个指针）上，不能只设在
-			// 下面的 fallback 副本上。消费者是 firePersistedHooks(entry) →
-			// PersistHook → runShadowWrite，它读的是 entry；只改副本的话
-			// 标志到此为止，落点是恒不触发的空转。第一版修复就踩了这个。
-			entry.T0Missing = true
-			fallback := *entry
-			fallback.Op = RequestLogInsert
-			if ferr := c.insertRequestLog(&fallback); ferr != nil {
-				return ferr
-			}
-			// 2026-10-05 审计 §9.203: 这条分支上认领是记在副本上的
-			// (insertRequestLog 收到的是 &fallback), 而消费者
-			// firePersistedHooks(entry) 读的是调用方那个 entry。不同步回去
-			// 的话, 走了这条分支的请求在 session 族仍然拿不到标记。
-			entry.FinalSuccessClaimed = fallback.FinalSuccessClaimed
-			return nil
-		}
-
-		if err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, stringValue(entry.ApplicationCode),
-			strPtrToJSON(entry.RequestBody),
-			strPtrToJSON(entry.ResponseBody),
-			jsonOrNull(entry.OutboundBody),
-		); err != nil {
-			return err
-		}
-		if err := upsertProtocolMetadata(ctx, tx, entry); err != nil {
-			return err
-		}
-		if err := persistSystemFingerprint(ctx, tx, entry); err != nil {
-			return err
-		}
-	}
+	// ★ 2026-10-20（迁移 890，v1 族退役）：本段 v1 宽表写入分支（主行 UPDATE
+	// 与回落 INSERT + v1 正文族 + protocol/fingerprint 增补）整段删除——v1 族随
+	// 890 落库后写它必然 42P01。usage_ledger 刷新、api_keys 计数与 outbox
+	// request-completed 会话事件在门控外照常提交；会话族镜像承接本请求的
+	// 事实落点。
 
 	if entry.APIKeyID != nil && *entry.APIKeyID > 0 && entry.Success {
 		var promptAdd, completionAdd int64
@@ -2637,12 +1701,11 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		}
 	}
 
-	// v4 T7 (2026-08-18, migration 532): same final-success claim as the
-	// INSERT path — see insertRequestLog for the degrade semantics. The
-	// RowsAffected==0 fallback above re-enters insertRequestLog, which
-	// claims on its own.
-	if logsWrite && shouldClaimFinalSuccess(entry) {
-		claimSessionFinalSuccess(ctx, c, tx, entry)
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 的终态成功认领整段删除（见
+	// insertRequestLog 同处说明）⇒ 认领资格直接挂到 entry 上，由会话族自己
+	// 仲裁（session_turns 的 partial 唯一索引 + markTurnFinalSuccess）。
+	if shouldClaimFinalSuccess(entry) {
+		entry.FinalSuccessClaimed = true
 	}
 	if c.outboxWriter != nil && entry.GwSessionID != nil && *entry.GwSessionID != "" && requestLogEntryTerminal(entry) {
 		completed, err := buildRequestCompletedEvent(ctx, tx, entry)
@@ -2657,59 +1720,33 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	return tx.Commit(ctx)
 }
 
-func upsertProtocolMetadata(ctx context.Context, tx pgx.Tx, entry *RequestLogEntry) error {
-	if entry == nil || entry.RequestID == "" ||
-		(entry.ClientProtocol == nil && entry.UpstreamProtocol == nil && entry.ProtocolConversion == nil) {
-		return nil
-	}
-	_, err := tx.Exec(ctx, `
-		UPDATE _request_logs_hot
-		   SET client_protocol = COALESCE(client_protocol, $2),
-		       upstream_protocol = COALESCE(upstream_protocol, $3),
-		       protocol_conversion = COALESCE(protocol_conversion, $4)
-		 WHERE request_id = $1
-	`, entry.RequestID, entry.ClientProtocol, entry.UpstreamProtocol, entry.ProtocolConversion)
-	return err
-}
+// ★ 2026-10-20（迁移 890，v1 族退役）：upsertProtocolMetadata 整条删除——
+// 它补写的是 v1 宽表的 client_protocol / upstream_protocol /
+// protocol_conversion 三列，v1 族随 890 落库后写它必然 42P01。
+// ⇒ 协议三元组由会话族的镜像写入路径承接。
 
-// persistSystemFingerprint 把 entry.SystemFingerprint 落到
-// _request_logs_hot.system_fingerprint 专用列（2026-09-12 指纹写路径贯通，
-// 迁移 697 使其随 promote 进月度分区）。独立小 UPDATE 而非改 99 参数终态
-// UPDATE：零参数重排风险，且覆盖 UPDATE 主语句与 RowsAffected==0 回落
-// INSERT 两条路径（调用点在回落之后）。指纹每上游部署一份，last-write-wins；
-// entry 未携带时 no-op，历史语句集合不变。
+// ★ 2026-10-20（迁移 890，v1 族退役）：persistSystemFingerprint 整条删除——
+// 它把 entry.SystemFingerprint 落到 v1 宽表的专用列，v1 族随 890 落库后写它
+// 必然 42P01。指纹值由会话族承接（internal/sessionv2mirror/s1a_fields.go
+// 把 entry.SystemFingerprint 搬进会话族的写入载荷）。
 //
-// §9.51：本函数**不再**调用 markSystemFingerprintObserved()。它此前在
-// `if err == nil` 分支里 arm 进程内检测器，而本函数的两个调用点都在
-// `insertRequestLog` / `updateRequestLog` 的 `if logsWrite {}` 块内
-// ⇒ S4 停写后 arm 永不触发。arm 已移到 observeSystemFingerprint（门控之外）。
-// 落列与 arm 是**两件事**：前者是「把值写进 v1」，后者是「本实例见过这种流量」。
-func persistSystemFingerprint(ctx context.Context, tx pgx.Tx, entry *RequestLogEntry) error {
-	if entry == nil || entry.SystemFingerprint == nil || *entry.SystemFingerprint == "" {
-		return nil
-	}
-	_, err := tx.Exec(ctx, `
-		UPDATE _request_logs_hot
-		   SET system_fingerprint = $2
-		 WHERE request_id = $1
-	`, entry.RequestID, *entry.SystemFingerprint)
-	return err
-}
+// ⚠ 进程内的指纹观测 arm 不受影响：它在 observeSystemFingerprint 里，与写入
+// 解耦（详见该函数的注释）。
 
 // observeSystemFingerprint 记录「本实例见过带指纹的请求」。
 //
 // 这是指纹漂移检测器（bg/integrity_fingerprint_drift.go）**唯一**的进程内
 // arm 来源，经 SystemFingerprintObservedSince() 读出。
 //
-// §9.51：它**必须**与宽表写入解耦。此前 arm 发生在 persistSystemFingerprint
-// 内部，而那个函数只在 `if logsWrite {}` 里被调用 ⇒ S4 停写之后，
+// §9.51：它**必须**与持久化写入解耦。此前 arm 发生在 persistSystemFingerprint
+// 内部，而那个函数被写门的条件包着 ⇒ 停写之后，
 // 即便上游开始返回 `X-System-Fingerprint`，检测器也永远不会恢复扫描。
-// arm 记录的是**观测**（本进程处理过一个带指纹的请求），与该请求是否落进
-// v1 无关。
+// arm 记录的是**观测**（本进程处理过一个带指纹的请求），与该请求是否落库
+// 无关。
 //
-// 调用点选在 insertRequestLog / updateRequestLog 的门控之外：这两个函数写
-// usage_ledger 的部分本就在门控之外（S4 停写的契约是「宽表停写、计费照常」），
-// 所以它们会活过 v1 退役——arm 放在这里不会跟着宽表一起消失。
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 宽表写入分支整段删除后，本函数的
+// 调用点（insertRequestLog / updateRequestLog）已**无门控**——arm 永远生效，
+// 这正是 §9.51 想要的形态。
 func observeSystemFingerprint(entry *RequestLogEntry) {
 	if entry == nil || entry.SystemFingerprint == nil || *entry.SystemFingerprint == "" {
 		return
@@ -2765,344 +1802,32 @@ func shouldClaimFinalSuccess(entry *RequestLogEntry) bool {
 		!IsInternalAutoEntry(entry)
 }
 
-// claimSessionFinalSuccess marks the _request_logs_hot row for requestID as
-// THE single final success of its gw_session_id (v4 T7 / R6.2 / P1-7,
-// migration 532). At most one row per session keeps is_final_success=TRUE;
-// superseded success rows are left untouched (history is never rewritten —
-// the admin timeline labels them "superseded" at read time).
+// ★ 2026-10-20（迁移 890，v1 族退役）：claimSessionFinalSuccess 与
+// heapRequestLogsPartitions 整条删除——前者是 v1 终态成功认领的入口，后者是
+// 它依赖的 v1 月度分区名缓存（pg_class.relam='h' 的宽表月度分区）。
+// ⇒ 会话族的终态成功打标见 internal/sessionv2mirror/final_success_turn.go。
+
+// ★ 2026-10-20（迁移 890，v1 族退役）：claimSessionFinalSuccessExec 整条
+// 删除——它是 v1 族的终态成功认领（事务内的 UPDATE ... SET is_final_success=TRUE
+// + NOT EXISTS 半连接），v1 族随 890 落库后必然 42P01。
 //
-// The claim is a single self-guarding UPDATE inside the caller's transaction:
-//   - only terminal-success rows (success=TRUE AND request_status='success')
-//     with a non-empty gw_session_id can claim;
-//   - NOT EXISTS checks both the hot table and the promoted partition parent
-//     (_request_logs), so a claim already held by an earlier success — whether
-//     still hot or already promoted past the 7-day window — blocks the claim;
-//   - concurrent double claims lose the race against the partial unique
-//     index uq_request_logs_hot_final_success_session (SQLSTATE 23505).
+// ⇒ 认领的**仲裁**改由会话族自己做：session_turns 的 partial 唯一索引
+// （uq_session_turns_hot_final_success）在会话族内部保证「一个会话一个最终
+// 成功」；internal/sessionv2mirror 的 markTurnFinalSuccess 在 w.Write 返回
+// 之后给那一行打标（23505 = 本会话别的轮次已认领 ⇒ 第一个认领者站住）。
+
+// ★ 2026-10-20（迁移 890，v1 族退役）：registerFinalSuccessClaimOutbox 整条
+// 删除——它是 v1 终态成功认领的**补偿**登记（往 session_mirror_outbox 写一行
+// source='claim'），v1 认领没了，补偿也就没有对象。
+// ⇒ 会话族的终态成功打标见 internal/sessionv2mirror/final_success_turn.go。
+
+// ★ 2026-10-20（迁移 890，v1 族退役）：upsertRequestLogBodies 整条删除——
+// 它是 v1 正文族（宽表正文侧表）的**唯一**写入点，v1 族随 890 落库后写它必然
+// 42P01。PG 侧正文改由会话族的正文镜像承担（internal/sessionv2mirror 写
+// session_turn_bodies）。
 //
-// Storage note: The UPDATE targets _request_logs_hot (heap storage) NOT the
-// parent partitioned table request_logs. Citus Columnar partitions do NOT
-// support UPDATE/CTID scans (SQLSTATE 0A000: "UPDATE and CTID scans not
-// supported for ColumnarScan"). The hot table is heap and supports UPDATE.
-// The NOT EXISTS subquery checks the parent table (which may have Columnar
-// partitions) but that is a SELECT, which Columnar supports.
-//
-// Failure semantics (all non-fatal, business row still commits):
-//   - 23505: lost race → row degrades to a normal success (superseded);
-//   - any other error (e.g. 42703 on a pre-532 schema during rolling deploy):
-//     claim skipped with a warning, row degrades to an unmarked success that
-//     sql/scripts/report_duplicate_session_success.sql can report for manual
-//     backfill.
-
-// heapRequestLogsPartitionsCachedTTL — heap 月度分区名缓存有效期. 5 分钟
-// 即可 (月份切换罕见, partition manager 每月触发).
-const heapRequestLogsPartitionsCachedTTL = 5 * time.Minute
-
-// heapRequestLogsPartitions 返回 pg_class.relam='h' 的 request_logs_<YYYY>_<MM>
-// 月度分区名列表. 缓存 5 分钟. 查询失败返回上次缓存 (可能为 nil) + 不报错.
-// 缓存不存在时执行查询; 查询失败返回 (nil, err), 调用方 fallback 跳过守卫.
-func (c *Client) heapRequestLogsPartitions(ctx context.Context, tx pgx.Tx) []string {
-	c.heapPartitionsMu.RLock()
-	cached := c.heapPartitions
-	cachedAt := c.heapPartitionsCachedAt
-	c.heapPartitionsMu.RUnlock()
-	if len(cached) > 0 && time.Since(cachedAt) < heapRequestLogsPartitionsCachedTTL {
-		return cached
-	}
-	// 选用调用者传入的 tx (与 claim 在同一事务内, 读到一致快照);
-	// tx==nil (历史旧 caller) 时退化为不用缓存.
-	var names []string
-	rows, qerr := tx.Query(ctx, `
-		SELECT c.relname
-		  FROM pg_inherits i
-		  JOIN pg_class p ON p.oid = i.inhparent
-		  JOIN pg_class c ON c.oid = i.inhrelid
-		  JOIN pg_am am ON am.oid = c.relam
-		 WHERE p.relname = '_request_logs'
-		   AND am.amname = 'heap'
-		 ORDER BY c.relname`)
-	if qerr != nil {
-		// 查询失败不阻塞 claim: 返回上次缓存 (可能空) + 记 warn.
-		slog.Warn("heap partitions cache query failed, using stale or nil",
-			"error", qerr)
-		return cached
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err == nil {
-			names = append(names, n)
-		}
-	}
-	if err := rows.Err(); err == nil && names != nil {
-		c.heapPartitionsMu.Lock()
-		c.heapPartitions = names
-		c.heapPartitionsCachedAt = time.Now()
-		c.heapPartitionsMu.Unlock()
-		return names
-	}
-	return cached
-}
-
-func claimSessionFinalSuccess(ctx context.Context, c *Client, tx pgx.Tx, entry *RequestLogEntry) {
-	// 2026-08-25: 列存分区安全. 旧实现直接 `FROM _request_logs promoted` 半连接,
-	// 在 columnar 分区上会触发 0A000 (CTID scan over columnar). 改为只在
-	// pg_class.relam='h' 的 request_logs_<year>_<month> 月度分区里查, columnar
-	// 月份自动跳过. 没有 heap 月份时降级为跳过 (依赖 hot 唯一索引 + 8h 保留 +
-	// sql/scripts/report_duplicate_session_success.sql 兜底).
-	//
-	// 2026-09-12 (P2 冷迁移停滞根因): Client 由调用方 (*Client 方法) 直传,
-	// 不再走包级 holder + SetClaimClient. 2026-08-26 merge d2cbaf88b 回退
-	// main.go 后 holder 从未被重新接线, 生产 claim 一直走 nil 分支 — promoted
-	// 守卫整段跳过, 跨 8h promote 边界的长会话第二次成功 claim 出第二条
-	// is_final_success=TRUE, promote 撞 uq_<partition>_final_success_session
-	// (23505) 整批回滚, 冷迁移停摆 2.5 天. 直传后编译器保证接线不再可丢;
-	// c==nil 仅剩单测/退化场景 (守卫跳过, 依赖 promote 侧 695 自愈 demote).
-	//
-	// 2026-09-25 审计第八轮 (D12): 传 entry 而非 requestID — claim 置位成功
-	// 后要在同一事务内登记 session_mirror_outbox 补偿行 (registerFinalSuccessClaimOutbox).
-	var heaps []string
-	if c != nil {
-		heaps = c.heapRequestLogsPartitions(ctx, tx)
-	}
-	claimSessionFinalSuccessExec(ctx, tx, entry, heaps)
-}
-
-// claimSessionFinalSuccessExec is the actual implementation. heapPartitions
-// is the snapshot of pg_class.relam='h' request_logs_* partitions (already
-// quoted/identified); nil/empty means "skip the promoted-partition guard
-// entirely" (single-test path or transient cache failure).
-func claimSessionFinalSuccessExec(ctx context.Context, tx pgx.Tx, entry *RequestLogEntry, heapPartitions []string) {
-	if tx == nil || entry == nil || entry.RequestID == "" {
-		return
-	}
-	requestID := entry.RequestID
-	// The savepoint isolates the claim: without it a 23505 would abort the
-	// whole _request_logs transaction and drop the business row.
-	if _, err := tx.Exec(ctx, `SAVEPOINT gw_final_success_claim`); err != nil {
-		slog.Debug("final-success claim: savepoint failed, skipping",
-			"request_id", requestID, "error", err)
-		return
-	}
-
-	// 拼装 promoted-partition NOT EXISTS 子查询.
-	// 没有 heap 分区时退化 (依赖 hot 唯一索引 + 8h 保留 + 报告脚本兜底):
-	//   - hot 表唯一索引 uq_request_logs_hot_final_success_session 是硬保证
-	//     (23505 兜底并发双写);
-	//   - hot 保留窗口 8h (lifecycle.hot_retention_hours) + promote 周期 1h;
-	//     超 8h 的 session 早结束, 不可能再被并发 claim.
-	var promotedGuard string
-	if len(heapPartitions) > 0 {
-		// UNION ALL 多个 heap 分区. regclass::text 走类型校验避免注入.
-		parts := make([]string, 0, len(heapPartitions))
-		for _, p := range heapPartitions {
-			// 白名单: request_logs_<4digits>_<2digits>; 不合规直接跳过
-			if !heapPartitionNameRE.MatchString(p) {
-				continue
-			}
-			// 2026-09-26 审计第十轮 (D13): 臂内补 gw_session_id 非空谓词并从
-			// 投影里去掉 is_final_success — partial 唯一索引
-			// uq_<partition>_final_success_session 的谓词是
-			// (is_final_success AND gw_session_id IS NOT NULL AND <> ''),
-			// 原臂只过滤 is_final_success, planner 无法证明谓词蕴含而走
-			// Seq Scan (2026_09 1.27M 行 × 每次 claim 尝试; 252 实证
-			// EXPLAIN 从 Seq Scan 翻转为 Index Only Scan)。语义恒等: 外层
-			// WHERE 已要求 COALESCE(gw_session_id,'') <> '', 半连接相关
-			// 等值下 promoted 臂里 NULL/'' 行本就不可匹配。
-			parts = append(parts,
-				fmt.Sprintf(`SELECT gw_session_id FROM ONLY %s WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> ''`, quoteIdent(p)))
-		}
-		if len(parts) > 0 {
-			promotedGuard = "  AND NOT EXISTS (\n" +
-				"       SELECT 1 FROM (\n           " +
-				strings.Join(parts, "\n           UNION ALL\n           ") +
-				"\n       ) promoted\n" +
-				"        WHERE promoted.gw_session_id = _request_logs_hot.gw_session_id\n" +
-				"  )"
-		}
-	}
-	if promotedGuard == "" {
-		slog.Debug("final-success claim: no heap monthly partitions cached, skipping promoted-partition guard",
-			"request_id", requestID)
-	}
-
-	// R69 审计：热表臂与 promoted 臂同款补齐 gw_session_id 非空谓词，让
-	// planner 能证明与 uq_request_logs_hot_final_success_session 的 partial
-	// 谓词蕴含。语义恒等：外层 WHERE 已要求 COALESCE(gw_session_id,'')<>''，
-	// 等值相关下 NULL/'' 行本就不可匹配（与 2026-09-26 promoted 臂补齐同一
-	// 论证，252 EXPLAIN 翻转证据见该处注释）。
-	tag, err := tx.Exec(ctx, `
-		UPDATE _request_logs_hot
-		   SET is_final_success = TRUE
-		 WHERE request_id = $1
-		   AND success = TRUE
-		   AND request_status = 'success'
-		   AND COALESCE(gw_session_id, '') <> ''
-		   AND NOT EXISTS (
-		        SELECT 1
-		          FROM _request_logs_hot other
-		         WHERE other.gw_session_id = _request_logs_hot.gw_session_id
-		           AND other.is_final_success
-		           AND other.gw_session_id IS NOT NULL AND other.gw_session_id <> ''
-		           AND other.request_id <> _request_logs_hot.request_id
-		   )`+promotedGuard+`
-	`, requestID)
-	if err != nil {
-		_, rbErr := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT gw_final_success_claim`)
-		var pgErr *pgconn.PgError
-		// 23505 = unique_violation (lost the race against
-		// uq_request_logs_hot_final_success_session).
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			// Lost the concurrent claim race: this row stays a normal
-			// success (superseded by the winner). R6.2: 不回改历史行.
-			slog.Info("final-success claim superseded by concurrent winner",
-				"request_id", requestID)
-		} else {
-			slog.Warn("final-success claim degraded (non-fatal)",
-				"request_id", requestID, "error", err)
-		}
-		if rbErr != nil {
-			slog.Warn("final-success claim: rollback to savepoint failed",
-				"request_id", requestID, "error", rbErr)
-		}
-		return
-	}
-	if tag.RowsAffected() > 0 {
-		slog.Debug("final-success claim granted", "request_id", requestID)
-		// 2026-10-05 审计 §9.203: 让 session 族跟着认领同一枚标记。v1 的
-		// 认领是本次事务里的 SQL UPDATE, session 族的 turn 却在镜像 hook
-		// 之后异步写 —— 所以这里只把「认领成功」这个**事实**挂到 entry 上,
-		// 由 sessionv2mirror 在 w.Write 返回之后给那一行打标 (同一形态、
-		// 同一理由, 见 abandoned_turn.go)。
-		//
-		// ⚠ 必须设在 entry (调用方持有的那个指针) 上。updateRequestLog 的
-		// upsert-race 分支会 `fallback := *entry` 再走 insertRequestLog,
-		// 只改副本的话标志到此为止 —— 那是 T0Missing 已经踩过一次的坑。
-		entry.FinalSuccessClaimed = true
-	}
-	// Release is cosmetic (released at COMMIT anyway) and must not fail the tx.
-	//nolint:errcheck // best-effort
-	_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_final_success_claim`)
-	if tag.RowsAffected() > 0 {
-		// 载荷里带 final_success_claimed=true, 回放器据此给补写的 turn 补标
-		// (见 replay.go)。顺序重要: 必须在置位之后序列化。
-		registerFinalSuccessClaimOutbox(ctx, tx, entry)
-	}
-}
-
-// registerFinalSuccessClaimOutbox enqueues a source='claim' compensation row
-// into session_mirror_outbox whenever a final-success claim was actually
-// granted, in the SAME transaction (2026-09-25 252 audit round 8, D12 —
-// the 4th and final recommendation of the storage-merge observation loop).
-//
-// Why: the v1 claim (is_final_success=TRUE, same-tx UPDATE) and the v2
-// mirror write (session_turns, best-effort hook AFTER commit) are two
-// phases. When the hook phase fails AND its own outbox registration fails
-// (or the process dies in the window), the claimed row permanently has no
-// mirrored turn and no durable trace — the reaper cannot replay what was
-// never registered (GLOBAL_G2 misses of 09-12/09-18/09-19/09-20/09-22, 5
-// rows / 8 days). Registering on every granted claim closes the hole in
-// both directions:
-//   - mirror already succeeded → reaper replays through v2.Write
-//     (request_id-idempotent no-op) and deletes the row;
-//   - mirror missing → the replay IS the repair.
-//
-// Granted-claim volume is tiny (252 measured: 9 rows / 24h against 74k
-// requests), so the extra INSERT + one idempotent replay is noise.
-//
-// Best-effort like the claim itself: any failure logs a warning and leaves
-// the business transaction untouched. RLS on the outbox (FORCE, migration
-// 712) requires the tenant-bypass GUCs; they are set inside a dedicated
-// savepoint and restored after the INSERT so they never leak to the rest
-// of the business transaction (a ROLLBACK TO the savepoint also restores
-// them, per PG's savepoint-GUC semantics).
-func registerFinalSuccessClaimOutbox(ctx context.Context, tx pgx.Tx, entry *RequestLogEntry) {
-	if entry == nil || entry.GwSessionID == nil || *entry.GwSessionID == "" {
-		return
-	}
-	payload, err := json.Marshal(entry)
-	if err != nil {
-		slog.Warn("final-success claim outbox: payload marshal failed (non-fatal)",
-			"request_id", entry.RequestID, "error", err)
-		return
-	}
-	if _, err := tx.Exec(ctx, `SAVEPOINT gw_claim_mirror_outbox`); err != nil {
-		slog.Warn("final-success claim outbox: savepoint failed, skipping registration (non-fatal)",
-			"request_id", entry.RequestID, "error", err)
-		return
-	}
-	if _, err := tx.Exec(ctx, `SELECT set_config('app.current_role', 'super_admin', true), set_config('app.bypass_rls', 'true', true)`); err != nil {
-		slog.Warn("final-success claim outbox: RLS GUC lift failed, skipping registration (non-fatal)",
-			"request_id", entry.RequestID, "error", err)
-		_, _ = tx.Exec(ctx, `ROLLBACK TO SAVEPOINT gw_claim_mirror_outbox`)
-		_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_claim_mirror_outbox`)
-		return
-	}
-	tenantID := entry.TenantID
-	if tenantID == "" {
-		tenantID = "default"
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO public.session_mirror_outbox
-		    (tenant_id, request_id, session_id, source, fail_reason, payload)
-		VALUES ($1, $2, $3, 'claim', 'final_success_claim', $4::jsonb)
-		ON CONFLICT (request_id) DO NOTHING
-	`, tenantID, entry.RequestID, *entry.GwSessionID, string(payload)); err != nil {
-		slog.Warn("final-success claim outbox: registration failed (non-fatal)",
-			"request_id", entry.RequestID, "error", err)
-		_, _ = tx.Exec(ctx, `ROLLBACK TO SAVEPOINT gw_claim_mirror_outbox`)
-		_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_claim_mirror_outbox`)
-		return
-	}
-	// Restore the GUCs so the rest of the business transaction (outbox
-	// events, commit) runs with the pre-registration role context.
-	//nolint:errcheck // best-effort; rollback-to-savepoint restores on failure paths
-	_, _ = tx.Exec(ctx, `SELECT set_config('app.current_role', '', true), set_config('app.bypass_rls', 'false', true)`)
-	//nolint:errcheck // best-effort
-	_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_claim_mirror_outbox`)
-}
-
-// upsertRequestLogBodies writes request/response/outbound bodies to
-// request_logs_bodies_hot. Uses a single INSERT ... ON CONFLICT DO UPDATE
-// (migration 455 gave the hot table UNIQUE(request_id)). The previous
-// triple-UPDATE/INSERT/UPDATE pattern had two problems:
-//  1. First UPDATE was dead code — the row doesn't exist yet in request_logs_bodies_hot.
-//  2. Third UPDATE was redundant — step 2 (INSERT) already created the row.
-//
-// 2026-08-24 Phase 1: outbound_body is now also written here. The main
-// _request_logs_hot row keeps all three body columns NULL; readers that need
-// full bodies join through admin/body_resolver.go which falls back to the
-// dedicated body table.
-func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID, applicationCode, requestBodyJSON, responseBodyJSON, outboundBodyJSON string) error {
-	// Keep missing bodies as NULL so metadata-only updates cannot erase a body
-	// captured by the initial or successful request-log write.
-	reqJSON := requestBodyJSON
-	respJSON := responseBodyJSON
-	outJSON := outboundBodyJSON
-	// CO-5 compatibility: existing digest envelopes remain readable, but new
-	// request and response bodies retain their complete JSON payloads. This
-	// avoids discarding stream evidence before downstream audit consumers read it.
-	if requestBodiesSummaryEnabled(applicationCode) {
-		reqJSON = summarizeBodyJSON(reqJSON)
-		respJSON = summarizeBodyJSON(respJSON)
-		outJSON = summarizeBodyJSON(outJSON)
-	}
-	// Use now() as ts for the hot table. Migration 455 (2026-07-23) changed the
-	// unique key to UNIQUE(request_id); ON CONFLICT must be (request_id), NOT
-	// (request_id, ts) — the composite form triggers 42P10 at runtime.
-	// The UPDATE clause only replaces a body when this write supplied one.
-	_, err := tx.Exec(ctx, `
-	INSERT INTO _request_logs_bodies_hot (request_id, ts, request_body, response_body, outbound_body)
-				SELECT $1, rl.ts, NULLIF($2, 'null')::jsonb, NULLIF($3, 'null')::jsonb, NULLIF($4, 'null')::jsonb
-				FROM _request_logs_hot rl
-				WHERE rl.request_id = $1
-				ON CONFLICT (request_id) DO UPDATE
-					SET request_body  = COALESCE(EXCLUDED.request_body, _request_logs_bodies_hot.request_body),
-					    response_body = COALESCE(EXCLUDED.response_body, _request_logs_bodies_hot.response_body),
-					    outbound_body = COALESCE(EXCLUDED.outbound_body, _request_logs_bodies_hot.outbound_body)
-			`, requestID, reqJSON, respJSON, outJSON)
-	return err
-}
+// ⚠ 本包的文件系统正文镜像（mirrorRequestBodies）**不受影响**：它不碰 PG，
+// 仍由 requestLogsWriteEnabled() 门控。
 
 func intptr(v int) *int           { return &v } //nolint:unused
 func floatptr(v float64) *float64 { return &v } //nolint:unused
@@ -3153,7 +1878,7 @@ func qualityActionsArgStr(raw json.RawMessage) string {
 }
 
 // attachmentsArg returns a value safe to bind to the NULLABLE
-// _request_logs.attachments JSONB column. Unlike quality_flags /
+// the request-log row's attachments JSONB column. Unlike quality_flags /
 // quality_fix_actions this column has no NOT NULL constraint, so an
 // empty payload binds SQL NULL (NULL attachments == "无附件"), which
 // is the intended semantic. The CAST($73 AS jsonb) in the INSERT
@@ -3213,7 +1938,7 @@ func strPtrToJSON(s *string) string {
 }
 
 // streamChunksSentArg returns a value safe to bind to the NOT NULL
-// _request_logs.stream_chunks_sent integer column. The column has a
+// the request-log row's stream_chunks_sent integer column. The column has a
 // DEFAULT 0 but, like every other NOT NULL column in the explicit
 // INSERT, an explicit bind OVERRIDES the default — and binding a
 // nil *int from Go produces SQL NULL, tripping SQLSTATE 23502. We
@@ -3283,7 +2008,7 @@ func intValue(p *int) int {
 
 // SearchText 是 searchText 的导出包装（§9.98）。
 //
-// 为什么需要它：v1 把这列写在 _request_logs.search_text，而
+// 为什么需要它：v1 把这列写在宽表的 search_text，而
 // session_turns.search_text **列已建、字段已在 ProcessedRequest、INSERT 也已绑定**，
 // 唯独**没有源**——internal/sessionv2mirror 拿不到未导出的 searchText，
 // 于是 s1a_fields.go 那行注释「缺源，保持零值」就一直成立，
@@ -3959,9 +2684,8 @@ func lookupProviderName(ctx context.Context, tx pgx.Tx, providerID *int) string 
 	return code
 }
 
-// lookupTurnNoSessionSQL / lookupTurnNoV1FallbackSQL 是 outbox turn_no 的
-// 会话族权威读与 v1 回退（S3 波 2 停写切换，见 lookupTurnNumber 注释）。
-// 提升为包级变量是给形状钉桩用的。
+// lookupTurnNoSessionSQL 是 outbox turn_no 的**会话族权威读**（hot ∪ parent
+// 两腿 MAX(turn_no)）。提升为包级变量是给形状钉桩用的。
 var lookupTurnNoSessionSQL = `
 		SELECT COALESCE(MAX(turn_no), 0)
 		FROM (
@@ -3971,16 +2695,10 @@ var lookupTurnNoSessionSQL = `
 		) session_turn_nos
 	`
 
-var lookupTurnNoV1FallbackSQL = `
-		SELECT COUNT(*)
-		FROM _request_logs
-		WHERE gw_session_id = $1
-		  AND ts >= NOW() - INTERVAL '30 days'
-	`
-
-// lookupTurnNumber queries _request_logs to count the turn number for this session.
-// Returns the next turn number (1-based). If sessionID is empty or query fails, returns 1.
-// Uses the same transaction tx to maintain consistency.
+// lookupTurnNumber queries the session family to count the turn number for
+// this session. Returns the next turn number (1-based). If sessionID is empty
+// or query fails, returns 1. Uses the same transaction tx to maintain
+// consistency.
 func lookupTurnNumber(ctx context.Context, tx pgx.Tx, sessionID string) int {
 	if sessionID == "" {
 		return 1
@@ -3990,25 +2708,17 @@ func lookupTurnNumber(ctx context.Context, tx pgx.Tx, sessionID string) int {
 	// Since we're in the middle of the INSERT transaction, we need to count INCLUDING
 	// the row we just inserted. The turn_no should be: COUNT(*) for this session.
 	//
-	// 2026-09-17 audit: _request_logs is RANGE-partitioned on ts. A bare
-	// gw_session_id predicate disables partition pruning, so every terminal
-	// request probed the gw_session_id index of EVERY monthly partition
-	// inside the write transaction. The 30d window restores pruning (1-2
-	// partitions); sessions outliving it restart turn numbering, which is
-	// acceptable — real sessions are far shorter, and the session/v2
-	// aggregator owns the authoritative turn_no anyway.
-	// 2026-10-13 S3 波 2（停写切换）：S4 停写后新请求不再进 _request_logs，
-	// v1 计数对新会话恒 0、outbox turn_no 恒 1。改为会话族权威读：turns
-	// 两腿 MAX(turn_no)（session_id 等值，idx_session_turns_session）；
-	// 0 时回退 v1 母表原查询（镜像前历史会话）。会话轮写与 outbox 发射
-	// 并发时本读可能少计在途一轮——该值本就是提示性载荷，权威 turn_no
-	// 归 session/v2 aggregator（见上）。
+	// 2026-10-20（迁移 890，v1 族退役）：原实现先读会话族两腿 MAX(turn_no)
+	// （session_id 等值，idx_session_turns_session），0 时回退 v1 母表计数
+	// （镜像前历史会话）——该回退腿随 890 落库后必然 42P01，已整段删除。
+	// ⇒ 现在两腿恒 0 时 turn_no 取 1（会话首轮）。
+	// 会话轮写与 outbox 发射并发时本读可能少计在途一轮——该值本就是提示性载荷，
+	// 权威 turn_no 归 session/v2 aggregator（见上）。
 	var count int
 	err := tx.QueryRow(ctx, lookupTurnNoSessionSQL, sessionID).Scan(&count)
 
-	if err == nil && count == 0 {
-		err = tx.QueryRow(ctx, lookupTurnNoV1FallbackSQL, sessionID).Scan(&count)
-	}
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 回退腿整段删除——v1 族随
+	// 890 落库后再读它必然 42P01。两腿 MAX(turn_no) 恒 0 时 turn_no 取 1（首轮）。
 
 	if err != nil {
 		// Non-fatal: log and fallback to 1

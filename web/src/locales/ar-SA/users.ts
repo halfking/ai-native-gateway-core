@@ -2,7 +2,7 @@
 export default {
   title: 'User Management',
   create: 'Create User',
-  readOnlyNotice: '📖 You are a tenant admin with read-only access. You can view and reset passwords for users in your tenant, but cannot create, edit, or delete users.',
+  readOnlyNotice: '📖 أنت مسؤول مستأجر بصلاحية قراءة فقط. تستطيع عرض كلمات مرور مستخدمي مستأجرك وإعادة تعيينها، لكن لا تستطيع إنشاء المستخدمين أو تعديلهم أو حذفهم.',
   filter: {
     byTenant: 'Filter by tenant:',
     allRoles: 'كل الأدوار',
@@ -15,13 +15,11 @@ export default {
   },
   table: {
     createdAt: 'تاريخ الإنشاء',
-    id: 'ID',
     username: 'Username',
     displayName: 'Display Name',
     email: 'Email',
     tenant: 'Tenant',
     role: 'Role',
-    mustChangePassword: 'Must Change Password',
     status: 'Status',
     lastLogin: 'Last Login',
     actions: 'Actions',
@@ -39,7 +37,6 @@ export default {
   },
   mustChangePassword: {
     pending: 'Pending',
-    completed: 'Completed',
   },
   status: {
     enabled: 'Enabled',
@@ -62,7 +59,7 @@ export default {
       submit: 'Create',
     },
     reset: {
-      title: 'Reset Password — {name}',
+      title: 'Reset Password: {name}',
       newPassword: 'New Password',
       passwordPlaceholder: 'At least 8 characters',
       confirmPassword: 'Confirm New Password',
@@ -80,10 +77,11 @@ export default {
     deleteFailed: 'Delete failed',
     resetFailed: 'Reset failed',
     passwordMismatch: 'Passwords do not match',
-    passwordComplexity: 'Password does not meet complexity requirements',
+    passwordComplexity: 'كلمة المرور لا تستوفي متطلبات التعقيد',
     resetPasswordMismatch: 'Passwords do not match',
-    resetPasswordComplexity: 'Password does not meet complexity requirements',
+    resetPasswordComplexity: 'كلمة المرور لا تستوفي متطلبات التعقيد',
     toggleFailed: 'Operation failed',
+    changePasswordFailed: 'تعذّر تغيير كلمة المرور. أعد المحاولة.',
   },
   passwordMatch: {
     matched: '✓ Passwords match',
@@ -138,5 +136,6 @@ export default {
     keyCount: 'مفاتيح API',
     viewAllLogs: 'عرض الكل في السجلات',
     requests: 'الطلبات',
+    loadStatsFailed: 'تعذّر تحميل إحصائيات المستخدمين. أعد المحاولة.',
   },
 }

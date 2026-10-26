@@ -99,8 +99,10 @@ func CollectForeignMarkers(body []byte) []string {
 	}
 	// A peer that already restores re-spelled markers can hand one back in a
 	// mutated spelling. Recognize those too, so the exemption still matches the
-	// canonical token the peer holds.
-	for _, span := range loosePlaceholderSpanPattern.FindAllStringIndex(string(body), -1) {
+	// canonical token the peer holds. r1039: the span finder also knows the
+	// full-width spelling, so a peer that re-spelled the marker on a CJK
+	// keyboard is still recognized.
+	for _, span := range looseMarkerSpans(string(body)) {
 		candidate := string(body[span[0]:span[1]])
 		if PlaceholderPattern.MatchString(candidate) {
 			continue
@@ -318,6 +320,15 @@ const fullWidthBraceLeadByte = 0xEF
 //
 // 修法：保留裸形语义，把成本拉回 memchr 量级——两条 memchr 分别定位
 // '{'/0xEF 与候选首字节，只在命中处做定长比较；全程不拷贝 body。
+//
+// 2026-10-20（r1039）：全角拼写此前**整个看不见**：CJK 输入法把标记写成
+// "ＳＥＮＳＩＴＩＶＥ：ｓｅｃｒｅｔ：１" 时，ASCII 词扫描看不见它，于是
+// markerSpans 在正则跑起来之前就提前返回 false，标记原样到达客户端。
+//
+// 这个字节形态的门**本来就已经覆盖**了全角形态：全角码位的首字节就是 0xEF，
+// 与全角花括号共用同一条 memchr（fullWidthBraceLeadByte）。真正缺判定的是
+// 字符串形态的那个门——它用的是精确的 strings.ContainsAny("{｛")，全角标记词
+// 过不去——所以判定加在 mayContainMarkerText 上。
 func mayCarryMarker(payload []byte) bool {
 	if bytes.IndexByte(payload, '{') >= 0 || bytes.IndexByte(payload, fullWidthBraceLeadByte) >= 0 {
 		return true
@@ -327,11 +338,16 @@ func mayCarryMarker(payload []byte) bool {
 
 // mayContainMarkerText is mayCarryMarker for callers that already hold the
 // payload as a string, so the conversion happens once per probe.
+//
+// 2026-10-21（r1039 续轮第三轮）：标记词的判定从「全 ASCII 词」或「全全角词」
+// 的**析取**改成「逐字符各自决定宽度」的**合取**（containsMarkerWordAnyWidth）。
+// 混拼形态（"ＳENSITIVE：phone" / "SENSITIVＥ:phone"）在旧判据下两者皆不成立
+// ⇒ 折宽副本不构造 ⇒ 生产扫描器看不见 ⇒ 标记原样到客户端（实测 0 spans）。
 func mayContainMarkerText(text string) bool {
 	if strings.ContainsAny(text, "{｛") {
 		return true
 	}
-	return containsFoldCaseWord(text, placeholderMarkerWord)
+	return containsMarkerWordAnyWidth(text)
 }
 
 // asciiLower folds one ASCII byte to lower case, leaving every other byte
@@ -497,12 +513,16 @@ func allMarkerSpansForeign(text string, foreign foreignMarkerSet) bool {
 // form and hid it from every probe built on this function
 // (placeholderCandidate / hasReservedPlaceholder / containsNonForeignMarker);
 // mayCarryMarker now admits the bare spelling and this function mirrors it.
+//
+// r1039: the span finder also admits the full-width spelling of the bare
+// form, so a marker re-spelled on a CJK keyboard is visible to the residual
+// probes instead of passing as clean.
 func markerSpans(text string) []string {
 	if !mayContainMarkerText(text) {
 		return nil
 	}
 	var spans []string
-	for _, span := range loosePlaceholderSpanPattern.FindAllStringIndex(text, -1) {
+	for _, span := range looseMarkerSpans(text) {
 		candidate := text[span[0]:span[1]]
 		if PlaceholderPattern.MatchString(candidate) {
 			spans = append(spans, candidate)

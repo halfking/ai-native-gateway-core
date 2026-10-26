@@ -129,11 +129,17 @@ func TestMigration527_DurableGoalStateLifecycleIntegration(t *testing.T) {
 	// information_schema.columns on an installer-shaped gate database, 2026-10-02).
 	// This insert supplied only tenant_id and failed 23502 on session_id, the
 	// first missing one; the other two would have failed next.
-	exec(`INSERT INTO handoff_logs (session_id, tenant_id, trigger_reason, tokens_at_handoff)
+	// ⚠ 2026-10-21（R60 轮）：父行必须插进 **handoff_logs_hot**，不是 handoff_logs。
+	// 迁移 517 建 FK 时目标是**动态**的：handoff_logs_hot 存在就指它，否则才指 handoff_logs
+	// （sql/migrations/startup/517_handoff_pending_confirmations.sql:70/73）。
+	// 而生产的产品路径写的正是 handoff_logs_hot 并取它的 id
+	// （domains/hooks/handoff/confirmation_pg.go:129/162）⇒ ⇒ 本测试原先插 handoff_logs
+	// ⇒ FK（指向 handoff_logs_hot）必然 23503 ⇒ **是测试的形态假设错了，不是产品缺陷**。
+	exec(`INSERT INTO handoff_logs_hot (session_id, tenant_id, trigger_reason, tokens_at_handoff)
 	      VALUES ('r527-session-a', 'tenant-a', 'manual', 10) RETURNING id`)
 	var logID int
-	if err := conn.QueryRow(ctx, `SELECT id FROM handoff_logs WHERE tenant_id='tenant-a' ORDER BY id DESC LIMIT 1`).Scan(&logID); err != nil {
-		t.Fatalf("lookup handoff_logs id: %v", err)
+	if err := conn.QueryRow(ctx, `SELECT id FROM handoff_logs_hot WHERE tenant_id='tenant-a' ORDER BY id DESC LIMIT 1`).Scan(&logID); err != nil {
+		t.Fatalf("lookup handoff_logs_hot id: %v", err)
 	}
 	_, err = conn.Exec(ctx, `INSERT INTO handoff_pending_confirmations (
 		id, api_key_id, previous_session_id, token_hash, status, expires_at,

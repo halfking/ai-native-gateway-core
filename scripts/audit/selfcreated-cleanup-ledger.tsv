@@ -1,0 +1,39 @@
+# scripts/audit/selfcreated-cleanup-ledger.tsv —— 「自建资源」回收路径的人工裁决台账
+# 生成：2026-10-21 R94 轮（trap 纪律全仓推广）
+# 量具：scripts/audit/measure-selfcreated-cleanup.sh（★ 输出是【候选集】，不是结论 ⇒ 结论在本台账）
+#
+# 列：文件	建的是什么	一次性?	兜底机制	有提前退出?	裁决	依据
+#   ★ 裁决取值：已修 / 无泄漏 / 无回收义务 / 静态假阳性
+#   ★ 「无回收义务」= 建的是长驻库（部署/迁移/远端）⇒ 本来就不该删
+#   ★ 「静态假阳性」= 量具按名命中，但它根本不建库
+#
+# ★★ 为什么必须有这张台账：静态判据的假阳性类**无界**（本轮实测到 7 类：
+#   ① 注释 ② 正则字面量 ③ 量具脚本自匹配 ④ 长驻库 ⑤ 测试夹具里的字面量
+#   ⑥ 日志字符串 ⑦ 只拼 query 字符串不真建库）
+#   ⇒ 静态判据只能**缩小候选集 + 暴露判据盲区**；结论必须逐条读源码人工裁决。
+internal/testdb/testdb.go	scratch 库（scratchName(t, baseDSN)）	一次性	Go defer + 建库前 DROP（自愈）	是	无泄漏	Go 的 defer 覆盖 panic；建库前先 DROP ⇒ 上次泄漏被下次自愈；源码自带 leak check 注释
+scripts/_lib/db-init-lib.sh	${db}_verify	一次性	★本轮加的 EXIT trap（保存并恢复调用方的 trap）	是	已修	修前：回收在函数尾部 ⇒ 建库后 4 条提前终止（return 1/exit 1/exit 2/exit 3）全部跳过 ⇒ 每次失败留一个 verify 库
+scripts/audit/fresh_schema_integration_test.go	dbName	一次性	Go defer	是	无泄漏	defer dropDatabase ⇒ 覆盖全部退出路径；建库前先 DROP
+scripts/audit/fresh-schema-from-migrations.sh	$FRESH_DB	一次性	trap cleanup EXIT	是	无泄漏	trap + 建库前 DROP；cleanup 里 DROP IF EXISTS
+scripts/audit/measure-factsource-cost-matrix.sh	itgate_factmatrix_a1/_b1/factmatrixprod_b2	一次性	EXIT + INT/TERM 双 trap（R93/R94 轮修）＋ cleanup_dbs 内 pg_terminate_backend（断会话）＋ SET statement_timeout='120s'（服务端超时，同一 psql 会话 ⇒ 实测生效）＋ DROP ... WITH (FORCE)	是	已修	修前：mk_db() 的量具自检失败会 return 1 ⇒ 调用方 continue（不退出）⇒ 已建好的库留在库里（尾部回收只在全部跑完后执行）｜★ R99 轮·续十四 复核并行会话的告警（『trap 兜底用的正是会挂的那条语句』）：该告警的**机制成立、引用证据已过期**⇒ 它引用的产物 /tmp/r92_matrix_after2.log 产于 11:33、其读的提交 e965ae92f 产于 13:44，而防卡保护 2314caa05(18:14) 与超时值订正 5c907ed3a(20:06) 均在其后⇒ ★ 实测 psql 多 -c 的会话语义：同一条 psql 的多个 -c 属**同一会话** ⇒ SET 对后续 DROP **生效**（对照：两次独立 psql ⇒ SHOW statement_timeout=0）⇒ ★ 故『当前代码仍会卡』不成立；本行第 4 列已更新为当前真实形态
+scripts/audit/probe-onetime-db-shape.sh	$DB（默认 itgate_r59_shape，DB_NAME 可覆盖）	一次性	★本轮加的 EXIT trap	是	已修	修前：回收在尾部 ⇒ 建库后 3 条 exit 2（建库/prereqs/基线失败）全部跳过 ⇒ 每次失败留一个 ~1 GB 的库；且 DB_NAME 每会话独立 ⇒ 开头的自愈 DROP 救不了别的名字
+scripts/audit/run-integration-gate.sh	$GATE_DB	一次性	trap	是	无泄漏	trap + 建库前 DROP
+scripts/audit/run-session-storage-stream.sh	一次性 docker 容器里的 session_ingest_test / session_settings_test	一次性容器	trap cleanup EXIT（docker rm -fv 整个容器）	是	无泄漏	★ 库建在**一次性容器**里 ⇒ 容器删了库就没了 ⇒ 比「逐库 DROP」更原子；量具 C3（找 DROP DATABASE）为 0 是假信号
+scripts/audit/verify_892_local.sh	$DB	一次性	trap + 建库前 DROP	是	无泄漏	建库前先 DROP IF EXISTS ⇒ 自愈
+scripts/audit/verify_892_patrol_ab.sh	$DB	一次性	trap + 建库前 DROP	是	无泄漏	同上
+scripts/audit/verify_892_patrol_e2e.sh	$DB	一次性	trap + 建库前 DROP	是	无泄漏	同上
+scripts/audit/verify_archive_orphan_local.py	itgate_14323	一次性	★本轮加的 atexit	是	已修	修前：只在正常跑完时 DROP ⇒ main() 的 return 2 经 sys.exit(main()) 变成脚本退出 ⇒ 跳过回收
+scripts/audit/verify_columnar_bulk_write_local.py	itgate_14325	一次性	★本轮加的 atexit	是	已修	修前：setup() / rebuild_source() 的 sys.exit(2)（失败路径）全部跳过回收
+scripts/audit/verify_promote_wal_cost_local.py	DB	一次性	try/finally	是	无泄漏	finally 里 DROP IF EXISTS ⇒ 覆盖 sys.exit 与异常
+scripts/audit/verify-session-family-p0-realdb.sh	$CLONE_DB	一次性	trap	是	无泄漏	trap
+scripts/deploy-lib.legacy/smart-discovery.sh	llm_gateway	长驻	无	是	无回收义务	部署脚本建的是**长驻库** ⇒ 本来就不该删（且它在 legacy 目录）
+scripts/deploy-local.sh	$dbname	长驻	无	是	无回收义务	本地部署的长驻库
+scripts/deploy-seamless-docker.sh	$DD_PG_DB	长驻	无	是	无回收义务	部署脚本建的是长驻库
+scripts/lib/pg-instance-connections.sh	不建库（只生成 query 字符串给调用者）	不适用	无	否	静态假阳性	★ 第 164 行只是 `query="SELECT format('CREATE DATABASE %I ...')"` ⇒ 它不执行建库 ⇒ 无回收义务
+scripts/local-deploy-test.sh	$PG_DB	长驻（本地部署）	无	是	无回收义务	本地部署的长驻库
+scripts/local-dev/ensure-llm-gateway-pg-role.sh	$PG_DB	长驻	无	是	无回收义务	角色初始化脚本建的是长驻库
+scripts/local-r112-migrate.sh	$TARGET_DB	长驻迁移目标	无	是	无回收义务	迁移目标库是长驻的
+scripts/omnifree/e2e-verify.sh	$TEST_DB_NAME	一次性	trap	是	无泄漏	trap
+scripts/sync-gateway-db-to-211.sh	$TGT_DB	远端长驻	无	是	无回收义务	同步到 211 的目标库是长驻的
+scripts/ursmcheck/datasource_env_target_guard_test.go	不建库（只分析源码里的 CREATE DATABASE 文本）	不适用	无	否	静态假阳性	★ 第 77 行是 `regexp.MustCompile(`(?i)CREATE\s+DATABASE`)`、第 325 行是**测试夹具**里的字面量 ⇒ 它不建库
+scripts/user/client-deploy.sh	$POSTGRES_DB	长驻	无	是	无回收义务	客户端部署脚本建的是长驻库

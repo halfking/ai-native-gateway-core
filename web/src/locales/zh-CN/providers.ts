@@ -180,7 +180,6 @@ export default {
     drawerTitle: '管理凭据 — {name}',
     refresh: '刷新',
     addBtn: '+ 凭据',
-    empty: '暂无凭据，点击「+ 凭据」添加',
     table: {
       id: '凭据',
       status: '状态',
@@ -200,7 +199,7 @@ export default {
       disabled: '停用',
     },
     row: {
-      idTrustLine: '#{id} · {trust}',
+      idTrustLine: '#{id}：{trust}',
       healthProbeModel: 'Probe {model}',
       apiOk: 'API 绿',
       apiOkTitle: '模型清单 API 验证通过',
@@ -213,11 +212,11 @@ export default {
       slotFull: '已满',
       slotFree: '余 {free}',
       slotUnlimited: '无限（0=不限）',
-      usageSeparator: '次 · ',
+      usageSeparator: '次：',
       balanceLabel: '余额',
       // migration 721 (2026-09-18): balance provenance + on-demand refresh.
       balanceSourceApi: 'API 探测',
-      balanceSourceManual: '手工输入 · 24h 内自动探测不覆盖',
+      balanceSourceManual: '手工输入：24h 内自动探测不覆盖',
       balanceRefreshTooltip: '立即调用厂商余额 API（GET，不消耗 token）',
       balanceRefreshFailed: '余额探测失败',
       balanceUnsupported: '该厂商无公开余额 API（套餐类凭据请看套餐配额字段）',
@@ -254,6 +253,7 @@ export default {
       saveFailed: '保存凭据失败',
       toggleFailed: '操作失败',
     },
+    empty: '暂无凭据，点击「+ 凭据」添加',
   },
   // 2026-08-31: 供应商软删除（DELETE /api/providers/{id}）—— 行保留
   // 在表里但 deleted_at 非空，所有列表/路由表均不再返回。
@@ -270,18 +270,17 @@ export default {
     providerStarted: '检测已启动',
     providerRunning: '已在检测中',
     providerFailed: '检测失败',
-    credentialStatusPrefix: '状态: {status} · ',
+    credentialStatusPrefix: '状态: {status}：',
     credentialModels: '模型接口正常',
     credentialProbeOk: '探活通过',
     credentialUnreachable: '不可用',
     credentialFailed: '检测失败',
-    diagnoseFailed: '诊断失败',
+    diagnoseFailed: '诊断没能完成，请重试',
   },
   diagnose: {
     title: '供应商诊断 — 实际请求/响应抓包',
     subtitle: '(凭据已脱敏)',
     loading: '诊断中…',
-    summary: '共 {n} 个凭据，点击行展开详细请求/响应抓包',
     table: {
       credential: '凭据',
       modelSource: '模型源',
@@ -311,6 +310,7 @@ export default {
     errHeader: '⚠️ 错误',
     modelsHeader: '✅ 解析到的模型 ({n})',
     modelsTruncated: '… 共 {n} 个',
+    summary: '共 {n} 个凭据，选中任意一行可展开详细请求/响应抓包。',
   },
   bgStatus: {
     panelTitle: '后台任务状态',
@@ -343,7 +343,7 @@ export default {
     day: '天前',
   },
   error: {
-    loadFailed: '加载失败',
+    loadFailed: '供应商列表没能加载出来，请重试',
   },
   common: {
     button: {
@@ -376,15 +376,15 @@ export default {
   emergencyFailed: '紧急维护失败',
   // ── 2026-09-05: 设置与维护 · 生命周期状态 chips + 人工禁用状态 ──
   lifecycleTitle: '生命周期',
-  lifecycleHint: '点击状态立即保存生效；从「在用」切出需二次确认',
+  lifecycleHint: '选择状态后立即保存生效；从「在用」切出需二次确认',
   lifecycleLabelActive: '在用',
   lifecycleLabelDisabled: '停用',
   lifecycleLabelSuspended: '暂停',
   lifecycleLabelRetired: '退役',
-  lifecycleHintActive: 'active · 正常参与路由',
-  lifecycleHintDisabled: 'disabled · 人工停用，不参与路由',
-  lifecycleHintSuspended: 'suspended · 临时暂停，不参与路由',
-  lifecycleHintRetired: 'retired · 已退役，不再恢复',
+  lifecycleHintActive: 'active：正常参与路由',
+  lifecycleHintDisabled: 'disabled：人工停用，不参与路由',
+  lifecycleHintSuspended: 'suspended：临时暂停，不参与路由',
+  lifecycleHintRetired: 'retired：已退役，不再恢复',
   lifecycleCurrent: '当前',
   lifecycleChangeConfirm: '确认将生命周期从「在用」切换为「{label}」（{value}）？\n该凭据将不再参与路由，可随时切回「在用」恢复。',
   lifecycleChangeDone: '生命周期已切换为「{label}」。',

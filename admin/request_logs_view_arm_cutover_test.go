@@ -60,23 +60,16 @@ import (
 // 括号里的列与 verdict 由本文件的门**实测**得出（`go test -v` 即可看到），
 // **不要手抄**：手抄的列清单从第一次提交起就开始腐烂。
 var viewArmCutoverReaders = map[string]string{
-	"admin/auto_route.go":         "**work_type 是主要风险**：verdict=repoint-empty，session 臂上 work_type 实测 0.00%。切换后按 work_type 过滤 ⇒ 返回空集，接口仍 200",
-	"admin/credential_monitor.go": "verdict=repoint-gap-only：依赖 error_kind 这类「v1 有、session 臂无对应源」的列，切换后监控维度会缺",
-	"admin/memora_handlers.go":    "**work_type + request_preview/response_preview**：verdict=repoint-empty。preview 在 session 臂约 39%，切换后摘要输入变「有轮次、无预览」",
-	"admin/no_topic_session.go":   "**work_type + preview 列**：verdict=repoint-empty。preview 在 session 臂约 39%",
-	"admin/session_extract.go":    "**依赖面最窄的一个**（6 列）但含 work_type：verdict=repoint-empty",
-	// admin/session_online.go 于 2026-10-15 出列：改读 session_summaries，不再 JOIN 视图。
-	"admin/session_timeline_query.go":      "**work_type + preview 列**：verdict=repoint-empty。会话抽取页按 work_type 过滤会空",
-	"domains/sessionforensics/export.go":   "**混合读方**（既经视图读又直读底表），两个桶都收它；verdict=repoint-empty。切换后取证导出会缺 work_type/attachments",
-	"domains/sessionsummary/summarizer.go": "verdict=repoint-gap-only ⚠ **后果最隐蔽**：摘要输入变空不会失败，会生成「看起来正常」的错摘要——比失败更难发现",
-	// 以下两条于 2026-10-13（S3 波 2 停写切换）登记：两文件本轮改读
-	// canonical 视图后进入「经视图读 v1 臂 + 读了会话族供不上的列」桶。
-	"admin/work_types.go": "**work_type 维度**：verdict=repoint-empty。会话侧 work_type 近乎恒空，" +
-		"v1 臂最终退役时 by_work_type 桶对新流量消失（task_type 桶 by_l1_task 不受影响）；" +
-		"停写切换期（本轮）session 臂已供数，非即时失效",
-	"db/db.go": "**契约缺口列名的定义者**（repoint-empty 口径）：routingAnalyticsMVSQL/recent_success_rate " +
-		"等运行时 SSOT 重建体经视图取数，列名单本身即 canonical 契约——它是投影定义者而非运营读方，" +
-		"切换时随视图体的最后一次重建一并处置",
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空**。
+	//
+	// 这张表是「切换时的迁移清单」——对象是「经 canonical 视图读 **v1 臂**」的读方。
+	// 890 之后 canonical 视图 = **会话族两臂体**（**没有 v1 臂**了）⇒
+	// 「切换那一刻视图会少一条臂」这件事**不再发生** ⇒ 清单没有对象。
+	//
+	// ⇒ 本表保留（不删）：它守的是「**不许出现新的 v1 臂依赖**」。
+	//
+	// ⚠ 不要在这里手填「已知的例外」—— 已退役关系的残留引用登记在
+	// retiredV1ReferenceExceptions（生产缺陷台账）。
 }
 
 // TestViewArmCutoverReadersRegistryIsConsistent gates the cutover manifest in
@@ -99,6 +92,29 @@ func TestViewArmCutoverReadersRegistryIsConsistent(t *testing.T) {
 	//     两者的处置时点不同，混写会让切换清单里混进一个早就该改的文件。
 	//  2. viewArm ⊆ viewArmCutoverReaders ∪ retirementBreakers
 	//     每个实测到的依赖**必须被解释**。落在并集之外的那个才是真正的洞。
+	// ★ 890 之后（2026-10-20）：切换清单必须为空，且实测总体必须为空。
+	//
+	// canonical 视图 890 之后是会话族两臂体（**没有 v1 臂**）⇒
+	// 「经视图读 v1 臂」的读方不存在 ⇒ 清单与实测总体都必须为空。
+	if len(viewArmCutoverReaders) > 0 {
+		var files []string
+		for f := range viewArmCutoverReaders {
+			files = append(files, f)
+		}
+		sort.Strings(files)
+		t.Errorf("切换清单仍有 %d 条登记 —— 890 之后 canonical 视图没有 v1 臂了：\n  %s",
+			len(files), strings.Join(files, "\n  "))
+	}
+	if len(viewArm) > 0 {
+		var files []string
+		for f := range viewArm {
+			files = append(files, f)
+		}
+		sort.Strings(files)
+		t.Errorf("实测总体仍有 %d 个「经视图读 v1 臂」的读方 —— 890 之后 canonical 视图是会话族两臂体：\n  %s",
+			len(files), strings.Join(files, "\n  "))
+	}
+
 	var contradictory []string
 	for f := range viewArmCutoverReaders {
 		if _, ok := retirementBreakers[f]; ok {

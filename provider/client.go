@@ -194,7 +194,8 @@ type Candidate struct {
 	// and "no row" is a different answer from "row says false".
 	SupportsNativeResponsesKnown bool `json:"supports_native_responses_known,omitempty"`
 	// SupportsNativeResponsesStream is an independently verified native Responses SSE capability.
-	SupportsNativeResponsesStream bool `json:"supports_native_responses_stream,omitempty"`
+	SupportsNativeResponsesStream bool       `json:"supports_native_responses_stream,omitempty"`
+	StreamMode                    StreamMode `json:"stream_mode"`
 	// RoutedNodeState (2026-10-02, vapeur 遗留 #3) is the node-state the ROUTER
 	// already read for this candidate, handed to the executor so the durable
 	// Responses gate does not re-read the same key.
@@ -334,9 +335,11 @@ func (c *Candidate) UnavailableReason() string {
 	if c.LifecycleStatus != "" && c.LifecycleStatus != "active" {
 		reasons = append(reasons, "lifecycle:"+c.LifecycleStatus)
 	}
-	if c.CircuitState == "open" {
-		reasons = append(reasons, "circuit:open")
-	}
+	// CircuitState is an asynchronous, lossy DB mirror of a per-process
+	// breaker, not routing authority. Gating here can strand a healthy
+	// credential after restart or prevent the live breaker from receiving
+	// its half-open recovery probe. Keep the field for diagnostics; actual
+	// admission is enforced by credential.Manager.Allow at dispatch.
 	switch c.AvailabilityState {
 	case "suspended":
 		reasons = append(reasons, "availability:suspended")
@@ -1767,6 +1770,7 @@ SELECT
 			-- 「没回填过」和「回填了但为 false」压成同一个 FALSE。
 			(cmcap.id IS NOT NULL) AS supports_native_responses_known,
 			COALESCE(cmstream.supported, FALSE) AS supports_native_responses_stream,
+				COALESCE(cmb_mode.stream_mode, 'both') AS stream_mode,
 				COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
 				COALESCE(mo.manual_priority, 99)::int AS manual_priority,
 			-- 2026-09-07 (678): model_offers 视图补了 priority 列(== manual_priority),
@@ -1799,9 +1803,11 @@ SELECT
 			-- (see pep_lateral LATERAL below). Empty array preserves the
 			-- legacy single-endpoint fallback.
 			pep_lateral.endpoints AS native_endpoints
-		FROM matched mo
-		JOIN credentials c ON c.id = mo.credential_id
-		JOIN providers p ON p.id = c.provider_id
+			FROM matched mo
+			JOIN credential_model_bindings cmb_mode ON cmb_mode.id = mo.id
+			JOIN credentials c ON c.id = mo.credential_id
+			JOIN providers p ON p.id = c.provider_id
+
 		LEFT JOIN v_routable_credential_models v
 		       ON v.credential_id = mo.credential_id
 		      AND (v.raw_model_name = mo.raw_model_name OR v.raw_model_name = mo.standardized_name)
@@ -2013,7 +2019,9 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		// credentialhealth/tuner.go); used below to derive a capacity-weighted
 		// Weight when the operator has not set an explicit manual weight.
 		var concurrencyLimitAuto *int
+		var streamMode string
 		// nativeEndpointsJSON is the aggregated JSONB array. The LATERAL
+
 		// projection returns [] for providers without endpoint rows.
 		var nativeEndpointsJSON []byte
 		if err := rows.Scan(
@@ -2052,7 +2060,9 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.SupportsNativeResponses,
 			&cand.SupportsNativeResponsesKnown,
 			&cand.SupportsNativeResponsesStream,
+			&streamMode,
 			&cand.CacheMode,
+
 			&cand.ManualPriority,
 			&cand.Priority,
 			&cand.ActiveSessions,
@@ -2069,7 +2079,19 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			return nil, err
 		}
 		cand.OfferRawModel = offerRawModel
+		parsedMode, modeErr := ParseStreamMode(streamMode)
+		if modeErr != nil {
+			cand.StreamMode = StreamMode(streamMode)
+			slog.Error("candidate has invalid stream mode; requests will fail closed",
+				"credential_id", cand.CredentialID,
+				"raw_model", offerRawModel,
+				"stream_mode", streamMode,
+			)
+		} else {
+			cand.StreamMode = parsedMode
+		}
 		// A missing endpoint mapping is represented by [] and leaves the
+
 		// candidate on its protocol fallback path. NULL is not expected from
 		// the SQL projection, but a nil scan also safely means no mapping.
 		eps, epErr := decodeNativeEndpoints(nativeEndpointsJSON, cand.CredentialID)

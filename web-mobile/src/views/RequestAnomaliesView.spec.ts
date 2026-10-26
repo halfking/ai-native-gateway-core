@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import RequestAnomaliesView from './RequestAnomaliesView.vue'
 import { fetchAnomalyList, fetchAnomalyCounts } from '@/api/requestAnomalies'
 import { setLocale, locale } from '@/i18n'
+import { useAuthStore } from '@/stores/auth'
 
 /**
  * RequestAnomaliesView 的不变量（2026-10-07）。
@@ -35,14 +36,38 @@ const countsMock = fetchAnomalyCounts as unknown as ReturnType<typeof vi.fn>
 const ORIGIN_LOCALE = locale.value
 let mountedList: Array<{ unmount(): void }> = []
 
-async function mountView(): Promise<ReturnType<typeof mount>> {
+/**
+ * ★ 第一百三十批：视图内补了 superAdmin 档兜底（`allowed`），而 `allowed`
+ *   经 `useAuthStore().role` 取值 ⇒ 本 spec 必须在挂载前把角色**预置**进去。
+ *   否则 jsdom 里 localStorage 为空 ⇒ `role === ''` ⇒ 下面 31 条判据会
+ *   **整片**撞上 nope 区而变红（且报出来的是「断言找不到业务文案」，
+ *   很容易被误判成「这批改坏了页面」）。
+ *
+ * ⇒ 既有 31 条的主题是**业务不变量**（大小写敏感度 / counts 口径 / 分页…），
+ *   不是权限 ⇒ 默认按 `super_admin` 装配；权限自己的判据在
+ *   `RequestAnomaliesGuard.spec.ts`（那份把 auth store 整个 mock 掉）。
+ */
+async function mountViewAs(role = 'super_admin'): Promise<ReturnType<typeof mount>> {
   const pinia = createPinia()
   setActivePinia(pinia)
+  useAuthStore().userInfo = {
+    id: 1,
+    tenant_id: 't1',
+    username: 'u',
+    display_name: 'U',
+    email: 'e',
+    role,
+    enabled: true,
+  }
   const w = mount(RequestAnomaliesView, { attachTo: document.body, global: { plugins: [pinia] } })
   mountedList.push(w)
   await flushPromises()
   await flushPromises()
   return w
+}
+
+function mountView(): Promise<ReturnType<typeof mount>> {
+  return mountViewAs('super_admin')
 }
 
 function rec(over: Record<string, unknown> = {}) {

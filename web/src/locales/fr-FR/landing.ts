@@ -1,174 +1,146 @@
 // landing.ts — Landing page copy (guest homepage).
 //
-// 2026-07-05: Updated to neutral, global positioning.
+// 2026-10-25 rewrite (impeccable craft-floor / STYLE pass).
+// Rebuilt from the zh-CN / en-US samples. The previous draft was still the
+// English marketing text: "Core Open Source · Enterprise-Grade · Private
+// Deployment", adjectives standing in for facts, em dashes doing the job of
+// punctuation, and every description a tidy "X + Y + Z".
+// Rules live in DESIGN.md §7 "Voice" at the repo root.
+//
+// Fact discipline: this version claims only what the product actually does
+// (Apache 2.0 / 40 MB image / 200 concurrent with P99 under 500 ms / RLS
+// row-level security / 43 audit rounds with zero L1 findings / k3s and Docker
+// / three inbound protocols / 15-day trial). No new capability is implied.
 export default {
-  kicker: 'Core Open Source · Enterprise-Grade · Private Deployment',
-  title: 'LLM Gateway — Enterprise Open Source AI Gateway',
-  subtitle: 'Core open source enterprise AI gateway. Unified governance, global LLM access, compliance and data sovereignty — all core open source.',
-  featuresTitle: 'Core Capabilities',
-  featuresSubtitle: 'Covering key aspects from access to operations',
+  // Rendered only in the PublicPageShell footer (brand name + this). It is no
+  // longer used as a small label above the heading (craft-floor bans kickers).
+  kicker: 'Cœur sous licence Apache 2.0',
+  brandTitle: 'Passerelle centrale pour organisations IA natives',
+  // already says that. It says what the thing does instead.
+  title:
+    'Une passerelle pour tous les appels aux modèles de votre entreprise, où les voir, les mesurer et les couper',
+  subtitle:
+    'Les protocoles OpenAI, Anthropic et Responses arrivent dans la même passerelle. Routage par locataire et par modèle, facturation, audit et quotas au même endroit. Elle tourne sur vos machines, donc le trafic ne sort pas.',
+  featuresTitle: 'Ce que fait la passerelle',
+  featuresSubtitle:
+    'Entrée, routage, facturation et audit, dans le même point d\'entrée',
+  // The six capability facts on the right-hand rail. Every one is checkable.
   heroPoints: [
-    'Core Open Source · Apache 2.0',
-    'Enterprise Governance',
-    'Global LLM Access',
-    'Data Security Shield',
-    'AI Session Asset Management',
-    'Private Deployment',
+    'Cœur sous licence Apache 2.0',
+    'Plan de données en Go, image 40 Mo',
+    '200 appels simultanés, P99 sous 500 ms',
+    'Trois protocoles entrants, un seul point d\'accès',
+    'Isolation au niveau ligne avec PostgreSQL RLS',
+    'k3s ou Docker, sur votre propre matériel',
   ],
   features: {
     smartRouting: {
-      title: 'Smart Routing & Credential Pool',
-      description: 'Auto-routing by tenant, model and task type; multi-credential fingerprint pool + adaptive probing, failover in seconds, near-zero ban rate.',
+      title: 'Routage par locataire et par tâche',
+      description:
+        'La route est choisie à partir du locataire, du modèle et du type de tâche. Quand un fournisseur tombe, une sonde le détecte et le trafic passe au suivant ; un jeu d\'empreintes de credentials gère la rotation.',
     },
     safety: {
-      title: 'Call Security Shield',
-      description: 'LLM-as-judge prompt injection detection (v1 observability mode) + sensitive data masking planning, enterprise compliance defense.',
+      title: 'Injection de prompts et données sensibles',
+      description:
+        'LLM-as-judge détecte l\'injection de prompts (en v1 il observe seulement, il ne bloque pas) et les champs sensibles sont masqués selon des règles.',
       badge: 'beta',
     },
     cache: {
-      title: 'Cache Alignment & Cost Reduction',
-      description: 'Prompt prefix stabilization + semantic caching, maximize KV Cache hit rate, reduce token compute overhead.',
+      title: 'Cache et coût',
+      description:
+        'Préfixes stabilisés plus cache sémantique. Un meilleur taux de succès sur KV Cache veut dire moins de tokens facturés.',
     },
     agent: {
-      title: 'Agent & MCP Gateway',
-      description: 'Agent registry, A2A protocol, MCP tool hosting and protocol conversion — upgrade from LLM proxy to agent orchestration gateway.',
-      badge: 'Coming Soon',
+      title: 'Entrée des agents et de MCP',
+      description:
+        'Registre des agents, protocole A2A, hébergement d\'outils MCP et traduction de protocoles. On passe d\'un relais vers un LLM à l\'orchestration d\'agents.',
+      badge: 'Bientôt',
     },
     observability: {
-      title: 'Full-Chain Observability',
-      description: 'Request logs, routing decision audit, OTel tracing, SIEM/CEF event export, enterprise compliance ready.',
+      title: 'Chaque appel laisse une trace',
+      description:
+        'Journaux des appels, audit des décisions de routage, traces OTel, export d\'événements SIEM et CEF. Quand quelque chose casse, on peut remonter le chemin.',
     },
     billing: {
-      title: 'MaaS Billing System',
-      description: 'Plan + credits + three-pool wallet (subscription / credit / recharge), complete commercialization loop for tenant self-service.',
+      title: 'Un usage qui colle à la facture',
+      description:
+        'Forfaits, crédits et un portefeuille à trois poches (abonnement, crédit, recharge). Les locataires consultent leur propre usage au lieu de demander à un administrateur.',
     },
     multiProtocol: {
-      title: 'Multi-Protocol Compatibility',
-      description: 'OpenAI Chat / Anthropic Messages / Responses three inbound protocols unified, seamless access to open source and commercial models.',
+      title: 'Un point d\'accès, trois protocoles',
+      description:
+        'OpenAI Chat, Anthropic Messages et Responses sont normalisés à l\'entrée. Le client ne change pas, et la passerelle non plus.',
     },
     multiTenant: {
-      title: 'Multi-Tenant Isolation',
-      description: 'PostgreSQL RLS row-level security + 43 rounds of audit L1=0, zero data leakage between tenants, independent policy and quota per tenant.',
+      title: 'Les locataires ne se mélangent pas',
+      description:
+        'Sécurité au niveau ligne par PostgreSQL RLS, 43 tours d\'audit sans aucun constat L1, politique et quota propres à chaque locataire.',
     },
   },
-  advantagesTitle: 'Why Choose LLM Gateway',
-  advantagesSubtitle: 'Enterprise AI gateway for global enterprises',
+  advantagesTitle: 'Pourquoi l\'installer soi-même',
+  advantagesSubtitle: 'Les données restent chez vous, la facture reste lisible',
   advantages: {
     openSource: {
-      title: 'Core Open Source',
-      description: 'Data plane, control plane, authentication, routing scheduler all open source. Zero black box, enterprise auditable, customizable, and evolvable',
+      title: 'Cœur ouvert',
+      description:
+        'Plan de données, plan de contrôle, authentification et ordonnanceur de routage sont entièrement publiés sous Apache 2.0. Vous pouvez les modifier et vous pouvez les auditer.',
     },
     private: {
-      title: 'Private Deployment',
-      description: 'Fully private deployment, data stays in enterprise, k3s + Docker dual form, zero external dependencies',
+      title: 'Votre propre matériel',
+      description:
+        'Installation sur vos machines, sous forme k3s ou Docker, sans dépendre d\'un service externe.',
     },
     antiBan: {
-      title: 'High Availability System',
-      description: 'Multi-credential rotation + intelligent probing + automatic failover, ensuring service continuity',
+      title: 'Un blocage n\'est pas une panne',
+      description:
+        'Rotation des credentials et sondes actives : quand un credential est bloqué, le suivant prend le relais.',
     },
     perf: {
-      title: 'Go High-Performance Data Plane',
-      description: 'Native Go implementation, 40MB lightweight image, 200 concurrency P99 < 500ms, SSE streaming stable relay',
+      title: 'Un plan de données qui tient',
+      description:
+        'Go natif, image 40 Mo, P99 sous 500 ms à 200 appels simultanés, relais SSE stable.',
     },
   },
-  footer: 'LLM Gateway · Core Open Source · Enterprise Deployment · Data Sovereignty',
-  ariaPoints: 'Key Highlights',
+  footer: 'Cœur ouvert sous licence Apache 2.0, exécuté sur vos machines.',
   roadmap: {
-    title: 'Product Roadmap',
-    subtitle: 'From LLM data plane to enterprise Agent gateway, continuous build',
+    title: 'Où cela mène',
+    subtitle: 'D\'un plan de données LLM à une passerelle pour les agents d\'entreprise',
     v31: {
       phase: 'v3.1',
-      title: 'API Hub Asset Center + MCP Tool Hosting',
-      description: 'Unified registration of LLM endpoints, MCP services and Agents, developer self-service discovery and reuse.',
+      title: 'Centre d\'actifs API Hub et hébergement d\'outils MCP',
+      description:
+        'Les points d\'accès LLM, les services MCP et les agents sont enregistrés au même endroit, pour que les développeurs les trouvent et les réutilisent sans demander.',
     },
     v32: {
       phase: 'v3.2',
-      title: 'Security Shield GA + SIEM Integration + SpecBoost',
-      description: 'Prompt injection blocking, sensitive data masking, API description intelligent enrichment to improve Function Calling accuracy.',
+      title: 'Blocage des injections, intégration SIEM, SpecBoost',
+      description:
+        'La détection d\'injection de prompts passe de l\'observation au blocage, les données sensibles sont masquées et les descriptions d\'API sont enrichies automatiquement pour améliorer la précision du Function Calling.',
     },
     v40: {
       phase: 'v4.0',
-      title: 'Agent Registry + A2A Protocol Gateway',
-      description: 'Cross-agent task delegation and orchestration, unified access to OpenClaw and business Agents.',
+      title: 'Registre d\'agents et passerelle de protocole A2A',
+      description:
+        'Les agents se délèguent des tâches entre eux, et OpenClaw comme les agents maison entrent par la même porte.',
     },
     v50: {
       phase: 'v5.0',
-      title: 'Industry Solution GA',
-      description: 'Four industry templates for customer service, HR, sales, logistics, out-of-the-box agent solutions.',
+      title: 'Solutions sectorielles, en disponibilité générale',
+      description:
+        'Des modèles pour le support, les ressources humaines, la vente et la logistique. On en installe un, et ça marche.',
     },
   },
-
-  brandTitle: 'AI-Native Organization Core Gateway',
-
-  brandSubtitle: 'Qigui · Self-hosted',
-
-  activateBanner: {
-    title: 'Gateway not activated',
-    desc: 'No valid license on this instance. Open the activation wizard for online or offline activation.',
-    action: 'Activate now',
-  },
-
-  downloadCta: {
-    title: 'Self-hosted · Deploy in 5 minutes',
-    subtitle: 'Offline packages for every platform — no signup required. 15-day free trial after install.',
-    download: 'Download now',
-    support: 'Support us',
-    activate: 'Already installed? Activate',
-    note: 'Donation is voluntary and never blocks downloads or features',
-  },
-
-  deployFlow: {
-    title: 'Download · Install · Activate · Sign in',
-    subtitle: 'End-to-end private deployment integrated with the License activation wizard',
-    steps: {
-      download: {
-        title: 'Download offline package',
-        description: 'Pick your platform/arch artifact — no signup required for a time-limited download URL.',
-        action: 'Go to download',
-      },
-      install: {
-        title: 'Install on target environment',
-        description: 'Extract and run the installer on your server to deploy via k3s or Docker.',
-        hint: 'llm-gw-installer install --target /opt/kx-gateway',
-      },
-      activate: {
-        title: 'Activate License',
-        description: 'Online License Key or offline activation.req → activation.resp flow; 15-day trial available.',
-        action: 'Open activation wizard',
-        offlineAction: 'Offline activation portal',
-      },
-      login: {
-        title: 'Sign in to control plane',
-        description: 'After activation, sign in with admin credentials to manage tenants, routing, and observability.',
-        action: 'Sign in',
-      },
-    },
-    notes: [
-      'Donation is optional and never blocks downloads or features',
-      'Air-gapped sites should use the offline activation portal for activation.req',
-      'Activation wizard: /activate · interoperates with installer CLI commands',
-    ],
-  },
-
-  guestNavAria: 'Product navigation',
-
-  navDownload: 'Download',
-
-  navSetup: 'Install & Activate',
-
-  navActivate: 'Activate',
-
-  navLicense: 'License',
-
-  navAgreement: 'User Agreement',
-
-  navSupport: 'Support',
-
-  ctaLogin: 'Sign in',
-
-  ctaDownload: 'Download',
-
-  ctaActivate: 'Activate License',
-
-  ctaAgreement: 'View Agreement',
+  // 2026-07-21: guest-nav aria + top download/activation links (App.vue L197-203).
+  guestNavAria: 'Navigation du produit',
+  navDownload: 'Télécharger',
+  navSetup: 'Installer et activer',
+  navActivate: 'Activer en ligne',
+  navLicense: 'État de la licence',
+  navAgreement: 'Conditions d\'utilisation',
+  navSupport: 'Assistance',
+  // 2026-07-21: landing primary CTAs (LandingView.vue L109-119).
+  ctaLogin: 'Se connecter',
+  ctaDownload: 'Télécharger le paquet',
+  ctaActivate: 'Activer la licence',
+  ctaAgreement: 'Voir les conditions',
 }

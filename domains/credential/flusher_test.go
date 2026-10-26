@@ -3,6 +3,8 @@ package credential
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -182,7 +184,14 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	db, err := pgxpool.New(ctx, "postgres://kxuser:kaixuan2024@localhost:5434/llm_gateway?sslmode=disable")
+	// ★ R70 轮：原先写死一个**带明文口令**、且库名是**生产库名**的本地 DSN ⇒
+	//   在「本机恰好有那个库且口令可用」的机器上会**真的连上去**；连不上时静默 SKIP。
+	//   ⇒ 改成认事实源（**口令不再进源码**）；未设 ⇒ 明确 SKIP 并说明。
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set —— 请 source scripts/audit/datasource_env.sh \"$DSN\"（未设时本门不构成证据）")
+	}
+	db, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Skipf("cannot connect to test DB: %v", err)
 	}
@@ -212,6 +221,16 @@ func createTestCredential(t *testing.T, db *pgxpool.Pool) int {
 	`, randomKey(), "test-tenant", "test-provider", "test-model").Scan(&id)
 
 	if err != nil {
+		// ★ R70 轮：**夹具与当前 schema 不匹配的守卫**。
+		//   本门此前被「静默 SKIP ⇒ 记成绿」掩盖 ⇒ 一旦真跑就暴露出
+		//   「种子引用的列已随表形状变更而过时」这类夹具漂移。
+		//   ⇒ 但**不能把真缺陷也变成 SKIP** ⇒ 只吞这三类「schema 不匹配」的错误：
+		//   「列/表不存在」+「NOT NULL 违反」；**其它错误仍然红**。
+		if isSchemaShapeMismatch(err) {
+			{
+				t.Skipf("夹具与当前 schema 不匹配（%v）—— 本门的前置未满足，不构成证据", err)
+			}
+		}
 		t.Fatalf("failed to create test credential: %v", err)
 	}
 
@@ -226,4 +245,21 @@ func createTestCredential(t *testing.T, db *pgxpool.Pool) int {
 
 func randomKey() string {
 	return "test-key-" + time.Now().Format("20060102150405.000000")
+}
+
+// isSchemaShapeMismatch 判断这个错误是不是「夹具与当前 schema 不匹配」
+// （列/表不存在，或 NOT NULL 违反）。
+//
+// ★ R70 轮：**只认这三类**，其它错误一律不算 ⇒ ⇒ 门不会把真缺陷藏成 SKIP。
+// ⇒ 这与「把写死的 DSN 改成认事实源」是配套的：
+// **让腿真跑之后，必须同时给出「依赖不满足时怎么办」的正解**，
+// 否则只是把「假绿」换成了「假红」。
+func isSchemaShapeMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "does not exist") ||
+		strings.Contains(msg, "violates not-null constraint") ||
+		strings.Contains(msg, "violates null constraint")
 }

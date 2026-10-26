@@ -44,6 +44,20 @@ func NewAuthMiddleware(apiKey string) *AuthMiddleware {
 			// 不匹配它；A1 根修后它进了链内，全局 API key 部署下裸 /maintain
 			// 401 missing_key —— 与 /m 的 exact 条目对称补上。
 			//
+			// /maintain-api（2026-10-23）：**canonical 运维 API 前缀此前整体
+			// 漏登记** ⇒ 匿名探针（访客未登录时前端先探 /maintain-api/healthz
+			// 与 /maintain-api/menu/ops）被本门抢先拦成 **401 missing_key**，
+			// 而不是 maintain_proxy.go 设计的 **503 maintain.not_configured**
+			// 信封 ⇒ ⇒ 前端分不清「运维平台没配」与「运维平台真在维护态」
+			//（两者都只是 res.ok=false），首页因此常驻一条黄色告警。
+			// ★ 注意前缀歧义：PathPrefixes 里的 "/maintain/" **不匹配**
+			// "/maintain-api/..."（"-" 不是 "/"）⇒ 必须显式登记两条。
+			// ★ 安全性：本前缀只挂 maintain 反代（maintain_proxy.go 的
+			// compat mux），而 maintain 侧自己认会话/凭据
+			// （代理会剥掉客户端 X-Tenant-ID，租户范围只来自已认证会话）；
+			// 未配置 MAINTAIN_SERVICE_URL 时命中的是 503 not_configured
+			// 兜底，**不泄露任何数据**。端点级鉴权仍由 maintain 后端自守卫。
+			//
 			// SAFETY: every registered /api/* endpoint is wrapped by
 			// wrapAdmin/superAdmin in cmd/gateway/main.go and
 			// admin/handler.go. Verified 2026-06-30 via grep — see
@@ -75,12 +89,20 @@ func NewAuthMiddleware(apiKey string) *AuthMiddleware {
 			// 或改放 /assets/（前缀已豁免）；**勿将任何敏感文件放进 web/public 根**。
 			ExactPaths: []string{
 				"/healthz", "/healthz/full", "/readyz", "/version", "/metrics",
-				"/", "/index.html", "/m", "/maintain",
+				"/", "/index.html", "/m", "/maintain", "/maintain-api",
 				"/logo-icon.png", "/logo-icon-dark.png", "/favicon.png",
+				// 2026-10-19：应用图标标准（开轩 icon）落地——favicon.svg +
+				// 32/180 两档 PNG + apple-touch-icon 全部在 public 根，浏览器
+				// 运行期匿名请求。漏登记 ⇒ 全局 API-key 门 401 ⇒ 图标破图。
+				// 两侧都有门盯着：web_public_bypass_contract_test.go 的正向腿
+				// （被 index.html 引用却 401）与反向腿（public 根文件未表态）
+				// 都会当场变红。
+				"/favicon.svg", "/favicon-32.png", "/favicon-32-dark.png",
+				"/favicon-180-dark.png", "/apple-touch-icon-180.png",
 				"/theme-init.js", "/entry-switch.js", "/donation-qr.png",
 				"/user-agreement.html",
 			},
-			PathPrefixes: []string{"/api/", "/admin/", "/assets/", "/maintain/", "/plugins/", "/mock/", "/m/", "/m-assets/"},
+			PathPrefixes: []string{"/api/", "/admin/", "/assets/", "/maintain/", "/maintain-api/", "/plugins/", "/mock/", "/m/", "/m-assets/"},
 			},
 		},
 		expectedKey: apiKey,
@@ -129,6 +151,23 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 			provided = key
 		}
 		if provided == "" {
+			// 2026-10-16（zcode/ZCode minimax-m3 401 missing_key 事故）：
+			// 本分支此前**一条日志都不打**。修复前 AuthMiddleware 排在
+			// LoggingMiddleware 外侧，被它拒掉的请求既不进 http_request
+			// 记录，也没有 WARN——客户端拿到的 X-Request-Id（如 19d7d64a…）
+			// 在网关两份实例日志里 grep 命中 0 次，只剩 nginx access log
+			// 一条线索。链序已一并修复（见 cmd/gateway/main.go），但这条
+			// 日志仍要留：它带 code，能把"没带凭据"与"凭据无效"分开。
+			// 而本分支最容易被误判：边缘 nginx 对 :80 一律
+			// `301 https://$host$request_uri`，客户端按 fetch 规范跟随时
+			// Authorization 被跨源剥离、POST 被降级成 GET，落进来长得与
+			// "调用方压根没配 key" 一模一样（那把 key 当时是有效的）。
+			slog.Warn("auth: missing API key",
+				"remote", r.RemoteAddr,
+				"path", r.URL.Path,
+				"code", "missing_key",
+				"user_agent", r.UserAgent(),
+			)
 			writeAuthUnauthorized(r.Context(), w, i18n.MsgMissingAuth, "missing_key")
 			return
 		}
@@ -174,10 +213,15 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		// api_keys.key_prefix) so operators can tell WHICH misconfigured
 		// internal caller is being rejected — the 2026-08-24 incident
 		// needed cross-replica experiments to trace this gate.
+		// user_agent 同理补齐（2026-10-16）：这是把被拒请求指认回调用方的
+		// 唯一字段——鉴权拒绝即使已进 http_request 记录，也要靠它才能定位
+		// 是哪个客户端在用错钥匙。
 		slog.Warn("auth: invalid API key",
 			"remote", r.RemoteAddr,
 			"path", r.URL.Path,
 			"key_prefix", bearerKeyPrefixForLog(provided),
+			"code", "invalid_key",
+			"user_agent", r.UserAgent(),
 		)
 		writeAuthUnauthorized(r.Context(), w, i18n.MsgInvalidKey, "invalid_key")
 	})

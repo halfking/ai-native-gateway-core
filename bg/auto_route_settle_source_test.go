@@ -23,18 +23,38 @@ import (
 //  2. **默认值方向搞反**。`settings.GetPlatformBool` 在存储未初始化时默认 true
 //     （写门=开着）。若代码默认走会话族，就会在**任何**配置下悄悄改源。
 //  3. **切换不可见**。运维需要能在 /metrics 上立刻看到源从 v1 变成 session。
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：第 2 条的前提（v1 族还在）已作废 ——
+// v1 族被 DROP ⇒ 「默认走 v1」指向一张不存在的表 ⇒ 结算 worker 每轮 42P01。
+// ⇒ 读源不再由写门决定，`settleSourceFor` **恒**返回会话族规格
+// （TestSettleSourceForAlwaysReturnsSessionFamily）。
 
-// TestSettleSourceForDefaultsToV1 钉住 2：默认必须是 v1（与今天逐字相同）。
-func TestSettleSourceForDefaultsToV1(t *testing.T) {
-	src := settleSourceFor(true)
-	if src.Family != settleFamilyV1 {
-		t.Errorf("写门开着时 family = %q，期望 %q", src.Family, settleFamilyV1)
-	}
-	if src.TurnsTable != "_request_logs_hot" {
-		t.Errorf("写门开着时 TurnsTable = %q，期望 _request_logs_hot（与移植前逐字相同）", src.TurnsTable)
-	}
-	if src.SessionKeyCol != "gw_session_id" {
-		t.Errorf("写门开着时 SessionKeyCol = %q，期望 gw_session_id", src.SessionKeyCol)
+// TestSettleSourceForAlwaysReturnsSessionFamily 钉住 890 之后的读源契约：
+// **恒**是会话族，写门不再参与选源。
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：原判定是「**默认必须是 v1**」——
+// 只有明确读到写门关闭才切到会话族，因为 settings.GetPlatformBool 在存储
+// 未初始化时默认 true（写门=开着），若代码默认走会话族就会在**任何**配置下
+// 悄悄改源。
+//
+// 那条推理的前提是「v1 族还在」。890 之后 v1 族已被 DROP ⇒ 那个默认值指向
+// 一张**不存在的表** ⇒ 结算 worker 每轮 42P01、reward 永久 NULL；运维把
+// 写门翻回 true（本意是回滚）同样踩 42P01。
+// ⇒ 「按门切换」这件事本身已经不存在，本门从「默认 v1」**反转**为「恒会话族」。
+func TestSettleSourceForAlwaysReturnsSessionFamily(t *testing.T) {
+	// 写门开 / 关两种取值都必须落到会话族：写门已经不再决定读哪一族。
+	for _, logsWriteEnabled := range []bool{true, false} {
+		src := settleSourceFor(logsWriteEnabled)
+		if src.Family != settleFamilySession {
+			t.Errorf("写门=%v 时 family = %q，期望 %q（v1 族已随 890 退役，默认值不能指向已 DROP 的族）",
+				logsWriteEnabled, src.Family, settleFamilySession)
+		}
+		if src.TurnsTable != "session_turns_hot" {
+			t.Errorf("写门=%v 时 TurnsTable = %q，期望 session_turns_hot", logsWriteEnabled, src.TurnsTable)
+		}
+		if src.SessionKeyCol != "session_id" {
+			t.Errorf("写门=%v 时 SessionKeyCol = %q，期望 session_id", logsWriteEnabled, src.SessionKeyCol)
+		}
 	}
 }
 

@@ -27,8 +27,8 @@ func (c *StickyCleaner) Start(ctx context.Context) {
 func (c *StickyCleaner) Stop() {
 	if c.cancel != nil {
 		c.cancel()
+		<-c.done
 	}
-	<-c.done
 }
 
 func (c *StickyCleaner) run(ctx context.Context) {

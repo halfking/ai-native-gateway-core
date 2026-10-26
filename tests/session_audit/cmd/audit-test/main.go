@@ -175,25 +175,55 @@ func extractData() ([]ExtractedContent, error) {
 		fmt.Sscanf(limitStr, "%d", &limit)
 	}
 
+	// ★ 2026-10-20（迁移 890，v1 族整体退役）：取数改读**会话族**。
+	//
+	// 口径对应（v1 → 会话族）：
+	//   request_id    → session_turns.request_id ✔
+	//   gw_session_id → session_turns.session_id ✔（会话族存的是原始 session_id，
+	//                  不像 canonical 视图那样把 'sys:%' 置 NULL）
+	//   tenant_id     → session_turns.tenant_id ✔
+	//   outbound_body / response_body → session_bodies 的两列
+	//                  （⚠ 语义差别：会话族存的是**每轮增量**
+	//                    request_delta / response_delta，不是累积正文；
+	//                    出站正文 outbound_body 仍是完整的出站载荷）
+	//   client_model  → session_turns.model（会话族**没有** client_model；
+	//                  canonical 投影里它恒 NULL）
+	//   provider_code → session_turns.provider
+	//
+	// 两个存储面（hot ∪ parent）**都要读**：只读母表会漏掉尚未 promote 的
+	// 最近一段，本地实测两侧 request_id 交集为 0 ⇒ UNION ALL 不产生重复。
 	query := fmt.Sprintf(`
-		SELECT 
-			request_id,
-			COALESCE(gw_session_id, '') AS session_id,
-			COALESCE(tenant_id, 'default') AS tenant_id,
-			outbound_body,
-			response_body,
-			ts AS created_at,
-			COALESCE(client_model, '') AS model,
-			COALESCE(provider_code, '') AS provider
-		FROM _request_logs
-		WHERE ts >= NOW() - INTERVAL '7 days'
+		SELECT
+			t.request_id,
+			COALESCE(t.session_id, '') AS session_id,
+			COALESCE(t.tenant_id, 'default') AS tenant_id,
+			b.outbound_body,
+			b.response_body,
+			t.ts AS created_at,
+			COALESCE(t.model, '') AS model,
+			COALESCE(t.provider, '') AS provider
+		FROM (
+			SELECT request_id, session_id, tenant_id, ts, model, provider, success
+			FROM public.session_turns_hot
+			UNION ALL
+			SELECT request_id, session_id, tenant_id, ts, model, provider, success
+			FROM public.session_turns
+		) t
+		LEFT JOIN (
+			SELECT request_id, tenant_id, outbound_body, response_body
+			FROM public.session_bodies_hot
+			UNION ALL
+			SELECT request_id, tenant_id, outbound_body, response_body
+			FROM public.session_bodies
+		) b ON b.request_id = t.request_id AND b.tenant_id = t.tenant_id
+		WHERE t.ts >= NOW() - INTERVAL '7 days'
 		  AND (
-		      (outbound_body IS NOT NULL AND outbound_body != 'null'::jsonb)
-		      OR 
-		      (response_body IS NOT NULL AND response_body != 'null'::jsonb)
+		      (b.outbound_body IS NOT NULL AND b.outbound_body != 'null'::jsonb)
+		      OR
+		      (b.response_body IS NOT NULL AND b.response_body != 'null'::jsonb)
 		  )
-		  AND success = true
-		ORDER BY ts DESC
+		  AND t.success = true
+		ORDER BY t.ts DESC
 		LIMIT %d
 	`, limit)
 

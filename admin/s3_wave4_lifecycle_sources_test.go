@@ -47,16 +47,28 @@ func TestDataLifecycleTrendServesBothFamiliesWithFaithfulPredicate(t *testing.T)
 			sql := stripSQLComments(dataLifecycleTrendSQL(tc.tenantFilter))
 			bodies := sql
 
-			// 两条腿都必须在场（count 而非 Contains —— 删一条腿是静默回退）。
-			if got := countOccurrences(bodies, "request_logs_bodies_with_current_month"); got == 0 {
-				t.Errorf("没有 v1 腿 —— 停写前的历史会从压缩率里消失：\n%s", sql)
+			// ★ 2026-10-20（迁移 890，v1 族真删）：**跨族**这件事本身退役了。
+			// 原来的两腿是「v1 bodies 视图腿（冻结点之前的停写前历史）」+
+			// 「会话族腿」；v1 族被 DROP ⇒ v1 腿必然 42P01 ⇒ 它必须消失。
+			// 冻结点 db.V1FreezeCutoffSQL 此刻是常数 '-infinity'（db 侧
+			// v1_freeze_cutoff.go 的 890 注释），所以会话腿覆盖全部时间，
+			// 与删掉 v1 腿之前的实际取值**逐字相同**（v1 腿在冻结点之下恒空）。
+			//
+			// ⇒ 本门从「两条腿都必须在场」**反转**为「v1 族关系名必须不在场」。
+			if hits := retiredV1RelationsInSQL(bodies); len(hits) > 0 {
+				t.Errorf("压缩率的 v1 腿仍出现已退役 v1 族关系名 %v —— v1 族已随 890 被 DROP，读它 = 42P01：\n%s", hits, sql)
+			}
+			// 就地阳性对照：同一把尺子必须能认出 v1 形态（否则上面那条恒绿）。
+			if hits := retiredV1RelationsInSQL("FROM request_logs_bodies_with_current_month rb"); len(hits) == 0 {
+				t.Error("retiredV1RelationsInSQL 认不出 v1 正文视图 —— 负向断言已恒绿，判据坏了")
 			}
 			// 会话腿走 session_bodies_unified 合并视图（hot ∪ 分区父表，迁移 625）。
 			// 只查 hot 会漏掉已 promote 的行、只查父表会漏掉最近数小时——
 			// 裸父表读法另有两面门（session_family_two_surface_test）钉着。
 			// scoped 那支不用 unified：它的会话腿是 dataLifecycleCompressedExists
 			// 里的 EXISTS 子查询（SessionFamilyBodiesSourceSQL = hot∪父表），
-			// 由下方 count==2 的 EXISTS 断言覆盖。
+			// 由 TestDataLifecycleScopedBranchUsesExistenceNotJoin 的 EXISTS
+			// 计数断言覆盖。
 			if tc.name == "unscoped" && !strings.Contains(bodies, "public.session_bodies_unified") {
 				t.Errorf("没有会话族腿（session_bodies_unified）—— 停写后的新流量会从压缩率里消失：\n%s", sql)
 			}
@@ -85,18 +97,30 @@ func TestDataLifecycleScopedBranchUsesExistenceNotJoin(t *testing.T) {
 	// 带租户那一支要数的是「有多少轮带出站正文」——存在性问题，EXISTS 就够，
 	// 且天然免疫镜像双生（本地实测 11,711 个 request_id 同时存在于两族）。
 	// 换回 JOIN 形态必须先撞这里：那会让 COUNT 随双生膨胀。
-	if got := countOccurrences(scoped, "EXISTS (SELECT 1 FROM"); got != 2 {
-		t.Errorf("带租户那一支有 %d 个 EXISTS 分支，期望 2（v1 腿 + 会话族腿）：\n%s", got, scoped)
+	// ★ 2026-10-20（迁移 890）：跨族的 v1 腿退役 ⇒ EXISTS 分支从 2 个
+	// （v1 腿 + 会话族腿）收敛为 **1 个**（只剩会话族腿）。
+	if got := countOccurrences(scoped, "EXISTS (SELECT 1 FROM"); got != 1 {
+		t.Errorf("带租户那一支有 %d 个 EXISTS 分支，期望 1（v1 腿已随 890 退役，只剩会话族腿）：\n%s", got, scoped)
 	}
 	if !strings.Contains(scoped, dataLifecycleCompressedExists) {
 		t.Errorf("带租户那一支没有内嵌 dataLifecycleCompressedExists：\n%s", scoped)
 	}
-	// v1 腿的裸 IS NOT NULL 是**对的**（v1 用 SQL NULL 表示无正文，实测
-	// jsonb-null 0 行）。这条反向断言是防止有人"顺手统一"成 jsonb 写法，
-	// 那会让 v1 侧恒真、多算 1,201 行（真库实测 10-12：v1 5,405 vs
-	// 会话族忠实 4,204，并集恰好 5,405 —— 靠的正是 v1 侧不加排除）。
-	if !strings.Contains(scoped, "v.request_id = rl.request_id AND v.outbound_body IS NOT NULL") {
-		t.Errorf("带租户那一支的 v1 腿判据被改动了 —— v1 侧不该加 jsonb-null 排除：\n%s", scoped)
+	// ★ 反转：原来这条反向断言守的是「v1 腿的**裸** IS NOT NULL 是对的」
+	//（v1 用 SQL NULL 表示无正文）。v1 腿退役后，会话族是**唯一**的一族，
+	// 而会话族用 jsonb null 表示「没有正文」（真库实测 11,420 行 jsonb-null、
+	// 0 行 SQL NULL）⇒ 裸 IS NOT NULL 在会话族上是**恒真**（实测会把
+	// 压缩率 250 → 993 = 当天全部 turn 数）。
+	// ⇒ 判据反转成「会话族腿必须带 jsonb-null 排除」。
+	if !strings.Contains(scoped, "sb.outbound_body IS NOT NULL AND sb.outbound_body <> 'null'::jsonb") {
+		t.Errorf("带租户那一支的会话族腿判据被改动了 —— 会话族用 jsonb null 表示「没有正文」，"+
+			"裸 IS NOT NULL 恒真 ⇒ 压缩率会等于当天全部 turn 数（真库实测 993 vs 真实 250）：\n%s", scoped)
+	}
+	// v1 族关系名必须不在场（v1 腿退役；反向对照：尺子本身能认出 v1）。
+	if hits := retiredV1RelationsInSQL(scoped); len(hits) > 0 {
+		t.Errorf("带租户那一支仍出现已退役 v1 族关系名 %v：\n%s", hits, scoped)
+	}
+	if hits := retiredV1RelationsInSQL("FROM request_logs_bodies_with_current_month v"); len(hits) == 0 {
+		t.Error("retiredV1RelationsInSQL 认不出 v1 正文视图 —— 负向断言已恒绿，判据坏了")
 	}
 }
 

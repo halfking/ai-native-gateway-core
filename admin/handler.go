@@ -30,6 +30,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
 	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"    // 对账报表读面/导出（2026-09-25）
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
+	"github.com/kaixuan/llm-gateway-go/domains/sanitizerules"
 	"github.com/kaixuan/llm-gateway-go/domains/session"      //nolint:depguard // session state manager
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
@@ -55,9 +56,18 @@ type controlledBodyDB interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// topologyStatsDB 是「实时拓扑当天统计」只读查询面。刻意保持窄接口
+// （只有 Query）：db 字段是具体 *pgxpool.Pool，无法在单测里注入 pgxmock，
+// 而这个端点的三条真问题（租户隔离 / 降级信封 / 未知桶保留）都必须能被
+// 单测钉住，所以按 controlledBodyDB 的同款范式开一个窄口。
+type topologyStatsDB interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 type Handler struct {
 	db                   *pgxpool.Pool
 	bodyDB               controlledBodyDB
+	topologyStatsDB      topologyStatsDB
 	bodyServiceJWTSecret string
 	secret               string
 	encKey               []byte
@@ -69,6 +79,10 @@ type Handler struct {
 	// freeDiscovery (2026-09-09): 免费资源自动发现服务 (084 迁移三表).
 	// SetFreeDiscovery 在启动时注入; nil = 路由返回 503 (no-DB 模式).
 	freeDiscovery *freeDiscoveryDeps
+	// topologyPlugins (2026-10-18): 实时拓扑「在用插件」清单来源
+	// （builtin 治理插件 + external 插件进程状态）。SetTopologyPlugins
+	// 在启动时注入；nil = /api/admin/topology/plugins 返回 degraded 信封。
+	topologyPlugins topologyPluginsSource
 	// scanSchedulerStatus (2026-09-14, R20 §二.6): liveness probe for the
 	// periodic scan worker. nil → /api/free-discovery/scan-scheduler/status
 	// returns 503. Set by SetScanSchedulerStatus at startup.
@@ -170,6 +184,7 @@ type Handler struct {
 	// sanitizePatternDetector reloads SmartSaniGuard's YAML rule set through
 	// the same admin operation as sensitive words.
 	sanitizePatternDetector *sanitize.PatternDetector
+	sanitizeRuleManager     *sanitizerules.Manager
 	// routeIncidentHandler (2026-07-13) backs the read-only
 	// /api/admin/route-incidents* endpoints. nil disables the
 	// diagnose feature on the swim lane.
@@ -406,6 +421,7 @@ func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 	h := &Handler{
 		db:                   db,
 		bodyDB:               db,
+		topologyStatsDB:      db,
 		bodyServiceJWTSecret: strings.TrimSpace(os.Getenv("LLM_GATEWAY_SESSION_SERVICE_JWT_SECRET")),
 		secret:               secretKey,
 		encKey:               encKey,
@@ -891,6 +907,11 @@ func (h *Handler) SetSanitizePatternDetector(detector *sanitize.PatternDetector)
 	h.sanitizePatternDetector = detector
 }
 
+// SetSanitizeRuleManager wires managed policy administration; nil keeps routes available as 503.
+func (h *Handler) SetSanitizeRuleManager(manager *sanitizerules.Manager) {
+	h.sanitizeRuleManager = manager
+}
+
 func (h *Handler) admin(fn http.HandlerFunc) http.HandlerFunc {
 	return AdminMiddleware(fn, h.db, h.secret)
 }
@@ -899,6 +920,21 @@ func (h *Handler) admin(fn http.HandlerFunc) http.HandlerFunc {
 // tenant_admin gets 403 Forbidden.
 func (h *Handler) superAdmin(fn http.HandlerFunc) http.HandlerFunc {
 	return SuperAdminMiddleware(fn, h.db, h.secret)
+}
+
+// formatAnomalyTenantAdmin wraps the format-anomalies handler with the
+// new dual-role middleware: super_admin (and admin_key) keep full
+// access; tenant_admin gets read-only access via RLS policy isolation.
+// Sub-routes that mutate rows (POST /{id}/resolve) are additionally
+// gated inside the subrouter. (批 157, 2026-10-16)
+func (h *Handler) formatAnomalyTenantAdmin(fn http.HandlerFunc) http.HandlerFunc {
+	return FormatAnomalyTenantAdminMiddleware(fn, h.db, h.secret)
+}
+
+// modelIntegrityTenantAdmin wraps the model-integrity handler with the
+// same dual-role middleware as format-anomalies. (批 157, 2026-10-16)
+func (h *Handler) modelIntegrityTenantAdmin(fn http.HandlerFunc) http.HandlerFunc {
+	return ModelIntegrityTenantAdminMiddleware(fn, h.db, h.secret)
 }
 
 // providerConsole wraps the provider console tree with
@@ -910,6 +946,7 @@ func (h *Handler) providerConsole(fn http.HandlerFunc) http.HandlerFunc {
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
+	h.registerSanitizeRuleRoutes(mux)
 	// Public routes (no Bearer admin key)
 	mux.HandleFunc("/api/auth/token", h.handleLogin)
 	mux.HandleFunc("/api/auth/logout", h.handleLogout)
@@ -929,8 +966,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/users", admin(h.handleUsers))
 	mux.HandleFunc("/api/admin/audit-logs", h.superAdmin(h.handleListAuditLogs))
 	mux.HandleFunc("/api/admin/format-anomaly-summary", h.superAdmin(h.handleFormatAnomalySummary))
-	mux.HandleFunc("/api/admin/format-anomalies", h.superAdmin(h.handleFormatAnomalies))
-	mux.HandleFunc("/api/admin/format-anomalies/", h.superAdmin(h.handleFormatAnomalySubrouter))
+	// 扩展点台账（P2-2）：静态裁决表 + 运行期计数合并的一行一机制视图。
+	// ★ superAdmin：这是内部运维视图（暴露「哪些扩展点活着、哪些是死的」）。
+	mux.HandleFunc("/api/admin/extension-points", h.superAdmin(h.handleExtensionPoints))
+	mux.HandleFunc("/api/admin/format-anomalies", h.formatAnomalyTenantAdmin(h.handleFormatAnomalies))
+	mux.HandleFunc("/api/admin/format-anomalies/", h.formatAnomalyTenantAdmin(h.handleFormatAnomalySubrouter))
 	// reqprobe (2026-09-21): 请求侧异常（参数被拒/模式不匹配）列表、
 	// 徽标计数与批量解决；存储与部署模式无关（Full=Redis / lite=内存）。
 	mux.HandleFunc("/api/admin/request-anomalies", h.superAdmin(h.handleRequestAnomalies))
@@ -939,8 +979,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// finish_refusal, finish_truncation, empty_response, repeated_content,
 	// fingerprint_drift). See domains/streaming/integrity/ and
 	// admin/model_integrity.go for the read/write surface.
-	mux.HandleFunc("/api/admin/model-integrity", h.superAdmin(h.handleModelIntegrity))
-	mux.HandleFunc("/api/admin/model-integrity/", h.superAdmin(h.handleModelIntegrity))
+	mux.HandleFunc("/api/admin/model-integrity", h.modelIntegrityTenantAdmin(h.handleModelIntegrity))
+	mux.HandleFunc("/api/admin/model-integrity/", h.modelIntegrityTenantAdmin(h.handleModelIntegrity))
 	mux.HandleFunc("/api/admin/tenants", h.superAdmin(h.handleTenants))
 	mux.HandleFunc("/api/admin/tenants/", h.superAdmin(h.handleTenants))
 	mux.HandleFunc("/api/admin/mobile-node/descriptor", h.superAdmin(h.handleMobileNodeDescriptor))
@@ -1081,6 +1121,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/dashboard/board", admin(h.handleDashboardBoard))
 	mux.HandleFunc("/api/admin/stats", admin(h.handleStats))
 	mux.HandleFunc("/api/admin/stats/", admin(h.handleStats))
+	// 2026-10-16: 实时拓扑首页左栏「供应商当天请求/token 统计」只读投影。
+	// 与 /api/admin/stats/* 同源（stats_usage_daily），租户隔离走 statsTenantScope；
+	// 聚合表未迁移时返回 200 + degraded 信络而不是零行。
+	mux.HandleFunc("/api/admin/topology/providers-today", admin(h.handleTopologyProvidersToday))
+	// 2026-10-18: 实时拓扑网关大方块「在用插件」清单（builtin 治理插件 +
+	// external 插件进程状态）。装配缺失返回 200 + degraded 而不是零清单。
+	mux.HandleFunc("/api/admin/topology/plugins", admin(h.handleTopologyPlugins))
 	// 2026-09-25: 对账报表（供应商/内部双视角区间汇总 + xlsx 双 sheet 导出
 	// + 单日手动重跑）。superAdmin——数据含全租户内部计费。
 	mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(h.handleReportRollup))
@@ -1088,7 +1135,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/dashboard/board/error-drill", admin(h.handleDashboardBoardErrorDrill))
 	// superAdmin：重写全租户的分钟聚合存量（探测排除的历史回填）。
 	mux.HandleFunc("/api/admin/dashboard/rollup/rebuild", h.superAdmin(h.handleDashboardRollupRebuild))
-	mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))
+	// 批 158e (2026-10-17): ops/overview is a 12-way platform aggregate
+	// over gateway_instances / licenses / fault_events / upgrade_logs /
+	// download_events / offline_activation_requests / runtime_metrics —
+	// tables without tenant_id columns. Downgraded to superAdmin so
+	// tenant_admin cannot reach the endpoint (admin(...) previously
+	// accepted any admin role including tenant_admin).
+	mux.HandleFunc("/api/admin/ops/overview", h.superAdmin(h.handleOpsOverview))
 	mux.HandleFunc("/api/admin/security/ip-blocklist", h.superAdmin(h.handleIPBlocklistCollection))
 	mux.HandleFunc("/api/admin/security/ip-blocklist/reload", h.superAdmin(h.handleIPBlocklistReload))
 	mux.HandleFunc("/api/admin/security/ip-blocklist/", h.superAdmin(h.handleIPBlocklistItem))
@@ -1496,6 +1549,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 		h.registerMaasRoutes(mux)
 	}
+
+	// 2026-10-21 R72f：功能能力位端点（**无条件注册** —— 理由见 admin/capabilities.go）
+	h.RegisterCapabilityRoutes(mux)
 }
 
 // writeJSON 写 JSON 响应；marshal 失败时记日志并返回 500 兜底体。

@@ -37,8 +37,8 @@ func (p *DefaultProbePicker) Start(ctx context.Context) {
 func (p *DefaultProbePicker) Stop() {
 	if p.cancel != nil {
 		p.cancel()
+		<-p.done
 	}
-	<-p.done
 }
 
 func (p *DefaultProbePicker) run(ctx context.Context) {

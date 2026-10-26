@@ -26,6 +26,9 @@ type RoutingAttempt struct {
 	Stage     string `json:"stage,omitempty"`      // preflight/connect/upstream/stream
 	// Retryable 三态：nil=未知（旧数据/未分类），false=不可重试，true=可重试。
 	Retryable *bool `json:"retryable,omitempty"`
+	// RetryAfterSeconds carries the upstream Retry-After hint for survival
+	// aggregation. Zero preserves older records that did not carry a hint.
+	RetryAfterSeconds int `json:"retry_after_seconds,omitempty"`
 }
 
 // ResultPending is the placeholder Result used by the handler when it

@@ -21,7 +21,7 @@ import {
  * 单请求调度轨迹面回归护栏（2026-10-14，第一百一十二批）。
  *
  * ★★★ 权限：**admin 档，不是 superAdmin** —— 可执行注册处
- *   `cmd/gateway/main.go:7143-7144` 传的是 `requestJourneyWrapAdmin`
+ *   `cmd/gateway/main.go:7305` 传的是 `requestJourneyWrapAdmin`
  *   （→ `admin.AdminMiddleware`，**不检查 role**）
  *   ⇒ 抽屉席**不设** `requiresRole`，且**不得**进 `AppDrawer.spec.ts` 的
  *     superAdmin 白名单。⚠️ 与批 109/110/111 连续三批相反。

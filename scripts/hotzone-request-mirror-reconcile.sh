@@ -149,7 +149,20 @@ while IFS= read -r f; do
   if gunzip -t "$f" 2>/dev/null; then
     COUNT_GUNZIP_OK=$((COUNT_GUNZIP_OK+1))
     # gunzip 内容做一次 JSON 有效性体检（换算后应是合法 JSON）。
-    if ! gunzip -c "$f" 2>/dev/null | head -c 1 | grep -q '[{[]'; then
+    #
+    # ★★ 判定只取【取到的首字符】，**不让管道的退出码参与语义判断**
+    #   （R99 轮 · §19.20.66 修；缺陷由并行会话的 SIGPIPE 语义普查发现并通报）：
+    #   原形态 `if ! gunzip -c … | head -c 1 | grep -q '[{[]'` 在 `set -o pipefail` 下：
+    #     · `head -c 1` 读满 1 字节就退出 ⇒ 写端 gunzip 要写的数据**超过管道缓冲
+    #       （65,536 B）**时会被 SIGPIPE 杀（141）⇒ pipefail 取**最右边的非零** = 141
+    #     ⇒ `! 141` **恒真** ⇒ 【有效 JSON 被误判为失败】
+    #     ⇒ 且 grep 未命中（1）时会盖过 141 ⇒ 【无效 JSON 反被漏判】
+    #   ⇒ 实测（纯 shell，20 次/组）：解压后 500 KB 的**有效** JSON ⇒ pipefail 开时
+    #     判定 FAIL **20/20**、关时 PASS 20/20；109 B 的小文件两态都 PASS
+    #     ⇒ ⇒ 缺陷【与文件大小相关】：只有写端超缓冲才触发 ⇒ 大镜像文件必被误报。
+    #   ⇒ ⇒ 本形态对【两种方向】都正确：首字符不是 { 或 [ ⇒ 报「非 JSON 起始」。
+    first_char=$(gunzip -c "$f" 2>/dev/null | head -c 1 || true)
+    if [[ "$first_char" != "{" && "$first_char" != "[" ]]; then
       fail "镜像内容非 JSON 起始: $f"
     fi
   else

@@ -1,0 +1,29 @@
+# scripts/audit/dbaudit-scripts-ledger.tsv —— `.db-audit/sql/*.sql` 体检台账
+#
+# ★ 口径（2026-10-21，R93 轮实测）：
+#   体检范围 = 38 个手工审计脚本 / 181 个可执行单元（`-c "SQL"` 单条 + `<<'SQL'` heredoc 块）。
+#   读数环境 = 一次性形态库（`probe-onetime-db-shape.sh` 建、退出即 DROP）⇒ **对生产的写入 = 0**。
+#   读数工具 = `scripts/audit/healthcheck-dbaudit-scripts.sh`（**双口径交叉校验**：
+#     整脚本跑 vs 逐单元跑，ERROR 总数必须一致 ⇒ 不一致即拒绝出读数）。
+#
+# ★ 本台账登记的是**已定性的残留错误**（不修的部分）。
+#   为什么不修：换哪个列 / 换哪个对象是**语义决策** ⇒ 属主拍板，不由本轮代决。
+#   ★ 「不修」≠「没人看过」⇒ 所以每条都要登记：族 / 处置 / 依据 三列齐全。
+#
+# 列：脚本<TAB>行号<TAB>单元类型<TAB>错误类别<TAB>族<TAB>处置<TAB>依据
+#
+01_baseline.sql	18	stmt	column "read_time" does not exist	PG17 列漂移（pg_stat_checkpointer）	不修-待属主拍板	PG 17 的 pg_stat_checkpointer 已无 read_time（改名/移入 pg_stat_io）⇒ 换哪列是语义决策
+01_baseline.sql	22	stmt	column "checkpoints" does not exist	PG17 列漂移（pg_stat_bgwriter）	不修-待属主拍板	PG 17 的 pg_stat_bgwriter 已无 checkpoints（拆分到 pg_stat_checkpointer）⇒ 换哪列是语义决策
+03_slowsql.sql	30	stmt	column "blk_read_time" does not exist	PG17 列漂移（pg_stat_statements）	不修-待属主拍板	PG 17 的 pg_stat_statements 已无 blk_read_time（移入 pg_stat_io）⇒ 换哪列是语义决策
+23_crashlog.sql	20	stmt	column "lsn" does not exist	PG17 列漂移（pg_stat_database）	不修-待属主拍板	PG 17 的 pg_stat_database 已无 lsn（改用 pg_current_wal_lsn()）⇒ 换哪列是语义决策
+07_dist2.sql	34	stmt	relation "request_logs_bodies_2026_09" does not exist	v1 族退役（对象已不存在）	不修-待属主拍板	迁移 890 已退役 v1 request_logs 族 ⇒ 该分区对象不存在 ⇒ 换哪个对象是语义决策
+07_dist2.sql	43	stmt	relation "request_logs" does not exist	v1 族退役（对象已不存在）	不修-待属主拍板	迁移 890 已退役 v1 request_logs 族 ⇒ 换哪个对象是语义决策
+09_final.sql	34	stmt	relation "request_logs_2026_09" does not exist	v1 族退役（对象已不存在）	不修-待属主拍板	迁移 890 已退役 v1 request_logs 族 ⇒ 换哪个对象是语义决策
+09_final.sql	37	stmt	relation "request_logs_2026_09" does not exist	v1 族退役（对象已不存在）	不修-待属主拍板	迁移 890 已退役 v1 request_logs 族 ⇒ 换哪个对象是语义决策
+09_final.sql	38	stmt	relation "session_turns_2026_09" does not exist	历史月分区不在形态库	不修-待属主拍板	2026_09 是历史月（形态库只建当月+次月）⇒ 换哪个对象是语义决策
+09_final.sql	39	stmt	relation "sessions_2026_09" does not exist	历史月分区不在形态库	不修-待属主拍板	2026_09 是历史月（形态库只建当月+次月）⇒ 换哪个对象是语义决策
+23_crashlog.sql	17	stmt	relation "request_logs" does not exist	v1 族退役（对象已不存在）	不修-待属主拍板	迁移 890 已退役 v1 request_logs 族 ⇒ 换哪个对象是语义决策
+27_health.sql	12	stmt	relation "request_logs" does not exist	v1 族退役（对象已不存在）	不修-待属主拍板	迁移 890 已退役 v1 request_logs 族 ⇒ 换哪个对象是语义决策
+17_bench_columnar.sql	12	block	relation "public.request_logs_2026_09" does not exist	v1 族退役（对象已不存在）	不修-待属主拍板	heredoc 块内建表时 SELECT v1 族分区 ⇒ 对象不存在 ⇒ 换哪个对象是语义决策
+17_bench_columnar.sql	40	block	relation "public.request_logs_bodies_2026_09" does not exist	v1 族退役（对象已不存在）	不修-待属主拍板	heredoc 块内建表时 SELECT v1 族分区 ⇒ 对象不存在 ⇒ 换哪个对象是语义决策
+17_bench_columnar.sql	75	block	relation "public.request_logs_bodies_2026_09" does not exist	v1 族退役（对象已不存在）	不修-待属主拍板	heredoc 块内建表时 SELECT v1 族分区 ⇒ 对象不存在 ⇒ 换哪个对象是语义决策

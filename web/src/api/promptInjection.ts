@@ -140,9 +140,50 @@ export function toggleRule(id: number | string, enabled: boolean) {
 }
 
 /**
+ * Read one rule by id.
+ *
+ * 2026-10-20: the detail view ("点开看规则详情") needs a single-rule read with
+ * its own 404 semantics — "this rule does not exist" must be distinguishable
+ * from "the list you are looking at is stale". Before this, GET on
+ * /rules/{id} answered 405 Method Not Allowed.
+ */
+export function getRule(id: number | string) {
+  return req<PromptInjectionRule>('GET', `/api/admin/prompt-injection/rules/${id}`)
+}
+
+/**
+ * Create a custom rule.
+ *
+ * 2026-10-20: the view used a bare `req('POST', …)` for this. It is folded
+ * into the client so the whole rule surface can be mocked in one place.
+ */
+export function createRule(rule: Partial<PromptInjectionRule>) {
+  return req<{ message: string; rule_id: number }>(
+    'POST',
+    '/api/admin/prompt-injection/rules',
+    rule,
+  )
+}
+
+/** Delete a custom rule. System rules are rejected by the backend with 404. */
+export function deleteRule(id: number | string) {
+  return req<{ message: string }>('DELETE', `/api/admin/prompt-injection/rules/${id}`)
+}
+
+/**
  * Fields the backend actually accepts on PUT /api/admin/prompt-injection/rules/{id}.
  *
- * Source of truth: admin/prompt_injection_handler.go:updateRule (lines 392-421).
+ * Source of truth: admin/prompt_injection_handler.go — `updateRule` reads the
+ * body into `PromptInjectionRulePatch`, whose fields are **pointers**, and only
+ * the non-nil ones enter the SET clause.
+ *
+ * ★ 2026-10-20: this used to be a plain full-replace. The handler decoded the
+ * body into a struct with value-typed fields and then unconditionally SET eight
+ * columns, so *any partial payload wiped the rest of the row* — the config
+ * panel's severity slider (`updateRule(id, { severity })`) blanked `pattern`
+ * and `description` and set `enabled` to false. The backend now has real PATCH
+ * semantics, and a partial body really is partial.
+ *
  * Fields NOT here (rule_name, category, category_new, is_system, rule_type) are
  * either immutable or system-only and would be silently ignored — keeping them
  * out of the request type prevents drift.

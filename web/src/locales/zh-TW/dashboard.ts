@@ -7,17 +7,13 @@ tabs: {
     liveStream: '即時請求流',
     sessionStats: '會話與統計',
     selfcheck: '系統自檢',
-    systemmonitor: '系統監測',
   },
   v2: {
-    quickApiKey: 'API Key', quickModels: '模型', quickApiKeyTitle: '查看 API Key 排行',
+    quickApiKey: 'API Key', quickModels: '模型', quickApiKeyTitle: '檢視 API Key 排行',
     quickModelsTitle: '查看模型統計', refreshData: '重新整理資料', retry: '重試',
-    reloadAria: '重新載入資料', degradedViewLabel: '視圖',
-    degradedHint: '資料視圖 {view} 尚未初始化，請先執行資料聚合遷移',
-    emptyTitle: '暫無請求資料',
-    emptyHint: '設定供應商後，透過 /v1/chat/completions 發起呼叫即可查看即時流。',
-    modelsPage: '模型頁', totalTokensShort: '總 Token', totalCredits: '總積分消耗',
-    creditsSub: '按定價 × token 計算', modelCount: '模型數', sessionCompression: '會話壓縮',
+    reloadAria: '重新載入資料',
+ totalTokensShort: '總 Token', totalCredits: '總積分消耗',
+    creditsSub: '按定價 × token 計算', modelCount: '模型數',
     creditsDegraded: '積分彙總檢視 {view} 尚未初始化，此數不可信',
     summaryDegraded: "彙總彙總檢視 {view} 尚未初始化 —— 下方請求/Token/費用數字是「沒算出來」，而不是 0，不可作為結論。",
   },
@@ -57,7 +53,7 @@ tabs: {
     providerScore: '評分 {n}',
     providerPlan: '套餐',
     providerStatsTitle: '供應商用量統計',
-    providerStatsHint: '隨時間範圍聯動 · 點擊行查看詳情',
+    providerStatsHint: '隨時間範圍聯動：選擇任意一行查看詳情',
     providerExport: '匯出 Excel',
     filterRange: '時間範圍',
     filterGran: '粒度',
@@ -76,30 +72,41 @@ tabs: {
     distTitle: '分佈分析',
     distTop: 'TOP {n}',
     distOthers: '其他 {n} 項',
-    distDrillHint: '點擊錯誤類型 → 按模型/供應商/客戶端下鑽',
-    empty: '暫無資料',
+    distDrillHint: '選擇錯誤類型 → 按模型/供應商/客戶端下鑽',
+    /**
+     * 空狀態（2026-10-27 第 14 增量 · 空狀態 5 分）。
+     * ★ 原本這裡只有一個 `empty: '看板暫時沒有資料'`，被 6 個**不同**的卡片共用
+     *   （供應商 / 分佈排行 / 模型分佈 / 趨勢圖 / 用量表 / 運維看板的兩張任務卡）——
+     *   一句話覆蓋 6 種語意 ⇒ 使用者看到「沒有資料」時無法判斷是「真的沒有」「被篩掉了」
+     *   還是「算錯了」。⇒ 現在按**頁面事實**拆開，kind 寫進鍵名。
+     *   · emptyNoResult* = 無結果（查過了，真的沒有）
+     *   · emptyFailed*    = 失敗/未知（伺服器沒給 ⇒ 不能說成「沒有」）
+     *   ★ 時間範圍沿用本檔既有譯法（`dashboard.noData` 舊值「該時段暫無資料」）⇒ 該時段內。
+     */
+    emptyNoResultProviders: '該時段內沒有供應商資料。',
+    emptyNoResultDist: '該時段內沒有可排名的資料。',
+    emptyNoResultDrill: '該錯誤類型下沒有失敗的請求。',
+    emptyNoResultModelDist: '該時段內沒有模型資料。',
+    emptyNoResultModelTrend: '該時段內沒有模型趨勢資料。',
+    emptyNoResultTrend: '該時段內沒有用量趨勢資料。',
+    emptyNoResultDiscovery: '模型發現任務還沒有執行記錄。',
+    emptyNoResultProbe: '探測巡檢還沒有執行記錄。',
     bgTasks: '後台任務',
     discoveryStatus: '模型發現',
-    probeChecks: '近10分鐘探測',
     selfcheckTitle: '系統自檢',
-    selfcheckLast: '最近狀態',
-    selfcheckRate: '24h 成功率',
-    selfcheckHint: '點擊查看詳情 →',
     pieClients: '客戶端類型',
     pieDegraded: "不可用 —— {reason}。此處的空排名表示「沒算出來」，而不是「沒有資料」。",
     pieDegradedGeneric: "該排行查詢失敗",
     drillFailed: "無法載入該錯誤構成 —— {reason}。此處顯示為空不代表真的沒有這類錯誤。",
     pieClientIp: '客戶端 IP',
     pieIdentity: '身份指紋',
-    pieModels: '模型用量',
     pieErrors: '錯誤類型',
     pieTenants: '租戶用量',
-    pieProviders: '供應商用量',
     metricRequests: '請求次數',
     metricTokens: 'Token 數',
     metricToggle: '指標切換',
     errorDrill: '錯誤下鑽：{kind}',
-    drillModel: '按模型',
+    drillModel: '依模型',
     drillProvider: '按供應商',
     drillClient: '按客戶端',
     trendTitle: '用量趨勢',
@@ -110,177 +117,69 @@ tabs: {
     trendMore: '更多',
     trendMoreTitle: '開啟全頁用量趨勢分析',
     trendOthers: '其他',
-    filterProvider: '供應商 ID',
-    allProviders: '全部',
 
-    rangeCustomTab: '自定义',
 
-    rangeFrom: '起始',
 
-    rangeTo: '截止',
 
-    rangePicker: '统计时间范围',
 
     rangeCustom: '{start} 至 {end}',
   },
-  proxyWarning: {
-    title: "⚠ 出口代理無法連線",
-    detail: "已設定代理 {proxy} 探測失敗，已自動降級為直連模式。國外模型（Anthropic / OpenAI / OpenRouter / GitHub Copilot 等）可能失敗。",
-    detailHealthy: "代理 {proxy} 已恢復。",
-    hint: "代理恢復後系統將自動重新啟用"
-  },
-  backgroundTasks: {
-    title: "背景任務進行中",
-    running: "模型發現（{trigger}）",
-    startedAt: "開始 {time}",
-    heartbeat: "心跳 {time}",
-    slow: "管理頁可能變慢",
-    detailsLink: "查看詳情"
-  },
-  discovery: {
-    latest: "最近模型發現：",
-    failuresTitle: "模型發現 · 最近 6h 測試失敗",
-    failuresTally: "{n} 次失敗 · {m} 個模型",
-    summary: "查看失敗清單",
-    meta: "{n} 次 · 涉及 {m} 個憑證 · 最近 {date} · 錯誤 {code}"
-  },
   stat: {
     totalRequests: "總請求數",
-    inLastDays: "近 {days} 天",
-    totalTokens: "總 Token 用量",
-    prompt: "提示 {n}",
-    completion: "補完 {n}",
     totalCost: "總費用",
-    costUnit: "USD",
     successRate: "成功率",
     avgLatency: "平均延遲 {n} ms",
-    apiKeys: "接入 API Key",
-    enabledActive: "啟用 {enabled} · 活躍 {active}",
     models: "模型數量",
     activeInDays: "近 {days} 天活躍 {n}",
-    providers: "供應商 / 憑證",
-    enabledCredentials: "啟用 {enabled} · 憑證 {total}",
-offline: "下線資源",
-     modelsCredentials: "模型 {models} · 憑證 {creds}",
-     // 2026-08-06: 平均請求體 / 平均回應體 / 峰值（與 zh-CN 對齊）
      avgRequestSize: "平均請求體",
      avgResponseSize: "平均回應體",
      maxLabel: "峰值",
    },
   table: {
-    hotKeysTitle: "高用量 API Key 排行",
-    byModelTitle: "依模型統計",
-    colKey: "Key",
-    colApplication: "應用",
-    colOwner: "歸屬使用者",
-    colRequests: "請求數",
-    colTokens: "Token 用量",
-    colCost: "費用 (USD)",
-    colLastUsed: "最後使用",
     colModel: "模型",
-    colProvider: "提供商"
-  },
-  compression: {
-    title: "🤖 會話壓縮",
-    delta: "增量",
-    sliding: "滑動",
-    outboundTokens: "≈ {n} 出站 token"
-  },
-  empty: {
-    firstUse: "🚀 暫無請求資料。設定好提供商後，透過 /v1/chat/completions 發起呼叫吧。"
   },
   loading: "載入中…",
-  noData: "該時段暫無資料",
-  costSuffix: "USD",
-  viewFailedRequests: "查看失敗請求",
   liveStream: {
     title: "即時請求流",
     groupByQueue: "按處理佇列",
     controlsAria: "即時請求流控制列",
-    connected: "已連線",
-    disconnected: "重新連線中…",
     pause: "暫停",
     resume: "繼續",
-    filterAll: "全部狀態",
-    filterSuccess: "僅成功",
-    filterFailure: "僅失敗",
-    filterInProgress: "進行中",
-    filterGroupFailures: "失敗分類",
-    filterFailure5xx: "伺服器 / 上游 (5xx)",
-    filterFailure4xx: "用戶端 / 驗證 (4xx)",
-    filterFailureTimeout: "逾時 / 網路",
-    filterFailureNotFound: "路由 / 模型不存在",
-    filterFailureOther: "其它失敗",
-    idleLabel: "閒置 {duration}",
-    countTooltip: "緩衝區 {buffer} / 螢幕可見 {visible}",
-    countAria: "緩衝區 {buffer} 個請求，螢幕可見 {visible}",
     legendButton: '圖例',
     legend: {
-      title: "圖例",
-      model: "模型族",
-      status: "狀態",
-      openai: "OpenAI",
-      anthropic: "Anthropic",
-      domestic: "本地",
-      oss: "開源",
-      other: "其他",
       success: "成功",
       inProgress: "進行中",
-      failure: "失敗"
-,
       cancelled: '已取消',
     },
     tooltip: {
-      model: "模型",
-      provider: "供應商",
-      status: "狀態",
-      latency: "延遲",
-      tokens: "Token",
-      cost: "成本",
-      error: "錯誤",
-      time: "時間"
-,
-      vendor: '原厂',
 
-      requestId: 'ID',
 
-      errorKind: '错误类型',
 
-      errorRawCode: '原始代码',
 
       statusValue: {
         success: '成功',
         inProgress: '处理中',
         cancelled: '用户取消',
-        idle: '空闲（心跳占位）',
         failure: '请求失败',
       },
 
       tokenFormat: '{p} + {c}',
-      cache: '快取',
       cacheFormat: '讀{r}/寫{w}（命中率{pct}）',
-      sessionId: '會話',
     },
-    connecting: "連線中…",
-    reconnecting: "重新連線中…",
-    unsupported: "此瀏覽器不支援即時串流",
-    empty: "暫無即時請求",
 
     emptyWaiting: '等待即時請求流資料…',
     emptyConnecting: '正在連線即時串流，連線後自動載入…',
-    groupByCredential: '按憑據', groupByVendor: '按原廠', groupByProvider: '按供應商', groupByModel: '按模型',
+    groupByCredential: '按憑據', groupByProvider: '按供應商', groupByModel: '依模型',
     modeSmall: '小',
     modeLarge: '大',
     modeSmallTitle: '小模式：直條顯示，可容納更多請求（預設）',
     modeLargeTitle: '大模式：卡片顯示，包含更多請求詳情',
-    probeAll: '全部', probeOnly: '僅探測',
-    probeAllTitle: '顯示所有請求（預設）', probeOnlyTitle: '僅顯示探測請求',
     // 2026-08-06: 業務 / 探測過濾 + 標題（與 zh-CN 對齊）
     business: '業務',
     probe: '探測',
     businessTitle: '僅顯示真實業務請求',
     probeTitle: '僅顯示探測請求',
-    cacheWindow: '快取 / 視窗', connectionDetailTitle: '點擊查看連線詳情',
+    cacheWindow: '快取 / 視窗', connectionDetailTitle: '查看連線詳情',
     dimensionCredential: '憑據', dimensionVendor: '原廠', dimensionProvider: '供應商', dimensionModel: '模型',
     statusOpen: '已連線', statusConnecting: '連線中', statusReconnecting: '重新連線中',
     statusUnsupported: '不支援', statusClosed: '未連線',
@@ -326,11 +225,7 @@ offline: "下線資源",
 
     idleHoursMinutes: '閒置 {h} 小時 {m} 分鐘',
 
-    idleReasonNoTraffic: '無流量（5 分鐘無請求）',
-    // 2026-07-24: 多維過濾器
     filterStatus: '狀態',
-    filterAllOptions: '全部',
-    filterEmpty: '暫無可選項',
     filterModel: '模型',
     filterGroup: '篩選',
     filterProvider: '供應商',
@@ -343,13 +238,6 @@ offline: "下線資源",
       failure: '失敗',
       rate_limited: '限流',
     },
-    vendor: {
-      openai: 'OpenAI',
-      anthropic: 'Anthropic',
-      domestic: '本地',
-      oss: '開源',
-      other: '其他',
-    },
   },
   charts: {
     gradeA: "優秀",
@@ -358,70 +246,38 @@ offline: "下線資源",
     gradeD: "較差",
     gradeF: "異常",
     avgScore: "平均分",
-    healthDistribution: "健康度分布",
+    healthDistribution: "健康度分佈",
     totalSessions: "總會話數 {n}",
     newSessions: "新會話",
     activeSessions: "活躍會話",
     closedSessions: "已關閉",
     costUSD: "費用 (USD)",
     sessionCount: "會話數",
-    sessionTrend: "會話趨勢"
+    sessionTrend: "會話趨勢",
+    /**
+     * 空狀態（2026-10-27 第 14 增量 · 空狀態 5 分）。
+     * ★ 原先這兩處都用通用鍵 `dashboard.noData`（「該時段暫無資料」）。
+     *   kind = NoResult：查過了，該時段內真的沒有這種資料。
+     */
+    emptyNoResultHealthGrade: '該時段內沒有健康度分佈資料。',
+    emptyNoResultSessionTrend: '該時段內沒有會話趨勢資料。',
   },
 
-  moduleStats: {
-    executions: '執行次數',
-    cacheHitRate: '快取命中率',
-    rate: '比率',
-    totalModules: '模組數',
-    totalExecutions: '總執行次數',
-    avgCacheHitRate: '平均快取命中率',
-    avgDuration: '平均耗時',
 
-    title: '模組執行統計',
-
-    successRate: '成功率',
-  },
-
-  errors: {
-    trendTitle: '錯誤趨勢',
-    errorCount: '錯誤數',
-    totalCount: '總請求數',
-    errorRate: '錯誤率',
-    count: '數量',
-    rate: '比率',
-    totalErrors: '總錯誤數',
-    topErrors: 'Top 錯誤',
-
-    title: '錯誤統計',
-
-    totalRequests: '總請求數',
-
-    avgLatency: '平均錯誤延遲',
-  },
 
   performance: {
-    throughput: '吞吐量',
-    requests: '請求數',
-    p50: 'P50 延遲',
-    p95: 'P95 延遲',
-    p99: 'P99 延遲',
-    latencyDist: '延遲分布',
-    slowQueries: '慢查詢',
 
-    title: '效能指標',
 
     avgLatency: '平均延遲',
 
-    latency: '延遲',
   },
 
   providerUsage: {
     title: '供應商用量',
     subtitle: '{period} 全站供應商消耗彙總（可用於對帳）',
-    periodHint: '當前週期：{period}',
     more: '更多',
     search: '搜尋供應商名稱、代碼或 ID…',
-    back: '返回列表',
+    back: '返回清單',
     exportAll: '匯出全部 Excel',
     exportDetail: '匯出明細 Excel',
     colName: '供應商',
@@ -432,13 +288,19 @@ offline: "下線資源",
     colSuccess: '成功率',
     colModel: '模型',
     colDate: '日期',
-    periodDay: '按天',
+    periodDay: '依天',
     periodWeek: '按週',
-    periodMonth: '按月',
+    periodMonth: '依月',
     periodLabel: '統計週期：{period}',
     periodRange: '{start} 至 {end}',
     modelBreakdown: '模型彙總',
     dailyBreakdown: '每日模型明細',
+    /**
+     * 空狀態（2026-10-27 第 14 增量 · 空狀態 5 分）。
+     * ★ 原先用通用鍵 `dashboard.noData`（「該時段暫無資料」）。
+     *   kind = NoResult：降級態已有獨立措辭（dataLifecycle.usageCost.degraded.title），維持不變。
+     */
+    emptyNoResult: '該時段內沒有用量記錄。',
   },
   statsRow: {
     totalSessions: "Total Sessions",
@@ -451,5 +313,11 @@ offline: "下線資源",
     avgLatency: "Avg Latency",
     totalRequests: "Total Requests",
     totalTokens: "Total Tokens",
+  },
+  requestTile: {
+    childRequestsTitle: '子請求 {count} 個（展開查看）',
+    childRequestsEmpty: '子請求（暫無推送，展開查看）',
+    actionTrailTitle: '動作軌跡 {count} 條（展開查看）',
+    actionTrailEmpty: '動作軌跡（暫無推送，展開查看）',
   },
 }

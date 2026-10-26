@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# requires-bash: 4
+# ★ 本脚本用了 bash 4+ 特性 ⇒ macOS 自带 bash 3.2 跑不了 ⇒ 运行前提是 bash ≥ 4（Linux 主机）。
+#   ⇒ 这条声明把它从「隐含前提」变成**可检查的事实**（sql/schema/shell_bash_prereq_declaration_gate_test.go）。
 # =============================================================================
 # modelctl.sh — 本地大模型托管服务启停控制（网关本地供应商配套）
 #
@@ -81,9 +84,9 @@ start_server() {
     llamacpp)
       echo "✗ llamacpp 启动命令依赖 GGUF 模型路径（LLAMA_CPP_MODEL），请手工启动"; exit 1 ;;
     lmstudio)
-      echo "✗ LM Studio 需在 GUI 中启动 Local Server（端口 $port）"; exit 1 ;;
+      echo "✗ LM Studio 需在 GUI 中启动 Local Server（端口 ${port}）"; exit 1 ;;
     *)
-      echo "✗ 未知托管类型: $type（支持: ${!DEFAULT_PORT[@]}）"; exit 1 ;;
+      echo "✗ 未知托管类型: ${type}（支持: ${!DEFAULT_PORT[@]}）"; exit 1 ;;
   esac
   echo "$log"
 }

@@ -10,7 +10,10 @@ import type {
 import type { LiveNodeStatus } from '../composables/liveStreamStore'
 import { fmtTime, pct, statusClass } from '../utils/nodeDetailFormat'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
+import { useI18n } from 'vue-i18n'
 import NodeDetailAccessErrorsPanel from './NodeDetailAccessErrorsPanel.vue'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   node: LiveNodeStatus
@@ -50,11 +53,11 @@ watch(() => props.candidate?.credential_id, (id) => {
   <section class="nd-section">
     <h3>实时状态</h3>
     <dl class="nd-grid">
-      <div><dt>熔断</dt><dd :class="statusClass(node.circuit_state)">{{ node.circuit_state || '未知' }}</dd></div>
-      <div><dt>可用性</dt><dd :class="statusClass(node.availability_state)">{{ node.availability_state || '未知' }}</dd></div>
-      <div><dt>配额</dt><dd :class="statusClass(node.quota_state)">{{ node.quota_state || '未知' }}</dd></div>
-      <div><dt>健康</dt><dd :class="statusClass(node.health_status)">{{ node.health_status || '未知' }}</dd></div>
-      <div><dt>手工禁用</dt><dd>{{ node.manual_disabled ? '是' : '否' }}</dd></div>
+      <div><dt>{{ $t('common.terms.nodeState.circuitOpen') }}</dt><dd :class="statusClass(node.circuit_state)">{{ node.circuit_state || $t('common.terms.unknown') }}</dd></div>
+      <div><dt>{{ $t('common.terms.availability') }}</dt><dd :class="statusClass(node.availability_state)">{{ node.availability_state || $t('common.terms.unknown') }}</dd></div>
+      <div><dt>{{ $t('common.terms.quota') }}</dt><dd :class="statusClass(node.quota_state)">{{ node.quota_state || $t('common.terms.unknown') }}</dd></div>
+      <div><dt>{{ $t('common.terms.health') }}</dt><dd :class="statusClass(node.health_status)">{{ node.health_status || $t('common.terms.unknown') }}</dd></div>
+      <div><dt>{{ $t('common.terms.nodeState.manualDisabled') }}</dt><dd>{{ node.manual_disabled ? $t('common.button.yes') : $t('common.button.no') }}</dd></div>
       <div><dt>最近错误</dt><dd class="nd-wrap">{{ node.last_error || '—' }}<small v-if="node.last_error_at"> · {{ fmtTime(node.last_error_at) }}</small></dd></div>
     </dl>
   </section>
@@ -63,19 +66,19 @@ watch(() => props.candidate?.credential_id, (id) => {
 
   <template v-else-if="detailLoaded">
     <section v-if="candidate" class="nd-section">
-      <h3>路由候选明细 <small v-if="candidateLoading">加载中…</small></h3>
+      <h3>{{ $t('common.terms.routingCandidates') }} <small v-if="candidateLoading">{{ $t('common.feedback.loading') }}</small></h3>
       <dl class="nd-grid">
-        <div><dt>凭据</dt><dd>{{ credentialDisplayName(candidate.credential_id) }} · {{ candidate.credential_label }}</dd></div>
+        <div><dt>{{ $t('common.credentialFallback') }}</dt><dd>{{ credentialDisplayName(candidate.credential_id) }} · {{ candidate.credential_label }}</dd></div>
         <div><dt>Provider</dt><dd>{{ candidate.provider_name }}</dd></div>
-        <div><dt>是否可路由</dt><dd :class="candidate.routable ? 'is-ok' : 'is-bad'">{{ candidate.routable ? '是' : '否' }}</dd></div>
+        <div><dt>{{ $t('common.terms.routableOrNot') }}</dt><dd :class="candidate.routable ? 'is-ok' : 'is-bad'">{{ candidate.routable ? $t('common.button.yes') : $t('common.button.no') }}</dd></div>
         <div><dt>阻断原因</dt><dd class="nd-wrap">{{ candidate.runtime_block_reason || candidate.block_reason || '—' }}</dd></div>
         <div><dt>生命周期</dt><dd>{{ candidate.lifecycle_status || '—' }}</dd></div>
         <div><dt>配额 / 余额</dt><dd>{{ candidate.quota_state || '—' }} / {{ candidate.balance_usd ?? '—' }} USD</dd></div>
         <div><dt>熔断 / 冷却</dt><dd>{{ candidate.circuit_state || 'closed' }} / {{ fmtTime(candidate.cooling_until) }}</dd></div>
         <div><dt>并发 / 会话</dt><dd>{{ candidate.effective_concurrency ?? '—' }} / {{ candidate.active_sessions ?? 0 }}</dd></div>
         <div><dt>Tier / 权重 / 优先级</dt><dd>T{{ candidate.tier }} / {{ candidate.weight }} / {{ candidate.manual_priority ?? 99 }}</dd></div>
-        <div><dt>成功率 / P95</dt><dd>{{ pct(candidate.success_rate) }} / {{ candidate.p95_latency_ms ? `${candidate.p95_latency_ms}ms` : '—' }}</dd></div>
-        <div><dt>连续失败</dt><dd :class="(candidate.credential_consecutive_failures ?? candidate.consecutive_failures ?? 0) ? 'is-warn' : 'is-ok'">{{ candidate.credential_consecutive_failures ?? candidate.consecutive_failures ?? 0 }}</dd></div>
+        <div><dt>{{ $t('common.terms.successRate') }} / P95</dt><dd>{{ pct(candidate.success_rate) }} / {{ candidate.p95_latency_ms ? `${candidate.p95_latency_ms}ms` : '—' }}</dd></div>
+        <div><dt>{{ $t('common.terms.consecutiveFailures') }}</dt><dd :class="(candidate.credential_consecutive_failures ?? candidate.consecutive_failures ?? 0) ? 'is-warn' : 'is-ok'">{{ candidate.credential_consecutive_failures ?? candidate.consecutive_failures ?? 0 }}</dd></div>
         <div><dt>生效窗口</dt><dd>{{ fmtTime(candidate.effective_at) }} ～ {{ fmtTime(candidate.expires_at) }}</dd></div>
       </dl>
     </section>
@@ -98,7 +101,7 @@ watch(() => props.candidate?.credential_id, (id) => {
     </section>
 
     <section v-if="selectedModel" class="nd-section">
-      <h3>滑动窗口 <small>最近 1 小时{{ windowSource ? ` · ${windowSource}` : '' }} · 点击查看请求详情</small></h3>
+      <h3>{{ $t('common.terms.slidingWindow') }} <small>{{ $t('ops.overview.recentRequestsHint', { source: windowSource ? ` · ${windowSource}` : '' }) }}</small></h3>
       <div v-if="windowEntries.length" class="nd-window" :aria-label="`${selectedModel} 最近调用结果`">
         <button
           v-for="entry in windowEntries.slice(0, 100)"

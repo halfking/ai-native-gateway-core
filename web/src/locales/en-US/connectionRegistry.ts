@@ -26,17 +26,4 @@ export default {
     live: 'No live streaming connections',
     closed: 'No recently closed connections',
   },
-  viewTimeline: 'View node recovery timeline',
-  recoverAt: 'Recover at {time} ({delta})',
-  detail: {
-    lastError: 'Last error',
-    lastErrorAt: 'Last error at',
-    recoverAt: 'Recover at',
-  },
-  state: {
-    connected: 'Connected',
-    connecting: 'Connecting',
-    disconnected: 'Disconnected',
-  },
-  inFlight: 'In flight {count}',
 }

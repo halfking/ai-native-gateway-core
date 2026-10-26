@@ -602,9 +602,16 @@ func TestFaultInjection(t *testing.T) {
 		defer cancel()
 
 		now := time.Now().UTC()
+		// DigestJSON 必填（domains/session/v2/turn_writer.go 的 TurnRecord.DigestJSON
+		// 注释写明：AppendTurn 把它按 string(rec.DigestJSON) 传给 digest（jsonb），
+		// 空值 = 空串 ⇒ PG 报 22P02 invalid input syntax for type json ⇒ 整条 INSERT 失败）。
+		// 生产侧不会踩到，因为唯一赋值点 session_writer_v2.go 的 digestJSON 来自
+		// sessiondigest.Marshal（出错即 return，永不为 nil）⇒ **是本测试没满足这个前置**，
+		// 不是产品缺陷 ⇒ 这里补一个最小合法 digest。
 		base := sessionsv2.TurnRecord{
 			SessionID: sess, TenantID: tenant, RequestID: reqID, Ts: now,
 			Model: "gpt-4o-mini", Provider: "openai",
+			DigestJSON: []byte(`{"v":1}`),
 		}
 
 		t.Cleanup(func() {
@@ -630,6 +637,7 @@ func TestFaultInjection(t *testing.T) {
 		turn2, err := tw.AppendTurn(ctx, sessionsv2.TurnRecord{
 			SessionID: sess, TenantID: tenant, RequestID: reqID2, Ts: now,
 			Model: "gpt-4o-mini", Provider: "openai",
+			DigestJSON: []byte(`{"v":1}`),
 		})
 		require.NoError(t, err, "second AppendTurn with a new request_id")
 		assert.Equal(t, turn1+1, turn2,

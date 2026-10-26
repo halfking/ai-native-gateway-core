@@ -5,6 +5,7 @@
 import { ref, computed } from 'vue'
 import { fmtDateTimeShort } from '../i18n/useFormat'
 import type { HotApiKeyEntry, ModelUsage } from '../api'
+import { Close } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   hotKeys: HotApiKeyEntry[]
@@ -74,8 +75,8 @@ defineExpose({ open, close })
                   按模型统计
                 </button>
               </div>
-              <button type="button" class="drawer-close" @click="close" aria-label="关闭">
-                ✕
+              <button type="button" class="drawer-close" @click="close" :aria-label="$t('common.close')">
+                <Close />
               </button>
             </div>
 
@@ -83,7 +84,7 @@ defineExpose({ open, close })
             <div class="drawer-body">
               <!-- APIKey排行 -->
               <div v-if="activeTab === 'apikeys'" class="drawer-content">
-                <div v-if="loading" class="drawer-loading">加载中…</div>
+                <div v-if="loading" class="drawer-loading">{{ $t('common.feedback.loading') }}</div>
                 <div v-else-if="degradedReason" class="drawer-degraded" role="status">
                   ⚠️ 数据聚合视图未就绪（{{ degradedReason }}），本列表不可作为结论。
                 </div>
@@ -91,11 +92,11 @@ defineExpose({ open, close })
                   <thead>
                     <tr>
                       <th>Key</th>
-                      <th>应用</th>
+                      <th>{{ $t('common.terms.application') }}</th>
                       <th>归属用户</th>
-                      <th style="text-align:right">请求数</th>
-                      <th style="text-align:right">Token 用量</th>
-                      <th style="text-align:right">费用 (USD)</th>
+                      <th style="text-align:right">{{ $t('common.terms.requestCount') }}</th>
+                      <th style="text-align:right">{{ $t('common.terms.tokenUsage') }}</th>
+                      <th style="text-align:right">{{ $t('common.terms.fee') }} (USD)</th>
                       <th>最后使用</th>
                     </tr>
                   </thead>
@@ -116,18 +117,18 @@ defineExpose({ open, close })
 
               <!-- 模型统计 -->
               <div v-if="activeTab === 'models'" class="drawer-content">
-                <div v-if="loading" class="drawer-loading">加载中…</div>
+                <div v-if="loading" class="drawer-loading">{{ $t('common.feedback.loading') }}</div>
                 <div v-else-if="degradedReason" class="drawer-degraded" role="status">
                   ⚠️ 数据聚合视图未就绪（{{ degradedReason }}），本列表不可作为结论。
                 </div>
                 <table v-else-if="models.length > 0" class="stats-table">
                   <thead>
                     <tr>
-                      <th>模型</th>
+                      <th>{{ $t('common.terms.model') }}</th>
                       <th>提供商</th>
-                      <th style="text-align:right">请求数</th>
-                      <th style="text-align:right">Token 用量</th>
-                      <th style="text-align:right">费用 (USD)</th>
+                      <th style="text-align:right">{{ $t('common.terms.requestCount') }}</th>
+                      <th style="text-align:right">{{ $t('common.terms.tokenUsage') }}</th>
+                      <th style="text-align:right">{{ $t('common.terms.fee') }} (USD)</th>
                     </tr>
                   </thead>
                   <tbody>

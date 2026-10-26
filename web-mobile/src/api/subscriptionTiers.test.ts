@@ -21,8 +21,8 @@ import {
  * 订阅档的契约测试（2026-10-08，第八十七批）。
  *
  * 后端：**echo group**（不是 admin 的 mux！）
- * `cmd/gateway/main.go:6964` adminGroup := e.Group("/api/admin", requireSuperAdmin)
- * → `:6966` licensing.RegisterModuleRoutes
+ * `cmd/gateway/main.go:7188` adminGroup := e.Group("/api/admin", requireSuperAdmin)
+ * → `:7183` licensing.RegisterModuleRoutes
  * → `licensing/admin_api.go:33-36` → `licensing/module_api.go:22` g.GET("/tiers", …)
  * → 实现 `licensing/module_api.go:64-98`
  *

@@ -18,13 +18,24 @@ const (
 )
 
 // loadSlidingWindowEntries loads call entries for one credential×model pair.
-// Primary: Redis recorder; fallback: request_logs. Always returns a non-nil
+// Primary: Redis recorder; fallback: session_turns. Always returns a non-nil
 // entries slice so JSON never serializes to null.
+//
+// ★ 2026-10-24（v1 → session_turns 替换轮）：回退腿读的是会话族，值却写着
+//
+//	"_request_logs" ⇒ 运营读到一个不存在的表名 ⇒ 改成 "session_turns"。
+//
+// 2026-10-16 audit #153: tenantID + isTenantAdmin thread the caller's tenant
+// scope down to the SQL filter. Redis entries carry no tenant tag, so for
+// tenant_admin callers we skip the Redis fast path and force the DB fallback
+// (which carries `AND ($5 = ” OR tenant_id = $5)`).
 func (m *CredentialMonitorHandlers) loadSlidingWindowEntries(
 	ctx context.Context,
 	credentialID int,
 	model string,
 	minutes, limit int,
+	tenantID string,
+	isTenantAdmin bool,
 ) (entries []credentialhealth.CallEntry, source string, err error) {
 	if m.recorder == nil && m.redisClient != nil {
 		m.recorder = credentialhealth.NewRecorder(m.redisClient, 2*time.Hour, 100)
@@ -32,17 +43,17 @@ func (m *CredentialMonitorHandlers) loadSlidingWindowEntries(
 
 	source = "redis"
 	entries = make([]credentialhealth.CallEntry, 0)
-	if m.recorder != nil && m.recorder.Enabled() {
+	if !isTenantAdmin && m.recorder != nil && m.recorder.Enabled() {
 		since := time.Now().Add(-time.Duration(minutes) * time.Minute)
 		entries, _ = m.recorder.GetRecent(ctx, credentialID, model, since)
 	}
 
 	if len(entries) == 0 {
-		source = "_request_logs"
+		source = "session_turns"
 		if m.h == nil || m.h.db == nil {
 			return entries, source, fmt.Errorf("database not configured")
 		}
-		rlEntries, rlErr := m.slidingWindowFromRequestLogs(ctx, credentialID, model, minutes, limit)
+		rlEntries, rlErr := m.slidingWindowFromRequestLogs(ctx, credentialID, model, minutes, limit, tenantID)
 		if rlErr != nil {
 			return nil, source, rlErr
 		}
@@ -73,6 +84,14 @@ func slidingWindowStatsMap(stats credentialhealth.Stats) map[string]any {
 func (m *CredentialMonitorHandlers) handleSlidingWindowBatch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// 12h-audit 20261017: same role gate as the single-credential endpoint —
+	// per-item entries carry cross-tenant per-call detail (Redis fast path has
+	// no tenant tag), so role=user must not reach the batch fan-out either.
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
 		return
 	}
 
@@ -154,6 +173,14 @@ func (m *CredentialMonitorHandlers) handleSlidingWindowBatch(w http.ResponseWrit
 		work = append(work, pair{idx: i, credentialID: it.CredentialID, model: it.Model})
 	}
 
+	// 2026-10-16 audit #153: compute tenant scope once for the whole batch —
+	// caller-side, not per-item (the batch is one caller, many pairs).
+	tenantID := ""
+	isTenantAdmin := IsTenantAdmin(r)
+	if isTenantAdmin {
+		tenantID = GetTenantID(r)
+	}
+
 	jobs := make(chan pair, len(work))
 	for _, job := range work {
 		jobs <- job
@@ -173,7 +200,7 @@ func (m *CredentialMonitorHandlers) handleSlidingWindowBatch(w http.ResponseWrit
 		go func() {
 			defer wg.Done()
 			for job := range jobs {
-				entries, source, err := m.loadSlidingWindowEntries(ctx, job.credentialID, job.model, minutes, slidingWindowBatchLimit)
+				entries, source, err := m.loadSlidingWindowEntries(ctx, job.credentialID, job.model, minutes, slidingWindowBatchLimit, tenantID, isTenantAdmin)
 				if err != nil {
 					results[job.idx].Error = err.Error()
 					continue

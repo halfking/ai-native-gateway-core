@@ -100,7 +100,13 @@ cleanup() {
   if [[ "$KEEP_FRESH_DB" == "1" ]]; then
     echo "  keeping $FRESH_DB (point TEST_AUDIT_FRESH_SCHEMA_DB_URL at it)"
   else
-    PSQL_ADMIN -q -c "DROP DATABASE IF EXISTS $FRESH_DB" >/dev/null 2>&1 || true
+    # ★ 防卡保护：SET / terminate / DROP 三条独立 -c（SET 与 DROP 不能串在同一个 -c，
+    #   否则 PG 报「DROP DATABASE cannot run inside a transaction block」⇒ 清理直接失败）
+    PSQL_ADMIN -q \
+      -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$FRESH_DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+    PSQL_ADMIN -q \
+      -c "SET statement_timeout = '120s'" \
+      -c "DROP DATABASE IF EXISTS $FRESH_DB WITH (FORCE);" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -151,7 +157,14 @@ declare -a failed_list=()
 # required an underscore right after the numeric prefix, which silently
 # excluded date-prefixed migrations such as
 # 2026-07-13-multimodal-token-fields-hot.sql — 464 of 777 files matched.
-mapfile -t mig_files < <(ls sql/migrations/startup/ 2>/dev/null \
+# ★ bash 3.2 兼容（2026-10-21）：原写法是 `mapfile -t`（bash 4.0+），
+#   而 macOS 自带 bash 3.2 不支持 ⇒ 本脚本在 macOS 上**语法错误直接退出**
+#   ⇒ 等于「本地审计在开发者机器上根本没跑过」。改用 read 循环。
+mig_files=()
+while IFS= read -r _mig_line; do
+  [ -n "$_mig_line" ] || continue
+  mig_files+=("$_mig_line")
+done < <(ls sql/migrations/startup/ 2>/dev/null \
     | grep -E '^[0-9].*\.sql$' \
     | grep -v '\.down\.sql$' \
     | sort)

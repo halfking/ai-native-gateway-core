@@ -7,6 +7,7 @@ import {
   type AvailableModelsResponse,
   type PopularModel,
 } from '../api'
+import { CaretBottom } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -182,7 +183,7 @@ async function refreshModels(force = false) {
     vendorGroups.value = buildVendorGroups(data.families)
   } catch (e: unknown) {
     if (generation === modelsGeneration) {
-      loadErr.value = e instanceof Error ? e.message : '加载模型失败'
+      loadErr.value = e instanceof Error ? e.message : t('modelPicker.loadFailed')
     }
   } finally {
     if (generation === modelsGeneration) loading.value = false
@@ -297,7 +298,7 @@ watch(() => props.modelValue, () => {
         <span v-else class="mp-placeholder">{{ placeholder }}</span>
         <span class="mp-actions">
           <span v-if="multiValues.length" class="mp-badge">{{ multiValues.length }}</span>
-          <span class="mp-caret">▾</span>
+          <span class="mp-caret"><CaretBottom /></span>
         </span>
       </button>
     </template>
@@ -312,7 +313,7 @@ watch(() => props.modelValue, () => {
         </div>
         <span v-else class="mp-placeholder">{{ placeholder }}</span>
         <button type="button" class="mp-open-btn" :disabled="disabled" @click.stop="openMain">
-          {{ multiValues.length ? '编辑' : '选择' }}
+          {{ multiValues.length ? $t('common.button.edit') : $t('common.terms.select') }}
         </button>
       </div>
     </template>
@@ -327,7 +328,7 @@ watch(() => props.modelValue, () => {
             type="button"
             class="mp-clear"
             :disabled="disabled"
-            title="清空"
+            :title="$t('common.terms.clear')"
             @click.stop="clearSingle"
           >×</button>
           <span class="mp-caret">▾</span>
@@ -341,11 +342,11 @@ watch(() => props.modelValue, () => {
         <div class="mp-dialog" role="dialog" :aria-label="title" @click.stop>
           <header class="mp-header">
             <h3 class="mp-title">{{ title }}</h3>
-            <button type="button" class="mp-close" aria-label="关闭" @click="isMulti ? cancelMulti() : closeMain()">×</button>
+            <button type="button" class="mp-close" :aria-label="$t('common.close')" @click="isMulti ? cancelMulti() : closeMain()">×</button>
           </header>
 
           <div class="mp-body">
-            <div v-if="loading" class="mp-status">加载中…</div>
+            <div v-if="loading" class="mp-status">{{ $t('common.feedback.loading') }}</div>
             <div v-else-if="loadErr" class="mp-status mp-err">{{ loadErr }}</div>
             <template v-else>
               <section v-if="popular.length" class="mp-section">
@@ -400,8 +401,8 @@ watch(() => props.modelValue, () => {
           <footer v-if="isMulti" class="mp-footer">
             <span class="mp-footer-hint">已选 {{ draft.size }} 个</span>
             <div class="mp-footer-actions">
-              <button type="button" class="btn btn-ghost btn-sm" @click="cancelMulti">取消</button>
-              <button type="button" class="btn btn-primary btn-sm" @click="confirmMulti">确认</button>
+              <button type="button" class="btn btn-ghost btn-sm" @click="cancelMulti">{{ $t('common.button.cancel') }}</button>
+              <button type="button" class="btn btn-primary btn-sm" @click="confirmMulti">{{ $t('common.button.confirm') }}</button>
             </div>
           </footer>
         </div>
@@ -430,10 +431,10 @@ watch(() => props.modelValue, () => {
             </div>
           </div>
           <footer v-if="isMulti" class="mp-footer mp-footer--compact">
-            <button type="button" class="btn btn-ghost btn-sm" @click="closeVendor">返回</button>
+            <button type="button" class="btn btn-ghost btn-sm" @click="closeVendor">{{ $t('common.button.back') }}</button>
           </footer>
           <footer v-else class="mp-footer mp-footer--compact">
-            <button type="button" class="btn btn-ghost btn-sm" @click="closeVendor">返回</button>
+            <button type="button" class="btn btn-ghost btn-sm" @click="closeVendor">{{ $t('common.button.back') }}</button>
           </footer>
         </div>
       </div>
@@ -531,7 +532,7 @@ watch(() => props.modelValue, () => {
 .mp-section + .mp-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
 .mp-section-title {
   margin: 0 0 10px; font-size: 12px; font-weight: 600;
-  color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted);letter-spacing: 0.01em;
 }
 
 .mp-grid {

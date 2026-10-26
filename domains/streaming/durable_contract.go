@@ -35,26 +35,30 @@ const (
 // DurableRequestSnapshotV1 is the versioned, credential-free request DTO used
 // by RecoveryWorker. Dynamic candidates and credentials are deliberately absent.
 type DurableRequestSnapshotV1 struct {
-	Version              int             `json:"version"`
-	Endpoint             string          `json:"endpoint"`
-	ClientProtocol       string          `json:"client_protocol"`
-	ClientModel          string          `json:"client_model"`
-	NormalizedBody       json.RawMessage `json:"normalized_body"`
-	RequestHash          string          `json:"request_hash"`
-	APIKeyID             int             `json:"api_key_id"`
-	TenantID             string          `json:"tenant_id"`
-	ApplicationID        int             `json:"application_id"`
-	SessionID            string          `json:"session_id"`
-	SessionSource        string          `json:"session_source"`
-	ClientProfile        string          `json:"client_profile,omitempty"`
-	ClientIdentityHash   string          `json:"client_identity_hash"`
-	ToolsRequested       bool            `json:"tools_requested"`
-	ResponseFormat       string          `json:"response_format,omitempty"`
-	HasMultimodalContent bool            `json:"has_multimodal_content"`
-	PolicyVersion        string          `json:"policy_version"`
-	RequestID            string          `json:"request_id"`
-	TaskCorrelationID    string          `json:"task_correlation_id"`
-	ParentRequestID      string          `json:"parent_request_id,omitempty"`
+	Version            int             `json:"version"`
+	Endpoint           string          `json:"endpoint"`
+	ClientProtocol     string          `json:"client_protocol"`
+	ClientModel        string          `json:"client_model"`
+	NormalizedBody     json.RawMessage `json:"normalized_body"`
+	RequestHash        string          `json:"request_hash"`
+	APIKeyID           int             `json:"api_key_id"`
+	TenantID           string          `json:"tenant_id"`
+	ApplicationID      int             `json:"application_id"`
+	SessionID          string          `json:"session_id"`
+	SessionSource      string          `json:"session_source"`
+	ClientProfile      string          `json:"client_profile,omitempty"`
+	ClientIdentityHash string          `json:"client_identity_hash"`
+	ToolsRequested     bool            `json:"tools_requested"`
+	// Stream preserves the accepted client transport for detached recovery.
+	// Older V1 snapshots omit it and therefore retain the historical non-stream
+	// behavior through Go's false zero value.
+	Stream               bool   `json:"stream,omitempty"`
+	ResponseFormat       string `json:"response_format,omitempty"`
+	HasMultimodalContent bool   `json:"has_multimodal_content"`
+	PolicyVersion        string `json:"policy_version"`
+	RequestID            string `json:"request_id"`
+	TaskCorrelationID    string `json:"task_correlation_id"`
+	ParentRequestID      string `json:"parent_request_id,omitempty"`
 }
 
 func (s DurableRequestSnapshotV1) Validate() error {

@@ -2,7 +2,7 @@
 export default {
   title: 'User Management',
   create: 'Create User',
-  readOnlyNotice: '📖 You are a tenant admin with read-only access. You can view and reset passwords for users in your tenant, but cannot create, edit, or delete users.',
+  readOnlyNotice: '📖 您是租戶管理員，只有讀取權限。可以檢視與重設本租戶使用者的密碼，但不能新增、修改或刪除使用者。',
   filter: {
     byTenant: 'Filter by tenant:',
     allRoles: '全部角色',
@@ -15,19 +15,17 @@ export default {
   },
   table: {
     createdAt: '創建時間',
-    id: 'ID',
     username: 'Username',
     displayName: 'Display Name',
     email: 'Email',
     tenant: 'Tenant',
     role: 'Role',
-    mustChangePassword: 'Must Change Password',
     status: 'Status',
     lastLogin: 'Last Login',
     actions: 'Actions',
   },
   action: {    detail: '詳情',
-    disable: '禁用',
+    disable: '停用',
     enable: '啟用',
 
     resetPassword: 'Reset Password',
@@ -39,7 +37,6 @@ export default {
   },
   mustChangePassword: {
     pending: 'Pending',
-    completed: 'Completed',
   },
   status: {
     enabled: 'Enabled',
@@ -80,10 +77,11 @@ export default {
     deleteFailed: 'Delete failed',
     resetFailed: 'Reset failed',
     passwordMismatch: 'Passwords do not match',
-    passwordComplexity: 'Password does not meet complexity requirements',
+    passwordComplexity: '密碼未達到複雜度要求',
     resetPasswordMismatch: 'Passwords do not match',
-    resetPasswordComplexity: 'Password does not meet complexity requirements',
+    resetPasswordComplexity: '密碼未達到複雜度要求',
     toggleFailed: 'Operation failed',
+    changePasswordFailed: '密碼沒能修改，請重試',
   },
   passwordMatch: {
     matched: '✓ Passwords match',
@@ -96,7 +94,7 @@ export default {
     total: '總用戶',
     active: '活躍（30 天內有請求）',
     admins: '管理員',
-    disabled: '已禁用',
+    disabled: '已停用',
     requests30d: '近 30 天請求',
     credits30d: '近 30 天積分消耗',
   },
@@ -133,10 +131,11 @@ export default {
     time: '時間',
     firstTotal: '首字 / 總耗時',
     status: '狀態',
-    basic: '基本信息',
+    basic: '基本資訊',
     hotKeys: '高頻密鑰',
     keyCount: 'API 密鑰',
     viewAllLogs: '在日誌中查看全部',
     requests: '請求',
+    loadStatsFailed: '使用者統計沒能載入出來，請重試',
   },
 }

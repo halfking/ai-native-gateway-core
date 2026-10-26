@@ -341,7 +341,7 @@ async function savePolicy() {
       policyDraft.value = { ...policy.value }
     }
     policyMsg.value = t('routing.savedPolicy')
-  } catch (e) { policyMsg.value = '保存失败: ' + String(e) }
+  } catch (e) { policyMsg.value = t('routing.dashboard.resolve.savePolicyFailedWithReason', { reason: String(e) }) }
   finally { savingPolicy.value = false }
 }
 
@@ -352,7 +352,7 @@ async function saveWeights() {
     await updateScoringWeights(weightsDraft.value)
     weights.value = { ...weightsDraft.value }
     policyMsg.value = t('routing.savedWeights')
-  } catch (e) { policyMsg.value = '保存失败: ' + String(e) }
+  } catch (e) { policyMsg.value = t('routing.dashboard.resolve.savePolicyFailedWithReason', { reason: String(e) }) }
   finally { savingPolicy.value = false }
 }
 
@@ -600,7 +600,7 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
   try {
     priorities = assignSpacedPriorities(next.length)
   } catch (error) {
-    reorderErr.value = error instanceof Error ? error.message : '候选数量超过优先级上限，无法排序'
+    reorderErr.value = error instanceof Error ? error.message : t('routing.dashboard.resolve.reorderFailed')
     return
   }
   resolveCandidates.value = next.map((candidate, index) => ({
@@ -628,7 +628,7 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
     await doResolve()
   } catch (e: unknown) {
     resolveCandidates.value = previous
-    const fallback = e instanceof Error ? e.message : '排序保存失败'
+    const fallback = e instanceof Error ? e.message : t('routing.dashboard.resolve.sortSaveFailed')
     if (e instanceof ApiError && e.status === 409) {
       reorderErr.value = '排序已过期，已重新查询，请重试。'
       void doResolve()
@@ -667,7 +667,7 @@ async function saveCandidatePriority(c: RoutingCandidate, value: boolean) {
   } catch (e: unknown) {
     // Roll back to server truth on error.
     resolveCandidates.value = previous
-    const fallback = e instanceof Error ? e.message : '保存失败'
+    const fallback = e instanceof Error ? e.message : t('common.feedback.saveFailed')
     if (e instanceof ApiError && e.status === 403) {
       priorityErr.value = '仅超级管理员可以切换优先凭据。'
     } else {
@@ -709,7 +709,7 @@ function loadResolveLog() {
       } catch (err) {
         // 配额满/隐私模式：备份失败也要讲出来，不能装作已备份
         console.error('Failed to back up corrupt resolve log:', err)
-        resolveLogError.value = '解析本地运行记录失败，且原始内容备份失败（浏览器存储可能已满）'
+        resolveLogError.value = t('routing.dashboard.resolve.localLogFailed')
         resolveLog.value = []
         return
       }
@@ -1000,7 +1000,7 @@ onUnmounted(() => stopPoll())
             路由策略
           </router-link>
         </div>
-        <button class="btn btn-sm btn-ghost refresh-btn" @click="loadIndex(); loadAudit(); activeTab === 'analytics' && loadAnalytics(); activeTab === 'policy' && loadPolicy()" title="刷新">↻</button>
+        <button class="btn btn-sm btn-ghost refresh-btn" @click="loadIndex(); loadAudit(); activeTab === 'analytics' && loadAnalytics(); activeTab === 'policy' && loadPolicy()" :title="$t('common.button.refresh')">↻</button>
       </div>
 
       <!-- L1 / L2 pipeline -->
@@ -1039,7 +1039,7 @@ onUnmounted(() => stopPoll())
         <p>暂无 Auto 路由数据 — 请前往 <button class="link-btn" @click="activeTab = 'live'">实时决策</button> Tab 使用模拟器产生请求，或等待生产流量写入。</p>
       </div>
       <template v-else>
-        <p class="analytics-hint text-muted">{{ analyticsRowDim === 'work_type' ? t('routing.workTypes') : t('routing.task') }}×模型匹配统计 · 点击单元格查看决策明细与 L2 漏斗</p>
+        <p class="analytics-hint text-muted">{{ analyticsRowDim === 'work_type' ? t('routing.workTypes') : t('routing.task') }}{{ t('routing.dashboard.matchStatsHint') }}</p>
         <div class="card compact-card flat-card">
           <AnalyticsKpiBar :audit="audit" />
         </div>
@@ -1195,7 +1195,7 @@ onUnmounted(() => stopPoll())
           <table class="dense-table">
             <thead>
               <tr>
-                <th>#</th><th>模型</th><th>{{ profileLabel }}</th><th>P95</th><th>成功率</th><th>入/出 $/1M</th><th>压力</th><th></th>
+                <th>#</th><th>{{ $t('common.terms.model') }}</th><th>{{ profileLabel }}</th><th>P95</th><th>{{ $t('common.terms.successRate') }}</th><th>{{ $t('common.terms.inOutPrice') }}</th><th>{{ $t('common.terms.pressure') }}</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -1273,7 +1273,7 @@ onUnmounted(() => stopPoll())
         </div>
       </div>
       <div v-else-if="!indexLoading" class="card compact-card empty-hint">
-        索引暂无数据 — 点击 ↻ 刷新
+        {{ $t('routing.dashboard.overview.emptyHint') }}
       </div>
     </div>
 
@@ -1349,12 +1349,12 @@ onUnmounted(() => stopPoll())
               </tr>
             </tbody>
           </table>
-          <div v-else class="text-muted">暂无</div>
+          <div v-else class="text-muted">{{ $t('routing.dashboard.policy.customerCostEmpty') }}</div>
         </div>
         <div class="card compact-card">
           <div class="section-head"><h3>模型成本</h3></div>
           <table v-if="modelCost.length" class="dense-table">
-            <thead><tr><th>模型</th><th>费用</th><th>成功率</th><th>请求</th></tr></thead>
+            <thead><tr><th>{{ $t('common.terms.model') }}</th><th>{{ $t('common.terms.fee') }}</th><th>{{ $t('common.terms.successRate') }}</th><th>{{ $t('common.terms.request') }}</th></tr></thead>
             <tbody>
               <tr v-for="m in modelCost" :key="m.raw_model">
                 <td class="model-name">{{ m.raw_model }}</td>
@@ -1364,7 +1364,7 @@ onUnmounted(() => stopPoll())
               </tr>
             </tbody>
           </table>
-          <div v-else class="text-muted">暂无</div>
+          <div v-else class="text-muted">{{ $t('routing.dashboard.policy.modelCostEmpty') }}</div>
         </div>
       </div>
     </div>
@@ -1401,8 +1401,8 @@ onUnmounted(() => stopPoll())
       <div v-if="resolution" class="card compact-card">
         <div class="section-head tight"><h3>模型解析</h3></div>
         <div class="resolve-meta">
-          <span><span class="text-muted">客户端：</span><code>{{ resolution.client_model }}</code></span>
-          <span><span class="text-muted">路径：</span>{{ resolution.resolution_path }}</span>
+          <span><span class="text-muted">{{ $t('common.terms.client') }}：</span><code>{{ resolution.client_model }}</code></span>
+          <span><span class="text-muted">{{ $t('common.terms.path') }}：</span>{{ resolution.resolution_path }}</span>
           <span v-if="resolution.canonical_name"><span class="text-muted">Canonical：</span>{{ resolution.canonical_name }}</span>
         </div>
         <div v-if="resolution.plan_order.length" class="plan-order">
@@ -1445,7 +1445,7 @@ onUnmounted(() => stopPoll())
               <tr>
                 <th v-if="superAdmin" style="width: 24px" aria-label="排序">↕</th>
                 <th style="width: 32px">#</th>
-                <th style="width: 92px">可用性</th>
+                <th style="width: 92px">{{ $t('common.terms.availability') }}</th>
                 <th>供应商 / 凭据</th>
                 <th style="width: 220px">上游</th>
                 <th style="width: 120px">Tier · 权重</th>
@@ -1547,12 +1547,12 @@ onUnmounted(() => stopPoll())
       <div v-if="resolveLog.length" class="card compact-card">
         <div class="card-toolbar">
           <div class="toolbar-left"><span class="toolbar-title">运行记录</span></div>
-          <button class="btn btn-ghost btn-sm" @click="clearResolveLog">清空</button>
+          <button class="btn btn-ghost btn-sm" @click="clearResolveLog">{{ $t('common.terms.clear') }}</button>
         </div>
         <div class="table-wrap">
           <table class="dense-table">
             <thead>
-              <tr><th>时间</th><th>模型</th><th>Profile</th><th>路径</th><th>可路由</th><th>Top凭据</th><th></th></tr>
+              <tr><th>{{ $t('common.time') }}</th><th>{{ $t('common.terms.model') }}</th><th>Profile</th><th>{{ $t('common.terms.path') }}</th><th>{{ $t('common.terms.routable') }}</th><th>Top{{ $t('common.credentialFallback') }}</th><th></th></tr>
             </thead>
             <tbody>
               <tr v-for="(e, i) in resolveLog" :key="i">
@@ -1582,7 +1582,7 @@ onUnmounted(() => stopPoll())
               <select v-model="simProfile" class="sim-select">
                 <option value="smart">智能</option>
                 <option value="speed_first">速度</option>
-                <option value="cost_first">成本</option>
+                <option value="cost_first">{{ $t('common.terms.cost') }}</option>
               </select>
               <button class="btn btn-primary btn-sm" :disabled="simLoading" @click="runSim">{{ simLoading ? '…' : t('routing.simulate') }}</button>
             </div>
@@ -1601,7 +1601,7 @@ onUnmounted(() => stopPoll())
           <div class="live-dist">
             <div class="dist-mini">
               <div class="dist-col">
-                <h4>任务</h4>
+                <h4>{{ $t('common.terms.task') }}</h4>
                 <div v-for="[task, count] in distEntries(audit.task_distribution).slice(0, 5)" :key="task" class="dist-row">
                   <span class="dist-label">{{ task }}</span>
                   <div class="dist-bar-bg"><div class="dist-bar-fill" :style="{ width: (count / distMax(audit.task_distribution) * 100) + '%' }" /></div>
@@ -1629,7 +1629,7 @@ onUnmounted(() => stopPoll())
         </div>
         <div class="table-wrap">
           <table v-if="decisions.length" class="dense-table">
-            <thead><tr><th>时间</th><th>任务</th><th>Profile</th><th>模型</th><th>置信</th><th>状态</th><th></th></tr></thead>
+            <thead><tr><th>{{ $t('common.time') }}</th><th>{{ $t('common.terms.task') }}</th><th>Profile</th><th>{{ $t('common.terms.model') }}</th><th>{{ $t('common.terms.confidence') }}</th><th>{{ $t('common.terms.status') }}</th><th></th></tr></thead>
             <tbody>
               <template v-for="d in decisions" :key="d.request_id">
                 <tr class="model-row" @click="onExpandDecision(d.request_id)">
@@ -1677,7 +1677,6 @@ onUnmounted(() => stopPoll())
       :model="nodeDrawerModel"
       :initial-tab="nodeDrawerTab"
       :seed-candidate="nodeDrawerSeed"
-      :require-super-admin-edit="true"
       @applied="onCandidateSettingsApplied"
     />
   </div>
@@ -1957,8 +1956,8 @@ onUnmounted(() => stopPoll())
   border-radius: 4px;
   background: var(--bg);
 }
-.layer-panel.l1-accent { border-left: 3px solid var(--accent); }
-.layer-panel.l2-accent { border-left: 3px solid var(--success); }
+.layer-panel.l1-accent { border: 1px solid var(--accent); }
+.layer-panel.l2-accent { border: 1px solid var(--success); }
 .l2-meta { font-size: 10px; color: var(--muted); margin-bottom: 4px; word-break: break-all; }
 .l2-meta.mono { font-family: ui-monospace, monospace; font-size: 9px; }
 .l2-creds { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -1983,7 +1982,7 @@ onUnmounted(() => stopPoll())
 }
 .policy-block { flex: 1; min-width: 220px; }
 .policy-divider { width: 1px; background: var(--border); align-self: stretch; min-height: 60px; }
-.block-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+.block-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; font-weight: 600;letter-spacing: 0.01em; }
 .inline-fields {
   display: flex;
   flex-wrap: wrap;
@@ -2101,7 +2100,7 @@ onUnmounted(() => stopPoll())
 .sim-step.l2.win { background: var(--success-bg); color: var(--success); font-weight: 600; }
 
 .dist-mini { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.dist-col h4 { font-size: 9px; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; letter-spacing: .04em; }
+.dist-col h4 { font-size: 9px;color: var(--muted); margin: 0 0 4px; letter-spacing: 0.01em; }
 .dist-row {
   display: grid;
   grid-template-columns: 56px 1fr 24px;

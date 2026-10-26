@@ -48,14 +48,14 @@
 
 | 文档 | 说明 | 更新日期 |
 |------|------|----------|
-| **[系统需求规格说明书](./01-requirements/SYSTEM_REQUIREMENTS.md)** | 系统需求权威总纲：FR×19 域 / NFR×13 / 全局不变量（2026-10-01 全码审计重生）⭐ | 2026-10-01 |
+| **[系统需求规格说明书](./01-requirements/SYSTEM_REQUIREMENTS.md)** | 系统需求权威总纲：FR×16 域 / NFR×13 / 全局不变量（2026-10-01 全码审计重生）⭐ | 2026-10-01 |
 | **[功能特性目录](./01-requirements/functional/FEATURES_CATALOG.md)** | 功能→代码包→API→前端页实现映射，含 🔴 新旧并行 / ⚪ 死代码标注 ⭐ | 2026-10-01 |
 | **[当前系统架构](./03-design/01-architecture/architecture/ARCHITECTURE.md)** | 内部权威架构文（证据分级 CURRENT/SHADOW/PARALLEL，快照 2026-10-01）⭐ | 2026-10-01 |
 | **[新旧并行实现对比](./03-design/01-architecture/parallel-implementations-comparison.md)** | 同功能新旧两版实现的重点标注与收敛方案（10 组并行对 + 7 处死代码）⭐ | 2026-10-01 |
 | **[统一优化提示词方案](./03-design/01-architecture/unified-optimization-prompts.md)** | 逐项可执行的收敛提示词包（U-01~U-10） | 2026-10-01 |
 | **[系统架构与业务流程图集](./architecture-diagrams.md)** | 全图集（Mermaid）：系统上下文/容器/请求主链/双层路由/存储/部署/Worker 体系 ⭐ | 2026-10-01 |
 | **[会话处理生命周期](./session-lifecycle.md)** | 会话三层模型、指派决策、单轮时序、状态机、粘性绑定、压缩与数据归档全流程图 ⭐ | 2026-10-01 |
-| **[项目总览](./PROJECT_OVERVIEW.md)** | 项目概述、架构设计、核心功能模块 ⭐ | 2026-10-01 |
+| **[项目总览](./PROJECT_OVERVIEW.md)** | 项目概述、架构设计、核心功能模块 ⭐ | 2026-10-22 |
 | **[功能模块指南](./MODULES_GUIDE.md)** | 详细的模块功能说明与使用指南 ⭐ | 2026-10-01 |
 | **[快速参考手册](./QUICK_REFERENCE.md)** | 常用命令、API端点、故障排查 ⭐ | 2026-09-06 |
 | **[文档索引](./archive/2026-09/INDEX.md)** | 按主题组织的文档快速定位（2026-09-08 归档） | 2026-08-17 |
@@ -64,18 +64,18 @@
 
 ## 目录结构（现行）
 
-> 2026-08-17 重构时的 27 目录结构已进一步演化：2026-09-07 起重组为 `01-requirements`～`07-reporting` 编号结构（详见 [archive/2026-09/INDEX.md](./archive/2026-09/INDEX.md)），原 `api/`、`domains/`、`features/`、`i18n/`、`legal/`、`model-iq/`、`model-quality/`、`modules/`、`ops/`、`partition/`、`pricing/`、`testing/`、`user-guide/` 等 13 个目录已并入编号结构，不再存在。当前 docs/ 顶层共约 60 个条目，主体如下：
+> 2026-08-17 重构时的 27 目录结构已进一步演化：2026-09-07 起重组为 `01-requirements`～`07-reporting` 编号结构（详见 [archive/2026-09/INDEX.md](./archive/2026-09/INDEX.md)），原 `api/`、`domains/`、`features/`、`i18n/`、`legal/`、`model-iq/`、`model-quality/`、`modules/`、`ops/`、`partition/`、`pricing/`、`testing/`、`user-guide/` 等 13 个目录已并入编号结构，不再存在。当前 docs/ 顶层共 182 个条目，主体如下：
 
 ```
 docs/
 ├── README.md                ← 本文件：导览
 │
-├── 01-requirements/         需求（11 篇）
-├── 02-resources/            资源（研究/合规等，28 篇；含 research/pricing、compliance/legal）
-├── 03-design/               设计（151 篇；architecture/API 契约、feature-design/model-iq·model-quality·i18n、data-design/partition 等）
+├── 01-requirements/         需求（13 篇）
+├── 02-resources/            资源（研究/合规等，43 篇；含 research/pricing、compliance/legal）
+├── 03-design/               设计（165 篇；architecture/API 契约、feature-design/model-iq·model-quality·i18n、data-design/partition 等）
 ├── 04-implementation/       实现（38 篇；含 deliverables/user-guide）
-├── 05-testing/              测试（18 篇）
-├── 06-deployment/           部署/运维（50 篇）
+├── 05-testing/              测试（21 篇）
+├── 06-deployment/           部署/运维（59 篇）
 ├── 07-reporting/            报告（13 篇）
 │
 ├── adr/ architecture/ design/ deploy/ deployment/ migrations/ operations/ runbooks/

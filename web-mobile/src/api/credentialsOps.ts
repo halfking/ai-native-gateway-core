@@ -15,7 +15,7 @@ import { req, type RequestOptions } from './client'
 /**
  * `POST /api/credentials/set-manual-disabled`
  *
- * 后端 admin/credential_monitor.go:1785-1792 强制校验：`reason` 为空串直接 400
+ * 后端 admin/credential_monitor.go:2098-2100 强制校验：`reason` 为空串直接 400
  * （"reason required"）。移动端若让用户提交空 reason，请求必定失败且报错信息
  * 对用户无意义 ⇒ 视图层必须在提交前挡住，不要指望后端兜底。
  *
@@ -42,9 +42,9 @@ export function setManualDisabled(
 }
 
 /**
- * `POST /api/credentials/clear-manual-disabled`（注册 admin/credential_monitor.go:166）
+ * `POST /api/credentials/clear-manual-disabled`（注册 admin/credential_monitor.go:170）
  *
- * reason 同样必填（:1689-1691）。与 set(false) 的差别是这是**专用解除停用**
+ * reason 同样必填（:1962-1964）。与 set(false) 的差别是这是**专用解除停用**
  * 端点，桌面用它做「凭据已修好，放回路由池」这个语义动作。
  */
 export function clearManualDisabled(
@@ -136,7 +136,7 @@ export function forceRecoverCredential(credentialId: number, options?: RequestOp
 }
 
 /**
- * `POST /api/routing/credentials/{id}/reset-state`（admin/handler.go:946，superAdmin）
+ * `POST /api/routing/credentials/{id}/reset-state`（admin/handler.go:1005，superAdmin）
  * 聚焦式状态复位，handler admin/routing_reset.go:52。`reason` 必填（:69-72）。
  *
  * 与 force-recover 的分工：那个是「凭据级 5 步全清」，这个是「带 reason 的记账式
@@ -394,7 +394,7 @@ export function resolveRouting(
   return req<RoutingResolveResponse>('GET', `/api/routing/resolve?${qs}`, undefined, options)
 }
 
-/** `GET /api/routing/score-details?model=X`（admin/handler.go:1209）—— 打分明细。 */
+/** `GET /api/routing/score-details?model=X`（admin/handler.go:1283）—— 打分明细。 */
 export interface ScoreDetailsResponse {
   model: string
   total_score?: number

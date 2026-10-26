@@ -2,30 +2,48 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestGetLogDetail_TimestampMismatch verifies that request_body and response_body
-// can still be retrieved even when the ts field differs slightly between
-// _request_logs_hot and request_logs_bodies_hot.
+// TestGetLogDetail_TimestampMismatch pins the body-join key contract of the
+// log detail read path.
 //
-// Background: The current JOIN condition uses both request_id AND ts:
+// # 旧契约（v1 时代）
+//
+// bodies 的 JOIN 曾经写成
 //
 //	LEFT JOIN request_logs_bodies_with_current_month rb
 //	  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
 //
-// This causes JOIN failures when:
-// - Network latency between two INSERT statements
-// - Transaction commit time differences
-// - Database timestamp precision issues
-// - Partition table timestamp conversions
+// 而两侧的 ts 相等率**极低**（db/request_logs_view_schema.go 的文件头实测
+// 99.85% 不等）⇒ ts 不等就**静默**丢正文（LEFT JOIN ⇒ NULL，不报错）。
 //
-// Expected behavior: Since request_id is semantically unique (one request
-// has only one message body), the JOIN should work with request_id alone.
+// # R68 改瞄（2026-10-21，v1 族退役）
+//
+// 890 之后那条形态**不再可能**：
+//
+//	· v1 的 `request_logs_bodies_with_current_month` 视图随 v1 族一起消失；
+//	· 会话族正文源 `db.SessionFamilyBodiesSourceSQL()` **不投影 `ts`**
+//	  —— 那个文件头把理由写死了：「这个源不投影 ts…加上它会把一个**解析期
+//	  错误**换成一个**静默的行数变化**。响亮失败优于静默改行」。
+//
+// ⇒ 本门改钉这条**更硬**的不变量：
+//
+//	① **ts 不等不再导致丢正文**（正文源只按 request_id 单键匹配）；
+//	② 想按 ts 等值 JOIN 的写法会**响亮报错**（42703 undefined_column），
+//	   而不是静默少算 —— 即「失败方式从静默变成响亮」这条改进被钉住。
+//
+// ⚠ 判据 ② 必须真的跑那条带 ts 的 SQL（而不是断言源文本里没有 "ts"）：
+//
+//	子串判据会被 request_id / request_delta 之类的词形骗过；
+//	真正的不变量是「PG 对这条语句的裁决」。
 func TestGetLogDetail_TimestampMismatch(t *testing.T) {
 	pool := setupTestDB(t)
 	defer pool.Close()
@@ -41,36 +59,23 @@ func TestGetLogDetail_TimestampMismatch(t *testing.T) {
 	require.NoError(t, err)
 	defer tx.Rollback(ctx)
 
-	// Insert into usage_ledger_hot
+	// 元数据行（ts1）
 	_, err = tx.Exec(ctx, `
-		INSERT INTO usage_ledger_hot (
-			request_id, ts, tenant_id, success
-		) VALUES ($1, $2, 'test-tenant', true)
-	`, requestID, ts1)
+		INSERT INTO session_turns_hot
+			(session_id, turn_no, tenant_id, request_id, ts, model, success)
+		VALUES ($1, 1, 'test-tenant', $2, $3, 'gpt-4', true)
+	`, sessionIDFor(requestID), requestID, ts1)
 	require.NoError(t, err)
 
-	// Insert into _request_logs_hot with ts1
+	// 正文行（ts2 —— 与元数据行相差 500µs）
 	_, err = tx.Exec(ctx, `
-		INSERT INTO _request_logs_hot (
-			request_id, ts, tenant_id, application_id, success,
-			client_model, outbound_model
-		) VALUES ($1, $2, 'test-tenant', 1, true, 'gpt-4', 'gpt-4')
-	`, requestID, ts1)
-	require.NoError(t, err)
-
-	// Insert into _request_logs_bodies_hot with ts2 (slightly different!)
-	// R65 夹具适配：迁移 601/604（2026-08-25）已 DROP bodies 表的 tenant_id
-	// 残留列——bodies 只存 payload，租户经 request_id JOIN _request_logs 解析
-	//（rule 22 §9.1）。修前夹具显式插入该列实锤 42703。
-	_, err = tx.Exec(ctx, `
-		INSERT INTO _request_logs_bodies_hot (
-			request_id, ts,
-			request_body, response_body
-		) VALUES ($1, $2,
+		INSERT INTO session_bodies_hot
+			(session_id, turn_no, tenant_id, request_id, ts,
+			 request_delta, response_delta)
+		VALUES ($1, 1, 'test-tenant', $2, $3,
 			'{"messages":[{"role":"user","content":"test"}]}'::jsonb,
-			'{"choices":[{"message":{"role":"assistant","content":"response"}}]}'::jsonb
-		)
-	`, requestID, ts2)
+			'{"choices":[{"message":{"role":"assistant","content":"response"}}]}'::jsonb)
+	`, sessionIDFor(requestID), requestID, ts2)
 	require.NoError(t, err)
 
 	require.NoError(t, tx.Commit(ctx))
@@ -79,47 +84,51 @@ func TestGetLogDetail_TimestampMismatch(t *testing.T) {
 	// 逐轮累积夹具行）——注册顺序在 pool.Close 之后，LIFO 保证先清理后关池。
 	defer func() { cleanupTestRequestLog(t, pool, requestID) }()
 
-	// Query using the current JOIN pattern (with ts condition)
-	var requestBodyWithTS, responseBodyWithTS *string
+	// ── 前提：两侧 ts 确实不等（否则本门证明不了任何东西）────────────
+	var metaTS, bodyTS *time.Time
 	err = pool.QueryRow(ctx, `
-		SELECT
-		  COALESCE(rb.request_body::text, '') AS request_body,
-		  COALESCE(rb.response_body::text, '') AS response_body
-		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb
-		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
-		WHERE rl.request_id = $1
-		LIMIT 1
-	`, requestID).Scan(&requestBodyWithTS, &responseBodyWithTS)
+		SELECT rl.ts, (SELECT sb.ts FROM session_bodies_hot sb WHERE sb.request_id = $1 LIMIT 1)
+		  FROM request_logs_with_current_month rl
+		 WHERE rl.request_id = $1
+		 LIMIT 1
+	`, requestID).Scan(&metaTS, &bodyTS)
 	require.NoError(t, err)
+	require.NotNil(t, metaTS, "元数据行必须可见")
+	require.NotNil(t, bodyTS, "正文行必须可见")
+	require.NotEqual(t, *metaTS, *bodyTS,
+		"前提破坏：两侧 ts 相等 ⇒ 本门证明不了「ts 不等不丢正文」")
 
-	// Current behavior: JOIN fails due to ts mismatch, bodies are NULL.
-	// R65 断言适配：查询用 COALESCE(rb.x::text, '')——无匹配时得到空串
-	// 而非 NULL（修前断言 Nil 与自身查询形状矛盾，任何数据下都不可能通过）。
-	assert.Empty(t, requestBodyWithTS, "Expected empty (COALESCE '') with ts condition (current broken behavior)")
-	assert.Empty(t, responseBodyWithTS, "Expected empty (COALESCE '') with ts condition (current broken behavior)")
-
-	// Query using the proposed JOIN pattern (without ts condition)
-	var requestBodyWithoutTS, responseBodyWithoutTS *string
+	// ── 判据 1：按 request_id 单键 JOIN ⇒ 正文必须取得到 ─────────────
+	var requestBody, responseBody *string
 	err = pool.QueryRow(ctx, `
-		SELECT
-		  COALESCE(rb.request_body::text, '') AS request_body,
-		  COALESCE(rb.response_body::text, '') AS response_body
+		SELECT rb.request_body::text, rb.response_body::text
 		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb
+		LEFT JOIN (`+dbpkg.SessionFamilyBodiesSourceSQL()+`) rb
 		  ON rb.request_id = rl.request_id
 		WHERE rl.request_id = $1
 		LIMIT 1
-	`, requestID).Scan(&requestBodyWithoutTS, &responseBodyWithoutTS)
+	`, requestID).Scan(&requestBody, &responseBody)
 	require.NoError(t, err)
+	require.NotNil(t, requestBody, "ts 不等不得导致丢正文（正文源只按 request_id 匹配）")
+	require.NotNil(t, responseBody, "ts 不等不得导致丢正文")
+	assert.Contains(t, *requestBody, "test", "Request body should contain test message")
+	assert.Contains(t, *responseBody, "response", "Response body should contain response")
 
-	// Expected behavior: JOIN succeeds with request_id alone, bodies are present
-	require.NotNil(t, requestBodyWithoutTS, "Expected body to be found without ts condition")
-	require.NotNil(t, responseBodyWithoutTS, "Expected body to be found without ts condition")
-	assert.Contains(t, *requestBodyWithoutTS, "test", "Request body should contain test message")
-	assert.Contains(t, *responseBodyWithoutTS, "response", "Response body should contain response")
-
-	t.Logf("✅ Test demonstrates that removing ts from JOIN condition fixes the issue")
-	t.Logf("   - With ts condition: bodies are NULL (broken)")
-	t.Logf("   - Without ts condition: bodies are retrieved correctly (fixed)")
+	// ── 判据 2：ts-等值 JOIN 的写法必须**响亮报错**，不得静默少算 ─────
+	var tsJoinBody *string
+	err = pool.QueryRow(ctx, `
+		SELECT rb.request_body::text
+		FROM request_logs_with_current_month rl
+		LEFT JOIN (`+dbpkg.SessionFamilyBodiesSourceSQL()+`) rb
+		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		WHERE rl.request_id = $1
+		LIMIT 1
+	`, requestID).Scan(&tsJoinBody)
+	require.Error(t, err,
+		"会话族正文源不投影 ts ⇒ ts-等值 JOIN 必须响亮报错，不能静默丢行")
+	var pgErr *pgconn.PgError
+	require.True(t, errors.As(err, &pgErr),
+		"必须是 PG 错误码形态（实得 %T: %v）", err, err)
+	assert.Equal(t, "42703", pgErr.Code,
+		"必须是「列不存在」的响亮失败（undefined_column），而不是别的错误")
 }

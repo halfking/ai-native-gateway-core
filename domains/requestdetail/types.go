@@ -9,10 +9,27 @@ import "encoding/json"
 type Source string
 
 const (
-	SourceMemory       Source = "memory"
-	SourceFile         Source = "file"
-	SourceLive         Source = "live_stream"
-	SourceRequestLogs  Source = "_request_logs"
+	SourceMemory Source = "memory"
+	SourceFile   Source = "file"
+	SourceLive   Source = "live_stream"
+	// ★ 2026-10-24（v1 → session_turns 替换轮）：值从 "_request_logs" 改成
+	//   "request_logs" —— ★★ **订正（2026-10-25 12h 审计轮）**：原文写的理由是
+	//   「前端 useRequestDetailLoader.ts 的 sourceRank 与其测试用的都是
+	//   'request_logs' ⇒ 旧值与前端对不上」⇒ ★★ **该理由不成立**：
+	//   实测该文件的 `sourceRank` 只比较 `'journey'`（3）与 `'waterfall'`（2），
+	//   **整段不含 'request_logs'**；含 `'request_logs'` 字面量的是**测试文件**
+	//   `useRequestDetailLoader.test.ts`（11 处夹具）⇒ ⇒ 生产前端**从不断言**
+	//   该字段的值 ⇒ 「旧值与前端对不上」在生产链路上**无可观测后果**。
+	//   ⇒ ★ **真正理由**（与 `admin/credential_monitor.go` 同一款）：旧值
+	//   `"_request_logs"` 是一个**已被迁移 890 物理删除的表名** ⇒ 运营在响应里
+	//   读到的是一个不存在的表 ⇒ 改成读面名 `"request_logs"`。
+	//   ⇒ ★★ **改动本身是对的、行为中性**：① 本字段**不落库**（只出现在 API
+	//   响应的 `source` JSON 字段里）⇒ 无需数据迁移；② 无任何消费方按该值
+	//   分支 ⇒ 改值不影响路由、不影响客户端可见的分类口径。
+	//   ⇒ ★ 订正的是**理由**，不是改动本身。
+	//   注意：这两个 Source 描述的是**读面**（请求账本 / 会话轮次），
+	//   不是物理表名 —— 物理表早已是会话族。
+	SourceRequestLogs  Source = "request_logs"
 	SourceSessionTurns Source = "session_turns"
 )
 

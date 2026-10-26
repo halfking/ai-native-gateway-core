@@ -46,6 +46,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -420,15 +421,25 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 			    ))) AS model
 			), usage AS (
 			    SELECT lower(raw_model) AS raw_model FROM (
-			        SELECT COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
+			        SELECT rl.raw_model_name AS raw_model,
 			               count(*) AS calls
-			        FROM _request_logs_hot rl
+			        FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl
 			        WHERE rl.success
 			          AND rl.ts > now() - make_interval(hours => $2)
 			          -- R50: dual-arm probe exclusion — watchdog backoff is a
 			          -- usage scan (INV-3); probe-only models must back off too.
-			          AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
-			          AND COALESCE(rl.outbound_model, rl.client_model) <> ''
+			          -- ★ 890（v1 族退役）：会话族没有 quality_flags ⇒ 必须用
+			          -- 会话族那条探针排除谓词（origin_stage + task_type +
+			          -- origin_actor 三臂；物理谓词引用 quality_flags，会 42703）。
+			          AND `+fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")+`
+			          -- ★ 890：模型名口径换成 rl.raw_model_name——会话族里它就是
+			          -- COALESCE(outbound_model, client_model) 的同义列（取值口径
+			          -- 登记见 internal/sessionv2mirror/s1a_fields.go）。
+			          -- 不用投影的 outbound_model 列：那一列在会话臂上落的是
+			          -- t.model（= client_model 的同义列），拿它去比
+			          -- provider_models.raw_model_name 会在别名映射行上系统性误判。
+			          AND rl.raw_model_name IS NOT NULL
+			          AND rl.raw_model_name <> ''
 			        GROUP BY raw_model
 			    ) t
 			    ORDER BY calls DESC LIMIT $3
@@ -514,9 +525,13 @@ func (r *ModelProbeRunner) demoteAgedHealthyBindings(ctx context.Context) {
 			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 			  AND lower(mps.raw_model_name) NOT IN (SELECT model FROM static)
 			  AND NOT EXISTS (
-			      SELECT 1 FROM _request_logs_hot rl
+			      -- ★ 890（v1 族退役）：证据源换成会话族热腿（v1 热表已 DROP）。
+			      -- 模型名口径用 rl.raw_model_name（会话族里它就是
+			      -- COALESCE(outbound_model, client_model) 的同义列），
+			      -- 与上面 usage CTE 同一口径。
+			      SELECT 1 FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl
 			      WHERE rl.credential_id = mps.credential_id
-			        AND COALESCE(rl.outbound_model, rl.client_model) = mps.raw_model_name
+			        AND rl.raw_model_name = mps.raw_model_name
 			        AND rl.success
 			        AND rl.ts > now() - make_interval(hours => $2))
 			  AND NOT EXISTS (
@@ -585,13 +600,29 @@ func (r *ModelProbeRunner) manualProbeWorker(ctx context.Context) {
 }
 
 func (r *ModelProbeRunner) Stop() {
+	// 2026-10-21 (R71): the wait on r.done must be reachable ONLY when a
+	// loop is actually running. r.done is closed by the goroutine that
+	// Start()/StartFeaturedOnly() launched, so a runner that was only
+	// constructed (never started) would block here forever — and because
+	// the gateway's shutdown sequence is one goroutine, that single block
+	// also prevents every later Stop() from running.
+	//
+	// Two independent entry points exist, and each owns a different cancel
+	// handle: Start() sets r.cancel, StartFeaturedOnly() stores
+	// r.featuredCancel. Both launch a goroutine that closes r.done, so
+	// "started" means "either handle is set".
+	started := false
 	if r.cancel != nil {
 		r.cancel()
+		started = true
 	}
 	if fc := r.featuredCancel.Load(); fc != nil && *fc != nil {
 		(*fc)()
+		started = true
 	}
-	<-r.done
+	if started {
+		<-r.done
+	}
 }
 
 func (r *ModelProbeRunner) run(ctx context.Context) {
@@ -763,6 +794,8 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 			r.recordRun(timeoutCtx, q.t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "scheduler")
 			r.applyResult(timeoutCtx, q.t, "auth", nil, "decrypt_error", decErr.Error(), 0,
 				"unchanged", false, "scheduler", ns, nf, nst)
+			// provider 错误：状态不改，但**节拍要推进**（否则这一行永远停在过去值）。
+			r.advanceProbeBeat(timeoutCtx, q.t, "auth", nf)
 			continue
 		}
 		q.t.APIKey = apiKey
@@ -804,6 +837,14 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 			stateChange, applied, "scheduler")
 		r.applyResult(timeoutCtx, q.t, status, &httpStatus, errCode, errMsg, latency,
 			stateChange, applied, "scheduler", newSucc, newFail, newState)
+		// ★ 2026-10-20 12h 审计轮修复：provider 侧错误（auth/network/5xx/rate_limit）
+		// 不证明模型坏了也不证明好了 ⇒ 状态不动（applyResult 已不写）；
+		// 但**必须记账**：否则 model_probe_state 这一行（唯一写入口）不被推进，
+		// next_retry_at 停在过去值、last_status/last_attempt_at/total_attempts
+		// 永久显示旧值，而 model_probe_runs 一直在写 ⇒ 审计表与状态表口径分裂。
+		if !applied && category == probeCategoryProviderError {
+			r.advanceProbeBeat(timeoutCtx, q.t, status, newFail)
+		}
 
 		tested++
 		switch stateChange {
@@ -902,13 +943,20 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		  -- 2026-09-20 INV-3: the model must have real (non-probe) traffic on
 		  -- THIS credential within the 3-day probe scope window.
 		  AND EXISTS (
-			SELECT 1 FROM _request_logs_hot rl
+			-- ★ 890（v1 族退役）：证据源换成会话族热腿（v1 热表已 DROP；
+			-- 窗口 3 天 ≫ hot 保留期 8h，v1 侧本来就只看得到最近 8h，
+			-- 会话族热腿的保留期同款 ⇒ 口径不变）。
+			SELECT 1 FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl
 			WHERE rl.credential_id = cmb.credential_id
 			  AND rl.ts >= now() - `+probeUsageWindowInterval+`
-			  AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
+			  -- 会话族没有 quality_flags ⇒ 用会话族那条探针排除谓词。
+			  AND `+fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")+`
+			  -- 腿 1 用 client_model（会话族同名同义，来自 session_turn_details）；
+			  -- 腿 2/3 用 rl.raw_model_name —— 它在会话族里就是 v1
+			  -- outbound_model 的同义列（COALESCE(outbound_model, client_model)）。
 			  AND (pm.raw_model_name = rl.client_model
-			       OR pm.raw_model_name = rl.outbound_model
-			       OR pm.outbound_model_name = rl.outbound_model)
+			       OR pm.raw_model_name = rl.raw_model_name
+			       OR pm.outbound_model_name = rl.raw_model_name)
 		  )
 		LIMIT $1
 	`, MaxBatchPerCycle*4 /* bound scan; Go-side globalIsFeaturedModel further filters */)
@@ -992,8 +1040,9 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 //   - model_unavailable: fail++; succ = 0
 //     if fail >= 3 → newState = 'broken_confirmed',  state_change = 'broke'
 //     else          newState = 'recovering',        state_change = 'unchanged'
-//   - provider_error (auth/network/5xx/rate_limit): succ = 0, fail unchanged
-//     so provider issues never cause a model to be marked broken_confirmed.
+//   - provider_error (auth/network/5xx/rate_limit): retain model authority;
+//     the error belongs to the provider path and proves neither recovery nor
+//     a model-specific failure.
 //   - skipped: no state change, but endpoint_id_required resets counters.
 func (r *ModelProbeRunner) computeConsensus(
 	status string, category probeCategory, prevState, errCode string, prevSucc, prevFail int,
@@ -1044,11 +1093,19 @@ func (r *ModelProbeRunner) computeConsensus(
 			stateChange = "unchanged"
 		}
 	default:
-		// probeCategoryProviderError: do NOT advance fail counter. Provider-side
-		// issues (auth, network, http_5xx, rate_limit) do not prove the model
-		// is unavailable.
-		newSucc = 0
-		newState = "recovering"
+		// Provider-side errors prove neither model failure nor recovery. In
+		// particular, changing broken_confirmed to recovering would make
+		// applyResult restore its availability cache without a successful ping.
+		applied = false
+		// ★ 2026-10-20 12h 审计轮修复：**不改状态**与**不推进调度**是两件事。
+		// 此前 applied=false 让 applyResult 整段 return ⇒ model_probe_state
+		// 这一行（applyResult 的唯一写入口）完全没被推进：
+		//   · next_retry_at 永远停在过去值 ⇒ 每轮周期都被重新选中；
+		//   · last_status / last_attempt_at / total_attempts 对运维永久显示旧值；
+		//   · 而 model_probe_runs 一直在写 "provider_error"
+		//     ⇒ **审计表与状态表口径分裂**。
+		// ⇒ provider 错误只写节拍（不碰 state / availability）——
+		// 由**调用点**按 category 触发 r.advanceProbeBeat（见 cycle/manual 两处）。
 	}
 	return
 }
@@ -1161,6 +1218,12 @@ func (r *ModelProbeRunner) applyResult(
 	stateChange string, applied bool, triggeredBy string,
 	newSucc, newFail int, newState string,
 ) {
+	if !applied {
+		// provider 错误**不改状态**，但**要推进节拍** ——
+		// 节拍由调用点按 category 触发 r.advanceProbeBeat（见 cycle/manual 两处），
+		// 避免把「不改状态」与「不记账」混成一件事。
+		return
+	}
 
 	cfg := LoadProbeBackoffConfig()
 	var nextRetryInterval time.Duration
@@ -1272,6 +1335,53 @@ func (r *ModelProbeRunner) applyResult(
 		r.writeAvailabilityCache(ctx, t, newState, true, status, newSucc, newFail, nextRetryInterval)
 	default:
 		r.writeAvailabilityCache(ctx, t, newState, true, status, newSucc, newFail, nextRetryInterval)
+	}
+}
+
+// advanceProbeBeat 只推进 model_probe_state 的**调度节拍**，不改状态。
+//
+// 2026-10-20 12h 审计轮修复：provider 侧错误（auth / network / 5xx / rate_limit）
+// 既不证明模型坏了，也不证明模型好了 —— 所以**不能**把 broken_confirmed 拉回
+// recovering（那会借 writeAvailabilityCache(available=true) 恢复路由）。
+// 但「不改状态」不等于「不记账」：此前 applyResult 在 applied=false 时整段 return，
+// 于是这一行完全不被推进：
+//
+//	· next_retry_at 永远停在过去值 ⇒ 每轮周期都被重新选中（探针空转）；
+//	· last_status / last_attempt_at / total_attempts 对运维永久显示旧值；
+//	· 而 model_probe_runs 一直在写 "provider_error"
+//	  ⇒ **审计表与状态表口径分裂**。
+//
+// ⇒ 这里只写节拍：total_attempts / last_attempt_at / next_retry_at / last_status。
+// 绝不碰 state、consecutive_successes、consecutive_failures、last_state_change_*，
+// 也**不**碰 availability 缓存与 binding 可用性。
+// modelProbeBeatSQL 是「只推进节拍」的 upsert。
+//
+// 判据（bg/probe_observation_beat_gate_20261020_test.go）逐字钉住这条 SQL：
+// DO UPDATE SET 里**只能**出现节拍四列，state / consecutive_* /
+// last_state_change_* 一律不得出现 —— 那些是「状态」，由 applyResult 负责。
+const modelProbeBeatSQL = `
+		INSERT INTO model_probe_state
+		    (credential_id, raw_model_name, state,
+		     consecutive_successes, consecutive_failures, total_attempts,
+		     last_attempt_at, next_retry_at, last_status)
+		VALUES ($1, $2, 'unknown', 0, 0, 1, NOW(), NOW() + $3::interval, $4)
+		ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+		    total_attempts  = model_probe_state.total_attempts + 1,
+		    last_attempt_at = NOW(),
+		    next_retry_at   = EXCLUDED.next_retry_at,
+		    last_status     = EXCLUDED.last_status
+	`
+
+func (r *ModelProbeRunner) advanceProbeBeat(ctx context.Context, t probeTarget, status string, newFail int) {
+	cfg := LoadProbeBackoffConfig()
+	nextRetryInterval := cfg.NextDelay(newFail)
+	intervalStr := fmt.Sprintf("%d seconds", int(nextRetryInterval.Seconds()))
+
+	if _, err := r.db.Exec(ctx, modelProbeBeatSQL, t.CredentialID, t.RawModel, intervalStr, status); err != nil {
+		slog.Warn("model probe v2: advanceProbeBeat failed",
+			"credential_id", t.CredentialID,
+			"raw_model", t.RawModel,
+			"error", err)
 	}
 }
 
@@ -1500,6 +1610,8 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 		r.recordRun(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "manual")
 		r.applyResult(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0,
 			"unchanged", false, "manual", ns, nf, nst)
+		// provider 错误：状态不改，但节拍要推进。
+		r.advanceProbeBeat(ctx, t, "auth", nf)
 		return decErr
 	}
 	t.APIKey = apiKey
@@ -1510,6 +1622,10 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	r.recordRun(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual")
 	r.applyResult(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual",
 		newSucc, newFail, newState)
+	// provider 侧错误：状态不改，但节拍要推进（同上）。
+	if !applied && category == probeCategoryProviderError {
+		r.advanceProbeBeat(ctx, t, status, newFail)
+	}
 
 	// 2026-07-25 SPEC §3.1.5: mirror TriggerAllSync behavior — when the
 	// single manual probe succeeds, clear node_probe_state so

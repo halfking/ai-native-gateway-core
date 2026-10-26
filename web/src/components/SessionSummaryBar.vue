@@ -5,7 +5,7 @@
 // polls /snapshot for up to 30s, looking for a fresh
 // summary_generated_at timestamp.
 
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   triggerInstantSummary,
   getSessionSnapshot,
@@ -21,6 +21,10 @@ const props = defineProps<{
   totalTurns?: number
   totalCost?: number
   summaryGeneratedAt?: string
+  // durationMs 是 sessions.duration_ms —— 网关每轮刷新的**已流逝时长**
+  // （877 起不再是恒 NULL 的死列）。它与 created_at/updated_at 不是冗余：
+  // 那两个是行时间戳，本列是网关自己维护的时长口径（写点与读点同源）。
+  durationMs?: number
 }>()
 
 const emit = defineEmits<{
@@ -28,6 +32,26 @@ const emit = defineEmits<{
 }>()
 
 const status = ref<'idle' | 'pending' | 'done' | 'failed'>('idle')
+
+// durationMs → 人类可读的耗时。
+//
+// 口径：<1s 显示毫秒；<60s 显示秒；<1h 显示分秒；否则小时分。
+// 用 null 而不是 0 表示"后端没给"——0ms 是一个**假的**"瞬时完成"。
+const durationText = computed(() => {
+  const ms = props.durationMs
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return ''
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  const totalSec = Math.floor(ms / 1000)
+  if (totalSec < 60) return `${totalSec}s`
+  if (totalSec < 3600) {
+    const m = Math.floor(totalSec / 60)
+    const sec = totalSec % 60
+    return sec ? `${m}m${sec}s` : `${m}m`
+  }
+  const h = Math.floor(totalSec / 3600)
+  const m = Math.floor((totalSec % 3600) / 60)
+  return m ? `${h}h${m}m` : `${h}h`
+})
 const errMsg = ref('')
 let pollGeneration = 0
 let pollTimer: ReturnType<typeof setTimeout> | null = null
@@ -62,7 +86,7 @@ async function poll(sessionId: string, generation: number, previousGeneratedAt?:
   }
   if (generation === pollGeneration && sessionId === props.sessionId) {
     status.value = 'failed'
-    errMsg.value = '超时未生成'
+    errMsg.value = '摘要没能生成：已超时，请重试'
   }
 }
 
@@ -112,6 +136,12 @@ onBeforeUnmount(() => {
         <span>{{ totalTurns || 0 }} turns</span>
         <span class="dot">&middot;</span>
         <span>${{ (totalCost || 0).toFixed(4) }}</span>
+        <!-- 已流逝时长：sessions.duration_ms 的消费点。
+             v-if 挡的是"后端没给"，与 0ms（假的瞬时完成）区分开。 -->
+        <template v-if="durationText">
+          <span class="dot">&middot;</span>
+          <span :title="'已流逝时长（sessions.duration_ms）'">{{ durationText }}</span>
+        </template>
       </div>
     </div>
     <div class="right">

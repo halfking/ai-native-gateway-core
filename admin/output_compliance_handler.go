@@ -832,13 +832,11 @@ const complianceRecordPreviewLimit = 120
 //	issue_subtype → hit_type
 //	detected_at → created_at
 //	redacted    → redacted
-//	content_preview ← redacted_output，且**仅在 redacted=true 时取**
+//	content_preview ← 优先 redacted_output（仅 redacted=true），否则 evidence
 //
-// 最后一条是安全约束，不是风格选择：compliance 引擎判定某处需要脱敏时会把
-// 原文替换掉，并把 redacted 置 true；evidence 列存的是命中的原始片段。
-// 这里只回显引擎自己脱敏后的 redacted_output，未脱敏的行一律返回空预览——
-// 否则这个列表就成了一条「把 PII/密钥原文摊平给人看」的通道，
-// 与合规模块存在的目的正好相反。
+// evidence 列在 316 迁移注释里就是「脱敏后的证据」（最多 500 字符），不是
+// original_output。Admin 复核需要看到形状级证据才能确认误报；永不返回
+// original_output。
 func (h *OutputComplianceHandler) handleRecords(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
@@ -878,12 +876,13 @@ func (h *OutputComplianceHandler) handleRecords(w http.ResponseWriter, r *http.R
 		       CASE WHEN COALESCE(redacted, false)
 		            THEN left(COALESCE(redacted_output, ''), %d)
 		            ELSE '' END,
+		       left(COALESCE(evidence, ''), %d),
 		       detected_at
 		FROM output_compliance_audit
 		WHERE %s
 		ORDER BY detected_at DESC, id DESC
 		LIMIT $%d OFFSET $%d
-	`, complianceRecordPreviewLimit, cond, len(args)-1, len(args)), args...)
+	`, complianceRecordPreviewLimit, complianceRecordPreviewLimit, cond, len(args)-1, len(args)), args...)
 	if err != nil {
 		writeInternalErrStr(w, "Failed to list compliance records", err)
 		return
@@ -897,13 +896,17 @@ func (h *OutputComplianceHandler) handleRecords(w http.ResponseWriter, r *http.R
 			sessionKey, checkType, hitType string
 			severity                       int
 			redacted                       bool
-			preview                        string
+			redactedPreview, evidence      string
 			createdAt                      time.Time
 		)
 		if err := rows.Scan(&id, &sessionKey, &checkType, &hitType,
-			&severity, &redacted, &preview, &createdAt); err != nil {
+			&severity, &redacted, &redactedPreview, &evidence, &createdAt); err != nil {
 			warnRowSkip("outputCompliance.records", err)
 			continue
+		}
+		preview := redactedPreview
+		if preview == "" {
+			preview = evidence
 		}
 		records = append(records, map[string]interface{}{
 			"id":              id,
@@ -914,6 +917,7 @@ func (h *OutputComplianceHandler) handleRecords(w http.ResponseWriter, r *http.R
 			"severity":        severity,
 			"redacted":        redacted,
 			"content_preview": preview,
+			"evidence":        evidence,
 			"created_at":      createdAt.UTC().Format(time.RFC3339),
 		})
 	}

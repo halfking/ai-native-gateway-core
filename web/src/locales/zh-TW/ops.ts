@@ -1,322 +1,12 @@
 export default {
-  title: '運維平台',
 
   // License Management
-  license: {
-    title: 'License管理',
-    create: '創建License',
-    createTitle: '創建新License',
-    createSuccess: 'License創建成功',
-    createFailed: 'License創建失敗',
-    fillRequired: '請填寫必填項',
-    loadFailed: '加載License失敗',
-    loadDevicesFailed: '加載設備列表失敗',
-    revoke: '撤銷',
-    revokeConfirm: '確定要撤銷客戶 {customer} 的License嗎？',
-    revokeSuccess: 'License撤銷成功',
-    revokeFailed: 'License撤銷失敗',
-    licenseKey: 'License密鑰',
-    customer: '客戶',
-    customerPlaceholder: '請輸入客戶名稱',
-    customerEmail: '信箱',
-    customerEmailPlaceholder: '請輸入信箱地址',
-    subscriptionTier: '訂閱等級',
-    tier: '等級',
-    modules: '模組',
-    modulesTitle: '模組管理',
-    features: '功能標識',
-    maxDevices: '最大設備數',
-    featuresPlaceholder: '逗號分隔的功能標識',
-    devices: '設備',
-    expiresAt: '過期時間',
-    selectDate: '選擇日期時間',
-    hostname: '主機名',
-    deviceId: '設備ID',
-    activatedAt: '激活時間',
-    lastSeen: '最後在線',
-    offlineRequests: '離線激活請求',
-    offlineActivation: '離線激活',
-    requestCode: '請求碼',
-    activationCode: '激活碼',
-    approve: '批准',
-    reject: '拒絕',
-    approveSuccess: '激活請求已批准',
-    approveFailed: '批准失敗',
-    rejectTitle: '拒絕激活',
-    rejectReason: '請輸入拒絕理由',
-    rejectSuccess: '已拒絕激活請求',
-    rejectFailed: '拒絕失敗',
-    deactivate: '停用',
-    deactivateConfirm: '停用設備',
-    deactivateReason: '請輸入停用原因',
-    deactivateSuccess: '設備已停用',
-    deactivateFailed: '停用設備失敗',
-    status: {
-      active: '激活',
-      expired: '過期',
-      revoked: '已撤銷',
-      pending: '待審批',
-      approved: '已批准',
-      rejected: '已拒絕',
-    },
-
-    holdersTab: '持有人',
-
-    licensesTab: 'License 列表',
-
-    holderEmail: '持有人邮箱',
-
-    holderLicenses: 'License 数',
-
-    holderDevices: '设备数',
-
-    holderDonations: '累计捐赠',
-
-    loadHoldersFailed: '加载持有人失败',
-  },
 
   // Fault Management
-  fault: {
-    title: '故障管理',
-    loadFailed: '加載故障數據失敗',
-    fillRequired: '請填寫必填項',
-    events: '故障事件',
-    rules: '故障規則',
-    createRule: '創建規則',
-    createSuccess: '規則創建成功',
-    createFailed: '規則創建失敗',
-    editRule: '編輯規則',
-    updateSuccess: '規則更新成功',
-    saveFailed: '保存失敗',
-    deleteRuleConfirm: '確定要刪除規則 {name} 嗎？',
-    deleteSuccess: '規則刪除成功',
-    deleteFailed: '刪除失敗',
-    fix: '修復',
-    fixConfirm: '確定要手動觸發修復嗎？',
-    fixTriggered: '修復已觸發',
-    fixFailed: '修復失敗',
-    acknowledge: '確認',
-    resolve: '解決',
-    totalEvents: '總事件',
-    openEvents: '未解決',
-    resolvedEvents24h: '已解決 (24h)',
-    avgResolutionTime: '平均修復時間',
-    ruleName: '規則名稱',
-    ruleNamePlaceholder: '請輸入規則名稱',
-    descriptionPlaceholder: '請輸入描述',
-    severityLabel: '嚴重程度',
-    titleLabel: '標題',
-    source: '來源',
-    metric: '指標',
-    operator: '運算符',
-    threshold: '閾值',
-    duration: '持續時間',
-    action: '動作',
-    actionConfig: '動作配置',
-    cooldown: '冷卻時間',
-    condition: '條件',
-    conditionPlaceholder: '請輸入觸發條件',
-    autoFix: '自動修復',
-    message: '消息',
-    detectedAt: '檢測時間',
-    resolvedAt: '解決時間',
-    ackedAt: '確認時間',
-    metadata: '元數據',
-    eventDetail: '事件詳情',
-    status: {
-      new: '新建',
-      acknowledged: '已確認',
-      resolving: '修復中',
-      resolved: '已解決',
-      ignored: '已忽略',
-    },
-    severity: {
-      critical: '嚴重',
-      error: '錯誤',
-      warning: '警告',
-      info: '信息',
-    },
-  },
 
   // Auto Update
-  autoupdate: {
-    title: '自動更新',
-    loadFailed: '加載發布版本失敗',
-    loadLogsFailed: '加載升級日誌失敗',
-    fillRequired: '請填寫必填項',
-    releases: '發布版本',
-    createRelease: '創建發布',
-    createReleaseTitle: '創建新發布',
-    createSuccess: '發布創建成功',
-    createFailed: '發布創建失敗',
-    publish: '發布',
-    publishConfirm: '確定要發布版本 {version} 嗎？',
-    publishSuccess: '版本發布成功',
-    publishFailed: '版本發布失敗',
-    unpublish: '取消發布',
-    unpublishConfirm: '確定要取消發布版本 {version} 嗎？',
-    unpublishSuccess: '已取消發布',
-    unpublishFailed: '取消發布失敗',
-    rollback: '回滾',
-    rollbackTitle: '回滾到指定版本',
-    rollbackConfirm: '確定要回滾到版本 {version} 嗎？',
-    rollbackSuccess: '版本回滾成功',
-    rollbackFailed: '回滾失敗',
-    rollbackWarning: '回滾將恢復到目標版本，請確保備份可用後再繼續。',
-    targetVersion: '目標版本',
-    targetVersionPlaceholder: '例如: v1.0.0',
-    version: '版本',
-    versionPlaceholder: '例如: v2.0.0',
-    buildSeq: '構建號',
-    releaseTitle: '發布標題',
-    releaseTitlePlaceholder: '請輸入發布標題',
-    channelLabel: '渠道',
-    imageTag: '鏡像標籤',
-    imageTagPlaceholder: '例如: registry.example.com/gateway:v2.0.0',
-    imageDigest: '鏡像摘要',
-    minVersion: '最低版本',
-    mandatory: '強制升級',
-    createdBy: '創建者',
-    createdByPlaceholder: '請輸入創建者姓名',
-    description: '描述',
-    changelog: '更新日誌',
-    publishedAt: '發布時間',
-    rolloutPercentage: '灰度比例',
-    gray: '灰度發布',
-    grayTitle: '創建灰度規則',
-    grayPhase: '階段',
-    grayCreate: '創建規則',
-    grayCreateSuccess: '灰度規則創建成功',
-    grayCreateFailed: '灰度規則創建失敗',
-    upgradeLogs: '升級日誌',
-    startedAt: '開始時間',
-    completedAt: '完成時間',
-    grayPhaseCanary: '金絲雀',
-    grayPhaseBatch1: '第一批',
-    grayPhaseBatch2: '第二批',
-    grayPhaseBatch3: '第三批',
-    grayPhaseFull: '全量',
-    errorMessage: '錯誤信息',
-    retryCount: '重試次數',
-    channel: {
-      stable: '穩定版',
-      beta: '測試版',
-      canary: '金絲雀版',
-      _unknown: '未知',
-    },
-    logStatus: {
-      pending: '等待中',
-      downloading: '下載中',
-      ready_to_restart: '待重啟',
-      upgrading: '升級中',
-      success: '成功',
-      failed: '失敗',
-      rolled_back: '已回滾',
-      _unknown: '未知',
-    },
-
-    rolloutGate: '灰度门禁',
-
-    rolloutTitle: '灰度门禁 · {version}',
-
-    rolloutRuleStatus: '规则状态',
-
-    rolloutGateAllowed: '允许推进',
-
-    rolloutSuccessRate: '升级成功率',
-
-    rolloutRollbackRate: '回滚率',
-
-    rolloutSamples: '升级样本',
-
-    rolloutSuccessCount: '成功',
-
-    rolloutFailedCount: '失败',
-
-    rolloutRolledBackCount: '回滚',
-
-    rolloutPause: '暂停灰度',
-
-    rolloutResume: '恢复灰度',
-
-    rolloutPauseSuccess: '灰度已暂停',
-
-    rolloutResumeSuccess: '灰度已恢复',
-
-    rolloutLoadFailed: '加载灰度门禁状态失败',
-
-    rolloutActionFailed: '灰度门禁操作失败',
-  },
 
   // Center Operations
-  center: {
-    title: '運營中心',
-    loadFailed: '加載實例失敗',
-    loadHeartbeatFailed: '加載心跳歷史失敗',
-    commandSent: '命令已發送',
-    commandFailed: '命令發送失敗',
-    instanceId: '實例 ID',
-    hostname: '主機名',
-    ipAddress: 'IP 地址',
-    region: '區域',
-    version: '版本',
-    buildSeq: '構建號',
-    uptime: '運行時間',
-    startedAt: '啟動時間',
-    lastHeartbeat: '最後心跳',
-    totalInstances: '總數',
-    onlineInstances: '在線',
-    degradedInstances: '降級',
-    offlineInstances: '離線',
-    cpuUsage: '運行時間',
-    memoryUsage: '內存 (MB)',
-    diskUsage: '磁盤使用率',
-    heartbeatHistory: '心跳歷史 (24h)',
-    sendCommand: '命令',
-    sendCommandTitle: '向實例發送命令',
-    command: '命令',
-    parameters: '參數',
-    parametersPlaceholder: '輸入 JSON 參數 (可選)',
-    paramsInvalidJSON: '參數 JSON 格式無效',
-    status: {
-      online: '在線',
-      offline: '離線',
-      degraded: '降級',
-    },
-    cmd: {
-      restart: '重啟服務',
-      upgrade: '升級版本',
-      configUpdate: '更新配置',
-      healthCheck: '健康檢查',
-      collectLogs: '收集日誌',
-    },
-
-    lastCommand: '最近命令 {id} · 状态：{status}',
-
-    alerts: {
-      title: '运维告警',
-      openCount: '未关闭 {count}',
-      empty: '暂无告警',
-      severity: '级别',
-      alertTitle: '标题',
-      message: '详情',
-      source: '来源',
-      detectedAt: '检测时间',
-      acknowledge: '确认',
-      resolve: '解决',
-      suppress: '压制 24h',
-      ackSuccess: '告警已确认',
-      resolveSuccess: '告警已解决',
-      suppressSuccess: '告警已压制 24 小时',
-      actionFailed: '告警操作失败',
-      status: {
-        triggered: '待处理',
-        acknowledged: '已确认',
-        resolved: '已解决',
-        suppressed: '已压制',
-      },
-    },
-  },
 
   // VibeCoding
   vibecoding: {
@@ -338,6 +28,16 @@ export default {
     viewReviews: '查看審查',
     showAll: '顯示全部',
     reviewDetail: '審查詳情',
+    /**
+     * 空狀態（2026-10-27 第 14 增量 · 空狀態 5 分）。
+     * ★ 三張表原先共用一句 `hyper.list.empty`（「清單暫時沒有內容」），但它們是**兩種**狀態：
+     *   · projects —— 用的是原始陣列 ⇒ 空 = 還沒創建過任何項目（FirstUse）
+     *   · sessions / reviews —— 用的是**篩選後**的陣列 ⇒ 空 = 被篩掉了（Filtered）
+     *   ⇒ 同一句話覆蓋兩種狀態，等於把「你還沒開始」和「你的篩選條件太窄」講成同一件事。
+     */
+    emptyFirstUseProjects: '還沒有創建任何項目。',
+    emptyFilteredSessions: '目前篩選條件下沒有會話記錄。',
+    emptyFilteredReviews: '目前篩選條件下沒有代碼審查記錄。',
     projectName: '項目名稱',
     projectNamePlaceholder: '請輸入項目名稱',
     language: '程式語言',
@@ -346,10 +46,8 @@ export default {
     frameworkPlaceholder: '例如: Vue 3',
     projectId: '項目ID',
     sessionName: '會話名稱',
-    sessionNamePlaceholder: '請輸入會話名稱',
     taskType: '任務類型',
     taskTypePlaceholder: '例如: code review, refactor, explain',
-    duration: '時長',
     startedAt: '開始時間',
     endedAt: '結束時間',
     filePath: '檔案路徑',
@@ -361,171 +59,67 @@ export default {
     reviewedAt: '審查時間',
     line: '行號',
     severity: '嚴重度',
-    message: '消息',
-    code: '代碼',
-    suggestedCode: '建議代碼',
-    status: {
-      active: '活躍',
-      archived: '已歸檔',
-      completed: '已完成',
-      _unknown: '未知',
-    },
+    message: '訊息',
   },
 
 
   overview: {
-    title: '維運概覽',
-    loadFailed: '載入概覽資料失敗',
-    onlineInstances: '線上實例',
-    totalLicenses: 'License 總數',
-    pendingApprovals: '待審批啟用',
-    todayUpgrades: '今日升級',
-    openFaults: '未處理故障',
-    recentUpgrades: '最近升級',
-    recentFaults: '最新告警',
-    pendingOffline: '待審批離線啟用',
-    viewAll: '查看全部',
 
-    subtitle: '一眼掌握集群健康；点进节点查看性能压力、请求汇总与错误详情',
 
-    licenseSubsystem: '许可子系统',
 
-    licenseModeNormal: '运行中',
 
-    licenseModeRestricted: '已停服',
 
-    licenseModeGrace: '宽容期（剩余 {hours} 小时）',
 
-    lastRefresh: '上次刷新',
 
-    consecutiveFailures: '连续失败次数',
 
-    totalCycles: '共 {n} 轮',
 
-    lastError: '最近错误',
 
-    justNow: '刚刚',
 
-    minutesAgo: '{n} 分钟前',
 
-    hoursAgo: '{n} 小时前',
 
-    daysAgo: '{n} 天前',
 
-    todayDownloads: '今日下载',
 
-    weekDownloads: '7 日下载',
 
-    supporterCount: '支持者',
 
-    donationTotal: '捐赠总额',
 
-    activationRate: '30 日激活率',
 
-    publicPortal: '公开门户',
 
-    deploymentNodes: '部署节点',
 
-    topologyTitle: '部署拓扑',
 
-    topologyHint: '按区域分区；节点少时卡片放大，多时自动换行。点击节点查看详情。',
 
-    regionEmpty: '未注册节点',
 
-    nodesOnlineOf: '{online} / {total} 在线',
 
-    noHeartbeat: '无心跳',
 
-    viewNode: '详情',
 
-    nodeDetailTitle: '节点详情',
 
-    nodeDetailLoadFailed: '加载节点详情失败',
+    nodeDetailSuperAdminOnlyHint: '僅超級管理員可以維護節點；目前以唯讀方式展示。',
+    nodeDetailDefaultTenantOnlyHint: '僅 default 租戶可以維護節點；目前以唯讀方式展示。',
 
-    perfPressure: '性能压力',
 
-    memory: '内存',
 
-    concurrency: '并发',
 
-    requestSummary: '请求汇总',
 
-    requestsTotal: '总请求',
 
-    requestsOk: '成功',
 
-    requestsErr: '错误',
 
-    successRate: '成功率',
 
-    avgLatency: '平均延迟',
 
-    nodeErrors: '错误与告警',
 
-    noNodeErrors: '暂无告警',
 
-    regionMissing: '未注册',
 
-    regionOnline: '在线',
 
-    regionDegraded: '降级',
 
-    regionOffline: '离线',
 
-    regionOnlineCount: '{n} 在线',
 
-    dataPlaneTables: '252 数据面表记录数',
+    pingFailedWithReason: '會話 Ping 失敗：{reason}。請重試',
+    saveSettingFailedWithReason: '設定沒能儲存：{reason}。請重試',
+    maintainFailed: '維護沒能完成，請重試',
+    modelMaintainFailed: '模型維護沒能完成，請重試',
+    fpSlotLoadFailed: '指紋槽位沒能載入出來，請重試',
+    fpSlotProviderMissing: '缺少 provider_id，指紋槽位沒能載入。請先選擇供應商再試',
+    accessErrorsHint: '失敗呼叫 + 路由錯誤 · 開啟原始請求詳情',
+    recentRequestsHint: '最近 1 小時{source} · 查看請求詳情',
   }
 ,
-  downloads: {
-    title: '下载发版',
-    subtitle: '编译验证、打包离线安装包并发布到 download.kxpms.cn 版本目录',
-    publishBtn: '发布当前版本到下载站',
-    publishOk: '发布成功',
-    publishFailed: '发布失败',
-    loadFailed: '加载下载发版数据失败',
-    todayDl: '今日下载',
-    totalDl: '累计下载',
-    supporters: '支持者',
-    activationRate: '激活率',
-    currentVersion: '当前发布版本',
-    version: '版本号',
-    buildSeq: '构建序号',
-    gitRepo: '开源仓库',
-    artifacts: '已发布产物',
-    platform: '平台',
-    file: '文件名',
-    size: '大小',
-    path: '存储路径',
-    publishHistory: '发版记录',
-    status: '状态',
-    artifactCount: '产物数',
-    tests: '测试',
-    createdAt: '时间',
-    summary: '摘要',
-    storageHint: '离线包按版本号存放于 245:/var/www/download/llm-gateway-go/v{version}/，发版前自动跑 distribution 测试并写入 download_publish_runs 审计表。',
-    openPublicDownload: '打开公开下载页',
-    openActivate: '打开激活向导',
-  },
 
-  blocklist: {
-    title: 'IP 黑名单',
-    loadFailed: '加载黑名单失败',
-    add: '添加封禁',
-    ip: 'IP/CIDR',
-    ipPlaceholder: '例: 203.0.113.10 或 10.0.0.0/8',
-    ipRequired: '请输入 IP 或 CIDR',
-    reason: '原因',
-    scope: '作用域',
-    hits: '命中次数',
-    total: '共 {n} 条',
-    createSuccess: '已添加',
-    createFailed: '添加失败',
-    updateFailed: '更新失败',
-    deleteConfirm: '确认删除 {ip}？',
-    deleteSuccess: '已删除',
-    reloadCache: '刷新 Redis 缓存',
-    reloadSuccess: '缓存已刷新',
-    reloadFailed: '缓存刷新失败',
-  },
 }

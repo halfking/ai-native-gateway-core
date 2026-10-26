@@ -41,7 +41,9 @@
   ```
 
 - **查询性能优化**:
-  - 使用 `date_trunc()` 进行时间桶聚合
+  - 使用 **epoch 对齐分桶**（`to_timestamp(floor(EXTRACT(EPOCH FROM ts) / <步长秒>) * <步长秒>)`）
+    而不是 `date_trunc()` —— `date_trunc` 只接受固定字段名（'minute'/'hour'/'day'），
+    不接受 '5 minutes' 这类参数化步长
   - FILTER 子句高效计算成功/失败数
   - `percentile_cont()` 计算 P95 延迟
   - `jsonb_object_agg()` 聚合错误分布
@@ -61,14 +63,17 @@
 
 **需要创建的索引**:
 ```sql
+-- ⚠ 落地订正（2026-10-20）：`request_logs` **没有 `is_self_test` 列**，
+-- 且探针排除谓词是**三臂**、每臂都要带 COALESCE（见下）。
+-- 下面两条是**设计稿**的索引形状；实际线上索引见
+-- migrations/035_add_heatmap_indexes.sql 与 docs/db-changelog.md。
 -- 核心索引：支持时间范围 + 凭据 + 模型筛选
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_request_logs_heatmap 
 ON request_logs (
   credential_id, 
   ts DESC, 
   LOWER(COALESCE(outbound_model, client_model)),
-  success,
-  is_self_test
+  success
 )
 WHERE ts >= NOW() - INTERVAL '30 days';
 
@@ -83,8 +88,7 @@ ON request_logs (
   error_kind,
   request_id
 )
-WHERE ts >= NOW() - INTERVAL '30 days' 
-  AND COALESCE(is_self_test, FALSE) = FALSE;
+WHERE ts >= NOW() - INTERVAL '30 days';
 ```
 
 **验证命令**:
@@ -93,13 +97,18 @@ EXPLAIN ANALYZE
 SELECT
   credential_id,
   lower(COALESCE(outbound_model, client_model)) AS raw_model_name,
-  date_trunc('minute', ts) AS time_bucket,
+  to_timestamp(floor(EXTRACT(EPOCH FROM ts) / 60) * 60) AS time_bucket,
   COUNT(*) AS total_requests,
   COUNT(*) FILTER (WHERE success) AS success_count
 FROM request_logs_with_current_month
 WHERE ts >= NOW() - INTERVAL '1 day'
   AND ts < NOW()
-  AND COALESCE(is_self_test, FALSE) = FALSE
+  -- 探针/自检排除（三臂，全部带 COALESCE；缺 COALESCE 会静默吞行）
+  AND NOT COALESCE('probe' = ANY(quality_flags), FALSE)
+  AND COALESCE(task_type, '') <> 'probe_triggered'
+  AND COALESCE(origin_actor, '') NOT IN (
+        'node-probe-worker', 'active-probe-worker',
+        'probe-service', 'credential-selfcheck-worker')
 GROUP BY credential_id, raw_model_name, time_bucket
 ORDER BY credential_id, raw_model_name, time_bucket;
 ```
@@ -111,7 +120,13 @@ ORDER BY credential_id, raw_model_name, time_bucket;
 ### 4. 前端实现（高优先级 🔴）
 
 #### 4.1 Tab 结构重构
-**文件**: `web/src/views/CredentialMonitorView.vue`
+**文件**: `web/src/views/CredentialMonitorWithTabs.vue`（页面宿主）
+
+> **落地订正（2026-10-20）**：Tab 宿主是**独立组件**
+> `CredentialMonitorWithTabs.vue`，列表视图组件实际名为
+> `CredentialMonitorView`（不是设计稿里的 `CredentialListView`），
+> 且 Tab 是**五个**不是三个 —— `探测健康` 仅对 super_admin 追加，
+> `错误趋势` 对 tenant_admin 开放。
 
 **改动**:
 ```vue
@@ -121,19 +136,26 @@ ORDER BY credential_id, raw_model_name, time_bucket;
     <SegTabs v-model="activeTab" :tabs="tabs" />
     
     <!-- Tab 内容 -->
-    <CredentialListView v-if="activeTab === 'list'" />
+    <CredentialMonitorView v-if="activeTab === 'list'" />
     <CredentialHeatmapView v-else-if="activeTab === 'heatmap'" />
     <RoutingLogView v-else-if="activeTab === 'routing-log'" />
+    <ErrorTrendView v-else-if="activeTab === 'error-trend'" />
+    <ProbeHealthPanel v-else-if="activeTab === 'probe-health'" embedded />
   </div>
 </template>
 
 <script setup lang="ts">
-const activeTab = ref<'list' | 'heatmap' | 'routing-log'>('list')
-const tabs = [
+const activeTab = ref<'list' | 'heatmap' | 'routing-log' | 'error-trend' | 'probe-health'>('list')
+const tabs = ref<SegTab[]>([
   { value: 'list', label: '列表视图' },
   { value: 'heatmap', label: '热力图' },
   { value: 'routing-log', label: '路由记录' },
-]
+  { value: 'error-trend', label: '错误趋势' },
+])
+// 探测健康仅 super_admin 可见时追加
+if (isSuperAdmin()) {
+  tabs.value.push({ value: 'probe-health', label: '探测健康' })
+}
 </script>
 ```
 
@@ -301,8 +323,24 @@ const newData = await getCredentialHeatmap(lastBucketTime, now, granularity)
 // 合并到现有数据
 ```
 
-#### 5.4 Redis 缓存（后端）
+#### 5.4 响应缓存（后端）
+> **落地订正（2026-10-20）**：本节原设计的 **Redis 缓存没有落地**。
+> 实际实现**没有缓存层** —— `meta.cache_hit` 恒为 `false`（每次都是实时查询），
+> 见 `admin/credential_monitor_heatmap.go` 的
+> 「cache_hit 现由缓存层控制；无缓存层时恒为 false（实时查询）」。
+> （`meta.expires_at` 仍会填 `now + 1min`，但那**不代表**有缓存。）
+>
+> 可观测性走**既有 slog 结构化日志**，不是 Prometheus：
+> - `slog.Info("heatmap query completed", duration_ms/credentials/total_buckets/granularity)`
+> - `slog.Info("heatmap_query_metric", status/duration_ms/data_points/granularity/slow_query)`
+>   （`slow_query` 阈值 5s）
+> - 失败走 `slog.Error("heatmap query failed", error, duration_ms)`
+>
+> 若将来要加缓存，应复用同包 `summaryCache` 的形态（进程内 + singleflight），
+> 而不是另起一套 Redis key 空间。
+
 ```go
+// 设计稿（未落地）—— Redis 缓存
 // Key 格式: heatmap:{time_start}:{time_end}:{granularity}:{hash(filters)}
 // TTL: 1 分钟
 cacheKey := fmt.Sprintf("heatmap:%s:%s:%s:%s", 
@@ -493,10 +531,10 @@ granularity=1m"
 
 | 风险                     | 影响   | 缓解措施                                     | 状态 |
 |--------------------------|--------|---------------------------------------------|------|
-| 数据库查询慢（大时间范围）| 高     | 添加索引 + 分页加载 + Redis 缓存            | ⚠️   |
-| 前端渲染卡顿（大量色块）  | 中     | 虚拟滚动 + Canvas 渲染                      | 📝   |
+| 数据库查询慢（大时间范围）| 高     | 添加索引 + 分页加载（**Redis 缓存未落地**）  | ⚠️   |
+| 前端渲染卡顿（大量色块）  | 中     | 虚拟滚动 + Canvas 渲染（**未落地**，现状是表格网格） | 📝   |
 | 状态映射逻辑不准确        | 高     | 与现有 `credentialDisplayState` 对齐 + 测试 | ✅   |
-| 自检数据污染真实流量      | 中     | 默认排除 `is_self_test = true`               | ✅   |
+| 自检数据污染真实流量      | 中     | 默认排除探针/自检（三臂 COALESCE 谓词）       | ✅   |
 | 时间粒度选择困难          | 低     | 根据时间范围自动推荐粒度 + 提示文案          | 📝   |
 
 图例：
@@ -557,10 +595,15 @@ CREATE TABLE request_logs (
   latency_ms INT,
   error_kind TEXT,
   error_class TEXT,
-  is_self_test BOOLEAN DEFAULT FALSE,
   tenant_id TEXT
 );
 ```
+
+> ⚠ **落地订正（2026-10-20）**：上面是**设计稿**的简化 schema。
+> 真实库里**没有 `is_self_test` 列**（探针判据是
+> `task_type` / `quality_flags` / `origin_actor` 三列，见 §3 的谓词）；
+> 且热力图实际读的是**视图** `request_logs_with_current_month`，不是物理表
+> `request_logs`（视图的列集合与物理表不同，内联谓词曾导致 42703）。
 
 ---
 
@@ -572,6 +615,6 @@ CREATE TABLE request_logs (
 
 ---
 
-**最后更新**: 2026-09-06  
-**文档版本**: v1.0  
-**状态**: 后端已完成，前端待实施
+**最后更新**: 2026-10-20  
+**文档版本**: v1.1  
+**状态**: 前后端均已落地（本文档多处为**设计稿**，已按现状逐条订正）

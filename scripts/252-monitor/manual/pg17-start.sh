@@ -51,7 +51,7 @@ echo "==> 停掉并移除旧容器 $CONTAINER_NAME"
 podman stop "$CONTAINER_NAME" 2>/dev/null || true
 podman rm "$CONTAINER_NAME" 2>/dev/null || true
 
-echo "==> 启动 $CONTAINER_NAME（数据目录 $DATA_DIR，bind mount）"
+echo "==> 启动 ${CONTAINER_NAME}（数据目录 ${DATA_DIR}，bind mount）"
 podman run -d \
   --name "$CONTAINER_NAME" \
   --restart unless-stopped \

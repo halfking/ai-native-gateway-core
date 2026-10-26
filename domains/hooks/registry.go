@@ -7,6 +7,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/phasepolicy"
 )
 
 // HookRegistry 实现了Registry接口，管理所有Hook的注册和执行
@@ -280,10 +282,18 @@ func (r *HookRegistry) getHookTimeout(hookName string) time.Duration {
 	return 5 * time.Second
 }
 
-// isCriticalPhase 判断是否为关键阶段
+// isCriticalPhase 报告该阶段的失败是否**中止**请求。
+//
+// ★ 2026-10-24 P1-5（失败策略表）：口径**不再硬编码在这里**，
+//
+//	而是引用 `internal/phasepolicy` 的**单一真值源**
+//	（domains/hooks 与 domains/pipeline 曾各有一套「哪些阶段算关键」的口径）。
+//	⇒ 改策略只需改那张表一处；门禁
+//	（scripts/ursmcheck/magpie_p1_failure_policy_test.go）对拍"表 ↔ 实现"。
+//
+// 既有语义保持不变：PreRouting 与 Routing 阶段的失败会中止请求。
 func (r *HookRegistry) isCriticalPhase(phase Phase) bool {
-	// PreRouting和Routing阶段的失败会中止请求
-	return phase == PhasePreRouting || phase == PhaseRouting
+	return phasepolicy.IsTerminating(string(phase))
 }
 
 // NoOpLogger 实现无操作的Logger

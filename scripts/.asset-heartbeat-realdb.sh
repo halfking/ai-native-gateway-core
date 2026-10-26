@@ -48,7 +48,7 @@ sys.stdout.write(w.group(1))
 PYEOF
 
 EXTRACTED=$(python3 -c "$EXTRACT" "$GO_SRC" 2>&1) || {
-  echo "ABORT: 无法从 Go 源码提取 SQL（$EXTRACTED）" >&2; exit 3; }
+  echo "ABORT: 无法从 Go 源码提取 SQL（${EXTRACTED}）" >&2; exit 3; }
 case "$EXTRACTED" in
   ERROR:*) echo "ABORT: $EXTRACTED —— 门自身失效，不是被测对象的问题" >&2; exit 3 ;;
 esac
@@ -110,7 +110,7 @@ RES=$(printf '%s\n' "$OUT" | grep -E '^(S[2-5])\|(PASS|FAIL)$' || true)
 RAN=$(printf '%s\n' "$RES" | grep -c . || true)
 
 if [ "$rc" -ne 0 ] || [ "$RAN" -eq 0 ]; then
-  echo "ABORT: 真库探针不可用（rc=$rc, 判定行=$RAN）" >&2
+  echo "ABORT: 真库探针不可用（rc=$rc, 判定行=${RAN}）" >&2
   printf '%s\n' "$OUT" | tail -5 >&2
   exit 3
 fi

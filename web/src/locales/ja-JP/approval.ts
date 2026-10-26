@@ -51,18 +51,16 @@ export default {
       viewDetail: 'View details',
     },
     empty: 'No approval requests',
-    loading: 'Loading…',
     pagination: {
       previous: 'Previous',
       next: 'Next',
-      info: 'Page {page} / {totalPages} ({total} total)',
+      info: '{page} / {totalPages} ページ（{total} 件）',
     },
     errors: {
-      loadFailed: 'Failed to load',
       approveFailed: 'Approve failed',
       rejectFailed: 'Reject failed',
 
-      loadListFailed: '加载审批列表失败',
+      loadListFailed: "承認リストの読み込みに失敗しました",
     },
     success: {
       approved: 'Approved',
@@ -70,15 +68,15 @@ export default {
     },
 
     relativeTime: {
-      justNow: '刚刚',
-      minutesAgo: '{n} 分钟前',
-      hoursAgo: '{n} 小时前',
-      daysAgo: '{n} 天前',
+      justNow: "たった今",
+      minutesAgo: "{n} 分前",
+      hoursAgo: "{n} 時間前",
+      daysAgo: "{n} 日前",
     },
 
     confirm: {
-      approve: '确认批准此请求？\n请求 ID: {id}',
-      rejectPrompt: '请输入拒绝原因：',
+      approve: "このリクエストを承認しますか？\nリクエスト ID: {id}",
+      rejectPrompt: "却下理由を入力してください：",
     },
   },
   detail: {
@@ -90,6 +88,9 @@ export default {
       actions: 'Approval actions',
       history: 'Approval history',
     },
+    loadFailed: '承認詳細の読み込みに失敗しました。再試行してください。',
+    approveFailed: '承認を完了できませんでした。再試行してください。',
+    rejectFailed: '拒否を完了できませんでした。再試行してください。',
   },
   config: {
     title: '承認設定',
@@ -145,7 +146,7 @@ export default {
       saved: '保存しました',
     },
     format: {
-      seconds: '{n} 秒',
+      seconds: "{n}秒",
       minutes: '{n} 分',
       hours: '{n} 時間',
     },

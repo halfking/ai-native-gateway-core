@@ -4,7 +4,9 @@ package promptinjection
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -298,6 +300,46 @@ func (d *Detector) Detect(ctx context.Context, tenantID, input string) (*Detecti
 	return result, nil
 }
 
+// insertDetectionSQL 是检测记录落库的**正典形状** SQL。
+//
+// 2026-10-20 复核轮：这段 SQL 原本写的是历史迁移 315 的形状
+// （detection_score / matched_rules / matched_rules_count / detection_layers /
+// risk_level varchar），而**正典表**（sql/schema/01-schema.sql 与
+// sql/objects/tables/prompt_injection_detections.sql）从未采用该形状：
+// 正典 risk_level 是 **integer 分数（1..10，带 CHECK 约束）**，且没有
+// detection_score / matched_rules / matched_rules_count / detection_layers 四列。
+// 315 的 `CREATE TABLE IF NOT EXISTS` 在正典库上是**空操作**（表已存在 ⇒
+// 那几列从未被创建）⇒ 这条 INSERT 在正典库上恒报 42703，而失败只落一行
+// slog.Warn ⇒ **每一次注入检测的审计记录都被静默丢弃**（检测本身照常
+// 生效/拦截，只是没有留痕）。
+//
+// 现在按正典形状写：
+//
+//	· risk_level ← 分数（正典语义：它就是 1..10 的分值）；
+//	· rule_name / category ← 命中的最高危规则（MatchedRule 无 ID/pattern，
+//	  rule_id / matched_pattern 留空而不是编造）；
+//	· categories ← 过滤到 injection_category 枚举标签的子集（规则的
+//	  category 是自由文本，直接塞进枚举数组会整条 INSERT 失败）。
+//
+// 提为包级常量是为了让真库判据能**逐字**跑这条 SQL（见
+// detector_canonical_shape_test.go），而不是让判据自己抄一份。
+const insertDetectionSQL = `
+	INSERT INTO prompt_injection_detections (
+		tenant_id, request_id, session_key, risk_level,
+		rule_name, category,
+		action_taken, blocked, evidence_text, input_hash,
+		client_ip, user_agent, categories,
+		llm_confidence, llm_reason, canary_token_leaked,
+		approval_id, replaced_content
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+		$11, $12,
+		COALESCE(ARRAY(SELECT c::injection_category
+		               FROM unnest($13::text[]) AS c
+		               WHERE c = ANY (enum_range(NULL::injection_category)::text[])),
+		         '{}'::injection_category[]),
+		$14, $15, $16, $17, $18)
+`
+
 // DetectAndLog 检测并记录到数据库
 func (d *Detector) DetectAndLog(ctx context.Context, tenantID, requestID, sessionKey, input, clientIP, userAgent string) (*DetectionResult, error) {
 	result, err := d.Detect(ctx, tenantID, input)
@@ -306,33 +348,49 @@ func (d *Detector) DetectAndLog(ctx context.Context, tenantID, requestID, sessio
 	}
 
 	if result.Score > 0 {
-		matchedRulesJSON, _ := json.Marshal(result.MatchedRules)
-		detectionLayersJSON, _ := json.Marshal(result.DetectionLayers)
-		categoriesJSON, _ := json.Marshal(result.Categories)
+		// 正典表没有 matched_rules / detection_layers 两列（那是 315 的形状），
+		// 因此不再序列化这两份 JSON —— 落库的规则信息改由 rule_name +
+		// category 承载（见下 topMatchedRule）。
+		//
+		// categories 绑 **pq.Array**（text[]）而不是 json.Marshal 的字节：
+		// 列类型是枚举数组 injection_category[]，把 JSON 字节直接塞进去
+		// ⇒ lib/pq 按文本发送 ⇒ PG 报 `malformed array literal: "[\"a\"]"`
+		// ⇒ 整条 INSERT 失败（同族先例：攻击向量库写侧，a56338ee2）。
+		// 不在枚举里的标签（DB 动态规则可以带自定义类别）由 SQL 侧**丢弃**，
+		// 不让一个不认识的类别把整条审计记录写不进去。
 		inputHash := fmt.Sprintf("%x", result.Score)
 
-		query := `
-			INSERT INTO prompt_injection_detections (
-				tenant_id, request_id, session_key, detection_score, risk_level,
-				matched_rules, matched_rules_count, detection_layers,
-				action_taken, blocked, evidence_text, input_hash,
-				client_ip, user_agent, categories,
-				llm_confidence, llm_reason, canary_token_leaked,
-				approval_id, replaced_content
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
-		`
-
-		_, err := d.db.ExecContext(ctx, query,
-			tenantID, requestID, sessionKey, result.Score, result.RiskLevel,
-			matchedRulesJSON, len(result.MatchedRules), detectionLayersJSON,
+		// 2026-10-20 复核轮：这段 INSERT 原本写的是历史迁移 315 的形状
+		// （detection_score / matched_rules / matched_rules_count /
+		// detection_layers / risk_level varchar），而**正典表**从未采用该形状：
+		// 正典 risk_level 是 integer 分数（1..10，带 CHECK），且没有那 4 列。
+		// 315 的 `CREATE TABLE IF NOT EXISTS` 在正典库上是**空操作**
+		// （表已存在 ⇒ 列从未被创建）⇒ 这条 INSERT 在正典库上恒报 42703，
+		// 而失败只落一条 slog.Warn ⇒ **每一次注入检测的审计记录都被静默丢弃**
+		//（检测本身照常生效/拦截，只是没有留痕）。
+		// 现在按正典形状写：
+		//   · risk_level ← 分数（正典语义：它就是 1..10 的分值）；
+		//   · rule_name / category ← 命中的最高危规则（MatchedRule 无 ID/pattern，
+		//     rule_id / matched_pattern 留空而不是编造）；
+		//   · categories ← 过滤到 injection_category 枚举标签的子集
+		//     （规则的 category 是自由文本，直接塞进枚举数组会整条 INSERT 失败）。
+		topRule, topCategory := topMatchedRule(result.MatchedRules)
+		_, err := d.db.ExecContext(ctx, insertDetectionSQL,
+			tenantID, requestID, sessionKey, result.Score,
+			topRule, topCategory,
 			result.ActionTaken, result.Blocked, result.Evidence, inputHash,
-			clientIP, userAgent, categoriesJSON,
+			clientIP, userAgent, pq.Array(result.Categories),
 			result.LLMConfidence, result.LLMReason, result.CanaryTokenLeaked,
 			nil, result.ReplacedContent,
 		)
 
 		if err != nil {
-			slog.Warn("prompt_injection: failed to log detection", "error", err)
+			// 2026-10-20：这一行曾经是 slog.Warn —— 审计记录写不进去时
+			// 只有一条 WARN，与「今天没有注入命中」在页面上长得一样。
+			// 升级为 Error：检测审计链断掉是**安全事件**，不是噪声。
+			slog.Error("prompt_injection: failed to log detection",
+				"error", err, "tenant_id", tenantID, "request_id", requestID,
+				"score", result.Score, "risk_level", result.RiskLevel)
 		}
 
 		// 更新策略统计
@@ -580,8 +638,51 @@ func (d *Detector) calculateScore(matches []MatchedRule) int {
 	return maxSeverity
 }
 
+// topMatchedRule 返回命中的**最高危**规则名与它的首个类别。
+//
+// 2026-10-20 复核轮：正典表 prompt_injection_detections 的 rule_name
+// （varchar 100）与 category（varchar 50）是单值列，而 MatchedRule 可以同时
+// 命中多条。正典表没有 matched_rules(JSONB) 数组列 ⇒ 只能落一条代表规则。
+// 代表规则取 severity 最大者（与 calculateScore 的口径一致：分数 = 最危规则的
+// severity）；同 severity 时取先出现的那条，保证同一份输入落库结果稳定。
+// 类别取该规则 category 的第一段（规则里的 category 允许逗号分隔多类别）。
+// 留空而不是编造：命不中任何规则时两列都写空串（列可空）。
+func topMatchedRule(matches []MatchedRule) (ruleName string, category string) {
+	if len(matches) == 0 {
+		return "", ""
+	}
+	top := matches[0]
+	for _, m := range matches[1:] {
+		if m.Severity > top.Severity {
+			top = m
+		}
+	}
+	cat := top.Category
+	if i := strings.Index(cat, ","); i >= 0 {
+		cat = cat[:i]
+	}
+	return top.RuleName, strings.TrimSpace(cat)
+}
+
 // calculateRiskLevel 计算风险等级
 func (d *Detector) calculateRiskLevel(score int) string {
+	return RiskLevelFromScore(score)
+}
+
+// RiskLevelFromScore 是「分数 → 严重等级」的唯一真值（Go 侧）。
+//
+// 2026-10-20 复核轮：正典表 public.prompt_injection_detections 的 risk_level
+// 是 **integer 分数（1..10，带 CHECK 约束）**，不是字符串等级；严重等级字符串
+// 在读侧由分数派生。历史迁移 315 曾把这两者拆成 detection_score(int) +
+// risk_level(varchar)，但正典基线（sql/schema/01-schema.sql 与
+// sql/objects/tables/prompt_injection_detections.sql）从未采用该形状，
+// 且 315 的 CREATE TABLE IF NOT EXISTS 在正典库上是**空操作**
+// （表已存在 ⇒ 那些列从未被创建）。
+// ⇒ 派生阈值必须是**唯一**的：写侧（DetectAndLog 落库）与读侧
+// （admin/prompt_injection_handler.go 的列表/统计）必须共用同一份阈值，
+// 否则落库的分数与页面显示的等级会各说各话。
+// 阈值本身沿用本函数历史取值（10/8/6），不是新发明的口径。
+func RiskLevelFromScore(score int) string {
 	switch {
 	case score >= 10:
 		return "critical"
@@ -593,6 +694,14 @@ func (d *Detector) calculateRiskLevel(score int) string {
 		return "low"
 	}
 }
+
+// RiskLevelSQLExpr 是 RiskLevelFromScore 的 SQL 侧孪生。
+//
+// 读侧（列表筛选用它做 WHERE、列表/统计用它做投影）必须与 Go 侧同阈值；
+// 两边漂移会让「按等级筛选」与「列表里显示的等级」互相矛盾。
+const RiskLevelSQLExpr = `CASE WHEN risk_level >= 10 THEN 'critical' ` +
+	`WHEN risk_level >= 8 THEN 'high' ` +
+	`WHEN risk_level >= 6 THEN 'medium' ELSE 'low' END`
 
 // extractCategories 提取所有风险类别
 func (d *Detector) extractCategories(matches []MatchedRule) []string {
@@ -795,21 +904,82 @@ func (d *Detector) createApprovalRequest(ctx context.Context, tenantID, requestI
 	}
 }
 
+// insertAttackVectorSQL 是「自动学习攻击模式」的写入语句。
+//
+// ★ 为什么 categories 不能直接绑 JSON 字节（2026-10-20 审计修，见
+//
+//	docs/audit/2026-10-20-prompt-injection-attack-vector-write.md）：
+//	列类型是**枚举数组** injection_category[]，而旧写法把 json.Marshal 的
+//	[]byte 直接塞进 $4 ⇒ lib/pq 按文本发送 ⇒ PG 报
+//	    ERROR: malformed array literal: "["prompt_injection",...]"
+//	⇒ **每一次 learnAttackPattern 必然失败**，表恒为空（本地实测 0 行），
+//	而失败被 slog.Warn 吞掉 ⇒ 静默失效（写侧从不落库，读侧永远空集）。
+//
+// 现在 $4 传的是 text[]（pq.Array），由 SQL 侧把**合法**的枚举标签转成
+// injection_category[]。不在枚举里的标签（DB 动态规则可以带自定义类别）
+// 被**丢弃**而不是让整条 INSERT 失败 —— 一个不认识的类别不该让整条学习写不进去。
+const insertAttackVectorSQL = `INSERT INTO injection_attack_vectors (
+	tenant_id, attack_text, attack_hash, categories, severity, source, detected_at
+)
+SELECT $1, $2, $3,
+       ARRAY(SELECT c::injection_category
+             FROM unnest($4::text[]) AS c
+             WHERE c = ANY (enum_range(NULL::injection_category)::text[])),
+       $5, 'detection', NOW()
+ON CONFLICT (tenant_id, attack_hash) DO NOTHING`
+
+// attackVectorSeverity 把检测分映射成落库用的 severity。
+//
+// 列上的 CHECK 是 severity >= 1 AND severity <= 10（迁移 364）。
+// result.Score 取的是命中规则的**最大 severity**（规则取值域 3..10），
+// 所以正常路径必然落在区间内；但 CHECK 违反会让整条 INSERT 失败、
+// 而失败只留一行 Warn ⇒ 又一次静默失效。这里显式夹取，
+// 让"分数越界"降级成"存一个边界值"而不是"整条写不进去"。
+func attackVectorSeverity(score int) int {
+	switch {
+	case score < 1:
+		return 1
+	case score > 10:
+		return 10
+	default:
+		return score
+	}
+}
+
+// attackVectorHash 产出 attack_hash 列的值。
+//
+// ★ 2026-10-20 12h 审计轮修正：这里原来直接写
+//
+//	hash := fmt.Sprintf("%x", []byte(input))
+//
+// 那是**输入原文的 hex**，长度 = 2 × len(input)，而列是
+//
+//	attack_hash VARCHAR(64) NOT NULL,  -- SHA-256
+//
+// learnAttackPattern 放行 10..10000 字节的输入 ⇒ **任何 ≥33 字节的输入
+// hex 后都超过 64** ⇒ INSERT 必然失败（PG: value too long for character
+// varying(64)）⇒ 失败被 slog.Warn 吞掉 ⇒ 表恒为空。
+// ⇒ 这是一条与「枚举数组列绑了 JSON 字节」**互相独立**的第二条失败路径：
+// 那条修好之后，这条仍然让绝大多数真实攻击载荷写不进去。
+// ⇒ 改成真正的 SHA-256（固定 64 个 hex 字符），与列的声明一致。
+//
+// 抽成独立函数是为了让「hash 宽度与输入长度无关」这条性质**可被门禁直接测到**
+// （判据见 r1039_attack_vector_hash_width_test.go）。
+func attackVectorHash(input string) string {
+	sum := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(sum[:])
+}
+
 // learnAttackPattern 自动学习攻击模式
 func (d *Detector) learnAttackPattern(ctx context.Context, tenantID, input string, result *DetectionResult) {
 	if len(input) < 10 || len(input) > 10000 {
 		return
 	}
 
-	hash := fmt.Sprintf("%x", []byte(input))
-	categoriesJSON, _ := json.Marshal(result.Categories)
+	hash := attackVectorHash(input)
 
-	query := `INSERT INTO injection_attack_vectors (
-		tenant_id, attack_text, attack_hash, categories, severity, source, detected_at
-	) VALUES ($1, $2, $3, $4, $5, 'detection', NOW())
-	ON CONFLICT (tenant_id, attack_hash) DO NOTHING`
-
-	_, err := d.db.ExecContext(ctx, query, tenantID, input, hash, categoriesJSON, result.Score)
+	_, err := d.db.ExecContext(ctx, insertAttackVectorSQL,
+		tenantID, input, hash, pq.Array(result.Categories), attackVectorSeverity(result.Score))
 	if err != nil {
 		slog.Warn("prompt_injection: failed to learn attack pattern", "error", err)
 	}

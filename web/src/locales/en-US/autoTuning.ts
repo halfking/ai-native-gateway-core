@@ -38,7 +38,7 @@ export default {
     generating: 'Generating…',
     generateConfirm: 'Read human corrections from the last {days} days and draft threshold/keyword proposals (quantified by inline backtest; nothing applies automatically)?',
     generateDone: 'Generated {n} proposal draft(s) (pending review)',
-    generateNone: 'Not enough corrections in the window, or identical pending proposals already exist — nothing generated',
+    generateNone: 'Not enough corrections in the window, or identical pending proposals already exist. Nothing generated',
     analyze: 'Run signal analysis',
     analyzing: 'Analyzing…',
     analyzeConfirm: 'Run the feedback analyzer now (tuning_signals quality-driven proposals)?',

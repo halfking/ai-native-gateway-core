@@ -5,11 +5,19 @@ import { req, type RequestOptions } from './client'
  *
  * GET /api/admin/turns/sessions/filter-options
  *
- * - **注册**：`admin/handler.go:1277`
+ * - **注册**：`admin/handler.go:1307`（★ 原写 `:1277`，**整块漂 30 行**，第一百二十七批订正）
  *   ```go
  *   mux.HandleFunc("/api/admin/turns/sessions/filter-options", admin(h.handleTurnsFilterOptions))
  *   ```
- *   ⇒ ★★ **admin 档**（`h.admin` = `AdminMiddleware`，`handler.go:880`）⇒ 抽屉席不设 `requiresRole`。
+ *   ⇒ ★★★ **admin 档**（`h.admin` = `AdminMiddleware`，别名在 `handler.go:925`，★ 原写 `:880`）
+ *   ⇒ ⇒ ⚠️⚠️⚠️ **原写的「⇒ 抽屉席不设 `requiresRole`」是错的**（第一百二十七批订正）：
+ *   `AdminMiddleware` 全文**无任何 `claims.Role` 比对** + `pkg/identity` 的
+ *   `supportedRole` **接受 `"user"`** ⇒ 服务端**没有**角色下限。
+ *   ⇒ 本族载荷是**租户级聚合清单**（整个租户用过的模型/供应商/客户端/负责人/标签），
+ *     不是某个用户自己的数据 ⇒ **设 `requiresRole: 'admin'`**。
+ *   ⇒ 详见文件末尾「权限档」一节的两条独立理由。
+ *   ★ 这是**第四个**写下「admin 档 ⇒ 不设 requiresRole」的模块
+ *     （第一百二十一 / 一百二十二 / 一百二十三批已因同一句话返工）。
  * - **实现**：`admin/turns_filter_options.go:49-130`（handler）· `:36-46`（`TurnsFilterOptionsResponse`）
  *   · `:136-154`（三段查询拼装）· `:157-181`（`runFilterOptionQueries`）。
  * - **桌面调用方**：`web/src/api/turns.ts:204-206` `listTurnsFilterOptions()` —— **不带任何参数**；
@@ -292,4 +300,57 @@ export function statusCodeFilterValue(v: string): number | null {
   const t = v.trim()
   if (!/^-?\d+$/.test(t)) return null
   return Number(t)
+}
+// ═══════════════════════════════════════════════════════════════════════════
+// 权限档（2026-10-15，第一百二十七批新增）
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ★★★★★ 本族设 `'admin'` 的**两条独立理由**（缺一不可）：
+ *
+ * **（甲）需要 `'admin'`** —— 载荷是**租户级聚合清单**，不是某个用户自己的数据。
+ * 8 个维度分别是「这个租户**所有**人用过的项目 / 任务 / 负责人 / 客户端 / 标签 /
+ * 模型 / 供应商 / 状态码」⇒ 一个只该看**自己**请求的普通用户，
+ * 不该看到整个租户的负责人名单与客户端清单。
+ *
+ * **（乙）不过度限制到 `'super_admin'`** —— 载荷是**租户内**的。
+ * `handleTurnsFilterOptions`（`admin/turns_filter_options.go:61-73`）逐字：
+ * ```go
+ * if IsTenantAdmin(r) { tenantID = GetTenantID(r) } else { tenantID = tenantFromQueryOrContext(r) }
+ * if tenantID != "" { tenantWhere = " AND ss.tenant_id = $1" … }
+ * ```
+ * ⇒ 每个维度都带 `tenantWhere`，**没有别人的东西** ⇒ 按批 119 的边界不过度限制。
+ *
+ * ⚠️⚠️★★ **服务端这一层是唯一的门**：
+ * 注册 `admin/handler.go:1307` 的 `admin(...)` 是 `admin/handler.go:933` 的局部别名
+ * `admin := h.admin` ⇒ `h.admin` = `AdminMiddleware`（`admin/auth.go:85` 起，
+ * **全文无任何 `claims.Role` 比对**）+ `pkg/identity` 的 `supportedRole` **接受 `"user"`**
+ * ⇒ 任何已认证的普通用户都能调到这些**租户级**清单。
+ *
+ * ★★ 与本模块头原写的「admin 档 ⇒ 抽屉席不设 `requiresRole`」**正好相反**
+ *   —— 那正是第一百二十一 / 一百二十二 / 一百二十三批连续返工的那句话，
+ *   本模块（第九十六批写的）只是**第四个**写下它的模块。
+ * ⇒ 前端严于后端是**兜底不是修复**。
+ *
+ * ★ 这条**不是恒真**：它随 role 变。
+ */
+export function turnsFilterOptionsRoleNeedsAdminGate(role: string | null | undefined): boolean {
+  if (role === 'super_admin' || role === 'tenant_admin' || role === 'admin_key') return false
+  return true
+}
+
+/**
+ * ★★★★★ 载荷是**租户内**的 —— 这是「不过度限制到 `super_admin`」的**依据**。
+ *
+ * ⇒ 判别条件是**响应里不含租户键**，而不是「某个值恰好为空」。
+ *   哪天后端把这个端点改成跨租户聚合（例如给 super_admin 一个「全平台模型清单」），
+ *   这条会红 ⇒ 提示权限档要重判（那时就该考虑 `super_admin` 了）。
+ *
+ * ⚠️ 载荷里没有任何租户**标识符**可查（8 个维度都是用户数据本身），
+ *   所以这条只能钉「响应里没有租户键」这一层；
+ *   真正的租户过滤事实由判据去**读 Go 源码**逐字核（见 `turns-sessions` 同族的写法）。
+ */
+export function turnsFilterOptionsIsTenantScoped(resp: unknown): boolean {
+  const s = JSON.stringify(resp ?? null).toLowerCase()
+  return !s.includes('tenant')
 }

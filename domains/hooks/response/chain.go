@@ -2,12 +2,40 @@ package response
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/extpointledger"
+	"github.com/kaixuan/llm-gateway-go/internal/extpoints"
 	sseparser "github.com/kaixuan/llm-gateway-go/internal/sse"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
+
+// ── 扩展点台账（P2-2）──────────────────────────────────────────────────────
+//
+// ★ 记账粒度是**单个拦截器的一次调用**，不是「一次链调用」——
+// 因为**被吞掉的失败**（拦截器报错、链继续往下走）才是台账最该看见的东西：
+// 链级记账会把它们算成「成功」⇒ ★ 「失败数」永远是 0 ⇒ 台账失去意义。
+//
+// ★ 机制 ID 取自 `internal/extpoints`（裁决表的单一真值源）⇒
+// 台账与裁决表**共用同一套 ID** ⇒ admin 能把两半合成一行，
+// 而且 ★ 两半能互相印证（裁决表说「不在生产」，台账的调用次数就该是 0）。
+
+// recordIntercept 把一次拦截器调用记进扩展点台账。
+func recordIntercept(err error, start time.Time) {
+	outcome := extpointledger.OutcomeOK
+	switch {
+	case err == nil:
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded):
+		outcome = extpointledger.OutcomeTimeout
+	default:
+		outcome = extpointledger.OutcomeFailed
+	}
+	extpointledger.Default().Record(extpoints.IDResponseIntercept, outcome, time.Since(start), err)
+}
 
 // InterceptorChain chains multiple ResponseInterceptors together.
 type InterceptorChain struct {
@@ -58,7 +86,9 @@ func (c *InterceptorChain) InterceptNonStream(ctx context.Context, req *Intercep
 	currentReq := req
 
 	for i, interceptor := range c.interceptors {
+		istart := time.Now()
 		result, err := interceptor.InterceptNonStream(ctx, currentReq)
+		recordIntercept(err, istart)
 		if err != nil {
 			// R25-V (2026-09-30 round 30): an interceptor may declare its
 			// errors MANDATORY via the optional FailClosed marker. Output
@@ -135,7 +165,9 @@ func (c *InterceptorChain) InterceptStreamChunk(ctx context.Context, chunk []byt
 	currentChunk := chunk
 
 	for i, interceptor := range c.interceptors {
+		istart := time.Now()
 		result, err := interceptor.InterceptStreamChunk(ctx, currentChunk, meta)
+		recordIntercept(err, istart)
 		if err != nil {
 			if fc, ok := interceptor.(interface{ FailClosed() bool }); ok && fc.FailClosed() {
 				metrics.OutputGateFailClosedErrorsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateSourceChainFailClose).Inc()
@@ -158,6 +190,14 @@ func (c *InterceptorChain) InterceptStreamChunk(ctx context.Context, chunk []byt
 		}
 		if result.ShouldBlock {
 			finalResult.ShouldBlock = true
+		}
+		if len(result.Metadata) > 0 {
+			if finalResult.Metadata == nil {
+				finalResult.Metadata = make(map[string]interface{})
+			}
+			for k, v := range result.Metadata {
+				finalResult.Metadata[k] = v
+			}
 		}
 		if result.SuppressChunk {
 			// A later interceptor is withholding this frame. Earlier
@@ -318,7 +358,9 @@ func (c *InterceptorChain) InterceptStreamEnd(ctx context.Context, meta *StreamM
 	var finalResult *EndResult
 
 	for i, interceptor := range c.interceptors {
+		istart := time.Now()
 		result, err := interceptor.InterceptStreamEnd(ctx, meta)
+		recordIntercept(err, istart)
 		if err != nil {
 			slog.Warn("interceptor_chain: stream end interceptor failed",
 				"index", i,

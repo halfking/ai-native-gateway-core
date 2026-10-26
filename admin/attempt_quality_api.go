@@ -13,6 +13,8 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
+
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 const attemptQualityAPIPath = "/api/admin/quality/attempts"
@@ -128,15 +130,24 @@ func loadFinalRequestMetrics(ctx context.Context, queryRow func(context.Context,
 	if queryRow == nil {
 		return finalRequestMetrics{}, nil
 	}
-	// R46 F3: 读面 hot∪母表——本端点 hours 默认 24/上限 168，hot 保留期
-	// 只有 8h，只扫 hot 会静默少报（与同响应的 request_state_transitions
-	// 聚合双口径矛盾）。不用 turns 优先的 request_logs_with_current_month：
-	// 它的 turns 段 provider_id 投影 NULL，按 provider 过滤会静默丢行。
+	// ★ 2026-10-20（890 真删轮）：读面换成**会话族原生源** db.SessionFamilyTurnsSourceSQL()
+	// （hot ∪ parent + details 特征层 LEFT JOIN）。
+	//
+	// 为什么必须换：旧读面 `request_logs_with_current_month_without_request_class_due_at`
+	// **直读 v1 族**（真库实测）⇒ v1 停写后恒 0 行 ⇒ 本端点此前恒返回 0；
+	// 890 删族后它会变成 **42P01**。
+	//
+	// 为什么「按 provider 过滤不会静默丢行」仍成立（旧注释担心的点）：
+	// 会话族原生源的 `provider_id` 来自 **details 特征层**（`d.provider_id`），
+	// 与 canonical 视图同源；而**没有 details 行的轮次**其 provider_id 为 NULL
+	// ⇒ 按 provider 过滤时那部分行**本来就不该被计入**（它们无法归属到某个 provider）。
+	// ⚠ 口径提示：details 层的覆盖窗口若短于 turns 层，按 provider 过滤的口径
+	// 会随窗口收窄而变窄——这是**已登记的**会话族口径（db/retirement_column_exposure.go）。
 	query := `SELECT COUNT(*)::bigint,
 		COUNT(*) FILTER (WHERE success)::bigint,
 		COUNT(*) FILTER (WHERE NOT success)::bigint,
 		COALESCE(SUM(total_tokens), 0)::bigint
-		FROM request_logs_with_current_month_without_request_class_due_at
+		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
 		WHERE tenant_id = $1 AND ts >= $2 AND ts < $3`
 	args := []any{tenantID, start.UTC(), end.UTC()}
 	if providerID > 0 {

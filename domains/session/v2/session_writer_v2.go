@@ -101,10 +101,14 @@ func (w *SessionWriterV2) ensureLifecycle() {
 // NewSessionWriterV2 creates a new SessionWriterV2 instance
 func NewSessionWriterV2(tw *TurnWriter, bw *SessionBodiesWriter, sa *SessionAggregator, tlw *TurnLogsWriter) *SessionWriterV2 {
 	ctx, cancel := context.WithCancel(context.Background())
+	var aggregator sessionUpdater
+	if sa != nil {
+		aggregator = sa
+	}
 	return &SessionWriterV2{
 		turnWriter:        tw,
 		bodiesWriter:      bw,
-		sessionAggregator: sa,
+		sessionAggregator: aggregator,
 		turnLogsWriter:    tlw,
 		lifecycleCtx:      ctx,
 		lifecycleCancel:   cancel,
@@ -713,6 +717,48 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	if settings.GetPlatformBool("storage.session_final_full_enabled", false) {
 		bodiesRec.OutboundBody = nil
 	}
+
+	// ★★★★★★ FIXME-14376（2026-10-22 §143.76 轮，只登记、★ 零行为变更）：
+	//	★★★★★★ 【本行的 `= nil` 是「形态 A」的【成因】，不是它的副作用】
+	//	⇒ ⇒ ★★ 它推翻了 §143.74 的订正横幅五（「E1 对 delta 形态几乎无影响」）。
+	//
+	//	★ 完整因果链（三段，全部可在本文件内自证）：
+	//	  ① 【写侧·本行】：E1 门开着 ⇒ 逐轮 bodies 行的 outbound_body 被**显式置 nil**；
+	//	  ② 【读侧·本文件上方】：下一轮进来时，差集基准取自【库里上一轮】那一行
+	//	     （`GetLatestBodiesInTx` → `previousBody.OutboundBody` → `req.LastOutboundBody`）
+	//	     ⇒ ★★ 而那一行的 outbound_body 已被 ① 置空 ⇒ ⇒ **基准恒空**；
+	//	  ③ 【差分·`extractRequestDelta`】：基准为空 ⇒ 走
+	//	     `len(req.LastOutboundBody) == 0` 那条分支 ⇒ **客户端完整历史整份落盘**
+	//	     ⇒ ⇒ 形态 A（outbound_body 恒为 jsonb 'null' 的那一种）。
+	//
+	//	★★★ 生产实测（252 共享库 2026-10-22，★ 只读；口径见
+	//	★★★ scripts/audit/verify_session_bodies_e1_baseline_causality.sql）：
+	//	  ① 逐轮行 outbound_body 带值率：E1 前 = **30.25%**（82,516 / 272,819）
+	//	     ⇒ E1 后 = **0.00%**（0 / 5,693）★ ⇒ 直接封顶到零；
+	//	  ② ★★ E1 后「本来有出站」的会话（用 final_full 行的存在性量）= **51.97%**；
+	//	     而这批会话的逐轮行 outbound_body 带值率 = **0.00%**（0 / 2,953）
+	//	     ⇒ ⇒ ★★★ 「E1 把【有出站】的会话也打成了形态 A」**坐实**
+	//	     ⇒ ⇒ ★★ **不是「压缩器没产出」，是「E1 主动置 nil」**；
+	//	  ③ ★★★ 同一 session 跨 E1 边界的【自然实验】（3 个会话 ⇒ 排除流量构成差异）：
+	//	     平均 delta 体量 **12,074 → 42,389 B/轮（3.5×）**，形态 B 占比 **88.89% → 0.00%**；
+	//	  ④ ★★★ 控制会话轮数后分层（★ 排除「长会话本来就大」）：
+	//	     >10 轮层内「基准可得」= 41,796 B vs「基准缺失」= 92,462 B（**2.2×**）；
+	//	     2-3 轮层内 14,915 B vs 223,005 B（**15×**）★ ⇒ 基准就是放大器；
+	//	  ⑤ ★ 形态 B 的传播性：17,562 / 18,629 = **94.3%** 的 B 轮，其下一轮也是 B
+	//	     ⇒ ⇒ 形态 B **自我强化** ⇒ ⇒ ★★ E1 一刀切断它 ⇒ ⇒ 二次方从 ~30% 涨到 100%。
+	//
+	//	★★ 为什么这个区分重要（★ 它改变属主决策的方向）：
+	//	  §143.74 横幅五曾据此说「E1 真实作用在读侧 ⇒ 倾向不必关 E1」；
+	//	  ★★ 而本轮证明 E1 **同时**决定了写侧的形态 ⇒ ⇒
+	//	  ⇒ **关 E1 能把形态 B 的那 30% 拿回来**（★ 收益在【正确性】与【增长率】，
+	//	  ★★ 不在【存量空间】—— §143.75 已把存量可回收量校准成 501 MB）；
+	//	  ⇒ ⇒ ★★ 但关 E1 会**停掉 final_full 行**（★ 它是 E1 门一起写的）
+	//	  ⇒ ⇒ ⇒ **「关 E1」不是一个独立选项**，它是「关 E1 + 改差集基准」的组合
+	//	  ⇒ ⇒ ⇒ ⇒ **属主决策（⑮）需重排**（★ 见 runbook §143.76 的决策就绪三问）。
+	//
+	//	★ 本轮【不改行为】：★ 改它会改变生产正文的【内容口径】（历史正文会被重写）
+	//	  ⇒ ⇒ 属主决策（⑮）拍板后再改。⇒ ⇒ 本处只做登记，
+	//	  ⇒ ⇒ 并由门 `scripts/ursmcheck/section_14376_e1_baseline_causality_test.go` 钉住。
 	if err := w.bodiesWriter.WriteBodiesInTx(lockCtx, tx, bodiesRec); err != nil {
 		return fmt.Errorf("write bodies: %w", err)
 	}
@@ -971,6 +1017,41 @@ func (w *SessionWriterV2) getPreviousBody(ctx context.Context, sessionID, tenant
 //   - If submit_mode is "delta" or "snapshot": entire RequestBody is the delta
 //   - If submit_mode is "full": extract messages not present in LastOutboundBody
 //   - If LastOutboundBody is empty: entire RequestBody is the delta (first turn)
+//
+// ★★★★★★ FIXME-14372（2026-10-22 §143.72 轮，只登记、★ 零行为变更）：
+//
+//	★ 本函数在 submit_mode == "full" 时的差集【基准与被减对象形态不匹配】，
+//	⇒ ⇒ 算出来的 request_delta 【不是「本轮新增」】。
+//
+//	★ 事实（代码自身可证）：ProcessedRequest 的三个字段注释写明——
+//
+//		RequestBody      []Message // Full request body from client
+//		LastOutboundBody []Message // Previous turn's outbound (for delta extraction)
+//		OutboundBody     []Message // Actual outbound sent to LLM (after compression)
+//
+//	  ⇒ ⇒ ★★ 被减对象 = 【客户端的完整历史】（未压缩）；
+//	  ⇒ ⇒ ★★ 差集基准 = 【上一轮压缩后的出站消息】（req.LastOutboundBody =
+//	      previousBody.OutboundBody，见本文件上方赋值处）；
+//	  ⇒ ⇒ ★★★ ⇒ 差集 = 「客户端完整历史中【没被压缩保留下来】的那些片段」
+//	      = ★【压缩残留】，而不是「本轮新增」。
+//
+//	★ 实测印证（252 共享库，2026-10-22，只读）：
+//	  ① 同一轮里 request_delta 与 outbound_body 的内容交集只有 9.5%（turn 16：2/21）
+//	     ⇒ 若它真是「本轮新增」，本就不该与 outbound 高度重合；
+//	  ② 多个轮的 request_delta 开头都重复着同一条固定前缀
+//	     [system, user×4] ⇒ ★ 正是「压缩时被丢掉的 system 与最早的 user」；
+//	  ③ 同一条累积体 1,468 条消息，而同轮 outbound_body 只有 6~46 条
+//	     ⇒ ⇒ 出站压缩掉约 97%。
+//
+//	★ 影响面（★ 与「容量」是两件事）：
+//	  ⇒ ★★ 内容正确性：库里 10 月起的 request_delta 存的是【压缩残留】，
+//	     ⇒ ⇒ 【历史正文即使存在也不可信】；
+//	  ⇒ ★ 容量：每行仍是有界的（实测约 18 KB/行）⇒ ⇒ §143.68 的「≈230 MB/天」
+//	     与「线性增长」的前提【仍然成立】⇒ ⇒ 属主决策 ⑪（保留期）不受影响。
+//
+//	★ 本轮【不改行为】：改它会改变生产正文的【内容口径】（历史正文会被重写）
+//	  ⇒ ⇒ 属主决策（⑭）拍板后再改。⇒ ⇒ 本处只做登记，
+//	  ⇒ ⇒ 并由门 `scripts/ursmcheck/section_14372_delta_semantics_test.go` 钉住。
 func extractRequestDelta(req *ProcessedRequest, submitMode string) []Message {
 	// Attachment-only turns carry no new message body; persist an empty delta
 	// while retaining attachment metadata on the turn row.
@@ -978,6 +1059,36 @@ func extractRequestDelta(req *ProcessedRequest, submitMode string) []Message {
 		return nil
 	}
 
+	// ★★★★★★ FIXME-14373（2026-10-22 §143.73 轮，只登记、★ 零行为变更）：
+	//	★★ 本函数有【三条独立的分支】会把【客户端的完整历史】整份落成 request_delta；
+	//	★★ 而生产上最常走的那一条，是【差集基线读空】这一条。
+	//	★ 机制（代码自证，三处）：
+	//	  ① 差集基准来自【库里的上一轮】：`GetLatestBodiesInTx` → previousBody.OutboundBody
+	//	     → `req.LastOutboundBody`（见本文件上方赋值处）；
+	//	  ② 当上一轮的 outbound_body 在库里是 jsonb 字面量 'null' 时，
+	//	     previousBody.OutboundBody 为空 ⇒ ⇒ 走下面 `len(req.LastOutboundBody) == 0`
+	//	     这条分支 ⇒ ★★ delta = 客户端完整历史（不是增量）；
+	//	  ③ 即使基线非空，基准也是【上一轮压缩后的出站】⇒ 形态与被减对象不匹配
+	//	     （⇒ 压缩残留；详见本函数上方 FIXME-14372）。
+	//	★ 设计意图（bodies_writer.go 的注释原文）：
+	//	  「RequestDelta only contains messages that were not present in the previous
+	//	    turn, avoiding exponential growth of storing full history in every row.」
+	//	  ⇒ ⇒ ★★★ 上面 ② 这条分支让该意图【在生产上被击穿】：每轮重存整份历史。
+	//	★ 实测（252 共享库 2026-10-22，只读；口径见 scripts/audit/verify_session_bodies_delta_amplification.sql）：
+	//	  ① 内容级：形态 A（outbound_body 全为 jsonb 'null'）相邻轮 13/14 成立
+	//	     「delta(t) ⊇ delta(t−1) 的全部消息」，且公共前缀长度恰等于上一轮长度
+	//	     ⇒ ⇒ 每轮把整份历史重存一遍；形态 B（outbound_body 是数组）相邻轮 0/22 成立
+	//	     ⇒ ⇒ 形态 B 真的只存本轮新增（★ 意图在那一侧是达成的）。
+	//	  ② 体量：session_bodies_2026_10 的 request_delta 合计 2.63 GB
+	//	     = 整个分区 5.09 GB 的 51.6%；而 response_delta（≈每轮真实新增）
+	//	     只有 57.8 MB ⇒ ⇒ delta 是「真实新增」的 45 倍。
+	//	  ③ ≥10 轮的 220 个会话里 127 个（57.7%）是二次方形态，持有 747 MB（占 55.4%），
+	//	     却只占 27.4% 的轮数；二次方会话每轮 112 KB vs 线性会话 19 KB（6×）。
+	//	★ 处置：本轮【不改行为】—— 改差集基准会改变生产正文的【内容口径】，
+	//	  且需要「上一轮客户端完整历史」这个目前【不存在】的存储位
+	//	  （final_full 行是天然的承载点，但语义要改）⇒ ⇒ 属主决策（⑮）拍板后再改。
+	//	  本处只做登记，并由门 scripts/ursmcheck/section_14373_delta_amplification_test.go 钉住。
+	//
 	// If client explicitly sent delta or snapshot, trust it
 	if submitMode == "delta" || submitMode == "snapshot" || submitMode == "inferred_compressed" {
 		return req.RequestBody

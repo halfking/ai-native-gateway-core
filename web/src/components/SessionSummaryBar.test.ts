@@ -74,6 +74,36 @@ describe('SessionSummaryBar', () => {
     expect(wrapper.text()).toContain('summary unavailable')
   })
 
+  // ── sessions.duration_ms 的消费点 ──────────────────────────────────
+  //
+  // 这条断言守的是"877 修好的 duration_ms 真的有用户可见收益"：
+  // 之前它只写不读，审计只能记成"诚实，但没有用户可见收益"。
+  it('shows the elapsed duration from sessions.duration_ms', () => {
+    const wrapper = mountBar({ durationMs: 90000 })
+
+    expect(wrapper.text()).toContain('1m30s')
+  })
+
+  it('formats sub-minute durations in seconds and milliseconds', () => {
+    expect(mountBar({ durationMs: 250 }).text()).toContain('250ms')
+    expect(mountBar({ durationMs: 4200 }).text()).toContain('4s')
+    expect(mountBar({ durationMs: 3_600_000 }).text()).toContain('1h')
+  })
+
+  // ★ 缺失 ≠ 0ms。0 是"瞬时完成"，是后端给的**真实值**；
+  //   undefined 是"后端没给"。两者不能渲染成同一个东西。
+  it('does not render a duration when the backend did not provide one', () => {
+    const wrapper = mountBar()
+
+    expect(wrapper.text()).not.toContain('0ms')
+  })
+
+  it('renders a genuine zero duration as 0ms', () => {
+    const wrapper = mountBar({ durationMs: 0 })
+
+    expect(wrapper.text()).toContain('0ms')
+  })
+
   it('polls until a newer snapshot is returned', async () => {
     triggerInstantSummaryMock.mockResolvedValue({})
     const result = { summary: '轮询摘要', summary_generated_at: '2026-08-21T00:00:01Z' }

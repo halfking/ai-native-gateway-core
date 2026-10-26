@@ -1,0 +1,38 @@
+# 产品库名台账（R95 轮 · 段 B）
+#
+# 用途：给「破坏性腿守卫」的库名判据提供「产品库名」这一维。
+# 背景：§19.20.50 ⑤ 指出主门 r87ReHostMarker（整串匹配）与生产规则
+#       domains/reportrollup 的 isScratchDB（分词整词 scratch/e2e）不是同一层。
+#       R95 轮实测：两套规则在 138 个真实库名上分类相反 7 个（见 handoff §19.20.53）。
+#
+# class 取值：
+#   product              产品形态库（生产/准生产形态）。必须永远不被当成临时库放行。
+#   product_variant      产品的其它长期形态库（dev / test 变体 / 同步副本）。
+#                        长期存在，不得被当成临时库，但也不是产品主库。
+#   long_lived_nonprod   长期存在但不属于本产品的库。不得被当成临时库。
+#   scratch_family       真·临时库族（前缀/后缀模式），可被当成临时库。
+#
+# 字段：name<TAB>class<TAB>evidence
+#   evidence 必须写清「这个分类凭什么」，不得留空。
+#
+# 台账门：scripts/ursmcheck/product_db_name_ledger_test.go
+#   I1 非临时类不得被主门轴（r87ReHostMarker）判成临时目标标记
+#   I2 非临时类不得被生产轴（分词整词 scratch/e2e）判成临时库
+#   I3 结构不变量（唯一 / 证据非空 / 分类合法 / 命名空间合法 / 解析器非空）
+#   I4 scratch 家族的每个模式必须被它所属的那一轴真的认出来
+
+llm_gateway	product	生产形态库：252 / 211 / 本地三处均存在；仓内 DSN 字面量 131 处引用。
+llm_gateway_dev	product_variant	仓内 DSN 字面量引用（6 处）；长期存在的开发形态库。
+llm_gateway_test	product_variant	本地长期库；仓内 DSN 字面量 26 处引用；R95 实测两套规则均判为非临时。
+llm_gateway_test_r112	product_variant	本地长期库（§19.20.50 ③ 记录：长期库，子串规则会误放行）。
+llm_gateway_zombie_2512	product_variant	本地长期库。
+llm_gateway_sync_20260718	product_variant	本地长期库（同步副本）。
+llm_gateway_sync_20260718_v2	product_variant	本地长期库（同步副本）。
+llm_gateway_sync_20260718_v3	product_variant	本地长期库（同步副本）。
+llm_gateway_sync_20260718_v4	product_variant	本地长期库（同步副本）。
+llm_gateway_pre_cutover_20261014	product_variant	211 上存在（§143.20 记 1,169 MB 未清理）；切流前的产品形态副本。
+postgres	long_lived_nonprod	PG 默认库；各实例均存在；非本产品对象，但不得当临时库。
+itgate_*	scratch_family	本仓审计轮专用临时库前缀；本地实测 26 个 itgate/scratch/e2e 族库；仅主门轴认得这个前缀标记。
+*_scratch	scratch_family	生产规则 isScratchDB 分词整词命中 scratch；本地实测 llm_gw_r46_scratch / r79_scratch 等。
+*_e2e	scratch_family	生产规则 isScratchDB 分词整词命中 e2e；本地实测 ai_session_manager_e2e / llmgw_report_e2e。
+*_scratch_*	scratch_family	生产规则分词整词命中；本地实测 memora_receipt_scratch_20260911。

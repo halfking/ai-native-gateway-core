@@ -222,14 +222,26 @@ func consumersOf(files []repoSourceFile, key string) []string {
 //
 // Self-shrinking: an entry whose key has gained a consumer turns the gate red.
 var knownUnwiredSettings = map[string]string{
-	// ── lifecycle.*_ttl_days：被迁移 391 播种进设置表，值可存、界面可见，全仓无人读 ──
+	// ── lifecycle.*_ttl_days：被迁移 391 播种进设置表，值可存、界面可见，本仓无人读 ──
 	// 5 个设置与 5 张表严格一一对应，而 drop_old_state_partitions() 覆盖的
 	// 恰好是另外 5 张表，一张都不在这 5 张里。
-	"lifecycle.request_wal_ttl_days":                   "P2：对应 request_wal（375MB/975,153 行）；DELETE 还因 request_wal_2026_08 是 columnar 而无法规划",
-	"lifecycle.usage_ledger_ttl_days":                  "P2：对应 usage_ledger（1001MB/2,038,536 行）；无任何清理路径",
-	"lifecycle.credential_model_call_history_ttl_days": "P2：对应 credential_model_call_history（102MB/284,877 行）；该表是普通表（relkind=r，非分区）",
-	"lifecycle.credit_ledger_ttl_days":                 "尚未膨胀（160 kB，0 行），但清理机制同样不存在",
-	"lifecycle.tool_usage_stats_ttl_days":              "尚未膨胀（224 kB，0 行），但清理机制同样不存在",
+	//
+	// ★★ 2026-10-18 订正（§88）：下面 5 条的原说明写着「无任何清理路径」，
+	//   **那半句是错的，且错得危险** —— 会诱导下一个人「数据无界增长 ⇒ 去 DROP 分区」。
+	//   实测：252 上的 /opt/scripts/pg17-drop-old-columnar-partitions.sh
+	//   把**这 5 张表全部**列进了 PARENTS，以 RETAIN_MONTHS=2 按月（cron `30 2 1 * *`）
+	//   清理历史分区。实测 cutoff 推进 2026_05→06→07→08，
+	//   即实际留存 2~3 个月（2026_09 分区要等 2026-12-01 才被清）。
+	//   ⇒ 真实缺陷不是「无界增长」，而是**留存控制分裂**：
+	//     setting 声明 1 天（UI 可见可改、保存成功），本仓无人读，
+	//     而实际生效的是 252 脚本里硬编码的 2 个月，**没有任何一行代码表达这个数字**。
+	//   ⇒ 本 allowlist 本身仍然成立（它检查的是**本仓接线**，不是全系统留存），
+	//     只有说明文字需要修正。修说明、不删条目：删了会让门失去这条已知的例外。
+	"lifecycle.request_wal_ttl_days":                   "P2：对应 request_wal；本仓无清理路径，但 252 的 pg17-drop-old-columnar-partitions.sh 以 RETAIN_MONTHS=2 按月清理（§88 订正）",
+	"lifecycle.usage_ledger_ttl_days":                  "P2：对应 usage_ledger；本仓无清理路径，实际由 252 脚本 RETAIN_MONTHS=2 兜底（§88 订正，非「无界增长」）",
+	"lifecycle.credential_model_call_history_ttl_days": "P2：对应 credential_model_call_history；本仓无清理路径，实际由 252 脚本兜底（§88）；该表是普通表（relkind=r，非分区）",
+	"lifecycle.credit_ledger_ttl_days":                 "尚未膨胀；本仓无清理路径，实际由 252 脚本兜底（§88 订正，非「机制不存在」）",
+	"lifecycle.tool_usage_stats_ttl_days":              "尚未膨胀；本仓无清理路径，实际由 252 脚本兜底（§88 订正，非「机制不存在」）",
 
 	// ── self_check.*：整个子系统未接线（5 个键成组）──────────────────────
 	// D09 对应域。键成组全死通常意味着该子系统的 spec 先落地、接线后延。

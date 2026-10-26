@@ -1,122 +1,17 @@
 export default {
-  title: "إدارة دورة حياة البيانات",
   refresh: "تحديث",
   loading: "جاري التحميل…",
-  storageLoading: "جاري تحميل إحصائيات التخزين…",
-  stats: {
-    totalData: "إجمالي حجم البيانات",
-    hotData: "بيانات ساخنة (0-7 أيام)",
-    warmData: "بيانات دافئة (7-30 يومًا)",
-    coldData: "بيانات باردة (30-90 يومًا)",
-    expiredData: "بيانات منتهية الصلاحية (>90 يومًا)"
-  },
-  charts: {
-    distribution: "توزيع البيانات",
-    growthTrend: "اتجاه النمو (آخر 7 أيام)",
-    trendDate: "التاريخ",
-    trendRequests: "عدد الطلبات",
-    trendCompressed: "عدد المضغوط",
-    trendCompressionRate: "معدل الضغط",
-    trendEmpty: "لا توجد بيانات اتجاه"
-  },
   storage: {
-    title: "💾 إدارة التخزين",
-    disk: "مساحة القرص",
-    database: "حجم قاعدة البيانات",
-    databaseTotalSize: "الحجم الإجمالي {size}",
-    tableRows: "{n} صفوف",
-    attachments: "تخزين المرفقات",
-    orphanTitle: "يوجد {n} ملف في دليل التخزين بدون سجل قاعدة بيانات",
-    orphanBadge: "ملفات يتيمة {n}",
-    totalFiles: "{n} ملفات",
-    activeLabel: "[نشط]",
-    logFiles: "ملفات السجل",
-    rotation: "تكوين التدوير:",
-    rotationSingle: "ملف واحد {n} ميجابايت",
-    rotationKeep: "الاحتفاظ بـ {n}",
-    rotationAge: "الاحتفاظ بـ {n} يوم",
-    rotationCompress: "الضغط {state}",
-    rotationYes: "نعم",
-    rotationNo: "لا",
-    moreRotated: "… هناك {n} ملفات مدارة إضافية",
-    lifecycleConfig: "تكوين دورة الحياة",
-    configAttachmentPath: "مسار تخزين المرفقات:",
-    configRetention: "مدة الاحتفاظ بالبيانات:",
-    configRetentionDays: "{n} يوم",
-    configMaxAttachment: "الحد الأقصى لحجم المرفق:",
-    configMaxAttachmentMb: "{n} ميجابايت",
-    configAutoCleanup: "التنظيف التلقائي:",
-    autoCleanupOn: "مفعّل",
-    autoCleanupOff: "معطّل"
+    migrateFailedWithReason: 'تعذّر إتمام الترحيل: {reason}. أعد المحاولة.',
   },
-  attachmentCleanup: {
-    title: "🗑️ تنظيف المرفقات",
-    mode: "وضع التنظيف:",
-    modeOld: "تنظيف المرفقات منتهية الصلاحية (الاحتفاظ بآخر N يوم)",
-    modeOrphan: "تنظيف الملفات اليتيمة (لا توجد سجلات قاعدة بيانات في الدليل)",
-    daysLabel: "أيام الاحتفاظ:",
-    minDays: "الحد الأدنى لأيام الاحتفاظ هو 7",
-    preview: "معاينة التنظيف",
-    execute: "تنفيذ التنظيف",
-    affected: "الملفات المتأثرة:",
-    orphanedSuffix: "(يتيمة {n})",
-    estimatedFreed: "المساحة المقدرة المحررة:",
-    warningPrefix: "⚠️",
-    previewFailed: "فشل معاينة تنظيف المرفقات",
-    executeFailed: "فشل تنظيف المرفقات",
-    confirmTitle: "تأكيد تنظيف المرفقات؟\nالملفات المتأثرة {n}\nالمساحة المقدرة المحررة {size}\n\nهذا الإجراء لا يمكن التراجع عنه!",
-    completed: "اكتمل التنظيف: تم حذف {n} ملفات / {db} سجلات قاعدة بيانات، تم تحرير {size}"
-  },
-  logCleanup: {
-    title: "📋 تنظيف السجلات",
-    daysLabel: "أيام الاحتفاظ:",
-    minDays: "الحد الأدنى لأيام الاحتفاظ هو 7",
-    compressedOnly: "تنظيف الملفات المضغوطة فقط",
-    preview: "معاينة التنظيف",
-    execute: "تنفيذ التنظيف",
-    affected: "الملفات المتأثرة:",
-    estimatedFreed: "المساحة المقدرة المحررة:",
-    warningPrefix: "⚠️",
-    previewFailed: "فشل معاينة تنظيف السجلات",
-    executeFailed: "فشل تنظيف السجلات",
-    confirmTitle: "تأكيد تنظيف ملفات السجل؟\nالملفات المتأثرة {n}\nالمساحة المقدرة المحررة {size}\n\nهذا الإجراء لا يمكن التراجع عنه!",
-    completed: "اكتمل تنظيف السجلات: تم حذف {n} ملفات، تم تحرير {size}"
-  },
-  dataCleanup: {
-    title: "عمليات التنظيف",
-    action: "نوع العملية:",
-    actionArchive: "أرشفة (موصى بها)",
-    actionDelete: "حذف (خطر)",
-    actionTrim: "تشذيب (قيد التنفيذ)",
-    from: "تاريخ البدء:",
-    to: "تاريخ الانتهاء:",
-    preview: "معاينة التأثير",
-    execute: "تنفيذ التنظيف",
-    affected: "عدد الصفوف المتأثرة:",
-    affectedRowsSuffix: " صف",
-    estimatedFreed: "المساحة المقدرة المحررة:",
-    warningPrefix: "⚠️",
-    missingDate: "يرجى اختيار تاريخ البدء والانتهاء",
-    needPreview: "يرجى معاينة التأثير أولاً",
-    previewFailed: "فشل المعاينة",
-    executeNotImpl: "سيتم تنفيذ وظيفة التنظيف في المرحلة التالية. يرجى استخدام برنامج نصي سطر الأوامر لتنفيذ عمليات التنظيف.",
-    confirmDelete: "تأكيد حذف {n} صفوف من البيانات؟\nالمساحة المقدرة المحررة: {size}\n\nهذا الإجراء لا يمكن التراجع عنه!",
-    confirmArchive: "تأكيد أرشفة {n} صفوف من البيانات؟\nالمساحة المقدرة المحررة: {size}\n\nهذا الإجراء لا يمكن التراجع عنه!",
-    confirmAction: "{action} {n} صفوف من البيانات؟"
-  },
-  tenant: {
-    title: "إحصائيات بيانات المستأجر (Top 10)",
-    tenantId: "معرّف المستأجر",
-    rows: "عدد الصفوف",
-    size: "حجم المساحة",
-    percent: "النسبة"
-  },
-  chartLabels: {
-    hot: "بيانات ساخنة (0-7 أيام)",
-    warm: "بيانات دافئة (7-30 يومًا)",
-    cold: "بيانات باردة (30-90 يومًا)",
-    expired: "بيانات منتهية الصلاحية (>90 يومًا)",
-    tooltipSuffix: "{label}: {n} صفوف ({pct}%)"
+  /**
+   * نصوص إدارة الحقول الكبيرة (BlobManager).
+   * ★ الحالة الفارغة (الدفعة 14 · «حالات فارغة»): كان用的是 مفتاحًا عامًا
+   *   (`common.feedback.noData` — «لا يوجد محتوى لعرضه حاليًا»).
+   *   هذه الصفحة **بلا مُرشِّح زمني** ⇒ لا نكتب نطاقًا زمنيًا (لا نخترع معلومة لا تعرفها الصفحة).
+   */
+  blob: {
+    emptyNoResult: 'لا توجد سجلات للحقول الكبيرة بعد.',
   },
   storageOverview: {
     summary: {
@@ -171,9 +66,9 @@ export default {
       vacuum: "🧹 VACUUM",
       vacuumFull: "🗜 FULL",
       reindex: "🔧 REINDEX",
-      vacuumTitle: "VACUUM (ANALYZE) {table} — بدون قفل، يستعيد الصفوف الميتة",
-      vacuumFullTitle: "VACUUM FULL {table} — بقفل، يعيد المساحة إلى نظام التشغيل",
-      reindexTitle: "REINDEX TABLE {table} — بقفل، يعيد بناء الفهارس"
+      vacuumTitle: "VACUUM (ANALYZE) {table}: بدون قفل، يستعيد الصفوف الميتة",
+      vacuumFullTitle: "VACUUM FULL {table}: بقفل، يعيد المساحة إلى نظام التشغيل",
+      reindexTitle: "REINDEX TABLE {table}: بقفل، يعيد بناء الفهارس"
     },
     modal: {
       vacuumTitle: "🧹 تأكيد تنفيذ VACUUM",
@@ -191,7 +86,7 @@ export default {
       time: "الوقت المقدر",
       cancel: "إلغاء",
       confirm: "تنفيذ {op}",
-      success: "اكتمل {op} {table} — تم تحرير {size} ({pct}%)",
+      success: "اكتمل {op} {table}: تم تحرير {size} ({pct}%)",
       failed: "فشل {op}: {msg}"
     },
     rowResult: {
@@ -223,7 +118,6 @@ export default {
   hotPartition: {
     hotTableTitle: "ترحيل بيانات جداول Hot",
     hotTableDesc: "يرحّل الصفوف من جداول Hot إلى التقسيمات الشهرية. يلزم تنفيذ VACUUM FULL لاحقًا لإعادة المساحة فعلًا إلى نظام التشغيل.",
-    retentionLabel: "الاحتفاظ",
     retention: {
       all: "ترحيل الكل الآن",
       "1day": "الاحتفاظ بآخر يوم واحد",
@@ -236,16 +130,12 @@ export default {
     migrationProgress: "تم ترحيل {migrated} صفًا ({batches} دفعات، {duration} ثانية)",
     promoteConfirm: "ترحيل البيانات الأقدم من {hours} من {label}؟",
     promoteAll: "الكل",
-    hours: "{n} ساعات",
     days: "{n} أيام",
-    emptyResult: "لا توجد بيانات",
     partitionTitle: "إدارة التقسيمات الشهرية",
     partitionDesc: "احذف التقسيمات الشهرية القديمة لتحرير مساحة القرص.",
-    partitionWarning: "هذا الإجراء لا يمكن التراجع عنه — يرجى توخي الحذر.",
+    partitionWarning: "هذا الإجراء لا يمكن التراجع عنه: يرجى توخي الحذر.",
     tables: {
       title: "الجداول المقسّمة",
-      selectLabel: "الجدول: ",
-      selectPlaceholder: "اختر جدولًا مقسّمًا",
       refresh: "تحديث",
       columns: {
         name: "الجدول",
@@ -274,11 +164,6 @@ export default {
         heap: "هيب",
         archive: "مؤرشف"
       },
-      month: {
-        recent: "حديث",
-        medium: "متوسط",
-        old: "قديم"
-      },
       delete: "حذف",
       deleting: "جاري الحذف…",
       empty: "لا توجد تقسيمات لهذا الجدول"
@@ -296,68 +181,91 @@ export default {
       cancel: "إلغاء",
       confirm: "تنفيذ الحذف",
       deleting: "جاري الحذف…",
-      success: "تم الحذف بنجاح:\n{message}\nتحرير: {size}",
-      failed: "فشل الحذف: {msg}"
     },
     hotTableNames: {
-      requestLogs: "请求日志",
-      credentialModelIndex: "凭据模型索引",
-      usageLedger: "用量账本",
-      routingDecisionLog: "路由决策日志"
+      requestLogs: "سجلات الطلبات",
+      credentialModelIndex: "فهرس بيانات اعتماد النماذج",
+      usageLedger: "دفتر الاستخدام",
+      routingDecisionLog: "سجل قرارات التوجيه"
     },
     labels: {
-      rows: "行数",
+      rows: "الصفوف",
       toast: "TOAST"
     },
-    migrationFailed: "迁移失败"
-,
-    jobIdMissing: 'Failed to start async job: missing job_id',
 
-    asyncCompleted: 'Async migration complete: {n} rows migrated',
 
-    asyncFailed: 'Async migration failed: {error}',
 
-    cancel: 'Cancel',
 
-    cancelTitle: 'Cancel migration job',
 
-    cancelConfirm: 'Cancel the currently running migration job? Already-migrated data will be preserved.',
 
-    cancelRequested: 'Cancellation requested. The job will stop at the next batch.',
 
-    asyncEnabledHint: 'Since 2026-07-13 migrations run in async mode. Real-time progress and cancel are visible on this page.',
 
-    cronStatsTitle: 'Nightly auto-migration',
 
-    cronStatsDesc: 'Every day at 02:00 AM, hot tables older than 24 hours are auto-migrated. Tunable via env vars.',
 
-    cronEnabled: 'Enabled',
 
-    cronDisabled: 'Disabled',
 
-    cronLastRun: 'Last run',
 
-    cronRunCount: 'Total runs',
 
-    cronLastError: 'Last error',
 
-    cronRunning: 'Running now',
+    statsLoadFailedWithReason: 'تعذّر تحميل إحصائيات جداول hot: {reason}. أعد المحاولة.',
+    startMigrationFailedWithReason: 'تعذّر بدء مهمة الترحيل: {reason}. أعد المحاولة.',
+    submitDeleteFailedWithReason: 'تعذّر إرسال مهمة الحذف: {reason}. أعد المحاولة.',
   },
-  preview: "预览清理",
-  hotData: "热数据 (0-7天)",
-  warmData: "温数据 (7-30天)",
-  coldData: "冷数据 (30-90天)",
-  expiredData: "过期数据 (>90天)",
-  missingDate: "请选择起始日期和结束日期",
-  previewFailed: "预览失败",
-  needPreview: "请先预览影响",
-  executeNotImpl: "清理功能将在下一阶段实现。请使用命令行脚本执行清理操作。"
+  preview: "معاينة التنظيف",
+  hotData: "بيانات ساخنة (0-7 أيام)",
+  warmData: "بيانات دافئة (7-30 يومًا)",
+  coldData: "بيانات باردة (30-90 يومًا)",
+  expiredData: "بيانات منتهية الصلاحية (>90 يومًا)",
+  missingDate: "يرجى اختيار تاريخ البدء والانتهاء",
+  previewFailed: "فشل المعاينة",
+  needPreview: "يرجى معاينة التأثير أولاً",
+  executeNotImpl: "سيتم تنفيذ وظيفة التنظيف في المرحلة التالية. يرجى استخدام برنامج نصي سطر الأوامر لتنفيذ عمليات التنظيف."
 ,
   pages: {
     filesystemMaintenance: 'صيانة نظام الملفات',
     storageConfig: 'إعداد التخزين',
     logManagement: 'إدارة السجلات',
     usageCost: 'تكلفة الاستخدام',
+    usageEnhanced: 'تحليلات الاستخدام المتقدمة',
+  },
+
+  usageEnhanced: {
+    refresh: 'تحديث',
+    loading: 'جارٍ التحميل…',
+    empty: 'لا توجد سجلات استهلاك في هذه الفترة',
+    cards: {
+      totalCost: 'التكلفة الإجمالية',
+      totalRequests: 'إجمالي الطلبات',
+      periodDelta: 'فارق التكلفة بين الفترتين',
+      cacheHitRate: 'معدل إصابة الذاكرة المؤقتة',
+    },
+    trend: {
+      title: 'اتجاه التكلفة (آخر {days} يومًا)',
+    },
+    hotKeys: {
+      title: 'أبرز مفاتيح API (حسب استهلاك الرموز)',
+      colId: 'معرّف مفتاح API',
+      colPrefix: 'بادئة المفتاح',
+      colApplication: 'التطبيق',
+      colRequests: 'الطلبات',
+      colTokens: 'الرموز',
+      colCost: 'التكلفة الإجمالية',
+    },
+    degraded: {
+      title: 'بعض المقاييس غير متاحة: ',
+      hint: 'مخطط قاعدة البيانات أقدم من هذا الإصدار؛ الأرقام التالية قيم بديلة تعني «تعذّر الحساب» وليست قياسات حقيقية.',
+    },
+    errors: {
+      load: 'تعذّر تحميل بيانات الاستخدام المتقدمة',
+    },
+    sources: {
+      summary: 'ملخص الاستخدام',
+      costTrend: 'اتجاه التكلفة',
+      periodCompare: 'مقارنة الفترات',
+      cacheEconomics: 'اقتصاديات الذاكرة المؤقتة',
+      hotKeys: 'مفاتيح API النشطة',
+    },
+    footer: 'آخر تحديث: {time}',
   },
 
   usageCost: {
@@ -371,7 +279,7 @@ export default {
       previousLabel: 'فترة المقارنة ({period})',
       change: 'التغيير',
       significant: 'ملحوظ',
-      meta: '{requests} طلب · {models} نماذج',
+      meta: '{requests} طلب: {models} نماذج',
     },
     attribution: {
       title: 'إسناد التكلفة',
@@ -417,7 +325,7 @@ export default {
     },
     degraded: {
       title: 'بعض المقاييس غير متاحة:',
-      hint: 'مخطط قاعدة البيانات متأخر عن هذه النسخة، لذا الأرقام أدناه هي قيم نائبة تعني «تعذّر الحساب» وليست قياسات حقيقية (وهذا ليس等同于 عدم وجود بيانات لهذه الفترة). اطلب من المسؤول تنفيذ ترحيل تجميع البيانات.',
+      hint: 'مخطط قاعدة البيانات أقدم من هذه النسخة، لذا الأرقام أدناه قيم نائبة تعني «تعذّر الحساب» وليست قياسات حقيقية (وهذا لا يعني عدم وجود بيانات لهذه الفترة). اطلب من المسؤول تنفيذ ترحيل تجميع البيانات.',
     },
   },
   confirmDeleteCleanup: 'حذف {rows} صفًا؟\nالمساحة المتوقَّع تحريرها: {size}\n\nهذا الإجراء لا رجعة فيه!',

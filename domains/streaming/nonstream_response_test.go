@@ -19,7 +19,11 @@ func TestClassifyNonStreamUpstreamResponse(t *testing.T) {
 		{"anthropic text is not empty", `{"type":"message","content":[{"type":"text","text":"hello"}]}`, nonStreamResponseAnthropic, false},
 		{"anthropic tool use is not empty", `{"type":"message","content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{}}]}`, nonStreamResponseAnthropic, false},
 		{"anthropic tool use with input only is not empty", `{"type":"message","content":[{"type":"tool_use","input":{"city":"Paris"}}]}`, nonStreamResponseAnthropic, false},
-		{"anthropic signed thinking is not empty", `{"type":"message","content":[{"type":"thinking","thinking":"","signature":"sig_1"}]}`, nonStreamResponseAnthropic, false},
+		// r1029 (2026-10-17): a signed thinking block terminates deliberation,
+		// it is not the assistant answer — same 154 failure mode as the chat
+		// legs. Reverse guard follows.
+		{"anthropic signed thinking is empty", `{"type":"message","content":[{"type":"thinking","thinking":"","signature":"sig_1"}]}`, nonStreamResponseAnthropic, true},
+		{"anthropic signed thinking then text is not empty", `{"type":"message","content":[{"type":"thinking","thinking":"","signature":"sig_1"},{"type":"text","text":"pong"}]}`, nonStreamResponseAnthropic, false},
 		{"anthropic redacted thinking is not empty", `{"type":"message","content":[{"type":"redacted_thinking","data":"opaque"}]}`, nonStreamResponseAnthropic, false},
 		{"anthropic server tool use is not empty", `{"type":"message","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}]}`, nonStreamResponseAnthropic, false},
 		{"empty anthropic content is empty", `{"type":"message","content":[]}`, nonStreamResponseAnthropic, true},

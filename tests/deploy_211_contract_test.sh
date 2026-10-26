@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy_211_contract_test.sh — scripts/deploy-211-docker.sh 的离线契约门
+# deploy_211_contract_test.sh — scripts/deploy-seamless-docker.sh 的离线契约门
 #
 # 纯 bash，不碰 docker、不碰 192.168.31.211：把被测脚本里几个纯函数抽出来
 # 单独驱动，钉住 211 部署脚本真正容易回归的契约。
@@ -15,7 +15,9 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT="$ROOT/scripts/deploy-211-docker.sh"
+# 被测引擎路径可被环境变量覆盖 —— **只给变异验证用**（把改坏的副本喂给门，
+# 证明门确实在测东西而不是恒绿）。日常运行不设该变量，指向仓库里的真引擎。
+SCRIPT="${DEPLOY_211_ENGINE:-$ROOT/scripts/deploy-seamless-docker.sh}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -64,8 +66,8 @@ run_alloc() {
   (
     set -uo pipefail
     CLAIM_FILE="$claim"
-    D211_REDIS_DB_START=15
-    D211_REDIS_DB_END=0
+    DD_REDIS_DB_START=15
+    DD_REDIS_DB_END=0
     redis_db_in_use() { [[ " $occupied " == *" $2 "* ]]; }
     redis_db_has_gateway_keys() { [[ " $self_occ " == *" $2 "* ]]; }
     die() { printf 'DIED:%s\n' "$*"; exit 9; }
@@ -98,7 +100,7 @@ check "claim 库被占后向下重新分配" "11" "$(run_alloc '12 13 14 15' 12)
 : > "$TMP/claim2"
 (
   set -uo pipefail
-  CLAIM_FILE="$TMP/claim2"; D211_REDIS_DB_START=15; D211_REDIS_DB_END=0
+  CLAIM_FILE="$TMP/claim2"; DD_REDIS_DB_START=15; DD_REDIS_DB_END=0
   occupied='15 14'                      # 高位两个库已被别的服务占用
   redis_db_in_use() { [[ " $occupied " == *" $2 "* ]]; }
   log(){ :; }; warn(){ :; }; die(){ printf 'DIED\n'; exit 9; }
@@ -115,11 +117,209 @@ check "claim 库全为网关自占键 → 复用不漂移" "6" "$(run_alloc '6' 
 # 10) 外来键：claim 库非空且非网关键（自占集合不含它）→ 放弃 claim 重新分配
 check "claim 库为外来键占用 → 放弃 claim 重新分配" "11" "$(run_alloc '12 13 14 15' 12 '')"
 
+echo "== URSM 库号复用（gateway.env 持久化，不逐次下移） =="
+sed -n '/^URSM_REDIS_DB="\${URSM_V2_REDIS_DB:-}"$/,/^\[\[ -n "\$URSM_REDIS_DB" \]\] || die/p' \
+  "$SCRIPT" > "$TMP/ursm.sh"
+[[ -s "$TMP/ursm.sh" ]] && ok "截取到 URSM 分配段" || bad "截取不到 URSM 分配段（锚点行被改？）"
+run_ursm() {
+  # $1=占用集合 $2=env 里上次的 URSM 库号(可空) $3=自占集合 $4=会话库号
+  local occupied="$1" prev="$2" self_occ="$3"
+  (
+    set -uo pipefail
+    unset URSM_V2_REDIS_DB
+    ENV_FILE="$TMP/ursm.env"; : > "$ENV_FILE"
+    [[ -n "$prev" ]] && printf 'export URSM_V2_REDIS_DB=%s\n' "$prev" > "$ENV_FILE"
+    REDIS_DB="$4"; REDIS_CONTAINER=stub
+    redis_db_in_use() { [[ " $occupied " == *" $2 "* ]]; }
+    redis_db_has_gateway_keys() { [[ " $self_occ " == *" $2 "* ]]; }
+    die() { printf 'DIED\n'; exit 9; }
+    log() { :; }
+    source "$TMP/ursm.sh"
+    printf '%s\n' "$URSM_REDIS_DB"
+  )
+}
+# 211 实测形态：0～15 全有键，上次 URSM=0 且库内只有 ursm:* → 必须复用 0
+check "URSM 上次库号只含网关键 → 复用(全库被占也不 die)" "0" \
+  "$(run_ursm '0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15' 0 '0' 5)"
+check "URSM 上次库号被外来键占用 → 放弃并找空库" "13" \
+  "$(run_ursm '0 14' 0 '' 5)"
+check "URSM 上次库号与会话库撞号 → 不复用" "14" \
+  "$(run_ursm '' 5 '5' 5)"
+check "无持久化记录 → 默认优先 db14" "14" "$(run_ursm '' '' '' 5)"
+
+echo "== production 模式鉴权密钥（生成 / 持久复用 / 环境变量优先）=="
+if extract_fn dd_auth_secret > "$TMP/authsec.sh"; then
+  run_sec() {
+    # $1=变量名 $2=持久文件名 $3=前缀 $4=调用方环境变量值(可空)
+    (
+      set -uo pipefail
+      DD_STATE_DIR="$TMP/state"; mkdir -p "$DD_STATE_DIR/env"
+      unset "$1"; [[ -n "$4" ]] && export "$1=$4"
+      source "$TMP/authsec.sh"
+      dd_auth_secret "$1" "$2" "$3"
+    )
+  }
+  k1="$(run_sec LLM_GATEWAY_ADMIN_API_KEY t.adminkey ops_ '')"
+  [[ "$k1" =~ ^ops_[0-9a-f]{64}$ ]] && ok "首次生成带前缀的 256 位随机值（ops_+64hex）" \
+    || bad "首次生成形态不对：$k1"
+  k2="$(run_sec LLM_GATEWAY_ADMIN_API_KEY t.adminkey ops_ '')"
+  check "重跑复用持久值，不轮换" "$k1" "$k2"
+  check "持久文件内容 = NAME=值" "LLM_GATEWAY_ADMIN_API_KEY=$k1" "$(cat "$TMP/state/env/t.adminkey")"
+  check "持久文件权限 600" "600" "$(stat -f %Lp "$TMP/state/env/t.adminkey" 2>/dev/null || stat -c %a "$TMP/state/env/t.adminkey")"
+  check "调用方环境变量优先并回写持久文件" "ops_from_env" \
+    "$(run_sec LLM_GATEWAY_ADMIN_API_KEY t.adminkey ops_ ops_from_env)"
+  check "回写后持久文件跟随环境变量" "LLM_GATEWAY_ADMIN_API_KEY=ops_from_env" "$(cat "$TMP/state/env/t.adminkey")"
+  h="$(run_sec CURSOR_HMAC_SECRET t.hmac '' '')"
+  (( ${#h} >= 32 )) && ok "CURSOR_HMAC_SECRET 长度 ${#h} ≥ 32（ValidateAuthSecrets 门）" \
+    || bad "CURSOR_HMAC_SECRET 长度 ${#h} < 32，production 会拒启"
+else
+  bad "抽不出 dd_auth_secret（production 模式密钥段被删或改名）"
+fi
+api_prefix="$(sed -nE 's/^GW_STATIC_API_KEY="\$\(dd_auth_secret LLM_GATEWAY_API_KEY gateway\.apikey ([^)]*)\)"$/\1/p' "$SCRIPT")"
+if [[ -n "$api_prefix" && "$api_prefix" != sk-* ]]; then
+  ok "静态 API key 前缀 '$api_prefix' 不是 sk-（sk-* 会被委托库校验，静态比对失效）"
+else
+  bad "静态 API key 前缀缺失或为 sk-*：'$api_prefix'"
+fi
+for want in 'LLM_GATEWAY_ENV=production' 'LLM_GATEWAY_LICENSE_ACTIVATED=1' \
+            'LLM_GATEWAY_API_KEY=${GW_STATIC_API_KEY}' \
+            'LLM_GATEWAY_ADMIN_API_KEY=${GW_ADMIN_API_KEY}' 'CURSOR_HMAC_SECRET=${GW_CURSOR_HMAC}'; do
+  if grep -qF -- "-e \"$want\"" "$SCRIPT"; then ok "容器 -e 注入 $want"; else bad "容器缺 -e $want"; fi
+done
+if grep -qF "export LLM_GATEWAY_LICENSE_ACTIVATED=1" "$SCRIPT"; then
+  ok "gateway.env 持久化 LLM_GATEWAY_LICENSE_ACTIVATED=1（防 SPA 卡 /bootstrap）"
+else
+  bad "gateway.env 未写 LLM_GATEWAY_LICENSE_ACTIVATED=1"
+fi
+env_line="$(grep -n "printf 'export LLM_GATEWAY_ENV=production" "$SCRIPT" | cut -d: -f1)"
+gen_line="$(grep -n '^GW_CURSOR_HMAC=' "$SCRIPT" | cut -d: -f1)"
+if [[ -n "$env_line" && -n "$gen_line" && "$gen_line" -lt "$env_line" ]]; then
+  ok "production 开关写入前三项密钥已就绪（${gen_line} < ${env_line}）"
+else
+  bad "LLM_GATEWAY_ENV=production 未持久化或早于密钥生成"
+fi
+
 echo "== PG 17 版本判定 =="
 run_pg17() { ( set -uo pipefail; source "$TMP/pg17.sh"; pg_is_17 "$1" && echo yes || echo no ); }
 check "17.5 (170005) 判为 PG17" "yes" "$(run_pg17 170005)"
 check "18.1 (180001) 不判为 PG17" "no"  "$(run_pg17 180001)"
 check "16.4 (160004) 不判为 PG17" "no"  "$(run_pg17 160004)"
+
+echo "== 选谁当网关 PG：按「谁持有网关库」而不是按 docker ps 顺序（2026-10-18）=="
+# 背景：211 上 acc-pg17 与 redclaw-local-stack-redclaw-casdoor-db-1 用**同一张
+# kx-citus-pg17:amd64 镜像**，同时满足 pg17+columnar+vector 三维能力判据。旧实现
+# 「第一个合格者即返回」，而 docker ps 顺序不含语义（实测选中了只活了 38 分钟的
+# casdoor PG）→ 随重启换症状。真正的判据是「这只容器里有没有 llm_gateway」。
+if extract_fn pg_candidate_score > "$TMP/pgscore.sh"; then
+  ok "抽到 pg_candidate_score（纯打分，无 IO）"
+else
+  bad "抽不出 pg_candidate_score（脚本结构变了？）"; echo "  FAIL 无法继续 PG 选择用例"; exit 1
+fi
+if extract_fn pg_pick_from_candidates > "$TMP/pgpick.sh"; then
+  ok "抽到 pg_pick_from_candidates（纯选择，无 IO）"
+else
+  bad "抽不出 pg_pick_from_candidates"; exit 1
+fi
+run_score() { ( set -uo pipefail; source "$TMP/pgscore.sh"; pg_candidate_score "$@" ); }
+run_pick() {
+  # $1=候选表（每行 "<name> <explicit> <persisted> <has_db> <has_objs> <managed>"）
+  ( set -uo pipefail; log(){ :; }; source "$TMP/pgpick.sh"; source "$TMP/pgscore.sh"
+    pg_pick_from_candidates "$1" ) 2>/dev/null
+}
+# 打分表（值取自真机形态，不是随手编的）
+check "显式指定优先(1000)"        "1000" "$(run_score 1 0 0 0 0 9)"
+check "上次绑定且持有网关库(900)"  "900"  "$(run_score 0 1 1 1 0 9)"
+check "持有网关库+网关对象(800)"   "800"  "$(run_score 0 0 1 1 0 9)"
+check "仅持有网关库(700)"          "700"  "$(run_score 0 0 1 0 0 9)"
+check "脚本自建实例(600)"          "600"  "$(run_score 0 0 0 0 1 9)"
+check "全场唯一候选(500)"          "500"  "$(run_score 0 0 0 0 0 1)"
+check "上次绑定但库里没有网关库→降到200" "200" "$(run_score 0 1 0 0 0 9)"
+check "多候选且谁都无网关库→拒绝复用(-1)" "-1" "$(run_score 0 0 0 0 0 2)"
+
+# ★ 真机复现：docker ps 把 redclaw 的 casdoor PG 列在 acc-pg17 之前（实测即如此）
+CASDOOR_FIRST=$'redclaw-local-stack-redclaw-casdoor-db-1 0 0 0 0 0\nacc-pg17 0 0 1 4 0'
+ACC_FIRST=$'acc-pg17 0 0 1 4 0\nredclaw-local-stack-redclaw-casdoor-db-1 0 0 0 0 0'
+check "真机形态（casdoor 在前）→ 必须选持有网关库的 acc-pg17" "acc-pg17" "$(run_pick "$CASDOOR_FIRST")"
+check "同一候选集换顺序 → 结果不变（去掉 docker ps 顺序这个随机量）" "acc-pg17" "$(run_pick "$ACC_FIRST")"
+# 变异自检：把「谁持有网关库」对调（casdoor 持有、acc-pg17 不持有）→ 必须改选
+# casdoor。这一条证明选择**跟着数据走**，而不是跟着行序或容器名偏好走；
+# 若实现里残留「按名字挑」「取第一行」，它会立刻打红。
+REVERSED=$'redclaw-local-stack-redclaw-casdoor-db-1 0 0 1 1 0\nacc-pg17 0 0 0 0 0'
+check "变异自检：持库者对调后跟着改选（证明判据读的是数据）" \
+  "redclaw-local-stack-redclaw-casdoor-db-1" "$(run_pick "$REVERSED")"
+# 不自洽的夹具（has_db=0 却 has_objs>0）必须一律被拒，不能因为「有网关对象」而选中：
+# 网关对象只有在库里才谈得上，这个组合只可能是采集读错了列。
+if [[ -z "$(run_pick $'a-pg 0 0 0 9 0\nb-pg 0 0 0 0 0')" ]]; then
+  ok "自相矛盾的候选（有对象却无库）不被选中"
+else
+  bad "自相矛盾的候选被选中：网关对象只在库里存在，has_objs 必蕴含 has_db"
+fi
+# 上次部署被污染（gateway.env 指向 casdoor）时，也不能把网关再绑到 casdoor 上
+POLLUTED=$'redclaw-local-stack-redclaw-casdoor-db-1 0 1 0 0 0\nacc-pg17 0 0 1 4 0'
+check "上次绑定被污染（无网关库）→ 仍选持有网关库的那只" "acc-pg17" "$(run_pick "$POLLUTED")"
+# 歧义即新建：两只都合格、谁也没有网关库 → 不赌，直接返回非 0 让上层新建
+if [[ -z "$(run_pick $'b-pg 0 0 0 0 0\na-pg 0 0 0 0 0')" ]]; then
+  ok "多候选且均无网关库 → 拒绝复用（上层转新建，不猜）"
+else
+  bad "多候选均无网关库时仍复用了其中一只（等于回到按顺序猜）"
+fi
+# 唯一候选：不存在「选错谁」的可能，允许复用并建库
+check "全场唯一候选且无网关库 → 仍复用（保持既有行为）" "only-pg" \
+  "$(run_pick $'only-pg 0 0 0 0 0')"
+# 显式指定压过一切
+check "显式指定压过「持有网关库」的其它容器" "kx-pg17-columnar" \
+  "$(run_pick $'acc-pg17 0 0 1 4 0\nkx-pg17-columnar 1 0 0 0 1 2')"
+
+echo "== 网关库检测（本轮新增的独立维度）=="
+# 只查「能力」不查「库」，就分不出 acc-pg17 与 casdoor 的 PG —— 这正是本轮根因。
+if grep -qF "pg_gateway_db_state" "$SCRIPT" \
+   && grep -qF "FROM pg_database WHERE datname='\${DD_PG_DB}'" "$SCRIPT" \
+   && grep -qF "gateway_db_revision_sequences" "$SCRIPT"; then
+  ok "网关库检测查 pg_database + 网关特征表（独立于 pg17/columnar/vector 能力判据）"
+else
+  bad "网关库检测缺失：无法区分「有网关库的 PG」与「别人的 PG」"
+fi
+# 超级用户解析：复用他人容器时几乎从不叫 postgres（acc-pg17=acc_super、
+# casdoor=casdoor）。硬编码 -U postgres 会让存在性检查与 CREATE DATABASE 双双
+# 静默失败（`2>/dev/null` + `|| warn`），症状远在几百行外。
+#
+# ⚠ 判据形状（变异 C 打红过一轮）：早期这道门只查「函数体里没有字面 `-U postgres`」，
+# 而实现其实早就不写那个字面量了——超级用户统一从变量 $su 传进 pg_as_super。
+# 于是把 `su="$(pg_superuser_of …)"` 换成 `su="postgres"`（**语义完全等价于本轮缺陷**
+# 且门全绿），因为门在看语法形状、看不到取值来源。
+# ⇒ 改为钉住**解析入口这一行本身**：必须真的调 pg_superuser_of 拿值。
+ensure_body="$(sed -n "/^ensure_pg_database()/,/^}/p" "$SCRIPT")"
+if grep -qF 'su="$(pg_superuser_of "$c")"' "$SCRIPT" \
+   && ! grep -qF -- '-U postgres' <<<"$ensure_body"; then
+  ok "ensure_pg_database 的超级用户来自 pg_superuser_of（不再是写死的 postgres）"
+else
+  bad "ensure_pg_database 未从容器实际超级用户取值（复用他人容器必静默失败）"
+fi
+# 建库/建角色失败必须 die 而不是 warn：本轮症状（迁移腿报 database does not exist）
+# 完全由「warn 后继续」放大而来。
+# ⚠ 判据形状（变异 D 打红过一轮）：早期这道门只查「函数体里出现过 die」——函数里
+# 共有两处 die，任一处还在就恒绿，把建库那处的 warn 放过去测不出来。
+# ⇒ 改为**逐分支**断言：取 CREATE 那行及其后两行，里面必须有 || die。
+for anchor in 'CREATE ROLE \"' 'CREATE DATABASE \"'; do
+  branch="$(grep -A2 -F "$anchor" <<<"$ensure_body" | head -3)"
+  if grep -qF '|| die' <<<"$branch"; then
+    ok "「${anchor}」分支失败时 die（不 warn 后继续）"
+  else
+    bad "「${anchor}」分支失败只 warn → 带不存在的库继续跑，故障点漂到几百行外"
+  fi
+done
+# 角色必须先于库创建：CREATE DATABASE ... OWNER 指向不存在的角色报 42704。
+# ⚠ 判据写法（2026-10-18 自己踩的坑）：锚点必须带转义引号 `CREATE ROLE \"`，
+# 只写 `CREATE ROLE` 会先命中**上面那行解释这件事的注释**（注释里同样出现了
+# "CREATE DATABASE ... OWNER"），于是 role_line 反而大于 db_line，把正确的实现
+# 判成错的。凡是本仓这类「源码文本扫描」的门，锚点都要精确到只有真代码才有的形状。
+role_line="$(grep -nF 'CREATE ROLE \"' <<<"$ensure_body" | head -1 | cut -d: -f1)"
+db_line="$(grep -nF 'CREATE DATABASE \"' <<<"$ensure_body" | head -1 | cut -d: -f1)"
+if [[ -n "$role_line" && -n "$db_line" && "$role_line" -lt "$db_line" ]]; then
+  ok "先建角色再建库（OWNER 不悬空）"
+else
+  bad "CREATE DATABASE 早于 CREATE ROLE（OWNER 会 42704）role=${role_line:-无} db=${db_line:-无}"
+fi
 
 echo "== 脚本静态契约 =="
 # $var 紧跟非 ASCII 字符（典型是中文全角括号）在 UTF-8 locale 下会被 bash
@@ -140,6 +340,33 @@ PY
   done
 else
   printf '  SKIP 全角标点隐患扫描（本机无 python3；核心断言不受影响）\n'
+fi
+# ── 量具自身的竞态门（2026-10-20 新增）──────────────────────────────────
+# 「printf 出一个字符串 | grep -q」在 `set -o pipefail` 下是**随机假红**：
+# grep -q 命中即退出 ⇒ 上游 printf 还在写 ⇒ 收 SIGPIPE(141) ⇒ pipefail 把
+# 整条管道判成非零 ⇒ `if` 走 else 分支 ⇒ 门报假红。
+# 实测（2026-10-20）：50KB 正文的 `$_nocomment` 一条断言 60 次里假红 1 次；
+# 且**失败项在复跑间漂移**（这轮是「configs 种子」那条，下轮是「GO 基础镜像」
+# 那条）—— 竞态的特征，不是某条断言写错的特征（真写错会稳定地红同一条）。
+# ⇒ 本门内一律用 here-string（`grep ... <<<"$X"`）：命令退出码取 grep 的，
+#   上游 141 不会污染判定；语义上只多一个行尾换行，对**按行匹配**无影响
+#   （本文件用到 -A2/-nF 的两处锚点都在函数体中部，行号不受影响）。
+# 这条门把「不许再写回 printf|grep」钉死，否则下一个会话改回来就复发。
+if command -v python3 >/dev/null 2>&1; then
+  for f in "$ROOT/tests/deploy_211_contract_test.sh" "$ROOT/tests/deploy_211_teardown_order_test.sh"; do
+    racy_n="$(python3 - "$f" <<'PY'
+import re, io, sys
+s = io.open(sys.argv[1], encoding="utf-8").read()
+# 注释行不算：说明性文字里引用该形态是允许的（那不是可执行代码）。
+code = "\n".join(l for l in s.splitlines() if not l.lstrip().startswith("#"))
+pat = re.compile(r"printf\s+'%s'\s+\"\$[A-Za-z_][A-Za-z0-9_]*\"\s*\|\s*grep")
+print(len(pat.findall(code)))
+PY
+)"
+    check "$(basename "$f") 无「printf|grep」竞态形态" "0" "$racy_n"
+  done
+else
+  printf '  SKIP printf|grep 竞态扫描（本机无 python3）\n'
 fi
 # 复用判定必须同时含版本、columnar、vector 三维，否则会去抢别人的 PG16 实例
 # 历史上 pg_am 口径把 acc-pg17（Citus 系）误判为「没 columnar」→ 走了新建路径
@@ -271,41 +498,208 @@ if grep -q "name '._\\*' -o -name '.DS_Store'" "$ROOT/Dockerfile"; then
 else
   bad "Dockerfile 未在 COPY . 之前清理 macOS 元数据"
 fi
-# --via 必须把三个基础镜像 build-arg 变量转发到远端：211 的构建腿吃本地
-# /opt/kaixuan/base-images 的离线镜像（kx-base/golang 等）全靠这几个变量；
-# 漏转发时远端静默回落 docker.io 默认值，外网一断构建就死（2026-10-14 轮）。
-for _v in D211_GO_BASE_IMAGE D211_RUNTIME_BASE_IMAGE D211_BASE_REGISTRY; do
-  if grep -q "${_v}='" "$SCRIPT"; then
-    ok "--via 转发基础镜像变量 ${_v}（离线构建路径）"
+# --via 必须把三个基础镜像 build-arg 变量转发到远端：权威仓 registry-211
+# （方案 42）；漏转发时远端若再静默回落 docker.io，外网一断构建就死。
+# ⚠ 2026-10-20 引擎泛化后，转发改成**显式清单 + 通用展开**
+#   （`for _v in …; _dd_fwd+=" ${_v}='${!_v}'"`），字面量 `DD_GO_BASE_IMAGE='`
+#   不再出现在脚本里 ⇒ 旧断言（grep 字面量）恒红，但转发**其实没坏**。
+#   ⇒ 改判两件事：① 变量在**转发清单**里；② 通用展开那行在。
+#   只判①会漏「清单里有但没展开」；只判②会漏「清单里没有」。
+_fwd_list="$(sed -n '/for _v in DD_TARGET/,/; do/p' "$SCRIPT")"
+_expand_line="$(grep -n '_dd_fwd+=' "$SCRIPT" | head -1)"
+for _v in DD_GO_BASE_IMAGE DD_RUNTIME_BASE_IMAGE DD_BASE_REGISTRY; do
+  if grep -qF "$_v" <<<"$_fwd_list" && [[ -n "$_expand_line" ]]; then
+    ok "--via 转发基础镜像变量 ${_v}（registry-211 构建路径）"
   else
-    bad "--via 未转发 ${_v}，远端将回落 docker.io 默认基础镜像"
+    bad "--via 未转发 ${_v}，远端将回落错误默认基础镜像"
   fi
 done
+# ★ 反向断言：**repo 相对派生的量不得进转发清单**。
+#   DD_WEB_DIST_SRC / DD_MOBILE_DIST_SRC / DD_CONFIGS_SRC 在引擎顶部按
+#   `$DD_REPO_ROOT/<x>` 算出来，而 DD_REPO_ROOT 两侧不同（部署机 = 本机仓库，
+#   远端 = /root/llm-gateway-go-211）。转发过去 = 远端拿着 macOS 路径去种子化
+#   ⇒ 前端产物「缺失」⇒ 撞「上一轮种子还在」判定 ⇒ **部署直接 die**；
+#   configs 则是静默回落内置脱敏集（sensitive_patterns.yaml 没种进去）。
+_fwd_bad=""
+for _v in DD_WEB_DIST_SRC DD_MOBILE_DIST_SRC DD_CONFIGS_SRC; do
+  if grep -qF "$_v" <<<"$_fwd_list"; then _fwd_bad+="${_v} "; fi
+done
+if [[ -z "$_fwd_bad" ]]; then
+  ok "转发清单不含 repo 相对派生的量（web/mobile/configs 源由远端自己算）"
+else
+  bad "转发清单含 repo 相对派生的量：${_fwd_bad}（远端会拿到部署机路径 ⇒ 部署 die / 配置静默回落）"
+fi
+# 默认基础镜像必须钉 registry-211.itestu.cn，禁止回落 docker.io/golang。
+# 形状钉桩：默认值字符串本身含 registry-<target> + lang-base/kx-base-golang +
+# lang-base/alpine:3.22——只断言「变量存在」测不出「默认仍是 docker.io」。
+# ⚠ 2026-10-20 引擎泛化后，「registry-211.itestu.cn」这个**写死的主机名**
+#   属于**薄外壳**（scripts/deploy-211.sh）的职责，引擎侧必须按 target 拼。
+#   ⇒ 引擎判「默认是 registry-${DD_TARGET}.itestu.cn」且**不含**写死的
+#     registry-211（写死 = 引擎没真正主机无关，新主机会拉到 211 的仓）。
+_nocomment_engine="$(grep -vE '^[[:space:]]*#' "$SCRIPT")"
+if grep -qF 'registry-${DD_TARGET}.itestu.cn' <<<"$_nocomment_engine"; then
+  ok "引擎默认基础镜像仓按 target 拼（registry-\${DD_TARGET}.itestu.cn）"
+else
+  bad "引擎默认基础镜像仓不是按 target 拼的（新增主机时必须手工改引擎）"
+fi
+if grep -qF 'registry-211.itestu.cn' <<<"$_nocomment_engine"; then
+  bad "引擎里仍写死 registry-211.itestu.cn —— 引擎没真正主机无关"
+else
+  ok "引擎不含写死的主机专属仓名"
+fi
+if grep -qF 'lang-base/kx-base-golang:1.27-alpine-amd64' <<<"$_nocomment_engine"; then
+  ok "引擎默认 GO 基础镜像 = lang-base/kx-base-golang:1.27-alpine-amd64"
+else
+  bad "引擎默认 GO 基础镜像不是 lang-base/kx-base-golang:1.27-alpine-amd64"
+fi
+if grep -qF 'lang-base/alpine:3.22-amd64' <<<"$_nocomment_engine"; then
+  ok "引擎默认 RUNTIME 基础镜像 = lang-base/alpine:3.22-amd64"
+else
+  bad "引擎默认 RUNTIME 基础镜像不是 registry-211 lang-base/alpine:3.22-amd64"
+fi
+if grep -qE 'GO_BASE_IMAGE=\$\{DD_GO_BASE_IMAGE:-golang:' <<<"$_nocomment_engine"; then
+  bad "引擎仍默认 docker.io golang:*（211 直连不通）"
+else
+  ok "引擎不再默认 docker.io golang:*"
+fi
+if grep -qE '^[[:space:]]*dd_ensure_base_image(s)?\(\)|dd_ensure_base_images' <<<"$_nocomment_engine"; then
+  ok "引擎构建前确保基础镜像（pull registry → 离线回落）"
+else
+  bad "引擎缺少 dd_ensure_base_images：未 pull 就 build 会在无本地缓存时炸"
+fi
+if grep -qE 'database\.connected|db_down' \
+   <<<"$_nocomment_engine" && grep -qE 'mode=lite|lite' <<<"$_nocomment_engine"; then
+  ok "引擎就绪验证钉 DB/Redis connected + 拒绝 lite（readyz 200 不够）"
+else
+  bad "引擎就绪验证未断言 database/redis connected（或未拒绝 lite）"
+fi
+if grep -qF 'dd_smoke_admin_login' \
+   <<<"$_nocomment_engine" && grep -qF '/api/auth/token' <<<"$_nocomment_engine"; then
+  ok "引擎部署后登录冒烟走 /api/auth/token（非 /api/admin/login）"
+else
+  bad "引擎缺少登录冒烟或仍指向错误的 /api/admin/login"
+fi
+# ★ 2026-10-23（F2）重写：原来是「引擎源码里有没有 X-Real-IP / $remote_addr
+#   字样」的**字符串存在性**检查 —— 那是**恒绿门**：把整段逻辑删成空壳照样绿，
+#   而 F2 的原症状恰恰是「这段逻辑**从来没生效过**」。
+#   ⇒ 现在钉**接线**（引擎怎么用补丁器）+ **不变量**（不写死域名 / 失败要还原
+#     / 结论分类要区分「没有」与「不认识」）。
+if grep -qF 'nginx-llm-realip-patch.py' <<<"$_nocomment_engine"; then
+  ok "引擎调用独立补丁器 nginx-llm-realip-patch.py（判定逻辑可离线验证）"
+else
+  bad "引擎没有调用独立补丁器：X-Real-IP 判定又回到内嵌 heredoc（不可验证）"
+fi
+if grep -qE -- '--domain[[:space:]]' <<<"$_nocomment_engine" \
+   && grep -qF 'DD_DOMAIN' <<<"$_nocomment_engine"; then
+  ok "引擎把 DD_DOMAIN 传给补丁器（域名不写死）"
+else
+  bad "引擎没把 DD_DOMAIN 传给补丁器：换域名会静默改错对象"
+fi
+if grep -qF 'llm.itestu.cn' <<<"$_nocomment_engine"; then
+  bad "引擎正文里仍写死 llm.itestu.cn —— 与「引擎不含主机专属信息」自相矛盾"
+else
+  ok "引擎正文不含写死域名（llm.itestu.cn 只出现在注释里）"
+fi
+if grep -qE 'search-root' <<<"$_nocomment_engine"; then
+  ok "引擎跨文件搜 443 腿（--search-root）—— 不再只在自己的 conf 里找"
+else
+  bad "引擎不跨文件搜 443 腿：443 腿在别的文件时永远找不到（211 的现状）"
+fi
+if grep -qF 'skip-domain-not-on-443-block' <<<"$_nocomment_engine" \
+   && grep -qF 'noop-unknown-shape' <<<"$_nocomment_engine"; then
+  ok "引擎区分「本机没有该域的 443」（信息）与「形态不认识」（才告警）"
+else
+  bad "引擎不区分两种『没改』结论：要么继续打假告警，要么该告警时不告警"
+fi
+# nginx -t 失败 ⇒ 必须还原：否则磁盘上留着没验证过的配置，
+# 之后任何一次 reload 都会加载它（潜伏半切换态，同仓审计 §4.1）。
+if grep -qE 'nginx -t' <<<"$_nocomment_engine" \
+   && grep -qE 'cp "\$\{backs\[\$' <<<"$_nocomment_engine"; then
+  ok "nginx -t 失败时会从备份还原（不留半切换态配置）"
+else
+  bad "nginx -t 失败不还原：磁盘上留一份没验证过的配置（潜伏半切换态）"
+fi
+# ★ 2026-10-23（211 502 事故根修）：「upstream 端口」这条**事实**的读写必须
+#   ① 走共享脚本（scripts/ops/nginx-upstream-port.py）—— 内嵌在引擎里的正则
+#      **不剥注释** ⇒ 会读到 nginx 注释里那个旧端口（245 实况）⇒ 活跃槽判错；
+#   ② 在**任何写动作之前**有一次「槽位↔端口绑定」体检（dd_check_slot_binding）——
+#      绑定脱节时**拒绝部署**，而不是拿状态文件猜一个槽位去切流/停槽。
+if [[ -f "$ROOT/scripts/ops/nginx-upstream-port.py" ]] \
+   && grep -qF 'nginx-upstream-port.py' <<<"$_nocomment_engine"; then
+  ok "引擎的 upstream 端口读写走共享脚本（掩码后定位 ⇒ 注释里的旧端口不算数）"
+else
+  bad "引擎没有走共享的 upstream 端口判定脚本：注释里的旧端口会被当真（⇒ 活跃槽判错 ⇒ 502）"
+fi
+# ★ 单一真值源：引擎里**不得**再出现内嵌的 upstream 端口正则
+#   （内嵌副本迟早与共享脚本漂移 ⇒ 读侧/写侧口径不一致 ⇒ 又一次半切换态）。
+if grep -qF 'server\s+127\.0\.0\.1' <<<"$_nocomment_engine"; then
+  bad "引擎里仍有内嵌的 upstream 端口正则 ⇒ 判定口径会与共享脚本漂移（删掉重复实现）"
+else
+  ok "引擎里没有内嵌的 upstream 端口正则（判定逻辑单一真值源）"
+fi
+if grep -qE 'DD_UPSTREAM_PORT_HELPER' <<<"$_nocomment_engine"; then
+  ok "引擎按自身目录解析判定脚本（不依赖可被覆盖的 DD_REPO_ROOT）"
+else
+  bad "引擎解析判定脚本的方式脆弱（DD_REPO_ROOT 可被覆盖 ⇒ 脚本可能找不到）"
+fi
+if grep -qF 'dd_check_slot_binding' <<<"$_nocomment_engine"; then
+  ok "引擎有「槽位↔端口绑定」体检（绑定脱节 ⇒ 拒绝部署而不是猜）"
+else
+  bad "引擎没有绑定体检：upstream 指向别的产品的端口时仍会照常切流/停槽"
+fi
+# 体检必须发生在**写动作之前**（迁移重放 / 起容器 / 切流 / 停旧槽都在它后面）
+_guard_line="$(grep -n 'dd_check_slot_binding$' "$SCRIPT" | head -1 | cut -d: -f1)"
+_migrate_line="$(grep -n 'REVISION_SEQ=' "$SCRIPT" | head -1 | cut -d: -f1)"
+_candidate_line="$(grep -n 'DD_CANDIDATE_CONTAINER="$(dd_container_name' "$SCRIPT" | head -1 | cut -d: -f1)"
+if [[ -n "$_guard_line" && -n "$_migrate_line" && -n "$_candidate_line" ]] \
+   && [[ "$_guard_line" -lt "$_migrate_line" && "$_guard_line" -lt "$_candidate_line" ]]; then
+  ok "绑定体检发生在迁移重放与起容器之前（脱节时一个字节都不写）"
+else
+  bad "绑定体检的位置太晚（迁移/起容器已经动过了）"
+fi
+# 只读体检工具必须在场（属主要能自己查现场）
+if [[ -f "$ROOT/scripts/ops/deploy-doctor.sh" ]]; then
+  ok "只读体检工具在场（scripts/ops/deploy-doctor.sh）"
+else
+  bad "缺少只读体检工具：绑定脱节时属主没有手段查现场"
+fi
+
+# 入口 deploy-211.sh 必须 export 同一组 registry-211 默认，经 --via 传到远端。
+if [[ -f "$ROOT/scripts/deploy-211.sh" ]]; then
+  _w="$(grep -vE '^[[:space:]]*#' "$ROOT/scripts/deploy-211.sh")"
+  if grep -qF 'export DD_BASE_REGISTRY=' \
+     <<<"$_w" && grep -qF 'export DD_GO_BASE_IMAGE=' \
+     <<<"$_w" && grep -qF 'export DD_RUNTIME_BASE_IMAGE=' <<<"$_w"; then
+    ok "deploy-211.sh 入口 export registry-211 基础镜像默认"
+  else
+    bad "deploy-211.sh 未 export DD_* 基础镜像默认（远端可能吃到空值）"
+  fi
+fi
 # ── Web 前端腿（2026-10-15）：root SPA / /m 移动端 / 版本元数据 ─────────
 # 形态钉桩：tar 同步**不得**带任何形态的 dist 排除——macOS bsdtar 的 exclude
 # 对无通配模式也按「任意尾部路径段」语义匹配（--exclude=dist 与
 # --exclude=./dist 实测都命中 web/dist），root 只剩版本 JSON——这是
 # llm.itestu.cn 打不开管理页的根因；种子+挂载+env 三件必须成套。
 _nocomment="$(grep -vE '^[[:space:]]*#' "$SCRIPT")"
-if printf '%s' "$_nocomment" | grep -qE -- "--exclude=(\./)?dist"; then
+if grep -qE -- "--exclude=(\./)?dist" <<<"$_nocomment"; then
   bad "tar 同步仍带 dist 排除（bsdtar 尾段语义会排掉 web/dist，root SPA 缺失根因）"
 else
   ok "tar 同步不带任何 dist 排除（web/dist、web-mobile/dist 随树上树）"
 fi
 # 同族：--exclude=build 会误伤 vendor/.../api/types/build/*.go（2026-10-15 12h 审计 P2）
-if printf '%s' "$_nocomment" | grep -qE -- "--exclude=(\./)?build([[:space:]]|$)"; then
+if grep -qE -- "--exclude=(\./)?build([[:space:]]|$)" <<<"$_nocomment"; then
   bad "tar 同步仍带 build 排除（bsdtar 尾段语义会排掉 vendor/.../types/build）"
 else
   ok "tar 同步不带裸 build 排除（vendor docker types/build 随树上树）"
 fi
-# configs 种子必须钉 D211_REPO_ROOT，禁止再 $(cd "$(dirname "$0")/..")——相对 $0
+# configs 种子必须钉 DD_REPO_ROOT，禁止再 $(cd "$(dirname "$0")/..")——相对 $0
 # 依赖 cwd，docker build 后/非仓库 cwd 会报 cd: scripts/..: No such file（2026-10-15）。
-if printf '%s' "$_nocomment" | grep -qE 'D211_CONFIGS_SRC=.*\$D211_REPO_ROOT/configs'; then
-  ok "configs 种子路径钉 D211_REPO_ROOT（不依赖 cwd/\$0）"
+if grep -qE 'DD_CONFIGS_SRC=.*\$DD_REPO_ROOT/configs' <<<"$_nocomment"; then
+  ok "configs 种子路径钉 DD_REPO_ROOT（不依赖 cwd/\$0）"
 else
   bad "configs 种子仍用 dirname \$0 相对 cd，非仓库 cwd 会 No such file"
 fi
-if printf '%s' "$_nocomment" | grep -qE 'D211_CONFIGS_SRC=.*dirname "\$0"'; then
+if grep -qE 'DD_CONFIGS_SRC=.*dirname "\$0"' <<<"$_nocomment"; then
   bad "configs 种子仍含 dirname \"\$0\" 相对路径（cwd 漂移即炸）"
 fi
 # ── 前端产物新鲜度闭环（2026-10-15 审计 P1）────────────────────────────
@@ -315,31 +709,31 @@ fi
 # deploy-local.sh 的硬失败（2538 白页事故收口）属方向性回退。
 # 下面几条一律扫 $_nocomment：注释里出现字符串不算数（否则整段被删、
 # 只留注释里的字面量，门照样绿——这正是本门此前能漏掉该缺陷的原因）。
-if printf '%s' "$_nocomment" | grep -qE '^[[:space:]]*seed_web_dist\(\)'; then
+if grep -qE '^[[:space:]]*seed_web_dist\(\)' <<<"$_nocomment"; then
   ok "211 定义 seed_web_dist 前端产物闸门"
 else
   bad "211 缺少 seed_web_dist 前端产物闸门（缺失/陈旧 dist 只会 warn，部署照样绿）"
 fi
-if printf '%s' "$_nocomment" | grep -qE -- '-newer .*index\.html'; then
+if grep -qE -- '-newer .*index\.html' <<<"$_nocomment"; then
   ok "211 前端闸门按源码新鲜度判定（-newer），不靠构建序号"
 else
   bad "211 前端闸门没有新鲜度判定：陈旧 dist 会被照旧种子化，线上是旧 SPA 而部署显示成功"
 fi
-if printf '%s' "$_nocomment" | grep -qE "!\ -name '\*\.test\.ts'|!\ -name \"\*\.test\.ts\"|! -name '\\*\\.test\\.ts'"; then
+if grep -qE "!\ -name '\*\.test\.ts'|!\ -name \"\*\.test\.ts\"|! -name '\\*\\.test\\.ts'" <<<"$_nocomment"; then
   ok "211 前端新鲜度排除 *.test.ts（测试文件不进 bundle）"
-elif printf '%s' "$_nocomment" | grep -qF "! -name '*.test.ts'"; then
+elif grep -qF "! -name '*.test.ts'" <<<"$_nocomment"; then
   ok "211 前端新鲜度排除 *.test.ts（测试文件不进 bundle）"
 else
   bad "211 前端新鲜度未排除 *.test.ts，测试文件 mtime 会误杀部署"
 fi
-if printf '%s' "$_nocomment" | grep -qE 'D211_ALLOW_STALE_WEB'; then
-  ok "211 保留纯 API 形态逃生舱 D211_ALLOW_STALE_WEB"
+if grep -qE 'DD_ALLOW_STALE_WEB' <<<"$_nocomment"; then
+  ok "211 保留纯 API 形态逃生舱 DD_ALLOW_STALE_WEB"
 else
   bad "211 硬拒绝后没有逃生舱，纯 API 部署形态被堵死"
 fi
 # 无声回滚（缺 dist 但上一轮种子还在）必须 die，且**不受逃生舱豁免**：
 # 纯 API 的前提是「压根没有前端」，不是「前端是旧的」。
-if printf '%s' "$_nocomment" | grep -qE 'GW_WEB_DIST_OK=1|GW_MOBILE_DIST_OK=1'; then
+if grep -qE 'GW_WEB_DIST_OK=1|GW_MOBILE_DIST_OK=1' <<<"$_nocomment"; then
   ok "211 种子化以闸门结论为准（GW_*_DIST_OK），缺 dist 时不挂载"
 else
   bad "211 种子化仍直接判 index.html 存在与否，未走闸门结论"
@@ -348,7 +742,48 @@ for _pat in 'LLM_GATEWAY_STATIC_DIR=/app/web/dist' 'MOBILE_WEB_DIST=/app/web-mob
   if grep -qF "$_pat" "$SCRIPT"; then
     ok "web 腿契约在场: $_pat"
   else
-    bad "web 腿契约缺失: $_pat（SPA/移动端/版本元数据将回落或不可用）"
+    bad "web 腿契约缺失: ${_pat}（SPA/移动端/版本元数据将回落或不可用）"
+  fi
+done
+# 版本戳：仓库 version.json 是别的部署留下的戳，211 必须用部署机真实 HEAD 改写，
+# 否则 /version 冒充他人版本（2026-10-16 实测：跑 75bf327a 却显示 2661-76e185e7）。
+if grep -qF "DD_BUILD_SHA='\${DD_BUILD_SHA}'" <<<"$_nocomment"; then
+  ok "--via 转发构建提交号 DD_BUILD_SHA"
+else
+  bad "--via 未转发 DD_BUILD_SHA，远端无 .git 只能沿用他人版本戳"
+fi
+if command -v python3 >/dev/null 2>&1; then
+  sed -n '/^import json, sys, time$/,/^json.dump(v, open(path, "w"), indent=2)$/p' "$SCRIPT" > "$TMP/vstamp.py"
+  printf '{"version":"2.5.8-76e185e7-20261015-2661","git_tag":"2.5.8","git_sha":"76e185e7","build_seq":2661}\n' > "$TMP/v.json"
+  # 三个参数：路径 / sha / target（target 决定版本串后缀，引擎主机无关）
+  python3 "$TMP/vstamp.py" "$TMP/v.json" "75bf327a" "211" >/dev/null 2>&1
+  _vs="$(python3 -c 'import json,sys;v=json.load(open(sys.argv[1]));print(v["git_sha"], v["version"].split("-")[1], v["version"].endswith("-211"), v.get("target"))' "$TMP/v.json" 2>/dev/null)"
+  check "种子 version.json 按构建提交号改写（sha/version 后缀 -211）" "75bf327a 75bf327a True 211" "$_vs"
+else
+  printf '  SKIP 版本戳改写行为（本机无 python3）\n'
+fi
+# ★ 改写目标必须是**本槽的副本**（version/<slot>.json），不是平铺的 version.json。
+#   2026-10-20 实测过的坑：蓝绿把种子改成按槽隔离后，改写仍指向平铺路径
+#   （那个文件**没被挂载**）⇒ 改写对线上毫无作用；而 python 只传 2 个参数却读
+#   sys.argv[3] ⇒ IndexError 被 `|| warn` 吞掉 ⇒ 失败形态是「静默不改写」。
+#   ⇒ 判据钉两件事：① 改写路径含 <slot>；② 平铺路径不得再出现在改写调用里。
+if grep -qE 'python3 - "\$DD_GW_DATA_ROOT/version/\$DD_CANDIDATE_SLOT\.json"' <<<"$_nocomment"; then
+  ok "version.json 改写目标是本槽副本（version/<slot>.json）"
+else
+  bad "version.json 改写未指向本槽副本 —— 改写落到未挂载的平铺路径等于没改"
+fi
+if grep -qE 'python3 - "\$DD_GW_DATA_ROOT/version\.json"' <<<"$_nocomment"; then
+  bad "version.json 改写仍指向平铺路径 \$DD_GW_DATA_ROOT/version.json（未挂载，改写无效）"
+else
+  ok "version.json 改写不再指向未挂载的平铺路径"
+fi
+# 槽位隔离：web / web-mobile / version 三样种子都必须按槽分目录，
+# 否则「回退不需还原种子」的前提不成立（旧槽会被本轮覆盖）。
+for _seed in 'web/$DD_CANDIDATE_SLOT/dist' 'web-mobile/$DD_CANDIDATE_SLOT/dist' 'version/$DD_CANDIDATE_SLOT.json'; do
+  if grep -qF "$_seed" <<<"$_nocomment"; then
+    ok "种子按槽隔离: ${_seed}"
+  else
+    bad "种子未按槽隔离: ${_seed}（回退时旧槽的产物已被本轮覆盖）"
   fi
 done
 # 执行位置守卫：macOS 裸跑（无 --via）必须立刻给出 --via 指引，而不是让
@@ -369,7 +804,7 @@ if (( wmiss == 0 )); then
   for _sig in 'unset SSHPASS' 'source "$SCRIPT_DIR/deploy-lib-resolve.sh"' \
               'parse-wrapper-flags.sh' 'extract_force_unlock' \
               "' --dry-run '" 'PROBE_TIMEOUT_SECS' \
-              'deploy-211-docker.sh" --via "$D211_TARGET"'; do
+              'deploy-seamless-docker.sh" --via "$DD_SSH_TARGET"'; do
     if grep -qF -- "$_sig" "$WRAPPER"; then
       ok "deploy-211.sh 家族骨架: $_sig"
     else
@@ -391,12 +826,55 @@ else
   bad "引擎 PROBE_TIMEOUT_SECS 无 :- 兜底（远端执行必炸 unbound variable）"
 fi
 # --via 段必须先拿 deploy-lib 家族锁再碰目标树（锁行号 < rm -rf 行号）
+# ⚠ 锚点是 `rm -rf '$DD_REMOTE_ROOT'`（引擎泛化后目标树根是变量，不是写死的
+#   ~/llm-gateway-go-211）—— 锚点写死旧路径会「grep 不到 ⇒ 判定失败」，
+#   而不是因为锁顺序真的坏了。
 lock_line="$(grep -n 'lock_acquire_local' "$SCRIPT" | head -1 | cut -d: -f1)"
-rm_line="$(grep -n 'rm -rf ~/llm-gateway-go-211' "$SCRIPT" | head -1 | cut -d: -f1)"
+rm_line="$(grep -n "rm -rf '\$DD_REMOTE_ROOT'" "$SCRIPT" | head -1 | cut -d: -f1)"
 if [[ -n "$lock_line" && -n "$rm_line" && "$lock_line" -lt "$rm_line" ]]; then
   ok "引擎 --via 先取家族部署锁（deploy-lib lock.sh）再动目标树（${lock_line} < ${rm_line}）"
 else
   bad "--via 无锁或锁在破坏性步骤之后（并发部署会在 rm vs tar 处互炸）"
+fi
+
+# ── 硬阻断清单透传（r1037，2026-10-20）─────────────────────────────────
+# 「哪些规则允许终止回合」由 LLM_GATEWAY_HARD_BLOCK_RULES 决定。运维要能
+# 在不改代码的情况下开关它 ⇒ 部署引擎必须把它透传进容器。
+#
+# 三条契约：
+#   ① 引擎从部署机环境变量 / env 文件里取值；
+#   ② 取到值时用 -e 注入容器；
+#   ③ 取不到时**不注入**（用网关内置默认：只有 input 允许硬阻断）——
+#      注入空串会被网关当成「显式清空清单」，那会把请求侧的 fail-closed
+#      一起关掉（正是 r1037 判据纪律第 3 条说的那种「两个成因都放行」）。
+if grep -qE 'LLM_GATEWAY_HARD_BLOCK_RULES' "$SCRIPT"; then
+  ok "引擎认 LLM_GATEWAY_HARD_BLOCK_RULES（硬阻断清单可配）"
+else
+  bad "引擎不认 LLM_GATEWAY_HARD_BLOCK_RULES：清单无法在部署时配置"
+fi
+if grep -qE '\-e "LLM_GATEWAY_HARD_BLOCK_RULES=' "$SCRIPT"; then
+  ok "引擎用 -e 把硬阻断清单注入容器"
+else
+  bad "引擎未用 -e 注入 LLM_GATEWAY_HARD_BLOCK_RULES"
+fi
+if grep -qE 'if \[\[ -n "\$HARD_BLOCK_RULES" \]\]; then' "$SCRIPT"; then
+  ok "引擎空值时不注入清单（用网关内置默认，而不是显式清空）"
+else
+  bad "引擎无条件注入硬阻断清单：空值会被网关当成显式清空"
+fi
+# env 文件每次部署都被重写 ⇒ 引擎必须保留上一份里运维手工改过的值，
+# 否则「改 env 文件」这种运维动作在下一次部署后静默失效。
+if grep -qE 'ENV_FILE.*LLM_GATEWAY_HARD_BLOCK_RULES|LLM_GATEWAY_HARD_BLOCK_RULES.*ENV_FILE' "$SCRIPT"; then
+  ok "引擎从 env 文件复用上次落下的硬阻断清单（运维手工改的能跨部署保留）"
+else
+  bad "引擎不复用 env 文件里的硬阻断清单：运维手工改的值下次部署即丢"
+fi
+# 部署机 → 远端引擎的转发：--via 形态的引擎在**目标机**上跑，部署机的环境
+# 变量到不了那儿 ⇒ 清单必须显式转发，否则「export 了再部署」是空操作。
+if grep -qE 'DD_SKIP_LOGIN_SMOKE LLM_GATEWAY_HARD_BLOCK_RULES' "$SCRIPT"; then
+  ok "引擎把 LLM_GATEWAY_HARD_BLOCK_RULES 转发到远端（部署机 export 有效）"
+else
+  bad "引擎不转发 LLM_GATEWAY_HARD_BLOCK_RULES：部署机 export 的清单到不了远端"
 fi
 
 echo

@@ -34,25 +34,34 @@ import {
  * 凭据模型状态变更历史面回归护栏（2026-10-14，第一百一十四批）。
  *
  * ★★★★★★ 本批与批 113 是**同一个坑的第二个实例**，而且变形了，值得逐字记住：
- *   1. 挂载 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
- *      ⇒ 包 `admin.AdminMiddleware`（`admin/auth.go:85-138`）**只认证、不检 role**
- *      （`admin/users.go:307-309` 的注释把这写成显式设计）；
- *   2. `handleModelHistory`（`admin/credential_monitor.go:1502-1545`）自己也不检 role；
+ *   1. 挂载 `admin/handler.go:1525` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+ *      ⇒ 包 `admin.AdminMiddleware`（`admin/auth.go:86-141`）**只认证、不检 role**
+ *      （`admin/users.go:306-308` 的注释把这写成显式设计）；
+ *   2. ★★★★★★ **2026-10-21 订正**：`handleModelHistory`
+ *      （`admin/credential_monitor.go:1666`）**现在自己检 role** ——
+ *      2026-10-16 audit #154 在 `:1678` 加了白名单
+ *      （`!IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r)` ⇒ 越权返 **403**）
+ *      ⇒ 旧结论「handler 自己也不检 role」**已不成立**（见 ⑬-3）。
  *   3. ★★★ **变形点**：租户键不是调 `EffectiveTenantIDAll`，而是**手写内联**了同一语义
- *      （`credential_monitor.go:1532-1535`）：
+ *      （`credential_monitor.go:1706-1709`）：
  *      ```go
  *      tenantID := ""
  *      if IsTenantAdmin(r) { tenantID = GetTenantID(r) }
  *      ```
  *      ⇒ ⇒★ **grep `EffectiveTenantID` 找不到这一处** ——
  *        批 113 的判别动作在这里会**漏掉整个家族**，而实际风险一模一样。
- *   4. ⇒ 非 tenant_admin 一律空串 ⇒ 两段 SQL 的 `AND ($4 = '' OR …)` 放行 ⇒ **全租户**。
+ *   4. ⇒ **能走到 SQL 的只有三类**：tenant_admin 租户内；
+ *      super_admin / admin_key 空串放行 ⇒ **全租户**；
+ *      user 等第四类在 `:1678` 被 **403** 挡住 ⇒ 旧结论「非 tenant_admin 一律看全租户」
+ *      **已不成立**。
  *
- * ⇒★★ 处置同样是 `requiresRole: 'admin'`（本仓第三个该档席）。
+ * ⇒★★ 处置**不变**（仍是 `requiresRole: 'admin'`，本仓第三个该档席）——
+ *   变的只是**理由的强度**：服务端从「零角色下限」变成了「有 403 白名单」。
  *
  * ⚠️⚠️ **抽屉隐藏 ≠ 路由拦截**：`src/hyper-wiring.ts:34-45` 的 `beforeEach` 只查登录态，
  *   `meta.requiresRole` 全仓无人读 ⇒ 深链照样打开 ⇒ 视图内自己再兜一层。
- *   ⚠️ 这里是**兜底不是修复**：后端对越权返 **200 + 全租户数据**，**没有 403**。
+ *   ⚠️ 这里是**与服务端对齐、不是替代**：服务端对越权返 **403**
+ *   （2026-10-16 audit #154 起），但前端这一层仍不可省（深链可达 + 别的失败形状）。
  *
  * 判据钉十二组不变量：
  *  ① ★★★★★★ 权限档 = `'admin'`，且**租户键是手写内联**（结构层钉 Go 源码）。
@@ -287,7 +296,7 @@ describe('②③ 参数守卫', () => {
 
   it('③-1 ★★★ ★★ 负数 credential_id **不拦**（后端只判 === 0，前端不替它加规则）', () => {
     // ★★ 这条是「前端不该默默改后端语义」的判据。
-    //   `credential_monitor.go:1511` 判的是 `credentialID == 0`（**不是** `< 1`）
+    //   `credential_monitor.go:1690` 判的是 `credentialID == 0`（**不是** `< 1`）
     //   ⇒ 负数能过后端那一关 ⇒ 前端若拦掉就是**加了后端没有的规则**。
     expect(modelHistoryParamsAreAcceptable({ credentialId: -1, rawModelName: 'm', limit: 50 })).toBe(true)
   })
@@ -434,7 +443,7 @@ describe('⑥ 键恒在，可为裸 null', () => {
 
 describe('⑦ actor 的空串与 reason 的 null 必须显示得不一样', () => {
   it('⑦-1 ★★★★ 两者显示不同（actor 空串、reason null）', async () => {
-    // ★★ `credential_monitor.go:1416-1418` 只在 reason 非空时才赋值
+    // ★★ `credential_monitor.go:1645-1647` 只在 reason 非空时才赋值
     //   ⇒ reason 的取值域是 {null, 非空串}；而 actor 只看 Valid ⇒ **可以是空串**。
     mFetch.mockResolvedValue(resp({ events: [manualEvent({ actor: '', reason: null })] }))
     const w = await mountView()
@@ -635,17 +644,39 @@ describe('⑬ 后端租户推导链（读 Go 源码）', () => {
     expect(body).not.toContain('EffectiveTenantID')
   })
 
-  it('⑬-3 ★★★★★ handler 自己不检查 role', () => {
+  it('⑬-3 ★★★★★★ handler 自己检 role（三档白名单），越权返 403', () => {
+    // ★★★★★★ **2026-10-21 订正**：旧结论「handler 自己不检查 role」**已不成立** ——
+    //   Go 侧 2026-10-16 audit #154 在 `admin/credential_monitor.go:1678` 加了白名单：
+    //   `if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) { 403 }`。
+    //   ⇒ 旧判据 `not.toMatch(/Role\s*==|Role\s*!=|RequireSuperAdmin|requireUserManager/)`
+    //   是**恒绿**的：新门用的是 `IsTenantAdmin` / `IsSuperAdminOrLegacy` **封装**，
+    //   不写 `Role ==` ⇒ 正则永远匹配不到 ⇒ 它绿着却守不住结论。
+    //   ⇒ 这条改成**断言白名单在场**（有牙，且只在 Go 侧真加了门时才绿）。
     const src = goSrc('admin/credential_monitor.go')
     const fn = src.slice(src.indexOf('func (m *CredentialMonitorHandlers) handleModelHistory'))
     const body = fn.slice(0, fn.indexOf('\n}\n\n'))
-    expect(body).not.toMatch(/Role\s*==|Role\s*!=|RequireSuperAdmin|requireUserManager/)
+    // ★★★ 白名单：tenant_admin（IsTenantAdmin）或 超管/旧版管理员（IsSuperAdminOrLegacy）
+    expect(body, 'handler 的 role 白名单没了 ⇒ 越权又能拿到全租户数据').toMatch(
+      /!IsTenantAdmin\(r\) && !IsSuperAdminOrLegacy\(r\)/,
+    )
+    // ★★ 越权必须被挡下来（403），不能是 200 + 全租户
+    expect(body, '越权没有返 403').toMatch(
+      /writeError\(w, http\.StatusForbidden, "administrator role required"\)/,
+    )
+    // ★ 反向护栏：白名单是「或」关系（两档任一放行），**多一档就是提权**
+    expect(body, '白名单被改成了「且」或加了别的档位 ⇒ 权限档要重判').not.toMatch(
+      /IsSuperAdminOrLegacy\(r\)\s*\|\|/,
+    )
   })
 
   it('⑬-4 ★★★★ 两段 SQL 都有「空串放行」的租户条件', () => {
     const src = goSrc('admin/credential_monitor.go')
     expect(src).toContain("AND ($4 = '' OR mpr.tenant_id = $4)")
     expect(src).toContain("AND ($4 = '' OR al.tenant_id = $4)")
+    // ★★ 2026-10-21 订正：这条**仍然成立**，但「空串放行」的**适用范围变了** ——
+    //   自 2026-10-16 audit #154 的 role gate（见 ⑬-3）起，
+    //   **只有** super_admin / admin_key 能带着空串租户键走到 SQL；
+    //   其余角色在 handler 入口就被 403 挡住 ⇒ 「空串 ⇒ 全租户」不再是提权面。
   })
 
   it('⑬-5 ★★★★ credential_id 只判 === 0（负数能过）—— 与前端不拦负数一致', () => {

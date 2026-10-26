@@ -7,7 +7,7 @@
 //     标成 `(admin)`，**这是过时的**。真相是 `admin/handler.go:926-927`：
 //         mux.HandleFunc("/api/admin/tenants",  h.superAdmin(h.handleTenants))
 //         mux.HandleFunc("/api/admin/tenants/", h.superAdmin(h.handleTenants))
-//     `handleTenantModelPolicies` **只有**这一个调用点（`admin/tenants.go:188-190`）
+//     `handleTenantModelPolicies` **只有**这一个调用点（`admin/tenants.go:191`）
 //     ⇒ 整棵子树（含 check 与 audit）**都是 superAdmin 硬门槛**。
 //     ★★ `SuperAdminMiddleware` 只认 JWT，且 `claims.Role != "super_admin"` 即 403；
 //         `sk-...` 那类 legacy Bearer token 走不到 handler，直接 401。

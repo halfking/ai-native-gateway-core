@@ -19,7 +19,7 @@ AI Native Gateway est une **passerelle LLM open source, auto-hébergée et nativ
 - **Normalisation des protocoles** : compatibilité OpenAI, Anthropic, Gemini et Responses API — un seul endpoint pour tous les modèles
 - **Routage intelligent à deux couches** : L1 choisit le modèle (classification de tâche → scoring à 6 dimensions), L2 choisit le credential (repli de palier → tour de facturation → scoring P2C → exécuter / couper)
 - **Gouvernance de session** : sessions collantes, replay de session au contenu complet, compression automatique de prompt et cycle de vie des données en 4 niveaux — la conversation, et pas seulement la requête, est un objet managé de premier rang
-- **Multi-tenant** : isolation des tenants imposée par RLS PostgreSQL sur 38+ tables, avec quotas, metering et facturation MaaS par tenant
+- **Multi-tenant** : isolation des tenants imposée par RLS PostgreSQL sur 90+ tables, avec quotas, metering et facturation MaaS par tenant
 - **Gestion des credentials** : pools multi-credentials avec déguisement d’empreinte, sonde adaptive et coupure automatique (disjoncteur)
 - **Observabilité** : flux de requêtes en temps réel, analytique de routage (heatmap + Sankey), suivi des coûts, OTel + Prometheus
 - **Confidentialité** : déploiement 100 % privé — toutes les données restent dans votre infrastructure
@@ -55,7 +55,7 @@ Construit avec **Go + PostgreSQL + Redis**, aujourd’hui en production sur k3s 
 |-------|--------------|
 | **Protocole** | Compatible OpenAI / Anthropic / Gemini / Responses + relais SSE avec contrôles d’intégrité |
 | **Routage** | Routage à deux couches (modèle → credential) + sessions collantes + auto-routage avec politiques coût/qualité |
-| **Multi-tenant** | Tunnel d’identité (IP/MAC/ClientID virtuels) + pools de credentials + RLS sur 38+ tables |
+| **Multi-tenant** | Tunnel d’identité (IP/MAC/ClientID virtuels) + pools de credentials + RLS sur 90+ tables |
 | **Gouvernance du trafic** | Limitation de tokens (TPM/RPM) + cache sémantique + compression de prompt + algorithmes à fenêtre glissante |
 | **Audit** | Audit bout-en-bout + DLQ + repli disque + OTel + Prometheus |
 | **Credentials** | Multi-credential + pool d’empreintes + sonde adaptive + désactivation manuelle |
@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 15+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 90+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -104,16 +104,17 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | Chemin | Rôle |
 |------|------|
 | `cmd/gateway/` | Racine de composition — point d’entrée de production en binaire unique (plans données + contrôle) |
-| `domains/` | 67 domaines DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, sécurité… |
+| `domains/` | 68 domaines DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, sécurité… |
 | `admin/` + `web/` | API REST d’admin + SPA Vue 3 + TypeScript (Element Plus, ECharts) |
+| `web-mobile/` | Frontend mobile (Vue 3 + TypeScript) — seconde UI de production ; le déploiement refuse de démarrer sans son build `dist/` |
 | `bg/` | Workers en arrière-plan — probing, nettoyage du cycle de vie, agrégation de stats, maintenance des partitions |
 | `storage/` | Factory de stockage double mode (`full` : PG+Redis / `lite` : SQLite+fichiers+KV en processus) |
 | `internal/` | Infra transverse — IR, strip des champs fournisseurs, miroir de session, outbox, télémétrie… |
-| `sql/migrations/` + `db/migrations/` | Migrations idempotentes (série de démarrage actuellement à 863) |
+| `sql/migrations/` + `db/migrations/` | Migrations idempotentes (série de démarrage actuellement à 907) |
 | `installer/` | Module autonome d’installation / mise à niveau multiplateforme |
 | `scripts/`, `deploy/` | Outillage de build, déploiement, miroir et vérification |
 
-Instantané d’échelle (scan du code au 2026-10-06) : **~4,967 fichiers Go · 2,728 fichiers de test · 1,016 SQL de migration · 67 packages de domaine · 44 binaires** sous `cmd/`.
+Instantané d’échelle (scan du code au 2026-10-22 @31466a01d) : **~5,680 fichiers Go · 3,333 fichiers de test · 1,119 SQL de migration · 68 packages de domaine · 44 binaires** sous `cmd/` (comptages hors `vendor/` et `installer/`; SQL de migration = arbre complet `sql/migrations/`; binaires = paquets main selon `go list`).
 
 **Pour aller plus loin**
 
@@ -131,7 +132,7 @@ La plupart des passerelles traitent chaque requête comme un événement isolé.
 - **Liaison de session collante** : les sessions sont épinglées à des credentials afin que le contexte de conversation survive aux changements de modèle et aux failovers — aucune perte de contexte silencieuse en pleine tâche
 - **Audit et replay au niveau session** : les system prompts et réponses complets sont conservés et rejouables par session (13 000+ sessions en production), couvrant type de tâche, modèle client, modèle sortant, fournisseur, tokens, latence et motif de fin — découpables par clé / tenant / plage temporelle pour le dépannage et la conformité
 - **Compression automatique de prompt** : quand une requête approche de la fenêtre de contexte réelle du fournisseur (déclencheur à ~80 %), une compression au niveau des messages s’exécute avant l’envoi — les longues sessions d’agents tiennent dans des fenêtres plus petites au lieu d’échouer. Chaque événement de compression (stratégie, seuil, tailles avant/après) est enregistré sur la requête
-- **Intelligence des métadonnées de session** : étiquetage automatique du type de travail (10 types de travail), attribution de projet et extraction de titre transforment le trafic brut en connaissances cherchables
+- **Intelligence des métadonnées de session** : étiquetage automatique du type de travail (27 types de travail), attribution de projet et extraction de titre transforment le trafic brut en connaissances cherchables
 - **Tunnel d’identité** : le trafic des agents est rattaché via IP/MAC/ClientID virtuels afin que l’isolation multi-tenant tienne même quand de nombreux agents partagent une seule sortie (egress)
 - **Cycle de vie des données en 4 niveaux** : chaud (0–7 j) / tiède (7–30 j) / froid (30–90 j) / expiré (>90 j) avec aperçu avant archivage — « voici exactement ce qui va bouger » avant l’exécution
 
@@ -166,12 +167,12 @@ Tous les modules ci-dessous sont livrés et tournent dans le déploiement de pro
 ### Moniteur de credentials — santé multi-sources × multi-credentials
 
 ![Credential Monitor](docs/assets/screenshots/credential-monitor.png)
-*Une matrice de disponibilité 2D en direct (19 credentials × 18 modèles en production) montre d’un coup d’œil quel credential casse quel modèle. Latence P95 par credential, taux de succès sur fenêtre glissante d’1 heure et usage des slots de concurrence. Le pool d’empreintes (50+ User-Agents, 35 variantes Accept-Language, 11 profils uTLS) + la sonde adaptive esquivent automatiquement le risk control amont — les échecs déclenchent le disjoncteur, sans intervention humaine*
+*Une matrice de disponibilité 2D en direct (19 credentials × 18 modèles en production) montre d’un coup d’œil quel credential casse quel modèle. Latence P95 par credential, taux de succès sur fenêtre glissante d’1 heure et usage des slots de concurrence. Le pool d’empreintes (42 User-Agents, 35 variantes Accept-Language) + la sonde adaptive esquivent automatiquement le risk control amont — les échecs déclenchent le disjoncteur, sans intervention humaine*
 
 ### Configuration des types de travail — auto-classification des tâches
 
 ![Work Types](docs/assets/screenshots/work-types.png)
-*Auto-classification des tâches (10 types de travail) avec distribution sur 24 h, modèles les plus utilisés et stats des décisions de routage — configurable par type de travail dans l’UI d’admin*
+*Auto-classification des tâches (27 types de travail) avec distribution sur 24 h, modèles les plus utilisés et stats des décisions de routage — configurable par type de travail dans l’UI d’admin*
 
 ### Pool de ressources gratuit
 
@@ -362,11 +363,11 @@ Pour le design complet de l’installeur, voir [installer/README.md](installer/R
 | **Résidence des données** | Les données sortent de votre périmètre | Toutes les données restent dans votre infrastructure |
 | **Facturation** | À l’usage (USD) | Forfaits + crédits + boosters — conçu pour les PME chinoises, compatible Alipay |
 | **Modèles amont** | Quelques grands fournisseurs | Couverture large de modèles + modèles domestiques chinois + modèles locaux |
-| **Pool d’empreintes de credentials** | Basique | 50+ User-Agents · 35 Accept-Language · 11 profils uTLS |
+| **Pool d’empreintes de credentials** | Basique | 42 User-Agents · 35 Accept-Language |
 | **Gouvernance de session** | Logs au niveau requête | Sessions collantes + replay au contenu complet + compression + cycle de vie en 4 niveaux |
 | **Passerelle d’outils MCP** | Partiel | Livraison complète visée T3 2026 |
 | **Adapté au chinois** | Limité | UI entièrement en chinois + modèles domestiques + Alipay |
-| **Audit multi-tenant** | Standard | RLS sur 38+ tables · audits tenant à L1 = 0 |
+| **Audit multi-tenant** | Standard | RLS sur 90+ tables · audits tenant à L1 = 0 |
 
 ### vs. alternatives nommées
 
@@ -434,7 +435,7 @@ Voir [ROADMAP.md](ROADMAP.md) pour le détail complet.
 | Cycle de vie de session | [docs/session-lifecycle.md](docs/session-lifecycle.md) — cycle de vie de traitement de session, entièrement diagrammé |
 | Architecture (graduée par preuves) | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — autorité interne (graduation CURRENT/SHADOW/PARALLEL) |
 | Architecture (vue d’ensemble) | [docs/architecture.md](docs/architecture.md) — conception système et composants |
-| Exigences | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×19 domaines / NFR×13 |
+| Exigences | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×16 domaines / NFR×13 |
 | Catalogue de fonctionnalités | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md) — carte fonctionnalité → code → API → page admin |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — specs du plan de données et de l’API d’admin |
 | Environnement | [docs/environment.md](docs/environment.md) — environnements de déploiement et variables |
@@ -468,7 +469,7 @@ Protection des informations sensibles : `.githooks/pre-push` exécute automatiqu
 
 ## ✅ CI & gates (à partir du 2026-09-14)
 
-- **La porte officielle = `./verify.sh` en local** : à exécuter avant tout commit/déploiement (`go test ./...` complet, rapprochement des checksums de migrations, conformité privacy, vet, build, build frontend). Les merges vers main et les releases s’y réfèrent.
+- **La porte officielle = `./verify.sh` en local** : à exécuter avant tout commit/déploiement (`go test ./...` complet, rapprochement des checksums de migrations, conformité privacy, vet, build ; le build frontend uniquement avec `--web`). Les merges vers main et les releases s’y réfèrent.
 - **Porte légère codeup Flow** : codeup est le seul remote ; `.github/workflows/` ne s’exécute pas sur codeup ; `.workflow/main-verify.yml` fournit la configuration pipeline-as-code (build + `go vet ./autoroute/...` + suite offline de 60 cas d’auto-matching), à importer une fois depuis la page « Pipelines » du dépôt codeup, puis déclenchement automatique à chaque push/PR.
 - La régression offline de l’auto-matching peut être relancée seule : `go test ./autoroute/ -run 'TestAutoMatchingSuiteHeuristic|TestPromptClassificationMatrix'` (purement offline, sans réseau).
 
@@ -478,7 +479,7 @@ Protection des informations sensibles : `.githooks/pre-push` exécute automatiqu
 
 Les contributions sont les bienvenues ! Voir [CONTRIBUTING.md](CONTRIBUTING.md) pour la mise en place du développement, le style de code et le processus de pull request.
 
-Les changements multi-tenant doivent passer les trois linters : `lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant`.
+Les changements multi-tenant doivent passer la porte RLS (`make test-rls` — PostgreSQL réel, nécessite `TEST_DATABASE_URL`) et la suite de tests unitaires (`make test` — le même `go test ./...` que la CI exécute via `verify.sh`).
 
 ## 🔐 Sécurité
 

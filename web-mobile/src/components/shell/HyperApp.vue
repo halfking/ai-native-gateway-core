@@ -2,8 +2,9 @@
 // HyperApp — 应用壳（唯一布局）：顶栏 + 主滚动区 + compact 底栏 +
 // 抽屉/账户 Sheet。headerless 路由（登录页）隐藏全部 chrome。
 // DockCoordinator 的 effectiveTop 以本壳顶栏实测为准（07 §4）。
-import { computed, onMounted, provide, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, provide, ref } from 'vue'
 import { useRoute } from 'vue-router'
+import { Hyper } from '@/hyper'
 import { useWindowClass } from '@/composables/useWindowClass'
 import { useDeploySeqUpdate } from '@/hyper/update/useDeploySeqUpdate'
 import AppTopbar from './AppTopbar.vue'
@@ -26,25 +27,52 @@ const accountOpen = ref(false)
 const headerless = computed(() => route.meta.headerless === true)
 const showBottomNav = computed(() => !headerless.value && windowClass.value === 'compact')
 
-// 2026-10-10：弹窗（drawer / 账户 sheet / AppSheet）打开时，顶栏左按钮
-// 要变 X 才能让用户关掉，而不是再触发一层抽屉。哪个 overlay 在最前面
-// 就关哪个 —— 「最前」按 Hyper overlay 的注册顺序（最新注册在最前）。
-const overlayActive = computed(() => drawerOpen.value || accountOpen.value)
+// 2026-10-10：弹窗（drawer / 账户 sheet / AppSheet / FocusLayer）打开时，
+// 顶栏左按钮要变 X 才能让用户关掉，而不是再触发一层抽屉。
+//
+// ★ 2026-10-17 真机踩坑：原先只看 drawerOpen/accountOpen，AppSheet 与
+// FocusLayer 虽已登记进 Hyper.topOverlay，顶栏却仍显示菜单键；用户点
+// 到「看起来像叉叉」的系统返回位（或期待顶栏 X）无效。必须把
+// Hyper.topOverlay 一并算进 overlayActive，并从顶栏关闭顶层 Hyper overlay。
+const overlayActive = computed(
+  () => drawerOpen.value || accountOpen.value || Hyper.topOverlay.value != null,
+)
 function closeActiveOverlay(): void {
-  // 优先关最近打开的那一个，避免一次性全关导致视觉跳变。
+  // 优先关 Hyper 登记的最顶层（AppSheet / FocusLayer / 账户 Sheet 共用）。
+  // 必须走 dismissOverlay：只调 handle.close() 不会从栈里摘掉登记，
+  // 顶栏 X 会卡死在打开态（单测与真机同构）。
+  const top = Hyper.topOverlay.value
+  if (top) {
+    Hyper.dismissOverlay(top.id)
+    return
+  }
   if (accountOpen.value) {
     accountOpen.value = false
     return
   }
   if (drawerOpen.value) {
     drawerOpen.value = false
-    return
   }
+}
+
+function onOpenAccountEvent(): void {
+  accountOpen.value = true
+}
+
+// 在 setup 同步登记：/me 冷启动时子页 onMounted 早于本壳 onMounted，
+// 若只在 onMounted 里 addEventListener 会丢掉首屏打开账户的事件。
+if (typeof window !== 'undefined') {
+  window.addEventListener('llmgw:open-account', onOpenAccountEvent)
 }
 
 // 部署序号检查（UI规范 18 §4）：headerless（登录页）同样检查——长期停在
 // 登录页的设备也该收到更新提示；首次检查延迟晚于首屏落地。
 onMounted(() => update.start())
+onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('llmgw:open-account', onOpenAccountEvent)
+  }
+})
 </script>
 
 <template>

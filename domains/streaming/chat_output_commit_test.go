@@ -149,6 +149,7 @@ func (s *chatPendingReplaySource) GetLatest(context.Context, string) (*pending.R
 }
 
 func TestChatDeferredOutputDoesNotBypassHookViaCachedReplay(t *testing.T) {
+	r1013RequireComplianceOn(t)
 	source := &chatPendingReplaySource{}
 	interceptor := response.NewInterceptorChain(outputhook.NewOutputComplianceInterceptor(nativePhoneChecker{}, nil))
 	rec, _ := runChatOutputCommitWith(t, interceptor, nil,
@@ -164,6 +165,7 @@ func TestChatDeferredOutputDoesNotBypassHookViaCachedReplay(t *testing.T) {
 }
 
 func TestChatDeferredOutputRealComplianceGovernsClientBytesAndAudit(t *testing.T) {
+	r1013RequireComplianceOn(t)
 	interceptor := response.NewInterceptorChain(outputhook.NewOutputComplianceInterceptor(nativePhoneChecker{}, nil))
 	rec, entries := runChatOutputCommit(t, interceptor, nil)
 	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "13800138000") || !strings.Contains(rec.Body.String(), "[PHONE]") {

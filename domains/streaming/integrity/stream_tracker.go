@@ -35,6 +35,8 @@ import (
 	"os"
 	"strconv"
 	"sync"
+
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 )
 
 // maxTrackedBlocks caps the hash table so a multi-megabyte stream cannot
@@ -164,7 +166,7 @@ func (t *StreamTracker) ObserveText(s string) bool {
 
 // BreachReason implements audit.StreamTextObserver.
 func (t *StreamTracker) BreachReason() string {
-	return "integrity_repeated_content"
+	return audit.BreachReasonRepeatedContent
 }
 
 // RepeatedContentHash returns the latched finding for the completion

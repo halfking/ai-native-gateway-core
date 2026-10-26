@@ -8,7 +8,7 @@
 // ══ 权限 ══════════════════════════════════════════════════════════════════
 // ★★★★★★ 权限档**第一类（有租户维度）**，但**本族是第一个「服务端缺角色下限」的**。
 //
-//   三条端点都挂在 `admin/handler.go:1289` 的**前缀子路由**上：
+//   三条端点都挂在 `admin/handler.go:1339` 的**前缀子路由**上：
 //     `mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))`
 //   → `admin/usage.go:49` `HandleUsageAdmin` 按 path 尾段分发到
 //     `usageCostTrend`(`usage_enhanced.go:128`) / `usagePeriodCompare`(`:347`)
@@ -18,7 +18,7 @@
 //     ⇒ 各租户互相隔离 ⇒ **不是**第三类（没有「载荷含别人的东西」的判定权）。
 //
 //   ★★★★★ **但 `h.admin` 没有任何角色下限**：
-//     `h.admin` = `AdminMiddleware`（`handler.go:894` → `auth.go:85`）全文只有
+//     `h.admin` = `AdminMiddleware`（`handler.go:901` → `auth.go:85`）全文只有
 //     「验 JWT」+「强制改密码」；而 `pkg/identity/verifier.go` 的 `supportedRole`
 //     —— **`supportedRole("user")` 返回 `true`** —— 它校验「角色**是已知的**」，
 //     **不是**「角色**够高**」。
@@ -52,7 +52,7 @@ import {
   type PeriodCompareResponse,
 } from '@/api/usageEnhanced'
 
-useHyperPage({ title: () => t('ue.title') })
+useHyperPage({ title: () => (allowed.value ? t('ue.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

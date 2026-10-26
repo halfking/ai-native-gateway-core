@@ -8,7 +8,7 @@ export default {
   common: {
       refresh: 'Refresh',
       loading: 'Working…',
-      empty: 'No data yet',
+      empty: 'Free discovery has no records yet',
       actions: 'Actions',
       enabled: 'Enabled',
       disabled: 'Disabled',
@@ -59,7 +59,7 @@ export default {
       delete: 'Delete',
       deleteConfirm: 'Delete template "{name}"? Existing discovery tasks and results are unaffected.',
       deleted: 'Template deleted: {name}',
-      disabledScanHint: 'Template is disabled — enable it before scanning'
+      disabledScanHint: 'Template is disabled: enable it before scanning'
     },
   scan: {
       title: 'Trigger discovery',
@@ -82,7 +82,7 @@ export default {
       review: 'Review results'
     },
   res: {
-      title: 'Results · task {id} · {provider}',
+      title: 'Results, task {id}, {provider}',
       pending: 'Pending review',
       all: 'All',
       model: 'Model ID',
@@ -118,11 +118,11 @@ export default {
     },
   hist: {
       title: 'Import history ({n})',
-      desc: 'Tasks that actually imported models (imported count > 0). Click Detail to see where each result of that task ended up.',
+      desc: 'Tasks that actually imported models (imported count > 0). Open Detail to see where each result of that task ended up.',
       completed: 'Completed at',
       detail: 'Detail',
       none: 'No import records yet. Finish a bulk import on the Tasks & Review tab and it will show up here.',
-      detailTitle: 'Import detail · task {id} · {provider}',
+      detailTitle: 'Import detail, task {id}, {provider}',
       importedAt: 'Imported at'
     },
 }

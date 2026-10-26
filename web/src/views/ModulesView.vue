@@ -12,6 +12,7 @@ import {
   type ModuleWithStatus,
 } from '../api/modules'
 import { listSettings, type SettingItem } from '../api'
+import { localeArray } from '../i18n'
 import { useRouter } from 'vue-router'
 import PromptInjectionConfigPanel from '../components/PromptInjectionConfigPanel.vue'
 import ModuleEntitlementsPanel from '../components/ModuleEntitlementsPanel.vue'
@@ -369,10 +370,16 @@ function integrationTitle(moduleKey: string): string {
   return selectedModule.value?.integration?.label || moduleKey
 }
 
+// ⚠ 数组型语言包键**不能经 t() 取**（vue-i18n 9 的 t() 对数组消息返回键路径字符串，
+//   v-for 会把键名逐字符渲染出来）⇒ 改从消息树直取，见 i18n.ts 的 localeArray()。
+const feishuSteps = localeArray<string[]>('modulesView.integration.feishuSteps')
+const wechatSteps = localeArray<string[]>('modulesView.integration.wechatSteps')
+const dingtalkSteps = localeArray<string[]>('modulesView.integration.dingtalkSteps')
+
 function integrationSteps(moduleKey: string): string[] {
-  if (moduleKey === 'feishu_bot') return t('modulesView.integration.feishuSteps') as unknown as string[]
-  if (moduleKey === 'wechat_bot') return t('modulesView.integration.wechatSteps') as unknown as string[]
-  if (moduleKey === 'dingtalk_bot') return t('modulesView.integration.dingtalkSteps') as unknown as string[]
+  if (moduleKey === 'feishu_bot') return feishuSteps.value
+  if (moduleKey === 'wechat_bot') return wechatSteps.value
+  if (moduleKey === 'dingtalk_bot') return dingtalkSteps.value
   return []
 }
 
@@ -479,6 +486,8 @@ onMounted(() => {
             </span>
           </div>
         </div>
+
+        <button v-if="selectedModule.key === 'output_compliance'" class="btn" @click="router.push('/admin/sanitize-rules')">{{ t('sanitizeRules.title') }}</button>
 
         <!-- Legacy dependency banner removed: backend now supplies dependencies + blocked_reason. -->
 
@@ -1069,7 +1078,7 @@ onMounted(() => {
               <div class="integ-steps">
                 <h4 class="steps-title">{{ t('modulesView.integration.stepsTitle') }}</h4>
                 <ol class="steps-list">
-                  <li v-for="(step, i) in selectedModule.key === 'feishu_bot' ? t('modulesView.integration.feishuSteps') : []" :key="i">{{ step }}</li>
+                  <li v-for="(step, i) in selectedModule.key === 'feishu_bot' ? feishuSteps : []" :key="i">{{ step }}</li>
                 </ol>
               </div>
               <div class="integ-status">
@@ -1163,7 +1172,7 @@ onMounted(() => {
   padding: 10px 16px;
   margin-bottom: 16px;
   background: color-mix(in srgb, var(--el-color-primary-light-9) 60%, transparent);
-  border-left: 3px solid var(--el-color-primary);
+  border: 1px solid var(--el-color-primary);
   border-radius: 6px;
   font-size: 13px;
   color: var(--el-text-color-regular);
@@ -1201,9 +1210,8 @@ onMounted(() => {
   padding: 6px 10px 4px;
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.01em;
   color: var(--text-secondary);
-  text-transform: uppercase;
 }
 .group-count {
   font-size: 10px;
@@ -1231,7 +1239,7 @@ onMounted(() => {
   border-color: var(--accent);
 }
 .module-card.disabled { opacity: 0.65; }
-.module-card.has-missing { border-left: 3px solid var(--warning); }
+.module-card.has-missing { border: 1px solid var(--warning); }
 .card-icon {
   font-size: 22px;
   flex-shrink: 0;
@@ -1668,7 +1676,7 @@ onMounted(() => {
 .config-hint {
   padding: 10px 12px;
   background: color-mix(in srgb, var(--accent) 6%, transparent);
-  border-left: 3px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 4px;
   font-size: 12px;
   color: var(--text-secondary);
@@ -1684,8 +1692,7 @@ onMounted(() => {
   font-size: 12px;
   font-weight: 600;
   color: var(--accent-h);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.01em;
   margin: 0 0 10px;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border);

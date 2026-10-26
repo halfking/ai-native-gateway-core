@@ -21,6 +21,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -92,6 +94,81 @@ func (m *MockSessionCacheBackend) Del(ctx context.Context, key string) error {
 	delete(m.data, key)
 	delete(m.expiry, key)
 	return nil
+}
+
+// Eval implements the cache lease protocol atomically for deterministic replay.
+// It deliberately rejects arbitrary Lua rather than pretending to interpret it.
+func (m *MockSessionCacheBackend) Eval(ctx context.Context, script string, keys []string, args ...any) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	expire := func(key string) {
+		if exp, ok := m.expiry[key]; ok && !time.Now().Before(exp) {
+			delete(m.data, key)
+			delete(m.expiry, key)
+		}
+	}
+	if len(keys) == 0 || len(args) == 0 {
+		return nil, fmt.Errorf("invalid cache script arguments")
+	}
+	token := toString(args[0])
+	expire(keys[0])
+	switch {
+	case strings.Contains(script, "session-cache-acquire"):
+		if len(args) != 2 {
+			return nil, fmt.Errorf("invalid acquire arguments")
+		}
+		if m.data[keys[0]] != nil {
+			return int64(0), nil
+		}
+		var ms int64
+		if _, err := fmt.Sscan(toString(args[1]), &ms); err != nil {
+			return nil, err
+		}
+		m.data[keys[0]] = map[string]string{"lease_token": token}
+		m.expiry[keys[0]] = time.Now().Add(time.Duration(ms) * time.Millisecond)
+	case strings.Contains(script, "session-cache-release"):
+		if m.data[keys[0]]["lease_token"] != token {
+			return int64(0), nil
+		}
+		delete(m.data, keys[0])
+		delete(m.expiry, keys[0])
+	case strings.Contains(script, "session-cache-invalidate"):
+		if len(keys) != 3 || len(args) != 1 {
+			return nil, fmt.Errorf("invalid invalidate arguments")
+		}
+		expire(keys[2])
+		if m.data[keys[2]]["lease_token"] != token {
+			return int64(0), nil
+		}
+		for _, key := range keys[:2] {
+			delete(m.data, key)
+			delete(m.expiry, key)
+		}
+	case strings.Contains(script, "session-cache-commit"):
+		if len(keys) != 2 || len(args) < 4 || len(args)%2 != 0 {
+			return nil, fmt.Errorf("invalid commit arguments")
+		}
+		expire(keys[1])
+		if m.data[keys[1]]["lease_token"] != token {
+			return int64(0), nil
+		}
+		var ms int64
+		if _, err := fmt.Sscan(toString(args[1]), &ms); err != nil || ms <= 0 {
+			return nil, fmt.Errorf("invalid TTL")
+		}
+		fields := make(map[string]string, len(args)/2-1)
+		for i := 2; i < len(args); i += 2 {
+			fields[toString(args[i])] = toString(args[i+1])
+		}
+		m.data[keys[0]] = fields
+		m.expiry[keys[0]] = time.Now().Add(time.Duration(ms) * time.Millisecond)
+	default:
+		return nil, fmt.Errorf("unsupported replay cache script")
+	}
+	return int64(1), nil
 }
 
 func toString(v any) string {

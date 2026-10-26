@@ -1,0 +1,51 @@
+# reclaim_candidates.tsv —— 「可回收对象」登记表（机器可读）
+#
+# 生成时间：2026-10-21（§143.42 轮）
+# 用途：把「哪些对象可以回收」从 runbook 里的散文变成**可复核的数据**，
+#       并让 admin/section_14342_reclaim_measurement_test.go 用**同一套决策表**
+#       重算每一行的 verdict ⇒ 登记表**不可能自说自话**。
+#
+# 列（制表符分隔）：
+#   object                 对象名
+#   total_bytes            pg_total_relation_size（字节，252 实测）
+#   measured_empty         精确判空（EXISTS + LIMIT 1）：YES / NO
+#   relispartition         pg_class.relispartition：t / f
+#   has_parent             pg_inherits 有父记录：t / f
+#   is_default_partition   relpartbound = 'DEFAULT'：t / f
+#   func_refs              public 函数体按名引用的个数（252 实测）
+#   verdict                由决策表重算（RECLAIMABLE_DROP / RECLAIMABLE_TRUNCATE / NOT_RECLAIMABLE）
+#   method                 回收手段（DROP / VACUUM_FULL / -）
+#   note                   依据与风险
+#
+# ★★★ 三条量具纪律（决策表与本登记表都建立在它们之上）
+#   ① 判空用 EXISTS(SELECT 1 FROM t LIMIT 1)，**禁用** pg_stat_user_tables.n_live_tup
+#      ⇒ n_live_tup 对「长期无写入 + 从未 analyze」的表恒为 0 ⇒ §143.40 因此误判 17 个对象
+#   ② 判「孤儿分区」用 pg_class.relispartition
+#      ⇒ 「pg_inherits 里没有父」对**普通表恒真** ⇒ 不是孤儿证据
+#   ③ 判「回收了多少字节」看磁盘，不看 catalog 汇总
+#
+# ★ 本表 = §143.40 的 20 条清单**逐条复核**后的结果（清单本身保留，便于对账）。
+#   §143.40 的「4 个 orphan + 0 行 = 1,293 MB」与「9 月空分区包 ≈2,133 MB」
+#   在本表中全部降级为 NOT_RECLAIMABLE —— 详见 runbook §143.42 / 订正横幅二十。
+
+# object	total_bytes	measured_empty	relispartition	has_parent	is_default_partition	func_refs	verdict	method	note
+_request_logs_bodies_hot	304734208	YES	f	f	f	1	RECLAIMABLE_TRUNCATE	VACUUM_FULL	0 行（堆已 0 bytes）；229 MB 在 TOAST 索引、55 MB 在 TOAST 表 ⇒ VACUUM FULL 重写后回收；被 promote_request_logs_bodies_hot_to_partition 引用 ⇒ 不可 DROP
+_request_logs_hot	61603840	YES	f	f	f	6	RECLAIMABLE_TRUNCATE	VACUUM_FULL	0 行；被 6 个 public 函数体按名引用（promote_request_logs_hot_to_partition / cleanup_stale_in_progress_requests / credential_most_used_model ×2 / recent_success_rate / system_health_status）⇒ 不可 DROP
+usage_facts_default	83492864	YES	t	t	t	1	NOT_RECLAIMABLE	-	DEFAULT 兜底分区（relpartbound='DEFAULT'）⇒ 删它会让不落在具名分区里的行报 23514 ⇒ 打断写入路径 ⇒ 必须保留
+ursm_node_snapshot_min_legacy	893845504	NO	f	f	f	0	NOT_RECLAIMABLE	-	2,836,620 行（snapshot_ts 跨度 2026-10-06 15:50 ~ 2026-10-07 13:03）⇒ 父表最早分区是 20261014 ⇒ **这段历史只此一份**；且是迁移 830 的回滚锚点（830 down 脚本会 RENAME 它）⇒ DROP = 毁历史 + 断回滚路径
+session_title_states	95625216	NO	f	f	f	0	NOT_RECLAIMABLE	-	175,975 行活跃业务表（迁移 550 建，PK=(tenant_id, scoped_session_id)，带 fencing/tombstone）⇒ 不是分区表，「不在父表下」是普通表的恒真命题
+usage_ledger_2026_09	777535488	NO	t	t	f	0	NOT_RECLAIMABLE	-	1,416,772 行 ⇒ §143.40 误判为「9 月空分区」
+session_turn_details_2026_09	632389632	NO	t	t	f	0	NOT_RECLAIMABLE	-	786,036 行（对照 session_turns_2026_09 的 798,278 行 = 98.5%）⇒ §143.40 误判为「0 行」，并据此留下「details 没接线」的待定性项 —— 实际写入正常
+request_wal_2026_09	201867264	NO	t	t	f	0	NOT_RECLAIMABLE	-	446,777 行
+routing_decision_log_2026_09	143810560	NO	t	t	f	0	NOT_RECLAIMABLE	-	440,138 行
+supplier_errors_2026_09	119128064	NO	t	t	f	0	NOT_RECLAIMABLE	-	非空
+sessions_2026_09	94953472	NO	t	t	f	0	NOT_RECLAIMABLE	-	163,682 行
+session_memora_2026_09	55099392	NO	t	t	f	0	NOT_RECLAIMABLE	-	非空
+session_censors_2026_09	29728768	NO	t	t	f	0	NOT_RECLAIMABLE	-	非空
+session_bodies_2026_09	18358272	NO	t	t	f	0	NOT_RECLAIMABLE	-	非空
+usage_facts_20261009	17752064	NO	t	t	f	0	NOT_RECLAIMABLE	-	非空
+request_logs_2026_09	14901248	NO	t	t	f	1	NOT_RECLAIMABLE	-	非空
+auto_route_selections_2026_09	12730368	NO	t	t	f	0	NOT_RECLAIMABLE	-	非空
+usage_facts_20261007	12656640	NO	t	t	f	0	NOT_RECLAIMABLE	-	非空
+usage_facts_20261006	11706368	NO	t	t	f	0	NOT_RECLAIMABLE	-	非空
+usage_facts_20261008	10977280	NO	t	t	f	0	NOT_RECLAIMABLE	-	非空

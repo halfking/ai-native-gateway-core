@@ -1,0 +1,18 @@
+# permanent-skip-ledger.tsv —— 「门在产品形态库上跑不跑」的实测台账
+# 生成方式：bash scripts/audit/measure-permanent-skip-axis.sh --verify
+# 列：gate	file	probe_target	verdict	reason
+# ★ verdict = 该门在「TEST_DATABASE_URL 指向产品形态库」这一档的实测判定（PASS/SKIP/FAIL）
+# ★ reason  = 判定依据（哪一行代码 / 哪条分支）
+# ★ damage  = 形态库是否受损（0=零损伤 1=有变化）
+TestListModels_modalityProvenanceReachesTheList	admin/models_modality_source_realdb_test.go	8 张夹具表（建在自有一次性空库上）	PASS	scratchEmptyPool 自建一次性空库 ⇒ 探针在空库上命中「0 张表」⇒ 真跑
+TestGetModel_exposesProvenanceInTheResponseBody	admin/models_modality_source_realdb_test.go	8 张夹具表（建在自有一次性空库上）	PASS	scratchEmptyPool 自建一次性空库 ⇒ 探针在空库上命中「0 张表」⇒ 真跑
+TestPricingImport_writesEveryPriceColumn	admin/pricing_import_realdb_test.go	model_offers（建在自有一次性空库上）	PASS	scratchEmptyPool 自建一次性空库 ⇒ 探针在空库上命中「不存在」⇒ 真跑
+TestPricingImport_badCellDoesNotDropTheWholeRow	admin/pricing_import_realdb_test.go	model_offers（建在自有一次性空库上）	PASS	scratchEmptyPool 自建一次性空库 ⇒ 探针在空库上命中「不存在」⇒ 真跑
+TestPricingImport_reportsRejectedRows	admin/pricing_import_realdb_test.go	model_offers（建在自有一次性空库上）	PASS	scratchEmptyPool 自建一次性空库 ⇒ 探针在空库上命中「不存在」⇒ 真跑
+TestPricingImport_cleanFileReportsNothingRejected	admin/pricing_import_realdb_test.go	model_offers（建在自有一次性空库上）	PASS	scratchEmptyPool 自建一次性空库 ⇒ 探针在空库上命中「不存在」⇒ 真跑
+TestPricingImport_emptyCellIsSkippedNotZeroed	admin/pricing_import_realdb_test.go	model_offers（建在自有一次性空库上）	PASS	scratchEmptyPool 自建一次性空库 ⇒ 探针在空库上命中「不存在」⇒ 真跑
+TestPricingImport_cleanRowWithEmptyCellsLogsNothing	admin/pricing_import_realdb_test.go	model_offers（建在自有一次性空库上）	PASS	scratchEmptyPool 自建一次性空库 ⇒ 探针在空库上命中「不存在」⇒ 真跑
+TestPricingImport_badCellStillLogs	admin/pricing_import_realdb_test.go	model_offers（建在自有一次性空库上）	PASS	scratchEmptyPool 自建一次性空库 ⇒ 探针在空库上命中「不存在」⇒ 真跑
+TestSessionFamilyRuntimeSQL_ExecutesOnRealDB	admin/session_family_runtime_sql_test.go	session_summaries/session_dim/models_canonical	PASS	直读 TEST_DATABASE_URL ⇒ 探针就在形态库上；只跑 SELECT ⇒ 零足迹
+TestRetiredPartitionTableStatusIsNotAnError	admin/session_family_runtime_sql_test.go	_request_logs（已退役）/ usage_ledger（在位）	PASS	直读 TEST_DATABASE_URL ⇒ 探针就在形态库上；_request_logs 不在位 ⇒ 不走 Skip 分支
+TestSessionFinalSuccessBacklogIsClosed	admin/session_final_success_backlog_realdb_test.go	public.request_logs_2026_09	SKIP	直读 TEST_DATABASE_URL；v1 族已退役 ⇒ to_regclass 为空 ⇒ 恒 Skip

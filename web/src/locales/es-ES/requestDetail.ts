@@ -28,7 +28,6 @@ export default {
       requestTime: 'Hora de la solicitud',
       status: 'Estado',
       latency: 'Latencia',
-      latencyUnit: 'ms',
       tenant: 'Tenant',
       success: 'Success',
       clientModel: 'Modelo del cliente',
@@ -40,7 +39,6 @@ export default {
       taskId: 'ID de tarea',
       endUser: 'End User',
       token: 'Token',
-      tokenTotal: 'Tokens (total {input}/{output})',
       total: 'total',
       cache: 'Cache',
       costCredits: 'Cost / Credits',
@@ -151,7 +149,6 @@ export default {
   // — RequestWaterfallPanel —
   waterfall: {
     loading: 'Cargando cascada de despacho…',
-    source: 'Origen: {src}',
     stageHeader: 'Etapas T0–T9',
     cols: {
       stage: 'Etapa',
@@ -179,19 +176,13 @@ export default {
     diagram: {
       ariaLabel: 'Flujo de procesamiento de solicitudes', trackLabel: 'Secuencia de eventos del flujo',
       event: 'Evento de flujo', noData: 'Sin flujo observable', noEvents: 'Sin eventos de flujo',
-      stages: { received: 'Entrada', routing: 'Resolución de ruta', model_queue: 'Cola del modelo', credential_queue: 'Cola de credenciales', node_selection: 'Selección de nodo', upstream: 'Solicitud ascendente', streaming: 'Respuesta en streaming', retrying: 'Reintentando', terminal: 'Solicitud completada' },
-      status: { success: 'Éxito', failed: 'Fallido', timeout: 'Tiempo agotado', skipped: 'Omitido' },
       flags: { compression: 'Compresión', retry: 'Reintento', nodeSwitch: 'Cambio de nodo', degraded: 'Observación degradada' },
       evidenceLabel: 'Evidencia de enrutamiento y cascada', evidenceTitle: 'Intentos observados', waterfallAttempt: 'Intento de cascada #{number}', noDetails: 'Sin detalles adicionales', degraded: 'Observación degradada',
       lanesLabel: 'Carriles de intentos', lanesTitle: 'Intentos de journey observados', attemptLane: 'Intento #{number}', sourceJourney: 'Fuente journey', waterfallLabel: 'Barras de etapas waterfall', waterfallTitle: 'Barras de etapas waterfall', lastAttemptSemantics: 'Tiempo de la solicitud; T5–T9 puede reflejar el último intento', synthesizedBars: 'Las etapas sintetizadas indican marcas de tiempo ausentes (observación degradada).', requestTimeline: 'Línea temporal de la solicitud',
-      legend: { success: 'Éxito', failed: 'Fallido/tiempo agotado', special: 'Compresión · reintento · cambio de nodo' }
+      legend: { success: 'Éxito', failed: 'Fallido/tiempo agotado', special: 'Compresión, reintento, cambio de nodo' }
     },
   },
   // — marcadores comunes —
-  common: {
-    emDash: '—',
-    colon: ': ',
-  },
  // — Subtask 3 (handoff §5): body_status two-state banners —
   // Fuente: turns[].body_status de /api/admin/sessions/detail; no de
   // /snapshot (allí no hay turns) ni de la lista /turns (solo metadatos).

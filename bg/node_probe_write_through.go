@@ -62,6 +62,24 @@ func healthyCredentialSQL() string {
 		      OR COALESCE(quota_state, 'ok') <> 'ok'
 		      OR quota_recover_at IS NOT NULL
 		      OR availability_recover_at IS NOT NULL
+		      -- 2026-10-16: the three columns cleared above must also appear
+		      -- here. Without them the "nothing needs to change" no-op guard
+		      -- skips the whole UPDATE whenever the ONLY dirt is a stale
+		      -- error string — so a credential already marked
+		      -- healthy/ready/ok kept an old failure message forever.
+		      -- Measured on 211: 18 credentials sat in exactly that shape
+		      -- (health_status=healthy, availability_state=ready,
+		      -- quota_state=ok, both recover_at NULL, health_error and/or
+		      -- state_reason_detail non-NULL). That is the "node says 可用 but
+		      -- the error line still shows an old 403" inconsistency.
+		      --
+		      -- A successful upstream call is newer evidence than any stored
+		      -- error text, which is the same contract the function comment
+		      -- already states for the quota columns — these are just the
+		      -- diagnostic half of it.
+		      OR health_error IS NOT NULL
+		      OR state_reason_code IS NOT NULL
+		      OR state_reason_detail IS NOT NULL
 		  )`
 }
 

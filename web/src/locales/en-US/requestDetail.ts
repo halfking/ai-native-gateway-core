@@ -28,7 +28,6 @@ export default {
       requestTime: 'Request time',
       status: 'Status',
       latency: 'Latency',
-      latencyUnit: 'ms',
       tenant: 'Tenant',
       success: 'Success',
       clientModel: 'Client model',
@@ -40,7 +39,6 @@ export default {
       taskId: 'Task ID',
       endUser: 'End User',
       token: 'Token',
-      tokenTotal: 'Tokens (total {input}/{output})',
       total: 'total',
       cache: 'Cache',
       costCredits: 'Cost / Credits',
@@ -151,7 +149,6 @@ export default {
   // — RequestWaterfallPanel —
   waterfall: {
     loading: 'Loading dispatch waterfall…',
-    source: 'Source: {src}',
     stageHeader: 'T0–T9 stages',
     cols: {
       stage: 'Stage',
@@ -179,19 +176,13 @@ export default {
     diagram: {
       ariaLabel: 'Request processing flow', trackLabel: 'Flow event sequence',
       event: 'Flow event', noData: 'No observable flow', noEvents: 'No flow events',
-      stages: { received: 'Ingress', routing: 'Route resolution', model_queue: 'Model queue', credential_queue: 'Credential queue', node_selection: 'Node selection', upstream: 'Upstream request', streaming: 'Streaming response', retrying: 'Retrying', terminal: 'Request complete' },
-      status: { success: 'Success', failed: 'Failed', timeout: 'Timeout', skipped: 'Skipped' },
       flags: { compression: 'Compression', retry: 'Retry', nodeSwitch: 'Node switch', degraded: 'Observation degraded' },
       evidenceLabel: 'Routing and waterfall evidence', evidenceTitle: 'Observed attempts', waterfallAttempt: 'Waterfall attempt #{number}', noDetails: 'No additional details', degraded: 'Observation degraded',
       lanesLabel: 'Request attempt lanes', lanesTitle: 'Observed journey attempts', attemptLane: 'Attempt #{number}', sourceJourney: 'Journey source', waterfallLabel: 'Waterfall stage bars', waterfallTitle: 'Waterfall stage bars', lastAttemptSemantics: 'Request-level timing; T5–T9 may reflect the last attempt', synthesizedBars: 'Synthesized stages indicate missing timestamps (degraded observation).', requestTimeline: 'Request timeline',
-      legend: { success: 'Success', failed: 'Failed/timeout', special: 'Compression · retry · node switch' },
+      legend: { success: 'Success', failed: 'Failed/timeout', special: 'Compression, retry, node switch' },
     },
   },
   // — shared placeholders —
-  common: {
-    emDash: '—',
-    colon: ': ',
-  },
   // — Subtask 3 (handoff §5): body_status two-state banners —
   // Source is turns[].body_status from /api/admin/sessions/detail — not
   // /snapshot (no turns there) and not the /turns list (metadata-only).

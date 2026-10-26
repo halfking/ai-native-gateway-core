@@ -27,7 +27,7 @@ import {
   nodesRef,
   liveStreamState,
   connectionRef,
-  lastEventAtRef,
+  initialDataReceivedRef,
   snapshotRef,
   getNodesForModel,
   getRequestsForCredential,
@@ -159,12 +159,12 @@ const congestionHint = computed(() => {
 
 const hasData = computed(() => queue.value !== null && queue.value.wired)
 
-// streamAwaitingData（2026-10-15 r1032c）：连接未建立，或已建立但还没收到
-// 任何一帧。这段窗口里「队列数据未接入」是**抢跑的误报**——queue envelope
-// 只是还没到达，不是 dispatch 没接线（本地实测：建连 <0.4s、首帧 ~2s，
-// 中间约 1.5s 空态区写着误导性文案且无任何加载标记）。
+// streamAwaitingData（2026-10-16 audit）：连接未建立，或本代际的权威
+// initial_data 还没到。只有权威帧（含显式空回放）能证明「queue envelope
+// 真的不会来」；health/keepalive 旁路帧不算交付，否则队列区会抢跑
+// 「队列数据未接入」的误导空态。
 const streamAwaitingData = computed(
-  () => connectionRef.value !== 'open' || lastEventAtRef.value === 0,
+  () => connectionRef.value !== 'open' || !initialDataReceivedRef.value,
 )
 const isIdle = computed(() => hasData.value && totalDepth.value === 0)
 
@@ -804,7 +804,7 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
       return assignSpacedPriorities(mergedIds.length)
     } catch (error) {
       clearDragState()
-      dragError.value = error instanceof Error ? error.message : '候选数量超过优先级上限，无法排序'
+      dragError.value = error instanceof Error ? error.message : t('routing.dashboard.resolve.reorderFailed')
       return null
     }
   })()
@@ -1563,7 +1563,7 @@ function requestTitleTooltip(request: LiveRequest): string {
   flex-wrap: wrap;
   gap: 4px 16px;
   padding: 7px 12px;
-  background: var(--kx-bg-elevated);
+  background: var(--bg-subtle);
   border-radius: var(--kx-radius-sm, 6px);
 }
 .qp-stat {
@@ -1658,7 +1658,7 @@ function requestTitleTooltip(request: LiveRequest): string {
 }
 .qp-bar {
   height: 6px;
-  background: var(--kx-bg-elevated);
+  background: var(--bg-subtle);
   border-radius: 3px;
   overflow: hidden;
 }
@@ -1735,7 +1735,7 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-model-nodes { display:flex; gap:6px; flex-wrap:wrap; flex:1 1 100%; padding-left:18px; }
 .qp-node-card-wrap { border-radius:6px; transition: background 120ms ease, outline-color 120ms ease, width 160ms ease; outline: 2px dashed transparent; outline-offset: 1px; flex: 0 0 auto; }
 .qp-node-card-wrap.is-drag-over { background: color-mix(in srgb, var(--kx-accent) 14%, transparent); outline-color: var(--kx-accent); }
-.qp-node-card { display:grid; gap:4px; text-align:left; width:100%; box-sizing:border-box; padding:7px 9px; border:1px solid var(--kx-border); border-left-width:3px; border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); position:relative; }
+.qp-node-card { display:grid; gap:4px; text-align:left; width:100%; box-sizing:border-box; padding:7px 9px; border:1px solid var(--kx-border); border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); position:relative; }
 .qp-node-rank { margin-left:6px; font-size:10px; color:var(--kx-muted); font-variant-numeric: tabular-nums; }
 .qp-node-card-meta { display:flex; flex-wrap:wrap; gap:4px; align-items:baseline; font-size:11px; color:var(--kx-muted); overflow:hidden; }
 .qp-stat-ok { color: var(--kx-success); font-variant-numeric: tabular-nums; }
@@ -1756,10 +1756,10 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-dot--ok { background:var(--kx-success); opacity:1; }
 .qp-dot--bad { background:var(--kx-danger); opacity:1; }
 .qp-dot--unknown { background:var(--kx-text-secondary); opacity:.4; }
-.qp-node-card--ok { border-left-color:var(--kx-success); }
-.qp-node-card--warn { border-left-color:var(--kx-warning); }
-.qp-node-card--danger { border-left-color:var(--kx-danger); }
-.qp-node-card--disabled { border-left-color:var(--kx-text-secondary); opacity:.72; }
+.qp-node-card--ok { border-color: var(--kx-success); }
+.qp-node-card--warn { border-color: var(--kx-warning); }
+.qp-node-card--danger { border-color: var(--kx-danger); }
+.qp-node-card--disabled { border-color: var(--kx-text-secondary); opacity:.72; }
 .qp-retry { margin-left:auto; border:0; background:transparent; color:var(--kx-text-secondary); cursor:pointer; font-size:11px; }
 .qp-model-scope-state,.qp-model-detail-hint { color:var(--kx-text-secondary); font-size:11px; padding:8px 10px; margin:0; }
 .qp-model-scope-state--error { color:var(--kx-danger); }

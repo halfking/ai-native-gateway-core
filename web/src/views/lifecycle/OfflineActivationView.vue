@@ -103,7 +103,7 @@ async function importLicense() {
       activation_code: offlinePayload.value.trim(),
     })
     if (!result.activated) {
-      throw new Error(result.error || '离线激活失败')
+      throw new Error(result.error || '离线激活没能完成，请重试')
     }
     message.value = result.message || '离线激活成功；联网后将自动向中心补注册。'
     ElMessage.success(message.value)
@@ -123,7 +123,6 @@ onMounted(ensureReady)
   <div class="lifecycle-page">
     <header class="lifecycle-page__header">
       <div>
-        <p class="eyebrow">OFFLINE ACTIVATION</p>
         <h1>离线激活</h1>
         <p>本机无法联网访问中心时使用：复制实例 ID 到公网激活站点，生成激活码后粘贴回来即可。</p>
       </div>
@@ -216,13 +215,6 @@ onMounted(ensureReady)
   gap: 16px;
   align-items: flex-start;
   margin-bottom: 20px;
-}
-.eyebrow {
-  margin: 0 0 6px;
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
 }
 .lifecycle-page__header h1 { margin: 0 0 8px; font-size: 24px; }
 .lifecycle-page__header p { margin: 0; color: var(--kx-muted); font-size: 14px; }

@@ -32,7 +32,7 @@
 //   4. ★★★★ `count` **恒等于** `events.length`（`:385` 写的是 `len(items)`），
 //      且**响应不回显 limit** ⇒ 截断只能靠「拿满请求上限」反推。
 //   5. ★★★★ `context` 走 `jsoncol.Decode`：列是 NULL、列是 JSON `null`、
-//      **以及列里的 JSON 解析失败**（`jsoncol.go:57-79`，失败只留 Warn、dst 不动）
+//      **以及列里的 JSON 解析失败**（`jsoncol.go:57-75`，失败只留 Warn、dst 不动）
 //      ——**三种情况都让键被省略** ⇒ ★★ 「键缺失」**不能**证明「没有上下文」。
 //   6. ★★★ `provider_id` / `credential_id` 是**指针** + omitempty
 //      ⇒ 键在时值可能是真实的 **0**；真值判断会把 0 误判成「没有」。
@@ -45,12 +45,14 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
 import { t } from '@/i18n'
+import { useAuthStore } from '@/stores/auth'
 import {
   fetchModelIntegrityFingerprintDrift,
   driftDaysIsSendable,
   driftLimitIsSendable,
   driftCountMatchesEvents,
   modelIntegrityDriftAtCap,
+  modelIntegrityDriftRoleIsAllowed,
   driftDaysWasRewritten,
   driftHasNumericValue,
   driftNumericValueIsZero,
@@ -72,7 +74,13 @@ import {
   type ModelIntegrityDriftResponse,
 } from '@/api/modelIntegrityDrift'
 
-useHyperPage({ title: () => t('mid.title') })
+useHyperPage({ title: () => (allowed.value ? t('mid.title') : t('common.pageDenied')) })
+// 批 150：补视图内兜底。`modelIntegrityDriftRoleIsAllowed` 与 `appNav.ts:229` 的
+// `requiresRole: 'super_admin'` 同源；壳层 `hyper-wiring.ts` 已在路由层消费同样的
+// `requiresRole` ⇒ 正常导航下 `allowed` 永远 true，本兜底只在路由被绕过时生效。
+const auth = useAuthStore()
+const role = computed(() => auth.role)
+const allowed = computed(() => modelIntegrityDriftRoleIsAllowed(role.value))
 
 // ══ 查询条件 ════════════════════════════════════════════════════════════
 
@@ -197,7 +205,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="mid">
+  <p v-if="!allowed" data-testid="mid-denied" role="alert">{{ t('common.pageDenied') }}</p>
+  <div v-else class="mid">
     <section class="mid__sec">
       <header class="mid__head">
         <h2 class="mid__h">{{ t('mid.list.title') }}</h2>

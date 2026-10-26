@@ -1,122 +1,19 @@
 export default {
-  title: "Gestion du cycle de vie des données",
   refresh: "Actualiser",
   loading: "Chargement…",
-  storageLoading: "Chargement des statistiques de stockage…",
-  stats: {
-    totalData: "Données totales",
-    hotData: "Données chaudes (0–7 jours)",
-    warmData: "Données tièdes (7–30 jours)",
-    coldData: "Données froides (30–90 jours)",
-    expiredData: "Données expirées (>90 jours)"
-  },
-  charts: {
-    distribution: "Répartition des données",
-    growthTrend: "Tendance de croissance (7 derniers jours)",
-    trendDate: "Date",
-    trendRequests: "Requêtes",
-    trendCompressed: "Compressées",
-    trendCompressionRate: "Taux de compression",
-    trendEmpty: "Aucune donnée de tendance pour le moment"
-  },
   storage: {
-    title: "💾 Gestion du stockage",
-    disk: "Espace disque",
-    database: "Taille de la base de données",
-    databaseTotalSize: "Taille totale {size}",
-    tableRows: "{n} lignes",
-    attachments: "Stockage des pièces jointes",
-    orphanTitle: "{n} fichiers dans le répertoire de stockage sans enregistrement en base",
-    orphanBadge: "{n} orphelins",
-    totalFiles: "{n} fichiers",
-    activeLabel: "[actif]",
-    logFiles: "Fichiers journaux",
-    rotation: "Configuration de rotation : ",
-    rotationSingle: "fichier unique {n} Mo",
-    rotationKeep: "conserver {n}",
-    rotationAge: "conserver {n} jours",
-    rotationCompress: "compresser {state}",
-    rotationYes: "oui",
-    rotationNo: "non",
-    moreRotated: "… et {n} fichiers rotés supplémentaires",
-    lifecycleConfig: "Configuration du cycle de vie",
-    configAttachmentPath: "Chemin de stockage des pièces jointes :",
-    configRetention: "Durée de rétention des données :",
-    configRetentionDays: "{n} jours",
-    configMaxAttachment: "Taille max des pièces jointes :",
-    configMaxAttachmentMb: "{n} Mo",
-    configAutoCleanup: "Nettoyage automatique :",
-    autoCleanupOn: "Activé",
-    autoCleanupOff: "Désactivé"
+    migrateFailedWithReason: 'La migration n’a pas pu aboutir : {reason}. Veuillez réessayer.',
   },
-  attachmentCleanup: {
-    title: "🗑️ Nettoyage des pièces jointes",
-    mode: "Mode de nettoyage :",
-    modeOld: "Nettoyer les pièces jointes expirées (conserver N derniers jours)",
-    modeOrphan: "Nettoyer les fichiers orphelins (sans enregistrement en base)",
-    daysLabel: "Jours de rétention :",
-    minDays: "Les jours de rétention doivent être au moins 7",
-    preview: "Aperçu",
-    execute: "Exécuter",
-    affected: "Fichiers concernés :",
-    orphanedSuffix: "({n} orphelins)",
-    estimatedFreed: "Libération estimée :",
-    warningPrefix: "⚠️",
-    previewFailed: "Échec de l'aperçu du nettoyage des pièces jointes",
-    executeFailed: "Échec du nettoyage des pièces jointes",
-    confirmTitle: "Confirmer le nettoyage des pièces jointes ?\nFichiers : {n}\nLibération estimée : {size}\n\nCeci est irréversible !",
-    completed: "Nettoyage terminé : {n} fichiers / {db} lignes en base supprimés, {size} libérés"
-  },
-  logCleanup: {
-    title: "📋 Nettoyage des journaux",
-    daysLabel: "Jours de rétention :",
-    minDays: "Les jours de rétention doivent être au moins 7",
-    compressedOnly: "Ne nettoyer que les fichiers déjà compressés",
-    preview: "Aperçu",
-    execute: "Exécuter",
-    affected: "Fichiers concernés :",
-    estimatedFreed: "Libération estimée :",
-    warningPrefix: "⚠️",
-    previewFailed: "Échec de l'aperçu du nettoyage des journaux",
-    executeFailed: "Échec du nettoyage des journaux",
-    confirmTitle: "Confirmer le nettoyage des journaux ?\nFichiers : {n}\nLibération estimée : {size}\n\nCeci est irréversible !",
-    completed: "Nettoyage des journaux terminé : {n} fichiers supprimés, {size} libérés"
-  },
-  dataCleanup: {
-    title: "Opérations de nettoyage",
-    action: "Type d'action :",
-    actionArchive: "Archiver (recommandé)",
-    actionDelete: "Supprimer (dangereux)",
-    actionTrim: "Tronquer (à venir)",
-    from: "Date de début :",
-    to: "Date de fin :",
-    preview: "Aperçu de l'impact",
-    execute: "Exécuter",
-    affected: "Lignes concernées :",
-    affectedRowsSuffix: " lignes",
-    estimatedFreed: "Libération estimée :",
-    warningPrefix: "⚠️",
-    missingDate: "Veuillez choisir une date de début et une date de fin",
-    needPreview: "Veuillez d'abord exécuter un aperçu",
-    previewFailed: "Échec de l'aperçu",
-    executeNotImpl: "Le nettoyage sera implémenté dans la prochaine phase. Veuillez utiliser les scripts CLI pour l'instant.",
-    confirmDelete: "Confirmer la suppression de {n} lignes ?\nLibération estimée : {size}\n\nCeci est irréversible !",
-    confirmArchive: "Confirmer l'archivage de {n} lignes ?\nLibération estimée : {size}\n\nCeci est irréversible !",
-    confirmAction: "{action} {n} lignes ?"
-  },
-  tenant: {
-    title: "Statistiques des données par locataire (Top 10)",
-    tenantId: "ID de locataire",
-    rows: "Lignes",
-    size: "Taille",
-    percent: "Part"
-  },
-  chartLabels: {
-    hot: "Données chaudes (0–7 j.)",
-    warm: "Données tièdes (7–30 j.)",
-    cold: "Données froides (30–90 j.)",
-    expired: "Données expirées (>90 j.)",
-    tooltipSuffix: "{label} : {n} lignes ({pct}%)"
+  /**
+   * Textes du gestionnaire des champs volumineux (BlobManager).
+   * ★ État vide (2026-10-27 · incrément 14 — « état vide en 5 points ») :
+   *   il utilisait la clé générique `common.feedback.noData`
+   *   (« Aucun contenu à afficher pour l’instant »).
+   *   Cette page **n’a pas de filtre de temps** ⇒ pas de plage de temps
+   *   (on n’invente pas un fait que la page ignore).
+   */
+  blob: {
+    emptyNoResult: 'Aucun enregistrement de champ volumineux n’a encore été créé.',
   },
   storageOverview: {
     summary: {
@@ -171,9 +68,9 @@ export default {
       vacuum: "🧹 VACUUM",
       vacuumFull: "🗜 FULL",
       reindex: "🔧 REINDEX",
-      vacuumTitle: "VACUUM (ANALYZE) {table} — sans verrou, récupère les tuples morts",
-      vacuumFullTitle: "VACUUM FULL {table} — avec verrou, rend l'espace au SE",
-      reindexTitle: "REINDEX TABLE {table} — avec verrou, reconstruit les index"
+      vacuumTitle: "VACUUM (ANALYZE) {table}: sans verrou, récupère les tuples morts",
+      vacuumFullTitle: "VACUUM FULL {table}: avec verrou, rend l'espace au SE",
+      reindexTitle: "REINDEX TABLE {table}: avec verrou, reconstruit les index"
     },
     modal: {
       vacuumTitle: "🧹 Confirmer VACUUM",
@@ -191,7 +88,7 @@ export default {
       time: "Durée estimée",
       cancel: "Annuler",
       confirm: "Exécuter {op}",
-      success: "{op} {table} terminé — {size} libérés ({pct}%)",
+      success: "{op} {table} terminé: {size} libérés ({pct}%)",
       failed: "{op} échoué : {msg}"
     },
     rowResult: {
@@ -223,7 +120,6 @@ export default {
   hotPartition: {
     hotTableTitle: "Migration des données des hot tables",
     hotTableDesc: "Promeut les lignes des hot tables vers les partitions mensuelles. Un VACUUM FULL est ensuite nécessaire pour vraiment rendre l'espace au système d'exploitation.",
-    retentionLabel: "Rétention",
     retention: {
       all: "Tout migrer maintenant",
       "1day": "Conserver 1 jour",
@@ -236,16 +132,12 @@ export default {
     migrationProgress: "{migrated} lignes migrées ({batches} lots, {duration}s)",
     promoteConfirm: "Migrer de {label} les données de plus de {hours} ?",
     promoteAll: "tout",
-    hours: "{n} heures",
     days: "{n} jours",
-    emptyResult: "Aucune donnée",
     partitionTitle: "Gestion des partitions mensuelles",
     partitionDesc: "Supprimez les anciennes partitions mensuelles pour libérer de l'espace disque.",
-    partitionWarning: "Cette action est irréversible — à utiliser avec précaution.",
+    partitionWarning: "Cette action est irréversible: à utiliser avec précaution.",
     tables: {
       title: "Tables partitionnées",
-      selectLabel: "Table : ",
-      selectPlaceholder: "Sélectionnez une table partitionnée",
       refresh: "Actualiser",
       columns: {
         name: "Table",
@@ -274,11 +166,6 @@ export default {
         heap: "heap",
         archive: "archivée"
       },
-      month: {
-        recent: "récent",
-        medium: "moyen",
-        old: "ancien"
-      },
       delete: "Supprimer",
       deleting: "Suppression…",
       empty: "Aucune partition pour cette table"
@@ -296,68 +183,91 @@ export default {
       cancel: "Annuler",
       confirm: "Supprimer la partition",
       deleting: "Suppression…",
-      success: "Supprimée avec succès :\n{message}\nLibéré : {size}",
-      failed: "Échec de la suppression : {msg}"
     },
     hotTableNames: {
-      requestLogs: "请求日志",
-      credentialModelIndex: "凭据模型索引",
-      usageLedger: "用量账本",
-      routingDecisionLog: "路由决策日志"
+      requestLogs: "Journaux de requêtes",
+      credentialModelIndex: "Index des modèles d'identifiants",
+      usageLedger: "Grand livre de consommation",
+      routingDecisionLog: "Journal des décisions de routage"
     },
     labels: {
-      rows: "行数",
+      rows: "Lignes",
       toast: "TOAST"
     },
-    migrationFailed: "迁移失败"
-,
-    jobIdMissing: 'Failed to start async job: missing job_id',
 
-    asyncCompleted: 'Async migration complete: {n} rows migrated',
 
-    asyncFailed: 'Async migration failed: {error}',
 
-    cancel: 'Cancel',
 
-    cancelTitle: 'Cancel migration job',
 
-    cancelConfirm: 'Cancel the currently running migration job? Already-migrated data will be preserved.',
 
-    cancelRequested: 'Cancellation requested. The job will stop at the next batch.',
 
-    asyncEnabledHint: 'Since 2026-07-13 migrations run in async mode. Real-time progress and cancel are visible on this page.',
 
-    cronStatsTitle: 'Nightly auto-migration',
 
-    cronStatsDesc: 'Every day at 02:00 AM, hot tables older than 24 hours are auto-migrated. Tunable via env vars.',
 
-    cronEnabled: 'Enabled',
 
-    cronDisabled: 'Disabled',
 
-    cronLastRun: 'Last run',
 
-    cronRunCount: 'Total runs',
 
-    cronLastError: 'Last error',
 
-    cronRunning: 'Running now',
+    statsLoadFailedWithReason: 'Les statistiques des tables hot n’ont pas pu être chargées : {reason}. Veuillez réessayer.',
+    startMigrationFailedWithReason: 'La tâche de migration n’a pas pu démarrer : {reason}. Veuillez réessayer.',
+    submitDeleteFailedWithReason: 'La tâche de suppression n’a pas pu être soumise : {reason}. Veuillez réessayer.',
   },
-  preview: "预览清理",
-  hotData: "热数据 (0-7天)",
-  warmData: "温数据 (7-30天)",
-  coldData: "冷数据 (30-90天)",
-  expiredData: "过期数据 (>90天)",
-  missingDate: "请选择起始日期和结束日期",
-  previewFailed: "预览失败",
-  needPreview: "请先预览影响",
-  executeNotImpl: "清理功能将在下一阶段实现。请使用命令行脚本执行清理操作。"
+  preview: "Aperçu de l'impact",
+  hotData: "Données chaudes (0–7 jours)",
+  warmData: "Données tièdes (7–30 jours)",
+  coldData: "Données froides (30–90 jours)",
+  expiredData: "Données expirées (>90 jours)",
+  missingDate: "Veuillez choisir une date de début et une date de fin",
+  previewFailed: "Échec de l'aperçu",
+  needPreview: "Veuillez d'abord exécuter un aperçu",
+  executeNotImpl: "Le nettoyage sera implémenté dans la prochaine phase. Veuillez utiliser les scripts CLI pour l'instant."
 ,
   pages: {
     filesystemMaintenance: 'Maintenance du système de fichiers',
     storageConfig: 'Configuration du stockage',
     logManagement: 'Gestion des journaux',
     usageCost: 'Coût d’utilisation',
+    usageEnhanced: 'Analyse avancée de l’utilisation',
+  },
+
+  usageEnhanced: {
+    refresh: 'Actualiser',
+    loading: 'Chargement…',
+    empty: 'Aucun enregistrement d’utilisation sur cette période',
+    cards: {
+      totalCost: 'Coût total',
+      totalRequests: 'Requêtes totales',
+      periodDelta: 'Δ de coût entre périodes',
+      cacheHitRate: 'Taux de succès du cache',
+    },
+    trend: {
+      title: 'Tendance des coûts ({days} derniers jours)',
+    },
+    hotKeys: {
+      title: 'Principales clés API (par consommation de tokens)',
+      colId: 'ID de clé API',
+      colPrefix: 'Préfixe de clé',
+      colApplication: 'Application utilisée',
+      colRequests: 'Requêtes',
+      colTokens: 'Nombre de tokens',
+      colCost: 'Coût total',
+    },
+    degraded: {
+      title: 'Certaines métriques sont indisponibles : ',
+      hint: 'Le schéma de la base de données est en retard sur cette version ; les chiffres sont des substituts « non calculables », pas des mesures réelles.',
+    },
+    errors: {
+      load: 'Échec du chargement des données d’utilisation avancées',
+    },
+    sources: {
+      summary: 'Résumé d’utilisation',
+      costTrend: 'Tendance des coûts',
+      periodCompare: 'Comparaison de périodes',
+      cacheEconomics: 'Économie du cache',
+      hotKeys: 'Clés API actives',
+    },
+    footer: 'Dernière actualisation : {time}',
   },
 
   usageCost: {
@@ -371,7 +281,7 @@ export default {
       previousLabel: 'Période de référence ({period})',
       change: 'Variation',
       significant: 'Significatif',
-      meta: '{requests} requêtes · {models} modèles',
+      meta: '{requests} requêtes: {models} modèles',
     },
     attribution: {
       title: 'Attribution des coûts',

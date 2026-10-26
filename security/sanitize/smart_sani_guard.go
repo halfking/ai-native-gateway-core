@@ -44,6 +44,22 @@ const RestoreInterceptorName = "sanitize_restore"
 const maxSanitizeBodySize = 128 << 20
 const defaultOffsetLeaseTTL = 15 * time.Second
 
+// Per-session offset lock waiting (2026-10-20, audit).
+//
+// offsetLockPollInterval is the retry cadence while the lock is held by
+// someone else. It keeps the original 50 ms cadence, so the Redis round-trip
+// load per contended waiter is unchanged by the longer wait window.
+const offsetLockPollInterval = 50 * time.Millisecond
+
+// maxOffsetLockWait caps how long a waiter blocks before failing closed.
+// The cap is what keeps a genuinely stuck lock from pinning the request for
+// the full lease; see offsetsLockWaitBudget.
+const maxOffsetLockWait = 2 * time.Second
+
+// minOffsetLockWait keeps a very short lease (tests shorten it) from
+// collapsing the wait window back to the old too-small regime.
+const minOffsetLockWait = 50 * time.Millisecond
+
 func sanitizeGenerationKey(tenantID, sessionID string) string {
 	return sanitizeMapKey(tenantID, sessionID) + ":generation"
 }
@@ -242,6 +258,9 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 			m.logger.Warn("sanitize_middleware: sanitize failed",
 				"error", err, "session_id", sessionID)
 			status := http.StatusServiceUnavailable
+			if errors.Is(err, ErrRuleBlocked) {
+				status = http.StatusForbidden
+			}
 			if errors.Is(err, errInvalidSanitizeInput) {
 				status = http.StatusBadRequest
 			}
@@ -420,6 +439,12 @@ type sanitizeOffsetLease struct {
 
 // acquireOffsetsLock takes the per-session lock. Redis-backed sessions never
 // proceed unlocked; the commit script verifies this lease before writing.
+//
+// The wait window is derived from the lease (see offsetsLockWaitBudget) rather
+// than being a hardcoded number of attempts. 2026-10-20 (audit): it used to be
+// 3 attempts × 50 ms ≈ 100 ms against a 15 s lease, so a holder that was
+// merely slow was indistinguishable from a stuck lock and the waiter failed
+// closed with 503 on a healthy system.
 func (m *SanitizeInputMiddleware) acquireOffsetsLock(ctx context.Context, sessionID, tenantID string) (sanitizeOffsetLease, error) {
 	if m.redis == nil || sessionID == "" {
 		return sanitizeOffsetLease{}, nil
@@ -434,14 +459,10 @@ func (m *SanitizeInputMiddleware) acquireOffsetsLock(ctx context.Context, sessio
 	if leaseTTL <= 0 {
 		leaseTTL = defaultOffsetLeaseTTL
 	}
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return sanitizeOffsetLease{}, ctx.Err()
-			case <-time.After(50 * time.Millisecond):
-			}
-		}
+	deadline := time.Now().Add(m.offsetsLockWaitBudget(leaseTTL))
+	timer := time.NewTimer(offsetLockPollInterval)
+	defer timer.Stop()
+	for {
 		ok, err := m.redis.SetNX(ctx, key, tok, leaseTTL).Result()
 		if err != nil {
 			return sanitizeOffsetLease{}, err
@@ -451,8 +472,49 @@ func (m *SanitizeInputMiddleware) acquireOffsetsLock(ctx context.Context, sessio
 			go m.renewOffsetsLease(ctx, lease, leaseTTL)
 			return lease, nil
 		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(offsetLockPollInterval)
+		select {
+		case <-ctx.Done():
+			return sanitizeOffsetLease{}, ctx.Err()
+		case <-timer.C:
+		}
 	}
 	return sanitizeOffsetLease{}, errors.New("sanitize offsets lock busy")
+}
+
+// offsetsLockWaitBudget is how long a caller waits for the per-session offset
+// lock before failing closed.
+//
+// Why it scales with the lease (2026-10-20, audit): the lease is the holder's
+// own crash-recovery bound — a live holder renews it for as long as it runs,
+// so the lease length is the only in-band signal for "how long may a holder
+// legitimately hold this lock". The previous fixed 100 ms window was two
+// orders of magnitude below the 15 s lease, which made "the holder is merely
+// slow" (busy host, large body, a second middleware instance racing on the
+// same session) and "the lock is stuck" produce the same 503.
+//
+// Why it is capped (maxOffsetLockWait): a genuinely stuck lock must still fail
+// closed promptly rather than pin the request for the full lease. The cap
+// keeps the fail-closed contract intact — the waiter still returns
+// "sanitize offsets lock busy" and the caller still refuses to dispatch.
+func (m *SanitizeInputMiddleware) offsetsLockWaitBudget(leaseTTL time.Duration) time.Duration {
+	budget := leaseTTL
+	if budget > maxOffsetLockWait {
+		budget = maxOffsetLockWait
+	}
+	if budget < minOffsetLockWait {
+		budget = minOffsetLockWait
+	}
+	return budget
 }
 
 func (m *SanitizeInputMiddleware) renewOffsetsLease(ctx context.Context, lease sanitizeOffsetLease, ttl time.Duration) {
@@ -1435,9 +1497,10 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 		if len(candidate) > maxPlaceholderTailBytes {
 			if reservedMarkerStarted(candidate) {
 				// Over-length tail: the marker never completed, so no type was ever
-				// parsed out of it. Bare marker — naming a type here would be a
-				// guess about bytes nobody resolved.
-				safe = combined[:start] + redactedMarker
+				// parsed out of it. The mask still names its category — "unknown"
+				// is a statement about *this mask* (no type was resolvable), not a
+				// guess about the bytes (r1038).
+				safe = combined[:start] + unknownRedactedMarker
 			} else {
 				// r1030 release valve: the held prefix never started the marker
 				// word — it is a `{"`-style quote-wrap candidate that kept
@@ -1498,7 +1561,7 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 	// than "the text changed") is what keeps the normal split-across-chunks
 	// restore working — that path resolves and must pass through untouched.
 	if previous != "" && tail == "" && reservedMarkerStarted(previous) &&
-		strings.Contains(restored, redactedMarker) {
+		strings.Contains(restored, redactedMarkerPrefix) {
 		// 2026-10-13 (r1022): on a tool-argument lane the delta is a fragment of
 		// a JSON document that the client reassembles and JSON.parse()s. The
 		// whole-field `[REDACTED]` here swallowed the fragment's non-marker
@@ -1511,7 +1574,7 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 			object[field] = restored
 			return true, false
 		}
-		object[field] = redactedMarker
+		object[field] = unknownRedactedMarker
 		return true, false
 	}
 	if previous != "" && tail == "" && restored == combined {
@@ -1527,10 +1590,10 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 			// the arguments whenever the fragment boundary landed inside a
 			// marker-like token.
 			if jsonArgLane {
-				object[field] = redactedMarker + value
+				object[field] = unknownRedactedMarker + value
 				return true, false
 			}
-			object[field] = redactedMarker
+			object[field] = unknownRedactedMarker
 			return true, false
 		}
 		object[field] = combined

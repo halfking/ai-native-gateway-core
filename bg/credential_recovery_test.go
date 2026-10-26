@@ -771,6 +771,13 @@ func TestHealthAutoRecoverSetTickIntervalDisabled(t *testing.T) {
 // TestLookbackCandidateSQLGuards pins the UT-CR-09 eligibility contract:
 // only degraded/offline bindings with a SUCCESS inside the lookback window
 // are candidates; the SELECT never mutates cmb.available.
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：证据源从「v1 hot ∪ v1 母表」换成
+// **会话族 hot ∪ 父表**（§9.28 的两个存储面惯例）——原来的两条 EXISTS 臂
+// 合并成一条，因为会话族原生源本身就是 hot ∪ parent 的并集，语义逐字相同。
+// 模型名口径也从 COALESCE(outbound_model, client_model) 换成会话族的
+// raw_model_name（它就是那个 COALESCE 的同义列，取值口径登记见
+// internal/sessionv2mirror/s1a_fields.go）。
 func TestLookbackCandidateSQLGuards(t *testing.T) {
 	sql := lookbackCandidateSQL()
 	mustContain := []string{
@@ -784,12 +791,13 @@ func TestLookbackCandidateSQLGuards(t *testing.T) {
 		"COALESCE(c.lifecycle_status, 'active') = 'active'",
 		"COALESCE(c.manual_disabled, FALSE) = FALSE",
 		"c.availability_state = 'ready'",
-		// the 36h success window — on BOTH log tables
-		"FROM _request_logs_hot rl",
-		"FROM _request_logs rl",
+		// the 36h success window — on BOTH storage faces of the session family
+		// (§9.28：写方只写 hot，冷行由 promote 搬到父表，只读一面会漏最新）
+		"public.session_turns_hot t",
+		"public.session_turns t",
 		"rl.success = TRUE",
 		"rl.ts > now() - make_interval(hours => $1)",
-		"COALESCE(rl.outbound_model, rl.client_model) = pm.raw_model_name",
+		"rl.raw_model_name = pm.raw_model_name",
 		// bounded fan-out
 		"LIMIT $2",
 	}
@@ -797,6 +805,12 @@ func TestLookbackCandidateSQLGuards(t *testing.T) {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("lookbackCandidateSQL missing %q in:\n%s", want, sql)
 		}
+	}
+	// 负向断言：不得再引用退役的 v1 族（迁移 890 已 DROP ⇒ 提及即整条语句
+	// 42P01 ⇒ 这条扫描会整体挂掉）。
+	// ⚠ 正向对照：上面那两条会话族存储面断言 —— 只删 v1 不加会话族会被抓住。
+	if strings.Contains(sql, "_request_logs") {
+		t.Fatalf("lookbackCandidateSQL must NOT reference the retired v1 family:\n%s", sql)
 	}
 	// SELECT-only: the authoritative cmb.available flip belongs to the
 	// node_probe runOne success branch, never to the scan.
@@ -874,6 +888,9 @@ func TestLookbackIntervalAndWindowResolution(t *testing.T) {
 // success predicate) is claimed via the SKIP LOCKED lease tx, receives the
 // Recover(30) success write, and is handed to the dual-round probe entry.
 func TestScanLookbackTriggersRecoveryAndProbe(t *testing.T) {
+	// 回溯扫描要求 v1 侧可比（lookbackComparability：停写即跳过），
+	// 而 2026-10-20 起该键的代码默认是 false（审计 D0）—— 钉住前提。
+	withV1WriteEnabled(t, "true")
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("pgxmock.NewPool: %v", err)
@@ -936,6 +953,7 @@ func TestScanLookbackTriggersRecoveryAndProbe(t *testing.T) {
 // unit level: no candidate rows (SQL excluded them — no in-window success)
 // → zero recover writes, zero probe submissions, no claim transactions.
 func TestScanLookbackNoRowsNoTrigger(t *testing.T) {
+	withV1WriteEnabled(t, "true")
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("pgxmock.NewPool: %v", err)
@@ -968,6 +986,7 @@ func TestScanLookbackNoRowsNoTrigger(t *testing.T) {
 // CONFLICT race (row exists, leased/paused elsewhere) reports claimed=false
 // and the scan skips both the recover write and the probe submission.
 func TestScanLookbackSkipsLeasedOrPausedRows(t *testing.T) {
+	withV1WriteEnabled(t, "true")
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("pgxmock.NewPool: %v", err)

@@ -39,7 +39,33 @@ import {
   type AnomalyCounts,
 } from '@/api/requestAnomalies'
 
-useHyperPage({ title: () => t('anomalies.title') })
+// ══════════════════════════════════════════════════════════════════════════
+// ★★★★ 权限：superAdmin 档，而**服务端是真门**（第 130 批补上这一层）
+// ══════════════════════════════════════════════════════════════════════════
+//
+//   注册 `admin/handler.go:936-937` 两条都挂 `h.superAdmin(...)`，而
+//   `SuperAdminMiddleware`（`admin/auth.go:383-384`）**逐字比 role**：
+//     if claims.Role != "super_admin" { writeError(w, 403, "super_admin role required…") }
+//
+//   ⇒ ★★ 所以本视图的兜底兜的是**体验层**：深链直达（壳层 `meta.requiresRole`
+//     全仓无人消费，见 §11.166）时服务端会回 403，页面会显示一坨错误串；
+//     加这一层是为了让用户看到**为什么**，而不是「随便某个请求失败了」。
+//
+//   ⚠️★ 与批 121~128 那一族（`admin` 档）**方向相反**：那边前端这一层是
+//     **唯一的门**（`AdminMiddleware` 只认证不检 role），这边服务端才是。
+//     ⇒ 判据必须钉住这个差别，否则下一个人会照抄 admin 档的注释，
+//       写出「本页是唯一的门」这种**事实相反**的话。
+//
+//   ⚠️ `admin_key` **进不来**（服务端逐字比的就是 `super_admin`）——
+//     与 `v1DataHorizon` 时代 `admin_key` 与 super_admin 同档的情况不同。
+import { useAuthStore } from '@/stores/auth'
+import { anomalyRoleIsSuperAdmin } from '@/api/requestAnomalies'
+
+useHyperPage({ title: () => (allowed.value ? t('anomalies.title') : t('common.pageDenied')) })
+
+const auth = useAuthStore()
+const role = computed(() => auth.role)
+const allowed = computed(() => anomalyRoleIsSuperAdmin(role.value))
 
 const LIMIT_CHOICES = [ANOMALY_LIMIT_DEFAULT, 100, ANOMALY_LIMIT_MAX]
 
@@ -60,6 +86,9 @@ const error = ref<string | null>(null)
 const countsError = ref<string | null>(null)
 
 async function loadCounts(): Promise<void> {
+  // ★ 深链兜底的第一半：**不发请求**（不只是「藏起来」）。
+  //   抽屉席已挡一道（`requiresRole: 'super_admin'`），这里再挡是为了**深链直达**。
+  if (!allowed.value) return
   try {
     counts.value = await fetchAnomalyCounts()
     countsError.value = null
@@ -70,6 +99,8 @@ async function loadCounts(): Promise<void> {
 }
 
 async function loadList(): Promise<void> {
+  // ★ 同上：不发请求。
+  if (!allowed.value) return
   loading.value = true
   error.value = null
   try {
@@ -162,6 +193,18 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="view-root ra">
+    <!-- ★★ 深链兜底的第二半：把「为什么看不了」讲清楚（第 130 批补上）。
+           ⚠️ 服务端是**真门**（`SuperAdminMiddleware` 逐字比 role），
+           所以这不是安全层，是体验层：没有它，深链直达会显示一坨 403 错误串。 -->
+    <template v-if="!allowed">
+      <section class="ra__panel" data-testid="ra-nope">
+        <span class="ra__panel-title">{{ t('anomalies.title') }}</span>
+        <p class="ra__msg ra__msg--err" data-testid="ra-nope-msg">{{ t('anomalies.nope.msg') }}</p>
+        <p class="ra__note" data-testid="ra-nope-why">{{ t('anomalies.nope.why') }}</p>
+      </section>
+    </template>
+
+    <template v-else>
     <p v-if="loading" class="ra__msg">{{ t('common.loading') }}</p>
 
     <!-- ══════ 徽标计数 ══════ -->
@@ -323,6 +366,7 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </section>
+    </template>
   </div>
 </template>
 

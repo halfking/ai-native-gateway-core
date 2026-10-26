@@ -217,7 +217,14 @@ func TestDualReadValidator_CompareDetail_RealDB(t *testing.T) {
 }
 
 func TestDualReadValidator_Summarize_RealDB(t *testing.T) {
-	pool := openDualReadGate(t)
+	// ★ 只验连通性：退役态的 Summarize **一条查询都不发**
+	// （dual_read_validator.go:390 起），所以这道门**不需要任何业务表**。
+	// ⇒ 走 openDualReadConnection 而不是 openDualReadGate ——
+	// 后者会探 v1 族 ⇒ 在当前形态库上把本门连坐成「永远 SKIP ⇒ 永远绿」。
+	// ★ 这道门现在是**退役态契约的真库门**：它在真库上证明
+	// 「Summarize 不 42P01 且如实报 v1_family_retired」——
+	// ⇒ 任何把 v1 族重新写回活路径的改动都会在这里暴露（42P01）。
+	pool := openDualReadConnection(t)
 
 	v := NewDualReadValidator(pool)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -317,7 +324,13 @@ func bucketRowSum(bs []MirrorDriftBucket) int64 {
 	return n
 }
 
-// openDualReadGate 是三个门共用的入口：无 DSN 干净跳过，有 DSN 则建池并探表。
+// openDualReadGate 是**读 v1 族 SQL** 的门共用的入口：无 DSN 干净跳过，
+// 有 DSN 则建池并探表（**含 v1 族**）。
+//
+// ⚠ v1 族已被迁移 890 整体退役 ⇒ 在当前形态库上，`probeDualReadTables`
+// 必然跳过 ⇒ 凡是走这个入口的门都**永远 SKIP ⇒ 永远绿**。
+// ⇒ 所以「不读业务表」的门必须走 openDualReadConnection（只验连通性）。
+// 判据由 cmd/gateway/dual_read_v1_probe_guard_test.go 钉住。
 func openDualReadGate(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := resolveDualReadDSN()
@@ -326,6 +339,30 @@ func openDualReadGate(t *testing.T) *pgxpool.Pool {
 	}
 	pool := openDualReadPool(t, dsn)
 	probeDualReadTables(t, pool)
+	return pool
+}
+
+// openDualReadConnection 只验**连通性**，不开表探针。
+//
+// 为什么需要它：退役态的 SummarizeFrom **一条查询都不发**
+// （dual_read_validator.go:390 起），所以守它的门**根本不需要任何业务表**；
+// 而共用入口 openDualReadGate 会探 v1 族 ⇒ 把这些门连坐成「永远 SKIP ⇒
+// 永远绿」（go test 把 SKIP 记成 PASS）。
+// ⇒ 拆成两个入口：读 v1 族 SQL 的门走 openDualReadGate；
+// 只验连通性的门走这里 ⇒ 它们在**当前形态库**上真的会跑、真的会红。
+func openDualReadConnection(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	dsn := resolveDualReadDSN()
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set — offline mode")
+	}
+	pool := openDualReadPool(t, dsn)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var one int
+	if err := pool.QueryRow(ctx, "SELECT 1").Scan(&one); err != nil {
+		t.Fatalf("dual-read 连通性探测失败: %v", err)
+	}
 	return pool
 }
 
@@ -427,7 +464,9 @@ func TestDualReadValidator_CompareVsDetailScope_RealDB(t *testing.T) {
 //
 // 输入列与 db/request_logs_view_schema.go:828 的 CASE 所引用的列一一对应。
 func TestDriftClassExpression_RealDB(t *testing.T) {
-	openDualReadGate(t) // 只为确认 DSN/连通性；本测试不读业务表
+	// ★ 只验连通性；本测试**不读业务表**（只用 VALUES 造合成行）。
+	// ⇒ 不走 openDualReadGate（它会探 v1 族 ⇒ 把本门连坐成永远 SKIP）。
+	openDualReadConnection(t)
 	pool := openDualReadPool(t, resolveDualReadDSN())
 
 	cases := []struct {

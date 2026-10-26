@@ -140,7 +140,7 @@ export default {
     },
   },
   edit: {
-    title: 'Anbieter bearbeiten — {name}',
+    title: 'Anbieter bearbeiten: {name}',
     catalogCode: 'Katalogcode',
     vendor: 'Anbieter',
     headerProfile: 'Header Profile',
@@ -172,10 +172,9 @@ export default {
     },
   },
   credential: {
-    drawerTitle: 'Anmeldedaten verwalten — {name}',
+    drawerTitle: 'Anmeldedaten verwalten: {name}',
     refresh: 'Aktualisieren',
     addBtn: '+ Anmeldedaten',
-    empty: 'Noch keine Anmeldedaten — auf „+ Anmeldedaten" klicken, um hinzuzufügen',
     table: {
       id: 'Anmeldedaten',
       status: 'Status',
@@ -195,7 +194,7 @@ export default {
       disabled: 'Deaktiviert',
     },
     row: {
-      idTrustLine: '#{id} · {trust}',
+      idTrustLine: '#{id}: {trust}',
       healthProbeModel: 'Probe {model}',
       apiOk: 'API OK',
       apiOkTitle: 'Modelllisten-API validiert',
@@ -208,11 +207,11 @@ export default {
       slotFull: 'Voll',
       slotFree: 'frei {free}',
       slotUnlimited: 'unbegrenzt (0 = kein Limit)',
-      usageSeparator: ' Aufrufe · ',
+      usageSeparator: ' Aufrufe: ',
       balanceLabel: 'Guthaben',
       // migration 721 (2026-09-18): balance provenance + on-demand refresh.
       balanceSourceApi: 'API-Abfrage',
-      balanceSourceManual: 'Manuell erfasst · 24h keine automatische Abfrage',
+      balanceSourceManual: 'Manuell erfasst: 24h keine automatische Abfrage',
       balanceRefreshTooltip: 'Guthaben-API des Anbieters jetzt abfragen (GET, ohne Tokens)',
       balanceRefreshFailed: 'Guthaben-Abfrage fehlgeschlagen',
       balanceUnsupported: 'Anbieter bietet keine Guthaben-API (Plan-Zugänge siehe Plan-Quota-Felder)',
@@ -226,7 +225,7 @@ export default {
       disable: 'Löschen',
     },
     addDialog: {
-      title: 'Anmeldedaten hinzufügen — {name}',
+      title: 'Anmeldedaten hinzufügen: {name}',
       apiKeyLabel: 'API Key',
       apiKeyPlaceholder: 'sk-…',
       tagsLabel: 'Tags (optional)',
@@ -247,23 +246,23 @@ export default {
       saveFailed: 'Anmeldedaten konnten nicht gespeichert werden',
       toggleFailed: 'Vorgang fehlgeschlagen',
     },
+    empty: 'Noch keine Anmeldedaten: Zum Hinzufügen „+ Anmeldedaten" wählen.',
   },
   check: {
     providerStarted: 'Prüfung gestartet',
     providerRunning: 'Wird bereits geprüft',
     providerFailed: 'Prüfung fehlgeschlagen',
-    credentialStatusPrefix: 'Status: {status} · ',
+    credentialStatusPrefix: 'Status: {status}: ',
     credentialModels: 'Modell-Schnittstelle OK',
     credentialProbeOk: 'Prüfung bestanden',
     credentialUnreachable: 'Nicht erreichbar',
     credentialFailed: 'Prüfung fehlgeschlagen',
-    diagnoseFailed: 'Diagnose fehlgeschlagen',
+    diagnoseFailed: 'Diagnose konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
   },
   diagnose: {
-    title: 'Anbieterdiagnose — tatsächliche Anfrage-/Antwort-Aufzeichnung',
+    title: 'Anbieterdiagnose: tatsächliche Anfrage-/Antwort-Aufzeichnung',
     subtitle: '(Anmeldedaten bereinigt)',
     loading: 'Diagnose läuft…',
-    summary: '{n} Anmeldedaten — auf eine Zeile klicken, um Anfrage-/Antwort-Details zu erweitern',
     table: {
       credential: 'Anmeldedaten',
       modelSource: 'Modellquelle',
@@ -293,6 +292,7 @@ export default {
     errHeader: '⚠️ Fehler',
     modelsHeader: '✅ Geparste Modelle ({n})',
     modelsTruncated: '… {n} gesamt',
+    summary: '{n} Anmeldedaten: eine beliebige Zeile wählen, um Anfrage-/Antwort-Details zu erweitern',
   },
   bgStatus: {
     panelTitle: 'Status der Hintergrundaufgaben',
@@ -325,7 +325,7 @@ export default {
     day: 'Tage her',
   },
   error: {
-    loadFailed: 'Laden fehlgeschlagen',
+    loadFailed: 'Anbieterliste konnte nicht geladen werden. Bitte erneut versuchen.',
   },
   common: {
     button: {
@@ -367,15 +367,15 @@ export default {
   emergencyFailed: 'Notfallwartung fehlgeschlagen',
   // ── 2026-09-05: Einstellungen & Wartung · Lifecycle-Status-Chips + manueller Sperrstatus ──
   lifecycleTitle: 'Lifecycle',
-  lifecycleHint: 'Klicken Sie auf einen Status, um sofort zu speichern; beim Verlassen von „Aktiv“ wird bestätigt',
+  lifecycleHint: 'Wählen Sie einen Status, um sofort zu speichern; beim Verlassen von „Aktiv“ wird bestätigt',
   lifecycleLabelActive: 'Aktiv',
   lifecycleLabelDisabled: 'Deaktiviert',
   lifecycleLabelSuspended: 'Ausgesetzt',
   lifecycleLabelRetired: 'Ausgemustert',
-  lifecycleHintActive: 'active · nimmt normal am Routing teil',
-  lifecycleHintDisabled: 'disabled · manuell deaktiviert, vom Routing ausgeschlossen',
-  lifecycleHintSuspended: 'suspended · vorübergehend pausiert, vom Routing ausgeschlossen',
-  lifecycleHintRetired: 'retired · endgültig ausgemustert, hier nicht wiederherstellbar',
+  lifecycleHintActive: 'active: nimmt normal am Routing teil',
+  lifecycleHintDisabled: 'disabled: manuell deaktiviert, vom Routing ausgeschlossen',
+  lifecycleHintSuspended: 'suspended: vorübergehend pausiert, vom Routing ausgeschlossen',
+  lifecycleHintRetired: 'retired: endgültig ausgemustert, hier nicht wiederherstellbar',
   lifecycleCurrent: 'Aktuell',
   lifecycleChangeConfirm: 'Lifecycle von „Aktiv“ auf „{label}“ ({value}) ändern?\nDiese Credential erhält keinen Traffic mehr; Sie können jederzeit zurück zu „Aktiv“ wechseln.',
   lifecycleChangeDone: 'Lifecycle auf „{label}“ geändert.',

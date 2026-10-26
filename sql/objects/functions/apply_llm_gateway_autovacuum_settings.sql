@@ -36,10 +36,10 @@ CREATE FUNCTION public.apply_llm_gateway_autovacuum_settings() RETURNS integer
 		        JOIN pg_class p ON p.oid = i.inhparent
 		        WHERE n.nspname = 'public'
 		          AND p.relname = ANY (ARRAY[
-		              'credential_model_index','model_probe_runs','request_logs',
+		              'credential_model_index','model_probe_runs',
 		              'routing_decision_log','request_wal','usage_ledger',
 		              'credit_ledger','tool_usage_stats','candidate_failure_logs',
-		              'handoff_logs','request_logs_bodies'])
+		              'handoff_logs'])
 		    LOOP
 		        BEGIN
 		            EXECUTE format('ALTER TABLE %I SET (%s)', r.relname, opts_sql);

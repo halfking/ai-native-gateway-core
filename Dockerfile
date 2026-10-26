@@ -21,6 +21,7 @@ FROM ${GO_BASE_IMAGE}${GO_IMAGE_DIGEST:+@${GO_IMAGE_DIGEST}} AS builder
 # China network: proxy.golang.org is unreachable, use goproxy.cn instead.
 # The offline-package build script already does this; Docker builds need it too.
 ENV GOPROXY=https://goproxy.cn,direct
+ENV GOTOOLCHAIN=go1.27.2
 
 WORKDIR /app
 
@@ -38,7 +39,7 @@ COPY . .
 # ⚠️ 2026-10-13 12h 审计轮（P1）修正：本行此前**排在 `COPY . .` 之前**，那时镜像里
 # 只有 go.mod/go.sum，`find` 什么也没删；紧接着的 COPY 又把 `._*` 原样带了进来
 # ⇒ 这一层等于没写。必须排在 COPY 之后才成立。
-# 同步脚本（deploy-211-docker.sh）的 --exclude 是第一道防线，这里是第二道；
+# 同步脚本（deploy-seamless-docker.sh）的 --exclude 是第一道防线，这里是第二道；
 # 但真正的兜底应是 .dockerignore（它与构建上下文怎么来的无关）。
 RUN find . -type f \( -name '._*' -o -name '.DS_Store' \) -delete
 

@@ -223,7 +223,8 @@ func TestClientIPFromRequest(t *testing.T) {
 	}{
 		{"xff preferred", map[string]string{"X-Forwarded-For": "10.0.0.1, 10.0.0.2"}, "1.1.1.1:1234", "10.0.0.1"},
 		{"xri fallback", map[string]string{"X-Real-IP": "10.0.0.3"}, "1.1.1.1:1234", "10.0.0.3"},
-		{"remote addr fallback", nil, "1.1.1.1:1234", "1.1.1.1:1234"},
+		// RemoteAddr 带端口时剥掉端口，避免 "ip:port" 与 "ip" 拆成两个限流桶
+		{"remote addr fallback strips port", nil, "1.1.1.1:1234", "1.1.1.1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

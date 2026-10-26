@@ -58,15 +58,32 @@ func ClampUsageLimit(limit int) int {
 }
 
 // requestLogsSource keeps usage queries working during upgrades where the
-// optional union view has not been created yet. _request_logs_hot is an
-// independent seven-day table; request_logs_with_current_month unions hot
-// + partitioned archive without column-count drift between hot/parent.
+// optional union view has not been created yet.
+//
+// ★ 2026-10-20（迁移 890，v1 族最终删除）：**两个分支合并成一个**。
+//
+// 原实现对 `days <= 7` 返回 `_request_logs_hot AS r`（v1 族的独立热表），
+// 对 `days > 7` 返回 `request_logs_with_current_month AS r`（canonical 视图）。
+// 那个分流是灰度期的产物：**hot 表只保留 8h**，而 canonical 视图是
+// hot ∪ 月度分区 ⇒ 短窗用 hot 是为了让「最近 7 天」这个口径拿到数据。
+//
+// v1 族被整体 DROP 之后：① `_request_logs_hot` 不存在 ⇒ 那条分支必然 42P01；
+// ② 而 canonical 视图**本身就是**会话族两臂体
+// （`session_turns_hot ∪ session_turns` + 734 details LEFT JOIN）⇒
+// 它已经覆盖了「热窗 + 冷窗」两个面 ⇒ **短窗/长窗不再需要分流**。
+//
+// ⇒ 恒返回 canonical 视图。
+//
+// ⚠ 口径变化（写在这里，免得被当成纯重构）：canonical 视图不含
+// **镜像链建立之前的历史**（那批行只存在于 v1 族，已随 890 删除）⇒
+// 7 天窗的计数会变少——那不是 bug，是「那段历史已经不在库里了」。
+//
 // The subquery MUST be aliased because PostgreSQL requires every FROM
 // subquery to have a name. The returned tuple is (FROM clause, alias).
 func requestLogsSource(days int) (string, string) {
-	if days <= 7 {
-		return "_request_logs_hot AS r", "r"
-	}
+	// days 参数保留：调用点（usage.go / consumption_detail.go）都传它，
+	// 且 ClampUsageDays 仍决定查询窗口。分流本身已无意义。
+	_ = days
 	return "request_logs_with_current_month AS r", "r"
 }
 

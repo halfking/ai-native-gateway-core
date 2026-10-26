@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { CaretBottom } from '@element-plus/icons-vue'
 
 export interface AnomalyTypeOption {
   value: string
@@ -70,10 +71,10 @@ function clearValue() {
           type="button"
           class="tp-clear"
           :disabled="disabled"
-          title="清空"
+          :title="$t('common.terms.clear')"
           @click.stop="clearValue"
         >×</button>
-        <span class="tp-caret">▾</span>
+        <span class="tp-caret"><CaretBottom /></span>
       </span>
     </button>
 
@@ -82,7 +83,7 @@ function clearValue() {
         <div class="tp-dialog" role="dialog" :aria-label="title" @click.stop>
           <header class="tp-header">
             <h3 class="tp-title">{{ title }}</h3>
-            <button type="button" class="tp-close" aria-label="关闭" @click="closeDialog">×</button>
+            <button type="button" class="tp-close" :aria-label="$t('common.close')" @click="closeDialog">×</button>
           </header>
 
           <div class="tp-toolbar">

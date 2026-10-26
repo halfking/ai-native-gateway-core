@@ -225,7 +225,7 @@ INSTANCE_COUNT=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
     -tAc "SELECT COUNT(*) FROM gateway_instances WHERE instance_id = '$INSTANCE_ID'")
 
 if [ "$INSTANCE_COUNT" != "1" ]; then
-    log_error "实例未正确写入 gateway_instances 表（count=$INSTANCE_COUNT）"
+    log_error "实例未正确写入 gateway_instances 表（count=${INSTANCE_COUNT}）"
     exit 1
 fi
 log_success "实例已正确写入 gateway_instances 表"
@@ -235,10 +235,10 @@ HEARTBEAT_COUNT=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
     -tAc "SELECT COUNT(*) FROM instance_heartbeats WHERE instance_id = '$INSTANCE_ID'")
 
 if [ "$HEARTBEAT_COUNT" -lt 3 ]; then
-    log_error "心跳记录不足（expected=3, actual=$HEARTBEAT_COUNT）"
+    log_error "心跳记录不足（expected=3, actual=${HEARTBEAT_COUNT}）"
     exit 1
 fi
-log_success "心跳记录已正确写入（count=$HEARTBEAT_COUNT）"
+log_success "心跳记录已正确写入（count=${HEARTBEAT_COUNT}）"
 
 # 验证 tokens
 TOKEN_EXISTS=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \

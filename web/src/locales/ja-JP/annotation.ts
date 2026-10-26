@@ -8,8 +8,6 @@ export default {
     refreshing: '更新中...',
   },
   filter: {
-    startDate: '開始日',
-    endDate: '終了日',
     taskType: '元タスクタイプ',
     model: 'モデル',
     modelPlaceholder: 'すべてのモデル',
@@ -21,8 +19,6 @@ export default {
     all: 'すべて',
     annotatedOnly: 'アノテーション済み',
     unannotatedOnly: '未アノテーション',
-    annotator: 'アノテーター',
-    annotatorPlaceholder: 'アノテーター名を入力',
     query: '検索',
     reset: 'リセット',
   },
@@ -35,8 +31,6 @@ export default {
     selectModel: 'モデルを選択',
     autoRoute: 'AUTOルート',
     confidence: '信頼度',
-    humanProvider: '人手によるプロバイダー',
-    selectProvider: 'プロバイダーを選択',
     isCorrect: 'ルーティングは正しいか',
     correct: '正しい',
     incorrect: '誤り',
@@ -46,7 +40,6 @@ export default {
     submit: '送信',
     cancel: 'キャンセル',
     errors: {
-      providerRequired: 'プロバイダーは必須です',
       taskTypeRequired: 'タスクタイプは必須です',
       modelRequired: 'モデルは必須です',
       reasonRequired: '理由は必須です',
@@ -55,7 +48,6 @@ export default {
     },
   },
   table: {
-    requestId: 'リクエストID',
     time: '時刻',
     title: 'タイトル',
     client: 'クライアント',
@@ -63,7 +55,6 @@ export default {
     model: 'モデル',
     taskType: 'タスクタイプ',
     confidence: '信頼度',
-    autoProvider: 'AUTOルート',
     status: '状態',
     statusOk: '成功 {code}',
     statusFail: '失敗 {code}',
@@ -73,14 +64,12 @@ export default {
     unannotated: '未アノテーション',
     annotate: 'アノテート',
     view: '表示',
-    delete: '削除',
   },
   drawer: {
     annotateTitle: 'サンプルにアノテーション',
     viewTitle: 'アノテーション表示',
   },
   detail: {
-    humanProvider: '人手によるプロバイダー',
     isCorrect: 'ルーティングは正しいか',
     reason: 'アノテーション理由',
     annotator: 'アノテーター',
@@ -96,18 +85,6 @@ export default {
     totalTurns: 'セッションターン数',
     source: 'データソース',
   },
-  batch: {
-    title: '一括アノテーション',
-    desc: '選択した {count} 件を一括アノテーション',
-    submit: '一括送信',
-  },
-  pagination: {
-    total: '合計 {n} 件',
-    pageOf: '{total} ページ中 {page} ページ',
-    perPage: '表示件数',
-    prev: '前へ',
-    next: '次へ',
-  },
   reasons: {
     correct: '予測が正しい',
     performance: 'パフォーマンス問題',
@@ -121,7 +98,7 @@ export default {
     refresh: '更新',
     refreshing: '更新中...',
     loadFailed: '統計の読み込みに失敗しました',
-    noData: 'データがありません',
+    noData: 'アノテーション統計はまだありません。先にアノテーションをまとめて登録してから確認してください。',
     totalAnnotations: '総アノテーション数',
     providerAccuracy: 'プロバイダー別精度',
     annotatorStats: 'アノテーター別統計',
@@ -140,24 +117,13 @@ export default {
     distribution: '分布',
   },
   // Actions
-  batchSelected: '{count} 件選択中',
-  batchAnnotate: '一括アノテーション',
-  clearSelection: '選択を解除',
 
   // Success messages
-  annotationCreated: 'アノテーションを作成しました',
-  batchSuccess: '一括アノテーション成功：{count} 件',
-  batchPartialSuccess: '一括アノテーション一部成功：{success} 件成功、{failed} 件失敗',
-  deleteSuccess: 'アノテーションを削除しました',
 
   // Error messages
   loadFailed: 'サンプルの読み込みに失敗しました',
   annotationFailed: 'アノテーションに失敗しました',
   correctionWriteFailed: '修正の書き込みに失敗しました（アノテーションは保存済み）：{msg}',
-  batchFailed: '一括アノテーションに失敗しました',
-  deleteFailed: 'アノテーションの削除に失敗しました',
-  noSamplesSelected: 'アノテーションするサンプルを選択してください',
-  confirmDelete: 'このアノテーションを削除しますか？',
 
   // Loading states
   loading: '読み込み中...',

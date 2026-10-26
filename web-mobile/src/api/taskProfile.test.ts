@@ -35,7 +35,7 @@ import {
  * 后端：`taskprofile/handler.go:128-136`（**第七种注册形态：方法内嵌路由模式 + 跨包**）
  * + `:141-180`（handleProfile）+ `:155-159`（profileView 匿名内嵌 ⇒ JSON 扁平）
  * + `taskprofile/suggest.go:45-105`（Suggest / escalateTier）+ `corrections.go:131-163`（Stats）
- * + `registry.go:25 :98-106 :128-136`，由 `admin/handler.go:1413` 用 `admin` 挂载。
+ * + `registry.go:25 :98-106 :128-136`，由 `admin/handler.go:1488` 用 `admin` 挂载。
  *
  * 重点是源文件头写明的十二件事 (1)…(12)。带 ★ 的自校验判据都能被变异打掉。
  * ⚠️ 全部用例标题**字面量**写（不用 `it.each`）—— 变异 harness 靠标题取锚点。

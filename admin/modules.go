@@ -202,7 +202,7 @@ func allModuleDefinitions() []ModuleDefinition {
 			{
 				Key:         "output_compliance",
 				Name:        "输出合规检测",
-				Description: "检查 LLM 输出中的敏感数据（PII、密钥、内部 IP、Token 等），触发告警或自动脱敏。",
+				Description: "可选：检查 LLM 输出中的敏感数据（PII、密钥、内部 IP、Token 等）。默认关闭；输入脱敏与强制外传守卫不受此开关影响。",
 				Capabilities: []string{
 					"敏感数据识别（PII / 密钥 / 内部 IP）",
 					"自动脱敏处理",
@@ -212,6 +212,8 @@ func allModuleDefinitions() []ModuleDefinition {
 				Icon:        "🔒",
 				Category:    "security",
 				SettingKey:  "output_compliance.enabled",
+				ConfigKeys:  []string{"sanitize.output_check_enabled", settings.KeySanitizeRulesRefreshIntervalSeconds, settings.KeySanitizeRulesAuditEnabled, settings.KeySanitizeRulesEventLimit},
+				DocsURL:     "/admin/sanitize-rules",
 				DangerLevel: settings.Warning,
 			},
 			{
@@ -1359,6 +1361,35 @@ func (h *Handler) feishuBotConfigSummary(w http.ResponseWriter, r *http.Request)
 }
 
 // registerFeishuRoutes installs feishu_bot module admin endpoints.
+//
+// ★ routemount: disabled — 本函数**故意没有调用点**，理由与恢复配方如下
+//
+//	（2026-10-21 R72 轮实测；这条注释本身就是「停用」这件事的显式声明，
+//	 取代此前「调用点被 build 修复顺手删掉、谁也不知道它还活着」的状态）。
+//
+// 实测事实（本地 8782 + 生产 252，均为只读核实）：
+//
+//	· /api/admin/feishubot/* 三个端点恒 404（挂载缺失）。
+//	· 承载表 feishu_bot_routing_rules / feishu_bot_send_log 由
+//	  sql/migrations/domain/220_feishu_bot_routing.sql 建；**新装库**会建，
+//	  **升级库**不会（domain 迁移只进 scripts/init-local-db.sh 的新装链，
+//	  升级链 scripts/apply-db-revision-sequence.sh 只带显式清单）。
+//	· 生产 252（ssh 252 → docker exec pg-252-pg17）实测：两张表不存在，
+//	  函数 update_feishu_route_updated_at 不存在（0 个）。
+//
+// 为什么**不**在恢复调用点的同时把 220 一起推上生产：
+//
+//	那是给 211/252 增加两张新表 + 一个函数的**生产变更**，而飞书机器人本体
+//	并没有在跑（本进程里也没有任何写这两张表的调用点），属于属主的语义决策。
+//	单独恢复调用点更糟：生产会从 404（诚实的「没这个端点」）变成 500
+//	（relation does not exist），把配置态伪装成故障。
+//
+// 恢复它需要**三件一起**的事，缺一件都会在生产上打出 500：
+//  1. 在 admin/handler.go 的 registerModuleRoutes 里调用本函数；
+//  2. 把 sql/migrations/domain/220_feishu_bot_routing.sql 登记进
+//     scripts/apply-db-revision-sequence.sh 的升级序列（并按仓库纪律在
+//     docs/db-changelog.md 登记 sha256）；
+//  3. 新装链已满足（init-local-db.sh 会跑全部 domain 迁移），无需改动。
 func (h *Handler) registerFeishuRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/feishubot/routing-rules", h.admin(h.handleFeishuRoutingList))
 	mux.HandleFunc("/api/admin/feishubot/routing-rules/", h.admin(h.feishuRoutingRulesItem))

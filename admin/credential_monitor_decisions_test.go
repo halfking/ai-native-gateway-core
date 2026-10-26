@@ -30,6 +30,12 @@ func TestHandleCredentialDecisions(t *testing.T) {
 		m := &CredentialMonitorHandlers{h: h}
 
 		req := httptest.NewRequest(http.MethodGet, "/api/credentials/decisions", nil)
+		// 2026-10-20 12h 审计轮：/api/credentials/decisions 补了角色门
+		// （!IsTenantAdmin && !IsSuperAdminOrLegacy ⇒ 403），且门**早于** nil-db 门
+		// ⇒ 未授权者拿 403，不会从 503/503 的差异里读出"DB 是否已配置"。
+		// 本用例要测的是**穿过角色门之后**的 nil-db 路径 ⇒ 必须带上管理员角色。
+		// ★ 断言没变（仍是 503）：变的只是"请求现在需要带角色"这件事。
+		req = SetAuthContext(req, &AuthContext{Role: "super_admin", IsJWT: true})
 		w := httptest.NewRecorder()
 
 		m.handleCredentialDecisions(w, req)
@@ -51,6 +57,7 @@ func TestHandleClearManualDisabled(t *testing.T) {
 		m := &CredentialMonitorHandlers{h: h}
 
 		req := httptest.NewRequest(http.MethodPost, "/api/credentials/clear-manual-disabled", bytes.NewBufferString("invalid"))
+		req = SetAuthContext(req, &AuthContext{Role: "super_admin", IsJWT: true})
 		w := httptest.NewRecorder()
 
 		m.handleClearManualDisabled(w, req)
@@ -67,6 +74,7 @@ func TestHandleClearManualDisabled(t *testing.T) {
 		body := map[string]any{"reason": "test"}
 		bodyBytes, _ := json.Marshal(body)
 		req := httptest.NewRequest(http.MethodPost, "/api/credentials/clear-manual-disabled", bytes.NewBuffer(bodyBytes))
+		req = SetAuthContext(req, &AuthContext{Role: "super_admin", IsJWT: true})
 		w := httptest.NewRecorder()
 
 		m.handleClearManualDisabled(w, req)
@@ -83,6 +91,7 @@ func TestHandleClearManualDisabled(t *testing.T) {
 		body := map[string]any{"credential_id": 123}
 		bodyBytes, _ := json.Marshal(body)
 		req := httptest.NewRequest(http.MethodPost, "/api/credentials/clear-manual-disabled", bytes.NewBuffer(bodyBytes))
+		req = SetAuthContext(req, &AuthContext{Role: "super_admin", IsJWT: true})
 		w := httptest.NewRecorder()
 
 		m.handleClearManualDisabled(w, req)
@@ -138,6 +147,9 @@ func TestCredentialDecisionsIntegration(t *testing.T) {
 
 	// Test the endpoint
 	req := httptest.NewRequest(http.MethodGet, "/api/credentials/decisions?credential_id=999&limit=10", nil)
+	// 2026-10-20 12h 审计轮：该端点补了角色门（403），门早于 DB 查询
+	// ⇒ 集成用例必须带管理员角色，否则会拿到 403 而不是 200。
+	req = SetAuthContext(req, &AuthContext{Role: "super_admin", IsJWT: true})
 	w := httptest.NewRecorder()
 
 	m.handleCredentialDecisions(w, req)
@@ -164,6 +176,7 @@ func TestCredentialDecisionsIntegration(t *testing.T) {
 	// and matches case-insensitively across model/client_model/outbound_model.
 	for _, modelParam := range []string{"gpt-4", "GPT-4"} {
 		freq := httptest.NewRequest(http.MethodGet, "/api/credentials/decisions?credential_id=999&model="+modelParam, nil)
+		freq = SetAuthContext(freq, &AuthContext{Role: "super_admin", IsJWT: true})
 		fw := httptest.NewRecorder()
 		m.handleCredentialDecisions(fw, freq)
 		if fw.Code != http.StatusOK {

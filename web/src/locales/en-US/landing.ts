@@ -1,153 +1,136 @@
 // landing.ts — Landing page copy (guest homepage).
 //
-// 2026-07-05: Updated to neutral, global positioning.
+// 2026-10-24 rewrite (impeccable craft-floor / STYLE pass).
+// The previous draft read like a generated landing page: a three-item
+// marketing string, adjectives standing in for facts, em dashes doing the
+// job of punctuation, and every description a tidy "X + Y + Z".
+// Rules live in DESIGN.md §7 "Voice" at the repo root.
+//
+// Fact discipline: this version claims only what the product actually does
+// (Apache 2.0 / 40 MB image / 200 concurrent with P99 under 500 ms / RLS
+// row-level security / 43 audit rounds with zero L1 findings / k3s and Docker
+// / three inbound protocols / 15-day trial). No new capability is implied.
 export default {
-  kicker: 'Core Open Source · Enterprise-Grade · Private Deployment',
+  // Rendered only in the PublicPageShell footer (brand name + this). It is no
+  // longer used as a small label above the heading (craft-floor bans kickers).
+  kicker: 'Apache 2.0 core',
   brandTitle: 'AI-Native Organization Core Gateway',
-  brandSubtitle: 'Qigui · Self-hosted',
-  title: 'AI-Native Organization Core Gateway',
-  subtitle: 'Core open source enterprise AI gateway. Unified governance, global LLM access, compliance and data sovereignty — all core open source.',
-  featuresTitle: 'Core Capabilities',
-  featuresSubtitle: 'Covering key aspects from access to operations',
+  // already says that. It says what the thing does instead.
+  title: 'One gateway for every model your company calls, where you can see it, meter it, and turn it off',
+  subtitle:
+    'OpenAI, Anthropic and Responses protocols land in the same gateway. Routing by tenant and model, metering, audit and rate limits in one place. It runs on your own machines, so the traffic never leaves.',
+  featuresTitle: 'What it does',
+  featuresSubtitle: 'Intake, routing, metering and audit, all in the same entry point',
+  // The six capability facts on the right-hand rail. Every one is checkable.
   heroPoints: [
-    'Core Open Source · Apache 2.0',
-    'Enterprise Governance',
-    'Global LLM Access',
-    'Data Security Shield',
-    'AI Session Asset Management',
-    'Private Deployment',
+    'Apache 2.0 core',
+    'Go data plane, 40 MB image',
+    '200 concurrent, P99 under 500 ms',
+    'Three inbound protocols, one endpoint',
+    'Row-level isolation with PostgreSQL RLS',
+    'k3s or Docker, on your own hardware',
   ],
   features: {
     smartRouting: {
-      title: 'Smart Routing & Credential Pool',
-      description: 'Auto-routing by tenant, model and task type; multi-credential fingerprint pool + adaptive probing, failover in seconds, near-zero ban rate.',
+      title: 'Routing by tenant and by task',
+      description:
+        'Picks a route from tenant, model and task type. When an upstream starts failing, a probe notices and traffic moves to the next one; a credential fingerprint pool handles rotation.',
     },
     safety: {
-      title: 'Call Security Shield',
-      description: 'LLM-as-judge prompt injection detection (v1 observability mode) + sensitive data masking planning, enterprise compliance defense.',
+      title: 'Prompt injection and sensitive data',
+      description:
+        'LLM-as-judge detects prompt injection (v1 observes only, it does not block) and sensitive fields get masked by rule.',
       badge: 'beta',
     },
     cache: {
-      title: 'Cache Alignment & Cost Reduction',
-      description: 'Prompt prefix stabilization + semantic caching, maximize KV Cache hit rate, reduce token compute overhead.',
+      title: 'Cache and cost',
+      description:
+        'Prefix stabilization plus semantic caching. A higher KV Cache hit rate means fewer tokens billed.',
     },
     agent: {
-      title: 'Agent & MCP Gateway',
-      description: 'Agent registry, A2A protocol, MCP tool hosting and protocol conversion — upgrade from LLM proxy to agent orchestration gateway.',
-      badge: 'Coming Soon',
+      title: 'Agent and MCP ingress',
+      description:
+        'Agent registry, A2A protocol, MCP tool hosting and protocol translation. It moves from proxying an LLM to orchestrating agents.',
+      badge: 'Coming soon',
     },
     observability: {
-      title: 'Full-Chain Observability',
-      description: 'Request logs, routing decision audit, OTel tracing, SIEM/CEF event export, enterprise compliance ready.',
+      title: 'Every request leaves a trail',
+      description:
+        'Request logs, routing decision audit, OTel traces, SIEM and CEF event export. When something breaks you can walk it back.',
     },
     billing: {
-      title: 'MaaS Billing System',
-      description: 'Plan + credits + three-pool wallet (subscription / credit / recharge), complete commercialization loop for tenant self-service.',
+      title: 'Usage that matches the bill',
+      description:
+        'Plans, credits and a three-pool wallet (subscription, credit, top-up). Tenants check their own usage instead of asking an admin.',
     },
     multiProtocol: {
-      title: 'Multi-Protocol Compatibility',
-      description: 'OpenAI Chat / Anthropic Messages / Responses three inbound protocols unified, seamless access to open source and commercial models.',
+      title: 'One endpoint, three protocols',
+      description:
+        'OpenAI Chat, Anthropic Messages and Responses are normalized on the way in. The client code does not change and neither does the gateway.',
     },
     multiTenant: {
-      title: 'Multi-Tenant Isolation',
-      description: 'PostgreSQL RLS row-level security + 43 rounds of audit L1=0, zero data leakage between tenants, independent policy and quota per tenant.',
+      title: 'Tenants stay separate',
+      description:
+        'PostgreSQL RLS row-level security, 43 audit rounds with zero L1 findings, independent policy and quota per tenant.',
     },
   },
-  advantagesTitle: 'Why Choose LLM Gateway',
-  advantagesSubtitle: 'Enterprise AI gateway for global enterprises',
+  advantagesTitle: 'Why run it yourself',
+  advantagesSubtitle: 'The data stays on your side, and the bill stays readable',
   advantages: {
     openSource: {
-      title: 'Core Open Source',
-      description: 'Data plane, control plane, authentication, routing scheduler all open source. Zero black box, enterprise auditable, customizable, and evolvable',
+      title: 'Open core',
+      description:
+        'Data plane, control plane, auth and routing scheduler are all open source under Apache 2.0. You can change it, and you can audit it.',
     },
     private: {
-      title: 'Private Deployment',
-      description: 'Fully private deployment, data stays in enterprise, k3s + Docker dual form, zero external dependencies',
+      title: 'Your own hardware',
+      description:
+        'Installed on your machines, in k3s or Docker form, with no dependency on an external service.',
     },
     antiBan: {
-      title: 'High Availability System',
-      description: 'Multi-credential rotation + intelligent probing + automatic failover, ensuring service continuity',
+      title: 'A ban is not an outage',
+      description:
+        'Credential rotation plus active probing: when one credential gets banned, the next one takes over.',
     },
     perf: {
-      title: 'Go High-Performance Data Plane',
-      description: 'Native Go implementation, 40MB lightweight image, 200 concurrency P99 < 500ms, SSE streaming stable relay',
+      title: 'A data plane that holds up',
+      description:
+        'Native Go, 40 MB image, P99 still under 500 ms at 200 concurrent requests, stable SSE relay.',
     },
   },
-  footer: 'LLM Gateway · Core Open Source · Enterprise Deployment · Data Sovereignty',
-  ariaPoints: 'Key Highlights',
+  footer: 'Open core under Apache 2.0, running on your own machines.',
   roadmap: {
-    title: 'Product Roadmap',
-    subtitle: 'From LLM data plane to enterprise Agent gateway, continuous build',
+    title: 'Where this is going',
+    subtitle: 'From an LLM data plane to a gateway for enterprise agents',
     v31: {
       phase: 'v3.1',
-      title: 'API Hub Asset Center + MCP Tool Hosting',
-      description: 'Unified registration of LLM endpoints, MCP services and Agents, developer self-service discovery and reuse.',
+      title: 'API Hub asset center and MCP tool hosting',
+      description:
+        'LLM endpoints, MCP services and agents get registered in one place, so developers can find and reuse them without asking.',
     },
     v32: {
       phase: 'v3.2',
-      title: 'Security Shield GA + SIEM Integration + SpecBoost',
-      description: 'Prompt injection blocking, sensitive data masking, API description intelligent enrichment to improve Function Calling accuracy.',
+      title: 'Injection blocking, SIEM integration, SpecBoost',
+      description:
+        'Prompt injection detection moves from observing to blocking, sensitive data gets masked, and API descriptions are enriched automatically to improve Function Calling accuracy.',
     },
     v40: {
       phase: 'v4.0',
-      title: 'Agent Registry + A2A Protocol Gateway',
-      description: 'Cross-agent task delegation and orchestration, unified access to OpenClaw and business Agents.',
+      title: 'Agent registry and A2A protocol gateway',
+      description:
+        'Agents delegate tasks to each other, and OpenClaw plus in-house agents arrive through the same door.',
     },
     v50: {
       phase: 'v5.0',
-      title: 'Industry Solution GA',
-      description: 'Four industry templates for customer service, HR, sales, logistics, out-of-the-box agent solutions.',
+      title: 'Industry solutions, generally available',
+      description:
+        'Templates for support, HR, sales and logistics. Install one and it works.',
     },
-  },
-  activateBanner: {
-    title: 'Gateway not activated',
-    desc: 'No valid license on this instance. Open the activation wizard for online or offline activation.',
-    action: 'Activate now',
-  },
-  downloadCta: {
-    title: 'Self-hosted · Deploy in 5 minutes',
-    subtitle: 'Offline packages for every platform — no signup required. 15-day free trial after install.',
-    download: 'Download now',
-    support: 'Support us',
-    activate: 'Already installed? Activate',
-    note: 'Donation is voluntary and never blocks downloads or features',
-  },
-  deployFlow: {
-    title: 'Download · Install · Activate · Sign in',
-    subtitle: 'End-to-end private deployment integrated with the License activation wizard',
-    steps: {
-      download: {
-        title: 'Download offline package',
-        description: 'Pick your platform/arch artifact — no signup required for a time-limited download URL.',
-        action: 'Go to download',
-      },
-      install: {
-        title: 'Install on target environment',
-        description: 'Extract and run the installer on your server to deploy via k3s or Docker.',
-        hint: 'llm-gw-installer install --target /opt/kx-gateway',
-      },
-      activate: {
-        title: 'Activate License',
-        description: 'Online License Key or offline activation.req → activation.resp flow; 15-day trial available.',
-        action: 'Open activation wizard',
-        offlineAction: 'Offline activation portal',
-      },
-      login: {
-        title: 'Sign in to control plane',
-        description: 'After activation, sign in with admin credentials to manage tenants, routing, and observability.',
-        action: 'Sign in',
-      },
-    },
-    notes: [
-      'Donation is optional and never blocks downloads or features',
-      'Air-gapped sites should use the offline activation portal for activation.req',
-      'Activation wizard: /activate · interoperates with installer CLI commands',
-    ],
   },
   // 2026-07-21: guest-nav aria + top download/activation links (App.vue L197-203).
   guestNavAria: 'Product navigation',
   navDownload: 'Download',
-  navSetup: 'Install & Activate',
+  navSetup: 'Install and activate',
   navActivate: 'Activate',
   navLicense: 'License',
   navAgreement: 'User Agreement',
@@ -155,6 +138,6 @@ export default {
   // 2026-07-21: landing primary CTAs (LandingView.vue L109-119).
   ctaLogin: 'Sign in',
   ctaDownload: 'Download',
-  ctaActivate: 'Activate License',
-  ctaAgreement: 'View Agreement',
+  ctaActivate: 'Activate license',
+  ctaAgreement: 'View agreement',
 }

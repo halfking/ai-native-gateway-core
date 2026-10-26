@@ -134,7 +134,7 @@ run_scenario() {
       bad "B2 网关漏检：真值原样到达客户端 ($model):$leaked"
       note "出向正文无占位符 → 该值未被脱敏，属网关缺陷"
     else
-      note "B2 模型自行复述了历史中的值 ($model):$leaked（出向已有占位符，非网关缺陷）"
+      note "B2 模型自行复述了历史中的值 ($model):${leaked}（出向已有占位符，非网关缺陷）"
     fi
   else
     ok "B2 模型响应未复现敏感原文 ($model)"

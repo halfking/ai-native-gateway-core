@@ -11,6 +11,10 @@ import (
 // HandleSessionManagementList handles the session list request with enhanced filtering
 // GET /api/sessions/list
 func (h *Handler) HandleSessionManagementList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	if h.db == nil {
 		http.Error(w, "database not configured", http.StatusServiceUnavailable)
 		return
@@ -21,6 +25,10 @@ func (h *Handler) HandleSessionManagementList(w http.ResponseWriter, r *http.Req
 // HandleSessionManagementDetail handles session detail requests
 // GET /api/sessions/detail/{session_key}
 func (h *Handler) HandleSessionManagementDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	if h.db == nil {
 		http.Error(w, "database not configured", http.StatusServiceUnavailable)
 		return
@@ -31,6 +39,10 @@ func (h *Handler) HandleSessionManagementDetail(w http.ResponseWriter, r *http.R
 // HandleSessionManagementUpdate handles session metadata update requests
 // PATCH /api/sessions/update/{session_key}
 func (h *Handler) HandleSessionManagementUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	if h.db == nil {
 		http.Error(w, "database not configured", http.StatusServiceUnavailable)
 		return

@@ -1,0 +1,11 @@
+[Unit]
+Description=Discover native gateway blue-green active slot for Prometheus
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/monitoring/prometheus/sync-active-target.py
+TimeoutStartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/monitoring/prometheus/targets

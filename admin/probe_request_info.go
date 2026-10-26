@@ -28,9 +28,10 @@ package admin
 
 import (
 	"encoding/json"
-	"strconv"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/internal/probekind"
 )
 
 // probeRequestInfo is the small subset of probe metadata the live-stream
@@ -46,71 +47,49 @@ type probeRequestInfo struct {
 // value when the entry is not a probe row, so callers can blindly
 // assign the result without nil checks.
 //
-// 2026-07-17 (audit): 当前实现覆盖三条探测请求识别路径：
+// 2026-10-23 审计：判定逻辑收敛到 internal/probekind（唯一真值源）。
+// 本函数此前自带一份手写清单（8 个 stage + 5 个 alias），与
+// domains/streaming/context_attrs.go 的 isProbeOriginStage、
+// middleware/origin_mw.go 的 isValidOriginStage、
+// domains/stats/minute_entry.go 的 IsProbeTraffic 各写一份 ⇒ 必然漂移。
 //
-//  1. task_type='probe_triggered'        (legacy ActiveProbeWorker)
-//  2. origin_stage 是已知探测阶段           (NodeProbeWorker / SelfCheck /
-//     SystemHealth / ProbeV2 等)
-//  3. quality_flags 包含 'probe'          (backfill / 老数据兜底)
+// 现在的判定 = probekind.IsProbe：stage 路径 ∪ markers 路径
+// （task_type / quality_flags / origin_actor）。
 //
-// single source of truth: origin_stage 列表必须与
-// domains/streaming/context_attrs.go 的 isProbeOriginStage 保持同步，
-// 否则 dashboard 与 context_attrs 侧表 is_probe 列会漂移（参见
-// PR eb176eb6 评审）。
+// ★ 删掉的 5 个 alias 分支（direct / gateway / scheduled /
+//
+//	probe_gateway / probe_scheduled 作为 origin_stage）：
+//	它们从来写不进 DB —— middleware/origin_mw.go 的 isValidOriginStage
+//	闸门（origin_mw.go:354-359）在中间件层就把它们挡掉，DB CHECK
+//	（migration 341）也不认 ⇒ 是死防御代码。
+//	⚠ 但 "probe_gateway" / "probe_scheduled" 作为 **task_type_chosen**
+//	  是合法的（bg/active_probe_emitter.go:373 写 "probe_" + origin），
+//	  那条路径由下面路径 1 单独处理，未受影响。
 func extractProbeInfo(entry *telemetry.RequestLogEntry) probeRequestInfo {
 	if entry == nil {
 		return probeRequestInfo{}
 	}
 
 	// 路径1: task_type='probe_triggered' (legacy ActiveProbeWorker path)
-	isProbeFromTaskType := entry.TaskType != nil && *entry.TaskType == "probe_triggered"
+	isProbeFromTaskType := probekind.IsProbeTaskType(derefStr(entry.TaskType))
 
 	// 路径2: origin_stage 是已知探测阶段（与 isProbeOriginStage 同源）。
-	//
-	// 注意：当前 case 列表必须与 domains/streaming/context_attrs.go 的
-	// isProbeOriginStage 函数完全一致。新增合法 origin_stage 值时，
-	// 两处必须同时更新。这是单一真值源：context_attrs.is_probe 列的
-	// 写入路径与 dashboard 的实时渲染都依赖同一份清单。
-	isProbeFromOriginStage := false
 	origin := "direct" // 默认值，下文按优先级覆盖
-	if entry.OriginStage != nil {
-		switch *entry.OriginStage {
-		case "self_check", "node_probe", "system_health":
-			isProbeFromOriginStage = true
-			origin = "scheduled" // 定期后台健康检查
-		case "probe_direct", "direct":
-			isProbeFromOriginStage = true
-			origin = "direct"
-		case "probe_gateway", "gateway":
-			isProbeFromOriginStage = true
-			origin = "gateway"
-		case "probe_scheduled", "scheduled":
-			isProbeFromOriginStage = true
-			origin = "scheduled"
-		case "probe_v2", "passive_probe", "model_probe":
-			isProbeFromOriginStage = true
-			// 这三类都是 origin 维度探测变体，但 UI 仅暴露
-			// direct / gateway / scheduled 三个 pill，复用
-			// scheduled 作为最接近的语义归类。
-			origin = "scheduled"
-		case "manual":
-			isProbeFromOriginStage = true
-			origin = "direct" // 手动触发归为 direct 探测
-		}
+	stage := strings.TrimSpace(derefStr(entry.OriginStage))
+	isProbeFromOriginStage := probekind.IsProbeStage(stage)
+	if isProbeFromOriginStage {
+		origin = probeOriginForStage(stage)
 	}
 
 	// 路径3: quality_flags 包含 'probe' (向后兼容老数据)
-	isProbeFromQualityFlags := false
-	if entry.QualityFlags != nil {
-		for _, f := range entry.QualityFlags {
-			if f == "probe" {
-				isProbeFromQualityFlags = true
-				break
-			}
-		}
-	}
+	isProbeFromQualityFlags := probekind.IsProbeQualityFlags(entry.QualityFlags)
 
-	if !isProbeFromTaskType && !isProbeFromOriginStage && !isProbeFromQualityFlags {
+	// 路径4: origin_actor 是已知探测 actor（origin_stage 丢失时的兜底）。
+	// 2026-10-23 新增 —— 此前 dashboard 只看 stage，stage 一丢就漏标；
+	// 而 stats 端早就看 actor 了 ⇒ 两端口径不一致。
+	isProbeFromActor := probekind.IsProbeActor(derefStr(entry.OriginActor))
+
+	if !isProbeFromTaskType && !isProbeFromOriginStage && !isProbeFromQualityFlags && !isProbeFromActor {
 		return probeRequestInfo{}
 	}
 
@@ -144,19 +123,40 @@ func extractProbeInfo(entry *telemetry.RequestLogEntry) probeRequestInfo {
 	}
 	// Attempt 2: parse from quality_flags "attempt_N" (fallback for
 	// older rows written before the auto_decision JSONB was added).
-	if attempt == 0 && entry.QualityFlags != nil {
-		for _, f := range entry.QualityFlags {
-			if len(f) > 8 && f[:8] == "attempt_" {
-				if n, err := strconv.Atoi(f[8:]); err == nil && n > attempt {
-					attempt = n
-				}
-			}
-		}
+	if attempt == 0 {
+		attempt = probekind.ProbeAttemptFromQualityFlags(entry.QualityFlags)
 	}
 
 	return probeRequestInfo{
 		IsProbe:      true,
 		ProbeOrigin:  origin,
 		ProbeAttempt: attempt,
+	}
+}
+
+// probeOriginForStage 把探测 origin_stage 映射成 UI 的三个 pill 语义
+// （direct / gateway / scheduled）。
+//
+// 2026-10-23：这是 dashboard **唯一**保留的 stage→origin 映射表。
+// 旧实现在同一个 switch 里混着「合法 stage」与「永不落库的 alias」两套
+// 语义（direct/gateway/scheduled/probe_gateway/probe_scheduled），读的人
+// 无法分辨哪个真会落库 ⇒ 本函数把两者彻底分开：合法 stage 走这里，
+// alias 分支已删除。
+func probeOriginForStage(stage string) string {
+	switch stage {
+	case "self_check", "node_probe", "system_health":
+		// 定期后台健康检查 / 后台探针
+		return "scheduled"
+	case "probe_direct":
+		return "direct"
+	case "probe_v2", "passive_probe", "model_probe":
+		// 这三类都是 origin 维度探测变体，但 UI 仅暴露
+		// direct / gateway / scheduled 三个 pill，复用
+		// scheduled 作为最接近的语义归类。
+		return "scheduled"
+	case "manual":
+		return "direct" // 手动触发归为 direct 探测
+	default:
+		return "direct"
 	}
 }

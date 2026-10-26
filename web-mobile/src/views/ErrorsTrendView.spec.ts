@@ -683,18 +683,21 @@ describe('⑪ 后端租户推导链（读 Go 源码）', () => {
     expect(fn2.slice(0, fn2.indexOf('\n}'))).toContain('return "default"')
   })
 
-  it('⑪-3 ★★★★ getErrorsTrend 自己也不做角色检查', () => {
+  it('⑪-3 ★★★★ getErrorsTrend 入口已加角色门控（audit #154 修复，2026-10-16）', () => {
     const src = goSrc('admin/errors_trend.go')
     const fn = src.slice(src.indexOf('func (h *errorsTrendHandlers) getErrorsTrend'))
     const body = fn.slice(0, fn.indexOf('\n}\n\n'))
-    expect(body).toContain('EffectiveTenantIDAll(r)')
-    // ★ 入口只查这四样
+    // ★★★ audit #154 把「effective role=user 可读跨租户聚合 / 全租户历史」
+    //   收口：handler 入口加 `if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) { ... }`。
+    //   本批起反向断言改为正向断言 —— 若有人回退 audit #154 把门控拿掉，
+    //   这道门会立刻红。
+    expect(body).toContain('IsTenantAdmin')
+    expect(body).toContain('IsSuperAdminOrLegacy')
+    // 这两条与角色门控无关，是入口原本就有的"参数解析"门；保留作回归保护。
     expect(body).toContain('h.db == nil')
     expect(body).toContain('parseVendorErrorHours')
     expect(body).toContain('invalid_granularity')
     expect(body).toContain('invalid_credential_id')
-    // ★★★ 不得出现角色判断
-    expect(body).not.toMatch(/Role\s*==|IsTenantAdmin|RequireSuperAdmin/)
   })
 
   it('⑪-4 ★★★★ 三条 SQL 的租户条件都是「空串 = 全租户」', () => {

@@ -1,15 +1,2 @@
 export default {
-  tierAll: 'Tous',
-  tierLocal: 'Local',
-  loadFailed: 'Échec du chargement',
-  tierLabel: 'Niveau',
-  searchLabel: 'Rechercher',
-  providerCount: '{count} fournisseurs',
-  noMatchingProviders: 'Aucun fournisseur correspondant aux critères de recherche actuels',
-  searchPlaceholder: 'Rechercher des fournisseurs…',
-  loading: 'Chargement…',
-  domestic: 'National',
-  modelCount: '{count} modèles',
-  documentation: 'Documentation →',
-  noResults: 'Aucun résultat',
 }

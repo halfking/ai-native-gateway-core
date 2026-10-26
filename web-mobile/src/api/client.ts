@@ -71,6 +71,28 @@ export function isAbortError(err: unknown): boolean {
   return !!err && typeof err === 'object' && (err as { name?: unknown }).name === 'AbortError'
 }
 
+/**
+ * 2026-10-22：维护态信封识别。部署版服务端在维护窗口把部分管理面请求
+ * （实测 /api/auth/me 会话水合）打成 {"code":"maintenance_mode"}。这类失败
+ * **不是会话问题也不是凭据问题**：会话探针不应据此踢登录，登录页应展示
+ * 可重试提示。取证：llm-gateway-client 仓 .maestro/evidence/2026-10-22-6s-real/
+ * SERVICE-RELIABILITY-REPORT.md §3。
+ */
+export function isMaintenanceMode(err: unknown): boolean {
+  if (!(err instanceof ApiError)) return false
+  const code = err.code
+  if (!code) return false
+  // 2026-10-22 审计修正：维护态信封是**一族**，不是一个字面量。
+  //   - 部署版边缘组件下发 {"code":"maintenance_mode"}（2026-10-22 实测）
+  //   - 本仓 maintain_proxy 下发 {"code":"maintain.*"}
+  //     （cmd/gateway/maintain_proxy.go 的 maintain.upstream_unavailable /
+  //      maintain.proxy_unavailable / maintain.not_configured）
+  // 只认一个字面量 ⇒ 服务端换个码就静默退回「踢登录」，
+  // 正是本函数要治的「维护态误杀会话」原样复发。
+  // ⇒ 判据放宽为**信封族**；宁可放过一次真维护态，也不误杀一个好会话。
+  return code === 'maintenance_mode' || code.startsWith('maintain.')
+}
+
 // ---- ApiError ----
 
 export class ApiError extends Error {
@@ -122,6 +144,10 @@ function errorCode(text: string): string {
       const code = (err as Record<string, unknown>).code
       if (typeof code === 'string') return code
     }
+    // 2026-10-22：边缘/维护组件下发的顶层 {code,message,request_id} 信封
+    // （无 .error 包装，实测形态 {"code":"maintenance_mode",...}）也要提出
+    // code —— 否则所有按 code 分支的 UI（登录页、会话探针）都认不出维护态。
+    if (typeof j.code === 'string' && j.code) return j.code
   } catch {
     /* 非 JSON 错误体：没有 code */
   }
@@ -181,7 +207,19 @@ async function sessionReallyDead(): Promise<boolean> {
         await req('GET', '/api/auth/me')
         return false
       } catch (err) {
-        if (isEpochError(err)) return false
+        // 维护态下探针失败 ≠ 会话死亡（2026-10-22 实测部署版服务端会把
+        // /api/auth/me 打成 maintenance_mode）：踢登录会把好会话误杀。
+        if (isEpochError(err) || isMaintenanceMode(err)) return false
+        // 2026-10-22 审计修正：「没探成」≠「探死了」。
+        // 探针失败的形态分三类，只有第三类才携带「会话已失效」的证据：
+        //   ① epoch 变了（换号）       ⇒ 不判死（已在上面对齐）
+        //   ② 维护态信封               ⇒ 不判死（已在上面对齐）
+        //   ③ AbortError（请求被取消）/ 非 ApiError（如响应体不是 JSON
+        //      触发的 SyntaxError）   ⇒ **没有任何证据**说会话死了
+        // 判死需要**明确的认证失败信号**；「探针抛了异常」不是证据。
+        // 旧实现把 ③ 也判成死亡 ⇒ 维护页返回 2xx+HTML 时「登录页↔维护页」死循环。
+        if (isAbortError(err)) return false
+        if (!(err instanceof ApiError)) return false
         return true
       } finally {
         // 结论只对这一轮有效：下一次 401 必须重新探，不能永久粘住。
@@ -205,6 +243,8 @@ function errorMessage(statusText: string, text: string): string {
       if (typeof detail === 'string') return detail
     }
     if (typeof j.detail === 'string') return j.detail
+    // 顶层 {code,message} 信封（维护态等边缘组件形态）：message 是人类可读文案
+    if (typeof j.message === 'string' && j.message) return j.message
     return text
   } catch {
     return text

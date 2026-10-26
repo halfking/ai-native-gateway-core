@@ -6,6 +6,43 @@ import (
 	"log/slog"
 )
 
+// sessionSummariesSessionKeyArbiterSQL 是「session_key 上是否已有可仲裁
+// ON CONFLICT (session_key) 的**非部分唯一索引**」的判定 SQL。
+//
+// ★ §143.16（2026-10-21，生产实测）：
+//   - 主键 session_summaries_pkey = PRIMARY KEY (session_key)，
+//     裸唯一索引 session_summaries_session_key_uidx = UNIQUE (session_key)
+//     ⇒ 两者的 pg_index.indkey **都是 1** ⇒ 键集逐字重复 ⇒ 生产两份各 ~67MiB。
+//   - 但「表没有主键」（本文件头注释里的 memora 最小 shape 场景）时，
+//     裸 uidx 是 ON CONFLICT (session_key) 唯一的非部分唯一仲裁索引
+//     ⇒ 它的必要性是**条件性的**，既不能无条件建、也不能无条件禁。
+//
+// ⇒ 所以判据抽成**一个常量、两处引用**：
+//
+//	① bootstrap 的 CREATE 守卫（session_summaries_schema.go）
+//	② canonical 短路的「缺索引」判定（db_session_summaries_shortcircuit.go）
+//	两处共用同一段 SQL ⇒ 结构上杜绝漂移。
+//	判据见 db/session_summaries_arbiter_test.go。
+//
+// ⚠ 谓词里三个条件缺一不可：
+//
+//	indisunique（唯一）、indpred IS NULL（**非部分**索引才有仲裁资格）、
+//	indnkeyatts = 1（键恰好是 session_key 一列）。
+//
+// ⚠ 这段 SQL 里**不能出现 %**：canonical 短路那段是用 fmt.Sprintf 拼
+//
+//	unnest(ARRAY[%s]) 的 ⇒ 这里的 % 会被当成格式符。
+const sessionSummariesSessionKeyArbiterSQL = `
+		    SELECT 1
+		      FROM pg_index i
+		      JOIN pg_attribute a
+		        ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+		     WHERE i.indrelid = 'public.session_summaries'::regclass
+		       AND i.indisunique
+		       AND i.indpred IS NULL
+		       AND i.indnkeyatts = 1
+		       AND a.attname = 'session_key'`
+
 // ensureSessionSummariesCanonical mirrors
 // sql/migrations/startup/655_session_summaries_schema_reconcile.sql.
 //
@@ -165,12 +202,18 @@ func (d *DB) ensureSessionSummariesCanonical(ctx context.Context) error {
 
 		DO $$
 		BEGIN
-		    IF NOT EXISTS (
-		        SELECT 1 FROM pg_indexes
-		        WHERE schemaname = 'public'
-		          AND tablename = 'session_summaries'
-		          AND indexname = 'session_summaries_session_key_uidx'
-		    ) THEN
+		    -- ★ 2026-10-21（runbook §143.16 实测）：只有「session_key 上**一个**可仲裁的
+		    -- 非部分唯一索引都没有」时，才需要这份裸 uidx。
+		    --
+		    -- 主键 session_summaries_pkey(session_key) 在位时，它与 uidx 的
+		    -- pg_index.indkey 都是 1 ⇒ **键集逐字重复** ⇒ 生产实测两份各 ~67MiB
+		    -- （且该表持续写入 ⇒ 每次写都多维护一份 B-tree）⇒ 此时 uidx 是纯冗余。
+		    -- 反过来，「表没有主键」（memora 最小 shape）时，uidx 就是
+		    -- ON CONFLICT (session_key) 唯一的非部分唯一仲裁索引 ⇒ 不能无条件删。
+		    --
+		    -- ⇒ 判据抽成常量（sessionSummariesSessionKeyArbiterSQL），
+		    --   bootstrap 与 canonical 短路两处共用，杜绝漂移。
+		    IF NOT EXISTS (`+sessionSummariesSessionKeyArbiterSQL+`) THEN
 		        CREATE UNIQUE INDEX session_summaries_session_key_uidx
 		            ON public.session_summaries (session_key);
 		    END IF;

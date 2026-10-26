@@ -39,6 +39,35 @@ function walk(dir, out = []) {
   return out
 }
 
+/**
+ * 相对路径键统一成 POSIX 分隔符。
+ *
+ * ★ 为什么必须归一（2026-10-23 实测，在 Windows 上把 211 部署整个拦死）：
+ *   node:path 的 relative() 在 Windows 返回**反斜杠**（views\Foo.vue），
+ *   在 POSIX 返回正斜杠（views/Foo.vue）。而豁免表一律按 POSIX 路径书写
+ *   （本目录同族脚本 color-token-audit.mjs / color-blindspot-audit.mjs /
+ *   deadcode-scan.mjs / compact-table-census.mjs / file-input-census.mjs
+ *   **早已**这么做 —— 这里只是漏掉的那一个）
+ *   ⇒ Windows 上按原样查表**必然落空** ⇒ 已逐条复核豁免的 9 条被误报成
+ *     「未在豁免表内」⇒ 契约 C 门恒红 ⇒ pnpm build 失败
+ *     ⇒ deploy-211.sh 的前端构建阶段 die ⇒ 部署被拦死（生产未受影响）。
+ *   实测（同一份代码、同一棵树）：
+ *     · 211 (Linux)  → exit 0，输出「（其中 9 条已逐条复核豁免）」
+ *     · 本机 Windows → exit 1，同 9 条全部报「未在豁免表内」
+ *   ⇒ 键的**构造处**与**查表处**都归一：构造处保证显示与 JSON 报告口径一致，
+ *     查表处保证白名单不因分隔符而失效（两层都要，不能只补一层）。
+ */
+const relPosix = (p) => relative(SRC, p).replace(/\\/g, '/')
+
+/** 豁免表查表键归一：白名单不该因为分隔符差异而失效。 */
+const exemptKey = (f) => String(f).replace(/\\/g, '/')
+
+/**
+ * 豁免表命中判定（map 形态）。
+ * 用 hasOwnProperty 而不是 truthy 判断：键的值为空串时也不该被算成「命中」。
+ */
+const exemptHit = (table, file) => Object.prototype.hasOwnProperty.call(table, exemptKey(file))
+
 /** 取出 <style> 块（scoped / 非 scoped 都取，支持多个 style 块）。 */
 function styleBlocks(src) {
   const blocks = []
@@ -164,7 +193,7 @@ const REVIEW_ITEMS = []
 
 function checkOverlays(file, src) {
   const problems = []
-  const rel = relative(SRC, file)
+  const rel = relPosix(file)
 
   // 1) 自研 CSS 弹层：容器级判定（宽度看容器，限高看所有相关规则）
   // 触发的类名形如 xxx-drawer / modal__panel。字符类必须含 `_`，
@@ -218,7 +247,7 @@ function checkOverlays(file, src) {
     })
   }
 
-  return problems.filter((p) => !OVERLAY_EXEMPT.some((e) => rel === e.file))
+  return problems.filter((p) => !OVERLAY_EXEMPT.some((e) => exemptKey(e.file) === exemptKey(rel)))
 }
 
 /**
@@ -259,8 +288,8 @@ function isBaseOverlayContainer(cls, word) {
 
 function checkOverlayBlock(file, src, kind, review) {
   const problems = []
-  const rel = relative(SRC, file)
-  if (OVERLAY_EXEMPT.some((e) => rel === e.file)) return problems
+  const rel = relPosix(file)
+  if (OVERLAY_EXEMPT.some((e) => exemptKey(e.file) === exemptKey(rel))) return problems
 
   // ★ 只在 <style> 块内解析 CSS。早期版本扫全文，把 JavaScript 的
   // `if (!o) return ... {` 之类代码块当成 CSS 规则，于是
@@ -470,7 +499,7 @@ function buildListInventory(files) {
   for (const file of files) {
     const src = readFileSync(file, 'utf8')
     if (!TABLE_RE.test(src)) continue
-    const rel = relative(SRC, file)
+    const rel = relPosix(file)
     rows.push({
       file: rel,
       hasDate: DATE_FILTER_RE.test(src),
@@ -630,6 +659,23 @@ function open(o) {
   r.push(['日期控件：确实没有日期控件时不得误认（反向对照）', !DATE_FILTER_RE.test('<table><tr><td>only rows</td></tr></table>')])
   r.push(['日期控件：泛化的 type="text" 不得被当成日期控件（反向对照）', !DATE_FILTER_RE.test('<input type="text" />')])
 
+  // ★ 跨平台护栏（2026-10-23）：豁免查表键必须与路径分隔符无关。
+  //   Windows 上 node:path.relative() 给的是**反斜杠**，而豁免表按 POSIX 路径
+  //   书写 ⇒ 查表必然落空 ⇒ 已逐条复核豁免的条目被误报成「未在豁免表内」
+  //   ⇒ 契约 C 门在 Windows 上恒红 ⇒ pnpm build 失败 ⇒ 211 部署被拦死。
+  //   正向：反斜杠形态的键必须命中豁免表。
+  r.push(['豁免查表：反斜杠形态的键必须命中（跨平台护栏）',
+    exemptHit({ 'views/UserProfileView.vue': '复核理由' }, 'views\\UserProfileView.vue')])
+  //   反向：不在表内的键**不得**命中（否则这条护栏自己是恒绿装饰品）。
+  r.push(['豁免查表：不在表内的键不得命中（反向对照）',
+    !exemptHit({ 'views/UserProfileView.vue': '复核理由' }, 'views\\NotExemptView.vue')])
+  //   构造侧：清单里的键必须已经是 POSIX 分隔符（Windows 上 relative() 的原样输出含反斜杠）。
+  {
+    const firstView = walk(VIEWS).sort()[0]
+    r.push(['相对路径键：清单键必须是 POSIX 分隔符（Windows 护栏）',
+      !!firstView && !relPosix(firstView).includes('\\')])
+  }
+
   console.log('── 判据自检 ──')
   let ok = true
   for (const [label, pass] of r) {
@@ -685,7 +731,7 @@ if (byFile.size) {
   console.log('\n── 违规明细（硬门，--strict 会 exit 1）──')
   const sorted = [...byFile.entries()].sort((a, b) => a[0].localeCompare(b[0]))
   for (const [file, ps] of sorted) {
-    console.log(`\n${relative(SRC, file)}`)
+    console.log(`\n${relPosix(file)}`)
     for (const p of ps) console.log(`  [${p.kind}] L${p.line}  ${p.msg}`)
   }
 }
@@ -693,7 +739,7 @@ if (byFile.size) {
 if (REVIEW_ITEMS.length) {
   console.log('\n── 待人工确认（不阻断构建；判据只能提示、不能定罪）──')
   for (const r of REVIEW_ITEMS) {
-    console.log(`  ${relative(SRC, r.file)} L${r.line}\n    ${r.msg}`)
+    console.log(`  ${relPosix(r.file)} L${r.line}\n    ${r.msg}`)
   }
   console.log('  ↑ 这些要么是「子项滚动但命名对不上」，要么是真裁切。静态判据分不出来，点开看一眼。')
 }
@@ -731,11 +777,11 @@ const NAME_SORT_EXEMPT = {
   'views/ModelIntegrityView.vue': '首列是「检测时间」，异常事件流水按时间倒序才对（复核更正：原写的'
     + '「排序会连带改筛选分组语义」不成立 —— 该表行源是 events，不走 useModelCatalogFilters）',
 }
-const stillUnsorted = needNameSort.filter((r) => !NAME_SORT_EXEMPT[r.file])
-const exempted = needNameSort.filter((r) => NAME_SORT_EXEMPT[r.file])
+const stillUnsorted = needNameSort.filter((r) => !exemptHit(NAME_SORT_EXEMPT, r.file))
+const exempted = needNameSort.filter((r) => exemptHit(NAME_SORT_EXEMPT, r.file))
 if (exempted.length) {
   console.log(`  （其中 ${exempted.length} 条已逐条复核豁免）`)
-  for (const r of exempted) console.log(`  ○ ${r.file} — ${NAME_SORT_EXEMPT[r.file]}`)
+  for (const r of exempted) console.log(`  ○ ${r.file} — ${NAME_SORT_EXEMPT[exemptKey(r.file)]}`)
 }
 if (stillUnsorted.length) {
   console.log(`\n契约 C 违规（名称列表未排序，未在豁免表内）: ${stillUnsorted.length}`)

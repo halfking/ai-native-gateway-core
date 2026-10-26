@@ -3,9 +3,7 @@
 export default {
   modal: {
     title: 'Anfrage-Ablaufdetails',
-    openButton: '🔗 Ablauf',
     close: 'Schließen',
-    tooltip: 'End-to-End-Zeitachse dieser Anfrage anzeigen',
     snapshotTitle: 'Fehlerkontext-Snapshot',
     candidates: 'Kandidaten',
     routingState: 'Routing',
@@ -17,8 +15,6 @@ export default {
     failedCount: 'fehlgeschlagen',
   },
   detail: {
-    basicInfo: 'Grundinformation',
-    requestId: 'Anfrage-ID',
     finalStatus: 'Endstatus',
     failedAtStage: 'Fehlerphase',
     totalDuration: 'Gesamtdauer',
@@ -27,11 +23,9 @@ export default {
     sourcePostgres: 'PostgreSQL (Verlauf)',
     eventCount: 'Ereignisse',
     copyJson: 'JSON kopieren',
-    copySuccess: 'Kopiert',
     statusSuccess: 'Erfolg',
     statusFailed: 'Fehlgeschlagen',
     statusTimeout: 'Zeitüberschreitung',
-    statusSkipped: 'Übersprungen',
     statusInProgress: 'In Bearbeitung',
   },
   empty: {
@@ -41,7 +35,6 @@ export default {
     hint2: 'Abgeschlossen vor < 10 Min.: noch in Redis',
     hint3: 'Bereits nach PostgreSQL geschrieben: wird als Fallback angezeigt',
 
-    hint4: 'If empty here, possible causes: flush not completed, or trace was not emitted',
   },
   aiPrompt: {
     button: '🤖 KI-Eingabe generieren',
@@ -76,16 +69,5 @@ export default {
     module_upstream: 'Upstream',
     module_session: 'Sitzung',
   },
-  failureHint: {
-    upstream_timeout: 'Upstream-Zeitüberschreitung',
-    upstream_unreachable: 'Upstream unerreichbar',
-    upstream_reset: 'Verbindung zurückgesetzt',
-    upstream_io_error: 'Netzwerk-E/A-Fehler',
-    upstream_network_error: 'Netzwerkfehler',
-    upstream_5xx: 'Upstream 5xx',
-    upstream_4xx: 'Upstream 4xx',
-    upstream_rate_limit: 'Upstream-Limit (429)',
-    upstream_auth_error: 'Upstream-Auth (401/403)',
-    upstream_not_found: 'Upstream 404',
-  },
+  generateFailed: 'Zusammenfassung konnte nicht erzeugt werden. Bitte erneut versuchen.',
 }

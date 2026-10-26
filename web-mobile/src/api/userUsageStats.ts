@@ -72,8 +72,8 @@ export const USER_STATS_BUCKET_KEYS = ['name', 'requests', 'tokens', 'credits', 
 /** `userStatsRecentRequest` 的 6 键。 */
 export const USER_STATS_RECENT_KEYS = ['ts', 'model', 'first_chunk_ms', 'total_ms', 'credits', 'status'] as const
 
-/** `tenantDailyStat` 的 7 键。 */
-export const USER_STATS_DAILY_KEYS = ['date', 'requests', 'success', 'errors', 'tokens', 'credits', 'cost'] as const
+/** `tenantDailyStat` 的 7 键（与 admin/tenants.go `json:"cost_usd"` 对齐）。 */
+export const USER_STATS_DAILY_KEYS = ['date', 'requests', 'success', 'errors', 'tokens', 'credits', 'cost_usd'] as const
 
 /** 见 (17)：五个**各不相同**的占位符。 */
 export const USER_STATS_MODEL_PLACEHOLDER = '<unknown>'
@@ -139,7 +139,7 @@ export interface UserStatsRecentRequest {
   status: string
 }
 
-/** `tenantDailyStat`（复用自租户统计）。 */
+/** `tenantDailyStat`（复用自租户统计；Cost 字段 json tag 是 cost_usd）。 */
 export interface UserStatsDailyRow {
   /** `YYYY-MM-DD`（`to_char` 的产物）。 */
   date: string
@@ -148,7 +148,7 @@ export interface UserStatsDailyRow {
   errors: number
   tokens: number
   credits: number
-  cost: number
+  cost_usd: number
 }
 
 export interface UserStatsResponse {
@@ -255,7 +255,7 @@ export function unwrapUserStats(resp: unknown): UserStatsResponse {
     const o = requireObject(daily[i], `用户画像 的 daily[${i}]`)
     requireKeys(o, USER_STATS_DAILY_KEYS, `用户画像 的 daily[${i}]`)
     if (typeof o['date'] !== 'string') throw new Error(`daily[${i}] 的 date 不是字符串`)
-    for (const key of ['requests', 'success', 'errors', 'tokens', 'credits', 'cost'] as const) {
+    for (const key of ['requests', 'success', 'errors', 'tokens', 'credits', 'cost_usd'] as const) {
       if (typeof o[key] !== 'number') throw new Error(`daily[${i}] 的 ${key} 不是数字`)
     }
   }

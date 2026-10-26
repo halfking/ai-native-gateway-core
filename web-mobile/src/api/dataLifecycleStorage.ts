@@ -5,16 +5,16 @@ import { STORAGE_TABLES_LIMIT_DEFAULT, STORAGE_TABLES_LIMIT_MAX } from './dataLi
  * dataLifecycleStorage.ts — 存储总览 + 表级大小（2026-10-08，第八十批）。
  *
  * - **注册**（`admin/handler.go`）：
- *   - `:1001` `admin(h.handleDataLifecycleStorage)` ⇒ GET `/api/admin/data-lifecycle/storage`
- *   - `:1002` `admin(h.handleDataLifecycleTableSizes)` ⇒ GET `/api/admin/data-lifecycle/storage/tables`
+ *   - `:1009` `admin(h.handleDataLifecycleStorage)` ⇒ GET `/api/admin/data-lifecycle/storage`
+ *   - `:1010` `admin(h.handleDataLifecycleTableSizes)` ⇒ GET `/api/admin/data-lifecycle/storage/tables`
  *   ⇒ ⚠️⚠️ **行号订正（2026-10-14，第一百二十三批）**：本段原写 `:982` / `:983`，
- *     实况 `:1001` / `:1002`，**整块漂了 19 行**；同族 vacuum/reindex 的范围
- *     原写 `:986-992`，实为 `:1005-:1011`（同样是 19 行）。
+ *     实况 `:1009` / `:1010`，**整块漂了 27 行**；同族 vacuum/reindex 的范围
+ *     原写 `:986-992`，实为 `:1013-:1019`（同样是 27 行）。
  *
  *   ⚠️⚠️⚠️ **「抽屉席不设 `requiresRole`」已于 2026-10-14（第一百二十三批）订正
  *     ⇒ 本族必须设 `requiresRole: 'admin'`。**
  *
- *   ★★ **「admin 档」这三个字被误读了。** `admin(...)` 是 `admin/handler.go:925`
+ *   ★★ **「admin 档」这三个字被误读了。** `admin(...)` 是 `admin/handler.go:933`
  *   的**局部别名** `admin := h.admin`，而 `h.admin` = `AdminMiddleware`
  *   —— 它**没有任何角色下限** ⇒ **「admin 档」在注册行里的真实含义是
  *   「已认证」，不是「管理员」。**
@@ -42,7 +42,7 @@ import { STORAGE_TABLES_LIMIT_DEFAULT, STORAGE_TABLES_LIMIT_MAX } from './dataLi
  *   ⇒ ★ 与批 119（v1 数据地平线，不设 requiresRole）的差别在于**那份告示必须让所有人看见**，
  *     而本族没有这个理由 —— 「没有理由给普通用户看」本身就是一道门。
  *
- *   ⇒ ★★ 同族 `:1005-:1011` 的 vacuum / vacuum-full / reindex（六个）
+ *   ⇒ ★★ 同族 `:1013-:1019` 的 vacuum / vacuum-full / reindex（六个）
  *     **全是 `h.superAdmin`** 且**全是写操作**（锁表风险）⇒ 本模块**一条都不碰**。
  * - **实现**：`admin/data_lifecycle_storage.go`（`:131-229` 两个 handler，`:232-561` helpers）。
  * - **桌面调用方**：`web/src/api/tuning.ts:447`（overview）与 `:470`（tables）。
@@ -815,7 +815,7 @@ function requireKeys(obj: object, keys: readonly string[], where: string): void 
  * ⇒ 没有「载荷含别人的东西」这个判定权 ⇒ 按批 119 的边界**不过度限制**。
  *
  * **（乙）但需要 `'admin'`** —— 服务端**没有角色下限**。
- * `admin(...)` 是 `admin/handler.go:925` 的局部别名 `admin := h.admin`，
+ * `admin(...)` 是 `admin/handler.go:933` 的局部别名 `admin := h.admin`，
  * 而 `h.admin` = `AdminMiddleware`（无任何角色判定）+
  * `pkg/identity` 的 `supportedRole` 接受 `"user"`
  * ⇒ 任何已认证的普通用户都能调这两个端点，而「本机磁盘用量」没理由给普通用户看。

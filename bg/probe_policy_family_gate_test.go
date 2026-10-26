@@ -28,6 +28,14 @@
 // 拿它当会话族的列 SSOT，会让 origin_stage / origin_actor 三条臂**全部**被报成
 // 缺列（假红），而更糟的是：若有人为了「让门变绿」而把谓词改窄，门就再也拦不住
 // 真正的 42703 了。⇒ 会话族取**迁移**（526 建表 + 707 加列），不取 objects 文件。
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：**v1 族整族被 DROP** ⇒
+// `sql/objects/tables/request_logs_hot.sql` 随 canonical 对象库一起被删除。
+// ⇒ 本门对 v1 族的那一半**重铸**（见下方「退役族的闭包门」）：
+// 「v1 谓词的列在 v1 表上」这条断言已经**无对象可查**（那张表不存在了），
+// 而它在今天的**活**含义是另一条更要紧的不变量：**v1 族不许再被任何活路径
+// 选中**——一旦被选中，那条 SQL 会引用一张已 DROP 的表 ⇒ 整条语句 42P01。
+// 闭包门（settleSourceFor 恒返回会话族）比列存在性检查更强，且永远有效。
 package bg
 
 import (
@@ -44,8 +52,6 @@ const (
 	migrationSessionTurnsHotDDL = "sql/migrations/startup/526_session_turns_hot.sql"
 	// 迁移里给会话族补 55 列的文件。
 	migrationSessionTurnsS1A = "sql/migrations/startup/707_session_turns_s1a.sql"
-	// v1 族的列来源（这条早于会话族迁移，且早已在生产使用）。
-	objectsRequestLogsHotDDL = "sql/objects/tables/request_logs_hot.sql"
 )
 
 // aliasedColumnRE 抓渲染后谓词里的 `<alias>.<col>` 引用。
@@ -137,26 +143,44 @@ func sessionFamilyColumns(t *testing.T) map[string]bool {
 	return cols
 }
 
-// v1FamilyColumns 解析 v1 族的 hot 表列集合。
-func v1FamilyColumns(t *testing.T) map[string]bool {
-	t.Helper()
-	ddl := readRepoFile(t, objectsRequestLogsHotDDL)
-	block := createTableColumnsRE.FindStringSubmatchIndex(ddl)
-	if block == nil {
-		t.Fatalf("%s 里找不到 `CREATE TABLE ... _request_logs_hot ( ... );` 块（解析器坏了，不是文件坏了）。",
-			objectsRequestLogsHotDDL)
-	}
-	cols := map[string]bool{}
-	for _, m := range tableColumnRE.FindAllStringSubmatch(ddl[block[4]:block[5]], -1) {
-		cols[m[1]] = true
-	}
-	for _, anchor := range []string{"id", "request_id", "quality_flags", "origin_stage", "task_type", "origin_actor"} {
-		if !cols[anchor] {
-			t.Fatalf("v1 族列集合缺锚点列 %q（%s）。\n"+
-				"  缺它会让「v1 谓词的列都在 v1 表上」这条断言变得廉价。", anchor, objectsRequestLogsHotDDL)
+// v1FamilyColumns（解析 v1 族 hot 表列集合）已随迁移 890 **退役**：
+// v1 族连表带分区一起被 DROP，canonical 对象库里的
+// `sql/objects/tables/request_logs_hot.sql` 也随之被删除 ⇒ 「v1 谓词引用的列
+// 是否都在 v1 表上」已经没有可查的对象（那张表不会再被查询）。
+//
+// 它被**替换**为 TestRetiredV1FamilyIsUnreachable（退役族闭包门）：v1 族在活
+// 路径上不可达 ⇒ 那条 v1 谓词永远不会被执行 ⇒ 「它引用了哪几列」不再是活
+// 风险；而「有人把 v1 族选成读源」才是（那会让整条 SQL 42P01）。
+//
+// 保留这一段的**教训**：族列的来源必须选对（见文件头）——换成会话族之后，
+// 同一个坑会以另一个形式回来（拿过期的 objects 快照当列 SSOT）。
+
+// TestRetiredV1FamilyIsUnreachable 是 v1 族退役后的**闭包门**（替代上面那条
+// 已无对象可查的 v1 列存在性检查）。
+//
+// 为什么这条更强：v1 族被 DROP 后，「v1 谓词引用了哪几列」不再是活风险
+// ——**没有任何活路径会执行它**。活风险是反过来的：**有人把 v1 族选成读源**
+// ⇒ 那条 SQL 引用一张不存在的表 ⇒ 42P01 ⇒ 整个 worker 每轮失败。
+//
+// ⇒ 门钉住「v1 族标签不得再被产出」：写门开 / 关两种取值都必须落到会话族。
+// （这条与 bg/auto_route_settle_source_test.go 的读源门同源；两处都留是因为
+// 一处钉的是**结算规格**，一处钉的是**族闭包**。）
+func TestRetiredV1FamilyIsUnreachable(t *testing.T) {
+	for _, logsWriteEnabled := range []bool{true, false} {
+		src := settleSourceFor(logsWriteEnabled)
+		if src.Family == settleFamilyV1 {
+			t.Errorf("写门=%v 时读源族仍是 %q：v1 族已随迁移 890 被 DROP，"+
+				"选中它 ⇒ 整条结算 SQL 42P01。规格：%+v", logsWriteEnabled, src.Family, src)
+		}
+		if src.TurnsTable == "_request_logs_hot" {
+			t.Errorf("写门=%v 时读源表仍是 %q（已随迁移 890 被 DROP）", logsWriteEnabled, src.TurnsTable)
 		}
 	}
-	return cols
+	// 正向对照：活路径确实落在会话族上（否则上面两条可能只是「都没选」）。
+	src := settleSourceFor(true)
+	if src.Family != settleFamilySession || src.TurnsTable != "session_turns_hot" {
+		t.Fatalf("活路径必须落在会话族热腿上；实际：%+v", src)
+	}
 }
 
 // predicateColumns 返回渲染后谓词引用的列名集合。
@@ -186,17 +210,22 @@ func predicateColumns(t *testing.T, label, rendered string) map[string]bool {
 func TestProbeTrafficExclusionPredicateColumnsExistOnTheirFamily(t *testing.T) {
 	const alias = "rl"
 
-	v1Cols := v1FamilyColumns(t)
 	sessionCols := sessionFamilyColumns(t)
 
+	// ★ 2026-10-20（迁移 890，v1 族退役）：**v1 那一格被移除**。
+	// v1 族连表带分区一起被 DROP ⇒ 「v1 谓词引用的列是否都在 v1 表上」已经
+	// 没有可查的对象（那张表不会再被查询，canonical 对象库里的
+	// request_logs_hot.sql 也随之删除）。
+	// ⇒ 它被 TestRetiredV1FamilyIsUnreachable（退役族闭包门）替代：v1 族在
+	// 活路径上不可达，那条 v1 谓词永远不会被执行。
+	// ⚠ 这里**不是**把 v1 的覆盖删掉了：v1 谓词常量仍在（闭集分派函数还认
+	// 它），删掉的只是「对它做列存在性检查」这一件已无对象可查的事。
 	cases := []struct {
 		label    string
 		family   string
 		cols     map[string]bool
 		mustHave []string // 该族谓词**必须**用到的探针标记（少一条 = 少挡一类探针）
 	}{
-		{label: "v1", family: settleFamilyV1, cols: v1Cols,
-			mustHave: []string{"origin_stage", "quality_flags"}},
 		{label: "session", family: settleFamilySession, cols: sessionCols,
 			mustHave: []string{"origin_stage", "task_type", "origin_actor"}},
 	}

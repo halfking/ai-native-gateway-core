@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/identity"
@@ -115,10 +116,14 @@ func (r *DurableAttemptRunnerImpl) Run(ctx context.Context, task *durable.Task, 
 	keyID := ki.ID
 	clientID := identity.BuildIdentity(ki.TenantID, &appID, &keyID, identity.ClientFingerprint{ClientProfile: profile})
 
+	var streamRecorder *httptest.ResponseRecorder
+	if snapshot.Stream {
+		streamRecorder = httptest.NewRecorder()
+	}
 	params := &executors.ExecParams{
 		R:                    durableSyntheticRequest(ctx, snapshot),
 		BodyBytes:            snapshot.NormalizedBody,
-		IsStream:             false,
+		IsStream:             snapshot.Stream,
 		SuppressSuccessWrite: true,
 		ClientModel:          snapshot.ClientModel,
 		ClientID:             clientID,
@@ -132,6 +137,9 @@ func (r *DurableAttemptRunnerImpl) Run(ctx context.Context, task *durable.Task, 
 		AppID:                &appID,
 		ApiKeyID:             &keyID,
 		ToolsRequested:       snapshot.ToolsRequested,
+	}
+	if streamRecorder != nil {
+		params.W = streamRecorder
 	}
 	if snapshot.Endpoint == "/v1/responses" {
 		// Native Responses candidates require the preserved request body;
@@ -152,7 +160,14 @@ func (r *DurableAttemptRunnerImpl) Run(ctx context.Context, task *durable.Task, 
 	if result.Success && result.ExecResult != nil {
 		attempt.Body = result.ExecResult.ResponseBody
 		attempt.ContentType = "application/json"
-		if result.ExecResult.Response != nil {
+		if streamRecorder != nil {
+			attempt.Body = append([]byte(nil), streamRecorder.Body.Bytes()...)
+			if ct := streamRecorder.Header().Get("Content-Type"); ct != "" {
+				attempt.ContentType = ct
+			} else {
+				attempt.ContentType = "text/event-stream"
+			}
+		} else if result.ExecResult.Response != nil {
 			if ct := result.ExecResult.Response.Header.Get("Content-Type"); ct != "" {
 				attempt.ContentType = ct
 			}

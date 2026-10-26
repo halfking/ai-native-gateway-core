@@ -17,7 +17,7 @@ export default {
     fallbacks: 'フォールバック chain',
     minConf: '最低信頼度',
     total: '修正サンプル',
-    rate: '修正率',
+    rate: "訂正率",
     suggestion: '提案ティア',
   },
   action: {

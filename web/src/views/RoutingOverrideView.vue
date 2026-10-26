@@ -412,7 +412,6 @@ h2 {
 .summary-label {
   font-size: 11px;
   color: var(--muted);
-  text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 .summary-value {
@@ -594,7 +593,6 @@ h2 {
   border-radius: 3px;
   font-size: 11px;
   font-weight: 600;
-  text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 .mode-pin {

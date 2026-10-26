@@ -28,6 +28,14 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'home.title', requiresAuth: true },
   },
   {
+    // 批 150：`hyper-wiring.ts` 在角色不匹配时跳到这里。
+    //   meta.titleKey 复用 `common.pageDenied` ⇒ document.title 不会泄露真页面名。
+    path: '/restricted',
+    name: 'restricted',
+    component: () => import('@/views/RestrictedPageView.vue'),
+    meta: { titleKey: 'common.pageDenied', requiresAuth: true },
+  },
+  {
     path: '/nodes',
     name: 'nodes',
     component: () => import('@/views/NodesView.vue'),
@@ -267,7 +275,7 @@ const routes: RouteRecordRaw[] = [
   },
   // 探测系统健康 + 队列快照（2026-10-07）。admin 档：两条都在
   // RegisterProbeDashboardRoutes(mux, wrapAdmin)（probe_dashboard.go:1900-1909，
-  // 注册点 cmd/gateway/main.go:7298）⇒ tenant_admin 可用，不设 requiresRole。
+  // 注册点 cmd/gateway/main.go:7590）⇒ tenant_admin 可用，不设 requiresRole。
   // ★ 这两个端点是双轨形状（顶层字段全是 legacy 的），实现见 probeHealth.ts。
   {
     path: '/probe-health',
@@ -696,13 +704,13 @@ const routes: RouteRecordRaw[] = [
     path: '/format-anomalies',
     name: 'format-anomalies',
     component: () => import('@/views/FormatAnomaliesView.vue'),
-    meta: { titleKey: 'fa.title', requiresAuth: true },
+    meta: { titleKey: 'fa.title', requiresAuth: true, requiresRole: 'super_admin' },
   },
   {
     path: '/model-integrity-drift',
     name: 'model-integrity-drift',
     component: () => import('@/views/ModelIntegrityDriftView.vue'),
-    meta: { titleKey: 'mid.title', requiresAuth: true },
+    meta: { titleKey: 'mid.title', requiresAuth: true, requiresRole: 'super_admin' },
   },
   {
     // ★ 后端前缀**带尾斜杠**（`/api/admin/report-rollup/`）⇒ 客户端必须自己拼对尾段
@@ -737,7 +745,7 @@ const routes: RouteRecordRaw[] = [
   },
   {
     // ★★ 凭据模型状态变更历史（2026-10-14 第一百一十四批）。
-    //   挂载 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+    //   挂载 `admin/handler.go:1525` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
     //   ⇒ **admin 档**，tenant_admin 本该可用。
     // ⚠️⚠️ 但 `requiresRole` 设的是 **`'admin'` 而不是缺省**，与「admin 档 ⇒ 不设」
     //   的旧口径相反。根因（`api/modelHistory.ts` 文件头 (1b)）：
@@ -758,19 +766,19 @@ const routes: RouteRecordRaw[] = [
   },
   {
     // ★★ 凭据模型滑窗调用明细（2026-10-14 第一百一十五批）。
-    //   注册 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+    //   注册 `admin/handler.go:1525` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
     //   ⇒ 是 **admin 档**，与批 113/114 那两族同注册处。
-    // ⚠️⚠️ 但 `requiresRole` 是 **`'super_admin'`**，与那两族**相反** ——
-    //   因为本族**连租户维度都没有**：`handleSlidingWindow`
-    //   （admin/credential_monitor.go:704-782）里既没有 `tenantID` 变量、
-    //   也没有任何 `IsTenantAdmin`，两条数据腿（Redis 与 _request_logs 回退）
-    //   的 WHERE 都只有 `credential_id = $1 AND lower(...) = lower($2)`。
-    //   而 `credential_id` 是**全局唯一**主键 ⇒ 任何通过认证的主体报出别的
-    //   租户的 credential_id 就能读到它的逐次调用明细。
-    //   ⇒ `'admin'` 档在这里会给出**虚假的安全感**（按钮写着「我的租户」，
-    //     后端根本不理这句）⇒ 必须过度限制。
-    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查登录态）
-    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截。
+    // ⚠️⚠️ `requiresRole` 是 **`'super_admin'`**，与那两族**相反**。
+    // ★★★★★ 订正（2026-10-21 行号订正轮）：原引用 `:704-782` → 实为
+    //   `admin/credential_monitor.go:747-854`（`handleSlidingWindow` 全函数体）；原文据此断言
+    //   「既没有 `tenantID` 变量、也没有任何 `IsTenantAdmin`」⇒ ★ **已不成立**：
+    //   2026-10-16 audit #153 + 2026-10-17 12h-audit 已把门补上 ——
+    //   · 角色门 `admin/credential_monitor.go:759-762`（非 super_admin/admin_key/tenant_admin 即 403）；
+    //   · 租户作用域 `admin/credential_monitor.go:793-798`（`tenantID` 由 `IsTenantAdmin` 决定）；
+    //   · Redis 快腿 `:803` 对 tenant_admin 直接跳过，两条 SQL（`:896`/`:941`）都带 `AND ($5 = '' OR
+    //     tenant_id = $5)`，`tenantID` 当 `$5` 传下去（`:816`/`:963`）。
+    //   ⇒ **后端自己已做租户隔离** ⇒ `'super_admin'` 现在是**保守取值**（非被逼的过度限制）。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查登录态）⇒ 真正生效的是后端那道 403 + 租户过滤。
     path: '/sliding-window',
     name: 'sliding-window',
     component: () => import('@/views/SlidingWindowView.vue'),
@@ -794,18 +802,18 @@ const routes: RouteRecordRaw[] = [
   },
   {
     // ★ 运维总览（2026-10-14 第一百一十七批）。
-    //   注册 `admin/handler.go:1091` `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
-    //   —— 注册处**确实**是 admin 档（`AdminMiddleware`，`admin/auth.go:85-140` **只认证不检 role**），
-    //   而 `handleOpsOverview` 自己既不读 AuthContext 也不看 role。
-    // ★★★★ 但**归第三类**：本族**完全没有租户维度** —— 11 条子查询全是全局表，
-    //   取租户键的代码**根本不存在**（`grep tenant` 打不到不是遗漏，是设计上就没有）。
-    //   ⇒ 与批 115/116 同处置：**过度限制**到 'super_admin'。
-    //   理由不是洁癖：`offline_requests` 每行带别人的 `license_key` / `hardware_hash` /
-    //   `activation_code`，`deployment_nodes` 是全平台机队的 IP 与版本。
-    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查 requiresAuth 与登录态）
-    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截；
-    //   视图内另有一层兜底（`OpsOverviewView.vue` 的 `opsv-nope` 段，兜的是「不发请求」）。
-    // ⚠️ 前端严于后端是**兜底不是修复** —— 后端这一族**没有门**可修。
+    //   注册 `admin/handler.go:1144` `mux.HandleFunc("/api/admin/ops/overview", h.superAdmin(h.handleOpsOverview))`
+    //   —— ★ 订正（2026-10-21 行号订正轮）：原引用 `:1134`（那一行逐字是 `/api/admin/dashboard/rollup/rebuild`
+    //     的注册）→ 实为 `:1141`；且原写「注册处**确实**是 admin 档」**也已过期** —— 后端批 158e（2026-10-17）
+    //     已降为 **superAdmin 档**（`SuperAdminMiddleware`，`admin/auth.go:467-475`：`claims.Role != "super_admin"` 即 403）；
+    //   而 `admin/ops_overview.go:48` 的 `handleOpsOverview` 自己既不读 AuthContext 也不看 role。
+    // ★★★★ 但**归第三类**：本族**完全没有租户维度** —— 11 条子查询全是全局表，取租户键的代码**根本不存在**（`grep tenant` 打不到不是遗漏）。
+    //   ⇒ `requiresRole: 'super_admin'` 现在与后端**同档**（不再是「前端过度限制」那套说法）；理由
+    //   不是洁癖：`offline_requests` 每行带别人的 `license_key`/`hardware_hash`/`activation_code`，
+    //   `deployment_nodes` 是全平台机队的 IP 与版本。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查 requiresAuth 与登录态）⇒ 这一行还不是生效中的
+    //   拦截；视图内另有一层兜底（`OpsOverviewView.vue` 的 `opsv-nope` 段）。⚠️ 前端严于后端是**兜底不是修复**
+    //   —— 后端这一族**没有门**可修 ⇒ ★ 订正（2026-10-21）：**这句已过期**（批 158e 已补门，前后端**同档**）。
     path: '/ops-overview',
     name: 'ops-overview',
     component: () => import('@/views/OpsOverviewView.vue'),
@@ -835,15 +843,19 @@ const routes: RouteRecordRaw[] = [
     //   注册 `admin/handler.go:1109` 的 `admin(...)` ⇒ **admin 档**（不设 requiresRole）。
     // ★★★★★ 本族是**第三类（过度限制）的边界**，与批 115/117/118 **相反**且它们并没错：
     //   过度限制的正当性来自「载荷里有**别人的东西**」，不是来自「没有租户维度」本身。
-    //   本族没有租户维度，但它答的是**平台级全局事实**（`_request_logs` 写门是否停更），
-    //   七键里无一带租户 ⇒ **不需要**过度限制，tenant_admin 可用。
+    //   本族没有租户维度，但它答的是**平台级全局事实**
+    //   （「这台网关的 session_turns 有没有在跟上最近收到的请求」），
+    //   六个键里无一带租户 ⇒ **不需要**过度限制，tenant_admin 可用。
     // ★★★ 而且**必须**对 tenant_admin 可见：`silence` 那句自陈
-    //   「接口照常 200、结果集非空、字段齐全，接口没报错不代表数据是新的」——
-    //   挡掉它等于让租户把停更数据读成新鲜数据。
-    path: '/v1-data-horizon',
-    name: 'v1-data-horizon',
-    component: () => import('@/views/V1DataHorizonView.vue'),
-    meta: { titleKey: 'v1h.title', requiresAuth: true },
+    //   「这类断流没有任何错误信号：统计接口照常返回、数字齐全。
+    //    接口没报错不代表数据是新的」—— 挡掉它等于让租户把断流数据读成新鲜数据。
+    // ⚠️ 第 129 批随 r1033 的后端重写一起改名：端点 `/v1-data-horizon` →
+    //   `/data-horizon`，判据从「v1 停写门」换成「session_turns 新鲜度」。
+    path: '/data-horizon',
+    alias: '/v1-data-horizon',
+    name: 'data-horizon',
+    component: () => import('@/views/DataHorizonView.vue'),
+    meta: { titleKey: 'dh.title', requiresAuth: true },
   },
   {
     // ★ 订阅档（2026-10-14，第一百二十批）。
@@ -920,6 +932,69 @@ const routes: RouteRecordRaw[] = [
     name: 'storage-migration-state',
     component: () => import('@/views/StorageMigrationStateView.vue'),
     meta: { titleKey: 'sms.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
+    // ★ 轮次列表的筛选候选值（2026-10-15，第一百二十七批）。
+    //   ⚠️⚠️ 与**上一条路由**同一个 `admin(...)` 档 ⇒ 服务端**没有**角色下限
+    //     （`admin := h.admin` → AdminMiddleware，supportedRole 接受 "user"）
+    //     ⇒ `meta.requiresRole: 'admin'` 这一层**是唯一的门**，不是体验兜底。
+    //   ★ 模块头原写「admin 档 ⇒ 不设 requiresRole」——本批订正（第四个写下这句错的模块）。
+    path: '/turns-filter-options',
+    name: 'turns-filter-options',
+    component: () => import('@/views/TurnsFilterOptionsView.vue'),
+    meta: { titleKey: 'tfo.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
+    // ★ 会话分析筛选项（2026-10-15，第一百二十八批）。
+    //   GET /api/admin/session-analytics/filter-options
+    //
+    //   ⚠️ 注册形态是**第六种：前缀 catch-all + 方法内分发器**
+    //     （`cmd/gateway/main.go:7286` → `admin/session_analytics_handler.go:728-729`）
+    //     ⇒ 只查 `admin/handler.go` 的 `mux.HandleFunc` 会判「端点不存在」。
+    //
+    //   权限 `requiresRole: 'admin'`：
+    //     `wrapSessionAnalytics`（`cmd/gateway/main_admin_wrappers.go:42`）是**双模式**的，
+    //     而**两条分支都不给浏览器用户设角色下限** ——
+    //     （甲）session-service JWT 未启用 ⇒ `AdminMiddleware`（`admin/auth.go:85` 起，
+    //          **全文无 `claims.Role` 比对**）；
+    //     （乙）已启用 ⇒ `SessionAnalyticsMiddleware`（`admin/session_service_auth.go:18`）
+    //          **确实**逐字检了 `hasScope(claims.Scope, "session:read")`，
+    //          ★★ 但它把主体强制成 `Role: "tenant_admin"`，是**服务间调用**的门，
+    //          **浏览器用户走不到那条分支**。
+    //     ⇒ 需要 admin：载荷是租户级聚合清单。
+    //     ⇒ 不过度限制到 super_admin：除 super_admin 外两条查询都拼了 `tenant_id = $1`
+    //          （`session_analytics_top.go:206-209`、`:219-222`）⇒ 租户内。
+    //     ⇒ ★★ 注意方向与兄弟端点(tfo)**相反**：`effectiveScopeTenant`
+    //          （`admin/session_tenant.go:189`）对 super_admin 返回**空串**
+    //          ⇒ super_admin 看的是**全部租户**的聚合。
+    //   ⇒ `meta.requiresRole: 'admin'` 这一层**是唯一的门**，不是体验兜底。
+    path: '/session-analytics-filter-options',
+    name: 'session-analytics-filter-options',
+    component: () => import('@/views/SessionAnalyticsFilterOptionsView.vue'),
+    meta: { titleKey: 'saf.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
+    path: '/sanitize-rules',
+    name: 'sanitize-rules',
+    component: () => import('@/views/SanitizeRulesView.vue'),
+    meta: { titleKey: 'sr.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  // 兼容口语/旧书签路径（2026-10-17 真机验收）：/sessions /requests /me
+  // 曾直接落到 NotFound，用户以为功能缺失。
+  { path: '/sessions', redirect: '/sessions-online' },
+  { path: '/requests', redirect: '/logs' },
+  // /me /account：用轻量页打开账户 Sheet（query 方案在 WebView 整页导航时会被剥掉）。
+  {
+    path: '/me',
+    name: 'me',
+    component: () => import('@/views/OpenAccountView.vue'),
+    meta: { titleKey: 'nav.account', requiresAuth: true },
+  },
+  {
+    path: '/account',
+    name: 'account',
+    component: () => import('@/views/OpenAccountView.vue'),
+    meta: { titleKey: 'nav.account', requiresAuth: true },
   },
   {
     path: '/:pathMatch(.*)*',

@@ -20,6 +20,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta"
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionpush"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/internal/titlestore"
 	"github.com/kaixuan/llm-gateway-go/metrics"
@@ -163,11 +164,47 @@ func (g *AutoTitleGenerator) commitProvisionalArrival(tenantID, sessionID, taskI
 				"session_id", sessionID, "tenant_id", tenantID, "error", err)
 		}
 	}
+	// G-2：落库成功后把结构化分析产出推给 memora（纯副作用，失败只记日志）。
+	// ★ **独立 ctx**：这条链的网络往返不能占用上面那个 2s 的写路径预算
+	//   （memora 慢 ⇒ 用户的请求不该等）。
+	go g.pushProvisionalToMemora(tenantID, sessionID, taskID, result)
 	title := strings.TrimSpace(result.Title)
 	if title == "" || g.handler.titleStore == nil {
 		return
 	}
 	g.commitProvisionalTitle(ctx, tenantID, sessionID, taskID, title)
+}
+
+// pushProvisionalToMemora 把 provisional 分析产出投递给 memora。
+//
+// ★ 用**独立**的 8s ctx：它跑在请求收尾阶段，不能把 memora 的延迟算进
+//
+//	请求的预算里；也不能因为 memora 慢就让这次请求失败（Deliver 永不返回错误）。
+func (g *AutoTitleGenerator) pushProvisionalToMemora(tenantID, sessionID, taskID string, result sessionmeta.Result) {
+	if g == nil || g.handler == nil || g.handler.analysisMetadataStore == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	var tags []sessionpush.Tag
+	if raw, err := g.handler.analysisMetadataStore.SessionTags(ctx, tenantID, sessionID); err == nil {
+		for _, t := range raw {
+			tags = append(tags, sessionpush.Tag{
+				Key:        t.Key,
+				Value:      t.Value,
+				Source:     t.Source,
+				Confidence: t.Confidence,
+			})
+		}
+	}
+	sessionpush.Deliver(ctx, sessionpush.Input{
+		TenantID:  tenantID,
+		SessionID: sessionID,
+		TaskID:    taskID,
+		Status:    sessionmeta.StatusProvisional,
+		Result:    result,
+		Tags:      tags,
+	})
 }
 
 // commitProvisionalTitle writes the arrival title as a dedicated

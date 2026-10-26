@@ -55,6 +55,9 @@ func (s *StoreDB) Set(scope Scope, key string, value any) (jsonRawMessage, error
 	if scope == ScopeTenant {
 		return nil, fmt.Errorf("use SetTenant for tenant scope")
 	}
+	if isSessionWriteKey(key) {
+		return s.mutateSessionWriteSetting(key, value, false)
+	}
 	spec := Global.Spec(key)
 	if spec == nil {
 		return nil, fmt.Errorf("unknown setting: %s", key)
@@ -67,6 +70,32 @@ func (s *StoreDB) Set(scope Scope, key string, value any) (jsonRawMessage, error
 	}
 	newValStr := string(newVal)
 	var oldVal []byte
+	if key == "sanitize.output_check_enabled" {
+		if err := spec.Validate(value); err != nil {
+			return nil, err
+		}
+		// Preserve the effective env/default on the first write. An atomic
+		// upsert uses the real previous DB value if another gateway wins first.
+		prior := "true"
+		if !GetPlatformBool(key, true) {
+			prior = "false"
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), settingsQueryTimeout)
+		defer cancel()
+		err = s.pool.QueryRow(ctx, `
+		 INSERT INTO settings_kv(key,value,value_type,scope,category,updated_at,prev_value,prev_updated_at)
+		 VALUES($1,$2::jsonb,$3,'platform',$4,now(),$5::jsonb,now())
+		 ON CONFLICT(key) DO UPDATE SET
+		 value=EXCLUDED.value, prev_value=settings_kv.value,
+		 value_type=EXCLUDED.value_type, category=EXCLUDED.category,
+		 prev_updated_at=settings_kv.updated_at, updated_at=now()
+		 RETURNING prev_value::text`, key, newValStr, valueType, category, prior).Scan(&oldVal)
+		if err != nil {
+			return nil, fmt.Errorf("set output check: %w", err)
+		}
+		InvalidatePlatformValue(key)
+		return oldVal, nil
+	}
 	// Try UPDATE first; if no row matched, INSERT.
 	err = s.pool.QueryRow(context.Background(), `
 		UPDATE settings_kv
@@ -209,6 +238,9 @@ func (s *StoreDB) ListTenant(tenantID string) (map[string]jsonRawMessage, error)
 // Rollback reverts key to its prev_value. Returns the value that was
 // written as the new "current" value.
 func (s *StoreDB) Rollback(scope Scope, key, tenantID string) (jsonRawMessage, error) {
+	if scope != ScopeTenant && isSessionWriteKey(key) {
+		return s.mutateSessionWriteSetting(key, nil, true)
+	}
 	var newVal []byte
 	var err error
 	if scope == ScopeTenant {

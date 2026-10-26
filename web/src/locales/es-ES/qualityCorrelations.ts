@@ -1,13 +1,13 @@
 // Auto-synced from en-US (es-ES)
 export default {
   title: 'Quality Correlations',
-  subtitle: 'Cross-references request features with outcomes (success, latency, quality).',
+  subtitle: 'Contrasta las características de la petición con los resultados (éxito, latencia, calidad).',
   filter: {
     window: 'Window',
     bucketBy: 'Bucket by',
     refresh: 'Refresh',
     loading: 'Loading…',
-    days: { d1: '1 day', d7: '7 days', d30: '30 days', d90: '90 days' },
+    days: { d1: '1 día', d7: '7 días', d30: '30 días', d90: '90 días' },
     by: {
       prompt_length: 'Prompt length',
       tools: 'Tool count',
@@ -25,7 +25,7 @@ export default {
   },
   breakdown: {
     title: 'Breakdown by {by}',
-    empty: 'No data — try lowering the days or expanding the filter.',
+    empty: 'Sin datos: reduce los días o amplía el filtro.',
     headers: {
       bucket: 'Bucket',
       samples: 'Samples',
@@ -36,14 +36,13 @@ export default {
     },
   },
   insights: {
-    title: 'What predicts quality? (Pearson correlation)',
-    hint: 'Each predictor is correlated with avg_quality across buckets.',
-    empty: 'Not enough samples for insights.',
+    title: '¿Qué predice la calidad? (correlación de Pearson)',
+    hint: 'Cada predictor se correlaciona con avg_quality en todos los grupos.',
     buckets: '{n} buckets',
     samples: '{n} samples',
 
-    emptyInsufficient: 'Need at least 30 samples to compute meaningful correlations.',
+    emptyInsufficient: 'Se necesitan al menos 30 muestras para calcular correlaciones con sentido.',
 
-    emptyUnexpected: 'No insights (unexpected). Check server logs.',
+    emptyUnexpected: 'Sin resultados (inesperado). Revisa los registros del servidor.',
   },
 }

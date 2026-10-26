@@ -352,7 +352,7 @@ journalctl -u llm-gateway -f
 
 ```bash
 # 开启Go详细日志
-export LOG_LEVEL=debug
+export LLM_GATEWAY_LOG_LEVEL=debug
 
 # 查看实时数据库连接
 psql -c "SELECT * FROM pg_stat_activity WHERE datname = 'llm_gateway';"

@@ -4,7 +4,6 @@ export default {
   page: {
     title: 'Standard models',
     desc: 'Standard models we have opened for your tenant. Pricing covers input / output / cache read / cache write, all charged in credits per million tokens.',
-    filterTitle: 'Standard models · filter',
     filterPlaceholder: 'Pick a standard model…',
     modelCount: '{n} models',
     refresh: 'Refresh',
@@ -15,11 +14,8 @@ export default {
   },
   columns: {
     model: 'Standard model',
-    canonicalName: 'Model ID',
-    family: 'Family',
     contextWindow: 'Context',
     multimodal: 'Multimodal',
-    modalityTag: 'Type',
     billingMode: 'Billing',
     inPrice: 'Input / 1M',
     outPrice: 'Output / 1M',
@@ -44,10 +40,6 @@ export default {
     notSet: '—',
   },
   filterBar: {
-    selectedVendor: 'Selected vendor: {vendor}',
     count: 'Showing {n} / {m}',
-  },
-  cta: {
-    buyCredits: 'Buy credits',
   },
 }

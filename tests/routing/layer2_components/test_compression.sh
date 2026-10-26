@@ -91,7 +91,7 @@ test_context_overflow_compression() {
     # Check if compression was applied
     capture_logs 100
     
-    if echo "$LAST_LOGS" | grep -qi "compression\|compress"; then
+    if grep -qi "compression\|compress" <<<"$LAST_LOGS"; then
         echo -e "${GREEN}✓${NC} Compression detected in logs"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
@@ -174,7 +174,7 @@ test_memora_integration() {
     # Check logs for Memora activity
     capture_logs 100
     
-    if echo "$LAST_LOGS" | grep -qi "memora"; then
+    if grep -qi "memora" <<<"$LAST_LOGS"; then
         echo -e "${GREEN}✓${NC} Memora activity detected"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else

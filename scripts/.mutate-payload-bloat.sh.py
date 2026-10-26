@@ -139,6 +139,16 @@ MUTATIONS = [
 ]
 
 
+
+# stdout/stderr 必须显式配 UTF-8：这些脚本会打印含「⇒」等字符的中文，
+# 而 cp936（Windows 中文默认）编码不了 ⇒ print() 抛 UnicodeEncodeError
+# ⇒ 门在出读数时就崩了。在 UTF-8 locale 下本段是 no-op，POSIX 行为不变。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
+
 def md5(p):
     with open(p, "rb") as f:
         return hashlib.md5(f.read()).hexdigest()
@@ -150,7 +160,7 @@ def run(cmd):
     # 严格解码会在这里抛 UnicodeDecodeError，**把变异脚本自己打断** ——
     # 于是「有牙的那条」根本跑不到结论，只留下一个 traceback。
     return subprocess.run(cmd, shell=True, cwd=REPO, capture_output=True,
-                          text=True, errors="replace")
+                          encoding='utf-8', errors="replace")
 
 
 def main():

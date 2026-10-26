@@ -20,6 +20,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/session"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	agenttelemetry "github.com/kaixuan/llm-gateway-go/telemetry" //nolint:depguard // aliased: system-prompt extractor for agent fallback (avoids clash with /domains/hooks/observability/telemetry)
@@ -187,6 +188,13 @@ type RequestLogContext struct {
 	streamChunkErrors  atomic.Int64
 	streamChunksSent   atomic.Int64
 
+	// 2026-10-16: 客户端实收 HTTP 状态码。网关自造失败（鉴权/额度/会话/
+	// 策略/内部错误）根本不经过上游，UpstreamStatusCode 恒为 nil，下游
+	// （session v2 镜像、lite sink）只能退回字面 500，于是 401 鉴权失败
+	// 全部以 status_code=500 落库。nil = 该出口没有记录实收状态，下游必须
+	// 走自己的推导；**不代表 500**。见 SetClientStatus。
+	ClientStatusCode *int
+
 	// 2026-07-01: 附件元数据字段 (migration 325)
 	// 存储从请求体中提取的 base64/data-URI 附件元数据，写入 _request_logs.attachments JSONB。
 	Attachments []attachments.AttachmentMetadata
@@ -245,6 +253,22 @@ func (c *RequestLogContext) SetUpstreamStatus(statusCode int) {
 		return
 	}
 	c.UpstreamStatusCode = &statusCode
+}
+
+// SetClientStatus records the HTTP status the client is about to receive (or has
+// received) on this connection. It is the client-facing counterpart of
+// SetUpstreamStatus and is the only source of truth for gateway-authored
+// rejections: those never reach an upstream, so UpstreamStatusCode stays nil
+// and every downstream consumer used to substitute a literal 500.
+//
+// Must be called BEFORE the terminal emit on an exit that writes the status
+// after emitting, because EmitFailure/EmitRateLimited snapshot the entry
+// synchronously. Ordering is emit-then-write on every pre-response exit.
+func (c *RequestLogContext) SetClientStatus(statusCode int) {
+	if c == nil || statusCode <= 0 {
+		return
+	}
+	c.ClientStatusCode = &statusCode
 }
 
 // SetClientTimeout marks that the client disconnected or timed out.
@@ -512,11 +536,11 @@ func applyWorkTypeField(entry *telemetry.RequestLogEntry, c *RequestLogContext) 
 // request:
 //
 //	SELECT child.request_id, child.parent_request_id, child.origin_actor
-//	FROM _request_logs_hot child
+//	FROM session_turns_hot child
 //	WHERE child.origin_actor = 'auto-title-generator'
 //	  AND child.ts > now() - interval '1 hour';
 //
-// Without this, _request_logs_hot.parent_request_id is always NULL on title
+// Without this, the turn row's parent_request_id is always NULL on title
 // rows and operators have no way to correlate "08aa2a8a → 3a03f7db".
 func applyParentCorrelationFields(entry *telemetry.RequestLogEntry, c *RequestLogContext) {
 	if entry == nil || c == nil {
@@ -1078,10 +1102,13 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		ClientRequestID:   clientRequestIDPtr,
 		// 2026-06-30: 上游诊断字段
 		UpstreamStatusCode: c.UpstreamStatusCode,
-		ClientTimeout:      clientTimeoutPtr,
-		ClientEndpoint:     clientEndpointPtr,
-		StreamChunkErrors:  streamChunkErrorsPtr,
-		StreamChunksSent:   streamChunksSentPtr,
+		// 2026-10-16: 客户端实收状态码（网关自造失败的唯一真值来源）。
+		// 与 UpstreamStatusCode 独立：后者是上游返回的，网关自造失败没有上游。
+		ClientStatusCode:  c.ClientStatusCode,
+		ClientTimeout:     clientTimeoutPtr,
+		ClientEndpoint:    clientEndpointPtr,
+		StreamChunkErrors: streamChunkErrorsPtr,
+		StreamChunksSent:  streamChunksSentPtr,
 		// 2026-07-01: 附件元数据
 		Attachments: attachmentsJSON,
 		// V3.1 dispatch queue timestamps (migration 491)
@@ -1297,8 +1324,100 @@ func (c *RequestLogContext) EmitRateLimited(errCode, errMessage string, provider
 }
 
 // failAndMark emits a failure row immediately (explicit exit paths).
-func (c *RequestLogContext) failAndMark(errCode, errMsg string, providerID, credentialID *int) {
+//
+// 2026-10-16: clientStatus is the HTTP status the client is about to receive (or
+// has already received, on the render-then-emit exits). Same contract and same
+// reason as captureAndEmitFailure's parameter: these exits emit before they
+// write, the entry is snapshotted synchronously, and every consumer downstream
+// (session v2 mirror statusCode, lite sink liteEntryStatusCode) otherwise has to
+// fall back to the literal 500 — which is how 401/503/410/429 rejections all
+// landed as status_code=500 in session_turns.
+//
+// Each call site must state the status taken from the adjacent code path that
+// actually decides the client response (the writeErrorJSON* argument, the
+// classification result, or the already-rendered prewarmed/SSE terminal). Do
+// not pass an upstream status and do not invent a plausible default: for the
+// prewarmed and in-stream terminal shapes the client really did receive 200,
+// and mislabelling those as 5xx would be a second fidelity bug.
+func (c *RequestLogContext) failAndMark(errCode, errMsg string, providerID, credentialID *int, clientStatus int) {
+	c.SetClientStatus(clientStatus)
 	c.EmitFailure(errCode, errMsg, providerID, credentialID)
+}
+
+// clientStatusForPrewarmed resolves the status the client actually receives on
+// the shared post-execute error shape.
+//
+// Every Exhausted / provider_error branch has the same two-arm structure:
+// `if preStreamPrepared { writePrewarmedStreamError*(w, ...) } else { writeErrorJSON*(w, <explicit>) }`.
+// The pre-stream keepalive already committed the response, and
+// writePrewarmedStreamError / writePrewarmedStreamErrorFull only ever call
+// safeWriteSSE — they set no status — so on that path the client received 200
+// and the error travels as an in-stream SSE envelope (the branch's own comment
+// calls it "an empty 200"). The explicit arm puts the given status on the wire.
+//
+// Using this instead of hardcoding either value is what keeps the prewarmed arm
+// from being recorded as an upstream 5xx: the client genuinely saw 200.
+func clientStatusForPrewarmed(preStreamPrepared bool, explicitStatus int) int {
+	if preStreamPrepared {
+		return http.StatusOK
+	}
+	return explicitStatus
+}
+
+// terminalTraceOutcome derives the request trace's terminal status + failed
+// stage from the request's own outcome record.
+//
+// 2026-10-16 (defect: routing-stage failures were finalized as success): the
+// caller used to read `ErrCode == ""` as "this request succeeded". ErrCode is
+// only written by SetError, so it described a *subset* of the failure exits:
+//
+//   - captureAndEmitFailure calls SetError first  → ErrCode set → correct.
+//   - failAndMark / EmitFailure / EmitRateLimited never touch ErrCode; they put
+//     the code on the entry (BuildFailureEntry → ErrorKind) and claim the
+//     terminal transition instead.
+//
+// Every routing-stage rejection (invalid_model, model_not_found, no_candidate,
+// rate-limited, provider_error …) therefore finalized as FinalSuccess. Measured
+// on the local PG: three real failing requests had final_status=success and no
+// failed event, while the 260 auth failures that DO go through SetError were
+// correctly finalized as failed — exactly the split the mechanism predicts.
+//
+// The judgement is therefore anchored on the terminal record (TerminalKind /
+// TerminalEntry.ErrorKind), which every emit path writes, with ErrCode kept as
+// the fallback for the SetError-only exits that emit no terminal row.
+//
+// Behaviour change: failed_at_stage for the failAndMark class is now the
+// stage ClassifyFailureToStage maps the real error kind to (e.g. no_candidate →
+// route_resolve, model_not_found → upstream_request) instead of the previous
+// catch-all request_complete, because ClassifyFailureToStage("") returned the
+// default. That is the point of the fix — the stage was previously wrong for
+// the same reason the status was.
+func terminalTraceOutcome(c *RequestLogContext) (gwtrace.FinalStatus, gwtrace.Stage) {
+	if c == nil {
+		return gwtrace.FinalSuccess, ""
+	}
+	failureCode := ""
+	switch c.TerminalKind() {
+	case "failure", "rate_limited":
+		if e := c.TerminalEntry(); e != nil && e.ErrorKind != nil {
+			failureCode = strings.TrimSpace(*e.ErrorKind)
+		}
+		if failureCode == "" {
+			// The terminal row carries no error kind (degenerate minimal entry).
+			// The kind itself is still a failure verdict, and classifying it keeps
+			// the stage at the documented request_complete default.
+			failureCode = c.TerminalKind()
+		}
+	case "success":
+		return gwtrace.FinalSuccess, ""
+	}
+	if failureCode == "" {
+		failureCode = c.ErrCode
+	}
+	if failureCode == "" {
+		return gwtrace.FinalSuccess, ""
+	}
+	return gwtrace.FinalFailed, gwtrace.ClassifyFailureToStage(failureCode)
 }
 
 // emitRateLimitedDecisionLog writes the explicit not-run-class
@@ -1682,6 +1801,95 @@ func applyOriginMetadata(entry *telemetry.RequestLogEntry, keyInfo *authenticati
 		if actor != "" && (entry.OriginActor == nil || *entry.OriginActor == "") {
 			entry.OriginActor = strPtr(actor)
 		}
+	}
+}
+
+// applyRequestContextFields 把「请求上下文字段」补到终态 entry 上
+// （2026-10-23 审计 · 探测打标）。
+//
+// ── 背景（154 生产实测，2026-10-23）────────────────────────────────────
+//
+// 「从请求上下文派生的字段」此前只在两处被应用：
+//
+//	① recordInitialRequestLog —— 初始 in_progress INSERT
+//	② buildEntry —— 失败 / 限流终态
+//
+// 而 session v2 镜像（internal/sessionv2mirror/hook.go:82）**只镜像终态
+// entry**：初始 INSERT 被刻意跳过（turn 幂等、写入后不可更新），所以它
+// 带的字段永远到不了 session_turns。
+//
+// ⇒ 成功请求落到 session_turns 的**唯一**入口是 emitTelemetry 构造的终态
+// entry，而它是从零构造的、不带任何请求上下文派生字段。
+//
+// 实测后果（154，session_turns_hot）：
+//
+//   - origin_stage 非空的行 **100% 是 success=false**；为空的行 **100% 是
+//     success=true**。
+//   - 同一组 (credential_id, model, request_preview) 三元组，失败行打了
+//     node_probe 标、成功行一个标都没有（如 cred 29 +
+//     nemotron-3-ultra-550b-a55b + "user: ping"：失败侧 186 行有标，
+//     成功侧 50 行无标）。
+//   - 目标请求 af1eb6d83ef39610cc4f8be4e181b5a8 在侧表
+//     request_context_attrs 里是 origin_stage=node_probe /
+//     client_ip=127.0.0.1 / is_probe=t，在 session_turns_hot 里这四列
+//     全空 ⇒ 实时拓扑把它当业务流量 ⇒ 用户看到的「探测请求没打标、有漏掉
+//     的」。
+//
+// 丢的不只是 origin：applyAutoRouteFields 同样只在初始 INSERT 与失败路径
+// 被调用 ⇒ 成功行的 is_auto_request / task_type / task_type_chosen 也是
+// 空的。而 task_type 正是 stats 侧判定探测的三个标记之一
+// （quality_flags / task_type / origin_actor，见 domains/stats/
+// minute_entry.go）⇒ 成功路径同时破坏了 stats 面的探测排除。
+//
+// ── 修法 ──────────────────────────────────────────────────────────────
+//
+// 把成功终态与失败终态对齐，逐项补齐 buildEntry 已有的那套派生字段：
+//
+//	applyAutoRouteFields    → IsAutoRequest / TaskType / AutoDecision /
+//	                          AutoConfidence / TaskTypeChosen / WorkType
+//	applyOriginMetadata     → OriginStage / OriginActor / ClientIP /
+//	                          ClientForwardedFor（ctx 权威 + DB 系统键兜底）
+//	ClientEndpoint /
+//	ClientRequestID         → 客户端请求端点与客户端自报 id
+//
+// 语义**分两族**，不是统一的「只补空位」：
+//
+//	★ origin 族（OriginStage / OriginActor / ClientIP / ClientForwardedFor /
+//	  ClientEndpoint / ClientRequestID）= **只补空位**（first-write-wins）
+//	  ⇒ entry 上已有值不被覆盖。
+//	★ auto-route 族（IsAutoRequest / TaskType / TaskTypeChosen / WorkType /
+//	  AutoProfile / AutoDecision / AutoConfidence / ModelChosen）
+//	  = **无条件覆盖**（见 applyAutoRouteFields / applyWorkTypeField）。
+//
+// ★ 2026-10-24 12h 审计轮订正：原注释把两族都写成「只补空位」⇒ **与实现不符**
+//
+//	（而 auto-route 那几列恰恰是驱动 stats 侧探测排除统计的列）⇒ ★ 注释是契约，
+//	契约与代码不一致时，**改注释**（行为侧今天无影响：两个调用点用的都是新建 entry）。
+//
+// 因此调用点可以放在终态构造之后、发射之前，与 buildEntry 内部的
+// 「applyAutoRouteFields → applyParentCorrelationFields →
+// applyOriginMetadata」顺序保持一致。
+func applyRequestContextFields(entry *telemetry.RequestLogEntry, keyInfo *authentication.KeyInfo, c *RequestLogContext) {
+	if entry == nil {
+		return
+	}
+	var originCtx context.Context
+	if c != nil && c.Request != nil {
+		originCtx = c.Request.Context()
+	}
+	if keyInfo == nil && c != nil {
+		keyInfo = c.KeyInfo
+	}
+	applyAutoRouteFields(entry, c)
+	applyOriginMetadata(entry, keyInfo, originCtx)
+	if c == nil {
+		return
+	}
+	if entry.ClientEndpoint == nil && c.ClientEndpoint != "" {
+		entry.ClientEndpoint = strPtr(c.ClientEndpoint)
+	}
+	if entry.ClientRequestID == nil && c.ClientRequestID != "" {
+		entry.ClientRequestID = strPtr(c.ClientRequestID)
 	}
 }
 

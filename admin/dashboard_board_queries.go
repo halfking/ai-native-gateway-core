@@ -247,11 +247,77 @@ func (h *Handler) queryBoardCreditsExcludingProbes(ctx context.Context, tenantID
 	return credits, ""
 }
 
+// overviewCountsNeedsLogFallback 判定「看板概览计数还要不要跑日志回退」。
+//
+// ## 2026-10-21（§143.37 / P20）：这是本轮加的门控，替代掉一个无条件回退
+//
+// ── 改的是什么 ────────────────────────────────────────────────────────
+// 改前（`272e1bf93` 引入分钟路径时的形态）：
+//
+//	if err := h.queryOverviewCountsMinute(...); err != nil {
+//	    if !IsMissingRelationError(err) {
+//	        return err
+//	    }
+//	}
+//	return h.fillOverviewCountsFromLogs(...)   // ★★ 在 if 块【外面】⇒ 无条件
+//
+// ★★ 那个 `return` 落在 `if` 块**外面** ⇒ **分钟路径成功时也照跑日志回退**。
+//
+//	（`272e1bf93` 的意图显然是「分钟路径当主、缺失时回退」，但收尾的 `return`
+//	 被留在了 `if` 之外 ⇒ 快路径加上了，慢路径却从没被关掉。）
+//
+// ── 为什么这一扫在分钟路径成功时是【纯浪费】─────────────────────────────
+// ★ `fillOverviewCountsFromLogs` 只在计数为 0 时才采纳它的结果：
+//
+//		if *models == 0 && logModels > 0 { *models = logModels }
+//		if *providers == 0 && logProviders > 0 { *providers = logProviders }
+//
+//	  ⇒ 当分钟路径已经给出**两个非零**计数时，那一整扫（会话族 hot ∪ parent
+//	    两腿 UNION ALL + 118 列投影 + details LEFT JOIN）的结果
+//	    **被逐字丢弃** ⇒ 扫了、付了钱、什么也没换到。
+//
+// ★ 生产实测（§143.37.3，只读）：分钟路径在 1/7/30 天 × 平台/租户
+//
+//	**6 个组合里全部给出两个非零计数**（模型 79/165/488、供应商 8/10/19）
+//	⇒ 6/6 组合下这一扫都是纯浪费。
+//	⇒ 而它 2 天跑了 412 次、读了 21.8 GB 物理读、占了 1,108.7 s 的库时间。
+//
+// ── 语义【逐值】不变（不是「大概等价」）────────────────────────────────
+// 设分钟路径结果为 (m, p)，日志回退结果为 (lm, lp)：
+//
+//	改前：恒执行日志回退 ⇒ 最终 (m==0&&lm>0 ? lm : m, p==0&&lp>0 ? lp : p)
+//	改后：仅当 (m==0 || p==0) 才执行日志回退
+//	      · (m!=0 && p!=0)：改前跑了但两个 if 都不成立 ⇒ 状态不变；
+//	                        改后不跑 ⇒ 状态不变。★ 逐值相等。
+//	      · (m==0 || p==0)：改前改后都执行日志回退 ⇒ 逐字相同的代码路径。
+//
+// ⚠ 诚实边界（唯一的差别，不是「零风险」）：改前在 (m!=0 && p!=0) 时
+//
+//	**可能把日志查询的错误返回给调用方**；改后返回 nil。
+//	⇒ 两个调用点（`queryBoardSummary` / `fallbackBoardSummary`）都用 `_ =`
+//	  丢弃了这个错误 ⇒ **调用点可观测行为不变**（由门
+//	  `TestSection14337CallSitesDiscardOverviewCountsError` 钉住）。
+//
+// ⚠ 边界②：分钟路径报 42P01（关系缺失）时**仍然跑**日志回退 ——
+//
+//	那正是回退存在的理由（聚合表没装 ⇒ 只能从明细表算）。
+//	非 42P01 的错误（超时等）仍然直接向上返回，不回退（同改前）。
+func overviewCountsNeedsLogFallback(minuteErr error, models, providers int) bool {
+	if minuteErr != nil {
+		// 只有「关系缺失」才回退；其它错误由调用方直接返回（与改前一致）。
+		return IsMissingRelationError(minuteErr)
+	}
+	// 分钟路径已成功 ⇒ 只在确实需要补 0 时才回退。
+	return models == 0 || providers == 0
+}
+
 func (h *Handler) queryOverviewCounts(ctx context.Context, tenantID string, tr boardTimeRange, keys, models, providers *int) error {
-	if err := h.queryOverviewCountsMinute(ctx, tenantID, tr, keys, models, providers); err != nil {
-		if !IsMissingRelationError(err) {
-			return err
-		}
+	err := h.queryOverviewCountsMinute(ctx, tenantID, tr, keys, models, providers)
+	if err != nil && !IsMissingRelationError(err) {
+		return err
+	}
+	if !overviewCountsNeedsLogFallback(err, *models, *providers) {
+		return nil
 	}
 	return h.fillOverviewCountsFromLogs(ctx, tenantID, tr, keys, models, providers)
 }

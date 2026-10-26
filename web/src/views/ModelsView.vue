@@ -313,7 +313,7 @@ async function loadNameMappings() {
     nameMappings.value = r.items
     nameMappingsTotal.value = r.total
   } catch (e: unknown) {
-    notifyNameMappingsErr(e instanceof Error ? e.message : '加载失败')
+    notifyNameMappingsErr(e instanceof Error ? e.message : t('common.feedback.loadFailed'))
   } finally {
     nameMappingsLoading.value = false
   }
@@ -325,7 +325,7 @@ async function syncNameMappings() {
     notifyNameMappingsOk(`同步完成：从 provider_models 导入了 ${r.provider_models} 条映射`)
     await loadNameMappings()
   } catch (e: unknown) {
-    notifyNameMappingsErr(e instanceof Error ? e.message : '同步失败')
+    notifyNameMappingsErr(e instanceof Error ? e.message : t('models.error.syncFailed'))
   }
 }
 
@@ -352,7 +352,7 @@ function closeNameMappingModal() {
 
 async function saveNameMapping() {
   if (!nameMappingForm.value.raw_model_name.trim() || !nameMappingForm.value.standardized_name.trim()) {
-    notifyNameMappingsErr('原始名称和标准名称都不能为空')
+    notifyNameMappingsErr(t('models.error.nameRequired'))
     return
   }
   nameMappingSaving.value = true
@@ -373,7 +373,7 @@ async function saveNameMapping() {
     closeNameMappingModal()
     await loadNameMappings()
   } catch (e: unknown) {
-    notifyNameMappingsErr(e instanceof Error ? e.message : '保存失败')
+    notifyNameMappingsErr(e instanceof Error ? e.message : t('common.feedback.saveFailed'))
   } finally {
     nameMappingSaving.value = false
   }
@@ -385,7 +385,7 @@ async function removeNameMapping(id: number) {
     await deleteModelNameMapping(id)
     await loadNameMappings()
   } catch (e: unknown) {
-    notifyNameMappingsErr(e instanceof Error ? e.message : '删除失败')
+    notifyNameMappingsErr(e instanceof Error ? e.message : t('common.feedback.deleteFailed'))
   }
 }
 
@@ -899,7 +899,7 @@ watch(activeTab, async (tab) => {
         <h3>模型名称映射管理</h3>
       </div>
       <div class="card-body">
-        <div v-if="nameMappingsLoading" style="text-align:center;padding:32px;color:var(--muted)">加载中...</div>
+        <div v-if="nameMappingsLoading" style="text-align:center;padding:32px;color:var(--muted)">{{ $t('common.feedback.loading') }}</div>
         <div v-else-if="nameMappingsError" class="alert alert-error" style="margin-bottom:12px">{{ nameMappingsError }}</div>
         <div v-else-if="nameMappingsMessage" class="alert alert-success" style="margin-bottom:12px">{{ nameMappingsMessage }}</div>
 
@@ -909,10 +909,10 @@ watch(activeTab, async (tab) => {
               <th>ID</th>
               <th>原始名称 (raw_model_name)</th>
               <th>标准名称 (standardized_name)</th>
-              <th>描述</th>
+              <th>{{ $t('common.description') }}</th>
               <th>自动生成</th>
               <th>更新时间</th>
-              <th style="width:120px">操作</th>
+              <th style="width:120px">{{ $t('common.actions') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -923,13 +923,13 @@ watch(activeTab, async (tab) => {
               <td class="muted">{{ m.description || '-' }}</td>
               <td>
                 <span :class="m.auto_generated ? 'badge badge-gray' : 'badge badge-green'">
-                  {{ m.auto_generated ? '是' : '否' }}
+                  {{ m.auto_generated ? $t('common.button.yes') : $t('common.button.no') }}
                 </span>
               </td>
               <td class="muted small">{{ m.updated_at ? formatDateTime(m.updated_at, { locale: 'zh-CN' }) : '-' }}</td>
               <td>
-                <button v-if="!readOnly && !m.auto_generated" class="btn btn-ghost btn-sm" @click="openNameMappingModal(m)">编辑</button>
-                <button v-if="!readOnly && !m.auto_generated" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="removeNameMapping(m.id)">删除</button>
+                <button v-if="!readOnly && !m.auto_generated" class="btn btn-ghost btn-sm" @click="openNameMappingModal(m)">{{ $t('common.button.edit') }}</button>
+                <button v-if="!readOnly && !m.auto_generated" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="removeNameMapping(m.id)">{{ $t('common.button.delete') }}</button>
               </td>
             </tr>
           </tbody>
@@ -940,9 +940,9 @@ watch(activeTab, async (tab) => {
 
         <!-- Pagination -->
         <div v-if="nameMappingsTotal > nameMappingsPageSize" style="margin-top:16px;display:flex;gap:8px;align-items:center">
-          <button class="btn btn-ghost btn-sm" :disabled="nameMappingsPage <= 1" @click="nameMappingsPage--; loadNameMappings()">上一页</button>
+          <button class="btn btn-ghost btn-sm" :disabled="nameMappingsPage <= 1" @click="nameMappingsPage--; loadNameMappings()">{{ $t('common.pagination.previous') }}</button>
           <span>第 {{ nameMappingsPage }} / {{ Math.ceil(nameMappingsTotal / nameMappingsPageSize) }} 页，共 {{ nameMappingsTotal }} 条</span>
-          <button class="btn btn-ghost btn-sm" :disabled="nameMappingsPage >= Math.ceil(nameMappingsTotal / nameMappingsPageSize)" @click="nameMappingsPage++; loadNameMappings()">下一页</button>
+          <button class="btn btn-ghost btn-sm" :disabled="nameMappingsPage >= Math.ceil(nameMappingsTotal / nameMappingsPageSize)" @click="nameMappingsPage++; loadNameMappings()">{{ $t('common.pagination.next') }}</button>
         </div>
       </div>
     </div>
@@ -982,7 +982,7 @@ watch(activeTab, async (tab) => {
     <div class="card filter-card" style="margin-bottom:12px">
       <div class="card-header">
         <div class="filter-heading">
-          <h3>筛选</h3>
+          <h3>{{ $t('common.button.filter') }}</h3>
           <div v-if="namespaceOptions.length" class="filter-summary-row">
             <span class="muted small">标签维度 {{ namespaceOptions.length }} · 候选 {{ namespaceTagCount }}</span>
             <span v-if="activeTags.length" class="muted small">已选标签 {{ activeTags.length }}</span>
@@ -996,7 +996,7 @@ watch(activeTab, async (tab) => {
           >
             {{ showNamespaceFilters ? t('models.collapse') : t('models.expand') }}
           </button>
-          <button v-if="activeTags.length || statusFilter || selectedVendor || pickedModel.trim() || textSearch.trim()" class="btn btn-ghost btn-sm" @click="clearFilters">清空</button>
+          <button v-if="activeTags.length || statusFilter || selectedVendor || pickedModel.trim() || textSearch.trim()" class="btn btn-ghost btn-sm" @click="clearFilters">{{ $t('common.terms.clear') }}</button>
         </div>
       </div>
       <div class="card-body">
@@ -1078,20 +1078,20 @@ watch(activeTab, async (tab) => {
         <div v-if="discoveryStatusError" class="alert alert-warning" role="status">
           ⚠️ {{ t('models.error.discoveryStatusLoadFailed') }}（{{ discoveryStatusError }}）
         </div>
-        <div v-if="loading" class="muted">加载中…</div>
+        <div v-if="loading" class="muted">{{ $t('common.feedback.loading') }}</div>
         <table v-else class="table">
           <thead>
             <tr>
               <th>规范名</th>
-              <th>显示名</th>
+              <th>{{ $t('common.terms.displayName') }}</th>
               <th>厂商</th>
               <th>family</th>
-              <th>状态</th>
+              <th>{{ $t('common.terms.status') }}</th>
               <th>modality</th>
               <th>ctx</th>
               <th>标准智商</th>
               <th>aliases/offers</th>
-              <th>操作</th>
+              <th>{{ $t('common.actions') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -1132,7 +1132,7 @@ watch(activeTab, async (tab) => {
           <div v-if="featuredError" class="alert alert-error">{{ featuredError }}</div>
           <div v-if="featuredMessage" class="alert alert-success">{{ featuredMessage }}</div>
 
-          <div v-if="featuredLoading" class="muted">加载中…</div>
+          <div v-if="featuredLoading" class="muted">{{ $t('common.feedback.loading') }}</div>
           <template v-else>
             <div class="featured-recommend-bar">
               <button class="btn btn-sm btn-ghost" :disabled="featuredRecommendLoading" @click="previewRecommendedFeatured">
@@ -1160,7 +1160,7 @@ watch(activeTab, async (tab) => {
               <button class="btn btn-primary" @click="saveFeatured" :disabled="featuredSaving">
                 {{ featuredSaving ? t('models.savingFeatured') : t('models.saveFeatured') }}
               </button>
-              <button class="btn btn-ghost" @click="closeFeaturedDrawer">关闭</button>
+              <button class="btn btn-ghost" @click="closeFeaturedDrawer">{{ $t('common.close') }}</button>
             </div>
           </template>
       </div>
@@ -1176,15 +1176,15 @@ watch(activeTab, async (tab) => {
       @close="detail = null"
     >
       <div class="drawer-body">
-          <div v-if="detailLoading" class="muted">加载中…</div>
+          <div v-if="detailLoading" class="muted">{{ $t('common.feedback.loading') }}</div>
 
           <!-- 基础信息 -->
           <div class="section">
             <h4>基础信息</h4>
             <div class="form-grid">
               <div class="form-group">
-                <label>显示名</label>
-                <input v-model="editInfo.display_name" class="input" placeholder="显示名" />
+                <label>{{ $t('common.terms.displayName') }}</label>
+                <input v-model="editInfo.display_name" class="input" :placeholder="$t('common.terms.displayName')" />
               </div>
               <div class="form-group">
                 <label>厂商/Family</label>
@@ -1194,13 +1194,13 @@ watch(activeTab, async (tab) => {
                 </select>
               </div>
               <div class="form-group">
-                <label>状态</label>
+                <label>{{ $t('common.terms.status') }}</label>
                 <select v-model="editInfo.status" class="input">
                   <option v-for="s in statuses" :key="s" :value="s">{{ s }}</option>
                 </select>
               </div>
               <div class="form-group">
-                <label>模态</label>
+                <label>{{ $t('common.terms.modality') }}</label>
                 <select v-model="editInfo.modality" class="input">
                   <option v-for="m in modalities" :key="m" :value="m">{{ m }}</option>
                 </select>
@@ -1220,8 +1220,8 @@ watch(activeTab, async (tab) => {
                 <input v-model="editInfo.disabled_reason" class="input" placeholder="禁用/弃用原因" />
               </div>
               <div class="form-group span-2">
-                <label>备注</label>
-                <textarea v-model="editInfo.notes" class="input" rows="2" placeholder="备注" />
+                <label>{{ $t('common.terms.remark') }}</label>
+                <textarea v-model="editInfo.notes" class="input" rows="2" :placeholder="$t('common.terms.remark')" />
               </div>
               <div class="form-group">
                 <button class="btn btn-primary" @click="saveInfo">保存基础信息</button>
@@ -1251,8 +1251,8 @@ watch(activeTab, async (tab) => {
                 <span class="help-text">量化方式，可选</span>
               </div>
               <div class="form-group">
-                <label>备注</label>
-                <input v-model="newAlias.notes" class="input" placeholder="备注" />
+                <label>{{ $t('common.terms.remark') }}</label>
+                <input v-model="newAlias.notes" class="input" :placeholder="$t('common.terms.remark')" />
               </div>
               <div class="form-group" style="align-self:end">
                 <button class="btn btn-primary btn-sm" @click="addAlias">新增 alias</button>
@@ -1267,7 +1267,7 @@ watch(activeTab, async (tab) => {
             </div>
 
             <table class="table alias-table">
-              <thead><tr><th>Raw Name</th><th>Surface</th><th>Quant</th><th>状态</th><th>备注</th><th>操作</th></tr></thead>
+              <thead><tr><th>Raw Name</th><th>Surface</th><th>Quant</th><th>{{ $t('common.terms.status') }}</th><th>{{ $t('common.terms.remark') }}</th><th>{{ $t('common.actions') }}</th></tr></thead>
               <tbody>
                 <tr v-for="a in detail.aliases" :key="a.id" :class="{ mutedRow: a.status !== 'active' }">
                   <td><code>{{ a.raw_name }}</code></td>
@@ -1294,16 +1294,16 @@ watch(activeTab, async (tab) => {
               <table class="table offers-table">
                 <thead>
                   <tr>
-                    <th>供应商</th>
-                    <th>凭据</th>
+                    <th>{{ $t('common.terms.provider') }}</th>
+                    <th>{{ $t('common.credentialFallback') }}</th>
                     <th>原始模型名</th>
-                    <th>标准名</th>
+                    <th>{{ $t('common.terms.standardName') }}</th>
                     <th>输入价格</th>
                     <th>输出价格</th>
-                    <th>成功率</th>
-                    <th>P95延迟</th>
+                    <th>{{ $t('common.terms.successRate') }}</th>
+                    <th>P95{{ $t('common.terms.latency') }}</th>
                     <th>健康状态</th>
-                    <th>状态</th>
+                    <th>{{ $t('common.terms.status') }}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1353,7 +1353,7 @@ watch(activeTab, async (tab) => {
       <div class="modal-content create-modal" @click.stop>
         <div class="modal-header">
           <h3>新增模型</h3>
-          <button class="btn btn-ghost btn-sm" @click="showCreateModal = false">关闭</button>
+          <button class="btn btn-ghost btn-sm" @click="showCreateModal = false">{{ $t('common.close') }}</button>
         </div>
         <div class="modal-body">
           <div class="form-grid">
@@ -1370,13 +1370,13 @@ watch(activeTab, async (tab) => {
             <div class="form-group">
               <label>厂商/Family</label>
               <select v-model="createForm.family" class="input">
-                <option value="">选择 family</option>
+                <option value="">{{ $t('common.terms.select') }} family</option>
                 <option v-for="f in families" :key="f.id" :value="f.id">{{ f.vendor ? f.vendor + ' - ' : '' }}{{ f.display_name }} · {{ f.id }}</option>
               </select>
               <span class="help-text">模型所属的厂商或系列</span>
             </div>
             <div class="form-group">
-              <label>模态</label>
+              <label>{{ $t('common.terms.modality') }}</label>
               <select v-model="createForm.modality" class="input">
                 <option v-for="m in modalities" :key="m" :value="m">{{ m }}</option>
               </select>
@@ -1398,12 +1398,12 @@ watch(activeTab, async (tab) => {
               <span class="help-text">供应商实际使用的模型名称，每行一个。例如：标准名 gpt-4o 的别名可以是 gpt-4o-2024-08-06、gpt-4o-latest 等</span>
             </div>
             <div class="form-group span-2">
-              <label>备注</label>
+              <label>{{ $t('common.terms.remark') }}</label>
               <textarea v-model="createForm.notes" class="input" rows="2" placeholder="备注信息" />
             </div>
           </div>
           <div class="modal-footer">
-            <button class="btn btn-ghost" @click="showCreateModal = false">取消</button>
+            <button class="btn btn-ghost" @click="showCreateModal = false">{{ $t('common.button.cancel') }}</button>
             <button class="btn btn-primary" :disabled="creating || !createForm.canonical_name" @click="submitCreate">
               {{ creating ? t('models.submitting') : t('models.submit') }}
             </button>
@@ -1441,14 +1441,14 @@ watch(activeTab, async (tab) => {
             <span class="help-text">统一使用的标准模型名称（不带前缀，如 minimax-m2.7）</span>
           </div>
           <div class="form-group">
-            <label>描述</label>
+            <label>{{ $t('common.description') }}</label>
             <input v-model="nameMappingForm.description" class="input" placeholder="可选描述" />
           </div>
         </div>
       <template #footer>
-        <button class="btn btn-ghost" @click="closeNameMappingModal">取消</button>
+        <button class="btn btn-ghost" @click="closeNameMappingModal">{{ $t('common.button.cancel') }}</button>
         <button class="btn btn-primary" :disabled="nameMappingSaving || !nameMappingForm.raw_model_name || !nameMappingForm.standardized_name" @click="saveNameMapping">
-          {{ nameMappingSaving ? '保存中...' : '保存' }}
+          {{ nameMappingSaving ? $t('common.saving') : $t('common.button.save') }}
         </button>
       </template>
     </AppModal>
@@ -1596,7 +1596,7 @@ watch(activeTab, async (tab) => {
   margin-bottom: 6px;
 }
 
-.ns-label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; }
+.ns-label { font-size: 11px; font-weight: 600; color: var(--text-muted);}
 .tag-list { display: flex; flex-wrap: wrap; gap: 4px; }
 .tag-chip {
   border: 1px solid var(--border); background: var(--bg);
@@ -1777,7 +1777,6 @@ watch(activeTab, async (tab) => {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-muted);
-  text-transform: uppercase;
 }
 
 .provider-cell {

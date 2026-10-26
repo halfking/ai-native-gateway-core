@@ -11,6 +11,21 @@ import (
 // 计数的源形状。停写后新流量轮次只落 session_turns(_hot)，原 hot-only 实现
 // 让门槛恒 0、自动摘要停摆。判据同层：断言驱动包级 SQL 变量——它们就是
 // CountNewTurns/CountTotalTurns 实际发给 PostgreSQL 的文本。
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：本门**反转**了 v1 那一段。
+//
+// 原来这里钉的是「v1 回退腿必须直读 _request_logs 分区父表」「必须带
+// gw_session_id = $1 AND success = TRUE 谓词」——回退腿服务的是「镜像链
+// 启用前的历史会话」（计数只数得到 v1 母表的行）。
+//
+// v1 族被整体 DROP 之后：① 那条 SQL 必然 42P01（整条语句失败，不是那条腿
+// 失败）；② 那些历史会话**本身**也随 v1 族一起消失 ⇒ 回退腿没有任何可回退
+// 的对象。⇒ countTurnsSessionSQL 成为**唯一**计数腿，会话族 0 行就是 0 行。
+//
+// ⇒ 反转后的判据是「唯一那条计数 SQL 里**不得**出现 v1 族引用」。
+// 保留的正向断言（内推谓词、hot+parent 两腿、成功谓词）保证「会话族那条腿
+// 真的在」，不是「因为什么都没写所以没引用 v1」。另配**阳性对照**证明这条
+// 负向判据分得清「含 v1 引用」与「不含」。
 func TestS3Wave2TurnCountSources(t *testing.T) {
 	if !strings.Contains(countTurnsSessionSQL, "session_id = $1") {
 		t.Error("会话族计数缺少内推的 session_id = $1 谓词（外层过滤投影列会丢索引）")
@@ -22,23 +37,28 @@ func TestS3Wave2TurnCountSources(t *testing.T) {
 	if !strings.Contains(countTurnsSessionSQL, "rl.success = TRUE") {
 		t.Error("成功轮计数谓词丢失（门槛口径回归）")
 	}
-	// v1 回退必须覆盖 promote 排空的历史行（2026-10-13 252 审计轮演进：从
-	// canonical 视图收窄到 _request_logs 分区父表——父表 hot∪各月分区都在，
-	// promote 排空的行照数；且回退腿只在会话族腿为 0 时执行，此时本会话
-	// 在 session_turns 无行可反连接，视图 turns 两臂 + details join 是
-	// leg 1 刚证明为空的纯重复扫描，252 实测单次 1.0-5.6s × 29 次/10.2h）。
-	// 钉子从「必须视图」演进为「必须父表直读」双向钉死。
-	if !strings.Contains(v1FallbackCountSQL, "FROM _request_logs\n") &&
-		!strings.Contains(v1FallbackCountSQL, "FROM _request_logs ") {
-		t.Error("v1 回退腿应直读 _request_logs 分区父表（hot∪分区全覆盖，不落裸 hot 缺口）")
+
+	// ---- 反转后的负向判据：唯一那条计数 SQL 不得引用 v1 族 ----
+	//
+	// 逐字包含（strings.Contains）而不是 LIKE：`_` 在 LIKE 里是单字符通配符，
+	// `LIKE '%_request_logs%'` 既会误命中无关串、也会漏掉别的写法。
+	for _, v1 := range []string{
+		"_request_logs",
+		"request_logs_hot",
+		"request_logs_bodies",
+		"request_logs_with_current_month",
+	} {
+		if strings.Contains(countTurnsSessionSQL, v1) {
+			t.Errorf("计数 SQL 里出现了 v1 族引用 %q —— v1 族已被迁移 890 DROP，"+
+				"任何提到它的语句整条 42P01 ⇒ 自动摘要的门槛计数会直接失败。", v1)
+		}
 	}
-	if strings.Contains(v1FallbackCountSQL, "request_logs_with_current_month") {
-		t.Error("v1 回退腿不应再走 canonical 视图（turns 臂对回退场景是纯重复扫描，2026-10-13 审计轮）")
-	}
-	if strings.Contains(v1FallbackCountSQL, "_request_logs_hot") {
-		t.Error("v1 回退腿禁止退回裸 hot 表（promote 排空的历史行会漏计）")
-	}
-	if !strings.Contains(v1FallbackCountSQL, "gw_session_id = $1 AND success = TRUE") {
-		t.Error("v1 回退腿口径谓词丢失")
+
+	// ---- 阳性对照：证明上面那条负向判据**分得清** ----
+	//
+	// 没有对照，上面那个 for 循环若把判据写坏（例如检查一个永远不出现的串），
+	// 整段会恒绿——「判据没测到东西」与「判据测到了」必须长得不一样。
+	if !strings.Contains("SELECT 1 FROM _request_logs", "_request_logs") {
+		t.Error("判据分不清「含 v1 引用」与「不含」—— 上面的负向断言此时恒绿")
 	}
 }

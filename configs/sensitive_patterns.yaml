@@ -2,10 +2,23 @@
 # 配置各种敏感信息的检测模式、关键词和阈值
 
 # 全局配置
+#
+# ★ r1039（2026-10-20）：本节**不是规则源**——检测器不解析它。
+# 理由（逐条）：
+#   · min_confidence：检测器没有「置信度」概念。规则条目只读
+#     regex/group/kind/scopes/action，`confidence` 字段本身也被忽略。
+#     ⇒ 若哪天真按 0.7 实现，**medical.medication（confidence 0.65）会被
+#     直接丢弃** —— 一个「看起来更完整」的实现反而让规则变少，所以本轮
+#     不动它，只把语义写清楚。
+#   · enable_cache / cache_ttl：检测器没有结果缓存层（缓存由网关的
+#     会话级映射表承担，不在本文件里配置）。
+# ⇒ 保留本节是为了不破坏运维已有的阅读习惯与外部文档引用；它在门禁
+#   security/sanitize/r1039_yaml_rule_coverage_test.go 的「非规则段白名单」
+#   里被显式登记，不会被当成「漏加载的规则族」。
 global:
-  min_confidence: 0.7  # 最小置信度阈值
-  enable_cache: true   # 启用检测结果缓存
-  cache_ttl: 300       # 缓存过期时间（秒）
+  min_confidence: 0.7  # 最小置信度阈值（当前未被检测器读取，见上）
+  enable_cache: true   # 启用检测结果缓存（当前未被检测器读取）
+  cache_ttl: 300       # 缓存过期时间（秒，当前未被检测器读取）
 
 # PII (个人身份信息) 检测规则
 pii:
@@ -36,8 +49,22 @@ pii:
       description: "详细地址信息"
       
     # 护照号
+    #
+    # r1039（2026-10-20）：收窄为**中国护照**的真实格式。
+    # 原规则 `[EGP]\d{8}` 只要求「E/G/P + 8 位数字」，于是任何以这三个字母
+    # 开头的 9 位 token 都会被判成护照号 —— 运维散文里的「配置项 P20240101
+    # 生效」就是这么被误伤的（实测被判为敏感并遮蔽）。
+    #
+    # 中国护照号的真实形态：
+    #   · 旧版：E + 8 位数字        （E12345678）
+    #   · 电子护照：E + A~G + 7 位数字（EA1234567 / EG1234567）
+    # ⇒ 规则改为这两种形态。
+    #
+    # ★ 取舍（明确写下）：**不再**识别 G 前缀与 P 前缀的 9 位数字串
+    # （如 G12345678 / P20240101）。它们不是中国护照格式，而旧规则把它们
+    # 一并吞掉，正是本次误伤的来源。
     passport:
-      regex: '\b[EGP]\d{8}\b'
+      regex: '\bE(?:[A-G]\d{7}|\d{8})\b'
       confidence: 0.85
       description: "中国护照号码"
       
@@ -47,9 +74,12 @@ pii:
       # 部署配置散文里的 `ssh_user=deploy` 漏检——用户名以明文出网关，模型回显
       # 时又撞上输出侧凭据键检查，整条 tool 调用被掐断。用户名进占位符闭环
       # （TypeAccount）后，出向是占位符、回程可还原。
-      regex: '(?i)(?:account|user(?:name|_name)?|[a-z0-9_]*_user|login|帐号|账号|账户|用户名)["'']?\s*[:=：]\s*("(?:\\.|[^"\\])*"|''[^'']*''|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"'',;，；<>{}=\]][^\s"'',;，；<>{}\]]*)+)'
+      regex: '(?i)(?:account|user(?:name|_name)?|[a-z0-9_]*_user|login|帐号|账号|账户|用户名)["'']?(?:\*{1,2}|`)?\s*(?:[:=：]\s*|(?:改成|改为|设置为|设为|更新为|是|为)\s*|\s+(?:is|(?:set|changed?|updated?)\s+to)\s+|\s+)((?:\$\{[^}\r\n]*\}|"(?:\\.|[^"\\])*"|''[^'']*''|`[^`]*`|“[^”]*”|‘[^’]*’|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"''`“”‘’,;，；。！？<>{}=\]|][^\s"''`“”‘’,;，；。！？<>{}\]|]*)+))'
       group: 1
       description: "带标签的登录帐号"
+    credential_pair_account:
+      regex: '(?i)(?:(?:管理员)?(?:帐号|账号|账户)(?:\s*[/／和及、]\s*(?:密码|口令))?|(?:用户名|username|user)\s*[/／]\s*(?:密码|password)|admin(?:istrator)?\s+(?:account|credentials))\s*(?:改成|改为|设置为|设为|更新为|是|为|[:=：]|(?:set|changed?|updated?)\s+to|to|is)\s*((?:"[^"\r\n]+"|''[^''\r\n]+''|`[^`]+`|“[^”\r\n]+”|‘[^’\r\n]+’|[^\s/／:"''`“”‘’,;，；。！？<>{}=\]|]+))\s*[/／]\s*((?:\$\{[^}\r\n]*\}|"(?:\\.|[^"\\])*"|''[^'']*''|`[^`]*`|“[^”]*”|‘[^’]*’|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"''`“”‘’,;，；。！？<>{}=\]|][^\s"''`“”‘’,;，；。！？<>{}\]|]*)+))'
+      group: 1
     # 2026-10-10: server_ip / server_ipv6 不再进入脱敏范围。
     #
     # 地址类文本（http_proxy=http://127.0.0.1:7890、host: 10.24.7.91、
@@ -107,11 +137,14 @@ secret:
     # 5d9e1267），redact 侧同规则会把正文分节标题遮成 [REDACTED:secret]。
     # 带引号的值（含 "="）走引号分支不受影响。
     password:
-      regex: '(?i)(?:password|passwd|pwd|secret|token|api_key|apikey|access_key|authorization|密码|口令)["'']?\s*[:=：]\s*("(?:\\.|[^"\\])*"|''[^'']*''|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"'',;，；<>{}=\]][^\s"'',;，；<>{}\]]*)+)'
+      regex: '(?i)(?:password|passwd|pwd|secret|token|api_key|apikey|access_key|authorization|密码|口令)["'']?(?:\*{1,2}|`)?\s*(?:[:=：]\s*|(?:改成|改为|设置为|设为|更新为|是|为)\s*|\s+(?:is|(?:set|changed?|updated?)\s+to)\s+|\s+)((?:\$\{[^}\r\n]*\}|"(?:\\.|[^"\\])*"|''[^'']*''|`[^`]*`|“[^”]*”|‘[^’]*’|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"''`“”‘’,;，；。！？<>{}=\]|][^\s"''`“”‘’,;，；。！？<>{}\]|]*)+))'
       group: 1
       confidence: 0.8
       description: "密码字段"
       
+    credential_pair_secret:
+      regex: '(?i)(?:(?:管理员)?(?:帐号|账号|账户)(?:\s*[/／和及、]\s*(?:密码|口令))?|(?:用户名|username|user)\s*[/／]\s*(?:密码|password)|admin(?:istrator)?\s+(?:account|credentials))\s*(?:改成|改为|设置为|设为|更新为|是|为|[:=：]|(?:set|changed?|updated?)\s+to|to|is)\s*((?:"[^"\r\n]+"|''[^''\r\n]+''|`[^`]+`|“[^”\r\n]+”|‘[^’\r\n]+’|[^\s/／:"''`“”‘’,;，；。！？<>{}=\]|]+))\s*[/／]\s*((?:\$\{[^}\r\n]*\}|"(?:\\.|[^"\\])*"|''[^'']*''|`[^`]*`|“[^”]*”|‘[^’]*’|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"''`“”‘’,;，；。！？<>{}=\]|][^\s"''`“”‘’,;，；。！？<>{}\]|]*)+))'
+      group: 2
     # JWT Token
     jwt:
       regex: '\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b'
@@ -161,9 +194,23 @@ secret:
 financial:
   enabled: true
   patterns:
-    # 银行卡号：16-19位数字
+    # 银行卡号：按 IIN（发卡行前 6 位）前缀族约束，仍是 16-19 位、允许 4 位
+    # 分组之间用空格或连字符。
+    #
+    # r1039（2026-10-20）：原规则 `\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4,7}\b`
+    # 只要求「16-19 位数字」，于是**任何**长数字串都是卡号 —— 17 位的纳秒
+    # 时间戳（`时间戳 2026102012345678`）被判成 credit_card 并遮蔽。
+    #
+    # ⇒ 改为「IIN 前缀 + 长度」双约束：卡号必须落在真实发卡行前缀族里
+    #（Visa 4 / Mastercard 51-55 / AmEx 34,37 / Discover 6011,65xx /
+    #  UnionPay 62 / JCB 35），且长度 16-19（AmEx 例外为 15）。
+    # 时间戳以 1 或 2 开头，落在所有前缀族之外 ⇒ 不再命中。
+    #
+    # ★ 取舍（明确写下）：**不再**识别不以已知 IIN 开头的 16-19 位数字串
+    # （例如部分历史发行的、以 2 开头的老卡）。旧规则把它们全当卡号，
+    # 代价是把时间戳、流水号一并遮蔽。
     bank_card:
-      regex: '\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4,7}\b'
+      regex: '\b(?:3[47]\d{13}|(?:4\d{3}|5[1-5]\d{2}|3[47]\d{2}|6(?:011|5\d{2})|62\d{2}|35\d{2})[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4,7})\b'
       confidence: 0.85
       description: "银行卡号"
       
@@ -186,8 +233,21 @@ financial:
       description: "微信账号"
       
     # IBAN (国际银行账号)
+    #
+    # r1039（2026-10-20）：原规则 `\b[A-Z]{2}\d{2}[A-Z0-9]{4,30}\b` 只有
+    # 「两个大写字母 + 两位数字」这一条结构约束，于是 `US20240001`、
+    # `DE1234ABCD` 这类 10 位 token 全部被判成 IBAN。
+    #
+    # ⇒ 改为「真实 IBAN 国家代码 + 合法长度」双约束：
+    #   · 国家代码取 SWIFT IBAN 注册表里的代码表（US 不是 IBAN 国家 ⇒
+    #     `US20240001` 直接出局）；
+    #   · IBAN 总长 15-34 位（最短 NO 15 位），故 BBAN 段为 11-30 位
+    #     ⇒ `DE1234ABCD`（10 位）因长度出局。
+    #
+    # ★ 取舍（明确写下）：**不再**识别国家代码不在表内、或长度不在
+    # 15-34 位之间的形似 IBAN 串。旧规则把它们一并吞掉，是本次误伤的来源。
     iban:
-      regex: '\b[A-Z]{2}\d{2}[A-Z0-9]{4,30}\b'
+      regex: '\b(?:AD|AE|AL|AT|AZ|BA|BE|BG|BH|BR|BY|CH|CR|CY|CZ|DE|DK|EE|EG|ES|FI|FO|FR|GB|GE|GI|GL|GR|GT|HR|HU|IE|IL|IQ|IS|IT|JO|KW|KZ|LB|LC|LI|LT|LU|LV|LY|MC|MD|ME|MK|MR|MT|MU|NL|NO|PK|PL|PS|PT|QA|RO|RS|SA|SC|SE|SI|SK|SM|ST|SV|TL|TN|TR|UA|VA|VG|XK)\d{2}[A-Z0-9]{11,30}\b'
       confidence: 0.8
       description: "国际银行账号"
       
@@ -211,6 +271,17 @@ financial:
     iban: "show_first_4_last_4"      # 显示前4后4位
 
 # MEDICAL (医疗信息) 检测规则
+#
+# ★ r1039（2026-10-20）：本族此前**完全没被加载**，而且**就算加载也会炸**——
+# 下面两条正则里的 `\u4e00` 是 **Java/JS 风格的 Unicode 转义**，Go 的 RE2
+# **不支持**（`regexp.Compile` 报 `invalid escape sequence: \u`）。而
+# parsePatternConfig 是「整份文件全编译、全通过才替换」的语义 ⇒ 一条规则
+# 编译失败 ⇒ **整个 configs/sensitive_patterns.yaml 加载失败** ⇒ 网关回落
+# 到内置兜底规则集（连 pii/secret/financial 也一起没了）。
+# ⇒ 字符类改用 RE2 支持的 `\x{...}` 写法（语义与原来的 CJK 基本区一致）。
+#
+# ★ 同族的 `keywords:` 与 `redaction_rules:` 仍**不是规则源**（检测器只读
+# enabled/patterns/regex/group/kind/scopes/action），它们只是说明文档。
 medical:
   enabled: true
   patterns:
@@ -219,16 +290,16 @@ medical:
       regex: '(病历号|就诊号|住院号)\s*[:：]?\s*[A-Z0-9]{6,20}'
       confidence: 0.85
       description: "病历号"
-      
+
     # 诊断信息
     diagnosis:
-      regex: '(诊断|确诊|患有|病情)\s*[:：]?\s*[\u4e00-\u9fa5]{2,20}'
+      regex: '(诊断|确诊|患有|病情)\s*[:：]?\s*[\x{4e00}-\x{9fa5}]{2,20}'
       confidence: 0.7
       description: "诊断信息"
-      
+
     # 药品名称
     medication:
-      regex: '(服用|用药|处方)\s*[:：]?\s*[\u4e00-\u9fa5A-Za-z]{2,20}'
+      regex: '(服用|用药|处方)\s*[:：]?\s*[\x{4e00}-\x{9fa5}A-Za-z]{2,20}'
       confidence: 0.65
       description: "药品信息"
       
@@ -250,6 +321,10 @@ medical:
     medication: "partial_redact"            # 部分隐藏
 
 # 脱敏规则详细说明
+#
+# ★ r1039（2026-10-20）：本节**不是规则源**——它只是各遮蔽样式的说明文档。
+# 检测器实际只用统一占位符（{SENSITIVE:<type>:<n>}）与统一还原，不按
+# `redaction_rules` / `redaction_methods` 的样式名分派。
 redaction_methods:
   full_redact:
     description: "完全隐藏，显示为 ******"
@@ -276,6 +351,9 @@ redaction_methods:
     example: "高血压糖尿病 -> 高***病"
 
 # 性能优化配置
+#
+# ★ r1039（2026-10-20）：本节**不是规则源**——检测器不解析它（检测是同步
+# 顺序执行的；限流/超时由网关其它层负责）。
 performance:
   max_content_length: 1048576  # 最大内容长度（1MB）
   parallel_detection: true     # 并行检测
@@ -283,6 +361,9 @@ performance:
   timeout_ms: 5000            # 超时时间（毫秒）
 
 # 审计日志配置
+#
+# ★ r1039（2026-10-20）：本节**不是规则源**——检测器不解析它。审计台账由
+# domains/sanitizerules（托管规则）那条链路负责，与本文件无关。
 audit:
   log_detections: true        # 记录检测结果
   log_redactions: true        # 记录脱敏操作
@@ -290,17 +371,31 @@ audit:
   retention_days: 90          # 日志保留天数
 
 # 白名单配置
+#
+# ★ r1039（2026-10-20）：本节**不是规则源**——检测器不解析它，
+#  白名单**不作为放行依据**（见下方 exclude_patterns 的说明）。
+#  门禁 security/sanitize/r1039_yaml_rule_coverage_test.go 会断言
+#  exclude_patterns 保持为空：往里加一条不会生效，却看起来像生效了 ——
+#  那正是 r1039 要消灭的「静默失效」形态。
 whitelist:
-  # 测试环境白名单
+  # 测试环境白名单（仅作说明，当前不被检测器读取）
   test_patterns:
     - "test@example.com"
     - "1234567890"
     - "sk-test-"
-  
+
   # 检测器目前仅解析 enabled/patterns/regex/group；白名单不作为放行依据。
+  # 保持为空；加条目请先在代码里实现放行语义，否则门禁会红。
   exclude_patterns: []
 
 # 自定义规则扩展
+#
+# ★ r1039（2026-10-20）：本节**不是规则源**——检测器只加载
+#  「<族名>.patterns.<规则名>」这种结构（见 pii/secret/financial/medical），
+#  而 custom_rules 用的是另一套 schema（name/type/confidence/redaction），
+#  加载器不认 ⇒ 加在这里的规则**不会生效**。
+#  ⇒ 门禁 security/sanitize/r1039_yaml_rule_coverage_test.go 断言 rules 保持
+#  为空：加一条就会红，并提示把规则写进某个 `patterns:` 族里。
 custom_rules:
   enabled: true
   rules: []

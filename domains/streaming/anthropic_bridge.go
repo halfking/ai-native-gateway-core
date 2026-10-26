@@ -829,6 +829,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		chunkCount          int
 		bufferedText        strings.Builder
 		hasEmittedToolCalls bool
+		hasNamedToolCalls   bool
 		bufferedToolArgs    strings.Builder
 		currentToolCallID   string
 		initialArgsSent     bool
@@ -886,9 +887,16 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 
 		if written {
 			chunkCount++
+			// r1029 (2026-10-17): reasoning_content / thinking_signature are
+			// deliberation, not the assistant answer, so they no longer set
+			// emittedContent. This flag feeds IsEmptyOutcome at line ~1473: with
+			// reasoning counting, a model that spends the whole budget thinking
+			// (max_tokens exhausted, no content block ever emitted) cleared the
+			// gate and reached the client as an empty 200. The thinking channel
+			// is still written to the client above — only this emptiness verdict
+			// narrows. Named/argument-bearing tool_calls still count.
 			if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil &&
-				(chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" ||
-					chunk.Delta.ThinkingSignature != "" || len(chunk.Delta.ToolCalls) > 0) {
+				(chunk.Delta.Content != "" || len(chunk.Delta.ToolCalls) > 0) {
 				emittedContent = true
 			}
 		}
@@ -1236,6 +1244,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 							initialArgsSent = false
 						}
 						hasEmittedToolCalls = true
+						hasNamedToolCalls = hasNamedToolCalls || evt.ContentBlock.Name != ""
 					} else if err == nil && evt.ContentBlock.Type == "tool_result" {
 						// 2026-08-29: Register tool_result with validator
 						var toolResultEvt struct {
@@ -1334,12 +1343,15 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 									digest := sha256.Sum256([]byte(evt.Delta.Signature))
 									capture.AddQualityFlag("anthropic_signature_delta:" + hex.EncodeToString(digest[:8]))
 								}
-								// signature_delta is a thinking-block terminal marker; the
-								// stream delivered semantic structure even if the wire bytes
-								// were opaque to OpenAI. Count it as content emission so
-								// the empty-response detector does not fire on a thinking-only
-								// turn.
-								emittedContent = true
+								// r1029 (2026-10-17): this used to set
+								// emittedContent so the empty-response detector
+								// would not fire on a thinking-only turn. That is
+								// exactly the 154 glm-5.3 failure mode — a
+								// signature_delta terminates the thinking block,
+								// it is not the assistant answering. Counting it
+								// hands the client an empty 200. The signature is
+								// still captured above; only the emptiness verdict
+								// changes.
 							}
 						default:
 							slog.Warn("unknown_delta_type_in_stream",
@@ -1490,6 +1502,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			if finishReason != nil {
 				fr = *finishReason
 			}
+			fr = ir.ToolCallFinishReason(fr, hasNamedToolCalls)
 			// 2026-09-13 fix (holdback parity with the responses bridges):
 			// the survival L1 holdback window (5s/20 chunks) holds semantic
 			// frames WITHOUT advancing the gate commit state, so a stream

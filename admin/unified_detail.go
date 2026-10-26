@@ -1,5 +1,9 @@
 // unified_detail.go — GET /api/admin/request-detail/{request_id}
-// Unified request detail facade: memory → file → _request_logs → session_turns.
+// Unified request detail facade: memory → file → 会话族（session_turns）。
+//
+// 2026-10-20（迁移 890，v1 族整体退役）：facade 的第三段（v1 请求日志）
+// 删除，元数据与正文都从会话族读（db.SessionFamilyTurnsSourceSQL /
+// db.SessionFamilyBodiesSourceSQL）。
 package admin
 
 import (
@@ -59,7 +63,7 @@ func (h *Handler) SetRequestDetailStore(store *requestdetail.Store, retry ...Loc
 	}
 	// 2026-08-30: route Redis-backed live-stream details through the
 	// same locator so a click on a still-running swim lane resolves
-	// without waiting for the eventual _request_logs write. The adapter
+	// without waiting for the eventual request-log write. The adapter
 	// is nil-safe — when liveStreamRedisStore is nil (no Redis or
 	// feature flag off), the live step is simply skipped.
 	if h.liveStreamRedisStore != nil {
@@ -115,7 +119,7 @@ func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID stri
 
 	// A persisted body row may be partial (for example, a successful stream
 	// with no captured response). Fill only missing fields from session_turns;
-	// never replace fields that are already present in request_logs_bodies.
+	// never replace fields that are already present in the bodies store.
 	if len(bodies.RequestBody) == 0 || len(bodies.ResponseBody) == 0 || len(bodies.OutboundBody) == 0 {
 		if sessionBodies, _, sessionErr := r.ReadSessionTurnsBodies(ctx, canonicalRequestID, false); sessionErr == nil {
 			if len(bodies.RequestBody) == 0 {
@@ -174,50 +178,37 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string,
 	// The previous OR query prevented efficient index usage. Now we try request_id first
 	// (primary key lookup), then client_request_id if not found (indexed lookup).
 
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的「v1 hot 表 → 视图冷扫」
+	// 四腿退化为两腿：两条都读会话族原生源
+	// （db.SessionFamilyTurnsSourceSQL，hot ∪ 母表 + 734 details 层）。
+	//
+	// 为什么是原生源而不是 canonical 视图：视图本身就是这两条腿的封装，
+	// 走视图等于把同一份会话族数据查两遍；原生源的列名与视图逐字相同
+	// （118 列同名同序），所以下方的扫描目标一个都不用改。
+	//
+	// request_id / client_request_id 两个谓词都能下推进会话族索引
+	// （idx_session_turns_request_id / idx_session_turns_client_request_id），
+	// 限制先于 118 列投影求值 ⇒ 命中行数级开销。
+	//
 	// Try request_id first (should be fast - primary key or indexed lookup)
 	err := r.db.QueryRow(ctx, `
-		SELECT request_id, COALESCE(tenant_id, ''),
-		       gw_session_id, gw_task_id, client_model,
-		       request_status, success, latency_ms
-		  FROM _request_logs_hot
-		 WHERE request_id = $1`+tenantClause+`
+		SELECT rl.request_id, COALESCE(rl.tenant_id, ''),
+		       rl.gw_session_id, rl.gw_task_id, rl.client_model,
+		       rl.request_status, rl.success, rl.latency_ms
+		  FROM `+dbpkg.SessionFamilyTurnsSourceSQL()+` rl
+		 WHERE rl.request_id = $1`+tenantClause+`
 		 LIMIT 1
 	`, args...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 
 	// If not found by request_id, try client_request_id
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = r.db.QueryRow(ctx, `
-			SELECT request_id, COALESCE(tenant_id, ''),
-			       gw_session_id, gw_task_id, client_model,
-			       request_status, success, latency_ms
-			  FROM _request_logs_hot
-			 WHERE client_request_id = $1`+tenantClause+`
-			 ORDER BY ts DESC
-			 LIMIT 1
-		`, args...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
-	}
-
-	// If still not found in hot table, try partitioned table
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = r.db.QueryRow(ctx, `
-			SELECT request_id, COALESCE(tenant_id, ''),
-			       gw_session_id, gw_task_id, client_model,
-			       request_status, success, latency_ms
-			  FROM request_logs_with_current_month
-			 WHERE request_id = $1`+tenantClause+`
-			 LIMIT 1
-		`, args...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
-	}
-
-	// Try client_request_id in partitioned table
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = r.db.QueryRow(ctx, `
-			SELECT request_id, COALESCE(tenant_id, ''),
-			       gw_session_id, gw_task_id, client_model,
-			       request_status, success, latency_ms
-			  FROM request_logs_with_current_month
-			 WHERE client_request_id = $1`+tenantClause+`
-			 ORDER BY ts DESC
+			SELECT rl.request_id, COALESCE(rl.tenant_id, ''),
+			       rl.gw_session_id, rl.gw_task_id, rl.client_model,
+			       rl.request_status, rl.success, rl.latency_ms
+			  FROM `+dbpkg.SessionFamilyTurnsSourceSQL()+` rl
+			 WHERE rl.client_request_id = $1`+tenantClause+`
+			 ORDER BY rl.ts DESC
 			 LIMIT 1
 		`, args...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 	}
@@ -270,34 +261,20 @@ func (r *pgBodyReader) loadOutboundBody(ctx context.Context, requestID string) (
 	// canonical request ID was resolved through a tenant-scoped metadata query;
 	// use that immutable identity for the body lookup rather than duplicating a
 	// removed tenant_id column in the body schema.
-	// 2026-08-27 OPTIMIZATION: Try hot table first, then fall back to partitioned bodies table
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 正文只有一条腿：会话族
+	// （session_bodies hot ∪ 父表，db.SessionFamilyBodiesSourceSQL）。
+	//
+	// 被删掉的两条腿分别是「v1 hot 正文表」与「v1 bodies 视图冷扫」；
+	// 冷扫那条原本就是「证明缺席」——columnar 分区无 btree，154 实测单 id
+	// miss 59s，30s ctx 必超时，而超时不是 ErrNoRows，挂在 ErrNoRows 分支下
+	// 的兜底永远够不着（unified 全量 500 的直接根因）。v1 表退役后这个
+	// 超时面直接消失，正文只可能来自会话族。
 	err := r.db.QueryRow(ctx, `
 		SELECT outbound_body::text
-		  FROM _request_logs_bodies_hot
+		  FROM `+dbpkg.SessionFamilyBodiesSourceSQL()+`
 		 WHERE request_id = $1
 		 LIMIT 1
 	`, requestID).Scan(&raw)
-
-	// Fallback to partitioned bodies table if not in hot
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = r.db.QueryRow(ctx, `
-			SELECT outbound_body::text
-			  FROM request_logs_bodies_with_current_month
-			 WHERE request_id = $1
-			 LIMIT 1
-		`, requestID).Scan(&raw)
-	}
-
-	// 阶段 3（S4 停写交接，2026-10-13）：session 家族兜底 —— 停写后新请求
-	// 的正文只落 session_bodies；旧请求在 v1 双腿命中，本腿纯增量。
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = r.db.QueryRow(ctx, `
-			SELECT outbound_body::text
-			  FROM `+dbpkg.SessionFamilyBodiesSourceSQL()+`
-			 WHERE request_id = $1
-			 LIMIT 1
-		`, requestID).Scan(&raw)
-	}
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, requestdetail.ErrNotFound

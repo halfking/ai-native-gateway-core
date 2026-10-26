@@ -1,0 +1,15 @@
+{
+  "metric": "keys = runtime truth (vm-evaluated locale modules); reachable = scanner.ts literal refs (helper-prefix resolved) ∪ template candidates (prefix+suffix match); hard gate = every reachable key exists in all 8 locales; ratchet = per-locale missing-vs-union count + asymmetric key count",
+  "updated": "2026-10-20",
+  "missingVsUnion": {
+    "ar-SA": 130,
+    "de-DE": 125,
+    "en-US": 443,
+    "es-ES": 125,
+    "fr-FR": 125,
+    "ja-JP": 130,
+    "zh-CN": 777,
+    "zh-TW": 132
+  },
+  "asymmetricKeys": 777
+}

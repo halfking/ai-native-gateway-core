@@ -2,7 +2,7 @@
 export default {
   title: 'User Management',
   create: 'Create User',
-  readOnlyNotice: '📖 You are a tenant admin with read-only access. You can view and reset passwords for users in your tenant, but cannot create, edit, or delete users.',
+  readOnlyNotice: '📖 あなたは読み取り権限のみを持つテナント管理者です。テナント内のユーザーのパスワードを表示してリセットできますが、ユーザーの作成・編集・削除はできません。',
   filter: {
     byTenant: 'Filter by tenant:',
     allRoles: 'すべてのロール',
@@ -15,13 +15,11 @@ export default {
   },
   table: {
     createdAt: '作成日時',
-    id: 'ID',
     username: 'Username',
     displayName: 'Display Name',
     email: 'Email',
     tenant: 'Tenant',
     role: 'Role',
-    mustChangePassword: 'Must Change Password',
     status: 'Status',
     lastLogin: 'Last Login',
     actions: 'Actions',
@@ -39,7 +37,6 @@ export default {
   },
   mustChangePassword: {
     pending: 'Pending',
-    completed: 'Completed',
   },
   status: {
     enabled: 'Enabled',
@@ -80,10 +77,11 @@ export default {
     deleteFailed: 'Delete failed',
     resetFailed: 'Reset failed',
     passwordMismatch: 'Passwords do not match',
-    passwordComplexity: 'Password does not meet complexity requirements',
+    passwordComplexity: 'パスワードが複雑さの要件を満たしていません',
     resetPasswordMismatch: 'Passwords do not match',
-    resetPasswordComplexity: 'Password does not meet complexity requirements',
+    resetPasswordComplexity: 'パスワードが複雑さの要件を満たしていません',
     toggleFailed: 'Operation failed',
+    changePasswordFailed: 'パスワードを変更できませんでした。再試行してください。',
   },
   passwordMatch: {
     matched: '✓ Passwords match',
@@ -117,7 +115,7 @@ export default {
     daysUnit: '日',
     kpiRequests: 'リクエスト数',
     dailyAvg: '日平均',
-    topModel: '主力',
+    topModel: "主要モデル",
     kpiCredits: 'クレジット消費',
     kpiErrP95: '失敗率 / P95',
     failed: '失敗',
@@ -138,5 +136,6 @@ export default {
     keyCount: 'API キー',
     viewAllLogs: 'ログで全部見る',
     requests: 'リクエスト',
+    loadStatsFailed: 'ユーザー統計の読み込みに失敗しました。再試行してください。',
   },
 }

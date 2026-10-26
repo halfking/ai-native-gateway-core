@@ -61,10 +61,10 @@ export default {
 
   error: {
     loadFailed: '読み込みに失敗しました',
+    checkFailed: '検証失敗',
     canonicalNameRequired: 'canonical_name は必須です',
     createFailed: '作成に失敗しました',
     deleteFailed: '削除に失敗しました',
     restoreFailed: '復元に失敗しました',
   },
-  softDeleteConfirm: 'ポリシー {name} をソフト削除しますか？（復元可能）',
 }

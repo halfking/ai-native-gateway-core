@@ -29,7 +29,7 @@ import {
  *   那些批次的错：「都是 `admin(...)` ⇒ admin 档 ⇒ 抽屉席不设 `requiresRole`」，
  *   根因是**没人去看中间件那一层**。
  *   ★★★ 而本模块（第九十三批写的）的作者**顺手看了相邻那一行**，发现
- *   `:1129`（superAdmin）与 `:1132`（admin，storage/migration-state）
+ *   `:1137`（superAdmin）与 `:1140`（admin，storage/migration-state）
  *   **相邻两行却是两种档位**，并写下了「绝不能按 `/api/admin/storage/` 前缀推权限」。
  *   ⇒ ★★ **「顺手看一眼邻居」这一步，就是三批返工与不返工的分界线。**
  *
@@ -43,7 +43,7 @@ import {
  *   而本模块**只导出两个 GET** ⇒ 移动端**不提供任何写入入口**。
  *
  * ★★ **行号订正**：模块头原写 `:1108` / `:1109` / `:1111` / `:1114`，
- *   实况 `:1129` / `:1130` / `:1132` / `:1135`（**整块漂 21 行**）。
+ *   实况 `:1137` / `:1138` / `:1140` / `:1143`（**整块漂 29 行**）。
  *
  * 判据钉六组：
  *  ① ★★★★★★ 权限档 super_admin（**真门**）+ 相邻两行两种档位。
@@ -233,27 +233,27 @@ describe('① 权限档第二类「真门」', () => {
     expect(storageConfigServerIsRealGate('h.admin')).toBe(false)
   })
 
-  it('①-6 ★★★★★★ 读 Go 源码：`:1129` 与 `:1132` **相邻两行却是两种档位**', () => {
+  it('①-6 ★★★★★★ 读 Go 源码：`:1182` 与 `:1185` **相邻两行却是两种档位**', () => {
     // ★★★ 这条是「绝不能按前缀推权限」的**事实侧**，也是本族结论与三批返工的对照。
     const lines = goSrc('admin/handler.go').split('\n')
     const storageLine = lines.findIndex((l) => l.includes('"/api/admin/storage/config"'))
-    expect(storageLine + 1, '模块头原写 :1108').toBe(1129)
+    expect(storageLine + 1, '模块头原写 :1108 → :1137 → :1172 → :1179（2026-10-21 views 行号订正轮）→ 实为 :1182（2026-10-26 行号漂移订正轮）').toBe(1182)
     expect(lines[storageLine]).toMatch(/h\.superAdmin\(h\.handleStorageConfig\)/)
-    // ★ 相邻的 migration-state 就在 1129 之后两行，却是 admin 档。
+    // ★ 相邻的 migration-state 就在 1179 之后三行，却是 admin 档。
     const migLine = lines.findIndex((l) => l.includes('"/api/admin/storage/migration-state"'))
-    expect(migLine + 1).toBe(1132)
+    expect(migLine + 1).toBe(1185)
     expect(lines[migLine]).toMatch(/admin\(h\.handleMigrationState\)/)
     expect(lines[migLine]).not.toMatch(/superAdmin/)
     expect(migLine - storageLine, '两行应当相邻（差 3 行：注释与空行）').toBeLessThanOrEqual(3)
   })
 
-  it('①-7 ★★★★ 行号订正：模块头原写 :1108/:1109/:1111/:1114，实为 :1129/:1130/:1132/:1135', () => {
+  it('①-7 ★★★★ 行号订正：:1108/:1109/:1111/:1114 → :1137/:1138/:1140/:1143 → :1172/:1173/:1175/:1178 → 实为 :1179/:1180/:1182/:1185 → 再漂至实为 :1182/:1183/:1185/:1188（2026-10-26 行号漂移订正轮）', () => {
     const lines = goSrc('admin/handler.go').split('\n')
     const at = (frag: string) => lines.findIndex((l) => l.includes(frag)) + 1
-    expect(at('"/api/admin/storage/config"')).toBe(1129)
-    expect(at('"/api/admin/storage/config/test-path"')).toBe(1130)
-    expect(at('"/api/admin/storage/migration-state"')).toBe(1132)
-    expect(at('"/api/admin/logs/config"')).toBe(1135)
+    expect(at('"/api/admin/storage/config"')).toBe(1182)
+    expect(at('"/api/admin/storage/config/test-path"')).toBe(1183)
+    expect(at('"/api/admin/storage/migration-state"')).toBe(1185)
+    expect(at('"/api/admin/logs/config"')).toBe(1188)
     // ★ 反向护栏：模块头原写的行号那行**不是**本族任何一行注册。
     expect(lines[1107]).not.toMatch(/storage\/config|logs\/config/)
   })

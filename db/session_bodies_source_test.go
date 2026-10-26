@@ -26,8 +26,29 @@ package db
 //	   （37 个 id）。实测这 37 个都不在 session_turns 里，所以今天不放大。
 //	   ⚠ **「今天不」不是保证**——一旦某个重复 id 落进 session_turns，
 //	   导出就会多出重复消息且不报错。
-//	③ v1 那一臂真的存在且同形：默认关闭时读的是它。
-//	   它若被带外操作删掉，OFF 臂就是一个幻影，而门会绿。
+//	③ **v1 那一臂已经退役**（迁移 885 真删表 + 890 退族）⇒ 这一腿的原语义
+//	   「默认关闭时读的是它，它若被删掉 OFF 臂就是幻影」**已经不存在**：
+//	   今天**没有**「默认关闭时读 v1」这回事。
+//	   ⇒ 现行判据改成两件事（见下面「③ 的改瞄」小节）：
+//	   ③a **v1 bodies 关系必须不存在**（退役完成的现行不变量）；
+//	   ③b **会话族自己的两条腿必须同形**（hot 臂与父表的列类型一致）。
+//
+// # ③ 的改瞄（R69 轮，2026-10-21）
+//
+// 原 ③ 判的是「v1 那一臂真的存在且同形」，即
+// `'request_logs_bodies_with_current_month'::regclass` 必须能查到 request_body /
+// response_body / request_id 三列。**这条判据在 v1 族退役后恒红**（42P01），
+// 而且它红的理由不是产品坏了，是**它守的那个东西已经不存在了**。
+//
+// ⇒ 同一族的「两侧同形」在今天仍然有意义，只是**两侧换了人**：
+// 以前是「v1 侧 vs 会话侧」，今天是「会话 hot 臂 vs 会话父表臂」。
+// ⇒ 故 ③ 改为 ③a + ③b。
+//
+// ⚠ **另外，① 的第一版探针是「有数据的」**（`SELECT pg_typeof(rb.<col>) FROM <源> LIMIT 1`）
+// ⇒ **表空时返回 0 行** ⇒ 报 `no rows in result set` ⇒ **红**，
+// 而那个红**与源无关**（源是对的，库是空的）⇒ **A 类：门在拒绝空证据**。
+// 本轮把探针改成**与数据无关**（LEFT JOIN LATERAL ⇒ 恒 1 行），
+// 于是「列名改了 ⇒ 解析期 42703」这条真判据**在任何库上都能验**。
 
 import (
 	"context"
@@ -72,12 +93,31 @@ func TestSessionFamilyBodiesSourceColumnParity(t *testing.T) {
 	//   - 列不存在 ⇒ **解析期**就 42P01/42703，错误信息直接指名那个列名；
 	//   - 类型不对 ⇒ pg_typeof 返回的不是期望值。
 	// 不需要猜怎么从 catalog 里挖子查询的列。
+	//
+	// ⚠★ **R69 轮：这一版的探针是「有数据的」⇒ 空表上恒红。**
+	// `SELECT pg_typeof(rb.<col>) FROM <源> LIMIT 1` 在源返回 0 行时
+	// ⇒ `no rows in result set` ⇒ 门红 ⇒ ★ **那个红与源无关**
+	// （源是对的、库是空的）⇒ **A 类：门在拒绝空证据**。
+	//
+	// ⇒ 改成**与数据无关**的形状：`LEFT JOIN LATERAL (...) ON true`
+	// ⇒ 恒返回 **1 行**；`pg_typeof` 取的是**表达式的类型**（不是值的类型）
+	// ⇒ 行内全是 NULL 也照样返回声明类型（实测：空库上得到 jsonb|jsonb|text）。
+	// ⇒ 且**解析期语义完全保留**：列名写错仍然是 42703（实测）。
+	probeColumnType := func(col string) (string, error) {
+		var typ string
+		err := pool.QueryRow(ctx, `
+			SELECT pg_typeof(x.`+col+`)::text
+			FROM (SELECT 1) AS s
+			LEFT JOIN LATERAL (
+				SELECT * FROM `+SessionFamilyBodiesSourceSQL()+` AS src LIMIT 1
+			) AS x ON true
+		`).Scan(&typ)
+		return typ, err
+	}
 	got := map[string]string{}
 	for _, c := range []string{"request_body", "response_body", "request_id"} {
-		var typ string
-		if err := pool.QueryRow(ctx,
-			`SELECT pg_typeof(rb.`+c+`)::text FROM `+SessionFamilyBodiesSourceSQL()+
-				` rb LIMIT 1`).Scan(&typ); err != nil {
+		typ, err := probeColumnType(c)
+		if err != nil {
 			t.Errorf("★ 会话 bodies 源取不到列 %q（%v）—— "+
 				"调用点写的是 COALESCE(rb.%s, '{}'::jsonb) 与 ON rb.request_id = rl.request_id，"+
 				"列名一变就是运行期 42703。", c, err, c)
@@ -103,34 +143,67 @@ func TestSessionFamilyBodiesSourceColumnParity(t *testing.T) {
 		}
 	}
 
-	// ② v1 那一臂（默认关闭时读的那一侧）必须同形。
+	// ③a **v1 bodies 关系必须不存在**（v1 族已退役：迁移 885 真删表 + 890 退族）。
 	//
-	// ⚠ **第一版这里只查了 request_body 一列**，却在注释里写「必须同形」。
-	// 调用点投影的是 request_body **和** response_body，ON 子句用的是 request_id ——
-	// 少查两列，v1 侧若把 response_body 改名，这道门照样绿，而默认支在运行期 42703。
-	// v1 是**真实关系**（不是子查询），所以 catalog 查法在这里成立且不怕空表。
-	v1Rel := "'request_logs_bodies_with_current_month'::regclass"
-	for _, c := range []string{"request_body", "response_body", "request_id"} {
+	// ⚠ 这条**取代**了原来那条「v1 那一臂必须存在且同形」——
+	// 后者的前提（默认关闭时读 v1）**已经不存在了**。
+	// 现在真正的不变量是反过来的：**v1 不该再回来**。
+	// ⇒ 一旦有人把 `_request_logs_bodies` / `request_logs_bodies_with_current_month`
+	// 重新建起来（例如某个迁移回滚、或带外操作），这里立刻红。
+	for _, rel := range []string{
+		"request_logs_bodies_with_current_month",
+		"_request_logs_bodies",
+	} {
+		var exists bool
+		if err := pool.QueryRow(ctx,
+			`SELECT to_regclass('public.`+rel+`') IS NOT NULL`).Scan(&exists); err != nil {
+			t.Errorf("探测 v1 bodies 关系 %q 是否存在：%v", rel, err)
+			continue
+		}
+		if exists {
+			t.Errorf("★ v1 bodies 关系 public.%s **又存在了** —— "+
+				"v1 族已随迁移 885/890 退役（真删表）；它若被重新建起，"+
+				"说明有迁移回滚或带外 DDL ⇒ 读面会重新分裂成两族。", rel)
+		}
+	}
+
+	// ③b **会话族自己的两条腿必须同形**（hot 臂 vs 父表臂）。
+	//
+	// ★ 这是原 ③「两侧同形」在**当前形态**下的等价物：
+	// 以前两侧是「v1 侧 vs 会话侧」，今天两侧是会话族的 hot 臂与父表臂。
+	// 用 **catalog** 取类型（这两张是真实关系，catalog 查法成立）⇒
+	// **与数据无关**，空表上也成立。
+	type relType struct{ rel, col string }
+	for _, rt := range []relType{
+		{"session_bodies_hot", "request_delta"},
+		{"session_bodies", "request_delta"},
+		{"session_bodies_hot", "response_delta"},
+		{"session_bodies", "response_delta"},
+		{"session_bodies_hot", "request_id"},
+		{"session_bodies", "request_id"},
+	} {
 		var typ string
 		err := pool.QueryRow(ctx, `
 			SELECT format_type(a.atttypid, a.atttypmod)
 			FROM pg_attribute a
-			WHERE a.attrelid = `+v1Rel+`
-			  AND a.attname = $1 AND NOT a.attisdropped`, c).Scan(&typ)
+			WHERE a.attrelid = 'public.`+rt.rel+`'::regclass
+			  AND a.attname = $1 AND NOT a.attisdropped`, rt.col).Scan(&typ)
 		if err != nil {
-			t.Errorf("★ v1 bodies 关系没有 %q 列（%v）—— "+
-				"默认关闭时读的就是它；它若被改名或删掉，OFF 臂是幻影而门会绿。", c, err)
+			t.Errorf("★ 会话 bodies 关系 %q 没有 %q 列（%v）—— "+
+				"源里映射的是它；列名一变就是运行期 42703。", rt.rel, rt.col, err)
 			continue
 		}
-		// 会话侧同样查一次，两边都要能查到才有资格比类型。
-		sessionTyp, ok := got[c]
-		if !ok {
-			continue // 上面已报
-		}
-		if typ != sessionTyp {
-			t.Errorf("v1 侧 %q 是 %s，会话侧是 %s —— 两侧不同形，"+
-				"开关打开后 COALESCE(rb.%s, …) / ON rb.%s 会 22P02 或 42703",
-				c, typ, sessionTyp, c, c)
+		// 与源投影出来的类型比：源里 `request_delta AS request_body` ⇒
+		// 源侧类型必须等于物理列类型（映射不能改类型，否则 COALESCE(…, '{}') 会 22P02）。
+		srcCol := map[string]string{
+			"request_delta":  "request_body",
+			"response_delta": "response_body",
+			"request_id":     "request_id",
+		}[rt.col]
+		if srcTyp, ok := got[srcCol]; ok && srcTyp != typ {
+			t.Errorf("会话族 %s.%s 是 %s，源里投影成 %s 后是 %s —— 两侧不同形，"+
+				"`COALESCE(rb.%s, '{}'::jsonb)` 会 22P02 或 42703",
+				rt.rel, rt.col, typ, srcCol, srcTyp, srcCol)
 		}
 	}
 }

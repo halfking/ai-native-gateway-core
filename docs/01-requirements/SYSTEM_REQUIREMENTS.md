@@ -115,9 +115,9 @@ LLM Gateway Go 是**企业级大模型统一接入网关**：为多租户企业�
 
 | 编号 | 需求 | 优先级 | 状态 | 实现锚点 |
 |---|---|---|---|---|
-| FR-SS-01 | 请求日志（request_logs 热分区+归档）为 canonical 事实源 | M | CURRENT | `telemetry/`、`db/`（分区） |
+| FR-SS-01 | **会话轮次族（`session_turns` 热分区+`session_bodies_hot`+`session_summaries`）为 canonical 事实源**；旧 `request_logs` 写入已于 2026-10-16 关闭（`storage.request_logs_write_enabled=false`），表改名 `_request_logs`/`_request_logs_hot` 仅保留历史可读，作为主读源的降级备份 | M | CURRENT | `domains/session/v2/`、`admin/session_*.go`（旧：`telemetry/`、`db/` 分区） |
 | FR-SS-02 | 会话视图：列表/详情/轮次/时间线/导出/对比/聚类/全景图 | S | CURRENT | `admin/session_*.go` |
-| FR-SS-03 | Sessions V2 影子写（schema+writer+cache），双读行级对账，7 天零漂移门禁后翻主读 | S | SHADOW（迁移中） | `domains/session/v2`、`dual_writer.go`、`dual_read_validator.go` |
+| FR-SS-03 | Sessions V2 读源已翻主读（`sessions_v2.primary_read=true`、`l3_read=true`），`request_logs` 降级为备份；影子写（`shadow_write`）仍开 | S | CURRENT | `domains/session/v2`、`dual_writer.go`、`dual_read_validator.go` |
 | FR-SS-04 | 会话摘要/标题自动生成 | O | CURRENT | `domains/sessionsummary/` |
 | FR-SS-05 | 请求体归档（热区/文件/对象存储）与详情回放 | S | CURRENT | `domains/requestdetail` |
 | FR-SS-06 | 会话分析（用户/客户端/任务维度，物化视图+RLS） | S | CURRENT | `admin/session_analytics_*.go` |
@@ -238,7 +238,7 @@ LLM Gateway Go 是**企业级大模型统一接入网关**：为多租户企业�
 | NFR-10 | 可扩展 | 单进程巨石 + runtime_role 角色拆分 + 插件运行时 | CURRENT（水平拆分为 TARGET） |
 | NFR-11 | 国际化 | 前后端各 8 语言（ar/de/en/es/fr/ja/zh-CN/zh-TW） | CURRENT |
 | NFR-12 | 数据治理 | 分区归档/保留期/审计裁剪/一致性对账 worker 体系 | CURRENT |
-| NFR-13 | 兼容性 | Go 1.27.1；h2c 同端口 HTTP/1.1+2；PG 15+；Redis 7+（lite 模式两者皆免） | CURRENT |
+| NFR-13 | 兼容性 | Go 1.27.2；h2c 同端口 HTTP/1.1+2；PG 15+；Redis 7+（lite 模式两者皆免） | CURRENT |
 
 ## 6. 全局约束与不变量（设计必须遵守）
 

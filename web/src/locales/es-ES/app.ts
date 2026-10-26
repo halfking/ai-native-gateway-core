@@ -1,27 +1,16 @@
 // Auto-translated draft (es-ES) · 2026-07-02 · please review
 // app.ts — Textos del shell de App.vue (roles, colapsar lateral, salir, cambio de idioma).
 export default {
-  brand: 'AI-Native Org Gateway',
+  brand: {
+    siteTitle: 'AI Native Gateway Central',
+    siteTitleLineTwo: 'Gateway Central',
+    alt: 'Logotipo de Kaixuan',
+  },
   role: {
     super_admin: 'Superadministrador',
     tenant_admin: 'Administrador de inquilino',
   },
-  sidebar: {
-    expand: 'Expandir barra lateral',
-    collapse: 'Contraer barra lateral',
-    collapseMenu: 'Contraer menú',
-  },
-  logout: 'Cerrar sesión',
-  lang: {
-    switch: 'Cambiar idioma',
-    label: 'Idioma',
-  },
   // 2026-07-22: pie del shell público (emparejado con LifecycleShell).
-  footer: {
-    left: '© 2026 AI-Native Gateway',
-    right: '¿Necesita ayuda?',
-    feedbackLink: 'Enviar comentarios',
-  },
   // 2026-07-22: menú de usuario (UserMenuDropdown) + diálogo de perfil (UserInfoDialog).
   userMenu: {
     profile: 'Perfil',
@@ -37,10 +26,6 @@ export default {
     close: 'Cerrar',
   },
   // 2026-07-22: skip-link (a11y).
-  nav: {
-    mainAria: 'Navegación principal',
-    skip: 'Saltar al contenido principal',
-  },
 
   theme: {
     switchToLight: 'Switch to light',
@@ -57,7 +42,7 @@ export default {
   },
   deploySeq: {
     bannerTitle: 'New version available',
-    bannerHint: 'A newer build is deployed. Reload the page to switch.',
+    bannerHint: 'Hay una compilación más reciente desplegada. Recarga la página para cambiar.',
     updateNow: 'Reload now',
     later: 'Later',
     currentSeq: 'Page deploy seq',
@@ -66,8 +51,8 @@ export default {
     stateAvailable: 'Update available',
     stateIndeterminate: 'Indeterminate',
     stateChecking: 'Checking…',
-    reasonNoLocal: 'This page carries no deploy seq (not injected at build time)',
-    reasonNoRemote: 'Server returned no deploy seq (old build or non-repo hosting)',
+    reasonNoLocal: 'Esta página no lleva secuencia de despliegue (no se inyectó en la compilación)',
+    reasonNoRemote: 'El servidor no devolvió la secuencia de despliegue (compilación antigua o alojamiento fuera del repo)',
     reasonNetwork: 'Check request failed; cannot determine',
     checks: 'Checks run',
     checkNow: 'Check for updates',

@@ -144,11 +144,13 @@ func DetectProtocol(body []byte) (protocol string, confidence float64, err error
 	}
 
 	// Responses-exclusive fields must be handled before the Anthropic/OpenAI
-	// heuristic: Responses clients use input[] instead of messages[], and their
+	// heuristic: cache keys and safety identifiers are shared with Chat and
+	// must not change the client response protocol. Responses uses input[]
+	// instead of messages[], and its
 	// body otherwise has several fields shared with Chat Completions.
 	for _, key := range []string{
 		"input", "instructions", "previous_response_id", "max_output_tokens",
-		"truncation", "prompt_cache_key", "safety_identifier",
+		"truncation",
 	} {
 		if _, ok := keys[key]; ok {
 			return ProtocolOpenAIResponses, 0.85, nil

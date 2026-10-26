@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/kaixuan/llm-gateway-go/domains/sanitizerules"
 	"github.com/kaixuan/llm-gateway-go/security/sensitive"
 )
 
@@ -40,6 +41,11 @@ func (h *SensitiveWordsHandler) RegisterRoutes(mux *http.ServeMux, adminWrap fun
 func (h *SensitiveWordsHandler) handleReload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	if managed, ok := h.patternDetector.(interface{ RuleManager() *sanitizerules.Manager }); ok && managed.RuleManager() != nil {
+		writeError(w, http.StatusConflict, "publish a managed sanitize rule version instead of reloading local files")
 		return
 	}
 

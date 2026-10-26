@@ -27,17 +27,4 @@ export default {
     closed: '暂无近期关闭记录',
   },
   // 节点恢复时间线（NodeHealthTimelineView 仍使用）
-  viewTimeline: '查看节点恢复时间线',
-  recoverAt: '预计恢复 {time}（{delta}）',
-  detail: {
-    lastError: '最近错误',
-    lastErrorAt: '最近错误时间',
-    recoverAt: '预计恢复时间',
-  },
-  state: {
-    connected: '已建连',
-    connecting: '建连中',
-    disconnected: '已断开',
-  },
-  inFlight: '在途 {count}',
 }

@@ -1,19 +1,13 @@
 // app.ts — App.vue shell strings (header roles, sidebar collapse, logout, language switcher).
 export default {
-  brand: 'AI-Native Org Gateway',
+  brand: {
+    siteTitle: 'AI Native Core Gateway',
+    siteTitleLineTwo: 'Core Gateway',
+    alt: 'Kaixuan logo',
+  },
   role: {
     super_admin: 'Super Admin',
     tenant_admin: 'Tenant Admin',
-  },
-  sidebar: {
-    expand: 'Expand sidebar',
-    collapse: 'Collapse sidebar',
-    collapseMenu: 'Collapse menu',
-  },
-  logout: 'Sign out',
-  lang: {
-    switch: 'Switch language',
-    label: 'Language',
   },
   // 2026-07-21: theme strings aligned with ai-native-maintain / ai-session-manager.
   theme: {
@@ -23,16 +17,7 @@ export default {
     darkTitle: 'Dark mode',
   },
   // 2026-07-22: top-bar accessibility strings (incl. a11y skip-link).
-  nav: {
-    mainAria: 'Main navigation',
-    skip: 'Skip to main content',
-  },
   // 2026-07-22: public shell footer strings (used by LifecycleShell).
-  footer: {
-    left: '© 2026 AI-Native Org Gateway',
-    right: 'Need help?',
-    feedbackLink: 'Send feedback',
-  },
   // 2026-07-22: user menu dropdown (UserMenuDropdown) + profile dialog (UserInfoDialog).
   userMenu: {
     profile: 'Profile',
@@ -52,7 +37,7 @@ export default {
     titleUnavailable: 'Unable to confirm traffic data state: figures on this page may be stale',
     hintLabel: 'Investigate',
     retry: 'Re-check',
-    failedHint: 'Could not read the data state. An unconfirmed state is not a healthy state — treat figures on this page as possibly stale.',
+    failedHint: 'Could not read the data state. An unconfirmed state is not a healthy state. Treat figures on this page as possibly stale.',
   },
   deploySeq: {
     bannerTitle: 'New version available',

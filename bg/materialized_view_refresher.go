@@ -105,6 +105,74 @@ const (
 	// 用后立刻 RESET，不污染连接池归还后的其他语句。
 	mvRefreshStatementTimeout = "180s"
 
+	// sessionViewsStatementTimeout 是 **session 族专用**的语句上限（2026-10-22）。
+	//
+	// ★★ 为什么必须分族：mvRefreshStatementTimeout=180s 是**全族共用**的一个值，
+	// 而 357 会话分析族三视图的实测成本跨 7s ~ >180s ⇒ 最慢的那一个被
+	// **自己的语句上限**杀掉 —— **不是**被锁饿死。这个区分是本轮的核心归因。
+	//
+	// 生产实测（252 共享库，2026-10-22，两台实例的 journalctl）：
+	//   · 245 03:00 轮 session_client_stats：**零锁等待**（上一行就是
+	//     "redis leader token acquired"，中间没有任何 contended 记录），
+	//     elapsed=180.31s，报错原文
+	//     ERROR: canceling statement due to statement timeout (SQLSTATE 57014)
+	//     ⇒ REFRESH 本身就需要 >180s，被 180s 的 pin 砍掉。
+	//   · 154 04:00 轮 session_client_stats：先为 advisory lock 等了 91s
+	//     （退避 2→4→8→15→15…），再跑满 180s 被杀
+	//     ⇒ elapsed=271.11s = 91s 等锁 + 180.11s 语句。
+	//   · 154 02:00 轮（成功）：client_stats 34.28s / task_stats 6.19s /
+	//     matrix 3.75s ⇒ 最快与最慢差 25 倍。
+	//
+	// 取 600s 的依据：**仓内同一类病已有先例** —— §14330 把巡检脚本的
+	// STMT_TIMEOUT 从 180s 抬到 600s，理由同为「空闲 105s / 有负载 180s+」。
+	// 此处同样取 600s（对实测的 180.31s 杀线有 3.3× 余量）。
+	//
+	// ⚠⚠ **诚实边界：被杀掉的那批慢运行不在 pg_stat_statements 里**
+	//   （该扩展只统计**完成**的语句）⇒ 那个「client_stats REFRESH
+	//   mean 62.4s / max 175.5s」的读数**系统性低估了尾部**：
+	//   **max 175.5s < 钉子 180s 恰恰证明被杀掉的那批没被统计**。
+	//   ⇒ 真实耗时的尾部目前**不可测**，600s 是「够用」而不是「已证够用」。
+	//   ⇒ 根治方向是把 REFRESH 的成本降下来（审计档 R76 §成本根因），
+	//     而不是继续抬钉子 —— 抬钉子只把「被杀」换成「占用锁更久」。
+	sessionViewsStatementTimeout = "600s"
+
+	// mvRefreshWorkMem lifts work_mem for the REFRESH statement only.
+	//
+	// Why (2026-10-19, 252 PG temp-file 审计轮，生产只读实测):
+	//   pg_stat_database.temp_files = 14,458 / temp_bytes = 104 GB。
+	//   pg_stat_statements（10-18 22:03 重置后的 11.6h 窗口）里
+	//   TOP15 占全窗口 93%，其中物化视图 REFRESH CONCURRENTLY 约占 54%：
+	//     session_task_stats          2,717 MB / 20 次 = 136 MB 每次，均值 10.8s
+	//     session_client_stats          801 MB / 20 次 =  40 MB 每次，均值 31.5s
+	//     session_client_task_matrix    570 MB / 20 次 = 28.5 MB 每次，均值 2.4s
+	//     routing_analytics_7d          317 MB / 35 次 =   9 MB 每次，均值 81.5s
+	//   PG 侧 work_mem = 8MB（配置文件）。
+	//
+	// ⚠⚠ 机理不是"结果集太大排不下"——**这个说法是错的，别沿用**。
+	// 实测（§109 订正 §108）这些视图的**输出极小**：
+	//   session_task_stats 6 行 / routing_audit_summary_7d 2 行 /
+	//   session_client_stats 815 行 / session_client_task_matrix 1,437 行
+	// 而 EXPLAIN（COSTS OFF，不执行）给出的节点是
+	//   Partial HashAggregate → Gather → Finalize HashAggregate
+	//   HashAggregate（下面挂 Gather + 一串 Nested Loop）
+	// **计划里根本没有 Sort 节点**，136MB 溢写的是聚合/连接的**中间结果**。
+	// ⇒ 所以正确表述是：溢写来自 **work_mem 受限的中间节点**（HashAggregate 一族）。
+	// ⇒ 这不改变处置方向：PG 的 HashAggregate 同样按 work_mem 分区并在超限时落盘，
+	// 而 REFRESH 是普通查询计划（不是维护命令），吃 work_mem 而非 maintenance_work_mem。
+	//
+	// ⚠ 诚实边界：**具体是哪个节点在溢写，本轮没有实测**。
+	// 坐实它需要 EXPLAIN (ANALYZE, BUFFERS) 跑在刷新路径上，而 REFRESH 形似写操作、
+	// 代价高（均值 81.5s 那一档），本轮不做。⇒ 收益未验证，见 §109。
+	//
+	// 与上面 statement_timeout 同一条处置路径：会话级抬高 + 用后 RESET，
+	// 不污染归还连接池后的其他语句。
+	//
+	// ⚠ 256MB 的依据与它的上界：每轮全网只有一个实例真正执行刷新
+	//（Redis 令牌桶 + advisory lock 兜底，见文件头），所以这是**单会话上界**，
+	// 不是 ×实例数。调更大之前请先确认 PG 宿主（172.16.2.210）的内存余量 ——
+	// 本轮**没有**核到该宿主内存（只读通道拿不到），故这里取保守值而不取"实测够用"。
+	mvRefreshWorkMem = "256MB"
+
 	// ── 357 会话分析物化视图族（2026-10-07）─────────────────────────────
 	// 迁移 357 建了 session_client_stats / session_task_stats /
 	// session_client_task_matrix 三个物化视图，admin session-analytics 端点
@@ -123,19 +191,70 @@ const (
 	// SessionViewsTimeout 绑定一轮 session 刷新。它必须**明显大于**实测的
 	// 40-70s：被 ctx 掐断的表现不是报错，而是**后几个视图根本没刷新**，
 	// 且前面已刷的会留下半轮状态 —— 比整体失败更难发现。
-	SessionViewsTimeout = 10 * time.Minute
+	//
+	// ★ 2026-10-22：10min → 15min。理由是 sessionViewsStatementTimeout
+	// 抬到 600s 之后，**ctx 才是唯一还兜得住整轮的那道闸**：
+	// 600s 的语句上限必须**小于**轮内 ctx，否则 ctx 会先掐断，抬钉子等于白抬。
+	//
+	// ★★ R107 轮（12h 审计）订正：上面那条判据**只比了「语句上限 vs ctx」**，
+	//   漏掉了**锁等待预算** —— 而锁等待是**加在语句之前**的，**不是包含在**它里面：
+	//     一轮的最坏耗时 = SessionViewLockRetryBudget（整轮共享，≤4min）
+	//                    + 各视图的语句耗时
+	//   ⇒ 15min(900s) 的 ctx **装不下**「4min 锁等待 + 600s 的 client_stats
+	//     + 两个快视图（实测 182.33s + 65.40s）」= 240+600+247.7 = **1087.7s**。
+	//   ⇒ ⇒ 也就是说：**抬到 600s 之后，ctx 仍可能是先掐断的那道闸** ——
+	//     而 ctx 掐断正是本注释开头说的「比整体失败更难发现」的那种失败形态。
+	//     ⇒ 修法不是「再抬语句钉子」（那只是把同一个洞挪个位置），而是**把 ctx
+	//       抬到能装下「锁预算 + 慢视图的语句上限 + 其余视图的实测最大值」**。
+	//
+	// ★ 20min 的依据（把每一项都写出来，便于下一轮复核）：
+	//     锁等待（整轮共享上限）      240.0s  （SessionViewLockRetryBudget）
+	//     client_stats 语句上限      600.0s  （sessionViewsStatementTimeout）
+	//     task_stats 实测最大值      182.33s （154 04:00 轮）
+	//     matrix 实测最大值          65.40s （154 04:00 轮）
+	//     ─────────────────────────────────────
+	//     合计                       1087.7s = 18.13min
+	//   ⇒ 20min(1200s) 留 112.3s 余量（≈10%）。
+	//
+	//   ⚠ 诚实边界：上表的「task_stats/matrix 实测最大值」来自**有语句上限**的轮次，
+	//     而新上限 600s 是这次才抬的 ⇒ 若这两个视图在新上限下也跑到 600s，
+	//     合计会变成 240+1800=2040s=34min ⇒ 20min 的 ctx 仍会先掐断。
+	//     ⇒ 但**这条路今天不成立**：这两个视图的实测成本是 6.19s/7.45s 与 182.33s，
+	//     与 client_stats 的 ≥180.31s 差一个量级 ⇒ 它们是「快视图」的前提
+	//     **正是本轮把清单改成「快的先刷」所依赖的那个前提**。
+	//     ⇒ 若哪天它们也变慢，那说明「快视图」这个前提本身塌了，
+	//       届时应当重估的是**成本根因**（把 REFRESH 做便宜），而不是继续抬钉子。
+	//
+	//   ★ 为什么 20min 仍然是安全的（不会拖累 routing 族）：
+	//     session 轮错开到 :05（sessionViewsPhaseOffset），routing 轮在 :00/:30。
+	//     20min 的轮 ⇒ 最晚跑到 :25 ⇒ **不撞 :30 那轮 routing**；
+	//     15min 的轮跑到 :20 也安全，但 20min 仍在同一量级内
+	//     ⇒ 也就是说这次把 ctx 抬到 20min **没有引入新的族间饥饿**。
+	//   ⇒ 同时仍**小于** SessionViewsInterval(60min)
+	//     （既有门要求：超时 < 间隔，否则刷新周期会堆积）。
+	SessionViewsTimeout = 20 * time.Minute
+
+	// sessionViewsOtherViewsBudget 是「client_stats 之外的两个视图」的实测
+	// 最坏耗时合计（task_stats 182.33s + matrix 65.40s = 247.73s）。
+	//
+	// ★ 它存在的唯一目的：让上面那条不变量**可被机器复核**，而不是只活在注释里。
+	//   不变量：SessionViewsTimeout ≥ SessionViewLockRetryBudget
+	//                                + sessionViewsStatementTimeout
+	//                                + sessionViewsOtherViewsBudget
+	//   （门见 bg/materialized_view_refresher_session_timeout_test.go）
+	sessionViewsOtherViewsBudget = 4 * time.Minute
 
 	// SessionViewLockRetryBudget 是**整轮共享**的锁等待预算（不是每视图一份）。
 	//
 	// 2026-10-12 实测（§10.106.37 §六）：两个周期共用一把 mvRefreshLockKey，
-	// 而 60min 的 session 周期是 10min routing 周期的整数倍，两个定时器又都
+	// 而 60min 的 session 周期是 30min routing 周期的整数倍，两个定时器又都
 	// 对齐墙钟（nextAlignedWait）⇒ 它们每个整点必然撞在同一把锁上。
 	// 10-12 02:00 那轮三个视图全部 skipped_no_lock，MV 数据陈旧 2 小时。
 	// 锁只在真正执行 REFRESH 期间被持有（单轮 14-200s），不是整轮持有，
 	// 所以「等一会儿再试」就能拿到 —— 不需要给两个周期各开一把锁键。
 	//
 	// 取 4min 的理由：实测最长一轮 195s（245 03:00 轮），
-	// 4min 重试 + 195s 物化 = ~7.3min，仍在 SessionViewsTimeout(10min) 之内；
+	// 4min 重试 + 195s 物化 = ~7.3min，仍在 SessionViewsTimeout(20min) 之内；
 	// 共享而非每视图一份，是因为 SessionViewsTimeout 是**整轮**预算，
 	// 三视图各等 4min 会把 ctx 掐断变成新的失败形态。
 	SessionViewLockRetryBudget = 4 * time.Minute
@@ -153,6 +272,33 @@ const (
 	// sessionViewsDistLockLogical 是独立的 Redis 键后缀。与 10min 的
 	// routing 周期共用一个 token 会让两个节奏不同的周期互相抢票。
 	sessionViewsDistLockLogical = "materialized_view_refresh_session"
+
+	// sessionViewsPhaseOffset 把 session 周期的墙钟相位从整点错开到 :05。
+	//
+	// ★ 为什么：RefreshInterval=30min（:00/:30）与 SessionViewsInterval=60min
+	//   （:00）**都**对齐整点 ⇒ 每个整点必然同刻撞上同一把 mvRefreshLockKey。
+	//   实测（154，2026-10-22 04:00 轮）：session 轮为这把锁等了 **91s**
+	//   （退避 2→4→8→15→15…），整轮被推到 04:04 才开跑；
+	//   03:00 轮则是 routing 族被 session 族占着锁而**两个视图全被跳过**
+	//   ⇒ 共享锁同时伤害**两族**。
+	//
+	// ★ 为什么**不**另开一把锁键（本文件历史上明确否掉过）：
+	//   SessionViewLockRetryBudget 上方的注释写着「修法不是另开锁键
+	//   （那会让 routing 与 session 的 REFRESH 并发跑，而 session 一轮已经占掉
+	//   集群 62%~75% 的 WAL）」⇒ 并发的代价是真实的。
+	//
+	// ⇒ 错开相位是**零并发**的解法：:00 只有 routing 轮，:05 只有 session 轮，
+	//   两族在共享锁上**不再相撞** ⇒ 不需要第二把锁，也没有并发 REFRESH，
+	//   严格优于现状。
+	//   陈旧度算术不受影响：刷新戳落在 :05，新鲜度预算 90min ⇒ 下一轮
+	//   :05 之前仍有 30min 余量（与原先 :00 起算同余）。
+	sessionViewsPhaseOffset = 5 * time.Minute
+
+	// sessionViewsMinTickGap 是「启动后的首轮刷新」与「第一个对齐 tick」之间
+	// 的最小间隔。错开相位会带来一个新形态：进程若在 :03 启动，首轮刷新在
+	// :05，而对齐 tick 也在 :05 ⇒ **两轮只隔 2 分钟**，等于把一轮几百秒的
+	// REFRESH 重复做一遍。⇒ 间隔不足时把 tick 推后一整个周期。
+	sessionViewsMinTickGap = 10 * time.Minute
 )
 
 // SessionAnalyticsViews 是迁移 357 建立、admin session-analytics 端点读取的
@@ -162,9 +308,26 @@ const (
 // 而不是退化成普通 REFRESH。refreshView 对不存在的视图会安全跳过
 // （skipped_missing_view），所以 357 未应用的库不会因此报错。
 var SessionAnalyticsViews = []string{
-	"session_client_stats",
-	"session_task_stats",
+	// ★ 2026-10-22：**按实测成本从快到慢排序**（原来是最慢的排第一）。
+	//
+	// 为什么要改顺序：一轮是**串行**的，而实测三个视图的成本差 25 倍
+	// （252 生产 2026-10-22）：
+	//   session_client_task_matrix  7.45s / 65.4s
+	//   session_task_stats          6.19s / 151.5s
+	//   session_client_stats        34.28s / **≥180.31s（被杀）**
+	// ⇒ 慢视图排第一时，它在开跑前就把整轮推迟了它自己的耗时
+	//   （实测 245 03:00 轮：client_stats 跑满 180.31s 被杀后，
+	//    task_stats 才在 03:03:00 开始、到 03:05:31 才完成），
+	//   后面两个视图因此**被推到离新鲜度预算只剩 28 分钟**的位置。
+	// ⇒ 改成快的先刷：慢视图无论成败，都**不再推迟**快的两个，
+	//   快的两个因此总能在自己的预算内拿到新数据。
+	//   ⇒ 这是「限制爆炸半径」，不是「让慢的更快」。
+	//
+	// ⇒ 语义不变：三个视图彼此独立，admin 侧的新鲜度门按**端点所需**的
+	//   视图列表逐个判定（admin/session_analytics_*.go），与本清单顺序无关。
 	"session_client_task_matrix",
+	"session_task_stats",
+	"session_client_stats",
 }
 
 // MaterializedViewRefresher manages periodic refresh of routing analytics
@@ -231,8 +394,8 @@ func (r *MaterializedViewRefresher) Start() {
 func (r *MaterializedViewRefresher) Stop() {
 	if r.cancel != nil {
 		r.cancel()
+		<-r.done
 	}
-	<-r.done
 	slog.Info("materialized_view_refresher stopped")
 }
 
@@ -283,7 +446,7 @@ func (r *MaterializedViewRefresher) refreshLoop(ctx context.Context) {
 	// 多一个 goroutine 就得多一套等待语义，而这里并不需要并发。
 	//
 	// 刻意用**另一个定时器**而不是把三个视图塞进 refreshAll：两个周期的节奏
-	// 与超时预算完全不同（10min/5min vs 60min/10min），共用一个 ctx 预算会让
+	// 与超时预算完全不同（30min/5min vs 60min/20min），共用一个 ctx 预算会让
 	// routing 那一轮被 session 的耗时吃掉预算。陈旧度契约也是分开的
 	// （15min vs sessionMvFreshnessBudget）。
 	select {
@@ -293,7 +456,7 @@ func (r *MaterializedViewRefresher) refreshLoop(ctx context.Context) {
 	}
 	r.refreshSessionViews(ctx)
 
-	sessionTimer := time.NewTimer(nextAlignedWait(time.Now(), SessionViewsInterval))
+	sessionTimer := time.NewTimer(sessionViewsTickWait(time.Now()))
 	defer sessionTimer.Stop()
 
 	for {
@@ -305,9 +468,19 @@ func (r *MaterializedViewRefresher) refreshLoop(ctx context.Context) {
 			timer.Reset(nextAlignedWait(time.Now(), RefreshInterval))
 		case <-sessionTimer.C:
 			r.refreshSessionViews(ctx)
-			sessionTimer.Reset(nextAlignedWait(time.Now(), SessionViewsInterval))
+			sessionTimer.Reset(sessionViewsTickWait(time.Now()))
 		}
 	}
+}
+
+// sessionViewsTickWait 是 session 周期的等待时长：落在 :05 相位上，
+// 且与上一轮至少隔开 sessionViewsMinTickGap（避免启动后立刻连做两轮）。
+func sessionViewsTickWait(now time.Time) time.Duration {
+	d := nextAlignedWaitAt(now, SessionViewsInterval, sessionViewsPhaseOffset)
+	if d < sessionViewsMinTickGap {
+		d += SessionViewsInterval
+	}
+	return d
 }
 
 // nextAlignedWait returns how long to sleep until the next wall-clock
@@ -322,6 +495,36 @@ func nextAlignedWait(now time.Time, interval time.Duration) time.Duration {
 		phase += interval
 	}
 	return interval - phase
+}
+
+// nextAlignedWaitAt behaves like nextAlignedWait but lands on a fixed offset
+// inside every interval instead of on the interval boundary.
+//
+// ★ 为什么需要它（2026-10-22）：RefreshInterval=30min 与
+// SessionViewsInterval=60min 都对齐整点 ⇒ 两族每个整点必然同刻抢同一把
+// advisory lock（实测 session 轮为此等 91s，routing 轮则被整轮跳过）。
+// 把其中一族的相位错开 5 分钟，两族就**不再相撞** —— 比「另开一把锁键」
+// 好，因为那会让两族的 REFRESH 并发跑，而 session 一轮已经占掉集群
+// 62%~75% 的 WAL（本文件 SessionViewLockRetryBudget 上方的注释已记）。
+//
+// 锚定规则与 nextAlignedWait 一致：以 Unix epoch 为基准 ⇒ 所有实例
+// （无论本地时区或进程启动时刻）都落在**同一组** offset 点上。
+// offset 必须落在 (0, interval) 内；越界时取模归一。
+// 返回值恒 > 0：目标点若已过去，就等下一个周期（绝不返回零长等待）。
+func nextAlignedWaitAt(now time.Time, interval, offset time.Duration) time.Duration {
+	phase := time.Duration(now.UnixNano()) % interval
+	if phase < 0 {
+		phase += interval
+	}
+	target := offset % interval
+	if target < 0 {
+		target += interval
+	}
+	d := target - phase
+	if d <= 0 {
+		d += interval
+	}
+	return d
 }
 
 // refreshAll refreshes all materialized views.
@@ -374,7 +577,7 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	var failedView string
 
 	start := time.Now()
-	if reason, err := r.refreshView(ctx, "routing_analytics_7d", useAdvisoryLock); err != nil {
+	if reason, err := r.refreshView(ctx, "routing_analytics_7d", useAdvisoryLock, mvRefreshStatementTimeout); err != nil {
 		hasError = true
 		lastErr = err
 		failedView = "routing_analytics_7d"
@@ -390,7 +593,7 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	}
 
 	auditStart := time.Now()
-	if reason, err := r.refreshView(ctx, "routing_audit_summary_7d", useAdvisoryLock); err != nil {
+	if reason, err := r.refreshView(ctx, "routing_audit_summary_7d", useAdvisoryLock, mvRefreshStatementTimeout); err != nil {
 		hasError = true
 		lastErr = err
 		failedView = "routing_audit_summary_7d"
@@ -430,7 +633,7 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 //
 // ⚠️ 2026-10-12 订正（§10.106.37 §六）：本函数原注释称「相撞概率约 1.7%，
 // 这个取舍是安全的」——**这个估计是错的，而且方向相反**。
-// SessionViewsInterval(60min) 是 RefreshInterval(10min) 的**整数倍**，
+// SessionViewsInterval(60min) 是 RefreshInterval(30min) 的**整数倍**，
 // 两个定时器又都走 nextAlignedWait 对齐墙钟 ⇒ 它们每个整点**必然**撞在同一把锁上，
 // 不是 1.7% 的巧合。实测 2026-10-12 02:00 那一轮三个视图全部 skipped_no_lock，
 // MV 数据陈旧 2 小时，00:00~03:00 四小时只落地三轮（0.75 次/小时）。
@@ -469,7 +672,7 @@ func (r *MaterializedViewRefresher) refreshSessionViews(parentCtx context.Contex
 	}
 
 	// 2026-10-12（§10.106.37 §六）：retryDeadline 整轮共享，不是每视图一份。
-	// 两个周期共用一把 advisory lock，而 60min 的 session 周期是 10min routing
+	// 两个周期共用一把 advisory lock，而 60min 的 session 周期是 30min routing
 	// 周期的整数倍、两个定时器又都对齐墙钟 ⇒ 整点必然撞锁。撞上就整轮跳过的话，
 	// session 数据会陈旧整整一小时（实测 2026-10-12 02:00 丢了一整轮）。
 	// 锁只在真正执行 REFRESH 期间持有（实测单轮 14~195s），等一会儿就能拿到。
@@ -479,7 +682,7 @@ func (r *MaterializedViewRefresher) refreshSessionViews(parentCtx context.Contex
 	for _, view := range SessionAnalyticsViews {
 		start := time.Now()
 		reason, err := retryOnLockHeld(ctx, view, retryDeadline, func() (mvSkipReason, error) {
-			return r.refreshView(ctx, view, true)
+			return r.refreshView(ctx, view, true, sessionViewsStatementTimeout)
 		})
 		switch {
 		case err != nil:
@@ -630,7 +833,19 @@ const (
 // skipped reports whether the view was left alone.
 func (s mvSkipReason) skipped() bool { return s != mvRefreshed }
 
-func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName string, useAdvisoryLock bool) (mvSkipReason, error) {
+// refreshView refreshes one materialized view.
+//
+// ★ statementTimeout 参数（2026-10-22）：语句上限**按族**传入，不再全族共用
+// 一个 180s。理由与实测见 sessionViewsStatementTimeout 的注释：
+// session_client_stats 的 REFRESH 在 252 生产上**零锁等待**就跑了 180.31s
+// 被 180s 的 pin 杀掉 ⇒ 共用一个值必然切掉慢的那一个。
+// routing 族仍传 mvRefreshStatementTimeout(180s)（12h 窗口内零失败记录，
+// 且实测 max 139.6s 仍在界内 ⇒ 没有证据支持改它）。
+//
+// ★ 签名里的 refreshView( 前缀是既有静态门（bg/materialized_view_refresher_workmem_test.go）
+//   的抽取锚点 —— 那个门断言 work_mem 的 SET/RESET 就在**本函数体内**，
+//   所以这些语句不能被挪进别的函数。
+func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName string, useAdvisoryLock bool, statementTimeout string) (mvSkipReason, error) {
 	var exists bool
 	err := r.db.QueryRow(ctx, `
 		SELECT EXISTS (
@@ -662,12 +877,26 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 	// for this session only; see mvRefreshStatementTimeout. Reset via
 	// WithoutCancel so a canceled/failed refresh still returns a clean
 	// connection to the pool.
+	//
+	// ★ 用参数 statementTimeout 而不是直接用常量：语句上限按族不同
+	//   （见 refreshView 的注释）。
 	if _, err := conn.Exec(ctx,
-		"SET statement_timeout = '"+mvRefreshStatementTimeout+"'"); err != nil {
+		"SET statement_timeout = '"+statementTimeout+"'"); err != nil {
 		return mvRefreshed, err
 	}
 	defer func() {
 		_, _ = conn.Exec(context.WithoutCancel(ctx), "RESET statement_timeout")
+	}()
+
+	// Same shape, different axis: the REFRESH rewrite spills to temp files
+	// because work_mem (8MB on 252) is two orders of magnitude below the
+	// largest measured sort. See mvRefreshWorkMem for the full measurement.
+	// RESET keeps the pool clean for whatever statement runs next.
+	if _, err := conn.Exec(ctx, "SET work_mem = '"+mvRefreshWorkMem+"'"); err != nil {
+		return mvRefreshed, err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), "RESET work_mem")
 	}()
 
 	if !useAdvisoryLock {

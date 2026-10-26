@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { UserInfo } from '@/api/client'
-import { bumpSessionEpoch } from '@/api/client'
+import { bumpSessionEpoch, isMaintenanceMode } from '@/api/client'
 import * as authApi from '@/api/auth'
 import type { LoginOptions } from '@/api/auth'
 import { Hyper } from '@/hyper'
@@ -153,8 +153,25 @@ export const useAuthStore = defineStore('auth', () => {
       //   又触发 login() 拿到新 token；只在 /me 真给了新 token 时才覆盖。
       if (refreshedToken) token.value = refreshedToken
       persistUser(me)
-    } catch {
+    } catch (err) {
       if (current !== generation) return
+      // 2026-10-22：只把「确定是会话死了」的失败（401）当登出处理。
+      // 维护态信封 / 断网 / 5xx 都是**瞬时故障**：此时清空 localStorage 会把
+      // 本地用户态连同主题/语言/节点配置一起抹掉（用户看到「登录状态丢失」），
+      // 而 HttpOnly 会话 cookie 其实还在。瞬时失败保持现状、不清任何状态，
+      // 服务端恢复后下一次冷启水合即可自愈。
+      //
+      // 2026-10-22 审计修正：上一条注释写着「维护态信封是瞬时故障」，
+      // **但实现里没有维护态这一支** —— 只按 HTTP status 判（0 / 5xx）。
+      // 维护闸门若对 /me 回 401/403 + 维护信封（正是维护态最常见的形态），
+      // 瞬时判据不成立 ⇒ 照旧清掉 userInfo/token/localStorage/sessionStorage
+      // ⇒ 正是本函数要治的「登录状态丢失」放大器。
+      // ⇒ 判据补齐：维护态信封一律按瞬时处理，不看 status。
+      if (isMaintenanceMode(err)) return
+      const status = (err as unknown as { status?: unknown }).status
+      const transient =
+        typeof status === 'number' && (status === 0 || (status >= 500 && status !== 501))
+      if (transient) return
       userInfo.value = null
       token.value = ''
       safeClear(localStorage)

@@ -4,7 +4,7 @@
 //   - 请求进入 → 中间件 → handler → executor → upstream → 流响应 全链路事件
 //   - 每个事件包含: 序号 / 阶段 / 模块 / 耗时 / 状态 / 详情 / 错误
 //   - 请求进行中: Redis 暂存 (key=request:trace:{request_id}, TTL 600s)
-//   - 请求完成: 一次性 UPDATE 到 _request_logs.trace_events (JSONB)
+//   - 请求完成: 一次性 UPDATE 到 session_turns_hot/冷表 trace_events (JSONB)
 //   - 失败时: 保存上下文快照(路由状态/节点状态/并发槽位/凭据缓存等)
 //
 // 优雅降级:
@@ -29,8 +29,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
-
-	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // ─── 领域模型 ─────────────────────────────────────────────────────────────────
@@ -161,7 +159,7 @@ type Recorder interface {
 	// Load 读取完整 trace。优先从 Redis 读,自动 fallback 到 PG。
 	Load(ctx context.Context, requestID string) (*RequestTrace, bool, error)
 
-	// FlushToPG 把 Redis 中的 trace 写入 _request_logs.trace_events。
+	// FlushToPG 把 Redis 中的 trace 写入 session trace_events，门开启时可回退 legacy。
 	// 一般在请求结束的 defer 中调用。失败仅日志,不抛错。
 	FlushToPG(ctx context.Context, db *pgxpool.Pool, requestID string) error
 
@@ -458,26 +456,16 @@ func (r *RedisRecorder) Load(ctx context.Context, requestID string) (*RequestTra
 
 // FlushToPG implements Recorder.
 //
-// 把 Redis 中的 trace 一次性写入 _request_logs.trace_events (JSONB)。
-// 删除 Redis key 在写入成功(或写入失败但已重试)后执行,避免并发请求看到"trace 已 flush 但 DB 还未写"的中间态。
+// 把 Redis trace 写入 session 热表，已归档时回退冷表；仅停写门开启时
+// 才允许回退 legacy 热表。只有父行和规范化事件持久化成功才清理 Redis。
+// 沿用调用方 ctx（后台调用方自行脱离请求取消），不延长其 deadline。
 func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, requestID string) error {
 	if requestID == "" || r == nil || r.rdb == nil || db == nil {
 		return nil
 	}
 	key := keyFor(requestID)
 
-	// R52：S4 停写门控。停写（宽表冻结/迁移窗口）期间 trace_events 的
-	// UPDATE 不应执行；此前该写点游离在门外，且停写后父行缺失会命中
-	// ErrTraceParentNotFound → Redis trace 永久保留、每次 flush 重试堆积。
-	// 与"宽表停写"语义一致：丢弃 trace 并清理 Redis key。
-	if !settings.RequestLogsWriteEnabled() {
-		if err := r.rdb.Del(ctx, key).Err(); err != nil {
-			slog.Warn("trace.FlushToPG: stop-write enabled but Redis DEL failed",
-				"request_id", requestID, "err", err)
-		}
-		return nil
-	}
-
+	// 冻结 v1 不冻结 session trace；父行尚未出现时保留 Redis 供重试。
 	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
@@ -492,17 +480,33 @@ func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, request
 		return err
 	}
 
-	result, err := db.Exec(runCtx, `
-		UPDATE _request_logs_hot
-		SET trace_events = $1::jsonb
-		WHERE request_id = $2
-	`, raw, requestID)
-	if err != nil {
-		slog.Warn("trace.FlushToPG: UPDATE failed",
-			"request_id", requestID, "err", err)
-		return err
+	// ★ 2026-10-20（迁移 890，v1 族退役）：原先在写门开着时还会追加一条
+	// 「回退 legacy 热表」的 UPDATE。v1 族被整体 DROP 后那条语句必然 42P01
+	// ⇒ 删除。写门在本函数里**不再**决定写哪一族：trace_events 的唯一归宿
+	// 是会话族（session_turns_hot / session_turns 两面都试）。
+	//
+	// ⚠ 口径损失（如实登记）：v1 侧曾有 691,883 行带真实 trace_events，而
+	// 镜像**从不**写会话族的 trace_events 列 ⇒ 历史请求的 trace 在 PG 侧
+	// 查不到（Redis 侧那份在 flush 成功后即被删除）。这是「v1 侧有真实值、
+	// 会话侧恒 NULL」那个已登记事实（db/request_logs_view_padded_columns.go
+	// 的 rejectedProjections「trace_events」条目）的直接后果。
+	updates := []string{
+		`UPDATE session_turns_hot SET trace_events = $1::jsonb WHERE request_id = $2`,
+		`UPDATE session_turns SET trace_events = $1::jsonb WHERE request_id = $2`,
 	}
-	if !shouldDeleteTraceAfterFlush(result.RowsAffected()) {
+	var rowsAffected int64
+	for _, query := range updates {
+		result, updateErr := db.Exec(runCtx, query, raw, requestID)
+		if updateErr != nil {
+			slog.Warn("trace.FlushToPG: UPDATE failed", "request_id", requestID, "err", updateErr)
+			return updateErr
+		}
+		rowsAffected = result.RowsAffected()
+		if rowsAffected > 0 {
+			break
+		}
+	}
+	if !shouldDeleteTraceAfterFlush(rowsAffected) {
 		slog.Warn("trace.FlushToPG: request log row not found, retaining Redis trace",
 			"request_id", requestID)
 		return ErrTraceParentNotFound
@@ -538,7 +542,7 @@ func shouldDeleteTraceAfterFlush(rowsAffected int64) bool {
 	return rowsAffected > 0
 }
 
-// ErrTraceParentNotFound 表示 trace 对应的 _request_logs 行尚未落库或已不存在。
+// ErrTraceParentNotFound 表示 trace 对应的 session/允许写入的 legacy 父行尚未落库或已不存在。
 var ErrTraceParentNotFound = errors.New("trace: request log row not found")
 
 // ErrEmptyRequestID 当 requestID 为空时返回。
@@ -594,10 +598,8 @@ func unmarshalTrace(raw, fallbackID string) (*RequestTrace, error) {
 // 不应该作为 HTTP 500 报给前端。原实现会让前端展示 "no rows in result set" 红色错误,
 // 实际只是该行尚无 trace_events JSONB;此处把 ErrNoRows 当成"未找到"返回。
 //
-// 2026-07-20: 增加 _request_logs_hot 回退查找。migration 341 把 _request_logs 拆分成
-// 热表 _request_logs_hot + 月度分区 _request_logs,最近的请求 (0-7 天) 只在 hot 表;
-// 只查 _request_logs 会让前端"流程详情"对所有近 7 天的请求都返回空。
-// 这里用 UNION ALL 先查 hot、再查分区表,顺序按"最近优先"。
+// session hot/cold 优先；仅没有 session 父行时回退 legacy 历史。
+// session 行存在但 trace 为空不能被旧宽表的残留事件掩盖。
 func LoadFromPG(ctx context.Context, db *pgxpool.Pool, requestID string) (*RequestTrace, error) {
 	if requestID == "" {
 		return nil, ErrEmptyRequestID
@@ -605,24 +607,29 @@ func LoadFromPG(ctx context.Context, db *pgxpool.Pool, requestID string) (*Reque
 	if db == nil {
 		return nil, nil
 	}
-	var raw []byte
-	err := db.QueryRow(ctx,
+	// ★ 2026-10-20（迁移 890，v1 族退役）：原先的第二条查询（v1 热表 ∪ v1 母表）
+	// **整条删除**——v1 族被整体 DROP 后它必然 42P01，而同一条语句里的
+	// 会话族腿已经覆盖了两个存储面（hot ∪ 父表）。
+	queries := []string{
 		`SELECT trace_events FROM (
-			SELECT trace_events, ts FROM _request_logs_hot WHERE request_id = $1
+			SELECT trace_events, ts, 0 AS priority FROM session_turns_hot WHERE request_id = $1
 			UNION ALL
-			SELECT trace_events, ts FROM _request_logs WHERE request_id = $1
-		) t WHERE trace_events IS NOT NULL ORDER BY ts DESC LIMIT 1`,
-		requestID).Scan(&raw)
-	if err != nil {
-		// 2026-07-17: 没有 trace_events JSONB 或 request_id 不存在都属于"没数据",
-		// 不算 load 失败。让上层进入 not-found / probe-synthesize 路径即可。
+			SELECT trace_events, ts, 1 AS priority FROM session_turns WHERE request_id = $1
+		) t ORDER BY priority, ts DESC NULLS LAST LIMIT 1`,
+	}
+	for _, query := range queries {
+		var raw []byte
+		err := db.QueryRow(ctx, query, requestID).Scan(&raw)
 		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(raw) == 0 || string(raw) == "null" {
 			return nil, nil
 		}
-		return nil, err
+		return unmarshalTrace(string(raw), requestID)
 	}
-	if len(raw) == 0 {
-		return nil, nil
-	}
-	return unmarshalTrace(string(raw), requestID)
+	return nil, nil
 }

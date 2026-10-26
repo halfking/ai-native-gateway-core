@@ -378,14 +378,14 @@ onBeforeUnmount(() => {
 }
 .ph__anom {
   border: 1px solid var(--app-border);
-  border-left: 3px solid var(--app-success);
+  border: 1px solid var(--app-success);
   border-radius: var(--app-radius);
   background: var(--app-surface);
   padding: var(--app-space-3);
   margin-bottom: var(--app-space-3);
 }
 .ph__anom--bad {
-  border-left-color: var(--app-danger);
+  border-color: var(--app-danger);
 }
 .ph__anom-head {
   display: flex;

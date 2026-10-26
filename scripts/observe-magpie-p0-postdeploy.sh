@@ -118,25 +118,76 @@ done
 [[ "$ready_ok" -eq 1 ]] || echo "WARN: no readyz on 8781/8782 (service down or wrong host)"
 
 # --- log counters (W2 / single-flight / quotaHeld) ---
+count_windowed_json_logs() {
+  local pat="$1"
+  python3 - "$LOG_GLOB" "$pat" "$WINDOW_MIN" <<'PY'
+import datetime
+import glob
+import json
+import os
+import re
+import shlex
+import sys
+
+log_glob, pattern, window_minutes = sys.argv[1:]
+now = datetime.datetime.now(datetime.timezone.utc)
+cutoff = now - datetime.timedelta(minutes=float(window_minutes))
+matcher = re.compile(pattern)
+
+paths = []
+seen = set()
+for file_pattern in shlex.split(log_glob):
+    for path in glob.glob(os.path.expanduser(file_pattern)):
+        if path not in seen and os.path.isfile(path):
+            seen.add(path)
+            paths.append(path)
+
+count = 0
+for path in paths:
+    try:
+        handle = open(path, "r", encoding="utf-8", errors="replace")
+    except OSError:
+        continue
+    with handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+                timestamp = record.get("time")
+                if not isinstance(timestamp, str):
+                    continue
+                parsed = datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    continue
+                parsed = parsed.astimezone(datetime.timezone.utc)
+            except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if cutoff <= parsed <= now and matcher.search(line):
+                count += 1
+print(count)
+PY
+}
+
 count_pat() {
-  # grep 零命中 exit 1；pipefail 下必须临时关掉，否则整脚本/或 `|| echo 0` 双打。
   local pat="$1" n
   if [[ -n "${LOG_GLOB:-}" ]]; then
-    set +o pipefail
-    # shellcheck disable=SC2086
-    n=$(grep -a -h -E "$pat" $LOG_GLOB 2>/dev/null | wc -l | tr -d ' ')
-    set -o pipefail
+    n="$(count_windowed_json_logs "$pat")"
     echo "${n:-0}"
   elif [[ "$TARGET" == "local" ]]; then
     echo "n/a-set-LOG_GLOB"
   else
     # Blue-green canary units — NOT bare llm-gateway-go (154 实测无此 unit).
     if [[ "${JOURNAL:-0}" == "1" ]]; then
-      local units="llm-gateway-go-canary@8782 llm-gateway-go-canary@8781 llm-gateway-go"
+      local candidates="llm-gateway-go-canary@8782 llm-gateway-go-canary@8781 llm-gateway-go"
       if [[ -n "$active_ready_port" ]]; then
-        units="llm-gateway-go-canary@${active_ready_port} $units"
+        candidates="llm-gateway-go-canary@${active_ready_port} $candidates"
       fi
-      local u total=0 chunk
+      local u units="" total=0 chunk
+      for u in $candidates; do
+        case " $units " in
+          *" $u "*) ;;
+          *) units="${units:+$units }$u" ;;
+        esac
+      done
       for u in $units; do
         set +o pipefail
         chunk=$(journalctl -u "$u" --since "${WINDOW_MIN} min ago" --no-pager 2>/dev/null \
@@ -151,7 +202,7 @@ count_pat() {
   fi
 }
 
-echo "--- log counters (last ${WINDOW_MIN}m if JOURNAL=1 / LOG_GLOB set) ---"
+echo "--- log counters (last ${WINDOW_MIN}m; LOG_GLOB requires JSON lines with parseable RFC3339 time) ---"
 [[ -n "${LOG_GLOB:-}" ]] && echo "LOG_GLOB=$LOG_GLOB"
 for pat in \
   'ProbeSync' \

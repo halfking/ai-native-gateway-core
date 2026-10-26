@@ -139,7 +139,8 @@ function healthGradeColor(grade?: string): 'success' | 'primary' | 'warning' | '
  * 三张 el-table 桌面**都没有自己的空态行** —— 0 行时 Element 渲染它自带的 "No Data"。
  * 卡片形态下 0 行会是一个空 `<ul>` ⇒ 必须给容器 `:empty`，且**带 `isCompact` 前置**
  * （否则桌面会把 Element 的空态换成我们的 `EmptyState`，那是桌面变更）。
- * 文案复用既有的 `hyper.list.empty` ⇒ **0 新增 i18n 键**。
+ * 文案按**三张表各自的统计对象**分开（§ 第 14 增量）：空态要能区分「首次使用 /
+ * 无结果 / 筛选后 / 无权限 / 失败」，三张表共用一句「列表暂时没有内容」等于什么都没说。
  *
  * ## `health_grade`：5 档 Element 类型 → 3 档 tone（与桌面同一组判读线）
  *
@@ -287,7 +288,7 @@ const recentSessionFields = computed<CardField[]>(() => [
           title-key="task_id"
           :fields="topTaskFields"
           :empty="isCompact && (data?.top_tasks.length ?? 0) === 0"
-          :empty-text="t('hyper.list.empty')"
+          :empty-text="t('sessions.userProfile.emptyFirstUseTopTasks')"
         >
           <template #table>
         <el-table :data="data?.top_tasks ?? []" stripe size="small">
@@ -310,7 +311,7 @@ const recentSessionFields = computed<CardField[]>(() => [
           title-key="end_user_id"
           :fields="topEndUserFields"
           :empty="isCompact && (data?.top_end_users.length ?? 0) === 0"
-          :empty-text="t('hyper.list.empty')"
+          :empty-text="t('sessions.userProfile.emptyFirstUseTopEndUsers')"
         >
           <template #table>
         <el-table :data="data?.top_end_users ?? []" stripe size="small">
@@ -333,7 +334,7 @@ const recentSessionFields = computed<CardField[]>(() => [
           title-key="session_id"
           :fields="recentSessionFields"
           :empty="isCompact && (data?.recent_sessions.length ?? 0) === 0"
-          :empty-text="t('hyper.list.empty')"
+          :empty-text="t('sessions.userProfile.emptyFirstUseRecentSessions')"
         >
           <template #table>
         <el-table :data="data?.recent_sessions ?? []" stripe size="small">

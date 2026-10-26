@@ -12,6 +12,7 @@ import {
 } from '../api'
 import { isReadOnlyMode, isSuperAdmin } from '../store'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
+import { Reading, Setting, Lightning } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 // credentialDisplayName resolves credential id → human label; the composable
@@ -258,7 +259,7 @@ onMounted(load)
             @click="toggleFeatured"
           >{{ featuredOnly ? t('routing.featuredOnly') : t('routing.featuredOnlyOff') }}</button>
         </div>
-        <button class="btn btn-sm btn-ghost refresh-btn" :disabled="loading" @click="load" title="刷新">↻</button>
+        <button class="btn btn-sm btn-ghost refresh-btn" :disabled="loading" @click="load" :title="$t('common.button.refresh')">↻</button>
       </div>
       <div class="hero-stats">
         <span v-for="c in heroChips" :key="c.label" class="chip">{{ c.label }} <strong>{{ c.value }}</strong></span>
@@ -266,7 +267,7 @@ onMounted(load)
     </div>
 
     <div v-if="readOnly" class="card compact-card alert-info-card">
-      📖 租户管理员视图：凭据详情（供应商、价格、状态）已隐藏。
+      <Reading /> 租户管理员视图：凭据详情（供应商、价格、状态）已隐藏。
     </div>
 
     <div v-if="error" class="alert alert-danger compact-alert">{{ error }}</div>
@@ -281,7 +282,7 @@ onMounted(load)
         <input v-model="search" class="search-input" placeholder="搜索系列、变体、供应商…" />
       </div>
 
-      <div v-if="loading" class="loading-hint">加载中…</div>
+      <div v-if="loading" class="loading-hint">{{ $t('common.feedback.loading') }}</div>
       <template v-else>
         <div v-if="seriesList.length" class="pill-section">
           <span class="pill-label">系列</span>
@@ -333,9 +334,9 @@ onMounted(load)
               class="btn btn-sm btn-primary"
               :disabled="recommendLoading"
               @click="adoptRecommendedFeatured"
-            >⚡ 一键采用最近 7 天 Top {{ recommendLoading ? t('routing.loading') : t('routing.recommendText') }}</button>
+            ><Lightning /> 一键采用最近 7 天 Top {{ recommendLoading ? t('routing.loading') : t('routing.recommendText') }}</button>
             <router-link to="/routing-policy" class="btn btn-sm btn-ghost">
-              ⚙ 前往路由策略手动配置
+              <Setting /> 前往路由策略手动配置
             </router-link>
           </div>
         </div>
@@ -366,7 +367,7 @@ onMounted(load)
           <table class="dense-table">
             <thead>
               <tr>
-                <th>供应商</th><th>凭据</th><th>Tier</th><th>状态</th><th>成功率</th><th>P95</th><th>入/出 $/1M</th><th>上游模型</th>
+                <th>{{ $t('common.terms.provider') }}</th><th>{{ $t('common.credentialFallback') }}</th><th>Tier</th><th>{{ $t('common.terms.status') }}</th><th>{{ $t('common.terms.successRate') }}</th><th>P95</th><th>{{ $t('common.terms.inOutPrice') }}</th><th>{{ $t('common.terms.upstreamModel') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -399,7 +400,7 @@ onMounted(load)
     </div>
 
     <div v-else-if="!loading && variantPills.length" class="card compact-card hint-card">
-      <p class="text-muted">点击上方变体按钮查看凭据路由详情</p>
+      <p class="text-muted">{{ $t('routing.variantHint') }}</p>
     </div>
 
   </div>
@@ -495,8 +496,7 @@ onMounted(load)
   display: block;
   font-size: 9px;
   color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: .04em;
+  letter-spacing: 0.01em;
   margin-bottom: 4px;
   font-weight: 600;
 }

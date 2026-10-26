@@ -3,6 +3,7 @@
 package admin
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -95,7 +96,10 @@ func scanV1BodiesReaders(t *testing.T, root string) map[string]int {
 	t.Helper()
 	pat := v1BodiesReadPattern(t)
 	out := map[string]int{}
-	skipDir := map[string]bool{".git": true, "docs": true, "node_modules": true, "vendor": true}
+	skipDir := map[string]bool{
+		".git": true, "docs": true, "node_modules": true, "vendor": true,
+		".audit": true, ".audit-validation": true, ".audit-workspace": true,
+	}
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -218,173 +222,16 @@ const bodiesSwitchRetireNote = "退役后替代：切换层 v1 臂删除，Sessi
 	"2026-10-13 停写复审计实测带会话头未镜像行=844 全为回环/非终态（真损失 0），会话臂覆盖全部用户可见正文。"
 
 var v1BodiesReaders = map[string]indirectReader{
-	// ── 组 1：切换层消费点（间接读方，已开会话臂）────────────────────────
-	"admin/session_title.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason:     "loadTaskLogsForTitle 手动会话标题语料。" + bodiesSwitchRetireNote,
-	},
-	"admin/memora_handlers.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason:     "handleSessionMessages（/api/sessions/:id/messages 查看器）。" + bodiesSwitchRetireNote,
-	},
-	"admin/logs_summary.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason:     "loadSessionLogsForSummary / loadSessionLogsBySessionID 摘要语料两站点。" + bodiesSwitchRetireNote,
-	},
-	"admin/no_topic_session.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason:     "无主题会话消息查看器 + 标题语料两站点。" + bodiesSwitchRetireNote,
-	},
-	"admin/auto_title_generator.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason:     "AutoTitleGenerator.loadSessionLogsForTitle 自动标题语料。" + bodiesSwitchRetireNote,
-	},
-	"admin/session_sanitize_matches.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason:     "loadOutboundBodySnippet 敏感命中片段预览（outbound_body，fallback request_body）。" + bodiesSwitchRetireNote,
-	},
-	"admin/compression_stats.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason:     "handleCompressionStats 三站点（估 token / 策略聚合 / 小时时序，outbound_body+request_body）。" + bodiesSwitchRetireNote,
-	},
-	"admin/session_export.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason:     "sessionExportMessagesSQL 会话导出包消息（request_body/response_body）。" + bodiesSwitchRetireNote,
-	},
-	"admin/session_compare.go": {
-		Family:     familyBodies,
-		ResolvesTo: "_request_logs_bodies",
-		Reason: "generateHandoffSummary（handoff 交接摘要）经切换层。" + bodiesSwitchRetireNote +
-			"对比主路径的批量正文（querySessionBodiesByRequestID）已于 2026-10-13 固定读会话族" +
-			"（消费方 turns 腿本就是会话族；停写后新会话正文只在 session_bodies），解析器已补" +
-			"request_delta/response_delta 数组形状臂（parseMessagesFromBody/parseResponseMessages）。",
-	},
-	"domains/sessionsummary/summarizer.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason:     "getSessionMessagesQuery / GetMessagesSince 摘要 V1 消息源两站点。" + bodiesSwitchRetireNote,
-	},
-	"domains/sessionsummary/system_prompt_prefix.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason:     "GetSystemPromptPrefix 摘要 system prompt 前缀（首轮请求体）。" + bodiesSwitchRetireNote,
-	},
-	"domains/sessionforensics/export.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason:     "取证会话包导出两份 SQL（ExportFromTx / ExportSession，双字面量由 TestForensicsExportSQLVariantsStayInSync 钉同步）。" + bodiesSwitchRetireNote,
-	},
-	"bg/passive_probe_listener.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason: "pollNewErrors 失败行 200 字符预览（response_body）。注意它读的是**业务失败行**正文——" +
-			"查询带 ProbeTrafficExclusionPredicateView 显式排除探针，不是探针观测读方；终态失败行" +
-			"按钩子语义会被镜像（response_delta 非空）。" + bodiesSwitchRetireNote +
-			"整只监听器的驱动读（v1 turns 面）冻结是另一张表的登记项，不属本门。",
-	},
-
-	// ── 组 2：字面 v1 腿 + 会话兜底腿并存的点查族（三阶段读取）──────────
-	"admin/logs.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason: "getLog 两阶段 body 读取：v1 腿（fetchRequestOutboundBody/fetchRequestBodies 的 hot+view" +
-			"四处字面站点，request_id 单键）服务冻结历史；阶段3 已有会话族兜底（fetchSessionOutboundBody/" +
-			"fetchRequestBodies 尾腿经 SessionFamilyBodiesSourceSQL）。退役后替代：删 v1 两腿，会话腿转唯一" +
-			"（会话臂已覆盖全部镜像行，见 bodiesSwitchRetireNote 的覆盖实测；探针/回环请求_id 的点查返回" +
-			"空正文属已登记可接受损失）。",
-	},
-	"admin/body_resolver.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason: "lookupControlledBody 受控正文点查：阶段1/2 为 v1 字面腿（hot+view，request_id+ts 等值——" +
-			"v1 家族内合法的消歧键），阶段3 会话族兜底（request_id 单键，S4 交接加）。退役后替代：删 v1 两腿，" +
-			"会话腿转唯一并改由 session_turns 取 occurredAt（ts 不在 bodies 源列合同内）。为什么够用：同上，" +
-			"会话臂覆盖全部镜像行；ts 等值消歧在会话族由 request_id 唯一性承担（session_bodies 无重 request_id 实测）。",
-	},
-	"admin/unified_detail.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason: "pgBodyReader.loadOutboundBody 统一详情 outbound 三腿（hot+view 字面 + 会话兜底）。" +
-			"退役后替代：删 v1 两腿，会话腿转唯一。理由同 admin/logs.go 条目。",
-	},
-	"domains/hooks/goal/history_store.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason: "FetchBySession 主路径已走切换层（historySessionSQL），v1 字面臂（historyV1SQL，request_id 单键）" +
-			"是刻意的回退。退役后替代：删 v1 回退臂，主路径转唯一。" + bodiesSwitchRetireNote,
-	},
-
-	// ── 组 3：v1 专属读方（替代方案 ≠ 切换层）────────────────────────────
-	"admin/session_bodies_batch.go": {
-		Family:     familyBodies,
-		ResolvesTo: "_request_logs_bodies",
-		Reason: "两处字面站点，替代不同：① v1BodiesByRequestIDSQL——session_summary_v2 回退路径专用" +
-			"（其 turns 腿就是 v1 视图的遗留会话，bodies 腿必须同源），随 v1 表 DROP 退役，届时未镜像" +
-			"遗留会话（sessions_v2.enabled=false 时代）的摘要语料消失，属已登记可接受损失，删表前 owner" +
-			"在生产库复核该人群规模；② sessionBodiesByRequestIDAndTSSQL——无生产调用方（仅守形测试引用，" +
-			"§5.9 历史形状钉子），DROP 时直接删除。主批量取数器（sessionBodiesByRequestIDSQL）已于" +
-			"2026-10-13 固定读会话族（消费方 session_compare 的 turns 腿是会话族）。",
-	},
-	"admin/quality_correlations.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason: "auto-route 质量相关性分桶。★ 2026-10-13 S4 波 4 **已落地**会话族重写：" +
-			"turns 腿改 canonical 源，bodies 腿经切换层读 **outbound_body**（完整上游请求对象，含 " +
-			"tools/messages 键——不能读 request_body：会话臂那是 request_delta 增量数组、没有这些键，" +
-			"机械沿用会静默塌桶）；tools 桶带 jsonb_typeof 守卫（22023 教训）。语义边界：无会话头" +
-			"探针行按设计不进会话族（R51），分桶样本自此只含业务 auto 流量（旧实现无探针排除谓词、" +
-			"探针行混入样本；本地实测 v1 auto 23,786 行里探针占 22,951）。探针维度分析若需保留，" +
-			"改读 node_probe_runs 族——仍属主拍板项。DROP 时随切换层删 v1 臂。",
-	},
-	"admin/data_lifecycle.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason: "data-lifecycle/stats 看板两站点：其语义就是 **v1 存储体量治理**（pg_total_relation_size" +
-			"('_request_logs') 等）。退役后替代：端点随 v1 存储退役；若要保留看板需另做会话族体量版" +
-			"（独立工作项，与 data_lifecycle blob 会话臂债同登记）。停写后 trend 两臂随窗口滑过冻结点归零" +
-			"是预期行为。",
-	},
-	// admin/data_lifecycle_blobs.go 于 2026-10-13（S4 波 4）出列：会话臂
-	// 扩展已落地（治理对象 session_bodies 族 outbound_body+双 attachments，
-	// execute 目标 session_bodies_hot，增量正文保留），文件脱离 v1 族。
-	"cmd/compression-bench/main.go": {
-		Family:     familyBodies,
-		ResolvesTo: "_request_logs_bodies",
-		Reason: "CLI 压缩基准工具，(request_id,ts) 等值 JOIN 读 outbound_body（切换层不投影 ts，" +
-			"不能换切换层——db 注释点名的三个 ts 读方之一）。退役后替代：改读 session_bodies_hot∪" +
-			"session_bodies 原生列（request_id+ts+outbound_body 齐全，ts 为正文写入时刻，与 v1 同义）。" +
-			"冻结存量在 DROP 前仍可跑基准；属工具，不阻塞删表。",
-	},
-	"cmd/tools/backfill_session_bodies/main.go": {
-		Family:     familyBodies,
-		ResolvesTo: "_request_logs_bodies",
-		Reason: "v1→v2 回填工具本体：输入（完整 request_body/response_body 载荷）按设计只存在于 v1，" +
-			"会话族没有等价物——它正是会话族这份数据的**来源**。退役后替代：无（工具使命随 v1 终结）。" +
-			"本地库已实测真损失 0（无需回填）；生产删表前由 owner 复核同口径。",
-	},
-	"cmd/tools/validate_sessions_v2/loader.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason: "双写 parity 门的 **V1 真值臂**（hot 腿+母表腿）：它读 v1 是定义使然——把 V1 臂改读" +
-			"会话族会变成自己比自己。退役后替代：工具使命随 v1 终结（parity 证据只对冻结窗有效，" +
-			"WindowExceedsV1Data 已显式守窗）。",
-	},
-	"db/request_logs_view_schema.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "_request_logs_bodies",
-		Reason: "bodies 读端灰度切换层**本体**（SessionBodiesSourceSQL 的 v1 臂字面量）。" +
-			"退役后替代：删除 v1 臂（返回值恒为 SessionFamilyBodiesSourceSQL），开关退化为 no-op 后移除。" +
-			"为什么够用：开关默认关（v1 臂）是灰度期的回滚设计；停写后 v1 臂对会话族 turns 是错源，" +
-			"会话臂是唯一正确形态，且组 1 的全部消费点已按「会话臂为常态」登记。",
-	},
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空**。
+	//
+	// 24 条登记的对象全是「读 v1 bodies 腿」的文件；而 890 之后
+	// **没有任何生产文件再读 v1 bodies 腿**（bodies 读端只剩会话族）⇒
+	// 「bodies 退役评估」这件事已经没有对象。
+	//
+	// ⇒ 本表保留（不删）：它守的是「**不许出现新的 v1 bodies 读方**」。
+	//
+	// ⚠ 不要在这里手填「已知的例外」—— 已退役关系的残留引用登记在
+	// retiredV1ReferenceExceptions（生产缺陷台账）。
 }
 
 // TestV1BodiesReadersAreAssessed 是 bodies 腿的双向门。
@@ -397,6 +244,25 @@ var v1BodiesReaders = map[string]indirectReader{
 func TestV1BodiesReadersAreAssessed(t *testing.T) {
 	root := repoRootFromCaller(t)
 	measured := scanV1BodiesReaders(t, root)
+
+	// ★ 890 之后（2026-10-20）：总体与登记表都必须为空。
+	//
+	// v1 族被物理删除 ⇒ bodies 腿没有 v1 可退役 ⇒ 「bodies 退役评估」没有对象。
+	// ⇒ 本门从「登记表覆盖全部 bodies 读方」翻成
+	//「**登记表必须为空，且实测 bodies 读方必须为空**」。
+	if len(v1BodiesReaders) > 0 {
+		t.Errorf("v1 bodies 读方登记仍有 %d 条 —— 890 之后 v1 族已物理删除，"+
+			"没有任何生产文件再读 v1 bodies 腿。", len(v1BodiesReaders))
+	}
+	if len(measured) > 0 {
+		var names []string
+		for f, n := range measured {
+			names = append(names, fmt.Sprintf("%s(%d)", f, n))
+		}
+		sort.Strings(names)
+		t.Errorf("%d 个文件仍被实测为读 v1 bodies 腿：\n  %s\n"+
+			"⇒ 它们运行时会 42P01（890 已删这些关系）。", len(measured), strings.Join(names, "\n  "))
+	}
 
 	var unregistered, stale []string
 	for f, n := range measured {
@@ -418,39 +284,32 @@ func TestV1BodiesReadersAreAssessed(t *testing.T) {
 	}
 	t.Logf("v1 bodies 读方：%d 文件 / %d 调用点（已登记 %d）",
 		len(measured), total, len(v1BodiesReaders))
-	// 把「当前应当是红的」写进输出。理由：本门与 S4 门、回填门一样是**故意红**的
-	// 负向判据，而 CI 输出里一个不带标记的 FAIL 会被读成回归。
-	// ⚠ 措辞不能含糊：它是**预期红**，但**不代表 bodies 已可删**。
-	if len(unregistered) > 0 {
-		t.Logf("【预期红】本门故意红：bodies 腿尚未逐点评估。红了 = 判据在拦；" +
-			"全绿 = 登记表已覆盖全部 bodies 读方（那时才谈得上 _request_logs_bodies 可删）。")
-	}
 	for f, n := range measured {
 		t.Logf("  %-58s %d", f, n)
 	}
 
 	if len(unregistered) > 0 {
 		t.Errorf("%d 个文件读 v1 bodies 腿但未登记 —— 在逐点评估之前，"+
-			"**不能**把 _request_logs_bodies 判定为可删：\n  %s\n\n"+
-			"为什么这必须红而不是记一条日志：DROP 之后这些 JOIN 不会报错，"+
-			"它们读到 NULL，而多数调用点写的是 COALESCE(…, '{}') —— "+
-			"于是导出/摘要照常成功，只是每条消息的正文为空。"+
-			"「返回 18%% 数据的查询和正常工作的查询看起来一样」在这里还要更糟一档。\n\n"+
-			"处置方向：会话族有 session_bodies 表"+
-			"（promote 函数见 db/db.go:3267，回填工具 cmd/tools/backfill_session_bodies）。"+
-			"★ 处置指引（R48-A11 订正，旧文本「先补 helper」已过期）："+
-			"bodies 源 helper **已存在**——turns 侧 SessionFamilyTurnsSourceSQL 同族，"+
-			"bodies 侧是 db/request_logs_view_schema.go 的 SessionFamilyBodiesSourceSQL "+
-			"（storage.session_bodies_native_read 开关，默认 v1 臂）。"+
-			"逐个把 LEFT JOIN _request_logs_bodies* 改指切换层前，先读 "+
-			"docs/audit/2026-10-06-v1-bodies-read-path.md（§9.265）："+
-			"「只改指切换层但开关仍在 v1 臂」是假迁移，登记时须写明取源路径。"+
-			"★ 旧指引「先补那个 helper」已过期——helper 就是 SessionFamilyBodiesSourceSQL 本身，勿再造一个。",
-			len(unregistered), strings.Join(unregistered, "\n  "))
+			"**不能**把 _request_logs_bodies 判定为可删：\n  %s", len(unregistered),
+			strings.Join(unregistered, "\n  "))
 	}
 	if len(stale) > 0 {
 		t.Errorf("%d 条 bodies 读方登记已失效（实测 0 处）——多半是读法变了：\n  %s",
 			len(stale), strings.Join(stale, "\n  "))
+	}
+
+	// ★ 阳性对照：扫描器必须仍能看见 v1 bodies 引用。
+	//
+	// ⚠ 没有这一条，「实测为 0」无法与「扫描器坏了」区分 —— 这正是
+	// TestV1BodiesGateIsNotSilentlyVacuous 当年要防的失效形态。
+	pat := v1BodiesReadPattern(t)
+	if !pat.MatchString("FROM _request_logs_bodies_hot rb") {
+		t.Error("v1BodiesReadPattern 匹配不上 v1 bodies 热表 —— 扫描器没有区分力，" +
+			"上面「实测为 0」是空洞的")
+	}
+	if !pat.MatchString("LEFT JOIN request_logs_bodies_with_current_month rb") {
+		t.Error("v1BodiesReadPattern 匹配不上 v1 bodies 视图 —— 扫描器没有区分力，" +
+			"上面「实测为 0」是空洞的")
 	}
 }
 
@@ -463,10 +322,20 @@ func TestV1BodiesReadersAreAssessed(t *testing.T) {
 func TestV1BodiesGateIsNotSilentlyVacuous(t *testing.T) {
 	root := repoRootFromCaller(t)
 	measured := scanV1BodiesReaders(t, root)
+
+	// ★ 890 之后（2026-10-20）：**总体为空是正确状态**，不是「量具坏了」。
+	//
+	// 原来这里是一条地板（总体为 0 ⇒ Fatal），因为那时总体为空只可能意味着
+	// 「扫描器坏了」。890 之后 v1 族被物理删除 ⇒ bodies 读方总体真的归零。
+	//
+	// ⇒ 地板翻成：**总量为空必须是因为扫描器扫过而没命中**。
+	// 判据：扫描器的模式必须仍能认出 v1 bodies 形态（阳性对照）。
 	if len(measured) == 0 {
-		t.Fatal("v1 bodies 读方实测为 0 个文件 —— 这不是「bodies 腿已经没人读了」，" +
-			"是扫描器坏了：SSOT 推导或路径过滤出了问题。在这种状态下上面那道门会全绿，" +
-			"而一个 bodies 依赖都没被评估。")
+		pat := v1BodiesReadPattern(t)
+		if !pat.MatchString("FROM _request_logs_bodies_hot rb") {
+			t.Fatal("v1 bodies 读方实测为 0，**且**扫描模式认不出 v1 bodies 形态 —— " +
+				"这不是「bodies 腿已经没人读了」，是扫描器坏了（SSOT 推导或路径过滤出了问题）。")
+		}
 	}
 	if len(v1BodiesRelations(t)) == 0 {
 		t.Fatal("v1 bodies 关系名集合为空（地板断言本该拦住，见 v1BodiesRelations）")
@@ -509,17 +378,63 @@ func TestV1BodiesScanIncludesRegisteredIndirectReaders(t *testing.T) {
 	sort.Strings(want)
 	sort.Strings(missing)
 	t.Logf("登记为间接 bodies 读方的文件 %d 个：%v", len(want), want)
-	if len(want) == 0 {
-		t.Fatal("没有任何文件被登记为间接 bodies 读方 —— " +
-			"要么 indirectRequestLogsReaders 的 bodies 登记被删了（本该有一项），" +
-			"要么 v1BodiesRelations 推不出 bodies 关系名。两种都让这道门失去意义。")
+
+	// ★ 890 之后（2026-10-20）：间接读方表已清空 ⇒ 「间接 bodies 读方」必须为空。
+	//
+	// 原来这里是一条地板（want 为 0 ⇒ Fatal），因为那时它只可能意味着
+	// 「登记被删了 / SSOT 推不出 bodies 关系名」。890 之后 bodies 腿的切换层
+	// 已经恒等于会话族（db.SessionBodiesSourceSQL = SessionFamilyBodiesSourceSQL），
+	// **不再存在间接读 v1 bodies 的文件** ⇒ 0 是正确值。
+	if len(want) > 0 {
+		t.Errorf("仍有 %d 个文件被登记为间接 bodies 读方 —— 890 之后 bodies 切换层恒为会话族，"+
+			"不再有间接读 v1 bodies 的文件：\n  %s", len(want), strings.Join(want, "\n  "))
 	}
 	if len(missing) > 0 {
 		t.Errorf("这些文件登记为间接 v1 bodies 读方，但没出现在实测总体里：%v\n"+
-			"⇒ scanV1BodiesReaders 末尾的「间接读方并入总体」被删掉或失效了。"+
-			"它们的 v1 bodies 依赖会从退役证据里消失，而门**仍然红**"+
-			"（本来就红，25 个还是 24 个都不改退出码）。", missing)
+			"⇒ scanV1BodiesReaders 末尾的「间接读方并入总体」被删掉或失效了。", missing)
 	}
+
+	// ★ 阳性对照：「并入总体」这段逻辑本身必须仍然有效。
+	//
+	// ⚠ 合成一个间接 bodies 登记 + 一个消费点，证明总体确实会把它们并进来。
+	// （否则表空着的时候，这段逻辑恒不执行、没人知道它是否还在。）
+	synthetic := map[string]int{}
+	if !mergeIndirectBodiesReaders(synthetic, map[string]bool{"synthetic/indirect.go": true},
+		map[string]bool{"synthetic/consumer.go": true}, "synthetic/indirect.go") {
+		t.Error("mergeIndirectBodiesReaders 没有把已登记的间接 bodies 读方并入总体 —— " +
+			"「间接读方并入总体」这段逻辑坏了")
+	}
+	if len(synthetic) != 2 {
+		t.Errorf("mergeIndirectBodiesReaders 并入后总体只有 %d 个文件，期望 2（间接读方 + 消费点）", len(synthetic))
+	}
+}
+
+// mergeIndirectBodiesReaders 是 scanV1BodiesReaders 末尾「把间接 bodies 读方
+// 与其消费点并入总体」那段逻辑的**可测版本**。
+//
+// 为什么抽成函数：890 之后间接读方表为空 ⇒ 那段逻辑在真实数据上不再执行 ⇒
+// 「它还在不在、还对不对」没人能证明。抽出来才能用合成数据直接驱动它。
+//
+// 参数：
+//   - out：总体（原地修改）
+//   - indirect：已登记为间接 bodies 读方的文件集合
+//   - consumers：已登记切换层的消费点集合
+//   - file：当前正在处理的间接读方文件
+//
+// 返回：file 是否被并入总体。
+func mergeIndirectBodiesReaders(out map[string]int, indirect, consumers map[string]bool, file string) bool {
+	if !indirect[file] {
+		return false
+	}
+	if out[file] == 0 {
+		out[file] = 1
+	}
+	for c := range consumers {
+		if out[c] == 0 && c != file {
+			out[c] = 1
+		}
+	}
+	return true
 }
 
 // TestV1BodiesScanSeesJoinOnlyReaders 钉住「只有 JOIN、没有 FROM」也必须算数。
@@ -545,8 +460,6 @@ func TestV1BodiesScanSeesJoinOnlyReaders(t *testing.T) {
 
 	// ⚠ 两个模式都**提到循环外**。第一版把 v1BodiesReadPattern(t) 写在
 	// per-file 循环里，于是每读一个文件就重建一次正则（含 SSOT 推导与排序）。
-	// 26 个文件不致命，但它把这条门从「毫秒」拖成「看着像卡住」——
-	// 而一个让人觉得卡的门，人会先去怀疑它而不是去读它。
 	fjPattern := v1BodiesReadPattern(t)
 
 	var joinOnly []string
@@ -555,31 +468,58 @@ func TestV1BodiesScanSeesJoinOnlyReaders(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", f, err)
 		}
-		hasFrom, hasJoin := false, false
-		for _, line := range strings.Split(string(src), "\n") {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") ||
-				strings.HasPrefix(trimmed, "/*") {
-				continue
-			}
-			if fromOnly.MatchString(line) {
-				hasFrom = true
-			}
-			if fjPattern.MatchString(line) {
-				hasJoin = true
-			}
-		}
-		if hasJoin && !hasFrom {
+		if isJoinOnlyBodiesReader(string(src), fromOnly, fjPattern) {
 			joinOnly = append(joinOnly, f)
 		}
 	}
 	sort.Strings(joinOnly)
-	if len(joinOnly) == 0 {
-		t.Errorf("总体里没有任何「只 JOIN 不 FROM」的 bodies 读方 —— " +
-			"这正是 §9.226 修掉的盲区形状。若这里为 0，要么扫描模式被收窄回 from-only，" +
-			"要么这些读方已经改完；两者都需要有人显式确认，不能默认。")
+
+	// ★ 890 之后（2026-10-20）：**「只 JOIN 不 FROM」的读方为 0 是正确状态**。
+	//
+	// 原来这里是一条「必须 ≥1」的地板，因为那时总体里至少有两个只 JOIN 的读方
+	// （admin/session_export.go / admin/session_compare.go）。890 之后没有文件
+	// 再读 v1 bodies ⇒ 这个盲区**在总体里已经不存在**。
+	//
+	// ⇒ 地板翻成：**总体为 0 是正确的，但「只 JOIN 也能被看见」这条能力必须仍在**。
+	// 判据：用**合成源码**证明 isJoinOnlyBodiesReader 仍能认出只 JOIN 的形态。
+	if len(joinOnly) > 0 {
+		t.Errorf("总体里出现了 %d 个「只 JOIN 不 FROM」的 bodies 读方 —— 890 之后不该再有：\n  %v",
+			len(joinOnly), joinOnly)
+	}
+	joinOnlySynthetic := "SELECT rl.request_id\n" +
+		"FROM public.session_turns_hot rl\n" +
+		"LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id"
+	if !isJoinOnlyBodiesReader(joinOnlySynthetic, fromOnly, fjPattern) {
+		t.Error("isJoinOnlyBodiesReader 认不出「只 JOIN 不 FROM」的 bodies 读方 —— " +
+			"扫描口径被收窄回 from-only 了（§9.226 修掉的盲区复发）")
+	}
+	fromSynthetic := "SELECT rb.request_id FROM _request_logs_bodies_hot rb"
+	if isJoinOnlyBodiesReader(fromSynthetic, fromOnly, fjPattern) {
+		t.Error("isJoinOnlyBodiesReader 把「有 FROM」的读方判成只 JOIN —— 判据写坏了")
 	}
 	t.Logf("只 JOIN 不 FROM 的 bodies 读方：%d 个 %v", len(joinOnly), joinOnly)
+}
+
+// isJoinOnlyBodiesReader 报告一段源码是否是「只 JOIN 不 FROM」的 bodies 读方。
+//
+// 抽成纯函数是为了能用**合成源码**直接驱动它（总体为空时，真实样本证明不了
+// 「只 JOIN 也算数」这条能力还在）。
+func isJoinOnlyBodiesReader(src string, fromOnly, fjPattern *regexp.Regexp) bool {
+	hasFrom, hasJoin := false, false
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") ||
+			strings.HasPrefix(trimmed, "/*") {
+			continue
+		}
+		if fromOnly.MatchString(line) {
+			hasFrom = true
+		}
+		if fjPattern.MatchString(line) {
+			hasJoin = true
+		}
+	}
+	return hasJoin && !hasFrom
 }
 
 func quoteAll(in []string) []string {
@@ -615,22 +555,54 @@ func TestV1BodiesReadersAreDeclaredWell(t *testing.T) {
 		bodiesRel[n] = true
 	}
 	for file, e := range v1BodiesReaders {
-		if strings.TrimSpace(e.Reason) == "" {
-			t.Errorf("%s：bodies 读方登记的 Reason 为空——空理由的登记等于没有登记；"+
-				"这一项要写清「退役后由什么替代、为什么那个替代够用」", file)
-		}
-		if strings.TrimSpace(e.ResolvesTo) == "" {
-			t.Errorf("%s：ResolvesTo 为空。不写它，「它读的是 v1 bodies」就是一句断言；\n"+
-				"  写上表名之后，这句话可以被 v1BodiesRelations 核对。", file)
-		} else if !bodiesRel[strings.ToLower(e.ResolvesTo)] {
-			t.Errorf("%s：ResolvesTo = %q，不在 v1 bodies 关系名集合里。\n"+
-				"  可选：%s\n"+
-				"  若它其实指向别的表，应该从本表删掉，而不是改成一个不存在的表名。",
-				file, e.ResolvesTo, strings.Join(names, " / "))
-		}
-		if strings.TrimSpace(e.Family) == "" {
-			t.Errorf("%s：Family 为空。这一项用于说明它读的是哪一族（"+
-				"本表的读者分不清「已评估」与「已登记但没看」）。", file)
+		for _, p := range v1BodiesReaderProblems(file, e, bodiesRel) {
+			t.Errorf("%s：%s", file, p)
 		}
 	}
+
+	// ★ 890 之后（2026-10-20）：表为空 ⇒ 逐条校验不执行 ⇒ 判据必须有牙。
+	//
+	// ⇒ 用**合成条目**证明自检逻辑有效：缺 Reason / 缺 ResolvesTo /
+	// ResolvesTo 不在 bodies 族里 / Family 为空 —— 四种都必须被判出问题；
+	// 一条各项都合规的必须不被判出问题。
+	bad := map[string]indirectReader{
+		"缺 Reason":     {Family: familyBodies, ResolvesTo: "_request_logs_bodies"},
+		"缺 ResolvesTo": {Family: familyBodies, Reason: "合成条目"},
+		"ResolvesTo 不在 bodies 族": {
+			Family: familyBodies, ResolvesTo: "not_a_bodies_relation", Reason: "合成条目",
+		},
+		"Family 为空": {ResolvesTo: "_request_logs_bodies", Reason: "合成条目"},
+	}
+	for name, e := range bad {
+		if len(v1BodiesReaderProblems(name, e, bodiesRel)) == 0 {
+			t.Errorf("合成条目「%s」没有被自检逻辑判出问题 —— 自检逻辑没有牙"+
+				"（表空着的时候，这是唯一还能证明它有效的手段）", name)
+		}
+	}
+	ok := indirectReader{
+		Family:     familyBodies,
+		ResolvesTo: "_request_logs_bodies",
+		Reason:     "合成条目：各项合规",
+	}
+	if problems := v1BodiesReaderProblems("synthetic/ok.go", ok, bodiesRel); len(problems) != 0 {
+		t.Errorf("一个各项都合规的合成条目被判出问题 %v —— 自检逻辑本身坏了", problems)
+	}
+}
+
+// v1BodiesReaderProblems 是一条 bodies 读方登记的**自检**（返回问题列表，空 = 合格）。
+func v1BodiesReaderProblems(file string, e indirectReader, bodiesRel map[string]bool) []string {
+	var problems []string
+	if strings.TrimSpace(e.Reason) == "" {
+		problems = append(problems, "Reason 为空——空理由的登记等于没有登记；"+
+			"这一项要写清「退役后由什么替代、为什么那个替代够用」")
+	}
+	if strings.TrimSpace(e.ResolvesTo) == "" {
+		problems = append(problems, "ResolvesTo 为空。不写它，「它读的是 v1 bodies」就是一句断言")
+	} else if !bodiesRel[strings.ToLower(e.ResolvesTo)] {
+		problems = append(problems, "ResolvesTo 不在 v1 bodies 关系名集合里")
+	}
+	if strings.TrimSpace(e.Family) == "" {
+		problems = append(problems, "Family 为空。这一项用于说明它读的是哪一族")
+	}
+	return problems
 }

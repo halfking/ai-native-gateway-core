@@ -12,8 +12,10 @@ package compression
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,20 +27,25 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 type fakeRedis struct {
-	store map[string]map[string]string
-	ttls  map[string]time.Duration
-	delCh chan string
+	mu     sync.Mutex
+	expiry map[string]time.Time
+	store  map[string]map[string]string
+	ttls   map[string]time.Duration
+	delCh  chan string
 }
 
 func newFakeRedis() *fakeRedis {
 	return &fakeRedis{
-		store: map[string]map[string]string{},
-		ttls:  map[string]time.Duration{},
-		delCh: make(chan string, 4),
+		expiry: map[string]time.Time{},
+		store:  map[string]map[string]string{},
+		ttls:   map[string]time.Duration{},
+		delCh:  make(chan string, 16),
 	}
 }
 
 func (f *fakeRedis) HSet(_ context.Context, key string, values ...any) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.store[key] == nil {
 		f.store[key] = map[string]string{}
 	}
@@ -50,17 +57,90 @@ func (f *fakeRedis) HSet(_ context.Context, key string, values ...any) error {
 	return nil
 }
 func (f *fakeRedis) HGetAll(_ context.Context, key string) (map[string]string, error) {
-	return f.store[key], nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]string{}
+	for k, v := range f.store[key] {
+		out[k] = v
+	}
+	return out, nil
 }
 func (f *fakeRedis) Expire(_ context.Context, key string, ttl time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.ttls[key] = ttl
 	return nil
 }
 func (f *fakeRedis) Del(_ context.Context, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	delete(f.store, key)
 	delete(f.ttls, key)
 	f.delCh <- key
 	return nil
+}
+
+func (f *fakeRedis) Eval(ctx context.Context, script string, keys []string, args ...any) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	expire := func(key string) {
+		if exp, ok := f.expiry[key]; ok && !time.Now().Before(exp) {
+			delete(f.store, key)
+			delete(f.expiry, key)
+		}
+	}
+	if len(keys) == 0 || len(args) == 0 {
+		return nil, fmt.Errorf("invalid cache script arguments")
+	}
+	token := fmt.Sprint(args[0])
+	expire(keys[0])
+	switch {
+	case strings.Contains(script, "session-cache-acquire"):
+		if f.store[keys[0]] != nil {
+			return int64(0), nil
+		}
+		f.store[keys[0]] = map[string]string{"lease_token": token}
+		f.expiry[keys[0]] = time.Now().Add(time.Duration(args[1].(int64)) * time.Millisecond)
+	case strings.Contains(script, "session-cache-release"):
+		if f.store[keys[0]]["lease_token"] != token {
+			return int64(0), nil
+		}
+		delete(f.store, keys[0])
+		delete(f.expiry, keys[0])
+	case strings.Contains(script, "session-cache-invalidate"):
+		if len(keys) != 3 || len(args) != 1 {
+			return nil, fmt.Errorf("invalid invalidate arguments")
+		}
+		expire(keys[2])
+		if f.store[keys[2]]["lease_token"] != token {
+			return int64(0), nil
+		}
+		for _, key := range keys[:2] {
+			delete(f.store, key)
+			delete(f.expiry, key)
+			delete(f.ttls, key)
+			f.delCh <- key
+		}
+	case strings.Contains(script, "session-cache-commit"):
+		expire(keys[1])
+		if f.store[keys[1]]["lease_token"] != token {
+			return int64(0), nil
+		}
+		fields := make(map[string]string, len(args)/2-1)
+		for i := 2; i < len(args); i += 2 {
+			fields[fmt.Sprint(args[i])] = fmt.Sprint(args[i+1])
+		}
+		f.store[keys[0]] = fields
+		ttl := time.Duration(args[1].(int64)) * time.Millisecond
+		f.ttls[keys[0]] = ttl
+		f.expiry[keys[0]] = time.Now().Add(ttl)
+	default:
+		return nil, fmt.Errorf("unsupported fake cache script")
+	}
+	return int64(1), nil
 }
 
 // fake DB
@@ -166,21 +246,16 @@ func TestGetOrLoad_DBFallback(t *testing.T) {
 		t.Error("GetOrLoad: empty body from DB")
 	}
 	// The DB hit should also back-fill Redis (L2).
-	if _, ok := redis.store["session:sc:t:s1:v1"]; !ok {
+	if _, ok := redis.store[redisKey("t", "s1")]; !ok {
 		t.Error("GetOrLoad(DB): expected Redis back-fill")
 	}
 }
 
-func TestGetOrLoad_DBErrorIgnored(t *testing.T) {
-	redis := newFakeRedis()
-	db := &errDB{err: errSentinel}
-	c := NewSessionCache(redis, db)
-	st, _, err := c.GetOrLoad(context.Background(), "t", "s1")
-	if err != nil {
-		t.Fatalf("GetOrLoad: expected nil error when DB fails (logged only), got %v", err)
-	}
-	if st != nil {
-		t.Errorf("GetOrLoad(DB error): st = %v, want nil", st)
+func TestGetOrLoad_DBErrorPropagates(t *testing.T) {
+	c := NewSessionCache(newFakeRedis(), &errDB{err: errSentinel})
+	st, body, err := c.GetOrLoad(context.Background(), "t", "s1")
+	if err == nil || st != nil || body != nil {
+		t.Fatalf("shared DB error: state=%v body=%q err=%v", st, body, err)
 	}
 }
 
@@ -259,7 +334,7 @@ func TestSaveToRedis_HotReloadedTTL(t *testing.T) {
 	if err := c.Set(context.Background(), "t", "s1", stateOf("s1"), []byte("b1")); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	ttl, ok := redis.ttls["session:sc:t:s1:v1"]
+	ttl, ok := redis.ttls[redisKey("t", "s1")]
 	if !ok {
 		t.Fatal("saveToRedis: Expire not called")
 	}
@@ -668,13 +743,13 @@ func TestLoadFromLegacyDB_DBError(t *testing.T) {
 
 func TestLoadFromRedis_SchemaMismatch(t *testing.T) {
 	redis := newFakeRedis()
-	redis.store["session:sc:t:s1:v1"] = map[string]string{
+	redis.store[redisKey("t", "s1")] = map[string]string{
 		"v":   "99", // wrong version
 		"loh": "abc",
 	}
 	c := NewSessionCache(redis, nil)
 	st, body, err := c.loadFromRedis(context.Background(), "t", "s1")
-	if err != nil || st != nil || body != nil {
+	if err == nil || st != nil || body != nil {
 		t.Errorf("loadFromRedis(schema mismatch) = (%v, %v, %v), want (nil, nil, nil)", st, body, err)
 	}
 }
@@ -692,7 +767,7 @@ func TestLoadFromRedis_EmptyFields(t *testing.T) {
 func TestLoadFromRedis_DecodeError(t *testing.T) {
 	redis := newFakeRedis()
 	// Wrong type for a numeric field.
-	redis.store["session:sc:t:s1:v1"] = map[string]string{
+	redis.store[redisKey("t", "s1")] = map[string]string{
 		"v": "not-an-int",
 	}
 	c := NewSessionCache(redis, nil)
@@ -714,13 +789,14 @@ func TestInvalidate_RemovesFromAllTiers(t *testing.T) {
 
 	c.Invalidate(context.Background(), "t", "s1")
 
-	select {
-	case k := <-redis.delCh:
-		if k != "session:sc:t:s1:v1" {
-			t.Errorf("Invalidate: deleted key %q, want session:sc:t:s1:v1", k)
+	for _, key := range []string{legacyRedisKey("t", "s1"), redisKey("t", "s1")} {
+		fields, err := redis.HGetAll(context.Background(), key)
+		if err != nil || len(fields) != 0 {
+			t.Errorf("Invalidate: key %q remains: %v, err=%v", key, fields, err)
 		}
-	case <-time.After(100 * time.Millisecond):
-		t.Error("Invalidate: Redis Del not called")
+	}
+	if c.l1[l1Key("t", "s1")] != nil {
+		t.Error("Invalidate: L1 entry remains")
 	}
 }
 
@@ -764,16 +840,15 @@ func TestInvalidate_DeletesSanitizeKeysWithTenantHash(t *testing.T) {
 
 	c.Invalidate(context.Background(), tenantID, sessID)
 
-	// Drain all deletes (L2 session-key + sanitize map + sanitize offsets = 3
-	// total). We confirm the two sanitize keys land among them.
+	// Drain the two session namespaces and all three sanitize keys.
 	deleted := map[string]bool{}
 	timeout := time.After(200 * time.Millisecond)
-	for len(deleted) < 3 {
+	for len(deleted) < 5 {
 		select {
 		case k := <-redis.delCh:
 			deleted[k] = true
 		case <-timeout:
-			t.Fatalf("Invalidate: expected 3 deletes (L2 + sanitize map + offsets); got %v", deleted)
+			t.Fatalf("Invalidate: expected 5 deletes (v1/v2 + sanitize map/offsets/generation); got %v", deleted)
 		}
 	}
 	if !deleted[sanitizeKey] {

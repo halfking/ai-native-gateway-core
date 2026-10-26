@@ -17,7 +17,7 @@ Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 ### 1. Development Environment
 
 **Prerequisites:**
-- Go 1.21+ ([install](https://go.dev/dl/))
+- Go 1.27.2+ ([install](https://go.dev/dl/))
 - PostgreSQL 14+ (local or Docker)
 - Redis 7+ (local or Docker)
 - Node.js 18+ and pnpm 8+ (for frontend)
@@ -250,15 +250,21 @@ pnpm test           # Run tests
 Before PR, run:
 
 ```bash
-# Check RLS is enabled on new tables
-make lint-pg-rls
+# Check RLS is enabled on new tables (real PostgreSQL; requires TEST_DATABASE_URL)
+make test-rls
 
-# Check tenant scope compliance
-make lint-tenant-scope-llmgw
-
-# Check OTel tenant attributes
-make lint-otel-tenant
+# Check tenant scope compliance (unit-test coverage, e.g. admin/session_tenant_test.go)
+make test
 ```
+
+> **Note**: the former `make lint-pg-rls` / `make lint-tenant-scope-llmgw` / `make lint-otel-tenant` targets
+> never existed in this repository — no `scripts/Makefile` and no lint script was ever committed here — so
+> `make lint-*` always failed. `make test-rls` is the only real-PostgreSQL RLS gate and is a local gate
+> (needs `TEST_DATABASE_URL`, not wired into CI); CI runs the unit-test suite via `verify.sh`.
+> The OTel `tenant.id` attribute is set by `internal/observability/tenant.go` (`AttrTenantID`) and is now
+> covered by a unit gate in that package (`TestSetTenantAttrsSetsRequiredTenantID`); what it does **not**
+> yet cover is that every span-producing call site actually calls it — that is a whole-path question,
+> not an attribute-contract question.
 
 ### Example
 

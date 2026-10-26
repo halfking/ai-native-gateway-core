@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# requires-bash: 4
+# ★ 本脚本用了 bash 4+ 特性 ⇒ macOS 自带 bash 3.2 跑不了 ⇒ 运行前提是 bash ≥ 4（Linux 主机）。
+#   ⇒ 这条声明把它从「隐含前提」变成**可检查的事实**（sql/schema/shell_bash_prereq_declaration_gate_test.go）。
 # ─────────────────────────────────────────────────────────────────────────────
 # sync-to-github.sh — 推 SI-LLM-Gateway 到 GitHub 公开镜像
 # ─────────────────────────────────────────────────────────────────────────────

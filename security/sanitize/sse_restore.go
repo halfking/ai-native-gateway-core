@@ -183,11 +183,12 @@ func maskDegenerateMarkerSpans(ctx context.Context, text string) (string, bool) 
 		}
 		b.WriteString(text[:start])
 		// A parseable span keeps its type in the mask; a degenerate one has no
-		// type to report and falls back to the bare marker.
+		// type to report — it still gets a **named** mask ("unknown"), because a
+		// bare marker tells the client nothing (r1038).
 		if parses {
 			b.WriteString(RedactionMarker(parsed.Type))
 		} else {
-			b.WriteString(redactedMarker)
+			b.WriteString(unknownRedactedMarker)
 		}
 		text = text[start+end+1:]
 	}

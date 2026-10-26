@@ -430,7 +430,7 @@ onBeforeUnmount(() => {
 }
 .sa__turn {
   padding: 6px 8px;
-  border-left: 2px solid var(--app-border);
+  border: 1px solid var(--app-border);
   margin-bottom: 4px;
 }
 .sa__turn-head {

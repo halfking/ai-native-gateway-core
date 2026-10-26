@@ -145,8 +145,32 @@ func TestRedisManager_FollowerTTLExpired(t *testing.T) {
 	}
 	// Follower should give up shortly after TTL, not after a full second
 	// or more. Allow generous slack for CI scheduling.
-	if elapsed < 200*time.Millisecond || elapsed > 1500*time.Millisecond {
-		t.Fatalf("Wait elapsed %v; want ~TTL (200ms)", elapsed)
+	//
+	// ★ 2026-10-21（R66 轮「全仓时钟判据普查」）：下界从 `200ms` 收到 **50ms**。
+	//
+	// 原因（**实测**，不是推测）：follower 的 watcher 用的是 **PTTL 剩余量**
+	//（admin/distlock/lock.go:152-168），而 PTTL 是**毫秒分辨率**的读数
+	// ⇒ 它的自然值与 200ms 只差**亚毫秒**。
+	// 实测 10 次：elapsed ∈ [200.03ms, 201.64ms]
+	// ⇒ **最坏余量 0.03ms（自然值的 0.015%）**
+	// ⇒ 任何让 PTTL 读数早一亚毫秒的扰动（不同的 Redis 版本、时钟粒度、
+	//   慢机器上的取整方向）都会把它判成「等太短」⇒ **一条等着的假红**。
+	//
+	// 而这条下界想表达的其实只是「**它不是瞬间放弃**」——
+	//   · 「它确实是等到 TTL 才放弃」已经由上面那行 `ErrTTLExpired` 证明了
+	//     （该错误只可能来自 TTL 定时器）；
+	//   · 「它没有瞬间放弃」用 50ms 表达即可：自然值 ≈200ms ⇒ **4× 余量**，
+	//     亚毫秒抖动打不到它。
+	// ⇒ 判别职责归行为断言，时钟只做「粗判 + 宽松兜底」。
+	//
+	// ★ R68 轮复测（12 次，宿主 16 核超载 3.5×）：自然值 ∈ [200.38ms, 228.23ms]
+	//   ⇒ 当前 50ms 下界的**实测余量 ≥ 150.38ms**（余量/阈值 = 300.8%）
+	//   ⇒ 确认 R66 轮的修法有效，且**这仍是全仓 8 处判别型下界里唯一一处
+	//     自然值来自「毫秒分辨率读数」（PTTL）而非定时器**的地方。
+	//   台账：internal/clockguard/measured_margins.tsv
+	//   ⇒ 门（internal/clockguard）在有人把下界改大到贴近自然值时会变红。
+	if elapsed < 50*time.Millisecond || elapsed > 1500*time.Millisecond {
+		t.Fatalf("Wait elapsed %v; want ~TTL (200ms), but not instantly", elapsed)
 	}
 }
 

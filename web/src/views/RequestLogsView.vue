@@ -34,6 +34,7 @@ import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
+import { Lightning } from '@element-plus/icons-vue'
 const { isSpanning } = useViewportSegments()
 
 const rows = ref<RequestLogRow[]>([])
@@ -304,22 +305,31 @@ async function loadCredentialOptions() {
       // 并发拉每个 provider 的 credential 列表。provider 数量一般较小（数十），
       // 这里全量加载与 /providers 页面策略一致。失败时该 provider 的凭据下拉
       // 退化为空，但其它 provider 不受影响。
+      //
+      // 2026-10-16：**改为分批**（每批 4 个）。原来是 `Promise.all(providers.map(...))`
+      // 一次性扇出全部 provider；本机 providers 有 47 行，首屏就是 47 个同源请求。
+      // 浏览器对同源 HTTP/1.1 只有约 6 条并发连接，剩下的排队，主数据请求
+      // `/api/logs` 被挤到队尾并最终 context canceled（下拉与列表并发时尤其明显）。
+      // 分批后峰值占用 4 条，给列表请求留出连接，余量足够且总耗时几乎不变。
       const allCreds: { id: number; providerId: number; label: string }[] = []
       const failedProviders: string[] = []
-      await Promise.all(
-        providers.map(async (p) => {
-          try {
-            const creds = await getProviderCredentials(p.id)
-            for (const c of creds) {
-              allCreds.push({ id: c.id, providerId: c.provider_id, label: c.label })
+      const CRED_BATCH = 4
+      for (let i = 0; i < providers.length; i += CRED_BATCH) {
+        await Promise.all(
+          providers.slice(i, i + CRED_BATCH).map(async (p) => {
+            try {
+              const creds = await getProviderCredentials(p.id)
+              for (const c of creds) {
+                allCreds.push({ id: c.id, providerId: c.provider_id, label: c.label })
+              }
+            } catch {
+              // 单个 provider 的凭据失败不影响其它 provider；保持当前已收集项。
+              // 但必须**记账**：少掉的那些凭据如果不讲出来，按它们筛就是零结果。
+              failedProviders.push(p.display_name || p.catalog_code)
             }
-          } catch {
-            // 单个 provider 的凭据失败不影响其它 provider；保持当前已收集项。
-            // 但必须**记账**：少掉的那些凭据如果不讲出来，按它们筛就是零结果。
-            failedProviders.push(p.display_name || p.catalog_code)
-          }
-        }),
-      )
+          }),
+        )
+      }
       credentialOptions.value = allCreds
       if (failedProviders.length > 0) {
         filterOptionsError.value = t('requests.list.filter.partialLoadFailed', {
@@ -831,11 +841,11 @@ function callerKeyTitle(r: RequestLogRow): string {
 }
 
 function traceSessionTitle(id: string) {
-  return `会话 ID（点击筛选同脉络）\n${id}`
+  return t('requests.detail_extra.sessionIdTitleWithId', { id })
 }
 
 function traceTaskTitle(id: string) {
-  return `任务 ID（点击仅筛此任务）\n${id}`
+  return t('requests.detail_extra.taskIdTitleWithId', { id })
 }
 
 // 详情 body 缓存统计随列表刷新一起拉取。纯诊断信息：失败静默置 null
@@ -1113,8 +1123,20 @@ onMounted(async () => {
   // 调用方不包 try/catch —— 包了也是死代码（内层已吞）。
   await loadKeys()
 
-  // 供应商/凭据下拉加载失败由 loadCredentialOptions() 内部兜底。
-  await loadCredentialOptions()
+  // 2026-10-16 修复：供应商/凭据下拉**不再阻塞**主列表加载。
+  //
+  // 原来这里是 `await loadCredentialOptions()`，而它内部对**每个** provider 并发
+  // `await getProviderCredentials(p.id)`（Promise.all）。本地 provider 表有 47 行，
+  // 于是首屏一次性扇出 47 个同源请求；浏览器对同源 HTTP/1.1 只有约 6 条并发连接，
+  // 排在其后的**主数据请求 `/api/logs`** 被挤到队尾并最终被取消 ——
+  // 服务端日志留下 `admin listLogs count query failed: context canceled`
+  // （logs.go:646），前端则表现为：页面完整渲染、已登录、无任何报错，
+  // 但恒显「共 0 条 / 无记录」。
+  //
+  // 这也让实现违反了本函数上方自己的设计约定「任一来源失败都不阻塞日志列表
+  // 渲染，下拉回退为空」。改成 void 后：主列表立刻发出，下拉在后台补齐，
+  // 其失败仍由内部兜底并在筛选区显示，语义不变。
+  void loadCredentialOptions()
 
   try {
     await load()
@@ -1152,7 +1174,7 @@ onMounted(async () => {
          说明容量吃紧，需要评估调大 LRU 上限。容量分母取后端 cap 字段（audit:
          不硬编码 1024）；无流量时命中率显示 "—" 而非误导性的 0.0%。 -->
     <div v-if="isSuperAdmin() && bodyCache" class="body-cache-strip" :title="bodyCacheTitle">
-      <span class="body-cache-strip__label">⚡ 详情缓存</span>
+      <span class="body-cache-strip__label"><Lightning /> 详情缓存</span>
       <span>命中率 <strong>{{ bodyCacheHitRate }}</strong></span>
       <span>命中 {{ bodyCache.hits }}</span>
       <span>未命中 {{ bodyCache.misses }}</span>
@@ -1457,8 +1479,8 @@ onMounted(async () => {
             type="text"
             class="filter-input"
             style="width:220px"
-            placeholder="搜索请求消息内容…"
-            title="消息片段"
+            placeholder="搜索模型/会话ID/密钥前缀…"
+            title="按请求元数据匹配：客户端/出站模型、客户端配置、请求模式、会话/任务 ID、密钥前缀、密钥属主、应用编码。★ 不检索请求/响应正文 —— 后端 ?q= 走的是 search_text，而 search_text 只由这些元数据拼成（见 domains/hooks/observability/telemetry/client.go 的 searchText）"
             @keyup.enter="resetPageAndLoad"
           />
           <input
@@ -1573,7 +1595,7 @@ onMounted(async () => {
               >任务 {{ ellipsize(r.gw_task_id, 36) }}</div>
               <span v-if="!r.gw_task_id && !r.gw_session_id" class="cell-line2" style="color:var(--muted)">—</span>
             </td>
-            <td class="col-title" :title="r.session_title || '尚无会话标题 — 点击详情查看'">
+            <td class="col-title" :title="r.session_title || $t('requests.table.sessionTitleFallback')">
               <div v-if="r.session_title" class="cell-line1 cell-clip title-text">{{ r.session_title }}</div>
               <div v-else class="cell-line1 muted">—</div>
             </td>
@@ -1819,7 +1841,7 @@ onMounted(async () => {
   overflow-wrap: anywhere;
 }
 .trace-summary {
-  border-left: 3px solid var(--accent);
+  border: 1px solid var(--accent);
 }
 .col-trace-action {
   white-space: nowrap;

@@ -41,7 +41,8 @@ func TestRequestLogsWriteEnabledKeyIsSpelledOnce(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", "vendor", "node_modules", "docs", "installer":
+			case ".git", "vendor", "node_modules", "docs", "installer",
+				".audit", ".audit-validation", ".audit-workspace":
 				return filepath.SkipDir
 			}
 			return nil
@@ -90,20 +91,92 @@ func TestRequestLogsWriteEnabledMatchesSpec(t *testing.T) {
 	}
 }
 
-// TestRequestLogsWriteEnabledDefaultsTrueWhenStoreUninitialised: a validator
-// wired before settings.Global is populated must report the documented default
-// (writes continue) rather than false.
+// TestRequestLogsWriteEnabledDefaultsFalseWhenStoreUninitialised: a validator
+// wired before settings.Global is populated must report the documented default.
 //
-// The direction matters: false would mean "v1 is frozen", and s4GateVerdictOf
-// reads a false here as "the S4 gate cannot be evaluated" — so an
-// uninitialised store would void the cutover gate for a reason that has
-// nothing to do with drift, and would do so silently.
-func TestRequestLogsWriteEnabledDefaultsTrueWhenStoreUninitialised(t *testing.T) {
+// 2026-10-20 (audit D0): the documented default **changed** from true to
+// false. The old contract is recorded here rather than deleted, because the
+// test's purpose did not change:
+//
+//   - Old: "true (keep double-writing)". Its rationale was that false would
+//     be read as "v1 is frozen" and s4GateVerdictOf would treat the S4
+//     cutover gate as un-evaluable — voiding the gate for a reason that had
+//     nothing to do with drift.
+//   - New: "false (do not double-write)". The same reasoning now applies in
+//     the opposite direction: the *code* default must not be "keep writing the
+//     retired wide family". The S4 gate is voided by a false value either way
+//     (there is no v1 side left to compare against), but now it is void
+//     *because v1 is off on purpose*, which is a different operator message
+//     than "the gate could not be evaluated".
+//
+// So the invariant that survived the change is the one this test still pins:
+// the accessor must never invent a value. With an uninitialised store it must
+// return the **declared** default — and the declared default is now false.
+func TestRequestLogsWriteEnabledDefaultsFalseWhenStoreUninitialised(t *testing.T) {
 	saved := Global
 	t.Cleanup(func() { Global = saved })
 	Global = nil
-	if !RequestLogsWriteEnabled() {
-		t.Fatal("Global 未初始化时必须回落到默认 true（继续双写）：" +
-			"返回 false 会被 dual-read 门读成「v1 已冻结」，从而无理由地作废 S4 判据")
+	if RequestLogsWriteEnabled() {
+		t.Fatal("Global 未初始化时必须回落到默认 false（不双写）：" +
+			"回退 true 会让未显式配置的环境（新装/克隆/灾备）继续写已退役的宽族，" +
+			"使「双写已下线」只是某台机器的配置事实而不是代码事实")
+	}
+}
+
+// TestRequestLogsWriteEnabledCodeDefaultIsOff pins the D0 fix from all three
+// ends, because a default flip is exactly the change that can make a gate
+// green from both sides at once (LESSONS: 改「默认值」会让既有判据同时从两端假绿).
+//
+//  1. **declared** — the spec table says Default: false. This is the value
+//     the effective-read path falls back to.
+//  2. **fallback** — the accessor with Global == nil returns false. This is
+//     the value read before the registry exists.
+//  3. **effective** — with a registry that has the spec registered, an env
+//     backend, and no DB row, the accessor returns false. Without this leg the
+//     test would pass even if the effective-read path silently resolved to
+//     something else (e.g. a stale hard-coded true inside getPlatformBool).
+//
+// Leg 3 is the one that can go red for a reason that has nothing to do with
+// the declared default (an env var set in the ambient environment), so the
+// env var is explicitly cleared rather than assumed unset.
+func TestRequestLogsWriteEnabledCodeDefaultIsOff(t *testing.T) {
+	// Leg 1 — declared default.
+	var spec *Spec
+	for _, candidate := range StorageSpecs() {
+		if candidate.Key == KeyRequestLogsWriteEnabled {
+			spec = candidate
+			break
+		}
+	}
+	if spec == nil {
+		t.Fatalf("spec 表未登记键 %q", KeyRequestLogsWriteEnabled)
+	}
+	if spec.Default != false {
+		t.Fatalf("storage.request_logs_write_enabled 的声明默认值 = %v，必须是 false："+
+			"「未显式配置 ⇒ 不双写」必须是代码事实，而不是每台机器各自配置的事实",
+			spec.Default)
+	}
+
+	saved := Global
+	t.Cleanup(func() { Global = saved })
+
+	// Leg 2 — accessor fallback with no registry at all.
+	Global = nil
+	if RequestLogsWriteEnabled() {
+		t.Fatal("Global == nil 时访问器必须回退 false")
+	}
+
+	// Leg 3 — effective read through an initialised registry (no DB row, no env).
+	t.Setenv(EnvNameAuto(KeyRequestLogsWriteEnabled), "")
+	registry := NewRegistry()
+	for _, candidate := range StorageSpecs() {
+		if err := registry.RegisterSpec(candidate); err != nil {
+			t.Fatalf("register spec %s: %v", candidate.Key, err)
+		}
+	}
+	registry.RegisterBackend(EnvBackendScope, NewStoreEnv())
+	Global = registry
+	if RequestLogsWriteEnabled() {
+		t.Fatal("已初始化但未配置（无 settings_kv 行、无环境变量）时必须读到 false")
 	}
 }

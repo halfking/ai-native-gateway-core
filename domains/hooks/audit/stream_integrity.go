@@ -1,5 +1,19 @@
 package audit
 
+// BreachReasonRepeatedContent is the breach reason reported when the
+// repeated-content (reply-loop) rule trips.
+//
+// ★ 它住在 audit 包（而不是 integrity 包）是因为依赖方向是
+//
+//	integrity → audit（见本文件头的说明）⇒ 常量必须能被**下游**（streaming）
+//	引用，而下游**不能**反过来 import integrity。
+//
+// ★ 2026-10-24 magpie 19 类 rest 词表轮（§6-P0-3）：这个 reason 现在还承担
+//
+//	**归责分流**——「回复陷入循环」与「空回复」必须分开（前者罚模型粒度、
+//	不罚账号）。⇒ 分流点靠的是**同一个字符串**，所以它不能是散落的字面量。
+const BreachReasonRepeatedContent = "integrity_repeated_content"
+
 // StreamTextObserver is the optional incremental observer a
 // StreamCapture notifies as assistant text accumulates. It exists so
 // the integrity detector can spot a looping model mid-stream instead of

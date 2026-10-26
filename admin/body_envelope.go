@@ -3,11 +3,11 @@ package admin
 // CO-5 (M2) summary mode read-side adapter. When sessions_v2.enabled=true
 // and sessions_v2.request_bodies_full=false, the telemetry write path
 // (domains/hooks/observability/telemetry/body_summary.go) persists a digest
-// envelope into _request_logs_bodies_hot instead of the full body:
+// envelope into the body store instead of the full body:
 //
 //	{"_gw_body_summary":{"mode":"digest","bytes":N,"sha256":"…","head":"…","head_truncated":bool}}
 //
-// Admin readers that LEFT JOIN request_logs_bodies_with_current_month used
+// Admin readers that LEFT JOIN the bodies view used
 // to receive the raw envelope JSON and degrade (doc 23 §5 P2-C1). This file
 // carries the admin-side detection helpers so those readers can consume the
 // retained head instead. The no-payload sentinels ("", "null", "{}") never

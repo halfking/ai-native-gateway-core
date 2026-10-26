@@ -280,8 +280,10 @@ func TestHandleCaptcha_IssuesUsableChallenge(t *testing.T) {
 func TestHandleCaptcha_RequiredAfterRepeatedFailures(t *testing.T) {
 	resetCaptchaSingletonsForTest()
 	h := &Handler{}
+	// 失败计数按 clientIPFromRequest 契约以剥端口后的 IP 分桶；
+	// RemoteAddr 故意带端口，钉住「handler 查找前先剥端口」。
 	for i := 0; i < CaptchaFailureThreshold; i++ {
-		loginFailuresGlobal.fail("10.0.0.9:1234")
+		loginFailuresGlobal.fail("10.0.0.9")
 	}
 
 	rec := httptest.NewRecorder()

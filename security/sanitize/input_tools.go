@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -122,6 +123,105 @@ var credentialKeywordFamily = []string{
 	"access_key", "authorization", "credential", "帐号", "账号", "密码", "口令",
 }
 
+// dummyCredentialValues 是「一眼假的示例值」字面量集（整值、大小写不敏感）。
+//
+// r1039（D7，2026-10-20）：`{"token":"abc123"}` / `{"password":"abc123"}`
+// 之前被 `builtin.secret_field.egress` 整条拦下——可它们是**占位值**，
+// 不是泄漏的真值。拦它的代价由每个请求承担（模型并行发起的其它工具调用
+// 一起陪葬），而 owner 的口径是「不要放大范围，导致正常的工具执行失败」。
+//
+// 方向与 placeholderCredentialValues 一致：枚举的是「定义上不构成泄漏」的
+// 拼写，不是「长得像无害」的形状。
+var dummyCredentialValues = map[string]bool{
+	"abc123": true, "abc1234": true, "abcdef": true,
+	"aaaaaa": true, "000000": true, "0000": true,
+	"redacted": true, "masked": true, "hidden": true,
+	"notasecret": true, "not-a-secret": true, "notarealsecret": true,
+	"your-token-here": true, "your-secret-here": true, "your-password-here": true,
+	"your-token": true, "your_api_key_here": true,
+	"fake": true, "sample": true, "test": true, "none": true, "null": true,
+	"secret": true, "token": true, "password": true,
+	// 纯数字串（123456 / 12345678）**不在**这一族：它们是现实里最常见的弱口令
+	// 形态，r1024 的既有契约是「凭据字段上的普通明文照拦」。示例值判定只覆盖
+	// 「字母 + 平凡数字」与掩码形态（见 isDummyCredentialValue）。
+}
+
+// dummyCredentialMaskPattern 匹配「被遮蔽过的值」形态：一串掩码字符
+// （* / x / X / • / · / █），可带尾随数字（部分客户端展示「前 4 后 4」）。
+//
+// 例：***、xxxx、XXXXXX、****1234、••••。
+var dummyCredentialMaskPattern = regexp.MustCompile(`^[xX*•·█]{2,}[0-9]*$`)
+
+// dummyCredentialAlphaDigits 匹配「字母 + 数字」的示例值形态（字母 ≤ 6 位，
+// 数字 3~4 位）。数字段是否「平凡」由 isTrivialDigitRun 判。
+//
+// 例：abc123、pass123、user0000、admin1234。
+var dummyCredentialAlphaDigits = regexp.MustCompile(`^([A-Za-z]{1,6})([0-9]{3,4})$`)
+
+// dummyCredentialMaxLength 是「示例值」判定的长度上限。
+//
+// r1039（D7）：owner 给的边界是「高熵、字母数字混合、长度 ≥ 16 的仍要拦」。
+// ⇒ 16 位以上一律不按示例值处理。
+const dummyCredentialMaxLength = 16
+
+// isDummyCredentialValue 报告凭据字段的值是否「一眼假的示例值」。
+//
+// 判据分三族（都是**定义上不构成泄漏**的形态，不是「看起来弱」的强度判断）：
+//
+//  1. 字面量集（dummyCredentialValues）。
+//  2. 掩码形态：*** / xxxx / ****1234。
+//  3. 字母 + 平凡数字序列：abc123 / pass123 / user0000。
+//
+// 明确不覆盖的：
+//
+//   - 「短但随机」的值（hunter2、p@ss）——短不代表假，拦着。
+//   - 长度 ≥ 16 的高熵值——那正是真密钥的形状，拦着。
+//   - 含符号的混合值（R7#kQ?92!）——拦着。
+func isDummyCredentialValue(value string) bool {
+	v := strings.TrimSpace(value)
+	if v == "" || len(v) >= dummyCredentialMaxLength {
+		return false
+	}
+	if dummyCredentialValues[strings.ToLower(v)] {
+		return true
+	}
+	if dummyCredentialMaskPattern.MatchString(v) {
+		return true
+	}
+	if m := dummyCredentialAlphaDigits.FindStringSubmatch(v); m != nil {
+		return isTrivialDigitRun(m[2])
+	}
+	return false
+}
+
+// isTrivialDigitRun 报告数字段是否「平凡」：全同（000 / 111）或连续递增
+// （123 / 2345）。
+//
+// 为什么要单独判：字母+数字的形态本身不足以说明是示例值——`hunter2` 也是
+// 「字母+数字」，但它是货真价实的弱口令，不该放行。数字段的平凡性才是
+// 「这是随手编的示例」的信号。
+func isTrivialDigitRun(digits string) bool {
+	if digits == "" {
+		return false
+	}
+	allSame := true
+	for i := 1; i < len(digits); i++ {
+		if digits[i] != digits[0] {
+			allSame = false
+			break
+		}
+	}
+	if allSame {
+		return true
+	}
+	for i := 1; i < len(digits); i++ {
+		if digits[i] != digits[i-1]+1 {
+			return false
+		}
+	}
+	return true
+}
+
 // isPlaceholderCredentialValue 报告凭据字段的值是否「模型自造的占位拼写」。
 // label 是该值所属的 JSON 键（凭据字段名），用于自指涉判定。
 func isPlaceholderCredentialValue(label, value string) bool {
@@ -130,6 +230,10 @@ func isPlaceholderCredentialValue(label, value string) bool {
 		return true
 	}
 	if placeholderCredentialValues[v] {
+		return true
+	}
+	// r1039（D7）：一眼假的示例值（abc123 / *** / user0000 …）同样是占位拼写。
+	if isDummyCredentialValue(value) {
 		return true
 	}
 	// 自指涉：值里包含凭据关键词（字段名或其同族词）。
@@ -186,6 +290,14 @@ func (s *requestInputSanitizer) sanitizeToolCallsDepth(raw json.RawMessage, dept
 	if err := json.Unmarshal(raw, &call); err != nil || call == nil {
 		return nil, false, fmt.Errorf("%w: tool call", errInvalidSanitizeInput)
 	}
+
+	priorCtx := s.ctx
+	var tool string
+	_ = json.Unmarshal(call["name"], &tool)
+	if tool != "" {
+		s.ctx = WithRuleField(priorCtx, tool, "")
+	}
+	defer func() { s.ctx = priorCtx }()
 	changed := false
 	if fn, ok := call["function"]; ok {
 		updated, didChange, err := s.sanitizeToolCallsDepth(fn, depth+1)
@@ -197,7 +309,7 @@ func (s *requestInputSanitizer) sanitizeToolCallsDepth(raw json.RawMessage, dept
 		}
 	}
 	if args, ok := call["arguments"]; ok {
-		updated, didChange, err := s.sanitizeToolValue(args, 0)
+		updated, didChange, err := s.sanitizeToolValueWithLabel(args, 0, "arguments")
 		if err != nil {
 			return nil, false, err
 		}
@@ -213,7 +325,12 @@ func (s *requestInputSanitizer) sanitizeToolCallsDepth(raw json.RawMessage, dept
 }
 
 func (s *requestInputSanitizer) sanitizeToolBlock(raw json.RawMessage, block map[string]json.RawMessage, field string, value json.RawMessage) (json.RawMessage, bool, error) {
-	updated, changed, err := s.sanitizeToolValue(value, 0)
+	priorCtx := s.ctx
+	var tool string
+	_ = json.Unmarshal(block["name"], &tool)
+	s.ctx = WithRuleField(priorCtx, tool, "")
+	defer func() { s.ctx = priorCtx }()
+	updated, changed, err := s.sanitizeToolValueWithLabel(value, 0, field)
 	if err != nil || !changed {
 		return raw, false, err
 	}
@@ -249,7 +366,11 @@ func (s *requestInputSanitizer) sanitizeToolValueWithLabel(raw json.RawMessage, 
 			// match a sensitive-data rule and mint a second placeholder).
 			return raw, false, nil
 		}
-		if credentialField(label) && text != "" {
+		managed := false
+		if d, ok := s.sanitizer.detector.(*PatternDetector); ok {
+			managed = d.RuleManager() != nil
+		}
+		if !managed && credentialField(label) && text != "" {
 			typ := TypeSecret
 			switch strings.ToLower(label) {
 			case "account", "username", "user_name", "login", "帐号", "账号", "账户", "用户名":
@@ -269,14 +390,27 @@ func (s *requestInputSanitizer) sanitizeToolValueWithLabel(raw json.RawMessage, 
 			return out, true, err
 		}
 		doc := bytes.TrimSpace([]byte(text))
-		if len(doc) > 0 && (doc[0] == '{' || doc[0] == '[') && json.Valid(doc) {
-			updated, changed, err := s.sanitizeToolValue(doc, depth+1)
+		// Managed nested strings keep their actual field and full restoration
+		// boundary. Only protocol arguments/input roots carry embedded JSON
+		// containers; legacy unversioned parsing retains its recursive behavior.
+		structuredRoot := !managed || depth == 0 && (label == "arguments" || label == "input")
+		if structuredRoot && len(doc) > 0 && (doc[0] == '{' || doc[0] == '[') && json.Valid(doc) {
+			// Decoded arrays retain the containing field for their string
+			// elements; object members acquire their own actual JSON keys.
+			if doc[0] == '{' {
+				label = ""
+			}
+			updated, changed, err := s.sanitizeToolValueWithLabel(doc, depth+1, label)
 			if err != nil || !changed {
 				return raw, false, err
 			}
 			out, err := json.Marshal(string(updated))
 			return out, true, err
 		}
+		prior := s.ctx
+		meta, _ := prior.Value(ruleFieldKey{}).(ruleField)
+		s.ctx = WithRuleField(prior, meta.tool, label)
+		defer func() { s.ctx = prior }()
 		return s.sanitizeText(raw)
 	case '{':
 		if credentialField(label) {

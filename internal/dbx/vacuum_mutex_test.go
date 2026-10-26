@@ -256,6 +256,15 @@ func TestVacuumFullMutexStatementTimeoutInsideTxn(t *testing.T) {
 	// The timeout must actually bound the wait: not instant (lock round-trip
 	// takes some time) and not far past the budget (pre-fix it waited
 	// unboundedly until the holder released).
+	//
+	// ★ R68 轮实测（探针复制本等待序列，10 次，宿主 16 核超载 3.5×）：
+	//   自然值 ∈ [1012.45ms, 1055.93ms]，均值 1027.08ms
+	//   ⇒ 下界 200ms 的**实测余量 ≥ 812.45ms**（余量/阈值 = 406%）
+	//   ⇒ 自然值由 **PG 侧 `SET LOCAL statement_timeout = 1s`** 决定
+	//     （**服务器端**计时器 ⇒ 只晚不早 ⇒ 下界恒成立）。
+	//   ⇒ 与 admin/distlock 那处对照：那里的自然值来自**毫秒分辨率的 PTTL 读数**
+	//     （余量按构造接近零）；这里的自然值来自**服务器端超时**，余量宽裕。
+	//   台账：internal/clockguard/measured_margins.tsv
 	if elapsed < 200*time.Millisecond {
 		t.Fatalf("contender gave up suspiciously fast (%v) — lock may not have been held", elapsed)
 	}

@@ -43,7 +43,7 @@ import {
  *   cmd/gateway/main.go:7367               注册前缀 **tenant-approval-config（单数）**
  *   cmd/gateway/main.go:7369-7396          strings.Contains 派发 + default http.NotFound
  *   cmd/gateway/main_admin_wrappers.go:26  wrapAdmin = admin.AdminMiddleware ⇒ **admin 档**
- *   admin/handler.go:926-927               /api/admin/tenants/ 归 superAdmin（复数路径是另一族）
+ *   admin/handler.go:985                 /api/admin/tenants/ 归 superAdmin（复数路径是另一族）
  *   admin/approval_config_handler.go:68    config  ⇒ writeJSON(200, config)  **裸对象**
  *   admin/approval_config_handler.go:141-144 approvers ⇒ {approvers, count}
  *   admin/approval_config_handler.go:294-297 rules ⇒ {rules, count}

@@ -19,7 +19,7 @@ AI Native Gateway 是一個為 AI Agent 與「vibe coding」時代打造的**開
 - **協定歸一**：相容 OpenAI、Anthropic、Gemini 與 Responses API——一個端點存取所有模型
 - **智慧雙層路由**：L1 選模型（任務分類 → 6 維評分），L2 選憑證（Tier 回退 → 計費輪次 → P2C 評分 → 執行 / 熔斷）
 - **工作階段治理**：黏性工作階段、全文工作階段回放、自動提示詞壓縮與 4 檔資料生命週期——對話本身（而非僅單次請求）就是一等管理物件
-- **多租戶**：以 PostgreSQL RLS 在 38+ 張表上強制租戶隔離，並提供按租戶配額、計量與 MaaS 計費
+- **多租戶**：以 PostgreSQL RLS 在 90+ 張表上強制租戶隔離，並提供按租戶配額、計量與 MaaS 計費
 - **憑證管理**：多憑證池，具備指紋偽裝、自適應探測與自動熔斷
 - **可觀測性**：即時請求流、路由分析（熱力圖 + Sankey）、成本追蹤、OTel + Prometheus
 - **隱私**：100% 私有化部署——所有資料都留在你的基礎設施內
@@ -55,7 +55,7 @@ AI Native Gateway 是一個為 AI Agent 與「vibe coding」時代打造的**開
 |-------|--------------|
 | **協定** | OpenAI / Anthropic / Gemini / Responses 相容 + 帶完整性校驗的 SSE 串流中繼 |
 | **路由** | 雙層路由（模型 → 憑證）+ 黏性工作階段 + 基於成本/品質策略的自動路由 |
-| **多租戶** | 身分隧道（virtual IP/MAC/ClientID）+ 憑證池 + 38+ 表 RLS |
+| **多租戶** | 身分隧道（virtual IP/MAC/ClientID）+ 憑證池 + 90+ 表 RLS |
 | **流量治理** | Token 限流（TPM/RPM）+ 語義快取 + 提示詞壓縮 + 滑動視窗演算法 |
 | **稽核** | 全鏈路稽核 + DLQ + 磁碟回退 + OTel + Prometheus |
 | **憑證** | 多憑證 + 指紋池 + 自適應探測 + 手動停用 |
@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 15+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 90+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -104,16 +104,17 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | 路徑 | 職責 |
 |------|------|
 | `cmd/gateway/` | 組合根——單一二進位生產入口（資料面 + 控制面） |
-| `domains/` | 67 個 DDD 領域——`streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
+| `domains/` | 68 個 DDD 領域——`streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
 | `admin/` + `web/` | 管理 REST API + Vue 3 + TypeScript SPA（Element Plus、ECharts） |
+| `web-mobile/` | 行動端前端（Vue 3 + TypeScript）——第二生產前端；部署要求先建置 `dist/` |
 | `bg/` | 背景工作者——探測、生命週期清理、統計聚合、分區維護 |
 | `storage/` | 雙模式儲存工廠（`full`：PG+Redis / `lite`：SQLite+檔案+行程內 KV） |
 | `internal/` | 橫切基礎設施——IR、vendor 欄位剝離、工作階段鏡像、outbox、遙測… |
-| `sql/migrations/` + `db/migrations/` | 冪等遷移（啟動系列目前 863） |
+| `sql/migrations/` + `db/migrations/` | 冪等遷移（啟動系列目前 907） |
 | `installer/` | 獨立跨平台安裝器 / 升級器模組 |
 | `scripts/`、`deploy/` | 建置、部署、鏡像與驗證工具 |
 
-規模快照（2026-10-06 程式碼掃描）：`cmd/` 下共 **~4,967 個 Go 檔案 · 2,728 個測試檔案 · 1,016 個遷移 SQL · 67 個領域套件 · 44 個二進位**。
+規模快照（2026-10-22 程式碼掃描 @31466a01d）：`cmd/` 下共 **~5,680 個 Go 檔案 · 3,333 個測試檔案 · 1,119 個遷移 SQL · 68 個領域套件 · 44 個二進位**（檔案數不含 `vendor/` 與 `installer/`；遷移 SQL 為 `sql/migrations/` 全量；二進位依 `go list` 的 main 套件計）。
 
 **深入閱讀**
 
@@ -131,7 +132,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 - **黏性工作階段綁定**：工作階段釘在憑證上，模型切換與故障轉移後對話上下文仍在——任務中途不會靜默丟失上下文
 - **工作階段級稽核與回放**：完整 system prompt 與回應按工作階段留存並可回放（生產環境 13,000+ 工作階段），涵蓋任務類型、客戶端模型、出口模型、供應商、Token、延遲與結束原因——可依金鑰 / 租戶 / 時間範圍切分檢視，便於排障與合規
 - **自動提示詞壓縮**：當請求逼近供應商真實上下文視窗（約 80% 觸發）時，會在分發前執行訊息級壓縮——長 Agent 工作階段得以塞進更小的視窗而不是失敗。每次壓縮事件（策略、閾值、壓縮前後大小）都記錄在請求上
-- **工作階段中繼資料智慧**：自動工作類型標記（10 類工作類型）、專案歸屬與標題擷取，把原始流量變成可檢索的知識
+- **工作階段中繼資料智慧**：自動工作類型標記（27 類工作類型）、專案歸屬與標題擷取，把原始流量變成可檢索的知識
 - **身分隧道**：Agent 流量透過 virtual IP/MAC/ClientID 歸屬，即使多個 Agent 共用一個出口，多租戶隔離依然成立
 - **4 檔資料生命週期**：熱（0–7 天）/ 溫（7–30 天）/ 冷（30–90 天）/ 過期（>90 天），並提供封存預覽——執行前先明確告訴你「將會搬動哪些資料」
 
@@ -166,12 +167,12 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 ### 憑證監控 — 多來源 × 多憑證健康度
 
 ![憑證監控](docs/assets/screenshots/credential-monitor.png)
-*即時二維可用性矩陣（生產環境 19 憑證 × 18 模型）一眼看出哪個憑證拖垮了哪個模型。按憑證的 P95 延遲、1 小時滑動視窗成功率與並發槽位用量。指紋池（50+ User-Agent、35 種 Accept-Language、11 套 uTLS 設定檔）+ 自適應探測自動規避上游風控——失敗即觸發熔斷，無需人工介入*
+*即時二維可用性矩陣（生產環境 19 憑證 × 18 模型）一眼看出哪個憑證拖垮了哪個模型。按憑證的 P95 延遲、1 小時滑動視窗成功率與並發槽位用量。指紋池（42 個 User-Agent、35 種 Accept-Language）+ 自適應探測自動規避上游風控——失敗即觸發熔斷，無需人工介入*
 
 ### 工作類型設定 — 任務自動分類
 
 ![工作類型](docs/assets/screenshots/work-types.png)
-*任務自動分類（10 類工作類型）附 24 小時分佈、熱門模型與路由決策統計——可在管理端按工作類型設定*
+*任務自動分類（27 類工作類型）附 24 小時分佈、熱門模型與路由決策統計——可在管理端按工作類型設定*
 
 ### 免費資源池
 
@@ -362,11 +363,11 @@ Installer 完整設計見 [installer/README.md](installer/README.md)。
 | **資料駐留** | 資料離開企業邊界 | 所有資料留在你的基礎設施內 |
 | **計費** | 按用量計費（USD） | 套餐 + 積分 + 加油包——為中國 SMB 而設，支援支付寶 |
 | **上游模型** | 少數主流廠商 | 廣泛模型覆蓋 + 中國國產模型 + 本地模型 |
-| **憑證指紋池** | 基礎 | 50+ User-Agent · 35 Accept-Language · 11 uTLS 設定檔 |
+| **憑證指紋池** | 基礎 | 42 個 User-Agent · 35 Accept-Language |
 | **工作階段治理** | 請求級日誌 | 黏性工作階段 + 全文回放 + 壓縮 + 4 檔生命週期 |
 | **MCP 工具閘道** | 部分 | 2026 年 Q3 全量交付 |
 | **中文友好** | 有限 | 完整中文介面 + 國產模型 + 支付寶 |
-| **多租戶稽核** | 標準 | 38+ 表 RLS · 租戶稽核 L1 = 0 |
+| **多租戶稽核** | 標準 | 90+ 表 RLS · 租戶稽核 L1 = 0 |
 
 ### vs. 具名替代方案
 
@@ -434,7 +435,7 @@ Installer 完整設計見 [installer/README.md](installer/README.md)。
 | 工作階段生命週期 | [docs/session-lifecycle.md](docs/session-lifecycle.md)——工作階段處理生命週期，完整圖解 |
 | 架構（證據分級） | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md)——內部權威文件（CURRENT/SHADOW/PARALLEL 分級） |
 | 架構（總覽） | [docs/architecture.md](docs/architecture.md)——系統設計與元件 |
-| 需求 | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md)——FR×19 領域 / NFR×13 |
+| 需求 | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md)——FR×16 領域 / NFR×13 |
 | 功能目錄 | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md)——功能 → 程式碼 → API → 管理頁面對應 |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md)——資料面與管理 API 規格 |
 | 環境 | [docs/environment.md](docs/environment.md)——部署環境與變數 |
@@ -468,7 +469,7 @@ git push github       # → github (secret scan, blocked on BLOCK-level hit)
 
 ## ✅ CI 與門禁（2026-09-14 起）
 
-- **正式門禁 = 本地 `./verify.sh`**：提交/部署前必跑（`go test ./...` 全量、遷移 checksum 對賬、隱私合規、vet、build、前端建置）。merge 到 main 與發版以它為準。
+- **正式門禁 = 本地 `./verify.sh`**：提交/部署前必跑（`go test ./...` 全量、遷移 checksum 對賬、隱私合規、vet、build；前端建置為 `--web` 選通項）。merge 到 main 與發版以它為準。
 - **codeup Flow 輕量門**：遠端只有 codeup，`.github/workflows/` 在 codeup 不執行；`.workflow/main-verify.yml` 提供流水線即程式碼設定（build + `go vet ./autoroute/...` + 60 例 auto 匹配離線套件），需在 codeup 倉庫「流水線」頁匯入一次後隨 push/PR 自動觸發。
 - auto 匹配離線回歸可單獨復跑：`go test ./autoroute/ -run 'TestAutoMatchingSuiteHeuristic|TestPromptClassificationMatrix'`（純離線，無網路）。
 
@@ -478,7 +479,7 @@ git push github       # → github (secret scan, blocked on BLOCK-level hit)
 
 歡迎參與貢獻！開發環境設定、程式碼風格與 pull request 流程見 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-多租戶相關改動必須通過全部三個 linter：`lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant`。
+多租戶相關改動必須通過 RLS 門禁（`make test-rls`——真實 PostgreSQL，需 `TEST_DATABASE_URL`）與單元測試套件（`make test`——CI 的 `verify.sh` 跑的就是它）。
 
 ## 🔐 安全
 

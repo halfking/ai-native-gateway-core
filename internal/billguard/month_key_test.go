@@ -157,10 +157,15 @@ var monthBucketSites = []monthBucketCallSite{
 	{
 		// 写方：定时聚合。CostReconciliationMonthsToAggregate 内用
 		// time.Date(y, m, 1, 0,0,0,0, loc) 构造 ⇒ 已归一。
-		// ⚠️ 锚点是 :91（构造那一行）而不是 :90（函数签名行）——
-		// 早先锚在 :90 时判据报"归一=false"，那是**锚点选错**，不是代码有缺陷。
-		// 教训：锚点必须指向**实际构造点**，函数名不能替代它。
-		where:      "bg/cost_reconciliation_worker.go:91",
+		// ⚠️ 锚点必须指向**实际构造行**，函数名不能替代它——
+		// 早先锚在函数签名行 :90 时判据报"归一=false"，那是**锚点选错**，
+		// 不是代码有缺陷。
+		// 2026-10-17 改键 :91 → :243：ad7a12b32（对账 worker 接入跨实例节流槽）
+		// 在本文件头部插入节流槽常量/字段/option/耗时上界等 152 行，
+		// 把该 time.Date 构造下移。逐字核对 :243 仍是
+		// `current := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())`。
+		// ⇒ 与 2026-10-13 那次（:126 → :145）同源：**行号锚点对插入敏感**。
+		where:      "bg/cost_reconciliation_worker.go:243",
 		origin:     "CostReconciliationMonthsToAggregate",
 		normalized: true,
 	},
@@ -195,7 +200,7 @@ var monthBucketSites = []monthBucketCallSite{
 		// 2026-10-11 收口轮：**缺陷已修，不再是已知缺陷**——
 		//   裸 time.Now() 会以「当前时刻」（如 2026-10-11 23:45）去比较 date 列里
 		//   存着的日历月首日 2026-10-01 ⇒ 端点 200 + count=0，**静默返回 0 行且不报错**。
-		// 现按写方（bg/cost_reconciliation_worker.go:91 CostReconciliationMonthsToAggregate）
+		// 现按写方（bg/cost_reconciliation_worker.go:243 CostReconciliationMonthsToAggregate）
 		// 逐字一致的形态构造月键 ⇒ 已归一。
 		// 例外 `…go:112` 随之**删除**（不是改键）：违规本身已不存在，
 		// 留着会变成"假装生效的豁免"，与 rowsguard 那条 stale 同类。

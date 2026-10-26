@@ -484,28 +484,55 @@ func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
 // is not hypothetical: any gateway process still running a pre-823 binary writes
 // NULL labels into _hot, and the parent-only gauge cannot see them.
 //
-// R31 (2026-10-10, 252 审计): the exact window-less count is only affordable
-// if the physical plan is. On 252 it wasn't: 793k permanent-NULL rows ×
-// per-row _request_logs partition probes blew past the role's 30s
-// statement_timeout ~3/h forever, the gauge sat at -1 and the release gate
-// was unmeasurable. 849 (covering partial index on (request_id)) plus the
-// sampleRemaining SET LOCAL budget lift make the same SQL completable —
-// the semantics (window-less, both surfaces, -1 on failure) are untouched.
+// R31 (2026-10-10, 252 审计): the window-less count was claimed to be made
+// completable by 849 (covering partial index on request_id) plus the
+// sampleRemaining SET LOCAL budget lift, "with the semantics (window-less,
+// both surfaces, -1 on failure) untouched".
 //
-// The candidate query below deliberately does NOT cover _hot — see its own
-// comment. Backfill scope and gauge scope are different questions; making them
-// the same scope is what created the blind spot.
+// **That claim was falsified by measurement (2026-10-18).** On 252 the same SQL
+// still did not complete: 60s statement_timeout kill in one run, 126s in
+// another, and a bare `SELECT count(*) … GROUP BY tableoid` over the NULL set
+// needed >90s. 154's worker logged `remaining count failed: timeout: context
+// deadline exceeded` every ~3 min — **20 failures, 0 successes** in 5.5h, on
+// both the 8781 and 8782 instances. A gauge that has never once succeeded is
+// not "honest about a stall"; it is -1 forever while burning a full budget
+// every tick on a production PG shared with other applications.
+//
+// Analysing the partition did not help either: session_turns_2026_09 is
+// 798,278 rows / 2.7 GB, and a 13m37s ANALYZE produced a truthful plan that
+// still timed out, because the real volume is **330,544 rows** with
+// request_status IS NULL that must hash-join _request_logs. Those rows are
+// exactly the "823-pre v1 history, structurally unfillable" set the header
+// argument (and the candidate query's own 7-day floor) already identifies.
+//
+// 2026-10-18 (owner-approved): the parent arm takes the **same 7-day
+// partition_date floor** as sessionRequestStatusCandidateSQL. Measured on 252:
+// window-less 60s+ timeout vs windowed **7s, returning 0**.
+//
+// Tradeoff, stated plainly rather than buried: the previous note claimed a
+// window-less gauge "keeps reporting the backlog and the release gate stays
+// honest" if the job stalls longer than 7 days. Windowing does give that up —
+// a job stalled beyond the window can no longer be read off this gauge. It is
+// accepted because (a) that property was already void in practice (the gauge
+// never returned a number to lose), and (b) the candidate query cannot attempt
+// those rows either, so the window tracks what the job actually acts on.
+//
+// The dual-surface coverage is deliberately KEPT: the _hot arm stays
+// window-less, because "rows that would be lost at retirement" is a different
+// question from "rows this job can still fix" and _hot holds only ~6k rows.
 const sessionRequestStatusRemainingSQL = `
-	SELECT (SELECT count(*)
-	          FROM public.session_turns t
-	          JOIN public._request_logs l ON l.request_id = t.request_id
-	         WHERE t.request_status IS NULL
-	           AND l.request_status IS NOT NULL)
-	     + (SELECT count(*)
-	          FROM public.session_turns_hot t
-	          JOIN public._request_logs l ON l.request_id = t.request_id
-	         WHERE t.request_status IS NULL
-	           AND l.request_status IS NOT NULL)`
+	-- ★ 2026-10-20（迁移 890，v1 族退役）：标签源（v1 族）已整体 DROP ⇒
+	-- 没有任何 turn 还有「可抄的孪生源行」⇒ **剩余量恒为 0**。
+	--
+	-- 这正是这个量表的定义（见文件头「v1-side IS NOT NULL mirrors the
+	-- candidate query」）：它数的是「**还能被抄**的行」，不是「标签为 NULL
+	-- 的行」。源没了 ⇒ 可抄的行数为 0 ⇒ 量表为 0。
+	--
+	-- ⚠ **不要把它读成「所有 NULL 标签都被补上了」**：823 之前的历史行现在
+	-- 是**结构性不可填**（标签随 v1 族一起消失），它们的 request_status 永远
+	-- 是 NULL。D9 退役门（用这个量表当放行信号）随 v1 族退役**不再有意义**——
+	-- 退役的放行条件是「剩余量归零」，而剩余量现在**结构上**就是 0。
+	SELECT 0::bigint`
 
 // sessionRequestStatusSourceProbeSQL checks both ends of the copy. to_regclass
 // yields NULL for an absent relation instead of raising, which is what turns
@@ -567,13 +594,19 @@ const sessionRequestStatusSourceProbeSQL = `
 // window-less gauge keeps reporting the backlog and the release gate stays
 // honest. See the file header for the full argument.
 const sessionRequestStatusCandidateSQL = `
+	-- ★ 2026-10-20（迁移 890，v1 族退役）：标签源已整体 DROP ⇒ 候选集**恒为空**。
+	--
+	-- 保留这条语句的形状（键集分页 + LIMIT + 同样的投影列）是为了让 drain 的
+	-- 「没有候选」路径仍然是一次**廉价查询**（而不是「没有查询」），也让
+	-- processBatch 的批次 machinery 一行未动。AND FALSE 是显式的「无源」
+	-- 表达：planner 把它折叠成一个空 Result，不会去扫 session_turns 再逐行
+	-- 探测一个已不存在的源。
 	SELECT t.id, t.partition_date, t.tenant_id, t.request_id
 	FROM public.session_turns t
-	JOIN public._request_logs l ON l.request_id = t.request_id
 	WHERE t.id > $1
 	  AND t.partition_date >= (now() - interval '7 days')::date
 	  AND t.request_status IS NULL
-	  AND l.request_status IS NOT NULL
+	  AND FALSE
 	ORDER BY t.id
 	LIMIT $2`
 
@@ -711,12 +744,14 @@ func execRequestStatusUpdate(ctx context.Context, tx pgx.Tx, batch []requestStat
 // The FROM-VALUES list carries each row's (id, partition_date) so the
 // partitioned parent prunes to the owning partition's pkey
 // (session_turns_pkey = (id, partition_date)) instead of touching all six.
-// The label itself comes from _request_logs (l.request_status), never from the
-// VALUES tuple, so the copy has exactly one source of truth.
+// The label column is never written from the VALUES tuple: since 885 the v1
+// source is gone, so the statement degenerates to an identity assignment
+// (t.request_status = t.request_status) guarded by AND FALSE — see the
+// in-body note for the 42P01 that the previous l.request_status form caused.
 func buildRequestStatusUpdateSQL(batch []requestStatusBackfillRow) (string, []any) {
 	var sb strings.Builder
 	args := make([]any, 0, len(batch)*3)
-	sb.WriteString("UPDATE public.session_turns t SET request_status = l.request_status FROM (VALUES ")
+	sb.WriteString("UPDATE public.session_turns t SET request_status = t.request_status FROM (VALUES ")
 	for i, r := range batch {
 		if i > 0 {
 			sb.WriteString(", ")
@@ -726,9 +761,36 @@ func buildRequestStatusUpdateSQL(batch []requestStatusBackfillRow) (string, []an
 		args = append(args, r.id, r.partitionDate, r.requestID)
 	}
 	sb.WriteString(") AS v(id, partition_date, request_id) ")
-	sb.WriteString("JOIN public._request_logs l ON l.request_id = v.request_id ")
+	// ★ 2026-10-20（迁移 890，v1 族退役）：标签源（v1 族）已整体 DROP ⇒
+	// 本语句**永远匹配不到任何行**（候选集恒为空，见
+	// sessionRequestStatusCandidateSQL）。保留 FROM-VALUES + 同样的 $N 占位
+	// 是为了让参数个数与形状不变（pgx 会拒绝「语句没引用却传了参数」）。
+	// `AND FALSE` 让它成为一次真正的 no-op，而不是「把标签写成它自己」。
+	//
+	// ★★ 2026-10-21（R65 轮实测修正）：885 那一版把 FROM 里的
+	// `JOIN public._request_logs l` 删掉了，**却没改 SET 子句**——
+	// SET 仍在写 `l.request_status`，而别名 `l` 已随 v1 族一起消失。
+	// ⇒ 这条语句**根本无法被解析**：
+	//
+	//	ERROR:  missing FROM-clause entry for table "l"   (42P01)
+	//
+	// 注意这是**解析期**错误，不是执行期：PG 在 bind 阶段就拒绝它，
+	// 与 `AND FALSE` 会不会命中任何行**无关**。也就是说，只要有人
+	// 把这条语句送给 PG（哪怕它恒匹配 0 行），整条语句就炸。
+	// 当时代价是「候选集恒空 ⇒ UPDATE 永不可达」把它藏住了 ——
+	// 一颗定时炸弹：任何人去掉 `AND FALSE`，或把语句挪到别的路径上，
+	// 就会立刻 42P01。
+	//
+	// ⇒ 修法：`SET request_status = t.request_status`（**自赋值**）。
+	// 自赋值是**恒等**的（写回自己原来的值），所以：
+	//   · 参数个数与形状不变（仍是每行 3 个占位）⇒ 夹具与实参不用动；
+	//   · 即使 `AND FALSE` 被误删，这条语句也**不会改坏任何标签**；
+	//   · 语句在真库上可解析（PREPARE 通过 ⇒ 42P01 这一类彻底消失）。
+	// 「把标签写成它自己」在这里指的是「用 VALUES 里的值写回去」——
+	// VALUES 只有 (id, partition_date, request_id)，没有标签列，
+	// 所以 t.request_status（表自己的列）才是唯一形状兼容的合法来源。
 	sb.WriteString("WHERE t.id = v.id AND t.partition_date = v.partition_date ")
-	sb.WriteString("AND t.request_status IS NULL AND l.request_status IS NOT NULL")
+	sb.WriteString("AND t.request_status IS NULL AND FALSE")
 	return sb.String(), args
 }
 

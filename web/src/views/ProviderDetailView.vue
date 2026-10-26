@@ -14,6 +14,7 @@ import ProbeHistoryTab from './provider-detail/ProbeHistoryTab.vue'
 import QualityTab from './provider-detail/QualityTab.vue'
 import ErrorDetailTab from './provider-detail/ErrorDetailTab.vue'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import { Lock } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -187,7 +188,7 @@ watch(providerId, () => {
       <div style="display:flex;align-items:center;gap:12px">
         <button class="btn btn-ghost" @click="back">{{ pp('back') }}</button>
         <h2 style="margin:0">{{ provider?.display_name || '...' }}</h2>
-        <span v-if="provider?.manual_disabled" class="badge badge-red" :title="pp('manualDisabledTitle')">🔒 {{ pp('manualDisabledBadge') }}</span>
+        <span v-if="provider?.manual_disabled" class="badge badge-red" :title="pp('manualDisabledTitle')"><Lock /> {{ pp('manualDisabledBadge') }}</span>
         <span v-else-if="!provider?.enabled" class="badge badge-gray">{{ pp('disabledBadge') }}</span>
       </div>
       <div style="display:flex;gap:8px">

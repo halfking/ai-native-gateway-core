@@ -271,7 +271,7 @@ function resultText(tk: ProbeQueueTask): string | null {
   padding: var(--app-space-3);
 }
 .pb__item--manual {
-  border-left: 3px solid var(--app-danger);
+  border: 1px solid var(--app-danger);
 }
 .pb__item-manual {
   margin: 4px 0 0;

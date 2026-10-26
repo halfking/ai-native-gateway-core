@@ -220,16 +220,15 @@ func TestResponsesStreamBridge_AcceptsCanonicalEventLines(t *testing.T) {
 	}
 }
 
-// A stream that ends without response.completed must still be terminated, or a
-// chat client hangs waiting for [DONE].
+// EOF remains a failure even after a text delta; a successful terminal would
+// make clients persist a partial answer as a completed turn.
 func TestResponsesStreamBridge_TruncatedStreamStillTerminates(t *testing.T) {
 	truncated := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"
-	chunks := collectChatChunks(t, truncated)
-	if got := chunkDeltas(chunks); got != "partial" {
-		t.Fatalf("assembled text = %q, want the one delta that arrived", got)
-	}
-	if len(chunks) == 0 {
-		t.Fatal("a truncated stream must still emit a terminal frame")
+	bridge := responsesToChatStream(context.Background(), io.NopCloser(strings.NewReader(truncated)), "m")
+	out, err := io.ReadAll(bridge)
+	_ = bridge.Close()
+	if err == nil || !strings.Contains(string(out), "partial") || !strings.Contains(string(out), `"error"`) || strings.Contains(string(out), "[DONE]") {
+		t.Fatalf("truncated stream completed: err=%v body=%s", err, out)
 	}
 }
 

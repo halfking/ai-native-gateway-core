@@ -4,9 +4,7 @@ import { computed } from 'vue'
 export interface LandingFeature {
   title: string
   description: string
-  /** Short glyph / index mark (decorative). */
-  icon?: string
-  /** Optional badge tag, e.g. "即将上线" / "beta". */
+  /** 徽标标记，例如「即将上线」/「beta」。 */
   badge?: string
 }
 
@@ -23,7 +21,6 @@ const props = withDefaults(
     /** When set, shows product logo instead of the decorative brand mark. */
     logoSrc?: string
     logoSize?: number
-    kicker: string
     title: string
     subtitle: string
     heroPoints?: string[]
@@ -52,19 +49,23 @@ const props = withDefaults(
     ctaLabel: '登录控制台',
     secondaryCtaLabel: '',
     secondaryCtaHref: '',
-    footerText: 'LLM Gateway · 核心开源 · 中国本地化 · 私有部署',
+    footerText: 'LLM Gateway：核心开源，中国本地化，私有部署',
     hideCta: false,
   },
 )
 
 const emit = defineEmits<{ login: [] }>()
 
-const pipeline = computed(() =>
-  props.heroPoints.slice(0, 3).map((point, index) => ({
-    n: String(index + 1),
-    title: point,
-  })),
-)
+/**
+ * 2026-10-24：这里原来把 heroPoints 截前 3 条渲染成「1、2、3 编号的流程」。
+ * 三处问题：① 编号本身不承载信息（craft-floor 禁装饰性序号）；
+ * ② 凭空截断 6 条里的 3 条，读者会以为只有三个能力；③ 右侧整块是装饰，
+ * 右边两个渐变光球 + 编号流程，没有一个字是产品事实。
+ *
+ * 现在改成一条「能力导轨」：全部 heroPoints 按原顺序列出，用一根细线串起来。
+ * 线只是排版手段（让一列短语读起来是一组），不承载信息编号。
+ */
+const railPoints = computed(() => props.heroPoints)
 </script>
 
 <template>
@@ -85,7 +86,6 @@ const pipeline = computed(() =>
             <strong>{{ brand }}</strong>
           </span>
         </div>
-        <p class="kx-landing__kicker">{{ kicker }}</p>
         <h1 class="kx-landing__title">{{ title }}</h1>
         <p class="kx-landing__subtitle">{{ subtitle }}</p>
         <div v-if="!hideCta" class="kx-landing__actions">
@@ -103,37 +103,27 @@ const pipeline = computed(() =>
         <slot name="hero-extra" />
       </div>
 
-      <div class="kx-landing__hero-art" aria-hidden="true">
-        <div class="kx-landing__orb kx-landing__orb--one" />
-        <div class="kx-landing__orb kx-landing__orb--two" />
-        <div class="kx-landing__pipeline">
-          <div
-            v-for="(step, index) in pipeline"
-            :key="step.title"
-            class="kx-landing__pipeline-step"
-            :class="{ 'is-active': index === 0 }"
-          >
-            <span>{{ step.n }}</span>
-            <div>
-              <strong>{{ step.title }}</strong>
-            </div>
-          </div>
-        </div>
-      </div>
+      <!-- 能力导轨：替代原来的「装饰光球 + 1/2/3 编号流程」。 -->
+      <aside v-if="railPoints.length" class="kx-landing__rail" aria-label="capabilities">
+        <ol class="kx-landing__rail-list">
+          <li v-for="point in railPoints" :key="point" class="kx-landing__rail-item">
+            {{ point }}
+          </li>
+        </ol>
+      </aside>
     </section>
 
     <section class="kx-landing__features">
       <header class="kx-landing__section-head">
-        <span class="kx-landing__eyebrow">CAPABILITIES</span>
         <h2 class="kx-landing__section-title">{{ featuresTitle }}</h2>
         <p class="kx-landing__section-sub">{{ featuresSubtitle }}</p>
       </header>
-      <div class="kx-landing__feature-grid">
-        <article v-for="(item, index) in features" :key="item.title" class="kx-landing__card">
-          <div class="kx-landing__card-mark" aria-hidden="true">
-            {{ item.icon || String(index + 1).padStart(2, '0') }}
-          </div>
-          <div class="kx-landing__card-head">
+      <!-- 2026-10-24：原来这里是「图标块 + 标题 + 文字」同尺寸卡片网格
+           （craft-floor 的懒默认）。现在去掉图标块与卡片壳，改成清单式排版：
+           标题、说明、一条细分隔线。信息量不变，读起来像一份说明而不是模板。 -->
+      <div class="kx-landing__feature-list">
+        <article v-for="item in features" :key="item.title" class="kx-landing__feature">
+          <div class="kx-landing__feature-head">
             <h3>{{ item.title }}</h3>
             <span v-if="item.badge" class="kx-landing__badge">{{ item.badge }}</span>
           </div>
@@ -144,13 +134,12 @@ const pipeline = computed(() =>
 
     <section v-if="advantages.length" class="kx-landing__advantages">
       <header class="kx-landing__section-head">
-        <span class="kx-landing__eyebrow">WHY US</span>
         <h2 class="kx-landing__section-title">{{ advantagesTitle }}</h2>
         <p class="kx-landing__section-sub">{{ advantagesSubtitle }}</p>
       </header>
+      <!-- 同上：去掉 01/02 序号与卡片壳。 -->
       <ol class="kx-landing__adv-flow">
-        <li v-for="(item, index) in advantages" :key="item.title">
-          <span class="kx-landing__adv-index" aria-hidden="true">{{ String(index + 1).padStart(2, '0') }}</span>
+        <li v-for="item in advantages" :key="item.title" class="kx-landing__adv-item">
           <strong>{{ item.title }}</strong>
           <span>{{ item.description }}</span>
         </li>
@@ -176,15 +165,16 @@ const pipeline = computed(() =>
   --landing-primary: var(--accent);
   --landing-primary-hover: var(--accent-dark);
   --landing-primary-soft: var(--info-bg);
-  --landing-font: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Segoe UI", sans-serif;
-  --landing-display: "Outfit", "Noto Sans SC", "PingFang SC", sans-serif;
+  /* 2026-10-24：原来是 `"Noto Sans SC", "PingFang SC", ...` 与
+     `"Outfit", "Noto Sans SC", ...`。这两个名字**从未被 @font-face 加载过**
+     —— 引用了一个不存在的字体，运行时直接落回平台 sans。
+     现在改吃全局令牌（style.css 里的自托管 IBM Plex Sans + 系统中日韩）。 */
+  --landing-font: var(--kx-font-sans);
+  --landing-display: var(--kx-font-sans);
   --landing-pad-x: clamp(28px, 5vw, 72px);
   color: var(--landing-text);
   font-family: var(--landing-font);
-  background:
-    radial-gradient(ellipse 70% 45% at 100% -10%, var(--info-bg), transparent 55%),
-    radial-gradient(ellipse 50% 40% at 0% 100%, var(--success-bg), transparent 50%),
-    var(--landing-bg);
+  background: var(--landing-bg);
   min-height: 100%;
   width: 100%;
   box-sizing: border-box;
@@ -192,7 +182,7 @@ const pipeline = computed(() =>
 
 .kx-landing__hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
+  grid-template-columns: minmax(0, 1.25fr) minmax(240px, 0.75fr);
   gap: clamp(32px, 6vw, 80px);
   align-items: center;
   justify-content: stretch;
@@ -226,11 +216,13 @@ const pipeline = computed(() =>
   display: grid;
   place-items: center;
   color: var(--on-primary);
-  font-weight: 800;
+  /* 2026-10-24：去掉 145° 渐变与彩色柔影。品牌字块是实心色块就够了，
+     渐变 + 阴影是「让元素浮起来」的装饰，不是信息。字重也收到 700
+     （craft-floor：只允许 400/500/600/700，750/800 是合成出来的假字重）。 */
+  font-weight: 700;
   font-size: 18px;
   font-family: var(--landing-display);
-  background: linear-gradient(145deg, var(--accent), var(--accent-darker));
-  box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 18%, transparent);
+  background: var(--landing-primary);
 }
 .kx-landing__brand-logo {
   width: 60px;
@@ -244,46 +236,26 @@ const pipeline = computed(() =>
 .kx-landing__brand-text {
   min-width: 0;
 }
-.kx-landing__brand strong,
-.kx-landing__brand small {
-  display: block;
-  line-height: 1.1;
-  text-align: left;
-}
 .kx-landing__brand strong {
+  display: block;
+  line-height: 1.35;
+  text-align: left;
   font-family: var(--landing-display);
   font-size: clamp(14px, 2vw, 17px);
   font-weight: 700;
-  line-height: 1.35;
   letter-spacing: -0.02em;
   max-width: min(52vw, 420px);
 }
-.kx-landing__brand small {
-  margin-top: 4px;
-  color: var(--landing-muted);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.kx-landing__kicker,
-.kx-landing__eyebrow {
-  margin: 0;
-  color: var(--landing-primary);
-  font-size: 11px;
-  font-weight: 750;
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
-  text-align: left;
-}
 
 .kx-landing__title {
-  margin: 12px 0 14px;
+  /* 上方留白多于下方：标题自己扛重量，上面不再挂 kicker / eyebrow 小标签
+     （craft-floor 硬禁：「没有哪份 brief 能把它赎回来」）。 */
+  margin: 0 0 14px;
   font-family: var(--landing-display);
   font-size: clamp(2.2rem, 5vw, 3.6rem);
   font-weight: 700;
-  line-height: 1.06;
-  letter-spacing: -0.045em;
+  line-height: 1.08;
+  letter-spacing: -0.04em;
   white-space: pre-line;
   text-align: left;
 }
@@ -314,9 +286,9 @@ const pipeline = computed(() =>
   gap: 8px;
   min-height: 44px;
   padding: 0 18px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 600;
   text-decoration: none;
   transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease;
 }
@@ -324,12 +296,11 @@ const pipeline = computed(() =>
   border: 0;
   color: var(--on-primary);
   background: var(--landing-primary);
-  box-shadow: 0 8px 18px var(--info-bg);
   cursor: pointer;
 }
 .kx-landing__cta:hover { background: var(--landing-primary-hover); transform: translateY(-1px); }
 /* 2026-09-29 暗色修复：背景原为 var(--on-primary)，而 --on-primary → --kx-text-on-primary
-   → #ffffff 在明暗两套皮肤里都是同一个纯白（style.css L28 / L168），于是暗色下「下载安装包」
+→   #ffffff 在明暗两套皮肤里都是同一个纯白（style.css L28 / L168），于是暗色下「下载安装包」
    变成一块刺眼白底 + 深色文字的大色块。改用本组件已声明、随皮肤切换的 --landing-surface
    （→ --surface-elevated：亮色 rgba(255,255,255,.88)，暗色 rgba(26,34,45,.92)）。 */
 .kx-landing__cta-secondary {
@@ -339,82 +310,44 @@ const pipeline = computed(() =>
 }
 .kx-landing__cta-secondary:hover { transform: translateY(-1px); border-color: var(--info-bd); }
 
-.kx-landing__hero-art {
-  position: relative;
-  min-height: 320px;
+/* ── 能力导轨 ──
+   替代原来的装饰光球 + 编号流程。一根细线把短语串成一组，
+   线只管排版，不管编号。 */
+.kx-landing__rail {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  min-height: 260px;
+  padding-left: 22px;
+  border-left: 1px solid var(--landing-border);
+}
+.kx-landing__rail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   width: 100%;
   display: grid;
-  place-items: center;
-  overflow: hidden;
-  border-radius: 0;
-  border: 0;
-  background: linear-gradient(155deg, var(--info-bg) 0%, var(--info-bg) 48%, var(--success-bg) 100%);
-  align-self: stretch;
+  gap: 14px;
 }
-.kx-landing__orb {
-  position: absolute;
-  border-radius: 999px;
-  filter: blur(2px);
-  animation: kx-orb-drift 8s ease-in-out infinite;
-}
-.kx-landing__orb--one {
-  width: 240px;
-  height: 240px;
-  top: -50px;
-  right: -20px;
-  background: var(--info-bg);
-}
-.kx-landing__orb--two {
-  width: 160px;
-  height: 160px;
-  bottom: -45px;
-  left: 20px;
-  background: color-mix(in srgb, var(--success) 14%, transparent);
-  animation-delay: -3s;
-}
-.kx-landing__pipeline {
+.kx-landing__rail-item {
   position: relative;
-  z-index: 1;
-  width: min(88%, 360px);
-  display: grid;
-  gap: 10px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--landing-text);
+  padding-left: 18px;
 }
-.kx-landing__pipeline-step {
-  display: grid;
-  grid-template-columns: 28px 1fr;
-  gap: 12px;
-  align-items: center;
-  padding: 12px 14px;
-  border-radius: 12px;
-  background: var(--surface-elevated);
-  border: 1px solid var(--surface-elevated);
-  box-shadow: 0 8px 24px var(--kx-shadow-sm);
-}
-.kx-landing__pipeline-step span {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  display: grid;
-  place-items: center;
-  background: var(--landing-primary-soft);
-  color: var(--landing-primary);
-  font-size: 12px;
-  font-weight: 700;
-  font-family: var(--landing-display);
-}
-.kx-landing__pipeline-step strong {
-  display: block;
-  font-size: 13px;
-  letter-spacing: -0.02em;
-  text-align: left;
-}
-.kx-landing__pipeline-step.is-active {
-  border-color: var(--info-bd);
-  background: var(--landing-surface);
-}
-.kx-landing__pipeline-step.is-active span {
+/* 每个短语前一个小方点：形状是「这是列表项」的第二信号，
+   不靠颜色区分。 */
+.kx-landing__rail-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.55em;
+  width: 5px;
+  height: 5px;
+  border-radius: 1px;
   background: var(--landing-primary);
-  color: var(--on-primary);
+  opacity: 0.55;
 }
 
 .kx-landing__features,
@@ -430,13 +363,14 @@ const pipeline = computed(() =>
 }
 
 .kx-landing__section-head {
-  margin-bottom: 18px;
+  margin-bottom: 22px;
   text-align: left;
 }
 .kx-landing__section-title {
-  margin: 8px 0 6px;
+  margin: 0 0 6px;
   font-family: var(--landing-display);
   font-size: clamp(1.4rem, 2.4vw, 1.75rem);
+  font-weight: 700;
   letter-spacing: -0.03em;
   text-align: left;
 }
@@ -448,103 +382,74 @@ const pipeline = computed(() =>
   text-align: left;
 }
 
-.kx-landing__feature-grid {
+/* 功能清单：两栏，靠一条细线分隔，不用卡片壳。 */
+.kx-landing__feature-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  column-gap: 40px;
+  row-gap: 0;
   width: 100%;
+  border-top: 1px solid var(--landing-border);
 }
-
-.kx-landing__card {
-  padding: 20px;
-  border: 1px solid var(--landing-border);
-  border-radius: 12px;
-  background: var(--landing-surface);
-  box-shadow: 0 10px 32px var(--kx-shadow-sm);
-  transition: border-color 0.15s ease, transform 0.15s ease;
+.kx-landing__feature {
+  padding: 22px 0 24px;
+  border-bottom: 1px solid var(--landing-border);
   text-align: left;
 }
-.kx-landing__card:hover {
-  border-color: var(--info-bd);
-  transform: translateY(-2px);
-}
-.kx-landing__card-mark {
-  width: 36px;
-  height: 36px;
-  margin-bottom: 12px;
-  border-radius: 10px;
-  display: grid;
-  place-items: center;
-  background: var(--landing-primary-soft);
-  color: var(--landing-primary);
-  font-size: 12px;
-  font-weight: 700;
-  font-family: var(--landing-display);
-}
-.kx-landing__card-head {
+.kx-landing__feature-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  margin: 0 0 8px;
+  margin: 0 0 6px;
 }
-.kx-landing__card h3 {
+.kx-landing__feature h3 {
   margin: 0;
   font-size: 15px;
-  font-weight: 650;
-  letter-spacing: -0.02em;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   text-align: left;
 }
 .kx-landing__badge {
   flex-shrink: 0;
-  padding: 3px 8px;
+  padding: 2px 7px;
   border-radius: 6px;
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--warning-dark);
   background: var(--warning-bg);
 }
-.kx-landing__card p {
+.kx-landing__feature p {
   margin: 0;
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.65;
   color: var(--landing-muted);
   text-align: left;
 }
 
 .kx-landing__adv-flow {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 28px 40px;
   margin: 0;
   padding: 0;
   list-style: none;
   width: 100%;
+  border-top: 1px solid var(--landing-border);
 }
-.kx-landing__adv-flow li {
+.kx-landing__adv-item {
   display: grid;
   gap: 6px;
-  padding: 18px;
-  border: 1px solid var(--landing-border);
-  border-radius: 12px;
-  background: var(--landing-surface);
+  padding: 22px 0 24px;
   text-align: left;
 }
-.kx-landing__adv-index {
-  width: fit-content;
-  color: var(--landing-primary);
-  font-family: var(--landing-display);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
-.kx-landing__adv-flow strong {
+.kx-landing__adv-item strong {
   font-size: 14px;
-  letter-spacing: -0.02em;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
-.kx-landing__adv-flow span:last-child {
-  font-size: 12px;
-  line-height: 1.55;
+.kx-landing__adv-item span {
+  font-size: 13px;
+  line-height: 1.65;
   color: var(--landing-muted);
 }
 
@@ -567,10 +472,6 @@ const pipeline = computed(() =>
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
 }
-@keyframes kx-orb-drift {
-  0%, 100% { transform: translate3d(0, 0, 0); }
-  50% { transform: translate3d(-8px, 10px, 0); }
-}
 
 @media (max-width: 1024px) {
   .kx-landing__hero {
@@ -579,9 +480,9 @@ const pipeline = computed(() =>
     min-height: auto;
     padding-top: 28px;
   }
-  .kx-landing__hero-art {
-    min-height: 240px;
-    border-radius: 16px;
+  .kx-landing__rail {
+    min-height: 0;
+    padding-left: 18px;
   }
 }
 
@@ -592,16 +493,12 @@ const pipeline = computed(() =>
     gap: 20px;
     padding-top: 20px;
   }
-  .kx-landing__hero-art {
-    min-height: 200px;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .kx-landing__hero,
   .kx-landing__features,
-  .kx-landing__advantages,
-  .kx-landing__orb {
+  .kx-landing__advantages {
     animation: none !important;
   }
 }

@@ -67,7 +67,7 @@ import { req, type RequestOptions } from './client'
 //     ★ 另注意 `param` 是**逗号连接的多个参数名**（一个请求可能被拒多个参数），
 //       不是单个值 —— 按逗号拆开显示。
 //
-// (9) ★ 错误信封走 `writeError`（`admin/handler.go:1494-1498`）⇒
+// (9) ★ 错误信封走 `writeError`（`admin/handler.go:1570-1574`）⇒
 //     `{"error":{"detail":…}}`，键是 **`detail`** 不是 `message`。
 //     ★ 这是本仓库见到的**第三个信封族**：
 //       pending-responses = `{"error":{"message":…,"code":…}}`
@@ -163,7 +163,7 @@ export function fetchAnomalyList(params: AnomalyListParams = {}, options?: Reque
     qs.set('trigger', params.trigger)
   }
   // ★ `unresolved_only` 的真值判定是 `EqualFold("true") || == "1"`
-  //   （`queryBool`，admin/handler.go:1546-1549）⇒ 只在这两种形态下发送。
+  //   （`queryBool`，admin/handler.go:1625-1627）⇒ 只在这两种形态下发送。
   if (params.unresolvedOnly === true) qs.set('unresolved_only', 'true')
   if (typeof params.limit === 'number' && Number.isFinite(params.limit)) {
     const n = Math.trunc(params.limit)
@@ -211,4 +211,38 @@ export function unwrapAnomalyCounts(resp: unknown): AnomalyCounts {
   }
   const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
   throw new Error(`request-anomalies/count 响应形状不符：期望 {unresolved, new_today}，实得 ${actual}`)
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 权限档（第一百三十批追加）
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ★★★★ 这一族是 **superAdmin 档**，而 `SuperAdminMiddleware` 是**真门**
+ *   —— 逐字比 role，不是「只认证」：
+ *   ```go
+ *   // admin/auth.go:383-384
+ *   if claims.Role != "super_admin" {
+       writeError(w, http.StatusForbidden, "super_admin role required for this endpoint")
+   }
+ *   ```
+ *   注册 `admin/handler.go:936-937` 的两条都挂 `h.superAdmin(...)`
+ *   （`h.superAdmin` = `SuperAdminMiddleware(fn, h.db, h.secret)`，`handler.go:900-902`）。
+ *
+ * ★★★ 因此本页的视图内兜底兜的是**体验层**，不是安全层：
+ *   深链直达时服务端会返回 403，页面会显示错误串；
+ *   加这一层是为了让用户看到**为什么**而不是一坨 403 JSON。
+ *   ⇒ ★ 与 `admin` 档（批 121~128 那批）**方向相反**：那边前端这一层是
+ *     **唯一的门**，这边服务端才是。判据必须把这条差别钉住。
+ *
+ * ⚠️★ `admin_key` **不算**：它在前一批（`v1DataHorizon` 时代）能与
+ *   super_admin 同档，但服务端这里逐字比的是 `claims.Role != "super_admin"`
+ *   ⇒ `admin_key` 会被 403。**这一族只有 `super_admin` 一个角色能进。**
+ *
+ * ⚠️ 这也是「抽屉席必须进 `AppDrawer.spec.ts` 的 superAdmin 白名单」的原因，
+ *   而那个白名单本身是排好序的字面量数组。
+ */
+export function anomalyRoleIsSuperAdmin(role: string | null | undefined): boolean {
+  return role === 'super_admin'
 }

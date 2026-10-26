@@ -297,6 +297,8 @@ func (c *SurvivalCoordinator) notifyRetry(ctx context.Context, attempt int, deci
 	}
 }
 
+var errSurvivalInteractiveDeadline = errors.New("survival interactive deadline")
+
 func survivalCancellationDecision(err error) TaskDecision {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
@@ -510,6 +512,10 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			return res
 		}
 		if !c.now().Before(deadline) {
+			if err := ctx.Err(); err != nil {
+				res.Decision = survivalCancellationDecision(err)
+				return res
+			}
 			res.Decision = deadlineExceededDecision(res, deadlineKindCounts)
 			c.renderTerminal(res.Decision, nil, false)
 			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
@@ -560,12 +566,42 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			gateOpts.ReplayAlignment = l2Replay
 			l2Replay = nil
 		}
-		gate := NewAttemptCommitGate(ctx, c.Protocol, sw, gateOpts)
+		remaining := deadline.Sub(c.now())
+		parentDeadline, parentHasDeadline := ctx.Deadline()
+		parentDeadlineEarlier := false
+		if parentHasDeadline {
+			parentRemaining := time.Until(parentDeadline)
+			if parentRemaining <= 0 {
+				res.Decision = survivalCancellationDecision(context.DeadlineExceeded)
+				return res
+			}
+			if parentRemaining < remaining {
+				remaining = parentRemaining
+				parentDeadlineEarlier = true
+			}
+		}
+		if remaining <= 0 {
+			res.Decision = deadlineExceededDecision(res, deadlineKindCounts)
+			c.renderTerminal(res.Decision, nil, false)
+			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+			return res
+		}
+		// Now may be faked by coordinator tests, but context timers must always
+		// track real elapsed wall-clock time. The derived context preserves parent
+		// cancellation/deadline priority and carries an explicit cause so a
+		// completed attempt can be classified as the survival budget rather than a
+		// client disconnect.
+		attemptCtx, cancelAttempt := context.WithTimeoutCause(ctx, remaining, errSurvivalInteractiveDeadline)
+		gate := NewAttemptCommitGate(attemptCtx, c.Protocol, sw, gateOpts)
 
 		gw := NewGateWriterWithResponse(gate, params.W)
 		attemptParams := *params
 		attemptParams.W = gw
-		res.FinalAttempt = ExecuteAttempt(ctx, c.Exec, gate, &attemptParams)
+		attemptParams.SurvivalDeadline = time.Now().Add(remaining)
+		res.FinalAttempt = ExecuteAttempt(attemptCtx, c.Exec, gate, &attemptParams)
+		attemptCause := context.Cause(attemptCtx)
+		parentErr := ctx.Err()
+		cancelAttempt()
 		// Shadow evaluation settles only after the ordinary attempt completed.
 		// It never feeds a result back into the recovery ladder or gate state.
 		if l2.shadowEnabled() {
@@ -573,6 +609,37 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		}
 		res.Attempts++
 		survivalFoldKindCounts(deadlineKindCounts, res.FinalAttempt)
+		// A parent cancellation/deadline always wins over the coordinator's
+		// budget: it belongs to the caller and must not manufacture a survival
+		// terminal after the client/request owner has gone away.
+		if parentErr != nil {
+			if gate.State() < CommitStateContent {
+				_ = gate.Discard()
+			}
+			res.Decision = survivalCancellationDecision(parentErr)
+			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+			return res
+		}
+		if errors.Is(attemptCause, errSurvivalInteractiveDeadline) {
+			// When the parent supplied the tighter deadline, it remains the
+			// authority even if the child timeout reports its own sentinel first.
+			// Likewise, recheck the parent for same-tick cancellation races.
+			if parentDeadlineEarlier || (parentHasDeadline && !time.Now().Before(parentDeadline)) || ctx.Err() != nil {
+				if gate.State() < CommitStateContent {
+					_ = gate.Discard()
+				}
+				res.Decision = survivalCancellationDecision(context.DeadlineExceeded)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				return res
+			}
+			if gate.State() < CommitStateContent {
+				_ = gate.Discard()
+			}
+			res.Decision = deadlineExceededDecision(res, deadlineKindCounts)
+			c.renderTerminal(res.Decision, gate, false)
+			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+			return res
+		}
 		if err := ctx.Err(); err != nil {
 			if gate.State() < CommitStateContent {
 				_ = gate.Discard()

@@ -39,6 +39,30 @@ registered_all="$(sed -n 's/^GUARD_PACKAGES[[:space:]]*:*=//p' Makefile \
   | tr -d '\\' | tr ' ' '\n' | sed 's|^\\$||' | grep '^\./' || true)"
 registered="$(printf '%s\n' "$registered_all" | grep '^\./internal/' || true)"
 
+# ★★★ 2026-10-22 12h 审计轮：第二条清单 GUARD_PACKAGES_SLOW。
+#   ./scripts/ursmcheck（94 个门文件）此前**不在任何执行路径**上 ⇒ CI 从未跑过它。
+#   ⇒ 它必须被登记，且登记项必须真实存在于磁盘上（反向检查同样覆盖）。
+missing_slow=0
+registered_slow="$(sed -n 's/^GUARD_PACKAGES_SLOW[[:space:]]*:*=//p' Makefile \
+  | tr -d '\\' | tr ' ' '\n' | sed 's|^\\$||' | grep '^\./' || true)"
+if ! printf '%s\n' "$registered_slow" | grep -qx './scripts/ursmcheck'; then
+  echo "❌ ./scripts/ursmcheck 未登记进 Makefile 的 GUARD_PACKAGES_SLOW" >&2
+  echo "   ⇒ 它有 94 个门文件（含 CJK 变量名棘轮、R75 巡检快路门、投递门…）" >&2
+  echo "   ⇒ 不登记 ⇒ 它们在 CI 上一次都不会跑 ⇒ 门只是文档，不是门。" >&2
+  missing_slow=1
+fi
+# 反向：慢速清单里的每一项都必须真实存在于磁盘上。
+while IFS= read -r entry; do
+  [[ -n "$entry" ]] || continue
+  dir="$repo_root/${entry#./}"
+  if [[ ! -d "$dir" ]]; then
+    echo "❌ GUARD_PACKAGES_SLOW 登记了不存在的目录: ${entry#./}" >&2
+    missing_slow=1
+  fi
+done <<<"$registered_slow"
+# 慢速清单也纳入总清单 ⇒ 反向存在性检查一次覆盖两张表。
+registered_all="$(printf '%s\n%s\n' "$registered_all" "$registered_slow" | sed '/^$/d')"
+
 # 实际存在的守卫包（目录名以 guard 结尾）
 declare -a on_disk=()
 while IFS= read -r d; do
@@ -81,7 +105,7 @@ while IFS= read -r entry; do
   fi
 done <<<"$registered_all"
 
-# 命名一致性（R88 补，**告警不拦**）：登记的包应��以 guard 结尾。
+# 命名一致性（R88 补，**告警不拦**）：登记的包应该以 guard 结尾。
 #
 # 为什么值得写下来：正向检查靠 `find -name '*guard'` 枚举磁盘，而
 # GUARD_PACKAGES 里有 3 个不以 guard 结尾的条目（errdiscard / dbrows /
@@ -102,10 +126,10 @@ while IFS= read -r entry; do
   fi
 done <<<"$registered"
 
-if [[ $missing -ne 0 ]]; then
+if [[ $missing -ne 0 || $missing_slow -ne 0 ]]; then
   echo "" >&2
   echo "   新增审计守卫时必须把它接进执行路径，否则它只是文档、不是门。" >&2
-  echo "   请在 Makefile 的 GUARD_PACKAGES 里登记后重跑本脚本。" >&2
+  echo "   请在 Makefile 的 GUARD_PACKAGES / GUARD_PACKAGES_SLOW 里登记后重跑本脚本。" >&2
   exit 1
 fi
 
@@ -136,6 +160,13 @@ fi
 # 常规单测门（go test ./...）也绿，只有那个专用 job 悄悄不跑它。
 # 换成 `make guards` 后不存在第二份清单可漂移，本检查负责保证它不退回去。
 workflow_dir="$repo_root/.github/workflows"
+# ★ 2026-10-24 §3.17：拆开两个判据的作用域。
+#   · 「硬编码清单」检查 ⇒ 只在 `.github/workflows/` 存在时才有意义（它是那个
+#     目录的形态约束）⇒ 保留目录存在性条件。
+#   · 「专用门还在」检查 ⇒ **必须无条件执行**——它判的是【在跑的载体】，
+#     而在跑的载体**不是** `.github/workflows/`（本仓远端是 codeup）。
+#     ⇒ 若把它包在目录存在性条件里，等于让「载体不在那个目录」这件事
+#       **连检查都不会发生** ⇒ 又一次假绿。
 if [[ -d "$workflow_dir" ]]; then
   # 判据必须锚在**真正执行的命令**上，不能锚在「文件里出现过这个字符串」。
   # 变异验证抓到的自证漏洞：本检查原先 grep 裸串 `make guards`，而
@@ -152,14 +183,60 @@ if [[ -d "$workflow_dir" ]]; then
     echo "   作为唯一事实源。请勿在 workflow 里再抄一份包列表。" >&2
     exit 1
   fi
+fi
 
-  # 专用门必须还在：允许有人删掉整个 job，那等于把守卫从审计路径上摘掉。
-  if ! grep -rqsE '^[[:space:]]*run:[[:space:]]*make[[:space:]]+guards[[:space:]]*$' "$workflow_dir"; then
-    echo "" >&2
-    echo "❌ 没有任何 CI workflow 以 run 步骤执行 \`make guards\`——审计守卫的" >&2
-    echo "   专用门已被删除或改写。守卫会静默降级为「只在本地跑的东西」。" >&2
-    echo "   （注释里提到 make guards 不算——判据只看 run 步骤。）" >&2
-    exit 1
-  fi
-  echo "✅ CI 未硬编码守卫包清单，且专用门仍在（run: make guards）"
+# 专用门必须还在：允许有人删掉整个 job，那等于把守卫从审计路径上摘掉。
+#
+# ★★★★ 2026-10-24 magpie 对齐轮 §3.17：**本判据此前锚错了目录** ⇒ 它是
+#   一道**没有牙**的门。
+#
+#   事实（实测）：本仓远端是 `codeup.aliyun.com`（`git remote -v`）⇒
+#   **`.github/workflows/` 里的 workflow 从来不在任何在跑的 CI 里**
+#   ⇒ 于是本判据证明的是「**那个不执行的目录里的某个文件还在**」，
+#     而真正在跑的 codeup Flow（`.workflow/main-verify.yml`）**完全不跑门禁**
+#     ⇒ ★★ **整个审计守卫体系在 CI 上是空转的**。
+#
+#   ★ 实测证明本判据没牙（同一变异下两门对照）：
+#     把 `.workflow/main-verify.yml` 里的门禁调用删掉 ⇒
+#       · 本脚本（锚在 `.github/workflows/`）⇒ **exit 0**（没牙）
+#       · scripts/ursmcheck/ci_carrier_truth_test.go（锚在在跑的载体）⇒ **红**
+#
+#   ⇒ 修法：★ **按远端宿主推导【在跑的载体目录】**（与 Go 门
+#     ci_carrier_truth_test.go 同一口径），**只查那一个目录**。
+#   ⇒ ★ 为什么不能「两个目录都查、任一命中即可」：★ 实测踩过 ——
+#     `.github/workflows/audit-guards-ci.yml` 里**本来就有一行** `make guards`
+#     ⇒ 「两个目录都查」会让**不执行的目录顶替在跑的目录** ⇒ 删掉在跑载体的
+#     门禁调用后本脚本**仍然绿** ⇒ ★ 又一次「假绿」。
+#   ⇒ ★ 判据钉的是**语义**（「在跑的载体里还在跑门禁」）而不是**形态**
+#     （「恰好是哪个目录」）：远端若迁到 GitHub，本判据自动改查
+#     `.github/workflows/`，不需要改代码。
+carrier_dir=""
+remote_host="$(git remote get-url origin 2>/dev/null || true)"
+remote_host="${remote_host#*://}"
+remote_host="${remote_host#*@}"
+remote_host="${remote_host%%:*}"
+remote_host="${remote_host%%/*}"
+remote_host="$(printf '%s' "$remote_host" | tr '[:upper:]' '[:lower:]')"
+case "$remote_host" in
+  *github*)   carrier_dir="$repo_root/.github/workflows" ;;
+  *codeup*)   carrier_dir="$repo_root/.workflow" ;;
+  *)          carrier_dir="" ;;   # 未知平台 ⇒ 本脚本不臆断，交由 Go 门按并集查
+esac
+if [[ -z "$carrier_dir" ]]; then
+  echo "⚠️  远端宿主无法判定（origin='${remote_host}'）⇒ 跳过「专用门还在」检查" >&2
+  echo "   （Go 门 scripts/ursmcheck/ci_carrier_truth_test.go 按并集口径独立复核。）" >&2
+elif [[ ! -d "$carrier_dir" ]]; then
+  echo "❌ 在跑的载体目录 ${carrier_dir#${repo_root}/} 不存在 ⇒ 审计守卫在 CI 上" >&2
+  echo "   无处执行（远端宿主='${remote_host}' ⇒ 该平台在此仓的载体目录应为此）。" >&2
+  exit 1
+elif ! grep -rqsE '^[^#]*\bmake[[:space:]]+guards(-fast)?([[:space:]]|$)' "$carrier_dir" 2>/dev/null; then
+  echo "" >&2
+  echo "❌ 在跑的载体（${carrier_dir#${repo_root}/}，远端='${remote_host}'）没有在执行" >&2
+  echo "   \`make guards\` / \`make guards-fast\` ⇒ 审计守卫在 CI 上是空转的。" >&2
+  echo "   （注释里提到不算——判据只看非注释行；命令必须是完整一条。）" >&2
+  echo "   ★ 本仓远端是 codeup ⇒ 真正在跑的载体是 .workflow/（codeup Flow）；" >&2
+  echo "     .github/workflows/ 在本仓不执行 ⇒ 往那里加 step **不会**让门跑起来。" >&2
+  exit 1
+else
+  echo "✅ CI 未硬编码守卫包清单，且在跑的载体（${carrier_dir#${repo_root}/}）仍在跑 make guards*"
 fi

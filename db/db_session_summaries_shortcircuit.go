@@ -127,12 +127,23 @@ func (d *DB) sessionSummariesCanonicalComplete(ctx context.Context) bool {
 		return strings.Join(out, ",")
 	}
 
-	var missingIndexes int
-	if err := d.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT count(*) FROM unnest(ARRAY[%s]) AS want(name)
+	// ★ §143.16（2026-10-21）：裸 uidx 的必要性是**条件性的** ——
+	//   主键 session_summaries_pkey(session_key) 在位时，它与主键键集逐字重复
+	//   （生产实测两份各 ~67MiB，且该表持续写入）⇒ 不需要它；
+	//   主键不在位时，它才是 ON CONFLICT (session_key) 唯一的非部分唯一仲裁索引 ⇒ 必须在。
+	// ⇒ 只有「缺它 **且** 也没有别的仲裁索引」才算真的缺。
+	//   （本条只在 uidx 真的缺失时才会生效 ⇒ 无需再排除「它自己」当仲裁索引。）
+	// ⚠ 判据与 bootstrap 的 CREATE 守卫共用同一段 SQL（常量），杜绝两处漂移。
+	missingIndexSQL := `SELECT count(*) FROM unnest(ARRAY[%s]) AS want(name)
 		  WHERE NOT EXISTS (SELECT 1 FROM pg_indexes
 		                     WHERE schemaname='public' AND tablename='session_summaries'
-		                       AND indexname = want.name)`,
+		                       AND indexname = want.name)
+		    AND NOT (
+		        want.name = 'session_summaries_session_key_uidx'
+		        AND EXISTS (` + sessionSummariesSessionKeyArbiterSQL + `)
+		    )`
+	var missingIndexes int
+	if err := d.pool.QueryRow(ctx, fmt.Sprintf(missingIndexSQL,
 		quoted(sessionSummariesCanonicalIndexes))).Scan(&missingIndexes); err != nil {
 		return false
 	}

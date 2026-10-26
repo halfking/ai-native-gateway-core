@@ -5,37 +5,15 @@ export default {
   refresh: 'Refresh',
   loading: 'Loading…',
 
-  kind: {
-    all: 'All',
-    llm_endpoint: 'LLM endpoint',
-    mcp_server: 'MCP server',
-    agent: 'Agent',
-  },
 
-  kindLabel: {
-    llm_endpoint: 'LLM',
-    mcp_server: 'MCP',
-    agent: 'Agent',
-  },
 
-  health: {
-    healthy: 'Healthy',
-    degraded: 'Degraded',
-    down: 'Down',
-    unknown: 'Unknown',
-  },
 
-  relationType: {
-    depends_on: 'depends_on',
-    calls: 'calls',
-    similar_to: 'similar_to',
-  },
 
   filter: {
     kindTitle: 'Kind',
     tenantTitle: 'Tenant',
     defaultTenant: 'Default tenant',
-    placeholder: 'Search by name / owner / team / tenant_id…',
+    placeholder: '依名稱 / 負責人 / 團隊 / tenant_id 搜尋…',
     clear: 'Clear',
     query: 'Query',
     totalCount: '{n} total',
@@ -78,10 +56,6 @@ export default {
 
   detail: {
     title: 'Agent detail',
-    basicInfo: 'Basic info',
-    refId: 'ref_id',
-    kind: 'Kind',
-    name: 'Name',
     owner: 'Owner',
     team: 'Team',
     tenant: 'Tenant',
@@ -90,11 +64,7 @@ export default {
     firstSeen: 'First seen',
     lastSeen: 'Last seen',
     metadata: 'Metadata',
-    capabilities: 'Capabilities',
-    relations: 'Relations',
     noRelations: 'No relations',
-    upstream: 'Upstream',
-    downstream: 'Downstream',
     addRelation: 'Add relation',
     showTopology: 'Show topology',
     close: 'Close',
@@ -108,7 +78,6 @@ export default {
     relationType: 'Relation type',
     cancel: 'Cancel',
     submit: 'Create relation',
-    submitting: 'Submitting…',
     creating: 'Creating…',
   },
 
@@ -124,14 +93,6 @@ export default {
     noAgents: 'No agents yet',
   },
 
-  error: {
-    loadFailed: 'Failed to load',
-    detailFailed: 'Failed to load detail',
-    linkFailed: 'Failed to create relation',
-    statsFailed: 'Failed to load stats',
-    topologyFailed: 'Failed to load topology',
-    invalidTargetId: 'Please enter a valid target Agent ID',
-  },
 
   // 扁平键（供 Vue 组件直接使用）
   all: '全部',
@@ -140,11 +101,11 @@ export default {
   agent: 'Agent',
   depends_on: 'depends_on（依賴）',
   calls: 'calls（呼叫）',
-  similar_to: 'similar_to（替代）',
+  similar_to: 'similar_to（取代）',
   loadFailed: '載入失敗',
   healthy: '健康',
   degraded: '降級',
-  down: '不可用',
+  down: '無法使用',
   unknown: '未知',
   detailFailed: '載入詳情失敗',
   linkFailed: '建立關聯失敗',

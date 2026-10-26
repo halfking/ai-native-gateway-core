@@ -145,7 +145,7 @@ export default {
     },
   },
   edit: {
-    title: 'Edit provider — {name}',
+    title: 'Edit provider: {name}',
     catalogCode: 'Catalog code',
     vendor: 'Vendor',
     headerProfile: 'Header Profile',
@@ -177,10 +177,9 @@ export default {
     },
   },
   credential: {
-    drawerTitle: 'Manage credentials — {name}',
+    drawerTitle: 'Manage credentials: {name}',
     refresh: 'Refresh',
     addBtn: '+ Credential',
-    empty: 'No credentials yet — click "+ Credential" to add',
     table: {
       id: 'Credential',
       status: 'Status',
@@ -200,7 +199,7 @@ export default {
       disabled: 'Disabled',
     },
     row: {
-      idTrustLine: '#{id} · {trust}',
+      idTrustLine: '#{id}: {trust}',
       healthProbeModel: 'Probe {model}',
       apiOk: 'API OK',
       apiOkTitle: 'Models list API validated',
@@ -213,11 +212,11 @@ export default {
       slotFull: 'Full',
       slotFree: 'free {free}',
       slotUnlimited: 'unlimited (0 = no cap)',
-      usageSeparator: ' calls · ',
+      usageSeparator: ' calls: ',
       balanceLabel: 'Balance',
       // migration 721 (2026-09-18): balance provenance + on-demand refresh.
       balanceSourceApi: 'API probe',
-      balanceSourceManual: 'Manual entry · auto probes skipped for 24h',
+      balanceSourceManual: 'Manual entry: auto probes skipped for 24h',
       balanceRefreshTooltip: 'Query the vendor balance API now (GET, zero tokens)',
       balanceRefreshFailed: 'Balance probe failed',
       balanceUnsupported: 'Vendor exposes no balance API (plan vendors report via plan quota fields)',
@@ -233,7 +232,7 @@ export default {
       disable: 'Delete',
     },
     addDialog: {
-      title: 'Add credential — {name}',
+      title: 'Add credential: {name}',
       apiKeyLabel: 'API Key',
       apiKeyPlaceholder: 'sk-…',
       tagsLabel: 'Tags (optional)',
@@ -257,6 +256,7 @@ export default {
       saveFailed: 'Save credential failed',
       toggleFailed: 'Operation failed',
     },
+    empty: 'No credentials yet: click "+ Credential" to add',
   },
   // 2026-08-31: provider soft delete (DELETE /api/providers/{id}).
   // The row stays in the table but deleted_at is set, so the
@@ -274,18 +274,17 @@ export default {
     providerStarted: 'Check started',
     providerRunning: 'Already running',
     providerFailed: 'Check failed',
-    credentialStatusPrefix: 'Status: {status} · ',
+    credentialStatusPrefix: 'Status: {status}: ',
     credentialModels: 'Models interface OK',
     credentialProbeOk: 'Probe passed',
     credentialUnreachable: 'Unreachable',
     credentialFailed: 'Check failed',
-    diagnoseFailed: 'Diagnose failed',
+    diagnoseFailed: 'The diagnosis could not be completed. Please retry.',
   },
   diagnose: {
-    title: 'Provider diagnose — actual request/response capture',
+    title: 'Provider diagnose: actual request/response capture',
     subtitle: '(credentials sanitized)',
     loading: 'Diagnosing…',
-    summary: '{n} credentials — click a row to expand request/response details',
     table: {
       credential: 'Credential',
       modelSource: 'Model source',
@@ -315,6 +314,7 @@ export default {
     errHeader: '⚠️ Error',
     modelsHeader: '✅ Parsed models ({n})',
     modelsTruncated: '… {n} total',
+    summary: '{n} credentials: select any row to expand request/response details',
   },
   bgStatus: {
     panelTitle: 'Background task status',
@@ -347,7 +347,7 @@ export default {
     day: 'd ago',
   },
   error: {
-    loadFailed: 'Failed to load',
+    loadFailed: 'The provider list could not be loaded. Please retry.',
   },
   common: {
     button: {
@@ -380,15 +380,15 @@ export default {
   emergencyFailed: 'Emergency maintenance failed',
   // ── 2026-09-05: settings tab · lifecycle state chips + manual-disable state ──
   lifecycleTitle: 'Lifecycle',
-  lifecycleHint: 'Click a state to save immediately; leaving Active asks for confirmation',
+  lifecycleHint: 'Choose a state to save immediately; leaving Active asks for confirmation',
   lifecycleLabelActive: 'Active',
   lifecycleLabelDisabled: 'Disabled',
   lifecycleLabelSuspended: 'Suspended',
   lifecycleLabelRetired: 'Retired',
-  lifecycleHintActive: 'active · participates in routing normally',
-  lifecycleHintDisabled: 'disabled · manually disabled, excluded from routing',
-  lifecycleHintSuspended: 'suspended · temporarily paused, excluded from routing',
-  lifecycleHintRetired: 'retired · retired for good, not recoverable here',
+  lifecycleHintActive: 'active: participates in routing normally',
+  lifecycleHintDisabled: 'disabled: manually disabled, excluded from routing',
+  lifecycleHintSuspended: 'suspended: temporarily paused, excluded from routing',
+  lifecycleHintRetired: 'retired: retired for good, not recoverable here',
   lifecycleCurrent: 'Current',
   lifecycleChangeConfirm: 'Switch lifecycle from Active to "{label}" ({value})?\nThe credential will stop receiving traffic; you can switch back to Active at any time.',
   lifecycleChangeDone: 'Lifecycle switched to "{label}".',

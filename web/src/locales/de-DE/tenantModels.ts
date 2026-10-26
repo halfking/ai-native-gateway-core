@@ -3,7 +3,6 @@ export default {
   page: {
     title: 'Standardmodelle',
     desc: 'Standardmodelle, die wir für Ihren Mandanten freigeschaltet haben. Die Abrechnung umfasst Eingabe / Ausgabe / Cache-Lesen / Cache-Schreiben, jeweils in Credits pro Million Token.',
-    filterTitle: 'Standardmodelle · Filter',
     filterPlaceholder: 'Standardmodell auswählen…',
     modelCount: '{n} Modelle',
     refresh: 'Aktualisieren',
@@ -14,11 +13,8 @@ export default {
   },
   columns: {
     model: 'Standardmodell',
-    canonicalName: 'Modell-ID',
-    family: 'Familie',
     contextWindow: 'Kontext',
     multimodal: 'Multimodal',
-    modalityTag: 'Typ',
     billingMode: 'Abrechnung',
     inPrice: 'Eingabe / 1M',
     outPrice: 'Ausgabe / 1M',
@@ -43,10 +39,6 @@ export default {
     notSet: '—',
   },
   filterBar: {
-    selectedVendor: 'Ausgewählter Anbieter: {vendor}',
     count: '{n} / {m} angezeigt',
-  },
-  cta: {
-    buyCredits: 'Credits kaufen',
   },
 }

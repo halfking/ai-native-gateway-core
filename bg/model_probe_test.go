@@ -36,29 +36,29 @@ func TestComputeConsensus_3ConsecutiveModelUnavailable(t *testing.T) {
 }
 
 func TestComputeConsensus_ProviderErrorDoesNotCountAsFailure(t *testing.T) {
-	_, _, succ, fail, st := computeConsensusForTest("auth", probeCategoryProviderError, "unknown", "decrypt_error", 0, 1)
-	if succ != 0 || fail != 1 || st != "recovering" {
+	_, applied, succ, fail, st := computeConsensusForTest("auth", probeCategoryProviderError, "unknown", "decrypt_error", 0, 1)
+	if applied || succ != 0 || fail != 1 || st != "unknown" {
 		t.Errorf("provider_error auth: got (succ=%d fail=%d state=%s)", succ, fail, st)
 	}
 }
 
 func TestComputeConsensus_NetworkErrorDoesNotCountAsFailure(t *testing.T) {
-	_, _, succ, fail, st := computeConsensusForTest("network", probeCategoryProviderError, "unknown", "", 0, 1)
-	if succ != 0 || fail != 1 || st != "recovering" {
+	_, applied, succ, fail, st := computeConsensusForTest("network", probeCategoryProviderError, "unknown", "", 0, 1)
+	if applied || succ != 0 || fail != 1 || st != "unknown" {
 		t.Errorf("provider_error network: got (succ=%d fail=%d state=%s)", succ, fail, st)
 	}
 }
 
 func TestComputeConsensus_Http5xxErrorDoesNotCountAsFailure(t *testing.T) {
-	_, _, succ, fail, st := computeConsensusForTest("http_5xx", probeCategoryProviderError, "recovering", "", 2, 2)
-	if succ != 0 || fail != 2 || st != "recovering" {
+	_, applied, succ, fail, st := computeConsensusForTest("http_5xx", probeCategoryProviderError, "recovering", "", 2, 2)
+	if applied || succ != 2 || fail != 2 || st != "recovering" {
 		t.Errorf("provider_error http_5xx: got (succ=%d fail=%d state=%s) — fail must NOT increment", succ, fail, st)
 	}
 }
 
 func TestComputeConsensus_RateLimitedDoesNotCountAsFailure(t *testing.T) {
-	_, _, succ, fail, st := computeConsensusForTest("http_4xx", probeCategoryProviderError, "recovering", "rate_limited", 0, 2)
-	if succ != 0 || fail != 2 || st != "recovering" {
+	_, applied, succ, fail, st := computeConsensusForTest("http_4xx", probeCategoryProviderError, "recovering", "rate_limited", 0, 2)
+	if applied || succ != 0 || fail != 2 || st != "recovering" {
 		t.Errorf("rate_limited: got (succ=%d fail=%d state=%s) — fail must NOT increment", succ, fail, st)
 	}
 }

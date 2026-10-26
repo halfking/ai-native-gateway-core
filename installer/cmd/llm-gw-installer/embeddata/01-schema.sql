@@ -6179,7 +6179,9 @@ CREATE TABLE public.credential_model_bindings (
     plan_type_origin text,
     plan_type_updated_at timestamp with time zone,
     context_window_override integer,
-    priority boolean DEFAULT false NOT NULL
+    priority boolean DEFAULT false NOT NULL,
+    stream_mode text DEFAULT 'both'::text NOT NULL,
+    CONSTRAINT credential_model_bindings_stream_mode_check CHECK ((stream_mode = ANY (ARRAY['both'::text, 'stream_only'::text, 'non_stream_only'::text])))
 );
 
 
@@ -6901,7 +6903,7 @@ CREATE TABLE public.credentials (
     auto_disabled_reason text,
     auto_enabled_at timestamp with time zone,
     auto_enabled_reason text,
-    CONSTRAINT chk_credentials_health_source CHECK (((health_source IS NULL) OR (health_source = ANY (ARRAY['models'::text, 'probe'::text, 'mixed'::text, 'none'::text, 'fast_reprobe'::text])))),
+    CONSTRAINT chk_credentials_health_source CHECK (((health_source IS NULL) OR (health_source = ANY (ARRAY['models'::text, 'probe'::text, 'mixed'::text, 'none'::text, 'fast_reprobe'::text, 'probe_now'::text])))),
     CONSTRAINT chk_credentials_health_status CHECK ((health_status = ANY (ARRAY['unknown'::text, 'healthy'::text, 'warning'::text, 'unreachable'::text]))),
     CONSTRAINT credentials_availability_state_check CHECK ((availability_state = ANY (ARRAY['ready'::text, 'cooling'::text, 'rate_limited'::text, 'auth_failed'::text, 'unreachable'::text, 'suspended'::text]))),
     CONSTRAINT credentials_circuit_state_chk CHECK ((circuit_state = ANY (ARRAY['closed'::text, 'open'::text, 'half_open'::text]))),
@@ -15627,9 +15629,15 @@ PARTITION BY RANGE (partition_date);
 --
 
 COMMENT ON TABLE public.session_bodies IS 'V2正文存储表：存储增量正文，避免request_logs的全量JSONB膨胀问题。
-     使用columnar存储格式，配合zstd压缩，预计可节省60-80%磁盘空间。
+     ★ 存储引擎真相（2026-10-20 修正，审计 D3）：本表是 **heap + lz4 TOAST**，
+     **从未使用列存（columnar）**。压缩由 TOAST 的 lz4 完成
+     （sql/migrations/startup/765_bodies_columnar_storage.sql:127-128 的
+     SET COMPRESSION lz4）；此前那条把本表说成「列存 + 压缩可省 60-80% 磁盘」的
+     COMMENT 与实现相反 —— 本族因 promote_session_bodies 用
+     ON CONFLICT DO NOTHING（列存关系不能承载唯一索引）而**必须**留 heap，
+     论证见 765_bodies_columnar_storage.sql:13-21，
+     829_bodies_columnar_rollback.sql 记录了列存方案被回滚。
      Created: 2026-07-17, Migration 430';
-
 
 --
 -- Name: session_bodies_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -30307,6 +30315,17 @@ COMMENT ON COLUMN public.session_turns.parent_request_id IS
     'Request identifier of the parent turn for derived or subordinate work.';
 COMMENT ON COLUMN public.session_turns.task_type IS
     'Task classification copied onto the turn to avoid a sessions join.';
+COMMENT ON COLUMN public.session_turns.tools IS
+    'Tools invoked during this turn (JSON array). ★ 2026-10-20 起由写路径填充（审计 G-6，迁移 889）：
+本列此前**从未被写过**（domains/session/v2/turn_writer.go 的 INSERT 列清单里没有它）
+⇒ 每一行都停在默认值 ''[]''::jsonb ⇒ 视图 request_logs_with_current_month
+投影出的 tool_calls 恒为空数组（不是「该请求没有工具调用」，是「没人写过这一列」）。
+现在由 turn_writer.go 的 turnToolsJSONBExpr 在 INSERT 的**同一条语句**里用子查询
+从 public.session_tools_hot 聚合（按 session_id + request_id），元素是
+{tool_name, tool_call_id, status, duration_ms, error_type} 的摘要
+（**不含** arguments/result —— 那两份正文在 session_bodies 与 session_tools 里）。
+★ 历史行**不回填**（工具行可能已被 promote 搬走，回填值会不完整）。
+原始注释（456）：Tools invoked during this turn (JSON array of tool_use records).';
 
 -- These are partitioned parent indexes. PostgreSQL creates or attaches matching
 -- child indexes for existing partitions and propagates them to new partitions.

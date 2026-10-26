@@ -1,6 +1,7 @@
 # LLM Gateway Go — 项目总览与架构设计
 
-> **版本**: v3.0（全码审计重生成）  
+> **版本**: 2.5.8-5e14ede2-20261020-2794
+  
 > **更新日期**: 2026-10-06  
 > **状态**: 生产运行中 · 本版基于全码审计刷新（四域子代理 + 主代理实证），新增/重生文档见 §8  
 
@@ -16,7 +17,7 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 
 - **统一接入**: 兼容 OpenAI/Anthropic/Gemini/国产模型等多种协议
 - **智能路由**: 基于成本/质量/延迟的多维度自动路由决策
-- **多租户隔离**: 38+ 表 RLS 行级安全，完整租户数据隔离
+- **多租户隔离**: 90+ 表 RLS 行级安全，完整租户数据隔离
 - **流量治理**: Token 限流、语义缓存、提示词压缩
 - **企业级部署**: 支持离线激活、自动升级、多环境部署
 - **全链路可观测**: 完整审计、监控、追踪能力
@@ -25,9 +26,9 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 
 | 类别 | 技术选型 |
 |------|----------|
-| **核心语言** | Go 1.27.1 |
+| **核心语言** | Go 1.27.2 |
 | **Web框架** | Gin/Echo (数据面), Vue 3 + TypeScript (管理面板) |
-| **数据库** | PostgreSQL 15+ (RLS + 分区表 + 列存) |
+| **数据库** | PostgreSQL 14+ (RLS + 分区表 + 列存) |
 | **缓存/状态** | Redis 7+ (URSM状态、限流、会话、队列) |
 | **存储** | Aliyun OSS / AWS S3 (请求体归档) |
 | **可观测性** | OpenTelemetry + Prometheus + Grafana |
@@ -35,16 +36,16 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 
 ---
 
-### 1.4 代码统计（基于真实代码扫描，2026-10-14，均不含 vendor/ 与 installer/；旧版数字含 vendor 依赖不可比）
+### 1.4 代码统计（基于真实代码扫描，2026-10-16，均不含 vendor/ 与 installer/；旧版数字含 vendor 依赖不可比）
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
-| Go源文件总数 | 5,173 个 | `find . -name "*.go" -not -path "./vendor/*" \| wc -l` |
-| Admin API文件 | 653 个 | `find ./admin -name "*.go" -type f \| wc -l` |
-| 后台Worker文件 | 401 个 | `find ./bg -name "*.go" -type f \| wc -l` |
-| 领域模块数量 | 67 个 | `ls ./domains/ \| wc -l` (一级目录) |
-| 数据库迁移 | 1058 个 SQL | `sql/migrations/` 全量；startup 数字序列活跃至 **863**（work_type 路由来源；7xx 段止于 765），下一枚 864 |
-| 单元测试文件 | 2,899 个 | `*_test.go`（不含 vendor/installer） |
+| Go源文件总数 | 5,680 个 | `find . -name "*.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
+| Admin API文件 | 737 个 | `find ./admin -name "*.go" -type f \| wc -l` |
+| 后台Worker文件 | 426 个 | `find ./bg -name "*.go" -type f \| wc -l` |
+| 领域模块数量 | 68 个 | `ls ./domains/ \| wc -l` (一级目录) |
+| 数据库迁移 | 1,119 个 SQL | `sql/migrations/` 全量；startup 数字序列活跃至 **894**（work_type 路由来源） |
+| 单元测试文件 | 3,333 个 | `find . -name "*_test.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
 | 可执行程序 | 34 个 | `ls ./cmd/ \| wc -l` |
 
 ---
@@ -70,7 +71,7 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 │                                                                   │
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │            控制面 (Control Plane)                         │   │
-│  │  Admin API (453文件) + Vue SPA + 后台Worker (217文件)    │   │
+│  │  Admin API (737文件) + Vue SPA + 后台Worker (426文件)    │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                   │
 │  ┌─────────────────────────────────────────────────────────┐   │
@@ -160,9 +161,9 @@ Client Request
 - **实例注册**: 启动时自动向主控端注册，60s心跳上报状态（online/degraded/offline）
 
 **关键文件**:
-- `licensing/client/activation.go` - 激活客户端
-- `licensing/validator/` - License验证器
-- `installer/internal/activator/` - 安装器激活模块
+- `licensing/activator.go` - 激活客户端
+- `licensing/validator.go` - License验证器
+- `installer/internal/activation/` - 安装器激活模块
 
 ### 3.2 智能路由系统
 
@@ -186,9 +187,9 @@ Client Request
 |------|------|------|
 | **Cost-Optimized** | `router_scoring.go` | 成本惩罚 0.15 参与 P2C 综合分（2026-09-19 起默认开，env 可关；非成本主导） |
 | **Quality-Aware** | `autoroute/scorer/quality.go` | 质量优先 |
-| **Context-Aware** | `autoroute/scorer/context.go` | 上下文窗口优先 |
-| **Cache-Optimized** | `cache/scorer.go` | 缓存命中优先 |
-| **Headroom** | `autoroute/scorer/headroom.go` | 剩余配额优先 |
+| **Context-Aware** | `domains/streaming/executors/strategy_context.go` | 上下文窗口优先 |
+| **Cache-Optimized** | `domains/streaming/executors/strategy_cache.go` | 缓存命中优先 |
+| **Headroom** | `domains/streaming/executors/strategy_headroom.go` | 剩余配额优先 |
 
 #### 重试策略
 
@@ -211,11 +212,11 @@ Client Request
 - **双层状态**: 内存 + Redis 双层健康状态
 - **7类错误分级**: Auth/RateLimit/ContextLength/ServerError/Network/Timeout/Unknown
 - **主动探测**: `bg/active_probe_worker.go` 定期健康检查
-- **指纹池**: 50+ UA + 35 Accept-Language + 11 utls profile 自适应伪装
+- **指纹池**: 42 UA + 35 Accept-Language 自适应伪装（⚠ 代码里没有 utls 依赖，go.mod 中 `utls` 命中 0）
 - **并发控制**: FP槽位管理，动态并发限制
 
 **关键组件**:
-- `domains/credential/fp_slot.go` - FP槽位管理
+- `credentialfpslot/slot.go` - FP槽位管理
 - `domains/health/composite.go` - 健康状态聚合
 - `bg/active_probe_executor.go` - 探测执行器
 
@@ -230,15 +231,15 @@ Client Request
 - **Pre-stream心跳**: Anthropic header透传 + stall-only超时（无wall-clock cap）
 
 **关键文件**:
-- `domains/streaming/stream_relay.go` - 流式中继核心
+- `domains/streaming/stream.go` - 流式中继核心
 - `domains/streaming/integrity/detector.go` - 完整性检测
-- `internal/vendorstrip/openai.go` - OpenAI字段过滤
+- `internal/vendorstrip/strip.go` - 统一过滤上游厂商私有字段
 
 ### 3.5 多租户与身份隧道
 
 **位置**: `domains/tenant/`, `domains/identity/`, `middleware/`
 
-- **RLS隔离**: 38+ 表行级安全（Row-Level Security）
+- **RLS隔离**: 90+ 表行级安全（Row-Level Security）
 - **身份隧道**: Virtual IP/MAC/ClientID 租户标识传递
 - **凭据池**: 每租户独立凭据池管理
 - **配额管理**: 租户级 Token/RPM/TPM 限流
@@ -246,7 +247,7 @@ Client Request
 
 **关键文件**:
 - `domains/tenant/resolver.go` - 租户解析
-- `domains/identity/tunnel.go` - 身份隧道
+- `domains/identity/egress.go` - 身份隧道
 - `middleware/tenant_context.go` - 租户上下文
 
 ### 3.6 会话管理 (Sessions V2)
@@ -260,13 +261,13 @@ Client Request
 - **Session分析**: `domains/sessiondigest/` 会话摘要生成
 
 **关键文件**:
-- `domains/session/v2/persister.go` - V2持久化
-- `domains/sessionstate/manager.go` - 状态管理
-- `domains/requestdetail/archiver.go` - 请求体归档
+- `domains/session/v2/session_writer_v2.go` - V2持久化
+- `domains/sessionstate/state_machine.go` - 状态管理
+- `domains/requestdetail/store.go` - 请求体归档
 
 ### 3.7 后台Worker系统
 
-**位置**: `bg/` (401个Go文件)
+**位置**: `bg/` (426个Go文件)
 
 核心Worker（部分列举）:
 
@@ -276,16 +277,16 @@ Client Request
 | **自动路由结算** | `auto_route_settle_worker.go` | 路由反馈收集 |
 | **审计清理** | `audit_trimmer.go` | 审计数据清理 |
 | **分区管理** | `partition_manager.go` | 分区表自动维护 |
-| **质量监控** | `quality_monitor_worker.go` | 模型质量监控 |
+| **质量监控** | `bg/model_quality_worker.go` | 模型质量监控 |
 | **系统监测** | `systemmonitor/monitor.go` | Redis队列 + 30s去重 |
-| **统计聚合** | `stats_aggregator.go` | 统计数据聚合 |
-| **会话摘要** | `session_digest_worker.go` | 会话摘要生成 |
+| **统计聚合** | `bg/stats_minute_rollup.go` | 统计数据聚合 |
+| **会话摘要** | `domains/session/v2/session_digest_backfill.go` | 会话摘要生成 |
 
 **启动控制**: `cmd/gateway/main.go` 统一装配，支持 graceful shutdown
 
 ### 3.8 Admin API与管理面板
 
-**位置**: `admin/` (653个Go文件), `web/` (Vue 3 + TS)
+**位置**: `admin/` (737个Go文件), `web/` (Vue 3 + TS)
 
 #### Admin API模块
 
@@ -406,12 +407,12 @@ Client Request
 ## 5. 代码统计
 
 ```
-Go源文件总数:     5,173 个 (不含 vendor/installer)
-Admin API文件:      653 个
-后台Worker文件:     401 个
-领域模块:            67 个 (domains/ 一级目录)
-数据库迁移:         1058 个 SQL (sql/migrations/; startup 活跃序列最新 863, 下一枚 864)
-测试文件:         2,899 个 (*_test.go, 不含 vendor/installer)
+Go源文件总数:     5,680 个 (不含 vendor/installer；快照 @31466a01d)
+Admin API文件:      737 个
+后台Worker文件:     426 个
+领域模块:            68 个 (domains/ 一级目录)
+数据库迁移:         1,119 个 SQL (sql/migrations/; startup 活跃序列最新 894)
+测试文件:         3,333 个 (*_test.go, 不含 vendor/installer)
 可执行程序:           34 个 (cmd/)
 ```
 
@@ -441,7 +442,7 @@ Admin API文件:      653 个
   - `codeup` (origin) - 日常开发
   - `github` - 公开镜像（自动严格扫描）
 - **提交规范**: Conventional Commits (feat/fix/docs/refactor...)
-- **Pre-push扫描**: 49条规则敏感信息扫描
+- **Pre-push扫描**: 50条规则敏感信息扫描
 
 ---
 
@@ -479,7 +480,7 @@ Admin API文件:      653 个
 
 ### 8.1 核心文档
 
-- [系统需求规格说明书](./01-requirements/SYSTEM_REQUIREMENTS.md) - 系统需求（FR×19 域/NFR×13，2026-10-01 重生）⭐
+- [系统需求规格说明书](./01-requirements/SYSTEM_REQUIREMENTS.md) - 系统需求（FR×16 域/NFR×13，2026-10-01 重生）⭐
 - [功能特性目录](./01-requirements/functional/FEATURES_CATALOG.md) - 功能→代码→API→前端页映射（含 🔴 并行标注）⭐
 - [架构设计](./03-design/01-architecture/architecture/ARCHITECTURE.md) - 系统架构详细设计（事实快照 2026-10-01）
 - [新旧并行实现对比](./03-design/01-architecture/parallel-implementations-comparison.md) - 新旧版本实现重点标注与收敛方案

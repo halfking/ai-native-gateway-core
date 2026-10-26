@@ -151,16 +151,20 @@ type TerminalMeta struct {
 	OutboundModel string
 }
 
-// LearnedParams 返回该 (provider, model) 可前置剔除的参数（带 60s 缓存）。
-// 存储异常时返回 nil（fail-open：不剔除，回到逐请求探测）。
-func (c *Coordinator) LearnedParams(ctx context.Context, providerCode, outboundModel string) []string {
+// LearnedParams 返回精确 provider/model/actual-wire 上可前置剔除的参数（带
+// 60s 缓存）。无效键与存储异常都返回 nil（fail-open：不剔除，回到逐请求探测）。
+func (c *Coordinator) LearnedParams(ctx context.Context, key LearnedKey) []string {
 	if c == nil || c.store == nil || !c.learnEnabled {
 		return nil
 	}
-	key := strings.ToLower(providerCode) + "|" + strings.ToLower(outboundModel)
+	key = key.normalized()
+	if !key.valid() {
+		return nil
+	}
+	cacheKey := key.cacheKey()
 	now := time.Now()
 	c.mu.Lock()
-	if entry, ok := c.learned[key]; ok && now.Before(entry.expiry) {
+	if entry, ok := c.learned[cacheKey]; ok && now.Before(entry.expiry) {
 		c.mu.Unlock()
 		return entry.params
 	}
@@ -169,11 +173,16 @@ func (c *Coordinator) LearnedParams(ctx context.Context, providerCode, outboundM
 	// singleflight 合并同一 key 的并发回源（错过缓存的请求只有一个真正
 	// 打 Store，其余共享结果）；ctx 透传调用方的，执行者被取消时共享方
 	// 拿到空结果走 fail-open（不剔除），与回源失败语义一致。
-	v, _, _ := c.learnSF.Do(key, func() (any, error) {
-		params := c.store.LearnedParams(ctx, providerCode, outboundModel)
-		c.mu.Lock()
-		c.learned[key] = learnedEntry{params: params, expiry: time.Now().Add(learnedCacheTTL)}
-		c.mu.Unlock()
+	v, _, _ := c.learnSF.Do(cacheKey, func() (any, error) {
+		params := c.store.LearnedParams(ctx, key)
+		// Do not cache an empty snapshot: a record can be queued asynchronously
+		// between this lookup and the next request. Positive values remain cached;
+		// other instances still converge through Store.
+		if len(params) > 0 {
+			c.mu.Lock()
+			c.learned[cacheKey] = learnedEntry{params: params, expiry: time.Now().Add(learnedCacheTTL)}
+			c.mu.Unlock()
+		}
 		return params, nil
 	})
 	params, _ := v.([]string)

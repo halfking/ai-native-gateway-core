@@ -29,12 +29,6 @@ export default {
     extraction_failed: 'Extracción fallida',
     unexpected_structure: 'Estructura inesperada',
     null_usage_values: 'Valores usage nulos',
-    token_mismatch: 'Tokens no coinciden',
-    missing_provider_tokens: 'Tokens de proveedor faltantes',
-    missing_client_tokens: 'Tokens de cliente faltantes',
-    json_parse_error: 'Error de análisis JSON',
-    missing_finish_reason: 'Finish Reason faltante',
-    missing_content: 'Content faltante',
   },
 
   anomalyTypeDescription: {
@@ -65,7 +59,6 @@ export default {
     requestId: 'Request ID',
     tokenInfo: 'Info de tokens',
     status: 'Estado',
-    actions: 'Acciones',
     loading: 'Cargando...',
     noData: 'No se encontraron registros de anomalías',
     viewDetail: 'Detalles',
@@ -73,10 +66,6 @@ export default {
     actualTokens: 'Real: {count}',
   },
 
-  token: {
-    expected: 'Esperado',
-    actual: 'Real',
-  },
 
   pager: {
     prev: 'Anterior',

@@ -174,7 +174,7 @@ export function useGatewayApiKey() {
 
       return revealFirstAvailable(active)
     } catch (e: unknown) {
-      error.value = e instanceof Error ? e.message : '获取 API 密钥失败'
+      error.value = e instanceof Error ? e.message : 'API 密钥没能取到，请重试'
       apiKey.value = ''
       selectedKeyId.value = null
       syncSelectedMeta(null)
@@ -200,7 +200,7 @@ export function useGatewayApiKey() {
       }
       return true
     } catch (e: unknown) {
-      error.value = e instanceof Error ? e.message : '获取密钥失败'
+      error.value = e instanceof Error ? e.message : '密钥没能取到，请重试'
       return false
     } finally {
       picking.value = false

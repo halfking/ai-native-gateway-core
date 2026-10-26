@@ -8,8 +8,6 @@ export default {
     refreshing: 'جارٍ التحديث...',
   },
   filter: {
-    startDate: 'تاريخ البدء',
-    endDate: 'تاريخ الانتهاء',
     taskType: 'نوع المهمة الأصلي',
     model: 'النموذج',
     modelPlaceholder: 'جميع النماذج',
@@ -21,8 +19,6 @@ export default {
     all: 'الكل',
     annotatedOnly: 'معلّق',
     unannotatedOnly: 'غير معلّق',
-    annotator: 'المعلِّق',
-    annotatorPlaceholder: 'أدخل اسم المستخدم للمعلِّق',
     query: 'استعلام',
     reset: 'إعادة تعيين',
   },
@@ -35,8 +31,6 @@ export default {
     selectModel: 'اختر نموذجاً',
     autoRoute: 'مسار AUTO',
     confidence: 'الثقة',
-    humanProvider: 'المزوّد المعلَّق يدوياً',
-    selectProvider: 'اختر مزوّداً',
     isCorrect: 'هل التوجيه صحيح؟',
     correct: 'صحيح',
     incorrect: 'خطأ',
@@ -46,7 +40,6 @@ export default {
     submit: 'إرسال',
     cancel: 'إلغاء',
     errors: {
-      providerRequired: 'المزوّد مطلوب',
       taskTypeRequired: 'نوع المهمة مطلوب',
       modelRequired: 'النموذج مطلوب',
       reasonRequired: 'السبب مطلوب',
@@ -55,7 +48,6 @@ export default {
     },
   },
   table: {
-    requestId: 'معرّف الطلب',
     time: 'الوقت',
     title: 'العنوان',
     client: 'العميل',
@@ -63,7 +55,6 @@ export default {
     model: 'النموذج',
     taskType: 'نوع المهمة',
     confidence: 'الثقة',
-    autoProvider: 'مسار AUTO',
     status: 'الحالة',
     statusOk: 'نجاح {code}',
     statusFail: 'فشل {code}',
@@ -73,14 +64,12 @@ export default {
     unannotated: 'غير معلّق',
     annotate: 'تعليق',
     view: 'عرض',
-    delete: 'حذف',
   },
   drawer: {
     annotateTitle: 'تعليق على عينة',
     viewTitle: 'عرض التعليق',
   },
   detail: {
-    humanProvider: 'المزوّد المعلَّق يدوياً',
     isCorrect: 'هل التوجيه صحيح؟',
     reason: 'سبب التعليق',
     annotator: 'المعلِّق',
@@ -96,18 +85,6 @@ export default {
     totalTurns: 'أدوار الجلسة',
     source: 'المصدر',
   },
-  batch: {
-    title: 'التعليق بالجملة',
-    desc: 'علّق على {count} عينات محددة بالجملة',
-    submit: 'إرسال بالجملة',
-  },
-  pagination: {
-    total: 'الإجمالي: {n}',
-    pageOf: 'صفحة {page} من {total}',
-    perPage: 'لكل صفحة',
-    prev: 'السابق',
-    next: 'التالي',
-  },
   reasons: {
     correct: 'التنبؤ صحيح',
     performance: 'مشكلة أداء',
@@ -121,7 +98,7 @@ export default {
     refresh: 'تحديث',
     refreshing: 'جارٍ التحديث...',
     loadFailed: 'فشل تحميل الإحصاءات',
-    noData: 'لا توجد بيانات',
+    noData: 'لا توجد إحصاءات الوسم بعد. أكمل دفعة تعليقات أولًا ثم راجعها.',
     totalAnnotations: 'إجمالي التعليقات',
     providerAccuracy: 'دقة المزوّدين',
     annotatorStats: 'إحصاءات المعلِّقين',
@@ -140,24 +117,13 @@ export default {
     distribution: 'التوزيع',
   },
   // Actions
-  batchSelected: 'تم تحديد {count}',
-  batchAnnotate: 'التعليق بالجملة',
-  clearSelection: 'مسح التحديد',
 
   // Success messages
-  annotationCreated: 'تم إنشاء التعليق بنجاح',
-  batchSuccess: 'نجح التعليق بالجملة: {count} عنصراً',
-  batchPartialSuccess: 'نجح التعليق بالجملة جزئياً: {success} ناجح، {failed} فاشل',
-  deleteSuccess: 'تم حذف التعليق بنجاح',
 
   // Error messages
   loadFailed: 'فشل تحميل عينات التعليق',
   annotationFailed: 'فشل التعليق',
   correctionWriteFailed: 'فشل حفظ التصحيح (تم حفظ التعليق التوضيحي): {msg}',
-  batchFailed: 'فشل التعليق بالجملة',
-  deleteFailed: 'فشل حذف التعليق',
-  noSamplesSelected: 'الرجاء تحديد عينات للتعليق',
-  confirmDelete: 'تأكيد حذف هذا التعليق؟',
 
   // Loading states
   loading: 'جارٍ التحميل...',

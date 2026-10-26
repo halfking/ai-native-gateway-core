@@ -40,3 +40,11 @@ func TestStreamContinuationKeyIsRegisteredInSpecs(t *testing.T) {
 		t.Fatalf("settings key %q is missing from PlatformSpecs(); the registry would never load it", KeyStreamContinuationEnabled)
 	}
 }
+
+func TestStreamContinuationDefaultsOff(t *testing.T) {
+	for _, spec := range StreamContinuationSpecs() {
+		if spec.Key == KeyStreamContinuationEnabled && spec.Default != false {
+			t.Fatalf("continuation defaults to %v; unsupported upstreams must not be resumed without opt-in", spec.Default)
+		}
+	}
+}

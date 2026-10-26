@@ -90,7 +90,7 @@ Handles all user-facing LLM requests with OpenAI/Anthropic/Responses/Gemini comp
 Requests flow through **two routing layers**, both observable in the Routing Panorama admin page:
 
 **L1 — Model Selection** (which model should serve this request?):
-1. Prompt auto-classification into **work types** (code generation, conversation, summarization, translation, CRM follow-up, …) — 10 built-in types, configurable per type in the admin UI
+1. Prompt auto-classification into **work types** (code generation, conversation, summarization, translation, CRM follow-up, …) — 27 built-in types, configurable per type in the admin UI
 2. **6-dimension scoring** of candidate models against the classified task
 3. Model profile locking (explicit `model` parameters bypass L1)
 
@@ -126,11 +126,11 @@ Requests flow through **two routing layers**, both observable in the Routing Pan
 
 - **Secret masking**: API keys and tokens are masked before persistence — OpenAI (`sk-…`), Anthropic (`sk-ant-…`), AWS (`AKIA…`), generic Bearer tokens, and `x-api-key` header forms; applied to request logs, session summaries, and archived request/response bodies
 - **Encrypted credentials**: upstream provider keys are encrypted at rest (Fernet/AES) and rendered masked (`sk-****`) in the admin UI
-- **Multi-tenancy**: PostgreSQL Row-Level Security on 38+ tables; cross-tenant reads return not-found rather than forbidden (no information leak)
+- **Multi-tenancy**: PostgreSQL Row-Level Security on 90+ tables; cross-tenant reads return not-found rather than forbidden (no information leak)
 
 ### Multi-Tenancy
 
-**Isolation**: PostgreSQL Row-Level Security (RLS) on 38+ tables
+**Isolation**: PostgreSQL Row-Level Security (RLS) on 90+ tables
 
 **Key Concepts**:
 - **Tenant**: Top-level isolation boundary
@@ -220,7 +220,7 @@ The two modes share the same `storage` interfaces; per-store mapping table and c
 ## Technology Stack
 
 **Backend**:
-- Go 1.27.1
+- Go 1.27.2
 - PostgreSQL 14+ (with RLS)
 - Redis 7+ (optional in lite storage mode)
 

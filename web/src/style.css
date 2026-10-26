@@ -1,5 +1,278 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ═══════════════════════════════════════════════════════════════════
+   自托管字体（2026-10-24 排版轮）
+   ═══════════════════════════════════════════════════════════════════
+   为什么自托管：网关是私有化部署（154/245/252 都在内网），Google Fonts 与
+   各 CDN 不可达。落地页原来写的是 `"Outfit"` / `"Noto Sans SC"`，但这两个名字
+   **从未被 @font-face 加载过** —— 那是「引用了一个不存在的字体」，运行时直接落回
+   平台 sans。craft-floor 的原话是「最接近的已装字体是失败，不是退路」。
+
+   为什么选 IBM Plex Sans / Mono：
+   - Plex 有真实性格，不是 Inter 那种「AI 默认体」；它出自仪器仪表的设计语境，
+     与本产品「精密仪器」的视觉世界对得上。
+   - 真等宽数字（tabular figures）天然适配满屏的 ID / 金额 / 时延。
+   - 只取 Latin：中文回落 PingFang SC / 思源黑（系统自带，字形远好过任何
+     web font），不下载 CJK 子集 ⇒ 12 个文件共 232 KB。
+   - unicode-range 做了分片 ⇒ 浏览器只在真的用到大写重音/中东欧字形时才去拉
+     latin-ext，当前 8 个语种实际只会下载 latin 那 6 个文件。
+
+   许可：SIL Open Font License 1.1。
+   位置：src/assets/fonts/ ⇒ Vite 打包进 dist/assets/（该前缀已在
+   middleware/auth_mw.go 的 PathPrefixes 里匿名豁免）。刻意不落 web/public 根 ——
+   那里每个文件都得单独登记豁免（middleware/web_public_bypass_contract_test.go）。
+   ═══════════════════════════════════════════════════════════════════ */
+
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./assets/fonts/ibm-plex-sans-latin-400-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./assets/fonts/ibm-plex-sans-latin-ext-400-normal.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./assets/fonts/ibm-plex-sans-latin-500-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./assets/fonts/ibm-plex-sans-latin-ext-500-normal.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('./assets/fonts/ibm-plex-sans-latin-600-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('./assets/fonts/ibm-plex-sans-latin-ext-600-normal.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./assets/fonts/ibm-plex-sans-latin-700-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./assets/fonts/ibm-plex-sans-latin-ext-700-normal.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./assets/fonts/ibm-plex-mono-latin-400-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./assets/fonts/ibm-plex-mono-latin-ext-400-normal.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./assets/fonts/ibm-plex-mono-latin-500-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./assets/fonts/ibm-plex-mono-latin-ext-500-normal.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ── 主题无关的令牌 ── */
+:root {
+  /* 字体族：Latin 自托管 → 系统中日韩 → 系统阿拉伯 → 系统西文。
+     顺序有意：中文界面上 Latin 单词（模型名、字段名）走 Plex，
+     中文回落系统黑体，两套字形在同一行里都站得住。 */
+  --kx-font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC',
+    'Noto Sans Arabic', 'Geeza Pro', 'Segoe UI Historic', Arial, sans-serif;
+  /* 等宽只用于数据与代码（ID / 哈希 / 金额 / 时延 / 请求体），
+     不拿来做「显得技术」的装饰。 */
+  --kx-font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, 'SF Mono',
+    Menlo, Consolas, 'Liberation Mono', monospace;
+  /* --mono 此前**从未被定义过**：style.css 里 .alert-meta 写了
+     font-family: var(--mono)，那条声明因此解析失败、静默落回继承字体。
+     这里补上真定义，等宽才真的生效。 */
+  --mono: var(--kx-font-mono);
+
+  /* ── 字号阶跃（2026-10-24 排版轮）──
+     此前只有 --kx-font-sm/md/lg（12/14/16）三级，撑不起「一眼看出层级」。
+     这里补到 9 级：10px 的元信息到 38px 的落地页 H1，每级行高与字重步进
+     都写死，组件层不再各写各的字号。 */
+  --kx-text-2xs: 11px;
+  --kx-text-xs:  12px;
+  --kx-text-sm:  13px;
+  --kx-text-md:  14px;
+  --kx-text-lg:  16px;
+  --kx-text-xl:  20px;
+  --kx-text-2xl: 24px;
+  --kx-text-3xl: 30px;
+  --kx-text-4xl: 38px;
+
+  /* ── 圆角纪律（craft-floor：卡片圆角 12–16px；药丸只给极小 chip）──
+     --radius 8px 是控件（按钮 / 输入框 / 小 chip）；
+     卡片与面板走 --radius-card 14px；模态与抽屉这类大表面走 --radius-lg 16px。 */
+  --radius-card: 14px;
+  --radius-lg:   16px;
+
+  /* ── 第二代命名桥接（2026-10-25）──────────────────────────────
+     组件层大量使用 --space-* / --text-* / --font-semibold / --bg-surface /
+     --border-muted / --card-bg / --kx-text-secondary 这一代命名，而它们
+     **在全仓从未被定义过**（`git log -S'--space-3:'` 查证：这道定义在
+     整个历史上都不存在；全仓 grep 也无任何 --space-3: 定义）。
+
+     ★ 为什么这不只是「少个变量」：CSS 规范里 var() 引用未定义的自定义
+       属性 ⇒ 整条声明 **invalid at computed-value time** ⇒ 不是退回
+       默认值，而是**这条声明整个消失**。实测（浏览器计算样式）：
+         .st-card   padding = 0px    background = transparent
+         .oo-card   padding = 0px    border-width = 0px
+         .st-card-price  font-size = 14px / font-weight = 400（应为 24px / 600）
+       ⇒ 卡片没有内边距、没有边框、底色透明、文字层级塌成一片。
+
+     ★ 这里全部桥接到 --kx-* 真值源，**不新增任何颜色**。
+       放在基础 :root 而非明暗两块：每个别名都指向主题内的 --kx-*，
+       计算值随主题走，不需要复制两份。 */
+  /* 间距阶 —— 对应 --kx-space-1..6（4/8/12/16/24/32px） */
+  --space-1: var(--kx-space-1);
+  --space-2: var(--kx-space-2);
+  --space-3: var(--kx-space-3);
+  --space-4: var(--kx-space-4);
+  --space-5: var(--kx-space-5);
+  --space-6: var(--kx-space-6);
+  /* 字号阶 —— 对应 --kx-text-2xs..4xl（11/12/13/14/16/20/24/30/38px） */
+  --text-2xs: var(--kx-text-2xs);
+  --text-xs:  var(--kx-text-xs);
+  --text-sm:  var(--kx-text-sm);
+  --text-md:  var(--kx-text-md);
+  --text-lg:  var(--kx-text-lg);
+  --text-xl:  var(--kx-text-xl);
+  --text-2xl: var(--kx-text-2xl);
+  --text-3xl: var(--kx-text-3xl);
+  --text-4xl: var(--kx-text-4xl);
+  /* 字重阶 */
+  --font-medium:   500;
+  --font-semibold: 600;
+  --font-bold:     700;
+  /* 字体族 */
+  --font-mono: var(--kx-font-mono);
+  --font-base: var(--kx-font-sans);
+  --mono-font: var(--kx-font-mono);
+  /* 表面 —— 卡片面 = --kx-surface */
+  --bg-surface: var(--kx-surface);
+  --card-bg:    var(--kx-surface);
+  --surface:    var(--kx-surface);
+  --surface-soft: var(--kx-surface-soft);
+  --surface-1:  color-mix(in srgb, var(--kx-text) 4%, transparent);
+  --surface2:   var(--surface-secondary);
+  --bg-container: var(--bg-card);
+  --bg-input:   var(--bg);
+  --header-bg:  var(--bg-card);
+  /* 描边 —— muted 比 --border 更淡（同族的 color-mix 写法，见 --bg-hover） */
+  --border-muted: color-mix(in srgb, var(--kx-border) 60%, var(--kx-surface));
+  --border-color: var(--border);
+  /* 语义色别名 */
+  --accent-color:  var(--accent);
+  --accent-hover:  var(--accent-h);
+  --accent-soft:   var(--kx-primary-soft);
+  --app-primary:   var(--kx-primary);
+  --primary-color: var(--accent);
+  --primary:      var(--accent);
+  --primary-hover: var(--accent-h);
+  --primary-soft:  var(--kx-primary-soft);
+  --success-color: var(--success);
+  --error:       var(--danger);
+  --error-text:  var(--danger);
+  --error-bg:    var(--danger-bg);
+  --warning-text: var(--warning);
+  --info:        var(--accent);
+  --cyan:        var(--probe-cyan);
+  --text-tertiary: var(--kx-muted);
+  --fg:          var(--text);
+  --status-color: var(--muted);
+  --bar-color:   var(--muted);
+  --model-font-size: 10px;
+  /* 追踪状态色（RequestTracePanel 用它们当行内色值） */
+  --trace-status-ok:   var(--success);
+  --trace-status-fail: var(--danger);
+  --trace-status-warn: var(--warning);
+  --trace-status-skip: var(--muted);
+  /* --kx-* 家族里那些从未定义、却被引用的老名字 */
+  --kx-accent:    var(--accent);
+  --kx-error:     var(--danger);
+  --kx-color-success: var(--success);
+  --kx-color-warning: var(--warning);
+  --kx-color-error:   var(--danger);
+  --kx-mono:      var(--kx-font-mono);
+  --kx-fg:        var(--text);
+  --kx-text-primary:   var(--text-primary);
+  --kx-text-secondary: var(--text-secondary);
+  --kx-text-muted:     var(--text-muted);
+  --kx-text-subtle:    var(--text-muted);
+  --kx-text-inverse:   var(--on-primary);
+  --kx-surface-secondary: var(--surface-secondary);
+  --kx-bg-container: var(--bg-card);
+  --kx-border-light: var(--border);
+  --kx-border-strong: var(--kx-border);
+  --kx-radius-sm: 6px;
+  --kx-radius-md: var(--radius);
+  --kx-muted-soft: transparent;
+  /* 运行时行内注入的令牌：给出与原兜底一致的默认值
+     （行内 :style 仍会覆盖它，这里只是不让声明落空） */
+  --qwt-grid-cols: minmax(140px, 200px) 78px minmax(240px, 1fr) 72px;
+  --rdv-table-min-width: 720px;
+  --dt-min-width: 720px;
+  --sr-cols-mobile: 2;
+  --sr-cols-tablet: 2;
+  --sr-cols-desktop: 4;
+  --mtc-h: 280px;
+  /* 代码块表面：终端式代码块在明暗两套主题下都是固定深色，
+     配浅色文字读作独立区域（原先借用了 --bg-elevated，
+     见 ExamplesView .code-block 的注释）。 */
+  --code-surface: #1e1e2e;
+}
+
 /* 2026-07-21: 与 ai-native-maintain / ai-session-manager 主题统一。
  * CSS 变量在 :root 提供默认（保持原 llm-gateway-go 暗色配色），并通过
  * html[data-theme='light'] / html[data-theme='dark'] 切换浅色与深色两套。
@@ -56,6 +329,7 @@ html[data-theme='light'] {
   --muted:     var(--kx-muted);
   --accent:    var(--kx-primary);
   --accent-h:  var(--kx-primary-hover);
+  --accent-rgb: 30, 79, 214;    /* #1e4fd6 —— accent 的 RGB 三元组（亮色） */
   --success:   var(--kx-success);
   --success-soft: var(--kx-success-soft);
   --warning:   var(--kx-warning);
@@ -112,8 +386,10 @@ html[data-theme='light'] {
   --success-light:     #6ee7b7;
   --purple-light:      #cba6f7;
   --purple-dark:       #3730a3;
-  /* 表面/容器背景(代码块 / 暗模式投影) */
-  --bg-elevated:       #1e1e2e;
+  /* 表面/容器背景(代码块 / 暗模式投影) —— ★ 2026-10-25 删除：
+     这个令牌是「代码块深色」与「卡片表面」混用的产物，亮色主题下
+     卡片拿到近黑底（实测 rgb(30,30,46) 落在 #f4f6f9 页面上）。
+     代码块请用 --code-surface，卡片请用 --bg-surface / --bg-subtle。 */
   /* 厂商品牌色 (走 token, light/dark 通用) */
   --vendor-openai:     #10a37f;
   --vendor-anthropic:  #d97757;
@@ -184,6 +460,7 @@ html[data-theme='dark'] {
   --muted:     var(--kx-muted);
   --accent:    var(--kx-primary);
   --accent-h:  var(--kx-primary-hover);
+  --accent-rgb: 91, 140, 255;   /* #5b8cff —— accent 的 RGB 三元组（暗色） */
   --success:   var(--kx-success);
   --success-soft: var(--kx-success-soft);
   --warning:   var(--kx-warning);
@@ -238,8 +515,7 @@ html[data-theme='dark'] {
   --success-light: #6ee7b7;
   --purple-light:  #cba6f7;
   --purple-dark:   #3730a3;
-  /* 表面/容器背景(代码块 / 暗模式投影) */
-  --bg-elevated:   #1e1e2e;
+  /* 表面/容器背景(代码块 / 暗模式投影) —— ★ 2026-10-25 删除，见亮色块同名注释。 */
   /* 厂商品牌色 (双主题统一) */
   --vendor-openai:     #10a37f;
   --vendor-anthropic:  #d97757;
@@ -275,11 +551,64 @@ html[data-theme='dark'] {
 html, body, #app { height: 100%; }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+  font-family: var(--kx-font-sans);
   background: var(--bg);
   color: var(--text);
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: var(--kx-text-md);
+  line-height: 1.6;
+  /* 插入符是浏览器的免费表面 —— 全仓此前 caret-color 0 处，
+     意味着光标是系统默认的，跟界面不属于同一套设计。 */
+  caret-color: var(--kx-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   浏览器表面（2026-10-24 排版轮）
+   ═══════════════════════════════════════════════════════════════════
+   文本选区、插入符、滚动条、焦点环、表格数字位 —— 这些是浏览器自带的、
+   属于任何设计系统的「免费表面」。craft-floor 的原话：这是「这页是被造出来
+   的，而不是拼装出来的」最便宜的信号，也是模型最常漏掉的地方。
+
+   本仓此前：::selection 0 处、全局 ::-webkit-scrollbar 0 处、caret-color 0 处。
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* 选区：用主色的低透明度染色，落在任何底色上都还能读。 */
+::selection {
+  background: color-mix(in srgb, var(--kx-primary) 26%, transparent);
+  color: var(--kx-text);
+}
+
+/* 焦点环：全局唯一来源。键盘可达性是底线，不是加分项。
+   偏移 2px 让焦点环不贴住元素边缘，一眼能看出焦点在哪。 */
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--kx-primary) 72%, transparent);
+  outline-offset: 2px;
+}
+
+/* 滚动条：Firefox 用 scrollbar-color，WebKit 用伪元素。 */
+html {
+  scrollbar-color: color-mix(in srgb, var(--kx-muted) 38%, transparent) transparent;
+  scrollbar-width: thin;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--kx-muted) 34%, transparent);
+  border-radius: 999px;
+  /* 2px 透明边框 + content-box ⇒ 滑块比轨道细，手感更像「悬浮」而非「贴边」。 */
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--kx-muted) 55%, transparent);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 a { color: var(--accent); text-decoration: none; }
@@ -323,7 +652,9 @@ input[type="radio"], input[type="checkbox"] {
   user-select: none;
   background: var(--card);
   color: var(--text);
-  box-shadow: 0 1px 0 var(--shadow-color-light);
+  /* 2026-10-24 抬升纪律：原来这里是 `box-shadow: 0 1px 0 var(--shadow-color-light)`
+     —— 1px 描边下面压一层零模糊高光，是「有描边又要抬一层」的幽灵卡片写法
+     （craft-floor 明禁）。描边已经说明了边界，阴影就不再重复声明一次。 */
   transition:
     background-color .18s ease,
     border-color .18s ease,
@@ -335,13 +666,14 @@ input[type="radio"], input[type="checkbox"] {
 .btn-primary {
   background: var(--accent);
   color: #fff;
+  /* 2026-10-24 抬升纪律：填色按钮的表面是「填充」本身，1px 描边已经说明了
+     边界，原来这层 0 2px 6px 的主色柔影属于重复声明（同族问题见上方 .btn）。
+     去掉之后主按钮靠色块本身立住，比「描边 + 彩色柔影」更干净。 */
   border-color: color-mix(in srgb, var(--accent) 70%, transparent);
-  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04), 0 2px 6px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 .btn-primary:hover:not(:disabled) {
   background: var(--accent-h);
   border-color: color-mix(in srgb, var(--accent-h) 75%, transparent);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 30%, transparent);
   transform: translateY(-1px);
 }
 /* 危险：danger 填充 */
@@ -349,7 +681,6 @@ input[type="radio"], input[type="checkbox"] {
   background: var(--danger);
   color: #fff;
   border-color: color-mix(in srgb, var(--danger) 80%, transparent);
-  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04), 0 2px 6px color-mix(in srgb, var(--danger) 24%, transparent);
 }
 .btn-danger:hover:not(:disabled) {
   background: color-mix(in srgb, var(--danger) 88%, #000);
@@ -437,16 +768,17 @@ input[type="radio"], input[type="checkbox"] {
   cursor: progress;
   opacity: 0.7;
 }
-/* 焦点环：键盘可达性 */
+/* 焦点环：键盘可达性。全局 :focus-visible 已给出统一描边，
+   这里只微调偏移，不再另画一圈光晕（双重焦点环会读成「坏了」）。 */
 .btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+  outline-offset: 1px;
 }
 
 .card {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  /* 2026-10-24 圆角纪律：卡片 14px（--radius-card），控件才是 8px（--radius）。 */
+  border-radius: var(--radius-card);
   padding: 16px;
 }
 
@@ -470,13 +802,18 @@ input[type="radio"], input[type="checkbox"] {
   text-shadow: 0 0 8px color-mix(in srgb, var(--accent) 50%, transparent);
 }
 
-table { width: 100%; border-collapse: collapse; }
+/* 数据表的数字位：等宽数字让纵向列能对齐。
+   这是「表格是给人读数用的」的底线 —— 比例数字会让每次刷新都跳。 */
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 thead th {
   text-align: left;
-  font-size: 11px;
+  font-size: var(--kx-text-2xs);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: .05em;
+  /* 2026-10-24 去掉 text-transform: uppercase。
+     中文没有大小写，uppercase 对中文是空操作，只会让界面读起来像
+     「翻译过来的模板」—— 这是本仓最扎眼的一处 AI 味。
+     层级改由字重 + 颜色承担，不再靠把拉丁字母全大写。 */
+  letter-spacing: .01em;
   color: var(--muted);
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
@@ -499,7 +836,8 @@ tbody tr:hover { background: var(--row-hover); }
 .modal {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  /* 大表面走 16px（--radius-lg）。 */
+  border-radius: var(--radius-lg);
   padding: 24px;
   min-width: 360px;
   max-width: 500px;
@@ -563,9 +901,9 @@ tbody tr:hover { background: var(--row-hover); }
   margin-bottom: 16px;
 }
 .drawer-section-title {
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  font-size: var(--kx-text-xs);
+  /* 2026-10-24 去掉 uppercase：中文没有大小写，全大写只会读成翻译模板。 */
+  letter-spacing: 0.01em;
   color: var(--muted);
   margin-bottom: 8px;
 }
@@ -576,12 +914,12 @@ tbody tr:hover { background: var(--row-hover); }
 .stat-card {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-card);
   padding: 12px 16px;
 }
-.stat-card .label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
-.stat-card .value { font-size: 22px; font-weight: 700; line-height: 1.2; }
-.stat-card .sub   { font-size: 11px; color: var(--muted); margin-top: 3px; line-height: 1.3; }
+.stat-card .label { font-size: var(--kx-text-2xs); color: var(--muted); margin-bottom: 4px; }
+.stat-card .value { font-size: var(--kx-text-2xl); font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.stat-card .sub   { font-size: var(--kx-text-2xs); color: var(--muted); margin-top: 3px; line-height: 1.3; }
 
 /* 2026-08-09: 紧凑版 stat-card，用于请求日志页 stats-grid 的 token 拆分条。
    与上方突出显示的 stats-overview 形成视觉对比: 大字号 + 强调边框 vs 紧凑灰底。 */
@@ -592,14 +930,15 @@ tbody tr:hover { background: var(--row-hover); }
 }
 
 /* 2026-08-09: 请求日志页顶部 stats-overview 三联概览卡。
-   视觉权重高于下方 .stat-card.grid: 更大数字、更显眼的强调色左边框、
-   卡片式间距，使其成为页面"本次过滤条件下"的关键指标。 */
+   2026-10-24 抬升纪律：视觉权重改由「数字本身的字号 + 字重」承担，
+   不再靠 3px 彩色左边框（craft-floor 明禁：卡片上的彩色侧边条）。
+   原来只有 total-credits 一张卡是绿的 —— 那个「这是钱」的语义仍然要留着，
+   但改用标签前的一个状态点表达，形状本身就是第二信号。 */
 .stats-overview { container-type: inline-size; }
 .stat-overview-card {
   background: var(--card);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--primary);
-  border-radius: var(--radius);
+  border-radius: var(--radius-card);
   padding: 12px 16px;
   display: flex;
   flex-direction: column;
@@ -608,25 +947,36 @@ tbody tr:hover { background: var(--row-hover); }
   transition: background 0.12s ease;
 }
 .stat-overview-card:hover { background: var(--surface-secondary, var(--card)); }
-.stat-overview-card[data-stat="total-credits"] { border-left-color: var(--success); }
 .stat-overview-label {
-  font-size: 11px;
+  font-size: var(--kx-text-2xs);
   color: var(--text-secondary, var(--muted));
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
   font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* 「这笔是 credits」的标记：一个小圆点，不是色条。 */
+.stat-overview-card[data-stat="total-credits"] .stat-overview-label::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  flex: none;
 }
 .stat-overview-value {
-  font-size: 24px;
+  font-size: var(--kx-text-2xl);
   font-weight: 700;
-  line-height: 1.1;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 .stat-overview-sub {
   font-size: 10px;
   color: var(--muted);
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 @container (max-width: 480px) {
   .stat-overview-value { font-size: 20px; }

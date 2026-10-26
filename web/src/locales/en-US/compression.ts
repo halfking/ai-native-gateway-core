@@ -6,19 +6,10 @@ export default {
   load: {
     statsFailed: 'Failed to load compression stats',
     sessionsFailed: 'Failed to load compression sessions',
-    configFailed: 'Failed to load compression config — the values below are factory defaults, not the current config',
+    configFailed: 'Failed to load compression config: the values below are factory defaults, not the current config',
   },
   tabs: {
-    h24: '24 hours',
-    d7: '7 days',
-    d30: '30 days',
     custom: 'Custom',
-  },
-  custom: {
-    from: 'Start time',
-    to: 'End time',
-    apply: 'Apply',
-    sep: 'to',
   },
   stats: {
     totalRequests: 'Total requests',
@@ -33,9 +24,6 @@ export default {
   charts: {
     strategyDistribution: 'Strategy distribution',
     compressionRateTrend: 'Compression rate trend',
-    timeBucketHour: 'Hourly',
-    timeBucket6Hour: 'Every 6 hours',
-    timeBucketDay: 'Daily',
     noData: 'No time-series data available',
     titleSuffix: '{strategy}: {count} ({pct})',
     barTitle: '{hour}: {n} requests, {pct} compression',
@@ -56,17 +44,6 @@ export default {
     previous: 'Previous',
     next: 'Next',
     pageInfo: '{current} / {total}',
-  },
-  strategies: {
-    delta_append: 'Delta append',
-    sliding_window_token: 'Sliding window (tokens)',
-    sliding_window_count: 'Sliding window (count)',
-    sliding_window_idle: 'Sliding window (idle)',
-    mechanical_trim: 'Mechanical trim',
-    memora_l1_inject: 'Memora inject',
-    llm_summary: 'LLM summary',
-    noop: 'No-op',
-    none: 'Not compressed',
   },
   d30: '30 days',
   d7: '7 days',

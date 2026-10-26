@@ -27,6 +27,41 @@ const { presets: dayPresets, rangeValue, applyRange } = useSpanDaysRange(days, [
   { days: 90, labelKey: 'qualityCorrelations.filter.days.d90' },
 ])
 
+/**
+ * 后端在「无数据」时会把数组字段返成 **`null`**（Go 的 nil slice 被 JSON 序列化成
+ * `null` 而不是 `[]`），而 `QualityCorrelationResponse` 把它们声明成**非空数组**
+ * ⇒ 类型是**假的**。页面若直接 `resp.breakdown.reduce(...)` 就会抛
+ * `TypeError: Cannot read properties of null (reading 'reduce')`
+ * （本机实测：`/quality-correlations` 页，2026-10-20 逐页扫描抓到的唯一一条
+ * JS 运行时异常）。
+ *
+ * 「无数据」是**合法业务状态**，必须渲染空态而不是抛异常。
+ *
+ * 归一化放在**边界**（写进 `resp` 之前）而不是模板里：
+ *   · 模板继续用 `resp.breakdown` / `resp.insights`（既有跨层契约门禁钉的
+ *     就是这个形态，且它们是本页**唯一**的数据出口）；
+ *   · 页面各处拿到的都是数组，不需要各自设防（防御散落在 4 个模板表达式里
+ *     就会漏掉第 5 个）。
+ *
+ * 后端也已改成恒返 `[]`（admin/quality_correlations.go），但**前端不能依赖
+ * 后端**：同一份视图可能被别的后端实现喂数据。
+ */
+type QualityCorrelationWire = Omit<QualityCorrelationResponse, 'breakdown' | 'insights'> & {
+  breakdown: QualityCorrelationResponse['breakdown'] | null
+  insights: QualityCorrelationResponse['insights'] | null
+}
+
+function normalizeQualityCorrelations(
+  raw: QualityCorrelationWire | null | undefined,
+): QualityCorrelationResponse | null {
+  if (!raw) return null
+  return {
+    ...raw,
+    breakdown: Array.isArray(raw.breakdown) ? raw.breakdown : [],
+    insights: Array.isArray(raw.insights) ? raw.insights : [],
+  }
+}
+
 function onRangeApply(range: KxDateRange) {
   applyRange(range)
   void load()
@@ -36,10 +71,12 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    resp.value = await getQualityCorrelations({
-      days: days.value,
-      by: by.value,
-    })
+    resp.value = normalizeQualityCorrelations(
+      await getQualityCorrelations({
+        days: days.value,
+        by: by.value,
+      }),
+    )
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {

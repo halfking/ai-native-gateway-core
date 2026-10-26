@@ -127,15 +127,29 @@ func TestStreamStateMachine_CancelFromStreaming(t *testing.T) {
 	// At this point the keep-alive ticker goroutine must be live
 	// (otherwise we would not be testing cancellation against a
 	// running ticker).
+	//
+	// ★★ 2026-10-23 修：这里的等待原本是「一次性 sleep 2*interval」（10ms），
+	//   而 5ms ticker 在**满载并行**下首帧实测落在 6–14ms ⇒ 10ms 是零余量赌注
+	//   ⇒ 2026-10-23 全量 `go test ./...` 实测红一次、单跑 5/5 绿。
+	//   ⇒ 同一个文件里的 TestStreamStateMachine_TickerGoroutineStopsOnCancel
+	//     早就按 R50 遗留 #8 改成「死线轮询」（tickerFirstFireBudget = 1s = 200×tick）
+	//     并在注释里记了「12× 超订下首帧 6–14ms / 0/150 跑超过 2s」——
+	//     ★ 那次修复**漏掉了本测试这个同族兄弟** ⇒ 本轮补齐。
 	framesBeforeCancel := ps.Frames()
 	if framesBeforeCancel == 0 {
-		// Give the ticker one extra cycle so the assertion below
-		// (frames strictly increasing before Stop) is meaningful
-		// even on a slow runner.
-		select {
-		case <-time.After(2 * cancelTestTickerInterval):
-		case <-ctx.Done():
-			t.Fatalf("ctx done waiting for ticker to fire: %v", ctx.Err())
+		// ★ 必须轮询到「真的有帧」为止，而不是赌一个 sleep 够长：
+		//   这是**前置条件**（liveness），不是被测对象 ⇒ 它的余量应当很宽。
+		fireDeadline := time.Now().Add(tickerFirstFireBudget)
+		for ps.Frames() == 0 {
+			if time.Now().After(fireDeadline) {
+				t.Fatalf("ticker never fired within %v — cancel test cannot proceed",
+					tickerFirstFireBudget)
+			}
+			select {
+			case <-time.After(cancelTestTickerInterval):
+			case <-ctx.Done():
+				t.Fatalf("ctx done waiting for ticker to fire: %v", ctx.Err())
+			}
 		}
 		framesBeforeCancel = ps.Frames()
 	}

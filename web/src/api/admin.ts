@@ -289,17 +289,25 @@ export function resetUserPassword(id: number, password: string) {
   return req<{ status: string }>('PUT', `/api/users/${id}/password`, { password })
 }
 
-// AuthMeResponse wraps the user info and optionally includes a fresh access_token.
-// When the server returns access_token, the SPA should persist it to localStorage
-// (this happens during cookie-only hydration: valid HttpOnly cookie but no JWT in
-// localStorage). When access_token is omitted (legacy callers), the SPA falls
-// back to cookie-based auth.
-export interface AuthMeResponse extends UserInfo {
+// AuthMeResponse carries a fresh access_token **plus the user object nested
+// under `user`** — that is what the server actually sends
+// (admin/users.go:683 `{"access_token":…,"expires_at":…,"user":{…}}`).
+// It also carries a fresh HttpOnly session cookie.
+//
+// 2026-10-23 修正：本接口此前声明为 `extends UserInfo`（用户字段在**顶层**），
+// 而后端从来没有这样发过。该错误类型直接诱导了 App.vue 的水合判据去读
+// `raw.id` ⇒ 对真实响应恒为 undefined ⇒ 每次冷启都 clearJwt()。
+// 判身份请统一走 `store.userInfoFromAuthMe()`（同时认嵌套与降级扁平两种形态），
+// 不要在这里按 UserInfo 直接展开。
+export interface AuthMeResponse {
   access_token?: string
   expires_at?: string
+  user?: UserInfo
 }
 
 export function getAuthMe() {
+  // 降级路径（JWT 签发失败，admin/users.go:678）返回**顶层** userInfo；
+  // 两种形态都在联合类型里，由 store.userInfoFromAuthMe 归一。
   return req<AuthMeResponse | UserInfo>('GET', '/api/auth/me')
 }
 

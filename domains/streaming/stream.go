@@ -84,6 +84,27 @@ func isEmptySemanticDelta(payload string) bool {
 	return emptyoutcome.ChatSemanticDelta(payload)
 }
 
+// gateBufferedFinishWithoutOutput reports whether the empty-stream gate's
+// buffer carries a finish_reason with zero agent-visible output — the
+// MiniMax "close after finish_reason, no [DONE]" shape while still buffering.
+func gateBufferedFinishWithoutOutput(buffered []string) bool {
+	sawFinish := false
+	for _, l := range buffered {
+		payload := extractPayload(l)
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		if chunkHasContent(payload) {
+			return false
+		}
+		chunk, err := ir.ParseOpenAIStreamChunk(l)
+		if err == nil && chunk != nil && chunk.FinishReason != "" {
+			sawFinish = true
+		}
+	}
+	return sawFinish
+}
+
 func earlyEmptyOutcome(capture *audit.StreamCapture) *StreamOutcome {
 	if capture != nil {
 		capture.MarkInterruptedWithReason("early_empty_detection")
@@ -171,6 +192,9 @@ func runEmptyStreamGateWithVendor(
 	stripFn func([]byte) []byte,
 	toolsRequested bool,
 ) (flushedLines []string, outcome *StreamOutcome) {
+	if stripFn == nil && vendorCode == "" {
+		stripFn = newInferredStreamStripper()
+	}
 	buffered := make([]string, 0, emptyGateMaxChunks)
 	bufferedBytes := 0
 	xmlToolCoercer := newStreamXMLToolCallCoercer()
@@ -282,8 +306,21 @@ func runEmptyStreamGateWithVendor(
 				failure.Reason = "stream_timeout"
 				failure.Kind = errorsx.KindStreamTimeout
 			case streamReadEOF:
-				failure.Reason = "eof_without_done"
-				failure.Kind = errorsx.KindUpstreamDown
+				// Magpie emptyReply (2026-10-17): MiniMax closes after
+				// finish_reason without [DONE] while the empty gate is still
+				// buffering. If the buffer has a finish_reason and zero
+				// agent-visible output (phantoms/usage/role only), surface
+				// KindEmptyResponse — not eof_without_done — so the executor
+				// retries the way Magpie does on emptyReply.
+				if gateBufferedFinishWithoutOutput(buffered) {
+					failure.Reason = "openai_empty_response"
+					failure.Kind = errorsx.KindEmptyResponse
+					failure.Resumable = true
+					failure.ChunkCount = 0
+				} else {
+					failure.Reason = "eof_without_done"
+					failure.Kind = errorsx.KindUpstreamDown
+				}
 			}
 			if capture != nil {
 				capture.MarkInterruptedWithReason(failure.Reason)
@@ -501,12 +538,20 @@ func integrityBreachOutcome(capture *audit.StreamCapture, chunkCount int) Stream
 		}
 		capture.MarkInterruptedWithReason(reason)
 	}
+	// ★ 2026-10-24 magpie 19 类 rest 词表轮（§6-P0-3）：**回复陷入循环**必须与
+	//   「空回复」分开 —— magpie 的 failLoop 理由是「是模型转圈，不是账号的锅」
+	//   （magpie internal/gateway/routing.go:319-321）⇒ 休息粒度取 (凭据,模型)，
+	//   **不罚账号**；而 KindEmptyResponse 走的是另一条归责路径。
+	kind := errorsx.KindEmptyResponse
+	if reason == audit.BreachReasonRepeatedContent {
+		kind = errorsx.KindReplyLoop
+	}
 	return StreamOutcome{
 		Interrupted: true,
 		Reason:      reason,
 		Resumable:   true,
 		ChunkCount:  chunkCount,
-		Kind:        errorsx.KindEmptyResponse,
+		Kind:        kind,
 	}
 }
 
@@ -645,6 +690,11 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
+	if stripFn == nil && vendorCode == "" {
+		stripFn = newInferredStreamStripper()
+	}
+	// Terminal repair state belongs to this request, including its empty-stream gate.
+	norm = norm.forStream()
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
@@ -689,6 +739,15 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			if pc != nil {
 				pc.markInterrupted("stream_panic")
 			}
+		}
+		if outcome.Interrupted && outcome.Resumable && gate != nil && !attemptHasClientSemanticOutput(gate, 0) {
+			// Retry thresholds count client-visible frames, not frames accepted
+			// into holdback. Keep the original count available for diagnostics.
+			if outcome.ChunkCount > 0 {
+				streamLogFromContext(ctx, nil).Debug("held stream frames excluded from retry threshold",
+					"accepted_chunks", outcome.ChunkCount, "client_visible_chunks", 0, "reason", outcome.Reason)
+			}
+			outcome.ChunkCount = 0
 		}
 		// Best-effort capture finalise. If the stream completed
 		// normally, the capturer holds the full body ready for
@@ -764,7 +823,13 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	// active, a failed client write only disables response writes; the
 	// upstream body must still be consumed for replay.
 	clientDisconnected := false
+	continuationHasToolCall := false
 	writeClientLine := func(line string) bool {
+		// Belt-and-suspenders: strip again in case a line bypassed
+		// stripChunkFieldsForVendor (gate flush / model rewrite paths).
+		line = stripPhantomToolCallsFromSSELine(line)
+		// Observe the final wire shape, including XML-coerced and nonzero-choice calls.
+		continuationHasToolCall = continuationHasToolCall || chatLineStartsToolCall(line)
 		if clientDisconnected {
 			return false
 		}
@@ -823,8 +888,10 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			firstFailure = StreamOutcome{
 				Interrupted: true,
 				Reason:      "first_byte_timeout",
-				Kind:        errorsx.KindStreamTimeout,
-				Resumable:   true,
+				// ★ 2026-10-24 magpie 19 类 rest 词表轮（§6-P0-4）：首字节超时
+				//   与流中超时分开 —— 前者「第一次放过、反复才罚、罚在模型粒度」。
+				Kind:      errorsx.KindFirstByteTimeout,
+				Resumable: true,
 			}
 		default:
 			firstFailure = streamReadFailureOutcome(err, 0)
@@ -869,8 +936,8 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	finalFinishReason := ""
 
 	// sawSemanticOutput tracks whether any chunk WRITTEN TO THE CLIENT
-	// carried real assistant semantics (content / reasoning / tool_calls /
-	// audio), judged by the shared emptyoutcome table (chunkHasContent).
+	// carried real assistant semantics (content / named tool_calls / audio),
+	// judged by the shared emptyoutcome table (chunkHasContent).
 	// r0924b (2026-09-24): finish_reason alone is NOT semantic output — a
 	// stream of pure usage/keepalive/role frames diluted past the
 	// empty-stream gate cap plus a trailing finish_reason must NOT be
@@ -878,6 +945,13 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	// emptyoutcome semantic table, with or without finish_reason). It only
 	// feeds the benign-EOF branch below; the eof_without_done structured
 	// error paths are unchanged.
+	//
+	// r1029 (2026-10-17): reasoning_content no longer sets this flag. A
+	// reasoning model that spends the whole token budget on deliberation
+	// (max_tokens exhausted, content never emitted) must NOT be promoted to a
+	// benign success — that is the 154 glm-5.3 empty_model_response path. The
+	// thinking channel is still relayed to the client verbatim; only this
+	// gate's notion of "the assistant actually answered" narrows.
 	sawSemanticOutput := false
 
 	// P0-3 (2026-10-14)：断流原地续问状态。continuationPrefix 累计已发给
@@ -886,8 +960,12 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	// 读循环侧的预算防重入（hook 内另有一道 atomic CAS，双保险）；
 	// suppressContinuationRole 抑制续问首个 delta 的 role 字段重复——
 	// 客户端不应看到第二个 role:assistant 首 帧。
+	// continuationAmbiguous（P0-3 审计修复，2026-10-16）：上游一旦出现
+	// 多 choice 或非零 index 的语义输出，choice-0-only 的 prefill 无法
+	// 表达流状态——永久禁用续问，回落既有 eof_without_done 终态。
 	var continuationPrefix strings.Builder
 	continuationSpent := false
+	continuationAmbiguous := false
 	suppressContinuationRole := false
 
 	if firstLine != "" {
@@ -897,6 +975,16 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			diagnosticCollector.observeRaw([]byte(firstRawPayload))
 			if chunk, parseErr := ir.ParseOpenAIStreamChunk(firstLine); parseErr == nil {
 				diagnosticCollector.observeChunk(chunk)
+				if chunk.Type == ir.ChunkTypeError {
+					// P0-3 审计修复：上游首帧即宣告失败——byte-silent
+					// 可恢复中断，执行器换候选；不外显供应商错误体，
+					// 不续问。首帧阶段必然未提交正文。
+					outcome, _ := chatChunkErrorTerminal(w, flusher, capture, false, 0, chunk)
+					return outcome
+				}
+				if chatStreamChoicesAmbiguous([]byte(firstRawPayload)) {
+					continuationAmbiguous = true
+				}
 				if chunk.FinishReason != "" {
 					finalFinishReason = chunk.FinishReason
 				}
@@ -1121,6 +1209,18 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 				// main-loop path at line ~1407.
 				if p != "" && p != "[DONE]" {
 					if chunk, parseErr := ir.ParseOpenAIStreamChunk(l); parseErr == nil {
+						if chunk.Type == ir.ChunkTypeError {
+							// P0-3 审计修复：闸门冲刷线上出现上游错误帧——
+							// 同主循环契约：未提交 byte-silent 可恢复；已提交
+							// 单一网关安全终态。冲刷循环此帧尚未写客户端。
+							committed := attemptHasClientSemanticOutput(gate, chunkCount)
+							outcome, rendered := chatChunkErrorTerminal(w, flusher, capture, committed, chunkCount, chunk)
+							outcome.TerminalRendered = rendered
+							return outcome
+						}
+						if chatStreamChoicesAmbiguous([]byte(p)) {
+							continuationAmbiguous = true
+						}
 						if chunk.FinishReason != "" {
 							finalFinishReason = chunk.FinishReason
 						}
@@ -1209,14 +1309,27 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 					//
 					// r0924b (2026-09-24): the benign promotion additionally
 					// requires sawSemanticOutput — real assistant output
-					// (content/reasoning/tool_calls, emptyoutcome table) must
-					// have reached the client. A zero-semantic stream (pure
-					// usage/keepalive/role frames + finish_reason, diluted past
-					// the empty-stream gate cap) has no tool executor waiting
-					// on it; promoting it to success would be exactly the
-					// §11.6 pseudo-success (usage-only = EMPTY regardless of
-					// finish_reason). Those streams fall through to the
-					// existing eof_without_done structured-error paths below.
+					// (content/reasoning/named-or-arg tool_calls, emptyoutcome
+					// table) must have reached the client. A zero-semantic
+					// stream (pure usage/keepalive/role frames + finish_reason,
+					// diluted past the empty-stream gate cap) has no tool
+					// executor waiting on it; promoting it to success would be
+					// exactly the §11.6 pseudo-success (usage-only = EMPTY
+					// regardless of finish_reason).
+					//
+					// Magpie emptyReply parity (2026-10-17): finish_reason with
+					// zero agent-visible output (incl. MiniMax phantom
+					// tool_calls) must surface KindEmptyResponse so the
+					// executor retries / switches candidates — not eof_without_done
+					// and not a benign success. Mirrors responses_bridge.
+					if finalFinishReason != "" && !sawSemanticOutput && !attemptHasClientSemanticOutput(gate, chunkCount) {
+						slog.Warn("upstream finish_reason with zero agent-visible output — Magpie emptyReply failover",
+							"client_model", clientModel,
+							"chunk_count", chunkCount,
+							"finish_reason", finalFinishReason,
+						)
+						return chatEmptyResponseTerminal(w, flusher, capture, pc, gate, chunkCount)
+					}
 					if finalFinishReason != "" && chunkCount > 0 && sawSemanticOutput {
 						slog.Info("upstream EOF without [DONE] after finish_reason — benign non-compliant close (§11.6 parity)",
 							"client_model", clientModel,
@@ -1247,7 +1360,13 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 						// 失败/预算耗尽/无正文可 prefill 则原样落入下方既有
 						// eof_without_done 终态化（不双 terminal）。
 						if contFn := executors.StreamContinuationFromContext(ctx); contFn != nil &&
-							!continuationSpent && continuationPrefix.Len() > 0 {
+							!continuationSpent && !continuationAmbiguous && !continuationHasToolCall &&
+							continuationPrefix.Len() > 0 && continuationPrefix.Len() <= continuationMaxPrefixBytes {
+							// P0-3 审计修复（2026-10-16）：先关旧腿 body 再发续问
+							// 请求——要求显式 Close 才释放连接的自定义 transport
+							// 不再在第二腿建连期间占用第一腿资源。
+							//nolint:errcheck // old upstream body just EOF'd; close is hygiene
+							_ = bodyCloser.Close()
 							newBody, contErr := contFn(continuationPrefix.String())
 							if contErr == nil && newBody != nil {
 								continuationSpent = true
@@ -1257,8 +1376,11 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 									"prefix_len", continuationPrefix.Len(),
 									"chunk_count", chunkCount,
 								)
-								//nolint:errcheck // old upstream body just EOF'd; close is hygiene
-								_ = bodyCloser.Close()
+								if capture != nil {
+									// 两腿分别计费：把已完结腿的最后 usage 入账，
+									// 让 SummaryAsMap 求和而不是被续问腿覆盖。
+									capture.BankCurrentUsage()
+								}
 								bodyCloser = newBody
 								reader = bufio.NewReaderSize(newBody, streamBufSize)
 								// 续问 body 在本函数返回时关闭（每请求至多
@@ -1520,22 +1642,35 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 
 		rawPayload := extractPayload(line)
 		if rawPayload != "" && rawPayload != "[DONE]" {
-			// P0-3：续问腿首帧的 role 字段抑制——上一腿已经发过
-			// role:assistant，客户端再收到一次就是重复前缀信号。只作用于
-			// 续问腿的第一个带 payload 的帧（无论其是否携带 role），处理
-			// 完一次性清零。
+			// P0-3：续问腿的 role 字段抑制——上一腿已经发过 role:assistant，
+			// 客户端再收到一次就是重复前缀信号。抑制只被「从带载荷帧上剥掉
+			// role」解除；整帧丢弃（role-only priming）与空 delta / usage 等
+			// metadata 帧都不消耗抑制机会（P0-3 审计修复，2026-10-16），
+			// 否则前置 metadata 之后的 role 重复帧会漏到客户端。
 			if suppressContinuationRole {
-				stripped, drop := stripContinuationRoleFromLine(line)
+				stripped, drop, hadRole := stripContinuationRoleFromLine(line)
 				if drop {
-					suppressContinuationRole = false
 					continue
 				}
-				line = stripped
-				suppressContinuationRole = false
+				if hadRole {
+					line = stripped
+					suppressContinuationRole = false
+				}
 			}
 			diagnosticCollector.observeRaw([]byte(rawPayload))
 			if chunk, parseErr := ir.ParseOpenAIStreamChunk(line); parseErr == nil {
 				diagnosticCollector.observeChunk(chunk)
+				if chunk.Type == ir.ChunkTypeError {
+					// P0-3 审计修复（2026-10-16）：上游在流中段显式宣告失败
+					// ——绝不可作为续问 prefill、绝不可原样转发供应商错误体。
+					committed := attemptHasClientSemanticOutput(gate, chunkCount)
+					outcome, rendered := chatChunkErrorTerminal(w, flusher, capture, committed, chunkCount, chunk)
+					outcome.TerminalRendered = rendered
+					return outcome
+				}
+				if chatStreamChoicesAmbiguous([]byte(rawPayload)) {
+					continuationAmbiguous = true
+				}
 				if chunk.FinishReason != "" {
 					finalFinishReason = chunk.FinishReason
 				}
@@ -1619,6 +1754,9 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 		payload := extractPayload(line)
 		if payload != "" {
 			if payload == "[DONE]" {
+				if !sawSemanticOutput {
+					return chatEmptyResponseTerminal(w, flusher, capture, pc, gate, chunkCount)
+				}
 				upstreamDoneReceived = true
 			}
 			if capture != nil {
@@ -1690,11 +1828,41 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 }
 
 func extractPayload(line string) string {
-	if !strings.HasPrefix(line, "data: ") {
+	if !strings.HasPrefix(line, "data:") {
 		return ""
 	}
-	payload := strings.TrimPrefix(line, "data: ")
+	payload := strings.TrimPrefix(line, "data:")
 	return strings.TrimSpace(payload)
+}
+
+// chatLineStartsToolCall checks every choice, including legacy function_call.
+// Once tool arguments have started, plain text cannot reconstruct the reply.
+func chatLineStartsToolCall(line string) bool {
+	if !strings.HasPrefix(line, "data:") {
+		return false
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if !strings.Contains(payload, "tool_calls") && !strings.Contains(payload, "function_call") {
+		return false
+	}
+	var frame struct {
+		Choices []struct {
+			Delta struct {
+				ToolCalls    []json.RawMessage `json:"tool_calls"`
+				FunctionCall json.RawMessage   `json:"function_call"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal([]byte(payload), &frame) != nil {
+		return false
+	}
+	for _, choice := range frame.Choices {
+		legacy := strings.TrimSpace(string(choice.Delta.FunctionCall))
+		if len(choice.Delta.ToolCalls) > 0 || legacy != "" && legacy != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 // accumulateChatContentDelta appends the chunk's plain text delta to the
@@ -1714,51 +1882,54 @@ func accumulateChatContentDelta(chunk *ir.StreamChunk, b *strings.Builder) {
 }
 
 // stripContinuationRoleFromLine removes the "role" field from a chat SSE
-// chunk line (P0-3 continuation splice). A first continuation frame that
-// carries ONLY the role (the typical `{"delta":{"role":"assistant",
-// "content":""}}` priming frame) is dropped entirely (drop=true); a frame
-// that also carries content/tool_calls/finish_reason/usage keeps everything
-// but the role. Line shape in / out: "data: {json}\n".
-func stripContinuationRoleFromLine(line string) (string, bool) {
-	if !strings.HasPrefix(line, "data: ") {
-		return line, false
+// chunk line (P0-3 continuation splice). A continuation frame that carries
+// ONLY the role (the typical `{"delta":{"role":"assistant","content":""}}`
+// priming frame) is dropped entirely (drop=true); a frame that also carries
+// content/tool_calls/finish_reason/usage keeps everything but the role.
+// hadRole reports whether the frame actually carried a role field — callers
+// keep the suppression armed when it is false so metadata/usage frames do
+// not consume the one-shot suppression (P0-3 audit fix, 2026-10-16).
+// Line shape in / out: "data: {json}\n".
+func stripContinuationRoleFromLine(line string) (out string, drop bool, hadRole bool) {
+	if !strings.HasPrefix(line, "data:") {
+		return line, false, false
 	}
 	trailing := "\n"
 	if !strings.HasSuffix(line, "\n") {
 		trailing = ""
 	}
-	payload := strings.TrimSuffix(strings.TrimPrefix(line, "data: "), "\n")
+	payload := strings.TrimSuffix(strings.TrimPrefix(line, "data:"), "\n")
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(payload), &obj); err != nil {
-		return line, false
+		return line, false, false
 	}
 	choicesRaw, ok := obj["choices"]
 	if !ok {
-		return line, false
+		return line, false, false
 	}
 	var choices []json.RawMessage
 	if err := json.Unmarshal(choicesRaw, &choices); err != nil || len(choices) == 0 {
-		return line, false
+		return line, false, false
 	}
 	var choice map[string]json.RawMessage
 	if err := json.Unmarshal(choices[0], &choice); err != nil {
-		return line, false
+		return line, false, false
 	}
 	deltaRaw, ok := choice["delta"]
 	if !ok {
-		return line, false
+		return line, false, false
 	}
 	var delta map[string]json.RawMessage
 	if err := json.Unmarshal(deltaRaw, &delta); err != nil {
-		return line, false
+		return line, false, false
 	}
 	if _, hasRole := delta["role"]; !hasRole {
-		return line, false
+		return line, false, false
 	}
 	delete(delta, "role")
 	newDelta, err := json.Marshal(delta)
 	if err != nil {
-		return line, false
+		return line, false, true
 	}
 	// role-only priming frame（delta 里除 role 外无任何载荷）：整帧丢弃——
 	// 除非帧在别处还带着 finish_reason/usage，那些必须继续到达客户端。
@@ -1766,25 +1937,137 @@ func stripContinuationRoleFromLine(line string) (string, bool) {
 		_, hasFinish := choice["finish_reason"]
 		_, hasUsage := obj["usage"]
 		if !hasFinish && !hasUsage {
-			return "", true
+			return "", true, true
 		}
 	}
 	choice["delta"] = newDelta
 	newChoice, err := json.Marshal(choice)
 	if err != nil {
-		return line, false
+		return line, false, true
 	}
 	choices[0] = newChoice
 	newChoices, err := json.Marshal(choices)
 	if err != nil {
-		return line, false
+		return line, false, true
 	}
 	obj["choices"] = newChoices
 	newObj, err := json.Marshal(obj)
 	if err != nil {
-		return line, false
+		return line, false, true
 	}
-	return "data: " + string(newObj) + trailing, false
+	return "data: " + string(newObj) + trailing, false, true
+}
+
+// continuationMaxPrefixBytes caps the continuation prefill accumulator
+// (P0-3 audit fix, 2026-10-16). A longer committed prefix means the answer
+// is already far past any reasonable continuation point: splicing would
+// re-marshal a ≥64KiB body (triple memory amplification with the builder
+// and the wire buffer) for marginal recovery value. Over-cap streams fall
+// through to the existing eof_without_done terminal instead of issuing a
+// second upstream request.
+const continuationMaxPrefixBytes = 64 * 1024
+
+// chatStreamChoicesAmbiguous reports whether a raw chat SSE payload carries
+// shapes the choice-0-only continuation prefill cannot represent: more than
+// one choice, or a non-zero choice index carrying content (P0-3 audit fix,
+// 2026-10-16). Ambiguous streams permanently disable continuation — a single
+// trailing assistant message cannot stand in for multi-branch state.
+func chatStreamChoicesAmbiguous(payload []byte) bool {
+	var obj struct {
+		Choices []struct {
+			Index int `json:"index"`
+			Delta struct {
+				Content string `json:"content"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(payload, &obj); err != nil {
+		return false
+	}
+	if len(obj.Choices) > 1 {
+		return true
+	}
+	for _, c := range obj.Choices {
+		if c.Index != 0 && c.Delta.Content != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// chatChunkErrorTerminal enforces the in-band upstream error contract
+// (P0-3 audit fix, 2026-10-16): a `data: {"error":...}` frame from upstream
+// is a provider-declared failure — never continuation prefill material,
+// never forwarded raw (supplier detail must not leak to the client).
+//
+//   - uncommitted streams stay byte-silent with a resumable interruption so
+//     the executor's candidate loop can fail over;
+//   - committed streams get exactly ONE gateway-safe terminal (fixed
+//     message, no vendor fields) + synthesized [DONE].
+//
+// Returns the outcome and whether a terminal was rendered.
+func chatChunkErrorTerminal(w http.ResponseWriter, flusher http.Flusher, capture *audit.StreamCapture, committed bool, chunkCount int, chunk *ir.StreamChunk) (StreamOutcome, bool) {
+	if capture != nil {
+		capture.MarkInterruptedWithReason("upstream_error")
+	}
+	errType := ""
+	errCode := ""
+	if chunk != nil && chunk.Error != nil {
+		errType = chunk.Error.Type
+		errCode = chunk.Error.Code
+	}
+	slog.Warn("stream: upstream in-band error chunk",
+		"upstream_error_type", errType,
+		"upstream_error_code", errCode,
+		"chunk_count", chunkCount,
+		"committed", committed,
+	)
+	outcome := StreamOutcome{
+		Interrupted: true,
+		Reason:      "upstream_error",
+		Kind:        errorsx.KindUpstreamDown,
+		ChunkCount:  chunkCount,
+	}
+	if !committed {
+		// Nothing client-visible yet: stay silent so the candidate loop
+		// transparently fails over (same contract as malformed SSE frames).
+		outcome.Resumable = true
+		return outcome, false
+	}
+	errChunk := "data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"upstream stream returned an error\",\"code\":\"upstream_error\",\"reason\":\"upstream_error\",\"retryable\":true},\"code\":\"upstream_error\",\"reason\":\"upstream_error\",\"retryable\":true}\n\ndata: [DONE]\n\n"
+	safeWriteSSE(w, errChunk)
+	safeFlush(flusher)
+	outcome.Resumable = false
+	outcome.TerminalRendered = true
+	return outcome, true
+}
+
+// A DONE marker ends transport, but does not turn reasoning into an answer.
+// Keep held attempts silent; once reasoning reached the client, close with one
+// error terminal and forbid transparent replay of those committed bytes.
+func chatEmptyResponseTerminal(w http.ResponseWriter, flusher http.Flusher, capture *audit.StreamCapture, pc *pendingCapturer, gate *AttemptCommitGate, chunkCount int) StreamOutcome {
+	if capture != nil {
+		capture.MarkInterruptedWithReason("openai_empty_response")
+	}
+	committed := attemptHasClientSemanticOutput(gate, chunkCount)
+	outcome := StreamOutcome{
+		Interrupted: true, Reason: "openai_empty_response", Kind: errorsx.KindEmptyResponse,
+		Resumable: !committed, ChunkCount: chunkCount,
+	}
+	if !committed {
+		return outcome
+	}
+	terminal := "data: {\"error\":{\"type\":\"empty_response\",\"message\":\"upstream completed without an assistant answer\",\"code\":\"openai_empty_response\",\"reason\":\"empty_response\",\"retryable\":true},\"code\":\"openai_empty_response\",\"reason\":\"empty_response\",\"retryable\":true}\n\ndata: [DONE]\n\n"
+	if pc != nil {
+		pc.append(terminal)
+	}
+	written := safeWriteSSE(w, terminal)
+	flushed := safeFlush(flusher)
+	if written && flushed {
+		outcome.TerminalRendered = true
+		gate.MarkTerminalRendered()
+	}
+	return outcome
 }
 
 // splitCombinedDoneFrame extracts the first complete JSON value from a malformed
@@ -1797,10 +2080,10 @@ func stripContinuationRoleFromLine(line string) (string, bool) {
 // marker, which callers requeue as a separate SSE frame.
 func splitCombinedDoneFrame(line string) (string, bool) {
 	trimmed := strings.TrimSpace(line)
-	if !strings.HasPrefix(trimmed, "data: ") {
+	if !strings.HasPrefix(trimmed, "data:") {
 		return line, false
 	}
-	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data: "))
+	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 	if payload == "" || payload == "[DONE]" {
 		return line, false
 	}
@@ -1939,11 +2222,17 @@ func stripChunkFields(line string, stripFn func([]byte) []byte) (string, int, st
 // explicitly avoids fragile function-value identity checks and cross-vendor
 // error classification.
 func stripChunkFieldsForVendor(line, vendorCode string, stripFn func([]byte) []byte) (string, int, string) {
-	if !strings.HasPrefix(line, "data: ") {
+	if !strings.HasPrefix(line, "data:") {
 		return line, 0, ""
 	}
-	payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
-	if payload == "" || payload == "[DONE]" {
+	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if payload == "" {
+		return line, 0, ""
+	}
+	if payload == "[DONE]" {
+		if stripFn != nil {
+			stripFn([]byte(payload))
+		}
 		return line, 0, ""
 	}
 
@@ -1953,14 +2242,19 @@ func stripChunkFieldsForVendor(line, vendorCode string, stripFn func([]byte) []b
 			return line, code, msg
 		}
 	}
-	if stripFn == nil {
-		return line, 0, ""
+	// Always strip nameless MiniMax-style phantom tool_calls before the
+	// client sees the frame (r1028b). Applied even when stripFn is nil so
+	// non-catalog vendors still drop empty slots.
+	outPayload := payload
+	if stripFn != nil {
+		stripped := stripFn([]byte(payload))
+		if len(stripped) == 0 {
+			return line, 0, ""
+		}
+		outPayload = string(stripped)
 	}
-	stripped := stripFn([]byte(payload))
-	if len(stripped) == 0 {
-		return line, 0, ""
-	}
-	return "data: " + string(stripped) + "\n", 0, ""
+	outPayload = stripPhantomToolCallsInPayload(outPayload)
+	return "data: " + outPayload + "\n", 0, ""
 }
 
 // resolveStreamVendor normalizes an explicit catalog code and, for empty
@@ -1978,6 +2272,9 @@ func resolveStreamVendor(payload, vendorCode string, stripFn func([]byte) []byte
 	}
 	switch {
 	case fields["base_resp"] != nil || fields["nvext"] != nil || fields["input_sensitive"] != nil:
+		if stripFn != nil {
+			return "minimax", stripFn
+		}
 		return "minimax", StripMinimaxFieldsBody
 	case fields["zhipu_request_id"] != nil || fields["web_search_results"] != nil:
 		return "zhipu", StripZhipuFieldsBody
@@ -2024,10 +2321,10 @@ func (c *onceReadCloser) Close() error {
 }
 
 func extractModelFromChunk(line string) string {
-	if !strings.HasPrefix(line, "data: ") || strings.HasPrefix(line, "data: [DONE") {
+	if !strings.HasPrefix(line, "data:") || strings.HasPrefix(line, "data: [DONE") {
 		return ""
 	}
-	jsonStr := strings.TrimPrefix(line, "data: ")
+	jsonStr := strings.TrimPrefix(line, "data:")
 	jsonStr = strings.TrimSpace(jsonStr)
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(jsonStr), &obj); err != nil {
@@ -2086,13 +2383,13 @@ func safeWriteSSE(w io.Writer, line string) (ok bool) {
 }
 
 func replaceModelInChunk(line, clientModel, discoveredUpstream string) string {
-	if !strings.HasPrefix(line, "data: ") || clientModel == "" {
+	if !strings.HasPrefix(line, "data:") || clientModel == "" {
 		return line
 	}
 	if strings.HasPrefix(line, "data: [DONE") {
 		return line
 	}
-	jsonStr := strings.TrimPrefix(line, "data: ")
+	jsonStr := strings.TrimPrefix(line, "data:")
 	jsonStr = strings.TrimSpace(jsonStr)
 
 	var obj map[string]json.RawMessage

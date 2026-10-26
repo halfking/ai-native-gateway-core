@@ -45,6 +45,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/bg"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 // indirectReader 描述一个「v1 读法是间接的」文件。
@@ -81,92 +84,165 @@ type indirectReader struct {
 }
 
 var indirectRequestLogsReaders = map[string]indirectReader{
-	"db/request_logs_view_schema.go": {
-		Family:     familyBodies,
-		ResolvesTo: "_request_logs_bodies",
-		SwitchFunc: "SessionBodiesSourceSQL",
-		Reason: "★ bodies 读端灰度切换层的**唯一**所在地（§9.233）。" +
-			"`SessionBodiesSourceSQL()` 有两臂：默认返回字面量 " +
-			"`request_logs_bodies_with_current_month`（v1 bodies 视图），" +
-			"开关打开才返回 `SessionFamilyBodiesSourceSQL()`（会话族 hot ∪ 父表）。" +
-			"⇒ **默认支是 v1**，与 bg/auto_route_settle_sql.go 同形：条件性读 v1。\n" +
-			"⚠ **本条目在 §9.230→§9.233 之间搬过两次家**，两次都是同一个原因：" +
-			"切换层住错包，前一批消费点能迁、后一批迁不了。" +
-			"  ① §9.230 住在 admin/session_bodies_source.go（当时只有 2 个消费点，都在 admin 包）；\n" +
-			"  ② §9.232 迁了 7 个 admin 包读方，仍够用；\n" +
-			"  ③ §9.233 要迁 domains/ 与 bg/ 的 4 个 ⇒ 跨包看不见未导出符号，" +
-			"**实测把它们从 bodies 总体里静默挤掉了 4 个**（27→23）——" +
-			"而那道门本来就故意红，不会有任何信号。\n" +
-			"⇒ 搬到 db（与 SessionFamilyTurnsSourceSQL 等同族 helper 同处）。\n" +
-			"消费点共 13 个文件（admin 9 + domains/sessionforensics 1 + domains/sessionsummary 2 + bg 1；" +
-			"R46 机器复测：13 文件 19 调用点——计数以门输出为准，勿手抄），" +
-			"由 indirectSourceConsumers 机器识别。",
-	},
-	"bg/auto_route_settle_sql.go": {
-		Family:     familyBase,
-		ResolvesTo: "_request_logs_hot",
-		Reason: "settleBatch / loadTaskBaselines 的 SQL 由 settleBaselinesSQL(src) 与 " +
-			"settlePendingSQL(src) 构造，关系名是 src.TurnsTable（§9.43 引入）。" +
-			"src 来自 settleSourceFor(logsWriteEnabled)：写门开着 ⇒ _request_logs_hot（当前族），" +
-			"关掉 ⇒ session_turns_hot（§9.44）。⇒ 同一段 SQL 在两个族之间切换，" +
-			"族不能由文本判定，必须显式登记。",
-	},
+	// 890 之后：间接读 v1 的文件为零。
+	//
+	// 三条曾经在这里的登记为什么都走了（2026-10-20 实测）：
+	//
+	//	① db/request_logs_view_schema.go —— `SessionBodiesSourceSQL()` 的
+	//	   v1 臂已被删掉，函数体恒等于 `SessionFamilyBodiesSourceSQL()`
+	//	   （db/request_logs_view_schema.go:807-809）⇒ 它不再能解析到 v1。
+	//	② bg/auto_route_settle_sql.go —— `settleSourceFor()` 恒返回
+	//	   `session_turns_hot`（bg/auto_route_settle_source.go:80-87），
+	//	   写门不再决定读哪一族 ⇒ 不再是「条件性读 v1」。
+	//	③ admin/auto_route_outcome_freshness.go —— 与 ② 同一个
+	//	   `bg.ActiveSettleTurnsTable()`，同一条推理。
+	//
+	// ⚠ 这张表**保留**（不删）：它守的是「不许出现新的间接读 v1」这条不变式，
+	// 而间接读点恰恰是**行扫描看不见**的那一类（§9.49）。
+	// 清空它不是「这张表没用了」，是「间接读 v1 的总体归零」。
+	//
+	// ⚠ 新增登记的规矩不变：ResolvesTo 必须是**真表名**、Reason 必填非空、
+	// Family 必须是已声明的族（见 TestIndirectRequestLogsReadersAreDeclaredWell）。
 }
 
 // TestIndirectRequestLogsReadersAreDeclaredWell 挡住「登记了但说不清」。
+//
+// # 890 之后（2026-10-20）：本表为空 ⇒ 循环体空转 ⇒ 判据必须有牙
+//
+// 空表 + 循环 = **恒绿**。⇒ 本门拆成两半：
+//
+//	① **表必须为空**（间接读 v1 的总体归零）；
+//	② 登记表的自检逻辑本身必须有效 —— 用**合成条目**做阳性对照：
+//	   一个缺 Reason / 缺 ResolvesTo / ResolvesTo 不在 v1DirectTables 里 /
+//	   Family 不在已声明族里的条目，**必须**被自检逻辑判出问题；
+//	   一个各项都合规的条目，**必须**不被判出问题。
+//
+// ⇒ ② 保证「将来有人往表里填一条，它会立刻被拦下 / 放行」这件事是真的，
+// 而不是「表空着所以什么都没发生」。
 func TestIndirectRequestLogsReadersAreDeclaredWell(t *testing.T) {
 	families := map[string]bool{
 		familyBodies: true, familyBodiesMixed: true,
 		familyView: true, familyBase: true,
 	}
-	for file, e := range indirectRequestLogsReaders {
-		if strings.TrimSpace(e.Reason) == "" {
-			t.Errorf("%s：间接读点登记的 Reason 为空——空理由的登记等于没有登记", file)
+
+	// ① 间接读 v1 的总体必须为空。
+	if len(indirectRequestLogsReaders) > 0 {
+		var files []string
+		for f := range indirectRequestLogsReaders {
+			files = append(files, f)
 		}
-		if strings.TrimSpace(e.ResolvesTo) == "" {
-			t.Errorf("%s：ResolvesTo 为空。不写它，「它读的是 v1」就是一句断言；\n"+
-				"  写上表名之后，这句话可以被 v1DirectTables 核对。", file)
-		} else if !v1DirectTables[e.ResolvesTo] {
-			t.Errorf("%s：ResolvesTo = %q，不在 v1DirectTables 里。\n"+
-				"  这张表只登记「间接读 v1 宽族」的文件；若它其实指向别的表，"+
-				"应该从本表删掉而不是改成一个不存在的表名。", file, e.ResolvesTo)
-		}
-		if !families[e.Family] {
-			t.Errorf("%s：Family = %q，不是已声明的族。\n  可选：%s",
-				file, e.Family, strings.Join([]string{familyBodies, familyBodiesMixed, familyView, familyBase}, " / "))
+		sort.Strings(files)
+		t.Errorf("indirectRequestLogsReaders 仍有 %d 条登记 —— 890 之后 v1 族已物理删除，"+
+			"不再存在间接读 v1 的文件：\n  %s\n"+
+			"若某条登记其实已改指会话族，请删掉它；若它仍能解析到 v1，那是生产缺陷，"+
+			"请登记进 retiredV1ReferenceExceptions 而不是留在这里。",
+			len(files), strings.Join(files, "\n  "))
+	}
+
+	// ② 自检逻辑的阳性/阴性对照（合成条目，不碰真实表）。
+	ok := indirectReader{
+		Family:     familyBase,
+		ResolvesTo: "_request_logs_hot",
+		Reason:     "合成条目：各项合规",
+	}
+	if problems := indirectReaderProblems("synthetic/ok.go", ok, families); len(problems) != 0 {
+		t.Errorf("一个各项都合规的合成条目被判出问题 %v —— 自检逻辑本身坏了", problems)
+	}
+	bad := map[string]indirectReader{
+		"缺 Reason":     {Family: familyBase, ResolvesTo: "_request_logs_hot"},
+		"缺 ResolvesTo": {Family: familyBase, Reason: "合成条目"},
+		"ResolvesTo 不在 v1DirectTables": {
+			Family: familyBase, ResolvesTo: "not_a_v1_table", Reason: "合成条目",
+		},
+		"Family 不在已声明族": {
+			Family: "family_unknown", ResolvesTo: "_request_logs_hot", Reason: "合成条目",
+		},
+	}
+	for name, e := range bad {
+		if problems := indirectReaderProblems("synthetic/"+name, e, families); len(problems) == 0 {
+			t.Errorf("合成条目「%s」没有被自检逻辑判出问题 —— 自检逻辑没有牙（表空着的时候，"+
+				"这是唯一还能证明它有效的手段）", name)
 		}
 	}
 }
 
+// indirectReaderProblems 是一条间接读方登记的**自检**（返回问题列表，空 = 合格）。
+//
+// 为什么抽成函数：表清空之后，循环体不再执行 ⇒ 「自检逻辑有没有牙」就没人证明了。
+// 抽出来才能在合成条目上直接驱动它。
+func indirectReaderProblems(file string, e indirectReader, families map[string]bool) []string {
+	var problems []string
+	if strings.TrimSpace(e.Reason) == "" {
+		problems = append(problems, "Reason 为空——空理由的登记等于没有登记")
+	}
+	if strings.TrimSpace(e.ResolvesTo) == "" {
+		problems = append(problems, "ResolvesTo 为空")
+	} else if !v1DirectTables[e.ResolvesTo] {
+		problems = append(problems, "ResolvesTo 不在 v1DirectTables 里")
+	}
+	if !families[e.Family] {
+		problems = append(problems, "Family 不是已声明的族")
+	}
+	return problems
+}
+
 // TestIndirectRequestLogsReadersAreStillIndirect 是这张表的失效自检。
 //
-// 两条，缺一不可：
+// # 890 之后（2026-10-20）：从「登记不许腐烂」翻成「切换层不许再能选到 v1 臂」
 //
-//	① 登记的文件必须**仍然读不到直接字面量**（直接计数为 0）。若某天有人把
-//	   settleSourceFor 的表名内联回 SQL，间接性消失 ⇒ 本条目应删掉、文件回到
-//	   requestLogsReadInventory 的直接表里。留着会让「间接」这个分类永久占位。
-//	② 文件必须仍然存在。文件被删/改名而登记项还在 = 一条指向空气的记录。
+// 原两道检查（① 登记的文件必须仍然读不到直接字面量；② 文件必须仍然存在）
+// 在表清空之后都变成空转 ⇒ 本门改守**它们当初要防的那个东西本身**：
 //
-// ⚠ 这道门**发现不了新的间接读点**（见文件头注释）。它只保证已知的那几条不腐烂。
+//	**间接读点的机制还在（切换层还在），但切换层已经选不到 v1 了。**
+//
+// ⇒ 断言两个切换层当前解析到的关系**不是**已退役的 v1 族：
+//
+//   - db.SessionBodiesSourceSQL()：bodies 读端切换层（v1 臂已删，恒等于会话族）
+//   - bg.ActiveSettleTurnsTable()：settle worker 的 turns 源（写门不再决定读哪一族）
+//
+// 这两条是**正向**断言（说清楚它们现在读的是什么），不是「没找到坏东西」式的空断言。
+//
+// ⚠ 顺带守住的次级不变式：同一文件不得同时出现在直接表与间接表（否则算两次）。
 func TestIndirectRequestLogsReadersAreStillIndirect(t *testing.T) {
 	root := repoRootFromCaller(t)
+
+	// ① 表必须为空（总体归零）。逐条检查见上一道门。
+	if len(indirectRequestLogsReaders) > 0 {
+		t.Errorf("indirectRequestLogsReaders 仍有 %d 条登记 —— 890 之后不存在间接读 v1 的文件", len(indirectRequestLogsReaders))
+	}
+
+	// ② 切换层当前解析到的关系必须不是已退役的 v1 族。
+	//
+	// ⚠ 这里判的是**返回值**，不是源码文本：helper 内部怎么写的（写门、开关、
+	// 常量折叠）都不影响调用点实际会发出什么 SQL ⇒ 判返回值才是不受实现细节
+	// 影响的判据。
+	bodiesSrc := dbpkg.SessionBodiesSourceSQL()
+	if hits := retiredV1RelationsInSQL(bodiesSrc); len(hits) > 0 {
+		t.Errorf("db.SessionBodiesSourceSQL() 解析到了已退役的 v1 族关系 %v —— "+
+			"它仍能选到 v1 臂 ⇒ 间接读 v1 的通道还开着", hits)
+	}
+	if bodiesSrc != dbpkg.SessionFamilyBodiesSourceSQL() {
+		t.Errorf("db.SessionBodiesSourceSQL() ≠ db.SessionFamilyBodiesSourceSQL() —— " +
+			"bodies 读端切换层不再是「恒等于会话族」，它仍可能选到别的源")
+	}
+	settleTable := bg.ActiveSettleTurnsTable()
+	if hits := retiredV1RelationsInSQL(settleTable); len(hits) > 0 {
+		t.Errorf("bg.ActiveSettleTurnsTable() = %q，解析到了已退役的 v1 族关系 %v —— "+
+			"settle worker 的 turns 源仍能选到 v1", settleTable, hits)
+	}
+	if settleTable != "session_turns_hot" {
+		t.Errorf("bg.ActiveSettleTurnsTable() = %q，期望 session_turns_hot —— "+
+			"写门不再决定读哪一族（890 之后恒为会话族热表）", settleTable)
+	}
+
+	// ③ 同一文件不得同时出现在直接表与间接表。
 	direct := scanRequestLogsReaders(t, root)
 	for file := range indirectRequestLogsReaders {
-		if _, err := os.Stat(filepath.Join(root, file)); err != nil {
-			t.Errorf("间接读点登记 %q：文件不存在（%v）。请删掉这条登记。", file, err)
-			continue
-		}
 		if n := direct[file]; n != 0 {
-			t.Errorf("间接读点登记 %q：现在能被直接扫到 %d 处（`from _request_logs` 匹配上了）。\n"+
-				"  间接性已经消失——请把它从本表删掉、并登记进 requestLogsReadInventory，\n"+
-				"  然后重新评估它的族与停写后果。留着会让「间接」变成永不更新的占位。", file, n)
+			t.Errorf("间接读点登记 %q：现在能被直接扫到 %d 处 —— 间接性已经消失，请从本表删掉", file, n)
 		}
-	}
-	// 反向：直接表里不许出现本表已登记的文件，否则它被算两次。
-	for file := range indirectRequestLogsReaders {
 		if _, dup := requestLogsReadInventory[file]; dup {
-			t.Errorf("%s 同时出现在 indirectRequestLogsReaders 与 requestLogsReadInventory。\n"+
-				"  它只能算一次：要么是直接读点，要么是间接读点。", file)
+			t.Errorf("%s 同时出现在 indirectRequestLogsReaders 与 requestLogsReadInventory —— 只能算一次", file)
 		}
 	}
 }
@@ -180,6 +256,7 @@ func TestIndirectRequestLogsReadersAreStillIndirect(t *testing.T) {
 // 又是一次无声的总体漂移。
 var nonSourceDirs = map[string]bool{
 	".git": true, "docs": true, "node_modules": true, "vendor": true,
+	".audit": true, ".audit-validation": true, ".audit-workspace": true,
 }
 
 func productionGoFiles(t *testing.T, root string) []string {

@@ -21,8 +21,8 @@ func (s *Service) Start(ctx context.Context) {
 func (s *Service) Stop() {
 	if s.cancel != nil {
 		s.cancel()
+		<-s.done
 	}
-	<-s.done
 }
 
 func (s *Service) run(ctx context.Context) {

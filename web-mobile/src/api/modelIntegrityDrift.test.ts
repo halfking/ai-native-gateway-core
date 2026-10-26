@@ -38,9 +38,18 @@ import {
 /**
  * 指纹漂移的契约测试（2026-10-08，第八十一批）。
  *
- * 后端：`admin/handler.go:924-925`（整个 `/api/admin/model-integrity/` 前缀都是
- * `h.superAdmin`）→ `admin/model_integrity.go:62-84` 的 switch 分发 →
- * `:314-388` 的 `handleModelIntegrityFingerprintDrift`。
+ * 后端：`admin/handler.go:982-983`（整个 `/api/admin/model-integrity/` 前缀都是
+ * `h.modelIntegrityTenantAdmin`）→ `admin/model_integrity.go:85-104` 的 switch 分发 →
+ * `:341-412` 的 `handleModelIntegrityFingerprintDrift`。
+ * ★★★★★★ 2026-10-21 行号订正：`:976-977` → `:979-980`（**漂 3 行**）；
+ *   同段的 `admin/model_integrity.go:62-84` → `:85-104`（switch 分发）、
+ *   `:314-388` → `:341-412`（该 handler 全体）。
+ *   ⚠️★ **档位断言同时订正**：原文写「前缀都是 `h.superAdmin`」——
+ *   Go 侧**已不是** superAdmin：批 157（2026-10-16）把它换成**双档**中间件
+ *   `h.modelIntegrityTenantAdmin`（`admin/handler.go:936-938` →
+ *   `ModelIntegrityTenantAdminMiddleware`）：super_admin / admin_key 全量，
+ *   **tenant_admin 走 RLS 只读**；只有 resolve 写路径仍在 dispatcher 头逐字比 role
+ *   （`admin/model_integrity.go:69-76`，403）。
  *
  * 重点是源文件头写明的九件事 (1)…(9)，其中带 ★ 的自校验判据都能被变异打掉。
  * ⚠️ 全部用例标题**字面量**写（不用 `it.each`）—— 变异 harness 靠标题取锚点。

@@ -328,7 +328,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
   justify-content: space-between;
   align-items: center;
   padding: 10px 12px;
-  background: var(--kx-bg-elevated);
+  background: var(--bg-subtle);
   cursor: pointer;
   user-select: none;
   text-align: left;
@@ -370,10 +370,10 @@ const hasNodes = computed(() => nodes.value.length > 0)
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 .nm-card:hover { transform: translateY(-2px); box-shadow: var(--kx-shadow-sm); }
-.nm-card--ok { border-left: 3px solid var(--kx-success); }
-.nm-card--warn { border-left: 3px solid var(--kx-warning); }
-.nm-card--danger { border-left: 3px solid var(--kx-danger); }
-.nm-card--disabled { border-left: 3px solid var(--kx-text-secondary); opacity: 0.6; }
+.nm-card--ok { border: 1px solid var(--kx-success); }
+.nm-card--warn { border: 1px solid var(--kx-warning); }
+.nm-card--danger { border: 1px solid var(--kx-danger); }
+.nm-card--disabled { border: 1px solid var(--kx-text-secondary); opacity: 0.6; }
 .nm-card-header {
   display: flex;
   justify-content: space-between;

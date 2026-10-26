@@ -104,23 +104,47 @@ for name in "${scheduled[@]}"; do
 done
 pass "闸门在自身不可用时 fail-open"
 
-# 3. 心跳脚本的闸门必须排在 EXIT trap **之后**。
+# 3. 心跳脚本的 trap 必须排在单实例闸门**之后**（⇒ skip 不刷新心跳）。
 #
 #    pg17-pg-availability-check.sh 用 EXIT trap 写
 #    /var/lib/pg17-check/pg-availability.lastrun，那是「巡检还在跑吗」的判据
 #    （健康时它刻意不输出，所以只能问 lastrun 的 mtime）。
-#    闸门若排在 trap 之前，抢锁失败直接 exit 0 会让 lastrun 不更新 ——
-#    运维据此会误判「心跳已经停了」，而它其实好好地在跑。
+#
+#    ★★★ 2026-10-26 订正（本门此前**钉死了过时的方向**，见下）：
+#    ★ 本条原先断言「闸门必须排在 EXIT trap **之后**」（trap@< gate@），
+#      与脚本在 2026-10-19 的**有意改动**正好相反 ⇒ 门自那天起一直是红的。
+#    ★ 脚本那一侧的改动是**对的**（§143.14 实测）：心跳的语义必须是
+#      「**本轮真的采样过 PG**」，而不是「脚本被启动过」——
+#      原实现把 trap 装在闸门**之前** ⇒ 「本轮被锁挡掉、根本没采样」的实例
+#      也刷新 lastrun ⇒ 实测 13,043 次 skip 期间心跳**一直是新鲜的**
+#      ⇒「巡检还在跑吗」与「巡检在空转」在观感上同形，而那正是本脚本
+#      存在的理由（2026-10-05 容器被误删、4 分钟无人告警）。
+#    ★⇒ 正确形态是：**闸门在前（skip 路径在闸门处就 exit 0），
+#      trap 在后（只覆盖真正采样的那一条路径）**。
+#    ★ 权威判据是**行为门** `scripts/ursmcheck/monitor_scheduling_semantics_test.go`
+#      的 `TestAvailabilitySkipDoesNotRefreshHeartbeat`（用假 flock 真跑一遍，
+#      比较 mtime）——它与脚本在 2026-10-20 的同一个提交里一起改的。
+#      ★★ 本条只是**静态**的护栏（静态面在本仓是量具不可用时的唯一可跑面）；
+#        ★★ 静态判据只钉**顺序**（gate@ < trap@），**不钉**哪一条语义对 ——
+#        ★★ 方向一旦再被改回去，这里会红，而真正的事实源是上面那道行为门。
+#
+#    ⚠ 判据口径修正：原先用 `grep -n "EXIT" | head -1` 取 trap 行，
+#      它取的是**第一个含 "EXIT" 的行**——那是**注释里的** "EXIT" 字样，
+#      不是 `trap … EXIT` 这条命令本身 ⇒ 量具指向了错误的对象。
+#      ⇒ 改为精确匹配 trap 命令行（`trap '…' EXIT`），并排除注释行。
 hb="$MON/pg17-pg-availability-check.sh"
 if [ -f "$hb" ] && grep -q '_llmgw_single_instance_guarded' "$hb"; then
-  trap_line=$(grep -n "EXIT" "$hb" | head -1 | cut -d: -f1)
-  gate_line=$(grep -n '_llmgw_single_instance_guarded=false' "$hb" | head -1 | cut -d: -f1)
+  # ★ 只认**代码位**的 trap 命令行：以 '#' 开头的注释行不算。
+  #   （注释里说明「EXIT trap」的那几行不是 trap 安装点。）
+  trap_line=$(grep -nE '^[[:space:]]*trap[[:space:]].*EXIT' "$hb" | head -1 | cut -d: -f1)
+  gate_line=$(grep -nE '^[[:space:]]*_llmgw_single_instance_guarded=false' "$hb" | head -1 | cut -d: -f1)
   [ -n "$trap_line" ] && [ -n "$gate_line" ] || fail "$hb 找不到 EXIT trap 或闸门起始行"
-  [ "$gate_line" -gt "$trap_line" ] \
-    || fail "$hb 的闸门（行 ${gate_line}）排在了 EXIT trap（行 ${trap_line}）**之前**。
-   ★ 抢锁失败时脚本会 exit 0，EXIT trap 是唯一会写 lastrun 的地方 ——
-     闸门排在前面，lastrun 就不更新，运维会误判心跳已停。"
-  pass "心跳脚本的闸门排在 EXIT trap 之后（trap@$trap_line < gate@${gate_line}）"
+  [ "$trap_line" -gt "$gate_line" ] \
+    || fail "$hb 的 EXIT trap（行 ${trap_line}）排在了单实例闸门（行 ${gate_line}）**之前**。
+   ★ 闸门在前 ⇒ 抢锁失败的那条路径在闸门处就 exit 0，**不会**走到 trap ⇒
+     skip 不刷新 lastrun ⇒ 心跳新鲜 = 真采样过 PG（§143.14）。
+     若把 trap 移回闸门之前，skip 会刷新心跳 ⇒ 心跳在说谎 ⇒ 门必须红。"
+  pass "心跳脚本的 EXIT trap 排在单实例闸门之后（gate@${gate_line} < trap@${trap_line} ⇒ skip 不刷新心跳）"
 fi
 
 # 4. 磁盘巡检必须带查询超时 —— 单实例闸门的另一半。
@@ -396,13 +420,23 @@ pass "伪容器下报 gauge_unavailable + 退出码 3（查不到 ≠ 没问题�
 if [ -f "$tmp/gate.txt" ]; then
   wd_fn=$(awk '/^_llmgw_run_bounded\(\) \{/,/^\}/' "$dw")
   if [ -n "$wd_fn" ]; then
+    export WD_CHILD_PIDS="$tmp/watchdog-child-pids"
+    : > "$WD_CHILD_PIDS"
+    cleanup_watchdog_children() {
+      while IFS= read -r child_pid; do
+        kill -9 "$child_pid" 2>/dev/null || true
+      done < "$WD_CHILD_PIDS"
+    }
+    trap 'cleanup_watchdog_children; rm -rf "$tmp"' EXIT
     {
       printf '%s\n' '#!/usr/bin/env bash' 'set -uo pipefail'
       printf '%s\n' "$wd_fn"
       # 注意不能用 `|| true`：那会把看门狗的 124 吞成 0，自证就永远失败。
       # 这里显式把函数的返回码作为脚本退出码传出去。
-      printf '%s\n' '_llmgw_run_bounded 2 bash -c "sleep 45; date > /dev/null"'
-      printf '%s\n' 'exit $?'
+      cat <<'WATCHDOG'
+_llmgw_run_bounded 2 bash -c 'sleep 45 & child_pid=$!; printf "%s\n" "$child_pid" >> "$WD_CHILD_PIDS"; wait "$child_pid"'
+exit $?
+WATCHDOG
     } > "$tmp/wd_run.sh"
     chmod +x "$tmp/wd_run.sh"
 
@@ -417,13 +451,27 @@ if [ -f "$tmp/gate.txt" ]; then
      必须先证明探针会跑，结论才有意义。"
     [ $((probe_e - probe_s)) -le 8 ] \
       || fail "看门狗探针耗时 $((probe_e - probe_s))s，说明超时上界没生效"
+    [ "$(wc -l < "$WD_CHILD_PIDS" | tr -d ' ')" -eq 1 ] \
+      || fail "看门狗探针没有记录恰好 1 个真实孙进程，后续零孤儿结论无前提"
 
-    base_sleep=$(pgrep -x sleep 2>/dev/null | wc -l | tr -d ' ')
-    for _ in 1 2 3; do bash "$tmp/wd_run.sh" >/dev/null 2>&1; done
+    for _ in 1 2 3; do
+      bash "$tmp/wd_run.sh" >/dev/null 2>&1
+      [ "$?" -eq 124 ] || fail "看门狗连续探针未按超时返回 124"
+    done
     sleep 2
-    after_sleep=$(pgrep -x sleep 2>/dev/null | wc -l | tr -d ' ')
-    leak=$((after_sleep - base_sleep))
-    [ "$leak" -le 0 ] \
+    [ "$(sort -u "$WD_CHILD_PIDS" | wc -l | tr -d ' ')" -eq 4 ] \
+      || fail "自证与连续探针应记录 4 个独立孙进程，不能用缺失前提证明零孤儿"
+    # Count only descendants created by these probes. Other tests may start
+    # or finish arbitrary sleep processes on the same host during this gate.
+    leak=0
+    while IFS= read -r child_pid; do
+      child_state=$(ps -o stat= -p "$child_pid" 2>/dev/null | tr -d ' ')
+      case "$child_state" in
+        ''|Z*) ;; # Exited or awaiting reaping: no live orphan remains.
+        *) leak=$((leak + 1)) ;;
+      esac
+    done < "$WD_CHILD_PIDS"
+    [ "$leak" -eq 0 ] \
       || fail "看门狗超时后留下 $leak 个孙进程（期望 0）。
    ★ 只 kill 直接子进程会漏掉 \`bash -c 'sleep …'\` 的 sleep。
      事故当天「进程只增不减」就是这个形态：超时闸自己漏进程。"

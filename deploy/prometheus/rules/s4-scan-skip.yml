@@ -15,8 +15,27 @@
 # credential_recovery 既有 llmgw_recovery_lookback_triggers_total{outcome=
 # "skipped_s4_stop_write"} 的局限。当前状态由 gauge 表达，所以只补 gauge。
 #
-# 标签纪律（GW-00）：worker ∈ {ledger_reconciliation, credential_recovery}，
-# reason ∈ {s4_stop_write}，均为编译期闭集，基数恒定。
+# 标签纪律（GW-00）：worker ∈ {ledger_reconciliation, credential_recovery,
+# routing_health_checker}，reason ∈ {s4_stop_write, usage_arm_empty}，
+# 均为编译期闭集，基数恒定。
+#
+# ⚠ 2026-10-20（迁移 885 + 并行审计轮 D0）：**s4_stop_write 已成历史 reason**。
+# 三条「可比性门」（凭据恢复 36h 回看、usage↔credit 账务比对、
+# recorded_cost_is_negative 健康检查）读的都是 storage.request_logs_write_enabled，
+# 而该键的 subject（v1 族）已被 885 删除、代码默认已被翻成 false ⇒
+# 「门关着的理由已过期、后果却不可逆」⇒ 三条门**退役**，那条检查**恒执行**。
+# ⇒ s4_stop_write 仍留在闭集里（指标序列连续性：gauge 恒 0），
+#   但**不再**会被产出。
+#
+# ⇒ 现在唯一会被产出的 reason 是 **usage_arm_empty**：账务对账的
+#   usage↔credit 比对在「usage 臂为空、credit 臂有行」时**不可判定**
+#   （两侧不同期）⇒ 跳过并说明，而不是把 credit 侧每一行都记成
+#   「计了费但没有用量」的假发现。
+#
+# ⚠ routing_health_checker 的粒度与前两个**不同**（2026-10-20 R51 续轮）：
+# 健康检查器一个 worker 跑十几条检查 —— 退役后它**没有任何**检查挂前提守卫
+# ⇒ 这条告警对它表达的是「本轮**有检查**因某个 reason 没有执行」，
+# 不是「这个 worker 全都没跑」。排查时不要按前两个的口径去理解。
 
 groups:
   - name: s4_scan_skip

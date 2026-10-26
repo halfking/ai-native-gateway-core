@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { formatDateTime } from '../utils/datetime'
 import { sortByName } from '../utils/sortByName'
 import { localeRef } from '../i18n'
@@ -22,6 +23,9 @@ import SparkBars from '../components/ui/SparkBars.vue'
 import { chartColors, createComboChartConfig, useChart } from '../composables/useChart'
 import { useRaceGuard } from '../composables/useRaceGuard'
 import { isPlatformOpsView } from '../store'
+import { Message, Clock } from '@element-plus/icons-vue'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const router = useRouter()
@@ -110,7 +114,7 @@ async function loadTenant() {
     if (activeTab.value === 'stats') await loadStats()
     applyRouteFocus()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('common.feedback.loadFailed')
   } finally {
     loading.value = false
   }
@@ -120,7 +124,7 @@ async function loadUsers() {
   try {
     users.value = await getTenantUsers(tenantCode.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载用户失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.loadUsersFailed')
   }
 }
 
@@ -128,7 +132,7 @@ async function loadKeys() {
   try {
     keys.value = await getTenantKeys(tenantCode.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载密钥失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.loadKeysFailed')
   }
 }
 
@@ -144,7 +148,7 @@ async function loadStats() {
     stats.value = next
   } catch (e: unknown) {
     if (statsRace.stale(gen)) return
-    error.value = e instanceof Error ? e.message : '加载统计失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.loadStatsFailed')
   }
 }
 
@@ -249,7 +253,7 @@ async function loadWallet() {
   try {
     maasWallet.value = await getAdminMaasWallet(tenantCode.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载钱包失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.loadWalletFailed')
   }
 }
 
@@ -258,7 +262,7 @@ async function loadLedger() {
     const res = await getAdminMaasLedger(tenantCode.value, 100)
     maasLedger.value = res.items ?? []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载账本失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.loadLedgerFailed')
   }
 }
 
@@ -267,7 +271,7 @@ async function loadOrders() {
     const res = await getAdminMaasTenantOrders(tenantCode.value, 50)
     maasOrders.value = res.items ?? []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载订单失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.loadOrdersFailed')
   }
 }
 
@@ -276,7 +280,7 @@ async function loadBilling() {
   try {
     billing.value = await getAdminMaasConsumptionDetail(tenantCode.value, billingDays.value, billingOwnerUser.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载计费明细失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.loadBillingDetailsFailed')
   } finally {
     billingLoading.value = false
   }
@@ -296,7 +300,7 @@ async function submitAdjust() {
     adjustNote.value = ''
     await Promise.all([loadWallet(), loadLedger()])
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '调整失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.adjustFailed')
   } finally {
     adjustSaving.value = false
   }
@@ -316,7 +320,7 @@ async function submitGrant() {
     grantNote.value = ''
     await Promise.all([loadWallet(), loadLedger()])
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '授予失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.grantFailed')
   } finally {
     grantSaving.value = false
   }
@@ -329,7 +333,7 @@ async function confirmOrder(orderId: number) {
     await confirmAdminMaasOrder(orderId, '管理员手动确认到账')
     await Promise.all([loadOrders(), loadWallet(), loadLedger()])
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '确认失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.confirmFailed')
   } finally {
     confirmSaving.value = null
   }
@@ -400,7 +404,7 @@ async function toggleUserEnabled(u: TenantUser) {
     await updateUser(u.id, { enabled: !u.enabled })
     await loadUsers()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '操作失败'
+    error.value = e instanceof Error ? e.message : t('common.feedback.operationFailed')
   }
 }
 
@@ -448,7 +452,7 @@ watch(() => route.params.tenantId, loadTenant)
   <div class="tenant-detail">
     <div v-if="error" class="alert alert-danger" style="margin-bottom:12px">{{ error }}</div>
 
-    <div v-if="loading && !tenant" class="loading">加载中…</div>
+    <div v-if="loading && !tenant" class="loading">{{ $t('common.feedback.loading') }}</div>
 
     <div v-else-if="tenant">
       <!-- Header -->
@@ -461,12 +465,12 @@ watch(() => route.params.tenantId, loadTenant)
           </h1>
           <div class="header-meta">
             <code class="code-badge">{{ tenant.code }}</code>
-            <span v-if="tenant.contact_email">📧 {{ tenant.contact_email }}</span>
-            <span>🕐 {{ fmtTime(tenant.created_at) }}</span>
+            <span v-if="tenant.contact_email"><Message /> {{ tenant.contact_email }}</span>
+            <span><Clock /> {{ fmtTime(tenant.created_at) }}</span>
           </div>
           <p v-if="tenant.description" class="description">{{ tenant.description }}</p>
         </div>
-        <button class="btn btn-primary" @click="openEdit">编辑</button>
+        <button class="btn btn-primary" @click="openEdit">{{ $t('common.button.edit') }}</button>
       </div>
 
       <!-- Tabs -->
@@ -485,25 +489,25 @@ watch(() => route.params.tenantId, loadTenant)
       <!-- Overview Tab（2026-09-30 统计 UI 优化轮：KPI 升级为 主值+副指标+sparkline） -->
       <div v-if="activeTab === 'overview'" class="tab-content">
         <div class="stat-cards stat-cards--kpi">
-          <StatCard label="用户数" icon="👥">
+          <StatCard label="用户数">
             <template #value>{{ tenant.user_count }}</template>
             <template #sub>密钥 {{ tenant.api_key_count }} 把</template>
           </StatCard>
-          <StatCard label="密钥数" icon="🔑">
+          <StatCard label="密钥数">
             <template #value>{{ tenant.api_key_count }}</template>
             <template #sub>独立模型 {{ stats?.unique_models ?? '—' }}</template>
           </StatCard>
-          <StatCard label="7天请求" icon="📥">
+          <StatCard label="7天请求">
             <template #value>{{ fmtNum(tenant.requests_7d) }}</template>
             <template #sub>失败 {{ fmtNum(overviewFail7d) }}（{{ (tenant.requests_7d ?? 0) > 0 ? ((overviewFail7d / (tenant.requests_7d ?? 0)) * 100).toFixed(1) : '0.0' }}%）</template>
             <template #spark><SparkBars :data="spark7d('requests')" color-token="--accent" /></template>
           </StatCard>
-          <StatCard label="7天 Token" icon="🔢">
+          <StatCard label="7天 Token">
             <template #value>{{ fmtTokensCompact(tenant.tokens_7d) }}</template>
             <template #sub>日均请求 {{ fmtNum(overviewDailyAvg) }}</template>
             <template #spark><SparkBars :data="spark7d('tokens')" color-token="--probe-cyan" /></template>
           </StatCard>
-          <StatCard label="7天费用" icon="🪙" tone="success">
+          <StatCard label="7天费用" tone="success">
             <template #value>
               <span class="stat-value stat-value--fee">
                 <FeeCostCell
@@ -517,7 +521,7 @@ watch(() => route.params.tenantId, loadTenant)
             <template #sub>积分 {{ fmtNum(tenant.credits_7d) }}</template>
             <template #spark><SparkBars :data="spark7d('credits')" color-token="--success" /></template>
           </StatCard>
-          <StatCard label="总请求数（历史）" icon="📚">
+          <StatCard label="总请求数（历史）">
             <template #value>{{ fmtNum(tenant.total_requests) }}</template>
             <template #sub>自 {{ fmtTime(tenant.created_at) }} 起</template>
           </StatCard>
@@ -529,7 +533,7 @@ watch(() => route.params.tenantId, loadTenant)
           <div class="maas-shortcut-grid">
             <RouterLink :to="maasLink('/tenant/models')" class="maas-shortcut-card">
               <span class="maas-shortcut-icon">🤖</span>
-              <span class="maas-shortcut-label">标准模型</span>
+              <span class="maas-shortcut-label">{{ $t('common.terms.standardModel') }}</span>
             </RouterLink>
             <RouterLink :to="maasLink('/tenant/pricing')" class="maas-shortcut-card">
               <span class="maas-shortcut-icon">💳</span>
@@ -559,7 +563,7 @@ watch(() => route.params.tenantId, loadTenant)
       <div v-if="activeTab === 'users'" class="tab-content">
         <table class="table" style="width:100%">
           <thead>
-            <tr><th>ID</th><th>用户名</th><th>显示名</th><th>邮箱</th><th>角色</th><th>状态</th><th>最后登录</th><th>操作</th></tr>
+            <tr><th>ID</th><th>{{ $t('common.terms.username') }}</th><th>{{ $t('common.terms.displayName') }}</th><th>{{ $t('common.terms.email') }}</th><th>{{ $t('common.terms.role') }}</th><th>{{ $t('common.terms.status') }}</th><th>最后登录</th><th>{{ $t('common.actions') }}</th></tr>
           </thead>
           <tbody>
             <tr v-for="u in sortedUsers" :key="u.id">
@@ -568,11 +572,11 @@ watch(() => route.params.tenantId, loadTenant)
               <td>{{ u.display_name || '-' }}</td>
               <td>{{ u.email || '-' }}</td>
               <td><span class="badge" :class="u.role === 'super_admin' ? 'badge-purple' : 'badge-blue'">{{ u.role }}</span></td>
-              <td><span class="badge" :class="u.enabled ? 'badge-green' : 'badge-red'">{{ u.enabled ? '启用' : '禁用' }}</span></td>
+              <td><span class="badge" :class="u.enabled ? 'badge-green' : 'badge-red'">{{ u.enabled ? $t('common.status.enabled') : $t('common.status.disabled') }}</span></td>
               <td class="mono">{{ fmtTime(u.last_login_at || '') }}</td>
               <td>
                 <button class="btn btn-ghost btn-sm" @click="toggleUserEnabled(u)">
-                  {{ u.enabled ? '禁用' : '启用' }}
+                  {{ u.enabled ? $t('common.status.disabled') : $t('common.status.enabled') }}
                 </button>
               </td>
             </tr>
@@ -592,7 +596,7 @@ watch(() => route.params.tenantId, loadTenant)
         </div>
         <table class="table" style="width:100%">
           <thead>
-            <tr><th>ID</th><th>密钥前缀</th><th>别名</th><th>应用</th><th>状态</th><th>请求数</th><th>费用</th><th>创建</th></tr>
+            <tr><th>ID</th><th>密钥前缀</th><th>别名</th><th>{{ $t('common.terms.application') }}</th><th>{{ $t('common.terms.status') }}</th><th>{{ $t('common.terms.requestCount') }}</th><th>{{ $t('common.terms.fee') }}</th><th>创建</th></tr>
           </thead>
           <tbody>
             <tr v-for="k in sortedVisibleKeys" :key="k.id">
@@ -600,7 +604,7 @@ watch(() => route.params.tenantId, loadTenant)
               <td><code>{{ k.key_prefix }}</code></td>
               <td>{{ k.key_alias || '-' }}</td>
               <td><span class="badge badge-blue">{{ k.application_code || '-' }}</span></td>
-              <td><span class="badge" :class="k.enabled ? 'badge-green' : 'badge-red'">{{ k.enabled ? '启用' : '禁用' }}</span></td>
+              <td><span class="badge" :class="k.enabled ? 'badge-green' : 'badge-red'">{{ k.enabled ? $t('common.status.enabled') : $t('common.status.disabled') }}</span></td>
               <td>{{ fmtNum(k.total_requests) }}</td>
               <td>
                 <span v-if="showCost">{{ fmtCost(k.total_cost_usd) }}</span>
@@ -623,7 +627,7 @@ watch(() => route.params.tenantId, loadTenant)
       <!-- Stats Tab（2026-09-30 统计 UI 优化轮重做：KPI 8 卡 + 双趋势图 + 占比条分布） -->
       <div v-if="activeTab === 'stats'" class="tab-content">
         <div class="stats-toolbar">
-          <label>时间窗口:</label>
+          <label>{{ $t('common.terms.timeWindow') }}:</label>
           <div class="window-chips">
             <button
               v-for="d in [7, 30, 90, 365]"
@@ -638,15 +642,15 @@ watch(() => route.params.tenantId, loadTenant)
         </div>
 
         <div v-if="stats" class="stat-cards stat-cards--kpi">
-          <StatCard label="总请求" icon="📥">
+          <StatCard label="总请求">
             <template #value>{{ fmtNum(stats.total_requests) }}</template>
-            <template #sub>失败 <span style="color:var(--danger)">{{ fmtNum(statsFailTotal) }}</span>（{{ stats.total_requests > 0 ? ((statsFailTotal / stats.total_requests) * 100).toFixed(1) : '0.0' }}%）</template>
+            <template #sub>{{ $t('common.status.failed') }} <span style="color:var(--danger)">{{ fmtNum(statsFailTotal) }}</span>（{{ stats.total_requests > 0 ? ((statsFailTotal / stats.total_requests) * 100).toFixed(1) : '0.0' }}%）</template>
           </StatCard>
-          <StatCard label="总 Token" icon="🔢">
+          <StatCard label="总 Token">
             <template #value>{{ fmtTokensCompact(stats.total_tokens) }}</template>
             <template #sub>入 {{ fmtTokensCompact(stats.input_tokens) }} · 出 {{ fmtTokensCompact(stats.output_tokens) }} · 缓存读 {{ fmtTokensCompact(stats.cache_read_tokens) }} · 缓存写 {{ fmtTokensCompact(stats.cache_write_tokens) }}</template>
           </StatCard>
-          <StatCard label="总费用" icon="🪙" tone="success">
+          <StatCard label="总费用" tone="success">
             <template #value>
               <span class="stat-value stat-value--fee">
                 <FeeCostCell inline :credits="stats.total_credits" :cost-usd="stats.total_cost_usd" :show-cost="showCost" />
@@ -654,26 +658,26 @@ watch(() => route.params.tenantId, loadTenant)
             </template>
             <template #sub>积分 {{ fmtNum(stats.total_credits) }}<template v-if="showCost"> · 成本 {{ fmtCost(stats.total_cost_usd) }}</template></template>
           </StatCard>
-          <StatCard label="日均请求" icon="📈">
+          <StatCard label="日均请求">
             <template #value>{{ fmtNum(statsDailyAvg) }}</template>
             <template #sub>
               <template v-if="statsDayDelta != null">较前一日 {{ formatDayDelta(statsDayDelta) }}</template>
               <template v-else>窗口 {{ stats.days }} 天</template>
             </template>
           </StatCard>
-          <StatCard label="独立密钥" icon="🔑">
+          <StatCard label="独立密钥">
             <template #value>{{ stats.unique_keys }}</template>
             <template #sub>按密钥用量见密钥 tab</template>
           </StatCard>
-          <StatCard label="独立模型" icon="🤖">
+          <StatCard label="独立模型">
             <template #value>{{ stats.unique_models }}</template>
             <template #sub>Top 见下方模型分布</template>
           </StatCard>
-          <StatCard label="独立应用" icon="🧩">
+          <StatCard label="独立应用">
             <template #value>{{ stats.unique_apps }}</template>
             <template #sub>Top 见下方应用分布</template>
           </StatCard>
-          <StatCard label="平均耗时" icon="⏱️">
+          <StatCard label="平均耗时">
             <template #value>{{ fmtLatency(stats.avg_latency_ms) }}</template>
             <template #sub>窗口内请求均值</template>
           </StatCard>
@@ -700,7 +704,7 @@ watch(() => route.params.tenantId, loadTenant)
             </div>
           </div>
           <table class="table">
-            <thead><tr><th>模型</th><th class="text-right">请求</th><th class="text-right">Token</th><th class="text-right">积分</th><th class="text-right">费用</th></tr></thead>
+            <thead><tr><th>{{ $t('common.terms.model') }}</th><th class="text-right">{{ $t('common.terms.request') }}</th><th class="text-right">Token</th><th class="text-right">{{ $t('common.unit.credits') }}</th><th class="text-right">{{ $t('common.terms.fee') }}</th></tr></thead>
             <tbody>
               <tr v-for="m in statsModelSorted" :key="m.model">
                 <td>
@@ -725,10 +729,10 @@ watch(() => route.params.tenantId, loadTenant)
           <div class="stats-tables-header">
             <h3>应用分布 · Top 20</h3>
             <span class="spacer"></span>
-            <span class="text-muted" style="font-size:12px">点击行跳转密钥列表（带应用过滤）</span>
+            <span class="text-muted" style="font-size:12px">{{ $t('tenants.detail.appDistributionHint') }}</span>
           </div>
           <table class="table">
-            <thead><tr><th>应用</th><th class="text-right">请求</th><th class="text-right">Token</th><th class="text-right">积分</th><th class="text-right">费用</th></tr></thead>
+            <thead><tr><th>{{ $t('common.terms.application') }}</th><th class="text-right">{{ $t('common.terms.request') }}</th><th class="text-right">Token</th><th class="text-right">{{ $t('common.unit.credits') }}</th><th class="text-right">{{ $t('common.terms.fee') }}</th></tr></thead>
             <tbody>
               <tr v-for="a in statsAppSorted" :key="a.application_code" class="stats-app-row" @click="openAppKeys(a.application_code)">
                 <td>
@@ -752,16 +756,16 @@ watch(() => route.params.tenantId, loadTenant)
       <!-- Billing Audit Tab -->
       <div v-if="activeTab === 'billing'" class="tab-content">
         <div class="stats-toolbar billing-toolbar">
-          <label>时间窗口:</label>
+          <label>{{ $t('common.terms.timeWindow') }}:</label>
           <select v-model.number="billingDays" @change="onBillingFilterChange">
             <option :value="1">近 1 天</option>
             <option :value="7">近 7 天</option>
             <option :value="30">近 30 天</option>
             <option :value="90">近 90 天</option>
           </select>
-          <label for="billing-owner-user">用户:</label>
+          <label for="billing-owner-user">{{ $t('common.terms.user') }}:</label>
           <input id="billing-owner-user" v-model="billingOwnerUser" class="billing-user-input" placeholder="按 API Key 所属用户过滤" @keyup.enter="loadBilling" />
-          <button class="btn btn-primary btn-sm" :disabled="billingLoading" @click="loadBilling">{{ billingLoading ? '加载中…' : '查询' }}</button>
+          <button class="btn btn-primary btn-sm" :disabled="billingLoading" @click="loadBilling">{{ billingLoading ? $t('common.feedback.loading') : $t('common.terms.query') }}</button>
         </div>
 
         <div v-if="billing" class="stat-cards">
@@ -775,7 +779,7 @@ watch(() => route.params.tenantId, loadTenant)
 
         <div class="billing-table-wrap">
           <table class="table billing-table">
-            <thead><tr><th>用户</th><th>供应商</th><th>凭据</th><th>模型</th><th>请求</th><th>输入 / 输出</th><th>缓存读 / 写</th><th>积分</th><th>成本</th><th>收入</th><th>毛利率</th><th>取消计费</th></tr></thead>
+            <thead><tr><th>{{ $t('common.terms.user') }}</th><th>{{ $t('common.terms.provider') }}</th><th>{{ $t('common.credentialFallback') }}</th><th>{{ $t('common.terms.model') }}</th><th>{{ $t('common.terms.request') }}</th><th>输入 / 输出</th><th>缓存读 / 写</th><th>{{ $t('common.unit.credits') }}</th><th>{{ $t('common.terms.cost') }}</th><th>收入</th><th>毛利率</th><th>取消计费</th></tr></thead>
             <tbody>
               <tr v-for="row in billing?.rows || []" :key="`${row.provider_id}-${row.credential_id}-${row.canonical_id}-${row.owner_user}`">
                 <td>{{ row.owner_user || '未标记' }}</td><td>{{ row.provider_name || '未标记' }}</td><td><code>{{ row.credential_label || row.credential_id || '未标记' }}</code></td><td><code>{{ row.model }}</code></td>
@@ -817,7 +821,7 @@ watch(() => route.params.tenantId, loadTenant)
             <input v-model="grantAmount" type="number" min="1" placeholder="正整数" />
           </div>
           <div class="adjust-row">
-            <label>备注</label>
+            <label>{{ $t('common.terms.remark') }}</label>
             <input v-model="grantNote" type="text" placeholder="授予原因（可选）" />
           </div>
           <button class="btn btn-primary btn-sm" :disabled="grantSaving" @click="submitGrant">
@@ -832,7 +836,7 @@ watch(() => route.params.tenantId, loadTenant)
             <input v-model="adjustAmount" type="number" placeholder="正数充值，负数扣减" />
           </div>
           <div class="adjust-row">
-            <label>备注</label>
+            <label>{{ $t('common.terms.remark') }}</label>
             <input v-model="adjustNote" type="text" placeholder="调整原因（可选）" />
           </div>
           <button class="btn btn-primary btn-sm" :disabled="adjustSaving" @click="submitAdjust">
@@ -847,12 +851,12 @@ watch(() => route.params.tenantId, loadTenant)
           <thead>
             <tr>
               <th>订单号</th>
-              <th>类型</th>
+              <th>{{ $t('common.terms.type') }}</th>
               <th>金额</th>
-              <th>积分</th>
-              <th>状态</th>
-              <th>时间</th>
-              <th>操作</th>
+              <th>{{ $t('common.unit.credits') }}</th>
+              <th>{{ $t('common.terms.status') }}</th>
+              <th>{{ $t('common.time') }}</th>
+              <th>{{ $t('common.actions') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -887,13 +891,13 @@ watch(() => route.params.tenantId, loadTenant)
         <table class="table" style="width:100%">
           <thead>
             <tr>
-              <th>时间</th>
-              <th>类型</th>
+              <th>{{ $t('common.time') }}</th>
+              <th>{{ $t('common.terms.type') }}</th>
               <th>池</th>
               <th style="text-align:right">变动</th>
               <th style="text-align:right">余额</th>
               <th>关联</th>
-              <th>备注</th>
+              <th>{{ $t('common.terms.remark') }}</th>
             </tr>
           </thead>
           <tbody>

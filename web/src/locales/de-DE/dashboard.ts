@@ -7,7 +7,6 @@ tabs: {
     liveStream: 'Live-Anfragestream',
     sessionStats: 'Sitzungen & Statistik',
     selfcheck: 'Selbstprüfung',
-    systemmonitor: 'Systemüberwachung',
   },
 v2: {
     quickApiKey: 'API Key',
@@ -17,18 +16,12 @@ v2: {
     refreshData: 'Refresh data',
     retry: 'Retry',
     reloadAria: 'Reload data',
-    degradedViewLabel: 'View',
-    degradedHint: 'Data view {view} is not initialized yet. Run the aggregation migration first.',
-    emptyTitle: 'No request data yet',
-    emptyHint: 'After configuring providers, send a call via /v1/chat/completions to see the live stream here.',
-    modelsPage: 'Models',
     totalTokensShort: 'Total Tokens',
     totalCredits: 'Credits charged',
     creditsSub: 'Pricing × tokens',
-    creditsDegraded: 'Credit-Tabelle {view} ist nicht initialisiert — dieser Wert ist nicht belastbar',
-    summaryDegraded: "Aggregatansicht {view} ist nicht initialisiert — die Zahlen zu Anfragen/Token/Kosten sind nicht verfügbar, nicht null. Bitte nicht als Ergebnis verwenden.",
+    creditsDegraded: 'Credit-Tabelle {view} ist nicht initialisiert. Dieser Wert ist nicht belastbar',
+    summaryDegraded: "Aggregatansicht {view} ist nicht initialisiert. Die Zahlen zu Anfragen/Token/Kosten sind nicht verfügbar, nicht null. Bitte nicht als Ergebnis verwenden.",
     modelCount: 'Models',
-    sessionCompression: 'Session compression',
   },
   range: {
     today: "Heute",
@@ -66,7 +59,7 @@ v2: {
     providerScore: 'Score {n}',
     providerPlan: 'Tarif',
     providerStatsTitle: 'Anbieter-Nutzungsstatistik',
-    providerStatsHint: 'Folgt dem Zeitraum · Zeile klicken für Details',
+    providerStatsHint: 'Folgt dem Zeitraum: eine beliebige Zeile wählen, um Details zu sehen.',
     providerExport: 'Excel exportieren',
     filterRange: 'Zeitraum',
     filterGran: 'Granularität',
@@ -86,24 +79,36 @@ v2: {
     distTop: 'TOP {n}',
     distOthers: '{n} weitere',
     distDrillHint: 'Fehlertyp anklicken → Drilldown nach Modell/Anbieter/Client',
-    empty: 'No data',
+    /**
+     * Leerzustände (2026-10-27, Inkrement 14 · „Leerzustand 5 Punkte“).
+     * ★ Vorher stand hier ein einziges `empty: 'No data'`, das von 6 **verschiedenen**
+     *   Karten geteilt wurde (Anbieter / Verteilungsrangliste / Modellverteilung /
+     *   Trenddiagramme / Nutzungstabelle / die zwei Aufgabenkarten der Betriebsübersicht)
+     *   — ein Satz für 6 Bedeutungen ⇒ „keine Daten“ ließ offen, ob wirklich nichts da ist,
+     *   ob herausgefiltert wurde oder ob schlicht falsch gerechnet wurde.
+     *   ⇒ Jetzt nach **Seitenfakt** getrennt, die Art steht im Schlüsselnamen.
+     *   · emptyNoResult* = kein Ergebnis (geprüft, es gibt wirklich nichts)
+     *   · emptyFailed*    = fehlgeschlagen/unbekannt (der Server lieferte nichts)
+     */
+    emptyNoResultProviders: 'Im ausgewählten Zeitraum liegen keine Anbieterdaten vor.',
+    emptyNoResultDist: 'Im ausgewählten Zeitraum gibt es keine Daten für die Rangliste.',
+    emptyNoResultDrill: 'Für diesen Fehlertyp gibt es keine fehlgeschlagenen Anfragen.',
+    emptyNoResultModelDist: 'Im ausgewählten Zeitraum liegen keine Modelldaten vor.',
+    emptyNoResultModelTrend: 'Im ausgewählten Zeitraum liegen keine Daten zum Modelltrend vor.',
+    emptyNoResultTrend: 'Im ausgewählten Zeitraum liegen keine Daten zum Nutzungstrend vor.',
+    emptyNoResultDiscovery: 'Die Modellentdeckung wurde noch nicht ausgeführt.',
+    emptyNoResultProbe: 'Der Probe-Prüflauf wurde noch nicht ausgeführt.',
     bgTasks: 'Background tasks',
     discoveryStatus: 'Model discovery',
-    probeChecks: 'Probes (10m)',
     selfcheckTitle: 'Self-check',
-    selfcheckLast: 'Last status',
-    selfcheckRate: '24h success rate',
-    selfcheckHint: 'Click for details →',
-    pieClients: 'Client types',
-    pieDegraded: "Nicht verfügbar — {reason}. Eine leere Rangliste bedeutet hier, dass nicht berechnet wurde, nicht dass nichts vorhanden war.",
+    pieClients: 'Client-Typen',
+    pieDegraded: "Nicht verfügbar: {reason}. Eine leere Rangliste bedeutet hier, dass nicht berechnet wurde, nicht dass nichts vorhanden war.",
     pieDegradedGeneric: "die Ranglisten-Abfrage ist fehlgeschlagen",
-    drillFailed: "Diese Aufschlüsselung konnte nicht geladen werden — {reason}. Eine leere Liste bedeutet nicht, dass keine Fehler auftraten.",
+    drillFailed: "Diese Aufschlüsselung konnte nicht geladen werden. {reason}. Eine leere Liste bedeutet nicht, dass keine Fehler auftraten.",
     pieClientIp: 'Client-IP',
-    pieIdentity: 'Identity hash',
-    pieModels: 'Model usage',
-    pieErrors: 'Error types',
-    pieTenants: 'Tenant usage',
-    pieProviders: 'Provider usage',
+    pieIdentity: 'Identitäts-Hash',
+    pieErrors: 'Fehlertypen',
+    pieTenants: 'Mandanten-Nutzung',
     metricRequests: 'Requests',
     metricTokens: 'Tokens',
     metricToggle: 'Metrik',
@@ -119,181 +124,73 @@ v2: {
     trendMore: 'Mehr',
     trendMoreTitle: 'Ganzseitige Nutzungstrend-Analyse öffnen',
     trendOthers: 'Weitere',
-    filterProvider: 'Provider ID',
-    allProviders: 'All',
 
-    rangeCustomTab: 'Custom',
 
-    rangeFrom: 'From',
 
-    rangeTo: 'To',
 
-    rangePicker: 'Statistics period',
 
     rangeCustom: '{start} to {end}',
   },
-  proxyWarning: {
-    title: "⚠ Ausgangs-Proxy nicht erreichbar",
-    detail: "Der konfigurierte Proxy {proxy} konnte nicht erreicht werden — das Gateway ist automatisch in den Direktmodus gewechselt. Ausländische Modelle (Anthropic / OpenAI / OpenRouter / GitHub Copilot usw.) können fehlschlagen.",
-    detailHealthy: "Proxy {proxy} ist wieder online.",
-    hint: "Das System wird automatisch wieder aktiviert, sobald der Proxy wiederhergestellt ist."
-  },
-  backgroundTasks: {
-    title: "Hintergrundaufgaben laufen",
-    running: "Modellerkennung ({trigger})",
-    startedAt: "Gestartet {time}",
-    heartbeat: "Heartbeat {time}",
-    slow: "Die Admin-Seiten können langsamer werden",
-    detailsLink: "Details anzeigen"
-  },
-  discovery: {
-    latest: "Letzte Modellerkennung: ",
-    failuresTitle: "Modellerkennung · Fehler in den letzten 6 Std.",
-    failuresTally: "{n} Fehler · {m} Modelle",
-    summary: "Fehlerliste anzeigen",
-    meta: "{n} mal · {m} Anmeldedaten betroffen · letzte {date} · Fehler {code}"
-  },
   stat: {
     totalRequests: "Gesamtanfragen",
-    inLastDays: "In den letzten {days} Tagen",
-    totalTokens: "Gesamte Token-Nutzung",
-    prompt: "Prompt {n}",
-    completion: "Completion {n}",
     totalCost: "Gesamtkosten",
-    costUnit: "USD",
     successRate: "Erfolgsrate",
     avgLatency: "Durchschn. Latenz {n} ms",
-    apiKeys: "Eingebundene API-Schlüssel",
-    enabledActive: "Aktiviert {enabled} · aktiv {active}",
     models: "Modelle",
     activeInDays: "In den letzten {days} Tagen {n} aktiv",
-    providers: "Anbieter / Anmeldedaten",
-    enabledCredentials: "Aktiviert {enabled} · Anmeldedaten {total}",
-    offline: "Offline-Ressourcen",
-    modelsCredentials: "Modelle {models} · Anmeldedaten {creds}",
-    // 2026-08-06: Durchschn. Anfragegröße / Durchschn. Antwortgröße / Spitze (Abgleich mit zh-CN)
     avgRequestSize: "Durchschn. Anfragegröße",
     avgResponseSize: "Durchschn. Antwortgröße",
     maxLabel: "Spitze",
   },
   table: {
-    hotKeysTitle: "Rangliste der API-Schlüssel mit hoher Nutzung",
-    byModelTitle: "Nach Modell",
-    colKey: "Schlüssel",
-    colApplication: "Anwendung",
-    colOwner: "Besitzer",
-    colRequests: "Anfragen",
-    colTokens: "Token-Nutzung",
-    colCost: "Kosten (USD)",
-    colLastUsed: "Zuletzt verwendet",
     colModel: "Modell",
-    colProvider: "Anbieter"
-  },
-  compression: {
-    title: "🤖 Sitzungskomprimierung",
-    delta: "Delta",
-    sliding: "Gleitend",
-    outboundTokens: "≈ {n} ausgehende Tokens"
-  },
-  empty: {
-    firstUse: "🚀 Noch keine Anfragedaten. Nach der Anbieterkonfiguration senden Sie einen Aufruf über /v1/chat/completions, um hier Daten zu sehen."
   },
   loading: "Wird geladen…",
-  noData: "Keine Daten für diesen Zeitraum",
-  costSuffix: "USD",
-  viewFailedRequests: "Fehlgeschlagene Anfragen anzeigen",
   liveStream: {
     title: "Echtzeit-Anfrage-Stream",
     groupByQueue: "Nach Verarbeitungswarteschlange",
     controlsAria: "Steuerung des Echtzeit-Anfrage-Streams",
-    connected: "Verbunden",
-    disconnected: "Verbindet erneut...",
     pause: "Pause",
     resume: "Fortsetzen",
-    filterAll: "Alle Status",
-    filterSuccess: "Nur Erfolg",
-    filterFailure: "Nur Fehler",
-    filterInProgress: "In Bearbeitung",
-    filterGroupFailures: "Fehleraufschlüsselung",
-    filterFailure5xx: "Server / Upstream (5xx)",
-    filterFailure4xx: "Client / Auth (4xx)",
-    filterFailureTimeout: "Timeout / Netzwerk",
-    filterFailureNotFound: "Routing / Modell nicht gefunden",
-    filterFailureOther: "Andere Fehler",
-    idleLabel: "Leerlauf {duration}",
-    countTooltip: "{buffer} im Puffer / {visible} sichtbar",
-    countAria: "{buffer} Anfragen im Puffer, {visible} sichtbar",
     legendButton: 'Legende',
     legend: {
-      title: "Legende",
-      model: "Modellfamilie",
-      status: "Status",
-      openai: "OpenAI",
-      anthropic: "Anthropic",
-      domestic: "Inland",
-      oss: "Open Source",
-      other: "Andere",
       success: "Erfolg",
       inProgress: "In Bearbeitung",
-      failure: "Fehler"
-,
       cancelled: 'Cancelled',
     },
     tooltip: {
-      model: "Modell",
-      provider: "Anbieter",
-      status: "Status",
-      latency: "Latenz",
-      tokens: "Tokens",
-      cost: "Kosten",
-      error: "Fehler",
-      time: "Zeit"
-,
-      vendor: 'Vendor',
 
-      requestId: 'ID',
 
-      errorKind: 'Error type',
 
-      errorRawCode: 'Raw code',
 
       statusValue: {
         success: 'Success',
         inProgress: 'In progress',
         cancelled: 'Cancelled by user',
-        idle: 'Idle (heartbeat placeholder)',
         failure: 'Request failed',
       },
 
       tokenFormat: '{p} + {c}',
-      cache: 'Cache',
       cacheFormat: 'Lesen {r} / Schreiben {w} (Treffer {pct})',
-      sessionId: 'Sitzung',
     },
-    connecting: "Verbindung wird hergestellt…",
-    reconnecting: "Verbindung wird wiederhergestellt…",
-    unsupported: "Live-Stream wird in diesem Browser nicht unterstützt",
-    empty: "Keine Live-Anfragen",
 
     emptyWaiting: 'Warten auf Live-Anfragestream-Daten…',
     emptyConnecting: 'Verbindung zum Live-Stream wird aufgebaut, nach dem Verbinden wird automatisch geladen…',
-    groupByCredential: 'Nach Zugangsdaten', groupByVendor: 'Nach Anbieter', groupByProvider: 'Nach Provider', groupByModel: 'Nach Modell',
+    groupByCredential: 'Nach Zugangsdaten', groupByProvider: 'Nach Provider', groupByModel: 'Nach Modell',
     modeSmall: 'Klein',
     modeLarge: 'Groß',
     modeSmallTitle: 'Kleiner Modus: vertikale Balken, fasst mehr Anfragen (Standard)',
     modeLargeTitle: 'Großer Modus: Karten mit mehr Anfragedetails',
-    probeAll: 'Alle', probeOnly: 'Nur Probes',
-    probeAllTitle: 'Alle Anfragen anzeigen (Standard)', probeOnlyTitle: 'Nur Probe-Anfragen anzeigen',
     // 2026-08-06: Geschäfts- / Probe-Filter + Titel (Abgleich mit zh-CN)
     business: 'Geschäft',
     probe: 'Probe',
     businessTitle: 'Nur echte Geschäftsanfragen anzeigen',
     probeTitle: 'Nur Probe-Anfragen anzeigen',
-    cacheWindow: 'Cache / Fenster', connectionDetailTitle: 'Klicken für Verbindungsdetails',
+    cacheWindow: 'Cache / Fenster', connectionDetailTitle: 'Verbindungsdetails anzeigen',
     dimensionCredential: 'Zugangsdaten', dimensionVendor: 'Anbieter', dimensionProvider: 'Provider', dimensionModel: 'Modell',
     statusOpen: 'Verbunden', statusConnecting: 'Verbinden', statusReconnecting: 'Wiederverbinden',
     statusUnsupported: 'Nicht unterstützt', statusClosed: 'Nicht verbunden',
-    queueStreamConnecting: 'Verbindung zum Live-Stream wird aufgebaut — dieser Bereich aktualisiert sich nach dem Verbinden automatisch…',
+    queueStreamConnecting: 'Verbindung zum Live-Stream wird aufgebaut. Dieser Bereich aktualisiert sich nach dem Verbinden automatisch…',
     queueStreamClosed: 'Live-Stream getrennt, automatische Neuverbindung läuft…',
     queueStreamUnsupported: 'Dieser Browser unterstützt keine Live-Streams (EventSource); dieser Bereich kann keine Echtzeitdaten empfangen.',
     queueStreamAwaiting: 'Live-Stream verbunden, erste Daten werden empfangen…',
@@ -335,11 +232,7 @@ v2: {
 
     idleHoursMinutes: 'Leer {h} Std {m} Min',
 
-    idleReasonNoTraffic: 'Kein Traffic (5 Min Leerlauf)',
-    // 2026-07-24: Multi-dimension filters
     filterStatus: 'Status',
-    filterAllOptions: 'Alle',
-    filterEmpty: 'Keine Optionen verfügbar',
     filterModel: 'Modell',
     filterGroup: 'Filter',
     filterProvider: 'Anbieter',
@@ -351,13 +244,6 @@ v2: {
       success: 'Erfolg',
       failure: 'Fehler',
       rate_limited: 'Begrenzt',
-    },
-    vendor: {
-      openai: 'OpenAI',
-      anthropic: 'Anthropic',
-      domestic: 'Inland',
-      oss: 'Open Source',
-      other: 'Andere',
     },
   },
   charts: {
@@ -374,60 +260,24 @@ v2: {
     closedSessions: "Geschlossene Sitzungen",
     costUSD: "Kosten (USD)",
     sessionCount: "Sitzungsanzahl",
-    sessionTrend: "Sitzungstrend"
+    sessionTrend: "Sitzungstrend",
+    /** Leerzustände (2026-10-27, Inkrement 14): vorher nutzten beide Stellen `dashboard.noData` („keine Daten für diesen Zeitraum“). */
+    emptyNoResultHealthGrade: 'Im ausgewählten Zeitraum liegen keine Daten zur Gesundheitsverteilung vor.',
+    emptyNoResultSessionTrend: 'Im ausgewählten Zeitraum liegen keine Daten zum Sitzungstrend vor.',
   },
 
-  moduleStats: {
-    executions: 'Ausführungen',
-    cacheHitRate: 'Cache-Trefferrate',
-    rate: 'Rate',
-    totalModules: 'Gesamtzahl Module',
-    totalExecutions: 'Gesamtausführungen',
-    avgCacheHitRate: 'Durchschn. Cache-Trefferrate',
-    avgDuration: 'Durchschn. Dauer',
 
-    title: 'Modul-Ausführungsstatistik',
-
-    successRate: 'Erfolgsrate',
-  },
-
-  errors: {
-    trendTitle: 'Fehlertrend',
-    errorCount: 'Fehleranzahl',
-    totalCount: 'Gesamtanfragen',
-    errorRate: 'Fehlerrate',
-    count: 'Anzahl',
-    rate: 'Rate',
-    totalErrors: 'Gesamtfehler',
-    topErrors: 'Top-Fehler',
-
-    title: 'Fehlerstatistik',
-
-    totalRequests: 'Gesamtanfragen',
-
-    avgLatency: 'Durchschn. Fehlerlatenz',
-  },
 
   performance: {
-    throughput: 'Durchsatz',
-    requests: 'Anfragen',
-    p50: 'P50 Latenz',
-    p95: 'P95 Latenz',
-    p99: 'P99 Latenz',
-    latencyDist: 'Latenzverteilung',
-    slowQueries: 'Langsame Abfragen',
 
-    title: 'Leistungsmetriken',
 
     avgLatency: 'Durchschn. Latenz',
 
-    latency: 'Latenz',
   },
 
   providerUsage: {
     title: 'Anbieternutzung',
-    subtitle: '{period} — Gesamtverbrauch aller Anbieter (abgleichsbereit)',
-    periodHint: 'Aktueller Zeitraum: {period}',
+    subtitle: '{period}: Gesamtverbrauch aller Anbieter (abgleichsbereit)',
     more: 'Mehr',
     search: 'Name, Code oder ID suchen…',
     back: 'Zurück zur Liste',
@@ -448,6 +298,8 @@ v2: {
     periodRange: '{start} bis {end}',
     modelBreakdown: 'Nach Modell',
     dailyBreakdown: 'Tägliche Modellaufschlüsselung',
+    /** Leerzustand: keine Nutzungsdatensätze (der herabgestufte Zustand hat mit `dataLifecycle.usageCost.degraded.title` einen eigenen Wortlaut). */
+    emptyNoResult: 'Im ausgewählten Zeitraum liegen keine Nutzungsdaten vor.',
   },
   statsRow: {
     totalSessions: "Total Sessions",
@@ -460,5 +312,11 @@ v2: {
     avgLatency: "Avg Latency",
     totalRequests: "Total Requests",
     totalTokens: "Total Tokens",
+  },
+  requestTile: {
+    childRequestsTitle: 'Unteranfragen {count} (zum Aufklappen)',
+    childRequestsEmpty: 'Unteranfragen (noch keine Übertragung, zum Aufklappen)',
+    actionTrailTitle: 'Aktionsverlauf {count} Einträge (zum Aufklappen)',
+    actionTrailEmpty: 'Aktionsverlauf (noch keine Übertragung, zum Aufklappen)',
   },
 }

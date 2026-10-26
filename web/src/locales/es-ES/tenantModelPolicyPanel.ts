@@ -61,10 +61,10 @@ export default {
 
   error: {
     loadFailed: 'Error al cargar',
+    checkFailed: 'Error de validación',
     canonicalNameRequired: 'canonical_name es obligatorio',
     createFailed: 'Error al crear',
     deleteFailed: 'Error al eliminar',
     restoreFailed: 'Error al restaurar',
   },
-  softDeleteConfirm: '¿Eliminación suave de la política {name}? (recuperable)',
 }

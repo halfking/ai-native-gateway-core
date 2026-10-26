@@ -46,7 +46,15 @@ function formatMs(ms: number) {
           </div>
         </div>
       </template>
-      <p v-else class="empty-hint">{{ errors ? t('sessions.stats.errorsEmpty') : t('dashboard.noData') }}</p>
+      <!--
+        ★ 2026-10-27（第 14 增量 · 空状态 5 分）：两个分支是**两件事**，不许共用一句话。
+          · errors 有值但计数为 0 ⇒ 「当前周期无错误记录」= **好状态**（errorsEmpty）。
+          · errors 为 null ⇒ 服务端**没返回**错误汇总 = **未知**，不是「没有错误」。
+            ⇒ 原文案用 dashboard.noData（「该时段暂无数据」）把「不知道」讲成「知道」——
+              与 ProviderUsageExplorer 里那段注释（降级时说「暂无数据」等于把不知道讲成知道）
+              是同一个病根。现在有专门的 Failed 类措辞。
+      -->
+      <p v-else class="empty-hint">{{ errors ? t('sessions.stats.errorsEmpty') : t('sessions.stats.emptyFailedErrorSummary') }}</p>
     </div>
   </div>
 </template>

@@ -1,9 +1,18 @@
 package bg
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// v1SortKeyRE 按**标识符边界**匹配 v1 臂的排序键 `e.last_error_at`。
+//
+// ⚠ 为什么要正则而不是 strings.Contains：`se.last_error_at` 里**含**
+// "e.last_error_at" 子串 ⇒ 用子串匹配会被 se 臂喂饱（恒真）⇒ 那条
+// 「不得再有裸 e.last_error_at」的负向断言就废了。
+// 边界规则：前面必须是标识符字符（字母/数字/下划线/点）之外的东西。
+var v1SortKeyRE = regexp.MustCompile(`(^|[^A-Za-z0-9_.])e\.last_error_at`)
 
 // S4 停写：凭据自检的错误证据臂（2026-10-02 审计，§9.26）。
 //
@@ -23,6 +32,14 @@ import (
 // ⇒ 因此**不门控整个自检 worker**（那会连同仍然有效的故障发现一起停掉），
 //    改为补 session 族臂把「止错」的部分保住。
 //
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 族连表带分区一起被 DROP ⇒ 那条 v1
+// 臂**必须删除**（提到已 DROP 的关系会让整条 pickDueCredential 语句 42P01）。
+// ⇒ se 臂成为**唯一**的错误证据臂、也是**唯一**的硬前置；本文件下方的门
+// 相应反转：v1 臂从「必须在、且必须 LEFT JOIN」变成「必须不在」。
+// ⇒ 丢掉的能力已在生产注释里如实登记：「探针最近失败 ⇒ 现在复检」这条取证
+// 捷径（探针流量按设计不走 session 写路径，会话族里根本没有探针行）；探针
+// 系统本身不受影响。
+//
 // 本文件的三条门设计纪律（前两版各踩了一次，记在这里防止第三次）：
 //
 //  1. **不许用全文件子串**。第一版在 pickDueCredential 函数体内查子串，被同函数里
@@ -36,6 +53,8 @@ import (
 //     本身含 `COALESCE(e.last_error_at, se.last_error_at)`；不剥注释的话，删掉真实
 //     的 ORDER BY 接线也能被注释满足。这与 admin 的逐字面量门是同一条教训
 //     （门被自己的注释弄红/喂饱）。
+//  4. **（890 轮新增）负向断言必须按标识符边界匹配**。`se.last_error_at` 里含
+//     "e.last_error_at" 子串 ⇒ 子串匹配恒真。见 v1SortKeyRE。
 //
 // 门的边界（它看不到什么）：它是**源码**门，只能证明这条 SQL 的形状没被改回退化
 // 形状；它不能证明 SQL 在真库上可执行，也不能证明两族覆盖真的重叠。真库那一半由
@@ -44,32 +63,34 @@ import (
 func TestSelfcheckErrorArmCoversSessionFamily(t *testing.T) {
 	sql := selfcheckPickSQL(t)
 
-	// ---- 臂 e（v1）：必须仍在，且必须是 LEFT JOIN ----
-	eArm, ok := lateralArmSrc(sql, "e")
-	if !ok {
-		t.Fatal("pickDueCredential 里找不到 v1 错误证据臂（LATERAL 别名 e）。\n" +
-			"它是探针失败信号的唯一来源（真库 24h 内 41 个有报错的凭据里，\n" +
-			"有 26 个只有 v1 有、且全是 node_probe），双写期也是主覆盖。")
-	}
-	if !strings.Contains(eArm, "LEFT JOIN LATERAL") {
-		t.Fatal("v1 臂不再是 LEFT JOIN —— session 臂永远轮不上它：\n" +
-			"**补了臂但没接线**是最容易自我欺骗的一种假修复（看起来做了，实际零效果）。\n" +
-			"当前 join 关键字：" + armJoinKeyword(eArm))
-	}
-	if !strings.Contains(eArm, "FROM _request_logs_hot rl") {
-		t.Error("v1 臂的证据源不再读 _request_logs_hot —— 请确认这是有意改动并同步本门")
+	// ---- 臂 e（v1）：★ 890 之后已退役 ----
+	// 原门要求「v1 臂必须仍在，且必须是 LEFT JOIN」——那是补 session 臂时防
+	// 的「补了臂但没接线」（session 臂永远轮不上它）。
+	//
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 族连表带分区一起被 DROP ⇒
+	// 同一条 FROM 里提到 v1 关系会让**整条 pickDueCredential 语句** 42P01
+	// （不是「那条臂失败」）⇒ 这条臂必须**删除**。
+	// ⇒ 本门从「v1 臂必须在」**反转**为「v1 臂必须不在」。
+	//
+	// ⚠ 负向断言的正向对照：下面 se 臂那一整组断言（两存储面 + CAST +
+	// 硬前置）就是对照项 —— 删掉 se 臂本门红，删掉 v1 臂本门绿。
+	if eArm, ok := lateralArmSrc(sql, "e"); ok {
+		t.Errorf("pickDueCredential 里不该再有 v1 错误证据臂（迁移 890 已 DROP，提及即整条语句 42P01）：\n"+
+			"当前 join 关键字：%s\n%s", armJoinKeyword(eArm), eArm)
 	}
 
 	// ---- 臂 se（session 族）：必须存在，且类型转换必须显式 ----
 	seArm, ok := lateralArmSrc(sql, "se")
 	if !ok {
 		t.Fatal("自检的错误证据臂不再覆盖 session 族。\n" +
-			"v1 那一臂是硬过滤，停写 24h 后没有任何凭据能通过 ⇒ 自检自己静默。\n" +
+			"v1 那一臂已随 890 退役，se 臂现在是**唯一**的错误证据臂，也是**硬过滤**\n" +
+			"（se.last_error_at IS NOT NULL）—— 它没了，自检就会自己静默：\n" +
+			"没有任何凭据能通过硬前置 ⇒ 一次都不跑。\n" +
 			"真库实测：24h 内 v1 有报错的凭据 41、session 侧 15、只有 v1 有的 26 条全是\n" +
 			"node_probe（探针流量按设计不走 session 写路径，无法端口）。\n" +
 			"补这条臂是为了保住业务失败检测。")
 	}
-	if !strings.Contains(seArm, "FROM session_turns st") && !strings.Contains(seArm, "FROM session_turns") {
+	if !strings.Contains(seArm, "FROM session_turns") {
 		t.Error("session 臂的证据源不是 session_turns —— session_turns 不受 S4 停写门管，\n" +
 			"换别的表会重新引入跨门边界。当前臂内容见测试输出")
 	}
@@ -80,14 +101,16 @@ func TestSelfcheckErrorArmCoversSessionFamily(t *testing.T) {
 	// 最新失败，单面读法让它对自己的目标完全失明。**
 	// R32（P2-D）：SELECT 清单加了 partition_date（分区裁剪下推，见
 	// credential_selfcheck.go 同址注释）——两个面的形状断言随之同步。
+	// ⚠ 边界匹配：两个 needle 都带换行尾 ⇒ 「父表那条」不会被热腿那条
+	// （FROM session_turns_hot）误满足，反之亦然。
 	for _, want := range []string{
-		"SELECT ts, success, status_code, credential_id, partition_date FROM session_turns",
-		"SELECT ts, success, status_code, credential_id, partition_date FROM session_turns_hot",
+		"SELECT ts, success, status_code, credential_id, partition_date FROM session_turns\n",
+		"SELECT ts, success, status_code, credential_id, partition_date FROM session_turns_hot\n",
 		"UNION ALL",
 		"st.partition_date >= (now() - interval '24 hours')::date",
 	} {
 		if !strings.Contains(seArm, want) {
-			t.Errorf("session 臂没有同时读会话族的两个存储面，缺：%s\n"+
+			t.Errorf("session 臂没有同时读会话族的两个存储面，缺：%q\n"+
 				"只读父表会漏掉 session_turns_hot 里的最新失败轮次（实测该窗口 761 个），\n"+
 				"而这条臂存在的意义恰恰是抓最新失败。710 视图同款 UNION ALL 惯例。", want)
 		}
@@ -98,28 +121,28 @@ func TestSelfcheckErrorArmCoversSessionFamily(t *testing.T) {
 			"这条是**真库执行门**才能抓的形状，源码门只能拦「转换被删掉」。")
 	}
 
-	// ---- 硬前置：必须由 COALESCE 承担，且不能退回 v1-only ----
-	if !strings.Contains(seArm, "ON COALESCE(e.last_error_at, se.last_error_at) IS NOT NULL") {
-		t.Error("硬前置没有由 COALESCE(e, se) 承担 —— 退回 v1-only 会让 session 臂成为装饰：\n" +
-			"v1 冻结后没有任何凭据能通过硬前置，自检静默。当前 se 臂的 ON 子句见测试输出。\n" +
+	// ---- 硬前置：v1 臂删除后由 se 臂独自承担 ----
+	if !strings.Contains(seArm, ") se ON se.last_error_at IS NOT NULL") {
+		t.Error("硬前置没有由 se 臂承担 —— 它现在是唯一的错误证据臂，\n" +
+			"ON 子句一旦不再是硬过滤，自检就会自己静默（没有任何凭据能通过）。\n" +
+			"当前 se 臂的 ON 子句见测试输出。\n" +
 			"se 臂原文：" + seArm)
 	}
-	if !strings.Contains(eArm, ") e ON e.last_error_at IS NOT NULL") {
-		t.Error("v1 臂自身的 ON 子句被改动 —— 它的语义是「无 v1 失败行时该臂产 NULL」，\n" +
-			"改掉会让 LEFT JOIN 退化成别的东西。当前 v1 臂原文：" + eArm)
-	}
 
-	// ---- 排序接线：停写后唯一合格的群体 v1 值为 NULL ----
+	// ---- 排序接线：最近报错优先 ----
 	// PostgreSQL 的 DESC 默认 NULLS FIRST，不接线会让他们全部挤到最前，
-	// 丢掉「最近报错优先」的排序语义。**接了 COALESCE 但漏了 DESC 同样会红。**
+	// 丢掉「最近报错优先」的排序语义。
 	orderBy := orderByClause(sql)
-	if !strings.Contains(orderBy, "COALESCE(e.last_error_at, se.last_error_at) DESC") {
-		t.Error("ORDER BY 仍只按 e.last_error_at 排序 —— 停写后 session-only 群体该值为 NULL，\n" +
-			"DESC 的 NULLS FIRST 会把他们全部挤到最前，丢掉「最近报错优先」的排序语义。\n" +
+	if !strings.Contains(orderBy, "se.last_error_at DESC") {
+		t.Error("ORDER BY 未按 se.last_error_at DESC 排序 —— 丢掉「最近报错优先」的排序语义。\n" +
 			"当前 ORDER BY 片段：" + orderBy)
 	}
-	if strings.Contains(orderBy, "e.last_error_at DESC") && !strings.Contains(orderBy, "COALESCE(e.last_error_at, se.last_error_at) DESC") {
-		t.Error("ORDER BY 里存在裸的 e.last_error_at DESC")
+	// 负向：不得再有裸的 e.last_error_at（v1 排序键已随那条臂删除）。
+	// ⚠ **必须按标识符边界匹配**：`se.last_error_at` 里含 "e.last_error_at"
+	// 子串 ⇒ 用 strings.Contains 会被 se 臂喂饱（恒真），这条断言就废了。
+	if v1SortKeyRE.MatchString(orderBy) {
+		t.Error("ORDER BY 里存在裸的 e.last_error_at（v1 排序键已随那条臂退役）\n" +
+			"当前 ORDER BY 片段：" + orderBy)
 	}
 }
 

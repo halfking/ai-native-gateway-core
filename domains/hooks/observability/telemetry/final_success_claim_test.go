@@ -1,4 +1,4 @@
-// final_success_claim_test.go — v4 T7 (migration 532) 会话级唯一成功 claim 单测。
+// final_success_claim_test.go — 会话级唯一成功 claim 的单测。
 //
 // 覆盖测试方案 G10：
 //
@@ -8,31 +8,73 @@
 //	          entry 触发 claim，失败/取消/空会话路径完全不触碰 claim
 //	          （库级唯一性由部分唯一索引保证，集成测试覆盖）。
 //
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 族（_request_logs / _request_logs_hot
+// / _request_logs_bodies*）连同它的终态成功认领入口 claimSessionFinalSuccess
+// 一起落库删除 ⇒ 本文件**整体重写**。
+//
+// ── 退役登记表（本轮退役的判据 → 退役原因 → 现在由谁承载）────────────────
+//
+//  1. TestClaimSessionFinalSuccess_GrantPathRunsInSameTxWithSavepoint
+//     退役对象：v1 的 claim UPDATE（`UPDATE _request_logs_hot SET
+//     is_final_success = TRUE ... NOT EXISTS(other)`）+ SAVEPOINT/RELEASE 序列 +
+//     D12 的 session_mirror_outbox 补偿登记。
+//     原因：claim 的目标表随 890 删除；且**仲裁职责已迁出本包**——会话族用
+//     partial 唯一索引 uq_session_turns_hot_final_success + markTurnFinalSuccess
+//     做仲裁（internal/sessionv2mirror/final_success_turn.go）。
+//     现在由谁承载：internal/sessionv2mirror 自己的判据
+//     （final_success_turn_gate_test.go / final_success_turn_wiring_test.go）；
+//     本包侧只负责「**资格**判定」与「把资格挂到 entry 上」⇒ 见本文件下方的
+//     TestUpdateRequestLog_TerminalSuccessMarksFinalSuccessClaimed。
+//
+//  2. TestClaimSessionFinalSuccess_NoGrantNoOutboxRegistration
+//     退役对象：claim 未置位（RowsAffected=0）时不登记补偿行。
+//     原因：v1 的补偿登记（session_mirror_outbox）随 claim 一起退役。
+//     现在由谁承载：**本包侧没有任何判据**守这条（补偿登记已不在本包）；
+//     该不变式在会话族侧另有人守。
+//
+//  3. TestClaimSessionFinalSuccess_UniqueViolationDegradesToNormalSuccess
+//     退役对象：唯一索引冲突（23505）降级为普通成功（回滚到 savepoint）。
+//     原因：v1 的 claim 语句不存在，冲突发生在会话族
+//     （uq_session_turns_hot_final_success），降级逻辑随之迁到
+//     internal/sessionv2mirror。
+//     现在由谁承载：internal/sessionv2mirror 的判据；本包侧无。
+//
+//  4. TestClaimSessionFinalSuccess_OtherErrorsDegrade
+//     退役对象：滚动发布窗口的 42703（列不存在）降级。
+//     原因：同上——v1 族与其列都不存在了，42703 不再是本包的失败模式。
+//     现在由谁承载：internal/sessionv2mirror；本包侧无。
+//
+//  5. TestClaimSessionFinalSuccess_Guards
+//     退役对象：nil entry / nil tx / nil Client 不产生任何语句。
+//     原因：claim 函数本身退役，没有「不产生语句」的主体了。
+//     现在由谁承载：nil 安全的**资格判定**仍在本包 ⇒ 由
+//     TestShouldClaimFinalSuccess 的 "nil entry" 用例承载。
+//
+//  6. TestClaimSessionFinalSuccess_HeapPartitionsGuard
+//     退役对象：v1 月度分区名缓存（heapPartitions / heapPartitionsCachedAt）
+//     驱动的 promoted guard（UNION ALL 多个 heap 月度分区，排除 columnar 月份）。
+//     原因：v1 宽表及其月度分区随 890 删除，promoted/columnar 晋级机制也一并
+//     删除（890 同时删掉了 ensure_request_logs_partition / promote_* 系列函数）。
+//     现在由谁承载：**本包侧无**（会话族没有 promoted/columnar 分区晋级这条线）。
+//
+//  7. TestUpdateRequestLog_AppendsFinalSuccessClaimOnTerminalSuccess
+//     **改指**（不是退役）：claim 语句那一半退役；「事务内恰好追加一次 claim」
+//     变成「事务内只把认领资格挂到 entry.FinalSuccessClaimed」⇒ 见下方同名的
+//     改指用例。
+//
+//  8. TestUpdateRequestLog_FailurePathSkipsClaim
+//     **改指**（不是退役）：失败路径不再发 claim 语句，但仍然必须**不**置位
+//     entry.FinalSuccessClaimed（否则会话族会把一次失败当成终态成功去仲裁）。
+//
 // DB mock 用 pgxmock（现有 telemetry 测试基建，见 request_logger_test.go）。
 package telemetry
 
 import (
-	"context"
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/require"
 )
-
-func newClaimMock(t *testing.T) (pgxmock.PgxConnIface, pgx.Tx) {
-	t.Helper()
-	mock, err := pgxmock.NewConn()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = mock.Close(context.Background()) })
-
-	mock.ExpectBegin()
-	tx, err := mock.Begin(context.Background())
-	require.NoError(t, err)
-	return mock, tx
-}
 
 // anyArgs 生成 n 个 AnyArg 匹配器（大参数量语句用）。
 func anyArgs(n int) []interface{} {
@@ -43,111 +85,15 @@ func anyArgs(n int) []interface{} {
 	return args
 }
 
-// claimSQLPattern 钉死 claim 语句的语义要素：自守卫（成功终态 + 非空会话）、
-// hot 侧 NOT EXISTS（排除自身）。2026-08-25: promoted 分区守卫 (跨 7 天窗口)
-// 改为动态拼装 (列存安全), 默认 nil 分支 (单测无 Client 注册) 不含该子句.
-// 集成测试覆盖 promoted guard 拼接: TestClaimSessionFinalSuccess_HeapPartitionsGuard。
-const claimSQLPattern = `UPDATE _request_logs_hot\s+SET is_final_success = TRUE\s+WHERE request_id = \$1\s+AND success = TRUE\s+AND request_status = 'success'\s+AND COALESCE\(gw_session_id, ''\) <> ''\s+AND NOT EXISTS[\s\S]*FROM _request_logs_hot other[\s\S]*other\.request_id <> _request_logs_hot\.request_id`
-
-func claimTestEntry(requestID, sessionID string) *RequestLogEntry {
-	sid := sessionID
-	return &RequestLogEntry{RequestID: requestID, GwSessionID: &sid, Success: true}
-}
-
-func TestClaimSessionFinalSuccess_GrantPathRunsInSameTxWithSavepoint(t *testing.T) {
-	mock, tx := newClaimMock(t)
-
-	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-	mock.ExpectExec(claimSQLPattern).
-		WithArgs("req-claim-1").
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec(`RELEASE SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("RELEASE", 0))
-	// 2026-09-25 审计第八轮 (D12): granted claim registers a source='claim'
-	// compensation row in session_mirror_outbox, same transaction.
-	mock.ExpectExec(`SAVEPOINT gw_claim_mirror_outbox`).
-		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\), set_config\('app\.bypass_rls', 'true', true\)`).
-		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectExec(`INSERT INTO public.session_mirror_outbox`).
-		WithArgs("default", "req-claim-1", "sess-1", pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectExec(`SELECT set_config\('app\.current_role', '', true\), set_config\('app\.bypass_rls', 'false', true\)`).
-		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectExec(`RELEASE SAVEPOINT gw_claim_mirror_outbox`).
-		WillReturnResult(pgxmock.NewResult("RELEASE", 0))
-
-	claimSessionFinalSuccess(context.Background(), nil, tx, claimTestEntry("req-claim-1", "sess-1"))
-
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-// UT-FS-D12：claim 未置位（RowsAffected=0，会话已有更早的 final-success）时
-// 不得登记补偿行——只有 granted claim 才有镜像兜底价值。
-func TestClaimSessionFinalSuccess_NoGrantNoOutboxRegistration(t *testing.T) {
-	mock, tx := newClaimMock(t)
-
-	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-	mock.ExpectExec(claimSQLPattern).
-		WithArgs("req-claim-superseded").
-		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
-	mock.ExpectExec(`RELEASE SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("RELEASE", 0))
-
-	claimSessionFinalSuccess(context.Background(), nil, tx, claimTestEntry("req-claim-superseded", "sess-2"))
-
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-// UT-FS-01（竞争失败方）：唯一索引冲突（23505）必须降级为普通成功——
-// 回滚到 savepoint，绝不让错误冒泡导致业务行丢失。
-func TestClaimSessionFinalSuccess_UniqueViolationDegradesToNormalSuccess(t *testing.T) {
-	mock, tx := newClaimMock(t)
-
-	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-	mock.ExpectExec(`UPDATE _request_logs_hot`).
-		WithArgs("req-claim-loser").
-		WillReturnError(&pgconn.PgError{
-			Code:    "23505",
-			Message: "duplicate key value violates unique constraint \"uq_request_logs_hot_final_success_session\"",
-		})
-	// 降级路径：回滚 savepoint，且不再 RELEASE。
-	mock.ExpectExec(`ROLLBACK TO SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("ROLLBACK", 0))
-
-	claimSessionFinalSuccess(context.Background(), nil, tx, claimTestEntry("req-claim-loser", "sess-loser"))
-
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-// 滚动发布窗口（migration 532 未应用，列不存在 42703）等其它错误同样降级，
-// 不阻塞 _request_logs 主写路径。
-func TestClaimSessionFinalSuccess_OtherErrorsDegrade(t *testing.T) {
-	mock, tx := newClaimMock(t)
-
-	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-	mock.ExpectExec(`UPDATE _request_logs_hot`).
-		WithArgs("req-claim-42703").
-		WillReturnError(&pgconn.PgError{
-			Code:    "42703",
-			Message: "column \"is_final_success\" of relation \"_request_logs_hot\" does not exist",
-		})
-	mock.ExpectExec(`ROLLBACK TO SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("ROLLBACK", 0))
-
-	claimSessionFinalSuccess(context.Background(), nil, tx, claimTestEntry("req-claim-42703", "sess-42703"))
-
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestClaimSessionFinalSuccess_Guards(t *testing.T) {
-	// nil entry / nil tx / nil Client：不产生任何语句。
-	claimSessionFinalSuccess(context.Background(), nil, nil, claimTestEntry("req-x", "sess-x"))
-	claimSessionFinalSuccess(context.Background(), nil, nil, nil)
+// ── 退役登记：让「退役」这件事在测试清单里可见，而不是变成一段无人引用的注释 ──
+func TestClaimSessionFinalSuccess_RetiredWithV1Family(t *testing.T) {
+	// 本轮退役的判据清单见文件头的「退役登记表」。此处保留一个显式的登记用例，
+	// 使「这些判据已经不在了」这件事在 go test 的输出里可见——
+	// 免得下一个会话以为它们还在、或者以为漏跑了什么。
+	t.Log("claimSessionFinalSuccess 与 v1 月度分区缓存（heapPartitions）" +
+		"随迁移 890 整条删除；终态成功的仲裁迁到 internal/sessionv2mirror " +
+		"（uq_session_turns_hot_final_success + markTurnFinalSuccess），" +
+		"本包只保留『资格判定 + 把资格挂到 entry.FinalSuccessClaimed』。")
 }
 
 // UT-FS-02（单元侧）：只有「成功终态 + 非空 gw_session_id」才尝试 claim。
@@ -211,13 +157,23 @@ func TestShouldClaimFinalSuccess_ExcludesInternalLoopbacks(t *testing.T) {
 	}
 }
 
-// UT-FS-02（写路径回归）：updateRequestLog 在成功终态事务内恰好追加一次
-// claim（SAVEPOINT → claim UPDATE → RELEASE），且不改变既有语句集合
-// （usage_ledger → _request_logs_hot 终态 UPDATE → bodies upsert）。
-func TestUpdateRequestLog_AppendsFinalSuccessClaimOnTerminalSuccess(t *testing.T) {
-	mock, err := pgxmock.NewConn()
-	require.NoError(t, err)
-	defer func() { _ = mock.Close(context.Background()) }()
+// UT-FS-02（写路径回归，★ 改指）：updateRequestLog 在成功终态事务内**不再**
+// 发任何 v1 claim 语句（claimSessionFinalSuccess 随 890 整条删除），只把
+// **认领资格**挂到 entry.FinalSuccessClaimed 上——真正的仲裁由
+// internal/sessionv2mirror 的 markTurnFinalSuccess 承担
+// （uq_session_turns_hot_final_success 部分唯一索引）。
+//
+// 改指后钉住的新契约：
+//
+//	① 成功终态 + 非空 gw_session_id ⇒ entry.FinalSuccessClaimed == true。
+//	   这是**跨包契约**：internal/sessionv2mirror/hook.go 与 replay.go 都读这个
+//	   标记才去仲裁 ⇒ 标记漏置位 = 会话永远不会有终态成功。
+//	② 事务内**不出现**任何 is_final_success 的 UPDATE（仲裁不在本包）。
+//
+// 正向对照（方法纪律第 2 条）：录制器必须抓到那条 usage_ledger_hot UPDATE
+// ——否则「没抓到语句」与「语句里没有 is_final_success」长得一模一样。
+func TestUpdateRequestLog_TerminalSuccessMarksFinalSuccessClaimed(t *testing.T) {
+	mock, recording, recorder := newRecordingDB(t)
 
 	sessionID := "sess-dup-054"
 	entry := &RequestLogEntry{
@@ -230,45 +186,38 @@ func TestUpdateRequestLog_AppendsFinalSuccessClaimOnTerminalSuccess(t *testing.T
 	}
 
 	mock.ExpectBegin()
-	// usage_ledger_hot（无 token 字段的分支）
+	// usage_ledger_hot（无 token 字段的分支：5 个绑定参数）
 	mock.ExpectExec(`UPDATE usage_ledger_hot`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs("req-054-3", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	// _request_logs_hot 终态 UPDATE（RETURNING ts，99 个绑定参数；含 t0..t9 与 608 的 request_class/due_at）
-	mock.ExpectExec(`UPDATE _request_logs_hot`).
-		WithArgs(anyArgs(100)...).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	// bodies 侧表 upsert
-	mock.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
-		WithArgs(anyArgs(4)...).
-		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	// v4 T7 claim（同事务）。2026-09-12 起 Client 直传非 nil，claim 先查
-	// heap 月度分区目录（空结果 → 无缓存 → promoted 守卫跳过）。
-	mock.ExpectQuery(`FROM pg_inherits`).
-		WillReturnRows(pgxmock.NewRows([]string{"relname"}))
-	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-	mock.ExpectExec(claimSQLPattern).
-		WithArgs("req-054-3").
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec(`RELEASE SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("RELEASE", 0))
 	mock.ExpectCommit()
 
-	c := NewClient()
-	c.SetDB(nil) // requestLogDatabase() falls back to dbPool via interface below
-	// 直接注入 mock（SetDB 只收 pgxpool，测试走接口字段）。
-	c.requestLogDB = mock
-
+	c := &Client{requestLogDB: recording}
 	require.NoError(t, c.updateRequestLog(entry))
 	require.NoError(t, mock.ExpectationsWereMet())
+
+	// ① 认领资格被挂上（internal/sessionv2mirror 的输入）。
+	require.True(t, entry.FinalSuccessClaimed,
+		"成功终态且带会话 ⇒ 必须标记认领资格，否则会话族永远不会仲裁出终态成功")
+
+	// ② 仲裁不在本包：事务里不得出现 is_final_success 的 UPDATE。
+	statements := recorder.recorded()
+	require.Len(t, statements, 1,
+		"updateRequestLog 应当只发一条 UPDATE（正向对照：录制器抓到了语句）")
+	require.Contains(t, statements[0], "UPDATE usage_ledger_hot")
+	require.NotContains(t, statements[0], "is_final_success",
+		"v1 的终态成功认领随 890 退役，本包不得再发 is_final_success 的 UPDATE")
 }
 
-// 失败路径不 claim：除了主语句外不应出现任何 SAVEPOINT/claim 语句。
-func TestUpdateRequestLog_FailurePathSkipsClaim(t *testing.T) {
-	mock, err := pgxmock.NewConn()
-	require.NoError(t, err)
-	defer func() { _ = mock.Close(context.Background()) }()
+// 失败路径不认领：除了主语句外不应出现任何 claim 相关的语句，
+// 也不得把 entry.FinalSuccessClaimed 置位（否则 sessionv2mirror 会把
+// 一次失败当成会话的终态成功去仲裁）。
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：本用例由
+// TestUpdateRequestLog_FailurePathSkipsClaim **改指**——「跳过 claim 语句」
+// 那一半随 v1 退役，但「失败不得置位认领资格」这半个跨包契约还在。
+func TestUpdateRequestLog_FailurePathSkipsFinalSuccessClaim(t *testing.T) {
+	mock, recording, recorder := newRecordingDB(t)
 
 	entry := &RequestLogEntry{
 		RequestID:     "req-fail-1",
@@ -282,77 +231,81 @@ func TestUpdateRequestLog_FailurePathSkipsClaim(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectExec(`UPDATE usage_ledger_hot`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs("req-fail-1", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec(`UPDATE _request_logs_hot`).
-		WithArgs(anyArgs(100)...).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
-		WithArgs(anyArgs(4)...).
-		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
 
-	c := NewClient()
-	c.requestLogDB = mock
-
+	c := &Client{requestLogDB: recording}
 	require.NoError(t, c.updateRequestLog(entry))
 	require.NoError(t, mock.ExpectationsWereMet())
+
+	require.False(t, entry.FinalSuccessClaimed,
+		"失败路径不得标记认领资格（否则会话族会把失败当成终态成功仲裁）")
+
+	statements := recorder.recorded()
+	require.Len(t, statements, 1,
+		"updateRequestLog 应当只发一条 UPDATE（正向对照：录制器抓到了语句）")
+	require.NotContains(t, statements[0], "is_final_success")
 }
 
-// TestClaimSessionFinalSuccess_HeapPartitionsGuard 验证 2026-08-25 columnar 安全修复:
-// 当 Client 携带非空 heap 月度分区列表, claim 语句必须拼装 promoted guard
-// (UNION ALL 多个 heap 月度分区, 排除 columnar 月份). 这覆盖生产路径, 避免
-// `FROM _request_logs promoted` 触发 SQLSTATE 0A000.
+// 资格判定与写路径的一致性：写路径置位认领资格的条件，必须与
+// shouldClaimFinalSuccess 的判定**完全一致**——两者不同步就会出现
+// 「判定说该认领、写路径却没标记」或反之的空档。
 //
-// 2026-09-12: Client 由调用方直传 (2026-08-26 merge d2cbaf88b 丢失 main.go
-// SetClaimClient 接线 → 生产 promoted 守卫从未生效 → 23505 卡死 promote,
-// P2 冷迁移停摆 2.5 天). holder 已删除, 编译器保证不再可漏接.
-func TestClaimSessionFinalSuccess_HeapPartitionsGuard(t *testing.T) {
-	mock, tx := newClaimMock(t)
-
-	c := NewClient()
-	c.heapPartitions = []string{
-		"request_logs_2026_07", // 列存 (白名单外) — 不在 heap 列表
-		"request_logs_2026_08", // 已转 heap (P1-5 修复)
-		"request_logs_2026_09", // heap
+// 本用例是上面两条写路径判据的**同测正向对照**：同一个 entry 家族，
+// 走写路径看标记、走判定函数看布尔值，两边必须同号。
+func TestUpdateRequestLog_ClaimFlagAgreesWithEligibilityPredicate(t *testing.T) {
+	cases := []struct {
+		name    string
+		entry   *RequestLogEntry
+		wantSQL bool
+	}{
+		{
+			name: "success with session => eligible and flagged",
+			entry: &RequestLogEntry{
+				RequestID: "req-agree-1", Success: true,
+				RequestStatus: strptr(RequestStatusSuccess), GwSessionID: strptr("sess-a"),
+			},
+			wantSQL: true,
+		},
+		{
+			name: "failure with session => not eligible and not flagged",
+			entry: &RequestLogEntry{
+				RequestID: "req-agree-2", Success: false,
+				RequestStatus: strptr(RequestStatusFailure), GwSessionID: strptr("sess-b"),
+			},
+			wantSQL: false,
+		},
+		{
+			name: "success without session => not eligible and not flagged",
+			entry: &RequestLogEntry{
+				RequestID: "req-agree-3", Success: true,
+				RequestStatus: strptr(RequestStatusSuccess),
+			},
+			wantSQL: false,
+		},
 	}
-	c.heapPartitionsCachedAt = time.Now()
 
-	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-	// 期望 claim SQL 包含 UNION ALL heap 分区名 (白名单过滤) + 接受 1 个参数 (req id)。
-	// 2026-09-26 审计第十轮 (D13): 钉死臂形状 —— 臂内必须带
-	// `gw_session_id IS NOT NULL AND gw_session_id <> ''` 谓词 (与 partial 唯一
-	// 索引 uq_<partition>_final_success_session 的谓词对齐, planner 才能证明
-	// 蕴含走 Index Only Scan; 252 实证 EXPLAIN 从 1.27M 行 Seq Scan 翻转),
-	// 且投影不得含 is_final_success (列不在索引里会强制回表破掉 index-only)。
-	// 2026-09-27 审计 R69: 热表臂同款补齐两谓词 (uq_request_logs_hot_final_
-	// success_session 谓词形状相同), 一并钉住。
-	expectedGuard := `UPDATE _request_logs_hot[\s\S]*other\.gw_session_id IS NOT NULL AND other\.gw_session_id <> ''` +
-		`[\s\S]*` +
-		`SELECT gw_session_id FROM ONLY .request_logs_2026_08. WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> ''` +
-		`[\s\S]*` +
-		`SELECT gw_session_id FROM ONLY .request_logs_2026_09. WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> ''` +
-		`[\s\S]*promoted\.gw_session_id`
-	mock.ExpectExec(expectedGuard).
-		WithArgs("req-claim-guard").
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec(`RELEASE SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("RELEASE", 0))
-	// granted claim → D12 补偿登记（entry 无会话头时静默跳过亦可；
-	// 这里给会话头，登记走完整 savepoint 序列）。
-	mock.ExpectExec(`SAVEPOINT gw_claim_mirror_outbox`).
-		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\), set_config\('app\.bypass_rls', 'true', true\)`).
-		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectExec(`INSERT INTO public.session_mirror_outbox`).
-		WithArgs("default", "req-claim-guard", "sess-guard", pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectExec(`SELECT set_config\('app\.current_role', '', true\), set_config\('app\.bypass_rls', 'false', true\)`).
-		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectExec(`RELEASE SAVEPOINT gw_claim_mirror_outbox`).
-		WillReturnResult(pgxmock.NewResult("RELEASE", 0))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock, err := pgxmock.NewPool()
+			require.NoError(t, err)
+			defer mock.Close()
 
-	claimSessionFinalSuccess(context.Background(), c, tx, claimTestEntry("req-claim-guard", "sess-guard"))
-	require.NoError(t, mock.ExpectationsWereMet())
+			mock.ExpectBegin()
+			mock.ExpectExec(`UPDATE usage_ledger_hot`).
+				WithArgs(anyArgs(5)...).
+				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+			mock.ExpectCommit()
+
+			c := &Client{requestLogDB: mock}
+			require.NoError(t, c.updateRequestLog(tc.entry))
+			require.NoError(t, mock.ExpectationsWereMet())
+
+			require.Equal(t, tc.wantSQL, tc.entry.FinalSuccessClaimed,
+				"写路径置位认领资格的条件必须与 shouldClaimFinalSuccess 一致")
+			require.Equal(t, tc.wantSQL, shouldClaimFinalSuccess(tc.entry),
+				"资格判定与写路径标记必须同号")
+		})
+	}
 }

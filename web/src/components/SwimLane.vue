@@ -16,6 +16,7 @@ import { useRouteIncidents } from '../composables/useRouteIncidents'
 import type { RouteIncident } from '../types/routeIncident'
 import RequestTile from './RequestTile.vue'
 import SwimLaneTrack from './SwimLaneTrack.vue'
+import { Timer } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   lane: SwimLaneType
@@ -89,8 +90,8 @@ const diagnoseTooltip = computed<string>(() => {
     return '当前泳道无活跃诊断事件（连续失败未达到 3 次）'
   }
   return primaryIncident.value?.state === 'recovering'
-    ? '连续成功进度：点击查看恢复详情'
-    : '点击查看诊断工作台'
+    ? '连续成功进度：查看恢复详情'
+    : '打开诊断工作台'
 })
 
 function handleDiagnoseClick() {
@@ -232,7 +233,7 @@ watch(laneMode, async () => {
           v-if="showLatency"
           class="swim-lane__stat swim-lane__latency"
           :title="`供应商 HTTP 延时: ${latencyText}`"
-        >⏱{{ latencyText }}</span>
+        ><Timer />{{ latencyText }}</span>
         <button
           v-if="!lane.isOthers || primaryIncident || showEmergencyButton"
           type="button"

@@ -3,6 +3,7 @@ package admin
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/domains/promptinjection"
 	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/lib/pq"
 )
@@ -21,6 +23,77 @@ type PromptInjectionHandler struct {
 	pool   *pgxpool.Pool
 	secret string
 }
+
+// promptInjectionDetectionsSelectCols 是检测列表的**正典形状**投影。
+//
+// 2026-10-20 复核轮：这段投影原先写的是历史迁移 315 的形状
+// （detection_score / matched_rules / matched_rules_count / risk_level varchar），
+// 而**正典表**（sql/schema/01-schema.sql 与
+// sql/objects/tables/prompt_injection_detections.sql）从未采用该形状：
+// 正典 risk_level 是 **integer 分数（1..10，带 CHECK 约束）**，
+// 且没有 detection_score / matched_rules / matched_rules_count 三列。
+// 315 的 `CREATE TABLE IF NOT EXISTS` 在正典库上是**空操作**
+// （表已存在 ⇒ 那几列从未被创建）⇒ 旧投影恒报 42703 ⇒ 端点 500。
+// 现在按正典形状读：
+//
+//	· 分数（detection_score）取 risk_level（integer 1..10）；
+//	· 等级字符串（risk_level）由同一套阈值派生
+//	  （domains/promptinjection.RiskLevelSQLExpr，与写侧
+//	   RiskLevelFromScore 同源 —— 落库的分数与页面显示的等级不能各说各话）；
+//	· matched_rules ← 命中规则的 rule_name；
+//	· matched_rules_count ← categories 的元素个数。
+//
+// 响应字段名与 JSON 契约保持不变（前端不改）。
+//
+// 提成包级常量是为了让真库判据能**逐字**跑它
+// （见 prompt_injection_canonical_shape_test.go），而不是让判据自己抄一份。
+const promptInjectionDetectionsSelectCols = `SELECT id, tenant_id, request_id, COALESCE(session_key, '') AS session_key, detected_at,
+		risk_level AS detection_score,
+		` + promptinjection.RiskLevelSQLExpr + ` AS risk_level,
+		COALESCE(rule_name, '') AS matched_rules,
+		COALESCE(array_length(categories, 1), 0) AS matched_rules_count,
+		action_taken, blocked, COALESCE(evidence_text, '') AS evidence_text,
+		COALESCE(categories::text[], '{}'::text[]), llm_confidence, COALESCE(llm_reason, ''),
+		COALESCE(canary_token_leaked, ''), COALESCE(approval_id, ''),
+		COALESCE(replaced_content, ''), COALESCE(client_ip, ''), COALESCE(user_agent, '')
+		FROM prompt_injection_detections WHERE `
+
+// promptInjectionDetectionsCountFrom 是检测列表的计数查询前缀。
+//
+// 2026-10-20 复核轮：原先这里用 strings.Replace 把 SELECT 换成
+// "SELECT COUNT(*)"。那是**字符串级替换**：只要 SELECT 文本与模板有一个
+// 字符不同（换行、空格、字段顺序），替换就静默不生效 ⇒ count 查询仍返回
+// 整行集 ⇒ Scan(&total) 报 "cannot scan ..."。计数与列表因此共用一段脆弱的
+// 文本耦合。改为**显式 count 查询 + 共享 WHERE**。
+const promptInjectionDetectionsCountFrom = "SELECT COUNT(*) FROM prompt_injection_detections WHERE "
+
+// promptInjectionStatsSQL 是检测统计的**正典形状**聚合。
+//
+// 2026-10-20 复核轮：原先读视图 prompt_injection_stats_enhanced（迁移 364）。
+// 该视图**在任何正典库上都建不出来**：它引用 d.detection_score，而正典表
+// 没有这一列 ⇒ 42P01 ⇒ 端点 500。且视图的严重等级分桶写的是
+// `(risk_level)::text = 'critical'`，而正典 risk_level 是 integer ⇒ 即使
+// 视图建出来，那 4 个分桶也**恒为 0**。
+// ⇒ 改为直接在正典表上聚合，阈值与写侧 RiskLevelFromScore 一致
+// （10/8/6，与 domains/promptinjection.RiskLevelSQLExpr 同源）。
+// 聚合查询恒返回一行（无 GROUP BY）⇒ 「今天没有命中」= 全零，
+// 不再需要靠 ErrNoRows 兜底。
+const promptInjectionStatsSQL = `SELECT COUNT(*) AS total_detections,
+			COUNT(*) FILTER (WHERE blocked) AS blocked_count,
+			COUNT(*) FILTER (WHERE risk_level >= 10) AS critical_count,
+			COUNT(*) FILTER (WHERE risk_level >= 8 AND risk_level < 10) AS high_count,
+			COUNT(*) FILTER (WHERE risk_level >= 6 AND risk_level < 8) AS medium_count,
+			COUNT(*) FILTER (WHERE risk_level < 6) AS low_count,
+			COUNT(*) FILTER (WHERE action_taken = 'approve') AS approval_count,
+			COUNT(*) FILTER (WHERE action_taken = 'replace') AS replaced_count,
+			COUNT(*) FILTER (WHERE action_taken = 'terminate') AS terminated_count,
+			COUNT(*) FILTER (WHERE canary_token_leaked IS NOT NULL) AS canary_leak_count,
+			COALESCE(AVG(risk_level), 0)::double precision AS avg_score,
+			COALESCE(MAX(risk_level), 0) AS max_score,
+			COALESCE(AVG(llm_confidence), 0)::double precision AS avg_llm_confidence,
+			COUNT(DISTINCT session_key) AS affected_sessions
+		FROM prompt_injection_detections
+		WHERE tenant_id = $1 AND detected_at >= CURRENT_DATE`
 
 // NewPromptInjectionHandler 创建 Handler
 func NewPromptInjectionHandler(pool *pgxpool.Pool, secret string) *PromptInjectionHandler {
@@ -261,6 +334,59 @@ type PromptInjectionRule struct {
 	UpdatedAt      string   `json:"updated_at"`
 }
 
+// PromptInjectionRulePatch 是 PUT /rules/{id} 的**部分更新**载荷。
+//
+// ★ 2026-10-20 修复：updateRule 过去把 body 解码成 PromptInjectionRule（全是值
+// 类型字段）后**无条件 SET 8 列** ⇒ 任何**部分**载荷都会把未传的字段清零。
+// 现存爆炸点不是理论上的：web/src/components/PromptInjectionConfigPanel.vue 的
+// 严重度滑杆调 updateRule(id, { severity })，对自定义规则会把 pattern/description
+// 清空、enabled 置 false、tags/examples 变空数组；对系统规则则整条 404。
+//
+// 改成指针字段后「未传（nil）」与「传零值（&false / &0 / &[]string{}）」可以区分，
+// 语义即 PATCH —— 正好也是 web/src/api/promptInjection.ts 里 UpdateRulePatch
+// 一直宣称的语义（此前只是后端没兑现）。
+type PromptInjectionRulePatch struct {
+	Pattern        *string   `json:"pattern"`
+	Description    *string   `json:"description"`
+	Severity       *int      `json:"severity"`
+	Enabled        *bool     `json:"enabled"`
+	CaseSensitive  *bool     `json:"case_sensitive"`
+	ActionOverride *string   `json:"action_override"`
+	Tags           *[]string `json:"tags"`
+	Examples       *[]string `json:"examples"`
+}
+
+// promptInjectionRuleSelectCols 是规则列表与单条读取共用的投影。
+// 抽成常量是为了让「详情」端点与「列表」端点返回**同一形状**——
+// 否则前端详情页会拿到比列表少的字段（例如 false_positive_rate 在 DB 里存在，
+// 但两个端点都没投影它；这是有意的：不在结构体里的列不进 API 契约）。
+const promptInjectionRuleSelectCols = `id, rule_name, rule_type, category, COALESCE(category_new::text, ''),
+	pattern, description, severity, enabled, case_sensitive,
+	COALESCE(is_system, true), COALESCE(action_override::text, ''),
+	COALESCE(tags, '{}'), COALESCE(examples, '{}'),
+	created_at, updated_at`
+
+// enumNullIfEmpty 把枚举列上的空串换成 NULL。
+//
+// ★ 2026-10-20 浏览器验收时实测到的真缺陷：
+// prompt_injection_rules.category_new 是 injection_category 枚举、
+// action_override 是 injection_action 枚举，**两列都允许 NULL**。
+// 但前端表单在「没选」时给的是**空串**而不是 null（新建规则的表单默认值就是
+// ""）⇒ 直接把空串塞进 SQL 会得到
+//
+//	ERROR: invalid input value for enum injection_action: "" (SQLSTATE 22P02)
+//
+// 表现是 500，而且**从 UI 新建自定义规则必失败**（每次都带上 action_override:""）。
+// 同样的坑在 updateRule 上：把动作覆盖清空再保存，同样 500。
+//
+// ⇒ 空串的语义是「不覆盖 / 没有覆盖动作」，落库必须是 NULL。
+func enumNullIfEmpty(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 func (h *PromptInjectionHandler) handleRules(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -288,6 +414,8 @@ func (h *PromptInjectionHandler) handleRuleSubrouter(w http.ResponseWriter, r *h
 	}
 
 	switch r.Method {
+	case http.MethodGet:
+		h.getRule(w, r, parts[0])
 	case http.MethodPut:
 		h.updateRule(w, r, parts[0])
 	case http.MethodDelete:
@@ -297,6 +425,32 @@ func (h *PromptInjectionHandler) handleRuleSubrouter(w http.ResponseWriter, r *h
 	}
 }
 
+// getRule 返回单条规则的完整详情。
+//
+// 2026-10-20 新增：「点开看规则详情」需要一个**有独立 404 语义**的单条读取端点
+// —— 列表端点已经返回全部可展示字段（复用同一份投影），但「按 id 取一条」在
+// 详情弹窗场景下才是正确的契约：id 不存在时必须能区分「没有这条规则」与
+// 「规则被删了/列表缓存过期」。
+func (h *PromptInjectionHandler) getRule(w http.ResponseWriter, r *http.Request, ruleID string) {
+	row := h.pool.QueryRow(r.Context(),
+		`SELECT `+promptInjectionRuleSelectCols+` FROM prompt_injection_rules WHERE id=$1`, ruleID)
+
+	rule := PromptInjectionRule{}
+	if err := row.Scan(&rule.ID, &rule.RuleName, &rule.RuleType, &rule.Category, &rule.CategoryNew,
+		&rule.Pattern, &rule.Description, &rule.Severity, &rule.Enabled, &rule.CaseSensitive,
+		&rule.IsSystem, &rule.ActionOverride, &rule.Tags, &rule.Examples,
+		&rule.CreatedAt, &rule.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "Rule not found"})
+			return
+		}
+		writeInternalErrStr(w, "Failed to get rule", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, rule)
+}
+
 func (h *PromptInjectionHandler) listRules(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	ruleType := q.Get("type")
@@ -304,11 +458,7 @@ func (h *PromptInjectionHandler) listRules(w http.ResponseWriter, r *http.Reques
 	enabled := q.Get("enabled")
 	search := q.Get("search")
 
-	query := `SELECT id, rule_name, rule_type, category, COALESCE(category_new::text, ''),
-		pattern, description, severity, enabled, case_sensitive,
-		COALESCE(is_system, true), COALESCE(action_override::text, ''),
-		COALESCE(tags, '{}'), COALESCE(examples, '{}'),
-		created_at, updated_at
+	query := `SELECT ` + promptInjectionRuleSelectCols + `
 		FROM prompt_injection_rules WHERE 1=1`
 	args := []interface{}{}
 	argCount := 1
@@ -383,8 +533,8 @@ func (h *PromptInjectionHandler) createRule(w http.ResponseWriter, r *http.Reque
 
 	var ruleID int
 	err := h.pool.QueryRow(r.Context(), query,
-		req.RuleName, req.RuleType, req.Category, req.CategoryNew, req.Pattern, req.Description,
-		req.Severity, req.Enabled, req.CaseSensitive, req.ActionOverride,
+		req.RuleName, req.RuleType, req.Category, enumNullIfEmpty(req.CategoryNew), req.Pattern, req.Description,
+		req.Severity, req.Enabled, req.CaseSensitive, enumNullIfEmpty(req.ActionOverride),
 		pq.Array(req.Tags), pq.Array(req.Examples),
 	).Scan(&ruleID)
 
@@ -397,22 +547,59 @@ func (h *PromptInjectionHandler) createRule(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *PromptInjectionHandler) updateRule(w http.ResponseWriter, r *http.Request, ruleID string) {
-	var req PromptInjectionRule
-	if err := readJSONRequired(r, &req); err != nil {
+	// 2026-10-20：改成 PATCH 语义（指针字段 + 动态 SET）。
+	// 旧实现无条件 SET 8 列，任何部分载荷都会把未传字段清零（详见
+	// PromptInjectionRulePatch 的注释）。全量载荷仍然照旧生效。
+	var patch PromptInjectionRulePatch
+	if err := readJSONRequired(r, &patch); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
 	}
 
-	query := `UPDATE prompt_injection_rules SET
-		pattern=$1, description=$2, severity=$3, enabled=$4, case_sensitive=$5,
-		action_override=$6, tags=$7, examples=$8, updated_at=NOW()
-		WHERE id=$9 AND COALESCE(is_system, true) = false`
+	sets := make([]string, 0, 8)
+	args := make([]interface{}, 0, 9)
+	add := func(col string, val interface{}) {
+		args = append(args, val)
+		sets = append(sets, col+"=$"+strconv.Itoa(len(args)))
+	}
+	if patch.Pattern != nil {
+		add("pattern", *patch.Pattern)
+	}
+	if patch.Description != nil {
+		add("description", *patch.Description)
+	}
+	if patch.Severity != nil {
+		add("severity", *patch.Severity)
+	}
+	if patch.Enabled != nil {
+		add("enabled", *patch.Enabled)
+	}
+	if patch.CaseSensitive != nil {
+		add("case_sensitive", *patch.CaseSensitive)
+	}
+	if patch.ActionOverride != nil {
+		add("action_override", enumNullIfEmpty(*patch.ActionOverride))
+	}
+	if patch.Tags != nil {
+		add("tags", pq.Array(*patch.Tags))
+	}
+	if patch.Examples != nil {
+		add("examples", pq.Array(*patch.Examples))
+	}
+	if len(sets) == 0 {
+		// 空补丁：旧实现会把整行清零（pattern=''、enabled=false…）。现在明确拒绝。
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "no updatable fields supplied (expected at least one of: pattern, description, severity, enabled, case_sensitive, action_override, tags, examples)",
+		})
+		return
+	}
 
-	result, err := h.pool.Exec(r.Context(), query,
-		req.Pattern, req.Description, req.Severity, req.Enabled, req.CaseSensitive,
-		req.ActionOverride, pq.Array(req.Tags), pq.Array(req.Examples), ruleID,
-	)
+	args = append(args, ruleID)
+	query := `UPDATE prompt_injection_rules SET ` + strings.Join(sets, ", ") +
+		`, updated_at=NOW() WHERE id=$` + strconv.Itoa(len(args)) +
+		` AND COALESCE(is_system, true) = false`
 
+	result, err := h.pool.Exec(r.Context(), query, args...)
 	if err != nil {
 		writeInternalErrStr(w, "Failed to update rule", err)
 		return
@@ -490,26 +677,31 @@ func (h *PromptInjectionHandler) toggleRule(w http.ResponseWriter, r *http.Reque
 
 // PromptInjectionDetection 检测日志
 type PromptInjectionDetection struct {
-	ID                int      `json:"id"`
-	TenantID          string   `json:"tenant_id"`
-	RequestID         string   `json:"request_id"`
-	SessionKey        string   `json:"session_key"`
-	DetectedAt        string   `json:"detected_at"`
-	DetectionScore    int      `json:"detection_score"`
-	RiskLevel         string   `json:"risk_level"`
-	MatchedRules      string   `json:"matched_rules"`
-	MatchedRulesCount int      `json:"matched_rules_count"`
-	ActionTaken       string   `json:"action_taken"`
-	Blocked           bool     `json:"blocked"`
-	EvidenceText      string   `json:"evidence_text"`
-	Categories        []string `json:"categories"`
-	LLMConfidence     *float64 `json:"llm_confidence"`
-	LLMReason         string   `json:"llm_reason"`
-	CanaryTokenLeaked string   `json:"canary_token_leaked"`
-	ApprovalID        string   `json:"approval_id"`
-	ReplacedContent   string   `json:"replaced_content"`
-	ClientIP          string   `json:"client_ip"`
-	UserAgent         string   `json:"user_agent"`
+	ID         int    `json:"id"`
+	TenantID   string `json:"tenant_id"`
+	RequestID  string `json:"request_id"`
+	SessionKey string `json:"session_key"`
+	// 2026-10-20 复核轮：原先是 string。timestamptz 扫不进 *string
+	//（pgx 二进制格式报 "cannot scan timestamptz (OID 1184) ... into *string"），
+	// 而旧查询在更早的 42703 就挂了 ⇒ 这个缺陷被掩盖着。
+	// 改成 *time.Time：JSON 仍是**字符串**（RFC3339，前端 fmtTime 可解析），
+	// 且列可空时如实给 null，不编造 1970。
+	DetectedAt        *time.Time `json:"detected_at"`
+	DetectionScore    int        `json:"detection_score"`
+	RiskLevel         string     `json:"risk_level"`
+	MatchedRules      string     `json:"matched_rules"`
+	MatchedRulesCount int        `json:"matched_rules_count"`
+	ActionTaken       string     `json:"action_taken"`
+	Blocked           bool       `json:"blocked"`
+	EvidenceText      string     `json:"evidence_text"`
+	Categories        []string   `json:"categories"`
+	LLMConfidence     *float64   `json:"llm_confidence"`
+	LLMReason         string     `json:"llm_reason"`
+	CanaryTokenLeaked string     `json:"canary_token_leaked"`
+	ApprovalID        string     `json:"approval_id"`
+	ReplacedContent   string     `json:"replaced_content"`
+	ClientIP          string     `json:"client_ip"`
+	UserAgent         string     `json:"user_agent"`
 }
 
 func (h *PromptInjectionHandler) handleDetections(w http.ResponseWriter, r *http.Request) {
@@ -537,49 +729,69 @@ func (h *PromptInjectionHandler) handleDetections(w http.ResponseWriter, r *http
 	sessionKey := q.Get("session_key")
 	category := q.Get("category")
 
-	query := `SELECT id, tenant_id, request_id, session_key, detected_at, detection_score, risk_level,
-		matched_rules, matched_rules_count, action_taken, blocked, evidence_text,
-		COALESCE(categories::text[], '{}'), llm_confidence, COALESCE(llm_reason, ''),
-		COALESCE(canary_token_leaked, ''), COALESCE(approval_id, ''),
-		COALESCE(replaced_content, ''), client_ip, user_agent
-		FROM prompt_injection_detections WHERE tenant_id = $1`
+	// 2026-10-20 复核轮：这段查询原先查的是历史迁移 315 的形状
+	// （detection_score / matched_rules / matched_rules_count / risk_level varchar），
+	// 而**正典表**（sql/schema/01-schema.sql 与
+	// sql/objects/tables/prompt_injection_detections.sql）从未采用该形状：
+	// 正典 risk_level 是 **integer 分数（1..10，带 CHECK 约束）**，
+	// 且没有 detection_score / matched_rules / matched_rules_count 三列。
+	// 315 的 `CREATE TABLE IF NOT EXISTS` 在正典库上是**空操作**
+	// （表已存在 ⇒ 那几列从未被创建）⇒ 旧查询恒报 42703 ⇒ 端点 500。
+	// 现在按**正典形状**读：
+	//   · 分数（detection_score）取 risk_level（integer 1..10）；
+	//   · 等级字符串（risk_level）由同一套阈值派生
+	//     （domains/promptinjection.RiskLevelSQLExpr，与写侧
+	//      RiskLevelFromScore 同源 —— 落库的分数与页面显示的等级不能各说各话）；
+	//   · matched_rules ← 命中规则的 rule_name；
+	//   · matched_rules_count ← categories 的元素个数。
+	// 响应字段名与 JSON 契约保持不变（前端不改）。
+	selectCols := promptInjectionDetectionsSelectCols
+
+	where := "tenant_id = $1"
 	args := []interface{}{tenantID}
 	argCount := 2
 
 	if riskLevel != "" {
-		query += " AND risk_level = $" + strconv.Itoa(argCount)
+		where += " AND " + promptinjection.RiskLevelSQLExpr + " = $" + strconv.Itoa(argCount)
 		args = append(args, riskLevel)
 		argCount++
 	}
 	if blocked != "" {
-		query += " AND blocked = $" + strconv.Itoa(argCount)
+		where += " AND blocked = $" + strconv.Itoa(argCount)
 		args = append(args, blocked == "true")
 		argCount++
 	}
 	if action != "" {
-		query += " AND action_taken = $" + strconv.Itoa(argCount)
+		where += " AND action_taken = $" + strconv.Itoa(argCount)
 		args = append(args, action)
 		argCount++
 	}
 	if sessionKey != "" {
-		query += " AND session_key = $" + strconv.Itoa(argCount)
+		where += " AND session_key = $" + strconv.Itoa(argCount)
 		args = append(args, sessionKey)
 		argCount++
 	}
 	if category != "" {
-		query += " AND $" + strconv.Itoa(argCount) + " = ANY(categories)"
+		where += " AND $" + strconv.Itoa(argCount) + " = ANY(categories)"
 		args = append(args, category)
 		argCount++
 	}
 
 	// 计算总数
-	countQuery := strings.Replace(query, "SELECT id, tenant_id, request_id, session_key, detected_at, detection_score, risk_level,\n\t\tmatched_rules, matched_rules_count, action_taken, blocked, evidence_text,\n\t\tCOALESCE(categories::text[], '{}'), llm_confidence, COALESCE(llm_reason, ''),\n\t\tCOALESCE(canary_token_leaked, ''), COALESCE(approval_id, ''),\n\t\tCOALESCE(replaced_content, ''), client_ip, user_agent", "SELECT COUNT(*)", 1)
+	//
+	// 2026-10-20 复核轮：原先这里用 strings.Replace 把 SELECT 换成
+	// "SELECT COUNT(*)"。那是**字符串级替换**：只要 SELECT 文本与模板有
+	// 一个字符不同（换行、空格、字段顺序），替换就静默不生效 ⇒ count 查询
+	// 仍返回整行集 ⇒ Scan(&total) 报 "cannot scan ..."。计数与列表因此
+	// 共用一段脆弱的文本耦合。改为**显式 count 查询 + 共享 WHERE**。
+	countQuery := promptInjectionDetectionsCountFrom + where
 	var total int
 	if err := h.pool.QueryRow(r.Context(), countQuery, args...).Scan(&total); err != nil {
 		writeInternalErrStr(w, "Failed to count detections", err)
 		return
 	}
 
+	query := selectCols + where
 	query += " ORDER BY detected_at DESC LIMIT $" + strconv.Itoa(argCount) + " OFFSET $" + strconv.Itoa(argCount+1)
 	args = append(args, pageSize, offset)
 
@@ -643,14 +855,10 @@ func (h *PromptInjectionHandler) handleStats(w http.ResponseWriter, r *http.Requ
 	tenantID := GetTenantID(r)
 
 	stats := &DetectionStats{}
-	err := h.pool.QueryRow(r.Context(),
-		`SELECT COALESCE(total_detections,0), COALESCE(blocked_count,0),
-			COALESCE(critical_count,0), COALESCE(high_count,0), COALESCE(medium_count,0), COALESCE(low_count,0),
-			COALESCE(approval_count,0), COALESCE(replaced_count,0), COALESCE(terminated_count,0),
-			COALESCE(canary_leak_count,0), COALESCE(avg_score,0), COALESCE(max_score,0),
-			COALESCE(avg_llm_confidence,0), COALESCE(affected_sessions,0)
-		FROM prompt_injection_stats_enhanced WHERE tenant_id = $1`, tenantID,
-	).Scan(&stats.TotalDetections, &stats.BlockedCount,
+	// 2026-10-20 复核轮：原先读视图 prompt_injection_stats_enhanced
+	//（迁移 364），该视图在任何正典库上都建不出来（见 promptInjectionStatsSQL
+	// 的注释）⇒ 42P01 ⇒ 端点 500。改为直接在正典表上聚合。
+	err := h.pool.QueryRow(r.Context(), promptInjectionStatsSQL, tenantID).Scan(&stats.TotalDetections, &stats.BlockedCount,
 		&stats.CriticalCount, &stats.HighCount, &stats.MediumCount, &stats.LowCount,
 		&stats.ApprovalCount, &stats.ReplacedCount, &stats.TerminatedCount,
 		&stats.CanaryLeakCount, &stats.AvgScore, &stats.MaxScore,

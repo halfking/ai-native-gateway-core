@@ -185,48 +185,62 @@ func TestS4Gate_VoidIsNeverReady(t *testing.T) {
 	}
 }
 
-// TestSummarizeNoLongerAssignsS4ReadyDirectly 是这道修复的**回归门**：
-// 断言 Summarize 里对 S4Ready 的赋值**有且仅有一处**，且那一处来自 verdict。
+// TestSummarizeNoLongerAssignsS4ReadyDirectly 是这道修复的**回归门**。
 //
-// 为什么不用「禁止出现 `sum.S4Ready =`」这种写法：修好后的正确代码正是
+// # ★ 2026-10-20（迁移 890，v1 族整体退役）：这道门**反转**了
+//
+// 原门断言：Summarize 里对 S4Ready 的赋值**有且仅有一处**，且那一处来自
+// verdict（`sum.S4Ready = verdict.Ready`）。
+//
+// 为什么原来不用「禁止出现 `sum.S4Ready =`」这种写法：修好后的正确代码正是
 // `sum.S4Ready = verdict.Ready`，它同样以 `sum.S4Ready =` 开头。第一版守卫就是这么
 // 写的，结果对自己的正确实现报红——守卫写宽会误伤正确代码，而误报的守卫会被
 // 关掉。正确形态是**数赋值点**并核对右值，而不是禁前缀。
 //
-// 上一版守不住「顺手简化」的场景也在这里：若有人把右值换回直接判定，赋值点
-// 仍是唯一的一处，但右值不再是 verdict.Ready，本门照红。
+// 现在被测对象退役了：`SummarizeFrom` **不再调用** `s4GateVerdictOf`，
+// S4Ready 也不再由任何 verdict 赋值——它在结构体字面量里**写死 false**
+// （退役态没有第二侧可比 ⇒ 不存在「可以停写」这个许可）。
+// ⇒ 门从「赋值点恰好一处且右值是 verdict.Ready」反转成「**一个赋值点都没有，且不再调用判定函数**」。
+//
+// 为什么这仍然值得钉：若有人把 `S4Ready` 改回由某个判定派生
+// （例如 `S4Ready: sum.GenuineLossRows == 0`），退役态下 GenuineLossRows 恒为 0
+// ⇒ 派生式恒为 **true** ⇒ 响应会重新长成「可以停写」的样子。
+// 那是本仓反复吃亏的「真空为绿」，只是这次发生在退役态。
+//
+// ★ 判据的正控制：下面两条否定断言各配一条**看得见违规形态**的对照，
+// 否则「一个赋值点都没有」与「不再调用判定函数」会因为判据没跑成而恒绿。
 func TestSummarizeNoLongerAssignsS4ReadyDirectly(t *testing.T) {
 	clean := stripGoComments(readGoSource(t, "dual_read_validator.go"))
 
-	assigns := s4ReadyAssignRE.FindAllStringSubmatch(clean, -1)
-	if len(assigns) != 1 {
-		t.Fatalf("S4Ready 的赋值点必须恰好 1 处，实得 %d：%q", len(assigns), assigns)
+	// 退役态：S4Ready 不该再有任何赋值点（它在结构体字面量里写死 false）。
+	if assigns := s4ReadyAssignRE.FindAllStringSubmatch(clean, -1); len(assigns) != 0 {
+		t.Errorf("退役后的 SummarizeFrom 不该再有 S4Ready 的赋值点，实得 %d 处：%q —— "+
+			"「可以停写」这个许可在退役态没有依据（v1 族已 DROP，没有第二侧可比）",
+			len(assigns), assigns)
 	}
-	if got := strings.TrimSpace(assigns[0][1]); got != "verdict.Ready" {
-		t.Fatalf("S4Ready 的右值必须是 verdict.Ready（经 s4GateVerdictOf 判定），实得 %q——"+
-			"直接判定会让该字段在停写后恒真", got)
+	// 退役态：判定函数不该再被调用（判决是 v1_family_retired，不是四条规则里的任何一条）。
+	if strings.Contains(clean, "s4GateVerdictOf(") {
+		t.Error("SummarizeFrom 仍在调用 s4GateVerdictOf：退役态的判决是 v1_family_retired，" +
+			"而不是这四条规则里的任何一条")
 	}
-	if !strings.Contains(clean, "s4GateVerdictOf(") {
-		t.Fatal("Summarize 未调用 s4GateVerdictOf：判定被绕开了")
+
+	// ★ 正控制：判据必须看得见「退役前的形态」，否则上面两条恒绿。
+	// 顺带让 s4GateArgRE 保持有主：它现在只用来证明「参数接线」这个判据本身没坏。
+	control := "sum.S4Ready = verdict.Ready\n" +
+		"verdict := s4GateVerdictOf(s4GateInput{v1Rows: sum.V1Rows, v1CoveragePP: sum.V1CoveragePP})\n"
+	if n := len(s4ReadyAssignRE.FindAllStringSubmatch(control, -1)); n != 1 {
+		t.Errorf("正控制失效：一个确实给 S4Ready 赋值的片段被数成 %d 个赋值点 —— "+
+			"「没有赋值点」这条断言没有牙", n)
 	}
-	// 判定的输入必须真的用上了「窗口扫到多少 V1 行」——只看真漏写会把空扫描
-	// 判成通过，而空扫描什么都没证明。
-	//
-	// ⚠ 这里用正则而不是 strings.Contains + 硬编码空格。§9.233.2 记过一次
-	// 同族的错（Evidence 锚在 `` `+fn()+` `` 与 `` ` + fn() + ` `` 上，
-	// gofmt 在两种拼写间切换，3 个文件失配）；本节又踩了一次 ——
-	// 往字面量里加一个更长的字段名，gofmt 会把整个字面量重新对齐，
-	// `v1Rows:      sum.V1Rows` 的 6 个空格变成 7 个，而 Contains 不认。
-	// ⇒ **锚在标识符 token 上，且对 gofmt 会改写的排版免疫。**
+	if !strings.Contains(control, "s4GateVerdictOf(") {
+		t.Error("正控制失效：判据看不出片段里调用了 s4GateVerdictOf(")
+	}
 	for _, f := range []struct{ structField, summaryField string }{
 		{"v1Rows", "V1Rows"},
-		{"genuineLoss", "GenuineLossRows"},
 		{"v1CoveragePP", "V1CoveragePP"},
-		{"windowHours", "WindowHours"},
 	} {
-		if !s4GateArgRE(f.structField, f.summaryField).MatchString(clean) {
-			t.Fatalf("s4GateVerdictOf 未接收 sum.%s：这条输入没进判定，门就少一条证据（§9.235）",
-				f.summaryField)
+		if !s4GateArgRE(f.structField, f.summaryField).MatchString(control) {
+			t.Errorf("正控制失效：参数接线判据认不出 %s: sum.%s", f.structField, f.summaryField)
 		}
 	}
 }
@@ -239,31 +253,98 @@ func TestSummarizeNoLongerAssignsS4ReadyDirectly(t *testing.T) {
 // 而源码写的是 `v1Rows:` ⇒ 永远匹配不上。
 // ★ 那是一条**恒假的断言**：它不会误报，只会一直红，诱使人把判据删掉而不是修。
 // 教训：**锚点写死时，先在真实源码上跑一次**；一条从来没绿过的门不是门。
+//
+// ★ 2026-10-20：判定函数已无生产调用点（见 dual_read_gate.go 的文件头），
+// 所以这个正则现在只用在**正控制**里（证明判据本身有牙），不再用来断言生产源码。
 func s4GateArgRE(structField, summaryField string) *regexp.Regexp {
 	return regexp.MustCompile(structField + `\s*:\s*sum\.` + summaryField + `\b`)
 }
 
 var s4ReadyAssignRE = regexp.MustCompile(`sum\.S4Ready\s*=\s*([^\n]+)`)
 
+// ── 退役态的两个「恒 false」判据（2026-10-20，迁移 890）──────────────────
+//
+// ⚠ 这三个正则锚在**标识符 token** 上，且对 gofmt 会改写的排版免疫
+// （`\s*` 而不是硬编码空格）。这不是洁癖：本文件历史上就踩过一次同族的错
+// （§9.233.2 记过：gofmt 把 `v1Rows:      sum.V1Rows` 的 6 个空格变成 7 个，
+// 而 Contains 不认 ⇒ 门永远红）。下面那道门就是那次教训的复现：
+// 它用 `strings.Contains(src, "V1CoveragePP: -1,")` 匹配，而 gofmt 现在
+// 把它对齐成了 `V1CoveragePP:     -1,` ⇒ 门红了，而**行为一个字都没变**。
+var (
+	// zeroDriftEvaluableFalseRE：退役态的「本次运行没有验证任何漂移」标记。
+	zeroDriftEvaluableFalseRE = regexp.MustCompile(`d\.ZeroDriftEvaluable\s*=\s*false\b`)
+	// zeroDriftFalseRE：退役态的「没有证据说漂移为零」。
+	// 注意 `d\.ZeroDrift\s*=` 不会匹配 `d.ZeroDriftEvaluable = false`
+	//（"ZeroDrift" 后面跟的是 "E"，不是空白或 "="）。
+	zeroDriftFalseRE = regexp.MustCompile(`d\.ZeroDrift\s*=\s*false\b`)
+	// zeroDriftDerivedRE：**禁止**的派生式。退役态下 d.OnlyInV1Count 恒为 0
+	// ⇒ `d.ZeroDrift = d.OnlyInV1Count == 0` 恒为 **true** ⇒ 读起来像
+	// 「两侧一致」，而事实是「没有第二侧可比」。这是必须挡住的那条回退路径。
+	zeroDriftDerivedRE = regexp.MustCompile(`d\.ZeroDrift\s*=\s*d\.OnlyInV1Count`)
+)
+
 // TestZeroDriftIsNotAlwaysFalse guards the opposite direction of the same
 // root cause: with v1 writes off, ZeroDrift must be reported as *not
 // evaluable* rather than as *drifted*, because a frozen v1 makes OnlyInV2 grow
 // with the clock. A permanently-false gate is as useless as a permanently-true
 // one, and it would make the spec's "7 天零漂移" exit condition unsatisfiable.
+//
+// # ★ 2026-10-20（迁移 890，v1 族整体退役）：这道门**反转**了
+//
+// 原门断言源码里有 `d.ZeroDriftEvaluable = d.V1WritesEnabled`（可评估性跟着
+// 写入开关走），且它必须排在 `d.ZeroDrift = d.OnlyInV1Count == 0` 之前
+// （先判可评估性，再下漂移结论）。
+//
+// 被测对象退役了：对账不存在 ⇒ 没有任何一次运行**评估过**漂移
+// ⇒ `ZeroDriftEvaluable` **恒为 false**（含义是「没量」，不是「有漂移」），
+// `ZeroDrift` 也恒为 false（没有证据说漂移为零）。
+// ⇒ 门从「可评估性 = 写入开关」反转成「两个字段**写死 false**，且可评估性仍必须排在漂移结论之前」。
+//
+// 为什么这仍然值得钉（而不是「反正恒 false，钉不钉都一样」）：
+// 恒 false 的字段**最容易被"顺手简化"成派生式**——
+// `d.ZeroDrift = d.OnlyInV1Count == 0` 在退役态恒为 true，
+// 响应会重新长成「两侧一致」的样子；`d.ZeroDriftEvaluable = d.V1WritesEnabled`
+// 则在停写开关关着时恒为 false、开着时恒为 true ⇒ 后者会把「没量」读成「量了」。
+// 两者都是本仓吃过亏的形状，所以必须挡住。
+//
+// 退役后的**行为**由另一道门承担（离线、可跑）：
+// dual_read_validator_test.go 的 TestDualReadValidator_RetiredFamilyIssuesNoQuery
+// （它用假查询器驱动真的 CompareDetail，断言 ZeroDriftEvaluable=false 且
+// ZeroDrift=false）。本门守的是**源码里的接线**：这两个字面量不能被改回派生式。
 func TestZeroDriftIsNotAlwaysFalse(t *testing.T) {
-	src := readGoSource(t, "dual_read_validator.go")
-	clean := stripGoComments(src)
-	if !strings.Contains(clean, "ZeroDriftEvaluable") {
-		t.Fatal("DualReadDetail 必须带 ZeroDriftEvaluable 字段")
+	clean := stripGoComments(readGoSource(t, "dual_read_validator.go"))
+
+	if !zeroDriftEvaluableFalseRE.MatchString(clean) {
+		t.Error("退役态必须写死 d.ZeroDriftEvaluable = false：它是「本次运行没有验证任何漂移」的标记")
 	}
-	if !strings.Contains(clean, "d.ZeroDriftEvaluable = d.V1WritesEnabled") {
-		t.Fatal("ZeroDriftEvaluable 未与 V1WritesEnabled 绑定：停写后仍会被当作真漂移读")
+	if !zeroDriftFalseRE.MatchString(clean) {
+		t.Error("退役态必须写死 d.ZeroDrift = false：没有证据说漂移为零")
 	}
-	// 赋 ZeroDrift 之前必须先有可评估性判定，否则顺序型回归会静默通过。
-	iEval := strings.Index(clean, "d.ZeroDriftEvaluable = d.V1WritesEnabled")
-	iAssign := strings.Index(clean, "d.ZeroDrift = d.OnlyInV1Count == 0")
-	if iEval < 0 || iAssign < 0 || iEval > iAssign {
-		t.Fatalf("可评估性判定必须在 ZeroDrift 赋值之前（eval@%d, assign@%d）", iEval, iAssign)
+	// 派生式会把「没量」读成「量了而且一致」——必须挡住。
+	if zeroDriftDerivedRE.MatchString(clean) {
+		t.Error("d.ZeroDrift 不得由 d.OnlyInV1Count 派生：退役态下 OnlyInV1Count 恒为 0，" +
+			"派生式恒为 true —— 读起来像「两侧一致」，而事实是「没有第二侧可比」")
+	}
+	// 顺序型回归仍然要挡：可评估性判定必须先于漂移结论落地。
+	iEval := zeroDriftEvaluableFalseRE.FindStringIndex(clean)
+	iAssign := zeroDriftFalseRE.FindStringIndex(clean)
+	if iEval == nil || iAssign == nil || iEval[0] > iAssign[0] {
+		t.Errorf("可评估性判定必须在 ZeroDrift 赋值之前（eval=%v, assign=%v）", iEval, iAssign)
+	}
+
+	// ★ 正控制：判据必须看得见「退役前的形态」，否则上面四条恒绿。
+	// 反向对照（写死 false 的形态）也必须被认出来，否则「必须写死 false」
+	// 这条断言在判据坏了的时候同样绿。
+	oldForm := "d.ZeroDriftEvaluable = d.V1WritesEnabled\nd.ZeroDrift = d.OnlyInV1Count == 0\n"
+	if zeroDriftEvaluableFalseRE.MatchString(oldForm) {
+		t.Error("正控制失效：判据把「跟着写入开关走」的形态判成了写死 false")
+	}
+	if !zeroDriftDerivedRE.MatchString(oldForm) {
+		t.Error("正控制失效：判据看不出 d.ZeroDrift = d.OnlyInV1Count == 0 这条派生式")
+	}
+	newForm := "d.ZeroDriftEvaluable = false\nd.ZeroDrift = false\n"
+	if !zeroDriftEvaluableFalseRE.MatchString(newForm) || !zeroDriftFalseRE.MatchString(newForm) {
+		t.Error("正控制失效：判据认不出写死 false 的形态")
 	}
 }
 
@@ -389,6 +470,16 @@ func TestS4Gate_CoverageRule(t *testing.T) {
 // The gate's whole point is to stop reporting a conclusion with no sample size
 // attached. A void reason that does not say how much was actually compared
 // leaves the operator to guess, and the guess they will make is the old one.
+//
+// ★ 2026-10-20（迁移 890）：这道门**没有**反转——它守的量（覆盖率必须以 -1
+// 起步，0 与「从未测量」必须可区分）在退役态下**依然成立**（`V1CoveragePP`
+// 恒为 -1）。变红的原因不是行为变了，是**判据的锚点太脆**：
+// 原写法 `strings.Contains(src, "V1CoveragePP: -1,")` 硬编码了一个空格，
+// 而 gofmt 把它对齐成了 `V1CoveragePP:     -1,` ⇒ 门红了，行为一个字没变。
+//
+// ⇒ 修法是**对排版免疫**，不是放宽断言：值仍然必须是 -1（0 是「测到了 0%」，
+// 与「从未测量」长得几乎一样，正是这道门要堵的那个失败模式）。
+// 锚点改成正则 `V1CoveragePP:\s*-1`（同款注记见上面 zeroDrift* 那组正则）。
 func TestS4Gate_CoverageIsReported(t *testing.T) {
 	src := stripGoComments(readGoSource(t, "dual_read_validator.go"))
 	if !strings.Contains(src, `V1CoveragePP float64 `+"`"+`json:"v1_coverage_pp"`) {
@@ -397,10 +488,33 @@ func TestS4Gate_CoverageIsReported(t *testing.T) {
 	// Initialised to -1, not 0: a measured 0% and "never measured" must not
 	// look alike, because one is a real state worth acting on and the other is
 	// an instrumentation gap.
-	if !strings.Contains(src, "V1CoveragePP: -1,") {
+	if !s4CoverageStartsAtMinusOneRE.MatchString(src) {
 		t.Fatal("V1CoveragePP 必须以 -1 起步：0 与「从未测量」在产物里必须可区分")
 	}
+
+	// ★ 正控制：判据必须对 gofmt 的排版免疫，也必须认得出「0」——
+	// 否则上面那条可能因为正则写错而恒绿。
+	for _, spaced := range []string{
+		"V1CoveragePP: -1,",
+		"V1CoveragePP:     -1,",
+		"V1CoveragePP:-1,",
+		"V1CoveragePP:\t-1,",
+	} {
+		if !s4CoverageStartsAtMinusOneRE.MatchString(spaced) {
+			t.Errorf("正控制失效：判据认不出 %q —— 锚点对 gofmt 的排版不免疫", spaced)
+		}
+	}
+	if s4CoverageStartsAtMinusOneRE.MatchString("V1CoveragePP:     0,") {
+		t.Error("正控制失效：判据把 0 当成了 -1 —— 这道门要堵的正是「0 与未测量长得一样」")
+	}
 }
+
+// s4CoverageStartsAtMinusOneRE 匹配「V1CoveragePP: -1」这条**起步值**。
+//
+// 为什么用 `\s*` 而不是硬编码空格：本文件历史上踩过两次同族的错
+// （§9.233.2，以及本节这道门自己——gofmt 把字面量重新对齐后它就红了）。
+// ⇒ 锚在标识符 token 上，且对 gofmt 会改写的排版免疫。
+var s4CoverageStartsAtMinusOneRE = regexp.MustCompile(`V1CoveragePP:\s*-1\b`)
 
 // TestS4Gate_MinimumWindow is the control pair for rule 4 (§9.236).
 //

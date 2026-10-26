@@ -1,0 +1,117 @@
+# scripts/ursmcheck/selfcreated_cleanup_quality_ledger.tsv
+# 「自建资源回收」的兜底【质量】台账（R95 轮 · 段 D 建，★ 段 E 改轴）
+#
+# ★ 与并行会话 R94 续九的 scripts/audit/selfcreated-cleanup-ledger.tsv 的分工（★ 两张表答的是【两个正交轴】）：
+#   · 那张台账 = 【会不会泄漏】的裁决（建的是什么 / 一次性? / 兜底机制 / 有提前退出? / 裁决）
+#   · 本台账   = 【兜底合不合格】的量化轴（覆盖性 + 信号 + 防卡 + 收割 + 缺什么）
+#   ⇒ ⇒ 二者互补：那张回答「要不要兜底」，这张回答「兜底到不到位」。
+#   ⇒⇒★ 实测：同一个对象可以在那张表里判「无泄漏」，在本表里判「待修」
+#   ⇒⇒★   （例：internal/testdb/testdb.go 在对方表里是「无泄漏」，在本表里是「待修: signal_trap」）
+#   ⇒⇒★   ⇒⇒ ★★ 差集里有 12 个交集对象，其中 10 个正是这种「一轴合格、另一轴待修」⇒⇒ 两轴确实正交。
+#
+# 列：file<TAB>language<TAB>fallback_covers<TAB>signal_trap<TAB>cleanup_timeout<TAB>cleanup_disconnect<TAB>child_reap<TAB>origin<TAB>verdict<TAB>deficits<TAB>evidence
+#   language           shell / python / go（★ 由扩展名推出）
+#   fallback_covers    yes/no —— ★★ 【覆盖性】：兜底「载体」里是否**真的包着回收动作**
+#                       （不是「有没有 trap」！★ 见下方「★ 段 E 的判据订正」）
+#   signal_trap        yes/no —— 有没有接管信号（存在性；★ 是否【必需】由语言映射表决定）
+#   cleanup_timeout    yes/no —— 清理语句自带 statement_timeout 类（中止语句）
+#   cleanup_disconnect yes/no —— 清理语句自带 pg_terminate_backend 类（先踢掉阻塞会话再 DROP）
+#   child_reap         yes/no/na —— 有后台子进程时，清理前有没有 kill + wait 收割（na = 不适用）
+#   origin             static/manual
+#                       static = 能被静态候选集判据认出
+#                       manual = 静态判据认不出（★ 存在理由见下）
+#   verdict            合格 / 待修 / 无回收义务
+#   deficits           逗号分隔的缺失项名（待修行用；取值：fallback / cleanup_guard /
+#                       signal_trap / child_reap）
+#   evidence           依据（必填；verdict=无回收义务 时必须写明「长驻」或「假阳性」或「不建库」）
+#
+# ★★ 【扫描口径】= scripts/ + internal/ + cmd/
+#   ⇒ 与并行会话那套量具（scripts/audit/measure-selfcreated-cleanup.sh 的
+#     `grep -rl --include='*.sh' --include='*.bash' --include='*.py' --include='*.go' … scripts internal cmd`）
+#     【完全一致】⇒⇒ 理由：两个台账的差集才有意义，否则差集里混着「口径差」而不是「轴差」。
+#   ⚠ 已知局限（属主决策项）：口径之外 Go 测试文件里【自己】建库并回收的
+#     （例：admin/admin_500_channel_gap_realdb_test.go 第 294/317 行）不在本门覆盖内。
+#
+# ★★ 「合格」的判定（★ 段 E 实测订正后的定义）：
+#   合格 = fallback_covers = yes
+#       ∧ （cleanup_timeout = yes ∨ cleanup_disconnect = yes）        ← 防卡保护
+#       ∧ （没有后台子进程 ∨ child_reap = yes）                        ← 收割
+#       ∧ （signal_trap = yes）                                        ← ★ 仅对 python/go 必需
+#   ★★ signal_trap **不是**对所有语言都必需：
+#   ★ 实测（R95 段 E 跨语言探针）：shell 的 `trap … EXIT` 在 SIGTERM/SIGINT 下【会执行】；
+#     而 python 的 atexit / try-finally 与 go 的 defer 【都不会执行】
+#     ⇒ ⇒ shell 侧不需要额外挂信号分支；python/go 侧【必须】显式接管信号。
+#   ★ 该结论的**唯一事实源** = scripts/ursmcheck/selfcreated_cleanup_language_map.tsv（表驱动）。
+#
+# ★★ 【段 E 的判据订正】——★ 段 D 判的是【存在性】，段 E 判的是【覆盖性】：
+#   段 D：fallback = 「文件里有没有 trap … EXIT」⇒ 读数是存在性。
+#   ★★ 实测反例：scripts/audit/verify_892_local.sh 第 26 行是 `trap 'rm -f "$TMP"' EXIT`
+#     ⇒ 它只删【临时 SQL 文件】，**不回收库**（库回收在第 46 行 = 正常路径末尾）
+#     ⇒ ⇒ 「有 trap」≠「trap 覆盖了要回收的资源」
+#     ⇒ ⇒ ★ 存在性轴是**假阳性方向**（会把真会泄漏的脚本判成合格）⇒ ⇒ 本台账订正之。
+#   ⇒ 读数变化：verify_892_local / verify_892_patrol_ab / verify_892_patrol_e2e 三行
+#     由「待修: cleanup_guard」⇒ 「待修: cleanup_guard,fallback」。
+#
+# ★★ 「origin=manual」这一档的��在理由（★ 段 D 实测抓到的判据盲区）：
+#   静态候选集判据 = 「文件里真在执行 CREATE DATABASE 且真在执行 DROP DATABASE」。
+#   ⇒ ⇒ **它会漏掉「经由调用别的脚本自建资源」的对象** ⇒ ⇒ 而那个对象恰恰是本仓
+#   唯一有「后台子进程 + kill+wait 收割」形态的脚本
+#   （scripts/audit/healthcheck-dbaudit-scripts.sh ⇒ 它调
+#    scripts/audit/probe-onetime-db-shape.sh 建库，自己不写 CREATE DATABASE）
+#   ⇒ ⇒ ★ 若只靠静态候选集，child_reap 那一轴就永远无对象 ⇒ ⇒ 门会漏掉真正需要收割的那个。
+#
+# ★★ 当前读数（2026-10-21 · R99 轮 · 段九 §19.20.65）：**18 行**（17 个静态候选 + 1 个 manual）；
+#   **合格 16 行**；**待修 0 行**；无回收义务 2 行。
+#   ⇒⇒ ★★ 缺陷集**清零**：段 E 时 18 行里有 16 行待修（13 行缺防卡保护 + 5 条非 shell 腿缺信号接管）
+#      ⇒ ⇒ 段七/段八修完 13 个 shell 腿、段九修完 5 条非 shell 腿（3 python + 2 go）⇒ ⇒ **待修 0 行**。
+#   ⇒⇒ ★★ 「合格」的定义见本文件头；★ 达标形态 = 「载体覆盖回收 + 防卡保护 + （python/go）信号接管」。
+#   ⇒ ⇒ 仓内已有两个正确范例（pg_terminate_backend 类防卡）：
+#   ⇒ ⇒   scripts/local-r112-migrate.sh、scripts/sync-gateway-db-to-211.sh
+#   ⇒ ⇒ ⇒ 修法不用外来建议，照这两个的形态改即可。
+#
+# ★★★★ 【段九新增的两条机制知识】——★ 都是**实测**，不是推断
+#
+# 【知识 1】psql 的**失败可见性由「读入方式」决定**，不由「语句是否出错」决定（实测 PG 17.10）：
+#     形态                          语句失败时的退出码      失败可见？
+#     ──────────────────────────────────────────────────────────────────────────
+#     -c 单条 / -c 多条            1                      ✔ 可见
+#     stdin 脚本（-f - 或裸 stdin）  0                      ✘ **不可见**！
+#     stdin 脚本 + ON_ERROR_STOP=1  3                      ✔ 可见
+#   ⇒⇒ ⇒ ★★ 走 stdin 脚本形态的清理（★ 本仓 3 个 python 腿都是）⇒ 必须显式 ON_ERROR_STOP=1
+#     ⇒⇒ ⇒ ★★ 且**还要查落点**（pg_database 里还有几行）⇒ ★ 「命令退出 0」≠「它干了活」。
+#   ⇒⇒ ⇒ ★★ 段八 的 shell 腿走 -c 形态 ⇒ 失败**可检出**（exit 1）⇒ **不需要改**
+#     （★ 段九曾怀疑「段八 的失败被 || true 吃掉了 ⇒ 不可见」⇒ **实测证伪** ⇒ 改法只落在 python 腿）。
+#
+# 【知识 2】★ **超时值不是拍脑袋**：「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」——
+#   实测 4.28s / 38.60s / 89.37s（PG 17.10，高负载下）⇒ ⇒ 15s 会把**合法**清理砍成
+#   「被 statement_timeout 取消」⇒ ⇒ 而「清理失败」＝「库泄漏」⇒ ⇒ 与守卫目的**正好相反**。
+#   ⇒⇒ ⇒ 单变量对照（同一形态，只改超时值）：15s 轮 **2/2 库残留=1**；120s 轮 **2/2 残留=0**。
+#   ⇒⇒ ⇒ ★★ 统一订正为 **120s**（覆盖已观测上界 89.37s 并留余量）⇒ ★ 诚实边界：负载相关，
+#     空闲机器上的收尾延迟**未测**；更稳的形态（terminate 后轮询等会话消失再 DROP）留作下轮。
+#
+# ★ 静态假阳性（★ 段 D 实测到的两类，均已排除在候选集外）：
+#   ① scripts/audit/measure-selfcreated-cleanup.sh —— 量具脚本自匹配：
+#      它的「CREATE DATABASE / DROP DATABASE / psql」全是【分析用的正则与标签】，它不建库。
+#   ② tests/deploy_211_contract_test.sh —— 契约测试 grep 别的脚本文本，
+#      它自己既不建库也不删库。
+scripts/_lib/db-init-lib.sh	shell	yes	no	yes	yes	na	static	合格		★ R98 轮修（§19.20.63）：本轮加的 EXIT trap（第 809 行 `trap 'db_init::_drop_verify_db' EXIT`）⇒ 兜底【覆盖】回收（函数名带命名空间前缀，按最后一段比对）；★ 清理语句自带防卡保护（SET statement_timeout='120s' + pg_terminate_backend + WITH (FORCE)）⇒ cleanup_guard 消除；★ 形态依据实测：SET/terminate/DROP 三条【独立 -c】（SET 与 DROP 同 -c ⇒ PG 报 cannot run inside a transaction block ⇒ 清理直接失败）+ DROP 放最后一条（psql 退出码只反映最后一条 -c）；★ R99 轮把超时值由 15s 订正为 120s（§19.20.65）：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」可达 89.37s ⇒ 15s 会把【合法】清理砍成失败 ⇒ 失败＝泄漏 ⇒ 与守卫目的相反（依据见台账头）
+scripts/audit/fresh-schema-from-migrations.sh	shell	yes	no	yes	yes	na	static	合格		cleanup()（第 99 行）+ trap cleanup EXIT（第 112 行）⇒ 兜底【覆盖】回收；★ R98 轮修（§19.20.63）：清理语句自带防卡保护（SET statement_timeout='120s' + pg_terminate_backend + WITH (FORCE)）⇒ cleanup_guard 消除；★ 形态依据实测：SET/terminate/DROP 三条【独立 -c】（SET 与 DROP 同 -c ⇒ PG 报 cannot run inside a transaction block ⇒ 清理直接失败）；★ R99 轮把超时值由 15s 订正为 120s（§19.20.65）：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」可达 89.37s ⇒ 15s 会把【合法】清理砍成失败 ⇒ 失败＝泄漏 ⇒ 与守卫目的相反（依据见台账头）
+scripts/audit/healthcheck-dbaudit-scripts.sh	shell	yes	yes	yes	yes	yes	manual	合格		★origin=manual：它调 scripts/audit/probe-onetime-db-shape.sh 建库（自己不含 CREATE DATABASE ⇒ 静态候选集认不出）★ 已有 EXIT trap（第 158 行）+ INT/TERM 接管（第 160 行）+ 先 kill/wait 收割 ⇒ 兜底【覆盖】回收 + child_reap=yes；★ R98 轮修（§19.20.63）：清理语句自带防卡保护（SET statement_timeout='120s' + pg_terminate_backend + WITH (FORCE)）⇒ cleanup_guard 消除；★ 附带实测发现：它挂了 INT/TERM trap ⇒ bash 会把 trap 推迟到当前前台命令（`wait "$BUILD_PID"`）结束 ⇒ 收割被推迟（详见 §19.20.59）；★ R99 轮把超时值由 15s 订正为 120s（§19.20.65）：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」可达 89.37s ⇒ 15s 会把【合法】清理砍成失败 ⇒ 失败＝泄漏 ⇒ 与守卫目的相反（依据见台账头）
+scripts/audit/measure-factsource-cost-matrix.sh	shell	yes	yes	yes	yes	na	static	合格		trap cleanup_dbs EXIT（第 175 行）⇒ 兜底【覆盖】回收；★ R98 轮修（§19.20.63）：清理语句自带防卡保护（SET statement_timeout='120s' + pg_terminate_backend + WITH (FORCE)）⇒ cleanup_guard 消除；★ 这正是 R95 段 C 实测被 Killed: 9 的那条语句；★ terminate 单独一条（输出丢 /dev/null）⇒ err 里只剩 DROP 的真实报错（R96 轮的「失败可检出」不被削弱）；★ DROP 放最后一条 ⇒ psql 退出码仍反映它；★ R96 轮补了 INT/TERM trap（探针回收要兜住信号路径）⇒ signal_trap 由 no 变 yes；★ R99 轮把超时值由 15s 订正为 120s（§19.20.65）：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」可达 89.37s ⇒ 15s 会把【合法】清理砍成失败 ⇒ 失败＝泄漏 ⇒ 与守卫目的相反（依据见台账头）
+scripts/audit/probe-onetime-db-shape.sh	shell	yes	no	yes	yes	na	static	合格		trap cleanup_db EXIT（第 84 行）⇒ 兜底【覆盖】回收；★ R98 轮修（§19.20.63）：清理语句自带防卡保护（SET statement_timeout='120s' + pg_terminate_backend + WITH (FORCE)）⇒ cleanup_guard 消除；★ DB_NAME 每会话独立 ⇒ 泄漏后无法按名自愈；★ 第 247 行 `trap - EXIT` 是交还；★ R99 轮把超时值由 15s 订正为 120s（§19.20.65）：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」可达 89.37s ⇒ 15s 会把【合法】清理砍成失败 ⇒ 失败＝泄漏 ⇒ 与守卫目的相反（依据见台账头）
+scripts/audit/run-integration-gate.sh	shell	yes	no	yes	yes	na	static	合格		cleanup()（第 227 行）+ trap cleanup EXIT（第 246 行）⇒ 兜底【覆盖】回收；★ R98 轮修（§19.20.63）：清理语句自带防卡保护（SET statement_timeout='120s' + pg_terminate_backend + WITH (FORCE)）⇒ cleanup_guard 消除；★ 形态依据实测：SET/terminate/DROP 三条【独立 -c】（SET 与 DROP 同 -c ⇒ PG 报 cannot run inside a transaction block ⇒ 清理直接失败）；★ R99 轮把超时值由 15s 订正为 120s（§19.20.65）：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」可达 89.37s ⇒ 15s 会把【合法】清理砍成失败 ⇒ 失败＝泄漏 ⇒ 与守卫目的相反（依据见台账头）
+scripts/audit/verify-session-family-p0-realdb.sh	shell	yes	no	yes	yes	na	static	合格		cleanup()（第 81 行）+ trap cleanup EXIT（第 92 行）⇒ 兜底【覆盖】回收；★ R98 轮修（§19.20.63）：清理语句自带防卡保护（SET statement_timeout='120s' + pg_terminate_backend + WITH (FORCE)）⇒ cleanup_guard 消除；★ 形态依据实测：SET/terminate/DROP 三条【独立 -c】（SET 与 DROP 同 -c ⇒ PG 报 cannot run inside a transaction block ⇒ 清理直接失败）；★ R99 轮把超时值由 15s 订正为 120s（§19.20.65）：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」可达 89.37s ⇒ 15s 会把【合法】清理砍成失败 ⇒ 失败＝泄漏 ⇒ 与守卫目的相反（依据见台账头）
+scripts/audit/verify_892_local.sh	shell	yes	no	yes	yes	na	static	合格		★ R97 轮修（§19.20.61）：新增 `cleanup()` 函数（★ 函数体内**字面**含 DROP DATABASE ⇒ 兜底载体【覆盖】回收动作）+ `trap 'cleanup; rm -f "$TMP"' EXIT` ⇒ ★ 原 trap 只删临时 SQL 文件、**不回收库**（真缺陷：任何提前退出都泄漏 itgate_892）已修；★ 清理语句自带防卡保护（SET statement_timeout='120s' + pg_terminate_backend + WITH (FORCE)）⇒ cleanup_guard 消除；★ shell 的 EXIT trap 在 SIGTERM 下**会**执行（实测）⇒ 无需信号接管；★ 重建路径与正常路径共用**同一个** cleanup ⇒ 只留一份 DROP 实现（不漂移）；★ R99 轮把超时值由 15s 订正为 120s（§19.20.65）：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」可达 89.37s ⇒ 15s 会把【合法】清理砍成失败 ⇒ 失败＝泄漏 ⇒ 与守卫目的相反（依据见台账头）
+scripts/audit/verify_892_patrol_ab.sh	shell	yes	no	yes	yes	na	static	合格		★ R97 轮修（§19.20.61）：新增 `cleanup()` 函数（★ 函数体内**字面**含 DROP DATABASE ⇒ 兜底载体【覆盖】回收动作）+ `trap 'cleanup; rm -f "$TMP"' EXIT` ⇒ ★ 原 trap 只删临时 SQL 文件、**不回收库**（真缺陷：任何提前退出都泄漏一次性库）已修；★ 清理语句自带防卡保护（SET statement_timeout='120s' + pg_terminate_backend + WITH (FORCE)）⇒ cleanup_guard 消除；★ shell 的 EXIT trap 在 SIGTERM 下**会**执行（实测）⇒ 无需信号接管；★ 重建路径与正常路径共用**同一个** cleanup ⇒ 只留一份 DROP 实现（不漂移）；★ R99 轮把超时值由 15s 订正为 120s（§19.20.65）：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」可达 89.37s ⇒ 15s 会把【合法】清理砍成失败 ⇒ 失败＝泄漏 ⇒ 与守卫目的相反（依据见台账头）
+scripts/audit/verify_892_patrol_e2e.sh	shell	yes	no	yes	yes	na	static	合格		★ R97 轮修（§19.20.61）：新增 `cleanup()` 函数（★ 函数体内**字面**含 DROP DATABASE ⇒ 兜底载体【覆盖】回收动作）+ `trap 'cleanup; rm -f "$TMP"' EXIT` ⇒ ★ 原 trap 只删临时 SQL 文件、**不回收库**（真缺陷：任何提前退出都泄漏一次性库）已修；★ 清理语句自带防卡保护（SET statement_timeout='120s' + pg_terminate_backend + WITH (FORCE)）⇒ cleanup_guard 消除；★ shell 的 EXIT trap 在 SIGTERM 下**会**执行（实测）⇒ 无需信号接管；★ 重建路径与正常路径共用**同一个** cleanup ⇒ 只留一份 DROP 实现（不漂移）；★ R99 轮把超时值由 15s 订正为 120s（§19.20.65）：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」可达 89.37s ⇒ 15s 会把【合法】清理砍成失败 ⇒ 失败＝泄漏 ⇒ 与守卫目的相反（依据见台账头）
+scripts/audit/verify_archive_orphan_local.py	python	yes	yes	yes	yes	na	static	合格		★ R99 轮修（§19.20.65）：① 【信号路径】实测 python 的 atexit 在进程被 SIGTERM 终止时【不执行】⇒ 显式接管 SIGTERM/SIGINT（signal.signal + 处理器抛 _Terminated ⇒ 异常沿栈展开 ⇒ finally/atexit 真的跑）⇒ signal_trap 由 no 变 yes；② 【防卡】_drop_db() 由「裸 DROP」改为「先 pg_terminate_backend 踢占用会话 + SET statement_timeout='120s' + DROP ... WITH (FORCE)」⇒ cleanup_guard 消除；③ ★★ 超时取 120s 而非 15s：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」= 4.28/38.60/89.37s⇒ 15s 会把【合法】清理砍成「被超时取消」⇒ 「清理失败」＝「库泄漏」⇒ 与守卫目的相反（单变量对照：15s 轮 2/2 库残留=1、120s 轮 2/2 残留=0）；④ ★★ 失败可见性：实测 psql 的退出码【由读入方式决定】——`-c` 形态失败 exit 1，而 stdin 脚本形态（-f -）失败【exit 0】⇒ 故清理路径显式 ON_ERROR_STOP=1，且【查落点】（pg_database 里还有几行）⇒ 不靠退出码判断成功
+scripts/audit/verify_columnar_bulk_write_local.py	python	yes	yes	yes	yes	na	static	合格		★ R99 轮修（§19.20.65）：① 【信号路径】实测 python 的 atexit 在进程被 SIGTERM 终止时【不执行】⇒ 显式接管 SIGTERM/SIGINT（signal.signal + 处理器抛 _Terminated ⇒ 异常沿栈展开 ⇒ finally/atexit 真的跑）⇒ signal_trap 由 no 变 yes；② 【防卡】_drop_db() 由「裸 DROP」改为「先 pg_terminate_backend 踢占用会话 + SET statement_timeout='120s' + DROP ... WITH (FORCE)」⇒ cleanup_guard 消除（★ 正常路径与 arm 报错路径现在都走【同一个】_drop_db ⇒ 不漂移）；③ ★★ 超时取 120s 而非 15s：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」= 4.28/38.60/89.37s⇒ 15s 会把【合法】清理砍成「被超时取消」⇒ 「清理失败」＝「库泄漏」⇒ 与守卫目的相反（单变量对照：15s 轮 2/2 库残留=1、120s 轮 2/2 残留=0）；④ ★★ 失败可见性：实测 psql 的退出码【由读入方式决定】——`-c` 形态失败 exit 1，而 stdin 脚本形态（-f -）失败【exit 0】⇒ 故清理路径显式 ON_ERROR_STOP=1，且【查落点】（pg_database 里还有几行）⇒ 不靠退出码判断成功
+scripts/audit/verify_promote_wal_cost_local.py	python	yes	yes	yes	yes	na	static	合格		★ R99 轮修（§19.20.65）：① 【信号路径】实测 python 的 try/finally 在进程被 SIGTERM 终止时【不执行】⇒ 显式接管 SIGTERM/SIGINT（signal.signal + 处理器抛 _Terminated ⇒ 异常沿栈展开 ⇒ finally 真的跑）⇒ signal_trap 由 no 变 yes；② 【防卡】finally 块里的 DROP 由「裸 DROP」改为「先 pg_terminate_backend + SET statement_timeout='120s' + DROP ... WITH (FORCE)」⇒ cleanup_guard 消除；③ ★★ SET 与 DROP 必须【逐条发送】⇒ 走 psql 的 stdin 脚本模式（stdin=True）⇒ 若走 -c 则两条被并进一个隐式事务 ⇒ PG 报「DROP DATABASE cannot run inside a transaction block」⇒ 清理【直接失败且静默】；④ ★★ 第 148 行的 `SET statement_timeout='300s'` 属于【建库 DDL】、**不属于**清理语句 ⇒ 未动（★ 判据「收窄到含 DROP 的那条逻辑命令」正好把这条误读排除掉）；⑤ ★★ DROP 必须【字面】留在 finally 块里 —— 判据判的是「兜底载体里是否真的包着回收动作」⇒ 抽成 helper 会被判「载体不覆盖回收」⇒ 故它与 _drop_db() 是【同一形态的两处】，改一处必须改另一处；⑥ ★★ 失败可见性：psql 在 stdin 脚本形态下失败 exit 0 ⇒ 清理路径查【落点】（pg_database 里还有几行）
+scripts/local-r112-migrate.sh	shell	no	no	no	yes	na	static	无回收义务		★长驻：迁移目标库是长驻的（与 scripts/audit/selfcreated-cleanup-ledger.tsv 同一裁决）★ 它的清理形态反而是【正确范例】：先 pg_terminate_backend 踢掉阻塞会话（cleanup_disconnect=yes）再 DROP ⇒ ★ 修法可照此形
+scripts/omnifree/e2e-verify.sh	shell	yes	no	yes	yes	na	static	合格		cleanup()（第 58 行）+ trap cleanup EXIT（第 84 行）⇒ 兜底【覆盖】回收；★ R98 轮修（§19.20.63）：① ★★ 顺带修掉一处真缺陷——原来的 DROP 连的是 **${TEST_DB_NAME} 自己** ⇒ PG 报 cannot drop the currently open database ⇒ 这次清理【从来没成功过】⇒ 一次性测试库每次跑都泄漏 ⇒ 改成连 postgres 再删；② 清理语句自带防卡保护（SET statement_timeout='120s' + pg_terminate_backend）⇒ cleanup_guard 消除；★ 此处【未】加 WITH (FORCE)：该脚本的 PG 目标是任意外部实例，FORCE 需 PG 13+ ⇒ 只用 terminate + timeout（PG ≥ 8.4 即成立）；★ R99 轮把超时值由 15s 订正为 120s（§19.20.65）：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」可达 89.37s ⇒ 15s 会把【合法】清理砍成失败 ⇒ 失败＝泄漏 ⇒ 与守卫目的相反（依据见台账头）
+scripts/sync-gateway-db-to-211.sh	shell	no	no	no	yes	na	static	无回收义务		★长驻：同步到 211 的目标库是长驻的（与 scripts/audit/selfcreated-cleanup-ledger.tsv 同一裁决）★ 清理形态是【正确范例】：先 pg_terminate_backend 再 DROP ⇒ ★ 修法可照此形
+internal/testdb/testdb.go	go	yes	yes	yes	no	na	static	合格		★ Go 腿：t.Cleanup 闭包里 DROP ⇒ 兜底【覆盖】回收；context.WithTimeout（⇒ cleanup_timeout=yes）⇒ 客户端防卡（★ go 侧防卡形态与 shell/python 不同：pgx 尊重 ctx）；★★ 但实测 defer / t.Cleanup 在 SIGTERM 下【不执行】⇒ 必须显式接管信号；★ R99 轮修（§19.20.65）：① 进程级注册表（dropTargets + sync.Once 只装一次 signal.Notify）⇒ 收到 SIGINT/SIGTERM ⇒ 回收全部已登记库 ⇒ signal.Stop + signal.Reset + 重发信号 ⇒ 仍以「被信号杀死」退出 ⇒ 不改变退出语义（★ 注册表是进程级而非每测试一个：signal.Notify 装的是进程级 handler，逐次装会让后一个顶掉前一个 ⇒ 先前登记的库就成孤儿）；② 清理 ctx 由 60s 提到 120s（cleanupTimeout）—— 实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」可达 89.37s ⇒ 60s 会把合法清理砍成失败 ⇒ 失败＝泄漏；③ 源文件第 102–110 行记着一次老坑：曾泄漏 10 个库，且泄漏检查的 LIKE 模式匹配不到、一直报「0」
+scripts/audit/fresh_schema_integration_test.go	go	yes	yes	yes	yes	na	static	合格		★ Go 腿：defer 闭包里先 pg_terminate_backend 再 DROP ⇒ 兜底【覆盖】回收 + 有防卡（服务端踢阻塞会话）；★★ 但实测 defer 在 SIGTERM 下【不执行】⇒ 必须显式接管信号；★ R99 轮修（§19.20.65）：① 进程级注册表（throwawayDbs + sync.Once）⇒ 收到 SIGINT/SIGTERM ⇒ 回收全部一次性库 ⇒ 恢复默认处置 + 重发信号 ⇒ 仍以「被信号杀死」退出；② ★★ 清理语句的 ctx 由【无界的 context.Background()】改为 context.WithTimeout(120s) ⇒ 原形态下一条卡住的语句能把整个测试跑挂住（★ 这也是「cleanup_timeout」轴由 no 变 yes 的原因）；③ ★★ DROP 必须【字面】留在 defer 闭包里（判据判「兜底载体是否真的包着回收动作」）⇒ 信号处理器里另有一份同形态实现（dropThrowawayNow）⇒ 改一处必须改另一处
+scripts/audit/measure-psql-form-matrix.sh	shell	yes	no	yes	no	na	static	合格		★ R102 轮新增（psql 失败可见性的【行为契约脚本】：8 格矩阵 + 5 组补充 ⇒ 14/14 全绿 / 退出码 0）：自建 = 自起一次性容器 postgres:17-alpine（用完即删）；自回收 = 兜底载体 cleanup() 里【显式】DROP DATABASE IF EXISTS r102_droptarget WITH (FORCE) ＋ 删容器 docker rm -f（★ 只删容器在效果上更强，但字面不含 DROP ⇒ A 轴会判「兜底不覆盖回收」⇒ 故显式同形；★ 是否放宽 A 轴属 peer 决策）；C1 timeout = 补充 A 的命令自带 SET statement_timeout='120s'；disconnect = no（★ 判据只认 pg_terminate_backend/pg_cancel_backend ⇒ WITH (FORCE) 不算 disconnect；★ C 轴是「或」⇒ timeout=yes 已满足 guarded）；无 shell 后台子进程 ⇒ child_reap=na（★ 容器由 docker daemon 管、不是本脚本的子进程 ⇒ 故用 docker create + docker start 而非 docker run -d；★ 判据特判已通报）；只 trap EXIT（shell 兜底在信号下的覆盖性以语言映射表为准）⇒ signal_trap=no；★ 真读数与机制见 docs/audit/2026-10-22-R102-psql失败可见性的读入方式依赖.md
+scripts/audit/verify_841_session_family_retention_local.py	python	yes	yes	yes	yes	na	static	合格		★ 2026-10-23 12h 审计轮登记 + 同轮修复（R99 形态，照本表 verify_archive_orphan_local.py 那一行）：① 【兜底覆盖性】原 DROP 只在【正常跑完】路径（if not args.keep: 内），而两个 sys.exit(2)（找不到迁移文件 / 841 未生效）**都发生在 CREATE DATABASE 之后** ⇒ 第 97 行那条是【确定的泄漏路径】（itgate_14369 已建好才退出）⇒ 改 atexit 钩子 ⇒ 覆盖 sys.exit / 未捕获异常 / 正常返回 ⇒ fallback_covers 由 no 变 yes；② 【信号路径】实测 python 的 atexit 在进程被 SIGTERM 终止时【不执行】⇒ 显式接管 SIGTERM/SIGINT（signal.signal + 处理器抛 _Terminated ⇒ 异常沿栈展开 ⇒ finally 与 atexit 真的跑）⇒ signal_trap 由 no 变 yes；③ 【防卡】DROP 由「裸 DROP DATABASE IF EXISTS」改为「先 pg_terminate_backend 踢占用会话 + SET statement_timeout=120s + DROP ... WITH (FORCE)」⇒ cleanup_guard 消除；★★ 超时取 120s 而非 15s —— 实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」可达 89.37s ⇒ 15s 会把【合法】清理砍成「被超时取消」⇒「清理失败」＝「库泄漏」⇒ 与守卫目的相反；④ ★★ SET 与 DROP 必须落在【同一条逻辑命令】、且 terminate 那条紧邻其前 —— 这是本门 C1/C2 判据的形状（拆成两行会让 disconnect 判不到）；⑤ ★★ 清理路径用独立的 _cleanup_sql()：不抛异常、且【不碰 LAST_STDERR】（那是本脚本的量具变量，清理路径不许污染读数）；⑥ 失败可见性：psql 在 stdin 形态下失败 exit 0 ⇒ 清理后【查落点】（pg_database 里还有几行），LEFT≠0 时打印告警 ⇒ 不靠退出码判断成功；⚠ 诚实边界：atexit 不覆盖 os._exit 与 SIGKILL。
+scripts/audit/verify_toast_amplification_local.py	python	yes	yes	yes	yes	na	static	合格		★ 2026-10-23 12h 审计轮登记 + 同轮修复（R99 形态，照本表 verify_archive_orphan_local.py 那一行）：① 【信号路径】实测 python 的 atexit / finally 在进程被 SIGTERM 终止时【不执行】⇒ 原 finally 的回收在信号路径上是【确定不执行】的 ⇒ 显式接管 SIGTERM/SIGINT（signal.signal + 处理器抛 _Terminated ⇒ 异常沿栈展开 ⇒ finally 与 atexit 真的跑）⇒ signal_trap 由 no 变 yes；② 【兜底覆盖性】原 finally 只覆盖【进了 try 的路径】⇒ ensure_db() 抛错与 try 之外的栈展开都跳过回收 ⇒ 补 atexit 钩子 ⇒ 覆盖 sys.exit / 未捕获异常 / 正常返回 ⇒ fallback_covers 由 no 变 yes；★★★ 记 yes 的同时把 DROP 字面【搬进】drop_db() 体内 ⇒ 一处实现、atexit 与 finally 共用 ⇒ 只留一份 DROP 不漂移（★ 原形态 finally 调 helper 而 DROP 字面在 helper 内，本门「载体是否包着回收动作」判据读数为 no —— 语义上是覆盖的，但读数与门不一致 ⇒ 直接改成模板同形）；③ 【防卡】drop_db() 由「裸 DROP DATABASE IF EXISTS」改为「先 pg_terminate_backend + SET statement_timeout=120s + DROP ... WITH (FORCE)」⇒ cleanup_guard 消除；★★ 超时取 120s 而非 15s 的理由同 verify_archive_orphan_local.py 一行（实测 terminate 之后 DROP 仍可等 89.37s）；④ ★★ SET 与 DROP 必须落在【同一条逻辑命令】、且 terminate 那条紧邻其前（本门 C1/C2 判据形状）；⑤ 失败可见性：psql stdin 形态失败 exit 0 ⇒ 清理后【查落点】（pg_database + count(*)），LEFT≠0 时告警；⑥ --keep 通过模块级 _KEEP 开关同时约束 finally 与 atexit ⇒ 调试用的「保留库」不被兜底破坏；⚠ 诚实边界：atexit 不覆盖 os._exit 与 SIGKILL。

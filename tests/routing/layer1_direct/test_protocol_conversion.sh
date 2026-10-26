@@ -56,7 +56,7 @@ test_openai_to_anthropic() {
     assert_log_contains "protocol_conversion"
     
     # Check if conversion is openai_to_anthropic
-    if echo "$LAST_LOGS" | grep -q "openai_to_anthropic"; then
+    if grep -q "openai_to_anthropic" <<<"$LAST_LOGS"; then
         echo "✓ Protocol conversion: openai_to_anthropic detected"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
@@ -94,7 +94,7 @@ test_anthropic_to_openai() {
     # Verify protocol conversion happened
     capture_logs 100
     
-    if echo "$LAST_LOGS" | grep -q "anthropic_to_openai"; then
+    if grep -q "anthropic_to_openai" <<<"$LAST_LOGS"; then
         echo "✓ Protocol conversion: anthropic_to_openai detected"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else

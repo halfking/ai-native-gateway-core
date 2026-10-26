@@ -83,6 +83,16 @@ func (m *CredentialMonitorHandlers) handleCredentialRoutingLog(w http.ResponseWr
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+
+	// 12h-audit 20261020: role gate（与 handleMonitorSummary / handleModelHistory 同口径）。
+	// 本路由注册在 AdminMiddleware 之下（只认证、不检 role），而租户过滤
+	// 只在 IsTenantAdmin 时才生效（见下方 `if IsTenantAdmin(r)`）
+	// ⇒ role=user 的调用方读到**全租户**的路由/探针/状态变更日志。
+	// 位置放在 nil-db 门**之前**：未授权者拿 403，不泄露 DB 是否配置。
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
 	if m.h == nil || m.h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return

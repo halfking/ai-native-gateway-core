@@ -58,7 +58,6 @@ services:
       
       # ── 日志配置 ──────────────────────────────────────────────────
       LLM_GATEWAY_LOG_LEVEL: ${LLM_GATEWAY_LOG_LEVEL:-info}
-      LLM_GATEWAY_LOG_FORMAT: ${LLM_GATEWAY_LOG_FORMAT:-json}
       LLM_GATEWAY_LOG_FILE: /var/log/llm-gateway/gateway.log
       LLM_GATEWAY_LOG_MAX_SIZE_MB: ${LLM_GATEWAY_LOG_MAX_SIZE_MB:-100}
       LLM_GATEWAY_LOG_MAX_BACKUPS: ${LLM_GATEWAY_LOG_MAX_BACKUPS:-10}

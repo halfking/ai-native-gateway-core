@@ -62,7 +62,7 @@ export default {
     fingerprintTitle: "アップストリームプラットフォーム照合用、完全なキーではありません",
     fingerprintUnparsed: "解析できません",
     viewErrorDetail: "TODO",
-    rowMeta: "#{id} · {trust}",
+    rowMeta: "#{id}：{trust}",
     cellUnset: "未設定",
     noLimit: "無制限",
     slotUsage: "スロット {used}/{limit}",
@@ -263,14 +263,14 @@ export default {
     supplier: 'サプライヤー', errorCode: 'エラーコード', requestId: 'リクエスト ID',
     stage: '段階', retry: '再試行', latency: '所要時間',
     openRequestTitle: 'リクエスト詳細を開く',
-    title: "供应商错误明细", selectCredential: "请先从凭据列表选择凭据", windowTitle: "统计时间窗口",
-    lastHour: "最近 1 小时", lastDay: "最近 24 小时", lastWeek: "最近 7 天", loading: "加载错误明细中…",
-    loadFailed: "加载供应商错误明细失败", credential: "凭据", health: "健康状态", availability: "可用状态", circuit: "熔断状态",
-    consecutiveFailures: "连续失败", balance: "余额", summary: "错误分布", errorKind: "错误类型", count: "次数",
+    title: "プロバイダーエラー明細", selectCredential: "先に認証情報リストから認証情報を選択してください", windowTitle: "集計時間ウィンドウ",
+    lastHour: "最近 1 時間", lastDay: "最近 24 時間", lastWeek: "最近 7 天", loading: "エラー明細を読み込み中…",
+    loadFailed: "プロバイダーエラー明細の読み込みに失敗しました", credential: "認証情報", health: "ヘルス状態", availability: "可用状態", circuit: "サーキット状態",
+    consecutiveFailures: "連続失敗回数", balance: "残高", summary: "エラー分布", errorKind: "エラー種別", count: "次数",
     statusCodes: "ステータスコード種別", retryableCount: "再試行可能", stageDist: "段階分布", lastSeen: "最終発生", noErrors: "この期間のエラー記録なし", recentFailures: "最近の失敗詳細",
-    time: "时间", model: "模型", kind: "错误类型", httpStatus: "HTTP 状态", message: "错误消息", upstreamPreview: "上游响应预览",
-    noRecentFailures: "没有最近失败记录", qualityScores: "最近 7 天供应商质量评分", date: "日期", totalScore: "综合评分",
-    availabilityScore: "可用性评分", stabilityScore: "稳定性评分", noQualityScores: "暂无质量评分",
+    time: "時刻", model: "模型", kind: "エラー種別", httpStatus: "HTTP ステータス", message: "エラーメッセージ", upstreamPreview: "アップストリームレスポンスプレビュー",
+    noRecentFailures: "最近の失敗記録はありません", qualityScores: "最近 7 日間のプロバイダー品質スコア", date: "日期", totalScore: "総合スコア",
+    availabilityScore: "可用性スコア", stabilityScore: "安定性スコア", noQualityScores: "品質スコアはまだありません",
   },
   models: {
     title: "モデル一覧 ({n})",
@@ -294,7 +294,7 @@ export default {
     probeAllLoading: "検出中…",
     probeAllTitle: "一覧の全モデルに対して検出を実行し、可用性を確認",
     probingModels: "モデルを検出中…",
-    probeResultOk: "✅ 成功 {n}",
+    probeResultOk: "✅ {n} 件成功",
     probeResultUnavailable: "❌ モデル利用不可 {n}",
     probeResultProviderErr: "⚠️ プロバイダー問題 {n}",
     probeResultSkipped: "⏭️ スキップ {n}",
@@ -334,7 +334,6 @@ export default {
     drawerOutboundSend: "送信内容:",
     drawerOutboundUnset: "未設定 — これを使用します",
     drawerSectionContextWindow: "コンテキストウィンドウ (トークン)",
-    drawerContextWindowHint: "この認証情報 × モデルに対する認証情報レベル上書き。優先順位: この上書き > カタログ上書き > モデルカタログ。空にする、0 を入力する、または「クリア」をクリックすると上書きが解除され、カタログ値が使用されます。実際に値を変更した場合のみ保存時に適用されます（標準化名など他のフィールドだけの保存では既存の上書きは保持されます）。",
     drawerContextWindowPlaceholder: "例: 200000",
     drawerContextWindowClearBtn: "クリア",
     drawerContextWindowClearTitle: "認証情報レベルの上書きを解除し、モデルカタログ値に戻す",
@@ -368,7 +367,7 @@ export default {
     phase2InOfferOnly: "✓ モデルが一覧に存在",
     checkFailedPrefix: "チェックリクエスト失敗: {msg}",
     offerNotInList: "この認証情報のモデル一覧にこのモデルがありません",
-    drawTitle: "offer #{id} · 認証情報 #{credId} {credLabel}",
+    drawTitle: "offer #{id}：認証情報 #{credId} {credLabel}",
     drawToggleDisable: "この紐付けを無効化",
     drawToggleEnable: "この紐付けを有効化",
     drawToggleLoading: "処理中…",
@@ -406,24 +405,25 @@ export default {
     refreshSummaryFailed: "失敗 {n}",
     refreshSummaryEmpty: "変化なし",
     creds: {
-      labelFallback: "凭据 #{id}"
+      labelFallback: "認証情報 #{id}"
     },
     overview: {
-      chipAvailable: "可用",
-      chipUnavailable: "不可用"
+      chipAvailable: "利用可能",
+      chipUnavailable: "利用不可"
     }
 ,
-    probeAllRecoveredHint: '✓ {n} 个模型探测成功；node_probe_state 已自动恢复，路由候选已重新可用',
+    probeAllRecoveredHint: "✓ {n} 件のモデルでプローブ成功。node_probe_state は自動復旧し、ルーティング候補が再び利用可能です",
 
-    resetNodeProbeBtn: '清失败探测状态',
+    resetNodeProbeBtn: "失敗したプローブ状態をクリア",
 
-    resetNodeProbeLoading: '清除中…',
+    resetNodeProbeLoading: "クリア中…",
 
-    resetNodeProbeTitle: '清除 node_probe_state 中 last_direct_ok=FALSE 的行（force-recover routing）。当全面探测显示 ok 但路由候选仍显示 blocked 时使用。',
+    resetNodeProbeTitle: "node_probe_state の last_direct_ok=FALSE の行をクリアします（ルーティングを強制復旧）。「すべてのモデルを検出」で OK と表示されてもルーティング候補が blocked のままの場合に使用します。",
 
-    resetNodeProbeConfirm: '确认清空该供应商所有失败的 node_probe_state 行？',
+    resetNodeProbeConfirm: "このプロバイダーの失敗した node_probe_state 行をすべてクリアしますか？",
 
-    resetNodeProbeDone: '✓ 已清除 {n} 行失败的 node_probe_state，路由候选立即恢复',
+    resetNodeProbeDone: "✓ 失敗した node_probe_state {n} 行をクリアし、ルーティング候補が即座に復旧しました",
+    repairFailed: '修復を完了できませんでした。再試行してください。',
   },
   settings: {
     overrideTitle: "🎛️ パススルーモード設定",
@@ -560,14 +560,14 @@ export default {
     credColModels: "Models 検出",
     credColChat: "Chat 検出",
     probeFailed: "失敗",
-    probeMetaModels: "{status} · {count} モデル · {latency}ms",
+    probeMetaModels: "{status}，{count} モデル，{latency}ms",
     // 2026-09-04: non-JSON probe hint (parity backfill).
-    probeNonJson: "{status} · JSON 以外のレスポンス",
-    probeMetaChat: "{status} · {latency}ms"
+    probeNonJson: "{status}：JSON 以外のレスポンス",
+    probeMetaChat: "{status}：{latency}ms"
   },
   probe: {
     consensusTitle: "コンセンサス機構",
-    consensusDesc: "{n} 回連続成功 → 復元済みとマーク · {n} 回連続失敗 → 失敗確定（検出停止）",
+    consensusDesc: "{n} 回連続成功 → 復元済みとマーク：{n} 回連続失敗 → 失敗確定（検出停止）",
     consensusFallback: "フォールバック間隔：1m → 5m → 15m → 60m（段階的）",
     refresh: "更新",
     refreshLoading: "…",
@@ -598,7 +598,7 @@ export default {
     emptyHistory: "テスト履歴がありません",
     statusOptions: {
       all: "すべて",
-      ok: "成功",
+      ok: "OK",
       http4xx: "クライアントエラー (4xx)",
       http5xx: "サーバーエラー (5xx)",
       network: "ネットワークエラー",
@@ -612,7 +612,7 @@ export default {
       healthyConfirmed: "復元済み",
       brokenConfirmed: "失敗確定"
     },
-    historyMeta: "直近100件 · scheduler 自動 / manual 手動",
+    historyMeta: "直近100件：scheduler 自動 / manual 手動",
     endpointIdBadge: "エンドポイント ID 設定が必要",
     endpointIdDetail: "このモデル（火山方舟 minimax-m3 / glm-5.1 など）は元のモデル名ではなく deployment エンドポイント ID（例: <code>ep-XXXXXXXX</code>）で呼び出す必要があります。次に進んでください:",
     endpointIdLink: "モデル一覧 → outbound_model_name を編集",
@@ -623,8 +623,7 @@ export default {
     loadFailed: "読み込み失敗",
     triggerFailed: "トリガー失敗"
   },
-  tableCol: {},
-  models_creds_labelFallback: "凭据 #{id}",
-  models_overview_chipAvailable: "可用",
-  models_overview_chipUnavailable: "不可用"
+  quality: {
+    loadFailed: '品質プロファイルの読み込みに失敗しました。再試行してください。',
+  },
 }

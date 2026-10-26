@@ -113,6 +113,12 @@ type interceptingStreamWriter struct {
 	blocked          bool
 	terminalRendered bool
 	finished         bool
+	// blockRule 是把这次流掐断的规则 ID。owner 口径（2026-10-20）：拦截必须
+	// 让客户知道**因为什么规则**被拦，而不是只给一个空响应。
+	blockRule string
+	// blockReason 是同一次拦截的**人类可读**原因短语（r1039/D4）。客户端拿
+	// 它去提示用户「这次调用被拦了，要不要继续执行」。
+	blockReason string
 }
 
 func newInterceptingStreamWriter(w http.ResponseWriter, chain ResponseInterceptor, ctx context.Context, meta response.StreamMeta) *interceptingStreamWriter {
@@ -262,6 +268,10 @@ func (w *interceptingStreamWriter) finish() {
 					w.writeErr = err
 				}
 				w.blocked = true
+				if rule := errorsx.PolicyBlockRuleID(err); rule != "" {
+					w.blockRule = rule
+				}
+				w.blockReason = policyBlockReasonFromError(err)
 			}
 			if w.blocked {
 				_ = pending
@@ -288,25 +298,85 @@ func (w *interceptingStreamWriter) finish() {
 	// protocol-shaped failure envelope so the client sees a recognisable
 	// terminal instead of a truncated connection.
 	if w.blocked && !w.terminalRendered {
-		w.writeTrustedTerminal(nativeStreamPolicyFailureFrame(w.meta.ClientProtocol))
+		w.writeTrustedTerminal(nativeStreamPolicyFailureFrame(w.meta.ClientProtocol, w.blockRule, w.blockReason))
 	}
 }
 
 // nativeStreamPolicyFailureFrame returns the SSE-shaped terminal that the
 // client uses to recognise "the stream ended because output governance
 // blocked it" rather than "the upstream connection dropped".
-func nativeStreamPolicyFailureFrame(protocol string) []byte {
+//
+// r1037（2026-10-20，211）：帧里必须带**规则名**——owner 口径「就算是被拦截，
+// 应该在中断时反馈给客户因为什么规则被拦截，不要搞空响应」。211 现场 zcode 拿到
+// 的只有 empty_model_response，因为它既没读到规则名，也没读到可解析的失败信封。
+//
+// ruleID 为空时仍然渲染终帧（形状合法、码可机器分类），只是没有规则名可报。
+//
+// r1039（D4）：extra[0] 是人类可读的原因短语（可选）——客户端要拿它提示用户
+// 「这次调用被拦了，要不要继续执行」。变参而不是新参数：既有调用点（与
+// domains/streaming/r1037_policy_rule_terminal_test.go 的判据）保持原样。
+func nativeStreamPolicyFailureFrame(protocol, ruleID string, extra ...string) []byte {
+	rule := ""
+	if ruleID != "" {
+		rule = `,"rule":"` + ruleID + `"`
+	}
+	reason := ""
+	if len(extra) > 0 && extra[0] != "" {
+		reason = `,"reason":"` + jsonEscapeSSEField(extra[0]) + `"`
+	}
 	switch protocol {
 	case "anthropic-messages":
-		return []byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Response blocked by output policy\"}}\n\n")
+		return []byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"" + rule + reason + "}}\n\n")
 	case "openai-responses":
-		return []byte("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"}}}\n\n")
+		// response 里的 id/status 是 Responses 协议形状的一部分：客户端的
+		// 解析器按 response 对象校验，缺字段会让整帧被丢掉——那正是
+		// 「客户端只看到空响应」的成因之一。
+		return []byte("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_output_policy_blocked\",\"object\":\"response\",\"status\":\"failed\",\"error\":{\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"" + rule + reason + "}}}\n\n")
 	default:
 		// r1028: carry a machine-classifiable code — agent clients (ZCode)
 		// map unknown api_error shapes to "reason=unknown retryable=false";
 		// the code lets them distinguish policy blocks from provider faults.
-		return []byte("data: {\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"}}\n\ndata: [DONE]\n\n")
+		return []byte("data: {\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"" + rule + reason + "}}\n\ndata: [DONE]\n\n")
 	}
+}
+
+// jsonEscapeSSEField 转义放进 SSE JSON 字符串里的文本。
+//
+// 原因短语里可能带引号/换行（参数位置、模型写的内容），不转义会让整帧
+// 变成非法 JSON —— 客户端按 JSON 解析失败就把帧丢掉，表现与「空响应」一样。
+func jsonEscapeSSEField(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return ""
+	}
+	return string(b[1 : len(b)-1])
+}
+
+// policyRuleFromChunkResult 取拦截结果里的规则 ID。
+func policyRuleFromChunkResult(result *response.ChunkResult) string {
+	if result == nil || result.Metadata == nil {
+		return ""
+	}
+	rule, _ := result.Metadata["policy_rule"].(string)
+	return rule
+}
+
+// policyReasonFromChunkResult 取拦截结果里的**人类可读**原因短语（r1039/D4）。
+func policyReasonFromChunkResult(result *response.ChunkResult) string {
+	if result == nil || result.Metadata == nil {
+		return ""
+	}
+	reason, _ := result.Metadata["policy_reason"].(string)
+	return reason
+}
+
+// policyBlockReasonFromError 从策略拦截错误里取人类可读原因短语。
+func policyBlockReasonFromError(err error) string {
+	var pbe *errorsx.PolicyBlockError
+	if errors.As(err, &pbe) && pbe != nil {
+		return pbe.Reason
+	}
+	return ""
 }
 
 // writeTrustedTerminal bypasses output interception only for a gateway-owned
@@ -346,6 +416,8 @@ func (w *interceptingStreamWriter) writeFrame(frame []byte) {
 		if err == nil && result != nil {
 			if result.ShouldBlock {
 				w.blocked = true
+				w.blockRule = policyRuleFromChunkResult(result)
+				w.blockReason = policyReasonFromChunkResult(result)
 				// R25-F: wrap the protocol-terminal sentinel so the handler's
 				// execErr fallback recognizes the policy terminal frame we
 				// already rendered and does not emit a second terminal.
@@ -1145,6 +1217,7 @@ type ChatHandler struct {
 	// with {SENSITIVE:type:index} placeholders before the request reaches
 	// the executor. The reverse mapping is persisted to Redis and consumed
 	// by SanitizeRestoreInterceptor on the response path. nil = disabled.
+	pinRuleContext          func(context.Context) context.Context
 	sanitizeInputMiddleware func(http.Handler) http.Handler
 
 	// handoffHook may return an explicit resume packet before provider dispatch;
@@ -1900,6 +1973,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w, r, journeyWriter := beginRequestJourney(w, r, h)
 	defer finishRequestJourney(r, journeyWriter)
 	r = markExplicitStreamSession(r)
+	r = h.pinRules(r)
 	if h.sanitizeInputMiddleware != nil {
 		var authorized bool
 		r, authorized = h.prepareSanitizeRequest(r)
@@ -2124,12 +2198,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 				fs    gwtrace.FinalStatus
 				failS gwtrace.Stage
 			)
-			if logCtx.ErrCode == "" {
-				fs, failS = gwtrace.FinalSuccess, ""
-			} else {
-				fs = gwtrace.FinalFailed
-				failS = gwtrace.ClassifyFailureToStage(logCtx.ErrCode)
-			}
+			fs, failS = terminalTraceOutcome(logCtx)
 			// Finalize 必须使用独立 context；客户端断连后 r.Context 已取消。
 			finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), 2*time.Second)
 			_ = h.traceRecorder.Finalize(finalizeCtx, requestID, fs, failS)
@@ -2263,8 +2332,18 @@ func (h *ChatHandler) serveWithExecutor(
 	// row shows empty body + model="<unknown>" and the operator cannot
 	// tell which client sent the bad request or which model it was
 	// trying to reach (the symptom that triggered the comprehensive audit).
-	captureAndEmitFailure := func(errCode, errMsg string, providerID, credentialID *int) {
+	//
+	// 2026-10-16: clientStatus is the HTTP status this exit is about to write
+	// — the very constant the caller passes to the writeErrorJSON* call on the
+	// next line. It must be stated here because the emit precedes the write and
+	// snapshots the entry synchronously. Passing it explicitly (rather than
+	// sniffing the ResponseWriter) keeps the two facts in one visible place and
+	// fails loudly at compile time if a future exit forgets: without it the row
+	// silently degrades to the consumer-side 500 fallback, which is exactly how
+	// 401 auth rejections were persisted as status_code=500.
+	captureAndEmitFailure := func(errCode, errMsg string, providerID, credentialID *int, clientStatus int) {
 		logCtx.SetError(errCode, errMsg)
+		logCtx.SetClientStatus(clientStatus)
 		logCtx.EnsureCaptured()
 		// 2026-07-27: Surface the provisional session id on early-failure
 		// branches so _request_logs.gw_session_id stays non-empty without
@@ -2318,7 +2397,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if h.keyVerifier != nil && h.keyVerifier.Enabled() {
 		rawKey := extractBearerToken(r)
 		if rawKey == "" {
-			captureAndEmitFailure("missing_key", "missing api key", nil, nil)
+			captureAndEmitFailure("missing_key", "missing api key", nil, nil, http.StatusUnauthorized)
 			writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgMissingKey, nil)
 			return
 		}
@@ -2335,13 +2414,13 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		if verifyErr != nil {
 			if _, ok := verifyErr.(*authentication.InvalidKeyError); ok {
-				captureAndEmitFailure("invalid_key", "invalid or expired api key", nil, nil)
+				captureAndEmitFailure("invalid_key", "invalid or expired api key", nil, nil, http.StatusUnauthorized)
 				w.Header().Set("WWW-Authenticate", "Bearer")
 				writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgInvalidKey, nil)
 				return
 			}
 			slog.Error("key verification RPC failed, rejecting request", "error", verifyErr)
-			captureAndEmitFailure("auth_unavailable", "authentication service temporarily unavailable", nil, nil)
+			captureAndEmitFailure("auth_unavailable", "authentication service temporarily unavailable", nil, nil, http.StatusServiceUnavailable)
 			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
 				"Authentication service temporarily unavailable", "server_error", "auth_unavailable")
 			return
@@ -2368,7 +2447,7 @@ func (h *ChatHandler) serveWithExecutor(
 		// keyInfo==nil shape (it is today's path for this state).
 		rawKey := extractBearerToken(r)
 		if rawKey == "" || subtle.ConstantTimeCompare([]byte(h.staticDataPlaneKey), []byte(rawKey)) != 1 {
-			captureAndEmitFailure("invalid_key", "invalid api key (static-key fallback auth)", nil, nil)
+			captureAndEmitFailure("invalid_key", "invalid api key (static-key fallback auth)", nil, nil, http.StatusUnauthorized)
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgInvalidKey, nil)
 			return
@@ -2389,7 +2468,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if keyInfo != nil && h.keyVerifier != nil {
 		if budgetErr := h.keyVerifier.CheckBudget(r.Context(), keyInfo.ID); budgetErr != nil {
 			if _, ok := budgetErr.(*authentication.BudgetExceededError); ok {
-				captureAndEmitFailure("budget_exhausted", "budget exhausted", nil, nil)
+				captureAndEmitFailure("budget_exhausted", "budget exhausted", nil, nil, http.StatusPaymentRequired)
 				writeErrorJSONCtx(r.Context(), w, http.StatusPaymentRequired, requestID, "insufficient_quota", i18n.MsgBudgetExhausted, nil)
 				return
 			}
@@ -2402,7 +2481,7 @@ func (h *ChatHandler) serveWithExecutor(
 				"request_id", requestID,
 				"key_id", keyInfo.ID,
 				"error", budgetErr)
-			captureAndEmitFailure("budget_unavailable", "budget check unavailable", nil, nil)
+			captureAndEmitFailure("budget_unavailable", "budget check unavailable", nil, nil, http.StatusServiceUnavailable)
 			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
 				"Budget check temporarily unavailable", "server_error", "budget_unavailable")
 			return
@@ -2413,7 +2492,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if keyInfo != nil && h.maasSvc != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
 		if err := h.maasSvc.PreCheckCredits(r.Context(), keyInfo.TenantID); err != nil {
 			if _, ok := err.(*maas.InsufficientCreditsError); ok {
-				captureAndEmitFailure("insufficient_credits", "insufficient credits", nil, nil)
+				captureAndEmitFailure("insufficient_credits", "insufficient credits", nil, nil, http.StatusPaymentRequired)
 				writeErrorJSONCtx(r.Context(), w, http.StatusPaymentRequired, requestID, "insufficient_quota", i18n.MsgInsufficientCredits, nil)
 				return
 			}
@@ -2733,13 +2812,13 @@ func (h *ChatHandler) serveWithExecutor(
 					// not be hijacked by another tenant's key merely because
 					// its APIKeyID is 0.
 					if si.TenantID != "" && si.TenantID != keyInfo.TenantID {
-						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil, http.StatusForbidden)
 						writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 						return
 					}
 					if bindErr := h.sessionGetter.BindAPIKey(ctx, sessionID, keyInfo.ID, keyInfo.TenantID); bindErr != nil {
 						slog.Warn("orphan session bind failed", "error", bindErr, "session_id", sessionID)
-						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil, http.StatusForbidden)
 						writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 						return
 					}
@@ -2747,7 +2826,7 @@ func (h *ChatHandler) serveWithExecutor(
 					si.TenantID = keyInfo.TenantID
 					sessionInfo = si
 				} else {
-					captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+					captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil, http.StatusForbidden)
 					writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 					return
 				}
@@ -2756,7 +2835,7 @@ func (h *ChatHandler) serveWithExecutor(
 			// cross-tenant steal attempt (key ids are only unique within
 			// their issuer).
 			if keyInfo != nil && si.APIKeyID == keyInfo.ID && si.TenantID != "" && si.TenantID != keyInfo.TenantID {
-				captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+				captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil, http.StatusForbidden)
 				writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 				return
 			}
@@ -2818,14 +2897,14 @@ func (h *ChatHandler) serveWithExecutor(
 				claimed, claimErr := ensureClaimedClientSession(ctx, h.sessionGetter, sessionID, keyInfo, regDeviceSeed, regTaskID)
 				if claimErr != nil {
 					if errors.Is(claimErr, errClientSessionForbidden) {
-						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil, http.StatusForbidden)
 						writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 						return
 					}
 					// r1029：store fault 的响应体不能用 SESSION_FORBIDDEN 文案
 					// ——那是所有权语义，会误导调用方与运维归因（实测
 					// auto_summary 把该 503 当所有权问题反复重试）。
-					captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil)
+					captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil, http.StatusServiceUnavailable)
 					writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionStoreUnavailable, nil)
 					return
 				}
@@ -2892,7 +2971,7 @@ func (h *ChatHandler) serveWithExecutor(
 			// 家族按 not-found 路径认领/保留）；503 响应体改用 store 语义
 			// 文案，不再误标 SESSION_FORBIDDEN。
 			slog.Warn("session lookup failed", "error", err)
-			captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil)
+			captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil, http.StatusServiceUnavailable)
 			writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionStoreUnavailable, nil)
 			return
 		}
@@ -2906,7 +2985,7 @@ func (h *ChatHandler) serveWithExecutor(
 		assignment, assignErr := h.assignGatewaySession(ctx, bodyBytes, r, keyInfo, sessionID, sessionInfo, clientProfileFromKey(keyInfo))
 		if assignErr != nil {
 			slog.Error("session assignment failed", "error", assignErr)
-			captureAndEmitFailure("session_error", "failed to assign session id", nil, nil)
+			captureAndEmitFailure("session_error", "failed to assign session id", nil, nil, http.StatusInternalServerError)
 			writeErrorJSONCtx(r.Context(), w, http.StatusInternalServerError, requestID, "session_error", i18n.MsgSessionAssignFailed, nil)
 			return
 		}
@@ -2925,6 +3004,16 @@ func (h *ChatHandler) serveWithExecutor(
 			if assignment.AutoCreated {
 				w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
 				w.Header().Set("X-Gw-Session-Auto", "true")
+				// ★ §143.86（落法 ⓪）：★ 把「本次请求由网关自动新建了会话」这个事实
+				// ★ 带进 ctx ⇒ ⇒ compression 层能判「这个会话在库里【必然】没有历史正文」
+				// ★ ⇒ ⇒ 省掉一次【必然落空】的读链（★ L3 及其上游腿）。
+				//
+				// ★ ★★ 必须同时更新 r：★ 压缩器拿的是 r.Context()（★ 本函数内的 Prepare 调用），
+				// ★ ⇒ ⇒ 只改 ctx 不改 r ⇒ ⇒ 标志到不了压缩器。
+				// ★ ★★ 开关默认【关】（★ ENABLE_SESSION_CACHE_SKIP_AUTO_CREATED）⇒ ⇒
+				// ★ ★★ 未打开时【零行为变更】。
+				ctx = compression.WithAutoCreatedSession(ctx, sessionID)
+				r = r.WithContext(ctx)
 			}
 			if assignment.ShouldPersist && h.lastSystemSession != nil && keyInfo != nil {
 				lsEntry := &session.LastSystemSessionEntry{
@@ -3024,7 +3113,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		switch res.StatusCode {
 		case 403:
-			captureAndEmitFailure("session_audit_block", res.Reason, nil, nil)
+			captureAndEmitFailure("session_audit_block", res.Reason, nil, nil, http.StatusForbidden)
 			span := trace.SpanFromContext(r.Context())
 			span.SetAttributes(
 				attribute.String(observability.AttrTenantID, hookTenant),
@@ -3033,7 +3122,7 @@ func (h *ChatHandler) serveWithExecutor(
 			writeErrorJSON(w, http.StatusForbidden, requestID, "Request blocked by security policy: "+res.Reason, "security_violation", "blocked")
 			return
 		case 202:
-			captureAndEmitFailure("session_audit_pending_approval", res.Reason, nil, nil)
+			captureAndEmitFailure("session_audit_pending_approval", res.Reason, nil, nil, http.StatusAccepted)
 			span := trace.SpanFromContext(r.Context())
 			span.SetAttributes(
 				attribute.String(observability.AttrTenantID, hookTenant),
@@ -3071,7 +3160,7 @@ func (h *ChatHandler) serveWithExecutor(
 		)
 		if denied {
 			msg := fmt.Sprintf("Model '%s' is not available for your account", canonical)
-			captureAndEmitFailure("model_forbidden", msg, nil, nil)
+			captureAndEmitFailure("model_forbidden", msg, nil, nil, http.StatusForbidden)
 			span := trace.SpanFromContext(r.Context())
 			span.SetAttributes(
 				attribute.String(observability.AttrTenantID, keyInfo.TenantID),
@@ -3119,7 +3208,7 @@ func (h *ChatHandler) serveWithExecutor(
 			// docs/2026-07-01-unknown-error-root-cause.md.
 			captureAndEmitFailure("auto_route_decider_failed",
 				fmt.Sprintf("auto-route decider failed for model '%s'", clientModel),
-				nil, nil)
+				nil, nil, http.StatusBadGateway)
 			markLogged()
 			writeErrorJSON(w, http.StatusBadGateway, requestID,
 				"auto-route temporarily unavailable; pass an explicit model name and retry",
@@ -3183,7 +3272,7 @@ func (h *ChatHandler) serveWithExecutor(
 		)
 		if denied {
 			msg := fmt.Sprintf("Model '%s' is not available for your account", canonical)
-			captureAndEmitFailure("model_forbidden_after_auto", msg, nil, nil)
+			captureAndEmitFailure("model_forbidden_after_auto", msg, nil, nil, http.StatusForbidden)
 			span := trace.SpanFromContext(r.Context())
 			span.SetAttributes(
 				attribute.String(observability.AttrTenantID, keyInfo.TenantID),
@@ -3659,7 +3748,8 @@ func (h *ChatHandler) serveWithExecutor(
 		slog.Error("failed to get candidates from provider", "error", err, "model", clientModel, "request_id", requestID)
 		rc := classifyRoutingError(err)
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, rc.code, nil, int(time.Since(startTime).Milliseconds()))
-		logCtx.failAndMark(rc.code, rc.message, nil, nil)
+		// Same rc.httpStatus that writeErrorJSON below puts on the wire.
+		logCtx.failAndMark(rc.code, rc.message, nil, nil, rc.httpStatus)
 		markLogged()
 		writeErrorJSON(w, rc.httpStatus, requestID, rc.message, "server_error", rc.code)
 		return
@@ -3673,7 +3763,8 @@ func (h *ChatHandler) serveWithExecutor(
 		if !h.provider.ModelKnown(r.Context(), clientModel) {
 			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "invalid_model", nil, int(time.Since(startTime).Milliseconds()))
 			logCtx.failAndMark("invalid_model",
-				fmt.Sprintf("Model '%s' is not supported by this gateway", clientModel), nil, nil)
+				fmt.Sprintf("Model '%s' is not supported by this gateway", clientModel), nil, nil,
+				http.StatusBadRequest)
 			markLogged()
 			writeErrorJSONCtx(r.Context(), w, http.StatusBadRequest, requestID, "invalid_request_error", i18n.MsgInvalidModel, map[string]any{"Model": clientModel})
 			return
@@ -3710,8 +3801,11 @@ func (h *ChatHandler) serveWithExecutor(
 		})
 		if !survivalEligible {
 			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
+			// writeNoCandidateWithAlternatives renders http.StatusServiceUnavailable
+			// on every arm (legacy / anthropic / with-alternatives).
 			logCtx.failAndMark("no_candidate",
-				fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil)
+				fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil,
+				http.StatusServiceUnavailable)
 			markLogged()
 			// 2026-08-09: the requested model has no routable node, but other
 			// models often do. Offer them so the caller can switch instead of
@@ -3808,7 +3902,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if h.metaToolInterceptor != nil {
 		modified, intercepted, err := h.metaToolInterceptor.InterceptRequest(r.Context(), bodyBytes)
 		if err != nil {
-			captureAndEmitFailure("meta_tool_error", fmt.Sprintf("meta-tool expansion failed: %v", err), nil, nil)
+			captureAndEmitFailure("meta_tool_error", fmt.Sprintf("meta-tool expansion failed: %v", err), nil, nil, http.StatusInternalServerError)
 			writeErrorJSONCtx(r.Context(), w, http.StatusInternalServerError, requestID, "internal_error", i18n.MsgMetaToolError, nil)
 			return
 		}
@@ -4819,6 +4913,42 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 goalRetryLoopDone:
+	if errors.Is(execErr, errorsx.ErrOutputPolicyBlocked) {
+		if preStream != nil {
+			h.unregisterStreamConnection(requestID, "output_policy_blocked")
+			preStream.stop()
+			preStream = nil
+		}
+		p, c := failureAttribution(execErr, candidates)
+		logCtx.SetRoute(p, c)
+		if ee, ok := execErr.(*executors.ExecuteError); ok {
+			logCtx.ApplyQueueTimestampsFromError(ee)
+		}
+		auditBuilder.Success(false)
+		rt.Emit(state.EventFailed)
+		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c, http.StatusForbidden)
+		// r1039（D3）：非流式 403 必须带上**规则名**——流式终帧带（见
+		// nativeStreamPolicyFailureFrame），非流式原来不带，客户端因此无法
+		// 告诉用户「因为什么规则被拦、要不要继续执行」。
+		rule, reason := policyBlockErrorDetail(execErr)
+		writeOutputPolicyBlockedJSON(protocolOfRequest(r), w, http.StatusForbidden, requestID,
+			"Response blocked by output policy", "policy_violation", "output_policy_blocked", rule, reason, "")
+		return
+	}
+	// A held tool lane may be rejected while survival reports its write error
+	// as a disconnect. The interceptor already rendered the policy terminal;
+	// preserve that decision before generic executor/survival failure handling.
+	if outputGovernanceTerminal == "output_policy_blocked" {
+		// Survival may lose the final result on a held-write rejection. Without
+		// an actual result/attempt, leave attribution unknown instead of guessing.
+		p, c := failureAttribution(execErr, nil)
+		if result != nil {
+			p, c = intPtr(result.Candidate.ProviderID), intPtr(result.Candidate.CredentialID)
+		}
+		logCtx.SetRoute(p, c)
+		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c, http.StatusForbidden)
+		return
+	}
 
 	// ── End of retry loop ────────────────────────────────────────────────
 
@@ -5157,7 +5287,14 @@ goalRetryLoopDone:
 			}
 			errCode := ste.detailCode()
 			logCtx.SetOutboundModel(explicitOutbound)
-			logCtx.failAndMark(errCode, ste.Error(), providerID, credentialID)
+			// Render-then-emit: the survival coordinator already put its protocol
+			// terminal on the wire via renderSurvivalTerminal, which only writes SSE
+			// frames and never calls WriteHeader — on an already-committed stream
+			// that is HTTP 200 (see survival_wiring.go: "once streaming has already
+			// sent 200, the Retry-After header can no longer be written"). The client
+			// received 200, so 200 is the faithful value here; passing 5xx would
+			// invent a status it never saw.
+			logCtx.failAndMark(errCode, ste.Error(), providerID, credentialID, http.StatusOK)
 			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 			markLogged()
 			if ste.kinds != "" {
@@ -5193,7 +5330,8 @@ goalRetryLoopDone:
 					map[string]any{"Reason": reason})
 				logCtx.SetOutboundModel(explicitOutbound)
 				logCtx.failAndMark("content_filter", execErr.Error(),
-					providerID, credentialID)
+					providerID, credentialID,
+					clientStatusForPrewarmed(preStreamPrepared, http.StatusBadRequest))
 				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID,
 					tried, modelResolution, txResult, "content_filter", failTrace,
 					int(time.Since(startTime).Milliseconds()))
@@ -5245,7 +5383,11 @@ goalRetryLoopDone:
 			if credCode != "" {
 				errCode = credCode
 				logCtx.SetOutboundModel(explicitOutbound)
-				logCtx.failAndMark(credCode, execErr.Error(), providerID, credentialID)
+				// credHTTPStatus is the value classifyUpstreamCredentialFailure computed
+				// on the line above and that writeErrorJSONWithDebugProto below puts on
+				// the wire; the prewarmed arm is an already-200 stream.
+				logCtx.failAndMark(credCode, execErr.Error(), providerID, credentialID,
+					clientStatusForPrewarmed(preStreamPrepared, credHTTPStatus))
 				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 				markLogged()
 				debugInfo := map[string]any{
@@ -5301,7 +5443,8 @@ goalRetryLoopDone:
 					msg = msg + " Reason: " + reason
 				}
 				logCtx.SetOutboundModel(explicitOutbound)
-				logCtx.failAndMark("unsupported_feature", execErr.Error(), providerID, credentialID)
+				logCtx.failAndMark("unsupported_feature", execErr.Error(), providerID, credentialID,
+					clientStatusForPrewarmed(preStreamPrepared, http.StatusBadRequest))
 				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, "unsupported_feature", failTrace, int(time.Since(startTime).Milliseconds()))
 				markLogged()
 				w.Header().Set("X-Gateway-Last-Kind", string(execErrTyped.LastKind))
@@ -5338,7 +5481,8 @@ goalRetryLoopDone:
 					msg = msg + " Reason: " + reason
 				}
 				logCtx.SetOutboundModel(explicitOutbound)
-				logCtx.failAndMark("model_deprecated", execErr.Error(), providerID, credentialID)
+				logCtx.failAndMark("model_deprecated", execErr.Error(), providerID, credentialID,
+					clientStatusForPrewarmed(preStreamPrepared, http.StatusGone))
 				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, "model_deprecated", failTrace, int(time.Since(startTime).Milliseconds()))
 				markLogged()
 				w.Header().Set("X-Gateway-Last-Kind", string(execErrTyped.LastKind))
@@ -5370,7 +5514,8 @@ goalRetryLoopDone:
 				logCtx.SetOutboundModel(explicitOutbound)
 				logCtx.failAndMark("rate_limit",
 					fmt.Sprintf("No available provider for model '%s'. All %d candidates failed (rate limited).", clientModel, execErrTyped.Tried),
-					providerID, credentialID)
+					providerID, credentialID,
+					clientStatusForPrewarmed(preStreamPrepared, http.StatusTooManyRequests))
 				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, "rate_limit", failTrace, int(time.Since(startTime).Milliseconds()))
 				markLogged()
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
@@ -5428,9 +5573,14 @@ goalRetryLoopDone:
 			// precise cause. Operators can now filter on
 			// error_kind='rate_limit' directly without parsing the
 			// X-Gateway-Last-Kind header.
+			// All-candidates-failed: the prewarmed arm is an already-200 stream
+			// (writePrewarmedStreamErrorFull writes no status); the explicit arm
+			// renders 503. This is the branch upstream 429 / quota_permanent lands
+			// on — the client saw 503, not 429 and not 500.
 			logCtx.failAndMark(errorKindOrFallback(realKind),
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
-				providerID, credentialID)
+				providerID, credentialID,
+				clientStatusForPrewarmed(preStreamPrepared, http.StatusServiceUnavailable))
 			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 			markLogged()
 			// Step 6: surface real kind in response header so log
@@ -5540,7 +5690,8 @@ goalRetryLoopDone:
 			}
 		}
 
-		logCtx.failAndMark("provider_error", enrichedErrMsg, providerID, credentialID)
+		logCtx.failAndMark("provider_error", enrichedErrMsg, providerID, credentialID,
+			clientStatusForPrewarmed(preStreamPrepared, http.StatusBadGateway))
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 		markLogged()
 		// 2026-09-23 critique round: the generic fallthrough also carries
@@ -5739,7 +5890,7 @@ goalRetryLoopDone:
 					// response_validation_failed and emit the failure audit.
 					outputGovernanceTerminal = "response_validation_failed"
 					p, c := candidateAttribution(result)
-					captureAndEmitFailure("response_validation_failed", "output governance interceptor failed: "+interceptErr.Error(), p, c)
+					captureAndEmitFailure("response_validation_failed", "output governance interceptor failed: "+interceptErr.Error(), p, c, http.StatusBadGateway)
 					writeErrorJSON(w, http.StatusBadGateway, requestID,
 						"Output governance rejected the response", "api_error", "response_validation_failed")
 					return
@@ -5756,9 +5907,13 @@ goalRetryLoopDone:
 					// silently returning nothing.
 					outputGovernanceTerminal = "output_policy_blocked"
 					p, c := candidateAttribution(result)
-					captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c)
-					writeErrorJSON(w, http.StatusForbidden, requestID,
-						"Response blocked by output policy", "api_error", "output_policy_blocked")
+					captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c, http.StatusForbidden)
+					// r1039（D3）：响应体带上规则名 + 人类可读原因 + 出问题的参数
+					// （拦截器在拦截那一刻记下的，见 outputcompliance 的
+					// policyBlockMetadata）——客户端据此提示用户「要不要继续」。
+					rule, reason, field := policyBlockMetadataFrom(interceptResult)
+					writeOutputPolicyBlockedJSON(protocolOfRequest(r), w, http.StatusForbidden, requestID,
+						"Response blocked by output policy", "api_error", "output_policy_blocked", rule, reason, field)
 					return
 				}
 				if interceptResult.ClientSignalKind != "" && !clientSignalKindAllowed(r, interceptResult.ClientSignalKind) {
@@ -5790,7 +5945,7 @@ goalRetryLoopDone:
 						// response_validation_failed and the failure audit.
 						outputGovernanceTerminal = "response_validation_failed"
 						p, c := candidateAttribution(result)
-						captureAndEmitFailure("response_validation_failed", "output governance returned invalid client protocol body", p, c)
+						captureAndEmitFailure("response_validation_failed", "output governance returned invalid client protocol body", p, c, http.StatusBadGateway)
 						writeErrorJSON(w, http.StatusBadGateway, requestID,
 							"Output governance returned an invalid response body", "api_error", "response_validation_failed")
 						return
@@ -5823,7 +5978,7 @@ goalRetryLoopDone:
 		if result != nil {
 			p, c = intPtr(result.Candidate.ProviderID), intPtr(result.Candidate.CredentialID)
 		}
-		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c)
+		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c, http.StatusForbidden)
 		return
 	}
 
@@ -6781,6 +6936,21 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		reqLog.SystemFingerprint = &systemFingerprint
 	}
 
+	// 2026-10-23 审计（探测打标）：成功终态 entry 必须带上请求上下文字段。
+	//
+	// origin 元数据此前只在 recordInitialRequestLog（初始 in_progress
+	// INSERT）与 buildEntry（失败/限流终态）里被应用；而 session v2 镜像
+	// （internal/sessionv2mirror/hook.go:82）**只镜像终态 entry**——初始
+	// INSERT 被刻意跳过（turn 幂等、写入后不可更新）⇒ 它带的元数据永远到不了
+	// session_turns。于是成功请求落库时 origin_stage/origin_actor/client_ip/
+	// client_forwarded_for/client_endpoint 全空：成功的探测请求在会话族里不带
+	// 任何探测标记 ⇒ 实时拓扑把它当业务流量（154 实测：同一组
+	// credential+model+prompt，失败行打 node_probe 标、成功行无标）。
+	//
+	// 这里与失败终态对齐：补 ctx 权威值 + DB 系统键兜底（applyOriginMetadata），
+	// 只补空位、不覆盖 entry 上已有值。
+	applyRequestContextFields(reqLog, keyInfo, logCtx)
+
 	h.telemetryClient.EmitRequestLogUpdate(reqLog)
 	if h.requestLogHook != nil {
 		h.requestLogHook(reqLog)
@@ -6902,7 +7072,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			RepeatedContentHits:        repHits,
 			RepeatedContentBlockSize:   repBlockSize,
 			RepeatedContentBlocksTotal: repBlocks,
-			StreamAborted:              capture.IntegrityBreachReason() == "integrity_repeated_content",
+			StreamAborted:              capture.IntegrityBreachReason() == audit.BreachReasonRepeatedContent,
 		})
 	}
 }
@@ -7117,6 +7287,23 @@ func (h *ChatHandler) emitClientDisconnectProbe(originalRequestID string, r *htt
 	entry, ok := buildClientDisconnectProbeEntry(originalRequestID, r, logCtx)
 	if !ok {
 		return
+	}
+	// 2026-10-23 审计（探测打标）：本条目是终态行（Success=false /
+	// RequestStatus=failure）⇒ 与其它终态路径对齐补上 origin 元数据。
+	//
+	// ★★ 2026-10-24 12h 审计轮订正：原注释写「会被 session v2 镜像写入
+	// session_turns」——**对探测流量不成立**：
+	//   本条目**没有** GwSessionID（结构体字面量里就没这个字段）⇒ 镜像走
+	//   合成行路径（internal/sessionv2mirror/hook.go:99-101）⇒
+	//   ★ 补上 origin_stage=node_probe 之后，syntheticKindOf 判成 "probe"
+	//   ⇒ IsProbeSyntheticSession 为真 ⇒ **镜像直接 return，这行不再入 session_turns**。
+	//   ⇒ ⇒ 对**探测流量**来说，本条改动的效果是「这行从会话族里消失」，
+	//       而**不是**「这行被打上了标」；**业务流量**不受影响
+	//       （origin.stage=business ⇒ 仍是 "anon" ⇒ 仍入会话族）。
+	//   ⇒ ★ 该「去处变化」在本轮提交里**未披露** ⇒ 登记在
+	//     docs/12小时内修订审计-2026-10-24-0740.md 问题⑭。
+	if logCtx != nil {
+		applyRequestContextFields(entry, logCtx.KeyInfo, logCtx)
 	}
 	// Test sink (mirrors the initial-log path at ~handler.go:3075).
 	if h.requestLogHook != nil {
@@ -8698,6 +8885,77 @@ func generateRequestID() string {
 
 func writeErrorJSON(w http.ResponseWriter, status int, requestID, msg, errType, code string) {
 	writeErrorJSONWithDebug(w, status, requestID, msg, errType, code, nil)
+}
+
+// policyBlockMetadataFrom 从拦截结果里取「规则名 / 人类可读原因 / 出问题的参数」。
+//
+// r1039（D3）：拦截器在拦截那一刻把三样东西记进 Metadata（见
+// domains/hooks/outputcompliance 的 policyBlockMetadata），写者据此渲染
+// 客户端可见的失败信封。缺项返回空串 ⇒ 响应里不出现该键。
+func policyBlockMetadataFrom(result *response.InterceptResult) (rule, reason, field string) {
+	if result == nil || result.Metadata == nil {
+		return "", "", ""
+	}
+	rule, _ = result.Metadata["policy_rule"].(string)
+	reason, _ = result.Metadata["policy_reason"].(string)
+	field, _ = result.Metadata["policy_field"].(string)
+	return rule, reason, field
+}
+
+// policyBlockErrorDetail 从策略拦截错误里取规则名与原因。
+//
+// 流式与非流式两条路径都把规则名装在 errorsx.PolicyBlockError 里；错误链
+// 上取不到就是空串（渲染时不出现该键），不影响失败信封的形状。
+func policyBlockErrorDetail(err error) (rule, reason string) {
+	var pbe *errorsx.PolicyBlockError
+	if errors.As(err, &pbe) && pbe != nil {
+		return pbe.RuleID, pbe.Reason
+	}
+	return "", ""
+}
+
+// writeOutputPolicyBlockedJSON 写非流式的策略拦截响应。
+//
+// r1039（D3）：非流式 403 原来只有 message/type/code/request_id，**丢了规则名**
+// ——流式终帧带 rule（nativeStreamPolicyFailureFrame），非流式不带，客户端因此
+// 既说不出因为什么规则被拦，也没法据此提示用户「这次调用被拦了，要不要继续
+// 执行」（owner 口径 2026-10-20）。
+//
+// 既有键（message / type / code / request_id）原样保留 ⇒ 向后兼容；新增
+// rule / reason / field 三个键，缺省时不出现。Anthropic 形状沿用既有约定
+// （顶层 type=error，error 对象里只放 type/message + 本次新增项）。
+func writeOutputPolicyBlockedJSON(proto string, w http.ResponseWriter, status int, requestID, msg, errType, code, rule, reason, field string) {
+	w.Header().Set("Content-Type", "application/json")
+	if requestID != "" {
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	w.WriteHeader(status)
+	errObj := map[string]any{
+		"message": msg,
+		"type":    errType,
+	}
+	if proto == "anthropic" {
+		errObj["type"] = anthropicErrorType(errType, code)
+	} else {
+		errObj["code"] = code
+		errObj["request_id"] = requestID
+	}
+	if rule != "" {
+		errObj["rule"] = rule
+	}
+	if reason != "" {
+		errObj["reason"] = reason
+	}
+	if field != "" {
+		errObj["field"] = field
+	}
+	if proto == "anthropic" {
+		//nolint:errcheck // HTTP write error non-recoverable
+		json.NewEncoder(w).Encode(map[string]any{"type": "error", "error": errObj})
+		return
+	}
+	//nolint:errcheck // HTTP write error non-recoverable
+	json.NewEncoder(w).Encode(map[string]any{"error": errObj})
 }
 
 // writeErrorJSONCtx emits an error response whose message is translated via

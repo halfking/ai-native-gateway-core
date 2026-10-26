@@ -128,7 +128,7 @@ import { req, type RequestOptions } from './client'
 //       `error.detail` / text/plain。`api/client.ts` 的 `errorMessage` 全都兜得住。
 //
 // (16) ★★★★★★ **`feedback` 的响应键是 `feedback`，不是 `items`。**
-//     `listFeedback`（admin/output_compliance_handler.go:711）：
+//     `listFeedback`（admin/output_compliance_handler.go:712）：
 //         writeJSON(w, 200, map[string]interface{}{
 //             "feedback": items, "limit": limit, "offset": offset})
 //     ⇒ 同一 handler 里 `review-queue`（:602）用的是 **`items`**，
@@ -332,7 +332,7 @@ export interface ComplianceFeedback {
  * ★★★ 响应键是 **`feedback`**，**不是** `items`。
  *
  * 后端 `listFeedback` 的 `writeJSON` 字面量
- * （`admin/output_compliance_handler.go:711`）：
+ * （`admin/output_compliance_handler.go:712`）：
  *
  *     writeJSON(w, http.StatusOK, map[string]interface{}{
  *         "feedback": items, "limit": limit, "offset": offset})

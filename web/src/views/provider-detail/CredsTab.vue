@@ -1712,7 +1712,7 @@ function onTagsInput(ev: Event) {
 .drawer-section--collapsible > summary.drawer-section-title::before {
   content: '▸';
   font-size: 11px;
-  color: var(--muted, #888);
+  color: var(--muted);
   transition: transform 0.15s ease;
 }
 .drawer-section--collapsible[open] > summary.drawer-section-title::before {

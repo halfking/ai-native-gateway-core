@@ -61,9 +61,10 @@ const fetchedAt = ref<number | null>(null) // unix ms of last successful load
 const freshnessLabel = computed(() => {
   if (!fetchedAt.value) return ''
   const secs = Math.max(0, Math.round((Date.now() - fetchedAt.value) / 1000))
-  if (secs < 60) return `${secs} 秒前`
+  // ★ 2026-10-26：原来这里硬编码中文「{n} 秒前」，任何语种都显示中文。
+  if (secs < 60) return t('freePool.freshness.secondsAgo', { n: secs })
   const mins = Math.floor(secs / 60)
-  return `${mins} 分 ${secs % 60} 秒前`
+  return t('freePool.freshness.minutesAgo', { m: mins, s: secs % 60 })
 })
 // stale (>60s yellow, >5min red) drives the badge color.
 const freshnessClass = computed(() => {
@@ -216,7 +217,7 @@ async function runBootstrap() {
     const res = await bootstrapFreePool()
     const mirror = (res.mirror as { registered?: number })?.registered ?? 0
     const discover = (res.discover as { registered?: number })?.registered ?? 0
-    notifySuccess(`一键建设完成：镜像 ${mirror} 个 Provider，发现/更新 ${discover} 个`)
+    notifySuccess(t('freePool.error.bootstrapDone', { mirrors: mirror, discovered: discover }))
     await load()
   } catch (e: unknown) {
     notifyError(e instanceof Error ? e.message : t('freePool.bootstrapFailed'))
@@ -230,7 +231,7 @@ async function runBridgeOAuth() {
   clearActionMsg()
   try {
     const res = await bridgeFreePoolOAuth()
-    notifySuccess(`OAuth 桥接：${res.registered ?? 0} 个 OAuth 凭证已注入池子`)
+    notifySuccess(t('freePool.error.oauthBridgeDone', { n: res.registered ?? 0 }))
     await load()
   } catch (e: unknown) {
     notifyError(e instanceof Error ? e.message : t('freePool.oauthBridgeFailed'))
@@ -244,7 +245,7 @@ async function runDiscover() {
   clearActionMsg()
   try {
     const res = await discoverFreePool()
-    notifySuccess(`自动学习完成：本轮注册/更新 ${res.registered ?? 0} 个 Provider`)
+    notifySuccess(t('freePool.error.discoverDone', { n: res.registered ?? 0 }))
     await load()
   } catch (e: unknown) {
     notifyError(e instanceof Error ? e.message : t('freePool.discoverFailed'))
@@ -258,7 +259,7 @@ async function runImportEnv() {
   clearActionMsg()
   try {
     const res = await importFreePoolEnv()
-    notifySuccess(`环境变量导入：${res.registered ?? 0} 个 Key 已注入池子`)
+    notifySuccess(t('freePool.error.importEnvDone', { n: res.registered ?? 0 }))
     await load()
   } catch (e: unknown) {
     notifyError(e instanceof Error ? e.message : t('freePool.importEnvFailed'))
@@ -311,12 +312,12 @@ async function runQuickProbe() {
     })
     probeResult.value = res.probe
     if (res.probe?.ok) {
-      notifySuccess(`探活通过 · HTTP ${res.probe.status_code} · 模型 ${res.probe.model_count ?? 0} 个`)
+      notifySuccess(t('freePool.error.probePassed', { status: res.probe.status_code, n: res.probe.model_count ?? 0 }))
     } else {
-      notifyError(`探活未通过：${res.probe?.reason || res.probe?.error || t('freePool.probeFailedReason')}`)
+      notifyError(t('freePool.error.probeFailed', { reason: res.probe?.reason || res.probe?.error || t('freePool.probeFailedReason') }))
     }
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : '探活失败')
+    notifyError(e instanceof Error ? e.message : t('freePool.error.probeFailedGeneric'))
   } finally {
     quickProbing.value = false
   }
@@ -344,11 +345,14 @@ async function runQuickSave(probeFirst = true) {
     })
     probeResult.value = res.probe ?? null
     if (res.status === 'ok') {
-      notifySuccess(`凭据已入库 · catalog=${res.catalog_code} · credential ${res.credential_id ? credentialDisplayName(res.credential_id) : t('freePool.credentialSavedPlaceholder')}`)
+      notifySuccess(t('freePool.error.credentialSaved', {
+        code: res.catalog_code,
+        id: res.credential_id ? credentialDisplayName(res.credential_id) : t('freePool.credentialSavedPlaceholder'),
+      }))
       quickEntry.value.api_key = ''
       await load()
     } else {
-      notifyError(res.error || `入库失败 (${res.status})`)
+      notifyError(res.error || `${t('freePool.error.saveFailed')} (${res.status})`)
     }
   } catch (e: unknown) {
     notifyError(e instanceof Error ? e.message : t('freePool.saveFailed'))
@@ -373,7 +377,7 @@ async function generateTempEmail() {
       web_url: res.web_url || 'https://mail.tm/en/',
     }
     tempInbox.value = []
-    notifySuccess(`临时邮箱已生成：${res.address}`)
+    notifySuccess(t('freePool.error.tempEmailCreated', { address: res.address }))
   } catch (e: unknown) {
     notifyError(e instanceof Error ? e.message : t('freePool.tempEmailFailed'))
   } finally {
@@ -393,7 +397,7 @@ async function pollTempInbox() {
         verificationCode: extractVerificationCode(m.subject)
                         ?? extractVerificationCode(m.intro),
       }))
-      notifySuccess(`收件箱 ${res.total ?? res.messages.length} 封`)
+      notifySuccess(t('freePool.error.inboxCount', { n: res.total ?? res.messages.length }))
     } else {
       notifyError(res.error || t('freePool.fetchInboxFailed'))
     }
@@ -469,7 +473,7 @@ async function submitNew() {
       api_key: newProvider.value.api_key || undefined,
       models: models.length > 0 ? models : undefined,
     })
-    notifySuccess(`Provider 注册成功 (ID: ${res.provider_id})`)
+    notifySuccess(t('freePool.error.providerRegistered', { id: res.provider_id }))
     showAddForm.value = false
     newProvider.value = {
       catalog_code: '',
@@ -497,7 +501,7 @@ async function submitBulk() {
     .map(s => s.trim())
     .filter(Boolean)
   if (apiKeys.length === 0) {
-    notifyError('请至少填入一个 API Key（逗号或换行分隔）')
+    notifyError(t('freePool.error.atLeastOneKey'))
     return
   }
   bulkSubmitting.value = true
@@ -517,9 +521,9 @@ async function submitBulk() {
       bulk_mode: bulkForm.value.bulk_mode,
     })
     if (res.bulk_mode === 'per_credential' && res.errors === 0) {
-      notifySuccess(`多 Key 池化完成：${res.total_keys} 个 Key 聚合成 1 个 credential（轮转放大配额）`)
+      notifySuccess(t('freePool.error.bulkDone', { n: res.total_keys }))
     } else {
-      notifySuccess(`批量注册：${res.registered}/${res.total_keys} 成功（${res.bulk_mode}）`)
+      notifySuccess(t('freePool.error.bulkRegistered', { r: res.registered, t: res.total_keys, mode: res.bulk_mode }))
     }
     showBulkForm.value = false
     bulkForm.value = {
@@ -697,23 +701,23 @@ onUnmounted(() => {
           :title="fetchedAt ? formatTimeOnly(fetchedAt) : ''"
         >
           <span class="fresh-dot" aria-hidden="true"></span>
-          {{ fetchedAt ? freshnessLabel : '未加载' }}
+          {{ fetchedAt ? freshnessLabel : t('freePool.notLoaded') }}
         </span>
-        <button class="btn btn-ghost" type="button" @click="load" :disabled="loading || syncing">刷新</button>
+        <button class="btn btn-ghost" type="button" @click="load" :disabled="loading || syncing">{{ t('freePool.refresh') }}</button>
         <button class="btn btn-ghost" type="button" @click="runBootstrap" :disabled="loading || syncing">
           {{ syncing ? t('freePool.bootstrapSyncing') : t('freePool.bootstrap') }}
         </button>
         <button class="btn btn-ghost" type="button" @click="runBridgeOAuth" :disabled="loading || syncing">
-          OAuth 桥接
+          {{ t('freePool.bridgeOAuth') }}
         </button>
         <button class="btn btn-ghost" type="button" @click="runImportEnv" :disabled="loading || syncing">
-          导入环境变量 Key
+          {{ t('freePool.importEnv') }}
         </button>
         <button class="btn btn-ghost" type="button" @click="runDiscover" :disabled="loading || syncing">
-          自动学习并注册
+          {{ t('freePool.discover') }}
         </button>
         <button class="btn btn-primary" type="button" @click="activeTab = 'assistant'; showKeyForm = false; showAddForm = false">
-          快速录入
+          {{ t('freePool.quickEntry') }}
         </button>
         <button class="btn btn-primary" type="button" @click="showKeyForm = !showKeyForm">
           {{ showKeyForm ? t('freePool.hideKeyForm') : t('freePool.showKeyForm') }}
@@ -722,31 +726,26 @@ onUnmounted(() => {
           {{ showAddForm ? t('freePool.hideKeyForm') : t('freePool.showAddForm') }}
         </button>
         <button class="btn btn-primary" type="button" @click="showBulkForm = !showBulkForm">
-          {{ showBulkForm ? '收起多 Key 批量' : '多 Key 批量池化' }}
+          {{ showBulkForm ? t('freePool.collapseBulk') : t('freePool.bulkPool') }}
         </button>
       </div>
       </template>
     </PageHeader>
-    <p style="color:var(--muted);margin-bottom:20px">
-      管理免费模型资源池。已注册模型路由优先级最高（routing_tier = 9，composite_score = 0）。
-      下方「免费模型清单」展示当前池内全部可用模型；「模板目录」展示已知免费 Provider 及其预期模型。
-    </p>
+    <p style="color:var(--muted);margin-bottom:20px">{{ t('freePool.page.desc') }}</p>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
     <div v-if="message" class="alert alert-success">{{ message }}</div>
 
     <StatsRow v-if="poolData" style="margin-bottom:20px">
-      <StatCard label="可路由模型" :value="poolData.stats.routable_models" tone="success" :sub="`/ ${poolData.stats.free_models} offer`" />
-      <StatCard label="可用 Provider" :value="poolData.stats.available_providers" tone="success" :sub="`/ ${poolData.stats.total_providers}`" />
-      <StatCard label="模板已接入" :value="poolData.stats.catalog_registered" :sub="`/ ${poolData.stats.catalog_templates} 模板`" />
-      <StatCard label="模板模型" :value="catalogSummary.templateModels" sub="目录已知" />
+      <StatCard :label="t('freePool.stats.routableModels')" :value="poolData.stats.routable_models" tone="success" :sub="`/ ${poolData.stats.free_models} offer`" />
+      <StatCard :label="t('freePool.stats.availableProviders')" :value="poolData.stats.available_providers" tone="success" :sub="`/ ${poolData.stats.total_providers}`" />
+      <StatCard :label="t('freePool.stats.templatesLinked')" :value="poolData.stats.catalog_registered" :sub="`/ ${poolData.stats.catalog_templates} ${t('freePool.stats.templatesUnit')}`" />
+      <StatCard :label="t('freePool.stats.templateModels')" :value="catalogSummary.templateModels" :sub="t('freePool.stats.catalogKnown')" />
     </StatsRow>
 
     <div v-if="showKeyForm" class="card" style="margin-bottom:20px">
-      <h3 style="margin-top:0">写入免费池凭据（加密存 DB）</h3>
-      <p class="cell-muted" style="margin:0 0 12px">
-        Key 写入 <code class="model-code">credentials.secret_ciphertext</code>，来源写入 <code class="model-code">acquisition_source / acquisition_detail</code>。
-      </p>
+      <h3 style="margin-top:0">{{ t('freePool.keyForm.title') }}</h3>
+      <p class="cell-muted" style="margin:0 0 12px">{{ t('freePool.keyForm.desc') }}</p>
       <div class="form-grid">
         <div class="form-item">
           <label>Catalog Code *</label>
@@ -757,11 +756,11 @@ onUnmounted(() => {
           </select>
         </div>
         <div class="form-item">
-          <label>来源类型</label>
+          <label>{{ t('freePool.keyForm.source') }}</label>
           <select v-model="newKey.source" class="input">
-            <option value="signup">signup（官方注册）</option>
-            <option value="env">env（环境变量导入）</option>
-            <option value="manual">manual（手动）</option>
+            <option value="signup">{{ t('freePool.keyForm.sourceOptions.signup') }}</option>
+            <option value="env">{{ t('freePool.keyForm.sourceOptions.env') }}</option>
+            <option value="manual">{{ t('freePool.keyForm.sourceOptions.manual') }}</option>
             <option value="oauth">oauth</option>
             <option value="mirrored">mirrored</option>
           </select>
@@ -771,39 +770,39 @@ onUnmounted(() => {
           <input v-model="newKey.api_key" class="input" type="password" placeholder="sk-..." />
         </div>
         <div class="form-item">
-          <label>来源说明</label>
-          <input v-model="newKey.source_detail" class="input" placeholder="如 OpenRouter void / AIGoCode dev" />
+          <label>{{ t('freePool.keyForm.sourceDetail') }}</label>
+          <input v-model="newKey.source_detail" class="input" :placeholder="t('freePool.keyForm.sourceDetailPlaceholder')" />
         </div>
         <div class="form-item">
-          <label>凭据标签</label>
-          <input v-model="newKey.label" class="input" placeholder="可选，默认自动生成" />
+          <label>{{ t('freePool.keyForm.label') }}</label>
+          <input v-model="newKey.label" class="input" :placeholder="t('freePool.keyForm.labelPlaceholder')" />
         </div>
       </div>
       <div style="margin-top:12px;display:flex;gap:8px">
         <button class="btn btn-primary" type="button" :disabled="keySubmitting" @click="submitKey">
           {{ keySubmitting ? t('freePool.submitting') : t('freePool.submit') }}
         </button>
-        <button class="btn btn-ghost" type="button" @click="showKeyForm = false">取消</button>
+        <button class="btn btn-ghost" type="button" @click="showKeyForm = false">{{ t('freePool.hideKeyForm') }}</button>
       </div>
     </div>
 
     <div v-if="showAddForm" class="card" style="margin-bottom:20px">
-      <h3 style="margin-top:0">添加免费 Provider</h3>
+      <h3 style="margin-top:0">{{ t('freePool.providerForm.title') }}</h3>
       <div class="form-grid">
         <div class="form-item">
           <label>Catalog Code *</label>
-          <input v-model="newProvider.catalog_code" class="input" placeholder="例如: zhipu-free" />
+          <input v-model="newProvider.catalog_code" class="input" :placeholder="t('freePool.providerForm.catalogCodePlaceholder')" />
         </div>
         <div class="form-item">
-          <label>显示名称</label>
-          <input v-model="newProvider.display_name" class="input" placeholder="例如: Zhipu GLM Free" />
+          <label>{{ t('freePool.providerForm.displayName') }}</label>
+          <input v-model="newProvider.display_name" class="input" :placeholder="t('freePool.providerForm.displayNamePlaceholder')" />
         </div>
         <div class="form-item" style="grid-column: 1 / -1">
           <label>Base URL *</label>
           <input v-model="newProvider.base_url" class="input" placeholder="https://api.example.com/v1" />
         </div>
         <div class="form-item">
-          <label>协议</label>
+          <label>{{ t('freePool.providerForm.protocol') }}</label>
           <select v-model="newProvider.protocol" class="input">
             <option value="openai-completions">openai-completions</option>
             <option value="openai-responses">openai-responses</option>
@@ -812,16 +811,16 @@ onUnmounted(() => {
         </div>
         <div class="form-item">
           <label>API Key</label>
-          <input v-model="newProvider.api_key" class="input" type="password" placeholder="可选" />
+          <input v-model="newProvider.api_key" class="input" type="password" :placeholder="t('freePool.providerForm.apiKeyPlaceholder')" />
         </div>
         <div class="form-item" style="grid-column: 1 / -1">
-          <label>模型列表 (逗号分隔)</label>
-          <input v-model="newProvider.models" class="input" placeholder="例如: gpt-4o-mini, gpt-3.5-turbo" />
+          <label>{{ t('freePool.providerForm.models') }}</label>
+          <input v-model="newProvider.models" class="input" :placeholder="t('freePool.providerForm.modelsPlaceholder')" />
         </div>
       </div>
 
       <div style="margin-top:16px">
-        <h4 style="font-size:13px;margin-bottom:8px;color:var(--muted)">已知免费 Provider 模板：</h4>
+        <h4 style="font-size:13px;margin-bottom:8px;color:var(--muted)">{{ t('freePool.providerForm.templatesTitle') }}</h4>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button
             v-for="tpl in catalog"
@@ -840,33 +839,29 @@ onUnmounted(() => {
         <button class="btn btn-primary" type="button" @click="submitNew" :disabled="submitting">
           {{ submitting ? t('freePool.submitting') : t('freePool.submit') }}
         </button>
-        <button class="btn btn-ghost" type="button" @click="showAddForm = false" :disabled="submitting">取消</button>
+        <button class="btn btn-ghost" type="button" @click="showAddForm = false" :disabled="submitting">{{ t('freePool.hideKeyForm') }}</button>
       </div>
     </div>
 
     <!-- P2 (2026-08-11): bulk multi-key pooling form -->
     <div v-if="showBulkForm" class="card" style="margin-bottom:20px">
-      <h3 style="margin-top:0">多 Key 批量池化</h3>
-      <p class="cell-muted" style="margin:0 0 12px">
-        把同一账号的多个 Key 聚合成 <strong>1 个 credential</strong>，由 KeyRotator 轮转使用 ——
-        成倍放大该账号的免费配额。<strong>仅适用于同一上游账号的多 Key</strong>；
-        若 Key 分属不同账号，请切换为「每 Key 独立 credential」。
-      </p>
+      <h3 style="margin-top:0">{{ t('freePool.bulkPool') }}</h3>
+      <p class="cell-muted" style="margin:0 0 12px">{{ t('freePool.bulkPoolDesc') }}</p>
       <div class="form-grid">
         <div class="form-item">
           <label>Catalog Code *</label>
-          <input v-model="bulkForm.catalog_code" class="input" placeholder="例如: openrouter-free" />
+          <input v-model="bulkForm.catalog_code" class="input" :placeholder="t('freePool.bulkCatalogPlaceholder')" />
         </div>
         <div class="form-item">
-          <label>显示名称</label>
-          <input v-model="bulkForm.display_name" class="input" placeholder="例如: OpenRouter Free Pool" />
+          <label>{{ t('freePool.providerForm.displayName') }}</label>
+          <input v-model="bulkForm.display_name" class="input" :placeholder="t('freePool.bulkDisplayNamePlaceholder')" />
         </div>
         <div class="form-item" style="grid-column: 1 / -1">
           <label>Base URL *</label>
           <input v-model="bulkForm.base_url" class="input" placeholder="https://openrouter.ai/api/v1" />
         </div>
         <div class="form-item">
-          <label>协议</label>
+          <label>{{ t('freePool.providerForm.protocol') }}</label>
           <select v-model="bulkForm.protocol" class="input">
             <option value="openai-completions">openai-completions</option>
             <option value="openai-responses">openai-responses</option>
@@ -874,60 +869,60 @@ onUnmounted(() => {
           </select>
         </div>
         <div class="form-item">
-          <label>聚合模式</label>
+          <label>{{ t('freePool.bulkMode.label') }}</label>
           <select v-model="bulkForm.bulk_mode" class="input">
-            <option value="per_credential">聚合成 1 个 credential（轮转放大配额，默认）</option>
-            <option value="per_key">每 Key 独立 credential（不同账号时用）</option>
+            <option value="per_credential">{{ t('freePool.bulkMode.perCredential') }}</option>
+            <option value="per_key">{{ t('freePool.bulkMode.perKey') }}</option>
           </select>
         </div>
         <div class="form-item" style="grid-column: 1 / -1">
-          <label>API Keys *（逗号或换行分隔）</label>
+          <label>{{ t('freePool.bulkApiKeysLabel') }}</label>
           <textarea v-model="bulkForm.api_keys" class="input" rows="4"
             placeholder="sk-or-v1-aaa&#10;sk-or-v1-bbb&#10;sk-or-v1-ccc"></textarea>
         </div>
         <div class="form-item" style="grid-column: 1 / -1">
-          <label>模型列表 (逗号分隔)</label>
-          <input v-model="bulkForm.models" class="input" placeholder="例如: google/gemini-flash:free, meta-llama/llama-3.3-70b:free" />
+          <label>{{ t('freePool.providerForm.models') }}</label>
+          <input v-model="bulkForm.models" class="input" :placeholder="t('freePool.bulkModelsPlaceholder')" />
         </div>
       </div>
       <div style="margin-top:12px;display:flex;gap:8px">
         <button class="btn btn-primary" type="button" @click="submitBulk" :disabled="bulkSubmitting">
-          {{ bulkSubmitting ? t('freePool.submitting') : '批量池化' }}
+          {{ bulkSubmitting ? t('freePool.submitting') : t('freePool.bulkPoolSubmit') }}
         </button>
-        <button class="btn btn-ghost" type="button" @click="showBulkForm = false" :disabled="bulkSubmitting">取消</button>
+        <button class="btn btn-ghost" type="button" @click="showBulkForm = false" :disabled="bulkSubmitting">{{ t('freePool.hideKeyForm') }}</button>
       </div>
     </div>
 
-    <div v-if="loading" class="empty">加载中…</div>
+    <div v-if="loading" class="empty">{{ t('freePool.loading') }}</div>
 
     <template v-else-if="poolData">
       <div class="tab-bar" style="margin-bottom:16px">
         <button class="tab-btn" type="button" :class="{ active: activeTab === 'assistant' }" @click="activeTab = 'assistant'">
-          注册助手
+          {{ t('freePool.tab.assistant') }}
         </button>
         <button class="tab-btn" type="button" :class="{ active: activeTab === 'models' }" @click="activeTab = 'models'">
-          免费模型清单 ({{ liveModels.length }})
+          {{ t('freePool.tab.models', { n: liveModels.length }) }}
         </button>
         <button class="tab-btn" type="button" :class="{ active: activeTab === 'providers' }" @click="activeTab = 'providers'">
           Provider ({{ poolData.pool.length }})
         </button>
         <button class="tab-btn" type="button" :class="{ active: activeTab === 'catalog' }" @click="activeTab = 'catalog'">
-          模板目录 ({{ catalog.length }})
+          {{ t('freePool.tab.catalog', { n: catalog.length }) }}
         </button>
         <button class="tab-btn" type="button" :class="{ active: activeTab === 'keys' }" @click="activeTab = 'keys'">
-          凭据来源 ({{ poolKeys.length }})
+          {{ t('freePool.tab.keys', { n: poolKeys.length }) }}
         </button>
         <button class="tab-btn" type="button" :class="{ active: activeTab === 'guide' }" @click="activeTab = 'guide'">
-          获取方式与审计
+          {{ t('freePool.tab.guide') }}
         </button>
       </div>
 
       <!-- Assistant tab -->
       <div v-if="activeTab === 'assistant'" class="assistant-layout">
         <div ref="quickEntryCard" class="card quick-entry-card">
-          <h3 style="margin-top:0">快速录入凭据</h3>
+          <h3 style="margin-top:0">{{ t('freePool.assistant.title') }}</h3>
           <p class="cell-muted" style="margin:0 0 12px">
-            粘贴注册页、Base URL 与 API Key → 探活验证 → 加密写入数据库。也可从下方平台卡片一键填入。
+            {{ t('freePool.assistant.desc') }}
           </p>
           <div class="form-grid">
             <div class="form-item" style="grid-column:1/-1">
@@ -960,34 +955,34 @@ onUnmounted(() => {
             style="margin-top:12px"
           >
             <div class="form-item" style="grid-column:1/-1">
-              <label>注册 / 文档页 URL</label>
+              <label>{{ t('freePool.assistant.signupUrl') }}</label>
               <input v-model="quickEntry.signup_url" class="input" placeholder="https://openrouter.ai/signup" />
             </div>
             <div class="form-item">
               <label>Catalog Code</label>
-              <input v-model="quickEntry.catalog_code" class="input" placeholder="留空则自动生成" />
+              <input v-model="quickEntry.catalog_code" class="input" :placeholder="t('freePool.assistant.catalogCodePlaceholder')" />
             </div>
             <div class="form-item">
-              <label>显示名称</label>
-              <input v-model="quickEntry.display_name" class="input" placeholder="Provider 显示名" />
+              <label>{{ t('freePool.assistant.displayName') }}</label>
+              <input v-model="quickEntry.display_name" class="input" :placeholder="t('freePool.assistant.displayNamePlaceholder')" />
             </div>
             <div class="form-item">
-              <label>来源类型</label>
+              <label>{{ t('freePool.assistant.source') }}</label>
               <select v-model="quickEntry.source" class="input">
-                <option value="signup">signup（官方注册）</option>
-                <option value="manual">manual（中转/手动）</option>
+                <option value="signup">{{ t('freePool.assistant.sourceOptions.signup') }}</option>
+                <option value="manual">{{ t('freePool.assistant.sourceOptions.manual') }}</option>
                 <option value="env">env</option>
                 <option value="discovered">discovered</option>
               </select>
             </div>
             <div class="form-item">
-              <label>来源说明</label>
-              <input v-model="quickEntry.source_detail" class="input" placeholder="如 AIGoCode VS Code 插件" />
+              <label>{{ t('freePool.assistant.sourceDetail') }}</label>
+              <input v-model="quickEntry.source_detail" class="input" :placeholder="t('freePool.assistant.sourceDetailPlaceholder')" />
             </div>
           </div>
 
           <div v-if="probeResult" class="probe-box">
-            <strong>探活结果</strong>
+            <strong>{{ t('freePool.assistant.probeResult') }}</strong>
             <pre>{{ JSON.stringify(probeResult, null, 2) }}</pre>
           </div>
           <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
@@ -1002,14 +997,14 @@ onUnmounted(() => {
               type="button"
               class="btn btn-ghost"
               @click="openUrl(quickEntry.signup_url)"
-            >打开注册页</button>
+            >{{ t('freePool.assistant.openSignup') }}</button>
           </div>
         </div>
 
         <div class="card">
-          <h3 style="margin-top:0">临时邮箱（注册用）</h3>
+          <h3 style="margin-top:0">{{ t('freePool.assistant.tempEmailTitle') }}</h3>
           <p class="cell-muted" style="margin:0 0 12px">
-            一键生成 mail.tm 邮箱收验证码。注册完成后请尽快复制 Key 并入库。
+            {{ t('freePool.assistant.tempEmailDesc') }}
           </p>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
             <button class="btn btn-primary" type="button" :disabled="tempEmailLoading" @click="generateTempEmail">
@@ -1022,7 +1017,7 @@ onUnmounted(() => {
               :disabled="tempPolling"
               @click="pollTempInbox"
             >{{ tempPolling ? t('freePool.refreshInboxLoading') : t('freePool.refreshInbox') }}</button>
-            <button v-if="tempEmail" type="button" class="btn btn-ghost" @click="openUrl(tempEmail.web_url)">打开 mail.tm</button>
+            <button v-if="tempEmail" type="button" class="btn btn-ghost" @click="openUrl(tempEmail.web_url)">{{ t('freePool.assistant.openMailTm') }}</button>
           </div>
           <div v-if="tempEmail" class="temp-email-box">
             <div class="temp-row">
@@ -1064,7 +1059,7 @@ onUnmounted(() => {
             </li>
           </ul>
           <div v-if="signupHub" class="tool-links" style="margin-top:16px">
-            <span class="cell-muted">其他邮箱工具：</span>
+            <span class="cell-muted">{{ t('freePool.assistant.otherTools') }}</span>
             <button
               v-for="t in signupHub.tools.filter(x => x.tool_type === 'temp_email' && !x.builtin)"
               :key="t.id"
@@ -1078,10 +1073,10 @@ onUnmounted(() => {
         <div class="card platform-hub">
           <div class="section-header">
             <div>
-              <h3 style="margin:0">免费 Token 平台导航</h3>
-              <p class="cell-muted" style="margin:4px 0 0">官方免费层 + 中转平台 + 社区端点 · 点击打开注册或填入快速录入</p>
+              <h3 style="margin:0">{{ t('freePool.assistant.hubTitle') }}</h3>
+              <p class="cell-muted" style="margin:4px 0 0">{{ t('freePool.assistant.hubDesc') }}</p>
             </div>
-            <input v-model="hubQuery" class="input search-input" placeholder="搜索平台…" />
+            <input v-model="hubQuery" class="input search-input" :placeholder="t('freePool.assistant.searchPlaceholder')" />
           </div>
           <div class="hub-filters">
             <button
@@ -1089,7 +1084,7 @@ onUnmounted(() => {
               class="tab-btn btn-sm"
               :class="{ active: hubCategory === 'all' }"
               @click="hubCategory = 'all'"
-            >全部</button>
+            >{{ t('freePool.assistant.filterAll') }}</button>
             <button
               v-for="cat in hubCategories"
               :key="cat.id"
@@ -1110,24 +1105,24 @@ onUnmounted(() => {
               <div class="cell-muted">{{ categoryLabel(p.category) }} · {{ p.difficulty }}</div>
               <code class="model-code" style="display:block;margin:6px 0">{{ p.base_url }}</code>
               <p v-if="p.notes" class="cell-muted" style="margin:0 0 8px">{{ p.notes }}</p>
-              <div v-if="p.models_hint" class="cell-muted">模型：{{ p.models_hint }}</div>
+              <div v-if="p.models_hint" class="cell-muted">{{ t('freePool.assistant.modelsLabel') }} {{ p.models_hint }}</div>
               <div v-if="p.tags && p.tags.length" class="tag-row">
                 <span v-for="tag in p.tags" :key="tag" class="model-tag template">{{ tag }}</span>
               </div>
               <div class="platform-actions">
-                <button class="btn btn-primary btn-sm" type="button" @click="fillFromPlatform(p)">填入录入</button>
-                <button class="btn btn-ghost btn-sm" type="button" @click="openUrl(p.signup_url)">打开注册</button>
+                <button class="btn btn-primary btn-sm" type="button" @click="fillFromPlatform(p)">{{ t('freePool.assistant.fillForm') }}</button>
+                <button class="btn btn-ghost btn-sm" type="button" @click="openUrl(p.signup_url)">{{ t('freePool.assistant.openSignup2') }}</button>
                 <button
                   v-if="p.api_key_url && p.api_key_url !== p.signup_url"
                   type="button"
                   class="btn btn-ghost btn-sm"
                   @click="openUrl(p.api_key_url)"
-                >获取 Key</button>
+                >{{ t('freePool.assistant.getKey') }}</button>
               </div>
             </div>
           </div>
           <div v-if="signupHub?.workflow?.length" style="margin-top:20px">
-            <h4 style="margin-bottom:8px">推荐工作流</h4>
+            <h4 style="margin-bottom:8px">{{ t('freePool.assistant.recommendedWorkflow') }}</h4>
             <ol class="guide-steps">
               <li v-for="step in signupHub.workflow" :key="step.step">
                 <strong>{{ step.title }}</strong> — {{ step.detail }}
@@ -1209,24 +1204,24 @@ onUnmounted(() => {
       <div v-if="activeTab === 'models'" class="card">
         <div class="section-header">
           <div>
-            <h3 style="margin:0">当前池内免费模型</h3>
+            <h3 style="margin:0">{{ t('freePool.models.title') }}</h3>
             <p class="cell-muted" style="margin:4px 0 0">
-              可路由 {{ routableModels.length }} 个 · 调用时使用 raw_model_name
+              {{ t('freePool.models.desc', { n: routableModels.length }) }}
             </p>
           </div>
-          <input v-model="modelQuery" class="input search-input" placeholder="搜索模型 / Provider / catalog…" />
+          <input v-model="modelQuery" class="input search-input" :placeholder="t('freePool.models.searchPlaceholder')" />
         </div>
 
-        <div v-if="filteredModels.length === 0" class="empty">暂无匹配的免费模型</div>
+        <div v-if="filteredModels.length === 0" class="empty">{{ t('freePool.models.empty') }}</div>
         <table v-else>
           <thead>
             <tr>
-              <th>模型名称</th>
+              <th>{{ t('freePool.models.colName') }}</th>
               <th>Provider</th>
-              <th>配额（今日）</th>
-              <th>健康</th>
-              <th>状态</th>
-              <th>凭据</th>
+              <th>{{ t('freePool.models.colQuotaToday') }}</th>
+              <th>{{ t('freePool.models.colHealth') }}</th>
+              <th>{{ t('freePool.models.colStatus') }}</th>
+              <th>{{ t('freePool.models.colCredential') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -1234,7 +1229,7 @@ onUnmounted(() => {
               <td>
                 <code class="model-code">{{ m.raw_model_name }}</code>
                 <div v-if="m.standardized_name && m.standardized_name !== m.raw_model_name" class="cell-muted">
-                  标准名: {{ m.standardized_name }}
+                  {{ t('freePool.models.standardName') }}{{ m.standardized_name }}
                 </div>
                 <div class="cell-muted">T{{ m.routing_tier }} · <code style="font-size:11px">{{ m.catalog_code }}</code></div>
               </td>
@@ -1249,20 +1244,20 @@ onUnmounted(() => {
                 <div v-if="m.quota_exhausted && quotaResetCountdown(m)" class="cell-muted qbar-reset">
                   ⟳ {{ quotaResetCountdown(m) }}
                 </div>
-                <div v-else-if="m.quota_exhausted" class="cell-muted qbar-reset">已耗尽</div>
+                <div v-else-if="m.quota_exhausted" class="cell-muted qbar-reset">{{ t('freePool.status.quotaExhausted') }}</div>
               </td>
               <td class="health-cell">
                 <div class="health-row">
                   <span class="health-pill" :class="m.success_rate && m.success_rate >= 0.95 ? 'hp-ok' : (m.success_rate && m.success_rate < 0.8 ? 'hp-bad' : 'hp-mid')">
                     {{ successRateLabel(m) }}
                   </span>
-                  <span class="health-pill" :title="'P95 延迟'">{{ latencyLabel(m) }}</span>
+                  <span class="health-pill" :title="t('freePool.p95Latency')">{{ latencyLabel(m) }}</span>
                 </div>
                 <div v-if="(m.consecutive_failures ?? 0) > 0" class="cell-muted fail-streak">
-                  ⚠ 连续失败 {{ m.consecutive_failures }} 次
+                  {{ t('freePool.models.consecutiveFailures', { n: m.consecutive_failures }) }}
                 </div>
                 <div v-if="coolingCountdown(m)" class="cell-muted cooling-tag">
-                  ❄ 冷却 {{ coolingCountdown(m) }}
+                  ❄ {{ t('freePool.status.cooling') }} {{ coolingCountdown(m) }}
                 </div>
               </td>
               <td>
@@ -1279,15 +1274,15 @@ onUnmounted(() => {
 
       <!-- Providers tab -->
       <div v-if="activeTab === 'providers'" class="card">
-        <h3 style="margin-top:0">Provider 列表</h3>
-        <div v-if="poolData.pool.length === 0" class="empty">暂无免费 Provider</div>
+        <h3 style="margin-top:0">{{ t('freePool.providers.title') }}</h3>
+        <div v-if="poolData.pool.length === 0" class="empty">{{ t('freePool.providers.empty') }}</div>
         <table v-else>
           <thead>
             <tr>
-              <th>Catalog / 名称</th>
-              <th>凭据</th>
-              <th>状态</th>
-              <th>模型列表</th>
+              <th>{{ t('freePool.providers.colCatalogName') }}</th>
+              <th>{{ t('freePool.providers.colCredential') }}</th>
+              <th>{{ t('freePool.providers.colStatus') }}</th>
+              <th>{{ t('freePool.providers.colModels') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -1302,7 +1297,7 @@ onUnmounted(() => {
                   <span
                     v-if="(entry.key_count ?? 1) > 1"
                     class="key-count-badge"
-                    :title="`多 Key 池化：${entry.key_count} 个 Key 轮转（放大配额）`"
+                    :title="t('freePool.keyCountRotated', { n: entry.key_count })"
                   >🔑 ×{{ entry.key_count }}</span>
                 </div>
                 <div class="cell-muted">{{ credentialDisplayName(entry.credential_id) }} · {{ entry.availability_state || t('freePool.ready') }}</div>
@@ -1320,8 +1315,8 @@ onUnmounted(() => {
                     :title="m.routable ? t('freePool.routable') : t('freePool.notRoutable')"
                   >{{ m.raw_model_name }}</span>
                 </div>
-                <div v-else class="cell-muted">无模型 offer</div>
-                <div class="cell-muted">免费 {{ entry.free_offers }} / 可用 {{ entry.available_offers }}</div>
+                <div v-else class="cell-muted">{{ t('freePool.providers.noModels') }}</div>
+                <div class="cell-muted">{{ t('freePool.providers.freeUnit') }} {{ entry.free_offers }} / {{ t('freePool.providers.availableUnit') }} {{ entry.available_offers }}</div>
               </td>
             </tr>
           </tbody>
@@ -1330,19 +1325,19 @@ onUnmounted(() => {
 
       <!-- Catalog tab -->
       <div v-if="activeTab === 'catalog'" class="card">
-        <h3 style="margin-top:0">已知免费 Provider 模板</h3>
+        <h3 style="margin-top:0">{{ t('freePool.catalog.title') }}</h3>
         <p class="cell-muted" style="margin-top:0;margin-bottom:16px">
-          模板列出的模型为官方/社区免费层预期模型；「已接入」表示当前池子中有 active 凭据。
+          {{ t('freePool.catalog.desc') }}
         </p>
         <table>
           <thead>
             <tr>
               <th>Provider</th>
-              <th>接入</th>
-              <th>获取方式</th>
-              <th>模板模型</th>
-              <th>池内 live 模型</th>
-              <th>操作</th>
+              <th>{{ t('freePool.catalog.colInPool') }}</th>
+              <th>{{ t('freePool.catalog.colAcquisition') }}</th>
+              <th>{{ t('freePool.catalog.colTemplateModels') }}</th>
+              <th>{{ t('freePool.catalog.colLiveModels') }}</th>
+              <th>{{ t('freePool.catalog.colActions') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -1356,7 +1351,7 @@ onUnmounted(() => {
                 <span class="badge" :class="tpl.pool_registered ? 'badge-green' : 'badge-gray'">
                   {{ tpl.pool_registered ? t('freePool.registered') : t('freePool.notRegistered') }}
                 </span>
-                <div v-if="tpl.env_configured" class="cell-muted">环境变量已配置</div>
+                <div v-if="tpl.env_configured" class="cell-muted">{{ t('freePool.catalog.envConfigured') }}</div>
               </td>
               <td>
                 <span class="acq-pill">{{ acquisitionLabel(tpl.acquisition_mode) }}</span>
@@ -1377,8 +1372,8 @@ onUnmounted(() => {
                 <span v-else class="cell-muted">—</span>
               </td>
               <td>
-                <a v-if="tpl.signup_url" :href="tpl.signup_url" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">注册</a>
-                <button class="btn btn-ghost btn-sm" @click="useTemplate(tpl)">填入表单</button>
+                <a v-if="tpl.signup_url" :href="tpl.signup_url" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">{{ t('freePool.catalog.signup') }}</a>
+                <button class="btn btn-ghost btn-sm" @click="useTemplate(tpl)">{{ t('freePool.catalog.fillForm') }}</button>
               </td>
             </tr>
           </tbody>
@@ -1387,18 +1382,18 @@ onUnmounted(() => {
 
       <!-- Keys tab -->
       <div v-if="activeTab === 'keys'" class="card">
-        <h3 style="margin-top:0">数据库中的免费池凭据</h3>
+        <h3 style="margin-top:0">{{ t('freePool.keys.title') }}</h3>
         <p class="cell-muted" style="margin:0 0 12px">
-          所有 Key 以 AES 加密存储在 PostgreSQL；下方仅显示掩码。环境变量导入后也会同步到此表。
+          {{ t('freePool.keys.desc') }}
         </p>
         <table v-if="poolKeys.length">
           <thead>
             <tr>
               <th>Provider</th>
-              <th>Key（掩码）</th>
-              <th>来源</th>
-              <th>说明</th>
-              <th>状态</th>
+              <th>{{ t('freePool.keys.colKeyMasked') }}</th>
+              <th>{{ t('freePool.keys.colSource') }}</th>
+              <th>{{ t('freePool.keys.colDetail') }}</th>
+              <th>{{ t('freePool.keys.colStatus') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -1420,16 +1415,13 @@ onUnmounted(() => {
             </tr>
           </tbody>
         </table>
-        <div v-else class="empty">暂无凭据，点击「写入 DB 凭据」添加</div>
+        <div v-else class="empty">{{ t('freePool.keys.empty') }}</div>
       </div>
 
       <!-- Guide tab -->
       <div v-if="activeTab === 'guide' && methodsData" class="card">
-        <h3 style="margin-top:0">获取方式与使用</h3>
-        <p class="cell-muted" style="margin-top:0;margin-bottom:16px">
-          定时任务每 {{ Math.round(methodsData.scheduler.interval_sec / 60) }} 分钟运行 discovery（env 导入 + no-key + OAuth + GitHub 列表学习）。
-          Key 写入 <code class="model-code">config/free-pool.env</code>，勿提交 Git。
-        </p>
+        <h3 style="margin-top:0">{{ t('freePool.guide.title') }}</h3>
+        <p class="cell-muted" style="margin-top:0;margin-bottom:16px">{{ t('freePool.guide.desc', { n: Math.round(methodsData.scheduler.interval_sec / 60) }) }}</p>
         <div class="guide-grid">
           <div v-for="m in methodsData.methods" :key="m.mode" class="guide-card">
             <div class="guide-head">
@@ -1440,13 +1432,13 @@ onUnmounted(() => {
             <ol class="guide-steps">
               <li v-for="(step, i) in m.steps" :key="i">{{ step }}</li>
             </ol>
-            <div class="cell-muted">{{ m.automated ? t('freePool.automated') : t('freePool.manual') }} · 风险 {{ m.risk }}</div>
+            <div class="cell-muted">{{ m.automated ? t('freePool.automated') : t('freePool.manual') }} · {{ t('freePool.guide.riskLabel') }} {{ m.risk }}</div>
           </div>
         </div>
-        <h4 style="margin:24px 0 12px">安全审计规则</h4>
+        <h4 style="margin:24px 0 12px">{{ t('freePool.guide.auditTitle') }}</h4>
         <table>
           <thead>
-            <tr><th>规则</th><th>状态</th><th>说明</th></tr>
+            <tr><th>{{ t('freePool.guide.auditColRule') }}</th><th>{{ t('freePool.guide.auditColStatus') }}</th><th>{{ t('freePool.guide.auditColDetail') }}</th></tr>
           </thead>
           <tbody>
             <tr v-for="rule in methodsData.audit_rules" :key="rule.id">
@@ -1457,7 +1449,7 @@ onUnmounted(() => {
           </tbody>
         </table>
         <div v-if="methodsData.scheduler.last_result && Object.keys(methodsData.scheduler.last_result).length" style="margin-top:16px">
-          <h4 style="margin-bottom:8px">最近一次定时 discovery</h4>
+          <h4 style="margin-bottom:8px">{{ t('freePool.guide.lastRunTitle') }}</h4>
           <pre class="discovery-log">{{ JSON.stringify(methodsData.scheduler.last_result, null, 2) }}</pre>
         </div>
       </div>

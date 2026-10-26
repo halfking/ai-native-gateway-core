@@ -17,6 +17,23 @@ type PgxStore struct {
 	pool *pgxpool.Pool
 }
 
+// ★ 读路径的 NULL 语义（2026-10-21 修，见 docs/audit/2026-10-21-R60-新装缺列族.md §9）：
+//
+// `fault_events` 里 `acked_at` / `acked_by` / `resolved_at` / `resolved_by` 四列
+// **都可空**（权威 DDL：sql/objects/tables/fault_events.sql），而
+// `Event` 结构体对**时间戳**用 `*time.Time`（NULL ⇒ nil ⇒ omitempty 不输出），
+// 对**文本**却用 `string`（⇒ 扫 NULL 必炸：cannot scan NULL into *string）。
+//
+// ⇒ ⇒ 同一张表里两种 NULL 语义 ⇒ 生产上 `public.fault_events` 的 9 行
+// **全部** `acked_by`/`resolved_by` 为 NULL ⇒ `GET /api/admin/faults/events`
+// （cmd/gateway/main.go 注册的 `/api/admin/faults/*`）**必然 500**。
+//
+// ⇒ 修法：把两个文本列在 SQL 侧用 COALESCE 兜成空串 ⇒ 与时间戳的既有语义对齐
+// （「缺省 ⇒ 空串 ⇒ JSON 里 omitempty 不输出」），**不**改 Go 结构体、**不**改 API 形状。
+// ⇒ GetEvent / GetOpenEventsByRule / ListEvents 三处必须同步改 —— 漏一处就还是坏的。
+//
+// ⚠ 注释里别写两个连续单引号：gofmt 的 doc 注释正规化会把它们改成弯引号，
+// 于是「gofmt 后文件又变了」变成常态（本轮真踩了一次）。
 func NewPgxStore(pool *pgxpool.Pool) *PgxStore {
 	return &PgxStore{pool: pool}
 }
@@ -38,7 +55,8 @@ func (s *PgxStore) GetEvent(ctx context.Context, eventID int64) (*Event, error) 
 	var metadataJSON []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, rule_id, rule_name, severity, title, description, source, status, metadata,
-		       detected_at, acked_at, acked_by, resolved_at, resolved_by, created_at, updated_at
+		       detected_at, acked_at, COALESCE(acked_by, ''), resolved_at, COALESCE(resolved_by, ''),
+		       created_at, updated_at
 		FROM fault_events WHERE id = $1
 	`, eventID).Scan(
 		&event.ID, &event.RuleID, &event.RuleName, &event.Severity, &event.Title,
@@ -59,7 +77,8 @@ func (s *PgxStore) GetEvent(ctx context.Context, eventID int64) (*Event, error) 
 func (s *PgxStore) GetOpenEventsByRule(ctx context.Context, ruleID int64) ([]Event, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, rule_id, rule_name, severity, title, description, source, status, metadata,
-		       detected_at, acked_at, acked_by, resolved_at, resolved_by, created_at, updated_at
+		       detected_at, acked_at, COALESCE(acked_by, ''), resolved_at, COALESCE(resolved_by, ''),
+		       created_at, updated_at
 		FROM fault_events
 		WHERE rule_id = $1 AND status IN ('new', 'acknowledged', 'resolving')
 		ORDER BY detected_at DESC
@@ -117,7 +136,8 @@ func (s *PgxStore) ListEvents(ctx context.Context, status EventStatus, offset, l
 	}
 
 	query := `SELECT id, rule_id, rule_name, severity, title, description, source, status, metadata,
-	                 detected_at, acked_at, acked_by, resolved_at, resolved_by, created_at, updated_at
+	                 detected_at, acked_at, COALESCE(acked_by, ''), resolved_at, COALESCE(resolved_by, ''),
+	                 created_at, updated_at
 	          FROM fault_events ` + whereClause + `
 	          ORDER BY detected_at DESC
 	          LIMIT $` + offsetPlaceholder(len(args)+1) + ` OFFSET $` + offsetPlaceholder(len(args)+2)

@@ -531,7 +531,7 @@ onBeforeUnmount(() => {
 .cv__msg--err { color: #b91c1c; }
 .cv__note { margin: 6px 0; font-size: 12px; color: var(--app-text-secondary); }
 
-.cv__banner { margin: 8px 0; padding: 8px 10px; border-left: 3px solid #d97706; background: #fff7ed; font-size: 12px; color: #9a3412; }
+.cv__banner { margin: 8px 0; padding: 8px 10px; border: 1px solid #d97706; background: #fff7ed; font-size: 12px; color: #9a3412; }
 
 .cv__pager { display: flex; gap: 8px; margin-top: 10px; }
 .cv__page { min-width: 72px; padding: 0 12px; font-size: 14px; }

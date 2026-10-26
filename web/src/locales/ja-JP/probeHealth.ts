@@ -41,16 +41,10 @@ export default {
   },
   loading: 'Loading…',
   empty: 'No data',
-  health: {
-    healthy: 'healthy',
-    degraded: 'degraded',
-    warning: 'warning',
-    critical: 'critical',
-    unknown: 'unknown',
-  },
   probeAllConfirm: 'モデル {model} の全 {n} 件の認証情報に対してプローブを発火しますか？',
-  systemStartAllConfirm: 'すべてのプローブタスクを開始しますか？全 active 認証情報の binding をスキャンします。',
-  systemStopAllConfirm: 'すべてのプローブタスクを停止しますか？既に claimed されたタスクは完了まで実行されます。',
-  systemTriggeredToast: '{n} 件のタスクを発火、{failed} 件失敗',
-  systemStoppedToast: 'キューの {n} 件のタスクをクリアしました',
+  detail: {
+    triggerFailed: 'トリガーを実行できませんでした。再試行してください。',
+    modelNodeNotFound: 'このモデルのノードが見つかりません。モデル名を確認するか、先にノードを接続してから再試行してください',
+    pricingUnavailable: '価格データを表示するには platform_ops 権限が必要です。管理者に権限の有効化を依頼してください',
+  },
 }

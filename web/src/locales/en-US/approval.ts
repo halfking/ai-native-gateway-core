@@ -51,14 +51,12 @@ export default {
       viewDetail: 'View details',
     },
     empty: 'No approval requests',
-    loading: 'Loading…',
     pagination: {
       previous: 'Previous',
       next: 'Next',
       info: 'Page {page} / {totalPages} ({total} total)',
     },
     errors: {
-      loadFailed: 'Failed to load',
       loadListFailed: 'Failed to load approval list',
       approveFailed: 'Approve failed',
       rejectFailed: 'Reject failed',
@@ -87,6 +85,9 @@ export default {
       actions: 'Approval actions',
       history: 'Approval history',
     },
+    loadFailed: 'The approval details could not be loaded. Please retry.',
+    approveFailed: 'The approval could not be completed. Please retry.',
+    rejectFailed: 'The rejection could not be completed. Please retry.',
   },
   config: {
     title: 'Approval settings',

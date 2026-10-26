@@ -308,17 +308,17 @@ function goCanonical() {
             @click-canonical="goCanonical"
           />
         </div>
-        <button type="button" class="btn btn-ghost btn-sm" @click="emit('close')">关闭</button>
+        <button type="button" class="btn btn-ghost btn-sm" @click="emit('close')">{{ $t('common.close') }}</button>
       </div>
 
       <div class="drawer-body dual">
         <section class="pane">
           <h4>标准信息 <span v-if="offer.canonical_id" class="badge inherit">继承/可改</span></h4>
-          <label class="field-label">标准名</label>
+          <label class="field-label">{{ $t('common.terms.standardName') }}</label>
           <div class="cell-sub"><code>{{ offer.canonical_name || offer.standardized_name || '—' }}</code></div>
-          <label class="field-label">状态</label>
+          <label class="field-label">{{ $t('common.terms.status') }}</label>
           <div class="cell-sub">{{ offer.canonical_status || '—' }}</div>
-          <label class="field-label">模态</label>
+          <label class="field-label">{{ $t('common.terms.modality') }}</label>
           <select v-model="draft.modality" class="field-input" :disabled="!canEdit">
             <option value="text">text</option>
             <option value="vision">vision</option>
@@ -353,10 +353,10 @@ function goCanonical() {
           </h4>
           <div class="avail-row">
             <span class="avail-badge" :class="offer.available ? 'on' : 'off'">
-              {{ offer.available ? '可用' : '不可用' }}
+              {{ offer.available ? $t('common.terms.available') : $t('common.terms.unavailable') }}
             </span>
             <button class="btn btn-sm" :disabled="!canEdit || toggling" @click="toggleAvail">
-              {{ offer.available ? '停用' : '启用' }}
+              {{ offer.available ? $t('common.terms.deactivate') : $t('common.status.enabled') }}
             </button>
           </div>
           <label class="field-label">标准化名</label>
@@ -412,19 +412,19 @@ function goCanonical() {
           <div class="price-grid">
             <div>
               <label class="field-label">输入价格 / 1M tokens</label>
-              <input v-model.number="draft.unit_price_in_per_1m" type="number" min="0" step="0.001" class="field-input" :disabled="!canEdit" placeholder="保持现值" />
+              <input v-model.number="draft.unit_price_in_per_1m" type="number" min="0" step="0.001" class="field-input" :disabled="!canEdit" :placeholder="$t('common.terms.keepCurrent')" />
             </div>
             <div>
               <label class="field-label">输出价格 / 1M tokens</label>
-              <input v-model.number="draft.unit_price_out_per_1m" type="number" min="0" step="0.001" class="field-input" :disabled="!canEdit" placeholder="保持现值" />
+              <input v-model.number="draft.unit_price_out_per_1m" type="number" min="0" step="0.001" class="field-input" :disabled="!canEdit" :placeholder="$t('common.terms.keepCurrent')" />
             </div>
             <div>
               <label class="field-label">缓存读取价格 / 1M tokens</label>
-              <input v-model.number="draft.cache_read_price_per_1m" type="number" min="0" step="0.001" class="field-input" :disabled="!canEdit" placeholder="保持现值" />
+              <input v-model.number="draft.cache_read_price_per_1m" type="number" min="0" step="0.001" class="field-input" :disabled="!canEdit" :placeholder="$t('common.terms.keepCurrent')" />
             </div>
             <div>
               <label class="field-label">缓存写入价格 / 1M tokens</label>
-              <input v-model.number="draft.cache_write_price_per_1m" type="number" min="0" step="0.001" class="field-input" :disabled="!canEdit" placeholder="保持现值" />
+              <input v-model.number="draft.cache_write_price_per_1m" type="number" min="0" step="0.001" class="field-input" :disabled="!canEdit" :placeholder="$t('common.terms.keepCurrent')" />
             </div>
           </div>
           <label class="field-label">计费模式</label>

@@ -26,9 +26,6 @@ package admin
 // 以及「db 那一层的默认臂确实返回 v1 视图」这个**端到端**事实。
 
 import (
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -36,29 +33,48 @@ import (
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
-// TestBodiesSwitchDefaultsToV1 钉住「默认关闭」，三处都查。
+// TestBodiesSwitchLayerIsAlwaysSessionFamily 钉住「bodies 切换层恒返回会话族」。
 //
-// ⚠ 为什么不能只在测试里 `settings.GetPlatformBool(key, false)` 然后断言：
-// 那个 `false` 是**调用点写的 fallback**，不是配置里的默认值。
-// 有人把 spec 的 `Default: true` 改掉，调用点的 `false` 仍然在，
-// 而 `GetPlatformBool` 在 key 存在时以配置值为准 ⇒ 开关实际是开的。
-// ⇒ **两个默认值都要查**：spec 的 `Default` 与调用点的 fallback。
-func TestBodiesSwitchDefaultsToV1(t *testing.T) {
-	// ① 调用点 fallback：db 侧传的必须是 false。
-	src := readRepoFile(t, "db", "request_logs_view_schema.go")
-	want := "settings.GetPlatformBool(SessionBodiesNativeReadSetting, false)"
-	if !strings.Contains(src, want) {
-		t.Errorf("db/request_logs_view_schema.go 里 GetPlatformBool 的调用不是 %q。\n"+
-			"⚠ fallback 只在 key **不存在**时生效，但 spec 一旦登记该 key，"+
-			"生效的就是配置里的值（Default）；两处都必须是 false。", want)
+// ★ 2026-10-20（迁移 890，v1 族真删）：本门**改名**（原
+// `TestBodiesSwitchDefaultsToV1`）—— 被守的东西已经不存在了。
+//
+//	原来：灰度开关 `storage.session_bodies_native_read` 关（默认）时返回
+//	      v1 正文族视图 `request_logs_bodies_with_current_month`，开时返回
+//	      会话族源；判据钉「默认必须是 v1 那一臂」。
+//	现在：890 删掉了 v1 正文族**连同那张视图** ⇒ 默认臂指向一个**不存在的
+//	      关系** ⇒ 走默认臂的读方整条语句 42P01（不是那条腿失败，也不是
+//	      静默空集）。⇒ 灰度期结束，`db.SessionBodiesSourceSQL()` **恒**
+//	      返回会话族源，开关不再参与选源。
+//
+// 为什么必须留下这道门（而不是删掉）：那道开关**仍然存在**、仍在
+// settings spec 里登记、仍可能被运维拨动。⇒ 必须钉住「切换层不再读它、
+// 且恒返回会话族」，否则有人把 v1 臂「顺手加回来」是零成本的，而代价是
+// 12 个消费点整条 42P01。
+//
+// ⚠ 判据打在**剥注释后**的源码上：db 侧保留了大量讲 v1 臂历史的注释，
+// 判据若打在注释上，改对代码后门反而更红（反向的假红）。
+func TestBodiesSwitchLayerIsAlwaysSessionFamily(t *testing.T) {
+	// ① db 侧不再读那个开关（切换层已退化为 no-op）。
+	src := stripGoComments(readRepoFile(t, "db", "request_logs_view_schema.go"))
+	if strings.Contains(src, "GetPlatformBool(SessionBodiesNativeReadSetting") {
+		t.Errorf("db/request_logs_view_schema.go 里仍在读 %q —— 890 之后 v1 臂已不存在，"+
+			"「关」这个选项没有意义；开关若被拨到任何取值都必须仍然返回会话族源。",
+			dbpkg.SessionBodiesNativeReadSetting)
 	}
 
-	// ② 未加载任何设置时，端到端返回 v1 那一臂。
+	// ② 未加载任何设置时，端到端返回**会话族**那一臂（恒等）。
 	got := dbpkg.SessionBodiesSourceSQL()
-	if want := "request_logs_bodies_with_current_month"; got != want {
-		t.Errorf("未加载设置时 db.SessionBodiesSourceSQL() = %q，期望 %q（默认必须走 v1）\n"+
-			"⚠ 默认开启会让生产 2026-09-30 的会话导出正文全变 `{}`（1,113 条 turn，"+
-			"审计 §9.229.2 实测），而接口仍 200。", got, want)
+	if want := dbpkg.SessionFamilyBodiesSourceSQL(); got != want {
+		t.Errorf("db.SessionBodiesSourceSQL() = %q，期望 %q（恒返回会话族源）\n"+
+			"⚠ v1 正文族已随 890 被 DROP，指回它 = 12 个消费点整条语句 42P01。", got, want)
+	}
+	// 负向判据：不得再出现 v1 正文族关系名（按标识符边界）。
+	if hits := retiredV1RelationsInSQL(got); len(hits) > 0 {
+		t.Errorf("db.SessionBodiesSourceSQL() 的输出仍引用已退役 v1 族关系名 %v —— 读了 = 42P01", hits)
+	}
+	// 就地阳性对照：同一把尺子必须能认出 v1 形态（否则上面那条恒绿）。
+	if hits := retiredV1RelationsInSQL("FROM request_logs_bodies_with_current_month rb"); len(hits) == 0 {
+		t.Error("retiredV1RelationsInSQL 认不出 v1 正文视图 —— 负向断言已恒绿，判据坏了")
 	}
 
 	// ③ spec 里的 Default 必须是 false。
@@ -128,36 +144,13 @@ func specSegmentForKey(src, key string) string {
 	return src[start : i+end]
 }
 
-// readRepoFile 按**仓库根**解析路径（parts 里带包名，如 "admin/session_export.go"）。
+// ⚠ readRepoFile 原先定义在本文件（带 `//go:build !integration`）⇒ 在
+// `-tags=integration` 树下它不存在，而 admin/admin_500_channel_gap_realdb_test.go
+// （无 build tag）在 :281 调用它 ⇒ **集成标签树编译不过**
+// （vet: undefined: readRepoFile）⇒ `sql/schema` 的集成树编译门恒红。
+// ⇒ 已于 2026-10-22 把它提到无 build tag 的 admin/repo_file_reader_test.go（**定义没变，
+// 只是换了个文件**）⇒ 两棵树都编译、两棵树的腿都不丢。
 //
-// ⚠ 第一版我把它写成 `readRepoFile(t, ".", rel)` 与 `readRepoFile(t, "..", "settings", …)`，
-// 报 `open /tmp/.../session_export.go` 与 `open /tmp/settings/spec_storage.go`
-// —— 因为这个 helper 向上找的是 **go.mod 所在的仓根**，不是包目录。
-// 「.」= 仓根，「..」= 仓的父目录。⇒ 量具的路径语义要先确认，再写。
-func readRepoFile(t *testing.T, parts ...string) string {
-	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	dir := filepath.Dir(thisFile)
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			break
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("no go.mod above %s", filepath.Dir(thisFile))
-		}
-		dir = parent
-	}
-	b, err := os.ReadFile(filepath.Join(append([]string{dir}, parts...)...))
-	if err != nil {
-		t.Fatalf("read %v: %v", parts, err)
-	}
-	return string(b)
-}
-
 // ⚠ 包内已有 **三份**「剥 Go 注释」的实现（本文件写第三份时才发现）：
 //
 //	admin/session_view_dependency_risk_test.go      stripGoComments（正则版）

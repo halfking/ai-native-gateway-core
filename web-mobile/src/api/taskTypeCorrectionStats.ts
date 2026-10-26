@@ -17,7 +17,7 @@ import {
  *
  * - **注册**：`taskprofile/handler.go:131` `mux.HandleFunc("GET /api/admin/task-profile/corrections/stats", wrap(h.handleCorrectionStats))`
  *   ⇒ **第七种注册形态：方法内嵌路由模式**（引号紧贴 `GET `，不是紧贴 `/api`）。
- *   由 `admin/handler.go:1413` 挂载 ⇒ **admin 档** ⇒ 抽屉席不设 `requiresRole`。
+ *   由 `admin/handler.go:1488` 挂载 ⇒ **admin 档** ⇒ 抽屉席不设 `requiresRole`。
  * - **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
  * - **桌面调用方**：`web/src/api/taskProfile.ts:95-100`（`getTaskTypeCorrectionStats(sinceDays = 30)`）——
  *   ★ 它只传 `since_days`，**从不传 `recent_limit`**。

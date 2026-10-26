@@ -10,8 +10,8 @@ import {
   formatQualityScore,
   formatCalculatedAt,
   QUALITY_GRADE_COLORS,
-  QUALITY_GRADE_LABELS,
 } from '../../types/quality-api'
+import { qualityGradeLabel } from '../../utils/qualityGradeLabel'
 
 const props = defineProps<{
   providerId: number
@@ -34,7 +34,7 @@ async function loadData() {
     data.value = await getProviderQualityDetail(props.providerId)
   } catch (e: unknown) {
     data.value = null
-    error.value = e instanceof Error ? e.message : '加载质量画像失败'
+    error.value = e instanceof Error ? e.message : t('providerDetail.quality.loadFailed')
   } finally {
     loading.value = false
   }
@@ -74,8 +74,8 @@ function gradeStyle(grade: string | undefined): Record<string, string> {
 }
 
 function gradeLabel(grade: string | undefined): string {
-  if (!grade) return '—'
-  return QUALITY_GRADE_LABELS[grade as QualityGrade] || grade
+  // 等级文案在语言包（common.terms.qualityGrade.*）；等级缺失时沿用本页的「—」占位约定。
+  return qualityGradeLabel(grade, '—')
 }
 
 function scoreColor(n: number): string {

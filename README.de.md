@@ -19,7 +19,7 @@ AI Native Gateway ist ein **Open-Source-, self-hosted-, AI-nativer LLM-Gateway**
 - **Protokoll-Normalisierung**: OpenAI-, Anthropic-, Gemini- und Responses-API-Kompatibilität — ein Endpunkt für jedes Modell
 - **Intelligentes Zwei-Schichten-Routing**: L1 wählt das Modell (Task-Klassifikation → 6-Dimensionen-Scoring), L2 wählt das Credential (Tier-Fallback → Billing-Runde → P2C-Scoring → Execute / Circuit-Break)
 - **Session-Governance**: Sticky Sessions, vollständiges Session-Replay, automatische Prompt-Kompression und 4-stufiger Datenlebenszyklus — das Gespräch, nicht nur der Request, ist ein First-Class-Objekt
-- **Multi-Tenancy**: Durch PostgreSQL-RLS erzwungene Tenant-Isolation auf 38+ Tabellen, mit Tenant-spezifischen Quotas, Metering und MaaS-Billing
+- **Multi-Tenancy**: Durch PostgreSQL-RLS erzwungene Tenant-Isolation auf 90+ Tabellen, mit Tenant-spezifischen Quotas, Metering und MaaS-Billing
 - **Credential-Management**: Multi-Credential-Pools mit Fingerprint-Tarnung, adaptivem Probing und automatischem Circuit-Breaking
 - **Observability**: Echtzeit-Request-Streams, Routing-Analysen (Heatmap + Sankey), Kosten-Tracking, OTel + Prometheus
 - **Privacy**: 100 % privates Deployment — alle Daten bleiben in Ihrer Infrastruktur
@@ -55,7 +55,7 @@ Gebaut mit **Go + PostgreSQL + Redis**, läuft heute in Produktion auf k3s (zwei
 |-------|--------------|
 | **Protokoll** | OpenAI / Anthropic / Gemini / Responses kompatibel + SSE-Streaming-Relay mit Integritätschecks |
 | **Routing** | Zwei-Schichten-Routing (Modell → Credential) + Sticky Sessions + Auto-Routing mit Kosten-/Qualitäts-Policies |
-| **Multi-Tenancy** | Identity-Tunnel (virtuelle IP/MAC/ClientID) + Credential-Pools + RLS auf 38+ Tabellen |
+| **Multi-Tenancy** | Identity-Tunnel (virtuelle IP/MAC/ClientID) + Credential-Pools + RLS auf 90+ Tabellen |
 | **Traffic-Governance** | Token-Rate-Limiting (TPM/RPM) + semantischer Cache + Prompt-Kompression + Sliding-Window-Algorithmen |
 | **Audit** | Full-Chain-Audit + DLQ + Disk-Fallback + OTel + Prometheus |
 | **Credentials** | Multi-Credential + Fingerprint-Pool + adaptives Probing + manuelle Deaktivierung |
@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 15+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 90+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -104,16 +104,17 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | Pfad | Rolle |
 |------|------|
 | `cmd/gateway/` | Composition-Root — Produktions-Einstiegspunkt als Single-Binary (Data + Control Plane) |
-| `domains/` | 67 DDD-Domains — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, Hooks, Security … |
+| `domains/` | 68 DDD-Domains — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, Hooks, Security … |
 | `admin/` + `web/` | Admin-REST-API + Vue 3 + TypeScript SPA (Element Plus, ECharts) |
+| `web-mobile/` | Mobiles Frontend (Vue 3 + TypeScript) — zweites Produktions-UI; das Deployment verweigert den Start ohne den `dist/`-Build |
 | `bg/` | Background-Worker — Probing, Lifecycle-Cleanup, Stats-Aggregation, Partition-Wartung |
 | `storage/` | Dual-Mode-Storage-Factory (`full`: PG+Redis / `lite`: SQLite+Dateien+In-Proc-KV) |
 | `internal/` | Querschnitts-Infrastruktur — IR, Vendor-Strip, Session-Mirror, Outbox, Telemetry … |
-| `sql/migrations/` + `db/migrations/` | Idempotente Migrationen (Startup-Serie aktuell bei 863) |
+| `sql/migrations/` + `db/migrations/` | Idempotente Migrationen (Startup-Serie aktuell bei 907) |
 | `installer/` | Eigenständiges plattformübergreifendes Installer-/Upgrader-Modul |
 | `scripts/`, `deploy/` | Build-, Deploy-, Mirror- und Verifikations-Werkzeuge |
 
-Skalierungs-Snapshot (Code-Scan vom 2026-10-06): **~4,967 Go-Dateien · 2,728 Testdateien · 1,016 Migrations-SQLs · 67 Domain-Packages · 44 Binaries** unter `cmd/`.
+Skalierungs-Snapshot (Code-Scan vom 2026-10-22 @31466a01d): **~5,680 Go-Dateien · 3,333 Testdateien · 1,119 Migrations-SQLs · 68 Domain-Packages · 44 Binaries** unter `cmd/` (Dateizahlen ohne `vendor/` und `installer/`; Migrations-SQLs = vollständiger `sql/migrations/`-Baum; Binaries = main-Pakete laut `go list`).
 
 **Vertiefende Lektüre**
 
@@ -131,7 +132,7 @@ Die meisten Gateways behandeln jeden Request als isoliertes Ereignis. AI Native 
 - **Sticky-Session-Bindung**: Sessions werden an Credentials gepinnt, sodass Gesprächskontext Modell- und Failover-Wechsel überlebt — kein stiller Kontextverlust mitten im Task
 - **Session-Level-Audit & Replay**: volle System-Prompts und Antworten werden pro Session aufbewahrt und sind abspielbar (13.000+ Sessions in Produktion) — erfasst werden Task-Typ, Client-Modell, ausgehendes Modell, Provider, Tokens, Latenz und Endgrund; schneidbar nach Key / Tenant / Zeitraum für Troubleshooting und Compliance
 - **Automatische Prompt-Kompression**: nähert sich ein Request dem echten Kontextfenster des Providers (~80 % Trigger), läuft vor dem Dispatch eine Message-Level-Kompression — lange Agent-Sessions passen in kleinere Fenster, statt zu scheitern. Jedes Kompressionsereignis (Strategie, Schwellwert, Größe vorher/nachher) wird am Request protokolliert
-- **Session-Metadaten-Intelligenz**: automatisches Work-Type-Tagging (10 Work-Types), Projektzuordnung und Titel-Extraktion machen aus rohem Traffic durchsuchbares Wissen
+- **Session-Metadaten-Intelligenz**: automatisches Work-Type-Tagging (27 Work-Types), Projektzuordnung und Titel-Extraktion machen aus rohem Traffic durchsuchbares Wissen
 - **Identity-Tunneling**: Agent-Traffic wird über virtuelle IP/MAC/ClientID zugeordnet, sodass Multi-Tenant-Isolation auch dann hält, wenn viele Agenten einen gemeinsamen Egress teilen
 - **4-stufiger Datenlebenszyklus**: heiß (0–7 T) / warm (7–30 T) / kalt (30–90 T) / abgelaufen (>90 T) mit Archiv-Vorschau — Sie sehen vor der Ausführung genau, was verschoben wird
 
@@ -166,12 +167,12 @@ Alle unten gezeigten Module sind ausgeliefert und laufen im k3s-Produktionsdeplo
 ### Credential-Monitor — Multi-Source × Multi-Credential-Health
 
 ![Credential Monitor](docs/assets/screenshots/credential-monitor.png)
-*Eine live 2-D-Verfügbarkeitsmatrix (19 Credentials × 18 Modelle in Produktion) zeigt auf einen Blick, welches Credential welches Modell bricht. P95-Latenz je Credential, 1-Stunden-Sliding-Window-Erfolgsrate und Concurrency-Slot-Nutzung. Fingerprint-Pool (50+ User-Agents, 35 Accept-Language-Varianten, 11 uTLS-Profile) + adaptives Probing umgehen Upstream-Risk-Control automatisch — Fehler lösen den Breaker aus, ganz ohne menschliches Zutun*
+*Eine live 2-D-Verfügbarkeitsmatrix (19 Credentials × 18 Modelle in Produktion) zeigt auf einen Blick, welches Credential welches Modell bricht. P95-Latenz je Credential, 1-Stunden-Sliding-Window-Erfolgsrate und Concurrency-Slot-Nutzung. Fingerprint-Pool (42 User-Agents, 35 Accept-Language-Varianten) + adaptives Probing umgehen Upstream-Risk-Control automatisch — Fehler lösen den Breaker aus, ganz ohne menschliches Zutun*
 
 ### Work-Type-Konfiguration — Task-Auto-Klassifikation
 
 ![Work Types](docs/assets/screenshots/work-types.png)
-*Task-Auto-Klassifikation (10 Work-Types) mit 24-h-Verteilung, Top-Modellen und Routing-Entscheidungsstatistiken — je Work-Type im Admin-UI konfigurierbar*
+*Task-Auto-Klassifikation (27 Work-Types) mit 24-h-Verteilung, Top-Modellen und Routing-Entscheidungsstatistiken — je Work-Type im Admin-UI konfigurierbar*
 
 ### Free-Resource-Pool
 
@@ -362,11 +363,11 @@ Das vollständige Installer-Design finden Sie in [installer/README.md](installer
 | **Data Residency** | Daten verlassen Ihren Perimeter | Alle Daten bleiben in Ihrer Infrastruktur |
 | **Billing** | Usage-basiert (USD) | Tarife + Credits + Booster-Packs — gebaut für China-SMB, Alipay-ready |
 | **Upstream-Modelle** | Einige große Anbieter | Breite Modellabdeckung + chinesische Domestic-Modelle + lokale Modelle |
-| **Credential-Fingerprint-Pool** | Basis | 50+ User-Agents · 35 Accept-Language · 11 uTLS-Profile |
+| **Credential-Fingerprint-Pool** | Basis | 42 User-Agents · 35 Accept-Language |
 | **Session-Governance** | Request-Level-Logs | Sticky Sessions + Vollinhalt-Replay + Kompression + 4-stufiger Lebenszyklus |
 | **MCP-Tool-Gateway** | Teilweise | Volle Auslieferung angezielt für Q3 2026 |
 | **Chinesisch-freundlich** | Begrenzt | Volle chinesische UI + Domestic-Modelle + Alipay |
-| **Multi-Tenant-Audit** | Standard | RLS auf 38+ Tabellen · Tenant-Audits bei L1 = 0 |
+| **Multi-Tenant-Audit** | Standard | RLS auf 90+ Tabellen · Tenant-Audits bei L1 = 0 |
 
 ### vs. namentlich genannte Alternativen
 
@@ -434,7 +435,7 @@ Siehe [ROADMAP.md](ROADMAP.md) für alle Details.
 | Session-Lifecycle | [docs/session-lifecycle.md](docs/session-lifecycle.md) — Session-Processing-Lifecycle, vollständig diagrammiert |
 | Architektur (evidence-graded) | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — interne maßgebliche Dokumentation (CURRENT/SHADOW/PARALLEL-Graduierung) |
 | Architektur (Überblick) | [docs/architecture.md](docs/architecture.md) — Systemdesign und Komponenten |
-| Anforderungen | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×19 Domänen / NFR×13 |
+| Anforderungen | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×16 Domänen / NFR×13 |
 | Feature-Katalog | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md) — Feature → Code → API → Admin-Seite Mapping |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — Data-Plane- und Admin-API-Specs |
 | Umgebung | [docs/environment.md](docs/environment.md) — Deployment-Umgebungen und Variablen |
@@ -468,7 +469,7 @@ Schutz sensibler Informationen: `.githooks/pre-push` führt beim Push zu GitHub 
 
 ## ✅ CI & Gates (ab 2026-09-14)
 
-- **Offizielles Gate = lokales `./verify.sh`**: Muss vor jedem Commit/Deployment laufen (`go test ./...` vollständig, Migrations-Checksum-Abgleich, Datenschutz-Compliance, vet, build, Frontend-Build). Merges nach main und Releases richten sich danach.
+- **Offizielles Gate = lokales `./verify.sh`**: Muss vor jedem Commit/Deployment laufen (`go test ./...` vollständig, Migrations-Checksum-Abgleich, Datenschutz-Compliance, vet, build; Frontend-Build nur mit `--web`). Merges nach main und Releases richten sich danach.
 - **codeup Flow leichtes Gate**: Es gibt nur codeup als Remote; `.github/workflows/` wird auf codeup nicht ausgeführt; `.workflow/main-verify.yml` bietet Pipeline-as-Code-Konfiguration (build + `go vet ./autoroute/...` + Offline-Suite mit 60 Auto-Matching-Testfällen). Sie muss einmal über die Seite „Pipelines“ im codeup-Repository importiert werden und wird danach bei push/PR automatisch ausgelöst.
 - Die Auto-Matching-Offline-Regression kann separat erneut ausgeführt werden: `go test ./autoroute/ -run 'TestAutoMatchingSuiteHeuristic|TestPromptClassificationMatrix'` (rein offline, ohne Netzwerk).
 
@@ -478,7 +479,7 @@ Schutz sensibler Informationen: `.githooks/pre-push` führt beim Push zu GitHub 
 
 Wir freuen uns über Beiträge! Siehe [CONTRIBUTING.md](CONTRIBUTING.md) für Development-Setup, Code-Stil und den Pull-Request-Prozess.
 
-Multi-Tenancy-Änderungen müssen alle drei Linter bestehen: `lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant`.
+Multi-Tenancy-Änderungen müssen das RLS-Gate (`make test-rls` — echtes PostgreSQL, benötigt `TEST_DATABASE_URL`) und die Unit-Test-Suite (`make test` — dasselbe `go test ./...`, das CI über `verify.sh` ausführt) bestehen.
 
 ## 🔐 Sicherheit
 

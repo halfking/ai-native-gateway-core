@@ -77,6 +77,10 @@ func TestRunCredentialDecisions_PropagatesQueryAndRowsErrors(t *testing.T) {
 func TestHandleCredentialDecisions_NilDB(t *testing.T) {
 	m := &CredentialMonitorHandlers{h: &Handler{}}
 	req := httptest.NewRequest(http.MethodGet, "/api/credentials/decisions?credential_id=21", nil)
+	// 2026-10-20 12h 审计轮：该端点补了角色门（未授权 403），门早于 nil-db 门
+	// ⇒ 本用例要测的是"穿过角色门之后"的 nil-db 路径，必须带管理员角色。
+	// ★ 断言未变（仍是 503）。
+	req = SetAuthContext(req, &AuthContext{Role: "super_admin", IsJWT: true})
 	rr := httptest.NewRecorder()
 	m.handleCredentialDecisions(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {

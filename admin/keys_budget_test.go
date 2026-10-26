@@ -305,19 +305,50 @@ func TestBudgetCheck_NonMissingRelationErrorKeeps500(t *testing.T) {
 	insertHotSpend(t, pool, keyID, "zz-bgate-d-r1", 3.0)
 
 	ctx := context.Background()
+
+	// ★★★ R68：还原必须**注册在重命名之前**，而且必须**条件化**。
+	//
+	// 原实现的还原注册在 `CREATE VIEW` **之后** ⇒ 任何在两者之间失败的路径
+	// （最典型：`CREATE VIEW` 自己报 42703 —— 这正是本文件 R68 之前那个
+	// 「SELECT no_such_column_zz」写法必然触发的）⇒ t.Fatalf ⇒ **还原从未注册**
+	// ⇒ ★ **真视图被永久改名走** ⇒ 库里留下 `usage_ledger_with_current_month_bak`
+	// 而真名消失 ⇒ ★★ **之后每一次跑这条门都在第一步就 42P01**
+	// （「rename view: relation ... does not exist」）⇒ 门变成永久红，
+	// 而且**把共享真库留在坏状态**。
+	//
+	// ⇒ 两条纪律：
+	//  ① 还原注册**前置**（任何失败路径都会跑）；
+	//  ② 还原**条件化**：只有备份视图真的存在时才动手 ——
+	//     否则（重命名压根没发生、或已还原过一次）就去 DROP 真视图 ⇒ 那是
+	//     **把可修的坏状态变成不可修的坏状态**。
+	restoreUsageLedgerView := func() {
+		var backupExists bool
+		if err := pool.QueryRow(ctx,
+			`SELECT to_regclass('public.usage_ledger_with_current_month_bak') IS NOT NULL`).
+			Scan(&backupExists); err != nil || !backupExists {
+			// 没有备份视图 ⇒ 重命名没发生（或已还原）⇒ 不碰真视图。
+			return
+		}
+		_, _ = pool.Exec(ctx, `DROP VIEW IF EXISTS usage_ledger_with_current_month`)
+		_, _ = pool.Exec(ctx,
+			`ALTER VIEW usage_ledger_with_current_month_bak RENAME TO usage_ledger_with_current_month`)
+	}
+	t.Cleanup(restoreUsageLedgerView)
+
 	if _, err := pool.Exec(ctx,
 		`ALTER VIEW usage_ledger_with_current_month RENAME TO usage_ledger_with_current_month_bak`); err != nil {
 		t.Fatalf("rename view: %v", err)
 	}
+	// ★ R68：原写法是 `SELECT no_such_column_zz FROM usage_ledger_hot` ——
+	//   PG 在 **CREATE VIEW 时就校验列引用** ⇒ 直接 42703 ⇒ 夹具自己就建不出来
+	//   （那道门一直在红，且**与 v1 族无关**；★ 更糟的是它同时把真库留在
+	//   「真视图被改名走」的坏状态里 —— 见上面还原前置的注释）。
+	//   ⇒ 正确形态：建一个**存在但缺列**的视图（少投影 handler 会读的那一列
+	//     `cost_usd`）⇒ 查它时才是**运行期** 42703 —— 这才是本门要区分的形态。
 	if _, err := pool.Exec(ctx,
-		`CREATE VIEW usage_ledger_with_current_month AS SELECT no_such_column_zz FROM usage_ledger_hot`); err != nil {
+		`CREATE VIEW usage_ledger_with_current_month AS SELECT request_id, api_key_id, ts FROM usage_ledger_hot`); err != nil {
 		t.Fatalf("create broken view: %v", err)
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DROP VIEW IF EXISTS usage_ledger_with_current_month`)
-		_, _ = pool.Exec(ctx,
-			`ALTER VIEW usage_ledger_with_current_month_bak RENAME TO usage_ledger_with_current_month`)
-	})
 
 	resp, rec := callBudgetCheck(h, keyID)
 	assertNoBudgetNumbersProduced(t, resp, rec)

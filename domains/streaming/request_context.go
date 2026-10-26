@@ -90,6 +90,9 @@ func beginRequestJourney(w http.ResponseWriter, r *http.Request, handler *ChatHa
 	if lifecycle == nil {
 		return w, r, nil
 	}
+	// ★ 2026-10-24 P1-1（统一请求级观察者）：**v1 真实路径**的请求开始事件。
+	//   发布是**非阻塞**的（队列满 ⇒ 丢弃并计数）⇒ 观察面**不得**影响请求。
+	magpieP1PublishBegin(r, identity.RequestID)
 	writer := &requestJourneyStatusWriter{ResponseWriter: w}
 	if flusher, ok := w.(http.Flusher); ok {
 		return &requestJourneyFlushStatusWriter{requestJourneyStatusWriter: writer, flusher: flusher}, r, writer
@@ -112,6 +115,7 @@ func finishRequestJourney(r *http.Request, writer *requestJourneyStatusWriter) {
 	}
 	if err := r.Context().Err(); err != nil {
 		lifecycle.Finish(r.Context(), requestjourney.OutcomeCanceled, "client_canceled", 0)
+		magpieP1PublishEnd(r, lifecycle.RequestID(), false, 0, "client_canceled")
 		return
 	}
 	status := http.StatusOK
@@ -124,9 +128,11 @@ func finishRequestJourney(r *http.Request, writer *requestJourneyStatusWriter) {
 			errorKind = strings.ToLower(strings.ReplaceAll(http.StatusText(status), " ", "_"))
 		}
 		lifecycle.Finish(r.Context(), requestjourney.OutcomeFailure, errorKind, status)
+		magpieP1PublishEnd(r, lifecycle.RequestID(), false, status, errorKind)
 		return
 	}
 	lifecycle.Finish(r.Context(), requestjourney.OutcomeSuccess, "", status)
+	magpieP1PublishEnd(r, lifecycle.RequestID(), true, status, "")
 }
 
 func ensureRequestJourney(r *http.Request, handler *ChatHandler, requestID string) (*http.Request, *requestjourney.Lifecycle) {

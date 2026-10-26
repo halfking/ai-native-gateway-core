@@ -185,7 +185,7 @@ func ProbeSpecs() []*Spec {
 			Max:             floatPtr(500),
 			Default:         20,
 			Description:     "按用量纳入「常用」的模型数（Top-N）",
-			DescriptionLong: "在静态精选列表之外，按 _request_logs_hot 近窗口成功调用数取 Top-N 一并视为常用模型。设 0 则仅按静态精选列表判定（kill-switch）。",
+			DescriptionLong: "在静态精选列表之外，按会话族热表（session_turns_hot）近窗口成功调用数取 Top-N 一并视为常用模型。设 0 则仅按静态精选列表判定（kill-switch）。★ 2026-10-24：原读源是 v1 `_request_logs_hot`，该族已随迁移 890 退役。",
 			Unit:            "个",
 			DangerLevel:     Safe,
 			HotReload:       true,

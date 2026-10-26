@@ -44,9 +44,16 @@ describe('AppSheet mobile focus behavior', () => {
     wrapper.unmount()
   })
 
-  it('does not focus a text/select control when opened on a touch device', async () => {
+  it('does not focus a text/select/action control when opened (close or panel only)', async () => {
+    // 2026-10-17：旧逻辑在 pointer:fine 时会 focus 第一个业务 button
+    // （供应商详情「解除手动停用」→ window.prompt），iOS 模拟器正好是 fine。
+    // 现在一律优先 close，没有本地头时 focus panel。
     setLocale('zh-CN')
-    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })))
+    vi.stubGlobal('matchMedia', vi.fn((q: string) => ({
+      matches: String(q).includes('pointer: coarse') || String(q).includes('hover: none'),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })))
     const focused: HTMLElement[] = []
     vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (this: HTMLElement) {
       focused.push(this)
@@ -55,6 +62,7 @@ describe('AppSheet mobile focus behavior', () => {
       props: { modelValue: false, title: '筛选条件' },
       slots: {
         default: () => h('div', [
+          h('button', { id: 'danger-action', type: 'button' }, '解除手动停用'),
           h('input', { id: 'search-choice' }),
           h('select', { id: 'choice' }, [h('option', '全部')]),
         ]),
@@ -69,6 +77,38 @@ describe('AppSheet mobile focus behavior', () => {
     expect(document.body.querySelector('#search-choice')).not.toBeNull()
     expect(focused).toHaveLength(1)
     expect(focused[0]).toBe(document.body.querySelector('.app-sheet__close'))
+    expect(focused[0]).not.toBe(document.body.querySelector('#danger-action'))
+
+    wrapper.unmount()
+  })
+
+  it('compact sheet hides duplicate title but keeps close for a11y', async () => {
+    // max-width:599px ⇒ 不画 h2 标题（避免与顶栏双标题），但保留 ✕
+    // （iOS Maestro 搜不到顶栏 icon 的 aria-label）。
+    vi.stubGlobal('matchMedia', vi.fn((q: string) => ({
+      matches: String(q).includes('max-width: 599px'),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })))
+    const focused: HTMLElement[] = []
+    vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (this: HTMLElement) {
+      focused.push(this)
+    })
+    const wrapper = mount(AppSheet, {
+      props: { modelValue: true, presentation: 'sheet', title: 'Anthropic' },
+      slots: {
+        default: () => h('div', [h('button', { id: 'danger-action', type: 'button' }, '解除手动停用')]),
+      },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await flushPromises()
+
+    expect(document.body.querySelector('.app-sheet__header')).not.toBeNull()
+    expect(document.body.querySelector('.app-sheet__title')).toBeNull()
+    expect(document.body.querySelector('.app-sheet__close')).not.toBeNull()
+    expect(focused[0]).toBe(document.body.querySelector('.app-sheet__close'))
+    expect(focused[0]).not.toBe(document.body.querySelector('#danger-action'))
 
     wrapper.unmount()
   })

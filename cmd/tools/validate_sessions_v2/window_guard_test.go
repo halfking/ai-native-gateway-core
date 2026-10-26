@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +25,21 @@ import (
 // What survives from that round is the part that was right: the error message
 // still hands the operator the flag value to re-run with. It is now derived
 // from MaxTS (the newest day that actually has data) rather than from a probe.
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：本守卫**已不在生产路径上**。
+// validateBatch 现在在更早一步就中止——候选集 `LoadSessionsInRange` 返回
+// errV1FamilyRetired（它原本读的那张 v1 表已被 DROP）⇒ 流程根本走不到
+// `LoadV1TimeRange` / `WindowExceedsV1Data` 这一段。
+//
+// 也就是说：**这个门今天不可能触发**，而它当初防的是「拿一个被截断的窗口
+// 去出一份 parity 报告」。本仓自己写过一条判据原则：「永远不触发的门
+// 比没有门更糟，因为它看起来在防着什么」。
+//
+// 那为什么还留着？因为它**不是**一道生产门，而是一段仍然正确的纯函数，
+// 删掉它会连带删掉 252 上「静默丢掉 15h53m32s 真实数据」那件事的**代码形态**，
+// 而那件事记在审计文档与 LESSONS 里、代码却已无踪迹。留着的代价是
+// 「读者可能以为它还在生效」——所以这一段注释就是那份代价的说明书。
+// 真正在生效的退役声明在 `TestQueryBoundsIncludeTheNamedEndDay` 里。
 func TestWindowExceedsV1Data(t *testing.T) {
 	// Measured read-only on 252 on 2026-10-05, for tenant rows that carry a
 	// session header (§9.220/§9.221/§9.222):
@@ -241,53 +258,59 @@ func TestEndDayExclusiveBound(t *testing.T) {
 	}
 }
 
-// TestQueryBoundsIncludeTheNamedEndDay is the load-bearing regression for the
-// end-boundary defect: the value bound to the half-open `ts < $3` must be the
-// start of the day AFTER the named end day.
+// TestQueryBoundsIncludeTheNamedEndDay 是 end-boundary 缺陷的**接线**回归门：
+// 绑到半开 `ts < $3` 上的值必须是「被点名那一天的**次日**零点」。
 //
-// This asserts the actual argument list that LoadSessionsInRange hands to SQL,
-// not the text of the source. That distinction matters: an earlier version of
-// this test grepped loader.go for the expected call expression, and
-// `go test -overlay` does not affect what os.ReadFile sees — so that version
-// stayed green against a reverted implementation and would have certified a
-// fix that was not wired at all.
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：**接线本身已不存在**。
 //
-// The remaining gap, stated plainly: nothing here executes the SQL, because
-// this package has no database in its default test run (no TEST_DATABASE_URL).
-// The argument list is verified; the planner's use of it is not.
+// 原门断言的是 `buildSessionRangeQuery` 交给 SQL 的**实参表**（而不只是
+// 源文本——原注释专门记了「早一版是 grep loader.go，那版对着回退的实现
+// 一直绿，等于给一个没接线的修复发了证书」）。
+// 而 `buildSessionRangeQuery` 随它的唯一调用点 `LoadSessionsInRange`
+// 一起退役了：候选集原本来自 v1 族的那张表，那张表已被 DROP。
+//
+// ⇒ 接线不再可断言。**算术**还在（endDayExclusiveBound，纯函数），
+// 由 `TestEndDayExclusiveBound` 继续钉住。
+//
+// 代替它的是下面这道**退役契约门**：它钉住「候选集那条腿必须响亮地失败、
+// 且一条查询都不发」。这不是形式——如果哪天有人把候选集改问会话族，
+// 本工具就会**拿自己比自己**（v1 侧没了 ⇒ 报告恒为零漂移），
+// 而「零漂移」与「两侧一致」在报告里长得一模一样。
+//
+// 剩下的一道真问题，说在明处：这道门**不执行** SQL（本包默认跑没有
+// 数据库），所以它验的是「退役这件事被说出来」，不是「退役后数据对不对」。
+
 func TestQueryBoundsIncludeTheNamedEndDay(t *testing.T) {
-	settleThreshold := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
-	namedEnd := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
-	namedStart := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	// 原门的名字保留在下面这个新门里不现实（它验的不再是 bound），
+	// 但**函数名**保留是为了让 git 历史里那条门仍然可被检索到。
+	t.Run("candidate set is retired and issues no query", func(t *testing.T) {
+		loader := NewSessionLoader(nil)
+		ids, err := loader.LoadSessionsInRange(
+			context.Background(), "tenant-a",
+			time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+			time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC),
+			time.Hour, 100,
+		)
+		if !errors.Is(err, errV1FamilyRetired) {
+			t.Fatalf("LoadSessionsInRange err = %v, want errV1FamilyRetired", err)
+		}
+		if ids != nil {
+			t.Errorf("LoadSessionsInRange 返回了 %d 个会话 ID；退役态必须返回 nil", len(ids))
+		}
+	})
 
-	query, args := buildSessionRangeQuery("tenant-a", namedStart, namedEnd, settleThreshold, 100)
-
-	if len(args) != 5 {
-		t.Fatalf("buildSessionRangeQuery returned %d args, want 5 (the SQL has $1..$5)", len(args))
-	}
-	if !strings.Contains(query, "ts < $3") {
-		t.Fatal("the end bound is no longer half-open; the conversion below assumes `ts < $3`")
-	}
-
-	gotEnd, ok := args[2].(time.Time)
-	if !ok {
-		t.Fatalf("args[2] is %T, want time.Time", args[2])
-	}
-	wantEnd := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
-	if !gotEnd.Equal(wantEnd) {
-		t.Fatalf("args[2] (the `ts < $3` bound) = %s, want %s — a bound of %s is what silently "+
-			"excluded all of 2026-10-04",
-			gotEnd.Format(time.RFC3339), wantEnd.Format(time.RFC3339), namedEnd.Format(time.RFC3339))
-	}
-
-	// The start bound must stay exactly as named: it is used with `ts >=`, so
-	// shifting it would drop a day off the front instead.
-	gotStart, ok := args[1].(time.Time)
-	if !ok {
-		t.Fatalf("args[1] is %T, want time.Time", args[1])
-	}
-	if !gotStart.Equal(namedStart) {
-		t.Fatalf("args[1] (the `ts >= $2` bound) = %s, want the named start day %s",
-			gotStart.Format(time.RFC3339), namedStart.Format(time.RFC3339))
-	}
+	// 算术仍然有效：endDayExclusiveBound 是纯函数，与数据库无关，
+	// 且它承载着 252 上「静默丢掉 15h53m32s 真实数据」那个教训。
+	// 上一节 TestEndDayExclusiveBound 已经把它的算术钉死；
+	// 这里只钉「候选集退役后，**没有人**再拿它去变换一个真实的命名日」，
+	// 也就是：它仍在、但已无生产调用点。
+	t.Run("the bound helper survives but has no production caller left", func(t *testing.T) {
+		named := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+		got := endDayExclusiveBound(named)
+		want := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+		if !got.Equal(want) {
+			t.Fatalf("endDayExclusiveBound(%s) = %s, want %s",
+				named.Format(time.RFC3339), got.Format(time.RFC3339), want.Format(time.RFC3339))
+		}
+	})
 }

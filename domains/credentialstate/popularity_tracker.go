@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 // ModelPopularityTracker tracks model usage frequency from _request_logs
@@ -78,11 +80,19 @@ func (t *ModelPopularityTracker) refresh(ctx context.Context) error {
 	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// 2026-07-05 migration 341: 查询 _request_logs_hot（1 小时窗口完全在热表范围内）
+	// 2026-07-05 migration 341: 查询热表（1 小时窗口完全在热表范围内）
+	//
+	// ★ 890（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。client_model 在
+	// 会话族里同名同义（来自 session_turn_details 特征层）。
+	//
+	// ⚠ 顺带修一个**既有**缺陷：这条语句原来按 created_at 过滤，而 v1 热表
+	// **没有 created_at 这一列**（真库实测：42703 column "created_at" does not
+	// exist）⇒ 这条查询**一直**在报错（每轮 refresh 记一条 Warn），热度榜从未
+	// 产出过。v1 侧的对应列是 ts；会话族侧也是 ts ⇒ 改用 ts。
 	rows, err := t.db.Query(queryCtx, `
 		SELECT client_model, COUNT(*) AS request_count
-		FROM _request_logs_hot
-		WHERE created_at > NOW() - INTERVAL '1 hour'
+		FROM `+db.SessionFamilyTurnsHotSourceSQL()+`
+		WHERE ts > NOW() - INTERVAL '1 hour'
 		  AND client_model IS NOT NULL
 		  AND client_model != ''
 		GROUP BY client_model

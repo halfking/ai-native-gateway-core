@@ -126,10 +126,15 @@ LLMGW_LOCK_DIR=${LLMGW_LOCK_DIR:-/var/run/lock}
 _llmgw_lock_file="$LLMGW_LOCK_DIR/llmgw-$(basename "$0" .sh).lock"
 
 _llmgw_single_instance_guarded=false
+# ★ 打开锁文件的那一行**不得**把 stderr 一起重定向（§143.14）：
+#   exec 不带命令时，重定向施加到**当前 shell** ⇒ "exec 9>file 2>/dev/null"
+#   会让本脚本此后所有 stderr 输出永久消失 ⇒ log()（写 stderr）全部失声。
+#   ⇒ 用 { exec 9>file; } 2>/dev/null：组的重定向只作用于组本身，组结束即恢复；
+#     fd 9 的语义不变（exec 的重定向仍然持久）。
 if [ -z "${LLMGW_NO_SINGLE_INSTANCE_LOCK:-}" ] \
    && command -v flock >/dev/null 2>&1 \
    && mkdir -p "$LLMGW_LOCK_DIR" 2>/dev/null \
-   && exec 9>"$_llmgw_lock_file" 2>/dev/null; then
+   && { exec 9>"$_llmgw_lock_file"; } 2>/dev/null; then
   if ! flock -n 9; then
     echo "[$(date +%Y-%m-%dT%H:%M:%S%z)] skip: $(basename "$0") 上一轮仍在运行（lock=${_llmgw_lock_file}），本轮不重复执行" \
       >> "${LLMGW_LOCK_SKIP_LOG:-/var/log/llmgw-single-instance-skip.log}" 2>/dev/null || true
@@ -179,7 +184,30 @@ CONF=${LLMGW_PG17_CONF:-/etc/llmgw/pg17.conf}
 : "${SPARSE_KEEP_RATIO:=0.5}"
 
 # 本脚本只读会话的 statement_timeout（应用角色的 30s 不够用，见 de() 注释）
-: "${STMT_TIMEOUT:=180s}"
+#
+# ★★ 2026-10-20 订正（§143.14）：180s → 600s。
+#   起因是**量具超时导致巡检大面积出不了结论**，而且这件事**一直没人看见**：
+#   252 上这道巡检的日志（/var/log/ursm-snapshot-health.log）里
+#   「ABORT: main query failed: ERROR: canceling statement due to statement timeout」
+#   的每日条数 vs 「OK:」的每日条数（2026-10-20 实测）：
+#       10-04~10-08  OK 216 / ABORT 4      ← 几乎全绿
+#       10-10        OK   0 / ABORT 53     ← 全灭
+#       10-12~10-13  OK   2 / ABORT 33
+#       10-18~10-19  OK  19 / ABORT 29
+#   ⇒ 也就是说：**从 2026-10-10 起，这道巡检有相当一部分小时数是「量具不可用、
+#     本次不出结论」**（exit 3），而 §5.6「落库次数塌陷」指纹的探测通道
+#     恰恰在那些小时里是**瞎的**。
+#   成因：表长大了（本文件头写「23.7M 行」），7 天基线 + 2 天 DISTINCT 活跃度的
+#   聚合成本跟着涨，而超时上限还停在 180s。
+#   实测（252，2026-10-20 00:24，空闲时段，STMT_TIMEOUT=600s）：
+#       整轮 105s（其中主判据那一段 ~104s），exit 0，判据「OK: 无真空洞，无降级」。
+#   ⇒ 600s 对 105s 的实测成本有 **5.7 倍**余量；按有负载时 180s+ 的观测，
+#     也有 3 倍以上余量。
+#   ⇒ **代价要说清**：这条查询每小时要扫 7 天 ~2,370 万行（列存表），
+#     成本是真的；把它降下来需要「每日基线物化表」这类**结构改动**（新增对象 ⇒
+#     需属主拍板），不在本轮范围内。⇒ 这里只把「量具超时」换成「出结论」，
+#     不假装成本不存在。
+: "${STMT_TIMEOUT:=600s}"
 
 # 统计粒度。默认 hour，理由见文件头「为什么按小时而不是按分钟」。
 : "${GRANULARITY:=hour}"
@@ -232,8 +260,58 @@ de() {
   #     而下游 `x=$(de ...)` 是按「单行取值」解析的，
   #     多这一行会直接触发「返回多行，无法解析」的 exit 3。
   #     PGOPTIONS 在连接建立时生效，不产生任何输出。
-  podman exec -e "PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT:-180s}" \
-    "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c "$1" 2>&1 || true
+  #   PGOPTIONS 在连接建立时生效，不产生任何输出。
+  #
+  # PSQL_CMD 注入点（2026-10-18，§86）：默认形态与改造前逐字相同，但允许
+  # 本地单测顶替掉 podman。此前本脚本没有任何行为测试，cron_registration
+  # _test.go 只钉住「它被注册了」，不钉它跑出什么 —— 而「量具跑不通却报绿」
+  # 正是这道脚本最贵的失效形态。形态照抄 payload-bloat 脚本的同名注入点。
+  # shellcheck disable=SC2086 # PSQL_CMD 刻意按多词命令传入
+  # ★★ 【PSQL_CMD 注入点的契约，2026-10-22 R75 轮补记（此前只有 e2e 脚本里的
+  #   用例隐含着它，没写在这里 ⇒ 踩坑者会浪费很久）】：
+  #     注入的 PSQL_CMD **必须自带结尾的 -c**。
+  #   ★ 原因：`-c` 写在【默认值】里 ⇒ 一旦注入 PSQL_CMD，整个默认值被替换
+  #     ⇒ 漏了 -c ⇒ psql 把 SQL 当成【位置参数】⇒ 报
+  #     「extra command-line argument "SELECT ..."」——
+  #     ★★ 这个报错**完全不像**「你少写了 -c」，会把人引到 SQL 语法/引号的方向。
+  #   ★ 正确写法：`PSQL_CMD="docker exec -i $CONTAINER psql -U $DBUSER -d $DB -tAX -c"`
+  #     （scripts/audit/verify_892_patrol_e2e.sh 就是这么写的 ⇒ 可直接抄）
+  # ★★★ 【客户端侧失败必须看得见】—— 2026-10-22 12h 审计轮修掉的一处真缺陷。
+  #   原来的形态是 `... 2>&1 || true` ⇒ **psql 的退出码被丢弃**。
+  #   而 sql_failed() 只认**服务端** SQL 错误（输出里有 ERROR/FATAL 行）⇒
+  #   客户端侧失败（连不上 / podman socket 不可用 / 命令不存在）**根本不产生
+  #   那种文本** ⇒ 全部漏判。
+  #   ⇒ 后果（本脚本自己的判词：量具坏了却在报绿）：
+  #     · 量具自检 control=$(de …) 会拿到 "Error: unable to connect to Podman socket"
+  #       ⇒ sql_failed 不匹配、但 -z "$control" 也不成立（非空）⇒ **自检通过**
+  #       ⇒ 脚本继续跑到底并报 OK ⇒ 量具已经坏了，报告却写着「没问题」。
+  #     · 基线探针 base_probe 同理 ⇒ 快路判据读到的全是垃圾。
+  #   ⇒ 修法：保留退出码，并把「退出码≠0」翻译成与服务端错误**同形**的
+  #     ERROR: 前缀 ⇒ 下游既有的 sql_failed() 判据一字不改就能判出来。
+  # ★★★ 2026-10-24（R97 轮）加 `-c jit=off` —— 本脚本的会话**不该付 JIT 编译成本**。
+  #
+  #   缺陷本体（252 生产实测，pg_stat_statements + EXPLAIN ANALYZE）：
+  #     本脚本的每条查询都由**一次性 psql 会话**执行 ⇒ 后端一连就退
+  #     ⇒ ★ PG 的 JIT 编译产物缓存在**后端内存**里 ⇒ 下一轮**全部重新编译**。
+  #     实测主判据语句触发 `JIT: Functions: 181`，
+  #     Options = Inlining/Optimization/Expressions/Deforming 全开。
+  #   ⇒ 而这 181 个函数的编译产物**与判据结果一个字节都不相干**
+  #     ⇒ 每小时烧掉一份「纯编译」时间，却不产生任何判据价值。
+  #   ★ 为什么不能用「调高 jit_above_cost」来治：那要改**服务端**配置，
+  #     波及共享库上的所有业务会话 ⇒ 属主决策项；
+  #     而这里只关**本脚本自己**的会话 ⇒ 影响面 = 本脚本。
+  #   ★ 语义零影响：JIT 只是编译器，PG 保证编译前后结果逐字相同。
+  #     ★ 实证见 docs/audit/2026-10-27-R97-ursm巡检链-JIT与谓词下推.md：
+  #       同一条 SQL，jit 开 / 关两档的 10 个判据字段【逐字相同】。
+  local out rc=0
+  # shellcheck disable=SC2086 # PSQL_CMD 刻意按多词命令传入
+  out=$( ${PSQL_CMD:-podman exec -e "PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT:-600s} -c jit=off" \
+    "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c} "$1" 2>&1 ) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    out="ERROR: psql exited ${rc}: ${out}"
+  fi
+  printf '%s' "$out"
+  return 0
 }
 
 # 任一行以 ERROR/FATAL 开头 ⇒ psql 整条挂掉。
@@ -254,7 +332,7 @@ sql_failed() { printf '%s\n' "$1" | grep -qE '^\s*(ERROR|FATAL)'; }
 #        （本次实测：10-03 23:00 明明有 122,735 行，被算成 0 行 VOID；
 #          同一时刻 24h 窗口的旧查询给出的是 122,735 —— 两个数对不上才暴露出来。）
 #   正解：统一用右开区间，序列取到 hi_excl 往前一个 step。
-BUCKETS_SQL="
+BUCKETS_SQL_SOURCE="
 WITH win AS (
   SELECT $G_TRUNC $NOW_EXPR - make_interval(hours => $WINDOW_HOURS)) AS lo,
          $G_TRUNC $NOW_EXPR)                                          AS hi_excl
@@ -279,7 +357,11 @@ joined AS (
 base_buckets AS (
   SELECT $G_SLOT_TS AS slot, count(*) AS c
   FROM ursm_node_snapshot_min
-  WHERE snapshot_ts >= $NOW_EXPR - make_interval(days => $BASELINE_DAYS)
+  -- ★★ 窗口下界【桶对齐】（P11 / §143.35）：原来是行时间下界
+  --   （$NOW_EXPR - N days）⇒ 边界桶只算半截 ⇒ 与汇总表路不一致
+  --   ⇒ ⇒ 两路必须用同一个【桶对齐】下界 ⇒ 边界桶才逐字相同。
+  --   ⇒⇒ ★★ 【这是判定输入的一处真实改动】⇒ 必须由属主知情并拍板。
+  WHERE snapshot_ts >= date_trunc('$G_UNIT', $NOW_EXPR - make_interval(days => $BASELINE_DAYS))
     AND snapshot_ts < (SELECT lo FROM win)
   GROUP BY 1, $G_TRUNC snapshot_ts)),
 -- 活跃子单位的基线**单独用短窗口**算。
@@ -301,6 +383,178 @@ base_active AS (
     AND $G_SLOT_TS IN (SELECT slot FROM joined)
   GROUP BY 1, $G_TRUNC snapshot_ts))
 "
+BUCKETS_SQL_DAILY="
+WITH win AS (
+  SELECT $G_TRUNC $NOW_EXPR - make_interval(hours => $WINDOW_HOURS)) AS lo,
+         $G_TRUNC $NOW_EXPR)                                          AS hi_excl
+),
+series AS (SELECT generate_series(lo, hi_excl - $G_IV, '$G_STEP') AS m FROM win),
+cur AS (
+  SELECT $G_TRUNC snapshot_ts) AS m, count(*) AS c, $G_ACTIVE AS a
+  FROM ursm_node_snapshot_min, win
+  WHERE snapshot_ts >= win.lo AND snapshot_ts < win.hi_excl
+  GROUP BY 1
+),
+joined AS (
+  SELECT s.m, coalesce(c.c, 0) AS c, coalesce(c.a, 0) AS a, $G_SLOT_M AS slot
+  FROM series s LEFT JOIN cur c ON c.m = s.m
+),
+-- 基线：同一批小时位在更早的 N 天里的**每个桶**各自计数，
+-- 然后对每个小时位取中位数。
+-- ★ 这里必须先按 (日期, 桶) 分组再取分位数。踩过的坑：
+--   漏掉日期维度、直接对原始行 GROUP BY 小时位，得到的是
+--   「该小时位 7 天的总行数」（~700,000），比真实单桶高 5 倍，
+--   于是 10-01/10-02 这些正常日会被整片判成 DEGRADED（实测 25/25 全红）。
+-- ★★ 基线走【每日 slot 汇总表】（P11，迁移 892）：过去的完整天读汇总表，
+--   今天仍实时读源表（今天的数据还在写，汇总表按设计不含今天）。
+--   ★ 为什么今天必须走源表（★ 本地真库 A/B 实测逼出来的，不是设计时就想到的）：
+--     汇总表的填充范围是 [today - N, today)，【不含今天】
+--     ⇒ 若新路覆盖整个窗口，今天上午到 win.lo 的那些桶会【整个消失】
+--     ⇒ ⇒ 实测：16 行 OLD_ONLY（全是今天的桶）⇒ 判定输入变了。
+--   ★ 汇总表每行 = (天, 粒度, 小时位, 桶起点) → 行数
+--     ⇒ 与源表路的「按 (天, 桶) 分组 count(*)」是【同一个量】⇒ 逐字相同。
+--   ⚠ 窗口：两路都用【桶对齐】的下界（date_trunc）⇒ 窗内的桶在两边都完整。
+--     ⇒⇒ ★★ 【这是判定输入的一处真实改动】⇒ 必须由属主知情并拍板。
+base_buckets AS (
+  SELECT d.slot AS slot, d.rows AS c
+    FROM public.ursm_snapshot_slot_daily d
+   WHERE d.granularity = '$G_UNIT'
+     AND d.bucket_ts >= date_trunc('$G_UNIT', $NOW_EXPR - make_interval(days => $BASELINE_DAYS))
+     AND d.bucket_ts <  (SELECT lo FROM win)
+     AND d.day <  (now() AT TIME ZONE current_setting('TimeZone'))::date
+  UNION ALL
+  -- 今天：实时读源表
+  SELECT $G_SLOT_TS AS slot, count(*) AS c
+    FROM ursm_node_snapshot_min
+   WHERE snapshot_ts >= date_trunc('$G_UNIT', $NOW_EXPR - make_interval(days => $BASELINE_DAYS))
+     AND snapshot_ts <  (SELECT lo FROM win)
+     -- ★★ 2026-10-24（R97 轮）改写：【把「今天」写成可下推的范围谓词】。
+     --   原来的形态：$G_TRUNC snapshot_ts) >= (今天零点)
+     --     ⇒ 它是**列上的函数表达式** ⇒ PG 的规划器**不能**把它换成
+     --       snapshot_ts 的范围条件 ⇒ 只能当 **Filter** 挂在
+     --       「snapshot_ts >= 7 天前」那个 Index Cond **之上**
+     --       ⇒ ★★ 实测（252，EXPLAIN）：
+     --         Index Cond: snapshot_ts >= now()-7 days   ← 仍然是 7 天！
+     --         Filter:    date_trunc('hour', snapshot_ts) >= 今天零点
+     --       ⇒ 8 个分区全被扫（20261017~20261024），
+     --         其中 7 个分区的行**扫完即丢**（Filter 全部为假）。
+     --   现在的形态：snapshot_ts >= (今天零点)
+     --     ⇒ 直接成为 **Index Cond** ⇒ ★ 只扫今天那一个分区，
+     --       其余分区「Subplans Removed」/「never executed」。
+     --   ★★ 【等价性证明】（必须成立，否则这就是口径改动）：
+     --     对 ts ∈ timestamptz，令 T = 今天零点（本地时区，恰好落在
+     --     hour / minute 的边界上）：
+     --       (a) ts >= T ⇒ date_trunc(unit, ts) >= date_trunc(unit, T) = T
+     --           （date_trunc 单调不减；T 本就在 unit 边界上 ⇒ 截断后不变）
+     --       (b) ts < T ⇒ date_trunc(unit, ts) < T
+     --           （否则 ts 与 date_trunc(unit, ts) 会落在同一个 unit 桶里，
+     --             而该桶的下界 >= T ⇒ ts >= T，矛盾）
+     --     ⇒ 两式合起来 ⇒ date_trunc(unit, ts) >= T ⟺ ts >= T。
+     --   ★ 边界：T 取的是【本地日期的零点】；夏令时「午夜不存在」的时区里
+     --     PG 会把该零点规范化到 01:00，而 01:00 仍在 hour/minute 边界上
+     --     ⇒ 等价性照旧成立（Asia/Shanghai 自 1991 年起无夏令时）。
+     --   ★ 这个改写**只动「今天」这一条腿**的读集范围，
+     --     **不改任何判据口径**（分组、桶对齐、基线天数、中位数算法全部原样）。
+     --     ★ 实证：改写前后 10 个判据字段逐字相同（生产 A/B + 本地真库门）。
+     AND snapshot_ts >= (now() AT TIME ZONE current_setting('TimeZone'))::date::timestamptz
+   GROUP BY 1, $G_TRUNC snapshot_ts)),
+-- 活跃子单位的基线**单独用短窗口**算。
+-- ★ 性能实测（252，7 天 ≈ 600 万行）：
+--     count(DISTINCT date_trunc('minute', ts))  7 天 = 44.5s   ← 不可接受
+--                                        2 天 =  9.7s
+--                                        1 天 =  3.6s
+--   而同一批数据只做 count(*) 是 7.2s ⇒ **DISTINCT 是全部增量**。
+--   行数基线要 7 天（量纲敏感），但「这个小时位正常时该有多少分钟有数据」
+--   是一个**比行数稳定得多**的量（干净日实测 53~60/60），短窗口足够。
+base_active AS (
+  SELECT $G_SLOT_TS AS slot, count(*) AS c, $G_ACTIVE AS a
+  FROM ursm_node_snapshot_min
+  WHERE snapshot_ts >= $NOW_EXPR - make_interval(days => $ACTIVE_DAYS)
+    AND snapshot_ts < (SELECT lo FROM win)
+    -- ★ 只算窗口里**真的用到**的小时位（3h 窗 ⇒ 3~4 个 slot，不是 24 个）。
+    --   DISTINCT 的排序/哈希成本正比于分组数，砍掉 6~8 倍。
+    --   不加这个过滤时主判据 32.9s，加上后实测见提交信息。
+    AND $G_SLOT_TS IN (SELECT slot FROM joined)
+  GROUP BY 1, $G_TRUNC snapshot_ts))
+"
+# === 基线来源选择（P11，迁移 892 / §143.35）================================
+#
+# ★ 为什么要两条路：
+#   源表路 = 每小时扫 7 天源表（实测每次 2.9 GB / 190 s，累计 74 GB）
+#   汇总表路 = 读【每日 slot 汇总表】ursm_snapshot_slot_daily ⇒ 只读几千行
+#
+# ★★★ 为什么必须是【两段独立的 SQL】，而不是在同一段里用 CASE 选：
+#   ★ PG 在【规划期】就解析表名 ⇒ 只要 SQL 文本里出现了那个【不存在的表】，
+#     整条语句就报 relation ... does not exist ⇒ ⇒ ★★ 【把两路写进同一段 SQL
+#     是行不通的】（本地真库端到端实测：旧路也被拖崩 ⇒ 回退机制是假的）。
+#   ⇒ ⇒ 正确形态：两段各自完整的 SQL，在 shell 里按探测结果二选一。
+#
+# ★★★ 【回退是必须的，不是可选的】：
+#   若汇总表不存在（迁移未部署）/ 为空（回填没跑）/ 粒度不匹配
+#   ⇒ 必须【自动回退到源表路】，否则巡检读到「没有基线」
+#   ⇒ ⇒ 所有桶判成 NO-BASELINE ⇒ **巡检会安静地失明**
+#   ⇒ ⇒ ★★ 那比「慢」更坏（脚本照样成功退出，外部看不出来）。
+#   ⇒ ⇒ ★ 所以探测失败 ⇒ 一律走源表路 ⇒ **慢，但不失明**。
+#
+# ★ 探测三条（一次极轻量的查询）：
+#   ① 表存在吗（to_regclass）
+#   ② 有当前粒度的行吗（granularity = 当前粒度）
+#   ③ ★★【覆盖了基线窗吗】—— 2026-10-22 R75 轮修正（P11-R75），见下。
+#   ★ 三条都满足才走汇总表路。
+BASE_SRC="source"
+# ★★★ 覆盖判据的修正（2026-10-22 R75 轮，P11-R75）：
+#
+#   ★★★ 原判据是 `min(day) <= 今天 - 基线天数` ⇒ 它只问「表里有没有【足够老】的数据」。
+#   ★★★ 而快路真正需要的是「表里有没有【足够新】的数据」——
+#   ★   快路读的窗口是 [今天-基线天数, 今天)，**缺一天就少一天样本**。
+#   ★★★ ⇒ 原判据在【表停更】时依然成立（min(day) 不会随时间前进）
+#   ★★★   ⇒ 巡检会【继续走快路】，而快路此时读到的基线一天比一天少
+#   ★★★   ⇒ 到第 8 天左右，快路在窗口内【一行都读不到】
+#   ★★★   ⇒ 全部桶判成 NO-BASELINE ⇒ ★★ **巡检静默失明**
+#   ★★★     （★ 与 892 迁移头里「回填 0 行 ⇒ 巡检安静地失明」是**同一族**失败模式）
+#   ★ ⇒ 正确判据 = 「窗口内的【每一天】都有数据」
+#   ★   = count(DISTINCT day) over [今天-基线天数, 今天) == 基线天数。
+#   ★   任何一天缺 ⇒ 探测失败 ⇒ 回退源表路 ⇒ **慢，但不失明**
+#   ★   （★ 与本脚本既有哲学一致：「探测失败 ⇒ 一律走源表路 ⇒ 慢，但不失明」）。
+#   ★ ⇒ 而且它是【第一天就退化】的（不是第八天）⇒ 停更一次就立刻回到慢路。
+base_probe=$(de "SELECT coalesce(to_regclass('public.ursm_snapshot_slot_daily')::text, '')
+                         || '|' || coalesce((SELECT count(*)::text FROM public.ursm_snapshot_slot_daily
+                                              WHERE granularity = '$G_UNIT'), '0')
+                         || '|' || coalesce((SELECT min(day)::text FROM public.ursm_snapshot_slot_daily
+                                              WHERE granularity = '$G_UNIT'), '')
+                         || '|' || coalesce((SELECT max(day)::text FROM public.ursm_snapshot_slot_daily
+                                              WHERE granularity = '$G_UNIT'), '')
+                         || '|' || coalesce((SELECT count(DISTINCT day)::text FROM public.ursm_snapshot_slot_daily
+                                              WHERE granularity = '$G_UNIT'
+                                                AND day >= ((now() AT TIME ZONE current_setting('TimeZone'))::date
+                                                            - make_interval(days => $BASELINE_DAYS))::date
+                                                AND day <  (now() AT TIME ZONE current_setting('TimeZone'))::date), '0')")
+if ! sql_failed "$base_probe"; then
+  base_tbl=$(printf '%s' "$base_probe" | cut -d'|' -f1)
+  base_cnt=$(printf '%s' "$base_probe" | cut -d'|' -f2)
+  base_min=$(printf '%s' "$base_probe" | cut -d'|' -f3)
+  base_max=$(printf '%s' "$base_probe" | cut -d'|' -f4)
+  base_cov=$(printf '%s' "$base_probe" | cut -d'|' -f5)
+  need_min=$(de "SELECT ((now() AT TIME ZONE current_setting('TimeZone'))::date - make_interval(days => $BASELINE_DAYS))::date")
+  if [ "$base_tbl" = "ursm_snapshot_slot_daily" ] \
+     && [ -n "$base_cnt" ] && [ "$base_cnt" -gt 0 ] 2>/dev/null \
+     && ! sql_failed "$need_min" && [ -n "$need_min" ] && [ -n "$base_min" ]; then
+    # ★ 覆盖判据：窗口内【每一天】都有数据 ⇒ count(DISTINCT day) >= 基线天数。
+    #   ⚠ 数字比较用 [ ... -ge ... ]（bash 3.2 可用）。
+    #   ⚠ 旧判据用的是【字典序】日期比较（YYYY-MM-DD），现已不再用于决策，
+    #     但 min/max 仍打进日志，便于运维一眼看出「表停在哪天」。
+    if [ -n "$base_cov" ] && [ "$base_cov" -ge "$BASELINE_DAYS" ] 2>/dev/null; then
+      BASE_SRC="daily"
+    fi
+  fi
+fi
+log "base_source=${BASE_SRC} granularity=${G_UNIT} baseline_days=${BASELINE_DAYS} slot_daily_cov_days=${base_cov:-?} slot_daily_min=${base_min:-?} slot_daily_max=${base_max:-?} slot_daily_need_from=${need_min:-?}"
+if [ "$BASE_SRC" = "daily" ]; then
+  BUCKETS_SQL="$BUCKETS_SQL_DAILY"
+else
+  BUCKETS_SQL="$BUCKETS_SQL_SOURCE"
+fi
+
 log "start ursm-snapshot-health mode=report now=${NOW_EXPR} window=${WINDOW_HOURS}h granularity=${G_UNIT} baseline=${BASELINE_DAYS}d ratio=${DEGRADED_RATIO}"
 
 # === 量具自检 =========================================================
@@ -315,6 +569,66 @@ if sql_failed "$control" || [ -z "$control" ]; then
   exit 3
 fi
 log "control ok: rows_in_last_10min=$control"
+
+# --- 基线跨度体检（2026-10-18 §86）----------------------------------
+# 背景：BASELINE_DAYS（判据基线窗口）与 URSM_SNAPSHOT_RETENTION_DAYS
+# （数据留存）今天是**两个独立配置，恰好都等于 7 天，零余量**。而下游那个
+# 「基线为空」的 abort 只在 ref_p50<=0 时触发 —— 基线「薄」这一端没有任何检查。
+# 于是留存一旦被调到 < BASELINE_DAYS（一个完全合理的省存储提议），基线会
+# 静默地从 7 天缩到 3 天：ref_p50 仍 > 0、10 个字段仍齐全、仍打「OK」。
+# 而 DEGRADED_RATIO 是按 7 天样本标定的 ⇒ 样本变少时判据更容易判 ok。
+#
+# 量具选择：必须走**分区目录**（pg_inherits + 分区名里的日期）而不是扫表 ——
+# 实测 `SELECT min(snapshot_ts) … GROUP BY tableoid` 在这张 23.7M 行表上
+# 直接打满 30s statement_timeout（§86 实测）；本形态实测毫秒级返回。
+#
+# ★ 只数**真的有数据**的分区：partition_manager 会预建明天的分区，而那个分区
+#   是 0 字节（实测 20261019 = 0 bytes / reltuples = -1）。按分区名计数会
+#   把空分区算成一天 —— 第一版就这么写，注释还声称「预建的空分区不算数」，
+#   而代码并没有排除它，返回 9 天（真实 8 天）。
+#   判据用 pg_relation_size > 0：有数据的分区必有物理页，空分区是 0 字节。
+#   ⚠ 这仍是「有没有页」的代理，不是精确行数；但它只需要目录，且足够区分
+#     「空占位」与「真没数据」——后者恰恰是本检查要抓的形态。
+span=$(de "SELECT coalesce(max((regexp_match(c.relname, '_([0-9]{8})\$'))[1]::date)::text, '0') || '|' ||
+                 coalesce(min((regexp_match(c.relname, '_([0-9]{8})\$'))[1]::date)::text, '0') || '|' ||
+                 count(*) FILTER (WHERE pg_relation_size(c.oid) > 0) || '|' ||
+                 (SELECT relkind::text FROM pg_class WHERE oid = 'ursm_node_snapshot_min'::regclass) || '|' ||
+                 (SELECT count(*) FROM pg_inherits WHERE inhparent = 'ursm_node_snapshot_min'::regclass)
+          FROM pg_class c
+          JOIN pg_inherits h ON h.inhrelid = c.oid
+          WHERE h.inhparent = 'ursm_node_snapshot_min'::regclass
+            AND c.relname ~ '_[0-9]{8}\$';")
+if sql_failed "$span"; then
+  # 体检本身失败**不阻断**：它只是告警探针，不能让它把一台健康的机器判成 exit 3。
+  log "WARN: baseline-span probe failed (non-fatal): ${span//$'\n'/ }"
+else
+  # ★★ P18（§143.32）：探针多带两个字段 —— 表的 relkind 与分区总数。
+  #    原因：这条探针**只数「带日期的分区」**，所以它对**非分区表**恒返回 0 天。
+  #    211 实测：ursm_node_snapshot_min 是普通表（relkind='r'，pg_inherits 无子分区），
+  #    探针因此每轮报「0 day(s) with data」⇒ 接着报「基线样本不足 / OK 判定偏宽松」
+  #    ⇒ ★ **那是假告警**（211 的表里实测有 7 天数据、5,933,760 行）。
+  #    ⇒ 探针对「不适用」的形态必须**明确说 n/a**，不能把「数不到」说成「没有」。
+  IFS='|' read -r span_hi span_lo span_ndays span_relkind span_nparts <<<"$span"
+  if [ "${span_relkind:-}" != "p" ]; then
+    # 该表不是分区父表 ⇒ 目录探针**不适用** ⇒ 本探针不出结论、不发告警。
+    # ★ 基线天数改由主判据的 ref_p50 判定（ref_p50<=0 的极端形态由「基线为空 ⇒ ABORT」覆盖）。
+    BASELINE_THIN=""
+    log "baseline span: n/a（本表 relkind=${span_relkind:-?}，不是分区父表 ⇒ 目录探针不适用；基线天数由主判据的 ref_p50 判定）"
+  elif [ "${span_nparts:-0}" -gt 0 ] && [ "${span_ndays:-0}" -eq 0 ]; then
+    # 是分区父表、但没有一个分区名匹配 _YYYYMMDD ⇒ 命名约定不适用 ⇒ 同样不出结论。
+    BASELINE_THIN=""
+    log "baseline span: n/a（本表是分区父表，但 ${span_nparts} 个分区里没有一个分区名匹配 _YYYYMMDD ⇒ 目录探针不适用）"
+  else
+    log "baseline span: ${span_ndays:-?} day(s) with data (oldest $span_lo, newest $span_hi), BASELINE_DAYS=${BASELINE_DAYS}"
+    if [ "${span_ndays:-0}" -lt "${BASELINE_DAYS}" ] 2>/dev/null; then
+      # ★ 记进 summary 行，让下游能区分「7 天都健康」与「只有 3 天、判定偏松」。
+      BASELINE_THIN="thin:${span_ndays}d/${BASELINE_DAYS}d"
+      echo "WARN: 基线样本不足 —— 表里只有 ${span_ndays} 天数据，判定阈值却按 ${BASELINE_DAYS} 天标定。" >&2
+      echo "      本次 OK 判定是**偏宽松**的，不可当作「${BASELINE_DAYS} 天都健康」。" >&2
+      echo "      常见原因：URSM_SNAPSHOT_RETENTION_DAYS 被调小（当前默认 7 天）。" >&2
+    fi
+  fi
+fi
 
 rows=$(de "$BUCKETS_SQL,
 -- 行数基线（7 天，只有 count(*)，便宜）
@@ -334,9 +648,21 @@ ref_act AS (
            FILTER (WHERE a > 0) AS rate
   FROM base_active GROUP BY 1
 ),
--- 两段聚合各自独立算完再 1:1 连接。写成 `base_buckets b LEFT JOIN base_active a
--- ON a.slot=b.slot GROUP BY b.slot` 会产生 7×3 的笛卡尔积（虽然中位数碰巧不变，
+-- 两段聚合各自独立算完再 1:1 连接。写成「base_buckets b LEFT JOIN base_active a
+-- ON a.slot=b.slot GROUP BY b.slot」会产生 7×3 的笛卡尔积（虽然中位数碰巧不变，
 -- 但那是「碰巧对」，不是「对」）。
+-- ★★ 2026-10-20 订正（§143.14）：这里原来用的是**反引号**，
+--   而本段 SQL 在**双引号字符串**里 ⇒ bash 把反引号内容当**命令替换**执行了 ⇒
+--   每小时都往 stderr 打两行假错：
+--     line 478: base_buckets: command not found
+--     line 479: --: command not found
+--   （反引号内容含换行 ⇒ 被拆成两条命令：第一条以 base_buckets 开头、第二条以 -- 开头。）
+--   ⇒ 危害有三层：① 假错淹没真错（stderr 是排查的唯一线索）；
+--     ② 这些假错**只在 stderr 恢复后才看得见**——此前被单实例闸门的
+--     「exec 9>file 2>/dev/null」吞掉整整 16 天（2026-10-04 引入反引号）；
+--     ③ 靠"读日志有没有错"判断巡检健康的人，会把真错当噪声。
+--   ⇒ 改用「」后本段再无反引号。族门：scripts/ursmcheck/monitor_shell_quoting_test.go
+--     的 TestNoBacktickInsideDoubleQuotedStrings（钉住**双引号里不得有反引号**这一类）。
 slot_ref AS (
   SELECT r.slot, r.p50, t.a50, t.rate
   FROM ref_rows r LEFT JOIN ref_act t ON t.slot = r.slot
@@ -391,7 +717,11 @@ if [ "$ref_p50" -le 0 ] 2>/dev/null; then
   echo "      常见原因：BASELINE_DAYS 超过快照保留天数，或表被清空。" >&2
   exit 3
 fi
-log "summary: ${rows//$'\n'/ }"
+# ★ 基线薄不薄**只写在这一行**：10 个判据字段的口径完全没变（它们仍然是
+#   按 BASELINE_DAYS 的目标口径算的），变的只是「这个 OK 值有多可信」。
+#   把它混进 10 字段会让下游 awk 按位置取值的逻辑错位 —— 那比少一个字段更糟。
+#   所以用独立后缀：日志里 grep 'summary:' 一行就能同时拿到判定与可信度。
+log "summary: ${rows//$'\n'/ }${BASELINE_THIN:+ | baseline_thin=$BASELINE_THIN}"
 
 buckets_total=$(printf '%s' "$rows" | awk -F'|' '{print $1+0}')
 void_b=$(printf '%s' "$rows"        | awk -F'|' '{print $2+0}')
@@ -419,16 +749,31 @@ if [ "$G_UNIT" = "hour" ]; then
   printf '  活跃分钟占比   : %s%%   (常态 100%%；塌到个位数即 §5.6 的指纹)\n' "$active_pct"
 fi
 echo
+# ★★ 2026-10-19 订正：这一段原来是**写死 252 拓扑**的绝对阈值
+#   （peak>90000 ⇒ 双写 / >45000 ⇒ 单写 / 否则「显著低于常态」）。
+#   把它带到 211（acc-pg17）装机后实测：单写、峰值 35,708 行/桶，
+#   **每一次都落到 else 分支**打印「显著低于常态」——
+#   而同一份输出里正写着「正常 3/3」「OK: 无真空洞，无降级」。
+#   ⇒ 一行自称「推断」的话，在任何常态量级不等于 252 双写量级的实例上都是恒假，
+#      而且它恒假的方向恰好是**报忧**——训练读者忽略工具的最后一行。
+#   ⇒ 改成与**同时段基线**比：脚本手里已有 p50(本窗, $7) 与 ref_p50(基线, $8)，
+#      比值与「这台机器有几台在写」无关，跨实例、跨双写/单写都成立。
+#   ⚠ 阈值沿用 DEGRADED_RATIO 的同一套语义，不另起口径：
+#      ≥0.8 接近常态；[0.5,0.8) 低于常态（双写掉一台正落此带）；<0.5 显著低于。
 case "$G_UNIT" in
   hour)
-    if [ "$peak" -gt 90000 ] 2>/dev/null; then
-      echo "  当前基线推断   : 双写（154 authoritative + 245 shadow）"
-    elif [ "$peak" -gt 45000 ] 2>/dev/null; then
-      echo "  当前基线推断   : 单写（245 可能已退出 shadow）"
+    ratio=$(awk -v a="$p50" -v b="$ref_p50" 'BEGIN{ if (b>0) printf "%.2f", a/b; else print "NA" }')
+    if awk -v r="$ratio" 'BEGIN{exit !(r=="NA")}' 2>/dev/null; then
+      echo "  当前量级对比   : 基线为空，无参照系（见上方 ABORT 说明）"
+    elif awk -v r="$ratio" 'BEGIN{exit !(r+0>=0.8)}'; then
+      echo "  当前量级对比   : 接近同时段常态（本窗 p50 / 基线 = ${ratio}）"
+    elif awk -v r="$ratio" 'BEGIN{exit !(r+0>=0.5)}'; then
+      echo "  当前量级对比   : 低于常态（${ratio}）—— 双写掉一台正落此带，请查是否只剩单写"
     else
-      echo "  当前基线推断   : 显著低于常态，请结合上面逐桶判定看"
-    fi ;;
-  minute) echo "  当前基线推断   : 见 peak（分钟粒度，跨小时比较意义有限）" ;;
+      echo "  当前量级对比   : 显著低于常态（${ratio}）"
+    fi
+    echo "  本窗峰值       : ${peak} 行/桶（绝对值随实例而异，只作记录，不参与判定）" ;;
+  minute) echo "  当前量级对比   : 见 peak（分钟粒度，跨小时比较意义有限）" ;;
 esac
 
 # === 异常桶明细（最多 20 条）===

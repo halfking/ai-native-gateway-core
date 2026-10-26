@@ -39,7 +39,11 @@ func TestRunOne_NoRoutableModels_InsertsFailedPlaceholder(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name", "standardized_name"}))
 	mock.ExpectQuery("FROM routing_policy").WithArgs("default").
 		WillReturnRows(pgxmock.NewRows([]string{"featured_models"}).AddRow([]string{}))
-	mock.ExpectQuery("FROM _request_logs_hot rl").WithArgs(credID, "default").
+	// ★ 2026-10-20（迁移 890，v1 族退役）：recentUsageModels 的读源从
+	// `_request_logs_hot` 换成**会话族热腿**（v1 热表已 DROP）。
+	// 这条期望同时是「读面确实落在会话族」的证据：pgxmock 按正则匹配，
+	// 读源一旦回到 v1 族（或再换成别的族），这条期望就匹配不上 ⇒ 本门红。
+	mock.ExpectQuery("FROM public\\.session_turns_hot t").WithArgs(credID, "default").
 		WillReturnRows(pgxmock.NewRows([]string{"model", "count"}))
 
 	// insertRun: INSERT INTO self_check_runs (...) RETURNING id

@@ -57,6 +57,11 @@ func (h *Handler) handleFormatAnomalies(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	// 批 157 (2026-10-16): tenant isolation. super_admin/admin_key → ""
+	// (bypass RLS, see all); tenant_admin → own tenantID (RLS policy
+	// filters to that tenant). The three read helpers below dispatch
+	// via withTenantOrAllReadOnlyTx.
+	tenantID := EffectiveTenantIDAll(r)
 
 	limit := queryInt(r, "limit", 50)
 	if limit <= 0 {
@@ -103,7 +108,7 @@ func (h *Handler) handleFormatAnomalies(w http.ResponseWriter, r *http.Request) 
 		LEFT JOIN providers p ON p.id = rfa.provider_id
 		WHERE ` + whereSQL
 	var total int
-	if err := withAllTenantReadOnlyTx(r.Context(), h.db, func(tx pgx.Tx) error {
+	if err := withTenantOrAllReadOnlyTx(r.Context(), h.db, tenantID, func(tx pgx.Tx) error {
 		return tx.QueryRow(r.Context(), countQuery, args...).Scan(&total)
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "count query failed")
@@ -140,7 +145,7 @@ func (h *Handler) handleFormatAnomalies(w http.ResponseWriter, r *http.Request) 
 	args = append(args, limit, offset)
 
 	items := make([]FormatAnomalyRecord, 0, limit)
-	if err := withAllTenantReadOnlyTx(r.Context(), h.db, func(tx pgx.Tx) error {
+	if err := withTenantOrAllReadOnlyTx(r.Context(), h.db, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(r.Context(), listQuery, args...)
 		if err != nil {
 			return err
@@ -200,6 +205,8 @@ func (h *Handler) handleFormatAnomalySummary(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	// 批 157 (2026-10-16): tenant isolation, parallel to handleFormatAnomalies.
+	tenantID := EffectiveTenantIDAll(r)
 
 	hours := queryInt(r, "hours", 24)
 	if hours <= 0 {
@@ -210,7 +217,7 @@ func (h *Handler) handleFormatAnomalySummary(w http.ResponseWriter, r *http.Requ
 	}
 
 	summaries := make([]FormatAnomalySummary, 0)
-	if err := withAllTenantReadOnlyTx(r.Context(), h.db, func(tx pgx.Tx) error {
+	if err := withTenantOrAllReadOnlyTx(r.Context(), h.db, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(r.Context(), `
 			SELECT
 				DATE_TRUNC('hour', detected_at) AS hour,
@@ -267,10 +274,6 @@ func (h *Handler) handleFormatAnomalySummary(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *Handler) handleFormatAnomalySubrouter(w http.ResponseWriter, r *http.Request) {
-	if h.db == nil {
-		writeError(w, http.StatusServiceUnavailable, "database not configured")
-		return
-	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin/format-anomalies/")
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) != 2 || parts[1] != "resolve" {
@@ -279,6 +282,20 @@ func (h *Handler) handleFormatAnomalySubrouter(w http.ResponseWriter, r *http.Re
 	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	// 批 157 (2026-10-16): the resolve write path stays super_admin-only.
+	// tenant_admin has read-only access to the anomalies via RLS, but
+	// cannot mark them resolved. The middleware accepts both roles; this
+	// gate enforces the write restriction at the subrouter. Checked
+	// before the db-nil guard so a misconfigured deployment doesn't
+	// leak 503 to a role we already want to reject with 403.
+	if !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "super_admin role required to resolve format anomalies")
+		return
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 	id, err := strconv.ParseInt(parts[0], 10, 64)
@@ -302,7 +319,8 @@ func (h *Handler) handleFormatAnomalySubrouter(w http.ResponseWriter, r *http.Re
 			    resolved_at = NOW(),
 			    resolution_notes = $2
 			WHERE id = $1
-		`, id, body.ResolutionNotes)
+			  AND ($3 = '' OR tenant_id = $3)
+		`, id, body.ResolutionNotes, EffectiveTenantIDAll(r))
 		return err
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "update failed")

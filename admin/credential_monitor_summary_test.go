@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -333,5 +335,117 @@ func TestRunMonitorSummary_RowsErrPropagates(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("mock expectations: %v", err)
+	}
+}
+
+// TestRunMonitorSummary_DetailModelsDeriveStateAndWorstRate 覆盖 detail 模式的
+// **Go 侧** per-model 状态派生，以及 summary 模式的 worst-rate 语义。
+//
+// ⚠ 判据纪律（AGENTS.md #3 / #12）：
+//
+//	聚合成功率**不能**从 mock 行里断言 —— 那是 mock 把自己回显给自己，
+//	恒绿（本仓库上一轮就踩过：分支那份判据断言 `*AggregatedSuccessRate == 0.72`，
+//	而 0.72 正是 mock 自己塞进去的值，删掉整段实现它照样全绿）。
+//	worst-rate 的语义在 **SQL** 里（summary 模式 `MIN(rsr.rate)`），
+//	所以那条断言落在 SQL 文本上；detail 模式则必须显式为 NULL（不编造）。
+func TestRunMonitorSummary_DetailModelsDeriveStateAndWorstRate(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	models := []byte(`[
+		{"raw_model_name":"manual","offer_available":true,"binding_available":false,"binding_unavailable_reason":"manual_offline","probe_state":"healthy_confirmed","recent_success_rate":0.91},
+		{"raw_model_name":"broken","offer_available":true,"binding_available":true,"probe_state":"broken_confirmed","recent_success_rate":0.72}
+	]`)
+	rows := pgxmock.NewRows([]string{
+		"id", "provider_id", "provider_name", "label", "status",
+		"availability_state", "health_status", "quota_state",
+		"concurrency_limit", "concurrency_limit_auto", "effective_concurrency",
+		"manual_disabled", "consecutive_failures", "availability_recover_at",
+		"state_reason_code", "state_reason_detail", "health_checked_at", "total_requests",
+		"model_total", "model_available", "broken_model_count", "aggregated_success_rate", "models",
+	}).AddRow(
+		int64(11), int64(7), "provider", "credential", "active", "ready", "healthy", "ok",
+		nil, nil, 5, false, 0, nil, nil, nil, nil, int64(100), 2, 1, 1, nil, models,
+	)
+	mock.ExpectQuery(`SELECT[\s\S]*FROM[\s\S]*credentials[\s\S]*`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), "tenant-a").
+		WillReturnRows(rows)
+
+	_, summaries, err := runMonitorSummary(context.Background(), mock,
+		monitorSummarySQLParams{ProviderID: 7, CredentialID: 11, Mode: "detail", TenantID: "tenant-a"})
+	if err != nil {
+		t.Fatalf("runMonitorSummary: %v", err)
+	}
+	if len(summaries) != 1 || len(summaries[0].Models) != 2 {
+		t.Fatalf("unexpected summary result: %+v", summaries)
+	}
+
+	// ★ Go 侧派生（真被测逻辑）：manual_offline → manual_disabled，
+	//   broken_confirmed → probe_broken，理由文案同源。
+	manual, broken := summaries[0].Models[0], summaries[0].Models[1]
+	if manual.EffectiveState != "manual_disabled" || manual.ModelDisabledReason != "管理员手动下线" {
+		t.Fatalf("manual model derivation drifted: %+v", manual)
+	}
+	if broken.EffectiveState != "probe_broken" || broken.ModelDisabledReason != "探测失败 (broken_confirmed)" {
+		t.Fatalf("broken model derivation drifted: %+v", broken)
+	}
+
+	// ⚠ 这里**不能**断言扫描出来的 AggregatedSuccessRate —— 那个值是 mock 行
+	//   自己塞进去的，断言它等于 mock 就是「mock 把自己回显给自己」，恒绿。
+	//   detail 模式「不编造聚合成功率」是一条 **SQL** 契约，落在 SQL 文本上。
+	detailSQL := buildMonitorSummarySQL(monitorSummarySQLParams{ProviderID: 7, CredentialID: 11, Mode: "detail", TenantID: "tenant-a"})
+	if !strings.Contains(detailSQL, "NULL::double precision AS aggregated_success_rate") {
+		t.Fatalf("detail mode must not fabricate an aggregated success rate, SQL:\n%s", detailSQL)
+	}
+
+	// ★ worst-rate 语义落在 summary 模式的 SQL 上：取各模型最近成功率的**最小值**。
+	summarySQL := buildMonitorSummarySQL(monitorSummarySQLParams{ProviderID: 7, TenantID: "tenant-a"})
+	if !strings.Contains(summarySQL, "MIN(rsr.rate) AS aggregated_success_rate") {
+		t.Fatalf("summary mode must take the worst model success rate, SQL:\n%s", summarySQL)
+	}
+	if !strings.Contains(summarySQL, "recent_success_rate") {
+		t.Fatalf("summary mode must source the per-model success rate, SQL:\n%s", summarySQL)
+	}
+	// core 模式刻意不碰 request_logs，也不算聚合成功率。
+	coreSQL := buildMonitorSummarySQL(monitorSummarySQLParams{Mode: "core", TenantID: "tenant-a"})
+	if strings.Contains(coreSQL, "MIN(rsr.rate)") {
+		t.Fatalf("core mode must not compute the worst rate, SQL:\n%s", coreSQL)
+	}
+}
+
+// TestHandleMonitorSummary_NilDB：未接 DB 时给 503，而不是 nil pointer panic。
+//
+// ⚠ 与兄弟 handler 的口径一致性：promote/demote/set-concurrency/model-toggle/
+// decisions/manual-disabled/sliding-window 等 9 个 handler 都有这道门，
+// summary handler 原先是本组**唯一**没有的（2026-10-20 补上）。
+func TestHandleMonitorSummary_NilDB(t *testing.T) {
+	m := &CredentialMonitorHandlers{h: &Handler{}}
+	// ⚠ 必须用**唯一** provider_id：monitorSummaryCache 是**包级全局**，
+	//   同 key 的条目会被同包其它测试写进去并跨测试存活
+	//   （默认 provider_id=0 的那条已被 server_duration 测试缓存 ⇒
+	//     本用例会走到缓存命中分支，拿到 200 而不是 503）。
+	//   缓存命中在 nil-db 判空**之前**短路是有意为之：缓存命中不需要 DB。
+	req := httptest.NewRequest(http.MethodGet, "/api/credentials/monitor-summary?provider_id=987654", nil)
+	req = SetAuthContext(req, &AuthContext{Role: "super_admin", UserID: 1, TenantID: "default"})
+	rr := httptest.NewRecorder()
+	m.handleMonitorSummary(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s, want 503", rr.Code, rr.Body.String())
+	}
+}
+
+// TestHandleMonitorSummary_RoleGateBeforeNilDB：未授权者得 403 而不是 503。
+//
+// 503 会泄露「DB 是否已配置」，与本组读写两侧的角色门口径一致。
+func TestHandleMonitorSummary_RoleGateBeforeNilDB(t *testing.T) {
+	m := &CredentialMonitorHandlers{h: &Handler{}}
+	req := httptest.NewRequest(http.MethodGet, "/api/credentials/monitor-summary", nil)
+	rr := httptest.NewRecorder()
+	m.handleMonitorSummary(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s, want 403", rr.Code, rr.Body.String())
 	}
 }

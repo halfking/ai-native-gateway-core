@@ -218,7 +218,7 @@ function closeDialog() {
       <section class="journey-modal" role="dialog" aria-modal="true" :aria-label="t('requestJourneys.title')">
         <div class="journey-header">
           <div><h3>{{ t('requestJourneys.title') }}</h3><p class="journey-modal-sub">{{ t('requestJourneys.modalSubtitle') }}</p></div>
-          <div class="journey-header-actions"><button type="button" class="icon-button" :title="t('requestJourneys.retry')" :aria-label="t('requestJourneys.retry')" @click="loadView(activeView, true)"><RefreshRight aria-hidden="true" /></button><button type="button" class="icon-button" aria-label="关闭" title="关闭" @click="closeDialog"><Close aria-hidden="true" /></button></div>
+          <div class="journey-header-actions"><button type="button" class="icon-button" :title="t('requestJourneys.retry')" :aria-label="t('requestJourneys.retry')" @click="loadView(activeView, true)"><RefreshRight aria-hidden="true" /></button><button type="button" class="icon-button" :aria-label="$t('common.close')" :title="$t('common.close')" @click="closeDialog"><Close aria-hidden="true" /></button></div>
         </div>
 
     <div class="journey-tabs" role="tablist" :aria-label="t('requestJourneys.title')">
@@ -391,7 +391,7 @@ function closeDialog() {
   text-align: left;
   cursor: pointer;
 }
-.queue-row:hover { background: var(--kx-bg-elevated); }
+.queue-row:hover { background: var(--bg-hover); }
 .queue-position,
 .queue-attempt,
 .queue-updated { color: var(--kx-text-secondary); font-size: 11px; }
@@ -421,7 +421,7 @@ function closeDialog() {
   gap: 4px 8px;
   margin-top: 8px;
   padding: 8px 10px;
-  border-left: 3px solid var(--kx-warning);
+  border: 1px solid var(--kx-warning);
   background: color-mix(in srgb, var(--kx-warning) 10%, var(--kx-surface));
   color: var(--kx-text-secondary);
   font-size: 12px;

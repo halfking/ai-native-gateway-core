@@ -63,13 +63,25 @@ var normalizedRe = regexp.MustCompile(`replace\(\s*[\w.]*request_id::text\s*,\s*
 // noopTextCasts 白名单：**text 列 → text 的空操作**，不是 uuid::text，不需要规范化。
 // 登记它们不是为了放行，而是为了让「白名单项消失了/变了」也能被发现。
 // ⚠️ key 是 `<相对本包路径>:<行内特征>`，行内特征必须仍能在该文件里 grep 到。
-var noopTextCasts = map[string]string{
-	"analytics.go:request_id::text = ANY($1::text[])": "_request_logs 是 text 列；上一段 _request_logs_hot 分支连 ::text 都不加，两边等价。别改成 replace(...)",
-}
+//
+// 2026-10-16 退役轮：原 analytics.go 的 `request_id::text = ANY($1::text[])`
+// 已从白名单**移除**，因为那一行空操作转换本身被删了——
+// admin/analytics.go 的决策回放腿改写为内联双腿后，hot 腿写
+// `request_id = ANY($1::text[])`（不带 ::text），母表腿同样去掉转换。
+// 依据是该文件内的 R47 实测注释：真库 _request_logs / _request_logs_hot 的
+// request_id **均为 text**，母表存原始 hex32；真正 uuid 型的是
+// routing_decision_log.request_id，不是这两张表。所以这条白名单的放行理由
+// 已随被放行的那行代码一起消失——保留它会让本门变成判据自己警告的「恒绿断言」。
+var noopTextCasts = map[string]string{}
 
 // noopTextCastsDB 同上，但在 db 包。
 var noopTextCastsDB = map[string]string{
-	"db.go:request_id::text AS request_id": "routing_analytics_source 从 _request_logs_hot / _request_logs 取数，两张表 request_id 都是 text ⇒ 空操作",
+	// ★ 2026-10-20（迁移 890）：routing_analytics_source 的取数源从
+	// `_request_logs_hot` / `_request_logs` 换成 **canonical 视图**
+	// （request_logs_with_current_month；890 之后它是会话族两臂体）。
+	// 结论不变：那一列仍是 text（session_turns.request_id text NOT NULL）
+	// ⇒ `request_id::text` 仍是空操作。
+	"db.go:request_id::text AS request_id": "routing_analytics_source 从 canonical 视图 request_logs_with_current_month 取数（890 之后是会话族两臂体），session_turns.request_id 是 text ⇒ 空操作",
 }
 
 func readSource(t *testing.T, path string) string {
@@ -172,11 +184,26 @@ func TestCrossTableRequestIDRepresentation(t *testing.T) {
 				t.Errorf("db 包白名单项 %q 已不存在：请删除或更新（否则恒绿）", key)
 			}
 		}
-		// db 包的 routing_analytics_source 从 _request_logs* 取数，两张表都是 text 列
-		// ⇒ 这里的 ::text 是空操作。**只登记，不禁止** —— 真正的禁止在 admin 包那个子测试里。
-		if !strings.Contains(body, "FROM _request_logs_hot") {
-			t.Error("db.go 里已找不到 `FROM _request_logs_hot`：" +
-				"routing_analytics_source 的数据来源变了，请复核 db 包的空操作判断")
+		// ★ 2026-10-20（890）：取数源从 `_request_logs_hot` / `_request_logs`
+		// 换成 canonical 视图（request_logs_with_current_month，890 之后是
+		// 会话族两臂体）。⇒ 白名单的**放行理由**跟着换，结论不变。
+		//
+		// ⚠ 判据的作用是「取数源变了就逼人复核」⇒ 标记必须跟着换；否则它会
+		// 一直报「已找不到」，而没人分得清该改白名单还是该改代码。
+		if !strings.Contains(body, "FROM request_logs_with_current_month") {
+			t.Error("db.go 里已找不到 `FROM request_logs_with_current_month`：" +
+				"routing_analytics_source 的数据来源又变了，请复核 db 包的空操作判断")
+		}
+		// 阳性对照：白名单的放行理由依赖「那一列是 text」⇒ 把它钉在 schema 快照上。
+		// （会话族 request_id 是 text；uuid 的是 routing_decision_log。）
+		schema, err := os.ReadFile("../sql/schema/01-schema.sql")
+		if err != nil {
+			t.Skipf("读不到 schema 快照（%v），跳过类型事实断言", err)
+		}
+		if !strings.Contains(string(schema), "request_id text NOT NULL,") {
+			t.Error("schema 里已找不到 `request_id text NOT NULL,`：" +
+				"会话族 request_id 的类型变了 ⇒ routing_analytics_source 的 request_id::text " +
+				"可能不再是空操作，请复核 noopTextCastsDB")
 		}
 	})
 }

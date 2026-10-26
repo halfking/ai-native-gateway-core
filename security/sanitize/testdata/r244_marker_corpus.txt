@@ -1,0 +1,90 @@
+# r244_marker_corpus.txt —— 占位符扫描的**提交式语料**（2026-10-21）
+#
+# 为什么要把它提交进仓库：
+#   原先的误报审计（r244_bare_marker_corpus_audit_test.go）只扫**外部**语料
+#   （生产抽样，默认路径 /tmp/sbld3/samples.txt）。本机没有那份文件 ⇒ 测试
+#   **整体 skip** ⇒ 在 CI 里它长得和「审计通过」一模一样。而
+#   AGENTS.md 的硬要求是：「检查没跑成」与「检查通过」必须长得不一样。
+#   ⇒ 这份提交式语料保证审计**永远至少跑一遍**，外部语料存在时再叠加。
+#
+# 行格式：
+#   #            注释
+#   MARKER      <原文>  必须被**生产扫描路径**检出（≥1 个 span），且不得被判成误报
+#   MARKER-JSON <原文>  花括号分支会**整段吞掉**这段 JSON（生产是在内层重扫里
+#                         才看到里面那个 marker 的）⇒ 不要求 span 数，但要求
+#                         **端到端被遮蔽**（客户端拿到的文本里不得再有标记词）
+#   PROSE       <原文>  必须检出 **0** 个 span（散文不得被当成标记），且端到端逐字不变
+#
+# ⚠️ MARKER 段的判定用的是**生产扫描路径**（looseMarkerSpans），不是
+#    loosePlaceholderSpanPattern。后者的裸形态分支只认 ASCII ⇒ 全角拼写
+#    在它眼里**根本不存在** ⇒ 用它审计等于审计了一个生产不会用的扫描器。
+#    （2026-10-21 实测：`ＳＥＮＳＩＴＩＶＥ：phone` 在生产扫描里是 1 个 span，
+#    在旧审计口径里是 0 个。）
+#
+# ── 已知漏检形态 ──────────────────────────────────────────────
+#
+# ⚠️ 2026-10-21 更新：下面这一条**已修**，形态已挪进 MARKER 段。
+#    修复前（实测，生产扫描路径 looseMarkerSpans）：
+#        `ＳENSITIVE：phone`       spans=0   ← 混拼（首字全角）
+#        `SENSITIVＥ:phone`        spans=0   ← 混拼（末字全角）
+#        `ＳＥＮＳＩＴＩＶＥ：phone`  spans=1   （本来就支持）
+#        `SENSITIVE:phone`        spans=1   （本来就支持）
+#    根因**不在便宜门本身**，而在 foldMarkerWidth 的**前置门**是
+#    「全 ASCII 词」与「全全角词」的**析取** ⇒ 混拼两者皆不成立
+#    ⇒ 折宽副本根本不构造 ⇒ **生产扫描器本体也看不见它**（0 spans）
+#    ⇒ 标记原样到达客户端。
+#    修法见 docs/audit/2026-10-20-r1039-脱敏阻断与设置界面审计轮.md §7.13，
+#    判据见 security/sanitize/r1039_mixed_width_marker_test.go。
+#
+#   标记词本身**半角全角混拼**（如 `ＳENSITIVE：phone`、`SENSITIVＥ:phone`）。 ← 已修
+#
+# ── 仍待确认的漏检形态（**故意不放进 MARKER 段**）────────────
+#   （目前无：2026-10-21 把 2^9 = 512 种宽度组合**全部穷举**验证过，
+#     混拼词级形态已全覆盖。若将来发现新的形态，先在此登记再修。）
+
+# ── MARKER 段：生产扫描必须看见 ───────────────────────────────
+MARKER {SENSITIVE:secret:1}
+MARKER ｛SENSITIVE:secret:1｝
+MARKER {SENSITIVE：phone：1}
+MARKER ｛SENSITIVE：phone：1｝
+MARKER SENSITIVE:phone
+MARKER SENSITIVE：phone
+MARKER ＳＥＮＳＩＴＩＶＥ：phone
+MARKER ＳＥＮＳＩＴＩＶＥ:phone
+MARKER SENSITIVE:phone:1
+MARKER （SENSITIVE:phone, SENSITIVE:email, SENSITIVE:id_card）
+MARKER your token is ＳＥＮＳＩＴＩＶＥ：ｓｅｃｒｅｔ：１ ok
+MARKER-JSON {"phone":"SENSITIVE:phone"}
+
+# ── 混拼形态（半角/全角逐字符混用）：2026-10-21 修复后加入 ──────
+# 这些形态修复前在生产扫描路径上是 **0 spans**（标记原样到客户端）。
+MARKER ＳENSITIVE：phone
+MARKER SENSITIVＥ:phone
+MARKER Ｓensitive:phone
+MARKER sensitive：phone
+MARKER ｛ＳＥＮＳＩＴＩＶＥ：ｓｅｃｒｅｔ：１｝
+MARKER ｛ＳENSITIVE：secret：1｝
+MARKER {SENSITIVE：secret：1}
+MARKER {SENSITIVE:ｓｅｃｒｅｔ:1}
+
+# ── PROSE 段：生产扫描必须看不见 ───────────────────────────────
+PROSE the sensitive data was returned
+PROSE this is not sensitive
+PROSE most sensitive: phone number
+PROSE server_ip is a type name
+PROSE sensitive:12345
+PROSE grep -n 'sensitive: 12345' file.txt
+PROSE a.sensitive-phone
+PROSE {"path":"/tmp/a.txt","count":3}
+PROSE {"cfg":{"retries":5},"tags":["a","b"]}
+PROSE 这是敏感数据，请妥善保管
+PROSE 敏感字段：手机号
+PROSE 全角标点，：（）；！？
+PROSE ＡＢＣ：ＡＢＣ
+PROSE 订单已发货，联系电话：１３８００１３８００
+
+# ── 混拼形态的**散文**侧（2026-10-21 加入）──────────────────────
+# 放宽「看见混拼」不得放大范围：含标记词但**不是标记**的散文必须逐字不变。
+PROSE ＳＥＮＳＩＴＩＶＥ 这个词出现在散文里
+PROSE SENSITIVＥ 这个词也出现在散文里
+PROSE 客户反馈：SENSITIVE 字段为空

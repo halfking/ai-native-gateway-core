@@ -7,14 +7,14 @@ export default {
   common: {
       refresh: "重新整理",
       loading: "處理中…",
-      empty: "暫無資料",
+      empty: '免費資源發現還沒有記錄',
       actions: "操作",
       enabled: "已啟用",
       disabled: "已停用",
       hideForm: "收起"
     },
   tabs: {
-      templates: "模板管理",
+      templates: "範本管理",
       tasks: "任務與結果審查",
       history: "匯入歷史"
     },
@@ -46,8 +46,8 @@ export default {
       done: "匯入完成：成功 {created} 個，失敗 {failed} 個"
     },
   tpl: {
-      listTitle: "模板列表（{n}）",
-      name: "模板",
+      listTitle: "範本清單（{n}）",
+      name: "範本",
       baseUrl: "Base URL",
       apiType: "API 協定",
       keyEnv: "Key 環境變數",
@@ -75,13 +75,13 @@ export default {
       trigger: "觸發方式",
       found: "發現數",
       imported: "已匯入",
-      by: "操作人",
+      by: "操作者",
       time: "建立時間",
       error: "錯誤訊息",
       review: "審查結果"
     },
   res: {
-      title: "發現結果 · 任務 {id} · {provider}",
+      title: "發現結果，任務 {id}，{provider}",
       pending: "待審查",
       all: "全部",
       model: "模型 ID",
@@ -121,7 +121,7 @@ export default {
       completed: "完成時間",
       detail: "明細",
       none: "暫無匯入記錄。完成一次「任務與結果審查」頁的批次匯入後會在這裡顯示。",
-      detailTitle: "匯入明細 · 任務 {id} · {provider}",
+      detailTitle: "匯入明細，任務 {id}，{provider}",
       importedAt: "匯入時間"
     },
 }

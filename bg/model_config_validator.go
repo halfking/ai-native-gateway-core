@@ -60,8 +60,8 @@ func (v *ModelConfigValidator) Start(ctx context.Context) {
 func (v *ModelConfigValidator) Stop() {
 	if v.cancel != nil {
 		v.cancel()
+		<-v.done
 	}
-	<-v.done
 	slog.Info("model_config_validator stopped")
 }
 

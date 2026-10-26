@@ -274,19 +274,19 @@
           </div>
 
           <div class="modal-section">
-            <div class="modal-section-title">① {{ t('dataLifecycle.storageOverview.modal.flow') }}</div>
+            <div class="modal-section-title">{{ t('dataLifecycle.storageOverview.modal.flow') }}</div>
             <div class="modal-section-body">{{ flowText }}</div>
           </div>
           <div class="modal-section" :class="{ 'modal-section-impact': confirmOp.op !== 'VACUUM' }">
-            <div class="modal-section-title">② {{ t('dataLifecycle.storageOverview.modal.impact') }}</div>
+            <div class="modal-section-title">{{ t('dataLifecycle.storageOverview.modal.impact') }}</div>
             <div class="modal-section-body">{{ impactText }}</div>
           </div>
           <div class="modal-section">
-            <div class="modal-section-title">③ {{ t('dataLifecycle.storageOverview.modal.disk') }}</div>
+            <div class="modal-section-title">{{ t('dataLifecycle.storageOverview.modal.disk') }}</div>
             <div class="modal-section-body">{{ diskText }}</div>
           </div>
           <div class="modal-section">
-            <div class="modal-section-title">④ {{ t('dataLifecycle.storageOverview.modal.time') }}</div>
+            <div class="modal-section-title">{{ t('dataLifecycle.storageOverview.modal.time') }}</div>
             <div class="modal-section-body">{{ timeText }}</div>
           </div>
         </div>
@@ -786,7 +786,7 @@ function fmtNum(n: number) {
 
 /* ── 列存 (citus_columnar) ── */
 .columnar-card {
-  border-left: 3px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
 }
 .columnar-grid {
   display: grid;
@@ -804,8 +804,7 @@ function fmtNum(n: number) {
   color: var(--muted);
   margin-bottom: 6px;
   font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
 }
 .columnar-stat .stat-value {
   font-size: 22px;
@@ -823,7 +822,7 @@ function fmtNum(n: number) {
   margin: 12px 0 0;
   padding: 8px 12px;
   background: color-mix(in srgb, var(--accent) 8%, transparent);
-  border-left: 2px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 4px;
   font-size: 12px;
   color: var(--accent-h);

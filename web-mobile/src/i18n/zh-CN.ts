@@ -5,6 +5,7 @@ export const zhCN = {
     subtitle: '移动运维',
   },
   nav: {
+    sanitizeRules: '脱敏规则',
     maasRates: 'MaaS 积分价',
     maasOrders: 'MaaS 订单',
     maasCatalog: 'MaaS 目录',
@@ -25,7 +26,7 @@ export const zhCN = {
     modelIQ: '模型智商',
     opsOverview: '运维总览',
     requestActions: '动作时间线',
-    v1DataHorizon: 'v1 数据地平线',
+    dataHorizon: '流量数据地平线',
     slidingWindow: '滑窗调用明细',
     modelIntegrityDrift: '指纹漂移',
     modelPolicies: '模型策略',
@@ -51,6 +52,8 @@ export const zhCN = {
     nodes: '节点',
     models: '模型',
     keys: '密钥',
+    searchPlaceholder: '搜索功能页…',
+    searchNoResults: '没有匹配的功能页',
     more: '更多',
     alerts: '告警',
     usage: '用量',
@@ -96,6 +99,8 @@ export const zhCN = {
     dataLifecycleStorage: '存储总览',
     storageAndLogConfig: '存储与日志',
     storageMigrationState: '附件目录迁移',
+    turnsFilterOptions: '筛选候选值',
+    sessionAnalyticsFilterOptions: '会话筛选项',
     account: '我的',
   },
   // ★ 订阅档（2026-10-14，第一百二十批）。前缀 sts。
@@ -275,6 +280,84 @@ export const zhCN = {
       filesDeleted: '已删文件数',
     },
   },
+  // ★ 轮次筛选候选值（2026-10-15，第一百二十七批）。前缀 tfo。
+  tfo: {
+    title: '筛选候选值',
+    nope: {
+      msg: '仅管理员可查看筛选项候选值。',
+      // ★★ 与 slc/sms 的 nope 文案方向一致：这一族服务端**没有**角色下限。
+      why: '这一层是服务端之外唯一的门：后端这个端点只校验登录、不校验角色，普通账号本来也能读到本租户的全部候选值。',
+    },
+    gate: { note: '本页是这一族里唯一挡普通账号的地方（后端只校验登录，不校验角色）。' },
+    readonly: { note: '本页只读：筛选本身由轮次列表端点执行，这里只取候选值。' },
+    load: { title: '取数', btn: '刷新候选值' },
+    state: { title: '候选值' },
+    badge: { nonEmpty: '有候选值' },
+    empty: '这台网关还没有任何可筛选的维度（不是故障）。',
+    emptyDims: '以下维度暂无候选值：{list}',
+    dim: {
+      models: '模型',
+      providers: '供应商',
+      statusCodes: '状态码',
+      projects: '项目',
+      tasks: '任务',
+      owners: '负责人',
+      clients: '客户端',
+      tags: '标签',
+      empty: '（暂无可选值）',
+    },
+    note: {
+      windowed: '受「近 {n} 天」窗口约束。',
+      allTime: '★ 不受时间窗口约束：取的是全历史里最近活跃的值。',
+      clients: '★ 不受时间窗口约束（取全历史最近活跃）；且这一列混着两种来源，不能假定它只是客户端 ID。',
+      tags: '★ 不受时间窗口约束（取全历史最近活跃）；数组里的空串会原样出现在这里。',
+    },
+    windowNote: '★ 后端只有 3 个维度受近 {days} 天窗口约束（模型 / 供应商 / 状态码），其余 5 个是全历史最近活跃。',
+    clientsNote: '「客户端」这一维度是 client_id ∪ {sources} 的并集。',
+    noApiKeys: '★ 响应里没有 api_keys 这个键，所以本页不渲染「API Key」筛选（桌面那把下拉永远是空的）。',
+    tenant: { scoped: '本页只展示本租户范围内的候选值。' },
+    truncated: '已达 {n} 条上限，可能还有更多',
+    badStatus: '★ 这些值不是合法状态码，回传筛选条件时会被忽略：{list}',
+  },
+  // ★ 会话分析筛选项（2026-10-15，第一百二十八批）。前缀 saf。
+  // ⚠️ 与兄弟端点的 tfo 块**方向相反**，文案不能互相套用：
+  //   本族只有 2 个维度、无数据时后端发 null（不是 []）、super_admin 看全部租户。
+  saf: {
+    title: '会话筛选项',
+    nope: {
+      msg: '仅管理员可查看会话筛选项。',
+      // ★★ 本族与兄弟端点(tfo)同为「服务端没有角色下限」这一类，但**多一层**：
+      //   这里的鉴权是**双模式**的，另一条分支(session-service JWT)确实检了
+      //   `session:read` scope —— 可那是**服务间调用**的门，浏览器用户走不到它。
+      why: '这一层是服务端之外唯一的门：后端对浏览器用户只校验登录、不校验角色，普通账号本来也能读到本租户的全部模型与提供商清单。',
+    },
+    gate: { note: '本页是这一族里唯一挡普通账号的地方（后端只校验登录，不校验角色）。' },
+    readonly: { note: '本页只读：会话筛选本身由会话分析列表端点执行，这里只取候选值。' },
+    load: { title: '取数', btn: '刷新筛选项' },
+    state: { title: '筛选项' },
+    badge: { nonEmpty: '有筛选项' },
+    empty: '这台网关近 30 天还没有跑过任何会话（不是故障）。',
+    // ★★ 半空形状专属文案：两个列表里恰好一个没值。兄弟端点**没有**这一档。
+    halfEmpty: '★ 只有一半的筛选项有值，另一半是空的：{list}。这在本网关是正常状态（会话摘要里的模型列与提供商列可以只有一个有值）。',
+    emptyDims: '以下维度暂无候选值：{list}',
+    dim: {
+      models: '模型',
+      providers: '提供商',
+      empty: '（暂无可选值）',
+      // ★★ (2) 后端无数据时发的是 null 而不是 []，这两种「空」要说清楚区别。
+      nullEmpty: '（后端返回 null：近 30 天没有过这个维度，不是故障）',
+    },
+    // ★ (9) 顺序与去重在响应里可观测，所以能把它显示出来而不是默默假定。
+    sortedUnique: '按值升序·无重复',
+    dimNote: '聚合自 session_summaries.{column}，近 {days} 天。',
+    // ★★ 两个维度**都**有 30 天窗口（兄弟端点只有 3/8 有）——文案不能抄那边的。
+    windowNote: '★ 本页只有 {n} 个维度，且**都**受近 {days} 天窗口约束。',
+    // ★★ (4) super_admin 这一档看的是**全部租户**的聚合，且无法用参数收窄。
+    crossTenant: {
+      note: '★ 你以超级管理员身份查看：这里是**全部租户**近 30 天的模型与提供商聚合，这个端点**没有**按租户收窄的参数。',
+    },
+    tenant: { agnostic: '本页展示的是聚合候选值清单（不含任何租户标识字段）。' },
+  },
   // ★ 用量成本（2026-10-14，第一百二十二批）。前缀 ue。
   ue: {
     title: '用量成本',
@@ -340,6 +423,9 @@ export const zhCN = {
     sessionExpired: '登录状态已过期，请重新登录。',
     sessionAliveUnauthorized: '登录状态有效，但该功能当前不可用（可能未启用该功能）。',
     forbidden: '当前账号没有执行此操作的权限。',
+    // ★ 第一百三十四批：深链直达受限页时，document.title 用它
+    //   —— `common.forbidden` 讲的是「不能做某个操作」，语义不对口。
+    pageDenied: '无权访问此页',
     notFoundOrDenied: '记录不存在或当前账号无权查看。',
     conflict: '服务端数据已变化，请刷新后重试。',
     serverError: '服务端暂时无法完成操作，请稍后重试。',
@@ -849,7 +935,7 @@ export const zhCN = {
   waterfall: {
     title: '调度瀑布',
     // ★ 本面没有 degraded 字段，不可观测由 wired/source 表达，文案必须区别于「没有请求」
-    unwired: '队列投影未接上 —— 这不是「当前没有请求」，而是这个观测面根本没在工作，时序数据不可用。',
+    unwired: '队列投影未接上。观测面没在工作，时序数据不可用，不能按「当前没有请求」读。',
     sourceNone: '没有可用数据源 —— 同上，时序数据不可用。',
     sourceLabel: '数据源：{s}',
     empty: '当前没有可展示的调度记录',
@@ -1655,6 +1741,12 @@ export const zhCN = {
     stale: '已过期',
     lastActive: '最后活跃 {t}',
     loadMore: '加载更多',
+    openDetail: '打开会话详情 {id}',
+    detailTitle: '会话详情',
+    sessionId: '会话 ID',
+    lastActiveLabel: '最后活跃',
+    focusTurns: '全屏查看轮次',
+    openInTurns: '在会话页打开',
     errForbidden: '当前账号没有查看在线会话的权限',
   },
   dataFlow: {
@@ -1991,6 +2083,13 @@ export const zhCN = {
   },
   anomalies: {
     title: '请求侧异常',
+    // ★ 深链兜底文案（第 130 批）。⚠️ 服务端 `SuperAdminMiddleware`
+    // 逐字比 role ⇒ 这一族是**真门**，本层兜的是**体验层**（说清为什么），
+    // 与 `admin` 档那批（前端才是唯一的门）**方向相反**。
+    nope: {
+      msg: '仅超级管理员可查看请求侧异常。',
+      why: '服务端会返回 403（这一族的权限门是后端中间件）；本页提前挡住，是为了告诉你原因，而不是显示一串接口错误。',
+    },
     counts: '未解决计数',
     unresolved: '未解决',
     newToday: '今日新增',
@@ -2194,7 +2293,7 @@ export const zhCN = {
     searchPlaceholder: '按订单号 / 租户 / 状态 / 类型 / 套餐名过滤',
     empty: '没有匹配的订单。',
     // ↓ 列表项
-    noPaymentHintNote: '这一行没有支付提示——**不是「这单没有支付信息」**，而是列表接口压根不返回这个字段（见详情页）。',
+    noPaymentHintNote: '这一行没有支付提示：列表接口压根不返回这个字段（见详情页），这一列恒为空，不能读成「这单没有支付信息」。',
     listLacksEnrichNote: '本页所有订单都缺 `payment_hint` / `stub_mode`：后端只在**详情**接口里 enrich 支付信息，列表那一圈没调。这是**端点差异**，不是数据缺失。',
     orphanTag: '关联已删',
     orphanName: '（关联已被删除）',
@@ -3434,7 +3533,7 @@ sctx: {
     limitLabel: '条数上限',
     limitPlaceholder: '留空 = 后端默认 50',
     limitEffectiveNote: '实际生效的条数上限：{n}',
-    limitRewrittenNote: '★★ 你填的值被后端改成了 {n}：它的实现不是「截断到上限」，而是「小于等于 0 或大于 200 一律回落成默认值 {default}」。所以 200 是合法的、201 会变回 50，填非数字也一样。',
+    limitRewrittenNote: '★★ 你填的值被后端改成了 {n}：后端的规则是「小于等于 0 或大于 200 一律回落成默认值 {default}」，不按上限截断。所以 200 是合法的、201 会变回 50，填非数字也一样。',
     triggerType: '触发方式',
     modelsFound: '扫到模型',
     modelsImported: '已导入',
@@ -3696,7 +3795,7 @@ sctx: {
     },
     series: {
       title: '趋势序列',
-      meta: '桶粒度 {bucket} 分钟 · top={top} · 读面 {source}',
+      meta: '桶粒度 {bucket} 分钟，top={top}，读面 {source}',
       // ★★ 空序列 + degraded=false ⇒ 真的是零用量
       trulyEmpty: '这段时间确实没有用量。',
       // ★★★★ 空序列 + degraded=true ⇒ **不是**「没有用量」，是「没算出来」
@@ -4607,43 +4706,66 @@ sctx: {
   //   注册处 admin/handler.go:1109 的 admin(...) ⇒ **admin 档**，抽屉席**不设** requiresRole。
   // ★★ 本族与批 115/117/118 **相反**且它们并没错：没有租户维度 ≠ 就要过度限制，
   //   判据是「载荷里有没有别人的东西」—— 本族是**平台级全局事实**，七个键无一带租户。
-  v1h: {
-    title: 'v1 数据地平线',
+  dh: {
+    title: '流量数据地平线',
     load: {
       title: '读取',
       btn: '读取告示',
     },
     scope: {
-      note: '本页回答一个平台级问题：v1 流量读源是否已停更。它与租户无关，所以对所有角色开放。',
-      headerNote: '服务端还有一个响应头承载同一件事，但移动端的请求层只取响应体，本页只用响应体判定。',
+      note: '本页回答一个平台级问题：网关还在收请求，而 session_turns 有没有跟上。它与租户无关，所以对所有角色开放。',
+      headerNote: '服务端在这个端点自身的响应上带一个响应头承载同一件事；移动端的请求层只取响应体，本页只用响应体判定。',
       empty: '尚未读取。',
     },
     state: {
       title: '当前状态',
-      live: '正常写入',
-      frozen: '已停更',
-      unknown: '无法确认',
-      'unknown-shape': '形状异常',
+      live: '数据新鲜或网关空闲',
+      stale: '已断流',
+      unknown: '读不到',
+      'unexpected-shape': '形状异常',
       note: {
-        live: '写门明确开着，这一类读源没有停更。',
-        frozen: '明确读到写门已关闭：接口照常返回、结果集非空，但内容停在停写前一刻。',
-        unknown: '控制这个读源的配置键没有显式取值，当前读到的值来自默认值回落 —— 既不能说它停更，也不能说它还在写。',
-        'unknown-shape': '响应既不是「未停更」，也不符合「停更」或「无法确认」这两种形态之一。',
+        live: '会话数据跟上了最近的请求，或者网关最近根本没收到请求（没有流量就没有「该到而未到的数据」）。',
+        stale: '★ 网关仍在接收请求，但 session_turns 没记录到新数据：统计接口照常返回、数字齐全，可内容停在断流那一刻。注意：会话表连一行都没有也算这一档。',
+        unknown: '★ 读不到 session_turns（数据库故障、表缺失、未接库）。既不能说它断流，也不能说它正常 —— 请按「可能已过期」对待。',
+        'unexpected-shape': '响应既不是「数据新鲜」，也不符合「已断流」或「读不到」这两种形态之一。',
       },
     },
     check: {
-      flagBad: '告示对象里 frozen 与 unknown 没有恰好一个为 true —— 后端不产出这种形态。',
-      affectsBad: 'affects 里有后端没有列出的取值。',
-      affectsCountBad: 'affects 的项数不是后端固定的那三个。',
-      sourceBad: 'source 不是那张表的表名（应为 _request_logs，注意开头的下划线；它不是配置来源）。',
-      gateKeyBad: 'gate_key 与后端那个控制键不符 —— 运维要知道改哪里。',
-      shapeBad: '有告示对象但不符合停更/无法确认两种形态之一。',
+      flagBad: '告示对象里 stale 与 unknown 没有恰好一个为 true —— 后端不产出这种形态。',
+      shapeBad: '有告示对象，但不符合「已断流 / 读不到」两种形态之一。',
+      sourceBad: 'source 不是被检查的数据源族（应为 session_turns_hot；它不是配置来源）。',
       envelope: '本状态（{state}）对应的响应体形态已核对。',
     },
     field: {
-      source: '读源族',
-      gateKey: '控制键',
-      affects: '受影响档位',
+      source: '数据源族',
+      recentWindow: '「近期有请求」判定窗',
+      lagTolerance: 'session 侧落后容忍',
     },
+    source: {
+      note: '本页只**如实转述**服务端判定，不在前端重算：后端要比对 session_turns 的 MAX(ts) 与网关进程内的 lastActivity 两个信号（{source}）才能下结论。',
+    },
+  },
+  sr: {
+    title: '脱敏规则', denied: '仅超级管理员、legacy 管理密钥和有租户的租户管理员可访问。',
+    readonly: '本页可查看规则、命中事件、版本与实例，并复核事件。',
+    readonlyManager: '本页可查看规则、命中事件、版本与实例，复核事件并编辑验证规则草稿。发布和回滚请使用桌面端。',
+    draftTitle: '规则草稿', draftNote: 'JSON草稿只保存在当前页面，离开或切换身份会丢弃。验证会发送到服务端，但不会发布规则。RE2正则与样本语义以服务端校验为准。',
+    copyCurrent: '复制当前规则', draftJson: '草稿JSON', validateDraft: '服务端验证', clearDraft: '清空草稿', invalidDraft: '草稿JSON、字段结构或大小无效（请求最多2MiB）。', draftValidated: '此份草稿已通过服务端验证，尚未发布：',
+    publishDraft: '发布草稿', publishComment: '发布说明（必填，最多2000 UTF-8字节）', publishConfirmNote: '确认将以下说明作为新版本提交：当前 base', invalidPublishComment: '发布说明不能为空，且不能超过2000 UTF-8字节。', invalidPublish: '发布请求无效（参数、版本冲突或服务端校验未通过）。', publishSaved: '已发布；当前规则已切换到新版本，草稿已清空。',
+    rollback: '回滚到此版本', rollbackComment: '回滚说明（必填，最多2000 UTF-8字节）', rollbackConfirmNote: '确认把以下说明作为从当前 base 回滚到 v', rollbackSaved: '已回滚；当前规则已切换到回滚目标版本。',
+    paramsTitle: '运行参数', paramsNote: '仅 super_admin/admin_key 可见。修改后由网关周期重新加载，刷新间隔生效有最多 N 秒延迟。', paramsCurrent: '当前', paramsSave: '保存', paramsSaved: '参数已保存；下面刷新以应用。', paramsInvalid: '参数非法：整数须在范围内，布尔为 true/false。',
+    review: '复核事件', reviewComment: '复核评论（最多2000 UTF-8字节）', reviewNote: '请选择复核结论。评论会持久保存，请勿填写密钥或敏感原文。',
+    confirmedSensitive: '确认敏感', falsePositive: '误报', ignored: '忽略', reviewConfirm: '确认保存此事件的复核结论：',
+    invalidReview: '复核状态无效，或评论超过2000 UTF-8字节。', reviewSaved: '复核已保存；当前列表保留该事件，重新读取后应用筛选条件。',
+    events: '命中事件', rules: '当前规则', versions: '发布历史', instances: '实例版本', refresh: '读取',
+    allTenants: '范围：全部租户', ownTenant: '范围：当前租户；由服务端强制过滤。',
+    action: '处理动作', status: '复核状态', limit: '读取上限（1–1000）', all: '全部',
+    notLoaded: '尚未读取。点击读取获取当前数据。', empty: '本次读取没有记录。',
+    tenant: '租户', count: '聚合次数', sample: '脱敏摘要', lastSeen: '最后上报',
+    fallback: '版本 0 为本机回退规则，不代表已有已发布的数据库版本。',
+    enabled: '启用', disabled: '停用', priority: '优先级', details: '查看完整结构', localInstance: '本机状态',
+    rollbackOf: '回滚来源', target: '数据库目标版本', sameVersion: '版本号一致', versionDiffers: '版本号不同',
+    lastRefresh: '最后刷新', instanceNote: '版本号一致不等于实例健康；请同时核对摘要、最后上报时间与错误。本页不自动轮询。',
+    invalidResponse: '服务端响应结构异常，未替换已显示数据。', invalidFilter: '筛选参数无效，请核对动作、状态和整数上限。', requestFailed: '请求失败，请重试。',
   },
 } as const

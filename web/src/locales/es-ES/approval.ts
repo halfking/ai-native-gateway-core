@@ -51,14 +51,12 @@ export default {
       viewDetail: 'View details',
     },
     empty: 'No approval requests',
-    loading: 'Loading…',
     pagination: {
       previous: 'Previous',
       next: 'Next',
-      info: 'Page {page} / {totalPages} ({total} total)',
+      info: 'Página {page} / {totalPages} ({total} en total)',
     },
     errors: {
-      loadFailed: 'Failed to load',
       approveFailed: 'Approve failed',
       rejectFailed: 'Reject failed',
 
@@ -90,6 +88,9 @@ export default {
       actions: 'Approval actions',
       history: 'Approval history',
     },
+    loadFailed: 'No se pudo cargar el detalle de la aprobación. Vuelva a intentarlo.',
+    approveFailed: 'No se pudo completar la aprobación. Vuelva a intentarlo.',
+    rejectFailed: 'No se pudo completar el rechazo. Vuelva a intentarlo.',
   },
   config: {
     title: 'Configuración de aprobación',

@@ -27,37 +27,110 @@ import (
 // 同一文件里的 balance_chain 不受影响：它整段只读 credit_ledger_hot（自洽回放），
 // 不跨族。所以这道门只该挡 usage_credit_mismatch 一项。
 
-func TestUsageCreditComparability(t *testing.T) {
-	cases := []struct {
-		name       string
-		logsWrite  bool
-		wantOK     bool
-		wantReason string
-	}{
-		{"gate open — comparable", true, true, ""},
-		{"gate closed — not comparable, and the reason is machine-readable", false, false, usageCreditSkipS4StopWrite},
+// TestUsageCreditComparabilityIsDataDriven（★ 2026-10-20 退役换题后的新门）：
+// usage↔credit 比对的**可判定性判据必须是数据驱动的**，而不是某个开关的状态。
+//
+// 旧判据（已退役）：纯函数 `usageCreditComparability(logsWriteEnabled)` +
+// 常量 `usageArmEmptySkipReason`，输入是 S4 停写键。它的两个前提都已消失：
+//
+//	① 890 把 v1 族整体 DROP、usage 侧随之迁到**会话族**（写入路径无条件）
+//	   ⇒ 「门一关两侧就不同期」不再成立；
+//	② 该键的**代码默认**被并行审计轮改成 false ⇒ 这条**财务**比对在任何
+//	   未显式配置它的环境上永久停摆（findings 恒 0 ⇒ 运维读到「账务无差异」）。
+//
+// 新判据：**这一次的两侧是否同期** —— usage 臂（会话族带 credits_charged 的
+// 请求）在窗口内一行都没有、而 credit 臂有行 ⇒ 不可判定 ⇒ 跳过并说明。
+//
+// ⚠ 三条断言各自配阳性对照/负对照：
+//
+//	① SQL 必须把 usage 臂的总体规模查出来（否则 Go 侧无从判断）；
+//	② 判定必须落在**已登记**的 reason 上（否则「跳过」不会被指标记到）；
+//	③ 判定**不得**再读那个已退役的键。
+func TestUsageCreditComparabilityIsDataDriven(t *testing.T) {
+	// ① SQL 必须暴露 usage 臂行数。
+	sql := usageCreditSQL()
+	if !strings.Contains(sql, "(SELECT count(*)::int FROM usage)") {
+		t.Error("usageCreditSQL 没有把 usage 臂的总体规模查出来 —— " +
+			"Go 侧就无从判断「这次比对可不可判定」，于是要么恒跳过、要么恒假发现")
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ok, reason := usageCreditComparability(tc.logsWrite)
-			if ok != tc.wantOK {
-				t.Fatalf("comparable = %v, want %v", ok, tc.wantOK)
-			}
-			if reason != tc.wantReason {
-				t.Fatalf("reason = %q, want %q", reason, tc.wantReason)
-			}
-			// The one thing this must never do is return a non-empty verdict
-			// while claiming comparability, or an empty reason while refusing.
-			// A blank reason is how "skipped" silently degrades into "no findings".
-			if !ok && strings.TrimSpace(reason) == "" {
-				t.Errorf("refused to compare but gave no machine-readable reason — " +
-					"skip and 'no differences' must stay distinguishable")
-			}
-			if ok && reason != "" {
-				t.Errorf("compared fine but still reported reason %q", reason)
-			}
-		})
+	// ★ 正向对照：判据必须认得出这段形态（否则上面那条可能因写法差异而恒真）。
+	if !strings.Contains("SELECT (SELECT count(*)::int FROM usage) AS usage_arm_rows",
+		"(SELECT count(*)::int FROM usage)") {
+		t.Fatal("判据没有牙：一个确实带 usage 臂计数的片段被判成「没有」")
 	}
+
+	// ② 判定必须落在已登记的 reason 上。
+	if !s4ScanSkipReasonRegistered(usageArmEmptySkipReason) {
+		t.Errorf("跳过原因 %q 不在 s4ScanSkipReasons 闭集里 —— 未登记的 reason 不会写进 "+
+			"llm_gateway_bg_s4_scan_skipped_last_run（该指标的标签空间必须严格等于闭集），"+
+			"于是这一轮的 gauge 停在 0 ⇒ 指标会把「跳过了」谎报成「跑过了」",
+			usageArmEmptySkipReason)
+	}
+
+	// ③ 判定不得再读那个已退役的键。
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "ledger_reconciliation.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var fn *ast.FuncDecl
+	for _, d := range file.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == "checkUsageCredit" {
+			fn = fd
+			break
+		}
+	}
+	if fn == nil {
+		t.Fatal("checkUsageCredit not found")
+	}
+	if mentionsRequestLogsWriteEnabledExpr(fn) {
+		t.Error("checkUsageCredit 又读起了 settings.RequestLogsWriteEnabled —— " +
+			"那个键的 subject（v1 族）已被 890 删除、代码默认已被翻成 false；" +
+			"读它等于让这条财务比对在未显式配置它的环境上永久停摆")
+	}
+	// 判定必须真的发生：既要有 markSkipped，也必须**调用那个纯函数判定**。
+	//
+	// ⚠ reason 常量本身在纯函数 `usageCreditComparable` 里（它返回那个登记键），
+	//   checkUsageCredit 只负责把返回的 reason 传给 markSkipped ⇒
+	//   门查的是「调用了纯函数」，不是「函数体里出现了那个常量名」。
+	if findCall(t, fn, "markSkipped") == nil {
+		t.Error("checkUsageCredit 没有 markSkipped —— 跳过就与「扫了没发现差异」不可区分")
+	}
+	if findCall(t, fn, "usageCreditComparable") == nil {
+		t.Error("checkUsageCredit 没有调用 usageCreditComparable —— " +
+			"可判定性必须由那个**纯函数**判定（可脱离数据库被测），" +
+			"而不是在流程里随手写条件")
+	}
+	// ★ 正向对照：那个纯函数必须真的产出那个**登记过的** reason。
+	if comparable, reason := usageCreditComparable(0, 3); comparable || reason != usageArmEmptySkipReason {
+		t.Errorf("usageCreditComparable(0, 3) = (%v, %q)，期望 (false, %q) —— "+
+			"「有差异行但 usage 臂为空」必须判成不可判定并给出登记过的原因",
+			comparable, reason, usageArmEmptySkipReason)
+	}
+	// ★ 反向对照：没有差异行时**不得**判成跳过（那是「确实没有差异」）。
+	if comparable, reason := usageCreditComparable(0, 0); !comparable || reason != "" {
+		t.Errorf("usageCreditComparable(0, 0) = (%v, %q)，期望 (true, 空串) —— "+
+			"零差异行是「确实没有差异」，不是「不可判定」；两者混同会让运维读到"+
+			"「账务无差异」而真相是「没跑」", comparable, reason)
+	}
+}
+
+// mentionsIdentExpr 报「这段 Go 代码里有没有引用标识符 name」。
+func mentionsIdentExpr(node ast.Node, name string) bool {
+	if node == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(node, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if id, ok := n.(*ast.Ident); ok && id.Name == name {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
 // TestUsageCreditSkipIsNotSilent pins the "swept 0" vs "swept nothing" separation
@@ -70,8 +143,8 @@ func TestUsageCreditSkipIsNotSilent(t *testing.T) {
 	if got := r.SkippedChecks(); len(got) != 0 {
 		t.Fatalf("fresh reconciler already reports skips: %v", got)
 	}
-	r.markSkipped(usageCreditSkipS4StopWrite)
-	if got := r.SkippedChecks(); len(got) != 1 || got[0] != usageCreditSkipS4StopWrite {
+	r.markSkipped(usageArmEmptySkipReason)
+	if got := r.SkippedChecks(); len(got) != 1 || got[0] != usageArmEmptySkipReason {
 		t.Fatalf("skip not recorded: %v", got)
 	}
 	r.resetSkipped()
@@ -124,12 +197,22 @@ func TestRunOnceResetsSkipState(t *testing.T) {
 	}
 }
 
-// TestUsageCreditCheckIsGatedBeforeQuerying is the structural pin: the gate must
-// be consulted BEFORE the query is issued, and it must return early. Pinning the
-// call alone would be the weaker "the guard exists" assertion — the failure mode
-// this guards against is a guard that is called but whose result is ignored, or
-// consulted after the rows are already in hand.
-func TestUsageCreditCheckIsGatedBeforeQuerying(t *testing.T) {
+// TestUsageCreditCheckIsNotGatedByRetiredV1Key（★ 反转自
+// TestUsageCreditCheckIsGatedBeforeQuerying）：
+//
+// 旧门守的是「门必须在查询**之前**被咨询、且门分支必须 return」——那是
+// 「可判定性由开关决定」那个形态的结构钉子。
+//
+// 反转的理由：可判定性判据已经换成**数据驱动**（usage 臂为空 ⇒ 不可判定），
+// 它**必须**发生在查询**之后**（要先知道 usage 臂有多空才知道能不能判）⇒
+// 旧门要求的位置关系在新形态下是**错的**，照抄它会把实现锁死在旧形态上。
+//
+// 新门守三件事：
+//
+//	① 不得再咨询那个已退役的判据（usageCreditComparability 已随门删除）；
+//	② 必须**先查询**再判定 —— 判定依赖查询结果；
+//	③ 判定命中时必须 markSkipped 并**不再产生 finding**（返回 0）。
+func TestUsageCreditCheckIsNotGatedByRetiredV1Key(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "ledger_reconciliation.go", nil, 0)
 	if err != nil {
@@ -145,49 +228,43 @@ func TestUsageCreditCheckIsGatedBeforeQuerying(t *testing.T) {
 	if fn == nil {
 		t.Fatal("checkUsageCredit not found")
 	}
-	gateIf := findIfCalling(t, fn, "usageCreditComparability")
-	if gateIf == nil {
-		t.Fatal("checkUsageCredit no longer consults usageCreditComparability — " +
-			"the cross-family comparison is ungated and will emit unbounded false findings " +
-			"once S4 stop-write is active")
-	}
-	// The skip branch must actually terminate. Asserting "the function contains
-	// some `return 0`" is a trap: an earlier version of this test searched the
-	// whole body for the first `return 0`, so deleting the return from the skip
-	// branch left it matching the `return 0` in the query-error path and the
-	// guard stayed green on a gate that no longer short-circuits. Pin the return
-	// to THIS if-statement's body.
-	if !hasReturn(gateIf.Body.List) {
-		t.Error("the gate's skip branch has no return — checkUsageCredit would go on to query " +
-			"rows after deciding the comparison is not decidable")
-	}
-	if !callsWithin(gateIf.Body.List, "markSkipped") {
-		t.Error("the gate result is not recorded via markSkipped — a skip is then " +
-			"indistinguishable from a clean run that found nothing")
-	}
-	// Ordering: the decision must precede the query, not merely coexist with it.
-	if gateIf.Pos() > fn.Body.List[len(fn.Body.List)-1].Pos() {
-		t.Error("gate statement sits after the last statement of the function body")
-	}
-	q := findCall(t, fn, "Query")
-	if q == nil {
-		t.Fatal("checkUsageCredit no longer issues a query — this test needs updating")
-	}
-	if gateIf.Pos() > q.Pos() {
-		t.Error("the gate is consulted AFTER the query is issued; it must short-circuit before any rows are read")
+
+	// ① 旧判据已退役。
+	if findIfCalling(t, fn, "usageCreditComparability") != nil {
+		t.Error("checkUsageCredit 又咨询了 usageCreditComparability —— " +
+			"它连同常量 usageCreditSkipS4StopWrite 已随 890 + D0 退役（理由已过期、输入恒为假）")
 	}
 
-	// The sibling check must stay ungated: balance_chain reads credit_ledger_hot
-	// only, so gating it would silently disable a check that is still decidable.
+	// ② 判定必须在查询之后：判定依赖查询结果（usage 臂行数）。
+	q := findCall(t, fn, "Query")
+	if q == nil {
+		t.Fatal("checkUsageCredit 不发查询了 —— 这条财务比对必须真的比对两侧")
+	}
+	skipCall := findCall(t, fn, "markSkipped")
+	if skipCall == nil {
+		t.Fatal("checkUsageCredit 没有 markSkipped —— 跳过必须留下机器可读的痕迹")
+	}
+	if skipCall.Pos() < q.Pos() {
+		t.Error("跳过判定发生在查询之前 —— 新的可判定性判据是**数据驱动**的" +
+			"（要靠查询结果里的 usage 臂行数），查询之前判不了")
+	}
+
+	// ③ 判定必须经由那个纯函数（reason 由它产出 ⇒ 一定是登记过的键）。
+	if findCall(t, fn, "usageCreditComparable") == nil {
+		t.Error("checkUsageCredit 没有调用 usageCreditComparable —— " +
+			"可判定性判定必须走那个纯函数（reason 是登记过的机器可读键）")
+	}
+
+	// 兄弟检查必须保持不门控：balance_chain 只读 credit_ledger_hot（自洽回放），
+	// 永远可判定 ⇒ 给它加门就是「用假报机换静默洞」。
 	for _, d := range file.Decls {
 		fd, ok := d.(*ast.FuncDecl)
 		if !ok || fd.Name.Name != "checkBalanceChain" {
 			continue
 		}
-		if findIfCalling(t, fd, "usageCreditComparability") != nil {
-			t.Error("checkBalanceChain is gated by the usage↔credit predicate, but it replays " +
-				"credit_ledger_hot against itself and stays fully decidable under stop-write — " +
-				"gating it would trade a false-positive machine for a silent hole")
+		if findIfCalling(t, fd, "usageCreditComparable") != nil {
+			t.Error("checkBalanceChain 被 usage↔credit 的判定门控了 —— " +
+				"它只读 credit_ledger_hot 自洽回放、永远可判定，门控它等于制造静默洞")
 		}
 	}
 }

@@ -45,7 +45,7 @@ const requests: WaterfallRequest[] = [
 <template>
   <div class="preview">
     <h1>队列瀑布图 · 本地预览</h1>
-    <p class="sub">相对 T0 · 图例在表上方 · fixture 两条请求</p>
+    <p class="sub">相对 T0 基准，图例在表上方，fixture 两条请求</p>
     <QueueWaterfallTimeline :requests="requests" :wired="true" source="memory" />
     <h2>空态</h2>
     <QueueWaterfallTimeline :requests="[]" :wired="false" source="none" />

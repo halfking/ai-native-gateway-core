@@ -288,6 +288,50 @@ func TestExecuteOpenAIReqProbeLearnedStrip(t *testing.T) {
 	}
 }
 
+// A candidate can declare responses while a streaming request is forced onto
+// the chat endpoint. A response-wire stream_options learning must not remove
+// Chat's usage-accounting skeleton from the actual chat body.
+func TestExecuteOpenAIReqProbeUsesActualChatWireForStreamingFallback(t *testing.T) {
+	var gotBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			t.Fatalf("upstream path = %q, want chat fallback", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	store := reqprobe.NewMemoryStore()
+	exec, coord := newReqProbeExecutor(store)
+	defer coord.Close()
+	cand := reqProbeTestCandidate(upstream.URL)
+	cand.Protocol = "openai-responses"
+	cand.SupportsNativeResponsesStream = false
+	if _, err := store.Upsert(context.Background(), reqprobe.Record{
+		ProviderID: cand.ProviderID, ProviderCode: cand.CatalogCode, OutboundModel: cand.RawModel,
+		Protocol: "openai-responses", Trigger: reqprobe.TriggerParamRejected, Param: "stream_options",
+		HTTPStatus: http.StatusBadRequest, ErrorKind: "client_bug", RecoveredCount: 1,
+	}); err != nil {
+		t.Fatalf("seed responses learning: %v", err)
+	}
+
+	_, err := exec.executeOpenAI(&ExecParams{
+		W:           httptest.NewRecorder(),
+		R:           httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
+		BodyBytes:   []byte(`{"model":"grok-4.6","messages":[],"stream":true,"stream_options":{"include_usage":true}}`),
+		ClientModel: "grok-4.6", ClientProtocol: "openai-completions", IsStream: true,
+	}, cand, 0, time.Now(), nil)
+	if err != nil {
+		t.Fatalf("executeOpenAI: %v", err)
+	}
+	if !strings.Contains(gotBody, `"stream_options"`) {
+		t.Fatalf("chat fallback body lost stream_options from responses-only learning: %s", gotBody)
+	}
+}
+
 // Case 4: mode_mismatch 不可回退时仍记录（responses 客户端 + 非流式 +
 // native 传输 404 → 只记录，不自动切换）。
 func TestExecuteOpenAIReqProbeModeMismatchRecordsWithoutFallback(t *testing.T) {

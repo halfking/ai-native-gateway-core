@@ -51,7 +51,7 @@ test_credential_failover() {
     
     capture_logs 100
     local cred_id_1
-    cred_id_1=$(echo "$LAST_LOGS" | grep -oP 'credential_id=\K\d+' | head -1 || echo "0")
+    cred_id_1=$(grep -oP 'credential_id=\K\d+' <<<"$LAST_LOGS" | head -1 || echo "0")
     echo "Initial credential: $cred_id_1"
     
     # Request 2-10: Send multiple requests to observe failover behavior
@@ -68,7 +68,7 @@ test_credential_failover() {
             
             capture_logs 50
             local cred_id
-            cred_id=$(echo "$LAST_LOGS" | grep -oP 'credential_id=\K\d+' | head -1 || echo "unknown")
+            cred_id=$(grep -oP 'credential_id=\K\d+' <<<"$LAST_LOGS" | head -1 || echo "unknown")
             creds_seen+=("$cred_id")
         fi
         
@@ -122,7 +122,7 @@ test_provider_recovery() {
         
         # Check logs for retry evidence
         capture_logs 100
-        if echo "$LAST_LOGS" | grep -qi "retry\|attempt\|fallback"; then
+        if grep -qi "retry\|attempt\|fallback" <<<"$LAST_LOGS"; then
             echo "  Retry mechanism detected in logs"
         fi
     else
@@ -224,7 +224,7 @@ test_sticky_cleanup_after_failure() {
     
     capture_logs 50
     local original_cred
-    original_cred=$(echo "$LAST_LOGS" | grep -oP 'credential_id=\K\d+' | head -1 || echo "0")
+    original_cred=$(grep -oP 'credential_id=\K\d+' <<<"$LAST_LOGS" | head -1 || echo "0")
     
     echo "Original credential: $original_cred"
     
@@ -239,7 +239,7 @@ test_sticky_cleanup_after_failure() {
         if [ "$LAST_HTTP_STATUS" -eq 200 ]; then
             capture_logs 50
             local current_cred
-            current_cred=$(echo "$LAST_LOGS" | grep -oP 'credential_id=\K\d+' | head -1 || echo "0")
+            current_cred=$(grep -oP 'credential_id=\K\d+' <<<"$LAST_LOGS" | head -1 || echo "0")
             
             if [ "$current_cred" != "$original_cred" ] && [ "$current_cred" != "0" ]; then
                 switch_detected=true

@@ -24,6 +24,13 @@ export interface LiveRequest {
   tenant_id?: string
   gw_session_id?: string
   model?: string
+  // 2026-10-16（实时拓扑页）：canonical_name 与 credential_* 一直在 SSE 线上
+  // （Go 侧 LiveRequest 有，见 admin/live_stream_sse.go），但 TS 侧漏了声明，
+  // 于是任何按「标准模型名」「凭据级」聚合的代码都拿不到类型。
+  // 实时拓扑的供应端节点正是凭据级（node_update 同口径），这里补齐声明。
+  canonical_name?: string
+  credential_id?: number
+  credential_label?: string
   model_category?: LiveModelCategory
   provider_code?: string
   status?: LiveStatus
@@ -236,13 +243,22 @@ export interface LiveStreamEnvelope {
   ts: string
   request?: LiveRequest
   requests?: LiveRequest[]
+  // 2026-10-16 audit fix: the authoritative initial replay is declared by this
+  // flag, NOT by the presence of `requests`. `requests` carries `omitempty` on
+  // the server, so an empty (or nil) replay is absent from the wire entirely and
+  // `Array.isArray(env.requests)` was false for exactly the quiet tenants that
+  // most need the ready signal — pinning them to "接收首批数据中" forever.
+  // Mirrors queue_present / nodes_present, which exist for the same reason.
+  requests_present?: boolean
   snapshot?: LiveStreamSnapshot
   delta?: LiveStreamDelta
   health?: LiveStreamHealth
   incident?: RouteIncidentUpdate
   lane_ids?: string[]
   queue?: LiveQueueSnapshot
+  queue_present?: boolean
   nodes?: LiveNodeStatus[]
+  nodes_present?: boolean
   // 2026-08-15 (24号 §3): request_lifecycle payload. The backend normally
   // sends one action object, but an aggregated batch frame may carry an array
   // — both shapes are accepted. `actions` is a defensive alias.
@@ -259,7 +275,13 @@ export const liveStreamState = reactive({
   snapshot: null as LiveStreamSnapshot | null,
   connection: 'idle' as ConnectionState,
   paused: false,
+  // Observability timestamp: every valid envelope advances it, including
+  // health/keepalive-adjacent frames. It must NOT drive UI delivery state.
   lastEventAt: 0,
+  // Delivery marker for the current EventSource generation. Only the
+  // authoritative initial_data envelope flips this; a health_update cannot
+  // falsely claim that queue/nodes/snapshot have arrived.
+  initialDataReceived: false,
   redisHealthy: true,
   redisError: '',
   queue: null as LiveQueueSnapshot | null,
@@ -306,6 +328,7 @@ let visibilityChangeHandler: (() => void) | null = null
 // Track page visibility changes
 function installVisibilityListener() {
   if (typeof document === 'undefined' || visibilityChangeHandler) return
+  visibilityState.isVisible = !document.hidden
   
   visibilityChangeHandler = () => {
     const wasHidden = !visibilityState.isVisible
@@ -316,21 +339,14 @@ function installVisibilityListener() {
       const hiddenDuration = Date.now() - visibilityState.lastVisibleAt
       console.log(`[LiveStream] Page visible after ${Math.round(hiddenDuration / 1000)}s`)
       
-      if (visibilityState.missedWhileHidden) {
-        console.log('[LiveStream] Missed updates while hidden, reconnecting for authoritative replay')
-        // A snapshot_refresh only repairs request tiles. Reconnect so the
-        // server also replays request_lifecycle and child_request frames.
-        // The existing connection is intentionally closed first; openConnection
-        // will perform the normal initial_data + lifecycle replay handshake.
-        if (refCount > 0) {
-          closeConnection()
-          openConnection()
-        }
-        visibilityState.missedWhileHidden = false
-      }
+      // Suspending transport creates a replay gap even if no frame arrived.
+      // A fresh connection restores requests, lifecycle actions and children.
+      if (refCount > 0) openConnection()
+      visibilityState.missedWhileHidden = false
     } else if (document.hidden) {
       visibilityState.lastVisibleAt = Date.now()
-      console.log('[LiveStream] Page hidden, marking updates as missed')
+      visibilityState.missedWhileHidden = true
+      closeConnection()
     }
   }
   
@@ -355,6 +371,7 @@ export const snapshotRef: ComputedRef<LiveStreamSnapshot | null> = computed(() =
 export const connectionRef: ComputedRef<ConnectionState> = computed(() => liveStreamState.connection)
 export const pausedRef: ComputedRef<boolean> = computed(() => liveStreamState.paused)
 export const lastEventAtRef: ComputedRef<number> = computed(() => liveStreamState.lastEventAt)
+export const initialDataReceivedRef: ComputedRef<boolean> = computed(() => liveStreamState.initialDataReceived)
 export const redisHealthyRef: ComputedRef<boolean> = computed(() => liveStreamState.redisHealthy)
 export const redisErrorRef: ComputedRef<string> = computed(() => liveStreamState.redisError)
 export const queueRef: ComputedRef<LiveQueueSnapshot | null> = computed(() => liveStreamState.queue)
@@ -863,10 +880,16 @@ function applyInitialData(items: LiveRequest[]) {
 
 function handleEnvelope(env: LiveStreamEnvelope) {
   liveStreamState.lastEventAt = Date.now()
-  if (env.queue) {
+  if (env.queue_present) {
+    liveStreamState.queue = env.queue ?? null
+  } else if (env.queue) {
+    // Backward compatibility with pre-presence servers.
     liveStreamState.queue = env.queue
   }
-  if (env.nodes) {
+  if (env.nodes_present) {
+    liveStreamState.nodes = env.nodes ?? []
+  } else if (env.nodes) {
+    // Backward compatibility with pre-presence servers.
     liveStreamState.nodes = env.nodes
   }
   if (env.health) {
@@ -874,7 +897,13 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     liveStreamState.redisError = env.health.redis_error || ''
   }
 
-  if (env.type === 'initial_data' && Array.isArray(env.requests)) {
+  if (env.type === 'initial_data' && env.requests_present === true) {
+    // Only an authoritative initial replay (including an explicit empty replay)
+    // declares the current tenant/user stream ready for rendering.
+    // Gate on requests_present, not Array.isArray(env.requests): the server's
+    // `omitempty` drops a zero-length slice, so an empty replay arrives with no
+    // `requests` key and the array check never fired for quiet identities.
+    liveStreamState.initialDataReceived = true
     if (env.snapshot) {
       mergeSnapshotFromServer(env.snapshot)
       if (env.snapshot.latest_request_ts && env.snapshot.latest_request_ts > maxSeenTs) {
@@ -883,8 +912,12 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     } else if (env.delta) {
       mergeDelta(env.delta)
     }
-    applyInitialData(env.requests)
-    for (const r of env.requests) {
+    // The gate no longer implies the array exists (requests_present is the
+    // authority), so normalise before iterating: an authoritative EMPTY replay
+    // arrives with no `requests` key at all and `for...of undefined` would throw.
+    const replay = Array.isArray(env.requests) ? env.requests : []
+    applyInitialData(replay)
+    for (const r of replay) {
       if (r.ts && r.ts > maxSeenTs) maxSeenTs = r.ts
     }
     return
@@ -1293,18 +1326,21 @@ function mergeLegendsByKey(existing: LiveStreamLegendItem[], incoming: LiveStrea
 
 function openConnection() {
   openConnectionTotal++
-  if (es || refCount <= 0) return
+  if (es || refCount <= 0 || !visibilityState.isVisible) return
   if (typeof EventSource === 'undefined') {
     liveStreamState.connection = 'unsupported'
     return
   }
   const generation = ++connectionGeneration
+  // 2026-10-16 audit: a new connection generation owns a fresh authoritative
+  // initial-data window. Health/node tick frames are not enough to prove that
+  // tenant-scoped requests/snapshot state has arrived.
+  liveStreamState.lastEventAt = 0
+  liveStreamState.initialDataReceived = false
   // Recompute MAX_VISIBLE on resize so the replay buffer stays at 2× viewport.
   recomputeMaxVisible()
   resizeHandler = () => recomputeMaxVisible()
   window.addEventListener('resize', resizeHandler)
-  // Install visibility listener when opening connection
-  installVisibilityListener()
   // Browser EventSource cannot set Authorization headers, and the
   // project uses HttpOnly cookies that some reverse-proxy / dev
   // setups do not propagate to the EventSource request (e.g. a
@@ -1331,13 +1367,14 @@ function openConnection() {
   connection.onopen = () => {
     if (es !== connection || connectionGeneration !== generation) return
     liveStreamState.connection = 'open'
+    onConnectionStateChanged('open')
   }
   connection.onmessage = (ev) => {
     if (es !== connection || connectionGeneration !== generation) return
     try {
       const env = JSON.parse(ev.data) as LiveStreamEnvelope
       
-      // Skip updates when page is hidden (keep connection alive, don't write state)
+      // Defend against a message queued before the visibility event closes us.
       if (!visibilityState.isVisible) {
         console.debug('[LiveStream] Message received but page hidden, marking as missed')
         visibilityState.missedWhileHidden = true
@@ -1359,9 +1396,52 @@ function openConnection() {
     if (es !== connection || connectionGeneration !== generation) return
     if (connection.readyState === 2) {
       liveStreamState.connection = 'closed'
+      onConnectionStateChanged('closed')
+      scheduleFatalReconnect()
     } else {
       liveStreamState.connection = 'reconnecting'
+      onConnectionStateChanged('reconnecting')
     }
+  }
+}
+
+// Fatal reconnect (2026-10-16 audit): after an HTTP-level EventSource failure
+// (401/403/404/5xx → readyState=2) the browser never retries on its own. The
+// backoff used to live in LiveRequestStreamV2 only, so direct consumers
+// (RequestRegistry / RequestJourneyDetail) stayed closed forever. It now lives
+// beside the connection state machine: bounded exponential backoff, only while
+// at least one consumer is mounted, cleared by any state transition (someone
+// else already acted) and by final release.
+const FATAL_RECONNECT_BASE_MS = 5_000
+const FATAL_RECONNECT_MAX_MS = 30_000
+let fatalReconnectTimer: ReturnType<typeof setTimeout> | null = null
+let fatalReconnectAttempt = 0
+
+function clearFatalReconnect() {
+  if (fatalReconnectTimer) {
+    clearTimeout(fatalReconnectTimer)
+    fatalReconnectTimer = null
+  }
+}
+
+function scheduleFatalReconnect() {
+  if (fatalReconnectTimer || refCount <= 0) return
+  const delay = Math.min(FATAL_RECONNECT_BASE_MS * 2 ** fatalReconnectAttempt, FATAL_RECONNECT_MAX_MS)
+  fatalReconnectAttempt += 1
+  fatalReconnectTimer = setTimeout(() => {
+    fatalReconnectTimer = null
+    if (refCount <= 0) return
+    // Inert while another path already reopened (es !== null is checked inside).
+    reconnectStream()
+  }, delay)
+}
+
+function onConnectionStateChanged(state: ConnectionState) {
+  // Any transition means somebody (browser retry, URL save, this backoff)
+  // already acted — a pending timer would stack a second reconnect.
+  clearFatalReconnect()
+  if (state === 'open') {
+    fatalReconnectAttempt = 0
   }
 }
 
@@ -1376,19 +1456,28 @@ function closeConnection() {
     window.removeEventListener('resize', resizeHandler)
     resizeHandler = null
   }
-  // Remove visibility listener when closing connection
-  removeVisibilityListener()
+  // Visibility follows consumer refs, including while transport is suspended.
+  clearFatalReconnect()
   liveStreamState.connection = 'closed'
 }
 
 export function acquireLiveStream(): () => void {
   refCount += 1
-  if (refCount === 1) openConnection()
+  if (refCount === 1) {
+    installVisibilityListener()
+    openConnection()
+  }
+  // Idempotent release: a double cleanup must not close the singleton out
+  // from under a second live consumer.
+  let released = false
   return () => {
+    if (released) return
+    released = true
     refCount -= 1
     if (refCount <= 0) {
       refCount = 0
       closeConnection()
+      removeVisibilityListener()
     }
   }
 }
@@ -1424,8 +1513,8 @@ export function requestSnapshotRefresh() {
 
 // 2026-09-01 (P2 cleanup): removed _requestSnapshotRefresh forward declaration.
 // The visibility handler used to call this back-reference before the function
-// was defined below; the current implementation inlines closeConnection() +
-// openConnection() directly, so the indirection is dead code.
+// was defined below; visibility now suspends and reopens transport directly,
+// so the indirection is dead code.
 
 export function pauseStream() {
   liveStreamState.paused = true
@@ -1440,10 +1529,20 @@ export function togglePause() {
   else pauseStream()
 }
 export function resetStream() {
+  // Tenant/user-scoped state. A partial reset is a cross-account data leak:
+  // queue/nodes can render immediately on the next dashboard mount before the
+  // new identity's first SSE frame arrives.
   liveStreamState.requests = []
   liveStreamState.snapshot = null
+  liveStreamState.queue = null
+  liveStreamState.nodes = []
   liveStreamState.actions.clear()
   liveStreamState.children.clear()
+  liveStreamState.lastEventAt = 0
+  liveStreamState.initialDataReceived = false
+  liveStreamState.redisHealthy = true
+  liveStreamState.redisError = ''
+  liveStreamState.paused = false
   // 复用 clearRequestCredentialIndex，让依赖于 requestCredentialRevision 的
   // 组件（RequestTile、LiveRequestBlock）在重连/重建流时立即刷新凭据显示。
   clearRequestCredentialIndex()
@@ -1452,7 +1551,27 @@ export function resetStream() {
   idIndex.clear()
   pending.length = 0
   maxSeenTs = ''
+  needsFullRefresh = false
 }
+
+/**
+ * Atomically cross an auth/tenant boundary: fence the old EventSource
+ * generation, clear every user-scoped projection, then reconnect only when
+ * live consumers still exist. This is safe for both logout (components will
+ * shortly unmount) and an in-place tenant/user swap.
+ */
+export function resetLiveStreamIdentity() {
+  const shouldReconnect = refCount > 0
+  closeConnection()
+  resetStream()
+  if (shouldReconnect) openConnection()
+}
+
+// store.ts cannot import this module (liveStreamStore already imports the auth
+// store). Register the identity-boundary reset through the same cycle-free
+// global callback pattern used by the relay-key cache invalidator.
+globalThis.__llmgwLiveStreamIdentityInvalidator = resetLiveStreamIdentity
+
 export function reconnectStream() {
   if (refCount <= 0) return
   closeConnection()
@@ -1513,7 +1632,10 @@ export const __testing = {
   // make every later assertion meaningless — a cascade that hides the real
   // failure behind a pile of confusing ones.
   resetForTest: () => {
+    closeConnection()
     removeVisibilityListener()
+    clearFatalReconnect()
+    fatalReconnectAttempt = 0
     refCount = 0
     visibilityState.isVisible = typeof document !== 'undefined' ? !document.hidden : true
     visibilityState.lastVisibleAt = Date.now()
@@ -1528,7 +1650,7 @@ export const __testing = {
   // ---------------------------------------------------------------------------
 
   // Lets a test assert on the *decision* the visibility handler makes. The
-  // recovery branch calls closeConnection()/openConnection(), which are inert
+  // recovery branch calls openConnection(), which is inert
   // without an EventSource, so without this a test could not tell "recovered"
   // from "declined to recover" — the exact ambiguity that hid the
   // missedWhileHidden bug for as long as it existed.
@@ -1586,16 +1708,20 @@ export const __testing = {
       // refCount-relative bookkeeping independent of the network state,
       // which is exactly the property we want to assert here.
       liveStreamState.connection = 'closed'
-      // The visibility listener is installed by openConnection() in
-      // production. Without it here, the handler is never attached and any
+      // Like production, attach on the first consumer even without transport.
+      // Without it here, the handler is never attached and any
       // assertion about its recovery decision would pass for every
       // implementation — including the broken one — because nothing would run.
       installVisibilityListener()
     }
+    let released = false
     return () => {
+      if (released) return
+      released = true
       refCount -= 1
       if (refCount <= 0) {
         refCount = 0
+        closeConnection()
         removeVisibilityListener()
       }
     }

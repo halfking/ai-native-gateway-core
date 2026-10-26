@@ -72,7 +72,7 @@
 | 系统盘 `df /` 已用% | ≥ 60% | ≥ 75% | 留出"还能跑清理"的时间窗 |
 | 系统盘剩余 GB | ≤ 30 GB | — | 200G 系统的 15% |
 | `llm_gateway` DB | ≥ 20 GB | ≥ 28 GB | 之前一次触发时 22 GB |
-| `request_logs_hot`（单表风险） | ≥ 2 GB | ≥ 3 GB | JSONB TOAST 风险 |
+| `session_turns_hot`（单表风险） | ≥ 2 GB | ≥ 3 GB | JSONB TOAST 风险（★ 2026-10-22 §145 换对象：原 `_request_logs_hot` 随迁移 890 退役） |
 | `model_probe_runs_hot` | ≥ 500 MB | — | 14 天 TTL 满约 1 GB |
 | `columnar_internal.chunk`（元数据） | ≥ 15 GB | — | DROP 列存表后未 VACUUM FULL 才会膨胀 |
 | `pg_wal` 拥堵 | ≥ 3 GB | — | `max_wal_size` 默认 2 GB |
@@ -274,9 +274,19 @@ WEBHOOK_TYPE=feishu,dingtalk      # 暂不支持多 channel,需改 notify.sh
 - 闸门**不可用时 fail-open**：拿不到锁就放行。反过来做（失败退出）会让
   监控整体静默，而静默的监控不会被任何人发现已经坏了。
   `pg17-disk-watch.sh` 的采样行会记 `gate=guarded|FAIL_OPEN`，让 fail-open 本身可见。
-- `pg17-pg-availability-check.sh` 的闸门排在 **EXIT trap 之后**：
-  它的 trap 负责写 `pg-availability.lastrun`（「巡检还在跑吗」的判据），
-  抢锁失败直接 `exit 0` 会让 lastrun 不更新，运维会误判心跳已停。
+- `pg17-pg-availability-check.sh` 的 **EXIT trap 排在单实例闸门之后**：
+  它的 trap 负责写 `pg-availability.lastrun`（「巡检还在跑吗」的判据）。
+  闸门在前 ⇒ 抢锁失败的那条路径在闸门处就 `exit 0`，**走不到 trap**
+  ⇒ skip 不刷新 `lastrun` ⇒ **心跳新鲜 = 本轮真的采样过 PG**，
+  而不是「脚本被启动过」。
+  ★ 2026-10-26 订正：本条此前写的是「闸门排在 EXIT trap **之后**」，
+    那是 **2026-10-19 订正之前**的旧形态；脚本在 §143.14 一轮里有意改成
+    「闸门在前、trap 在后」（实测依据：13,043 次 skip 期间心跳一直是新鲜的
+    ⇒「巡检还在跑吗」与「巡检在空转」无法区分），而本 README 与
+    `tests/monitor_single_instance_gate_test.sh` 的静态判据**漏改**
+    ⇒ 后者自那天起一直是红的（CI 的 `verify.sh` 作业随之长期为红）。
+    权威判据是行为门 `scripts/ursmcheck/monitor_scheduling_semantics_test.go`
+    的 `TestAvailabilitySkipDoesNotRefreshHeartbeat`。
 
 ### 回归门
 

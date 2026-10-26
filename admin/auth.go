@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -271,7 +272,11 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			// canonical identities. DSN 未配置时 RecordShadow 内部 noop。
 			identity.RecordShadow("llm-gateway", u.ID, u.TenantID, u.DisplayName, u.Email)
 
-			h.auditLog(u.Username, "authentication.login", "user", u.ID, fmt.Sprintf("method=jwt role=%s tenant=%s ip=%s", u.Role, u.TenantID, r.RemoteAddr))
+			h.auditLog(u.Username, "authentication.login", "user", u.ID, fmt.Sprintf("method=jwt role=%s tenant=%s ip=%s", u.Role, u.TenantID, clientIP))
+			// 成功登录必须 Reset 限流桶：Allow() 在入口已计数，不 Reset 则
+			// 5 次成功登录后同一 IP 整分钟 429（legacy key 路径早已 Reset，
+			// JWT 路径漏了——2026-10-17 llm.itestu.cn 无法登录根因）。
+			loginLimiter.Reset(clientIP)
 			clearLoginFailures(clientIP)
 			// Dual-write (rule 20 §6.1): set HttpOnly cookie AND return access_token。
 			// remember_me=false → 会话级 cookie（无 Max-Age/Expires，关掉即失效）。
@@ -371,6 +376,92 @@ func (h *Handler) generateAdminKey(secretKey string) (raw, hash, prefix, ciphert
 	return
 }
 
+// FormatAnomalyTenantAdminMiddleware guards /api/admin/format-anomalies*:
+// super_admin (and admin_key) keeps full access; tenant_admin gets
+// read-only access to the format anomaly tables via RLS policy isolation
+// (set app.current_tenant on the connection). The /resolve subroute is
+// super_admin-only — the subrouter enforces this gate before the SQL
+// runs (see handleFormatAnomalySubrouter).
+//
+// (2026-10-16, 批 157) — modelled after ProviderConsoleMiddleware
+// (admin/provider_access.go). Authorization premise: the bypass branch
+// is reached only when tenantID == "", which only happens for
+// super_admin / admin_key (handler 入口). tenant_admin always lands in
+// the second case, where EffectiveTenantIDAll returns the caller's own
+// tenantID, satisfying withTenantOrAllReadOnlyTx's "bypass only on
+// empty tenantID" constraint.
+func FormatAnomalyTenantAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
+	return tenantAdminOrSuperAdmin(next, db, secretKey, "format-anomalies")
+}
+
+// ModelIntegrityTenantAdminMiddleware guards /api/admin/model-integrity*:
+// same shape as FormatAnomalyTenantAdminMiddleware; /resolve is
+// super_admin-only, enforced in handleModelIntegrity.
+func ModelIntegrityTenantAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
+	return tenantAdminOrSuperAdmin(next, db, secretKey, "model-integrity")
+}
+
+// tenantAdminOrSuperAdmin is the shared three-case dispatch (super_admin
+// / tenant_admin / 其它 403). The label is purely for error messages.
+func tenantAdminOrSuperAdmin(next http.HandlerFunc, db *pgxpool.Pool, secretKey, label string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Mirror SuperAdminMiddleware auth surface so the super_admin path
+		// is byte-for-byte the access it had before this middleware existed.
+		tokenStr, ok := extractBearerOrCookieToken(r)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		claims, err := VerifyToken(tokenStr, secretKey)
+		if err != nil || claims.UserID <= 0 {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		issuedAt := time.Time{}
+		if claims.IssuedAt != nil {
+			issuedAt = claims.IssuedAt.Time
+		}
+		if authRevocationProbe(r.Context(), db, claims.UserID, issuedAt) {
+			writeError(w, http.StatusUnauthorized, "session revoked: password changed")
+			return
+		}
+		if enforceMustChangePassword(w, r, claims) {
+			return
+		}
+		switch {
+		case claims.Role == "super_admin" || claims.Role == "admin_key":
+			authReq := SetAuthContext(r, &AuthContext{
+				UserID:   claims.UserID,
+				TenantID: claims.TenantID,
+				Username: claims.Username,
+				Role:     claims.Role,
+				IsJWT:    true,
+			})
+			next(w, authReq)
+			return
+		case claims.Role == "tenant_admin":
+			if claims.TenantID == "" {
+				// tenant_admin without a tenant binding cannot be safely
+				// isolated — refuse rather than risk bypass.
+				writeError(w, http.StatusForbidden, "tenant_admin must have a tenant binding to access "+label)
+				return
+			}
+			authReq := SetAuthContext(r, &AuthContext{
+				UserID:   claims.UserID,
+				TenantID: claims.TenantID,
+				Username: claims.Username,
+				Role:     claims.Role,
+				IsJWT:    true,
+			})
+			next(w, authReq)
+			return
+		default:
+			writeError(w, http.StatusForbidden, "super_admin or tenant_admin role required for this endpoint")
+			return
+		}
+	}
+}
+
 // SuperAdminMiddleware wraps admin auth + role check (super_admin only).
 // tenant_admin requests get 403 Forbidden.
 func SuperAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
@@ -414,18 +505,32 @@ func SuperAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey str
 	}
 }
 
-// clientIPFromRequest extracts the client IP, preferring X-Forwarded-For header.
+// clientIPFromRequest extracts the client IP for login rate-limit / captcha.
+// Order: X-Forwarded-For (left-most) → X-Real-IP → RemoteAddr host.
+// Strips :port so "192.168.1.2:54321" and "192.168.1.2" share one bucket.
 func clientIPFromRequest(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		for i := 0; i < len(xff); i++ {
-			if xff[i] == ',' {
-				return xff[:i]
-			}
+	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			xff = strings.TrimSpace(xff[:i])
 		}
-		return xff
+		if xff != "" {
+			return stripHostPort(xff)
+		}
 	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		return stripHostPort(xri)
 	}
-	return r.RemoteAddr
+	return stripHostPort(r.RemoteAddr)
+}
+
+func stripHostPort(hostport string) string {
+	hostport = strings.TrimSpace(hostport)
+	if hostport == "" {
+		return hostport
+	}
+	// net.SplitHostPort needs brackets for IPv6; fall back to raw on error.
+	if h, _, err := net.SplitHostPort(hostport); err == nil && h != "" {
+		return h
+	}
+	return hostport
 }

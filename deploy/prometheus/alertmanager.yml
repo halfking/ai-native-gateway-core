@@ -37,13 +37,25 @@ route:
       continue: false
 
 receivers:
+  # 2026-10-15 observability audit: this receiver's webhook was left fully
+  # commented out ("Webhook disabled by default"), which made Alertmanager
+  # MATCH the route and then DROP every non-credential alert with no
+  # integration at all — the worst failure mode, because it looks healthy in
+  # `amtool config show` (receiver exists) while delivering nothing.
+  #
+  # The placeholder host is RFC 2606 reserved, so an unconfigured deploy
+  # fails loudly ("webhook delivery failed") instead of silently, which is
+  # the same contract credential-team below already relies on. 55 alert
+  # rules whose notifications all dead-ended here.
   - name: 'default'
-    # Webhook disabled by default - uncomment and set LARK_WEBHOOK_URL to enable
-    # webhook_configs:
-    #   - url: '${LARK_WEBHOOK_URL}'
-    #     send_resolved: true
-    #     http_config:
-    #       follow_redirects: true
+    webhook_configs:
+      - url: 'https://placeholder.invalid/##DEFAULT_TEAM_WEBHOOK_URL##'
+        send_resolved: true
+        http_config:
+          follow_redirects: true
+        # Keep one POST bounded when a burst fans out across many
+        # provider_id / tenant_id labels.
+        max_alerts: 50
 
   # 2026-08-18: credential-team oncall receiver. The webhook URL is sourced
   # from $CREDENTIAL_TEAM_WEBHOOK_URL at container start (docker-compose

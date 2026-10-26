@@ -128,9 +128,9 @@ function statsOf(over: Partial<UserStatsResponse> = {}): UserStatsResponse {
     },
     // ★ generate_series 零填充 ⇒ 长度恒等于 days
     daily: [
-      { date: '2026-10-05', requests: 0, success: 0, errors: 0, tokens: 0, credits: 0, cost: 0 },
-      { date: '2026-10-06', requests: 40, success: 39, errors: 1, tokens: 20000, credits: 120, cost: 6.5 },
-      { date: '2026-10-07', requests: 80, success: 78, errors: 2, tokens: 30000, credits: 180, cost: 6.0 },
+      { date: '2026-10-05', requests: 0, success: 0, errors: 0, tokens: 0, credits: 0, cost_usd: 0 },
+      { date: '2026-10-06', requests: 40, success: 39, errors: 1, tokens: 20000, credits: 120, cost_usd: 6.5 },
+      { date: '2026-10-07', requests: 80, success: 78, errors: 2, tokens: 30000, credits: 180, cost_usd: 6.0 },
     ],
     top_models: [bucket()],
     top_apps: [bucket({ name: 'chat', requests: 100 })],
@@ -368,7 +368,7 @@ describe('用户画像解包', () => {
     expect(() => unwrapUserStats(statsOf({ daily: [{ ...row, date: 1 } as never] }))).toThrow(
       /daily\[0\] 的 date 不是字符串/,
     )
-    for (const key of ['requests', 'success', 'errors', 'tokens', 'credits', 'cost'] as const) {
+    for (const key of ['requests', 'success', 'errors', 'tokens', 'credits', 'cost_usd'] as const) {
       expect(() => unwrapUserStats(statsOf({ daily: [{ ...row, [key]: 'x' } as never] }))).toThrow(
         new RegExp(`daily\\[0\\] 的 ${key} 不是数字`),
       )
@@ -796,6 +796,14 @@ describe('常量取值', () => {
     expect([...USER_STATS_KPI_KEYS]).toEqual(['requests', 'tokens', 'credits', 'errors', 'error_rate', 'latency_p95_ms'])
     expect([...USER_STATS_BUCKET_KEYS]).toEqual(['name', 'requests', 'tokens', 'credits', 'cost_usd'])
     expect([...USER_STATS_RECENT_KEYS]).toEqual(['ts', 'model', 'first_chunk_ms', 'total_ms', 'credits', 'status'])
-    expect([...USER_STATS_DAILY_KEYS]).toEqual(['date', 'requests', 'success', 'errors', 'tokens', 'credits', 'cost'])
+    expect([...USER_STATS_DAILY_KEYS]).toEqual(['date', 'requests', 'success', 'errors', 'tokens', 'credits', 'cost_usd'])
+  })
+
+  it('★ ★ wire 实测 daily 用 cost_usd（不是 cost）：缺 cost_usd 抛、仅有 cost 仍抛', () => {
+    const r = statsOf()
+    const badMissing = del({ ...r.daily[0]! } as unknown as Record<string, unknown>, 'cost_usd')
+    expect(() => unwrapUserStats({ ...r, daily: [badMissing as never] })).toThrow(/daily\[0\] 缺 1 个键（cost_usd）/)
+    const legacyCostOnly = del({ ...r.daily[0]!, cost: 1 } as unknown as Record<string, unknown>, 'cost_usd')
+    expect(() => unwrapUserStats({ ...r, daily: [legacyCostOnly as never] })).toThrow(/daily\[0\] 缺 1 个键（cost_usd）/)
   })
 })

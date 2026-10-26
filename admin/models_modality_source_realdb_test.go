@@ -65,13 +65,22 @@ func modelsHandlerFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool)
 
 	tables := []string{"model_offers", "credentials", "providers", "model_aliases",
 		"model_families", "models_canonical", "model_iq_runs", "node_iq_latest"}
+	// ★★ R80 轮：这不再是「存在就 SKIP」的闸。
+	//   库现在是**一次性空库**（admin/scratch_db_test.go 分配时就自证过 public 下 0 张表）
+	//   ⇒ ⇒ 这里再看到夹具表存在 ⇒ **说明隔离破了**（拿到的不是一次性库）
+	//   ⇒ ⇒ 那必须**红**：本门接着要 DROP 掉这 8 张表
+	//   （含 credentials / providers），**绝不能在共享库上跑**。
+	//   ⇒ ⇒ 而原来的 t.Skipf 在这里正是「这道门从来没跑过」的成因：
+	//   产品形态库里这 8 张表**永远存在** ⇒ ⇒ 门永远 SKIP ⇒ 人看到的是「通过」。
+	//   ⇒ ⇒ 闸的职责从「躲开」变成「自证隔离成立」。
 	var existing int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.tables
 		WHERE table_schema='public' AND table_name = ANY($1)`, tables).Scan(&existing); err != nil {
 		t.Fatalf("probe schema: %v", err)
 	}
 	if existing > 0 {
-		t.Skipf("%d of the fixture tables already exist — this test drops them", existing)
+		t.Fatalf("%d 张夹具表已经存在 —— 隔离破了（拿到的不是一次性空库）；"+
+			"本门会 DROP 掉它们（含 credentials / providers），绝不能在共享库上跑", existing)
 	}
 
 	// ★ 注册在**建表之前**：建到一半失败会留残桩，下一轮安全闸看到「表已存在」
@@ -322,17 +331,14 @@ func TestGetModel_exposesProvenanceInTheResponseBody(t *testing.T) {
 // 夹具的 DROP ⇒ DROP 先跑。
 func modelsHandlerRealDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL not set — this needs a real database")
-	}
+	// ★★ R80 轮：本门是**破坏性**的（要 DROP 8 张产品表再重建）
+	//   ⇒ 它**只能**跑在「目标表不存在」的库上。
+	//   ⇒ 原先直连 TEST_DATABASE_URL（产品形态库）⇒ 闸「8 张夹具表存在一张就 SKIP」
+	//   ⇒ **这道门在任何产品形态库上永远 SKIP，从来没真正跑过**。
+	//   ⇒ 改用一次性空库（admin/scratch_db_test.go）：**库要假、表名要真**。
+	pool := scratchEmptyPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
 	modelsHandlerFixture(t, ctx, pool)
 	return pool
 }

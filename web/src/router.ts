@@ -1,11 +1,14 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { store, isDefaultTenant } from './store'
+import { throttledFetch } from './api/_core'
 import { showOpsPlatform } from './config/edition'
 import { locationFromInternalPath } from './utils/safeRedirect'
 
 // Critical views loaded immediately (login, home, layout)
 import LoginView from './views/LoginView.vue'
 import HomeView from './views/HomeView.vue'
+import LiveTopologyView from './views/LiveTopologyView.vue'
+import RequestDetailPage from './views/RequestDetailPage.vue'
 import ForbiddenView from './views/ForbiddenView.vue'
 
 // All other views are lazy-loaded to reduce initial bundle size
@@ -56,9 +59,27 @@ const PromptInjectionSettingsView = () => import('./views/PromptInjectionSetting
 const ApprovalConfigView = () => import('./views/ApprovalConfigView.vue')
 const ApprovalListView = () => import('./views/ApprovalListView.vue')
 const ApprovalDetailView = () => import('./views/ApprovalDetailView.vue')
+const SanitizeRulesView = () => import('./views/SanitizeRulesView.vue')
 const OutputComplianceView = () => import('./views/OutputComplianceView.vue')
 const UsageCostView = () => import('./views/admin/UsageCost.vue')
 const UsageTrendExplorerView = () => import('./views/admin/UsageTrendExplorer.vue')
+// 批 158b：P1 usageEnhanced 孤儿接前端，组合 summary + cost-trend + period-compare + cache-economics + hot-api-keys
+const UsageEnhancedView = () => import('./views/admin/UsageEnhancedView.vue')
+// 批 158c：P2 boardOperational 独立详细页（独立深链，呈现 background_tasks + selfcheck 全字段）
+// ⚠️ 后端 tenant 隔离未落实（属主拍板），前端仅"呈现已就位数据"，不参与授权判断
+const BoardOperationalView = () => import('./views/BoardOperationalView.vue')
+// 批 158e：P4 opsOverview 独立详细页（12 路 payload 综合视图；后端中间件降级 admin → superAdmin）
+const OpsOverviewView = () => import('./views/OpsOverviewView.vue')
+// 批 200：P5 跨仓孤儿接前端 subscriptionTiers（license-authority 独立服务，nginx 反代 /api/admin/tiers）
+const SubscriptionTiersView = () => import('./views/SubscriptionTiersView.vue')
+// 批 201：加 router/nav 让 turnsFilterOptions 深链可达（API 已有，缺独立详细页）
+const TurnsFilterOptionsView = () => import('./views/TurnsFilterOptionsView.vue')
+// 批 202：加 router/nav 让 storageMigrationState 深链可达（API + StorageConfig 已有，缺独立详细页）
+const StorageMigrationStateView = () => import('./views/StorageMigrationStateView.vue')
+// 批 203：P2 requestActions 孤儿接前端（Redis LIST by request_id）
+const RequestActionsView = () => import('./views/RequestActionsView.vue')
+// 批 204：P0 storageAndLogConfig 孤儿接前端（3 段只读摘要：storage + filesystem + log）
+const StorageAndLogConfigView = () => import('./views/StorageAndLogConfigView.vue')
 const ReconciliationReportView = () => import('./views/admin/ReconciliationReport.vue')
 // 2026-07-24: V2-P4 admin session detail page (dual-column turns + drawer).
 const SessionDetailView = () => import('./views/admin/SessionDetailPage.vue')
@@ -181,6 +202,14 @@ export const router = createRouter({
     // 2026-07-21: 总览搬到 /dashboard；根路径 / 仍走 HomeView（未登录 redirect 到 maintain，已登录显示 DashboardView）。
     { path: '/dashboard',          component: HomeView, meta: { requiresAuth: true } },
     { path: '/',                   component: HomeView, meta: { public: true } },
+    // 2026-10-16: 实时拓扑新首页（/live）。与旧首页**并存**：`/` 与
+    // /dashboard 一行未改，本页只新增一个入口，不接管根路径。
+    // 权限与 /dashboard 同级（requiresAuth），租户管理员进入即按会话租户收窄。
+    { path: '/live',               component: LiveTopologyView, meta: { requiresAuth: true } },
+    // 2026-10-18: 请求详情**全页**（owner 要求：面板可整页打开某条请求的
+    // 详情）。从 /live 左右面板的 ↗ 进入，非导航项（navCoverage 按孤儿登记）；
+    // 数据来自实时滚动窗口，直链/刷新时可能已滚出（页面如实说明，不冒充空详情）。
+    { path: '/live/request/:requestId', component: RequestDetailPage, meta: { requiresAuth: true } },
 
     // super_admin only — providers, catalog, free pool, tenants, audit logs
     // 2026-09-04: 供应商列表/详情改挂 providerConsole —— super_admin，或
@@ -267,6 +296,12 @@ export const router = createRouter({
     { path: '/admin/session-analytics/users/:owner', component: UserProfileView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/clients/:id', component: ClientAnalyticsView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/tasks/:id', component: TaskAnalyticsView, meta: { requiresAuth: true } },
+    {
+      path: '/admin/session-analytics/filter-options',
+      name: 'session-analytics-filter-options',
+      component: () => import('./views/SessionAnalyticsFilterOptionsView.vue'),
+      meta: { requiresAuth: true },
+    },
     { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
     { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresPlatformOps: true } },
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },
@@ -276,9 +311,18 @@ export const router = createRouter({
     { path: '/admin/approval-config', component: ApprovalConfigView, meta: { requiresSuper: true } },
     { path: '/admin/approvals',    component: ApprovalListView, meta: { requiresSuper: true } },
     { path: '/admin/approvals/:id', component: ApprovalDetailView, meta: { requiresSuper: true } },
+    { path: '/admin/sanitize-rules', component: SanitizeRulesView, meta: { requiresAuth: true } },
     { path: '/admin/output-compliance', component: OutputComplianceView, meta: { requiresSuper: true } },
     { path: '/admin/usage',        component: UsageCostView, meta: { requiresSuper: true } }, // 用量成本视图 (T2.4)；R34: 与相邻 admin 路由对齐补权限 meta
     { path: '/admin/usage-trends', component: UsageTrendExplorerView, meta: { requiresAuth: true, fillViewport: true } }, // 全屏用量趋势（2026-10-02：铺满主区；模型用 ModelPicker）
+    { path: '/admin/usage-enhanced', component: UsageEnhancedView, meta: { requiresSuper: true } }, // 用量增强分析（批 158b：组合 usage.ts 5 端点综合视图；同档 UsageCost 走 super_admin）
+    { path: '/admin/board-operational', component: BoardOperationalView, meta: { requiresAuth: true } }, // 运营面板（批 158c：独立详细页；⚠️ 后端 tenant 隔离未落实，admin 档 endpoint）
+    { path: '/admin/ops-overview', component: OpsOverviewView, meta: { requiresSuper: true } }, // 运维总览（批 158e：12 路 payload 卡片布局；与 appNav.ts:229 maintain SPA 平级，web/ 内部独立深链）
+    { path: '/admin/subscription-tiers', component: SubscriptionTiersView, meta: { requiresSuper: true } }, // 订阅层级（批 200：P5 跨仓 license-authority 独立服务，nginx 反代 /api/admin/tiers）
+    { path: '/admin/turns/filter-options', component: TurnsFilterOptionsView, meta: { requiresSuper: true } }, // 轮次筛选选项（批 201：API 已有 listTurnsFilterOptions，缺独立深链详细页）
+    { path: '/admin/data-lifecycle/migration-state', component: StorageMigrationStateView, meta: { requiresPlatformOps: true } }, // 存储迁移状态（批 202：API + StorageConfig 已有，缺独立深链；与父 /admin/data-lifecycle 端点同档 platformOps）
+    { path: '/admin/request-actions/:id', name: 'request-actions', component: RequestActionsView, meta: { requiresSuper: true } }, // 请求动作时间线（批 203：Redis LIST by request_id；admin 档 endpoint）
+    { path: '/admin/storage-and-log-config', component: StorageAndLogConfigView, meta: { requiresSuper: true } }, // 存储与日志配置（批 204：3 段只读摘要；子视图 StorageConfig/FilesystemMaintenance/LogManagement 全在 DataLifecycleView 父视图下）
     { path: '/admin/reconciliation', component: ReconciliationReportView, meta: { requiresSuper: true } }, // 对账报表（供应商/内部双视角 + Excel 导出，2026-09-25）
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表
@@ -317,6 +361,16 @@ export const router = createRouter({
     ...(import.meta.env.DEV
       ? [{ path: '/dev/waterfall-preview', component: () => import('./views/DispatchWaterfallPreview.vue'), meta: { public: true } }]
       : []),
+    // 2026-10-16: 实时拓扑的 DEV 夹具预览页（动效/排版的肉眼验收入口，
+    // 生产构建不注册）。同 DispatchWaterfallPreview 的既有做法。
+    ...(import.meta.env.DEV
+      ? [{ path: '/dev/live-topology-preview', component: () => import('./views/LiveTopologyPreview.vue'), meta: { public: true } }]
+      : []),
+    // 2026-10-18: 请求详情全页的 DEV 免登录别名（浏览器验收用；生产路由
+    // /live/request/:id 保持 requiresAuth —— 详情含 token/费用/会话，不许匿名）。
+    ...(import.meta.env.DEV
+      ? [{ path: '/dev/live-request-preview/:requestId', component: RequestDetailPage, meta: { public: true } }]
+      : []),
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })
@@ -342,7 +396,7 @@ async function shouldRedirectToBootstrap(toPath: string): Promise<boolean> {
   try {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
     const timer = controller ? window.setTimeout(() => controller.abort(), 2500) : 0
-    const res = await fetch('/api/system/bootstrap/status', {
+    const res = await throttledFetch('/api/system/bootstrap/status', {
       method: 'GET',
       credentials: 'same-origin',
       cache: 'no-store',

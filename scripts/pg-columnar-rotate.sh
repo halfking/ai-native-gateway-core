@@ -55,7 +55,17 @@ case "$MODE" in
       LEFT JOIN pg_inherits i ON child.oid = i.inhrelid
       LEFT JOIN pg_class parent ON parent.oid = i.inhparent
       JOIN pg_am am ON child.relam = am.oid
-      WHERE child.relname ~ '^(_request_logs|credential_model_index|usage_ledger|request_wal)_2026_(0[1-9]|1[0-2])$'
+      WHERE parent.relname IN ('_request_logs', 'credential_model_index', 'usage_ledger', 'request_wal')
+        -- 口径：**按父表枚举**（2026-10-20 复核轮改）。旧口径
+        -- \`child.relname ~ '^(_request_logs|... )_2026_(0[1-9]|1[0-2])\$'\`
+        -- 要求**子表名带家族前缀**，而待删标志在**父表**上（迁移 860 只改父表，
+        -- 分区子表名按设计保持不变）⇒ 7 张真实分区
+        -- （request_logs_2026_07/08/10/11/default 等）**永远不会被轮转**。
+        -- LEFT JOIN 在非分区行上 parent.relname 为 NULL ⇒ 该谓词顺带把
+        -- 非分区表滤掉（等价于 INNER JOIN），这里显式写成 IN 以保留可读性。
+        -- 月份窗口仍按**子表自己的后缀**判定（与旧口径的 \`_2026_MM\` 等价），
+        -- 只是不再要求子表名带家族前缀。
+        AND child.relname ~ '_2026_(0[1-9]|1[0-2])\$'
         AND child.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')
         AND am.amname = 'heap'
       ORDER BY child.relname;

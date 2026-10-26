@@ -32,7 +32,7 @@ REMOTE_DIR="/opt/llm-gateway-go"
 SERVICE="llmgo-252-dev"
 LISTEN="127.0.0.1:8780"
 BUILD_TMP="$(mktemp -d /tmp/llmgo-252-build.XXXXXX)"
-trap 'shred -u "$BUILD_TMP/gateway.env" 2>/dev/null; rm -rf "$BUILD_TMP"' EXIT
+trap 'shred -u "$BUILD_TMP/gateway.env" "$BUILD_TMP/remote.env.prev" 2>/dev/null; rm -rf "$BUILD_TMP"' EXIT
 
 log() { printf '[deploy-252] %s\n' "$*"; }
 
@@ -44,7 +44,7 @@ source "$INJECTOR" inject 252 >/dev/null 2>&1
 set +u
 for k in LLM_GATEWAY_DATABASE_URL LLM_GATEWAY_JWT_SECRET LLM_GATEWAY_TEST_KEY SSH_KEY_252; do
   v="${!k:-}"
-  [[ -n "$v" ]] || { log "ERROR: SSOT KEY 未注入：$k（先 source env-injector inject 252）"; exit 2; }
+  [[ -n "$v" ]] || { log "ERROR: SSOT KEY 未注入：${k}（先 source env-injector inject 252）"; exit 2; }
 done
 [[ -f "$SSH_KEY_252" ]] || { log "ERROR: SSH_KEY_252 不是可读文件"; exit 2; }
 # R37 fix (D14): the `set +e`/`set +u` above were never restored — every
@@ -109,8 +109,46 @@ fi
 # R37 fix (D14): SECRET_KEY and CREDENTIAL_ENCRYPTION_KEY were the SAME
 # random value — one key reused across two cryptographic domains. Generate
 # two independent keys.
-GEN_KEY=$(python3 -c "import secrets;print(secrets.token_urlsafe(33))")
-ENC_KEY=$(python3 -c "import secrets;print(secrets.token_urlsafe(33))")
+#
+# ★★ 2026-10-21 §143.53：**密钥【不轮换】** —— 轮换即作废全部 API key 与加密凭据。
+#   实测证据（252 侧，2026-10-21）：
+#   * `LLM_GATEWAY_SECRET_KEY` 是库内 `api_keys.key_hash` 的 HMAC 密钥
+#     （`domains/authentication/verifier.go:623` `HashAPIKey(secretKey, key)`
+#     = HMAC-SHA256）⇒ ⇒ **换 SECRET_KEY ⇒ 库里每一条 api_key 的哈希都再也对不上
+#     ⇒ ⇒ 全部 API key 一次性失效**；
+#   * `LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY` 换了 ⇒ 库里用旧钥加密的凭据解不开
+#     ⇒ ⇒ 凭据面全量 decrypt_failed。
+#   ⇒ ⇒ **每次部署都重新生成 = 每次部署都打断现网鉴权** ⇒ ⇒ 这不是「dev 实例无所谓」
+#   （DB 是共享的 172.16.2.210 库，api_keys 表对全实例可见）。
+#   ⇒ ⇒ 修法：**先从远端现有 .env.dev 读回这两个值，存在就沿用**；
+#   ⇒ ⇒ 只有远端还没有（首次部署）才生成新的。
+#   ⇒ ⇒ 读取全程不回显、不落日志；临时副本在 EXIT trap 里 shred。
+GEN_KEY=""
+ENC_KEY=""
+REMOTE_ENV_PREV="$BUILD_TMP/remote.env.prev"
+if ssh -qi "$SSH_KEY_252" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+     "root@$TARGET_HOST" "cat $REMOTE_DIR/.env.dev 2>/dev/null" > "$REMOTE_ENV_PREV" 2>/dev/null \
+   && [[ -s "$REMOTE_ENV_PREV" ]]; then
+  GEN_KEY=$(sed -n 's/^LLM_GATEWAY_SECRET_KEY=//p' "$REMOTE_ENV_PREV" | tail -1 || true)
+  ENC_KEY=$(sed -n 's/^LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=//p' "$REMOTE_ENV_PREV" | tail -1 || true)
+  if [[ -n "$GEN_KEY" && -n "$ENC_KEY" ]]; then
+    log "沿用远端既有 SECRET_KEY / CREDENTIAL_ENCRYPTION_KEY（不轮换）"
+  else
+    log "远端 env 缺少密钥项 ⇒ 本次生成新的（首次部署形态）"
+  fi
+else
+  log "远端 env 不可读 ⇒ 本次生成新的密钥（首次部署形态）"
+  GEN_KEY=""
+  ENC_KEY=""
+fi
+[[ -n "$GEN_KEY" ]] || GEN_KEY=$(python3 -c "import secrets;print(secrets.token_urlsafe(33))")
+[[ -n "$ENC_KEY" ]] || ENC_KEY=$(python3 -c "import secrets;print(secrets.token_urlsafe(33))")
+# ★ 两个密钥必须是【两个不同的值】（R37 D14 的原意）：远端若历史上就是同一个值，
+# ⇒ 这里补一个独立的 CREDENTIAL_ENCRYPTION_KEY（SECRET_KEY 保持不动）。
+if [[ "$GEN_KEY" == "$ENC_KEY" ]]; then
+  ENC_KEY=$(python3 -c "import secrets;print(secrets.token_urlsafe(33))")
+  log "远端两个密钥同值 ⇒ 只补一个新的 CREDENTIAL_ENCRYPTION_KEY（SECRET_KEY 不动）"
+fi
 DB_URL_252=$(printf '%s' "$LLM_GATEWAY_DATABASE_URL" | sed -E 's#@127\.0\.0\.1:5432#@172.16.2.210:5432#; s#@localhost:5432#@172.16.2.210:5432#')
 # R37 fix (D14): umask 077 while writing — the file carries DATABASE_URL
 # (PG password) and JWT_SECRET; the old write-then-chmod left a world-readable

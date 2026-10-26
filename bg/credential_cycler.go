@@ -60,8 +60,8 @@ func (c *CredentialCycler) Start(ctx context.Context) {
 func (c *CredentialCycler) Stop() {
 	if c.cancel != nil {
 		c.cancel()
+		<-c.done
 	}
-	<-c.done
 }
 
 func (c *CredentialCycler) run(ctx context.Context) {

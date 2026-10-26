@@ -28,7 +28,6 @@ export default {
       requestTime: 'Anfragezeit',
       status: 'Status',
       latency: 'Latenz',
-      latencyUnit: 'ms',
       tenant: 'Tenant',
       success: 'Success',
       clientModel: 'Client-Modell',
@@ -40,7 +39,6 @@ export default {
       taskId: 'Aufgaben-ID',
       endUser: 'End User',
       token: 'Token',
-      tokenTotal: 'Token (gesamt {input}/{output})',
       total: 'Gesamt',
       cache: 'Cache',
       costCredits: 'Cost / Credits',
@@ -151,7 +149,6 @@ export default {
   // — RequestWaterfallPanel —
   waterfall: {
     loading: 'Dispatch-Waterfall wird geladen…',
-    source: 'Quelle: {src}',
     stageHeader: 'T0–T9-Phasen',
     cols: {
       stage: 'Phase',
@@ -179,19 +176,13 @@ export default {
     diagram: {
       ariaLabel: 'Anfrageverarbeitungsablauf', trackLabel: 'Sequenz der Flow-Ereignisse',
       event: 'Flow-Ereignis', noData: 'Kein beobachtbarer Flow', noEvents: 'Keine Flow-Ereignisse',
-      stages: { received: 'Eingang', routing: 'Routenauflösung', model_queue: 'Modellwarteschlange', credential_queue: 'Credential-Warteschlange', node_selection: 'Knotenauswahl', upstream: 'Upstream-Anfrage', streaming: 'Stream-Antwort', retrying: 'Wiederholung', terminal: 'Anfrage abgeschlossen' },
-      status: { success: 'Erfolg', failed: 'Fehlgeschlagen', timeout: 'Timeout', skipped: 'Übersprungen' },
       flags: { compression: 'Komprimierung', retry: 'Wiederholung', nodeSwitch: 'Knotenwechsel', degraded: 'Beobachtung eingeschränkt' },
       evidenceLabel: 'Routing- und Waterfall-Nachweise', evidenceTitle: 'Beobachtete Versuche', waterfallAttempt: 'Waterfall-Versuch #{number}', noDetails: 'Keine weiteren Details', degraded: 'Beobachtung eingeschränkt',
       lanesLabel: 'Anfrageversuch-Spuren', lanesTitle: 'Beobachtete Journey-Versuche', attemptLane: 'Versuch #{number}', sourceJourney: 'Journey-Quelle', waterfallLabel: 'Waterfall-Phasenbalken', waterfallTitle: 'Waterfall-Phasenbalken', lastAttemptSemantics: 'Anfrageweite Zeit; T5–T9 können den letzten Versuch widerspiegeln', synthesizedBars: 'Synthetische Phasen zeigen fehlende Zeitstempel (eingeschränkte Beobachtung).', requestTimeline: 'Anfragezeitachse',
-      legend: { success: 'Erfolg', failed: 'Fehlgeschlagen/Timeout', special: 'Komprimierung · Wiederholung · Knotenwechsel' }
+      legend: { success: 'Erfolg', failed: 'Fehlgeschlagen/Timeout', special: 'Komprimierung, Wiederholung, Knotenwechsel' }
     },
   },
   // — Allgemeine Platzhalter —
-  common: {
-    emDash: '—',
-    colon: ': ',
-  },
  // — Subtask 3 (handoff §5): body_status two-state banners —
   // Quelle: turns[].body_status von /api/admin/sessions/detail — nicht
   // /snapshot (dort gibt es keine turns) und nicht die /turns-Liste

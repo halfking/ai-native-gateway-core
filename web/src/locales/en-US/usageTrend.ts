@@ -11,7 +11,7 @@ export default {
   filterModel: 'Model',
   filterMetric: 'Metric',
   filterAll: 'All',
-  filterProviderKeyFailed: "Provider / key filter options failed to load — an empty dropdown does not mean there are none",
+  filterProviderKeyFailed: "Provider / key filter options failed to load. An empty dropdown does not mean there are none",
   filterTenantFailed: 'Tenant filter options failed to load',
   shareByMetric: 'Share (metric)',
   sourceDetail: 'Request detail',

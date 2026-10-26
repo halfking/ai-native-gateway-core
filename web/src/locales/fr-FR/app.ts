@@ -1,27 +1,16 @@
 // Auto-translated draft (fr-FR) · 2026-07-02 · please review
 // app.ts — App.vue shell strings (header roles, sidebar collapse, logout, language switcher).
 export default {
-  brand: 'AI-Native Org Gateway',
+  brand: {
+    siteTitle: 'AI Native Passerelle Centrale',
+    siteTitleLineTwo: 'Passerelle Centrale',
+    alt: 'Logo Kaixuan',
+  },
   role: {
     super_admin: 'Super-administrateur',
     tenant_admin: 'Administrateur du locataire',
   },
-  sidebar: {
-    expand: 'Déplier la barre latérale',
-    collapse: 'Replier la barre latérale',
-    collapseMenu: 'Replier le menu',
-  },
-  logout: 'Se déconnecter',
-  lang: {
-    switch: 'Changer de langue',
-    label: 'Langue',
-  },
   // 2026-07-22: public shell footer strings (paired with LifecycleShell).
-  footer: {
-    left: '© 2026 AI-Native Gateway',
-    right: "Besoin d'aide ?",
-    feedbackLink: 'Envoyer un commentaire',
-  },
   // 2026-07-22: user menu dropdown (UserMenuDropdown) + profile dialog (UserInfoDialog).
   userMenu: {
     profile: 'Profil',
@@ -37,10 +26,6 @@ export default {
     close: 'Fermer',
   },
   // 2026-07-22: skip-link (a11y) strings.
-  nav: {
-    mainAria: 'Navigation principale',
-    skip: 'Aller au contenu principal',
-  },
 
   theme: {
     switchToLight: 'Switch to light',
@@ -53,11 +38,11 @@ export default {
     titleUnavailable: 'Impossible de confirmer l’état des données de trafic : les chiffres de cette page peuvent être obsolètes',
     hintLabel: 'Inspecter',
     retry: 'Revérifier',
-    failedHint: 'Lecture de l’état des données impossible. Un état non confirmé n’est pas un état sain — traitez les chiffres de cette page comme potentiellement obsolètes.',
+    failedHint: 'Lecture de l’état des données impossible. Un état non confirmé n’est pas un état sain. Traitez les chiffres de cette page comme potentiellement obsolètes.',
   },
   deploySeq: {
     bannerTitle: 'New version available',
-    bannerHint: 'A newer build is deployed. Reload the page to switch.',
+    bannerHint: 'Une version plus récente est déployée. Rechargez la page pour passer à la nouvelle.',
     updateNow: 'Reload now',
     later: 'Later',
     currentSeq: 'Page deploy seq',
@@ -66,8 +51,8 @@ export default {
     stateAvailable: 'Update available',
     stateIndeterminate: 'Indeterminate',
     stateChecking: 'Checking…',
-    reasonNoLocal: 'This page carries no deploy seq (not injected at build time)',
-    reasonNoRemote: 'Server returned no deploy seq (old build or non-repo hosting)',
+    reasonNoLocal: 'Cette page ne porte pas de séquence de déploiement (non injectée à la compilation)',
+    reasonNoRemote: 'Le serveur n\'a pas renvoyé de séquence de déploiement (version ancienne ou hébergement hors dépôt)',
     reasonNetwork: 'Check request failed; cannot determine',
     checks: 'Checks run',
     checkNow: 'Check for updates',

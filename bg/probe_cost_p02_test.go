@@ -433,6 +433,27 @@ func TestRequestFailureThrottlePredicateSQL(t *testing.T) {
 	}
 	defer pool.Close()
 
+	// ★★ 记录这张表**是不是本用例自己建的** —— 清场策略必须据此分叉。
+	//
+	//   真实库上 `node_probe_state` **本来就存在**（产品 schema 拥有它），
+	//   而六个探针健康视图（v_node_probe_state_compat / v_model_health_dashboard /
+	//   v_probe_queue_snapshot / v_model_priority_details / v_probe_system_health /
+	//   v_routable_credential_models）**依赖它**
+	//   ⇒ ⇒ `DROP TABLE`（不带 CASCADE）**永远失败**（2BP01）
+	//   ⇒ ⇒ 旧清场（只 DROP 表）等于**从来没清过** ⇒ 夹具行跨轮次存活
+	//   ⇒ ⇒ 而夹具用 `ON CONFLICT DO NOTHING` ⇒ 下一轮读到的是**陈旧的
+	//   last_attempt_at** ⇒ min-gap 臂翻转 ⇒ **同一个库上跑第二遍就红**。
+	//
+	//   ⇒ 修法（两处）：
+	//   ① 夹具写入改成 **UPSERT**（每次跑都写入新鲜的时间戳）⇒ 不依赖上一轮的残留；
+	//   ② 清场改成「**只删本用例插的行**（credential_id = 420926，本文件专属）」；
+	//      只有当表是本用例自己建的（preExisted = false ⇒ 不可能有视图依赖它）才 DROP 表。
+	preExisted := false
+	if err := pool.QueryRow(ctx,
+		`SELECT to_regclass('public.node_probe_state') IS NOT NULL`).Scan(&preExisted); err != nil {
+		t.Fatalf("probe node_probe_state pre-existence: %v", err)
+	}
+
 	// The production table shape this predicate reads (subset of \d
 	// node_probe_state; extra columns get NULL/defaulted).
 	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS node_probe_state (
@@ -464,6 +485,25 @@ func TestRequestFailureThrottlePredicateSQL(t *testing.T) {
 			return
 		}
 		defer conn.Close(cctx)
+		if preExisted {
+			// ★ 表是产品 schema 的（且有六个视图依赖它）⇒ **不能 DROP**
+			//   ⇒ 只删本用例插的行（credential_id = 420926 是本文件专属标识符）。
+			if _, derr := conn.Exec(cctx,
+				`DELETE FROM node_probe_state WHERE credential_id = 420926`); derr != nil {
+				t.Errorf("cleanup: delete node_probe_state fixtures: %v", derr)
+				return
+			}
+			var left int
+			if qerr := conn.QueryRow(cctx,
+				`SELECT count(*) FROM node_probe_state WHERE credential_id = 420926`).Scan(&left); qerr != nil {
+				t.Errorf("cleanup: verify fixtures deleted: %v", qerr)
+				return
+			}
+			if left != 0 {
+				t.Errorf("cleanup: %d fixture rows still present after DELETE", left)
+			}
+			return
+		}
 		if _, derr := conn.Exec(cctx, `DROP TABLE IF EXISTS node_probe_state`); derr != nil {
 			t.Errorf("cleanup: drop node_probe_state: %v", derr)
 			return
@@ -501,7 +541,12 @@ func TestRequestFailureThrottlePredicateSQL(t *testing.T) {
 		if _, err := pool.Exec(ctx, `
 			INSERT INTO node_probe_state (credential_id, raw_model_name, consecutive_failures, last_err_code, last_attempt_at, next_retry_at, last_direct_ok)
 			VALUES (420926, $1, $2, `+f.rowSQL+`, FALSE)
-			ON CONFLICT (credential_id, raw_model_name) DO NOTHING`, f.model, f.cf); err != nil {
+			ON CONFLICT (credential_id, raw_model_name) DO UPDATE
+			SET consecutive_failures = EXCLUDED.consecutive_failures,
+			    last_err_code        = EXCLUDED.last_err_code,
+			    last_attempt_at      = EXCLUDED.last_attempt_at,
+			    next_retry_at        = EXCLUDED.next_retry_at,
+			    last_direct_ok       = EXCLUDED.last_direct_ok`, f.model, f.cf); err != nil {
 			t.Fatalf("insert fixture %s: %v", f.model, err)
 		}
 	}
@@ -509,7 +554,12 @@ func TestRequestFailureThrottlePredicateSQL(t *testing.T) {
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO node_probe_state (credential_id, raw_model_name, consecutive_failures, last_err_code, last_attempt_at, next_retry_at, last_direct_ok)
 		VALUES (420926, 'counter-only-evidence', 2, NULL, now() - interval '90 seconds', now() + interval '1 hour', FALSE)
-		ON CONFLICT (credential_id, raw_model_name) DO NOTHING`); err != nil {
+		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
+			SET consecutive_failures = EXCLUDED.consecutive_failures,
+			    last_err_code        = EXCLUDED.last_err_code,
+			    last_attempt_at      = EXCLUDED.last_attempt_at,
+			    next_retry_at        = EXCLUDED.next_retry_at,
+			    last_direct_ok       = EXCLUDED.last_direct_ok`); err != nil {
 		t.Fatalf("insert counter-only fixture: %v", err)
 	}
 

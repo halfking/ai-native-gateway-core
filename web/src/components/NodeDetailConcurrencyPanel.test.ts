@@ -1,8 +1,8 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { createI18n } from 'vue-i18n'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import NodeDetailConcurrencyPanel from './NodeDetailConcurrencyPanel.vue'
 import type { CredentialMonitorSummary } from '../api/credential-monitor'
+import { testI18n } from '../test-utils/i18n'
 
 type FpSlotStats = {
   unlimited: boolean
@@ -31,8 +31,6 @@ vi.mock('../api/providers', () => ({
 vi.mock('../api/credential-monitor', () => ({
   setConcurrencyAuto,
 }))
-
-const i18n = createI18n({ legacy: false, locale: 'zh-CN', messages: { 'zh-CN': {} } })
 
 function makeMonitor(overrides: Partial<CredentialMonitorSummary> = {}): CredentialMonitorSummary {
   return {
@@ -84,7 +82,7 @@ function mountPanel(monitor = makeMonitor(), providerId = 12763) {
       canEdit: true,
     },
     global: {
-      plugins: [i18n],
+      plugins: [testI18n],
       stubs: { FpSlotVisualizer: true, Teleport: true },
     },
   })

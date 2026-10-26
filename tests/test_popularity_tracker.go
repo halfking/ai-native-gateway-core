@@ -7,12 +7,17 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
 )
 
+// ★ 2026-10-20：顺手修掉一处**既有编译错**（本文件是 //go:build ignore，
+// 从来没被编译过，所以没人发现）：`"─"*70` 不是合法的 Go（字符串不能乘），
+// 正确写法是 strings.Repeat("─", 70)。不修的话这个脚本**根本跑不起来**，
+// 而「改指会话族」的目的正是让它还能跑。
 func main() {
 	// 从环境变量读取数据库连接
 	dbURL := "postgres://llm_gateway:password@localhost:5432/llm_gateway?sslmode=disable"
@@ -35,35 +40,51 @@ func main() {
 	fmt.Println("   ✓ 数据库连接成功")
 	fmt.Println()
 
-	// 检查 _request_logs 表
-	fmt.Println("2. 检查 _request_logs 表结构...")
+	// ★ 2026-10-20（迁移 890，v1 族整体退役）：本脚本改查**会话族**
+	// （session_turns_hot ∪ session_turns）。
+	//
+	// 口径对应关系（v1 → 会话族）：
+	//   表          _request_logs        → session_turns_hot ∪ session_turns
+	//   时间列      created_at            → ts（v1 侧其实是 ts；created_at 早就不存在）
+	//   模型列      client_model          → model（会话族**没有** client_model：
+	//                                          canonical 投影里它恒 NULL）
+	//   两个存储面  母表 + hot             → 母表 + hot（两侧都要读：
+	//                                          只读母表会漏掉最新的那一段）
+	//
+	// ⚠ 语义差别（写明）：v1 的 client_model 是**客户端请求的模型**，
+	// 会话族的 model 是**实际选中的模型**（outbound_model）。热度追踪器
+	// （domains/credentialstate）也在迁移中，所以它的口径以它为准。
+
+	// 检查会话族表
+	fmt.Println("2. 检查 session_turns 表结构...")
 	var exists bool
 	err = pool.QueryRow(ctx, `
 		SELECT EXISTS (
-			SELECT FROM information_schema.tables 
-			WHERE table_name = '_request_logs'
+			SELECT FROM information_schema.tables
+			WHERE table_name = 'session_turns'
 		)
 	`).Scan(&exists)
 	if err != nil || !exists {
-		log.Fatalf("_request_logs 表不存在: %v", err)
+		log.Fatalf("session_turns 表不存在: %v", err)
 	}
-	fmt.Println("   ✓ _request_logs 表存在")
+	fmt.Println("   ✓ session_turns 表存在")
 
-	// 检查索引
+	// 检查索引（口径对应 v1 侧的 created_at 索引：会话族的时间列是 ts）
 	var indexCount int
 	err = pool.QueryRow(ctx, `
-		SELECT COUNT(*) 
-		FROM pg_indexes 
-		WHERE tablename = '_request_logs' 
-		  AND indexdef ILIKE '%created_at%'
+		SELECT COUNT(*)
+		FROM pg_indexes
+		WHERE tablename IN ('session_turns', 'session_turns_hot')
+		  AND indexdef ILIKE '%ts%'
+		  AND indexdef ILIKE '%model%'
 	`).Scan(&indexCount)
 	if err != nil {
 		log.Printf("   ⚠ 索引检查失败: %v", err)
 	} else if indexCount == 0 {
-		fmt.Println("   ⚠ 警告: 未找到 created_at 索引，查询可能较慢")
-		fmt.Println("   建议: CREATE INDEX idx_request_logs_created_at_model ON _request_logs (created_at DESC, client_model);")
+		fmt.Println("   ⚠ 警告: 未找到 (ts, model) 相关索引，查询可能较慢")
+		fmt.Println("   建议: CREATE INDEX idx_session_turns_ts_model ON session_turns (ts DESC, model);")
 	} else {
-		fmt.Printf("   ✓ 找到 %d 个 created_at 相关索引\n", indexCount)
+		fmt.Printf("   ✓ 找到 %d 个 (ts, model) 相关索引\n", indexCount)
 	}
 	fmt.Println()
 
@@ -71,12 +92,16 @@ func main() {
 	fmt.Println("3. 检查最近1小时数据...")
 	var totalRows, distinctModels, withModel int
 	err = pool.QueryRow(ctx, `
-		SELECT 
+		SELECT
 		  COUNT(*) as total_rows,
-		  COUNT(DISTINCT client_model) as distinct_models,
-		  COUNT(*) FILTER (WHERE client_model IS NOT NULL) as with_model
-		FROM _request_logs 
-		WHERE created_at > NOW() - INTERVAL '1 hour'
+		  COUNT(DISTINCT t.model) as distinct_models,
+		  COUNT(*) FILTER (WHERE t.model IS NOT NULL) as with_model
+		FROM (
+		  SELECT model, ts FROM session_turns_hot
+		  UNION ALL
+		  SELECT model, ts FROM session_turns
+		) t
+		WHERE t.ts > NOW() - INTERVAL '1 hour'
 	`).Scan(&totalRows, &distinctModels, &withModel)
 	if err != nil {
 		log.Fatalf("查询失败: %v", err)
@@ -99,12 +124,16 @@ func main() {
 
 	start = time.Now()
 	rows, err := pool.Query(ctx, `
-		SELECT client_model, COUNT(*) AS request_count
-		FROM _request_logs
-		WHERE created_at > NOW() - INTERVAL '1 hour'
-		  AND client_model IS NOT NULL
-		  AND client_model != ''
-		GROUP BY client_model
+		SELECT t.model, COUNT(*) AS request_count
+		FROM (
+		  SELECT model, ts FROM session_turns_hot
+		  UNION ALL
+		  SELECT model, ts FROM session_turns
+		) t
+		WHERE t.ts > NOW() - INTERVAL '1 hour'
+		  AND t.model IS NOT NULL
+		  AND t.model != ''
+		GROUP BY t.model
 		ORDER BY request_count DESC
 		LIMIT 100
 	`)
@@ -136,7 +165,7 @@ func main() {
 	// 显示 TOP 10
 	fmt.Println("6. TOP 10 热门模型：")
 	fmt.Println("   模型名称                                   请求数    推荐间隔")
-	fmt.Println("   " + "─"*70)
+	fmt.Println("   " + strings.Repeat("─", 70))
 	for i, ms := range stats {
 		if i >= 10 {
 			break
@@ -173,7 +202,7 @@ func main() {
 	fmt.Println("=== 测试完成 ===")
 	fmt.Println()
 	fmt.Println("部署建议：")
-	fmt.Println("1. 确保索引存在：CREATE INDEX idx_request_logs_created_at_model ON _request_logs (created_at DESC, client_model);")
+	fmt.Println("1. 确保索引存在：CREATE INDEX idx_session_turns_ts_model ON session_turns (ts DESC, model);")
 	fmt.Println("2. 启用热度追踪：export LLM_GATEWAY_ENABLE_POPULARITY_TRACKING=true")
 	fmt.Println("3. 监控查询耗时：观察日志中的 'popularity tracker: refreshed' 消息")
 }

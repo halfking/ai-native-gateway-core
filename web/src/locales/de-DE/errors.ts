@@ -4,13 +4,6 @@
 // when no code is present. Grow the code list as endpoints evolve.
 export default {
   // Resolve by ApiError.code (machine-readable stable strings). Append as new codes appear.
-  code: {
-    unauthorized: 'Nicht autorisiert, bitte melden Sie sich erneut an',
-    forbidden: 'Zugriff verweigert',
-    not_found: 'Ressource nicht gefunden',
-    rate_limited: 'Zu viele Anfragen, bitte versuchen Sie es bald erneut',
-    internal: 'Interner Serverfehler',
-  },
   // Fallback by HTTP status.
   byStatus: {
     400: 'Ungültige Anfrage',

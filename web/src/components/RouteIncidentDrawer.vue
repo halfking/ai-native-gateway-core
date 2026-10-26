@@ -49,6 +49,7 @@ import {
   type RouteIncidentTimelinePoint,
 } from '../types/routeIncident'
 import { exportFile } from '../utils/exportFile'
+import { Search, Close } from '@element-plus/icons-vue'
 
 // R48-D4（R48 报告 §五-6）：导出链失败文案接 i18n；组件其余存量硬编码串
 // 仍登记在 CJK 基线棘轮（scripts/i18n-cjk-baseline.json），逐批清偿。
@@ -205,24 +206,25 @@ async function fetchDetail(id: string) {
   error.value = null
   timelineError.value = null
   try {
-    const [d, e, t] = await Promise.all([
+    // ★ 第三个解构项曾叫 `t` ⇒ **遮蔽了 i18n 的 `t`** ⇒ 下面的 t('…') 变成了「把数据当函数调用」。
+    const [d, e, tl] = await Promise.all([
       getRouteIncident(id, props.tenantId),
       getRouteIncidentEvents(id, 200, props.tenantId),
       getRouteIncidentTimeline(id, props.tenantId),
     ])
     detail.value = d
     events.value = e?.items || []
-    timeline.value = t?.items || []
+    timeline.value = tl?.items || []
     if (!d) {
       error.value = '找不到该路由事件'
-    } else if (!t) {
-      timelineError.value = '近 24 小时数据加载失败'
+    } else if (!tl) {
+      timelineError.value = t('routeIncidentDrawer.timelineLoadFailed')
     }
     // Audit + runs are best-effort; we always load them after the
     // detail so we can show the operator a current-state section.
     void fetchAuditAndRuns(id)
   } catch (e: any) {
-    error.value = e?.message || '详情加载失败'
+    error.value = e?.message || t('routeIncidentDrawer.detailLoadFailed')
   } finally {
     loading.value = false
     lastFetchAt.value = Date.now()
@@ -240,7 +242,7 @@ async function fetchAuditAndRuns(id: string) {
     auditEntries.value = a?.items || []
     runs.value = r?.items || []
   } catch (e: any) {
-    auditError.value = e?.message || '审计日志加载失败'
+    auditError.value = e?.message || t('routeIncidentDrawer.auditLogLoadFailed')
   } finally {
     auditLoading.value = false
   }
@@ -577,7 +579,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
       <div class="route-incident-drawer__panel">
         <header class="route-incident-drawer__header">
           <div class="route-incident-drawer__title">
-            <span class="route-incident-drawer__icon" aria-hidden="true">🔍</span>
+            <span class="route-incident-drawer__icon" aria-hidden="true"><Search /></span>
             <div>
               <div class="route-incident-drawer__heading">
                 诊断工作台
@@ -597,7 +599,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
               :disabled="loading"
               @click="refresh"
             >
-              {{ loading ? '刷新中…' : '刷新' }}
+              {{ loading ? $t('common.terms.refreshing') : $t('common.button.refresh') }}
             </button>
             <button
               ref="closeBtn"
@@ -606,7 +608,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
               aria-label="关闭诊断"
               @click="close"
             >
-              ✕
+              <Close />
             </button>
           </div>
         </header>
@@ -614,10 +616,10 @@ function hasRunValues(values: Record<string, unknown>): boolean {
         <div class="route-incident-drawer__body">
           <!-- 1. Status header -->
           <section class="route-incident-drawer__section">
-            <h3 class="route-incident-drawer__section-title">1. 状态</h3>
+            <h3 class="route-incident-drawer__section-title">1. {{ $t('common.terms.status') }}</h3>
             <div class="status-grid">
               <div class="status-grid__cell">
-                <div class="status-grid__label">状态</div>
+                <div class="status-grid__label">{{ $t('common.terms.status') }}</div>
                 <div :class="['status-grid__value', `status-grid__value--${stateTone}`]">
                   {{ visibleStateLabel }}
                 </div>
@@ -667,23 +669,23 @@ function hasRunValues(values: Record<string, unknown>): boolean {
                 <span class="kv__val">{{ currentRoute.protocol || '—' }}</span>
               </div>
               <div class="kv__row">
-                <span class="kv__key">标准模型</span>
+                <span class="kv__key">{{ $t('common.terms.standardModel') }}</span>
                 <span class="kv__val">{{ currentRoute.canonical_model || '—' }}</span>
               </div>
               <div class="kv__row">
-                <span class="kv__key">出站模型</span>
+                <span class="kv__key">{{ $t('common.terms.outboundModel') }}</span>
                 <span class="kv__val">{{ currentRoute.outbound_model || '—' }}</span>
               </div>
               <div class="kv__row">
-                <span class="kv__key">供应商 ID</span>
+                <span class="kv__key">{{ $t('common.terms.provider') }} ID</span>
                 <span class="kv__val">{{ currentRoute.provider_id ?? '—' }}</span>
               </div>
               <div class="kv__row">
-                <span class="kv__key">凭据 ID</span>
+                <span class="kv__key">{{ $t('common.credentialFallback') }} ID</span>
                 <span class="kv__val">{{ currentRoute.credential_id ?? '—' }}</span>
               </div>
               <div class="kv__row">
-                <span class="kv__key">路由决策</span>
+                <span class="kv__key">{{ $t('common.terms.routingDecision') }}</span>
                 <span class="kv__val">{{ currentRoute.routing_decision || '—' }}</span>
               </div>
             </div>
@@ -813,7 +815,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
                 </span>
               </div>
               <div class="kv__row">
-                <span class="kv__key">可用性</span>
+                <span class="kv__key">{{ $t('common.terms.availability') }}</span>
                 <span class="kv__val">
                   {{ resourceSnapshot.availability_state || '—' }}
                 </span>
@@ -1061,7 +1063,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
                 </span>
               </label>
               <details v-if="confirmKind === 'release_slot'" class="action-modal__params">
-                <summary>附加参数（可选）</summary>
+                <summary>{{ $t('common.terms.extraParams') }}</summary>
                 <label class="action-modal__label">
                   slot_id
                   <input
@@ -1073,7 +1075,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
                 </label>
               </details>
               <details v-else-if="confirmKind === 'recover'" class="action-modal__params">
-                <summary>附加参数（可选）</summary>
+                <summary>{{ $t('common.terms.extraParams') }}</summary>
                 <label class="action-modal__label">
                   target_state
                   <select v-model="(confirmParams as any).target_state" class="action-modal__input">
@@ -1089,7 +1091,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
                 type="button"
                 class="route-incident-drawer__btn route-incident-drawer__btn--ghost"
                 @click="confirmKind = null"
-              >取消</button>
+              >{{ $t('common.button.cancel') }}</button>
               <button
                 type="button"
                 :class="['route-incident-drawer__btn', actionDestructive(confirmKind) ? 'route-incident-drawer__btn--destructive' : 'route-incident-drawer__btn--primary']"
@@ -1129,7 +1131,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
                 class="route-incident-drawer__btn route-incident-drawer__btn--ghost"
                 @click="exportState = 'idle'; lastExport = null"
               >
-                关闭
+                {{ $t('common.close') }}
               </button>
             </div>
           </div>
@@ -1403,8 +1405,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 .status-grid__label {
   font-size: 10px;
   color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
 }
 
 .status-grid__value {
@@ -1579,10 +1580,14 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 3px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
   background: var(--bg);
   border: 1px solid var(--border);
+  /* 这里保留 uppercase：徽标里显示的是 API 返回的**拉丁事件 token**
+     （opened / failure_observed / recovery_progress / recovered），
+     属数据而非界面文案，大写后更易扫读。
+     中文界面禁 uppercase 的规则针对的是 t() 出来的界面标签。 */
+  text-transform: uppercase;
 }
 
 .event-row__type--opened { color: var(--danger); border-color: var(--danger-bd); }
@@ -1659,8 +1664,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   padding: 1px 6px;
   border-radius: 999px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
 }
 
 .action-result__pill--success {
@@ -1717,8 +1721,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   padding: 1px 6px;
   border-radius: 999px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
 }
 
 .audit-row__pill--success {

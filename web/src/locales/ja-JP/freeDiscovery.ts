@@ -7,7 +7,7 @@ export default {
   common: {
       refresh: "更新",
       loading: "処理中…",
-      empty: "データなし",
+      empty: '無料リソース探索の記録はまだありません。',
       actions: "操作",
       enabled: "有効",
       disabled: "無効",
@@ -81,7 +81,7 @@ export default {
       review: "結果をレビュー"
     },
   res: {
-      title: "結果 · タスク {id} · {provider}",
+      title: "結果，タスク {id}，{provider}",
       pending: "レビュー待ち",
       all: "すべて",
       model: "モデル ID",
@@ -117,11 +117,11 @@ export default {
     },
   hist: {
       title: "インポート履歴（{n}）",
-      desc: "実際にインポートが発生したタスク（インポート数 > 0）を表示。詳細をクリックすると各結果の最終状態を確認できます。",
+      desc: '実際にインポートが発生したタスク（インポート数 > 0）を表示。各結果の最終状態は「詳細」で確認できます。',
       completed: "完了日時",
       detail: "詳細",
       none: "インポート記録はまだありません。タスクとレビュー画面で一括インポートするとここに表示されます。",
-      detailTitle: "インポート詳細 · タスク {id} · {provider}",
+      detailTitle: "インポート詳細，タスク {id}，{provider}",
       importedAt: "インポート日時"
     },
 }

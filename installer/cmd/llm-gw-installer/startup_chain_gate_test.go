@@ -30,31 +30,32 @@ import (
 //   - A listed migration that now applies has been fixed; delete its entry so
 //     the list keeps shrinking and cannot quietly go stale.
 //
-// This test deliberately does not assert a green install. Asserting that would
-// require registering the ~150 unregistered canonical migrations, which changes
-// the object set a fresh install produces and is an architecture decision, not
-// a mechanical fix. Until that decision is made, the honest invariant is
-// "the set of broken migrations is exactly the reviewed set".
-var knownStartupChainGaps = map[string]string{
-	"622_provider_error_aggregator_state.sql":               `relation "public.candidate_failure_logs_hot" does not exist (creator 392 unregistered)`,
-	"624_candidate_failure_logs_promote_atomic_v2.sql":      `relation "public.candidate_failure_logs_hot" does not exist (creator 392 unregistered)`,
-	"627_candidate_failure_logs_aggregation_id_unified.sql": `relation "public.candidate_failure_logs_hot" does not exist (creator 392 unregistered)`,
-	"682_model_offers_context_window_columns.sql":           `column cmb.context_window_source does not exist`,
-	"683_session_dim_ownership_columns.sql":                 `relation "session_dim" does not exist (creator 350 unregistered)`,
-	"686_fix_session_module_executions_2026_10_bounds.sql":  `relation "public.session_module_executions_2026_10" does not exist`,
-	"690_session_summaries_archived_ttl_index.sql":          `column "archived_at" does not exist`,
-	"696_request_logs_view_system_fingerprint.sql":          `relation "public.request_logs_with_current_month_without_request_class_due_at" does not exist`,
-	"700_request_logs_view_raw_model_name.sql":              `relation "public.request_logs_with_current_month_without_request_class_due_at" does not exist`,
-	"707_session_turns_s1a.sql":                             `relation "public.session_turns_hot" does not exist (creator 526 unregistered)`,
-	"708_session_bodies_s1a.sql":                            `UPDATE and CTID scans not supported for ColumnarScan`,
-	"713_session_turns_cost_precision.sql":                  `relation "public.session_turns_hot" does not exist (creator 526 unregistered)`,
-	"733_session_turn_details.sql":                          `column "request_type" does not exist`,
-	"734_request_logs_view_details_join.sql":                `migration 734 requires session_turns family (run 430/513/526 first)`,
-	"738_view_chain_credits_rate_multiplier.sql":            `request_logs_with_current_month column count = 0 (expected 114)`,
-	"740_view_chain_client_ip.sql":                          `request_logs_with_current_month_without_customer_id column count = 0 (expected 110)`,
-	"757_session_turns_origin_actor_projection.sql":         `view public.session_turns_with_current_month not found`,
-	"762_session_project_backfill_chain.sql":                `relation "public.session_dim" does not exist (creator 350 unregistered)`,
-}
+// 2026-10-20 订正（本轮实测，真库 PG 18.x 临时库，整链 282 条逐条跑）：
+//
+//	**本表已清空 —— 整条 fresh-install 链现在全绿（0 of 282 fail）。**
+//
+// 三处订正，各自都有实测支撑：
+//
+//  1. **本门自己的量具坏了**：`runInstallerPSQL` 无条件加 `--single-transaction`，
+//     而真实安装器会把带 `dbinit:no-transaction` 标记的文件送到**非事务通道**
+//     ⇒ 718/719/807/822/845/871/877 这 7 条含
+//     `DROP/CREATE INDEX CONCURRENTLY` 的迁移在**本门里**被误报成
+//     「链上新破坏」。**量具比被测对象更严 ⇒ 造假阳性**。修正后这 7 条全绿。
+//  2. **489/490 补登**（本轮登记）：853 自己在文件头声明依赖
+//     「489/490_credential_probe_queue_*（队列表本体）」，而那两条从未登记进链
+//     ⇒ 新装在 853 处 42P01 并**中止整个安装**。补登后 853 绿。
+//  3. **原 18 条已审阅失败项全部不再失败**（含 622/624/627 的 candidate_failure_logs
+//     族、707/713/733/734/738/740/757/762 等）⇒ 按本表的收缩规则逐条删除。
+//     这 18 条里有 10 条其实**早已**在链变好之后不再失败，只是没人跑这个门
+//     ⇒ 门红着 = **信号被淹没**：真缺陷和假缺陷混在一起，没人看得见。
+//
+// ⇒ 现在这张表是**空的**，门的含义变成最锐的那一条：
+// **「整条 fresh-install 链必须一条不落地应用成功」**。
+// 任何新的断链都会被立刻点名；任何链变好也仍会被要求把表补回（或保持空）。
+//
+// ⚠ 口径：这条结论是在**本机 PG 18.x**、用真实 `psql` 逐条跑出来的，
+// 不是静态分析。跨 PG 大版本重跑时若出现差异，先怀疑版本差异而不是直接改表。
+var knownStartupChainGaps = map[string]string{}
 
 // TestStartupChainGapsMatchReviewedSet applies the whole fresh-install chain to
 // a disposable database and compares the set of migrations that fail against
@@ -136,9 +137,29 @@ func applyInstallerSQLTolerant(t *testing.T, dsn, path string) (reason string, f
 // gate that wants to *read* failures, and unlike psqlScalar it never parses a
 // scalar out of the output, so citus's background-worker warnings on stderr
 // cannot be mistaken for a value.
+//
+// ⚠ 2026-10-20 订正：事务包裹必须**尊重 dbinit:no-transaction 标记**。
+// 之前这里无条件加 `--single-transaction`，而真实安装器（dbinit.Runner.applySQL
+// 与本包的 applyInstallerSQL）会把带标记的文件送到**非事务通道**。于是
+// 718/719/807/822/845/871/877 这 7 条含
+// `DROP/CREATE INDEX CONCURRENTLY` 的迁移在**这个门里**全部报
+// “cannot run inside a transaction block”，被误记成「链上新破坏」。
+// ⇒ **量具比被测对象更严 ⇒ 量具造假阳性**（判据纪律：坏尺子必须先修尺子，
+// 否则「链是坏的」这个结论会把真缺陷和假缺陷混在一起）。
+// 2026-10-20 实测：修正后这 7 条在本门里全部应用成功。
 func runInstallerPSQL(t *testing.T, dsn, path string) (string, string) {
 	t.Helper()
-	cmd := exec.Command("psql", "-v", "ON_ERROR_STOP=1", "--single-transaction", "--dbname", dsn, "-f", path)
+	args := []string{"-v", "ON_ERROR_STOP=1"}
+	// 与真实安装器同一套事务分流（dbinit.Runner.applySQL）。
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", filepath.Base(path), err)
+	}
+	if !dbinit.RequiresNoTransaction(content) {
+		args = append(args, "--single-transaction")
+	}
+	args = append(args, "--dbname", dsn, "-f", path)
+	cmd := exec.Command("psql", args...)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return string(out), "0"

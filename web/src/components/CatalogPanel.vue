@@ -36,7 +36,7 @@ async function load() {
   try {
     entries.value = await getCatalog()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : '没能加载出来，请重试'
   } finally {
     loading.value = false
   }

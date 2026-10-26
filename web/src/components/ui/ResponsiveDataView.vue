@@ -158,7 +158,7 @@ function onSwitch(to: DataViewMode) {
     <div v-if="loading" class="responsive-data-view__state">
       <AppSpinner />
     </div>
-    <EmptyState v-else-if="empty" :text="emptyText || t('hyper.list.empty')" :padding="emptyPadding">
+    <EmptyState v-else-if="empty" :text="emptyText || t('common.empty.noResult')" :padding="emptyPadding">
       <slot name="empty" />
     </EmptyState>
 

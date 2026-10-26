@@ -269,7 +269,7 @@ dst_n="$(verify_count "$DST_DB")"
 info "校验: 源 db$SRC_DB 前缀键=$src_n  目标 db$DST_DB 前缀键=$dst_n"
 
 if [ "$src_n" != "$dst_n" ]; then
-  die "校验失败：源 $src_n != 目标 $dst_n。不要设置 URSM_V2_REDIS_DB，保持现状并排查。"
+  die "校验失败：源 $src_n != 目标 ${dst_n}。不要设置 URSM_V2_REDIS_DB，保持现状并排查。"
 fi
 [ "$dst_n" -gt 0 ] || die "目标前缀键数为 0，迁移无效。"
 

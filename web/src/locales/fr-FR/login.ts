@@ -2,23 +2,15 @@
 // login.ts — login modal + guest header login entry.
 export default {
   title: 'Se connecter au plan de contrôle',
-  subtitle: 'Kaixuan MaaS Console', // marque « Kaixuan » conservée identique dans toutes les langues
-  username: 'Nom d\'utilisateur',
-  usernamePlaceholder: 'admin',
+  hint: 'Lors de la première connexion, ou après la réinitialisation du mot de passe par un administrateur, changez-le avant de continuer.',
   password: 'Mot de passe',
-  passwordPlaceholder: '••••••••',
   submit: 'Se connecter',
   submitting: 'Connexion en cours…',
-  cancel: 'Annuler',
-  close: 'Fermer',
-  signIn: 'Se connecter',
   error: {
     required: 'Veuillez saisir le nom d\'utilisateur et le mot de passe',
     failed: 'Échec de la connexion',
+    apiKeyUnsupported: 'Ce compte ne se connecte plus avec une clé API. Utilisez votre nom d\'utilisateur et votre mot de passe. Pour de l\'aide, contactez un administrateur.',
+    badResponse: 'La réponse de connexion est mal formée. Réessayez ou contactez un administrateur.',
   },
-  changePassword: 'Changer le mot de passe',
-  passwordChangeSuccess: 'Mot de passe changé avec succès',
-  passwordChangedReloading: 'Mot de passe mis à jour, déconnexion puis reconnexion…',
-  passwordChangedReLogin: 'Mot de passe mis à jour. Veuillez vous reconnecter avec votre nouveau mot de passe.',
   checking: 'Vérification du statut de connexion…',
 }

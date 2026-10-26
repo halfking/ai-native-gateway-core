@@ -24,6 +24,7 @@ import {
 import { credentialDisplayName } from '../composables/useCredentialLabels'
 import { formatDateTime } from '../utils/datetime'
 import ActionTimeline from './ActionTimeline.vue'
+import { Refresh, RefreshRight, StarFilled, Loading, Close } from '@element-plus/icons-vue'
 
 const { t, locale } = useI18n()
 
@@ -290,8 +291,8 @@ const childCount = computed(() => childRequests.value.length)
 
 const childBadgeTitle = computed(() =>
   childCount.value > 0
-    ? `子请求 ${childCount.value} 个（点击查看）`
-    : '子请求（暂无推送，点击查看）',
+    ? t('dashboard.requestTile.childRequestsTitle', { count: childCount.value })
+    : t('dashboard.requestTile.childRequestsEmpty'),
 )
 
 const stageCategory = computed(() => props.tile.stage_category || null)
@@ -353,8 +354,8 @@ const timelinePanelStyle = ref<Record<string, string>>({})
 
 const timelineBadgeTitle = computed(() =>
   timelineCount.value > 0
-    ? `动作轨迹 ${timelineCount.value} 条（点击查看）`
-    : '动作轨迹（暂无推送，点击查看）',
+    ? t('dashboard.requestTile.actionTrailTitle', { count: timelineCount.value })
+    : t('dashboard.requestTile.actionTrailEmpty'),
 )
 
 function toggleTimelinePanel(evt: Event) {
@@ -460,7 +461,7 @@ function closeTimelinePanel() {
       v-if="retrySeqLabel"
       class="request-tile__retry-badge"
       :title="`重试第 ${retrySeqLabel.slice(1)} 次`"
-    >⭐{{ retrySeqLabel }}</span>
+    ><StarFilled />{{ retrySeqLabel }}</span>
 
     <!-- OBS-FE3 (26号 §3): 子请求计数徽标（右上角，位于状态点下方）。
          点击弹出子请求列表面板；计数 0（事件未推送）时置灰仍可点击，面板显示空态。 -->
@@ -513,9 +514,9 @@ function closeTimelinePanel() {
         <span class="request-tile__provider">{{ line3Content }}</span>
         <span v-if="latencyLabel && !isIdle" class="request-tile__latency">{{ latencyLabel }}</span>
       </div>
-      <span v-if="isRouting" class="request-tile__stage-indicator request-tile__stage-indicator--routing" title="路由排队中" aria-label="路由排队中">⏳</span>
-      <span v-if="isWaitingLLM" class="request-tile__stage-indicator request-tile__stage-indicator--llm" title="等待大模型响应" aria-label="等待大模型响应">🔄</span>
-      <span v-if="isRetrying" class="request-tile__stage-indicator request-tile__stage-indicator--retrying" title="重试调度中" aria-label="重试调度中">🔁</span>
+      <span v-if="isRouting" class="request-tile__stage-indicator request-tile__stage-indicator--routing" title="路由排队中" aria-label="路由排队中"><Loading /></span>
+      <span v-if="isWaitingLLM" class="request-tile__stage-indicator request-tile__stage-indicator--llm" title="等待大模型响应" aria-label="等待大模型响应"><Refresh /></span>
+      <span v-if="isRetrying" class="request-tile__stage-indicator request-tile__stage-indicator--retrying" title="重试调度中" aria-label="重试调度中"><RefreshRight /></span>
     </div>
 
     <!-- OBS-FE3 (26号 §3): 子请求列表面板 — Teleport 到 body，
@@ -540,7 +541,7 @@ function closeTimelinePanel() {
             class="request-tile__children-panel-close"
             aria-label="关闭子请求列表"
             @click.stop="closeChildPanel"
-          >✕</button>
+          ><Close /></button>
         </div>
         <ul v-if="childCount > 0" class="request-tile__children-list">
           <li
@@ -584,7 +585,7 @@ function closeTimelinePanel() {
             class="request-tile__children-panel-close"
             aria-label="关闭动作时间线"
             @click.stop="closeTimelinePanel"
-          >✕</button>
+          ><Close /></button>
         </div>
         <ActionTimeline :request-id="tile.request_id" />
       </div>

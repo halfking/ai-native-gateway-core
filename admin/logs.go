@@ -537,7 +537,20 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		addFilter("rl.identity_hash = $%d", v)
 	}
 	if v := strings.TrimSpace(queryString(r, "q")); v != "" {
-		addFilter("rl.search_text ILIKE $%d", "%"+v+"%")
+		// G-5（2026-10-20 会话族审计）：词形搜索词**并联**一条全文检索腿，
+		// 与迁移 887 的索引表达式 to_tsvector('simple', search_text) **逐字同形**
+		// —— 不同形时 planner 静默不用那条索引（不报错，只是顺序扫描）。
+		//
+		// ★ 子串腿**永远保留**（OR 而不是 AND）：FTS 词元严格窄于子串
+		//   （"eepseek" 是 "deepseekchat" 的子串但不是它的词元）⇒ 用 AND
+		//   会砍掉子串召回，那是「破坏子串检索」。
+		// ★ 不用 addFilter：全文形态要绑**两个**参数（ILIKE 侧绑 '%词%'，
+		//   FTS 侧绑原词 —— plainto_tsquery 自己会切分与加引号），
+		//   而 addFilter 只推进一个 argIdx。
+		clause, qArgs := buildSessionSearchPredicate(v, argIdx)
+		clauses = append(clauses, clause)
+		args = append(args, qArgs...)
+		argIdx += len(qArgs)
 	}
 	if v := strings.TrimSpace(queryString(r, "error_kind")); v != "" {
 		addFilter("rl.error_kind = $%d", v)
@@ -616,44 +629,34 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 
 	where := strings.Join(clauses, " AND ")
 
-	// For COUNT, we need the same JOINs to filter by ak.tenant_id for tenant_admin
-	// 2026-07-06: 使用视图查询，避免遗漏 hot 表数据（migration 341）
-	var count int
-	var agg requestLogAggregate
+	// S3 波1（plan §4-S3）：FROM 源可在视图与 session_turns 原生投影间切换
+	//（storage.admin_logs_native_turns_read，默认视图）。两种形态在 rl 别名下
+	// 逐列同形，WHERE/JOIN/扫描零改动。全查询共用一次取值，保证 COUNT/聚合/
+	// 分页列表读到同一行集。
 	// Super-admin path keeps the original narrow shape (no api_keys join —
 	// api_keys is not needed for the row count or for the SUM aggregate and
 	// adding it would inflate the query plan on the busiest list endpoint).
 	// Tenant-admin path retains the LEFT JOIN against api_keys so the WHERE
 	// clause on rl.tenant_id is matched by the same row set used for COUNT
 	// and the SUM aggregate below.
-	// S3 波1（plan §4-S3）：FROM 源可在视图与 session_turns 原生投影间切换
-	//（storage.admin_logs_native_turns_read，默认视图）。两种形态在 rl 别名下
-	// 逐列同形，WHERE/JOIN/扫描零改动。全查询共用一次取值，保证 COUNT/聚合/
-	// 分页列表读到同一行集。
 	logsFrom := logsSourceFromSQL()
 
-	superCountSQL := "SELECT COUNT(*) FROM " + logsFrom + " WHERE " + where
-	tenantCountSQL := "SELECT COUNT(*) FROM " + logsFrom + " LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
-	if IsTenantAdmin(r) {
-		if err := h.db.QueryRow(ctx, tenantCountSQL, args...).Scan(&count); err != nil {
-			slog.Error("admin listLogs count query failed", "scope", "tenant", "error", err)
-			writeInternalErr(w, "query failed", err)
-			return
-		}
-	} else {
-		if err := h.db.QueryRow(ctx, superCountSQL, args...).Scan(&count); err != nil {
-			slog.Error("admin listLogs count query failed", "scope", "super_admin", "error", err)
-			writeInternalErr(w, "query failed", err)
-			return
-		}
-	}
-
-	// Aggregate totals over the same filter set (independent of pagination).
-	// Failure here MUST NOT take down the page; the list endpoint still has
-	// valid items / count, so we log and ship zero-valued aggregate fields.
-	// The SUM query reuses the same row-shape as the matching COUNT above
-	// (super-admin vs tenant-admin) to guarantee the totals describe the
-	// same row set the user is paginating over.
+	// 2026-10-20（复核轮 §5.12）：COUNT 与 SUM 合并为**一次**聚合。
+	//
+	// 此前对**同一行集**做了两次独立扫描（一条 COUNT、一条 SUM），而
+	// canonical 视图的扫描代价与窗口内行集大小成正比 ⇒ 每读一次列表页，
+	// 窗口内的行集就被过**两遍**。合并后一条聚合同时给出 count 与各 SUM
+	// ⇒ 只过一遍（执行次数 2 → 1）。
+	//
+	// ⚠ **失败语义必须保持**：旧行为是「SUM 失败 ⇒ 聚合字段回零、页照常出」
+	//   （COUNT 失败才 500）。所以聚合失败时退回**单独**的 COUNT 查询，
+	//   聚合字段仍然保持零值；COUNT 也失败才是 500。
+	//
+	// ⚠ **口径不变**：COUNT 与 SUM 用的是同一 FROM/WHERE 与同一组参数
+	//   （tenant_admin 路径两者都带 api_keys 的 LEFT JOIN；super_admin 路径
+	//   两者都不带）⇒ 合并查询里的 COUNT(*) 与旧 COUNT 查询**逐字等价**。
+	var count int
+	var agg requestLogAggregate
 	var (
 		promptSum     int64
 		completionSum int64
@@ -665,6 +668,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	)
 	aggSelect := `
 		SELECT
+			COUNT(*),
 			COALESCE(SUM(rl.prompt_tokens), 0)::bigint,
 			COALESCE(SUM(rl.completion_tokens), 0)::bigint,
 			COALESCE(SUM(rl.cache_read_tokens), 0)::bigint,
@@ -680,13 +684,25 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		aggFromSQL = " FROM " + logsFrom + " WHERE " + where
 	}
 	if err := h.db.QueryRow(ctx, aggSelect+aggFromSQL, args...).Scan(
-		&promptSum, &completionSum, &cacheReadSum, &cacheWriteSum,
+		&count, &promptSum, &completionSum, &cacheReadSum, &cacheWriteSum,
 		&totalTokens, &costSum, &creditsSum,
 	); err != nil {
 		slog.Warn("admin listLogs aggregate scan failed",
 			"err", err.Error(),
-			"count", count,
 		)
+		// 聚合失败：退回单独的 COUNT（页面的 count 与列表仍然可用，
+		// 聚合字段保持零值）—— 与旧行为一致（旧：COUNT 失败即 500）。
+		countSQL := "SELECT COUNT(*) FROM " + logsFrom + " WHERE " + where
+		scope := "super_admin"
+		if IsTenantAdmin(r) {
+			countSQL = "SELECT COUNT(*) FROM " + logsFrom + " LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
+			scope = "tenant"
+		}
+		if err := h.db.QueryRow(ctx, countSQL, args...).Scan(&count); err != nil {
+			slog.Error("admin listLogs count query failed", "scope", scope, "error", err)
+			writeInternalErr(w, "query failed", err)
+			return
+		}
 		// Keep aggregate zero-valued; the page still renders list + count.
 	} else {
 		agg = requestLogAggregate{
@@ -889,100 +905,123 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	//       单独查 body：先 _request_logs_bodies_hot（idx 命中，<1ms），
 	//       找不到再回退到 _request_logs_bodies 视图（columnar，慢但可走 20s ctx）。
 	// 这样 dashboard 实时流（24h 内请求）走 hot fast path，不会再 5s timeout。
-	err = h.db.QueryRow(ctx, fmt.Sprintf(`
-		SELECT %s
-		  FROM %s
-		%s
-		 WHERE (rl.request_id = $1 OR rl.client_request_id = $1)
-		   AND ($2 OR rl.tenant_id = $3)
-		 ORDER BY CASE WHEN rl.request_id = $1 THEN 0 ELSE 1 END, rl.ts DESC
-		 LIMIT 1
-		`, requestLogsDetailCols, logsSourceFromSQL(), requestLogsJoins), requestID, IsSuperAdminOrLegacy(r), GetTenantID(r)).Scan(
-		&detail.Ts,
-		&detail.RequestID,
-		&detail.APIKeyID,
-		&detail.EndUserID,
-		&detail.ClientModel,
-		&detail.OutboundModel,
-		&detail.CredentialID,
-		&detail.CredentialLabel,
-		&detail.ProviderID,
-		&detail.ProviderName,
-		&detail.ProviderCode,
-		&detail.ClientProfile,
-		&detail.RequestMode,
-		&detail.PromptTokens,
-		&detail.CompletionTokens,
-		&detail.CacheReadTokens,
-		&detail.CacheWriteTokens,
-		&detail.TotalTokens,
-		&detail.CostUSD,
-		&detail.CostDisplay,
-		&detail.CostCurrency,
-		&detail.LatencyMs,
-		&detail.Success,
-		&detail.RequestStatus,
-		&detail.ErrorKind,
-		&detail.SearchText,
-		&detail.IdentityHash,
-		&detail.VirtualClientID,
-		&detail.VirtualIP,
-		&detail.VirtualMAC,
-		&detail.AffinityHit,
-		&detail.RequestChecksum,
-		&detail.ResponseChecksum,
-		&detail.TransformRuleID,
-		&detail.EgressProtocol,
-		&detail.FailureStage,
-		&detail.FailureDetailCode,
-		&detail.UpstreamFinishReason,
-		&detail.RequestPreview,
-		&detail.TransformSummary,
-		&detail.ResponsePreview,
-		&detail.StreamFirstChunkMs,
-		&detail.StreamChunkCount,
-		&detail.StreamDoneReceived,
-		&detail.StreamInterrupted,
-		&detail.StreamDoneSent,
-		&detail.UsageSource,
-		&detail.GwSessionID,
-		&detail.GwTaskID,
-		&detail.APIKeyPrefix,
-		&detail.APIKeyOwnerUser,
-		&detail.ApplicationCode,
-		&detail.CanonicalName,
-		&detail.CanonicalModel, // 2026-07-27: 标准模型名 (migration 458)
-		&detail.AgentName,      // 2026-07-27: 客户端类型
-		&detail.AgentType,      // 2026-07-27: 客户端分组
-		&detail.ClientProtocol, // 2026-07-27: 客户端协议
-		&detail.ProviderModel,
-		&detail.CreditsCharged,
-		&detail.OutboundMsgCount,
-		&detail.OutboundTokenEst,
-		&detail.CompressionStrategy,
-		&detail.CompressionReason,
-		&detail.ParentRequestID,
-		// 2026-07-01: attachment_count (migration 325). Same COALESCE expression
-		// as the list query; re-evaluated here so the detail payload also
-		// exposes the count without forcing the client to parse attachments.
-		&detail.AttachmentCount,
-		// 2026-08-06: session_titles.title (see requestLogsListCols).
-		&detail.SessionTitle,
-		// rl.customer_id is in SELECT position 67 (after session_title); see
-		// requestLogsListCols. The list endpoint scans &l.CustomerID; we mirror
-		// it here so detail payload also exposes the customer linkage.
-		&detail.CustomerID,
-		// rl.request_class / rl.due_at follow customer_id (SELECT positions
-		// 68 and 69). Position must mirror requestLogsListCols order — see
-		// 2026-08-28 BUGFIX note above regarding RequestClass/DueAt duplication.
-		&detail.RequestClass, &detail.DueAt,
-		&detail.OutboundMsgHashes,
-		&detail.CompressionMeta,
-		// 2026-07-01: 完整附件元数据 JSONB (migration 325)。
-		&detail.Attachments,
-		&detail.RoutingAttempts,
-		&detail.RoutingSummary,
-	)
+	//
+	// 2026-10-18 (S4 停写回归修复)：旧实现把两个 id 的匹配写成单条 OR
+	// 谓词（request_id 与 client_request_id 各 = $1 再 OR），在 734 视图上
+	// 会让 planner 放弃 idx_session_turns(_hot)_request —— session 家族没有
+	// client_request_id 索引，OR 只能退化为对全部 session_turns 月分区的
+	// 顺序扫描（154 实测 2026_09+2026_10 ≈ 100 万行 / 3.8GB，30s ctx 必超时）。
+	// S4 停写后新请求只落 session 家族，于是 /api/logs/:id 对每个新请求都
+	// 500（request-detail 页核心数据全空）。拆法与 unified_detail.go
+	// loadRequestLogMeta 的 2026-08-27 优化同构：两段顺序查询，各自的纯
+	// 等值谓词可下推进视图全部分支走索引；client_request_id 腿的索引由
+	// 迁移 874（idx_session_turns_client_request_id 部分索引）补齐。
+	// 语义不变：request_id 命中优先于 client_request_id 命中（拆分天然
+	// 保序），段内仍按 ts DESC。
+	scanDetailRow := func(whereLeg string) error {
+		return h.db.QueryRow(ctx, fmt.Sprintf(`
+			SELECT %s
+			  FROM %s
+			%s
+			 WHERE %s
+			   AND ($2 OR rl.tenant_id = $3)
+			 ORDER BY rl.ts DESC
+			 LIMIT 1
+			`, requestLogsDetailCols, logsSourceFromSQL(), requestLogsJoins, whereLeg), requestID, IsSuperAdminOrLegacy(r), GetTenantID(r)).Scan(
+			&detail.Ts,
+			&detail.RequestID,
+			&detail.APIKeyID,
+			&detail.EndUserID,
+			&detail.ClientModel,
+			&detail.OutboundModel,
+			&detail.CredentialID,
+			&detail.CredentialLabel,
+			&detail.ProviderID,
+			&detail.ProviderName,
+			&detail.ProviderCode,
+			&detail.ClientProfile,
+			&detail.RequestMode,
+			&detail.PromptTokens,
+			&detail.CompletionTokens,
+			&detail.CacheReadTokens,
+			&detail.CacheWriteTokens,
+			&detail.TotalTokens,
+			&detail.CostUSD,
+			&detail.CostDisplay,
+			&detail.CostCurrency,
+			&detail.LatencyMs,
+			&detail.Success,
+			&detail.RequestStatus,
+			&detail.ErrorKind,
+			&detail.SearchText,
+			&detail.IdentityHash,
+			&detail.VirtualClientID,
+			&detail.VirtualIP,
+			&detail.VirtualMAC,
+			&detail.AffinityHit,
+			&detail.RequestChecksum,
+			&detail.ResponseChecksum,
+			&detail.TransformRuleID,
+			&detail.EgressProtocol,
+			&detail.FailureStage,
+			&detail.FailureDetailCode,
+			&detail.UpstreamFinishReason,
+			&detail.RequestPreview,
+			&detail.TransformSummary,
+			&detail.ResponsePreview,
+			&detail.StreamFirstChunkMs,
+			&detail.StreamChunkCount,
+			&detail.StreamDoneReceived,
+			&detail.StreamInterrupted,
+			&detail.StreamDoneSent,
+			&detail.UsageSource,
+			&detail.GwSessionID,
+			&detail.GwTaskID,
+			&detail.APIKeyPrefix,
+			&detail.APIKeyOwnerUser,
+			&detail.ApplicationCode,
+			&detail.CanonicalName,
+			&detail.CanonicalModel, // 2026-07-27: 标准模型名 (migration 458)
+			&detail.AgentName,      // 2026-07-27: 客户端类型
+			&detail.AgentType,      // 2026-07-27: 客户端分组
+			&detail.ClientProtocol, // 2026-07-27: 客户端协议
+			&detail.ProviderModel,
+			&detail.CreditsCharged,
+			&detail.OutboundMsgCount,
+			&detail.OutboundTokenEst,
+			&detail.CompressionStrategy,
+			&detail.CompressionReason,
+			&detail.ParentRequestID,
+			// 2026-07-01: attachment_count (migration 325). Same COALESCE expression
+			// as the list query; re-evaluated here so the detail payload also
+			// exposes the count without forcing the client to parse attachments.
+			&detail.AttachmentCount,
+			// 2026-08-06: session_titles.title (see requestLogsListCols).
+			&detail.SessionTitle,
+			// rl.customer_id is in SELECT position 67 (after session_title); see
+			// requestLogsListCols. The list endpoint scans &l.CustomerID; we mirror
+			// it here so detail payload also exposes the customer linkage.
+			&detail.CustomerID,
+			// rl.request_class / rl.due_at follow customer_id (SELECT positions
+			// 68 and 69). Position must mirror requestLogsListCols order — see
+			// 2026-08-28 BUGFIX note above regarding RequestClass/DueAt duplication.
+			&detail.RequestClass, &detail.DueAt,
+			&detail.OutboundMsgHashes,
+			&detail.CompressionMeta,
+			// 2026-07-01: 完整附件元数据 JSONB (migration 325)。
+			&detail.Attachments,
+			&detail.RoutingAttempts,
+			&detail.RoutingSummary,
+		)
+	}
+	// 腿 1：网关侧 request_id（唯一标识，视图全分支有索引）。
+	err = scanDetailRow("rl.request_id = $1")
+	if errors.Is(err, sql.ErrNoRows) {
+		// 腿 2：客户端自带 request_id。仅在腿 1 未命中时执行——此时结果集
+		// 里不可能再有 request_id = $1 的行（同租户门下腿 1 已证明缺席），
+		// 旧的 CASE 优先序由两段顺序天然保持。
+		err = scanDetailRow("rl.client_request_id = $1")
+	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "request log not found")
@@ -1074,64 +1113,44 @@ func normalizeJSONForAPI(raw json.RawMessage) json.RawMessage {
 	return raw
 }
 
-// fetchRequestBodies 2026-08-17 BUGFIX 二阶段 body 读取：从 _request_logs_bodies
-// 中拉取单条请求的 request_body/response_body。
+// fetchRequestBodies 2026-08-17 BUGFIX 二阶段 body 读取：拉取单条请求的
+// request_body/response_body。
 //
 //   - 阶段 0：内存 LRU+TTL 缓存（rule 36 §1 持久化语义）。
 //     dashboard 用户经常"开 → 关 → 再开"同一个 request_id 来回比对；
-//     重复点击走 cache < 1ms 而非 5s columnar 扫描。命中条件：5min 内同 ID。
-//   - 阶段 1：查 _request_logs_bodies_hot (heap, 单条索引 <1ms)，
-//     覆盖 dashboard "实时请求流 → 点击请求" 高频路径（24h 内请求都还在 hot）。
-//   - 阶段 2：hot 找不到时回退到 _request_logs_bodies 视图（含 columnar 月分区，
-//     单 ID 扫描可能 30s+），走独立的 20s ctx。cold ctx 直接派生自 r.Context()
-//     而非 metadata 用的 30s ctx——确保冷路径有完整 20s 余量，metadata
-//     慢也不会拖累 body 读取（rule 11 §14 持续验证）。
+//     重复点击走 cache < 1ms。命中条件：5min 内同 ID。
+//   - 阶段 1：会话族正文源（session_bodies hot ∪ 父表，request_id 单键索引
+//     命中，ms 级）。
 //
-// 之所以拆出来（而不是 LEFT JOIN 进主查询），是因为 UNION ALL 视图
-// request_logs_bodies_with_current_month 会强制 planner 扫 columnar 分区；
-// 在 hot-first 分支里提前 LIMIT 1 短路后，columnar 分区永远不会被触达。
+// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的三条腿（v1 hot 正文表 /
+// 会话族 / v1 columnar 冷扫）收敛成一条会话族腿。冷扫那条本来就是**证明
+// 缺席**（columnar 分区无 btree，154 实测单 id miss 59s > 20s ctx），
+// 超时又挂在 ErrNoRows 分支下够不着 ⇒ unified 全量 500。v1 退役后这个
+// 超时面直接消失。
 //
-// 返回值约定：cache hit → (body, body, nil)；hot 命中 → (body, body, nil)；
-// cold 命中 → (body, body, nil)；两边都没行 → (nil, nil, sql.ErrNoRows)；
+// 之所以拆出来（而不是 LEFT JOIN 进主查询），是因为正文源要按 request_id
+// 单键短路，避免把整族正文拖进主查询的扫描面。
+//
+// 返回值约定：cache hit → (body, body, nil)；会话族命中 → (body, body, nil)；
+// 两边都没行 → (nil, nil, sql.ErrNoRows)；
 // transport 错误 → (nil, nil, err)。caller 把 body 置 nil 但 metadata 仍 200。
 func (h *Handler) fetchRequestOutboundBody(ctx context.Context, requestID string) (json.RawMessage, error) {
-	var raw []byte
-	hotCtx, hotCancel := context.WithTimeout(ctx, 3*time.Second)
-	defer hotCancel()
-	err := h.db.QueryRow(hotCtx, `
-		SELECT outbound_body::text
-		  FROM _request_logs_bodies_hot
-		 WHERE request_id = $1
-		 LIMIT 1
-	`, requestID).Scan(&raw)
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 出站正文只剩一条腿：会话族
+	// （session_bodies hot ∪ 父表，fetchSessionOutboundBody）。
+	//
+	// 被删掉的两条腿是「v1 hot 正文表」与「v1 bodies 视图冷扫」。冷扫那条
+	// 本来就只是**证明缺席**——columnar 分区无 btree，154 实测单 id miss 59s
+	//（2026_10 分区），20s ctx 必超时，而超时不是 ErrNoRows，挂在 ErrNoRows
+	// 分支下的兜底永远够不着 ⇒ unified 全量 500、getLog 正文吞掉后 20s 白等。
+	// v1 表退役后这个超时面直接消失：正文只可能来自会话族。
+	raw, err := fetchSessionOutboundBody(ctx, h.db, requestID)
 	if err == nil {
-		return json.RawMessage(raw), nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		slog.WarnContext(ctx, "admin fetchRequestOutboundBody hot scan failed",
-			"request_id", requestID, "error", err.Error())
-	}
-
-	coldCtx, coldCancel := context.WithTimeout(ctx, 20*time.Second)
-	defer coldCancel()
-	err = h.db.QueryRow(coldCtx, `
-		SELECT outbound_body::text
-		  FROM request_logs_bodies_with_current_month
-		 WHERE request_id = $1
-		 LIMIT 1
-	`, requestID).Scan(&raw)
-	if err == nil {
-		return json.RawMessage(raw), nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
-	}
-	// 阶段 3（S4 停写交接，2026-10-13）：session 家族兜底。停写后新请求
-	// 的正文只落 session_bodies（v1 双腿必然 miss）；旧请求在阶段 1/2 命中，
-	// 本腿不改变任何既有结果 —— 纯增量。request_id 单键、不涉 ts 等值
-	//（SessionFamilyBodiesSourceSQL 的列合同无 ts，见 db/request_logs_view_schema.go）。
-	if raw, err := fetchSessionOutboundBody(ctx, h.db, requestID); err == nil {
 		return raw, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		slog.WarnContext(ctx, "admin fetchRequestOutboundBody session scan failed",
+			"request_id", requestID, "error", err.Error())
+		return nil, err
 	}
 	return nil, sql.ErrNoRows
 }
@@ -1177,91 +1196,48 @@ func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (req
 		return entry.body, entry.resp, nil
 	}
 
-	// 阶段 1: hot (heap, 索引秒级) — 派生自 metadata ctx（30s），
-	// 单查询预算 3s；如果 metadata 自己卡到 30s 边界，hot 会跟着取消 — 这是
-	// 期望行为（同一接口整体超时）。
-	hotCtx, hotCancel := context.WithTimeout(ctx, 3*time.Second)
-	defer hotCancel()
-	var rb, ob []byte
-	row := h.db.QueryRow(hotCtx, `
+	// 阶段 1（2026-10-20 迁移 890）：会话族正文源（session_bodies hot ∪ 父表）。
+	//
+	// 原来的三条腿是「v1 hot 正文表 → 会话族 → v1 columnar 冷扫」；v1 族整体
+	// 退役后只剩中间这条。冷扫那条本来就是**证明缺席**（columnar 分区无 btree，
+	// 154 实测单 id miss 59s > 20s ctx），超时又挂在 ErrNoRows 分支下够不着
+	// ⇒ unified 全量 500 —— 那个超时面随 v1 表一起消失。
+	//
+	// request_id 单键、不涉 ts 等值（SessionFamilyBodiesSourceSQL 的列合同无 ts，
+	// 见 db/request_logs_view_schema.go）。
+	sessCtx, sessCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer sessCancel()
+	var srb, sob []byte
+	if sessErr := h.db.QueryRow(sessCtx, `
 		SELECT request_body::text, response_body::text
-		  FROM _request_logs_bodies_hot
+		  FROM `+dbpkg.SessionFamilyBodiesSourceSQL()+`
 		 WHERE request_id = $1
 		 LIMIT 1
-	`, requestID)
-	if scanErr := row.Scan(&rb, &ob); scanErr == nil {
-		if err := validatePersistedBodySize(rb, ob); err != nil {
+	`, requestID).Scan(&srb, &sob); sessErr == nil {
+		if err := validatePersistedBodySize(srb, sob); err != nil {
 			return nil, nil, err
 		}
-		body, resp := decodeStoredBodyForAdmin(rb), decodeStoredBodyForAdmin(ob)
+		body, resp := decodeStoredBodyForAdmin(srb), decodeStoredBodyForAdmin(sob)
 		h.bodyFetchCache.Put(requestID, body, resp)
 		elapsed := time.Since(start)
 		if elapsed > 1*time.Second {
-			slog.InfoContext(ctx, "admin fetchRequestBodies hot path slow",
+			slog.InfoContext(ctx, "admin fetchRequestBodies session path slow",
 				"request_id", requestID, "elapsed_ms", elapsed.Milliseconds())
 		}
 		return body, resp, nil
-	} else if !errors.Is(scanErr, sql.ErrNoRows) {
-		// 真正的查询错误（非 not found）— 仍尝试阶段 2
-		slog.WarnContext(ctx, "admin fetchRequestBodies hot scan failed",
-			"request_id", requestID, "error", scanErr.Error())
-	}
-
-	// 阶段 2: columnar 月分区（可能慢，给 20s ctx）
-	// 直接派生自请求 ctx（不是 metadata ctx），确保 metadata 卡顿不会拖累 body。
-	// http.Request.Context() 通常由 nginx proxy_read_timeout（默认 1200s）兜底。
-	coldCtx, coldCancel := context.WithTimeout(ctx, 20*time.Second)
-	defer coldCancel()
-	row = h.db.QueryRow(coldCtx, `
-		SELECT request_body::text, response_body::text
-		  FROM request_logs_bodies_with_current_month
-		 WHERE request_id = $1
-		 LIMIT 1
-	`, requestID)
-	if scanErr := row.Scan(&rb, &ob); scanErr != nil {
-		elapsed := time.Since(start)
-		// 阶段 3（S4 停写交接，2026-10-13）：session 家族兜底 —— 停写后新
-		// 请求正文只在 session_bodies；旧请求在阶段 1/2 已命中，本腿纯增量。
-		if errors.Is(scanErr, sql.ErrNoRows) {
-			sessCtx, sessCancel := context.WithTimeout(ctx, 5*time.Second)
-			defer sessCancel()
-			var srb, sob []byte
-			if sessErr := h.db.QueryRow(sessCtx, `
-				SELECT request_body::text, response_body::text
-				  FROM `+dbpkg.SessionFamilyBodiesSourceSQL()+`
-				 WHERE request_id = $1
-				 LIMIT 1
-			`, requestID).Scan(&srb, &sob); sessErr == nil {
-				if err := validatePersistedBodySize(srb, sob); err != nil {
-					return nil, nil, err
-				}
-				body, resp := decodeStoredBodyForAdmin(srb), decodeStoredBodyForAdmin(sob)
-				h.bodyFetchCache.Put(requestID, body, resp)
-				return body, resp, nil
-			}
-			// 两端都没找到 → 缓存 sql.ErrNoRows sentinel（5min 内重复查询直接命中）
-			h.bodyFetchCache.Put(requestID, nil, nil)
-			slog.InfoContext(ctx, "admin fetchRequestBodies no body anywhere",
-				"request_id", requestID, "elapsed_ms", elapsed.Milliseconds())
-			return nil, nil, sql.ErrNoRows
-		}
-		if errors.Is(scanErr, context.DeadlineExceeded) {
-			slog.WarnContext(ctx, "admin fetchRequestBodies cold path timeout",
-				"request_id", requestID, "elapsed_ms", elapsed.Milliseconds())
-		}
+	} else if !errors.Is(sessErr, sql.ErrNoRows) {
 		// transport-class error（ctx cancel, conn refused, ...）不缓存 — 让
 		// 下一次请求能 retry（rule 22 §4 错误缓存防抖）。
-		return nil, nil, scanErr
+		slog.WarnContext(ctx, "admin fetchRequestBodies session scan failed",
+			"request_id", requestID, "error", sessErr.Error())
+		return nil, nil, sessErr
 	}
-	if err := validatePersistedBodySize(rb, ob); err != nil {
-		return nil, nil, err
-	}
-	body, resp := decodeStoredBodyForAdmin(rb), decodeStoredBodyForAdmin(ob)
-	h.bodyFetchCache.Put(requestID, body, resp)
-	elapsed := time.Since(start)
-	slog.InfoContext(ctx, "admin fetchRequestBodies cold path hit",
-		"request_id", requestID, "elapsed_ms", elapsed.Milliseconds())
-	return body, resp, nil
+
+	// 两端都没找到 → 缓存 sql.ErrNoRows sentinel（5min 内重复查询直接命中）
+	h.bodyFetchCache.Put(requestID, nil, nil)
+	slog.InfoContext(ctx, "admin fetchRequestBodies no body anywhere",
+		"request_id", requestID, "elapsed_ms", time.Since(start).Milliseconds())
+	return nil, nil, sql.ErrNoRows
 }
 
 func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {

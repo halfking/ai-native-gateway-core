@@ -15,7 +15,7 @@ describe('journeyStageMap', () => {
   it('maps every journey stage to a stable label and waterfall stage', () => {
     expect(Object.keys(JOURNEY_STAGE_MAP)).toEqual(expect.arrayContaining([...knownStages]))
     for (const stage of knownStages) {
-      expect(getJourneyStageMapping(stage)?.labelKey).toBe(stage)
+      expect(getJourneyStageMapping(stage)?.stageKey).toBe(stage)
       expect(stageLabelKey(stage)).toBe(stage)
     }
     expect(journeyStageToWaterfall('upstream')).toBe('upstream')

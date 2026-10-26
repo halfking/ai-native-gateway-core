@@ -7,7 +7,7 @@ export default {
   common: {
       refresh: "Aktualisieren",
       loading: "Wird verarbeitet…",
-      empty: "Keine Daten",
+      empty: 'Die Discovery kostenloser Ressourcen hat noch keine Einträge.',
       actions: "Aktionen",
       enabled: "Aktiviert",
       disabled: "Deaktiviert",
@@ -58,7 +58,7 @@ export default {
       delete: "Löschen",
       deleteConfirm: "Vorlage \"{name}\" löschen? Bestehende Discovery-Aufgaben und -Ergebnisse bleiben unberührt.",
       deleted: "Vorlage gelöscht: {name}",
-      disabledScanHint: "Vorlage deaktiviert — vor dem Scan aktivieren"
+      disabledScanHint: "Vorlage deaktiviert: vor dem Scan aktivieren"
     },
   scan: {
       title: "Discovery auslösen",
@@ -81,7 +81,7 @@ export default {
       review: "Ergebnisse prüfen"
     },
   res: {
-      title: "Ergebnisse · Aufgabe {id} · {provider}",
+      title: "Ergebnisse, Aufgabe {id}, {provider}",
       pending: "Zu prüfen",
       all: "Alle",
       model: "Modell-ID",
@@ -121,7 +121,7 @@ export default {
       completed: "Abgeschlossen am",
       detail: "Details",
       none: "Noch keine Importe. Nach einem Bulk-Import unter Aufgaben & Prüfung erscheint er hier.",
-      detailTitle: "Importdetails · Aufgabe {id} · {provider}",
+      detailTitle: "Importdetails, Aufgabe {id}, {provider}",
       importedAt: "Importiert am"
     },
 }

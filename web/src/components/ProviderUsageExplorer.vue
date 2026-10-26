@@ -254,7 +254,7 @@ watch(() => props.timeQuery, () => {
                 >
                   {{ t('dashboard.providerUsage.exportAll') }}
                 </button>
-                <button type="button" class="pue-close" aria-label="关闭" @click="emit('close')">×</button>
+                <button type="button" class="pue-close" :aria-label="$t('common.close')" @click="emit('close')">×</button>
               </div>
               <!-- 19 §3.1 规则 4：导出失败必须如实可见，禁止静默 -->
               <p v-if="exportError" class="pue-export-error" role="alert">{{ exportError }}</p>
@@ -302,7 +302,7 @@ watch(() => props.timeQuery, () => {
                     <div v-else-if="degraded" class="pue-empty" role="status">
                       ⚠️ {{ t('dataLifecycle.usageCost.degraded.title') }}（{{ degraded }}）
                     </div>
-                    <div v-else-if="!loading" class="pue-empty">{{ t('dashboard.board.empty') }}</div>
+                    <div v-else-if="!loading" class="pue-empty">{{ t('dashboard.providerUsage.emptyNoResult') }}</div>
                   </div>
                 </div>
 

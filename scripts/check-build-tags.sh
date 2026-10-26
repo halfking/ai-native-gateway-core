@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# requires-bash: 4
+# ★ 本脚本用了 bash 4+ 特性 ⇒ macOS 自带 bash 3.2 跑不了 ⇒ 运行前提是 bash ≥ 4（Linux 主机）。
+#   ⇒ 这条声明把它从「隐含前提」变成**可检查的事实**（sql/schema/shell_bash_prereq_declaration_gate_test.go）。
 # check-build-tags.sh — 在**每个**构建 tag 配置下编译含构建约束的包。
 #
 # 为什么这道门存在（2026-10-02，审计 §9.74）：

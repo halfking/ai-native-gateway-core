@@ -44,6 +44,7 @@ import {
   pushOverlayLayer,
   setOverlayLayerClose,
 } from '../../composables/useOverlayStack'
+import { Close } from '@element-plus/icons-vue'
 
 const props = withDefaults(
   defineProps<{
@@ -360,7 +361,7 @@ onBeforeUnmount(() => {
             :aria-label="t('common.button.close')"
             @click="requestClose"
           >
-            ✕
+            <Close />
           </button>
         </header>
 

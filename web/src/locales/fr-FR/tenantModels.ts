@@ -3,7 +3,6 @@ export default {
   page: {
     title: 'Modèles standard',
     desc: 'Modèles standard ouverts pour votre locataire. La tarification couvre l\'entrée / la sortie / la lecture du cache / l\'écriture du cache, facturés en crédits par million de tokens.',
-    filterTitle: 'Modèles standard · filtre',
     filterPlaceholder: 'Choisir un modèle standard…',
     modelCount: '{n} modèles',
     refresh: 'Actualiser',
@@ -14,11 +13,8 @@ export default {
   },
   columns: {
     model: 'Modèle standard',
-    canonicalName: 'ID du modèle',
-    family: 'Famille',
     contextWindow: 'Contexte',
     multimodal: 'Multimodal',
-    modalityTag: 'Type',
     billingMode: 'Tarification',
     inPrice: 'Entrée / 1M',
     outPrice: 'Sortie / 1M',
@@ -43,10 +39,6 @@ export default {
     notSet: '—',
   },
   filterBar: {
-    selectedVendor: 'Fournisseur sélectionné : {vendor}',
     count: '{n} / {m} affichés',
-  },
-  cta: {
-    buyCredits: 'Acheter des crédits',
   },
 }

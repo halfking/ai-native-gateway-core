@@ -3,13 +3,6 @@
 // when no code is present. Grow the code list as endpoints evolve.
 export default {
   // Resolve by ApiError.code (machine-readable stable strings). Append as new codes appear.
-  code: {
-    unauthorized: 'Unauthorized, please sign in again',
-    forbidden: 'Access denied',
-    not_found: 'Resource not found',
-    rate_limited: 'Too many requests, please retry shortly',
-    internal: 'Internal server error',
-  },
   // Fallback by HTTP status.
   byStatus: {
     400: 'Bad request',

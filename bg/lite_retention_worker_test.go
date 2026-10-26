@@ -8,7 +8,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/storage/sqlite"
 )
 
-// R46 F6: 行级保留期 worker 的删除边界——_request_logs 按 ts 逐行清理；
+// R46 F6: 行级保留期 worker 的删除边界——SQLite request_logs 按 ts 逐行清理；
 // sessions/turns 以会话为单位（超龄会话连同全部 turns 删除，活跃会话的
 // 历史轮次保留）。
 func TestLiteRetentionWorker_RunOnceDeletesExpiredRows(t *testing.T) {
@@ -26,8 +26,8 @@ func TestLiteRetentionWorker_RunOnceDeletesExpiredRows(t *testing.T) {
 			t.Fatalf("exec %s: %v", q, err)
 		}
 	}
-	// 旧行 + 新行（_request_logs）
-	mustExec(`INSERT INTO _request_logs (request_id, tenant_id, session_id, ts, method, path) VALUES
+	// 旧行 + 新行（SQLite 未随 PostgreSQL S4 退役轮改名）
+	mustExec(`INSERT INTO request_logs (request_id, tenant_id, session_id, ts, method, path) VALUES
 		('req-old', 't1', 'sess-old', ?, 'POST', '/v1/chat'),
 		('req-new', 't1', 'sess-new', ?, 'POST', '/v1/chat')`, old, now)
 	// 超龄会话（2 turns）+ 活跃会话（1 个超龄 turn 仍要保留）
@@ -59,7 +59,7 @@ func TestLiteRetentionWorker_RunOnceDeletesExpiredRows(t *testing.T) {
 
 	// 边界核对：新行/活跃会话/活跃会话的超龄 turn 全部保留。
 	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM _request_logs`).Scan(&n); err != nil || n != 1 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM request_logs`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("expected 1 remaining request_log, got %d (err=%v)", n, err)
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id='sess-new'`).Scan(&n); err != nil || n != 1 {
@@ -79,7 +79,7 @@ func TestLiteRetentionWorker_RunOnceIdempotent(t *testing.T) {
 	defer db.Close()
 
 	old := time.Now().Add(-8 * 24 * time.Hour).Unix()
-	if _, err := db.Exec(`INSERT INTO _request_logs (request_id, tenant_id, session_id, ts, method, path) VALUES
+	if _, err := db.Exec(`INSERT INTO request_logs (request_id, tenant_id, session_id, ts, method, path) VALUES
 		('req-old', 't1', NULL, ?, 'POST', '/v1/chat')`, old); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestLiteRetentionWorker_RevivedSessionKeepsTurns(t *testing.T) {
 	}
 	mustExec(`INSERT INTO sessions (id, tenant_id, created_at, updated_at) VALUES ('sess-old', 't1', ?, ?)`, old, old)
 	mustExec(`INSERT INTO session_turns (tenant_id, session_id, turn_no, ts) VALUES ('t1', 'sess-old', 1, ?)`, old)
-	mustExec(`INSERT INTO _request_logs (request_id, tenant_id, ts, method, path) VALUES ('req-old', 't1', ?, 'POST', '/v1/chat')`, old)
+	mustExec(`INSERT INTO request_logs (request_id, tenant_id, ts, method, path) VALUES ('req-old', 't1', ?, 'POST', '/v1/chat')`, old)
 
 	// 复活：updated_at 刷到当下（等价于 sweep 缝隙内新 turn 写入的 bump）。
 	mustExec(`UPDATE sessions SET updated_at = ? WHERE id = 'sess-old'`, now)

@@ -23,6 +23,7 @@ package routeincident
 import (
 	"context"
 	"os"
+	"regexp"
 	"testing"
 	"time"
 
@@ -39,6 +40,15 @@ func itSetup(t *testing.T) *Store {
 	pool, err := pgxpool.New(context.Background(), dsn)
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
+
+	// ★★★ R86 轮：**库名守卫**（本文件头写着「Cleanup: DROP DATABASE llm_routeincident_it」
+	//   ⇒ 设计目标是一次性库，但在此之前**代码里没有任何东西拦着**）。
+	//   ⇒ 下面那段 SQL 会在目标库里 CREATE TABLE route_incidents / route_incident_events
+	//   + CREATE FUNCTION + CREATE TRIGGER，最后 **TRUNCATE** 这两张表
+	//   ⇒ 目标若是产品库 = 往产品库里塞集成测试专用表 + 清空同名表
+	//   ⇒ 而 ROUTEINCIDENT_IT_DSN 曾被事实源导出（= 通用 DSN = 产品库）。
+	//   ⇒ 守卫必须在 CREATE/TRUNCATE **之前**；DSN 是显式给的 ⇒ 配错要 Fatal（响亮）。
+	guardScratchDBName(t, pool)
 
 	// 389 base shape + 715 deltas — exactly what ensureRouteIncidentSchema +
 	// ensureRouteIncidentPendingState leave behind on a fresh install.
@@ -109,6 +119,30 @@ func itSetup(t *testing.T) *Store {
 	`)
 	require.NoError(t, err)
 	return NewStore(pool)
+}
+
+// reScratchDBName 认「一次性库」的命名（R86 轮）。
+//
+// ★ 口径与 bg/balance_floor_guard_integration_test.go **逐字同款**
+//   （两包各写一份：跨包共享要新开 testutil 包，成本大于收益；
+//     但**两处必须同步改**，否则两腿的放行口径会漂）。
+//   · 独立词 token ∈ {scratch, e2e, tmp, bench, itgate} ⇒ 放行；
+//   · 或库名含 `_it`（本腿文档里的 llm_routeincident_it）⇒ 放行。
+// ★ **不放行** `llm_gateway`（产品库），也**不放行** `llm_gateway_test`（长期库）。
+var reScratchDBName = regexp.MustCompile(`(?i)(^|_)(scratch|e2e|tmp|bench|itgate)(_|$)|_it(_|$)`)
+
+// guardScratchDBName 拒绝把「产品形态库」当一次性库用（R86 轮）。
+func guardScratchDBName(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	var name string
+	if err := pool.QueryRow(context.Background(), `SELECT current_database()`).Scan(&name); err != nil {
+		require.NoError(t, err)
+	}
+	if !reScratchDBName.MatchString(name) {
+		t.Fatalf("拒绝在库 %q 上跑本集成腿：它会在目标库里建 route_incidents / route_incident_events "+
+			"并 TRUNCATE 这两张表 —— 目标必须是一次性库（库名含独立词 scratch/e2e/tmp/bench/itgate，"+
+			"或含 _it，例如 llm_routeincident_it）", name)
+	}
 }
 
 func failureIn(route string, n int) TransitionInput {

@@ -248,7 +248,13 @@ func TestStreamOpenAIToAnthropicSSE_FirstByteTimeoutClosesBlockingBody(t *testin
 	case outcome := <-done:
 		assert.True(t, outcome.Interrupted)
 		assert.Equal(t, "first_byte_timeout", outcome.Reason)
-		assert.Equal(t, errorsx.KindStreamTimeout, outcome.Kind)
+		// ★ 2026-10-24 magpie 19 类 rest 词表轮（§6-P0-4）：首字节超时与
+		//   **流中超时**分成两个 kind —— 前者的归责是「第一次放过、反复才罚、
+		//   罚在模型粒度」（magpie 的 slow 类），后者仍照罚。
+		//   ⇒ 这里断言的是**分开之后**的契约，不是旧值。
+		assert.Equal(t, errorsx.KindFirstByteTimeout, outcome.Kind)
+		assert.NotEqual(t, errorsx.KindStreamTimeout, outcome.Kind,
+			"首字节超时必须与流中超时分开，否则『第一次放过』无法表达")
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("stream bridge did not return promptly after closing the blocking body")
 	}
@@ -451,8 +457,16 @@ func TestStreamAnthropicSSEToOpenAI_SignatureDeltaRetainedAndObserved(t *testing
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body)), Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil)}
 	rec := httptest.NewRecorder()
 	capture := audit.NewStreamCapture()
-	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-signature", capture, nil)
-	require.False(t, out.Interrupted, "signature_delta must not interrupt the bridge: %+v", out)
+	StreamAnthropicSSEToOpenAI(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-signature", capture, nil)
+	// r1029 (2026-10-17): this assertion used to be require.False(Interrupted)
+	// with the comment "signature_delta must not interrupt the bridge". A
+	// thinking-only turn now correctly classifies as empty (see
+	// TestAnthropicExecutor_EmptyNativeMessagesResponseIsRetryable and the 154
+	// glm-5.3 evidence) — a signature terminates the thinking block, it is not
+	// the assistant answering. What this test actually guards is the two
+	// security properties below, both still asserted: the opaque signature is
+	// never forged onto the OpenAI wire, and its presence stays auditable.
+	// The thinking-only failover verdict itself is covered by the r1029 tests.
 	wire := rec.Body.String()
 	assert.NotContains(t, wire, "sig_opaque_123", "opaque Anthropic signature must not be forged into OpenAI wire")
 	flags := capture.SummaryAsMap()["quality_flags"]

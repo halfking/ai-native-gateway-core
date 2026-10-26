@@ -106,6 +106,7 @@ func TestChatNonStreamBlockDecisionHoldsBodyOffWire(t *testing.T) {
 // data owner suppresses redaction; the pre-fix production state (empty
 // CallerOwner) must keep the conservative redaction path.
 func TestNonStreamOwnerMatchSkipsRedactionOwnerUnknownRedacts(t *testing.T) {
+	r1013RequireComplianceOn(t)
 	chatBody := func(content string) []byte {
 		return []byte(`{"id":"1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"` + content + `"},"finish_reason":"stop"}],"usage":{"total_tokens":3}}`)
 	}
@@ -137,6 +138,7 @@ func TestNonStreamOwnerMatchSkipsRedactionOwnerUnknownRedacts(t *testing.T) {
 // CallerOwner/ClientProtocol from StreamMeta so the owner compare and the
 // protocol-aware rewrite keep working on the reassembled body.
 func TestInterceptStreamEndCarriesOwnerAndProtocolFromMeta(t *testing.T) {
+	r1013RequireComplianceOn(t)
 	anthropicBody := []byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"call 13800138000"}]}`)
 	ownerFn := func(context.Context, string, string) string { return "alice" }
 	run := func(callerOwner string) *response.EndResult {

@@ -43,15 +43,20 @@ STATE_DIR=${PG17_STATE_DIR:-/var/lib/pg17-check}
 STATE_FILE="$STATE_DIR/pg-availability.state"
 LAST_RUN="$STATE_DIR/pg-availability.lastrun"
 
-# 心跳：无论走哪条退出路径都写一次。**巡检自己挂了就该能从这个文件的
-# mtime 看出来**，而不是从「日志里没有新行」猜 —— 后者与「一切正常」同形。
+# 心跳：**采样发生过**才写（安装点在单实例闸门**之后**，见下）。
+# 「巡检自己挂了就该能从这个文件的 mtime 看出来」，而不是从「日志里没有新行」
+# 猜 —— 后者与「一切正常」同形。
 #
-# ★ 整条重定向放进 `{ ...; } 2>/dev/null`：目录不存在时是**重定向本身**失败，
-#   bash 会在 trap 里打一行错误。`cmd > f || true` 压不住它 ——
-#   错误发生在建立重定向的时刻，早于 || 能观察的位置。
-#   （第一版就是这么写的，于是「量具不可用」这条消息旁边永远跟着一行
-#     `行 1: ...lastrun: No such file or directory`，把真正要读的那行挤下去。）
-trap '{ date +%Y-%m-%dT%H:%M:%S%z > "$LAST_RUN"; } 2>/dev/null || true' EXIT
+# ★ 2026-10-19 订正（本条是本轮最重要的改动，之前的心跳在**说谎**）：
+#   原实现把 trap 装在闸门**之前** ⇒ 「本轮被锁挡掉、根本没采样」的实例
+#   也会刷新 lastrun ⇒ lastrun 新鲜只证明「脚本被启动过」，
+#   **不证明「PG 被问过」**。
+#   ⇒ 后果实测（252，§143.14）：每分钟被重复调度挡掉的那一份也写心跳，
+#     于是 13,043 次 skip 期间心跳**一直是新鲜的**，
+#     「巡检还在跑吗」与「巡检在空转」无法区分 —— 而这正是本脚本
+#     存在的理由（2026-10-05 容器被误删、4 分钟无人告警）。
+#   ⇒ 判据必须是 within-semantics 的：**心跳 = 真的采样过**。
+#     本文件头「日志约定：健康时不输出」说的也是同一件事。
 
 # === 单实例闸门（2026-10-10 生产事故修复）================================
 # 起因：2026-10-10 252 现场，pg17-disk-watch.sh 堆到 310 份副本、149 个
@@ -78,17 +83,39 @@ LLMGW_LOCK_DIR=${LLMGW_LOCK_DIR:-/var/run/lock}
 _llmgw_lock_file="$LLMGW_LOCK_DIR/llmgw-$(basename "$0" .sh).lock"
 
 _llmgw_single_instance_guarded=false
+# ★ 打开锁文件的那一行**不得**把 stderr 一起重定向（§143.14）：
+#   exec 不带命令时，重定向施加到**当前 shell** ⇒ "exec 9>file 2>/dev/null"
+#   会让本脚本此后所有 stderr 输出永久消失 ⇒ log()（写 stderr）全部失声。
+#   ⇒ 用 { exec 9>file; } 2>/dev/null：组的重定向只作用于组本身，组结束即恢复；
+#     fd 9 的语义不变（exec 的重定向仍然持久）。
 if [ -z "${LLMGW_NO_SINGLE_INSTANCE_LOCK:-}" ] \
    && command -v flock >/dev/null 2>&1 \
    && mkdir -p "$LLMGW_LOCK_DIR" 2>/dev/null \
-   && exec 9>"$_llmgw_lock_file" 2>/dev/null; then
+   && { exec 9>"$_llmgw_lock_file"; } 2>/dev/null; then
   if ! flock -n 9; then
-    echo "[$(date +%Y-%m-%dT%H:%M:%S%z)] skip: $(basename "$0") 上一轮仍在运行（lock=${_llmgw_lock_file}），本轮不重复执行" \
+    # ★ 措辞订正（2026-10-19，§143.14）：原文写「上一轮仍在运行」，
+    #   而 252 实测到的**真实成因是「重复调度」** —— 同一分钟 crond 起了两个
+    #   逐字相同的实例，输的那个在这里退出。⇒ 「上一轮还在跑」会让人
+    #   去找「谁挂死了」，而实际上没有任何东西挂死。
+    #   ⇒ 改成中性措辞，并把两种成因都写出来（不猜，但也不误导）。
+    echo "[$(date +%Y-%m-%dT%H:%M:%S%z)] skip: $(basename "$0") 锁被占用（lock=${_llmgw_lock_file}），本轮不重复执行（成因可能是**重复调度**：同一分钟起了两个实例；也可能是上一轮真的尚未结束）" \
       >> "${LLMGW_LOCK_SKIP_LOG:-/var/log/llmgw-single-instance-skip.log}" 2>/dev/null || true
     exit 0
   fi
   _llmgw_single_instance_guarded=true
 fi
+
+# ★ 心跳的 trap 装在闸门**之后**（2026-10-19 订正，见文件头）。
+#   拿不到锁的那条路径在上面就 exit 0 了 ⇒ 它**不会**刷新 lastrun。
+#   ⇒ lastrun 新鲜 = 「本轮真的采样过 PG」，而不是「脚本被启动过」。
+#   这条差别在 §143.14 里值 9 天：心跳一直在刷新，而巡检被重复调度挤成了空转。
+#
+# ★ 整条重定向放进 `{ ...; } 2>/dev/null`：目录不存在时是**重定向本身**失败，
+#   bash 会在 trap 里打一行错误。`cmd > f || true` 压不住它 ——
+#   错误发生在建立重定向的时刻，早于 || 能观察的位置。
+#   （第一版就是这么写的，于是「量具不可用」这条消息旁边永远跟着一行
+#     `行 1: ...lastrun: No such file or directory`，把真正要读的那行挤下去。）
+trap '{ date +%Y-%m-%dT%H:%M:%S%z > "$LAST_RUN"; } 2>/dev/null || true' EXIT
 
 log() { printf '%s %s\n' "$(now_iso)" "$*" >&2; }
 
@@ -183,8 +210,8 @@ verdict_ok() {
   if [ "$_S" = "down" ]; then
     local m; m=$(mins_since "$_SINCE")
     write_state up "$(date +%s)" "-"
-    log "RECOVERED: PG 恢复，中断 $m 分钟（原因 $_REASON）"
-    notify info "PG 已恢复：$CONTAINER" "中断 $m 分钟后恢复正常（原因：$_REASON）"
+    log "RECOVERED: PG 恢复，中断 $m 分钟（原因 ${_REASON}）"
+    notify info "PG 已恢复：$CONTAINER" "中断 $m 分钟后恢复正常（原因：${_REASON}）"
     return 0
   fi
   if [ "$_S" = "unknown" ]; then
@@ -245,7 +272,7 @@ if [ "$CSTATE" != "running" ]; then
   DETAIL=$("$RUNTIME" inspect -f \
     'exit={{.State.ExitCode}} oom={{.State.OOMKilled}} finished={{.State.FinishedAt}}' \
     "$CONTAINER" 2>/dev/null)
-  verdict_down "container_${CSTATE}" "容器 $CONTAINER 状态=$CSTATE（$DETAIL）"
+  verdict_down "container_${CSTATE}" "容器 $CONTAINER 状态=${CSTATE}（${DETAIL}）"
   exit 1
 fi
 

@@ -1,6 +1,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { isDefaultTenant, isSuperAdmin } from '../store'
-import type { RoutingCandidate } from '../api/routing'
+import { i18n } from '../i18n'
+import type { RoutingCandidate, StreamMode } from '../api/routing'
 import type { CredentialLifecycleStatus } from '../api/providers'
 import type {
   CredentialModelStatus, CredentialMonitorSummary, CredentialRoutingDecision,
@@ -16,7 +17,6 @@ export type NodeDetailDrawerProps = {
   model?: string
   initialTab?: NodeDetailTab
   seedCandidate?: RoutingCandidate | null
-  requireSuperAdminEdit?: boolean
 }
 
 export function useNodeDetailDrawerLoad(
@@ -45,6 +45,7 @@ export function useNodeDetailDrawerLoad(
   const pingResult = ref<{ status: string; latency_ms: number; tested_at: string; error?: string } | null>(null)
   const lifecycle = ref<CredentialLifecycleStatus>('active')
   const manualPriority = ref(99); const priorityFlag = ref(false); const routingTier = ref(2); const weight = ref(100)
+  const streamMode = ref<StreamMode>('both')
   const modelActionReason = ref('')
   const coreLoaded = ref(false); const coreLoading = ref(false)
   const detailRequestId = ref<string | null>(null)
@@ -59,13 +60,38 @@ export function useNodeDetailDrawerLoad(
     get: () => props.modelValue,
     set: (v: boolean) => emit('update:modelValue', v),
   })
+  // 2026-10-20 写侧角色门：本抽屉的**每一个**写操作后端都要求 super_admin ——
+  //   · session-ping / models-test / emergency-repair / candidate-binding
+  //     → h.superAdmin（admin/handler.go:991,996,1306；
+  //       admin/credential_state_handlers.go:176-178）
+  //   · set-concurrency-auto / model-toggle / set|clear-manual-disabled
+  //     → RequireSuperAdminForWrite（admin/context.go:79，tenant_admin 只读）
+  //   · PATCH /api/providers/{id}/credentials/{id}（手动并发 / 指纹槽位 / 生命周期）
+  //     → providerConsole 对 tenant_admin **只读**（admin/provider_access.go:67-74：
+  //       「tenant_admin has read-only provider access; only credential API key
+  //       rotation is allowed」）
+  //
+  // 而这层门原先只判「是否 default 租户」：default 租户的 tenant_admin
+  // canEdit=true ⇒ 能点到写按钮，点下去只拿到 403。
+  // （`admin/handler.go:942` 写明 default 租户 tenant_admin 的定位就是
+  //  「只读 + 凭据 API Key 轮换」。）
+  //
+  // ⇒ 统一收紧为「一律要求 super_admin」。原先那个默认不收紧的
+  // `requireSuperAdminEdit` 开关正是缺口本身，已移除。
   const canEdit = computed(() => {
     if (!isDefaultTenant()) return false
-    return props.requireSuperAdminEdit ? isSuperAdmin() : true
+    return isSuperAdmin()
   })
   const editGateHint = computed(() => {
-    if (props.requireSuperAdminEdit && !isSuperAdmin()) return '仅超级管理员可以维护节点；当前以只读方式展示。'
-    if (!isDefaultTenant()) return '仅 default 租户可以维护节点；当前以只读方式展示。'
+    // 顺序：先报更靠前的那个阻塞条件。
+    // 非 default 租户 ⇒ 租户门先挡（提示租户）；default 租户但不是 super_admin
+    // ⇒ 角色门挡（提示角色）。两者同时不满足时提示租户门，因为它更早生效。
+    //
+    // ★ 2026-10-21 订正：「非 default 租户」这支原先是**硬编码中文**字面量，
+    //   与「非 super_admin」那支（上一轮已 i18n 化）不对称 ⇒ 非 default 租户
+    //   的用户无论界面语言是什么，都只会看到中文提示。两个分支现在都走 i18n 键。
+    if (!isDefaultTenant()) return i18n.global.t('ops.overview.nodeDetailDefaultTenantOnlyHint')
+    if (!isSuperAdmin()) return i18n.global.t('ops.overview.nodeDetailSuperAdminOnlyHint')
     return ''
   })
   const currentNode = computed<LiveNodeStatus | null>(() => {
@@ -81,14 +107,35 @@ export function useNodeDetailDrawerLoad(
   })
   const selectedModelStatus = computed(() => allModels.value.find(m => m.raw_model_name === selectedModel.value) ?? null)
   const resolvedProviderId = computed(() => currentNode.value?.provider_id ?? candidate.value?.provider_id ?? monitor.value?.provider_id ?? null)
+  // ⚠️ 这里返回的是**稳定 code**，不是展示文案。
+  //   早先返回中文（'可用' / '熔断' …），于是模板里出现了
+  //   `headlineState === '可用' ? 'ready' : headlineState` 这种**拿译文做比较**的写法 ——
+  //   一旦改成 i18n 键，比较就永久失效（状态样式静默变灰）。
+  //   现在：code 负责逻辑，展示文案由 headlineStateLabel 单独给出。
   const headlineState = computed(() => {
     const n = currentNode.value
-    if (!n) return '未知'
-    if (n.manual_disabled || n.disable_kind === 'manual') return '手工禁用'
-    if (n.circuit_state === 'open') return '熔断'
-    if (n.health_status === 'unreachable' || n.availability_state === 'unreachable') return '不可达'
-    if (n.availability_state === 'cooling' || n.circuit_state === 'half_open') return '恢复中'
-    return '可用'
+    if (!n) return 'unknown'
+    if (n.manual_disabled || n.disable_kind === 'manual') return 'manual_disabled'
+    if (n.circuit_state === 'open') return 'circuit_open'
+    if (n.health_status === 'unreachable' || n.availability_state === 'unreachable') return 'unreachable'
+    if (n.availability_state === 'cooling' || n.circuit_state === 'half_open') return 'recovering'
+    return 'available'
+  })
+  const headlineStateLabel = computed(() => {
+    switch (headlineState.value) {
+      case 'manual_disabled':
+        return i18n.global.t('common.terms.nodeState.manualDisabled')
+      case 'circuit_open':
+        return i18n.global.t('common.terms.nodeState.circuitOpen')
+      case 'unreachable':
+        return i18n.global.t('common.terms.nodeState.unreachable')
+      case 'recovering':
+        return i18n.global.t('common.terms.nodeState.recovering')
+      case 'available':
+        return i18n.global.t('common.terms.nodeState.available')
+      default:
+        return i18n.global.t('common.terms.nodeState.unknown')
+    }
   })
   const errorKinds = computed(() => Object.entries(windowStats.value?.error_kinds ?? {}))
   const failedWindowEntries = computed(() => windowEntries.value.filter(e => !e.ok).slice(0, 40))
@@ -99,7 +146,7 @@ export function useNodeDetailDrawerLoad(
     sequence, loadController, requestsController, coreController, coreTask, coreCandidateTask,
     visible, currentNode, scopedModel, loading, loadError, candidate, candidateLoading, monitor,
     selectedModel, windowEntries, windowStats, windowSource, history, decisions, lifecycle,
-    manualPriority, priorityFlag, routingTier, weight, coreLoaded, coreLoading,
+    manualPriority, priorityFlag, routingTier, weight, streamMode, coreLoaded, coreLoading,
   })
 
   function resetDrawerData() {
@@ -189,6 +236,7 @@ export function useNodeDetailDrawerLoad(
       && priorityFlag.value === false
       && routingTier.value === 2
       && weight.value === 100
+      && streamMode.value === 'both'
     if (props.seedCandidate && formIsPristine) {
       candidate.value = props.seedCandidate
       lifecycle.value = (props.seedCandidate.lifecycle_status ?? 'active') as CredentialLifecycleStatus
@@ -196,6 +244,7 @@ export function useNodeDetailDrawerLoad(
       priorityFlag.value = props.seedCandidate.priority ?? false
       routingTier.value = props.seedCandidate.tier ?? 2
       weight.value = props.seedCandidate.weight ?? 100
+      streamMode.value = props.seedCandidate.stream_mode ?? 'both'
     }
     void ensureTabLoaded('detail')
     void ensureTabLoaded('availability')
@@ -248,9 +297,9 @@ export function useNodeDetailDrawerLoad(
     activeTab, otherModelsLoaded, otherModelsLoading, loading, detailLoaded, detailLoading, requestsLoaded, requestsLoading,
     settingsLoaded, settingsLoading, loadError, candidate, candidateLoading, monitor, selectedModel,
     windowEntries, windowStats, windowSource, history, decisions, saving, actionMessage, actionError,
-    pingResult, lifecycle, manualPriority, priorityFlag, routingTier, weight, modelActionReason, coreLoaded, coreLoading,
+    pingResult, lifecycle, manualPriority, priorityFlag, routingTier, weight, streamMode, modelActionReason, coreLoaded, coreLoading,
     detailRequestId, visible, canEdit, editGateHint, currentNode, allModels, models, selectedModelStatus,
-    resolvedProviderId, headlineState, errorKinds, failedWindowEntries, failedDecisions, otherModelsNeedRefresh,
+    resolvedProviderId, headlineState, headlineStateLabel, errorKinds, failedWindowEntries, failedDecisions, otherModelsNeedRefresh,
     mergeMonitorModels, chooseModel, refreshCurrentTab, ensureTabLoaded,
   }
 }

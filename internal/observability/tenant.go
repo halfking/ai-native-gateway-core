@@ -35,8 +35,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Attribute keys (mirror scripts/_lib/otel-tenant-attrs.py; single
-// source of truth across the stack)
+// Attribute keys (the R34 OTel convention; this file is the single
+// source of truth for the attribute names inside this repository —
+// the cross-stack Python mirror scripts/_lib/otel-tenant-attrs.py was
+// never committed here, so do not treat it as an existing reference).
 const (
 	AttrTenantID             = "tenant.id"
 	AttrTenantShopIDs        = "tenant.shop_ids"

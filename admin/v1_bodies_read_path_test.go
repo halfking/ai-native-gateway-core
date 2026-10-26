@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 // v1_bodies_read_path_test.go —— 把 27 个 bodies 读方按「读源怎么来的」分成三类，
@@ -157,49 +159,27 @@ func TestBodiesReadPathClassifierSeparatesTheTwoHelpers(t *testing.T) {
 func TestV1BodiesReadPathsArePinned(t *testing.T) {
 	root := repoRootFromCaller(t)
 	measured := scanV1BodiesReaders(t, root)
+
+	// ★ 890 之后（2026-10-20）：**总体为 0 是正确状态**，不是「扫描器坏了」。
+	//
+	// 原来这里是一条地板（总体为 0 ⇒ Fatal），因为那时 bodies 读方总体
+	// 至少有 13 个。890 之后 v1 族被物理删除 ⇒ 没有任何文件再读 v1 bodies
+	// ⇒ 总体真的归零。
+	//
+	// ⇒ 地板翻成：**总量为空必须是因为扫描器扫过而没命中**。
+	// 判据：扫描器的模式必须仍能认出 v1 bodies 形态（阳性对照）。
 	if len(measured) == 0 {
-		t.Fatalf("bodies 读方总体为 0 —— 扫描器坏了，不是「bodies 没人读」")
+		pat := v1BodiesReadPattern(t)
+		if !pat.MatchString("FROM _request_logs_bodies_hot rb") {
+			t.Fatalf("bodies 读方总体为 0，**且**扫描模式认不出 v1 bodies 形态 —— " +
+				"这不是「bodies 没人读」，是扫描器坏了。")
+		}
 	}
 
-	wantSwitchOnly := []string{
-		"admin/auto_title_generator.go",
-		"admin/compression_stats.go",
-		"admin/logs_summary.go",
-		"admin/memora_handlers.go",
-		"admin/no_topic_session.go",
-		"admin/session_compare.go",
-		"admin/session_export.go",
-		"admin/session_sanitize_matches.go",
-		// ★ 它的 `request_logs_bodies_with_current_month` 只出现在
-		//   `LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+` rb /* … */`
-		//   的 **SQL 块注释**里 —— 有人在那里标注了这个调用的默认臂。
-		//   剥掉 SQL 注释后该文件不指名任何 v1 bodies 关系 ⇒ 属 switch_only。
-		"admin/session_title.go",
-		"bg/passive_probe_listener.go",
-		"admin/quality_correlations.go",
-		"domains/sessionforensics/export.go",
-		"domains/sessionsummary/summarizer.go",
-		"domains/sessionsummary/system_prompt_prefix.go",
-	}
-	wantLiteralOnly := []string{
-		"admin/body_resolver.go",
-		// 2026-10-13 S4 波 4 出列：整只端点会话族化（canonical turns 源 +
-		// SessionFamilyBodiesSourceSQL，见 s3_wave4_bodies_sources_test.go 钉桩）。
-		"admin/data_lifecycle.go",
-		// data_lifecycle_blobs 于 2026-10-13（S4 波 4）出列：会话臂治理。
-		"admin/logs.go",
-		"admin/session_bodies_batch.go",
-		"admin/unified_detail.go",
-		"cmd/compression-bench/main.go",
-		"cmd/tools/backfill_session_bodies/main.go",
-		"cmd/tools/validate_sessions_v2/loader.go",
-		"domains/hooks/goal/history_store.go",
-	}
-	wantMixed := []string{
-		// 切换层自己：`return "request_logs_bodies_with_current_month"` 是**活代码**，
-		// 而 `SessionFamilyBodiesSourceSQL()` 也在同一文件 ⇒ 它同时持有两臂。
-		"db/request_logs_view_schema.go",
-	}
+	// ★ 三条路径的成员清单随之清空：没有任何读方 ⇒ 三条路径都没有成员。
+	wantSwitchOnly := []string{}
+	wantLiteralOnly := []string{}
+	wantMixed := []string{}
 
 	got := map[bodiesReadPath]map[string]bool{}
 	for _, k := range []bodiesReadPath{bodiesViaSwitchOnly, bodiesLiteralOnly, bodiesMixed} {
@@ -228,8 +208,7 @@ func TestV1BodiesReadPathsArePinned(t *testing.T) {
 	if sum != len(measured) {
 		t.Errorf("三条路径合计 %d，与 bodies 总体 %d 不符", sum, len(measured))
 	}
-	t.Logf("27 个 bodies 读方按取源路径：只经切换层 %d（★ 开关未设 ⇒ 此刻读 v1）· "+
-		"只字面量 %d（无开关可翻，必须改 SQL）· 混合 %d",
+	t.Logf("bodies 读方按取源路径：只经切换层 %d · 只字面量 %d（无开关可翻，必须改 SQL）· 混合 %d",
 		len(got[bodiesViaSwitchOnly]), len(got[bodiesLiteralOnly]), len(got[bodiesMixed]))
 }
 
@@ -260,9 +239,19 @@ func TestBodiesReadPathAgreesWithTheShapeRegistry(t *testing.T) {
 			registered[f] = true
 		}
 	}
-	if len(registered) == 0 {
-		t.Fatalf("既有登记表里没有一条 shapeAlreadySwitched —— 分类常量或登记表变了，" +
-			"本门与它的交叉核对失去对象")
+
+	// ★ 890 之后（2026-10-20）：形状登记表已清空 ⇒ 「already-switched」这一档
+	// **一个成员都没有** —— 于是这道交叉核对的两边都为空。
+	//
+	// 原来这里是一条地板（registered 为空 ⇒ Fatal），因为那时它只可能意味着
+	// 「分类常量或登记表变了」。890 之后 bodies 读方总体归零，登记表随之清空
+	// ⇒ 空是正确值。
+	//
+	// ⇒ 地板翻成：**两边必须同时为空** —— 一边空、另一边非空，
+	// 说明两张表**不同源**（那正是这道门要盯的缝）。
+	if len(registered) > 0 {
+		t.Errorf("形状登记表里仍有 %d 条 already-switched —— 890 之后没有 v1 bodies 读方可判定。",
+			len(registered))
 	}
 
 	// 机械重算：真调用切换层且剥注释后不指名 v1 bodies 的文件
@@ -279,7 +268,6 @@ func TestBodiesReadPathAgreesWithTheShapeRegistry(t *testing.T) {
 	}
 
 	// ① 机械算出的「只经切换层」必须**全都是**既有表登记的 already-switched。
-	//    少一个 = 有人接了切换层却没登记退役风险（与 §9.232 那个 4 文件静默消失同型）。
 	var unregistered []string
 	for _, f := range mechanical {
 		if !registered[f] {
@@ -294,8 +282,7 @@ func TestBodiesReadPathAgreesWithTheShapeRegistry(t *testing.T) {
 	}
 
 	// ② 反向：既有表说已切、而机械重算说「切换层自己」（mixed）的那一个，
-	//    只能是切换层的定义处。登记表把它和消费点放同一档，本门把它单列 ——
-	//    这不是分歧，是**切缝不同**，但切缝必须钉住，否则两边会各说各话。
+	//    只能是切换层的定义处。
 	onlyMixedInRegistry := []string{}
 	for f := range registered {
 		b, err := readFileForEvidence(filepath.Join(root, f))
@@ -307,14 +294,14 @@ func TestBodiesReadPathAgreesWithTheShapeRegistry(t *testing.T) {
 		}
 	}
 	sort.Strings(onlyMixedInRegistry)
-	wantMixedInRegistry := []string{"db/request_logs_view_schema.go"}
+	wantMixedInRegistry := []string{}
 	if strings.Join(onlyMixedInRegistry, " ") != strings.Join(wantMixedInRegistry, " ") {
 		t.Errorf("登记表标 already-switched、而机械重算为 mixed 的文件应是 %v（切缝差异），"+
 			"实际 %v", wantMixedInRegistry, onlyMixedInRegistry)
 	}
-	t.Logf("交叉核对：机械算出「只经切换层」%d 个，全部已在既有登记表的 shapeAlreadySwitched 里；"+
-		"另 %d 个（%s）登记表同档但机械判 mixed —— 那是切换层的定义处，切缝不同。",
-		len(mechanical), len(onlyMixedInRegistry), strings.Join(onlyMixedInRegistry, " "))
+	t.Logf("交叉核对：机械算出「只经切换层」%d 个；登记表 already-switched %d 个；"+
+		"两边同为空（890 之后没有 v1 bodies 读方）。",
+		len(mechanical), len(registered))
 }
 
 func assertBodiesPath(t *testing.T, got map[bodiesReadPath]map[string]bool, p bodiesReadPath, want []string) {
@@ -415,19 +402,45 @@ func TestBodiesSwitchPairIsPinnedAndPaired(t *testing.T) {
 		}
 	}
 
-	// 两个键必须**真的**在各自那一侧的源码里被读到，且都带 false 兜底。
-	// 兜底从 false 改成 true 是危险方向：会让「键不存在」等价于「已切会话侧」。
+	// ── 读端：890 之后**没有开关可翻了** ────────────────────────────────
 	//
-	// ⚠ 这里刻意**允许两种调用形态**（字面量 / 常量名），因为两侧本来就不一样：
-	// 读端用常量 `SessionBodiesNativeReadSetting`（db/request_logs_view_schema.go:1094），
-	// 写端直接写字面量。我第一版只写了「键名字面量」，两侧同时判红 ——
-	// 那是**我的正则错了**，不是产品代码错了。
-	// 现在改成「键必须以字面量或该侧指定的常量名出现」+「兜底必须是 false」两段独立断言。
+	// 原来这道门要求读端「键必须以字面量或常量名出现」+「兜底必须是 false」。
+	// 890 之后 `db.SessionBodiesSourceSQL()` 的 v1 臂被删掉，函数体恒等于
+	// `SessionFamilyBodiesSourceSQL()` ⇒ **读端不再读这个键**。
+	//
+	// ⇒ 读端那条判据翻成它的**等价新不变量**：
+	//	**读端不得再有任何能选到 v1 臂的分支。**
+	// 这比「键在、兜底是 false」更强：它直接断言返回值恒为会话族。
+	dbSrc, err := os.ReadFile(filepath.Join(repoRootFromCaller(t), "db/request_logs_view_schema.go"))
+	if err != nil {
+		t.Fatalf("读 db/request_logs_view_schema.go: %v", err)
+	}
+	if got := dbpkg.SessionBodiesSourceSQL(); got != dbpkg.SessionFamilyBodiesSourceSQL() {
+		t.Errorf("db.SessionBodiesSourceSQL() ≠ db.SessionFamilyBodiesSourceSQL() —— "+
+			"读端又出现了一条能选到 v1 臂的分支。\n实际返回：%s", got)
+	}
+	// 键名常量可以留着（它是历史登记），但**不得**再被 `GetPlatformBool` 读取 ——
+	// 一旦有人把它接回去，读端就能重新选源。
+	readSwitch := regexp.MustCompile(`GetPlatformBool\([^)]*SessionBodiesNativeReadSetting[^)]*\)`)
+	if readSwitch.MatchString(string(dbSrc)) {
+		t.Errorf("db/request_logs_view_schema.go 又开始读 bodies 灰度开关 " +
+			"（GetPlatformBool(…, SessionBodiesNativeReadSetting)）—— " +
+			"读端必须恒为会话族：这个开关的 v1 臂已经被 890 删掉，重新接回去只会" +
+			"让人以为「翻开关就能改源」。")
+	}
+	// 就地阳性对照：同一把尺子必须能认出「读端接了开关」这个形态。
+	if !readSwitch.MatchString("func f() { return settings.GetPlatformBool(SessionBodiesNativeReadSetting, false) }") {
+		t.Error("readSwitch 正则认不出「读端接了开关」的形态 —— 负向断言已恒绿，判据坏了")
+	}
+
+	// ── 写端：开关仍在，兜底必须仍是 false ──────────────────────────────
+	//
+	// 写端 `storage.session_turns_bodies_enabled` 控制 session_turns 的
+	// request_delta / response_delta 两列是否写入；它与 890 无关，**仍然在**。
+	// ⇒ 这条判据原样保留（键必须以字面量出现 + 兜底必须是 false）。
+	//
+	// ⚠ 兜底从 false 改成 true 是危险方向：会让「键不存在⇒取 false」这条前提失效。
 	for _, chk := range []struct{ rel, key, constName, anchor string }{
-		{
-			rel: "db/request_logs_view_schema.go", key: bodiesReadKey,
-			constName: "SessionBodiesNativeReadSetting", anchor: "SessionBodiesSourceSQL",
-		},
 		{
 			rel: "domains/session/v2/session_writer_v2.go", key: bodiesWriteKey,
 			anchor: "RequestDeltaJSON",
@@ -441,7 +454,6 @@ func TestBodiesSwitchPairIsPinnedAndPaired(t *testing.T) {
 		if !strings.Contains(src, chk.anchor) {
 			t.Errorf("%s 里找不到 %q —— 该开关的落点变了，P1 清单需要重新取证", chk.rel, chk.anchor)
 		}
-		// ① 键必须以字面量出现，或（读端）以本侧常量名出现，且该常量绑定到这个键。
 		byLiteral := strings.Contains(src, `"`+chk.key+`"`)
 		byConst := chk.constName != "" &&
 			strings.Contains(src, chk.constName) &&
@@ -451,8 +463,6 @@ func TestBodiesSwitchPairIsPinnedAndPaired(t *testing.T) {
 				chk.rel, chk.key,
 				map[bool]string{true: "，也没有本侧常量 " + chk.constName + " 绑定到它", false: ""}[byConst || chk.constName != ""])
 		}
-		// ② 兜底必须是 false。键名/常量名都用 `[^)]*` 放过，
-		//    这样形态可变而「兜底被改成 true」这个危险变异仍会被抓住。
 		call := regexp.MustCompile(`GetPlatformBool\([^)]*,\s*false\)`)
 		if !call.MatchString(src) {
 			t.Errorf("%s 里找不到任何 `GetPlatformBool(…, false)` 形式的读取 —— "+

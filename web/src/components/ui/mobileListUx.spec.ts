@@ -121,9 +121,20 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   ['src/views/CorrelationsView.vue', 391, '按任务类型聚合（resp.by_task_type，title-key=label）：任务类型同为筛选维度，无落地页'],
   ['src/views/CorrelationsView.vue', 437, '模型×任务交叉表（modelTaskRows，title-key=card_key）：交叉统计单元，两侧都无详情页'],
   ['src/views/FreeDiscoveryView.vue', 1083, '发现流列表，本视图只做发现不做详情'],
-  ['src/views/QualityCorrelationsView.vue', 186, '质量相关性聚合，无单条详情'],
-  ['src/views/UserProfileView.vue', 285, '画像内嵌的 top_tasks（title-key=task_id）：任务名是分组标签，本视图无任务详情页'],
-  ['src/views/UserProfileView.vue', 308, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
+  // ⚠ 行号锚点：2026-10-20 由 186 改为 223。
+  //   原因：QualityCorrelationsView.vue 在 <script setup> 头部插入了 37 行
+  //   （后端把数组字段返成 null 时的边界归一化，见该文件的 normalizeQualityCorrelations
+  //   与 docs/audit/2026-10-20-request-logs-session-turns-复核轮.md §5.8），
+  //   186 之后的所有行整体后移 37 行 ⇒ 锚点必须跟着走。
+  //   本仓同类改键先例：internal/billguard/month_key_test.go（2026-10-13 :126→:145、
+  //   2026-10-17 :91→:243）—— 每次都要在登记处写明原因与行数。
+  ['src/views/QualityCorrelationsView.vue', 223, '质量相关性聚合，无单条详情'],
+  // ⚠ 行号锚点：2026-10-27 由 285/308 改为 286/309。
+  //   原因：第 14 增量（空状态 5 分）给 UserProfileView.vue 的 `<script>` 文档块
+  //   加了 1 行说明（讲三张表的空态按统计对象分开）⇒ 其后所有行号整体 +1。
+  //   与 QualityCorrelationsView（186→223）、ApprovalListView（451→452）同类。
+  ['src/views/UserProfileView.vue', 286, '画像内嵌的 top_tasks（title-key=task_id）：任务名是分组标签，本视图无任务详情页'],
+  ['src/views/UserProfileView.vue', 309, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
   ['src/views/tenant/MaaSAccountView.vue', 282, '账号内嵌表，无账号详情页'],
   ['src/views/tenant/MaaSUsageView.vue', 354, '用量内嵌表，无用量详情页'],
   ['src/views/tenant/TenantModelsView.vue', 207, '租户模型内嵌表，无详情页'],
@@ -133,7 +144,14 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
 const KNOWN_GAP: Array<[string, number, string]> = [
   [
     'src/views/ApprovalListView.vue',
-    451,
+    // ⚠ 行号锚点：2026-10-25 由 451 改为 452。
+    //   原因**不是**「后来插了一行」—— `git blame` 显示本视图的
+    //   `<ResponsiveDataView>` 自 8f819d104（2026-10-04 落库）起就在 452 行，
+    //   结构至今未变；⇒ 是当初**登记时手误**（把 `<ResponsiveDataView` 当成
+    //   0-based 或按上一行注释数），把 452 写成了 451。
+    //   ⇒ 后果：本门同时报「未登记 452」与「451 在源码里找不到了」两条红。
+    //   （本仓同类改键先例：QualityCorrelationsView.vue 186→223，见 NON_NAVIGABLE 注释。）
+    452,
     '详情目的地 /admin/approvals/:request_id 存在，但 viewDetail 两个调用点都写在 #table 插槽里；'
       + '该视图只传 #table ⇒ compact 卡片无任何入口。修法涉及桌面行是否整行可点（行内有 ✕ 拒绝等写操作），属产品裁决。',
   ],
@@ -269,7 +287,11 @@ const blocks = scanBlocks()
 const ASYMMETRY: Array<[string, number, string]> = [
   [
     'src/views/TenantDashboardView.vue',
-    716,
+    // ⚠ 行号锚点：2026-10-25 由 716 改为 717。
+    //   与 KNOWN_GAP 同源：登记时手误少算一行，不是后来插了行 ——
+    //   `git blame` 显示本视图的 `<ResponsiveDataView>` 自 8f819d104
+    //   （2026-10-04 落库）起就在 717 行，结构至今未变。
+    717,
     '详情块：卡片 clickable 跳 /request-logs，桌面 detail-table 的 <tr> 无 @click。'
       + '桌面页脚 detailFooterLogs 本就是同一目标的 RouterLink ⇒ 同目的地、不同入口位置。'
       + '是否让桌面行也整行可点属产品裁决，未擅自改。',

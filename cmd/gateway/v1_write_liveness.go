@@ -46,10 +46,22 @@ import (
 // 第三个面（session 侧）是**用来区分「死了」和「集群没流量」的**：
 // 两侧同时为零时，什么都没证明，判 `quiet` 而不是 `dead`
 // —— 这与 `dual_read_gate.go` 规则 2（「空扫描 = 什么都没证明」）同源。
+//
+// # ★ 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 读数只剩会话侧两腿
+//
+// v1 族（`_request_logs*`）被整体 DROP 之后，**任何提到它的语句都会 42P01**
+// （整条语句失败，不是那条腿失败）。所以：
+//
+//   - v1 侧的读数**按定义恒为 0 行**（表不存在 ⇒ 没有行可读、也没有行可写）；
+//   - 判决所需的全部输入都在会话侧两腿上；
+//   - 「v1 侧 0 行 + 会话侧在写」这个形状现在意味着**v1 已退役**，
+//     而不是一个待修的故障——判决层照旧给 `dead`，信号层（worker）按
+//     停写开关把它降级成 `retired`（见 v1_write_liveness_worker.go）。
+//
+// ⇒ 保留会话族的**两个面**（hot ∪ parent）这件事没有变：只读父表会把
+// 「最近 N 分钟没有流量」误报成死亡信号（上面那段实测就是它）。
 const v1WriteLivenessSQL = `
 SELECT
-  (SELECT COUNT(*) FROM _request_logs_hot     WHERE ts >= $1) AS v1_hot_rows,
-  (SELECT COUNT(*) FROM _request_logs         WHERE ts >= $1) AS v1_parent_rows,
   (SELECT COUNT(*) FROM session_turns_hot   WHERE ts >= $1) AS turns_hot_rows,
   (SELECT COUNT(*) FROM session_turns       WHERE ts >= $1) AS turns_parent_rows`
 
@@ -72,6 +84,13 @@ const (
 //
 // 刻意做成结构体而不是四个位置参数：位置传错会把 livenessAlive 变成 livenessDead，
 // 而这四个值全是 int64，编译器不会吭声。
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：V1HotRows / V1ParentRows **恒为 0**。
+//
+//	它们保留在结构体里，是因为快照的 JSON 形状（v1_hot_rows / v1_parent_rows）
+//	是 admin 拉取面的既有契约，删字段会改形状；而「恒 0」本身就是退役的读数
+//	——v1 族不存在 ⇒ 没有行可读。**别把这两个 0 读成「v1 表空了」**：
+//	那是同一件事的两种说法，但前者是退役、后者是停写。
 type v1WriteLivenessInput struct {
 	V1HotRows     int64
 	V1ParentRows  int64
@@ -103,11 +122,25 @@ func ClassifyV1WriteLiveness(in v1WriteLivenessInput) string {
 }
 
 // v1WriteLiveness 跑一次读数并给出判决。
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：**退役感知**。
+//
+// 旧实现读 v1 族的两个面；那一族被 DROP 之后，探针本身就会 42P01 ——
+// 而 42P01 会被信号层当成「测量失败」（verdict=unknown + 每 tick 一条 WARN），
+// 于是「v1 已退役」这个**预期态**被报成了「读不出来」。⇒ 现在探针只读会话族
+// 两面，v1 侧按定义恒 0 行，于是：
+//
+//	会话侧在写 ⇒ 分类器给 dead ⇒ 信号层（worker）在停写开关关着时把它降级成
+//	                 `retired`（不是 ERROR）；开关若仍开着 ⇒ 保持 dead + ERROR，
+//	                 那是对的：写入开关开着而表没了，**真的**会写失败。
+//	会话侧也没写 ⇒ quiet（什么都没证明，与退役无关）。
+//
+// 判决层的取值词汇（alive/dead/quiet）与信号层的 retired 都没有新增。
 func v1WriteLiveness(ctx context.Context, q dualReadQuerier, window time.Duration) (v1WriteLivenessInput, string, error) {
 	var in v1WriteLivenessInput
 	in.ThresholdRows = 1
 	err := q.QueryRow(ctx, v1WriteLivenessSQL, time.Now().Add(-window)).
-		Scan(&in.V1HotRows, &in.V1ParentRows, &in.TurnsHotRows, &in.TurnsParent)
+		Scan(&in.TurnsHotRows, &in.TurnsParent)
 	if err != nil {
 		return in, "", err
 	}

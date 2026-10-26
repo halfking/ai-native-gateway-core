@@ -8,8 +8,6 @@ export default {
     refreshing: '刷新中...',
   },
   filter: {
-    startDate: '开始日期',
-    endDate: '结束日期',
     taskType: '原任务类型',
     model: '模型',
     modelPlaceholder: '全部模型',
@@ -21,8 +19,6 @@ export default {
     all: '全部',
     annotatedOnly: '已标注',
     unannotatedOnly: '未标注',
-    annotator: '标注人',
-    annotatorPlaceholder: '输入标注人用户名',
     query: '查询',
     reset: '重置',
   },
@@ -35,8 +31,6 @@ export default {
     selectModel: '请选择模型',
     autoRoute: '自动路由',
     confidence: '置信度',
-    humanProvider: '人工标注供应商',
-    selectProvider: '请选择供应商',
     isCorrect: '路由是否正确',
     correct: '正确',
     incorrect: '错误',
@@ -46,7 +40,6 @@ export default {
     submit: '提交',
     cancel: '取消',
     errors: {
-      providerRequired: '请选择供应商',
       taskTypeRequired: '请选择任务类型',
       modelRequired: '请选择模型',
       reasonRequired: '请选择标注原因',
@@ -55,7 +48,6 @@ export default {
     },
   },
   table: {
-    requestId: '请求ID',
     time: '时间',
     title: '标题',
     client: '客户端',
@@ -63,7 +55,6 @@ export default {
     model: '模型',
     taskType: '任务类型',
     confidence: '置信度',
-    autoProvider: '自动路由',
     status: '状态',
     statusOk: '成功 {code}',
     statusFail: '失败 {code}',
@@ -73,14 +64,12 @@ export default {
     unannotated: '未标注',
     annotate: '标注',
     view: '查看',
-    delete: '删除',
   },
   drawer: {
     annotateTitle: '标注样本',
     viewTitle: '查看标注',
   },
   detail: {
-    humanProvider: '人工标注供应商',
     isCorrect: '路由是否正确',
     reason: '标注原因',
     annotator: '标注人',
@@ -96,18 +85,6 @@ export default {
     totalTurns: '会话轮次',
     source: '数据源',
   },
-  batch: {
-    title: '批量标注',
-    desc: '批量标注选中的 {count} 条样本',
-    submit: '批量提交',
-  },
-  pagination: {
-    total: '共 {n} 条',
-    pageOf: '第 {page} / {total} 页',
-    perPage: '每页',
-    prev: '上一页',
-    next: '下一页',
-  },
   reasons: {
     correct: '预测正确',
     performance: '性能问题',
@@ -121,7 +98,7 @@ export default {
     refresh: '刷新',
     refreshing: '刷新中...',
     loadFailed: '加载统计数据失败',
-    noData: '暂无数据',
+    noData: '还没有标注统计 —— 先完成一批标注后再看',
     totalAnnotations: '总标注数',
     providerAccuracy: '供应商准确率',
     annotatorStats: '标注人统计',
@@ -140,24 +117,13 @@ export default {
     distribution: '分布',
   },
   // Actions
-  batchSelected: '已选择 {count} 条',
-  batchAnnotate: '批量标注',
-  clearSelection: '清除选择',
   
   // Success messages
-  annotationCreated: '标注成功',
-  batchSuccess: '批量标注成功: {count} 条',
-  batchPartialSuccess: '批量标注部分成功: 成功 {success} 条，失败 {failed} 条',
-  deleteSuccess: '删除标注成功',
   
   // Error messages
   loadFailed: '加载标注样本失败',
   annotationFailed: '标注失败',
   correctionWriteFailed: '修正写入失败（主标注已保存）：{msg}',
-  batchFailed: '批量标注失败',
-  deleteFailed: '删除标注失败',
-  noSamplesSelected: '请先选择要标注的样本',
-  confirmDelete: '确认删除此标注？',
   
   // Loading states
   loading: '加载中...',

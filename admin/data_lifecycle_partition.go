@@ -82,6 +82,10 @@ type partitionTableStatus struct {
 	Partitions       []partitionInfo `json:"partitions"`
 	HasArchiveFunc   bool            `json:"has_archive_func"`
 	ArchiveTableName string          `json:"archive_table_name"`
+	// Retired=true 表示**这张表已经不存在**（v1 族随迁移 890 被物理删除），
+	// 清单条目保留只是为了让 admin UI 的手动清理列表仍能看到这个表名。
+	// 2026-10-20 起：不存在时不再查询它（否则每次都 42P01 + WARN 噪声）。
+	Retired bool `json:"retired"`
 }
 
 // GET /api/admin/data-lifecycle/partitions
@@ -121,6 +125,27 @@ func (h *Handler) getPartitionTableStatus(ctx context.Context, config partitione
 		HasArchiveFunc:   config.HasArchiveFunc,
 		ArchiveTableName: config.ArchiveTableName,
 		Partitions:       make([]partitionInfo, 0),
+	}
+
+	// ★ 2026-10-20（v1 族退役）：清单里的表可能**已经不存在** ——
+	// 迁移 890 把 _request_logs 族物理删掉了，但这份清单（admin UI 的
+	// 手动清理列表）仍留着它 ⇒ 每次查状态都 42P01
+	// （relation "_request_logs" does not exist）⇒ 每次调
+	// /api/admin/data-lifecycle/partitions 都刷一条 WARN 噪声，
+	// 而该表的状态永远拿不到。
+	//
+	// 处置：先探表在不在；不在 ⇒ 返回「已退役」状态（Retired=true），
+	// **不再查它**。清单条目**保留**（既有端点契约：UI 仍列出该表名；
+	// 手动 archive 端点对无 archive 函数的表回 400
+	// 「archive function not available for _request_logs」，
+	// 那个路径不碰数据库，因此不产生 42P01）。
+	var tableExists bool
+	if err := h.db.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, config.TableName).Scan(&tableExists); err != nil {
+		return status, fmt.Errorf("probe table existence: %w", err)
+	}
+	if !tableExists {
+		status.Retired = true
+		return status, nil
 	}
 
 	// Get overall table size

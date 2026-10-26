@@ -318,6 +318,11 @@ func (c *Client) doWithClient(req *http.Request, httpClient *http.Client) (*http
 
 		var doErr error
 		resp, doErr = httpClient.Do(req)
+		if doErr == nil {
+			if err := nonAPIReply(resp, req); err != nil {
+				return resp, err
+			}
+		}
 
 		if doErr == nil && resp.StatusCode < 500 {
 			return resp, nil

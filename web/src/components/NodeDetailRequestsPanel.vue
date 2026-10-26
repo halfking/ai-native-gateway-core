@@ -24,7 +24,7 @@ const router = useRouter()
     <div v-else class="nd-table-wrap">
       <table class="nd-table">
         <thead>
-          <tr><th>时间</th><th>请求</th><th>模型</th><th>结果</th><th>延迟</th><th>错误</th></tr>
+          <tr><th>{{ $t('common.time') }}</th><th>{{ $t('common.terms.request') }}</th><th>{{ $t('common.terms.model') }}</th><th>{{ $t('common.terms.result') }}</th><th>{{ $t('common.terms.latency') }}</th><th>{{ $t('common.terms.error') }}</th></tr>
         </thead>
         <tbody>
           <tr v-for="decision in decisions" :key="decision.request_id">
@@ -43,7 +43,7 @@ const router = useRouter()
                 @click-canonical="router.push({ path: '/models', query: { q: decision.client_model || decision.model || '' } })"
               />
             </td>
-            <td :class="decision.success ? 'is-ok' : 'is-bad'">{{ decision.success ? '成功' : '失败' }}</td>
+            <td :class="decision.success ? 'is-ok' : 'is-bad'">{{ decision.success ? $t('common.status.success') : $t('common.status.failed') }}</td>
             <td>{{ decision.latency_ms == null ? '—' : `${decision.latency_ms}ms` }}</td>
             <td>{{ decision.error_class || '—' }}</td>
           </tr>

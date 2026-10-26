@@ -134,7 +134,7 @@ import { req, type RequestOptions } from './client'
  *       **同一个 admin 包里，一处选择不吞、一处吞掉三处。**
  *
  * (9) ★★★★★ **`limit` 越界 400，范围 1–200，默认 50**（`:1448-1451`）。
- *     ⇒ 但 ★★ **`queryInt` 解析失败时静默回落默认值**（`admin/handler.go:1534-1544`）：
+ *     ⇒ 但 ★★ **`queryInt` 解析失败时静默回落默认值**（`admin/handler.go:1610-1620`）：
  *     ```go
  *     v, err := strconv.Atoi(s)
  *     if err != nil { return def }   // ← 不报错
@@ -158,7 +158,7 @@ import { req, type RequestOptions } from './client'
  *
  * (12) ★★★ **超时 5s**（`:1461` `context.WithTimeout(r.Context(), 5*time.Second)`）。
  *
- * (13) ★★★ **错误体是 `{"error":{"detail"}}`**（`writeError`，`handler.go:1494-1498`）
+ * (13) ★★★ **错误体是 `{"error":{"detail"}}`**（`writeError`，`handler.go:1517-1523`）
  *      ⇒ 与批 91 的 `writeJSONErrCtx`（`{message, code, type}`）**不是同一种**
  *      ⇒ ★★ 同一个 admin 包里至少有三种错误体（`detail` / `message+code+type` /
  *        `code+detail`），**按「写出层」分支，不按包**。

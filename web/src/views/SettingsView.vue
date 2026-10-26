@@ -10,6 +10,7 @@ import {
   type SettingSpec,
 } from '../api'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import { Warning } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -296,7 +297,7 @@ onMounted(() => {
               <td>
                 <span class="src-badge" :class="'src-' + it.source">{{ it.source || '—' }}</span>
               </td>
-              <td>{{ dangerLabel(it.danger_level) }}</td>
+              <td class="cell-danger">{{ dangerLabel(it.danger_level) }}</td>
             </tr>
           </tbody>
         </table>
@@ -310,7 +311,7 @@ onMounted(() => {
 
         <!-- Tenant-scoped warning -->
         <div v-if="selected.scope === 'tenant'" class="tenant-warning">
-          <div class="warning-icon">⚠️</div>
+          <div class="warning-icon"><Warning /></div>
           <div class="warning-content">
             <strong>租户级配置</strong>
             <p>此设置作用于单个租户，无法在系统级设置。请前往<strong>租户管理</strong>页面为特定租户配置此项。</p>
@@ -571,6 +572,12 @@ onMounted(() => {
   border-radius: 3px;
   font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, monospace;
+}
+/* 危险等级是短标签。表格是 auto 布局、value 列的 JSON 很长 ⇒ 危险列会被
+   挤到 ~41px，于是「🟡 注意」按字竖排（实测 41×124，一列一个字）。
+   标签逐字断行没有含义，宁可让这列多占几十像素。 */
+.cell-danger {
+  white-space: nowrap;
 }
 
 /* === Source badges === */
@@ -841,7 +848,7 @@ onMounted(() => {
   margin-top: 8px;
   padding: 8px 12px;
   background: color-mix(in srgb, var(--accent) 5%, transparent);
-  border-left: 3px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 4px;
 }
 
@@ -914,7 +921,7 @@ onMounted(() => {
   padding: 16px;
   background: color-mix(in srgb, var(--warning) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
-  border-left: 4px solid var(--warning);
+  border: 1px solid var(--warning);
   border-radius: 8px;
 }
 
@@ -988,7 +995,7 @@ onMounted(() => {
   margin-top: 12px;
   padding: 8px 12px;
   background: color-mix(in srgb, var(--accent) 8%, transparent);
-  border-left: 3px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 4px;
   font-size: 13px;
 }

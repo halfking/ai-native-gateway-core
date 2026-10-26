@@ -4,18 +4,16 @@
 // GET /api/credentials/sliding-window?credential_id=X&model=Y&minutes=60&limit=50
 //
 // ⚠️⚠️⚠️⚠️ 权限档：**`requiresRole: 'super_admin'`** —— 与批 113/114 连续两批**相反**。
-//   注册处确实是 admin 档（`admin/handler.go:1475` `h.admin`），
-//   但**「admin 档」在本族连「管理员隔离」都做不到**：
-//   ★★★★★ `handleSlidingWindow`（`admin/credential_monitor.go:704-782`）里
-//   **根本没有 `tenantID` 变量，也没有任何 `IsTenantAdmin` 判断**，两条数据腿
-//   **都**没有租户维度：
-//   - Redis 腿 `m.recorder.GetRecent(ctx, credentialID, model, since)` —— 键只有
-//     `(credentialID, model)`；
-//   - 回退腿 `slidingWindowQuery()` / `slidingWindowHotQuery()` 的 WHERE 只有
-//     `credential_id = $1 AND lower(...) = lower($2) AND ts > …`。
-//   ⇒ 而 `credential_id` 是**全局唯一**主键 ⇒ ★★★ **任何通过认证的主体，
-//     只要报出别的租户的 credential_id，就能读到那个凭据的逐次调用明细**。
-//   ⇒ `'admin'` 档在这里会给出**虚假的安全感**：按钮写着「我的租户」，后端不理这句。
+//   注册处确实是 admin 档（`admin/handler.go:1528` `h.admin`）。
+//   ★★ **本文件头原写的那条「admin 档连管理员隔离都做不到」已被后端补洞覆盖**
+//   （audit #153 + 12h-audit 20261017，2026-10-16/17）：
+//   `handleSlidingWindow`（`admin/credential_monitor.go:753-863`）今天
+//   **有** `tenantID` / `IsTenantAdmin` / `GetTenantID`，两条 SQL 腿都带
+//   `AND ($5 = '' OR tenant_id = $5)`（`:905` / `:950`），并有角色门
+//   （`:765-768`，`role=user` ⇒ 403）；Redis 快腿对 tenant_admin 直接跳过
+//   （`:809`，Redis 键没有 tenant tag）。
+//   ⇒ 所以 `'admin'` 档**现在**是安全的；本席仍写 `'super_admin'` 是
+//     **过度限制**（收紧一档不必跟着放开），**不是漏洞**。
 //   ⚠️ 前端严于后端是兜底不是修复 —— 后端那条路本来就开着。
 //   ⚠️ 抽屉隐藏 ≠ 路由拦截（`meta.requiresRole` 全仓无人读）⇒ 视图内还要兜一层。
 //
@@ -24,6 +22,9 @@
 //   而后端发的是 **`'_request_logs'`** ⇒ 回退信号判据对真实响应**恒返回 false**。
 //   ⇒ 那个错是从**模块头抄漏了一行 Go** 开始，连带常量、实现、3 条用例一起歪，
 //     三方互相印证、整套件全绿。本批补了「对着 Go 源码钉」的判据组 (15)。
+// ★★★ **2026-10-26 第二轮（同一族、同一处、同样三方互证地错）**：后端在
+//   **v1 → session_turns 替换轮**（2026-10-24）把值换成 **`"session_turns"`**，
+//   **常量 / 实现 / 用例都没跟着改** ⇒ 回退信号判据又对真实响应恒 false。
 //
 // ★★★★★ 本族最要紧的六件事（文件头共 14 条）：
 //   1. ★★★★★ **四个数字完全互锁**：`total_returned === entries.length ===
@@ -32,7 +33,7 @@
 //      `err` 是空串就完全不进 `error_kinds`。
 //   3. ★★★★★ **`failure_rate` 是派生的，`total === 0` 时恒为 0**（不是 NaN/null）。
 //   4. ★★★★★ `source === 'redis'` ⟹ `entries.length > 0`；
-//      `'_request_logs'` 是**二义的**（Redis 不可用 / 窗口内无数据，同形）。
+//      `'session_turns'` 是**二义的**（Redis 不可用 / 窗口内无数据，同形）。
 //   5. ★★★★ **Redis 的错误被整个丢弃**（`entries, _ = …`）⇒ Redis 挂了静默回退，
 //      响应里看不出 Redis 故障。
 //   6. ★★★★ **`err` 是唯一带 omitempty 的键** ⇒ 成功条目里**键消失**；
@@ -65,7 +66,7 @@ import {
   type CallEntry,
 } from '@/api/slidingWindow'
 
-useHyperPage({ title: () => t('sw.title') })
+useHyperPage({ title: () => (allowed.value ? t('sw.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 
@@ -161,7 +162,7 @@ const rateBad = computed(() => (data.value ? !slidingWindowFailureRateMatches(da
 const redisEmptyBad = computed(() =>
   data.value ? !slidingWindowRedisSourceImpliesEntries(data.value) : false,
 )
-/** ★★ `'_request_logs'` 有数据是**正常**的两种成因之一，不是错误。 */
+/** ★★ `'session_turns'` 有数据是**正常**的两种成因之一，不是错误。 */
 const fellBackWithData = computed(() =>
   data.value ? slidingWindowFallbackSourceStillHasEntries(data.value) : false,
 )

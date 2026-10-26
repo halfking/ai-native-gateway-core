@@ -47,10 +47,10 @@ func requireSessionTaskAccess(w http.ResponseWriter, r *http.Request, ctx contex
 //
 // 这是跨租户访问的**权限门**，不是数据查询：任何一个来源在 S4 停写后查不到行，
 // 结果就会从「阻断越权」翻转成「阻断所有人」——全体租户管理员的会话详情整体
-// 404，而运维会误判为租户/权限配置问题。因此这里必须让 session 族与 v1 族并联，
+// 404，而运维会误判为租户/权限配置问题。因此这里必须让多条腿并联，
 // 停写前后都至少有一条腿供数。
 //
-// 四条腿的分工（session 族侧）：
+// 三条腿的分工（全部在 session 族侧）：
 //   - session_summaries：带部分索引 idx_session_summaries_task
 //     (tenant_id, gw_task_id) WHERE gw_task_id IS NOT NULL，EXISTS 走索引。
 //   - session_turn_details_hot：gw_task_id 的权威来源（733 特征层），
@@ -58,9 +58,12 @@ func requireSessionTaskAccess(w http.ResponseWriter, r *http.Request, ctx contex
 //   - session_turn_details 月分区母表：同一权威来源的已 promote 行。802 补了
 //     (tenant_id, gw_task_id) 部分索引并级联到全部分区，真库 EXPLAIN 实测走
 //     Index Only Scan（Buffers: shared hit=4）；无索引时这是 167 万行顺序扫描。
-//   - v1 _request_logs_hot ∪ _request_logs：镜像链启用之前的历史窗口。
 //
-// OR-of-EXISTS 会短路：任一腿先命中即返回，因此四条腿的代价不会叠加。
+// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的第四条腿
+// （v1 hot ∪ v1 母表）删除。镜像链启用之前的历史窗口随 v1 表一起消失，
+// 这部分会话在本门下一律查不到行（与它们在其它读端同样查不到一致）。
+//
+// OR-of-EXISTS 会短路：任一腿先命中即返回，因此三条腿的代价不会叠加。
 func assertTaskInTenant(ctx context.Context, db *pgxpool.Pool, taskID, tenantID string) bool {
 	if db == nil || taskID == "" || tenantID == "" {
 		return false
@@ -76,12 +79,6 @@ func assertTaskInTenant(ctx context.Context, db *pgxpool.Pool, taskID, tenantID 
 		) OR EXISTS(
 			SELECT 1 FROM session_turn_details
 			WHERE gw_task_id = $1 AND tenant_id = $2
-		) OR EXISTS(
-			SELECT 1 FROM _request_logs_hot
-			WHERE gw_task_id = $1 AND tenant_id = $2
-		) OR EXISTS(
-			SELECT 1 FROM _request_logs
-			WHERE gw_task_id = $1 AND tenant_id = $2
 		)
 	`, taskID, tenantID).Scan(&exists)
 	return err == nil && exists
@@ -94,7 +91,7 @@ type taskTenantDB interface {
 }
 
 // taskIDsInTenant 是 assertTaskInTenant 的批量版：一次往返返回 taskIDs 中
-// 属于 tenantID 的子集。表清单与 assertTaskInTenant 逐腿对齐（五腿并联，
+// 属于 tenantID 的子集。表清单与 assertTaskInTenant 逐腿对齐（三腿并联，
 // 停写前后都至少有一条腿供数，理由见 assertTaskInTenant 的权限门注释）。
 // 2026-10-07 审计：titles/batch 曾对客户端提供的任意 task_id 无租户过滤
 // （session_titles 无 tenant_id 列），tenant_admin 可跨租户探测会话标题。
@@ -115,12 +112,6 @@ func taskIDsInTenant(ctx context.Context, db taskTenantDB, taskIDs []string, ten
 			WHERE tenant_id = $1 AND gw_task_id = ANY($2)
 			UNION
 			SELECT gw_task_id FROM session_turn_details
-			WHERE tenant_id = $1 AND gw_task_id = ANY($2)
-			UNION
-			SELECT gw_task_id FROM _request_logs_hot
-			WHERE tenant_id = $1 AND gw_task_id = ANY($2)
-			UNION
-			SELECT gw_task_id FROM _request_logs
 			WHERE tenant_id = $1 AND gw_task_id = ANY($2)
 		) t
 	`, tenantID, taskIDs)

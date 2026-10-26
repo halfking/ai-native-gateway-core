@@ -45,6 +45,29 @@ type SandboxPolicy struct {
 // DefaultSandboxPolicy returns a deny-by-default policy that provides no
 // privilege. It is safe to use as the zero-trust baseline before any real
 // sandbox is wired up.
+//
+// # ★ 2026-10-24 P0-2：「谁负责置 true」的答案是**目前没有人**
+//
+// 计划书（docs/research/2026-10-24-magpie-v0.1.1367-…md §6-P0-2）要求
+// "把 `SandboxPolicy.Available` 的语义写清：谁负责置 true"。审计后的答案：
+//
+//	① **生产路径上没有任何代码构造 `SandboxPolicy`** —— `NewSandboxEnforcer`
+//	   在非测试代码里**零调用方**（实测：`grep NewSandboxEnforcer` 只命中
+//	   sandbox.go 的定义与 sandbox_test.go）⇒ 连"恒 false 的拒绝"这条
+//	   防御层**都还没接线**。
+//	② 因此 `Available = true` 在生产上**不可达** ⇒ 数据面写能力
+//	   （request.mutate / request.block / response.mutate / response.block /
+//	   tool.mutate / tool.block / tool.execute）当前**没有任何路径**能让它通过。
+//
+// ⇒ **未来要置 true 时的责任划分**（这是本注释存在的目的）：
+//
+//	① **必须**先有一个真沙箱：独立 OS 用户 + 内存上限（`ValidateSandboxPolicy`
+//	   已经强制这两项，`Available=true` 而缺任何一项 ⇒ 直接报错）；
+//	② 置 true 的**唯一**合法位置是**配置装载处**（把管理员显式配置翻译成
+//	   policy），**不是**某个业务调用点 —— 业务代码只读 policy，不得改它；
+//	③ 置 true 的那一刻**必须**同时有一条可观测证据（否则又是一处
+//	   "声明与实现不同源"）⇒ 见门禁
+//	   scripts/ursmcheck/magpie_p0_plugin_capability_holes_test.go 的 G3。
 func DefaultSandboxPolicy() SandboxPolicy {
 	return SandboxPolicy{
 		Available:              false,

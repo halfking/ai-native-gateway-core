@@ -4,7 +4,7 @@
       <div class="card-header">
         <h3 class="card-title">大字段 Top {{ rows.length }}（按 request_body + outbound_body 真实字节数）</h3>
         <button class="btn btn-ghost btn-sm" @click="load" :disabled="loading">
-          {{ loading ? '加载中…' : '刷新' }}
+          {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
         </button>
       </div>
       <div class="blob-table-wrap">
@@ -14,7 +14,7 @@
               <th>request_id</th>
               <th>session</th>
               <th>tenant</th>
-              <th>时间</th>
+              <th>{{ $t('common.time') }}</th>
               <th>请求体</th>
               <th>出参体</th>
               <th>合计</th>
@@ -31,7 +31,7 @@
               <td class="num strong">{{ r.total_human }}</td>
             </tr>
             <tr v-if="!rows.length && !loading">
-              <td colspan="7" class="empty">暂无数据</td>
+              <td colspan="7" class="empty">{{ $t('dataLifecycle.blob.emptyNoResult') }}</td>
             </tr>
           </tbody>
         </table>
@@ -148,7 +148,7 @@ async function onPreview() {
   try {
     preview.value = await dataLifecycleBlobCleanupPreview(form.value)
   } catch (e: any) {
-    alert('预览失败：' + (e?.response?.data?.error?.detail || e?.message || 'unknown'))
+    alert(t('common.feedback.previewFailedWithReason', { reason: e?.response?.data?.error?.detail || e?.message || t('common.feedback.unknownReason') }))
   } finally {
     loading.value = false
   }
@@ -164,7 +164,7 @@ async function onExecute() {
     preview.value = null
     await load()
   } catch (e: any) {
-    alert('执行失败：' + (e?.response?.data?.error?.detail || e?.message || 'unknown'))
+    alert(t('common.feedback.executeFailedWithReason', { reason: e?.response?.data?.error?.detail || e?.message || t('common.feedback.unknownReason') }))
   } finally {
     loading.value = false
   }
@@ -240,7 +240,7 @@ onMounted(load)
   margin-top: 8px;
   padding: 6px 10px;
   background: var(--warning-soft);
-  border-left: 2px solid var(--warning);
+  border: 1px solid var(--warning);
   color: var(--warning);
   font-size: 12px;
   border-radius: 4px;

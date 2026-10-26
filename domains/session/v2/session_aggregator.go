@@ -226,7 +226,8 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			owner_user, client_ip, agent_name,
 			agent_role, parent_session_id, parent_task_id,
 				partition_date,
-				primary_request_id
+				primary_request_id,
+				duration_ms
 			) VALUES (
 				$1, $2,
 				$3, $3, 'active',
@@ -239,7 +240,10 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 				COALESCE(NULLIF($20, ''), 'main'),
 				NULLIF($21, ''), NULLIF($22, ''),
 				$23,
-				NULLIF($24, '')
+				NULLIF($24, ''),
+				-- 首写：created_at 与 updated_at 同为 $3，已流逝为 0。
+				-- （此处的 -- 行注释是合法的：PG 只在 VALUES 元组外拒绝裸注释）
+				0
 			)
 		-- 租户守卫（2026-09-07 审计）：客户端提供的 gw_ 会话 id 在 Redis
 		-- 缓存过期后无法做归属校验，WHERE 挡住他租户 key 用同 id 混写
@@ -288,7 +292,35 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			-- 且指针被无限推向最新热行、永不收敛。翻转为存量优先：首个
 			-- 非空 RequestID 固化后不再被后续轮改写（与 730 归因列注释的
 			-- "不能用 COALESCE(NULLIF(EXCLUDED...))" 形态学一致）。
-			primary_request_id = COALESCE(public.sessions.primary_request_id, NULLIF(EXCLUDED.primary_request_id, ''))
+			primary_request_id = COALESCE(public.sessions.primary_request_id, NULLIF(EXCLUDED.primary_request_id, '')),
+			-- 706 的 duration_ms 在本 upsert 里**曾经零写入**：706 列注释写
+			-- 「关闭时 closed_at - created_at」，而唯一的写入方 CloseSession
+			-- 全仓零调用方（2026-09-14 审计已记，见 session_writer_v2.go:744
+			-- 与 bodies_writer.go:213 对同一缺口的记录）⇒ 该列在生产上恒 NULL。
+			--
+			-- 这里改为**每轮刷新已流逝时长**（EXCLUDED.updated_at - 存量
+			-- created_at），而不是「关闭时才算」。理由：
+			--   1. 没有关闭链路可依赖（上面零调用方是已记录事实，不是待办），
+			--      把写入点挂在关闭上等于继续写一列永远 NULL 的字段；
+			--   2. 进行中的会话已有「已流逝多久」这个真实且有用的语义，
+			--      每轮刷新让它单调逼近真实总时长；
+			--   3. 与 CloseSession 不冲突——真接上关闭链路时，它在同一时刻
+			--      写 closed_at 与 duration_ms，结果与本行的连续刷新同值
+			--      （GREATEST(0, …) 两边都用），不会打架。
+			--
+			-- ⚠ EXCLUDED.updated_at 与存量 created_at 之差，而不是 EXCLUDED 两者
+			--   之差：INSERT 臂里 created_at 每次都写成 $3（即本轮时间），
+			--   若拿 EXCLUDED.created_at 当起点，每轮都会把起点重置到"现在"，
+			--   duration_ms 恒为 0——正是本条要修的缺陷换了个写法。
+			-- ⚠ 起点取存量 sessions.created_at（首写固化，冲突臂不改写它），
+			--   所以 GREATEST(0, …) 只用于挡时钟回拨/乱序到达的负值。
+			--   created_at 是 NOT NULL DEFAULT NOW()（706:124），故不需要 NULL
+			--   分支：之前那个 CASE WHEN created_at IS NOT NULL … ELSE 保底
+			--   的 ELSE 在生产上**不可达**，只有把该列声明成可空的测试夹具
+			--   才走得到 —— 那是夹具保真度问题，不是生产语义，留着只会让人
+			--   误以为 created_at 可能为 NULL 是真实约束。
+			duration_ms = GREATEST(0,
+				(EXTRACT(EPOCH FROM (EXCLUDED.updated_at - public.sessions.created_at)) * 1000)::BIGINT)
 		WHERE public.sessions.tenant_id = EXCLUDED.tenant_id
 	`,
 		update.SessionID, update.TenantID,

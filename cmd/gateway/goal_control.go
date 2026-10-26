@@ -548,6 +548,7 @@ func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redi
 		return nil
 	}
 	detector := newSanitizePatternDetector()
+	installSanitizeRuleManager(chatHandler, detector, db, redisClient)
 
 	// 1. 输入侧中间件（chatHandler.ServeHTTP 入口处生效）
 	mwFn, mwErr := buildSanitizeInputMiddleware(redisClient, detector, db)

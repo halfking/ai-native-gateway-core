@@ -159,7 +159,7 @@ const i18n = createI18n({
         create: '创建',
         close: '关闭',
       },
-      hyper: { dataView: { table: '表格', cards: '卡片' }, list: { empty: '暂无数据' } },
+      hyper: { dataView: { table: '表格', cards: '卡片' } },
       ops: {
         vibecoding: {
           title: 'Vibe Coding',
@@ -187,6 +187,10 @@ const i18n = createI18n({
           reviewDetail: '评审详情',
           // ★ 只登记三档；`failed` / `deleted` 故意不登记 ⇒ 走 enumLabel 的原值回落。
           status: { active: '进行中', archived: '已归档', completed: '已完成' },
+          // ★ 第 14 增量：三段的空态**各不相同**（首次使用 / 筛选后为空 ×2）
+          emptyFirstUseProjects: '还没有创建任何项目。',
+          emptyFilteredSessions: '当前筛选条件下没有会话记录。',
+          emptyFilteredReviews: '当前筛选条件下没有代码审查记录。',
         },
       },
     },
@@ -429,12 +433,16 @@ describe('VibeCodingView：el-table 地形 + 跨层契约', () => {
     }
   })
 
-  it('0 新增 i18n 键：只引用 ops.vibecoding.* / common.* / hyper.* 的既有键', () => {
+  it('空态按语义分键：projects=首次使用，sessions/reviews=筛选后为空', () => {
     const used = new Set([...CODE_ONLY.matchAll(/t\('([^']+)'/g)].map((m) => m[1]))
     for (const k of used) {
       expect(/^(ops\.vibecoding\.|common\.|hyper\.)/.test(k), `预期词条前缀之外的键：${k}`).toBe(true)
     }
-    expect(used.has('hyper.list.empty'), 'compact 空态复用 hyper.list.empty ⇒ 0 新增键').toBe(true)
+    // ★ 第 14 增量：空态必须能区分状态种类 ⇒ 三张表各自的 kind 写进键名。
+    expect(used.has('ops.vibecoding.emptyFirstUseProjects'), 'projects 空态 = 首次使用（还没创建）').toBe(true)
+    expect(used.has('ops.vibecoding.emptyFilteredSessions'), 'sessions 空态 = 筛选后为空（用的是 filteredSessions）').toBe(true)
+    expect(used.has('ops.vibecoding.emptyFilteredReviews'), 'reviews 空态 = 筛选后为空（用的是 filteredReviews）').toBe(true)
+    expect(used.has('hyper.list.empty'), '通用空态键不许回来').toBe(false)
   })
 })
 
@@ -647,7 +655,13 @@ describe('VibeCodingView：空态归属', () => {
     expect(empties).toHaveLength(3)
     // ★ 文案也要断：只断「出现了」的话，把 `:empty-text` 换成任何一个别的既有键
     //   都不会红 —— 而空态文案是本页唯一会露给用户的词条。
-    for (const e of empties) expect(e.text()).toContain('暂无数据')
+    // ★ 第 14 增量：三段空态必须**分别**说清自己缺的是什么，且**互不相同**
+    //   （「还没创建过项目」与「筛选条件太窄」是两种状态，不能讲成同一句话）。
+    const texts = empties.map((e) => e.text())
+    expect(texts.some((t) => t.includes('还没有创建任何项目。'))).toBe(true)
+    expect(texts.some((t) => t.includes('当前筛选条件下没有会话记录。'))).toBe(true)
+    expect(texts.some((t) => t.includes('当前筛选条件下没有代码审查记录。'))).toBe(true)
+    expect(new Set(texts).size).toBe(3)
     expect(w.findAll('[data-testid="card-list"]')).toHaveLength(0)
   })
 

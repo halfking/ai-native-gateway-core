@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import type { RoutingCandidate } from '../api/routing'
+import type { RoutingCandidate, StreamMode } from '../api/routing'
 import {
   CREDENTIAL_LIFECYCLE_STATUSES, type CredentialLifecycleStatus,
 } from '../api/providers'
@@ -25,6 +25,7 @@ defineProps<{
   priorityFlag: boolean
   routingTier: number
   weight: number
+  streamMode: StreamMode
   modelActionReason: string
   selectedModelStatus: CredentialModelStatus | null
 }>()
@@ -34,6 +35,7 @@ const emit = defineEmits<{
   'update:priorityFlag': [value: boolean]
   'update:routingTier': [value: number]
   'update:weight': [value: number]
+  'update:streamMode': [value: StreamMode]
   'update:modelActionReason': [value: string]
   // 2026-09-05: lifecycle is now a direct-manipulation state chip group
   // (click saves immediately), replacing the old select + save button.
@@ -45,6 +47,15 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+// stream_mode 三态：默认双通道；单通道仅用于已知上游模式缺陷（如
+// Vapeur Claude 流式 4xx/5xx）。路由侧按请求的 stream 标志过滤候选，
+// 非本地降级——这里改的是 credential_model_bindings.stream_mode。
+const streamModeOptions: Array<{ value: StreamMode; label: string }> = [
+  { value: 'both', label: '流式 + 非流式（默认）' },
+  { value: 'stream_only', label: '仅流式' },
+  { value: 'non_stream_only', label: '仅非流式' },
+]
 
 // Lifecycle state chips: dot color follows semantics
 // (active=green, disabled=red, suspended=yellow, retired=grey). Labels and
@@ -137,6 +148,17 @@ const lifecycleOptions = [
           :value="weight"
           @input="emit('update:weight', Number(($event.target as HTMLInputElement).value))"
         />
+      </label>
+      <label class="nd-stream-mode" title="限定该凭据×模型绑定可承接的通讯模式：路由按每个请求的 stream 标志过滤候选；默认两种均可。">
+        通讯模式
+        <select
+          :disabled="!canEdit"
+          :value="streamMode"
+          @change="emit('update:streamMode', ($event.target as HTMLSelectElement).value as StreamMode)"
+        >
+          <option v-for="opt in streamModeOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+        </select>
+        <small>按请求的 stream 标志过滤路由候选</small>
       </label>
     </div>
     <button class="btn btn-primary btn-sm" :disabled="saving || !canEdit" @click="emit('saveSettings')">保存设置</button>
@@ -236,4 +258,7 @@ code.nd-lc-code { font-size: 10.5px; opacity: 0.75; }
 .nd-priority-flag { display: flex; flex-direction: column; gap: 2px; }
 .nd-priority-flag small { color: var(--kx-muted, var(--muted)); font-size: 11px; }
 .nd-priority-flag input[type='checkbox'] { width: 16px; height: 16px; margin: 4px 0 0; }
+.nd-stream-mode { display: flex; flex-direction: column; gap: 2px; }
+.nd-stream-mode small { color: var(--kx-muted, var(--muted)); font-size: 11px; }
+.nd-stream-mode select { padding: 4px 6px; }
 </style>

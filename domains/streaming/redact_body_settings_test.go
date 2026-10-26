@@ -6,15 +6,15 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
 )
 
-// TestRedactSettingsDefaultToLegacyBehavior pins the SC-2 back-compat
-// invariant: with no settings store configured (unit tests / settings.Global
-// nil), the previously-hardcoded values must remain the fallbacks so the
-// wiring change is invisible to existing deployments.
-func TestRedactSettingsDefaultToLegacyBehavior(t *testing.T) {
-	if !outputComplianceEnabled() {
-		t.Fatal("output_compliance.enabled fallback must stay true (legacy hardcoded value)")
+// TestRedactSettingsDefaultOffPinsProductDefault pins the 2026-10-17 product
+// default: with no settings store (unit tests / settings.Global nil), optional
+// output compliance stays off. redaction_mode still falls back to
+// owner_mismatch for when compliance is explicitly enabled.
+func TestRedactSettingsDefaultOffPinsProductDefault(t *testing.T) {
+	if outputComplianceEnabled() {
+		t.Fatal("output_compliance.enabled fallback must be false (optional module default off)")
 	}
 	if got := getRedactionMode(); got != outputcompliance.RedactOwnerMismatch {
-		t.Fatalf("redaction_mode fallback = %q, want owner_mismatch (legacy hardcoded value)", got)
+		t.Fatalf("redaction_mode fallback = %q, want owner_mismatch", got)
 	}
 }

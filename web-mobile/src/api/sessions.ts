@@ -6,8 +6,8 @@ import { costMayBeNoData } from './modelTaskIndex'
 //   GET /api/admin/sessions/online               当前活跃会话（游标分页）
 //   GET /api/admin/sessions/{id}/timeline        单会话轮次树
 //
-// 鉴权：三条都挂 `wrapAdmin` / `admin(...)`（cmd/gateway/main.go:7268-7275、
-// admin/handler.go:1175-1183）⇒ **admin 档，tenant_admin 可用**。
+// 鉴权：三条都挂 `wrapAdmin` / `admin(...)`（cmd/gateway/main.go:7560、
+// admin/handler.go:1253-1254）⇒ **admin 档，tenant_admin 可用**。
 // ★ 但 `summary` 那个端点是 **POST-only**（admin/session_summary_v2.go:89），
 //   同族端点方法不一致，别照抄 GET。
 //

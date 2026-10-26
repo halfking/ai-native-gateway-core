@@ -28,7 +28,6 @@ export default {
       requestTime: 'リクエスト時刻',
       status: 'ステータス',
       latency: 'レイテンシ',
-      latencyUnit: 'ms',
       tenant: 'Tenant',
       success: 'Success',
       clientModel: 'クライアントモデル',
@@ -40,7 +39,6 @@ export default {
       taskId: 'タスク ID',
       endUser: 'End User',
       token: 'Token',
-      tokenTotal: 'トークン(合計 {input}/{output})',
       total: '合計',
       cache: 'Cache',
       costCredits: 'Cost / Credits',
@@ -151,7 +149,6 @@ export default {
   // — RequestWaterfallPanel —
   waterfall: {
     loading: 'ディスパッチウォーターフォールを読み込み中…',
-    source: 'データソース:{src}',
     stageHeader: 'T0–T9 ステージ',
     cols: {
       stage: 'ステージ',
@@ -179,19 +176,13 @@ export default {
     diagram: {
       ariaLabel: 'リクエスト処理フロー', trackLabel: 'フローイベントの順序',
       event: 'フローイベント', noData: '観測可能なフローがありません', noEvents: 'フローイベントがありません',
-      stages: { received: '受信', routing: 'ルート解決', model_queue: 'モデルキュー', credential_queue: '認証情報キュー', node_selection: 'ノード選択', upstream: '上流リクエスト', streaming: 'ストリーミング応答', retrying: '再試行中', terminal: 'リクエスト完了' },
-      status: { success: '成功', failed: '失敗', timeout: 'タイムアウト', skipped: 'スキップ' },
       flags: { compression: '圧縮', retry: '再試行', nodeSwitch: 'ノード切替', degraded: '観測劣化' },
       evidenceLabel: 'ルーティングとウォーターフォールの証拠', evidenceTitle: '観測された試行', waterfallAttempt: 'ウォーターフォール試行 #{number}', noDetails: '追加詳細なし', degraded: '観測劣化',
       lanesLabel: 'リクエスト試行レーン', lanesTitle: '観測されたジャーニー試行', attemptLane: '試行 #{number}', sourceJourney: 'Journey ソース', waterfallLabel: 'ウォーターフォール段階バー', waterfallTitle: 'ウォーターフォール段階バー', lastAttemptSemantics: 'リクエスト単位の時間；T5–T9 は最後の試行を反映する場合があります', synthesizedBars: '合成段階はタイムスタンプ欠落（観測劣化）を示します。', requestTimeline: 'リクエストタイムライン',
-      legend: { success: '成功', failed: '失敗/タイムアウト', special: '圧縮 · 再試行 · ノード切替' }
+      legend: { success: '成功', failed: '失敗/タイムアウト', special: '圧縮，再試行，ノード切替' }
     },
   },
   // — 共通プレースホルダー —
-  common: {
-    emDash: '—',
-    colon: '：',
-  },
  // — Subtask 3 (handoff §5): body_status two-state banners —
   // 出典: /api/admin/sessions/detail の turns[].body_status。/snapshot には
   // turns がなく、/turns 一覧はメタデータのみなので使わないこと。

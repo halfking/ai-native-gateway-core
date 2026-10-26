@@ -5,22 +5,34 @@
 //
 // ★★★★★★ 权限档：**`requiresRole: 'admin'`**，不是缺省。推导见
 //   `api/modelHistory.ts` 文件头 (1b)，四步全部当场读码核过：
-//   1. `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
-//      ⇒ 包 `admin.AdminMiddleware`（`admin/auth.go:85-138`）**只认证、不检 role**
-//      （`admin/users.go:307-309` 的注释把这件事写成显式设计）；
-//   2. `handleModelHistory`（`admin/credential_monitor.go:1502-1545`）自己也不检 role；
-//   3. ★★ 租户键是**手写内联**的（`:1532-1535`）
+//   ⚠★★ 2026-10-21 订正（views 行号订正轮）：`api/modelHistory.ts` 的 (1b)
+//     **同源推导已过期**（那里仍写「handler 自己也不检 role」）——
+//     **以本处为准**；api/ 侧的同源订正不在本轮范围。
+//   1. `admin/handler.go:1525` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+//      ⇒ 包 `admin.AdminMiddleware`（`admin/auth.go:86-141`）**只认证、不检 role**
+//      （`admin/users.go:306-308` 的注释把这件事写成显式设计）；
+//   2. ★★★★★★ **订正**：`handleModelHistory`
+//      （`admin/credential_monitor.go:1666`）**现在自己检 role** ——
+//      2026-10-16 audit #154 在 `:1678` 加了白名单
+//      （`!IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r)` ⇒ 越权返 **403**）
+//      ⇒ 旧结论「handler 自己也不检 role」**已不成立**。
+//   3. ★★ 租户键是**手写内联**的（`:1706-1709`）
 //      ```go
 //      tenantID := ""
 //      if IsTenantAdmin(r) { tenantID = GetTenantID(r) }
 //      ```
 //      ⇒ 与 `EffectiveTenantIDAll` **语义相同但不叫那个名字**
 //      ⇒ ★★ **grep `EffectiveTenantID` 找不到这一处**，这是批 113 那个坑的变体；
-//   4. ⇒ 非 tenant_admin 一律空串 ⇒ 两段 SQL 的 `AND ($4 = '' OR …)` 放行 ⇒ **全租户**。
+//   4. ⇒ **能走到 SQL 的只有三类**：tenant_admin 有租户键 ⇒ 租户内；
+//      super_admin / admin_key 租户键为空串 ⇒ SQL 的 `AND ($4 = '' OR …)` 放行
+//      ⇒ **看全租户**；而 user 等第四类在 `:1678` 就被 **403** 挡住，
+//      到不了 SQL ⇒ 旧结论「非 tenant_admin 一律看全租户」**已不成立**。
 //
 // ⚠️⚠️ **抽屉隐藏 ≠ 路由拦截**：`src/hyper-wiring.ts:34-45` 的 `beforeEach` 只查登录态，
 //   `meta.requiresRole` 全仓无人读 ⇒ 深链照样打开 ⇒ 视图内自己再兜一层。
-//   ⚠️ 这里是**兜底不是修复**：后端对越权返 **200 + 全租户数据**，根本没有 403。
+//   ⚠️ 这里是**与服务端对齐、不是替代**：服务端对越权返 **403**
+//   （2026-10-16 audit #154 起），但**前端这一层仍不可省** ——
+//   深链可达，且 403 之前还有 404/503 等别的失败形状要区分。
 //
 // ★★★★★ 本族最要紧的五件事（文件头共 14 条）：
 //   1. ★★★★★ **十个键全部恒在，其中六个可为裸 `null`** —— `ModelHistoryEvent`
@@ -59,7 +71,7 @@ import {
   type ModelHistoryEvent,
 } from '@/api/modelHistory'
 
-useHyperPage({ title: () => t('mh.title') })
+useHyperPage({ title: () => (allowed.value ? t('mh.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

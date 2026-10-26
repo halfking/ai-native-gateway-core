@@ -3,7 +3,6 @@ export default {
   page: {
     title: '標準モデル',
     desc: 'テナントに開放されている標準モデルの一覧です（ベンダー別）。入力 / 出力 / キャッシュ読み / キャッシュ書き込みのいずれも、100万トークンあたりのクレジットで課金されます。',
-    filterTitle: '標準モデル · 絞り込み',
     filterPlaceholder: '標準モデルを選択…',
     modelCount: '{n} モデル',
     refresh: '更新',
@@ -14,11 +13,8 @@ export default {
   },
   columns: {
     model: '標準モデル',
-    canonicalName: 'モデル ID',
-    family: 'ファミリー',
     contextWindow: 'コンテキスト',
     multimodal: 'マルチモーダル',
-    modalityTag: '種類',
     billingMode: '課金方式',
     inPrice: '入力 / 1M',
     outPrice: '出力 / 1M',
@@ -43,10 +39,6 @@ export default {
     notSet: '—',
   },
   filterBar: {
-    selectedVendor: '選択中のベンダー：{vendor}',
     count: '{n} / {m} 件表示中',
-  },
-  cta: {
-    buyCredits: 'クレジットを購入',
   },
 }

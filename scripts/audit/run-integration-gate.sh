@@ -235,8 +235,12 @@ cleanup() {
     fi
     docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
       -c "DROP ROLE IF EXISTS ${TENANT_ROLE:-itgate_tenant}" >/dev/null 2>&1 || true
+    # ★ 防卡保护：SET / terminate / DROP 三条独立 -c
     docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-      -c "DROP DATABASE IF EXISTS $GATE_DB" >/dev/null 2>&1 || true
+      -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$GATE_DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+    docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+      -c "SET statement_timeout = '120s'" \
+      -c "DROP DATABASE IF EXISTS $GATE_DB WITH (FORCE);" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -244,8 +248,12 @@ trap cleanup EXIT
 echo "═══ integration gate: $PKG ${TEST_NAME:+(run=$TEST_NAME)} ═══"
 echo "═══ disposable db=$GATE_DB container=$PG_CONTAINER ═══"
 
+# ★ 防卡保护：SET / terminate / DROP 三条独立 -c
 docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-  -c "DROP DATABASE IF EXISTS $GATE_DB" >/dev/null 2>&1
+  -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$GATE_DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+  -c "SET statement_timeout = '120s'" \
+  -c "DROP DATABASE IF EXISTS $GATE_DB WITH (FORCE);" >/dev/null 2>&1
 if ! docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
      -c "CREATE DATABASE $GATE_DB" >/dev/null 2>/tmp/itgate-create.err; then
   echo "--- stderr ---" >&2; cat /tmp/itgate-create.err >&2
@@ -412,13 +420,28 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
       die "有 ${sf_fail} 条启动迁移未应用，但找不到已知缺口清单 ${GAP_MANIFEST}。" \
 "清单缺失时无法区分「已知缺口」与「新回归」，而放行等于把新回归当已知缺口吞掉。"
     fi
-    mapfile -t gap_known < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
-                              -e 's/[[:space:]].*$//' "$GAP_MANIFEST" | sort -u)
+    # ★ bash 3.2 兼容（2026-10-21）：原写法是 `mapfile -t`（bash 4.0+），
+    #   而 macOS 自带 bash 3.2 不支持 ⇒ 本脚本在 macOS 上**语法错误直接退出**
+    #   ⇒ 等于「本地审计在开发者机器上根本没跑过」。改用 read 循环。
+    gap_known=()
+    while IFS= read -r _gap_line; do
+      [ -n "$_gap_line" ] || continue
+      gap_known+=("$_gap_line")
+    done < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
+                    -e 's/[[:space:]].*$//' "$GAP_MANIFEST" | sort -u)
     declare -a gap_unlisted=()
     declare -a gap_hit=()
+    # ★★★ R99 轮 · §19.20.67 修：`printf … | grep -qxF` ⇒ 改用 **herestring**。
+    #   ⇒ 原来：写端 `printf '%s\n' "${gap_known[@]}"`、消费者 `grep -qxF` 是**早退**的
+    #   ⇒ ⇒ 输出超过管道缓冲（65,536 B）时写端被 **SIGPIPE** 杀（141）⇒ pipefail 取
+    #   ⇒   最右非零 = 141 ⇒ `if` 的条件变成非零 ⇒ ⇒ **「已知缺口」被判成「新回归」**。
+    #   ⇒ ★ 实测当前体量：过滤后 **1,002 B / 26 条目**（阈值 65,536 B ⇒ **65× 余量**）
+    #   ⇒   ⇒ 现在是良性的；但「有界」会随 manifest 增长而失效 ⇒ ★ 直接消除这个条件性。
+    #   ⇒ ★ 顺手把 printf 提到循环外（它是循环不变量）⇒ 少一次进程。
+    gap_known_txt=$(printf '%s\n' "${gap_known[@]}" || true)
     for entry in "${sf_failed[@]}"; do
       f="${entry%% :: *}"
-      if printf '%s\n' "${gap_known[@]}" | grep -qxF "$f"; then
+      if grep -qxF "$f" <<<"$gap_known_txt"; then
         gap_hit+=("$entry")
       else
         gap_unlisted+=("$entry")
@@ -451,9 +474,18 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
     # Stale entries: a listed migration that applied fine this run. Surfaced, not
     # fatal, so a real fix is not blocked — but it must not be forgotten either.
     declare -a gap_stale=()
-    mapfile -t gap_actual < <(for e in "${sf_failed[@]}"; do echo "${e%% :: *}"; done | sort -u)
+    gap_actual=()
+    while IFS= read -r _gap_line; do
+      [ -n "$_gap_line" ] || continue
+      gap_actual+=("$_gap_line")
+    done < <(for e in "${sf_failed[@]}"; do echo "${e%% :: *}"; done | sort -u)
+    # ★★★ R99 轮 · §19.20.67 修（同族第 2 处）：`printf … | grep -qxF` ⇒ 改用 **herestring**。
+    #   ⇒ 写端把「本轮实际失败清单」灌进管道、消费者 `grep -qxF` 是**早退**的
+    #   ⇒ ⇒ 清单超管道缓冲（65,536 B）时写端被 **SIGPIPE** 杀（141）⇒ pipefail 取
+    #   ⇒   最右非零 = 141 ⇒ `||` 分支被误取 ⇒ ⇒ 「本轮未复现」的旧缺口被误报。
+    gap_actual_txt=$(printf '%s\n' "${gap_actual[@]}" || true)
     for known in "${gap_known[@]}"; do
-      printf '%s\n' "${gap_actual[@]}" | grep -qxF "$known" || gap_stale+=("$known")
+      grep -qxF "$known" <<<"$gap_actual_txt" || gap_stale+=("$known")
     done
     if (( ${#gap_stale[@]} > 0 )); then
       echo "  ⚠ 已知缺口清单里有 ${#gap_stale[@]} 条本轮未复现（可能已修复），请从清单中删除："
@@ -536,8 +568,18 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
       declare -a br_unlisted=() br_over=() br_under=() br_absent=()
       # Names the budget actually exempts, read once so the "failed but not
       # listed" check below does not re-parse the file per failure.
-      mapfile -t br_listed < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
-                                 -e 's/[[:space:]].*$//' "$BR_BUDGET")
+      br_listed=()
+      while IFS= read -r _br_line; do
+        [ -n "$_br_line" ] || continue
+        br_listed+=("$_br_line")
+      done < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
+                      -e 's/[[:space:]].*$//' "$BR_BUDGET")
+      # ★★★ R99 轮 · §19.20.67 修（同族第 3 处）：`printf … | grep -qxF` ⇒ 改用 **herestring**。
+      #   ⇒ ★★ 这处比别处更重：它的 `|| br_unlisted+=(…)` 汇进 `br_unlisted`
+      #   ⇒   而 `br_unlisted` 是 **die 的条件**（下面 `if (( ${#br_over[@]} > 0 ||
+      #   ⇒   ${#br_unlisted[@]} > 0 || … ))` ⇒ `die`）⇒ ⇒ 一次 SIGPIPE(141)
+      #   ⇒   ⇒ **整轮门禁以假理由失败**（报「baseline 的不可重跑规模超出登记预算」）。
+      br_listed_txt=$(printf '%s\n' "${br_listed[@]}" || true)
       while IFS=$'\t' read -r bf budget _; do
         [[ -z "$bf" || "$bf" == \#* ]] && continue
         actual=0
@@ -562,7 +604,7 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
       # the files the budget mentions.
       for e in "${br_failed[@]}"; do
         f="${e%% *}"
-        printf '%s\n' "${br_listed[@]}" | grep -qxF "$f" \
+        grep -qxF "$f" <<<"$br_listed_txt" \
           || br_unlisted+=("${f}（重跑失败但不在预算清单里）")
       done
       echo "  rerun baseline: 错误预算见 sql/schema/baseline_rerun_budget.tsv"
@@ -610,12 +652,19 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
 "但找不到已知缺口清单 ${RR_MANIFEST}。缺清单时无法区分「已知不可重跑」与「新回归」，" \
 "而放行等于把新回归当已知缺口吞掉。"
       fi
-      mapfile -t rr_known < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
-                               -e 's/[[:space:]].*$//' "$RR_MANIFEST" | sort -u)
+      rr_known=()
+      while IFS= read -r _rr_line; do
+        [ -n "$_rr_line" ] || continue
+        rr_known+=("$_rr_line")
+      done < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
+                      -e 's/[[:space:]].*$//' "$RR_MANIFEST" | sort -u)
       declare -a rr_unlisted=() rr_hit=()
+      # ★★★ R99 轮 · §19.20.67 修：同 gap_known —— `printf … | grep -qxF` ⇒ **herestring**
+      #   ⇒ 消除「写端超管道缓冲 ⇒ 被 SIGPIPE 杀 ⇒ 管道码 141 ⇒ 判定翻转」这个条件性。
+      rr_known_txt=$(printf '%s\n' "${rr_known[@]}" || true)
       for entry in "${rr_failed[@]}"; do
         f="${entry#rerun:}"; f="${f%% :: *}"
-        if printf '%s\n' "${rr_known[@]}" | grep -qxF "$f"; then
+        if grep -qxF "$f" <<<"$rr_known_txt"; then
           rr_hit+=("$entry")
         else
           rr_unlisted+=("$entry")
@@ -631,9 +680,16 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
 "sql/schema/startup_rerun_known_gaps.tsv 再重跑；不要为了让门禁变绿而放宽这里的判据。"
       fi
       declare -a rr_stale=()
-      mapfile -t rr_actual < <(for e in "${rr_failed[@]}"; do echo "${e#rerun:}" | cut -d' ' -f1; done | sort -u)
+      rr_actual=()
+      while IFS= read -r _rr_line; do
+        [ -n "$_rr_line" ] || continue
+        rr_actual+=("$_rr_line")
+      done < <(for e in "${rr_failed[@]}"; do echo "${e#rerun:}" | cut -d' ' -f1; done | sort -u)
+      # ★★★ R99 轮 · §19.20.67 修（同族第 4 处）：`printf … | grep -qxF` ⇒ 改用 **herestring**。
+      #   ⇒ 同 gap_actual —— 「本轮未复现」的旧缺口会被误报成「还在」。
+      rr_actual_txt=$(printf '%s\n' "${rr_actual[@]}" || true)
       for known in "${rr_known[@]}"; do
-        printf '%s\n' "${rr_actual[@]}" | grep -qxF "$known" || rr_stale+=("$known")
+        grep -qxF "$known" <<<"$rr_actual_txt" || rr_stale+=("$known")
       done
       if (( ${#rr_stale[@]} > 0 )); then
         echo "  ⚠ 不可重跑清单里有 ${#rr_stale[@]} 条本轮未复现（可能已修复），请从清单中删除："
@@ -806,11 +862,15 @@ RUN_LOG="${GATE_LOG:-/tmp/itgate-run-$(echo "$PKG" | tr -c 'a-zA-Z0-9' '-').log}
 echo "  [log] $RUN_LOG"
 env \
   AI_SESSION_MANAGER_DATABASE_URL="$GATE_URL" \
+  CONTEXT_ATTRS_TEST_DATABASE_URL="$GATE_URL" \
   D07_S01_PG_URL="$GATE_URL" \
   DATABASE_URL="$GATE_URL" \
+  DECISION_RETIREMENT_TEST_DATABASE_URL="$GATE_URL" \
   LICENSE_AUTHORITY_DATABASE_URL="$GATE_URL" \
+  LLM_GATEWAY_DATABASE_URL="$GATE_URL" \
   LLM_GATEWAY_PG_URL="$GATE_URL" \
   OMNIFREE_TEST_DB_URL="$GATE_URL" \
+  ROUTING_ANALYTICS_GATE_TEST_DATABASE_URL="$GATE_URL" \
   TEST_AUDIT_FRESH_SCHEMA_DB_URL="$GATE_URL" \
   TEST_AUDIT_ISOLATED_DB_URL="$GATE_URL" \
   TEST_DATABASE_URL="$GATE_URL" \

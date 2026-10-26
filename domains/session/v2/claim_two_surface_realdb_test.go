@@ -126,6 +126,13 @@ CREATE TABLE public.sessions (
 	parent_task_id         TEXT,
 	partition_date         DATE    NOT NULL,
 	primary_request_id     TEXT,
+	-- 2026-10-21（R60 轮）补：upsertSessionSnapshot 的 INSERT 臂要写 duration_ms
+	-- （迁移 706 声明的 sessions.duration_ms BIGINT），而这个手写夹具早于 706 ⇒
+	-- 产品 SQL 打在夹具上必然 42703：column "duration_ms" of relation "sessions" does not exist。
+	-- ⚠ 形态与本仓 bg 包的 42703 事故同型（夹具的列集比产品需求旧）——
+	--   权威 DDL 见 sql/objects/tables/sessions.sql 与迁移 706_session_family_s1a.sql。
+	-- ⚠ 这段注释在 Go 原始字符串（反引号）里 ⇒ 注释里绝不能再出现反引号（本轮踩过）。
+	duration_ms            BIGINT,
 	UNIQUE (session_id, partition_date)
 );
 

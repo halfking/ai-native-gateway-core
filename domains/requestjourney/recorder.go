@@ -706,6 +706,18 @@ type Lifecycle struct {
 	ingressTerminal atomic.Bool
 }
 
+// RequestID 返回这次请求的标识（与事件里的 RequestID 同源）。
+//
+// ★ 2026-10-24 P1-1：请求级观察者需要在**请求终结**时回填权威的 request_id
+//
+//	—— 只靠 HTTP 头不够（中间件被绕过的直调路径上没有那个头）。
+func (l *Lifecycle) RequestID() string {
+	if l == nil {
+		return ""
+	}
+	return l.requestID
+}
+
 func NewLifecycle(recorder *Recorder, gatewayInstanceID, requestID string) *Lifecycle {
 	return &Lifecycle{
 		recorder:          recorder,

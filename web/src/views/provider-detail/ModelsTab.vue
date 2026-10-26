@@ -21,6 +21,7 @@ import {
 import ModelOfferDetailDrawer from '../../components/model/ModelOfferDetailDrawer.vue'
 import { confirmDialog } from '../../composables/useConfirmDialog'
 import { sortByName } from '../../utils/sortByName'
+import { CircleCheck } from '@element-plus/icons-vue'
 
 const { t: td } = useI18n()
 const pm = (k: string, params?: Record<string, unknown>): string =>
@@ -141,7 +142,7 @@ async function loadRoutingDiagnostics() {
   try {
     routingDiag.value = await getRoutingBlockedDiagnostic(props.providerId)
   } catch (e: unknown) {
-    routingDiagErr.value = e instanceof Error ? e.message : '诊断失败'
+    routingDiagErr.value = e instanceof Error ? e.message : td('providers.check.diagnoseFailed')
   } finally {
     routingDiagLoading.value = false
   }
@@ -158,7 +159,7 @@ async function handleFixBlocked() {
     await Promise.all([load(), loadRoutingDiagnostics()])
     setTimeout(() => { routingDiagFixed.value = false }, 5000)
   } catch (e: unknown) {
-    routingDiagErr.value = e instanceof Error ? e.message : '修复失败'
+    routingDiagErr.value = e instanceof Error ? e.message : td('providerDetail.models.repairFailed')
   } finally {
     routingDiagFixing.value = false
   }
@@ -523,7 +524,7 @@ load()
     </div>
 
     <!-- 路由阻塞诊断 (2026-07-24) -->
-    <div class="card" style="margin-bottom:12px;border-left:3px solid var(--warning)">
+    <div class="card" style="margin-bottom:12px;border: 1px solid var(--warning)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <h5 style="margin:0">路由阻塞诊断</h5>
         <div style="display:flex;gap:8px">
@@ -541,7 +542,7 @@ load()
         </div>
       </div>
       <div v-if="routingDiagErr" class="alert alert-danger" style="margin-bottom:8px">{{ routingDiagErr }}</div>
-      <div v-if="routingDiagFixed" class="alert alert-success" style="margin-bottom:8px">✅ 修复完成，请观察路由是否恢复</div>
+      <div v-if="routingDiagFixed" class="alert alert-success" style="margin-bottom:8px"><CircleCheck /> 修复完成，请观察路由是否恢复</div>
       <div v-if="routingDiagLoading" class="text-muted">加载中…</div>
       <div v-else-if="!routingDiag" class="text-muted">点击"诊断"查看每个凭据-模型的路由状态</div>
       <div v-else>

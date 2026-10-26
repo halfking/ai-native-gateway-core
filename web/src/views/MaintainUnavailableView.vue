@@ -10,6 +10,7 @@ import { useRouter } from 'vue-router'
 import { ElButton, ElCard } from 'element-plus'
 import { probeMaintainAvailable } from '../config/edition'
 import PublicPortalLayout from '../components/PublicPortalLayout.vue'
+import { Tools } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const checking = ref(false)
@@ -37,12 +38,11 @@ onMounted(() => {
 
 <template>
   <PublicPortalLayout
-    title="运维平台不可用"
+    title="503 · 运维平台不可用"
     subtitle="/maintain 页面由独立的维护后台（ai-native-maintain）提供，当前该服务未启动或未部署。"
-    kicker="503"
   >
     <el-card shadow="never" class="pub-card maintain-card">
-      <div class="maintain-icon" aria-hidden="true">🛠️</div>
+      <div class="maintain-icon" aria-hidden="true"><Tools /></div>
       <p class="maintain-detail">
         请求未能到达维护后台，页面已停止自动跳转以避免闪烁。
         请确认 ai-native-maintain 服务已启动（或

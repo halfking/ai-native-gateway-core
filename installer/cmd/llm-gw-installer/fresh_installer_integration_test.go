@@ -56,20 +56,32 @@ func TestFreshInstallerSessionTurnsHotBootstrap(t *testing.T) {
 		"advisory lock function": `SELECT to_regprocedure('public.session_turns_advisory_lock_key(text,text)') IS NOT NULL`,
 		"promotion function":     `SELECT to_regprocedure('public.promote_session_turns_hot_to_partition(interval,integer)') IS NOT NULL`,
 		"hot table RLS":          `SELECT relrowsecurity FROM pg_class WHERE oid = 'public.session_turns_hot'::regclass`,
-		// 2026-10-01: counts pinned to the live-production end state
-		// (session_turns / session_turns_hot / view = 104 / 104 / 55 columns
-		// after the full chain incl. 707's lock-step expansion and 713/757
-		// view rebuilds). The historical 51-column pins predate the
-		// baseline-gap fixes that let fresh installs reach this state.
+		// ★ 2026-10-21（R74 轮）改瞄：这条 pin 从「hot 表列数 = 106」改成
+		//   「**hot 表列数 == 父表列数**」。
 		//
-		// security_invoker note: the 526-era bootstrap created this view WITH
+		//   为什么必须改（实测，不是推断）：R74 轮在**门自己建的库**上真跑这道门，
+		//   它**今天必然红**：`got "f"`（106 ≠ 实测 108）。
+		//   ⇒ 差的 2 列来自 885（host_tags）/ 887（search_text）/ 889（tools_population）
+		//   这一串会话族扩列。
+		//
+		//   为什么「绝对列数」这个 pin 本身就该退休：
+		//   它在 2026-10-20 已经被订正过一次（104 → 106），**每加一列就红一次**
+		//   ⇒ 它是**必然腐烂的 pin**，而它要守的性质（hot 面不是残废的 stub、
+		//   而是父表的完整投影）已经被下面那条 **四元组逐列 parity** 严格更强地覆盖。
+		//   ⇒ 保留「与父表列数相等」这一条**形态**断言，去掉会腐烂的绝对数。
+		//
+		//   security_invoker note: the 526-era bootstrap created this view WITH
 		// (security_invoker = true), but 713's in-place rebuild dropped the
 		// option — live production has it unset today (reloptions empty).
 		// Restoring it via a 625/627-style hardening step is a candidate
 		// follow-up pending a ruling; until then absence is the canonical
 		// state and is covered by the "current-month view" existence check.
-		"hot table column count": `SELECT count(*) = 104 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'session_turns_hot'`,
-		"view column count":      `SELECT count(*) = 55 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'session_turns_with_current_month'`,
+		"hot table column count matches parent": `
+			SELECT (SELECT count(*) FROM information_schema.columns
+			         WHERE table_schema = 'public' AND table_name = 'session_turns_hot')
+			     = (SELECT count(*) FROM information_schema.columns
+			         WHERE table_schema = 'public' AND table_name = 'session_turns')`,
+		"view column count": `SELECT count(*) = 55 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'session_turns_with_current_month'`,
 		"nullable JSONB digest": `
 			SELECT count(*) = 2
 			FROM information_schema.columns
@@ -188,9 +200,23 @@ func TestFreshInstallerSessionTurnsHotBootstrap(t *testing.T) {
 		"details parent is partitioned": `
 			SELECT relkind = 'p' FROM pg_class
 			WHERE oid = 'public.session_turn_details'::regclass`,
+		// ★ 2026-10-21（R74 轮）改瞄：从「分区数 = 2」改成
+		//   「**当月 + 次月分区按名字存在**」。
+		//   ⇒ 实测（门自己建的库）：分区是 `session_turn_details_2026_10`（当月）
+		//     + `session_turn_details_2026_11`（次月）+ `session_turn_details_default`
+		//     = **3 个** ⇒ 「= 2」的绝对数 pin 今天就红。
+		//   ⇒ 这条断言的**本意**是「当月与次月分区已预建」（否则写路径 23514），
+		//     而「一共几个分区」是**会随 default 分区加入而变**的量
+		//     ⇒ 改成按名字断言当月/次月 ⇒ 既守住本意，又不腐烂。
 		"details partitions pre-created (current + next month)": `
-			SELECT count(*) = 2 FROM pg_inherits
-			WHERE inhparent = 'public.session_turn_details'::regclass`,
+			SELECT count(*) = 2
+			FROM pg_inherits i
+			JOIN pg_class c ON c.oid = i.inhrelid
+			WHERE i.inhparent = 'public.session_turn_details'::regclass
+			  AND c.relname IN (
+			    'session_turn_details_' || to_char(current_date, 'YYYY_MM'),
+			    'session_turn_details_' || to_char((current_date + interval '1 month')::date, 'YYYY_MM')
+			  )`,
 		"802 parent index valid": `
 			SELECT i.indisvalid FROM pg_index i
 			WHERE i.indexrelid = 'public.idx_session_turn_details_tenant_gw_task_id'::regclass`,
@@ -239,8 +265,22 @@ func TestFreshInstallerSessionTurnsHotBootstrap(t *testing.T) {
 			)`,
 		"details promote callable on fresh install": `
 			SELECT promote_session_turn_details_hot_to_partition('8 hours'::interval, 1000) = 0`,
+		// ★ 2026-10-21（R74 轮）再订正：上一条订正（2026-10-20）的**前提本身**
+		//   已被 **迁移 890** 推翻 ⇒ 它写下的名字今天也不存在了。
+		//   - 860 把 request_logs 族改名成 `_` 前缀的「待删标志」形态
+		//     （`_request_logs` / `_request_logs_hot` / …）—— 那一刻是对的；
+		//   - 但 **890_drop_request_logs_v1_family.sql**（链内 index 282）把
+		//     **整个 v1 族真删了**（DROP 名单里含 `request_logs` 与 `_request_logs`），
+		//     连同 `request_logs_bodies_with_current_month` 等 4 个 v1 视图。
+		//   ⇒ 今天的形态是：**v1 族彻底不存在，canonical 视图改读会话族**。
+		//   ⇒ R74 轮实测：这道门**真跑必然红**，
+		//     报错原文 = `ERROR: relation "public._request_logs" does not exist`。
+		//   ⇒ 本条断言的**本意**是「details join 的视图链可 plan（不是 42P01）」，
+		//     而它的读法引用了一个**已退役对象** ⇒ 改成读**退役后的 canonical 视图**
+		//     （`request_logs_with_current_month`，链内 680 建、884 改读会话族）。
+		//   ⇒ 口径不变：只是把「读哪张表」跟到今天真正在的那张。
 		"734 details join keeps the request_logs view chain planable": `
-			SELECT count(*) >= 0 FROM public.request_logs`,
+			SELECT count(*) >= 0 FROM public.request_logs_with_current_month`,
 	} {
 		if got := psqlScalar(t, dsn, query); got != "t" {
 			t.Errorf("fresh installer 733+802 chain %s check failed: got %q", name, got)

@@ -16,6 +16,7 @@ import {
   type RequestTrace,
   type TraceEvent,
 } from '../api/trace'
+import { Link, MessageBox, Box, InfoFilled, Loading, Warning, CaretBottom } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -87,7 +88,7 @@ async function loadTrace(id: string) {
       expanded.value = ex
     }
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : '加载失败'
+    const msg = e instanceof Error ? e.message : t('common.feedback.loadFailed')
     // 2026-07-17: 后端修复后, "no rows in result set" 不会再 500 上抛;
     // 此处仍兼容旧的 404 / not_found 错误信息 → 走空状态 UI。
     if (msg.includes('202') || msg.includes('not_ready') || msg.includes('still being persisted')) {
@@ -234,7 +235,7 @@ async function generatePrompt() {
     aiTokens.value = resp.tokens_estimate
     aiEventCount.value = resp.event_count
   } catch (e: unknown) {
-    aiError.value = e instanceof Error ? e.message : '生成失败'
+    aiError.value = e instanceof Error ? e.message : t('trace.generateFailed')
   } finally {
     aiGenerating.value = false
   }
@@ -278,7 +279,7 @@ onUnmounted(() => {
     <!-- 内嵌面板 header — 与抽屉内其他 section 视觉一致, 不抢戏 -->
     <header class="trace-panel-header">
       <div class="trace-panel-title">
-        <span class="icon" aria-hidden="true">🔗</span>
+        <span class="icon" aria-hidden="true"><Link /></span>
         <span class="title">{{ t('trace.modal.title') }}</span>
         <code v-if="trace" class="rid">{{ trace.request_id }}</code>
       </div>
@@ -314,17 +315,17 @@ onUnmounted(() => {
       </div>
 
       <div v-else-if="error === 'not_ready'" class="trace-empty">
-        <div class="empty-icon" aria-hidden="true">⏳</div>
+        <div class="empty-icon" aria-hidden="true"><Loading /></div>
         <h4>链路正在持久化</h4>
         <p>请求日志已生成，但链路事件仍在从 Redis 写入 PostgreSQL，请稍后重试。</p>
       </div>
       <div v-else-if="error === 'unavailable'" class="trace-empty">
-        <div class="empty-icon" aria-hidden="true">⚠</div>
+        <div class="empty-icon" aria-hidden="true"><Warning /></div>
         <h4>链路暂不可用</h4>
         <p>请求记录存在，但当前没有可读取的完整链路数据。</p>
       </div>
       <div v-else-if="error === 'not_found'" class="trace-empty">
-        <div class="empty-icon" aria-hidden="true">📭</div>
+        <div class="empty-icon" aria-hidden="true"><MessageBox /></div>
         <h4>{{ t('trace.empty.title') }}</h4>
         <p>{{ t('trace.empty.desc') }}</p>
         <ul class="empty-hints">
@@ -334,7 +335,7 @@ onUnmounted(() => {
         </ul>
       </div>
       <div v-else-if="error" class="trace-error">
-        <span aria-hidden="true">⚠</span>
+        <span aria-hidden="true"><Warning /></span>
         <span>{{ error }}</span>
       </div>
 
@@ -388,13 +389,13 @@ onUnmounted(() => {
               <span class="stage">{{ stageName(ev.stage) }}</span>
               <span class="module">{{ moduleName(ev.module) }}</span>
               <span v-if="ev.duration_ms > 0" class="duration">{{ ev.duration_ms }} ms</span>
-              <span class="caret" :class="{ open: isExpanded(ev.seq) }" aria-hidden="true">▾</span>
+              <span class="caret" :class="{ open: isExpanded(ev.seq) }" aria-hidden="true"><CaretBottom /></span>
             </button>
 
             <div v-if="isExpanded(ev.seq)" class="timeline-body">
               <div class="muted small">{{ fmtTime(ev.timestamp) }}</div>
               <div v-if="ev.error" class="error-line">
-                <span aria-hidden="true">⚠</span>
+                <span aria-hidden="true"><Warning /></span>
                 <span>{{ ev.error }}</span>
               </div>
 
@@ -408,7 +409,7 @@ onUnmounted(() => {
               </table>
 
               <div v-if="ev.snapshot" class="snapshot">
-                <div class="snapshot-title">📦 {{ t('trace.modal.snapshotTitle') }}</div>
+                <div class="snapshot-title"><Box /> {{ t('trace.modal.snapshotTitle') }}</div>
                 <div v-if="ev.snapshot.candidates && (ev.snapshot.candidates as unknown[]).length" class="snapshot-row">
                   <span class="label">{{ t('trace.modal.candidates') }}</span>
                   <span>{{ (ev.snapshot.candidates as unknown[]).length }} {{ t('trace.modal.entries') }}</span>
@@ -442,7 +443,7 @@ onUnmounted(() => {
                   </tbody>
                 </table>
                 <div v-if="ev.snapshot.failure_hint" class="failure-hint">
-                  💡 {{ ev.snapshot.failure_hint }}
+                  <InfoFilled /> {{ ev.snapshot.failure_hint }}
                 </div>
               </div>
             </div>
@@ -615,7 +616,7 @@ onUnmounted(() => {
   margin: 0;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-left: 2px solid var(--warning);
+  border: 1px solid var(--warning);
   border-radius: 4px;
   font-size: 11px;
   max-width: 100%;
@@ -640,7 +641,7 @@ onUnmounted(() => {
   margin: 4px 0;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-left: 2px solid var(--danger);
+  border: 1px solid var(--danger);
   border-radius: 4px;
   font-size: 12px;
   color: var(--text);
@@ -666,8 +667,7 @@ onUnmounted(() => {
 .summary-item .label {
   font-size: 10px;
   color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
 }
 .summary-item strong {
   font-size: 12px;
@@ -794,7 +794,7 @@ onUnmounted(() => {
   gap: 6px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-left: 2px solid var(--danger);
+  border: 1px solid var(--danger);
   color: var(--text);
   padding: 4px 8px;
   border-radius: 3px;
@@ -833,7 +833,7 @@ onUnmounted(() => {
   padding: 6px 10px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-left: 2px solid var(--warning);
+  border: 1px solid var(--warning);
   border-radius: 3px;
   font-size: 11px;
 }

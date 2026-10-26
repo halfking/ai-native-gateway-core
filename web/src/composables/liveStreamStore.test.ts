@@ -781,23 +781,18 @@ describe('liveStreamStore missed-while-hidden recovery intent', () => {
     release()
   })
 
-  it('does not reconnect when no frame was dropped', () => {
-    // Negative control. Without it, an implementation that reconnected on
-    // every hidden→visible transition — ignoring the debt entirely — would
-    // satisfy the test above just as well as one that honours it.
+  it('reconnects after suspension even when no frame arrived while hidden', () => {
+    // Transport suspension itself creates the replay gap; no hidden frame is
+    // required to make the next visible connection authoritative again.
     const release = __testing.acquireForTest()
     const opensBefore = __testing.openConnectionTotal()
 
     __testing.fireVisibilityChange(true)
-    expect(__testing.missedWhileHidden()).toBe(false)
+    expect(__testing.missedWhileHidden()).toBe(true)
 
     __testing.fireVisibilityChange(false)
     expect(__testing.missedWhileHidden()).toBe(false)
-    // 「没有重连」必须被直接观测，而不是由 flag=false 顺带推出：无条件重连
-    // 的实现在上面两条 flag 断言下同样全绿——判据不在被测性质上（同
-    // 48f810117 归因的那一族）。openConnectionTotal 在可见转换前后不变，
-    // 无条件重连（变异 B）才第一次判红。
-    expect(__testing.openConnectionTotal()).toBe(opensBefore)
+    expect(__testing.openConnectionTotal()).toBe(opensBefore + 1)
 
     release()
   })

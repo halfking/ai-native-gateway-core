@@ -5,6 +5,7 @@ import { createRouter, createMemoryHistory } from 'vue-router'
 import AppDrawer from './AppDrawer.vue'
 import { DRAWER_NAV, BOTTOM_NAV, navItemsFor, isNavItemActive } from '@/config/appNav'
 import { useAuthStore } from '@/stores/auth'
+import { useCapabilitiesStore } from '@/stores/capabilities'
 
 /**
  * 导航权限门控（2026-10-06）。
@@ -20,6 +21,13 @@ import { useAuthStore } from '@/stores/auth'
  * ② super_admin 的抽屉里**有** /integrity；
  * ③ admin 档页面（/logs、/providers、/routing）对两者**都**可见 ——
  *    它们走 h.admin，tenant_admin 后端是允许的，挡掉反而是误伤。
+ *
+ * ★★ 2026-10-21（R72f）**加了一维**：**功能能力位**。
+ *   有些功能的端点只在开关打开时才注册（「费用对账」⇒ `admin/handler.go:1099`
+ *   的 `providerCostReconciliationHandler` 装配判断）⇒ ⇒ 那一席若照常显示，
+ *   super_admin 点进去必然 404 ⇒ ⇒ ★ **404 与「端点不存在」同形 ⇒ 没有一层
+ *   会说真话** ⇒ ⇒ 所以前端要**按能力位隐藏入口**。
+ *   ⇒ 口径是 **fail-closed**：能力位未加载 / 取失败 ⇒ 按「该能力没开」处理。
  */
 
 vi.mock('@/hyper', async (importOriginal) => {
@@ -29,13 +37,21 @@ vi.mock('@/hyper', async (importOriginal) => {
 
 let mounted: Array<{ unmount(): void }> = []
 
-async function mountDrawerAs(role: string, startPath = '/') {
+async function mountDrawerAs(role: string, startPath = '/', enabledCapabilities: readonly string[] = []) {
   const pinia = createPinia()
   setActivePinia(pinia)
   useAuthStore().userInfo = {
     id: 1, tenant_id: 't1', username: 'u', display_name: 'U',
     email: 'e', role, enabled: true,
   }
+  // ★ 2026-10-21（R72f）：能力位。★ **默认空集 = fail-closed**
+  //   （「未加载 / 取失败 ⇒ 该能力没开」）⇒ 带 requiresCapability 的席不显示。
+  //   ⇒ 要测「能力位开着时那一席在」，必须**显式**传入。
+  //   ⇒ ★ 这里**不**打真实网络：能力位是从 store 读的纯状态，
+  //     「端点返回什么形状」由 api/featureCapabilities.spec.ts 负责。
+  const caps = useCapabilitiesStore()
+  caps.caps = Object.fromEntries(enabledCapabilities.map((c) => [c, true]))
+  caps.loaded = true
   // AppDrawer 里 useRoute() + watch(route.fullPath)，必须挂真 router 上下文。
   // 用 memory history 而不是 mock useRoute —— 后者会让 isNavItemActive
   // 与真实路由表脱节，测出来的东西不成立。
@@ -99,6 +115,115 @@ describe('AppDrawer 权限门控', () => {
       expect(hrefs.some((h) => h.includes(p))).toBe(true)
     }
   })
+
+  it('★★ 能力位关 ⇒ 带 requiresCapability 的席**不渲染**；开着 ⇒ 渲染（2026-10-21）', async () => {
+    // ★★ 这一条钉的是**抽屉真实渲染**（不是 navItemsFor 这个纯函数）：
+    //   「能力位没开 ⇒ 那一席不出现」是本轮新契约的**唯一用户可见后果**。
+    // ★ 取「reconciliation」这一席做样本，但**不写死它的能力名** ——
+    //   能力名从 nav 项自身读（`requiresCapability`）⇒ 改名/加席都不会让本条失效。
+    const gated = DRAWER_NAV.find((i) => i.requiresCapability)
+    expect(gated, '★ 没有带 requiresCapability 的席 ⇒ 本组没测到东西').toBeTruthy()
+    const path = gated!.to
+    const capName = gated!.requiresCapability!
+
+    // ① fail-closed（不传能力位）⇒ 不渲染
+    const off = await mountDrawerAs('super_admin')
+    const offHrefs = Array.from(document.body.querySelectorAll('.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+    expect(offHrefs, `能力位没开时 ${path} 不该出现`).not.toContain(path)
+    off.unmount()
+    document.body.innerHTML = ''
+    mounted = []
+
+    // ② 能力位开着 ⇒ 渲染
+    await mountDrawerAs('super_admin', '/', [capName])
+    const onHrefs = Array.from(document.body.querySelectorAll('.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+    expect(onHrefs, `能力位开着时 ${path} 必须出现`).toContain(path)
+  })
+})
+
+
+describe('AppDrawer 搜索（2026-10-15：85 席无搜索是可达性硬伤）', () => {
+  beforeEach(() => {
+    for (const w of mounted) {
+      try { w.unmount() } catch { /* ignore */ }
+    }
+    mounted = []
+    document.body.innerHTML = ''
+    vi.resetAllMocks()
+  })
+  afterEach(() => {
+    for (const w of mounted) {
+      try { w.unmount() } catch { /* ignore */ }
+    }
+    mounted = []
+  })
+
+  async function drawerLinks(): Promise<string[]> {
+    return Array.from(document.body.querySelectorAll('nav.drawer__nav .drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+  }
+
+  // 抽屉 Teleport 到 body ⇒ w.find 看不见输入框；直接在 document 上改值
+  // 并派发 input 事件（v-model 监听的就是它）。
+  async function typeSearch(text: string): Promise<void> {
+    const input = document.body.querySelector('input.drawer__search-input') as HTMLInputElement | null
+    if (!input) throw new Error('drawer search input not found in body')
+    input.value = text
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    await flushPromises()
+  }
+
+  it('★ 子串过滤：输入 compress 只剩 compression 家族的席，且远小于全量', async () => {
+    await mountDrawerAs('super_admin')
+    const before = await drawerLinks()
+    expect(before.length).toBeGreaterThan(20) // 85 席基线在场，否则本用例失去判别力
+    // 测试环境 locale 是 en-US：匹配面 = 标题 + key + 路径（组件对三者都做
+    // 小写子串匹配；中文标题匹配在真机 zh 环境下同一代码路径，spec 钉形状）。
+    await typeSearch('compress')
+    const after = await drawerLinks()
+    expect(after.some((h) => h.includes('/compression'))).toBe(true)
+    expect(after.length).toBeGreaterThan(0)
+    expect(after.length).toBeLessThan(before.length / 4)
+    // 被筛掉的席确实不在 DOM 里（不是被 CSS 藏）
+    expect(after.some((h) => h === '/logs')).toBe(false)
+  })
+
+  it('★ 标题匹配面：按本地化标题子串（session）也能筛出会话家族', async () => {
+    await mountDrawerAs('super_admin')
+    await typeSearch('session')
+    const links = await drawerLinks()
+    expect(links.some((h) => h.includes('/sessions'))).toBe(true)
+    expect(links.some((h) => h === '/logs')).toBe(false)
+  })
+
+  it('★ 空串 = 不过滤：清空搜索后席数回到角色全量', async () => {
+    await mountDrawerAs('super_admin')
+    const full = (await drawerLinks()).length
+    await typeSearch('compress')
+    const filtered = (await drawerLinks()).length
+    expect(filtered).toBeLessThan(full)
+    await typeSearch('')
+    expect((await drawerLinks()).length).toBe(full)
+  })
+
+  it('★ 权限门控先于搜索：tenant_admin 搜 integrity 搜不出越权入口', async () => {
+    await mountDrawerAs('tenant_admin')
+    await typeSearch('integrity')
+    const links = await drawerLinks()
+    expect(links.some((h) => h.includes('/integrity'))).toBe(false)
+  })
+
+  it('★ 无结果提示在场：搜不存在的词给可行动提示，而不是空白面板', async () => {
+    await mountDrawerAs('super_admin')
+    await typeSearch('zzz-no-such-page')
+    expect((await drawerLinks()).length).toBe(0)
+    const empty = document.body.querySelector('.drawer__search-empty')
+    // 测试环境 locale=en-US；zh 文案同 key（nav.searchNoResults）
+    expect(empty?.textContent).toContain('No matching pages')
+  })
 })
 
 describe('navItemsFor', () => {
@@ -126,8 +251,20 @@ describe('navItemsFor', () => {
     document.body.innerHTML = ''
   })
 
-  it('super_admin 看到全部', () => {
-    expect(navItemsFor(DRAWER_NAV, 'super_admin').length).toBe(DRAWER_NAV.length)
+  it('super_admin 看到全部（★ 能力位开着时）', () => {
+    // ★ 2026-10-21（R72f）：`reconciliation` 席新增了 `requiresCapability`
+    //   ⇒ 「看到全部」的前提变成「**该能力开着**」⇒ ⇒ 分两种口径分别钉住：
+    //   ① fail-closed（不给能力位）⇒ 带能力位的席**一律不显示**；
+    //   ② 能力位开着 ⇒ 全部可见，且**顺序不变**（顺序不是契约，但 key 集合是）。
+    const gated = DRAWER_NAV.filter((i) => i.requiresCapability)
+    expect(gated.length, '★ 本组的存在意义就是「有席带 requiresCapability」⇒ 一条都没有就白测了').toBeGreaterThan(0)
+    const withoutCaps = navItemsFor(DRAWER_NAV, 'super_admin')
+    expect(withoutCaps.length).toBe(DRAWER_NAV.length - gated.length)
+    expect(withoutCaps.some((i) => i.requiresCapability)).toBe(false)
+    const capNames = [...new Set(gated.map((i) => i.requiresCapability).filter((c): c is string => typeof c === 'string'))]
+    const withCaps = navItemsFor(DRAWER_NAV, 'super_admin', new Set(capNames))
+    expect(withCaps.length).toBe(DRAWER_NAV.length)
+    expect(withCaps.map((i) => i.key)).toEqual(DRAWER_NAV.map((i) => i.key))
   })
 
   it('tenant_admin 少掉的**只有** superAdmin 档那些', () => {
@@ -178,7 +315,7 @@ describe('navItemsFor', () => {
       'ops-overview',
       'overrides',
       // ★★★★ 2026-10-14 第一百二十一批：平台设置
-      //   （`admin/settings.go:24` `mux.HandleFunc("/api/admin/settings/", h.admin(h.settingsRouter))`）
+      //   （`admin/settings.go:25` `mux.HandleFunc("/api/admin/settings/", h.admin(h.settingsRouter))`）
       //   ★★ 注意它包的是**一个会再分发到四个 handler 的 router** ——
       //   `h.admin` = `AdminMiddleware` 只认证不检 role，`settingsGet`/`settingsHistory`
       //   **全文零 role 检查**，而 history 传 `tid=""` 且审计项恒带
@@ -205,15 +342,19 @@ describe('navItemsFor', () => {
       //   是 h.superAdmin）。同族的 `featured-models`（`:1216`）其实是 admin 档，
       //   但这一席整体按 superAdmin 挡 —— 混档会让「谁能看哪块」不可解释。
       'routing-policy',
-      // ★★ 2026-10-14 第一百一十五批：滑窗调用明细
-      //   （`admin/credential_monitor.go:704-782`）—— **与前两席相反**！
-      //   `handleSlidingWindow` 里既没有 `tenantID` 变量也没有 `IsTenantAdmin`，
-      //   Redis 与 `_request_logs` 回退两条腿的 WHERE 都**只有 credential_id**，
-      //   而它是**全局唯一**主键 ⇒ 任何通过认证的主体报出别的租户的
-      //   credential_id 就能读到它的逐次调用明细 ⇒ 连 tenant_admin 都必须挡。
+      // ★★ 2026-10-14 第一百一十五批：滑窗调用明细 —— **与前两席相反**！
+      //   ★★2026-10-26 订正：本段原写的理由（后端没有租户维度 ⇒ 跨租户可读）
+      //   已被 audit #153 + 12h-audit 20261017 补洞覆盖 ——
+      //   `handleSlidingWindow`（`admin/credential_monitor.go:753-863`）今天
+      //   有 `tenantID` / `IsTenantAdmin` / 角色门（`:765-768`）与两条 SQL 腿的
+      //   `AND ($5 = '' OR tenant_id = $5)`（`:905` / `:950`）。
+      //   ⇒ 本席仍留在 superAdmin 白名单是**过度限制**（收紧一档不必跟着放开），
+      //     **不是漏洞** —— ★ 改白名单前必须先确认 Redis 快腿在 super_admin 下
+      //     也没有泄漏面。
       'sliding-window',
       // ★★ 2026-10-14 第一百二十批：订阅档
-      //   （`licensing/module_api.go:22`，走 **echo group**：`main.go:7027`
+      //   （`licensing/admin_api.go:33` `func RegisterModuleRoutes`，
+      //   走 **echo group**：`cmd/gateway/main.go:7188`
       //   `adminGroup := e.Group("/api/admin", requireSuperAdmin)`）
       //   ★★★★ **权限档第四类**：前三席的超管限制各有各的理由
       //   （后端不一致 / 载荷含别人的数据 / 全局平台事实），
@@ -444,8 +585,14 @@ describe('AppDrawer 导航后收起', () => {
     // ⚠️ 注意这条不能靠「从 / 出发点每个链接」来写 —— 那条路径上
     // route.fullPath **会变**，watcher 会替 onNavClick 把活干完，
     // 把 onNavClick 整个删掉也照样全绿（已实测）。必须站在该项自己的路由上点它。
+    // ★ 2026-10-21（R72f）：**能力位开着**才挂全量 —— 否则带 requiresCapability
+    //   的席（fail-closed）根本不渲染 ⇒ 穷举会漏项 ⇒ 守卫被削弱。
+    //   ⇒ 穷举的是「**画出来的**每一席」，不是 DRAWER_NAV 的抽象全集。
+    const allCaps = [...new Set(
+      DRAWER_NAV.map((i) => i.requiresCapability).filter((c): c is string => typeof c === 'string'),
+    )]
     for (const item of DRAWER_NAV) {
-      const w = await mountDrawerAs('super_admin', item.to)
+      const w = await mountDrawerAs('super_admin', item.to, allCaps)
       // 只取 <a>：抽屉里「我的」也是 .drawer__link，但它是 <button>，
       // emit 的是 account 而非「收起」，混进来会让计数对不上。
       const self = Array.from(document.body.querySelectorAll<HTMLAnchorElement>('a.drawer__link'))
@@ -460,5 +607,15 @@ describe('AppDrawer 导航后收起', () => {
       document.body.innerHTML = ''
       mounted = []
     }
-  })
+  },
+  // ★ 这条必须自带 timeout，不能吃 vitest 的默认 20000ms。
+  //   它的耗时是 **O(DRAWER_NAV 项数)**：每项都要新建 pinia + 一个含全部
+  //   导航路径的 memory router，再 mount 整棵抽屉（见 mountDrawerAs）。
+  //   ⇒ 阈值随每接一个页面席单调上涨，20s 这个默认值对「穷举」语义本就失配：
+  //   单跑实测只需 2~3s，全量并行争抢 CPU 下实测 **20131ms**（第 127 批十连跑
+  //   run#3 偶发超时 1/10 轮），当时 DRAWER_NAV 恰好从 85 涨到 86。
+  //   ⚠️ 这里只放宽**时间预算**，断言一个都没动 —— 判据强度不变，
+  //   变的是「多慢算失败」这条与机器负载有关的判据。
+  //   ⇒ 若哪天导航项继续暴涨，这里要跟着调，而不是回退成默认 20s。
+  120_000)
 })

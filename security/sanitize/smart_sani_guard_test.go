@@ -981,7 +981,19 @@ func TestSanitizeRestoreInterceptor_SplitUnknownPlaceholderMasksWithoutMap(t *te
 	gotSecond, err := it.InterceptStreamChunk(context.Background(), second, meta)
 	require.NoError(t, err)
 	require.NotNil(t, gotSecond)
-	assert.Contains(t, string(gotSecond.ModifiedChunk), RedactionMarker(SensitiveType("forged"))+" after")
+	// r1039：遮蔽标记里的**类型名**改为 unknown。
+	//
+	// 这条判据钉的**意图**是「分片的未知占位符必须被遮蔽、不得泄露原文、
+	// 后缀 ' after' 必须保留」——类型名只是顺带写死的一个取值。
+	// "forged" 是**模型自造**的类型，网关没有这个类别的规则；把它原样回显
+	// 等于声称一个不存在的类别。容错阶段早就是收敛成 unknown 的
+	// （maskType，见 placeholder_loose.go），本轮把精确阶段也对齐，
+	// 两个阶段对同一段文本不再给出不同的答案。
+	//
+	// ⇒ 这里换的是**取值**，不是意图：断言仍然是「被遮蔽了」+「后缀还在」
+	// +「没有标记漏出去」。
+	assert.Contains(t, string(gotSecond.ModifiedChunk), RedactionMarker(unknownRedactionType)+" after")
+	assert.NotContains(t, string(gotSecond.ModifiedChunk), "forged")
 	assert.NotContains(t, string(gotSecond.ModifiedChunk), "{SENSITIVE:")
 }
 
@@ -1193,7 +1205,11 @@ func TestSanitizeRestoreInterceptor_MasksInvalidPlaceholderContinuationAndKeepsS
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.False(t, result.ShouldBlock, "a malformed placeholder must not terminate the client stream")
-	assert.Contains(t, string(result.ModifiedChunk), "[REDACTED]")
+	// r1038：遮蔽物一律带类型。此处标记前缀被垃圾文本补全，类型从未被解析出
+	// 来 ⇒ 标记是 "[REDACTED:unknown]"（一句关于**这次遮蔽**的实话），
+	// 而不是无从追问的裸形态。
+	assert.Contains(t, string(result.ModifiedChunk), unknownRedactedMarker)
+	assert.NotContains(t, string(result.ModifiedChunk), "[REDACTED]")
 	assert.NotContains(t, string(result.ModifiedChunk), "{SENSITIVE:")
 	assert.NotContains(t, string(result.ModifiedChunk), "13800138000")
 	continued, err := it.InterceptStreamChunk(context.Background(), contentFrame("following"), meta)

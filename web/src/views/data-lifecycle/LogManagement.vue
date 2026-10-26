@@ -76,7 +76,7 @@ async function load() {
       file_path: cfg.file_path_override || cfg.file_path || '',
     }
   } catch (e: any) {
-    error.value = e.message || '加载失败'
+    error.value = e.message || t('common.feedback.loadFailed')
   } finally {
     loading.value = false
   }
@@ -101,7 +101,7 @@ async function saveEnabled() {
     // 重新拉取 stats / files（启用后才有内容）
     await load()
   } catch (e: any) {
-    saveMsg.value = '❌ 保存失败：' + (e.message || '未知错误')
+    saveMsg.value = '❌ ' + t('common.feedback.saveFailedWithReason', { reason: e.message || t('common.feedback.unknownReason') })
   } finally {
     saving.value = false
   }
@@ -122,7 +122,7 @@ async function save() {
     config.value = cfg
     saveMsg.value = '✅ 已保存并热加载生效（无需重启）'
   } catch (e: any) {
-    saveMsg.value = '❌ 保存失败：' + (e.message || '未知错误')
+    saveMsg.value = '❌ ' + t('common.feedback.saveFailedWithReason', { reason: e.message || t('common.feedback.unknownReason') })
   } finally {
     saving.value = false
   }
@@ -140,7 +140,7 @@ async function doArchive() {
       await load()
     }
   } catch (e: any) {
-    alert('操作失败：' + (e.message || '未知错误'))
+    alert(t('common.feedback.operationFailedWithReason', { reason: e.message || t('common.feedback.unknownReason') }))
   } finally {
     opLoading.value = false
   }
@@ -162,7 +162,7 @@ async function doCleanup() {
       await load()
     }
   } catch (e: any) {
-    alert('操作失败：' + (e.message || '未知错误'))
+    alert(t('common.feedback.operationFailedWithReason', { reason: e.message || t('common.feedback.unknownReason') }))
   } finally {
     opLoading.value = false
   }

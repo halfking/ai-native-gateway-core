@@ -211,3 +211,34 @@ describe('TurnsView 会话卡渲染', () => {
     expect(w.text()).toContain('turns boom')
   })
 })
+
+describe('★★ TurnsView 深链 ?search= 预填并首请求带上', () => {
+  it('挂载路径带 search ⇒ 输入框有值且首枪带 search', async () => {
+    sess.mockResolvedValue({ items: [SESSION], has_more: false, next_cursor: '' })
+    turnsOf.mockResolvedValue({
+      session_id: 's-1',
+      count: 0,
+      has_more: false,
+      next_cursor: '',
+      turns: [],
+    })
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/', component: { template: '<div />' } },
+        { path: '/turns', component: TurnsView },
+      ],
+    })
+    await router.push({ path: '/turns', query: { search: 's-1' } })
+    await router.isReady()
+    const w = mount(TurnsView, { attachTo: document.body, global: { plugins: [pinia, router] } })
+    mountedList.push(w)
+    await flushPromises()
+    await flushPromises()
+    expect((w.find('.turns__search input').element as HTMLInputElement).value).toBe('s-1')
+    expect(sess).toHaveBeenCalled()
+    expect((sess.mock.calls[0]![0] as Record<string, unknown>).search).toBe('s-1')
+  })
+})

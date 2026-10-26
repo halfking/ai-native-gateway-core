@@ -4,4 +4,7 @@
 export default {
   exportFailedPrep: 'فشل التصدير: فشل تحميل التفاصيل أو التدقيق',
   exportNoChannel: 'فشل التصدير: لا توجد قناة صالحة في هذا المضيف',
+  timelineLoadFailed: 'تعذّر تحميل بيانات آخر 24 ساعة. أعد المحاولة.',
+  detailLoadFailed: 'تعذّر تحميل التفاصيل. أعد المحاولة.',
+  auditLogLoadFailed: 'تعذّر تحميل سجلات التدقيق. أعد المحاولة.',
 }

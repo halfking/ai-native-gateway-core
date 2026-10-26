@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 
 /**
  * ★★★★★★ **孤儿棘轮门**（2026-10-08，第一百批）。
@@ -78,11 +78,10 @@ import { join } from 'node:path'
  * ⇒ 两条任一不成立，那条登记立刻红。
  */
 const KNOWN_DUPLICATES: readonly string[] = [
-  // 与 `dashboardBoard.ts` 同端点（`/api/admin/dashboard/operational`），
-  // 而后者已被 `DashboardOpsView.vue` 消费 ⇒ 功能已可达，本项是**重复件**不是缺口。
-  // 消解条件（写下来是为了为了让「什么时候能删」有答案）：
-  // 把这 42 个独有判据/常量逐条核实后并入 `dashboardBoard.ts`，删掉本模块。
-  'boardOperational',
+  // ★ 批 149 收口：原 `boardOperational`（与 `dashboardBoard.ts` 同打 `/api/admin/dashboard/operational`），
+  //   全仓 27 处外部 grep 0 命中（独有 42 个常量/判据自始未在生产路径被消费），
+  //   仅 spec 自身引用 ⇒ 直接删除本模块 + spec，登记清单同步清空。
+  // ⇒ 消解条件 = `web-mobile/src/api/boardOperational*.ts` 在工作树不存在 + 本清单不含这一行。
 ]
 
 /**
@@ -169,10 +168,24 @@ const KNOWN_INFRASTRUCTURE: readonly string[] = [
  *   ⇒ 两条腿合起来才**唯一**命中 `nativeTransport`。
  */
 function infrastructureIsProven(name: string): boolean {
-  const src = moduleSource(name)
+  return infrastructureIsProvenGiven(moduleSource(name), shellIsNotInstalled())
+}
+
+/**
+ * ★★★ 与 `shellNotInstalledGiven` 同理**取参数**（第一百二十八批）。
+ *
+ * ⇒ 起因：负控⑤原先拿 `sessionAnalyticsFilterOptions` 当「有端点但不可达」的样本，
+ *   而那个模块在本批被接线 ⇒ 样本**当场失效**（负控会变成僵尸断言，全绿但没测任何东西）。
+ *   ⇒ ★★ 与 `boardOperational` 那类仓库里的活样本相比，
+ *   **喂字符串**的样本不会随接线腐烂，也不会让下一个人再换一轮名字。
+ *
+ * @param src      被检模块的源码（腿①：数 `/api/` 端点数）
+ * @param noShell  壳是否未安装（腿②，由调用方从依赖清单现读）
+ */
+function infrastructureIsProvenGiven(src: string, noShell: boolean): boolean {
   const endpointCount = (src.match(/['`]\/api\//g) ?? []).length
   if (endpointCount !== 0) return false // 腿①：有端点 ⇒ 是功能缺口，该开页
-  return shellIsNotInstalled()
+  return noShell
 }
 
 /**
@@ -215,9 +228,20 @@ function shellNotInstalledGiven(
   return !/setGatewayBaseUrl\(/.test(prod)
 }
 
+// ★★★ 第一百二十八批：`KNOWN_ORPHANS`（真缺口）**已清空** —— 真缺口 2 → 0。
+//
+//   最后一项 `sessionAnalyticsFilterOptions` 在本批接进 UI（视图
+//   `SessionAnalyticsFilterOptionsView.vue` + 路由 `/session-analytics-filter-options`
+//   + 抽屉席 `session-analytics-filter-options`）。
+//
+//   ⚠️ 空清单不是「可以删掉这个门」：这条判据（当前孤儿集合 = 三类登记的并）
+//   是**承重**的 —— 它逐个核对**全部**孤儿。清单空了，它照样守着：
+//   任何一个 api 模块只要还没接进 UI，就既不在清单里、又出现在 `currentOrphans()` 里
+//   ⇒ 这条立刻红。⇒ ★ 所以**留一个空数组**，不要删变量，也不要改成「无孤儿则跳过」。
 const KNOWN_ORPHANS: readonly string[] = [
-  'sessionAnalyticsFilterOptions',
-  'turnsFilterOptions',
+  // ★ 故意为空：当前没有「有 UI 入口才能算完成」的真缺口。
+  //   （`nativeTransport` 在 KNOWN_INFRASTRUCTURE —— 零端点的非页面型基础设施。
+  //   原 KNOWN_DUPLICATES 那条 `boardOperational` 在批 149 已合并删模块、清出本登记。）
 ]
 
 /**
@@ -324,6 +348,73 @@ function currentOrphans(): string[] {
   return apiModules().filter((m) => !seen.has(m))
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// ★★★ 第一百三十三批：给「孤儿」这个量具本身加自证。
+//
+// 本判据把「可达」定义为 **import 可达**（UI 侧 import 图的传递闭包）。
+// 而流水线的完成口径是「**可达 UI 入口**」—— 这两者**不是一回事**，
+// 差别只有一处：**uiSourceBlob 把 src 下所有文件都当种子**，
+// 所以一个 api 模块只要被**任何**文件 import 就算「可达」，
+// **哪怕那个文件自己从没被任何视图或壳层挂载**（死面板）。
+//
+// ⇒ 这个代理口径目前是**对的**，但它是**碰巧对**的 ——
+//   和第 132 批 `router/index.ts` 上 `stripComments` 空操作一个味道。
+// ⇒ 下面三条把它钉住，让它从「碰巧对」变成「被看着」。
+// ══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ★ 第一百三十二批修好的剥离顺序：**先按行删 `//`，再删块注释**。
+ *   顺序反了的话，`appNav.ts` 行注释里的 URL（`/api/maas/**`）会被当成
+ *   块注释起点，把大段真实代码当注释删掉。
+ */
+function stripComments(src: string): string {
+  return src.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
+}
+
+/** 剥掉注释后的 UI 源码拼块（用于「注释不得伪造可达性」那一条）。 */
+function uiSourceBlobStripped(): string {
+  return stripComments(uiSourceBlob())
+}
+
+/** 每次调用取新快照，不跨用例缓存；调用方可在单个同步判据内复用。 */
+function uiSources(): Map<string, string> {
+  const out = new Map<string, string>()
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (full === API_DIR) continue
+        walk(full)
+        continue
+      }
+      if (!/\.(ts|vue)$/.test(entry.name)) continue
+      if (entry.name.endsWith('.spec.ts')) continue
+      out.set(relative(ROOT, full), readFileSync(full, 'utf8'))
+    }
+  }
+  walk(ROOT)
+  return out
+}
+
+/** 直接从 UI 引到 API 的反向索引：每份源码只解析一次。 */
+function uiImporterIndex(sources: ReadonlyMap<string, string>): Map<string, string[]> {
+  const index = new Map<string, string[]>()
+  for (const [file, source] of sources) {
+    for (const name of new Set(importsOf(source))) {
+      const files = index.get(name) ?? []
+      files.push(file); index.set(name, files)
+    }
+  }
+  return index
+}
+
+/** 未提供快照时保持原调用口径；批量查询应复用同一个局部索引。 */
+function uiImportersOf(name: string, index = uiImporterIndex(uiSources())): string[] {
+  return index.get(name) ?? []
+}
+
+
+
 
 describe('孤儿棘轮', () => {
   it('★ 作用面自证：扫描到的 api 模块数不为 0（塌缩到 0 或 1 必须红）', () => {
@@ -374,8 +465,21 @@ describe('孤儿棘轮', () => {
     expect(shellNotInstalledGiven({ vue: '3', pinia: '3' }, { vitest: '4' }, '')).toBe(true)
     // 负控⑤：`infrastructureIsProven` 对**有端点**的模块必须返回 false
     //   （这条让 S3「判据恒真」这类变异有牙：恒真会让它对任何模块都返回 true）
-    expect(infrastructureIsProven('sessionAnalyticsFilterOptions')).toBe(false)
-    expect(infrastructureIsProven('turnsFilterOptions')).toBe(false)
+    // ★ 第一百二十八批：原先这里喂 `sessionAnalyticsFilterOptions`，
+    //   而它在本批被接线 ⇒ 样本当场失效。改为**直接喂字符串**，
+    //   样本不再依赖仓库里「恰好仍未接线」的模块。
+    expect(infrastructureIsProvenGiven("const P = '/api/admin/x'", false)).toBe(false)
+    // ★ 同一函数的正控：零端点 + 壳未安装 ⇒ 必须成立（否则负控⑤就是恒假）
+    expect(infrastructureIsProvenGiven('const N = 1', true)).toBe(true)
+    // ★ 腿②的反向护栏：零端点但壳已安装 ⇒ 必须不成立
+    expect(infrastructureIsProvenGiven('const N = 1', false)).toBe(false)
+    // ★ 与仓库现状的一致性（防止参数化把真实调用链改坏）：
+    //   对每个**真实**的基础设施条目，两种算法必须给出同一个答案。
+    for (const name of KNOWN_INFRASTRUCTURE) {
+      expect(infrastructureIsProvenGiven(moduleSource(name), shellIsNotInstalled())).toBe(
+        infrastructureIsProven(name),
+      )
+    }
   })
 
   it('★★★★ 「零端点 + 不可达」那条**能分辨**而不是恒成立（负控）', () => {
@@ -387,6 +491,51 @@ describe('孤儿棘轮', () => {
     expect(zeroEndpointOrphans.sort()).not.toEqual([...KNOWN_INFRASTRUCTURE, 'transport'].sort())
     expect(zeroEndpointOrphans.sort()).not.toEqual([...KNOWN_INFRASTRUCTURE, 'system'].sort())
     expect(zeroEndpointOrphans.sort()).not.toEqual([])
+  })
+
+  it('★★★★★ 负控：承重那条判据**必须逐字含集合相等断言**（专打 M23，负控的负控）', () => {
+    // ★★★★★ 第一百二十八批变异台：M23 把
+    //   `expect([...currentOrphans()].sort()).toEqual([...KNOWN_ORPHANS, ...].sort())`
+    //   换成 `expect([...currentOrphans()].sort().length).toBeGreaterThanOrEqual(0)`
+    //   ⇒ **事实仍为真**（真孤儿确实 ≥0 个）⇒ 整条**全绿**。
+    //   ⇒ 与 M23 同型的还有「上一条能分辨负控」：它复算的是
+    //   `reachableFromUi()`，**没有**检查承重判据本身有没有被换成恒真式。
+    //
+    // ⇒ ★★ 「削弱断言」型变异的第二层：上一批的负控只覆盖了
+    //   「判据函数返回错值」，**没覆盖「判据被换成恒真表达式」**。
+    //   ⇒ 治法是**钉源码形态**：承重那条必须逐字出现 `toEqual(` + 三份清单的展开。
+    const self = readFileSync(join(__dirname, 'orphanLedger.spec.ts'), 'utf8')
+    // ★★ 三份清单是**跨两行**书写的（`toEqual(` 后面换行才展开），
+    //   所以要连着取 3 行，不能只看命中 `toEqual(` 的那一行。
+    const lines = self.split('\n')
+    const at = lines.findIndex((l) => l.includes('currentOrphans()') && l.includes('toEqual('))
+    expect(at, '承重判据里的集合相等断言不见了 ⇒ 它可能被换成了恒真式').toBeGreaterThan(-1)
+    const snippet = lines.slice(at, at + 3).join('\n')
+    expect(snippet).toContain('currentOrphans()')
+    expect(snippet).toContain('toEqual(')
+    // ★★ 三份清单必须**都**出现（少一份就等于少覆盖一类登记）
+    for (const name of ['KNOWN_ORPHANS', 'KNOWN_DUPLICATES', 'KNOWN_INFRASTRUCTURE']) {
+      expect(snippet, `承重判据少了一类登记：${name}`).toContain(name)
+    }
+    // ★ 反向护栏：承重那条**不得**退化成「长度恒真」这类形式。
+    // ⚠️⚠️ 只扫**断言行**（以 expect 开头），不能扫整段 ——
+    //   这段文字里就包含「toBeGreaterThan(0)」这个字面量，
+    //   扫全文会**自指误红**（本批真踩到了）。
+    // ⚠️ 窗口必须停在**本用例闭合**处，不能按固定字符数切 ——
+    //   固定 900 字符会把**下一条**用例的断言也扫进来，
+    //   而下一条正好有 `toBeGreaterThan(0)` ⇒ 自指误红（本批真踩到了）。
+    const start = self.indexOf('当前孤儿集合 = 真缺口')
+    const end = self.indexOf('\n  })', start)
+    expect(end, '没找到承重用例的闭合位置').toBeGreaterThan(start)
+    const weightLines = self
+      .slice(start, end)
+      .split('\n')
+      .filter((l) => l.trim().startsWith('expect('))
+    expect(weightLines.length, '没扫到承重判据的断言行').toBeGreaterThan(0)
+    for (const l of weightLines) {
+      expect(l, '承重判据里出现了恒真式断言').not.toMatch(/toBeGreaterThan(?:OrEqual)?\(0\)/)
+      expect(l, '承重判据里出现了只比长度、不比集合的断言').not.toMatch(/\.length\)\.toBe/)
+    }
   })
 
   it('★★★★ 负控必须**钉住真判据的源码形态**，不能只复算（变异 S7 的教训）', () => {
@@ -451,7 +600,8 @@ describe('孤儿棘轮', () => {
 
   it('★★ 每一项登记的重复件**确实与某个已可达模块打同一个端点**（否则例外条款是免罪）', () => {
     // ★★★ 这条是第二类登记的**承重判据**：没有它，「重复件」就成了万能借口。
-    expect(KNOWN_DUPLICATES.length).toBeGreaterThan(0)
+    // ★ 批 149 收口：原 `boardOperational` 合并删模块后清单已清空
+    //   ⇒ 改用 `for` 循环，0 项时整条 trivial 通过；新登记必须照样自证。
     for (const name of KNOWN_DUPLICATES) {
       expect(currentOrphans(), `${name} 已不在孤儿集合里 ⇒ 这条登记该删了`).toContain(name)
       expect(duplicateIsProven(name), `${name} 没有已可达模块与它同端点 ⇒ 它是功能缺口，不是重复件`).toBe(true)
@@ -462,9 +612,11 @@ describe('孤儿棘轮', () => {
     for (const name of KNOWN_DUPLICATES) expect(KNOWN_ORPHANS).not.toContain(name)
   })
 
-  it('★★ 已消解的重复件要**移出**登记（boardOperational 被合并后这条会红）', () => {
+  it('★★ 已消解的重复件要**移出**登记（合并/删模块后这条逐条校验）', () => {
     // ★ 消解条件写在 KNOWN_DUPLICATES 的注释里；这条逼着人手工删那一行 ——
     //   与「接线一个孤儿就删一行」同一套纪律，只是对象换了。
+    // ★ 批 149 收口：`boardOperational` 合并 ⇒ 这条循环 0 项即通过；
+    //   新登记后**任一项不**在可达集合里立刻红。
     for (const name of KNOWN_DUPLICATES) expect(reachableFromUi().has(name)).toBe(false)
   })
 
@@ -560,7 +712,7 @@ describe('孤儿棘轮', () => {
 
   it('★★ 已接线的哨兵：reportRollup 不在孤儿里（第一百一十一批）', () => {
     // ★ 对账报表接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
-    //   该族是 **superAdmin 档**（admin/handler.go:1086，整个 `/api/admin/report-rollup/`
+    //   该族是 **superAdmin 档**（admin/handler.go:1133，整个 `/api/admin/report-rollup/`
     //   前缀带尾斜杠都是 h.superAdmin）⇒ 席**要** requiresRole，
     //   所以 `AppDrawer.spec.ts` 的排序白名单里**必须**出现 report-rollup。
     //   ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」。
@@ -581,10 +733,10 @@ describe('孤儿棘轮', () => {
 
   it('★★ 已接线的哨兵：opsOverview 不在孤儿里（第一百一十七批）', () => {
     // ★ 运维总览接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
-    //   权限成因是**第三类**：注册处 `admin/handler.go:1091` 是 `admin(...)`
-    //   （`AdminMiddleware` 只认证不检 role ⇒ 后端 tenant_admin **可读**），
-    //   但 `handleOpsOverview` 自己不检 role、11 条子查询**全是全局表**
-    //   ⇒ 服务端**完全没有租户维度** ⇒ 只能过度限制成 `requiresRole: 'super_admin'`，
+    //   权限成因是**第三类**：注册处 `admin/handler.go:1144` 是 `h.superAdmin(...)`
+    //   （`SuperAdminMiddleware` 逐字比 role ⇒ 后端 tenant_admin **读不到**），
+    //   且 `handleOpsOverview` 自己不检 role、11 条子查询**全是全局表**
+    //   ⇒ 服务端**完全没有租户维度** ⇒ 前端只能对齐成 `requiresRole: 'super_admin'`，
     //   所以 `AppDrawer.spec.ts` 的排序白名单里**必须**出现 ops-overview。
     // ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」；
     //   只加抽屉席不改正那份白名单，「tenant_admin 少掉的只有这些」那条立刻红。
@@ -604,16 +756,23 @@ describe('孤儿棘轮', () => {
     expect(currentOrphans()).not.toContain('requestActions')
   })
 
-  it('★★ 已接线的哨兵：v1DataHorizon 不在孤儿里（第一百一十九批）', () => {
-    // ★ v1 数据地平线接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
+  it('★★ 已接线的哨兵：dataHorizon 不在孤儿里（第一百一十九批；第 129 批改名）', () => {
+    // ★ 流量数据地平线接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
     //   该族是 **admin 档**（`admin/handler.go:1109` 的 `admin(...)`，AdminMiddleware
     //   只认证不检 role ⇒ 后端 tenant_admin 可读）
     //   ⇒ 席**不设** requiresRole ⇒ `AppDrawer.spec.ts` 的 superAdmin 白名单里
-    //   **不该**出现 v1-data-horizon（与 probe-queue / connection-registry 同一条纪律）。
+    //   **不该**出现 data-horizon（与 probe-queue / connection-registry 同一条纪律）。
     // ★★ 与批 115/117/118 三族**相反**而那三族并没错：本族虽无租户维度，
-    //   但载荷是**平台级全局事实**（七个键无一带租户）⇒ 过度限制**不适用**。
+    //   但载荷是**平台级全局事实**（六个键无一带租户）⇒ 过度限制**不适用**。
     //   ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」。
-    expect(currentOrphans()).not.toContain('v1DataHorizon')
+    // ⚠️ 第 129 批：模块随 r1033 的后端重写改名 `v1DataHorizon` → `dataHorizon`。
+    //   ★★ 这条哨兵的**取样方式**与第 128 批判据同一个病：断言「仓库里恰好有
+    //   一个已接线的模块」—— 模块改名它就红，而它红的原因与被测行为无关。
+    //   ⇒ 真正的承重判据是上面那条「当前孤儿集合 = 三类登记并集」，
+    //     它对**全部**孤儿逐个核对；这条哨兵只补一个「改名后仍可达」的实例。
+    expect(currentOrphans()).not.toContain('dataHorizon')
+    // ★ 旧名必须**不再存在**（否则改名就是复制而不是移动）
+    expect(apiModules()).not.toContain('v1DataHorizon')
   })
 
   it('★★★ 反向护栏：api 内部的互相引用不得凭空产生可达性', () => {
@@ -621,6 +780,163 @@ describe('孤儿棘轮', () => {
     //   第九十九批那个假阳性就会回来（taskTypeCorrectionStats 从 ./taskProfile 导入
     //   unwrapCorrectionStat 会被当成「taskProfile 已接上」）。
     const orphans = currentOrphans()
-    expect(orphans).toContain('turnsFilterOptions')
+    // ★ 第一百二十七批订正：`turnsFilterOptions` 已接线并移出清单
+    //   ⇒ 换成当时仍不可达的 `sessionAnalyticsFilterOptions`。
+    // ★ 第一百二十八批：**它也接线了**（最后一个真缺口归零）⇒ 改用 `boardOperational`。
+    //   ⇒ ★★★ 这已经是这条取样**第三次**要换名字，而每次都是同一个原因：
+    //     孤儿被接进 UI ⇒ 样本失效。这不是巧合，是**取样方式错了** ——
+    //     断言「仓库里恰好有一个未接线的模块」必然随流水线推进而腐烂。
+    //   ⇒ 那条「登记与实际必须一致」的判据（★ 当前孤儿集合 = …）才是承重的：
+    //     它对**全部**孤儿逐个核对，抽样的失效不会让它变绿。
+    //   ⇒ 这里退一步只断言一个**结构性**事实：孤儿集合**非空**。
+    //     真归零时（三个清单都空）这条自然也要改 —— 那时它该断言 `toHaveLength(0)`，
+    //     而**不是**回头去找一个假孤儿来凑数。
+    expect(orphans.length).toBeGreaterThan(0)
+    // ★ 承重的那一条单独再钉一次：孤儿集合里的每一项都必须落在三个清单之内。
+    for (const name of orphans) {
+      expect(
+        [...KNOWN_ORPHANS, ...KNOWN_DUPLICATES, ...KNOWN_INFRASTRUCTURE],
+        `${name} 是实际孤儿却没被登记`,
+      ).toContain(name)
+    }
+  })
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ⑥ ★★★ 第 133 批：给「孤儿」这个**量具本身**加自证。
+  //   本判据把「可达」当成 import 可达（UI 侧 import 图的传递闭包），
+  //   而完成口径是「可达 UI 入口」。差别只有一处：
+  //   uiSourceBlob 把 src 下**所有**文件都当种子 ⇒ 一个死面板被删到没人引用，
+  //   但只要它自己还在树里、还 import 着那个 api 模块，判据就仍判「已接」。
+  //   下面三条把「碰巧对」变成「被看着」。
+  // ══════════════════════════════════════════════════════════════════════
+
+  it('⑥-1 ★★★★★ 剥掉注释后可达性不得改变（★ 注释不得伪造可达性）', () => {
+    // 判据扫的是原始源码（含注释）。若某个 UI 文件在**注释**里写了
+    // `from '@/api/xxx'`，那个模块会被算成「已接」而其实没人 import。
+    // ⇒ 用批 132 修好的剥离顺序再跑一遍，两边孤儿集合必须**完全一致**。
+    const raw = currentOrphans().sort()
+    const strippedAll = apiModules()
+    const strippedOrphans: string[] = []
+    const strippedSeen = new Set<string>()
+    const all = new Set(apiModules())
+    const queue = importsOf(uiSourceBlobStripped()).filter((n) => all.has(n))
+    while (queue.length > 0) {
+      const n = queue.shift() as string
+      if (strippedSeen.has(n)) continue
+      strippedSeen.add(n)
+      for (const dep of importsOf(stripComments(moduleSource(n)))) {
+        if (all.has(dep) && !strippedSeen.has(dep)) queue.push(dep)
+      }
+    }
+    for (const m of strippedAll) if (!strippedSeen.has(m)) strippedOrphans.push(m)
+    strippedOrphans.sort()
+
+    expect(strippedOrphans, '注释里出现了 `from "@/api/x"` 形态的假 import ⇒ 某个真孤儿被藏起来了').toEqual(raw)
+    expect(raw.length, '一条孤儿都没扫到 ⇒ 量具塌缩了').toBeGreaterThan(0)
+  })
+
+  it('⑥-2 ★★★★★ 「可达但无 views 直接引用」的模块必须逐个点名', () => {
+    // 这 6 个都是**有正当理由**的例外，必须逐个写下来：
+    //   · credentialWriteOps / mobileNode / nodeAudit —— 由共用面板引入
+    //     （⑥-3 会验这些面板**确实被挂载**）
+    //   · nodeHealthTimeline —— api→api 委托（nodeHealth 转发）
+    //   · transport —— api→api 委托
+    //   · featureCapabilities（2026-10-21 R72f）—— **经 store 引入**：
+    //     能力位的唯一消费者是 `stores/capabilities.ts`，再由
+    //     `hyper-wiring.ts`（路由守卫）与 `components/shell/AppDrawer.vue`
+    //     （抽屉）使用。⇒ 视图**不直接**引用它 ⇒ 但它**确实在运行时路径上**
+    //     （⑥-3 会验它的引用方 `stores/capabilities.ts` 确实被挂载）。
+    //     ⚠️ 若有人新接了「经由面板/委托」而没进这张表，这条会红 ——
+    //       那正是它该做的：例外必须被登记，不能悄悄存在。
+    const seen = reachableFromUi()
+    const EXPECTED = [
+      'credentialWriteOps', 'featureCapabilities', 'mobileNode',
+      'nodeAudit', 'nodeHealthTimeline', 'transport',
+    ]
+    const actual = apiModules()
+      .filter((m) => seen.has(m))
+      .filter((m) => uiImportersOf(m).every((f) => !f.startsWith('views/')))
+      .sort()
+    expect(actual, '这些模块没有任何视图直接引用（须逐个登记理由，或改成有视图入口）').toEqual(EXPECTED)
+  })
+
+  it('⑥-2a 局部反向索引与逐文件过滤等价，空源/重复import不伪造引用', () => {
+    const sources = uiSources(), index = uiImporterIndex(sources)
+    for (const name of apiModules()) {
+      const direct = [...sources].filter(([, source]) => importsOf(source).includes(name)).map(([file]) => file)
+      expect(uiImportersOf(name, index)).toEqual(direct)
+    }
+    const synthetic = new Map([
+      ['views/Live.vue', 'import { a } from "@/api/live"; import { b } from "@/api/live"'],
+      ['components/Panel.vue', 'import { c } from "@/api/other"'],
+      ['views/Empty.vue', 'no imports'],
+    ])
+    const controlled = uiImporterIndex(synthetic)
+    expect(uiImportersOf('live', controlled)).toEqual(['views/Live.vue'])
+    expect(uiImportersOf('other', controlled)).toEqual(['components/Panel.vue'])
+    expect(uiImportersOf('missing', controlled)).toEqual([])
+    expect(uiImporterIndex(new Map()).size).toBe(0)
+  })
+
+  it('⑥-3 ★★★★★ 非视图引用方**确实被挂载**（死面板不得伪装成 UI 入口）', () => {
+    // 批144实测20秒超时：原实现按每个API反复读全树；局部索引不改变扫描范围。
+    const sources = uiSources(), importers = uiImporterIndex(sources)
+    const stripped = stripComments([...sources.values()].join('\n'))
+    // ★ 这是本组的关键一条：⑥-2 只保证「例外被点名」，
+    //   而 ⑥-3 保证这些例外**真的能被人点到** ——
+    //   即引用它们的那个面板/组件自己**不是死文件**（至少被一个非 spec 文件引用）。
+    const seen = reachableFromUi()
+    const noViewDirect = apiModules()
+      .filter((m) => seen.has(m))
+      .filter((m) => uiImportersOf(m, importers).every((f) => !f.startsWith('views/')))
+
+    expect(noViewDirect.length, '一组都没扫到 ⇒ 判据量具坏了').toBeGreaterThan(0)
+
+    const dead: string[] = []
+    for (const m of noViewDirect) {
+      for (const importer of uiImportersOf(m, importers)) {
+        const base = importer.replace(/\.(ts|vue)$/, '')
+        const stem = base.split('/').pop() as string
+        // 谁引用了这个引用方？至少要被一个**非 spec** 文件提到。
+        // ⚠️⚠️ 挂载方式**不只一种**，第一版只认 `import … from` ⇒ 误判：
+        //   这三个面板都是通过**组件标签**被用的（Options API 的 components
+        //   注册 / 模板里的 `<XxxSheet />`），没有对应的 import 语句。
+        //   ⇒ 只按 import 判「有没有被引用」，会把**活着的**面板判成死的。
+        const mounted =
+          // ① import 语句（跨行 ⇒ 必须在整块上做多行正则）
+          new RegExp(`import[\\s\\S]{0,300}?from\\s+['"][^'"]*${stem}['"]`).test(stripped) ||
+          // ② 模板里的组件标签 <XxxSheet …>
+          new RegExp(`<\\s*${stem}[\\s/>]`).test(stripped) ||
+          // ③ Options API 的 `components: { XxxSheet }` 注册
+          new RegExp(`components\\s*:\\s*\\{[^}]*\\b${stem}\\b`).test(stripped)
+        if (!mounted) dead.push(`${m} ← ${importer}（这个引用方自己没人引用）`)
+      }
+    }
+    expect(dead, `这些引用方是**死文件** ⇒ 判据把它们算成「已接 UI」，实际用户点不到：\n  ${dead.join('\n  ')}`).toEqual([])
+  })
+
+  it('⑥-4 ★★★★ 钉住 ⑥-1 / ⑥-2 的**集合比对形态**（★ 治「更弱但仍为真」的变异）', () => {
+    // ★★★★ 变异台 Q02 / Q04 把两条的断言**换成更弱但当前仍为真**的表达式：
+    //   ⑥-1  toEqual(raw)          → strippedOrphans.length >= raw.length
+    //   ⑥-2  toEqual(EXPECTED)     → actual.length <= EXPECTED.length
+    //   两条在当前数据上**都仍然为真** ⇒ 变异台判 NO_RED。
+    //
+    // ⇒ 这是第 129 批定下的那一族：**判据被削弱时无法察觉自己被削弱**。
+    //   治法只有一个：**从源码把「强形态」钉住** —— 否则哪天有人顺手把它改成
+    //   「长度不小于」，没人会看见，而集合比对（本次唯一的承重件）就没了。
+    //
+    // ⚠️ 本条的形状与本文件里已有的「钉判据自身」那几条同族，属**僵尸断言**：
+    //   只在「自己被改」时才红。它的价值在于把「别悄悄削弱它」写成门。
+    const self = readFileSync(join(API_DIR, 'orphanLedger.spec.ts'), 'utf8')
+    // ⑥-1：必须是**集合**相等，不是长度比较
+    expect(
+      self,
+      '⑥-1 的集合比对被削弱了 ⇒ 注释伪造可达性又会被放过',
+    ).toMatch(/expect\(strippedOrphans,[^\n]*\)\.toEqual\(raw\)/)
+    // ⑥-2：登记表必须**逐个相等**，不是长度上界
+    expect(
+      self,
+      '⑥-2 的登记表比对被削弱了 ⇒ 例外可以名存实亡',
+    ).toMatch(/expect\(actual,[^\n]*\)\.toEqual\(EXPECTED\)/)
   })
 })

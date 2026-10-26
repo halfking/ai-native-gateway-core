@@ -19,7 +19,7 @@ AI Native Gateway 是一个**开源、可私有部署的 AI 原生 LLM 网关**�
 - **协议归一化**：OpenAI、Anthropic、Gemini、Responses API 兼容 —— 一个端点接入所有模型
 - **双层智能路由**：L1 选模型（任务分类 → 6 维评分），L2 选凭据（Tier 回退 → 计费轮次 → P2C 评分 → 执行 / 熔断）
 - **会话治理**：粘性会话、全量内容会话回放、自动提示词压缩、4 档数据生命周期 —— 会话（而非单次请求）是一等治理对象
-- **多租户**：PostgreSQL RLS 强制租户隔离（38+ 表），配套每租户配额、用量计量与 MaaS 计费
+- **多租户**：PostgreSQL RLS 强制租户隔离（90+ 表），配套每租户配额、用量计量与 MaaS 计费
 - **凭据管理**：多凭据池，配指纹伪装、自适应探测与自动熔断
 - **可观测性**：实时请求流、路由分析（热力图 + Sankey）、成本追踪、OTel + Prometheus
 - **隐私**：100% 私有化部署 —— 所有数据留在企业基础设施内
@@ -55,7 +55,7 @@ AI Native Gateway 是一个**开源、可私有部署的 AI 原生 LLM 网关**�
 |-------|--------------|
 | **协议** | OpenAI / Anthropic / Gemini / Responses 兼容 + SSE 流式中继（增量完整性校验） |
 | **路由** | 双层路由（模型 → 凭据）+ 粘性会话 + 自动路由（cost/quality 策略） |
-| **多租户** | 身份隧道（virtual IP/MAC/ClientID）+ 凭据池 + 38+ 表 RLS |
+| **多租户** | 身份隧道（virtual IP/MAC/ClientID）+ 凭据池 + 90+ 表 RLS |
 | **流量治理** | Token 限流（TPM/RPM）+ 语义缓存 + 提示词压缩 + 滑窗算法 |
 | **审计** | 全链路审计 + DLQ + 磁盘回退 + OTel + Prometheus |
 | **凭据** | 多凭据 + 指纹池 + 自适应探测 + 手动禁用 |
@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 15+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 90+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -104,16 +104,17 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | 路径 | 职责 |
 |------|------|
 | `cmd/gateway/` | 组合根 —— 单二进制生产入口（数据面 + 控制面） |
-| `domains/` | 67 个 DDD 领域 —— `streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
+| `domains/` | 68 个 DDD 领域 —— `streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
 | `admin/` + `web/` | 管理 REST API + Vue 3 + TypeScript SPA（Element Plus、ECharts） |
+| `web-mobile/` | 移动端前端（Vue 3 + TypeScript）——第二生产前端；部署要求先构建 `dist/` |
 | `bg/` | 后台 worker —— 探测、生命周期清理、统计聚合、分区维护 |
 | `storage/` | 双模式存储工厂（`full`：PG+Redis / `lite`：SQLite+文件+进程内 KV） |
 | `internal/` | 横切基础设施 —— IR、vendor 字段剥离、会话镜像、outbox、遥测… |
-| `sql/migrations/` + `db/migrations/` | 幂等迁移（startup 系列当前到 863） |
+| `sql/migrations/` + `db/migrations/` | 幂等迁移（startup 系列当前到 907） |
 | `installer/` | 独立跨平台安装器 / 升级器模块 |
 | `scripts/`、`deploy/` | 构建、部署、镜像与校验工具 |
 
-规模快照（2026-10-06 代码扫描）：`cmd/` 下共 **~4,967 Go files · 2,728 test files · 1,016 migration SQLs · 67 domain packages · 44 binaries**。
+规模快照（2026-10-22 代码扫描 @31466a01d）：`cmd/` 下共 **~5,680 Go files · 3,333 test files · 1,119 migration SQLs · 68 domain packages · 44 binaries**（文件数不含 `vendor/` 与 `installer/`；迁移 SQL 为 `sql/migrations/` 全量；二进制按 `go list` 的 main 包计）。
 
 **延伸阅读**
 
@@ -131,7 +132,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 - **粘性会话绑定**：会话与凭据绑定，模型切换与故障转移后对话上下文不丢失 —— 任务中途不会发生静默的上下文丢失
 - **会话级审计与回放**：system prompt + 响应内容完整留存、可逐会话回放（生产环境已留存 13,000+ 会话），字段覆盖任务类型、客户端模型、出站模型、供应商、Token、延迟与结束原因 —— 可按 Key / 租户 / 时间段切片，支撑排查与合规审计
 - **自动提示词压缩**：当请求接近供应商真实上下文窗口（约 80% 触发）时，在分发前执行消息级压缩 —— 长 Agent 会话适配更小窗口而不是直接失败。每次压缩事件（策略、阈值、压缩前后大小）都记录在请求上
-- **会话元数据智能**：自动任务类型标注（10 类工作类型）、项目归属、标题提取，把原始流量变成可检索的知识
+- **会话元数据智能**：自动任务类型标注（27 类工作类型）、项目归属、标题提取，把原始流量变成可检索的知识
 - **身份隧道**：Agent 流量通过 virtual IP/MAC/ClientID 归属 —— 即使大量 Agent 共享同一出口，多租户隔离依然成立
 - **4 档数据生命周期**：热（0–7 天）/ 温（7–30 天）/ 冷（30–90 天）/ 过期（>90 天），配归档预览 —— 执行前先告诉你"具体会动哪些数据"
 
@@ -166,12 +167,12 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 ### 凭据监控 — 多源 × 多凭据健康
 
 ![凭据监控](docs/assets/screenshots/credential-monitor.png)
-*实时二维可用性矩阵（生产环境 19 凭据 × 18 模型），一眼看出哪个凭据下哪个模型出问题。每凭据 P95 延迟、1 小时滑动窗口成功率与并发槽位占用。指纹池（50+ User-Agent、35 种 Accept-Language 变体、11 种 uTLS profile）+ 自适应探测自动躲避上游风控 —— 失败即触发熔断，无需人工介入*
+*实时二维可用性矩阵（生产环境 19 凭据 × 18 模型），一眼看出哪个凭据下哪个模型出问题。每凭据 P95 延迟、1 小时滑动窗口成功率与并发槽位占用。指纹池（42 个 User-Agent、35 种 Accept-Language 变体）+ 自适应探测自动躲避上游风控 —— 失败即触发熔断，无需人工介入*
 
 ### 工作类型配置 — 任务自动分类
 
 ![工作类型](docs/assets/screenshots/work-types.png)
-*任务自动分类（10 类工作类型），附 24h 分布、Top 模型与路由决策统计 —— 可在管理界面按工作类型配置*
+*任务自动分类（27 类工作类型），附 24h 分布、Top 模型与路由决策统计 —— 可在管理界面按工作类型配置*
 
 ### 免费资源池
 
@@ -383,11 +384,11 @@ Installer 完整设计见 [installer/README.md](installer/README.md)。
 | **数据驻留** | 数据离开企业边界 | 所有数据留在企业基础设施内 |
 | **计费** | 按用量计费（USD） | 套餐 + 积分 + 加油包 —— 为中国 SMB 而生，支付宝就绪 |
 | **上游模型** | 少数主要厂商 | 广泛模型覆盖 + 国产模型 + 本地模型 |
-| **凭据指纹池** | 基础 | 50+ User-Agent · 35 Accept-Language · 11 uTLS profile |
+| **凭据指纹池** | 基础 | 42 个 User-Agent · 35 Accept-Language |
 | **会话治理** | 请求级日志 | 粘性会话 + 全量内容回放 + 压缩 + 4 档生命周期 |
 | **MCP 工具网关** | 部分 | 2026 Q3 全量交付 |
 | **中文友好** | 有限 | 全中文 UI + 国产模型 + 支付宝 |
-| **多租户审计** | 标准 | 38+ 表 RLS · 租户审计 L1 = 0 |
+| **多租户审计** | 标准 | 90+ 表 RLS · 租户审计 L1 = 0 |
 
 ### vs. 具名竞品
 
@@ -455,7 +456,7 @@ Installer 完整设计见 [installer/README.md](installer/README.md)。
 | 会话生命周期 | [docs/session-lifecycle.md](docs/session-lifecycle.md) — 会话处理生命周期，全流程图解 |
 | 架构（证据分级） | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — 内部权威文档（CURRENT/SHADOW/PARALLEL 分级） |
 | 架构（总览） | [docs/architecture.md](docs/architecture.md) — 系统设计与组件 |
-| 需求 | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×19 领域 / NFR×13 |
+| 需求 | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×16 领域 / NFR×13 |
 | 功能目录 | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md) — 功能 → 代码 → API → 管理页映射 |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — 数据面与管理面 API 规范 |
 | 环境 | [docs/environment.md](docs/environment.md) — 部署环境与变量 |
@@ -499,7 +500,7 @@ bash scripts/sync-to-github.sh             # 确认后 force-push（main + tags�
 
 ## ✅ CI 与门禁（2026-09-14 起）
 
-- **正式门禁 = 本地 `./verify.sh`**：提交/部署前必跑（`go test ./...` 全量、迁移 checksum 对账、隐私合规、vet、build、前端构建）。merge 到 main 与发版以它为准。
+- **正式门禁 = 本地 `./verify.sh`**：提交/部署前必跑（`go test ./...` 全量、迁移 checksum 对账、隐私合规、vet、build；前端构建为 `--web` 选通项）。merge 到 main 与发版以它为准。
 - **codeup Flow 轻量门**：远端只有 codeup，`.github/workflows/` 在 codeup 不执行；`.workflow/main-verify.yml` 提供流水线即代码配置（build + `go vet ./autoroute/...` + 60 例 auto 匹配离线套件），需在 codeup 仓库「流水线」页导入一次后随 push/PR 自动触发。
 - auto 匹配离线回归可单独复跑：`go test ./autoroute/ -run 'TestAutoMatchingSuiteHeuristic|TestPromptClassificationMatrix'`（纯离线，无网络）。
 
@@ -509,7 +510,7 @@ bash scripts/sync-to-github.sh             # 确认后 force-push（main + tags�
 
 欢迎参与贡献！开发环境搭建、代码风格与 PR 流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-多租户相关改动必须通过全部三条 linter：`lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant`。
+多租户相关改动必须通过 RLS 门禁（`make test-rls`——真实 PostgreSQL，需 `TEST_DATABASE_URL`）与单元测试套件（`make test`——CI 的 `verify.sh` 跑的就是它）。
 
 ## 🔐 安全
 

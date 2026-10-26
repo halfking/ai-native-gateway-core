@@ -3,9 +3,7 @@
 export default {
   modal: {
     title: 'リクエストトレース詳細',
-    openButton: '🔗 フロー',
     close: '閉じる',
-    tooltip: 'このリクエストのエンドツーエンドのタイムラインを表示',
     snapshotTitle: '失敗コンテキストスナップショット',
     candidates: '候補',
     routingState: 'ルーティング',
@@ -17,8 +15,6 @@ export default {
     failedCount: '失敗ステップ',
   },
   detail: {
-    basicInfo: '基本情報',
-    requestId: 'リクエスト ID',
     finalStatus: '最終ステータス',
     failedAtStage: '失敗ステージ',
     totalDuration: '合計時間',
@@ -27,11 +23,9 @@ export default {
     sourcePostgres: 'PostgreSQL (履歴)',
     eventCount: 'イベント数',
     copyJson: 'JSON をコピー',
-    copySuccess: 'コピー済み',
     statusSuccess: '成功',
     statusFailed: '失敗',
     statusTimeout: 'タイムアウト',
-    statusSkipped: 'スキップ',
     statusInProgress: '進行中',
   },
   empty: {
@@ -41,14 +35,13 @@ export default {
     hint2: '10 分以内に完了したリクエスト: まだ Redis にあります',
     hint3: 'PostgreSQL にフラッシュ済み: フォールバックで表示',
 
-    hint4: '如果此处显示为空，可能原因：请求未完成 flush、或该请求确实未触发 trace 埋点',
   },
   aiPrompt: {
     button: '🤖 AI プロンプト生成',
     modalTitle: 'AI 分析プロンプト生成器',
     userQuestionLabel: '質問',
     userQuestionPlaceholder: '例: このリクエストが失敗した理由は？',
-    generate: '生成',
+    generate: "作成",
     generating: '生成中...',
     resultLabel: '生成されたプロンプト',
     copy: 'コピー',
@@ -76,16 +69,5 @@ export default {
     module_upstream: '上流',
     module_session: 'セッション',
   },
-  failureHint: {
-    upstream_timeout: '上流タイムアウト',
-    upstream_unreachable: '上流到達不能',
-    upstream_reset: '接続リセット',
-    upstream_io_error: 'ネットワーク I/O エラー',
-    upstream_network_error: 'ネットワークエラー',
-    upstream_5xx: '上流 5xx',
-    upstream_4xx: '上流 4xx',
-    upstream_rate_limit: '上流レート制限 (429)',
-    upstream_auth_error: '上流認証 (401/403)',
-    upstream_not_found: '上流 404',
-  },
+  generateFailed: '要約を生成できませんでした。再試行してください。',
 }

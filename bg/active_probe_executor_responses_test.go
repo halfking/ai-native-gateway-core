@@ -97,7 +97,7 @@ func TestSingleResponsesPing_ClassifiesSuccess(t *testing.T) {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","status":"completed","output":[]}`))
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
 	}))
 	t.Cleanup(srv.Close)
 
@@ -135,7 +135,7 @@ func TestProbeWithRetry_ResponsesWireShape(t *testing.T) {
 		_ = json.Unmarshal(raw, &body)
 		gotMaxOutput, _ = body["max_output_tokens"].(float64)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"resp_9","object":"response","status":"completed","output":[]}`))
+		_, _ = w.Write([]byte(`{"id":"resp_9","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
 	}))
 	t.Cleanup(srv.Close)
 

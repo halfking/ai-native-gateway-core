@@ -8,8 +8,6 @@ export default {
     refreshing: '重新整理中...',
   },
   filter: {
-    startDate: '開始日期',
-    endDate: '結束日期',
     taskType: '原始任務類型',
     model: '模型',
     modelPlaceholder: '全部模型',
@@ -21,8 +19,6 @@ export default {
     all: '全部',
     annotatedOnly: '已標註',
     unannotatedOnly: '未標註',
-    annotator: '標註人',
-    annotatorPlaceholder: '輸入標註人使用者名稱',
     query: '查詢',
     reset: '重設',
   },
@@ -35,18 +31,15 @@ export default {
     selectModel: '選擇模型',
     autoRoute: 'AUTO 路由',
     confidence: '置信度',
-    humanProvider: '人工標註供應商',
-    selectProvider: '選擇供應商',
     isCorrect: '路由是否正確',
     correct: '正確',
     incorrect: '錯誤',
     reason: '標註原因',
     annotator: '標註人',
     annotatorPlaceholder: '輸入您的使用者名稱',
-    submit: '提交',
+    submit: '送出',
     cancel: '取消',
     errors: {
-      providerRequired: '供應商為必填項',
       taskTypeRequired: '任務類型為必填項',
       modelRequired: '模型為必填項',
       reasonRequired: '原因為必填項',
@@ -55,7 +48,6 @@ export default {
     },
   },
   table: {
-    requestId: '請求 ID',
     time: '時間',
     title: '標題',
     client: '用戶端',
@@ -63,7 +55,6 @@ export default {
     model: '模型',
     taskType: '任務類型',
     confidence: '置信度',
-    autoProvider: 'AUTO 路由',
     status: '狀態',
     statusOk: '成功 {code}',
     statusFail: '失敗 {code}',
@@ -73,14 +64,12 @@ export default {
     unannotated: '未標註',
     annotate: '標註',
     view: '檢視',
-    delete: '刪除',
   },
   drawer: {
     annotateTitle: '標註樣本',
     viewTitle: '檢視標註',
   },
   detail: {
-    humanProvider: '人工標註供應商',
     isCorrect: '路由是否正確',
     reason: '標註原因',
     annotator: '標註人',
@@ -96,18 +85,6 @@ export default {
     totalTurns: '會話輪次',
     source: '資料來源',
   },
-  batch: {
-    title: '批次標註',
-    desc: '批次標註 {count} 條選中樣本',
-    submit: '批次提交',
-  },
-  pagination: {
-    total: '共 {n} 筆',
-    pageOf: '第 {page} / {total} 頁',
-    perPage: '每頁',
-    prev: '上一頁',
-    next: '下一頁',
-  },
   reasons: {
     correct: '預測正確',
     performance: '效能問題',
@@ -121,7 +98,7 @@ export default {
     refresh: '重新整理',
     refreshing: '重新整理中...',
     loadFailed: '統計載入失敗',
-    noData: '暫無資料',
+    noData: '還沒有標註統計 —— 先完成一批標註後再查看',
     totalAnnotations: '總標註數',
     providerAccuracy: '供應商準確率',
     annotatorStats: '標註人統計',
@@ -140,24 +117,13 @@ export default {
     distribution: '分佈',
   },
   // Actions
-  batchSelected: '已選 {count} 條',
-  batchAnnotate: '批次標註',
-  clearSelection: '清除選擇',
 
   // Success messages
-  annotationCreated: '標註建立成功',
-  batchSuccess: '批次標註成功：{count} 條',
-  batchPartialSuccess: '批次標註部分成功：{success} 條成功，{failed} 條失敗',
-  deleteSuccess: '標註刪除成功',
 
   // Error messages
   loadFailed: '標註樣本載入失敗',
   annotationFailed: '標註失敗',
   correctionWriteFailed: '修正寫入失敗（主標註已保存）：{msg}',
-  batchFailed: '批次標註失敗',
-  deleteFailed: '刪除標註失敗',
-  noSamplesSelected: '請先選擇要標註的樣本',
-  confirmDelete: '確認刪除此標註？',
 
   // Loading states
   loading: '載入中...',

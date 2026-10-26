@@ -125,67 +125,36 @@ BEGIN
     -- 已是 ursm_node_snapshot_min_legacy_pkey（回滚后再上的情形）⇒ 无需动作。
 END $$;
 
--- 1b) 分区父表。
---     56 列 = 01-schema.sql 的 32 列 + 818 的 24 列。
---     ★ 依赖 818 已应用（否则下面 24 列不存在 writer 写入就会失败）。
+-- 1b) 分区父表 —— ★★ 2026-10-21 改为**列驱动**（LIKE），不再硬编码列清单。
+--
+--     原实现（硬编码 56 列 = 01-schema.sql 的 32 列 + 818 的 24 列）在 **252**
+--     上是正确的，但那是**当时的列集**。2026-10-21 在 211 上做预检时实测：
+--     211 的 `ursm_node_snapshot_min` 有 **57 列** —— 多出 `empty_response_rate_5m`
+--     （列 57，由后续迁移补的），而 writer 的 INSERT **确实写这一列**。
+--     ⇒ ⇒ **830 原样在 211 上执行会直接打断写路径**：
+--        新父表没有该列 ⇒ INSERT 报 `42703 column ... does not exist`
+--        ⇒ 而 boot 不会失败、迁移 RC=0、日志无异常 ⇒ **静默 + 致命**。
+--     ⇒ ⇒ 这就是「同一迁移在两个实例上是两个不同版本」的典型形态
+--        （与 §143.42 的「不能直接登记旧文件」同族）。
+--
+--     ⇒ **改成 LIKE 之后，「新父表的列集 == 旧表的列集」成为结构属性**，
+--       而不是靠人肉维护一份清单 ⇒ 这类「列漂移」缺陷从根上消失。
+--       ★ 对 252 而言行为**完全不变**：LIKE 出来的仍是那 56 列、同一顺序、
+--         同一 DEFAULT/NOT NULL。
+--
+--     ★ LIKE 的语义边界（刻意不选的选项）：
+--       · 不写 INCLUDING INDEXES   —— 索引不复制（PK 由 1c 显式建，名字才对得上）
+--       · 不写 INCLUDING CONSTRAINTS —— CHECK 约束不复制（旧表实测只有 PK，无 CHECK）
+--       · 写 INCLUDING DEFAULTS     —— 默认值必须复制（tenant_id DEFAULT '' 是硬约束）
+--       · NOT NULL **总是**被 LIKE 复制 ✔（PG 文档语义）
+--       · 不复制 IDENTITY/GENERATED —— 旧表无此类列（实测），带上也无副作用
 CREATE TABLE public.ursm_node_snapshot_min (
-    snapshot_ts timestamp with time zone NOT NULL,
-    recovery_epoch bigint NOT NULL,
-    provider_id integer NOT NULL,
-    credential_id integer NOT NULL,
-    raw_model_name text NOT NULL,
-    canonical_name text,
-    tenant_id text DEFAULT ''::text NOT NULL,
-    available boolean NOT NULL,
-    health_status text,
-    fail_streak integer,
-    cool_until timestamp with time zone,
-    sr_1m real,
-    sr_5m real,
-    sr_30m real,
-    samples_1m integer,
-    samples_5m integer,
-    samples_30m integer,
-    lat_p50_ms integer,
-    lat_p95_ms integer,
-    score real,
-    price_in_per_1m numeric,
-    price_out_per_1m numeric,
-    billing_mode text,
-    trust_level real,
-    baseurl_latency_ms integer,
-    conc_used integer,
-    conc_limit integer,
-    fp_used integer,
-    fp_limit integer,
-    source_priority integer,
-    generation bigint,
-    payload jsonb,
-    -- 以下 24 列来自 818 迁移（基线 01-schema.sql 尚未收录，设计稿 §9 Finding A）
-    updated_at_ms bigint,
-    last_probe_at_ms bigint,
-    last_probe_latency_ms bigint,
-    last_attempt_ms bigint,
-    last_ok_ms bigint,
-    last_request_at_ms bigint,
-    last_request_error_at_ms bigint,
-    manual_at_ms bigint,
-    cool_until_ms bigint,
-    event_seq bigint,
-    disabled boolean,
-    last_direct_ok boolean,
-    manual_hold boolean,
-    success_count integer,
-    failure_count integer,
-    disable_count integer,
-    lat_ewma_ms real,
-    empty_response_rate_1m real,
-    empty_response_rate_30m real,
-    last_err text,
-    manual_reason text,
-    manual_actor text,
-    disabled_reason text,
-    cool_reason text
+    LIKE public.ursm_node_snapshot_min_legacy
+        INCLUDING DEFAULTS
+        INCLUDING GENERATED
+        INCLUDING IDENTITY
+        INCLUDING STORAGE
+        INCLUDING COMMENTS
 ) PARTITION BY RANGE (snapshot_ts);
 
 -- 1c) 主键。保留且四列不变（见文件头硬约束 1）。

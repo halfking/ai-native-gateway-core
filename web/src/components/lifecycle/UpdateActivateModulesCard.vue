@@ -24,31 +24,31 @@ defineProps<{
     <el-alert v-if="error" type="warning" :title="error" show-icon :closable="false" class="mb" />
     <el-skeleton v-if="loading" :rows="3" animated />
     <el-table v-else-if="items.length" :data="items" size="small" stripe>
-      <el-table-column prop="display_name" label="模块" min-width="140">
+      <el-table-column prop="display_name" :label="$t('common.module')" min-width="140">
         <template #default="{ row }">
           {{ row.display_name || row.module_id }}
         </template>
       </el-table-column>
-      <el-table-column prop="version" label="版本" width="100" />
-      <el-table-column label="状态" width="100">
+      <el-table-column prop="version" :label="$t('common.terms.version')" width="100" />
+      <el-table-column :label="$t('common.terms.status')" width="100">
         <template #default="{ row }">
           <el-tag v-if="row.installed" size="small" type="success">已安装</el-tag>
           <el-tag v-else-if="row.licensed" size="small" type="info">已授权</el-tag>
-          <el-tag v-else size="small">未开通</el-tag>
+          <el-tag v-else size="small">{{ $t('common.terms.notActivated') }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="开通时间" min-width="160">
+      <el-table-column :label="$t('common.terms.activationTime')" min-width="160">
         <template #default="{ row }">
           {{ row.opened_at || row.activated_at || '—' }}
         </template>
       </el-table-column>
-      <el-table-column prop="description" label="说明" min-width="180" show-overflow-tooltip />
+      <el-table-column prop="description" :label="$t('common.terms.note')" min-width="180" show-overflow-tooltip />
     </el-table>
     <el-empty v-else description="暂无模块清单（请确认中心 modules/catalog 可用）" />
     <p class="muted">
       模块清单由中心发版目录下发；开通申请在
       <a href="https://llm.kxpms.cn/admin/modules" target="_blank" rel="noopener">llm.kxpms.cn/admin/modules</a>
-      完成。
+      {{ $t('common.terms.finish') }}。
     </p>
   </el-card>
 </template>

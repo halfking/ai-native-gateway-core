@@ -682,7 +682,7 @@ onBeforeUnmount(() => {
 .df__banner {
   margin: 8px 0;
   padding: 8px 10px;
-  border-left: 3px solid #d97706;
+  border: 1px solid #d97706;
   background: #fff7ed;
   font-size: 12px;
   color: #9a3412;

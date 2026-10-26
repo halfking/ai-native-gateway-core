@@ -29,7 +29,7 @@ import {
  *   —— 而第一百二十一批（platformSettings）与第一百二十二批（usageEnhanced）
  *   **栽在同一句话上**。三批的根因是同一个：
  *
- *   ★★★ `admin(...)` 是 `admin/handler.go:925` 的**局部别名** `admin := h.admin`，
+ *   ★★★ `admin(...)` 是 `admin/handler.go:962` 的**局部别名** `admin := h.admin`，
  *     而 `h.admin` = `AdminMiddleware` —— 它**没有任何角色下限** ⇒
  *     ★★ **「admin 档」在注册行里的真实含义是「已认证」，不是「管理员」。**
  *
@@ -51,8 +51,8 @@ import {
  *   那份告示**必须让所有人看见**（「接口没报错不代表数据是新的」）；
  *   本族**没有**这个理由 ⇒ 「**没理由给普通用户看**」本身就是一道门。
  *
- * ★★ 行号订正：模块头原写 `:982` / `:983`，实为 `:1001` / `:1002`（整块漂 **19 行**）；
- *   同族 vacuum/reindex 六个原写 `:986-992`，实为 `:1005-:1011`（同样 19 行）。
+ * ★★ 行号订正：模块头原写 `:982` / `:983`，实为 `:1009` / `:1010`（整块漂 **27 行**）；
+ *   同族 vacuum/reindex 六个原写 `:986-992`，实为 `:1013-:1019`（同样 27 行）。
  *
  * 判据钉六组：
  *  ① ★★★★★★ 权限档 admin，**两条理由分别钉**，且逐条从 Go 源码取证。
@@ -237,11 +237,11 @@ describe('① 权限档 admin（两条独立理由，缺一不可）', () => {
     }
   })
 
-  it('①-7 ★★★★★ 行号订正：模块头原写 `:982`/`:983`，实为 `:1001`/`:1002`', () => {
+  it('①-7 ★★★★★ 行号订正：`:982`/`:983` → `:1009`/`:1010`（批153）→ `:1034`/`:1035`（12h-audit 20261017）→ 实为 `:1038`（2026-10-21 views 行号订正轮）→ 实为 `:1041`（2026-10-26 行号漂移订正轮）', () => {
     const lines = goSrc('admin/handler.go').split('\n')
     const at = lines.findIndex((l) => l.includes('"/api/admin/data-lifecycle/storage"'))
     expect(at, '找不到注册行').toBeGreaterThan(-1)
-    expect(at + 1).toBe(1001)
+    expect(at + 1).toBe(1041)
     expect(lines[at]).toMatch(/admin\(h\.handleDataLifecycleStorage\)/)
     // ★★ 反向护栏：模块头原写的行号那行**不是**本族注册处。
     expect(lines[981]).not.toMatch(/data-lifecycle/i)

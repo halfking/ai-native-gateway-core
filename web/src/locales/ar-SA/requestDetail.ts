@@ -28,7 +28,6 @@ export default {
       requestTime: 'وقت الطلب',
       status: 'الحالة',
       latency: 'وقت الاستجابة',
-      latencyUnit: 'مللي ثانية',
       tenant: 'Tenant',
       success: 'Success',
       clientModel: 'نموذج العميل',
@@ -40,7 +39,6 @@ export default {
       taskId: 'معرّف المهمة',
       endUser: 'End User',
       token: 'رمز',
-      tokenTotal: 'الرموز (الإجمالي {input}/{output})',
       total: 'الإجمالي',
       cache: 'Cache',
       costCredits: 'Cost / Credits',
@@ -151,7 +149,6 @@ export default {
   // — RequestWaterfallPanel —
   waterfall: {
     loading: 'جارٍ تحميل شلال الإرسال…',
-    source: 'المصدر: {src}',
     stageHeader: 'مراحل T0–T9',
     cols: {
       stage: 'المرحلة',
@@ -179,19 +176,13 @@ export default {
     diagram: {
       ariaLabel: 'تدفق معالجة الطلب', trackLabel: 'تسلسل أحداث التدفق',
       event: 'حدث تدفق', noData: 'لا يوجد تدفق قابل للمراقبة', noEvents: 'لا توجد أحداث تدفق',
-      stages: { received: 'الوصول', routing: 'حل المسار', model_queue: 'طابور النموذج', credential_queue: 'طابور بيانات الاعتماد', node_selection: 'اختيار العقدة', upstream: 'طلب المنبع', streaming: 'استجابة متدفقة', retrying: 'إعادة المحاولة', terminal: 'اكتمل الطلب' },
-      status: { success: 'نجاح', failed: 'فشل', timeout: 'انتهاء المهلة', skipped: 'تم التخطي' },
       flags: { compression: 'ضغط', retry: 'إعادة محاولة', nodeSwitch: 'تبديل العقدة', degraded: 'تدهور المراقبة' },
       evidenceLabel: 'أدلة التوجيه والشلال', evidenceTitle: 'المحاولات المرصودة', waterfallAttempt: 'محاولة الشلال رقم {number}', noDetails: 'لا توجد تفاصيل إضافية', degraded: 'تدهور المراقبة',
       lanesLabel: 'مسارات محاولات الطلب', lanesTitle: 'محاولات الرحلة المرصودة', attemptLane: 'المحاولة #{number}', sourceJourney: 'مصدر الرحلة', waterfallLabel: 'أشرطة مراحل الشلال', waterfallTitle: 'أشرطة مراحل الشلال', lastAttemptSemantics: 'توقيت على مستوى الطلب؛ قد تعكس T5–T9 المحاولة الأخيرة', synthesizedBars: 'تشير المراحل الاصطناعية إلى طوابع زمنية مفقودة (مراقبة متدهورة).', requestTimeline: 'الخط الزمني للطلب',
-      legend: { success: 'نجاح', failed: 'فشل/انتهاء المهلة', special: 'ضغط · إعادة محاولة · تبديل العقدة' },
+      legend: { success: 'نجاح', failed: 'فشل/انتهاء المهلة', special: 'ضغط, إعادة محاولة, تبديل العقدة' },
     },
   },
   // — عناصر نائبة مشتركة —
-  common: {
-    emDash: '—',
-    colon: ': ',
-  },
  // — Subtask 3 (handoff §5): body_status two-state banners —
   // المصدر: turns[].body_status من /api/admin/sessions/detail — وليس
   // /snapshot (لا توجد turns هناك) ولا قائمة /turns (بيانات وصفية فقط).

@@ -136,9 +136,9 @@ tc7() {
   fi
 
   case "$http_code" in
-    429|503|500) ok "PASS: 返回 $http_code（预期行为）" ;;
+    429|503|500) ok "PASS: 返回 ${http_code}（预期行为）" ;;
     000|TIMEOUT) err "FAIL: 连接超时"; test_result=1 ;;
-    *) err "WARN: 返回 $http_code（预期 429/503/500）" ;;
+    *) err "WARN: 返回 ${http_code}（预期 429/503/500）" ;;
   esac
 
   info "Step 6: 验证重试日志"

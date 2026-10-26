@@ -16,6 +16,7 @@ import { createHyperPages } from '../lib/shell/hyper/hyperPages'
 import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
 import HyperLoadMore from '../components/ui/HyperLoadMore.vue'
 import type { CardField } from '../components/ui/CardList.vue'
+import { View, CircleClose, CircleCheck, Close } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -366,13 +367,13 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
     <!-- Messages -->
     <div v-if="error" class="message message-error">
-      <span class="message-icon">❌</span>
+      <span class="message-icon"><CircleClose /></span>
       {{ error }}
       <button class="message-close" @click="clearError">×</button>
     </div>
 
     <div v-if="successMessage" class="message message-success">
-      <span class="message-icon">✅</span>
+      <span class="message-icon"><CircleCheck /></span>
       {{ successMessage }}
       <button class="message-close" @click="clearMessage">×</button>
     </div>
@@ -523,14 +524,14 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
                   @click="quickReject(item)"
                   :title="t('approval.list.actions.reject')"
                 >
-                  ✕
+                  <Close />
                 </button>
                 <button
                   class="btn btn-secondary btn-xs"
                   @click="viewDetail(item)"
                   :title="t('approval.list.actions.viewDetail')"
                 >
-                  👁
+                  <View />
                 </button>
               </div>
             </td>
@@ -781,7 +782,6 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-secondary);
-  text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
@@ -836,7 +836,6 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
-  text-transform: uppercase;
 }
 
 .badge-green {

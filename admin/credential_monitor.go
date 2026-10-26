@@ -104,7 +104,11 @@ func (c *summaryCache) invalidateCredential(credentialID int) {
 		return
 	}
 	for key := range c.entries {
-		if strings.Contains(key, fmt.Sprintf(":c%d:", credentialID)) {
+		// `:c0:` 是**该 provider 的全量**摘要（key 由 monitorSummaryCacheKey
+		// 拼成 p<provider>:c<credential>:…，credential 缺省为 0）。单个凭据状态
+		// 变了之后，这个聚合条目同样过期 —— 只删 `:c<id>:` 会让它继续被命中，
+		// 最多 TTL(30s) 内对外给出旧值。
+		if strings.Contains(key, fmt.Sprintf(":c%d:", credentialID)) || strings.Contains(key, ":c0:") {
 			delete(c.entries, key)
 		}
 	}
@@ -534,7 +538,7 @@ func runMonitorSummary(ctx context.Context, db pgxQueryer, p monitorSummarySQLPa
 		); scanErr != nil {
 			scanFailures++
 			slog.Warn("monitor summary scan failed",
-				"credential_id", p.ProviderID, "error", scanErr.Error())
+				"credential_id", p.CredentialID, "provider_id", p.ProviderID, "error", scanErr.Error())
 			continue
 		}
 
@@ -583,12 +587,12 @@ func runMonitorSummary(ctx context.Context, db pgxQueryer, p monitorSummarySQLPa
 	}
 	if rows.Err() != nil {
 		slog.Error("monitor summary rows iteration failed",
-			"credential_id", p.ProviderID, "scan_failures", scanFailures, "error", rows.Err().Error())
+			"credential_id", p.CredentialID, "provider_id", p.ProviderID, "scan_failures", scanFailures, "error", rows.Err().Error())
 		return startedAt, summaries, fmt.Errorf("rows iteration failed: %w", rows.Err())
 	}
 	if scanFailures > 0 {
 		slog.Warn("monitor summary scan failures observed",
-			"credential_id", p.ProviderID, "scan_failures", scanFailures)
+			"credential_id", p.CredentialID, "provider_id", p.ProviderID, "scan_failures", scanFailures)
 	}
 	return startedAt, summaries, nil
 }
@@ -622,6 +626,17 @@ type WindowStats struct {
 func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// 12h-audit 20261017: role gate. Registered under AdminMiddleware (any
+	// authenticated user), but the summary SQL filter is `($3 = '' OR
+	// c.tenant_id = $3)` and TenantID only gets populated for tenant_admin
+	// (below) — a role=user caller passes "" through and sees every tenant's
+	// credential inventory. Same hole audit #154 closed on model-history;
+	// restrict to super_admin / admin_key / tenant_admin.
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
 		return
 	}
 
@@ -670,6 +685,27 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 		}
 	}
 
+	// ⚠️ 2026-10-20：补 nil-db 判空。本 handler 原先是本组**唯一**没有这道门的
+	// （promote/demote/set-concurrency/model-toggle/decisions/manual-disabled/
+	//  sliding-window 等 9 个兄弟 handler 都有）—— m.h.db 为 nil 时
+	// runMonitorSummary 会拿 nil querier 去 Query，直接 nil pointer panic。
+	// 生产上 h.db 恒接线，所以这不是线上事故，是**一致性缺口**：
+	// 同一个 handler 家族对「DB 没接」给出 9 种 503 + 1 种 panic。
+	//
+	// ⚠ 判的是**实际 querier**（summaryQuerier），不是 m.h.db：
+	//   summaryDB 是测试注入点（见 credential_monitor_server_duration_test.go），
+	//   只看 m.h.db 会把「注入了 mock db」的测试误判成「没接 DB」。
+	//
+	// 位置遵循本组既定口径（2026-10-19 写侧角色门轮）：
+	//   ① 在**角色门之后** ⇒ 未授权者得 403 而不是 503
+	//      （503 会泄露「DB 是否已配置」）；
+	//   ② 在**首次真正访问 db 之前**、且在缓存命中之后
+	//      ⇒ 缓存命中时不需要 DB，不该被 nil-db 拦下。
+	if m == nil || m.h == nil || (m.summaryDB == nil && m.h.db == nil) {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
 	// ⚠️ 2026-10-05 修正：原来写的是 `queryStart.Sub(startedAt)` —— 那是
 	// 「查询开始时刻 − handler 开始时刻」，两个都是**起点**，相减恒为 0 或负数。
 	// 它本来要报的是「这条 SQL 跑了多久」，而那个字段的唯一用途就是让人看见
@@ -699,11 +735,35 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 //
 // 2026-06-22: Redis is not configured on every environment, so when the
 // recorder is unavailable (or returns no data) we fall back to a direct
-// _request_logs query. The response carries `source` ("redis" or
-// "_request_logs") so the UI can show where the data came from.
+// session-turn query. The response carries `source` ("redis" or
+// "session_turns") so the UI can show where the data came from.
+//
+// ★ 2026-10-24（v1 → session_turns 替换轮）：回退腿早已改读会话族
+//
+//	（短窗 session_turns_hot / 长窗 canonical 视图），而 `source` 的值却还
+//	写着 "_request_logs" ⇒ 运营从响应里读到的是一个**不存在的表名**。
+//	⇒ 值改成 "session_turns"（与实际读面一致）。
+//
+// 2026-10-16 audit #153: tenant isolation. Per-call detail is sensitive — any
+// caller with a valid credential_id would otherwise read every other tenant's
+// call timeline. tenant_admin is scoped to its own tenant_id; super_admin /
+// admin_key keep the unfiltered (cross-tenant) view. The Redis recorder has
+// no tenant tag on its entries, so for tenant_admin callers we force the
+// session-turn fallback which carries the tenant_id filter.
 func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// 12h-audit 20261017: role gate. The #153 fix scoped tenant_admin via a
+	// tenant_id filter but left role=user on the "" (see-all) path — and the
+	// Redis fast path below (`!isTenantAdmin`) has no tenant tag at all, so
+	// any authenticated user could read every tenant's per-call timeline for
+	// any credential_id. Same standard audit #154 applied to model-history;
+	// restrict to super_admin / admin_key / tenant_admin.
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
 		return
 	}
 
@@ -730,6 +790,13 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 		return
 	}
 
+	// Tenant scope (audit #153): tenant_admin → own tenant, others → "" (see all).
+	tenantID := ""
+	if IsTenantAdmin(r) {
+		tenantID = GetTenantID(r)
+	}
+	isTenantAdmin := IsTenantAdmin(r)
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -739,15 +806,23 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 	// null) when there are no entries — otherwise the frontend's
 	// windowEntries.length throws "Cannot read properties of null".
 	entries := make([]credentialhealth.CallEntry, 0)
-	if m.recorder != nil && m.recorder.Enabled() {
+	if !isTenantAdmin && m.recorder != nil && m.recorder.Enabled() {
 		since := time.Now().Add(-time.Duration(minutes) * time.Minute)
 		entries, _ = m.recorder.GetRecent(ctx, credentialID, model, since)
 	}
 
-	// ── Fallback: _request_logs (when Redis is down or empty) ────────────
+	// ── Fallback: session_turns (when Redis is down or empty, or when we
+	// skipped the Redis path for tenant isolation) ───────────────────────
+	//
+	// ★ 2026-10-24：读面早已是会话族（短窗 session_turns_hot / 长窗
+	//   canonical 视图），值写 "_request_logs" 会让运营读到一个不存在的表名。
 	if len(entries) == 0 {
-		source = "_request_logs"
-		rlEntries, err := m.slidingWindowFromRequestLogs(ctx, credentialID, model, minutes, limit)
+		source = "session_turns"
+		if m.h == nil || m.h.db == nil {
+			writeError(w, http.StatusServiceUnavailable, "database not configured")
+			return
+		}
+		rlEntries, err := m.slidingWindowFromRequestLogs(ctx, credentialID, model, minutes, limit, tenantID)
 		if err != nil {
 			writeInternalErr(w, "failed to get window", err)
 			return
@@ -788,16 +863,16 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 }
 
 // slidingWindowHotMaxMinutes 划分抽屉回退查询的两条路径：
-// ≤ 120 分钟走 hot 窗快路径（session_turns_hot / _request_logs_hot，
-// 252 实测 0.6ms vs canonical 视图 med 1.27s，~2,000×）；更长窗口保留
+// ≤ 120 分钟走 hot 窗快路径（session_turns_hot，252 实测 0.6ms vs
+// canonical 视图 med 1.27s，~2,000×）；更长窗口保留
 // canonical 视图慢路径（视图三臂含全分区反连接，语义全域正确）。
 // 上界依据：hot 保留名义 8h（promote retention），水位滞后实测 ~12h
 // （R16 fact 85），120min 对最坏滞后仍有 4× 边际；batch 端点上限
 // 1440min，超过阈值的窗口必须走视图，否则会静默截断历史。
 const slidingWindowHotMaxMinutes = 120
 
-// slidingWindowQuery 构造凭据监控抽屉的 _request_logs 回退查询（长窗
-// 路径，> slidingWindowHotMaxMinutes 时使用）。2026-09-21 提取为函数：
+// slidingWindowQuery 构造凭据监控抽屉的会话族回退查询（长窗路径，
+// > slidingWindowHotMaxMinutes 时使用）。2026-09-21 提取为函数：
 // 真库回归测试（sliding_window_realdb_test.go）复用同一文本，防测试与
 // 生产 SQL 漂移——bg/feature_stats_worker.go featureDistributionQuery
 // 同款。视图 request_logs_with_current_month 冻结不可改投影（R37 定案），
@@ -818,11 +893,16 @@ func slidingWindowQuery() string {
 		       success, COALESCE(latency_ms, 0), COALESCE(error_kind, '')
 		FROM request_logs_with_current_month
 		WHERE credential_id = $1
-		  -- case-insensitive: _request_logs.outbound_model can differ in case
+		  -- case-insensitive: 会话腿的 outbound_model can differ in case
 		  -- from model_offers.raw_model_name (e.g. "MiniMax-M3" vs "minimax-m3"),
 		  -- so a plain = misses most rows.
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
 		AND ts > NOW() - ($3 || ' minutes')::interval
+		  -- 2026-10-16 audit #153: tenant isolation. Empty $5 (super_admin /
+		  -- admin_key / unauth probe) means "see all tenants"; otherwise the
+		  -- view's tenant_id must match. Without this any caller holding a
+		  -- valid credential_id would read every other tenant's call timeline.
+		  AND ($5 = '' OR tenant_id = $5)
 		ORDER BY ts DESC
 		LIMIT $4
 	`
@@ -832,14 +912,16 @@ func slidingWindowQuery() string {
 // slidingWindowHotMaxMinutes）。与 canonical 视图的窗内等价性论证见
 // slidingWindowQuery 头注；列投影与视图回退查询逐列一致，扫描面：
 //   - session_turns_hot 臂：idx_session_turns_hot_credential_ts
-//     ((CASE credential)::bigint, ts) 表达式索引伺服 credential+窗过滤；
-//   - _request_logs_hot 臂：idx_request_logs_hot_credential_model_ts
-//     (credential, lower(COALESCE(model)), ts) 表达式索引把模型过滤
-//     一并推入索引条件，反连接探测走
-//     idx_session_turns_hot_request 的 Index Only。
+//     ((CASE credential)::bigint, ts) 表达式索引伺服 credential+窗过滤。
 //
-// 252 真库实测（2026-10-11）：EXPLAIN ANALYZE 0.644ms，全臂索引条件
-// 下推，无排序溢出；对拍 canonical 视图 EXCEPT 双向差集 0。
+// 2026-10-20（迁移 890，v1 族整体退役）：原来的第二条臂（v1 hot 表 +
+// 对会话腿的反连接）删除。反连接的对象已不存在，留着就是 42P01；
+// 而两条臂之间本来就不重叠（promote 把 hot 搬进母表、hot 被排空）。
+// ⇒ 现在只剩一条臂，外层 UNION ALL 的「两臂列序必须逐位一致」约束随之
+// 变成「一条臂的列序必须与 canonical 视图一致」。
+//
+// 252 真库实测（2026-10-11，退役前的两臂形态）：EXPLAIN ANALYZE 0.644ms，
+// 全臂索引条件下推，无排序溢出；对拍 canonical 视图 EXCEPT 双向差集 0。
 func slidingWindowHotQuery() string {
 	return `
 		SELECT COALESCE(request_id, ''), EXTRACT(EPOCH FROM ts)::bigint * 1000,
@@ -847,39 +929,52 @@ func slidingWindowHotQuery() string {
 		FROM (
 		    SELECT t.request_id, t.ts, t.success, t.latency_ms, t.error_kind,
 		           t.model AS outbound_model, d.client_model,
+		           t.tenant_id AS tenant_id,
 		           CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END AS credential_id
 		    FROM session_turns_hot t
 		    LEFT JOIN session_turn_details_hot d
 		      ON d.tenant_id::text = t.tenant_id::text
 		     AND d.request_id = t.request_id
 		     AND d.partition_date = t.partition_date
-		    UNION ALL
-		    SELECT r.request_id, r.ts, r.success, r.latency_ms, r.error_kind,
-		           r.outbound_model, r.client_model, r.credential_id
-		    FROM _request_logs_hot r
-		    WHERE NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = r.request_id)
 		) cand
 		WHERE credential_id = $1
 		  -- 与视图路径同款大小写折叠：outbound_model 与 model_offers 大小写
 		  -- 可能不一致（"MiniMax-M3" vs "minimax-m3"）。
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
 		  AND ts > NOW() - ($3 || ' minutes')::interval
+		  -- 2026-10-16 audit #153: tenant isolation. Empty $5 (super_admin /
+		  -- admin_key) means "see all tenants"; otherwise the hot 表的
+		  -- tenant_id 必须匹配。两臂 SELECT 必须显式投影 tenant_id（hot
+		  -- 表原生列名同名，UNION ALL 要求两臂列结构一致才能在外层 WHERE
+		  -- 引用 cand.tenant_id）。
+		  AND ($5 = '' OR tenant_id = $5)
 		ORDER BY ts DESC
 		LIMIT $4
 	`
 }
 
 // slidingWindowFromRequestLogs builds CallEntry timeline data directly from
-// the _request_logs tables. Used when the Redis recorder is unavailable or
-// returns no entries. Window-gated: ≤ slidingWindowHotMaxMinutes reads the
+// the session-turn family. Used when the Redis recorder is unavailable or
+// returns no entries.
+//
+// ★ 2026-10-24：函数名保留（改名会动到调用点与既有夹具），但它读的是会话族
+//
+//	——短窗 session_turns_hot、长窗 canonical 视图（两臂体）。 Window-gated: ≤ slidingWindowHotMaxMinutes reads the
+//
 // hot dual-write tables (index descent, ~sub-ms); longer windows read the
 // canonical view (slidingWindowQuery, 729-serviced) which sees full history.
-func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Context, credentialID int, model string, minutes, limit int) ([]credentialhealth.CallEntry, error) {
+//
+// 2026-10-16 audit #153: tenantID is the caller's tenant scope ("" for
+// super_admin / admin_key — see all; non-empty for tenant_admin — own only).
+// threading tenantID into $5 of the SQL is the load-bearing defence: any
+// caller holding a valid credential_id would otherwise read every other
+// tenant's per-call detail.
+func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Context, credentialID int, model string, minutes, limit int, tenantID string) ([]credentialhealth.CallEntry, error) {
 	q := slidingWindowQuery()
 	if minutes <= slidingWindowHotMaxMinutes {
 		q = slidingWindowHotQuery()
 	}
-	rows, err := m.h.db.Query(ctx, q, credentialID, model, fmt.Sprintf("%d", minutes), limit)
+	rows, err := m.h.db.Query(ctx, q, credentialID, model, fmt.Sprintf("%d", minutes), limit, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -925,6 +1020,23 @@ func (m *CredentialMonitorHandlers) handlePromote(w http.ResponseWriter, r *http
 		return
 	}
 
+	// 2026-10-19 写侧角色门（补 audit #153/#154 读侧同族的**写侧**缺口）：
+	// 本组路由注册在 AdminMiddleware 之下（admin/auth.go:86），该中间件
+	// **只认证不检 role**；而 promote/demote/set-concurrency/model-toggle 的
+	// UPDATE 不带租户过滤 ⇒ 任意已认证用户可跨租户改写凭据状态。
+	// 按两条收口，与读侧（admin/credential_monitor.go:634 等）同标准：
+	//   ① 管理员下限：super_admin / admin_key / tenant_admin，挡 role=user；
+	//   ② 写操作需 super_admin（admin/context.go:79 的既定约定：tenant_admin 只读）。
+	// 顺序：**角色门在 nil-db 检查之前** —— 未授权者应得 403 而不是 503
+	// （503 会泄露「DB 是否已配置」，与读侧 role gate 判据同一条口径）。
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+
 	var req struct {
 		CredentialID int    `json:"credential_id"`
 		Reason       string `json:"reason"`
@@ -943,6 +1055,11 @@ func (m *CredentialMonitorHandlers) handlePromote(w http.ResponseWriter, r *http
 	defer cancel()
 
 	// Force recover: set availability_state = 'ready', clear recover_at
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
 	_, err := m.h.db.Exec(ctx, `
 		UPDATE credentials
 		SET availability_state = 'ready',
@@ -978,6 +1095,23 @@ func (m *CredentialMonitorHandlers) handleDemote(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// 2026-10-19 写侧角色门（补 audit #153/#154 读侧同族的**写侧**缺口）：
+	// 本组路由注册在 AdminMiddleware 之下（admin/auth.go:86），该中间件
+	// **只认证不检 role**；而 promote/demote/set-concurrency/model-toggle 的
+	// UPDATE 不带租户过滤 ⇒ 任意已认证用户可跨租户改写凭据状态。
+	// 按两条收口，与读侧（admin/credential_monitor.go:634 等）同标准：
+	//   ① 管理员下限：super_admin / admin_key / tenant_admin，挡 role=user；
+	//   ② 写操作需 super_admin（admin/context.go:79 的既定约定：tenant_admin 只读）。
+	// 顺序：**角色门在 nil-db 检查之前** —— 未授权者应得 403 而不是 503
+	// （503 会泄露「DB 是否已配置」，与读侧 role gate 判据同一条口径）。
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+
 	var req struct {
 		CredentialID      int     `json:"credential_id"`
 		Reason            string  `json:"reason"`
@@ -1000,6 +1134,11 @@ func (m *CredentialMonitorHandlers) handleDemote(w http.ResponseWriter, r *http.
 	defer cancel()
 
 	recoverAt := time.Now().Add(time.Duration(req.RecoverAfterHours * float64(time.Hour)))
+
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
 
 	_, err := m.h.db.Exec(ctx, `
 		UPDATE credentials
@@ -1039,6 +1178,23 @@ func (m *CredentialMonitorHandlers) handleSetConcurrencyAuto(w http.ResponseWrit
 		return
 	}
 
+	// 2026-10-19 写侧角色门（补 audit #153/#154 读侧同族的**写侧**缺口）：
+	// 本组路由注册在 AdminMiddleware 之下（admin/auth.go:86），该中间件
+	// **只认证不检 role**；而 promote/demote/set-concurrency/model-toggle 的
+	// UPDATE 不带租户过滤 ⇒ 任意已认证用户可跨租户改写凭据状态。
+	// 按两条收口，与读侧（admin/credential_monitor.go:634 等）同标准：
+	//   ① 管理员下限：super_admin / admin_key / tenant_admin，挡 role=user；
+	//   ② 写操作需 super_admin（admin/context.go:79 的既定约定：tenant_admin 只读）。
+	// 顺序：**角色门在 nil-db 检查之前** —— 未授权者应得 403 而不是 503
+	// （503 会泄露「DB 是否已配置」，与读侧 role gate 判据同一条口径）。
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+
 	var req struct {
 		CredentialID         int    `json:"credential_id"`
 		ConcurrencyLimitAuto int    `json:"concurrency_limit_auto"`
@@ -1060,6 +1216,11 @@ func (m *CredentialMonitorHandlers) handleSetConcurrencyAuto(w http.ResponseWrit
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
 
 	_, err := m.h.db.Exec(ctx, `
 		UPDATE credentials
@@ -1159,7 +1320,24 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if m.h.db == nil {
+
+	// 2026-10-19 写侧角色门（补 audit #153/#154 读侧同族的**写侧**缺口）：
+	// 本组路由注册在 AdminMiddleware 之下（admin/auth.go:86），该中间件
+	// **只认证不检 role**；而 promote/demote/set-concurrency/model-toggle 的
+	// UPDATE 不带租户过滤 ⇒ 任意已认证用户可跨租户改写凭据状态。
+	// 按两条收口，与读侧（admin/credential_monitor.go:634 等）同标准：
+	//   ① 管理员下限：super_admin / admin_key / tenant_admin，挡 role=user；
+	//   ② 写操作需 super_admin（admin/context.go:79 的既定约定：tenant_admin 只读）。
+	// 顺序：**角色门在 nil-db 检查之前** —— 未授权者应得 403 而不是 503
+	// （503 会泄露「DB 是否已配置」，与读侧 role gate 判据同一条口径）。
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+	if m == nil || m.h == nil || m.h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
@@ -1504,6 +1682,17 @@ func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r 
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	// 2026-10-16 audit #154: role gate (before nil-DB 503 so unauthorised
+	// callers can't probe for 503 — and so the role-gate unit test doesn't
+	// need a real pgxpool). Registered under AdminMiddleware (any
+	// authenticated user), but the SQL filter is `($4 = '' OR tenant_id = $4)`
+	// and tenantID only gets populated for tenant_admin (line below). A
+	// role=user caller passes "" through and sees every tenant's history.
+	// Restrict to super_admin / admin_key / tenant_admin.
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
 	if m.h == nil || m.h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
@@ -1687,6 +1876,19 @@ func (m *CredentialMonitorHandlers) handleCredentialDecisions(w http.ResponseWri
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+
+	// 12h-audit 20261020: role gate（与 handleMonitorSummary / handleModelHistory 同口径）。
+	// 本路由注册在 AdminMiddleware 之下（只认证、不检 role），而
+	// runCredentialDecisions 只在 IsTenantAdmin 时才追加
+	// `AND rdl.tenant_id = $N` ⇒ role=user 的调用方 tenant_id 为空
+	// ⇒ 读到**全租户**的路由决策日志（request_id / model / outbound_model /
+	// error_class / chosen_provider_id），且 routing_decision_log 没有 RLS 兜底。
+	// ⇒ 与审计 #154 在 model-history 上关掉的洞是同一个。
+	// 位置放在 nil-db 门**之前**：未授权者拿 403，不泄露 DB 是否配置。
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
 	if m.h == nil || m.h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
@@ -1742,6 +1944,23 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 		return
 	}
 
+	// 2026-10-19 写侧角色门（补 audit #153/#154 读侧同族的**写侧**缺口）：
+	// 本组路由注册在 AdminMiddleware 之下（admin/auth.go:86），该中间件
+	// **只认证不检 role**；而 promote/demote/set-concurrency/model-toggle 的
+	// UPDATE 不带租户过滤 ⇒ 任意已认证用户可跨租户改写凭据状态。
+	// 按两条收口，与读侧（admin/credential_monitor.go:634 等）同标准：
+	//   ① 管理员下限：super_admin / admin_key / tenant_admin，挡 role=user；
+	//   ② 写操作需 super_admin（admin/context.go:79 的既定约定：tenant_admin 只读）。
+	// 顺序：**角色门在 nil-db 检查之前** —— 未授权者应得 403 而不是 503
+	// （503 会泄露「DB 是否已配置」，与读侧 role gate 判据同一条口径）。
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+
 	var req struct {
 		CredentialID int    `json:"credential_id"`
 		Reason       string `json:"reason"`
@@ -1776,6 +1995,11 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 	var exists bool
 	var currentDisabled bool
 	checkQ := fmt.Sprintf("SELECT true, COALESCE(manual_disabled, false) FROM credentials WHERE id = $1 %s", tenantCheck)
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
 	if err := m.h.db.QueryRow(ctx, checkQ, checkArgs...).Scan(&exists, &currentDisabled); err != nil {
 		if err == pgx.ErrNoRows {
 			writeError(w, http.StatusNotFound, "credential not found")
@@ -1841,6 +2065,23 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 		return
 	}
 
+	// 2026-10-19 写侧角色门（补 audit #153/#154 读侧同族的**写侧**缺口）：
+	// 本组路由注册在 AdminMiddleware 之下（admin/auth.go:86），该中间件
+	// **只认证不检 role**；而 promote/demote/set-concurrency/model-toggle 的
+	// UPDATE 不带租户过滤 ⇒ 任意已认证用户可跨租户改写凭据状态。
+	// 按两条收口，与读侧（admin/credential_monitor.go:634 等）同标准：
+	//   ① 管理员下限：super_admin / admin_key / tenant_admin，挡 role=user；
+	//   ② 写操作需 super_admin（admin/context.go:79 的既定约定：tenant_admin 只读）。
+	// 顺序：**角色门在 nil-db 检查之前** —— 未授权者应得 403 而不是 503
+	// （503 会泄露「DB 是否已配置」，与读侧 role gate 判据同一条口径）。
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+
 	var req struct {
 		CredentialID   int    `json:"credential_id"`
 		ManualDisabled bool   `json:"manual_disabled"`
@@ -1876,6 +2117,11 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 	var exists bool
 	var currentDisabled bool
 	checkQ := fmt.Sprintf("SELECT true, COALESCE(manual_disabled, false) FROM credentials WHERE id = $1 %s", tenantCheck)
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
 	if err := m.h.db.QueryRow(ctx, checkQ, checkArgs...).Scan(&exists, &currentDisabled); err != nil {
 		if err == pgx.ErrNoRows {
 			writeError(w, http.StatusNotFound, "credential not found")

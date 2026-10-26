@@ -760,8 +760,14 @@ func TestAnthropicExecutor_EmptyNativeMessagesResponseIsRetryable(t *testing.T) 
 
 	for _, body := range []string{
 		`{"type":"message","content":[{"type":"text","text":"hello"}]}`,
-		`{"type":"message","content":[{"type":"thinking","thinking":"reasoning"}]}`,
-		`{"type":"message","content":[{"type":"thinking","thinking":"","signature":"sig_1"}]}`,
+		// r1029 (2026-10-17): the two thinking rows moved OUT of this
+		// non-empty list. A bare or signed thinking block is deliberation, not
+		// the assistant answer — counting it produced the 154 glm-5.3 empty
+		// 200. They are asserted empty in the loop above and covered by
+		// TestAnthropicExecutor_EmptyNativeMessagesResponseIsRetryable; the
+		// reverse guard (thinking followed by real text) lives in
+		// empty_response_test.go.
+		`{"type":"message","content":[{"type":"thinking","thinking":"reasoning"},{"type":"text","text":"hello"}]}`,
 		`{"type":"message","content":[{"type":"redacted_thinking","data":"opaque"}]}`,
 		`{"type":"message","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}]}`,
 		`{"type":"message","content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{}}]}`,

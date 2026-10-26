@@ -61,10 +61,10 @@ export default {
 
   error: {
     loadFailed: 'Laden fehlgeschlagen',
+    checkFailed: 'Validierung fehlgeschlagen',
     canonicalNameRequired: 'canonical_name ist erforderlich',
     createFailed: 'Erstellen fehlgeschlagen',
     deleteFailed: 'Löschen fehlgeschlagen',
     restoreFailed: 'Wiederherstellen fehlgeschlagen',
   },
-  softDeleteConfirm: 'Richtlinie {name} soft-löschen? (wiederherstellbar)',
 }

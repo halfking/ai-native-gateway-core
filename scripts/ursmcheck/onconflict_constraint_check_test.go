@@ -53,16 +53,51 @@ func normCols(s string) []string {
 
 func runOnconflict(t *testing.T, psqlRC int, stub string, env ...string) (int, string) {
 	t.Helper()
+	rc, out, _ := runOnconflictEnv(t, psqlRC, stub, env...)
+	return rc, out
+}
+
+// runOnconflictEnv 同 runOnconflict，但额外返回夹具的状态目录
+// （心跳文件落在里面）。★ 为什么单独拆一个：心跳语义那几道门
+// 要断言「被锁挡掉的那一轮**没有**刷新心跳」⇒ 必须知道心跳文件在哪；
+// 而既有 5 道门只关心退出码与输出，不该被多一个返回值打扰。
+func runOnconflictEnv(t *testing.T, psqlRC int, stub string, env ...string) (int, string, string) {
+	t.Helper()
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "fake-psql")
 	if err := os.WriteFile(fake, []byte("#!/bin/sh\n"+stub+"\nexit "+itoa(psqlRC)+"\n"), 0o755); err != nil {
 		t.Fatalf("write stub: %v", err)
 	}
-	e := append([]string{"PSQL_CMD=" + fake}, env...)
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// ★ 必须补上 timeout(1) 与 flock(1) 两个「量具缺件」（2026-10-19）：
+	//   timeout —— 被测脚本自 §143.14 起**要求**查询有上限，缺它就 fail-closed；
+	//     而 macOS 没有 GNU timeout ⇒ 缺它的话这道脚本在开发机上
+	//     永远走「不做查询」那条路（exit 3），所有行为断言都会变成恒真。
+	//   flock —— 单实例闸门用它；缺它闸门整条被 fail-open 跳过。
+	//     开发机没有 flock ⇒ 闸门分支从来没被执行过。
+	for name, body := range map[string]string{
+		"timeout": fakeTimeoutBody,
+		"flock":   fakeFlockBody,
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := filepath.Join(dir, "state")
+	e := append([]string{
+		"PSQL_CMD=" + fake,
+		"PATH=" + bin + ":/usr/bin:/bin:/usr/sbin:/sbin",
+		"ONCONFLICT_STATE_DIR=" + state,
+		"LLMGW_LOCK_DIR=" + filepath.Join(dir, "lock"),
+		"LLMGW_LOCK_SKIP_LOG=" + filepath.Join(dir, "skip.log"),
+	}, env...)
 	cmd := exec.Command("bash", onconflictScriptPath(t))
 	cmd.Env = append(os.Environ(), e...)
 	out, _ := cmd.CombinedOutput()
-	return cmd.ProcessState.ExitCode(), string(out)
+	return cmd.ProcessState.ExitCode(), string(out), state
 }
 
 // TestOnconflictExpectColsMatchesWriter 是本文件的正身。

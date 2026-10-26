@@ -206,12 +206,12 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
           <option value="custom">自定义</option>
         </select>
 
-        <span class="label">类型</span>
+        <span class="label">{{ $t('common.terms.type') }}</span>
         <select v-model="kindFilter" class="field-input w-kind" @change="resetAndLoad">
           <option v-for="o in kindOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
         </select>
 
-        <span class="label">结果</span>
+        <span class="label">{{ $t('common.terms.result') }}</span>
         <select v-model="resultFilter" class="field-input w-result" @change="resetAndLoad">
           <option v-for="o in resultOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
         </select>
@@ -225,12 +225,12 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 
         <label class="checkbox-label">
           <input type="checkbox" :checked="autoRefresh" @change="toggleAutoRefresh" />
-          自动刷新
+          {{ $t('common.terms.autoRefresh') }}
         </label>
 
         <span class="spacer"></span>
         <button class="btn btn-sm btn-primary" :disabled="loading" @click="loadLog">
-          {{ loading ? '加载中...' : '刷新' }}
+          {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
         </button>
       </div>
 
@@ -262,8 +262,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 
     <!-- Empty -->
     <div v-else-if="!loading && !entries.length" class="empty-state">
-      <p>暂无记录</p>
-      <p class="hint-text">请调整时间范围或过滤条件</p>
+      <p>{{ $t('routing.shared.logEmpty') }}</p>
     </div>
 
     <!-- Table -->
@@ -271,12 +270,12 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
       <table>
         <thead>
           <tr>
-            <th class="col-ts">时间</th>
-            <th class="col-kind">类型</th>
-            <th>模型</th>
-            <th>凭据</th>
-            <th class="col-status">结果</th>
-            <th class="col-lat">延迟</th>
+            <th class="col-ts">{{ $t('common.time') }}</th>
+            <th class="col-kind">{{ $t('common.terms.type') }}</th>
+            <th>{{ $t('common.terms.model') }}</th>
+            <th>{{ $t('common.credentialFallback') }}</th>
+            <th class="col-status">{{ $t('common.terms.result') }}</th>
+            <th class="col-lat">{{ $t('common.terms.latency') }}</th>
             <th class="col-err">错误摘要</th>
           </tr>
         </thead>
@@ -315,11 +314,11 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
                     <span>{{ changeLabels[e.change || ''] || e.change }}</span>
                   </div>
                   <div class="detail-item" v-if="e.kind === 'state_change'">
-                    <span class="detail-label">操作人</span>
+                    <span class="detail-label">{{ $t('common.terms.operator') }}</span>
                     <span>{{ e.actor || '系统' }}</span>
                   </div>
                   <div class="detail-item">
-                    <span class="detail-label">来源</span>
+                    <span class="detail-label">{{ $t('common.terms.source') }}</span>
                     <span>{{ e.source }}</span>
                   </div>
                   <div class="detail-item" v-if="e.tier != null">
@@ -339,7 +338,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
                     <pre class="error-pre">{{ e.error_message }}</pre>
                   </div>
                   <div class="detail-item" v-if="e.request_id">
-                    <span class="detail-label">请求 ID</span>
+                    <span class="detail-label">{{ $t('common.terms.request') }} ID</span>
                     <router-link :to="`/request-detail/${e.request_id}`" target="_blank" class="mono req-link">
                       {{ e.request_id }}
                     </router-link>
@@ -350,10 +349,10 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
                   </div>
                   <div class="detail-item" v-if="e.sticky != null && e.kind === 'routing'">
                     <span class="detail-label">粘性路由</span>
-                    <span>{{ e.sticky ? '是' : '否' }}</span>
+                    <span>{{ e.sticky ? $t('common.button.yes') : $t('common.button.no') }}</span>
                   </div>
                   <div class="detail-item" v-if="e.outbound_model && e.kind === 'routing'">
-                    <span class="detail-label">出站模型</span>
+                    <span class="detail-label">{{ $t('common.terms.outboundModel') }}</span>
                     <span class="mono">{{ e.outbound_model }}</span>
                   </div>
                   <div class="detail-item detail-full" v-if="e.detail">
@@ -371,11 +370,11 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
     <!-- Pagination -->
     <div v-if="total > PAGE_SIZE" class="pagination">
       <button class="btn btn-sm" :disabled="currentPage === 0 || loading" @click="currentPage--; loadLog()">
-        上一页
+        {{ $t('common.pagination.previous') }}
       </button>
       <span class="page-info">第 {{ currentPage + 1 }} / {{ totalPages }} 页</span>
       <button class="btn btn-sm" :disabled="(currentPage + 1) * PAGE_SIZE >= total || loading" @click="currentPage++; loadLog()">
-        下一页
+        {{ $t('common.pagination.next') }}
       </button>
     </div>
   </div>
@@ -565,7 +564,6 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
   font-size: 10px;
   color: var(--muted);
   font-weight: 600;
-  text-transform: uppercase;
 }
 
 .error-pre {

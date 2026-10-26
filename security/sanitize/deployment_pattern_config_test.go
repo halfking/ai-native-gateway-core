@@ -52,9 +52,9 @@ func Test245DeploymentShipsThePatternConfig(t *testing.T) {
 			"rule set」 claim no longer holds; revisit pending decision 107 and flip "+
 			"this gate together with the fix", how)
 	} else {
-		t.Log("  MISSING (as audited, decision 107 pending): the runtime stage never copies "+
-			"configs/ — the image ships no configs/sensitive_patterns.yaml, so "+
-			"newSanitizePatternDetector() takes its fallback branch for the whole life "+
+		t.Log("  MISSING (as audited, decision 107 pending): the runtime stage never copies " +
+			"configs/ — the image ships no configs/sensitive_patterns.yaml, so " +
+			"newSanitizePatternDetector() takes its fallback branch for the whole life " +
 			"of the container")
 	}
 

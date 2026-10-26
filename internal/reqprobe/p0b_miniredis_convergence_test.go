@@ -44,7 +44,7 @@ func TestP0BMiniredisCrossInstanceLearnStrip(t *testing.T) {
 	found := false
 	for time.Now().Before(deadline.Add(2 * time.Second)) {
 		coordB.InvalidateLearned()
-		learned = coordB.LearnedParams(context.Background(), "vapeur", "grok-4.6")
+		learned = coordB.LearnedParams(context.Background(), LearnedKey{ProviderID: 1, OutboundModel: "grok-4.6", ActualWire: "openai-responses"})
 		for _, p := range learned {
 			if p == "service_tier" {
 				found = true

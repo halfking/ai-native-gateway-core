@@ -287,7 +287,16 @@ func (r *Registry) EffectiveValue(scope Scope, key, tenantID string) (jsonRawMes
 		return nil, "", fmt.Errorf("unknown setting %q", key)
 	}
 	// 1. DB
-	if b, ok := r.backends[scope]; ok {
+	// ★ 2026-10-22 12h 审计轮（B5）：`r.backends` 的**读**原先**没有持锁**，
+	//   而 `RegisterBackend` 的**写**是在 `r.mu.Lock()` 下做的
+	//   ⇒ ⇒ 并发读写同一个 map ⇒ Go runtime 直接
+	//   `fatal error: concurrent map read and map write`（**不可 recover** ⇒ 整进程死）。
+	//   ⇒ 本轮把 11 个新键的读路径引到了这一行 ⇒ 把一个潜伏的竞态变成热路径上的竞态。
+	//   ⇒ 修法：读侧也取读锁（RLock 与写侧的 Lock 不冲突）。
+	r.mu.RLock()
+	backend, hasBackend := r.backends[scope]
+	r.mu.RUnlock()
+	if b, ok := backend, hasBackend; ok {
 		var v jsonRawMessage
 		var err error
 		if scope == ScopeTenant {
@@ -304,7 +313,17 @@ func (r *Registry) EffectiveValue(scope Scope, key, tenantID string) (jsonRawMes
 	}
 	// 2. env-var (only for platform scope)
 	if scope == ScopePlatform {
-		if b, ok := r.backends[EnvBackendScope]; ok {
+		// ★ 2026-10-22 12h 审计轮（B5 补漏）：这一行读的是**同一张 map**
+		//   （r.backends），而 B5 只给上面那处读加了 RLock ⇒ 此处的读
+		//   仍然与 RegisterBackend 的写（r.mu.Lock()）并发 ⇒ 同一个
+		//   `fatal error: concurrent map read and map write`（**不可 recover
+		//   ⇒ 整进程死**）依然可达。
+		//   ⇒ 判据：**同一张 map 的每一次读都要在锁内**。
+		//   只补一处 = 这条修法自身就是半截的（而且症状与没修时同形）。
+		r.mu.RLock()
+		envBackend, hasEnvBackend := r.backends[EnvBackendScope]
+		r.mu.RUnlock()
+		if b, ok := envBackend, hasEnvBackend; ok {
 			if v, err := b.Get(ScopePlatform, s.EnvName); err == nil && len(v) > 0 {
 				return v, "env", nil
 			}

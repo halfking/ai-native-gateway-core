@@ -70,7 +70,6 @@ export default {
     requestId: 'Request ID',
     actual: 'الفعلي',
     status: 'الحالة',
-    actions: 'الإجراءات',
     loading: 'جارٍ التحميل...',
     noData: 'لم يتم العثور على أحداث سلامة',
     viewDetail: 'التفاصيل',

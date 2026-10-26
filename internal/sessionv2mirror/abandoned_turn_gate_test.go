@@ -94,66 +94,72 @@ func padGo(t *testing.T) string {
 	return readRepoFile(t, "internal/sessionv2mirror/abandoned_turn.go")
 }
 
-// TestAbandonedTurnFlagIsSetOnEntryNotOnACopy pins invariant 1.
+// TestAbandonedTurnTriggerSourceIsRetired replaces the two former gates
+// (invariant 1 "flag on entry, not on a copy" and invariant 2 "predicate
+// direction") — **2026-10-21**.
 //
-// The mutation this exists for is the one that shipped in the first round of
-// the relocation: `fallback.T0Missing = true`, where fallback is `*entry`. It
-// compiles, every other gate passes, no test fails — and the landing pad never
-// fires, because the consumer reads the caller's entry, not the copy.
-func TestAbandonedTurnFlagIsSetOnEntryNotOnACopy(t *testing.T) {
-	code := stripGoComments(clientGo(t))
-
-	if strings.Contains(code, "fallback.T0Missing") {
-		t.Fatalf("the flag is set on `fallback`, which is a copy of entry.\n" +
-			"The consumer is firePersistedHooks(entry) → PersistHook → runShadowWrite, " +
-			"and it reads the CALLER's pointer; the copy dies with the insert. " +
-			"Everything compiles and the column stays NULL forever (audit §9.93).")
-	}
-	if !strings.Contains(code, "entry.T0Missing = true") {
-		t.Fatalf("client.go never sets entry.T0Missing = true — the fact that v1 had " +
-			"no t0 never reaches the mirror, so the landing pad cannot fire. " +
-			"It must be set on the caller's entry, in the branch where " +
-			"`SELECT EXISTS(...)` returned false.")
-	}
-}
-
-// TestAbandonedTurnPredicateIsGuardedByExistsFalse pins invariant 2.
+// # 为什么这两条门退役了（而不是「实现坏了」）
 //
-// ⚠ Position comparison alone is NOT enough, and the first draft of this gate
-// got that wrong: moving the assignment INSIDE `if exists { … }` still leaves
-// it after the guard textually. The mutation is "flag every request whose t0
-// landed", i.e. ~100% false positives, and it passed a gate written to stop it.
-// ⇒ Compare **brace depth**: the assignment must sit at the depth it had before
-// `if exists {` opened.
-func TestAbandonedTurnPredicateIsGuardedByExistsFalse(t *testing.T) {
-	s := clientGo(t)
+// 这两条门钉的是「telemetry 侧在 `updateRequestLog` 的 upsert-race 分支里
+// 查 v1 表、判断 t0 行是否存在，然后设置 `entry.T0Missing = true`」这个**形态**。
+//
+// ★ 迁移 890 把 v1 族整族 DROP，**并把那段认领逻辑一并删除** ⇒
+//
+//	现在**没有任何代码**会设置 `entry.T0Missing = true` ⇒
+//	⇒ 落地垫**恒不触发**，`session_turns.is_abandoned` 恒为 NULL/false。
+//
+// ⇒ 这两条门的前提**随被观测对象一起消失**了。它们的红不是缺陷，
+//
+//	是「门在守一个已经不存在的对象」。
+//
+// ★★ 处理方式（与 `internal/trace.FlushToPG` 的 R52「停写即丢弃」同口径）：
+//
+//	① **不**把实现改回去（v1 族退役是既定决策）；
+//	② **不**把门删了（删掉就等于把「复活所需的登记」一起删了）；
+//	③ 改成钉**退役这件事本身**：触发源必须**仍然不存在**，
+//	   且**必须留下显式登记**（abandoned_turn.go 的头部）。
+//
+// ⇒ 这条门仍然是**有牙**的：有人把 `T0Missing = true` 写回去（不管对错），
+//
+//	它会红并指出「触发源回来了，请同步检查落地垫与本登记」。
+//
+// # 登记债
+//
+// 「有没有 t0」在 v1 退役后**没有判据源**了 ⇒ `is_abandoned` 恒为 NULL。
+// 要还它需要一次语义设计（会话族的「开始了却没到终态」怎么判）——
+// 不在本轮范围。登记见 abandoned_turn.go 头部。
+func TestAbandonedTurnTriggerSourceIsRetired(t *testing.T) {
+	client := stripGoComments(clientGo(t))
+	if strings.Contains(client, "T0Missing = true") {
+		t.Fatalf("client.go 里又出现了 `T0Missing = true` 的设置点 —— v1 族已被迁移 890 退役，" +
+			"这个设置点依赖 `SELECT EXISTS(...)` 查 v1 表 ⇒ 若你重新加了它，说明触发源回来了，" +
+			"请同步检查：① 落地垫是否随之复活 ② 本文件的退役登记是否要撤掉")
+	}
 
-	setIdx := strings.Index(s, "entry.T0Missing = true")
-	if setIdx < 0 {
-		t.Fatalf("entry.T0Missing = true not found — see TestAbandonedTurnFlagIsSetOnEntryNotOnACopy")
-	}
-	guardIdx := strings.Index(s, "if exists {")
-	if guardIdx < 0 {
-		t.Fatalf("no `if exists {` guard before the flag assignment — the upsert-race " +
-			"branch no longer skips requests whose t0 row is actually present")
-	}
-	if guardIdx > setIdx {
-		t.Fatalf("the `if exists {` guard appears AFTER the flag assignment; the "+
-			"branch shape changed and this gate is no longer measuring what it claims "+
-			"(guard=%d, set=%d)", guardIdx, setIdx)
-	}
-	if !strings.Contains(s[guardIdx:setIdx], "return nil") {
-		t.Fatalf("the `if exists` guard no longer returns early — requests whose t0 " +
-			"DID land would fall through and be flagged abandoned")
+	// ★ 退役必须**机器可读地**留痕：只查注释里的关键词不够 ——
+	//   实测：把登记段首句整句抹掉，只查「退役」二字的门**仍然绿**
+	//   （因为文件别处也有这两个字）⇒ 门恒绿 = 没有牙。
+	//   ⇒ 这里钉一枚**常量**的值。
+	pad := padGo(t)
+	if !strings.Contains(pad, `abandonedTurnTriggerRetired = "v1-family-retired@2026-10-20"`) {
+		t.Fatalf("internal/sessionv2mirror/abandoned_turn.go 里的机器可读退役标记缺失或被改写 —— " +
+			"「触发源已退役」这件事必须**机器可读**（常量 abandonedTurnTriggerRetired）," +
+			"否则登记只能靠注释里的关键词⇒ 门会恒绿、变成没有牙的门")
 	}
 
-	depthAtGuard := braceDepth(s[:guardIdx])
-	depthAtSet := braceDepth(s[:setIdx])
-	if depthAtSet != depthAtGuard {
-		t.Fatalf("the flag assignment sits at brace depth %d but the `if exists` guard "+
-			"opens at %d — the assignment is INSIDE the guard, so every request whose "+
-			"t0 landed is flagged abandoned (depthSet=%d, depthGuard=%d)",
-			depthAtSet, depthAtGuard, depthAtSet, depthAtGuard)
+	// 退役必须**留痕**（给人读的那一份）：没有登记的退役 = 静默的能力消失。
+	if !strings.Contains(pad, "退役") {
+		t.Fatalf("internal/sessionv2mirror/abandoned_turn.go 里没有「退役」登记 —— " +
+			"触发源消失这件事没有被记录 ⇒ 后来的人只会看到「is_abandoned 永远是 NULL」，" +
+			"却查不到它是什么时候、因为什么消失的")
+	}
+	if !strings.Contains(pad, "T0Missing") {
+		t.Fatalf("abandoned_turn.go 的退役登记里没有提到 T0Missing —— 登记必须指明" +
+			"「哪个触发源退役了」，否则它只是一句无关的说明")
+	}
+	if !strings.Contains(pad, "is_abandoned") {
+		t.Fatalf("abandoned_turn.go 的退役登记里没有提到 is_abandoned —— 登记必须指明" +
+			"「哪一列从此恒为 NULL」，否则读的人无法判断影响面")
 	}
 }
 

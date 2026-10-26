@@ -64,6 +64,7 @@ func PlatformSpecs() []*Spec {
 	// 与敏感词评分阈值（security.sensitive_block/warn_score）。
 	out = append(out, NodeFailoverSpecs()...)
 	out = append(out, SensitiveSpecs()...)
+	out = append(out, SanitizeRulesSpecs()...)
 	// 2026-09-22: Wave 3 B1 —— 峰谷倍率时段表（maas.rate_periods，
 	// Go/SQL 双侧同源取档）。
 	out = append(out, MaasRatePeriodSpecs()...)
@@ -76,6 +77,8 @@ func PlatformSpecs() []*Spec {
 	// 2026-10-14: P0-3 断流原地续问——上游 EOF 无终态标记时同候选
 	// assistant-prefill 续问一次并无缝拼接（survival.stream_continuation_enabled）。
 	out = append(out, StreamContinuationSpecs()...)
+	// 2026-10-21 R72f: URSM v2 平台级设置（键此前只存在于读方 ⇒ 写不进去）。
+	out = append(out, UrsmSpecs()...)
 	return out
 }
 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { CaretBottom, CaretRight, CircleClose, CircleCheck, Warning } from '@element-plus/icons-vue'
 import { fmtDateMedium } from '../i18n/useFormat'
 import { useRouter, useRoute } from 'vue-router'
 import { getApprovalDetail, approveApproval, rejectApproval, type ApprovalDetail } from '../api/approval'
@@ -88,7 +89,7 @@ async function loadApproval() {
   try {
     approval.value = await getApprovalDetail(requestId.value)
   } catch (e: any) {
-    error.value = e.message || '加载审批详情失败'
+    error.value = e.message || t('approval.detail.loadFailed')
   } finally {
     loading.value = false
   }
@@ -108,7 +109,7 @@ async function handleApprove() {
     actionReason.value = ''
     await loadApproval()
   } catch (e: any) {
-    error.value = e.message || '批准失败'
+    error.value = e.message || t('approval.detail.approveFailed')
   } finally {
     actionLoading.value = false
   }
@@ -133,7 +134,7 @@ async function handleReject() {
     actionReason.value = ''
     await loadApproval()
   } catch (e: any) {
-    error.value = e.message || '拒绝失败'
+    error.value = e.message || t('approval.detail.rejectFailed')
   } finally {
     actionLoading.value = false
   }
@@ -184,13 +185,13 @@ onBeforeUnmount(() => {
 
     <!-- Messages -->
     <div v-if="error" class="message message-error">
-      <span class="message-icon">❌</span>
+      <span class="message-icon"><CircleClose /></span>
       {{ error }}
       <button class="message-close" @click="error = null">×</button>
     </div>
 
     <div v-if="successMessage" class="message message-success">
-      <span class="message-icon">✅</span>
+      <span class="message-icon"><CircleCheck /></span>
       {{ successMessage }}
       <button class="message-close" @click="successMessage = null">×</button>
     </div>
@@ -285,7 +286,7 @@ onBeforeUnmount(() => {
 
         <div class="sensitive-list">
           <div v-for="(item, idx) in approval.detect_result.sensitive_info" :key="idx" class="sensitive-item">
-            <span class="sensitive-icon">⚠️</span>
+            <span class="sensitive-icon"><Warning /></span>
             <span class="sensitive-text">{{ item }}</span>
           </div>
         </div>
@@ -295,7 +296,7 @@ onBeforeUnmount(() => {
       <section v-if="approval.snapshot?.session_summary" class="section collapsible-section">
         <div class="section-header clickable" @click="showSessionSummary = !showSessionSummary">
           <h2>
-            <span class="collapse-icon">{{ showSessionSummary ? '▼' : '▶' }}</span>
+            <span class="collapse-icon"><CaretBottom v-if="showSessionSummary" /><CaretRight v-else /></span>
             会话摘要
           </h2>
         </div>
@@ -309,7 +310,7 @@ onBeforeUnmount(() => {
       <section v-if="approval.snapshot?.messages?.length" class="section collapsible-section">
         <div class="section-header clickable" @click="showFullMessages = !showFullMessages">
           <h2>
-            <span class="collapse-icon">{{ showFullMessages ? '▼' : '▶' }}</span>
+            <span class="collapse-icon"><CaretBottom v-if="showFullMessages" /><CaretRight v-else /></span>
             用户消息
           </h2>
           <span class="badge badge-gray">{{ approval.snapshot.messages.length }} 条</span>
@@ -332,7 +333,7 @@ onBeforeUnmount(() => {
       <section v-if="approval.snapshot?.context" class="section collapsible-section">
         <div class="section-header clickable" @click="showContext = !showContext">
           <h2>
-            <span class="collapse-icon">{{ showContext ? '▼' : '▶' }}</span>
+            <span class="collapse-icon"><CaretBottom v-if="showContext" /><CaretRight v-else /></span>
             完整上下文
           </h2>
           <span class="badge badge-orange">管理员权限</span>
@@ -614,7 +615,6 @@ onBeforeUnmount(() => {
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
-  text-transform: uppercase;
 }
 
 .badge-large {
@@ -706,7 +706,6 @@ onBeforeUnmount(() => {
 .message-role {
   font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
   padding: 3px 8px;
   border-radius: 4px;
   background: var(--border);

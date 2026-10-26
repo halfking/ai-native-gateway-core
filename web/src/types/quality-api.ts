@@ -318,15 +318,14 @@ export const QUALITY_GRADE_COLORS: Record<QualityGrade, string> = {
 };
 
 /**
- * 质量等级文本
+ * ★ 2026-10-25：这里原来有一张**硬编码中文的质量等级表**（S:'卓越' / A:'优秀' / …），
+ *   已移除。三个原因：① 「卓越」是 DESIGN.md §7 的空洞词；② 7 个非中文语种会看到中文；
+ *   ③ 源码字面量 + 语言包 = 两个真值源。
+ *   ⇒ 等级文案搬到语言包（common.terms.qualityGrade.*），
+ *     取词的地方是 utils/qualityGradeLabel.ts（键名写成字面量，
+ *     静态扫描器才看得见它们 ⇒ 「8 个语种都有这个键」仍然有门在管）。
+ *   ★ 等级**字母**（S/A/B/C/D）仍是稳定 code：逻辑比较用字母，展示用词，两者不混。
  */
-export const QUALITY_GRADE_LABELS: Record<QualityGrade, string> = {
-  S: '卓越',
-  A: '优秀',
-  B: '良好',
-  C: '一般',
-  D: '较差',
-};
 
 /**
  * 格式化质量分数

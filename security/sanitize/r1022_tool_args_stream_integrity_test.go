@@ -218,7 +218,7 @@ func TestR1022ProseLaneStillRedactsWholeDelta(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected the prose delta to be rewritten")
 	}
-	if !strings.Contains(string(result.ModifiedChunk), redactedMarker) {
+	if !strings.Contains(string(result.ModifiedChunk), unknownRedactedMarker) {
 		t.Fatalf("prose lane no longer redacts: %q", string(result.ModifiedChunk))
 	}
 	if strings.Contains(strings.ToLower(string(result.ModifiedChunk)), "sensitive") {

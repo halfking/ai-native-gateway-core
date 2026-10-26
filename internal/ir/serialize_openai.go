@@ -439,7 +439,7 @@ func serializeOpenAIMessages(req *InternalRequest) []map[string]any {
 	}
 
 	// Convert each message
-	for _, msg := range req.Messages {
+	for _, msg := range expandToolResultMessages(req.Messages) {
 		messages = append(messages, serializeOpenAIMessage(msg))
 	}
 

@@ -72,6 +72,18 @@ type BackupSummary struct {
 	TotalSize     int64        `json:"total_size"` // 压缩后总大小
 	DateRange     string       `json:"date_range"`
 	Files         []BackupFile `json:"files"`
+	// SessionCountAvailable 报告「TotalSessions 这个口径**当前是否可用**」。
+	//
+	// ★ R82b 轮（2026-10-24）：154 生产实测发现 —— 备份记录**绝大多数是
+	//	`request_wal` / `request_log`**，它们的顶层**没有 `session_id` 字段**
+	//	（`session_id` 只在 `snapshot` 类记录上有，且 `omitempty` 会省略空值）
+	//	⇒ `BackupRecord.SessionID` 恒为空 ⇒ 「跨文件唯一 session 数」恒为 1
+	//	（= 唯一集合里只有那个**空串**）。
+	//	⇒ ⇒ 「会话数 = 1」是**读数失真**，不是事实。
+	//
+	// ★ 本字段让这件事**可见**：false ⇒ 该读数不可用（端点会标 degraded）。
+	//	（口径本身的修正 = **不把空串算成会话**，见 file_reader.go。）
+	SessionCountAvailable bool `json:"session_count_available"`
 }
 
 // RecoveryTask 恢复任务

@@ -8,6 +8,12 @@
 
 ## 环境概览
 
+> **端口注意（2026-10-15 补记）**：154/245 均为蓝绿双栈部署，服务监听端口由目标机
+> `/opt/llm-gateway-go/run/active-upstream.conf` 决定，在 `8781/8782` 间漂移
+> （AGENTS.md「端口：必须现场确认」节有逐日实测记录）。下列「端口: 8781」为
+> 本文 2026-08-29 时点快照值，**任何固定端口记忆都当过期处理**；探活两个端口都试，
+> 当前活跃端口以 `run/active-port` + `current` 符号链接 + `version.json` 三处对齐为准。
+
 ### 测试环境（245）
 - **主机**: <env:HOST_245_IP>
 - **SSH**: `ssh -p 25022 root@<env:HOST_245_IP>`
@@ -191,14 +197,14 @@ sum(rate(llm_gateway_malformed_sse_frame_total[5m])) by (stage)
 #### 请求统计指标
 ```promql
 # 请求总数
-llm_gateway_requests_total
+gateway_survival_requests_total
 
 # 请求成功率
-rate(llm_gateway_requests_total{status="success"}[5m]) / 
-rate(llm_gateway_requests_total[5m])
+rate(gateway_survival_requests_total{status="success"}[5m]) / 
+rate(gateway_survival_requests_total[5m])
 
 # 延迟分布
-histogram_quantile(0.95, rate(llm_gateway_request_duration_seconds_bucket[5m]))
+histogram_quantile(0.95, rate(gateway_survival_recovery_latency_seconds_bucket[5m]))
 ```
 
 #### 流式处理指标
@@ -207,7 +213,7 @@ histogram_quantile(0.95, rate(llm_gateway_request_duration_seconds_bucket[5m]))
 llm_gateway_stream_synthesized_done_total
 
 # Resume blocked 事件
-llm_gateway_survival_resume_blocked_total
+gateway_survival_resume_safety_blocked_total
 ```
 
 ---

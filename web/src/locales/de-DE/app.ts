@@ -1,27 +1,16 @@
 // Auto-translated draft (de-DE) · 2026-07-02 · please review
 // app.ts — App.vue shell strings (header roles, sidebar collapse, logout, language switcher).
 export default {
-  brand: 'AI-Native Org Gateway',
+  brand: {
+    siteTitle: 'AI Native Kern-Gateway',
+    siteTitleLineTwo: 'Kern-Gateway',
+    alt: 'Kaixuan-Logo',
+  },
   role: {
     super_admin: 'Super-Administrator',
     tenant_admin: 'Mandanten-Administrator',
   },
-  sidebar: {
-    expand: 'Seitenleiste ausklappen',
-    collapse: 'Seitenleiste einklappen',
-    collapseMenu: 'Menü einklappen',
-  },
-  logout: 'Abmelden',
-  lang: {
-    switch: 'Sprache wechseln',
-    label: 'Sprache',
-  },
   // 2026-07-22: public shell footer strings (paired with LifecycleShell).
-  footer: {
-    left: '© 2026 AI-Native Gateway',
-    right: 'Brauchen Sie Hilfe?',
-    feedbackLink: 'Feedback senden',
-  },
   // 2026-07-22: user menu dropdown (UserMenuDropdown) + profile dialog (UserInfoDialog).
   userMenu: {
     profile: 'Profil',
@@ -37,10 +26,6 @@ export default {
     close: 'Schließen',
   },
   // 2026-07-22: skip-link (a11y) strings.
-  nav: {
-    mainAria: 'Hauptnavigation',
-    skip: 'Zum Hauptinhalt springen',
-  },
 
   theme: {
     switchToLight: 'Switch to light',
@@ -53,11 +38,11 @@ export default {
     titleUnavailable: 'Status der Traffic-Daten nicht feststellbar: Die Zahlen auf dieser Seite könnten veraltet sein',
     hintLabel: 'Untersuchen',
     retry: 'Erneut prüfen',
-    failedHint: 'Der Datenstatus konnte nicht gelesen werden. Ein unbestätigter Status ist kein gesunder Status — die Zahlen auf dieser Seite können veraltet sein.',
+    failedHint: 'Der Datenstatus konnte nicht gelesen werden. Ein unbestätigter Status ist kein gesunder Status. Die Zahlen auf dieser Seite können veraltet sein.',
   },
   deploySeq: {
     bannerTitle: 'New version available',
-    bannerHint: 'A newer build is deployed. Reload the page to switch.',
+    bannerHint: 'Ein neuerer Build ist ausgerollt. Laden Sie die Seite neu, um zu wechseln.',
     updateNow: 'Reload now',
     later: 'Later',
     currentSeq: 'Page deploy seq',
@@ -66,8 +51,8 @@ export default {
     stateAvailable: 'Update available',
     stateIndeterminate: 'Indeterminate',
     stateChecking: 'Checking…',
-    reasonNoLocal: 'This page carries no deploy seq (not injected at build time)',
-    reasonNoRemote: 'Server returned no deploy seq (old build or non-repo hosting)',
+    reasonNoLocal: 'Diese Seite trägt keine Deploy-Sequenz (beim Build nicht eingefügt)',
+    reasonNoRemote: 'Der Server hat keine Deploy-Sequenz geliefert (alter Build oder Betrieb außerhalb des Repos)',
     reasonNetwork: 'Check request failed; cannot determine',
     checks: 'Checks run',
     checkNow: 'Check for updates',

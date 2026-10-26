@@ -133,8 +133,13 @@ func TestRefreshSessionViews_RefreshesEveryListedView(t *testing.T) {
 	if !strings.Contains(body, "for _, view := range SessionAnalyticsViews") {
 		t.Fatal("refreshSessionViews 没有遍历 SessionAnalyticsViews —— 清单改了这里不会跟着变")
 	}
-	if !strings.Contains(body, "r.refreshView(ctx, view, true)") {
-		t.Fatal("refreshSessionViews 没有逐个调 refreshView")
+	// ★ 2026-10-22：判据从 `r.refreshView(ctx, view, true)` 放宽为
+	// `r.refreshView(ctx, view, true,` —— **意图不变**（逐个视图调用、
+	// 且必须走 advisory 锁路径），只是不再把「参数个数」也钉死：
+	// session 族新增了分族语句上限参数（sessionViewsStatementTimeout）。
+	// 保持 `true`（useAdvisoryLock）仍然被断言 ⇒ session 族不会偷偷绕开锁。
+	if !strings.Contains(body, "r.refreshView(ctx, view, true,") {
+		t.Fatal("refreshSessionViews 没有逐个调 refreshView（且必须走 advisory 锁路径）")
 	}
 	// 单视图失败不能终止整轮：三个视图用途独立。
 	if strings.Contains(body, "return\n\t}") && !strings.Contains(body, "// 不 return") {

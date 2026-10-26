@@ -494,19 +494,13 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 16px;
-  position: relative;
-  overflow: hidden;
 }
-.stat-card::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; width: 3px; height: 100%;
-  background: var(--muted);
-}
-.stat-card.segment-hot::before { background: var(--success); }
-.stat-card.segment-warm::before { background: var(--warning); }
-.stat-card.segment-cold::before { background: var(--accent); }
-.stat-card.segment-expired::before { background: var(--danger); }
+/* 分段色：原来画在左缘的 3px 窄条（`::before`）改成整块 1px 描边。
+   窄条是 AI 生成 UI 最显眼的 tell（craft-floor 硬禁），颜色信息一分没丢。 */
+.stat-card.segment-hot { border-color: var(--success); }
+.stat-card.segment-warm { border-color: var(--warning); }
+.stat-card.segment-cold { border-color: var(--accent); }
+.stat-card.segment-expired { border-color: var(--danger); }
 
 .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .stat-value { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 4px; font-variant-numeric: tabular-nums; }
@@ -603,7 +597,7 @@ onUnmounted(() => {
   margin-top: 8px;
   padding: 6px 10px;
   background: var(--warning-soft);
-  border-left: 2px solid var(--warning);
+  border: 1px solid var(--warning);
   color: var(--warning);
   font-size: 12px;
   border-radius: 4px;

@@ -2,6 +2,25 @@
 # Real-time ASCII Monitor - 实时监控 4 mock 的请求/错误率
 set -euo pipefail
 
+# ★ R152 轮（2026-10-27）：**版本守卫** —— 本脚本用了 `declare -A`（关联数组
+# `PREV_TOTAL` / `PREV_SUCCESS` / `PREV_ERROR`），它需要 **bash ≥ 4**；
+# 而 **macOS 自带的 bash 是 3.2** ⇒ 直接跑会得到一句 cryptic 的
+# `declare: -A: invalid option`。
+# ⇒ 在做任何事之前先给出**可执行的**提示，而不是让使用者去猜。
+# ⇒ ★ 与 `scripts/repair-252-migration-ledger.sh` 的守卫同款（零行为变化）。
+# ⇒ ⚠ 为什么**不**在这里改成 bash 3.2 兼容：本仓对「用到 bash4 专有语法」的脚本
+#   已有**既定处置**（`scripts/ursmcheck/emergency_cleanup_l1_drop_guard_test.go`
+#   在 bash 3.2 上**跳过**并给出说明，而不是改写）⇒ ★ 与既有约定保持一致。
+if [[ -z "${BASH_VERSINFO[0]:-}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+  printf '%s\n' \
+    "FATAL: 本脚本需要 bash >= 4（用了 declare -A 关联数组）；当前是 ${BASH_VERSION:-unknown}。" >&2
+  printf '%s\n' \
+    "  macOS 自带 bash 是 3.2 ⇒ 请用 'brew install bash' 后的 /opt/homebrew/bin/bash，" >&2
+  printf '%s\n' \
+    "  来跑这个监控。" >&2
+  exit 64
+fi
+
 INTERVAL=${1:-2}  # 刷新间隔秒数
 
 MOCK_PORTS=(19080 19081 19082 19083)

@@ -8,6 +8,9 @@ import {
   setConcurrencyAuto,
   type CredentialMonitorSummary,
 } from '../api/credential-monitor'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 import {
   getCredentialFpSlotStats,
   updateCredential,
@@ -72,7 +75,7 @@ function normalizeInt(v: number | null | undefined | ''): number | null {
 async function loadFpStats() {
   const providerId = effectiveProviderId.value
   if (!providerId) {
-    fpError.value = '缺少 provider_id，无法加载指纹槽位。'
+    fpError.value = t('ops.overview.fpSlotProviderMissing')
     return
   }
   fpLoading.value = true
@@ -82,7 +85,7 @@ async function loadFpStats() {
     fpStats.value = stats
   } catch (error) {
     fpStats.value = null
-    fpError.value = error instanceof Error ? error.message : '指纹槽位加载失败'
+    fpError.value = error instanceof Error ? error.message : t('ops.overview.fpSlotLoadFailed')
   } finally {
     fpLoading.value = false
   }
@@ -163,7 +166,7 @@ async function saveUnified() {
     await loadFpStats()
     emit('saved')
   } catch (error) {
-    emit('error', error instanceof Error ? error.message : '保存失败')
+    emit('error', error instanceof Error ? error.message : t('common.feedback.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -184,7 +187,7 @@ defineExpose({ reload: loadFpStats })
         <div><dt>生效并发</dt><dd>{{ monitor.effective_concurrency }}</dd></div>
       </dl>
       <div class="nd-actions">
-        <button class="btn btn-sm" :disabled="!canEdit || saving" @click="openUnifiedDialog">调整并发与槽位</button>
+        <button class="btn btn-sm" :disabled="!canEdit || saving" @click="openUnifiedDialog">{{ $t('common.terms.concurrencyAndSlots') }}</button>
       </div>
     </template>
     <p v-else class="nd-muted">暂无并发摘要。</p>
@@ -193,7 +196,7 @@ defineExpose({ reload: loadFpStats })
       <div class="nd-fp-head">
         <strong>指纹槽位</strong>
         <button class="btn btn-sm btn-ghost" :disabled="fpLoading" @click="loadFpStats">
-          {{ fpLoading ? '加载中…' : '↻ 刷新' }}
+          {{ fpLoading ? $t('common.feedback.loading') : '↻ ' + $t('common.button.refresh') }}
         </button>
       </div>
       <div v-if="fpLoading && !fpStats" class="nd-seg-loading" role="status">指纹槽位加载中…</div>
@@ -201,7 +204,7 @@ defineExpose({ reload: loadFpStats })
       <template v-else-if="fpStats">
         <dl class="nd-grid">
           <div><dt>上限</dt><dd>{{ fpStats.slot_limit ?? (fpStats.unlimited ? '无限' : '—') }}</dd></div>
-          <div><dt>健康</dt><dd>{{ fpStats.healthy_slots }}</dd></div>
+          <div><dt>{{ $t('common.terms.health') }}</dt><dd>{{ fpStats.healthy_slots }}</dd></div>
           <div><dt>占用 / 空闲</dt><dd>{{ fpStats.occupied_slots }} / {{ fpStats.free_slots ?? '—' }}</dd></div>
         </dl>
         <FpSlotVisualizer
@@ -214,8 +217,8 @@ defineExpose({ reload: loadFpStats })
     </div>
 
     <div v-if="unifiedDialogOpen" class="nd-dialog-mask" @click.self="unifiedDialogOpen = false">
-      <div class="nd-dialog" role="dialog" aria-label="调整并发与槽位">
-        <h4>调整并发与槽位</h4>
+      <div class="nd-dialog" role="dialog" :aria-label="$t('common.terms.concurrencyAndSlots')">
+        <h4>{{ $t('common.terms.concurrencyAndSlots') }}</h4>
         <label>手动并发（留空 = 使用自动并发）
           <input v-model.number="manualDraft" type="number" min="0" placeholder="未设置" />
         </label>
@@ -226,11 +229,11 @@ defineExpose({ reload: loadFpStats })
           <input v-model.number="fpDraft" type="number" min="0" />
         </label>
         <label>调整原因
-          <input v-model="reasonDraft" placeholder="请输入原因" />
+          <input v-model="reasonDraft" :placeholder="$t('common.terms.reasonPlaceholder')" />
         </label>
         <div class="nd-actions">
-          <button class="btn btn-ghost btn-sm" @click="unifiedDialogOpen = false">取消</button>
-          <button class="btn btn-primary btn-sm" :disabled="saving" @click="saveUnified">确认</button>
+          <button class="btn btn-ghost btn-sm" @click="unifiedDialogOpen = false">{{ $t('common.button.cancel') }}</button>
+          <button class="btn btn-primary btn-sm" :disabled="saving" @click="saveUnified">{{ $t('common.button.confirm') }}</button>
         </div>
       </div>
     </div>

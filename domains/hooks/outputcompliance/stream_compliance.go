@@ -13,6 +13,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	sseparser "github.com/kaixuan/llm-gateway-go/internal/sse"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
@@ -60,6 +61,73 @@ func (f *checkedStreamFrame) wireBytes() ([]byte, error) {
 		return nil, err
 	}
 	return f.rebuild(data), nil
+}
+
+// policyRuleFromIssues 取第一条带规则 ID 的问题。
+//
+// owner 口径（2026-10-20）：拦截必须说清「因为什么规则」。规则 ID 由检查器
+// 给出（托管路径是快照里的规则 ID，非托管路径是 builtin.<type> 形态）。
+func policyRuleFromIssues(issues []outputcompliance.ComplianceIssue) string {
+	for _, issue := range issues {
+		if issue.RuleID != "" {
+			return issue.RuleID
+		}
+	}
+	return ""
+}
+
+// policyIssueLocation 取第一条带位置的问题（tool 参数是 JSON 路径，纯文本是
+// 字符区间）。
+func policyIssueLocation(issues []outputcompliance.ComplianceIssue) string {
+	for _, issue := range issues {
+		if issue.Location != "" {
+			return issue.Location
+		}
+	}
+	return ""
+}
+
+// blockedChunkResult 把策略拦截错误转成**带规则名**的阻断结果。
+//
+// 写者据此渲染协议终帧，客户端因此能区分「策略拦截」与「上游故障」，
+// 而不是只看到一个空响应（211 事故：zcode 只拿到 empty_model_response）。
+//
+// r1039（D4）：一并带上**人类可读**原因短语——客户端要拿它提示用户
+// 「这次调用被拦了，要不要继续执行」。
+func blockedChunkResult(err error) *response.ChunkResult {
+	ruleID := errorsx.PolicyBlockRuleID(err)
+	if ruleID == "" {
+		return &response.ChunkResult{ShouldBlock: true}
+	}
+	meta := map[string]interface{}{"policy_rule": ruleID}
+	if reason := policyBlockReasonFromError(err); reason != "" {
+		meta["policy_reason"] = reason
+	}
+	return &response.ChunkResult{ShouldBlock: true, Metadata: meta}
+}
+
+// policyBlockReasonFromError 从策略拦截错误里取人类可读原因短语。
+func policyBlockReasonFromError(err error) string {
+	var pbe *errorsx.PolicyBlockError
+	if errors.As(err, &pbe) && pbe != nil {
+		return pbe.Reason
+	}
+	return ""
+}
+
+// policyBlockErrorReason 组装策略拦截错误的原因短语。
+//
+// 形如「output policy blocked stream lane（rule builtin.egress_sink）at $.command」
+// ——规则名给机器看，位置给人看。
+func policyBlockErrorReason(situation, ruleID, location string) string {
+	reason := situation
+	if ruleID != "" {
+		reason += " (rule " + ruleID + ")"
+	}
+	if location != "" {
+		reason += " at " + location
+	}
+	return reason
 }
 
 type complianceStreamState struct {
@@ -134,12 +202,12 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 	checked, err := it.inspectSSEFrame(state.checkCtx, frame, meta, state.redact, &state.toolNames)
 	if err != nil {
 		state.clear()
-		return &response.ChunkResult{ShouldBlock: true}, nil
+		return blockedChunkResult(err), nil
 	}
 	if isStreamTerminalFrame(frame) {
 		prior, err := it.releaseCheckedFrames(state.checkCtx, state, meta)
 		if err != nil {
-			return &response.ChunkResult{ShouldBlock: true}, nil
+			return blockedChunkResult(err), nil
 		}
 		terminal, err := checked.wireBytes()
 		if err != nil {
@@ -217,7 +285,7 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 		if err != nil || result == nil {
 			return nil, fmt.Errorf("check stream lane %q: %w", lane, errOrMissingResult(err))
 		}
-		if result.Blocked {
+		if result.Blocked || state.redact && result.ToolShapeRedactionRequired {
 			metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathStreamLane).Inc()
 			// r1028 (2026-10-14, 154 incident): the lane block used to be
 			// completely silent — no log named the request, so every hit
@@ -225,6 +293,11 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 			// with the joined-lane shape; the payload preview stays off the
 			// log on purpose (blocked text may carry the very bytes the
 			// policy refuses to emit).
+			reasons := make([]string, 0, len(result.Issues))
+			for _, issue := range result.Issues {
+				reasons = append(reasons, issue.Subtype)
+			}
+			ruleID := policyRuleFromIssues(result.Issues)
 			slog.Warn("output_compliance: blocked stream lane",
 				"request_id", meta.RequestID,
 				"session_id", meta.SessionID,
@@ -233,8 +306,13 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 				"label", label,
 				"lane_bytes", len(original),
 				"issues", len(result.Issues),
+				"reason_codes", reasons,
+				"rule_id", ruleID,
 			)
-			return nil, errors.New("output policy blocked stream lane")
+			return nil, &errorsx.PolicyBlockError{
+				RuleID: ruleID,
+				Reason: policyBlockErrorReason("output policy blocked stream lane", ruleID, policyIssueLocation(result.Issues)),
+			}
 		}
 		if !state.redact || result.RedactedOutput == "" || result.RedactedOutput == original {
 			continue
@@ -483,16 +561,30 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 		if err != nil || result == nil {
 			return nil, errOrMissingResult(err)
 		}
-		if result.Blocked {
+		if result.Blocked || shouldRedact && result.ToolShapeRedactionRequired {
 			metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathStreamEvent).Inc()
+			// r1037（2026-10-20，211）：这条分支原来**不带任何原因**——lane 那条
+			// 分支有 reason_codes，event 这条没有，于是 211 现场只看到
+			// "blocked stream event"，既说不出哪条规则，也没法据此开/关。
+			reasons := make([]string, 0, len(result.Issues))
+			for _, issue := range result.Issues {
+				reasons = append(reasons, issue.Subtype)
+			}
+			ruleID := policyRuleFromIssues(result.Issues)
 			slog.Warn("output_compliance: blocked stream event",
 				"request_id", meta.RequestID,
 				"session_id", meta.SessionID,
 				"tenant_id", meta.TenantID,
 				"label", label,
 				"field_bytes", len(original),
+				"issues", len(result.Issues),
+				"reason_codes", reasons,
+				"rule_id", ruleID,
 			)
-			return nil, errors.New("output policy blocked stream event")
+			return nil, &errorsx.PolicyBlockError{
+				RuleID: ruleID,
+				Reason: policyBlockErrorReason("output policy blocked stream event", ruleID, policyIssueLocation(result.Issues)),
+			}
 		}
 		if incremental {
 			checked.parts = append(checked.parts, &streamTextPart{

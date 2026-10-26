@@ -445,6 +445,20 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// defaults and indexes match 469/478 exactly. 045/422/451 are also
 			// unregistered but fully covered by the baseline (verified live).
 			"852_models_canonical_column_set_reconcile.sql",
+			// 489/490 (wired 2026-10-20): 853 自己在文件头声明依赖
+			// 「489/490_credential_probe_queue_*（队列表本体）」，而那两条**从未**
+			// 登记进本链 ⇒ 新装环境在 853 处报
+			//   ERROR: relation "public.credential_probe_queue" does not exist
+			// 并**中止整个安装**（真库临时库实测；pristine HEAD 同样失败 ⇒ 既有缺陷，
+			// 与 2026-10-20 的 request_logs→session_turns 退役轮无关，但挡住了
+			// 「新装路径可跑通」这个交付物）。
+			// 853 的注释本就写着「once 489/490 create the queue」——事实是它们没被登记。
+			// 489 自称「startup mirror of domain migrations 343/347/349」，490 补齐运行时列；
+			// 两条都幂等（CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS /
+			// CREATE INDEX IF NOT EXISTS）且自包含（不引用其它关系）⇒ 可直接登记。
+			// 排位：必须在 853 **之前**（853 是 ALTER TABLE 那张表）。
+			"489_credential_probe_queue_startup_backfill.sql",
+			"490_credential_probe_queue_runtime_columns.sql",
 			// 853 (wired 2026-10-12): deploy-chain V360's automatic column on
 			// credential_probe_queue was never mirrored into the startup chain
 			// — no startup/domain migration adds it, yet bg/probe_queue.go's
@@ -1067,6 +1081,556 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 等值，现有 lower(raw_name) 表达式索引与 uq 第二列均不服务，
 			// CMI rollup 68/h 被击杀（252 审计轮实测）。
 			"864_model_aliases_bare_raw_name_active_idx.sql",
+			// Additive repair: stale 708 markers do not prove the body writer schema.
+			"865_session_bodies_kind_reconcile.sql",
+			// Versioned sanitization policies, review evidence, and instance acknowledgements.
+			"866_sanitize_rule_management.sql",
+			// 867（2026-10-16）：session_summaries (last_request_at DESC,
+			// session_key DESC) 部分索引 —— 在线会话超管路径无租户前导，
+			// tenant_time 只能整扫（252 冷缓存 >5s）。已建则整段跳过、不拿锁。
+			"867_session_summaries_last_request_at_idx.sql",
+			// 868: binding-scoped client transport policy; existing bindings
+			// default to both, while Vapeur Claude is non-stream-only.
+			"868_credential_model_stream_mode.sql",
+			// 869（2026-10-16 retire 轮）：promote_session_turns_hot_to_partition
+			// 的目录派生列清单重新确立为本通道终态体。硬编码 54 列清单相对 hot 的
+			// 106 列会静默丢弃 52 列（trace_events 等），晋级不报错、计数照常递增。
+			// 本通道顺序是 640(391) → 688(477) → 707(493)，707 原本已是末位；
+			// 869 排在其后，把「派生清单 + 列形状守卫 + 后置条件」钉成终态，
+			// 并在 fresh install 上与存量库（seq 通道，此前 640 为末位）收敛到同一体。
+			"869_promote_session_turns_trace_events.sql",
+			// 870（2026-10-17）：usage_ledger 月度对账覆盖索引，排在其后不被打断。
+			"870_usage_ledger_recon_cover_idx.sql",
+			// 871：route_incident_events(created_at) 首列索引。必须 CONCURRENTLY ——
+			// 网关持续写该表，普通 CREATE INDEX 的 SHARE 锁会阻塞写入。
+			// 该文件带 dbinit:no-transaction 标记，走非事务通道。
+			"871_route_incident_events_created_at_idx.sql",
+			// 872（2026-10-18）：credential_model_index 月分区 columnar→heap 存量转换。
+			"872_credential_model_index_partitions_heap.sql",
+			// 873（2026-10-18）：usage_ledger 窗口聚合覆盖索引补齐缓存 token 列。
+			"873_usage_ledger_ts_cover_cache_agg_idx.sql",
+			// 874（2026-10-18）：session_turns(client_request_id) 部分索引 ——
+			// S4 停写后 getLog/unified_detail 的 client_request_id 兜底腿承重。
+			"874_session_turns_client_request_id_idx.sql",
+			// 875（2026-10-18）：empty_response_rate_5m 补齐为 typed 列 ——
+			// 818 把它漏在 payload 里，而 store/pipeline.go:132 一直在读它。
+			"875_ursm_snapshot_empty_response_rate_5m.sql",
+			// 876（2026-10-18）：删掉三条声明在**分区父表**上、且被同表宽索引
+			// 逐列覆盖的窄索引（usage_ledger 的 request_id / ts、sessions 的
+			// session_id）。关键在父表上删：ensure_usage_ledger_partition 用的是
+			// CREATE TABLE … PARTITION OF，会克隆父表声明的每个索引 ⇒ 只删分区上
+			// 的实例，下个月建分区时原样长回来（实测每月约 243 MiB ≈ 2.9 GB/年）。
+			// 守卫在迁移文件里**现算覆盖关系**，证不出来就整条回滚。
+			"876_drop_prefix_covered_parent_indexes.sql",
+			// 877（2026-10-19）：session_turns search_text GIN trigram 索引 ——
+			// S4 停写后 admin/logs.go:540 的 `search_text ILIKE '%…%'` 前导
+			// 通配符谓词在 session 家族上没有任何可用索引，对每个 6.4GB 级月分区
+			// 顺序扫描。补齐 v1 族既有（ensure_request_logs_partition）的 trigram
+			// 能力到 session 族。判据是 planner 层（EXPLAIN 出 Bitmap Index
+			// Scan），不是「索引存在」——后者在空表上恒真。
+			"877_session_turns_search_text_trgm.sql",
+			// 878（2026-10-19）：supplier_errors 分区父表 5 条 btree 索引 ——
+			// supplier_errors_unified = hot UNION ALL 历史，历史侧是**零索引**的
+			// 54MB 月分区，而同一批查询在 hot 侧走 btree（211 acc-pg17 实测：
+			// seq_tup_read=69,873,160 / idx_scan 为空，读:写 ≈ 927:1）。
+			// 形状照抄 hot 侧那 5 条已验证索引；建在父表上让未来月分区自动继承
+			// （ensure_supplier_errors_partition 用 CREATE TABLE … PARTITION OF）。
+			"878_supplier_errors_partition_indexes.sql",
+			// 879（2026-10-21）：删掉 session_summaries 上与**主键键集逐字重复**的
+			// 裸唯一索引 session_summaries_session_key_uidx(UNIQUE(session_key))。
+			// 生产两份各 ~67MiB，而该表持续写入 ⇒ 每次写多维护一份 B-tree；
+			// 且点查计划器**优先选裸的那条**（它不是没人用的那一份）。
+			// 守卫：只有当**还存在别的**可仲裁唯一索引时才删 —— 表没有主键时
+			// 裸 uidx 是 ON CONFLICT (session_key) 唯一的仲裁器，删了写入直接失败。
+			"879_drop_session_summaries_redundant_session_key_uidx.sql",
+			// 880（2026-10-20）：把 session 写路径的**超时预算**在所有环境上对齐到 2000ms。
+			// 缺陷：`settings.GetPlatformInt` 的解析顺序是 DB → env → spec.Default →
+			// 代码 fallback，`spec.Default`（一直是 500）命中时代码里那个 2000 走不到
+			// ⇒ 实际预算 500ms，撑不住一次 shadow write 的串行步骤 ⇒ 正文不落、
+			// turn_no 错位、trace 丢失（全是静默失效）。本迁移只抬「已持久化过且
+			// 偏小」的值，不覆盖偏大的运维调优值。
+			"880_session_write_timeout_budget.sql",
+			// 881（2026-10-20）：删掉 injection_attack_vectors 上那条**只写不读**的
+			// ivfflat 索引 —— 全仓 `<=>` 的唯一读方打的是 task_type_centroids
+			// （另一张表，索引是活的），这张表只有 INSERT 与一个不碰 embedding
+			// 的 tenant 列表；而唯一的写入方**根本不写 embedding 列** ⇒ 该列恒为
+			// NULL、索引里一个条目都没有，却要在每次写入时付维护成本。
+			// 实测（EXPLAIN ANALYZE, BUFFERS，200 行 1536 维向量插入）：
+			// 有 ivfflat 3229ms/read=21279，无 ivfflat 1149ms/read=12。
+			// 守卫在迁移文件里**现算**：embedding 列有非 NULL 值就拒绝删
+			// （= 将来真有向量检索了，逼人重新评估）。
+			"881_drop_attack_vectors_embedding_index.sql",
+			// 882（2026-10-20）：给 `_request_logs`（860 改名的 request_logs 分区
+			// 父表）建 WHERE cost_usd < 0 的部分索引，根修
+			// bg/routing_health_checks.go recorded_cost_is_negative 的重扫浪费
+			// （R51 §3.5 方案 (a)。252 生产 24h 实测：158 次慢查 / 2,010s +
+			// 34 次/天被 statement_timeout 击杀；而源已停写、全表负成本行 = 0）。
+			// 建在父表上让未来月分区自动继承；fresh-install 的月分区
+			// （01-schema ensure）不带 USING columnar，全 heap，无 AM 拒绝面。
+			"882_request_logs_cost_negative_partial_idx.sql",
+			// 883：把 auto-route 成本仪表盘的两个**活指标**子查询从 v1 冻结族
+			// 切到会话族 —— customer_cost_view.active_concurrent（5 分钟窗，
+			// 读冻结族 ⇒ 任何环境都恒 0）与 model_cost_per_task_view.avg_latency_ms
+			// （7 天窗 ⇒ 读的是停写那一刻的快照）。两条腿的选型：5 分钟窗用
+			// hot 单腿（在线写路径只写 hot，晋级延迟远大于 5 分钟 ⇒ 完整且
+			// 无重复；本仓既有先例 SessionFamilyTurnsHotSourceSQL）；7 天窗用
+			// hot ∪ parent UNION ALL（跨过 hot 保留期，形态同
+			// SessionFamilyTurnsSourceSQL）。⚠ 会话族 api_key_id 是 text 而
+			// api_key_model_cost.api_key_id 是 integer ⇒ 必须显式 ::text。
+			"883_session_family_cost_view_metrics.sql",
+			// 884：把 3 张 **v1 裸母表** 分析视图改读会话族 ——
+			// v_continuation_effectiveness / v_node_switch_analysis /
+			// v_timeout_effectiveness。它们读的是 `_request_logs`（v1 自
+			// 2026-10-13 停写且历史数据已清空 ⇒ 真库恒 0 行、且不报任何错），
+			// 同时是「后期删除 _request_logs」的依赖阻塞项。
+			// 这 3 张是唯一**没有任何 API/Go 代码消费**的 v1 读面。
+			// 6 个细节语义列（is_continuation / cached_response_id /
+			// context_size_tokens / node_switch_count / timeout_mode /
+			// effective_timeout_seconds）在 `session_turn_details` 上都有
+			// （真库 1:1 填满）⇒ 能改读且**不丢能力**；canonical 视图
+			// `request_logs_with_current_month` 不投影这 6 列 ⇒ 只能用会话族直连。
+			// 两条腿 hot ∪ parent UNION ALL（前提：hot ∩ parent 实测无重叠，
+			// 计数型指标不会被数两次）。
+			"884_session_family_v_analytics_views.sql",
+			// 890：退役 v1 request_logs 族的**最后一步**（真删表）。
+			// ① canonical 视图 `request_logs_with_current_month` 去掉第三臂
+			//    （冻结 v1 体 + 双反连接去重），只剩两臂 session_turns_hot ∪
+			//    session_turns；② 删 4 张 v1-only 视图；③ 删 v1 族全部表
+			//    （母表带分区）+ hot 表 + 序列；④ 删只服务 v1 族的分区管理
+			//    函数与两个触发器函数。
+			// ⚠ 本文件按**两种物理名**都写（`request_logs` 与 `_request_logs`），
+			//    因为投递通道对"改名后"的处理**不一致**：部署通道
+			//    scripts/apply-db-revision-sequence.sh 会做词法改写，
+			//    安装器**不做**（逐字执行）⇒ 两种名字都试，三条通道都正确。
+			"890_drop_request_logs_v1_family.sql",
+			// 891：给**会话族**建 `WHERE cost_usd < 0` 的部分索引 ——
+			// 根修 bg/routing_health_checks.go recorded_cost_is_negative
+			// 检查的全表扫描。
+			// ★ 起因：890 把 v1 `_request_logs` 族**真删掉** ⇒ **882 给它建
+			//   的那条同款索引随表消亡**（索引活不过它的表）；而检查的源
+			//   随 890 迁到了会话族 ⇒ 会话族上**一条 cost_usd 索引都没有**。
+			// 实测（本地 PG17 真库）：hot 表 Seq Scan，父表每个分区一次
+			//   Seq Scan（4 个分区），谓词挂在 Filter 上。
+			// 形态：两条部分索引（父表 + hot），键序 (ts, credential_id,
+			//   raw_model_name) 服务 30 天窗范围谓词与 GROUP BY，INCLUDE
+			//   (cost_usd, cache_read_tokens, prompt_tokens) 让聚合 index-only。
+			//   谓词 `cost_usd < 0`；条目数 = 负成本行数（实测 0）⇒ 索引本体几页。
+			// 建在父表上 ⇒ 未来月分区自动继承（877 台账口径，882/874 同款）。
+			// ★ 顺序前提：两表与 raw_model_name（707 补列）都由启动序列建 ⇒
+			//   891 编号在其后，天然排在它们之后。
+			"891_session_turns_cost_negative_partial_idx.sql",
+			// 892：URSM 快照健康巡检的**每日 slot 汇总表**（P11，§143.35）——
+			// 根修「巡检每小时重扫 7 天基线」的成本（§143.29 成本 #1：
+			// 每次 2.9 GB 物理读 / 190 s，累计 74 GB）。
+			// 形态：表 ursm_snapshot_slot_daily + 幂等填充函数
+			//   refresh_ursm_snapshot_slot_daily(days_back, granularity)。
+			// ★ 与 891 无关，但编号在它之后 ⇒ 天然排在它后面。
+			// ⚠ 依赖：源表 ursm_node_snapshot_min 由 **baseline** sql/schema/01-schema.sql 建
+			//   （★ 453_ursm_v2_node_snapshot_min.sql **未在任何通道登记** ⇒ 已被 baseline 吸收；
+			//    892 只用 baseline 的 snapshot_ts 一列 ⇒ **不依赖** 818 的 typed 列）
+			//   ⇒ baseline 先于任何迁移执行 ⇒ 892 天然在它之后。
+			// ★ 不依赖 830（把源表变成分区表的那个迁移）—— 两者可独立授权。
+			"892_ursm_snapshot_slot_daily.sql",
+			// 885：给 session_turns **父表与 hot 表**各加 host（网关实例
+			// 身份）+ tags（轮次级标签数组）两列（审计 A5 缺口：全族此前
+			// 无任何主机/实例列，轮次级此前无标签位）。
+			// ★ 两侧必须同形：迁移 707 给 promote_session_turns_hot_to_partition
+			//   加了列集合契约校验（父表与 hot 的 (列名:类型:非空) 集合必须
+			//   全等，否则 promote 当场 RAISE EXCEPTION）⇒ 只加一侧会让
+			//   热表永远排不进月分区。
+			// promote 函数本身不用改：707 的搬行体是「目录派生列清单 +
+			//   RETURNING h.*」⇒ 对称加列自动流经。
+			"885_session_turns_host_tags.sql",
+			// 886：订正 public.session_bodies 的表注释（「使用 columnar 存储
+			// 格式」是**假注释** —— 该族自建表起就是 heap + lz4 TOAST，且因
+			// 唯一约束 / ON CONFLICT / UNION ALL 视图族三重互斥而**不可能**
+			// 是列存；论证见 765:13-21 与 829）。只改 pg_description，
+			// 零锁零 IO；**不改 430 本体**（已 applied + 已记账 + 校验和已登记）。
+			"886_session_bodies_storage_comment.sql",
+			// 887：给会话族的 search_text 建**全文检索**腿 —— 表达式 GIN 索引
+			// `USING gin (to_tsvector('simple', search_text))`。
+			// ★ **不得改用生成列**：promote_session_turns_hot_to_partition 会
+			//   因为 "cannot insert into a generated column" 报错 ⇒ 热表永远
+			//   排不进月分区（887 头部有完整论证）。
+			// ★ 含 CREATE INDEX CONCURRENTLY ⇒ 本文件带 dbinit:no-transaction
+			//   标记（首行），applySQL 据此不加 --single-transaction。
+			// ★ 只给**会话族**建，不给 v1 族（_request_logs）建：顶层 OR 要求
+			//   每条参与扫描的关系两条腿都有索引，而 v1 族 2026-10-20 实测 0 行
+			//   ⇒ 代价为零（前提与复核条件写在 887 头部）。
+			"887_session_turns_search_text_fts.sql",
+			// 888：补会话族的 join 索引缺口 —— session_bodies 父表与 hot 表各
+			// 补一条 (tenant_id, session_id, turn_no DESC, request_id)，
+			// sessions 补一条 (tenant_id, session_id, partition_date DESC)。
+			// ★ PG **不支持** ALTER INDEX … ADD COLUMN ⇒ 只能「建新 + 删旧」
+			//   （先建后删，无空窗）。
+			// ★ 含 CREATE/DROP INDEX CONCURRENTLY ⇒ 带 dbinit:no-transaction。
+			"888_session_family_join_index_gaps.sql",
+			// 889：裁决 session_turns.tools 死列 —— **填充**（不删列：710/816/817/824
+			// 的视图投影 + db/request_logs_view_schema.go 的 sessionFamilyProjection
+			// 都引用它，删列会撞依赖）。只订正 4 条列注释（tools × 2、turn_no × 2），
+			// 零锁零 IO；写路径的填充在 domains/session/v2/turn_writer.go
+			// （turnToolsJSONBExpr，从 session_tools_hot 按 session_id+request_id 聚合）。
+			"889_session_turns_tools_population.sql",
+
+			// ★★ 2026-10-21（R60 轮，属主拍板「登记 5 个」）：以下 5 条**此前从未被登记**
+			// ⇒ 全新安装出来的库缺 5 个列 ⇒ 其中 provider_models.source 缺了 ⇒
+			// **db.Open 的 ensure 链直接 42703** ⇒ 「全新安装 = 装完即炸」
+			// （已实测复现 db::TestEnsureAsrCatalogSeed_RealDB 与
+			//  sql-migrations-startup::TestMigration715FreshChainApplyMigrations 两条真库门；
+			//  后者测的正是真实新装路径 —— 它的链来自 installed_startup_migrations.tsv）。
+			//
+			// 为什么既有那道空棘轮（sql/schema/startup_known_gaps.tsv，0 known gaps）
+			// 看不见这一类：**它数「已登记迁移 failed」，不数「文件从未运行 missing」**
+			// ⇒ 缺列时它照样是绿的 ⇒ 现已补
+			// sql/schema/fresh_install_column_gaps.tsv（缺列登记册）
+			// + sql/schema/fresh_install_column_gaps_test.go（真库门，检新缺口 + 查过期）。
+			//
+			// 全部是 ADD COLUMN IF NOT EXISTS ⇒ **幂等** ⇒ 与仓内 851/855/856/857
+			// 的同形态补登记一致（那四条的注释也写着「文件躺在 sql/migrations/startup/ 里，
+			// deploy 的目录扫描会捡到它，但安装器只跑 StartupFiles」）。
+			//
+			// 位置：**链尾**（不按编号插位）—— 依赖已逐条核过：
+			//   361b  目标 provider_models 由 01-schema 基线建好（基线 16 列、无 source）；
+			//         已登记链里**没有任何**迁移引用 provider_models.source ⇒ 无前向依赖。
+			//   375/376 目标 offline_activation_requests 由基线建好（9 列、无 status/
+			//         reject_reason/activation_code）；718 只是**注释**里提到该表名 ⇒ 无依赖。
+			//   387  目标 session_embeddings 由 351（链内 index 8）建好 ⇒ 排在它之后即可。
+			//   427  目标 task_type_centroids 由 426（链内 index 3）建好 ⇒ 排在它之后即可。
+			// 链尾是唯一无条件成立的位置（同 855 的处置）。
+			//
+			// 361b：provider_models.source 前置补列（NOT NULL DEFAULT 'discovery'）。
+			//   原始出处是 domain/361（domain 通道，**安装器不跑**）⇒ 361b 就是为
+			//   「只走 startup 通道的库」写的同一句防御性 ALTER（文件头原文如此）。
+			"361b_provider_models_source_prelude.sql",
+			// 375：给 offline_activation_requests 补 status + reject_reason。
+			//   文件头自述「修复 P0: store_pgx.go RejectOfflineRequest() 使用了这两个字段，
+			//   但 374 迁移文件中漏掉了」⇒ 本条是 374 的补漏（374 本身也未登记，
+			//   但目标表由基线建好 ⇒ 不需要 374 在链里）。
+			"375_offline_requests_status.sql",
+			// 376：给 offline_activation_requests 补 activation_code（离线激活码，
+			//   供客户核对/审计）。
+			"376_offline_activation_code.sql",
+			// 387：session_embeddings 补 embedding_v2（会话分析推理用的向量列）。
+			"387_session_analysis_inference.sql",
+			// 427：task_type_centroids 补 embedding_model（任务类型质心用的模型名列）。
+			"427_task_type_centroids_model.sql",
+			"893_fresh_install_partition_prereq.sql",
+			// 894：把 v_candidate_failure_logs_diagnosis **重新绑回活表**
+			//   public.candidate_failure_logs（修 392 的改名副作用）。
+			//
+			//   机制：视图绑的是关系 OID，不是名字 ⇒ 392 把老堆表改名成
+			//   candidate_failure_logs_columnar_archive 并新建同名空分区表时，
+			//   **既有视图不会跟着换表** ⇒ 它仍绑在老表 OID 上 ⇒ 视图读不到新数据。
+			//   实测：211 = 0 行（活表 91,935 行）、新装链终态同样脱靶；
+			//   而 252 因 392 走「已分区则跳过」分支没被改名 ⇒ 187,907 行。
+			//   ⇒ 同一个视图在两个生产实例返回不同数据集。
+			//
+			//   视图体与仓内两处真相源（基线 sql/schema/01-schema.sql、
+			//   对象源文件 sql/objects/views/v_candidate_failure_logs_diagnosis.sql）
+			//   逐字同形 ⇒ 本迁移只把链终态**对齐真相源**，不改语义。
+			"894_rebind_candidate_failure_logs_diagnosis_view.sql",
+			// 895：给 **11 张 domain 链的表**补 startup 通道镜像
+			//   （domain/035/132/133/134/135/220/331 建的那批）。
+			//
+			//   缺陷本体（实测，非推断）：这 11 张表**只有 domain 通道建**，
+			//   而 **domain 链从来没有在生产上跑过** —— 生产只跑 startup
+			//   通道 + installer 的 StartupFiles，**domain 通道两者都不含**
+			//   ⇒ 生产 252 的 `schema_migrations` 里 domain 链的号**一个都没有**
+			//   ⇒ 那 11 张表在生产上**一个都不存在**
+			//   ⇒ 而它们**都有 Go 生产读写点**
+			//   （domains/credentialstate、domains/session、domains/dbdegradation、
+			//     domains/credential、admin/… 等）⇒ 相关功能在生产上 42P01。
+			//
+			//   逐张核对过**基线**（sql/schema/01-schema.sql）与**全 sql/ 树**：
+			//   ★ 这 11 张表**基线一个都没有建** ⇒ 全部要由 895 新建
+			//     （基线里的 `client_profiles text[]` / `notification_channels jsonb`
+			//      是**别的表上的列名**，不是表本身）。
+			//   ★ 同批域链源文件里的**兄弟表不镜像**：
+			//     tool_usage_stats / approval_routing_rules / credential_state_log
+			//     **已由基线建**（01-schema.sql:17738 / :5550 / :6774）
+			//     ⇒ 镜像它们会与基线抢同名对象；
+			//     notification_send_log 基线未建但**全仓 Go 零读写点**
+			//     ⇒ 不在本条口径内。
+			//
+			//   形态：**逐字照抄域链源文件**（列/类型/默认值/NOT NULL/CHECK/外键/
+			//   唯一约束/主键/索引/注释/序列），并补齐域链没有的依赖：
+			//   6 个触发器函数 + 7 个触发器（基线里**一个都没有**）。
+			//   幂等：CREATE TABLE/INDEX IF NOT EXISTS + CREATE OR REPLACE FUNCTION
+			//   + DROP TRIGGER IF EXISTS + CREATE TRIGGER。
+			//
+			//   顺序前提：**不依赖任何其它 startup 迁移** —— 外键目标
+			//   `public.credentials` 由**基线**建（01-schema.sql:6820）⇒ 生产已存在
+			//   ⇒ 链尾即可（与 893/894 同位置理由）。
+			"895_domain_chain_startup_images.sql",
+			// 896：把 375/376 给 offline_activation_requests 补的三列
+			//   （status / reject_reason / activation_code）+ 两索引重新交付到
+			//   只靠升级通道维护的存量库。生产通道 deploy-lib/db-changelog.sh 只把
+			//   version >= 412 当 pending ⇒ 375/376 永远到不了 252（实测缺列 ⇒
+			//   licensing 离线激活管理 SQL 42703）。本链上 375/376 已在前面应用
+			//   ⇒ 896 在新装库是 no-op（IF NOT EXISTS）；表不存在时 NOTICE 跳过。
+			"896_offline_activation_requests_columns_reassert.sql",
+			// 897：给会话族的 hot 排水补上 **final_success 自愈**
+			//   （★ 迁移 695 为 v1 request_logs 族做过同款；★ 那个族后来被 890
+			//   ★ 退役 ⇒ ⇒ 自愈没有随族迁走 ⇒ ⇒ 真正有同款病灶的会话族一直没有它）。
+			//
+			//   ★ 病灶（★ 252 共享库 2026-10-23 生产定点实测）：父表与 hot 表各有
+			//   同构的部分唯一索引 (tenant_id, session_id, partition_date)
+			//   WHERE is_final_success；而 promote 的**去重**键是
+			//   (tenant_id, request_id) ⇒ ⇒ 看不见 ⇒ ⇒ 批次里的冲突行撞
+			//   uq_session_turns_final_success ⇒ **23505** ⇒ ⇒ 原子 CTE
+			//   **整批回滚、零行搬走** ⇒ ⇒ 且批次按 ts 升序 ⇒ 那个坏行每批必含
+			//   ⇒ ⇒ **每个 tick 必败** ⇒ ⇒ hot 表无限涨 + 父表停止接收冷行。
+			//
+			//   ★ 修法：与 695 逐字同款 —— 在**批次选取之前**把「父表已持有该键
+			//   mark」的 hot 行降级为 is_final_success=FALSE（语义「输家 = superseded，
+			//   历史不改写」⇒ ⇒ 与 695 一致 ⇒ ⇒ 零语义变更）。
+			//
+			//   ★ 基线是 **869**（★ 现行体）⇒ 函数体整段来自 869、只插入一处 demote
+			//   ⇒ ⇒ 并保留 869 的「目录派生列清单 + 形状守卫」两道牙。
+			//
+			//   ★ 真库实测（一次性库，★ A/B 对照）：★ 无 demote 时同一场景报 23505
+			//   （约束名与生产逐字一致）且整批回滚；★ 装上后 demote 1 行、moved=1、
+			//   ★ 先到者的 mark 原样保留；★ 幂等（第二次 moved=0）。
+			//   ⇒ ★ 本迁移**只落仓**；★ 生产应用需属主另行授权。
+			"897_session_turns_promote_final_success_self_heal.sql",
+			// 898：补上 public.session_bodies_hot 的 **ts 首列索引**。
+			//
+			//   ★ 病灶（★ 252 共享库 2026-10-23 生产只读实测）：该 hot 表的
+			//   6 个索引中**没有一个以 ts 为首列** ⇒ 批次选取走
+			//   **Seq Scan + Sort**（实测 cost 1602~1623）；★ 对照组
+			//   session_turns_hot **有** idx_session_turns_hot_ts (ts, id,
+			//   partition_date) ⇒ 走 **Index Only Scan**（cost 219~385）。
+			//
+			//   ★ ★ **交付缺口（带精确失败点）**：614 @ 6973a9fb8（= 生产
+			//   schema_migrations 记账时刻 2026-08-29 16:48:05 那一版）把该
+			//   索引定义成 partial index 带 `WHERE ts > now() - interval
+			//   '8 hours'` 谓词 ⇒ **now() 非 IMMUTABLE** ⇒ PG 拒绝 ⇒
+			//   ⇒ **该索引从未建成**，且它**后面**同文件的
+			//   idx_session_bodies_hot_partition_date 也从未执行；⇒ 而它
+			//   **前面**的 _lookup / _request 建成了 ⇒ ⇒ 与生产现状逐条
+			//   吻合。⇒ 2026-09-03 的 368202126 修掉了 now() 谓词，但
+			//   **614 的台账已记为 applied ⇒ 修复永远到不了生产**；⇒ 且
+			//   614 **不在本通道 files=() 里** ⇒ 通道也不补 ⇒ **双通道都到不了**。
+			//   ⇒ ⇒ 这就是「台账说已应用 ≠ 实际对象是那一版」的实例。
+			//
+			//   ★ 另一条独立通道也拿不到它：707b（**在**通道里）用
+			//   `LIKE public.session_bodies INCLUDING ALL` 建 hot 表 ⇒ 索引集
+			//   **继承自父表** ⇒ 而父表上**没有** ts 首列索引（862 只给
+			//   session_turns / _request_logs 的父表加了 idx_*_ts）⇒
+			//   ⇒ LIKE 也拷不出 ts 索引 ⇒ 必须有一条新迁移直接建它。
+			//
+			//   ★ 形态：照抄仓内样板 idx_session_turns_hot_ts ⇒ 建
+			//   (ts, id, partition_date) 三列（hot 表有 id 列，614 第 8 行）。
+			//   ★ 用 CONCURRENTLY（888 第 2 段同款）：hot 表是**活写表**
+			//   （bodies_writer 持续写入，pg_stat_statements 实测 72,813 次
+			//   INSERT / mean 20.2ms）⇒ 普通 CREATE INDEX 会在构建期持
+			//   ShareLock 阻断写入。
+			//
+			//   ⚠ **诚实边界**：本索引**不**是 60s 超时的解。★ 2026-10-23
+			//   实测批次选取只花 **30ms**（Sort quicksort 4198kB，**未溢写**
+			//   ⇒ ★ 早前「12.29× 溢写」的结论是量具口径错，已作废）；
+			//   ★ 60s 的去向在**写侧**（实测 ≈79ms/行：154 日志 511 行耗
+			//   40.45s）。⇒ 本迁移消除的是「批次选取随表体量线性劣化」这个
+			//   **放大器**，是前置条件而非 60s 的解。
+			//   ⇒ ★ 本迁移**只落仓**；★ 生产应用需属主另行授权。
+			"898_session_bodies_hot_ts_index.sql",
+			// 899：把 promote_session_bodies_hot_to_partition 的**生产现行体**
+			//   **下沉成迁移**（★ session_bodies 族的 copy-gap 修复）。
+			//
+			//   ★ 病灶（★ 2026-10-23 生产只读实测 prosrc 指纹）：活库上装的是
+			//   **裸 ON CONFLICT DO NOTHING**（无仲裁目标）+ reconciled CTE +
+			//   形状守卫 + try-lock 的形态（src_len=3486）⇒ 这个形态**逐字
+			//   等于** db/db.go 的 ensureSessionBodiesPromoteDrain
+			//   （db/db.go:3984-4095，启动链 db/db.go:527 ⇒ **每次网关启动
+			//   都重装一次**）⇒ ⇒ **它只活在 Go 源码里，不在任何迁移里**。
+			//   ⇒ 而仓内四版迁移（615/626/638/708）**全是**带仲裁目标的
+			//   `ON CONFLICT (id, partition_date) DO NOTHING` ⇒ ⇒
+			//   **「只跑迁移不启 Go」会把 708 的形态装回生产** ⇒ ⇒ 而
+			//   708 的仲裁目标**不覆盖**父表的
+			//   session_bodies_tenant_request_partition_key UNIQUE
+			//   (tenant_id, request_id, partition_date) ⇒ ⇒ **23505 复发 +
+			//   毒丸行卡死 hot 窗口**（2026-09-17 PG 日志审计 65 轮实测，
+			//   逐字记录在 db/db.go:3965-3972）⇒ ⇒ **修法只活在 Go 侧 ⇒
+			//   修法在通道路径上无效**。
+			//
+			//   ★ 函数体**逐字等于生产现行体**（纪律同 897：基线必须是生产
+			//   现行体）⇒ ⇒ **语义零变更**；本迁移只做一件事：把这个形态从
+			//   「只活在 Go 源码里」变成「也活在迁移里」。
+			//   ★ 签名不变 ⇒ CREATE OR REPLACE 是替换、不是新增 ⇒ 无重载
+			//   残留、调用方零改动。
+			//   ⇒ ★ 本迁移**只落仓**；★ 生产应用需属主另行授权。
+			"899_session_bodies_promote_body_sink.sql",
+			// 900：把 FreeDiscovery 数据模型（084 + 087 的列）**再投递**给
+			//   升级通道库与新装链（896 同款交付缺口修复）。
+			//
+			//   ★ 交付缺口：升级通道只把 version ≥ 412 视为 pending ⇒
+			//   084（<412）从未到达任何生产库（db-changelog 084 行自证
+			//   「applied+verified (本地 llm-gateway 库, psql 手动应用)」）。
+			//   ⇒ 生产共享库实测无 provider_templates / discovery_tasks /
+			//   discovery_results ⇒ R39 的 ProviderTemplatesProvisioned()=false
+			//   ⇒ /api/free-discovery/* 一律 503 "database disabled"
+			//   （245 journal 逐字佐证，2026-10-23）。
+			//   ★ 形态：逐字复用 084 的幂等 DDL + 并入 087 三个健康反馈列；
+			//   新装链此前同样缺这三张表 ⇒ 本迁移同时补齐新装路径；
+			//   升级库全 no-op（IF NOT EXISTS）。
+			"900_freediscovery_schema_reassert.sql",
+			// 901：给分区父表 public.usage_ledger 补
+			//   (api_key_id, ts DESC) WHERE api_key_id IS NOT NULL 部分索引。
+			//
+			//   ★ 既有四组分区索引首列全是 request_id / tenant_id / ts，没有
+			//   api_key_id ⇒ /api/usage/{id} 三端点的按 key 聚合只能走 ts
+			//   首列索引 + Filter ⇒ EXPLAIN ANALYZE 实测「7 天窗口 0 行」耗
+			//   6,983 ms（key 73 空窗）⇒ keys 详情页使用统计在负载窗口整体
+			//   超时（2026-10-23 生产只读实测）。
+			//   ★ 形态照抄 hot 侧样板 usage_ledger_hot_api_key_id_ts_idx；
+			//   普通 CREATE INDEX（父表不支持 CONCURRENTLY）+ lock_timeout=60s
+			//   / statement_timeout=10min（891 同款）。
+			"901_usage_ledger_api_key_id_ts_idx.sql",
+			// 902：stats_event_dedup 索引合并 —— pkey 换体
+			//   UNIQUE(event_id) INCLUDE(occurred_at)，删除 845 所建的
+			//   (event_id, occurred_at) 复合索引（252 实测 151 MB）。
+			//
+			//   ★ 冗余证明：pkey(event_id) 保证全表 event_id 唯一 ⇒ 复合键
+			//   第二列从无「同 event_id 第二行」可排序；该复合索引相对 pkey
+			//   的唯一增值是 covering ⇒ INCLUDE 体 pkey 完整承接。
+			//   ★ 消费方逐个过（本地一次性库实测）：ON CONFLICT (event_id)
+			//   仍工作（INCLUDE 不参与推断）、rollup/reconciliation 四处
+			//   双列等值 JOIN 仍 Index Only、唯一性不变式仍强制。
+			//   ★ 252 净省 ≈114 MB（旧索引 265 MB → 单条 ~151 MB；表 409 → ~295 MB）。
+			//   幂等：换体段按
+			//   目录态判定 + 兜底 DROP tmp（无守卫重跑会留 20 MB 孤儿，
+			//   本地实验阶段 4 抓出后补）。dbinit:no-transaction 标记
+			//   （CREATE INDEX CONCURRENTLY）。
+			"902_stats_event_dedup_pkey_include.sql",
+			// 903：public.sessions 补 (updated_at DESC, session_id DESC) 索引。
+			//
+			//   ★ 根因：会话列表（admin/turns_sessions.go）的排序键
+			//   (updated_at DESC, session_id DESC) **没有任何索引能提供该序**
+			//   ⇒ 规划器只能 Seq Scan + top-N Sort ⇒ Sort 必须把 439,106 行
+			//   全部物化才能吐出第一行 ⇒ Limit 无法提前停 ⇒ 整条 JOIN 链跑满。
+			//
+			//   ★ 252 EXPLAIN ANALYZE 实测（生产只读）：原查询
+			//   32,089.911 ms；只加本索引（事务内建索引后 ROLLBACK）⇒
+			//   3.639 ms，shared hit 9,876,509 → 640，去重 SubPlan
+			//   439,570 次循环 → 22 次。
+			//
+			//   ★ 口径零变化：同一 REPEATABLE READ 快照内，生产查询与改写
+			//   形态各跑一次，两个结果集 22 行（含表头）**逐字一致**。
+			//
+			//   ★ 普通 CREATE INDEX（分区父表不支持 CONCURRENTLY）+
+			//   lock_timeout=60s / statement_timeout=10min（891/901 同款）。
+			//   public.sessions 是热写表（session_aggregator.go:216 每请求
+			//   一次 upsert）⇒ 构建期 SHARE 锁阻塞该分区写 ⇒ 落在低峰窗口。
+			"903_sessions_updated_at_session_id_index.sql",
+			// 904：inspector-stats 的 L2/L3 两条聚合腿补部分索引。
+			//
+			//   ★ 病灶（252 生产只读实测，2026-10-27）：
+			//   GET /api/admin/sessions/inspector-stats 的两条聚合腿
+			//   **都没有时间窗** ⇒ 都是全表聚合：
+			//     L3 `status='closed' AND closed_at >= CURRENT_DATE`
+			//        → 全扫 90 万行 session_dim 再丢掉 100%
+			//          （Rows Removed by Filter: 301,024）
+			//     L2 `AVG(health_score) WHERE health_score IS NOT NULL`
+			//        → 全扫 86 万行 session_summaries 再丢掉 55 万行
+			//          （Rows Removed by Filter: 184,361）
+			//
+			//   ★ 根因：session_dim 的 7 条既有索引**没有一条含 closed_at**；
+			//   session_summaries 的 19 条里只有 health_score IS **NULL** 侧
+			//   的 idx_session_summaries_health_pending ⇒ NOT NULL 侧
+			//   **无索引可承接** ⇒ 规划器只能 Seq Scan + Filter。
+			//
+			//   ★ 修复效果（事务内建索引 + EXPLAIN ANALYZE + ROLLBACK，
+			//   生产零持久变更；回滚后残留索引实测 = 0）：
+			//     L2 389.373 ms → **119.706 ms**（→ Parallel Index Only Scan）
+			//     L3 195.432 ms → **0.100 ms**  （→ Index Only Scan）
+			//     索引体积 8,192 B + 2,120 kB
+			//
+			//   ★ 口径零变化：本迁移**不改任何查询**，只加索引
+			//   ⇒ 结果集取值不变（构造性成立，不依赖快照比对）。
+			//
+			//   ★ 两张表都**不是分区表**（relkind='r'）⇒ 可用普通
+			//   CREATE INDEX；仍不用 CONCURRENTLY（startup 迁移默认在
+			//   事务里跑）。两张都是热写表 ⇒ 构建期持 SHARE 锁阻塞
+			//   该表写入 ⇒ 落在低峰窗口。普通 CREATE INDEX +
+			//   lock_timeout=60s / statement_timeout=10min（903 同款）。
+			"904_inspector_stats_partial_indexes.sql",
+			// 905：`?model=` 这类**稀有**轮次级过滤补 model 维度复合索引。
+			//
+			//   ★ 病灶（252 生产只读实测，2026-10-24）：
+			//   GET /api/admin/turns/sessions 带 `?model=` 时**恒 500@30s**。
+			//   build 2841（R90 的两腿 EXISTS 已上线）直连 REPEAT=3：
+			//     ?limit=20                       200 200 200   0.878 0.155 0.111 s
+			//     ?limit=20&api_key_id=105        200 200 200   9.576 0.216 0.151 s
+			//     ?limit=20&model=deepseek-ai%2F…  500 500 500  30.008 30.007 30.018 s
+			//     ?limit=20&provider=14           200 200 200   0.358 0.100 0.080 s
+			//     ?limit=20&status_code=500       200 200 200   0.554 0.181 0.153 s
+			//   ⇒ ★★ R90「四条全修」的结论被证伪（只有 model 那条仍 500）。
+			//
+			//   ★ 真因不是「形状」而是**稀有过滤值 ⇒ 外层会话深扫**：
+			//   该 model 命中 458 轮 / **30 个会话**，而 public.sessions
+			//   有 441,112 个会话；列表是 `ORDER BY s.updated_at DESC
+			//   LIMIT 21` ⇒ 必须扫到凑够 21 行 ⇒ EXPLAIN 实测外层
+			//   Rows Removed by Filter: 72,455 + 277,899 = **350,354**。
+			//
+			//   ★ 修复效果（事务内建索引 + EXPLAIN ANALYZE + ROLLBACK，
+			//   生产零持久变更；回滚后残留索引实测 = 0）：
+			//     model（稀有） 30,008 ms → **8.0 ms**
+			//     provider='14'    358 ms → **48.6 ms**
+			//     status_code=500  554 ms → **249.6 ms**
+			//
+			//   ★ 只给 model 建索引：provider n_distinct=20、
+			//   status_code n_distinct=8 ⇒ **没有选择性** ⇒ 给它们建索引
+			//   会让规划器更倾向「轮次驱动 + 大哈希构建」⇒ 实测退化到
+			//   **10,080 ms**。
+			//
+			//   ★ public.session_turns 是**分区热写表**（父表 4.7 GB /
+			//   1,014,911 行）⇒ 分区父表不支持 CONCURRENTLY ⇒ 普通
+			//   CREATE INDEX + lock_timeout=60s / statement_timeout=10min
+			//   （903/904 同款）。实测构建 **18,512 ms**（父表）+ 28 ms（hot）
+			//   ⇒ ★ 这 ~18.5 秒里 session_turns 的写入被 SHARE 锁阻塞
+			//   ⇒ 落在低峰窗口。
+			"905_turns_session_model_index.sql",
+			// ★ R94：给「会话列表的 api_key 回填」补**部分索引**。
+			//   探针会话（sys:probe:*）的 api_key_id 全是 NULL ⇒ 过滤条件
+			//   无法从索引判定 ⇒ 必须回表 ⇒ 实测扫 82,297 行堆、全部被过滤掉、
+			//   产出 0 行，却花了 1,350~1,569 ms。
+			//   部分索引只含「api_key_id 是数字」的行 ⇒ 探针流量在索引里一行
+			//   都没有 ⇒ Index Only Scan ⇒ 实测 **4.57 ms**（295×）。
+			//   ★ 谓词必须与 db.SessionFamilyAPIKeyIDNumericPredExpr 逐字一致
+			//   （PG 的谓词蕴含判定是语法的 ⇒ 写成 CASE 形式就认不出来）。
+			//   实测构建 6,026 ms（父表）+ 21 ms（hot）。
+			"906_turns_api_key_numeric_partial_index.sql",
+			// ★ R96：routing_analytics_source 换成「会话族两腿 + LATERAL 回定位」
+			//   ⇒ 消除刷新链里 45 万行 session_turn_details 顺序扫
+			//   （252 实测中位 4,482.8 ms → 2,270.8 ms；最坏一轮 20,378.6 → 1,917.1 ms）。
+			//   ★ 口径逐行等价（源层/聚合层双向 EXCEPT ALL 均 0/0）。
+			//   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（保留 OID ⇒ matview 依赖不动，
+			//     下一次 REFRESH 自动采用新定义 ⇒ **不需要重建 matview**）。
+			"907_routing_analytics_source_lateral.sql",
+			// 908：删除 route_incident_events 的零消费方索引
+			//   idx_route_incident_events_type_created (event_type,
+			//   created_at DESC)（252 实测 110 MB / idx_scan=1，5.2 天窗口）。
+			//
+			//   ★ 判决链：全仓 Go 代码无任何 event_type 谓词查询本表；
+			//   历史上唯一使用者（30 天留存 DELETE）已被 871 判为
+			//   「非首列条件 ⇒ 全索引扫描」的坏计划并被 created_at
+			//   首列索引取代；不背书任何约束（pg_namespace 实查 0 行）。
+			//   ★ 写路径热度：同表 uq_idem 5.2 天 42 万次扫描 ⇒
+			//   每次写入白维护一个零读者的 110 MB btree。
+			//   ★ 配套：db/db.go ensureRouteIncidentSchema 同批删除同名
+			//   CREATE INDEX（否则 ensure 链会把本迁移刚删的索引复活）。
+			//   baseline 刻意保留（718 先例：fresh-install 链建出→本条删掉）。
+			//   dbinit:no-transaction（DROP INDEX CONCURRENTLY）。
+			"908_route_incident_events_type_created_drop.sql",
+		//   909：给 session_summaries 的三列（session_key / title / primary_model）
+		//   补 GIN trigram 索引。★ 修的是 admin 会话搜索（catalogSearchSQL）
+		//   对 868,711 行做三列 OR 的 `%q%` ILIKE ⇒ Parallel Seq Scan
+		//   ⇒ 252 生产实测 Execution Time = 40,415.968 ms（40.4 秒）
+		//   ⇒ 而调用点 ctx 超时只有 2 秒 ⇒ ★★ 每次都超时 ⇒ 静默返回「没搜到」。
+		//   ★ Go 侧同步把谓词改成裸列（title ILIKE），★ 因为 PG 的表达式索引
+		//   匹配是逐字的 ⇒ COALESCE(title,'') ILIKE 用不上裸列索引。
+		//   dbinit:no-transaction（CREATE INDEX CONCURRENTLY）。
+		"909_session_summaries_search_trgm_indexes.sql",
 		},
 	}
 }

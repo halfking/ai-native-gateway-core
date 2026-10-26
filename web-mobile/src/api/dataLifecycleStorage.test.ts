@@ -55,7 +55,7 @@ import {
 /**
  * 存储总览 + 表级大小的契约测试（2026-10-08，第八十批）。
  *
- * 后端：`admin/handler.go:982` / `:983`（两个 `admin(...)` ⇒ admin 档），
+ * 后端：`admin/handler.go:1041` / `:1042`（两个 `admin(...)` ⇒ admin 档），
  * 实现 `admin/data_lifecycle_storage.go`（两个 handler + helpers）。
  *
  * 本 spec 的重点是十三件已在源文件头写明的事（(1)…(13)），其中带 ★ 的自校验判据

@@ -112,10 +112,10 @@ func TestMaterializedViewRefresher_TimeoutLiftAndReset_RealDB(t *testing.T) {
 	}
 
 	r := NewMaterializedViewRefresher(pool)
-	if _, err := r.refreshView(ctx, probeView, true); err != nil {
+	if _, err := r.refreshView(ctx, probeView, true, mvRefreshStatementTimeout); err != nil {
 		t.Fatalf("refreshView(advisory-lock path): %v", err)
 	}
-	if _, err := r.refreshView(ctx, probeView, false); err != nil {
+	if _, err := r.refreshView(ctx, probeView, false, mvRefreshStatementTimeout); err != nil {
 		t.Fatalf("refreshView(leader path): %v", err)
 	}
 

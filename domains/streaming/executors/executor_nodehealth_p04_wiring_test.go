@@ -2,6 +2,7 @@ package executors
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,25 @@ import (
 // 按错误正文分派三种记录方式——模型指名体跳过凭据熔断、quota 重置体对齐
 // 冷却、其余走既有 billing-mode 记录。断言与分派逻辑同层（直接驱动
 // adapter），并配「前提在场」断言（解析器确实吃下同一 detail 文本）。
+
+type nodeHealthStateSpy struct {
+	bindingFailures    []credential.Failure
+	credentialFailures []credential.Failure
+}
+
+func (s *nodeHealthStateSpy) Enabled() bool { return true }
+
+func (s *nodeHealthStateSpy) RestoreOnSuccess(context.Context, int, string) error { return nil }
+
+func (s *nodeHealthStateSpy) WriteOnError(_ context.Context, _ int, _ string, failure credential.Failure) error {
+	s.bindingFailures = append(s.bindingFailures, failure)
+	return nil
+}
+
+func (s *nodeHealthStateSpy) SetCredentialUnavailable(_ context.Context, _ int, failure credential.Failure) error {
+	s.credentialFailures = append(s.credentialFailures, failure)
+	return nil
+}
 
 func p04CircuitDecision(kind nodehealth.ErrorKind, detail string, effects ...nodehealth.EffectKind) nodehealth.Decision {
 	if len(effects) == 0 {
@@ -75,7 +95,7 @@ func TestP04Wiring_QuotaResetAlignsCircuitCooling(t *testing.T) {
 	}
 }
 
-func TestP04Wiring_ModelScopedRejectionSkipsCredentialBreaker(t *testing.T) {
+func TestP04Wiring_ModelScopedRejectionNarrowsFullReducerDecision(t *testing.T) {
 	// 既知登记项形态：正文指名模型，但分类落在非 binding 档（upstream/transient）。
 	detail := `{"error":{"message":"The model 'glm-5.2-flash' does not exist or is not available","type":"invalid_request_error"}}`
 	// 前提在场：提取器必须从这条 detail 里拿到模型名。
@@ -84,22 +104,70 @@ func TestP04Wiring_ModelScopedRejectionSkipsCredentialBreaker(t *testing.T) {
 		t.Fatalf("premise failed: ModelScopedRejection = (%q,%v), want (glm-5.2-flash,true)", model, ok)
 	}
 
-	exec := &Executor{Circuit: credential.NewManager()}
+	observer := &flashBlipObserver{mockStateObserver: &mockStateObserver{}}
+	state := &nodeHealthStateSpy{}
+	exec := &Executor{
+		Circuit:         credential.NewManager(),
+		StateObserver:   observer,
+		NodeHealthState: state,
+	}
 	adapter := executorNodeHealthAdapter{executor: exec}
-	if err := adapter.ApplyNodeHealthDecision(context.Background(),
-		p04CircuitDecision(nodehealth.ErrorKindUpstream, detail)); err != nil {
-		t.Fatalf("apply: %v", err)
+	reducer := nodehealth.NewOutcomeReducer()
+	node := nodehealth.NodeKey{TenantID: "default", ProviderID: 9, CredentialID: 31, Model: "glm-5.2-flash"}
+
+	var decision nodehealth.Decision
+	for i := 1; i <= 3; i++ {
+		observation := nodehealth.Observation{
+			Node:        node,
+			AttemptID:   fmt.Sprintf("p04-model-scope-%d", i),
+			Phase:       nodehealth.PhaseRequest,
+			Outcome:     requestjourney.OutcomeFailure,
+			ErrorKind:   nodehealth.ErrorKindUpstream,
+			HTTPStatus:  400,
+			RequestID:   fmt.Sprintf("p04-model-scope-req-%d", i),
+			BillingMode: "paid",
+			ErrorDetail: detail,
+		}
+		var err error
+		decision, err = reducer.ReduceAndApply(context.Background(), observation, adapter)
+		if err != nil {
+			t.Fatalf("ReduceAndApply failure %d: %v", i, err)
+		}
 	}
 
-	brk := exec.Circuit.Get(9, 31)
-	if brk == nil {
-		t.Fatal("breaker not created")
+	for _, want := range []nodehealth.EffectKind{
+		nodehealth.EffectRecordCircuitFailure,
+		nodehealth.EffectSetBindingUnavailable,
+		nodehealth.EffectSetCredentialUnavailable,
+		nodehealth.EffectUpdateURSM,
+		nodehealth.EffectInvalidateCandidateCache,
+		nodehealth.EffectScheduleProbe,
+	} {
+		found := false
+		for _, effect := range decision.Effects {
+			if effect.Kind == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("third reducer decision missing premise effect %s: %+v", want, decision.Effects)
+		}
 	}
-	if brk.State() != credential.StateClosed {
-		t.Fatalf("state = %s, want closed (model-scoped must not trip the credential breaker)", brk.State())
+
+	// The full-effect filter must skip breaker creation entirely; no
+	// credential-wide side effect is allowed to observe this model rejection.
+	if brk := exec.Circuit.Get(9, 31); brk != nil {
+		t.Fatalf("breaker = %+v, want nil (model-scoped must not touch credential breaker)", brk.Stats())
 	}
-	if n := brk.ConsecutiveFailures(); n != 0 {
-		t.Fatalf("consecutive = %d, want 0 (no accumulation on model-scoped rejection)", n)
+	if failures := observer.getFailures(); len(failures) != 0 {
+		t.Fatalf("legacy UpdateOnFailure calls = %+v, want none for model-scoped override", failures)
+	}
+	if got := len(state.bindingFailures); got != 1 {
+		t.Fatalf("binding-unavailable writes = %d, want 1", got)
+	}
+	if got := len(state.credentialFailures); got != 0 {
+		t.Fatalf("credential-unavailable writes = %d, want 0", got)
 	}
 }
 

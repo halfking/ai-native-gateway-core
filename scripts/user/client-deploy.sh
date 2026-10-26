@@ -1135,7 +1135,7 @@ out="${BACKUP_DIR}/${POSTGRES_DB}-$(date +%Y%m%d-%H%M%S).dump"
 log "pg_dump → ${out}"
 if ! docker exec -e PGPASSWORD="$POSTGRES_PASSWORD" "$PG_CONTAINER" \
   pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f /tmp/_bkup.dump; then
-  die "pg_dump 失败（容器 $PG_CONTAINER）"
+  die "pg_dump 失败（容器 ${PG_CONTAINER}）"
 fi
 docker cp "${PG_CONTAINER}:/tmp/_bkup.dump" "$out"
 docker exec "$PG_CONTAINER" rm -f /tmp/_bkup.dump
@@ -1295,8 +1295,8 @@ PLIST
 PLIST
   launchctl unload "$plist" >/dev/null 2>&1 || true
   launchctl unload "$plist2" >/dev/null 2>&1 || true
-  launchctl load "$plist" || warn "launchctl load 失败（$plist）"
-  launchctl load "$plist2" || warn "launchctl load 失败（$plist2）"
+  launchctl load "$plist" || warn "launchctl load 失败（${plist}）"
+  launchctl load "$plist2" || warn "launchctl load 失败（${plist2}）"
   log "launchd: 已安装 ${plist} 与清理任务"
 }
 

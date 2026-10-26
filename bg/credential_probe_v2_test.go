@@ -84,7 +84,7 @@ func TestClassifyProbeFailure_RateLimited(t *testing.T) {
 
 func TestClassifyProbeFailure_BalanceLow(t *testing.T) {
 	pr := classifyProbeFailure("402 payment required: balance too low")
-	if pr.HealthStatus != "warning" || pr.QuotaState != "periodic_exhausted" || pr.StateReasonCode != "balance_low" {
+	if pr.HealthStatus != "warning" || pr.QuotaState != "balance_exhausted" || pr.StateReasonCode != "quota" || pr.AvailabilityState != "suspended" {
 		t.Errorf("402 classification wrong: %+v", pr)
 	}
 }

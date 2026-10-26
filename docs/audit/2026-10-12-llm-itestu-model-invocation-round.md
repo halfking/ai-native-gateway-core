@@ -108,7 +108,7 @@ TOKEN=$(curl -sS -H 'Content-Type: application/json' \
 curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"application_code":"admin","tenant_id":"default","owner_user":"manual-test","key_alias":"manual-probe-001","remark":"manual probe test for model invocation"}' \
   http://127.0.0.1:8782/api/keys
-# → {"api_key":"sk-79oDjISbpPy55HfghVaeuPXGADtLBK2hNXA3awvKeCdo8J80","id":1082,...}
+# → {"api_key":"sk-__REDACTED_REAL_KEY__","id":1082,...}
 ```
 
 > 该 key 在 192.168.31.40:8782 不可用（HTTP 401 invalid_key），证实两台用不同 DB。.40 走自己的 DB+secret key，需要在 .40 另创建 key 才能验证（POSAPI 的 alias `itestu40` 没有，root/niuier/kaixuan 都拒绝，与 SSH 同样限制）。

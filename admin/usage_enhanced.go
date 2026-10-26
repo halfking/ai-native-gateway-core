@@ -69,19 +69,22 @@ type costTrendPlan struct {
 
 // planCostTrend 返回某个 group_by 的取数方案；维度未知时 ok=false。
 //
-// work_type / intent 是「请求侧」维度：原生归属是 _request_logs。usage_ledger
+// work_type / intent 是「请求侧」维度：原生归属是请求日志族（890 之后是
+// session_turns）。usage_ledger
 // 是计费宽表，只有 20 列（2026-10-03 实测 information_schema），从未投影
 // work_type / gw_session_id —— 在它上面引用必然 42703。
 //
 // 两个都不可接受的旧修法：
 //
-//	A. 从 ledger LEFT JOIN _request_logs 补列 —— 2M×2M 嵌套循环，30 天窗口
+//	A. 从 ledger LEFT JOIN 请求日志宽表补列 —— 2M×2M 嵌套循环，30 天窗口
 //	   实测 28s，超过本端点 15s 预算，且随窗口线性劣化；
+//	   （当时的宽表是 v1 家族，2026-10-20 迁移 890 整体退役；
+//	   会话族侧同理，session_turns 与 usage_ledger 也没有共同键。）
 //	B. 继续报错让 IsSchemaBehindError 降级 —— 得到 200 + 全 0，而 intent 是
 //	   UsageCost.vue 下拉框里的可选项，用户一点就中招。
 //
 // 采用：这两个维度以 request_logs_with_current_month 双腿视图为基表（39 轮
-// 2026-10-03 改，原为裸 _request_logs）。裸母表读不到 hot 腿里尚未 promote 的
+// 2026-10-03 改，原为裸请求日志母表）。裸母表读不到 hot 腿里尚未 promote 的
 // 最近 ≤8h 行——与 memora_context（206 号）/probe_history（204 号）同族的
 // 「近期流量盲区」。换视图后两条腿都吃同一条 ts 谓词，月分区剪枝不变
 // （204 号已验证同形换法）；视图列含 work_type / gw_session_id（两腿均有）。
@@ -613,6 +616,19 @@ type CacheEconomicsResponse struct {
 	DegradedReason string `json:"degraded_reason,omitempty"`
 }
 
+// cacheEconomicsCompressedBudget 是压缩计数那条附加查询的**独立**上限。
+//
+// 取 3s 的依据（252 实测，主聚合 6020ms / 总预算 10s）：留 3s 给附加查询，
+// 主聚合仍有 ~7s 的余量。给多了没用——这条查询单跑要 35s，3s 与 30s 的结果
+// 都是「算不出来，退化成一条 Warn」；给少了则可能在它本来能算出来的窗口上
+// （小 tenant / 窄日期范围）白白丢掉一个指标。3s 是让**大多数**请求保住主
+// 聚合、又不去赌附加指标的那个点。
+//
+// 这不是新口径：附加计数失败一直只降级成 Warn（compressed_requests 不参与
+// 任何比率计算），本常量只是让这条降级**确定**发生，而不是由它是否抢在
+// 主聚合前面耗尽 ctx 来随机决定。
+const cacheEconomicsCompressedBudget = 3 * time.Second
+
 func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -640,7 +656,8 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 主聚合只碰 usage_ledger 真实拥有的四列。
-	// 压缩请求数不在这里算：compression_strategy 只存在于 _request_logs，
+	// 压缩请求数不在这里算：compression_strategy 只存在于请求日志族
+	// （890 之后是 session_turns），
 	// 在这里 FILTER 它必然 42703 → 整条查询失败 → IsSchemaBehindError 降级成
 	// 200 + 全 0，而 UsageCost.vue 的缓存经济卡片 6 个指标全渲染 0。
 	// 拿不到就降级整页，比拿错数字更糟：用户看到的是「本月没花钱」。
@@ -654,16 +671,48 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 		%s
 	`, whereClause)
 
-	// compression_strategy 的原生归属是 _request_logs。走 _request_logs 而不是
-	// join 回 ledger：ledger→_request_logs 是 2M×2M 嵌套循环，30 天窗口实测 28s，
-	// 而按 ts 过滤的单表读同窗口实测 1.7s（2026-10-03 实测）。两表 cost 口径经
-	// 核对一致（同窗口均 150.15 美元），因此这里只是换张表，不引入新的计费口径。
-	// 读的是 hot∪母表双腿视图而非裸母表：最近 8h 的行只在 _request_logs_hot
-	//（hot 默认仅保留 8h），裸母表读对当月面板是真实盲区（sqlreadguard 读面
-	// 纪律）；视图两腿都吃 ts 谓词下推，剪枝收益不丢。
+	// compression_strategy 的原生归属是请求日志族（890 之后是 session_turns）。
+	//
+	// 2026-10-18（873 上线后的残余项）：这条查询原先读 canonical 视图
+	// request_logs_with_current_month，30 天窗口**跑不完**——实测 3s 子预算
+	// 100% 超时，154 journalctl 每次调用都记
+	//   WARN cache-economics: compressed request count unavailable
+	//        err="timeout: context deadline exceeded"
+	// 于是 compressed_requests **恒为 0 是降级产物，不是真实值**，
+	// 且每次调用白烧 3s（873 把主聚合降到 0.5s 后，端点 3.4–4.0s 的时间里
+	// 剩下的全是这条拿不到结果的查询）。
+	//
+	// 视图为什么跑不完：它把 session_turns / session_turn_details 一并联进来
+	// （LATERAL 补列 + NOT EXISTS 反连接），本端点只要一个 COUNT(*)，却要为
+	// 30 天 200 万行做整套补列。
+	//
+	// 实测对照（同一 30 天窗口，v1 族时代）：
+	//   request_logs_with_current_month  >300s（跑不完）
+	//   v1 母表单腿                        648 ms → **10,590 行**
+	//   v1 hot 单腿                        3 ms  → 0 行
+	// 母表命中 10,590 行 ⇒ 视图报出来的 0 确实是错的。
+	//
+	// ★ 为什么是**单腿母表**而不是 hot∪母表双腿（这是刻意取舍）：
+	//   sqlreadguard 的读面纪律要求读 hot∪母表双腿（最近 8h 的行只在
+	//   热表，裸母表读有 ≤8h 盲区）。但对**计数**指标来说，
+	//   朴素的 UNION ALL 腿是更糟的错误方向：
+	//   promote 会把旧行从 hot 搬到母表，两腿同时存在时同一行会被数两次
+	//   （bg/routing_health_checks.go 的 DEBT(R47) 条目记的就是这件事，
+	//   并注明「正确双腿必须走族视图并核对 promote 去重语义」——那需要
+	//   一个真实 promote 环境，不是本轮能定的）。
+	//   ⇒ 低估 ≤8h（保守、可在注释里说清）优于系统性虚高。
+	//   同款取舍见 internal/summarystore/store.go 与
+	//   domains/session/v2/session_request_status_backfill.go 的白名单条目。
+	//
+	// 口径变化如实记录：本指标此前**从未返回过真值**（恒为降级的 0），
+	// 因此不存在「与旧值不一致」的回归面；现在是第一次给出真实数字。
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 取数源从 v1 母表换成会话族
+	// 母表 session_turns（compression_strategy 在会话族的落点就是这一列，
+	// 真库 information_schema 核对过）。「单腿母表」这条取舍**原样保留**：
+	// 它换来的是 ≤8h 盲区而不是双计，与换源是两件独立的事。
 	compressedQuery := `
 		SELECT COUNT(*)
-		FROM request_logs_with_current_month rl
+		FROM session_turns rl
 		WHERE rl.ts >= $1 AND rl.ts < $2
 		  AND rl.compression_strategy IS NOT NULL
 		  AND rl.compression_strategy <> ''
@@ -690,8 +739,26 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 
 	// 压缩计数是附加信息，不参与主聚合。主聚合成功后才取；它失败不该让
 	// dollars_spent / cache_hit_ratio 这些已经算对的指标一起作废。
+	//
+	// 2026-10-18：它必须**自带预算**，不能与主聚合共用 ctx。
+	// 252 实测（同一个月窗口，逐条计时）：
+	//
+	//	主聚合 usage_ledger_with_current_month      6020 ms
+	//	compressedQuery request_logs_with_current_month  35344 ms
+	//
+	// 两条**顺序**跑在同一个 10s ctx 里 —— 光主聚合就吃掉 6s，附加那条
+	// 单跑要 35s，整端点 500（`cache-economics query failed`，稳定卡在
+	// 10.0s）。这不是库争抢、不是统计陈旧，是**预算本来就不可能成立**。
+	//
+	// 注释上方那句「30 天窗口实测 28s」早就写明了这条查询有多贵，作者因此把
+	// 主聚合换到了 usage_ledger，却把附加计数留在了同一张视图上——而它失败
+	// 本来就只降级成一条 Warn。给它一个有界子预算，主聚合拿回属于自己的时间，
+	// 附加计数要么在预算内算出、要么安静地退化成那条 Warn：与既有降级语义一致，
+	// 口径不变。
+	cctx, ccancel := context.WithTimeout(ctx, cacheEconomicsCompressedBudget)
+	defer ccancel()
 	if err == nil {
-		if cerr := h.db.QueryRow(ctx, compressedQuery, compressedArgs...).Scan(&compressedRequests); cerr != nil {
+		if cerr := h.db.QueryRow(cctx, compressedQuery, compressedArgs...).Scan(&compressedRequests); cerr != nil {
 			slog.Warn("cache-economics: compressed request count unavailable",
 				"tenant", tid, "err", cerr)
 		}

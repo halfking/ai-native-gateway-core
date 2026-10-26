@@ -138,7 +138,15 @@ func (s *Sanitizer) sanitizeInputStable(ctx context.Context, text string, offset
 		return nil, ErrNilSanitizer
 	}
 
-	fragments, err := s.detector.Detect(ctx, text)
+	var fragments []SensitiveFragment
+	var err error
+	if scoped, ok := s.detector.(interface {
+		DetectScope(context.Context, string, DetectionScope) ([]SensitiveFragment, error)
+	}); ok {
+		fragments, err = scoped.DetectScope(ctx, text, ScopeInputDeclarations)
+	} else {
+		fragments, err = s.detector.Detect(ctx, text)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("sanitize: detect failed: %w", err)
 	}
@@ -243,35 +251,7 @@ func allocateSensitivePlaceholder(typ SensitiveType, value string, offset map[Se
 // 编码，而容错阶段解析出的 (type, index) 正好就是 resolver 的入参。
 func (s *Sanitizer) restoreText(ctx context.Context, text string, resolve placeholderResolver, policy looseUnknownPolicy) string {
 	foreign := foreignMarkersFromContext(ctx)
-	result := PlaceholderPattern.ReplaceAllStringFunc(text, func(match string) string {
-		var parsedType SensitiveType
-		if parsed, ok := ParsePlaceholder(match); ok {
-			// A token observed in the inbound body belongs to the downstream
-			// hop even when this gateway can also see the same session mapping
-			// (for example, when both instances share Redis). Keep it intact so
-			// only the issuer restores it at the end of the chain.
-			if foreign.isForeign(match) {
-				return match
-			}
-			parsedType = parsed.Type
-			if resolve != nil {
-				if original, hit := resolve(parsed.Type, parsed.Index); hit {
-					return original
-				}
-			}
-			if resolve != nil {
-				s.logger.WarnContext(ctx, "sanitize: placeholder not found in map",
-					"placeholder", match)
-			}
-		}
-		if policy == looseMaskUnknown {
-			// The marker parsed, so its type is known and the mask can say so.
-			// A non-parsing match leaves parsedType empty and falls back to the
-			// bare form rather than guessing.
-			return RedactionMarker(parsedType)
-		}
-		return match
-	})
+	result := s.restoreExactMarkers(ctx, text, resolve, foreign, policy)
 
 	stats := restoreLooseMarkers(ctx, result, resolve, foreign, policy)
 	if stats.recovered > 0 {
@@ -286,6 +266,129 @@ func (s *Sanitizer) restoreText(ctx context.Context, text string, resolve placeh
 			"unresolved", stats.unresolved)
 	}
 	return stats.text
+}
+
+// restoreExactMarkers 是**精确阶段**（规范拼写 `{SENSITIVE:type:index}`）的实现。
+//
+// 2026-10-20 补（r1039）：过去这里是 ReplaceAllStringFunc，回调里**拿不到偏移**，
+// 于是「模型多写的一对花括号」无法处理——"{{SENSITIVE:secret:1}}" 里的内层
+// 规范拼写被本阶段消费掉，外层那一对花括号留在 span 之外，客户端看到的是
+// "{s3cr3t}"。
+//
+// 为什么不交给容错阶段：容错阶段（restoreLooseMarkers）**已经**会吸收这一对
+// 花括号（见 placeholder_loose.go 的 absorbMarkerDelimiters），但规范拼写
+// 由**本阶段先行消费**，容错阶段根本看不到那个标记 ⇒ 两阶段的顺序决定了
+// 这个残渣必然出现。改成 FindAllStringIndex + 手工拼接，才能在**同一处**
+// 把属于标记自己的定界花括号吸进来。
+//
+// 吸收条件与容错阶段**逐条一致**（widenExactMarkerSpan）：
+//   - **两侧**都多出一对同类的开/闭花括号（模型把花括号写重了）；
+//   - 吸收后**核心**（去掉全部花括号后的 marker 文本）不变；
+//   - 左边那一对花括号必须还没被前面的替换消费掉（floor）。
+//
+// ⇒ 普通 JSON 嵌套（`{"a":{"SENSITIVE:secret:1}}`，左侧紧邻的是冒号而不是
+// 开花括号）不受影响；单侧多一个花括号也不吸收（保持左右对称）。
+func (s *Sanitizer) restoreExactMarkers(ctx context.Context, text string, resolve placeholderResolver, foreign foreignMarkerSet, policy looseUnknownPolicy) string {
+	matches := PlaceholderPattern.FindAllStringIndex(text, -1)
+	if len(matches) == 0 {
+		return text
+	}
+
+	var b strings.Builder
+	b.Grow(len(text))
+	last := 0
+	for _, m := range matches {
+		matchStart, matchEnd := m[0], m[1]
+		match := text[matchStart:matchEnd]
+
+		// A token observed in the inbound body belongs to the downstream
+		// hop even when this gateway can also see the same session mapping
+		// (for example, when both instances share Redis). Keep it intact so
+		// only the issuer restores it at the end of the chain.
+		//
+		// foreign 判定用的是**内层规范拼写**（match）：token 的身份是那串规范
+		// 文本，多出来的那对花括号不是它的一部分。外来 token **不吸收**花括号
+		// ——本轮不改动下游 hop 负责的那段文本。
+		if foreign.isForeign(match) {
+			b.WriteString(text[last:matchEnd])
+			last = matchEnd
+			continue
+		}
+
+		// 属于标记自己的定界花括号（模型写重了）要一并吸进来。
+		spanStart, spanEnd := widenExactMarkerSpan(text, matchStart, matchEnd, last)
+
+		var replacement string
+		var parsedType SensitiveType
+		resolved := false
+		if parsed, ok := ParsePlaceholder(match); ok {
+			parsedType = parsed.Type
+			if resolve != nil {
+				// hit 与 original 分开判断：还原值本身**可以是空串**，
+				// 用 replacement=="" 当「没解析出来」的哨兵会把空串误判成未命中。
+				original, hit := resolve(parsed.Type, parsed.Index)
+				if hit {
+					replacement = original
+					resolved = true
+				}
+			}
+			if !resolved && resolve != nil {
+				s.logger.WarnContext(ctx, "sanitize: placeholder not found in map",
+					"placeholder", match)
+			}
+		}
+		if !resolved {
+			if policy == looseMaskUnknown {
+				// The marker parsed, so its type is known and the mask can say so.
+				// A non-parsing match leaves parsedType empty and falls back to the
+				// bare form rather than guessing.
+				//
+				// maskType 把「模型自造的类型」收敛成 unknown（与容错阶段一致）：
+				// 网关没有这个类型的规则，声称一个不存在的类别是错的。
+				replacement = RedactionMarker(maskType(parsedType))
+			} else {
+				replacement = match
+			}
+		}
+
+		b.WriteString(text[last:spanStart])
+		b.WriteString(replacement)
+		last = spanEnd
+	}
+	b.WriteString(text[last:])
+	return b.String()
+}
+
+// widenExactMarkerSpan 把**属于标记自己的**定界花括号并进 span。
+//
+// 与 placeholder_loose.go 的 absorbMarkerDelimiters 是同一条规则，这里是它在
+// 精确阶段（brace-delimited 形态）的对应实现：只吸收**两侧**都多出来的那一对，
+// 且吸收后核心不变。
+//
+// floor 是已经被上一次替换消费掉的文本末尾：左边那一对花括号若已经不在
+// 未消费的文本里（被前一个标记吃掉了），就不能再吸收。
+func widenExactMarkerSpan(text string, s, e, floor int) (int, int) {
+	coreS, coreE := markerCore(text, s, e)
+	if coreS >= coreE {
+		return s, e
+	}
+	// 左侧：紧邻 span 之前的那个字符必须是开花括号，且还没被消费掉。
+	lr, lstart, lok := runeBeforeStart(text, s)
+	if !lok || lstart < floor || !isOpenBraceRune(lr) {
+		return s, e
+	}
+	// 右侧：紧邻 span 之后的那个字符必须是闭花括号。
+	rr, rend, rok := runeAtSpan(text, e)
+	if !rok || !isCloseBraceRune(rr) {
+		return s, e
+	}
+	// 吸收后核心必须不变，否则吸进来的就不是这个标记的花括号了。
+	ns, ne := lstart, rend
+	cs, ce := markerCore(text, ns, ne)
+	if cs != coreS || ce != coreE {
+		return s, e
+	}
+	return ns, ne
 }
 
 // RestoreOutput 将输出文本中的占位符还原为原始值。

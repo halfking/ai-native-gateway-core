@@ -64,13 +64,19 @@ const defaultHistoryLimit = 20
 const maxHistoryMessageChars = 12000
 
 // FetchBySession reconstructs the transcript by reading the most recent
-// _request_logs rows for the session and merging their request messages with the
+// request rows for the session and merging their request messages with the
 // assistant reply that followed.
 //
-// historySessionSQL / historyV1SQL（S3 波 2 停写切换，见 FetchBySession 注释）。
-// 2026-07-21 Ticket #11: LEFT JOIN _request_logs_bodies retrieves full
-// request_body/response_body (moved to separate table in #10); COALESCE
+// historySessionSQL（S3 波 2 停写切换，见 FetchBySession 注释）。
+// 2026-07-21 Ticket #11: the bodies side table retrieves full
+// request_body/response_body (moved to a separate table in #10); COALESCE
 // keeps backwards compatibility during migration.
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：原先成对存在的 v1 回退查询
+// （historyV1SQL）**整条删除**——v1 族被 DROP 后，同一条 FROM 里提到 v1
+// 关系会让**整条语句** 42P01。回退腿当初服务的是「镜像链启用前的历史
+// 会话」（正文只在 v1 正文族）；那些会话的正文随 v1 族一起消失 ⇒ 回退腿
+// 现在**没有任何可回退的对象**，删掉它不损失任何内容。
 //
 // 2026-10-13 S3 波 2（停写切换）：gw_session_id 是会话内谓词（A 形态），
 // 按守卫规则迁会话族原生源：turns 腿用 SessionFamilyTurnsForSessionSQL
@@ -87,18 +93,6 @@ var historySessionSQL = `
 		JOIN ` + db.SessionFamilyBodiesSourceSQL() + ` rb
 		  ON rb.request_id = rl.request_id
 		WHERE COALESCE(rl.tenant_id, '') = COALESCE(NULLIF($2, ''), rl.tenant_id)
-		  AND (rb.request_body IS NOT NULL)
-		ORDER BY rl.ts DESC
-		LIMIT $3`
-
-const historyV1SQL = `
-		SELECT rb.request_body AS request_body,
-		       rb.response_body AS response_body
-		FROM _request_logs rl
-		LEFT JOIN _request_logs_bodies rb
-		  ON rb.request_id = rl.request_id
-		WHERE rl.gw_session_id = $1
-		  AND COALESCE(rl.tenant_id, '') = COALESCE(NULLIF($2, ''), rl.tenant_id)
 		  AND (rb.request_body IS NOT NULL)
 		ORDER BY rl.ts DESC
 		LIMIT $3`
@@ -122,18 +116,11 @@ func (s *PGHistoryStore) FetchBySession(ctx context.Context, sessionID, tenantID
 	if err != nil {
 		return nil, err
 	}
-	if len(pairs) == 0 {
-		// 会话族 0 行：镜像前历史会话（或正文缺失），回退 v1。
-		query = historyV1SQL
-		rows, err = s.db.QueryContext(ctx, query, sessionID, tenantID, limit)
-		if err != nil {
-			return nil, fmt.Errorf("goal: query session history: %w", err)
-		}
-		pairs, err = collectHistoryPairs(rows)
-		if err != nil {
-			return nil, err
-		}
-	}
+	// ★ 890（v1 族退役）：原先这里有一段「会话族 0 行 ⇒ 回退 v1 查询」的
+	// 分支。v1 族被 DROP 后那条回退腿**必然 42P01**（同一条 FROM 里提到
+	// v1 关系 ⇒ 整条语句失败），而且它服务的对象（镜像链启用前的历史
+	// 会话正文）已经随 v1 族一起消失 ⇒ 回退腿现在没有任何可回退的对象。
+	// ⇒ 分支删除：会话族 0 行就是 0 行（无正文 ⇒ 审计上下文里没有历史消息）。
 
 	// pairs is newest-first; reverse to chronological order.
 	out := make([]HistoryMessage, 0, len(pairs)*2)

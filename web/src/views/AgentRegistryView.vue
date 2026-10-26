@@ -567,7 +567,7 @@ onBeforeUnmount(() => {
             <h4>{{ t('agentRegistryView.topology.downstream', { n: neighbors.downstream.length }) }}</h4>
             <ul v-if="neighbors.downstream.length" class="neighbor-list">
               <li v-for="n in neighbors.downstream" :key="`d-${n.kind}-${n.ref_id}`">
-                <span class="kind-tag kind-{{ n.kind }}">{{ n.kind }}</span>
+                <span class="kind-tag" :class="'kind-' + n.kind">{{ n.kind }}</span>
                 <strong>{{ n.name }}</strong>
                 <span class="ref-id">#{{ n.ref_id }}</span>
               </li>
@@ -578,7 +578,7 @@ onBeforeUnmount(() => {
             <h4>{{ t('agentRegistryView.topology.upstream', { n: neighbors.upstream.length }) }}</h4>
             <ul v-if="neighbors.upstream.length" class="neighbor-list">
               <li v-for="n in neighbors.upstream" :key="`u-${n.kind}-${n.ref_id}`">
-                <span class="kind-tag kind-{{ n.kind }}">{{ n.kind }}</span>
+                <span class="kind-tag" :class="'kind-' + n.kind">{{ n.kind }}</span>
                 <strong>{{ n.name }}</strong>
                 <span class="ref-id">#{{ n.ref_id }}</span>
               </li>
@@ -608,7 +608,6 @@ onBeforeUnmount(() => {
 .stat-label {
   font-size: 11px;
   opacity: 0.7;
-  text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 .stat-value {

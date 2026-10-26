@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -135,6 +136,32 @@ func TestExecuteAttemptNoCandidatesSynthesizesOutcome(t *testing.T) {
 	if len(res.CandidateOutcomes) != 1 ||
 		res.CandidateOutcomes[0].Kind != errorsx.KindNoAvailableChannel {
 		t.Fatalf("expected single no_available_channel outcome, got %+v", res.CandidateOutcomes)
+	}
+}
+
+func TestExecuteAttemptPropagatesExecuteErrorRetryAfterToDeadlineSummary(t *testing.T) {
+	const retryAfterSeconds = 1140
+	fake := &fakeAttemptExecutor{err: &executors.ExecuteError{
+		LastKind:          errorsx.KindRateLimit,
+		LastErr:           errors.New("upstream quota window"),
+		RetryAfterSeconds: retryAfterSeconds,
+	}}
+
+	result := ExecuteAttempt(context.Background(), fake, newAttemptGateForTest(), &executors.ExecParams{RequestID: "retry-hint"})
+	if len(result.CandidateOutcomes) != 1 {
+		t.Fatalf("candidate outcomes = %+v, want one synthesized production outcome", result.CandidateOutcomes)
+	}
+	wantRetryAfter := time.Duration(retryAfterSeconds) * time.Second
+	if got := result.CandidateOutcomes[0].RetryAfter; got != wantRetryAfter {
+		t.Fatalf("candidate RetryAfter = %v, want %v", got, wantRetryAfter)
+	}
+	decision := AggregateTaskOutcomeWithHistory(result, errorsx.DecisionHistory{})
+	if decision.NextRetryAfter != wantRetryAfter {
+		t.Fatalf("aggregate NextRetryAfter = %v, want %v", decision.NextRetryAfter, wantRetryAfter)
+	}
+	resultForDeadline := SurvivalResult{Attempts: 1, Decision: decision, FinalAttempt: result}
+	if detail := survivalDeadlineDetail(resultForDeadline, map[errorsx.ErrorKind]int{errorsx.KindRateLimit: 1}); detail != "attempts=1 kinds=rate_limit:1 earliest_recovery_sec=1140" {
+		t.Fatalf("deadline detail = %q, want propagated 1140s hint", detail)
 	}
 }
 

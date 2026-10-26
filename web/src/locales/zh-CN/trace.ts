@@ -5,9 +5,7 @@
 export default {
   modal: {
     title: '请求链路详情',
-    openButton: '🔗 流程详情',
     close: '关闭',
-    tooltip: '查看该请求的端到端链路时间线',
     snapshotTitle: '失败上下文快照',
     candidates: '候选凭据',
     routingState: '路由状态',
@@ -19,8 +17,6 @@ export default {
     failedCount: '失败步骤',
   },
   detail: {
-    basicInfo: '基本信息',
-    requestId: '请求 ID',
     finalStatus: '最终状态',
     failedAtStage: '失败阶段',
     totalDuration: '总耗时',
@@ -29,11 +25,9 @@ export default {
     sourcePostgres: 'PostgreSQL (历史)',
     eventCount: '事件数',
     copyJson: '复制 JSON',
-    copySuccess: '已复制',
     statusSuccess: '成功',
     statusFailed: '失败',
     statusTimeout: '超时',
-    statusSkipped: '跳过',
     statusInProgress: '进行中',
   },
   empty: {
@@ -42,7 +36,6 @@ export default {
     hint1: 'trace 仅在网关代码埋点启用时才会生成(默认开启)',
     hint2: '进行中的请求：trace 数据暂存在 Redis，可实时查看',
     hint3: '已完成的请求：trace 数据已持久化到 request_logs.trace_events (JSONB)',
-    hint4: '如果此处显示为空，可能原因：请求未完成 flush、或该请求确实未触发 trace 埋点',
   },
   aiPrompt: {
     button: '🤖 生成 AI 分析提示词',
@@ -77,16 +70,5 @@ export default {
     module_upstream: '上游',
     module_session: '会话',
   },
-  failureHint: {
-    upstream_timeout: '上游连接超时',
-    upstream_unreachable: '无法连接上游',
-    upstream_reset: '连接被重置',
-    upstream_io_error: '网络 I/O 错误',
-    upstream_network_error: '网络错误',
-    upstream_5xx: '上游 5xx',
-    upstream_4xx: '上游 4xx',
-    upstream_rate_limit: '上游限流 (429)',
-    upstream_auth_error: '上游鉴权拒绝 (401/403)',
-    upstream_not_found: '上游 404 (模型名可能错误)',
-  },
+  generateFailed: '摘要没能生成，请重试',
 }

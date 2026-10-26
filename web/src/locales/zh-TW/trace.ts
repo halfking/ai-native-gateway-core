@@ -3,9 +3,7 @@
 export default {
   modal: {
     title: '請求鏈路詳情',
-    openButton: '🔗 流程詳情',
     close: '關閉',
-    tooltip: '查看該請求的端到端鏈路時間線',
     snapshotTitle: '失敗上下文快照',
     candidates: '候選憑據',
     routingState: '路由狀態',
@@ -17,8 +15,6 @@ export default {
     failedCount: '失敗步驟',
   },
   detail: {
-    basicInfo: '基本資訊',
-    requestId: '請求 ID',
     finalStatus: '最終狀態',
     failedAtStage: '失敗階段',
     totalDuration: '總耗時',
@@ -27,11 +23,9 @@ export default {
     sourcePostgres: 'PostgreSQL（歷史）',
     eventCount: '事件數',
     copyJson: '複製 JSON',
-    copySuccess: '已複製',
     statusSuccess: '成功',
     statusFailed: '失敗',
     statusTimeout: '超時',
-    statusSkipped: '跳過',
     statusInProgress: '進行中',
   },
   empty: {
@@ -41,15 +35,14 @@ export default {
     hint2: '完成時間 < 10 分鐘的請求，Redis 中仍保留 trace',
     hint3: '已完成的請求，trace_events JSONB 已 flush 到 PostgreSQL 後才可顯示',
 
-    hint4: '如果此处显示为空，可能原因：请求未完成 flush、或该请求确实未触发 trace 埋点',
   },
   aiPrompt: {
     button: '🤖 生成 AI 分析提示詞',
     modalTitle: 'AI 分析提示詞生成器',
     userQuestionLabel: '你的問題',
     userQuestionPlaceholder: '例如：為什麼這次 gpt-5.6-luna 請求超時了？',
-    generate: '生成',
-    generating: '生成中…',
+    generate: '產生',
+    generating: '產生中…',
     resultLabel: '生成的提示詞',
     copy: '複製',
     copySuccess: '已複製',
@@ -76,16 +69,5 @@ export default {
     module_upstream: '上游',
     module_session: '會話',
   },
-  failureHint: {
-    upstream_timeout: '上游連線超時',
-    upstream_unreachable: '無法連線上游',
-    upstream_reset: '連線被重置',
-    upstream_io_error: '網路 I/O 錯誤',
-    upstream_network_error: '網路錯誤',
-    upstream_5xx: '上游 5xx',
-    upstream_4xx: '上游 4xx',
-    upstream_rate_limit: '上游限流 (429)',
-    upstream_auth_error: '上游鑑權拒絕 (401/403)',
-    upstream_not_found: '上游 404 (模型名可能錯誤)',
-  },
+  generateFailed: '摘要沒能產生，請重試',
 }

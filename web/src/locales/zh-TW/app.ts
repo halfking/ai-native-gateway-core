@@ -1,27 +1,16 @@
 // Auto-translated draft (zh-TW/ja-JP) · 2026-07-02 · please review
 // app.ts — App.vue 外殼框架文案（頂欄角色、側欄折疊、退出、語言切換）。
 export default {
-  brand: 'AI-Native 組織網關',
+  brand: {
+    siteTitle: 'AI Native 組織核心網關',
+    siteTitleLineTwo: '組織核心網關',
+    alt: 'Kaixuan 標誌',
+  },
   role: {
     super_admin: '超級管理員',
     tenant_admin: '租戶管理員',
   },
-  sidebar: {
-    expand: '展開側欄',
-    collapse: '收起側欄',
-    collapseMenu: '收起選單',
-  },
-  logout: '登出',
-  lang: {
-    switch: '切換語言',
-    label: '語言',
-  },
   // 2026-07-22: 公開殼頁面底部文案（對齊 LifecycleShell）。
-  footer: {
-    left: '© 2026 AI-Native 組織閘道',
-    right: '需要協助嗎？',
-    feedbackLink: '提交意見',
-  },
   // 2026-07-22: 使用者選單下拉（UserMenuDropdown）+ 使用者資訊對話框（UserInfoDialog）。
   userMenu: {
     profile: '個人資訊',
@@ -37,15 +26,11 @@ export default {
     close: '關閉',
   },
   // 2026-07-22: skip-link 無障礙文案。
-  nav: {
-    mainAria: '主導航',
-    skip: '跳到主要內容',
-  },
 
   theme: {
-    switchToLight: '切到浅色',
-    switchToDark: '切到深色',
-    lightTitle: '浅色模式',
+    switchToLight: '切換為淺色',
+    switchToDark: '切換為深色',
+    lightTitle: '淺色模式',
     darkTitle: '深色模式',
   },
   dataHorizon: {
@@ -64,7 +49,7 @@ export default {
     state: '更新狀態',
     stateLatest: '已是最新',
     stateAvailable: '有新版本',
-    stateIndeterminate: '不可判定',
+    stateIndeterminate: '無法判定',
     stateChecking: '正在檢查…',
     reasonNoLocal: '本頁未攜帶部署序號（構建期未注入）',
     reasonNoRemote: '服務端未返回部署序號（舊構建或非本倉託管）',

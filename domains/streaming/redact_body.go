@@ -45,12 +45,28 @@ type RedactOwnerContextFunc func(sessionID, tenantID string) (callerOwner, dataO
 func BuildRedactBodyFn(
 	checker *outputcompliance.Checker,
 	ownerFn RedactOwnerContextFunc,
-	restoredValues func(ctx context.Context, sessionID, tenantID string) ([]string, error),
+	restoredValues func(context.Context, string, string) ([]string, error),
 ) func([]byte, string, string) []byte {
-	if checker == nil {
+	fn := BuildRedactBodyWithContextFn(checker, ownerFn, restoredValues)
+	if fn == nil {
 		return nil
 	}
 	return func(body []byte, sessionID, tenantID string) []byte {
+		return fn(context.Background(), body, sessionID, tenantID)
+	}
+}
+
+// BuildRedactBodyWithContextFn keeps the authenticated tenant and pinned policy
+// snapshot from the HTTP request through the final non-streaming write.
+func BuildRedactBodyWithContextFn(
+	checker *outputcompliance.Checker,
+	ownerFn RedactOwnerContextFunc,
+	restoredValues func(context.Context, string, string) ([]string, error),
+) func(context.Context, []byte, string, string) []byte {
+	if checker == nil {
+		return nil
+	}
+	return func(ctx context.Context, body []byte, sessionID, tenantID string) []byte {
 		if len(body) == 0 {
 			return body
 		}
@@ -67,8 +83,10 @@ func BuildRedactBodyFn(
 			return body
 		}
 
-		// 3. 检测 PII/敏感（write-time 无请求上下文，故从 Background 起挂豁免集合）
-		ctx := context.Background()
+		// Preserve request values; legacy callers explicitly supply Background.
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		if restoredValues != nil && sessionID != "" {
 			// 解析失败退回旧行为（照遮），不阻断响应：豁免是保护措施不是闸门。
 			if values, err := restoredValues(ctx, sessionID, tenantID); err == nil {
@@ -79,7 +97,15 @@ func BuildRedactBodyFn(
 			}
 		}
 		result, err := checker.Check(ctx, tenantID, output)
-		if err != nil || result == nil || len(result.Issues) == 0 {
+		if err != nil || result == nil {
+			return body
+		}
+		// Preserve a block decision at the final non-streaming writer. The executor
+		// recognizes this envelope and terminates with a policy failure audit.
+		if result.Blocked {
+			return []byte(`{"error":{"message":"Response blocked by output policy","type":"policy_violation","code":"output_policy_blocked"}}`)
+		}
+		if len(result.Issues) == 0 {
 			return body
 		}
 
@@ -176,11 +202,11 @@ func rewriteAssistantContentInJSON(body []byte, redactedContent string) ([]byte,
 	return out, true
 }
 
-// outputComplianceEnabled 读取 output_compliance.enabled。SC-2
-// (docs/修订0811/19)：此前是硬编码 true 的占位实现，绕过了管理台的
-// 模块开关；现在从 settings 读取（默认 true 保持旧行为）。
+// outputComplianceEnabled 读取 output_compliance.enabled。
+// 默认 false：与 ModuleSpecs / optional interceptor 一致；显式 true 才启用
+// write-time 脱敏。强制外传守卫不走本开关。
 func outputComplianceEnabled() bool {
-	return settings.GetPlatformBool("output_compliance.enabled", true)
+	return settings.GetPlatformBool("sanitize.output_check_enabled", true) && settings.GetPlatformBool("output_compliance.enabled", false)
 }
 
 // getRedactionMode 读取 output_compliance.redaction_mode。SC-2：此前硬

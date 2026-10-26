@@ -7,49 +7,41 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/internal/internaltraffic"
-	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
-// ensureRequestLogsCurrentMonthView mirrors
-// sql/migrations/startup/680_request_logs_current_month_view_bootstrap.sql and
-// sql/migrations/startup/710_request_logs_view_session_family_v2.sql.
+// ensureRequestLogsCurrentMonthView keeps the canonical read view
+// `request_logs_with_current_month` in its **session-only (two-arm)** shape.
 //
-// 2026-09-07 事故自愈：共享 PG 上的 canonical 查询视图
-// request_logs_with_current_month 被带外操作删掉（577/610 的包装视图
-// …_without_customer_id、…_without_request_class_due_at 仍在，顶层缺失），
-// /api/logs 全部请求 42P01。写路径（telemetry → _request_logs_hot）不受影响，
-// 只有读路径挂——这类"表在、视图没了"的状态没有任何 migration 会重建
-// （610 之后再无 migration 触碰该视图），网关也没有启动自愈，于是持续报错。
+// 2026-09-07 事故自愈（历史）：共享 PG 上的 canonical 查询视图被带外操作删掉，
+// /api/logs 全部请求 42P01。写路径不受影响，只有读路径挂——这类"表在、视图没了"
+// 的状态没有任何 migration 会重建，网关也没有启动自愈，于是持续报错。⇒ 本函数
+// 的存在意义始终是**自愈**：视图不在（或形态不对）时把它装回去。
 //
-// 2026-09-14 存储优化方案 v2 S2（plan §3 D6 / §4）：canonical 升级为
-// session 家族拼装体——session_turns(_hot) 113 列会话投影 UNION ALL v1 体
-// （700 形态冻结）× 反连接（request_id 已入 turns 的 v1 行不再输出，双写期
-// 不重复计数）。约 40 个读方同名同列契约零改动切换（migration 710 与本函数
-// 双轨同体；db/view_schema_v2_contract_test.go 校验两者 viewdef 等价）。
-// session_turns 缺表的极简/陈旧库回退 v1 体（legacy 链保持既有形状探测）。
+// 2026-09-14 存储优化方案 v2 S2：canonical 升级为 session 家族拼装体
+// （session_turns(_hot) 投影 UNION ALL 冻结 v1 体 × 反连接）。约 40 个读方
+// 同名同列契约零改动切换。
 //
-// 重建按 577 + 610 + 696 + 700 的包装链分阶段补齐，列契约 = 基础 108 列 UNION
-//   - customer_id (577) + request_class/due_at (610) + system_fingerprint (696)
-//   - raw_model_name (700，仅冻结链需追加；动态推导的基础交集自带)
-//   - credits_rate_multiplier (738/R57 六点闭合：基座缺列时条件 lateral，
-//     否则自愈重建体缺列 → bg rollup 每分钟 column does not exist，738 事故
-//     经自愈通道复发形态) + client_ip (740/R57 B7：真源客户端 IP 进链，
-//     bg rollup client_ip 维度与看板 client_ips 饼图的数据前提)。
+// ★ 2026-10-20（迁移 890）：v1 族（`_request_logs*`）整体退役 ⇒ 第三臂
+// （冻结 v1 体 + 两条反连接去重腿）与它依赖的两张中间层包装视图
+// （…_without_customer_id / …_without_request_class_due_at）**一并消失**。
+// 剩下的两臂（session_turns_hot ∪ session_turns，734 details 特征层
+// LEFT JOIN）的投影文本与 710/815/816/817/824 装出来的逐字相同 ⇒ 118 列同名
+// 同序 ⇒ 读方零改动。
 //
-// 基础列取 hot∩parent 交集（排除后追加列），因此 hot 的 HOT_ONLY 列
-// （caller_id 等）永远不会撑爆 UNION——这正是 341 式 "SELECT * FROM hot
-// UNION ALL SELECT * FROM parent" 重放在 603 之后必失败、进而留下"视图已删
-// 未建"的根因。700 的缘起：drift scanner（83bf582dd 起）SELECT
-// raw_model_name FROM 本视图，而冻结基础交集早于 485，该列从未出现在链上，
-// 每周期 42703（本机 2089 部署即时炸出，生产 252 视图同构）。
+// ⚠ 自愈**不得再触碰 v1 族**：那些表已被 890 删除，包装视图也没了 ⇒ 任何
+// 重建 v1 链的分支都会 42P01，而且失败点正是"刚删掉的表"，排查成本极高。
+// ⇒ 下面**没有**任何 `_request_logs` 字面量；会话族缺席时**不做 DDL**。
 //
-// 编号 SQL 文件供 DBA 同步流程与 deploy-local 修复轨道使用；本函数保证
-// 二进制启动即生效（幂等：视图健康且为 v2 体时零 DDL）。
+// ⚠ 精确仪器：判"v1 臂还在不在"用 `strpos`，**不用** `LIKE '%…_request_logs…%'`
+// —— SQL 的 LIKE 里 `_` 是**单字符通配符**（审计 §10.8 的坏尺子）。同一把
+// 尺子不能换到新判据上。
+//
+// 幂等：视图健康且已是两臂形态时零 DDL。
 func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	// 734：details 特征层在场时，最新 v3 体须含 session_turn_details JOIN；
+	// 734：details 特征层在场时，最新形态须含 session_turn_details JOIN；
 	// 老库（733 未跑）回退 710 形态仍视为健康，零 DDL。
 	var detailsFamilyExists bool
 	if err := d.pool.QueryRow(ctx, `
@@ -58,7 +50,7 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 	`).Scan(&detailsFamilyExists); err != nil {
 		return fmt.Errorf("probe session_turn_details family: %w", err)
 	}
-	var canonicalExists, bodyIsV2 bool
+	var canonicalExists, bodyIsSessionOnly, bodyHasV1Arm bool
 	// 体形探测基于 pg_views 行内求值（视图缺失时 EXISTS 子查询零行，
 	// pg_get_viewdef 不会被求值——不能直接对 '...'::regclass 取视图定义，
 	// 视图缺失会 42P01 炸掉整个探针）。
@@ -72,91 +64,29 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 			SELECT 1 FROM pg_views
 			WHERE schemaname = 'public'
 			  AND viewname = 'request_logs_with_current_month'
-			  AND pg_get_viewdef(schemaname || '.' || viewname, true) LIKE '%session_turns%'
-			  AND (NOT $1 OR pg_get_viewdef(schemaname || '.' || viewname, true) LIKE '%session_turn_details%')
+			  AND strpos(pg_get_viewdef(schemaname || '.' || viewname, true), 'session_turns') > 0
+			  AND (NOT $1 OR strpos(pg_get_viewdef(schemaname || '.' || viewname, true), 'session_turn_details') > 0)
+		),
+		EXISTS (
+			SELECT 1 FROM pg_views
+			WHERE schemaname = 'public'
+			  AND viewname = 'request_logs_with_current_month'
+			  AND strpos(pg_get_viewdef(schemaname || '.' || viewname, true), '_request_logs') > 0
 		)
-	`, detailsFamilyExists).Scan(&canonicalExists, &bodyIsV2); err != nil {
-		return fmt.Errorf("probe request_logs_with_current_month existence: %w", err)
+	`, detailsFamilyExists).Scan(&canonicalExists, &bodyIsSessionOnly, &bodyHasV1Arm); err != nil {
+		return fmt.Errorf("probe request_logs_with_current_month body: %w", err)
 	}
-	if canonicalExists && bodyIsV2 {
+	if canonicalExists && bodyIsSessionOnly && !bodyHasV1Arm {
 		return nil
 	}
 	if !canonicalExists {
-		slog.Warn("request_logs_with_current_month missing; self-healing view chain " +
-			"(mirror of sql/migrations/startup/680_request_logs_current_month_view_bootstrap.sql)")
+		slog.Warn("request_logs_with_current_month missing; self-healing the session-only view " +
+			"(mirror of sql/migrations/startup/885_drop_v1_request_logs_family.sql)")
 	}
 
-	var classWrapperExists, baseWrapperExists bool
-	if err := d.pool.QueryRow(ctx, `
-		SELECT
-			EXISTS (SELECT 1 FROM pg_views WHERE schemaname = 'public'
-				AND viewname = 'request_logs_with_current_month_without_request_class_due_at'),
-			EXISTS (SELECT 1 FROM pg_views WHERE schemaname = 'public'
-				AND viewname = 'request_logs_with_current_month_without_customer_id')
-	`).Scan(&classWrapperExists, &baseWrapperExists); err != nil {
-		return fmt.Errorf("probe _request_logs view wrappers: %w", err)
-	}
-
-	if !baseWrapperExists {
-		// 基础 108 列 UNION：hot∩parent 交集（按 hot 列序），排除 575/608
-		// 时代后追加的 customer_id/request_class/due_at。
-		var baseCols string
-		if err := d.pool.QueryRow(ctx, `
-			SELECT string_agg(quote_ident(h.attname), ', ' ORDER BY h.attnum)
-			  FROM pg_attribute h
-			  JOIN pg_class hc ON hc.oid = h.attrelid
-			  JOIN pg_namespace hn ON hn.oid = hc.relnamespace
-			  JOIN pg_attribute p ON p.attrelid = ('public._request_logs')::regclass
-			                     AND p.attname = h.attname
-			  JOIN pg_class pc ON pc.oid = p.attrelid
-			  JOIN pg_namespace pn ON pn.oid = pc.relnamespace
-			 WHERE hn.nspname = 'public'
-			   AND hc.relname = '_request_logs_hot'
-			   AND pn.nspname = 'public'
-			   AND pc.relname = '_request_logs'
-			   AND h.attnum > 0 AND NOT h.attisdropped
-			   AND p.attnum > 0 AND NOT p.attisdropped
-			   AND h.attname NOT IN ('customer_id', 'request_class', 'due_at')
-		`).Scan(&baseCols); err != nil {
-			return fmt.Errorf("derive _request_logs base view columns: %w", err)
-		}
-		if baseCols == "" {
-			return fmt.Errorf("_request_logs view self-heal: empty base column list " +
-				"(_request_logs_hot/request_logs missing? run migration 341 first)")
-		}
-		if _, err := d.pool.Exec(ctx, fmt.Sprintf(`
-			CREATE VIEW public.request_logs_with_current_month_without_customer_id AS
-			SELECT %s FROM public._request_logs_hot
-			UNION ALL
-			SELECT %s FROM public._request_logs
-		`, baseCols, baseCols)); err != nil {
-			return fmt.Errorf("rebuild _request_logs base wrapper view: %w", err)
-		}
-	}
-
-	if !classWrapperExists {
-		// Migration 577 阶段：lateral 追加 customer_id（hot 优先）。
-		if _, err := d.pool.Exec(ctx, `
-			CREATE VIEW public.request_logs_with_current_month_without_request_class_due_at AS
-			SELECT v.*, m.customer_id
-			FROM public.request_logs_with_current_month_without_customer_id v
-			LEFT JOIN LATERAL (
-				SELECT customer_id FROM public._request_logs_hot
-				WHERE request_id = v.request_id AND ts = v.ts
-				UNION ALL
-				SELECT customer_id FROM public._request_logs
-				WHERE request_id = v.request_id AND ts = v.ts
-				LIMIT 1
-			) m ON true
-		`); err != nil {
-			return fmt.Errorf("rebuild _request_logs customer_id wrapper view: %w", err)
-		}
-	}
-
-	// 会话族在场（430+707）→ canonical 直接上 v2 拼装体。v2 体内部内联的
-	// v1 分支按 700 形态经 lateral 自带 customer_id/request_class/due_at/
-	// system_fingerprint/raw_model_name，对动态重建链（基础交集已含 fp/raw）
-	// 与冻结链（696/700 lateral 追加）同构——无需再探测包装形状。
+	// 会话族在场（430+526+707）→ 装两臂体。缺会话族时**没有可退的形态**：
+	// v1 族已随 890 退役 ⇒ 此时不做任何 DDL，把问题留给启动序列报错，
+	// 而不是让自愈在一个已经退役的族上失败。
 	var sessionTurnsExist bool
 	if err := d.pool.QueryRow(ctx, `
 		SELECT EXISTS (
@@ -166,190 +96,22 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 	`).Scan(&sessionTurnsExist); err != nil {
 		return fmt.Errorf("probe session_turns presence: %w", err)
 	}
-	if sessionTurnsExist {
-		// 列数契约守卫（与 710 同规）：v1 体制 113 列（pre-738）或 115 列
-		// （738+740 追加倍率/client_ip 后的 v1 体）；其余即冻结基础交集契约
-		// 漂移，强行 UNION 必失败——保留现状，由视图契约修复流程先归位。
-		if canonicalExists {
-			var canonCols int
-			if err := d.pool.QueryRow(ctx, `
-			SELECT count(*) FROM information_schema.columns
-			WHERE table_schema = 'public'
-			  AND table_name = 'request_logs_with_current_month'
-		`).Scan(&canonCols); err != nil {
-				return fmt.Errorf("probe request_logs_with_current_month column count: %w", err)
-			}
-			// 813 前的形态：113 列（710 体）/ 115 列（738+740 追加倍率/client_ip
-			// 后的 v1 体）。118 列（813 三列）只会出现在**会话体**上，而会话体
-			// 早在上面的 bodyIsV2 分支就返回了 —— 走到这里说明视图还是 v1 体，
-			// 所以集合不必含 118。其余即冻结基础交集契约漂移，强行 UNION 必
-			// 失败——保留现状，由视图契约修复流程先归位。
-			if canonCols != 113 && canonCols != 115 {
-				slog.Warn("request_logs_with_current_month column count not in {113,115} (frozen contract drift); keeping v1 body",
-					"columns", canonCols)
-				return nil
-			}
-			slog.Info("request_logs_with_current_month carries the v1 body; upgrading to the " +
-				"session-family v2 body (mirror of sql/migrations/startup/710_request_logs_view_session_family_v2.sql)")
-		}
-		baseHasFP, baseHasRaw, baseHasCredits, baseHasCIP, err := d.baseWrapperShape(ctx)
-		if err != nil {
-			return err
-		}
-		middleCols, err := d.middleWrapperCols(ctx)
-		if err != nil {
-			return err
-		}
-		if _, err := d.pool.Exec(ctx, canonicalV2DDL(middleCols, baseHasFP, baseHasRaw, baseHasCredits, baseHasCIP, detailsFamilyExists)); err != nil {
-			return fmt.Errorf("rebuild request_logs_with_current_month as session-family v2: %w", err)
-		}
-		if _, err := d.pool.Exec(ctx, `COMMENT ON VIEW public.request_logs_with_current_month IS `+
-			canonicalV2Comment); err != nil {
-			return fmt.Errorf("comment request_logs_with_current_month v2: %w", err)
-		}
-		slog.Info("request_logs_with_current_month view upgraded to session-family v2 body "+
-			"(session_turns(_hot) projection UNION ALL frozen v1 body with anti-join dedup)",
-			"details_join", detailsFamilyExists)
+	if !sessionTurnsExist {
+		slog.Warn("request_logs_with_current_month: session_turns absent and the v1 family is retired " +
+			"(890) — no fallback body to install; leaving the view as-is")
 		return nil
 	}
-
-	// 无会话族（极简/陈旧库）：维持 v1 体。610+696+700 阶段：lateral 追加
-	// request_class/due_at（canonical），并按基础包装形状与底层表实际列况
-	// 决定是否追加 system_fingerprint（696）与 raw_model_name（700，与
-	// sql/migrations/startup/700 同形）。post-603 动态推导的基础交集已含两列
-	// （680 引导/自愈重建路径），此时 canonical 经 v.* 继承，再 lateral 追加
-	// 会重复列（CREATE 直接失败）；pre-485 冻结链（生产/本机现网）基础包装
-	// 缺列，需 lateral 追加。lateral 的列引用同样按 hot 侧实况裁剪——
-	// hot/parent 本身缺列时（极简测试桩、落后于 485/603 的库）自愈不得比
-	// 缺列现状更坏。列名消费者不受形状间列序差异影响。
-	if canonicalExists {
-		// v1 体已在且会话族缺席：无需任何变更（保持既有形状，零 DDL）。
-		return nil
+	if _, err := d.pool.Exec(ctx, canonicalSessionOnlyDDL(detailsFamilyExists)); err != nil {
+		return fmt.Errorf("rebuild request_logs_with_current_month as session-only two-arm body: %w", err)
 	}
-	baseHasFingerprint, baseHasRawModelName, baseHasCredits, baseHasClientIP, err := d.baseWrapperShape(ctx)
-	if err != nil {
-		return err
+	if _, err := d.pool.Exec(ctx, `COMMENT ON VIEW public.request_logs_with_current_month IS `+
+		canonicalSessionOnlyComment); err != nil {
+		return fmt.Errorf("comment request_logs_with_current_month: %w", err)
 	}
-	var hotHasFingerprint, hotHasRawModelName, hotHasCredits, hotHasClientIP bool
-	if err := d.pool.QueryRow(ctx, `
-		SELECT
-			EXISTS (
-				SELECT 1 FROM information_schema.columns
-				WHERE table_schema = 'public'
-				  AND table_name = '_request_logs_hot'
-				  AND column_name = 'system_fingerprint'
-			),
-			EXISTS (
-				SELECT 1 FROM information_schema.columns
-				WHERE table_schema = 'public'
-				  AND table_name = '_request_logs_hot'
-				  AND column_name = 'raw_model_name'
-			),
-			EXISTS (
-				SELECT 1 FROM information_schema.columns
-				WHERE table_schema = 'public'
-				  AND table_name = '_request_logs_hot'
-				  AND column_name = 'credits_rate_multiplier'
-			),
-			EXISTS (
-				SELECT 1 FROM information_schema.columns
-				WHERE table_schema = 'public'
-				  AND table_name = '_request_logs_hot'
-				  AND column_name = 'client_ip'
-			)
-	`).Scan(&hotHasFingerprint, &hotHasRawModelName, &hotHasCredits, &hotHasClientIP); err != nil {
-		return fmt.Errorf("probe _request_logs_hot appended columns: %w", err)
-	}
-	// 追加序与 canonicalV2DDL 逐字一致：class, due, fp, raw, credits, client_ip
-	// （时间序 = 追加迁移序；两侧文本漂移会破坏 ensure↔迁移 viewdef 等价契约）。
-	appendSelects := []string{"source.request_class", "source.due_at"}
-	lateralHotSelects := []string{"h.request_class", "h.due_at"}
-	lateralParentSelects := []string{"p.request_class", "p.due_at"}
-	if !baseHasFingerprint && hotHasFingerprint {
-		appendSelects = append(appendSelects, "source.system_fingerprint")
-		lateralHotSelects = append(lateralHotSelects, "h.system_fingerprint")
-		lateralParentSelects = append(lateralParentSelects, "p.system_fingerprint")
-	}
-	if !baseHasRawModelName && hotHasRawModelName {
-		appendSelects = append(appendSelects, "source.raw_model_name")
-		lateralHotSelects = append(lateralHotSelects, "h.raw_model_name")
-		lateralParentSelects = append(lateralParentSelects, "p.raw_model_name")
-	}
-	if !baseHasCredits && hotHasCredits {
-		appendSelects = append(appendSelects, "source.credits_rate_multiplier")
-		lateralHotSelects = append(lateralHotSelects, "h.credits_rate_multiplier")
-		lateralParentSelects = append(lateralParentSelects, "p.credits_rate_multiplier")
-	}
-	if !baseHasClientIP && hotHasClientIP {
-		appendSelects = append(appendSelects, "source.client_ip")
-		lateralHotSelects = append(lateralHotSelects, "h.client_ip")
-		lateralParentSelects = append(lateralParentSelects, "p.client_ip")
-	}
-	canonicalDDL := fmt.Sprintf(`
-		CREATE VIEW public.request_logs_with_current_month AS
-		SELECT v.*, %s
-		FROM public.request_logs_with_current_month_without_request_class_due_at v
-		LEFT JOIN LATERAL (
-			SELECT %s
-			FROM public._request_logs_hot h
-			WHERE h.request_id = v.request_id AND h.ts = v.ts
-			UNION ALL
-			SELECT %s
-			FROM public._request_logs p
-			WHERE p.request_id = v.request_id AND p.ts = v.ts
-			LIMIT 1
-		) source ON true
-	`, strings.Join(appendSelects, ", "),
-		strings.Join(lateralHotSelects, ", "),
-		strings.Join(lateralParentSelects, ", "))
-	if _, err := d.pool.Exec(ctx, canonicalDDL); err != nil {
-		return fmt.Errorf("rebuild request_logs_with_current_month view: %w", err)
-	}
-	slog.Info("request_logs_with_current_month view chain restored (self-heal 680+696+700)",
-		"base_wrapper_carries_fingerprint", baseHasFingerprint,
-		"base_wrapper_carries_raw_model_name", baseHasRawModelName,
-		"appended_columns", strings.Join(appendSelects, ", "))
+	slog.Info("request_logs_with_current_month view installed as the session-only two-arm body "+
+		"(session_turns_hot ∪ session_turns; the v1 arm is retired with the v1 family)",
+		"details_join", detailsFamilyExists)
 	return nil
-}
-
-// baseWrapperShape probes whether the base intersection wrapper already
-// carries the post-freeze appended columns — system_fingerprint/raw_model_name
-// (dynamic-rebuild chain) versus not (frozen pre-485 chain) — plus
-// credits_rate_multiplier (736/738) and client_ip (341/740). Missing base
-// wrapper (nothing to probe) reports all false — the lateral-append shape,
-// matching the ensure's rebuild order.
-func (d *DB) baseWrapperShape(ctx context.Context) (fp, raw, credits, cip bool, err error) {
-	err = d.pool.QueryRow(ctx, `
-		SELECT
-			EXISTS (
-				SELECT 1 FROM information_schema.columns
-				WHERE table_schema = 'public'
-				  AND table_name = 'request_logs_with_current_month_without_customer_id'
-				  AND column_name = 'system_fingerprint'
-			),
-			EXISTS (
-				SELECT 1 FROM information_schema.columns
-				WHERE table_schema = 'public'
-				  AND table_name = 'request_logs_with_current_month_without_customer_id'
-				  AND column_name = 'raw_model_name'
-			),
-			EXISTS (
-				SELECT 1 FROM information_schema.columns
-				WHERE table_schema = 'public'
-				  AND table_name = 'request_logs_with_current_month_without_customer_id'
-				  AND column_name = 'credits_rate_multiplier'
-			),
-			EXISTS (
-				SELECT 1 FROM information_schema.columns
-				WHERE table_schema = 'public'
-				  AND table_name = 'request_logs_with_current_month_without_customer_id'
-				  AND column_name = 'client_ip'
-			)
-	`).Scan(&fp, &raw, &credits, &cip)
-	if err != nil {
-		return false, false, false, false, fmt.Errorf("probe base wrapper appended columns: %w", err)
-	}
-	return fp, raw, credits, cip, nil
 }
 
 // sessionFamilyProjectionV2 是 710 会话分支的 113 列投影（别名固定 t；hot 与
@@ -388,13 +150,139 @@ func (d *DB) baseWrapperShape(ctx context.Context) (fp, raw, credits, cip bool, 
 // report a different population than the one production serves.
 const sessionIsInternalSessionIDExpr = "(CASE WHEN t.session_id LIKE 'sys:%' THEN NULL ELSE t.session_id END)"
 
+// SessionFamilyAPIKeyIDExpr 是 api_key_id 的**唯一**规范表达式。
+//
+// # 为什么它必须是常量而不是各调用点各写一份
+//
+// 原始列 `session_turns.api_key_id` 是 **text**（2026-10-24 生产实测，
+// hot 与父表都是 text），而**过滤参数**是 int64 ⇒ 两侧必须先归一。
+// 归一规则 = 「纯数字才转 bigint，否则 NULL」（`NULL` 永远不等于任何 int）。
+//
+// ★ 这条规则**必须与投影逐字一致**：投影决定「会话列表里展示的 api_key 是哪个值」，
+// 而过滤决定「哪些会话出现在结果里」⇒ 两边规则不同 ⇒ 展示与过滤会对不上，
+// ★ 而那正是「用户按某个 key 过滤却看不到自己的会话」这类现象的来源。
+// ⇒ 故投影与过滤**共用同一个常量**，任何一侧改动都会被
+// admin/turns_sessions_filter_pushdown_test.go 的单一真值源门抓到。
+//
+// ★ 形态选择的实测依据（252 生产只读，2026-10-24）：
+//
+//	is_null 745,743 / pure_digits 362,434 / non_numeric 0 / 前导零或补白 0
+//
+// ⇒ 今天所有非空值都是**纯数字** ⇒ `api_key_id = $n::text` 在**今天**等价；
+// ★ 但它对未来的 `'0105'` 会与投影分叉（投影给 105，文本比较给 '0105'）
+// ⇒ ⇒ 保留 CASE 形式 ⇒ 对**任意**输入都与投影逐字一致。
+const SessionFamilyAPIKeyIDExpr = "(CASE WHEN t.api_key_id ~ '^[0-9]+$' THEN t.api_key_id::bigint END)"
+
+// SessionFamilyAPIKeyIDNumericPredExpr 是「api_key_id 归一后非空」的**裸正则**谓词。
+//
+// # ★★ 为什么必须是「裸正则」而不是 CASE 形式（R94，2026-10-24 生产实测）
+//
+// 【两种写法逐情形等价】对 `(CASE WHEN c ~ '^[0-9]+$' THEN c::bigint END) IS NOT NULL`
+//
+//	c = NULL  ⇒ CASE 得 NULL ⇒ 排除；裸正则得 NULL ⇒ 排除  ⇒ 同
+//	c 非数字  ⇒ CASE 得 NULL ⇒ 排除；裸正则得 false ⇒ 排除 ⇒ 同
+//	c = '18'  ⇒ CASE 得 18   ⇒ 保留；裸正则得 true  ⇒ 保留  ⇒ 同
+//	（唯一差别：超 int64 的纯数字串 —— CASE 形式会在**WHERE 求值**时报 22003，
+//	  裸正则形式只在**入选行的 SELECT 列表**求值时才报 ⇒ 后者**更宽松**，不是回归）
+//
+// ⇒ 生产真实非空批次逐行对拍（252，同一事务内同一快照）：
+//     old_rows=20 / new_rows=20 / only_new=0 / only_old=0  ⇒ 逐行一致 ✓
+//
+// 【但只有裸正则能被规划器认出来】★ PG 的「谓词蕴含」判定是**语法的**
+//   ⇒ 它无法证明「CASE 形式蕴含 `api_key_id ~ '^[0-9]+$'`」
+//   ⇒ 写在 CASE 里的过滤条件**用不上**以该正则谓词建的部分索引。
+//
+// ★ 实测（252 生产，事务内建索引 + EXPLAIN ANALYZE + ROLLBACK ⇒ 零残留）：
+//
+//	形态                                          探针批次执行时间
+//	CASE 形式过滤（无部分索引）                        1,350.8 ms   ← Rows Removed by Filter: 82,297
+//	裸正则过滤（无部分索引）                            1,569.3 ms   ← 同上（等价但同样慢）
+//	★ 裸正则过滤 + 部分索引 WHERE c ~ '^[0-9]+$'        **4.57 ms**  ← 295×
+//
+// 【为什么 CASE 形式那么慢】★ 探针会话（`sys:probe:*`）的 api_key_id
+//   **全是 NULL**（252 实测 462,394 行全空）⇒ 过滤条件**无法从索引里判定**
+//   ⇒ 必须回表 ⇒ 探针批次扫了 **82,297 行**堆，**全部被过滤掉**，产出 **0 行**。
+//   ⇒ ★ 部分索引只含「api_key_id 是数字」的行 ⇒ 探针流量在索引里**一行都没有**
+//   ⇒ 规划器走 **Index Only Scan** ⇒ 不用回表 ⇒ 4.57 ms。
+//
+// ★★ **语义耦合**：迁移 906 的部分索引谓词必须与本常量**逐字一致**
+//   （由 migration_906_turns_api_key_numeric_idx_test.go 钉住）。
+const SessionFamilyAPIKeyIDNumericPredExpr = "t.api_key_id ~ '^[0-9]+$'"
+
+// SessionFamilyLatestTurnPerSessionSQL 返回「每个 (tenant_id, session_id) 最新一轮」的 source，
+// 供会话列表页回填 api_key / handoff 父会话使用。
+//
+// # ★ 为什么要这个形态（2026-10-24 R93，生产只读实测）
+//
+// 【旧形态的代价】会话列表页的 api_key 回填曾是：
+//
+//	FROM public.session_turns_with_current_month t          -- 视图
+//	JOIN <hot ∪ 全部历史, 113 列投影> rl ON rl.request_id = t.request_id
+//
+// ★ 而 `session_turns_with_current_month` 的**名字骗人**：它的父表腿实测是
+// `FROM session_turns`（**全部分区**）⇒ 视图 = `hot ∪ 全部历史`
+// ⇒ ⇒ **同一批行被扫了两遍**（视图侧 `Heap Fetches 86,507` ＋ source 侧同样 86,507 行）
+// ⇒ ⇒ 再按 `request_id` **1:1 join**（**join 本身冗余** —— 同一行、同一列）。
+//
+// 【为什么只有 `?model=` 慢】它命中的 21 个**探针会话**在 2026_09 有 **85,712 轮**
+// ⇒ 实测该 enrich 查询 **13,066 ms**；而无过滤批次只有 21×1 轮 ⇒ **23 ms**
+// ⇒ ⇒ **差 570×** ⇒ 是「这批会话有多少轮」，不是「形状」。
+//
+// 【本形态】每个 source 一份「先聚合出该会话的最大 turn_no，再回定位那一行」：
+//
+//	(SELECT l.session_id, l.turn_no, <api_key 归一> AS api_key_id
+//	   FROM (SELECT session_id, max(turn_no) AS turn_no FROM <src> t
+//	          WHERE t.session_id = ANY($1) AND <api_key 归一> IS NOT NULL <extraPred>
+//	          GROUP BY session_id) l
+//	   JOIN <src> t ON t.session_id = l.session_id AND t.turn_no = l.turn_no <extraPred>)
+//
+// ★ **为什么不用 `DISTINCT ON`**：写在**分区父表**上时，规划器给的是
+// **Merge Append ⇒ 全量 86,507 行**再 Sort+Unique（实测 **9,900 ms**）
+// ⇒ ⇒ PG **不会把 DISTINCT ON 下推到分区** ⇒ 裁剪不生效。
+// ⇒ 而 `GROUP BY session_id + max(turn_no)` 走 **index-only scan**（不回表）⇒ 只读索引页。
+//
+// 【生产实测（252，只读，2026-10-24）】
+//
+//	批次                      旧形态      本形态
+//	新鲜会话（21 行）           23.2 ms     96.0 ms   ← ★ 慢 4×（绝对值 <100 ms）
+//	当前月多轮（6 行）         115.0 ms     54.1 ms
+//	★ 探针 85,712 轮          13,066 ms   1,339 ms   ← 9.8×
+//
+// 【口径等价】旧口径 =「视图里、且 api_key 归一后非空的轮次中 turn_no 最大那一轮」的 api_key；
+// 本形态 =「hot ∪ 全部历史里、同样条件的最新一轮」的 api_key。
+// ★ 两者**相同**：(a) 视图 = hot ∪ 全部历史 ⇒ 候选轮次集合相同；
+// (b) 视图 hot 腿的 anti-join 只删「hot 与父表同时存在」的重复行 ⇒ 同一 request_id 的 api_key 相同；
+// (c) 本形态在**每个 source 内**都带 `IS NOT NULL` 过滤 ⇒ 与旧口径的过滤位置等价
+// （★ 漏掉它会让口径漂移：实测候选形态出现 `only_new=20 / only_old=0`）。
+// ⇒ 生产三批次双向 EXCEPT ALL：新鲜会话 `0/0/21=21`、当前月多轮 `0/0/6=6`、探针批次 `0/0/0=0`。
+//
+// # 参数
+//
+//   - extraPred：额外的行级谓词（如租户收窄 `AND t.tenant_id = $2`），
+//     **必须使用别名 `t`**（两处都会用：聚合子查询与回定位 JOIN）。
+//     ★ 它会同时施加在「聚合」与「回定位」两步上 ⇒ 与旧形态「租户过滤只加在 source 侧」等价。
+//
+// # 占位符
+//
+//   - `$1` 必须是 session_id 数组（text[]）⇒ 与旧形态一致。
+func SessionFamilyLatestTurnPerSessionSQL(extraPred string) string {
+	leg := func(src string) string {
+		return "(SELECT l.session_id, l.turn_no, " + SessionFamilyAPIKeyIDExpr + " AS api_key_id " +
+			"FROM (SELECT session_id, max(turn_no) AS turn_no FROM " + src + " t " +
+			"WHERE t.session_id = ANY($1) AND " + SessionFamilyAPIKeyIDNumericPredExpr + extraPred + " " +
+			"GROUP BY session_id) l " +
+			"JOIN " + src + " t ON t.session_id = l.session_id AND t.turn_no = l.turn_no" + extraPred + ")"
+	}
+	return "(" + leg("public.session_turns_hot") + " UNION ALL " + leg("public.session_turns") + ")"
+}
+
 var projectionExprsV2 = []string{
 	"NULL::bigint",
 	"t.request_id",
 	"t.ts",
 	"t.tenant_id::text",
 	"(CASE WHEN t.application_id ~ '^[0-9]+$' THEN t.application_id::bigint END)",
-	"(CASE WHEN t.api_key_id ~ '^[0-9]+$' THEN t.api_key_id::bigint END)",
+	SessionFamilyAPIKeyIDExpr,
 	"t.end_user_id",
 	"NULL::text",
 	"t.model",
@@ -465,6 +353,19 @@ var projectionExprsV2 = []string{
 	"NULL::jsonb",
 	"NULL::numeric(3,2)",
 	"t.upstream_finish_reason",
+	// tools —— 2026-10-20 起**有值了**（审计 G-6，迁移 889）。
+	//
+	// 事实校准：这一列此前**从未被写过**（456 建列，列默认值 '[]'::jsonb），
+	// turn_writer 的 INSERT 列清单里没有它 ⇒ 每行都停在 '[]' ⇒ 本投影透出
+	// 的 tool_calls 恒为空数组（不是「该请求没有工具调用」，是「没人写过」）。
+	// 现由 domains/session/v2/turn_writer.go 的 turnToolsJSONBExpr 在
+	// INSERT 的同一条语句里用子查询从 public.session_tools_hot 聚合
+	//（按 session_id + request_id），元素是
+	// {tool_name, tool_call_id, status, duration_ms, error_type} 的摘要。
+	//
+	// ⚠ **历史行仍是 '[]'**：889 不回填（工具行可能已被 promote 搬走）。
+	// ⇒ 读这一列时不能假设「老行也是空数组」——新行有值、老行没有；
+	//   也不能假设「有值就是完整工具记录」——那是摘要，不是正文。
 	"t.tools",
 	"t.client_endpoint",
 	"t.client_timeout",
@@ -614,28 +515,6 @@ var projectionExprByColumn = func() map[string]string {
 	return m
 }()
 
-// middleWrapperCols returns the middle wrapper's explicit column list
-// (quote_ident'd, attnum order) minus the 738/740 appended columns — the
-// inner-select base of the canonical v2 composition. Both the ensure and
-// migration 740 derive this list with the same query so the composed viewdefs
-// render identically.
-func (d *DB) middleWrapperCols(ctx context.Context) (string, error) {
-	var cols string
-	if err := d.pool.QueryRow(ctx, `
-		SELECT COALESCE(string_agg(quote_ident(a.attname), ', ' ORDER BY a.attnum), '')
-		  FROM pg_attribute a
-		 WHERE a.attrelid = 'public.request_logs_with_current_month_without_request_class_due_at'::regclass
-		   AND a.attnum > 0 AND NOT a.attisdropped
-		   AND a.attname NOT IN ('credits_rate_multiplier', 'client_ip')
-	`).Scan(&cols); err != nil {
-		return "", fmt.Errorf("derive middle wrapper column list: %w", err)
-	}
-	if cols == "" {
-		return "", fmt.Errorf("_request_logs view self-heal: empty middle wrapper column list")
-	}
-	return cols, nil
-}
-
 // sessionRequestStatusExpr is the session-leg expression for the frozen v1
 // `request_status` column. It is a package-level const (not a function) so that
 // the view-ensure chain, both native readers, and migration 824 all render the
@@ -724,11 +603,11 @@ func sessionFamilyProjection(withDetails bool) string {
 	return sessionFamilyProjectionFor(canonicalColumnOrderV2, withDetails)
 }
 
-// canonicalV2Comment 与迁移 734 的 COMMENT ON VIEW 同文（COMMENT 的 IS 只收
-// 单个字面量，不能像 SQL 赋值那样 || 拼接）。824 起补记 request_status 的分类
-// 口径（816/817 的两次 client_ip 改写当时未同步本常量，视图注释一度落后两代；
-// 这里补的是最新状态，不是逐版流水）。
-const canonicalV2Comment = `'会话存储解耦 v3（824）: 710 拼装体 + 734 details 特征层 LEFT JOIN（733，键 tenant_id+request_id+partition_date）——30 个 NULL 占位列换真实特征列（client_model/quality_*/stream_chunk_errors/request_class 等）。813 再追加 3 列（origin_stage/token_band/client_forwarded_for，session 侧直映 t.<col>、v1 侧 lateral）。816/817 把 client_ip 从 NULL 补位改为有源投影并换成语义守卫。824 把 request_status 的会话腿改走 error_kind=''rate_limit_exceeded''（旧口径只看 status_code=429，而 session_turns 里 429 是 0 行，等于从未生效，审计 §9.160）。仍 NULL：id（v1 请求行 id ≠ session turn id）/test_col/test_tab_indent/provider_model/credits_rate_multiplier，以及 client_ip 本身（字面量非法时落 NULL，不抛错）。trace_events 刻意未投影（镜像从不写，近窗非空率 0，投影即净数据损失）。'`
+// canonicalSessionOnlyComment 与迁移 890 的 COMMENT ON VIEW 同文（COMMENT 的
+// IS 只收单个字面量，不能像 SQL 赋值那样 || 拼接）。824 起补记 request_status
+// 的分类口径（816/817 的两次 client_ip 改写当时未同步本常量，视图注释一度落后
+// 两代；这里补的是最新状态，不是逐版流水）。890 起本常量描述**两臂**形态。
+const canonicalSessionOnlyComment = `'会话存储解耦 v4（890）: v1 族（_request_logs*）整体退役 ⇒ canonical 视图去掉第三臂（冻结 v1 体 + 双反连接去重），只剩两臂 session_turns_hot ∪ session_turns。两臂投影与 710/734/813/815/816/817/824 装出来的逐字相同 ⇒ 118 列同名同序 ⇒ 读方零改动。仍 NULL：id（v1 请求行 id ≠ session turn id）/test_col/test_tab_indent/provider_model/credits_rate_multiplier，以及 client_ip 本身（字面量非法时落 NULL，不抛错）。trace_events 刻意未投影（镜像从不写，近窗非空率 0，投影即净数据损失）。'`
 
 // canonicalColumnOrderV2 是 115 列的契约顺序（= 现网 canonical 视图列序：
 // 710 冻结 113 列 + 738 credits_rate_multiplier + 740 client_ip）。
@@ -787,97 +666,30 @@ var canonicalColumnOrderV2 = []string{
 	"client_forwarded_for",
 }
 
-// preRateColumnOrder 是 pre-736/740 极简链回退用的列序：113 冻结契约 + 813
-// 的三列，**剔除** credits_rate_multiplier/client_ip（那两列的源在中层包装
-// 自身，极简链上没有）。
+// canonicalSessionOnlyDDL renders the **session-only (two-arm)** canonical view.
 //
-// 刻意不复用 canonicalColumnOrderV2 的前缀切片：追加列不是接在 113 之后的
-// ——credits/client_ip 插在 813 三列之前，前缀切片会把它们带进来，而
-// canonicalV2DDL 的 pre-736 回退分支恰恰要求它们缺席。
-func preRateColumnOrder() []string {
-	out := make([]string, 0, len(canonicalColumnOrderV2))
-	for _, n := range canonicalColumnOrderV2 {
-		if n == "credits_rate_multiplier" || n == "client_ip" {
-			continue
-		}
-		out = append(out, n)
-	}
-	return out
-}
-
-// canonicalV2DDL 组装 710/734 视图体 + 738/740 追加尾列。middleCols 是中层
-// 包装（request_logs_with_current_month_without_request_class_due_at）的显式
-// 列清单——已剔除 credits_rate_multiplier/client_ip；两者以 v.<col> 文本引用
-// 固定在内层末尾（= 738 regexp 的插入位）。刻意不用 v.*：星展开的内容随中
-// 层扩列时变（710/734 存储的展开冻结于其 CREATE 时刻，自愈组合则取当下中
-// 层），任何依赖星展开的形态都无法与迁移产物逐字节对齐，也无法被 740.down
-// 稳定还原成 738 形态。
+// 2026-10-20（迁移 890）：v1 族（`_request_logs*`）整体退役 ⇒ canonical 视图的
+// **第三臂**（冻结 v1 体 + 两条反连接去重腿）随之退役。留下的两臂是
 //
-// baseHasFP/baseHasRaw 描述基础包装是否已自带 system_fingerprint/raw_model_name
-// ——冻结链（577/610 时代交集）不带，v1 分支按 700 形态 lateral 追加；动态
-// 重建链（680 引导/自愈，post-603 交集）自带，追加会重复列。这两列走
-// lateral（734 原语义，源是 hot/parent 底表）；class/due 恒走 lateral。
-// lateral 追加序固定 class, due, fp, raw。
+//	session_turns_hot t LEFT JOIN session_turn_details_hot d
+//	UNION ALL
+//	session_turns   t LEFT JOIN session_turn_details   d
 //
-// baseHasCredits/baseHasCIP 描述 736/738 倍率列与 341/740 client_ip 是否已
-// 在中层包装上：在（738/740 迁移后的常态）→ 外层投影展开 118 名单、内层末
-// 尾 v.<col> 引用；缺任一（<736 极简链）→ 回退 710 的 113 列契约 + 813 的
-// 三列（preRateColumnOrder，剔除 credits/client_ip）。两者刻意不走
-// lateral——源就是中层自身，lateral 化会改变引用文本打破等价契约。
+// ⚠ 两臂的投影文本与 710/815/816/817/824 装出来的**逐字相同** ⇒ 118 列同名同序
+// ⇒ 约 40 个读方零改动。
 //
-// 外层按 canonicalColumnOrderV2 按名归一化后与会话分支按位置对齐；反连接
-// 守卫走 idx_session_turns_request / idx_session_turns_hot_request。
+// ⚠ 为什么删掉的是「臂」而不是「列」：v1 臂贡献的那些列（customer_id /
+// request_class / due_at / system_fingerprint / raw_model_name /
+// credits_rate_multiplier / client_ip / origin_stage / token_band /
+// client_forwarded_for）在会话腿**全部自带**（要么直映、要么显式 NULL 补位）
+// ⇒ 去掉整条臂不会少一列，也不会改变任何一列的取值形状。
 //
-// hasDetails（734）：true 时 session 分支 LEFT JOIN session_turn_details(_hot)
-// 特征层，30 个 NULL 占位换 d.<col>；false（733 未跑的陈旧库）回退 710 形态。
-//
-// 组合文本与迁移 710/734/738/740 的产物逐字对齐——任何一侧漂移都会打破
-// TestRequestLogsViewV2EnsureMatchesMigration 的 viewdef 等价契约。
-func canonicalV2DDL(middleCols string, baseHasFP, baseHasRaw, baseHasCredits, baseHasCIP, hasDetails bool) string {
+// ⚠ 本函数**不再**接受 baseHasFP/baseHasRaw/baseHasCredits/baseHasCIP 与
+// middleCols：它们只服务于 v1 臂（v1 侧 lateral 追加 / 中层包装链列集）。
+// 留着它们当"不用也能过"的参数，等于允许调用方以为形状还能调 —— 所以
+// 签名直接改掉，让每个调用点都必须重新面对「两臂」这个事实。
+func canonicalSessionOnlyDDL(hasDetails bool) string {
 	names := canonicalColumnOrderV2
-	if !baseHasCredits || !baseHasCIP {
-		names = preRateColumnOrder() // pre-736/740 极简链：回退 710 冻结契约 + 813 三列
-	}
-	appendCols := []string{
-		"source.request_class", "source.due_at",
-		// 815（§9.22）：origin_stage/token_band/client_forwarded_for 在 session
-		// 侧走 t.<col> 直映，v1 侧恒走 lateral——中层包装链（577/610/696/700
-		// 形态）冻结于更早的列集，从不带这三列，所以不存在「基础链已自带」
-		// 这一形态，不需要 fp/raw 那样的条件化。序固定在 fp/raw **之前**：
-		// 与迁移 815 的 append_cols/lateral 字面量同序，viewdef 等价契约
-		// 比的就是这段文本。
-		"source.origin_stage", "source.token_band", "source.client_forwarded_for",
-	}
-	if !baseHasFP {
-		appendCols = append(appendCols, "source.system_fingerprint")
-	}
-	if !baseHasRaw {
-		appendCols = append(appendCols, "source.raw_model_name")
-	}
-	lateralCols := []string{
-		"h.request_class", "h.due_at",
-		"h.origin_stage", "h.token_band", "h.client_forwarded_for",
-	}
-	if !baseHasFP {
-		lateralCols = append(lateralCols, "h.system_fingerprint")
-	}
-	if !baseHasRaw {
-		lateralCols = append(lateralCols, "h.raw_model_name")
-	}
-	parentCols := make([]string, len(lateralCols))
-	for i, c := range lateralCols {
-		parentCols[i] = "p" + strings.TrimPrefix(c, "h")
-	}
-	// 738/740 追加尾列的内层引用（源 = 中层包装自身；序 = 迁移时间序）。
-	vExtras := make([]string, 0, 2)
-	if baseHasCredits {
-		vExtras = append(vExtras, "v.credits_rate_multiplier")
-	}
-	if baseHasCIP {
-		vExtras = append(vExtras, "v.client_ip")
-	}
-	innerSelects := append([]string{middleCols}, appendCols...)
-	innerSelects = append(innerSelects, vExtras...)
 	proj := sessionFamilyProjectionFor(names, hasDetails)
 	hotJoin := ""
 	parentJoin := ""
@@ -899,31 +711,9 @@ func canonicalV2DDL(middleCols string, baseHasFP, baseHasRaw, baseHasCredits, ba
 	FROM public.session_turns_hot t%s
 	UNION ALL
 	SELECT %s
-	FROM public.session_turns t%s
-	UNION ALL
-	SELECT %s
-	FROM (
-		SELECT %s
-		FROM public.request_logs_with_current_month_without_request_class_due_at v
-		LEFT JOIN LATERAL (
-			SELECT %s
-			FROM public._request_logs_hot h
-			WHERE h.request_id = v.request_id AND h.ts = v.ts
-			UNION ALL
-			SELECT %s
-			FROM public._request_logs p
-			WHERE p.request_id = v.request_id AND p.ts = v.ts
-			LIMIT 1
-		) source ON true
-	) rl
-	WHERE NOT EXISTS (SELECT 1 FROM public.session_turns_hot th WHERE th.request_id = rl.request_id)
-	  AND NOT EXISTS (SELECT 1 FROM public.session_turns tp WHERE tp.request_id = rl.request_id)`,
+	FROM public.session_turns t%s`,
 		proj, hotJoin,
-		proj, parentJoin,
-		strings.Join(names, ", "),
-		strings.Join(innerSelects, ", "),
-		strings.Join(lateralCols, ", "),
-		strings.Join(parentCols, ", "))
+		proj, parentJoin)
 }
 
 // SessionFamilyTurnsSourceSQL returns a parenthesized FROM-source emitting the
@@ -952,6 +742,171 @@ func SessionFamilyTurnsSourceSQL() string {
 		" FROM public.session_turns t" +
 		" LEFT JOIN public.session_turn_details d" +
 		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date)"
+}
+
+// SessionFamilyTurnsSessionExistsSQL 返回「**外层会话 s** 是否含有满足 colPred 的轮次」
+// 的**两腿 EXISTS**（hot 腿 ∪ 父表腿），供会话级过滤（`?api_key_id=` / `?model=` /
+// `?provider=` / `?status_code=`）使用。
+//
+// # 为什么不用 public.session_turns_with_current_month 视图（★ 实测，非推断）
+//
+// 【症状】GET /api/admin/turns/sessions 带 `?api_key_id=` / `?model=` 时
+//
+//	生产恒 500@30s（角色级 statement_timeout=30s ⇒ SQLSTATE 57014）。
+//	252 EXPLAIN ANALYZE 单变量 A/B（2026-10-24）：
+//	  A 生产形态（api_key_id）    > 90 s，被 statement_timeout 杀掉，未跑完
+//	  M 生产形态（model）              36,415 ms
+//
+// 【根因 ①：视图的 hot 腿带反连接】
+//
+//	CREATE VIEW session_turns_with_current_month AS
+//	  SELECT … FROM session_turns_hot hot
+//	  WHERE NOT EXISTS (SELECT 1 FROM session_turns archived
+//	                    WHERE archived.tenant_id = hot.tenant_id
+//	                      AND archived.request_id = hot.request_id)
+//	  UNION ALL SELECT … FROM session_turns
+//
+//	⇒ 外层每一行都要在 hot 上跑一次 Nested Loop Anti Join。
+//	⇒ ★★ 而「外层每一行」在这里是**几千行**（会话列表要扫到凑够 LIMIT 21）。
+//
+// 【根因 ②：api_key_id 那一支还多 JOIN 了一个 113 列的全量 source】
+//
+//	EXISTS (SELECT 1 FROM session_turns_with_current_month ft
+//	        JOIN <SessionFamilyTurnsSourceSQL()> rl ON rl.request_id = ft.request_id
+//	        WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id
+//	          AND rl.api_key_id = $n)
+//
+//	⇒ rl 是 **hot ∪ 父表全部历史**（≈1.1 M 行 × 113 列）的派生表，
+//	⇒ 而它在**关联子查询内部** ⇒ 外层每一行都要把它**物化一遍**
+//	⇒ ⇒ 实测 52,854 ms（把谓词推进 source 内部也一样，R85 手法在这里无效）。
+//
+// 【修法】两腿 EXISTS，各自带 session_id/tenant_id 谓词：
+//
+//	EXISTS (SELECT 1 FROM session_turns_hot t WHERE t.session_id = s.session_id …)
+//	OR EXISTS (SELECT 1 FROM session_turns t WHERE t.session_id = s.session_id …)
+//
+//	⇒ 谓词**落在索引上**（idx_session_turns_hot_tenant_session_turn 等）
+//	⇒ 实测 52,854 ms → **192~212 ms**（api_key 族）、36,415 ms → **198 ms**（model 族）。
+//
+// ★ **这不是新发明**：admin/turns_filter_options.go 的 turnMergedSource
+//   早在 2026-10-18 就用了同一手法（实测：视图 44,564 ms ⇒ 两腿 2,048/2,814 ms）。
+//   本 helper 只是把那条**已验证**的形态收敛成**单一真值源**，避免第三次各写一份。
+//
+// # 口径等价性（★ 前提与实测，见下）
+//
+// 【model / provider / status_code 三族】旧形态读视图的对应列，新形态读
+//
+//	hot ∪ 父表的同名列。视图 ≡ hot ∪ 父表：**结构性成立**——
+//	promote_session_turns_hot_to_partition 是
+//	「DELETE FROM session_turns_hot … INSERT INTO session_turns …」的**移动**，
+//	⇒ 同一 request_id 不会同时存在于两边 ⇒ 视图的反连接剔除 0 行
+//	⇒ 252 生产实测（2026-10-24）：hot ∩ 父表 按 (tenant_id, request_id) 配对
+//	   **0 行**；view 行数 1,107,672 = hot ∪ 父表原始行数 1,107,672。
+//
+// 【api_key_id 一族】旧形态读的是 **113 列投影**里的 `api_key_id`
+//	（= SessionFamilyAPIKeyIDExpr 的文本列→bigint 归一），新形态读同一表达式
+//	⇒ **逐字同一个谓词**。
+//	★ 唯一的前提：旧形态用 `rl.request_id = ft.request_id` 关联（**不带 tenant_id**），
+//	  新形态直接按 (session_id, tenant_id) 匹配 ⇒ 等价要求
+//	  「request_id → (session_id, tenant_id) 是函数依赖」。
+//	  252 生产实测（2026-10-24，全库 hot ∪ 父表、**跨租户**）：**0 例外**。
+//	  ★ 而新形态同时**消掉了旧形态的一个潜在跨租户串味**（旧形态的 JOIN 不带 tenant_id）。
+//
+// # 契约
+//
+//   - 外层会话别名**必须**是 `s`（本 helper 固定引用 `s.session_id` / `s.tenant_id`）。
+//   - colExpr 必须引用别名 `t`（两条腿都用 `t`）。
+//   - 两条腿各自是独立子查询作用域 ⇒ 复用同一别名 `t` 合法。
+//
+// # ★★ R92（2026-10-24）：形态从「两条 EXISTS 用 OR 组合」改成
+// **「派生表 UNION ALL + 单一 EXISTS」** —— 因为 OR 形态**锁死了驱动方向**。
+//
+// 【R90 形态为什么不够（生产实测，build 2841）】
+//   R90 上线后，154 直连 REPEAT=3：
+//     ?limit=20                       200×3  0.878/0.155/0.111 s
+//     ?limit=20&api_key_id=105        200×3  9.576/0.216/0.151 s
+//     ?limit=20&model=deepseek-ai%2F…  500×3  30.008/30.007/30.018 s
+//     ?limit=20&provider=14           200×3  0.358/0.100/0.080 s
+//     ?limit=20&status_code=500       200×3  0.554/0.181/0.153 s
+//   ⇒ ★★ **R90「四条全修」的结论被证伪**：只有 model 那条仍 500@30s。
+//
+// 【真因：不是形状问题，是「稀有过滤值 ⇒ 外层深扫」】
+//   252 生产只读实测：
+//     该 model 在父表 **458 轮 / 30 个会话**，hot 腿 **0 轮**；
+//     public.sessions **441,577 行 / 441,112 个会话**。
+//   ⇒ 过滤只命中 30 / 441,112 个会话，而会话列表是
+//     `ORDER BY s.updated_at DESC, s.session_id DESC LIMIT 21`
+//     ⇒ **必须扫到凑够 21 行**。
+//   ⇒ EXPLAIN ANALYZE 实测（事务内建索引后）：
+//       Index Scan using sessions_2026_09_updated_at_session_id_idx
+//         → Rows Removed by Filter: **72,455**
+//       Index Scan using sessions_2026_10_updated_at_session_id_idx
+//         → Rows Removed by Filter: **277,899**
+//     ⇒ ★ 外层一共扫了 **350,354 个会话**才凑出 21 行 ⇒ **17,501 ms**。
+//   ⇒ 对照：provider='14' 命中 181,907 轮、status_code=500 命中 671,117 轮
+//     ⇒ 前 21 个会话立刻凑齐 ⇒ 0.358s / 0.554s
+//     ⇒ ★ **同一个形状，只因「过滤值稀有度」不同，一个 0.3s 一个 30s**。
+//   ⇒ ★ 已排除「统计信息陈旧」：session_turns last_analyze=2026-10-19、
+//     session_turns_2026_10 last_autoanalyze=2026-10-24 ⇒ 统计是新鲜的；
+//     规划器估 128 行 vs 实际 458 行（只低估 3.6×）⇒ 不是统计缺失能解释的量级。
+//
+// 【OR 形态为什么锁死了驱动方向】
+//   OR 形态只能被规划成「两条相关 EXISTS」⇒ 规划器只能
+//   **会话驱动**（外层扫会话、每行去 EXISTS 里查轮次）。
+//   ⇒ 过滤值稀有时，会话驱动要扫 35 万行 ⇒ 30s 超时。
+//   ⇒ 而**轮次驱动**（先枚举匹配的轮次、再去找会话）在稀有过滤下只要 30 行。
+//
+// 【V2 形态：让规划器能自己选】
+//
+//	EXISTS (SELECT 1 FROM (
+//	    SELECT t.tenant_id, t.session_id, <colExpr> FROM public.session_turns t
+//	    UNION ALL
+//	    SELECT t.tenant_id, t.session_id, <colExpr> FROM public.session_turns_hot t
+//	) ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND <pred>)
+//
+//   ⇒ 派生表可被 planner **pull-up** ⇒ 半连接的两个驱动方向都可选：
+//   · 过滤值**稀有** ⇒ 轮次侧走 model 索引 ⇒ **轮次驱动**（外层只剩 30 行）
+//   · 过滤值**常见** ⇒ 轮次侧无索引 ⇒ 顺序扫 110 万行太贵 ⇒ 规划器自动选
+//     **会话驱动**（外层前 21 个会话立刻凑齐）
+//   ⇒ ★ **不写死「轮次驱动」** —— 那是 JOIN 形态（V3），实测在常见过滤上
+//     退化到 **10,080 ms**（provider='14'）。
+//
+// 【252 生产实测（事务内真实文件体 + ROLLBACK ⇒ 生产零持久变更）】
+//
+//	形态                                  model=稀有      provider='14'(常见)
+//	────────────────────────────────────────────────────────────────────────
+//	旧形态（R90 两条 EXISTS OR）              17,501 ms ✗    0.358 s ✓
+//	只加索引、不改形态                        17,501 ms ✗    （仍会话驱动）
+//	JOIN 派生表（V3，轮次驱动写死）              8.0 ms  ✓    **10,080 ms** ✗✗
+//	★★ V2 形态 + 迁移 905 的 model 索引         **8.0 ms** ✓  **48.6 ms** ✓
+//
+// 【★ 口径等价（252 生产，同一事务内同一快照，双向 EXCEPT ALL）】
+//
+//	model（稀有）  : only_r90=**0** / only_v2=**0** / r90_rows=21 / v2_rows=21
+//	provider='14'  : only_r90=**0** / only_v2=**0** / r90_rows=21 / v2_rows=21
+//
+//   ⇒ 结果集**逐行一致** ⇒ 两形态只差「求值顺序」，不差「取哪些行」。
+//   ⇒ 结构上也等价：旧形态 =「hot 腿 EXISTS ∨ 父表腿 EXISTS」，
+//     新形态 =「(hot ∪ 父表) 派生表上的 EXISTS」⇒ 同一谓词集、同一半连接语义
+//     （NULL 两侧都用 `=` ⇒ NULL 不匹配 ⇒ 行为一致）。
+//
+// 【★ 硬依赖：迁移 905 的 model 索引】
+//   V2 形态的「轮次驱动」分支**依赖** `idx_session_turns_model_session`：
+//   无索引时实测 V2 / model=稀有 = **205,708 ms**（规划器退化成
+//   「每行对 110 万轮做顺序扫」的嵌套循环半连接）。
+//   ⇒ ★ 生产上由**启动迁移 905** 在新二进制对外服务**之前**建好该索引
+//     （startup 迁移在切换前投递）⇒ 窗口为 0。
+//   ⇒ ★ 若索引被回滚而二进制未回滚：HTTP 症状与今天**相同**（角色级
+//     statement_timeout=30s ⇒ 同样 500@30s），不会更差，但会白烧 30s DB 时间。
+//   ⇒ 语义耦合由 migration_905_turns_session_model_idx_test.go 钉住。
+func SessionFamilyTurnsSessionExistsSQL(colExpr, colName, pred string) string {
+	return "(EXISTS (SELECT 1 FROM (" +
+		"SELECT t.tenant_id AS tenant_id, t.session_id AS session_id, " + colExpr + " AS " + colName +
+		" FROM public.session_turns t" +
+		" UNION ALL " +
+		"SELECT t.tenant_id, t.session_id, " + colExpr +
+		" FROM public.session_turns_hot t" +
+		") ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND " + pred + "))"
 }
 
 // SessionFamilyTurnsHotSourceSQL is the hot-only leg of
@@ -1003,6 +958,64 @@ func SessionFamilyTurnsForSessionSQL() string {
 		" LEFT JOIN public.session_turn_details d" +
 		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" +
 		" WHERE t.session_id = $1)"
+}
+
+// SessionFamilyTurnsForSessionsSQL 返回与 SessionFamilyTurnsSourceSQL **同一个冻结列投影**，
+// 但把 **session 谓词推进两条腿内部**（`t.session_id = ANY($1)`），让规划器能用
+// idx_session_turns_session (session_id, turn_no DESC) 逐会话取行，
+// 而不是把全部历史物化后再 Hash Join。
+//
+// # 为什么需要它（★ 2026-10-24 生产实测，可复算）
+//
+// 【症状】GET /api/admin/turns/sessions 的 **api_key enrich 腿**独占端点耗时：
+//
+//	pg_stat_statements 增量差分（打 3 次端点，252 只读）：
+//	  SELECT DISTINCT ON (t.session_id) …   每次 **20,176 ms** ← 端点的全部
+//	  SELECT s.session_id, s.tenant_id, …    每次      **8.3 ms**（主列表查询）
+//	  SELECT t.session_id, t.turn_no, …      每次      **4.2 ms**（轮次加载）
+//
+// 【根因】enrich 腿用的是 SessionFamilyTurnsSourceSQL() ——
+// **session_turns_hot UNION ALL session_turns 父表的全部历史分区**，
+// 而 session 谓词在 source **外部** ⇒ 规划器只能把整条 UNION ALL 物化
+// （估算 1,587,817 行）再 Hash Join。
+//
+// 【修法与实测】单变量 A/B（252 EXPLAIN ANALYZE，同 21 个**真实** session_id）：
+//
+//	A 谓词在 source 外部：Execution Time 11,478.486 ms（Hash Join，估算 1,587,817 行）
+//	B 谓词推进两腿内部：Execution Time      6.369 ms（Hash Join，估算      1,070 行）
+//
+//	⇒ ~1,800×；B 的两条腿走 `Index Scan using idx_session_turns_hot_tenant_session_turn`。
+//
+// # 与 SessionFamilyTurnsForSessionSQL（单 session 版）的区别
+//
+// 单 session 版谓词是 `t.session_id = $1`；本版是 `= ANY($1)`，
+// 因为调用方（会话列表页）一次要 enrich **一批** session（默认 21 个）。
+//
+// # 契约
+//
+//   - $1 必须是 session_id 数组（text[]）；谓词发射为 `t.session_id = ANY($1)`，
+//     两条腿各一份 ⇒ 同一个占位符在同一条 SQL 里出现两次（PG 允许）。
+//   - 投影与 SessionFamilyTurnsSourceSQL 逐字同源（同一 sessionFamilyProjection(true)）
+//     ⇒ 列集合、列名、列序完全一致 ⇒ 调用方的 SELECT 列表无需改动。
+//   - 调用方仍需自己加租户收窄（`WHERE rl.tenant_id = $2`）—— 本 helper 不带租户语义。
+//   - 语义等价性：JOIN 条件（`rl.request_id = t.request_id`）决定哪些 rl 行入选；
+//     本 helper 只是把 rl 的候选集**收窄**到这些 session 自己的轮次。
+//     ⇒ 只有当「同一 request_id 在 rl 里属于**别的** session」时才会少一行 ——
+//     而 request_id 是轮的标识（UNIQUE (tenant_id, request_id, partition_date)），
+//     实测不存在这种跨 session 归属。
+//
+// The returned source carries no alias — callers append one (e.g. `rl`).
+func SessionFamilyTurnsForSessionsSQL() string {
+	return "(SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns_hot t" +
+		" LEFT JOIN public.session_turn_details_hot d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" +
+		" WHERE t.session_id = ANY($1)" +
+		" UNION ALL SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns t" +
+		" LEFT JOIN public.session_turn_details d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" +
+		" WHERE t.session_id = ANY($1))"
 }
 
 // SessionFamilyBodiesSourceSQL returns a FROM source over the session-family
@@ -1094,6 +1107,20 @@ var sessionBodiesSourceProjection = "sb.request_id, sb.request_delta AS request_
 //
 // ⚠ 同一条陷阱适用于 `request_body`（投影名 request_delta）：会话族的
 // "无请求体"同样是 jsonb null，用 `IS NOT NULL` 会把 1,892 行算成有正文。
+//
+// # 适用范围（2026-10-21 §143.56 扩记）
+//
+//	原始合同是「喂给 SessionFamilyBodiesSourceSQL 的列别名」。本轮起它**也**被
+//	用在两个不在那个源上的别名上：
+//
+//	- `f`  = `public.session_bodies_unified` 的别名（final_full 快照腿）
+//	- `ff` = 同上的 LATERAL 结果别名
+//
+//	⇒ 成立条件只有一条：**该别名下有一个 jsonb 类型的 `outbound_body` 列**。
+//	这三处都满足（会话族与 unified 视图同源于 `session_bodies*`）。
+//	⇒ ★ 判据**只有一个事实源**：`cmd/gateway` 的 L3 冷启动式
+//	（`lastOutboundSessionSQL`）三处「有正文」判据都调它，
+//	与 `admin/data_lifecycle.go`、`cmd/compression-bench/main.go` 同口径。
 func SessionBodiesHasOutboundPredicate(alias string) string {
 	return alias + `.outbound_body IS NOT NULL AND ` + alias + `.outbound_body <> 'null'::jsonb`
 }
@@ -1125,11 +1152,29 @@ func SessionBodiesHasOutboundPredicate(alias string) string {
 // **9 个 admin 消费点在一次全仓解析里全部消失**（实测 5 个 vs 应有的 14 个）。
 // ⇒ 删除包装，全部调用点直接调 `dbpkg.SessionBodiesSourceSQL()`。
 // 代价是 5 个文件要新增 db import，收益是**单一切换层、单一探测路径**。
+// # ★ 2026-10-20（迁移 890，v1 族最终删除）：本切换层**退化为 no-op**。
+//
+// 原实现：开关 `storage.session_bodies_native_read` 关（默认）时返回
+// `request_logs_bodies_with_current_month`（**v1 正文族的视图**），开时返回
+// 会话族源。那是灰度期的回滚设计：开关关 = 读 v1，开 = 读会话族。
+//
+// 890 删掉了 v1 族，**连同那张视图** ⇒ 默认臂指向一个**已不存在的关系**
+// ⇒ 任何走默认臂的读方都是**整条语句 42P01**（不是那条腿失败，也不是静默空集）。
+// 实测受影响的消费点有 12 个（admin 的 6 个文件 + bg 1 + domains 3 …）。
+//
+// ⇒ 开关的**灰度期已经结束**：v1 臂不再有对象，「关」这个选项没有意义。
+//
+//	本函数恒返回会话族源。
+//
+// # 为什么保留这个函数（而不是让所有调用点直接调 SessionFamilyBodiesSourceSQL）
+//
+// 12 个调用点分散在 6 个包里，其中 4 个包（domains/sessionsummary、
+// domains/sessionforensics、bg、admin）不 import db 之外的切换层约定；
+// 让它们各自改写会引入「有人改了、有人没改」的分叉——而分叉的代价是
+// **一部分读方 42P01、一部分正常**，那种故障形态最难定位。
+// ⇒ 保留**单一入口**，让它恒返回唯一正确的形态。
 func SessionBodiesSourceSQL() string {
-	if settings.GetPlatformBool(SessionBodiesNativeReadSetting, false) {
-		return SessionFamilyBodiesSourceSQL()
-	}
-	return "request_logs_bodies_with_current_month"
+	return SessionFamilyBodiesSourceSQL()
 }
 
 // SessionBodiesNativeReadSetting 是 bodies 读端灰度开关的 key。

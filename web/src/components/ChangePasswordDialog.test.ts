@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ChangePasswordDialog from './ChangePasswordDialog.vue'
+import { testI18n } from '../test-utils/i18n'
 
 const changeMyPasswordMock = vi.fn()
 
@@ -19,6 +20,7 @@ describe('ChangePasswordDialog', () => {
     const wrapper = mount(ChangePasswordDialog, {
       props: { modelValue: true },
       global: {
+        plugins: [testI18n],
         stubs: { Teleport: true },
       },
     })
@@ -39,6 +41,7 @@ describe('ChangePasswordDialog', () => {
     const wrapper = mount(ChangePasswordDialog, {
       props: { modelValue: true },
       global: {
+        plugins: [testI18n],
         stubs: { Teleport: true },
       },
     })
@@ -58,6 +61,7 @@ describe('ChangePasswordDialog', () => {
     const wrapper = mount(ChangePasswordDialog, {
       props: { modelValue: true },
       global: {
+        plugins: [testI18n],
         stubs: { Teleport: true },
       },
     })
@@ -86,6 +90,7 @@ describe('ChangePasswordDialog', () => {
     const wrapper = mount(ChangePasswordDialog, {
       props: { modelValue: true, forced: true },
       global: {
+        plugins: [testI18n],
         stubs: { Teleport: true },
       },
     })

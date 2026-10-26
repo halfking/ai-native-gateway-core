@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 const (
@@ -144,17 +145,24 @@ func todaySuccessProbeSQL() string {
 	return `
 		WITH used AS (
 			SELECT rl.credential_id AS id, pm.raw_model_name, MAX(rl.ts) AS last_used_at
-			FROM _request_logs_hot rl
+			-- ★ 890（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
+			-- 窗口 24h ≫ hot 保留期 8h，v1 侧本来就只看得到最近 8h，
+			-- 会话族热腿保留期同款 ⇒ 口径不变。
+			FROM ` + db.SessionFamilyTurnsHotSourceSQL() + ` rl
 			JOIN credential_model_bindings cmb ON cmb.credential_id = rl.credential_id
 			JOIN provider_models pm ON pm.id = cmb.provider_model_id
 			WHERE rl.ts >= now() - interval '24 hours'
 			  AND rl.success = TRUE
-			  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
+			  -- 会话族没有 quality_flags ⇒ 用会话族那条探针排除谓词。
+			  AND ` + fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl") + `
 			  AND rl.credential_id IS NOT NULL
 			  AND pm.raw_model_name <> ''
+			  -- 腿 1 用 client_model（会话族同名同义，来自 session_turn_details）；
+			  -- 腿 2/3 用 rl.raw_model_name —— 它在会话族里就是 v1
+			  -- outbound_model 的同义列（COALESCE(outbound_model, client_model)）。
 			  AND (pm.raw_model_name = rl.client_model
-			       OR pm.raw_model_name = rl.outbound_model
-			       OR pm.outbound_model_name = rl.outbound_model)
+			       OR pm.raw_model_name = rl.raw_model_name
+			       OR pm.outbound_model_name = rl.raw_model_name)
 			GROUP BY rl.credential_id, pm.raw_model_name
 		), unhealthy AS (
 			SELECT used.id, used.raw_model_name, used.last_used_at

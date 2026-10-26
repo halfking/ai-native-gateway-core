@@ -83,4 +83,71 @@ grep -q 'MISS fingerprint: probeOne single-flight' "$tmp/miss.out" || fail "want
 grep -q 'count\[ProbeSync\]=0' "$tmp/miss.out" || fail "zero-match counts must print (not abort mid-script)"
 pass "behavior: MISS + zero counts still complete"
 
+# ── 6. 行为：LOG_GLOB 只统计观测窗口内的 JSON 日志，并安全展开多个 pattern ─────
+python3 - "$tmp/window-old.log" "$tmp/window-new.log" <<'PY'
+import datetime
+import json
+import sys
+
+now = datetime.datetime.now(datetime.timezone.utc)
+for path, age_minutes in zip(sys.argv[1:], (45, 5)):
+    timestamp = now - datetime.timedelta(minutes=age_minutes)
+    with open(path, "w") as fh:
+        fh.write(json.dumps({
+            "time": timestamp.isoformat().replace("+00:00", "Z"),
+            "msg": "ProbeSync same-pattern fixture",
+        }) + "\n")
+PY
+set +e
+TARGET=local BIN="$tmp/gateway" \
+  LOG_GLOB="$tmp/window-old*.log $tmp/window-new*.log" WINDOW_MIN=30 \
+  /bin/bash "$OBS" >"$tmp/window.out" 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "windowed observe want 0, got $rc; $(tail -5 "$tmp/window.out")"
+grep -q 'count\[ProbeSync\]=1' "$tmp/window.out" || \
+  fail "LOG_GLOB must count only the in-window JSON line; $(grep 'count\[ProbeSync\]' "$tmp/window.out" || true)"
+pass "behavior: LOG_GLOB excludes out-of-window JSON logs"
+
+# ── 7. 行为：active canary 与默认 journal unit 重叠时只查询一次 ────────────────
+mkdir -p "$tmp/stubbin"
+cat >"$tmp/stubbin/curl" <<'SH'
+#!/bin/sh
+printf '{"ready":true}\n'
+SH
+cat >"$tmp/stubbin/journalctl" <<'SH'
+#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -u)
+      printf '%s\n' "$2" >>"$JOURNAL_CALLS"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+SH
+chmod +x "$tmp/stubbin/curl" "$tmp/stubbin/journalctl"
+: >"$tmp/journal.calls"
+set +e
+PATH="$tmp/stubbin:$PATH" JOURNAL_CALLS="$tmp/journal.calls" \
+  TARGET=154 BIN="$tmp/gateway" LOG_GLOB= JOURNAL=1 WINDOW_MIN=30 \
+  /bin/bash "$OBS" >"$tmp/journal.out" 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "journal observe want 0, got $rc; $(tail -5 "$tmp/journal.out")"
+counter_count="$(grep -c '^count\[' "$tmp/journal.out")"
+[[ "$counter_count" -gt 0 ]] || fail "journal fixture did not run any counters"
+for unit in llm-gateway-go-canary@8781 llm-gateway-go-canary@8782 llm-gateway-go; do
+  calls="$(grep -Fxc "$unit" "$tmp/journal.calls" || true)"
+  [[ "$calls" -eq "$counter_count" ]] || \
+    fail "journal unit $unit called $calls times for $counter_count counters (want once per counter)"
+done
+total_calls="$(wc -l <"$tmp/journal.calls" | tr -d ' ')"
+[[ "$total_calls" -eq $((counter_count * 3)) ]] || \
+  fail "journal unit list contains duplicates: got $total_calls calls, want $((counter_count * 3))"
+pass "behavior: journal units are deduplicated"
+
 echo "ALL PASS: observe_magpie_p0_contract_test"

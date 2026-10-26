@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -107,6 +108,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w, r, journeyWriter := beginRequestJourney(w, r, h.chatHandler)
 	defer finishRequestJourney(r, journeyWriter)
 	r = markExplicitStreamSession(r)
+	r = h.chatHandler.pinRules(r)
 	if h.chatHandler.sanitizeInputMiddleware != nil {
 		var authorized bool
 		r, authorized = h.chatHandler.prepareSanitizeRequest(r)
@@ -887,7 +889,12 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			if logCtx != nil {
 				logCtx.SetRoute(providerID, credentialID)
 				logCtx.SetError(blockCode, blockMessage)
-				logCtx.failAndMark(blockCode, blockMessage, providerID, credentialID)
+				// Render-then-emit: nativeStreamWriter.finish() already wrote the
+				// protocol terminal through writeTrustedTerminal, which sets
+				// Content-Type and writes the frame but never calls WriteHeader —
+				// so the committed stream carried HTTP 200 and the block travels
+				// as an SSE error frame. 200 is what the client received.
+				logCtx.failAndMark(blockCode, blockMessage, providerID, credentialID, http.StatusOK)
 			} else {
 				latency := int(time.Since(startTime).Milliseconds())
 				h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
@@ -898,6 +905,28 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	if errors.Is(execErr, errorsx.ErrOutputPolicyBlocked) {
+		const code, message = "output_policy_blocked", "Response blocked by output policy"
+		attemptErrCode, attemptErrMsg = code, message
+		auditBuilder.Success(false)
+		rt.Emit(state.EventFailed)
+		providerID, credentialID := failureAttribution(execErr, candidates)
+		if logCtx != nil {
+			logCtx.SetRoute(providerID, credentialID)
+			if ee, ok := execErr.(*executors.ExecuteError); ok {
+				logCtx.ApplyQueueTimestampsFromError(ee)
+			}
+			// http.StatusForbidden is the argument writeResponsesError writes on the line below.
+			logCtx.failAndMark(code, message, providerID, credentialID, http.StatusForbidden)
+		} else {
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
+				providerID, credentialID, code, message, latency, chatBodyBytes, keyInfo, r)
+		}
+		*attemptLogged = true
+		writeResponsesError(w, http.StatusForbidden, message, code, "blocked")
+		return
+	}
 	if execErr != nil {
 		// SP-02: state machine — executor failed (skip when the failure was a
 		// client cancel, since r.Context() cancellation has already driven
@@ -1091,7 +1120,7 @@ func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
 	}
 
 	for key, raw := range req.Extra {
-		if len(raw) == 0 || string(raw) == "null" {
+		if len(raw) == 0 {
 			continue
 		}
 		// reasoning 已按 chat 线型翻译为 reasoning_effort，对象本体不再透传。
@@ -1099,7 +1128,9 @@ func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
 			continue
 		}
 		var value any
-		if err := json.Unmarshal(raw, &value); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		if err := decoder.Decode(&value); err != nil {
 			continue
 		}
 		if key == "tools" {

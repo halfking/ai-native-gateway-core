@@ -140,7 +140,7 @@ export default {
     },
   },
   edit: {
-    title: 'Modifier le fournisseur — {name}',
+    title: 'Modifier le fournisseur: {name}',
     catalogCode: 'Code catalogue',
     vendor: 'Fournisseur',
     headerProfile: 'Header Profile',
@@ -172,10 +172,9 @@ export default {
     },
   },
   credential: {
-    drawerTitle: 'Gérer les identifiants — {name}',
+    drawerTitle: 'Gérer les identifiants: {name}',
     refresh: 'Actualiser',
     addBtn: '+ Identifiant',
-    empty: 'Aucun identifiant pour le moment — cliquez sur « + Identifiant » pour en ajouter',
     table: {
       id: 'Identifiant',
       status: 'Statut',
@@ -195,7 +194,7 @@ export default {
       disabled: 'Désactivé',
     },
     row: {
-      idTrustLine: '#{id} · {trust}',
+      idTrustLine: '#{id}: {trust}',
       healthProbeModel: 'Sonde {model}',
       apiOk: 'API OK',
       apiOkTitle: 'API de la liste de modèles validée',
@@ -208,11 +207,11 @@ export default {
       slotFull: 'Plein',
       slotFree: 'libre {free}',
       slotUnlimited: 'illimité (0 = aucune limite)',
-      usageSeparator: ' appels · ',
+      usageSeparator: ' appels: ',
       balanceLabel: 'Solde',
       // migration 721 (2026-09-18): balance provenance + on-demand refresh.
       balanceSourceApi: 'Sondage API',
-      balanceSourceManual: 'Saisie manuelle · pas de sondage auto pendant 24h',
+      balanceSourceManual: 'Saisie manuelle: pas de sondage auto pendant 24h',
       balanceRefreshTooltip: 'Interroger maintenant l’API de solde du fournisseur (GET, sans tokens)',
       balanceRefreshFailed: 'Échec du sondage de solde',
       balanceUnsupported: 'Ce fournisseur n’expose pas d’API de solde (les offres plan via les champs de quota)',
@@ -226,7 +225,7 @@ export default {
       disable: 'Supprimer',
     },
     addDialog: {
-      title: 'Ajouter un identifiant — {name}',
+      title: 'Ajouter un identifiant: {name}',
       apiKeyLabel: 'API Key',
       apiKeyPlaceholder: 'sk-…',
       tagsLabel: 'Tags (facultatif)',
@@ -247,23 +246,23 @@ export default {
       saveFailed: 'Échec de l\'enregistrement de l\'identifiant',
       toggleFailed: 'Échec de l\'opération',
     },
+    empty: 'Aucun identifiant pour le moment : sélectionnez « + Identifiant » pour en ajouter.',
   },
   check: {
     providerStarted: 'Vérification démarrée',
     providerRunning: 'Déjà en cours',
     providerFailed: 'Échec de la vérification',
-    credentialStatusPrefix: 'Statut : {status} · ',
+    credentialStatusPrefix: 'Statut : {status}: ',
     credentialModels: 'Interface modèles OK',
     credentialProbeOk: 'Sondage réussi',
     credentialUnreachable: 'Inaccessible',
     credentialFailed: 'Échec de la vérification',
-    diagnoseFailed: 'Échec du diagnostic',
+    diagnoseFailed: 'Le diagnostic n’a pas pu aboutir. Veuillez réessayer.',
   },
   diagnose: {
-    title: 'Diagnostic fournisseur — capture réelle requête/réponse',
+    title: 'Diagnostic fournisseur: capture réelle requête/réponse',
     subtitle: '(identifiants assainis)',
     loading: 'Diagnostic…',
-    summary: '{n} identifiants — cliquez sur une ligne pour développer les détails de la requête/réponse',
     table: {
       credential: 'Identifiant',
       modelSource: 'Source du modèle',
@@ -293,6 +292,7 @@ export default {
     errHeader: '⚠️ Erreur',
     modelsHeader: '✅ Modèles analysés ({n})',
     modelsTruncated: '… {n} au total',
+    summary: '{n} identifiants : sélectionnez une ligne pour afficher les détails de la requête/réponse',
   },
   bgStatus: {
     panelTitle: 'Statut des tâches en arrière-plan',
@@ -325,7 +325,7 @@ export default {
     day: 'j',
   },
   error: {
-    loadFailed: 'Échec du chargement',
+    loadFailed: 'Le chargement de la liste des fournisseurs a échoué. Veuillez réessayer.',
   },
   common: {
     button: {
@@ -367,15 +367,15 @@ export default {
   emergencyFailed: 'Échec de la maintenance d’urgence',
   // ── 2026-09-05: onglet réglages · puces d'état de cycle de vie + état de désactivation manuelle ──
   lifecycleTitle: 'Cycle de vie',
-  lifecycleHint: 'Cliquez sur un état pour enregistrer immédiatement ; quitter « Actif » demande une confirmation',
+  lifecycleHint: 'Choisissez un état pour enregistrer immédiatement ; quitter « Actif » demande une confirmation',
   lifecycleLabelActive: 'Actif',
   lifecycleLabelDisabled: 'Désactivé',
   lifecycleLabelSuspended: 'Suspendu',
   lifecycleLabelRetired: 'Retiré',
-  lifecycleHintActive: 'active · participe normalement au routage',
-  lifecycleHintDisabled: 'disabled · désactivé manuellement, exclu du routage',
-  lifecycleHintSuspended: 'suspended · suspendu temporairement, exclu du routage',
-  lifecycleHintRetired: 'retired · retiré définitivement, non récupérable ici',
+  lifecycleHintActive: 'active: participe normalement au routage',
+  lifecycleHintDisabled: 'disabled: désactivé manuellement, exclu du routage',
+  lifecycleHintSuspended: 'suspended: suspendu temporairement, exclu du routage',
+  lifecycleHintRetired: 'retired: retiré définitivement, non récupérable ici',
   lifecycleCurrent: 'Actuel',
   lifecycleChangeConfirm: 'Passer le cycle de vie d’« Actif » à « {label} » ({value}) ?\nCe identifiant ne recevra plus de trafic ; vous pouvez revenir à « Actif » à tout moment.',
   lifecycleChangeDone: 'Cycle de vie passé à « {label} ».',

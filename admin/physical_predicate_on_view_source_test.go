@@ -93,7 +93,9 @@ func declaresCanonicalViewSource(code string) bool {
 // origin_stage 臂，它就变成了物理谓词的同义词，而 viewSourcePhysicalOnly
 // 清单已不再能区分两者 ⇒ 上面那道门失去判据。
 func TestViewPredicateHasNoPhysicalArm(t *testing.T) {
-	const p = bg.ProbeTrafficExclusionPredicateView
+	// 2026-10-23：谓词改成 var（actor 列表从 internal/probekind 渲染），
+	// 不再是编译期常量 ⇒ 这里不能用 const 上下文。
+	p := bg.ProbeTrafficExclusionPredicateView
 	if strings.Contains(p, "origin_stage") {
 		t.Errorf("视图变体谓词出现了 origin_stage 臂：它与物理谓词的区别只剩 quality_flags，" +
 			"而该列在 session 分臂可空 ⇒ 两者不再是可区分的两种形状，静态禁令失去判据")

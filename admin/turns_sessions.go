@@ -424,22 +424,45 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 	// model / provider / status_code 是轮次级条件：在会话查询里用 EXISTS 直接
 	// 排除不含匹配轮次的会话，避免整页"无匹配轮次"的空会话卡片。
 	// loadTurnsForSessions 会用同样条件过滤会话内展示的轮次。
+	//
+	// ★ 2026-10-24（R90）：这三条**不再**走 `session_turns_with_current_month` 视图，
+	//   改成 db.SessionFamilyTurnsSessionExistsSQL 的 **hot ∪ 父表两腿 EXISTS**。
+	//   理由（252 EXPLAIN ANALYZE 实测，生产只读）：视图的 hot 腿带
+	//   `NOT EXISTS (… FROM session_turns archived …)` 反连接 ⇒ 外层**每一行**
+	//   都要在 hot 上跑一次 Nested Loop Anti Join ⇒ `?model=` 生产形态
+	//   **36,415 ms** ⇒ 角色级 statement_timeout=30s ⇒ **稳定 500@30s**。
+	//   同一手法在 admin/turns_filter_options.go 的 turnMergedSource
+	//   早已在用（2026-10-18：视图 44,564 ms ⇒ 两腿 2,048/2,814 ms）。
+	//   ★ 口径等价：视图 ≡ hot ∪ 父表（promote 是 DELETE hot + INSERT parent 的
+	//   **移动** ⇒ 同一 request_id 不同时存在两边 ⇒ 反连接剔除 0 行；
+	//   252 实测 hot ∩ 父表配对 **0 行**）⇒ 同一列名、同一谓词。
+	//
+	// ★ 2026-10-24（R92）：形态再从「两条 EXISTS 用 OR 组合」改成
+	//   **派生表 UNION ALL + 单一 EXISTS**（同一 helper）。
+	//   ⇒ OR 形态只能被规划成「会话驱动」⇒ **稀有过滤值**（生产实测：该 model
+	//     只命中 30 / 441,112 个会话）⇒ 外层要扫 35 万个会话才凑够 LIMIT 21
+	//     ⇒ 500@30s。★ R90 上线后实测：model 仍 500×3，provider/status_code
+	//     已 200 ⇒ 「R90 四条全修」的结论被证伪。
+	//   ⇒ V2 形态可被 pull-up ⇒ 规划器能自己选驱动方向：稀有 ⇒ 轮次驱动
+	//     （外层只剩 30 行），常见 ⇒ 会话驱动（前 21 个会话立刻凑齐）。
+	//   ⇒ 252 生产实测（事务内建索引 + ROLLBACK）：model 稀有值
+	//     30,008 ms ⇒ **8.0 ms**；provider='14' 358 ms ⇒ **48.6 ms**。
 	if v := strings.TrimSpace(r.URL.Query().Get("model")); v != "" {
-		clauses = append(clauses, fmt.Sprintf(
-			"EXISTS (SELECT 1 FROM public.session_turns_with_current_month ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND ft.model = $%d)", argIdx))
+		clauses = append(clauses, db.SessionFamilyTurnsSessionExistsSQL(
+			"t.model", "model", "ft.model = $"+strconv.Itoa(argIdx)))
 		args = append(args, v)
 		argIdx++
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("provider")); v != "" {
-		clauses = append(clauses, fmt.Sprintf(
-			"EXISTS (SELECT 1 FROM public.session_turns_with_current_month ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND ft.provider = $%d)", argIdx))
+		clauses = append(clauses, db.SessionFamilyTurnsSessionExistsSQL(
+			"t.provider", "provider", "ft.provider = $"+strconv.Itoa(argIdx)))
 		args = append(args, v)
 		argIdx++
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("status_code")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			clauses = append(clauses, fmt.Sprintf(
-				"EXISTS (SELECT 1 FROM public.session_turns_with_current_month ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND ft.status_code = $%d)", argIdx))
+			clauses = append(clauses, db.SessionFamilyTurnsSessionExistsSQL(
+				"t.status_code", "status_code", "ft.status_code = $"+strconv.Itoa(argIdx)))
 			args = append(args, n)
 			argIdx++
 		}
@@ -469,17 +492,27 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("api_key_id")); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			// ⚠️ 这里必须用字符串拼接而不是 fmt.Sprintf：原生源 SQL 里含
-			// `LIKE 'sys:%'`、`~ '^[0-9]+$'` 等 % 字符，交给 Sprintf 会被当
-			// 成格式动词，产出 `%!'(MISSING)` 并吃掉 argIdx 的参数绑定 ——
-			// 实测生成的 WHERE 里出现了三处 %! 残渣，查询在运行期直接语法错。
-			// 参数序号单独拼，SQL 本体一个字节都不进格式化。
-			clauses = append(clauses, `EXISTS (
-					SELECT 1 FROM public.session_turns_with_current_month ft
-					JOIN `+db.SessionFamilyTurnsSourceSQL()+` rl ON rl.request_id = ft.request_id
-					WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id
-					  AND rl.api_key_id = $`+strconv.Itoa(argIdx)+`
-				)`)
+			// ★ 2026-10-24（R92）：这一支现在用 db.SessionFamilyTurnsSessionExistsSQL
+			//   渲染的 **派生表 UNION ALL + 单一 EXISTS** 形态（R90 的 OR-两腿形态）。
+			//   · 为什么换：OR 形态锁死了「会话驱动」方向 ⇒ 过滤值稀有时外层要扫
+			//     35 万个会话才凑够 LIMIT 21 ⇒ 生产 500@30s（实测 2026-10-24）。
+			//   · 口径：同谓词集、同半连接语义 ⇒ 与 R90 形态**逐行一致**
+			//     （252 生产同快照双向 EXCEPT ALL：only_r90=0 / only_v2=0）。
+			//
+			// ★ 谓词必须与**投影**逐字一致（db.SessionFamilyAPIKeyIDExpr）：
+			//   原始列是 text、参数是 int64 ⇒ 归一规则「纯数字才转 bigint」。
+			//   若这里改成 `t.api_key_id = $n::text`，则 '0105' 这类值会与投影分叉
+			//   ⇒ 「展示的 api_key」与「过滤用的 api_key」不是同一个口径。
+			//
+			// ★ 保留的语义：**参数非法（0 / 负数 / 非数字）⇒ 整个过滤子句被跳过**
+			//   （等价于不过滤）—— 与改动前逐字一致。
+			//
+			// ★ 旧的「不能用 fmt.Sprintf」陷阱已随全量 source 一起消失：
+			//   那个坑来自 source SQL 里的 `LIKE 'sys:%'` / `~ '^[0-9]+$'`
+			//   含 `%` 字符 ⇒ 现在这条子句里已没有任何 `%`。
+			clauses = append(clauses, db.SessionFamilyTurnsSessionExistsSQL(
+				db.SessionFamilyAPIKeyIDExpr, "api_key_id",
+				"ft.api_key_id = $"+strconv.Itoa(argIdx)))
 			args = append(args, n)
 			argIdx++
 		}
@@ -566,6 +599,15 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 
 	turnWhere := strings.Join(turnClauses, " AND ")
 
+	// ⚠ 下面 SELECT 里的 `attempt_no` **尚无写入路径，恒为 0** —— 读它得不到
+	// 信息，别据此写「本轮是第 N 次尝试」的判据（那类判据恒真）。
+	// 事实校准（2026-10-19 复核）：该列由 456 建为
+	// `attempt_no INT NOT NULL DEFAULT 0`，所以它在库里是 **0 而非 NULL**；
+	// 投影里的 COALESCE 是冗余的，不是「把 NULL 兜成 0」。
+	// 缺的是写入方：turn_writer.go 的 INSERT 列清单里没有 attempt_no，
+	// 全仓也无人写它（promote 函数只搬运既有值，同样不产生新值）。
+	// 可用真源在 requestjourney 侧（AttemptNo，见
+	// domains/requestjourney/attempt_facts.go），尚未接到本写入点。
 	query := fmt.Sprintf(`
 		SELECT t.session_id, t.turn_no, t.ts,
 			COALESCE(t.request_id, '') AS request_id,
@@ -665,6 +707,44 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 	return nil
 }
 
+// turnsSessionsAPIKeyEnrichSQL 构造「每个会话最新一轮的 api_key」回填查询。
+//
+// ★ 抽成包级函数（2026-10-24 R93）⇒ 门禁能**原样**构造它做「旧形态 vs 新形态」的
+// 真库等价性对拍（而不是在测试里抄一份 ⇒ 抄的那份会与生产漂移）。
+//
+// ★ 形态与代价依据见 db.SessionFamilyLatestTurnPerSessionSQL 的注释。
+// ★ tenantPred：额外的行级谓词（如 ` AND t.tenant_id = $2`），使用别名 `t`。
+func turnsSessionsAPIKeyEnrichSQL(tenantPred string) string {
+	return `
+		SELECT DISTINCT ON (x.session_id)
+			x.session_id,
+			x.api_key_id,
+			COALESCE(NULLIF(ak.key_alias, ''), ak.key_prefix, 'key#' || x.api_key_id::text) AS api_key_label
+		FROM ` + db.SessionFamilyLatestTurnPerSessionSQL(tenantPred) + ` x
+		LEFT JOIN public.api_keys ak ON ak.id = x.api_key_id
+		WHERE x.api_key_id IS NOT NULL
+		ORDER BY x.session_id, x.turn_no DESC`
+}
+
+// turnsSessionsAPIKeyEnrichLegacySQL 是 **R93 之前的旧形态**（保留**仅供门禁对拍**）。
+//
+// ★ 它刻意保留「视图 ⋈ 全量 history source」⇒ 生产实测同一批行被扫两遍
+// ⇒ `?model=` 命中多轮会话时 **13,066 ms** ⇒ 端点 500@30s。
+// ⇒ ⚠ **生产代码路径不得再引用它**（admin/turns_sessions_enrich_latest_test.go 的形态门会拦）。
+func turnsSessionsAPIKeyEnrichLegacySQL(tenantPred string) string {
+	return `
+		SELECT DISTINCT ON (t.session_id)
+			t.session_id,
+			rl.api_key_id,
+			COALESCE(NULLIF(ak.key_alias, ''), ak.key_prefix, 'key#' || rl.api_key_id::text) AS api_key_label
+		FROM public.session_turns_with_current_month t
+		JOIN ` + db.SessionFamilyTurnsForSessionsSQL() + ` rl ON rl.request_id = t.request_id
+		LEFT JOIN public.api_keys ak ON ak.id = rl.api_key_id
+		WHERE t.session_id = ANY($1)
+		  AND rl.api_key_id IS NOT NULL` + tenantPred + `
+		ORDER BY t.session_id, t.turn_no DESC`
+}
+
 // enrichTurnsSessionMeta 批量回填 api_key 与 handoff 父会话（仅针对当前页会话）。
 func (h *Handler) enrichTurnsSessionMeta(ctx context.Context, sessions []*TurnsSessionGroup, tenantID string) error {
 	if len(sessions) == 0 {
@@ -684,17 +764,33 @@ func (h *Handler) enrichTurnsSessionMeta(ctx context.Context, sessions []*TurnsS
 
 	// 同上：原生源 SQL 含 `%` 字符，不能过 fmt.Sprintf，否则 `%!'(MISSING)`
 	// 残渣会污染查询。SQL 用拼接，tenant 片段用 %s 是安全的（它本身无 %）。
-	apiKeyQuery := `
-		SELECT DISTINCT ON (t.session_id)
-			t.session_id,
-			rl.api_key_id,
-			COALESCE(NULLIF(ak.key_alias, ''), ak.key_prefix, 'key#' || rl.api_key_id::text) AS api_key_label
-		FROM public.session_turns_with_current_month t
-		JOIN ` + db.SessionFamilyTurnsSourceSQL() + ` rl ON rl.request_id = t.request_id
-		LEFT JOIN public.api_keys ak ON ak.id = rl.api_key_id
-		WHERE t.session_id = ANY($1)
-		  AND rl.api_key_id IS NOT NULL` + turnTenant + `
-		ORDER BY t.session_id, t.turn_no DESC`
+	//
+	// ★ 2026-10-24（R84）：source 从 SessionFamilyTurnsSourceSQL() 换成
+	//   SessionFamilyTurnsForSessionsSQL() —— 唯一差别是**把 session 谓词推进
+	//   source 的两条腿内部**（`t.session_id = ANY($1)`）。
+	//   原因（252 生产只读实测）：全量 source（hot UNION ALL 父表全部历史分区）
+	//   在谓词位于外部时会被整体物化再 Hash Join ⇒ 估算 1,587,817 行 ⇒
+	//   该腿每次调用 20,176 ms（pg_stat_statements 增量差分）⇒ 端点 21s。
+	//   单变量 A/B（同 21 个真实 session_id）：11,478.486 ms → **6.369 ms**。
+	//   JOIN 条件（rl.request_id = t.request_id）不变 ⇒ 入选行集合不变。
+	//
+	// ★★ 2026-10-24（R93）：**本条查询才是 `?model=` 500@30s 的真凶**
+	//   （R90/R92 修的是**列表查询**，而 500 一直由本条 enrich 查询造成
+	//   —— 生产 journal：`admin handleTurnsSessions enrich meta failed`）。
+	//   旧形态把**同一批行扫两遍**再 1:1 join：
+	//     · `public.session_turns_with_current_month` 的父表腿实测是 `FROM session_turns`
+	//       （**全部分区**，名字骗人）⇒ 视图 = hot ∪ 全部历史
+	//       ⇒ 视图侧 `Heap Fetches 86,507`；
+	//     · source 侧同样是那 86,507 行（113 列投影）；
+	//     · 两者按 `request_id` 1:1 join ⇒ **join 冗余**。
+	//   ⇒ 命中 `?model=` 时那 21 个**探针会话**在 2026_09 有 **85,712 轮**
+	//     ⇒ 实测 **13,066 ms**（无过滤批次只有 21×1 轮 ⇒ 23 ms）。
+	//   ⇒ 改成 `db.SessionFamilyLatestTurnPerSessionSQL()`：**每个 source 先
+	//     `GROUP BY session_id + max(turn_no)`（index-only，不回表）再回定位那一行**
+	//     ⇒ 实测同批次 **1,339 ms**（**9.8×**），口径经生产三批次双向 EXCEPT ALL 证明等价。
+	//   ⇒ ★ 旧的 `SessionFamilyTurnsForSessionsSQL()` **仍保留**（别处仍在用，
+	//     且新门禁要用它来构造「旧形态」做等价性对拍）。
+	apiKeyQuery := turnsSessionsAPIKeyEnrichSQL(turnTenant)
 
 	rows, err := h.db.Query(ctx, apiKeyQuery, turnArgs...)
 	if err != nil {

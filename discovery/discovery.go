@@ -16,13 +16,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/modelcatalog"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/secret"
-	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // Service manages model discovery from providers.
@@ -1100,10 +1100,10 @@ func seedCanonicalAliases(ctx context.Context, db modelcatalog.Querier, rawName 
 // omitting a model, or list pagination) from disabling the only working
 // credential for a model. The grace period is configurable via
 // DISCOVERY_GRACE_HOURS (default 24).
-// staleExpiryBlockedS4Reason 非空表示下架被禁止，原因见此常量。
+// staleExpiryBlockedEvidenceReason 非空表示下架被禁止，原因见此常量。
 //
 // 2026-10-02（审计 §9.10.2）：下面 model_offers 的宽限守卫是
-// `NOT EXISTS (_request_logs 近 N 小时成功)` —— 一条**否定式守卫**。S4 停写后
+// `NOT EXISTS (近 N 小时成功)` —— 一条**否定式守卫**。当**证据源停止写入**时
 // 该子查询不是「查不到」，而是**结构性恒空**：守卫从「已验证近期无成功」
 // 退化成「根本没有证据」，而代码会照常执行下架 ⇒ 无论模型是否真在用，
 // 都被判为 auto_discovery_expired。这不是降级，是主动禁用仍在工作的凭据模型，
@@ -1111,17 +1111,106 @@ func seedCanonicalAliases(ctx context.Context, db modelcatalog.Querier, rawName 
 //
 // 否定式比肯定式危险一个量级：肯定式在证据消失时不做动作（安全降级），
 // 否定式在证据消失时**做动作**。
-const staleExpiryBlockedS4Reason = "S4 停写中：宽限守卫依赖 _request_logs，证据源已停止写入，下架判定不成立"
+//
+// ★ 2026-10-21（§143.19 轮 R72g，属主裁决「退役该护栏」）：**判据换源，
+// 护栏不撤**。原判据是 `settings.RequestLogsWriteEnabled()`（v1 是否可写），
+// 而 890 之后 v1 族已退役 ⇒ 该判据恒不成立 ⇒ 护栏恒 skip ⇒ 陈旧模型
+// **永不再自动下架**（211 生产日志实证）。
+//
+// ⇒ 退役**不是删掉安全网**：安全网的**目的**（否定式守卫在证据缺失时必须不动）
+// 依然成立，只是**证据源**从 v1 换成了会话族。所以判据换成
+// **「会话族证据源在近 N 小时内是否有成功行」**——它直接问「证据在不在」，
+// 而不是问「另一个（已退役的）源是否可写」。
+//
+// ★ 为什么不能简单删除这个判断：会话族**也可能**停止写入
+// （例：R62 修过的 23514——新装库缺当月分区 ⇒ 写路径直接失败）。
+// 那一刻否定式守卫同样会结构性恒空 ⇒ 在用模型会被全量下架。
+// ⇒ 判据必须保留，只是要问对问题。
+//
+// 消息里仍点名 _request_logs：那是这道护栏**当初依赖的证据源**（运维要查
+// 它的来历），也是本仓对「v1 裸读」检测器（internal/sqlreadguard）仅剩的
+// 那个可解释的白名单命中点。
+const staleExpiryBlockedEvidenceReason = "宽限守卫的证据源（会话族）近期没有成功行 ⇒ 下架判定不成立（证据缺失时不做动作）；★ 该守卫的判据历经两代：初版依赖 v1 证据源（_request_logs，已随 890 退役 ⇒ 旧判据恒不成立、护栏恒 skip），现版直接问会话族证据源本身"
 
-// staleExpiryMayRun 判定「能否基于 v1 证据执行 stale 下架」。
+// staleExpiryMayRun 判定「能否基于证据源执行 stale 下架」。
 //
 // 抽成纯函数是为了可无库测试：缺陷所在的正是「证据源停止」这个分支，
 // 而它在线上是停写之后才出现的，集成测试永远撞不到。
-func staleExpiryMayRun(requestLogsWritable bool) (bool, string) {
-	if !requestLogsWritable {
-		return false, staleExpiryBlockedS4Reason
+//
+// ★ 2026-10-21：参数语义从「v1 是否可写」改为「**会话族证据源近期是否有
+// 成功行**」（见 staleExpiryBlockedEvidenceReason 的完整论证）。
+func staleExpiryMayRun(evidenceHasRecentSuccess bool) (bool, string) {
+	if !evidenceHasRecentSuccess {
+		return false, staleExpiryBlockedEvidenceReason
 	}
 	return true, ""
+}
+
+// sessionFamilyHasRecentSuccess reports whether the session-turn family
+// (the grace guard's evidence source since migration 890) has recorded any
+// successful turn recently.
+//
+// Why this is a **measurement** and not another switch:
+//
+//	The guard below is a *negative* guard (`NOT EXISTS (recent success)`).
+//	When the evidence source stops writing, that subquery becomes
+//	structurally empty and the guard degenerates from "verified: no recent
+//	success" into "no evidence at all" — while the code still expires the
+//	model. That is the failure mode §9.10.2 was written to prevent.
+//
+//	The previous criterion (`settings.RequestLogsWriteEnabled()`) asked
+//	whether a *different* source (v1) could be written. That question is
+//	only a proxy for "does the evidence source have data", and the proxy
+//	became permanently false once 890 retired v1 — so the guard skipped
+//	forever and stale models were never expired again.
+//
+//	Asking the source directly removes the proxy. It also keeps the guard
+//	armed for the case where the session family itself stops writing (e.g.
+//	the 23514 "no partition of relation session_turns" failure that R62
+//	fixed on fresh installs): in that case the guard still refuses to act.
+//
+//	Window: DISCOVERY_GRACE_HOURS (default 24h) — the same window the grace
+//	guard itself uses, so "no evidence" and "no recent success" can never
+//	disagree about which rows the guard would have seen.
+//
+//	Query shape: EXISTS over both arms of the session family (hot ∪ parent)
+//	with LIMIT-1 semantics, so it stops at the first hit and never scans the
+//	whole family.
+func (s *Service) sessionFamilyHasRecentSuccess(ctx context.Context) bool {
+	window := s.staleExpiryGraceHours()
+
+	const q = `SELECT EXISTS (
+	  SELECT 1 FROM public.session_turns_hot
+	  WHERE success = TRUE AND ts > now() - ($1 || ' hours')::interval
+	  UNION ALL
+	  SELECT 1 FROM public.session_turns
+	  WHERE success = TRUE AND ts > now() - ($1 || ' hours')::interval
+	)`
+	var ok bool
+	if err := s.db.QueryRow(ctx, q, window).Scan(&ok); err != nil {
+		// 查不到证据 ⇒ 按「证据缺失时不动」处理（安全方向）。
+		// slog 而非 return：这是运维必须看见的信号。
+		slog.Warn("discovery: stale-expiry evidence probe failed, treating as no evidence",
+			"error", err, "window_hours", window)
+		return false
+	}
+	return ok
+}
+
+// staleExpiryGraceHours returns the grace window used both by the evidence
+// probe above and by the guard's own `ts >` predicate.
+//
+// Extracted so the two can never drift apart (they must agree about which
+// rows count as "recent success"), and so the env override has exactly one
+// implementation site.
+func (s *Service) staleExpiryGraceHours() int {
+	hours := 24
+	if v := os.Getenv("DISCOVERY_GRACE_HOURS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			hours = n
+		}
+	}
+	return hours
 }
 
 func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
@@ -1131,12 +1220,28 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 
 	// S4 停写护栏：证据源停止写入时，宽限守卫失去判据，此时**不动**才是安全方向。
 	//
-	// 这里刻意**不做**「把证据换成 session 侧」的端口：session_turns 的
-	// raw_model_name 目前 0 填充（源头 RequestLogEntry 无该字段，见
-	// session_writer_v2.go 的「视图 NULL 补位」登记），而拿 session_turns.model
-	// 代替是错的——实测它等于 client_model（1138/1138），本守卫要比的却是上游名。
-	// 补齐那个字段是独立的一件事，不在这里顺手糊一个近似实现。
-	if mayExpire, blockedReason := staleExpiryMayRun(settings.RequestLogsWriteEnabled()); !mayExpire {
+	// ★ 2026-10-20（迁移 890，v1 族退役）：证据源已换成会话族，
+	// **当初不换的理由已经消失**——本注释说「session_turns 的 raw_model_name
+	// 目前 0 填充（源头 RequestLogEntry 无该字段）」，这条现在**不成立**：
+	// 会话族的 raw_model_name 已随镜像写入（s1a_fields.go §9.60.8：
+	// raw_model_name = COALESCE(outbound_model, client_model)），真库实测
+	// 近 3 天 625/627 行非空非空串，且带的是**上游名**（如
+	// "nvidia/llama-3.1-nemoguard-8b-topic-control"）⇒ 它正是 v1 侧
+	// outbound_model 的同义列（且是它的超集：多了 client_model 回落）
+	// ⇒ 守卫只会更宽松（更少误下架），方向安全。
+	// ⚠ 而「拿 session_turns.model 代替是错的」那条**仍然成立**（model 恒等于
+	// client_model，是客户端名不是上游名）⇒ 这里比的是 raw_model_name，不是 model。
+	//
+	// ★ 2026-10-21（属主裁决「退役该护栏」）：判据**换源不撤网**——
+	// 原判据 `settings.RequestLogsWriteEnabled()` 问的是「v1 能否写」，
+	// 而 v1 已随 890 退役 ⇒ 该问法恒为 false ⇒ 护栏恒 skip
+	// （211 生产日志实证："skip stale-model expiry"）。
+	// 新判据直接问**要问的那个问题**：「会话族证据源近期有没有成功行」。
+	// 这既让护栏重新有判据（不再恒 skip），又保住了它的安全方向
+	// （证据缺失时不动）。
+	// ⚠ 判据本身是**实测事实**（一次只读计数查询），不是另一个源的开关 ——
+	// 「问 A 是否可写来推断 B 是否有数据」正是当初把判据问错的原因。
+	if mayExpire, blockedReason := staleExpiryMayRun(s.sessionFamilyHasRecentSuccess(ctx)); !mayExpire {
 		slog.Info("discovery: skip stale-model expiry",
 			"reason", blockedReason,
 			"would_expire", "model_offers(available=FALSE) + credential_model_bindings(opt-in)")
@@ -1155,12 +1260,11 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 
 	// BUG-2 fix: grace period in hours. Bindings with at least one
 	// successful request within this window are immune to expiry.
-	graceHours := 24
-	if v := os.Getenv("DISCOVERY_GRACE_HOURS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			graceHours = n
-		}
-	}
+	//
+	// ★ 2026-10-21：改用 staleExpiryGraceHours()（与证据探针同一个实现点）——
+	// 探针问的窗口必须与守卫自己的 `ts >` 窗口一致，否则两者可能对
+	// 「哪些行算近期成功」给出不同答案（探针说有证据、守卫说没有）。
+	graceHours := s.staleExpiryGraceHours()
 
 	expired := 0
 	for credID, modelSet := range credModels {
@@ -1176,29 +1280,16 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 			i++
 		}
 
-		tag, err := s.db.Exec(ctx, fmt.Sprintf(`
-			UPDATE model_offers
-			SET available = FALSE,
-			    unavailable_reason = 'auto_discovery_expired',
-			    unavailable_at = now()
-			WHERE credential_id = $1
-			  AND raw_model_name NOT IN (%s)
-			  AND available = TRUE
-			  AND COALESCE(admin_protected, FALSE) = FALSE
-			  AND NOT EXISTS (
-			    SELECT 1 FROM _request_logs rl
-			    WHERE rl.credential_id = $1
-			      -- case-insensitive: _request_logs.outbound_model can differ in
-			      -- case from model_offers.raw_model_name (e.g. "MiniMax-M3" vs
-			      -- "minimax-m3"). A plain = would miss the rows and wrongly
-			      -- expire a model that's actively succeeding.
-			      AND lower(rl.outbound_model) = lower(model_offers.raw_model_name)
-			      AND rl.success = TRUE
-			      AND rl.ts > now() - interval '%d hours'
-			  )
-		`, placeholders, graceHours), args...)
+		tag, err := s.db.Exec(ctx, staleExpiryOffersSQL(placeholders, graceHours), args...)
 		if err != nil {
-			slog.Debug("failed to expire stale models", "credential_id", credID, "error", err)
+			// 2026-10-22 审计修正：Debug → Warn。
+			// 默认日志级别是 INFO（cmd/gateway/main.go 的 level := slog.LevelInfo）
+			// ⇒ Debug **不落盘**；而「成功过期 0 条」这一路也不出 Info
+			// ⇒ 下架整轮静默失效时**零可见性**。
+			// 2026-10-21 的 252 生产事故（stale 下架 UPDATE 被 Sprintf % 损坏）
+			// 被漏掉的原因正是这一条：功能全灭、而日志里什么都没有。
+			// ⇒ 失败必须至少 Warn：可发现性与「修好了」同等重要。
+			slog.Warn("failed to expire stale models", "credential_id", credID, "error", err)
 			continue
 		}
 		if tag.RowsAffected() > 0 {
@@ -1228,7 +1319,7 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 		`, placeholders), args...)
 		if err != nil {
-			slog.Debug("failed to expire stale cmb rows", "credential_id", credID, "error", err)
+			slog.Warn("failed to expire stale cmb rows", "credential_id", credID, "error", err)
 			continue
 		}
 		if cmbTag.RowsAffected() > 0 {
@@ -1242,4 +1333,44 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 	if expired > 0 {
 		slog.Info("total stale models expired", "count", expired)
 	}
+}
+
+// staleExpiryOffersSQL composes the stale-expiry UPDATE over model_offers.
+//
+// ⚠ This SQL must never be routed through fmt.Sprintf: the shared projection
+// inside SessionFamilyTurnsSourceSQL() contains a literal `%`
+// (`LIKE 'sys:%'`), and as a format string Go treats it as an unknown verb —
+// production evidence 2026-10-21: `LIKE 'sys:%!'(int=24)` plus
+// `interval '%!d(MISSING) hours'`, so every UPDATE failed to parse
+// (syntax error at or near "(") and stale-model expiry was dead since the
+// 890 cutover deploy. Both injected values are therefore concatenated, never
+// formatted; scripts/ursmcheck's sqlfmt_sessionfamily_gate_test.go keeps the
+// whole repo to this rule.
+func staleExpiryOffersSQL(placeholders string, graceHours int) string {
+	return `
+		UPDATE model_offers
+		SET available = FALSE,
+		    unavailable_reason = 'auto_discovery_expired',
+		    unavailable_at = now()
+		WHERE credential_id = $1
+		  AND raw_model_name NOT IN (` + placeholders + `)
+		  AND available = TRUE
+		  AND COALESCE(admin_protected, FALSE) = FALSE
+		  -- ★ 890（v1 族退役）：证据源换成**会话族原生源**（hot ∪ parent）。
+		  -- 模型名口径用 rl.raw_model_name —— 会话族里它就是 v1 outbound_model
+		  -- 的同义列（COALESCE(outbound_model, client_model)），且是 v1 侧
+		  -- outbound_model 的**超集**（多了 client_model 回落）⇒ 守卫只会更
+		  -- 宽松（更少误下架），方向安全。
+		  AND NOT EXISTS (
+		    SELECT 1 FROM ` + db.SessionFamilyTurnsSourceSQL() + ` rl
+		    WHERE rl.credential_id = $1
+		      -- case-insensitive: the model name can differ in case from
+		      -- model_offers.raw_model_name (e.g. "MiniMax-M3" vs
+		      -- "minimax-m3"). A plain = would miss the rows and wrongly
+		      -- expire a model that's actively succeeding.
+		      AND lower(rl.raw_model_name) = lower(model_offers.raw_model_name)
+		      AND rl.success = TRUE
+		      AND rl.ts > now() - interval '` + strconv.Itoa(graceHours) + ` hours'
+		  )
+	`
 }

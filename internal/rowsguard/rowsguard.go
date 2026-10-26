@@ -89,6 +89,119 @@ var skipDirs = map[string]bool{
 // **判据锚得过窄时，门对真实存在的站点是瞎的，而它自己不会报错**。
 var nextLoopRe = regexp.MustCompile(`for\s+(\w+)\.Next\(`)
 
+// exemptionAnchorSep 分隔「file:line」与逐字内容锚点。
+//
+// 为什么需要锚点（2026-10-16 审计）：豁免键原本一律是**行号**，而
+// `cmd/gateway/main.go` 是全仓最热的文件——该表里那一条 DISTINCT 扫描
+// 已经被逐次改键 12 次（4642→4708→4719→4736→4758→4770→4780→4791→4803
+// →4808→4839→4844→…）。行号锚点在这条上本质脆弱：任何在其上方的新增都会
+// 把它推移，于是每一轮都要回原提交核对一遍「是同一处漂移还是另找一处顶上」，
+// 而一旦漏改，守卫报的是 stale，**门对这一处不再有话可说**。
+//
+// 锚点把「位置」换成「内容身份」，并且**不比行号弱**：锚点必须在该文件中
+// **恰好命中一行**，0 命中（代码被改写/删除）或 >1 命中（不再唯一）都不放过，
+// 交由调用方按「门不能自证其覆盖」处理。纯行号键保持原语义（漂移即失配，
+// 方向安全），两者可混用。
+const exemptionAnchorSep = "~"
+
+// splitExemptionKey 解析 `file:line` 或 `file:line~ANCHOR`。
+// 返回文件、行号（1 基；解析不出则为 0）与锚点（无锚点时 anchor 为 ""，anchored 为 false）。
+func splitExemptionKey(key string) (file string, line int, anchor string, anchored bool) {
+	i := strings.LastIndex(key, ":")
+	if i < 0 {
+		return key, 0, "", false
+	}
+	file, rest := key[:i], key[i+1:]
+	if j := strings.Index(rest, exemptionAnchorSep); j >= 0 {
+		anchor, anchored = rest[j+len(exemptionAnchorSep):], true
+		rest = rest[:j]
+	}
+	n := 0
+	for _, c := range rest {
+		if c < '0' || c > '9' {
+			return file, 0, anchor, anchored
+		}
+		n = n*10 + int(c-'0')
+	}
+	return file, n, anchor, anchored
+}
+
+// resolveExemption 在 src 中定位该豁免键真实指向的 `for X.Next()` 行。
+//
+// 无锚点：按行号精确解析；该行确实是 Next 循环才返回成功。
+// 有锚点：在全文里找 TrimSpace 后与锚点**逐字相等**的行，必须**恰好一行**；
+// 命中后再确认该行确实是 Next 循环，否则失败。
+//
+// 返回 ok=false 的所有情形都由调用方当作「门在说谎」上报，不静默放过。
+func resolveExemption(key string, src []byte) (int, bool) {
+	file, want, anchor, anchored := splitExemptionKey(key)
+	if want < 1 || file == "" {
+		return 0, false
+	}
+	lines := strings.Split(string(src), "\n")
+	if !anchored {
+		if want <= len(lines) && nextLoopRe.MatchString(lines[want-1]) {
+			return want, true
+		}
+		return 0, false
+	}
+	if strings.TrimSpace(anchor) == "" {
+		return 0, false
+	}
+	// 锚点可以是单行，也可以是**多行块**（以 \n 分隔，逐行 TrimSpace 后逐字比对）。
+	// 多行块是循环的真实身份：单独的 `for rows.Next() {` 在 main.go 里有 2 处，
+	// 单独拿它当锚点会被唯一性检查挡下；带上它上方那行声明后恰好命中 1 处。
+	wantLines := strings.Split(anchor, "\n")
+	for i := range wantLines {
+		wantLines[i] = strings.TrimSpace(wantLines[i])
+		if wantLines[i] == "" {
+			return 0, false
+		}
+	}
+	found := 0
+	got := 0
+	for i := 0; i+len(wantLines) <= len(lines); i++ {
+		ok := true
+		for j, w := range wantLines {
+			if strings.TrimSpace(lines[i+j]) != w {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			found++
+			got = i + len(wantLines)
+		}
+	}
+	if found != 1 || got > len(lines) || !nextLoopRe.MatchString(lines[got-1]) {
+		return 0, false
+	}
+	return got, true
+}
+
+// resolveExemptions 把豁免表解析成「文件 → 已豁免行号集合」。
+// 无法解析的键不出现在结果里；调用方另行按 stale 上报，不在此处吞掉。
+func resolveExemptions(root string, exemptions map[string]string) map[string]map[int]bool {
+	out := map[string]map[int]bool{}
+	for key := range exemptions {
+		file, _, _, _ := splitExemptionKey(key)
+		if file == "" {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(root, file))
+		if err != nil {
+			continue
+		}
+		if ln, ok := resolveExemption(key, src); ok {
+			if out[file] == nil {
+				out[file] = map[int]bool{}
+			}
+			out[file][ln] = true
+		}
+	}
+	return out
+}
+
 // collectSites 走遍仓库，返回所有 `for X.Next()` 站点。
 // mustRel makes a repo-relative path, falling back to the path itself if the
 // walk ever hands us something outside root. A malformed key is still a stable
@@ -253,11 +366,12 @@ func CheckAll(root string, exemptions map[string]string) (int, []string, error) 
 		}
 		errCalls := errCallPositions(f)
 		loops := forNextLoops(f)
+		exempted := resolveExemptions(root, exemptions)[rel]
 		for _, loop := range loops {
 			recv := loopReceiver(loop)
 			pos := fset.Position(loop.Pos()).Line
 			key := fmt.Sprintf("%s:%d", rel, pos)
-			if _, ok := exemptions[key]; ok {
+			if exempted[pos] {
 				continue
 			}
 			checked++

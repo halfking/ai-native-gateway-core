@@ -57,7 +57,7 @@ import {
   type RequestActionEntry,
 } from '@/api/requestActions'
 
-useHyperPage({ title: () => t('ra.title') })
+useHyperPage({ title: () => (allowed.value ? t('ra.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

@@ -7,7 +7,7 @@ export default {
   common: {
       refresh: "Actualiser",
       loading: "Traitement…",
-      empty: "Aucune donnée",
+      empty: 'La découverte de ressources gratuites n’a encore aucun enregistrement',
       actions: "Actions",
       enabled: "Activé",
       disabled: "Désactivé",
@@ -58,7 +58,7 @@ export default {
       delete: "Supprimer",
       deleteConfirm: "Supprimer le modèle « {name} » ? Les tâches et résultats de découverte existants ne sont pas affectés.",
       deleted: "Modèle supprimé : {name}",
-      disabledScanHint: "Modèle désactivé — activez-le avant l'analyse"
+      disabledScanHint: "Modèle désactivé: activez-le avant l'analyse"
     },
   scan: {
       title: "Lancer la découverte",
@@ -81,7 +81,7 @@ export default {
       review: "Examiner les résultats"
     },
   res: {
-      title: "Résultats · tâche {id} · {provider}",
+      title: "Résultats, tâche {id}, {provider}",
       pending: "À examiner",
       all: "Tous",
       model: "ID du modèle",
@@ -117,11 +117,11 @@ export default {
     },
   hist: {
       title: "Historique d'import ({n})",
-      desc: "Tâches ayant réellement importé des modèles (nombre importé > 0). Cliquez sur Détail pour voir le devenir de chaque résultat.",
+      desc: 'Tâches ayant réellement importé des modèles (nombre importé > 0). Ouvrez « Détail » pour voir le devenir de chaque résultat.',
       completed: "Terminé le",
       detail: "Détail",
       none: "Aucun import pour l'instant. Terminez un import en lot dans l'onglet Tâches & revue et il apparaîtra ici.",
-      detailTitle: "Détail d'import · tâche {id} · {provider}",
+      detailTitle: "Détail d'import, tâche {id}, {provider}",
       importedAt: "Importé le"
     },
 }

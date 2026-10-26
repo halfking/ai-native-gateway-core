@@ -44,7 +44,7 @@ type controlPlaneVerdict struct {
 	// Gated：该消费方是否被 S4 写门覆盖。false = 门管不到它。
 	Gated bool
 
-	// Evidence：必须在该文件里逐字存在的片段。
+	// Evidence：必须在该文件的非 Go 注释代码中逐字存在的片段。
 	Evidence string
 
 	// EvidenceIn：Evidence 实际所在文件，默认为登记键本身。
@@ -90,556 +90,16 @@ var controlPlaneVerdicts = map[string]struct{ note string }{
 //
 // 键必须与 requestLogsReadInventory 的非 admin 子集完全一致（由门双向核）。
 var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
-	// ── 已逐行核实 ───────────────────────────────────────────────────────
-	"bg/credential_recovery.go": {
-		Feeds: "凭据恢复授权：lookbackCandidateSQL 选出「36h 内有成功流量」的降级/离线绑定",
-		Live:  true,
-		Gated: true,
-		Evidence: "SELECT 1 FROM _request_logs_hot rl\n" +
-			"\t\t          WHERE rl.credential_id = cmb.credential_id\n" +
-			"\t\t            AND COALESCE(rl.outbound_model, rl.client_model) = pm.raw_model_name\n" +
-			"\t\t            AND rl.success = TRUE",
-		BlastRadius: "",
-		Note: "**本表最重的一条。** 两段后果，第二段比第一段危险：\n" +
-			"  ① 停写 36h 后候选集恒空 → `if len(candidates) == 0 { return }` 静默返回，" +
-			"无日志无告警，降级凭据只能等自身探针恢复；\n" +
-			"  ② **停写后 36h 内仍在用停写前的陈旧成功记录授权恢复写入**——失效方向是" +
-			"**继续放行**，不是停止。\n" +
-			"与 2026-10-02 修掉的 s4_ready 真空为绿同族：门控的前提消失后仍给出许可，" +
-			"而这次许可的对象是凭据可用性。\n\n" +
-			"**2026-10-02 §9.37 订正：上面两条后果都已经不存在了，本条此前登记为 Gated:false，是过期的。** " +
-			"护栏 `lookbackComparability`(:1799-1804) 由 `9b8424fd8`（14:00，§9.23「36h lookback 恢复扫描的静默洞」）" +
-			"引入，晚于本登记条目最后一次改写（`b585c036e`，11:55）**2 小时 5 分**，同样是" +
-			"「护栏加对了、登记表没跟上」。本轮独立核对：护栏在 `scanLookbackRecoveries` 的 :1926，" +
-			"`return` 在 :1933，而 SQL 在 **:1939** 才发出、中间无别的入口 ⇒ 停写时这条授权**根本不会被计算**。\n\n" +
-			"BlastRadius 已清空：停写期间 `ursmRecoverSink` 不会被这条路径调用。\n\n" +
-			"**但清空不等于无事**——护栏的 `slog.Info` 说明「本轮未执行，非『无候选』」，" +
-			"而 `SkippedChecks()` 的生产消费者**只有测试** ⇒ 停写期间这个扫描在空跑这件事" +
-			"仍然只有日志、**没有指标与告警**。护栏把危险动作停了，把「为什么没动作」留在了日志里。",
-	},
-	"domains/hooks/observability/telemetry/client.go": {
-		Feeds:    "会话身份与轮次序号：FindRecentGatewaySession 决定无 id 请求复用哪个会话；lookupTurnNumber 决定 outbox 事件里的 turn_no",
-		Live:     true,
-		Gated:    false,
-		Evidence: "FROM public.session_turns_hot t",
-		BlastRadius: "空结果 ⇒ session_assignment.go:194 createSession()，即**新分配一个 gw_ 会话 id**；" +
-			"turn_no 则回退为提示性缺省。2026-10-13 S3 波 2：finder 改双热腿（session_turns_hot ∪ _request_logs_hot）、" +
-			"turn_no 改会话族 MAX(turn_no) 权威读，停写后仍由会话腿供数。",
-		Note: "**2026-10-02 自我更正**：子代理初判「每个请求静默新开 gw_session_id」，" +
-			"我复核后**判定过重**——主路径是 Redis 的 LastSystemSessionIndex（5 分钟 TTL，" +
-			"不受 S4 门控），DB finder 只是兜底。准确的失效条件是两条：\n" +
-			"  ① 无 Redis 部署：main.go:968 的装配在 redis 分支内，lastSystemSession 为 nil，" +
-			"session_assignment.go:160 的判空直接跳过 ⇒ **DB finder 是唯一路径**，完全切断；\n" +
-			"  ② Redis 索引 miss（TTL 到期 / Redis 重启 / device seed 不匹配）⇒ 原本由 DB " +
-			"兜底的续对话变成新建会话。\n" +
-			"turn_no 一侧确认为门控外：client.go:2113 注释原文「outbox request-completed " +
-			"会话事件在门控外照常提交」。缓解：同处注释写明「the session/v2 aggregator owns " +
-			"the authoritative turn_no anyway」，属派生计数器，非权威。",
-	},
-	"domains/providerprofile/adapters.go": {
-		Feeds: "provider 画像打分 → AlertEngine → PGCredentialActor 决定凭据自动禁用/恢复",
-		Live:  true,
-		Gated: false,
-		Evidence: "\t\tSELECT COUNT(*) FILTER (WHERE upstream_status_code = 429) AS rl_hits,\n" +
-			"\t\t       COUNT(*) AS total\n" +
-			"\t\tFROM _request_logs_hot\n" +
-			"\t\tWHERE credential_id = $1\n" +
-			"\t\t  AND ts >= NOW() - INTERVAL '1 hour' * $2",
-		BlastRadius: "bg/provider_profile_workers.go 装配的 AlertEngine 用该画像驱动 " +
-			"PGCredentialActor 的**凭据自动禁用与恢复**。",
-		Note: "活的：经 bg 的 ProfileCollector / ProfileAggregator / ProfileAlertWorker " +
-			"三个 worker 装配到 main.go。停写后每 credential 的 1h 窗口指标归零，画像失去" +
-			"依据。**未核实**：AlertEngine 在「无数据」时是「不告警」（安全）还是" +
-			"「评分掉到阈值以下 → 禁用凭据」（危险）——这决定它是降级还是事故，" +
-			"必须在生产库复核一次才能定级。",
-	},
-	// ── bg/ worker 簇：凭据健康与路由子系统（2026-10-02 逐个核实）──────────
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空**。
 	//
-	// 这一簇的共同形状：**读 v1 流量 → 决定凭据/路由/探针的状态写入**。
-	// 它比 §9.9.3 ① 的 credential_recovery 更广——后者是单一文件的一次写入
-	// 授权，这一簇是整个「凭据可用性反馈环」的输入端。
+	// 这张表登记的是「读 v1 的读点，其输出决定了哪个写入或哪个身份」——
+	// 即**控制面依赖**。而 890 之后 v1 族被物理删除 ⇒
+	// **没有任何读点读 v1** ⇒ 不存在「依赖 v1 的控制面」。
 	//
-	// ⚠️ 方向不止一种，逐条不同，别把它们当同一类处理：
-	//   · 继续放行（credential_recovery：36h 内用陈旧证据授权恢复）
-	//   · 退回保守（model_probe：热度没了 → next_retry_at 不再推后 → 探针变频繁）
-	//   · 静默失效（today_success_probe：候选集空 → 不再提交探测 → 只能等自身恢复）
-	"bg/candidate_failure_monitor.go": {
-		Feeds:    "5 分钟失败信号 → UPDATE credentials（凭据状态写入）",
-		Live:     true,
-		Gated:    false,
-		Evidence: "FROM request_logs_with_current_month",
-		BlastRadius: "bg/candidate_failure_monitor.go:391 `UPDATE credentials` —— 凭据级状态写入，" +
-			"由 :206/:333 两处 710 视图读点（5 分钟窗口）驱动。",
-		Note: "读 710 视图（有 session 臂）⇒ 停写后业务流量仍供数，**不会查空**。" +
-			"但探针流量消失会改变 5 分钟窗口的构成，失败信号口径随之变化。",
-	},
-	"bg/credential_selfcheck.go": {
-		Feeds:    "_request_logs_hot 近期表现 → 自检任务提交（self_check_runs / system_probe_runs / probe sink）",
-		Live:     true,
-		Gated:    false,
-		Evidence: "FROM _request_logs_hot rl",
-		BlastRadius: "SetProbeSink 注入的探测提交 + `INSERT INTO self_check_runs` / " +
-			"`INSERT INTO system_probe_runs`（:822/:851）。",
-		Note: "三处读点（:260/:544/:588）决定「要不要自检、探什么」。停写后输入冻结。",
-	},
-	"bg/model_probe.go": {
-		Feeds:    "usage CTE（_request_logs_hot 成功流量）→ model_probe_state.next_retry_at → 探针退避 → broken_confirmed → available=FALSE",
-		Live:     true,
-		Gated:    false,
-		Evidence: "COALESCE(rl.outbound_model, rl.client_model) AS raw_model,",
-		BlastRadius: "`UPDATE model_probe_state SET next_retry_at`（:436）与最终的 " +
-			"`UPDATE credential_model_bindings SET available = FALSE`（:1074）。",
-		Note: "**方向与 ① 相反，且不能只看终点。** reconcileBrokenConfirmedBindings（:1072）" +
-			"本身不读 v1，它读 model_probe_state；v1 的影响在**上游**：:421-435 的 usage CTE " +
-			"用 v1 成功流量算「热模型」并把它们的 next_retry_at 推后。" +
-			"⇒ 停写后 usage 臂恒空，热门模型**不再获得退避加成**，探针反而变频繁。" +
-			"别把它误判成「凭据被误禁用」——那是另一条链，且不由 v1 直接驱动。",
-	},
-	"bg/today_success_probe.go": {
-		Feeds:       "_request_logs_hot 成功记录 → 今日成功探测的提交（仅对 available=FALSE 的 pair）",
-		Live:        true,
-		Gated:       false,
-		Evidence:    "FROM _request_logs_hot rl",
-		BlastRadius: "探测提交 → 探测结果写回 credential_model_bindings.available。",
-		Note: "文件头注释：only pairs with a current unhealthy signal are submitted。" +
-			"⇒ 停写 36h 后无成功证据，降级 pair 不再被主动探测，**只能等自身恢复**——" +
-			"与 credential_recovery ① 同方向的静默失效。",
-	},
-	"bg/passive_probe_listener.go": {
-		Feeds:    "710 视图流量计数 → passive_probe_state（INSERT/UPDATE，多处）",
-		Live:     true,
-		Gated:    false,
-		Evidence: "FROM request_logs_with_current_month rl",
-		BlastRadius: "passive_probe_state 的 :112/:170/:218/:259/:474 五处写入——" +
-			"该表驱动被动探测的开关与计数。",
-		Note: "读 710 视图 ⇒ session 臂继续供数，不会查空；但 passive 计数与 probe 流量强相关，" +
-			"停写后构成变化。",
-	},
-	"bg/daily_probe_audit.go": {
-		Feeds:    "dailyProbeAuditSQL()（710 视图）→ 批量提交节点探测",
-		Live:     true,
-		Gated:    false,
-		Evidence: "FROM request_logs_with_current_month rl",
-		BlastRadius: "a.run() 遍历结果后逐个提交探测（submitted 计数，:191+），" +
-			"探测结果写回凭据状态。",
-		Note: "核实依据：函数体 :181-197 查到 credID/model 后进入提交循环，不是只读报表。",
-	},
-	"bg/integrity_fingerprint_probe.go": {
-		Feeds:    "system_fingerprint 探针流量是否存在（bool）→ 是否触发安全检测",
-		Live:     true,
-		Gated:    false,
-		Evidence: "FROM _request_logs -- sqlreadguard:allow D11 probe parent arm (hot arm checked first; existence superset of the view)",
-		BlastRadius: "probeFingerprintTraffic() 返回的 bool 决定 IntegrityFingerprintDrift " +
-			"是否判定「指纹漂移」——安全检测器的触发条件。",
-		Note: "文件仅 57 行、单一函数，但它是安全检测器的**触发开关**。" +
-			"与读端表里已登记的 bg/integrity_fingerprint_drift.go 是同一系统的两端。",
-	},
-	"bg/auto_route_affinity_worker.go": {
-		Feeds:    "_request_logs_hot/parent 亲和度证据 → task_model_affinity（INSERT/UPDATE ×3）",
-		Live:     true,
-		Gated:    false,
-		Evidence: "SELECT 1 FROM _request_logs rl",
-		BlastRadius: "task_model_affinity 表的 :385/:484/:507 三处写入——" +
-			"该表决定任务→模型的亲和路由。",
-		Note: "两段读（hot + parent）合并判定亲和，语义上等价于「v1 侧有流量才有亲和」。",
-	},
-	"bg/auto_route_settle_worker.go": {
-		Feeds:       "_request_logs_hot 结算证据 → auto_route_selections_hot（UPDATE ×2）",
-		Live:        true,
-		Gated:       false,
-		Evidence:    "LEFT JOIN ` + src.TurnsTable + ` rl",
-		EvidenceIn:  "bg/auto_route_settle_sql.go",
-		BlastRadius: "`UPDATE auto_route_selections_hot`——自动路由选择的结算状态。",
-		Note: "⚠ **§9.49：Evidence 已不在本文件里。** §9.43 把关系名改成 src.TurnsTable" +
-			"（S4 写门决定读 v1 还是会话族），§9.44 又把两条查询搬进 settleBaselinesSQL / " +
-			"settlePendingSQL 两个纯函数，于是本文件里不再有任何 v1 SQL。" +
-			"本条登记的**消费方仍是本文件**（sweep 调度 + writeReward/abandon 落库），" +
-			"但证明它读 v1 的那段 SQL 搬到了 auto_route_settle_sql.go ⇒ 用 EvidenceIn 指路。" +
-			"停写后结算源自动切到会话族（§9.43/§9.44），因此**不再是「结算证据断流」**，而是" +
-			"「结算源换族」：outcome 腿仍命中（会话臂覆盖 99.3%），但基线 cohort 换总体、" +
-			"可能塌成空 map 使 reward 的延迟/成本项静默中性化（§9.44 实测本机 24h 内 0 行）。" +
-			"⚠ 本条未随 §9.43 同步更新，拖了三轮才被发现——见审计 §9.49 关于「用后代提交当基线」的错误。",
-	},
-	"bg/ledger_reconciliation.go": {
-		Feeds:       "_request_logs_hot 对账证据 → maas_reconciliation_findings（INSERT）",
-		Live:        true,
-		Gated:       true,
-		Evidence:    "FROM _request_logs_hot",
-		BlastRadius: "",
-		Note: "写入的是**观察记录**而非直接改凭据，但 findings 会驱动下游处置，故判 live。\n\n" +
-			"**2026-10-02 §9.37 订正：本条此前登记为 Gated:false，是过期的。** " +
-			"护栏由 `dfd4da2f1`（13:35，§9.19 对账器跨 S4 门影响半径）引入，" +
-			"晚于本登记条目最后一次改写（`b585c036e`，11:55）约 1 小时 40 分，" +
-			"而**没有任何一道门把 Gated 与代码里的实际护栏对照** ⇒ 护栏加对了，登记表对外仍在说「门管不到」。\n\n" +
-			"订正后的依据（本轮独立核对）：`usageCreditComparability`(:327-332) 在 !logsWriteEnabled 时返回 " +
-			"`(false, usageCreditSkipS4StopWrite)`；`checkUsageCredit` 的**首行**就是 " +
-			"`if ok, reason := usageCreditComparability(settings.RequestLogsWriteEnabled()); !ok { " +
-			"r.markSkipped(reason); slog.Info(...); return 0 }`（:377-384），" +
-			"而 SQL 在 :386 才发出 ⇒ **查询一次都不发**。BlastRadius 已清空：该字段的定义是「它授权/改变的具体写入」，" +
-			"停写期间这次 INSERT 根本不会发生。\n\n" +
-			"**此缺口已闭合（§9.38）**：`SkippedChecks()`(:94-101) 原是只有测试消费的通道，" +
-			"返回值 0 在计数上与「扫了没发现差异」不可区分。现已由 " +
-			"`bg/s4_scan_skip_metrics.go` 发布为 `llm_gateway_bg_s4_scan_skipped_last_run`" +
-			"{worker,reason}（1=本轮未执行），由 " +
-			"`deploy/prometheus/rules/s4-scan-skip.yml` 的 `BgS4ScanSkipped` 告警消费。" +
-			"RunOnce 用 `defer` 记录，覆盖全部 return 分支。**护栏把查询停了，现在也看得见了。**",
-	},
-	"bg/model_tier.go": {
-		Feeds:    "_request_logs_hot 流量 → IsFeaturedModel() 的分层结果 → 路由",
-		Live:     true,
-		Gated:    false,
-		Evidence: "FROM _request_logs_hot rl",
-		BlastRadius: "IsFeaturedModel(rawModel, canonical) 的返回值被路由消费——" +
-			"决定某模型是否按 featured 档处理。",
-		Note: "写入面在内存（refresh :110），但**消费方是路由决策**，故判 live 而非 not_control_plane。",
-	},
-	"bg/shared_pick.go": {
-		Feeds:       "710 视图 → PickProbeModelForCredential() → 探测哪个模型",
-		Live:        true,
-		Gated:       false,
-		Evidence:    "FROM request_logs_with_current_month rl",
-		BlastRadius: "探测目标模型的选择 → 探测 → 凭据可用性回写。",
-		Note:        "与 today_success_probe / daily_probe_audit 同属「探测目标选择」族。",
-	},
-	"bg/auto_index_refresher.go": {
-		Feeds:       "_request_logs_hot 近期流量 → 推荐索引 → INSERT INTO credential_model_index_hot",
-		Live:        true,
-		Gated:       false,
-		Evidence:    "FROM _request_logs_hot rl",
-		BlastRadius: "`INSERT INTO credential_model_index_hot`（:215）——按推荐建/改索引。",
-		Note: "读端表已登记为 silently_frozen；控制面轴上它是 live（写的是索引配置）。" +
-			"两轴并存不矛盾：**同一个读点可以既「输出冻结」又「决定写入」**——" +
-			"这正是不能把两轴合并的实证。",
-	},
-	"bg/stats_minute_rollup.go": {
-		Feeds:       "710 视图 → request_stats_minute / request_stats_dim_minute 物化",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "FROM request_logs_with_current_month r",
-		BlastRadius: "（dormant：写入的是派生统计物化，不是决策）",
-		Note: "判 not_control_plane 的依据：写入目标是**派生数据**（分钟汇总 + 游标），" +
-			"不决定任何凭据/路由/身份。读端轴已登记为 unaffected。" +
-			"⚠️ 但 session 臂的 credits_rate_multiplier 恒 NULL（见读端表备注），" +
-			"会让 credits 按倍率 1.0 计——" +
-			"这是**值劣化**，不属于任何一档，属遗留项。",
-	},
-	"bg/lite_retention_worker.go": {
-		Feeds:       "SQLite 保留期清理（与 PG 侧 S4 门控不同链）",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "DELETE FROM request_logs WHERE rowid IN (",
-		BlastRadius: "（dormant：lite 模式本地库的行级保留期）",
-		Note:        "读的是**待清理行**（生命周期），不是流量。与 PG 侧停写门控无关。",
-	},
-	// ── 第二批：2026-10-02 逐个核实 ───────────────────────────────────────
-	"discovery/discovery.go": {
-		Feeds:       "_request_logs 的「近期无成功」→ UPDATE model_offers SET available=FALSE（禁用写入）",
-		Live:        true,
-		Gated:       true,
-		Evidence:    "SELECT 1 FROM _request_logs rl",
-		BlastRadius: "",
-		Note: "**2026-10-02 §9.37 订正：本条此前登记为 Gated:false，是过期的。** 过期原因有迹可循：登记表由 " +
-			"`af4ef4b32`（12:14）写入，护栏由**更晚**的 `e52687954`（12:25，§9.12「修 discovery 误下架 —— " +
-			"否定式守卫在证据消失时必须不动」）加上，而**没有任何一道门把 Gated 字段与代码里的实际护栏对照** ⇒ " +
-			"护栏加了就绿，登记表不动。现已改为 Gated:true。\n\n" +
-			"订正后的依据：`expireStaleModels` 在 :1110 有显式短路 " +
-			"`if mayExpire, blockedReason := staleExpiryMayRun(settings.RequestLogsWriteEnabled()); !mayExpire { " +
-			"slog.Info(...); return }`，而 `staleExpiryMayRun`(:1091-1096) 在 !requestLogsWritable 时返回 " +
-			"`(false, staleExpiryBlockedS4Reason)` ⇒ 整段 stale 下架（含伴生的 credential_model_bindings 写）" +
-			"**在发查询之前就短路了**，:1160 的读点根本不会执行。护栏由 discovery/stale_expiry_gate_test.go 钉住，" +
-			"停写时 slog 留有 reason + would_expire 三字段，灰度可见。\n\n" +
-			"**为什么 BlastRadius 被清空**：该字段的定义是「Live && !Gated 时必填 —— 它授权/改变的具体写入是什么」。" +
-			"Gated 变 true 之后，这次写入在停写期间**根本不会发生**，留着旧的 BlastRadius 等于对外声明一件" +
-			"已经不存在的事。\n\n" +
-			"**保留原失效形态的记录，因为它仍是最锋利的那个**：若护栏被误删或改坏，退化路径就是 " +
-			"`NOT EXISTS (… rl.success = TRUE AND rl.ts > now() - interval 'N hours')` 在证据消失后**恒真** ⇒ " +
-			"无论模型是否真的在用都被判 auto_discovery_expired 而下架。不是「恢复变慢」，是**主动禁用仍在工作的" +
-			"凭据模型**，无异常、无告警。与 s4_ready 真空为绿同族，但后果更重。",
-	},
-	"cmd/gateway/output_compliance_control.go": {
-		Feeds:       "_request_logs 的 api_key_owner_user → 输出脱敏的 owner 判定",
-		Live:        true,
-		Gated:       false,
-		Evidence:    "FROM _request_logs\n\t\t\tWHERE gw_session_id = sd.gw_session_id",
-		BlastRadius: "lookupOwners() 返回的 callerOwner 为空 → owner 规则走保守分支 → **输出被脱敏**。",
-		Note: "失效方向是**过度脱敏**而非泄漏（代码注释明确：失败应永不泄漏），属 fail-safe。" +
-			"但影响面不小：caller owner 取不到会让合规控制对所有会话保守处理。" +
-			"注意它优先用 session_dim.owner_user，v1 只提供 caller 侧 ⇒ 影响是部分的。",
-	},
-	"domains/sessionsummary/summarizer.go": {
-		Feeds:       "710 视图语料 → UPDATE session_summaries（会话摘要内容）",
-		Live:        true,
-		Gated:       false,
-		Evidence:    "FROM request_logs_with_current_month rl",
-		BlastRadius: "`UPDATE session_summaries`（:812）——会话摘要正文。",
-		Note:        "读 710（有 session 臂）⇒ 不查空；但正文质量依赖 bodies 腿（见读端表 bodies 族）。",
-	},
-	"internal/summarystore/store.go": {
-		Feeds:       "轮次计数 → session_summaries 的 INSERT/UPDATE 决策",
-		Live:        true,
-		Gated:       false,
-		Evidence:    "SELECT COUNT(*)::int FROM ` + db.SessionFamilyTurnsForSessionSQL()",
-		BlastRadius: "`INSERT INTO session_summaries`（:181）——是否/如何写会话摘要。",
-		Note:        "2026-10-13 S3 波 2：主腿改读 session_turns(_hot)，0 行回退 canonical 视图（镜像前历史会话）；停写后计数照常。",
-	},
-	"domains/routeincident/store.go": {
-		Feeds:       "710 视图 → 路由事件状态机（pending/active/recovering 迁移）",
-		Live:        true,
-		Gated:       false,
-		Evidence:    "FROM request_logs_with_current_month rl",
-		BlastRadius: "事件状态迁移写入（SELECT … FOR UPDATE 保护的 UPDATE 路径）。",
-		Note:        "读端表已登记并经族门复核过；控制面轴上它是 live（驱动状态机迁移）。",
-	},
-	"internal/quality/minute_aggregator.go": {
-		Feeds:    "canonical 视图 → provider_metrics_minute（供给质量评分）",
-		Live:     true,
-		Gated:    false,
-		Evidence: "FROM request_logs_with_current_month",
-		BlastRadius: "`INSERT INTO provider_metrics_minute`（:21）——分钟级质量指标，" +
-			"下游据此评分并影响路由/凭据决策。",
-		Note: "判 live 而非 not_control_plane 的依据：写的是**被决策消费的指标**，不是展示用物化。",
-	},
-	"autoroute/recommend_v2.go": {
-		Feeds:       "_request_logs → 自动路由推荐 → 下游 worker 写 task_model_affinity / selections",
-		Live:        true,
-		Gated:       false,
-		Evidence:    "FROM _request_logs",
-		BlastRadius: "本文件不直接写；其推荐结果被 bg/auto_route_* worker 消费并落库。",
-		Note:        "与 bg/model_tier.go 同理：写入面在别处，但**消费方是路由决策**，故判 live。",
-	},
-	"domains/attachments/handler.go": {
-		Feeds:       "按 request_id 取 attachments → 响应内容",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "SELECT attachments::text FROM request_logs_with_current_month WHERE request_id = $1",
-		BlastRadius: "（dormant：只流向响应体，不决定任何写入或身份）",
-		Note:        "文件内无 UPDATE/INSERT，读点唯一且直接服务响应。",
-	},
-	// ── 第三批：2026-10-02 逐个核实 ───────────────────────────────────────
-	"bg/integrity_fingerprint_drift.go": {
-		Feeds:    "710 视图指纹基线 → integrity_fingerprint_baseline / model_integrity_events",
-		Live:     true,
-		Gated:    false,
-		Evidence: "FROM request_logs_with_current_month",
-		BlastRadius: "`INSERT INTO integrity_fingerprint_baseline`（:363）与 " +
-			"`INSERT INTO model_integrity_events`（:396）——安全基线与安全事件。",
-		Note: "读端表已登记为 silently_frozen（经族门复核）。控制面轴上是 live：" +
-			"它写的是**安全事件**，停写后指纹比对的两侧都冻结 ⇒ 漂移检测静默失效。",
-	},
-	"bg/stats_minute_rollup_retire.go": {
-		Feeds:    "710 视图 → 游标推进 → DELETE 三张 rollup 表",
-		Live:     true,
-		Gated:    false,
-		Evidence: "FROM request_logs_with_current_month AS r",
-		BlastRadius: "`DELETE FROM request_stats_minute`（:16）、" +
-			"`request_stats_dim_minute`（:71）、`request_stats_error_drill_minute`（:94）。",
-		Note: "方向安全：游标冻结 ⇒ retire 停止 ⇒ 聚合数据累积而非丢失。" +
-			"判 live 只因为它确实由 v1 读驱动 DELETE，失效方向不危险。",
-	},
-	"domains/streaming/anomaly_harvester.go": {
-		Feeds:    "_request_logs_hot 回填 actual_tokens → response_format_anomalies / fault_events",
-		Live:     true,
-		Gated:    false,
-		Evidence: "FROM _request_logs_hot r",
-		BlastRadius: "`UPDATE response_format_anomalies SET actual_tokens`（:219）与 " +
-			"`INSERT INTO fault_events`（:358）。",
-		Note: "停写后 join 恒 0 行且 `if n > 0` 才打日志 ⇒ 无错无日志，actual_tokens 永远 NULL，" +
-			"异常记录的真实 token 口径退化为 estimated。fault_events 同样不再新增。",
-	},
-	"cmd/gateway/main_v3_wiring.go": {
-		Feeds:       "上一轮 outbound（会话族优先，v1 视图/母表回退）→ compression.LastOutboundRow → 压缩决策",
-		Live:        true,
-		Gated:       false,
-		Evidence:    "FROM _request_logs",
-		BlastRadius: "压缩决策的输入——决定发给上游的内容形态。",
-		Note:        "无本地写入，但**消费方是压缩决策**，会改变实际发往 provider 的请求体，故判 live。2026-10-13 S3 波 2：主腿改会话族两源拼装（turns 元数据 + SessionFamilyBodiesSourceSQL 的 outbound_body），v1 母表查询降为回退腿（evidence 即回退腿）。",
-	},
-	"domains/hooks/goal/history_store.go": {
-		Feeds:       "会话正文（会话族优先，v1 回退）→ FormatHistoryForPrompt → 拼进 prompt 的历史",
-		Live:        true,
-		Gated:       false,
-		Evidence:    "FROM _request_logs rl",
-		BlastRadius: "拼装进下一次请求 prompt 的历史消息——直接改变发往上游的内容。",
-		Note:        "与 main_v3_wiring 同形：无本地写，但输出进入请求体。2026-10-13 S3 波 2：主腿改会话族两源拼装（ForSession turns + SessionFamilyBodiesSourceSQL），evidence 是 v1 回退腿（服务镜像前历史会话）。",
-	},
-	// domains/streaming/model_alternatives.go 于 2026-10-13（S3 波 2 停写切换）
-	// 除名：usage_7d 热面改读会话族原生源（SessionFamilyTurnsSourceSQL），
-	// 文件已不在 requestLogsReadInventory，控制面表不得收录非清单成员。
-	"internal/trace/trace.go": {
-		Feeds:       "_request_logs 的 trace_events → LoadFromPG → 链路详情响应",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "SELECT trace_events, ts FROM _request_logs_hot WHERE request_id = $1",
-		BlastRadius: "（dormant：读点服务响应；:496 的 UPDATE 是 v1 自身写入，已在 S4 门控内）",
-		Note: "读端无下游决策；同文件的 :496 `UPDATE _request_logs_hot` 是 v1 内部写，" +
-			"已随 S4 门控一并关停，不属本轴。",
-	},
-	"cmd/gateway/waterfall_db.go": {
-		Feeds:       "canonical 视图 → waterfall 响应",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "FROM request_logs_with_current_month",
-		BlastRadius: "（dormant：只服务响应）",
-		Note:        "无写入。2026-10-13 S3 波 2：DB 腿改读 canonical 视图，session 臂继续供数（读端轴已同步改判 unaffected）。",
-	},
-	// ── 第四批：2026-10-02 收口，52/52 ────────────────────────────────────
+	// ⇒ 本表保留（不删）：它守的是「**不许出现新的 v1 控制面依赖**」。
 	//
-	// 这一批的证据**逐条从源码实取**（脚本打印真实匹配行），不用词宽的
-	// `_request_logs` 子串——否则「已评估」与「凭印象」就分不开了。
-	"domains/analysis/optimizer.go": {
-		Feeds:    "_request_logs 会话级 token/压缩统计 → INSERT INTO session_optimization_suggestions",
-		Live:     true,
-		Gated:    false,
-		Evidence: "COALESCE((SELECT SUM(COALESCE(cache_read_tokens,0)) FROM _request_logs WHERE gw_session_id = ss.session_key), 0)",
-		BlastRadius: "`INSERT INTO session_optimization_suggestions`（:232）——优化建议落库，" +
-			"其 detect() 规则（如「存在压缩空间」）决定是否产出建议。",
-		Note: "会话其余统计来自仍在长的 session_summaries，只有这三个子查询直读 v1。" +
-			"⇒ 停写后 cache_read_tokens / compression_strategy / outbound_token_est 恒 0，" +
-			"而 request_count 与成本照常有值 ⇒ **建议照常写入、内容静默失真**。",
-	},
-	// domains/analysis/request_summary.go 于 2026-10-13（S3 波 2 停写切换）
-	// 除名：loadRequestLogs 改读会话族原生源，文件已不在 requestLogsReadInventory。
-	"domains/sessionsummary/system_prompt_prefix.go": {
-		Feeds:       "bodies 腿取会话首条请求体的 system prompt → 作为总结 LLM 的额外输入 → 写 session_summaries",
-		Live:        true,
-		Gated:       false,
-		Evidence:    "FROM request_logs_with_current_month rl",
-		BlastRadius: "与 summarizer.go 共用同一次 `UPDATE session_summaries` 写入（:812）。",
-		Note: "**bodies 族的具体实例**：JOIN request_logs_bodies_with_current_month，" +
-			"bodies 没有 session 臂 ⇒ 停写后取不到 system prompt，会话摘要**质量**静默下降" +
-			"（摘要照常生成，只是少了原始系统提示词这一路输入）。",
-	},
-	"cmd/gateway/dual_read_validator.go": {
-		Feeds:       "v1 ↔ session 对账 → 发布 S4 门控判定（不写服务状态）",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "FROM _request_logs_hot",
-		BlastRadius: "（dormant：产出的是判定报告，本身不决定凭据/路由/身份）",
-		Note: "**它就是 S4 那道门本身**。§8.2 已修掉它的真空为绿（s4_ready ⇔ 写入中 ∧ 扫到过 ∧ 无真漏写）。" +
-			"在本轴上它不是「读 v1 决定写」，而是「读两侧做对账」，故判 not_control_plane；" +
-			"它的问题归 validator 轴，不归控制面轴。",
-	},
-	"cmd/gateway/waterfall_by_request.go": {
-		Feeds:       "request_id → waterfall 响应（查不到即 404）",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "FROM _request_logs_hot",
-		BlastRadius: "（dormant：无写入）",
-		Note:        "失败模式是 errors_out（404），属可接受：灰度立刻暴露。",
-	},
-	"cmd/compression-bench/main.go": {
-		Feeds:       "历史行 → 离线压缩基准样本",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "FROM _request_logs",
-		BlastRadius: "（dormant：离线 CLI，无写入，不在服务路径）",
-		Note: "样本为空不 Fatal，只打日志 ⇒ 停写后基准结论静默变成「S4 之前」口径。" +
-			"不影响在线面，但会让离线基准失去可比性。",
-	},
-	// 2026-10-13 S4 波 4 出列：cmd/scenario_driver/main.go 断言改数
-	// session_bodies_hot / session_turns_hot，脱离 v1 控制面。
-	"cmd/traffic-replay/main.go": {
-		Feeds:       "历史行 → 离线回放样本",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "FROM _request_logs",
-		BlastRadius: "（dormant：离线 CLI）",
-		Note: "注释里的 _request_logs 已被扫描器剔除（§8.5 的 40 条注释规则），" +
-			"此处证据取自 :133 的真实代码行。",
-	},
-	"cmd/tools/backfill_session_bodies/main.go": {
-		Feeds:       "v1 → 回填 session_bodies（离线迁移工具）",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "query from _request_logs_bodies_hot",
-		BlastRadius: "（dormant：离线迁移工具，不在服务路径）",
-		Note: "⚠️ 但它本身是 v1→session 的迁移工具：S4 之后**它的输入会随时间消失**，" +
-			"回填窗口是关闭的。这是迁移排期的约束，不是停写期的退化。",
-	},
-	"cmd/tools/validate_sessions_v2/loader.go": {
-		Feeds:       "v1 与 v2 双读 → 校验报告",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "FROM _request_logs_bodies_hot",
-		BlastRadius: "（dormant：离线校验工具）",
-		Note:        "LoadV1Turns / LoadV2Turns 成对存在，语义上就是 validator 轴。",
-	},
-	"db/db.go": {
-		Feeds:       "启动期 DDL：ensureRoutingAnalyticsColumns 建/改分析视图",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "FROM _request_logs_hot",
-		BlastRadius: "（dormant：改的是 schema/视图定义，不是服务状态）",
-		Note: "读点位于迁移 SQL 字符串里（:3169/:3187/:5871）。停写不删表，DDL 行为不变。" +
-			"**核实过程的一处自我更正**：我一度以为扫描器把注释当读点，证据是 :77/:181/:224 " +
-			"四处 _request_logs 全在注释里；逐行核对后确认那四处确实被剔除，真实读点在 3169 等行，" +
-			"扫描器无缺陷。",
-	},
-	"db/probe_views_unified.go": {
-		Feeds:       "返回 CREATE OR REPLACE VIEW 的 SQL 文本",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "FROM request_logs_with_current_month rl",
-		BlastRadius: "（dormant：产出视图定义）",
-		Note:        "视图的 session 臂覆盖情况由读端表的 pg_get_viewdef 门负责，不在本轴。",
-	},
-	"domains/sessionforensics/export.go": {
-		Feeds:       "v1 → 会话取证导出包",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "FROM request_logs_with_current_month rl",
-		BlastRadius: "（dormant：导出，不决定服务状态）",
-		Note:        "停写后导出内容只剩停写前的行——这是数据保全问题，已在 §8.6 的 641,452 行议题内。",
-	},
-	"internal/collector/gateway_adapters.go": {
-		Feeds:       "PgTrafficReader.Snapshot → TPS/p50/p99/Top20/in-flight 采样",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "FROM request_logs_with_current_month",
-		BlastRadius: "（dormant：只读快照）",
-		Note: "吞错形态确实存在（`if err != nil { return TrafficSnapshot{}, nil }`），" +
-			"但停写本身不触发该路径。读 710 ⇒ session 臂继续供数。",
-	},
-	"storage/sqlite/request_log_store.go": {
-		Feeds:       "lite 模式自己的 SQLite request_logs（9 列轻量形态；SQLite 是另一个存储面，不随 PG 侧迁移 860 改名）",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "FROM request_logs",
-		BlastRadius: "（dormant：与 PG 侧 S4 门控不同链）",
-		Note:        "StorageModeLite 下才被 factory 选中，full 模式走 newPgRequestLogStore。",
-	},
-	"tests/session_audit/cmd/audit-test/main.go": {
-		Feeds:       "抽取测试语料",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "FROM _request_logs",
-		BlastRadius: "（dormant：测试工具）",
-		Note:        "本包在 tests/ 下且文件名非 _test.go，扫描器不排除，故进了清单。",
-	},
-	"tests/test_popularity_tracker.go": {
-		Feeds:       "手工验证 popularity tracker 的脚本",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "FROM _request_logs",
-		BlastRadius: "（dormant：手工脚本）",
-		Note: "它手工查 v1 造热度数据来验证 tracker，与 domains/credentialstate 的 " +
-			"dormant 判定是同一件事的两端。",
-	},
-	"domains/credentialstate/popularity_tracker.go": {
-		Feeds: "模型热度 → GetProbeInterval → 探针节奏（10s/2m/10m）",
-		Live:  false,
-		Gated: false,
-		Evidence: "SELECT client_model, COUNT(*) AS request_count\n" +
-			"\t\tFROM _request_logs_hot\n" +
-			"\t\tWHERE created_at > NOW() - INTERVAL '1 hour'",
-		BlastRadius: "（dormant，暂无实际写入影响）",
-		Note: "**2026-10-02 自我更正**：初判为 live 且列为高危（停写后 refresh 把 " +
-			"popularModels 换成空 map，GetProbeInterval 对所有模型回落到 5 分钟默认，" +
-			"相对热门模型的 10 秒是 30 倍探测衰减）。逐行核实后**判定为 dormant**，两条独立理由：\n" +
-			"  ① main.go:1535 由 LLM_GATEWAY_ENABLE_POPULARITY_TRACKING=true 把关，**默认 false**；\n" +
-			"  ② 它唯一的输出 Manager.GetRecommendedProbeInterval **全仓无生产调用方**（仅定义）。\n" +
-			"登记为 dormant 而不是删掉，是为了防日后有人把消费方接上——那时本条会立刻变 live。",
-	},
+	// ⚠ 不要在这里手填「已知的例外」—— 已退役关系的残留引用登记在
+	// retiredV1ReferenceExceptions（生产缺陷台账）。
 }
 
 // controlPlaneUnreviewed 是分母里**还没查**的文件。
@@ -669,6 +129,22 @@ func controlPlaneUnreviewed() []string {
 // 依赖重新藏起来。
 func TestRequestLogsControlPlaneKnownEntriesAreReal(t *testing.T) {
 	root := repoRootFromCaller(t)
+
+	// ★ 890 之后（2026-10-20）：控制面表必须为空。
+	//
+	// v1 族被物理删除 ⇒ 没有读点读 v1 ⇒ 不存在「依赖 v1 的控制面」。
+	// ⇒ 本门从「已登记的每一条都必须锚在真实代码上」翻成
+	//「**表必须为空**」，并给逐条自检逻辑配**阳性对照**（合成条目必须被判出问题）。
+	if len(requestLogsControlPlaneReaders) > 0 {
+		var files []string
+		for f := range requestLogsControlPlaneReaders {
+			files = append(files, f)
+		}
+		sort.Strings(files)
+		t.Errorf("控制面表仍有 %d 条登记 —— 890 之后 v1 族已物理删除，不存在依赖 v1 的控制面：\n  %s",
+			len(files), strings.Join(files, "\n  "))
+	}
+
 	for file, v := range requestLogsControlPlaneReaders {
 		// §9.49：一个文件可以是「**消费方但不是读方**」——settle worker 读 SQL
 		// 已被 §9.43/§9.44 抽进 auto_route_settle_sql.go，它自己只负责调度与落库。
@@ -716,8 +192,8 @@ func TestRequestLogsControlPlaneKnownEntriesAreReal(t *testing.T) {
 			t.Errorf("%s: 读取失败 %v", file, err)
 			continue
 		}
-		if !strings.Contains(string(raw), v.Evidence) {
-			t.Errorf("%s: Evidence 在 %s 中不存在：\n  %q", file, evFile, v.Evidence)
+		if !inventoryEvidenceInCode(string(raw), v.Evidence) {
+			t.Errorf("%s: Evidence 未出现在 %s 的有效非注释 Go 代码中：\n  %q", file, evFile, v.Evidence)
 		}
 		// 关键约束：活的且门控外的读点，必须点名它授权/改变的写入。
 		// 少了这一条，「活」就只是一个形容词。
@@ -727,4 +203,69 @@ func TestRequestLogsControlPlaneKnownEntriesAreReal(t *testing.T) {
 				file, verdict)
 		}
 	}
+
+	// ★ 阳性对照：逐条自检逻辑本身必须仍然有效（表空着的时候，循环不执行）。
+	//
+	// ⇒ 用一条**合成登记**驱动同一个判据：它既不在读点清单里、又没有 Feeds、
+	// Evidence 也为空 ⇒ 必须被判出问题。
+	synthFile := "synthetic/control_plane.go"
+	synth := controlPlaneVerdict{Evidence: "FROM _request_logs_hot rl"}
+	problems := controlPlaneEntryProblems(t, root, synthFile, synth)
+	if len(problems) == 0 {
+		t.Error("一条凭空多出、且没有 Feeds / Evidence 的合成登记没有被判出问题 —— " +
+			"控制面自检逻辑没有牙（表空着的时候，这是唯一还能证明它有效的手段）")
+	}
+}
+
+// controlPlaneEntryProblems 是一条控制面登记的**自检**（返回问题列表，空 = 合格）。
+//
+// 为什么抽成函数：890 之后控制面表清空 ⇒ 逐条校验不再执行 ⇒
+// 「自检逻辑有没有牙」就没人证明了。抽出来才能在合成登记上直接驱动它。
+func controlPlaneEntryProblems(t *testing.T, root, file string, v controlPlaneVerdict) []string {
+	t.Helper()
+	var problems []string
+	_, isDirectReader := requestLogsReadInventory[file]
+	_, isIndirectReader := indirectRequestLogsReaders[file]
+	evidenceIsKnownReader := false
+	if v.EvidenceIn != "" {
+		_, evidenceIsKnownReader = requestLogsReadInventory[v.EvidenceIn]
+		if !evidenceIsKnownReader {
+			_, evidenceIsKnownReader = indirectRequestLogsReaders[v.EvidenceIn]
+		}
+	}
+	if !isDirectReader && !isIndirectReader && !evidenceIsKnownReader {
+		problems = append(problems, "不在 requestLogsReadInventory / indirectRequestLogsReaders 里"+
+			"（EvidenceIn 也不是已知读点）——控制面表不得凭空多出文件")
+	}
+	if strings.TrimSpace(v.Feeds) == "" {
+		problems = append(problems, "Feeds 为空——控制面读点必须写明它的输出决定什么")
+	}
+	verdict := cpNotControlPlane
+	switch {
+	case !v.Live:
+		verdict = cpControlPlaneDormant
+	case !v.Gated:
+		verdict = cpControlPlaneLive
+	}
+	if _, ok := controlPlaneVerdicts[verdict]; !ok {
+		problems = append(problems, "未知判定 "+verdict)
+	}
+	if strings.TrimSpace(v.Evidence) == "" {
+		problems = append(problems, "Evidence 为空")
+	} else {
+		evFile := file
+		if v.EvidenceIn != "" {
+			evFile = v.EvidenceIn
+		}
+		raw, err := os.ReadFile(filepath.Join(root, evFile))
+		if err != nil {
+			problems = append(problems, "读取失败 "+err.Error())
+		} else if !inventoryEvidenceInCode(string(raw), v.Evidence) {
+			problems = append(problems, "Evidence 未出现在 "+evFile+" 的有效非注释 Go 代码中")
+		}
+	}
+	if v.Live && !v.Gated && strings.TrimSpace(v.BlastRadius) == "" {
+		problems = append(problems, "判定为活 + 门控外却没有 BlastRadius")
+	}
+	return problems
 }

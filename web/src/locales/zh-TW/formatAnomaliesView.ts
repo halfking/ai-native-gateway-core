@@ -29,12 +29,6 @@ export default {
     extraction_failed: '擷取失敗',
     unexpected_structure: '非預期結構',
     null_usage_values: 'Usage 值為 Null',
-    token_mismatch: 'Token 不匹配',
-    missing_provider_tokens: '遺失 Provider Tokens',
-    missing_client_tokens: '遺失 Client Tokens',
-    json_parse_error: 'JSON 解析錯誤',
-    missing_finish_reason: '遺失 Finish Reason',
-    missing_content: '遺失 Content',
   },
 
   anomalyTypeDescription: {
@@ -65,7 +59,6 @@ export default {
     requestId: 'Request ID',
     tokenInfo: 'Token 資訊',
     status: '狀態',
-    actions: '操作',
     loading: '載入中...',
     noData: '沒有找到異常記錄',
     viewDetail: '詳情',
@@ -73,10 +66,6 @@ export default {
     actualTokens: '實際: {count}',
   },
 
-  token: {
-    expected: '預期',
-    actual: '實際',
-  },
 
   pager: {
     prev: '上一頁',
@@ -148,7 +137,7 @@ export default {
           param: '參數 / 建議',
           status: '狀態碼',
           occurrences: '次數',
-          recoveredCount: '自愈 {n} 次',
+          recoveredCount: '自癒 {n} 次',
       },
       detail: {
           title: '請求錯誤詳情',

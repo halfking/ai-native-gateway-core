@@ -500,6 +500,9 @@ type StripMinimaxFieldsFunc func(body []byte) []byte
 // Implementations are expected to be no-ops when toolsRequested is false.
 type XMLCoerceNonStreamFunc func(body []byte, toolsRequested bool) []byte
 
+// XMLCoerceNonStreamWithContextFunc repairs text calls using caller offers.
+type XMLCoerceNonStreamWithContextFunc func(context.Context, []byte) []byte
+
 // 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 // QualityProcessNonStreamFunc is the per-provider tool_call quality
 // post-processor. It returns the (possibly rewritten) body plus the
@@ -605,7 +608,9 @@ type Executor struct {
 	// turn XML-style tool calls into structured tool_calls. Wired from
 	// main.go (relay.coerceXMLToolCallsInChatResponse) so the routing
 	// package does not need to import relay.
-	XMLCoerceNonStream XMLCoerceNonStreamFunc
+	// Deprecated: bool-only hooks cannot authorize executable names.
+	XMLCoerceNonStream            XMLCoerceNonStreamFunc
+	XMLCoerceNonStreamWithContext XMLCoerceNonStreamWithContextFunc
 	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 	// QualityProcessNonStream is the per-provider tool_call quality
 	// post-processor for non-stream responses. Wired from main.go
@@ -700,8 +705,19 @@ type Executor struct {
 	// 签名：func(body []byte, sessionID, tenantID string) []byte
 	// Wired from main.go via streaming.BuildRedactBodyFn.
 	RedactBodyFn func([]byte, string, string) []byte
-	Auditor      audit.Sink
-	State        *credential.Writer
+	// RedactBodyWithContextFn takes precedence and preserves request policy/tenant context.
+	RedactBodyWithContextFn func(context.Context, []byte, string, string) []byte
+	Auditor                 audit.Sink
+	State                   *credential.Writer
+	// NodeHealthState is the narrow write seam for node-health effects. nil
+	// delegates to State, preserving production wiring while making adapter
+	// scope contracts observable without a real PostgreSQL pool.
+	NodeHealthState interface {
+		Enabled() bool
+		RestoreOnSuccess(context.Context, int, string) error
+		WriteOnError(context.Context, int, string, credential.Failure) error
+		SetCredentialUnavailable(context.Context, int, credential.Failure) error
+	}
 	// NodeOutcomeReducer is the dispatch-attempt node-health authority. Main may
 	// inject a process-shared reducer; when nil, the executor constructs one
 	// lazily on first dispatch attempt. NodeHealthAdapter is optional; when nil,
@@ -1193,13 +1209,24 @@ func safeUpstreamBodyDigest(body []byte) string {
 }
 
 func (e *Executor) redactClientResponse(params *ExecParams, body []byte) []byte {
-	if e == nil || e.RedactBodyFn == nil || len(body) == 0 {
+	if e == nil || len(body) == 0 {
 		return body
 	}
-	if params == nil {
-		return e.RedactBodyFn(body, "", "")
+	ctx := context.Background()
+	var session, tenant string
+	if params != nil {
+		session, tenant = params.SessionID, params.TenantID
+		if params.R != nil {
+			ctx = params.R.Context()
+		}
 	}
-	return e.RedactBodyFn(body, params.SessionID, params.TenantID)
+	if e.RedactBodyWithContextFn != nil {
+		return e.RedactBodyWithContextFn(ctx, body, session, tenant)
+	}
+	if e.RedactBodyFn != nil {
+		return e.RedactBodyFn(body, session, tenant)
+	}
+	return body
 }
 
 func (e *Executor) logClientResponse(params *ExecParams, protocol string, body []byte) {
@@ -1307,6 +1334,11 @@ type ExecParams struct {
 	// the client connection (session capture or durable/survival ownership).
 	// Provisional correlation session IDs must not set this flag.
 	StreamSurvivesClientCancel bool
+	// SurvivalDeadline is the coordinator-owned wall-clock stop for a bounded
+	// survival attempt. It is explicit because a detached stream deliberately
+	// ignores client cancellation, but must never discard the survival deadline.
+	// Zero keeps ordinary detached-stream lifetime semantics.
+	SurvivalDeadline time.Time
 	// PreStreamPrepared means the caller already committed a 200
 	// text/event-stream response and may be emitting keep-alive comments
 	// while the executor is still retrying upstream credentials. In this
@@ -2199,6 +2231,34 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		params.R = params.R.WithContext(session.SetTenantID(params.R.Context(), params.TenantID))
 	}
 
+	// Stream-mode gate (868): drop candidates whose binding forbids this
+	// request's transport BEFORE sticky/router/probe run. Only reassign
+	// params.Candidates when the filter actually dropped something — the
+	// zero-blocked path must keep the caller's slice identity (the sync-probe
+	// hold contract mutates the caller's slice via OnProbeHoldEnd to publish
+	// recovery; a defensive copy here would hide it, see
+	// TestExecutor_NoCandidateProbe_Recovers).
+	if modeCandidates, modeBlocked := filterCandidatesByStreamMode(params.Candidates, params.IsStream); len(modeBlocked) > 0 {
+		if len(modeCandidates) == 0 {
+			mode := "non_stream"
+			if params.IsStream {
+				mode = "stream"
+			}
+			trace := streamModeMismatchTrace(modeBlocked)
+			if params.AuditBuilder != nil {
+				params.AuditBuilder.DecisionTrace(trace)
+			}
+			return nil, &ExecuteError{
+				LastErr:   fmt.Errorf("no candidate permits %s requests", mode),
+				Tried:     0,
+				Exhausted: true,
+				Trace:     trace,
+				LastKind:  errorsx.KindUnsupportedFeature,
+			}
+		}
+		params.Candidates = modeCandidates
+	}
+
 	// Keep both inbound protocol bodies immutable across candidate failover.
 	// Per-candidate rendering works from these snapshots and never re-enters
 	// attachment extraction.
@@ -2521,8 +2581,9 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		// ── 2026-07-17 同步探测 hold: 把客户端请求暂停，并行探测同模型所有
 		// 候选节点的供应商直连；首个直连成功 → 网关路由测试 → 重发用户请求。
 		// 所有探测都失败 / 5s 超时 → fall through 到下方 503 返回。
-		if e.SyncNoCandidateProbe && e.ProbeSync != nil && params.R != nil && !params.SurvivalAttempt {
+		if e.SyncNoCandidateProbe && e.ProbeSync != nil && params.R != nil {
 			// P0-D quotaHeld：全员额度/余额耗尽时不 ProbeSync（打上游只会再
+
 			// 收 402/429，放大比无收益）——立即以 KindQuota 出口，handler
 			// 映射 429+Retry-After（Tried=0 标记「未打上游的全灭」）。
 			if quotaHeldAll(probeCandidates) {
@@ -2576,11 +2637,28 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 					params.OnProbeHoldEnd(recovered)
 				}
 				if recovered {
+					// Survival owns retries. It is still allowed the bounded, single
+					// probe recovery attempt above, but must return its aggregateable
+					// failure to the coordinator rather than recursively Execute here.
+					// The coordinator refreshes candidates before its next attempt.
+					if params.SurvivalAttempt {
+						if params.AuditBuilder != nil {
+							params.AuditBuilder.DecisionTrace(trace)
+						}
+						return nil, &ExecuteError{
+							Tried:     0,
+							Exhausted: true,
+							Trace:     trace,
+							LastKind:  errorsx.KindTransient,
+							LastErr:   fmt.Errorf("probeOne recovered candidate; survival coordinator must refresh and retry"),
+						}
+					}
 					// The initial candidate slice is a point-in-time snapshot and may
 					// still carry Routable=false after the probe restored the node.
 					// Reload candidates so the retry is based on the persisted/cache
 					// state rather than re-filtering stale request data.
 					retryCandidates := e.refreshedCandidatesAfterProbe(params)
+
 					if len(retryCandidates) == 0 {
 						retryCandidates = params.Candidates
 					}
@@ -3057,9 +3135,11 @@ func (e *Executor) refreshedCandidatesAfterProbe(params *ExecParams) []provider.
 			"error", err)
 		return nil
 	}
+	candidates, _ = filterCandidatesByStreamMode(candidates, params.IsStream)
 	slog.Info("executor: refreshed candidates after probe",
 		"model", params.ClientModel,
 		"tenant_id", params.TenantID,
+		"is_stream", params.IsStream,
 		"candidates", len(candidates))
 	return candidates
 }

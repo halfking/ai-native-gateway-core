@@ -175,6 +175,14 @@ type StreamCapture struct {
 	completionTokens      *int
 	cacheReadTokens       *int
 	cacheWriteTokens      *int
+	// Banked usage for continuation legs (P0-3 audit fix, 2026-10-16).
+	// ObserveUsage/ObserveChunk use REPLACE semantics — correct for one
+	// upstream leg, but a continuation splice bills TWO upstream calls inside
+	// one capture. At splice time the stream reader banks the finished leg's
+	// last-known values here and clears the live fields; SummaryAsMap then
+	// reports bank+live so the finished leg's tokens are not under-counted.
+	bankedPromptTokens     int
+	bankedCompletionTokens int
 	// HasThinking is set when the stream contained at least one
 	// Anthropic-style thinking content block. Detected in the
 	// side-channel audit of the Q4 passthrough path.
@@ -816,6 +824,27 @@ func EmitFailover(sink Sink, requestID string, fromCred, toCred int, reason stri
 	)
 }
 
+// BankCurrentUsage folds the finished upstream leg's last-known usage into
+// the continuation bank and clears the live fields so the next leg starts
+// from zero. Replace-semantics inside one leg are preserved; across legs the
+// values SUM (each leg is a separately billed upstream call). No-op when the
+// finished leg never reported usage.
+func (sc *StreamCapture) BankCurrentUsage() {
+	if sc == nil {
+		return
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if sc.promptTokens != nil {
+		sc.bankedPromptTokens += *sc.promptTokens
+		sc.promptTokens = nil
+	}
+	if sc.completionTokens != nil {
+		sc.bankedCompletionTokens += *sc.completionTokens
+		sc.completionTokens = nil
+	}
+}
+
 func (sc *StreamCapture) SummaryAsMap() map[string]any {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
@@ -862,6 +891,24 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 	if sc.completionTokens != nil {
 		m["completion_tokens"] = *sc.completionTokens
 	}
+	// Continuation legs (P0-3): banked usage from finished legs sums with the
+	// final leg's live values. A bank entry always wins the emit because it
+	// means at least two upstream calls were billed inside this capture.
+	if sc.bankedPromptTokens > 0 || sc.bankedCompletionTokens > 0 {
+		pt, ct := sc.bankedPromptTokens, sc.bankedCompletionTokens
+		if sc.promptTokens != nil {
+			pt += *sc.promptTokens
+		}
+		if sc.completionTokens != nil {
+			ct += *sc.completionTokens
+		}
+		if pt > 0 {
+			m["prompt_tokens"] = pt
+		}
+		if ct > 0 {
+			m["completion_tokens"] = ct
+		}
+	}
 	if sc.cacheReadTokens != nil {
 		m["cache_read_tokens"] = *sc.cacheReadTokens
 	}
@@ -900,8 +947,20 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 	}
 	// 2026-06-23: structured tool_calls from streaming (migration 042).
 	// Emit as JSONB-compatible array for persistence in _request_logs.tool_calls.
+	// r1028b: Responses-bridge renumbering leaves nil pads at index 0
+	// (message slot). Drop them so session_bodies does not look like
+	// MiniMax phantom tool_calls after the wire already stripped them.
 	if len(sc.ToolCalls) > 0 {
-		m["tool_calls"] = sc.ToolCalls
+		compact := make([]map[string]any, 0, len(sc.ToolCalls))
+		for _, tc := range sc.ToolCalls {
+			if tc == nil {
+				continue
+			}
+			compact = append(compact, tc)
+		}
+		if len(compact) > 0 {
+			m["tool_calls"] = compact
+		}
 	}
 	// 2026-08-19: surface every discard event the survival / recovery /
 	// empty-gate paths recorded. The audit upsert pipeline forwards this

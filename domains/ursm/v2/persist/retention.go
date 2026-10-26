@@ -222,6 +222,14 @@ func (w *SnapshotRetentionWorker) CleanupOnce(ctx context.Context) {
 	}
 	res, err := w.CleanupWithStats(ctx)
 	switch {
+	case isPoolClosed(err):
+		// 关停态：main 的 defer 已经把共享池关掉，而关停 goroutine 还在
+		// 排空本 worker ⇒ 「退出前尽力清一次」必然撞上 closed pool。
+		// 这不是留存故障（下一实例启动时会补做），所以降到 Debug。
+		// ★ 与真失败严格分开：下面的 case 必须继续对**任何**其他错误 Warn，
+		//   否则「关停」就成了吞错的万能借口。
+		slog.Debug("ursm.v2: snapshot retention skipped on shutdown; database pool already closed",
+			"retention", w.cfg.Retention.String())
 	case err != nil:
 		slog.Warn("ursm.v2: snapshot retention cleanup failed (non-fatal)",
 			"error", err, "mode", res.Mode)

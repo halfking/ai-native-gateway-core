@@ -2,7 +2,7 @@
 export default {
   title: 'User Management',
   create: 'Create User',
-  readOnlyNotice: '📖 You are a tenant admin with read-only access. You can view and reset passwords for users in your tenant, but cannot create, edit, or delete users.',
+  readOnlyNotice: '📖 Sie sind Mandantenadministrator mit reinem Lesezugriff. Sie können Passwörter der Nutzer in Ihrem Mandanten ansehen und zurücksetzen, aber keine Nutzer anlegen, bearbeiten oder löschen.',
   filter: {
     byTenant: 'Filter by tenant:',
     allRoles: 'Alle Rollen',
@@ -15,13 +15,11 @@ export default {
   },
   table: {
     createdAt: 'Erstellt am',
-    id: 'ID',
     username: 'Username',
     displayName: 'Display Name',
     email: 'Email',
     tenant: 'Tenant',
     role: 'Role',
-    mustChangePassword: 'Must Change Password',
     status: 'Status',
     lastLogin: 'Last Login',
     actions: 'Actions',
@@ -39,7 +37,6 @@ export default {
   },
   mustChangePassword: {
     pending: 'Pending',
-    completed: 'Completed',
   },
   status: {
     enabled: 'Enabled',
@@ -62,7 +59,7 @@ export default {
       submit: 'Create',
     },
     reset: {
-      title: 'Reset Password — {name}',
+      title: 'Reset Password: {name}',
       newPassword: 'New Password',
       passwordPlaceholder: 'At least 8 characters',
       confirmPassword: 'Confirm New Password',
@@ -80,10 +77,11 @@ export default {
     deleteFailed: 'Delete failed',
     resetFailed: 'Reset failed',
     passwordMismatch: 'Passwords do not match',
-    passwordComplexity: 'Password does not meet complexity requirements',
+    passwordComplexity: 'Das Passwort erfüllt die Komplexitätsanforderungen nicht',
     resetPasswordMismatch: 'Passwords do not match',
-    resetPasswordComplexity: 'Password does not meet complexity requirements',
+    resetPasswordComplexity: 'Das Passwort erfüllt die Komplexitätsanforderungen nicht',
     toggleFailed: 'Operation failed',
+    changePasswordFailed: 'Passwort konnte nicht geändert werden. Bitte erneut versuchen.',
   },
   passwordMatch: {
     matched: '✓ Passwords match',
@@ -138,5 +136,6 @@ export default {
     keyCount: 'API-Schlüssel',
     viewAllLogs: 'Alle in den Logs ansehen',
     requests: 'Anfragen',
+    loadStatsFailed: 'Benutzerstatistik konnte nicht geladen werden. Bitte erneut versuchen.',
   },
 }

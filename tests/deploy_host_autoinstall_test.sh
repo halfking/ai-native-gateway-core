@@ -24,7 +24,7 @@ if [[ "${DL_AUTOINSTALL_TEST:-0}" != 1 ]]; then
   exit 0
 fi
 
-source "$ROOT/scripts/deploy-local-lib.sh"
+source "$ROOT/scripts/deploy-local-lib.sh" || { printf 'FATAL: 无法 source %s\n' ""$ROOT/scripts/deploy-local-lib.sh"" >&2; exit 1; }
 
 TMP=$(mktemp -d -t kx-autoinstall.XXXXXX)
 export KAIXUAN_ROOT="$TMP"
@@ -61,7 +61,7 @@ sed -n '/^# Host-native service installation/,/^ensure_resources() {/p' \
 grep -q 'dl_install_postgres()' "$TMP/host-install.inc" \
   || fail 'host-install slice is empty — the section markers in deploy-local.sh moved'
 # shellcheck disable=SC1090
-source "$TMP/host-install.inc"
+source "$TMP/host-install.inc" || { printf 'FATAL: 无法 source %s\n' ""$TMP/host-install.inc"" >&2; exit 1; }
 
 log "isolated shared root: $TMP"
 

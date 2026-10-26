@@ -51,14 +51,12 @@ export default {
       viewDetail: 'View details',
     },
     empty: 'No approval requests',
-    loading: 'Loading…',
     pagination: {
       previous: 'Previous',
       next: 'Next',
-      info: 'Page {page} / {totalPages} ({total} total)',
+      info: 'Seite {page} / {totalPages} ({total} gesamt)',
     },
     errors: {
-      loadFailed: 'Failed to load',
       approveFailed: 'Approve failed',
       rejectFailed: 'Reject failed',
 
@@ -90,6 +88,9 @@ export default {
       actions: 'Approval actions',
       history: 'Approval history',
     },
+    loadFailed: 'Genehmigungsdetails konnten nicht geladen werden. Bitte erneut versuchen.',
+    approveFailed: 'Genehmigung konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
+    rejectFailed: 'Ablehnung konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
   },
   config: {
     title: 'Genehmigungseinstellungen',

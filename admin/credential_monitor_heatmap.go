@@ -86,6 +86,27 @@ type HeatmapResponse struct {
 //   - credential_ids: comma-separated list of credential IDs (optional)
 //   - models: comma-separated list of model names (optional, case-insensitive)
 //   - exclude_self_test: exclude self-test requests (default: true)
+//
+// parseExcludeSelfTest 解析 exclude_self_test 查询参数。
+//
+// 缺省 true（与本文件上方文档及 FEATURE-REQ §4.2 一致）：此前直接用
+// queryBool，缺省返回 false，裸 API 调用方会把自检流量计入服务质量统计。
+//
+// 刻意**不**并入 queryBool —— queryBool 的缺省语义在别处是 false
+// （它是通用解析器），单独抽出来才能让「缺省」这件事有独立判据。
+//
+// 已知且刻意的 fail-open：参数**在场但不可解析**（`?exclude_self_test=`
+// 空值、或 `=yes` 这类非 true/1 写法）时，`Has()` 为真走 queryBool，
+// queryBool 只认 "true"/"1"，因此落到 false —— 即自检流量被计入。
+// 这是「过滤器」的天然方向（宁可多算不可漏算），已在
+// docs/deployment/credential-monitor-heatmap-deployment-guide.md §6.1 记载。
+func parseExcludeSelfTest(r *http.Request) bool {
+	if !r.URL.Query().Has("exclude_self_test") {
+		return true
+	}
+	return queryBool(r, "exclude_self_test")
+}
+
 func (m *CredentialMonitorHandlers) handleCredentialHeatmap(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -103,12 +124,7 @@ func (m *CredentialMonitorHandlers) handleCredentialHeatmap(w http.ResponseWrite
 	timeStartStr := queryString(r, "time_start")
 	timeEndStr := queryString(r, "time_end")
 	granularity := queryString(r, "granularity")
-	// exclude_self_test 缺省 true（与上方文档及 FEATURE-REQ §4.2 一致）；
-	// 此前 queryBool 缺省返回 false，裸 API 调用方会把自检流量计入服务质量。
-	excludeSelfTest := true
-	if r.URL.Query().Has("exclude_self_test") {
-		excludeSelfTest = queryBool(r, "exclude_self_test")
-	}
+	excludeSelfTest := parseExcludeSelfTest(r)
 
 	if timeStartStr == "" || timeEndStr == "" {
 		writeError(w, http.StatusBadRequest, "time_start and time_end are required")

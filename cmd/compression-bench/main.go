@@ -1,5 +1,9 @@
 // Command compression-bench benchmarks the v3 SessionCompressor on
-// historical _request_logs from a live database.
+// historical request rows from a live database.
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：历史样本改取**会话族**
+// （db.SessionFamilyTurnsSourceSQL / db.SessionFamilyBodiesSourceSQL）。
+// 详见 loadRequestLogs 里的说明。
 package main
 
 import (
@@ -23,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 )
 
@@ -210,20 +215,38 @@ func loadRequestLogs(ctx context.Context, pool *pgxpool.Pool, days, maxSamples i
 		limitClause = fmt.Sprintf("LIMIT %d", maxSamples)
 	}
 
-	// 正文来自 _request_logs_bodies 腿，不是 _request_logs（2026-10-02 修正）。
+	// ★ 2026-10-20（迁移 890，v1 族整体退役）：数据源改指**会话族**。
 	//
-	// 原来的写法是 `COALESCE(outbound_body::text, request_body::text, '{}')`
-	// 直读 _request_logs，而真库上 **_request_logs 没有 request_body 这一列**
-	// （真库实测：`column "request_body" does not exist`）⇒ 这条查询**在任何
-	// 情况下都会硬报错**，工具今天跑不起来。同名的两列都在 bodies 腿上。
+	// 原来这一段读 v1 宽族（turns 腿 + bodies 腿，ts 等值 JOIN）。那一族被
+	// DROP 之后，任何提到它的语句都会 42P01 ⇒ 工具直接跑不起来。
+	// ⇒ 改用 db.SessionFamilyTurnsSourceSQL()（会话族 turns，**含 734 details
+	// 的 LEFT JOIN**，所以 outbound_token_est / outbound_msg_count 这两列
+	// 仍然有值——它们在 710 形态里是 NULL 补位）与
+	// db.SessionFamilyBodiesSourceSQL()（会话族 bodies，列名保持
+	// request_body / response_body / outbound_body 不变 ⇒ 下面的投影零改动）。
 	//
-	// 为什么连 request_body 兜底一起去掉、而不是改指它：那是**另一种正文**
-	// （入站完整载荷），而本工具量的是**出站压缩比**（BytesBefore 直接取
-	// OutboundBody 的长度）。拿入站正文顶替出站正文，会让每个比值都是拿
-	// 两种东西的字节数相除——数字照样出得来，结论却是假的。宁可少一批样本。
+	// ⚠ 两处**语义**变化，写明不藏：
 	//
-	// 联键用 (request_id, ts)：bodies 腿主键就是 (request_id, ts)，逐轮精确。
-	q := fmt.Sprintf(`
+	//  1) JOIN 键从 (request_id, ts) 变成 request_id 单键。原因是
+	//     db.SessionFamilyBodiesSourceSQL() **不投影 ts**（这是刻意的：
+	//     会话族里 ts 相等率极低，加上去会把解析期错误换成一个静默的行数
+	//     变化——见 db 包的注记）。实测本地会话族 session_bodies.ts 与
+	//     session_turns.ts **890/890 相等**，所以单键 JOIN 在这里是忠实的；
+	//     但它不像 ts 等值 JOIN 那样能挡掉「同一 request_id 出现在两个分区」
+	//     的重复行（db 侧实测有 37 个这样的 id，且它们都不在 session_turns 里，
+	//     所以今天不会让本工具多算行）。
+	//  2) 「没有正文」的判定从 `IS NOT NULL` 变成 `IS NOT NULL AND <> 'null'::jsonb`。
+	//     会话族的「无正文」是 jsonb null 而不是 SQL NULL ⇒ 只写 IS NOT NULL
+	//     是**恒真**（db 包的 SessionBodiesHasOutboundPredicate 记着这条）。
+	//     这里用共享 helper，别自己再写一遍。
+	// ⚠ SessionFamily helper 的投影里含字面 `%`（turns 投影的 `LIKE 'sys:%'`，
+	// 见 db/request_logs_view_schema.go 的 sessionIsInternalSessionIDExpr），
+	// 拼好的 SQL 不能再过 fmt.Sprintf（`%` 会被当成未知动词损坏语句——
+	// discovery/discovery.go 2026-10-21 生产事故同族）⇒ limitClause 用拼接。
+	// 2026-10-22 审计订正：原注释说「**两个** helper 的投影里都有字面 %」——
+	// 实测只有 turns 投影有；bodies 投影**没有** %（db/request_logs_view_schema.go
+	// 的 bodies 投影不含该字面量）。过度断言会让后来者以为 bodies 侧也已修过。
+	q := `
 		SELECT
 			rl.request_id,
 			rl.tenant_id,
@@ -233,13 +256,12 @@ func loadRequestLogs(ctx context.Context, pool *pgxpool.Pool, days, maxSamples i
 			COALESCE(rl.outbound_msg_count, 0) AS msg_count,
 			COALESCE(rl.compression_strategy, '') AS compression_strategy,
 			rl.ts
-		FROM _request_logs rl
-		JOIN _request_logs_bodies b ON b.request_id = rl.request_id AND b.ts = rl.ts
+		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
+		JOIN ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` b ON b.request_id = rl.request_id
 		WHERE rl.ts >= NOW() - INTERVAL '1 day' * $1
-		  AND b.outbound_body IS NOT NULL
+		  AND ` + dbpkg.SessionBodiesHasOutboundPredicate("b") + `
 		ORDER BY rl.ts DESC
-		%s
-	`, limitClause)
+		` + limitClause
 
 	rows, err := pool.Query(ctx, q, days)
 	if err != nil {

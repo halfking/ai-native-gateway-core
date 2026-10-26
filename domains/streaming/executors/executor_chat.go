@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/emptyoutcome"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
 	"github.com/kaixuan/llm-gateway-go/internal/paramrefusal"
@@ -29,6 +31,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
+	"github.com/kaixuan/llm-gateway-go/internal/tooloffer"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 	"github.com/kaixuan/llm-gateway-go/pool"
@@ -144,6 +147,7 @@ type chatStreamContinuation struct {
 	// reassigned (never mutated in place) at points that return a retryable
 	// error first, so a per-attempt snapshot equals the streamed body.
 	body []byte
+	mode string // vendor wire mode: prefix (DeepSeek) or partial (Moonshot)
 	req  *http.Request
 	// client is the same pool/default HTTP client the attempt used.
 	client *http.Client
@@ -172,7 +176,14 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 	if ctxErr := s.req.Context().Err(); ctxErr != nil {
 		return nil, fmt.Errorf("stream continuation: upstream context done: %w", ctxErr)
 	}
-	contBody, err := appendAssistantPrefillMessage(s.body, prefixText)
+	// The request-wide attempt budget is the authority for real upstream HTTP
+	// calls — the continuation leg is no exception. Consume BEFORE the wire
+	// call: an exhausted budget must not reach the network at all, and a
+	// failed continuation must not refund its slot (the call really happened).
+	if _, err := consumeUpstreamAttempt(s.params); err != nil {
+		return nil, err
+	}
+	contBody, err := appendAssistantPrefillMessage(s.body, prefixText, s.mode)
 	if err != nil {
 		return nil, fmt.Errorf("stream continuation: %w", err)
 	}
@@ -182,6 +193,11 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 	// upstream.Client's retry loop replays via GetBody and would otherwise
 	// resend the original (pre-prefill) body.
 	clone := s.req.Clone(s.req.Context())
+	if s.mode == "prefix" {
+		// DeepSeek serves prefix completion under /beta, beside /v1.
+		clone.URL.Path = "/beta/chat/completions"
+		clone.URL.RawPath = ""
+	}
 	contBytes := contBody
 	clone.Body = io.NopCloser(bytes.NewReader(contBytes))
 	clone.ContentLength = int64(len(contBytes))
@@ -193,6 +209,10 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 	// stream loop finishes); acquiring the same single-slot pool here would
 	// self-deadlock. Going straight through the same client keeps the same
 	// transport/connection pool without the semaphore.
+	// R51-F15 同款：续问是准入内的第二次上游调用，必须补记 RPM/TPM 桶，
+	// 否则是隐性成本。放在 wire 调用前：成功、非 2xx、网络错误都是一次
+	// 真实上游调用，一律计量（放在 200 之后会让失败腿逃过计费）。
+	meterExtraUpstreamCall(s.params)
 	var resp *http.Response
 	if s.e.Upstream != nil {
 		var uErr *upstreampkg.Error
@@ -215,9 +235,6 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 		return nil, fmt.Errorf("stream continuation: upstream status %d (%s)",
 			resp.StatusCode, strings.TrimSpace(string(preview[:min(n, len(preview))])))
 	}
-	// R51-F15 同款：续问是准入内的第二次上游调用，必须补记 RPM/TPM 桶，
-	// 否则是隐性成本。
-	meterExtraUpstreamCall(s.params)
 	slog.Info("stream continuation issued",
 		"request_id", s.params.RequestID,
 		"provider_id", s.cand.ProviderID,
@@ -228,6 +245,49 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 		"attempt", 1,
 	)
 	return resp.Body, nil
+}
+
+// chatContinuationMode admits only vendor endpoints and model families whose
+// assistant prefill has continuation semantics. A relay's model name alone is
+// no evidence: generic Chat APIs can silently restart the answer.
+func chatContinuationMode(upstreamURL, model string) string {
+	u, err := url.Parse(upstreamURL)
+	if err != nil || u.Scheme != "https" || (u.Port() != "" && u.Port() != "443") {
+		return ""
+	}
+	if u.Path != "/v1/chat/completions" && u.Path != "/chat/completions" && u.Path != "/beta/chat/completions" {
+		return ""
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	switch strings.ToLower(u.Hostname()) {
+	case "api.deepseek.com":
+		if model == "deepseek-chat" {
+			return "prefix"
+		}
+	case "api.moonshot.cn", "api.moonshot.ai":
+		switch model {
+		case "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k":
+			return "partial"
+		}
+	}
+	return ""
+}
+
+// chatBodyHasExplicitOutputCap reports whether the outbound body sets an
+// explicit output ceiling (max_tokens / max_completion_tokens). A continued
+// second leg resets the upstream's output budget, so the two legs can
+// jointly exceed what the client asked for; the gateway cannot reliably
+// compute the remaining allowance, so an explicit cap conservatively
+// disables continuation (P0-3 audit fix, 2026-10-16).
+func chatBodyHasExplicitOutputCap(body []byte) bool {
+	var top struct {
+		MaxTokens           *json.RawMessage `json:"max_tokens"`
+		MaxCompletionTokens *json.RawMessage `json:"max_completion_tokens"`
+	}
+	if err := json.Unmarshal(body, &top); err != nil {
+		return false
+	}
+	return top.MaxTokens != nil || top.MaxCompletionTokens != nil
 }
 
 // appendAssistantPrefillMessage returns a copy of body with one trailing
@@ -245,7 +305,10 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 //   - multi-choice (n>1) upstreams: only choice 0's text exists in the
 //     reader accumulator (ParseOpenAIStreamChunk reads choices[0]), so the
 //     prefill represents choice 0 only.
-func appendAssistantPrefillMessage(body []byte, prefixText string) ([]byte, error) {
+func appendAssistantPrefillMessage(body []byte, prefixText, mode string) ([]byte, error) {
+	if mode != "prefix" && mode != "partial" {
+		return nil, errors.New("upstream has no proven prefill capability")
+	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(body, &top); err != nil {
 		return nil, fmt.Errorf("parse outbound body: %w", err)
@@ -261,7 +324,9 @@ func appendAssistantPrefillMessage(body []byte, prefixText string) ([]byte, erro
 	prefill := struct {
 		Role    string `json:"role"`
 		Content string `json:"content"`
-	}{Role: "assistant", Content: prefixText}
+		Prefix  bool   `json:"prefix,omitempty"`
+		Partial bool   `json:"partial,omitempty"`
+	}{Role: "assistant", Content: prefixText, Prefix: mode == "prefix", Partial: mode == "partial"}
 	prefillRaw, err := json.Marshal(prefill)
 	if err != nil {
 		return nil, err
@@ -344,9 +409,7 @@ func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.
 	if err != nil {
 		return nil, err
 	}
-	if c.XMLCoerceNonStream != nil {
-		body = c.XMLCoerceNonStream(body, false)
-	}
+	// This legacy interface has no request offers; it cannot authorize text calls.
 	if c.Normalize != nil {
 		body = c.Normalize(body, false)
 	}
@@ -376,6 +439,9 @@ func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.
 	// sessionID/tenantID 需从上下文传入（当前简化为空，TODO: 从 routing 上下文注入）。
 	if c.RedactBodyFn != nil {
 		body = c.RedactBodyFn(body, "", "")
+		if err := outputPolicyError(body); err != nil {
+			return nil, err
+		}
 	}
 	copyNonStreamResponseHeaders(w.Header(), resp.Header, len(body))
 	w.WriteHeader(resp.StatusCode)
@@ -882,8 +948,10 @@ func (e *Executor) executeOpenAI(
 		}
 	}
 	// reqprobe: 前置应用已学习的参数剔除规则（此前已被"剔除后重试成功"
-	// 验证过的参数，24h 滑窗；LLM_GATEWAY_REQPROBE_LEARN=off 关闭）。
-	bodyBytes = e.reqprobeApplyLearned(bodyBytes, cand, params.RequestID)
+	// 验证过的参数，24h 滑窗；LLM_GATEWAY_REQPROBE_LEARN=off 关闭）。实际
+	// 出站 wire 在 native 闸门已决定后才可确定，不能使用候选声明协议。
+	bodyBytes = e.reqprobeApplyLearned(bodyBytes, cand,
+		actualOutboundWire(cand, nativeNonStream || nativeStream), params.RequestID)
 	// P0-1 paramrefusal 主动剔除（choke point #2，finalize 后统一出站体）：
 	// chat 腿首发同样应用已记忆字段（否则记忆对 chat 腿只有「先吃一次
 	// 400」的反应价值，没有先发价值）；native 腿在上面 choke point #1 已
@@ -986,7 +1054,7 @@ func (e *Executor) executeOpenAI(
 		if e.RequestProbe != nil {
 			probe.input = reqprobe.Input{
 				HTTPStatus: status, ErrorBody: append([]byte(nil), errorBody[:min(len(errorBody), 1024)]...),
-				OutboundBody: bodyBytes, ErrorKind: string(kind), Protocol: cand.Protocol, NativeResponses: true,
+				OutboundBody: bodyBytes, ErrorKind: string(kind), Protocol: providercatalog.ProtocolOpenAIResponses, NativeResponses: true,
 			}
 			probe.diag = reqprobe.Diagnosis{
 				Trigger: reqprobe.TriggerModeMismatch, SuggestMode: "chat", Reason: "responses_api_unsupported",
@@ -1110,6 +1178,20 @@ func (e *Executor) executeOpenAI(
 			default:
 				upstreamURL = upstreamurl.ChatCompletionsURL(cand.BaseURL)
 			}
+			// Run at the actual HTTP attempt boundary, after every mode switch
+			// or context recovery. A first-attempt-only repair misses native
+			// Responses and bodies rebuilt by reactive retries.
+			wireProtocol := "chat"
+			if cand.Protocol == providercatalog.ProtocolAnthropicMessages {
+				wireProtocol = "messages"
+			} else if nativeNonStream || nativeStream {
+				wireProtocol = "responses"
+			}
+			var historyErr error
+			bodyBytes, historyErr = repairOutboundToolHistory(params, cand, bodyBytes, wireProtocol)
+			if historyErr != nil {
+				return nil, historyErr
+			}
 
 			// BUG-2 fix: use upCtx (created at loop scope) directly so the
 			// request carries the correct context from the start. Previously
@@ -1135,16 +1217,20 @@ func (e *Executor) executeOpenAI(
 			// 均已就位。nativeStream（responses 线格式上游）与 anthropic
 			// 线格式上游本轮不覆盖——hook 对 OpenAIToAnthropicStream /
 			// OpenAIToResponsesStream 桥（chat 线上游、非 chat 线客户端）同样
-			// 挂载但桥侧暂不消费（登记待接线）。
+			// 挂载但桥侧暂不消费（登记待接线）。仅官方已知 prefill 主机+模型
+			// 可装钩；设置缺失默认关闭。工具调用开始后由读循环拒绝续问。
 			var continuation *chatStreamContinuation
-			if params.IsStream && !nativeStream && e.StreamChat != nil &&
+			continuationMode := chatContinuationMode(upstreamURL, outboundModel)
+			if continuationMode != "" && params.IsStream && !nativeStream && e.StreamChat != nil &&
 				cand.Protocol != providercatalog.ProtocolAnthropicMessages &&
-				settings.GetPlatformBool(settings.KeyStreamContinuationEnabled, true) {
+				!chatBodyHasExplicitOutputCap(bodyBytes) &&
+				settings.GetPlatformBool(settings.KeyStreamContinuationEnabled, false) {
 				continuation = &chatStreamContinuation{
 					e:      e,
 					params: params,
 					cand:   cand,
 					body:   bodyBytes,
+					mode:   continuationMode,
 				}
 				upCtx = WithStreamContinuation(upCtx, continuation.invoke)
 			}
@@ -1626,7 +1712,7 @@ func (e *Executor) executeOpenAI(
 						ErrorBody:       probeBody,
 						OutboundBody:    bodyBytes,
 						ErrorKind:       string(errKind),
-						Protocol:        cand.Protocol,
+						Protocol:        actualOutboundWire(cand, nativeNonStream || nativeStream),
 						NativeResponses: nativeNonStream || nativeStream,
 					}
 					if diag, diagOK := reqprobe.Diagnose(probeIn); diagOK {
@@ -1817,7 +1903,7 @@ func (e *Executor) executeOpenAI(
 							transformation.AdaptChatParamsToResponsesWire(
 								transformation.StripStreamOptions(append([]byte(nil), params.ResponsesBodyBytes...))),
 							cand.ProviderID, cand.RawModel, paramRefusalWireKey(cand, true))
-					} else if converted, convOK := chatBodyToResponsesBody(clientSourceBody, cand.RawModel); convOK {
+					} else if converted, convOK := clientBodyToResponsesBody(cand, params, clientSourceBody); convOK {
 						retryBody = converted
 					}
 					if len(retryBody) > 0 {
@@ -1997,7 +2083,7 @@ func (e *Executor) executeOpenAI(
 							ErrorBody:       terminalBody,
 							OutboundBody:    bodyBytes,
 							ErrorKind:       string(errKind),
-							Protocol:        cand.Protocol,
+							Protocol:        actualOutboundWire(cand, nativeNonStream || nativeStream),
 							NativeResponses: nativeNonStream || nativeStream,
 						}
 						if diag, diagOK := reqprobe.Diagnose(probeIn); diagOK {
@@ -2113,8 +2199,14 @@ func (e *Executor) executeOpenAI(
 						// 审计 R3 #2 (2026-09-09): params.BodyBytes 此时仍是客户端原始
 						// Anthropic 体(上游体在 bodyBytes 中另行转换),以其估算
 						// message_start.usage.input_tokens,替代恒 0。
+						bridgeResp := resp
+						if nativeStream && upgradedFromChat {
+							copy := *resp
+							copy.Body = responsesToChatStream(streamReaderContext(params, resp), resp.Body, outboundModel)
+							bridgeResp = &copy
+						}
 						streamOutcome = e.OpenAIToAnthropicStream(
-							streamReaderContext(params, resp), streamSink, resp,
+							streamReaderContext(params, resp), streamSink, bridgeResp,
 							params.ClientModel, outboundModel,
 							diagnosticRequestID(params),
 							params.Capture, nil,
@@ -2393,6 +2485,18 @@ func (e *Executor) executeOpenAI(
 			// no client-side error. The handler-side 502 stays as the
 			// final fallback when ALL candidates are empty.
 			if !nativeNonStream && !params.IsStream && isNonStreamEmptyResponse(respBody) {
+				// ★ R150 轮（2026-10-27）：把「为什么空」记进日志。
+				//
+				// 改动前的读数（本地 8782 实测）：日志只有 status=200 与
+				// credential_id ⇒ 运维无法区分「上游挂了」与「上游答了、但
+				// 整个输出预算被推理吃掉、content 从未产出」（实测：
+				// completion_tokens == reasoning_tokens == max_tokens，
+				// finish_reason=length）。
+				//
+				// ★ **零契约风险**：只增加 slog 字段，**不改任何路由行为、
+				// 不改任何客户端可见面**（分类口径仍由 internal/emptyoutcome
+				// 那张唯一真值表决定）。
+				emptyReason, emptyUsage := emptyoutcome.InspectEmptyBody(respBody)
 				slog.Warn("executor: non-stream empty response, failing over to next candidate",
 					"request_id", params.RequestID,
 					"credential_id", cand.CredentialID,
@@ -2400,6 +2504,11 @@ func (e *Executor) executeOpenAI(
 					"raw_model", cand.RawModel,
 					"client_model", params.Model,
 					"status", resp.StatusCode,
+					"empty_reason", string(emptyReason),
+					"finish_reason", emptyUsage.FinishReason,
+					"completion_tokens", emptyUsage.CompletionTokens,
+					"reasoning_tokens", emptyUsage.ReasoningTokens,
+					"prompt_tokens", emptyUsage.PromptTokens,
 				)
 				requestflow.Log(requestflow.Event{
 					Stage: "failover", RequestID: params.RequestID, Model: params.Model,
@@ -2427,14 +2536,19 @@ func (e *Executor) executeOpenAI(
 							ResponseBody: append([]byte(nil), respBody...),
 						})
 					}
-					// paramledger (2026-09-22): Responses 响应对象回显
-					// reasoning.effort——出站被降级/归一时，把回显值还原为
-					// 客户端原始值再写回。
-					// R51 (2026-09-21): restore/redact 都可能改写 body 长度，
-					// 必须在 copyNonStreamResponseHeaders 计算 Content-Length
-					// 之前完成全部改写；此前先按上游 body 定长再改写，
-					// net/http 按旧定长截断，客户端拿到残缺 JSON。
-					respBody = e.redactClientResponse(params, e.restoreClientEcho(params, respBody))
+				}
+				// Restore Responses reasoning.effort before redacting; both transforms
+				// must precede the Content-Length/header copy (R51, paramledger).
+				// Deferred/native handlers still commit ResponseBody later. Apply
+				// the same policy decision even when this executor owns no write.
+				respBody = e.redactClientResponse(params, e.restoreClientEcho(params, respBody))
+				if err := outputPolicyError(respBody); err != nil {
+					return &ExecuteResult{
+						Candidate: cand, LatencyMs: latencyMs,
+						RequestBody: append([]byte(nil), bodyBytes...), InboundBody: sourceBody,
+					}, err
+				}
+				if !params.SuppressSuccessWrite && params.W != nil {
 					if !params.DeferredOutputGovernance {
 						e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-responses"), respBody)
 					}
@@ -2481,8 +2595,8 @@ func (e *Executor) executeOpenAI(
 			if params.ClientModel != "" {
 				respBody = replaceModelInResponseBody(respBody, params.ClientModel)
 			}
-			if e.XMLCoerceNonStream != nil {
-				respBody = e.XMLCoerceNonStream(respBody, params.ToolsRequested)
+			if e.XMLCoerceNonStreamWithContext != nil {
+				respBody = e.XMLCoerceNonStreamWithContext(streamReaderContext(params, resp), respBody)
 			}
 			if e.Normalize != nil {
 				respBody = e.Normalize(respBody, false)
@@ -2602,7 +2716,15 @@ func (e *Executor) executeOpenAI(
 						ResponseBody:       append([]byte(nil), respBody...),
 					})
 				}
-				respBody = e.redactClientResponse(params, respBody)
+			}
+			respBody = e.redactClientResponse(params, respBody)
+			if err := outputPolicyError(respBody); err != nil {
+				return &ExecuteResult{
+					Candidate: cand, LatencyMs: latencyMs,
+					RequestBody: append([]byte(nil), bodyBytes...), InboundBody: sourceBody,
+				}, err
+			}
+			if !params.SuppressSuccessWrite && params.W != nil {
 				if !params.DeferredOutputGovernance {
 					// R25-V: under DeferredOutputGovernance these bytes only
 					// reached the handler's capture buffer; the handler may
@@ -3241,7 +3363,15 @@ const detachedStreamMaxLifetime = 2 * time.Hour
 // stays immune, lease abort terminates the upstream call.
 func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if params.IsStream && params.StreamSurvivesClientCancel {
-		upCtx, cancel := context.WithTimeout(context.WithoutCancel(params.R.Context()), detachedStreamMaxLifetime)
+		parent := context.WithoutCancel(params.R.Context())
+		if !params.SurvivalDeadline.IsZero() {
+			upCtx, cancel := context.WithDeadline(parent, params.SurvivalDeadline)
+			if abort := dispatch.DetachedStreamAbort(params.R.Context()); abort != nil {
+				return newAbortAwareContext(upCtx, abort), cancel
+			}
+			return upCtx, cancel
+		}
+		upCtx, cancel := context.WithTimeout(parent, detachedStreamMaxLifetime)
 		if abort := dispatch.DetachedStreamAbort(params.R.Context()); abort != nil {
 			return newAbortAwareContext(upCtx, abort), cancel
 		}
@@ -3293,13 +3423,18 @@ func (c *abortAwareContext) Err() error {
 // response. Durable streams intentionally detach that context from client
 // cancellation, so protocol readers must not fall back to params.R here.
 func streamReaderContext(params *ExecParams, resp *http.Response) context.Context {
+	ctx := context.Background()
 	if resp != nil && resp.Request != nil {
-		return resp.Request.Context()
+		ctx = resp.Request.Context()
+	} else if params != nil && params.R != nil {
+		ctx = params.R.Context()
 	}
-	if params != nil && params.R != nil {
-		return params.R.Context()
+	if params != nil {
+		// BodyBytes remains the original client protocol body across retries;
+		// detached durable readers retain their actual upstream cancellation.
+		ctx = tooloffer.WithNames(ctx, tooloffer.FromRequest(params.BodyBytes))
 	}
-	return context.Background()
+	return ctx
 }
 
 // parseMiniMaxBaseResp extracts MiniMax's HTTP 200-wrapped error signal
@@ -3381,7 +3516,46 @@ func proactiveChatToResponsesUpgrade(cand provider.Candidate, params *ExecParams
 	if len(params.BodyBytes) == 0 {
 		return nil, false
 	}
-	converted, ok := chatBodyToResponsesBody(params.BodyBytes, cand.RawModel)
+	return clientBodyToResponsesBody(cand, params, params.BodyBytes)
+}
+
+// Both proactive and reactive upgrades must parse the actual client dialect.
+// Parsing Messages as Chat discards tool_use/result blocks before wire repair.
+func clientBodyToResponsesBody(cand provider.Candidate, params *ExecParams, sourceBody []byte) (body []byte, upgraded bool) {
+	// Messages handlers retain the original Anthropic body. Parse its actual
+	// dialect before the shared Responses conversion so system/tools survive.
+	if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages {
+		parsed, err := ir.ParseAnthropic(sourceBody)
+		if err != nil {
+			return nil, false
+		}
+		if model := strings.TrimSpace(cand.RawModel); model != "" {
+			parsed.Model = model
+		}
+		parsed.TargetProvider = cand.CatalogCode
+		// An explicit effort remains authoritative over the thinking budget,
+		// matching ParseOpenAI's precedence on the previous Chat intermediate.
+		var explicitEffort string
+		if json.Unmarshal(parsed.Extensions["reasoning_effort"], &explicitEffort) == nil && explicitEffort != "" {
+			parsed.Reasoning = &ir.ReasoningConfig{Effort: explicitEffort}
+		}
+		// Preserve the existing Responses thinking translation without passing
+		// through the Chat dialect, which cannot carry Anthropic thinking.
+		if parsed.Thinking != nil && parsed.Reasoning == nil {
+			raw, _ := json.Marshal(parsed.Thinking)
+			if _, translated, ok := paramreg.TranslateThinkingForProtocol(raw, "responses"); ok {
+				var reason struct {
+					Effort string `json:"effort"`
+				}
+				if json.Unmarshal(translated, &reason) == nil {
+					parsed.Reasoning = &ir.ReasoningConfig{Effort: reason.Effort}
+				}
+			}
+		}
+		converted, err := ir.SerializeResponsesRequest(parsed)
+		return converted, err == nil && len(converted) > 0
+	}
+	converted, ok := chatBodyToResponsesBody(sourceBody, cand.RawModel)
 	if !ok {
 		return nil, false
 	}

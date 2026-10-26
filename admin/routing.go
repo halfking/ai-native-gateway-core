@@ -217,6 +217,7 @@ type resolveCandidate struct {
 	BlockReason           string   `json:"block_reason,omitempty"`
 	ManualPriority        int      `json:"manual_priority"`
 	Priority              bool     `json:"priority"`
+	StreamMode            string   `json:"stream_mode"`
 	ActiveSessions        int      `json:"active_sessions"`
 	// R7 fix: 前端将基于这个字段判断 show 重置计数按钮，
 	// 而 resolve 操作的是 credentials.consecutive_failures。
@@ -226,6 +227,14 @@ type resolveCandidate struct {
 	CompositeScore                float64 `json:"composite_score"`
 	BillingMode                   string  `json:"billing_mode"`
 	BillingRound                  int     `json:"billing_round"`
+
+	// dbCircuitState / dbCoolingUntil mirror credentials.circuit_state /
+	// cooling_until. They are unexported because the exported CircuitState /
+	// CoolingUntil pair is owned by the URSM v2 overlay; the credential-level
+	// breaker mirror is applied on top by applyCredentialCircuitGate so the
+	// resolve surface gates the same way production dispatch does.
+	dbCircuitState string
+	dbCoolingUntil *string
 }
 
 func sortResolveCandidatesStable(candidates []resolveCandidate) {
@@ -332,6 +341,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				COALESCE(cmb.weight, 100) AS weight,
 				COALESCE(cmb.manual_priority, 99) AS manual_priority,
 				COALESCE(cmb.priority, FALSE) AS priority,
+				COALESCE(cmb.stream_mode, 'both') AS stream_mode,
 				COALESCE(cmb.active_sessions, 0) AS active_sessions,
 				COALESCE(cmb.billing_mode, 'per_token') AS billing_mode,
 				mo.unit_price_in_per_1m,
@@ -342,6 +352,15 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				v.canonical_id AS canonical_id,
 				COALESCE(mo.unit_price_in_per_1m, 0) AS quota_cap_usd,
 				COALESCE(mo.unit_price_out_per_1m, 0) AS quota_used_usd,
+				-- 2026-10-16: credentials.circuit_state / cooling_until are the
+				-- credential-level breaker mirror that production dispatch gates
+				-- on (provider.Candidate.CircuitState → UnavailableReason() →
+				-- IsAvailable() → dispatchCandidateAllowed). They are read here
+				-- ONLY so the resolve surface can mirror that decision; they must
+				-- NOT enter the v_routable_credential_models.is_routable
+				-- conjunction (internal/routeguard forbids exactly that).
+				COALESCE(c.circuit_state, 'closed') AS circuit_state,
+				c.cooling_until::text AS cooling_until,
 				v.is_routable,
 				v.unavailable_reason
 			FROM v_routable_credential_models v
@@ -399,11 +418,16 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		var c resolveCandidate
 		var isRoutable bool
 		var unavailableReason *string
+		var circuitState string
+		var coolingUntil *string
 
-		// Slimmed scan (2026-07-24): circuit_state / cooling_until /
-		// cmb.available / consecutive_failures / success_rate / p95_latency_ms
-		// are no longer in the SELECT — they're owned by URSM v2 and
-		// back-filled below if the manager is ready.
+		// Slimmed scan (2026-07-24): cmb.available / consecutive_failures /
+		// success_rate / p95_latency_ms are no longer in the SELECT — they are
+		// owned by URSM v2 and back-filled below if the manager is ready.
+		// circuit_state / cooling_until came back on 2026-10-16: unlike the
+		// URSM-owned fields they are ALSO a live production gate (see the
+		// SELECT comment), so dropping them here made resolve claim
+		// "routable" for nodes dispatch drops.
 		if err := rows.Scan(
 			&c.ProviderID, &c.ProviderName, &c.CatalogCode, &c.Protocol, &c.BaseURL,
 			&c.ProviderEnabled, &c.CredentialID, &c.TenantID, &c.CredentialLabel, &c.CredentialStatus,
@@ -411,15 +435,23 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			&c.QuotaState, &c.QuotaRecoverAt, &c.ConcurrencyLimit, &c.EffectiveConcurrency,
 			&c.EffectiveAt, &c.ExpiresAt, &c.CredentialInEffect, &c.BalanceUSD,
 			&c.Tier, &c.Weight,
-			&c.ManualPriority, &c.Priority, &c.ActiveSessions, &c.BillingMode,
+			&c.ManualPriority, &c.Priority, &c.StreamMode, &c.ActiveSessions, &c.BillingMode,
+
 			&c.UnitPriceInPer1M, &c.UnitPriceOutPer1M, &c.Currency,
 			&c.ModelName, &c.StandardizedName, &c.CanonicalID,
 			&c.QuotaCapUSD, &c.QuotaUsedUSD,
+			&circuitState, &coolingUntil,
 			&isRoutable, &unavailableReason,
 		); err != nil {
 			warnRowSkip("routing.resolve", err)
 			continue
 		}
+		// Stash the credential-level breaker mirror on the unexported fields.
+		// The exported CircuitState/CoolingUntil are (re)written from the URSM
+		// NodeView by resolveRuntimeDefaults/applyURSMOverlay, so the
+		// credential gate re-applies these afterwards (applyCredentialCircuitGate).
+		c.dbCircuitState = circuitState
+		c.dbCoolingUntil = coolingUntil
 		// Keep database eligibility separate from the authoritative runtime
 		// decision. The resolve endpoint is diagnostic and must not imply that
 		// a SQL-routable row is request-routable when URSM has no node view.
@@ -530,6 +562,13 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			applyURSMOverlay(candidates, views, time.Now())
 		}
 	}
+
+	// 2026-10-16: safety net for the branches above that never call
+	// applyURSMOverlay (URSM off / not-ready / query failed), which apply their
+	// runtime state through applyResolveDefaults + markResolveRuntimeUnknown and
+	// therefore do not get the credential gate from that function. The overlay
+	// branch already applied it (idempotent). See applyCredentialCircuitGate.
+	applyCredentialCircuitGate(candidates)
 
 	// Keep the persisted manual order authoritative on this page. Composite
 	// score remains a deterministic tie-breaker for candidates that share a
@@ -745,17 +784,18 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 	}
 
 	var req struct {
-		ManualPriority *int  `json:"manual_priority"`
-		RoutingTier    *int  `json:"routing_tier"`
-		Weight         *int  `json:"weight"`
-		Priority       *bool `json:"priority"`
+		ManualPriority *int    `json:"manual_priority"`
+		RoutingTier    *int    `json:"routing_tier"`
+		Weight         *int    `json:"weight"`
+		Priority       *bool   `json:"priority"`
+		StreamMode     *string `json:"stream_mode"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if req.ManualPriority == nil && req.RoutingTier == nil && req.Weight == nil && req.Priority == nil {
-		writeError(w, http.StatusBadRequest, "at least one of manual_priority / routing_tier / weight / priority required")
+	if req.ManualPriority == nil && req.RoutingTier == nil && req.Weight == nil && req.Priority == nil && req.StreamMode == nil {
+		writeError(w, http.StatusBadRequest, "at least one of manual_priority / routing_tier / weight / priority / stream_mode required")
 		return
 	}
 	if req.RoutingTier != nil && (*req.RoutingTier < 0 || *req.RoutingTier > 9) {
@@ -769,6 +809,14 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 	if req.ManualPriority != nil && (*req.ManualPriority < 0 || *req.ManualPriority > 99) {
 		writeError(w, http.StatusBadRequest, "manual_priority must be in [0,99]")
 		return
+	}
+	if req.StreamMode != nil {
+		mode, err := provider.ParseStreamMode(*req.StreamMode)
+		if err != nil || *req.StreamMode == "" || string(mode) != *req.StreamMode {
+			writeError(w, http.StatusBadRequest, "stream_mode must be one of both, stream_only, non_stream_only")
+			return
+		}
+		*req.StreamMode = string(mode)
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -805,9 +853,10 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 			routing_tier    = COALESCE($2::int, routing_tier),
 			weight          = COALESCE($3::int, weight),
 			priority        = COALESCE($4::boolean, priority),
+			stream_mode     = COALESCE($5::text, stream_mode),
 			updated_at      = NOW()
-		WHERE id = $5
-	`, req.ManualPriority, req.RoutingTier, req.Weight, req.Priority, bindingID); err != nil {
+		WHERE id = $6
+	`, req.ManualPriority, req.RoutingTier, req.Weight, req.Priority, req.StreamMode, bindingID); err != nil {
 		writeInternalErr(w, "update failed", err)
 		return
 	}
@@ -854,6 +903,7 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 		"routing_tier":    req.RoutingTier,
 		"weight":          req.Weight,
 		"priority":        req.Priority,
+		"stream_mode":     req.StreamMode,
 	}
 	h.logAudit(r, "routing_candidate_binding_update", beforeAfter)
 
@@ -5595,6 +5645,14 @@ func markResolveRuntimeUnknown(candidates []resolveCandidate, reason string) {
 // Redis/mirror misses are explicitly marked as missing so the diagnostic
 // surface agrees with authoritative request routing.
 func applyURSMOverlay(candidates []resolveCandidate, views []api.NodeView, now time.Time) {
+	// The credential-level mirror/balance gate is applied at the END of this
+	// function, not by the caller. resolveRuntimeDefaults() above resets
+	// CircuitState to "closed" on every row, so a gate invoked BEFORE the
+	// overlay would be silently undone by it — a misordering that reads as a
+	// working fix and loses the mirrored circuit_state the node drawer renders.
+	// Folding it in here makes the ordering a property of the function rather
+	// than of a call site nobody re-checks when the overlay grows.
+	defer applyCredentialCircuitGate(candidates)
 	viewByKey := make(map[string]api.NodeView, len(views))
 	for _, v := range views {
 		viewByKey[ursmViewKey(v.CredentialID, v.RawModel)] = v
@@ -5664,6 +5722,59 @@ func applyURSMOverlay(candidates []resolveCandidate, views []api.NodeView, now t
 	}
 }
 
+// applyCredentialCircuitGate folds the credential-level breaker mirror
+// (credentials.circuit_state) and the balance gate into the resolve verdict.
+//
+// ## Dispatch truth this mirrors (2026-10-16 reconciliation)
+//
+// Two same-morning fixes landed on opposite baselines and were reconciled:
+//
+//	29f02985b (03:49)  provider.Candidate.UnavailableReason() no longer gates
+//	                   on CircuitState — the DB mirror is an async, lossy,
+//	                   last-writer-wins copy of a per-process breaker. Gating
+//	                   admission on it strands healthy credentials after a
+//	                   restart and starves the breaker's half-open recovery
+//	                   probe (the Vapeur stranding incident).
+//	035cea8b5 (04:11)  resolve must agree with dispatch instead of calling
+//	                   SQL-routable rows routable that dispatch would drop.
+//
+// Post-reconciliation dispatch has TWO layers: candidate admission
+// (dispatchCandidateAllowed → IsAvailable: lifecycle/availability/quota/
+// balance — NOT the circuit mirror) and the authoritative in-memory breaker
+// (Circuit.Allow at the send point, executor_dispatch.go, which owns half-open
+// probing). Resolve cannot see the in-memory breaker, so it mirrors the
+// admission layer exactly: the circuit mirror is surfaced for diagnostics
+// (node drawer renders circuit_state / cooling_until next to 熔断) but never
+// flips Routable — a stale open mirror must not hide a credential from this
+// panel that dispatch would actually try. This invariant is the same one
+// internal/routeguard enforces on the SQL conjunction (ForbiddenColumns).
+//
+// The balance gate stays a hard flip: UnavailableReason still rejects a known
+// non-positive balance even when quota_state is ok. Unknown balance is not
+// proof of exhaustion and must remain untouched.
+func applyCredentialCircuitGate(candidates []resolveCandidate) {
+	for i := range candidates {
+		c := &candidates[i]
+		if c.dbCircuitState == "open" {
+			// Surface the real mirror, not a defaulted one — display only.
+			c.CircuitState = "open"
+			c.CoolingUntil = c.dbCoolingUntil
+		}
+		balanceBlocked := c.BalanceUSD != nil && *c.BalanceUSD <= 0
+		if !balanceBlocked {
+			continue
+		}
+		if !c.Routable && !c.RuntimeRoutable {
+			// Already blocked by the SQL view or the URSM overlay; keep the
+			// more specific existing reason rather than overwriting it.
+			continue
+		}
+		c.Routable = false
+		c.RuntimeRoutable = false
+		c.BlockReason = "balance_zero"
+	}
+}
+
 // errForceEnableCredNotFound is returned by applyForceEnable when the credential
 // id has no row in `credentials`. Surfaces as 404 to the caller.
 var errForceEnableCredNotFound = errors.New("credential not found")
@@ -5713,25 +5824,10 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 		return fmt.Errorf("force_enable: update credentials failed: %w", err)
 	}
 
-	var cmbRows int64
-	if rawModel != "" {
-		tag, err := tx.Exec(ctx, `
-			UPDATE credential_model_bindings cmb
-			SET available = TRUE,
-				unavailable_reason = NULL,
-				unavailable_at = NULL,
-				unavailable_recover_at = NULL,
-				updated_at = NOW()
-			FROM provider_models pm
-			WHERE cmb.credential_id = $1
-			  AND pm.id = cmb.provider_model_id
-			  AND pm.raw_model_name = $2
-		`, credentialID, rawModel)
-		if err != nil {
-			met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
-			return fmt.Errorf("force_enable: update cmb failed: %w", err)
-		}
-		cmbRows = tag.RowsAffected()
+	cmbRows, err := forceEnableBindings(ctx, tx, credentialID, rawModel)
+	if err != nil {
+		met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+		return fmt.Errorf("force_enable: update cmb failed: %w", err)
 	}
 
 	// Clear NodeProbeWorker backoff so v_routable_credential_models drops
@@ -5838,7 +5934,7 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 	beforeAfter["previous_availability_state"] = availState
 	beforeAfter["new_manual_disabled"] = false
 	beforeAfter["new_availability_state"] = "ready"
-	beforeAfter["cmb_available"] = cmbRows > 0 || rawModel == ""
+	beforeAfter["cmb_available"] = cmbRows > 0
 	beforeAfter["cmb_rows_updated"] = cmbRows
 	beforeAfter["node_probe_rows_updated"] = probeRows
 	beforeAfter["model_probe_rows_updated"] = modelProbeRows

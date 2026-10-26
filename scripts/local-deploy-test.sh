@@ -496,7 +496,7 @@ run_migrations() {
 gateway_env() {
   export LLM_GATEWAY_LISTEN=":8781"
   export LLM_GATEWAY_ENV="local"
-  export LOG_LEVEL="info"
+  export LLM_GATEWAY_LOG_LEVEL="info"
   export STICKY_MULTILEVEL_DEBUG="1"
   export LLM_GATEWAY_DATABASE_URL="$TEST_DATABASE_URL"
   export LLM_GATEWAY_REDIS_ADDR="localhost:6379"

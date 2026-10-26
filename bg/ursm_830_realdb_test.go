@@ -163,21 +163,39 @@ func dropAll830Objects(t *testing.T, pool *pgxpool.Pool) {
 // canonical 的 `ursm_node_snapshot_min_pkey`（830 的 RENAME CONSTRAINT 那一步
 // 就是为它准备的）。
 //
-// 列不需要与生产一致：830 不读旧表结构，只 RENAME。但 PK 四列必须与 830
-// 新建的 PK 同名，才能覆盖"约束名被旧表占着"这条路径。
+// ★★ 2026-10-21 订正（列驱动之后夹具必须「像生产」）：
+//
+//	原注释写的是「列不需要与生产一致：830 不读旧表结构，只 RENAME」——
+//	**这句话在 830 改成 LIKE 列驱动之后不成立了**：新父表的列集 = 旧表的列集。
+//	⇒ 夹具若只有 4 列，新父表就只有 4 列 ⇒ 下面「writer 形状的 INSERT」
+//	  （写 recovery_epoch / provider_id / canonical_name / available / health_status /
+//	  payload / updated_at_ms）会 42703 ⇒ **实测真的红了**。
+//	⇒ ⇒ 夹具必须带齐 writer 会写的列 —— 这也正是列驱动的**契约**：
+//	  「旧表有什么列，新父表就有什么列」⇒ 旧表缺列 = 迁移后写入缺列。
+//	⇒ 生产实测：252 旧表 56 列、211 旧表 57 列（多 `empty_response_rate_5m`）⇒
+//	  两者的新父表分别是 56 / 57 列 ⇒ writer 的 48 列 INSERT 都落得下去。
 func makePreMigrationTable(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), `
 		CREATE TABLE public.ursm_node_snapshot_min (
 		    snapshot_ts timestamp with time zone NOT NULL,
-		    tenant_id   text NOT NULL,
+		    recovery_epoch bigint NOT NULL DEFAULT 0,
+		    provider_id integer NOT NULL DEFAULT 0,
 		    credential_id integer NOT NULL,
 		    raw_model_name text NOT NULL,
+		    canonical_name text,
+		    tenant_id   text DEFAULT ''::text NOT NULL,
+		    available boolean NOT NULL DEFAULT true,
+		    health_status text,
+		    payload jsonb,
+		    updated_at_ms bigint,
 		    CONSTRAINT ursm_node_snapshot_min_pkey
 		        PRIMARY KEY (snapshot_ts, tenant_id, credential_id, raw_model_name)
 		);
 		INSERT INTO public.ursm_node_snapshot_min
-		    SELECT ts, 't1', 1, 'm1' FROM generate_series(now() - interval '2 days', now(), interval '1 hour') ts;
+		    (snapshot_ts, recovery_epoch, provider_id, credential_id, raw_model_name, tenant_id, available)
+		    SELECT ts, 0, 0, 1, 'm1', 't1', true
+		      FROM generate_series(now() - interval '2 days', now(), interval '1 hour') ts;
 	`)
 	if err != nil {
 		t.Fatalf("build pre-migration table: %v", err)
@@ -324,16 +342,46 @@ func Test830MigrationRealDB(t *testing.T) {
 		}
 	})
 
-	t.Run("56 列且无 snapshot_ts 单列索引", func(t *testing.T) {
-		var cols int
+	t.Run("列集与旧表一致（列驱动）且无 snapshot_ts 单列索引", func(t *testing.T) {
+		// ★★ 2026-10-21 订正：原断言是「columns = 56」—— 那是**硬编码列清单的
+		//   实现细节**，不是性质。211 实测该表有 **57 列**（多出
+		//   `empty_response_rate_5m`，writer 的 INSERT 确实写它）⇒
+		//   830 原样在 211 上执行会**打断写路径**（42703）。
+		//   ⇒ 830 已改为 LIKE 列驱动 ⇒ 断言随之改成**性质**：
+		//   「新父表的列集 == 旧表（legacy）的列集」。
+		//   ⇒ 对 252（56 列）与 211（57 列）同时成立，不需要维护清单。
+		var parentCols, legacyCols int
 		if err := pool.QueryRow(ctx, `
 			SELECT count(*) FROM information_schema.columns
 			 WHERE table_schema='public' AND table_name='ursm_node_snapshot_min'
-		`).Scan(&cols); err != nil {
+		`).Scan(&parentCols); err != nil {
 			t.Fatal(err)
 		}
-		if cols != 56 {
-			t.Fatalf("columns = %d, want 56", cols)
+		if err := pool.QueryRow(ctx, `
+			SELECT count(*) FROM information_schema.columns
+			 WHERE table_schema='public' AND table_name='ursm_node_snapshot_min_legacy'
+		`).Scan(&legacyCols); err != nil {
+			t.Fatal(err)
+		}
+		if parentCols != legacyCols {
+			t.Fatalf("新父表列数 = %d，旧表列数 = %d —— 列驱动要求两者一致"+
+				"（不一致 ⇒ writer 的 INSERT 会因缺列报 42703）", parentCols, legacyCols)
+		}
+		// 列名逐个对照（只比数量不够：可能多一列少一列而总数相同）。
+		var diff int
+		if err := pool.QueryRow(ctx, `
+			SELECT count(*) FROM (
+				SELECT column_name FROM information_schema.columns
+				 WHERE table_schema='public' AND table_name='ursm_node_snapshot_min'
+				EXCEPT
+				SELECT column_name FROM information_schema.columns
+				 WHERE table_schema='public' AND table_name='ursm_node_snapshot_min_legacy'
+			) d
+		`).Scan(&diff); err != nil {
+			t.Fatal(err)
+		}
+		if diff != 0 {
+			t.Fatalf("新父表有 %d 个列名不在旧表里 —— 列驱动失效", diff)
 		}
 		var idx int
 		if err := pool.QueryRow(ctx, `

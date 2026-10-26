@@ -22,9 +22,6 @@ export default {
   },
   events: {
     header: 'الأحداث الرئيسية',
-    error: 'خطأ',
-    warning: 'تحذير',
-    info: 'معلومات',
   },
   toolUsage: 'استخدام الأدوات',
   toolCount: '{n} مرة',

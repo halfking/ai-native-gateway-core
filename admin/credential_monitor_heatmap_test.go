@@ -220,3 +220,76 @@ func TestHandleCredentialHeatmap_NilDB(t *testing.T) {
 		t.Fatalf("expected 503, got %d body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+// ── exclude_self_test 的解析层判据（2026-10-17 审计轮补）─────────────
+//
+// 为什么要在**解析层**判：原先「缺省 true」的内联修复
+// （直接 queryBool，缺省返回 false，会把自检流量计入服务质量）位于
+// handleCredentialHeatmap 体内，而既有判据
+// （TestBuildHeatmapSQL_* / TestHeatmapExcludeSelfTestKeepsSessionBranchRows）
+// 全部直接构造 heatmapQueryParams{ExcludeSelfTest: …}，
+// **没有任何一条经过 URL 解析**——修复所在的层是裸的。
+// 这正是 AGENTS.md 判据纪律第 1 条：判据必须与被测函数在同一层。
+//
+// 量具说明：Handler.db 是具体 *pgxpool.Pool（见 admin/handler.go:59-65，
+// 仓库自己记着「无法在单测里注入 pgxmock」），所以本轮没有为了测 5 行
+// 参数解析去给 CredentialMonitorHandlers 开窄 DB 口（那是为「查询逻辑」
+// 准备的范式，不是为参数解析）。改为把解析抽成 parseExcludeSelfTest，
+// 在**它自己那一层**判；再用 parse→buildHeatmapSQL 的接线断言把两端
+// 串起来，覆盖「解析结果真的决定查哪条 SQL 臂」。
+func TestParseExcludeSelfTest(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		want  bool
+	}{
+		{"omitted_defaults_true", "", true},
+		{"explicit_true", "?exclude_self_test=true", true},
+		{"explicit_one", "?exclude_self_test=1", true},
+		{"explicit_true_mixedcase", "?exclude_self_test=TRUE", true},
+		{"explicit_false", "?exclude_self_test=false", false},
+		{"explicit_zero", "?exclude_self_test=0", false},
+		// 以下两条是「在场但不可解析」——Has() 为真走 queryBool，
+		// queryBool 只认 "true"/"1"，于是静默落到 false（自检流量被计入）。
+		// 这是过滤器天然方向上的 fail-open，部署指南 §6.1 已如实记载，
+		// 判据在此把它钉住以防日后有人「顺手收紧」时无声改变语义。
+		{"present_but_empty_is_fail_open", "?exclude_self_test=", false},
+		{"present_but_garbage_is_fail_open", "?exclude_self_test=yes", false},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/api/credentials/heatmap"+tt.query, nil)
+			if got := parseExcludeSelfTest(r); got != tt.want {
+				t.Fatalf("parseExcludeSelfTest(%q) = %v, want %v", tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseExcludeSelfTestWiringToSQLArm 串起两端：解析结果必须真的
+// 决定 buildHeatmapSQL 走哪条臂。若谓词被改名或注入块被删，本条会红，
+// 从而避免上面那张表变成「测了个跟 SQL 无关的孤立函数」的假绿。
+func TestParseExcludeSelfTestWiringToSQLArm(t *testing.T) {
+	build := func(rawQuery string) string {
+		r := httptest.NewRequest(http.MethodGet, "/api/credentials/heatmap"+rawQuery, nil)
+		q, _ := buildHeatmapSQL(heatmapQueryParams{
+			TimeStart:       time.Date(2026, 9, 6, 0, 0, 0, 0, time.UTC),
+			TimeEnd:         time.Date(2026, 9, 6, 1, 0, 0, 0, time.UTC),
+			BucketSeconds:   300,
+			ExcludeSelfTest: parseExcludeSelfTest(r),
+		})
+		return q
+	}
+	const marker = "NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)"
+
+	if q := build(""); !strings.Contains(q, marker) {
+		t.Fatal("omitted exclude_self_test must produce the probe-excluding SQL arm")
+	}
+	if q := build("?exclude_self_test=false"); strings.Contains(q, "quality_flags") {
+		t.Fatal("exclude_self_test=false must not inject the probe-exclusion predicate")
+	}
+	// 两条臂必须可判别，否则上两条断言恒真
+	if build("") == build("?exclude_self_test=false") {
+		t.Fatal("the two arms must differ, otherwise these assertions cannot discriminate")
+	}
+}

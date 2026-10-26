@@ -21,24 +21,14 @@ export default {
     currencyDisplay: '展示幣種',
     save: '儲存全域設定',
     saving: '儲存中…',
-    saved: '全域基準已儲存（僅影響未手工定價的維度）',
     effective: '生效 ≈ {value}（含折扣）',
   },
   filter: {
-    title: '定價管理 · 模型篩選',
-    placeholder: '搜尋標準模型…',
-    allPricing: '全部定價',
-    defaultOnly: '僅全域基準',
-    customOnly: '含手工定價',
-    partialOnly: '部分手工',
-    otherVendor: '其他',
-    summary: '手工 {custom} · 全域 {defaults} / {total}',
+    summary: '手工 {custom}：全域 {defaults} / {total}',
   },
   table: {
     colModel: '標準模型',
-    colVendor: '廠家',
     colStatus: '狀態',
-    colActions: '',
     edit: '定價',
     reset: '恢復',
     empty: '暫無模型',
@@ -48,85 +38,66 @@ export default {
     manualTagTitle: '手工定價',
     manualTag: '手',
 
-    colModality: '模态',
+    colModality: '模態',
 
-    modalityText: '文本',
+    modalityText: '文字',
 
-    modalityVision: '视觉',
+    modalityVision: '視覺',
 
-    modalityAudio: '音频',
+    modalityAudio: '音訊',
 
-    modalityVideo: '视频',
+    modalityVideo: '影片',
 
-    modalityMultimodal: '多模态',
+    modalityMultimodal: '多模態',
 
     modalityEmbedding: '向量',
 
     modalityOther: '其他',
 
-    hasMultimodal: '含多模态定价',
+    hasMultimodal: '含多模態定價',
   },
   editModal: {
-    title: '手工定價 · {name}',
+    title: '手工定價：{name}',
     hint: '勾選「手工」並填寫積分；未勾選維度繼續跟隨全域基準 × 折扣。',
-    fieldSuffix: ' · 手工定價',
+    fieldSuffix: '：手工定價',
     resetBase: '恢復基準',
     globalApprox: '全域 ≈ {value}',
     save: '儲存',
     saving: '儲存中…',
     fillGlobal: '填入目前全域',
     cancel: '取消',
-    needOneManual: '請至少勾選一個「手工定價」維度',
     resetConfirm: '恢復 {name} 全部維度為全域基準？',
-    resetSuccess: '已恢復',
-    resetFailed: '恢復失敗',
 
-    sectionText: '文本 Token 维度',
+    sectionText: '文本 Token 維度',
 
-    sectionMultimodal: '多模态 Token 维度（视觉 / 音频 / 视频）',
+    sectionMultimodal: '多模態 Token 維度（視覺 / 音訊 / 影片）',
 
-    fieldImage: '视觉 Token',
 
-    fieldAudio: '音频 Token',
 
-    fieldVideo: '视频 Token',
   },
   field: {
-    input: '輸入',
-    output: '輸出',
-    cacheRead: '快取讀',
-    cacheWrite: '快取寫',
 
-    image: '视觉',
+    image: '視覺',
 
-    audio: '音频',
+    audio: '音訊',
 
-    video: '视频',
-  },
-  error: {
-    loadFailed: '載入失敗',
-    saveFailed: '儲存失敗',
-    resetFailed: '恢復失敗',
+    video: '影片',
   },
 
   // 扁平键（供 Vue 组件直接使用）
-  defaultOnly: '仅全局基准',
-  customOnly: '含手工定价',
+  defaultOnly: '僅全域基準',
+  customOnly: '含手工定價',
   partialOnly: '部分手工',
   otherVendor: '其他',
   loadFailed: '載入失敗',
-  saved: '全局基准已保存（仅影响未手工定价的维度）',
-  saveFailed: '保存失败',
-  needOneManual: '请至少勾选一个「手工定价」维度',
-  resetFailed: '恢复失败',
-  input: '输入',
-  output: '输出',
-  cacheRead: '缓存读',
-  cacheWrite: '缓存写',
-  refreshLoading: '加载中…',
-  refresh: '刷新',
-  saving: '保存中…',
-  save: '保存',
+  saved: '全域基準已儲存（僅影響未手工定價的維度）',
+  saveFailed: '儲存失敗',
+  needOneManual: '請至少勾選一個「手工定價」維度',
+  resetFailed: '恢復失敗',
+  input: '輸入',
+  output: '輸出',
+  cacheRead: '快取讀',
+  cacheWrite: '快取寫',
 
   batch: {
     selected: '已選 {n} 項',
@@ -140,6 +111,6 @@ export default {
     msgFilled: '已寫入 {n} 個模型',
     msgFailed: '批量操作失敗',
 
-    fillGlobal: '填入当前全局',
+    fillGlobal: '填入目前全域',
   },
 }

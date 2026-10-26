@@ -77,9 +77,11 @@ func TestGateInjectsEveryDBCredentialName(t *testing.T) {
 	}
 	t.Logf("仓内 DB URL 变量名 %d 个：%v", len(names), names)
 
-	// TEST_TENANT_DATABASE_URL is the one name that must NOT be $GATE_URL.
+	// TEST_TENANT_DATABASE_URL needs a non-bypass role. The two destructive
+	// session fixtures instead need their dedicated required runner, checked
+	// below; they must never recreate public in this populated gate database.
 	//
-	// Every other name wants the ordinary gate DSN. This one wants a DSN whose
+	// Other names want the ordinary gate DSN. The tenant name wants a DSN whose
 	// role cannot bypass RLS, because its only consumers are tenant-isolation
 	// probes. Pointing it at $GATE_URL handed those probes a superuser
 	// (rolsuper=t, rolbypassrls=t), and
@@ -94,6 +96,21 @@ func TestGateInjectsEveryDBCredentialName(t *testing.T) {
 	const tenantVar = "TEST_TENANT_DATABASE_URL"
 	for _, name := range names {
 		if name == tenantVar {
+			continue
+		}
+		if contract, ok := dedicatedSessionDB(name); ok {
+			for _, problem := range sessionStorageGateProblems(name, contract, sessionStorageGateSources(t, contract, act)) {
+				t.Errorf("%s 专用隔离门缺失：%s", name, problem)
+			}
+			continue
+		}
+		// dsn_exclusive that guards itself: injecting the populated gate
+		// database is forbidden, and the fixture has to keep guarding.
+		if fixture, ok := destructiveGuardedDB[name]; ok {
+			src := sessionStorageGateSources(t, sessionDBContract{}, act)
+			for _, problem := range destructiveGuardedDBProblems(name, fixture, src) {
+				t.Errorf("%s 事实源注入检查：%s", name, problem)
+			}
 			continue
 		}
 		if !regexp.MustCompile(regexp.QuoteMeta(name) + `="\$GATE_URL"`).MatchString(act) {
@@ -1363,5 +1380,197 @@ echo "--- rr_failed ---"; for e in "${rr_failed[@]}"; do echo "ENTRY|$e"; done
 	// label exists.
 	if len(rrEntries) != 1 || !strings.HasPrefix(rrEntries[0], "rerun:") {
 		t.Errorf("第二遍的清单不对，期望恰好 1 条带 rerun: 标记的缺失文件：%q", rrEntries)
+	}
+}
+
+// TestStartupRerunGapsMechanismGroupsMatchEntries guards the manifest's own
+// taxonomy.
+//
+// Why this gate exists (measured 2026-10-21, R82 round): the manifest's
+// "reason" field is free text, and the ratchet compares FILENAMES only — so
+// nothing watched the mechanism groups. When R82 re-classified entries
+// (577 → [M12], 716/734/738/740/815 → [M11], 738 → no longer [M6]), the
+// group headers kept their old counts and their old file lists:
+//
+//	# [M8] 级联：上游中止 ⇒ 下游全灭 —— 9 条（680/696/700/710/716/733/734/740/815）
+//
+// while the data section no longer agreed with that at all. A reader (or a
+// script) that trusts the header is reading a taxonomy that no longer exists.
+//
+// So this gate pins three things:
+//
+//  1. every entry's [Mx] tag has a group header that DECLARES a count
+//     (a group header without a count is either an explicit "说明块" or a bug);
+//  2. each declaring group's claimed count equals the number of entries that
+//     actually carry that tag;
+//  3. each declaring group's parenthesised file list equals the set of
+//     entries carrying that tag.
+//
+// The file list is what makes (2) useful: a count alone cannot tell you that
+// the group names 716 while the entry for 716 was re-classified.
+//
+// Canonical group header form:
+//
+//	# [Mx] <title> —— N 条（<token>/<token>/…）   or   —— 0 条（—）
+//
+// A token matches an entry when it equals the entry's filename, the filename
+// without its ".sql" suffix, or the numeric prefix before the first "_".
+func TestStartupRerunGapsMechanismGroupsMatchEntries(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("startup_rerun_known_gaps.tsv"))
+	if err != nil {
+		t.Fatalf("读不到不可重跑清单：%v", err)
+	}
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+
+	type group struct {
+		tag    string
+		title  string
+		count  int
+		tokens []string
+		line   int
+	}
+	groups := map[string]*group{}
+	// entriesByTag: tag -> the manifest entries carrying that tag.
+	entriesByTag := map[string][]string{}
+
+	groupHeader := regexp.MustCompile(`^#\s*\[M(\d+)\]\s*(.*)$`)
+	declared := regexp.MustCompile(`——\s*(\d+)\s*条\s*(（.*）)?\s*$`)
+	tokenList := regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+	tagInReason := regexp.MustCompile(`\[M(\d+)\]`)
+
+	for i, raw := range lines {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			m := groupHeader.FindStringSubmatch(trimmed)
+			if m == nil {
+				continue
+			}
+			tag := "M" + m[1]
+			title := m[2]
+			d := declared.FindStringSubmatch(title)
+			if d == nil {
+				// A group header that does not declare a count is allowed only
+				// when it says out loud that it is a prose block, not a group.
+				if !strings.Contains(title, "说明块") {
+					t.Errorf("第 %d 行的分组头 [%s] 没有声明条数（应形如「—— N 条（…）」）：%q\n"+
+						"没有声明条数的分组头无法被核对 ⇒ 分类学就没人守；"+
+						"若它只是说明文字，请把标题里写明「说明块」",
+						i+1, tag, title)
+				}
+				continue
+			}
+			n, err := strconv.Atoi(d[1])
+			if err != nil {
+				t.Errorf("第 %d 行的分组头 [%s] 条数不是整数：%q", i+1, tag, d[1])
+				continue
+			}
+			g := &group{tag: tag, title: title, count: n, line: i + 1}
+			if d[2] != "" {
+				inner := strings.TrimSuffix(strings.TrimPrefix(d[2], "（"), "）")
+				for _, tok := range strings.FieldsFunc(inner, func(r rune) bool {
+					return r == '/' || r == ' ' || r == '\t'
+				}) {
+					tok = strings.TrimSpace(tok)
+					if tok == "" || tok == "—" {
+						continue
+					}
+					if !tokenList.MatchString(tok) {
+						t.Errorf("第 %d 行的分组头 [%s] 的清单项 %q 不是「迁移号」或「文件名」形态",
+							i+1, tag, tok)
+						continue
+					}
+					g.tokens = append(g.tokens, tok)
+				}
+			}
+			if _, dup := groups[tag]; dup {
+				t.Errorf("第 %d 行重复定义了分组头 [%s]", i+1, tag)
+				continue
+			}
+			groups[tag] = g
+			continue
+		}
+
+		parts := strings.Split(raw, "\t")
+		if len(parts) != 2 {
+			continue
+		}
+		file := strings.TrimSpace(parts[0])
+		reason := strings.TrimSpace(parts[1])
+		tm := tagInReason.FindStringSubmatch(reason)
+		if tm == nil {
+			// TestStartupRerunGapsManifestIsAnnotated already requires a tag on
+			// every entry; this gate only needs the tag to place the entry.
+			continue
+		}
+		tag := "M" + tm[1]
+		entriesByTag[tag] = append(entriesByTag[tag], file)
+	}
+
+	if len(groups) == 0 {
+		t.Fatal("一个分组头都没解析出来；解析失败会让下面的核对全部空转")
+	}
+
+	matches := func(token, file string) bool {
+		if token == file {
+			return true
+		}
+		if file == token+".sql" {
+			return true
+		}
+		return strings.HasPrefix(file, token+"_")
+	}
+
+	for tag, g := range groups {
+		files := entriesByTag[tag]
+		if len(files) != g.count {
+			t.Errorf("分组头 [%s]（第 %d 行）声明 %d 条，数据区里实际有 %d 条带该标签：%v\n"+
+				"分组头与数据区不一致 ⇒ 读者按分组头理解分类学时会读到一份不存在的分类学",
+				tag, g.line, g.count, len(files), files)
+		}
+		// The declared list must match the entries that carry the tag, in both
+		// directions: a listed token with no entry (the group claims a file it
+		// does not have) and an entry with no token (the group forgot it).
+		for _, tok := range g.tokens {
+			found := false
+			for _, f := range files {
+				if matches(tok, f) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("分组头 [%s]（第 %d 行）的清单里有 %q，但数据区里没有带该标签的对应条目",
+					tag, g.line, tok)
+			}
+		}
+		for _, f := range files {
+			found := false
+			for _, tok := range g.tokens {
+				if matches(tok, f) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("条目 %s 带标签 [%s]，但分组头 [%s]（第 %d 行）的清单里没有它：%v",
+					f, tag, tag, g.line, g.tokens)
+			}
+		}
+	}
+
+	// Every tag an entry carries must be covered by a group that declares a
+	// count — otherwise that entry's mechanism has no place in the taxonomy.
+	for tag, files := range entriesByTag {
+		g, ok := groups[tag]
+		if !ok {
+			t.Errorf("有条目带标签 [%s]（%v），但没有对应的分组头", tag, files)
+			continue
+		}
+		if g.count != len(files) {
+			continue // already reported above
+		}
 	}
 }

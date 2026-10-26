@@ -123,6 +123,12 @@ func (h *SelfCheckHandler) handleListRuns(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	// 2026-10-16 audit #155: tenant scope. self_check_runs.tenant_id
+	// (migration 338) is the source of truth; super_admin/admin_key get
+	// "" (see all), tenant_admin gets own tenant_id. Same `($N = '' OR
+	// tenant_id = $N)` pattern as runModelHistory / errors_trend.
+	tenantID := EffectiveTenantIDAll(r)
+
 	where := ` WHERE 1=1`
 	args := []any{}
 	argIdx := 1
@@ -136,6 +142,9 @@ func (h *SelfCheckHandler) handleListRuns(w http.ResponseWriter, r *http.Request
 		args = append(args, status)
 		argIdx++
 	}
+	where += " AND ($" + strconv.Itoa(argIdx) + " = '' OR tenant_id = $" + strconv.Itoa(argIdx) + ")"
+	args = append(args, tenantID)
+	argIdx++
 
 	query := `SELECT id, model_name, started_at, completed_at, duration_ms,
 		status, rounds_total, rounds_success, had_tool_call,
@@ -208,6 +217,13 @@ func (h *SelfCheckHandler) handleGetRun(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// 2026-10-16 audit #155: tenant scope on the run-detail endpoint. This
+	// is the load-bearing defence: a tenant_admin reporting another tenant's
+	// run id must not get back request_body / response_preview from rounds.
+	// The WHERE on the run query is the gate; the rounds query is reached
+	// only when the run was found and owned by caller's tenant.
+	tenantID := EffectiveTenantIDAll(r)
+
 	// Get run.
 	var run scRun
 	err = h.db.QueryRow(r.Context(), `
@@ -220,7 +236,7 @@ func (h *SelfCheckHandler) handleGetRun(w http.ResponseWriter, r *http.Request) 
 		COALESCE(upstream_error,'') AS upstream_error,
 		COALESCE(selection_strategy,'') AS selection_strategy,
 		COALESCE(attempted_models,'[]'::jsonb) AS attempted_models
-		FROM self_check_runs WHERE id=$1`, id).Scan(
+		FROM self_check_runs WHERE id=$1 AND ($2 = '' OR tenant_id = $2)`, id, tenantID).Scan(
 		&run.ID, &run.ModelName, &run.StartedAt, &run.CompletedAt,
 		&run.DurationMs, &run.Status, &run.RoundsTotal, &run.RoundsSuccess,
 		&run.HadToolCall, &run.TotalTokens, &run.AvgLatencyMs,
@@ -233,7 +249,10 @@ func (h *SelfCheckHandler) handleGetRun(w http.ResponseWriter, r *http.Request) 
 	}
 	run.CredentialID = credentialIDFromSelfCheckLabel(run.ModelName)
 
-	// Get rounds.
+	// Get rounds. self_check_round_results has no tenant_id column; runs
+	// are FK-linked (run_id → self_check_runs.id), so reaching this point
+	// means the run was just confirmed to belong to caller's tenant — the
+	// rounds are safe to return.
 	rows, err := h.db.Query(r.Context(), `
 		SELECT id, round_index, is_ping, is_tool_call, latency_ms,
 		prompt_tokens, completion_tokens, total_tokens,
@@ -801,13 +820,17 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 		FailedRuns  int     `json:"failed_runs"`
 		SuccessRate float64 `json:"success_rate"`
 	}
+	// 2026-10-16 audit #155: tenant scope. self_check_runs.tenant_id
+	// (migration 338) — same `($N = '' OR tenant_id = $N)` pattern.
+	tenantID := EffectiveTenantIDAll(r)
 	var s summary
 	h.db.QueryRow(r.Context(), `
 		SELECT COUNT(*),
 		COUNT(*) FILTER (WHERE status='success'),
 		COUNT(*) FILTER (WHERE status='partial'),
 		COUNT(*) FILTER (WHERE status='failed')
-		FROM self_check_runs WHERE started_at >= $1`, since).Scan(
+		FROM self_check_runs WHERE started_at >= $1
+		  AND ($2 = '' OR tenant_id = $2)`, since, tenantID).Scan(
 		&s.TotalRuns, &s.SuccessRuns, &s.PartialRuns, &s.FailedRuns)
 	if s.TotalRuns > 0 {
 		s.SuccessRate = float64(s.SuccessRuns) / float64(s.TotalRuns)
@@ -821,8 +844,9 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 		COUNT(*) FILTER (WHERE status='failed'),
 		COALESCE(AVG(avg_latency_ms),0)::int
 		FROM self_check_runs WHERE started_at >= $1
+		  AND ($2 = '' OR tenant_id = $2)
 		GROUP BY model_name
-		ORDER BY model_name`, since)
+		ORDER BY model_name`, since, tenantID)
 	if err != nil {
 		writeInternalErrStr(w, "query self-check model stats failed", err)
 		return
@@ -859,10 +883,13 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Error breakdown.
+	// 2026-10-16 audit #155: tenant scope (handler has 4 SQL; commit #155
+	// originally only updated 2 — caught by independent verifier).
 	errRows, errRowsErr := h.db.Query(r.Context(), `
 		SELECT COALESCE(error_type,'none'), COUNT(*)
 		FROM self_check_runs WHERE started_at >= $1 AND status != 'success'
-		GROUP BY error_type ORDER BY COUNT(*) DESC`, since)
+		  AND ($2 = '' OR tenant_id = $2)
+		GROUP BY error_type ORDER BY COUNT(*) DESC`, since, tenantID)
 	type errStat struct {
 		ErrorType string `json:"error_type"`
 		Count     int    `json:"count"`
@@ -888,13 +915,15 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Trend (hourly buckets).
+	// 2026-10-16 audit #155: tenant scope (4th SQL in this handler, see comment above).
 	trendRows, trendRowsErr := h.db.Query(r.Context(), `
 		SELECT date_trunc('hour', started_at) AS ts,
 		COUNT(*) FILTER (WHERE status='success')::float / NULLIF(COUNT(*),0)::float AS success_rate,
 		COUNT(*) AS total
 		FROM self_check_runs WHERE started_at >= $1
+		  AND ($2 = '' OR tenant_id = $2)
 		GROUP BY date_trunc('hour', started_at)
-		ORDER BY ts`, since)
+		ORDER BY ts`, since, tenantID)
 	type trendPoint struct {
 		Timestamp   string  `json:"timestamp"`
 		SuccessRate float64 `json:"success_rate"`
@@ -976,14 +1005,17 @@ func (h *SelfCheckHandler) handleModels(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
+	// 2026-10-16 audit #155: tenant scope.
+	tenantID := EffectiveTenantIDAll(r)
 	rows, err := h.db.Query(r.Context(), `
 		SELECT model_name, COUNT(*) AS total,
 		COUNT(*) FILTER (WHERE status='success') AS success,
 		COUNT(*) FILTER (WHERE status='failed') AS failed,
 		MAX(started_at) AS last_run
 		FROM self_check_runs
+		WHERE ($1 = '' OR tenant_id = $1)
 		GROUP BY model_name
-		ORDER BY last_run DESC`)
+		ORDER BY last_run DESC`, tenantID)
 	if err != nil {
 		writeInternalErrStr(w, "query self-check models overview failed", err)
 		return

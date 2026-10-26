@@ -33,6 +33,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -41,6 +42,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 )
 
@@ -185,26 +187,119 @@ func (m *CandidateFailureMonitor) tick(ctx context.Context) {
 	}
 }
 
+// checkStalenessSQL: 见 checkStaleness 内的两条子查询的形态约束。
+//
+// 2026-10-18 (24h 审计轮：S4 停写 + 假阳性 ERROR)：
+// 原实现读 `request_logs_with_current_month` 当 "最近请求活动" 信号，
+// 但该视图 UNION 了 `session_turns_hot + session_turns + request_logs 派生`
+// 三腿 —— S4 停写时 `_request_logs_hot` 冻结，但 session_log 臂照写
+// ⇒ lastRequest 恒有值（最近 session turn 行）⇒ staleness 永远"有最近活动"。
+// 本机实测：S4 停写后 candidate_failure_logs_hot 0 行（无真实上游调用），
+// `request_logs_with_current_month` 仍 838 行（来自 session_turns），
+// staleness 22h+ 假阳性。
+// 修：lastRequest 改读 `request_logs_with_current_month_without_request_class_due_at`，
+// 该视图仅含 request_logs 腿（不含 session_turns），与 failure writer 写
+// 入口同源；S4 停写后该视图也 0 行 ⇒ lastRequest=nil ⇒ 不告警。
+// 写门禁（TestStalenessLastRequestSurfaceExcludesSessionTurns）锁定表名序列，
+// 防止后人把视图改回 session_turns 混合形态。
+//
+// ⚠ 依赖登记（2026-10-19 审计补）：该视图是 577/734 为规避投影缺失而**故意**
+// 建成的 v1-only 中间层，不是承重对象，随时可能被清理迁移删掉。它在
+// cmd/gateway/request_logs_view_session_arm_pin_test.go 的 v1OnlyRequestLogsViews
+// 里登记（那是该事实的唯一真相来源，由真库 pg_get_viewdef 重算核对）。
+// ⇒ 若哪天该视图被删，本检查会**每 tick 报错**（而不是静默漏告警），
+//
+//	处置顺序是：先改这条常量，再同步那份登记表，两处一起改才算闭环。
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：**那一天到了**——890 删掉了这张
+// v1-only 视图（连同另外三张 v1-only 包装视图），本检查的源已换成会话族原生源
+// （见下面的 checkStalenessLastRequestSurface）。
+// ⚠ 那个「靠冻结腿关掉假阳性」的 workaround 随之作废：890 之后只剩一个请求面，
+// 不存在「v1 冻结、session 照写」的分裂态 ⇒ 本检查重新变回它本来的形状。
+// ⇒ cmd/gateway/request_logs_view_session_arm_pin_test.go 的 v1OnlyRequestLogsViews
+// 登记表里那一项、以及 admin/request_logs_stop_write_classification_test.go 里
+// 「staleness 读的是 v1-only 腿」的断言，**都需要父会话同步**（不在本文件范围）。
+//
+// checkStalenessLastRequestSurface 是「最近请求活动」信号所读的源。
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：原值是 v1-only 视图
+// `request_logs_with_current_month_without_request_class_due_at`（读 v1 族的
+// hot ∪ parent）——**该视图随 890 一起被 DROP**（它是 577/734 为规避投影缺失
+// 而故意建成的 v1-only 中间层，见 890 迁移第 4 步）⇒ 继续读它必然 42P01。
+// ⇒ 换成会话族原生源（热腿）。
+//
+// ⚠ 为什么是**热腿**而不是 hot ∪ parent（与被删视图的读取范围相比是收窄的）：
+//
+//	① 语义上等价：这条查询只问「最近 5 分钟有没有请求活动」，而
+//	   promote_session_turns_hot_to_partition 的保留期默认 **7 天**
+//	   （实测该函数签名 p_retention interval DEFAULT '7 days'）⇒ 5 分钟内的行
+//	   必然还在热表里，冷腿不可能持有更新的行。真库核对：两条腿返回的
+//	   lastRequest 完全相同（2026-10-20 13:11:03）。
+//	② 成本上不等价：会话族原生源是 118 列投影 + UNION ALL + LEFT JOIN 特征层，
+//	   **规划**成本实测 ~390 ms（其中执行仅 0.7 ms；热腿 5 ms）。这条查询按
+//	   monitor 的 tick（默认 1 分钟）跑 ⇒ 每次 tick 付 0.4 s 规划只为算一个
+//	   max(ts)，不划算。热腿实测 5 ms。
+//
+// ⚠⚠ **语义变化，父会话须知悉**——这是本轮里唯一一处「原设计前提被抽掉」的
+// 改动，结论不是「换个源就行」，而是「**原来那条 v1-only 腿是在替谁挡**」：
+//
+//	2026-10-18 那一轮特意挑 v1-only 腿（不含 session_turns UNION），是因为
+//	S4 停写期「v1 冻结、session 臂照写」⇒ 读 v1 腿能让 lastRequest 恒为
+//	NULL，从根上关掉「网关没流量却报管道僵死」的假阳性。**它挡的其实是探针
+//	流量**：停写期会话族照写的那批行，是 model-probe / credential-selfcheck
+//	这些探针写出来的（探针也走 telemetry ⇒ 也进会话族），而真用户流量确实
+//	没有 ⇒ 于是 lastRequest 非 nil、lastFailure 为 nil ⇒ 假阳性。
+//
+//	⇒ 890 之后**只剩一个请求面**（会话族），「靠冻结腿把探针挡在外面」这条
+//	路不存在了 ⇒ 挡探针这件事必须**显式**做：下面这条查询加了会话族的探针
+//	排除谓词（origin_stage / task_type / origin_actor 三臂，见
+//	bg/probe_policy.go 的 probeTrafficExclusionPredicateSession）。
+//	⇒ 换句话说：**「只允许 read 端 request_logs 形态」这条旧纪律的意图被保留
+//	下来了，实现方式从「换一族」变成了「同一族里排探针」。**
+//
+//	⚠ 由此产生的两处父会话动作（不在本文件范围）：
+//	① bg/candidate_failure_monitor_logic_test.go 的
+//	   TestStalenessLastRequestSurfaceExcludesSessionTurns 断言「源里不能出现
+//	   session_turns」——这条断言的前提（存在一条非 session 的请求面）已不存在，
+//	   需改写成「源是会话族热腿 **且** 带会话族探针排除谓词」。
+//	② admin/request_logs_stop_write_classification_test.go 里
+//	   「staleness 读的是 v1-only 腿」的证据登记同样需要更新。
+var checkStalenessLastRequestSurface = db.SessionFamilyTurnsHotSourceSQL()
+
 // checkStaleness detects a dead or unwired failure-log pipeline when the
 // gateway has recent request activity. A quiet gateway must not alert merely
 // because no candidate failure has ever been recorded.
 func (m *CandidateFailureMonitor) checkStaleness(ctx context.Context) error {
 	var lastFailure, lastRequest *time.Time
-	if err := m.db.QueryRow(ctx, `
+	var failureSourceMaxID, requestSourceMaxID *int64
+	// 2026-09-12: candidate_failure_logs 视图必需 — bare 父表只 hold cold
+	// rows，partition promote 失败时（09-10 P5 duplicate key）父表 max(ts)
+	// 会 8h+ stale 而 hot 表每分钟在写，旧 surface 报警假阴性。
+	// 2026-10-18: lastRequest 改读 v1-only 腿，剔除 session_turns UNION。
+	// ★ 2026-10-20（迁移 890，v1 族退役）：那个 v1-only 视图已被 890 删掉 ⇒
+	// 源换成会话族热腿（见 checkStalenessLastRequestSurface 的注释）。
+	// ⚠ 探针排除谓词是**必需**的，不是锦上添花：v1-only 腿原来顺带把探针流量
+	// 挡在了外面（停写期会话族照写的那批行是探针写的 ⇒ 假阳性）；890 之后只有
+	// 一个请求面，必须显式排探针才能保住同一条纪律。
+	// 5 分钟窗口保留：它把「最近有请求活动」这个前提钉死，也是这条查询的
+	// 成本边界（谓词可下推到 session_turns_hot 的 ts 索引）。
+	//
+	// 2026-10-20 (24h 审计轮) 加 source_max_*_id 子查询：S4 退役 / 主动停写
+	// 与 failure writer 真坏 两种成因在 max(ts) 形态上一致，需要用历史
+	// aggregation_id / id 把它们区分开（见 candidateFailureMonitorClassifyStale）。
+	checkStalenessSQL := `
 		SELECT
-			-- 2026-09-12: both surfaces must read the current-month view —
-			-- the writer inserts into candidate_failure_logs_hot, so the bare
-			-- parent only holds promoted (cold) rows; with the partition
-			-- promote failing (P5 duplicate key, since 09-10) its max(ts) ran
-			-- 8h+ stale and the staleness alert fired while the hot table was
-			-- being written minutes earlier.
 			(SELECT max(ts) FROM candidate_failure_logs_with_current_month),
-			-- 2026-09-11: recent-window reads must use the current-month
-			-- surface — the bare _request_logs parent only holds cold rows
-			-- (max(ts) a day+ stale on 154), so "gateway has recent activity"
-			-- evaluated false and staleness alerts never fired.
-			(SELECT max(ts) FROM request_logs_with_current_month WHERE ts >= now() - interval '5 minutes')
-	`).Scan(&lastFailure, &lastRequest); err != nil {
+			(SELECT max(ts) FROM ` + checkStalenessLastRequestSurface + ` rl
+			  WHERE rl.ts >= now() - interval '5 minutes'
+			    AND ` + fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl") + `
+			),
+			(SELECT max(aggregation_id) FROM candidate_failure_logs_with_current_month),
+			(SELECT max(id) FROM ` + checkStalenessLastRequestSurface + ` rl
+			  WHERE ` + fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl") + `
+			)
+	`
+	if err := m.db.QueryRow(ctx, checkStalenessSQL).Scan(&lastFailure, &lastRequest, &failureSourceMaxID, &requestSourceMaxID); err != nil {
 		return err
 	}
 	if !failureLogIsStale(lastFailure, lastRequest, time.Now(), m.stalenessThreshold) {
@@ -227,14 +322,98 @@ func (m *CandidateFailureMonitor) checkStaleness(ctx context.Context) error {
 		WindowSec: int(m.stalenessThreshold.Seconds()),
 		LastBody:  age,
 	}
-	slog.Error("candidate_failure_monitor: failure log is stale",
-		"last_insert_at", lastFailure,
-		"last_request_at", lastRequest,
-		"age", age,
-		"threshold", m.stalenessThreshold,
-	)
+	// S4 退役 / 主动停写 与 failure writer 真坏 在 max(ts) 形态上**完全一致**
+	// （lastRequest=alive, lastFailure=stale）⇒ 单纯看时间戳没法区分。本轮选
+	// 「**按 source_max_failure_id 是否 > 0 二分类**」：
+	//   - source_max_failure_id > 0 ⇒ 曾经活跃过 ⇒ 视作 S4 退役/停写 ⇒ WARN
+	//   - source_max_failure_id = 0 ⇒ 从未写入过 ⇒ 视作 writer 真坏 ⇒ ERROR
+	//
+	// ⚠ 这是个**有偏判据**：(b) 的早期阶段也会短暂 source_max=0，与「刚启动
+	// 还没失败过」不易区分。但 stalenessThreshold 默认 30 分钟，已经滤掉了
+	// 「刚启动」场景（前 30 分钟 gateway 真没失败是正常的）；30 分钟+ 仍
+	// source_max=0 ⇒ wiring 真坏。
+	//
+	// 同时把 source_max_failure_id / source_max_request_id 两个诊断字段透传到
+	// 日志与告警体，让告警接收端能根据业务上下文（S4 退役窗口表）决定是否抑制。
+	fid := int64(0)
+	if failureSourceMaxID != nil {
+		fid = *failureSourceMaxID
+	}
+	rid := int64(0)
+	if requestSourceMaxID != nil {
+		rid = *requestSourceMaxID
+	}
+	switch candidateFailureMonitorClassifyStale(fid) {
+	case stalenessLikelyStopWrite:
+		slog.Warn("candidate_failure_monitor: failure log is stale (failure writer previously active; likely intentional stop-write)",
+			"last_insert_at", lastFailure,
+			"last_request_at", lastRequest,
+			"source_max_failure_id", fid,
+			sourceMaxRequestIDKey, rid,
+			"age", age,
+			"threshold", m.stalenessThreshold,
+		)
+	default:
+		slog.Error("candidate_failure_monitor: failure log is stale (failure writer never wrote any rows)",
+			"last_insert_at", lastFailure,
+			"last_request_at", lastRequest,
+			"source_max_failure_id", fid,
+			sourceMaxRequestIDKey, rid,
+			"age", age,
+			"threshold", m.stalenessThreshold,
+		)
+	}
 	m.fireAlert(alert)
 	return nil
+}
+
+// stalenessVerdict is the per-tick classification returned by
+// candidateFailureMonitorClassifyStale. Exposed as a typed enum so the
+// classifier stays a pure function and the test (in
+// candidate_failure_monitor_s4_stop_test.go) can pin both the binary outcome
+// (warn vs error) and the regression that motivated the split.
+type stalenessVerdict int
+
+const (
+	// stalenessWithinBaseline: gateway active + failure writer recently wrote;
+	// the staleness predicate should not have fired in the first place.
+	// Defensive default — the caller should not invoke the classifier in
+	// this state, so this constant is only reachable from tests.
+	stalenessWithinBaseline stalenessVerdict = iota
+	// stalenessLikelyStopWrite: failure log is stale but the writer was
+	// previously active (source_max_failure_id > 0). The most likely cause
+	// is intentional stop-write (S4 退役 / ops hold). Log at WARN.
+	stalenessLikelyStopWrite
+	// stalenessWriterNeverWrote: failure log is stale AND source_max_failure_id
+	// is 0 (or the underlying table never had a row). The most likely cause
+	// is a real writer-side break (schema drift / replica down / wrong pool).
+	// Log at ERROR.
+	stalenessWriterNeverWrote
+)
+
+// sourceMaxRequestIDKey is the structured log field name for the request
+// surface's max id, mirroring source_max_failure_id on the failure side. The
+// two fields are emitted together so readers can correlate "is the request
+// side still producing" against "did the failure side ever produce".
+const sourceMaxRequestIDKey = "source_max_request_id"
+
+// candidateFailureMonitorClassifyStale decides whether a stale failure-log
+// observation is more likely an intentional stop-write (S4 退役) or a real
+// writer-side break.
+//
+// It is a pure function so the S4-stop scenario (writer previously active,
+// now frozen) and the never-wrote scenario (writer broken from boot) can be
+// pinned by a unit test without spinning up a DB.
+//
+// ⚠ 已知有偏：当 stalenessThreshold 短于「gateway 从启动到首次失败」的最大
+// 间隔时，分类会把「刚启动、还没失败过」误判为 stalenessWriterNeverWrote。
+// 默认阈值 30 分钟 + 真实生产常在前几分钟就有失败 ⇒ 在默认配置下偏判的
+// 概率低；运营上有「先静默启动再接流量」的部署节奏时需调大阈值。
+func candidateFailureMonitorClassifyStale(failureSourceMaxID int64) stalenessVerdict {
+	if failureSourceMaxID > 0 {
+		return stalenessLikelyStopWrite
+	}
+	return stalenessWriterNeverWrote
 }
 
 func failureLogIsStale(lastFailure, lastRequest *time.Time, now time.Time, threshold time.Duration) bool {
@@ -361,11 +540,10 @@ func (m *CandidateFailureMonitor) checkAutoCool(ctx context.Context) error {
 		               t.error_kind
 		        FROM session_turns_hot t
 		        WHERE t.ts >= now() - interval '5 minutes'
-		        UNION ALL
-		        SELECT r.credential_id, r.request_status, r.error_kind
-		        FROM _request_logs_hot r
-		        WHERE r.ts >= now() - interval '5 minutes'
-		          AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = r.request_id)
+		        -- ★ 890（v1 族退役）：原先的第二条臂（v1 hot 表 + 对会话族热腿的
+		        -- 反连接）整条删除。v1 族被 DROP 后，同一条 FROM 里提到 v1 关系
+		        -- 会让**整条语句** 42P01 ⇒ auto-cool 巡检整体挂掉。
+		        -- 删除不损失口径：那条臂在停写后本就恒空（v1 hot 冻结）。
 		    ) cand
 		    WHERE credential_id IS NOT NULL
 		    GROUP BY credential_id

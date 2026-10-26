@@ -23,7 +23,7 @@ $PSQL -c "SELECT 'assets indexes: '||count(*) FROM pg_indexes WHERE tablename='a
 $PSQL -c "SELECT indexdef FROM pg_indexes WHERE tablename='assets';"
 
 echo "===== TOAST COMPRESSION AUDIT (top toast tables) ====="
-$PSQL -c "SELECT c.relname||' | toast='||pg_size_pretty(pg_total_relation_size(c.reltoastrelid))||' | attstorage/toasttuple='||t2.attstorage||'/'||t2.attcompression||' | avg_width='||coalesce(s.avg_width::text,'-')||' | null_frac='||coalesce(s.null_frac::text,'-') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_class t2 ON t2.oid=c.reltoastrelid LEFT JOIN pg_stats s ON s.schemaname=n.nspname AND s.tablename=c.relname AND s.attname='outbound_body' WHERE n.nspname='public' AND c.reltoastrelid<>0 AND pg_total_relation_size(c.reltoastrelid) > 10*1024*1024 ORDER BY pg_total_relation_size(c.reltoastrelid) DESC LIMIT 15;"
+$PSQL -c "SELECT c.relname||' | toast='||pg_size_pretty(pg_total_relation_size(c.reltoastrelid))||' | attstorage/toasttuple='||ta.attstorage::text||'/'||ta.attcompression::text||' | avg_width='||coalesce(s.avg_width::text,'-')||' | null_frac='||coalesce(s.null_frac::text,'-') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_class t2 ON t2.oid=c.reltoastrelid JOIN pg_attribute ta ON ta.attrelid=t2.oid AND ta.attname='chunk_id' LEFT JOIN pg_stats s ON s.schemaname=n.nspname AND s.tablename=c.relname AND s.attname='outbound_body' WHERE n.nspname='public' AND c.reltoastrelid<>0 AND pg_total_relation_size(c.reltoastrelid) > 10*1024*1024 ORDER BY pg_total_relation_size(c.reltoastrelid) DESC LIMIT 15;"
 
 echo "===== COLUMN WIDTH / NULLRATE: request_logs ====="
 $PSQL -c "SELECT attname||' | '||null_frac||' | '||avg_width||' | '||n_distinct FROM pg_stats WHERE schemaname='public' AND tablename='request_logs' ORDER BY avg_width DESC NULLS LAST LIMIT 25;"
@@ -38,7 +38,7 @@ echo "===== WAIT EVENTS ====="
 $PSQL -c "SELECT wait_event_type||'/'||coalesce(wait_event,'-')||' = '||count(*) FROM pg_stat_activity WHERE wait_event_type IS NOT NULL GROUP BY wait_event_type, wait_event ORDER BY count(*) DESC LIMIT 12;"
 
 echo "===== UNUSED / UNUSED-SIZE INDEXES (top 30) ====="
-$PSQL -c "SELECT ui.relname||' | table='||ui.relname||' | size='||pg_size_pretty(pg_relation_size(ui.indexrelid))||' | idx_scan='||ui.idx_scan||' | '||left(ui.indexdef,120) FROM pg_stat_user_indexes ui JOIN pg_index i ON i.indexrelid=ui.indexrelid JOIN pg_class c ON c.oid=i.indrelid WHERE ui.idx_scan=0 AND NOT i.indisunique AND NOT i.indisprimary AND pg_relation_size(ui.indexrelid) > 1024*1024 ORDER BY pg_relation_size(ui.indexrelid) DESC LIMIT 30;"
+$PSQL -c "SELECT ui.relname||' | table='||ui.relname||' | size='||pg_size_pretty(pg_relation_size(ui.indexrelid))||' | idx_scan='||ui.idx_scan||' | '||left(pg_get_indexdef(ui.indexrelid),120) FROM pg_stat_user_indexes ui JOIN pg_index i ON i.indexrelid=ui.indexrelid JOIN pg_class c ON c.oid=i.indrelid WHERE ui.idx_scan=0 AND NOT i.indisunique AND NOT i.indisprimary AND pg_relation_size(ui.indexrelid) > 1024*1024 ORDER BY pg_relation_size(ui.indexrelid) DESC LIMIT 30;"
 
 echo "===== INDEXES WITH LOW SELECTIVITY (idx_tup_read >> rows) ====="
 $PSQL -c "SELECT s.relname||' | idx_scan='||s.idx_scan||' | idx_tup_read='||s.idx_tup_fetch||' | ratio='||round(s.idx_tup_fetch::numeric/nullif(s.idx_scan,0),1)||' | n_live='||s.n_live_tup FROM pg_stat_user_tables s WHERE s.idx_scan>1000 ORDER BY (s.idx_tup_fetch::numeric/nullif(s.idx_scan,0)) DESC LIMIT 15;"

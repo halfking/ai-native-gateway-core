@@ -93,8 +93,8 @@ func TestSanitizeToolMessages_EmptyToolCallID(t *testing.T) {
 
 	result := SanitizeToolMessages(messages, "")
 
-	if len(result) != 1 {
-		t.Errorf("expected 1 message (only assistant), got %d", len(result))
+	if len(result) != 2 || result[1].ToolCallID != "call_123" || result[1].Content[0].ToolResult == nil || !result[1].Content[0].ToolResult.IsError {
+		t.Errorf("expected the unanswered actual call to receive an interrupted error, got %#v", result)
 	}
 }
 

@@ -349,6 +349,14 @@ func TestCleanupRateLimited(t *testing.T) {
 		t.Fatalf("cleanup: %v", err)
 	}
 	elapsed := time.Since(start)
+	// ★ R68 轮实测（探针复制本等待序列，10 次，宿主 16 核超载 3.5×）：
+	//   自然值 ∈ [1506.64ms, 1539.39ms]，均值 1516.87ms
+	//   ⇒ 下界 900ms 的**实测余量 ≥ 606.64ms**（余量/阈值 = 67.4%）
+	//   ⇒ 自然值由**限速器（2/s）的节流定时器**决定（只晚不早 ⇒ 下界恒成立）。
+	//   ⇒ ⚠ 注意自然值比「2/s × 3 条 ⇒ ~1s」大：节流是**按条**而不是按批，
+	//     所以余量比直觉大 —— 但这**不是**可以拿来把下界往上调的理由
+	//     （下界表达的是「限速确实生效」，不是「它限到了多少」）。
+	//   台账：internal/clockguard/measured_margins.tsv
 	if elapsed < 900*time.Millisecond {
 		t.Fatalf("rate limit too aggressive: elapsed=%v, want >=900ms", elapsed)
 	}

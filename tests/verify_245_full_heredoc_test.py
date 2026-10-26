@@ -4,7 +4,9 @@ from pathlib import Path
 
 
 repo_root = Path(__file__).resolve().parents[1]
-script = (repo_root / "scripts/ops/verify-245-full.sh").read_text()
+# encoding 必须显式指定：read_text() 的缺省编码取自 locale，在非 UTF-8 locale
+# （Windows 中文默认 cp936 / GBK）下会 UnicodeDecodeError。
+script = (repo_root / "scripts/ops/verify-245-full.sh").read_text(encoding='utf-8')
 start_marker = (
     '  "EXPECTED_BUILD_SEQ=$EXPECTED_BUILD_SEQ '
     'EXPECTED_GIT_SHA=$EXPECTED_GIT_SHA python3 -" <<\'PY\'\n'

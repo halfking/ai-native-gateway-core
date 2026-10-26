@@ -7,7 +7,7 @@ import { req, type RequestOptions } from './client'
  *
  * - **注册**：**第四种注册形态** —— 既不在 `admin/handler.go` 的 mux 清单里，
  *   也不在 `cmd/gateway/main.go:7135-7136` 的 requestJourney 直挂清单里，而是
- *   `cmd/gateway/main.go:7143-7144` 现构造 API 对象、现调 `RegisterRoutes`
+ *   `cmd/gateway/main.go:7179-7180` 现构造 API 对象、现调 `RegisterRoutes`
  *   （★ 第八十九批写的 `:7070` / `:7074-7075` 已随并发提交漂移，
  *     第一百一十二批现场核对后订正 —— 承批 103「现状盘点数字应当删掉而不是改对」的同族，
  *     行号只是**定位提示**，判据不依赖它）：
@@ -15,7 +15,7 @@ import { req, type RequestOptions } from './client'
  *   journalSnapshotAPI := admin.NewJournalSnapshotAPI(journalSnapshotStore)
  *   journalSnapshotAPI.RegisterRoutes(mux, requestJourneyWrapAdmin)
  *   ```
- *   → `admin/journal_handlers.go:30-35`（`mux.HandleFunc("/api/admin/dispatch/journal/", wrap(api.ServeHTTP))`）
+ *   → `admin/journal_handlers.go:13-18`（`mux.HandleFunc("/api/admin/dispatch/journal/", wrap(api.ServeHTTP))`）
  *   ⇒ ★★★ 只 grep `mux.HandleFunc` 或 `main.go` 的路由清单都会判成「死端点」。
  * - **实现**：`admin/journal_handlers.go`（126 行）+ `domains/dispatch/journal_consumer.go`
  *   + `domains/dispatch/journal.go`（条目结构）+ `domains/dispatch/pipeline.go:1852-1893`（发射）。
@@ -44,7 +44,7 @@ import { req, type RequestOptions } from './client'
  * (3) ★★★★★ **两种错误体形状并存，且取决于「哪一层写的」**：
  *     - handler 层 `writeRequestJourneyError`（`request_journey.go:287-291`）：
  *       `{"error":{"message":msg,"type":"admin_error"}}`
- *     - 中间件层 `writeError`（`handler.go:1494-1498`）：`{"error":{"detail":msg}}`
+ *     - 中间件层 `writeError`（`handler.go:1517-1523`）：`{"error":{"detail":msg}}`
  *       （401 `authentication required`、403 `password change required` 走这条）
  *     ⇒ ★★ **同一个 admin 包里就有两种**，键名互斥（`message` vs `detail`）
  *     ⇒ ⇒ 错误映射必须按（**写出层**）分支，不能只按包分支。

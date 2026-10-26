@@ -250,11 +250,12 @@ function toggleExpanded(id: number) {
 function categoryDisplay(raw: string) {
   const safeRaw = raw || 'unknown'
   const meta = getCategoryMeta(safeRaw)
-  // vue-i18n v9: pass the fallback via the `default` option so missing keys
-  // (or missing translations) render a sensible Chinese label instead of the
-  // raw dotted key path.
+  // vue-i18n v9 的回退必须走**字符串第二参**（parseTranslateArgs: isString(arg2)
+  // ⇒ options.default）。传对象 `{ default: … }` 在 v9 里整个对象会变成
+  // `options.named`（具名插值表）⇒ `default` 只是个插值名，**不产生回退**，
+  // 键缺失时仍然渲染出原始点号键路径。（原注释写的是 v9 行为，与实际不符。）
   return {
-    label: t(`sessions.config.${meta.i18nKey}`, { default: meta.zhFallback || safeRaw }),
+    label: t(`sessions.config.${meta.i18nKey}`, meta.zhFallback || safeRaw),
     tagType: meta.tagType,
   }
 }
@@ -606,7 +607,7 @@ const thresholdInvalid = computed(() => {
 .section-head { margin-bottom: 8px; }
 .section-head h2 { font-size: 13px; margin: 0; color: var(--text); }
 .section-head p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
-.subsection-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 14px 0 6px; }
+.subsection-title { font-size: 11px;letter-spacing: 0.01em; color: var(--muted); margin: 14px 0 6px; }
 .hint-row { color: var(--muted); font-size: 11px; margin: 0 0 6px; }
 
 .field-row { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(180px, 360px); align-items: center; gap: 18px; padding: 9px 0; border-bottom: 1px solid var(--border); }

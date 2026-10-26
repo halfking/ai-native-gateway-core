@@ -10,14 +10,18 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/domains/sanitizerules"
+	"github.com/kaixuan/llm-gateway-go/internal/credentialtext"
 )
 
 // Checker 输出合规检查器
 type Checker struct {
-	db           *sql.DB
-	piiPatterns  []*PIIPattern
-	toxicWords   map[string]*ToxicKeyword
-	biasDetector *BiasDetector
+	managedRuleSource func() ManagedRuleCheck
+	db                *sql.DB
+	piiPatterns       []*PIIPattern
+	toxicWords        map[string]*ToxicKeyword
+	biasDetector      *BiasDetector
 }
 
 // PIIPattern PII 检测模式
@@ -113,20 +117,36 @@ type ComplianceResult struct {
 	Issues         []ComplianceIssue `json:"issues"`
 	RedactedOutput string            `json:"redacted_output"`
 	Blocked        bool              `json:"blocked"`
+	// ToolShapeRedactionRequired means redaction would change a JSON key/type.
+	// The hook blocks it only when caller/owner policy actually requires redaction.
+	ToolShapeRedactionRequired bool `json:"-"`
 }
 
 // ComplianceIssue 合规问题
 type ComplianceIssue struct {
-	Type        string  `json:"type"`     // 'pii'/'toxic'/'bias'/'hallucination'
-	Subtype     string  `json:"subtype"`  // 'email'/'phone'/'profanity' 等
-	Severity    int     `json:"severity"` // 1-10
-	Location    string  `json:"location"` // "char:120-145"
-	Content     string  `json:"content"`  // 脱敏后的内容
-	Score       float64 `json:"score"`
-	Redacted    bool    `json:"redacted"`
-	Description string  `json:"description"`
+	Type     string `json:"type"`     // 'pii'/'toxic'/'bias'/'hallucination'
+	Subtype  string `json:"subtype"`  // 'email'/'phone'/'profanity' 等
+	Severity int    `json:"severity"` // 1-10
+	Location string `json:"location"` // "char:120-145"
+	Content  string `json:"content"`  // 脱敏后的内容
+	Score    float64 `json:"score"`
+	Redacted bool   `json:"redacted"`
+	// RuleID 是命中的规则 ID。owner 口径（2026-10-20）：拦截必须让客户知道
+	// 「因为什么规则被拦」，没有规则名的拦截理由对客户端不可用。
+	RuleID     string `json:"rule_id,omitempty"`
+	Description string `json:"description"`
 	// ExceptionMatched 为 true 表示命中身份感知例外规则（不会被脱敏/阻断）。
 	ExceptionMatched bool `json:"exception_matched,omitempty"`
+	// DetectOnly 为 true 表示「只检出、不改写客户端可见文本」。
+	//
+	// r1038（2026-10-20）：地址族（IP / 内网地址）按用户口径不进遮蔽面，
+	// 但命中**照记**（合规统计 / 复核队列 / 审计行不变）——只撤遮蔽、不撤检出。
+	//
+	// 为什么是独立字段而不是复用 Redacted：Redacted 是**输出**（这条命中
+	// 有没有被遮蔽），拿它当**输入**去决定要不要遮蔽，会让任何手工构造
+	// issue 的调用方（不填 Redacted）突然失去遮蔽能力——那是契约变更，
+	// 不是本次修复要的东西。
+	DetectOnly bool `json:"detect_only,omitempty"`
 }
 
 // NewChecker 创建检查器
@@ -167,20 +187,26 @@ func (c *Checker) Check(ctx context.Context, tenantID, output string) (*Complian
 		RedactedOutput: output,
 	}
 
+	var managed ManagedRuleCheck
+	if c.managedRuleSource != nil {
+		managed = c.managedRuleSource()
+	}
+	// A published snapshot owns PII, secrets and IP rules as one policy.
+	// Do not run the former DB/hardcoded rules again after a rule is disabled.
 	// PII 检测
-	if policy.CheckPII {
+	if managed == nil && policy.CheckPII {
 		piiIssues := c.detectPII(output, policy)
 		result.Issues = append(result.Issues, piiIssues...)
 	}
 
 	// 密钥/凭据检测
-	if policy.CheckSecrets {
+	if managed == nil && policy.CheckSecrets {
 		secretIssues := c.detectSecrets(output, policy)
 		result.Issues = append(result.Issues, secretIssues...)
 	}
 
 	// 内网 IP 检测
-	if policy.CheckInternalIP {
+	if managed == nil && policy.CheckInternalIP {
 		ipIssues := c.detectInternalIP(output, policy)
 		result.Issues = append(result.Issues, ipIssues...)
 	}
@@ -202,9 +228,25 @@ func (c *Checker) Check(ctx context.Context, tenantID, output string) (*Complian
 		result.RedactedOutput = c.redactOutput(ctx, output, result.Issues, policy)
 	}
 
+	// r1037（2026-10-20，211）：给每条问题补上规则 ID——「因为什么规则被拦」
+	// 这句话需要规则名，内置路径没有托管快照那样的规则 ID，就用稳定伪 ID。
+	for i := range result.Issues {
+		if result.Issues[i].RuleID == "" {
+			result.Issues[i].RuleID = builtinIssueRuleID(result.Issues[i])
+		}
+	}
 	result.Compliant = len(result.Issues) == 0 || !policy.StrictMode
 	result.Blocked = c.shouldBlock(result.Issues, policy)
-
+	if managed != nil {
+		checked, err := managed(ctx, tenantID, result.RedactedOutput)
+		if err != nil {
+			return nil, err
+		}
+		result.Issues = append(result.Issues, checked.Issues...)
+		result.Blocked = result.Blocked || checked.Blocked
+		result.Compliant = result.Compliant && checked.Compliant
+		result.RedactedOutput = checked.RedactedOutput
+	}
 	return result, nil
 }
 
@@ -252,6 +294,24 @@ func (c *Checker) detectPII(output string, policy *Policy) []ComplianceIssue {
 			continue
 		}
 
+		// r1038（2026-10-20）：地址族（IP / 内网地址）**不进遮蔽面**。
+		//
+		// 这条链路的规则来自 DB 的 `pii_patterns`（316 播种），其中
+		// `ip_address` 一行的正则是 `\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}`——
+		// 连版本号与环回地址一并命中。命中后 redactOutput 会把整段换掉，于是
+		// 「export https_proxy=http://127.0.0.1:7890」这类可复制执行的命令
+		// 变成坏命令。
+		//
+		// 851 迁移把那行停用了，但那是**数据**修复：运维随时可以改回
+		// enabled，而这里没有任何代码级保证。地址类风险由 security/sanitize
+		// 的 ScopeEgress 外传守卫承担（模型生成的 tool 参数里的公网目的地
+		// 仍硬阻断）。
+		//
+		// 口径与 2026-10-10 的 internal_ip 一致：**只撤遮蔽、不撤检出**——
+		// issue 照记（合规统计 / 复核队列 / 审计行不变），只是不再改写
+		// 客户端可见文本。
+		addressFamily := isAddressPIIType(pattern.PatternType)
+
 		matches := pattern.regex.FindAllStringIndex(output, -1)
 		for _, match := range matches {
 			start, end := match[0], match[1]
@@ -264,7 +324,8 @@ func (c *Checker) detectPII(output string, policy *Policy) []ComplianceIssue {
 				Location:    fmt.Sprintf("char:%d-%d", start, end),
 				Content:     c.maskPII(content, pattern.PatternType),
 				Score:       1.0,
-				Redacted:    policy.AutoRedact,
+				Redacted:    policy.AutoRedact && !addressFamily,
+				DetectOnly:  addressFamily,
 				Description: pattern.Description,
 			})
 		}
@@ -569,7 +630,11 @@ func (c *Checker) detectSecrets(output string, policy *Policy) []ComplianceIssue
 		if err != nil {
 			continue
 		}
-		matches := re.FindAllStringIndex(output, -1)
+		scan := output
+		if p.patternType == "password" {
+			scan = credentialtext.DetectionText(output)
+		}
+		matches := re.FindAllStringIndex(scan, -1)
 		for _, match := range matches {
 			start, end := match[0], match[1]
 			issues = append(issues, ComplianceIssue{
@@ -609,6 +674,19 @@ func (c *Checker) detectInternalIP(output string, policy *Policy) []ComplianceIs
 	}
 
 	return issues
+}
+
+// isAddressPIIType 报告某个 PII 规则类型是否属于**地址族**。
+//
+// r1038（2026-10-20）：地址族不进遮蔽面（见 detectPII 的说明）。
+// 判定按**类型名**而不是按规则名——DB 里的 pattern_type 由运维写，
+// 规则名（pattern_name）各部署叫法不同，类型名才是稳定的语义轴。
+func isAddressPIIType(piiType string) bool {
+	switch strings.ToLower(strings.TrimSpace(piiType)) {
+	case "ip", "ip_address", "ipv6", "server_ip", "internal_ip", "address", "domain", "hostname":
+		return true
+	}
+	return false
 }
 
 // shouldCheckPIIType 判断是否检查某类 PII
@@ -685,8 +763,16 @@ func (c *Checker) redactOutput(ctx context.Context, output string, issues []Comp
 		if issue.ExceptionMatched {
 			continue
 		}
+		// r1038：DetectOnly 的命中**照记**（issue 不丢），但不改写客户端可见
+		// 文本——地址族按用户口径不进遮蔽面。
+		if issue.DetectOnly {
+			continue
+		}
 		action := c.actionForIssue(issue, policy)
 		if issue.Type == "pii" && policy.AutoRedact {
+			// r1038：issue.Redacted 是**逐条**的「这条要不要改写客户端可见文本」。
+			// 地址族命中时 Redacted=false —— issue 照记（审计面不空），但正文
+			// 不被改写（只撤遮蔽、不撤检出，与 internal_ip 的 log 口径同向）。
 			if s, e, ok := parseCharLocation(issue.Location); ok {
 				items = append(items, redactItem{s, e, issue.Content}) // Content 已是 maskPII 结果
 			}
@@ -768,22 +854,43 @@ func (c *Checker) actionForIssue(issue ComplianceIssue, policy *Policy) string {
 }
 
 // shouldBlock 判断是否阻断
+//
+// r1037（2026-10-20，211）：硬阻断必须由**清单**显式开启（见
+// domains/sanitizerules.HardBlockAllow）。输出侧默认不终止回合——owner 口径
+// 「输出信息当前默认不要拦截」；形状匹配降级为遮蔽，回合继续走完。
 func (c *Checker) shouldBlock(issues []ComplianceIssue, policy *Policy) bool {
 	if policy.EnforcementMode != "enforce" {
 		return false
 	}
-
 	for _, issue := range issues {
 		if issue.ExceptionMatched {
 			continue
 		}
 		action := c.actionForIssue(issue, policy)
-		if action == "block" || (policy.StrictMode && issue.Severity >= 9) {
-			return true
+		if action != "block" && !(policy.StrictMode && issue.Severity >= 9) {
+			continue
 		}
+		if !sanitizerules.HardBlockAllowed("output", builtinIssueRuleID(issue)) {
+			continue
+		}
+		return true
 	}
-
 	return false
+}
+
+// builtinIssueRuleID 把内置检测的问题映射成可清单化的规则 ID。
+//
+// 内置路径没有托管快照那样的规则 ID，但「因为什么规则被拦」这句话需要规则名，
+// 清单也需要按名开/关——所以给每类问题一个稳定 ID。
+func builtinIssueRuleID(issue ComplianceIssue) string {
+	switch issue.Type {
+	case "pii":
+		return "builtin.pii." + issue.Subtype
+	case "secret":
+		return "builtin.secret." + issue.Subtype
+	default:
+		return "builtin." + issue.Type
+	}
 }
 
 // getActionTaken 获取执行的动作

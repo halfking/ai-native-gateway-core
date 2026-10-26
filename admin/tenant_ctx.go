@@ -43,6 +43,29 @@ func withAllTenantTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx)
 	})
 }
 
+// withTenantOrAllReadOnlyTx 按 tenantID 是否为空分派租户上下文。
+//
+// 为什么需要它（2026-10-16）：`withTenantTx` 对空 tenantID 不是"不设 GUC"，
+// 而是让 `setLocalTenantGUC` 返回 `empty tenant_id for SET LOCAL app.current_tenant`
+// 这个错误。历史上有多处代码注释假定"super_admin 传空 tenant ⇒ 不设 GUC ⇒
+// RLS policy 会按 'default' 过滤" —— 那个前提从来没成立过：结果是直接报错。
+//
+// 分派口径（与 withTenantTx 自身的文档一致）：
+//   - tenantID 非空 → 设 app.current_tenant，RLS 按该租户收窄（精确，不越权）；
+//   - tenantID 为空 → 走显式 super-admin bypass。
+//
+// **bypass 的授权前提**：调用方必须保证「tenantID 为空」只可能出现在
+// super_admin / admin_key 身上。本仓的既有写法（session_audit.go 的
+// `if !isSuper { req.TenantID = callerTenant }`）已经保证了这点：非 super
+// 的调用方 tenantID 永远被赋成非空的 callerTenant。任何新调用方若不满足这个
+// 前提，就**不能**用本 helper，应直接用 withTenantTx 让空值报错。
+func withTenantOrAllReadOnlyTx(ctx context.Context, pool *pgxpool.Pool, tenantID string, fn func(tx pgx.Tx) error) error {
+	if tenantID == "" {
+		return withAllTenantReadOnlyTx(ctx, pool, fn)
+	}
+	return withTenantTx(ctx, pool, tenantID, fn)
+}
+
 func withReadOnlyTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) error) error {
 	return withTx(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, fn)
 }

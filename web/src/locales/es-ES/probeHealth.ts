@@ -41,16 +41,10 @@ export default {
   },
   loading: 'Loading…',
   empty: 'No data',
-  health: {
-    healthy: 'healthy',
-    degraded: 'degraded',
-    warning: 'warning',
-    critical: 'critical',
-    unknown: 'unknown',
-  },
   probeAllConfirm: '¿Disparar sondeos para las {n} credenciales del modelo {model}?',
-  systemStartAllConfirm: '¿Iniciar todas las tareas de sondeo? Se examinarán los vínculos de todas las credenciales activas.',
-  systemStopAllConfirm: '¿Detener todas las tareas de sondeo? Las tareas ya reclamadas (claimed) terminarán de todos modos.',
-  systemTriggeredToast: '{n} tareas disparadas, {failed} fallidas',
-  systemStoppedToast: 'Se vaciaron {n} tareas de la cola',
+  detail: {
+    triggerFailed: 'No se pudo lanzar el sondeo. Vuelva a intentarlo.',
+    modelNodeNotFound: 'No se encontró ningún nodo para este modelo. Confirme el nombre del modelo o conecte un nodo y vuelva a intentarlo.',
+    pricingUnavailable: 'Los datos de precios requieren el permiso platform_ops. Contacte con el administrador para habilitarlo.',
+  },
 }

@@ -784,10 +784,10 @@ onUnmounted(() => {
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--kx-text) 4%, transparent);
 }
 .stat-card.warning {
-  border-left: 4px solid var(--warning);
+  border: 1px solid var(--warning);
 }
 .stat-card.danger {
-  border-left: 4px solid var(--danger);
+  border: 1px solid var(--danger);
 }
 .stat-label {
   color: var(--muted);

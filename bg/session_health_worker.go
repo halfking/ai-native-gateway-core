@@ -89,8 +89,8 @@ func (w *SessionHealthWorker) Start(ctx context.Context) {
 func (w *SessionHealthWorker) Stop() {
 	if w.cancel != nil {
 		w.cancel()
+		<-w.done
 	}
-	<-w.done
 }
 
 func (w *SessionHealthWorker) run(ctx context.Context) {

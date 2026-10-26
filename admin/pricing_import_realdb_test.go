@@ -43,7 +43,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -60,13 +59,20 @@ import (
 func pricingImportFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 
+	// ★★ R80 轮：这不再是「存在就 SKIP」的闸。
+	//   库现在是**一次性空库**（admin/scratch_db_test.go 分配时就自证过 public 下 0 张表）
+	//   ⇒ ⇒ 这里再看到 model_offers ⇒ **说明隔离破了**（拿到的不是一次性库）
+	//   ⇒ ⇒ 那必须**红**：本门接着要 DROP 掉它再重建
+	//   ⇒ ⇒ 而原来的 t.Skip 在产品形态库上恒成立 ⇒ **这道门从来没跑过**，
+	//   人看到的却是「通过」。
 	var existing int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.tables
 		WHERE table_schema='public' AND table_name = 'model_offers'`).Scan(&existing); err != nil {
 		t.Fatalf("probe schema: %v", err)
 	}
 	if existing > 0 {
-		t.Skip("model_offers already exists — this test drops it")
+		t.Fatalf("model_offers 已存在 —— 隔离破了（拿到的不是一次性空库）；" +
+			"本门会 DROP 掉它再重建，绝不能在共享库上跑")
 	}
 
 	// ★ 注册在**建表之前**。
@@ -131,17 +137,14 @@ func postImport(t *testing.T, h *Handler, csv string) map[string]any {
 
 func pricingImportRealDB(t *testing.T) (*pgxpool.Pool, context.Context, *Handler) {
 	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL not set — this needs a real database")
-	}
+	// ★★ R80 轮：本门是**破坏性**的（要 DROP model_offers 再重建）
+	//   ⇒ 它**只能**跑在「model_offers 不存在」的库上
+	//   ⇒ 原先直连 TEST_DATABASE_URL ⇒ 产品形态库里 model_offers 永远存在
+	//   ⇒ ⇒ 闸恒成立 ⇒ **这道门从来没跑过**。
+	//   ⇒ 改用一次性空库（admin/scratch_db_test.go）：**库要假、表名要真**。
+	pool := scratchEmptyPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
 	pricingImportFixture(t, ctx, pool)
 	return pool, ctx, &Handler{db: pool}
 }

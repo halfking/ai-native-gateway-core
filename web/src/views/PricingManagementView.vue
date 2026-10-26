@@ -13,7 +13,7 @@
     </div>
 
     <div v-if="readOnly" class="alert alert-info" style="margin-bottom:12px">
-      📖 您是租户管理员，当前为只读模式。上游成本价格仅供查看，不能修改或导入。
+      <Reading /> 您是租户管理员，当前为只读模式。上游成本价格仅供查看，不能修改或导入。
     </div>
     <div v-if="globalMsg" class="alert" :class="globalMsgOk ? 'alert-success' : 'alert-danger'" style="margin-bottom:12px">{{ globalMsg }}</div>
 
@@ -490,6 +490,7 @@ import { exportFile } from '../utils/exportFile'
 import { readExportBlob, ExportTooLargeError } from '../utils/exportResponse'
 import { formatBytes } from '../utils/format'
 import { acceptImportFile, importRejectionMessage, PRICING_CSV_MAX_BYTES } from '../utils/fileImport'
+import { Reading } from '@element-plus/icons-vue'
 
 /** 定价 CSV 导入规则：上限对齐服务端，后缀只收 csv。 */
 const PRICING_CSV_RULE = { maxBytes: PRICING_CSV_MAX_BYTES, extensions: ['.csv'] } as const
@@ -897,7 +898,9 @@ async function pasteToSelected() {
     selectedRows.value.clear()
     await fetchTable()
   } catch (e) {
-    globalMsg.value = `批量更新失败: ${e instanceof Error ? e.message : '未知错误'}`
+    globalMsg.value = t('common.feedback.batchUpdateFailedWithReason', {
+      reason: (e instanceof Error ? e.message : '') || t('common.feedback.unknownReason'),
+    })
     globalMsgOk.value = false
   } finally {
     saving.value = false
@@ -968,7 +971,9 @@ async function applyModelBatchPricing() {
     showModelBatchModal.value = false
     await fetchData()
   } catch (e) {
-    globalMsg.value = `批量定价失败: ${e instanceof Error ? e.message : '未知错误'}`
+    globalMsg.value = t('common.feedback.batchPricingFailedWithReason', {
+      reason: (e instanceof Error ? e.message : '') || t('common.feedback.unknownReason'),
+    })
     globalMsgOk.value = false
   } finally {
     savingBatch.value = false
@@ -1185,7 +1190,7 @@ onMounted(fetchData)
 .tree-offers { margin-left: 20px; }
 .tree-offer { padding: 4px 8px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); }
 .tree-offer:hover { background: var(--bg-hover); }
-.tree-offer.selected { background: var(--bg-secondary); border-left: 3px solid var(--accent); }
+.tree-offer.selected { background: var(--bg-secondary); border: 1px solid var(--accent); }
 .offer-provider { color: var(--success); min-width: 80px; }
 .offer-cred { color: var(--muted); min-width: 60px; }
 .offer-tier { font-size: 11px; padding: 1px 4px; border-radius: 3px; background: var(--bg-subtle); color: var(--text); }

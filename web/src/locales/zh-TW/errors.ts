@@ -2,13 +2,6 @@
 // errors.ts — API 錯誤文案。優先按後端穩定的 ApiError.code 翻譯（errors.code.<code>），
 // 無 code 時回退到 ApiError.message（後端中文兜底）。code 列表隨介面演進逐步補充。
 export default {
-  code: {
-    unauthorized: '未授權，請重新登入',
-    forbidden: '無權存取',
-    not_found: '資源不存在',
-    rate_limited: '請求過於頻繁，請稍後重試',
-    internal: '伺服器內部錯誤',
-  },
   byStatus: {
     400: '請求參數有誤',
     401: '未授權，請重新登入',

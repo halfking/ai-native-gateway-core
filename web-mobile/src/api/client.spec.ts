@@ -6,6 +6,7 @@ import {
   bumpSessionEpoch,
   currentSessionEpoch,
   isEpochError,
+  isMaintenanceMode,
   req,
   resetUnauthorizedForTests,
   setUnauthorizedHandler,
@@ -95,6 +96,35 @@ describe('api/client（17 §5 契约）', () => {
     expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/api/auth/me'))).toBe(true)
     // 裁决结论必须随错误传下去：文案层据此不说「登录状态已过期」
     // （2026-10-13 实测：不带这个字段时页面仍在说「请重新登录」，与事实相反）
+    expect((err as ApiError).sessionAlive).toBe(true)
+  })
+
+  it('2026-10-22：顶层 {code,message} 信封（维护态形态）能提出 code 与文案', async () => {
+    // 部署版边缘组件实测形态：{"code":"maintenance_mode","message":"网关维护中，请稍后重试。","request_id":"..."}
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ code: 'maintenance_mode', message: '网关维护中，请稍后重试。', request_id: '01JAZ' }), { status: 503 }),
+    )
+    const err = await req('GET', '/api/auth/me').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).code).toBe('maintenance_mode')
+    expect((err as ApiError).message).toBe('网关维护中，请稍后重试。')
+    expect(isMaintenanceMode(err)).toBe(true)
+  })
+
+  it('2026-10-22：会话探针吃维护态 ⇒ 不踢登录（维护窗口不误杀好会话）', async () => {
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    // 业务端点 401，探针 /api/auth/me 命中维护态信封（503 + maintenance_mode）
+    fetchMock.mockImplementation((url: string) =>
+      String(url).includes('/api/auth/me')
+        ? new Response(JSON.stringify({ code: 'maintenance_mode', message: '网关维护中，请稍后重试。' }), { status: 503 })
+        : new Response(JSON.stringify({ error: 'authentication required' }), { status: 401 }),
+    )
+    const err = await req('GET', '/api/keys').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiError)
+    // ★ 维护窗口内不能把有效会话踢回登录页（踢了之后冷启水合又撞维护态，
+    //   2026-10-22 实测形成「登录页↔维护 JSON」死循环）
+    expect(handler).not.toHaveBeenCalled()
     expect((err as ApiError).sessionAlive).toBe(true)
   })
 

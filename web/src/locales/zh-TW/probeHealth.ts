@@ -41,16 +41,10 @@ export default {
   },
   loading: 'Loading…',
   empty: 'No data',
-  health: {
-    healthy: 'healthy',
-    degraded: 'degraded',
-    warning: 'warning',
-    critical: 'critical',
-    unknown: 'unknown',
-  },
   probeAllConfirm: '對模型 {model} 的全部 {n} 個憑證觸發探活?',
-  systemStartAllConfirm: '確認開始全部探測任務？將掃描所有 active 憑證的 binding。',
-  systemStopAllConfirm: '確認停止全部探測任務？已 claimed 的任務仍會跑完。',
-  systemTriggeredToast: '已觸發 {n} 任務, 失敗 {failed}',
-  systemStoppedToast: '已清空佇列 {n} 條任務',
+  detail: {
+    triggerFailed: '觸發沒能成功，請重試',
+    modelNodeNotFound: '找不到這個模型的節點。請確認模型名稱，或先接入節點再試',
+    pricingUnavailable: '價格資料需要 platform_ops 權限才能查看。請聯絡管理員開通',
+  },
 }

@@ -4,4 +4,7 @@
 export default {
   exportFailedPrep: '匯出失敗：詳情載入或稽核失敗',
   exportNoChannel: '匯出失敗：目前主機沒有可用的匯出通道',
+  timelineLoadFailed: '近 24 小時的資料沒能載入出來，請重試',
+  detailLoadFailed: '詳情沒能載入出來，請重試',
+  auditLogLoadFailed: '稽核記錄沒能載入出來，請重試',
 }

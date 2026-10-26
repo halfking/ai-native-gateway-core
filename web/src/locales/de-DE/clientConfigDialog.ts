@@ -4,13 +4,13 @@ export default {
   close: 'Schließen',
 
   step1: {
-    title: '① API-Schlüssel auswählen (alle Schlüssel unter aktuellem Mandant)',
+    title: "① Verfügbaren API-Schlüssel auswählen",
     refresh: 'Aktualisieren',
     refreshing: 'Wird aktualisiert…',
     loading: 'Lädt…',
     empty: {
       title: 'Keine API-Schlüssel',
-      description: 'Es sind keine API-Schlüssel unter dem aktuellen Mandanten verfügbar. Administratoren können auf die Schaltfläche unten klicken, um einen neuen Schlüssel zu beantragen.',
+      description: 'Unter dem aktuellen Mandanten sind noch keine API-Schlüssel verfügbar. Administratoren können unten einen neuen Schlüssel beantragen.',
       applyButton: 'Neuen Schlüssel beantragen',
     },
     selected: 'Ausgewählt:',
@@ -18,16 +18,15 @@ export default {
 
   step2: {
     title: '② Betriebssystem',
-    pathHint: 'Konfigurationsdateipfad:',
+    pathHint: "Konfigurationsort:",
   },
 
   step3: {
-    title: '③ Modellbereich auswählen',
-    featured: 'Ausgewählte Modelle (Routing-Featured-Konfiguration)',
+    title: "④ Modellumfang auswählen",
+    featured: "Empfohlene Modelle (Routing des Mandanten des gewählten Schlüssels)",
     all: 'Alle verfügbaren Modelle (vom Gateway)',
     featuredPreview: {
-      loading: 'Lädt…',
-      empty: 'Keine ausgewählten Modelle im Routing konfiguriert',
+      empty: "Für den gewählten Mandanten sind keine empfohlenen Modelle konfiguriert",
       manageButton: 'Zu "Routing-Richtlinie" gehen, um zu konfigurieren →',
       manage: 'Verwalten →',
     },
@@ -37,9 +36,23 @@ export default {
       selected: 'ausgewählt',
       filterHint: '({count} Treffer)',
       searchPlaceholder: '🔍 Modellname / Anbieter / Familie suchen…',
-      loading: 'Lädt…',
       noMatch: 'Keine passenden Modelle',
     },
+  },
+
+  retry: "Erneut versuchen",
+  otherFamily: "Andere",
+  gateway: {
+    title: "③ Gateway-API-URL",
+    hint: "Standardmäßig wird die Adresse dieses Gateways verwendet. Generierte Dateien und Skripte enthalten den gewählten API-Schlüssel. Bewahren Sie sie sicher auf.",
+  },
+  provider: {
+    label: "Anbietername",
+    hint: "Ein Eintrag mit gleichem Namen und gleicher URL wird aktualisiert. Bei abweichender URL stoppt das Skript und fordert einen neuen Namen an.",
+  },
+  notes: {
+    cherryStudio: "Tragen Sie den gewählten Schlüssel in den Client-Einstellungen ein. Diese Datei enthält nur die Parameter.",
+    rooCode: "Konfigurieren Sie OpenAI Compatible in den Einstellungen von Roo Code.",
   },
 
   footer: {
@@ -51,21 +64,22 @@ export default {
 
   results: {
     tabs: {
+      yaml: "YAML-Ausschnitt",
       file: 'Konfigurationsdatei',
       script: 'Konfigurationsskript',
       manual: 'Manuelle Schritte',
     },
     actions: {
+      scriptWarning: "Das Skript enthält Ihren Schlüssel. Laden Sie es herunter und führen Sie es lokal aus. Der Inhalt wird hier nicht angezeigt.",
+      mergeHint: "Das Skript sichert die alte Konfiguration, führt {provider} zusammen und erhält andere Anbieter",
       copyContent: 'Inhalt kopieren',
       downloadFile: 'Datei herunterladen',
       downloadScript: 'Skript herunterladen',
-      scriptHint: 'Skript sichert alte Konfigurationsdateien automatisch',
     },
   },
 
   applyDialog: {
     title: 'Neuen API-Schlüssel beantragen',
-    close: 'Schließen',
     applicationCode: 'Anwendungscode (application_code)',
     applicationCodePlaceholder: 'z.B. default-app',
     description: 'Beschreibung',
@@ -76,8 +90,16 @@ export default {
   },
 
   error: {
+    invalidGatewayURL: "Geben Sie eine gültige HTTP(S)-API-URL ohne Zugangsdaten, Abfrageparameter oder Fragment ein.",
+    invalidProviderName: "Der Anbietername muss aus 1–64 Buchstaben (A–Z), Ziffern, Unterstrichen oder Bindestrichen bestehen und mit einem Buchstaben oder einer Ziffer beginnen.",
+    featuredLoadFailed: "Empfohlene Modelle konnten nicht geladen werden. Bitte erneut versuchen.",
+    catalogLoadFailed: "Modellkatalog konnte nicht geladen werden. Bitte erneut versuchen.",
+    selectModel: "Wählen Sie mindestens ein Modell. Falls keine empfohlenen Modelle vorhanden sind, konfigurieren Sie diese zuerst unter Routing-Richtlinie.",
+    keyUnavailable: "Der gewählte Schlüssel konnte nicht gelesen werden. Bitte erneut auswählen.",
+    generateFailed: "Die Konfiguration konnte nicht generiert werden. Bitte erneut versuchen.",
+    copyFailed: "Kopieren fehlgeschlagen. Bitte die Datei herunterladen.",
     applyFailed: 'Antrag fehlgeschlagen',
   },
   // Added 2026-07-02 — Cursor fallback note (used by ClientConfigDialog when tool === 'cursor').
-  cursorNotSupported: 'Cursor unterstützt keine Datei-Schreibvorgänge — bitte manuell in der Settings-UI konfigurieren',
+  cursorNotSupported: 'Cursor unterstützt keine Datei-Schreibvorgänge. Bitte manuell in der Settings-UI konfigurieren',
 }

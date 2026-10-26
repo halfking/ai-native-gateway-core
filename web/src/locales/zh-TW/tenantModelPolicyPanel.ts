@@ -51,8 +51,8 @@ export default {
     reason: 'reason',
     reasonPlaceholder: '可選，例如 成本控制',
     cancel: '取消',
-    submit: '提交',
-    submitting: '提交中…',
+    submit: '送出',
+    submitting: '送出中…',
   },
 
   confirm: {
@@ -61,10 +61,10 @@ export default {
 
   error: {
     loadFailed: '載入失敗',
+    checkFailed: '校驗失敗',
     canonicalNameRequired: 'canonical_name 必填',
     createFailed: '建立失敗',
     deleteFailed: '刪除失敗',
     restoreFailed: '復原失敗',
   },
-  softDeleteConfirm: '確認軟刪除策略 {name}？(可復原)',
 }

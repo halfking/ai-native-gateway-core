@@ -1,0 +1,12 @@
+{
+  "baseline": "aa888f9b80ad08490df8d3f8a5508bf52f6152f0",
+  "files": {
+    "bg/node_probe.go": "380e5f292caf0fe250fbc603bc6337a5973ee66662750a473e5af3f6b8274145",
+    "bg/probe_service.go": "a91fa158bc16aaa1cfe58bda2234ca3ec504db2b73751830a5f56335c3bb2038",
+    "bg/probe_responses_fallback.go": "fa7ed41dc51d39a474078abbdd4e94b4599123ffddb5695b7e7f2d5c395f9cf2",
+    "bg/node_probe_response_validation_test.go": "4bd24da746ea1b2bf6b2669a92794fb5c05805d8af59110a0498c0d2215bd84d",
+    "bg/probe_responses_fallback_test.go": "b80b0d4d862c498a3f2bf6833d74cd12820e2bbff3b5561291a309306448332f",
+    "bg/probe_capability_writers_test.go": "dc0792bb3c3b944930701586b1c8ea40cb0029e987edec394314f01c4194d063"
+  },
+  "combined_sha256": "357deb8ea75928ba6c19ee6b14c456173e92e9edc327555611bb0193422fac1d"
+}

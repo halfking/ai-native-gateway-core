@@ -19,7 +19,7 @@ AI Native Gateway は、AI エージェントと「バイブコーディング�
 - **プロトコル正規化**：OpenAI / Anthropic / Gemini / Responses API 互換 —— 1 つのエンドポイントですべてのモデルに接続
 - **2 層インテリジェントルーティング**：L1 がモデルを選択（タスク分類 → 6 項目スコアリング）、L2 がクレデンシャルを選択（ティアフォールバック → 課金ラウンド → P2C スコアリング → 実行 / サーキットブレーク）
 - **セッションガバナンス**：スティッキーセッション、全文セッションリプレイ、自動プロンプト圧縮、4 層データライフサイクル —— 「リクエスト」ではなく「会話」を第一級の管理対象として扱う
-- **マルチテナント**：38 以上のテーブルに PostgreSQL RLS で強制されるテナント分離、テナント別クォータ・計量・MaaS 課金に対応
+- **マルチテナント**：90 以上のテーブルに PostgreSQL RLS で強制されるテナント分離、テナント別クォータ・計量・MaaS 課金に対応
 - **クレデンシャル管理**：フィンガープリント偽装、適応型プロービング、自動サーキットブレーク付きのマルチクレデンシャルプール
 - **オブザーバビリティ**：リアルタイムリクエストストリーム、ルーティング分析（ヒートマップ + Sankey）、コスト追跡、OTel + Prometheus
 - **プライバシー**：100% プライベートデプロイ —— すべてのデータが自社インフラ内に留まる
@@ -55,7 +55,7 @@ AI Native Gateway は、AI エージェントと「バイブコーディング�
 |----------|----------|
 | **プロトコル** | OpenAI / Anthropic / Gemini / Responses 互換 + 整合性チェック付き SSE ストリーミング中継 |
 | **ルーティング** | 2 層ルーティング（モデル → クレデンシャル）+ スティッキーセッション + cost/quality ポリシーによるオートルーティング |
-| **マルチテナント** | アイデンティティトンネル（virtual IP/MAC/ClientID）+ クレデンシャルプール + 38 以上のテーブルに RLS |
+| **マルチテナント** | アイデンティティトンネル（virtual IP/MAC/ClientID）+ クレデンシャルプール + 90 以上のテーブルに RLS |
 | **トラフィックガバナンス** | トークンレート制限（TPM/RPM）+ セマンティックキャッシュ + プロンプト圧縮 + スライディングウィンドウアルゴリズム |
 | **監査** | フルチェーン監査 + DLQ + ディスクフォールバック + OTel + Prometheus |
 | **クレデンシャル** | マルチクレデンシャル + フィンガープリントプール + 適応型プロービング + 手動無効化 |
@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 15+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 90+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -104,16 +104,17 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | パス | 役割 |
 |------|------|
 | `cmd/gateway/` | コンポジションルート —— シングルバイナリの本番エントリ（データ + コントロールプレーン） |
-| `domains/` | 67 の DDD ドメイン —— `streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security など |
+| `domains/` | 68 の DDD ドメイン —— `streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security など |
 | `admin/` + `web/` | 管理 REST API + Vue 3 + TypeScript SPA（Element Plus、ECharts） |
+| `web-mobile/` | モバイルフロントエンド（Vue 3 + TypeScript）——第 2 の本番 UI。デプロイは `dist/` ビルドなしでは実行されない |
 | `bg/` | バックグラウンドワーカー —— プロービング、ライフサイクルクリーンアップ、統計集計、パーティションメンテナンス |
 | `storage/` | デュアルモードストレージファクトリ（`full`：PG+Redis / `lite`：SQLite+ファイル+インプロセス KV） |
 | `internal/` | 横断インフラ —— IR、ベンダーフィールド除去、セッションミラー、outbox、テレメトリなど |
-| `sql/migrations/` + `db/migrations/` | 冪等マイグレーション（起動シリーズは現在 863） |
+| `sql/migrations/` + `db/migrations/` | 冪等マイグレーション（起動シリーズは現在 907） |
 | `installer/` | スタンドアロンのクロスプラットフォームインストーラ / アップグレーダーモジュール |
 | `scripts/`、`deploy/` | ビルド、デプロイ、ミラー、検証ツール |
 
-スケールスナップショット（2026-10-06 のコードスキャン）：`cmd/` 配下に **~4,967 Go ファイル · 2,728 テストファイル · 1,016 マイグレーション SQL · 67 ドメインパッケージ · 44 バイナリ**。
+スケールスナップショット（2026-10-22 のコードスキャン @31466a01d）：`cmd/` 配下に **~5,680 Go ファイル · 3,333 テストファイル · 1,119 マイグレーション SQL · 68 ドメインパッケージ · 44 バイナリ**（ファイル数は `vendor/` と `installer/` を除外；マイグレーション SQL は `sql/migrations/` 全量；バイナリは `go list` の main パッケージ基準）。
 
 **さらに詳しく**
 
@@ -131,7 +132,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 - **スティッキーセッションバインディング**：セッションをクレデンシャルに固定し、モデル切り替えやフェイルオーバー後も会話コンテキストを維持 —— タスク途中でコンテキストが静かに失われることがありません
 - **セッションレベルの監査とリプレイ**：system prompt とレスポンス全文を保存し、セッション単位で再生可能（本番環境で 13,000 以上のセッションを保有）。タスク種別・クライアントモデル・出力モデル・プロバイダ・トークン・レイテンシ・終了理由を網羅し、キー / テナント / 期間でスライスしてトラブルシューティングとコンプライアンス監査に活用
 - **自動プロンプト圧縮**：リクエストがプロバイダの実際のコンテキストウィンドウに近づくと（約 80% で発火）、ディスパッチ前にメッセージレベルの圧縮を実行 —— 長いエージェントセッションが小さいウィンドウにも収まります。圧縮イベント（戦略・しきい値・圧縮前後のサイズ）はすべてリクエストに記録されます
-- **セッションメタデータインテリジェンス**：タスク種別の自動タグ付け（10 ワークタイプ）、プロジェクト帰属、タイトル抽出により、生のトラフィックを検索可能なナレッジに変換
+- **セッションメタデータインテリジェンス**：タスク種別の自動タグ付け（27 ワークタイプ）、プロジェクト帰属、タイトル抽出により、生のトラフィックを検索可能なナレッジに変換
 - **アイデンティティトンネル**：エージェントトラフィックを virtual IP/MAC/ClientID で帰属させ、多数のエージェントが同一出口を共有してもマルチテナント分離を維持
 - **4 層データライフサイクル**：ホット（0〜7 日）/ ウォーム（7〜30 日）/ コールド（30〜90 日）/ 期限切れ（90 日超）+ アーカイブプレビュー —— 実行前に「何が移動するのか」を正確に表示
 
@@ -166,12 +167,12 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 ### クレデンシャルモニター — マルチソース × マルチクレデンシャルの健全性
 
 ![クレデンシャルモニター](docs/assets/screenshots/credential-monitor.png)
-*2 次元の可用性マトリクス（本番環境で 19 クレデンシャル × 18 モデル）で、どのクレデンシャルがどのモデルを壊しているか一目で把握。クレデンシャルごとの P95 レイテンシ、直近 1 時間のスライディングウィンドウ成功率、同時実行スロット使用率。フィンガープリントプール（50+ User-Agent · 35 種 Accept-Language · 11 種 uTLS プロファイル）+ 適応型プロービングが上流のリスクコントロールを自動回避 —— 障害はブレーカーが遮断し、人の介入は不要*
+*2 次元の可用性マトリクス（本番環境で 19 クレデンシャル × 18 モデル）で、どのクレデンシャルがどのモデルを壊しているか一目で把握。クレデンシャルごとの P95 レイテンシ、直近 1 時間のスライディングウィンドウ成功率、同時実行スロット使用率。フィンガープリントプール（42 種 User-Agent · 35 種 Accept-Language）+ 適応型プロービングが上流のリスクコントロールを自動回避 —— 障害はブレーカーが遮断し、人の介入は不要*
 
 ### ワークタイプ設定 — タスク自動分類
 
 ![ワークタイプ](docs/assets/screenshots/work-types.png)
-*タスク自動分類（10 ワークタイプ）と 24 時間分布、上位モデル、ルーティング決定統計 —— 管理画面でワークタイプごとに設定可能*
+*タスク自動分類（27 ワークタイプ）と 24 時間分布、上位モデル、ルーティング決定統計 —— 管理画面でワークタイプごとに設定可能*
 
 ### フリーリソースプール
 
@@ -362,11 +363,11 @@ GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe .
 | **データレジデンシー** | データが組織の境界外に出る | すべてのデータが自社インフラ内に留まる |
 | **課金** | 従量課金（USD） | プラン + クレジット + ブースターパック —— 中国 SMB 向け、Alipay 対応 |
 | **上流モデル** | 一部の大手ベンダー | 幅広いモデル + 中国国産モデル + ローカルモデル |
-| **クレデンシャルフィンガープリントプール** | 基本的 | 50+ User-Agent · 35 種 Accept-Language · 11 種 uTLS プロファイル |
+| **クレデンシャルフィンガープリントプール** | 基本的 | 42 種 User-Agent · 35 種 Accept-Language |
 | **セッションガバナンス** | リクエスト単位のログ | スティッキーセッション + 全文リプレイ + 圧縮 + 4 層データライフサイクル |
 | **MCP ツールゲートウェイ** | 一部 | 2026 Q3 フル提供予定 |
 | **中国語フレンドリー** | 限定的 | 完全中国語 UI + 国産モデル + Alipay |
-| **マルチテナント監査** | 標準 | 38+ テーブル RLS · テナント監査 L1 = 0 |
+| **マルチテナント監査** | 標準 | 90+ テーブル RLS · テナント監査 L1 = 0 |
 
 ### 有名な代替製品との比較
 
@@ -434,7 +435,7 @@ GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe .
 | セッションライフサイクル | [docs/session-lifecycle.md](docs/session-lifecycle.md) — セッション処理ライフサイクル、完全図解 |
 | アーキテクチャ（エビデンスグレード） | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — 内部権威（CURRENT/SHADOW/PARALLEL グレーディング） |
 | アーキテクチャ（概観） | [docs/architecture.md](docs/architecture.md) — システム設計とコンポーネント |
-| 要件 | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×19 ドメイン / NFR×13 |
+| 要件 | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×16 ドメイン / NFR×13 |
 | 機能カタログ | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md) — 機能 → コード → API → 管理画面マップ |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — データプレーンと管理 API 仕様 |
 | 環境 | [docs/environment.md](docs/environment.md) — デプロイ環境と変数 |
@@ -468,7 +469,7 @@ git push github       # → github (secret scan, blocked on BLOCK-level hit)
 
 ## ✅ CI とゲート（2026-09-14 以降）
 
-- **正式ゲート = ローカルの `./verify.sh`**：コミット/デプロイ前に必ず実行（`go test ./...` フル、マイグレーション checksum 突き合わせ、プライバシーコンプライアンス、vet、build、フロントエンドビルド）。main への merge とリリースはこれを基準とします。
+- **正式ゲート = ローカルの `./verify.sh`**：コミット/デプロイ前に必ず実行（`go test ./...` フル、マイグレーション checksum 突き合わせ、プライバシーコンプライアンス、vet、build。フロントエンドビルドは `--web` 指定時のみ）。main への merge とリリースはこれを基準とします。
 - **codeup Flow 軽量ゲート**：リモートは codeup のみで、`.github/workflows/` は codeup では実行されません；`.workflow/main-verify.yml` がパイプライン・アズ・コード設定（build + `go vet ./autoroute/...` + 60 例の auto マッチングオフラインスイート）を提供し、codeup リポジトリの「流水线」ページで一度インポートすれば、以降 push/PR で自動トリガーされます。
 - auto マッチングオフライン回帰は単独で再実行可能：`go test ./autoroute/ -run 'TestAutoMatchingSuiteHeuristic|TestPromptClassificationMatrix'`（完全オフライン、ネットワーク不要）。
 
@@ -478,7 +479,7 @@ git push github       # → github (secret scan, blocked on BLOCK-level hit)
 
 コントリビューションを歓迎します！開発環境の構築、コードスタイル、プルリクエストのプロセスは [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
 
-マルチテナント関連の変更は、`lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant` の 3 つのリンターすべてに合格する必要があります。
+マルチテナント関連の変更は、RLS ゲート（`make test-rls`——実 PostgreSQL が必要、`TEST_DATABASE_URL` が要る）とユニットテストスイート（`make test`——CI の `verify.sh` が実行しているのと同じもの）を通過する必要があります。
 
 ## 🔐 セキュリティ
 

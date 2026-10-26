@@ -19,30 +19,55 @@
 
 ### 2. 前端实现
 - ✅ **热力图视图组件**
-  - 文件: `web/src/views/CredentialHeatmapView.vue` (570+ 行)
+  - 文件: `web/src/views/CredentialHeatmapView.vue` (1371 行，单文件实现表格网格 / 详情抽屉 / 状态修正)
+  - 组件依赖仅两个：`components/ActiveFilterChips.vue`（已选条件 chips）、
+    `components/ui/KxDateRangePicker.vue`（时间范围选择器）
   - 功能:
-    - 时间范围选择器 (今天/1h/6h/24h/7天/本月/自定义)
-    - 粒度切换 (1m/5m/15m/1h/1d，自动推荐)
-    - 筛选器 (排除自检、仅显示异常)
+    - 时间范围选择器 (今天/最近1小时/最近6小时/最近24小时/昨天/最近7天/本月/自定义)
+    - 粒度切换 (1m/5m/15m/1h/1d，按时间范围自动建议：≤1h→1m，≤6h→5m，≤24h→15m，≤168h→1h，否则 1d)
+    - 筛选器 (排除自检——默认勾选、仅显示异常、模型过滤；默认折叠为 chips 展示)
     - 自动刷新 (10/30/60秒)
-    - 色块热力图网格
-    - 凭据展开/收起 (localStorage持久化)
-    - 详情弹窗 (点击色块显示统计、错误分布、失败请求)
+    - 表格形式热力图 (横向时间座标列，各行色块按列对齐)
+    - 凭据展开/收起 (localStorage 持久化，单一 key: `credential_heatmap_expanded`，值为展开的凭据 ID 数组)
+    - 色块详情抽屉 (统计、错误分布、失败请求样本、状态修正操作: 模型上下线/凭据恢复/凭据降级/凭据启用/凭据停用)
+    - ★ 状态修正的 5 个动作后端全部要求 super_admin
+      （`RequireSuperAdminForWrite` / `h.superAdmin`）⇒ 前端对非 super_admin
+      禁用这些按钮并给出只读提示，见「写侧角色门」小节
 
 - ✅ **Tab 结构包装器**
   - 文件: `web/src/views/CredentialMonitorWithTabs.vue`
-  - 功能: 列表视图 / 热力图 / 路由记录 三个Tab切换
+  - 功能: **五个** Tab 切换: `列表视图` / `热力图` / `路由记录` / `错误趋势` /
+    `探测健康`（`探测健康` **仅 super_admin 可见**；`错误趋势` 对 tenant_admin 开放，
+    `/api/errors/trend` 服务端按租户收口）
 
 - ✅ **API 接口定义**
-  - 文件: `web/src/api/credential-monitor.ts:388-470`
+  - 文件: `web/src/api/credential-monitor.ts` (609 行)
   - TypeScript 类型定义完整
-  - 已导出到 `web/src/api/index.ts`
+  - 已导出到 `web/src/api.ts`（`export * from './api/credential-monitor'`）
 
 - ✅ **路由集成**
-  - 文件: `web/src/router.ts:47`
+  - 文件: `web/src/router.ts:222`
   - `/routing-v2/credentials` 路径更新为使用 `CredentialMonitorWithTabs`
 
-### 3. 文档
+### 3. 写侧角色门（2026-10-20 落地订正）
+
+「状态修正」的 5 个动作打到的后端端点**全部要求 super_admin**
+（`admin/credential_monitor.go` 的 `RequireSuperAdminForWrite` /
+`model-toggle` 的 `h.superAdmin`）—— tenant_admin 是**只读**档
+（`admin/handler.go:942`：「default 租户 tenant_admin 获得只读 + 凭据 API Key 轮换」）。
+
+| 动作 | 端点 | 方法 |
+|---|---|---|
+| 模型上线 / 模型下线 | `/api/credentials/model-toggle` | POST |
+| 恢复凭据 | `/api/credentials/promote` | POST |
+| 降级凭据 | `/api/credentials/demote` | POST |
+| 启用凭据 / 停用凭据 | `/api/credentials/set-manual-disabled` | POST |
+
+⇒ 非 super_admin 时，这些按钮**被禁用**并显示只读提示；函数层还有第二道守卫
+（防按钮态被绕过）。后端那道门是 2026-10-19 补上的，前端此前未同步，
+tenant_admin 会看到可点的写按钮、点下去只拿到 403。
+
+### 4. 文档
 - ✅ **需求规格**: `docs/design/credential-monitor-heatmap-requirements.md` (500+ 行)
 - ✅ **实施指南**: `docs/design/credential-monitor-heatmap-implementation.md` (600+ 行)
 - ✅ **部署指南**: 本文档
@@ -132,7 +157,8 @@ ls -lh dist/
 
 **访问测试**:
 1. 打开浏览器: `http://localhost:5173/routing-v2/credentials`
-2. 应该看到三个Tab: `列表视图` / `热力图` / `路由记录`
+2. 应该看到五个Tab: `列表视图` / `热力图` / `路由记录` / `错误趋势` / `探测健康`
+   （`探测健康` 仅 super_admin 可见）
 3. 点击 `热力图` Tab
 4. 应该看到时间范围选择器、粒度选择器、筛选器
 5. 点击 `刷新` 按钮加载数据
@@ -213,7 +239,7 @@ All tests completed!
 
 #### 2.1 基础功能
 - [ ] 访问 `/routing-v2/credentials`，页面正常加载
-- [ ] 看到三个Tab: 列表视图、热力图、路由记录
+- [ ] 看到五个Tab: 列表视图、热力图、路由记录、错误趋势、探测健康（探测健康仅 super_admin 可见）
 - [ ] 点击 `热力图` Tab，切换成功
 - [ ] 默认显示 `今天` 的数据
 - [ ] 粒度默认为 `5m` 或自动推荐值
@@ -315,6 +341,73 @@ All tests completed!
 
 ---
 
+## 🔍 查询参数语义（2026-10-17 补）
+
+本节按 `admin/credential_monitor_heatmap.go` 当前实现补齐，
+补的是代码里早已存在、但本文档此前完全未记载的两个行为。
+
+### 6.1 `exclude_self_test` —— 缺省为 `true`
+
+`admin/credential_monitor_heatmap.go:106-110`：
+
+```go
+// exclude_self_test 缺省 true（与 FEATURE-REQ §4.2 一致）
+excludeSelfTest := true
+if r.URL.Query().Has("exclude_self_test") {
+    excludeSelfTest = queryBool(r, "exclude_self_test")
+}
+```
+
+**运维要点**：这是 `Has()` + 显式覆盖的写法，不是 `Get()=="true"`。
+因此：
+
+| 请求形式 | 结果 |
+|---|---|
+| 不带该参数 | `exclude_self_test=true`（排除自测流量） |
+| `?exclude_self_test=` （空值） | 走 `queryBool` 解析，**不要假设等于 true** |
+| `?exclude_self_test=false` | `false`，自测流量计入热图 |
+
+验收时若发现热图里混进自测流量，先确认调用方传的是显式 `false`
+还是根本没传——两者行为不同。
+
+### 6.2 分桶是 epoch 对齐的
+
+`admin/credential_monitor_heatmap.go:457`、`:667`：
+
+> Buckets are epoch-aligned via `to_timestamp(floor(epoch/N)*N)`
+
+含义：桶边界按 Unix epoch 绝对对齐，**与请求的 `time_start` 无关**。
+推论三条：
+
+1. `granularity` 取任意整 N 秒都成立，不需要能整除时间跨度；
+2. 桶标签反映的是绝对时间点，不是「从 `time_start` 起第 k 桶」；
+3. 两次相同参数请求的桶边界重合，可直接逐桶对比（这也是 `cache_hit`
+   语义讨论的前提）。
+
+排查「热图整体偏移了几十分钟」类问题时，先排除把 epoch 桶标签
+误读成相对偏移。
+
+### 6.3 `meta.cache_hit` 恒为 `false`（刻意，非缺陷）
+
+`admin/credential_monitor_heatmap.go:235-236`：
+
+```go
+// cache_hit 现由缓存层控制；无缓存层时恒为 false（实时查询）
+resp.Meta.CacheHit = false
+```
+
+当前端点**自身不做缓存**，每次都是实时查询，因此该字段恒为 `false`。
+观测侧不要据此判定「缓存失效」；`meta.expires_at`（+1min）只是
+响应头语义，不代表本端点会自行复用。
+
+> 历史背景：2026-09-07 曾有一版分支引入「1min 进程内缓存 +
+> singleflight」让该字段变真。因与当前 stale-while-revalidate 的
+> 缓存层方向冲突、且会让该字段含义从「缓存层命中」漂移成
+> 「进程内命中」，该实现**未并入**，判定见
+> `docs/audit/2026-10-17-24h-audit-branch-adjudication.md` §三。
+
+---
+
 ## 🐛 故障排查
 
 ### 问题 1: API 返回 404
@@ -350,7 +443,19 @@ pkill llm-gateway-go
 SELECT COUNT(*), MIN(ts), MAX(ts) FROM request_logs WHERE ts >= NOW() - INTERVAL '1 day';
 
 -- 检查是否有非自检数据
-SELECT COUNT(*) FROM request_logs WHERE ts >= NOW() - INTERVAL '1 day' AND COALESCE(is_self_test, FALSE) = FALSE;
+-- ★ 探针/自检排除谓词与后端共用同一份拼写（bg.ProbeTrafficExclusionPredicateView），
+--   读的是**视图** request_logs_with_current_month 的列词汇，不是物理表。
+--   三个臂都必须带 COALESCE：缺 COALESCE 时 `'probe' = ANY(NULL)` 为 NULL，
+--   `NOT NULL` 不为 TRUE ⇒ 那批行会被**静默丢掉**
+--   （2026-10-02 实测：7d 内会话族 40,275 行里有 40,225 行被吞）。
+--   ⚠ request_logs 无 `is_self_test` 列 —— 那是旧说法，别再照抄。
+SELECT COUNT(*) FROM request_logs_with_current_month
+WHERE ts >= NOW() - INTERVAL '1 day'
+  AND NOT COALESCE('probe' = ANY(quality_flags), FALSE)
+  AND COALESCE(task_type, '') <> 'probe_triggered'
+  AND COALESCE(origin_actor, '') NOT IN (
+        'node-probe-worker', 'active-probe-worker',
+        'probe-service', 'credential-selfcheck-worker');
 
 -- 查看凭据分布
 SELECT credential_id, COUNT(*) FROM request_logs WHERE ts >= NOW() - INTERVAL '1 day' GROUP BY credential_id;
@@ -370,12 +475,21 @@ SELECT credential_id, COUNT(*) FROM request_logs WHERE ts >= NOW() - INTERVAL '1
 \d request_logs
 
 -- 检查索引使用情况
+-- ★ 分桶用 epoch 对齐而不是 date_trunc：date_trunc 只接受固定字段名
+--   （'minute'/'hour'/'day'），不接受 '5 minutes' 这类参数化步长。
+--   后端实际拼写（admin/credential_monitor_heatmap.go）：
+--   to_timestamp(floor(EXTRACT(EPOCH FROM rl.ts) / <步长秒>) * <步长秒>)
 EXPLAIN ANALYZE
 SELECT credential_id, lower(COALESCE(outbound_model, client_model)) AS raw_model_name,
-       date_trunc('minute', ts) AS time_bucket, COUNT(*) AS total_requests
+       to_timestamp(floor(EXTRACT(EPOCH FROM ts) / 60) * 60) AS time_bucket,
+       COUNT(*) AS total_requests
 FROM request_logs_with_current_month
 WHERE ts >= NOW() - INTERVAL '1 day' AND ts < NOW()
-  AND COALESCE(is_self_test, FALSE) = FALSE
+  AND NOT COALESCE('probe' = ANY(quality_flags), FALSE)
+  AND COALESCE(task_type, '') <> 'probe_triggered'
+  AND COALESCE(origin_actor, '') NOT IN (
+        'node-probe-worker', 'active-probe-worker',
+        'probe-service', 'credential-selfcheck-worker')
 GROUP BY credential_id, raw_model_name, time_bucket;
 
 -- 应该看到 "Index Scan" 而不是 "Seq Scan"

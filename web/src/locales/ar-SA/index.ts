@@ -18,6 +18,7 @@ import credentialMonitor from './credentialMonitor'
 import providers from './providers'
 import landing from './landing'
 import dashboard from './dashboard'
+import liveTopology from './liveTopology'
 import providerDetail from './providerDetail'
 import providerDetailPage from './providerDetailPage'
 import tenants from './tenants'
@@ -58,6 +59,7 @@ import modulesView from './modulesView'
 import formatAnomaliesView from './formatAnomaliesView'
 import modelIntegrityView from './modelIntegrityView'
 import outputCompliance from './outputCompliance'
+import sanitizeRules from './sanitizeRules'
 import agentRegistryView from './agentRegistryView'
 import ops from './ops'
 import qualityCorrelations from './qualityCorrelations'
@@ -82,6 +84,7 @@ import hyper from './hyper'
 import routeIncidentDrawer from './routeIncidentDrawer'
 
 export default {
+  sanitizeRules,
   hyper,
   usageTrend,
   common,
@@ -161,4 +164,5 @@ export default {
   requestDetail,
   reports,
   routeIncidentDrawer,
+  liveTopology,
 }

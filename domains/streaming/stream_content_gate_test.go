@@ -41,11 +41,35 @@ func TestChunkHasContent_Cases(t *testing.T) {
 		{
 			name: "reasoning_content delta (deepseek-r1 etc.)",
 			body: `{"choices":[{"index":0,"delta":{"reasoning_content":"thinking..."}}]}`,
+			// r1029 (2026-10-17): was true. Reasoning-only is deliberation,
+			// not the assistant answer — the 154 glm-5.3 evidence
+			// (max_tokens=8 all consumed by reasoning, content never emitted,
+			// finish_reason=length) is exactly this frame repeated.
+			want: false,
+		},
+		{
+			// Reverse guard: reasoning arriving alongside real content still
+			// counts. Without this row the fix would fail over normal reasoning
+			// models — trading one fault for another.
+			name: "reasoning_content delta alongside content",
+			body: `{"choices":[{"index":0,"delta":{"reasoning_content":"thinking...","content":"hi"}}]}`,
 			want: true,
 		},
 		{
-			name: "tool_calls delta",
+			// r1028 Magpie parity / r1029: id/type-only slot is a phantom.
+			name: "tool_calls delta with id only (phantom)",
 			body: `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function"}]}}]}`,
+			want: false,
+		},
+		{
+			// Named tool, or an arguments delta (name usually earlier).
+			name: "named tool_calls delta",
+			body: `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search","arguments":""}}]}}]}`,
+			want: true,
+		},
+		{
+			name: "tool_calls arguments delta",
+			body: `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"q\":1}"}}]}}]}`,
 			want: true,
 		},
 		{

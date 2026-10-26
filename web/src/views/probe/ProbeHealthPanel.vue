@@ -187,7 +187,7 @@ async function triggerManualProbe() {
     )
     
     if (!modelsData.models || modelsData.models.length === 0) {
-      showTriggerMessage('未找到该模型的节点', true)
+      showTriggerMessage(t('probeHealth.detail.modelNodeNotFound'), true)
       return
     }
 
@@ -217,11 +217,11 @@ async function triggerManualProbe() {
         void refreshAll()
       }, 2000)
     } else {
-      showTriggerMessage(response.message || '触发失败', true)
+      showTriggerMessage(response.message || t('probeHealth.detail.triggerFailed'), true)
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
-    showTriggerMessage(`触发失败: ${errMsg}`, true)
+    showTriggerMessage(t('common.feedback.triggerFailedWithReason', { reason: errMsg }), true)
   } finally {
     triggerBusy.value = false
   }
@@ -564,7 +564,6 @@ h1 {
 .stat-label {
   font-size: 11px;
   color: var(--muted);
-  text-transform: uppercase;
   margin-bottom: 4px;
 }
 
@@ -600,7 +599,6 @@ h1 {
 .queue-label {
   font-size: 11px;
   font-weight: 600;
-  text-transform: uppercase;
   margin-bottom: 4px;
 }
 
@@ -673,7 +671,6 @@ h1 {
 .data-table thead th {
   padding: 8px 12px;
   font-size: 11px;
-  text-transform: uppercase;
   font-weight: 600;
 }
 

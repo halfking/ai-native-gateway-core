@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-10-14T14:46:20.889Z",
+  "exported_at": "2026-10-25T18:17:29.723Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -14,8 +14,16 @@
   },
   "primary": [
     {
+      "path": "/live",
+      "labelKey": "nav.item.liveTopology",
+      "icon": "🛰",
+      "platformOps": true,
+      "exact": true,
+      "tenantScope": "default",
+      "pluginScope": "*"
+    },
+    {
       "path": "/dashboard",
-      "label": "总览",
       "labelKey": "nav.item.overview",
       "icon": "📊",
       "platformOps": true,
@@ -27,12 +35,10 @@
   "groups": [
     {
       "id": "tenant-portal",
-      "label": "我的服务",
       "labelKey": "nav.group.tenantPortal",
       "items": [
         {
           "path": "/tenant/models",
-          "label": "标准模型",
           "labelKey": "nav.item.tenantModels",
           "icon": "🤖",
           "tenantOnly": true,
@@ -41,7 +47,6 @@
         },
         {
           "path": "/tenant/account",
-          "label": "我的账户",
           "labelKey": "nav.item.tenantAccount",
           "icon": "💰",
           "tenantOnly": true,
@@ -50,7 +55,6 @@
         },
         {
           "path": "/tenant/pricing",
-          "label": "套餐与充值",
           "labelKey": "nav.item.tenantPricing",
           "icon": "💳",
           "tenantOnly": true,
@@ -59,7 +63,6 @@
         },
         {
           "path": "/tenant/usage",
-          "label": "我的消耗",
           "labelKey": "nav.item.tenantUsage",
           "icon": "📉",
           "tenantOnly": true,
@@ -72,12 +75,10 @@
     },
     {
       "id": "models-routing",
-      "label": "模型与路由",
       "labelKey": "nav.group.modelsRouting",
       "items": [
         {
           "path": "/models",
-          "label": "模型与目录",
           "labelKey": "nav.item.models",
           "icon": "🏷️",
           "platformOps": true,
@@ -87,7 +88,6 @@
         },
         {
           "path": "/routing-v2",
-          "label": "路由全景",
           "labelKey": "nav.item.routingOverview",
           "icon": "🗺️",
           "super": true,
@@ -98,7 +98,6 @@
         },
         {
           "path": "/routing-v2/credentials",
-          "label": "凭据监控",
           "labelKey": "nav.item.credentialMonitor",
           "icon": "📊",
           "tenantScope": "*",
@@ -106,7 +105,6 @@
         },
         {
           "path": "/routing-v2/auto-ops",
-          "label": "AUTO 路由运营",
           "labelKey": "nav.item.autoOps",
           "icon": "♻️",
           "tenantScope": "*",
@@ -114,7 +112,6 @@
         },
         {
           "path": "/providers",
-          "label": "供应商",
           "labelKey": "nav.item.providers",
           "icon": "🔌",
           "providerConsole": true,
@@ -123,7 +120,6 @@
         },
         {
           "path": "/admin/reconciliation",
-          "label": "供应商对账",
           "labelKey": "nav.item.reconciliation",
           "icon": "🧾",
           "super": true,
@@ -133,7 +129,6 @@
         },
         {
           "path": "/admin/usage-trends",
-          "label": "用量趋势分析",
           "labelKey": "nav.item.usageTrends",
           "icon": "📈",
           "super": true,
@@ -143,7 +138,6 @@
         },
         {
           "path": "/pricing",
-          "label": "成本价格",
           "labelKey": "nav.item.pricing",
           "icon": "📉",
           "platformOps": true,
@@ -153,7 +147,6 @@
         },
         {
           "path": "/model-pricing",
-          "label": "定价管理",
           "labelKey": "nav.item.modelPricing",
           "icon": "💰",
           "platformOps": true,
@@ -163,7 +156,6 @@
         },
         {
           "path": "/free-pool",
-          "label": "免费资源",
           "labelKey": "nav.item.freePool",
           "icon": "🎁",
           "super": true,
@@ -173,7 +165,6 @@
         },
         {
           "path": "/free-discovery",
-          "label": "免费发现",
           "labelKey": "nav.item.freeDiscovery",
           "icon": "🔍",
           "super": true,
@@ -187,12 +178,10 @@
     },
     {
       "id": "tenant-users",
-      "label": "租户用户",
       "labelKey": "nav.group.tenantUsers",
       "items": [
         {
           "path": "/tenants",
-          "label": "租户管理",
           "labelKey": "nav.item.tenants",
           "icon": "🏢",
           "super": true,
@@ -202,7 +191,6 @@
         },
         {
           "path": "/users",
-          "label": "用户管理",
           "labelKey": "nav.item.users",
           "icon": "👤",
           "tenantScope": "*",
@@ -210,7 +198,6 @@
         },
         {
           "path": "/keys",
-          "label": "API 密钥",
           "labelKey": "nav.item.keys",
           "icon": "🔑",
           "tenantScope": "*",
@@ -218,7 +205,6 @@
         },
         {
           "path": "/key-applications",
-          "label": "密钥申请",
           "labelKey": "nav.item.keyApplications",
           "icon": "📬",
           "super": true,
@@ -228,7 +214,6 @@
         },
         {
           "path": "/audit-logs",
-          "label": "审计日志",
           "labelKey": "nav.item.auditLogs",
           "icon": "📋",
           "super": true,
@@ -238,7 +223,6 @@
         },
         {
           "path": "/admin/reconciliation?view=internal",
-          "label": "结算报表",
           "labelKey": "nav.item.settlementReport",
           "icon": "📑",
           "super": true,
@@ -252,12 +236,10 @@
     },
     {
       "id": "requests-sessions",
-      "label": "请求与会话",
       "labelKey": "nav.group.requestsSessions",
       "items": [
         {
           "path": "/request-logs",
-          "label": "请求日志",
           "labelKey": "nav.item.requestLogs",
           "icon": "📋",
           "tenantScope": "*",
@@ -265,7 +247,6 @@
         },
         {
           "path": "/dispatch/waterfall",
-          "label": "队列瀑布图",
           "labelKey": "nav.item.dispatchWaterfall",
           "icon": "📊",
           "platformOps": true,
@@ -275,7 +256,6 @@
         },
         {
           "path": "/admin/turns",
-          "label": "轮次列表",
           "labelKey": "nav.item.turns",
           "icon": "🔄",
           "super": true,
@@ -285,7 +265,6 @@
         },
         {
           "path": "/admin/session-analytics/users",
-          "label": "会话分析中心",
           "labelKey": "nav.item.sessionAnalytics",
           "icon": "📊",
           "tenantScope": "*",
@@ -293,7 +272,6 @@
         },
         {
           "path": "/admin/request-registry",
-          "label": "请求注册表",
           "labelKey": "nav.item.requestRegistry",
           "icon": "📑",
           "super": true,
@@ -303,7 +281,6 @@
         },
         {
           "path": "/admin/connection-registry",
-          "label": "连接注册台",
           "labelKey": "nav.item.connectionRegistry",
           "icon": "🔗",
           "super": true,
@@ -317,12 +294,17 @@
     },
     {
       "id": "data-ops",
-      "label": "数据运维",
       "labelKey": "nav.group.dataOps",
       "items": [
         {
+          "path": "/admin/sanitize-rules",
+          "labelKey": "sanitizeRules.title",
+          "icon": "🔒",
+          "tenantScope": "*",
+          "pluginScope": "*"
+        },
+        {
           "path": "/admin/settings",
-          "label": "系统设置",
           "labelKey": "nav.item.settings",
           "icon": "⚙️",
           "super": true,
@@ -332,7 +314,6 @@
         },
         {
           "path": "/admin/proxy",
-          "label": "代理管理",
           "labelKey": "nav.item.proxy",
           "icon": "🌐",
           "super": true,
@@ -342,7 +323,6 @@
         },
         {
           "path": "/admin/data-lifecycle",
-          "label": "数据生命周期",
           "labelKey": "nav.item.dataLifecycle",
           "icon": "💾",
           "platformOps": true,
@@ -352,7 +332,6 @@
         },
         {
           "path": "/format-anomalies",
-          "label": "格式异常监控",
           "labelKey": "nav.item.formatAnomalies",
           "icon": "⚠️",
           "super": true,
@@ -362,7 +341,6 @@
         },
         {
           "path": "/model-integrity",
-          "label": "模型完整性监控",
           "labelKey": "nav.item.modelIntegrity",
           "icon": "🛰️",
           "super": true,
@@ -372,7 +350,6 @@
         },
         {
           "path": "/admin/modules",
-          "label": "模块管理",
           "labelKey": "nav.item.modules",
           "icon": "🧩",
           "super": true,
@@ -382,7 +359,6 @@
         },
         {
           "path": "/admin/prompt-injection",
-          "label": "提示词注入检测",
           "labelKey": "nav.item.promptInjection",
           "icon": "🛡️",
           "super": true,
@@ -392,7 +368,6 @@
         },
         {
           "path": "/admin/compression",
-          "label": "压缩管理",
           "labelKey": "nav.item.compression",
           "icon": "📦",
           "platformOps": true,
@@ -402,7 +377,6 @@
         },
         {
           "path": "/admin/modules?module=wechat_bot",
-          "label": "微信机器人",
           "labelKey": "nav.item.wechatBot",
           "icon": "💬",
           "super": true,
@@ -412,7 +386,6 @@
         },
         {
           "path": "/admin/agents",
-          "label": "Agent Registry",
           "labelKey": "nav.item.agents",
           "icon": "🤖",
           "super": true,
@@ -422,7 +395,6 @@
         },
         {
           "path": "/customer/update-activate",
-          "label": "更新与激活",
           "labelKey": "nav.item.updateActivate",
           "icon": "🔄",
           "tenantScope": "*",
@@ -430,7 +402,6 @@
         },
         {
           "path": "/customer/offline-activation",
-          "label": "离线激活",
           "labelKey": "nav.item.licenseOffline",
           "icon": "🔌",
           "notActivatedOnly": true,
@@ -439,7 +410,6 @@
         },
         {
           "path": "/maintain/tenant/telemetry",
-          "label": "数据采集范围",
           "labelKey": "nav.item.telemetryScope",
           "icon": "📡",
           "external": true,
@@ -452,12 +422,10 @@
     },
     {
       "id": "opsplatform",
-      "label": "运维中心",
       "labelKey": "nav.group.opsplatform",
       "items": [
         {
           "path": "/maintain/ops/overview",
-          "label": "运维总览",
           "labelKey": "nav.item.opsOverview",
           "icon": "🧭",
           "super": true,
@@ -469,7 +437,6 @@
         },
         {
           "path": "/maintain/ops/center",
-          "label": "中心运维",
           "labelKey": "nav.item.opsCenter",
           "icon": "🖥️",
           "super": true,
@@ -481,7 +448,6 @@
         },
         {
           "path": "/maintain/ops/downloads",
-          "label": "发布与下载",
           "labelKey": "nav.item.opsDownloads",
           "icon": "📦",
           "super": true,
@@ -493,7 +459,6 @@
         },
         {
           "path": "/maintain/ops/licenses",
-          "label": "License管理",
           "labelKey": "nav.item.opsLicenses",
           "icon": "🔑",
           "super": true,
@@ -505,7 +470,6 @@
         },
         {
           "path": "/maintain/ops/faults",
-          "label": "故障管理",
           "labelKey": "nav.item.opsFaults",
           "icon": "⚠️",
           "super": true,
@@ -517,7 +481,6 @@
         },
         {
           "path": "/maintain/ops/autoupdate",
-          "label": "自动更新",
           "labelKey": "nav.item.opsAutoUpdate",
           "icon": "🚀",
           "super": true,
@@ -530,7 +493,6 @@
         },
         {
           "path": "/ops/vibecoding",
-          "label": "VibeCoding",
           "labelKey": "nav.item.opsVibeCoding",
           "icon": "💻",
           "super": true,
@@ -545,12 +507,10 @@
     },
     {
       "id": "guide",
-      "label": "接入指南",
       "labelKey": "nav.group.guide",
       "items": [
         {
           "path": "/examples",
-          "label": "接入示例",
           "labelKey": "nav.item.examples",
           "icon": "📝",
           "tenantScope": "*",
@@ -558,14 +518,13 @@
         },
         {
           "path": "/examples#auto-config",
-          "label": "自动配置",
+          "labelKey": "nav.item.autoConfig",
           "icon": "🛠️",
           "tenantScope": "*",
           "pluginScope": "*"
         },
         {
           "path": "/maintain/ops/autoupdate",
-          "label": "自动更新",
           "labelKey": "nav.item.opsAutoUpdate",
           "icon": "🚀",
           "external": true,
@@ -576,7 +535,6 @@
         },
         {
           "path": "/maintain/donate",
-          "label": "赞助与捐赠",
           "labelKey": "nav.item.supportDonate",
           "icon": "💖",
           "external": true,
@@ -589,12 +547,10 @@
     },
     {
       "id": "chat",
-      "label": "对话",
       "labelKey": "nav.group.chat",
       "items": [
         {
           "path": "/chat",
-          "label": "对话",
           "labelKey": "nav.item.chat",
           "icon": "💬",
           "tenantScope": "*",

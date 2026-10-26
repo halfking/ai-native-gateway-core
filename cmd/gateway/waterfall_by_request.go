@@ -13,8 +13,11 @@ import (
 )
 
 // waterfallByRequestSQL 是单请求瀑布点查（request_id，B 形态）。2026-10-13
-// S3 波 2：FROM _request_logs_hot → canonical 视图（会话臂服务新流量、v1 臂
-// 服务历史、反连接去重；16 个表达式全在 118 列契约内，t0..t9 会话侧直映）。
+// S3 波 2：canonical 视图（会话臂服务新流量、反连接去重；16 个表达式全在
+// 118 列契约内，t0..t9 会话侧直映）。
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：canonical 视图已重写为
+// **纯会话两臂**（session_turns_hot ∪ session_turns，734 details LEFT JOIN），
+// 所以本查询的读法**零改动**——它读的是视图，不是 v1 基表。
 // 提升为包级常量是给形状钉桩用的：这段文本就是发给 PG 的文本。
 const waterfallByRequestSQL = `
 SELECT

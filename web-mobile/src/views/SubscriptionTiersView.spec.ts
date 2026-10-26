@@ -28,7 +28,7 @@ import {
  * ★★★★★★ **权限档第四类登场：不是第三类，是「真门」。**
  *   批 115/117/118 都归第三类（服务端没有租户维度 ⇒ 载荷含别人的数据 ⇒ 过度限制）。
  *   本批**同样没有租户维度**（读全局 `subscription_tiers`），
- *   **但**中间件 `requireSuperAdmin`（`cmd/gateway/main_jwt_middleware.go:65-73`）
+ *   **但**中间件 `requireSuperAdmin`（`cmd/gateway/main_jwt_middleware.go:93-102`）
  *   逐字就是 `if role != "super_admin" { 403 }`
  *   ⇒ 权限由**中间件**给出，不靠前端推断 ⇒ 抽屉席设 `requiresRole` 即完整处置。
  *   ⇒ ★★★★ 与批 116 `modelIQ` 同款，与前三批相反：**别把「没有租户维度」自动读成第三类**。
@@ -547,7 +547,9 @@ describe('⑦ 接线与编码门', () => {
     // ★★ 反向护栏：它是**功能缺口**，不是重复件（端点与 dashboardBoard 不重合）。
     //   若哪天有人图省事把它登记进 KNOWN_DUPLICATES 免罪，这条立刻红。
     expect(listOf('KNOWN_DUPLICATES')).not.toContain('subscriptionTiers')
-    expect(listOf('KNOWN_DUPLICATES')).toEqual(['boardOperational'])
+    // ★★★ 批 149 收口：合并 boardOperational 后重复件清单已清空
+    //   （孤儿登记从「无真缺口 + 一条重复件 + 一条基础设施」降到「无真缺口 + 一条基础设施」）。
+    expect(listOf('KNOWN_DUPLICATES')).toEqual([])
   })
 
   it('⑦-5 ★★★ 编码门：视图与本文件不得含 U+FFFD / NUL', () => {

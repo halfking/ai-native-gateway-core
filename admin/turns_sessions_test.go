@@ -196,16 +196,43 @@ func TestBuildTurnsSessionWhere_TurnLevelFiltersSession(t *testing.T) {
 
 	for _, c := range []string{
 		"s.tenant_id = $1",
-		"ft.model = $2",
-		"ft.provider = $3",
-		"ft.status_code = $4",
+		// ★★ 形态无关的写法：R90 形态是 `t.model = $2`、R92 形态是
+		//   `ft.model = $2` ⇒ 两者都含子串 `model = $2` ⇒
+		//   ★ 只断言 `model = $2`（**不**带 `t.` 前缀）⇒ 两种形态都成立，
+		//   ★ 而「绑到第几个占位符」这个语义被守住。
+		//   ⚠ 旧写法 `t.model = $2` 在 R92 形态下是**子串侥幸**命中
+		//   （"ft.model = $2" 里恰好含 "t.model = $2"）⇒ 名实不符。
+		"model = $2",
+		"provider = $3",
+		"status_code = $4",
 	} {
 		if !strings.Contains(where, c) {
 			t.Errorf("where missing %q\nwhere=%s", c, where)
 		}
 	}
-	if !strings.Contains(where, "EXISTS (SELECT 1 FROM public.session_turns_with_current_month ft") {
-		t.Errorf("expected EXISTS subquery on session_turns_with_current_month: %s", where)
+	// ★ 2026-10-24（R90）：轮次级过滤子句**不再**读 `session_turns_with_current_month`。
+	//   理由（252 EXPLAIN ANALYZE 实测，生产只读）：该视图的 hot 腿带
+	//   `NOT EXISTS (… FROM session_turns archived …)` 反连接 ⇒ 外层**每一行**
+	//   都要在 hot 上跑一次 Nested Loop Anti Join ⇒ `?model=` 生产形态
+	//   **36,415 ms** ⇒ 角色级 statement_timeout=30s ⇒ **稳定 500@30s**。
+	//   ⇒ 现在两腿都在（hot ∪ 父表），由 db.SessionFamilyTurnsSessionExistsSQL 渲染。
+	//
+	// ★★ 2026-10-24 订正（R92 之后）：断言**不再钉形态**。
+	//   R90 = 「两腿 OR」；R92 = 「**派生表 UNION ALL + 单一 EXISTS**」⇒
+	//   ⇒ ★ 本门要守的**语义**是「**hot 腿与父表腿都在 EXISTS 里**」，
+	//   ★ 而这个语义在两种形态下都成立 ⇒ ★ 改成形态无关的写法。
+	if !strings.Contains(where, "FROM public.session_turns_hot t") {
+		t.Errorf("expected hot-leg in the turn-level EXISTS: %s", where)
+	}
+	if !strings.Contains(where, "FROM public.session_turns t") {
+		t.Errorf("expected parent-leg in the turn-level EXISTS: %s", where)
+	}
+	if !strings.Contains(where, "EXISTS") {
+		t.Errorf("expected the turn-level filters to be pushed into an EXISTS: %s", where)
+	}
+	// ★ 反向断言：视图一旦被引回来，这条端点就会回到 500@30s —— 而**不报任何错**。
+	if strings.Contains(where, "session_turns_with_current_month") {
+		t.Errorf("turn-level filter must not read the anti-join view: %s", where)
 	}
 	if strings.Contains(where, "JOIN public.sessions") {
 		t.Errorf("turn-level EXISTS must not join public.sessions: %s", where)
@@ -256,8 +283,36 @@ func TestBuildTurnsSessionWhere_NoTimeWindowStillCursor(t *testing.T) {
 func TestBuildTurnsSessionWhere_APIKeyAndStatus(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions?api_key_id=42&status=active", nil)
 	where, args, nextArg := buildTurnsSessionWhere(req, "t1", time.Time{}, time.Time{}, time.Time{}, "", 1)
-	if !strings.Contains(where, "rl.api_key_id = $2") {
-		t.Fatalf("missing api_key_id EXISTS clause: %s", where)
+	// ★ 2026-10-24（R90）：api_key 过滤子句从「视图 ⋈ 113 列全量 source」改成
+	//   hot ∪ 父表两腿 EXISTS。谓词**逐字**取 db.SessionFamilyAPIKeyIDExpr
+	//   （= 投影里那一列的表达式）⇒ 「展示的 api_key」与「过滤用的 api_key」
+	//   永远是同一个口径。
+	//   ★ 这里刻意写**字面量**而不是引用常量 ⇒ 常量若被改动，本断言会红
+	//     （常量与投影的一致性由 admin/turns_sessions_filter_pushdown_test.go 单独钉）。
+	//
+	// ★★ 2026-10-24 订正（R92 之后）：本断言**不再钉谓词的形态**。
+	//   形态两天里变过两次：R90 = 两腿 OR；R90' = CASE 表达式 = $N；
+	//   R92 = ★ **派生表 UNION ALL + 单一 EXISTS** ⇒ CASE 落在**投影**里、
+	//   谓词变成 `ft.api_key_id = $N`。
+	//   ⇒ ★ 钉形态 ⇒ 形态一变就**假红**，而**实现可能完全正确**
+	//   ⇒ ★★ 实测：R92 改完形态后，这两条断言一起红 ⇒ `admin` 包在 main 上
+	//   **红着**，而 `admin` 不在任何 CI 路径上 ⇒ ⇒ **没人看见**。
+	//   ⇒ ⇒ 改判据为**语义**（两半都要）：
+	//     ① **口径**（归一表达式本身在 SQL 里）——两形态都成立
+	//        （R90' 在谓词侧、R92 在投影侧）；
+	//     ② **绑定位置**（谓词绑到 $2）——形态不限。
+	const apiKeyCase = "(CASE WHEN t.api_key_id ~ '^[0-9]+$' THEN t.api_key_id::bigint END)"
+	if !strings.Contains(where, apiKeyCase) {
+		t.Fatalf("api_key_id 归一表达式（展示/过滤同口径）丢失：%s", where)
+	}
+	if !strings.Contains(where, "api_key_id = $2") &&
+		!strings.Contains(where, "END) = $2") {
+		t.Fatalf("api_key_id 谓词没绑到 $2：%s", where)
+	}
+	// ★ 反向断言：旧形态把 113 列全量 source 放进关联子查询 ⇒ 外层每行物化一遍
+	//   ⇒ 生产 EXPLAIN ANALYZE > 90 s 未跑完 ⇒ 端点 500@30s。
+	if strings.Contains(where, "SessionFamilyTurnsSourceSQL") {
+		t.Fatalf("api_key filter must not pull the full 113-column source into a correlated subquery: %s", where)
 	}
 	if !strings.Contains(where, "s.status = $3") {
 		t.Fatalf("missing status clause: %s", where)
@@ -384,8 +439,24 @@ func TestTurnsSessionSQLHasNoFormatArtifacts(t *testing.T) {
 		}
 	}
 	// 参数绑定必须与 args 对得上：$1=tenant $2=api_key_id $3=status。
-	if !strings.Contains(where, "rl.api_key_id = $2") {
-		t.Fatalf("api_key_id predicate lost its bind position:\n%s", where)
+	//
+	// ★★ 2026-10-24 订正：本断言**不再钉谓词的具体形态**。
+	//
+	//   ★ 为什么：谓词形态在这两天**变过两次** ——
+	//   R90（旧形态 `rl.api_key_id = $2`）→ R90'（CASE 表达式 = $2）
+	//   → R92（**派生表 UNION ALL + 单一 EXISTS** ⇒ `ft.api_key_id = $2`）。
+	//   ⇒ ★ 钉形态 ⇒ 形态一变门就红，**而实现可能完全正确**
+	//   ⇒ ⇒ ★★ **真问题**：R92 改了形态、这条门没跟着改 ⇒ `admin` 包在 main 上
+	//   **红着**，而 `admin` 包**不在任何 CI 路径上** ⇒ ⇒ **没有人看见**
+	//   （本轮 2026-10-24 合并他人提交时实测到）。
+	//
+	//   ⇒ ⇒ 改判据为**语义**：api_key_id 谓词必须绑到 **$2**，
+	//   **左侧是什么形态不限**（CASE 表达式 / 派生表列 / 原始列都行）。
+	//   ⇒ ★ 仍能抓住本门真正的猎物：占位符被 fmt 吃掉（那时两种形态都不在）。
+	apiKeyBound := strings.Contains(where, "api_key_id = $2") ||
+		strings.Contains(where, "END) = $2")
+	if !apiKeyBound {
+		t.Fatalf("api_key_id predicate lost its bind position（$2）：\n%s", where)
 	}
 	if len(args) != 3 {
 		t.Fatalf("expected 3 bound args, got %#v", args)

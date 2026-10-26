@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import type { Approver } from '../api/approval'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
+import { Plus, Message, EditPen, Delete, Close } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   modelValue: Approver[]
@@ -126,7 +127,7 @@ function moveDown(index: number) {
     <div class="header">
       <h3>审批人列表</h3>
       <button class="btn btn-primary" @click="openAddDialog">
-        <span>➕</span> 添加审批人
+        <Plus /> 添加审批人
       </button>
     </div>
 
@@ -147,7 +148,7 @@ function moveDown(index: number) {
             <span class="approver-role">{{ approver.role }}</span>
             <span class="priority-badge">优先级: {{ approver.priority + 1 }}</span>
           </div>
-          <div class="approver-email">📧 {{ approver.email }}</div>
+          <div class="approver-email"><Message /> {{ approver.email }}</div>
         </div>
 
         <div class="approver-actions">
@@ -155,7 +156,7 @@ function moveDown(index: number) {
             class="btn-icon"
             :class="{ active: approver.enabled }"
             @click="toggleEnabled(index)"
-            :title="approver.enabled ? '禁用' : '启用'"
+            :title="approver.enabled ? $t('common.status.disabled') : $t('common.status.enabled')"
           >
             {{ approver.enabled ? '✓' : '✗' }}
           </button>
@@ -178,16 +179,16 @@ function moveDown(index: number) {
           <button
             class="btn-icon"
             @click="openEditDialog(index)"
-            title="编辑"
+            :title="$t('common.button.edit')"
           >
-            ✏️
+            <EditPen />
           </button>
           <button
             class="btn-icon btn-danger"
             @click="removeApprover(index)"
-            title="删除"
+            :title="$t('common.button.delete')"
           >
-            🗑️
+            <Delete />
           </button>
         </div>
       </div>
@@ -198,7 +199,7 @@ function moveDown(index: number) {
       <div class="dialog">
         <div class="dialog-header">
           <h3>{{ editingIndex !== null ? '编辑审批人' : '添加审批人' }}</h3>
-          <button class="btn-close" @click="showDialog = false">✕</button>
+          <button class="btn-close" @click="showDialog = false"><Close /></button>
         </div>
 
         <div class="dialog-body">
@@ -215,7 +216,7 @@ function moveDown(index: number) {
           </div>
 
           <div class="form-group">
-            <label>邮箱 <span class="required">*</span></label>
+            <label>{{ $t('common.terms.email') }} <span class="required">*</span></label>
             <input
               v-model="formData.email"
               type="email"
@@ -227,7 +228,7 @@ function moveDown(index: number) {
           </div>
 
           <div class="form-group">
-            <label>角色 <span class="required">*</span></label>
+            <label>{{ $t('common.terms.role') }} <span class="required">*</span></label>
             <input
               v-model="formData.role"
               type="text"
@@ -241,14 +242,14 @@ function moveDown(index: number) {
           <div class="form-group">
             <label class="checkbox-label">
               <input v-model="formData.enabled" type="checkbox" />
-              <span>启用</span>
+              <span>{{ $t('common.status.enabled') }}</span>
             </label>
           </div>
         </div>
 
         <div class="dialog-footer">
-          <button class="btn btn-ghost" @click="showDialog = false">取消</button>
-          <button class="btn btn-primary" @click="saveApprover">保存</button>
+          <button class="btn btn-ghost" @click="showDialog = false">{{ $t('common.button.cancel') }}</button>
+          <button class="btn btn-primary" @click="saveApprover">{{ $t('common.button.save') }}</button>
         </div>
       </div>
     </div>

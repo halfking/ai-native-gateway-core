@@ -13,9 +13,80 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 var partitionNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*_[0-9]{4}_[0-9]{2}$`)
+
+// Keep manual promotion aligned with the automatic retired-v1 lifecycle gate.
+var retiredV1HotTables = map[string]struct{}{
+	"_request_logs_hot":        {},
+	"_request_logs_bodies_hot": {},
+}
+
+// promoteHotRetiredReason reports why a manual promote of table is refused, or
+// "" when the table is not part of the retired v1 family.
+func promoteHotRetiredReason(table string) string {
+	if _, retired := retiredV1HotTables[table]; !retired {
+		return ""
+	}
+	if settings.RequestLogsWriteEnabled() {
+		return "" // writes re-enabled: the family is live again, allow the promote
+	}
+	return table + " belongs to the retired request_logs family " +
+		"(storage.request_logs_write_enabled=false, renamed by migration 860); " +
+		"hot promotion is disabled for it — the automatic lifecycle job is gated the same way"
+}
+
+// rejectRetiredV1Promote writes the refusal response for a retired v1 hot
+// table and reports whether the caller should stop.
+func rejectRetiredV1Promote(w http.ResponseWriter, table string) bool {
+	reason := promoteHotRetiredReason(table)
+	if reason == "" {
+		return false
+	}
+	// 409 Conflict: the request is well-formed and the table exists, but the
+	// family is in the retired state. 400 would blame the request instead.
+	writeError(w, http.StatusConflict, reason)
+	return true
+}
+
+// hotReclaimHint returns the operator hint for reclaiming disk space after a hot
+// promote drained a retired v1 table, or "" when table is not part of that family.
+//
+// 2026-10-18 (§97): the previous hint was inline and said
+// "…对 _request_logs_hot 执行 VACUUM FULL 以回收磁盘空间". Three defects, all
+// confirmed against the production catalog (details in the runbook §97):
+//
+//  1. It named only _request_logs_hot (59 MB) and never _request_logs_bodies_hot
+//     (291 MB) — i.e. it pointed at the table holding 15% of the reclaimable space.
+//  2. It was unreachable in exactly the state it exists for. promoteHotRetiredReason
+//     fails the job before any batch runs while writes are disabled, so
+//     TotalMigrated can never exceed 0 on the retired family. The hint only ever
+//     appears after writes are re-enabled — the one state where nobody needs it.
+//  3. It attributed the space to "TOAST 尚未释放" while naming an operation whose
+//     TOAST behaviour is not what the measurement shows. Measured on 2026-10-18:
+//     _request_logs_bodies_hot is count(*)=0 with heap 0 bytes, its TOAST holds 0
+//     chunks at 99.6% free space, and the TOAST btree has 29,299 of 29,302 pages
+//     marked deleted — after a same-day VACUUM of both the parent and the TOAST.
+//     A plain VACUUM demonstrably returns none of it, and only TRUNCATE rewrites
+//     the TOAST relation itself.
+//
+// We deliberately do NOT assert what VACUUM FULL does to a TOAST table: the audit
+// found no authoritative source settling it, and the recommendation does not
+// depend on the answer — TRUNCATE is unconditionally correct here because the
+// family is write-gated and both tables measure count(*)=0.
+func hotReclaimHint(table string) string {
+	if _, retired := retiredV1HotTables[table]; !retired {
+		return ""
+	}
+	return "已迁移数据，但磁盘空间尚未释放：" + table +
+		" 的剩余占用在 TOAST 与索引页上，普通 VACUUM 只把它们标为可复用、不归还给操作系统。" +
+		"请在【存储总览】页面对该表执行 TRUNCATE（前提：count(*) = 0），" +
+		"只有 TRUNCATE 会连同 TOAST 表一起重写。"
+}
 
 func validPartitionName(name string) bool {
 	return partitionNamePattern.MatchString(name) && !strings.HasSuffix(name, "_hot")
@@ -29,6 +100,15 @@ func quoteIdentifier(name string) string {
 // 2026-07-14: model_probe_runs_hot 切换为纯 hot 表策略，
 // 移除了 model_probe_runs_hot 项（不再 promote）。
 var hotPromoteTableMap = map[string]string{
+	// ⚠ 890（v1 族真删）之后，这两项的**表与 promote 函数都被 DROP**。
+	// 本表**保留**它们不是为了还能 promote（早就不行了），而是为了保住**手动
+	// promote 端点的退役语义**：对退役族必须回 409 + "retired request_logs
+	// family" 理由，而不是笼统的"不支持该表"（既有契约，见
+	// admin/data_lifecycle_hot_partition_retirement_test.go）。
+	//
+	// ⇒ 自动 hot cron **不再**盲调它们：cron 侧有**能力探针**（promote 函数
+	// 不存在 ⇒ 记一条 INFO 的 SKIP，不报错）—— 这才是止血的刀；把条目从本表
+	// 摘掉会改掉手动端点的拒绝形状（实测：既有退役契约测试直接变红）。
 	"_request_logs_hot":             "promote_request_logs_hot_to_partition",
 	"usage_ledger_hot":              "promote_usage_ledger_hot_to_partition",
 	"request_wal_hot":               "promote_request_wal_hot_to_partition",
@@ -238,11 +318,19 @@ type promoteHotAsyncResponse struct {
 // 默认 hot 窗口为 8 小时，所有手动/自动 promote 使用同一默认值。
 const defaultHotRetentionHours = 8
 
+type hotPromoteDB interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
 // handleDataLifecyclePromoteHotAsync POST /api/admin/data-lifecycle/hot/promote-async
 //
 // 异步触发 hot 表迁移，立即返回 job_id，后台 goroutine 执行迁移逻辑。
 // 前端通过 GET /api/admin/data-lifecycle/hot/job/:id 轮询状态。
 func (h *Handler) handleDataLifecyclePromoteHotAsync(w http.ResponseWriter, r *http.Request) {
+	h.handleDataLifecyclePromoteHotAsyncWithDB(w, r, h.db)
+}
+
+func (h *Handler) handleDataLifecyclePromoteHotAsyncWithDB(w http.ResponseWriter, r *http.Request, db hotPromoteDB) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -254,6 +342,11 @@ func (h *Handler) handleDataLifecyclePromoteHotAsync(w http.ResponseWriter, r *h
 	}
 	if _, ok := hotPromoteTableMap[req.TableName]; !ok {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid table_name: %s", req.TableName))
+		return
+	}
+	// Retired v1 family (migration 860 + stop-write): refuse the manual leg
+	// exactly as the automatic lifecycle leg already does.
+	if rejectRetiredV1Promote(w, req.TableName) {
 		return
 	}
 
@@ -308,7 +401,7 @@ func (h *Handler) handleDataLifecyclePromoteHotAsync(w http.ResponseWriter, r *h
 	jobCtx, cancel := context.WithTimeout(context.Background(), 24*time.Hour)
 	job.cancelFn = cancel
 
-	go h.runHotPromoteJob(jobCtx, job, req.MaxBatches)
+	go h.runHotPromoteJobWithDB(jobCtx, job, req.MaxBatches, db)
 
 	slog.Info("data-lifecycle: hot promote async started",
 		"job_id", job.ID,
@@ -323,7 +416,7 @@ func (h *Handler) handleDataLifecyclePromoteHotAsync(w http.ResponseWriter, r *h
 	_ = json.NewEncoder(w).Encode(promoteHotAsyncResponse{
 		RunID:      job.ID,
 		TableName:  job.TableName,
-		Status:     string(job.Status),
+		Status:     string(HotJobStatusPending),
 		Async:      true,
 		PollingURL: fmt.Sprintf("/api/admin/data-lifecycle/hot/job/%s", job.ID),
 		StartedAt:  job.StartedAt.Format(time.RFC3339),
@@ -338,6 +431,10 @@ func (h *Handler) handleDataLifecyclePromoteHotAsync(w http.ResponseWriter, r *h
 //   - 写入 final 状态（success / partial / failed / cancelled）时设置 FinishedAt
 //   - 任何 panic 由 defer recover 兜底，状态写为 failed 并附 panic 信息
 func (h *Handler) runHotPromoteJob(ctx context.Context, job *HotPromoteJob, maxBatches int) {
+	h.runHotPromoteJobWithDB(ctx, job, maxBatches, h.db)
+}
+
+func (h *Handler) runHotPromoteJobWithDB(ctx context.Context, job *HotPromoteJob, maxBatches int, db hotPromoteDB) {
 	defer func() {
 		if r := recover(); r != nil {
 			now := time.Now().UTC()
@@ -386,8 +483,20 @@ func (h *Handler) runHotPromoteJob(ctx context.Context, job *HotPromoteJob, maxB
 			return
 		}
 
+		if reason := promoteHotRetiredReason(job.TableName); reason != "" {
+			now := time.Now().UTC()
+			job.Status = HotJobStatusFailed
+			job.Error = reason
+			job.FinishedAt = &now
+			job.UpdatedAt = now
+			job.DurationSeconds = int64(time.Since(job.StartedAt).Seconds())
+			slog.Warn("data-lifecycle: hot promote job retired",
+				"job_id", job.ID, "table", job.TableName, "total_migrated", job.TotalMigrated, "reason", reason)
+			return
+		}
+
 		var migrated int64
-		err := h.db.QueryRow(ctx,
+		err := db.QueryRow(ctx,
 			fmt.Sprintf("SELECT %s($1::interval, $2::int)", fnName),
 			retentionInterval,
 			job.BatchSize,
@@ -422,8 +531,10 @@ func (h *Handler) runHotPromoteJob(ctx context.Context, job *HotPromoteJob, maxB
 				"total_migrated", job.TotalMigrated,
 				"batches", job.BatchesExecuted,
 				"duration_seconds", job.DurationSeconds)
-			if job.TableName == "_request_logs_hot" && job.TotalMigrated > 0 {
-				job.Warning = "已迁移数据，但 TOAST 空间尚未释放。请在【存储总览】页面对 _request_logs_hot 执行 VACUUM FULL 以回收磁盘空间。"
+			if job.TotalMigrated > 0 {
+				if hint := hotReclaimHint(job.TableName); hint != "" {
+					job.Warning = hint
+				}
 			}
 			return
 		}
@@ -576,6 +687,10 @@ type promoteHotResponse struct {
 // 同步模式（保留兼容）：内部启动异步任务，阻塞等待结果。
 // 推荐使用 /promote-async + GET /job/{id} 实现真正的非阻塞调用。
 func (h *Handler) handleDataLifecyclePromoteHot(w http.ResponseWriter, r *http.Request) {
+	h.handleDataLifecyclePromoteHotWithDB(w, r, h.db)
+}
+
+func (h *Handler) handleDataLifecyclePromoteHotWithDB(w http.ResponseWriter, r *http.Request, db hotPromoteDB) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -607,6 +722,10 @@ func (h *Handler) handleDataLifecyclePromoteHot(w http.ResponseWriter, r *http.R
 	fnName, ok := hotPromoteTableMap[req.TableName]
 	if !ok {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid table_name: %s", req.TableName))
+		return
+	}
+	// Retired v1 family — same gate as the async leg above.
+	if rejectRetiredV1Promote(w, req.TableName) {
 		return
 	}
 
@@ -644,7 +763,7 @@ func (h *Handler) handleDataLifecyclePromoteHot(w http.ResponseWriter, r *http.R
 		}
 
 		var migrated int64
-		err := h.db.QueryRow(ctx,
+		err := db.QueryRow(ctx,
 			fmt.Sprintf("SELECT %s($1::interval, $2::int)", fnName),
 			retentionInterval,
 			req.BatchSize,

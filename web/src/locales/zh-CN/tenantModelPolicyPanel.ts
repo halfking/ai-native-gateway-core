@@ -61,10 +61,10 @@ export default {
 
   error: {
     loadFailed: '加载失败',
+    checkFailed: '校验失败',
     canonicalNameRequired: 'canonical_name 必填',
     createFailed: '创建失败',
     deleteFailed: '删除失败',
     restoreFailed: '恢复失败',
   },
-  softDeleteConfirm: '确认软删除策略 {name}？(可恢复)',
 }

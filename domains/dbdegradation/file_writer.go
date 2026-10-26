@@ -44,6 +44,34 @@ func NewFileWriter(baseDir string) *FileWriter {
 	return fw
 }
 
+// FIXME-14370（§143.70，2026-10-22 生产实测登记；**零行为变更**）：
+//
+//	本文件写出的降级兜底文件（{baseDir}/backups/sessions-YYYY-MM-DD[-NN].jsonl.gz）
+//	**没有任何保留期** —— 只有两个【写入上限】（maxFileSize=100MB / maxDailyFiles=50），
+//	**没有任何按日期删除旧文件的路径** ⇒ ⇒ 日文件无界堆积。
+//
+//	★ 生产实测（只读）：
+//	  - 245：data/backups/backups = **14 GB / 196 个文件**，最早 2026-07-15；
+//	  - 154：data/backups/backups = **4.9 GB / 98 个文件**，最早 2026-08-17；
+//	  - 154 根分区已 **90% 满**（可用 9.8 GB）。
+//
+//	★ 为什么它不是别的东西在管：
+//	  - `TTLManager`（ttl_manager.go）管的是 **Redis session key 的 TTL**，不是这些文件；
+//	  - `/etc/cron.d/llm-gateway-prune` 每周日 prune 的是**旧 release 二进制**；
+//	  - `/etc/cron.d/cleanup-known-junk.sh` 每 30 min 跑，但只在**可用 < 5 GB** 时才动手，
+//	    且清理对象是 procfs / dangling 镜像 / /tmp 产物，**不含本目录**。
+//
+//	★ 附带发现（可读性风险，不只是空间）：
+//	  单遍 `gzip.NewReader` 读这些文件会**整文件 0 条可恢复**（多进程 O_APPEND +
+//	  容器硬杀跳过 gzip.Close ⇒ 「孤儿 header + 完整 member + 截断尾」）——
+//	  仓内 `file_reader_salvage.go` 的打捞通道才是正确读法（打捞比单遍多捞回 36%）。
+//	  154 上 98 个文件里 **51 个**单遍读不出；打捞后仍有 **730 MB** 压缩字节不可恢复。
+//
+//	⇒ ⇒ 待属主拍板（属主决策 ⑫）：保留期天数 / 归档口径 / 是否「先打捞再删」。
+//	  在拍板前，本 FIXME 只做登记，**不改任何行为**。
+//	  门 `scripts/ursmcheck/section_14370_session_bodies_file_surface_test.go`
+//	  判据 ③ 钉住「缺陷仍在且已被登记」⇒ 谁修了它，门会红 ⇒ 提醒同步决策清单。
+
 // WriteSnapshot 写入会话快照
 func (fw *FileWriter) WriteSnapshot(ctx context.Context, sess *session.Session, stats *session.SessionStats, args session.SnapshotArgs) error {
 	record := BackupRecord{

@@ -63,7 +63,7 @@ async function load() {
     stats.value = next
   } catch (e: unknown) {
     if (race.stale(gen)) return
-    errorText.value = e instanceof Error ? e.message : '加载用户统计失败'
+    errorText.value = e instanceof Error ? e.message : t('users.detail.loadStatsFailed')
   } finally {
     if (race.current(gen)) loading.value = false
   }
@@ -176,12 +176,12 @@ const canDrillKeys = computed(() => isSuperAdmin())
       <div class="udd-header">
         <div class="udd-identity">
           <span class="badge" :class="user.role === 'super_admin' ? 'badge-purple' : 'badge-blue'">{{ user.role }}</span>
-          <span class="badge" :class="user.enabled ? 'badge-green' : 'badge-red'">{{ user.enabled ? t('users.status.enabled', '启用') : t('users.status.disabled', '禁用') }}</span>
+          <span class="badge" :class="user.enabled ? 'badge-green' : 'badge-red'">{{ user.enabled ? t('users.status.enabled', $t('common.status.enabled')) : t('users.status.disabled', $t('common.status.disabled')) }}</span>
           <span v-if="user.must_change_password" class="badge badge-yellow">{{ t('users.mustChangePassword.pending', '待改密') }}</span>
           <code class="mono udd-tenant">{{ user.tenant_id }}</code>
         </div>
         <div class="udd-actions">
-          <button class="btn btn-sm" @click="onToggleEnabled">{{ user.enabled ? t('users.action.disable', '禁用') : t('users.action.enable', '启用') }}</button>
+          <button class="btn btn-sm" @click="onToggleEnabled">{{ user.enabled ? t('users.action.disable', $t('common.status.disabled')) : t('users.action.enable', $t('common.status.enabled')) }}</button>
           <button class="btn btn-sm" @click="onResetPassword">{{ t('users.action.resetPassword', '重置密码') }}</button>
         </div>
       </div>
@@ -196,30 +196,30 @@ const canDrillKeys = computed(() => isSuperAdmin())
             :class="{ active: days === d }"
             type="button"
             @click="days = d"
-          >{{ t('users.detail.days', '近') }} {{ d }} {{ t('users.detail.daysUnit', '天') }}</button>
+          >{{ t('users.detail.days', '近') }} {{ d }} {{ t('users.detail.daysUnit', $t('common.days')) }}</button>
         </div>
       </div>
 
-      <div v-if="loading" class="udd-empty">{{ t('users.detail.loading', '加载中…') }}</div>
+      <div v-if="loading" class="udd-empty">{{ t('users.detail.loading', $t('common.feedback.loading')) }}</div>
       <div v-else-if="errorText" class="udd-empty udd-error">{{ errorText }}</div>
 
       <template v-else-if="stats">
         <!-- KPI -->
         <div class="udd-kpis">
-          <StatCard :label="t('users.detail.kpiRequests', '请求数')" icon="📥" compact>
+          <StatCard :label="t('users.detail.kpiRequests', $t('common.terms.requestCount'))" compact>
             <template #value>{{ fmtNum(stats.kpi.requests) }}</template>
             <template #sub>{{ t('users.detail.dailyAvg', '日均') }} {{ stats.days > 0 ? fmtNum(Math.round(stats.kpi.requests / stats.days)) : '-' }}</template>
           </StatCard>
-          <StatCard label="Token" icon="🔢" compact>
+          <StatCard label="Token" compact>
             <template #value>{{ fmtTokensCompact(stats.kpi.tokens) }}</template>
             <template #sub>{{ t('users.detail.topModel', '主力') }} {{ stats.top_models[0]?.name ?? '—' }}</template>
           </StatCard>
-          <StatCard :label="t('users.detail.kpiCredits', '积分消耗')" icon="🪙" compact tone="success">
+          <StatCard :label="t('users.detail.kpiCredits', '积分消耗')" compact tone="success">
             <template #value>{{ fmtNum(stats.kpi.credits) }}</template>
           </StatCard>
-          <StatCard :label="t('users.detail.kpiErrP95', '失败率 / P95')" icon="⏱️" compact tone="danger">
+          <StatCard :label="t('users.detail.kpiErrP95', '失败率 / P95')" compact tone="danger">
             <template #value>{{ (stats.kpi.error_rate * 100).toFixed(1) }}%<span class="udd-unit">/ {{ fmtMs(stats.kpi.latency_p95_ms) }}</span></template>
-            <template #sub>{{ t('users.detail.failed', '失败') }} {{ fmtNum(stats.kpi.errors) }}</template>
+            <template #sub>{{ t('users.detail.failed', $t('common.status.failed')) }} {{ fmtNum(stats.kpi.errors) }}</template>
           </StatCard>
         </div>
 
@@ -239,7 +239,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
             <div class="udd-card">
               <div class="udd-card-title">{{ t('users.detail.topModels', 'Top 模型') }}</div>
               <table class="udd-table">
-                <thead><tr><th>{{ t('users.detail.model', '模型') }}</th><th class="num">{{ t('users.detail.req', '请求') }}</th><th class="num">Token</th><th class="num">{{ t('users.detail.credits', '积分') }}</th></tr></thead>
+                <thead><tr><th>{{ t('users.detail.model', $t('common.terms.model')) }}</th><th class="num">{{ t('users.detail.req', $t('common.terms.request')) }}</th><th class="num">Token</th><th class="num">{{ t('users.detail.credits', $t('common.unit.credits')) }}</th></tr></thead>
                 <tbody>
                   <tr v-for="m in stats.top_models" :key="m.name">
                     <td class="mono">{{ m.name }}</td>
@@ -254,7 +254,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
             <div class="udd-card">
               <div class="udd-card-title">{{ t('users.detail.topApps', 'Top 应用') }}</div>
               <table class="udd-table">
-                <thead><tr><th>{{ t('users.detail.app', '应用') }}</th><th class="num">{{ t('users.detail.req', '请求') }}</th><th class="num">Token</th><th class="num">{{ t('users.detail.credits', '积分') }}</th></tr></thead>
+                <thead><tr><th>{{ t('users.detail.app', $t('common.terms.application')) }}</th><th class="num">{{ t('users.detail.req', $t('common.terms.request')) }}</th><th class="num">Token</th><th class="num">{{ t('users.detail.credits', $t('common.unit.credits')) }}</th></tr></thead>
                 <tbody>
                   <tr v-for="a in stats.top_apps" :key="a.name">
                     <td><span class="badge badge-blue">{{ a.name }}</span></td>
@@ -272,7 +272,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
           <div class="udd-card">
             <div class="udd-card-title">{{ t('users.detail.recent', '最近请求') }}</div>
             <table class="udd-table">
-              <thead><tr><th>{{ t('users.detail.time', '时间') }}</th><th>{{ t('users.detail.model', '模型') }}</th><th class="num">{{ t('users.detail.firstTotal', '首字 / 总耗时') }}</th><th class="num">{{ t('users.detail.credits', '积分') }}</th><th>{{ t('users.detail.status', '状态') }}</th></tr></thead>
+              <thead><tr><th>{{ t('users.detail.time', $t('common.time')) }}</th><th>{{ t('users.detail.model', $t('common.terms.model')) }}</th><th class="num">{{ t('users.detail.firstTotal', '首字 / 总耗时') }}</th><th class="num">{{ t('users.detail.credits', $t('common.unit.credits')) }}</th><th>{{ t('users.detail.status', $t('common.terms.status')) }}</th></tr></thead>
               <tbody>
                 <tr v-for="(rq, i) in stats.recent_requests" :key="i">
                   <td class="mono udd-time">{{ fmtDateTime24h(rq.ts) }}</td>
@@ -291,10 +291,10 @@ const canDrillKeys = computed(() => isSuperAdmin())
         <div class="udd-card">
           <div class="udd-card-title">{{ t('users.detail.basic', '基本信息') }}</div>
           <div class="udd-kv">
-            <span class="k">{{ t('users.table.displayName', '显示名') }}</span><span>{{ user.display_name || '—' }}</span>
-            <span class="k">{{ t('users.table.email', '邮箱') }}</span><span class="mono">{{ user.email || '—' }}</span>
-            <span class="k">{{ t('users.table.tenant', '租户') }}</span><span class="mono">{{ user.tenant_id }}</span>
-            <span class="k">{{ t('users.table.createdAt', '创建时间') }}</span><span class="mono">{{ fmtDateTime24h(user.created_at) }}</span>
+            <span class="k">{{ t('users.table.displayName', $t('common.terms.displayName')) }}</span><span>{{ user.display_name || '—' }}</span>
+            <span class="k">{{ t('users.table.email', $t('common.terms.email')) }}</span><span class="mono">{{ user.email || '—' }}</span>
+            <span class="k">{{ t('users.table.tenant', $t('common.terms.tenant')) }}</span><span class="mono">{{ user.tenant_id }}</span>
+            <span class="k">{{ t('users.table.createdAt', $t('common.createdAt')) }}</span><span class="mono">{{ fmtDateTime24h(user.created_at) }}</span>
             <span class="k">{{ t('users.table.lastLogin', '最后登录') }}</span><span class="mono">{{ user.last_login_at ? fmtDateTime24h(user.last_login_at) : '—' }}</span>
             <span class="k">{{ t('users.detail.hotKeys', '高频密钥') }}</span><span class="mono">{{ topKeysText }}</span>
             <span class="k">{{ t('users.detail.keyCount', 'API 密钥') }}</span>
@@ -367,8 +367,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
   text-align: left;
   font-size: 10.5px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
   color: var(--muted);
   padding: 5px 6px;
   border-bottom: 1px solid var(--border);

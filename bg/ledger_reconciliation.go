@@ -44,7 +44,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
-	"github.com/kaixuan/llm-gateway-go/settings"
+	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 const (
@@ -303,53 +303,46 @@ func (r *LedgerReconciler) checkBalanceChain(ctx context.Context, window time.Du
 	return count
 }
 
-// usageCreditSkipS4StopWrite is the machine-readable reason key recorded when
-// the usage↔credit comparison is skipped because S4 stop-write is active.
-const usageCreditSkipS4StopWrite = "s4_stop_write"
+// ★ 2026-10-20（迁移 890 + 并行审计轮 D0）：旧的「可比性门」已退役。
+//
+// 退役的是：常量 `usageCreditSkipS4StopWrite`（"s4_stop_write"）与纯函数
+// `usageCreditComparability(logsWriteEnabled)`。
+//
+// 旧门的形状：usageCreditSQL 把 v1 族（`storage.request_logs_write_enabled`
+// 门内）与 credit_ledger_hot（永不在门内）做 FULL OUTER JOIN ⇒ 停写生效后
+// 两侧不再同期 ⇒ 每个请求都落进「未匹配 credit」分支被记成差异 ⇒ 无界假发现。
+// ⇒ 旧门在停写时跳过本比对，形状是对的。
+//
+// 退役理由（两个前提同时消失，而门仍然闭合）：
+//   ① 890 把 v1 族整体 DROP、usage 侧随之迁到**会话族**（写入路径无条件）
+//      ⇒ 「门一关两侧就不同期」不再成立；
+//   ② 该键的**代码默认**被并行审计轮改成 false ⇒ 这条**财务**比对在任何
+//      未显式配置它的环境上**永久停摆**（findings 计数恒 0 ⇒ 运维会读到
+//      「账务无差异」）。
+//
+// ⇒ 替代物：`usageArmEmptySkipReason` + **数据驱动**的可判定性检查
+//   （见 checkUsageCredit）—— 判据从「某个开关的状态」换成「这一次的两侧
+//   是否同期」，后者才是这个问题真正要问的。
+//
+// （退役记录：这两个符号的唯一用途就是那道门，留着就成了「看起来还在
+//   防守」的僵尸判据。）
 
-// usageCreditComparability reports whether the usage↔credit comparison is
-// currently *decidable*, and why not when it isn't.
-//
-// The comparison spans the S4 gate boundary: usageCreditSQL joins
-// _request_logs_hot (INSIDE the _request_logs wide family, i.e. what
-// storage.request_logs_write_enabled gates) against credit_ledger_hot (a
-// billing table that is not in that family and never will be). The reconciler
-// did not consult the gate at all, so the moment stop-write fires the two sides
-// stop describing the same period:
-//
-//   - usage arm   → freezes at the cutover (no new credits_charged rows)
-//   - credit arm  → keeps growing (billing is not gated)
-//
-// Every request after the cutover therefore lands in the FULL OUTER JOIN's
-// unmatched-credit branch with charged=0 / debited>0 and is recorded as a
-// difference in maas_reconciliation_findings. Those are not ledger defects —
-// they are the stop-write itself, reported as if they were. The count grows
-// without bound, so it is not a transient either.
-//
-// Same shape as the discovery stale-expiry guard: the premise ("both sides are
-// live over the same window") disappears when the gate flips, and what remains
-// must be "stop and say so", not "keep running and call the output a finding".
-// Deliberately a pure function so the decision is testable without a database
-// and without touching the gate.
-func usageCreditComparability(logsWriteEnabled bool) (comparable bool, reason string) {
-	if !logsWriteEnabled {
-		return false, usageCreditSkipS4StopWrite
-	}
-	return true, ""
-}
-
-// usageCreditSQL compares per-request credit charges (_request_logs_hot)
+// usageCreditSQL compares per-request credit charges (session family)
 // against ledger consume deductions (credit_ledger_hot). Extracted for the
 // SQL-shape regression test.
 //
-// Note the two sides are NOT in the same blast radius — see
-// usageCreditComparability, which is why this must not be run while S4
-// stop-write is active.
+// Note the two sides are NOT in the same blast radius — the usage arm comes
+// from the session family (written unconditionally), the credit arm from the
+// billing ledger (never gated) — which is why the decidability check is
+// **data-driven** (usage arm empty ⇒ skip) rather than a switch: see
+// checkUsageCredit and usageArmEmptySkipReason.
 func usageCreditSQL() string {
 	return `
 		WITH usage AS (
 		    SELECT tenant_id, request_id, SUM(credits_charged) AS charged
-		    FROM _request_logs_hot
+		    -- ★ 890（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
+		    -- credits_charged / tenant_id / request_id / ts 在会话族投影里同名同义。
+		    FROM ` + db.SessionFamilyTurnsHotSourceSQL() + `
 		    WHERE ts > now() - $1::interval
 		      AND ts < now() - $2::interval
 		      AND credits_charged IS NOT NULL AND credits_charged <> 0
@@ -365,7 +358,21 @@ func usageCreditSQL() string {
 		)
 		SELECT COALESCE(u.tenant_id, c.tenant_id),
 		       COALESCE(u.request_id, c.ref_id),
-		       COALESCE(u.charged, 0), COALESCE(c.debited, 0)
+		       COALESCE(u.charged, 0), COALESCE(c.debited, 0),
+		       -- ★ 890 + D0：usage 臂的**总体规模**。
+		       --   它回答的是「这次比对有没有可比性」：usage 臂为 0 行而
+		       --   credit 臂有行 ⇒ 两侧不同期（源要么没写、要么没带
+		       --   credits_charged、要么镜像滞后）⇒ 比对结果会把
+		       --   credit 侧每一行都记成「计了费但没有用量」——**假发现**。
+		       --   旧实现用「S4 停写键」当这个开关（证据源在门内 ⇒ 门一关
+		       --   就冻结），890 之后证据源迁到会话族、且该键的代码默认被
+		       --   并行审计轮改成 false ⇒ 那个开关既过时又恒闭 ⇒ 这条
+		       --   **财务**比对在任何未显式配置它的环境上永久停摆。
+		       --   ⇒ 改用**数据驱动**的可判定性：臂空 ⇒ 不可判定 ⇒ 跳过
+		       --   并把跳过做成可观测（见 usageArmEmptySkipReason）。
+		       --   ⚠ 这不是「用数据换开关」——它比开关更贴切：开关只能回答
+		       --   「源是否被关掉」，数据回答的是「这一次的两侧是否同期」。
+		       (SELECT count(*)::int FROM usage) AS usage_arm_rows
 		FROM usage u
 		FULL OUTER JOIN credit c
 		  ON u.tenant_id = c.tenant_id AND u.request_id = c.ref_id
@@ -381,15 +388,69 @@ func usageCreditSQL() string {
 // radii, so while stop-write is active the comparison is not decidable and
 // running it would land an unbounded stream of false findings. See
 // usageCreditComparability for the full failure shape.
-func (r *LedgerReconciler) checkUsageCredit(ctx context.Context, window time.Duration) int {
-	if ok, reason := usageCreditComparability(settings.RequestLogsWriteEnabled()); !ok {
-		r.markSkipped(reason)
-		slog.Info("ledger reconciliation: usage↔credit 比对已跳过（本轮未执行，非「无差异」）",
-			"reason", reason,
-			"detail", "_request_logs_hot 已停写而 credit_ledger_hot 继续增长，两侧不再同期；"+
-				"继续比对会把停写本身记成账务差异")
-		return 0
+// usageArmEmptySkipReason 是 machine-readable 原因键：当 usage 臂在窗口内
+// **一行都没有**、而 credit 臂有行时，本次比对**不可判定**。
+//
+// ★ 2026-10-20（迁移 890 + 并行审计轮 D0）：它取代了旧的
+// `usageCreditSkipS4StopWrite`（"s4_stop_write"）。
+//
+// 旧键的前提是「usage 侧（v1 族）在 S4 停写门内 ⇒ 门一关，两侧不再同期」。
+// 890 把 v1 族整体 DROP、usage 侧随之迁到**会话族**（写入路径无条件）⇒
+// ① 「门一关就不同期」不再成立；② 而该键的**代码默认**被改成 false
+// ⇒ 这条**财务**比对在任何未显式配置它的环境上**永久停摆**
+// （停摆期间 findings 计数为 0，运维会读到「账务无差异」）。
+//
+// ⇒ 改为**数据驱动**的可判定性：理由不再来自某个开关，而是来自
+// 「这一次的两侧是否同期」。
+const usageArmEmptySkipReason = "usage_arm_empty"
+
+// usageCreditComparable 判定「这一次 usage↔credit 比对是否**可判定**」。
+//
+// 纯函数（可脱离数据库被测），两个输入都来自本次查询的结果：
+//
+//   - usageArmRows：usage 臂（会话族带 credits_charged 的请求）在窗口内的行数；
+//   - diffRows：本次比对**要报**的差异行数（usage 与 credit 两侧不同额）。
+//
+// 判定：
+//
+//	① 没有差异行 ⇒ 可判定（且无事可报）—— 这是「确实没有差异」，
+//	  **不是**「不可判定」，两者必须分开（否则运维会读到「账务无差异」
+//	  而真相是「没跑」）。
+//	② 有差异行、但 usage 臂为空 ⇒ **不可判定**：两侧不同期（源没写、
+//	  没带 credits_charged、或镜像滞后）⇒ 继续比对会把 credit 侧每一行
+//	  都记成「计了费但没有用量」的**假发现**，且数量无上界。
+//	③ 其余 ⇒ 可判定。
+//
+// ★ 2026-10-20（890 + D0）：本函数取代旧的
+// `usageCreditComparability(logsWriteEnabled)`——旧版的输入是一个**开关**，
+// 而开关只能回答「源是否被关掉」；本版回答的是「**这一次**的两侧是否同期」，
+// 后者才是这个问题真正要问的。旧的开关式判据会让这条财务比对在未显式
+// 配置该键的环境上**永久停摆**（停摆期间 findings 恒 0 ⇒ 运维读到
+// 「账务无差异」）。
+func usageCreditComparable(usageArmRows, diffRows int) (comparable bool, reason string) {
+	if diffRows == 0 {
+		return true, ""
 	}
+	if usageArmRows == 0 {
+		return false, usageArmEmptySkipReason
+	}
+	return true, ""
+}
+
+// checkUsageCredit compares per-request credit charges (session family)
+// against ledger consume deductions (credit_ledger_hot).
+//
+// ★ 2026-10-20（890 + D0）：本函数原先的**前提闸**（读 S4 停写键）已退役，
+// 换成**数据驱动**的可判定性检查：
+//
+//	usage 臂（会话族带 credits_charged 的请求）为空，而 credit 臂有行
+//	⇒ 两侧不同期 ⇒ 比对不可判定 ⇒ 跳过并**把跳过做成可观测**，
+//	  而不是把 credit 侧每一行都记成「计了费但没有用量」的**假发现**。
+//
+// ⚠ 这条比对是**财务控制**：它退役前的默认状态是「永远跳过」
+//
+//	（停写键默认 false）⇒ 恢复它本身就是修一个**静默的财务盲区**。
+func (r *LedgerReconciler) checkUsageCredit(ctx context.Context, window time.Duration) int {
 	rows, err := r.pool.Query(ctx, usageCreditSQL(), window, ledgerSettleLag, r.maxFindingsPerRun)
 	if err != nil {
 		slog.Warn("ledger reconciliation: usage↔credit scan failed", "error", err)
@@ -400,11 +461,12 @@ func (r *LedgerReconciler) checkUsageCredit(ctx context.Context, window time.Dur
 	type pair struct {
 		tenantID, requestID string
 		charged, debited    int64
+		usageArmRows        int
 	}
 	var batch []pair
 	for rows.Next() {
 		var v pair
-		if err := rows.Scan(&v.tenantID, &v.requestID, &v.charged, &v.debited); err != nil {
+		if err := rows.Scan(&v.tenantID, &v.requestID, &v.charged, &v.debited, &v.usageArmRows); err != nil {
 			slog.Warn("ledger reconciliation: usage↔credit scan row failed", "error", err)
 			return count
 		}
@@ -413,6 +475,27 @@ func (r *LedgerReconciler) checkUsageCredit(ctx context.Context, window time.Dur
 	if err := rows.Err(); err != nil {
 		slog.Warn("ledger reconciliation: usage↔credit scan failed", "error", err)
 		return count
+	}
+	// 不可判定 ⇒ 跳过并说明（不产生任何 finding）。
+	//
+	// ⚠ 判据是「**有差异行** 且 usage 臂为 0」，不是「usage 臂为 0」：
+	// 两侧都空时没有差异行、没有假发现风险，那是「确实没有差异」，
+	// 不该被记成「跳过」。
+	//
+	// ⚠ batch 可能为空（两侧都空 ⇒ 零差异行）⇒ 取 usage 臂行数前先判长度，
+	// 否则 batch[0] 会越界 panic（这类 panic 会打掉整个 worker 的 goroutine）。
+	usageArmRows := 0
+	if len(batch) > 0 {
+		usageArmRows = batch[0].usageArmRows
+	}
+	if comparable, reason := usageCreditComparable(usageArmRows, len(batch)); !comparable {
+		r.markSkipped(reason)
+		slog.Info("ledger reconciliation: usage↔credit 比对已跳过（本轮未执行，非「无差异」）",
+			"reason", reason,
+			"detail", "usage 臂（会话族带 credits_charged 的请求）在窗口内一行都没有，"+
+				"而 credit 臂有行 ⇒ 两侧不同期 ⇒ 比对不可判定；"+
+				"继续比对会把 credit 侧每一行都记成「计了费但没有用量」的假发现")
+		return 0
 	}
 	for _, v := range batch {
 		r.insertFinding(ctx, "usage_credit_mismatch", v.tenantID, v.requestID,

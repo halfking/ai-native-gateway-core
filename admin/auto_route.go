@@ -31,6 +31,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/i18n"
 	"github.com/kaixuan/llm-gateway-go/internal/httpx"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 // AutoRouteHandlers groups the 5 admin endpoints for autoroute.
@@ -155,7 +157,7 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 		SELECT ts, request_id, api_key_id, task_type, auto_profile,
 		       auto_confidence, client_model, outbound_model,
 		       credential_id, auto_decision, success, latency_ms, work_type
-		FROM request_logs_with_current_month_without_customer_id
+		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` r
 		WHERE is_auto_request = TRUE
 		  AND ts >= NOW() - INTERVAL '7 days'
 	`
@@ -261,6 +263,94 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 	writeJSONOk(w, out)
 }
 
+// autoRouteIndexSnapshotSQL —— 取「每个 (credential_id, raw_model) 对的
+// 最新桶那一行」，供 admin 的 auto-route 索引端点使用。
+//
+// 2026-10-19（96h 审计轮）：本查询原先写成「CTE latest_bucket
+// （GROUP BY 取 MAX(bucket)）+ JOIN 回原视图」，本轮改写成「元组 IN 子查询」。
+//
+// ⚠⚠⚠ **原提交（a54213451）声称的「1789 ms → 739 ms，-59%，每天省 27 分钟
+// 数据库时间」是错的，已撤回**（订正见 2026-10-20 的 correction 提交与
+// docs/audit/2026-10-19-96h-审计轮-分支裁决与慢SQL.md §3.4）。
+// 错因：**测量顺序造成的冷热缓存混淆**——先跑的那条是冷的，后跑的那条是热的。
+// 我自己手上的 `pg_stat_statements` 其实已经反证了它：**同一条旧写法**当天
+// 第一次 2030.9 ms、随后 3 次均值 726.2 ms ⇒ 那个 1789 ms 只是冷启动读数。
+//
+// ⇒ 订正后的**真库实测**（252 生产库、生产形态 ORDER BY score_smart DESC
+//
+//	   LIMIT 100、先预热再**交错重复** ABAB ×6 轮）：
+//
+//		旧写法（CTE + JOIN）  n=6  min 644 / 中位 777 / max 1173 / 均值 829 ms
+//		新写法（元组 IN）      n=6  min 632 / 中位 691 / max 1060 / 均值 755 ms
+//		⇒ 中位差 -86 ms（-11%），最小值差 -12 ms（-1.9%）
+//		⇒ **组内极差（±80 ms）大于组间差** ⇒ 差异在噪声带内 ⇒
+//		  **结论：两种写法性能无实质差异**（不是 -59%，也不是稳定的小幅优势）。
+//
+// ⇒ 计划面**结构相同**（自己复测的 EXPLAIN (ANALYZE, BUFFERS) 逐节点比对）：
+//
+//	节点类型完全一致（Gather Merge → Sort → Hash Left Join → Hash Join →
+//	Parallel Append → HashAggregate → Append → Seq Scan …），
+//	行数完全一致（聚合侧 432,076、外层 144,025、最终 100 行），
+//	buffers 几乎一致（30,292 vs 30,284）——**只有 Hash Join 换成 Hash Semi Join**。
+//	⇒ 「旧写法把同一批行扫两遍、新写法只扫一遍」这个机理解释**不成立**。
+//
+// ⇒ 所以本次改写的**真实价值只有两条**（都不是性能）：
+//  1. 语义等价已用真库逐行对账钉死（EXCEPT 双向差集 = 0，1079/1079 行）；
+//  2. 换掉了**教科书式的 DISTINCT ON**——那才是真的慢：它让 PG 对 432,076 行
+//     做 external merge Sort、溢出 58,944 kB 到磁盘（work_mem 仅 8MB），
+//     Execution Time 2980 ms（我方实测）/ 3040.8 ms（复核方实测），
+//     **比两种写法都差 3~4 倍**——这一条是**远超噪声带**的真实差异。
+//
+// ⇒ **下一次若有人再想「优化」这条 SQL，先记住两件事**：
+//
+//	(a) 交错重复测，别拿「先跑的那条」当基线（冷热缓存）；
+//	(b) 两种现有写法等价，别再改来改去；要动就先把 `gateway_mv_refresh_*`
+//	    之外的**真实读放大**找出来（这才是这 43 万行真正的问题）。
+//
+// ⚠ 语义等价性（三处都对上，改写才成立）：
+//  1. **逐对**取 MAX(bucket)，不是全局 MAX：桶是稀疏的，全局最大值只落在
+//     最后一次有指标变化的桶上（典型 1~2 行），会把整个索引藏起来
+//     （见 handleIndexSnapshot 的注释）。
+//  2. canonical_id 过滤留在**外层**：原写法是「先按对取最新桶，再按
+//     canonical_id 过滤」；若把过滤推进 IN 子查询，就变成「在过滤后的行里
+//     取最新桶」，当同一 (对, 桶) 上 canonical_id 变过时两者不等价。
+//  3. models_canonical 的 LEFT JOIN 位置不影响结果（按主键唯一查）。
+//
+// 门：admin/auto_route_index_snapshot_sql_test.go（语义两条 + 禁 DISTINCT ON）。
+const autoRouteIndexSnapshotSQL = `
+		SELECT cmi.credential_id, cmi.raw_model, cmi.canonical_id,
+		       COALESCE(mc.canonical_name, ''), cmi.billing_mode,
+		       cmi.unit_price_in_per_1m, cmi.unit_price_out_per_1m,
+		       cmi.context_window, cmi.success_rate, cmi.p95_latency_ms,
+		       cmi.active_sessions, cmi.concurrency_limit, cmi.pressure_ratio,
+		       cmi.score_smart, cmi.score_speed_first, cmi.score_cost_first,
+		       cmi.updated_at, cmi.bucket
+		FROM credential_model_index_with_current_month cmi
+		LEFT JOIN models_canonical mc ON mc.id = cmi.canonical_id
+		WHERE (cmi.credential_id, cmi.raw_model, cmi.bucket) IN (
+		    SELECT credential_id, raw_model, MAX(bucket)
+		    FROM credential_model_index_with_current_month
+		    GROUP BY credential_id, raw_model
+		)
+`
+
+// autoRouteIndexSnapshotQuery 组装 auto-route 索引端点的 SQL 与参数。
+//
+// 抽成函数而不是留在 handler 里，是为了让门能检查**拼装后**的形态：
+// canonical_id 过滤必须落在 IN 子查询**之外**（见 autoRouteIndexSnapshotSQL
+// 的语义等价性第 2 条），只检查常量文本看不到这个位置关系。
+func autoRouteIndexSnapshotQuery(canonicalID string, top int) (string, []interface{}) {
+	query := autoRouteIndexSnapshotSQL
+	args := []interface{}{}
+	if canonicalID != "" {
+		args = append(args, canonicalID)
+		query += fmt.Sprintf(" AND cmi.canonical_id = $%d", len(args))
+	}
+	args = append(args, top)
+	query += fmt.Sprintf(" ORDER BY cmi.score_smart DESC LIMIT $%d", len(args))
+	return query, args
+}
+
 // handleIndexSnapshot returns the current credential_model_index snapshot
 // (the latest 5-min bucket). Used by the admin UI to visualise the live
 // index state and by curl scripts to debug routing decisions.
@@ -304,34 +394,7 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	query := `
-		WITH latest_bucket AS (
-		    SELECT credential_id, raw_model, MAX(bucket) AS bucket
-		    FROM credential_model_index_with_current_month
-		    GROUP BY credential_id, raw_model
-		)
-		SELECT cmi.credential_id, cmi.raw_model, cmi.canonical_id,
-		       COALESCE(mc.canonical_name, ''), cmi.billing_mode,
-		       cmi.unit_price_in_per_1m, cmi.unit_price_out_per_1m,
-		       cmi.context_window, cmi.success_rate, cmi.p95_latency_ms,
-		       cmi.active_sessions, cmi.concurrency_limit, cmi.pressure_ratio,
-		       cmi.score_smart, cmi.score_speed_first, cmi.score_cost_first,
-		       cmi.updated_at, cmi.bucket
-		FROM credential_model_index_with_current_month cmi
-		JOIN latest_bucket lb
-		  ON lb.credential_id = cmi.credential_id
-		 AND lb.raw_model     = cmi.raw_model
-		 AND lb.bucket        = cmi.bucket
-		LEFT JOIN models_canonical mc ON mc.id = cmi.canonical_id
-		WHERE 1=1
-	`
-	args := []interface{}{}
-	if canonicalID != "" {
-		args = append(args, canonicalID)
-		query += fmt.Sprintf(" AND cmi.canonical_id = $%d", len(args))
-	}
-	args = append(args, top)
-	query += fmt.Sprintf(" ORDER BY cmi.score_smart DESC LIMIT $%d", len(args))
+	query, args := autoRouteIndexSnapshotQuery(canonicalID, top)
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
@@ -343,7 +406,24 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 	out := make([]map[string]interface{}, 0)
 	for rows.Next() {
 		var credID int64
-		var rawModel, canonicalName, billingMode string
+		var rawModel, canonicalName string
+		// ★ 2026-10-19：`billing_mode` 必须扫进 **string，不能扫进 string。
+		//
+		// 这一列没有 COALESCE 保护，而 credential_model_index 里确实有 NULL：
+		// 实测 427,986 行里 2,153 行 billing_mode IS NULL（其余 per_token
+		// 324,935 / token_plan 50,867 / free 50,031）。
+		//
+		// 后果不是「跳过那一行」这么简单：`rows.Scan` 出错会把 pgx 的 rows
+		// 置为出错状态，循环结束后 `rows.Err()` 同样返回这个错，
+		// 于是 writeAggRowsErr 照样把整个端点写成 500：
+		//
+		//	WARN  admin aggregate row scan failed; row skipped
+		//	      op=autoRoute.indexSnapshot error=cannot scan NULL into *string
+		//	ERROR admin handler internal error caller=aggregate_read_guard.go:34
+		//
+		// 实测 /api/admin/auto-route/index 稳定 500@1.1s（快速失败，不是超时）。
+		// 语义不变：NULL 与 "" 一样表示「没有这个值」，都不写进 entry。
+		var billingMode *string
 		var canonicalIDVal *int
 		var priceIn, priceOut, successRate, pressureRatio *float64
 		var contextWindow, p95, activeSessions, concurrencyLimit *int
@@ -367,8 +447,8 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 		if canonicalName != "" {
 			entry["canonical_name"] = canonicalName
 		}
-		if billingMode != "" {
-			entry["billing_mode"] = billingMode
+		if billingMode != nil && *billingMode != "" {
+			entry["billing_mode"] = *billingMode
 		}
 		if priceIn != nil {
 			entry["unit_price_in_per_1m"] = *priceIn

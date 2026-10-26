@@ -148,11 +148,37 @@
 
 | 门 | 断言什么 | 变异检验 |
 |---|---|---|
-| `TestS4DriftScopeReadsBothStorageFaces` | `mirrorDriftScopeSQL` 四个存储面**各读一次**；带正/负对照 | 删掉任一面 → 红（逐个点名） |
+| `TestDriftReconciliationMentionsNoRetiredV1Relation` | 对账这条路（`dual_read_validator.go`）的**代码**里不得再出现 v1 族的关系名；带正/负对照 | 往代码里塞一条 `FROM _request_logs_hot` → 红 |
 | `TestS4WindowFloorIsWeakerThanTheDocumentedExitCondition` | 打印窗口下限 vs spec 条件的差距；4 条否决理由非空 | —（有意不判定对错） |
 
 3 个变异（删 `request_logs_hot` / 删 `session_turns_hot` / 两面同删）全部按预期变红，
 两面的变异准确报出 2 条缺失。
+
+### ★ 2026-10-20（迁移 885，v1 族退役）：本节第一道门**退役换题**
+
+`TestS4DriftScopeReadsBothStorageFaces` 已从代码里**退役**，由
+`TestDriftReconciliationMentionsNoRetiredV1Relation` 接替。**门数仍是 2 道**
+（原表第一行换名换题，不是新增）。
+
+退役**不是**因为它守的不变量不重要，而是因为**被测对象不存在了**：
+
+1. `mirrorDriftScopeSQL` 随 v1 族的 DROP 一起从生产代码里删除 ⇒ 门还在、对象没了
+   ⇒ 它只能靠「把断言删掉」变绿，而那不是门。
+2. 它守的形态（「v1 还在写、但父表落后 9 小时 ⇒ 只读父表会把『最近 N 小时没有
+   v1』误报成空窗」）在 v1 族被 DROP 之后**无处可犯** —— 没有「父表落后 hot」
+   这回事，「只读一面」这个错误也就没有载体。
+
+退役把「读少了」换成了两个更要紧的错误，各有门承担：
+
+| 错误 | 谁守 |
+|---|---|
+| **还在量**：把退役态报成「已测量」（`v1_coverage_pp` 报 0 而不是 -1、`zero_drift` 报 true 而不是 false） | `cmd/gateway/s4_gate_coverage_faces_test.go`、`cmd/gateway/dual_read_validator_test.go` |
+| **还在查**：拿已 DROP 的表名去查（任何提到 v1 族的语句都是 **42P01**，且是**整条语句**失败，不是那条腿失败） | 本节新门 + `cmd/gateway/dual_read_validator_test.go` 的「零查询」门 |
+
+新门的判据打在**去掉 Go 注释后**的生产源码上（判据一旦能在注释里被满足就不是判据），
+并带**正控制**（一个确实提到 `_request_logs_hot` 的片段必须被判成「提到了」，
+否则上面那条断言恒绿）与**负控制**（不得误伤 `session_turns_hot` 与
+`public.request_logs` —— 后者是**另一个**关系，885 之后是会话族的两臂视图）。
 
 ---
 

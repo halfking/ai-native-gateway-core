@@ -99,6 +99,10 @@ type SessionV2 struct {
 	Intent              *string    `json:"intent,omitempty"`
 	PrimaryRequestID    *string    `json:"primary_request_id,omitempty"`
 	TurnLogsSummary     any        `json:"turn_logs_summary,omitempty"`
+	// DurationMs 是 sessions.duration_ms —— 877 起由**每轮刷新**写入的
+	// 已流逝时长（updated_at - created_at）。见 session_turns_v2.go 的
+	// sessionSnapshotV2.DurationMs 注释（同一口径、同一消费方）。
+	DurationMs *int64 `json:"duration_ms,omitempty"`
 
 	// SessionAnalysis 是 migration 567 的 session_analysis_metadata 读侧投影
 	// （LEFT JOIN LATERAL 命中时非空）。见 session_meta_view.go 的字段定义与
@@ -348,6 +352,7 @@ func (api *SessionDetailV2API) querySession(
 				s.last_model, s.last_provider,
 				s.task_type, s.client_type, s.topic, s.intent,
 				s.primary_request_id, s.turn_logs_summary,
+				s.duration_ms,
 				sam.status, sam.schema_version, sam.input_hash,
 				sam.source_task_id, sam.updated_at, sam.payload
 			FROM public.sessions s
@@ -374,6 +379,7 @@ func (api *SessionDetailV2API) querySession(
 		&s.LastModel, &s.LastProvider,
 		&s.TaskType, &s.ClientType, &s.Topic, &s.Intent,
 		&s.PrimaryRequestID, &turnLogsSummaryRaw,
+		&s.DurationMs,
 		&saStatus, &saSchemaVersion, &saInputHash, &saSourceTaskID, &saUpdatedAt, &saPayloadRaw,
 	)
 	if err != nil {
@@ -507,12 +513,12 @@ func (api *SessionDetailV2API) queryTurns(
 // 主键对客户端不可见）。策略：
 //
 //  1. 若 input 已等于某行 sessions.session_id（同租户） → 直接返回。
-//  2. 否则尝试经 _request_logs.gw_session_id → sessions.primary_request_id
-//     的反向映射；只允许唯一解析（命中多行返回 error，禁止把 gw_session_id
-//     隐式覆盖多个会话）。
+//  2. 否则尝试经会话族（session_turns.session_id ≡ gw_session_id）→
+//     sessions.primary_request_id 的反向映射；只允许唯一解析（命中多行返回
+//     error，禁止把 gw_session_id 隐式覆盖多个会话）。
 //  3. 两步都查不到 → 返回 errSessionNotFound，让上游按 404 处理。
 //
-// RLS：所有查询都带 tenant_id 谓词；不绕过 sessions / _request_logs 的现有
+// RLS：所有查询都带 tenant_id 谓词；不绕过 sessions / 会话族的现有
 // RLS 策略。sessionDetailV2DB 接口未暴露 Exec/QueryRow with bypass_rls，
 // 因此本 helper 无法也无法绕过租户隔离。
 func (api *SessionDetailV2API) resolveSessionID(
@@ -541,7 +547,7 @@ func (api *SessionDetailV2API) resolveSessionID(
 		return "", fmt.Errorf("resolveSessionID direct: %w", err)
 	}
 
-	// 2. 反向映射：_request_logs.gw_session_id → sessions.primary_request_id →
+	// 2. 反向映射：会话族 request_id → sessions.primary_request_id →
 	//    session_id。仅在 direct miss 时执行。取全部 DISTINCT session_id：
 	//    恰好 1 个才返回；0 个按未找到处理；>1 个说明该 gw_session_id 跨
 	//    多个会话 —— 显式拒绝。12h 审计 F-1：初版注释承诺"多命中返回
@@ -555,28 +561,24 @@ func (api *SessionDetailV2API) resolveSessionID(
 		FROM public.sessions s
 		WHERE s.tenant_id = $1
 		  AND s.primary_request_id IN (
-		      -- 会话存储解耦 v3 S3 读端迁移：session 族腿先行，v1 腿保留。
+		      -- 会话存储解耦 v3 S3 读端迁移：session 族腿（hot∪母表）。
 		      -- session_turns.session_id 就是 gw_session_id 形态，与本函数的
 		      -- 输入同键，因此可直接在 session 族内取 request_id 候选。
 		      -- 不改外层 primary_request_id 匹配，语义与迁移前逐字一致。
 		      --
-		      -- S4 停写（storage.request_logs_write_enabled=false）后下面两条
-		      -- v1 腿对活跃会话恒空，本反向臂会返回 0 候选 → errSessionNotFound
-		      -- （404），把仍以 gw_session_id 形式寻址的旧客户端整体打成不可用。
+		      -- R71 审计：双腿化（hot∪母表，R47 守卫纪律）。近期轮次在热表、
+		      -- 历史行已被 promote 进母表；单腿母表只能解析 8h 前的
+		      -- gw_session_id，热窗内反向臂恒 miss。
+		      --
+		      -- 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的两条 v1 腿
+		      -- （_request_logs_hot ∪ _request_logs）删除。会话族是唯一事实源，
+		      -- 仍以 gw_session_id 形式寻址的旧客户端在会话族里查不到就是
+		      -- 查不到（errSessionNotFound / 404），与其它读端一致。
 		      SELECT request_id FROM session_turns_hot
 		      WHERE tenant_id = $1 AND session_id = $2
 		      UNION ALL
 		      SELECT request_id FROM session_turns
 		      WHERE tenant_id = $1 AND session_id = $2
-		      UNION ALL
-		      -- R71 审计：双腿化（hot∪母表，R47 守卫纪律）。活跃会话的
-		      -- _request_logs 行在热表、历史行已被 promote 进母表；单腿母表
-		      -- 只能解析 8h 前的 gw_session_id，热窗内反向臂恒 miss。
-		      SELECT request_id FROM _request_logs_hot
-		      WHERE tenant_id = $1 AND gw_session_id = $2
-		      UNION ALL
-		      SELECT request_id FROM _request_logs
-		      WHERE tenant_id = $1 AND gw_session_id = $2
 		  )
 		LIMIT 2
 	`, tenantID, input)

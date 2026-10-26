@@ -35,7 +35,7 @@ services:
       DB_URL: postgresql://test:test123@postgres:5432/llm_gateway_test
       REDIS_ADDR: redis:6379
       PORT: 8443
-      LOG_LEVEL: info
+      LICENSE_AUTHORITY_LOG_LEVEL: info
     ports:
       - "8443:8443"
     depends_on:

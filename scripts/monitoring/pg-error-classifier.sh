@@ -122,75 +122,75 @@ classify_error() {
   # --- project（本项目，出现即回归） -------------------------------------
   # §1 表行1（L12）/ §3.1（L67）：citus columnar 分区 × 统一视图合成列 source，
   # 消息形如 "cache lookup failed for attribute source of relation 1148425"。
-  if printf '%s' "$msg" | grep -qE 'cache lookup failed for attribute [^ ]+ of relation'; then
+  if grep -qE 'cache lookup failed for attribute [^ ]+ of relation' <<<"$msg"; then
     echo -e 'project\tcitus_columnar_source_column'
     return
   fi
   # §1 表行3（L14）：model_integrity_events 写 jsonb 列收到非 JSON 文本
   # （历史根因：pgx SimpleProtocol 下 []byte 被内联为 bytea hex）。
   # 该消息文本在 external 噪音里也出现，必须用 STATEMENT 归属到本表。
-  if printf '%s' "$msg" | grep -qF 'invalid input syntax for type json' \
-    && printf '%s' "$stmt" | grep -qE 'INSERT INTO[[:space:]]+(public\.)?model_integrity_events'; then
+  if grep -qF 'invalid input syntax for type json' <<<"$msg" \
+    && grep -qE 'INSERT INTO[[:space:]]+(public\.)?model_integrity_events' <<<"$stmt"; then
     echo -e 'project\tmodel_integrity_events_json_syntax'
     return
   fi
   # §1 表行2（L13）：auto_route_selections 分区函数/关系缺失
   # （历史根因：修复序列单标记静默吞掉后追加的 650/656）。
-  if printf '%s' "$msg" | grep -qE 'function (ensure|promote)_auto_route_selections_partition.*does not exist'; then
+  if grep -qE 'function (ensure|promote)_auto_route_selections_partition.*does not exist' <<<"$msg"; then
     echo -e 'project\tauto_route_partition_function_missing'
     return
   fi
   # §1 表行2（L13）：relation "auto_route_selections_hot|all|月分区" does not exist
-  if printf '%s' "$msg" | grep -qE 'relation "auto_route_selections_(hot|all|[0-9]{4}_[0-9]{2})" does not exist'; then
+  if grep -qE 'relation "auto_route_selections_(hot|all|[0-9]{4}_[0-9]{2})" does not exist' <<<"$msg"; then
     echo -e 'project\tauto_route_relation_missing'
     return
   fi
   # 兜底（§1 "等"）：语句命中本项目核心对象但消息未被上面规则覆盖时仍归 project，
   # 避免新型回归被静默归入 unknown。对象清单 = 文档 §2.4 关键 schema。
-  if printf '%s' "$stmt" | grep -qE 'INSERT INTO[[:space:]]+(public\.)?(model_integrity_events|candidate_failure_logs|provider_error_details|provider_error_aggregator_state|auto_route_selections|tuning_proposals|fault_events)([[:space:](]|$)' \
-    || printf '%s' "$stmt" | grep -qE '(UPDATE|FROM)[[:space:]]+(public\.)?(provider_error_details|provider_error_aggregator_state|candidate_failure_logs_unified)([[:space:](]|$)'; then
+  if grep -qE 'INSERT INTO[[:space:]]+(public\.)?(model_integrity_events|candidate_failure_logs|provider_error_details|provider_error_aggregator_state|auto_route_selections|tuning_proposals|fault_events)([[:space:](]|$)' <<<"$stmt" \
+    || grep -qE '(UPDATE|FROM)[[:space:]]+(public\.)?(provider_error_details|provider_error_aggregator_state|candidate_failure_logs_unified)([[:space:](]|$)' <<<"$stmt"; then
     echo -e 'project\tproject_object_sql_error'
     return
   fi
 
   # --- external（其他应用的已知噪音，§1 末段 L17） -------------------------
   # employees 表噪音一：列不存在（crm）
-  if printf '%s' "$msg" | grep -qF 'column e.employee_id does not exist'; then
+  if grep -qF 'column e.employee_id does not exist' <<<"$msg"; then
     echo -e 'external\tcrm_employees_column_missing'
     return
   fi
   # employees 表噪音二：同列多次赋值（crm agent 心跳 upsert）
-  if printf '%s' "$msg" | grep -qF 'multiple assignments to same column "last_heartbeat_at"'; then
+  if grep -qF 'multiple assignments to same column "last_heartbeat_at"' <<<"$msg"; then
     echo -e 'external\tcrm_employees_multiple_assignment'
     return
   fi
   # daily_kline：列 "days" 不存在
-  if printf '%s' "$msg" | grep -qF 'column "days" does not exist'; then
+  if grep -qF 'column "days" does not exist' <<<"$msg"; then
     echo -e 'external\tdaily_kline_days_column'
     return
   fi
   # llm_usage_records 关系不存在
-  if printf '%s' "$msg" | grep -qF 'relation "llm_usage_records" does not exist'; then
+  if grep -qF 'relation "llm_usage_records" does not exist' <<<"$msg"; then
     echo -e 'external\tllm_usage_records_missing'
     return
   fi
   # agent_groups 关系不存在
-  if printf '%s' "$msg" | grep -qF 'relation "agent_groups" does not exist'; then
+  if grep -qF 'relation "agent_groups" does not exist' <<<"$msg"; then
     echo -e 'external\tagent_groups_missing'
     return
   fi
   # audit_logs RLS 拒绝
-  if printf '%s' "$msg" | grep -qE 'row-level security policy for table "audit_logs"'; then
+  if grep -qE 'row-level security policy for table "audit_logs"' <<<"$msg"; then
     echo -e 'external\taudit_logs_rls_denied'
     return
   fi
   # search_path 未设置即建对象
-  if printf '%s' "$msg" | grep -qF 'no schema has been selected to create in'; then
+  if grep -qF 'no schema has been selected to create in' <<<"$msg"; then
     echo -e 'external\tno_schema_selected'
     return
   fi
   # 语句超时被取消（多应用共享实例，归属不明，按 §1 归 external）
-  if printf '%s' "$msg" | grep -qF 'canceling statement due to user request'; then
+  if grep -qF 'canceling statement due to user request' <<<"$msg"; then
     echo -e 'external\tcanceling_statement'
     return
   fi

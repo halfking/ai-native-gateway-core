@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -205,6 +206,25 @@ func (h *Handler) settingsGet(w http.ResponseWriter, r *http.Request, key string
 		writeError(w, http.StatusNotFound, "unknown setting "+key)
 		return
 	}
+	// Platform view of a tenant-scoped spec: values live per tenant, there is
+	// no platform-level value to resolve. Return the spec default (source
+	// "default") instead of failing EffectiveValue's tenant_id requirement —
+	// clicking any tenant-scoped key in the admin settings detail pane (e.g.
+	// goal.retry_delay_seconds) 500'd here (2026-10-23, llmgo 245). The UI
+	// already renders the 租户级配置 warning and falls back to spec.default.
+	if !tenant && tid == "" && sp.Scope == settings.ScopeTenant {
+		def, err := json.Marshal(sp.Default)
+		if err != nil {
+			writeInternalErr(w, "internal error (see server logs)", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"spec":   sp,
+			"value":  json.RawMessage(def),
+			"source": "default",
+		})
+		return
+	}
 	scope := sp.Scope
 	if tenant {
 		scope = settings.ScopeTenant
@@ -223,13 +243,25 @@ func (h *Handler) settingsGet(w http.ResponseWriter, r *http.Request, key string
 
 // settingsPut writes a value with validation and audit.
 func (h *Handler) settingsPut(w http.ResponseWriter, r *http.Request, key string, tenant bool, tid string) {
-	if settings.Global == nil || h.db == nil {
-		writeError(w, http.StatusServiceUnavailable, "settings not available")
+	if settings.Global == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings registry not initialised")
 		return
 	}
 	sp := settings.Global.Spec(key)
 	if sp == nil {
 		writeError(w, http.StatusNotFound, "unknown setting "+key)
+		return
+	}
+	// Platform route has no tenant context: a tenant-scoped spec cannot be
+	// written here (StoreDB.Set rejects ScopeTenant). Point at the tenant
+	// endpoint instead of surfacing a raw internal error.
+	if !tenant && sp.Scope == settings.ScopeTenant {
+		writeError(w, http.StatusBadRequest,
+			"tenant-scoped setting: use /api/admin/tenant-settings/{tid}/"+key)
+		return
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings not available")
 		return
 	}
 	// Permission gate.
@@ -277,6 +309,10 @@ func (h *Handler) settingsPut(w http.ResponseWriter, r *http.Request, key string
 		oldVal, err = store.Set(scope, key, v)
 	}
 	if err != nil {
+		if errors.Is(err, settings.ErrNoRequestWriteSource) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeInternalErr(w, "save failed", err)
 		return
 	}
@@ -329,6 +365,28 @@ func (h *Handler) settingsHistory(w http.ResponseWriter, r *http.Request, key, t
 
 // settingsRollback reverts a setting to its previous value.
 func (h *Handler) settingsRollback(w http.ResponseWriter, r *http.Request, key string, tenant bool, tid string) {
+	// ★ 2026-10-24 12h 审计轮（问题⑮）：**同族键的第三个入口**收口。
+	//
+	// GET（settings.go:215）与 PUT（settings.go:258）都已对 tenant-scoped spec
+	// 做了分支；而本路由（平台 rollback）此前**没有** ⇒ ⇒ 对 tenant-scoped 键，
+	// 它会一路走到 store.Rollback(scope=ScopeTenant, tid="") ⇒
+	// `UPDATE tenant_settings_kv … WHERE tenant_id = ''` ⇒ pgx.ErrNoRows
+	// ⇒ 400「no previous value to rollback to」。
+	//
+	// ★ 那不是 500（⇒ 「500 根修」的结论仍成立），但它是**误导性错误**：
+	// 用户看到的是「没有可回滚的历史值」，而真实原因是「这个键压根不属于平台层」。
+	// ⇒ 与 PUT 同构：直接指向租户端点。
+	//
+	// ★★ **放在 db 可用性检查之前**（而不是之后）：这个键属不属于平台层，
+	//   与「数据库此刻连不连得上」**无关** ⇒ ⇒ 不该先吐一个泛泛的 503，
+	//   更不该在 db 正常时吐一个误导性的「没有可回滚的历史值」。
+	if settings.Global != nil && !tenant {
+		if sp := settings.Global.Spec(key); sp != nil && sp.Scope == settings.ScopeTenant {
+			writeError(w, http.StatusBadRequest,
+				"tenant-scoped setting: use /api/admin/tenant-settings/{tid}/"+key)
+			return
+		}
+	}
 	if settings.Global == nil || h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "settings not available")
 		return

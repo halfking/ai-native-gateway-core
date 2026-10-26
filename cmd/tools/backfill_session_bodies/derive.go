@@ -10,6 +10,27 @@
 //
 // The delta-derivation core (DeriveTurnDeltas / subtractMessages / parsing) is
 // pure and unit-tested; the CLI only adds DB I/O around it.
+//
+// ★★ FIXME-14371（2026-10-22 §143.71，只登记、零行为变更）：本文件的两条纯函数
+//
+//	    是「从别处接回累积正文」这条恢复路径的算法内核，但它们【不能直接写回 v2】：
+//
+//		① ★ 保真缺口：Msg 只有 {Role, Content}，Content 是 plainContent 投影
+//		   （字符串逐字 / 数组与多模态取紧凑 JSON）⇒ 丢掉了 tool_calls、多模态结构
+//		   与 provider 原生形态 ⇒ ⇒ v2 的 session_bodies 存的是 v2.Message
+//		   （{Role, Content, ContentRaw json.RawMessage, ToolCalls, RawContent}，
+//		   且 MarshalJSON 的 Source precedence 以 ContentRaw 为准）⇒ ⇒
+//		   ⇒ 写回 v2 需要一层【保真适配】（把原始 message JSON 直接映射成
+//		   v2.Message，content 进 ContentRaw、tool_calls 进 ToolCalls）⇒
+//		   ⇒ ★ 该适配层在仓内【不存在】。
+//
+//		② ★ 语义前提（实测结论）：DeriveTurnDeltas 是【前缀差分】
+//		   （delta_i = full_i − full_{i−1}）⇒ 它要求【同一会话相邻轮次的累积体都在场】。
+//		   实测（§143.71）：真实累积体会被改写、也会被裁剪 ⇒ 245 上 content 级
+//		   「前一条是后一条真前缀」只成立 51.6% ⇒ ⇒ 「捞回第 N 轮 ⇒ 前 N 轮都能重建」
+//		   在【差分】语义下不成立 ⇒ ⇒ 恢复需要走【切轮法】（按 user 边界切累积体），
+//		   而切轮法的可靠性由「前缀链」给出（见 runbook §143.71 与
+//		   cmd/tools/dbdegradation-salvage 的 -analyze-prefix）。
 package main
 
 import (

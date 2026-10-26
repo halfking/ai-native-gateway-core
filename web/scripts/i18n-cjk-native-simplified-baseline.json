@@ -1,0 +1,12 @@
+{
+  "updated": "2026-10-25",
+  "note": "referenced = 硬闸（须为 0）；unreferenced = 棘轮（只许降）。由 scripts/i18n-cjk-native-simplified-guard.mjs --update-baseline 写入",
+  "referenced": {
+    "ja-JP": 0,
+    "zh-TW": 0
+  },
+  "unreferenced": {
+    "ja-JP": 294,
+    "zh-TW": 288
+  }
+}

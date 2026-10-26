@@ -1,7 +1,7 @@
 // nodeHealthTimeline.ts — T9 node recovery timeline view (English)
 export default {
   title: 'Node Recovery Timeline',
-  subtitle: 'Recent key recovery events for a single credential',
+  subtitle: '1 つの資格情報に関する最近の鍵復旧イベント',
   loading: 'Loading recovery timeline…',
   error: 'Failed to load recovery timeline',
   empty: 'No recovery events for this credential',

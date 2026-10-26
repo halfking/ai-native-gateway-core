@@ -10,7 +10,30 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// V1Turn represents a turn from _request_logs (V1 schema)
+// errV1FamilyRetired 是「v1 族已退役」的唯一错误出口。
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：v1 族（`_request_logs*`）被 DROP，
+// 任何提到它的语句都会 42P01。而本工具的**全部存在意义**就是「v1 vs 会话族」
+// 的对拍——v1 那一侧没了，这个比较就永远得不出结果。
+//
+// ⇒ 所有读 v1 的入口都返回这个错误，而不是发一条会 42P01 的查询。
+//
+//	这比「返回 0 行」诚实得多：0 行会被读成「两侧一致」，
+//	而事实是「只有一侧，而且它没被读过」——那正是本仓反复吃过亏的
+//	「真空为绿」（§9.222 / §9.235 记的都是同一个坑）。
+//
+// 错误文案里带上族名与迁移号，是为了让看到它的人**立刻知道这不是环境问题**。
+var errV1FamilyRetired = errors.New(
+	"v1 family retired: the v1 request-log family was dropped (migration 890); " +
+		"this validator's v1 leg no longer exists, so there is nothing to compare")
+
+// V1Turn represents a turn from the (retired) v1 request-log family.
+//
+// ★ 2026-10-20：v1 族已整体退役 ⇒ **不再有任何代码路径会填出这个结构**。
+//
+//	它保留下来是因为本工具的校验器/报告器仍以它为入参（validator.go /
+//	report.go / repair.go 都不在本轮范围内），而那些调用点会因为
+//	LoadV1Turns 返回 errV1FamilyRetired 而**不再被走到**。
 type V1Turn struct {
 	RequestID    string
 	Ts           time.Time
@@ -20,7 +43,7 @@ type V1Turn struct {
 	ProviderID   string
 	CredentialID string
 
-	// Usage is stored as JSONB in _request_logs
+	// Usage is stored as JSONB in the v1 family
 	Usage   json.RawMessage
 	CostUSD float64
 
@@ -113,168 +136,44 @@ type sessionDB interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
-// v1BodyQuery / v1BodyQueryParent 取代了原先那条「子查询内 UNION ALL」的查询。
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：原先那两条 v1 bodies 腿
+// （`v1BodyQuery` / `v1BodyQueryParent`）与它们背后的一大段注记已删除。
 //
-// # 为什么必须改（审计 §9.196，因果已确证）
+// 为什么连注记一起删：那段注记记的是「Citus columnar 分区 + 未命名子查询 ⇒
+// invalid perminfoindex 0 in RTE with relid 0」这个**执行器**缺陷，以及
+// 「拆成两条顺序查询」这个修法。它是 v1 bodies 表特有的问题——
+// 而那张表连同它的分区已被 DROP ⇒ 这个缺陷**不可能再复现**。
+// 留着一段讲一个已经不会发生的问题的注记，是给下一个人制造噪音：
+// 他会以为「这里还有个形状要注意」，而真正的形状是「这一族已经不在了」。
 //
-// migration 765 `bodies_columnar_storage` 把 `_request_logs_bodies` 的
-// RANGE 分区转成了 **Citus `columnar`** 访问方法。**只要**该分区出现在
-// 一个**未命名子查询**（relid=0 的 RTE）里并参与 `UNION ALL`，
-// 执行器初始化就抛：
-//
-//	invalid perminfoindex 0 in RTE with relid 0
-//
-// 复现（干净库上，**0 行的分区**即可，审计 §9.196.4）：
-//
-//	ALTER TABLE request_logs_bodies_2026_11 SET ACCESS METHOD columnar;
-//	SELECT count(*) FROM (SELECT request_id FROM _request_logs_bodies_hot
-//	                      UNION ALL SELECT request_id FROM _request_logs_bodies) x;
-//	⇒ ERROR: invalid perminfoindex 0 in RTE with relid 0
-//
-// 它与行数、数据内容、统计信息、DDL 全部无关（已逐项实测排除）。
-//
-// # 为什么拆成两条，而不是给子查询补一个分区键谓词
-//
-// 两种改法都实测能通过。选前者是因为**补谓词会改语义**：谓词下推改变
-// 分区裁剪路径，而原查询的 `ts = $2` 本已足够定位；用两条顺序查询则
-// **逐字保留**「hot 优先、母表兜底」的择一规则，与原
-// `ORDER BY source_priority LIMIT 1` 的结果**完全一致**。
-//
-// # 代价（写明，不藏）
-//
-// 原本 1 次往返变成最多 2 次。`LoadV1Turns` 对每个轮次调用一次，
-// 命中率低时（多数行只在母表）**会变成 2 倍往返**。
-// 这是真实代价；但在「一条都查不出来」与「慢一倍」之间，前者不可接受。
-
-// v1BodyQuery 先查 hot 腿（原 source_priority=0）。
-// 未命名子查询的形状已实测会触发 perminfoindex 错误，
-// 因此这里**不**使用 `FROM ( ... UNION ALL ... )`。
-const v1BodyQuery = `
-	SELECT COALESCE(request_body, '{}'::jsonb), COALESCE(response_body, '{}'::jsonb)
-	FROM _request_logs_bodies_hot
-	WHERE request_id = $1 AND ts = $2
-	LIMIT 1
-`
-
-// v1BodyQueryParent 是 hot 未命中时的兜底腿（原 source_priority=1）。
-const v1BodyQueryParent = `
-	SELECT COALESCE(request_body, '{}'::jsonb), COALESCE(response_body, '{}'::jsonb)
-	FROM _request_logs_bodies
-	WHERE request_id = $1 AND ts = $2
-	LIMIT 1
-`
+// 保留的是它背后的那条通用教训（写在这里，免得它随注记一起消失）：
+// **碰到「换个写法就绕过去了」的执行器缺陷，先问它绕过去之后语义有没有变**。
+// 那一轮的正确修法是拆成两条顺序查询，**逐字保留**了「hot 优先、母表兜底」
+// 的择一规则；而一个更省事的修法（给子查询补一个分区键谓词）会改语义
+// （谓词下推改变分区裁剪路径）——两者在结果上不可区分，所以必须选可证明的那个。
 
 // NewSessionLoader creates a new session loader
 func NewSessionLoader(db sessionDB) *SessionLoader {
 	return &SessionLoader{db: db}
 }
 
-// LoadV1Turns loads all turns for a session from _request_logs
-// Uses two-step query to avoid JOIN timeout with _request_logs_bodies
+// LoadV1Turns loads the v1 turns of a session.
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：**这条腿退役**，本方法返回
+// errV1FamilyRetired，不发任何查询。
+//
+// 为什么不把 v1 那一腿改指会话族再继续比：那会让工具**拿自己比自己**
+// （会话族 vs 会话族），结果恒为「零差异」——而这个「零差异」与
+// 「两侧一致」在报告里长得一模一样。本仓为这件事付过两次学费
+// （§9.222 的截断窗口、§9.235 的真空为绿）：**「没量」与「量了，没有」必须
+// 长得不一样**。⇒ 宁可响亮地报「v1 已退役」，也不要产出一份看起来很干净的
+// 零差异报告。
+//
+// 签名保持不变（返回 ([]V1Turn, error)）：调用点在 main.go / repair.go，
+// 不在本轮范围内；它们会因为这个错误而**停止**（单会话模式 fatal，
+// 批处理模式记一次 loader error 并跳过该会话），而不是产出一份假报告。
 func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID string) ([]V1Turn, error) {
-	// Step 1: Query _request_logs for metadata
-	// Note: staging schema doesn't have 'usage' or 'compression_meta' columns
-	// Token counts are stored as separate columns (prompt_tokens, completion_tokens, etc.)
-	metaQuery := `
-		SELECT 
-			request_id,
-			ts,
-			gw_session_id,
-			tenant_id,
-			COALESCE(client_model, '') as client_model,
-			COALESCE(provider_id::text, '') as provider_id,
-			COALESCE(credential_id::text, '') as credential_id,
-			COALESCE(prompt_tokens, 0) as prompt_tokens,
-			COALESCE(completion_tokens, 0) as completion_tokens,
-			COALESCE(cache_read_tokens, 0) as cache_read_tokens,
-			COALESCE(cache_write_tokens, 0) as cache_write_tokens,
-			COALESCE(cost_usd, 0) as cost_usd,
-			COALESCE(success, false) as success
-		FROM _request_logs
-		WHERE tenant_id = $1 AND gw_session_id = $2
-		ORDER BY ts ASC
-	`
-
-	rows, err := l.db.Query(ctx, metaQuery, tenantID, sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("query _request_logs: %w", err)
-	}
-	defer rows.Close()
-
-	var turns []V1Turn
-	for rows.Next() {
-		var turn V1Turn
-		var promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens int
-		err := rows.Scan(
-			&turn.RequestID,
-			&turn.Ts,
-			&turn.SessionID,
-			&turn.TenantID,
-			&turn.ClientModel,
-			&turn.ProviderID,
-			&turn.CredentialID,
-			&promptTokens,
-			&completionTokens,
-			&cacheReadTokens,
-			&cacheWriteTokens,
-			&turn.CostUSD,
-			&turn.Success,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("scan _request_logs row: %w", err)
-		}
-
-		// Reconstruct usage JSON from separate columns
-		usage := map[string]interface{}{
-			"prompt_tokens":      promptTokens,
-			"completion_tokens":  completionTokens,
-			"cache_read_tokens":  cacheReadTokens,
-			"cache_write_tokens": cacheWriteTokens,
-			"total_tokens":       promptTokens + completionTokens,
-		}
-		usageJSON, _ := json.Marshal(usage)
-		turn.Usage = usageJSON
-
-		// Initialize empty compression_meta and bodies (bodies filled in step 2)
-		turn.CompressionMeta = json.RawMessage("{}")
-		turn.RequestBody = json.RawMessage("{}")
-		turn.ResponseBody = json.RawMessage("{}")
-		turns = append(turns, turn)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate _request_logs: %w", err)
-	}
-
-	// Step 2: Query the independent body store using the request log's identity.
-	// Bodies may still be in the hot table or already promoted to partitions. The
-	// timestamp is part of the body table key and prevents a reused request ID from
-	// receiving another turn's body.
-	//
-	// 两条腿**顺序**执行（审计 §9.196）：原来那条「子查询内 UNION ALL」的查询在
-	// `_request_logs_bodies` 的 RANGE 分区是 Citus `columnar` 时会让执行器初始化
-	// 直接失败（invalid perminfoindex 0 in RTE with relid 0），而 migration 765
-	// `bodies_columnar_storage` 正是干这件事的。拆成两条后语义不变：hot 优先、
-	// 母表兜底，与原 `ORDER BY source_priority LIMIT 1` 一致。
-	for i := range turns {
-		var requestBody, responseBody json.RawMessage
-		err := l.db.QueryRow(ctx, v1BodyQuery, turns[i].RequestID, turns[i].Ts).Scan(&requestBody, &responseBody)
-		if err == pgx.ErrNoRows {
-			// hot 未命中 → 走已 promote 的母表分区。
-			err = l.db.QueryRow(ctx, v1BodyQueryParent, turns[i].RequestID, turns[i].Ts).Scan(&requestBody, &responseBody)
-		}
-		if err == pgx.ErrNoRows {
-			// No bodies for this request - keep empty defaults
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("query _request_logs_bodies for request_id=%s: %w", turns[i].RequestID, err)
-		}
-		turns[i].RequestBody = requestBody
-		turns[i].ResponseBody = responseBody
-	}
-
-	return turns, nil
+	return nil, errV1FamilyRetired
 }
 
 // LoadV2Turns loads all turns for a session from the canonical current-month view.
@@ -493,7 +392,13 @@ func (l *SessionLoader) LoadV2Session(ctx context.Context, tenantID, sessionID s
 	return &session, nil
 }
 
-// V1TimeRange is the span of v1 rows that actually exist for a tenant.
+// V1TimeRange is the span of rows that actually exist for a tenant.
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：名字里的 "V1" 保留了——
+// 调用点（main.go 的批处理流程、window_guard_test.go）都不在本轮范围内，
+// 改名会让它们编译不过。但**它描述的对象已经退役**：v1 族被 DROP ⇒
+// LoadV1TimeRange 现在返回 errV1FamilyRetired ⇒ 这个结构不再被填出。
+// （待办：调用点更新后把它改名为 TimeRange / 去掉 V1 前缀。）
 type V1TimeRange struct {
 	MinTS, MaxTS time.Time
 	Rows         int64
@@ -502,31 +407,24 @@ type V1TimeRange struct {
 // LoadV1TimeRange reports the real span of v1 data for a tenant.
 //
 // §9.222: batch validation is advertised as "compare v1 against v2 over a
-// window", but _request_logs is **not** a permanent store. On 252 the monthly
+// window", but the v1 family is **not** a permanent store. On 252 the monthly
 // job `pg17-drop-old-columnar-partitions.sh` (RETAIN_MONTHS=2) DETACHes and
-// DROPs every _request_logs partition older than two months, while
-// session_turns is on no rotation list at all. So a window wider than two
-// months does not come back empty and does not error — it comes back
-// **silently truncated**, and a parity report over a truncated window reads
-// exactly like a parity report over the window that was asked for.
+// DROPs every v1 partition older than two months, while session_turns is on no
+// rotation list at all. So a window wider than two months does not come back
+// empty and does not error — it comes back **silently truncated**, and a parity
+// report over a truncated window reads exactly like a parity report over the
+// window that was asked for.
 //
-// The caller cannot detect that from the candidate count alone, because a
-// truncated window can still yield ≥100 sessions. This is the only place the
-// tool can tell the truth about it, so the range is measured here and
-// surfaced rather than inferred.
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：**这条腿退役**，本方法返回
+// errV1FamilyRetired。
+//
+// 为什么连「把窗口守卫改问会话族」都不做：那个守卫（WindowExceedsV1Data）
+// 存在的理由是「v1 会被轮转丢弃，而会话族不会」——它要防的是**拿一个被截断的
+// 窗口去出一份 parity 报告**。现在 parity 本身已经没有第二侧可出，这个守卫
+// 也就没有对象了；把它改问会话族会造出一道**永远不触发**的假门
+// （会话族不在任何轮转清单上）——比没有门更糟，因为它看起来在防着什么。
 func (l *SessionLoader) LoadV1TimeRange(ctx context.Context, tenantID string) (V1TimeRange, error) {
-	var r V1TimeRange
-	err := l.db.QueryRow(ctx, `
-		SELECT min(ts), max(ts), count(*)
-		FROM _request_logs
-		WHERE tenant_id = $1
-		  AND gw_session_id IS NOT NULL
-		  AND gw_session_id <> ''
-	`, tenantID).Scan(&r.MinTS, &r.MaxTS, &r.Rows)
-	if err != nil {
-		return r, fmt.Errorf("query v1 time range: %w", err)
-	}
-	return r, nil
+	return V1TimeRange{}, errV1FamilyRetired
 }
 
 // WindowExceedsV1Data reports whether the window the operator asked for
@@ -606,67 +504,23 @@ func endDayExclusiveBound(namedEndDay time.Time) time.Time {
 	return namedEndDay.AddDate(0, 0, 1)
 }
 
-// LoadSessionsInRange loads session IDs within a date range for batch validation
-func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string, startDate, endDate time.Time, settleWindow time.Duration, maxSessions int) ([]string, error) {
-	if endDate.IsZero() {
-		// ts < $3 with a zero time is `ts < year 1`: the query matches nothing
-		// and the tool reports "no settled sessions found", which points the
-		// operator at their data instead of at their flags. This used to be
-		// reachable by passing -start-date without -end-date.
-		return nil, errors.New("end of the validation window is unset: pass -end-date (YYYY-MM-DD); " +
-			"a zero end bound silently matches zero rows rather than reporting an error")
-	}
-	settleThreshold := time.Now().Add(-settleWindow)
-
-	// For batch mode, we select from _request_logs and filter by settle window
-	// We'll additionally filter by updated_at from sessions table if it exists
-	query, args := buildSessionRangeQuery(tenantID, startDate, endDate, settleThreshold, maxSessions)
-	rows, err := l.db.Query(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query session IDs: %w", err)
-	}
-	defer rows.Close()
-
-	var sessionIDs []string
-	for rows.Next() {
-		var sessionID string
-		if err := rows.Scan(&sessionID); err != nil {
-			return nil, fmt.Errorf("scan session_id: %w", err)
-		}
-
-		sessionIDs = append(sessionIDs, sessionID)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate session IDs: %w", err)
-	}
-
-	return sessionIDs, nil
-}
-
-// buildSessionRangeQuery returns the SQL and the bound arguments for the
-// settled-session lookup.
+// LoadSessionsInRange loads session IDs within a date range for batch validation.
 //
-// It is split out of LoadSessionsInRange so that the bound arguments can be
-// asserted without a database. The end bound is the whole point: the SQL is
-// half-open, so $3 must be the start of the day after the day the operator
-// named (see endDayExclusiveBound). That argument is the one thing a real run
-// cannot easily show you, because the damage is an absence — a dropped range
-// of rows looks exactly like a window that had none.
-func buildSessionRangeQuery(tenantID string, startDate, endDate, settleThreshold time.Time, maxSessions int) (string, []any) {
-	const query = `
-			SELECT gw_session_id
-			FROM _request_logs
-			WHERE tenant_id = $1
-			  AND ts >= $2
-			  AND ts < $3
-			  AND gw_session_id IS NOT NULL
-			  AND gw_session_id != ''
-			GROUP BY gw_session_id
-			HAVING MAX(ts) < $4
-			ORDER BY gw_session_id
-			LIMIT $5
-		`
-	args := []any{tenantID, startDate, endDayExclusiveBound(endDate), settleThreshold, maxSessions}
-	return query, args
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：**这条腿退役**，本方法返回
+// errV1FamilyRetired（候选集原本来自 v1 族的那张表，而它已被 DROP）。
+//
+// 为什么不把候选集改问会话族：候选集是**为 v1↔v2 对拍挑靶子**用的，
+// 而对拍已经没有第二侧 ⇒ 没有靶子可挑。留着一条只为了「还能列出点东西」
+// 而存在的查询，是给运维制造「工具还在正常跑」的错觉——而它下一步就会
+// 因为 v1 腿退役而失败。
+func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string, startDate, endDate time.Time, settleWindow time.Duration, maxSessions int) ([]string, error) {
+	return nil, errV1FamilyRetired
 }
+
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：原先那条构造候选集 SQL 的
+// 纯函数（buildSessionRangeQuery）已删除——它唯一的调用点
+// （LoadSessionsInRange）随 v1 候选集一起退役，而留着一条没人调用的
+// SQL 构造函数只会让人以为这条路径还活着。
+//
+// endDayExclusiveBound 保留：它是**纯函数**（不碰数据库），仍被窗口守卫
+// 与既有门使用；只是它原先唯一的调用点没了。

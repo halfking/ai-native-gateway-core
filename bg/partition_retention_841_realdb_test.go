@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/internal/testdb"
 )
 
 // partitionRetentionDSN841 returns the real-DB DSN, or skips.
@@ -28,7 +30,18 @@ func partitionRetentionDSN841(t *testing.T) string {
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置，跳过 841 分区保留真库回归")
 	}
-	return dsn
+	// ★★ R92 轮（守卫线 · 续六）：本 helper 之前**只读环境变量、没有任何目标库判定**
+	//   ⇒ 事实源指到产品库时，整组 5 个用例会打在产品库上：
+	//     · `DROP TABLE IF EXISTS public.t841_parent CASCADE`
+	//     · `DELETE FROM public.llm_gateway_partition_retention;`  ← 无 WHERE
+	//     · `DELETE FROM public.llm_gateway_partition_drop_log;`  ← 无 WHERE
+	//   后两张是**产品表**（252 生产核实：public.llm_gateway_partition_retention
+	//   与 public.llm_gateway_partition_drop_log 都存在，relkind='r'）⇒ 无 WHERE 的
+	//   DELETE 会**清空产品表的数据**（表还在、行没了）——比 DROP 表更隐蔽，
+	//   而且门禁看不出来（表还在、列都在、只是行没了）。
+	//   ⇒ 必须派生一次性库：目标落点 = 一次性库，事实源只提供服务器与权限。
+	//   （每个用例各自派生 ⇒ 用例之间也不再共享库，「自足」的性质反而更强。）
+	return testdb.Create(t, dsn)
 }
 
 // apply841InTx applies migration 841 plus a throwaway partitioned parent with

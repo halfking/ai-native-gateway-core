@@ -1,0 +1,20 @@
+# R86 轮台账：**「事实源承载的值」与「消费腿要的靶子」错配的已知实例**
+#
+# 列：name<TAB>file<TAB>verdict
+#   name    事实源导出的环境变量名
+#   file    消费它的测试文件（仓库相对路径）
+#   verdict 这条错配的**人工判词**（为什么它是错配、正解是什么）
+#
+# ★ 这张台账是门 `datasource_env_target_guard_test.go` 的**已知问题清单**：
+#   ① 探测到但**不在**台账里的错配 ⇒ **红**（新增 ⇒ 要人判）；
+#   ② 台账里但**探测不到**的行 ⇒ **红**（台账腐化 ⇒ 删行）。
+#   ⇒ ⇒ 台账只减不增 ⇒ 每修一处（把名字移出事实源 / 给腿换专用名 / 补守卫）就少一行。
+#
+# ★ 判据的机器可判形态（R86 轮实测收敛）：
+#   错配 = 「事实源导出该名」∧「该腿**真读**它（os.Getenv/os.LookupEnv）」∧
+#          「该腿**按库名做决定**（读形态守卫）」∧「该腿**不自建库**」。
+#   · 「真读」：排除「名字只出现在字面量里」（R63 的老坑：按名命中多是假阳性）。
+#   · 「读形态守卫」：库名被**读取**（current_database() / 读 .Database）才算；
+#     `cfg.ConnConfig.Database = x`（**改指**到自建库）是**好形态**，不算守卫。
+#   · 「自建库」（CREATE DATABASE）⇒ 这条腿自带隔离 ⇒ 事实源的 DSN 只是引导连接 ⇒ 不是错配。
+TEST_PG_URL	sql/migrations/startup/migration_877_write_amplification_test.go	判词：该腿 os.Getenv("TEST_PG_URL") 后连库，随后 current_database() + waDisposableDBName() 判定；一次性库判据只认 bench/test/tmp/scratch/pg_ 子串 ⇒ 通用 DSN（库名 llm_gateway）**必被拒绝** ⇒ 事实源档下必假红。★ 官方 runner 档不红（runner 给的是自建门禁库 itgate_*，含 test 子串）。★ 正解有两条且**都改判据语义**（共享名不能只为这一条腿服务 / 继承来的 DSN 该走 Skip 而不是 Fatal）⇒ 属主/下轮拍板，本轮只登记不擅改。

@@ -155,6 +155,11 @@ type ChunkResult struct {
 	SuppressChunk bool // Withhold the current frame from the wire; ModifiedChunk may carry an earlier frame explicitly released by the same interceptor.
 	ModifiedChunk []byte
 	InjectAfter   []byte
+	// Metadata carries facts about the decision (e.g. policy_rule = the rule
+	// that blocked the frame). The writer turns it into the client-visible
+	// failure envelope, so the client learns **which** rule stopped the turn
+	// instead of receiving an empty response.
+	Metadata map[string]interface{}
 }
 
 // EndResult contains the outcome of stream end interception.

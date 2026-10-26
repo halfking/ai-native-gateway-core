@@ -209,15 +209,35 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 		require.Contains(t, src, "COALESCE(is_auto_request, FALSE) AS is_auto_request",
 			"db.go view SQL must NULL-normalize is_auto_request")
 
-		columnsAt := strings.Index(src, "ensureRoutingAnalyticsColumns(migCtx)")
+		// ★ 2026-10-24（v1 → session_turns 替换轮）：这条子判据的**机制**换了主人。
+		//
+		// 旧形态：db.go 有一句 ensureRoutingAnalyticsColumns，给 v1 族补
+		// task_type / origin_stage / origin_actor；本子判据钉的是「补列必须
+		// 发生在物化视图之前」。
+		//
+		// 新形态：v1 族已随 890 物理删除 ⇒ 补列的那句自愈链整条删除；
+		// 这三列现在由**启动迁移链**建在会话族上（session_turns.task_type /
+		// origin_stage / origin_actor），并由 canonical 视图
+		// request_logs_with_current_month 投影成 v1 同名列 ⇒ 物化视图的源
+		// （routing_analytics_source）读的正是 canonical 视图。
+		//
+		// ⇒ 承重不变式**没变**（「依赖的列必须先在位」），变的是「谁来保证它
+		// 在位」。新形态下它的载体是 **canonical 视图的 ensure 顺序**：
+		// 视图必须先被装好（否则 routing_analytics_source 建不出来），
+		// 然后才是物化视图。
+		viewAt := strings.Index(src, "ensureRequestLogsCurrentMonthView(migCtx)")
 		viewsAt := strings.Index(src, "ensureRoutingAnalyticsMaterializedViews(migCtx)")
-		require.GreaterOrEqual(t, columnsAt, 0, "runtime must ensure analytics columns")
-		require.Greater(t, viewsAt, columnsAt,
-			"origin_stage/task_type columns must be ensured before analytics views")
-		require.Contains(t, src, "ALTER TABLE IF EXISTS _request_logs_hot",
-			"runtime prerequisite must cover _request_logs_hot")
-		require.Contains(t, src, "ALTER TABLE IF EXISTS _request_logs",
-			"runtime prerequisite must cover _request_logs")
+		require.GreaterOrEqual(t, viewAt, 0,
+			"canonical 视图（会话族两臂体）的自愈必须在启动序列里")
+		require.Greater(t, viewsAt, viewAt,
+			"canonical 视图必须先于 routing analytics 物化视图就位（物化视图的源读的就是它）")
+
+		// 反向：物化视图的源必须读 canonical 视图，**不许**读 v1 族
+		// （v1 族不存在 ⇒ 42P01 ⇒ 整条 boot 迁移中止）。
+		require.Contains(t, src, "FROM request_logs_with_current_month",
+			"routing analytics 的源视图必须读 canonical 视图（会话族两臂体）")
+		require.NotContains(t, src, "ALTER TABLE IF EXISTS _request_logs",
+			"boot 路径上不许再对已退役的 v1 族做 DDL")
 	})
 
 	t.Run("view_definitions_do_not_carry_refreshed_at", func(t *testing.T) {

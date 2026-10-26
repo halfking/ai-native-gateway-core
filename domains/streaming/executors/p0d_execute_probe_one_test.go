@@ -198,6 +198,129 @@ func TestExecuteProbeOneRedisSingleFlightConcurrent(t *testing.T) {
 	}
 }
 
+func TestExecuteSurvivalQuotaHeldSkipsProbeAndSetsRetryAfter(t *testing.T) {
+	now := time.Now().UTC()
+	cm := newCircuitManagerForTest()
+	lim := newLimiterForTest()
+	defer lim.Stop()
+
+	e := &Executor{
+		Circuit:                cm,
+		Limiter:                lim,
+		Router:                 NewRouter(NewStickyCache(), lim),
+		UpstreamTimeout:        5 * time.Second,
+		StreamTimeout:          10 * time.Second,
+		SyncNoCandidateProbe:   true,
+		SyncNoCandidateTimeout: 2 * time.Second,
+		ProbeOneFlight:         NewMemoryProbeOneFlight(),
+	}
+	wireDispatchPipelineForTest(t, e)
+
+	var probeCalls atomic.Int32
+	e.ProbeSync = func(context.Context, []credentialstate.NoCandidatesCandidate, string, string) bool {
+		probeCalls.Add(1)
+		return false
+	}
+
+	cands := []provider.Candidate{
+		quotaHeldCand(1, now.Add(40*time.Minute)),
+		quotaHeldCand(2, now.Add(19*time.Minute)),
+	}
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(""))
+	rec := httptest.NewRecorder()
+	_, err := e.Execute(&ExecParams{
+		W: rec, R: r,
+		BodyBytes:       []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`),
+		ClientModel:     "m",
+		OutboundModel:   "m",
+		Candidates:      cands,
+		StickyKey:       "p0d-survival-quota",
+		Policy:          &provider.Policy{TierFallbackMax: 4, RetryPerCredential: 0},
+		RequestID:       "p0d-survival-quota",
+		SurvivalAttempt: true,
+	})
+	if err == nil {
+		t.Fatal("survival Execute want quotaHeld error")
+	}
+	var ee *ExecuteError
+	if !errors.As(err, &ee) {
+		t.Fatalf("err type %T, want *ExecuteError", err)
+	}
+	if ee.Tried != 0 || ee.LastKind != errorsx.KindQuota {
+		t.Fatalf("ExecuteError tried=%d kind=%s, want Tried=0 KindQuota", ee.Tried, ee.LastKind)
+	}
+	if probeCalls.Load() != 0 {
+		t.Fatalf("ProbeSync calls=%d, want 0 (quotaHeld survival)", probeCalls.Load())
+	}
+	if ee.RetryAfterSeconds < 19*60-5 || ee.RetryAfterSeconds > 19*60+5 {
+		t.Fatalf("RetryAfterSeconds=%d, want ≈%d", ee.RetryAfterSeconds, 19*60)
+	}
+}
+
+func TestExecuteSurvivalProbeOneRecoversWithoutRecursiveExecute(t *testing.T) {
+	now := time.Now().UTC()
+	cm := newCircuitManagerForTest()
+	lim := newLimiterForTest()
+	defer lim.Stop()
+	flight := NewMemoryProbeOneFlight()
+
+	e := &Executor{
+		Circuit:                cm,
+		Limiter:                lim,
+		Router:                 NewRouter(NewStickyCache(), lim),
+		UpstreamTimeout:        5 * time.Second,
+		StreamTimeout:          10 * time.Second,
+		SyncNoCandidateProbe:   true,
+		SyncNoCandidateTimeout: 2 * time.Second,
+		ProbeOneFlight:         flight,
+	}
+	wireDispatchPipelineForTest(t, e)
+
+	var probeCalls atomic.Int32
+	var probedCred atomic.Int32
+	e.ProbeSync = func(_ context.Context, cands []credentialstate.NoCandidatesCandidate, _, _ string) bool {
+		probeCalls.Add(1)
+		if len(cands) != 1 {
+			t.Errorf("ProbeSync candidates=%d, want 1", len(cands))
+		} else {
+			probedCred.Store(int32(cands[0].CredentialID))
+		}
+		return true
+	}
+
+	cands := []provider.Candidate{
+		cooledCand(9, now.Add(20*time.Minute)),
+		cooledCand(4, now.Add(1*time.Minute)),
+		cooledCand(7, now.Add(5*time.Minute)),
+	}
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(""))
+	rec := httptest.NewRecorder()
+	_, err := e.Execute(&ExecParams{
+		W: rec, R: r,
+		BodyBytes:       []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`),
+		ClientModel:     "m",
+		OutboundModel:   "m",
+		Candidates:      cands,
+		StickyKey:       "p0d-survival-recover",
+		Policy:          &provider.Policy{TierFallbackMax: 4, RetryPerCredential: 0},
+		RequestID:       "p0d-survival-recover",
+		SurvivalAttempt: true,
+	})
+	if err == nil {
+		t.Fatal("survival Execute must return after probe recovery instead of recursing")
+	}
+	var ee *ExecuteError
+	if !errors.As(err, &ee) {
+		t.Fatalf("err type %T, want *ExecuteError", err)
+	}
+	if ee.Tried != 0 || !ee.Exhausted || ee.LastKind != errorsx.KindTransient {
+		t.Fatalf("survival recovery result = %+v, want bounded transient/no-candidate outcome", ee)
+	}
+	if probeCalls.Load() != 1 || probedCred.Load() != 4 {
+		t.Fatalf("ProbeSync calls=%d cred=%d, want one earliest-cred=4 probe", probeCalls.Load(), probedCred.Load())
+	}
+}
+
 func TestExecuteQuotaHeldSkipsProbeAndSetsRetryAfter(t *testing.T) {
 	now := time.Now().UTC()
 	cm := newCircuitManagerForTest()

@@ -283,7 +283,7 @@ export function logArchiveListAmbiguousZero(r: LogArchiveList): boolean {
 // ── 通用：humanBytes 复算 ────────────────────────────────────────────
 
 /**
- * ★ 复算 `humanBytes`（`admin/data_lifecycle_storage.go:502-518`）：
+ * ★ 复算 `humanBytes`（`admin/data_lifecycle_storage.go:1113-1130`）：
  *   1024 进制，units B/KB/MB/GB/TB/PB；整数字节原样（`formatInt`），
  *   其余保留两位再 `TrimRight` 掉尾零；`n < 0` ⇒ `"0 B"`。
  * ★ 只用来做**一致性核对**（派生值对不上就是异常），页面渲染用后端给的串。

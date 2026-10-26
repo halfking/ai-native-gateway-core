@@ -18,6 +18,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -77,6 +78,7 @@ type p03UpstreamLog struct {
 	mu     sync.Mutex
 	bodies []string
 	auths  []string
+	paths  []string
 }
 
 func (l *p03UpstreamLog) count() int {
@@ -115,6 +117,7 @@ func newP03Upstream(t *testing.T, leg1Frames, leg2Frames []string) (*httptest.Se
 		log.mu.Lock()
 		log.bodies = append(log.bodies, string(raw))
 		log.auths = append(log.auths, r.Header.Get("Authorization"))
+		log.paths = append(log.paths, r.URL.Path)
 		leg := len(log.bodies)
 		log.mu.Unlock()
 
@@ -200,11 +203,12 @@ func newP03Executor(t *testing.T, upstreamURL string) *executors.Executor {
 		func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, _ string, _ executors.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) executors.StreamOutcome {
 			out := streaming.StreamChatWithPendingCapture(ctx, w, resp, clientModel, outboundModel, streaming.NewNormalizer(), capture, toolsRequested, nil, nil)
 			return executors.StreamOutcome{
-				Interrupted: out.Interrupted,
-				Reason:      out.Reason,
-				Resumable:   out.Resumable,
-				ChunkCount:  out.ChunkCount,
-				Kind:        out.Kind,
+				Interrupted:      out.Interrupted,
+				Reason:           out.Reason,
+				Resumable:        out.Resumable,
+				ChunkCount:       out.ChunkCount,
+				Kind:             out.Kind,
+				TerminalRendered: out.TerminalRendered,
 			}
 		},
 		nil,
@@ -218,17 +222,42 @@ func newP03Executor(t *testing.T, upstreamURL string) *executors.Executor {
 
 func p03Execute(t *testing.T, exec *executors.Executor, upstreamURL string) (*httptest.ResponseRecorder, *executors.ExecuteResult, error) {
 	t.Helper()
+	return p03ExecuteCandidate(t, exec, upstreamURL, "https://api.deepseek.com/v1", "deepseek-chat")
+}
+
+type p03Transport func(*http.Request) (*http.Response, error)
+
+func (f p03Transport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func p03ExecuteCandidate(t *testing.T, exec *executors.Executor, upstreamURL, baseURL, model string) (*httptest.ResponseRecorder, *executors.ExecuteResult, error) {
+	t.Helper()
+	// Keep the candidate's real capability identity; only route network I/O to
+	// the test server. No test request can reach the public vendor.
+	previous := http.DefaultClient
+	target, err := url.Parse(upstreamURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	http.DefaultClient = &http.Client{Transport: p03Transport(func(req *http.Request) (*http.Response, error) {
+		clone := req.Clone(req.Context())
+		u := *req.URL
+		u.Scheme, u.Host = target.Scheme, target.Host
+		clone.URL = &u
+		return http.DefaultTransport.RoundTrip(clone)
+	})}
+	defer func() { http.DefaultClient = previous }()
+	exec.Pools = nil
 	recorder := httptest.NewRecorder()
 	cand := provider.Candidate{
 		ProviderID:        18,
 		CredentialID:      209423,
-		BaseURL:           upstreamURL,
+		BaseURL:           baseURL,
 		Protocol:          "openai-completions",
 		CatalogCode:       "openai",
 		Tier:              1,
 		Weight:            100,
-		RawModel:          "p03-model",
-		OfferRawModel:     "p03-model",
+		RawModel:          model,
+		OfferRawModel:     model,
 		APIKey:            "p03-key",
 		BillingMode:       "token_plan",
 		Routable:          true,
@@ -245,6 +274,7 @@ func p03Execute(t *testing.T, exec *executors.Executor, upstreamURL string) (*ht
 		ClientModel:                 "p03-model",
 		ClientProtocol:              "openai-completions",
 		IsStream:                    true,
+		Capture:                     audit.NewStreamCapture(),
 		ClientID:                    identity.ClientIdentity{IdentityHash: "p03-stream-continuation"},
 		Candidates:                  []provider.Candidate{cand},
 		Policy:                      &provider.Policy{TierFallbackMax: 1, RetryPerCredential: 0},
@@ -504,5 +534,104 @@ func TestP03ExecutorGateInstallsHook(t *testing.T) {
 				t.Fatalf("hook present in stream ctx = %v, want %v", hookSeen, tc.want)
 			}
 		})
+	}
+}
+
+func TestP1ContinuationRequiresKnownPrefillCapability(t *testing.T) {
+	for _, tc := range []struct{ name, base, model string }{
+		{"generic chat", "https://relay.example/v1", "deepseek-chat"},
+		{"host suffix spoof", "https://api.deepseek.com.evil.example/v1", "deepseek-chat"},
+		{"unknown model on official host", "https://api.deepseek.com/v1", "gpt-4.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withP03ContinuationSetting(t, true)
+			upstream, log := newP03Upstream(t, []string{p03Frame1a, p03Frame1b, p03Frame1c}, []string{p03Frame2a, p03Frame2z, p03Done})
+			exec := newP03Executor(t, upstream.URL)
+			recorder, _, err := p03ExecuteCandidate(t, exec, upstream.URL, tc.base, tc.model)
+			if log.count() != 1 {
+				t.Fatalf("unproven capability must not continue; upstream calls=%d err=%v bodies=%v wire=%s", log.count(), err, log.bodies, recorder.Body.String())
+			}
+			got := parseP03ClientStream(recorder.Body.String())
+			if got.text != "one two three" || got.errFrames != 1 || got.doneCount != 1 {
+				t.Fatalf("must expose original cut terminal: %+v", got)
+			}
+		})
+	}
+}
+
+func TestP1ContinuationSendsVendorPrefillMode(t *testing.T) {
+	for _, tc := range []struct{ name, base, model, field, path string }{
+		{"DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "prefix", "/beta/chat/completions"},
+		{"Kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k", "partial", "/v1/chat/completions"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withP03ContinuationSetting(t, true)
+			upstream, log := newP03Upstream(t, []string{p03Frame1a, p03Frame1b, p03Frame1c}, []string{p03Frame2a, p03Frame2z, p03Done})
+			exec := newP03Executor(t, upstream.URL)
+			_, _, err := p03ExecuteCandidate(t, exec, upstream.URL, tc.base, tc.model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if log.count() != 2 {
+				t.Fatalf("supported upstream must continue once; calls=%d", log.count())
+			}
+			var body struct {
+				Messages []map[string]any `json:"messages"`
+			}
+			if err := json.Unmarshal([]byte(log.body(1)), &body); err != nil {
+				t.Fatal(err)
+			}
+			tail := body.Messages[len(body.Messages)-1]
+			if tail[tc.field] != true {
+				t.Fatalf("missing %s=true on assistant prefill: %s", tc.field, log.body(1))
+			}
+			if log.paths[1] != tc.path {
+				t.Fatalf("continuation path=%s, want %s", log.paths[1], tc.path)
+			}
+		})
+	}
+}
+
+func TestP1ContinuationNeverResumesStartedToolCall(t *testing.T) {
+	for _, tool := range []string{
+		`data:{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_no_space"}]}}]}` + "\n\n",
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"run","arguments":"{"}}]}}]}` + "\n\n",
+		`data: {"choices":[{"index":0,"delta":{}},{"index":1,"delta":{"tool_calls":[{"index":0,"id":"call_2"}]}}]}` + "\n\n",
+		`data: {"choices":[{"index":0,"delta":{"function_call":{"name":"run","arguments":"{"}}}]}` + "\n\n",
+	} {
+		t.Run(tool, func(t *testing.T) {
+			calls := 0
+			ctx := executors.WithStreamContinuation(context.Background(), func(string) (io.ReadCloser, error) {
+				calls++
+				return io.NopCloser(strings.NewReader(p03Frame2z + p03Done)), nil
+			})
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(p03Frame1a + p03Frame1b + tool)), Request: httptest.NewRequest(http.MethodPost, "http://upstream.test/v1/chat/completions", nil).WithContext(ctx)}
+			recorder := httptest.NewRecorder()
+			out := streaming.StreamChatWithPendingCapture(ctx, recorder, resp, "p03-model", "p03-model", nil, nil, true, nil, nil)
+			if calls != 0 {
+				t.Fatalf("a tool call cannot be reconstructed from text prefill; hook calls=%d", calls)
+			}
+			if !out.Interrupted || out.Reason != "eof_without_done" {
+				t.Fatalf("cut tool call must retain original terminal: %+v", out)
+			}
+			if !strings.Contains(recorder.Body.String(), "call_") && !strings.Contains(recorder.Body.String(), "function_call") {
+				t.Fatalf("tool-call precondition missing from client wire: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestP1ContinuationDisabledWithoutSettingsRegistry(t *testing.T) {
+	previous := settings.Global
+	settings.Global = nil
+	t.Cleanup(func() { settings.Global = previous })
+	upstream, log := newP03Upstream(t, []string{p03Frame1a, p03Frame1b, p03Frame1c}, []string{p03Frame2a, p03Frame2z, p03Done})
+	recorder, _, _ := p03Execute(t, newP03Executor(t, upstream.URL), upstream.URL)
+	if log.count() != 1 {
+		t.Fatalf("missing settings must keep continuation disabled: %d calls", log.count())
+	}
+	got := parseP03ClientStream(recorder.Body.String())
+	if got.errFrames != 1 || got.doneCount != 1 {
+		t.Fatalf("original cut terminal missing: %+v", got)
 	}
 }

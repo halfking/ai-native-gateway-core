@@ -25,7 +25,7 @@ nproc
 free -m 2>/dev/null | head -3
 df -h /var/lib/postgresql/data | tail -2
 echo "===== TABLE COUNT BY KIND ====="
-$PSQL -c "SELECT c.relkind||' '||CASE c.relkind WHEN 'r' THEN 'table' WHEN 'p' THEN 'part_table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'matview' WHEN 'S' THEN 'sequence' WHEN 'i' THEN 'index' ELSE c.relkind::text END||' = '||count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' GROUP BY 1 ORDER BY 1;"
+$PSQL -c "SELECT c.relkind::text||' '||CASE c.relkind WHEN 'r' THEN 'table' WHEN 'p' THEN 'part_table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'matview' WHEN 'S' THEN 'sequence' WHEN 'i' THEN 'index' ELSE c.relkind::text END||' = '||count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' GROUP BY c.relkind ORDER BY 1;"
 echo "===== SCHEMA OBJECTS ====="
 $PSQL -c "SELECT (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p')) AS tables, (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='i') AS indexes, (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='v') AS views, (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='m') AS matviews, (SELECT count(*) FROM pg_constraint ch JOIN pg_class c ON c.oid=ch.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public') AS constraints, (SELECT count(*) FROM pg_indexes WHERE schemaname='public') AS pg_indexes;"
 echo "===== FUNCTIONS / TRIGGERS / RULES / POLICIES ====="

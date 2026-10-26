@@ -62,12 +62,12 @@ export default {
     fingerprintTitle: "للتحقق مع النظام الأساسي للمنبع، ليس المفتاح الكامل",
     fingerprintUnparsed: "تعذر التحليل",
     viewErrorDetail: "TODO",
-    rowMeta: "#{id} · {trust}",
+    rowMeta: "#{id}: {trust}",
     cellUnset: "غير معين",
     noLimit: "غير محدود",
     slotUsage: "خانة {used}/{limit}",
     requestCountSuffix: "مرة",
-    addCredTitle: "إضافة بيانات اعتماد — {name}",
+    addCredTitle: "إضافة بيانات اعتماد: {name}",
     addCredApiKey: "مفتاح API",
     addCredLabel: "علامة (اختياري)",
     addCredLabelPlaceholder: "مثل: مفتاح الإنتاج",
@@ -263,21 +263,21 @@ export default {
     supplier: 'المورد', errorCode: 'رمز الخطأ', requestId: 'معرف الطلب',
     stage: 'المرحلة', retry: 'إعادة المحاولة', latency: 'المدة',
     openRequestTitle: 'فتح تفاصيل الطلب',
-    title: "供应商错误明细", selectCredential: "请先从凭据列表选择凭据", windowTitle: "统计时间窗口",
-    lastHour: "最近 1 小时", lastDay: "最近 24 小时", lastWeek: "最近 7 天", loading: "加载错误明细中…",
-    loadFailed: "加载供应商错误明细失败", credential: "凭据", health: "健康状态", availability: "可用状态", circuit: "熔断状态",
-    consecutiveFailures: "连续失败", balance: "余额", summary: "错误分布", errorKind: "错误类型", count: "次数",
+    title: "تفاصيل أخطاء المزود", selectCredential: "اختر بيانات اعتماد أولًا", windowTitle: "نافذة الوقت",
+    lastHour: "آخر ساعة", lastDay: "آخر 24 ساعة", lastWeek: "آخر 7 أيام", loading: "جاري تحميل أخطاء المزود…",
+    loadFailed: "فشل تحميل أخطاء المزود", credential: "بيانات الاعتماد", health: "الحالة الصحية", availability: "التوفر", circuit: "قاطع الدائرة",
+    consecutiveFailures: "الإخفاقات المتتالية", balance: "الرصيد", summary: "توزيع الأخطاء", errorKind: "نوع الخطأ", count: "العدد",
     statusCodes: "أنواع رموز الحالة", retryableCount: "قابلة لإعادة المحاولة", stageDist: "توزيع المراحل", lastSeen: "آخر ظهور", noErrors: "لا أخطاء في هذه النافذة", recentFailures: "الإخفاقات الأخيرة",
-    time: "时间", model: "模型", kind: "错误类型", httpStatus: "HTTP 状态", message: "错误消息", upstreamPreview: "上游响应预览",
-    noRecentFailures: "没有最近失败记录", qualityScores: "最近 7 天供应商质量评分", date: "日期", totalScore: "综合评分",
-    availabilityScore: "可用性评分", stabilityScore: "稳定性评分", noQualityScores: "暂无质量评分",
+    time: "الوقت", model: "النموذج", kind: "النوع", httpStatus: "حالة HTTP", message: "رسالة الخطأ", upstreamPreview: "معاينة استجابة المنبع",
+    noRecentFailures: "لا توجد إخفاقات حديثة", qualityScores: "جودة المزود خلال آخر 7 أيام", date: "التاريخ", totalScore: "النتيجة الإجمالية",
+    availabilityScore: "درجة التوفر", stabilityScore: "درجة الاستقرار", noQualityScores: "لا توجد درجات جودة",
   },
   models: {
     title: "قائمة النماذج ({n})",
     refreshing: "جاري قراءة البيانات من المزود…",
     refreshBtn: "قراءة من المزود",
     refreshTitle: "استدعاء واجهة المزود /v1/models لإضافة النماذج غير المخزنة",
-    routableLoadFailed: 'فشل تحميل ملخص قابلية التوجيه — المنطقة الفارغة أدناه لا تعني عدم وجود روابط غير قابلة للتوجيه',
+    routableLoadFailed: 'فشل تحميل ملخص قابلية التوجيه: المنطقة الفارغة أدناه لا تعني عدم وجود روابط غير قابلة للتوجيه',
     refreshLoading: "جاري القراءة…",
     clearBtn: "مسح",
     clearLoading: "جاري المسح…",
@@ -332,9 +332,8 @@ export default {
     drawerOutboundHint: "بعض المزودين (مثل Volcano Ark) يحتاجون إلى endpoint ID (مثل ep-20241227XXXX) كحقل نموذج، وليس الاسم الأصلي. في حالة عدم التكوين، سيتم تخطي الفحص (رمز الخطأ endpoint_id_required).",
     drawerOutboundPlaceholder: "ep-XXXXXXXX",
     drawerOutboundSend: "سيتم إرسال:",
-    drawerOutboundUnset: "غير معين — سيتم استخدام",
+    drawerOutboundUnset: "غير معين: سيتم استخدام",
     drawerSectionContextWindow: "نافذة السياق (رموز)",
-    drawerContextWindowHint: "تجاوز على مستوى بيانات الاعتماد لهذه البيانات × النموذج. التسلسل: هذا التجاوز > تجاوز الكتالوج > الكتالوج. اتركه فارغًا، أدخل 0، أو انقر على «مسح» لإزالة التجاوز واستخدام قيمة الكتالوج. يُطبَّق التغيير فقط إذا قمت فعلاً بتعديل القيمة؛ حفظ الحقول الأخرى (مثل الاسم القياسي) لا يستبدل تجاوزًا قائمًا.",
     drawerContextWindowPlaceholder: "مثال 200000",
     drawerContextWindowClearBtn: "مسح",
     drawerContextWindowClearTitle: "إزالة التجاوز على مستوى بيانات الاعتماد والعودة إلى قيمة كتالوج النموذج",
@@ -368,7 +367,7 @@ export default {
     phase2InOfferOnly: "✓ النموذج موجود في القائمة",
     checkFailedPrefix: "فشل طلب الفحص: {msg}",
     offerNotInList: "النموذج غير موجود في قائمة النماذج لبيانات الاعتماد هذه",
-    drawTitle: "offer #{id} · بيانات الاعتماد #{credId} {credLabel}",
+    drawTitle: "offer #{id}: بيانات الاعتماد #{credId} {credLabel}",
     drawToggleDisable: "تعطيل هذا الارتباط",
     drawToggleEnable: "تفعيل هذا الارتباط",
     drawToggleLoading: "جاري المعالجة…",
@@ -406,24 +405,25 @@ export default {
     refreshSummaryFailed: "فشل {n}",
     refreshSummaryEmpty: "لا تغيير",
     creds: {
-      labelFallback: "凭据 #{id}"
+      labelFallback: "بيانات الاعتماد #{id}"
     },
     overview: {
-      chipAvailable: "可用",
-      chipUnavailable: "不可用"
+      chipAvailable: "متاح",
+      chipUnavailable: "غير متاح"
     }
 ,
-    probeAllRecoveredHint: '✓ {n} model(s) probed OK; node_probe_state auto-recovered, routing candidates re-enabled',
+    probeAllRecoveredHint: '✓ تم فحص {n} من النماذج بنجاح، وأُعيد بناء node_probe_state تلقائيًا، وأُعيد تفعيل مرشحي التوجيه',
 
     resetNodeProbeBtn: 'Clear failed probes',
 
     resetNodeProbeLoading: 'Clearing…',
 
-    resetNodeProbeTitle: 'Clear node_probe_state rows where last_direct_ok=FALSE (force-recover routing). Use when Probe all shows OK but routing candidates remain blocked.',
+    resetNodeProbeTitle: 'احذف صفوف node_probe_state التي تكون فيها last_direct_ok=FALSE وأعد تفعيل التوجيه. استخدمه عندما تُظهر «فحص الكل» حالة OK مع بقاء مرشحي التوجيه محظورين.',
 
-    resetNodeProbeConfirm: 'Clear all failed node_probe_state rows for this provider?',
+    resetNodeProbeConfirm: 'هل تحذف كل الصفوف الفاشلة في node_probe_state لهذا المزوّد؟',
 
-    resetNodeProbeDone: '✓ Cleared {n} failed node_probe_state rows; routing candidates re-enabled',
+    resetNodeProbeDone: '✓ حُذف {n} صف فاشل في node_probe_state وأُعيد تفعيل مرشحي التوجيه',
+    repairFailed: 'تعذّر إتمام الإصلاح. أعد المحاولة.',
   },
   settings: {
     overrideTitle: "🎛️ تكوين وضع التمرير",
@@ -504,7 +504,7 @@ export default {
     modelPlaceholder: "اختر نموذجًا…",
     modelPickerTitle: "تصفية نماذج سجلات المزود",
     credentialAll: "كل بيانات الاعتماد",
-    credentialsLoadFailed: 'فشل تحميل قائمة بيانات الاعتماد — تعني القائمة الفارغة عدم وجود سجلات بالضرورة',
+    credentialsLoadFailed: 'فشل تحميل قائمة بيانات الاعتماد: تعني القائمة الفارغة عدم وجود سجلات بالضرورة',
     credentialTitle: "بيانات الاعتماد",
     resultAll: "الكل",
     resultOk: "نجاح",
@@ -560,14 +560,14 @@ export default {
     credColModels: "فحص النماذج",
     credColChat: "فحص Chat",
     probeFailed: "فشل",
-    probeMetaModels: "{status} · {count} نماذج · {latency}ms",
+    probeMetaModels: "{status}, {count} نماذج, {latency}ms",
     // 2026-09-04: non-JSON probe hint (parity backfill).
-    probeNonJson: "{status} · استجابة غير JSON",
-    probeMetaChat: "{status} · {latency}ms"
+    probeNonJson: "{status}: استجابة غير JSON",
+    probeMetaChat: "{status}: {latency}ms"
   },
   probe: {
     consensusTitle: "آلية التوافق",
-    consensusDesc: "{n} نجاح متتالي → وضع علامة تم الاستعادة · {n} فشل متتالي → تأكيد الفشل (إيقاف الفحص)",
+    consensusDesc: "{n} نجاح متتالي → وضع علامة تم الاستعادة: {n} فشل متتالي → تأكيد الفشل (إيقاف الفحص)",
     consensusFallback: "فاصل التراجع: 1m → 5m → 15m → 60m (تدريجي)",
     refresh: "تحديث",
     refreshLoading: "…",
@@ -612,7 +612,7 @@ export default {
       healthyConfirmed: "تم الاستعادة",
       brokenConfirmed: "تأكيد الفشل"
     },
-    historyMeta: "آخر 100 · scheduler تلقائي / manual يدوي",
+    historyMeta: "آخر 100: scheduler تلقائي / manual يدوي",
     endpointIdBadge: "يتطلب تكوين endpoint ID",
     endpointIdDetail: "يجب استخدام deployment endpoint ID (مثل <code>ep-XXXXXXXX</code>) لاستدعاء هذا النموذج (مثل Volcano Ark minimax-m3 / glm-5.1)، وليس اسم النموذج الأصلي. يرجى الانتقال إلى",
     endpointIdLink: "قائمة النماذج → تحرير outbound_model_name",
@@ -623,8 +623,7 @@ export default {
     loadFailed: "فشل التحميل",
     triggerFailed: "فشل التشغيل"
   },
-  tableCol: {},
-  models_creds_labelFallback: "凭据 #{id}",
-  models_overview_chipAvailable: "可用",
-  models_overview_chipUnavailable: "不可用"
+  quality: {
+    loadFailed: 'تعذّر تحميل ملفات الجودة. أعد المحاولة.',
+  },
 }

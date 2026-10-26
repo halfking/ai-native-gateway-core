@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
@@ -138,6 +139,30 @@ func TestDispatchExecutionContext_SessionStreamDetaches(t *testing.T) {
 	cancelClient()
 	if errors.Is(got.Err(), context.Canceled) {
 		t.Fatal("session stream dispatch wait must remain alive after client disconnect")
+	}
+}
+
+func TestDispatchExecutionContext_DetachedSurvivalHonorsSurvivalDeadline(t *testing.T) {
+	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	clientCtx, cancelClient := context.WithCancel(r.Context())
+	defer cancelClient()
+	deadline := time.Now().Add(40 * time.Millisecond)
+
+	got, cancelDispatch := dispatchExecutionContext(&ExecParams{
+		R: r.WithContext(clientCtx), IsStream: true, StreamSurvivesClientCancel: true, SurvivalDeadline: deadline,
+	})
+	defer cancelDispatch()
+	cancelClient()
+	if err := got.Err(); err != nil {
+		t.Fatalf("detached survival dispatch wait followed client cancellation: %v", err)
+	}
+	select {
+	case <-got.Done():
+		if !errors.Is(got.Err(), context.DeadlineExceeded) {
+			t.Fatalf("dispatch context error = %v, want deadline exceeded", got.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("dispatch context ignored survival deadline")
 	}
 }
 

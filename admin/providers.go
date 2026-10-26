@@ -778,7 +778,11 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 		       COALESCE(ac.cnt, 0), COALESCE(hc.cnt, 0), COALESCE(wc.cnt, 0),
 		       COALESCE(cc.cnt, 0), COALESCE(uc.cnt, 0),
 		       COALESCE(am.cnt, 0), COALESCE(um.cnt, 0),
-		       COALESCE(er.rate, 0),
+		       COALESCE((SELECT SUM(s.failure_count)::float8 / NULLIF(SUM(s.requests), 0)
+		                   FROM request_stats_minute s
+		                  WHERE s.provider_id = p.id
+		                    AND s.tenant_id = p.tenant_id
+		                    AND s.bucket >= now() - interval '24 hours'), 0),
 		       p.created_at
 		FROM providers p
 		LEFT JOIN provider_catalog pc ON pc.code = p.catalog_code
@@ -789,14 +793,35 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 		LEFT JOIN (SELECT provider_id, COUNT(*) cnt FROM credentials WHERE availability_state='unreachable' GROUP BY provider_id) uc ON uc.provider_id = p.id
 		LEFT JOIN (SELECT c.provider_id, COUNT(*) cnt FROM model_offers mo JOIN credentials c ON c.id = mo.credential_id WHERE mo.available=true GROUP BY c.provider_id) am ON am.provider_id = p.id
 		LEFT JOIN (SELECT c.provider_id, COUNT(*) cnt FROM model_offers mo JOIN credentials c ON c.id = mo.credential_id WHERE mo.available=false GROUP BY c.provider_id) um ON um.provider_id = p.id
-		-- 2026-07-31 partition architecture: 24-hour window query read
-		-- _request_logs_hot directly (migration 341 hot table).
-		-- 2026-10-13 S3 波 2（停写切换）：hot 已停写、热窗排空后 error_rate_24h
-		-- 对新流量恒 0；改读 canonical 视图（会话臂 provider_id 依赖 734
-		-- details 特征层，缺 details 行的会话轮不进分子分母——已登记的覆盖缺口，
-		-- 不是本查询的回归）。4 列全在 118 列契约内。
-		LEFT JOIN (SELECT provider_id, COALESCE(SUM(CASE WHEN lower(COALESCE(request_status, '')) IN ('failure', '') AND NOT success THEN 1 ELSE 0 END)::float8 / NULLIF(COUNT(*),0), 0) rate FROM request_logs_with_current_month WHERE ts >= now() - interval '24 hours' GROUP BY provider_id) er ON er.provider_id = p.id
 		-- 2026-08-31: 软删除的供应商不存在（列表与详情都不返回 404）。
+		-- error_rate_24h（上面那个相关子查询）2026-10-18 由 canonical 视图改读
+		-- request_stats_minute 分钟级滚存，并从「先聚合全部 provider 再
+		-- LEFT JOIN 单行」改成相关子查询。两个原因都是结构性的：
+		--
+		-- 1) LEFT JOIN 派生表让 p.id = $1 推不进聚合侧，实测 24h 窗口下
+		--    要对**所有** provider 的行做聚合（本机 EXPLAIN ANALYZE：
+		--    57682 shared buffers）；相关子查询让 provider 过滤直接落到
+		--    扫描侧。
+		-- 2) canonical 视图 request_logs_with_current_month 是四路 UNION ALL
+		--    （session_turns_hot ∪ session_turns ∪ 明细基表）+ details
+		--    LATERAL 补列 + 两个 NOT EXISTS 反连接，扫 24h 窗口本机实测
+		--    12.9s（下推 provider_id 后仍 7.6s）。详情接口 ctx 超时 5s，
+		--    于是 /api/providers/14 稳定 500
+		--    （"getProvider query failed: timeout: context deadline
+		--    exceeded"），13/1 等也贴着 5s 线。
+		--
+		-- 换源不是新发明：usageTrendSource（admin/usage_trend_series.go）
+		-- 早就把「带 provider 过滤」的读面分档到 request_stats_minute，
+		-- 注释写明理由就是「避免明细分区慢扫」。error_rate_24h 同属
+		-- provider 过滤的聚合，按同一条分档走。
+		--
+		-- 口径变化（已知且接受）：视图臂排除了有 session turn 的行，滚存臂
+		-- 不排；分子分母的总体因此不同。本机同窗实测 provider 14：
+		-- 视图 3533 行 / 0.0232，滚存 2487 行 / 0.0261——同一量级，
+		-- 且滚存是仓库自己的成对 success_count/failure_count，比视图里
+		-- request_status IN ('failure','') AND NOT success 的反推更直接。
+		-- 写侧已按 ProbeTrafficExclusionPredicateView 剔除探针流量
+		-- （bg/stats_minute_rollup.go:252）。
 		WHERE p.id = $1 AND p.tenant_id = 'default' AND p.deleted_at IS NULL
 	`, id).Scan(
 		&p.ID, &p.Code, &p.DisplayName, &p.CatalogCode,

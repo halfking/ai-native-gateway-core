@@ -658,58 +658,32 @@ func TestRequestLogsRetirementExposure(t *testing.T) {
 // per-file column lists in TestRequestLogsRetirementExposure's report *do* show
 // the difference — read the report, not just the gate verdict.
 var retirementBreakers = map[string]string{
-	// ── still blocking after column→relation attribution (§9.165) ──────────
-	// admin/work_types.go 与 db/db.go 于 2026-10-13（S3 波 2 停写切换）移出
-	// breaker 登记（门指示：reader repointed ⇒ delete the entry）：
-	// work_types 四个读点改读 canonical 视图 + 「指定模型」回退链（停写影响
-	// 面改判 silently_degraded_aggregate，见停写分类表）；db/db.go 的
-	// routingAnalyticsMVSQL 重建体与 recent_success_rate 函数体不再把契约
-	// 缺口列名带进 v1 基表读字面量。
-	"domains/hooks/observability/telemetry/client.go": "the v1 **writer** (insertRequestLog). An " +
-		"INSERT into a dropped table errors, so it must be removed or repointed, not tolerated",
-	// domains/streaming/model_alternatives.go 于 2026-10-13（S3 波 2 停写切换）
-	// 移出 breaker 登记：usage_7d 热面已整体迁至会话族原生源，原 `id`/
-	// canonical_id 缺口随 v1 读点的消失一并解除。
-	"cmd/gateway/dual_read_validator.go": "reads v1 work_type / request_type / origin_actor as its " +
-		"V1-side inputs — legitimate in itself (§9.163.1), but work_type is 0% on the session side, " +
-		"so the validator's exclusion arm loses its discriminator after the v1 side is gone",
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空**。
+	//
+	// 原先这里登记「直读 v1 底表、且读了会话族供不上的列」的读方 ——
+	// 而 890 之后 **v1 族已被物理删除**，于是：
+	//
+	//	· 读 v1 底表的代码运行时会 42P01（关系不存在），
+	//	  它们不再是「退役清单上的迁移项」，而是**生产缺陷**（登记在
+	//	  retiredV1ReferenceExceptions）；
+	//	· 「会话族供不上的列」这个判据也随之失效 ——
+	//	  canonical 视图 890 之后本身就是会话族两臂体。
+	//
+	// ⇒ 「哪些文件会因删 v1 而坏掉」这个问题已经没有对象。
+	// ⇒ 本表保留（不删）：它守的是「**不许出现新的直读 v1 底表的读方**」。
+	//
+	// ⚠ 不要在这里手填「已知的例外」—— 已退役关系的残留引用登记在
+	// retiredV1ReferenceExceptions（生产缺陷台账，不是迁移清单）。
 }
 
-// retirementReattributed records the eleven files that §9.162's registry listed
-// as breakers and that §9.165's attribution fix re-classified. They are kept
-// here as a record rather than deleted, because "we checked this and it is
-// actually fine" is information; a silently shrunken list is indistinguishable
-// from a list nobody maintained.
+// retirementReattributed 记录「被重新归因、判定为可接受」的读方。
 //
-// The defect they share: the old extractor asked "does the substring `id` appear
-// in a v1-reading literal", and these files' literals are full of dimension-table
-// primary keys (`mc.id`, `c.id`, `p.id`), a JSONB key access (`att->>'id'`), and
-// an output alias (`credential_id AS id`). None of them is _request_logs.id.
+// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空** —— 与 retirementBreakers
+// 同理：v1 族被物理删除之后，「读方会怎样」这个问题没有对象了。
+//
+// 保留它的理由同上：它守的是「不许出现新的直读 v1 底表的读方」。
 var retirementReattributed = map[string]string{
-	"admin/data_lifecycle_attachments.go": "repoint-degraded: real dependency is `attachments` (18.19% session vs 100% v1). The `id` was `att->>'id'`, a JSONB key access on the attachments column",
-	"cmd/gateway/v1_write_liveness.go": "§9.264/§9.265 的 v1 写入腿存活读数。" +
-		"它**不指名任何 canonical 列** —— SQL 里只有 `COUNT(*)` 与 `ts`，" +
-		"没有 id / credential_id / work_type 之类。所以按列判定它是 repoint-safe（`RepointNoColumnsMeasured`）。\n" +
-		"⚠ 但**不要**把 repoint-safe 读成「退役后照常工作」：它唯一的依赖是 " +
-		"**v1 关系的行存在性**，而那正是退役会拿走的东西。" +
-		"⇒ DROP 之后它是 **42P01 直接报错**，不是静默空 —— 属主自己的口径是「报错是好事" +
-		"（灰度时立刻发现，不会悄悄给出错误答案）」，所以**可以容忍，但必须先退役或改指**。\n" +
-		"⇒ 消费面分档为 ③（按设计继续读 v1）：它的判据就是「v1 还在不在写」这件事本身。" +
-		"停写之后它要么退役、要么改观测对象，**不能留着一个永远 dead 的判据**。",
-	"admin/probe_history.go": "repoint-degraded: `credential_id` only. The `id` was `models_canonical.id`",
-	"admin/providers.go":     "repoint-degraded: `provider_id` only. Every `p.id`/`c.id` belongs to the providers/credentials tables",
-	// admin/routing.go 于 2026-10-13（S3 波 3）除名：popularModelsHotSQL 改读
-	// 会话族原生源后文件内已无 v1 列引用（exposure 扫描 0 列 = 无测量对象）。
-	"admin/swim_lane_init.go":    "**repoint-safe**: no exposure columns at all. The `id`s were models_canonical / model_families / credentials / providers primary keys",
-	"bg/auto_index_refresher.go": "repoint-degraded: `canonical_id` only. The `id`s were credentials / models_canonical / provider_models / credential_model_bindings primary keys",
-	"bg/credential_recovery.go":  "repoint-degraded: `client_model` + `credential_id` only",
-	"bg/credential_selfcheck.go": "repoint-degraded: `canonical_id` + `credential_id` only. The `id`s were `credentials.id`",
-	"bg/model_probe.go":          "**repoint-safe**: no exposure columns at all",
-	"bg/today_success_probe.go":  "repoint-safe: its `id` was `rl.credential_id AS id` — an output alias. The real dependency, credential_id, is a *stronger* column than the list assumed and is not in the breaker set on its own",
-	"admin/logs.go": "repoint-degraded rather than blocked: with `id` and `provider_model` correctly " +
-		"attributed away, the only real v1 dependency left is the degraded set " +
-		"(client_model 90.06%, credential_id 62.65%, canonical_id 0.07%, provider_id 55.82%, " +
-		"application_id 3.51% on the session side)",
+	// 890 之后：v1 读方总体为零 ⇒ 无归因登记。
 }
 
 // TestRequestLogsRetirementBreakersRegistryIsConsistent gates the registry in
@@ -774,9 +748,34 @@ func TestRetirementExposurePopulationIsEveryKnownReader(t *testing.T) {
 	if len(extra) > 0 {
 		t.Errorf("exposure 总体里有字面量表之外的文件：%v", extra)
 	}
-	// 地板：总体为空 ⇒ 整道门无声通过。
+	// ★ 890 之后（2026-10-20）：**总体为空是正确状态**，不是「量具坏了」。
+	//
+	// 原来这里是一条地板（总体为 0 ⇒ Fatal），因为那时总体为空只可能意味着
+	// 「扫描器坏了」。890 之后 v1 族被物理删除 ⇒ 读方总体真的归零。
+	//
+	// ⇒ 地板翻成：**总体为空必须是因为扫描器扫过而没命中**，不是**扫描器没跑**。
+	//
+	// ⚠⚠ 2026-10-20 二次订正：**证据源换了**。
+	// 第一版的「扫描器活着」证据是「那 4 处已具名的残留引用」（admin 生产代码里
+	// 读 890 已 DROP 的两张包装视图）—— 它们随后**被修掉了**（改指会话族原生源
+	// db.SessionFamilyTurnsSourceSQL()，顺带把 4 个恒空端点救回有数据）。
+	// ⇒ 真命中归零 ⇒ 若还拿「必须有真命中」当地板，就等于**逼着生产代码保留缺陷**
+	// 才能让门绿 ⇒ 那是把判据绑在缺陷上。
+	//
+	// ⇒ 证据源换成**合成样本**：临时写一个含 v1 读点的 .go 文件，
+	// 用**同一个抽取器**跑一遍 ⇒ 它必须命中 ⇒ 证明「扫描器确实在工作」，
+	// 而这个证据**与生产代码里有没有残留无关**。
 	if len(got) == 0 {
-		t.Fatal("exposure 总体为 0 个文件 —— 门会全绿而一个读方都没评估")
+		dir := t.TempDir()
+		sample := filepath.Join(dir, "synthetic_v1_reader.go")
+		const sampleSrc = "package synthetic\n\nconst q = \"SELECT * FROM public._request_logs_hot\"\n"
+		if err := os.WriteFile(sample, []byte(sampleSrc), 0o600); err != nil {
+			t.Fatalf("write synthetic sample: %v", err)
+		}
+		if lits := extractV1ReadingLiterals(t, sample); len(lits) == 0 {
+			t.Fatal("exposure 总体为 0 个文件，而**合成样本**也扫不到已退役关系的引用 —— " +
+				"这不是「v1 读方归零」，是扫描器没跑（或匹配器坏了）")
+		}
 	}
 }
 
@@ -895,6 +894,29 @@ func TestRequestLogsRetirementBreakersRegistryIsConsistent(t *testing.T) {
 	root := repoRootFromCaller(t)
 	measured, viewArm := measureV1ReadingExposure(t, root)
 
+	// ★ 890 之后（2026-10-20）：两张登记表都必须为空。
+	//
+	// v1 族被物理删除 ⇒ 没有任何读方会因为「删掉 v1」而坏掉。
+	// ⇒ 本门从「登记表必须覆盖全部 breaking 读方」翻成
+	//「**登记表必须为空，且实测 breaking 读方必须为空**」。
+	if len(retirementBreakers) > 0 {
+		t.Errorf("retirementBreakers 仍有 %d 条登记 —— 890 之后 v1 族已被物理删除，"+
+			"「删 v1 会坏掉哪些文件」这个问题没有对象了。", len(retirementBreakers))
+	}
+	if len(retirementReattributed) > 0 {
+		t.Errorf("retirementReattributed 仍有 %d 条登记 —— 890 之后没有 v1 读方可归因。",
+			len(retirementReattributed))
+	}
+	if len(measured) > 0 {
+		var names []string
+		for f, sev := range measured {
+			names = append(names, f+" ("+sev+")")
+		}
+		sort.Strings(names)
+		t.Errorf("%d 个文件仍被实测为「直读 v1 底表」—— 它们运行时会 42P01："+
+			"\n  %s", len(measured), strings.Join(names, "\n  "))
+	}
+
 	var unregistered, stale []string
 	for f := range measured {
 		if _, ok := retirementBreakers[f]; !ok {
@@ -958,6 +980,14 @@ func TestRequestLogsRetirementBreakersRegistryIsConsistent(t *testing.T) {
 // failure mode than a missing table, which at least announces itself.
 func TestRequestLogsRetirementRepointVerdict(t *testing.T) {
 	root := repoRootFromCaller(t)
+	// ★ 890 之后（2026-10-20）：两张登记表为空 ⇒ 「repoint 会怎样」没有对象。
+	// 本门剩下的判据（verdict 函数自身的 7 条用例、matcher 覆盖面）仍然有效 ——
+	// 它们是**函数级**判据，与登记表是否为空无关。
+	if len(retirementBreakers) > 0 || len(retirementReattributed) > 0 {
+		t.Errorf("repoint verdict 的评估集非空（breakers=%d reattributed=%d）—— "+
+			"890 之后没有 v1 读方，这两张表必须为空。",
+			len(retirementBreakers), len(retirementReattributed))
+	}
 	// Both registries, not just the blockers: the point of this report is the
 	// whole assessed set, and shrinking it to "the ones that break" would hide
 	// exactly the files §9.165 re-classified.

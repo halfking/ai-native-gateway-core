@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import type { ApprovalRule } from '../api/approval'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
+import { Plus, Rank, EditPen, Delete, Close } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   modelValue: ApprovalRule[]
@@ -163,7 +164,7 @@ function getRiskLevelLabel(level: string): string {
     <div class="header">
       <h3>审批规则</h3>
       <button class="btn btn-primary" @click="openAddDialog">
-        <span>➕</span> 添加规则
+        <Plus /> 添加规则
       </button>
     </div>
 
@@ -183,7 +184,7 @@ function getRiskLevelLabel(level: string): string {
         @dragend="onDragEnd"
       >
         <div class="rule-header">
-          <div class="rule-drag-handle">☰</div>
+          <div class="rule-drag-handle"><Rank /></div>
           <div class="rule-info">
             <div class="rule-name">{{ rule.name }}</div>
             <div class="rule-meta">
@@ -201,15 +202,15 @@ function getRiskLevelLabel(level: string): string {
               class="btn-icon"
               :class="{ active: rule.enabled }"
               @click="toggleEnabled(index)"
-              :title="rule.enabled ? '禁用' : '启用'"
+              :title="rule.enabled ? $t('common.status.disabled') : $t('common.status.enabled')"
             >
               {{ rule.enabled ? '✓' : '✗' }}
             </button>
-            <button class="btn-icon" @click="openEditDialog(index)" title="编辑">
-              ✏️
+            <button class="btn-icon" @click="openEditDialog(index)" :title="$t('common.button.edit')">
+              <EditPen />
             </button>
-            <button class="btn-icon btn-danger" @click="removeRule(index)" title="删除">
-              🗑️
+            <button class="btn-icon btn-danger" @click="removeRule(index)" :title="$t('common.button.delete')">
+              <Delete />
             </button>
           </div>
         </div>
@@ -236,7 +237,7 @@ function getRiskLevelLabel(level: string): string {
       <div class="dialog dialog-large">
         <div class="dialog-header">
           <h3>{{ editingIndex !== null ? '编辑规则' : '添加规则' }}</h3>
-          <button class="btn-close" @click="showDialog = false">✕</button>
+          <button class="btn-close" @click="showDialog = false"><Close /></button>
         </div>
 
         <div class="dialog-body">
@@ -251,7 +252,7 @@ function getRiskLevelLabel(level: string): string {
           </div>
 
           <div class="form-group">
-            <label>描述</label>
+            <label>{{ $t('common.description') }}</label>
             <textarea
               v-model="formData.description"
               class="form-textarea"
@@ -313,12 +314,12 @@ function getRiskLevelLabel(level: string): string {
                   :disabled="formData.conditions.length === 1"
                   title="删除条件"
                 >
-                  ✕
+                  <Close />
                 </button>
               </div>
 
               <button class="btn btn-ghost btn-sm" @click="addCondition">
-                ➕ 添加条件
+                <Plus /> 添加条件
               </button>
             </div>
           </div>
@@ -332,8 +333,8 @@ function getRiskLevelLabel(level: string): string {
         </div>
 
         <div class="dialog-footer">
-          <button class="btn btn-ghost" @click="showDialog = false">取消</button>
-          <button class="btn btn-primary" @click="saveRule">保存</button>
+          <button class="btn btn-ghost" @click="showDialog = false">{{ $t('common.button.cancel') }}</button>
+          <button class="btn btn-primary" @click="saveRule">{{ $t('common.button.save') }}</button>
         </div>
       </div>
     </div>

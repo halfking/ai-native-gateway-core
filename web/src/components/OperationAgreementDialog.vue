@@ -14,6 +14,7 @@
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppModal from './ui/AppModal.vue'
+import { localeArray } from '../i18n'
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
@@ -43,7 +44,8 @@ const emit = defineEmits<{
 
 const { t, tm } = useI18n()
 const agreed = ref(false)
-const points = tm('public.agreement.points') as string[]
+// ⚠ 数组型语言包键不能经 t() 取（vue-i18n 9 的 t() 对数组消息返回键路径字符串）
+const points = localeArray<string[]>('public.agreement.points')
 
 const dialogVisible = computed({
   get: () => props.modelValue,

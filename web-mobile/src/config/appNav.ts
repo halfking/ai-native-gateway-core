@@ -18,6 +18,30 @@ export interface NavItem {
    *   在抽屉层就该挡住，而不是等用户点进去看报错。
    */
   requiresRole?: 'admin' | 'super_admin'
+  /**
+   * 可见所需的**功能能力位**。缺省 = 不依赖任何能力位。
+   *
+   * ★ 2026-10-21 新增（R72f 轮 · 属主决策项 #10 的后半）。原因：有些功能的
+   *   **端点只在开关打开时才注册**（例：「费用对账」的
+   *   `/api/admin/provider-cost-reconciliation*` —— `admin/handler.go:1099` 的 `providerCostReconciliationHandler` 装配判断）
+   *   ⇒ ⇒ 而这一席此前
+   *   **只带 `requiresRole`** ⇒ ⇒ ⇒ 开关关着时 super_admin 照样看得见它、
+   *   点进去必然 404 ⇒ ★★ **404 与「端点不存在」同形 ⇒ 没有一层会说真话**。
+   *
+   * ★ 能力位由后端 `/api/admin/capabilities` 给出，且那个值是**派生**的
+   *   （「handler 是否装配」⇒ 端点是否注册）⇒ ⇒ 不存在「能力位说开着、
+   *   端点却 404」的可能。
+   *
+   * ★ **fail-closed**：能力位**未加载 / 取失败** ⇒ 按「该能力没开」处理
+   *   ⇒ ⇒ 宁可少显示一席，也不要显示一个「点了必然失败」的入口。
+   *
+   * ★★ **写这类引用的规矩**：`goLineRef.spec.ts` 的 token 是**按行**取的
+   *   ⇒ ⇒ 「Go 里的标识符」必须和 `.go:行号` 写在**同一行**，
+   *   否则那一行的 token 集里只有端点路径字面量 ⇒ 引用会被判成
+   *   「对不上」而**并非它真的错了**。本行因此把
+   *   `providerCostReconciliationHandler` 与 `admin/handler.go:1099` 写在一起。
+   */
+  requiresCapability?: string
 }
 
 /** 底栏 4 席直达 + 「更多」固定席（≤5 席约束）。 */
@@ -33,7 +57,7 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'alerts', to: '/alerts', icon: 'alert', titleKey: 'nav.alerts' },
   { key: 'usage', to: '/usage', icon: 'chart', titleKey: 'nav.usage' },
   { key: 'users', to: '/users', icon: 'user', titleKey: 'nav.users', requiresRole: 'admin' },
-  { key: 'reconciliation', to: '/reconciliation', icon: 'chart', titleKey: 'nav.reconciliation', requiresRole: 'super_admin' },
+  { key: 'reconciliation', to: '/reconciliation', icon: 'chart', titleKey: 'nav.reconciliation', requiresRole: 'super_admin', requiresCapability: 'cost_reconciliation' },
   // ★ 2026-10-14 第一百一十一批：对账报表（区间多维汇总 + 筛选栏候选）。
   //   `admin/handler.go:1086` `h.superAdmin(h.handleReportRollup)` ⇒ **要** super_admin。
   //   ⚠️ ★★ 与上面那张 `reconciliation` 席是**两个不同功能**，标题必须能区分：
@@ -217,8 +241,11 @@ export const DRAWER_NAV: readonly NavItem[] = [
   // ★ 2026-10-14 第一百一十批：指纹漂移。`admin/handler.go:942-943` 两条都是
   //   `h.superAdmin`（整个 `/api/admin/model-integrity/` 前缀都是 superAdmin 档）
   //   ⇒ 这一席**要** `requiresRole: 'super_admin'`。
-  //   ★ 本族读路径跨全部租户（`admin/model_integrity.go:328` 的 `withAllTenantReadOnlyTx`
-  //     且 WHERE 无租户条件），但**档位本身就是那道门** ⇒ 视图内无需段落级门控。
+  //   ★ 读路径租户语义（批 157 后）：super_admin/admin_key 经
+  //     `withTenantOrAllReadOnlyTx` 的空-tenant 分支跨全部租户；
+  //     tenant_admin 则被收窄到本租户（`admin/model_integrity.go:165`
+  //     等四个读 helper）。菜单仍**要** `requiresRole: 'super_admin'`
+  //     ⇒ 视图内无需段落级门控。
   //   ⚠️ 与 `integrity`（同前缀的 summary/events/resolve 那一面）是**两张席**：
   //     同一个前缀上既有 admin 面也有 superAdmin 面 ⇒ 权限**不得**按前缀判。
   {
@@ -412,7 +439,7 @@ export const DRAWER_NAV: readonly NavItem[] = [
     requiresRole: 'super_admin',
   },
   // 2026-10-08 第一百批：任务类型档案 + 人工修正反馈闭环。
-  // ★ admin 档（`admin/handler.go:1413` 用 `admin` 挂载 `RegisterTaskProfileRoutes`）
+  // ★ admin 档（`admin/handler.go:1488` 用 `admin` 挂载 `RegisterTaskProfileRoutes`）
   //   ⇒ **不设** requiresRole（与上面那席相反）。
   // ★ 这一席同时接上批 98/99 的两个 API 模块 —— 它们此前**没有任何 UI 引用**，
   //   全仓 94 个 API 模块里有 32 个是这种「做完了但用户点不到」的孤儿。
@@ -465,14 +492,17 @@ export const DRAWER_NAV: readonly NavItem[] = [
   },
   // ★★ 凭据模型滑窗调用明细（2026-10-14 第一百一十五批）——
   //   与 errors-trend / model-history **同注册处**，但**处置相反**。
-  // ⚠️⚠️ 这里要设 **`requiresRole: 'super_admin'`** 而不是 `'admin'`：
-  //   `handleSlidingWindow`（admin/credential_monitor.go:704-782）里
-  //   **既没有 `tenantID` 变量也没有 `IsTenantAdmin`** ⇒ Redis 与
-  //   `_request_logs` 回退两条腿的 WHERE 都**只有 credential_id**，
-  //   而 `credential_id` 是**全局唯一**主键
-  //   ⇒ 任何通过认证的主体报出别的租户的 credential_id 就能读到它的逐次调用明细。
-  //   ⇒ `'admin'` 档会给出「按钮写着我的租户、后端根本不理这句」的**虚假安全感**。
-  // ⇒ ★ 所以它**必须**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（与上面两席相反）。
+  // ⚠️⚠️ 这里设 **`requiresRole: 'super_admin'`** 而不是 `'admin'`：
+  //   ★★ **2026-10-26 订正**：本段原写的理由（「后端两条腿都只有 credential_id、
+  //   没有租户维度 ⇒ 跨租户可读」）已被后端补洞覆盖 —— audit #153 +
+  //   12h-audit 20261017（2026-10-16/17）给 `handleSlidingWindow`
+  //   （`admin/credential_monitor.go:753-863`）加了 `tenantID` / `IsTenantAdmin`、
+  //   两条 SQL 腿的 `AND ($5 = '' OR tenant_id = $5)`（`:905` / `:950`），
+  //   以及角色门（`:765-768`，`role=user` ⇒ 403）；Redis 快腿对 tenant_admin
+  //   直接跳过（`:809`，Redis 键没有 tenant tag）。
+  //   ⇒ 所以 `'admin'` 档**现在**是安全的；仍写 `'super_admin'` 是**过度限制**
+  //     （收紧一档不必跟着放开），**不是漏洞**。
+  // ⇒ ★ 它仍**必须**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（与上面两席相反）。
   {
     key: 'sliding-window',
     to: '/sliding-window',
@@ -528,13 +558,14 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.requestActions',
     requiresRole: 'super_admin',
   },
-  // ★ v1 数据地平线（2026-10-14 第一百一十九批）——
+  // ★ 流量数据地平线（2026-10-14 第一百一十九批；2026-10-15 第 129 批随 r1033 改名）——
   //   注册 `admin/handler.go:1109` 的 `admin(...)` ⇒ **admin 档**（不设 requiresRole）。
   // ⚠️ 与批 115/117/118 三席**相反**，而它们并没错：本族没有租户维度，
-  //   但载荷是**平台级全局事实**（七个键无一带租户）
+  //   但载荷是**平台级全局事实**（六个键无一带租户）
   //   ⇒ 过度限制的判据是「载荷里有没有别人的东西」，不是「有没有 tenant 条件」。
   // ⇒ 且**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单 —— 加进去那条立刻红。
-  { key: 'v1-data-horizon', to: '/v1-data-horizon', icon: 'clock', titleKey: 'nav.v1DataHorizon' },
+  // ⚠️ 第 129 批：席名/路径随端点改名（`/v1-data-horizon` → `/data-horizon`）。
+  { key: 'data-horizon', to: '/data-horizon', icon: 'clock', titleKey: 'nav.dataHorizon' },
   // ★ 订阅档（2026-10-14 第一百二十批）——
   //   ★★★★ 权限档**第四类**，与前三席都不同：
   //   它**同样没有租户维度**（读全局 `subscription_tiers`），
@@ -627,6 +658,50 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.storageMigrationState',
     requiresRole: 'admin',
   },
+  // ★ 轮次列表的筛选候选值（2026-10-15 第一百二十七批）——
+  //   `admin/handler.go:1299` 的 `admin(...)` ⇒ **服务端没有角色下限**
+  //   （`admin := h.admin` → AdminMiddleware，supportedRole 接受 "user"）。
+  //   ★ 'admin' 档两条独立理由：
+  //     （甲）需要：载荷是**租户级聚合清单**（全租户用过的模型/供应商/客户端/负责人/标签），
+  //           不是某个用户自己的数据；
+  //     （乙）不过度限制：每个维度都拼了 tenantWhere ⇒ 租户内数据。
+  //   ★★ 模块头原写「admin 档 ⇒ 抽屉席不设 requiresRole」——**第四个**写下这句错的模块
+  //     （批 121/122/123 已因同一句话返工）。
+  //   ⚠️ 'admin' 档**不得**进 AppDrawer.spec.ts 的 superAdmin 白名单。
+  {
+    key: 'turns-filter-options',
+    to: '/turns-filter-options',
+    // ★ IconName 里**没有** `filter`（类型门会红）⇒ 用 `search`（筛选语义最贴）。
+    icon: 'search',
+    titleKey: 'nav.turnsFilterOptions',
+    requiresRole: 'admin',
+  },
+  // ★ 会话分析筛选项（2026-10-15，第一百二十八批）。
+  //   GET /api/admin/session-analytics/filter-options
+  // ⚠️ 与兄弟席 `turns-filter-options` **可见范围方向相反**，两席不能互相套用：
+  //   · 兄弟：super_admin 也只看**自己租户**（永远拼 tenantWhere）；
+  //   · 本席：`effectiveScopeTenant`（`admin/session_tenant.go:180`）对 super_admin
+  //     返回**空串** ⇒ `if tenantID != ""` 不成立 ⇒ ★★ **super_admin 看的是全部租户的聚合**，
+  //     且这个端点**没有** `?tenant=` 收窄手段。
+  //   ⇒ 视图里对这一档必须显式写明，否则用户会以为「这就是我这个租户的清单」。
+  //
+  // 权限 `requiresRole: 'admin'`：
+  //   （甲）需要 admin：载荷是租户级聚合清单（这个租户所有人跑过的模型/提供商）。
+  //   （乙）不过度限制：除 super_admin 外两条查询都拼了 `AND tenant_id = $1`
+  //        （`session_analytics_top.go:206-209`、`:219-222`）⇒ 租户内数据。
+  // ⚠️ 'admin' 档**不得**进 AppDrawer.spec.ts 的 superAdmin 白名单。
+  {
+    key: 'session-analytics-filter-options',
+    to: '/session-analytics-filter-options',
+    // ★ IconName 里**没有** `funnel`（`AppIcon.vue:8-36` 全名单 27 个，
+    //   `funnel` 只是 AppDrawer.spec.ts:152 里的一个普通字符串字面量，不是图标名）
+    //   ⇒ 用 `search`（筛选语义最贴，与兄弟席一致）。
+    icon: 'search',
+    titleKey: 'nav.sessionAnalyticsFilterOptions',
+    requiresRole: 'admin',
+  },
+  // 脱敏规则：租户管理员可读本租户事件；其余三区在视图内按服务端档位挡。
+  { key: 'sanitize-rules', to: '/sanitize-rules', icon: 'check', titleKey: 'nav.sanitizeRules', requiresRole: 'admin' },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',
@@ -657,13 +732,47 @@ export function isNavItemActive(item: NavItem, path: string): boolean {
  * tenant_admin，`h.superAdmin` 不允许（admin/handler.go:880-888）。所以
  * `admin` 表示管理员工作台角色（tenant_admin / super_admin / legacy admin_key）；
  * `super_admin` 表示仅超级管理员。其余用户不能访问管理入口。
+ *
+ * ★ `capabilities` = **已开启的能力位集合**（`capabilitiesStore.enabled`）。
+ *   ★ **fail-closed**：`undefined`（未加载/取失败）⇒ 带 `requiresCapability`
+ *     的项**一律隐藏**。⇒ ⇒ 宁可少显示一席，也不要显示「点了必然失败」的入口。
  */
-export function navItemsFor(items: readonly NavItem[], role: string | null | undefined): NavItem[] {
+export function navItemsFor(
+  items: readonly NavItem[],
+  role: string | null | undefined,
+  capabilities?: ReadonlySet<string> | null,
+): NavItem[] {
   const isSuper = role === 'super_admin'
   const isAdmin = isSuper || role === 'tenant_admin' || role === 'admin_key'
-  return items.filter((item) => item.requiresRole === 'super_admin'
-    ? isSuper
-    : item.requiresRole === 'admin'
-      ? isAdmin
-      : true)
+  return items.filter((item) => {
+    if (item.requiresRole === 'super_admin' && !isSuper) return false
+    if (item.requiresRole === 'admin' && !isAdmin) return false
+    if (item.requiresCapability && !capabilities?.has(item.requiresCapability)) return false
+    return true
+  })
+}
+
+/** 批 150：路由层按 `path` 判定 `role` 是否有权进入。
+ *  与 `navItemsFor` 同源（`requiresRole` ∈ { undefined, 'admin', 'super_admin' }），
+ *  但接收**单个 path** 而非完整 nav 项列表 —— 路由守卫一次只查一个目标。
+ *
+ * ★ 2026-10-21（R72f）：同时消费 `requiresCapability` ⇒ ⇒ 功能没装配时，
+ *   **直接访问该路由也进不去**（不只是抽屉里不显示）⇒ ⇒ 与抽屉口径同源、
+ *   同 fail-closed。 */
+export function routeAllowedFor(
+  path: string,
+  role: string | null | undefined,
+  capabilities?: ReadonlySet<string> | null,
+): boolean {
+  const isSuper = role === 'super_admin'
+  const isAdmin = isSuper || role === 'tenant_admin' || role === 'admin_key'
+  // ★★ 显式按 path 查：避免路径别名（例：`/format-anomalies` 与 `/format-anomaly`）
+  //   撞到同一 nav 项时 navItemsFor 给"对的那项"，但路由层给"错的那项"。
+  //   这里改成"看 nav 里所有 to 完全等于 path 的项"，没有则按"无 requiresRole"放行。
+  const item = DRAWER_NAV.find((n) => n.to === path) ?? BOTTOM_NAV.find((n) => n.to === path)
+  if (!item) return true
+  if (item.requiresRole === 'super_admin' && !isSuper) return false
+  if (item.requiresRole === 'admin' && !isAdmin) return false
+  if (item.requiresCapability && !capabilities?.has(item.requiresCapability)) return false
+  return true
 }

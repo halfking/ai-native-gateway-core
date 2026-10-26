@@ -267,7 +267,7 @@ watch(usageRows, () => void loadBalances())
     <div v-else-if="providersDegraded" class="pv-empty" role="alert">
       {{ t('dashboard.board.pieDegraded', { reason: props.board?.degraded_pies?.reason || t('dashboard.board.pieDegradedGeneric') }) }}
     </div>
-    <div v-else class="pv-empty">{{ t('dashboard.board.empty') }}</div>
+    <div v-else class="pv-empty">{{ t('dashboard.board.emptyNoResultProviders') }}</div>
 
     <div class="pv-table-card">
       <div class="pv-sec__bar">
@@ -295,7 +295,7 @@ watch(usageRows, () => void loadBalances())
           </thead>
           <tbody>
             <tr v-if="!tableRows.length">
-              <td colspan="7" class="pv-table__empty">{{ usageLoading ? t('dashboard.loading') : t('dashboard.board.empty') }}</td>
+              <td colspan="7" class="pv-table__empty">{{ usageLoading ? t('dashboard.loading') : t('dashboard.board.emptyNoResultProviders') }}</td>
             </tr>
             <tr v-for="row in tableRows" :key="row.provider_id" class="pv-row" @click="openProvider(row.provider_id)">
               <td><b>{{ row.provider_name }}</b></td>

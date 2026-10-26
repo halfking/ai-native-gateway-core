@@ -95,7 +95,20 @@ WHERE provider_id = $1
 		error4xxScore*0.05 +
 		timeoutScore*0.05
 
-	s.logger.Info("availability score calculated",
+	// 2026-10-17: 由 Info 降为 Debug。
+	//
+	// 实测（245 上 quality-service.error.log）：本行是全文件 **76% 的行数**
+	// （3,593,726 行里约 152k/200k 抽样命中），每轮调度按
+	// (provider × model) 打一行，112 个组合 × 288 轮/天 ≈ 3.2 万行/天。
+	// 它是**逐项明细**，而同一次调度的汇总已经在
+	// scheduler.go:130 的 "quality calculation run completed"
+	// （duration/success/failed/total）里，两条一起留会让 INFO 失去
+	// 「生命周期事件」语义。
+	//
+	// 与本文件自身的约定也一致：入口的 "calculating availability score"
+	// (:39) 本来就是 Debug，只有结果行是 Info。
+	// 需要逐项分数时用 -log-level=debug 打开，聚合口径不受影响。
+	s.logger.Debug("availability score calculated",
 		"provider_id", providerID,
 		"model", modelName,
 		"score", finalScore,

@@ -137,7 +137,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
     setStep('download', 'done')
   } catch (e) {
     setStep('download', 'failed')
-    ElMessage.error(`下载失败：${(e as Error).message}`)
+    ElMessage.error(t('common.feedback.downloadFailedWithReason', { reason: (e as Error).message }))
     upgrading.value = null
     return
   }
@@ -150,7 +150,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
     setStep('install', 'done')
   } catch (e) {
     setStep('install', 'failed')
-    ElMessage.error(`安装失败：${(e as Error).message}`)
+    ElMessage.error(t('common.feedback.installFailedWithReason', { reason: (e as Error).message }))
     upgrading.value = null
     return
   }
@@ -165,7 +165,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
     emit('refresh')
   } catch (e) {
     setStep('switch', 'failed')
-    ElMessage.error(`启动切换失败：${(e as Error).message}`)
+    ElMessage.error(t('customer.versions.switchFailedWithReason', { reason: (e as Error).message }))
   } finally {
     upgrading.value = null
   }
@@ -333,8 +333,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
 .banner-label {
   font-size: 11px;
   color: var(--muted, var(--muted));
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
 }
 .banner-value {
   font-size: 18px;
@@ -354,7 +353,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   padding: 8px 12px;
   margin-bottom: 12px;
   background: color-mix(in srgb, var(--warning) 12%, transparent);
-  border-left: 3px solid var(--kx-warning, var(--warning));
+  border: 1px solid var(--kx-warning, var(--warning));
   border-radius: 4px;
   font-size: 13px;
   color: var(--kx-warning, var(--warning-dark));

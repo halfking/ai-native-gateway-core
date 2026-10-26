@@ -6,9 +6,9 @@
 // ══ 权限 ══════════════════════════════════════════════════════════════════
 // ★★★★ `requiresRole: 'admin'` —— **不是** super_admin，也**不是**不设。
 //
-//   注册 `admin/handler.go:1132`：`admin(h.handleMigrationState)`
-//   而 `admin` 是 `admin/handler.go:925` 的**局部别名** `admin := h.admin`
-//   ⇒ `h.admin` = `AdminMiddleware`（`admin/auth.go:85` 起）——
+//   注册 `admin/handler.go:1182`：`admin(h.handleMigrationState)`
+//   而 `admin` 是 `admin/handler.go:962` 的**局部别名** `admin := h.admin`
+//   ⇒ `h.admin` = `AdminMiddleware`（`admin/auth.go:86` 起）——
 //     ★★ 全文**无任何 `claims.Role` 比对** ⇒ **没有角色下限**
 //   ⇒ 「admin 档」在注册行里的真实含义是「**已认证**」，不是「管理员」。
 //
@@ -22,8 +22,8 @@
 //        而「本机附件目录正从 A 搬到 B」**没理由给普通用户看**。
 //
 //   ⚠️⚠️ ★★★★ **与第一百二十四批结论相反，而且只隔一行**：
-//     `:1129`（`storage/config`）是 `h.superAdmin` ⇒ **服务端是真门**；
-//     `:1132`（本族）是 `admin(...)`      ⇒ **服务端没有门**。
+//     `:1172`（`storage/config`）是 `h.superAdmin` ⇒ **服务端是真门**；
+//     `:1175`（本族）是 `admin(...)`      ⇒ **服务端没有门**。
 //   ⇒ ★★★ 前端这一层在批 124 是**体验兜底**，在**本族是唯一的门**。
 //     前端严于后端是**兜底不是修复**。
 //
@@ -51,7 +51,7 @@ import {
   type MigrationStateResponse,
 } from '@/api/storageMigrationState'
 
-useHyperPage({ title: () => t('sms.title') })
+useHyperPage({ title: () => (allowed.value ? t('sms.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

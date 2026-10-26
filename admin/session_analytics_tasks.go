@@ -10,6 +10,43 @@ import (
 	"time"
 )
 
+// sessionAnalyticsTaskDailyCostTrendSQL / sessionAnalyticsTaskRecentSessionsSQL
+// 是「任务分析详情」页两个面板的 SQL。提成包级常量是为了让**真库执行门**
+// 能直接跑它们（admin/session_family_runtime_sql_test.go）——
+// 内联在 handler 里的 SQL 无法被门直接执行，列名一改错就只能靠
+// “面板看起来是空的” 来发现（2026-10-20 实测：正是这么发现的）。
+//
+// ★ 2026-10-20 修：JOIN 条件原写成 `ss.session_key = sd.session_id`，
+// 而 session_dim 里的列是 **gw_session_id**（另有 session_key），没有
+// session_id ⇒ PG 报
+//
+//	ERROR: column sd.session_id does not exist (42703)
+//
+// ⇒ 这两个面板**每次都失败**，而代码用 `if err == nil { ... }` 把错误吞掉
+// （面板静默变空）⇒ 页面上看不出报错，只看得到「没数据」。
+// 同包另外 7 处 JOIN（session_task_project_api.go / session_management_api.go）
+// 用的是正确写法 `sd.gw_session_id = ss.session_key`。
+const sessionAnalyticsTaskDailyCostTrendSQL = `
+	SELECT 
+		DATE(ss.first_request_at) as date,
+		SUM(ss.total_cost_usd) as cost,
+		COUNT(*) as sessions
+	FROM session_summaries ss
+	INNER JOIN session_dim sd ON ss.session_key = sd.gw_session_id AND ss.tenant_id = sd.tenant_id
+	%s
+	GROUP BY DATE(ss.first_request_at)
+	ORDER BY date ASC
+`
+
+const sessionAnalyticsTaskRecentSessionsSQL = `
+	SELECT ss.session_key, ss.request_count, ss.total_cost_usd, ss.health_score, ss.health_grade, ss.first_request_at
+	FROM session_summaries ss
+	INNER JOIN session_dim sd ON ss.session_key = sd.gw_session_id AND ss.tenant_id = sd.tenant_id
+	%s
+	ORDER BY ss.last_request_at DESC
+	LIMIT 20
+`
+
 // TaskAnalyticsListResponse 任务分析列表响应
 type TaskAnalyticsListResponse struct {
 	Tasks       []TaskAnalyticsSummary `json:"tasks"`
@@ -354,17 +391,14 @@ func (h *Handler) handleTaskAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 		trendArgs = append(trendArgs, tenantID)
 	}
 
-	trendRows, err := h.db.Query(ctx, fmt.Sprintf(`
-		SELECT 
-			DATE(ss.first_request_at) as date,
-			SUM(ss.total_cost_usd) as cost,
-			COUNT(*) as sessions
-		FROM session_summaries ss
-		INNER JOIN session_dim sd ON ss.session_key = sd.session_id AND ss.tenant_id = sd.tenant_id
-		%s
-		GROUP BY DATE(ss.first_request_at)
-		ORDER BY date ASC
-	`, trendWhereClause), trendArgs...)
+	trendRows, err := h.db.Query(ctx, fmt.Sprintf(sessionAnalyticsTaskDailyCostTrendSQL, trendWhereClause), trendArgs...)
+	if err != nil {
+		// 2026-10-20：原来只有 `if err == nil` 分支，错误被完全吞掉 ⇒ 面板
+		// 静默变空（分不清「没数据」和「SQL 坏了」）。降级可以接受，
+		// 但降级原因必须留痕。
+		slog.Warn("analytics detail panel query failed; panel degraded",
+			"panel", "daily_cost_trend", "error", err)
+	}
 	if err == nil {
 		defer trendRows.Close()
 		resp.DailyCostTrend = []DailyCostPoint{}
@@ -394,14 +428,11 @@ func (h *Handler) handleTaskAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 		recentWhereClause += " AND ss.tenant_id = $2"
 	}
 
-	recentRows, err := h.db.Query(ctx, fmt.Sprintf(`
-		SELECT ss.session_key, ss.request_count, ss.total_cost_usd, ss.health_score, ss.health_grade, ss.first_request_at
-		FROM session_summaries ss
-		INNER JOIN session_dim sd ON ss.session_key = sd.session_id AND ss.tenant_id = sd.tenant_id
-		%s
-		ORDER BY ss.last_request_at DESC
-		LIMIT 20
-	`, recentWhereClause), recentArgs...)
+	recentRows, err := h.db.Query(ctx, fmt.Sprintf(sessionAnalyticsTaskRecentSessionsSQL, recentWhereClause), recentArgs...)
+	if err != nil {
+		slog.Warn("analytics detail panel query failed; panel degraded",
+			"panel", "recent_sessions", "error", err)
+	}
 	if err == nil {
 		defer recentRows.Close()
 		resp.RecentSessions = []RecentSessionItem{}

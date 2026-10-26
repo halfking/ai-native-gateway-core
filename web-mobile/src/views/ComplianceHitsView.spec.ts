@@ -114,7 +114,7 @@ function queueResp(over: Record<string, unknown> = {}) {
 
 /**
  * ★★ 这里的键必须是 **`feedback`**。
- * 后端 `admin/output_compliance_handler.go:711` 的 map 字面量是
+ * 后端 `admin/output_compliance_handler.go:712` 的 map 字面量是
  *   `{"feedback": items, "limit": limit, "offset": offset}`
  * 而同 handler 的 `review-queue`（:602）写的是 `"items"` —— **两个键不同名**。
  * ★ 本轮第一版把两处都写成 `items`，夹具也跟着写错 ⇒ 全绿、对着真后端必抛。

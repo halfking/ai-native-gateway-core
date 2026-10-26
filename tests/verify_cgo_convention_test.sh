@@ -70,6 +70,9 @@ GUARD_BLOCK="$(awk '
 cgo_after_guard() {  # $1=uname 的假返回值；其余参数是 KEY=VALUE 预设环境
   local fake_uname="$1"; shift
   (
+    # verify.sh exports CGO_ENABLED before invoking this gate. Each fixture
+    # must start clean, then apply only its explicit environment presets.
+    unset CGO_ENABLED VERIFY_CGO_ENABLED
     local kv
     for kv in "$@"; do export "$kv"; done
     uname() { printf '%s\n' "$fake_uname"; }
@@ -92,6 +95,21 @@ got="$(cgo_after_guard Linux)" \
   || fail "抽取的守卫块在 Linux 上执行失败：$got"
 [[ "$got" == "<unset>" ]] \
   || fail "Linux/CI 上也被钉成 CGO_ENABLED=$got —— CI 的 cgo 可用，改它会让 lite 族整片红，且违反「不要改 CI」"
+
+# The gate itself must work both after verify.sh's default export and after
+# VERIFY_CGO_ENABLED=1. Removing fixture isolation must fail even in a clean shell.
+for inherited_cgo in 0 1; do
+  got="$(export CGO_ENABLED="$inherited_cgo" VERIFY_CGO_ENABLED="$inherited_cgo"; cgo_after_guard Darwin)"
+  [[ "$got" == "0" ]] \
+    || fail "继承 cgo=$inherited_cgo 污染 Darwin 默认夹具：$got"
+  got="$(export CGO_ENABLED="$inherited_cgo" VERIFY_CGO_ENABLED="$inherited_cgo"; cgo_after_guard Linux)"
+  [[ "$got" == "<unset>" ]] \
+    || fail "继承 cgo=$inherited_cgo 污染 Linux 未设置夹具：$got"
+done
+
+got="$(cgo_after_guard Linux CGO_ENABLED=1 VERIFY_CGO_ENABLED=0)"
+[[ "$got" == "1" ]] \
+  || fail "Linux 守卫改写调用方显式 CGO_ENABLED=1：$got"
 
 # ── 2. 口径必须带着「为什么」一起被钉住 ───────────────────────────────
 grep -q 'tapi error' "$VERIFY" \
@@ -124,20 +142,23 @@ grep -q 'CGO_ENABLED=0' "$DRV_NOCGO" \
 
 if ! CGO_ENABLED=0 go build ./storage/sqlite >/dev/null 2>&1; then
   rc=$?
-  fail "CGO_ENABLED=0 go build ./storage/sqlite 失败（rc=$rc）—— 本机默认口径的地基没了"
+  fail "CGO_ENABLED=0 go build ./storage/sqlite 失败（rc=${rc}）—— 本机默认口径的地基没了"
 fi
 pass 'CGO_ENABLED=0 builds storage/sqlite (both driver forms coexist)'
 
 # ── 6. 行为断言：cgo 专属面的动态探测与登记名单一致（漂移报警） ───────────
 # 探测集 = （传递依赖 mattn/go-sqlite3 的包）∩（go list ./... 的真实包全集）。
 # 取交集是必须的：`go list -test` 还会吐出 `storage_test` 这类测试变体包名。
+# Inspect the cgo graph even when verify.sh builds without cgo; otherwise
+# driver_cgo.go is excluded and its registered dependency boundary looks empty.
+# go list resolves dependencies here without compiling or linking cgo binaries.
 raw="$(mktemp)"; all="$(mktemp)"
 detected="$(cd "$ROOT" && {
-  go list -e -test -f '{{.ImportPath}}|{{range .Deps}}{{.}} {{end}}' ./... 2>/dev/null \
+  CGO_ENABLED=1 go list -e -test -f '{{.ImportPath}}|{{range .Deps}}{{.}} {{end}}' ./... 2>/dev/null \
     | grep 'mattn/go-sqlite3' | cut -d'|' -f1 \
     | sed 's/ \[.*//; s/\.test$//' | grep -v '\.test$' \
     | sed 's#^github.com/kaixuan/llm-gateway-go/##' | LC_ALL=C sort -u > "$raw" || true
-  go list ./... | sed 's#^github.com/kaixuan/llm-gateway-go/##' | LC_ALL=C sort -u > "$all"
+  CGO_ENABLED=1 go list ./... | sed 's#^github.com/kaixuan/llm-gateway-go/##' | LC_ALL=C sort -u > "$all"
   LC_ALL=C comm -12 "$all" "$raw"
 })"
 rm -f "$raw" "$all" >/dev/null 2>&1 || true

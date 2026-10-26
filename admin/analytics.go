@@ -760,45 +760,68 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 	var latency *int
 
 	replayTenantFrag, replayTenantArgs, _ := tenantLogsClause(r, 2)
-	replayArgs := []any{uuidVariants(reqID)}
+	replayIDs := uuidVariants(reqID)
+	if len(replayIDs) == 2 {
+		// UUID text storage is normally lower-case; normalize only UUIDs,
+		// preserving the original variant and arbitrary probe IDs.
+		replayIDs = append(replayIDs, uuidVariants(strings.ToLower(reqID))...)
+	}
+	replayArgs := []any{replayIDs}
 	if replayTenantFrag != "" {
 		replayArgs = append(replayArgs, replayTenantArgs...)
 	}
-	// R46 F3/F9: 读面 hot∪母表（决策回放的主场景就是"刚出的坏决策"，裸母表
-	// 对最近 8h 仍在 hot 侧的请求 404）。不用 turns 优先的
-	// request_logs_with_current_month——它的 turns 段把 auto_profile 投影
-	// 为 NULL，决策回放要读的字段都在 _request_logs 侧。
-	// request_id 匹配必须按腿进行：视图把 hot(TEXT)/母表(TEXT) 归并为
-	// text，但 ANY 的参数类型会被两支推成 uuid[]（数组字面量对探测 id 直接
-	// 22P02）——改为内联双腿：hot 腿 text 精确匹配（走 request_id 索引，
-	// 覆盖 hex32/dashed/探测 id 三形态）；母表腿 ::text 比较（request_id
-	// 同为 text 列，双形态匹配纯防御性），加 30d 界防跨全部分区扫描。
-	// （R47 实测注释更正：真库 _request_logs(_hot).request_id 均为 text 且
-	// 母表存原始 hex32；真正 uuid 型的是 routing_decision_log.request_id，
-	// L2 腿的 dashed 形态候选对位的是那张表。）
+	// Session-only writes retain L1 on turns and profile/client model on the
+	// 733 details layer (already wired by the mirror bridge and projected by
+	// the current compatibility view). Read both hot and cold layers directly,
+	// ahead of legacy history. Details can promote independently, so match either
+	// layer by the full tenant/request/date key, preferring hot enrichment.
+	// All request-log/session IDs are text (including probe IDs); only L2 is
+	// uuid. Keep the 30-day cold bound and apply tenant scope before LIMIT.
 	err := h.db.QueryRow(ctx, `
 		SELECT ts, task_type, auto_profile, auto_confidence,
 		       client_model, outbound_model, api_key_id, credential_id,
 		       auto_decision, success, latency_ms
 		FROM (
-		    SELECT ts, task_type, auto_profile, auto_confidence,
-		           client_model, outbound_model, api_key_id, credential_id,
-		           auto_decision, success, latency_ms
-		    FROM _request_logs_hot
-		    WHERE request_id = ANY($1::text[])
-		    UNION ALL
-		    SELECT ts, task_type, auto_profile, auto_confidence,
-		           client_model, outbound_model, api_key_id, credential_id,
-		           auto_decision, success, latency_ms
-		    FROM _request_logs
-		    WHERE ts >= NOW() - INTERVAL '30 days'
-		      -- ⚠️ 这个 ::text 是 **text 列 → text 的空操作**，不是 uuid::text，
-		      --   所以**不需要**规范化（D-RL-01 只针对 uuid 列）。
-		      --   上一行的 _request_logs_hot 分支甚至直接 request_id = ANY(...) 不加转换 ——
-		      --   两边等价，加了只是不一致的噪音。别把它"顺手修"成 replace(...)。
-		      AND request_id::text = ANY($1::text[])
+		    SELECT t.ts, t.task_type, d.auto_profile, t.auto_confidence,
+		           d.client_model, t.model AS outbound_model,
+		           CASE WHEN t.api_key_id ~ '^[0-9]+$' THEN t.api_key_id::bigint END AS api_key_id,
+		           CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END AS credential_id,
+		           NULLIF(t.auto_decision, '') AS auto_decision,
+		           COALESCE(t.success, false) AS success, t.latency_ms,
+		           t.tenant_id::text AS tenant_id, t.source_rank
+		    FROM (
+		        SELECT ts, task_type, auto_confidence, model, api_key_id, credential_id,
+		               auto_decision, success, latency_ms, tenant_id, request_id, partition_date,
+		               0 AS source_rank FROM session_turns_hot
+		        WHERE request_id = ANY($1::text[])
+		        UNION ALL
+		        SELECT ts, task_type, auto_confidence, model, api_key_id, credential_id,
+		               auto_decision, success, latency_ms, tenant_id, request_id, partition_date,
+		               1 AS source_rank FROM session_turns
+		        WHERE partition_date >= CURRENT_DATE - 30
+		          AND request_id = ANY($1::text[])
+		    ) t
+		    LEFT JOIN LATERAL (
+		        SELECT auto_profile, client_model FROM (
+		            SELECT auto_profile, client_model, 0 AS detail_rank
+		            FROM session_turn_details_hot
+		            WHERE tenant_id = t.tenant_id AND request_id = t.request_id
+		              AND partition_date = t.partition_date
+		            UNION ALL
+		            SELECT auto_profile, client_model, 1 AS detail_rank
+		            FROM session_turn_details
+		            WHERE tenant_id = t.tenant_id AND request_id = t.request_id
+		              AND partition_date = t.partition_date
+		        ) details ORDER BY detail_rank LIMIT 1
+		    ) d ON true
+		    -- 2026-10-20（迁移 890）：v1 族（_request_logs / _request_logs_hot）整体
+		    -- 退役，本查询原来的第 3/4 臂（v1 hot ∪ v1 母表）随之删除。
+		    -- 剩下的两臂（session_turns_hot ∪ session_turns + 734 details 层）
+		    -- 就是会话族本身：同一批轮次、同名列；source_rank 0/1 仍保证「先热
+		    -- 后冷」的取行顺序与删除前逐位一致。
 		) rl
 		WHERE true`+replayTenantFrag+`
+		ORDER BY source_rank, ts DESC
 		LIMIT 1
 	`, replayArgs...).Scan(
 		&ts, &taskType, &prof, &confidence,

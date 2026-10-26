@@ -3,7 +3,6 @@ export default {
   page: {
     title: 'Modelos estándar',
     desc: 'Modelos estándar habilitados para su inquilino. La facturación cubre entrada / salida / lectura de caché / escritura de caché, en créditos por millón de tokens.',
-    filterTitle: 'Modelos estándar · filtro',
     filterPlaceholder: 'Elegir un modelo estándar…',
     modelCount: '{n} modelos',
     refresh: 'Actualizar',
@@ -14,11 +13,8 @@ export default {
   },
   columns: {
     model: 'Modelo estándar',
-    canonicalName: 'ID del modelo',
-    family: 'Familia',
     contextWindow: 'Contexto',
     multimodal: 'Multimodal',
-    modalityTag: 'Tipo',
     billingMode: 'Facturación',
     inPrice: 'Entrada / 1M',
     outPrice: 'Salida / 1M',
@@ -43,10 +39,6 @@ export default {
     notSet: '—',
   },
   filterBar: {
-    selectedVendor: 'Proveedor seleccionado: {vendor}',
     count: 'Mostrando {n} / {m}',
-  },
-  cta: {
-    buyCredits: 'Comprar créditos',
   },
 }

@@ -12,6 +12,11 @@
 // （writeInternalErr），前端把失败丢成空数组，面板于是显示
 // `dashboard.board.empty`（「暂无数据」）。
 //
+// ★ 2026-10-27（第 14 增量 · 空状态 5 分）后：失败分支仍走 `drillFailed`（红色告警），
+//   而**查询成功但 0 条命中**的分支改用 `dashboard.board.emptyNoResultDrill`
+//   （「该错误类型下没有失败的请求。」）—— 这两件事必须分开：
+//   0 条命中是**好状态**（这类错误确实没发生），不是「没有数据」。
+//
 // **用户点开「错误下钻」是为了看错误，屏幕上写的是「没有错误」** ——
 // 而真相是「这次查询失败了」。这不是「少一个提示」，
 // 是把一次失败陈述成了一个相反的事实。
@@ -63,7 +68,8 @@ const i18n = createI18n({
           distTop: 'Top {n}',
           distOthers: '其他 {n}',
           distDrillHint: '点击下钻',
-          empty: '暂无数据',
+          emptyNoResultDist: '所选时段内没有可排名的数据。',
+          emptyNoResultDrill: '该错误类型下没有失败的请求。',
           pieClients: '客户端类型',
           pieErrors: '错误类型',
           pieIdentity: '身份指纹',
@@ -113,7 +119,7 @@ beforeEach(() => {
 })
 
 describe('错误下钻三态', () => {
-  it('① 请求失败 → 显示失败原因，不显示「暂无数据」', async () => {
+  it('① 请求失败 → 显示失败原因，不显示空态文案', async () => {
     const err: any = new Error('internal error (see server logs)')
     err.detail = 'internal error (see server logs)'
     fetchBoardErrorDrill.mockRejectedValue(err)
@@ -129,7 +135,9 @@ describe('错误下钻三态', () => {
     // 探针显示失败文案其实渲染正常 —— 又一次「红的是判据，不是产品」。
     // 这与本轮 pie 判据那次是同一个坑，隔了几个小时又踩一遍。
     const panel = w.find('.drill-panel')
-    expect(panel.text()).not.toContain('暂无数据')
+    // ★ 第 14 增量：空态文案已按语义拆开 ⇒ 下钻面板的空态是「该错误类型下没有失败的请求。」
+    //   （不是泛泛的「暂无数据」）—— 失败态仍不得显示它。
+    expect(panel.text()).not.toContain('该错误类型下没有失败的请求。')
     // 失败面板里必须带出服务端给的原因，而不是一句「加载失败」。
     expect(failEl.text()).toContain('internal error')
   })
@@ -146,13 +154,13 @@ describe('错误下钻三态', () => {
     expect(w.text()).toContain('gpt-4o')
   })
 
-  it('③ 成功但为空 → 显示「暂无数据」，不出现失败态', async () => {
+  it('③ 成功但为空 → 显示「该错误类型下没有失败的请求。」，不出现失败态', async () => {
     fetchBoardErrorDrill.mockResolvedValue({ items: [] })
 
     const w = await openDrill(board())
 
     expect(w.find('.drill-panel__error').exists()).toBe(false)
-    expect(w.text()).toContain('暂无数据')
+    expect(w.text()).toContain('该错误类型下没有失败的请求。')
   })
 
   it('④ 切维度后重试失败，不显示上一次的旧行', async () => {

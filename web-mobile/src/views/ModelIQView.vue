@@ -89,7 +89,7 @@ import {
   type ModelIQHistoryPoint,
 } from '@/api/modelIQ'
 
-useHyperPage({ title: () => t('miq.title') })
+useHyperPage({ title: () => (allowed.value ? t('miq.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

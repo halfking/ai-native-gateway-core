@@ -27,8 +27,63 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
+
+// settleWriteEnabledKV 是一个只读的假 KV 后端：任何键都读回同一个值。
+//
+// 只给平台作用域用（settings.ScopePlatform）—— 结算源族看的是
+// `storage.request_logs_write_enabled` 这一个平台级键。
+type settleWriteEnabledKV struct {
+	raw []byte
+}
+
+func (k *settleWriteEnabledKV) Get(settings.Scope, string) ([]byte, error) { return k.raw, nil }
+func (k *settleWriteEnabledKV) Set(settings.Scope, string, any) ([]byte, error) {
+	return nil, nil
+}
+func (k *settleWriteEnabledKV) GetTenant(string, string) ([]byte, error) { return k.raw, nil }
+func (k *settleWriteEnabledKV) SetTenant(string, string, any) ([]byte, error) {
+	return nil, nil
+}
+
+// withSettleSourceV1 把 S4 写门在**本测试期间**钉成「双写开启」，
+// 于是结算源族 = v1（_request_logs_hot）。
+//
+// # ★ 为什么必须显式钉（2026-10-21，R59 轮）
+//
+// 结算读哪一族由 `currentSettleSource()` 决定，而它 = `settleSourceFor(settings.RequestLogsWriteEnabled())`；
+// 而 `RequestLogsWriteEnabled()` 的**缺省值**在 2026-10-20（audit D0）被从 true 改成了 false
+// （见 settings/key_request_logs_write_enabled.go 的注释：「It used to be true, and that fallback
+// was the load-bearing half of the defect」）。
+//
+// ⇒ 缺省时族 = **session**（`session_turns_hot`）⇒ 这几条腿写进 `_request_logs_hot` 的行
+// **根本不在 cohort 里** ⇒ cohort 空 ⇒ 报「baseline for task_type 'code' missing」。
+// ⇒ 而这几条腿本来是**按 v1 族写的**（它们验的就是 v1 的 LATERAL 与合成 actor 排除语义）
+// ⇒ ⇒ 它们必须**显式钉住族**，而不是随缺省值漂移。
+//
+// # 为什么此前没有门报出来
+//
+// `settleSourceFor` 的注释还写着「判定刻意做成**默认 v1**」—— 那句注释在 D0 翻默认值之后
+// **已经不成立**了（它的前提是「GetPlatformBool 默认 true」）。
+// ⇒ 于是「族选错」这个原因在失败消息里完全看不见（消息只说 cohort 空），
+// 而**没有任何门**把「结算腿必须钉住族」这件事钉住。
+// ⇒ 现在：① 这几条腿显式钉；② `bg/probe_policy_fixture_gate_test.go` 旁边新增的
+// `TestSettleLegsPinTheirFamily` 钉住「夹具腿运行时读到的族 = v1」。
+func withSettleSourceV1(t *testing.T) {
+	t.Helper()
+	prev := settings.Global
+	t.Cleanup(func() { settings.Global = prev })
+	registry := settings.NewRegistry()
+	registry.RegisterBackend(settings.ScopePlatform, &settleWriteEnabledKV{raw: []byte("true")})
+	for _, spec := range settings.StorageSpecs() {
+		if err := registry.RegisterSpec(spec); err != nil {
+			t.Fatalf("register spec %s: %v", spec.Key, err)
+		}
+	}
+	settings.Global = registry
+}
 
 const settleWorkerSchema = `
 CREATE TABLE _request_logs_hot (
@@ -43,7 +98,17 @@ CREATE TABLE _request_logs_hot (
 	is_auto_request boolean,
 	origin_actor text,
 	routing_attempts jsonb,
-	ts timestamptz NOT NULL DEFAULT NOW()
+	ts timestamptz NOT NULL DEFAULT NOW(),
+	-- ★ 2026-10-21（R59 轮）：这两列是**产品 SQL 真的要用**的，缺了必然 42703。
+	--   v1 族的探针排除谓词（bg/probe_policy.go 的 probeTrafficExclusionPredicate）
+	--   两条臂都引用它们：'probe' = ANY(quality_flags) 与 COALESCE(origin_stage,'business')。
+	--   夹具早于该谓词写成 ⇒ 夹具的列集比产品 SQL 的需求旧 ⇒ 结算轮询每次 42703。
+	--   ⚠ 之前没有门报出来：守卫 TestProbeTrafficExclusionPredicateColumnsExistOnTheirFamily
+	--   查的是**仓内迁移声明的列**（sql/objects/tables/request_logs_hot.sql），
+	--   而失败发生在**这份手写夹具**上 ⇒ 判据与被测对象不在同一层。
+	--   现在守卫也查夹具层（bg/probe_policy_family_gate_test.go）。
+	quality_flags text[],
+	origin_stage text
 );
 CREATE TABLE auto_route_selections_hot (
 	id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -87,7 +152,13 @@ CREATE TABLE session_turns_hot (
 	is_auto_request boolean,
 	origin_actor text,
 	routing_attempts jsonb,
-	ts timestamptz NOT NULL DEFAULT NOW()
+	ts timestamptz NOT NULL DEFAULT NOW(),
+	-- ★ 2026-10-21（R59 轮）：会话族谓词（probeTrafficExclusionPredicateSession）
+	--   用的三列是 origin_stage / task_type / origin_actor —— 迁移 707 给
+	--   session_turns / session_turns_hot 补了 origin_stage、origin_actor 等 55 列，
+	--   **但没有 quality_flags** ⇒ 夹具必须补 origin_stage，且**不能**补 quality_flags
+	--   （补了会让「族谓词不许引用别族列」这条性质在夹具上失去意义）。
+	origin_stage text
 );
 `
 
@@ -95,6 +166,7 @@ func TestAutoRouteSettleBaselinesExcludeSyntheticActors(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
+	withSettleSourceV1(t) // ★ 显式钉住结算源族 = v1（见辅助函数注释）
 	pool, cleanup := DispatchPostgresContainer(t, ctx, settleWorkerSchema)
 	defer cleanup()
 
@@ -156,6 +228,7 @@ func TestAutoRouteSettleBatchMrLateralExcludesSyntheticActors(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
+	withSettleSourceV1(t) // ★ 显式钉住结算源族 = v1（见辅助函数注释）
 	pool, cleanup := DispatchPostgresContainer(t, ctx, settleWorkerSchema)
 	defer cleanup()
 
@@ -220,6 +293,7 @@ func TestAutoRouteSettleBatchSkipsSyntheticActorSelections(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
+	withSettleSourceV1(t) // ★ 显式钉住结算源族 = v1（见辅助函数注释）
 	pool, cleanup := DispatchPostgresContainer(t, ctx, settleWorkerSchema)
 	defer cleanup()
 
@@ -355,6 +429,7 @@ func TestAutoRouteSettleSessionSourceMatchesV1OnIdenticalRows(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
+	withSettleSourceV1(t) // ★ 显式钉住结算源族 = v1（见辅助函数注释）
 	pool, cleanup := DispatchPostgresContainer(t, ctx, settleWorkerSchema)
 	defer cleanup()
 
@@ -542,6 +617,7 @@ func TestAutoRouteSettleMissingCohortIsCounted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
+	withSettleSourceV1(t) // ★ 显式钉住结算源族 = v1（见辅助函数注释）
 	pool, cleanup := DispatchPostgresContainer(t, ctx, settleWorkerSchema)
 	defer cleanup()
 
@@ -645,6 +721,7 @@ func TestAutoRouteSettleSweepFailureCounterWiresUp(t *testing.T) {
 	// "SELECT 1" 只是让 extraSchema 非空，从而走 testschema 私有 schema 隔离
 	// （空串会拿到未隔离的真库门池——那会让 sweep 结算真表，这是本测试
 	// 明确不要的）。
+	withSettleSourceV1(t) // ★ 显式钉住结算源族 = v1（本测试的前提是「_request_logs_hot 不可见」）
 	pool, cleanup := DispatchPostgresContainer(t, ctx, "SELECT 1;")
 	defer cleanup()
 

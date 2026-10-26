@@ -29,11 +29,13 @@ func TestRedactionMarkerShapesAgree(t *testing.T) {
 			t.Errorf("type %q: sanitize=%q outputcompliance=%q", typ, want, got)
 		}
 	}
-	// 空类型退回裸标记：两处都必须如此，且不带冒号。
-	if got := RedactionMarker(""); got != "[REDACTED]" {
+	// r1038（2026-10-20）：类型**不可知**时不再退回裸形态，而是
+	// "[REDACTED:unknown]"——用户口径「原则上每个占位符都有特殊的标记」。
+	// 两处实现必须同时改，否则客户端会在同一次响应里看到两种写法。
+	if got := RedactionMarker(""); got != "[REDACTED:unknown]" {
 		t.Errorf("sanitize 空类型 = %q", got)
 	}
-	if got := outputcompliance.RedactionMarker(""); got != "[REDACTED]" {
+	if got := outputcompliance.RedactionMarker(""); got != "[REDACTED:unknown]" {
 		t.Errorf("outputcompliance 空类型 = %q", got)
 	}
 }

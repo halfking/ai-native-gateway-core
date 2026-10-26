@@ -16,6 +16,7 @@
 //
 // 颜色只用 var(--kx-*)；未实现字段（next_retry_at_ms 等）不渲染、不零值冒充。
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { CaretBottom, CaretRight } from '@element-plus/icons-vue'
 import {
   fetchProbeTriStateTasks,
   type ProbeTriStateTask,
@@ -592,7 +593,7 @@ function credentialTitle(c: ProbeCard): string {
                   <span class="probe-card__cred" :title="credentialTitle(c)">{{ credentialLabel(c) }}</span>
                   <span class="probe-card__model">{{ c.raw_model || '—' }}</span>
                   <span class="probe-card__latency">{{ fmtMs(c.latency_ms) }}</span>
-                  <span class="probe-card__expand">{{ expandedKeys.has(c.key) ? '▾' : '▸' }}</span>
+                  <span class="probe-card__expand"><CaretBottom v-if="expandedKeys.has(c.key)" /><CaretRight v-else /></span>
                 </div>
                 <div v-if="expandedKeys.has(c.key)" class="probe-card__detail" data-testid="completed-detail">
                   <div class="probe-detail-row"><span class="probe-detail-label">结果</span><span>{{ c.outcome ? OUTCOME_LABEL[c.outcome] : '—' }}</span></div>

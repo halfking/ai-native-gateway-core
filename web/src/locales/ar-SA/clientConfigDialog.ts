@@ -4,7 +4,7 @@ export default {
   close: 'إغلاق',
 
   step1: {
-    title: '① اختر مفتاح API (جميع المفاتيح تحت المستأجر الحالي)',
+    title: "① اختر مفتاح API متاحًا",
     refresh: 'تحديث',
     refreshing: 'جارٍ التحديث…',
     loading: 'جارٍ التحميل…',
@@ -18,16 +18,15 @@ export default {
 
   step2: {
     title: '② نظام التشغيل',
-    pathHint: 'مسار ملف التكوين:',
+    pathHint: "موقع التكوين:",
   },
 
   step3: {
-    title: '③ اختر نطاق النموذج',
-    featured: 'النماذج المميزة (تكوين التوجيه featured)',
+    title: "④ اختر نطاق النماذج",
+    featured: "النماذج المميزة (توجيه مستأجر المفتاح المحدد)",
     all: 'جميع النماذج المتاحة (من البوابة)',
     featuredPreview: {
-      loading: 'جارٍ التحميل…',
-      empty: 'لا توجد نماذج مميزة مكونة في التوجيه',
+      empty: "لم يتم تكوين نماذج مميزة للمستأجر المحدد",
       manageButton: 'انتقل إلى "سياسة التوجيه" للتكوين →',
       manage: 'إدارة →',
     },
@@ -37,9 +36,23 @@ export default {
       selected: 'محدد',
       filterHint: '({count} تطابق البحث)',
       searchPlaceholder: '🔍 بحث عن اسم النموذج / المورد / العائلة…',
-      loading: 'جارٍ التحميل…',
       noMatch: 'لا توجد نماذج مطابقة',
     },
+  },
+
+  retry: "إعادة المحاولة",
+  otherFamily: "أخرى",
+  gateway: {
+    title: "③ عنوان API للبوابة",
+    hint: "يُستخدم عنوان هذه البوابة افتراضيًا. تحتوي الملفات والبرامج النصية الناتجة على مفتاح API المحدد؛ احفظها بأمان.",
+  },
+  provider: {
+    label: "اسم الموفر",
+    hint: "يُحدّث الإدخال إذا تطابق الاسم والعنوان. إذا اختلف العنوان، يتوقف البرنامج النصي ويطلب تغيير الاسم.",
+  },
+  notes: {
+    cherryStudio: "أدخل المفتاح المحدد في إعدادات العميل. يسرد هذا الملف المعلمات فقط.",
+    rooCode: "كوّن OpenAI Compatible في إعدادات Roo Code.",
   },
 
   footer: {
@@ -51,21 +64,22 @@ export default {
 
   results: {
     tabs: {
+      yaml: "مقتطف YAML",
       file: 'ملف التكوين',
       script: 'سكريبت التكوين',
       manual: 'الخطوات اليدوية',
     },
     actions: {
+      scriptWarning: "يحتوي البرنامج النصي على مفتاحك. نزّله وشغّله محليًا؛ لا يُعرض محتواه هنا.",
+      mergeHint: "ينسخ البرنامج النصي التكوين القديم احتياطيًا ويدمج {provider} ويحافظ على الموفرين الآخرين",
       copyContent: 'نسخ المحتوى',
       downloadFile: 'تحميل الملف',
       downloadScript: 'تحميل السكريبت',
-      scriptHint: 'يقوم السكريبت تلقائيًا بنسخ احتياطية لملفات التكوين القديمة',
     },
   },
 
   applyDialog: {
     title: 'طلب مفتاح API جديد',
-    close: 'إغلاق',
     applicationCode: 'رمز التطبيق (application_code)',
     applicationCodePlaceholder: 'مثال: default-app',
     description: 'الوصف',
@@ -76,8 +90,16 @@ export default {
   },
 
   error: {
+    invalidGatewayURL: "أدخل عنوان API صالحًا يبدأ بـ HTTP(S) ولا يحتوي على بيانات اعتماد أو معاملات استعلام أو جزء عنوان.",
+    invalidProviderName: "استخدم من 1 إلى 64 حرفًا لاتينيًا (A–Z) أو رقمًا أو شرطة سفلية أو واصلة لاسم المزوّد، على أن يبدأ بحرف أو رقم.",
+    featuredLoadFailed: "تعذّر تحميل النماذج المميزة. أعد المحاولة.",
+    catalogLoadFailed: "تعذّر تحميل دليل النماذج. أعد المحاولة.",
+    selectModel: "اختر نموذجًا واحدًا على الأقل. إذا لم توجد نماذج مميزة، فكوّنها أولًا في سياسة التوجيه.",
+    keyUnavailable: "تعذّرت قراءة المفتاح المحدد. اختره مرة أخرى.",
+    generateFailed: "فشل إنشاء التكوين. أعد المحاولة.",
+    copyFailed: "فشل النسخ. نزّل الملف.",
     applyFailed: 'فشل الطلب',
   },
   // Added 2026-07-02 — Cursor fallback note (used by ClientConfigDialog when tool === 'cursor').
-  cursorNotSupported: 'لا يدعم Cursor الكتابة إلى الملفات — يرجى التهيئة يدويًا عبر واجهة Settings',
+  cursorNotSupported: 'لا يدعم Cursor الكتابة إلى الملفات: يرجى التهيئة يدويًا عبر واجهة Settings',
 }

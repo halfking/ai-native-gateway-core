@@ -91,8 +91,16 @@ groups:
           summary: "LLM Gateway 服务不可用"
           description: "LLM Gateway 实例 {{ $labels.instance }} 无法连接"
 
+      # 2026-10-15 observability audit: both rules below referenced metric
+      # names the gateway stopped emitting years ago
+      # (llm_gateway_requests_total / llm_gateway_request_duration_seconds_bucket).
+      # They evaluated to an empty vector forever — silently incapable of firing.
+      # The gateway actually exports llm_gateway_http_requests_total{status,method,path}
+      # and llm_gateway_http_request_duration_seconds_bucket (388 live series /
+      # 3880 buckets on 245). histogram_quantile also REQUIRES sum by (le):
+      # without it, 3880 mixed-label buckets make the quantile meaningless.
       - alert: HighErrorRate
-        expr: rate(llm_gateway_requests_total{status=~"5.."}[5m]) / rate(llm_gateway_requests_total[5m]) > 0.05
+        expr: sum(rate(llm_gateway_http_requests_total{status=~"5.."}[5m])) / sum(rate(llm_gateway_http_requests_total[5m])) > 0.05
         for: 5m
         labels:
           severity: warning
@@ -102,7 +110,7 @@ groups:
           description: "LLM Gateway 5xx 错误率 > 5% (当前: {{ $value | humanizePercentage }})"
 
       - alert: HighLatency
-        expr: histogram_quantile(0.99, rate(llm_gateway_request_duration_seconds_bucket[5m])) > 5
+        expr: histogram_quantile(0.99, sum by (le) (rate(llm_gateway_http_request_duration_seconds_bucket[5m]))) > 5
         for: 5m
         labels:
           severity: warning

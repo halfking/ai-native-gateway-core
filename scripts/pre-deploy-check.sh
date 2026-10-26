@@ -335,7 +335,7 @@ if [ "$CHECK_PARTITION_ARCHIVE" = "1" ]; then
   if [ "$RELKIND" = "p" ]; then
     check_pass
   else
-    check_fail "credential_model_index 未分区（relkind=$RELKIND）"
+    check_fail "credential_model_index 未分区（relkind=${RELKIND}）"
   fi
 fi
 

@@ -32,36 +32,36 @@ import {
  * 凭据模型滑窗调用明细面回归护栏（2026-10-14，第一百一十五批）。
  *
  * ⚠️⚠️⚠️⚠️ **权限档是 `'super_admin'`，与批 113/114 连续两批相反。**
- * 注册处同为 admin 档（`admin/handler.go:1475` `h.admin`），
- * 但**「admin 档」在本族连租户隔离都做不到**：
- * `handleSlidingWindow`（`admin/credential_monitor.go:704-782`）里
- * **既没有 `tenantID` 变量，也没有任何 `IsTenantAdmin`**，
- * 两条数据腿**都**没有租户维度：
- * - Redis 腿 `m.recorder.GetRecent(ctx, credentialID, model, since)` —— 键只有
- *   `(credentialID, model)`；
- * - 回退腿 `slidingWindowQuery()` / `slidingWindowHotQuery()` 的 WHERE 只有
- *   `credential_id = $1 AND lower(...) = lower($2) AND ts > …`。
- * 而 `credential_id` 是**全局唯一**主键 ⇒ **任何通过认证的主体报出别的租户的
- * credential_id 就能读到它的逐次调用明细**。
- * ⇒ `'admin'` 档在这里会给出**虚假的安全感**，所以必须过度限制。
+ * 注册处同为 admin 档（`admin/handler.go:1528` `h.admin`）。
+ * ★★ **本文件头原写的那条「admin 档连租户隔离都做不到」已被后端补洞覆盖**
+ * （audit #153 + 12h-audit 20261017，2026-10-16/17）：
+ * `handleSlidingWindow`（`admin/credential_monitor.go:753-863`）今天
+ * **有** `tenantID` / `IsTenantAdmin` / `GetTenantID`，两条 SQL 腿都带
+ * `AND ($5 = '' OR tenant_id = $5)`（`:905` / `:950`），且有角色门
+ * （`:765-768`，`role=user` ⇒ 403）。★ ⑬-1 那组门钉的正是**补上之后**的形状。
+ * ⇒ 所以 `'admin'` 档**现在**是安全的；本席仍写 `'super_admin'` 是**过度限制**
+ *   （收紧一档不必跟着放开），**不是漏洞**。
  *
  * ★★ **本批还修掉一个真缺陷**：`source` 的回退取值被写成 `'request_logs'`，
  *   而后端发的是 **`'_request_logs'`** ⇒ 回退信号判据对真实响应恒 false。
  *   ⇒ 那个错是从**模块头抄漏了一行 Go** 开始，连带常量 / 实现 / 3 条用例一起歪，
  *     三方互相印证、整套件全绿。修法见 `api/slidingWindow.test.ts` 的 (15) 组。
+ * ★★★ **2026-10-26 第二轮（同一族、同一处、同样三方互证地错）**：后端在
+ *   **v1 → session_turns 替换轮**（2026-10-24）把值换成 **`"session_turns"`**
+ *   （回退腿早已改读会话族），**常量 / 实现 / 用例都没跟着改** ⇒ 同一处再错一次。
  *   ⇒ ★★★ 判别动作：**注释 / 常量 / 判据三者互相印证时，要问
  *     「它们是从同一份错误来源抄来的吗」** —— 互证不等于正确。
  *
  * 判据钉十二组不变量：
  *  ① ★★★★★★ 权限档 = `'super_admin'`，且**必须进 superAdmin 白名单**
- *      （与 113/114 两席相反），并读 Go 源码钉「没有租户维度」这一事实。
+ *      （与 113/114 两席相反），并读 Go 源码钉「租户隔离在位」这一事实（⑬-1）。
  *  ② ★★★★ 参数守卫：credential_id 不能是 0、limit 落在 1–500、model 非空。
  *  ③ ★★ **负数 credential_id 不拦**（后端只判 `=== 0`）。
  *  ④ ★★★★★ **四个数字互锁**：`total_returned === entries.length === stats.total`，
  *      且 `success + failed === total`。
  *  ⑤ ★★★★ `error_kinds` 求和**≤** `failed`；小于时**不是错**，只说明。
  *  ⑥ ★★★★★ `failure_rate === 0` 当且仅当 `total === 0`；否则 `failed/total`。
- *  ⑦ ★★★★★ `source === 'redis'` ⟹ 有行；`'_request_logs'` 有行是**正常**的。
+ *  ⑦ ★★★★★ `source === 'redis'` ⟹ 有行；`'session_turns'` 有行是**正常**的。
  *  ⑧ ★★★★ `err` 是唯一 omitempty 键 ⇒ 成功条目里**键不存在**，两种都要显示清楚。
  *  ⑨ ★★★ `rid` 恒在但**可能为空串** ⇒ 空串单独说。
  *  ⑩ ★★★ 无 tiebreak ⇒ 只断言非升序，并列**不得**误报。
@@ -407,11 +407,14 @@ describe('⑥ failure_rate 是派生值', () => {
 // ── ⑦ source 的两档 ───────────────────────────────────────────────────────
 
 describe('⑦ source 语义', () => {
-  it('⑦-1 ★★★★★ 两个来源的字面量（★ 回退那一侧**带前导下划线**）', () => {
-    expect([...SLIDING_WINDOW_SOURCES]).toEqual(['redis', '_request_logs'])
-    // ★★★ 负向钉法：无下划线的那个**不得**出现在常量里。
-    //   它一旦出现，回退信号判据对真实响应恒为 false（第一批十五批实测踩过）。
+  it('⑦-1 ★★★★★ 两个来源的字面量（★ 回退那一侧是 `session_turns`）', () => {
+    expect([...SLIDING_WINDOW_SOURCES]).toEqual(['redis', 'session_turns'])
+    // ★★★ 负向钉法：**两个已退役的字面量**都不得出现在常量里 ——
+    //   `'request_logs'`（2026-10-14 订正前的漏下划线版）与
+    //   `'_request_logs'`（2026-10-24 v1 → session_turns 替换轮前的旧值）。
+    //   ★ 两个都必须钉：只钉前者 ⇒ 后端退回旧值时门照样绿。
     expect([...SLIDING_WINDOW_SOURCES]).not.toContain('request_logs')
+    expect([...SLIDING_WINDOW_SOURCES]).not.toContain('_request_logs')
   })
 
   it('⑦-2 ★★★★★ 正控：redis 源必然有行', () => {
@@ -426,12 +429,12 @@ describe('⑦ source 语义', () => {
   })
 
   it('⑦-4 ★★★★★ 回退源**有数据是正常的**，页面只说明不报错', async () => {
-    mFetch.mockResolvedValue(respOf([entry(), failedEntry()], { source: '_request_logs' }))
+    mFetch.mockResolvedValue(respOf([entry(), failedEntry()], { source: 'session_turns' }))
     const w = await mountView()
     await queryWith(w)
     expect(hasId(w, 'sw-fallback-data')).toBe(true)
     expect(hasId(w, 'sw-redis-empty-bad')).toBe(false)
-    expect(slidingWindowFallbackSourceStillHasEntries(respOf([entry()], { source: '_request_logs' }))).toBe(true)
+    expect(slidingWindowFallbackSourceStillHasEntries(respOf([entry()], { source: 'session_turns' }))).toBe(true)
   })
 
   it('⑦-5 ★★★ Redis 故障不可见这件事恒在说明', async () => {
@@ -441,11 +444,11 @@ describe('⑦ source 语义', () => {
   })
 
   it('⑦-6 ★★★ 回退源零行 ⇒ 不触发「回退有数据」', async () => {
-    mFetch.mockResolvedValue(respOf([], { source: '_request_logs' }))
+    mFetch.mockResolvedValue(respOf([], { source: 'session_turns' }))
     const w = await mountView()
     await queryWith(w)
     expect(hasId(w, 'sw-fallback-data')).toBe(false)
-    expect(slidingWindowFallbackSourceStillHasEntries(respOf([], { source: '_request_logs' }))).toBe(false)
+    expect(slidingWindowFallbackSourceStillHasEntries(respOf([], { source: 'session_turns' }))).toBe(false)
   })
 })
 
@@ -581,47 +584,52 @@ describe('⑬ 后端没有租户维度（读 Go 源码）', () => {
     return readFileSync(p, 'utf8')
   }
 
-  it('⑬-1 ★★★★★★ handler 里既没有 tenantID 变量也没有 IsTenantAdmin', () => {
+  it('⑬-1 ★★★★★★ handler 现在按 effective role 推 tenantID（audit #153 修复，2026-10-16）', () => {
     const src = goSrc('admin/credential_monitor.go')
     const fn = src.slice(src.indexOf('func (m *CredentialMonitorHandlers) handleSlidingWindow'))
     const body = fn.slice(0, fn.indexOf('\n}\n\n'))
-    // ★★★ 这三条是**本批权限档的全部依据**：
-    //   没有租户键 ⇒ 非特权角色报出别的租户的 credential_id 就能读到它的调用明细。
-    expect(body).not.toContain('tenantID')
-    expect(body).not.toContain('IsTenantAdmin')
-    expect(body).not.toContain('EffectiveTenantID')
-    expect(body).not.toMatch(/Role\s*==|RequireSuperAdmin|requireUserManager/)
+    // ★★★ audit #153 把「凭据监控抽屉的高敏感数据跨租户」关上了：handler
+    //   现在按 effective role 推 tenantID，再把 tenantID 拼进两条数据腿
+       //   （Redis 与 session_turns 回退）。本批起反向断言改为正向断言 —
+    //   若有人回退 audit #153 把 tenant 隔离拿掉，这道门会立刻红。
+    //   角色门控（admin/handler.go 那边 audit #154 没动这一族）依旧是
+    //   `h.admin(...)`，不属于本测试钉的范围。
+    expect(body).toContain('tenantID')
+    expect(body).toContain('IsTenantAdmin')
+    expect(body).toContain('GetTenantID')
   })
 
-  it('⑬-2 ★★★★★★ Redis 腿的键只有 (credentialID, model)', () => {
+  it('⑬-2 ★★★★★★ Redis 腿仍只按 (credentialID, model) 查 —— tenant 隔离只在 session_turns 回退路径生效', () => {
     const src = goSrc('admin/credential_monitor.go')
+    // ★ audit #153 的策略：Redis 录制端没标 tenant tag，强制走 session_turns
+    //   回退腿（那里带 tenant_id 列），而不是去改 Redis schema。所以这条
+    //   仍叫「Redis 腿只有 (credentialID, model)」，只是后面 caller 那里
+    //   看到 entries 为空会落到回退腿。判据因此改成"调用点的签名未变"。
     expect(src).toContain('m.recorder.GetRecent(ctx, credentialID, model, since)')
     expect(src).not.toContain('GetRecent(ctx, credentialID, model, since, tenantID)')
   })
 
-  it('⑬-3 ★★★★★★ 两条回退 SQL 的 **WHERE 里都没有** tenant 过滤', () => {
+  it('⑬-3 ★★★★★★ 两条回退 SQL 的 **WHERE 都加了** tenant 过滤（audit #153 修复，2026-10-16）', () => {
     const src = goSrc('admin/credential_monitor.go')
 
-    // —— 长窗路径：整个查询里**根本没有** tenant_id ——
+    // —— 长窗路径：WHERE 段必有 tenant_id ——
     const q = src.slice(src.indexOf('func slidingWindowQuery() string'))
     const qBody = q.slice(0, q.indexOf('\n}\n'))
     expect(qBody).toContain('credential_id = $1')
-    expect(qBody).not.toContain('tenant_id')
+    expect(qBody).toContain('tenant_id')
+    // audit #153 的统一形态：空串 = 全租户（super_admin / admin_key / 未登录），
+    // 否则按 tenant_id 强过滤。判据因此钉**字面形态**，不留"加法不收敛"的口子。
+    expect(qBody).toMatch(/AND\s*\(\s*\$\d+\s*=\s*''\s*OR\s+tenant_id\s*=\s*\$\d+\s*\)/)
 
-    // ★★★★★ 热窗路径**有一个** tenant_id，但它在 **LEFT JOIN 的 ON 子句**里
-    //   （`ON d.tenant_id::text = t.tenant_id::text`）—— 那是在**同一个租户内**
-    //   把两张表对上，**不是访问控制**。
-    // ⇒ ⇒★ **naive `grep tenant_id` 会得出「这里有租户处理」的错误结论**，
-    //   而实际上 WHERE 子句里一条 tenant 条件都没有。
-    //   ⇒ 判据因此只看 **WHERE 段**（子查询合流之后的那个）。
+    // ★★★★★ 热窗路径 LEFT JOIN 段仍写 tenant_id（**同一个租户内**对齐两张
+    //   表，不是访问控制）；除此之外外层 WHERE 也必须有 audit #153 那条
+    //   tenant 过滤。判据同时钉两侧，杜绝「只改一处」的退化方向。
     const h = src.slice(src.indexOf('func slidingWindowHotQuery() string'))
     const hBody = h.slice(0, h.indexOf('\n}\n'))
     expect(hBody).toContain('ON d.tenant_id::text = t.tenant_id::text')
     const wherePart = hBody.slice(hBody.indexOf(') cand'))
     expect(wherePart).toContain('credential_id = $1')
-    expect(wherePart).not.toContain('tenant_id')
-    // ★★ 并且**没有任何按租户的绑定参数**（$5 之类）被传进这条查询
-    expect(hBody).not.toMatch(/tenant_id\s*=\s*\$\d/)
+    expect(wherePart).toMatch(/tenant_id\s*=\s*\$\d/)
   })
 
   it('⑬-4 ★★★ 注册处传的仍是 h.admin（本族**不是** superAdmin 档注册）', () => {

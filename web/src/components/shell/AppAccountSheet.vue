@@ -31,6 +31,7 @@ import { back, overlays, presentOverlay } from '../../lib/shell/hyper'
 import { useDeploySeqUpdate } from '../../composables/useDeploySeqUpdate'
 import LanguageSelector from '../LanguageSelector.vue'
 import ThemeToggle from '../ThemeToggle.vue'
+import { Close } from '@element-plus/icons-vue'
 
 const props = withDefaults(
   defineProps<{
@@ -165,7 +166,7 @@ const deploySeqReasonText = () => {
           :aria-label="t('hyper.account.close')"
           @click="close"
         >
-          ✕
+          <Close />
         </button>
       </header>
 

@@ -22,6 +22,7 @@ package bg
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -62,8 +63,8 @@ func (w *FeatureStatsWorker) Start(ctx context.Context) {
 func (w *FeatureStatsWorker) Stop() {
 	if w.cancel != nil {
 		w.cancel()
+		<-w.done
 	}
-	<-w.done
 }
 
 func (w *FeatureStatsWorker) run(ctx context.Context) {
@@ -386,13 +387,31 @@ func (w *FeatureStatsWorker) GetLatestStats(ctx context.Context) (map[string]int
 	fillRates := make(map[string]float64)
 	for rows.Next() {
 		var featureName string
-		var fillRate float64
+		// ★★★ R85 轮修（**真缺陷**，由 `bg/feature_stats_worker_test.go` 的收敛暴露）：
+		//
+		//	`feature_quality_metrics.fill_rate_pct` **可空**（真库实测 nullable=YES），
+		//	而**本 worker 自己就会写入 fill_rate_pct=NULL 的行**
+		//	（真库实测：complexity_bucket / context_length_bucket / domain_hint /
+		//	  intent_category / turn_count_bucket 这 5 个特征 total_count=4 但
+		//	  filled_count=NULL ⇒ 填充率无意义 ⇒ NULL）。
+		//
+		//	旧写法把它扫进 `float64` ⇒ NULL ⇒ **扫描错误** ⇒
+		//	而 pgx v5 会把**扫描错误记在 rows 上** ⇒ `rows.Err()` **又报一遍**
+		//	⇒ ⇒ **「跳行」的意图（SkipOrFail → continue）被 `rows.Err()` 击穿**
+		//	⇒ ⇒ **整个调用失败**（实测：`can't scan NULL into *float64`）。
+		//
+		//	⇒ 修法：扫进**可空类型** ⇒ NULL ⇒ **跳过该特征**（语义正确：
+		//	  「没有填充率数据」**不是**「填充率 0%」）⇒ `rows.Err()` 干净 ⇒ 调用正常返回。
+		var fillRate sql.NullFloat64
 		if err := rows.Scan(&featureName, &fillRate); err != nil {
 			if dbrows.SkipOrFail("bg.FeatureStatsWorker.GetLatestStats", err) {
 				continue
 			}
 		}
-		fillRates[featureName] = fillRate
+		if !fillRate.Valid {
+			continue
+		}
+		fillRates[featureName] = fillRate.Float64
 	}
 	// R66: fill_rates 被截断会让读到的特征填充率集合不完整且无 error。
 	if err := rows.Err(); err != nil {

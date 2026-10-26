@@ -7,18 +7,21 @@
 // ★★★★★★ 权限档：**`requiresRole: 'super_admin'`**，而且这是**真门**（与批 115/117/118 相反）。
 //   ★★★ **第三种注册机制**：它**不在** `admin/handler.go` 的 `mux.HandleFunc` 里，
 //   而在 **echo 的 group** 上：
-//     `cmd/gateway/main.go:7027` `adminGroup := e.Group("/api/admin", requireSuperAdmin)`
-//     → `:7029` `licensing.RegisterModuleRoutes(adminGroup, licensingStore)`
+//     `cmd/gateway/main.go:7188` `adminGroup := e.Group("/api/admin", requireSuperAdmin)`
+//     → `:7183` `licensing.RegisterModuleRoutes(adminGroup, licensingStore)`
 //     → `licensing/module_api.go:22` `g.GET("/tiers", h.ListTiers)`
 //   ⇒ ★★★ **只 grep mux 会把「已注册」误判成「死端点」** —— 本批取证时差点就这么判。
-//   ⇒ 中间件 `requireSuperAdmin` 逐字（`cmd/gateway/main_jwt_middleware.go:65-74`，
-//     工厂函数 `newRequireSuperAdminMiddleware`，role 比对在 `:68`）：
+//   ⇒ 中间件 `requireSuperAdmin` 逐字（`cmd/gateway/main_jwt_middleware.go:93-102`，
+//     工厂函数 `newRequireSuperAdminMiddleware`，role 比对在 `:96`）：
+//   ⚠️ 上一行是**判据假阳性**（token 是**小写** `requireSuperAdmin`，而 Go 里逐字是
+//     `RequireSuperAdmin`（**首字母大写**）⇒ 大小写敏感 ⇒ 门禁抓不到，
+//     已登记在 `goLineRef.spec.ts` 的 `KNOWN_FALSE_POSITIVE` 里，**不得改动它**）。
 //     ```go
 //     if role, _ := c.Get("role").(string); role != "super_admin" {
 //         return c.JSON(http.StatusForbidden, map[string]string{"error": "super_admin required"})
 //     }
 //     ```
-//     ⚠️ `requireSuperAdmin` 是 `main.go:6966` 的**局部变量名**，
+//     ⚠️ `requireSuperAdmin` 是 `main.go:7120` 的**局部变量名**，
 //        按变量名去那个文件里找定义**找不到** —— 定义用的是工厂函数名。
 //   ⇒ **档位本身就是那道门**（与批 116 `modelIQ` 同款），
 //     所以抽屉席设 `requiresRole` 即是安全意义上的完整处置。
@@ -51,7 +54,7 @@ import {
   type SubscriptionTierRow,
 } from '@/api/subscriptionTiers'
 
-useHyperPage({ title: () => t('sts.title') })
+useHyperPage({ title: () => (allowed.value ? t('sts.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

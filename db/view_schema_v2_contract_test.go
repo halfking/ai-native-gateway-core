@@ -133,97 +133,61 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 		t.Error("legacy (710-fallback) projection must not reference the details alias")
 	}
 
-	// Shape-conditional lateral composition: frozen chain laterally appends
-	// fp/raw only — credits (738) and client_ip (740) are referenced as
-	// v.<col> at the inner-select tail (the 738 regexp insert position),
-	// never laterally appended and never carried by a v.* star (star
-	// expansion is creation-time-frozen and can never byte-match the
-	// migration product). 815 的三列**恒**走 lateral（会话侧 t.<col> 直映、
-	// v1 侧无包装链可依），所以它们不属于「条件化」那一类，钉在下一条断言里。
-	testMiddleCols := "id, request_id, ts, tenant_id"
-	frozenDDL := canonicalV2DDL(testMiddleCols, false, false, false, false, true)
-	if !strings.Contains(frozenDDL, "source.system_fingerprint") ||
-		!strings.Contains(frozenDDL, "source.raw_model_name") ||
-		strings.Contains(frozenDDL, "source.credits_rate_multiplier") ||
-		strings.Contains(frozenDDL, "source.client_ip") {
-		t.Error("frozen-chain v2 DDL must laterally append fp/raw only — never credits/client_ip")
+	// ── 两臂形态契约（890 起）──────────────────────────────────────────────
+	//
+	// 旧契约（710~824）钉的是「v1 分支的 lateral 条件化」：冻结链横向追加
+	// fp/raw、动态链自带、815 三列恒走 lateral。890 把 v1 分支**整条摘掉**了
+	// ⇒ 那套条件化**整体失效**：形状参数（baseHasFP/…）不再是 DDL 的输入。
+	//
+	// ⇒ 契约换成三件**更强**的事：
+	//   ① DDL 恰好两臂（session_turns_hot ∪ session_turns），臂数由
+	//      "UNION ALL" 出现次数判定（两臂 = 1 次）；
+	//   ② DDL **不含任何 v1 族引用**（_request_logs / request_logs_hot /
+	//      request_logs_bodies / …）—— 精确仪器用 strpos，不用 LIKE 配 `_`
+	//      （审计 §10.8：SQL 的 `_` 是单字符通配符）；
+	//   ③ 815 三列在会话臂里仍是 `t.<col> AS <col>` 直映（少一条的后果不是
+	//      编译错或 DDL 错，而是那一列恒 NULL，而 UNION ALL 只按位置匹型、
+	//      列数不变 ⇒ 门只能在这里拦）。
+	//
+	// ⚠ 这条契约必须**与 890 迁移文件里的视图体**逐字同源（迁移产物与自愈
+	// 重建体必须等价）。见 TestSessionOnlyCanonicalDDLMatchesMigration890。
+	ddl := canonicalSessionOnlyDDL(true)
+	if n := strings.Count(ddl, "UNION ALL"); n != 1 {
+		t.Errorf("session-only canonical DDL must have exactly 2 arms (1 UNION ALL), got %d", n)
 	}
-	// 815 三列在**每一种基座形态**下都必须经 lateral 出现在 v1 分支内层。
-	// 少一条的后果不是编译错或 DDL 错，而是 v1 分支那一臂拿到 NULL——
-	// 而 UNION ALL 只按位置匹型，列数不变，所以门只能在这里拦。
-	for _, shape := range []struct {
-		name                       string
-		fp, raw, credits, cip, det bool
-	}{
-		{"frozen", false, false, false, false, true},
-		{"dynamic", true, true, true, true, true},
-		{"pre-736", false, false, false, false, true},
+	if !strings.Contains(ddl, "FROM public.session_turns_hot t") ||
+		!strings.Contains(ddl, "FROM public.session_turns t") {
+		t.Error("session-only canonical DDL must read session_turns_hot and session_turns")
+	}
+	// v1 族零引用：这是 890 的**核心不变量**。v1 族一旦被删，任何还提到它的
+	// DDL 都会 42P01 —— 而 42P01 出现在「视图重建」里时，症状是"整个日志
+	// 面板 500"，根因却是一次字符串拼写事故。
+	for _, marker := range []string{
+		"_request_logs", "request_logs_hot", "request_logs_bodies",
+		"request_logs_archive", "request_logs_with_current_month_without",
+		"source.", "v.credits_rate_multiplier", "v.client_ip",
 	} {
-		ddl := canonicalV2DDL(testMiddleCols, shape.fp, shape.raw, shape.credits, shape.cip, shape.det)
-		for _, col := range []string{"origin_stage", "token_band", "client_forwarded_for"} {
-			if !strings.Contains(ddl, "source."+col) {
-				t.Errorf("%s base shape: v1 branch must lateral-append source.%s", shape.name, col)
-			}
-			if !strings.Contains(ddl, "h."+col) || !strings.Contains(ddl, "p."+col) {
-				t.Errorf("%s base shape: lateral must select both h.%s and p.%s", shape.name, col, col)
-			}
-			if !strings.Contains(ddl, "t."+col+" AS "+col) {
-				t.Errorf("%s base shape: session branch must project t.%s", shape.name, col)
-			}
+		if strings.Contains(ddl, marker) {
+			t.Errorf("session-only canonical DDL must not reference %q — the v1 family is retired (890)", marker)
 		}
 	}
-	// Inner-select tail order (post-738/740 wrapper): middleCols, laterals,
-	// then v.credits/v.client_ip; the all-frozen probe composes the
-	// contract with no v-refs at all.
-	if !strings.Contains(canonicalV2DDL(testMiddleCols, false, false, true, true, true),
-		testMiddleCols+", source.request_class, source.due_at, source.origin_stage, source.token_band, source.client_forwarded_for, source.system_fingerprint, source.raw_model_name, v.credits_rate_multiplier, v.client_ip") {
-		t.Error("inner select must be middleCols + laterals (815 three, then fp/raw) + v.credits/v.client_ip (738 insert position)")
-	}
-	if strings.Contains(canonicalV2DDL(testMiddleCols, false, false, false, false, true), "v.credits_rate_multiplier") {
-		t.Error("pre-736 wrapper must not reference v.credits_rate_multiplier")
-	}
-	if dynamicDDL := canonicalV2DDL(testMiddleCols, true, true, true, true, true); strings.Contains(dynamicDDL, "source.system_fingerprint") ||
-		strings.Contains(dynamicDDL, "source.raw_model_name") {
-		t.Error("dynamic-chain v2 DDL must not re-append columns the base wrapper already carries")
-	}
-	// Composition width: wrapper with credits+client_ip composes the
-	// 118-name contract; missing either falls back to 113 + the 815 three.
-	// client_ip 的表达式 2026-10-02 起是有源投影（816），不再是 NULL 补位——
-	// 本断言随投影同体更新，钉的是「全宽形态里这一列**不是**补位」。
-	if full := canonicalV2DDL(testMiddleCols, true, true, true, true, true); strings.Contains(full, "NULL::inet AS client_ip") ||
-		!strings.Contains(full, "THEN t.client_ip::inet END) AS client_ip") ||
-		!strings.Contains(full, "NULL::double precision AS credits_rate_multiplier") {
-		t.Error("post-738/740 base must compose the full body (credits 补位 + client_ip 有源投影 + 815 three)")
-	}
-	if stale := canonicalV2DDL(testMiddleCols, true, true, true, false, true); strings.Contains(stale, "AS client_ip") ||
-		strings.Contains(stale, "AS credits_rate_multiplier") {
-		t.Error("pre-740 base must fall back to the pre-rate contract (113 + 815 three)")
-	}
-	// preRateColumnOrder 的存在理由：815 的三列排在 credits/client_ip **之后**，
-	// 所以「冻结 113 + 三列」不是 canonicalColumnOrderV2 的前缀。若哪天有人
-	// 把回退实现改回前缀切片，这三列会连同 credits/client_ip 一起消失。
-	if n := len(preRateColumnOrder()); n != len(canonicalColumnOrderV2)-2 {
-		t.Fatalf("preRateColumnOrder must drop exactly credits_rate_multiplier+client_ip: %d vs %d",
-			n, len(canonicalColumnOrderV2))
-	}
-	for _, col := range registeredColumnAppends[2:] {
-		found := false
-		for _, n := range preRateColumnOrder() {
-			if n == col {
-				found = true
-				break
-			}
+	// 815 三列在会话臂里是直映。
+	for _, col := range []string{"origin_stage", "token_band", "client_forwarded_for"} {
+		if !strings.Contains(ddl, "t."+col+" AS "+col) {
+			t.Errorf("session branch must project t.%s AS %s", col, col)
 		}
-		if !found {
-			t.Errorf("preRateColumnOrder dropped the 815 column %q — the pre-736 fallback would then "+
-				"compose a body whose v1 branch has no source for it", col)
-		}
+	}
+	// 全宽形态：credits 补位 + client_ip 有源投影（816/817）。
+	if strings.Contains(ddl, "NULL::inet AS client_ip") ||
+		!strings.Contains(ddl, "THEN t.client_ip::inet END) AS client_ip") ||
+		!strings.Contains(ddl, "NULL::double precision AS credits_rate_multiplier") {
+		t.Error("session-only DDL must compose the full body (credits 补位 + client_ip 有源投影)")
 	}
 	// hasDetails=false fallback: no details JOIN, no d.* references.
-	if legacyDDL := canonicalV2DDL(testMiddleCols, false, false, false, false, false); strings.Contains(legacyDDL, "session_turn_details") {
+	if legacyDDL := canonicalSessionOnlyDDL(false); strings.Contains(legacyDDL, "session_turn_details") {
 		t.Error("hasDetails=false DDL must not join the details family")
 	}
-	if detailsDDL := canonicalV2DDL(testMiddleCols, false, false, false, false, true); !strings.Contains(detailsDDL, "LEFT JOIN public.session_turn_details_hot") ||
+	if detailsDDL := canonicalSessionOnlyDDL(true); !strings.Contains(detailsDDL, "LEFT JOIN public.session_turn_details_hot") ||
 		!strings.Contains(detailsDDL, "LEFT JOIN public.session_turn_details ") {
 		t.Error("hasDetails=true DDL must LEFT JOIN both details hot and parent")
 	}

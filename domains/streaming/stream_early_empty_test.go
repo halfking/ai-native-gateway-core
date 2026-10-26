@@ -76,7 +76,7 @@ func TestRunEmptyStreamGateToolsRequestedTransformsBufferedXML(t *testing.T) {
 	withEarlyEmptyThreshold(t, 0)
 	starting := `data: {"id":"start","object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"}}]}` + "\n"
 	remaining := `data: {"id":"tool","object":"chat.completion.chunk","choices":[{"delta":{"content":"<tool_call><function=search><parameter=query>gateway</parameter></function></tool_call>"}}]}` + "\ndata: [DONE]\n\n"
-	body := io.NopCloser(strings.NewReader(remaining))
+	body := NewXMLToolCallCoercingBodyWithNames(io.NopCloser(strings.NewReader(remaining)), offeredSearchNames())
 	recorder := httptest.NewRecorder()
 	lastSend := time.Now()
 	chunkCount := 0
@@ -99,7 +99,7 @@ func TestRunEmptyStreamGateTransformsSplitXMLToolCall(t *testing.T) {
 	remaining := "data: {\"id\":\"tool-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"<tool_call><function=search>\"}}]}\n" +
 		"data: {\"id\":\"tool-2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"<parameter=query>gateway</parameter></function></tool_call>\"}}]}\n" +
 		"data: [DONE]\n\n"
-	body := io.NopCloser(strings.NewReader(remaining))
+	body := NewXMLToolCallCoercingBodyWithNames(io.NopCloser(strings.NewReader(remaining)), offeredSearchNames())
 	recorder := httptest.NewRecorder()
 	lastSend := time.Now()
 	chunkCount := 0
@@ -116,8 +116,8 @@ func TestRunEmptyStreamGateTransformsSplitXMLToolCall(t *testing.T) {
 	}
 }
 
-func TestStreamXMLToolCallOverflowIsDroppedAndBounded(t *testing.T) {
-	c := newStreamXMLToolCallCoercer()
+func TestStreamXMLToolCallOverflowPreservesTextAndBoundsHold(t *testing.T) {
+	c := newStreamXMLToolCallCoercer(offeredSearchNames())
 	content := "<tool_call><function=search>" + strings.Repeat("x", maxStreamXMLToolCallBytes) + "</function></tool_call>"
 	line := `data: {"id":"overflow","choices":[{"delta":{"content":"` + content + `"}}]}` + "\n"
 
@@ -125,11 +125,8 @@ func TestStreamXMLToolCallOverflowIsDroppedAndBounded(t *testing.T) {
 	if c.pending() {
 		t.Fatal("overflow must clear the buffered fragment")
 	}
-	if strings.Contains(got, content) {
-		t.Fatalf("overflow content leaked to output: %q", got)
-	}
-	if !strings.Contains(got, `"delta":{}`) {
-		t.Fatalf("overflow should emit a bounded empty delta, got %q", got)
+	if offeredStreamText(t, got) != content {
+		t.Fatal("overflow must release the original text")
 	}
 }
 
@@ -148,6 +145,29 @@ func TestRunEmptyStreamGateEarlyEmptyDetection(t *testing.T) {
 	}
 	if wire != "" {
 		t.Fatalf("early-empty buffer leaked to wire: %q", wire)
+	}
+}
+
+// Magpie / ZCode empty_model_response: MiniMax phantom tool_calls must
+// count as empty deltas so early-empty fires before the buffer cap flushes
+// a fake success to the client.
+const phantomToolDeltaFrame = "data: {\"id\":\"mm\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"\",\"type\":\"function\",\"function\":{\"name\":\"\",\"arguments\":\"\"}}]}}]}\n\n"
+
+func TestRunEmptyStreamGatePhantomToolCallsTriggerEarlyEmpty(t *testing.T) {
+	withEarlyEmptyThreshold(t, 3)
+
+	_, outcome, wire := runEmptyGateForTest(t, phantomToolDeltaFrame, phantomToolDeltaFrame+phantomToolDeltaFrame)
+	if outcome == nil {
+		t.Fatal("phantom tool_calls must trigger early-empty failover")
+	}
+	if outcome.Reason != "early_empty_detection" || outcome.Kind != errorsx.KindEmptyResponse {
+		t.Fatalf("outcome = %+v, want early empty KindEmptyResponse", outcome)
+	}
+	if !outcome.Resumable || outcome.ChunkCount != 0 {
+		t.Fatalf("outcome must be resumable with zero client chunks: %+v", outcome)
+	}
+	if wire != "" {
+		t.Fatalf("phantom buffer must not leak to wire: %q", wire)
 	}
 }
 

@@ -15,6 +15,20 @@
 #
 set -euo pipefail
 
+# ★ R151 轮（2026-10-27）：**版本守卫** —— 本脚本用了 `declare -A`（关联数组），
+# 它需要 **bash ≥ 4**；而 **macOS 自带的 bash 是 3.2** ⇒ 直接跑会得到一句
+# cryptic 的 `declare: -A: invalid option`（★ 本轮实测踩到）。
+# ⇒ 在做任何事之前先给出**可执行的**提示，而不是让使用者去猜。
+if [[ -z "${BASH_VERSINFO[0]:-}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+  printf '%s\n' \
+    "FATAL: 本脚本需要 bash >= 4（用了 declare -A 关联数组）；当前是 ${BASH_VERSION:-unknown}。" >&2
+  printf '%s\n' \
+    "  macOS 自带 bash 是 3.2 ⇒ 请用 'brew install bash' 后的 /opt/homebrew/bin/bash，" >&2
+  printf '%s\n' \
+    "  或直接在目标主机（Linux）上执行；★ 本脚本默认是**只读 preflight**，可安全先跑一次看缺口。" >&2
+  exit 64
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -106,13 +120,16 @@ canonical_for() {
   local ver=$1
   local description=$2
   local candidates=${CANDIDATES[$ver]-}
-  local candidate suffix match="" count=0
+  local candidate suffix match="" first="" count=0
   case "$ver:$description" in
     461:request_wal_hot_request_id_unique) description="request_wal_hot_unique_request_id" ;;
   esac
   [[ -n "$candidates" ]] || return 1
   while IFS= read -r candidate; do
     [[ -n "$candidate" ]] || continue
+    # ★ 必须在循环内捕获首个候选：`while read` 结束时的 EOF 会把循环变量
+    #   `candidate` 置空 ⇒ 循环**之后**再读 $candidate 只会拿到空串。
+    [[ -n "$first" ]] || first="$candidate"
     count=$((count + 1))
     suffix=${candidate#"${ver}"_}
     suffix=${suffix%.sql}
@@ -121,8 +138,18 @@ canonical_for() {
     fi
   done <<<"$candidates"
   if (( count == 1 )); then
-    [[ -n "$match" ]] || return 2
-    printf '%s\n' "$match"
+    # ★ 单候选兜底（R75 轮修）：只有一个候选文件时，它**就是**该 version
+    #   唯一可能的 canonical 文件，不该再要求 description 逐字相等。
+    #   ⇒ 与部署侧对账函数同款兜底（db-changelog.sh：
+    #     `if [[ -z "$f" && ${#candidates[@]} -eq 1 ]]; then f=${candidates[0]}; fi`）。
+    #   ⇒ ★ 没有这条兜底时，生产实测 description 为空的 837/838/839
+    #     （2026-10-07 12:48~12:50 应用）会被判成「无法解析为唯一 canonical
+    #     文件」⇒ **官方 repair 脚本修不了它们** ⇒ 台账缺口无法闭合。
+    if [[ -n "$match" ]]; then
+      printf '%s\n' "$match"
+    else
+      printf '%s\n' "$first"
+    fi
     return 0
   fi
   [[ -n "$match" ]] || return 2

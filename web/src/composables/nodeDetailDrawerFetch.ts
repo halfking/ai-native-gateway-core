@@ -1,5 +1,5 @@
 import type { Ref, ComputedRef } from 'vue'
-import { resolveRouting, type RoutingCandidate } from '../api/routing'
+import { resolveRouting, type RoutingCandidate, type StreamMode } from '../api/routing'
 import type { CredentialLifecycleStatus } from '../api/providers'
 import {
   getCredentialDecisions, getCredentialMonitorSummary, getModelHistory, getSlidingWindow,
@@ -33,6 +33,7 @@ export type FetchCtx = {
   priorityFlag: Ref<boolean>
   routingTier: Ref<number>
   weight: Ref<number>
+  streamMode: Ref<StreamMode>
   coreLoaded: Ref<boolean>
   coreLoading: Ref<boolean>
 }
@@ -75,6 +76,7 @@ export function createNodeDetailFetchers(ctx: FetchCtx) {
       ctx.priorityFlag.value = ctx.candidate.value?.priority ?? false
       ctx.routingTier.value = ctx.candidate.value?.tier ?? 2
       ctx.weight.value = ctx.candidate.value?.weight ?? 100
+      ctx.streamMode.value = ctx.candidate.value?.stream_mode ?? 'both'
       return true
     } catch (error) {
       if (!isAbort(error) && reqSeq === ctx.sequence.n && ctx.currentNode.value?.credential_id === node.credential_id) {
@@ -131,7 +133,7 @@ export function createNodeDetailFetchers(ctx: FetchCtx) {
       ctx.monitor.value = { ...incoming, models: keepModels ?? incoming.models }
       return true
     }).catch(error => {
-      if (!isAbort(error) && isCurrent()) ctx.loadError.value = '节点核心状态加载失败，仍展示实时状态。'
+      if (!isAbort(error) && isCurrent()) ctx.loadError.value = '节点核心状态没能加载出来，仍展示实时状态。请稍后重试'
       return false
     })
     const candidateTask = initialModel ? loadCandidate(initialModel, reqSeq, controller.signal) : Promise.resolve(true)
@@ -196,7 +198,7 @@ export function createNodeDetailFetchers(ctx: FetchCtx) {
       ])
       return isCurrent() && detailsLoaded && candidateLoaded
     } catch (error) {
-      if (!isAbort(error) && isCurrent()) ctx.loadError.value = '未能加载节点明细；核心实时状态仍可用。'
+      if (!isAbort(error) && isCurrent()) ctx.loadError.value = '节点明细没能加载出来，核心实时状态仍可用。请稍后重试'
       return false
     } finally {
       if (ctx.loadController.c === controller) ctx.loadController.c = null

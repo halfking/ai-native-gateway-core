@@ -38,7 +38,7 @@ export default {
     generating: 'Génération…',
     generateConfirm: 'Lire les corrections humaines des {days} derniers jours et rédiger des propositions de seuil/mot-clé (quantifiées par backtest inline ; rien ne s’applique automatiquement) ?',
     generateDone: '{n} proposition(s) générée(s) (en attente)',
-    generateNone: 'Pas assez de corrections sur la fenêtre, ou propositions en attente identiques déjà présentes — rien généré',
+    generateNone: 'Pas assez de corrections sur la fenêtre, ou propositions en attente identiques déjà présentes. Rien généré',
     analyze: 'Lancer l’analyse des signaux',
     analyzing: 'Analyse…',
     analyzeConfirm: 'Exécuter l’analyseur de feedback maintenant (propositions pilotées par la qualité de tuning_signals) ?',

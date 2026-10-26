@@ -60,14 +60,14 @@ export default {
     viewErrorDetail: "Vendor errors",
     empty: "No credentials",
     labelFallback: "Credential #{id}",
-    fingerprintTitle: "For upstream reconciliation only — not the full key",
+    fingerprintTitle: "For upstream reconciliation only: not the full key",
     fingerprintUnparsed: "Cannot parse",
-    rowMeta: "#{id} · {trust}",
+    rowMeta: "#{id}: {trust}",
     cellUnset: "Not set",
     noLimit: "No limit",
     slotUsage: "Slot {used}/{limit}",
     requestCountSuffix: "requests",
-    addCredTitle: "Add credential — {name}",
+    addCredTitle: "Add credential: {name}",
     addCredApiKey: "API Key",
     addCredLabel: "Label (optional)",
     addCredLabelPlaceholder: "e.g. Production key",
@@ -115,7 +115,7 @@ export default {
     drawerFpSlotSuggestPrefix: "Suggested: ",
     drawerFpSlotSuggestTitle: "Suggested {n} (concurrency ÷ 4, min 1)",
     drawerFpSlotHintAuto: "Suggested {n} (concurrency ÷ 4, floor, min 1)",
-    drawerFpSlotHintTouched: "Manually overridden — concurrency changes will not auto-adjust this value",
+    drawerFpSlotHintTouched: "Manually overridden: concurrency changes will not auto-adjust this value",
     drawerFpSlotReset: "Reset to suggested",
     drawerFpSlotResetTitle: "Restore the value auto-derived from concurrency",
     drawerFpSlotFull: "Full",
@@ -246,7 +246,7 @@ export default {
     apiKeyRevealing: "Revealing…",
     apiKeyHide: "Hide",
     apiKeyCopy: "Copy",
-    apiKeyWarningReveal: "The plaintext API key is visible in the browser. Handle with care — it will be hidden once you close the drawer.",
+    apiKeyWarningReveal: "The plaintext API key is visible in the browser. Handle with care. It will be hidden once you close the drawer.",
     apiKeyRotateBtn: "Rotate",
     apiKeyRotateTitle: "Rotate API Key",
     apiKeyRotateModelLabel: "Bound model (used to auto-probe the new key)",
@@ -254,7 +254,7 @@ export default {
     apiKeyRotateConfirmLabel: "Confirm new API Key",
     apiKeyRotateSubmit: "Submit",
     apiKeyRotating: "Submitting…",
-    apiKeyRotateMismatch: "The two entries do not match — please re-enter.",
+    apiKeyRotateMismatch: "The two entries do not match: please re-enter.",
     apiKeyRotateMissing: "Please enter a new API Key.",
     apiKeyRotateSuccess: "API Key rotated",
     apiKeyRotateFailed: "Rotation failed",
@@ -281,7 +281,7 @@ export default {
     refreshing: "Reading models from provider…",
     refreshBtn: "Read from provider",
     refreshTitle: "Call the provider /v1/models endpoint to discover new models",
-    routableLoadFailed: 'Routability summary failed to load — the blank area below does not mean there are no unroutable bindings',
+    routableLoadFailed: 'Routability summary failed to load: the blank area below does not mean there are no unroutable bindings',
     refreshLoading: "Reading…",
     clearBtn: "Clear",
     clearLoading: "Clearing…",
@@ -290,7 +290,7 @@ export default {
     clearFailed: "Clear failed",
     clearMessage: "Cleared {n} model bindings",
     refreshLocalBtn: "Refresh",
-    refreshLocalTitle: "Reload from local cache only — does not call the provider",
+    refreshLocalTitle: "Reload from local cache only: does not call the provider",
     refreshLocalLoading: "Loading…",
     refreshFailed: "Failed to read from provider",
     refreshStatusFailed: "Failed to query refresh status",
@@ -358,9 +358,8 @@ export default {
     drawerOutboundHint: "Some providers (e.g. Volcano Ark) require an endpoint ID (e.g. ep-20241227XXXX) as the model field instead of the raw name. Without it, the probe is skipped (error code: endpoint_id_required).",
     drawerOutboundPlaceholder: "ep-XXXXXXXX",
     drawerOutboundSend: "Will send:",
-    drawerOutboundUnset: "Not set — will use",
+    drawerOutboundUnset: "Not set: will use",
     drawerSectionContextWindow: "Context window (tokens)",
-    drawerContextWindowHint: "Binding-level override for this credential × model. Resolution chain: this override → canonical model override → canonical model catalog. Leave empty (or 0, or click Clear) to remove the override and fall back to the catalog value. Editing this field only takes effect when you actually change it; saving other fields (e.g. standardized name) does not clobber an existing override.",
     drawerContextWindowPlaceholder: "e.g. 200000",
     drawerContextWindowClearBtn: "Clear",
     drawerContextWindowClearTitle: "Remove the binding-level override and fall back to the canonical model catalog value",
@@ -376,8 +375,8 @@ export default {
     checkStatusWarning: "⚠ Warning",
     checkStatusError: "✗ Error",
     phaseLabel: {
-      phase1: "Phase 1 — model list:",
-      phase2: "Phase 2 — chat test:"
+      phase1: "Phase 1: model list:",
+      phase2: "Phase 2: chat test:"
     },
     phase1ModelsOk: "✓ Model list fetched OK",
     phase1ManifestFallback: "⚠ Using manifest fallback (API unreachable)",
@@ -394,7 +393,7 @@ export default {
     phase2InOfferOnly: "✓ Model is in the list",
     checkFailedPrefix: "Check request failed: {msg}",
     offerNotInList: "This credential's model list does not contain this model",
-    drawTitle: "offer #{id} · credential #{credId} {credLabel}",
+    drawTitle: "offer #{id}: credential #{credId} {credLabel}",
     drawToggleDisable: "Disable this binding",
     drawToggleEnable: "Enable this binding",
     drawToggleLoading: "Working…",
@@ -432,12 +431,13 @@ export default {
     refreshSummaryFailed: "Failed {n}",
     refreshSummaryEmpty: "No changes",
     creds: {
-      labelFallback: "凭据 #{id}"
+      labelFallback: "Credential #{id}"
     },
     overview: {
-      chipAvailable: "可用",
-      chipUnavailable: "不可用"
-    }
+      chipAvailable: "Available",
+      chipUnavailable: "Unavailable"
+    },
+    repairFailed: 'The repair could not be completed. Please retry.',
   },
   settings: {
     overrideTitle: "🎛️ Pass-through mode config",
@@ -460,7 +460,7 @@ export default {
     optionOnRecommended: "On (recommended)",
     optionOff2: "Off",
     compressionHint: "When off, requests are passed through to the upstream without context compression. Suitable for providers with large context windows (e.g. NVIDIA).",
-    cacheHint: "When off, sessions and responses are not cached — every call hits the upstream API. Suitable for full passthrough scenarios.",
+    cacheHint: "When off, sessions and responses are not cached. Every call hits the upstream API. Suitable for full passthrough scenarios.",
     formatHint: "Keep on to support Anthropic ↔ OpenAI protocol conversion. When off, only the native protocol is supported.",
     editTitle: "Edit provider",
     fieldDisplayName: "Display name",
@@ -518,7 +518,7 @@ export default {
     modelPlaceholder: "Select model…",
     modelPickerTitle: "Filter provider logs by model",
     credentialAll: "All credentials",
-    credentialsLoadFailed: 'Credential list failed to load — an empty credential filter does not mean there are no records',
+    credentialsLoadFailed: 'Credential list failed to load: an empty credential filter does not mean there are no records',
     credentialTitle: "Credential",
     resultAll: "All",
     resultOk: "Success",
@@ -550,7 +550,7 @@ export default {
     runningDiag: "Diagnosing…",
     starting: "Starting…",
     pollingHint: "Probing credentials, please wait…",
-    taskRunning: "Diagnosis task #{id} is running — typically 30–60 seconds…",
+    taskRunning: "Diagnosis task #{id} is running: typically 30–60 seconds…",
     errorTimeout: "Diagnosis timed out",
     errorDiag: "Diagnosis failed",
     summaryTotalCreds: "Total credentials",
@@ -574,13 +574,13 @@ export default {
     credColModels: "Models probe",
     credColChat: "Chat probe",
     probeFailed: "Failed",
-    probeMetaModels: "{status} · {count} models · {latency}ms",
-    probeNonJson: "{status} · non-JSON body",
-    probeMetaChat: "{status} · {latency}ms"
+    probeMetaModels: "{status}, {count} models, {latency}ms",
+    probeNonJson: "{status}: non-JSON body",
+    probeMetaChat: "{status}: {latency}ms"
   },
   probe: {
     consensusTitle: "Consensus mechanism",
-    consensusDesc: "{n} consecutive successes → marked recovered · {n} consecutive failures → confirmed broken (stop probing)",
+    consensusDesc: "{n} consecutive successes → marked recovered, {n} consecutive failures → confirmed broken (stop probing)",
     consensusFallback: "Backoff intervals: 1m → 5m → 15m → 60m (incremental)",
     refresh: "Refresh",
     refreshLoading: "…",
@@ -625,7 +625,7 @@ export default {
       healthyConfirmed: "Recovered",
       brokenConfirmed: "Confirmed broken"
     },
-    historyMeta: "Latest 100 records · scheduler auto / manual",
+    historyMeta: "Latest 100 records: scheduler auto / manual",
     endpointIdBadge: "Endpoint ID required",
     endpointIdDetail: "This model (e.g. Volcano Ark minimax-m3 / glm-5.1) must be invoked via a deployment endpoint ID (e.g. <code>ep-XXXXXXXX</code>) instead of its raw model name. Go to",
     endpointIdLink: "Models list → edit outbound_model_name",
@@ -636,7 +636,7 @@ export default {
     loadFailed: "Load failed",
     triggerFailed: "Trigger failed"
   },
-  models_creds_labelFallback: "凭据 #{id}",
-  models_overview_chipAvailable: "可用",
-  models_overview_chipUnavailable: "不可用"
+  quality: {
+    loadFailed: 'The quality profile could not be loaded. Please retry.',
+  },
 }

@@ -55,17 +55,40 @@ LLMGW_LOCK_DIR=${LLMGW_LOCK_DIR:-/var/run/lock}
 _llmgw_lock_file="$LLMGW_LOCK_DIR/llmgw-$(basename "$0" .sh).lock"
 
 _llmgw_single_instance_guarded=false
+# ★ 打开锁文件的那一行**不得**把 stderr 一起重定向（§143.14）：
+#   exec 不带命令时，重定向施加到**当前 shell** ⇒ "exec 9>file 2>/dev/null"
+#   会让本脚本此后所有 stderr 输出永久消失 ⇒ log()（写 stderr）全部失声。
+#   ⇒ 用 { exec 9>file; } 2>/dev/null：组的重定向只作用于组本身，组结束即恢复；
+#     fd 9 的语义不变（exec 的重定向仍然持久）。
 if [ -z "${LLMGW_NO_SINGLE_INSTANCE_LOCK:-}" ] \
    && command -v flock >/dev/null 2>&1 \
    && mkdir -p "$LLMGW_LOCK_DIR" 2>/dev/null \
-   && exec 9>"$_llmgw_lock_file" 2>/dev/null; then
+   && { exec 9>"$_llmgw_lock_file"; } 2>/dev/null; then
   if ! flock -n 9; then
-    echo "[$(date +%Y-%m-%dT%H:%M:%S%z)] skip: $(basename "$0") 上一轮仍在运行（lock=${_llmgw_lock_file}），本轮不重复执行" \
+    # ★ 措辞订正（2026-10-19，§143.14）：原文写「上一轮仍在运行」，
+    #   而 252 实测到的**真实成因是「重复调度」** —— 同一分钟 crond 起了两个
+    #   逐字相同的实例，输的那个在这里退出。⇒ 「上一轮还在跑」会让人
+    #   去找「谁挂死了」，而实际上没有任何东西挂死。
+    echo "[$(date +%Y-%m-%dT%H:%M:%S%z)] skip: $(basename "$0") 锁被占用（lock=${_llmgw_lock_file}），本轮不重复执行（成因可能是**重复调度**：同一分钟起了两个实例；也可能是上一轮真的尚未结束）" \
       >> "${LLMGW_LOCK_SKIP_LOG:-/var/log/llmgw-single-instance-skip.log}" 2>/dev/null || true
     exit 0
   fi
   _llmgw_single_instance_guarded=true
 fi
+
+# ★ 心跳（2026-10-19 新增，§143.14）。
+#   本脚本原先**没有**心跳：唯一的活体证据是它的日志，而日志在
+#   「巡检被重复调度挤掉」或「输出被 cron 行丢掉」时**都不增长** ——
+#   ⇒ 「日志陈旧」与「巡检死了」在观感上完全同形（§143.14 实测：
+#   252 上这道巡检的日志停在 2026-10-10，而它其实每天都被调度）。
+#
+#   trap 装在闸门**之后** ⇒ 拿不到锁的那一轮**不会**刷新心跳。
+#   ⇒ 心跳新鲜 = 「本轮真的问过库」；心跳陈旧 = 「巡检没在问」。
+#   这两个状态在 §143.14 里分开了 9 天，此前它们是同一个状态。
+STATE_DIR=${ONCONFLICT_STATE_DIR:-/var/lib/pg17-check}
+LAST_RUN="$STATE_DIR/pg-onconflict.lastrun"
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+trap '{ date +%Y-%m-%dT%H:%M:%S%z > "$LAST_RUN"; } 2>/dev/null || true' EXIT
 
 TABLE=${ONCONFLICT_TABLE:-ursm_node_snapshot_min}
 # 期望的 ON CONFLICT 推断列（逗号分隔，顺序无关）。
@@ -91,6 +114,17 @@ DBNAME=${PG17_DB:-llm_gateway}
 #     **「跑完了」不等于「跑出结论了」**，退出码必须配上可核对的输出。
 PSQL_CMD=${PSQL_CMD:-docker exec "$CONTAINER" psql -U "$PG_USER" -X -q -A -t -F'|' -v ON_ERROR_STOP=1 -d "$DBNAME" -c}
 
+# ★ 查询超时（2026-10-19 新增，§143.14）。
+#   本脚本原先**没有任何超时** —— 这是它「看起来一直在跑、其实早就死了」
+#   的物理原因：PG 半死（容器还在 listen、事务卡死）时
+#   `docker exec ... psql` 会**一直挂着** ⇒ 脚本持锁不放 ⇒
+#   之后每一轮都在闸门处被挡掉 ⇒ 这道巡检实质上死亡，
+#   而它的日志只是「陈旧」，没有任何东西说它死了。
+#   ⇒ 查询必须有上限。缺 timeout(1) 时**放弃本轮**（fail-closed），
+#     而不是无上限地挂着 —— 无上限地等一个可能永远不回来的答案，
+#     等价于把自己的心跳也一起停掉。
+QUERY_TIMEOUT=${ONCONFLICT_QUERY_TIMEOUT:-60}
+
 # ★ 这里**不能**用 `date -Is`（GNU coreutils 写法）。BSD/macOS 的 date 不认，
 #   会把每行时间戳变成一行 `date: invalid argument 's' for -I` 噪声，
 #   把真正要读的那行挤下去。形态与 pg17-pg-availability-check.sh 保持一致。
@@ -99,8 +133,14 @@ log() { printf '%s %s\n' "$(now_iso)" "$*" >&2; }
 
 psql_17() {
   local sql=$1
+  # ★ 缺 timeout(1) ⇒ 放弃本轮，不做无上限的查询（理由见 QUERY_TIMEOUT 处）。
+  if ! command -v timeout >/dev/null 2>&1; then
+    log "ABORT: 系统里没有 timeout(1) ⇒ 无法给查询设上限。"
+    log "   不做无上限的查询（PG 半死时会永远挂着并永久占住单实例锁）⇒ 本次不出结论。"
+    exit 3
+  fi
   # shellcheck disable=SC2086 # PSQL_CMD 是刻意按多词命令传入的
-  $PSQL_CMD "$sql" 2>&1
+  timeout "$QUERY_TIMEOUT" $PSQL_CMD "$sql" 2>&1
 }
 
 # 量具预检：先确认 PSQL_CMD 的**第一个词**在 PATH 上。
@@ -155,7 +195,13 @@ SQL=${SQL/__TABLE__/$TABLE}
 out=$(psql_17 "$SQL")
 rc=$?
 if [ $rc -ne 0 ]; then
-  log "ABORT: psql 失败 rc=$rc —— 量具不可用，本次不出结论（不报健康）。"
+  # rc=124 是 timeout 自己的码：查询还挂着但问不出结果。它的含义是
+  # 「PG 卡死」而不是「PG 拒连」——处置动作不同，措辞必须分开。
+  if [ "$rc" -eq 124 ]; then
+    log "ABORT: 查询在 ${QUERY_TIMEOUT}s 内没有返回（PG 卡死，不是拒连）—— 量具不可用，本次不出结论（不报健康）。"
+  else
+    log "ABORT: psql 失败 rc=$rc —— 量具不可用，本次不出结论（不报健康）。"
+  fi
   printf '%s\n' "$out" >&2
   exit 3
 fi

@@ -35,6 +35,57 @@ func boardPiesAllEmpty(pies map[string]any) bool {
 	return true
 }
 
+// fillOverviewCountsFromLogs 补齐看板的「活跃模型数 / 活跃供应商数」。
+//
+// 2026-10-21（§143.36 / P12）：**从「两个标量子查询」改成「单遍一次扫描」**。
+//
+// ── 改的是什么 ────────────────────────────────────────────────────────
+// 改前（本函数的旧形态，仓内逐字同构于生产 pg_stat_statements 的那条语句）：
+//
+//	SELECT
+//	  (SELECT COUNT(DISTINCT modelExpr)  FROM <115列投影> WHERE <where> AND modelExpr IS NOT NULL),
+//	  (SELECT COUNT(DISTINCT r.provider_id) FROM <115列投影> WHERE <where> AND r.provider_id IS NOT NULL)
+//
+// 两个标量子查询 ⇒ **同一份派生表被独立扫描两遍**（每遍 = hot 腿 + parent 腿
+// 的 UNION ALL + 118 列投影 + details LEFT JOIN）。
+//
+// 改后：
+//
+//	SELECT COUNT(DISTINCT modelExpr), COUNT(DISTINCT r.provider_id)
+//	  FROM <115列投影> WHERE <where>
+//
+// ── 为什么语义【逐值】不变（不是「大概等价」）────────────────────────────
+// ★ 关键：`COUNT(DISTINCT x)` **按定义忽略 NULL**（SQL 标准：COUNT 只计非 NULL）。
+//
+//	⇒ 改前那两条 `... AND modelExpr IS NOT NULL` / `... AND provider_id IS NOT NULL`
+//	  都是 **no-op**：它们只是把本来就不会被计入的行提前滤掉，不改变去重集合。
+//	⇒ 改后（无这两臂）与改前（有此两臂）**逐值相等**，不是「近似相等」。
+//	⇒ 实测印证（生产只读，两组窗口）：
+//	   30 天窗·无租户：改前 (731, 15) == 改后 (731, 15)
+//	   1 天窗·default：改前 (60, 6)   == 改后 (60, 6)
+//
+// ── 为什么值得改（生产只读实测，§143.36.5）────────────────────────────
+// 同窗口同租户，EXPLAIN (ANALYZE, BUFFERS) 的 buffers：
+//
+//	形态                         buffers        相对现状    执行时间
+//	改前（双子查询）              2,827,731        100.0%    37,328 ms
+//	改后（单遍）                1,426,254         50.4%     4,587 ms
+//
+// ⇒ **恰好减半**（两次独立扫描 → 一次），执行时间 −87.7%。
+// ⇒ 改前那条在 30 天窗上 **37.3 s 撞满 30 s statement_timeout**（= §143.26.3
+//
+//	记的「2 天 69 次被 statement timeout 杀」的物理原因）；改后 4.6 s 不会被杀。
+//
+// ⚠ 反直觉的一条（别再走错路）：★ **把 115 列投影裁成 9 列【零收益】**
+//
+//	（buffers 100.0% / 100.9%，实测）⇒ PostgreSQL 的 planner 已经把未引用的
+//	投影列裁掉了（plan 里 width 从 700 降到 40）⇒ **根因是「扫两遍」，
+//	不是「列太宽」**。⇒ 裁剪投影这条路已由实测排除，不要再做。
+//
+// ⚠ 边界：单遍形态的 WHERE **不含**那两个 IS NOT NULL 臂。若将来要把
+//
+//	聚合换成 SUM(…)/AVG(…)/COUNT(*)（这些对 NULL 敏感），必须把 IS NOT NULL
+//	臂按需加回 —— COUNT(DISTINCT) 的免检许可**不可外推**。
 func (h *Handler) fillOverviewCountsFromLogs(ctx context.Context, tenantID string, tr boardTimeRange, keys, models, providers *int) error {
 	logsTable, alias := boardRequestLogsFromClause()
 	where, args := boardLogsWhere(tr, alias, tenantID)
@@ -42,10 +93,10 @@ func (h *Handler) fillOverviewCountsFromLogs(ctx context.Context, tenantID strin
 	modelExpr := fmt.Sprintf(`COALESCE(NULLIF(%s.client_model, ''), NULLIF(%s.outbound_model, ''))`, alias, alias)
 	var logModels, logProviders int
 	err := h.db.QueryRow(ctx, fmt.Sprintf(`
-		SELECT
-			(SELECT COUNT(DISTINCT %s) FROM %s WHERE %s AND %s IS NOT NULL),
-			(SELECT COUNT(DISTINCT %s.provider_id) FROM %s WHERE %s AND %s.provider_id IS NOT NULL)
-	`, modelExpr, logsTable, where, modelExpr, alias, logsTable, where, alias), args...).Scan(&logModels, &logProviders)
+		SELECT COUNT(DISTINCT %s), COUNT(DISTINCT %s.provider_id)
+		FROM %s
+		WHERE %s
+	`, modelExpr, alias, logsTable, where), args...).Scan(&logModels, &logProviders)
 	if err != nil {
 		return err
 	}

@@ -123,7 +123,7 @@ export const SELF_CHECK_TRIGGER_ERR_WORKER_UNAVAILABLE = 'self_check.trigger.wor
 /** :959-960 判 stale 的阈值。 */
 export const SELF_CHECK_PROBE_STALE_MS = 15 * 60 * 1000
 
-/** admin/self_check_handlers.go:290 `defaultFeaturedModelsSC`（逐字）。 */
+/** admin/self_check_handlers.go:307-309 `defaultFeaturedModelsSC`（逐字）。 */
 export const SELF_CHECK_DEFAULT_FEATURED_MODELS = [
   'minimax-m2.7',
   'glm-5.2',

@@ -5,16 +5,16 @@ import { req, type RequestOptions } from './client'
  *
  * GET /api/admin/storage/config · GET /api/admin/logs/config
  *
- * - **注册**：`admin/handler.go:1129` 与 `:1135`，**两处夹着另外两行**：
+ * - **注册**：`admin/handler.go:1137` 与 `:1143`，**两处夹着另外两行**：
  *   ```go
- *   mux.HandleFunc("/api/admin/storage/config", h.superAdmin(h.handleStorageConfig))          // :1129
- *   mux.HandleFunc("/api/admin/storage/config/test-path", h.superAdmin(h.handleStorageTestPath)) // :1130
- *   mux.HandleFunc("/api/admin/storage/migration-state", admin(h.handleMigrationState))         // :1132 ★ admin 档
- *   mux.HandleFunc("/api/admin/logs/config", h.superAdmin(h.handleLogConfig))                   // :1135
+ *   mux.HandleFunc("/api/admin/storage/config", h.superAdmin(h.handleStorageConfig))          // :1137
+ *   mux.HandleFunc("/api/admin/storage/config/test-path", h.superAdmin(h.handleStorageTestPath)) // :1138
+ *   mux.HandleFunc("/api/admin/storage/migration-state", admin(h.handleMigrationState))         // :1140 ★ admin 档
+ *   mux.HandleFunc("/api/admin/logs/config", h.superAdmin(h.handleLogConfig))                   // :1143
  *   ```
  *   ⚠️ **行号订正（2026-10-14，第一百二十四批）**：本段原写 `:1108` / `:1109` /
- *     `:1111` / `:1114`，实况 `:1129` / `:1130` / `:1132` / `:1135`，**整块漂 21 行**。
- *   ⇒ ★★ `:1129` 与 `:1132` 相邻两行却是**两种档位**（superAdmin vs admin）
+ *     `:1111` / `:1114`，实况 `:1137` / `:1138` / `:1140` / `:1143`，**整块漂 29 行**。
+ *   ⇒ ★★ `:1137` 与 `:1140` 相邻两行却是**两种档位**（superAdmin vs admin）
  *   ⇒ ⇒ **绝不能按 `/api/admin/storage/` 这个前缀推权限。**
  *   ⇒ ★★★★★ 整族（`storage/config`、`logs/config`）是 `h.superAdmin` 档
  *     ⇒ tenant_admin 直接 403 ⇒ 抽屉席**必须**设 `requiresRole: 'super_admin'`。

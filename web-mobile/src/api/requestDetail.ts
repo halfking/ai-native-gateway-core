@@ -53,7 +53,7 @@
 //     ★ `dropped` **有意不在**线上契约里：区分「被保留期清理掉」与「从没写过」
 //       所需的保留期与 bodies_trimmer 作业都还没落地。
 //
-// (8) ★★★ **错误信封是 `{"error":{"detail":"…"}}`**（`admin/handler.go:1494-1498`
+// (8) ★★★ **错误信封是 `{"error":{"detail":"…"}}`**（`admin/handler.go:1517-1523`
 //     的 `writeError`）⇒ 本仓的 `error.detail` 族，`client.ts` 的 `errorMessage` 兜得住。
 //
 // (9) ★★★ **`request_id` 有三种合法形态**（`ValidateRequestID`，store.go:43/440-451），
@@ -180,7 +180,7 @@ export function fetchRequestDetail(
 }
 
 /**
- * ★ 后端 `writeJSON(w, 200, detail)`（unified_detail.go:474）传的是 `*Detail` 本身
+ * ★ 后端 `writeJSON(w, 200, detail)`（unified_detail.go:463）传的是 `*Detail` 本身
  * ⇒ 响应**没有包装键**，顶层就是 `{source, persistence, meta, bodies?, warning?}`。
  * 形状不符**抛错**，绝不当成「没查到」返回 null。
  */

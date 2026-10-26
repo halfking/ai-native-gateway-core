@@ -51,14 +51,12 @@ export default {
       viewDetail: 'View details',
     },
     empty: 'No approval requests',
-    loading: 'Loading…',
     pagination: {
       previous: 'Previous',
       next: 'Next',
-      info: 'Page {page} / {totalPages} ({total} total)',
+      info: 'الصفحة {page} / {totalPages} ({total} إجمالًا)',
     },
     errors: {
-      loadFailed: 'Failed to load',
       approveFailed: 'Approve failed',
       rejectFailed: 'Reject failed',
 
@@ -90,6 +88,9 @@ export default {
       actions: 'Approval actions',
       history: 'Approval history',
     },
+    loadFailed: 'تعذّر تحميل تفاصيل الموافقة. أعد المحاولة.',
+    approveFailed: 'تعذّر إتمام الموافقة. أعد المحاولة.',
+    rejectFailed: 'تعذّر إتمام الرفض. أعد المحاولة.',
   },
   config: {
     title: 'إعدادات الموافقة',

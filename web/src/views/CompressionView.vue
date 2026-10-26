@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { CaretRight } from '@element-plus/icons-vue'
 import { fmtDateCompact } from '../i18n/useFormat'
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
@@ -474,7 +475,7 @@ watch(activeTab, () => { void reload() })
     <!-- Current configuration chips (read-only; editable in Session Configuration → Compression) -->
     <div class="current-config-bar">
       <button class="config-toggle" @click="showCurrentConfig = !showCurrentConfig">
-        <span class="caret" :class="{ open: showCurrentConfig }">▶</span>
+        <span class="caret" :class="{ open: showCurrentConfig }"><CaretRight /></span>
         <span class="config-toggle-label">{{ t('sessions.config.basicSettings') }}</span>
         <span class="chip" :class="currentConfig.enabled ? 'chip-on' : 'chip-off'">
           {{ currentConfig.enabled ? t('sessions.config.enabled') : t('sessions.config.disabled') }}

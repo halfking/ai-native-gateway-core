@@ -1,122 +1,17 @@
 export default {
-  title: "データライフサイクル管理",
   refresh: "更新",
   loading: "読み込み中…",
-  storageLoading: "ストレージ統計を読み込み中…",
-  stats: {
-    totalData: "総データ量",
-    hotData: "ホットデータ (0-7日)",
-    warmData: "ウォームデータ (7-30日)",
-    coldData: "コールドデータ (30-90日)",
-    expiredData: "期限切れデータ (>90日)"
-  },
-  charts: {
-    distribution: "データ分布",
-    growthTrend: "増加トレンド（直近7日間）",
-    trendDate: "日付",
-    trendRequests: "リクエスト数",
-    trendCompressed: "圧縮数",
-    trendCompressionRate: "圧縮率",
-    trendEmpty: "トレンドデータがありません"
-  },
   storage: {
-    title: "💾 ストレージ管理",
-    disk: "ディスク容量",
-    database: "データベース使用量",
-    databaseTotalSize: "合計サイズ {size}",
-    tableRows: "{n} 行",
-    attachments: "添付ファイルストレージ",
-    orphanTitle: "ストレージディレクトリに {n} 件のデータベース未登録ファイル",
-    orphanBadge: "孤立ファイル {n}",
-    totalFiles: "{n} ファイル",
-    activeLabel: "[アクティブ]",
-    logFiles: "ログファイル",
-    rotation: "ローテーション設定:",
-    rotationSingle: "単一ファイル {n} MB",
-    rotationKeep: "{n} 個保持",
-    rotationAge: "{n} 日間保持",
-    rotationCompress: "圧縮 {state}",
-    rotationYes: "はい",
-    rotationNo: "いいえ",
-    moreRotated: "… 他に {n} 個のローテーションファイル",
-    lifecycleConfig: "ライフサイクル設定",
-    configAttachmentPath: "添付ファイル保存先:",
-    configRetention: "データ保持期間:",
-    configRetentionDays: "{n} 日",
-    configMaxAttachment: "最大添付ファイルサイズ:",
-    configMaxAttachmentMb: "{n} MB",
-    configAutoCleanup: "自動クリーンアップ:",
-    autoCleanupOn: "有効",
-    autoCleanupOff: "無効"
+    migrateFailedWithReason: '移行を完了できませんでした：{reason}。再試行してください。',
   },
-  attachmentCleanup: {
-    title: "🗑️ 添付ファイルクリーンアップ",
-    mode: "クリーンアップモード:",
-    modeOld: "期限切れ添付ファイルをクリーンアップ（直近N日を保持）",
-    modeOrphan: "孤立ファイルをクリーンアップ（ディレクトリに DB 登録なし）",
-    daysLabel: "保持日数:",
-    minDays: "保持日数は最低7日です",
-    preview: "クリーンアップをプレビュー",
-    execute: "クリーンアップを実行",
-    affected: "影響を受けるファイル:",
-    orphanedSuffix: "（孤立 {n}）",
-    estimatedFreed: "推定解放量:",
-    warningPrefix: "⚠️",
-    previewFailed: "添付ファイルクリーンアップのプレビュー失敗",
-    executeFailed: "添付ファイルクリーンアップ失敗",
-    confirmTitle: "添付ファイルのクリーンアップを確認しますか？\n影響ファイル {n} 件\n推定解放量 {size}\n\nこの操作は元に戻せません！",
-    completed: "クリーンアップ完了：{n} ファイル / {db} 行の DB レコードを削除、{size} を解放"
-  },
-  logCleanup: {
-    title: "📋 ログクリーンアップ",
-    daysLabel: "保持日数:",
-    minDays: "保持日数は最低7日です",
-    compressedOnly: "圧縮済みファイルのみクリーンアップ",
-    preview: "クリーンアップをプレビュー",
-    execute: "クリーンアップを実行",
-    affected: "影響を受けるファイル:",
-    estimatedFreed: "推定解放量:",
-    warningPrefix: "⚠️",
-    previewFailed: "ログクリーンアップのプレビュー失敗",
-    executeFailed: "ログクリーンアップ失敗",
-    confirmTitle: "ログファイルのクリーンアップを確認しますか？\n影響ファイル {n} 件\n推定解放量 {size}\n\nこの操作は元に戻せません！",
-    completed: "ログクリーンアップ完了：{n} ファイルを削除、{size} を解放"
-  },
-  dataCleanup: {
-    title: "クリーンアップ操作",
-    action: "操作タイプ:",
-    actionArchive: "アーカイブ（推奨）",
-    actionDelete: "削除（危険）",
-    actionTrim: "トリミング（実装待ち）",
-    from: "開始日:",
-    to: "終了日:",
-    preview: "影響をプレビュー",
-    execute: "クリーンアップを実行",
-    affected: "影響を受ける行数:",
-    affectedRowsSuffix: " 行",
-    estimatedFreed: "推定解放量:",
-    warningPrefix: "⚠️",
-    missingDate: "開始日と終了日を選択してください",
-    needPreview: "まず影響をプレビューしてください",
-    previewFailed: "プレビュー失敗",
-    executeNotImpl: "クリーンアップ機能は次のフェーズで実装予定です。コマンドラインスクリプトでクリーンアップ操作を実行してください。",
-    confirmDelete: "{n} 行のデータを削除しますか？\n推定解放領域: {size}\n\nこの操作は元に戻せません！",
-    confirmArchive: "{n} 行のデータをアーカイブしますか？\n推定解放領域: {size}\n\nこの操作は元に戻せません！",
-    confirmAction: "{action} {n} 行のデータ？"
-  },
-  tenant: {
-    title: "テナントデータ統計（Top 10）",
-    tenantId: "テナント ID",
-    rows: "行数",
-    size: "占有領域",
-    percent: "割合"
-  },
-  chartLabels: {
-    hot: "ホットデータ (0-7日)",
-    warm: "ウォームデータ (7-30日)",
-    cold: "コールドデータ (30-90日)",
-    expired: "期限切れデータ (>90日)",
-    tooltipSuffix: "{label}: {n} 行 ({pct}%)"
+  /**
+   * 大フィールド管理（BlobManager）の文言。
+   * ★ 空状態（2026-10-27 第 14 インクリメント · 空状態 5 分）：以前は汎用キー
+   *   `common.feedback.noData`（表示できる内容はまだありません）を使っていた。
+   *   このページに**時間フィルターは無い** ⇒ 時間は書かない（ページが知らない事実を作らない）。
+   */
+  blob: {
+    emptyNoResult: '大きなフィールドの記録はまだありません。',
   },
   storageOverview: {
     summary: {
@@ -223,7 +118,6 @@ export default {
   hotPartition: {
     hotTableTitle: "Hot 表データ移行",
     hotTableDesc: "hot 表のデータを月次パーティション表へ移行します。移行後に VACUUM FULL を実行して初めて OS にディスクが返却されます。",
-    retentionLabel: "保持期間",
     retention: {
       all: "今すぐ全件移行",
       "1day": "最新 1 日を保持",
@@ -236,16 +130,12 @@ export default {
     migrationProgress: "{migrated} 行移行済み（{batches} バッチ、{duration}s）",
     promoteConfirm: "{label} のうち {hours} より古いデータを移行しますか？",
     promoteAll: "すべて",
-    hours: "{n} 時間",
     days: "{n} 日",
-    emptyResult: "データがありません",
     partitionTitle: "月次パーティション管理",
     partitionDesc: "古い月次パーティションを削除してディスクを解放します。",
     partitionWarning: "元に戻せない操作です。慎重に実行してください。",
     tables: {
       title: "パーティション表一覧",
-      selectLabel: "テーブル：",
-      selectPlaceholder: "パーティション表を選択してください",
       refresh: "更新",
       columns: {
         name: "テーブル",
@@ -274,11 +164,6 @@ export default {
         heap: "ヒープ",
         archive: "アーカイブ済み"
       },
-      month: {
-        recent: "最近",
-        medium: "中間",
-        old: "古い"
-      },
       delete: "削除",
       deleting: "削除中...",
       empty: "このテーブルにはパーティションがありません"
@@ -296,68 +181,91 @@ export default {
       cancel: "キャンセル",
       confirm: "削除を実行",
       deleting: "削除中...",
-      success: "削除成功：{message}\n解放サイズ：{size}",
-      failed: "削除失敗：{msg}"
     },
     hotTableNames: {
-      requestLogs: "请求日志",
-      credentialModelIndex: "凭据模型索引",
-      usageLedger: "用量账本",
-      routingDecisionLog: "路由决策日志"
+      requestLogs: "リクエストログ",
+      credentialModelIndex: "認証情報モデルインデックス",
+      usageLedger: "使用量台帳",
+      routingDecisionLog: "ルーティング判断ログ"
     },
     labels: {
       rows: "行数",
       toast: "TOAST"
     },
-    migrationFailed: "迁移失败"
-,
-    jobIdMissing: '异步任务启动失败：未返回 job_id',
 
-    asyncCompleted: '异步迁移完成，共迁移 {n} 行',
 
-    asyncFailed: '异步迁移失败：{error}',
 
-    cancel: '取消',
 
-    cancelTitle: '取消迁移任务',
 
-    cancelConfirm: '确认取消当前正在运行的迁移任务？已迁移的数据会保留。',
 
-    cancelRequested: '已请求取消，任务将停止在下一个批次。',
 
-    asyncEnabledHint: '2026-07-13 起迁移已改为异步模式，迁移过程中可在此页面查看实时进度、取消任务。',
 
-    cronStatsTitle: '夜间自动迁移',
 
-    cronStatsDesc: '每天凌晨 02:00 自动迁移 hot 表中超过 24 小时的数据，可通过环境变量调整。',
 
-    cronEnabled: '已启用',
 
-    cronDisabled: '未启用',
 
-    cronLastRun: '上次运行',
 
-    cronRunCount: '累计运行',
 
-    cronLastError: '上次错误',
 
-    cronRunning: '正在运行',
+    statsLoadFailedWithReason: 'hot 表の統計を読み込めませんでした：{reason}。再試行してください。',
+    startMigrationFailedWithReason: '移行タスクを開始できませんでした：{reason}。再試行してください。',
+    submitDeleteFailedWithReason: '削除タスクを送信できませんでした：{reason}。再試行してください。',
   },
-  preview: "预览清理",
-  hotData: "热数据 (0-7天)",
-  warmData: "温数据 (7-30天)",
-  coldData: "冷数据 (30-90天)",
-  expiredData: "过期数据 (>90天)",
-  missingDate: "请选择起始日期和结束日期",
-  previewFailed: "预览失败",
-  needPreview: "请先预览影响",
-  executeNotImpl: "清理功能将在下一阶段实现。请使用命令行脚本执行清理操作。"
+  preview: "クリーンアップをプレビュー",
+  hotData: "ホットデータ (0-7日)",
+  warmData: "ウォームデータ (7-30日)",
+  coldData: "コールドデータ (30-90日)",
+  expiredData: "期限切れデータ (>90日)",
+  missingDate: "開始日と終了日を選択してください",
+  previewFailed: "プレビューに失敗しました",
+  needPreview: "先に影響を確認してください",
+  executeNotImpl: "クリーンアップ機能は次のフェーズで実装予定です。コマンドラインスクリプトでクリーンアップ操作を実行してください。"
 ,
   pages: {
     filesystemMaintenance: 'ファイルシステムメンテナンス',
     storageConfig: 'ストレージ設定',
     logManagement: 'ログ管理',
     usageCost: '利用コスト',
+    usageEnhanced: '利用率詳細分析',
+  },
+
+  usageEnhanced: {
+    refresh: '更新',
+    loading: '読み込み中…',
+    empty: 'この期間の使用量記録はまだありません。',
+    cards: {
+      totalCost: '総コスト',
+      totalRequests: '総リクエスト数',
+      periodDelta: '期間比較 Δ コスト',
+      cacheHitRate: 'キャッシュヒット率',
+    },
+    trend: {
+      title: 'コスト推移（直近 {days} 日間）',
+    },
+    hotKeys: {
+      title: '上位 API キー（トークン消費順）',
+      colId: 'API キー ID',
+      colPrefix: 'プレフィックス',
+      colApplication: 'アプリケーション',
+      colRequests: 'リクエスト数',
+      colTokens: 'トークン数',
+      colCost: '総コスト',
+    },
+    degraded: {
+      title: '一部の指標は利用できません: ',
+      hint: 'データベーススキーマがこのビルドより古くなっています。以下の数値は「計算できない」を示すプレースホルダであり、実測値ではありません。',
+    },
+    errors: {
+      load: '利用率詳細データの読み込みに失敗しました',
+    },
+    sources: {
+      summary: '利用率サマリー',
+      costTrend: 'コスト推移',
+      periodCompare: '期間比較',
+      cacheEconomics: 'キャッシュ経済性',
+      hotKeys: 'ホット API キー',
+    },
+    footer: '最終更新: {time}',
   },
 
   usageCost: {
@@ -371,7 +279,7 @@ export default {
       previousLabel: '比較期 ({period})',
       change: '変化',
       significant: '有意',
-      meta: '{requests} リクエスト · {models} モデル',
+      meta: '{requests} リクエスト：{models} モデル',
     },
     attribution: {
       title: 'コスト帰属',

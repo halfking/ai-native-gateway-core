@@ -1,5 +1,5 @@
 import type { Ref, ComputedRef } from 'vue'
-import type { RoutingCandidate } from '../api/routing'
+import type { RoutingCandidate, StreamMode } from '../api/routing'
 import { patchCandidateBinding } from '../api/routing'
 import { updateCredentialLifecycle, type CredentialLifecycleStatus } from '../api/providers'
 import {
@@ -38,6 +38,7 @@ export function useNodeDetailDrawerActions(opts: {
   priorityFlag: Ref<boolean>
   routingTier: Ref<number>
   weight: Ref<number>
+  streamMode: Ref<StreamMode>
   modelActionReason: Ref<string>
   detailRequestId: Ref<string | null>
   refreshCurrentTab: () => Promise<void>
@@ -45,7 +46,7 @@ export function useNodeDetailDrawerActions(opts: {
   const {
     emit, canEdit, currentNode, candidate, selectedModel, selectedModelStatus,
     saving, actionMessage, actionError, pingResult, lifecycle, manualPriority,
-    priorityFlag, routingTier, weight, modelActionReason, detailRequestId, refreshCurrentTab,
+    priorityFlag, routingTier, weight, streamMode, modelActionReason, detailRequestId, refreshCurrentTab,
   } = opts
 
   const { jumpToSessionSummary } = useSessionSummaryJump({
@@ -67,9 +68,11 @@ export function useNodeDetailDrawerActions(opts: {
       const result = await sessionPingCredential(node.credential_id, selectedModel.value)
       pingResult.value = result
       if (result.status === 'healthy') actionMessage.value = `会话 Ping 成功：${result.latency_ms}ms`
-      else actionError.value = result.error || `会话 Ping 失败：${result.status}`
+      else actionError.value = result.error || i18n.global.t('ops.overview.pingFailedWithReason', { reason: result.status })
     } catch (error) {
-      actionError.value = error instanceof Error ? error.message : '会话 Ping 失败'
+      actionError.value = i18n.global.t('ops.overview.pingFailedWithReason', {
+        reason: (error instanceof Error ? error.message : '') || i18n.global.t('common.feedback.unknownReason'),
+      })
     } finally { saving.value = false }
   }
 
@@ -80,18 +83,21 @@ export function useNodeDetailDrawerActions(opts: {
     saving.value = true; actionMessage.value = ''; actionError.value = ''
     try {
       // 生命周期不再走「保存设置」：改为状态 chips 点击直接保存（changeLifecycle）。
-      const patch: { manual_priority?: number; priority?: boolean; routing_tier?: number; weight?: number } = {}
+      const patch: { manual_priority?: number; priority?: boolean; routing_tier?: number; weight?: number; stream_mode?: StreamMode } = {}
       if (manualPriority.value !== (row.manual_priority ?? 99)) patch.manual_priority = manualPriority.value
       if (priorityFlag.value !== (row.priority ?? false)) patch.priority = priorityFlag.value
       if (routingTier.value !== row.tier) patch.routing_tier = routingTier.value
       if (weight.value !== row.weight) patch.weight = weight.value
+      if (streamMode.value !== (row.stream_mode ?? 'both')) patch.stream_mode = streamMode.value
       if (!Object.keys(patch).length) { actionMessage.value = i18n.global.t('providers.settingsNoChange'); return }
       await patchCandidateBinding(row.credential_id, row.model_name, patch)
       actionMessage.value = '设置已保存，正在等待实时状态对账。'
       emit('applied')
       await refreshCurrentTab()
     } catch (error) {
-      actionError.value = error instanceof Error ? error.message : '保存设置失败'
+      actionError.value = i18n.global.t('ops.overview.saveSettingFailedWithReason', {
+        reason: (error instanceof Error ? error.message : '') || i18n.global.t('common.feedback.unknownReason'),
+      })
     } finally { saving.value = false }
   }
 
@@ -138,7 +144,7 @@ export function useNodeDetailDrawerActions(opts: {
       emit('applied')
       await refreshCurrentTab()
     } catch (error) {
-      actionError.value = error instanceof Error ? error.message : '维护失败'
+      actionError.value = error instanceof Error ? error.message : i18n.global.t('ops.overview.maintainFailed')
     } finally { saving.value = false }
   }
 
@@ -157,7 +163,7 @@ export function useNodeDetailDrawerActions(opts: {
       emit('applied')
       await refreshCurrentTab()
     } catch (error) {
-      actionError.value = error instanceof Error ? error.message : '模型维护失败'
+      actionError.value = error instanceof Error ? error.message : i18n.global.t('ops.overview.modelMaintainFailed')
     } finally { saving.value = false }
   }
 

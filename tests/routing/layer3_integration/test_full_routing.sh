@@ -53,7 +53,7 @@ test_normal_routing_multiple_candidates() {
         if [ "$LAST_HTTP_STATUS" -eq 200 ]; then
             capture_logs 50
             local cred_id
-            cred_id=$(echo "$LAST_LOGS" | grep -oP 'credential_id=\K\d+' | head -1 || echo "unknown")
+            cred_id=$(grep -oP 'credential_id=\K\d+' <<<"$LAST_LOGS" | head -1 || echo "unknown")
             creds_used+=("$cred_id")
         fi
         
@@ -90,7 +90,7 @@ test_candidate_filtering() {
     # Check logs for filtering
     capture_logs 100
     
-    if echo "$LAST_LOGS" | grep -q "filtered\|unavailable\|cooling"; then
+    if grep -q "filtered\|unavailable\|cooling" <<<"$LAST_LOGS"; then
         echo "✓ Candidate filtering detected in logs"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
@@ -120,7 +120,7 @@ test_sticky_routing_integration() {
     
     capture_logs 100
     local cred_id_1
-    cred_id_1=$(echo "$LAST_LOGS" | grep -oP 'credential_id=\K\d+' | head -1 || echo "0")
+    cred_id_1=$(grep -oP 'credential_id=\K\d+' <<<"$LAST_LOGS" | head -1 || echo "0")
     
     # Request 2: Should use same credential via sticky
     sleep 1
@@ -131,7 +131,7 @@ test_sticky_routing_integration() {
     
     capture_logs 100
     local cred_id_2
-    cred_id_2=$(echo "$LAST_LOGS" | grep -oP 'credential_id=\K\d+' | head -1 || echo "0")
+    cred_id_2=$(grep -oP 'credential_id=\K\d+' <<<"$LAST_LOGS" | head -1 || echo "0")
     
     # Verify sticky hit
     if [ "$cred_id_1" = "$cred_id_2" ] && [ "$cred_id_1" != "0" ]; then

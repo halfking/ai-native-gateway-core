@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
@@ -344,7 +346,7 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		&totalCompletionTokens,
 	)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}

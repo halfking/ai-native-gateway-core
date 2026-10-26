@@ -15,16 +15,9 @@ export default {
   filter: {
     actorLabel: 'المنفذ',
     actorPlaceholder: 'مطابقة جزئية لاسم المستخدم',
-    actorAria: 'تصفية المنفذ',
     actionLabel: 'الإجراء',
     actionPlaceholder: 'مثال: user.* أو auth.*',
-    actionAria: 'تصفية الإجراء',
     fromLabel: 'وقت البدء',
-    fromAria: 'وقت البدء',
-    toLabel: 'وقت الانتهاء',
-    toAria: 'وقت الانتهاء',
-    query: 'استعلام',
-    reset: 'إعادة تعيين',
   },
   table: {
     headers: {
@@ -34,14 +27,6 @@ export default {
       target: 'الهدف',
       details: 'التفاصيل',
     },
-  },
-  pagination: {
-    total: 'إجمالي {n} سجل',
-    pageOf: '· الصفحة {page} / {total}',
-    perPage: 'لكل صفحة',
-    previous: 'السابق',
-    next: 'التالي',
-    dash: '—',
   },
   detail: {
     titleWithId: 'تفاصيل التدقيق #{id}',
@@ -68,13 +53,8 @@ export default {
     'authentication.login_failed': 'فشل تسجيل الدخول',
     'authentication.logout': 'تسجيل الخروج',
   },
-  errors: {
-    loadFailed: 'فشل التحميل',
-  },
 
   // 扁平键（供 Vue 组件直接使用）
   loadFailed: 'فشل التحميل',
   dash: '—',
-  refreshing: 'Refreshing…',
-  refresh: 'Refresh',
 }

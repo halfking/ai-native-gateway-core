@@ -26,6 +26,23 @@ package admin
 // 这是「修好了 500，却换了一个更安静的洞」。禁令由
 // TestNoPhysicalPredicateOnViewSource 单独守，不依赖本清单。
 var physicalOnlyRequestLogColumns = []string{
+	// ── 当前族（session_turns ∪ session_turns_hot）的物理独有列 ──────────
+	// ★ 2026-10-21（R67 / C7）：v1 族退役后，事实源换成会话族 ⇒
+	//   「物理独有列」要按**当前族**重算，否则静态禁令会漏报
+	//   （实测：会话族 31 个物理独有列，旧清单只覆盖 2 个）。
+	"aggregate_applied_at", "attachment_total_bytes", "attempt_no",
+	"compression_applied", "compression_tokens_saved", "digest", "host",
+	"injection_verdict", "ir_metadata", "is_abandoned", "model",
+	"multimodal_types", "namespace", "output_verdict", "partition_date",
+	"project_id", "provider", "quality", "request_delta", "response_delta",
+	"session_id", "source_kind", "status_code", "submit_mode", "summary",
+	"tags", "title", "tools", "turn_no",
+
+	// ── v1 族（_request_logs / _request_logs_hot）时代的物理独有列 ────────
+	// v1 族已随迁移 890 真删 ⇒ 这些列名在当前库里**一个都不存在**
+	//（实测 40 个里 38 个不在任何关系上，trace_events / upstream_protocol
+	// 由会话族继承，见上）。它们留在清单里的理由是**同一件事**：
+	// 它们**不在 canonical 视图契约里** ⇒ 视图读方引用它们就是 42703。
 	"api_key_fingerprint", "audio_tokens", "billed_despite_cancellation",
 	"cache_hit", "cache_tokens_saved", "cached_response_id",
 	"compression_end_index", "compression_ratio",

@@ -15,6 +15,9 @@ func newTestStore() *Store {
 	s := NewStore()
 	base := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
 	s.nowFn = func() time.Time { return base }
+	// NewStore samples wall time; sweep state must share the injected origin.
+	// Otherwise advancing this fixed clock can still precede lastSweep.
+	s.lastSweep = base
 	return s
 }
 

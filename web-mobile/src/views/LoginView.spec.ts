@@ -83,22 +83,22 @@ describe('LoginView 保持登录', () => {
     await flushPromises()
     await fillCredentials(wrapper)
 
-    // 默认不勾选。
-    await wrapper.find('form').trigger('submit')
-    await flushPromises()
-    expect(mocks.login).toHaveBeenLastCalledWith(
-      'admin',
-      'secret',
-      expect.objectContaining({ rememberMe: false }),
-    )
-
-    await wrapper.find('#mobile-login-remember').setValue(true)
+    // 移动端默认勾选（冷启保会话）；再测取消勾选透传 false。
     await wrapper.find('form').trigger('submit')
     await flushPromises()
     expect(mocks.login).toHaveBeenLastCalledWith(
       'admin',
       'secret',
       expect.objectContaining({ rememberMe: true }),
+    )
+
+    await wrapper.find('#mobile-login-remember').setValue(false)
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+    expect(mocks.login).toHaveBeenLastCalledWith(
+      'admin',
+      'secret',
+      expect.objectContaining({ rememberMe: false }),
     )
     wrapper.unmount()
   })

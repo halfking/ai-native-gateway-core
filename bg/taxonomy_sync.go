@@ -60,8 +60,8 @@ func (t *TaxonomySync) Start(ctx context.Context) {
 func (t *TaxonomySync) Stop() {
 	if t.cancel != nil {
 		t.cancel()
+		<-t.done
 	}
-	<-t.done
 }
 
 func (t *TaxonomySync) run(ctx context.Context) {

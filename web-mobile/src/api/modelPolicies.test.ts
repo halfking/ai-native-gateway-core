@@ -38,7 +38,7 @@ import {
  *
  * 后端逐条对应：
  *   admin/handler.go:926-927        两条注册都是 h.superAdmin(...) ⇒ 整棵子树 superAdmin
- *   admin/tenants.go:188-190        唯一挂载点（isModelPoliciesSubResource 转发）
+ *   admin/tenants.go:191        唯一挂载点（isModelPoliciesSubResource 转发）
  *   admin/tenants.go:216-218        前缀匹配（2026-06-23 修：/check /audit 曾全挂）
  *   admin/model_policies.go:87-163   子树分派（405 check/audit/undelete、400 id、404 tail）
  *   admin/model_policies.go:173-178  list 先验租户存在；err != nil 也报 404

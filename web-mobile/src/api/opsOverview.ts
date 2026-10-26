@@ -5,14 +5,25 @@ import { req, type RequestOptions } from './client'
  *
  * GET /api/admin/ops/overview
  *
- * - **注册**：`admin/handler.go:1091` `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
- *   ⇒ **admin 档**（`AdminMiddleware` 只认证不检 role ⇒ tenant_admin 后端**能**读）。
- * ★★ 2026-10-14 第一百一十七批订正：这一行原先写的是 `handler.go:1070`（**漂移 21 行**），
+ * - **注册**：`admin/handler.go:1144` `mux.HandleFunc("/api/admin/ops/overview", h.superAdmin(h.handleOpsOverview))`
+ *   ⇒ **superAdmin 档**（`SuperAdminMiddleware` 逐字比 role ⇒ tenant_admin 后端**读不到**，403）。
+ * ★★★★★★ 2026-10-21 行号订正 + **档位订正**：这一行原先写 `admin/handler.go:1134`
+ *   `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`（**漂 7 行**），
+ *   且断言「**admin 档** ⇒ tenant_admin 后端能读」——**该结论已不成立**：
+ *   批 158e（eb0aee4ec，2026-10-17）把注册处**降级**为 `h.superAdmin(...)`
+ *   （Go 侧 `admin/handler.go:1135-1140` 的注释自证：「Downgraded to superAdmin so
+ *   tenant_admin cannot reach the endpoint」）。
+ *   ⇒ 断言按 Go 现在的事实改写为 **superAdmin 档**（前端那侧本来就设
+ *     `requiresRole: 'super_admin'` ⇒ **现在**服务端也有真门，两边一致）。
+ *   ⇒ 同族 `views/OpsOverviewView.spec.ts` 已把这条钉成契约（逐字含 `h.superAdmin(...)`、
+ *     且逐字**不含** `admin(`）。
+ * ★★ 2026-10-14 第一百一十七批订正（历史）：这一行原先写的是 `handler.go:1070`（**漂移 21 行**），
  *   且结论「抽屉席**不设** `requiresRole`」与同文件末尾那句「不按租户隔离」**自相矛盾** ——
  *   不隔离还放行给 tenant_admin，等于把全平台机队拓扑与别人的
  *   `license_key` / `hardware_hash` / `activation_code` 递出去。
  *   ⇒ 抽屉席改设 **`requiresRole: 'super_admin'`**（第三类：服务端完全没有租户维度 ⇒ 过度限制，
- *     与批 115/116 同处置）。**事实**没变（注册处仍是 admin 档），变的是**前端要不要更严**。
+ *     与批 115/116 同处置）。当时的**事实**是「注册处仍是 admin 档」——
+ *     ★ 该前提**已被批 158e 推翻**（见上），但「前端要更严」的结论**不变**。
  * - ★ `ops` **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes`（`:37-54`）里
  *   ⇒ 尽管桌面把 `/ops` 页面 `externalMaintainRedirect` 到独立 maintain 服务，
  *   **这个 API 仍由本进程的 admin mux 提供**。别被前端的重定向误导。
@@ -337,7 +348,7 @@ export interface OpsOverviewResponse {
 
 // ── fetch ───────────────────────────────────────────────────────────────────
 
-/** GET `/api/admin/ops/overview`（`handler.go:1091`，**admin 档** ⇒ 后端 tenant_admin 可读）。无参数。 */
+/** GET `/api/admin/ops/overview`（`admin/handler.go:1144`，**superAdmin 档** ⇒ 后端 tenant_admin 读不到）。无参数。 */
 export function fetchOpsOverview(options?: RequestOptions): Promise<OpsOverviewResponse> {
   return req<unknown>('GET', '/api/admin/ops/overview', undefined, options).then(unwrapOpsOverview)
 }
@@ -613,7 +624,7 @@ export function opsRuntimeHasMetrics(row: OpsRuntimeMetric): boolean {
 
 /**
  * ★★★★★★ 权限档（第一百一十七批逐字核过四处）：
- *   ① 注册处 `admin/handler.go:1091` 传的是 `admin(...)` = `h.admin`（`handler.go:894`）
+ *   ① 注册处 `admin/handler.go:1099` 传的是 `admin(...)` = `h.admin`（`handler.go:901`）
  *      → `AdminMiddleware`（`admin/auth.go:85-140`）—— **只认证，不检 role**；
  *   ② 该中间件全文**没有** `claims.Role` 比较（对比 `SuperAdminMiddleware` `auth.go:376-409`）；
  *   ③ `admin/ops_overview.go` 全文**没有** `AuthContext` / `IsTenantAdmin` / `Role`；

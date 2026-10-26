@@ -29,12 +29,6 @@ export default {
     extraction_failed: 'فشل الاستخراج',
     unexpected_structure: 'هيكل غير متوقع',
     null_usage_values: 'قيم usage فارغة',
-    token_mismatch: 'عدم تطابق الرموز',
-    missing_provider_tokens: 'رموز المزود مفقودة',
-    missing_client_tokens: 'رموز العميل مفقودة',
-    json_parse_error: 'خطأ في تحليل JSON',
-    missing_finish_reason: 'Finish Reason مفقود',
-    missing_content: 'Content مفقود',
   },
 
   anomalyTypeDescription: {
@@ -65,7 +59,6 @@ export default {
     requestId: 'Request ID',
     tokenInfo: 'معلومات الرمز',
     status: 'الحالة',
-    actions: 'الإجراءات',
     loading: 'جارٍ التحميل...',
     noData: 'لم يتم العثور على سجلات شذوذات',
     viewDetail: 'التفاصيل',
@@ -73,10 +66,6 @@ export default {
     actualTokens: 'الفعلي: {count}',
   },
 
-  token: {
-    expected: 'المتوقع',
-    actual: 'الفعلي',
-  },
 
   pager: {
     prev: 'السابق',

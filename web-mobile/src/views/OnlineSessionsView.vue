@@ -28,6 +28,7 @@ import { useHyperPage } from '@/hyper'
 import { useAuthStore } from '@/stores/auth'
 import AppIcon from '@/components/common/AppIcon.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
+import OnlineSessionDetailSheet from '@/components/session/OnlineSessionDetailSheet.vue'
 import { t } from '@/i18n'
 import { relativeTime } from '@/utils/format'
 import {
@@ -42,6 +43,16 @@ useHyperPage({ title: () => t('online.title') })
 
 const auth = useAuthStore()
 const PAGE = ONLINE_LIMIT_MAX
+
+/** 点行开详情板：直拉 turns，不依赖 /turns?search= 列表命中。 */
+const detail = ref<OnlineSession | null>(null)
+const detailOpen = ref(false)
+
+function openSessionDetail(s: OnlineSession): void {
+  if (!s.session_id) return
+  detail.value = s
+  detailOpen.value = true
+}
 
 const rows = ref<OnlineSession[]>([])
 const nextCursor = ref<string | null>(null)
@@ -126,42 +137,52 @@ onBeforeUnmount(() => {
 
     <ul v-if="rows.length" class="on__list">
       <li v-for="s in rows" :key="s.session_id" class="on__item">
-        <div class="on__item-head">
-          <StatusDot :tone="toneOf(s)" />
-          <span class="on__sid">{{ s.session_id }}</span>
-        </div>
-        <p v-if="s.title" class="on__title">{{ s.title }}</p>
+        <button
+          type="button"
+          class="on__item-btn"
+          :aria-label="t('online.openDetail', { id: s.session_id })"
+          :data-session-id="s.session_id"
+          @click="openSessionDetail(s)"
+        >
+          <div class="on__item-head">
+            <StatusDot :tone="toneOf(s)" />
+            <span class="on__sid">{{ s.session_id }}</span>
+          </div>
+          <p v-if="s.title" class="on__title">{{ s.title }}</p>
 
-        <div class="on__kv">
-          <span class="on__kv-item">
-            <span class="on__kv-l">{{ t('online.model') }}</span>
-            <!-- ★ 空串意味着源列 NULL ⇒ 说「未知模型」而不是留白 -->
-            <span class="on__kv-v">{{ s.last_model || t('online.unknownModel') }}</span>
-          </span>
-          <span class="on__kv-item">
-            <span class="on__kv-l">{{ t('online.provider') }}</span>
-            <!-- ★ 键缺失 = NULL，不是 0 -->
-            <span class="on__kv-v">{{ s.last_provider_id === undefined ? '—' : `#${s.last_provider_id}` }}</span>
-          </span>
-          <span class="on__kv-item">
-            <span class="on__kv-l">{{ t('online.latency') }}</span>
-            <span class="on__kv-v">{{ s.last_latency_ms === undefined ? '—' : `${s.last_latency_ms}ms` }}</span>
-          </span>
-        </div>
+          <div class="on__kv">
+            <span class="on__kv-item">
+              <span class="on__kv-l">{{ t('online.model') }}</span>
+              <!-- ★ 空串意味着源列 NULL ⇒ 说「未知模型」而不是留白 -->
+              <span class="on__kv-v">{{ s.last_model || t('online.unknownModel') }}</span>
+            </span>
+            <span class="on__kv-item">
+              <span class="on__kv-l">{{ t('online.provider') }}</span>
+              <!-- ★ 键缺失 = NULL，不是 0 -->
+              <span class="on__kv-v">{{ s.last_provider_id === undefined ? '—' : `#${s.last_provider_id}` }}</span>
+            </span>
+            <span class="on__kv-item">
+              <span class="on__kv-l">{{ t('online.latency') }}</span>
+              <span class="on__kv-v">{{ s.last_latency_ms === undefined ? '—' : `${s.last_latency_ms}ms` }}</span>
+            </span>
+          </div>
 
-        <!-- ★★ freshness 是这个端点自带的权威位，stale 要显式标出 -->
-        <p v-if="s.freshness" class="on__fresh" :class="{ 'on__fresh--stale': s.freshness.stale }">
-          <span>{{ t('online.freshness', { ms: s.freshness.freshness_ms, src: s.freshness.data_source }) }}</span>
-          <span v-if="s.freshness.stale" class="on__stale">{{ t('online.stale') }}</span>
-        </p>
+          <!-- ★★ freshness 是这个端点自带的权威位，stale 要显式标出 -->
+          <p v-if="s.freshness" class="on__fresh" :class="{ 'on__fresh--stale': s.freshness.stale }">
+            <span>{{ t('online.freshness', { ms: s.freshness.freshness_ms, src: s.freshness.data_source }) }}</span>
+            <span v-if="s.freshness.stale" class="on__stale">{{ t('online.stale') }}</span>
+          </p>
 
-        <p v-if="s.last_active_at" class="on__meta">{{ t('online.lastActive', { t: relativeTime(s.last_active_at) }) }}</p>
+          <p v-if="s.last_active_at" class="on__meta">{{ t('online.lastActive', { t: relativeTime(s.last_active_at) }) }}</p>
+        </button>
       </li>
     </ul>
 
     <button v-if="hasMore" type="button" class="on__more" :disabled="loadingMore" @click="loadMore">
       {{ loadingMore ? t('common.loading') : t('online.loadMore') }}
     </button>
+
+    <OnlineSessionDetailSheet v-model="detailOpen" :session="detail" />
   </div>
 </template>
 
@@ -171,7 +192,6 @@ onBeforeUnmount(() => {
 }
 .on__scope {
   border: 1px solid var(--app-warning);
-  border-left-width: 3px;
   border-radius: var(--app-radius);
   background: var(--app-surface);
   padding: var(--app-space-2) var(--app-space-3);
@@ -207,11 +227,24 @@ onBeforeUnmount(() => {
   padding: 0;
 }
 .on__item {
+  margin-bottom: var(--app-space-2);
+}
+.on__item-btn {
+  display: block;
+  width: 100%;
+  margin: 0;
   padding: var(--app-space-3);
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   background: var(--app-surface);
-  margin-bottom: var(--app-space-2);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+.on__item-btn:active {
+  background: var(--app-surface);
 }
 .on__item-head {
   display: flex;

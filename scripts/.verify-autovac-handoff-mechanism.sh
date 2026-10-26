@@ -125,7 +125,7 @@ for pair in "sim_handpass:${ROWS_A:-空}" "sim_autovac:${ROWS_B:-空}"; do
   if [ -z "$n" ]; then
     fail "$name 的行数读数为空 —— 量具坏了"
   elif [ "$n" -le 100 ]; then
-    fail "$name 行数只有 $n（起点 100）⇒ 写入根本没发生，A/B 实验不成立，拒绝下结论"
+    fail "$name 行数只有 ${n}（起点 100）⇒ 写入根本没发生，A/B 实验不成立，拒绝下结论"
   fi
 done
 

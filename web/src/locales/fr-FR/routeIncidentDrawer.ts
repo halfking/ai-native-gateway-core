@@ -4,4 +4,7 @@
 export default {
   exportFailedPrep: 'Échec de l’export : échec du chargement des détails ou de l’audit',
   exportNoChannel: 'Échec de l’export : aucun canal utilisable dans cet hôte',
+  timelineLoadFailed: 'Le chargement des données des dernières 24 heures a échoué. Veuillez réessayer.',
+  detailLoadFailed: 'Le chargement du détail a échoué. Veuillez réessayer.',
+  auditLogLoadFailed: 'Le chargement du journal d’audit a échoué. Veuillez réessayer.',
 }

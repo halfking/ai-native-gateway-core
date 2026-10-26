@@ -49,6 +49,60 @@ systemd units：`/etc/systemd/system/llmgo-prometheus.service`、
 
 rule 文件与 `alertmanager.yml` **与仓库保持同源**；仓库修复后需同步到 245 并 reload。
 
+## ⚠️ 2026-10-16 三处断链事故与两个复发型陷阱
+
+一次「可告性」排查发现告警链从采集到通知**三处独立断开**，且都静默：
+
+| 环节 | 现象 | 根因 |
+|---|---|---|
+| 指标采集 | `up{job="llm-gateway"}=0`，7 天零采样 | 网关蓝绿迁到 `8782`，本文件仍写 `127.0.0.1:8781`（无人监听） |
+| 告警规则 | `HighErrorRate`/`HighLatency` 恒空 | 规则引用网关**早已不产出**的 `llm_gateway_requests_total`；真实名是 `llm_gateway_http_requests_total{status,method,path}` |
+| 通知投递 | 告警算出来没人收到 | `default` 接收器 `webhook_configs` 被整段注释，匹配路由后**无集成地丢弃**，且 `amtool config show` 看起来完全健康 |
+
+三处均已修复（仓库 + 245 同步）。**`default` 接收器现与 `credential-team` 同样使用
+RFC-2606 占位符**：未配置时响亮失败而非静默，这正是它当初被注释掉时丢掉的性质。
+
+### 陷阱一：端口会漂移，采集目标不会自己跟过去
+
+`slots/8782/` 这类蓝绿槽位会改变监听端口，而 Prometheus 的 `static_configs`
+是写死的。**网关迁槽后 `up` 会一直是 0，而 `LLMGatewayDown` 会一直 firing**——
+告警常年真鸣，最终被当噪声忽略，反而掩盖了真实故障。
+2026-10-16 复查再次发现反向漂移：active-port 已回到 8781，抓取仍固定 8782，产生 `LLMGatewayDown`。原先仅改端口并没有解决复发。
+
+原生部署改用 `prometheus-native.yml` 的 `file_sd_configs`：
+- `sync-active-target.py` 读取 `/opt/llm-gateway-go/run/active-port`，只接受 8781/8782，原子发布 `/opt/monitoring/prometheus/targets/gateway-active.json`。
+- `llmgo-prometheus-target-sync.timer` 每 15 秒更新，Prometheus 每 5 秒读取；`instance=gateway-245` 跨槽保持一致。
+- active-port 缺失或非法时 updater 失败并保留最后目标，不用空列表隐藏故障。仍需关注 updater unit 的失败状态。
+- 不抓闲置槽位，避免把正常关闭的槽位当作宕机；compose 配置保持不变。
+
+安装：将脚本放到 `/opt/monitoring/prometheus/`，先创建 `targets/`；将 service/timer 放到 `/etc/systemd/system/`，执行 `systemctl daemon-reload`、`systemctl start llmgo-prometheus-target-sync.service`、`systemctl enable --now llmgo-prometheus-target-sync.timer`。备份现网配置，将现有网关 job 的 static_configs 替换为模板的 file_sd_configs，保留其他 job 和 bearer 文件；运行 promtool check config 后 reload。
+
+验收仍需查询 targets 的真实端口及 `up{job="llm-gateway",instance="gateway-245"}=1`；不要仅凭定时器启动成功宣称采集恢复。
+
+### 陷阱二：规则里的指标名会过期，且**过期是静默的**
+
+指标改名后，PromQL 求值返回**空向量而非报错**，规则看起来「一直健康」。
+`Prometheus rule health` 也不会报——它只管表达式能不能解析。
+唯一可靠的体检是**逐条查表达式的引用指标是否真的存在**：
+
+```python
+# 对每条规则提取标识符，与 /api/v1/label/__name__/values 求差集；
+# 差集非空 = 该规则永远不可能触发
+```
+
+注意：**空结果 ≠ 死规则**。`up{job="x"} == 0` 在服务健康时本就返回空。
+必须区分「条件为假」与「指标不存在」，否则会把健康系统误判成故障（或反之）。
+
+### 验收：告警链路要验到「人」这一环
+
+`promtool check rules` 只验语法。真正的验收标准是三跳都发生过：
+
+1. `up{job="llm-gateway"} == 1`；
+2. 规则 `state == "firing"`（用 `/api/v1/rules` 读，不是看 Alertmanager）；
+3. 真实配置的接收端收到通知，并核对告警名称与接收时间。`Notify for alerts failed` 只能证明尝试失败，不能作为投递通过；当前占位 webhook 尚未完成真实收件闭环。
+
+第 3 跳之前，**配置看起来永远是绿的**。
+
 ## 常用运维
 
 ```bash

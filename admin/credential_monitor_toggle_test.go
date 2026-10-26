@@ -153,10 +153,15 @@ func TestHandleModelToggle_MethodNotAllowed(t *testing.T) {
 }
 
 // TestHandleModelToggle_NilDB returns 503 before any validation runs.
+//
+// 2026-10-19: model-toggle 现在有写侧角色门（superadmin 才可写，
+// 见 credential_monitor.go 的写侧角色门注释），未授权者会先得 403。
+// 本用例要验的是**过了角色门之后**的 nil-db 分支，故用 super_admin 身份。
 func TestHandleModelToggle_NilDB(t *testing.T) {
 	m := &CredentialMonitorHandlers{h: &Handler{}}
 	req := newReq(http.MethodPost, "/api/credentials/model-toggle",
 		strReader(`{"credential_id":1,"raw_model_name":"m","action":"offline","reason":"r"}`))
+	req = SetAuthContext(req, &AuthContext{Role: "super_admin", IsJWT: true})
 	rr := rec()
 	m.handleModelToggle(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
@@ -180,10 +185,35 @@ func TestHandleModelHistory_NilDB(t *testing.T) {
 	m := &CredentialMonitorHandlers{h: &Handler{}}
 	req := newReq(http.MethodGet,
 		"/api/credentials/model-history?credential_id=1&raw_model_name=m", nil)
+	// 2026-10-16 audit #154: pre-empt the role gate so this test still
+	// exercises the nil-DB 503. Production always reaches the handler with
+	// an admin role set by AdminMiddleware.
+	req = SetAuthContext(req, &AuthContext{Role: "super_admin"})
 	rr := rec()
 	m.handleModelHistory(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// 2026-10-16 audit #154: role gate on /api/credentials/model-history. Route
+// is registered under AdminMiddleware (any authenticated user), but the SQL
+// filter is `($4 = ” OR tenant_id = $4)` and tenantID only gets populated
+// for tenant_admin (handleModelHistory:1531). A role=user caller passes ""
+// through and reads every tenant's history. Restrict to super_admin /
+// admin_key / tenant_admin.
+func TestHandleModelHistory_UserRoleForbidden(t *testing.T) {
+	m := &CredentialMonitorHandlers{h: &Handler{}} // db intentionally nil
+	req := newReq(http.MethodGet,
+		"/api/credentials/model-history?credential_id=1&raw_model_name=m", nil)
+	req = SetAuthContext(req, &AuthContext{Role: "user", TenantID: "acme"})
+	rr := rec()
+	m.handleModelHistory(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "administrator role required") {
+		t.Fatalf("expected administrator role required, got %s", rr.Body.String())
 	}
 }
 

@@ -6,7 +6,7 @@ import { req, type RequestOptions } from './client'
  * GET /api/admin/session-analytics/filter-options
  *
  * - **注册**：**第六种注册形态 —— 前缀 catch-all + 方法内分发器**，
- *   `cmd/gateway/main.go:7186`
+ *   `cmd/gateway/main.go:7286`
  *   ```go
  *   mux.HandleFunc("/api/admin/session-analytics/", wrapSessionAnalytics(adminHandler.RouteSessionAnalytics))
  *   ```
@@ -15,7 +15,7 @@ import { req, type RequestOptions } from './client'
  *   ⇒ ★★ 注意它**不在** `admin/handler.go` 的 `mux.HandleFunc` 里，
  *   只查 `admin/handler.go` 会判「端点不存在」。
  * - **实现**：`admin/session_analytics_top.go:190-272`（handler）
- *   · `:47-50`（`FilterOptionsResponse`）· `admin/session_tenant.go:126-131`（`effectiveScopeTenant`）
+ *   · `:47-50`（`FilterOptionsResponse`）· `admin/session_tenant.go:180-185`（`effectiveScopeTenant`）
  *   · `cmd/gateway/main_admin_wrappers.go:42-64`（鉴权包装）。
  * - **桌面调用方**：**没有**。全仓 `web/src/` 只出现 `/api/admin/turns/sessions/filter-options`
  *   ⇒ ★★★ **移动端会是第一个调用方**。
@@ -58,7 +58,7 @@ import { req, type RequestOptions } from './client'
  *
  * (4) ★★★★★ **★ 租户作用域与兄弟端点方向相反**：
  *     ```go
- *     func effectiveScopeTenant(r *http.Request) string {   // session_tenant.go:126-131
+ *     func effectiveScopeTenant(r *http.Request) string {   // session_tenant.go:189-195
  *         if IsSuperAdminOrLegacy(r) { return "" }
  *         return GetTenantID(r)
  *     }
@@ -75,7 +75,7 @@ import { req, type RequestOptions } from './client'
  *     ⇒ ★★ 想要单租户视图，唯一办法是**用那个租户的账号登录**。
  *
  * (6) ★★★★ **★ 整条 `/api/admin/session-analytics/` 树只在 `dbConn != nil` 时注册**
- *     （`cmd/gateway/main.go:7085-7089`：`wrapSessionAnalytics` 只在有 DB 时才被赋值）
+ *     （`cmd/gateway/main.go:7314-7319`：`wrapSessionAnalytics` 只在有 DB 时才被赋值）
  *     ⇒ ⇒ **没有数据库时这个路径是 404，而不是 503** ——
  *       对照兄弟端点它恒注册（`admin/handler.go:1277`）才在 handler 内判 `h.db == nil` 返 503。
  *
@@ -240,4 +240,78 @@ export function filterOptionValuesAreSortedUnique(values: readonly string[]): bo
     if (!(prev < cur)) return false
   }
   return true
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 权限档（第一百二十八批追加）
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * 是否需要 admin 门 —— 与兄弟端点 `turnsFilterOptionsRoleNeedsAdminGate` 同形，
+ * 但**依据不同**，且本端点比它更该设门。
+ *
+ * ★★★ 注册链（逐字核实，2026-10-15）：
+ *   `cmd/gateway/main.go:7286`
+ *     mux.HandleFunc("/api/admin/session-analytics/", wrapSessionAnalytics(adminHandler.RouteSessionAnalytics))
+ *   ⇒ `wrapSessionAnalytics` = `newWrapSessionAnalytics`（`cmd/gateway/main_admin_wrappers.go:42`）
+ *   ⇒ ★★ 它是**双模式**的，且**两条分支都不设角色下限**：
+ *     （甲）session-service JWT 未启用 ⇒ 落 `admin.AdminMiddleware(fn, ...)`
+ *           ⇒ `admin/auth.go:85` 起，**全文无任何 `claims.Role` 比对**（与批 127 同一个事实）
+ *     （乙）已启用且 token 验签通过 ⇒ 走 `SessionAnalyticsMiddleware`
+ *           （`admin/session_service_auth.go:18`），它**确实**逐字检了
+ *           `hasScope(claims.Scope, "session:read")` 与 `claims.TenantID != ""`
+ *           ⇒ ★ 但那是**服务间调用**的门（主体被强制成 `Role: "tenant_admin"`），
+ *             **不是浏览器用户**的门；浏览器用户走（甲）那条，**零角色下限**。
+ *   ⇒ 两条独立理由，缺一不可：
+ *     （甲）**需要 admin**：载荷是**租户级聚合清单** ——
+ *          「这个租户所有人跑过的模型与提供商」。普通用户只该看自己的请求。
+ *     （乙）**不过度限制到 super_admin**：除 super_admin 外，handler 对两条查询
+ *          **都**拼了 `AND tenant_id = $1`（`session_analytics_top.go:206-209`、`:219-222`）
+ *          ⇒ 非 super_admin 拿到的是**自己租户内**的 ⇒ 按批 119 的边界不过度限制。
+ *
+ * ⚠️ 与兄弟端点的**方向相反**（模块头 (4)）：
+ *   `effectiveScopeTenant`（`admin/session_tenant.go:180-185`）对
+ *   `super_admin` / `admin_key` 返回 **空串** ⇒ `if tenantID != ""` 不成立
+ *   ⇒ ★★ **super_admin 看的是全部租户的聚合，且没有 `?tenant=` 收窄手段。**
+ *   兄弟端点（`turns/sessions`）永远租户内。⇒ **两个解包器/门都不能互相套用。**
+ */
+export function sessionAnalyticsFilterOptionsRoleNeedsAdminGate(role: string | null | undefined): boolean {
+  if (role === 'super_admin' || role === 'tenant_admin' || role === 'admin_key') return false
+  return true
+}
+
+/**
+ * ★★ 载荷里**不含**任何租户标识 ⇒ 可作为「这是聚合清单而非逐条会话记录」的旁证。
+ *
+ * ★★ **这不是权限判据**，别拿它当门用：它是**载荷形状**判据。
+ *   真正的门是 `sessionAnalyticsFilterOptionsRoleNeedsAdminGate`。
+ *   与兄弟端点同名 helper（`turnsFilterOptionsIsTenantScoped`）**恰好同向**，
+ *   但依据不同 —— 那边的「不含 tenant」是因为**永远拼了 tenantWhere**，
+ *   这边是因为**响应体只有两个字符串数组**（`:48-51` 无任何租户字段）。
+ */
+export function sessionAnalyticsFilterOptionsIsTenantAgnostic(resp: unknown): boolean {
+  const s = JSON.stringify(resp ?? null).toLowerCase()
+  return !s.includes('tenant')
+}
+
+/**
+ * ★★ (3) 载荷是否处于**半空**形状：两个列表里**恰好一个**没有值。
+ *
+ * ★★★ 为什么这个函数值得单独存在，而不能直接用 `IsEmpty` / `HasAnyValue`：
+ *   那两个函数的**和**只能把三种状态压成「全空 / 非全空」两档，
+ *   而本端点**真正反常的那一档恰好落在两者之间** ——
+ *   `{models: [...], providers: null}` 是一个**合法且可达**的响应
+ *   （`models_used text[] DEFAULT '{}' NOT NULL` 而 `providers text[]` 可空，
+ *   `UNNEST` 空数组/NULL 都只产生零行而不是报错）。
+ *   ⇒ 若视图只按 `IsEmpty` 分支，**半空形状会被当成「有数据」正常渲染**，
+ *     用户看到「模型有 12 个、提供商 0 个」却收不到任何「还缺一边」的提示。
+ *   ⇒ 与兄弟端点的对照：那边 8 个维度**共用**一个 `[]`，**半空不可达** ⇒
+ *     所以那边**不需要**这个函数 —— ★ 这就是「同叶名兄弟不可互相套用」的第四例。
+ */
+export function sessionAnalyticsFilterOptionsIsHalfEmpty(
+  o: SessionAnalyticsFilterOptions,
+): boolean {
+  const m = filterOptionList(o.models).length
+  const p = filterOptionList(o.providers).length
+  return (m === 0) !== (p === 0)
 }

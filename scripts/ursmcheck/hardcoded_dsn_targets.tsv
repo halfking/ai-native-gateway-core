@@ -1,0 +1,24 @@
+# 「被当作『要连的库』的写死 DSN」登记册（R70 轮建立）
+# 格式：path<TAB>literal<TAB>hash10<TAB>role<TAB>disposition<TAB>note
+#   role        : target | probe | sample
+#   disposition : pending | env:<VAR> | skip-explicit
+#   ★ role=target 的行**不许**留 pending（门 ②）⇒ 门推动真正的修复。
+# 用 `go test ./scripts/ursmcheck/ -run TestHardcodedDSNTargets -update` 重算骨架
+#   ★ 重算会**保留**已处置的 target 行（字面量已从源码消失 = 修复的证据）。
+../../admin/live_stream_async_test.go	postgres://tester:tester@127.0.0.1:1/unused?sslmode=disable	cd391d3407	probe	pending	端口 1 = 必连不上；构造「连不上」的池
+../../admin/storage_degraded_surfaces_r27_test.go	host=127.0.0.1 port=1 user=audit dbname=audit sslmode=disable connect_timeout=1 pool_max_conns=1	9974bc4286	probe	pending	端口 1；函数名 newDeadPool ⇒ 故意连不上的死池
+../../admin/user_usage_summary_observation_test.go	postgres://127.0.0.1:54318/postgres?sslmode=disable	cb2b754096	probe	pending	注释自证「this unit test never connects」⇒ 假 DSN 只为构造 pool
+../../bg/auto_route_realtime_listener_test.go	postgres://nobody:nopass@127.0.0.1:1/none?sslmode=disable	b7a7a73ed6	probe	pending	端口 1 = 必连不上
+../../bg/auto_route_workers_test.go	postgres://nouser:nopass@127.0.0.1:1/none	ab5d93d765	probe	pending	端口 1 = 必连不上
+../../bg/materialized_view_refresher_test.go	postgres://127.0.0.1:1/postgres?sslmode=disable&connect_timeout=1	556c206dfb	probe	pending	端口 1 + 注释自证「unreachable DSN」
+../../cmd/gateway/recovery_gate_adapter_test.go	postgres://u:p@127.0.0.1:1/db?sslmode=disable	c281483052	probe	pending	端口 1 = 必连不上
+../../cmd/gateway/routing_optimizer_init_test.go	postgres://gateway:gw@127.0.0.1:1/gw?sslmode=disable	12891fe9dd	probe	pending	端口 1 = 必连不上
+../../domains/streaming/models_stale_test.go	postgres://u:p@127.0.0.1:1/db?sslmode=disable	c281483052	probe	pending	端口 1 = 必连不上
+../../domains/streaming/redact_body_test.go	postgres://...	e417673b53	sample	pending	占位串「postgres://...」⇒ 不是地址
+../../domains/ursm/v2/persist/shutdown_pool_probe_test.go	postgres://127.0.0.1:1/none?connect_timeout=1	436abc09f6	probe	pending	端口 1 + connect_timeout=1
+../../internal/quality/integration_test.go	postgres://user:pass@localhost/db	f1b76be42d	sample	pending	Example 文档示例（godoc 用），不是被测连接
+../../admin/usage_enhanced_test.go	postgres://localhost/llm_gateway_test?sslmode=disable	ddbf707c2e	target	env:TEST_DATABASE_URL	原写死且**完全无视 env** ⇒ 本机有那个库就会真连上；连不上则静默 SKIP 被记成绿（R69 §19.18）⇒ R70 改成认事实源
+../../bg/feature_stats_worker_test.go	postgres://localhost/llm_gateway_test?sslmode=disable	ddbf707c2e	target	env:LLM_GATEWAY_FEATURE_STATS_TEST_DSN	原 fallback 到写死库 ⇒ 连不上则静默 SKIP（R69 §19.18 记的形态 b）⇒ R70 取消 fallback，改成未设即明确 SKIP
+../../bg/systemmonitor/metrics_collector_test.go	postgres://localhost/llm_gateway_test?sslmode=disable	ddbf707c2e	target	env:TEST_DATABASE_URL	原写死且无视 env ⇒ 连不上则静默 SKIP 被记成绿 ⇒ R70 改成认事实源
+../../domains/credential/flusher_test.go	postgres://kxuser:KAIXUAN_PW@localhost:5434/llm_gateway?sslmode=disable	14061457b5	target	env:TEST_DATABASE_URL	原写死**带明文口令**、且库名是生产库名 ⇒ 本机有那个库就会真连上 ⇒ R70 改成认事实源（**口令同时从源码移除**）
+../../internal/outbox/writer_test.go	postgres://localhost/llm_gateway_test?sslmode=disable	ddbf707c2e	target	env:TEST_DATABASE_URL	原写死且无视 env；**写入型**（好在包在 tx 里且 defer tx.Rollback() ⇒ 不留残留）⇒ R70 改成认事实源

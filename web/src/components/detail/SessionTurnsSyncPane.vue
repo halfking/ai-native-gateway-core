@@ -611,10 +611,10 @@ function onDividerKeydown(e: KeyboardEvent) {
   border-radius: 6px; padding: 8px; margin-bottom: 6px; cursor: pointer; color: inherit;
 }
 .turn-row.active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
-.turn--ok { border-left: 3px solid var(--kx-success); }
-.turn--err { border-left: 3px solid var(--kx-error); background: color-mix(in srgb, var(--kx-error) 5%, transparent); }
-.turn--warn { border-left: 3px solid var(--kx-warning); }
-.turn--info { border-left: 3px solid var(--kx-primary); }
+.turn--ok { border: 1px solid var(--kx-success); }
+.turn--err { border: 1px solid var(--kx-error); background: color-mix(in srgb, var(--kx-error) 5%, transparent); }
+.turn--warn { border: 1px solid var(--kx-warning); }
+.turn--info { border: 1px solid var(--kx-primary); }
 .left .tn { font-weight: 600; margin-right: 6px; }
 .st, .lat, .mdl { font-size: 11px; color: var(--muted); margin-right: 6px; }
 /* .pill / .pill--* 全部从全局 styles/pill-chip.css 继承（P1-8）。 */

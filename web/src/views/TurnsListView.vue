@@ -24,6 +24,7 @@ import {
   type TurnsFilterState,
   type TurnsGroupBy,
 } from '../components/turns/turnsListHelpers'
+import { CaretRight } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const loading = ref(false)
@@ -226,7 +227,7 @@ async function resummarize(session: TurnsSessionGroup) {
       [session.session_id]: refreshed ? '已触发重新归纳' : '已触发重新归纳，但新归纳没取回来（当前显示的是旧内容）',
     }
   } catch (cause) {
-    assetMsg.value = { ...assetMsg.value, [session.session_id]: cause instanceof Error ? cause.message : '归纳失败' }
+    assetMsg.value = { ...assetMsg.value, [session.session_id]: cause instanceof Error ? cause.message : '归纳没能完成，请重试' }
   } finally {
     summaryBusy.value = { ...summaryBusy.value, [session.session_id]: false }
   }
@@ -247,7 +248,7 @@ async function extractAsset(session: TurnsSessionGroup) {
         : `已沉淀 ${result.written} 条资产${result.skipped_duplicate ? `（跳过重复 ${result.skipped_duplicate}）` : ''}`,
     }
   } catch (cause) {
-    assetMsg.value = { ...assetMsg.value, [session.session_id]: cause instanceof Error ? cause.message : '沉淀失败' }
+    assetMsg.value = { ...assetMsg.value, [session.session_id]: cause instanceof Error ? cause.message : '沉淀没能完成，请重试' }
   } finally {
     assetBusy.value = { ...assetBusy.value, [session.session_id]: false }
   }
@@ -315,7 +316,7 @@ onBeforeUnmount(() => controller?.abort())
   <div class="turns-list-view">
     <div class="header">
       <h1>会话与轮次</h1>
-      <p class="subtitle">多维层级浏览 · 展开查看全部轮次摘要 · 可重新归纳并沉淀为资产</p>
+      <p class="subtitle">多维层级浏览，展开查看全部轮次摘要，可重新归纳并沉淀为资产</p>
     </div>
 
     <TurnsFilterBar
@@ -357,7 +358,7 @@ onBeforeUnmount(() => controller?.abort())
             :aria-expanded="!collapsedGroups.has(group.key)"
             @click="toggleGroup(group.key)"
           >
-            <span class="caret" :class="{ open: !collapsedGroups.has(group.key) }">▸</span>
+            <span class="caret" :class="{ open: !collapsedGroups.has(group.key) }"><CaretRight /></span>
             <span class="group-title">{{ group.label }}</span>
             <span class="badge">{{ group.sessionCount }} 会话</span>
             <span class="badge">{{ group.totalTurns }} 轮</span>
@@ -373,7 +374,7 @@ onBeforeUnmount(() => controller?.abort())
                 :aria-expanded="!collapsedTasks.has(taskKey(group.key, task.key))"
                 @click="toggleTask(taskKey(group.key, task.key))"
               >
-                <span class="caret" :class="{ open: !collapsedTasks.has(taskKey(group.key, task.key)) }">▸</span>
+                <span class="caret" :class="{ open: !collapsedTasks.has(taskKey(group.key, task.key)) }"><CaretRight /></span>
                 <span class="task-title">{{ task.label }}</span>
                 <span class="badge">{{ task.sessions.length }} 会话</span>
               </button>

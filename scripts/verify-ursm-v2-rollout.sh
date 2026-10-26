@@ -109,7 +109,7 @@ case "$stage" in
     done
     # These historical labels must never be accepted as evidence. The code emits
     # availability/order; accepting aliases would make a missing series look zero.
-    if printf '%s\n' "$metrics" | grep -Eq '^ursm_shadow_diff_total\{[^}]*type="(availability_mismatch|order_mismatch)"'; then
+    if grep -Eq '^ursm_shadow_diff_total\{[^}]*type="(availability_mismatch|order_mismatch)"' <<<"$metrics"; then
       printf 'WARN legacy mismatch labels found; use availability/order instead\n' >&2
     fi
     ;;

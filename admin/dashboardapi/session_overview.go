@@ -4,12 +4,24 @@ package dashboardapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/sync/errgroup"
 )
+
+// dashboardStatsStageError carries which parallel stats stage failed so the
+// error answer keeps the per-stage detail of the pre-parallel serial pipeline
+// (same shape as admin.statsStageError in tenants.go).
+type dashboardStatsStageError struct {
+	stage string
+	err   error
+}
+
+func (e dashboardStatsStageError) Error() string { return e.stage + ": " + e.err.Error() }
 
 // SessionOverviewHandler 会话总览 Handler
 type SessionOverviewHandler struct {
@@ -174,74 +186,89 @@ func (h *SessionOverviewHandler) HandleSessionOverview(w http.ResponseWriter, r 
 	ctx, cancel := GetRequestContext(r, 30*time.Second)
 	defer cancel()
 
-	// 1. 查询总会话数和活跃会话数
-	totalStats, err := h.queryTotalStats(ctx, params)
-	if err != nil {
+	// ── 六段聚合并行（2026-10-27 巡检轮）──
+	// 2026-10-15 可靠性轮：9 段串行共用 30s ctx，session_summaries 73 万行 seq scan，
+	// 每段 0.6~2.5s ⇒ 串行 4~12s，负载高时 30s 顶穿报 500 ⇒ 改成 errgroup 并行，墙钟 = max(段)。
+	// 2026-10-27 巡检轮（实测）：session_summaries 是 **86 万行普通表**（无分区、无
+	// first_request_at 索引），每条腿都是一次 Parallel Seq Scan（50,603 buffers）；
+	// 9 段并发 ⇒ 27 个并行 worker 抢 max_worker_processes=8 的槽 ⇒ 互相抢 CPU。
+	// 合并口径不变的四条标量腿（总会话/健康/合规/成本 → 1 次扫描）与两条趋势腿
+	// （成本趋势/会话趋势 → 1 次扫描）⇒ 9 段降到 6 段，session_summaries 扫描 6→3 次。
+	// **墙钟仍由两条 join 腿（top clients / top tasks）决定** —— 它们各自要把
+	// 90 万行的 session_dim 整表哈希，SQL 层候选已被实测否证（见审计档）。
+	// 错误语义保持：哪段死都带段名报 500（dashboardStatsStageError，
+	// 类型定义在包级，见 SessionOverviewHandler 前）。
+	var (
+		aggregates *sessionSummaryAggregates
+		prevCost   float64
+		modelUsage []ModelUsageItem
+		topClients []ClientRankItem
+		topTasks   []TaskRankItem
+		costTrend  []CostTrendPoint
+		sessTrend  []SessionTrendPoint
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		var err error
+		if aggregates, err = h.querySessionSummaryAggregates(gctx, params); err != nil {
+			return dashboardStatsStageError{"session summary aggregates", err}
+		}
+		return nil
+	})
+	g.Go(func() error {
+		// 上一周期成本：窗口与「成本统计」腿不同（2×days ~ days），无法并进同一次扫描。
+		// 原实现在成本腿内部顺带查，**错误被忽略**（不阻断整段）⇒ 这里保持同一语义。
+		prevCost = h.queryPrevPeriodCost(gctx, params)
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		if modelUsage, err = h.queryModelUsage(gctx, params); err != nil {
+			return dashboardStatsStageError{"model usage", err}
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		if topClients, err = h.queryTopClients(gctx, params, 5); err != nil {
+			return dashboardStatsStageError{"top clients", err}
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		if topTasks, err = h.queryTopTasks(gctx, params, 5); err != nil {
+			return dashboardStatsStageError{"top tasks", err}
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		costTrend, sessTrend, err = h.querySessionTrends(gctx, params)
+		if err != nil {
+			return dashboardStatsStageError{"session trends", err}
+		}
+		return nil
+	})
+	if err := g.Wait(); err != nil {
 		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query total stats", err.Error())
+		var se dashboardStatsStageError
+		if errors.As(err, &se) {
+			writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query "+se.stage, se.err.Error())
+			return
+		}
+		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query session overview", err.Error())
 		return
 	}
-
-	// 2. 查询健康度分布
-	healthDist, err := h.queryHealthDistribution(ctx, params)
-	if err != nil {
-		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query health distribution", err.Error())
-		return
+	totalStats := aggregates.total
+	healthDist := aggregates.health
+	compliance := aggregates.compliance
+	costStats := aggregates.cost
+	// 成本增长率：与原实现同口径（上一周期成本为 0 时不计算）
+	if prevCost > 0 {
+		costStats.CostGrowthPct = (costStats.TotalCostUSD - prevCost) * 100 / prevCost
 	}
-
-	// 3. 查询合规统计
-	compliance, err := h.queryComplianceStats(ctx, params)
-	if err != nil {
-		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query compliance stats", err.Error())
-		return
-	}
-
-	// 4. 查询成本统计
-	costStats, err := h.queryCostStats(ctx, params)
-	if err != nil {
-		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query cost stats", err.Error())
-		return
-	}
-
-	// 5. 查询模型使用
-	modelUsage, err := h.queryModelUsage(ctx, params)
-	if err != nil {
-		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query model usage", err.Error())
-		return
-	}
-
-	// 6. 查询 Top 客户端和任务
-	topClients, err := h.queryTopClients(ctx, params, 5)
-	if err != nil {
-		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query top clients", err.Error())
-		return
-	}
-
-	topTasks, err := h.queryTopTasks(ctx, params, 5)
-	if err != nil {
-		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query top tasks", err.Error())
-		return
-	}
-
-	// 7. 查询趋势数据
-	costTrend, err := h.queryCostTrend(ctx, params)
-	if err != nil {
-		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query cost trend", err.Error())
-		return
-	}
-
-	sessionTrend, err := h.querySessionTrend(ctx, params)
-	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query session trend", err.Error())
-		return
-	}
+	sessionTrend := sessTrend
 
 	// 构建响应
 	now := time.Now()
@@ -290,10 +317,31 @@ type totalStatsInternal struct {
 	Closed24h int
 }
 
-func (h *SessionOverviewHandler) queryTotalStats(ctx context.Context, params QueryParams) (*totalStatsInternal, error) {
-	stats := &totalStatsInternal{}
+// sessionSummaryAggregates 是一次「session_summaries 扫描」里同时聚合出来的四组标量。
+//
+// 2026-10-27 巡检轮引入：原先「总会话数 / 健康分布 / 合规统计 / 成本统计」是 4 条
+// 独立 SELECT，四条的 WHERE 子句逐字相同（可选 tenant_id + first_request_at 窗口），
+// 聚合表达式也逐条相同来源 ⇒ **合并后结果与旧实现逐值相同**。
+type sessionSummaryAggregates struct {
+	total      *totalStatsInternal
+	health     *HealthDistribution
+	compliance *ComplianceStats
+	cost       *CostStats
+}
 
-	// 构建查询条件（与 cost/trend 同一 days 窗口，避免 KPI 与趋势对不上）
+// querySessionSummaryAggregates 把四条标量腿合并成一次扫描。
+//
+// 为什么值得合并（2026-10-27 生产实测）：
+//   - session_summaries 是 **86 万行的普通表**（非分区，且**没有 first_request_at 索引**），
+//     每条腿都是一次 Parallel Seq Scan（50,603 shared hit / 760,110 行被过滤丢弃）。
+//   - 加 first_request_at 索引被**实测否证**（两条腿反而更慢，见审计档）⇒ 杠杆不在索引，
+//     在「同一张表被反复扫」。
+//   - 端点原本 9 段并发 ⇒ 27 个并行 worker 抢 max_worker_processes=8 的槽 ⇒ 互相抢 CPU。
+//     合并后这段扫描从 4 次降到 1 次。
+//
+// 口径等价性：WHERE 与每条聚合表达式都从原实现逐字搬来；健康分布与合规统计各自的
+// COUNT(*) 与「总会话数」的 COUNT(*) 同源（同表同窗）⇒ 直接复用同一个 total。
+func (h *SessionOverviewHandler) querySessionSummaryAggregates(ctx context.Context, params QueryParams) (*sessionSummaryAggregates, error) {
 	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
@@ -312,138 +360,19 @@ func (h *SessionOverviewHandler) queryTotalStats(ctx context.Context, params Que
 			COUNT(*) as total,
 			COUNT(*) FILTER (WHERE last_request_at >= NOW() - INTERVAL '24 hours') as active,
 			COUNT(*) FILTER (WHERE first_request_at >= NOW() - INTERVAL '24 hours') as new_24h,
-			COUNT(*) FILTER (WHERE last_request_at < NOW() - INTERVAL '24 hours' AND first_request_at < NOW() - INTERVAL '24 hours') as closed_24h
-		FROM session_summaries
-		%s
-	`, whereClause)
-
-	err := h.db.QueryRow(ctx, query, args...).Scan(
-		&stats.Total,
-		&stats.Active,
-		&stats.New24h,
-		&stats.Closed24h,
-	)
-	return stats, err
-}
-
-func (h *SessionOverviewHandler) queryHealthDistribution(ctx context.Context, params QueryParams) (*HealthDistribution, error) {
-	dist := &HealthDistribution{}
-
-	where := []string{}
-	args := []interface{}{}
-	argIdx := 1
-
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
-
-	whereClause := "WHERE " + joinStrings(where, " AND ")
-
-	query := fmt.Sprintf(`
-		SELECT
-			COUNT(*) as total,
-			COUNT(*) FILTER (WHERE health_grade = 'A') as a,
-			COUNT(*) FILTER (WHERE health_grade = 'B') as b,
-			COUNT(*) FILTER (WHERE health_grade = 'C') as c,
-			COUNT(*) FILTER (WHERE health_grade = 'D') as d,
-			COUNT(*) FILTER (WHERE health_grade = 'F') as f,
-			COALESCE(AVG(health_score), 0) as avg_score
-		FROM session_summaries
-		%s
-	`, whereClause)
-
-	err := h.db.QueryRow(ctx, query, args...).Scan(
-		&dist.Total,
-		&dist.A, &dist.B, &dist.C, &dist.D, &dist.F,
-		&dist.AvgScore,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// 计算百分比
-	if dist.Total > 0 {
-		dist.APercent = float64(dist.A) * 100 / float64(dist.Total)
-		dist.BPercent = float64(dist.B) * 100 / float64(dist.Total)
-		dist.CPercent = float64(dist.C) * 100 / float64(dist.Total)
-		dist.DPercent = float64(dist.D) * 100 / float64(dist.Total)
-		dist.FPercent = float64(dist.F) * 100 / float64(dist.Total)
-	}
-
-	return dist, nil
-}
-
-func (h *SessionOverviewHandler) queryComplianceStats(ctx context.Context, params QueryParams) (*ComplianceStats, error) {
-	stats := &ComplianceStats{}
-
-	where := []string{}
-	args := []interface{}{}
-	argIdx := 1
-
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
-
-	whereClause := "WHERE " + joinStrings(where, " AND ")
-
-	query := fmt.Sprintf(`
-		SELECT
-			COUNT(*) as total,
+			COUNT(*) FILTER (WHERE last_request_at < NOW() - INTERVAL '24 hours' AND first_request_at < NOW() - INTERVAL '24 hours') as closed_24h,
+			COUNT(*) FILTER (WHERE health_grade = 'A') as health_a,
+			COUNT(*) FILTER (WHERE health_grade = 'B') as health_b,
+			COUNT(*) FILTER (WHERE health_grade = 'C') as health_c,
+			COUNT(*) FILTER (WHERE health_grade = 'D') as health_d,
+			COUNT(*) FILTER (WHERE health_grade = 'F') as health_f,
+			COALESCE(AVG(health_score), 0) as avg_score,
 			COUNT(*) FILTER (WHERE compliance_status = 'compliant' OR compliance_status IS NULL) as compliant,
 			COUNT(*) FILTER (WHERE compliance_status = 'warning') as warning,
 			COUNT(*) FILTER (WHERE compliance_status = 'violation') as violation,
 			COUNT(*) FILTER (WHERE prompt_injection_detected = true) as prompt_injection,
 			COUNT(*) FILTER (WHERE pii_detected = true) as pii,
-			COUNT(*) FILTER (WHERE toxic_output_detected = true) as toxic
-		FROM session_summaries
-		%s
-	`, whereClause)
-
-	err := h.db.QueryRow(ctx, query, args...).Scan(
-		&stats.Total,
-		&stats.Compliant,
-		&stats.Warning,
-		&stats.Violation,
-		&stats.PromptInjection,
-		&stats.PIIDetected,
-		&stats.ToxicOutput,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	if stats.Total > 0 {
-		stats.ComplianceRate = float64(stats.Compliant) * 100 / float64(stats.Total)
-	}
-
-	return stats, nil
-}
-
-func (h *SessionOverviewHandler) queryCostStats(ctx context.Context, params QueryParams) (*CostStats, error) {
-	stats := &CostStats{}
-
-	// 当前周期
-	where := []string{}
-	args := []interface{}{}
-	argIdx := 1
-
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
-
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
-	whereClause := "WHERE " + joinStrings(where, " AND ")
-
-	query := fmt.Sprintf(`
-		SELECT
+			COUNT(*) FILTER (WHERE toxic_output_detected = true) as toxic,
 			COALESCE(SUM(total_cost_usd), 0) as total_cost,
 			COALESCE(AVG(total_cost_usd), 0) as avg_cost,
 			COALESCE(MAX(total_cost_usd), 0) as max_cost,
@@ -455,42 +384,86 @@ func (h *SessionOverviewHandler) queryCostStats(ctx context.Context, params Quer
 		%s
 	`, whereClause)
 
+	agg := &sessionSummaryAggregates{
+		total:      &totalStatsInternal{},
+		health:     &HealthDistribution{},
+		compliance: &ComplianceStats{},
+		cost:       &CostStats{},
+	}
 	err := h.db.QueryRow(ctx, query, args...).Scan(
-		&stats.TotalCostUSD,
-		&stats.AvgCostPerSession,
-		&stats.MaxCostSession,
-		&stats.InputCostUSD,
-		&stats.OutputCostUSD,
-		&stats.TotalRequests,
-		&stats.AvgLatencyMs,
+		&agg.total.Total,
+		&agg.total.Active,
+		&agg.total.New24h,
+		&agg.total.Closed24h,
+		&agg.health.A, &agg.health.B, &agg.health.C, &agg.health.D, &agg.health.F,
+		&agg.health.AvgScore,
+		&agg.compliance.Compliant,
+		&agg.compliance.Warning,
+		&agg.compliance.Violation,
+		&agg.compliance.PromptInjection,
+		&agg.compliance.PIIDetected,
+		&agg.compliance.ToxicOutput,
+		&agg.cost.TotalCostUSD,
+		&agg.cost.AvgCostPerSession,
+		&agg.cost.MaxCostSession,
+		&agg.cost.InputCostUSD,
+		&agg.cost.OutputCostUSD,
+		&agg.cost.TotalRequests,
+		&agg.cost.AvgLatencyMs,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	if stats.TotalRequests > 0 {
-		stats.AvgCostPerRequest = stats.TotalCostUSD / float64(stats.TotalRequests)
+	// 健康分布与合规统计各自原本带一个 COUNT(*)：同表同窗 ⇒ 与「总会话数」同值。
+	agg.health.Total = agg.total.Total
+	agg.compliance.Total = agg.total.Total
+
+	// 计算百分比
+	if agg.health.Total > 0 {
+		agg.health.APercent = float64(agg.health.A) * 100 / float64(agg.health.Total)
+		agg.health.BPercent = float64(agg.health.B) * 100 / float64(agg.health.Total)
+		agg.health.CPercent = float64(agg.health.C) * 100 / float64(agg.health.Total)
+		agg.health.DPercent = float64(agg.health.D) * 100 / float64(agg.health.Total)
+		agg.health.FPercent = float64(agg.health.F) * 100 / float64(agg.health.Total)
+	}
+	if agg.compliance.Total > 0 {
+		agg.compliance.ComplianceRate = float64(agg.compliance.Compliant) * 100 / float64(agg.compliance.Total)
+	}
+	if agg.cost.TotalRequests > 0 {
+		agg.cost.AvgCostPerRequest = agg.cost.TotalCostUSD / float64(agg.cost.TotalRequests)
 	}
 
-	// 计算成本增长率（与上一周期对比）
-	prevWhere := append([]string{}, where...)
-	prevWhere[len(prevWhere)-1] = fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days' AND first_request_at < NOW() - INTERVAL '%d days'", params.Days*2, params.Days)
-	prevWhereClause := "WHERE " + joinStrings(prevWhere, " AND ")
+	return agg, nil
+}
 
-	var prevTotalCost float64
-	prevQuery := fmt.Sprintf(`
+// queryPrevPeriodCost 取「上一周期」的成本合计（成本增长率的分母）。
+//
+// 与当前周期窗口不同（2×days ~ days）⇒ 无法并进同一次扫描，保持独立一条。
+// 错误按原实现语义**忽略**（原代码 `_ = h.db.QueryRow(...).Scan(&prevTotalCost)`），
+// 失败时返回 0 ⇒ 调用方不计算增长率。
+func (h *SessionOverviewHandler) queryPrevPeriodCost(ctx context.Context, params QueryParams) float64 {
+	where := []string{}
+	args := []interface{}{}
+	argIdx := 1
+
+	if params.TenantID != "" {
+		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
+		args = append(args, params.TenantID)
+		argIdx++
+	}
+	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days' AND first_request_at < NOW() - INTERVAL '%d days'", params.Days*2, params.Days))
+	whereClause := "WHERE " + joinStrings(where, " AND ")
+
+	query := fmt.Sprintf(`
 		SELECT COALESCE(SUM(total_cost_usd), 0)
 		FROM session_summaries
 		%s
-	`, prevWhereClause)
+	`, whereClause)
 
-	_ = h.db.QueryRow(ctx, prevQuery, args...).Scan(&prevTotalCost)
-
-	if prevTotalCost > 0 {
-		stats.CostGrowthPct = (stats.TotalCostUSD - prevTotalCost) * 100 / prevTotalCost
-	}
-
-	return stats, nil
+	var prevTotalCost float64
+	_ = h.db.QueryRow(ctx, query, args...).Scan(&prevTotalCost)
+	return prevTotalCost
 }
 
 func (h *SessionOverviewHandler) queryModelUsage(ctx context.Context, params QueryParams) ([]ModelUsageItem, error) {
@@ -678,17 +651,23 @@ func (h *SessionOverviewHandler) queryTopTasks(ctx context.Context, params Query
 	return items, nil
 }
 
-func (h *SessionOverviewHandler) queryCostTrend(ctx context.Context, params QueryParams) ([]CostTrendPoint, error) {
+// querySessionTrends 把「成本趋势」与「会话趋势」两条腿合并成一次扫描。
+//
+// 2026-10-27 巡检轮引入：两条腿的 WHERE 相同、GROUP BY 相同（DATE(first_request_at)）、
+// ORDER BY 相同 ⇒ **一次扫描同时产出两个切片，行数与顺序逐行一致**。
+// 聚合表达式逐条从原实现搬来（含原会话趋势里那个恒真的 FILTER，它在原 WHERE 下
+// 必然为真，但保留原样以确保结果与旧实现逐值相同）。
+func (h *SessionOverviewHandler) querySessionTrends(ctx context.Context, params QueryParams) ([]CostTrendPoint, []SessionTrendPoint, error) {
 	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
 
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 	if params.TenantID != "" {
 		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
 		args = append(args, params.TenantID)
 		argIdx++
 	}
+	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`
@@ -696,49 +675,7 @@ func (h *SessionOverviewHandler) queryCostTrend(ctx context.Context, params Quer
 			DATE(first_request_at) as date,
 			COALESCE(SUM(total_cost_usd), 0) as cost,
 			COUNT(*) as sessions,
-			COALESCE(SUM(request_count), 0) as requests
-		FROM session_summaries
-		%s
-		GROUP BY DATE(first_request_at)
-		ORDER BY date
-	`, whereClause)
-
-	rows, err := h.db.Query(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	items := make([]CostTrendPoint, 0)
-	for rows.Next() {
-		var item CostTrendPoint
-		if err := rows.Scan(&item.Date, &item.Cost, &item.Sessions, &item.Requests); err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-func (h *SessionOverviewHandler) querySessionTrend(ctx context.Context, params QueryParams) ([]SessionTrendPoint, error) {
-	where := []string{}
-	args := []interface{}{}
-	argIdx := 1
-
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
-	whereClause := "WHERE " + joinStrings(where, " AND ")
-
-	query := fmt.Sprintf(`
-		SELECT
-			DATE(first_request_at) as date,
+			COALESCE(SUM(request_count), 0) as requests,
 			COUNT(*) FILTER (WHERE first_request_at >= NOW() - INTERVAL '%d days') as new_sessions,
 			COUNT(*) FILTER (WHERE last_request_at >= NOW() - INTERVAL '24 hours') as active_count,
 			COUNT(*) FILTER (WHERE last_request_at < NOW() - INTERVAL '24 hours' AND first_request_at < NOW() - INTERVAL '24 hours') as closed_count
@@ -750,22 +687,32 @@ func (h *SessionOverviewHandler) querySessionTrend(ctx context.Context, params Q
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 
-	items := make([]SessionTrendPoint, 0)
+	costItems := make([]CostTrendPoint, 0)
+	sessItems := make([]SessionTrendPoint, 0)
 	for rows.Next() {
-		var item SessionTrendPoint
-		if err := rows.Scan(&item.Date, &item.NewSessions, &item.ActiveCount, &item.ClosedCount); err != nil {
-			return nil, err
+		var date string
+		var cost CostTrendPoint
+		var sess SessionTrendPoint
+		if err := rows.Scan(
+			&date,
+			&cost.Cost, &cost.Sessions, &cost.Requests,
+			&sess.NewSessions, &sess.ActiveCount, &sess.ClosedCount,
+		); err != nil {
+			return nil, nil, err
 		}
-		items = append(items, item)
+		cost.Date = date
+		sess.Date = date
+		costItems = append(costItems, cost)
+		sessItems = append(sessItems, sess)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return items, nil
+	return costItems, sessItems, nil
 }
 
 // 注：joinStrings、writeSuccessJSON、writeErrorJSON 已定义在 types.go

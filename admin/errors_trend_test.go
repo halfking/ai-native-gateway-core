@@ -164,26 +164,31 @@ func TestErrorsTrendValidationAndDBErrors(t *testing.T) {
 		t.Cleanup(mock.Close)
 		return mock
 	}
+	// 2026-10-16 audit #154: pre-empt the role gate so these tests still
+	// exercise their original intent (validation / nil-DB / SQL errors), not
+	// the new role gate. Production always reaches the handler with an admin
+	// role set by AdminMiddleware.
+	adminReq := func(method, path string) *http.Request {
+		req := httptest.NewRequest(method, path, nil)
+		return SetAuthContext(req, &AuthContext{Role: "super_admin"})
+	}
 	t.Run("invalid hours", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/errors/trend?hours=48", nil)
-		(&errorsTrendHandlers{db: newMock(t)}).getErrorsTrend(rec, req)
+		(&errorsTrendHandlers{db: newMock(t)}).getErrorsTrend(rec, adminReq(http.MethodGet, "/api/errors/trend?hours=48"))
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("status=%d", rec.Code)
 		}
 	})
 	t.Run("invalid granularity", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/errors/trend?granularity=week", nil)
-		(&errorsTrendHandlers{db: newMock(t)}).getErrorsTrend(rec, req)
+		(&errorsTrendHandlers{db: newMock(t)}).getErrorsTrend(rec, adminReq(http.MethodGet, "/api/errors/trend?granularity=week"))
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("status=%d", rec.Code)
 		}
 	})
 	t.Run("invalid credential_id", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/errors/trend?credential_id=abc", nil)
-		(&errorsTrendHandlers{db: newMock(t)}).getErrorsTrend(rec, req)
+		(&errorsTrendHandlers{db: newMock(t)}).getErrorsTrend(rec, adminReq(http.MethodGet, "/api/errors/trend?credential_id=abc"))
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("status=%d", rec.Code)
 		}
@@ -194,16 +199,14 @@ func TestErrorsTrendValidationAndDBErrors(t *testing.T) {
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnError(errors.New("db down"))
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/errors/trend", nil)
-		(&errorsTrendHandlers{db: mock}).getErrorsTrend(rec, req)
+		(&errorsTrendHandlers{db: mock}).getErrorsTrend(rec, adminReq(http.MethodGet, "/api/errors/trend"))
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 		}
 	})
 	t.Run("db not configured", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/errors/trend", nil)
-		(&errorsTrendHandlers{}).getErrorsTrend(rec, req)
+		(&errorsTrendHandlers{}).getErrorsTrend(rec, adminReq(http.MethodGet, "/api/errors/trend"))
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status=%d", rec.Code)
 		}
@@ -251,5 +254,59 @@ func TestErrorsTrendTenantScopedForTenantAdmin(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// 2026-10-16 audit #154: role gate on /api/errors/trend. Route is registered
+// under AdminMiddleware (any authenticated user), but the SQL filter is
+// `$N = ” OR tenant_id = $N` and EffectiveTenantIDAll returns "" for
+// non-tenant_admin — a role=user caller would read cross-tenant aggregates.
+// Block before any DB call.
+func TestGetErrorsTrend_UserRoleForbidden(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	// mock.ExpectationsWereMet would fail if any DB query fires — proving the
+	// 403 happens before any read. We assert the same here explicitly.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/errors/trend?hours=24", nil)
+	req = SetAuthContext(req, &AuthContext{Role: "user", TenantID: "acme"})
+	(&errorsTrendHandlers{db: mock}).getErrorsTrend(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d want 403 body=%s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("role=user must not reach DB: %v", err)
+	}
+}
+
+func TestGetErrorsTrend_TenantAdminAndSuperAdminAllowed(t *testing.T) {
+	// Both tenant_admin and super_admin + admin_key must reach the handler —
+	// not 403. We assert the gate is non-blocking by using a nil db: the
+	// handler's next check is `if h == nil || h.db == nil → 503`, so any code
+	// path past the gate surfaces as 503 (not 403). SQL semantics for these
+	// roles are covered by TestErrorsTrendTenantScopedForTenantAdmin.
+	cases := []struct {
+		name   string
+		role   string
+		tenant string
+	}{
+		{"super_admin", "super_admin", ""},
+		{"admin_key", "admin_key", "default"},
+		{"tenant_admin", "tenant_admin", "acme"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/api/errors/trend?hours=24", nil)
+			req = SetAuthContext(req, &AuthContext{Role: tc.role, TenantID: tc.tenant})
+			(&errorsTrendHandlers{}).getErrorsTrend(rec, req)
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("role=%s: status=%d want 503 (gate passed, db unconfigured) body=%s",
+					tc.role, rec.Code, rec.Body.String())
+			}
+		})
 	}
 }

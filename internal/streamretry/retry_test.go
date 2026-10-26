@@ -336,6 +336,14 @@ func TestRetryContext_Sleep(t *testing.T) {
 			t.Errorf("Sleep() error = %v, want nil", err)
 		}
 		// Should sleep at least base delay (with jitter, might be less)
+		//
+		// ★ R68 轮实测（探针复制本等待序列，30 次，宿主 16 核超载 3.5×）：
+		//   自然值 ∈ [9.07ms, 11.99ms]，均值 10.34ms
+		//   ⇒ 下界 5ms 的**实测余量 ≥ 4.07ms**（余量/阈值 = 81.5%）
+		//   ⇒ 与 R66 轮的**读实现推导**一致（retry.go:249-252 的抖动是 ±20%
+		//     ⇒ 10ms 基准的实际延迟 ∈ [8ms, 12ms] ⇒ 下界 5ms 有 3ms 余量）
+		//     —— ★ 推导的 3ms 与实测的 4.07ms 同量级，**互为印证**。
+		//   台账：internal/clockguard/measured_margins.tsv
 		if elapsed < 5*time.Millisecond {
 			t.Errorf("Sleep() elapsed = %v, want >= 5ms", elapsed)
 		}

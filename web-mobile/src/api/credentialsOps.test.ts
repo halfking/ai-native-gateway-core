@@ -97,7 +97,7 @@ describe('unwrapDecisions', () => {
 //   admin/handler.go:1517-1520          readJSON：body 为 nil 时返回 nil
 //   admin/diagnostics_credential.go:227 force-recover（无请求体，只有 query id）
 //   admin/credential_state_handlers.go:30-51  submit probe（202 异步）
-//   admin/credential_monitor.go:1785-1792     reason 为空串 ⇒ 400
+//   admin/credential_monitor.go:1838-1858     reason 为空串 ⇒ 400
 // ══════════════════════════════════════════════════════════════════════
 
 const fetchMock = vi.fn()
@@ -416,7 +416,7 @@ describe('节点状态修改与探测提交', () => {
   })
 
   it('★★ reason 为空的守卫在**视图层**（API 层故意不放行）', async () => {
-    // 后端 credential_monitor.go:1785-1792 对空串直接 400；
+    // 后端 credential_monitor.go:1838-1858 对空串直接 400；
     // 模块注释写明「视图层必须在提交前挡住」⇒ API 层**不**加守卫，
     // 这样断言的是「这层没拦」这个事实，而不是「这里该有守卫」。
     fetchMock.mockResolvedValue(jsonResponse({ success: true, message: 'ok' }))

@@ -146,7 +146,7 @@ export function useDashboardBoard() {
       }
     } catch (e: unknown) {
       if (controller.signal.aborted || generation !== loadGeneration) return
-      error.value = e instanceof Error ? e.message : '加载失败'
+      error.value = e instanceof Error ? e.message : '没能加载出来，请重试'
     } finally {
       if (generation === loadGeneration) {
         loadInFlight = false

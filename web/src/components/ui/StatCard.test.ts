@@ -54,7 +54,14 @@ describe('StatCard', () => {
     expect(source).toMatch(/@media \(max-width: 480px\)/)
     const mobileBlock = source.split('@media (max-width: 480px)')[1] ?? ''
     expect(mobileBlock).toContain('font-size: 18px')
-    // tone 色条使用逻辑属性，RTL 下自动镜像
-    expect(source).toContain('border-inline-start')
+    // ★ 2026-10-25：这里原来断言 source 含 'border-inline-start'，
+    //   注释写「tone 色条使用逻辑属性，RTL 下自动镜像」。
+    //   ★ 但那条彩色侧边条本身是 craft-floor 的**硬禁项**（卡片上 >1px 的
+    //   彩色 border-left/right）⇒ 旧断言在要求一个被禁的形态，必然红。
+    //   现形态是「形状 + 颜色」双通道：tone 标记改成标签前的**状态点**，
+    //   色盲也能看出这张卡带标记；圆点不涉及方向，旧断言关心的 RTL 镜像
+    //   随之消失（新的断言改为反向钉住「不要再长出侧边条」）。
+    expect(source).toContain('.app-stat-card__label::before')
+    expect(source).not.toContain('border-inline-start')
   })
 })

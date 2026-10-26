@@ -43,10 +43,15 @@ _llmgw_lock_key=$(basename "$0" .sh)
 _llmgw_lock_file="$LLMGW_LOCK_DIR/llmgw-${_llmgw_lock_key}.lock"
 
 _llmgw_single_instance_guarded=false
+# ★ 打开锁文件的那一行**不得**把 stderr 一起重定向（§143.14）：
+#   exec 不带命令时，重定向施加到**当前 shell** ⇒ "exec 9>file 2>/dev/null"
+#   会让本脚本此后所有 stderr 输出永久消失 ⇒ log()（写 stderr）全部失声。
+#   ⇒ 用 { exec 9>file; } 2>/dev/null：组的重定向只作用于组本身，组结束即恢复；
+#     fd 9 的语义不变（exec 的重定向仍然持久）。
 if [ -z "${LLMGW_NO_SINGLE_INSTANCE_LOCK:-}" ] \
    && command -v flock >/dev/null 2>&1 \
    && mkdir -p "$LLMGW_LOCK_DIR" 2>/dev/null \
-   && exec 9>"$_llmgw_lock_file" 2>/dev/null; then
+   && { exec 9>"$_llmgw_lock_file"; } 2>/dev/null; then
   if ! flock -n 9; then
     # 上一轮还在跑 —— 这是**正常路径**：本轮没有新采样，但巡检并没有失效
     # （上一轮正在产出）。故退出 0 而不是 3：
@@ -67,19 +72,33 @@ PG_USER=llm_gateway
 PG_DB=llm_gateway
 LOG=${LLMGW_DISK_WATCH_LOG:-/var/log/pg17-disk-watch.log}
 ALERT_LOG=${LLMGW_DISK_WATCH_ALERT_LOG:-/var/log/pg17-disk-watch.alert.log}
-NOTIFY=/opt/scripts/notify.sh
+NOTIFY=${PG17_NOTIFY_BIN:-/opt/scripts/notify.sh}
+# ★ 2026-10-19（§143.8）：两个**可注入**执行点，让行为门能用假 docker / 假 df
+#   驱动真实判定分支，而不是只能对源码做子串断言。
+#   为什么需要 df 也可注入：本脚本的告警电平直接由 `df -P /` 的 used% 决定，
+#   而开发机（macOS）的真实读数会随磁盘占用变化 ⇒ 门禁结果不可复现。
+#   与 emergency-cleanup / vacuum-bloat / proactive 脚本同款注入点。
+DOCKER_BIN=${DOCKER_BIN:-docker}
+DF_BIN=${DF_BIN:-df}
 
 # === 阈值（可被 conf 覆盖）===========================================
 # 默认阈值基于 200 GB 磁盘 + 之前一次 80%+ 紧急扩容事件的复盘：
 #   - 当时 70% 触发告警后没人看，80% 才发现 — 因此 warning 阈值定 60% 是为了
 #     留出"还有空间启动清理"的时间窗。
 DISK_WARN_PCT=${DISK_WARN_PCT:-60}
+# IM 心跳上限（分钟）：电平与告警种类都没变时，至多隔这么久必推一次。
+# ⇒ 这是「静默」的时间上界；**调小会更吵，调大更容易让人错过一个持续故障**。
+PG17_HEARTBEAT_MIN=${PG17_HEARTBEAT_MIN:-1440}
 DISK_CRIT_PCT=${DISK_CRIT_PCT:-75}
 DISK_AVAIL_GB_WARN=${DISK_AVAIL_GB_WARN:-30}
 DB_WARN_GB=${DB_WARN_GB:-20}
 DB_CRIT_GB=${DB_CRIT_GB:-28}
-HOT_REQUEST_LOGS_MB=${HOT_REQUEST_LOGS_MB:-2048}     # _request_logs_hot 2 GB 警告（JSONB TOAST 单表风险高）
-HOT_REQUEST_LOGS_CRIT_MB=${HOT_REQUEST_LOGS_CRIT_MB:-3072}
+# ★ 2026-10-22（§145）：监视对象从 _request_logs_hot（随迁移 890 退役，探针
+# 变 42P01 噪声源 ~144 条/天）换成它的语义继任者 session_turns_hot（现行主写入
+# hot 面，含 JSONB preview/search_text，TOAST 风险同族）。阈值沿用原值。
+# 旧 env 名保留一次回退，运维脚本里已设旧名的不至于静默回到默认值。
+HOT_SESSION_TURNS_MB=${HOT_SESSION_TURNS_MB:-${HOT_REQUEST_LOGS_MB:-2048}}     # session_turns_hot 2 GB 警告（JSONB TOAST 单表风险同族）
+HOT_SESSION_TURNS_CRIT_MB=${HOT_SESSION_TURNS_CRIT_MB:-${HOT_REQUEST_LOGS_CRIT_MB:-3072}}
 HOT_MODEL_PROBE_MB=${HOT_MODEL_PROBE_MB:-500}        # 14 天 TTL 满约 1 GB
 COLUMNAR_CHUNK_GB=${COLUMNAR_CHUNK_GB:-15}
 PG_WAL_GB=${PG_WAL_GB:-3}                             # >3 GB 拥堵（max_wal_size 默认 2 GB）
@@ -148,7 +167,7 @@ trap 'rm -f "$_DE_STAT_FILE"' EXIT
 de() {
   local out rc
   if out=$(_llmgw_run_bounded "$LLMGW_QUERY_TIMEOUT" \
-      docker exec \
+      "$DOCKER_BIN" exec \
         -e "PGOPTIONS=-c statement_timeout=${LLMGW_QUERY_TIMEOUT_MS} -c lock_timeout=5000" \
         -e "PGCONNECT_TIMEOUT=$LLMGW_CONNECT_TIMEOUT" \
         "$CONTAINER" "$@" 2>/dev/null); then
@@ -167,9 +186,9 @@ de() {
   printf '%s' "$out"
 }
 
-used_pct=$(df -P / | awk 'NR==2 {gsub("%","",$5); print $5}')
-used_gb=$(df -P / | awk 'NR==2 {printf "%.1f", $3/1024/1024}')
-avail_gb=$(df -P / | awk 'NR==2 {printf "%.1f", $4/1024/1024}')
+used_pct=$("$DF_BIN" -P / | awk 'NR==2 {gsub("%","",$5); print $5}')
+used_gb=$("$DF_BIN" -P / | awk 'NR==2 {printf "%.1f", $3/1024/1024}')
+avail_gb=$("$DF_BIN" -P / | awk 'NR==2 {printf "%.1f", $4/1024/1024}')
 # ★ 2026-10-11 审计修正：这里原本是 `du -s /var/lib/containers/storage/`。
 #   实测（252，负载已回落之后）该命令**跑 280 秒仍未返回** ——
 #   事故当天现场有 11 个 du 卡在 D 状态，它本就是两个负载源之一。
@@ -181,14 +200,14 @@ avail_gb=$(df -P / | awk 'NR==2 {printf "%.1f", $4/1024/1024}')
 #     不是容器总量，故日志字段改名 storage_fs_gb 以免误读。
 #   本指标只写日志、不参与任何阈值判断（见下方 alerts 段），故不丢告警能力。
 STORAGE_DIR=/var/lib/containers/storage
-storage_fs_gb=$(_llmgw_run_bounded 10 df -P "$STORAGE_DIR" 2>/dev/null | awk 'NR==2 {printf "%.1f", $3/1024/1024}' || true)
+storage_fs_gb=$(_llmgw_run_bounded 10 "$DF_BIN" -P "$STORAGE_DIR" 2>/dev/null | awk 'NR==2 {printf "%.1f", $3/1024/1024}' || true)
 [ -n "$storage_fs_gb" ] || storage_fs_gb="n/a"
 
 db_size_bytes=$(de psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT pg_database_size('$PG_DB')")
 db_size_gb=$(awk -v b="$db_size_bytes" 'BEGIN {printf "%.2f", b/1024/1024/1024}')
 db_all_gb=$(de psql -U "$PG_USER" -d postgres -tAc "SELECT round(sum(pg_database_size(datname))/1024.0/1024.0/1024.0, 2) FROM pg_database WHERE datistemplate=false" || echo 0)
 
-req_logs_hot_size=$(de psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT pg_total_relation_size('public._request_logs_hot')/1024/1024")
+turns_hot_size=$(de psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT pg_total_relation_size('public.session_turns_hot')/1024/1024")
 mp_hot_size=$(de psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT pg_total_relation_size('public.model_probe_runs_hot')/1024/1024")
 handoff_size=$(de psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT pg_total_relation_size('public.handoff_logs')/1024/1024")
 columnar_chunk_bytes=$(de psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT pg_total_relation_size('columnar_internal.chunk')")
@@ -218,8 +237,8 @@ awk_gt()  { awk -v a="$1" -v b="$2" 'BEGIN {print (a+0>b+0)?1:0}'; }
 
 [ "$(awk_gte "$db_size_gb" "$DB_CRIT_GB")" = "1" ] && \
   alerts+=("🔴llm_gateway DB critical: ${db_size_gb}GB, 阈值 ${DB_CRIT_GB}GB")
-[ "$(awk_gte "$req_logs_hot_size" "$HOT_REQUEST_LOGS_CRIT_MB")" = "1" ] && \
-  alerts+=("🔴_request_logs_hot critical: ${req_logs_hot_size}MB, 阈值 ${HOT_REQUEST_LOGS_CRIT_MB}MB")
+[ "$(awk_gte "$turns_hot_size" "$HOT_SESSION_TURNS_CRIT_MB")" = "1" ] && \
+  alerts+=("🔴session_turns_hot critical: ${turns_hot_size}MB, 阈值 ${HOT_SESSION_TURNS_CRIT_MB}MB")
 
 # warning
 [ "$used_pct" -ge "$DISK_WARN_PCT" ] && [ "$used_pct" -lt "$DISK_CRIT_PCT" ] && \
@@ -230,8 +249,8 @@ awk_floor() { awk -v a="$1" 'BEGIN {i=int(a+0); print (i+0<=a+0)?i:(i+1)}'; }
 avail_floor=$(awk_floor "$avail_gb")
 [ "$avail_floor" -le "$DISK_AVAIL_GB_WARN" ] && \
   alerts+=("🟡磁盘可用空间 warning: ${avail_gb}GB ≤ ${DISK_AVAIL_GB_WARN}GB")
-[ "$(awk_gte "$req_logs_hot_size" "$HOT_REQUEST_LOGS_MB")" = "1" ] && [ "$(awk_gt "$HOT_REQUEST_LOGS_CRIT_MB" "$req_logs_hot_size")" = "1" ] && \
-  alerts+=("🟡_request_logs_hot warning: ${req_logs_hot_size}MB, 阈值 ${HOT_REQUEST_LOGS_MB}MB")
+[ "$(awk_gte "$turns_hot_size" "$HOT_SESSION_TURNS_MB")" = "1" ] && [ "$(awk_gt "$HOT_SESSION_TURNS_CRIT_MB" "$turns_hot_size")" = "1" ] && \
+  alerts+=("🟡session_turns_hot warning: ${turns_hot_size}MB, 阈值 ${HOT_SESSION_TURNS_MB}MB")
 [ "$(awk_gte "$mp_hot_size" "$HOT_MODEL_PROBE_MB")" = "1" ] && \
   alerts+=("🟡model_probe_runs_hot warning: ${mp_hot_size}MB, 阈值 ${HOT_MODEL_PROBE_MB}MB (TTL 14天,如异常涨需排查)")
 [ "$(awk_gte "$columnar_chunk_gb" "$COLUMNAR_CHUNK_GB")" = "1" ] && \
@@ -279,22 +298,30 @@ if [ "$_de_fail" -gt 0 ]; then
   case "$dead_tup_pct_top" in "0"|"clean") dead_tup_pct_top="unavailable(量具故障)";; esac
 fi
 
-echo "[$(date -Iseconds)] level=$level gate=$([ "$_llmgw_single_instance_guarded" = true ] && echo guarded || echo FAIL_OPEN) gauge=${_de_fail}/${_de_total} disk=${used_pct}% avail=${avail_gb}GB db_llm_gateway=${db_size_gb}GB db_total=${db_all_gb}GB req_logs_hot=${req_logs_hot_size}MB mp_hot=${mp_hot_size}MB handoff=${handoff_size}MB columnar_chunk=${columnar_chunk_gb}GB wal=${pg_wal_gb}GB storage_fs=${storage_fs_gb}GB" >> "$LOG"
+echo "[$(date -Iseconds)] level=$level gate=$([ "$_llmgw_single_instance_guarded" = true ] && echo guarded || echo FAIL_OPEN) gauge=${_de_fail}/${_de_total} disk=${used_pct}% avail=${avail_gb}GB db_llm_gateway=${db_size_gb}GB db_total=${db_all_gb}GB turns_hot=${turns_hot_size}MB mp_hot=${mp_hot_size}MB handoff=${handoff_size}MB columnar_chunk=${columnar_chunk_gb}GB wal=${pg_wal_gb}GB storage_fs=${storage_fs_gb}GB" >> "$LOG"
 echo "[$(date -Iseconds)] top5: $top_tables" >> "$LOG"
 echo "[$(date -Iseconds)] dead_tup_top3: $dead_tup_pct_top" >> "$LOG"
 
-# === 告警去重（防 10 分钟一次的 IM 噪声）===
-# 规则：
-#   - 同 fingerprint + 同 level 在 cooldown 时间内不再推 IM
-#   - 但 alert log 仍每条都写
-#   - critical 默认 1 小时冷却；warning 30 分钟；info 不推送
+# === 告警去重（IM 侧；**本地 alert log 一条不减**）====================
+# ★ 2026-10-19（§143.8）改了判定方式，规则如下：
+#   - **本地 alert log 仍然每轮都写**（取证用）。
+#     去噪只作用于 IM 推送 —— 删本地日志就是「让错误更难被翻到」，
+#     与本仓 §143.8 的教训正好相反（按错误口径定级会导向加轮转）。
+#   - IM 推送改为「**电平跳变 / 告警种类集变化 / 心跳**」三者之一触发：
+#       ① 电平跳变（ok↔warning↔critical↔gauge_unavailable）—— 永远推，且不受冷却约束
+#       ② 告警种类集变化（同电平但冒出新问题）—— 受冷却约束
+#       ③ 心跳：状态持续未复述，至多 PG17_HEARTBEAT_MIN（默认 1440 分钟）后必推一次
+#   - ⚠ ③ 是整套改动的**安全下限**：只做①②的话，一个持续存在的故障
+#     会在第一次推送后永远沉默 —— 告警就从「吵」变成「瞎」。
+#   证据（252 只读，2026-10-19）：原实现 3 个月推了 12,371 次，
+#     其中**只有 56 次**是真的电平跳变，其余 12,315 次（99.5%）在重复推同一状态。
 if [ "$level" != "ok" ]; then
   msg="[$(date -Iseconds)] [252] ${level}"
   for a in "${alerts[@]}"; do msg+=$'\n'"$a"; done
   msg+=$'\n'""
   msg+=$'\n'"disk=${used_pct}% avail=${avail_gb}GB"
   msg+=$'\n'"llm_gateway=${db_size_gb}GB total=${db_all_gb}GB"
-  msg+=$'\n'"_request_logs_hot=${req_logs_hot_size}MB model_probe_runs_hot=${mp_hot_size}MB"
+  msg+=$'\n'"session_turns_hot=${turns_hot_size}MB model_probe_runs_hot=${mp_hot_size}MB"
   msg+=$'\n'"columnar_chunk=${columnar_chunk_gb}GB wal=${pg_wal_gb}GB"
   msg+=$'\n'""
   msg+=$'\n'"📊 top5 tables: $top_tables"
@@ -323,35 +350,75 @@ if [ "$level" != "ok" ]; then
     notify_level=$level
     case "$notify_level" in critical|warning|info) ;; *) notify_level=critical;; esac
 
-    # ★ 2026-10-11 审计修掉的真缺陷：这里原本写的是 "${ts:0:7}"，
+    # ★ 2026-10-11 审计修掉的真缺陷：这里原本在算指纹时写了 "${ts:0:7}"，
     #   而 `ts` 在整个脚本里**从未被赋值**（模板残留）。
     #   macOS bash 3.2 静默取空（fingerprint 退化，尚可用），
     #   但生产的 bash 4.4 上 `set -u` 直接报 `ts: unbound variable` 并退出 1
     #   —— 已在 252 实测复现。后果：**任何一次真告警都会在最后一步崩掉，
     #   IM 永远推不出去**（alert log 写了，但没人收到）。
     #   即 252 的告警投递通路在这次事故之前就是断的。
-    fingerprint=$(printf '%s\n%s\n%s' "$level" "$(printf '%s\n' "${alerts[@]}" | md5sum | cut -d' ' -f1)" "$(date +%Y-%m)" | md5sum | cut -d' ' -f1)
-    cooldown_file=/var/tmp/pg17-disk-watch.cooldown
+    # ── 指纹去抖（2026-10-19 §143.8）────────────────────────────────
+    # ★ 这里原来把**告警正文**整个喂进 md5：
+    #     fingerprint=$(printf '%s\n%s\n%s' "$level" "$(… "${alerts[@]}" | md5sum …)" "$(date +%Y-%m)" | md5sum …)
+    #   而正文里全是会抖的**取值**（`磁盘 critical: 72% (avail=54GB), 阈值 90%`）。
+    #   ⇒ 磁盘百分比 71↔72、avail 53↔54 都产生**新指纹**
+    #   ⇒ 冷却判定永远命中不到上一条 ⇒ **冷却形同虚设**。
+    #   252 实测（2026-10-19，取证在 §143.8.1）：
+    #     cooldown 文件 906 行（指纹种类数），其中 767 行已超 24h 未复现（85% 是死重量）
+    #     alert log 12,371 条推送记录（3 个月）
+    #     最近 12 个指纹的时间戳间隔 = 584~615 秒 ≈ 脚本的 10 分钟周期
+    #   ⇒ **每一轮都推 IM，一次都没被冷却拦住过**。
+    # ⇒ 修法：指纹只取「告警的种类」，把数值归一化后再哈希。
+    #   「种类」= 去掉全部数字后的文本 + level。同一个磁盘问题在 71% 和 72%
+    #   是同一个种类（该推一次），而磁盘问题与 WAL 拥堵是两个种类（该分开推）。
+    _alert_kinds=$(printf '%s\n' "${alerts[@]}" \
+      | sed -E 's/[0-9]+(\.[0-9]+)?/N/g' \
+      | LC_ALL=C sort -u)
+    fingerprint=$(printf '%s\n%s' "$level" "$_alert_kinds" | md5sum | cut -d' ' -f1)
+    state_file=${PG17_DISK_WATCH_STATE:-/var/tmp/pg17-disk-watch.alertstate}
     now_epoch=$(date +%s)
-    # 读上次同 fingerprint 推送时间（grep 无匹配时 exit 1 -> || true 屏蔽）
-    last_line=$(grep -F "${fingerprint}" "$cooldown_file" 2>/dev/null | head -1) || last_line=""
-    last_ts=${last_line##*:}
+    # 状态文件只有一行：<fingerprint>:<level>:<epoch>
+    # ⚠ 读不到 / 读坏了都让 *_prev 为空 ⇒ 下面的 level 比对必然成立 ⇒ 推送。
+    #   方向是**多推**而不是少推 —— 状态文件坏掉不该让告警静默（2026-10-10 的教训）。
+    prev_line=$(head -1 "$state_file" 2>/dev/null || true)
+    prev_fp=${prev_line%%:*}
+    _rest=${prev_line#*:}
+    prev_level=${_rest%%:*}
+    prev_ts=${_rest##*:}
+    [[ "$prev_ts" =~ ^[0-9]+$ ]] || prev_ts=0
+
+    heartbeat_min=${PG17_HEARTBEAT_MIN:-1440}   # 持续未复述的心跳（默认每天一次）
 
     push_im=true
-    if [ -n "$last_ts" ] && [ $((now_epoch - last_ts)) -lt $((COOLDOWN_MIN * 60)) ]; then
-      echo "[$(date -Iseconds)] cooldown active for $level (last=${last_ts}s ago, cooldown=${COOLDOWN_MIN}m), local log only" >> "$LOG"
+    if [ "$level" != "$prev_level" ]; then
+      # 电平跳变（含 ok↔warning↔critical↔gauge_unavailable）永远推。
+      # ⚠ 这一支**不**受冷却约束：warning→critical 若因冷却被吞掉，
+      #   正好在最该让人看见的时刻静默 —— 与「冷却防噪声」的初衷正好相反。
+      push_reason="电平跳变 ${prev_level:-none} -> $level"
+    elif [ $((now_epoch - prev_ts)) -ge $((heartbeat_min * 60)) ]; then
+      # 心跳：状态一直没变，但**不许就此永远沉默**。
+      # ★ 这是本节最重要的护栏：把「电平判定」改成「跳变判定」时，
+      #   最容易犯的错就是让一个持续存在的故障永远不再出现
+      #   —— 那样告警就从「吵」变成了「瞎」，而 2026-10-10 正是后者造成的 8 小时盲区。
+      # ⇒ 所以任何一次抑制都**有明确的时间上界**：至多 heartbeat_min 分钟后必推一次。
+      push_reason="持续未复述 ${heartbeat_min} 分钟（心跳）"
+    elif [ "$fingerprint" != "$prev_fp" ] \
+         && [ $((now_epoch - prev_ts)) -ge $((COOLDOWN_MIN * 60)) ]; then
+      # 同电平但「告警种类集」变了（如新冒出 WAL 拥堵）⇒ 值得说，但要受冷却约束，
+      #   否则某个阈值边缘的量会来回抖动，把 IM 打成新的 10 分钟风暴。
+      push_reason="告警种类集变化（距上次 ${COOLDOWN_MIN} 分钟以上）"
+    else
       push_im=false
+      push_reason="状态未变（距上次 $(( (now_epoch - prev_ts) / 60 )) 分钟 < 心跳 ${heartbeat_min} 分钟）"
     fi
+    echo "[$(date -Iseconds)] im-gate level=${level} fp=${fingerprint:0:8} prev_level=${prev_level:-none} age=$((now_epoch - prev_ts))s -> $([ "$push_im" = true ] && echo "PUSH ($push_reason)" || echo "SUPPRESS ($push_reason)")" >> "$LOG"
 
     if [ "$push_im" = "true" ]; then
       "$NOTIFY" --level "$notify_level" --title "252 ${level}" --body "$msg" || true
-      # 写入 cooldown 标记
-      mkdir -p "$(dirname "$cooldown_file")" 2>/dev/null
-      # 删除此 fp 的旧行,追加新行
-      touch "$cooldown_file"
-      grep -v "^${fingerprint}:" "$cooldown_file" > "${cooldown_file}.tmp" 2>/dev/null || true
-      printf "%s:%s\n" "$fingerprint" "$now_epoch" >> "${cooldown_file}.tmp"
-      mv "${cooldown_file}.tmp" "$cooldown_file" 2>/dev/null || true
+      # 写入状态（单行覆盖，不是追加）
+      mkdir -p "$(dirname "$state_file")" 2>/dev/null
+      printf "%s:%s:%s\n" "$fingerprint" "$level" "$now_epoch" > "${state_file}.tmp" 2>/dev/null \
+        && mv "${state_file}.tmp" "$state_file" 2>/dev/null || true
     fi
   fi
 fi

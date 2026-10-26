@@ -73,6 +73,16 @@ bash tests/observe_magpie_p0_contract_test.sh
 # 已认领的槽位、维护库探活（应用库还没建时也要认领）、以及自动安装先于 docker 失败。
 echo "[verify] deploy host-first resource contracts"
 bash tests/deploy_host_first_contract_test.sh
+echo "[verify] deploy session write environment contracts"
+bash tests/deploy_session_write_env_test.sh
+echo "[verify] rollback running-service verification"
+bash tests/deploy_rollback_service_test.sh
+# 2026-10-16 生产实测事故：把 64 位 sha256 明文写进发给 psql 的 SQL，
+# 输出脱敏管道把它替换成 [REDACTED:*] 替身（67 字符、含非十六进制字符），
+# 污染值被 UPDATE 真正提交进 llm_gateway_migration_checksums。台账对齐必须
+# 走 convert_from(decode('<hex>','hex'),'UTF8')，明文 sha256 永不出现。
+echo "[verify] migration-ledger checksum transport"
+bash tests/ledger_checksum_hex_transport_test.sh
 # 2026-10-10：252 上 pg17-disk-watch.sh 堆到 310 份副本、149 个僵死
 # `docker exec ... psql`，把 15G 内存吃到 swap 100% / load 300，PG 因此
 # 无法服务 154 网关（SQLSTATE 57P03、一小时 194 个 HTTP 503）。
@@ -96,6 +106,35 @@ bash tests/deploy_local_reap_test.sh
 echo "[verify] deploy-211 docker contracts"
 bash tests/deploy_211_contract_test.sh
 
+# 2026-10-23：211 的 nginx X-Real-IP 修补此前**从来没生效过**（引擎只在自己的
+# conf 里找「按域 443 块」，而 211 的 443 腿在通用 TLS 终结器里 ⇒ 每次部署
+# 打一条**假**告警「块形态变了?」）。判定逻辑已挪到
+# scripts/ops/nginx-llm-realip-patch.py ⇒ 这道门用**夹具**驱动它，
+# 钉住结论分类与副作用（改谁 / 不改谁 / 改前备份 / nginx -t 失败要还原）。
+# ★ 零外部依赖：纯 bash + python3，不碰 nginx、不碰任何目标机。
+echo "[verify] nginx llm realip patch behavior"
+bash tests/nginx_llm_realip_patch_test.sh
+
+# 2026-10-23（211 502 事故根修）：「upstream 端口」这条**事实**的读写与体检。
+# 引擎此前用**不剥注释**的正则读/改 upstream 端口 ⇒ 会读到 nginx 注释里那个
+# 旧端口（245 实况）⇒ 活跃槽判错 ⇒ 可能切错端口或停掉正在服务的槽 ⇒ 502。
+# 这道门用夹具钉住：读（烤死/include/backup/注释陷阱）、写（只改活的上游行、
+# 备份写改前内容、include 形态 fail-closed）、只读体检（脱节 ⇒ 退出码 2）。
+echo "[verify] nginx upstream port facts"
+bash tests/nginx_upstream_port_test.sh
+
+# ★ 2026-10-24 12h 审计轮（问题⑥）：这两道门此前**从来没有被执行过** ——
+#   `tests/deploy_legacy_restart_flag_test.sh`（69dc5ffee 修「--legacy-restart 死旗标」
+#   的防回归门）与 `tests/deploy_211_teardown_order_test.sh`（211 拆解顺序门）
+#   **除自身以外没有任何引用** ⇒ 不在 verify.sh、不在 CI ⇒ ⇒ 「门是绿的」这句话
+#   当时**没有依据**（门根本没跑）。
+#   ⇒ 接线。★ 两道门都是纯 bash、零外部依赖。
+echo "[verify] deploy-seamless --legacy-restart flag regression"
+bash tests/deploy_legacy_restart_flag_test.sh
+
+echo "[verify] deploy 211 teardown order"
+bash tests/deploy_211_teardown_order_test.sh
+
 echo "[verify] pre-commit checks"
 ./scripts/pre-commit-check.sh
 
@@ -113,13 +152,26 @@ echo "[verify] full Go tests"
 # 它们的真实覆盖在 CI 的 cgo=1 上：
 #   bg / cmd/gateway / storage / storage/factory / storage/sqlite / tests/integration
 # 该名单的漂移报警在 tests/verify_cgo_convention_test.sh。
-go test ./... -count=1 -timeout=300s
+#
+# ★★ 2026-10-24 12h 审计轮（问题②）：超时预算由 300s 提到 **900s**。
+#   起因：`scripts/ursmcheck` 里的**掏空法门**会**真的掏空仓内被跟踪的 .tsv**
+#   再跑读方 ⇒ 它是窗口内最慢的一个包（本机实测 293.047s；另一台机器实测 444s）。
+#   而 `testing` 的超时是 **alarm goroutine 里的 panic** ⇒ 其它 goroutine 的
+#   `defer` **不执行** ⇒ 一旦被超时 SIGKILL ⇒ **被跟踪的台账静默留空**。
+#   ⇒ 300s 预算下实测余量只有 **7 秒** ⇒ 负载一高就中招。
+#   ⇒ 本次同时给该门加了「备份落盘 + 自愈预检」（scripts/ursmcheck/tsv_hollowout_safety_test.go），
+#     即使仍被杀，下一次跑会自动把留空的台账还原回去。
+#   ⇒ 两道防线一起上：**给足预算**（不让它被杀）＋ **被杀也能自愈**。
+#   ⚠ 提高的是**每包**预算，不是总时长：各包并行执行，总墙钟由最慢的包决定。
+go test ./... -count=1 -timeout=900s
 
 # 2026-10-14（r1031 §五-3 / 判据纪律 #11）：TestStorageAudit* 集成审计是三域存储
 # 契约（冷读一致性/跨实例一致性/V2 元数据配对）的唯一观测器，带 -tags=integration
 # 且需要一次性回环 Redis+PG——上面的 `go test ./...` 从不编译它们，此前无任何入口
-# 真实执行；首次执行即抓到真缺陷（F3）。docker 可用时必跑，否则显式 SKIP。
-echo "[verify] session storage audit integration suite (docker-gated)"
+# 真实执行；首次执行即抓到真缺陷（F3）。缺少依赖或观测到不一致均拒绝发布。
+echo "[verify] session storage audit gate decision contracts"
+bash tests/session_storage_audit_gate_test.sh
+echo "[verify] session storage audit integration suite (required coherence)"
 bash tests/session_storage_audit_gate.sh
 
 echo "[verify] privacy compliance tests"
@@ -161,6 +213,27 @@ if [[ "$RUN_WEB" == true ]]; then
   pm_run element:check web
   echo "[verify] frontend color token gate (rule 12 P0 + baseline)"
   pm_run color:check web
+  echo "[verify] frontend copy-quality gate (AI 腔判据 + per-bucket ratchet)"
+  # ★ 2026-10-25 接入：这道门此前只扫语言包，本轮扩到 src/** 源码文本面与
+  #   移动端（web-mobile/）。不接进 CI ⇒ 扩出来的覆盖面就只是装饰。
+  pm_run copy-quality:check web
+  echo "[verify] frontend i18n gates (hidden-key / shared-dead / copy-clarity / empty-state)"
+  # ★★ 2026-10-26 接入（12h 审计轮）：这四道门此前**只登记在 package.json**，
+  #   ★★ verify.sh / workflow / vitest **一处都没引用** ⇒
+  #   ⇒ 「只降不升的受门管棘轮」（死键族）与「清晰文案门」**从未被执行过**
+  #   ⇒ ⇒ ★ **一门没人跑的守卫是文档，不是门**（R86/R94 同族）。
+  #   ⇒ ⇒ 接入前实测：四道门在当前树上**全绿** ⇒ ⇒ 接入是零风险的。
+  #   ★ 逐道说明（为什么它们该被执行）：
+  #   · i18n:hidden-key:check      隐藏键（组件里注册了但没真用）——省体积但易删错
+  #   · i18n:shared-dead:check     跨语种共用的死键计数棘轮（只许降不许升）
+  #   · copy-clarity:check          文案清晰度（源码侧，不只是语言包侧）
+  #   · copy-clarity-locale:check   文案清晰度（语言包侧，含占位符/通用短语）
+  #   · i18n:empty-state:check     空状态 5 分结构门（第 14 增量新增）
+  pm_run i18n:hidden-key:check web
+  pm_run i18n:shared-dead:check web
+  pm_run copy-clarity:check web
+  pm_run copy-clarity-locale:check web
+  pm_run i18n:empty-state:check web
   echo "[verify] frontend build"
   pm_run build web
   echo "[verify] web-mobile install"

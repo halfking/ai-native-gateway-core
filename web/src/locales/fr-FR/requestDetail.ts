@@ -28,7 +28,6 @@ export default {
       requestTime: 'Heure de la requête',
       status: 'Statut',
       latency: 'Latence',
-      latencyUnit: 'ms',
       tenant: 'Tenant',
       success: 'Success',
       clientModel: 'Modèle client',
@@ -40,7 +39,6 @@ export default {
       taskId: 'ID de tâche',
       endUser: 'End User',
       token: 'Token',
-      tokenTotal: 'Tokens (total {input}/{output})',
       total: 'total',
       cache: 'Cache',
       costCredits: 'Cost / Credits',
@@ -151,7 +149,6 @@ export default {
   // — RequestWaterfallPanel —
   waterfall: {
     loading: 'Chargement de la cascade de distribution…',
-    source: 'Source : {src}',
     stageHeader: 'Étapes T0–T9',
     cols: {
       stage: 'Étape',
@@ -179,19 +176,13 @@ export default {
     diagram: {
       ariaLabel: 'Flux de traitement de la requête', trackLabel: 'Séquence des événements du flux',
       event: 'Événement de flux', noData: 'Aucun flux observable', noEvents: 'Aucun événement de flux',
-      stages: { received: 'Entrée', routing: 'Résolution du routage', model_queue: 'File du modèle', credential_queue: 'File des identifiants', node_selection: 'Sélection du nœud', upstream: 'Requête amont', streaming: 'Réponse en flux', retrying: 'Nouvelle tentative', terminal: 'Requête terminée' },
-      status: { success: 'Succès', failed: 'Échec', timeout: 'Délai dépassé', skipped: 'Ignoré' },
       flags: { compression: 'Compression', retry: 'Nouvel essai', nodeSwitch: 'Changement de nœud', degraded: 'Observation dégradée' },
       evidenceLabel: 'Preuves de routage et de cascade', evidenceTitle: 'Tentatives observées', waterfallAttempt: 'Tentative de cascade n°{number}', noDetails: 'Aucun détail supplémentaire', degraded: 'Observation dégradée',
       lanesLabel: 'Voies des tentatives', lanesTitle: 'Tentatives de parcours observées', attemptLane: 'Tentative n°{number}', sourceJourney: 'Source Journey', waterfallLabel: 'Barres des étapes waterfall', waterfallTitle: 'Barres des étapes waterfall', lastAttemptSemantics: 'Chronologie de la requête ; T5–T9 peuvent refléter la dernière tentative', synthesizedBars: 'Les étapes synthétiques indiquent des horodatages manquants (observation dégradée).', requestTimeline: 'Chronologie de la requête',
-      legend: { success: 'Succès', failed: 'Échec/délai dépassé', special: 'Compression · nouvel essai · changement de nœud' }
+      legend: { success: 'Succès', failed: 'Échec/délai dépassé', special: 'Compression, nouvel essai, changement de nœud' }
     },
   },
   // — espaces réservés communs —
-  common: {
-    emDash: '—',
-    colon: ' : ',
-  },
  // — Subtask 3 (handoff §5): body_status two-state banners —
   // Source : turns[].body_status de /api/admin/sessions/detail — ni
   // /snapshot (pas de turns) ni la liste /turns (métadonnées seules).

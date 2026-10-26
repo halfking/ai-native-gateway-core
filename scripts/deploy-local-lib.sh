@@ -130,6 +130,28 @@ dl_shared_root() {
   printf '%s\n' "$v"
 }
 dl_shared_pg_dir() {
+  # 2026-10-20：LLM_GATEWAY_PG_DATA_DIR 覆盖。
+  #
+  # 本仓 local-dev 脚本（scripts/local-dev/recreate-llm-gateway-pg.sh:51、
+  # scripts/local-dev/recover-pg-citus-image.sh:81）早就把 LLM_GATEWAY_PG_DATA_DIR
+  # 当作「PG 数据目录在哪」的既有契约，但 deploy-local 的 shared 目录推导只看
+  # KAIXUAN_ROOT ⇒ 一个**故意**指向别处的集群（本机是 ~/kaixuan/postgres-citus，
+  # 承载 citus 13.3 + citus_columnar + vector，见 admin/data_lifecycle_storage.go:1001
+  # 与 docs/audit/2026-10-20-request-logs-session-turns-复核轮.md:440）会被
+  # migrate_existing_pg_to_shared 判成「不在 shared 位置」⇒ 触发搬迁回
+  # $KAIXUAN_ROOT/postgres，**把运维刻意选定的目录换掉**（并且那一跳本身还带着
+  # 硬编码宿主端口的缺陷，见 deploy-local.sh 的 migrate_existing_pg_to_shared）。
+  #
+  # 覆盖优先级：LLM_GATEWAY_PG_DATA_DIR（绝对路径）> $KAIXUAN_ROOT/postgres。
+  # 非绝对路径的覆盖值一律忽略并告警——docker --mount 的 source 必须是绝对路径。
+  local override="${LLM_GATEWAY_PG_DATA_DIR:-}"
+  if [[ -n "$override" ]]; then
+    if [[ "$override" == /* ]]; then
+      printf '%s\n' "${override%/}"
+      return 0
+    fi
+    printf '[deploy-local] warning: LLM_GATEWAY_PG_DATA_DIR=%s is not absolute; ignoring the override\n' "$override" >&2
+  fi
   local v; v=$(dl_shared_root)
   if [[ "$v" != /* ]]; then
     printf '[deploy-local] warning: shared_root=%s is non-absolute; falling back to %s/postgres\n' "$v" "$(dl_default_shared_root)" >&2
@@ -137,7 +159,62 @@ dl_shared_pg_dir() {
   fi
   printf '%s\n' "${v%/}/postgres"
 }
+# 物理路径（解析软链）。用于「容器数据目录 == 共享目录吗」这类判定：
+# 宿主机上容器数据目录常以软链形态挂在共享根下（例如
+# ~/kaixuan/postgres -> postgres-citus），字符串比较会把它误判成
+# 「未绑定共享目录」⇒ 触发一次几百 MB 级数据搬迁 + 容器重建；重建固定
+# 占用 5432，在该端口已被别的实例占用的机器上直接失败 ⇒ 整个部署中止。
+# 目录不存在时回退到「压缩连续斜杠 + 去尾斜杠」的旧归一化，保证调用方
+# 仍能比较字符串（不静默返回空串）。
+dl_physical_path() {
+  local p="${1:-}"
+  [[ -n "$p" ]] || return 0
+  local resolved=""
+  resolved=$(cd -- "$p" 2>/dev/null && pwd -P) || resolved=""
+  if [[ -z "$resolved" ]]; then
+    resolved=$(printf '%s' "$p" | tr -s '/' | sed 's:/*$::')
+  fi
+  printf '%s\n' "$resolved"
+}
+# 两个目录是否指向**同一份数据**（物理路径相同即同一份）。
+# 空输入一律判否：调用方据此区分「无法判定」与「确实不同」。
+dl_same_physical_dir() {
+  local a="${1:-}" b="${2:-}"
+  [[ -n "$a" && -n "$b" ]] || return 1
+  local pa pb
+  pa=$(dl_physical_path "$a")
+  pb=$(dl_physical_path "$b")
+  [[ -n "$pa" && "$pa" == "$pb" ]]
+}
 dl_shared_redis_dir() { printf '%s\n' "$(dl_shared_root)/redis"; }
+
+# 2026-10-20：重建 PG 容器时**沿用原容器实际发布的宿主端口**。
+#
+# deploy-local.sh 的 migrate_existing_pg_to_shared 过去硬编码
+# `-p 127.0.0.1:5432:5432`，有两个各自会炸的后果：
+#  (1) 宿主 5432 已被别的容器占用时 docker run 直接失败。本机实测 5432 被
+#      acc-pg17 占着，而 llm-gateway-pg 发布在 127.0.0.1:54318 ⇒ 搬迁必炸。
+#  (2) 即使 5432 恰好空闲，重建后的容器监听 5432，容器 env 里的 DSN 却仍写
+#      @127.0.0.1:54318 ⇒ 网关去连一个没人监听的端口。
+# 端口与 DSN 必须成对沿用，所以从原容器的 Ports 里读回 (HostIp, HostPort)。
+#
+# 抽成独立函数是为了让契约测试**不依赖 docker** 就能驱动这段推导
+# （见 tests/deploy_local_contract_test.sh）。
+#
+# 参数：$1=宿主 IP（可空）、$2=宿主端口（可空）。
+# 覆盖：LLM_GATEWAY_PG_PORT_BIND（ip:port:port，与
+#       scripts/local-dev/recreate-llm-gateway-pg.sh:52 同一契约）优先级最高。
+# 输出："ip:hostport:5432"。
+dl_pg_publish_spec() {
+  local host_ip="${1:-}" host_port="${2:-}" override="${LLM_GATEWAY_PG_PORT_BIND:-}"
+  if [[ -n "$override" && "$override" =~ ^[0-9.]+:[0-9]+:[0-9]+$ ]]; then
+    printf '%s\n' "$override"
+    return 0
+  fi
+  [[ "$host_ip" =~ ^[0-9.]+$ ]] || host_ip=127.0.0.1
+  [[ "$host_port" =~ ^[0-9]+$ ]] || host_port=5432
+  printf '%s:%s:5432\n' "$host_ip" "$host_port"
+}
 dl_pg_log_dir() { printf '%s\n' "$(dl_shared_pg_dir)/logs"; }
 dl_pg_backup_dir() { printf '%s\n' "$(dl_shared_pg_dir)/backups"; }
 dl_pg_run_dir() { printf '%s\n' "$(dl_shared_pg_dir)/run"; }
@@ -829,6 +906,9 @@ dl_write_env() {
     # LLM_GATEWAY_STORAGE_MAX_CONNECTIONS 只作用于 storage factory（当前
     # 仅 lite 模式构造，full 模式 gateway 不消费）。两者均 honor .env.local
     # 显式值，未设时写空行（gateway 侧视为未设置走默认）。
+    # Explicit write opt-ins only; unset retains the registry defaults.
+    dl_emit_env_line LLM_GATEWAY_SESSIONS_V2_ENABLED "${LLM_GATEWAY_SESSIONS_V2_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_SESSIONS_V2_SHADOW_WRITE "${LLM_GATEWAY_SESSIONS_V2_SHADOW_WRITE:-}"
     dl_emit_env_line LLM_GATEWAY_DB_MAX_CONNS "${LLM_GATEWAY_DB_MAX_CONNS:-}"
     dl_emit_env_line LLM_GATEWAY_STORAGE_MAX_CONNECTIONS "${LLM_GATEWAY_STORAGE_MAX_CONNECTIONS:-}"
     # 2026-09-30 hotzone 部署演练 D1：双模式与热区旋钮透传。白名单此前缺失
@@ -840,6 +920,54 @@ dl_write_env() {
     dl_emit_env_line LLM_GATEWAY_HOTZONE_RETENTION_HOURS "${LLM_GATEWAY_HOTZONE_RETENTION_HOURS:-}"
     dl_emit_env_line LLM_GATEWAY_HOTZONE_MAX_SIZE_GB "${LLM_GATEWAY_HOTZONE_MAX_SIZE_GB:-}"
     dl_emit_env_line LLM_GATEWAY_HOTZONE_REQUEST_MIRROR "${LLM_GATEWAY_HOTZONE_REQUEST_MIRROR:-}"
+    # 2026-10-21 R72f：费用对账（provider cost reconciliation）子开关透传。
+    # 与上面 hotzone 同一族：白名单缺失 ⇒ `.env.local` 里写
+    # LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED=true 被**静默丢弃**
+    # ⇒ 容器形态下该功能永远 off ⇒ `/api/admin/provider-cost-reconciliation*`
+    # 永远 404 ⇒ 移动端 `/m/reconciliation` 席（super_admin 可见）点进去必然失败。
+    # 该 env 是 `costReconciliationEnabled()` 的**第一优先**读法
+    # （cmd/gateway/provider_profile_init.go:256）；而 settings 那条路的键
+    # `provider_profile.cost_reconciliation.enabled` **从未 Register 成 spec**
+    # ⇒ `Global.Spec(key)` 返回 nil ⇒ `GetPlatformBool` 直接回退 false
+    # ⇒ ⇒ 补这一行是让 env 那条路可达的**最小修法**（未设时写空行，行为不变）。
+    dl_emit_env_line LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED "${LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED:-}"
+    # 2026-10-21 R72f（属主决策项 #9 = ★「逐个补进白名单」）：把「代码用 env 读、
+    # 但白名单漏掉」的那 23 个 feature flag 一次性补齐。
+    #
+    # ★ 为什么这一批必须补：白名单是**白名单式**的 ⇒ 白名单之外的一切**静默失效**
+    #   （不报错、不警告，只是配置不生效）⇒ ⇒ 「以为开了」比「没开」更危险。
+    # ★ 为什么现在补是安全的：**全部写成 `${KEY:-}`** ⇒ 未设时写**空行** ⇒
+    #   gateway 侧视为「未设置」⇒ 行为与改动前**逐字一致** ⇒ ⇒ 零语义风险。
+    #   ⇒ 「容器形态下这些开关是否开启」完全取决于 `.env.local` 里有没有写，
+    #     而 `.env.local` 是**逐环境**的（gitignored）⇒ ⇒ 不会把某个开关
+    #     意外带到所有环境。
+    # ★ 其中最要紧的一个：`LLM_GATEWAY_V2_ENABLED` —— 26 处引用，是
+    #   「v1/v2 双写」的**总开关** ⇒ ⇒ 容器形态下它此前**根本不通**
+    #   ⇒ ⇒ ⇒ 这正是「关停 request_logs 写入」只能靠迁移 890 硬删、
+    #   不能靠开关的根因（见审计档 §3.9 与 §3.6.1）。
+    dl_emit_env_line AUTO_ROUTE_FALLBACK_ENABLED "${AUTO_ROUTE_FALLBACK_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_ANOMALY_REPORTER_ENABLED "${LLM_GATEWAY_ANOMALY_REPORTER_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_COMPRESSION_STRATEGY_RUNNER_ENABLED "${LLM_GATEWAY_COMPRESSION_STRATEGY_RUNNER_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_CONSISTENCY_CHECK_ENABLED "${LLM_GATEWAY_CONSISTENCY_CHECK_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_HOSTED_TASKS_ENABLED "${LLM_GATEWAY_HOSTED_TASKS_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_INTEGRITY_HARVEST_ENABLED "${LLM_GATEWAY_INTEGRITY_HARVEST_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_LOG_BLEVE_ENABLED "${LLM_GATEWAY_LOG_BLEVE_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_MNF_STREAK_ENABLED "${LLM_GATEWAY_MNF_STREAK_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_MOCK_PROBE_ENABLED "${LLM_GATEWAY_MOCK_PROBE_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_PARTITION_MANAGER_ENABLED "${LLM_GATEWAY_PARTITION_MANAGER_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_PROVIDER_PROFILE_ENABLED "${LLM_GATEWAY_PROVIDER_PROFILE_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_RAW_LOG_ENABLED "${LLM_GATEWAY_RAW_LOG_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_RECOVERY_L2_ENABLED "${LLM_GATEWAY_RECOVERY_L2_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED "${LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED "${LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_SEMANTIC_ANALYSIS_ENABLED "${LLM_GATEWAY_SEMANTIC_ANALYSIS_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_STREAM_RETRY_ENABLED "${LLM_GATEWAY_STREAM_RETRY_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_V2_ENABLED "${LLM_GATEWAY_V2_ENABLED:-}"
+    dl_emit_env_line OMNIFREE_ENABLED "${OMNIFREE_ENABLED:-}"
+    dl_emit_env_line PARAMREG_ENABLED "${PARAMREG_ENABLED:-}"
+    dl_emit_env_line PROFILE_UPDATER_ENABLED "${PROFILE_UPDATER_ENABLED:-}"
+    dl_emit_env_line QUALITY_COLLECTOR_ENABLED "${QUALITY_COLLECTOR_ENABLED:-}"
+    dl_emit_env_line SANITIZE_SYSTEM_PROMPT_ENABLED "${SANITIZE_SYSTEM_PROMPT_ENABLED:-}"
   } > "$file"
   chmod 0600 "$file"
 }
@@ -1182,12 +1310,14 @@ dl_wait_pg_isready() {
         psql -X -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' \
         -h 127.0.0.1 -p 5432 -U "$user" -d "$db" >/dev/null 2>&1 && {
         log "PG pre-flight: ready after $attempt probe(s) via docker exec"
+        dl_pg_check_memory "$user" "$pass" "$host" "$port" "$db" || true
         return 0
       }
     elif _dl_have psql; then
       PGPASSWORD="$pass" psql -X -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' \
         -h "$host" -p "$port" -U "$user" -d "$db" >/dev/null 2>&1 && {
         log "PG pre-flight: ready after $attempt probe(s) via psql"
+        dl_pg_check_memory "$user" "$pass" "$host" "$port" "$db" || true
         return 0
       }
     else
@@ -1203,6 +1333,70 @@ dl_wait_pg_isready() {
     die "PG pre-flight timed out after 90s ($host:$port, db=$db) — fail-closed (DL_PG_PREFLIGHT_REQUIRED=1); gateway would have hit database:null in 20s; refusing to start the container"
   fi
   warn "PG pre-flight timed out after 90s ($host:$port, db=$db); gateway boot retry will have to absorb the remaining warmup"
+  return 1
+}
+# dl_pg_check_memory — shared_buffers 下限体检（2026-10-20）。
+#
+# 为什么需要这道门：shared_buffers 被调小到几百 kB 时，PG **能正常应答**、
+# 探活全绿、部署也报 VERIFY_PASS=1，但每条语句的**规划**要 ~1s
+# （catalog 页根本进不了共享缓冲 ⇒ 规划期反复走系统调用）。
+# 后果不是「慢」而是**静默丢数据**：session 族的写路径在 1~2s 的 context
+# deadline 内超时 ⇒ 网关返回 200，但 session_turns / session_bodies /
+# trace_events **一行都没落库**。
+#
+# 实测（2026-10-20，本机 llm-gateway-pg）：
+#   shared_buffers=400kB  ⇒ session_turns_hot 规划 1195ms / 执行 0.03ms
+#   shared_buffers=2GB    ⇒ session_turns_hot 规划   50ms / 执行 0.03ms
+# 差的不是执行，是**规划**——而规划时间直接决定写路径能否在 deadline 内完成。
+#
+# 阈值：PG 自己的默认是 128MB（16384×8kB）。低于它 ⇒ 报 warn；
+# DL_PG_MIN_SHARED_BUFFERS_REQUIRED=1 ⇒ die（fail-closed）。
+# 只查 shared_buffers，不查 work_mem 等：后者只影响单条大查询，不影响落库。
+dl_pg_check_memory() {
+  local user="$1" pass="$2" host="$3" port="$4" db="$5"
+  local min_kb="${DL_PG_MIN_SHARED_BUFFERS_KB:-131072}"
+  local required="${DL_PG_MIN_SHARED_BUFFERS_REQUIRED:-0}"
+  local raw='' kb=''
+  raw=$(_dl_pg_scalar "SHOW shared_buffers" "$user" "$pass" "$host" "$port" "$db") || return 0
+  [[ -z "$raw" ]] && return 0
+  # SHOW shared_buffers 返回 '400kB' / '2GB' / '16384' (8kB blocks)
+  kb=$(printf '%s' "$raw" | tr 'A-Z' 'a-z' | awk '
+    {
+      v=$1
+      if (v ~ /mb$/)      { printf "%d", v*1024; next }
+      if (v ~ /gb$/)      { printf "%d", v*1024*1024; next }
+      if (v ~ /kb$/)      { printf "%d", v; next }
+      if (v ~ /^[0-9]+$/) { printf "%d", v*8; next }
+      print ""
+    }')
+  [[ -z "$kb" ]] && return 0
+  if (( kb < min_kb )); then
+    local msg="PG shared_buffers=${raw} (≈${kb}kB) < ${min_kb}kB — 每条语句的规划会退化到 ~1s，写路径会在 context deadline 内超时 ⇒ 请求返回 200 但 session 族一行都不落库。修：ALTER SYSTEM SET shared_buffers='2GB'; 然后重启 PG（容器：docker exec <pg> psql -c \"ALTER SYSTEM ...\" && docker restart <pg>）"
+    if [[ "$required" == "1" ]]; then
+      die "$msg — fail-closed (DL_PG_MIN_SHARED_BUFFERS_REQUIRED=1)"
+    fi
+    warn "$msg"
+  else
+    log "PG pre-flight: shared_buffers=${raw} (≈${kb}kB) ≥ ${min_kb}kB — ok"
+  fi
+  return 0
+}
+# _dl_pg_scalar — 在已探测通过的 PG 上取一个标量；拿不到就返回非 0（调用方跳过）。
+_dl_pg_scalar() {
+  local q="$1" user="$2" pass="$3" host="$4" port="$5" db="$6"
+  local pg_container
+  pg_container=$(dl_pg_container_name)
+  if (( DL_DOCKER )) && [[ -n "$pg_container" ]]; then
+    docker exec -i -e PGPASSWORD="$pass" "$pg_container" \
+      psql -X -v ON_ERROR_STOP=1 -Atqc "$q" \
+      -h 127.0.0.1 -p 5432 -U "$user" -d "$db" 2>/dev/null && return 0
+    return 1
+  fi
+  if _dl_have psql; then
+    PGPASSWORD="$pass" psql -X -v ON_ERROR_STOP=1 -Atqc "$q" \
+      -h "$host" -p "$port" -U "$user" -d "$db" 2>/dev/null && return 0
+    return 1
+  fi
   return 1
 }
 dl_pg_container_name() {

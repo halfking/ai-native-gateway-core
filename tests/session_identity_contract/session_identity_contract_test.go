@@ -155,7 +155,7 @@ func TestSessionListV2_ResponseIDKindAnnotation(t *testing.T) {
 	defer mock.Close()
 
 	// sessionforensics.ListRecentSessions 用 _request_logs 表（gw_session_id 聚合）。
-	mock.ExpectQuery(`FROM _request_logs`).
+	mock.ExpectQuery(`FROM request_logs_with_current_month`).
 		WithArgs("default", 50).
 		WillReturnRows(sessionListV2ContractRow("gw_abc"))
 
@@ -231,7 +231,7 @@ func TestSessionListV2_TenantPinnedToAuthContext(t *testing.T) {
 	defer mock.Close()
 
 	// 传入 ?tenant=other（他人租户），但查询参数必须是 auth 租户 tenant-a。
-	mock.ExpectQuery(`FROM _request_logs`).
+	mock.ExpectQuery(`FROM request_logs_with_current_month`).
 		WithArgs("tenant-a", 50).
 		WillReturnRows(sessionListV2ContractRow("gw_abc"))
 
@@ -565,7 +565,7 @@ func TestSessionListV2_QueryFailureDoesNotLeakInternalError(t *testing.T) {
 	defer mock.Close()
 
 	secret := "pq: relation \"request_logs_partition_missing\" does not exist tenant-a"
-	mock.ExpectQuery(`FROM _request_logs`).
+	mock.ExpectQuery(`FROM request_logs_with_current_month`).
 		WithArgs("tenant-a", 50).
 		WillReturnError(errors.New(secret))
 
@@ -697,6 +697,15 @@ func TestFiveIDContract_EnumPin(t *testing.T) {
 // ── mock row helpers (admin/session_detail_v2_test.go 同款，但本包内独立 ──
 
 func makeContractSessionDetailRow(sessionID, tenantID string) *pgxmock.Rows {
+	// duration_ms 是 sessions.duration_ms（877 起由每轮刷新写入）。
+	// 生产代码以 *int64 接收（SQL NULL 表示"还没有时长"），故此处也传指针。
+	// ★ 2026-10-20 审计：本夹具此前是 27 列，而生产 SELECT 已是 28 列
+	//   （11598d847 接上 sessions.duration_ms 的读侧时加的那一列），
+	//   ⇒ pgxmock 报 "incorrect argument number 28 for columns 27"，
+	//   两条既有测试（ResolveGwSessionID / ReverseMapFallback）整包变红。
+	//   11598d847 修了 admin/session_detail_v2_test.go 里的**同款**夹具，
+	//   但漏了本包这一份 —— 同因同形的第二个页面。
+	durationMs := int64(90_000)
 	return pgxmock.NewRows([]string{
 		"id", "session_id", "tenant_id", "created_at", "updated_at", "closed_at", "status",
 		"total_turns", "total_tokens", "total_cost_usd",
@@ -704,6 +713,7 @@ func makeContractSessionDetailRow(sessionID, tenantID string) *pgxmock.Rows {
 		"last_model", "last_provider",
 		"task_type", "client_type", "topic", "intent",
 		"primary_request_id", "turn_logs_summary",
+		"duration_ms",
 		"sa_status", "sa_schema_version", "sa_input_hash",
 		"sa_source_task_id", "sa_updated_at", "sa_payload",
 	}).AddRow(
@@ -713,6 +723,7 @@ func makeContractSessionDetailRow(sessionID, tenantID string) *pgxmock.Rows {
 		nil, nil, nil, nil, nil,
 		nil, nil, nil, nil,
 		nil, nil,
+		&durationMs,
 		nil, nil, nil, nil, nil, nil,
 	)
 }

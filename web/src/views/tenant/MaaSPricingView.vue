@@ -264,9 +264,8 @@ onMounted(load)
 }
 .pricing-tier {
   font-size: 11px;
-  text-transform: uppercase;
   color: var(--muted);
-  letter-spacing: 0.05em;
+  letter-spacing: 0.01em;
 }
 .pricing-card h4 {
   margin: 0;

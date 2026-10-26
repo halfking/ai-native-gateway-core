@@ -300,7 +300,7 @@ async function triggerProbe(node: ModelNode) {
     })
     flash(`已触发 ${credentialDisplayName(node.credential_id)} 的探活`)
   } catch (err) {
-    flash(`触发失败: ${err instanceof Error ? err.message : String(err)}`)
+    flash(t('common.feedback.triggerFailedWithReason', { reason: err instanceof Error ? err.message : String(err) }))
   } finally {
     setTimeout(() => {
       const after = new Set(probeTriggering.value)
@@ -356,7 +356,7 @@ async function loadPricing() {
       pricingData.value = data.rows || []
     }
   } catch {
-    setTabError('pricing', '价格数据不可用（需要 platform_ops 权限）')
+    setTabError('pricing', t('probeHealth.detail.pricingUnavailable'))
     pricingData.value = []
   }
 }
@@ -459,7 +459,7 @@ onMounted(() => {
     <div v-if="flashMsg" class="flash">{{ flashMsg }}</div>
 
     <div class="tab-content card">
-      <EmptyState v-if="loading" text="加载中..." />
+      <EmptyState v-if="loading" :text="$t('common.feedback.loading')" />
 
       <!--
         2026-10-03：不带 ?model= 直接访问时，页面上所有内容都无从谈起
@@ -498,8 +498,8 @@ onMounted(() => {
             </div>
             <div class="node-stats">
               <div class="node-stat"><span class="muted-text small">连续成功</span><div>{{ node.consecutive_successes }}</div></div>
-              <div class="node-stat"><span class="muted-text small">连续失败</span><div class="rate-bad">{{ node.consecutive_failures }}</div></div>
-              <div class="node-stat"><span class="muted-text small">成功率(7d)</span><div>{{ formatNumber(node.success_rate_7d, 1) }}%</div></div>
+              <div class="node-stat"><span class="muted-text small">{{ $t('common.terms.consecutiveFailures') }}</span><div class="rate-bad">{{ node.consecutive_failures }}</div></div>
+              <div class="node-stat"><span class="muted-text small">{{ $t('common.terms.successRate') }}(7d)</span><div>{{ formatNumber(node.success_rate_7d, 1) }}%</div></div>
               <div class="node-stat"><span class="muted-text small">上次验证</span><div>{{ formatTime(node.last_verified_at) }}</div></div>
               <div class="node-stat"><span class="muted-text small">下次重试</span><div>{{ formatTime(node.next_retry_at) }}</div></div>
               <div class="node-stat"><span class="muted-text small">状态持续</span><div>{{ formatDuration(node.state_duration_minutes) }}</div></div>
@@ -531,14 +531,14 @@ onMounted(() => {
 
               <thead>
                 <tr>
-                  <th>层级</th>
+                  <th>{{ $t('common.terms.tier') }}</th>
                   <th>Provider</th>
-                  <th>凭据</th>
-                  <th>成功率</th>
-                  <th>延迟P95</th>
+                  <th>{{ $t('common.credentialFallback') }}</th>
+                  <th>{{ $t('common.terms.successRate') }}</th>
+                  <th>{{ $t('common.terms.latency') }}P95</th>
                   <th>输入价</th>
                   <th>输出价</th>
-                  <th>状态</th>
+                  <th>{{ $t('common.terms.status') }}</th>
                 </tr>
               </thead>
               <tbody>
@@ -555,7 +555,7 @@ onMounted(() => {
                   <td>{{ formatPrice(c.unit_price_out_per_1m, c.currency) }}</td>
                   <td>
                     <span :class="['badge', c.routable ? 'badge-green' : 'badge-red']">
-                      {{ c.routable ? '可路由' : '不可用' }}
+                      {{ c.routable ? $t('common.terms.routable') : $t('common.terms.unavailable') }}
                     </span>
                   </td>
                 </tr>
@@ -573,15 +573,15 @@ onMounted(() => {
 
             <thead>
               <tr>
-                <th>时间</th>
-                <th>请求ID</th>
-                <th>凭据</th>
-                <th>层级</th>
-                <th>结果</th>
-                <th>延迟</th>
+                <th>{{ $t('common.time') }}</th>
+                <th>{{ $t('common.terms.requestId') }}</th>
+                <th>{{ $t('common.credentialFallback') }}</th>
+                <th>{{ $t('common.terms.tier') }}</th>
+                <th>{{ $t('common.terms.result') }}</th>
+                <th>{{ $t('common.terms.latency') }}</th>
                 <th>Tokens</th>
-                <th>成本</th>
-                <th>错误</th>
+                <th>{{ $t('common.terms.cost') }}</th>
+                <th>{{ $t('common.terms.error') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -592,7 +592,7 @@ onMounted(() => {
                 <td>{{ d.tier != null ? 'T' + d.tier : '—' }}</td>
                 <td>
                   <span :class="['badge', d.success ? 'badge-green' : 'badge-red']">
-                    {{ d.success ? '成功' : '失败' }}
+                    {{ d.success ? $t('common.status.success') : $t('common.status.failed') }}
                   </span>
                 </td>
                 <td>{{ d.latency_ms ?? '—' }}ms</td>
@@ -608,7 +608,7 @@ onMounted(() => {
 
       <div v-else-if="activeTab === 'monitor'">
         <div class="window-controls">
-          <span class="muted-text">时间窗口:</span>
+          <span class="muted-text">{{ $t('common.terms.timeWindow') }}:</span>
           <button
             v-for="w in [15, 60, 360, 1440]"
             :key="w"
@@ -622,8 +622,8 @@ onMounted(() => {
         <div v-if="monitorError" class="load-error-banner" role="status">{{ monitorError }}</div>
         <div v-if="monitorStats" class="stats-row">
           <div class="stat-mini"><span class="stat-mini-label">请求总数</span><span class="stat-mini-val">{{ monitorStats.total }}</span></div>
-          <div class="stat-mini"><span class="stat-mini-label">成功</span><span class="stat-mini-val rate-good">{{ monitorStats.success }}</span></div>
-          <div class="stat-mini"><span class="stat-mini-label">失败</span><span class="stat-mini-val rate-bad">{{ monitorStats.failed }}</span></div>
+          <div class="stat-mini"><span class="stat-mini-label">{{ $t('common.status.success') }}</span><span class="stat-mini-val rate-good">{{ monitorStats.success }}</span></div>
+          <div class="stat-mini"><span class="stat-mini-label">{{ $t('common.status.failed') }}</span><span class="stat-mini-val rate-bad">{{ monitorStats.failed }}</span></div>
           <div class="stat-mini"><span class="stat-mini-label">失败率</span><span class="stat-mini-val rate-bad">{{ formatNumber(monitorStats.failure_rate * 100, 1) }}%</span></div>
         </div>
         <div v-if="monitorStats && Object.keys(monitorStats.error_kinds).length > 0" class="error-kinds">
@@ -636,10 +636,10 @@ onMounted(() => {
 
             <thead>
               <tr>
-                <th>时间</th>
-                <th>结果</th>
-                <th>延迟</th>
-                <th>错误</th>
+                <th>{{ $t('common.time') }}</th>
+                <th>{{ $t('common.terms.result') }}</th>
+                <th>{{ $t('common.terms.latency') }}</th>
+                <th>{{ $t('common.terms.error') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -647,7 +647,7 @@ onMounted(() => {
                 <td>{{ formatTimestamp(e.ts) }}</td>
                 <td>
                   <span :class="['badge', e.ok ? 'badge-green' : 'badge-red']">
-                    {{ e.ok ? '成功' : '失败' }}
+                    {{ e.ok ? $t('common.status.success') : $t('common.status.failed') }}
                   </span>
                 </td>
                 <td>{{ e.lat }}ms</td>
@@ -666,15 +666,15 @@ onMounted(() => {
 
             <thead>
               <tr>
-                <th>时间</th>
-                <th>请求ID</th>
-                <th>凭据</th>
-                <th>结果</th>
-                <th>延迟</th>
+                <th>{{ $t('common.time') }}</th>
+                <th>{{ $t('common.terms.requestId') }}</th>
+                <th>{{ $t('common.credentialFallback') }}</th>
+                <th>{{ $t('common.terms.result') }}</th>
+                <th>{{ $t('common.terms.latency') }}</th>
                 <th>Prompt</th>
                 <th>Completion</th>
-                <th>成本</th>
-                <th>错误</th>
+                <th>{{ $t('common.terms.cost') }}</th>
+                <th>{{ $t('common.terms.error') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -689,7 +689,7 @@ onMounted(() => {
                 </td>
                 <td>
                   <span :class="['badge', log.request_status === 'rate_limited' ? 'badge-amber' : log.success ? 'badge-green' : 'badge-red']">
-                    {{ log.request_status === 'rate_limited' ? '限流' : (log.success ? '成功' : '失败') }}
+                    {{ log.request_status === 'rate_limited' ? $t('common.terms.rateLimited') : (log.success ? $t('common.status.success') : $t('common.status.failed')) }}
                   </span>
                 </td>
                 <td>{{ log.latency_ms ?? '—' }}ms</td>
@@ -758,14 +758,14 @@ onMounted(() => {
                 <th>规范化名</th>
                 <th>原始模型</th>
                 <th>Provider</th>
-                <th>凭据</th>
+                <th>{{ $t('common.credentialFallback') }}</th>
                 <th>输入价(/1M)</th>
                 <th>输出价(/1M)</th>
                 <th>缓存读</th>
                 <th>缓存写</th>
                 <th>币种</th>
                 <th>计费</th>
-                <th>可用</th>
+                <th>{{ $t('common.terms.available') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -785,7 +785,7 @@ onMounted(() => {
                 <td>{{ p.billing_mode || '—' }}</td>
                 <td>
                   <span :class="['badge', p.available ? 'badge-green' : 'badge-gray']">
-                    {{ p.available ? '是' : '否' }}
+                    {{ p.available ? $t('common.button.yes') : $t('common.button.no') }}
                   </span>
                 </td>
               </tr>
@@ -977,7 +977,6 @@ onMounted(() => {
 .data-table thead th {
   padding: 8px 12px;
   font-size: 11px;
-  text-transform: uppercase;
   font-weight: 600;
   text-align: left;
   border-bottom: 1px solid var(--border);
@@ -1044,7 +1043,6 @@ onMounted(() => {
 .stat-mini-label {
   font-size: 11px;
   color: var(--muted);
-  text-transform: uppercase;
 }
 
 .stat-mini-val {

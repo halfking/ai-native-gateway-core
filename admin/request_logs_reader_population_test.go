@@ -264,6 +264,35 @@ func TestReaderPopulationGroundTruth(t *testing.T) {
 	t.Logf("v1 读方判定分布（%d 个 v1 读方，静态引用契约列合计 %d 个）：%s",
 		v1Files, colsTotal, strings.Join(parts, " "))
 
+	// ★ 890 之后（2026-10-20）：读方总体必须为空。
+	//
+	// 这道门原来量的是「清单里的文件逐个归族」，总体来自 requestLogsReadInventory。
+	// 890 之后清单归零 ⇒ 「未归类」「未判定」「已判定」三个计数都恒为 0，
+	// 而「族名分区」检查（v1 底表 vs 视图链互斥且穷尽）**仍然有效** ——
+	// 它测的是分类器本身，与总体无关。
+	//
+	// ⇒ 本门补两条：
+	//	① 总体必须为空（不许有新的 v1 读方）；
+	//	② **阳性对照**：分类器的两个正则必须仍能分清 v1 底表与视图
+	//	   （§9.167 的别名 bug 就是栽在这里，没有对照就会悄悄复发）。
+	if len(all) != 0 {
+		t.Errorf("读方总体仍有 %d 个文件 —— 890 之后 v1 族已物理删除。\n"+
+			"新增的 v1 读方要么是生产侧漏改（登记进 retiredV1ReferenceExceptions），"+
+			"要么是本门把「读 canonical 视图」误算成读 v1 —— 后者必须修分类口径，不得改本门。",
+			len(all))
+	}
+	if !v1BaseTableRe.MatchString("FROM _request_logs_hot") {
+		t.Error("v1BaseTableRe 认不出 v1 底表 —— 分类器坏了，" +
+			"下面那条「canonical 视图不算 v1」的阴性对照会恒绿")
+	}
+	if v1BaseTableRe.MatchString("FROM request_logs_with_current_month rl") {
+		t.Error("v1BaseTableRe 把 canonical 视图判成 v1 底表 —— " +
+			"§9.167 的别名 bug 复发（词边界失效）")
+	}
+	if !viewRelationRe.MatchString("FROM request_logs_with_current_month rl") {
+		t.Error("viewRelationRe 认不出 canonical 视图 —— 分类器坏了")
+	}
+
 	if len(unclassified) > 0 {
 		t.Errorf("%d inventory entries match neither a v1 base table nor a view: %s — a "+
 			"classifier with a default branch is a guess, and the third relation family "+
@@ -334,7 +363,14 @@ func TestReaderPopulationGroundTruth(t *testing.T) {
 // 会话（3b7180abe/31d466e21）引入为 v1 基表新读方（候选失败监控，探针面），
 // 消费面分档已登记 Tier ③（request_logs_retirement_tiering_test.go「候选失败
 // 监控：探针面」），退役风险判定随档位走——本基线只补记成员资格，不改判档。
-var unjudgedBaseline = 46
+// ★ 2026-10-20（迁移 890，v1 族真删）：基线归零。
+//
+// 未判定清单的成员全是「读 v1 而尚未逐点判定」的文件。890 之后 v1 族被
+// 物理删除 ⇒ **没有任何文件再读 v1** ⇒ 未判定清单归零。
+//
+// ⇒ 棘轮只朝一个方向：任何一个新的 v1 读方出现（哪怕同时有别的文件被判定、
+// 总数不变）都会被「数量 > 基线」与「成员不在基线集里」两条同时抓住。
+var unjudgedBaseline = 0
 
 // unjudgedBaselineFiles is the membership that goes with unjudgedBaseline.
 // A set, not a count: see the swap case in TestReaderPopulationGroundTruth.
@@ -345,60 +381,10 @@ var unjudgedBaseline = 46
 // canonical 视图精确等价，252 EXCEPT 对拍双向差集 0），退役时随 v1 一并
 // 改指或退役，与 v1_write_liveness 的 ③ 类同档；完整退役判定待退役轮做。
 var unjudgedBaselineFiles = map[string]bool{
-	"admin/analytics.go":                    true,
-	"admin/auto_route_outcome_freshness.go": true,
-	// 2026-10-13 S3 波 2 审计轮补记：并行会话引入的候选失败监控读方
-	// （Tier ③，探针面；分档见 request_logs_retirement_tiering_test.go）。
-	"bg/candidate_failure_monitor.go": true,
-	// 2026-10-13 S3 波 2：db/db.go 自 retirementBreakers 移出（routing 源
-	// 视图重建后 v1 基表读字面量不再带契约缺口列名，breaker 判定自然消失），
-	// 回到未判定态——成员资格补记，档位仍是 ①（v1 生命周期 DDL，随 v1 退役）。
-	"db/db.go":                         true,
-	"admin/body_resolver.go":           true,
-	"admin/credential_monitor.go":      true,
-	"admin/credential_success_rate.go": true,
-	"admin/data_lifecycle.go":          true,
-	// data_lifecycle_blobs / quality_correlations 于 2026-10-13（S4 波 4）出列（48→46）。
-	"admin/data_lifecycle_metrics.go":          true,
-	"admin/diagnostics_credential.go":          true,
-	"admin/provider_diagnose.go":               true,
-	"admin/provider_models.go":                 true,
-	"admin/request_trace.go":                   true,
-	"admin/session_detail_v2.go":               true,
-	"admin/session_sanitize_matches.go":        true,
-	"admin/session_tenant.go":                  true,
-	"admin/telemetry.go":                       true,
-	"admin/tenants.go":                         true,
-	"admin/unified_detail.go":                  true,
-	"autoroute/recommend_v2.go":                true,
-	"bg/auto_route_affinity_worker.go":         true,
-	"bg/integrity_fingerprint_probe.go":        true,
-	"bg/ledger_reconciliation.go":              true,
-	"bg/lite_retention_worker.go":              true,
-	"bg/model_tier.go":                         true,
-	"cmd/compression-bench/main.go":            true,
-	"cmd/gateway/main_v3_wiring.go":            true,
-	"cmd/gateway/output_compliance_control.go": true,
-	"cmd/gateway/waterfall_by_request.go":      true,
-	"cmd/gateway/waterfall_db.go":              true,
-	// cmd/scenario_driver/main.go 于 2026-10-13（S4 波 4）出列（49→48）：断言改数会话族热表。
-	"cmd/tools/backfill_session_bodies/main.go":     true,
-	"cmd/tools/validate_sessions_v2/loader.go":      true,
-	"cmd/traffic-replay/main.go":                    true,
-	"discovery/discovery.go":                        true,
-	"domains/analysis/optimizer.go":                 true,
-	"domains/analysis/request_summary.go":           true,
-	"domains/credentialstate/popularity_tracker.go": true,
-	"domains/hooks/goal/history_store.go":           true,
-	"domains/providerprofile/adapters.go":           true,
-	"domains/sessionforensics/export.go":            true,
-	"domains/streaming/anomaly_harvester.go":        true,
-	"internal/quality/minute_aggregator.go":         true,
-	"internal/summarystore/store.go":                true,
-	"internal/trace/trace.go":                       true,
-	"storage/sqlite/request_log_store.go":           true,
-	"tests/session_audit/cmd/audit-test/main.go":    true,
-	"tests/test_popularity_tracker.go":              true,
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本集**已清空** —— 未判定清单归零。
+	//
+	// ⚠ 不要在这里手填「已知的例外」—— 已退役关系的残留引用登记在
+	// retiredV1ReferenceExceptions（生产缺陷台账）。
 }
 
 // viewChainNames derives the canonical view chain from the schema SSOT rather
@@ -549,44 +535,6 @@ func liveRelations(t *testing.T, root string) map[string]bool {
 		}
 	}
 	return live
-}
-
-// stripSQLComments removes `-- ...` to end of line and `/* ... */` from a SQL
-// body. It is deliberately conservative about quoted regions: an apostrophe
-// inside a string literal is common in these queries, and mangling one would
-// change a classification silently. A `--` inside a quoted literal is left in
-// place, which can only leave a name un-stripped, never invent a relation.
-func stripSQLComments(raw string) string {
-	var b strings.Builder
-	inBlock := false
-	for _, line := range strings.Split(raw, "\n") {
-		if inBlock {
-			if i := strings.Index(line, "*/"); i >= 0 {
-				line, inBlock = line[i+2:], false
-			} else {
-				continue
-			}
-		}
-		if i := strings.Index(line, "--"); i >= 0 {
-			line = line[:i]
-		}
-		for {
-			i := strings.Index(line, "/*")
-			j := strings.Index(line, "*/")
-			if i < 0 {
-				break
-			}
-			if j > i {
-				line = line[:i] + line[j+2:]
-				continue
-			}
-			line, inBlock = line[:i], true
-			break
-		}
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
-	return b.String()
 }
 
 func sumProxy(all []populationEntry) int {

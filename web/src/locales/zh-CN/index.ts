@@ -17,6 +17,7 @@ import annotation from './annotation'
 import providers from './providers'
 import landing from './landing'
 import dashboard from './dashboard'
+import liveTopology from './liveTopology'
 import providerDetail from './providerDetail'
 import providerDetailPage from './providerDetailPage'
 import tenants from './tenants'
@@ -59,6 +60,7 @@ import formatAnomaliesView from './formatAnomaliesView'
 import modelIntegrityView from './modelIntegrityView'
 import agentRegistryView from './agentRegistryView'
 import outputCompliance from './outputCompliance'
+import sanitizeRules from './sanitizeRules'
 import ops from './ops'
 import qualityCorrelations from './qualityCorrelations'
 import routingAudit from './routingAudit'
@@ -142,6 +144,7 @@ export default {
   modelIntegrityView,
   agentRegistryView,
   outputCompliance,
+  sanitizeRules,
   ops,
   qualityCorrelations,
   routingAudit,
@@ -161,4 +164,5 @@ export default {
   requestDetail,
   reports,
   routeIncidentDrawer,
+  liveTopology,
 }

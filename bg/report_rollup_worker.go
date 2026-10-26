@@ -73,8 +73,8 @@ func (w *ReportRollupWorker) Start(ctx context.Context) {
 func (w *ReportRollupWorker) Stop() {
 	if w.cancel != nil {
 		w.cancel()
+		<-w.done
 	}
-	<-w.done
 }
 
 func (w *ReportRollupWorker) run(ctx context.Context) {

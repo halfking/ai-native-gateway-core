@@ -1,6 +1,9 @@
 package emptyoutcome
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // TestIsEmptyOutcome pins the single semantic decision point (Wave4-D2):
 // no emitted output ⇒ empty outcome, unless a client disconnect is pending
@@ -27,8 +30,8 @@ func TestIsEmptyOutcome(t *testing.T) {
 }
 
 // TestChatChunkHasOutput pins the per-frame rule set: usage-only, role-only
-// and control frames carry no output; content / reasoning / tool calls /
-// audio do.
+// and control frames carry no output; content / reasoning / named-or-arg
+// tool calls / audio do. Nameless phantom tool_calls (MiniMax) do NOT.
 func TestChatChunkHasOutput(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -41,8 +44,19 @@ func TestChatChunkHasOutput(t *testing.T) {
 		{"role-only announcement", `{"choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`, false},
 		{"empty delta", `{"choices":[{"index":0,"delta":{}}]}`, false},
 		{"text content", `{"choices":[{"index":0,"delta":{"content":"hi"}}]}`, true},
-		{"reasoning content", `{"choices":[{"index":0,"delta":{"reasoning_content":"think"}}]}`, true},
+		// r1029 (2026-10-17): reasoning-only is NOT agent-visible output. This
+		// row previously asserted true; the 154 evidence (request
+		// 623e36495abf1de578592fa90c78417a, max_tokens=8 all consumed by
+		// reasoning, content never emitted, finish_reason=length) shows that
+		// treating it as output hands the client an empty 200. See
+		// TestR1029ReasoningOnlyStreamChunkIsNotOutput for the frame-by-frame
+		// replay and TestR1029ContentAfterReasoningStillCounts for the guard
+		// that reasoning alongside real content still counts.
+		{"reasoning content only", `{"choices":[{"index":0,"delta":{"reasoning_content":"think"}}]}`, false},
+		{"reasoning alongside content", `{"choices":[{"index":0,"delta":{"reasoning_content":"think","content":"hi"}}]}`, true},
 		{"tool call", `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f","arguments":"{}"}}]}}]}`, true},
+		{"tool args delta only", `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"x\":1}"}}]}}]}`, true},
+		{"phantom tool slots", `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"","type":"function","function":{"name":"","arguments":""}},{"index":1,"id":"","type":"function","function":{"name":"","arguments":""}}]}}]}`, false},
 		{"audio delta", `{"choices":[{"index":0,"delta":{"audio":{"data":"YWJj"}}}]}`, true},
 		{"malformed JSON", `{not-json`, false},
 	}
@@ -52,6 +66,19 @@ func TestChatChunkHasOutput(t *testing.T) {
 				t.Fatalf("ChatChunkHasOutput(%s) = %v, want %v", tt.payload, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestChatChoicesIsEmptyPhantomTools pins Magpie parity on the non-stream
+// classifier: phantom tool_calls with empty name/arguments are empty.
+func TestChatChoicesIsEmptyPhantomTools(t *testing.T) {
+	phantom := json.RawMessage(`[{"message":{"content":null,"tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":""}}]}}]`)
+	if !ChatChoicesIsEmpty(phantom) {
+		t.Fatal("phantom tool_calls must classify as empty")
+	}
+	named := json.RawMessage(`[{"message":{"content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"Bash","arguments":"{}"}}]}}]`)
+	if ChatChoicesIsEmpty(named) {
+		t.Fatal("named tool_calls must not classify as empty")
 	}
 }
 

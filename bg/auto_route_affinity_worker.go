@@ -251,17 +251,17 @@ func (w *AutoRouteAffinityWorker) sweep(ctx context.Context) {
 // model's score down for reasons unrelated to model quality.
 //
 // R38 (R37 §四 #1 closing): synthetic rounds are excluded by an explicit
-// origin_actor predicate (LEFT JOIN _request_logs_hot). The reward IS NOT NULL
-// guard alone was insufficient — a future write path that stamps a real
-// reward on a goal-* row (e.g. ad-hoc backfill, manual reconcile) would slip
-// through and pollute task_model_affinity. The view auto_route_selections_all
+// origin_actor predicate (NOT EXISTS over the request-row family). The reward
+// IS NOT NULL guard alone was insufficient — a future write path that stamps a
+// real reward on a goal-* row (e.g. ad-hoc backfill, manual reconcile) would
+// slip through and pollute task_model_affinity. The view auto_route_selections_all
 // does not project origin_actor (selections carry only features + reward),
-// so the _request_logs join is the only reliable way to enforce the
+// so the request-row join is the only reliable way to enforce the
 // synthetic-round gate at the aggregate face. NULL origin_actor is treated as
 // ordinary traffic (legacy inserts predate the column).
 //
 // R46 F4 (affinity 盲窗三选一裁决, R43 §五#2 顺延收口): the old LEFT JOIN hit
-// _request_logs_hot only — settled rows older than the ~8h hot retention saw
+// the v1 hot table only — settled rows older than the ~8h hot retention saw
 // NULL origin_actor and slipped past the gate. Ruling (measured on the live
 // DB, see docs/audit/2026-09-19-r46-48h-audit-round.md §四): NOT EXISTS probes
 // over hot ∪ parent = 110ms / 14d window; literal view JOIN =
@@ -273,6 +273,14 @@ func (w *AutoRouteAffinityWorker) sweep(ctx context.Context) {
 // DELETE+INSERT), and each probe is an index descent on
 // pkey(request_id) / the partitioned request_id index (718 dropped the
 // redundant hot-side index; the pkey covers it).
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：前两条 v1 臂（v1 hot ∪ v1 母表）整体
+// 删除，只留会话族那一条。理由与它们当初被加进来时写的**同一条**：那两条臂
+// 在「过滤臂在门内、驱动表在门外」的形态下会**恒真** ⇒ 合成流量不再被排除。
+// 890 之后它们不是「恒真」而是「**42P01**」——整条聚合查询会失败（不是那条臂
+// 失败，是**整条语句**失败：同一条 FROM 里的任何 v1 关系被提及都会带走整句）。
+// ⇒ 删掉它们不损失任何过滤能力：会话族臂（第三条）在停写后**就是**承重臂，
+// 而 v1 臂在双写期是 no-op（同一 request_id 必然同时命中 v1 臂）。
 func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggregate, error) {
 	rows, err := w.db.Query(ctx, `
 		SELECT s.task_type,
@@ -292,32 +300,22 @@ func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggr
 		WHERE s.reward IS NOT NULL
 		  AND s.canonical_id IS NOT NULL
 		  AND s.settled_at >= NOW() - $1::interval
-		  AND NOT EXISTS (
-		      SELECT 1 FROM _request_logs_hot rl
-		      WHERE rl.request_id = s.request_id
-		        AND (COALESCE(rl.origin_actor, '') LIKE 'goal-%'
-		          OR COALESCE(rl.origin_actor, '') IN ('auto-title-generator','auto-summary-generator','session-summary')))
-		  AND NOT EXISTS (
-		      SELECT 1 FROM _request_logs rl
-		      WHERE rl.request_id = s.request_id
-		        AND (COALESCE(rl.origin_actor, '') LIKE 'goal-%'
-		          OR COALESCE(rl.origin_actor, '') IN ('auto-title-generator','auto-summary-generator','session-summary')))
-		  -- 2026-10-02 审计：第三条臂指向 session 族（SSOT，且不受 S4 停写门管）。
+		  -- 合成流量排除臂：证据源是**会话族**（SSOT，且不受 S4 停写门管）。
 		  --
-		  -- 前两条臂都在**门内**（_request_logs_hot / _request_logs 属
-		  -- settings.KeyRequestLogsWriteEnabled 声明的 _request_logs 宽族），而本查询的
-		  -- 驱动表 auto_route_selections 由 domains/hooks/observability/telemetry/
-		  -- selection_writer.go 写入，**该写方不咨询该门**（实测 0 处调用）。
-		  -- 于是停写一旦生效：驱动表继续收新行，而这两条 NOT EXISTS 因证据表冻结而
-		  -- **恒真** ⇒ 合成流量（goal-* / 标题、摘要生成器）不再被排除，
-		  -- 直接进入亲和度聚合 ⇒ 模型被合成流量污染，且无任何信号。
+		  -- 2026-10-02 审计：原先这里是**三条**臂——两条 v1 臂（hot / 母表，
+		  -- 都在 settings.KeyRequestLogsWriteEnabled 声明的宽族内）+ 一条会话族臂。
+		  -- 前两条臂在门内，而本查询的驱动表 auto_route_selections 由
+		  -- domains/hooks/observability/telemetry/selection_writer.go 写入，
+		  -- **该写方不咨询该门**（实测 0 处调用）⇒ 停写一旦生效：驱动表继续收
+		  -- 新行，而那两条 NOT EXISTS 因证据表冻结而**恒真** ⇒ 合成流量
+		  -- （goal-* / 标题、摘要生成器）不再被排除，直接进入亲和度聚合 ⇒
+		  -- 模型被合成流量污染，且无任何信号。
 		  --
 		  -- 这是跨门边界的第三个失效方向：前两个是「比较两侧」（假报机）与
 		  -- 「证据缺失」（静默洞），这个是「**过滤臂在门内、驱动表在门外**」
 		  -- ⇒ 过滤静默失效、方向为过度纳入。
 		  --
-		  -- 纯增量：保留前两条臂（今天双写期行为完全不变——同一 request_id 必然
-		  -- 同时命中 v1 臂），新臂在双写期是 no-op，停写后才成为承重臂。
+		  -- ★ 890（v1 族退役）：两条 v1 臂删除（见上），会话族臂成为唯一承重臂。
 		  AND NOT EXISTS (
 		      -- ⚠️ 同 §9.28：会话族是**两个存储面**，写方只写 session_turns_hot，
 		      -- 冷行由 promote 搬到分区父表，边界随 promote 节奏移动。只读父表 ⇒

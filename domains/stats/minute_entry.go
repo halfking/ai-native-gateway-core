@@ -1,27 +1,33 @@
 package stats
 
 import (
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/internal/probekind"
 	"github.com/kaixuan/llm-gateway-go/maas"
 )
 
 const unknownDim = "__unknown__"
 
-// probeGatewayActors mirrors bg.ProbeTrafficExclusionPredicateView's
-// origin_actor arm. It lives here rather than importing bg because bg imports
-// this package (bg/stats_minute_rollup.go) — a shared const in bg would be an
-// import cycle. TestProbeActorSetMatchesSQLPredicate in this package fails if
-// the two lists ever drift.
-var probeGatewayActors = []string{
-	"node-probe-worker",
-	"active-probe-worker",
-	"probe-service",
-	"credential-selfcheck-worker",
-}
+// probeGatewayActors is the canonical probe-actor set, owned by
+// internal/probekind (the single source of truth for "what counts as a
+// probe").
+//
+// 2026-10-23 audit: this list used to be a hand-maintained copy of
+// bg.ProbeTrafficExclusionPredicateView's origin_actor arm, and it had
+// drifted — self-check-worker and model-quality-worker were missing, so
+// rows they wrote were recognised as probe by the live topology dashboard
+// (which reads origin_stage) but NOT by the stats exclusion (which reads
+// origin_actor) ⇒ the board's 总请求数 was permanently inflated.
+// The set is now derived from internal/probekind.Writers, which is itself
+// the inverse index of the middleware's stage→actor pairing table, so the
+// three copies can no longer disagree.
+//
+// The SQL twin is bg.ProbeTrafficExclusionPredicateView, whose actor list
+// is rendered from the same source; TestProbeActorSetMatchesSQLPredicate
+// fails if the two ever drift.
+var probeGatewayActors = probekind.ProbeActors
 
 // IsProbeTraffic reports whether a completed request_log entry is probe traffic
 // and must therefore be kept out of the dashboard's request/success counters.
@@ -33,21 +39,19 @@ var probeGatewayActors = []string{
 // do NOT add an origin_stage arm — that would make the live and rollup writers
 // disagree about which rows are business traffic, and the two writers feed the
 // same ON CONFLICT key in request_stats_minute.
+//
+// 2026-10-23: the marker set now comes from internal/probekind (single source
+// of truth) — the same source the dashboard / side-table / DB CHECK read, and
+// the same source the SQL predicate's actor list is rendered from.
 func IsProbeTraffic(entry *telemetry.RequestLogEntry) bool {
 	if entry == nil {
 		return false
 	}
-	if slices.Contains(entry.QualityFlags, "probe") {
-		return true
-	}
-	if task := strings.TrimSpace(derefString(entry.TaskType)); task == "probe_triggered" {
-		return true
-	}
-	if actor := strings.TrimSpace(derefString(entry.OriginActor)); actor != "" &&
-		slices.Contains(probeGatewayActors, actor) {
-		return true
-	}
-	return false
+	return probekind.IsProbeMarkers(
+		derefString(entry.TaskType),
+		entry.QualityFlags,
+		derefString(entry.OriginActor),
+	)
 }
 
 func derefString(p *string) string {

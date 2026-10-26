@@ -60,7 +60,7 @@ func Test154ThinkEchoDegenerateMarkerMasksInsteadOfBlocks(t *testing.T) {
 	if strings.Contains(string(result.ModifiedChunk), "{SENSITIVE:") {
 		t.Fatalf("raw marker leaked through: %q", result.ModifiedChunk)
 	}
-	if !strings.Contains(string(result.ModifiedChunk), "[REDACTED]") {
+	if !strings.Contains(string(result.ModifiedChunk), redactedMarkerPrefix) {
 		t.Fatalf("marker was not masked: %q", result.ModifiedChunk)
 	}
 }

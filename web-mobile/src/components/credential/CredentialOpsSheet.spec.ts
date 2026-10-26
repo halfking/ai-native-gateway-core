@@ -8,6 +8,7 @@ import {
   setConcurrencyAuto,
   toggleCredentialModel,
 } from '@/api/credentialWriteOps'
+import { useAuthStore } from '@/stores/auth'
 import { setLocale, locale } from '@/i18n'
 
 /**
@@ -46,9 +47,28 @@ const MODELS = [
   { raw_model_name: 'o3', available: false, unavailable_reason: 'model_probe_broken' },
 ]
 
-async function mountSheet(): Promise<ReturnType<typeof mount>> {
+/**
+ * 挂载面板。
+ *
+ * `role` 决定写侧角色门（2026-10-20）：本面板四个写操作的后端端点
+ * （promote / demote / set-concurrency-auto / model-toggle）全部要求
+ * super_admin —— promote/demote/set-concurrency-auto 走
+ * RequireSuperAdminForWrite，model-toggle 走 h.superAdmin。
+ * 默认给 super_admin，让既有三条不变量用例保持「能写」的语境。
+ */
+async function mountSheet(role: 'super_admin' | 'tenant_admin' = 'super_admin'): Promise<ReturnType<typeof mount>> {
   const pinia = createPinia()
   setActivePinia(pinia)
+  const auth = useAuthStore()
+  auth.userInfo = {
+    id: 1,
+    tenant_id: 'default',
+    username: 'ops-tester',
+    display_name: 'ops tester',
+    email: 'ops@example.com',
+    role,
+    enabled: true,
+  }
   const w = mount(CredentialOpsSheet, {
     attachTo: document.body,
     props: { open: true, credentialId: 3, credentialLabel: 'prod-key-a', models: MODELS },
@@ -217,5 +237,53 @@ describe('★ 失败必须可见且区分档位', () => {
     await flushPromises()
     await confirmSheet()
     expect(document.body.querySelector('.ops__ok')).not.toBeNull()
+  })
+})
+
+/**
+ * ★ 写侧角色门（2026-10-20）
+ *
+ * 后端 2026-10-19 补上了凭据写侧的角色门（admin/credential_monitor.go 的
+ * RequireSuperAdminForWrite / model-toggle 的 h.superAdmin）：
+ * **tenant_admin 是只读档**，写操作一律 403。
+ * 前端若不收口，tenant_admin 就会看到完全可点的写按钮，点下去只拿到 403。
+ *
+ * 判据纪律（AGENTS.md）：
+ *   ① 阻断侧断言「API 没被调用」——这是真正的不变量；
+ *   ② **允许侧也要有正向断言**（super_admin 确实能发出去），
+ *      否则「因为压根没渲染/没挂上」也会让阻断侧全绿 ⇒ 假绿。
+ */
+describe('★ 写侧角色门 —— tenant_admin 不能触发凭据写操作', () => {
+  it('tenant_admin 提交 ⇒ 四个写端点一个都不发，且给出无权限提示', async () => {
+    const w = await mountSheet('tenant_admin')
+    await clickByText(w, '下线')
+    const ta = document.body.querySelector('.ops__reason-input') as HTMLTextAreaElement
+    ta.value = 'tenant 试图写'
+    ta.dispatchEvent(new Event('input'))
+    await flushPromises()
+    await confirmSheet()
+
+    expect(toggle).not.toHaveBeenCalled()
+    expect(promote).not.toHaveBeenCalled()
+    expect(demote).not.toHaveBeenCalled()
+    expect(conc).not.toHaveBeenCalled()
+    expect(bodyText()).toContain('没有执行凭据写操作的权限')
+    w.unmount()
+    document.body.innerHTML = ''
+  })
+
+  it('★ 允许侧正向断言：super_admin 同一路径确实发得出去（防假绿）', async () => {
+    const w = await mountSheet('super_admin')
+    await clickByText(w, '下线')
+    const ta = document.body.querySelector('.ops__reason-input') as HTMLTextAreaElement
+    ta.value = 'super 正常写'
+    ta.dispatchEvent(new Event('input'))
+    await flushPromises()
+    await confirmSheet()
+
+    expect(toggle).toHaveBeenCalledTimes(1)
+    expect(toggle).toHaveBeenCalledWith(3, 'gpt-4o', 'offline', 'super 正常写')
+    w.unmount()
+    document.body.innerHTML = ''
   })
 })

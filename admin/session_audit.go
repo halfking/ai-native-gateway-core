@@ -161,9 +161,14 @@ func (h *Handler) handleSessionAuditList(w http.ResponseWriter, r *http.Request)
 	sqlQuery += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argNum, argNum+1)
 	args = append(args, req.Limit, req.Offset)
 
-	// 走事务 + RLS：把裸 h.db.Query 替换成 withTenantTx 包装
+	// 走事务 + RLS：把裸 h.db.Query 替换成 withTenantTx 包装。
+	//
+	// 2026-10-16：用 withTenantOrAllReadOnlyTx 取代 withTenantTx。super_admin
+	// 不传 tenant_id 时 req.TenantID 为空，旧写法让 setLocalTenantGUC 返回
+	// "empty tenant_id for SET LOCAL app.current_tenant" ⇒ 本端点 500
+	// （本机实测：库里 2 行跨 2 租户时仍 500）。
 	records := []*SessionAuditRecord{}
-	err := withTenantTx(r.Context(), h.db, req.TenantID, func(tx pgx.Tx) error {
+	err := withTenantOrAllReadOnlyTx(r.Context(), h.db, req.TenantID, func(tx pgx.Tx) error {
 		rows, qerr := tx.Query(r.Context(), sqlQuery, args...)
 		if qerr != nil {
 			return fmt.Errorf("query failed: %w", qerr)
@@ -309,7 +314,13 @@ func (h *Handler) handleSessionAuditStats(w http.ResponseWriter, r *http.Request
 		statsTenant = "" // SQL 不绑定 tenant_id 参数
 	}
 
-	_ = withTenantTx(r.Context(), h.db, statsTenant, func(tx pgx.Tx) error {
+	// 2026-10-16：原来这里是 `_ = withTenantTx(...)`，错误被整个丢弃。
+	// super_admin 的 statsTenant 为空 ⇒ setLocalTenantGUC 直接返回
+	// "empty tenant_id for SET LOCAL app.current_tenant" ⇒ 事务从未执行 ⇒
+	// 响应是**零值**：`{"total":0,"by_status":{},...}` + HTTP 200。
+	// 对审计端点这比 500 更危险——运维看到的是「零风险」，而库里其实有待审批的
+	// 拦截记录。本机实测（插入 2 行跨 2 租户后）修复前确实返回 total=0。
+	if err := withTenantOrAllReadOnlyTx(r.Context(), h.db, statsTenant, func(tx pgx.Tx) error {
 		// 总数
 		if isSuper {
 			_ = tx.QueryRow(r.Context(),
@@ -388,15 +399,24 @@ func (h *Handler) handleSessionAuditStats(w http.ResponseWriter, r *http.Request
 
 		// 注意：上面用了 `WHERE tenant_id = $1` 等子句只是为了文档清晰，
 		// super_admin 实际走的是无 tenant 过滤的全表统计。
-		// RLS 兜底：withTenantTx("") 时不设 GUC，policy 走 NULLIF→'default'
-		// 默认值，仍会过滤。但全表 SQL 不带 WHERE，policy 即使过滤也只能
-		// 看到 tenant_id='default' 的行 — 所以此处超级管理员实际仅能看到
-		// 'default' 租户。要真正跨租户，需要 RLS policy 加 app.current_role
-		// bypass（见 migrations/120_session_audit.sql 后续增强）。
+		//
+		// 2026-10-16 更正一段**从来没成立过**的注释：原文写「withTenantTx("")
+		// 时不设 GUC，policy 走 NULLIF→'default'」。withTenantTx 对空值是
+		// **报错**而非不设 GUC，所以「超级管理员实际仅能看到 'default' 租户」
+		// 这句话描述的是一个从未发生过的状态——真实表现是整段统计静默失败。
+		// 现在空 tenantID 走 withTenantOrAllReadOnlyTx ⇒ 显式 super-admin
+		// bypass，跨租户统计才是它名字所声称的样子。
+		//
+		// 遗留：闭包内每个 Scan 仍是 `_ =`，所以单个子查询失败仍会静默留零值
+		// （典型是 AVG() 在空集时返回 NULL）。这需要逐个改成 sql.Null* 才能
+		// 正确区分「没有数据」与「查询失败」，属独立改动，本轮只修事务层。
 		_ = tenantFilterSQL // 保留变量以备后续扩展
 
 		return nil
-	})
+	}); err != nil {
+		writeInternalErr(w, "stats failed", err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, stats)
 }
@@ -439,7 +459,8 @@ func (h *Handler) handleSessionAuditExport(w http.ResponseWriter, r *http.Reques
 	_ = rowsLeakMarker
 	type exportRow struct{ cells []string }
 	var out []exportRow
-	err := withTenantTx(r.Context(), h.db, req.TenantID, func(tx pgx.Tx) error {
+	// 2026-10-16：同 list 端点，空 tenant_id 走显式 super-admin bypass。
+	err := withTenantOrAllReadOnlyTx(r.Context(), h.db, req.TenantID, func(tx pgx.Tx) error {
 		// 局部变量不再叫 sql：闭包内的扫描代码用 database/sql 的
 		// sql.NullString，变量名会遮蔽包名。
 		sqlText := `

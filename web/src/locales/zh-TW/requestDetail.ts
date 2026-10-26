@@ -28,7 +28,6 @@ export default {
       requestTime: '請求時間',
       status: '狀態',
       latency: '延遲',
-      latencyUnit: 'ms',
       tenant: 'Tenant',
       success: 'Success',
       clientModel: '用戶端模型',
@@ -40,7 +39,6 @@ export default {
       taskId: '任務 ID',
       endUser: 'End User',
       token: 'Token',
-      tokenTotal: 'Token(總計 {input}/{output})',
       total: '總計',
       cache: 'Cache',
       costCredits: 'Cost / Credits',
@@ -151,7 +149,6 @@ export default {
   // — RequestWaterfallPanel —
   waterfall: {
     loading: '載入調度瀑布中…',
-    source: '資料來源:{src}',
     stageHeader: 'T0–T9 階段',
     cols: {
       stage: '階段',
@@ -179,19 +176,13 @@ export default {
     diagram: {
       ariaLabel: '請求處理流程', trackLabel: '流程事件序列',
       event: '流程事件', noData: '尚無可觀測流程', noEvents: '尚無流程事件',
-      stages: { received: '進站', routing: '路由解析', model_queue: '模型佇列', credential_queue: '憑據佇列', node_selection: '節點選擇', upstream: '上游請求', streaming: '串流回應', retrying: '重試中', terminal: '請求結束' },
-      status: { success: '成功', failed: '失敗', timeout: '逾時', skipped: '略過' },
       flags: { compression: '壓縮', retry: '重試', nodeSwitch: '節點切換', degraded: '觀測降級' },
       evidenceLabel: '路由與瀑布觀測證據', evidenceTitle: '已觀測嘗試', waterfallAttempt: '瀑布嘗試 #{number}', noDetails: '沒有更多詳情', degraded: '觀測降級',
       lanesLabel: '請求嘗試泳道', lanesTitle: '已觀測旅程嘗試', attemptLane: '嘗試 #{number}', sourceJourney: 'Journey 來源', waterfallLabel: '瀑布階段條', waterfallTitle: '瀑布階段條', lastAttemptSemantics: '請求級時間；T5–T9 可能反映末次嘗試', synthesizedBars: '合成階段表示缺少時間戳（觀測降級）。', requestTimeline: '請求時間線',
-      legend: { success: '成功', failed: '失敗/逾時', special: '壓縮 · 重試 · 節點切換' }
+      legend: { success: '成功', failed: '失敗/逾時', special: '壓縮，重試，節點切換' }
     },
   },
   // — 通用佔位符 —
-  common: {
-    emDash: '—',
-    colon: '：',
-  },
  // — Subtask 3 (handoff §5): body_status 兩態橫幅 —
   // 資料來源：/api/admin/sessions/detail 的 turns[].body_status；不是
   // /snapshot（沒有 turns），也不是 /turns 列表（僅中繼資料）。

@@ -61,10 +61,10 @@ export default {
 
   error: {
     loadFailed: 'Failed to load',
+    checkFailed: 'Validation failed',
     canonicalNameRequired: 'canonical_name is required',
     createFailed: 'Failed to create',
     deleteFailed: 'Failed to delete',
     restoreFailed: 'Failed to restore',
   },
-  softDeleteConfirm: 'Soft-delete policy {name}? (recoverable)',
 }

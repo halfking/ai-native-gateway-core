@@ -93,7 +93,9 @@ func NewMandatoryOutputComplianceInterceptor(checker interface {
 	return &OutputComplianceInterceptor{checker: checker, mandatory: true, stateKey: stateKey}
 }
 
-func (it *OutputComplianceInterceptor) isEnabled() bool { return it.mandatory || enabled() }
+func (it *OutputComplianceInterceptor) isEnabled() bool {
+	return settings.GetPlatformBool("sanitize.output_check_enabled", true) && (it.mandatory || enabled())
+}
 
 func (it *OutputComplianceInterceptor) FailClosed() bool { return true }
 
@@ -126,28 +128,11 @@ func redactionMode() outputcompliance.RedactionMode {
 
 // enabled 读取 output_compliance.enabled。
 //
-// 默认 enabled：settings.Global 未初始化 / spec 未注册 / 没有具体配置时，
-// 按原 ModuleSpecs 默认 + write-time redactor 语义，认为 compliance 启用。
-// 只有显式设置 enabled=false 才禁用。
+// 默认关闭：与 ModuleSpecs / write-time redactor 一致。未初始化、未注册、
+// 未写入具体值时都不跑可选输出合规；只有显式 true 才启用。强制外传守卫
+// （mandatory OutputSensitive）不走本函数。
 func enabled() bool {
-	if settings.Global == nil {
-		return true
-	}
-	sp := settings.Global.Spec("output_compliance.enabled")
-	if sp == nil {
-		// Match ModuleSpecs' default and the write-time redactor. The
-		// gateway may have a checker before settings registration completes.
-		return true
-	}
-	raw, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
-	if err != nil || len(raw) == 0 {
-		return true
-	}
-	var b bool
-	if json.Unmarshal(raw, &b) != nil {
-		return true
-	}
-	return b
+	return settings.GetPlatformBool("output_compliance.enabled", false)
 }
 
 // InterceptNonStream 处理非流式响应：检测 + owner 规则脱敏。
@@ -216,6 +201,64 @@ func (it *OutputComplianceInterceptor) InterceptStreamEnd(ctx context.Context, m
 	return &response.EndResult{}, nil
 }
 
+// policyIssueDetail 取第一条带原因码/位置的问题。
+//
+// r1039（D3）：拦截要让客户端知道「哪条规则、哪个参数」——只有规则名不够：
+// 调用方（agent）要能据此提示用户「这次调用被拦了，要不要继续执行」。
+//
+// Location 语义随来源不同：tool 参数是 JSON 路径（$.command），纯文本是
+// 字符区间（char:120-145）。两者都是「出问题的地方」，都能直接回给用户。
+func policyIssueDetail(issues []outputcompliance.ComplianceIssue) (subtype, location string) {
+	for _, issue := range issues {
+		if issue.Subtype == "" && issue.Location == "" {
+			continue
+		}
+		return issue.Subtype, issue.Location
+	}
+	return "", ""
+}
+
+// policyBlockReason 产出人类可读的拦截原因短语。
+//
+// owner 口径（2026-10-20）：「就算是被拦截，应该在中断时反馈给客户因为什么
+// 规则被拦截，不要搞空响应」——客户端要能拿这句话去提示用户。
+func policyBlockReason(ruleID, subtype, field string) string {
+	phrase := ""
+	switch subtype {
+	case "credential":
+		phrase = "a credential value was found in a protected field"
+	case "egress_destination":
+		phrase = "the tool call appears to send data to an external destination"
+	default:
+		phrase = "the response violated an output policy rule"
+	}
+	if ruleID != "" {
+		phrase += " (rule " + ruleID + ")"
+	}
+	if field != "" {
+		phrase += " at " + field
+	}
+	return phrase
+}
+
+// policyBlockMetadata 组装拦截元数据：规则名 + 人类可读原因 + 出问题的位置。
+//
+// 键名与流式侧一致（policy_rule，见 policyRuleFromChunkResult），写者据此
+// 渲染协议终帧；非流式侧据此渲染 403 响应体。
+func policyBlockMetadata(rule, subtype, field string) map[string]interface{} {
+	meta := map[string]interface{}{}
+	if rule != "" {
+		meta["policy_rule"] = rule
+	}
+	if field != "" {
+		meta["policy_field"] = field
+	}
+	if reason := policyBlockReason(rule, subtype, field); reason != "" {
+		meta["policy_reason"] = reason
+	}
+	return meta
+}
+
 // processBody 是非流式/流结束共用的核心逻辑。
 //
 // F02 (V3): the body is decomposed into client-visible text lanes
@@ -229,6 +272,11 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 	}
 	shouldRedact := it.mandatory || outputcompliance.ShouldRedact(redactionMode(), req.CallerOwner, dataOwner)
 
+	// r1039（D3）：拦截原因（规则名 / 原因码 / 出问题的位置）在**拦截那一刻**
+	// 记下来。原来的非流式 403 只有一句 message，客户端既说不出因为什么规则
+	// 被拦，也没法据此提示用户。
+	var blockRule, blockSubtype, blockField string
+
 	transform := func(label, original string) (string, int, bool, error) {
 		result, err := it.checkText(ctx, req.TenantID, label, original)
 		if err != nil {
@@ -239,7 +287,13 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 		if result == nil {
 			return "", 0, false, errors.New("output compliance checker returned nil result")
 		}
-		if result.Blocked {
+		if result.Blocked || shouldRedact && result.ToolShapeRedactionRequired {
+			if rule := policyRuleFromIssues(result.Issues); rule != "" {
+				blockRule = rule
+			}
+			if subtype, field := policyIssueDetail(result.Issues); subtype != "" || field != "" {
+				blockSubtype, blockField = subtype, field
+			}
 			return "", 0, true, nil
 		}
 		if !shouldRedact || result.RedactedOutput == "" || result.RedactedOutput == original {
@@ -260,7 +314,11 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 	}
 	if blocked {
 		metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathBody).Inc()
-		return &response.InterceptResult{ShouldBlock: true, Action: "output_compliance_block"}, nil
+		return &response.InterceptResult{
+			ShouldBlock: true,
+			Action:      "output_compliance_block",
+			Metadata:    policyBlockMetadata(blockRule, blockSubtype, blockField),
+		}, nil
 	}
 
 	if !bytes.Equal(redactedBody, req.ResponseBody) {

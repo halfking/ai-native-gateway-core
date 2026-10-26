@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5"
 
 	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
@@ -206,45 +204,32 @@ func (h *Handler) lookupControlledBody(ctx context.Context, requestID, tenantID 
 	var occurredAt time.Time
 	var requestBody, responseBody *string
 
-	// The hot query is intentionally separate so the common recent-request path
-	// never invokes the UNION view over archived/columnar partitions.
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的两条 v1 腿（v1 hot 主行
+	// JOIN v1 hot 正文表；canonical 视图 JOIN v1 bodies 视图）一起删掉，
+	// 轮次与正文都只来自会话族。
+	//
+	// JOIN 键从 (request_id, ts) 改成 **request_id 单键**：会话族正文源
+	// （db.SessionFamilyBodiesSourceSQL）**不投影 ts** —— 那是 db 侧刻意的列
+	// 合同（两侧 bodies 的 ts 相等率实测 99.85% 不等；把 ts 加进去只会把一个
+	// 解析期错误换成一个静默的行数变化），所以 v1 那套 ts 等值 JOIN 搬不过来。
 	err := h.bodyDB.QueryRow(ctx, `
 		SELECT rl.ts,
 		       COALESCE(rb.request_body::text, ''),
 		       COALESCE(rb.response_body::text, '')
-		  FROM _request_logs_hot rl
-		  LEFT JOIN _request_logs_bodies_hot rb
-		    ON rb.request_id = rl.request_id AND rb.ts = rl.ts
-		 WHERE rl.request_id = $1
-		   AND rl.tenant_id = $2
-		 LIMIT 1
-	`, requestID, tenantID).Scan(&occurredAt, &requestBody, &responseBody)
-	if err == nil {
-		return occurredAt, requestBody, responseBody, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, sql.ErrNoRows) {
-		// A stale/missing hot table should not prevent the bounded archive fallback.
-		// The caller still returns the same 404 for every lookup failure.
-	}
-
-	err = h.bodyDB.QueryRow(ctx, `
-		SELECT rl.ts,
-		       COALESCE(rb.request_body::text, ''),
-		       COALESCE(rb.response_body::text, '')
-		  FROM request_logs_with_current_month rl
-		  LEFT JOIN request_logs_bodies_with_current_month rb
-		    ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		  FROM `+dbpkg.SessionFamilyTurnsSourceSQL()+` rl
+		  LEFT JOIN `+dbpkg.SessionFamilyBodiesSourceSQL()+` rb
+		    ON rb.request_id = rl.request_id
 		 WHERE rl.request_id = $1
 		   AND rl.tenant_id = $2
 		 LIMIT 1
 	`, requestID, tenantID).Scan(&occurredAt, &requestBody, &responseBody)
 	if err != nil {
+		// 找不到就是找不到：会话族是唯一事实源，没有第二处可查。
+		// The caller still returns the same 404 for every lookup failure.
 		return time.Time{}, nil, nil, err
 	}
-	// S4 停写交接（2026-10-13）：视图 session 分支的行 ts 与 v1 bodies 的
-	// ts 等值 JOIN 实测 99.85% 不等（§9.231），停写后的新请求经上面两腿
-	// 只会拿到空正文。此处按 request_id 单键补查 session_bodies（列合同
-	// 无 ts，恰是本兜底需要的形态）；旧请求 v1 腿已命中，本腿纯增量。
+	// 正文可能只落在一侧（镜像期双写、停写后单写）：空的一侧按 request_id
+	// 单键补查会话族正文源（列合同无 ts，恰是本兜底需要的形态）。
 	emptyBody := requestBody == nil || *requestBody == ""
 	emptyResp := responseBody == nil || *responseBody == ""
 	if emptyBody || emptyResp {
@@ -270,6 +255,25 @@ func (h *Handler) lookupControlledBody(ctx context.Context, requestID, tenantID 
 
 func normalizeControlledPrompt(raw *string) (string, bool) {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return "", false
+	}
+	// 2026-10-20（迁移 890）：正文只有会话族一份，而会话族的 request_delta
+	// 是**消息数组** `[{"role":"user","content":"…"}]`，不是 v1 家族的
+	// 「带 messages 键的完整对象」。数组臂先试：JSON 数组解进切片成功即判定
+	// 是数组形状（解进对象会报错 ⇒ 落到下面的对象臂）。
+	var array []struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(*raw), &array); err == nil {
+		for i := len(array) - 1; i >= 0; i-- {
+			if array[i].Role != "user" {
+				continue
+			}
+			if content, ok := controlledString(array[i].Content); ok {
+				return content, true
+			}
+		}
 		return "", false
 	}
 	var document struct {
@@ -301,6 +305,26 @@ func normalizeControlledResponse(raw *string) (string, bool) {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return "", false
 	}
+	// 2026-10-20（迁移 890）：会话族的 response_delta 是**消息数组**
+	// `[{"role":"assistant","content":"…"}]`（理由同 normalizeControlledPrompt）。
+	var array []struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(*raw), &array); err == nil {
+		for _, message := range array {
+			if message.Role != "" && message.Role != "assistant" {
+				continue
+			}
+			// ★ controlledText, not controlledString: the answer to a
+			// tool-calling turn is a content ARRAY, and refusing it made
+			// 46.1% of the governance domain's traffic invisible.
+			if content, ok := controlledText(message.Content); ok {
+				return content, true
+			}
+		}
+		return "", false
+	}
 	var document struct {
 		Choices []struct {
 			Message *struct {
@@ -314,11 +338,11 @@ func normalizeControlledResponse(raw *string) (string, bool) {
 	}
 	for _, choice := range document.Choices {
 		if choice.Message != nil {
-			if content, ok := controlledString(choice.Message.Content); ok {
+			if content, ok := controlledText(choice.Message.Content); ok {
 				return content, true
 			}
 		}
-		if content, ok := controlledString(choice.Text); ok {
+		if content, ok := controlledText(choice.Text); ok {
 			return content, true
 		}
 	}
@@ -334,6 +358,67 @@ func controlledString(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return content, true
+}
+
+// controlledText returns the text of a message body written in either of the
+// two shapes the session family stores.
+//
+// ★ WHY THE SECOND SHAPE EXISTS (measured, not guessed):
+//
+//	The answer to a turn that calls a tool is written as an OpenAI-style
+//	content ARRAY — `[{"role":"assistant","content":[{"type":"text",
+//	"text":"…"}],"tool_calls":[…]}]` — not as a plain string.
+//	Before this function existed, only a plain string was readable ⇒ every
+//	such answer was REFUSED by this endpoint ⇒ the answer was there and
+//	still invisible to every consumer of it.
+//
+//	Measured on 2026-10-25 (154, the AI-session-manager governance domain):
+//	the domain's 399 usages split into 184 "the answer is a content array"
+//	and 37 "the answer is a plain string" ⇒ 46.1% of the traffic the
+//	governance domain sees was invisible for this one reason.
+//
+// ★ THE RULE: a content array is readable when at least one of its parts
+//
+//	carries a `text` string. The parts' texts are joined with a newline,
+//	because two text parts are two blocks, not two halves of one word.
+//
+// ★ WHAT IS DELIBERATELY NOT SERVED: the `tool_calls` that usually sit
+//
+//	next to the content array. This endpoint has one `content` field;
+//	serving the tool calls would be a NEW field ⇒ a contract change ⇒
+//	that is a different change, not this one.
+func controlledText(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var content string
+	if err := json.Unmarshal(raw, &content); err == nil {
+		if content == "" {
+			return "", false
+		}
+		return content, true
+	}
+	var parts []json.RawMessage
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return "", false
+	}
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		var piece struct {
+			Text *string `json:"text"`
+		}
+		if err := json.Unmarshal(part, &piece); err != nil || piece.Text == nil {
+			continue
+		}
+		if strings.TrimSpace(*piece.Text) == "" {
+			continue
+		}
+		texts = append(texts, *piece.Text)
+	}
+	if len(texts) == 0 {
+		return "", false
+	}
+	return strings.Join(texts, "\n"), true
 }
 
 func writeControlledBodyAuthError(w http.ResponseWriter) {

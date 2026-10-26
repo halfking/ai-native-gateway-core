@@ -1,7 +1,7 @@
 // Auto-synced from en-US (zh-TW)
 export default {
   title: 'Routing Overrides Audit',
-  subtitle: 'Every change to the routing_overrides table is recorded with actor, action, and row state.',
+  subtitle: 'routing_overrides 資料表的每次變更都會記錄操作者、動作與該列狀態。',
   summary: {
     total: 'Total',
     inserts: 'Inserts',
@@ -19,13 +19,11 @@ export default {
     limit: 'Limit',
     refresh: 'Refresh',
     loading: 'Loading…',
-    days: { d1: '1 day', d7: '7 days', d30: '30 days', d90: '90 days' },
+    days: { d1: '1 天', d7: '7 天', d30: '30 天', d90: '90 天' },
     limits: { l50: '50', l200: '200', l500: '500', l1000: '1000' },
   },
   actions: {
     insert: 'Create',
-    update: 'Update',
-    delete: 'Delete',
   },
   table: {
     title: 'Audit entries ({n})',
@@ -40,8 +38,6 @@ export default {
       actor: 'Actor',
     },
     details: 'Details',
-    before: 'Before',
-    after: 'After',
   },
 
   expand: {

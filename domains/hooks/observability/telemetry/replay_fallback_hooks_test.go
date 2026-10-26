@@ -10,6 +10,21 @@
 //
 // DB mock 用 pgxmock（现有 telemetry 测试基建，见 final_success_claim_test.go /
 // body_summary_test.go 的同构期望链）。
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：本文件**只改期望链**，判据本身不变。
+//
+// 旧期望链（v1 族的语句集合）：
+//
+//	INSERT: usage_ledger_hot(19) + _request_logs_hot(103) + _request_logs_bodies_hot(4)
+//	        + SAVEPOINT + claim UPDATE + RELEASE
+//	UPDATE: usage_ledger_hot(5) + _request_logs_hot(100) + _request_logs_bodies_hot(4)
+//	        + SAVEPOINT + claim UPDATE + RELEASE
+//
+// 新期望链（迁移 890 后的语句集合）：只剩 usage_ledger_hot 的一条语句 +
+// commit（v1 宽表/正文族写入与终态成功认领整段退役；终态成功的仲裁迁到
+// internal/sessionv2mirror 的 markTurnFinalSuccess）。
+//
+// ⇒ 「回放成功后 hooks 必须被触发」这条不变式**原封不动**地继续被守着。
 package telemetry
 
 import (
@@ -36,13 +51,14 @@ func TestReplayFallbackFiresOnPersistedHooks(t *testing.T) {
 		Op:            RequestLogInsert,
 		Success:       true,
 		RequestStatus: &status,
-		GwSessionID:   &sessionID, // 命中 final-success claim 分支
+		GwSessionID:   &sessionID, // 命中 final-success 资格判定
 	}
 	payload, err := json.Marshal(entry)
 	require.NoError(t, err)
 
-	// insertRequestLog 事务链（无 bodies → 无 bodies INSERT；APIKeyID nil
-	// → 无 api_keys UPDATE；outboxWriter nil → 无 session opener）。
+	// insertRequestLog 事务链（迁移 890 后只剩一条 INSERT：APIKeyID nil
+	// → 无 api_keys UPDATE；outboxWriter nil → 无 session opener；
+	// v1 宽表 / 正文族写入与终态成功认领整段退役）。
 	mockDB.ExpectBegin()
 	usageArgs := make([]interface{}, 19)
 	for i := range usageArgs {
@@ -51,26 +67,6 @@ func TestReplayFallbackFiresOnPersistedHooks(t *testing.T) {
 	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
 		WithArgs(usageArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	requestArgs := make([]interface{}, 103) // 608: +request_class/due_at ($101/$102); B1: +rate_multiplier ($103)
-	for i := range requestArgs {
-		requestArgs[i] = pgxmock.AnyArg()
-	}
-	mockDB.ExpectExec(`INSERT INTO\s+_request_logs_hot\s*\(`).
-		WithArgs(requestArgs...).
-		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	// bodies 行无条件写入（全 nil 时 NULLIF 置空，仍占 4 参）。
-	mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("INSERT", 0))
-	// final-success claim（同事务 SAVEPOINT/UPDATE/RELEASE，
-	// 模式见 final_success_claim_test.go）。
-	mockDB.ExpectExec(`SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-	mockDB.ExpectExec(`UPDATE _request_logs_hot\s+SET is_final_success = TRUE`).
-		WithArgs("req-replay-e6").
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mockDB.ExpectExec(`RELEASE SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("RELEASE", 0))
 	mockDB.ExpectCommit()
 
 	hookCalled := make(chan *RequestLogEntry, 1)
@@ -97,7 +93,7 @@ func TestReplayFallbackFiresOnPersistedHooks(t *testing.T) {
 
 // TestReplayFallbackFiresOnPersistedHooks_UpdateOp — R45（D15+D16 复核）：
 // UPDATE op 是 G2 终态信号的主通道（终态 UPDATE 才携带 final-success
-// claim），此前钉桩只盖 INSERT op。本测试钉死回放 UPDATE 成功后 hooks
+// 资格），此前钉桩只盖 INSERT op。本测试钉死回放 UPDATE 成功后 hooks
 // 同样触发；并钉死写库失败（err != nil）时不得补发 hooks（无漏发窗口的
 // 对偶面：失败 record 会被 ring buffer requeue，下次成功才补发）。
 func TestReplayFallbackFiresOnPersistedHooks_UpdateOp(t *testing.T) {
@@ -118,31 +114,13 @@ func TestReplayFallbackFiresOnPersistedHooks_UpdateOp(t *testing.T) {
 		require.NoError(t, err)
 		defer mockDB.Close()
 
-		// updateRequestLog 事务链：usage_ledger（无 token 走 5 参分支）→
-		// _request_logs_hot 主 UPDATE（$99 DueAt 收尾）→ bodies upsert（4 参）
-		// → final-success claim → commit。protocol metadata / fingerprint /
-		// api_keys 均为 nil 字段 no-op。
+		// updateRequestLog 事务链：usage_ledger（无 token 走 5 参分支）→ commit。
+		// v1 宽表 UPDATE / 正文族 upsert / 终态成功认领（SAVEPOINT+claim）
+		// 随 890 整段退役。
 		mockDB.ExpectBegin()
 		mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-		updateArgs := make([]interface{}, 100)
-		for i := range updateArgs {
-			updateArgs[i] = pgxmock.AnyArg()
-		}
-		mockDB.ExpectExec(`UPDATE _request_logs_hot\s+SET client_model`).
-			WithArgs(updateArgs...).
-			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-		mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
-			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
-			WillReturnResult(pgxmock.NewResult("INSERT", 0))
-		mockDB.ExpectExec(`SAVEPOINT gw_final_success_claim`).
-			WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-		mockDB.ExpectExec(`UPDATE _request_logs_hot\s+SET is_final_success = TRUE`).
-			WithArgs("req-replay-e6-update").
-			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-		mockDB.ExpectExec(`RELEASE SAVEPOINT gw_final_success_claim`).
-			WillReturnResult(pgxmock.NewResult("RELEASE", 0))
 		mockDB.ExpectCommit()
 
 		hookCalled := make(chan *RequestLogEntry, 1)

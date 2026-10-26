@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 // Store 是 session_project_attribution 的持久化接口。
@@ -233,28 +235,35 @@ func (s *PGStore) LoadProjects(ctx context.Context, tenantID string) ([]Project,
 
 // LoadSignals 组装推断输入。
 //
-// 只读 _request_logs 已有列，不新增任何采集点。取会话首条请求：智能体的
+// 只读会话族已有列，不新增任何采集点。取会话首条请求：智能体的
 // 仓库路径/项目上下文几乎总出现在第一轮。
 //
-// 注意 _request_logs 没有独立的 system_prompt 列，请求全文在 request_body
-// (jsonb) 里；这里只取轻量的 request_preview 作为文本信号，避免为了归集
-// 去反序列化整个 body。identity_hash 代替设备种子做历史继承的关联键。
+// 注意请求全文在 request_body (jsonb) 里；这里只取轻量的 request_preview
+// 作为文本信号，避免为了归集去反序列化整个 body。identity_hash 代替设备
+// 种子做历史继承的关联键。
 //
 // api_key_id / identity_hash 可空，用 COALESCE 兜底避免 Scan 到 NULL 报错。
 func (s *PGStore) LoadSignals(ctx context.Context, tenantID, gwSessionID string) (Signals, error) {
 	if s == nil || s.q == nil {
 		return Signals{}, ErrNoStore
 	}
-	const q = `
-		SELECT COALESCE(work_type, ''), COALESCE(request_preview, ''),
-		       COALESCE(identity_hash, ''), COALESCE(api_key_id, 0)
-		FROM public._request_logs
-		WHERE tenant_id = $1 AND gw_session_id = $2
-		  AND ts > NOW() - ($3 || ' days')::interval
-		ORDER BY ts ASC
+	// ★ 890：投影源由 db.SessionFamilyTurnsForSessionSQL() 生成 ⇒ 它是 var 不是
+	// const（const 表达式里不能调函数）。
+	var q = `
+		SELECT COALESCE(rl.work_type, ''), COALESCE(rl.request_preview, ''),
+		       COALESCE(rl.identity_hash, ''), COALESCE(rl.api_key_id, 0)
+		-- ★ 890（v1 族退役）：源换成**会话族原生源**
+		-- （db.SessionFamilyTurnsForSessionSQL：会话谓词内推到 t.session_id = $1，
+		-- idx_session_turns_session 可用）。
+		-- ⚠ 占位符顺序因此调整：$1 = 会话 id（内推），$2 = 租户，$3 = 回溯天数。
+		FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
+		WHERE rl.tenant_id = $2
+		  AND rl.ts > NOW() - ($3 || ' days')::interval
+		ORDER BY rl.ts ASC
 		LIMIT 1`
 	sig := Signals{GwSessionID: gwSessionID, TenantID: tenantID}
-	err := s.q.QueryRow(ctx, q, tenantID, gwSessionID, signalLookbackDays).
+	// ★ 890：占位符顺序 = (会话 id, 租户, 回溯天数)，见上面 SQL 的注释。
+	err := s.q.QueryRow(ctx, q, gwSessionID, tenantID, signalLookbackDays).
 		Scan(&sig.WorkType, &sig.UserText, &sig.IdentityHash, &sig.APIKeyID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -269,28 +278,34 @@ func (s *PGStore) LoadSignals(ctx context.Context, tenantID, gwSessionID string)
 
 // InheritFromHistory 构造 InheritLookup：找同一客户端指纹近期已确认的项目。
 //
-// 关联键用 _request_logs.identity_hash（会话首条请求的客户端指纹），因为
+// 关联键用会话族的 identity_hash（会话首条请求的客户端指纹），因为
 // session_dim 里没有设备种子列。window 控制回溯窗口：太长会把换了项目的
 // 客户端错误继承到旧项目，建议 24h 量级。
 //
 // 只继承 status='confirmed' 的记录——未经人工确认的推断不应再成为下一次
 // 推断的依据，否则一个错误会顺着继承链扩散。
 //
-// EXISTS 子查询同样带 ts 窗口，保证 _request_logs 能做分区裁剪。
+// EXISTS 子查询同样带 ts 窗口，保证会话族能做分区裁剪。
 func InheritFromHistory(q Querier, window time.Duration) InheritLookup {
 	return func(ctx context.Context, s Signals) (string, error) {
 		if q == nil || s.IdentityHash == "" {
 			return "", nil
 		}
-		const sql = `
+		// ★ 890：同上，投影源是函数调用 ⇒ var 不是 const。
+		var sql = `
 			SELECT spa.project_ref
 			FROM public.session_project_attribution spa
 			WHERE spa.tenant_id = $1
 			  AND spa.status = 'confirmed'
 			  AND spa.project_ref IS NOT NULL
 			  AND spa.updated_at > NOW() - ($3 || ' seconds')::interval
+			  -- ★ 890（v1 族退役）：源换成**会话族原生源**（hot ∪ parent）。
+			  -- 会话 id 在这里是**变量**（spa.gw_session_id）而不是绑定参数，
+			  -- 所以用 ForSession 那条（它把会话谓词钉成 $1）不合适 ⇒ 用全族源。
+			  -- 投影里的 gw_session_id 与 idx_session_turns_effective_session 的
+			  -- 索引表达式同形 ⇒ 谓词仍可走索引。
 			  AND EXISTS (
-			      SELECT 1 FROM public._request_logs rl
+			      SELECT 1 FROM ` + db.SessionFamilyTurnsSourceSQL() + ` rl
 			      WHERE rl.gw_session_id = spa.gw_session_id
 			        AND rl.tenant_id = spa.tenant_id
 			        AND rl.identity_hash = $2

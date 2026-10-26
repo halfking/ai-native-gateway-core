@@ -41,90 +41,62 @@ var bareRequestLogsRe = regexp.MustCompile(`(?i)\b(FROM|JOIN)\s+(public\.)?_?req
 
 var sqlReadGuardAllowFiles = map[string]string{
 	// ---- LEGIT：双腿之母表腿（有意读） ----
-	"admin/analytics.go":               "LEGIT: 决策回放双腿之母表腿（R46 F9，hot 腿同查询内联）",
-	"admin/request_trace.go":           "LEGIT: hot∪母表双腿 UNION ALL（既定正面模板）",
-	"admin/session_tenant.go":          "LEGIT: assertTaskInTenant 跨租户权限门，session 族两腿 + v1 双 EXISTS 母表腿并联（S4 停写后不得只剩 v1）",
-	"admin/session_detail_v2.go":       "LEGIT: resolveSessionID 反向臂 hot∪母表双腿之母表腿（R71，hot 腿同查询内联）",
-	"internal/trace/trace.go":          "LEGIT: hot∪母表双腿",
-	"internal/summarystore/store.go":   "LEGIT: v1FallbackCountSQL 父表直读（2026-10-13 252 审计轮从视图收窄；只在会话族腿 0 行时执行，母表索引探测）。迁移 860 后物理名为 _request_logs，形态未变。",
-	"bg/auto_route_affinity_worker.go": "LEGIT: NOT EXISTS 探测之母表腿（R46 F4 裁决落地形态）",
-	"domains/session/v2/session_request_status_backfill.go": "LEGIT: request_status 回填的**候选集分母**（:457-467 的 remaining 量表、:521 源探针、:677 回写 VALUES 臂）。" +
-		"为什么母表单腿是对的：① 目标侧已经是双腿——`session_turns` 与 `session_turns_hot` 两臂在同一条 SQL 里相加，" +
-		"若只回填 hot 单窗，分母与写入面错位，「已回填比例」会恒为 0（这正是 R43 §R43/L1 修掉的同类假绿）；" +
-		"② 源侧 `_request_logs` 只有母表有 `request_status`（823 只给 session_turns/_hot 落标签），母表腿不是可选项。" +
-		"③ 对最近 8h 的盲区在此**方向是保守的**：那批行由在线路径直接落标签、本就不该进回填集，漏读只会让 remaining 略被低估，不会虚报进度。",
 
-	// ---- LEGIT：引擎/DDL/维护/工具 ----
-	"bg/lite_retention_worker.go":        "LEGIT: SQLite 引擎 DELETE（? 占位，非 PG hot/mother 体系）",
-	"cmd/gateway/dual_read_validator.go": "LEGIT: 专职双腿一致性校验器",
-	// db/db.go 条目已于 2026-10-13 12h 审计轮移除（自清洁）：
-	//   routing_analytics_source 已视图化（182a08928），该文件不再有裸读命中，
-	//   由 TestSQLReadGuardWhitelistCurrent 报出。
-	"db/request_logs_view_schema.go": "LEGIT: 视图 DDL 体",
-	// 2026-10-13 12h 审计轮登记：该文件是 **v1 冻结点常量本身**的定义处
-	// （V1FreezeCutoffSQL = max(ts) 取 hot ∪ 母表两腿）。
-	// 它不是「漏迁的读面」——冻结点的定义在语义上就**必须**读母表：
-	// promote 只搬 8h 前的旧行，只看 hot 会把冻结点定在数小时前，
-	// 双写期行将被两腿各计一次。改用会话族源反而无法界定 v1 臂边界。
-	"db/v1_freeze_cutoff.go":              "LEGIT: v1 冻结点常量定义本身（max(ts) 必须取 hot ∪ 母表两腿；见该文件头）",
-	"admin/data_lifecycle.go":             "LEGIT: 存储生命周期维护面（全历史体积/清理属设计语义）",
-	"admin/data_lifecycle_attachments.go": "LEGIT: 存储生命周期维护面",
-	"admin/data_lifecycle_metrics.go":     "LEGIT: 存储生命周期维护面",
-	"bg/credential_recovery.go":           "LEGIT: 恢复扫描需全历史窗口（404 二次确认 6h 终判的旧证据只在母表）",
-	// 2026-10-05（832/833 收口轮）两条：
-	"cmd/gateway/v1_write_liveness.go": "LEGIT: §9.264 写入腿存活信号——hot 与母表在同一查询内**并列计数**，" +
-		"对照本身就是查询目的（父表落后 hot 是正常形态，见其文件头 §9.160.7 第四/五次命中记录）；" +
-		"四腿（_request_logs_hot/request_logs/session_turns_hot/session_turns）缺一不可",
-	"bg/routing_health_checks.go": "DEBT(R47): recorded_cost_is_negative 巡检 30 天负成本审计单腿母表读——" +
-		"①为何暂不能双腿化：正确双腿必须走 request_logs_with_current_month 族视图并核对 promote 去重语义" +
-		"（§9.260 实测该族视图由 composer 运行时建、带 v1 臂，裸 UNION hot 会把 promote 前后重复行数两次，" +
-		"负价告警将系统性虚高），而核对需真库 promote 环境非本轮可得；" +
-		"②窗口论证：盲区≤晋级延迟，最新负价行最迟 8h 后进母表，warning 级 30 天窗口可容忍；" +
-		"③退役路径：双腿化后按 TestSQLReadGuardWhitelistCurrent 自清洁移除本条",
-	"cmd/tools/validate_sessions_v2/loader.go":  "TOOLING: 离线校验工具",
-	"cmd/tools/backfill_session_bodies/main.go": "TOOLING: 离线回填工具",
-	"cmd/traffic-replay/main.go":                "TOOLING: 离线回放工具",
-	"cmd/compression-bench/main.go":             "TOOLING: 离线基准工具",
-	// R72 移除三条滞留条目（自清洁盲区修复后由守卫报出，均仅剩注释命中）：
-	// admin/session_export.go（已双腿化为 request_logs_with_current_month 视图）、
-	// cmd/tools/backfill_sessions_v2_v2/main.go、cmd/tools/backfill_session_bodies/derive.go。
-
-	// ---- DEBT(R47)：admin 读面盲区债（R46 §五#11 同类，待双腿化） ----
-	// session_list.go / usage.go / session_online.go 已在 R48 §5 双腿化为
-	// request_logs_with_current_month 视图（view 已在白名单 LEGIT），对应
-	// 白名单条目按 self-cleaning 守卫自动清除（TestSQLReadGuardWhitelistCurrent）。
-	// admin/quality_correlations.go 条目已于 2026-10-14 移除：S4 波 4 的
-	// 会话族重写后该文件已无裸母表读（FROM 经 SessionFamilyTurnsSourceSQL
-	// 拼接），本门自清洁报出。origin/main 上既存红，本轮顺手收口。
-	"admin/session_sanitize_matches.go":        "DEBT(R47): 裸母表",
-	"cmd/gateway/output_compliance_control.go": "DEBT(R47): 网关运行时读面裸母表",
-	"cmd/gateway/main_v3_wiring.go":            "DEBT(R47): 接线读面裸母表",
-	"domains/analysis/optimizer.go":            "DEBT(R47): 裸母表",
-	"domains/analysis/projectattr/store.go":    "DEBT(R47): 裸母表",
-	// 下列三条已于 2026-10-13 12h 审计轮移除（S3 波2/波3 迁移后已无裸读命中）：
-	//   admin/provider_models.go、domains/analysis/request_summary.go、
-	//   domains/sessionforensics/export.go —— 均由 TestSQLReadGuardWhitelistCurrent 报出。
-	// domains/providerprofile/pg_reconciliation_store.go 条目已按 R28-B-1（round 30）
-	// 聚合源切换移除：该文件现已只读计帐侧月分区，无 _request_logs 裸读命中，
-	// 由 TestSQLReadGuardWhitelistCurrent 自清洁守卫报出。
-	"domains/hooks/goal/history_store.go":             "DEBT(R47): 裸母表",
-	"domains/hooks/observability/telemetry/client.go": "DEBT(R47): 裸母表",
-	"autoroute/recommend_v2.go":                       "DEBT(R47): 裸母表",
-	"discovery/discovery.go":                          "DEBT(R47): 裸母表",
 }
 
 var sqlReadGuardAllowSQLFiles = map[string]string{
-	"sql/objects/views/request_logs_with_current_month.sql":                           "LEGIT: v1 回退体（两条臂）视图定义体。⚠️ 它**不是**部署形态——部署形态是 db/request_logs_view_schema.go 的三臂会话体（session_turns_hot ∪ session_turns ∪ v1 臂 + 双反连接去重）。别把本文件当该视图的定义引用（203/204 号都栽在这里，205 号更正）；世代由 db/request_logs_view_dump_generation_test.go 钉住",
-	"sql/objects/views/request_logs_bodies_progress.sql":                              "LEGIT: 视图定义体",
-	"sql/objects/views/v_node_switch_analysis.sql":                                    "DEBT(R47): 视图定义裸母表",
-	"sql/objects/views/customer_cost_view.sql":                                        "DEBT(R47): 视图定义裸母表",
-	"sql/objects/views/model_cost_per_task_view.sql":                                  "DEBT(R47): 视图定义裸母表",
-	"sql/objects/views/v_timeout_effectiveness.sql":                                   "DEBT(R47): 视图定义裸母表",
-	"sql/objects/views/v_continuation_effectiveness.sql":                              "DEBT(R47): 视图定义裸母表",
-	"sql/objects/functions/credential_most_used_model_integer_integer.sql":            "DEBT(R47): 函数体裸母表",
-	"sql/objects/functions/get_last_successful_request_character_varying_integer.sql": "DEBT(R47): 函数体裸母表",
-	"sql/objects/tables/passive_probe_state.sql":                                      "LEGIT: DDL 体",
-	"sql/objects/other/backfill_request_logs_bodies_integer.sql":                      "LEGIT: 回填 DDL/维护体",
+	// ── 2026-10-20（迁移 890，v1 族最终删除）：本表原先有 11 条 LEGIT/DEBT
+	// 条目，全部指向「v1 fallback 体」或「v1 族函数体」。890 之后它们**逐条
+	// 消失**，原因是**各自不同的**，必须分开记，否则下一个人会把它们看成
+	// 「一次批量删除」而漏掉其中某一类的处置：
+	//
+	//   ① 视图定义体（6 条：canonical + bodies_progress + 5 张分析视图）
+	//      —— 逐条分开说：
+	//        · canonical（`sql/objects/views/request_logs_with_current_month.sql`）
+	//          已按 890 收口成**会话族两臂体**（与 Go composer 逐字同源，
+	//          见 db/request_logs_view_dump_generation_test.go）⇒ 无裸母表读。
+	//        · bodies_progress 整个文件删除（890 删掉这张视图）⇒ 无裸读。
+	//        · **5 张分析视图**（customer_cost_view / model_cost_per_task_view /
+	//          v_continuation_effectiveness / v_node_switch_analysis /
+	//          v_timeout_effectiveness）**必须回到 v1 fallback 体** ⇒ 仍有裸读，
+	//          故**保留白名单条目**（见下）。原因见各条理由。
+	//      ⇒ 3 条消失、5 条保留。
+	//
+	//   ② v1 族函数体（2 条 DEBT：credential_most_used_model /
+	//      get_last_successful_request）—— 这两个函数**在 890 里被 DROP**
+	//      （它们只服务 v1 族）⇒ 正典文件删除 ⇒ 条目必须删。
+	//
+	//   ③ v1 正文回填 PROCEEDURE（1 条 LEGIT）—— 890 同样 DROP ⇒ 文件删除。
+	//
+	// ⇒ 890 之后本表剩 **6 条**：5 条「基线 fallback 溯源体」+ 1 条散文误报。
+	// 这不是「把门放松」：白名单条目只豁免**命中**，真正的门是「命中数必须
+	// 为 0」——**生产读面**任何一处裸母表读都会 42P01，所以「零命中」是
+	// 必须达到的状态；白名单是「允许例外」的手段，而每条例外都必须写清
+	// 它**为什么不是生产读面**。
+	//
+	// ── 为什么 5 张分析视图可以保留裸读（而不是跟着 890 改成会话族）──────
+	//
+	//   `sql/objects/` 对**部署是惰性的**（sql/schema/objects_registry_test.go：
+	//   全仓唯一引用是 deploy/sql/sync-objects.sh，它只做单向文件拷贝，
+	//   `deploy/sql/objects/` 目录根本不存在 ⇒ 没有任何流水线会 apply 它），
+	//   而它对**基线是承重的**：它是「部分基线对象的唯一出处」。
+	//   这 5 个视图在基线三份副本（sql/schema/01-schema.sql 等）里是
+	//   **v1 fallback 体**，而基线会**自建** v1 族 ⇒ 那份形状在基线时点有效；
+	//   部署形态由**迁移 883 / 884** 换上（两条路径跑完启动序列后形态一致）。
+	//   ⇒ 若把 `sql/objects/` 这 5 个文件改成会话族，就会与基线三份副本
+	//   **分叉**（溯源丢失）⇒ 下一个据此重建基线的人会做出一个在基线时点
+	//   引用不存在关系的基线 ⇒ **新装 42P01 并中止整个安装**
+	//   （2026-10-20 真库临时库实测；同款形状的教训见
+	//   sql/migrations/startup/migration_883_session_family_cost_view_metrics_test.go
+	//   与 sql/schema/baseline_view_refs_test.go）。
+	//   ⇒ 这 5 条的裸读**从不执行**（文件不被 apply），更不是生产读面；
+	//   它们是「基线形状的存档」。真正的部署形态在迁移里。
+	"sql/objects/views/customer_cost_view.sql":           "LEGIT: **基线 fallback 溯源体**——部署形态由迁移 883 换上；本文件不被任何流水线 apply（sql/objects/ 对部署惰性），裸读 `public.request_logs` 只在基线自建了 v1 族的时点成立 ⇒ 不是生产读面。与基线三份副本保持一致是**溯源**要求，改成会话族会让基线分叉 ⇒ 新装 42P01。",
+	"sql/objects/views/model_cost_per_task_view.sql":     "LEGIT: **基线 fallback 溯源体**——部署形态由迁移 883 换上；本文件不被 apply，裸读 `public.request_logs` 只在基线时点成立 ⇒ 不是生产读面。理由同 customer_cost_view。",
+	"sql/objects/views/v_continuation_effectiveness.sql": "LEGIT: **基线 fallback 溯源体**——部署形态由迁移 884 换上；本文件不被 apply，裸读 `public.request_logs` 只在基线时点成立 ⇒ 不是生产读面。迁移 884 的门要求本文件与基线三份副本**逐字相同**。",
+	"sql/objects/views/v_node_switch_analysis.sql":       "LEGIT: **基线 fallback 溯源体**——部署形态由迁移 884 换上；本文件不被 apply，裸读 `public.request_logs` 只在基线时点成立 ⇒ 不是生产读面。理由同 v_continuation_effectiveness。",
+	"sql/objects/views/v_timeout_effectiveness.sql":      "LEGIT: **基线 fallback 溯源体**——部署形态由迁移 884 换上；本文件不被 apply，裸读 `public.request_logs` 只在基线时点成立 ⇒ 不是生产读面。理由同 v_continuation_effectiveness。",
+	"sql/objects/tables/passive_probe_state.sql":         "LEGIT: **散文误报**——本文件唯一的 \"request_logs\" 出现在 `COMMENT ON TABLE … IS '…'` 的**说明文字**里（这张表由 bg/passive_probe_listener.go 写入，与 v1 族无关）。⚠ 守卫的正则只认 `FROM|JOIN` 前缀，而说明文字里恰好有 \"from request_logs\" ⇒ 命中。之所以不删条目而是改文字：这张表的**用途描述**（被动观察累计连续错误）在 890 之后仍然成立，只是它不再从 v1 族取数。",
 }
 
 const sqlReadGuardInlineMarker = "sqlreadguard:allow"
@@ -240,46 +212,90 @@ func TestNoBareRequestLogsMotherReads(t *testing.T) {
 //     于是大家开始不看它 —— 棘轮就退化成了清单。
 //
 // ⇒ 「删一条加一条」也堵得住：那是新增，会红。
-var debtBaseline = map[string]bool{
-	// Go 读面
-	"admin/quality_correlations.go":                   true,
-	"admin/provider_models.go":                        true,
-	"admin/session_sanitize_matches.go":               true,
-	"cmd/gateway/output_compliance_control.go":        true,
-	"cmd/gateway/main_v3_wiring.go":                   true,
-	"domains/analysis/optimizer.go":                   true,
-	"domains/analysis/request_summary.go":             true,
-	"domains/analysis/projectattr/store.go":           true,
-	"domains/sessionforensics/export.go":              true,
-	"domains/hooks/goal/history_store.go":             true,
-	"domains/hooks/observability/telemetry/client.go": true,
-	"autoroute/recommend_v2.go":                       true,
-	"discovery/discovery.go":                          true,
-	// 2026-10-05（832/833 收口轮）棘轮协议新增：见白名单 DEBT 条目的三点论证
-	"bg/routing_health_checks.go": true,
-	// SQL 读面（视图定义体 / 函数体）
-	"sql/objects/views/v_node_switch_analysis.sql":                                    true,
-	"sql/objects/views/customer_cost_view.sql":                                        true,
-	"sql/objects/views/model_cost_per_task_view.sql":                                  true,
-	"sql/objects/views/v_timeout_effectiveness.sql":                                   true,
-	"sql/objects/views/v_continuation_effectiveness.sql":                              true,
-	"sql/objects/functions/credential_most_used_model_integer_integer.sql":            true,
-	"sql/objects/functions/get_last_successful_request_character_varying_integer.sql": true,
-}
+//
+// ★ 2026-10-20（迁移 890，v1 族最终删除）：本基线**清空**。
+//
+// 原基线 22 条（Go 15 + SQL 7）逐条被偿还，来源各不相同，必须分开记：
+//
+//	· Go 侧 15 条：v1 读面被迁到会话族（worker 清扫轮），条目由
+//	  TestSQLReadGuardWhitelistCurrent 的自清洁门报出后逐条删除；
+//	· SQL 侧 7 条：5 张 v1 fallback 分析视图 + 2 个 v1 族函数体，
+//	  正典按 890 收口后同样无裸母表读 ⇒ 条目删除、文件删除。
+//
+// ⇒ 清空之后，本门从「相对基线不得新增」变成「**一条 DEBT 都不许有**」，
+//
+//	这是**更强**的形态，不是放松：v1 族被 DROP 之后，任何一处裸母表读
+//	都会 42P01 ⇒ DEBT 这个档位本身已经**没有存在的对象**了。
+//
+// ⚠ 清空带来的一个量具缺口，以及它的补法：
+//
+//	「抽出条数 ≥ 下限」这条兜底在零债时恒真（0 ≥ 0）⇒ 抽取逻辑坏掉
+//	会与「没有债」同解。⇒ 鉴别力改由 **TestDebtExtractorStillFindsSyntheticDebt**
+//	用**合成样本**提供（验的是函数行为，不碰真实白名单）。
+var debtBaseline = map[string]bool{}
 
-func debtEntries() map[string]bool {
+// debtEntriesFrom 从「Go 侧白名单 + SQL 侧白名单」里抽出 DEBT 条目。
+//
+// 抽成**带参**的纯函数，是为了在「真实债条数 = 0」时仍能证明
+// **抽取逻辑本身有效**——见 TestDebtExtractorStillFindsSyntheticDebt。
+// 若只留一个读全局 map 的闭包，零债时「抽取坏了」与「没有债」就同解了。
+func debtEntriesFrom(goAllow, sqlAllow map[string]string) map[string]bool {
 	out := map[string]bool{}
-	for path, reason := range sqlReadGuardAllowFiles {
+	for path, reason := range goAllow {
 		if strings.Contains(reason, "DEBT") {
 			out[path] = true
 		}
 	}
-	for path, reason := range sqlReadGuardAllowSQLFiles {
+	for path, reason := range sqlAllow {
 		if strings.Contains(reason, "DEBT") {
 			out[path] = true
 		}
 	}
 	return out
+}
+
+func debtEntries() map[string]bool {
+	return debtEntriesFrom(sqlReadGuardAllowFiles, sqlReadGuardAllowSQLFiles)
+}
+
+// TestDebtExtractorStillFindsSyntheticDebt 是「零债时量具仍然有效」的证明。
+//
+// 背景：890 之后 v1 族被整体 DROP ⇒ 真实 DEBT 条数降到 **0**。
+// 而 DEBT 棘轮门原本靠「抽出条数 ≥ 下限」来证明**抽取逻辑没坏**
+// （抽取坏掉时，「没有新增」会与「一条都没抽到」同步为真 ⇒ 门安静通过）。
+// 真实债为 0 时这个兜底**失效**：0 ≥ 0 恒真。
+//
+// ⇒ 这道门用**合成样本**补回鉴别力：喂一份带 `DEBT(R47):` 理由的假白名单，
+// 断言抽取器仍能认出它；再喂一份只有 `LEGIT:` 的，断言它**不**被误认。
+//
+// ⚠ 这不是「造一条假债」——它不碰真实白名单，只验**函数行为**。
+func TestDebtExtractorStillFindsSyntheticDebt(t *testing.T) {
+	synth := debtEntriesFrom(
+		map[string]string{
+			"pkg/synthetic_go_debt.go": "DEBT(R47): 合成样本",
+		},
+		map[string]string{
+			"sql/objects/functions/synthetic.sql": "DEBT(R47): 合成样本",
+		},
+	)
+	if len(synth) != 2 {
+		t.Fatalf("抽取器从 2 条合成 DEBT 里认出 %d 条（期望 2）：%v —— "+
+			"抽取逻辑已坏，此时真实债数为 0 时「没有新增」会与「一条都没抽到」同解，"+
+			"棘轮门会安静通过。", len(synth), keysSorted(synth))
+	}
+	if !synth["pkg/synthetic_go_debt.go"] || !synth["sql/objects/functions/synthetic.sql"] {
+		t.Errorf("抽取器漏认了合成 DEBT：%v", keysSorted(synth))
+	}
+
+	// 反向：LEGIT 不得被误认成 DEBT（否则真实白名单里一条 LEGIT 就会
+	// 把棘轮门变成「永久新增」）。
+	legit := debtEntriesFrom(
+		map[string]string{"pkg/legit.go": "LEGIT: 合成样本"},
+		map[string]string{"sql/objects/functions/legit.sql": "TOOLING: 合成样本"},
+	)
+	if len(legit) != 0 {
+		t.Errorf("抽取器把 %d 条非 DEBT 理由误认成债：%v", len(legit), keysSorted(legit))
+	}
 }
 
 // TestDebtRatchetDoesNotGrow 补上棘轮缺失的那一半。
@@ -299,9 +315,47 @@ func TestDebtRatchetDoesNotGrow(t *testing.T) {
 	// 报出后按其要求删除 ⇒ DEBT 由 21 降为 18。
 	// 这不是「把门放松」：该门的判据是**相对 debtBaseline 不得新增**，
 	// 下限只是抽取有效性的兜底；18 条仍远高于空集，抽取坏掉仍会红。
-	if len(debt) < 17 {
-		t.Fatalf("只从白名单里抽出 %d 条 DEBT 条目（下限 17）：DEBT 识别很可能已失效，"+
-			"此时「没有新增」会与「一条都没抽到」同步为真。抽到的：%v", len(debt), keysSorted(debt))
+	// ⚠️ 2026-10-20 下限 17 → 15：迁移 883 把 customer_cost_view /
+	// model_cost_per_task_view 两个**活指标**子查询从 v1 冻结族切到会话族，
+	// 这两个定义体已无裸母表读 ⇒ TestSQLReadGuardWhitelistCurrent 报出
+	// （自清洁门要求删条目）⇒ DEBT 由 17 降为 15。
+	// ⚠️ 2026-10-20 下限 15 → 12：迁移 884 把 v_node_switch_analysis /
+	// v_timeout_effectiveness / v_continuation_effectiveness 三张 **v1 裸母表**
+	// 分析视图改读会话族（这 3 张是**唯一没有任何 API/Go 代码消费**的 v1 读面，
+	// 同时是「后期删除 _request_logs」的依赖阻塞项）⇒ 同样由自清洁门报出
+	// ⇒ DEBT 由 12 降为 4（890 轮：v1 族退役，裸母表读面被彻底收口）。
+	// 下调理由与历次下调同源：**下限必须 ≤ 真实债条数**，否则债务被真实偿还后
+	// 这道门永远转绿不了（自清洁守卫要求删条目，删条目又把计数压到下限以下
+	// ⇒ 两道门互相锁死）。
+	// 这不是「把门放松」：该门的判据是**相对 debtBaseline 不得新增**，
+	// 下限只是抽取有效性的兜底；4 条仍远高于空集，抽取坏掉仍会红。
+	//
+	// ⚠ 剩下的 4 条是**真债**，不是漏网：2 条 Go（discovery 的下架宽限守卫、
+	// telemetry 的写侧腿）与 2 条 SQL（正典函数体）。它们的"债"性质是
+	// 「读的是已冻结的 v1 ⇒ 恒空」，890 之后这些对象**已被删** ⇒ 这几条
+	// 将在正典层收口时一并出列。
+	//
+	// ⚠ 2026-10-20 下限 4 → **0**（890 轮收口）：上面那 4 条**逐条被偿还**
+	// （2 条 Go 随读面迁移出列，2 条 SQL 随正典函数体删除出列）⇒ 真实 DEBT
+	// 条数降到 **0**。下限必须 ≤ 真实债条数 ⇒ 0 是唯一能让这道门转绿的值
+	// （同历次下调同源：否则自清洁门要求删条目、删条目又把计数压到下限以下
+	// ⇒ 两道门互相锁死）。
+	//
+	// ⚠ 下限降到 0 之后，「抽出条数 ≥ 下限」这条**兜底失效**（0 ≥ 0 恒真）：
+	// 抽取逻辑坏掉会与「没有债」同解，棘轮门会安静通过。
+	// ⇒ 鉴别力改由 **TestDebtExtractorStillFindsSyntheticDebt** 用**合成样本**
+	// 提供（验函数行为，不碰真实白名单）。两道门构成一对：
+	//   本门管「真实白名单里一条 DEBT 都不许有」，
+	//   那道门管「DEBT 这个概念仍然能被认出来」。
+	//
+	// 本门此时**不是**「把门放松」，而是**更强**：debtBaseline 已清空 ⇒
+	// 任何一条 DEBT 条目都是「新增」⇒ 必红。v1 族被 DROP 之后，
+	// DEBT 这个档位已经没有存在的对象了。
+	if len(debt) > 0 {
+		t.Fatalf("DEBT 条目仍有 %d 条（期望 0）：%v —— v1 族已被迁移 890 整体 DROP，"+
+			"任何裸母表读都会 42P01，DEBT 档位已无存在的对象。"+
+			"若确有一条真实债，请先修代码再登记（优先把理由从 DEBT(R47) 改成 LEGIT 并给出依据）。",
+			len(debt), keysSorted(debt))
 	}
 
 	var added []string
@@ -506,9 +560,7 @@ var bareRequestLogsWriteRe = regexp.MustCompile(`(?i)\b(INSERT\s+INTO|UPDATE|DEL
 
 // sqlWriteGuardAllowFiles 是写面 LEGIT 白名单，理由必须写清楚「为什么不是
 // 直写母表」，便于未来有人误以为它是待还债项。
-var sqlWriteGuardAllowFiles = map[string]string{
-	"bg/lite_retention_worker.go": "LEGIT: SQLite 引擎 DELETE（? 占位，非 PG hot/mother 体系）",
-}
+var sqlWriteGuardAllowFiles = map[string]string{}
 
 const sqlWriteGuardInlineMarker = "sqlwriteguard:allow"
 

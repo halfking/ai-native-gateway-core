@@ -81,7 +81,7 @@ func TestCandidate_UnavailableReason_MinimaxM3(t *testing.T) {
 			wantNonEmpty: true,
 		},
 		{
-			name: "open circuit rejects minimax-m3",
+			name: "observational open circuit does not reject minimax-m3",
 			candidate: Candidate{
 				Routable:          true,
 				CircuitState:      "open",
@@ -89,7 +89,7 @@ func TestCandidate_UnavailableReason_MinimaxM3(t *testing.T) {
 				AvailabilityState: "ready",
 				QuotaState:        "ok",
 			},
-			wantNonEmpty: true,
+			wantNonEmpty: false,
 		},
 	}
 

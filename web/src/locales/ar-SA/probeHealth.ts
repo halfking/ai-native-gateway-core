@@ -41,16 +41,10 @@ export default {
   },
   loading: 'Loading…',
   empty: 'No data',
-  health: {
-    healthy: 'healthy',
-    degraded: 'degraded',
-    warning: 'warning',
-    critical: 'critical',
-    unknown: 'unknown',
-  },
   probeAllConfirm: 'تشغيل الفحص لجميع بيانات الاعتماد البالغة {n} للنموذج {model}؟',
-  systemStartAllConfirm: 'بدء جميع مهام الفحص؟ سيتم فحص ارتباطات جميع بيانات الاعتماد النشطة.',
-  systemStopAllConfirm: 'إيقاف جميع مهام الفحص؟ ستستكمل المهام المطالَب بها بالفعل حتى النهاية.',
-  systemTriggeredToast: 'تم تشغيل {n} مهمة، فشلت {failed}',
-  systemStoppedToast: 'تم إفراغ {n} مهمة من قائمة الانتظار',
+  detail: {
+    triggerFailed: 'تعذّر تشغيل الفحص. أعد المحاولة.',
+    modelNodeNotFound: 'لم يتم العثور على عقدة لهذا النموذج. تأكد من اسم النموذج، أو اربط عقدة أولًا ثم أعد المحاولة.',
+    pricingUnavailable: 'تتطلب بيانات الأسعار صلاحية platform_ops للعرض. تواصل مع المسؤول لتفعيلها.',
+  },
 }

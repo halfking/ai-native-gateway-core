@@ -1,0 +1,48 @@
+{
+  "baseline": "aa888f9b80ad08490df8d3f8a5508bf52f6152f0",
+  "binding": "uncommitted bytes; original 30-file production fix manifest unchanged",
+  "combined_sha256_encoding": "SHA256 of sorted path + SPACE + hex SHA256 + LF UTF-8 entries",
+  "combined_sha256": "b315f2cbddf7a188fae51361beb806c223a950d74dc5bcba71e99772dc464353",
+  "files": [
+    {
+      "path": "admin/request_logs_control_plane_dependency_test.go",
+      "sha256": "7b607c5dc7988c64419f90d931bfb027bdbecb9b080ba843ec35eb05d9152e16"
+    },
+    {
+      "path": "admin/request_logs_read_inventory_test.go",
+      "sha256": "a5f39cc14c4a98686052e03f4b8f18a6f8fd8bfd06921487ed6ebcb9e7421f3f"
+    },
+    {
+      "path": "admin/request_logs_reader_population_test.go",
+      "sha256": "c50ef0fb4ac08b2bde0839a470cbe9e60696d46c56538060f74406c3d023ded5"
+    },
+    {
+      "path": "admin/request_logs_retirement_exposure_test.go",
+      "sha256": "9cc3b5f97322892a7c8ef187fe038b0e7b97463b6d3b6f6713467d509e1e3ea0"
+    },
+    {
+      "path": "admin/request_logs_retirement_tiering_test.go",
+      "sha256": "947a2820021dfdf1f4e534ecad0a81a013966a0826b600a3e55c61980945d660"
+    },
+    {
+      "path": "admin/request_logs_stop_write_classification_test.go",
+      "sha256": "0402eb7b37950260f3282198fbf49eb0c2c9a85fed036021672730213857a9d5"
+    },
+    {
+      "path": "admin/session_family_two_surface_test.go",
+      "sha256": "7c47fe84d67dfd7397f69e2a89679c36d491fb6e88e0885b920f1112d69de317"
+    },
+    {
+      "path": "admin/source_sql_local_literal_test.go",
+      "sha256": "632cd3369664e1bf08948a5d2f6e43528b8d5cc6c3d7a63ec31c12babf186c62"
+    },
+    {
+      "path": "cmd/tools/sql_source_indirection_audit/manifest_test.go",
+      "sha256": "c9aa64a4d432593374f6ce178db8b95da084273a70f6ec0f07b6995d58f52427"
+    },
+    {
+      "path": "internal/errdiscard/errdiscard_test.go",
+      "sha256": "c1c37517320818b893e0da52a09940c2b9d846eb86ebc87a3b71104bfeb87ad2"
+    }
+  ]
+}

@@ -8,8 +8,6 @@ export default {
     refreshing: 'Actualisation...',
   },
   filter: {
-    startDate: 'Date de début',
-    endDate: 'Date de fin',
     taskType: 'Type de tâche original',
     model: 'Modèle',
     modelPlaceholder: 'Tous les modèles',
@@ -21,8 +19,6 @@ export default {
     all: 'Tout',
     annotatedOnly: 'Annoté',
     unannotatedOnly: 'Non annoté',
-    annotator: 'Annotateur',
-    annotatorPlaceholder: "Saisir le nom d'utilisateur de l'annotateur",
     query: 'Rechercher',
     reset: 'Réinitialiser',
   },
@@ -35,8 +31,6 @@ export default {
     selectModel: 'Sélectionner un modèle',
     autoRoute: 'Route AUTO',
     confidence: 'Confiance',
-    humanProvider: 'Fournisseur annoté manuellement',
-    selectProvider: 'Sélectionner un fournisseur',
     isCorrect: 'Routage correct ?',
     correct: 'Correct',
     incorrect: 'Incorrect',
@@ -46,7 +40,6 @@ export default {
     submit: 'Envoyer',
     cancel: 'Annuler',
     errors: {
-      providerRequired: 'Le fournisseur est obligatoire',
       taskTypeRequired: 'Le type de tâche est obligatoire',
       modelRequired: 'Le modèle est obligatoire',
       reasonRequired: 'Le motif est obligatoire',
@@ -55,7 +48,6 @@ export default {
     },
   },
   table: {
-    requestId: 'ID de requête',
     time: 'Heure',
     title: 'Titre',
     client: 'Client',
@@ -63,7 +55,6 @@ export default {
     model: 'Modèle',
     taskType: 'Type de tâche',
     confidence: 'Confiance',
-    autoProvider: 'Route AUTO',
     status: 'Statut',
     statusOk: 'Succès {code}',
     statusFail: 'Échec {code}',
@@ -73,14 +64,12 @@ export default {
     unannotated: 'Non annoté',
     annotate: 'Annoter',
     view: 'Voir',
-    delete: 'Supprimer',
   },
   drawer: {
     annotateTitle: "Annoter l'échantillon",
     viewTitle: "Voir l'annotation",
   },
   detail: {
-    humanProvider: 'Fournisseur annoté manuellement',
     isCorrect: 'Routage correct ?',
     reason: "Motif d'annotation",
     annotator: 'Annotateur',
@@ -96,18 +85,6 @@ export default {
     totalTurns: 'Tours de session',
     source: 'Source',
   },
-  batch: {
-    title: 'Annotation par lot',
-    desc: 'Annoter {count} échantillons sélectionnés en lot',
-    submit: 'Envoyer le lot',
-  },
-  pagination: {
-    total: 'Total : {n}',
-    pageOf: 'Page {page} sur {total}',
-    perPage: 'Par page',
-    prev: 'Précédent',
-    next: 'Suivant',
-  },
   reasons: {
     correct: 'Prédiction correcte',
     performance: 'Problème de performance',
@@ -121,7 +98,7 @@ export default {
     refresh: 'Actualiser',
     refreshing: 'Actualisation...',
     loadFailed: 'Échec du chargement des statistiques',
-    noData: 'Aucune donnée disponible',
+    noData: 'Pas encore de statistiques d’annotation. Terminez d’abord un lot d’annotations, puis revenez ici.',
     totalAnnotations: 'Annotations totales',
     providerAccuracy: 'Précision par fournisseur',
     annotatorStats: 'Statistiques par annotateur',
@@ -140,24 +117,13 @@ export default {
     distribution: 'Distribution',
   },
   // Actions
-  batchSelected: '{count} sélectionnés',
-  batchAnnotate: 'Annotation par lot',
-  clearSelection: 'Effacer la sélection',
 
   // Success messages
-  annotationCreated: 'Annotation créée avec succès',
-  batchSuccess: 'Annotation par lot réussie : {count} éléments',
-  batchPartialSuccess: 'Annotation par lot partiellement réussie : {success} réussies, {failed} échouées',
-  deleteSuccess: 'Annotation supprimée avec succès',
 
   // Error messages
   loadFailed: "Échec du chargement des échantillons d'annotation",
   annotationFailed: "Échec de l'annotation",
   correctionWriteFailed: 'Échec de l\'écriture de la correction (annotation enregistrée) : {msg}',
-  batchFailed: "Échec de l'annotation par lot",
-  deleteFailed: "Échec de la suppression de l'annotation",
-  noSamplesSelected: 'Veuillez sélectionner des échantillons à annoter',
-  confirmDelete: 'Confirmer la suppression de cette annotation ?',
 
   // Loading states
   loading: 'Chargement...',

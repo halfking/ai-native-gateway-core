@@ -35,6 +35,34 @@ const providerErrorAggregatorDefaultInterval = 10 * time.Minute
 // retention.
 const providerErrorAggregatorStallWarnAfter = 7 * time.Hour
 
+// providerErrorAggregatorSourceMaxIDSQL：stall guard 用来区分「真停摆」
+// （aggregator 落后于源，可能丢 promote 行）与「假阳性停摆」（aggregator
+// 已追平到源、源没新行）。必须读 candidate_failure_logs_hot（与 staging
+// 源同表）以保证可判定性。2026-10-18 (24h 审计轮) 引入。
+const providerErrorAggregatorSourceMaxIDSQL = "SELECT COALESCE(MAX(aggregation_id), 0) FROM candidate_failure_logs_hot"
+
+// providerErrorAggregatorStallDecision 把 stall 决策分两态：
+//   - stallGenuine: pre_watermark < source_max ⇒ aggregator 落后于源、
+//     停摆期间被 promote 的行会丢；按原 ERROR 告警。
+//   - stallCaughtUp: pre_watermark >= source_max ⇒ aggregator 已追平、源没新行；
+//     不算「丢 promote 行」的真停摆，按 WARN 记录而非 ERROR。
+//
+// 抽成纯函数便于单测（见 provider_error_aggregator_stall_test.go：
+// TestProviderErrorAggregatorStallGuardSkipsCaughtUpCase）。
+type providerErrorAggregatorStallDecision int
+
+const (
+	stallGenuine providerErrorAggregatorStallDecision = iota
+	stallCaughtUp
+)
+
+func providerErrorAggregatorClassifyStall(preWatermark, sourceMax int64) providerErrorAggregatorStallDecision {
+	if preWatermark < sourceMax {
+		return stallGenuine
+	}
+	return stallCaughtUp
+}
+
 // stageSourceRowsSQL stages the NEW source rows this tick will process into a
 // per-transaction temp table. The watermark parameter bounds the scan so
 // steady-state ticks stage only rows not yet aggregated; those rows identify
@@ -262,12 +290,55 @@ func (a *ProviderErrorAggregator) aggregateErrors(ctx context.Context) {
 	// （那就回到了每 tick 全分区扫的老路）；处置（人工/工具回填）由
 	// 告警接管。updated_at 只在水位真正前进时刷新（advanced CTE），
 	// 失败 tick 不会刷新它，故该差值是纯停摆时长。
+	//
+	// 2026-10-18 (24h 审计轮假阳性修复)：「停摆」有两种成因，必须把
+	// 「看不见的源」单独判掉。本机实测 S4 停写 + 仅 mock 流量时：
+	//   - candidate_failure_logs_with_current_month max(aggregation_id)=40
+	//   - last_source_id=40，updated_at=33h+ 前
+	//   - aggregator **已追平到源**（pre_watermark=40=源 max_id），但源没新行
+	//   ⇒ 水位停摆原因是「源空」不是「写路径坏」
+	//   ⇒ 打 ERROR 是假阳性（promote retention 与告警门同源同窗口 8h）
+	// 修：先比对 pre_watermark 与源 max(aggregation_id)。
+	//   pre_watermark >= source_max ⇒ 源空、aggregator 已追平、不告警；
+	//   pre_watermark <  source_max ⇒ 真停摆、可能丢 promote 行、按原 ERROR 告警。
+	// 写门禁 provider_error_aggregator_stall_test.go（TestProviderErrorAggregatorStallGuardSkipsCaughtUpCase）
+	// 锁形态。
 	if !lastAdvance.IsZero() {
 		if stall := time.Since(lastAdvance); stall > providerErrorAggregatorStallWarnAfter {
-			slog.Error("provider_error_aggregator: watermark stalled past promote retention; rows promoted during the stall are unreachable from hot-only staging and will be skipped",
-				"stall", stall.String(),
-				"stall_warn_after", providerErrorAggregatorStallWarnAfter.String(),
-				"pre_watermark", preWatermark)
+			// providerErrorAggregatorSourceMaxID is the *unfiltered* max(aggregation_id)
+			// over the same staging source. Reading it costs one extra
+			// `SELECT COALESCE(MAX(aggregation_id), 0)` against
+			// candidate_failure_logs_hot (parent + hot projection) which the
+			// staging SELECT below already touches, so the planner can re-use
+			// the relation cache within this transaction.
+			var sourceMax int64
+			if err := tx.QueryRow(timeoutCtx, providerErrorAggregatorSourceMaxIDSQL).Scan(&sourceMax); err != nil {
+				// 读不到源 ⇒ 退化按原行为告警（旧 bug 修不好时仍能告警）
+				slog.Error("provider_error_aggregator: watermark stalled past promote retention; rows promoted during the stall are unreachable from hot-only staging and will be skipped",
+					"stall", stall.String(),
+					"stall_warn_after", providerErrorAggregatorStallWarnAfter.String(),
+					"pre_watermark", preWatermark,
+					"source_max_check_error", err.Error())
+			} else {
+				// 抽到 providerErrorAggregatorClassifyStall 便于单测：
+				// stallGenuine ⇒ 走原 ERROR（aggregator 落后于源、停摆期间被 promote
+				// 的行会丢）；stallCaughtUp ⇒ WARN（aggregator 已追平、源没新行，
+				// 是 S4 停写 / 真实没上游调用场景下的假阳性，按不告警处理）。
+				switch providerErrorAggregatorClassifyStall(preWatermark, sourceMax) {
+				case stallGenuine:
+					slog.Error("provider_error_aggregator: watermark stalled past promote retention; rows promoted during the stall are unreachable from hot-only staging and will be skipped",
+						"stall", stall.String(),
+						"stall_warn_after", providerErrorAggregatorStallWarnAfter.String(),
+						"pre_watermark", preWatermark,
+						"source_max_aggregation_id", sourceMax)
+				case stallCaughtUp:
+					slog.Warn("provider_error_aggregator: watermark did not advance (source is caught up); no rows at risk of being stranded",
+						"stall", stall.String(),
+						"stall_warn_after", providerErrorAggregatorStallWarnAfter.String(),
+						"pre_watermark", preWatermark,
+						"source_max_aggregation_id", sourceMax)
+				}
+			}
 		}
 	}
 

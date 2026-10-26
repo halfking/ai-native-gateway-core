@@ -3,7 +3,8 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import ServiceLandingPage from '../components/ServiceLandingPage.vue'
-import { SITE_LOGO_SIZE, SITE_TITLE } from '../config/brand'
+import { localeArray } from '../i18n'
+import { SITE_LOGO_SIZE } from '../config/brand'
 import { detectTheme, logoSrc } from '../theme'
 
 const { t, tm } = useI18n()
@@ -18,7 +19,8 @@ onMounted(() => {
 })
 onUnmounted(() => logoObserver?.disconnect())
 
-const heroPoints = computed(() => tm('landing.heroPoints') as string[])
+// ⚠ 数组型语言包键不能经 t() 取（见 i18n.ts 的 localeArray() 注释）
+const heroPoints = localeArray<string[]>('landing.heroPoints')
 
 const features = computed(() => [
   {
@@ -92,10 +94,9 @@ function openLogin() {
 <template>
   <div class="llmgo-landing">
     <ServiceLandingPage
-      :brand="SITE_TITLE"
+      :brand="t('app.brand.siteTitle')"
       :logo-src="brandLogo"
       :logo-size="SITE_LOGO_SIZE"
-      :kicker="t('landing.kicker')"
       :title="t('landing.title')"
       :subtitle="t('landing.subtitle')"
       :hero-points="heroPoints"
@@ -122,7 +123,6 @@ function openLogin() {
       </template>
       <section class="llmgo-roadmap">
         <header class="llmgo-roadmap__head">
-          <span class="llmgo-roadmap__eyebrow">ROADMAP</span>
           <h2>{{ t('landing.roadmap.title') }}</h2>
           <p>{{ t('landing.roadmap.subtitle') }}</p>
         </header>
@@ -192,18 +192,9 @@ function openLogin() {
   text-align: left;
 }
 
-.llmgo-roadmap__eyebrow {
-  display: block;
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 750;
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
-}
-
 .llmgo-roadmap__head h2 {
   margin: 8px 0 6px;
-  font-family: "Outfit", "Noto Sans SC", "PingFang SC", sans-serif;
+  font-family: var(--kx-font-sans);
   font-size: clamp(1.4rem, 2.4vw, 1.75rem);
   letter-spacing: -0.03em;
   color: var(--kx-text);

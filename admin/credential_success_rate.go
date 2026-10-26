@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -103,35 +102,34 @@ func HandleCredentialSuccessRates(db *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-// resetCredentialSuccessRateRows deletes stale failed _request_logs_hot rows
-// for a (credential, model) pair inside a super-admin GUC transaction. The GUC
+// resetCredentialSuccessRateRows used to delete stale failed rows of the v1
+// request-log family (a (credential, model) pair) inside a super-admin GUC
+// transaction, so that recent_success_rate() recomputed without them. The GUC
 // predicate in the DELETE only passes when app.current_role/app.current_tenant
 // were set in this transaction — on a bare pooled connection the predicate is
 // NULL and the delete silently matches nothing (R38 fixed shape).
+//
+// 2026-10-20（迁移 890，v1 族整体退役）：这个 DELETE **没有等价物**，本函数
+// 变成**空操作**（返回 0，不执行任何语句）。理由是三条，缺一条都会写错：
+//
+//  1. v1 族已删除。原来的目标表不存在 ⇒ 留着这条 DELETE 就是 42P01 ⇒
+//     整个「重置」端点 500。
+//  2. **不能**把目标换成会话族。会话族不是「请求日志」，它是**会话本体**：
+//     一行 = 一轮对话。删一行 = 用户的会话少一轮（details / bodies 行变孤儿）。
+//     v1 时代删的是派生日志行，代价是零；换成会话族就不是同一件事了。
+//  3. 这个端点的语义是「原谅旧失败、让凭据恢复」，而成功率窗口
+//     （recent_success_rate 的 3 小时）本来就只覆盖近期 —— 端点下面返回的
+//     new_rate 仍是**当前真值**，运维拿到的信息没有丢。
+//
+// 保留函数与签名：调用点 admin/credential_success_rate.go 里的 handler 与
+// 守形测试都直接引用它（不在本次改动的所有权范围内）。
 func resetCredentialSuccessRateRows(ctx context.Context, db txBeginner, credentialID int64, rawModel string) (int64, error) {
-	var deleted int64
-	err := withTx(ctx, db, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if err := setAllTenantGUC(ctx, tx); err != nil {
-			return err
-		}
-		ct, err := tx.Exec(ctx, `
-			DELETE FROM _request_logs_hot
-			WHERE credential_id = $1
-			  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
-			  AND lower(COALESCE(request_status, '')) = 'failure'
-			  AND ts < NOW() - INTERVAL '10 minutes'
-			  AND (
-			    current_setting('app.current_role', true) = 'super_admin'
-			    OR tenant_id = current_setting('app.current_tenant', true)
-			  )
-		`, credentialID, rawModel)
-		if err != nil {
-			return err
-		}
-		deleted = ct.RowsAffected()
-		return nil
-	})
-	return deleted, err
+	// v1 族退役 ⇒ 没有可删的请求日志行（理由见头注）。
+	_ = ctx
+	_ = db
+	_ = credentialID
+	_ = rawModel
+	return 0, nil
 }
 
 // HandleResetCredentialSuccessRate manually resets success rate by deleting
@@ -160,18 +158,11 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		// Delete failed requests older than 10 minutes to allow immediate recovery
-		// 2026-07-05 migration 341: DELETE targets _request_logs_hot (独立热表).
-		// 数据迁移到月度分区后无法再编辑（只读），但 _hot 表中 0-7 天数据
-		// 可被删除以重置失败凭据的评估状态。
 		//
-		// Defense in depth (2026-09-01 audit): the SQL itself enforces a
-		// tenant scope using per-session GUCs. R38 (2026-09-17): the GUC
-		// predicate is only reachable inside a transaction that sets them —
-		// running on a bare pooled connection left both current_setting calls
-		// NULL and silently turned this DELETE into a permanent no-op. The
-		// handler is admin-authenticated (wrapAdmin) so the delete runs in a
-		// super-admin GUC transaction; the tenant predicate stays as a guard
-		// against future wrapper regressions.
+		// 2026-10-20（迁移 890）：v1 请求日志族整体退役 ⇒ 这次删除**没有等价物**：
+		// 删的是派生日志行（代价为零），而会话族是会话本体（删一行 = 少一轮
+		// 对话）。详见 resetCredentialSuccessRateRows 的头注。
+		// ⇒ 本端点退化为「不删任何行、照常回读当前成功率」。
 		deleted, err := resetCredentialSuccessRateRows(r.Context(), db, req.CredentialID, req.RawModel)
 		if err != nil {
 			writeInternalTextErr(w, "internal error (see server logs)", err)
@@ -202,7 +193,11 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 			"new_rate":    newRate,
 			"new_samples": newSamples,
 			"success":     true,
-			"message":     "Old failed requests deleted, success rate should recover",
+			// 消息如实反映「没有删任何行」：v1 请求日志族已退役（迁移 890），
+			// 会话族是唯一事实源、不会由本端点裁剪。JSON 的**键集合不变**。
+			"message": "no request rows deleted: the request-log family was retired " +
+				"(migration 890) and the session family is never pruned here — " +
+				"the rate below is the current value",
 		})
 	}
 }

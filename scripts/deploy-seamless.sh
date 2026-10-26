@@ -401,7 +401,10 @@ run_blue_green_assets_install() {
 # on the target. The canonical deployer fails closed rather than silently
 # reverting to the old stop/start path; operators may explicitly request the
 # legacy emergency flow with --legacy-restart.
-LEGACY_RESTART=false
+# ★ 2026-10-24：此处曾有一行无条件 `LEGACY_RESTART=false`，把参数解析（第 80-91 行
+#   的 `--legacy-restart) LEGACY_RESTART=true`）的结果**在主流程里覆盖回 false**
+#   ⇒ 该旗标自本行引入起就是死的（2026-10-24 实测：带旗标跑仍走蓝绿预热路径，
+#   日志 0 次 "legacy"）。默认值已在第 80 行声明 ⇒ 删掉这行重置。
 
 # 154 的公网 HTTPS 入口在 252 上终止 TLS 并代理到 154:8781。
 # 仅 154 部署需要同步保护 252 的公网 vhost；245 有自己的公网 vhost。
@@ -784,6 +787,42 @@ carry_forward_web_remote() {
   return 0
 }
 
+# tar records the bundle's '.' mode; a deployer's umask 077 otherwise makes
+# the release untraversable by nginx even when every health API is healthy.
+# Only public surfaces are normalized; private configs retain their modes.
+normalize_release_web_permissions() {
+  local release_dir="$REMOTE_ROOT/releases/$1"
+  remote_ssh "set -e; chmod 0755 '$release_dir';
+    for surface in web web-mobile; do
+      if [ -d '$release_dir'/\"\$surface\" ]; then
+        find '$release_dir'/\"\$surface\" -type d -exec chmod 0755 {} +
+        find '$release_dir'/\"\$surface\" -type f -exec chmod 0644 {} +
+      fi
+    done"
+}
+
+verify_public_web() {
+  local health_url probe_args base_url html html_type asset asset_type
+  health_url=$(target_field "$TARGET" internal_https_health_url)
+  [[ -n "$health_url" ]] || return 0
+  base_url=${health_url%/*}
+  probe_args=$(target_field "$TARGET" internal_https_probe_args)
+  if [[ "$TARGET" == 154 && "$health_url" == https://127.0.0.1/* ]]; then
+    base_url=https://llm.kxpms.cn
+    probe_args="$probe_args --resolve llm.kxpms.cn:443:127.0.0.1"
+  fi
+  html=$(remote_ssh "curl -kfsS $probe_args --max-time 10 -w '\n%{content_type}' -H 'Accept: text/html' '$base_url/dashboard'") || return 1
+  html_type=${html##*$'\n'}; html=${html%$'\n'*}
+  html_type=$(printf '%s' "${html_type%%;*}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [[ "$html_type" == text/html ]] || { err "dashboard media type is not HTML"; return 1; }
+  [[ "$html" == *"<html"* && "$html" == *"</html>"* ]] || { err "dashboard did not return HTML"; return 1; }
+  asset=$(printf '%s\n' "$html" | sed -n 's@.*src="\(/assets/[A-Za-z0-9._/-]*\.js\)".*@\1@p' | sed -n '1p')
+  [[ "$asset" == /assets/*.js ]] || { err "dashboard has no built JavaScript entry"; return 1; }
+  asset_type=$(remote_ssh "curl -kfsS $probe_args --max-time 10 -o /dev/null -w '%{content_type}' '$base_url$asset'") || return 1
+  asset_type=$(printf '%s' "${asset_type%%;*}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [[ "$asset_type" == text/javascript || "$asset_type" == application/javascript ]] || { err "dashboard entry is not JavaScript"; return 1; }
+}
+
 # ── 子命令: deploy ─────────────────────────────────────────────
 do_deploy() {
   local version bundle_dir deploy_start
@@ -815,7 +854,7 @@ do_deploy() {
     # 移除可能的旧 false 行，追加 true
     $SSH_CMD "sed -i '/^TRANSPORT_LAYER_IR_ENABLED=/d' '$_env_file' && echo 'TRANSPORT_LAYER_IR_ENABLED=true' >> '$_env_file'" \
       && ok "IR 已注入 env (TRANSPORT_LAYER_IR_ENABLED=true)" \
-      || warn "IR env 注入失败（可手动: echo TRANSPORT_LAYER_IR_ENABLED=true >> $_env_file）"
+      || warn "IR env 注入失败（可手动: echo TRANSPORT_LAYER_IR_ENABLED=true >> ${_env_file}）"
   fi
 
   # Shared checkout build state (version files, web/dist, local staging) is
@@ -889,16 +928,12 @@ do_deploy() {
     # 「refusing to deploy without the mobile surface」，部署在构建阶段中止。
     # 判据改为「缺失 **或** manifest 比 node_modules 新」：既保住无变更时不
     # 重装的优化，又不会漏装新依赖。
-    _pm_stale() {
-      local dir=$1 f
-      [[ -d "$dir/node_modules" ]] || return 0
-      for f in "$dir/package.json" "$dir/package-lock.json" "$dir/pnpm-lock.yaml"; do
-        [[ -f "$f" ]] || continue
-        [[ "$f" -nt "$dir/node_modules" ]] && return 0
-      done
-      return 1
-    }
-    if _pm_stale web; then
+    #
+    # 2026-10-22：该判据已抽到 scripts/lib/node-pm.sh 的 pm_deps_stale
+    # （单点真源）—— 211 的 docker 路径（deploy-seamless-docker.sh）用**同一个**
+    # 函数判「要不要重装」。两条部署路径各自演化过一次「重装判据」的漂移风险，
+    # 现在只剩一份实现。
+    if pm_deps_stale web; then
       log "web 依赖缺失或过期，按 lockfile 安装"
       pm_install web
     fi
@@ -907,7 +942,7 @@ do_deploy() {
     # 2026-10-04 统一入口轮：web-mobile（Hyper 移动前端）与 web 同链路构建。
     # 构建失败 die 而不是 warn —— 静默发布一个没有 /m 的版本等于把手机用户
     # 扔回 PC 页面（入口 302 与 /m 挂载一起消失）。
-    if _pm_stale web-mobile; then
+    if pm_deps_stale web-mobile; then
       log "web-mobile 依赖缺失或过期，按 lockfile 安装"
       pm_install web-mobile
     fi
@@ -1040,6 +1075,8 @@ do_deploy() {
     fi
   fi
 
+  normalize_release_web_permissions "$version" || { err "发布目录网页权限校验失败，中止"; exit 1; }
+
   # 6. verify (远端 sha256)
   log "[6/9] verify bundle (sha256)"
   HOST_STAGE_TARGET="$TARGET" host_verify_bundle "$SSH_CMD" "$REMOTE_ROOT/releases/$version" \
@@ -1070,7 +1107,156 @@ do_deploy() {
   old_version=$(remote_ssh "readlink '$REMOTE_ROOT/current' 2>/dev/null | xargs basename" 2>/dev/null || true)
   if [[ "$LEGACY_RESTART" == true ]]; then
     log "[8/9] legacy stop/start emergency path"
-    host_atomic_switch "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'
+    # 2026-10-26（245 seq 2823 现场实证的断链修复）：蓝绿迁移过的目标上，
+    # 契约 service_name 是蓝绿前的弃用遗留 unit（245 = llmgo-245.service，
+    # 且已被 mask）—— stop 它是 no-op 或直接报错；且 canary 的 ExecStart 跑
+    # slots/%i/gateway，host_atomic_switch 翻的 current/顶层软链 canary
+    # 根本不读 ⇒ 旧形态即便 restart 成功，起的也是旧 binary。
+    # ⇒ 实况 unit 必须解析：ps 归属（detect_active_side）>
+    #   run/active-service 记录 > 契约 service_name（逐级 warn）；
+    #   canary 形态走 slots/<port> 重指 + restart 实况 unit
+    #   （= 2026-10-24 2823 受控手动交换的等价自动化）。
+    if ! detect_active_side; then
+      err "legacy: 无法解析 ${TARGET} 实况服务端口/unit；拒绝盲切，中止（旧实例未受影响）"
+      exit 1
+    fi
+    local legacy_unit="${DETECTED_ACTIVE_UNIT:-}" legacy_port="${DETECTED_ACTIVE_PORT:-}"
+    if [[ -z "$legacy_unit" || "$legacy_unit" == "unknown" ]]; then
+      legacy_unit=$(remote_ssh "cat '$REMOTE_ROOT/run/active-service' 2>/dev/null" 2>/dev/null | tr -d '[:space:]' || true)
+      legacy_port=$(remote_ssh "cat '$REMOTE_ROOT/run/active-port' 2>/dev/null" 2>/dev/null | tr -d '[:space:]' || true)
+      [[ -n "$legacy_unit" ]] && warn "legacy: ps 归属未解析出 unit，回落 run/active-service 记录: ${legacy_unit}:${legacy_port:-?}"
+    fi
+    if [[ -z "$legacy_unit" || "$legacy_unit" == "unknown" ]]; then
+      legacy_unit=$(target_field "$TARGET" service_name)
+      legacy_port=$(target_field "$TARGET" active_port)
+      warn "legacy: 实况与记录均未解析出 unit，回退契约 service_name=${legacy_unit}（旧行为）"
+    fi
+    local canary_prefix
+    canary_prefix=$(target_field "$TARGET" candidate_unit 2>/dev/null || true)
+    # ★ 必须用参数展开剥后缀，不能用 sed：macOS BSD sed 对
+    #   s/@\.service$//@ 报 bad flag（2026-10-26 部署现场实测），
+    #   解析成空会让 canary 判定静默走错分支（回退 host_atomic_switch）。
+    canary_prefix="${canary_prefix%@.service}"
+    # ★★ 输入校验（2026-10-26 审计新增）：legacy_unit / legacy_port 来自
+    #   远端文件（run/active-service / run/active-port）或 ps 输出，
+    #   ★ 它们会被**原样拼进** `systemctl restart '<unit>'` 与 `ln -sfn ... '<path>'`
+    #   ⇒ 一旦远端文件被写坏（多一个空格、引号、换行），拼出来的命令就**变形**
+    #   ⇒ ⇒ 变形后的 systemctl 可能作用在**别的 unit** 上。
+    #   ⇒ 端口：只允许 1~5 位数字；unit：只允许 systemd unit 名允许的字符集
+    #     （字母数字与 . _ @ -），且必须以 .service 结尾。
+    #   ⇒ ★ 不合规 ⇒ **拒绝盲切**（与本轮「检测失败拒绝盲切」的承诺一致）。
+    if ! [[ "$legacy_port" =~ ^[0-9]{1,5}$ ]]; then
+      err "legacy: 实况端口「${legacy_port}」不合法（只允许 1~5 位数字）⇒ 拒绝盲切，中止（旧实例未受影响）"
+      exit 1
+    fi
+    if ! [[ "$legacy_unit" =~ ^[A-Za-z0-9_.@-]{1,64}\.service$ ]]; then
+      err "legacy: 实况 unit「${legacy_unit}」不合法（只允许字母数字与 . _ @ -，且须以 .service 结尾）⇒ 拒绝盲切，中止（旧实例未受影响）"
+      exit 1
+    fi
+    if [[ -n "$canary_prefix" && "$legacy_unit" == "${canary_prefix}"*".service" ]]; then
+      # ★★ canary 形态的 slot 目录**必须由 unit 的实例名（%i）推导**，不能由端口推。
+      #   事实：canary unit 的 ExecStart 是
+      #     /opt/llm-gateway-go/slots/%i/gateway
+      #   ⇒ slot 的键是 **systemd 实例名**（%i），而 %i 与**监听端口**是**两个不同的来源**
+      #   （llmgo-245-canary@2823.service ⇒ %i=2823，而端口是 8781/8782）。
+      #   ★ 原实现用 `slots/$legacy_port` ⇒ ★★ **重指的是一个 nobody 读的目录**
+      #   ⇒⇒ restart 起来的仍是旧 binary ⇒ **静默 no-op 部署**
+      #   ⇒⇒ 而提交说明写的是「canary 形态走 slots/<port> 重指」⇒ 承诺与实现不符。
+      # ⇒ 修法：从 unit 名剥出 %i（`prefix@<instance>.service` ⇒ `<instance>`），
+      #   并**校验它与实况监听端口一致**（不一致 ⇒ 拒绝盲切）。
+      local legacy_instance="${legacy_unit#*@}"
+      legacy_instance="${legacy_instance%.service}"
+      if ! [[ "$legacy_instance" =~ ^[0-9]{1,5}$ ]]; then
+        err "legacy: canary unit「${legacy_unit}」的实例名「${legacy_instance}」不是端口形态 ⇒ 拒绝盲切，中止（旧实例未受影响）"
+        exit 1
+      fi
+      if [[ "$legacy_instance" != "$legacy_port" ]]; then
+        err "legacy: canary 实例名（${legacy_instance}）与实况监听端口（${legacy_port}）不一致 ⇒ slot 键无法确定 ⇒ 拒绝盲切，中止（旧实例未受影响）"
+        exit 1
+      fi
+      local legacy_slot="$REMOTE_ROOT/slots/$legacy_instance"
+      local legacy_prev_release
+      legacy_prev_release=$(remote_ssh "readlink '$legacy_slot' 2>/dev/null | xargs basename" 2>/dev/null || true)
+      log "    legacy: canary 形态 —— ${legacy_slot} 重指 releases/${version} 后 restart ${legacy_unit}（原 release: ${legacy_prev_release:-<无>}）"
+      # ★ 两个 ln 分开做、分开报错（2026-10-26 审计新增）：
+      #   原实现把 slot 重指与 web-mobile 重指放在**同一条** `set -e` 命令里
+      #   ⇒ web-mobile 那步失败时，外层收到的也是「槽重指失败」
+      #   ⇒★ **报错与事实相反**（槽**已经**被重指了），且旧 release 并未「保持服务」。
+      if ! remote_ssh "ln -sfn '$REMOTE_ROOT/releases/$version' '$legacy_slot'"; then
+        err "legacy: ${legacy_slot} 重指失败；旧 release（${legacy_prev_release:-<无>}）保持服务"
+        exit 1
+      fi
+      if ! remote_ssh "if [ -d '$REMOTE_ROOT/releases/$version/web-mobile' ]; then ln -sfn '$REMOTE_ROOT/releases/$version/web-mobile' '$REMOTE_ROOT/web-mobile'; fi"; then
+        err "legacy: web-mobile 软链重指失败 —— ★ **槽已重指到 ${version}**（不是「保持服务」）⇒ 需回滚"
+        err "legacy: 回滚命令: ln -sfn '$REMOTE_ROOT/releases/${legacy_prev_release}' '$legacy_slot' && systemctl restart '$legacy_unit'"
+        exit 1
+      fi
+      if ! remote_ssh "systemctl restart '$legacy_unit'"; then
+        err "legacy: restart ${legacy_unit} 失败 —— slot 已重指但进程未起"
+        if [[ -n "$legacy_prev_release" ]]; then
+          err "legacy: 回滚命令（可直接粘贴）: ln -sfn '$REMOTE_ROOT/releases/$legacy_prev_release' '$legacy_slot' && systemctl restart '$legacy_unit'"
+        else
+          err "legacy: ★ 原 release 未解析出来（readlink 无输出）⇒ 无法给出可执行的回滚命令 ⇒ 请人工确认 $legacy_slot 当前指向"
+        fi
+        exit 1
+      fi
+      # ★★★ 2026-10-26 审计新增（P1）：legacy 路径此前**完全没有**验证 ——
+      #   [9/9] 探针与 host_mark_verified 都在蓝绿 else 分支里
+      #   ⇒ ⇒ legacy 重启了一个起不来的 binary，脚本照样打印「✅ 部署完成」
+      #   ⇒ ⇒ 且 release 从未被标记 verified ⇒ 回滚选目标时它是「不可信版本」。
+      # ⇒⇒ 补上**最小必要**的验证：/healthz 探活 + 运行中版本身份核对。
+      #   ⇒ ★ 用实况 unit/端口（legacy_port / legacy_unit），不是契约值。
+      local legacy_health_url="http://127.0.0.1:${legacy_port}/healthz"
+      log "    legacy: 探活 ${legacy_health_url}（timeout=120s）"
+      if ! remote_probe "$legacy_health_url" 120 >/dev/null 2>&1; then
+        err "legacy: ${legacy_unit} 重启后 ${legacy_health_url} 未就绪 ⇒ **不标记 verified** ⇒ 部署判定为失败"
+        if [[ -n "$legacy_prev_release" ]]; then
+          err "legacy: 回滚命令（可直接粘贴）: ln -sfn '$REMOTE_ROOT/releases/$legacy_prev_release' '$legacy_slot' && systemctl restart '$legacy_unit'"
+        else
+          err "legacy: ★ 原 release 未解析出来 ⇒ 无法给出可执行的回滚命令 ⇒ 请人工确认 $legacy_slot 当前指向"
+        fi
+        exit 1
+      fi
+      ok "    legacy: /healthz OK"
+      # 运行中版本身份核对（与蓝绿路径同形）：确认起的确实是本次部署的版本。
+      if ! _verify_running_release "$version"; then
+        err "legacy: 运行中的 release 与目标版本 ${version} 不一致 ⇒ **不标记 verified**"
+        if [[ -n "$legacy_prev_release" ]]; then
+          err "legacy: 回滚命令（可直接粘贴）: ln -sfn '$REMOTE_ROOT/releases/$legacy_prev_release' '$legacy_slot' && systemctl restart '$legacy_unit'"
+        fi
+        exit 1
+      fi
+      ok "    legacy: 运行中 release 身份核对通过（${version}）"
+      # ★★★ 补上 host_mark_verified：蓝绿路径在 [9/9] 里会调它，legacy 路径此前**从不调**
+      #   ⇒ ⇒ 部署成功的 release 仍标着 verified:false ⇒ 回滚选目标时它是「不可信版本」
+      #   ⇒ ⇒ 即「部署成功了，但下一个部署不敢回滚到它」⇒ **闭环缺最后一环**。
+      if ! host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'; then
+        err "legacy: host_mark_verified 失败（release ${version} 未被标记 verified）⇒ 部署判定为失败"
+        exit 1
+      fi
+      ok "    legacy: release ${version} 已标记 verified"
+    else
+      host_atomic_switch "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'
+      # ★ 同一条「验证 + 标记 verified」的要求也适用于 legacy host 形态
+      #   （上面的 canary 分支已有；这里补齐 else 分支 ⇒ 两条路径口径一致）。
+      local legacy_host_health_url="http://127.0.0.1:${legacy_port:-$(target_field "$TARGET" active_port)}/healthz"
+      log "    legacy: 探活 ${legacy_host_health_url}（timeout=120s）"
+      if ! remote_probe "$legacy_host_health_url" 120 >/dev/null 2>&1; then
+        err "legacy: ${legacy_unit} 重启后 ${legacy_host_health_url} 未就绪 ⇒ **不标记 verified** ⇒ 部署判定为失败"
+        exit 1
+      fi
+      ok "    legacy: /healthz OK"
+      if ! _verify_running_release "$version"; then
+        err "legacy: 运行中的 release 与目标版本 ${version} 不一致 ⇒ **不标记 verified**"
+        exit 1
+      fi
+      ok "    legacy: 运行中 release 身份核对通过（${version}）"
+      if ! host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'; then
+        err "legacy: host_mark_verified 失败（release ${version} 未被标记 verified）⇒ 部署判定为失败"
+        exit 1
+      fi
+      ok "    legacy: release ${version} 已标记 verified"
+    fi
     local switch_elapsed=0
     warn "legacy-restart used; 2-second blue-green SLO is not applicable"
   else
@@ -1360,13 +1546,13 @@ do_deploy() {
       remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/web-mobile' '$REMOTE_ROOT/web-mobile'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'" || true
     fi
     err "候选实例未通过 ${probe_failed}: ${probe_detail}，旧实例保持服务"
-    if printf '%s' "$probe_fail_tail" | grep -q "gateway listen failed"; then
+    if grep -q "gateway listen failed" <<<"$probe_fail_tail"; then
       err "  排查: journal 见 gateway listen failed —— 候选端口 bind 失败（多为 address already in use），按上方 ss -ltnp 输出查端口占用进程"
-    elif printf '%s' "$probe_fail_tail" | grep -q "schema migrations failed transiently"; then
+    elif grep -q "schema migrations failed transiently" <<<"$probe_fail_tail"; then
       err "  排查: journal 见迁移重试/超时（context deadline exceeded）—— boot 迁移链自身在烧点，调大 PROBE_TIMEOUT_SECS 无效；查 252 PG 锁等待与 db.go ensure 链最近改动"
-    elif printf '%s' "$probe_fail_tail" | grep -q "gateway listening"; then
+    elif grep -q "gateway listening" <<<"$probe_fail_tail"; then
       err "  排查: journal 已到 gateway listening 但探针未通过 —— bind 后即退出或就绪过慢，可 PROBE_TIMEOUT_SECS=600 重跑；仍败则查上方 ss -ltnp 与进程退出码"
-    elif printf '%s' "$probe_fail_tail" | grep -qE "(schema ensured|CHECKPOINT)"; then
+    elif grep -qE "(schema ensured|CHECKPOINT)" <<<"$probe_fail_tail"; then
       err "  排查: ensure 链在推进但未到 gateway listening —— boot 仍在继续；journal 末条若持续 >3 分钟不动，按 boot 烧点排查（PG 锁等待），否则 PROBE_TIMEOUT_SECS=600 重跑"
     else
       err "  排查: 上方 journal 若显示仍在 ensure（列交集检查在大表上可 >3 分钟），用 PROBE_TIMEOUT_SECS=600 重跑；若 ensure 已走完仍 refused，查 candidate 端口 bind 报错"
@@ -1469,6 +1655,13 @@ do_deploy() {
       exit 1
     fi
     ok "nginx 路由身份仲裁通过"
+  fi
+
+  # API readiness bypasses nginx's static root: also exercise HTML and its
+  # real entry asset before accepting the release or stopping the old unit.
+  if ! verify_public_web; then
+    _bluegreen_abort "公网网页或入口资源不可用" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
+    exit 1
   fi
 
   # 先确认 DB 已就绪，再同步 admin 密码并验证登录。
@@ -1687,7 +1880,7 @@ do_rollback() {
       err "回滚状态指针更新失败；请检查 Nginx 与 systemd"
       exit 1
     fi
-    if _verify_running_release "$target_version" && deploy_preflight_pg_from_remote_env "$SSH_CMD" "$(_env_file_for_target)"; then
+    if _verify_running_release "$target_version" "$rollback_service" && deploy_preflight_pg_from_remote_env "$SSH_CMD" "$(_env_file_for_target)"; then
       ok "蓝绿回滚完成 → $target_version (canonical active)"
     else
       err "蓝绿回滚后 running release/DB 校验失败"

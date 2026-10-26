@@ -227,17 +227,52 @@ func TestColumnarUniverseFromCatalog(t *testing.T) {
 	}
 	t.Logf("列存关系全集（%d 个，含母表）：%s", len(rels), strings.Join(rels, ", "))
 
-	// 阳性对照：全集里必须认得 migration 765 转换的那张表。
-	// 认不得 ⇒ 查询漏了「母表」这一跳，正是造成假零的那一跳。
-	var sawBodies bool
+	// ★ 阳性对照（R67 / C3 改判）：**不得硬编码某个关系名**。
+	//   过去这里写死 "public._request_logs_bodies" ⇒ v1 族退役（迁移 890）后
+	//   该表不存在 ⇒ 门恒红，而它守的东西（全集推导要认得「母表」这一跳）
+	//   其实一点没坏。
+	//   ⇒ 改成**结构性**对照：凡在 catalog 里挂着列存分区的**母表**，
+	//     都必须出现在全集中。若全集推导退回「只收分区名」，
+	//     母表就会缺席 ⇒ 这里红 ⇒ 与原意一致，且不随任何族退役而失效。
+	missingParents := make([]string, 0)
+	prows, err := pool.Query(ctx, `
+		SELECT DISTINCT pn.nspname || '.' || p.relname
+		FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		JOIN pg_am am ON am.oid = c.relam
+		JOIN pg_inherits i ON i.inhrelid = c.oid
+		JOIN pg_class p ON p.oid = i.inhparent
+		JOIN pg_namespace pn ON pn.oid = p.relnamespace
+		WHERE am.amname = 'columnar' AND n.nspname = 'public' AND c.relkind IN ('r','p')
+		ORDER BY 1`)
+	if err != nil {
+		t.Fatalf("查询列存母表失败: %v", err)
+	}
+	defer prows.Close()
+	relSet := make(map[string]bool, len(rels))
 	for _, r := range rels {
-		if r == "public._request_logs_bodies" {
-			sawBodies = true
+		relSet[r] = true
+	}
+	totalParents := 0
+	for prows.Next() {
+		var s string
+		if err := prows.Scan(&s); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		totalParents++
+		if !relSet[s] {
+			missingParents = append(missingParents, s)
 		}
 	}
-	if !sawBodies {
-		t.Errorf("列存全集里没有 public._request_logs_bodies —— " +
-			"全集推导漏了母表这一跳，下游子测试会得到**假零**而不是真结论")
+	if err := prows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if totalParents == 0 {
+		t.Fatalf("库里没有任何列存分区 ⇒ 全集推导无从谈起 —— 这**不是**「没有问题」，是量具坏了")
+	}
+	if len(missingParents) > 0 {
+		t.Errorf("列存全集漏了 %d 个母表 %v —— 全集推导漏了「母表」这一跳，"+
+			"下游子测试会得到**假零**而不是真结论", len(missingParents), missingParents)
 	}
 }
 
@@ -647,12 +682,23 @@ func TestProductionGoSQLOverColumnarCandidatesAreVerified_RealDB(t *testing.T) {
 			strings.Join(undecidable, "\n"))
 	}
 
-	// 候选数下界：证明「抽取 + 参数替换 + EXPLAIN」这条链真的跑起来了。
-	// 没有这条断言，一个改坏的抽取器会安静地报「0 候选、0 违规」。
-	if len(safe)+len(violations) == 0 {
-		t.Errorf("没有任何候选被真库裁决（候选 %d 条，安全 %d，违规 %d）—— "+
-			"要么抽取器坏了，要么参数替换让每条都不可判定。**不允许**把「0 违规」直接读成「没问题」",
-			len(candidates), len(safe), len(violations))
+	// ★ 候选数下界的**替代**：量具自检（R67 / C5 改判）。
+	//
+	// 过去这里断言「至少有一条候选被真库裁决」⇒ 0 候选就红。
+	// 但 0 候选在当前树上是**事实正确**的：v1 族退役（890）+ 会话族换源（884/890）
+	// 之后，生产不再在 **Go SQL 字符串**里内联「列存关系 + 子查询内集合算子」
+	// 这个形状 —— 那个 UNION ALL 搬进了**视图定义**里，生产读的是视图
+	// （实测：handoff_logs_with_current_month = 顶层 UNION ALL ⇒ 计划成功）。
+	// ⇒ 「0 候选」本身不是缺陷；**「抽取器坏了导致 0 候选」**才是缺陷。
+	// ⇒ 判据改成：先用**合成正例**证明抽取器确实认得出这种形状（量具自检），
+	//   再对抽出来的候选**逐条**裁决（候选为 0 ⇒ 逐条裁决是空真，不是漏判）。
+	//
+	// ⚠ 空真的另一面：门不再覆盖「生产将来又内联这个形状」——
+	//   那种情况由**同族的** TestDeployedViewOverColumnarIsServable_RealDB
+	//   与视图侧的门继续守着；本门守的是「Go SQL 内联形状」这一条路。
+	if !columnarCandidateExtractorHasTeeth(bare) {
+		t.Errorf("候选抽取器自检失败：它认不出「提到列存关系 + 子查询内集合算子」的合成正例 ⇒ " +
+			"「0 候选」是**量具坏了**，不能读成「生产没有这种形状」")
 	}
 
 	if len(violations) > 0 {
@@ -696,6 +742,26 @@ func mentionsAnyRelation(sql string, names []string) bool {
 		}
 	}
 	return false
+}
+
+// columnarCandidateExtractorHasTeeth 用**合成正例**证明抽取器认得出目标形状。
+//
+// ★ 这是「候选 0 条」这个读数的**唯一**可信前提（R67 / C5）：
+//
+//	抽取器（mentionsAnyRelation + setopInsideSubquery）如果坏了，
+//	也会安静地报「0 候选、0 违规」⇒ 没有自检，0 就是恒真。
+//	⇒ 自检用一条**必定命中**的合成 SQL：子查询里带 UNION ALL 且提到列存关系。
+func columnarCandidateExtractorHasTeeth(bare []string) bool {
+	if len(bare) == 0 {
+		return false
+	}
+	rel := bare[0]
+	pos := "SELECT * FROM (SELECT id FROM " + rel +
+		" UNION ALL SELECT id FROM " + rel + ") t"
+	if !mentionsAnyRelation(pos, bare) {
+		return false
+	}
+	return len(setopInsideSubquery(pos)) > 0
 }
 
 // ---------------------------------------------------------------------------

@@ -63,7 +63,7 @@ type frontShapeDecl struct {
 var endpointShapeRegistry = []endpointShapeDecl{
 	{
 		implFile:  "admin/modules.go",
-		implLine:  787,
+		implLine:  789,
 		implShape: `{"items": ...}`,
 		frontDecls: []frontShapeDecl{
 			{file: "web/src/api/modules.ts", line: 59, declaredType: "{ items: ModuleWithStatus[] }"},

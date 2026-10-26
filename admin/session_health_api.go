@@ -388,7 +388,10 @@ func (h *Handler) HandleSessionInspectorStats(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	tenantID := EffectiveTenantIDAll(r)
+	tenantID := GetTenantID(r)
+	if IsSuperAdminOrLegacy(r) {
+		tenantID = ""
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -664,22 +667,21 @@ func (h *Handler) runInspectorsForSnapshot(ctx context.Context, dim *sessionDimB
 
 func (h *Handler) fetchSessionInspectorStats(ctx context.Context, tenantID string) (*SessionInspectorStatsResponse, error) {
 	args := []any{}
-	tenantFilter := ""
+	joinFilter, scoreFilter, recycleFilter := inspectorStatsTenantFilters(tenantID)
 	if tenantID != "" {
-		tenantFilter = "WHERE tenant_id = $1"
 		args = append(args, tenantID)
 	}
 
 	stats := &SessionInspectorStatsResponse{}
 	row := h.db.QueryRow(ctx, `
 		SELECT
-		    COUNT(*) FILTER (WHERE status = 'active'),
-		    COUNT(*) FILTER (WHERE status = 'idle'),
-		    COUNT(*) FILTER (WHERE status = 'closed'),
-		    COALESCE(SUM(total_tokens), 0)
+		    COUNT(*) FILTER (WHERE sd.status = 'active'),
+		    COUNT(*) FILTER (WHERE sd.status = 'idle'),
+		    COUNT(*) FILTER (WHERE sd.status = 'closed'),
+		    COALESCE(SUM(ss.total_tokens), 0)
 		FROM session_summaries ss
-		JOIN session_dim sd ON sd.gw_session_id = ss.session_key
-		`+tenantFilter+`
+		JOIN session_dim sd ON sd.gw_session_id = ss.session_key AND sd.tenant_id = ss.tenant_id
+		`+joinFilter+`
 	`, args...)
 	if err := row.Scan(
 		&stats.ActiveSessions, &stats.IdleSessions, &stats.ClosedSessions, &stats.TotalTokens,
@@ -690,28 +692,63 @@ func (h *Handler) fetchSessionInspectorStats(ctx context.Context, tenantID strin
 	// 平均健康分（忽略 NULL）
 	var avgScore *float64
 	scoreRow := h.db.QueryRow(ctx, `
-		SELECT AVG(health_score) FROM session_summaries
-		WHERE health_score IS NOT NULL
-		`+tenantFilter+`
+		SELECT AVG(ss.health_score) FROM session_summaries ss
+		WHERE ss.health_score IS NOT NULL
+		`+scoreFilter+`
 	`, args...)
-	if err := scoreRow.Scan(&avgScore); err == nil && avgScore != nil {
+	if err := scoreRow.Scan(&avgScore); err != nil {
+		return nil, err
+	} else if avgScore != nil {
 		stats.AvgHealthScore = *avgScore
 	}
 
 	// 今日回收数
+	//
+	// 口径（2026-10-16 修正）：**「今天被关闭的会话数」**，即
+	//   status = 'closed' AND closed_at >= CURRENT_DATE（今日 00:00 起）。
+	// 不再按停机原因过滤。
+	//
+	// 为什么去掉 stop_reason（实测，非推断）：public.session_dim 在真库
+	// 只有 17 列，**没有 stop_reason**（也没有 updated_at）。权威 DDL 是
+	// sql/migrations/startup/805_session_dim_reconcile.sql:30-49，权威写方
+	// internal/sessionv2mirror/session_dim.go:72-83 / :104-117 写的正是这 17 列，
+	// 两者一致；全 sql/ 树里 stop_reason 只出现在
+	// sql/migrations/domain/331_session_state_and_rotations.sql:20，那是
+	// **另一张表** session_state_snapshots 的列（且该迁移自身有重复
+	// created_at 列、从未登记、从未应用）。
+	// 所以 `sd.stop_reason` 是一个**从未存在过的列**：原谓词让
+	// GET /api/admin/sessions/inspector-stats 稳定 500
+	// （SQLSTATE 42703 column sd.stop_reason does not exist）。
+	// 正确做法是改查询，不是补列——补一列等于凭空造一个无人写入、
+	// 永远为 NULL 的停机原因字段，计数会永远是 0（假指标）。
+	//
+	// 残留缺口（如实记录，未在本文件修复）：写入侧同样在引用这组不存在的列——
+	//   admin/session_health_api.go 的 HandleSessionRecycle（UPDATE ... stop_reason/updated_at）
+	//   bg/session_lifecycle_worker.go:496-500（applyRecycle，同样两列）
+	// 二者在真库上都会 42703；bg/ 与写入语义不在本文件所有权内，故只登记不改。
+	// 在其修复前，本计数等于「今日全部关闭数」，**无法**再按 idle/evicted/manual
+	// 细分——因为停机原因根本没有落库。
 	var recycled int
 	recycleRow := h.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM session_dim
-		WHERE status = 'closed'
-		  AND closed_at >= CURRENT_DATE
-		  AND stop_reason IN ('idle', 'absolute_lifetime', 'evicted', 'manual_admin')
-		`+tenantFilter+`
+		SELECT COUNT(*) FROM session_dim sd
+		WHERE sd.status = 'closed'
+		  AND sd.closed_at >= CURRENT_DATE
+		`+recycleFilter+`
 	`, args...)
-	if err := recycleRow.Scan(&recycled); err == nil {
-		stats.RecycledToday = recycled
+	if err := recycleRow.Scan(&recycled); err != nil {
+		return nil, err
 	}
+	stats.RecycledToday = recycled
 
 	return stats, nil
+}
+
+// The three queries have different WHERE contexts; never append a second WHERE.
+func inspectorStatsTenantFilters(tenantID string) (join, score, recycle string) {
+	if tenantID == "" {
+		return "", "", ""
+	}
+	return "WHERE ss.tenant_id = $1", "AND ss.tenant_id = $1", "AND sd.tenant_id = $1"
 }
 
 // inspectorReadInt 从 settings 读 int 类型的 inspector 配置。

@@ -55,21 +55,28 @@ func TestPGBodyReaderResolvesClientRequestIDToCanonicalID(t *testing.T) {
 	require.NoError(t, err)
 	defer mock.Close()
 
-	// 2026-08-27: loadRequestLogMeta resolves in cascade — request_id on hot
-	// table first, then client_request_id on hot, then the current-month
-	// view. A client-provided id misses the first lookup (empty rows →
-	// ErrNoRows) and resolves on the second.
+	// ★ 2026-10-20（迁移 890，v1 族退役）：元数据解析的两条腿都读**会话族**
+	// 原生源（db.SessionFamilyTurnsSourceSQL：hot ∪ 母表 + 734 details 层）。
+	//
+	// 原来的形态是四条腿：`_request_logs_hot`（request_id）→
+	// `_request_logs_hot`（client_request_id）→ canonical 视图（request_id）
+	// → canonical 视图（client_request_id）。v1 族被 DROP 之后那四条腿里的
+	// 两条（v1 热表）根本不存在，另两条（canonical 视图）在 890 之后**就是**
+	// 会话族两臂体 ⇒ 走视图等于把同一份会话族数据查两遍。
+	//
+	// ⇒ 现在是两条腿，都在会话族原生源上。判据用**结构**（两腿 + 关系名），
+	// 不用列投影：投影会随 118 列契约变，关系名不会。
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
+	mock.ExpectQuery(sessionFamilyTurnsLookupRE(false)).
 		WithArgs("client-req-1").
 		WillReturnRows(pgxmock.NewRows(metaCols))
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE client_request_id = \$1\s+ORDER BY ts DESC\s+LIMIT 1`).
+	mock.ExpectQuery(sessionFamilyTurnsByClientRequestIDRE(false)).
 		WithArgs("client-req-1").
 		WillReturnRows(pgxmock.NewRows(metaCols).
 			AddRow("gateway-req-1", "tenant-a", nil, nil, "claude-test", "success", true, 12))
-	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM _request_logs_bodies_hot`).
+	mock.ExpectQuery(sessionFamilyBodiesLookupRE()).
 		WithArgs("gateway-req-1").
 		WillReturnRows(pgxmock.NewRows([]string{"outbound_body"}).AddRow(`{"messages":[]}`))
 
@@ -91,14 +98,16 @@ func TestPGBodyReaderFillsPartialBodiesFromSessionTurns(t *testing.T) {
 	require.NoError(t, err)
 	defer mock.Close()
 
+	// ★ 2026-10-20（890）：元数据腿与正文腿都从 v1 切到会话族；第三条腿
+	// （session_turns 补空）不变。
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
+	mock.ExpectQuery(sessionFamilyTurnsLookupRE(false)).
 		WithArgs("req-partial").
 		WillReturnRows(pgxmock.NewRows(metaCols).
 			AddRow("req-partial", "default", "session-1", nil, "model", "success", true, 10))
-	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM _request_logs_bodies_hot`).
+	mock.ExpectQuery(sessionFamilyBodiesLookupRE()).
 		WithArgs("req-partial").
 		WillReturnRows(pgxmock.NewRows([]string{"outbound_body"}).AddRow(`{"messages":["from-logs"]}`))
 	mock.ExpectQuery(`(?s)SELECT t.session_id, t.turn_no,.*FROM public.session_turns_with_current_month t`).
@@ -123,10 +132,11 @@ func TestPGBodyReaderOmitBodySkipsBodyQueries(t *testing.T) {
 	require.NoError(t, err)
 	defer mock.Close()
 
+	// ★ 2026-10-20（890）：元数据腿从 v1 热表切到会话族原生源。
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
+	mock.ExpectQuery(sessionFamilyTurnsLookupRE(false)).
 		WithArgs("req-meta-only").
 		WillReturnRows(pgxmock.NewRows(metaCols).
 			AddRow("req-meta-only", "default", "session-1", nil, "model", "success", true, 10))
@@ -424,23 +434,18 @@ func TestPGBodyReader_ClientRequestIDCollision_RespectsTenantScope(t *testing.T)
 	require.NoError(t, err)
 	defer mock.Close()
 
+	// ★ 2026-10-20（890）：元数据腿从「v1 热表 + canonical 视图」四条腿
+	// 收敛为「会话族原生源」两条腿。租户谓词（AND tenant_id = $2）仍在，
+	// 这道门守的正是它。
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
-	// _request_logs_hot: request_id lookup must include tenant_id predicate.
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE request_id = \$1 AND tenant_id = \$2\s+LIMIT 1`).
+	// request_id lookup must include tenant_id predicate.
+	mock.ExpectQuery(sessionFamilyTurnsLookupRE(true)).
 		WithArgs("client-req-collision", "tenant-a").
 		WillReturnRows(pgxmock.NewRows(metaCols))
 	// client_request_id fallback must also include tenant_id predicate.
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE client_request_id = \$1 AND tenant_id = \$2\s+ORDER BY ts DESC\s+LIMIT 1`).
-		WithArgs("client-req-collision", "tenant-a").
-		WillReturnRows(pgxmock.NewRows(metaCols))
-	// partitioned request_id path is also constrained.
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_with_current_month\s+WHERE request_id = \$1 AND tenant_id = \$2\s+LIMIT 1`).
-		WithArgs("client-req-collision", "tenant-a").
-		WillReturnRows(pgxmock.NewRows(metaCols))
-	// partitioned client_request_id fallback.
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_with_current_month\s+WHERE client_request_id = \$1 AND tenant_id = \$2\s+ORDER BY ts DESC\s+LIMIT 1`).
+	mock.ExpectQuery(sessionFamilyTurnsByClientRequestIDRE(true)).
 		WithArgs("client-req-collision", "tenant-a").
 		WillReturnRows(pgxmock.NewRows(metaCols))
 
@@ -462,14 +467,14 @@ func TestPGBodyReader_ClientRequestIDCollision_AllowsOwnTenant(t *testing.T) {
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
-	// _request_logs_hot request_id lookup is constrained and returns tenant-a's row.
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE request_id = \$1 AND tenant_id = \$2\s+LIMIT 1`).
+	// ★ 2026-10-20（890）：元数据腿读会话族原生源；正文腿读会话族正文源。
+	// Body tables are keyed only by the canonical request ID; tenant scope was
+	// enforced while resolving that ID from the session-family turns source.
+	mock.ExpectQuery(sessionFamilyTurnsLookupRE(true)).
 		WithArgs("client-req-own", "tenant-a").
 		WillReturnRows(pgxmock.NewRows(metaCols).
 			AddRow("gateway-req-own", "tenant-a", nil, nil, "m", "success", true, 10))
-	// Body tables are keyed only by the canonical request ID; tenant scope was
-	// enforced while resolving that ID from request_logs_hot.
-	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM _request_logs_bodies_hot\s+WHERE request_id = \$1`).
+	mock.ExpectQuery(sessionFamilyBodiesLookupRE()).
 		WithArgs("gateway-req-own").
 		WillReturnRows(pgxmock.NewRows([]string{"outbound_body"}).AddRow(`{"o":1}`))
 
@@ -498,7 +503,8 @@ func TestPGBodyReader_DefenseInDepth_TenantMismatch(t *testing.T) {
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE request_id = \$1 AND tenant_id = \$2\s+LIMIT 1`).
+	// ★ 2026-10-20（890）：元数据腿读会话族原生源。
+	mock.ExpectQuery(sessionFamilyTurnsLookupRE(true)).
 		WithArgs("client-req-defense", "tenant-a").
 		WillReturnRows(pgxmock.NewRows(metaCols).
 			AddRow("gateway-req-defense", "tenant-b", nil, nil, "m", "success", true, 10))
@@ -523,11 +529,11 @@ func TestPGBodyReader_SuperAdminSeesCrossTenant(t *testing.T) {
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
 	// No `AND tenant_id` predicate when scope is unrestricted.
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
+	mock.ExpectQuery(sessionFamilyTurnsLookupRE(false)).
 		WithArgs("client-req-sa").
 		WillReturnRows(pgxmock.NewRows(metaCols).
 			AddRow("gateway-req-sa", "tenant-a", nil, nil, "m", "success", true, 10))
-	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM _request_logs_bodies_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
+	mock.ExpectQuery(sessionFamilyBodiesLookupRE()).
 		WithArgs("gateway-req-sa").
 		WillReturnRows(pgxmock.NewRows([]string{"outbound_body"}).AddRow(`{}`))
 

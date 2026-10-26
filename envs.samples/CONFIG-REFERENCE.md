@@ -90,7 +90,7 @@ settings_kv 数据库值（热加载，仅 settings 规格族）
 | `LLM_GATEWAY_UPSTREAM` | `http://127.0.0.1:8780` | 单上游直通模式（多供应商走 DB 配置） |
 | `LLM_GATEWAY_UPSTREAM_TIMEOUT` 等 8 个超时 | 见 config.go | upstream/stream/chunk/first-byte/response-header/keepalive/sync-retry/SSE 行上限 |
 | `LLM_GATEWAY_SESSION_TTL_HOURS` / `_SESSION_REUSE_WINDOW` / `_SESSION_ID_BODY_KEYS` / `_DEFAULT_LANGUAGE` | — | 会话基础 |
-| `LLM_GATEWAY_LOG_LEVEL/_FORMAT/_FILE/_MAX_*` | info/json/空/100×10×7 | 留空走 stderr；填路径启用轮转 |
+| `LLM_GATEWAY_LOG_LEVEL/_FILE/_MAX_*` | info/空/100×10×7 | 留空走 stderr；填路径启用轮转（格式固定 JSON，无开关） |
 | `LLM_GATEWAY_DATA_DIR/_BODIES_DIR/_BODIES_CODEC/_BACKUP_DIR` | ./data 相对 / gzip | 落盘布局；回滚旧二进制前 codec 切回 gzip |
 | `LLM_GATEWAY_STORAGE_MODE/_TYPE/_SQLITE_PATH` | db / postgres / — | 单机 sqlite 模式入口 |
 | `LLM_GATEWAY_ATTACHMENT_*`（10 项） | — | 附件目录/认证模式/大小上限/出站抓取等，见 01 |

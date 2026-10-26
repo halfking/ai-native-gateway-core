@@ -5,7 +5,7 @@ import { req, type RequestOptions } from './client'
 //   GET /api/admin/dispatch/waterfall/request/{request_id} 单条瀑布
 //   GET /api/admin/dispatch/queues                         队列深度
 //
-// 鉴权：三条都是 `wrapAdmin` = `AdminMiddleware`（cmd/gateway/main.go:7228-7230
+// 鉴权：三条都是 `wrapAdmin` = `AdminMiddleware`（cmd/gateway/main.go:7520-7522
 // → main_admin_wrappers.go:26-30），只做认证 ⇒ tenant_admin 可用。
 //
 // 为什么这条线值得单独一页：journey 回答「发生了什么事件」，waterfall 回答

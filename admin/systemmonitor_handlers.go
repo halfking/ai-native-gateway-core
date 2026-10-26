@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -300,6 +301,24 @@ func (h *Handler) handleSystemMonitorByModel(w http.ResponseWriter, r *http.Requ
 	})
 }
 
+// systemMonitorProbeRunCountersSQL 是「近 1 小时探针运行计数」的 SQL。
+// 提成包级常量是为了让**真库执行门**能直接跑它
+// （admin/session_family_runtime_sql_test.go）—— 内联在 handler 里的 SQL
+// 无法被门直接执行，列名一写错就只能靠「页面上的计数恒为 0」来发现
+// （2026-10-20 实测：正是这么发现的 —— 那个不存在的 total_tokens 列让
+// 整条查询 42703，错误又被 `_ =` 吞掉，四个计数全部停在 0）。
+//
+// ⚠ 这里**没有** token 聚合：system_probe_runs 没有 token 列（见
+// handleSystemMonitorStats 里的详细说明）。
+const systemMonitorProbeRunCountersSQL = `
+		SELECT
+			COUNT(*) FILTER (WHERE status = 'success'),
+			COUNT(*) FILTER (WHERE status IN ('failed', 'timeout', 'network_error')),
+			COUNT(*) FILTER (WHERE status = 'skipped')
+		FROM system_probe_runs
+		WHERE created_at >= NOW() - INTERVAL '1 hour'
+`
+
 // handleSystemMonitorStats 队列 + running + in_fallback 快照。
 func (h *Handler) handleSystemMonitorStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -324,16 +343,31 @@ func (h *Handler) handleSystemMonitorStats(w http.ResponseWriter, r *http.Reques
 		`SELECT monitor_concurrency FROM self_check_settings WHERE id=1`).Scan(&monitorConcurrency); err == nil && monitorConcurrency > 0 {
 		concurrency = monitorConcurrency
 	}
-	var completed, failed, skipped, tokens int64
-	_ = h.db.QueryRow(r.Context(), `
-		SELECT
-			COUNT(*) FILTER (WHERE status = 'success'),
-			COUNT(*) FILTER (WHERE status IN ('failed', 'timeout', 'network_error')),
-			COUNT(*) FILTER (WHERE status = 'skipped'),
-			COALESCE(SUM(total_tokens), 0)
-		FROM system_probe_runs
-		WHERE created_at >= NOW() - INTERVAL '1 hour'
-	`).Scan(&completed, &failed, &skipped, &tokens)
+	var completed, failed, skipped int64
+	// ★ 2026-10-20 修（真库执行门打出来的）：原来第 4 个聚合是
+	// `COALESCE(SUM(total_tokens), 0)` —— 而 system_probe_runs **没有
+	// token 列**（真库实测的列：id / task_id / task_type / automaticity /
+	// credential_id / provider_id / raw_model / source / worker_id / status /
+	// attempt / max_attempts / http_status / latency_ms / dns_ms / tls_ms /
+	// request_url / request_body_preview / response_body_preview / err_code /
+	// err_detail / skip_reason / recent_request_id / created_at ...）⇒
+	//   ERROR: column "total_tokens" does not exist (42703)
+	// 而错误被 `_ =` **整个丢掉** ⇒ 四个计数全部停在 0 ⇒
+	// 「近 1 小时完成/失败/跳过/Token」在页面上恒为 0（连成功的那些也是 0）。
+	//
+	// 修法：去掉那个不存在的聚合；并把错误**记成 WARN**（原来 `_ =` 把
+	// 错误连同四个计数一起吞了）。
+	//
+	// ⚠ total_tokens_1h 这个响应键**保留**（web-mobile 的 SystemMonitorStats
+	// 类型与 SystemMonitorView 都在读它）⇒ 值恒为 0，并在下面注明原因：
+	// 探针运行表**不记录 token**（它只记状态与时延），要统计探针消耗的 token
+	// 需要另接计量表（usage_ledger / session_turns）按 request 维度聚合 ——
+	// 那是另一个口径问题，不在本轮擅自改语义。
+	statsErr := h.db.QueryRow(r.Context(), systemMonitorProbeRunCountersSQL).
+		Scan(&completed, &failed, &skipped)
+	if statsErr != nil {
+		slog.Warn("system monitor: probe-run counters query failed; counters stay 0", "error", statsErr)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"queue_size":          queueSize,
 		"running_size":        runningSize,
@@ -342,8 +376,10 @@ func (h *Handler) handleSystemMonitorStats(w http.ResponseWriter, r *http.Reques
 		"completed_total_1h":  completed,
 		"failed_total_1h":     failed,
 		"skipped_total_1h":    skipped,
-		"total_tokens_1h":     tokens,
-		"snapshot_at":         time.Now().UTC(),
+		// system_probe_runs 不记 token（见上）⇒ 恒 0；键保留是因为
+		// web-mobile 的 SystemMonitorStats 类型与视图都在读它。
+		"total_tokens_1h": 0,
+		"snapshot_at":     time.Now().UTC(),
 	})
 }
 

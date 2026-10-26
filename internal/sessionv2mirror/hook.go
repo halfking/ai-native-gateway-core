@@ -34,7 +34,8 @@ import (
 // The hook checks sessions_v2.shadow_write and sessions_v2.enabled flags.
 // The hook is a no-op when:
 //   - writer is nil,
-//   - the feature flag disables V2 shadow writes,
+//   - the feature flag disables new V2 shadow writes and this entry has not
+//     already selected V2 as its canonical write source,
 //   - the entry is a non-terminal (in_progress) state.
 //
 // 存储优化方案 v2 §3-D4：无 gw_session_id 的流量（探针/系统/匿名）不再被
@@ -116,7 +117,10 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 		// Check feature flags via the shadowWriteEnabled seam (defaults to
 		// the settings-backed reader; tests override it because
 		// settings.Global is nil in the unit-test binary).
-		if !shadowWriteEnabled() {
+		// A completed telemetry transaction that skipped V1 has already chosen
+		// V2 as its fact source. Finish that write even if a subsequent config
+		// switch closes new shadow writes; durable replay has the same contract.
+		if !entry.SessionV2WriteRequired && !shadowWriteEnabled() {
 			return
 		}
 
@@ -219,19 +223,48 @@ var shadowWriteDispatchAsync = true
 // and neither the dims writer nor the V2 writer reads those fields (req is
 // the deep-parsed snapshot), so the hand-off is race-free.
 func runShadowWrite(w V2Writer, req *v2.ProcessedRequest, entry *telemetry.RequestLogEntry, dims []DimWriter, timeout time.Duration, synthetic bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	// ★ 2026-10-20：维度写与轮次写**各用各的预算**。
+	//
+	// 原来两者共用一个 ctx（也就是共用一个 deadline）。实测代价（本地
+	// PG 修好 shared_buffers 之后仍然复现）：
+	// session_dim 维度写是 `INSERT ... ON CONFLICT (gw_session_id) DO UPDATE`，
+	// 它的触发器还要去 UPDATE session_summaries；这一步慢或多等几把锁，
+	// 就会把**轮次写**的预算吃光 ⇒ session_turn_details 超时 ⇒
+	//   ① 正文（session_bodies）一行不落；
+	//   ② 整笔失败 ⇒ 走 outbox 异步重放 ⇒ turn_no 与请求顺序错位；
+	//   ③ trace 找不到父行 ⇒ trace_events 丢失。
+	//
+	// ⇒ 这正是 LESSONS「同一次判定里的不同判据可以有不同的时间语义，
+	// 不要因为共用一个函数就让它们共用同一个 gate」的形态：
+	// **维度写是 best-effort 的旁路，轮次写才是这次判定的主体。**
+	// 让旁路吃主体的预算 ⇒ 主体失败、旁路却「成功」了。
+	//
+	// 维度写仍保持「失败只记日志、不影响主体」的原契约，只是它不再能
+	// 把主体的 deadline 耗尽。
+	//
+	// ⚠ 关键：**光「再开一个 ctx」不够**。两个 `WithTimeout(bg, timeout)`
+	// 的 deadline 是同一个绝对时刻（t0+timeout），维度写照样把主体的
+	// deadline 耗光 —— 第一版修法就是这样，实测仍然失败（轮次写拿到的
+	// 剩余预算是 −0.8ms）。⇒ 轮次写的 ctx 必须在**维度写之后**才建：
+	// 它的预算从「轮次写开始」起算，这才真的是「各用各的预算」。
+	//
+	// 代价（如实标注）：一次 shadow write 的**总**墙钟上限从 timeout
+	// 变成 ≤ 2×timeout（维度 timeout + 轮次 timeout）。这是有意的取舍：
+	// 上限变松，换来主体不再被旁路饿死。调用方是后台 goroutine
+	//（shadowWriteSema 限流），worker 侧不受影响。
 
-	// session_dim 维度维护（任务/项目/属主/客户端）：与 V2 写入同一
-	// 超时预算，独立 best-effort —— V2 写失败也不影响维度更新。
+	// session_dim 维度维护（任务/项目/属主/客户端）：**独立**超时预算，
+	// best-effort —— V2 写失败也不影响维度更新，维度写失败也不影响 V2 写。
 	// 合成系统会话不维护 V1 维度表（session_dim 以 gw_session_id 为键，
 	// 无会话头流量本就缺席于此）。
-	if !synthetic {
+	if !synthetic && len(dims) > 0 {
+		dimCtx, dimCancel := context.WithTimeout(context.Background(), timeout)
+		defer dimCancel()
 		for _, dim := range dims {
 			if dim == nil {
 				continue
 			}
-			if err := dim.UpsertSessionDim(ctx, entry); err != nil {
+			if err := dim.UpsertSessionDim(dimCtx, entry); err != nil {
 				slog.Warn("sessionv2mirror: session_dim upsert failed",
 					"request_id", entry.RequestID,
 					"session_id", req.SessionID,
@@ -239,6 +272,10 @@ func runShadowWrite(w V2Writer, req *v2.ProcessedRequest, entry *telemetry.Reque
 			}
 		}
 	}
+
+	// 轮次写的预算从**这里**起算（维度写之后）。
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
 	err := w.Write(ctx, req)
 	if err == nil && entry.T0Missing {
@@ -404,6 +441,31 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry, sessionID string)
 		req.ResponseBody = parseResponseBody(*entry.ResponseBody)
 	}
 
+	// ★★★★★★ FIXME-14374（2026-10-22 §143.74 轮，只登记、★ 零行为变更）：
+	//	★★★★★ 本行的守卫条件 `len(entry.OutboundBody) > 0` 是【v2 正文表二次方放大】
+	//	★ 的**根因锚点** ⇒ ⇒ 它的后果有【三个】，且【互不相同】：
+	//	★ ① 存储：req.OutboundBody 为空 ⇒ 逐轮 outbound_body 落库为 jsonb 'null'
+	//	★    ⇒ ⇒ 下一轮的 delta 差集【基准读空】⇒ ⇒ extractRequestDelta 走
+	//	★    「len(LastOutboundBody) == 0 ⇒ return RequestBody」⇒ ⇒
+	//	★    **每轮把客户端完整历史整份落成 request_delta** ⇒ ⇒ 二次方放大。
+	//	★ ② 读侧：TurnReader.LoadChain 是【纯拼接、无去重】⇒ ⇒ 重建出的会话里
+	//	★    **同一个 system prompt 会出现 N 次**（★ 实测：15 轮的会话里出现 14 次）。
+	//	★ ③ 压缩器输入：session_cache.loadFromDB 先试 LoadLatestOutbound（★ 它把
+	//	★    jsonb 'null' 当空 ⇒ 返回 nil）⇒ ⇒ 必然回落 LoadChain(..., 10)
+	//	★    ⇒ ⇒ **压缩器拿到的上下文被放大约 10 倍**。
+	//	★ 为什么这是【默认行为】而不是边缘情况：★ 未压缩流量（submit_mode == "full"）
+	//	★ 在 10 月占 91.3%，在 E1 门开启后（2026-10-21 21:27:26+08）占 100%
+	//	★ ⇒ ⇒ **压缩器没有产物 ⇒ 本行不填 ⇒ 基线恒空 ⇒ 形态 A 必然**。
+	//	★ 实测（252 共享库，2026-10-22，只读）：
+	//	★   ① E1 门开启后新写入的 4,411 行 turn_delta：
+	//	★      **100% 的 outbound_body 是 jsonb 'null'**；
+	//	★   ② E1 后的新会话 4,757 轮 **100% 是 submit_mode='full'**（未压缩 ⇒ 无压缩产物）；
+	//	★   ③ 读侧放大（★ 用【仓内真实的 LoadChain】+ pgxmock 驱动生产导出行）：
+	//	★      形态 A 会话 15 轮 → 链长 348 / 去重后 44（**7.9×**）、单条 system prompt
+	//	★      **重复 14 次**；形态 B 会话 23 轮 → 链长 2,655 / 去重后 2,382（1.1×）。
+	//	★ 处置：本轮【不改行为】—— 改这里会改变生产正文的【内容口径】（delta 的含义）
+	//	★   ⇒ ⇒ 属主决策（⑮）拍板后再改 ⇒ ⇒ 本处只做登记，
+	//	★   ⇒ ⇒ 并由门 scripts/ursmcheck/section_14374_outbound_baseline_test.go 钉住。
 	// Outbound body (from session compressor)
 	if len(entry.OutboundBody) > 0 {
 		req.OutboundBody = parseMessagesJSON(entry.OutboundBody)
@@ -860,6 +922,8 @@ func parseProtocolMessages(raw json.RawMessage, response bool) []v2.Message {
 			_ = json.Unmarshal(b, &items)
 		} else if b := root["contents"]; len(b) > 0 {
 			_ = json.Unmarshal(b, &items)
+		} else if b := root["input"]; len(b) > 0 {
+			items = responsesWireItems(root, b)
 		}
 	} else if b := root["choices"]; len(b) > 0 {
 		var choices []struct {
@@ -909,6 +973,66 @@ func marshalObject(obj map[string]json.RawMessage) json.RawMessage {
 	return b
 }
 
+// responsesWireItems extracts the message list from an OpenAI-Responses request
+// envelope, producing the same []json.RawMessage shape the chat (`messages`)
+// and Gemini (`contents`) branches hand to the shared IR decoder.
+//
+// 2026-10-16 (defect: request bodies vanished on the Responses leg). `input` is
+// the Responses-wire counterpart of `messages`; `instructions` carries what the
+// chat envelope used to put in a leading system message. Neither key was in the
+// whitelist above, so any request served over the Responses wire parsed to nil
+// and its turn persisted request_delta = JSON null.
+//
+// Two production paths reach the mirror in that shape, and both were losing the
+// whole inbound body:
+//   - a genuine `/v1/responses` client (the entry's RequestBody IS the Responses
+//     envelope), and
+//   - a `/v1/chat/completions` client whose model is Responses-capable, because
+//     the proactive chat→Responses upgrade replaces the executor's InboundBody
+//     with the converted body (domains/streaming/executors/executor_chat.go:
+//     `sourceBody = proactiveResponsesBody`, then `InboundBody: sourceBody`).
+//     Verified against the local PG: exactly the two such requests
+//     (grok-4.6, gpt-5.6-luna) carry request_delta = JSON null while their
+//     chat-leg peers (deepseek-v4-flash, claude-sonnet-5-5) carry arrays.
+//
+// The response side never showed the gap because the chat→Responses bridge
+// converts the reply back into a chat `choices` envelope before it is persisted,
+// which is why the two broken rows read req=null / resp=array.
+//
+// `input` has two documented shapes: a bare string (one user turn) and an item
+// array ({"type":"message","role":..,"content":[{"type":"input_text",..}]} plus
+// function_call / function_call_output items). Only the string form needs
+// synthesizing; array items already carry role/content and are handed to the IR
+// decoder untouched — it preserves input_text/output_text block payloads verbatim.
+func responsesWireItems(root map[string]json.RawMessage, input json.RawMessage) []json.RawMessage {
+	var items []json.RawMessage
+	if err := json.Unmarshal(input, &items); err != nil {
+		items = nil
+	}
+	if len(items) == 0 {
+		var text string
+		if err := json.Unmarshal(input, &text); err == nil && text != "" {
+			if msg, err := json.Marshal(map[string]string{"role": "user", "content": text}); err == nil {
+				items = []json.RawMessage{msg}
+			}
+		}
+	}
+	var instructions string
+	if err := json.Unmarshal(root["instructions"], &instructions); err != nil || instructions == "" {
+		return items
+	}
+	// `instructions` is emitted FIRST so the reconstructed conversation keeps
+	// the original ordering: the chat→Responses converter lifts the leading
+	// system message out of `messages` into `instructions`, so without this the
+	// system prompt would silently vanish from the delta even after the body
+	// starts parsing.
+	sys, err := json.Marshal(map[string]string{"role": "system", "content": instructions})
+	if err != nil {
+		return items
+	}
+	return append([]json.RawMessage{sys}, items...)
+}
+
 // parseMessagesJSON extracts messages from the session compressor's
 // OutboundBody. That value is the FULL upstream request object
 // ({"model":...,"messages":[...]} — see compression.spliceBodyMessages), so we
@@ -931,7 +1055,25 @@ func parseMessagesJSON(raw json.RawMessage) []v2.Message {
 	if err := json.Unmarshal(raw, &arr); err == nil && len(arr) > 0 {
 		return toMessages(arr)
 	}
+	// 2026-10-16: Responses-wire outbound object ({"input":[...],
+	// "instructions":..., no "messages"}). Same envelope gap as the inbound
+	// request body, so it is delegated to the shared IR decoder rather than
+	// growing a second, divergent msgProbe-shaped decoder here: outbound and
+	// inbound messages must be decoded by ONE path or they drift again.
+	if hasResponsesWireInput(raw) {
+		return parseProtocolMessages(raw, false)
+	}
 	return nil
+}
+
+// hasResponsesWireInput reports whether raw is a JSON object carrying the
+// Responses-wire `input` envelope (and therefore has no `messages` to find).
+func hasResponsesWireInput(raw json.RawMessage) bool {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &root); err != nil || root == nil {
+		return false
+	}
+	return len(root["input"]) > 0 && len(root["messages"]) == 0
 }
 
 func toMessages(raw []msgProbe) []v2.Message {
@@ -1090,6 +1232,31 @@ func intStr(v int) string {
 	return string(buf)
 }
 
+// EligibleForTurnMirrorPolicy reports whether the request belongs to the
+// policy population that should produce a session_turn. It intentionally does
+// NOT apply the runtime shadow-write switch: turning session writes off while
+// business traffic continues is exactly what data-horizon must detect.
+//
+// PersistHook keeps the individual early returns below for observability and
+// exclusion-ledger tests; this exported classifier is the shared contract for
+// independent consumers such as the per-instance data-horizon canary.
+func EligibleForTurnMirrorPolicy(entry *telemetry.RequestLogEntry) bool {
+	if entry == nil {
+		return false
+	}
+	if !entry.Success && !isTerminalFailure(entry) {
+		return false
+	}
+	if IsProbeSyntheticSession(entry) {
+		return false
+	}
+	synthetic := entry.GwSessionID == nil || strings.TrimSpace(*entry.GwSessionID) == ""
+	if !synthetic && telemetry.IsInternalAutoEntry(entry) {
+		return false
+	}
+	return true
+}
+
 func isTerminalFailure(entry *telemetry.RequestLogEntry) bool {
 	if entry == nil || entry.Success {
 		return false
@@ -1103,7 +1270,22 @@ func isTerminalFailure(entry *telemetry.RequestLogEntry) bool {
 	return entry.ErrorKind != nil && strings.TrimSpace(*entry.ErrorKind) != ""
 }
 
+// statusCode derives the client-facing HTTP status persisted as
+// session_turns.status_code.
+//
+// Precedence (2026-10-16): ClientStatusCode is what the client actually
+// received, so it wins over everything derived. UpstreamStatusCode is the
+// provider's status, which is NOT the client's when the gateway authored the
+// response — it is kept as the second choice for proxy-shaped failures where
+// the upstream status *was* relayed verbatim. The 200/500 pair is the last
+// resort and means "no received-status information was recorded", not a claim
+// that the client saw 500: gateway-authored rejections (auth / budget /
+// session / policy) never reach an upstream, so UpstreamStatusCode is nil and
+// the old three-step chain turned every 401 into a persisted 500.
 func statusCode(entry *telemetry.RequestLogEntry) int {
+	if entry.ClientStatusCode != nil {
+		return *entry.ClientStatusCode
+	}
 	if entry.UpstreamStatusCode != nil {
 		return *entry.UpstreamStatusCode
 	}

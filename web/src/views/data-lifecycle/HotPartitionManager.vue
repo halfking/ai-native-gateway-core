@@ -1,7 +1,7 @@
 <template>
   <div class="hot-partition-manager">
     <div v-if="globalError" class="alert alert-error">
-      <span class="alert-icon">⚠️</span>
+      <span class="alert-icon"><Warning /></span>
       {{ globalError }}
     </div>
 
@@ -340,7 +340,7 @@
         </div>
         <div class="modal-body">
           <div class="warning-box">
-            <div class="warning-icon">⚠️</div>
+            <div class="warning-icon"><Warning /></div>
             <div class="warning-content">
               <p><strong>{{ t('dataLifecycle.hotPartition.deleteModal.warning') }}</strong></p>
               <p>{{ t('dataLifecycle.hotPartition.deleteModal.fields.name') }}：</p>
@@ -394,6 +394,7 @@ import {
   promoteHotTable, dropPartition, listLifecycleJobs, getLifecycleJob,
   type JobRun, type JobStatus,
 } from '@/api/tuning'
+import { Warning } from '@element-plus/icons-vue'
 
 interface HotTable {
   name: string
@@ -517,7 +518,7 @@ async function loadHotTableStats() {
     }
   } catch (err: any) {
     console.error('加载 hot 表统计失败:', err)
-    globalError.value = '加载 hot 表统计失败：' + (err.response?.data?.error || err.message)
+    globalError.value = t('dataLifecycle.hotPartition.statsLoadFailedWithReason', { reason: err.response?.data?.error || err.message })
   } finally {
     loading.value = false
   }
@@ -620,7 +621,7 @@ async function promoteTable(table: HotTable) {
     await loadJobHistory()
     if (pollTimer === null) startPolling()
   } catch (err: any) {
-    ElMessage.error('启动迁移任务失败：' + (err.response?.data?.error || err.message))
+    ElMessage.error(t('dataLifecycle.hotPartition.startMigrationFailedWithReason', { reason: err.response?.data?.error || err.message }))
   }
 }
 
@@ -646,7 +647,7 @@ async function executeDelete() {
     deleteConfirm.value = null
   } catch (err: any) {
     const msg = err.response?.data?.error || err.message || ''
-    ElMessage.error({ message: '提交删除任务失败：' + msg, duration: 8000 })
+    ElMessage.error({ message: t('dataLifecycle.hotPartition.submitDeleteFailedWithReason', { reason: msg }), duration: 8000 })
   }
 }
 
@@ -1236,7 +1237,7 @@ function formatNumber(num: number): string {
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
-  border-left: 3px solid var(--accent);
+  border: 1px solid var(--accent);
   padding-left: 10px;
 }
 

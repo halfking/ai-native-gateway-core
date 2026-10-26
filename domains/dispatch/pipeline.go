@@ -1078,6 +1078,9 @@ func (p *Pipeline) Stop() {
 func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 	qr.Ctx = ctx
 	qr.setObservationEmitter(func(observation Observation) {
+		// ★ 2026-10-24 P1-1（统一请求级观察者）：**每次上游尝试**的 Watch 事件。
+		//   发布是**非阻塞**的 ⇒ 观察面不得影响转发路径。
+		magpieP1PublishAttempt(ctx, observation)
 		p.observationChMu.RLock()
 		if p.observationCh == nil || p.observationClosed {
 			p.observationChMu.RUnlock()

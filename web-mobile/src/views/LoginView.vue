@@ -17,6 +17,7 @@ import { useAuthStore } from '@/stores/auth'
 import { fetchCaptcha } from '@/api/auth'
 import { ApiError } from '@/api/client'
 import { GATEWAY_SITES, currentSite, isCurrentSite, siteLoginUrl, type GatewaySite } from '@/api/gatewaySites'
+import { isMaintenanceMode } from '@/api/client'
 import { t } from '@/i18n'
 import AppIcon from '@/components/common/AppIcon.vue'
 
@@ -26,7 +27,10 @@ const auth = useAuthStore()
 
 const username = ref('')
 const password = ref('')
-const rememberMe = ref(false)
+// 移动端默认勾选「保持登录」：不勾时 token 进 sessionStorage / 会话 cookie，
+// Android stopApp/冷启会丢会话（2026-10-18 Maestro 01-shell-after-relaunch 红）。
+// 桌面同仓 LoginView 若分叉，保持各自默认；此处验收契约是 7 天保持。
+const rememberMe = ref(true)
 const captchaCode = ref('')
 const captchaId = ref('')
 const captchaImage = ref('')
@@ -115,6 +119,10 @@ async function submit(): Promise<void> {
       // 否则用户对着一个死验证码反复输，必然第二次也失败。
       // refreshCaptcha 会用服务端返回的 required 把「是否强制」同步回来。
       await refreshCaptcha()
+    } else if (isMaintenanceMode(err)) {
+      // 2026-10-22：维护态不是凭据问题 —— 展示服务端原话（如「网关维护中，
+      // 请稍后重试。」），用户才知道该等而不是改密码重试。
+      errorText.value = err instanceof Error && err.message ? err.message : t('login.failed')
     } else {
       errorText.value = t('login.failed')
     }

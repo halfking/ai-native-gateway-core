@@ -38,7 +38,9 @@ CREATE TABLE public.credential_model_bindings (
     -- models_canonical.context_window_override / context_window。
     context_window_override integer,
     context_window_source text DEFAULT 'catalog',
-    context_window_updated_at timestamp with time zone
+    context_window_updated_at timestamp with time zone,
+    stream_mode text DEFAULT 'both'::text NOT NULL,
+    CONSTRAINT credential_model_bindings_stream_mode_check CHECK ((stream_mode = ANY (ARRAY['both'::text, 'stream_only'::text, 'non_stream_only'::text])))
 );
 
 

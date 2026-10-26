@@ -44,6 +44,9 @@ func makeSessionDetailMockRowForTenant(payload []byte, tenant string) *pgxmock.R
 	intent := "intent-y"
 	primaryReq := "req-xyz"
 	sourceTask := "task-99"
+	// duration_ms 是 sessions.duration_ms（877 起由每轮刷新写入）。
+	// 生产代码以 *int64 接收（SQL NULL 表示"还没有时长"），故此处也传指针。
+	durationMs := int64(90_000)
 	return pgxmock.NewRows([]string{
 		"id", "session_id", "tenant_id", "created_at", "updated_at", "closed_at", "status",
 		"total_turns", "total_tokens", "total_cost_usd",
@@ -51,6 +54,7 @@ func makeSessionDetailMockRowForTenant(payload []byte, tenant string) *pgxmock.R
 		"last_model", "last_provider",
 		"task_type", "client_type", "topic", "intent",
 		"primary_request_id", "turn_logs_summary",
+		"duration_ms",
 		// session_analysis_metadata LATERAL 列（顺序固定，见 session_meta_view.go）
 		// 注意: sa_status/sa_schema_version/sa_input_hash 在生产代码里以 *string
 		// 接收 (LEFT JOIN miss 时为 SQL NULL), 因此 pgxmock 必须以 *string
@@ -65,6 +69,7 @@ func makeSessionDetailMockRowForTenant(payload []byte, tenant string) *pgxmock.R
 		&lastModel, &lastProvider,
 		&taskType, &clientType, &topic, &intent,
 		&primaryReq, []byte(`{"hint":"ok"}`),
+		&durationMs,
 		ptrStr("final"), ptrStr("session-analysis/v1"), ptrStr("hash-001"),
 		&sourceTask, &saUpdatedAt, payload,
 	)
@@ -247,6 +252,48 @@ func TestQuerySession_PopulatesSessionAnalysis(t *testing.T) {
 	}
 }
 
+// TestQuerySession_ReadsDurationMs 断言 sessions.duration_ms 的**值**真的落到
+// 结构体里，而不只是"查询里出现过这一列"。
+//
+// 两道门各管一半，缺一不可：
+//   - AST 门（session_duration_ms_consumer_test.go）证明"SELECT 里有这一列 +
+//     Scan 里有这个目标"。它抓不到两者**错位**（Scan 少一个目标、顺序串了）。
+//   - 本门证明值真的落到了结构体（Scan 目标与列的对应关系正确）。
+//
+// 本门**抓不到**"SELECT 把这一列删掉了"——pgxmock 的列是夹具写死的，
+// 删掉 SELECT 列只会让真实 DB 返回 27 列，夹具仍返回 28 列 ⇒ 照常通过。
+// 那一半由 AST 门负责，两道门合起来才是闭环。
+func TestQuerySession_ReadsDurationMs(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery(`LEFT JOIN LATERAL`).
+		WithArgs("gw_abc", "tenant-a").
+		WillReturnRows(makeSessionDetailMockRow([]byte(`{"schema_version":"session-analysis/v1","status":"final"}`)))
+
+	api := newSessionDetailV2APIWithDB(mock)
+	got, err := api.querySession(t.Context(), "gw_abc", "tenant-a")
+	if err != nil {
+		t.Fatalf("querySession: %v", err)
+	}
+	if got == nil {
+		t.Fatal("querySession returned nil for non-empty row")
+	}
+	if got.DurationMs == nil {
+		t.Fatal("DurationMs must be populated from sessions.duration_ms")
+	}
+	if *got.DurationMs != 90_000 {
+		t.Errorf("DurationMs=%d, want 90000", *got.DurationMs)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected DB calls: %v", err)
+	}
+}
+
 func TestQuerySession_LeftJoinMissLeavesAnalysisNil(t *testing.T) {
 	// LEFT JOIN LATERAL 未命中：sam.status='' → SessionAnalysis 必须保持 nil。
 	// 这条路径对应"会话尚未经过分析（arrival 钩子被禁用或还没跑过 final 阶段）"。
@@ -266,6 +313,7 @@ func TestQuerySession_LeftJoinMissLeavesAnalysisNil(t *testing.T) {
 			"last_model", "last_provider",
 			"task_type", "client_type", "topic", "intent",
 			"primary_request_id", "turn_logs_summary",
+			"duration_ms",
 			"sa_status", "sa_schema_version", "sa_input_hash",
 			"sa_source_task_id", "sa_updated_at", "sa_payload",
 		}).AddRow(
@@ -275,6 +323,7 @@ func TestQuerySession_LeftJoinMissLeavesAnalysisNil(t *testing.T) {
 			nil, nil, nil, nil, nil,
 			nil, nil, nil, nil,
 			nil, nil,
+			nil, // duration_ms 为 SQL NULL ⇒ DurationMs 保持 nil
 			nil, nil, nil, nil, nil, nil,
 		))
 

@@ -6,6 +6,7 @@ import { req } from '../api/_core'
 import { fmtDateTime24h } from '../i18n/useFormat'
 import { useActionMessage } from '../composables/useActionMessage'
 import AppSpinner from '../components/AppSpinner.vue'
+import { CircleCheck } from '@element-plus/icons-vue'
 
 const { t } = useI18n({ useScope: 'global' })
 
@@ -32,6 +33,7 @@ interface ComplianceRecord {
   severity: number
   redacted: boolean
   content_preview: string
+  evidence?: string
   created_at: string
 }
 
@@ -82,7 +84,7 @@ const recordsSize = ref(50)
 const recordsError = ref('')
 
 const config = ref<OutputComplianceConfig>({
-  enabled: true,
+  enabled: false,
   redaction_mode: 'owner_mismatch',
   pii_engine: 'regex',
   toxicity_engine: 'keyword',
@@ -311,6 +313,7 @@ onMounted(() => {
     <div class="view-header">
       <h2>{{ t('outputCompliance.title') }}</h2>
       <p class="view-subtitle">{{ t('outputCompliance.subtitle') }}</p>
+      <RouterLink to="/admin/sanitize-rules" class="btn">{{ t('sanitizeRules.title') }}</RouterLink>
     </div>
 
     <!-- 标签页 -->
@@ -477,7 +480,7 @@ onMounted(() => {
       <AppSpinner v-if="configLoading" :label="t('outputCompliance.config.loading')" />
       <div v-else-if="configError" class="error-banner">⚠️ {{ configError }}</div>
       <div v-else class="config-form">
-        <div v-if="configSuccess" class="success-banner">✅ {{ configSuccess }}</div>
+        <div v-if="configSuccess" class="success-banner"><CircleCheck /> {{ configSuccess }}</div>
 
         <!-- 开关配置 -->
         <div class="config-section">

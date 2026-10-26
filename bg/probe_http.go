@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
-	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -108,8 +107,10 @@ func singleGet(ctx context.Context, endpoint, apiKey string, desc providercap.De
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	latencyMs := int(time.Since(start).Milliseconds())
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 65536)) // 64KB to capture full model list
-	return classifyHTTPResponse(resp.StatusCode, string(body), latencyMs)
+	// 目录型端点用放宽后的上限：/v1/models 返回整个模型目录，
+	// 64KiB 对聚合型供应商不够（见 credentialProbeModelsBodyLimit 处的说明）。
+	body, readErr := readCredentialProbeBodyLimit(resp.Body, credentialProbeModelsBodyLimit)
+	return classifyProbeHTTPResponse(resp.StatusCode, body, readErr, latencyMs, "models")
 }
 
 // singleChatPing does ONE POST chat completion (Layer 4).
@@ -148,8 +149,8 @@ func singleChatPing(ctx context.Context, endpoint, apiKey, modelField string, de
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	latencyMs := int(time.Since(start).Milliseconds())
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return classifyHTTPResponse(resp.StatusCode, string(respBody), latencyMs)
+	respBody, readErr := readCredentialProbeBody(resp.Body)
+	return classifyProbeHTTPResponse(resp.StatusCode, respBody, readErr, latencyMs, probeResponseProtocol(desc))
 }
 
 // singleResponsesPing does ONE POST /v1/responses ping (2026-09-25).
@@ -185,12 +186,12 @@ func singleResponsesPing(ctx context.Context, endpoint, apiKey, modelField strin
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	latencyMs := int(time.Since(start).Milliseconds())
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	result := classifyHTTPResponse(resp.StatusCode, string(respBody), latencyMs)
+	respBody, readErr := readCredentialProbeBody(resp.Body)
+	result := classifyProbeHTTPResponse(resp.StatusCode, respBody, readErr, latencyMs, "responses")
 	// Keep the received frame on every outcome, not just the error ones — the
 	// capability backfill records it as evidence for the verdict it writes.
 	result.bodySample = truncateProbeBody(string(respBody), 500)
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if readErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 && responsesProbeProtocolEvidence(respBody) {
 		result.supportsResponses = boolEvidence(true)
 	} else if providercap.ResponsesUnsupportedError(resp.StatusCode, string(respBody)) {
 		result.supportsResponses = boolEvidence(false)
@@ -393,6 +394,8 @@ func probeWithRetry(
 		}
 	}
 
+	// Retain explicit protocol evidence even if a later fallback/retry fails.
+	var capabilityEvidence *bool
 	// Retryable error check: status in [401, 403, 404] should not retry.
 	for attempt, backoff := range probeBackoff {
 		if attempt > 0 {
@@ -401,6 +404,7 @@ func probeWithRetry(
 				return httpProbeResult{
 					status: "network", category: probeCategoryProviderError,
 					errCode: "ctx_canceled", errMsg: ctx.Err().Error(),
+					supportsResponses: capabilityEvidence,
 				}
 			case <-time.After(backoff):
 			}
@@ -421,6 +425,12 @@ func probeWithRetry(
 		default: // ProbeModeModelsList
 			result = singleGet(ctx, endpoint, t.APIKey, desc, t.CredentialID, t.RawModel)
 		}
+		nativeUnsupported := mode == ProbeModeResponses && result.supportsResponses != nil && !*result.supportsResponses
+		if result.supportsResponses != nil {
+			capabilityEvidence = result.supportsResponses
+		} else {
+			result.supportsResponses = capabilityEvidence
+		}
 		// Piggy-back: was the model in the response?
 		if len(result.modelIDs) > 0 && mode == ProbeModeModelsList {
 			result.modelListed = probeContainsString(result.modelIDs, t.RawModel) ||
@@ -437,24 +447,33 @@ func probeWithRetry(
 		// 裁决 → chat 降级复探（见 probe_responses_fallback.go）。否则
 		// consensus 会把 claude/qwen 等经 chat 完全可用的模型推向
 		// broken_confirmed → binding available=FALSE（model_probe_broken）。
-		if mode == ProbeModeResponses && providercap.ResponsesUnsupportedError(result.httpStatus, result.errMsg) {
-			capabilityEvidence := result.supportsResponses
+		if nativeUnsupported {
 			modelField := t.OutboundModel
 			if modelField == "" {
 				modelField = t.RawModel
 			}
-			fbStatus, fbBody, fbLatency, fbOK := responsesChatFallbackPing(ctx, probeChatClient, t.APIKey, t.BaseURL, modelField)
-			if fbOK {
+			fallback := responsesChatFallbackRound(ctx, probeChatClient, t.APIKey, t.BaseURL, modelField)
+			fbStatus, fbBody, fbLatency := fallback.HTTPStatus, fallback.Body, fallback.LatencyMs
+			if fallback.OK {
 				okResult := classifyHTTPResponse(fbStatus, fbBody, result.latencyMs+fbLatency)
 				okResult.errMsg = responsesUnsupportedDetail(result.httpStatus, fbStatus, fbBody, fbLatency, true)
 				okResult.supportsResponses = capabilityEvidence
 				result = okResult
+			} else if fallback.Inconclusive {
+				result = inconclusiveHTTPProbe(fbStatus, result.latencyMs+fbLatency, "chat fallback")
+				result.supportsResponses = capabilityEvidence
 			} else {
-				result.errMsg += "; " + responsesUnsupportedDetail(result.httpStatus, fbStatus, fbBody, fbLatency, false)
+				failed := classifyHTTPResponse(fbStatus, fbBody, result.latencyMs+fbLatency)
+				if fbStatus == 0 {
+					failed.status, failed.category, failed.errCode = "network", probeCategoryProviderError, "request_error"
+				}
+				failed.errMsg = responsesUnsupportedDetail(result.httpStatus, fbStatus, fbBody, fbLatency, false)
+				failed.supportsResponses = capabilityEvidence
+				result = failed
 			}
 		}
 		// Non-retryable conditions: success or auth/404 (definitive errors).
-		if result.category == probeCategoryOK ||
+		if result.category == probeCategoryOK || result.category == probeCategorySkipped ||
 			result.httpStatus == 401 || result.httpStatus == 403 || result.httpStatus == 404 ||
 			result.httpStatus == 400 || result.httpStatus == 422 {
 			return result

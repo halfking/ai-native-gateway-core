@@ -67,11 +67,11 @@ func validateAndFixMessages(messages []Message, requestID string) []Message {
 	// delimiter; it's SDK noise that should be cleaned before analysis.
 	messages = removeEmptyMessages(messages)
 
-	// Step 2: Remove orphaned tool messages (existing SanitizeToolMessages)
-	messages = SanitizeToolMessages(messages, requestID)
-
-	// Step 3: Fix tool call structure
+	// Stable call IDs must exist before constructing their missing answers.
 	messages = fixToolCallStructure(messages)
+
+	// Reconcile interrupted batches, then remove genuinely orphaned outputs.
+	messages = SanitizeToolMessages(messages, requestID)
 
 	// Step 4: Enforce role alternation (if needed)
 	messages = enforceRoleAlternation(messages)
@@ -194,6 +194,7 @@ func fixToolCallStructure(messages []Message) []Message {
 
 		for j := range messages[i].ToolCalls {
 			tc := &messages[i].ToolCalls[j]
+			originalID, originalName := tc.ID, tc.Function.Name
 
 			// Ensure ID is not empty
 			if tc.ID == "" {
@@ -217,6 +218,20 @@ func fixToolCallStructure(messages []Message) []Message {
 				fixedCount++
 			}
 
+			// Anthropic parsing mirrors the same actual call into Content. Keep
+			// that view aligned when repairing its ID/name so serialization can
+			// recognize the mirror instead of emitting an extra call.
+			if originalID != tc.ID || originalName != tc.Function.Name {
+				for k := range messages[i].Content {
+					use := messages[i].Content[k].ToolUse
+					if use != nil && use.ID == originalID && use.Name == originalName && string(use.Input) == tc.Function.Arguments {
+						copyUse := *use
+						copyUse.ID = tc.ID
+						copyUse.Name = tc.Function.Name
+						messages[i].Content[k].ToolUse = &copyUse
+					}
+				}
+			}
 			// Ensure type is set
 			if tc.Type == "" {
 				tc.Type = "function"

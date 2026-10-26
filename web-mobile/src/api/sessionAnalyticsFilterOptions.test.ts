@@ -16,9 +16,9 @@ import {
  * 会话分析页模型/提供商筛选项的契约测试（2026-10-08，第九十七批）。
  *
  * 后端：`admin/session_analytics_top.go:190-272`（handler）+ `:47-50`（响应结构体）
- * + `admin/session_tenant.go:126-131`（effectiveScopeTenant）
+ * + `admin/session_tenant.go:189-195`（effectiveScopeTenant）
  * + `admin/session_analytics_handler.go:728-729`（分发器 case）
- * + `cmd/gateway/main.go:7186`（前缀 catch-all 注册）+ `main_admin_wrappers.go:42-64`（双模式鉴权）。
+ * + `cmd/gateway/main.go:7286`（前缀 catch-all 注册）+ `main_admin_wrappers.go:42-64`（双模式鉴权）。
  *
  * ★ 本批的价值在于**与批 96 的同叶名兄弟端点的六处相反**，逐条钉在用例里。
  * ⚠️ 全部用例标题**字面量**写（不用 `it.each`）—— 变异 harness 靠标题取锚点。
@@ -85,7 +85,7 @@ function bothEmptyArrays(): Record<string, unknown> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('会话筛选项 · 常量与路径', () => {
-  it('路径是 /api/admin/session-analytics/filter-options（main.go:7186 前缀 catch-all）', () => {
+  it('路径是 /api/admin/session-analytics/filter-options（main.go:7286 前缀 catch-all）', () => {
     expect(SESSION_ANALYTICS_FILTER_OPTIONS_PATH).toBe('/api/admin/session-analytics/filter-options')
   })
 

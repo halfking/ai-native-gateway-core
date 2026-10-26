@@ -2,7 +2,7 @@
 #
 # 背景（2026-09-14 auto-matching 审计第 6 项，人工确认"两者都做"）：仓库远端
 # 仅 codeup，`.github/workflows/` 在 codeup 不执行，此前无生效 CI 载体。
-# 本文件是 codeup Flow 的流水线即代码配置：build + vet + 60 例 auto 匹配
+# 本文件是 codeup Flow 的流水线即代码配置：build + vet + 240 例 auto 匹配
 # 离线套件（纯离线、无网络、无 skip 守卫）。
 #
 # 完整门禁仍是本地 `./verify.sh`（含 go test ./... / 迁移 checksum / 隐私
@@ -40,7 +40,7 @@ stages:
             - step: shell
               name: setup-go
               script: |
-                GO_VERSION=1.27.1
+                GO_VERSION=1.27.2
                 if ! command -v go >/dev/null 2>&1 || [ "$(go version)" != "go version go${GO_VERSION} linux/amd64" ]; then
                   curl -sSfL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz
                   rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz
@@ -61,3 +61,26 @@ stages:
               script: |
                 export PATH=$PATH:/usr/local/go/bin
                 go test ./autoroute/ -run 'TestAutoMatchingSuiteHeuristic|TestPromptClassificationMatrix' -count=1 -v
+            # ★★★ 2026-10-24 magpie 对齐轮 §3.17：把审计守卫接进**真正在跑的载体**。
+            #
+            # ★ 起因：本仓远端是 codeup.aliyun.com ⇒ **`.github/workflows/` 从来不在
+            #   任何在跑的 CI 里** ⇒ `make guards`（它唯一的调用方在那个目录里）
+            #   **在 CI 上是空转的** ⇒ ★★ 「门是绿的」在 CI 上是空转（本地绿、CI 绿，
+            #   但 CI 从没跑过它）——**这正是本文件自己的开头注释承认过的那件事**，
+            #   只是当时没有载体去跑它。
+            #
+            # ★ 为什么是 `guards-fast` 而不是 `make guards`：
+            #   `make guards` 含 slow 门（scripts/ursmcheck，126 个门文件）
+            #   ⇒ 4 核 Linux 实测 **767s（13 分钟）**，且依赖 python3/bash 工具链
+            #   ⇒ 超出本 job 的常规预算，且在精简镜像里会因缺 python3 而红。
+            #   ⇒ 慢门留在本地 `make guards` 与官方门 `verify.sh` 的 `go test ./...`。
+            #   快门实测（4 核 Linux）：116s 墙钟，最慢单包 14.3s ⇒ 预算内。
+            #
+            # ★ 判据写在这条 **非注释行**上是有意的：
+            #   `scripts/ursmcheck/ci_carrier_truth_test.go` 的 C3 判据要求
+            #   「**真正在跑的载体**里必须有非注释行调门禁」⇒ 注释里写不算。
+            - step: shell
+              name: audit-guards
+              script: |
+                export PATH=$PATH:/usr/local/go/bin
+                make guards-fast

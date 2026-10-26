@@ -31,7 +31,7 @@ import {
  * 会话上下文读面的契约测试（2026-10-07）。
  *
  * 后端逐条对应：
- *   admin/handler.go:1296              /api/system/... 前缀（不是 /api/admin/！），h.admin
+ *   admin/handler.go:1359-1369           /api/system/ 前缀（不是 /api/admin/！），h.admin
  *   admin/session_extract.go:22-90     分派器：两条「同名不同码」错误 + titles 特判
  *   admin/session_extract.go:231-277   extraction-status：**两形态异形端点**
  *   admin/session_title.go:274-276     scopedSessionIDKey = TrimSpace

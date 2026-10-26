@@ -11,6 +11,7 @@ import {
   type MigrationRun,
 } from '../../api'
 import { confirmDialog } from '../../composables/useConfirmDialog'
+import { Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const config = ref<StorageConfig | null>(null)
@@ -99,7 +100,7 @@ async function load() {
       await checkMigrationState()
     }
   } catch (e: any) {
-    error.value = e.message || '加载失败'
+    error.value = e.message || t('common.feedback.loadFailed')
   } finally {
     loading.value = false
   }
@@ -135,7 +136,7 @@ async function save() {
       saveMsg.value = '✅ 配置已保存'
     }
   } catch (e: any) {
-    saveMsg.value = '❌ 保存失败：' + (e.message || '未知错误')
+    saveMsg.value = '❌ ' + t('common.feedback.saveFailedWithReason', { reason: e.message || t('common.feedback.unknownReason') })
   } finally {
     saving.value = false
   }
@@ -176,7 +177,7 @@ async function pollMigration() {
       if (st.latest?.status === 'succeeded') {
         saveMsg.value = '✅ 文件迁移完成，已切换到新目录'
       } else if (st.latest?.status === 'failed') {
-        saveMsg.value = '❌ 迁移失败：' + (st.latest.message || '未知错误')
+        saveMsg.value = '❌ ' + t('dataLifecycle.storage.migrateFailedWithReason', { reason: st.latest.message || t('common.feedback.unknownReason') })
       }
     }
   } catch {
@@ -207,7 +208,7 @@ async function testPathAvailable() {
   try {
     testResult.value = await storageConfigTestPath(testPath.value.trim())
   } catch (e: any) {
-    alert('测试失败：' + (e.message || '未知错误'))
+    alert(t('common.feedback.testFailedWithReason', { reason: e.message || t('common.feedback.unknownReason') }))
   } finally {
     testing.value = false
   }
@@ -242,7 +243,7 @@ function fmtNum(n?: number) {
     <div class="header">
       <h2>{{ t('dataLifecycle.pages.storageConfig') }}</h2>
       <button @click="load" :disabled="loading" class="btn-refresh">
-        {{ loading ? '加载中...' : '刷新' }}
+        {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
       </button>
     </div>
 
@@ -282,9 +283,9 @@ function fmtNum(n?: number) {
       <div v-if="migration" class="migration-box" :class="{ running: isMigrating, failed: migration.status === 'failed', done: migration.status === 'succeeded' }">
         <div class="migration-header">
           <span class="migration-title">
-            <span v-if="isMigrating">🔄 正在迁移附件文件…</span>
-            <span v-else-if="migration.status === 'succeeded'">✅ 迁移完成</span>
-            <span v-else-if="migration.status === 'failed'">❌ 迁移失败</span>
+            <span v-if="isMigrating"><Refresh /> 正在迁移附件文件…</span>
+            <span v-else-if="migration.status === 'succeeded'"><CircleCheck /> 迁移完成</span>
+            <span v-else-if="migration.status === 'failed'"><CircleClose /> 迁移失败</span>
           </span>
           <span v-if="migration.run_id" class="migration-runid mono">{{ migration.run_id.slice(0, 16) }}</span>
         </div>
@@ -370,7 +371,7 @@ function fmtNum(n?: number) {
       </div>
       <div class="form-actions">
         <button @click="save" :disabled="saving" class="btn-primary">
-          {{ saving ? '保存中...' : '保存配置' }}
+          {{ saving ? $t('common.saving') : '保存配置' }}
         </button>
       </div>
       <div v-if="saveMsg" class="save-msg">{{ saveMsg }}</div>

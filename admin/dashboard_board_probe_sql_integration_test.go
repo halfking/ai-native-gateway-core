@@ -50,58 +50,53 @@ func boardProbePool(t *testing.T) *pgxpool.Pool {
 }
 
 // TestDashboardBoardPredicateColumnsExistOnBoardView 反向校验：看板实际读的那张
-// 视图必须真的有谓词引用的三列。
+// 源必须真的有谓词引用的三列。
 //
-// 这三张源表（_request_logs_hot / _request_logs）在 sql/schema/01-schema.sql 里
-// 都声明了这些列，而 request_logs_with_current_month_without_customer_id 是
-// 二者按 hot 列序求交集派生（db/request_logs_view_schema.go:103-131）——
-// 但那是「按仓内 schema 文件推断」。真库可能因迁移顺序/回滚/自愈重建链而与之
-// 不一致，那会让看板整体 42703。
+// ★ 2026-10-21（R67 / C8 改判）：**换判据形状**。
+//
+// 旧判据从 boardRequestLogsFromClause() 里「按 ` AS ` 切开取前半段」当**视图名**，
+// 再去 pg_attribute 查它的列。r1033 起那张「视图」已经不存在了 ——
+// boardRequestLogsFromClause() 返回的是**一段投影子查询**（会话族 hot ∪ 母表），
+// 于是切出来的是一整段 SQL 文本 ⇒ 查 pg_attribute 必然零行 ⇒ 门恒红，
+// 而它守的东西（谓词引用的列在不在）其实一点没坏。
+//
+// ⇒ 改成**同层且更强**的判据：把**生产那条 FROM + 生产那条谓词**直接在真库上跑。
+//
+//	能跑通 ⇒ 三列都在投影里、谓词能解析、计划能成；
+//	跑不动（42703 / 其它）⇒ 门红并把原文打出来。
+//	这比「视图有几列」更强：它验的是**看板真的会发出去的那条 SQL**。
 func TestDashboardBoardPredicateColumnsExistOnBoardView(t *testing.T) {
 	pool := boardProbePool(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
-	from, _ := boardRequestLogsFromClause()
-	// boardRequestLogsFromClause 返回 "<view> AS <alias>"，取裸视图名。
-	resolved := strings.TrimSpace(strings.SplitN(from, " AS ", 2)[0])
-	if resolved == "" {
-		t.Fatalf("could not derive a view name from %q", from)
+	from, alias := boardRequestLogsFromClause()
+	if strings.TrimSpace(from) == "" {
+		t.Fatalf("boardRequestLogsFromClause() returned an empty FROM clause")
+	}
+	// boardRequestLogsFromClause() 返回的 from 已经带了 `AS <alias>`。
+	pred := fmt.Sprintf(bg.ProbeTrafficExclusionPredicateView, alias, alias, alias)
+	q := "SELECT count(*) FROM " + from +
+		" WHERE " + alias + ".ts > now() - interval '7 days' AND " + pred
+	if _, err := pool.Exec(ctx, q); err != nil {
+		t.Fatalf("看板 fallback 的生产读法在真库上跑不通：%v\n"+
+			"⚠ 谓词引用 quality_flags / task_type / origin_actor 三列 —— "+
+			"少一列就是每次看板调用都 42703。\n  SQL: %s", err, q)
 	}
 
-	rows, err := pool.Query(ctx, `
-		SELECT a.attname
-		FROM pg_attribute a
-		JOIN pg_class c ON c.oid = a.attrelid
-		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname = 'public' AND c.relname = $1
-		  AND a.attnum > 0 AND NOT a.attisdropped
-	`, resolved)
-	if err != nil {
-		t.Fatalf("describe %s: %v", resolved, err)
-	}
-	defer rows.Close()
-	present := map[string]bool{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			t.Fatal(err)
-		}
-		present[name] = true
-	}
-	if len(present) == 0 {
-		t.Fatalf("view %s reported zero columns — it is missing on this database", resolved)
-	}
-
-	// 谓词的三条臂各引用一列；少一列就是每次看板调用都 42703。
+	// ★ 附加断言：三列必须真的在**投影**里。
+	//   ⚠ 不能去查物理表的列：quality_flags 在 session_turns 上**并不存在**
+	//     （它由会话分臂的投影补成 NULL）⇒ 查物理列会误判成「缺列」。
+	//   ⇒ 直接问 PG：让**投影**自己报。LIMIT 0 ⇒ 只解析不执行。
 	for _, col := range []string{"quality_flags", "task_type", "origin_actor"} {
-		if !present[col] {
-			t.Errorf("view %s has no column %q — the board probe exclusion would 42703 on "+
-				"every /api/admin/dashboard/board call", resolved, col)
+		probe := "SELECT " + col + " FROM " + from + " LIMIT 0"
+		if _, err := pool.Exec(ctx, probe); err != nil {
+			t.Errorf("投影里取不到列 %q：%v\n"+
+				"⚠ 看板的探针排除谓词引用了这三列 ⇒ 少一列就是每次看板调用都 42703。"+
+				"该列要么得投影进源，要么谓词得改用别的列。\n  SQL: %s", col, err, probe)
 		}
 	}
-	t.Logf("%s: %d columns; predicate columns quality_flags/task_type/origin_actor all present",
-		resolved, len(present))
+	t.Logf("看板生产读法在真库上可执行；谓词三列在投影里齐备")
 }
 
 // TestDashboardBoardProbeExclusionSurvivesNullPaddedFlags 是「能解析」给不了的那一半：
@@ -123,11 +118,15 @@ func TestDashboardBoardProbeExclusionSurvivesNullPaddedFlags(t *testing.T) {
 	defer cancel()
 
 	pred := fmt.Sprintf(bg.ProbeTrafficExclusionPredicateView, "r", "r", "r")
+	// ★ 2026-10-21（R67 / C8 同族）：源也必须是**生产那条**。
+	//   旧写法硬编码 request_logs_with_current_month_without_customer_id ——
+	//   那张视图 r1033 起就没了 ⇒ 42P01 ⇒ 门恒红，而它守的不变式没坏。
+	from, _ := boardRequestLogsFromClause()
 	var keptAsIs, keptDefaulted, nullFlags int64
 	err := pool.QueryRow(ctx, fmt.Sprintf(`
 		WITH actual AS (
 		    SELECT quality_flags, task_type, origin_actor
-		    FROM request_logs_with_current_month_without_customer_id
+		    FROM %[2]s
 		    WHERE ts > now() - interval '7 days'
 		),
 		defaulted AS (
@@ -139,7 +138,7 @@ func TestDashboardBoardProbeExclusionSurvivesNullPaddedFlags(t *testing.T) {
 		    (SELECT count(*) FROM actual    r WHERE %[1]s) AS kept_as_is,
 		    (SELECT count(*) FROM defaulted r WHERE %[1]s) AS kept_defaulted,
 		    (SELECT count(*) FROM actual WHERE quality_flags IS NULL) AS null_flags
-	`, pred)).Scan(&keptAsIs, &keptDefaulted, &nullFlags)
+	`, pred, from)).Scan(&keptAsIs, &keptDefaulted, &nullFlags)
 	if err != nil {
 		t.Fatalf("counting query failed: %v", err)
 	}

@@ -5,7 +5,7 @@ import { req, type RequestOptions } from './client'
 //   GET /api/admin/probe/queue-snapshot   队列快照（unified + legacy 双轨）
 //
 // 鉴权：两条都在 `RegisterProbeDashboardRoutes(mux, wrapAdmin)`
-// （admin/probe_dashboard.go:1900-1909，注册点 cmd/gateway/main.go:7298）
+// （admin/probe_dashboard.go:1900-1909，注册点 cmd/gateway/main.go:7590）
 // ⇒ **admin 档**，tenant_admin 可用，导航不设 requiresRole。
 // 与已上移的 /probe（queue-tasks + provider-latency）同一条线。
 //

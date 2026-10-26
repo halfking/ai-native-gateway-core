@@ -286,9 +286,12 @@ function clip(text: string, max = 480): string {
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px; margin-bottom: 8px;
 }
-.qa-block { margin-bottom: 8px; padding: 8px; border-radius: 6px; border-left: 3px solid var(--border); }
-.qa-block--user { border-left-color: var(--kx-primary); background: color-mix(in srgb, var(--kx-primary) 8%, transparent); }
-.qa-block--assistant { border-left-color: var(--kx-success); background: color-mix(in srgb, var(--kx-success) 8%, transparent); }
+/* 引用块：整块 1px 描边（user / assistant 两态由 .qa-block--* 改描边色）。
+   原来左沿是 3px 粗边，且被 .qa-block--user / --assistant 染了色 ——
+   那是 craft-floor 硬禁的「卡片单边色条」。 */
+.qa-block { margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid var(--border); }
+.qa-block--user { border-color: var(--kx-primary); background: color-mix(in srgb, var(--kx-primary) 8%, transparent); }
+.qa-block--assistant { border-color: var(--kx-success); background: color-mix(in srgb, var(--kx-success) 8%, transparent); }
 .qa-pre {
   margin: 4px 0 0; white-space: pre-wrap; word-break: break-word;
   font-size: 12px; line-height: 1.45; max-height: 220px; overflow: auto;

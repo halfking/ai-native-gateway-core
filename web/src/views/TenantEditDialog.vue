@@ -29,7 +29,7 @@ watch(() => props.tenant, (t) => {
 
 async function handleSubmit() {
   if (!form.value.name) {
-    error.value = 'name 不能为空'
+    error.value = '请填写 name'
     return
   }
   submitting.value = true
@@ -44,7 +44,7 @@ async function handleSubmit() {
     emit('updated')
     emit('close')
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '更新失败'
+    error.value = e instanceof Error ? e.message : '更新没能完成，请重试'
   } finally {
     submitting.value = false
   }

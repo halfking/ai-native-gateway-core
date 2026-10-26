@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { createRouter, createMemoryHistory } from 'vue-router'
 import OnlineSessionsView from './OnlineSessionsView.vue'
 import { fetchOnlineSessions } from '@/api/sessions'
 import { setLocale, locale } from '@/i18n'
@@ -30,6 +31,29 @@ vi.mock('@/api/sessions', async (importOriginal) => {
   return { ...actual, fetchOnlineSessions: vi.fn() }
 })
 
+vi.mock('@/api/turnsSessions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/turnsSessions')>()
+  return {
+    ...actual,
+    fetchSessionTurns: vi.fn().mockResolvedValue({
+      session_id: 'gw-1',
+      turns: [
+        {
+          turn_number: 1,
+          request_id: 'r-1',
+          status: 'ok',
+          latency: 12,
+          child_requests: null,
+          body_status: 'available',
+        },
+      ],
+      count: 1,
+      has_more: false,
+      next_cursor: '',
+    }),
+  }
+})
+
 const onlineMock = fetchOnlineSessions as unknown as ReturnType<typeof vi.fn>
 
 const ORIGIN_LOCALE = locale.value
@@ -38,7 +62,19 @@ let mountedList: Array<{ unmount(): void }> = []
 async function mountView(): Promise<ReturnType<typeof mount>> {
   const pinia = createPinia()
   setActivePinia(pinia)
-  const w = mount(OnlineSessionsView, { attachTo: document.body, global: { plugins: [pinia] } })
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', component: { template: '<div />' } },
+      { path: '/turns', component: { template: '<div />' } },
+    ],
+  })
+  await router.push('/')
+  await router.isReady()
+  const w = mount(OnlineSessionsView, {
+    attachTo: document.body,
+    global: { plugins: [pinia, router] },
+  })
   mountedList.push(w)
   await flushPromises()
   await flushPromises()
@@ -243,5 +279,22 @@ describe('错误与空态', () => {
     onlineMock.mockResolvedValue(resp({ sessions: [row(), row({ session_id: 'x' })], count: 2 }))
     const w = await mountView()
     expect(w.text()).toContain('共 2 个活跃会话')
+  })
+})
+
+describe('★★ 判据 7：行可点开详情板（直拉 turns，不靠列表搜索）', () => {
+  it('行是 button，点后打开详情板并带上 session_id', async () => {
+    onlineMock.mockResolvedValue(resp({ sessions: [row({ session_id: 'gw-detail-9' })] }))
+    const w = await mountView()
+    const btn = w.find('button.on__item-btn')
+    expect(btn.exists()).toBe(true)
+    expect(btn.attributes('data-session-id')).toBe('gw-detail-9')
+    await btn.trigger('click')
+    await flushPromises()
+    await flushPromises()
+    // AppSheet / FocusLayer teleport 到 body
+    const body = document.body.textContent || ''
+    expect(body).toContain('gw-detail-9')
+    expect(body).toMatch(/全屏查看轮次|Fullscreen turns|在会话页打开|Open in sessions/)
   })
 })

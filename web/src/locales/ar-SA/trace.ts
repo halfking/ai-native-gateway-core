@@ -3,9 +3,7 @@
 export default {
   modal: {
     title: 'تفاصيل سلسلة الطلب',
-    openButton: '🔗 تفاصيل السلسلة',
     close: 'إغلاق',
-    tooltip: 'عرض الجدول الزمني من البداية إلى النهاية لهذا الطلب',
     snapshotTitle: 'لقطة سياق الفشل',
     candidates: 'المرشحون',
     routingState: 'حالة التوجيه',
@@ -17,8 +15,6 @@ export default {
     failedCount: 'الخطوة الفاشلة',
   },
   detail: {
-    basicInfo: 'معلومات أساسية',
-    requestId: 'معرّف الطلب',
     finalStatus: 'الحالة النهائية',
     failedAtStage: 'مرحلة الفشل',
     totalDuration: 'المدة الإجمالية',
@@ -27,11 +23,9 @@ export default {
     sourcePostgres: 'PostgreSQL (تاريخي)',
     eventCount: 'عدد الأحداث',
     copyJson: 'نسخ JSON',
-    copySuccess: 'تم النسخ',
     statusSuccess: 'نجاح',
     statusFailed: 'فشل',
     statusTimeout: 'انتهت المهلة',
-    statusSkipped: 'تم التخطي',
     statusInProgress: 'قيد التنفيذ',
   },
   empty: {
@@ -41,7 +35,6 @@ export default {
     hint2: 'الطلبات المكتملة خلال 10 دقائق: لا تزال في Redis',
     hint3: 'بعد التفريغ في PostgreSQL: يمكن عرضها كنسخة احتياطية',
 
-    hint4: 'If empty here, possible causes: flush not completed, or trace was not emitted',
   },
   aiPrompt: {
     button: '🤖 إنشاء مطالبة AI',
@@ -76,16 +69,5 @@ export default {
     module_upstream: 'المنبع',
     module_session: 'الجلسة',
   },
-  failureHint: {
-    upstream_timeout: 'مهلة المنبع',
-    upstream_unreachable: 'المنبع غير قابل للوصول',
-    upstream_reset: 'تمت إعادة تعيين الاتصال',
-    upstream_io_error: 'خطأ شبكة',
-    upstream_network_error: 'خطأ في الشبكة',
-    upstream_5xx: 'خطأ 5xx من المنبع',
-    upstream_4xx: 'خطأ 4xx من المنبع',
-    upstream_rate_limit: 'حد معدّل المنبع (429)',
-    upstream_auth_error: 'مصادقة المنبع (401/403)',
-    upstream_not_found: '404 من المنبع',
-  },
+  generateFailed: 'تعذّر إنشاء الملخص. أعد المحاولة.',
 }

@@ -394,6 +394,21 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		}
 		return ProbeQueueResult{}, err
 	}
+	if direct.observationOnly {
+		// Settle the task without a health verdict. Only the observation clock
+		// changes; routing/backoff state and any legacy picker lease survive.
+		if err := s.worker.recordProbeObservation(hbCtx, credID, model, false); err != nil {
+			return ProbeQueueResult{}, err
+		}
+		s.worker.emitProbe(hbCtx, credID, direct.providerID, model, direct.outboundModel, "direct", attempt, trigger, direct)
+		now := time.Now()
+		result := ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: direct.errCode, ReasonDetail: direct.errDetail}
+		if err := s.insertAuditRowWithLeaseCheck(ctx, hbCtx, task, credID, model, triggerKind, attempt, 0, direct, nodeProbeRoundResult{}, false, startedAt, now, int(now.Sub(startedAt).Milliseconds())); err != nil {
+			auditPersistFailedTotal.WithLabelValues(task.Source).Inc()
+			return result, fmt.Errorf("%w: %v", ErrProbeAuditPersistFailed, err)
+		}
+		return result, nil
+	}
 
 	// Missing-binding short-circuit: a (cred, model) with no binding row is a
 	// config problem, not a health problem. Emit one audit row, drop the state,
@@ -773,6 +788,9 @@ func (s *ProbeService) gatewayRound(ctx context.Context, credID int, model strin
 }
 
 func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
+	if outcome.direct.observationOnly {
+		return
+	}
 	if s.applyOutcomeFn != nil {
 		s.applyOutcomeFn(ctx, outcome)
 		return
@@ -837,6 +855,7 @@ func probeResultToRound(model string, pr *ProbeResult) nodeProbeRoundResult {
 		return r
 	}
 	r.httpStatus = pr.HTTPStatus
+	r.observationOnly = pr.ObservationOnly
 	r.latencyMs = pr.LatencyMs
 	r.requestURL = pr.RequestURL
 	r.requestBody = pr.RequestBody
@@ -855,7 +874,7 @@ func probeResultToRound(model string, pr *ProbeResult) nodeProbeRoundResult {
 		// specific classifier — loopback transport failures are this
 		// instance's fault (see classifyGatewayRoundRootCause).
 		r.rootCause = ProbeRootCause(pr.RootCause)
-		if r.rootCause == "" {
+		if r.rootCause == "" && !r.observationOnly {
 			r.rootCause = classifyGatewayRoundRootCause(r.errCode, r.httpStatus, r.responseBody)
 		}
 	}
@@ -907,6 +926,9 @@ func (w *NodeProbeWorker) notifyAutoRouteRefresh(ctx context.Context, credID int
 // during the transition (queue row remains the primary state).
 func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, model string, attempt int, success bool,
 	direct, gw nodeProbeRoundResult, now time.Time, backoff time.Duration) {
+	if direct.observationOnly {
+		return
+	}
 	if w.db == nil {
 		return
 	}
@@ -919,7 +941,12 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 		// out of the healthy-parked shape and feed the stale-state
 		// reconciler / pump an endless "error" that is not the node's. The
 		// gateway outcome stays visible via last_gateway_ok = gw.ok.
-		_, _ = w.db.Exec(ctx, `
+		// ★ R149 轮：写失败**不再静默吞掉**。实测（本轮）证明这条路径会「看起来跑了、
+		// 却没落地」：探针失败的结果若没写进 node_probe_state，路由闸门那一列
+		// （next_retry_at）就只剩 pump 的 45 秒投递 holdoff 在推进 ⇒ 5 分钟/6 小时
+		// 的退避阶梯被架空 ⇒ 上游长期不可用时该 (凭据×模型) 每 45~60 秒就被重新
+		// 放回候选池。本改动**不改变任何路由行为**，只把写失败变成可见。
+		if _, err := w.db.Exec(ctx, `
 			UPDATE node_probe_state SET
 				consecutive_failures = 0,
 				consecutive_successes = consecutive_successes + 1,
@@ -933,7 +960,10 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 				last_err_detail = NULL,
 				in_flight_until = NULL,
 				updated_at = now()
-			WHERE credential_id = $1 AND raw_model_name = $2`, credID, model, gw.ok)
+			WHERE credential_id = $1 AND raw_model_name = $2`, credID, model, gw.ok); err != nil {
+			slog.WarnContext(ctx, "node_probe_worker: mirror success write failed",
+				"credential_id", credID, "model", model, "error", err)
+		}
 		return
 	}
 	// 2026-09-17 (R39): mirror the legacy runOne ladder's gateway-side guard —
@@ -949,7 +979,8 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 	}
 	nextRetryAt := now.Add(backoff)
 	nextSec := int(backoff.Seconds())
-	_, _ = w.db.Exec(ctx, `
+	// ★ R149 轮：同上，写失败必须留痕（这是「退避阶梯被架空」这条链上唯一的可观测点）。
+	if _, err := w.db.Exec(ctx, `
 		UPDATE node_probe_state SET
 			consecutive_failures = CASE WHEN $10::boolean THEN node_probe_state.consecutive_failures ELSE $3 END,
 			consecutive_successes = 0,
@@ -964,7 +995,12 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 			updated_at = now()
 		WHERE credential_id = $1 AND raw_model_name = $2`,
 		credID, model, attempt, nextRetryAt, nextSec,
-		direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw), gatewaySide)
+		direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw), gatewaySide); err != nil {
+		slog.WarnContext(ctx, "node_probe_worker: mirror failure write failed",
+			"credential_id", credID, "model", model, "attempt", attempt,
+			"backoff", backoff.String(), "next_retry_at", nextRetryAt.UTC().Format(time.RFC3339Nano),
+			"error", err)
+	}
 }
 
 // insertNodeProbeRun writes the forensic audit row (mirrors runOne's INSERT).

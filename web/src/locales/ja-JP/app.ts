@@ -1,27 +1,16 @@
 // Auto-translated draft (zh-TW/ja-JP) · 2026-07-02 · please review
 // app.ts — App.vue 外壳框架文案（トップバーの役割、サイドバーの折りたたみ、ログアウト、言語切替）。
 export default {
-  brand: 'AI-Native Org Gateway',
+  brand: {
+    siteTitle: 'AI Native 組織コアゲートウェイ',
+    siteTitleLineTwo: '組織コアゲートウェイ',
+    alt: 'Kaixuan ロゴ',
+  },
   role: {
     super_admin: 'スーパー管理者',
     tenant_admin: 'テナント管理者',
   },
-  sidebar: {
-    expand: 'サイドバーを展開',
-    collapse: 'サイドバーを折りたたむ',
-    collapseMenu: 'メニューを折りたたむ',
-  },
-  logout: 'ログアウト',
-  lang: {
-    switch: '言語を切り替え',
-    label: '言語',
-  },
   // 2026-07-22: 公開シェルフッターの文言（LifecycleShell と連動）。
-  footer: {
-    left: '© 2026 AI-Native ゲートウェイ',
-    right: 'ヘルプが必要ですか？',
-    feedbackLink: 'フィードバックを送信',
-  },
   // 2026-07-22: ユーザーメニュー（UserMenuDropdown）+ プロフィールダイアログ（UserInfoDialog）。
   userMenu: {
     profile: 'プロフィール',
@@ -37,16 +26,12 @@ export default {
     close: '閉じる',
   },
   // 2026-07-22: スキップリンク（a11y）用文言。
-  nav: {
-    mainAria: 'メインナビゲーション',
-    skip: 'メインコンテンツへスキップ',
-  },
 
   theme: {
-    switchToLight: '切到浅色',
-    switchToDark: '切到深色',
-    lightTitle: '浅色模式',
-    darkTitle: '深色模式',
+    switchToLight: "ライトモードへ切替",
+    switchToDark: "ダークモードへ切替",
+    lightTitle: "ライトモード",
+    darkTitle: "ダークモード",
   },
   dataHorizon: {
     title: 'トラフィックデータの記録が遅れています：ゲートウェイはリクエストを処理していますが、session_turns が追いついていません',
@@ -57,7 +42,7 @@ export default {
   },
   deploySeq: {
     bannerTitle: 'New version available',
-    bannerHint: 'A newer build is deployed. Reload the page to switch.',
+    bannerHint: '新しいビルドがデプロイされています。ページを再読み込みすると切り替わります。',
     updateNow: 'Reload now',
     later: 'Later',
     currentSeq: 'Page deploy seq',
@@ -66,8 +51,8 @@ export default {
     stateAvailable: 'Update available',
     stateIndeterminate: 'Indeterminate',
     stateChecking: 'Checking…',
-    reasonNoLocal: 'This page carries no deploy seq (not injected at build time)',
-    reasonNoRemote: 'Server returned no deploy seq (old build or non-repo hosting)',
+    reasonNoLocal: 'このページにはデプロイ番号がありません（ビルド時に埋め込まれません）',
+    reasonNoRemote: 'サーバーがデプロイ番号を返しませんでした（古いビルド、またはリポジトリ外のホスティング）',
     reasonNetwork: 'Check request failed; cannot determine',
     checks: 'Checks run',
     checkNow: 'Check for updates',

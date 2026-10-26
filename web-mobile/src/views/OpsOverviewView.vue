@@ -9,16 +9,14 @@
 // ── 权限 ────────────────────────────────────────────────────────────────────
 // ★★★★★★ 权限档：**`requiresRole: 'super_admin'`** —— 归**第三类**
 //   （服务端**完全没有租户维度** ⇒ 过度限制），与批 115/116 同处置。
-//   四处逐字核过：
-//   ① 注册处 `admin/handler.go:1091` 传 `admin(...)` = `h.admin`（`handler.go:894`）
-//      → `AdminMiddleware`（`admin/auth.go:85-140`）；
-//   ② 该中间件全文**没有** `claims.Role` 比较（对比 `SuperAdminMiddleware`
-//      `auth.go:376-409` 那里是逐字 `if claims.Role != "super_admin"`）；
-//   ③ `admin/ops_overview.go` 全文**没有** `AuthContext` / `IsTenantAdmin` / `Role`；
-//   ④ **取租户键的代码根本不存在** —— 11 条子查询全是全局表。
-//     ⚠️ 所以 `grep tenant` 打不到**不是遗漏，是设计上就没有**。
-// ⇒ 也就是说：后端**没有门**（tenant_admin 能读到全平台运维数据）。
-//   本页的抽屉隐藏 + 下面那段兜底是**前端兜底**，⚠️ **不是修复** —— 真修复在服务端。
+//   12h-audit 20261017 更新：批 158e（eb0aee4ec）已把注册处改为
+//   `mux.HandleFunc("/api/admin/ops/overview", h.superAdmin(h.handleOpsOverview))`
+//   （`admin/handler.go:1134`，平台聚合 8 表全无 tenant_id ⇒ 档位本身就是门）。
+//   ⇒ 后端**现在有真门**（SuperAdminMiddleware 逐字比 role）；本页的抽屉隐藏
+//   + 兜底从「唯一的门」降级为**纵深防御**。历史记录保留在 ①-③：
+//   ① 注册处曾传 `admin(...)`（AdminMiddleware 不检 role，auth.go:85-140）；
+//   ② `ops_overview.go` 全文没有 `AuthContext`/`IsTenantAdmin`/`Role`；
+//   ③ 11 条子查询全是全局表，`grep tenant` 打不到是设计上就没有。
 //
 // ★★★★ 为什么这族数据连 tenant_admin 都不该看（不是洁癖）：
 //   `offline_requests` 每一行带 `license_key` / `hardware_hash` / `activation_code`
@@ -73,7 +71,7 @@ import {
   type OpsOverviewResponse,
 } from '@/api/opsOverview'
 
-useHyperPage({ title: () => t('ops.title') })
+useHyperPage({ title: () => (allowed.value ? t('ops.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 
