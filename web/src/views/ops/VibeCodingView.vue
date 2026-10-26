@@ -349,7 +349,7 @@ onMounted(load)
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="200" fixed="right">
           <template #default="scope">
-            <el-button type="primary" size="small" @click="openSessionDialog(scope?.row as VibeCodingProject)">
+            <el-button size="small" @click="openSessionDialog(scope?.row as VibeCodingProject)">
               {{ t('ops.vibecoding.newSession') }}
             </el-button>
             <el-button size="small" @click="selectedProjectId = scope?.row?.id">
@@ -360,7 +360,7 @@ onMounted(load)
       </el-table>
         </template>
         <template #actions="{ row }">
-          <el-button type="primary" size="small" @click="openSessionDialog(row as VibeCodingProject)">
+          <el-button size="small" @click="openSessionDialog(row as VibeCodingProject)">
             {{ t('ops.vibecoding.newSession') }}
           </el-button>
           <el-button size="small" @click="selectedProjectId = row.id">

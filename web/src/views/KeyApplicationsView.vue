@@ -211,7 +211,7 @@ onMounted(load)
               <!-- Pending: approve / reject -->
               <template v-if="app.status === 'pending'">
                 <button
-                  class="btn btn-sm btn-primary"
+                  class="btn btn-sm"
                   style="margin-right:6px"
                   @click="openReview(app, 'approve')"
                 >{{ t('keys.applications.action.approve') }}</button>

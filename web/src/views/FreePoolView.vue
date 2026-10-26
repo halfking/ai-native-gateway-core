@@ -1112,7 +1112,7 @@ onUnmounted(() => {
                 <span v-for="tag in p.tags" :key="tag" class="model-tag template">{{ tag }}</span>
               </div>
               <div class="platform-actions">
-                <button class="btn btn-primary btn-sm" type="button" @click="fillFromPlatform(p)">{{ t('freePool.assistant.fillForm') }}</button>
+                <button class="btn btn-ghost btn-sm" type="button" @click="fillFromPlatform(p)">{{ t('freePool.assistant.fillForm') }}</button>
                 <button class="btn btn-ghost btn-sm" type="button" @click="openUrl(p.signup_url)">{{ t('freePool.assistant.openSignup2') }}</button>
                 <button
                   v-if="p.api_key_url && p.api_key_url !== p.signup_url"
