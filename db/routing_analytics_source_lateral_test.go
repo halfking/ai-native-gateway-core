@@ -193,6 +193,11 @@ SELECT ts, task_type::text AS task_type, outbound_model::text AS outbound_model,
 FROM public.fixture_canonical;
 
 -- 夹具数据：覆盖回定位的每一个边界情形。日期全部相对 now()（见上方 910 轮说明）。
+-- ★ r_old 是「窗口外旧行」边界夹具（ts = now()-10d）：910 的日界下推让
+--   source 对它返回 NULL details 三列，而 canonical（旧体）返回真实值
+--   ⇒ 这是**有意边界**，由 TestRoutingAnalyticsSourceDayRangeBoundaryOnRealDB
+--   从两侧分别钉住；口径等价门因此只对 8 天窗内行做 EXCEPT ALL（910 的
+--   等价承诺范围 = 带 ts 窗的读——生产实测全部 13 处消费方都带窗/存在性探针）。
 INSERT INTO public.session_turns_hot VALUES
   (now() - interval '2 days' + interval '10 hours','chat','m1','wt','42', true, 't1','r1', true, 10, 0.1, 'direct', (now() - interval '2 days')::date),
   (now() - interval '2 days' + interval '10 hours' + interval '1 minute','chat',NULL,NULL,NULL, false, 't1','r2', false, 20, 0.2, 'direct', (now() - interval '2 days')::date),
@@ -204,10 +209,12 @@ INSERT INTO public.session_turn_details_hot VALUES
   ('cmX', 999, 'apX','t1','r3', (now() - interval '56 days')::date);
 INSERT INTO public.session_turns VALUES
   (now() - interval '4 days' + interval '9 hours','chat','m4','wt','9', true, 't3','r9', true, 50, 0.5, 'direct', (now() - interval '4 days')::date),
-  (now() - interval '5 days' + interval '9 hours','chat','m5','wt','0', false, 't4','r8', false, 60, 0.6, 'direct', (now() - interval '5 days')::date);
+  (now() - interval '5 days' + interval '9 hours','chat','m5','wt','0', false, 't4','r8', false, 60, 0.6, 'direct', (now() - interval '5 days')::date),
+  (now() - interval '10 days' + interval '9 hours','chat','m6','wt','1', true, 't5','r_old', true, 70, 0.7, 'direct', (now() - interval '10 days')::date);
 INSERT INTO public.session_turn_details VALUES
   ('cm4', 400, 'ap4','t3','r9', (now() - interval '4 days')::date),
   ('cm5', 500, 'ap5','t4','r8', (now() - interval '5 days')::date),
+  ('cm_old', 600, 'ap_old','t5','r_old', (now() - interval '10 days')::date),
   ('cmY', 888, 'apY','t9','rY', (now() - interval '26 days')::date);
 
 -- details 的唯一键（907 LIMIT 1 的等价性前提 / 910 普通 JOIN 不增殖的前提）：
@@ -246,40 +253,49 @@ func routingSourceGateConn(t *testing.T) (*pgx.Conn, context.Context) {
 	return conn, ctx
 }
 
-// TestRoutingAnalyticsSourceViewMatchesCanonicalOnRealDB 是**真库口径等价门**。
+// TestRoutingAnalyticsSourceViewMatchesCanonicalOnRealDB 是**真库口径等价门**（910 修订）。
 //
-// ★ 判据：新体与旧体**逐行一致**（双向 EXCEPT ALL 都必须是 0）。
+// ★ 判据（910 起按**窗口内**对拍）：新体与旧体在 **8 天窗内**逐行一致
+// （双向 EXCEPT ALL 都必须是 0）。
 //
+//	⚠ 910 的父表腿带 partition_date 日界下推 ⇒ **全源等价**不再成立（窗口外
+//	  旧行的 details 三列为 NULL，canonical 有值）——那是有意边界，由
+//	  TestRoutingAnalyticsSourceDayRangeBoundaryOnRealDB 从两侧钉住；
+//	  本门证的是「带 ts 窗的读不改口径」（生产 13 处消费方全部带窗/存在性探针）。
 //	⚠ 「0 行也一致」是假绿 ⇒ 门必须先断言两侧都**有行**（空集显式失败）。
 func TestRoutingAnalyticsSourceViewMatchesCanonicalOnRealDB(t *testing.T) {
 	conn, ctx := routingSourceGateConn(t)
 
 	var oldRows, newRows int
-	if err := conn.QueryRow(ctx, `SELECT count(*) FROM public.routing_analytics_source_old`).Scan(&oldRows); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM public.routing_analytics_source_old WHERE ts >= now() - interval '8 days'`).Scan(&oldRows); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.QueryRow(ctx, `SELECT count(*) FROM public.routing_analytics_source`).Scan(&newRows); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM public.routing_analytics_source WHERE ts >= now() - interval '8 days'`).Scan(&newRows); err != nil {
 		t.Fatal(err)
 	}
 	if oldRows == 0 || newRows == 0 {
 		t.Fatalf("夹具两侧都必须非空（空集不能自证等价）：old_rows=%d new_rows=%d", oldRows, newRows)
 	}
 	if oldRows != newRows {
-		t.Errorf("新旧体行数不同：old=%d new=%d ⇒ 口径已变", oldRows, newRows)
+		t.Errorf("窗口内新旧体行数不同：old=%d new=%d ⇒ 口径已变", oldRows, newRows)
 	}
 
 	var onlyOld, onlyNew int
 	if err := conn.QueryRow(ctx, `
 		SELECT
 		  (SELECT count(*) FROM (SELECT * FROM public.routing_analytics_source_old
-		     EXCEPT ALL SELECT * FROM public.routing_analytics_source) a),
+		     WHERE ts >= now() - interval '8 days'
+		     EXCEPT ALL SELECT * FROM public.routing_analytics_source
+		     WHERE ts >= now() - interval '8 days') a),
 		  (SELECT count(*) FROM (SELECT * FROM public.routing_analytics_source
-		     EXCEPT ALL SELECT * FROM public.routing_analytics_source_old) b)
+		     WHERE ts >= now() - interval '8 days'
+		     EXCEPT ALL SELECT * FROM public.routing_analytics_source_old
+		     WHERE ts >= now() - interval '8 days') b)
 	`).Scan(&onlyOld, &onlyNew); err != nil {
 		t.Fatal(err)
 	}
 	if onlyOld != 0 || onlyNew != 0 {
-		t.Errorf("口径不等价：only_old=%d only_new=%d ⇒ 换形改了取哪些行", onlyOld, onlyNew)
+		t.Errorf("窗口内口径不等价：only_old=%d only_new=%d ⇒ 换形改了取哪些行", onlyOld, onlyNew)
 	}
 
 	// ★ 列契约逐列对拍（CREATE OR REPLACE 的列名/类型/次序）。
@@ -312,6 +328,61 @@ func TestRoutingAnalyticsSourceViewMatchesCanonicalOnRealDB(t *testing.T) {
 	}
 	if n != 15 {
 		t.Errorf("source 视图应是 15 列，实际 %d 列", n)
+	}
+}
+
+// TestRoutingAnalyticsSourceDayRangeBoundaryOnRealDB 钉住 910 的**有意边界**。
+//
+// ★ 910 的父表腿带 partition_date 日界下推 ⇒ 对 ts 早于 8 天前的旧行，
+//
+//	source 返回行的 details 三列（client_model/provider_id/auto_profile）为 NULL，
+//	而 canonical（旧体）返回真实值。这是**设计内的口径边界**（等价承诺范围 =
+//	带 ts 窗的读；生产 13 处消费方实测全部带窗/存在性探针），不是缺陷——
+//	但必须显式钉住，否则未来任何「静默放宽/收窄日界」的改动都无人察觉。
+//
+// ★ 断言三件：
+//
+//  1. source 里旧行**存在**（LEFT JOIN 不丢行）且恰好 1 行（ukey ⇒ 不增殖）；
+//  2. source 里旧行 client_model IS NULL（日界边界生效）；
+//  3. canonical（旧体）里同一行 client_model = 'cm_old'（差异确实来自边界本身，
+//     不是夹具坏掉——没有这条，上面两条也可能因为「旧行根本没插进去」而恒真）。
+func TestRoutingAnalyticsSourceDayRangeBoundaryOnRealDB(t *testing.T) {
+	conn, ctx := routingSourceGateConn(t)
+
+	var srcRows int
+	var srcCM *string
+	if err := conn.QueryRow(ctx, `
+		SELECT count(*), min(client_model) FROM public.routing_analytics_source
+		 WHERE request_id = 'r_old'`).Scan(&srcRows, &srcCM); err != nil {
+		t.Fatal(err)
+	}
+	if srcRows != 1 {
+		t.Fatalf("旧行在 source 中应恰好 1 行（LEFT JOIN 保行 + ukey 不增殖），实际 %d", srcRows)
+	}
+	if srcCM != nil {
+		t.Errorf("旧行（ts 早于 8 天窗）的 client_model 应为 NULL（910 日界边界），实际 %q", *srcCM)
+	}
+
+	var oldCM *string
+	if err := conn.QueryRow(ctx, `
+		SELECT client_model FROM public.routing_analytics_source_old
+		 WHERE request_id = 'r_old'`).Scan(&oldCM); err != nil {
+		t.Fatal(err)
+	}
+	if oldCM == nil || *oldCM != "cm_old" {
+		t.Errorf("canonical 旧行 client_model 应为 cm_old（证明差异来自日界边界而非夹具缺数据），实际 %v", oldCM)
+	}
+
+	// ★ 窗口内的行不受边界影响（r9 在 8 天窗内 ⇒ details 有值）——
+	//   防止「日界谓词写得太紧把窗内行也切了」的回归。
+	var recentCM *string
+	if err := conn.QueryRow(ctx, `
+		SELECT client_model FROM public.routing_analytics_source
+		 WHERE request_id = 'r9' AND ts >= now() - interval '7 days'`).Scan(&recentCM); err != nil {
+		t.Fatal(err)
+	}
+	if recentCM == nil || *recentCM != "cm4" {
+		t.Errorf("窗口内行 r9 的 client_model 应为 cm4（日界边界不得波及窗内行），实际 %v", recentCM)
 	}
 }
 

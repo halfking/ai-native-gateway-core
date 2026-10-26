@@ -470,7 +470,7 @@ func serializeAnthropicSystem(system *SystemPrompt) any {
 				pdfMap["title"] = pdf.Title
 			}
 			if pdf.CacheCtrl != nil {
-				pdfMap["cache_control"] = map[string]any{"type": pdf.CacheCtrl.Type}
+				pdfMap["cache_control"] = cacheControlToMap(pdf.CacheCtrl)
 			}
 			parts = append(parts, pdfMap)
 		}
@@ -893,7 +893,7 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 
 	// Add cache_control if present
 	if block.CacheControl != nil {
-		out["cache_control"] = map[string]any{"type": block.CacheControl.Type}
+		out["cache_control"] = cacheControlToMap(block.CacheControl)
 	}
 
 	// Add index if present
@@ -1025,17 +1025,27 @@ func serializeAnthropicToolChoice(tc *ToolChoice) any {
 	return tc.Type
 }
 
+// cacheControlToMap renders one cache_control marker, keeping ttl so a 1h
+// checkpoint survives the IR round-trip instead of silently degrading to 5m.
+func cacheControlToMap(cc *CacheControl) map[string]any {
+	out := map[string]any{"type": cc.Type}
+	if cc.TTL != "" {
+		out["ttl"] = cc.TTL
+	}
+	return out
+}
+
 // serializeAnthropicCacheControl serializes cache control.
 func serializeAnthropicCacheControl(cc []CacheControl) any {
 	if len(cc) == 0 {
 		return nil
 	}
 	if len(cc) == 1 {
-		return map[string]any{"type": cc[0].Type}
+		return cacheControlToMap(&cc[0])
 	}
 	result := make([]map[string]any, len(cc))
-	for i, c := range cc {
-		result[i] = map[string]any{"type": c.Type}
+	for i := range cc {
+		result[i] = cacheControlToMap(&cc[i])
 	}
 	return result
 }
@@ -1095,7 +1105,7 @@ func serializeAnthropicDocuments(docs []Document) []map[string]any {
 			docMap["context"] = doc.Context
 		}
 		if doc.CacheCtrl != nil {
-			docMap["cache_control"] = map[string]any{"type": doc.CacheCtrl.Type}
+			docMap["cache_control"] = cacheControlToMap(doc.CacheCtrl)
 		}
 		result = append(result, docMap)
 	}

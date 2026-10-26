@@ -42,6 +42,40 @@ func TestExtractUsageFromChunk_VendorVariants(t *testing.T) {
 			want:    UsageData{PromptTokens: usageVariantIntPtr(100), CompletionTokens: usageVariantIntPtr(10), CacheReadTokens: usageVariantIntPtr(21), CacheWriteTokens: usageVariantIntPtr(9)},
 		},
 		{
+			// 2026-10-27 缓存标准对齐轮：Responses usage 的真实键是复数
+			// input_tokens_details（对照原厂文档），此前变量表里只有单数
+			// 死键，Responses 形状的命中整段读不到。
+			name:    "OpenAI Responses input_tokens_details.cached_tokens",
+			payload: `{"usage":{"input_tokens":100,"output_tokens":10,"input_tokens_details":{"cached_tokens":64}}}`,
+			want:    UsageData{PromptTokens: usageVariantIntPtr(100), CompletionTokens: usageVariantIntPtr(10), CacheReadTokens: usageVariantIntPtr(64)},
+		},
+		{
+			name:    "OpenAI Responses input_tokens_details.cache_write_tokens",
+			payload: `{"usage":{"input_tokens":100,"output_tokens":10,"input_tokens_details":{"cache_write_tokens":16}}}`,
+			want:    UsageData{PromptTokens: usageVariantIntPtr(100), CompletionTokens: usageVariantIntPtr(10), CacheWriteTokens: usageVariantIntPtr(16)},
+		},
+		{
+			// DeepSeek 官方 usage 顶层字段（prompt_tokens_details 之外的别名，
+			// 与 cached_tokens 恒等；老部署只发顶层字段）。
+			name:    "DeepSeek prompt_cache_hit_tokens top-level",
+			payload: `{"usage":{"prompt_tokens":100,"completion_tokens":10,"prompt_cache_hit_tokens":64,"prompt_cache_miss_tokens":36}}`,
+			want:    UsageData{PromptTokens: usageVariantIntPtr(100), CompletionTokens: usageVariantIntPtr(10), CacheReadTokens: usageVariantIntPtr(64), CacheMissTokens: usageVariantIntPtr(36)},
+		},
+		{
+			// 2026-10-27 缓存监测轮：TTL 写入分档（Anthropic 嵌套 cache_creation）。
+			name:    "Anthropic cache_creation ttl split",
+			payload: `{"usage":{"input_tokens":100,"output_tokens":10,"cache_creation_input_tokens":300,"cache_creation":{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":200}}}`,
+			want: UsageData{PromptTokens: usageVariantIntPtr(100), CompletionTokens: usageVariantIntPtr(10), CacheWriteTokens: usageVariantIntPtr(300),
+				CacheWriteTTLShort: usageVariantIntPtr(100), CacheWriteTTLLong: usageVariantIntPtr(200)},
+		},
+		{
+			// OpenAI Responses cache_write_tokens_details（ttl_30m/12h）。
+			name:    "OpenAI cache_write_tokens_details ttl split",
+			payload: `{"usage":{"input_tokens":100,"output_tokens":10,"input_tokens_details":{"cached_tokens":64,"cache_write_tokens":192},"cache_write_tokens_details":{"ttl_30m_tokens":64,"ttl_12h_tokens":128}}}`,
+			want: UsageData{PromptTokens: usageVariantIntPtr(100), CompletionTokens: usageVariantIntPtr(10), CacheReadTokens: usageVariantIntPtr(64), CacheWriteTokens: usageVariantIntPtr(192),
+				CacheWriteTTLShort: usageVariantIntPtr(64), CacheWriteTTLLong: usageVariantIntPtr(128)},
+		},
+		{
 			name:    "Doubao prompt_cache_miss_tokens",
 			payload: `{"usage":{"prompt_tokens":100,"completion_tokens":10,"prompt_cache_miss_tokens":88}}`,
 			want:    UsageData{PromptTokens: usageVariantIntPtr(100), CompletionTokens: usageVariantIntPtr(10), CacheMissTokens: usageVariantIntPtr(88)},
@@ -96,6 +130,9 @@ func TestExtractTokensFromResponseBody_VendorVariants(t *testing.T) {
 		{"canonical chat body", `{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20}}`, 100, 20, 0, 0},
 		{"details cache_read", `{"usage":{"prompt_tokens":100,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":64}}}`, 100, 10, 64, 0},
 		{"input_token_details cache_write", `{"usage":{"prompt_tokens":100,"completion_tokens":10,"input_token_details":{"cache_read":21,"cache_creation":9}}}`, 100, 10, 21, 9},
+		// 2026-10-27 缓存标准对齐轮：复数 input_tokens_details（真实 Responses 键）。
+		{"responses input_tokens_details read+write", `{"usage":{"input_tokens":100,"output_tokens":10,"input_tokens_details":{"cached_tokens":64,"cache_write_tokens":16}}}`, 100, 10, 64, 16},
+		{"deepseek prompt_cache_hit_tokens", `{"usage":{"prompt_tokens":100,"completion_tokens":10,"prompt_cache_hit_tokens":64}}`, 100, 10, 64, 0},
 		{"anthropic names", `{"usage":{"input_tokens":50,"output_tokens":7}}`, 50, 7, 0, 0},
 		{"minimax top-level usage", `{"base_resp":{"status_code":0},"model":"abab","input_tokens":11,"output_tokens":3}`, 11, 3, 0, 0},
 		{"total fills missing prompt", `{"usage":{"total_tokens":120,"completion_tokens":20}}`, 100, 20, 0, 0},
@@ -150,4 +187,6 @@ func assertUsageEqual(t *testing.T, got, want UsageData) {
 	cmp("CacheWriteTokens", got.CacheWriteTokens, want.CacheWriteTokens)
 	cmp("ReasoningTokens", got.ReasoningTokens, want.ReasoningTokens)
 	cmp("CacheMissTokens", got.CacheMissTokens, want.CacheMissTokens)
+	cmp("CacheWriteTTLShort", got.CacheWriteTTLShort, want.CacheWriteTTLShort)
+	cmp("CacheWriteTTLLong", got.CacheWriteTTLLong, want.CacheWriteTTLLong)
 }

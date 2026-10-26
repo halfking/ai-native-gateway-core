@@ -162,6 +162,13 @@
       "note": "★ AI 味登记册（★ R164 轮新增）"
     },
     {
+      "path": "web/scripts/design-elevation-baseline.json",
+      "kind": "registry",
+      "reader": "web/scripts/design-elevation-guard.mjs",
+      "behaviorally_verified": false,
+      "note": "★ 浮起（阴影/elevation）基线（★ 门读它：design-elevation-guard.mjs 用它判定「抬升层是否走词表」）。★ 2026-10-27 合并轮补登：★ 上游 7742505f5（阴影四支词表轮）新增本文件 ⇒ 但未登记进本普查表 ⇒ ⇒ 覆盖判据门判红（★ 「像登记册」的结构化文件必须二选一归属）⇒ ⇒ 本条按同族口径登记为 kind=registry（★ 掏空它 ⇒ 门瞎 ⇒ ⇒ 属真登记册，不是排除项）"
+    },
+    {
       "path": "web/scripts/i18n-cjk-baseline.json",
       "kind": "registry",
       "reader": "web/src/i18n/hardcoded_cjk.baseline.test.ts",

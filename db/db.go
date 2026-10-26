@@ -3809,6 +3809,12 @@ func (d *DB) ensureSessionBodiesPromoteDrain(ctx context.Context) error {
 //	⇒ 整计划 51,425~52,664 buffers（-64%，多轮稳定）。
 //	⇒ hot 腿**保留 LATERAL LIMIT 1**：details_hot 的索引是非唯一 request 索引，
 //	  唯一键证明只覆盖分区父表。
+//	⇒ ★ 等价承诺范围 = **带 ts 窗的读**（窗口内父表腿 EXCEPT ALL 0/0）；
+//	  全源等价不再成立——无窗全量读下 >8d 旧行的 details 三列为 NULL
+//	  （设计内边界）。全仓 13 处消费方实测全部带 7d 窗或为 request_id
+//	  存在性探针（LEFT JOIN 保行存在性）⇒ 今日零受影响消费方；
+//	  边界由 TestRoutingAnalyticsSourceDayRangeBoundaryOnRealDB 钉住，
+//	  未来新增无窗消费方时必须重审。
 //
 // ★★ 为什么要换形（R96 轮 252 生产实测，详见审计档
 // `docs/audit/2026-10-27-R96-routing-analytics刷新链-LATERAL回定位.md`）：

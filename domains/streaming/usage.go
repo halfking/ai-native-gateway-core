@@ -22,6 +22,12 @@ type UsageData struct {
 	ReasoningTokens  *int
 	CacheMissTokens  *int
 	ProviderTokens   *int
+	// 缓存写入的 TTL 分档（2026-10-27 缓存监测轮）。厂商映射：
+	// Anthropic 嵌套 usage.cache_creation.{ephemeral_5m→Short, ephemeral_1h→Long}；
+	// OpenAI Responses usage.cache_write_tokens_details.{ttl_30m→Short, ttl_12h→Long}。
+	// 只进监测面（capture/日志），台账列是既有的读写总量两列。
+	CacheWriteTTLShort *int
+	CacheWriteTTLLong  *int
 }
 
 // Wave4-D4 (2026-09-22): the usage field-variant table — the single place
@@ -40,11 +46,22 @@ var (
 		{"cache_read_input_tokens"},
 		{"cache_read_tokens"},
 		{"prompt_tokens_details", "cached_tokens"},
+		// 2026-10-27 缓存标准对齐轮：Responses usage 的真实键是复数
+		// input_tokens_details（对照原厂文档 2026-10-27；本仓
+		// native_responses_capture.go 自 2026-09-09 就按复数读）。下方单数
+		// 条目是历史兜底，实测无厂商在用，first-match 语义下保留无害。
+		{"input_tokens_details", "cached_tokens"},
 		{"input_token_details", "cache_read"},
+		// DeepSeek 官方 usage 顶层字段（api-docs.deepseek.com/guides/kv_cache）。
+		// 新版 DeepSeek 同时发 prompt_tokens_details.cached_tokens 且两者恒等
+		// ⇒ 先命中的那个读数相同；老部署只发顶层字段。
+		{"prompt_cache_hit_tokens"},
 	}
 	usageCacheWritePaths = []usagePath{
 		{"cache_creation_input_tokens"},
 		{"cache_write_tokens"},
+		// OpenAI Responses usage 的缓存写入槽（input_tokens_details 下）。
+		{"input_tokens_details", "cache_write_tokens"},
 		{"input_token_details", "cache_creation"},
 	}
 )
@@ -156,6 +173,23 @@ func ExtractUsageFromChunk(payload string) UsageData {
 			result.ProviderTokens = &v
 			break
 		}
+	}
+
+	// 缓存写入的 TTL 分档（2026-10-27 缓存监测轮）：两个厂商形态都在 usage
+	// 这一层——Anthropic 嵌套 cache_creation 对象、OpenAI
+	// cache_write_tokens_details。first-match 语义不适用（各自只有一个来源），
+	// 两组并存时以后到的赋值覆盖是可接受的（同一 usage 不该同时带两族）。
+	if v, err := nestedUsageInt(usage, "cache_creation", "ephemeral_5m_input_tokens"); err == nil && v > 0 {
+		result.CacheWriteTTLShort = &v
+	}
+	if v, err := nestedUsageInt(usage, "cache_creation", "ephemeral_1h_input_tokens"); err == nil && v > 0 {
+		result.CacheWriteTTLLong = &v
+	}
+	if v, err := nestedUsageInt(usage, "cache_write_tokens_details", "ttl_30m_tokens"); err == nil && v > 0 {
+		result.CacheWriteTTLShort = &v
+	}
+	if v, err := nestedUsageInt(usage, "cache_write_tokens_details", "ttl_12h_tokens"); err == nil && v > 0 {
+		result.CacheWriteTTLLong = &v
 	}
 
 	// total_tokens fallback: if we have total but missing prompt/completion,
@@ -534,6 +568,16 @@ func objVal(m map[string]json.RawMessage, key string) (map[string]json.RawMessag
 		return nil, err
 	}
 	return v, nil
+}
+
+// nestedUsageInt reads usage.<outer>.<inner> as an int (e.g. the Anthropic
+// cache_creation object or the OpenAI cache_write_tokens_details object).
+func nestedUsageInt(m map[string]json.RawMessage, outer, inner string) (int, error) {
+	outerObj, err := objVal(m, outer)
+	if err != nil {
+		return 0, err
+	}
+	return intValue(outerObj, inner)
 }
 
 func floatPtr(p *float64, def float64) float64 {

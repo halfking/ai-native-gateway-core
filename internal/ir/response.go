@@ -167,6 +167,12 @@ type ResponseUsage struct {
 	// nil = not applicable for this provider/request
 	CacheReadTokens  *int `json:"cache_read_tokens,omitempty"`  // Cache hit tokens (billed at reduced rate)
 	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"` // Cache creation tokens (billed at premium rate)
+	// 缓存写入的 TTL 分档（2026-10-27 缓存监测轮）。厂商映射：Anthropic
+	// usage.cache_creation.{ephemeral_5m→Short, ephemeral_1h→Long}；OpenAI
+	// usage.cache_write_tokens_details.{ttl_30m→Short, ttl_12h→Long}。只服务
+	// 监测面；序列化器不产出这两个键（Anthropic→Anthropic 走原文透传）。
+	CacheWriteTTLShort *int `json:"cache_write_ttl_short,omitempty"`
+	CacheWriteTTLLong  *int `json:"cache_write_ttl_long,omitempty"`
 
 	// Reasoning tokens (DeepSeek R1, OpenAI reasoning models)
 	ReasoningTokens *int `json:"reasoning_tokens,omitempty"`
@@ -244,6 +250,10 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 			OutputTokens             int `json:"output_tokens"`
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"` // audit-ir-multimodal (2026-07-13)
 			CacheReadInputTokens     int `json:"cache_read_input_tokens"`     // audit-ir-multimodal (2026-07-13)
+			CacheCreation            struct {
+				Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+				Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+			} `json:"cache_creation"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -276,6 +286,16 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 	if src.Usage.CacheReadInputTokens > 0 {
 		v := src.Usage.CacheReadInputTokens
 		ir.Usage.CacheReadTokens = &v
+	}
+	// 2026-10-27 缓存监测轮：嵌套 cache_creation 对象（5m/1h 写入分档，平面
+	// 字段是两者之和）。只进监测面，不改变任何串行输出。
+	if src.Usage.CacheCreation.Ephemeral5mInputTokens > 0 {
+		v := src.Usage.CacheCreation.Ephemeral5mInputTokens
+		ir.Usage.CacheWriteTTLShort = &v
+	}
+	if src.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+		v := src.Usage.CacheCreation.Ephemeral1hInputTokens
+		ir.Usage.CacheWriteTTLLong = &v
 	}
 
 	// container 原文进 Extensions，走标准扩展往返（见上方字段注释）。
@@ -1154,12 +1174,28 @@ func SerializeResponsesResponse(ir *InternalResponse, clientModel string) ([]byt
 		"model":      model,
 		"status":     status,
 		"output":     output,
-		"usage": map[string]any{
-			"input_tokens":  ir.Usage.PromptTokens,
-			"output_tokens": ir.Usage.CompletionTokens,
-			"total_tokens":  ir.Usage.TotalTokens,
-		},
 	}
+	// 2026-10-27 缓存标准对齐轮：Responses usage 的缓存命中走
+	// input_tokens_details（chat 侧走 prompt_tokens_details，见
+	// buildOpenAIUsageObject）。此前 IR 重建的 Responses 响应体整段丢掉
+	// cached_tokens，Codex 类客户端读不到命中数。无值不发键，与 chat 侧
+	// 同一纪律。
+	inputDetails := map[string]any{}
+	if ir.Usage.CacheReadTokens != nil && *ir.Usage.CacheReadTokens > 0 {
+		inputDetails["cached_tokens"] = *ir.Usage.CacheReadTokens
+	}
+	if ir.Usage.CacheWriteTokens != nil && *ir.Usage.CacheWriteTokens > 0 {
+		inputDetails["cache_write_tokens"] = *ir.Usage.CacheWriteTokens
+	}
+	usageObj := map[string]any{
+		"input_tokens":  ir.Usage.PromptTokens,
+		"output_tokens": ir.Usage.CompletionTokens,
+		"total_tokens":  ir.Usage.TotalTokens,
+	}
+	if len(inputDetails) > 0 {
+		usageObj["input_tokens_details"] = inputDetails
+	}
+	resp["usage"] = usageObj
 	// audit #11: a status=incomplete envelope without incomplete_details is a
 	// protocol gap — Responses SDK clients contract on the reason. Map the
 	// finish reason to the Responses API reason vocabulary; omit the field

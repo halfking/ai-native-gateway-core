@@ -417,6 +417,54 @@
 > ★★ 同一把尺子只能有一份实现 / ★★ 数字键会让 AST 写入器静默写出重复键 /
 > ★★「我以为的数字」必须当场重测 / ★★「疑似产品缺陷」要用能控住变量的量具复核 /
 > ★★ 文案结构变了断言的结构也要跟着变 / ★★「内部码该不该上屏」本身是个产品判断）。
+> **2026-10-26 多模态标准接口轮：本地音频（ASR/TTS）+ 文本三件套**（goal 会话，
+> 承接 network-switch 仓《嵌入与会话总结优化方案-2026-10-26》）：
+> ★ 目标：完善 llm.itestu.cn —— 接入本地模型，提供**嵌入/标题总结/内容总结/ASR/语音发音**
+> 标准接口。全部落地并 e2e（详见审计档 §4 时刻表）。
+> ⇒ ★ **新端点三件套** `domains/streaming/summarize.go`：`/v1/summarize`（短单发/长
+> map-reduce-render）、`/v1/summarize/title`（规则硬校验+实体择优）、`/v1/classify`
+> （受控词表）——环回 chat 面架构（与 audio_transform 同款），鉴权抽成包级
+> `authenticateNoRPM`、环回抽成 `loopbackChatCompletions`（transform 改委托，
+> 同一把尺子一份实现）；提示词移植自已验收的三个 SKILL.md；`<think>` 剥离；
+> 环回 429 单次重试；map 层 maxTokens=3000（thinking 模型预算不被烧穿）。
+> ⇒ ★ **whisper.cpp 传输** `audio_whisper_stt.go`：whisper-server 1.9.5 **没有**
+> OpenAI 兼容路径（实测 404），钉 `/inference` 方言，判据 **catalog_code**（绝不按
+> 模型名猜——云端也有 whisper-* 模型名）；base_url 注册约定**不带 /v1**。
+> ⇒ ★ **catalog 迁移 910**：whisper-cpp(:8081)/whisper-cpp-large(:8082)/macos-say(:8086)
+> 三条 kind='local' 条目 + manifest 模型清单（whisper 无 /v1/models ⇒ API 发现失败
+> 自动回落 manifest）；**7+1 点登记全齐**（正本/embeddata/installer×2/tsv/升级序列/
+> 基线/db-changelog）。
+> ⇒ ★★ **修复三个潜伏缺陷**（都被本地供应商注册踩出）：①启动播种把占位 key
+> **明文**写进 secret_ciphertext（播种已改走真加密 + admin decryptCred 对已知占位
+> 常量精确直通）；②同一明文在**运行时路由面**把候选整个丢掉（llamacpp/lmstudio/
+> mlx/vllm 四家「从未真正可路由」的根因；常量提升到 provider/catalog，两缝同修）；
+> ③**探针不认 thinking 模型**：max_tokens=32 探针载荷被 reasoning 烧穿 ⇒ content 空
+> ⇒ inconclusive ⇒ node_probe_failed 活锁——chat 臂加认 reasoning/reasoning_content
+> （「探针问的是活着吗，r1029 管的是能不能交付」，业务面一字不动；负例夹具按新契约
+> 移为 chat 正例，理由在注释）。
+> ⇒ ★ **Mac 侧**：whisper 双档 plist 0.0.0.0 + TTS 垫片 `~/bin/modelhub-tts-server.py`
+> （纯标准库，say+afconvert，OpenAI /v1/audio/speech 形态，wav/m4a，mp3 如实 400，
+> launchd :8086）。
+> ⇒ ★★ **部署坑（重要）**：**多 checkout 机器上 DD_REPO_ROOT 会漂**——第 5 次部署
+> 同步到 211 的竟是上游 abc92693 的树，镜像静默丢掉本轮全部端点（/v1/summarize 404
+> 而非 400）⇒ **部署必须 `LLM_GATEWAY_ROOT=<绝对路径>` 钉根**；另 deploy-211.sh
+> 无参路径的 bash3.2+set -u ARGS[*] unbound 已补守卫。
+> ⇒ ★ **e2e 读数**（llm.itestu.cn，8 次蓝绿部署后）：embeddings **4096 维** ✓、
+> ASR 双档转写正确 ✓、TTS wav ✓、title/classify/短总结多次通过（质量达 SKILL 规格）
+> ✓；**长路径 map-reduce 端到端打通（10-27 03:04：5207 字 → 91s 完整纪要成品）**。
+> 打通前挖掉两个真根因：★★ **ollama 对非 thinking 模型收到 reasoning_effort 直接
+> 400**（"does not support thinking"）⇒ 修在 **reqprobe**（thinking 能力族判据 →
+> 剥参免费重试，全调用方受益；summarize 层另加同判据兜底）——★ 教训：**chat 面把
+> 上游 400 吞成 503**，上游细节只在 upstream_http_attempt 日志里；★ **nginx 300s
+> proxy_read_timeout 掐断长渲染**（且掐断的在途请求会打脏渲染模型的探针状态，
+> 下一轮假象 503）⇒ 211 nginx llm 网关 location 已提 660s。
+> ⇒ ★★ **Mac 侧遗留（需用户处置）**：Ollama.app 与 launchd 双实例之争复发（坑#2），
+> MAX_LOADED_MODELS=5 的 plist 补丁未落到实际在跑的实例 ⇒ 模型 LRU 驱逐与探针
+> 超时的活锁会间歇复发；退 app + 重启 Mac 一次即根治。embedding:8b@32K 占 10GB，
+> 与双 chat 大模型共驻内存吃紧。
+> ⇒ 审计档 `docs/audit/2026-10-26-多模态标准接口轮-本地音频与文本三件套.md`（坑清单
+> §5 共 8 条：两条登记腿/admin_protected 排除/modality 只在 discovery 腿/错误映射吃真因/
+> 索引桶/ollama 活锁/DD_REPO_ROOT 漂移/30b 不宜当 map）。
 > **2026-10-27 第 17 增量：AI 痕迹门轮（impeccable 的 Do-Not 落成可执行判据）**（会话
 > `mvs_dc5e181989fc4539805f343f39be2b5d`）：★ 承接用户总目标（「学习 impeccable 的技能与规范，
 > 优化整个网关的 UI —— 减少 AI 化、增加人味与艺术化」）⇒ **前 16 增量清的是 i18n 覆盖与文案语义，
@@ -802,6 +850,96 @@
 > （★ 需 Anthropic SSE 严格帧与 Responses 的 `response.completed` 编排 —— IR 里有序列化器，
 > **流式终态的编排**未接线）；**Gemini 上游的 `header_profile_code` 联动**；
 > **Gemini 上游的上下文超限压缩恢复**（Ollama 路径有，Gemini 路径本轮只做一次尝试）。
+> **2026-10-27 Gemini 剩余登记项处置轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
+> ★ 承接上一条清单，**做掉其中 3 项**，另 2 项按硬约束登记。
+> ⇒ ★★★★ **本轮最值钱的一处发现：「没接线」≠「不存在」** ——
+> 上一轮把 `anthropic-messages` / `openai-responses` 的客户端线格式判为「未接线」，
+> 理由写的是「Anthropic SSE 严格帧 + Responses 的终态编排未接线」⇒ ★★ **那个理由站不住**：
+> 仓内**早就有**两条现成转换（`streaming.StreamOpenAIToAnthropicSSE` /
+> `streaming.StreamOpenAIToResponsesSSE`），而且**已经挂在 Executor 上**
+> （`OpenAIToAnthropicStream` / `OpenAIToResponsesStream`，`cmd/gateway/main.go` 接线），
+> 而**本 executor 本来就产出 OpenAI 形状的帧** ⇒ ★★ **同一份转换直接可用，零新增接线**
+> ⇒ ★★ 自己手搓 Anthropic 严格帧 = 白干（LESSONS §451 通用式一）。
+> ⇒ ★ **实现方式 = `io.Pipe`**：executor 把 Gemini 流转成 OpenAI 形状的帧写进管道，
+> 桥在另一侧读管道、写客户端 ⇒ ★★ 管道无缓冲 ⇒ **转换保持流式**（不整段缓冲到内存）。
+> ⇒ ★★ **不能直接 import 那个桥**：`domains/streaming` 导入 `domains/streaming/executors`
+> ⇒ 反向 import 即**循环依赖** ⇒ ★★ 这反过来说明「桥在 streaming、executor 持回调、
+> main.go 注入」是**被依赖方向逼出来的正确形状**，不是绕路。
+> ⇒ ★ **非流式**侧不需要桥：IR 层已有 `SerializeAnthropicResponse` /
+> `SerializeResponsesResponse`，且 `IRConverter` 接口本来就带这两个方法 ⇒ 零接线。
+> ⇒ ★ **`header_profile_code` 联动**（§8.3 明写「与 endpoint 的 `header_profile_code` 关联」）：
+> 出站请求**应用 endpoint 的 header profile**（与 OpenAI 路径同款）⇒ ★★ 没有它，
+> **Gemini 兼容中转**（profile 声明 `Authorization: Bearer`）会直接 401 ⇒ ★★
+> 应用顺序在凭据头**之后** ⇒ profile 声明的凭据头覆盖默认形态（这正是该机制的意义）。
+> ⇒ ★ **Gemini 上游的上下文超限压缩恢复**：复用共享的恢复协调器，压缩后**恰好重试一次**
+> （`geminiRecoveryAttempted` 标记防递归）。
+> ⇒ ★ **门（新增 11 条）**：Anthropic/Responses 请求 ⇒ Gemini 线（**不带** `messages`/`input`）/
+> Gemini 响应 ⇒ Anthropic（`type:message`+`stop_reason`）/⇒ Responses（`object:response`）/
+> ★ 桥收到的是 **OpenAI 形状**的帧（含 `[DONE]`）且 outcome 回传/★ **反向：桥缺失 ⇒
+> `KindUnsupportedFeature` 且不写任何字节**（不产生错形状的 200）/★ header profile 到达上游
+> 且默认 `x-goog-api-key` 仍在/★ 超限 ⇒ **恰好一次**压缩重试且重试体更小、压缩原因被记账/
+> ★ 未接线协议仍然 fail closed（门不是橡皮图章）。
+> ⇒ ★★ **本轮登记项的处置（★ 登记完立刻复查 ⇒ 第 1 项当场被推翻并做掉了，
+> 见本块末尾「补做掉第 4 项」）**：**Gemini 原生模型列表**
+> （★ 避让：并行会话正在改 `cmd/gateway/main.go`；★ 起手式：显式注册精确路由
+> `/v1beta/models`，**复用 `streaming.ModelsHandler` 的同一个 DB 数据源**、只换输出形状
+> ⇒ 厂商形状 `{"models":[{"name":"models/…"}]}`；★ 注意 Go 的 `ServeMux` 对已注册的子树
+> `/v1beta/models/` 会把无斜杠形态 **301** 过去 ⇒ 只按带斜杠实现也能访问到，但多一跳）；
+> **`:countTokens`**（★ **不是「不想做」，是「不能诚实做」**：仓内**没有** Gemini 分词器 ⇒
+> 本地估算会让客户端按错预算决策 ⇒ ★★ **唯一诚实的实现是转发给上游让厂商自己算**
+> ⇒ 那是**第三条出站动作**（响应形状 `{"totalTokens":N}` 与 `GenerateContentResponse` 完全不同
+> ⇒ 不走 `ProtocolHandler` 通用路径）⇒ 独立一轮）。
+> ⇒ ★ **补做掉第 4 项（登记理由已过期）**：**Gemini 原生模型列表**
+> （`GET /v1beta/models`）—— ★★ 上一轮的登记理由是「要动 `cmd/gateway/main.go`，
+> 而并行会话正在改该文件 ⇒ 避让」⇒ ★★★ 那是**时序条件**不是永久约束 ⇒ 本轮复查：
+> 并行会话的 `main.go` 改动落在**行 913 / 2574 / 3883 / 6788**，★ 而 Gemini 的 mux 注册在
+> **行 6794~6796** ⇒ ★★ 相距 25 行、**三方合并不重叠** ⇒ 避让前提消失 ⇒ 直接做掉。
+> ⇒ ★ **实现**：`domains/streaming/models.go` 新增 `ServeGeminiModels`（厂商原生形状
+> `{"models":[{"name":"models/…",…}]}`）★ **并把取数抽成 `loadEntries(ctx)` ⇒ 两份列表
+> 共用同一个可路由模型查询**（★ 同一份「网关能服务哪些模型」的真值 ⇒ 两个数据源
+> 就是两份真值 ⇒ 会漂移）+ `cmd/gateway/main.go` **一行**路由。
+> ⇒ ★★ **`supportedGenerationMethods` 只列网关【真的】支持的动作**
+> （`generateContent`/`streamGenerateContent`）⇒ **不列 `countTokens`** ⇒ ★
+> **列一个自己做不到的方法 = 给客户端一个它会当真、然后失败的承诺**。
+> ⇒ ★ **一个诚实的边界**：`/v1/models`（无斜杠）**仍是 OpenAI 形状**（OpenAI SDK 的既有契约）
+> ⇒ ★ Gemini 的 **GA 路径（`/v1`）**拿到的仍是 OpenAI 形状 ⇒ 本轮只解决 `v1beta` 这条
+> 厂商原生路径 ⇒ 若要 GA 也原生 ⇒ 需**重新分配 `/v1/models` 的归属** ⇒ 产品决策。
+> ⇒ ★ **门（再 +4 条）**：原生形状（`name` 带 `models/` 前缀 / `displayName` / 非空 methods）/
+> 上下文窗口映射 + **`models/` 前缀不重复** + 空 id 跳过 + 未知窗口**不发**该键/
+> ★ **反向：列表不列 `countTokens`**/★ **两份列表同一个数据源**（模型集合一致）。
+> ⇒ ★★★ **本轮第二值钱的一处发现：「只挂不认」比「不挂」更坏 —— 凭据收口面
+> 必须覆盖【每一个被服务的路由】** ——
+> 挂上 `/v1beta/models`（原生模型列表）之后，★★ **只挂不认**会留下一个比原缺陷
+> 更难查的形状：同一个客户端、同一个 key，`POST …:generateContent`（`x-goog-api-key`
+> 头形态）**能通**，而 `GET /v1beta/models`（`?key=` query 形态）**401** ⇒ ⇒
+> ★★ 用户看到的是「网关时好时坏 / 认证是坏的」⇒ ★★★ 根因不是「忘了带 key」，
+> 而是 **收口面漏了一条路由**：`internal/auth.IsGeminiNativePath`（`?key=` 的收口面）
+> 只认 generateContent 两个动作 ⇒ ⇒ ★★★ 而模型列表是**第三条被服务的 Gemini 路由**，
+> 它自己的 mux 条目**不在** `/v1beta/models/` 子树里 ⇒ ⇒ ★★ 靠「前缀」根本推不出它
+> ⇒ ⇒ ★★★ ⇒ 修法：`geminiNativePathRe` 增加一个**精确锚定**分支
+> `|/v1beta/models$` ⇒ ★★ **精确锚定而不是前缀**（`/v1beta/modelsXYZ` 必须**不在**
+> 收口面内 ⇒ 否则 `?key=` 会在一堆没人服务的路径上变成凭据源）⇒ ★★ `/v1/models`
+> （OpenAI 形状）**仍然不在**收口面内 ⇒ ★★ **收口面宁窄勿宽，但宽的部分必须是
+> 「已服务的 Gemini 路由」**。
+> ⇒ ★★★★ **本轮第三值钱的一处发现：「漂移门」自己也会写下【错误的要求】** ——
+> `TestGeminiNativePathMatchesHandlerParser` 判「已服务路由」用的是
+> `served(p) && handlerOK`（**前缀** ∧ **解析器**）⇒ ★★★ 模型列表**两条都不满足**
+> ⇒ ⇒ 门会把它归进「没人服务的路径」，**反过来要求收口面别覆盖它** ⇒ ⇒
+> ★★★ ⇒ 必须显式把新路由登记进门的判定（本轮加了一张 `geminiNativeExactRoutes`）
+> ⇒ ⇒ ★★ 否则这一轮会「为了让门绿而把收口面收窄」⇒ ★★★ ★★ **门不是事实，
+> 它只是事实的一个投影 ⇒ ⇒ 加一条路由时，老的投影会【自动给出错误结论】而且是绿的**
+> ⇒ ⇒ ★★ **「门全绿」时要问的是【门测的那件事成立吗】，而不是【门红了吗】**。
+> ⇒ ★ **门（再 +5 条，三侧对拍）**：挂载侧（`cmd/gateway`，**从 main.go 源码读出挂载语句**
+> ⇒ 不自证）+ 解析侧（`domains/streaming`，★ **反向**：generateContent 解析器**不认**
+> 模型列表 ⇒ 两条路由不许混）+ 收口侧（`internal/auth`，★ **反向**：精确锚定 ⇒
+> `/v1beta/modelsXYZ` 不在面内、`/v1/models` 不在面内）。
+> ⇒ ★★★★ **变异臂 4 臂全检出**（★ 三个方向，不只「把缺陷放回去」）：A 收窄回旧形态/
+> B 删掉模型列表挂载/C1 **锚定退化成前缀**/C2 **过宽到 `/v1/models`** ⇒ ⇒
+> ★★★ 四臂还原后 **md5 逐字一致** ⇒ ⇒ ★★ C1/C2 证明这组门**分得清**
+> 「该红的路径」与「不该红的路径」（★ **只会喊「必须覆盖」的门，和只会喊「不许覆盖」
+> 的门，是同一个门的两种坏法**）。
+> ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`（子项③，§14~§20）；
+> 通用式见 `LESSONS.md` **§451**（通用式一~十三）。
 > ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`（子项②，§6~§12）；
 > 通用式见 `LESSONS.md` **§439**（通用式一~七）。
 > **2026-10-23 实时拓扑探测打标四处源真值漂移轮 + 口径收敛**（会话
@@ -8605,11 +8743,40 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★★ （本机 `psql` shim 不认 DSN 的 host/port）⇒ ★ 已在 **origin/main 独立 worktree
 > ⇒ ⇒ ★★★ 复跑确认同签名失败 ⇒ **非本轮引入**，未动。
 > ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R90-turns-sessions-过滤路径500与两腿改写.md`**。
-> **2026-10-27 R166 轮（本会话）· routing_analytics_7d REFRESH 降本【907 残留探针的结构性收口，迁移 910 pending】**：
+> **2026-10-27 R167 轮（本会话）· 910 生产闭环复核与节奏归因【迁移 910 已应用，本轮零代码零迁移】**：
+> **对生产写入 = 0**（252 只读：schema_migrations / pgss 10min 序列 / 三台网关 journal / PG 外抄日志）。
+> 完整记录见 `docs/audit/2026-10-27-R167-910生产闭环复核与节奏归因轮.md` + LESSONS `§455`（★ 原拟 §454，合并让号）。
+> ★ **910 已由部署列车应用**：`applied_at = 2026-10-27 02:57:44.285+08`（台账实查；154 候选槽
+> 03:01:54 / 245 候选槽 03:10:53 先后启动；**252 宿主无刷新参与者**——ps 里的 `gateway` 进程
+> 实为 kxmemory 容器）。★ **干净窗验证（R166 快照自带 ±2 次雾区 ⇒ 不做跨轮切段，S1 应用后
+> 17 分钟定格 → 逐 tick 差分）**：语句级 buffers/call 147K → **64.6~65.3K（n=2）= −56%**
+> （SELECT 层 −64% 兑现；差值 ~13K 页 = REFRESH CONCURRENTLY diff/apply 层）、冷读
+> 132MB/次 → 38MB→~0、temp 0。★ **墙钟不背书**：同夜同负载带（load 40→64）PG 语句日志——
+> 907 形态六 tick = 50.4s/**击杀**/88.6s/10.4s/67.1s/**击杀**（10-26 18:33 第三发）；
+> 910 形态 19.04s/**176.1s（距 180s 钉 4s，buffers 正常零锁等待=纯 CPU 争用）**/85.5s（击杀后
+> 追账冷态）/**04:30 第四发击杀（journal ERROR SQLSTATE 57014）——**本轮文档曾按 n=3 写过
+> 「910 样本 0 击杀」，被 04:30 当场推翻 ⇒ 907 今晚 2/6、910 1/5 tick 击杀（同 load 50~64 带），
+> **击杀族没有被 910 消除；可声明的是结构与冷读**；§143.28 再次被生产验证。
+> ★ **节奏 +15% 归因收口**：55.2 次/天是 churn 日抬高的**窗均值**，**稳态恰 48/天=名义**
+> （10-26 全天 48；907 稳定纪元 off-tick 4 次=4 次部署初始刷新）；发射器全查=3 个
+> （tick/boot 初始/admin TriggerRefresh 无调用方）。★ **r7d−audit=14 归因收口**：trailing view
+> 记账不对称（unpaired 25 vs 15，两方向都在净 +10；击杀反向 audit+1；良性，下一 tick 兜底）。
+> ★ **承接前提复查（本轮最值钱）**：R166 §8 拍板材料「matrix 分族 work_mem（未拍板）」
+> **已于 10-19 `6d5db3a7c` 接线**（`refreshView` 共享路径 SET 256MB ⇒ 两族全覆盖，单 winner
+> 语义无需分族）且生产已兑现：matrix 三兄弟 temp/call 136/40/28.5MB → 15.3/4.7/3.2MB
+> （lift 后推算 2.5~5MB，**−89% 量级**）⇒ **第二优先级就地销案**——「未拍板/未接线」从写下的
+> 那一刻起就在腐烂，承接清单逐项先复查前提。★ **台账漏记补回填**：909 行也还是 pending
+> （10-26 02:10:45 已应用）⇒ 909/910 两行一并 applied+verified（909 判据=三 trigram 索引
+> pg_indexes 在位）；910 行残留失实句「本迁移不改变口径」修正为范围限定版。
+> ★ **pgss 口径定案（间接）**：三发击杀恰 180.000s 而 pgss max=179.539 ⇒ **180s 击杀不进
+> pgss**（与 10-19 注释一致）；R166 的 31.8s [32,41] 切段重推确认（31.96~34.9s）。
+> ⇒ **下一轮入口**：白天 load 60+ 带观察 910 击杀率（若出现击杀 ⇒ 增量刷新升第一位，属主）；
+> hot 腿 0 命中探针（下一块可量成本）；外抄日志 gap 根因（03:00/03:02 两行蒸发）。
+
 > **对生产写入 = 0**（252 全程只读；910 只落仓）。完整记录见
 > `docs/audit/2026-10-27-R166-routing-analytics-7d-REFRESH降本-父表腿日界下推.md` + handoff `§19.30` + LESSONS `§441`。
 > ★ **读数推进**：R147 的 4.97h/293/61.0s 是 **907 应用前**截面；907 实际 10-24 23:07+08 应用 252
-> ⇒ pgss 增量 ⇒ **907 后均值 ≈40.6s（1.5×）**，但仍是单 stmt 最大头；冷读 132MB/次、
+> ⇒ pgss 增量 ⇒ **907 后均值 ≈31.8s（混合窗推导，区间 [32,41]s ⇒ 1.5×~1.9×；批判审计轮修正：R147 读数时点 ≈10-24 02:51 早于 907 应用 20h ⇒ Δ窗混有 ~47 次 907 前调用——首轮误当纯后窗报 40.6s，正是 LESSONS §441 教训的实例）**，但仍是单 stmt 最大头（节奏 55.2 次/天 reset 干净重推，+15% 高于 30min 名义、14 次 r7d/audit 差未归因）；冷读 132MB/次、
 > temp 1.1MB/次 ⇒ **work_mem 不是本族杠杆**（matrix 才是）。
 > ★ **残留结构**：父表腿 ~2.75 万次/刷新 的 LATERAL 逐行探针（0.366ms × 27,486 ≈ 10.1s = 57%；
 > 整计划 ~147K buffers）；★ **探针单价随宿主负载漂 100×+**（R96 实测 ~3μs vs 本轮 366μs）
@@ -8617,7 +8784,7 @@ index b953a6f03..555ef83c4 100644
 > ★ **修法（910，零语义）**：父表腿 → 普通 LEFT JOIN + `partition_date >= (now()-8d)` 日界下推
 > ⇒ details 执行期分区裁剪（躲 0 行但堆 383MB 的 09 分区）+ Hash Join ⇒ **buffers 147K → 52K（−64%）**；
 > hot 腿保留 LATERAL（details_hot 无唯一键证明）。等价三证：ukey 唯一键（catalog 实测）+
-> 无行增殖（66,838→66,838）+ 错位行 0 ⇒ 窗口内双向 EXCEPT ALL **0/0**。
+> 无行增殖（66,838→66,838）+ 错位行 0 ⇒ 窗口内双向 EXCEPT ALL **0/0**。★ 批判审计轮收窄等价承诺范围 = **带 ts 窗的读**：日界下推使全源等价不再成立（无窗读 >8d 旧行 details 列为 NULL，设计内边界）；全仓 13 处消费方逐一实测全部带窗/存在性探针 ⇒ 今日零受影响，边界由 `TestRoutingAnalyticsSourceDayRangeBoundaryOnRealDB` 钉住。
 > ★★ **门禁代际交接**：「迁移 ≡ Go 常量」语义耦合门从 907 **移交给 910**；907 同名门改判为
 > **回退链门**（910.down ≡ 907.up 逐字）——applied 文件冻结后回退不许另写「差不多」的旧体；
 > 夹具日期改 now() 相对值（时间谓词会让写死日期的夹具漂出窗外）；计划门改「只允许 1 个 Limit 节点」。
@@ -10821,3 +10988,28 @@ index b953a6f03..555ef83c4 100644
 +> ⇒ ★★ **让号记录（仓内惯例）**：本轮通用式原用 §437~§441 ⇒ ★★ 推送前实测 `origin/main` 已被**并行会话占用 §437 / §438 / §439**（Gemini 多模态审计复审轮 · 本地部署连错集群轮 · Gemini 原生出站 executor 轮）⇒ ⇒ 按「**先到者让后到者改号**」的惯例，★ **我方让号为 §445~§449**（改号不改内容），并同步订正 §384。★★ **让号共两次**：第一次 §437~§441 → §440~§444（上游已占 §437 / §438 / §439）；第二次 §440~§444 → §445~§449（上游又占用了 §440）⇒ ★ **改号不改内容**，通用式正文一字未改。
 +> ⇒ ★★ **通用式（已落 `LESSONS.md` §445~§449，并订正 §384）**：★ **退役一个族要问两遍**（清单完备吗 / ★ **清单之外还有别的路吗**）；★ **「门绿」要追问「它绿的理由是不是它声称的那个理由」**（写进注释里的「实测」会过期，且**过期得毫无声响**）；★ **修完判据必须能证明「修之前漏、现在不漏」**；★ **「先后」是「通道 × 文件」的二元属性** ⇒ **显式列表几乎一定是手写的依赖序** ⇒ **绝不可用目录的字典序替代它**；★ **一条链的起点是「基线快照已经包含了什么」**，不是目录里的第一个文件（★ 复现链必须用那条链自己的显式列表）；★ **「跑不出预期终态」的第一嫌疑是环境**。
 +> ⇒ ⇒ ★★★★ 完整记录见 `docs/audit/2026-10-27-v1族退役完备性审计轮.md`（§0 结论 / §1 四层方法 / §2 6 个问题 / §3 修正 / §4 变异探针 / §5 真库复现 / §6 诚实边界 / §7 通用式 / §8 提交清单）。
+
+## ㉑ R166 轮（2026-10-27）· 会话列表 N+1 消除与「读数量具自证」—— ★★ 「同一份数据取了两遍」比 N+1 更值钱；★★ 量具输出 0 与「被测量为 0」长得一模一样
+
+> ⇒ ⇒ ⇒ ★ **背景**：★ 原始目标第 4 条「**优化请求的列表、记录查询、写入过程的效率，不要有表扫描或慢 SQL 的问题**」⇒ ⇒ ★ **R165 只完成了「定位」，本轮完成「修法 + 实测 + 门」**。
+> ⇒ ⇒ ⇒ ★★★ **★ 缺陷本体（本轮实测坐实，非推断）**：★ `handleListSessions` 对每个 session id 依次调 `Get()` 与 `GetStats()`，★ 而**这两个方法读的是同一个 Redis hash**（`session:{id}`，★ 两者都走 `redissafe.SafeHGetAll`）⇒ ⇒ ⇒ 每会话 **4 次往返**（★ `SafeHGetAll` = `TYPE` + `HGETALL`）× ★★ **且同一份 hash 取了两遍**。
+> ⇒ ⇒ ⇒ ★★★ **★★ 这比 N+1 更深一层**：★ N+1 是「读的对象多」，★ 这一层是「**读的对象不多，但同一份读了多遍**」⇒ ⇒ ⇒ ★ 而它在代码里**看不出来** —— `Get` 返回 `*Session`、`GetStats` 返回 `*SessionStats`，★ **两个不同的类型** ⇒ ⇒ ⇒ **只有把两者的 Redis 调用并排看才看得见**。
+> ⇒ ⇒ ⇒ ★★★ **服务端实测（★ `INFO commandstats`，★ 免疫网络噪声与机器负载；★ 本地 Redis DB2，★ 网关的 `LLM_GATEWAY_REDIS_DB=2`；★ 86 个活跃会话）**：★ 每请求 `hgetall=172`（= 86×**2** ⇒ ★★ 直接坐实「取了两遍」）、★ `type=172`、★ `srandmember=1`、★ `scan=9` ⇒ ⇒ ★ **命令总数 344、全部串行 ⇒ 往返数 344**。
+> ⇒ ⇒ ⇒ ★★★ **★ 第二层 N+1**：★ `listActiveSessions` 的**租户过滤**也是「每个候选 id 单独 `Get` 一次」。
+> ⇒ ⇒ ⇒ ★★★ **★ 修法（★ 仓内 3 文件）**：★ `domains/session/session_state_batch.go`（★ 新增 `Manager.GetBatch`）—— ★ **复用仓内既有原语**（★ `internal/redis.SafeHGetAllPipeline` + ★ `DefaultHashBatchSize=512`）⇒ ⇒ ★ **一次 TYPE 流水线 + 一次 HGETALL 流水线**取回整批 hash，★ 再由**同一份快照**分别派生 `Session` 与 `SessionStats`（★ 不重复读）；★ `admin/session_state_handlers.go` —— ★ 主循环改批量、★ 租户过滤改「攒块批量读回来过滤」、★ **批量失败退回逐键读**（★ 批量是**整批失败**、逐键是**坏键跳过** ⇒ ⇒ 不退回就会把整页打成空列表）；★ **仓内先例**：`GetEnrichedSession` 早就是「读一次 hash 同时给 session 与 stats」⇒ ⇒ ★ 改动是**本仓风格**而非新发明。
+> ⇒ ⇒ ⇒ ★★★ **★ 真实端点 A/B（★ 同一台机器、同一读数程序、两个二进制、★ 各 7 轮且每轮读数完全一致）**：
+> ⇒ ⇒ ⇒ ⇒ ★ A 臂 `2.5.8.2872`（优化前）· B 臂 `2.5.8.2873`（优化后）⇒ ⇒ ★ `hgetall` **172 → 86**、★ 命令总数 **344 → 172**、★ **往返 344 → 2（−99.4%）**、★ 墙钟中位数 **159ms → 41ms（−74%）**、★ `total_sessions` **两边都是 86（★ 语义未变）**。
+> ⇒ ⇒ ⇒ ⇒ ★ **墙钟读数要问它是在什么环境下得到的**：★ 本机 load ≈ 200（★ 10 核）⇒ ⇒ ★ 墙钟差值是**下界**，★ 而**服务端命令数与往返数是与负载无关的硬证据**。
+> ⇒ ⇒ ⇒ ★★★ **★ 语义未变的独立证据**：★ **510 条路由逐条 status/class 对拍 ⇒ 差异 0 条、路由集合完全相同**；★ 逐 API 巡检的分类分布与 R165 **逐项相等**（ok 281 / method_not_allowed 110 / bad_request 66 / not_found 47 / other_4xx 10 / server_error 6）；★ 巡检退出码 **75**（★ load 峰值 204.70 > 20 ⇒ ★ 延迟不可信、状态码可信）。
+> ⇒ ⇒ ⇒ ★★★ **★ 单测（★ 判据是【往返数】，★ 不是【命令条数】）**：★ 20 会话 ⇒ 逐键 **80** 次往返 ⇒ 批量 **2** 次；★ **对拍**（批量 vs 逐键逐字段相等）；★ 错类型键不拖垮整批；★ 缺失键跳过；★ 重复 id 只读一次；★ admin 层主判据是「**往返数不随会话数增长**」（★ n=5→6 次、n=40→6 次、★ **增长 0**；★ 旧路径为 32 → 242、★ 增长 210）。
+> ⇒ ⇒ ⇒ ★★★ **★ 真仓变异臂 2 臂全检出**：★ 臂 A（handler 退回旧逐键路径）⇒ ★ **FAIL**：增长 **210**；★ 臂 B（`GetBatch` 退回逐键读）⇒ ★ **FAIL**：批量 **80** = 逐键 **80** ⇒ ⇒ ★ 两臂还原后 **md5 逐字一致**。
+> ⇒ ⇒ ⇒ ★★★ **★★ 顺带修掉一条【退役后仍留在代码里的过期事实性注释】**：★ 原注释写「用量按会话 id 打 `_request_logs` 底表」，★ 而实际 SQL 读的是 **`session_turns_hot` ∪ `session_turns`** ⇒ ⇒ ★ **注释也是事实源** ⇒ ⇒ ★ 它落在最需要准确的地方（本轮原始目标正是 request_logs 退役）。
+> ⇒ ⇒ ⇒ ★★★★ **★ 本轮最值钱的一段：★★ 量具自身的三个缺陷（★ 三次都表现为「读数很干净」）**：★ ① **每次读 Redis 都开新连接** ⇒ ⇒ `SELECT 2` 不持久 ⇒ ⇒ **读到另一个 DB**（★ 症状：查 `session:*` 得 0 条 ⇒ ★ 差点得出「本地没有会话 ⇒ N+1 是潜伏的」）；★ ② **按「读够 N 字节就 break」截断回复** ⇒ ⇒ RESP **连接错位** ⇒ ⇒ 之后每次读到的都是上一条的尾巴（★ 症状：`hgetall` 恒 0）；★ ③ ★★ **`calls=172` 是 INFO 行的第一个 token 的后缀**（★ `cmdstat_type:calls=172,...`）⇒ ⇒ `tok.startswith('calls=')` **永远不匹配** ⇒ ⇒ **计数器恒 0** ⇒ ⇒ ★★ **这才是最危险的一种：「计数器恒 0」在报告里长得和「Redis 没被访问」一模一样** ⇒ ⇒ ⇒ **量具必须能自证读到过非零值** ⇒ ⇒ ★ **写读数脚本时先问一句：「这个读数在什么条件下会等于 0？」**
+> ⇒ ⇒ ⇒ ★★★ **★ 两处怀疑被实测否证（★ 留档，★ 防止下一轮重复排查）**：★ ① 「`scripts/audit/sql/min-prereqs.sql` 仍在建 `_request_logs_hot` ⇒ ⇒ 原始目标的『真正删除 `_request` 临时表』没闭合」⇒ ⇒ **否证**：★ 该文件已被并行会话的 v1 族退役台账**显式登记为 `Scope: "isolated-audit"`**（★ 只许经 `psql-isolated.sh` 在隔离库里执行，★ 用来验证 890 之前的迁移）⇒ ⇒ ★ **本地库里 `%request_logs%` 对象只剩 1 个（视图 `request_logs_with_current_month`）⇒ ⇒ ⇒ 库级目标已闭合**；★ ② 「新门 `sql/migrations/startup/v1_family_retirement_completeness_test.go` 不在 Makefile 门目标里 ⇒ ⇒ 不跑」⇒ ⇒ **否证**：★ `verify.sh:166` 跑 `go test ./...` ⇒ ⇒ **它在官方门里会跑**（★ 只是不在 Makefile 的 `guards` 里）⇒ ⇒ ★★ **「本仓有两套门体系」这件事本身要知道**。
+> ⇒ ⇒ ⇒ ★★★ **★ 交叉印证**：★ origin/main 新增的注释写明「v1 `request_logs` 族已随**迁移 890** 物理退役」⇒ ⇒ ★ 与本轮 R165 的库侧实测（★ 家族只剩 1 个兼容视图）**互相印证** ⇒ ⇒ ★ **「同名 ≠ 没转化」在退役侧同样成立**。
+> ⇒ ⇒ ⇒ ★★★★ **★ SQL 变化（★ 原始目标第 7 条）**：★ **本轮 `.sql` 变更 = 0 个** ⇒ ⇒ **211 / 252 无需为本轮补任何 SQL**；★ 合并 origin/main 带进来的 `.sql` 变化**全是注释标记**（★ `V1-FAMILY-RETIRED` 台账）⇒ ⇒ **无可执行 SQL 变化** ⇒ ⇒ ★ R165 §10 的台账（★ 211 缺 29 个迁移号、★ 252 缺 25 个、★ 安装器不可达 8 个）**在本轮维持不变**。
+> ⇒ ⇒ ⇒ ★★★★ **★ 待属主裁决（本轮新增）**：★ **R166-CI-BUDGET** —— ★ **慢门的 900s 上限在饱和机器上不够用**（★ `make guards-ursmcheck`（Makefile:213）与 `verify.sh:166` **用的是同一个 900s 预算**）⇒ ⇒ 建议二选一：① CI 机器保证低负载；② 预算提到 1800s；★ **R166-POST-SURFACE** —— ★ **89 条有副作用 POST 端点仍未逐条验证**（★ `api-sweep.sh` 只覆盖 GET）；★ **R166-WRITE-PATH** —— ★ 本轮**只动读路径**，★ 写路径（`session_turns` 落库）效率本轮**未审**。
+> ⇒ ⇒ ⇒ ★★★★ **★ 第四次慢门（★ 最终树 ＋ 权威调用）★ 拿到【真红】而不是超时**：★ `ursmcheck` **769.911s FAIL**（★ 4 条断言失败）· `admin` **224.385s ok** · `FINALGATE_EXIT=2` ⇒ ⇒ ★★ **这次在 900s 预算内跑完了 ⇒ ⇒ ⇒ 拿到的是判决而不是「没跑完」**（★ 对照 R165 那次 `panic: test timed out`）⇒ ⇒ ★★ **4 条 FAIL 的归属用同深度对拍坐实**：★ **纯 origin/main（零我的提交）上逐条同红** ⇒ ⇒ ⇒ ★★★ **本轮改动零门红；合并后的树红在 origin/main 自己身上** ⇒ ⇒ ★★ 4 条分别是：★ `admin_routes` 快照漂移（★ 生成器 577 vs 快照 576）、★ `request_surface_doc_currency` 两处区间失效（★ `cmd/gateway/main.go` 挪了位）、★ `web/scripts/design-elevation-baseline.json` 未登记 census ⇒ ⇒ ★ **门已给出确切修法**，★ 但 ★ 三处都要写进【并行会话自己的资产与设计页】⇒ ⇒ ★ 按纪律**只登记不代改**（★ `R166-ORIGIN-MAIN-RED`）。
+> ⇒ ⇒ ⇒ ★★★★ **★ 通用式沉淀在 `LESSONS.md` **§454**（★ 原拟 §450 ⇒ ★★ 合并 origin/main 时发现**并行会话也用了 §450** ⇒ ⇒ ⇒ **让号两次：§450 → §452 → §454，不改内容** ⇒ ⇒ ⇒ ★ §450/§452 现属对方（「浮起词汇归一轮」/「自审轮」），§454 才是本轮）。
+> ⇒ ⇒ ⇒ ★★★★ **★★★ 环境级根因链（★ 本轮最值钱的发现之一）**：★ **Android 无头夹具（AVD `pocket-test`，★ 两个实例各 `-cores 4`，★ 其中一个连续 5h23m 占 470.9% CPU）卡住了 Docker Desktop 的停止/启动流程** ⇒ ⇒ ★ Docker daemon 起不来 ⇒ ⇒ ★ 本机**唯一**的 psql（★ `~/kaixuan/pg18/bin/psql` 是 **2404 字节的 bash 转发 shim**）一并失效 ⇒ ⇒ ★ PG 端口转发随 VM 停止而失效 ⇒ ⇒ ★★ **本地网关的 DB 端点全部挂死**（★ `/api/admin/sessions` 10s 超时，★ 而 `/api/system/version` 仍 200）⇒ ⇒ ⇒ ★ **同一条根因既撑爆了慢门预算，又杀死了 Docker daemon** ⇒ ⇒ ⇒ ★ 处置：★ `adb emu kill` 优雅停两个无头实例 → ★ `docker desktop start`（★ 容器全部自动 healthy）→ ★ 重新部署 `DEPLOY4_EXIT=0` · release **2.5.8.2876** · `git_sha=1dc43be3`（★ **合并后的 HEAD**）· 凭据解密冒烟 `failed=0` ⇒ ⇒ ⇒ ★ **B' 臂复测：`hgetall`=86 · `type`=86 · `total_sessions`=86 ⇒ ⇒ 优化与语义在最终二进制上保持**（★ 墙钟 0.029s，★ 但负载已从 240 降到 112 ⇒ ⇒ ★ 墙钟**不是负载对齐**读数 ⇒ ⇒ ⇒ ★ 硬证据仍是 commandstats 的 344→172 与往返 344→2）。
+> ⇒ ⇒ ⇒ ★★★★ **完整记录见 `docs/audit/2026-10-27-R166-会话列表N+1消除与读数量具自证.md`**（§0~§12）。
