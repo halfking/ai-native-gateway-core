@@ -184,6 +184,16 @@ var knownStartupChainConcurrencyViolations = map[string]int{
 	//
 	// 计数 1：一条 DROP INDEX CONCURRENTLY（IF EXISTS 自然幂等，无 tmp）。
 	"908_route_incident_events_type_created_drop.sql": 1,
+	// 909（2026-10-24 R156 · D17-A，fc6c17111）与 877/887/908 同类：携带
+	// dbinit:no-transaction 标记 ⇒ 非事务通道。给 session_summaries 的三个
+	// LIKE/ILIKE 查询列补 GIN trigram 索引（admin 会话搜索去全表扫）。
+	// 用 CREATE INDEX CONCURRENTLY 是因为 session_summaries 是 83 万行热表
+	// （普通 CREATE 的 SHARE 锁会阻塞会话聚合写入）。★ 该提交漏登记本表
+	// ⇒ main 上此门红（R147 批判审计轮顺带修复：只登记，不改其文件）。
+	//
+	// 计数 4：4 条 CREATE INDEX CONCURRENTLY IF NOT EXISTS（注释里的提法
+	// 已被剥注释器排除）。
+	"909_session_summaries_search_trgm_indexes.sql": 4,
 }
 
 func countConcurrently(t *testing.T, path string) int {
