@@ -123,6 +123,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
@@ -218,6 +219,24 @@ SELECT 'srv'
 CENSUS_COLUMNS = 17  # env + 16
 RECONCILE_COLUMNS = 9  # ★ R163：★ 加了 fresh 环境 ⇒ 8 列 → 9 列
 COLUMNS_ARTIFACT_COLUMNS = 4  # ★ R163：★ env + schema + table + column
+
+# ★★ R164 新增：★【结构漂移】与【指标漂移】必须分开算 ——
+# ★★ 理由（★ 本轮实测出来的坑）：★ 底账里带着 `reltuples` / `table_size` / `total_size`
+# ★★ 这三列【每次 autovacuum / analyze 都会变】⇒ ⇒ 若拿整行做差集 ⇒ ⇒ **任何环境任何时刻**
+# ★★ 都会报「漂移」⇒ ⇒ ⇒ **噪声淹没的判据等于没有判据**。
+# ★★ ⇒ ⇒ 【对象没了 / 多了 / 形态变了】与【大小在动】必须分开报。
+# ★★ 排除面必须【显式且被门钉住】⇒ ★ 少排除 = 噪声，★ 多排除 = 漏报。
+VOLATILE_CENSUS_COLUMNS = ("reltuples", "table_size", "total_size")
+
+# ★ 底账 17 列的列名（★ 与 `collect` 的 SELECT 顺序逐字对应 ⇒ 判据按名字写，不按序号）。
+CENSUS_COLUMN_NAMES = (
+    "env", "kind", "schema", "relkind", "name", "owner", "ispartition",
+    "partition_bound", "parent_table", "reltuples", "table_size", "total_size",
+    "definition", "flags", "parent_index", "key_columns", "predicate",
+)
+assert len(CENSUS_COLUMN_NAMES) == CENSUS_COLUMNS
+assert set(VOLATILE_CENSUS_COLUMNS) <= set(CENSUS_COLUMN_NAMES)
+
 
 # ★★ R163 新增：★【列底账】的采集 SQL（★ 为什么单列一张表而不是塞进底账）。
 # ★★ 理由：★★ 「列级联退役」的判据必须回答【这个列在本环境还在不在】
@@ -411,6 +430,11 @@ def die(msg: str, code: int = 3):
     sys.exit(code)
 
 
+# ★ 自证钩子（★ R164）：★ `verify` 的现场采集行的覆盖入口。
+# ★ 只在 `selftest` 里被设置；★ 正常路径永远为 None ⇒ ★ 永远走真实采集。
+_LIVE_ROWS_OVERRIDE = None
+
+
 # ─────────────────────────── expect ───────────────────────────
 
 
@@ -547,8 +571,17 @@ def cmd_expect(args):
 # ─────────────────────────── collect ───────────────────────────
 
 
-def cmd_collect(args):
-    if args.from_stdin:
+def _collect_raw_rows(from_stdin: bool, psql_bin=None):
+    """★ 采集一个环境的底账【原始行】（★ 不含 env 前缀）⇒ list[str]。
+
+    ★ R164：★ 抽出来是为了让 `collect` 与 `verify` 走【同一条采集代码路径】
+    ⇒ ⇒ ★ 「verify 用的采集口径」与「快照用的采集口径」不可能分叉。
+    """
+    # ★ 自证钩子：★ 让 selftest 能【端到端】验退出码，★ 而不必真的连库。
+    # ★ 只在自证里被设置；★ 正常路径永远走真实采集。
+    if _LIVE_ROWS_OVERRIDE is not None:
+        return list(_LIVE_ROWS_OVERRIDE)
+    if from_stdin:
         # ★ 远程环境的采集形态：
         #   ssh 252 "cat | podman exec -i … psql -tA -q" < census.sql
         #     | python3 db-object-census.py collect --env 252 --from-stdin --out FILE --append
@@ -558,7 +591,7 @@ def cmd_collect(args):
         dsn = os.environ.get("GUARD_DSN")
         if not dsn:
             die("GUARD_DSN is not set (★ DSN 只走环境变量 ⇒ 不进 argv、不回显)")
-        psql = os.environ.get("GUARD_PSQL") or args.psql or "psql"
+        psql = os.environ.get("GUARD_PSQL") or psql_bin or "psql"
         try:
             proc = subprocess.run(
                 [psql, dsn, "-tA", "-q", "-v", "ON_ERROR_STOP=1", "-f", "-"],
@@ -582,7 +615,13 @@ def cmd_collect(args):
         parts = line.split("\t")
         if len(parts) != CENSUS_COLUMNS - 1:
             die("census row has %d fields, expected %d (★ newline contamination?)" % (len(parts), CENSUS_COLUMNS - 1))
-        rows.append("%s\t%s" % (args.env, line))
+        rows.append(line)
+    return rows
+
+
+def cmd_collect(args):
+    # ★ 前缀化放在这里（★ 与历史产物的 sha256 口径逐字一致 ⇒ ★ 旧快照仍可被新代码校验）
+    rows = ["%s\t%s" % (args.env, line) for line in _collect_raw_rows(args.from_stdin, args.psql)]
 
     header = (
         "# db-object-census.tsv —— ★ 三环境【真实对象底账】（★ 只读采集）\n"
@@ -631,6 +670,22 @@ def cmd_columns(args):
             for _c in _cols:
                 _pairs.add((_tbl, _c))
         sql_text = columns_sql(_pairs)
+    # ★★ R164 新增：★ 让【工具自己】产出 scoped SQL ⇒ ⇒ 远程采集用的 SQL 与本地同一份。
+    # ★★ 起因（★ 本轮实测踩到）：★ 远程采集的 scoped SQL 是【手搓】的 ⇒ ★ 手搓时把期望集的
+    # ★★ `source_file` 列当成了 `declared_columns` 列 ⇒ ⇒ IN 列表全是垃圾 ⇒ ⇒ 252/211 各采到
+    # ★★ **0 行**（★ 而本地走工具自己的 `--keys-from` ⇒ 879/891 行 ⇒ ⇒ 两边口径分叉）。
+    # ★★ ⇒ ⇒ 纪律：**采集 SQL 必须由工具生成**（★ 与「产物不许手拼」同族）。
+    if getattr(args, "emit_sql", None):
+        with open(args.emit_sql, "w", encoding="utf-8") as fh:
+            fh.write(sql_text)
+        sys.stderr.write(
+            "columns: emit-sql -> %s (%d bytes; ★ scope=%s)\n"
+            % (args.emit_sql, len(sql_text), "expected-index-key-columns"
+               if getattr(args, "keys_from", None) else "all-columns")
+        )
+        return 0
+    if not getattr(args, "env", None):
+        die("columns needs --env (★ 只有 --emit-sql 模式可以省)")
     if args.from_stdin:
         raw_rows = sys.stdin.read().splitlines()
     else:
@@ -726,25 +781,45 @@ def cmd_columns_bundle(args):
     """
     rows = []
     per_env = {}
+    per_env_collected = {}
     for path in args.inputs:
+        env_hint = None
+        collected_at = None
         with open(path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.rstrip("\n")
-                if not line or line.startswith("#"):
+                if not line:
+                    continue
+                if line.startswith("#"):
+                    # ★★ R164：★ 透传【采集时刻】（★ 与 census bundle 同款）
+                    # ★★ 修：★ 头部 token 前带 "★ " ⇒ ★ 锚在 "#\s*" 上会匹配不到。
+                    m = re.search(r"collected_at=(\S+)", line)
+                    if m:
+                        collected_at = m.group(1)
+                    m = re.search(r"env=(\S+)\s+rows=", line)
+                    if m:
+                        env_hint = m.group(1)
                     continue
                 parts = line.split("\t")
                 if len(parts) != COLUMNS_ARTIFACT_COLUMNS:
                     die("columns line has %d fields, expected %d" % (len(parts), COLUMNS_ARTIFACT_COLUMNS))
                 rows.append(line)
                 per_env[parts[0]] = per_env.get(parts[0], 0) + 1
+                if collected_at and parts[0] not in per_env_collected:
+                    per_env_collected[parts[0]] = collected_at
     if not rows:
         die("columns bundle has no data rows")
     env_desc = []
     for env in sorted(per_env):
         env_rows = [r for r in rows if r.split("\t")[0] == env]
         env_desc.append(
-            "%s rows=%d sha256=%s"
-            % (env, len(env_rows), hashlib.sha256("\n".join(env_rows).encode("utf-8")).hexdigest())
+            "%s rows=%d sha256=%s collected_at=%s"
+            % (
+                env,
+                len(env_rows),
+                hashlib.sha256("\n".join(env_rows).encode("utf-8")).hexdigest(),
+                per_env_collected.get(env) or "unknown",
+            )
         )
     header = (
         "# db-object-columns.tsv —— ★★【每环境每表每列】的事实底账（★ 只读采集）\n"
@@ -1124,6 +1199,190 @@ def cmd_reachability(args):
     return 0
 
 
+# ─────────────────────────── verify（R164）───────────────────────────
+
+
+def parse_census_header(path):
+    """读底账头部 ⇒ {'meta': {...}, 'envs': {env: {'rows': n, 'sha256': h, 'collected_at': ts}}}"""
+    meta = {}
+    envs = {}
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line.startswith("#"):
+                break
+            m = re.search(r"#\s*★\s*env=(\S+)\s+rows=(\d+)\s+sha256=([0-9a-f]+)(?:\s+collected_at=(\S+))?", line)
+            if m:
+                envs[m.group(1)] = {
+                    "rows": int(m.group(2)),
+                    "sha256": m.group(3),
+                    "collected_at": m.group(4),
+                }
+                continue
+            m = re.search(r"#\s*★\s*collected_at=(\S+)", line)
+            if m:
+                meta["collected_at"] = m.group(1)
+                continue
+            m = re.search(r"#\s*★\s*bundled_at=(\S+)", line)
+            if m:
+                meta["bundled_at"] = m.group(1)
+                continue
+            m = re.search(r"#\s*★\s*total_rows=(\d+)\s+envs=(\S+)", line)
+            if m:
+                meta["total_rows"] = int(m.group(1))
+                meta["envs"] = m.group(2).split(",")
+                continue
+    return meta, envs
+
+
+def parse_census_env_rows(path, env):
+    """读底账里某个环境的行（★ ★ 保留 env 前缀 ⇒ ★ 与 header 的 sha256 口径逐字一致）。"""
+    out = []
+    with open(path, encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) != CENSUS_COLUMNS:
+                die("census line %d has %d fields, expected %d" % (lineno, len(parts), CENSUS_COLUMNS))
+            if parts[0] == env:
+                out.append(line)
+    return out
+
+
+def _row_identity(parts):
+    """★ 对象的身份 ⇒ (kind, schema, name)（★ relkind 属【形态】不属【身份】）。
+
+    ★★ `parts` 必须是【17 列（带 env 前缀）】的形态 ⇒ ★ 与 `CENSUS_COLUMN_NAMES` 对齐。
+    """
+    return (parts[1], parts[2], parts[4])
+
+
+def _row_payload(parts):
+    """★ 对象的【结构载荷】⇒ tuple（★ 剔除 volatile 列 ⇒ ★ 只剩形态）。"""
+    volatile_idx = tuple(CENSUS_COLUMN_NAMES.index(c) for c in VOLATILE_CENSUS_COLUMNS)
+    return tuple(v for i, v in enumerate(parts) if i not in volatile_idx)
+
+
+def _row_metrics(parts):
+    """★ 对象的【指标】（★ 每次 autovacuum/analyze 都会动 ⇒ 不算漂移）。"""
+    return tuple(parts[CENSUS_COLUMN_NAMES.index(c)] for c in VOLATILE_CENSUS_COLUMNS)
+
+
+def diff_env(snap_rows, live_rows):
+    """★ 对拍两个行集 ⇒ (missing, added, changed, metric_only)。
+
+    ★ missing ⇒ ★ 【快照说该有、此刻没有】⇒ ★ 危险方向（★ 它会把人引向错误的补建动作）
+    ★ added   ⇒ ★ 【此刻有、快照没有】⇒ ★ 快照落后了（★ 良性方向）
+    ★ changed ⇒ ★ 同一对象的【形态】变了（★ 重建过 / 改过列 / 改过谓词）
+    ★ metric_only ⇒ ★ 只有大小在动（★ ★ 不是漂移 ⇒ ★ 但必须报数，不能静默）
+    """
+    snap = {}
+    for r in snap_rows:
+        p = r.split("\t")
+        snap[_row_identity(p)] = p
+    live = {}
+    for r in live_rows:
+        p = r.split("\t")
+        live[_row_identity(p)] = p
+
+    missing = sorted(set(snap) - set(live))
+    added = sorted(set(live) - set(snap))
+    changed = []
+    metric_only = []
+    for k in sorted(set(snap) & set(live)):
+        sp, lp = snap[k], live[k]
+        if _row_payload(sp) != _row_payload(lp):
+            changed.append(k)
+        elif _row_metrics(sp) != _row_metrics(lp):
+            metric_only.append(k)
+    return missing, added, changed, metric_only
+
+
+def cmd_verify(args):
+    """★ R164：★ 把「快照」与「此刻的真实库」对拍 ⇒ 报【结构漂移】。
+
+    ★★ 退出码（★★ 不许静默降级：★ 「没法判定」绝不能长成「没漂移」）：
+        0  无结构漂移（★ 指标漂移不算）
+        1  ★★ 有结构漂移（★ missing / added / changed）
+        2  ★★ 无法判定（★ 缺 DSN / 采集失败 / 快照里没有该环境 / 参数错误）
+    """
+    meta, hdr_envs = parse_census_header(args.census)
+    if args.env not in hdr_envs:
+        sys.stderr.write(
+            "ERROR: census %s has no env=%s (★ envs=%s)\n"
+            % (args.census, args.env, ",".join(sorted(hdr_envs)))
+        )
+        sys.exit(2)
+    snap_rows = parse_census_env_rows(args.census, args.env)
+    if not snap_rows:
+        sys.stderr.write("ERROR: census %s has no rows for env=%s\n" % (args.census, args.env))
+        sys.exit(2)
+
+    try:
+        raw_rows = _collect_raw_rows(args.from_stdin, args.psql)
+    except SystemExit as exc:
+        # ★ 「采集失败」在 verify 语境下是【无法判定】⇒ ★ 必须是 2，不是 0，也别混成 3。
+        sys.exit(2 if exc.code not in (0, None) else exc.code)
+    # ★ 前缀化 ⇒ ★ 与快照的行【同形】（★ 17 列 ⇒ 索引口径一致）
+    live_rows = ["%s\t%s" % (args.env, r) for r in raw_rows]
+
+    missing, added, changed, metric_only = diff_env(snap_rows, live_rows)
+
+    snap_sha = hashlib.sha256("\n".join(snap_rows).encode("utf-8")).hexdigest()
+    live_sha = hashlib.sha256("\n".join(live_rows).encode("utf-8")).hexdigest()
+    hdr_sha = hdr_envs[args.env]["sha256"]
+
+    summary = {
+        "env": args.env,
+        "snapshot_rows": len(snap_rows),
+        "live_rows": len(live_rows),
+        "snapshot_sha256": snap_sha,
+        "header_sha256": hdr_sha,
+        "live_sha256": live_sha,
+        "header_sha_matches_rows": hdr_sha == snap_sha,
+        "collected_at": hdr_envs[args.env].get("collected_at"),
+        "missing_in_live": len(missing),
+        "added_in_live": len(added),
+        "changed": len(changed),
+        "metric_only": len(metric_only),
+    }
+    if args.json:
+        sys.stderr.write(json.dumps(summary, ensure_ascii=False, sort_keys=True) + "\n")
+    else:
+        sys.stderr.write(
+            "verify: env=%s snapshot_rows=%d live_rows=%d\n"
+            % (args.env, len(snap_rows), len(live_rows))
+        )
+        sys.stderr.write(
+            "  structural drift: missing_in_live=%d added_in_live=%d changed=%d\n"
+            % (len(missing), len(added), len(changed))
+        )
+        sys.stderr.write(
+            "  metric-only movement (★ NOT drift): %d rows\n" % len(metric_only)
+        )
+        if hdr_sha != snap_sha:
+            sys.stderr.write(
+                "  ★ header sha256 != rows sha256 (★ 产物自身不一致 ⇒ 先修产物)\n"
+            )
+        for k in missing[:20]:
+            sys.stderr.write("  MISSING-IN-LIVE  %s/%s %s\n" % (k[0], k[1], k[2]))
+        for k in added[:20]:
+            sys.stderr.write("  ADDED-IN-LIVE    %s/%s %s\n" % (k[0], k[1], k[2]))
+        for k in changed[:20]:
+            sys.stderr.write("  CHANGED          %s/%s %s\n" % (k[0], k[1], k[2]))
+
+    # ★ 产物自身 sha256 对不上 ⇒ ★ 无从判定 ⇒ ★ 也是「无法判定」⇒ ★ 不是 0。
+    if not summary["header_sha_matches_rows"]:
+        sys.exit(2)
+    if missing or added or changed:
+        sys.stderr.write("RESULT: STRUCTURAL DRIFT\n")
+        sys.exit(1)
+    sys.stderr.write("RESULT: NO STRUCTURAL DRIFT\n")
+    return 0
+
+
 # ─────────────────────────── selftest ───────────────────────────
 
 
@@ -1260,9 +1519,11 @@ def cmd_bundle(args):
     ⇒ ★ 产物必须【工具生成】⇒ ★ 不能手拼（★ 手拼的产物没法证明自己来自工具）。
     """
     per_env = {}
+    per_env_collected = {}
     order = []
     for path in args.inputs:
         env = None
+        collected_at = None
         rows = []
         with open(path, encoding="utf-8") as fh:
             for lineno, line in enumerate(fh, 1):
@@ -1271,9 +1532,19 @@ def cmd_bundle(args):
                     continue
                 if line.startswith("#"):
                     # ★ 单环境文件的头部里带 "env=<label>"
-                    m = re.search(r"#\s*env=(\S+)\s", line)
+                    # ★★ R164 修：★ 头部里这些 token 前面还带着 "★ "（★ 比如
+                    # ★★ "# ★ env=local rows=…"）⇒ ⇒ ★ 用 "#\s*env=" 这种锚法会【匹配不到】
+                    # ★★ ⇒ ★★ 实测 caught：★ collected_at 一律透传成 "unknown" ⇒ ★ 恰好把
+                    # ★★ 本轮要闭合的那条边界（★ 「采集时刻查不到」）又关回去了 ⇒ ⇒ 改用无锚 token 匹配。
+                    m = re.search(r"env=(\S+)\s+rows=", line)
                     if m:
                         env = m.group(1)
+                    # ★★ R164：★ 把【采集时刻】透传下去（★ 否则 bundle 之后
+                    # ★★ 「这个环境的数据是几号采的」在产物里就查不到了 ⇒ ⇒
+                    # ★★ 「快照过期」不可机器判 ⇒ ★★ 这正是本轮要闭合的那条边界）。
+                    m = re.search(r"collected_at=(\S+)", line)
+                    if m:
+                        collected_at = m.group(1)
                     continue
                 parts = line.split("\t")
                 if len(parts) != CENSUS_COLUMNS:
@@ -1286,6 +1557,7 @@ def cmd_bundle(args):
         if env in per_env:
             die("duplicate env %s in inputs" % env)
         per_env[env] = rows
+        per_env_collected[env] = collected_at
         order.append(env)
 
     order.sort(key=_env_sort_key)
@@ -1303,8 +1575,13 @@ def cmd_bundle(args):
     for env in order:
         rows = per_env[env]
         header_lines.append(
-            "# ★ env=%s rows=%d sha256=%s"
-            % (env, len(rows), hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest())
+            "# ★ env=%s rows=%d sha256=%s collected_at=%s"
+            % (
+                env,
+                len(rows),
+                hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest(),
+                per_env_collected.get(env) or "unknown",
+            )
         )
     header_lines.append(
         "# ★ total_rows=%d envs=%s" % (len(all_rows), ",".join(order))
@@ -1590,6 +1867,178 @@ def cmd_selftest(args):
     os.unlink(exp)
     os.unlink(cen)
 
+    # ★★ R164 新增牙（★★ 两个要点：★ ① 「结构漂移」与「指标漂移」必须分得开
+    # ★★ ② 退出码语义必须分得开：★ 「没法判定」绝不能长成「没漂移」）
+    check(
+        "verify/volatile-columns-are-exactly-three",
+        VOLATILE_CENSUS_COLUMNS == ("reltuples", "table_size", "total_size"),
+        repr(VOLATILE_CENSUS_COLUMNS),
+    )
+
+    def _r(*vals):
+        """★ 17 列（带 env 前缀）的行（★ 与底账产物的行【同形】）。"""
+        return _row(CENSUS_COLUMNS, "local", *vals)
+
+    def _raw(*vals):
+        """★ 16 列（不带 env）的行（★ 与 `_collect_raw_rows` 的返回【同形】）。"""
+        return _row(CENSUS_COLUMNS - 1, *vals)
+
+    base = _r("idx", "public", "i", "idx_a", "owner", "f", "", "", "100", "4096", "8192",
+              "CREATE INDEX ...", "true,true,true", "", "tenant_id,session_id", "")
+    moved = _r("idx", "public", "i", "idx_a", "owner", "f", "", "", "200", "8192", "16384",
+               "CREATE INDEX ...", "true,true,true", "", "tenant_id,session_id", "")
+    redefined = _r("idx", "public", "i", "idx_a", "owner", "f", "", "", "100", "4096", "8192",
+                   "CREATE INDEX ON public.t (a)", "true,true,true", "", "tenant_id,session_id", "")
+
+    mi, ad, ch, mo = diff_env([base], [base])
+    check("verify/identical-is-no-drift", not mi and not ad and not ch and not mo, repr((mi, ad, ch, mo)))
+    mi, ad, ch, mo = diff_env([base], [moved])
+    check(
+        "verify/metric-only-is-not-drift",
+        not mi and not ad and not ch and len(mo) == 1,
+        "★ reltuples/size 变了 ⇒ 不该算漂移: %r" % ((mi, ad, ch, mo),),
+    )
+    mi, ad, ch, mo = diff_env([base], [])
+    check("verify/detects-missing-in-live", len(mi) == 1 and not ad, repr((mi, ad)))
+    mi, ad, ch, mo = diff_env([], [base])
+    check("verify/detects-added-in-live", len(ad) == 1 and not mi, repr((mi, ad)))
+    mi, ad, ch, mo = diff_env([base], [redefined])
+    check("verify/detects-changed-shape", len(ch) == 1 and not mo, repr((ch, mo)))
+
+    # ★★ 端到端退出码（★ 用自证钩子喂现场行 ⇒ 不连库）
+    def _write_census(path, env, rows):
+        pref = list(rows)
+        sha = hashlib.sha256("\n".join(pref).encode("utf-8")).hexdigest()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("# db-object-census.tsv —— selftest\n")
+            fh.write("# ★ bundled_at=2026-10-27T00:00:00+00:00\n")
+            fh.write("# ★ env=%s rows=%d sha256=%s collected_at=2026-10-27T00:00:00+00:00\n"
+                     % (env, len(pref), sha))
+            fh.write("# ★ total_rows=%d envs=%s\n" % (len(pref), env))
+            for r in pref:
+                fh.write(r + "\n")
+
+    global _LIVE_ROWS_OVERRIDE
+    with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False, encoding="utf-8") as fh:
+        cen2 = fh.name
+    _write_census(cen2, "local", [base])
+    vns = argparse.Namespace(env="local", census=cen2, psql=None, from_stdin=False, json=False)
+
+    raw_base = _raw("idx", "public", "i", "idx_a", "owner", "f", "", "", "100", "4096", "8192",
+                    "CREATE INDEX ...", "true,true,true", "", "tenant_id,session_id", "")
+    raw_moved = _raw("idx", "public", "i", "idx_a", "owner", "f", "", "", "200", "8192", "16384",
+                     "CREATE INDEX ...", "true,true,true", "", "tenant_id,session_id", "")
+    raw_redefined = _raw("idx", "public", "i", "idx_a", "owner", "f", "", "", "100", "4096", "8192",
+                         "CREATE INDEX ON public.t (a)", "true,true,true", "", "tenant_id,session_id", "")
+
+    _LIVE_ROWS_OVERRIDE = [raw_base]
+    try:
+        cmd_verify(vns)
+        rc = 0
+    except SystemExit as exc:
+        rc = exc.code
+    check("verify/exit-0-on-no-drift", rc == 0, "rc=%r" % (rc,))
+
+    _LIVE_ROWS_OVERRIDE = [raw_moved]
+    try:
+        cmd_verify(vns)
+        rc = 0
+    except SystemExit as exc:
+        rc = exc.code
+    check("verify/exit-0-on-metric-only", rc == 0, "★ 只有统计量在动 ⇒ 不该红: rc=%r" % (rc,))
+
+    _LIVE_ROWS_OVERRIDE = [raw_redefined]
+    try:
+        cmd_verify(vns)
+        rc = 0
+    except SystemExit as exc:
+        rc = exc.code
+    check("verify/exit-1-on-shape-drift", rc == 1, "rc=%r" % (rc,))
+
+    _LIVE_ROWS_OVERRIDE = []
+    try:
+        cmd_verify(vns)
+        rc = 0
+    except SystemExit as exc:
+        rc = exc.code
+    check("verify/exit-1-on-missing-object", rc == 1, "rc=%r" % (rc,))
+
+    # ★★ 「快照里没有这个环境」⇒ ★ 无法判定 ⇒ ★ 必须是 2（★ 绝不是 0）
+    vns_absent = argparse.Namespace(env="211", census=cen2, psql=None, from_stdin=False, json=False)
+    _LIVE_ROWS_OVERRIDE = [raw_base]
+    try:
+        cmd_verify(vns_absent)
+        rc = 0
+    except SystemExit as exc:
+        rc = exc.code
+    check("verify/exit-2-when-env-absent", rc == 2, "★ 「没法判定」≠「没漂移」: rc=%r" % (rc,))
+
+    # ★★ 「连不上库」⇒ ★ 同样是无法判定 ⇒ ★ 必须是 2
+    _LIVE_ROWS_OVERRIDE = None
+    saved_dsn = os.environ.pop("GUARD_DSN", None)
+    try:
+        cmd_verify(vns)
+        rc = 0
+    except SystemExit as exc:
+        rc = exc.code
+    finally:
+        if saved_dsn is not None:
+            os.environ["GUARD_DSN"] = saved_dsn
+    check("verify/exit-2-when-db-unreachable", rc == 2, "★ 「连不上」≠「没漂移」: rc=%r" % (rc,))
+
+    os.unlink(cen2)
+
+    # ★★ R164 第二组牙：★ bundle 的 collected_at 透传（★ 工具侧行为 ⇒ ★ 由本工具自证）
+    # ★★ 起因（★ 本轮实测）：★ 第一版透传【没生效】⇒ ★ 正则被头部里的 "★ " 挡住
+    # ★★ ⇒ ⇒ 头部出来全是 `collected_at=unknown` ⇒ ⇒ ★ 而「unknown」长得像一个合法值
+    # ★★ ⇒ ⇒ ⇒ 「透传失败」被伪装成「采集时刻未知」⇒ ⇒ ⇒ ⇒ 所以这里要验两件事：
+    # ★★   ① 透传【真的发生】；★ ★★ ② 兜底值必须是【显式的 unknown】（★ 不许长得像合法值）。
+    def _write_single_env(path, env, rows, collected_at):
+        pref = ["%s\t%s" % (env, r) for r in rows]
+        sha = hashlib.sha256("\n".join(pref).encode("utf-8")).hexdigest()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("# db-object-census.tsv —— selftest\n")
+            if collected_at is not None:
+                fh.write("# ★ collected_at=%s\n" % collected_at)
+            fh.write("# ★ env=%s rows=%d sha256=%s\n" % (env, len(pref), sha))
+            for r in pref:
+                fh.write(r + "\n")
+
+    with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False, encoding="utf-8") as fh:
+        env_a = fh.name
+    with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False, encoding="utf-8") as fh:
+        env_b = fh.name
+    with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False, encoding="utf-8") as fh:
+        env_c = fh.name
+    _write_single_env(env_a, "local", [raw_base], "2026-10-27T01:02:03+00:00")
+    _write_single_env(env_b, "252", [raw_base], "2026-10-27T04:05:06+00:00")
+    # ★ 第三个文件【故意没有 collected_at】⇒ ⇒ 兜底必须是 unknown
+    _write_single_env(env_c, "211", [raw_base], None)
+
+    bns = argparse.Namespace(inputs=[env_a, env_b, env_c], out=None)
+    buf = io.StringIO()
+    real_stdout = sys.stdout
+    sys.stdout = buf
+    try:
+        cmd_bundle(bns)
+    finally:
+        sys.stdout = real_stdout
+    bundled = buf.getvalue()
+    check(
+        "bundle/passes-collected-at-through",
+        "collected_at=2026-10-27T01:02:03+00:00" in bundled
+        and "collected_at=2026-10-27T04:05:06+00:00" in bundled,
+        "★ 采集时刻没透传到 bundle 头部",
+    )
+    check(
+        "bundle/fallback-is-explicit-unknown",
+        "collected_at=unknown" in bundled,
+        "★ 缺采集时刻时兜底必须是显式的 unknown（★ 不许长得像合法值）",
+    )
+    os.unlink(env_a)
+    os.unlink(env_b)
+    os.unlink(env_c)
+
     sys.stderr.write(
         "\nselftest: %d checks, %d failures\n" % (CHECKS[0], len(failures))
     )
@@ -1638,12 +2087,28 @@ def main(argv=None):
     p.add_argument("--out", help="output TSV (default: stdout)")
     p.set_defaults(func=cmd_bundle)
 
+    p = sub.add_parser(
+        "verify",
+        help="★ R164：★ 把快照与此刻的真实库对拍 ⇒ 报【结构漂移】（★ 退出码 0/1/2）",
+    )
+    p.add_argument("--env", required=True, help="environment label")
+    p.add_argument("--census", required=True, help="census bundle TSV")
+    p.add_argument("--psql", help="psql binary (default: $GUARD_PSQL or psql)")
+    p.add_argument(
+        "--from-stdin",
+        action="store_true",
+        help="read already-collected census rows from stdin (★ remote envs)",
+    )
+    p.add_argument("--json", action="store_true", help="print a JSON summary to stderr")
+    p.set_defaults(func=cmd_verify)
+
     p = sub.add_parser("retired", help="emit retirement-evidence ledger (created-then-dropped)")
     p.add_argument("--out", help="output TSV (default: stdout)")
     p.set_defaults(func=cmd_retired)
 
     p = sub.add_parser("columns", help="read-only column census of one environment")
-    p.add_argument("--env", required=True, help="environment label")
+    # ★ R164：★ --env 不再是必填（★ 因为 `--emit-sql` 模式下不需要环境标签 ⇒ ★ 只产 SQL）
+    p.add_argument("--env", help="environment label (★ --emit-sql 时可省)")
     p.add_argument("--out", help="output TSV (default: stdout)")
     p.add_argument("--append", action="store_true", help="append rows to --out")
     p.add_argument("--psql", help="psql binary (default: $GUARD_PSQL or psql)")
@@ -1651,6 +2116,10 @@ def main(argv=None):
     p.add_argument(
         "--keys-from",
         help="expected-set TSV (★ 只采期望集索引的【声明键列】⇒ 规模降到 1/8)",
+    )
+    p.add_argument(
+        "--emit-sql",
+        help="★ R164：★ 只写出采集用的 SQL（★ 远程环境用；★ ★ 采集 SQL 必须由工具生成 ⇒ 不许手搓）",
     )
     p.set_defaults(func=cmd_columns)
 
@@ -1675,6 +2144,14 @@ def main(argv=None):
 
     p = sub.add_parser("selftest", help="self-tests")
     p.set_defaults(func=cmd_selftest)
+
+    # ★★ R164：★ 把采集 SQL 本身也做成一个模式 ⇒ ★ 远程采集不用再手搓 SQL
+    # ★★ （★ 手搓过一次 ⇒ ★ 口径分叉 ⇒ ★ 252/211 采到 0 行 ⇒ ★ 见审计档 §5）。
+    p = sub.add_parser(
+        "census-sql",
+        help="★ R164：★ 打印对象底账的采集 SQL（★ 只读；★ 远程采集用这个，★ 不许手搓）",
+    )
+    p.set_defaults(func=lambda args: (sys.stdout.write(CENSUS_SQL), 0)[1])
 
     args = ap.parse_args(argv)
     return args.func(args)

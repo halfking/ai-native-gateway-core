@@ -3,7 +3,7 @@
 # ★ 列：create_migration_no	index_name	table	create_file	retire_migration_no	retire_file	conditional	retire_line	retire_kind	retired_column
 # ★ retire_kind：drop-index（★ 显式 DROP INDEX）| drop-column（★ ★ 删列 ⇒ PG 级联删索引）
 # ★ conditional=yes ⇒ ★ 该 DROP 在 DO 块内（★ 有前置证明才退役，★ 如 876 的覆盖证明）
-# ★ generated_at=2026-10-26T05:50:26+00:00
+# ★ generated_at=2026-10-26T10:23:55+00:00
 # ★ retired_indexes=886 retire_events=59
 347	credential_model_index_hot_unique_key	credential_model_index_hot	347_credential_model_index_hot_independence.sql	718	718_drop_redundant_indexes_and_add_ttl_indexes.sql	no	46	drop-index	
 349	credit_ledger_hot_created_idx	credit_ledger_hot	349_credit_ledger_hot_independence.sql	718	718_drop_redundant_indexes_and_add_ttl_indexes.sql	no	49	drop-index	
