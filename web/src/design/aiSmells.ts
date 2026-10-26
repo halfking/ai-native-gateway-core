@@ -69,7 +69,10 @@ export function listScannableFiles(rootDir: string): string[] {
 interface CssBlock {
   selector: string
   body: string
+  /** 块的**结束行**（1-based） */
   line: number
+  /** 块的**起始行**（1-based）—— 第 18 增量新增：算「声明在哪一行」要用 */
+  startLine: number
 }
 
 /**
@@ -98,6 +101,7 @@ export function extractCssBlocks(src: string, file: string): CssBlock[] {
           selector: text.split('{')[0].trim().split('\n').pop()!.trim(),
           body: text,
           line: startLine + j,
+          startLine: startLine + j - cur.length + 1,
         })
         cur = []
       }
@@ -126,7 +130,7 @@ export function extractCssBlocks(src: string, file: string): CssBlock[] {
 }
 
 /** 去掉 CSS 注释（避免注释里的声明被当成真声明）。 */
-function stripCssComments(s: string): string {
+export function stripCssComments(s: string): string {
   return s.replace(/\/\*[\s\S]*?\*\//g, '')
 }
 
@@ -206,43 +210,150 @@ export function isInsetOnly(value: string): boolean {
 }
 
 /**
+ * 阴影值拆成「层」，并标出每层的偏移。
+ *
+ * ★★★ 第 18 增量补的共享原语（2026-10-27）：「什么算抬升」这个口径**只能有一份**。
+ *   本函数与 `isElevationShadow` 是同一口径的两级粒度（全量 vs 判定），
+ *   第 18 增量的浮起词汇门（`design/elevation.ts`）必须复用它，
+ *   不许自己再写一份「哪一层算投影」的判断。
+ *
+ * ★ 坑（判据自身的坑，V7 盲区的同源）：
+ *   CSS 允许**省略长度单位**（`0 0 0 1px` 的第 1、2 段就是无单位的 `0`），
+ *   而旧的 V7 正则要求第 2 段必须带 `px` ⇒ `-1px 0 0 0 var(--accent)`
+ *   （零模糊 + 有偏移 = craft-floor 明令的硬偏移阴影）**被判成不违规**。
+ *   ⇒ 这里一律允许省略单位，靠「偏移是否非零」判定，而不是靠正则失配。
+ */
+export interface ShadowLayer {
+  raw: string
+  /** 水平偏移；null = 取不到（`var(--token)` / `none` 这类非字面量配方） */
+  offsetX: number | null
+  offsetY: number | null
+}
+
+export function shadowLayers(value: string): ShadowLayer[] {
+  const out: ShadowLayer[] = []
+  for (const part of splitTopLevel(value.trim())) {
+    const raw = part.trim()
+    if (!raw) continue
+    if (/^none$/i.test(raw)) continue
+    if (/inset/.test(raw)) continue
+    const m = raw.match(/^(-?\d+(?:\.\d+)?)(?:px)?\s+(-?\d+(?:\.\d+)?)(?:px)?(?:\s|$)/)
+    if (!m) {
+      out.push({ raw, offsetX: null, offsetY: null })
+      continue
+    }
+    out.push({ raw, offsetX: Number(m[1]), offsetY: Number(m[2]) })
+  }
+  return out
+}
+
+/**
+ * 规范抬升 token 名单（**唯一的名单** —— 第 18 增量的浮起词汇门也 import 它）。
+ *
+ * ★★★ 为什么必须有这张名单（假绿的来源）：
+ *   抬升配方的偏移写在 token 里（`var(--kx-shadow-md-left)` ⇒ `-12px 0 32px`），
+ *   而 `shadowLayers` 只从**字面量**取偏移 ⇒ 取不到 ⇒ 「这个表面有没有抬升」判不出来
+ *   ⇒ 幽灵卡片（描边 + 抬升）就**判不出来了**。
+ *   ⇒ 规矩：**`--kx-shadow-*` 命名的 token 一律是抬升**。
+ *   ⇒ 这不是「按写法判」而是「按名字约定的语义判」：命名即契约。
+ */
+export const ELEVATION_TOKENS = [
+  '--kx-shadow-xs',
+  '--kx-shadow-sm',
+  '--kx-shadow-md',
+  '--kx-shadow-md-left',
+] as const
+
+const ELEVATION_TOKEN_RE = new RegExp(`^var\\(\\s*(${ELEVATION_TOKENS.join('|')})\\s*\\)$`)
+
+/** 这一层是不是「规范抬升 token」的引用。 */
+export function isElevationToken(layer: string): boolean {
+  return ELEVATION_TOKEN_RE.test(layer.trim())
+}
+
+/**
  * 这个阴影是不是「抬升」（真的投影）。
  *
  * ★ 判据：必须是**非内阴影**，且**带非零偏移**。
  *   · `0 0 0 1px <color>` 是「用阴影画的圆环」⇒ 不是抬升（是描边的替身）
  *   · `0 0 5px <color>` 是「零偏移光晕」⇒ craft-floor 明令是装饰，不是深度
  *   ⇒ 两者都不该让一个表面被判成「抬升声明了两次」。
+ *   · `var(--kx-shadow-*)` 是**规范抬升**（偏移在 token 里，取不到字面量）
+ *     ⇒ 第 18 增量实测：没有这一条，迁到 token 的抽屉会「变成非抬升」
+ *       ⇒ 幽灵卡片门**假绿**。
  */
 export function isElevationShadow(value: string): boolean {
-  const v = value.trim()
-  if (/^none\b/i.test(v)) return false
-  if (isInsetOnly(v)) return false
-  for (const part of splitTopLevel(v)) {
-    if (/inset/.test(part)) continue
-    const m = part.match(/^\s*(-?\d+(?:\.\d+)?)(?:px)?\s+(-?\d+(?:\.\d+)?)px/)
-    if (!m) continue
-    if (m[1] !== '0' || m[2] !== '0') return true
-  }
-  return false
+  return shadowLayers(value).some(
+    (l) =>
+      isElevationToken(l.raw) ||
+      (l.offsetX !== null && l.offsetX !== 0) ||
+      (l.offsetY !== null && l.offsetY !== 0)
+  )
 }
 
 /**
- * 一个声明块里有没有「可见的描边」。
+/**
+ * 一个声明块里**所有** `box-shadow` 声明（按出现顺序）。
+ *
+ * ★★★ 第 18 增量补的共享原语（真仓变异臂 M3 抓到的盲区）：
+ *   旧实现是 `body.match(/box-shadow\s*:\s*([^;]+)/)` ⇒ **只取第一条**，
+ *   于是同块内的**第二条**声明（同块里既有规范 token、又有手写硬偏移）完全看不见。
+ *   ⇒ V7（硬偏移）与第 18 增量的浮起词汇门**共用**这一个遍历器 ⇒ 口径只有一份。
+ */
+export interface BoxShadowDecl {
+  value: string
+  /** 该声明在块内的字符偏移（用于换算行号） */
+  offset: number
+}
+
+export function boxShadowDeclarations(body: string): BoxShadowDecl[] {
+  const s = stripCssComments(body)
+  const out: BoxShadowDecl[] = []
+  const re = /box-shadow\s*:/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(s))) {
+    const semi = s.indexOf(';', m.index)
+    const value = s.slice(m.index, semi < 0 ? s.length : semi).replace(/^box-shadow\s*:\s*/, '').trim()
+    out.push({ value, offset: m.index })
+  }
+  return out
+}
+
+/**
+ * 一个声明块里有没有「可见的**闭合**描边」。
  *
  * ★★★ 判据自身的坑（自证 S1 抓到的）：`border` 的匹配不能写成 `border(?:-[a-z]+)?`
  *   —— 那会把 **`border-radius`** / `border-color` / `border-style` 也当成描边
  *   ⇒ 于是「只有阴影 + 圆角」的浮起层被误判成幽灵卡片。
  *   ⇒ 正确口径：`border` 只认**整体**与**四边**（top/right/bottom/left）。
+ *
+ * ★★★ 第 18 增量补的边界（真仓实测 4 处假阳性）：
+ *   **单边描边不算「表面描边」**。
+ *   依据是 craft-floor 原话的形状 ——「A 1px border **under** a wide soft shadow
+ *   is the ghost card」：幽灵卡片是**同一条边界**既画线又投影。
+ *   而抽屉上的 `border-left`（左边框）+ 向左的投影（`--kx-shadow-md-left`）：
+ *   描边在**内侧**、投影在**外侧** ⇒ 两者不重复 ⇒ 不是幽灵卡片。
+ *   ⇒ 闭合 = 整体 `border`，或四条边齐全。
  */
 function hasVisibleBorder(body: string): boolean {
   const s = stripCssComments(body)
-  // ① 整体或四边的 border
-  const m = s.match(/(^|[\s;{])border(?:-top|-right|-bottom|-left)?\s*:\s*([^;]+)/i)
+  // ① 整体 border ⇒ 闭合
+  const m = s.match(/(^|[\s;{])border\s*:\s*([^;]+)/i)
   if (m) {
     const v = m[2]
     if (!/^\s*none\b/i.test(v) && !/^\s*0\b/.test(v)) return true
   }
-  // ② 只有 border-width 时：宽度 > 0 也算可见
+  // ② 四条边齐全 ⇒ 闭合
+  const sides = ['top', 'right', 'bottom', 'left'] as const
+  let all = true
+  for (const side of sides) {
+    const re = new RegExp(`(^|[\\s;{])border-${side}\\s*:\\s*([^;]+)`, 'i')
+    const mm = s.match(re)
+    if (!mm) { all = false; break }
+    if (/^\s*(none|0)\b/i.test(mm[2])) { all = false; break }
+  }
+  if (all) return true
+  // ③ 只有 border-width 时：宽度 > 0 也算可见（整体描边）
   const w = s.match(/(^|[\s;{])border-width\s*:\s*([^;]+)/i)
   if (w && /(\d+(?:\.\d+)?)px/.test(w[2])) {
     const px = Number(w[2].match(/(\d+(?:\.\d+)?)px/)![1])
@@ -367,19 +478,31 @@ export function scanSource(src: string, rel: string, file: string = rel): AiSmel
       }
 
       // ── V7 硬偏移阴影（零模糊 + 非零偏移）──
-      const shv = body.match(/box-shadow\s*:\s*([^;]+)/)
-      if (shv && !isInsetOnly(shv[1])) {
-        const v = shv[1].trim()
-        const m = v.match(/^(-?\d+(?:\.\d+)?)(?:px)?\s+(-?\d+(?:\.\d+)?)px\s+0(?:px)?\b/)
-        if (m && (m[1] !== '0' || m[2] !== '0')) {
+      // ★ 第 18 增量修正（真仓实测的盲区）：旧正则在第 2 段**要求 px 单位**，
+      //   而 CSS 允许省略单位（`0` / `-1px 0 0 0 var(--accent)`）⇒
+      //   零模糊 + 有偏移的硬偏移阴影被漏判（真仓 `HotPartitionManager.vue` 实测 1 处）。
+      //   ⇒ 改为逐层判定，长度单位一律可省略。
+      // ★ 第 18 增量再修（真仓变异臂 M3 抓到）：旧实现只取块内**第一条** box-shadow
+      //   ⇒ 同块里的第二条声明完全看不见 ⇒ 改用共享遍历器 `boxShadowDeclarations`。
+      for (const decl of boxShadowDeclarations(body)) {
+        if (isInsetOnly(decl.value)) continue
+        for (const layer of shadowLayers(decl.value)) {
+          if (layer.offsetX === null || layer.offsetY === null) continue
+          if (layer.offsetX === 0 && layer.offsetY === 0) continue
+          const blurM = layer.raw.match(
+            /^(-?\d+(?:\.\d+)?)(?:px)?\s+(-?\d+(?:\.\d+)?)(?:px)?\s+(-?\d+(?:\.\d+)?)(?:px)?(?:\s|$)/
+          )
+          if (!blurM) continue
+          if (Number(blurM[3]) !== 0) continue
           findings.push({
             rule: 'V7-hard-offset-shadow',
             file: rel,
             line: b.line,
             selector: sel,
-            text: v.slice(0, 90),
+            text: layer.raw.slice(0, 90),
             reason: '零模糊硬偏移阴影（craft-floor：ban-hard-offset-shadow）',
           })
+          break
         }
       }
 
@@ -773,6 +896,19 @@ h2 { font-weight: 700; }
 <style scoped>
 .btn { box-shadow: 0 8px 24px var(--overlay-light); }
 </style>`).filter((r) => r === 'V7-hard-offset-shadow').length)
+  // ★ 第 18 增量新增：长度单位可省略时，硬偏移阴影仍须命中（旧正则漏判这一形态）
+  check('S8e2', '硬偏移 -1px 0 0 0（单位省略）⇒ V7', 1, rules(`
+<style scoped>
+.mark { box-shadow: -1px 0 0 0 var(--accent); }
+</style>`).filter((r) => r === 'V7-hard-offset-shadow').length)
+  check('S8f2', '零偏移圆环 0 0 0 1px ⇒ 不判 V7（是描边替身）', 0, rules(`
+<style scoped>
+.ring { box-shadow: 0 0 0 1px var(--kx-border); }
+</style>`).filter((r) => r === 'V7-hard-offset-shadow').length)
+  check('S8f3', '零偏移彩色光晕 0 0 5px ⇒ 判 V9、不判 V7', 0, rules(`
+<style scoped>
+.badge { box-shadow: 0 0 5px color-mix(in srgb, var(--probe-cyan) 30%, transparent); }
+</style>`).filter((r) => r === 'V7-hard-offset-shadow').length)
   check('S8g', 'letter-spacing:-0.05em ⇒ V8', 1, rules(`
 <style scoped>
 .h1 { letter-spacing: -0.05em; }
@@ -836,6 +972,23 @@ h2 { font-weight: 700; }
   check('S14', '0 8px 24px 抬升 + 描边 ⇒ 判 V1', 1, rules(`
 <style scoped>
 .tile { border: 1px solid var(--border); box-shadow: 0 8px 24px var(--overlay-light); }
+</style>`).filter((r) => r === 'V1-ghost-card').length)
+
+  // ★ 第 18 增量新增：规范 token 抬升 + 闭合描边 ⇒ 仍判 V1
+  //   （旧口径取不到 token 里的偏移 ⇒ 这一整族是假绿）
+  check('S14a', '规范 token 抬升 + 闭合描边 ⇒ 判 V1', 1, rules(`
+<style scoped>
+.tile { border: 1px solid var(--border); box-shadow: var(--kx-shadow-sm); }
+</style>`).filter((r) => r === 'V1-ghost-card').length)
+  check('S14b', '规范 token 抬升 + 单边描边（边界线）⇒ 不判 V1', 0, rules(`
+<style scoped>
+.drawer { border-left: 1px solid var(--border); box-shadow: var(--kx-shadow-md-left); }
+</style>`).filter((r) => r === 'V1-ghost-card').length)
+  check('S14c', '四边齐全 + 规范 token 抬升 ⇒ 判 V1', 1, rules(`
+<style scoped>
+.tile { border-top: 1px solid var(--border); border-right: 1px solid var(--border);
+        border-bottom: 1px solid var(--border); border-left: 1px solid var(--border);
+        box-shadow: var(--kx-shadow-md); }
 </style>`).filter((r) => r === 'V1-ghost-card').length)
 
   // S10：豁免登记簿生效

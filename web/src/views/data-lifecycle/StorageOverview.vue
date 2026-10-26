@@ -929,7 +929,7 @@ function fmtNum(n: number) {
   padding: 24px;
   max-width: 540px;
   width: 100%;
-  box-shadow: 0 10px 40px var(--overlay-light);
+  box-shadow: var(--kx-shadow-md);
 }
 .modal.modal-wide {
   max-width: 680px;
