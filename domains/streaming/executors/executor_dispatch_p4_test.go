@@ -114,12 +114,35 @@ func TestDispatchRouteOllamaNative_FFGate(t *testing.T) {
 			wantRationale: "no P4 coupling with the Anthropic path",
 		},
 		{
-			name:          "gemini stays explicitly unsupported",
+			// 2026-10-27（Gemini 转换面补全轮）: the Gemini native
+			// executor landed, so gemini-generate now routes to it
+			// instead of being skipped with KindUnsupportedFeature.
+			//
+			// ★ The rationale changed with it: the old pin said "must not
+			// silently chat-compat" — that half still holds and is now
+			// the load-bearing part. A gemini-generate candidate that
+			// fell through to routeOpenAI would be served OpenAI chat
+			// requests against a Gemini endpoint ⇒ 4xx attributed to the
+			// credential (the exact 2026-09-09 audit finding).
+			name:          "gemini routes to the native executor",
 			protocol:      "gemini-generate",
 			flags:         &settings.P4FeatureFlags{EndpointSelectorEnabled: true, OllamaNativeEnabled: true},
-			want:          routeUnsupportedGemini,
-			wantExecutor:  "none (KindUnsupportedFeature)",
-			wantRationale: "R60 still owns the Gemini executor; must not silently chat-compat",
+			want:          routeGeminiNative,
+			wantExecutor:  "GeminiExecutor (/v1beta/models/{m}:generateContent)",
+			wantRationale: "the Gemini executor exists; must not silently chat-compat",
+		},
+		{
+			// ★ Reverse pin: the Gemini route must NOT depend on any P4
+			// feature flag. A flag-gated Gemini route would mean the
+			// native executor is off by default ⇒ the same dead
+			// configuration the audit found (with the extra trap of
+			// looking "implemented").
+			name:          "gemini native route is flag independent",
+			protocol:      "gemini-generate",
+			flags:         nil,
+			want:          routeGeminiNative,
+			wantExecutor:  "GeminiExecutor (/v1beta/models/{m}:generateContent)",
+			wantRationale: "no rollout lever may gate the native Gemini route",
 		},
 		{
 			name:          "openai completions unaffected",
@@ -168,8 +191,8 @@ func routeName(r dispatchRoute) string {
 		return "routeAnthropic"
 	case routeOllamaNative:
 		return "routeOllamaNative"
-	case routeUnsupportedGemini:
-		return "routeUnsupportedGemini"
+	case routeGeminiNative:
+		return "routeGeminiNative"
 	default:
 		return "unknown"
 	}

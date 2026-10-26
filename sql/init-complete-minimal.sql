@@ -1,3 +1,15 @@
+-- V1-FAMILY-RETIRED: manual-only | 本脚本会建 v1 族的 request_logs / request_logs_hot。
+--   ★ v1 `request_logs` 族已随迁移 890 退役（物理删除）⇒ 本脚本**不在迁移链里**
+--   ⇒ 它建出来的表**不会被 890 删掉** ⇒ 在已退役的库上跑它 = v1 族复活
+--   ⇒ 42P01 的老问题原地复现。
+--   ★ 本脚本全仓**零可执行入口引用**（只有两处注释）⇒ 保留作历史脚手架。
+--   ⇒ **只在 890 之前的遗留库上手跑**，且用完即弃。
+--   ★★ **别因为「已退役」就把本文件删掉**：`internal/summarystore/store.go` 与
+--   `storage/factory/dual_mode_parity_test.go` 的注释仍把本文件当作
+--   **非 v1 表**（`session_summaries` 的 DDL 形状 / `sessions.id TEXT PRIMARY KEY`）
+--   的**历史形状参考** ⇒ 那两处引用**至今成立** ⇒ 删了会打断它们。
+--   ⇒ 门：sql/migrations/startup/v1_family_retirement_completeness_test.go
+--
 -- 完整的最小化数据库初始化脚本
 -- 创建LLM Gateway所需的所有基础表
 

@@ -222,19 +222,59 @@ var ProbeTrafficExclusionPredicateView = "(NOT COALESCE('probe' = ANY(%s.quality
 //
 //	origin_stage  ← 物理谓词那条臂（探针网关轮打 node_probe，没有 quality 标记）
 //	task_type     ← 视图谓词那条臂（ActiveProbeWorker 行）
-//	origin_actor  ← 视图谓词那条臂（四个探针 gateway actor，R52 订正后是四个）
+//	origin_actor  ← 视图谓词那条臂（探针 gateway actor 全集，由
+//	                 internal/probekind 渲染 —— 见下面的「为什么不再手写」）
 //
 // **不是**「挑几条看起来够用的」，而是「该族有的探针标记全部取」——
 // 少取一条就是一类探针静默进入 cohort，而 cohort 是基线，静默污染它等于
 // 静默改变 reward。
 //
+// # 为什么 actor 列表不再手写（R148 审计轮，2026-10-27）
+//
+// 这条谓词此前**手写**了四个 actor
+// （node-probe-worker / active-probe-worker / probe-service /
+// credential-selfcheck-worker）—— 那是 2026-09-22 R52 那次「两个不够、
+// 补成四个」订正后的快照值。**快照会烂**：同一文件里 2026-10-23 那次
+// 审计已经把视图谓词那条臂迁到 `internal/probekind`（见
+// ProbeTrafficExclusionPredicateView），理由写得清清楚楚——
+//
+//	「actor 列表不再手写，改由 internal/probekind 渲染。此前 Go 侧与 SQL 侧
+//	  各写一份，必然漂移 —— 已实证一次：self-check-worker /
+//	  model-quality-worker 只在 Go 侧缺席，stats 把它们写出的探测行当成
+//	  业务流量计入 ⇒ 板上『总请求数』持续虚高。」
+//
+// 也就是说：**同一次订正只迁了视图臂，会话臂被落下了。**
+// 而 probekind.ProbeActors 由规范写入点登记表派生，现为**七个**
+// （active-probe-worker / credential-selfcheck-worker / mock-probe-client /
+// model-quality-worker / node-probe-worker / probe-service /
+// self-check-worker）⇒ 会话臂手写的四元组少了三个
+// （self-check-worker / model-quality-worker / mock-probe-client）。
+//
+// 影响面不是「注释不好看」，而是三个活读面：
+//
+//   - bg/auto_route_settle_sql.go（settle 基线 cohort ⇒ reward 基线）
+//   - bg/candidate_failure_monitor.go（staleness 判定）
+//   - bg/credential_selfcheck.go（凭据近 3 天业务使用集合）
+//
+// 这三个读面都只认 origin_actor 这条臂的兜底：origin_stage 那条臂要求
+// `origin_stage='business'`，探针写入点写的是 'self_check'/'node_probe'
+// ⇒ 正常路径已被 origin_stage 臂挡住；**但 origin_stage 缺失/为空的行**
+// （COALESCE 落回 'business'）只剩 actor 臂兜底 ⇒ 那三个 actor 的探测行
+// 会被当成业务流量计入 cohort。
+//
+// ⇒ 修法不是「再补三个」（第三次快照），而是**让这条臂与视图臂共用同一
+// 份事实源**（probekind.SQLActorList()），并由
+// TestProbeTrafficExclusionPredicateActorListsStayInLockstep 钉住两条臂
+// 的词表一致 —— 与 candidate_query_sql_shape_test.go 里那条
+// 「modality 词表锁步」判据同款。
+//
 // ⚠ **诚实标注**：会话族在 252 上 `is_auto_request` 为 0 行（§9.44 实测），
 // 所以这条谓词的**探针分类效果未被生产数据验证过**，被验证的只有
 // 「引用的三列在该族表上确实存在」（迁移 707 + 252 列清单双向核对）。
 // 由 TestProbeTrafficExclusionPredicateColumnsExistOnTheirFamily 钉住后者。
-const probeTrafficExclusionPredicateSession = "(COALESCE(%s.origin_stage, 'business') = 'business'" +
+var probeTrafficExclusionPredicateSession = "(COALESCE(%s.origin_stage, 'business') = 'business'" +
 	" AND COALESCE(%s.task_type, '') <> 'probe_triggered'" +
-	" AND COALESCE(%s.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker', 'probe-service', 'credential-selfcheck-worker'))"
+	" AND COALESCE(%s.origin_actor, '') NOT IN (" + probekind.SQLActorList() + "))"
 
 // probeTrafficExclusionPredicateFor 按数据源族返回探针排除谓词。
 //

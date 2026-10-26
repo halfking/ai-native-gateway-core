@@ -51,13 +51,59 @@ cd "$ROOT" || exit 2
 VERIFY=0
 DEBUG=0
 DIGEST=0
+LEDGER_ONLY=0
 case "${1:-}" in
   --verify) VERIFY=1 ;;
   --debug)  DEBUG=1 ;;
   --digest) DIGEST=1 ;;   # ★ 内部模式：只输出读数指纹（给「确定性自检」用）
+  --ledger-only) LEDGER_ONLY=1 ;;  # ★ R86 轮新增：★ 只做台账自检（★ 不扫源码 ⇒ ~0.05 s）
 esac
 
 SELF="scripts/audit/measure-selfcreated-cleanup.sh"
+
+# ---------------------------------------------------------------- 台账自检（R86 轮抽出）
+# ★ 台账自检：结论必须逐条落地（★ 「量具给了候选集」≠「有人裁决过」）
+# ★★ R86 轮把这段抽成函数 ⇒ ★ `--verify` 与 `--ledger-only` **共用同一份判据**
+# ★★ ⇒ ⇒ 两个模式的语义**逐字一致**（★ 不是两份拷贝 ⇒ 不会漂）。
+SELF_CREATED_LEDGER="scripts/audit/selfcreated-cleanup-ledger.tsv"
+ledger_selfcheck() {
+  local ledger="$1" ln lbad
+  if [ ! -f "$ledger" ]; then
+    echo "  ⚠ 台账不存在：${ledger}（结论必须逐条落地）"
+    return 0
+  fi
+  ln="$(grep -c -vE '^[[:space:]]*(#|$)' "$ledger" || true)"
+  lbad="$(awk -F'\t' '!/^[[:space:]]*(#|$)/ && (NF<7 || $6=="") {n++} END{print n+0}' "$ledger")"
+  echo "  台账数据行 = ${ln}"
+  if [ "$ln" -lt 20 ]; then
+    echo "  ✗ 台账数据行过少 ⇒ 候选集没被逐条裁决（★ 量具给了候选集 ≠ 有人裁决过）"
+    return 2
+  fi
+  if [ "$lbad" != "0" ]; then
+    echo "  ✗ 台账有 ${lbad} 行缺裁决列 ⇒ 台账不可信"
+    return 2
+  fi
+  echo "  ✓ 台账结构自检通过（${ln} 行，裁决列齐全）"
+  return 0
+}
+
+
+# ---------------------------------------------------------------- --ledger-only（R86 轮新增）
+# ★ 为什么有这个模式：
+#   ★ 「掏空法门」（scripts/ursmcheck/tsv_hollowout_gate_test.go）把本台账掏空后
+#     要跑一遍读方 ⇒ ⇒ 而 `--verify` 模式会**全仓扫一遍源码**（★ 实测 ~42 s）
+#     ⇒ ⇒ 门每轮要跑两次 ⇒ ⇒ 单这一条就吃掉 ~84 s ⇒ ⇒ 而 `verify.sh` 的
+#     `go test ./... -timeout=900s` 是**每包**预算（★ 本门所在的包已经很重）。
+#   ★ 本模式把「台账自检」这一层**单独抽出来**（★ 与 `--verify` **共用同一个函数**
+#     ⇒ ⇒ 语义逐字一致）⇒ ⇒ 门拿到的是**同一个判据**，只是不必重扫全仓。
+#
+# ★ 诚实边界：★ 本模式**不产出候选集** ⇒ ⇒ 它证明的是「台账被掏空 ⇒ 台账自检红」
+# ⇒ ⇒ 而「候选集非空」那条判据（★ 与台账无关）由 `--verify` 负责。
+if [ "$LEDGER_ONLY" = "1" ]; then
+  echo "== --ledger-only：只做台账自检（★ 不扫源码 ⇒ ~0.05 s）=="
+  ledger_selfcheck "$SELF_CREATED_LEDGER" || exit $?
+  exit 0
+fi
 
 # ── 剥注释（按扩展名分派；★ 用 `//` 当通用标记会截断 SQL 行 ⇒ 漏放比误报危险）──
 strip_comments() {
@@ -445,24 +491,7 @@ if [ "$VERIFY" = "1" ]; then
   echo "== 口径自检 =="
   [ "$n_eff" -gt 0 ] || { echo "  ✗ 候选集为空 ⇒ 读数无意义"; exit 2; }
   echo "  ✓ 候选集非空（${n_eff}）⇒ 读数有效"
-  # ★ 台账自检：结论必须逐条落地（★ 「量具给了候选集」≠「有人裁决过」）
-  LEDGER="scripts/audit/selfcreated-cleanup-ledger.tsv"
-  if [ -f "$LEDGER" ]; then
-    ln="$(grep -c -vE '^[[:space:]]*(#|$)' "$LEDGER" || true)"
-    lbad="$(awk -F'\t' '!/^[[:space:]]*(#|$)/ && (NF<7 || $6=="") {n++} END{print n+0}' "$LEDGER")"
-    echo "  台账数据行 = ${ln}"
-    if [ "$ln" -lt 20 ]; then
-      echo "  ✗ 台账数据行过少 ⇒ 候选集没被逐条裁决（★ 量具给了候选集 ≠ 有人裁决过）"
-      exit 2
-    fi
-    if [ "$lbad" != "0" ]; then
-      echo "  ✗ 台账有 ${lbad} 行缺裁决列 ⇒ 台账不可信"
-      exit 2
-    fi
-    echo "  ✓ 台账结构自检通过（${ln} 行，裁决列齐全）"
-  else
-    echo "  ⚠ 台账不存在：${LEDGER}（结论必须逐条落地）"
-  fi
+  ledger_selfcheck "$SELF_CREATED_LEDGER" || exit $?
   if [ "$n_raw" != "$n_eff" ]; then
     echo "  ⚠ 剥注释/去正则/去自匹配前后候选数不同（${n_raw} → ${n_eff}）"
     echo "    ⇒ **不剥注释的读数会虚高**（注释里确有匹配）"
