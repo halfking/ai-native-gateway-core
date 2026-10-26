@@ -10270,3 +10270,50 @@ index b953a6f03..555ef83c4 100644
 > 　· ★ **R162-LEDGER-COV：把「执行过但没登记」的迁移补登记**（★ 让登记口径追上执行口径）
 > 　· ★ R161-D17-A（★ 211 补迁移 900/901/903/904/905/906/909）· R161-SHARED-BUF（★ 211 `shared_buffers=128MB`）· R161-RATCHET（★ 基线 211=56 / 252=51 / local=53）
 > ⇒ ⇒ ★★★★ 完整记录见 `docs/audit/2026-10-27-R162-期望集推导缺陷与活查询索引覆盖.md`（§0~§11，含 §4.2/§4.3/§4.4 三处**对出发时结论的订正**）。
+
+---
+
+## ⑰ R163 轮（2026-10-27）· 新装环境的多环境同一标准 —— ★★ 「同一标准」是【集合】【效果】【顺序】三件事
+
+> ⇒ ⇒ ★★★★ **原始目标第 7 条（「多个环境同样的标准来更新」）本轮被拆成三层，★ 每层都做了实测**：
+> ⇒ ⇒ ★★ ① **执行集合** —— ★ 安装器登记清单 = 分发包 = **312 条**（★ 逐字相等）⇒ ★ 仓内 **581 条 startup 里 271 条新装永远跑不到**
+> ⇒ ⇒ ★★ ② **执行效果** —— ★ 期望集 **834** 条索引：★ **369** 新装有、★ **342 条只因 `01-schema.sql` 是一份 dump 才有**、★ **74** 条合法退役、★ **49** 条新装**必然缺**
+> ⇒ ⇒ ★★ ③ **执行顺序** —— ★★ **同一套迁移，顺序不同 ⇒ 终态相反**（★ 实测 211 上 `708` 删死列先跑、`456` 加回死列后跑 ⇒ **死列复活**）
+> ⇒ ⇒ ★★★★ **★ 新装环境不是假设：★ 用安装器真实路径（00/01/02 + 312 条 StartupFiles，★ 含 `dbinit:no-transaction` 通道）在空库装出 312/312 全绿**
+
+### ★★ 三条硬发现
+
+> ⇒ ⇒ ★★★★ **一、`ON ONLY <table>` 被正则吃成表名 `ONLY` ⇒ ★★ 17 条索引被判「已退役」⇒ ★★ 7 条四环境全缺的真缺口被彻底掩盖**
+> ⇒ ⇒ ★★★★ **★ 这是「假退役」⇒ ★★ 危害是【掩盖真缺口】⇒ ★★ 与 R162 修的「假缺口」方向相反 ⇒ ★★ 两个方向都要修**
+> ⇒ ⇒ ★★★★ **★ 而且这个 bug 在 Python 工具与 Go 门里【一模一样】⇒ ⇒ 互证零信息（R162 教训的第二次实证）⇒ ⇒ 两侧都改 + 两侧各加「点名该形态」的自证**
+> ⇒ ⇒ ★★★★ **二、PG 会级联删掉依赖某列的索引 ⇒ ★★ 「建了 − 被 DROP」的差集永远看不到它 ⇒ ★★ 假缺口的第三种来源**
+> ⇒ ⇒ ★★★★ **★ 解法：★ 新增第 5 态 `retired-by-column-drop`（★ 不是缺口）＋ ★ 新增【列底账】事实层（★ 此前仓内完全没有）**
+> ⇒ ⇒ ★★★★ **三、★ 「迁移跑过」≠「迁移效果留存」⇒ ★★ 旧迁移的重试会撤销新迁移的效果 ⇒ ★★ 迁移链需要「只前进、不回退」的守卫**
+
+### ★★ 交付面
+
+> ⇒ ⇒ ★★★★ **工具 `scripts/audit/db-object-census.py`**：★ 新增 `columns` / `columns-bundle` / `reachability` 三个模式
+> 　· ★ 修 `ON ONLY` 解析（★ 零回归由 `expect/balanced-scan-zero-regression` 钉死）· ★ 加【列级联退役】判定
+> 　· ★ `selftest` **24 → 36 项**
+> ⇒ ⇒ ★★★★ **台账 6 份**：`db-object-census.tsv`（★ **11480 行 × 17 列**，★ 四环境含 fresh）
+> 　· `db-object-expect.tsv`（★ **834** 行 × **6** 列，★ 加 `declared_columns`）· `db-object-gap-ledger.tsv`（★ **834** 行 × 9 列，★ 五态）
+> 　· `db-object-retired.tsv`（★ **59** 个退役事件 × **10** 列，★ 两类证据 drop-index / drop-column）
+> 　· ★ **新增 `db-object-columns.tsv`**（★ **3576** 行 × 4 列）· ★ **新增 `installer-reachability.tsv`**（★ **834** 行 × 10 列）
+> ⇒ ⇒ ★★★★ **门**：`db_object_census_gate_test.go`（★ 扩：★ 五态分类 + 列底账 + 声明列逐条比）
+> 　＋ ★ **新增 `installer_reachability_gate_test.go`**（★ **G9~G14**：★ 全量独立重算 / 与缺口台账对拍 / 棘轮 / 不可达必缺 / 基线依赖 / 审计档读数）
+> ⇒ ⇒ ★★★★ **★ 四环境读数（★ 门钉住）**：★ 缺口 `local=56` / `fresh=49` / `252=56` / `211=62`（★ 生产缺口 77）
+> 　· ★ 可达性 `baseline-dependent=342` / `new-install-gap=13` / `prod-gap=36` / `installer-bug=0`
+> ⇒ ⇒ ★★★★ **★ 通用式 16 条**沉淀在 `LESSONS.md` **§430**（★ ★ 原 §429 ⇒ ★★ 与并行会话的「错误出口轮 §429」撞号 ⇒ ★★ **我方让号为 §430** ⇒ ★★ **改号不改内容**）
+> ⇒ ⇒ ★★★★ 属主裁决（★ 本轮全部留空未做）：★ **R163-INSTALLER-MANIFEST：把 22 个迁移加进安装器清单 + 分发包（★ 覆盖 49 条新装必然缺）**
+> 　· ★ **R163-HIDDEN-7：裁决被假退役掩盖的 7 条真缺口（★ 6 条 `routing_decision_log` + 1 条 `tool_usage_stats`）**
+> 　· ★ **R163-ORDER：211 的 `sessions` 三列死列要不要清（★ 顺序倒置的残留）** · ★ **R163-MIGRATION-MONOTONIC：迁移链加「只前进、不回退」守卫**
+> 　· ★ **R163-BASELINE：★ `01-schema.sql` 的定位（★ 342 条索引 / 95 个迁移的产物只存在于 dump）** · ★ R162-SESSIONS-IDX · ★ R162-EXPECT-SCOPE · ★ R161-D17-A · ★ R161-SHARED-BUF
+> ⇒ ⇒ ★★★★ ★★ **本轮订正（★ 2026-10-27 收尾）**：★ **「909 含 CONCURRENTLY ⇒ 永远装不上 ⇒ `guards-installer` 红」是【误报】**
+> 　· ★ 门（`installer/cmd/llm-gw-installer/startup_concurrency_gate_test.go:53`）断言 909「can never apply under `psql --single-transaction`; **the install hard-fails at this file**」
+> 　· ★ **真因**：★ `runner.go:1736` 只在文件**未**声明 `dbinit:no-transaction` 时才加 `--single-transaction`；★ 909 **第 1 行**带该标记 ⇒ ⇒ **runner 对 909 从不加那个参数**
+> 　· ★ **阳性/阴性对照（本轮最硬的一处证据）**：★ 同一文件、同一夹具库、同一 psql ⇒ **带** `--single-transaction` ⇒ `ERROR: CREATE INDEX CONCURRENTLY cannot run inside a transaction block`（rc=3）；★ **不带** ⇒ rc=0 且三条 trgm 索引 `indisvalid=true` 全部建出
+> 　· ★ **新装库实测**：`llm_gateway_fresh` 账本有 909（@`2026-10-25 14:44:52`）且三条索引 `indisvalid=t` / `indisready=t` ⇒ ⇒ **与「hard-fails」相反**
+> 　· ★ ★★ **门自己的注释（第 88~92 行）已写「该前提对携带 `dbinit:no-transaction` 标记的文件不成立」** ⇒ ★ 而 871/877/887/888/898/902/908 全登记在豁免表 ⇒ ⇒ **门维护的是【手抄白名单】⇒ ★ 漏一条就报红**；★ 仓内已有正解范例：`installer/internal/dbinit/untransactable_requires_marker_test.go` **调用真函数** `requiresNoTransaction`
+> 　· ★ **归属**：★ 本轮分支对 `installer/` 与 `sql/migrations/` **零 diff** ⇒ ⇒ **origin/main 既有红**；★ 修复已由并行会话的未提交补丁承担（★ 调用 `dbinit.RequiresNoTransaction`）⇒ ⇒ **本轮不重复实现、不纳入本次推送**
+> 　· ★ ★★ **三条通用式**：★ **门的前置假设必须与【被测物的实际行为】对齐 ⇒ ★★ 「门自己写着前提不成立却仍按旧前提判红」⇒ ⇒ 门的前置假设本身必须能被证伪** · ★ **「我这边红」≠「我这边错」⇒ ★★ 归属判定唯一可靠办法是【同机同命令、两个 checkout 各跑一遍】** · ★ **「装得上」的实测成本极低（★ 本轮 ≈ 1 分钟）⇒ ⇒ 判「新装装不上」之前先真装一次**
+> ⇒ ⇒ ★★★★ 完整记录见 `docs/audit/2026-10-27-R163-新装环境多环境同一标准与执行顺序.md`（§0~§11，★ 含 §8.5「909 门误报订正」、§9「诚实边界」9 条与 §10「待属主裁决」9 条）。

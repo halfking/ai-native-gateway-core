@@ -84,9 +84,12 @@ const (
 	qicReqRel    = "scripts/audit/asset/query-index-requirements.tsv"
 
 	qicCensusCols = 17 // env + 16
-	qicReqCols    = 7  // query_id source table filter_cols order_cols status note
+	qicReqCols    = 8  // query_id source table filter_cols order_cols status fresh_status note
 
 	qicEnvLocal = "local"
+	// ★★ qicEnvFresh = 「新装环境」：★ R163 轮用【安装器真实路径】（00/01/02 + 312 条 StartupFiles）
+	// ★★ 在空库装出来的库 ⇒ ★★ 它是「多环境同一标准」的【新装侧】实测基准。
+	qicEnvFresh = "fresh"
 
 	// qicMaxPermFilter 是 filter_cols 全排列的**上限保护**。
 	// ★ 清单很小（4 个元素以内）⇒ 全排列可枚举；★ 但一旦有人登记 9 个过滤列
@@ -155,13 +158,14 @@ func qicParseIndexCols(raw string) []string {
 // qicLoadLocalIndexes 从底账里取出 **env=local** 的全部**父级索引**（★ 按表分组）。
 //
 // ★★ 两个过滤条件：
+//
 //	① env == local      ⇒ 只有本地是 CI 可跑的环境
 //	② parent_index 为空 ⇒ 排除**分区子索引**（★ 子索引的 parent_table 是分区名，
 //	                          不是它所属的逻辑表 ⇒ 拿它当「该表的索引」是错的）
 //
 // ★★ 这里**不**排除部分索引 —— 排除发生在判定处（★ 打印失败详情时
 // ★★ 还要把**被排除的**部分索引一起列出来 ⇒ 用户才知道门为什么这么判）。
-func qicLoadLocalIndexes(t *testing.T, path string) map[string][]qicIndex {
+func qicLoadEnvIndexes(t *testing.T, path string, env string) map[string][]qicIndex {
 	t.Helper()
 	out := map[string][]qicIndex{}
 	lineno := 0
@@ -176,7 +180,7 @@ func qicLoadLocalIndexes(t *testing.T, path string) map[string][]qicIndex {
 			t.Fatalf("%s:%d: census row has %d fields, expected %d",
 				path, lineno, len(parts), qicCensusCols)
 		}
-		if parts[0] != qicEnvLocal || parts[1] != "idx" {
+		if parts[0] != env || parts[1] != "idx" {
 			continue
 		}
 		if strings.TrimSpace(parts[14]) != "" {
@@ -203,8 +207,13 @@ type qicRequirement struct {
 	filterCols []string
 	orderCols  []string
 	status     string
-	note       string
-	line       int
+	// ★★ freshStatus：★ 「新装环境」侧的状态（★ R163 轮新增）
+	// ★★ ★★ 为什么要有这一列：★ local 覆盖 ≠ 新装覆盖 ⇒ ★★ 「local 上有索引、新装上没有」
+	// ★★ ⇒ ★★ 新装环境【必然】全表扫描 ⇒ ★★ 这是「多环境同一标准」的真实缺口
+	// ★★ ⇒ ★★ 强制它被【显式登记】，★ 不许靠 local 侧的 covered 蒙混过去。
+	freshStatus string
+	note        string
+	line        int
 }
 
 // qicParseColList 解析逗号分隔的列清单（★ 可为空串 ⇒ 空切片）。
@@ -237,14 +246,15 @@ func qicLoadRequirements(t *testing.T, path string) []qicRequirement {
 				path, lineno, len(parts), qicReqCols, line)
 		}
 		out = append(out, qicRequirement{
-			queryID:    strings.TrimSpace(parts[0]),
-			source:     strings.TrimSpace(parts[1]),
-			table:      strings.TrimSpace(parts[2]),
-			filterCols: qicParseColList(parts[3]),
-			orderCols:  qicParseColList(parts[4]),
-			status:     strings.TrimSpace(parts[5]),
-			note:       strings.TrimSpace(parts[6]),
-			line:       lineno,
+			queryID:     strings.TrimSpace(parts[0]),
+			source:      strings.TrimSpace(parts[1]),
+			table:       strings.TrimSpace(parts[2]),
+			filterCols:  qicParseColList(parts[3]),
+			orderCols:   qicParseColList(parts[4]),
+			status:      strings.TrimSpace(parts[5]),
+			freshStatus: strings.TrimSpace(parts[6]),
+			note:        strings.TrimSpace(parts[7]),
+			line:        lineno,
 		})
 	}
 	return out
@@ -429,6 +439,7 @@ func qicItoa(n int) string {
 // TestQueryIndexCoverageRequirements 是本门的主体。
 //
 // ★ 判据：
+//
 //	① 清单非空（★ 空清单 ⇒ 门恒绿 ⇒ 判据失效 ⇒ 红）
 //	② 每条登记的 status 只能是 covered / known-gap
 //	③ covered_by == false ⇒ **必须**登记为 known-gap（★ 主要牙齿）
@@ -444,17 +455,27 @@ func TestQueryIndexCoverageRequirements(t *testing.T) {
 		t.Logf("★ 需求清单被环境变量 %s 指向 %s（★ 变异验证用法）", qicReqEnvOverride, reqPath)
 	}
 
-	indexes := qicLoadLocalIndexes(t, censusPath)
+	// ★★ 两个环境都要判：★ local（★ 开发/验证环境）＋ fresh（★ **新装环境**）
+	localIdx := qicLoadEnvIndexes(t, censusPath, qicEnvLocal)
+	freshIdx := qicLoadEnvIndexes(t, censusPath, qicEnvFresh)
 	reqs := qicLoadRequirements(t, reqPath)
 
-	// ① 底账里必须真的有 local 的父级索引行（★ 否则「没有索引 ⇒ 没覆盖」会变成恒真）。
-	localIdx := 0
-	for _, v := range indexes {
-		localIdx += len(v)
+	// ① 底账里必须真的有这两个环境的父级索引行（★ 否则「没有索引 ⇒ 没覆盖」会变成恒真）。
+	localTotal := 0
+	for _, v := range localIdx {
+		localTotal += len(v)
 	}
-	if localIdx == 0 {
+	if localTotal == 0 {
 		t.Fatalf("底账 %s 里 env=%s 的父级索引行数为 0 ⇒ 判定恒不成立 ⇒ 门会误报 ⇒ 判据失效",
 			censusPath, qicEnvLocal)
+	}
+	freshTotal := 0
+	for _, v := range freshIdx {
+		freshTotal += len(v)
+	}
+	if freshTotal == 0 {
+		t.Fatalf("底账 %s 里 env=%s 的父级索引行数为 0 ⇒ 新装侧判定恒不成立 ⇒ 门会误报 ⇒ 判据失效",
+			censusPath, qicEnvFresh)
 	}
 
 	// ① 清单为空 ⇒ 门恒绿 ⇒ 判据失效 ⇒ 红。
@@ -465,46 +486,87 @@ func TestQueryIndexCoverageRequirements(t *testing.T) {
 			reqPath)
 	}
 
-	coveredCount, gapCount := 0, 0
+	localCovered, localGap := 0, 0
+	freshCovered, freshGap := 0, 0
+	newInstallGaps := 0
+
 	for _, req := range reqs {
-		// ② status 取值域。
+		// ② status 取值域（★ 两个环境各一列）。
 		if req.status != "covered" && req.status != "known-gap" {
 			t.Errorf("%s:%d: query_id=%q 的 status=%q 非法（★ 只能是 covered 或 known-gap）",
 				reqPath, req.line, req.queryID, req.status)
 			continue
 		}
-
-		all := indexes[req.table]
-		cands := qicCandidates(all)
-		filterOK, orderOK, note := qicJudge(req, cands)
-		coveredBy := filterOK && orderOK
-
-		if coveredBy {
-			coveredCount++
-			// ★★ 登记为 known-gap 但其实已被覆盖 ⇒ **不罚**（★ 登记保守），
-			// ★★ 但要 log 出来 ⇒ 提示「这条登记可以删了 / 改成 covered」。
-			if req.status == "known-gap" {
-				t.Logf("★ 登记可清理：query_id=%q table=%s 现已被索引覆盖（filter_ok=%v order_ok=%v）⇒ 登记项可以删掉或改成 covered",
-					req.queryID, req.table, filterOK, orderOK)
-			}
+		if req.freshStatus != "covered" && req.freshStatus != "known-gap" {
+			t.Errorf("%s:%d: query_id=%q 的 fresh_status=%q 非法（★ 只能是 covered 或 known-gap）",
+				reqPath, req.line, req.queryID, req.freshStatus)
 			continue
 		}
 
-		gapCount++
-		// ③ ★★ 主要牙齿：没被覆盖却登记成 covered ⇒ 门红（★ 并打印全部上下文）。
-		if req.status == "covered" {
-			extra := ""
-			if note != "" {
-				extra = "  (" + note + ")\n"
+		// ── local 侧 ──
+		localAll := localIdx[req.table]
+		localCands := qicCandidates(localAll)
+		lFilter, lOrder, lNote := qicJudge(req, localCands)
+		localCoveredBy := lFilter && lOrder
+
+		if localCoveredBy {
+			localCovered++
+			if req.status == "known-gap" {
+				t.Logf("★ 登记可清理（local）：query_id=%q table=%s 现已被索引覆盖（filter_ok=%v order_ok=%v）⇒ 登记项可以删掉或改成 covered",
+					req.queryID, req.table, lFilter, lOrder)
 			}
-			t.Errorf("★ 未覆盖却登记成 covered：query_id=%q table=%q filter_cols=[%s] order_cols=[%s] "+
-				"（★ 来源 %s）\n   filter_ok=%v order_ok=%v%s   该表的父级索引：\n%s",
-				req.queryID, req.table, strings.Join(req.filterCols, ","),
-				strings.Join(req.orderCols, ","), req.source, filterOK, orderOK,
-				extra, qicDescribeIndexes(all))
+		} else {
+			localGap++
+			// ③ ★★ 主要牙齿：没被覆盖却登记成 covered ⇒ 门红（★ 并打印全部上下文）。
+			if req.status == "covered" {
+				extra := ""
+				if lNote != "" {
+					extra = "  (" + lNote + ")\n"
+				}
+				t.Errorf("★ [local] 未覆盖却登记成 covered：query_id=%q table=%q filter_cols=[%s] order_cols=[%s] "+
+					"（★ 来源 %s）\n   filter_ok=%v order_ok=%v%s   该表的父级索引：\n%s",
+					req.queryID, req.table, strings.Join(req.filterCols, ","),
+					strings.Join(req.orderCols, ","), req.source, lFilter, lOrder,
+					extra, qicDescribeIndexes(localAll))
+			}
+		}
+
+		// ── ★★ fresh（新装环境）侧 ── ★★ 这是「多环境同一标准」的新装侧判据
+		freshAll := freshIdx[req.table]
+		freshCands := qicCandidates(freshAll)
+		fFilter, fOrder, fNote := qicJudge(req, freshCands)
+		freshCoveredBy := fFilter && fOrder
+
+		if freshCoveredBy {
+			freshCovered++
+			if req.freshStatus == "known-gap" {
+				t.Logf("★ 登记可清理（fresh）：query_id=%q table=%s 现已被索引覆盖（filter_ok=%v order_ok=%v）",
+					req.queryID, req.table, fFilter, fOrder)
+			}
+		} else {
+			freshGap++
+			if req.freshStatus == "covered" {
+				extra := ""
+				if fNote != "" {
+					extra = "  (" + fNote + ")\n"
+				}
+				t.Errorf("★ [fresh/新装环境] 未覆盖却登记成 covered：query_id=%q table=%q filter_cols=[%s] order_cols=[%s] "+
+					"（★ 来源 %s）\n   filter_ok=%v order_ok=%v%s   该表的父级索引：\n%s",
+					req.queryID, req.table, strings.Join(req.filterCols, ","),
+					strings.Join(req.orderCols, ","), req.source, fFilter, fOrder,
+					extra, qicDescribeIndexes(freshAll))
+			}
+			// ★★★ ★★ local 覆盖、但 fresh 不覆盖 ⇒ ★★ **新装环境【必然】全表扫描**
+			if localCoveredBy {
+				newInstallGaps++
+				t.Logf("★★★ [新装缺口] query_id=%q（★ 来源 %s）：★ local 上有索引可用，★ ★★ 但【新装环境】没有 ⇒ "+
+					"★★ 任何按安装器路径装出来的新环境，这条查询【必然】全表扫描（★ 已登记为 fresh known-gap）",
+					req.queryID, req.source)
+			}
 		}
 	}
 
-	t.Logf("需求清单 %s：共 %d 条（covered_by 成立 %d / 不成立 %d）⇒ 读底账 %s",
-		reqPath, len(reqs), coveredCount, gapCount, censusPath)
+	t.Logf("需求清单 %s：共 %d 条 ⇒ local（covered %d / 未覆盖 %d）｜ fresh 新装环境（covered %d / 未覆盖 %d）｜ "+
+		"★ 其中「local 覆盖但新装不覆盖」= %d 条 ⇒ 读底账 %s",
+		reqPath, len(reqs), localCovered, localGap, freshCovered, freshGap, newInstallGaps, censusPath)
 }
