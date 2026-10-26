@@ -2384,6 +2384,15 @@ files=(
   #   （252 实测整计划 buffers 147K → 52K，-64%；口径逐行等价 EXCEPT ALL 0/0）。
   #   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（保留 OID ⇒ matview 依赖不动）。
   "$ROOT_DIR/sql/migrations/startup/910_routing_analytics_source_hashjoin.sql"
+
+  # ★ 911：本地音频（ASR/TTS）供应商 catalog 三条目（whisper-cpp /
+  #   whisper-cpp-large / macos-say），2026-10-26 多模态标准接口轮。
+  #   纯 INSERT ... ON CONFLICT DO NOTHING ⇒ 幂等、零数据操作、无锁风险；
+  #   不 seed providers 行（运营经 admin API 创建，catalog kind='local'
+  #   自动建占位凭据）。★ 合并时与上游 R166 的迁移 910 撞号 ⇒ 本条让位改为 911。
+  #   配套代码：whisper /inference 传输
+  #   （domains/streaming/audio_whisper_stt.go 按 catalog_code 钉死）。
+  "$ROOT_DIR/sql/migrations/startup/911_local_audio_catalog.sql"
 )
 
 

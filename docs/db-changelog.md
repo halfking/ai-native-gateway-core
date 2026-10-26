@@ -10463,3 +10463,28 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 |-----------|------|---------|--------|
 | 909 | `909_session_summaries_search_trgm_indexes.sql` | `77d829d0289cb3e0b16dfa93b16c70addcbf84d265f58b3e4996680ac4cb8e6b` | applied+verified |
 
+## 2026-10-26T17:30:00Z — deploy 211 多模态标准接口轮（本地音频 catalog）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 911 | `911_local_audio_catalog.sql` | `174f27ce0f6435f0c39df5a61a9deb43fb621bdc087c2bed112feeeb034f56bb` | applied+verified |
+
+三条 kind='local' catalog 条目（whisper-cpp :8081 / whisper-cpp-large :8082 /
+macos-say :8086），纯 INSERT ON CONFLICT 幂等；生产应用由 deploy-seamless
+引擎的迁移重放腿完成（211 蓝绿，2026-10-27 00:12 槽 b 首次应用，后续部署
+重放 no-op）。审计档：docs/audit/2026-10-26-多模态标准接口轮-本地音频与文本三件套.md
+
+★ **迁移号在合并时让位为 911（2026-10-27 03:2x 合并轮补记）**：本条原以
+`910_local_audio_catalog.sql` 落仓并已应用；与上游 R166 的
+`910_routing_analytics_source_hashjoin.sql`（同号不同文件）在合并时撞号 ⇒
+**上游 910 已在 origin/main ⇒ 本条让位改为 911**，文件同时改名
+（`sql/migrations/startup/911_local_audio_catalog.sql` 与
+`installer/cmd/llm-gw-installer/embeddata/startup/911_local_audio_catalog.sql`）。
+★ **为什么让本地这条让位、而不是反过来**：★ 上游 910 **已在生产应用**
+（R166 迁移重放腿），改名它 ⇒ 记账里出现「旧名已应用、新名未应用」⇒ 需额外迁移；
+★ 而本条是**纯 `INSERT ... ON CONFLICT DO NOTHING`** ⇒ 即使按新名 911 重放，
+★ 也是**语义级 no-op** ⇒ 让位代价为零。
+★ **SHA-256 随之变化**（文件首行 `-- 910_...` 改为 `-- 911_...`）：
+`3fb06de5…` → `174f27ce…`；★ 上表登记的是**改名后**的指纹。
+★ 登记台账 `sql/schema/installed_startup_migrations.tsv` 的 apply-order 索引：
+上游 910 = index 312，本条 911 = index 313。

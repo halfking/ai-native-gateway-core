@@ -450,6 +450,14 @@ func irAudioToGeminiPart(audio *MediaSource) map[string]any {
 	if mt == "" {
 		mt = "audio/" + audio.Format
 	}
+	// ★★ 2026-10-27（12h 审计轮）：★ **不许发出畸形 MIME**。
+	// ★★ 「audio/」+空 Format ⇒ "audio/" ⇒ 那是**非法 MIME**（没有子类型）⇒
+	// ★★ ⇒ Gemini 侧的 fileData.mimeType 校验会拒（或按错误类型解码）。
+	// ★★ ⇒ 兜底用**诚实的通用类型**（我们确实不知道子类型），
+	// ★★ 而不是拼一个半截的 "audio/"。
+	if !strings.Contains(mt, "/") || strings.HasSuffix(mt, "/") {
+		mt = "application/octet-stream"
+	}
 	if audio.Type == "base64" || audio.Data != "" {
 		return map[string]any{
 			"inlineData": map[string]any{

@@ -138,11 +138,22 @@ func credentialProbeText(parts []credentialProbeContent) bool {
 // emptyoutcome's unknown/malformed fallback protects business payloads from
 // being discarded. A probe needs positive evidence, so additionally require
 // the expected envelope and recognized assistant text or a named tool call.
+//
+// 2026-10-26 多模态标准接口轮（本地 ollama 接入实测）：thinking 默认开启的
+// 模型（qwen3/qwen3.8 系）在探针的固定载荷（max_tokens=32、不带 think:false）
+// 下把全部预算烧进 reasoning、content 为空 ⇒ ClassifyBody 按 r1029 的业务
+// 语义判「空」⇒ 探针 inconclusive ⇒ 节点永远翻不了绿（211 实测与冷加载
+// 超时叠加成 node_probe_failed 活锁）。探针问的是「**节点活着吗**」，与
+// r1029 管的「这条回答能不能交付给用户」是两个问题：reasoning 有输出同样
+// 是模型存活的一手证据。故 chat 形态在「业务判空」之后、放弃之前，补一道
+// reasoning 检查（ollama 的 message.reasoning 与 deepseek/openrouter 风格的
+// message.reasoning_content）。业务面（emptyoutcome/中继 failover）一字不动。
+// 这正是《嵌入与会话总结优化方案-2026-10-26》§14.4 建议的网关补丁一。
 func credentialProbeHasOutput(protocol string, body []byte) bool {
 	format, empty := emptyoutcome.ClassifyBody(body)
 	want := map[string]emptyoutcome.Format{"chat": emptyoutcome.FormatChat,
 		"messages": emptyoutcome.FormatAnthropic, "responses": emptyoutcome.FormatResponses}[protocol]
-	if format == emptyoutcome.FormatUnknown || format != want || empty {
+	if format == emptyoutcome.FormatUnknown || format != want {
 		return false
 	}
 	var envelope struct {
@@ -152,8 +163,10 @@ func credentialProbeHasOutput(protocol string, body []byte) bool {
 		Content []credentialProbeContent `json:"content"`
 		Choices []struct {
 			Message struct {
-				Content   json.RawMessage `json:"content"`
-				ToolCalls []struct {
+				Content          json.RawMessage `json:"content"`
+				Reasoning        json.RawMessage `json:"reasoning"`         // ollama qwen3 系
+				ReasoningContent json.RawMessage `json:"reasoning_content"` // deepseek/openrouter 风格
+				ToolCalls        []struct {
 					Function *struct{ Name string } `json:"function"`
 				} `json:"tool_calls"`
 			} `json:"message"`
@@ -167,11 +180,25 @@ func credentialProbeHasOutput(protocol string, body []byte) bool {
 	if json.Unmarshal(body, &envelope) != nil || (len(envelope.Error) > 0 && string(envelope.Error) != "null") {
 		return false
 	}
+	hasReasoningEvidence := false
+	for _, choice := range envelope.Choices {
+		if rawNonEmptyJSONString(choice.Message.Reasoning) || rawNonEmptyJSONString(choice.Message.ReasoningContent) {
+			hasReasoningEvidence = true
+			break
+		}
+	}
+	if empty && !(protocol == "chat" && hasReasoningEvidence) {
+		return false
+	}
 	switch protocol {
 	case "chat":
 		for _, choice := range envelope.Choices {
 			var text string
 			if json.Unmarshal(choice.Message.Content, &text) == nil && text != "" {
+				return true
+			}
+			// 探针的存活语义：reasoning 有输出 = 模型活着（见函数头注释）。
+			if rawNonEmptyJSONString(choice.Message.Reasoning) || rawNonEmptyJSONString(choice.Message.ReasoningContent) {
 				return true
 			}
 			var parts []credentialProbeContent
@@ -211,4 +238,17 @@ func credentialProbeHasOutput(protocol string, body []byte) bool {
 		}
 	}
 	return false
+}
+
+// rawNonEmptyJSONString 判定一个 JSON 原始字段是否为非空字符串
+// （去掉首尾空白后非空）。用于 reasoning/reasoning_content 的存活证据检查。
+func rawNonEmptyJSONString(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false
+	}
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return false
+	}
+	return strings.TrimSpace(s) != ""
 }
