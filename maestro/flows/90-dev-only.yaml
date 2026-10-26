@@ -1,0 +1,46 @@
+# 仅 dev 构建存在的路由
+# router.ts 里 import.meta.env.DEV 包裹的三条路由，生产构建不注册 ⇒ 单独成 flow，默认不参与批量跑。
+# 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
+# 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
+#       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
+appId: ${BASE_URL}
+---
+- launchApp
+- launchApp:
+    clearState: true
+
+# ── /dev/waterfall-preview ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/dev/waterfall-preview"
+- extendedWaitUntil:
+    visible: '队列瀑布图 · 本地预览'
+    timeout: 20000
+- evalScript: "${output.ms__dev_waterfall_preview = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__dev_waterfall_preview < 2000}"
+    optional: true
+    label: 'slow-check:/dev/waterfall-preview'
+
+# ── /dev/live-topology-preview ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/dev/live-topology-preview"
+- extendedWaitUntil:
+    visible: '实时拓扑'
+    timeout: 20000
+- evalScript: "${output.ms__dev_live_topology_preview = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__dev_live_topology_preview < 2000}"
+    optional: true
+    label: 'slow-check:/dev/live-topology-preview'
+
+# ── /dev/live-request-preview/:requestId ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/dev/live-request-preview/${REQUEST_ID}"
+- extendedWaitUntil:
+    visible: '请求详情'
+    timeout: 20000
+- evalScript: "${output.ms__dev_live_request_preview_requestId = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__dev_live_request_preview_requestId < 2000}"
+    optional: true
+    label: 'slow-check:/dev/live-request-preview/:requestId'
