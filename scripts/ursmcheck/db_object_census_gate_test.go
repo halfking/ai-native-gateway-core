@@ -410,6 +410,11 @@ func dbObjDeriveExpected(t *testing.T) (map[string]dbObjExpect, map[string]int) 
 	dropped := map[string]bool{}
 	transient := 0
 	files := 0
+	// ★★ R163：★ 两个解析路径的【名字集合】必须逐字相同（★ 互为交叉校验）
+	// ★★ 理由：★ R162 教训「两份独立实现互证也可能同源同错」⇒ ⇒ 光有一份解析不够
+	// ★★ ⇒ ⇒ 这里让【老正则】与【括号配对扫描】互相钉死：★ 任一侧单独漂移都会红。
+	regexNames := map[string]bool{}
+	consumedNames := map[string]bool{}
 
 	for _, e := range entries {
 		name := e.Name()
@@ -433,6 +438,10 @@ func dbObjDeriveExpected(t *testing.T) (map[string]dbObjExpect, map[string]int) 
 		consumed := map[string]bool{}
 		for _, m := range dbObjReUsing.FindAllStringSubmatch(body, -1) {
 			consumed[dbObjStripName(m[1])] = true
+			consumedNames[dbObjStripName(m[1])] = true
+		}
+		for _, m := range dbObjReCreate.FindAllStringSubmatch(body, -1) {
+			regexNames[dbObjStripName(m[1])] = true
 		}
 		for _, c := range dbObjScanCreateIndexes(body) {
 			name := c.name
@@ -444,6 +453,18 @@ func dbObjDeriveExpected(t *testing.T) (map[string]dbObjExpect, map[string]int) 
 		}
 		for _, m := range dbObjReDrop.FindAllStringSubmatch(body, -1) {
 			dropped[dbObjBareName(m[1])] = true
+		}
+	}
+
+	// ★★ R163：★ 两套解析的名字集合必须逐字相同（★ 任一侧单独漂移 ⇒ 这里红）
+	for k := range created {
+		if !regexNames[k] {
+			t.Errorf("★ 括号配对扫描多出了索引 %q（★ 老正则没抓到）⇒ 期望集会漂", k)
+		}
+	}
+	for k := range regexNames {
+		if _, ok := created[k]; !ok && !consumedNames[k] {
+			t.Errorf("★ 老正则抓到了索引 %q，★ 但括号配对扫描没抓到 ⇒ 期望集会缩", k)
 		}
 	}
 
@@ -869,6 +890,61 @@ func TestDbObjectGapLedgerIsFullyRecomputable(t *testing.T) {
 			}
 		}
 	}
+}
+
+// ─────────────────────────── G1b：列底账形状 + 每环境 sha256 自洽 ───────────────────────────
+
+// TestDbObjectColumnsSnapshotIsWellFormed 钉住列底账的完整性（★ 与底账同形态）。
+//
+// ★★ 为什么单列一道门（★ 而不是并进缺口台账那门）：★
+// ★★ 「列底账被污染」与「缺口台账与重算不一致」是【两件事】
+// ⇒ ⇒ 前者查【快照完整性】，★ 后者查【判定一致性】
+// ⇒ ⇒ 分开才能让变异臂各自红在【指名的那条腿】上（★ 红了 ≠ 验到了你想验的那条腿）。
+func TestDbObjectColumnsSnapshotIsWellFormed(t *testing.T) {
+	path := dbObjRepoPath(t, dbObjColumnsRel)
+	rows := dbObjDataLines(t, path)
+	if len(rows) == 0 {
+		t.Fatal("★ columns artifact has zero rows ⇒ the column-retirement verdict asserts nothing")
+	}
+	perEnv := map[string][]string{}
+	for _, r := range rows {
+		if len(r) != dbObjColumnsCols {
+			t.Fatalf("columns row has %d fields, expected %d: %v", len(r), dbObjColumnsCols, r)
+		}
+		perEnv[r[0]] = append(perEnv[r[0]], strings.Join(r, "\t"))
+	}
+	for _, e := range []string{"211", "252", "fresh", "local"} {
+		envRows := perEnv[e]
+		if len(envRows) == 0 {
+			t.Errorf("columns artifact missing environment %q", e)
+			continue
+		}
+		sum := sha256.Sum256([]byte(strings.Join(envRows, "\n")))
+		got := hex.EncodeToString(sum[:])
+		want := ""
+		for _, h := range dbObjHeaderLines(t, path) {
+			if !strings.Contains(h, e+" rows=") {
+				continue
+			}
+			m := regexp.MustCompile(regexp.QuoteMeta(e) + ` rows=(\d+) sha256=([0-9a-f]+)`).FindStringSubmatch(h)
+			if m == nil {
+				continue
+			}
+			wantRows, _ := strconv.Atoi(m[1])
+			if wantRows != len(envRows) {
+				t.Errorf("env %q header says %d rows, file has %d", e, wantRows, len(envRows))
+			}
+			want = m[2]
+		}
+		if want == "" {
+			t.Errorf("no header line for env %q in the columns artifact", e)
+			continue
+		}
+		if want != got {
+			t.Errorf("env %q columns sha256 mismatch: header=%s recomputed=%s", e, want, got)
+		}
+	}
+	t.Logf("columns artifact: %d rows across %d envs", len(rows), len(perEnv))
 }
 
 // ─────────────────────────── G4：坏行必被拒 ───────────────────────────

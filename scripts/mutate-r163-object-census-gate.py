@@ -77,6 +77,12 @@ PY_ONLY_BROKEN = """RE_CREATE_INDEX = re.compile(
     re.I,
 )"""
 
+# ★★ 注意：★ Go 侧有两处正则，★ 两处都必须「活」：
+# ★★   ① dbObjReCreateHead —— ★【括号配对扫描】用（★ 真正驱动期望集推导）
+# ★★   ② dbObjReCreate    —— ★【老正则】（★ 与 ① 互为交叉校验，★ 防任一侧单独漂移）
+# ★★ ⇒ ★★ 单侧退回缺陷 ⇒ ★★ 互证必须立刻红 ⇒ ★★ 这才是 R162 教训的正确用法。
+GO_ONLY_HEAD_ANCHOR = '''	dbObjReCreateHead = regexp.MustCompile(`(?is)CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([a-z0-9_"]+)\s+ON\s+(?:ONLY\s+)?([a-z0-9_."]+)\s*(?:USING\s+[a-z0-9_]+\s*)?\(`)'''
+GO_ONLY_HEAD_BROKEN = '''	dbObjReCreateHead = regexp.MustCompile(`(?is)CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([a-z0-9_"]+)\s+ON\s+([a-z0-9_."]+)\s*(?:USING\s+[a-z0-9_]+\s*)?\(`)'''
 GO_ONLY_ANCHOR = '''	dbObjReCreate = regexp.MustCompile(`(?is)CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+NOT\\s+EXISTS\\s+)?([a-z0-9_"]+)\\s+ON\\s+(?:ONLY\\s+)?([a-z0-9_."]+)`)'''
 GO_ONLY_BROKEN = '''	dbObjReCreate = regexp.MustCompile(`(?is)CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+NOT\\s+EXISTS\\s+)?([a-z0-9_"]+)\\s+ON\\s+([a-z0-9_."]+)`)'''
 
@@ -119,7 +125,20 @@ MUTATIONS = [
         "selftest",
     ),
     (
-        "M2-GO-ONLY-BUG",
+        "M2-GO-ONLY-HEAD-BUG",
+        GO_GATE_REL,
+        GO_ONLY_HEAD_ANCHOR,
+        GO_ONLY_HEAD_BROKEN,
+        "go:TestDbObjectExpectSetMatchesIndependentDerivation",
+        "go",
+    ),
+    (
+        "M2B-GO-ONLY-REGEX-BUG",
+        GO_GATE_REL,
+        GO_ONLY_ANCHOR,
+        GO_ONLY_BROKEN,
+        "go:TestDbObjectExpectSetMatchesIndependentDerivation",
+        "go",
         GO_GATE_REL,
         GO_ONLY_ANCHOR,
         GO_ONLY_BROKEN,
@@ -183,9 +202,9 @@ MUTATIONS = [
         "go",
     ),
     (
-        "M10-CONTROL-CENSUS-UNRELATED",
-        CENSUS_REL,
-        None,  # ★ 特殊处理：★ 改一个【不在期望集里】的索引的列序列 ⇒ ★ 判定结果不变
+        "M10-CONTROL-NOTE-COLUMN",
+        REACH_REL,
+        None,  # ★ 特殊处理：★ 改【note 自由文本列】⇒ ★ 判定结果不变
         None,
         "green",
         "green",
@@ -214,7 +233,7 @@ def apply_mutation(name, rel, old, new):
             if line.startswith("#") or not line.strip():
                 continue
             cols = line.split("\t")
-            if len(cols) == 4 and cols[0] == "local" and cols[2] == "sessions" \
+            if len(cols) == 4 and cols[2] == "sessions" \
                     and cols[3] == "last_full_payload_at":
                 del lines[i]
                 hit = True
@@ -253,21 +272,15 @@ def apply_mutation(name, rel, old, new):
             return original, False
         path.write_bytes("\n".join(lines).encode("utf-8"))
         return original, True
-    if name == "M10-CONTROL-CENSUS-UNRELATED":
+    if name == "M10-CONTROL-NOTE-COLUMN":
         # ★ 改一个【不在期望集里】的索引的列序列 ⇒ ★ 判定结果不应变 ⇒ ★ 门应仍绿
-        expect = set()
-        with open(REPO / "scripts/audit/asset/db-object-expect.tsv", encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("#") or not line.strip():
-                    continue
-                expect.add(line.split("\t")[1])
         lines = original.decode("utf-8").split("\n")
         for i, line in enumerate(lines):
             if line.startswith("#") or not line.strip():
                 continue
             cols = line.split("\t")
-            if len(cols) == 17 and cols[1] == "idx" and cols[4] not in expect:
-                cols[15] = "mutated_unrelated_column"
+            if len(cols) == 10 and cols[9] == "":
+                cols[9] = "mutated_note_only"
                 lines[i] = "\t".join(cols)
                 path.write_bytes("\n".join(lines).encode("utf-8"))
                 return original, True
