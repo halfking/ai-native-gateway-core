@@ -74,18 +74,21 @@ func hollowoutLockPath(root string) string {
 	return filepath.Join(root, hollowoutLockName)
 }
 
-// lockHollowoutShared 取得【整仓掏空锁】，返回释放函数。
+// lockHollowoutShared 取得【整仓掏空锁】，返回释放函数与【尝试次数】。
 //
 // ★ 返回值：
-//   - (release, nil)：★ 拿到锁 ⇒ ⇒ 调用方**必须**在变异完成后调用 release()
-//   - (nil, err)：★ 等待超时 / 锁不可用 ⇒ ⇒ 调用方**必须让门红**（★ 不能跳过）
-func lockHollowoutShared(root string, wait time.Duration) (func(), error) {
+//   - (release, attempts, nil)：★ 拿到锁 ⇒ ⇒ 调用方**必须**在变异完成后调用 release()
+//   - (nil, attempts, err)：★ 等待超时 / 锁不可用 ⇒ ⇒ 调用方**必须让门红**（★ 不能跳过）
+//
+// ★★ 【为什么带「尝试次数」出来】：★ 它是「这个持有者**确实等过**」的**不依赖时序**的证据
+// ★★ （★ 见 unix 版的注释：★ 时序断言会被仓内的余量门要求登记实测台账）。
+func lockHollowoutShared(root string, wait time.Duration) (func(), int, error) {
 	path := hollowoutLockPath(root)
-	release, err := lockHollowoutFile(path, wait)
+	release, attempts, err := lockHollowoutFile(path, wait)
 	if err != nil {
-		return nil, fmt.Errorf("拿整仓掏空锁失败（%s）：%w", path, err)
+		return nil, attempts, fmt.Errorf("拿整仓掏空锁失败（%s）：%w", path, err)
 	}
-	return release, nil
+	return release, attempts, nil
 }
 
 // ── 自证 ────────────────────────────────────────────────────────────────────
@@ -94,8 +97,13 @@ func lockHollowoutShared(root string, wait time.Duration) (func(), error) {
 //
 // ★ 三段断言：
 // ① 第一个持有者拿得到；
-// ② ★ 第二个持有者**拿不到**，且它**真的等过**（★ 不是立刻放弃 ⇒ ⇒ 判定是真的）；
+// ② ★ 第二个持有者**拿不到**，且它**至少轮询过一次**（★ ⇒ ⇒ 它确实在等 ⇒ ⇒ 而不只是「路径写错了」）；
 // ③ 释放之后能再拿到（★ ⇒ ⇒ 锁不是「一次性」的 ⇒ ⇒ 连续 35 条目不会把自己锁死）。
+//
+// ★★ 【为什么断言「轮询次数」而不是「等了多少毫秒」】：★ 仓内 `internal/clockguard`
+// ★★ 会把 `elapsed < <时长字面量>` 判成【判别型下界】⇒ ⇒ 新增一处就得上
+// ★★ `measured_margins.tsv` 实测台账（★ 要在本机量 10~30 次自然值）⇒ ⇒ 代价与收益不成比例。
+// ★★ ⇒ ⇒ **正确做法是不要引入时序依赖**：★ 「确实等过」由【轮询次数】表达 ⇒ ⇒ 与机器快慢无关。
 //
 // ★ 为什么能在**单进程内**自证：★ `flock` 的锁挂在【open file description】上
 // （★ POSIX 规定）⇒ ⇒ 同一进程用两个 fd 锁同一文件**也互斥**
@@ -103,31 +111,33 @@ func lockHollowoutShared(root string, wait time.Duration) (func(), error) {
 func TestHollowoutSharedLockExcludesSecondHolder(t *testing.T) {
 	dir := t.TempDir()
 
-	release, err := lockHollowoutShared(dir, 200*time.Millisecond)
+	release, firstAttempts, err := lockHollowoutShared(dir, 200*time.Millisecond)
 	if err != nil {
 		t.Fatalf("★ 第一个持有者拿不到锁 ⇒ ⇒ 锁根本不可用：%v", err)
+	}
+	if firstAttempts != 1 {
+		t.Fatalf("★ 第一个持有者应该**一次就拿到**（★ 它没有竞争者）⇒ 实际尝试 %d 次", firstAttempts)
 	}
 
 	func() {
 		// ★ 先注册释放 ⇒ ⇒ 下面任何一次 t.Fatalf（Goexit）都会把锁放掉。
 		defer release()
 
-		start := time.Now()
-		second, err := lockHollowoutShared(dir, 200*time.Millisecond)
-		elapsed := time.Since(start)
+		second, attempts, err := lockHollowoutShared(dir, 200*time.Millisecond)
 		if err == nil {
 			second()
 			t.Fatalf("★ 第二个持有者**拿到了**锁 ⇒ ⇒ 互斥失效 ⇒ ⇒ 并发跑会互相备份对方的掏空版 " +
 				"⇒ ⇒ 台账可能被永久留在掏空态")
 		}
-		// ★ 它必须是「等满了才放弃」⇒ ⇒ 否则「拿不到」可能只是「路径写错了」。
-		if elapsed < 150*time.Millisecond {
-			t.Fatalf("★ 第二个持有者 %s 就放弃了 ⇒ ⇒ 它**没等** ⇒ ⇒ 「拿不到」这个判定不实", elapsed)
+		// ★ 它必须**至少轮询过一次**⇒ ⇒ 否则「拿不到」可能只是「路径写错了 / 一次就放弃了」。
+		if attempts < 2 {
+			t.Fatalf("★ 第二个持有者只尝试了 %d 次就放弃了 ⇒ ⇒ 它**没等** ⇒ ⇒ 「拿不到」这个判定不实",
+				attempts)
 		}
 	}()
 
 	// ★ 释放之后必须能再拿到（★ 连续跑 35 个条目 ⇒ ⇒ 不能把自己锁死）。
-	release2, err := lockHollowoutShared(dir, 2*time.Second)
+	release2, _, err := lockHollowoutShared(dir, 2*time.Second)
 	if err != nil {
 		t.Fatalf("★ 释放之后拿不到锁 ⇒ ⇒ 锁是一次性的 ⇒ ⇒ 连续多条目会把自己锁死：%v", err)
 	}
@@ -164,8 +174,19 @@ func TestHollowoutLockFileIsUntrackedAndIgnored(t *testing.T) {
 			"⇒ ⇒ 污染普查表 / 覆盖判据的输入集合", hollowoutLockName)
 	}
 
-	// ★ 反向：锁文件此刻**不该**存在于仓根（★ 没跑掏空就不该有锁）。
-	if _, err := os.Stat(lockPath); err == nil {
-		t.Fatalf("★ 仓根出现了锁文件 %s ⇒ ⇒ 有跑没释放干净（★ 或上一次跑被杀留下了）", lockPath)
+	// ★ 反向断言：★ 锁文件**跑完会留在盘上**（★ `flock` 释放的是「锁」不是「文件」）
+	// ⇒ ⇒ 断言不能是「文件不存在」（★ 那会在**第二次跑**时恒红 ⇒ ⇒ 是我自己的自伤）。
+	// ⇒ ⇒ 正确的断言是「它**没有被 git 追踪**」⇒ ⇒ 即便它在盘上，也不在判据的输入集合里。
+	tracked := exec.Command("git", "-C", root, "ls-files", "--error-unmatch", hollowoutLockName)
+	tracked.Stdout = nil
+	tracked.Stderr = nil
+	if err := tracked.Run(); err == nil {
+		t.Fatalf("★ 锁文件 %s **被 git 追踪**了 ⇒ ⇒ 它会进入「git 追踪文件」的视野 "+
+			"⇒ ⇒ 污染普查表 / 覆盖判据的输入集合", hollowoutLockName)
+	}
+	// ★ 若它此刻在盘上 ⇒ ⇒ 必须是**零字节**（★ 锁文件不存内容 ⇒ ⇒ 不可能夹带信息）。
+	if st, err := os.Stat(lockPath); err == nil && st.Size() != 0 {
+		t.Fatalf("★ 锁文件 %s 有 %d 字节 ⇒ ⇒ 锁文件应当零字节（★ 它不承载任何数据）",
+			hollowoutLockName, st.Size())
 	}
 }

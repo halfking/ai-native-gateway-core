@@ -699,7 +699,7 @@ func hollowVerifyEntryOverlay(t *testing.T, root string, e hollowEntry, kind, sp
 	//   ③ 两者交错 ⇒ ⇒ 还原后 md5 对不上 ⇒ ⇒ 门红（★ 这一种反而是好的）。
 	// ★ ⇒ ⇒ 跨进程互斥是唯一的根治办法。
 	// ★ 拿不到锁 ⇒ **红**（★ 不跳过）⇒ ⇒ 「跳过」在退出码上与「跑了 0 条」不可区分。
-	releaseLock, err := lockHollowoutShared(root, hollowoutLockWait)
+	releaseLock, _, err := lockHollowoutShared(root, hollowoutLockWait)
 	if err != nil {
 		t.Fatalf("★ 拿不到整仓掏空锁 ⇒ ⇒ 本条**不判定**（★ 不能跳过：★「跳过」与「跑了 0 条」"+
 			"在退出码上不可区分）：%v", err)

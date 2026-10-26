@@ -301,7 +301,7 @@ func structuredVerifyEntryWithReader(t *testing.T, root string, e structuredCens
 	//
 	// ★ 与 `.tsv` 侧【同一把锁】（★ 两边都会写空真实文件）⇒ ⇒ 两边也互斥。
 	// ★ 拿不到锁 ⇒ **红**（★ 不跳过）⇒ ⇒ 「跳过」在退出码上与「跑了 0 条」不可区分。
-	releaseLock, err := lockHollowoutShared(root, hollowoutLockWait)
+	releaseLock, _, err := lockHollowoutShared(root, hollowoutLockWait)
 	if err != nil {
 		t.Fatalf("★ 拿不到整仓掏空锁 ⇒ ⇒ 本条**不判定**（★ 不能跳过）：%v", err)
 	}
@@ -450,7 +450,7 @@ func TestStructuredRegistryHollowoutReadersRejectEmptyRegistry(t *testing.T) {
 // ★ 只还原**普查表里登记过的登记册** ⇒ ⇒ 不会误伤仓里其它 `.hollowout-backup`。
 func structuredHealLeftovers(root string) (int, error) {
 	// ★★ R87 轮收尾：★ 自愈预检**自己也会写盘**⇒ ⇒ 也要拿【整仓掏空锁】（★ 与 `.tsv` 侧同一把）。
-	releaseLock, err := lockHollowoutShared(root, hollowoutLockWait)
+	releaseLock, _, err := lockHollowoutShared(root, hollowoutLockWait)
 	if err != nil {
 		return 0, err
 	}

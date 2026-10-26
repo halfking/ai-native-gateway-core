@@ -87,7 +87,7 @@ func healHollowLeftovers(root string) (int, error) {
 	// ⇒ ⇒ 它同样落在「变异工作树」的窗口里 ⇒ ⇒ 也要拿【整仓掏空锁】。
 	// ★ 不拿锁的后果：★ 预检会把**另一个正在跑的掏空版的备份**当成「遗留」
 	// ⇒ ⇒ 把它还原掉 ⇒ ⇒ 那个跑在自己的掏空窗口里读到的是【原文】⇒ ⇒ **误判 still-green**。
-	releaseLock, err := lockHollowoutShared(root, hollowoutLockWait)
+	releaseLock, _, err := lockHollowoutShared(root, hollowoutLockWait)
 	if err != nil {
 		return 0, err
 	}
