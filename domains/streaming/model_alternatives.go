@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/db"
@@ -58,6 +59,13 @@ const maxModelAlternatives = 8
 // 503 than to make a stalled client wait longer for a nicety.
 const alternativesQueryTimeout = 800 * time.Millisecond
 
+// alternativesQueryer is the narrow slice of *pgxpool.Pool the finder needs,
+// so tests can hand in a mock that would otherwise answer the lookup and
+// thereby prove the dead-context guard below actually fires.
+type alternativesQueryer interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
 // ModelAlternativesFinder resolves "what CAN this caller use right now".
 //
 // It is deliberately separate from the admin available-models catalog
@@ -69,7 +77,7 @@ const alternativesQueryTimeout = 800 * time.Millisecond
 // such a model as an alternative would send the client straight into a
 // second failure.
 type ModelAlternativesFinder struct {
-	db *pgxpool.Pool
+	db alternativesQueryer
 	// intentCache is autoroute's per-session task-type cache. Optional: nil
 	// simply means no session-level task type, and the result falls back to
 	// featured + popularity ordering.
@@ -108,6 +116,15 @@ func (f *ModelAlternativesFinder) Find(
 		Alternatives:   []ModelAlternative{},
 	}
 	if f == nil || f.db == nil {
+		return result
+	}
+
+	// ★ 2026-10-26（252 PG 日志审计）：零候选 503 路径的调用方经常在进入本函数
+	// 前就已经断开——客户端对 503 不等待建议列表。请求 ctx 已死时，这份列表必然
+	// 随响应一起被丢弃，再往下的查询注定以「canceling statement due to user
+	// request」收场：252 生产日志 10-24~10-26 三天实测 1,399 次取消（本查询独占
+	// 同期 PG ERROR 噪音约 46%）。ctx 已死即返回空表，不再向连接池要连接。
+	if err := ctx.Err(); err != nil {
 		return result
 	}
 
