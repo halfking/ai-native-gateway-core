@@ -85,15 +85,18 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	items := make([]sessionListItem, 0, len(sessionIDs))
+	// R166：一次批量读取代逐会话 Get+GetStats（两者读的是同一个 Redis hash，
+	// 每会话 4 次往返 ⇒ 400 个 id 最多 1600 次往返）。
+	sessions, statsByID := h.loadSessionsBatch(ctxFn(r), sessionIDs)
 	for _, sid := range sessionIDs {
-		sess, err := h.sessionManager.Get(ctxFn(r), sid)
-		if err != nil {
+		sess, ok := sessions[sid]
+		if !ok {
 			continue
 		}
 		if tenantID != "" && sess.TenantID != tenantID {
 			continue
 		}
-		stats, _ := h.sessionManager.GetStats(ctxFn(r), sid)
+		stats := statsByID[sid]
 		item := sessionListItem{
 			SessionID:         sess.SessionID,
 			TenantID:          sess.TenantID,
@@ -126,7 +129,11 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 
-	// 目录搜索只查 session_summaries。用量按会话 id 打 _request_logs 底表，不走联表视图。
+	// 目录搜索只查 session_summaries。用量按会话 id 聚合 session_turns_hot ∪ session_turns
+	// （唯一事实源，不走联表视图）。
+	// ★ R166 修正：此处原注释写「打 _request_logs 底表」——那是退役前的写法，
+	// 实际 SQL（admin/session_catalog_usage.go: catalogUsageSQL）读的是 session 族，
+	// 退役后已无 _request_logs 底表。注释与事实源分叉会让人误判退役状态。
 	searchQ := strings.TrimSpace(r.URL.Query().Get("q"))
 	if searchQ != "" {
 		items = h.mergeCatalogSearch(ctxFn(r), items, tenantID, searchQ, limit)
@@ -366,6 +373,40 @@ func ctxFn(r *http.Request) context.Context {
 	return r.Context()
 }
 
+// sessionTenantFilterChunk 租户过滤前候选会话的分块大小。
+//
+// R166：租户过滤原先是「每个候选 id 单独读一次会话」⇒ 又一层 N+1。
+// 改成「候选先攒成块，再一次性批量读回来按租户过滤」。块大小取仓内实测的
+// 批量工作点（internal/redis.DefaultHashBatchSize = 512）。
+const sessionTenantFilterChunk = 512
+
+// loadSessionsBatch 批量取回会话与其统计。
+//
+// ★ 失败粒度：批量读是**整批失败**，逐键读是**坏键被跳过、好键照常渲染**。
+// 因此批量失败时**退回逐键读**，保持优化前的降级语义——不把整页打成空列表，
+// 也不把整页打成 500。
+func (h *Handler) loadSessionsBatch(ctx context.Context, sessionIDs []string) (map[string]*session.Session, map[string]*session.SessionStats) {
+	sessions, stats, err := h.sessionManager.GetBatch(ctx, sessionIDs)
+	if err == nil {
+		return sessions, stats
+	}
+	slog.Warn("admin session list: batch read failed; falling back to per-session reads",
+		"op", "admin.sessionList.batchFallback", "sessions", len(sessionIDs), "error", err)
+	perSession := make(map[string]*session.Session, len(sessionIDs))
+	perStats := make(map[string]*session.SessionStats, len(sessionIDs))
+	for _, sid := range sessionIDs {
+		sess, err := h.sessionManager.Get(ctx, sid)
+		if err != nil {
+			continue
+		}
+		perSession[sid] = sess
+		if st, err := h.sessionManager.GetStats(ctx, sid); err == nil {
+			perStats[sid] = st
+		}
+	}
+	return perSession, perStats
+}
+
 func (h *Handler) listActiveSessions(ctx context.Context, tenantID string, limit int) []string {
 	if h.sessionManager == nil {
 		return nil
@@ -376,6 +417,23 @@ func (h *Handler) listActiveSessions(ctx context.Context, tenantID string, limit
 	}
 	iter := rc.Client().Scan(ctx, 0, "session:apiKey:*:active", 100).Iterator()
 	ids := make([]string, 0, limit)
+	// R166：租户过滤的候选先攒块，再批量读回来过滤（见 sessionTenantFilterChunk）。
+	pending := make([]string, 0, sessionTenantFilterChunk)
+	flushPending := func() {
+		if len(pending) == 0 {
+			return
+		}
+		sessions, _ := h.loadSessionsBatch(ctx, pending)
+		for _, id := range pending {
+			if len(ids) >= limit {
+				break
+			}
+			if sess, ok := sessions[id]; ok && sess.TenantID == tenantID {
+				ids = append(ids, id)
+			}
+		}
+		pending = pending[:0]
+	}
 	for iter.Next(ctx) {
 		members, err := rc.Client().SRandMemberN(ctx, iter.Val(), int64(limit)).Result()
 		if err != nil {
@@ -385,10 +443,14 @@ func (h *Handler) listActiveSessions(ctx context.Context, tenantID string, limit
 		}
 		for _, id := range members {
 			if tenantID != "" {
-				sess, err := h.sessionManager.Get(ctx, id)
-				if err != nil || sess.TenantID != tenantID {
-					continue
+				pending = append(pending, id)
+				if len(pending) >= sessionTenantFilterChunk {
+					flushPending()
+					if len(ids) >= limit {
+						return ids
+					}
 				}
+				continue
 			}
 			ids = append(ids, id)
 			if len(ids) >= limit {
@@ -396,6 +458,7 @@ func (h *Handler) listActiveSessions(ctx context.Context, tenantID string, limit
 			}
 		}
 	}
+	flushPending()
 	// Redis SCAN 迭代中断只会让 Next() 返回 false，不带错误；不查 Err()
 	// 就把「扫到一半连接断了」和「扫完了」当成同一件事。这里的选择是
 	// **降级不失败**：签名为 []string 且无 error 通道，改签名会波及

@@ -63,8 +63,8 @@ const (
 	mig910Name     = "910_routing_analytics_source_hashjoin.sql"
 	mig910DownName = "910_routing_analytics_source_hashjoin.down.sql"
 
-	mig910UpSHA256   = "4a1b5538557edf71991c92a7ab378e2009d74dc73d988ead67f66ec0090dc6f4"
-	mig910DownSHA256 = "63c3b9e1905791ec2e63200ab7bc7e4b65bec5849b4fdf50ab511def4acf0f4f"
+	mig910UpSHA256   = "9aa01a700e2bfbb6ab3e60eb256859cb7c4d863442e3002b2d0e997ff011811f"
+	mig910DownSHA256 = "52a87e34a080834f2abb8106816ed383abb926f15db3d3a6463a3b27216c86b2"
 
 	mig910DayRangePred = "dd.partition_date >= (now() - interval '8 days')::date"
 )

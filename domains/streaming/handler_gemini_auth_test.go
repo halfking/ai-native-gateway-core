@@ -201,6 +201,24 @@ func TestGeminiNativePathMatchesHandlerParser(t *testing.T) {
 	// TestGeminiHandlerIsMountedOnBothVendorPrefixes (cmd/gateway).
 	geminiMuxPrefixes := []string{"/v1beta/models/", "/v1/models/"}
 
+	// The Gemini-native MODEL LIST is a served Gemini route that is NOT
+	// under either mux subtree: it has its own mux entry
+	// (cmd/gateway/main.go: mux.HandleFunc("/v1beta/models",
+	// modelsHandler.ServeGeminiModels)), because it is a LIST, not a
+	// generateContent action.
+	//
+	// The mount itself is pinned against main.go by
+	// TestGeminiModelListIsMounted (cmd/gateway); the serving handler lives
+	// in THIS package (domains/streaming/models.go) and is asserted below.
+	//
+	// It must be in the credential scope: a native Gemini client presents
+	// its key as "?key=" (docs/vendor-formats/gemini.md), so without the
+	// scope the list 401s while generateContent (same client, header form)
+	// works.
+	geminiNativeExactRoutes := map[string]bool{
+		"/v1beta/models": true,
+	}
+
 	served := func(p string) bool {
 		for _, prefix := range geminiMuxPrefixes {
 			if strings.HasPrefix(p, prefix) {
@@ -232,9 +250,15 @@ func TestGeminiNativePathMatchesHandlerParser(t *testing.T) {
 		"/v1/chat/completions",
 		"/v1/messages",
 		"/v1/models",
-		"/v1beta/models",
 		"/prefix/v1beta/models/gemini:generateContent",
 		"/healthz",
+		// The Gemini-native MODEL LIST is served on its own mux entry
+		// (not under the "/v1beta/models/" subtree), so the prefix check
+		// above cannot see it -- it is listed as a served route below.
+		"/v1beta/models",
+		// A longer path that merely starts with "/v1beta/models" is a
+		// DIFFERENT route, and nothing serves it.
+		"/v1beta/modelsXYZ",
 	}
 
 	for _, p := range paths {
@@ -242,11 +266,13 @@ func TestGeminiNativePathMatchesHandlerParser(t *testing.T) {
 			_, _, handlerOK := extractGeminiPath(p)
 			scopeOK := auth.IsGeminiNativePath(p)
 
-			// A path is a SERVED Gemini route only when it is under a
-			// mounted mux prefix AND the handler's parser accepts it.
+			// A path is a SERVED Gemini route when it is under a mounted
+			// mux prefix AND the handler's parser accepts it, or when it
+			// is one of the exact Gemini-native routes mounted on their
+			// own mux entries (the model list).
 			// (A path under the prefix that the parser rejects is simply
-			// not a Gemini route — the handler answers 404 for it.)
-			servedRoute := served(p) && handlerOK
+			// not a Gemini route -- the handler answers 404 for it.)
+			servedRoute := (served(p) && handlerOK) || geminiNativeExactRoutes[p]
 
 			if servedRoute {
 				if !scopeOK {
@@ -254,10 +280,53 @@ func TestGeminiNativePathMatchesHandlerParser(t *testing.T) {
 				}
 				return
 			}
-			// Not a served Gemini route ⇒ the scope must not cover it.
+			// Not a served Gemini route -- the scope must not cover it.
 			if scopeOK {
 				t.Errorf("credential scope covers a path that is not a served Gemini route: %q", p)
 			}
 		})
+	}
+}
+
+// TestGeminiNativeModelListIsServedAndScoped is the model-list counterpart
+// of the drift gate above.
+//
+// The two sides of the model list:
+//
+//   - SERVED: domains/streaming/models.go ServeGeminiModels, mounted at
+//     cmd/gateway/main.go as mux.HandleFunc("/v1beta/models", ...).
+//     Pinned against main.go by TestGeminiModelListIsMounted (cmd/gateway).
+//   - AUTHENTICATED: the credential scope (internal/auth.IsGeminiNativePath)
+//     must cover it, otherwise a native client that presents "?key=" gets
+//     401 on the list while generateContent works with the same key.
+//
+// This test asserts the half that lives in THIS package: the serving
+// handler exists here, the credential scope covers the path, and the
+// generateContent parser does NOT claim it (the two routes are distinct --
+// a parser that matched the list would also make the scope wrong).
+func TestGeminiNativeModelListIsServedAndScoped(t *testing.T) {
+	const modelListPath = "/v1beta/models"
+
+	// The serving handler lives in this package. (Compile-time: if it is
+	// moved or renamed, this file stops compiling -- the mount in
+	// cmd/gateway/main.go would then point at nothing.)
+	var _ = (*ModelsHandler).ServeGeminiModels
+
+	if !auth.IsGeminiNativePath(modelListPath) {
+		t.Errorf("credential scope does not cover the Gemini-native model list %q", modelListPath)
+	}
+
+	// Reverse nail: the generateContent parser must NOT claim the list.
+	// If it did, the two routes would share one parser and the credential
+	// scope could not tell them apart.
+	if _, _, ok := extractGeminiPath(modelListPath); ok {
+		t.Errorf("the generateContent parser claims the Gemini-native model list %q", modelListPath)
+	}
+
+	// Reverse nail: the OpenAI-shaped list keeps its own contract and stays
+	// OUT of the Gemini credential scope (a "?key=" on it must not become a
+	// credential).
+	if auth.IsGeminiNativePath("/v1/models") {
+		t.Errorf("credential scope covers the OpenAI-shaped model list")
 	}
 }
