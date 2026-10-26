@@ -88,11 +88,15 @@ MUTATIONS = [
     #   得到一条恒绿的断言 ⇒ **作废并改写**。
     # ⇒ 改写后的 M6 钉的是**边界**：内层重扫必须只返回**内部那一截裸形**，
     #   返回整段候选 ⇒ 整段 JSON 会被当成标记 ⇒ span 集合错 ⇒ 契约门红。
+    # ⚠ M6 的**第一版替换体编译不干净**（`sp` 变成「declared and not used」）
+    #   ⇒ 读数作废（编译红 ≠ 断言红）⇒ 补 `_ = sp` 让它编译通过。
+    #   这也是纪律「变异必须【编译干净再验】」的又一次生效：不补这一行，
+    #   这条臂会一直挂在 COMPILE-RED 上，而臂的**意图**其实是成立的。
     ("M6",
      "内层重扫的**边界**写错（返回整段候选而不是内部那截裸形）⇒ 整段 JSON 被当成标记 ⇒ span 集合错",
      SANITIZE_REL,
-     "\t\tout = append(out, candidate[sp[0]:sp[1]])\n",
-     "\t\tout = append(out, candidate)\n",
+     "\tfor _, sp := range spans {\n\t\tout = append(out, candidate[sp[0]:sp[1]])\n\t}\n",
+     "\tfor _, sp := range spans {\n\t\t_ = sp\n\t\tout = append(out, candidate)\n\t}\n",
      "TestR1039InnerRescanSpanContractMatchesMarkerbound"),
 
     ("M7",
