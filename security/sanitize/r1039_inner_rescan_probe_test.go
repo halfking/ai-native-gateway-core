@@ -124,6 +124,27 @@ func TestR1039InnerRescanStaysQuietOnProseInsideJSON(t *testing.T) {
 	}
 }
 
+// TestR1039InnerRescanPrefilterStaysAsciiOnlyButStillSafe 钉住一处**刻意的
+// 窄门**：`hasReservedPlaceholder` 的预筛**只认 ASCII**（containsFoldCaseWordBytes）。
+//
+// 它一度被改成宽度感知（理由：混拼形态不被预筛识别），但**同轮的内层重扫**
+// 已经把这件事完全覆盖 ⇒ 那次放宽是**冗余修复** ⇒ 已撤回
+// （变异臂 M6 仍绿，正是它告诉我们的）。
+//
+// 这条判据钉住「窄门仍然安全」：混拼形态必须**照样**被守卫看见
+// ⇒ 将来若有人「顺手」把预筛放宽，本条会提醒他：先问「它还冗余吗」。
+func TestR1039InnerRescanPrefilterStaysAsciiOnlyButStillSafe(t *testing.T) {
+	ctx := context.Background()
+	for _, form := range r1039InnerRescanForms {
+		t.Run(form, func(t *testing.T) {
+			assert.True(t, hasReservedPlaceholder(ctx, []byte(form)),
+				"混拼形态必须被守卫看见（哪怕预筛只认 ASCII）: %q", form)
+			assert.True(t, hasReservedPlaceholder(ctx, []byte(`{"pwd":"`+form+`"}`)),
+				"JSON 里的混拼形态必须被守卫看见: %q", form)
+		})
+	}
+}
+
 // TestR1039InnerRescanMasksBareMarkerInToolArguments 是**端到端**判据：
 // 客户端真正收到的那一帧。
 //
@@ -286,15 +307,10 @@ func TestR1039InnerRescanCheapGatesDoNotAllocate(t *testing.T) {
 			allocsWord := testing.AllocsPerRun(100, func() {
 				_ = containsMarkerWordAnyWidth(body)
 			})
-			raw := []byte(body)
-			allocsBytes := testing.AllocsPerRun(100, func() {
-				_ = containsMarkerWordAnyWidthBytes(raw)
-			})
-			t.Logf("%s (%d bytes): text=%.1f word=%.1f bytes=%.1f allocs/op",
-				name, len(body), allocsText, allocsWord, allocsBytes)
+			t.Logf("%s (%d bytes): text=%.1f word=%.1f allocs/op",
+				name, len(body), allocsText, allocsWord)
 			assert.Equal(t, float64(0), allocsText, "便宜门 mayContainMarkerText 在 %s 上必须零分配", name)
 			assert.Equal(t, float64(0), allocsWord, "便宜门 containsMarkerWordAnyWidth 在 %s 上必须零分配", name)
-			assert.Equal(t, float64(0), allocsBytes, "便宜门 containsMarkerWordAnyWidthBytes 在 %s 上必须零分配", name)
 		})
 	}
 }

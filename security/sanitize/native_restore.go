@@ -23,21 +23,23 @@ const maxNativeToolInputDepth = 256
 // fold-case prefilter keeps ordinary responses (and prose containing the word
 // "sensitive") on the cheap path.
 //
-// 2026-10-27（r1039 混拼修复轮的**后续审计**）：这个预筛原来用的是
-// **ASCII-only** 的 containsFoldCaseWordBytes ⇒ **混拼形态不被识别**
-// ⇒ 下面这条 JSON 里的裸形混拼标记**既不被 raw-body 扫描看到
-// （brace 分支吞掉了 JSON 段），也不被预筛放行** ⇒ 残留守卫**不触发**
-// ⇒ 「fail-closed」的拦截（畸形 body / 可见车道外的残留）**该拦的没拦**。
-// ⇒ 预筛改成宽度感知（containsMarkerWordAnyWidthBytes）。
+// ⚠ 2026-10-27（自审轮）的一处**撤回**：这个预筛一度被改成宽度感知
+// （containsMarkerWordAnyWidthBytes），理由是「它只认 ASCII ⇒ 混拼形态不被
+// 识别」。但**同轮的内层重扫**（markerSpans 内部）已经把这件事**完全覆盖**了：
+// 混拼形态现在**在第一道检查**（containsNonForeignMarker）就被看见 ⇒
+// 预筛根本轮不到 ⇒ 那次放宽是**冗余修复**。
+// ⇒ 撤回它（变更面最小化 + 不给热路径多加一条 memchr）。
+// ⇒ 教训见 LESSONS.md：「变异臂仍绿」有时不是「判据没牙」，而是
+// 「**这个修复已被更强的修复覆盖**」⇒ 该做的是**撤回**，不是把判据改松。
 //
-// ⚠ **放宽预筛不等于放宽判定**：预筛只决定「要不要去做叶子重扫」，
-// 最终结论由 containsResidualPlaceholder 给，而它走的是宽度感知的
-// containsNonForeignMarker ⇒ **散文仍然判否**（不误拦）。
+// ⇒ 预筛保持 ASCII-only 是**安全的**：containsNonForeignMarker 与
+// looksLikeUnparsedMarker 走的都是宽度感知的 markerSpans ⇒
+// 「混拼形态不被预筛认出」的那一刻，**它已经被前面那道门认出来了**。
 func hasReservedPlaceholder(ctx context.Context, body []byte) bool {
 	if containsNonForeignMarker(ctx, body) {
 		return true
 	}
-	if !containsMarkerWordAnyWidthBytes(body) {
+	if !containsFoldCaseWordBytes(body, placeholderMarkerWord) {
 		return false
 	}
 	var decoded any

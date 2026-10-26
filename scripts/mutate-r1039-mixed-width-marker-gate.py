@@ -38,7 +38,6 @@ REPO = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else ".")
 SANITIZE_REL = "security/sanitize/placeholder_loose.go"
 MARKERBOUND_REL = "internal/markerbound/markerbound.go"
 HOP_REL = "security/sanitize/hop.go"
-NATIVE_REL = "security/sanitize/native_restore.go"
 
 # 两条判据族都要跑：混拼族（TestR1039MixedWidth*）与本轮自审的内层重扫族
 # （TestR1039InnerRescan*）⇒ `-run` 的参数是**正则**，用 | 并列。
@@ -83,11 +82,11 @@ MUTATIONS = [
 
     # ── 2026-10-27 自审轮新增（M6~M9）──────────────────────────────
     ("M6",
-     "残留守卫的预筛退回 ASCII-only（= 修复前的真实形态）⇒ 混拼形态不被识别 ⇒ 守卫不触发",
-     NATIVE_REL,
-     "\tif !containsMarkerWordAnyWidthBytes(body) {\n",
-     "\tif !containsFoldCaseWordBytes(body, placeholderMarkerWord) {\n",
-     "TestR1039InnerRescan"),
+     "内层重扫的**便宜门短路**失效（不再先用 memchr 筛）⇒ 每个候选都付一次正则扫描 ⇒ 常态成本放大",
+     SANITIZE_REL,
+     "\tif !containsMarkerWordAnyWidth(candidate) {\n\t\treturn nil\n\t}\n",
+     "\tif false {\n\t\treturn nil\n\t}\n",
+     "TestR1039InnerRescanScannerAllocationsAreBounded"),
 
     ("M7",
      "探针路径的内层重扫被删掉（= 修复前的真实形态）⇒ JSON 里的裸形标记不可见 ⇒ 参数车道被整个跳过 ⇒ 泄漏",
@@ -167,7 +166,7 @@ def main():
         return 2
 
     targets = {}
-    for rel in (SANITIZE_REL, MARKERBOUND_REL, HOP_REL, NATIVE_REL):
+    for rel in (SANITIZE_REL, MARKERBOUND_REL, HOP_REL):
         path = os.path.join(tree, rel)
         if not os.path.exists(path):
             print(f"REFUSED: 副本里没有 {rel}")
