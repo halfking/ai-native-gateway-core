@@ -53,10 +53,6 @@
       "value": "rgba(37, 99, 235, 0.06)"
     },
     {
-      "file": "components/routing/SmartRoutingConfigDrawer.vue",
-      "value": "rgba(0, 0, 0, 0.16)"
-    },
-    {
       "file": "views/ApprovalDetailView.vue",
       "value": "rgba(52, 211, 153, 0.2)"
     },

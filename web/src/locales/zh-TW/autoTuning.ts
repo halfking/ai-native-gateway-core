@@ -4,7 +4,7 @@ export default {
     refreshing: '重新整理中…',
     loadFailed: '自動調參沒能載入出來，請重試',
     panelTitle: '調參提案（批准即熱調參，5 分鐘內生效）',
-    noProposals: '暫無提案（feedback_analyzer 會按視窗自動產生）',
+    noProposals: '暫無提案（回饋分析器會按視窗自動產生）',
   filter: {
     statusAll: '全部',
     pending: '待審',
@@ -41,7 +41,7 @@ export default {
     generateNone: '視窗內修正樣本不足或已有同類待審提案，未產生新提案',
     analyze: '執行訊號分析',
     analyzing: '分析中…',
-    analyzeConfirm: '立即執行 feedback_analyzer 訊號分析（tuning_signals 質量驅動提案）？',
+    analyzeConfirm: '立即執行回饋分析器訊號分析（調優訊號質量驅動提案）？',
     analyzeDone: '訊號分析完成：{at}',
   },
   accuracy: {

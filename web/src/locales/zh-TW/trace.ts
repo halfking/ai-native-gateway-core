@@ -33,7 +33,7 @@ export default {
     desc: '該請求未觸發 trace，或 trace 資料已超出 Redis 10 分鐘保留期。',
     hint1: 'trace 僅在網關程式埋點啟用時才會生成（預設開啟）',
     hint2: '完成時間 < 10 分鐘的請求，Redis 中仍保留 trace',
-    hint3: '已完成的請求，trace_events JSONB 已 flush 到 PostgreSQL 後才可顯示',
+    hint3: '已完成的請求，追蹤資料 JSONB 已 flush 到 PostgreSQL 後才可顯示',
 
   },
   aiPrompt: {

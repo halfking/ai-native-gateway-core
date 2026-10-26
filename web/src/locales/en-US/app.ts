@@ -33,7 +33,7 @@ export default {
     close: 'Close',
   },
   dataHorizon: {
-    title: 'Traffic data is falling behind: the gateway is serving requests but session_turns is not keeping up',
+    title: 'Traffic data is falling behind: the gateway is serving requests but session records are not keeping up',
     titleUnavailable: 'Unable to confirm traffic data state: figures on this page may be stale',
     hintLabel: 'Investigate',
     retry: 'Re-check',

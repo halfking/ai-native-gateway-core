@@ -34,7 +34,7 @@ export default {
     darkTitle: 'Dark mode',
   },
   dataHorizon: {
-    title: 'Traffic-Daten fallen zurück: das Gateway verarbeitet Anfragen, aber session_turns kommt nicht hinterher',
+    title: 'Traffic-Daten fallen zurück: das Gateway verarbeitet Anfragen, aber der Sitzungsverlauf kommt nicht hinterher',
     titleUnavailable: 'Status der Traffic-Daten nicht feststellbar: Die Zahlen auf dieser Seite könnten veraltet sein',
     hintLabel: 'Untersuchen',
     retry: 'Erneut prüfen',
