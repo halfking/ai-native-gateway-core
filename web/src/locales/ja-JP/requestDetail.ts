@@ -145,6 +145,12 @@ export default {
     empty: 'リクエスト本文または永続化された添付から画像 / 音声 / 動画を検出できませんでした。',
     openOrDownload: '開く / ダウンロード',
     noPreviewUrl: 'プレビュー用 URL がありません',
+    kindLabel: {
+      image: '画像',
+      audio: '音声',
+      video: '動画',
+      file: 'ファイル',
+    },
   },
   // — RequestWaterfallPanel —
   waterfall: {

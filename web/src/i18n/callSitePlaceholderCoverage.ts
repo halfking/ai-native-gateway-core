@@ -102,7 +102,9 @@ export const UNRESOLVED_REGISTRY: Array<{
 }> = [
   {
     file: 'src/components/NodeStatusMatrix.vue',
-    line: 193,
+    // ⚠️ 行号会随文件编辑漂移（2026-10-27 第 17 增量：新增一行 icons-vue import ⇒ 193 → 194）
+    //    ⇒ 改这个文件后**必须**同步这一行，否则门会同时报「新增未决」与「登记过期」两个红。
+    line: 194,
     reason: 'dynamic-key',
     keys: [
       'requestJourneys.matrix.groupDanger',

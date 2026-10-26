@@ -549,7 +549,6 @@ defineExpose({ load })
 
 .modal-content {
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: var(--radius, 8px);
   padding: 24px;
   max-width: 600px;

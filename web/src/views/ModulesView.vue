@@ -22,6 +22,7 @@ import PageHeader from '../components/ui/PageHeader.vue'
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
 import { ElButton } from 'element-plus'
+import { ChatDotRound, Check, CircleCheckFilled, CircleCloseFilled, Cpu, Iphone, Link, Setting, Warning } from '@element-plus/icons-vue'
 const { t } = useI18n()
 const router = useRouter()
 const modules = ref<ModuleWithStatus[]>([])
@@ -528,7 +529,7 @@ onMounted(() => {
             <h3 class="section-title">{{ t('modulesView.overview.sectionCapabilities') }}</h3>
             <ul class="cap-list">
               <li v-for="(cap, i) in selectedModule.capabilities" :key="i" class="cap-item">
-                <span class="cap-check">✓</span>
+                <span class="cap-check"><Check /></span>
                 <span>{{ cap }}</span>
               </li>
             </ul>
@@ -585,7 +586,7 @@ onMounted(() => {
           <!-- 依赖区块：必需依赖未满足时，给出警告 + 一键启用按钮 -->
           <div v-if="dependencySection" class="info-section dependency-section">
             <h3 class="section-title">
-              <span class="dep-title-icon">🔗</span>
+              <span class="dep-title-icon"><Link /></span>
               {{ t('modulesView.overview.dependenciesTitle') }}
             </h3>
             <p v-if="selectedModule.blocked_reason" class="warning-banner">
@@ -602,7 +603,7 @@ onMounted(() => {
                   'dep-required': dep.required,
                 }"
               >
-                <span class="dep-status-icon">{{ dep.enabled ? '✅' : (dep.required ? '❌' : '⚠️') }}</span>
+                <span class="dep-status-icon"><CircleCheckFilled v-if="dep.enabled" /><CircleCloseFilled v-else-if="dep.required" /><Warning v-else /></span>
                 <div class="dep-info">
                   <span class="dep-name">{{ dep.name }}</span>
                   <span class="dep-desc">{{ dep.description }}</span>
@@ -1055,7 +1056,7 @@ onMounted(() => {
           <div class="integration-card" v-if="selectedModule.integration">
             <div class="integ-header">
               <span class="integ-icon">
-                {{ selectedModule.key === 'feishu_bot' ? '📱' : selectedModule.key === 'wechat_bot' ? '💬' : selectedModule.key === 'dingtalk_bot' ? '🤖' : '🔗' }}
+                <Iphone v-if="selectedModule.key === 'feishu_bot'" /><ChatDotRound v-else-if="selectedModule.key === 'wechat_bot'" /><Cpu v-else-if="selectedModule.key === 'dingtalk_bot'" /><Link v-else />
               </span>
               <div class="integ-info">
                 <h3 class="integ-title">
@@ -1110,7 +1111,7 @@ onMounted(() => {
       <!-- Empty state -->
       <aside v-else class="detail-pane detail-empty">
         <div class="empty-state">
-          <span class="empty-icon">⚙️</span>
+          <span class="empty-icon"><Setting /></span>
           <p>{{ t('modulesView.empty.selectModule') }}</p>
         </div>
       </aside>
@@ -1293,7 +1294,6 @@ onMounted(() => {
 }
 .dot-on {
   background: var(--success);
-  box-shadow: 0 0 4px color-mix(in srgb, var(--success) 40%, transparent);
 }
 .dot-off { background: var(--text-muted); }
 
@@ -1883,7 +1883,6 @@ onMounted(() => {
 }
 .status-indicator.connected {
   background: var(--success);
-  box-shadow: 0 0 4px var(--success-bd);
 }
 .status-indicator.disconnected { background: var(--muted); }
 
@@ -2075,4 +2074,18 @@ onMounted(() => {
   .meta-grid { grid-template-columns: 1fr; }
   .status-grid { grid-template-columns: 1fr; }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.cap-check > svg { width: 12px; height: 12px; }
+.dep-title-icon > svg { width: 13px; height: 13px; vertical-align: -2px; }
+.empty-icon > svg { width: 34px; height: 34px; }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.dep-status-icon > svg { width: 12px; height: 12px; }
+.integ-icon > svg { width: 16px; height: 16px; }
 </style>

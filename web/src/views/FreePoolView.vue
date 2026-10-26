@@ -36,6 +36,7 @@ import { useActionMessage } from '../composables/useActionMessage'
 import PageHeader from '../components/ui/PageHeader.vue'
 import StatsRow from '../components/ui/StatsRow.vue'
 import StatCard from '../components/ui/StatCard.vue'
+import { CaretBottom, CaretTop, Check, Key, Reading } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 // credentialDisplayName resolves credential id → human label; the composable
@@ -831,7 +832,7 @@ onUnmounted(() => {
             style="font-size:12px"
             :title="tpl.pool_registered ? t('freePool.templateInPool') : (tpl.env_configured ? t('freePool.templateEnvConfigured') : (tpl.needs_key ? t('freePool.templateNeedsKey') : t('freePool.templateNoKey')))"
           >
-            {{ tpl.display_name }}{{ tpl.pool_registered ? ' ✓' : (tpl.env_configured ? ' 🔑' : '') }}
+            {{ tpl.display_name }}<Check v-if="tpl.pool_registered" /><Key v-else-if="tpl.env_configured" />
           </button>
         </div>
       </div>
@@ -945,7 +946,7 @@ onUnmounted(() => {
             @click="showAdvancedOptions = !showAdvancedOptions"
           >
             {{ showAdvancedOptions ? t('freePool.assistant.hideAdvanced') : t('freePool.assistant.showAdvanced') }}
-            <span class="chevron" aria-hidden="true">{{ showAdvancedOptions ? '▲' : '▼' }}</span>
+            <span class="chevron" aria-hidden="true"><CaretTop v-if="showAdvancedOptions" /><CaretBottom v-else /></span>
           </button>
 
           <!-- Advanced options (collapsible) -->
@@ -1142,13 +1143,13 @@ onUnmounted(() => {
             @click="showGuidePanel = !showGuidePanel"
           >
             <div class="toggle-left">
-              <span class="guide-icon" aria-hidden="true">📖</span>
+              <span class="guide-icon" aria-hidden="true"><Reading /></span>
               <div>
                 <strong>{{ t('freePool.assistant.guidePanelTitle') }}</strong>
                 <div class="cell-muted">{{ t('freePool.assistant.guidePanelDesc') }}</div>
               </div>
             </div>
-            <span class="chevron" aria-hidden="true">{{ showGuidePanel ? '▲' : '▼' }}</span>
+            <span class="chevron" aria-hidden="true"><CaretTop v-if="showGuidePanel" /><CaretBottom v-else /></span>
           </button>
 
           <div
@@ -1914,4 +1915,16 @@ onUnmounted(() => {
   white-space: nowrap;
   cursor: help;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.guide-icon > svg { width: 20px; height: 20px; }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.btn.btn-ghost.btn-sm > svg { width: 11px; height: 11px; }
+.chevron > svg { width: 10px; height: 10px; }
 </style>

@@ -170,7 +170,6 @@ async function submit() {
 <style scoped>
 .password-modal {
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 24px;
   width: min(420px, calc(100vw - 32px));

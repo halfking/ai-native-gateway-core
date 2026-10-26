@@ -17,7 +17,7 @@ import {
   type RequestTrace,
   type TraceEvent,
 } from '../api/trace'
-import { Link, MessageBox, Box, InfoFilled, Loading, Warning, CaretBottom } from '@element-plus/icons-vue'
+import { Box, CaretBottom, Close, InfoFilled, Link, Loading, MessageBox, Warning } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -457,7 +457,7 @@ onUnmounted(() => {
     <div v-if="showAIPanel" class="ai-panel">
       <header class="ai-panel-header">
         <h4>{{ t('trace.aiPrompt.modalTitle') }}</h4>
-        <button class="btn btn-ghost btn-sm" type="button" @click="closeAI">×</button>
+        <button class="btn btn-ghost btn-sm" type="button" @click="closeAI"><Close /></button>
       </header>
       <div class="ai-panel-body">
         <label class="ai-label">
@@ -939,4 +939,10 @@ onUnmounted(() => {
   margin: 0;
   color: var(--text);
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.ai-panel-header .btn > svg { width: 12px; height: 12px; }
 </style>

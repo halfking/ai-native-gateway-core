@@ -109,7 +109,6 @@ watch(
    改用 --card（→ --kx-surface：亮色 #ffffff，暗色 #1a222d），弹窗主体随之皮肤切换。 */
 .dialog-content {
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 1.5rem;
   max-width: 540px;

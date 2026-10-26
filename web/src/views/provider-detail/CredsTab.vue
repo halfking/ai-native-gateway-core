@@ -27,6 +27,7 @@ import CredentialKeyField from '../../components/CredentialKeyField.vue'
 import CredentialModelsPanel from './CredentialModelsPanel.vue'
 import KxDatePicker from '../../components/ui/KxDatePicker.vue'
 import { confirmDialog } from '../../composables/useConfirmDialog'
+import { Clock, Refresh } from '@element-plus/icons-vue'
 
 const { t: td } = useI18n()
 const pd = (k: string, params?: Record<string, unknown>): string =>
@@ -1362,7 +1363,7 @@ function onTagsInput(ev: Event) {
                 :disabled="refreshingBalance[selected.id]"
                 :title="pr('credential.row.balanceRefreshTooltip')"
                 @click="refreshBalance"
-              >{{ refreshingBalance[selected.id] ? '⏳' : '⟳' }}</button>
+              ><Clock v-if="refreshingBalance[selected.id]" /><Refresh v-else /></button>
             </div>
             <div v-if="selected.balance_source" class="cell-sub" :title="pr(selected.balance_source === 'manual' ? 'credential.row.balanceSourceManual' : 'credential.row.balanceSourceApi')">
               <template v-if="selected.balance_source === 'manual'">✏️ {{ pr('credential.row.balanceSourceManual') }}</template>
@@ -1746,4 +1747,9 @@ function onTagsInput(ev: Event) {
     transform: rotate(360deg);
   }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.btn.btn-ghost.btn-sm > svg { width: 12px; height: 12px; }
 </style>

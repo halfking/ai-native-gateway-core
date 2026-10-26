@@ -12,6 +12,7 @@ import RequestDetailSectionHost from '../components/detail/RequestDetailSectionH
 import SessionSummaryBar from '../components/SessionSummaryBar.vue'
 import { statusToneClass } from '../components/detail/statusTone'
 import { downloadSessionDetailMarkdown } from '../utils/sessionDetailExport'
+import { ArrowLeft } from '@element-plus/icons-vue'
 import './request-detail-fullscreen.css'
 
 type ViewMode = 'request' | 'session-turns'
@@ -183,7 +184,7 @@ const snapDurationMs = computed(() => {
 <template>
   <div class="rdf" data-testid="request-detail-fullscreen">
     <header class="top">
-      <button type="button" class="btn btn-sm" @click="goBack">←</button>
+      <button type="button" class="btn btn-sm" @click="goBack"><ArrowLeft /></button>
       <div class="id-block">
         <code>{{ requestId || '—' }}</code>
         <span class="status-pill" :class="statusToneClass(statusLabel, 'pill')">{{ statusLabel }}</span>

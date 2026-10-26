@@ -5,6 +5,7 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { fetchBoardErrorDrill, isBoardPieDegraded, type BoardPayload, type BoardPieItem } from '../../api/board'
+import { Close } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   board: BoardPayload | null | undefined
@@ -195,7 +196,7 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
           <button type="button" :class="{ active: errorDrillDim === 'model' }" @click="onDrillDimChange('model')">{{ t('dashboard.board.drillModel') }}</button>
           <button type="button" :class="{ active: errorDrillDim === 'provider' }" @click="onDrillDimChange('provider')">{{ t('dashboard.board.drillProvider') }}</button>
           <button type="button" :class="{ active: errorDrillDim === 'client' }" @click="onDrillDimChange('client')">{{ t('dashboard.board.drillClient') }}</button>
-          <button type="button" class="drill-close" :aria-label="t('common.button.close')" @click="errorDrillKind = null">×</button>
+          <button type="button" class="drill-close" :aria-label="t('common.button.close')" @click="errorDrillKind = null"><Close /></button>
         </div>
       </div>
       <div v-if="errorDrillLoading" class="drill-panel__loading">{{ t('dashboard.loading') }}</div>
@@ -458,4 +459,10 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
     grid-template-columns: 1fr;
   }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.drill-close > svg { width: 11px; height: 11px; }
 </style>
