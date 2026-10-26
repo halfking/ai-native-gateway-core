@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // StorageAndLogConfigView — 存储配置 + 日志轮转配置（2026-10-14，第一百二十四批）。
 //
-// GET /api/admin/storage/config   （admin/handler.go:1179 h.superAdmin）
-// GET /api/admin/logs/config      （admin/handler.go:1185 h.superAdmin）
+// GET /api/admin/storage/config   （admin/handler.go:1182 h.superAdmin）
+// GET /api/admin/logs/config      （admin/handler.go:1188 h.superAdmin）
 //
 // ══ 权限 ══════════════════════════════════════════════════════════════════
 // ★★★★★ `requiresRole: 'super_admin'` —— 而且**服务端是真门**（第二类）。

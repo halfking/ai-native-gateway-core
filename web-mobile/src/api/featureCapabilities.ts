@@ -19,7 +19,7 @@ import { req, type RequestOptions } from './client'
  * ## 为什么需要它
  *
  * 「费用对账」是**可选装配**的功能：它的端点只在开关打开时才注册
- * （`admin/handler.go:1096` 的 `providerCostReconciliationHandler` 装配判断）。
+ * （`admin/handler.go:1099` 的 `providerCostReconciliationHandler` 装配判断）。
  * ⇒ 而移动端那一席（`/m/reconciliation`）
  * 此前**无条件可见** ⇒ ⇒ 开关关着时 super_admin 照样看得见、点进去必然 404。
  * ★ 404 与「端点不存在」同形 ⇒ **没有一层会说真话**。

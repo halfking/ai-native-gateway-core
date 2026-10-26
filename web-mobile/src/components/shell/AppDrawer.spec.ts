@@ -23,7 +23,7 @@ import { useCapabilitiesStore } from '@/stores/capabilities'
  *    它们走 h.admin，tenant_admin 后端是允许的，挡掉反而是误伤。
  *
  * ★★ 2026-10-21（R72f）**加了一维**：**功能能力位**。
- *   有些功能的端点只在开关打开时才注册（「费用对账」⇒ `admin/handler.go:1096`
+ *   有些功能的端点只在开关打开时才注册（「费用对账」⇒ `admin/handler.go:1099`
  *   的 `providerCostReconciliationHandler` 装配判断）⇒ ⇒ 那一席若照常显示，
  *   super_admin 点进去必然 404 ⇒ ⇒ ★ **404 与「端点不存在」同形 ⇒ 没有一层
  *   会说真话** ⇒ ⇒ 所以前端要**按能力位隐藏入口**。
@@ -342,15 +342,19 @@ describe('navItemsFor', () => {
       //   是 h.superAdmin）。同族的 `featured-models`（`:1216`）其实是 admin 档，
       //   但这一席整体按 superAdmin 挡 —— 混档会让「谁能看哪块」不可解释。
       'routing-policy',
-      // ★★ 2026-10-14 第一百一十五批：滑窗调用明细
-      //   （`admin/credential_monitor.go:704-782`）—— **与前两席相反**！
-      //   `handleSlidingWindow` 里既没有 `tenantID` 变量也没有 `IsTenantAdmin`，
-      //   Redis 与 `_request_logs` 回退两条腿的 WHERE 都**只有 credential_id**，
-      //   而它是**全局唯一**主键 ⇒ 任何通过认证的主体报出别的租户的
-      //   credential_id 就能读到它的逐次调用明细 ⇒ 连 tenant_admin 都必须挡。
+      // ★★ 2026-10-14 第一百一十五批：滑窗调用明细 —— **与前两席相反**！
+      //   ★★2026-10-26 订正：本段原写的理由（后端没有租户维度 ⇒ 跨租户可读）
+      //   已被 audit #153 + 12h-audit 20261017 补洞覆盖 ——
+      //   `handleSlidingWindow`（`admin/credential_monitor.go:753-863`）今天
+      //   有 `tenantID` / `IsTenantAdmin` / 角色门（`:765-768`）与两条 SQL 腿的
+      //   `AND ($5 = '' OR tenant_id = $5)`（`:905` / `:950`）。
+      //   ⇒ 本席仍留在 superAdmin 白名单是**过度限制**（收紧一档不必跟着放开），
+      //     **不是漏洞** —— ★ 改白名单前必须先确认 Redis 快腿在 super_admin 下
+      //     也没有泄漏面。
       'sliding-window',
       // ★★ 2026-10-14 第一百二十批：订阅档
-      //   （`licensing/module_api.go:22`，走 **echo group**：`main.go:7027`
+      //   （`licensing/admin_api.go:33` `func RegisterModuleRoutes`，
+      //   走 **echo group**：`cmd/gateway/main.go:7188`
       //   `adminGroup := e.Group("/api/admin", requireSuperAdmin)`）
       //   ★★★★ **权限档第四类**：前三席的超管限制各有各的理由
       //   （后端不一致 / 载荷含别人的数据 / 全局平台事实），

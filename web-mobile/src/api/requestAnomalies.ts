@@ -163,7 +163,7 @@ export function fetchAnomalyList(params: AnomalyListParams = {}, options?: Reque
     qs.set('trigger', params.trigger)
   }
   // ★ `unresolved_only` 的真值判定是 `EqualFold("true") || == "1"`
-  //   （`queryBool`，admin/handler.go:1622-1624）⇒ 只在这两种形态下发送。
+  //   （`queryBool`，admin/handler.go:1625-1627）⇒ 只在这两种形态下发送。
   if (params.unresolvedOnly === true) qs.set('unresolved_only', 'true')
   if (typeof params.limit === 'number' && Number.isFinite(params.limit)) {
     const n = Math.trunc(params.limit)

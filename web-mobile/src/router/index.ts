@@ -275,7 +275,7 @@ const routes: RouteRecordRaw[] = [
   },
   // 探测系统健康 + 队列快照（2026-10-07）。admin 档：两条都在
   // RegisterProbeDashboardRoutes(mux, wrapAdmin)（probe_dashboard.go:1900-1909，
-  // 注册点 cmd/gateway/main.go:7298）⇒ tenant_admin 可用，不设 requiresRole。
+  // 注册点 cmd/gateway/main.go:7590）⇒ tenant_admin 可用，不设 requiresRole。
   // ★ 这两个端点是双轨形状（顶层字段全是 legacy 的），实现见 probeHealth.ts。
   {
     path: '/probe-health',
@@ -774,7 +774,7 @@ const routes: RouteRecordRaw[] = [
     //   「既没有 `tenantID` 变量、也没有任何 `IsTenantAdmin`」⇒ ★ **已不成立**：
     //   2026-10-16 audit #153 + 2026-10-17 12h-audit 已把门补上 ——
     //   · 角色门 `admin/credential_monitor.go:759-762`（非 super_admin/admin_key/tenant_admin 即 403）；
-    //   · 租户作用域 `admin/credential_monitor.go:787-792`（`tenantID` 由 `IsTenantAdmin` 决定）；
+    //   · 租户作用域 `admin/credential_monitor.go:793-798`（`tenantID` 由 `IsTenantAdmin` 决定）；
     //   · Redis 快腿 `:803` 对 tenant_admin 直接跳过，两条 SQL（`:896`/`:941`）都带 `AND ($5 = '' OR
     //     tenant_id = $5)`，`tenantID` 当 `$5` 传下去（`:816`/`:963`）。
     //   ⇒ **后端自己已做租户隔离** ⇒ `'super_admin'` 现在是**保守取值**（非被逼的过度限制）。
@@ -802,7 +802,7 @@ const routes: RouteRecordRaw[] = [
   },
   {
     // ★ 运维总览（2026-10-14 第一百一十七批）。
-    //   注册 `admin/handler.go:1141` `mux.HandleFunc("/api/admin/ops/overview", h.superAdmin(h.handleOpsOverview))`
+    //   注册 `admin/handler.go:1144` `mux.HandleFunc("/api/admin/ops/overview", h.superAdmin(h.handleOpsOverview))`
     //   —— ★ 订正（2026-10-21 行号订正轮）：原引用 `:1134`（那一行逐字是 `/api/admin/dashboard/rollup/rebuild`
     //     的注册）→ 实为 `:1141`；且原写「注册处**确实**是 admin 档」**也已过期** —— 后端批 158e（2026-10-17）
     //     已降为 **superAdmin 档**（`SuperAdminMiddleware`，`admin/auth.go:467-475`：`claims.Role != "super_admin"` 即 403）；

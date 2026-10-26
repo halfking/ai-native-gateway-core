@@ -742,6 +742,22 @@ def build_authoritative(rows, meta, backlog=None):
     return "\n".join(lines)
 
 
+# ★★★ 棘轮计数（★ R161 轮新增）：★ 本段落自称「★ 棘轮基线，★ 只许降」
+#   ⇒ 「矛盾数变小」是【正确的改善】⇒ ★ 校验通道必须放行它。
+RATCHET_RE = re.compile(r"矛盾数（★ 棘轮基线，★ 只许降）\*\*：`(\d+)`")
+
+
+def extract_backlog(section):
+    """从权威段落里取出棘轮计数（★ 取不到 ⇒ None ⇒ 不走棘轮通道）。"""
+    m = RATCHET_RE.search(section or "")
+    return int(m.group(1)) if m else None
+
+
+def normalize_backlog(section):
+    """把棘轮计数抹成占位符（★ ⇒ 两条段落除计数外必须逐字相等）。"""
+    return RATCHET_RE.sub("矛盾数（★ 棘轮基线，★ 只许降）**：`N`", section or "")
+
+
 def cmd_render(args):
     rows, meta = read_snapshot(args.snapshot)
     if not rows:
@@ -757,10 +773,32 @@ def cmd_render(args):
         if cur is None:
             print(f"✘ {out} 里没有权威状态段落（★ 缺 R160-AUTHORITATIVE 标记）")
             return 2
-        if cur.strip() != section.strip():
+        if cur.strip() == section.strip():
+            print("✓ 权威状态段与快照一致")
+            return 0
+        # ★★★ 棘轮语义（★ R161 轮修的真缺陷）：★★ 本段落自称
+        #   「★ 棘轮基线，★ 只许降 ⇒ ★ 门要求现值 ≤ 本值」，
+        #   ★★ 而旧实现要求【逐字相等】⇒ ★★ **门与它自己写的规则互相矛盾**
+        #   ⇒ ★★ ⇒ 「矛盾数变小」这种【正确的改善】会让门红
+        #   ⇒ ★★ ⇒ 人只能去把散文改回去（★ 门会逼人撒谎）。
+        # ★★ 正确口径：★ 允许**唯一**一处差异 = 棘轮计数，且方向必须是【变小】。
+        cur_backlog = extract_backlog(cur)
+        new_backlog = extract_backlog(section)
+        if cur_backlog is None or new_backlog is None:
             print(f"✘ {out} 里的权威状态段与快照现算结果不一致 ⇒ ★ 要么手改过，★ 要么快照已过期")
+            print("  （★ 棘轮计数无法解析 ⇒ 不走棘轮通道）")
             return 2
-        print("✓ 权威状态段与快照一致")
+        if new_backlog > cur_backlog:
+            print(f"✘ 棘轮计数【变大】：仓内 {cur_backlog} → 现算 {new_backlog}")
+            print("  （★ 棘轮只许降 ⇒ 变大说明散文被改得更乐观了 ⇒ 拒绝）")
+            return 2
+        if normalize_backlog(cur) != normalize_backlog(section):
+            print(f"✘ {out} 里的权威状态段与快照现算结果不一致（★ 除棘轮计数外还有别的差异）")
+            print("  （★ 棘轮通道只放行【棘轮计数变小】这一种差异）")
+            return 2
+        print(f"✓ 权威状态段与快照一致（★ 棘轮计数收紧：{cur_backlog} → {new_backlog}）")
+        print("  （★ 建议重新生成镜像以收紧基线：python3 scripts/audit/db-changelog-ledger-reconcile.py"
+              " render --snapshot scripts/audit/asset/db-changelog-ledger-snapshot.tsv --write）")
         return 0
     if args.write:
         if os.path.exists(out):
@@ -923,6 +961,19 @@ def cmd_selftest(args):
     soft_kinds = sorted((h["migration"], h["kind"]) for h in rep["soft_contradictions"])
     check((14, "claimed-applied-but-absent") in soft_kinds,
           f"④ 14 号应进软桶（★ 旁路应用可能），实际 {soft_kinds}")
+
+    # ④b ★★★ 棘轮通道的自证（★ R161 轮新增）：★ 本段落自称「只许降」
+    #   ⇒ ★★ 校验通道必须【放行计数变小】、★【拒绝计数变大】、★【拒绝别的差异】。
+    ratchet_line = "★ ★ **散文状态与账本的矛盾数（★ 棘轮基线，★ 只许降）**：`%d`（★ 判据：…）"
+    sec_hi = "前言\n" + (ratchet_line % 107) + "\n表格\n"
+    sec_lo = "前言\n" + (ratchet_line % 106) + "\n表格\n"
+    check(extract_backlog(sec_hi) == 107, "④b 棘轮计数解析失败（107）")
+    check(extract_backlog(sec_lo) == 106, "④b 棘轮计数解析失败（106）")
+    check(normalize_backlog(sec_hi) == normalize_backlog(sec_lo),
+          "④b 抹掉计数后两条段落必须逐字相等")
+    sec_other = "前言\n" + (ratchet_line % 106) + "\n★ ★ 表格被手改过\n"
+    check(normalize_backlog(sec_other) != normalize_backlog(sec_lo),
+          "④b 非计数差异必须能被抹平检查抓到")
 
     # ⑤ ★★★ **权威段必须被跳过**（★ 防御性规则 ⇒ ★★ 必须【可被测到】⇒ 否则它是死代码）
     #

@@ -227,10 +227,10 @@ describe('① 权限档「admin」（第四个写下错话的模块）', () => {
     expect(sup).toMatch(/case "user"/)
   })
 
-  it('①-6 ★★★★★★ 读 Go 源码：注册行 `:1277` → `:1307`（批153）→ `:1342`（12h-audit 20261017）→ 实为 `:1349`（2026-10-21 views 行号订正轮）且是 admin 档', () => {
+  it('①-6 ★★★★★★ 读 Go 源码：注册行 `:1277` → `:1307`（批153）→ `:1342`（12h-audit 20261017）→ 实为 `:1349`（2026-10-21 views 行号订正轮）→ 实为 `:1352`（2026-10-26 行号漂移订正轮）且是 admin 档', () => {
     const lines = goSrc('admin/handler.go').split('\n')
     const i = lines.findIndex((l) => l.includes('"/api/admin/turns/sessions/filter-options"'))
-    expect(i + 1, '模块头原写 :1277 → :1307 → :1342 → 实为 :1349').toBe(1349)
+    expect(i + 1, '模块头原写 :1277 → :1307 → :1342 → :1349 → 实为 :1352').toBe(1352)
     // ★★★ 逐字复核：这一行必须是 `admin(...)` 档，**不是** `superAdmin(...)`。
     expect(lines[i]).toMatch(/admin\(h\.handleTurnsFilterOptions\)/)
     expect(lines[i]).not.toMatch(/superAdmin/)

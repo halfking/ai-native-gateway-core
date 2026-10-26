@@ -282,14 +282,15 @@ describe('① 权限档 admin（本仓第一个「有租户维度但缺角色下
     }
   })
 
-  it('①-8 ★★★★★ 注册处行号订正：模块头原写 `:1267`，经 `:1297`（批153）、`:1332`（12h-audit 20261017）再漂至实为 `:1339`（2026-10-21 views 行号订正轮）', () => {
+  it('①-8 ★★★★★ 注册处行号订正：模块头原写 `:1267`，经 `:1297`（批153）、`:1332`（12h-audit 20261017）再漂至 `:1339`（2026-10-21 views 行号订正轮）→ 实为 `:1342`（2026-10-26 行号漂移订正轮）', () => {
     const src = goSrc('admin/handler.go')
     const lines = src.split('\n')
     const at = lines.findIndex((l) => l.includes('"/api/admin/usage/"'))
     expect(at, '找不到 /api/admin/usage/ 的注册行').toBeGreaterThan(-1)
     // ★ 12h-audit 20261017：a18db7b84/c286e505a/eb0aee4ec 三笔再推 35 行 ⇒ :1332；
-    //   2026-10-21 views 行号订正轮：再推 7 行 ⇒ 真实行号 :1339。
-    expect(at + 1).toBe(1339)
+    //   2026-10-21 views 行号订正轮：再推 7 行 ⇒ :1339；
+    //   2026-10-26 行号漂移订正轮：再推 3 行 ⇒ 真实行号 :1342。
+    expect(at + 1).toBe(1342)
     expect(lines[at]).toMatch(/h\.admin\(h\.HandleUsageAdmin\)/)
     // ★★ 反向护栏：原行号那行必须**不是**本族注册处（它其实是 errorsTrend 相关）。
     expect(lines[1266]).not.toMatch(/usage/i)
