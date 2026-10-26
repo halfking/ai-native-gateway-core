@@ -27,9 +27,20 @@
 # Usage:
 #   bash scripts/audit/measure-permanent-skip-axis.sh              # measure, print table
 #   bash scripts/audit/measure-permanent-skip-axis.sh --verify     # measure + diff vs ledger
+#   bash scripts/audit/measure-permanent-skip-axis.sh --dry-run-readonly
+#                                                                  # ★ 只读台账 + 断言契约（★ 不碰库）
 #   KEEP_DB=1 bash scripts/audit/measure-permanent-skip-axis.sh    # keep the shape DB
 #   SHAPE_DB=itgate_xxx bash scripts/audit/measure-permanent-skip-axis.sh
 #                                                                  # reuse an existing shape DB
+#
+# ★ --dry-run-readonly 的定位（2026-10-28 R86 轮新增）：
+#   本脚本的**测量**需要真实库（docker + psql + 一次性形态库）⇒ ⇒「掏空法」门
+#   （scripts/ursmcheck/tsv_hollowout_gate_test.go）**不能**跑它
+#   ⇒ ⇒ R85 轮因此把 `permanent-skip-ledger.tsv` 登记成【例外】（理由 = 「需要真实库」）。
+#   ★ 本模式把「**读台账 + 断言台账契约**」这一层单独抽出来 ⇒ **完全不碰库**
+#   ⇒ ⇒ 「掏空 ⇒ 读方必须红」这条判据因此**可以在不碰库的前提下被行为化验证**。
+#   ★ 诚实边界：本模式**不重跑测量** ⇒ 它证明「台账被掏空 ⇒ 台账的契约不成立 ⇒ 读方红」
+#   ⇒ 而**不是**「台账被掏空 ⇒ 测量结果会与台账不符」（后者由 --verify 负责）⇒ 两者互补。
 #
 # Env:
 #   PG_CONTAINER  container (default: llm-gateway-pg)
@@ -53,7 +64,11 @@ DB_NAME="${DB_NAME:-itgate_permskip_shape}"
 LEDGER="${LEDGER:-scripts/audit/permanent-skip-ledger.tsv}"
 KEEP_DB="${KEEP_DB:-0}"
 VERIFY=0
-[ "${1:-}" = "--verify" ] && VERIFY=1
+DRY_RUN_READONLY=0
+case "${1:-}" in
+  --verify) VERIFY=1 ;;
+  --dry-run-readonly) DRY_RUN_READONLY=1 ;;
+esac
 
 # ---------------------------------------------------------------- 量具纪律 0
 # ★ 本脚本自己踩过一次坑，记在这里免得下一个人再踩：
@@ -82,6 +97,88 @@ read_val() {
   out="$(psql "$dsn" -q -A -t -c "$sql" 2>/dev/null | grep -v -E '^(WARNING|HINT|NOTICE|INFO|DETAIL|ERROR:|FATAL:)' | head -1)"
   printf '%s' "$out"
 }
+
+# ---------------------------------------------------------------- --dry-run-readonly
+# ★ 只读台账 + 断言台账契约 ⇒ ★ **完全不碰库**（不建库 / 不连 psql / 不 docker exec）
+#   ⇒ ⇒ 「掏空法」门可以把它当作 `permanent-skip-ledger.tsv` 的**行为化读方**
+#   ⇒ ⇒ 例外表里那条「需要真实库」的例外因此被降级为「已验证」。
+#
+# ★ 断言的是【台账契约】——★ 那正是本脚本每次测量跑完会写出来的那份形状：
+#   ① 台账存在；
+#   ② 数据行 ≥ 1（★ 掏空 ⇒ 这里红）；
+#   ③ 每行 5 列（gate / file / probe_target / verdict / reason）；
+#   ④ verdict ∈ {PASS, FAIL, SKIP}（★ 写进台账的必须是实测判定）；
+#   ⑤ gate 列非空且**唯一**（★ 一条门一行 ⇒ 不能重复登记）；
+#   ⑥ file 列指向仓内**真实存在**的文件（★ 台账不能指向不存在的测试文件）。
+#
+# ★★ 诚实边界（★ 与 `--verify` 的分工）：
+#   ★ 本模式**不重跑测量** ⇒ 它证明的是「台账被掏空 ⇒ 台账契约不成立 ⇒ 读方红」
+#   ⇒ 而**不是**「台账被掏空 ⇒ 测量结果会与台账不符」
+#   ⇒ 后者由 `--verify` 模式负责（★ 它需要真实库）⇒ ⇒ 两者是【互补】的两层。
+if [ "$DRY_RUN_READONLY" = "1" ]; then
+  say "== --dry-run-readonly：只读台账 + 断言契约（★ 不建库 / 不连 psql / 不 docker）=="
+  if [ ! -f "$LEDGER" ]; then
+    say "  ✗ 台账不存在：${LEDGER}"
+    exit 1
+  fi
+  say "  ✓ 台账存在：${LEDGER}"
+
+  # ② 数据行 ≥ 1
+  rows="$(grep -c -vE '^[[:space:]]*(#|$)' "$LEDGER" || true)"
+  if [ "${rows:-0}" -lt 1 ]; then
+    say "  ✗ 台账 0 数据行 ⇒ 台账被掏空 ⇒ 拒绝出结论"
+    exit 1
+  fi
+  say "  ✓ 数据行 = ${rows}"
+
+  # ③ 每行 5 列
+  badcols="$(awk -F'\t' '!/^[[:space:]]*(#|$)/ && NF!=5 {n++} END{print n+0}' "$LEDGER")"
+  if [ "$badcols" != "0" ]; then
+    say "  ✗ 台账有 ${badcols} 行列数不是 5（契约：gate/file/probe_target/verdict/reason）"
+    exit 1
+  fi
+  say "  ✓ 每行 5 列"
+
+  # ④ verdict ∈ {PASS,FAIL,SKIP}
+  badverdict="$(awk -F'\t' '!/^[[:space:]]*(#|$)/ && $4 !~ /^(PASS|FAIL|SKIP)$/ {n++} END{print n+0}' "$LEDGER")"
+  if [ "$badverdict" != "0" ]; then
+    say "  ✗ 台账有 ${badverdict} 行 verdict 不是 PASS/FAIL/SKIP"
+    exit 1
+  fi
+  say "  ✓ verdict 取值合法"
+
+  # ⑤ gate 列非空且唯一
+  emptygate="$(awk -F'\t' '!/^[[:space:]]*(#|$)/ && $1=="" {n++} END{print n+0}' "$LEDGER")"
+  if [ "$emptygate" != "0" ]; then
+    say "  ✗ 台账有 ${emptygate} 行 gate 列为空"
+    exit 1
+  fi
+  dupgate="$(awk -F'\t' '!/^[[:space:]]*(#|$)/ {print $1}' "$LEDGER" | sort | uniq -d | wc -l | tr -d ' ')"
+  if [ "${dupgate:-0}" != "0" ]; then
+    say "  ✗ 台账有 ${dupgate} 个 gate 被重复登记"
+    exit 1
+  fi
+  say "  ✓ gate 列非空且唯一"
+
+  # ⑥ file 列指向仓内真实存在的文件
+  missingfile="$(awk -F'\t' '!/^[[:space:]]*(#|$)/ {print $2}' "$LEDGER" | sort -u | while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      [ -f "$f" ] || echo "$f"
+    done | wc -l | tr -d ' ')"
+  if [ "${missingfile:-0}" != "0" ]; then
+    say "  ✗ 台账有 ${missingfile} 行的 file 列指向仓内不存在的文件"
+    awk -F'\t' '!/^[[:space:]]*(#|$)/ {print $2}' "$LEDGER" | sort -u | while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      [ -f "$f" ] || say "      缺：${f}"
+    done
+    exit 1
+  fi
+  say "  ✓ file 列指向仓内真实存在的文件"
+
+  say "== 汇总 =="
+  say "  台账契约 = 通过（★ 本模式未碰任何数据库）"
+  exit 0
+fi
 
 # ---------------------------------------------------------------- 形态库
 if [ -z "${SHAPE_DB:-}" ]; then
