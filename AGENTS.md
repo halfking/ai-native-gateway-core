@@ -8793,6 +8793,32 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★★ （本机 `psql` shim 不认 DSN 的 host/port）⇒ ★ 已在 **origin/main 独立 worktree
 > ⇒ ⇒ ★★★ 复跑确认同签名失败 ⇒ **非本轮引入**，未动。
 > ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R90-turns-sessions-过滤路径500与两腿改写.md`**。
+> **2026-10-27 R168 轮 · 252 SQL 日志 7 天全窗审计（10-19 23:47→10-27 06:05；主修复 stats rollup 30s 击杀活锁）**：
+> ★ **读数**：47,818 慢查 / 33,330 错误（★ 已扣 archive 同日 .gz/.log 重叠段双计 1,210/916）。
+> ★★ **主机干预（本轮最重要运维发现）**：开工 load 58.5 的元凶 = **~15 个 PPID=1 孤儿 AI 会话壳
+> + 4 条失控 grep**（单条烧 41.8 CPU 小时）+ 一条 1h55m 超级用户测量查询 ⇒ 清理后 **1 分钟 load 55→10.6**
+> ⇒ R167 的「白天 load 40→64」带与此直接相关；**清理按 `ps -eo pid,ppid` 枚举到零，每杀一层壳会翻出下一层 grep**。
+> ⇒ ★ **闭环验证 4 项**：A 族 `uq_session_turns_hot_final_success` 23505 ×6,569（10-22/23 爆发）
+> **10-25 起三日全零 = §143.105 修复的独立日志侧闭环**；§145 D1/D2（disk-watch 探已删视图 ×76 /
+> model_offers Sprintf % 语法错 ×473）10-23 起绝迹；WITH neg 10-21/22 集中 252 次后自熄。
+> ⇒ ★★ **主修复 `domains/stats/daily_monthly_rollup.go` 三件套**：`WITH latest`（3 天窗
+> usage_facts⋈dedup 重建 stats_usage_daily）被 30s rolconfig 击杀 **284 次/7 天（~41/天）、262 个不同分钟
+> = 平坦分布 = 内在成本**（干净负载 EXPLAIN 单臂仅 1.22s，贵在双实例每小时各自全量重建无任何协调）⇒
+> ①事务内 `SET LOCAL statement_timeout = rollupRefreshBudget(2min)`（promote/analyze 先例）+
+> ②单 runner advisory try-lock（`llm-gateway:stats-daily-rollup:`，输家跳过本 tick，重建幂等零损失）+
+> ③CloseEligibleMonths 独立 30s 预算（防刷新饿死月度封存）；形状测试（Begin<SET LOCAL<lock<DELETE<Commit
+> 次序钉死+天花板派生自预算）+ testcontainers 集成测试（peer 持锁⇒跳过 0 行；释放⇒正常重建）+
+> **变异两臂全检出**；生效待下次部署。⇒ ★ **登记不修 4 项**：**session_owners 特性缺口**
+> （358 回填读已删的 v1 表 ⇒ 890 后**不可投递**；installer 链只收编 session_dim 没收编 session_owners
+> 与 trigger；端点已有 10-03 降级口径 ⇒ **半截建空表会洗白 degraded 信号，明确不做**，正解=换源重制或
+> 端点改读 session_dim（owner 列 82% 有数据））；ursm 仪表查询分区裁剪失效（Append 探 9 分区，
+> 属地=ursmcheck 并行轨，10-24 刚被改过不越界）；bodies promote 60s 天花板 76 次=设计行为；外部噪音族
+> （search×436/pg_sleep×2250/schema_migrations 列名探测…）。⇒ ★ **测量污染**：本仓会话自己的
+> nolat/haslat/distinct_tenant 直连生产测量烧 ~4.5h CPU（含终止的 1h55m 一条）——**测量单条 >30s 的
+> 改用 scratch 库或明确预算，超级用户会话不受 rolconfig 约束**。⇒ 量具坑 5 条见审计档 §十
+> （提取器 flush 时机/`statement:` 标记定位/.gz 双计/pkill 自匹配/zsh 裸 `===`）。
+> ⇒ 审计档 `docs/audit/2026-10-27-R168-252-SQL日志审计轮.md`；通用式见 `LESSONS.md` **§458**
+> （★ 原拟 §457，推送前 fetch 实测并行 24h 审计轮已占用 ⇒ 按先到者惯例让号）。
 > **2026-10-27 R167 轮（本会话）· 910 生产闭环复核与节奏归因【迁移 910 已应用，本轮零代码零迁移】**：
 > **对生产写入 = 0**（252 只读：schema_migrations / pgss 10min 序列 / 三台网关 journal / PG 外抄日志）。
 > 完整记录见 `docs/audit/2026-10-27-R167-910生产闭环复核与节奏归因轮.md` + LESSONS `§455`（★ 原拟 §454，合并让号）。

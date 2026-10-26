@@ -3,6 +3,7 @@ package stats
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"sync"
 	"time"
@@ -13,7 +14,33 @@ import (
 const (
 	defaultRollupInterval = time.Hour
 	rollupLookback        = 48 * time.Hour
+
+	// rollupRefreshBudget caps one Refresh round-trip. The 3-day whole-bucket
+	// rebuild measured 17-30s+ on 252 under load (R168 audit: 293 statement
+	// timeouts in 7 days) — the role-level 30s rolconfig default kills it long
+	// before this budget; the in-transaction SET LOCAL is aligned to this
+	// value so the ceiling is ours, not the role's (promote 60s / analyze
+	// 10min precedent).
+	rollupRefreshBudget = 2 * time.Minute
+
+	// rollupCloseBudget: month close is a tiny idempotent UPDATE — it must not
+	// share the refresh budget, or a rebuild that eats the whole 2min starves
+	// it and the close silently never runs (R168).
+	rollupCloseBudget = 30 * time.Second
 )
+
+// statsRollupLockSeed derives the advisory-lock key shared by every gateway
+// instance (FNV-1a, same derivation as bg's promoteLockKey). Both instances
+// tick hourly against the same database and each runs the full 3-day rebuild;
+// without the lock a collision leaves both spending their statement budget in
+// lock waits until the role-level timeout kills them.
+const statsRollupLockSeed = "llm-gateway:stats-daily-rollup:"
+
+var statsRollupLockKey = func() int64 {
+	h := fnv.New64a()
+	h.Write([]byte(statsRollupLockSeed))
+	return int64(h.Sum64())
+}()
 
 // DailyMonthlyRollup rebuilds open daily/monthly projections from usage_facts.
 // Rebuild semantics make retries and late usage corrections converge without
@@ -91,13 +118,15 @@ func (r *DailyMonthlyRollup) run(ctx context.Context, done chan struct{}) {
 
 func (r *DailyMonthlyRollup) refreshRecent(ctx context.Context) {
 	now := time.Now().UTC()
-	refreshCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	refreshCtx, cancel := context.WithTimeout(ctx, rollupRefreshBudget)
 	defer cancel()
 	if err := r.Refresh(refreshCtx, now.Add(-rollupLookback), now); err != nil {
 		slog.Warn("stats daily/monthly rollup failed", "error", err)
 		return
 	}
-	if err := r.CloseEligibleMonths(refreshCtx, now); err != nil {
+	closeCtx, closeCancel := context.WithTimeout(ctx, rollupCloseBudget)
+	defer closeCancel()
+	if err := r.CloseEligibleMonths(closeCtx, now); err != nil {
 		slog.Warn("stats monthly close failed", "error", err)
 	}
 }
@@ -152,6 +181,31 @@ func (r *DailyMonthlyRollup) Refresh(ctx context.Context, since, until time.Time
 		return fmt.Errorf("begin stats rollup: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// R168 (252 SQL log audit): the role-level statement_timeout=30s (252
+	// rolconfig) killed this rebuild 293 times in 7 days — the 3-day window ×
+	// 6-dimension aggregate runs 17-30s+ under load, every killed attempt
+	// rolls back and the next tick redoes the identical window. Raise the
+	// ceiling to the Go-side budget (promote/analyze precedent); it is
+	// restored automatically when the transaction ends.
+	if _, err := tx.Exec(ctx,
+		fmt.Sprintf("SET LOCAL statement_timeout = '%dms'", rollupRefreshBudget.Milliseconds())); err != nil {
+		return fmt.Errorf("set stats rollup statement_timeout: %w", err)
+	}
+	// Single-runner lock: both gateways tick hourly against the same database.
+	// The loser skips this tick instead of racing the winner through the same
+	// DELETE+INSERT and burning both statement budgets in lock waits
+	// (pg_try_advisory_xact_lock + promoteLockKey / R12-F1 matview precedent).
+	// The rebuild is idempotent and whole-window, so a skipped tick loses no
+	// coverage — the peer (or the next tick) rebuilds it.
+	var gotLock bool
+	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock($1)`, statsRollupLockKey).
+		Scan(&gotLock); err != nil {
+		return fmt.Errorf("acquire stats rollup lock: %w", err)
+	}
+	if !gotLock {
+		return nil
+	}
 
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM stats_usage_daily
