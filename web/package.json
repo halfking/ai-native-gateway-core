@@ -60,6 +60,8 @@
     "design-elevation:selftest": "node scripts/design-elevation-guard.mjs --selftest",
     "design-elevation:list": "node scripts/design-elevation-guard.mjs --list",
     "design-elevation:update-baseline": "node scripts/design-elevation-guard.mjs --update-baseline",
+    "design-elevation:runtime": "node scripts/design-elevation-runtime-check.mjs",
+    "design-elevation:runtime:selftest": "node scripts/design-elevation-runtime-check.mjs --selftest",
     "color:baseline:update": "node scripts/color-token-audit.mjs --update-baseline --baseline scripts/color-audit-baseline.json",
     "color:baseline:stale": "node scripts/color-baseline-stale.mjs",
     "ui:sweep:selftest": "node scripts/ui-sweep.mjs --selftest",

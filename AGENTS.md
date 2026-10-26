@@ -508,8 +508,10 @@
 > —— ① **逐行匹配漏多行声明**（`RequestTile.vue` 的 `.request-tile--probe` 跨 4 行）；
 > ② **不剥注释抓出假阳性**（`style.css` 注释里的声明）⇒ 修完后与门**逐条对拍 53/53 一致**
 > ⇒ ★★ **两个独立实现必须逐条对拍，这是发现「量具自己坏了」的唯一手段**。
-> ⇒ ★★★ **源码合规 ≠ 运行时合规** ⇒ 补了一次**独立运行时核对**（无头 Chrome + CDP，
-> 遍历**全 DOM** 的计算阴影）：**7 页 × 2 主题 = 14 次扫描 ⇒ 非 token 抬升层 0 处**；
+> ⇒ ★★★ **源码合规 ≠ 运行时合规** ⇒ 补了一次**独立运行时核对**，且把工具**固化进仓**（`web/scripts/design-elevation-runtime-check.mjs`
+> ⇒ `design-elevation:runtime` / `:runtime:selftest` 11/11；★ 无 Chrome 时打印 ⏭ SKIP「未测量」而不是伪装成通过）
+> ⇒ 核对方式：头 Chrome + CDP，
+> 遍历**全 DOM** 的计算阴影）：**9 页 × 2 主题 = 18 次扫描 ⇒ 非 token 抬升层 0 处**；
 > 定点断言（13 处幽灵卡片处置）**0 条不通过**（`.topo-node` / `.gw` 计算阴影 = `none`；
 > `.app-topbar__dropdown` / `.user-menu__dropdown` = `md` 阴影 + 四边 `0px`）；
 > 浮层实测 `.journey-modal` = `rgba(0,0,0,.4) -12px 0 32px 0px`（**md-left 侧投影**）。
