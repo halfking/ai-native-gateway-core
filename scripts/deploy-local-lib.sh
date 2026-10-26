@@ -1313,8 +1313,11 @@ dl_wait_pg_isready() {
         dl_pg_check_memory "$user" "$pass" "$host" "$port" "$db" || true
         return 0
       }
-    elif _dl_have psql; then
-      PGPASSWORD="$pass" psql -X -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' \
+    elif dl_host_have psql; then
+      # ★★ 2026-10-27（R165 轮）★★ dl_host_run 优先 ~/kaixuan/pg18/bin/psql
+      #   ⇒ ★ 裸 `psql` 会命中 PATH 首位的容器转发 shim（★ 它丢 host/port、走容器内 socket）
+      #   ⇒ ⇒ 连到【另一个集群】⇒ ⇒ 预检误判 + 误导性报错。
+      PGPASSWORD="$pass" dl_host_run psql -X -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' \
         -h "$host" -p "$port" -U "$user" -d "$db" >/dev/null 2>&1 && {
         log "PG pre-flight: ready after $attempt probe(s) via psql"
         dl_pg_check_memory "$user" "$pass" "$host" "$port" "$db" || true
@@ -1392,8 +1395,9 @@ _dl_pg_scalar() {
       -h 127.0.0.1 -p 5432 -U "$user" -d "$db" 2>/dev/null && return 0
     return 1
   fi
-  if _dl_have psql; then
-    PGPASSWORD="$pass" psql -X -v ON_ERROR_STOP=1 -Atqc "$q" \
+  if dl_host_have psql; then
+    # ★★ 2026-10-27（R165 轮）★★ dl_host_run 优先 ~/kaixuan/pg18/bin/psql ⇒ ★ 绕开 shim
+    PGPASSWORD="$pass" dl_host_run psql -X -v ON_ERROR_STOP=1 -Atqc "$q" \
       -h "$host" -p "$port" -U "$user" -d "$db" 2>/dev/null && return 0
     return 1
   fi
@@ -1404,7 +1408,7 @@ dl_pg_container_name() {
   # running in system/host mode (dl_wait_pg_isready only execs when set).
   if [[ -n "${DL_PG_CONTAINER:-}" ]]; then printf '%s\n' "$DL_PG_CONTAINER"; return; fi
   for c in llm-gateway-pg postgres kx-citus; do
-    if (( DL_DOCKER )) && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -Fxq "$c"; then
+    if command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -Fxq "$c"; then
       printf '%s\n' "$c"; return
     fi
   done
