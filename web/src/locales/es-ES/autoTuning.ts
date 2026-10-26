@@ -4,7 +4,7 @@ export default {
     refreshing: 'Actualizando…',
     loadFailed: 'No se pudo cargar el ajuste automático. Vuelva a intentarlo.',
     panelTitle: 'Propuestas de ajuste (aprobada = aplicación en caliente en 5 min)',
-    noProposals: 'Aún no hay propuestas (feedback_analyzer las genera por ventana)',
+    noProposals: 'Aún no hay propuestas (analizador de feedback las genera por ventana)',
   filter: {
     statusAll: 'Todo',
     pending: 'Pendiente',
@@ -41,7 +41,7 @@ export default {
     generateNone: 'Correcciones insuficientes en la ventana o ya existen propuestas pendientes idénticas: no se generó nada',
     analyze: 'Ejecutar análisis de señales',
     analyzing: 'Analizando…',
-    analyzeConfirm: '¿Ejecutar el analizador de feedback ahora (propuestas basadas en la calidad de tuning_signals)?',
+    analyzeConfirm: '¿Ejecutar el analizador de feedback ahora (propuestas basadas en la calidad de señales de ajuste)?',
     analyzeDone: 'Análisis de señales completado: {at}',
   },
   accuracy: {

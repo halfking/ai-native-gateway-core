@@ -4,7 +4,7 @@ export default {
     refreshing: '更新中…',
     loadFailed: '自動チューニングの読み込みに失敗しました。再試行してください。',
     panelTitle: 'チューニング提案（承認後 5 分以内にホット適用）',
-    noProposals: '提案はまだありません（feedback_analyzer が期間ごとに自動生成します）',
+    noProposals: '提案はまだありません（フィードバックアナライザーが期間ごとに自動生成します）',
   filter: {
     statusAll: 'すべて',
     pending: '保留中',
@@ -41,7 +41,7 @@ export default {
     generateNone: '期間内の修正サンプルが不足しているか、同一の保留中提案が既に存在するため、新規生成はありません',
     analyze: 'シグナル分析を実行',
     analyzing: "解析中…",
-    analyzeConfirm: 'feedback_analyzer のシグナル分析を今すぐ実行しますか（tuning_signals 品質駆動の提案）？',
+    analyzeConfirm: 'フィードバックアナライザーのシグナル分析を今すぐ実行しますか（調整シグナル品質駆動の提案）？',
     analyzeDone: 'シグナル分析が完了しました：{at}',
   },
   accuracy: {

@@ -22,7 +22,7 @@ export default {
   },
   action: {
     apply: 'Aplicar sugerencias',
-    applyConfirm: '¿Escribir las sugerencias de tier basadas en correcciones en la configuración de tier (task_type_tier_config)?',
+    applyConfirm: '¿Escribir las sugerencias de tier basadas en correcciones en la configuración de tier?',
     applyDone: 'Aplicado: {types}',
     applyNone: 'Ninguna sugerencia alcanza actualmente el umbral',
     reload: 'Recargar overlay',

@@ -89,7 +89,7 @@ export default {
       compress: '压缩',
       security: '安全脱敏',
     },
-    mappedToLogs: '对应 request_logs:',
+    mappedToLogs: '对应请求日志：',
     openSingle: '在单请求模式打开',
     noChildren: '无子请求',
     switchHint: '请切换到「单请求」模式的「压缩与脱敏」Tab 查看三阶段对比。',

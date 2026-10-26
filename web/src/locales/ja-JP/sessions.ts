@@ -1,6 +1,6 @@
 export default {
   list: {
-    emptyHint: "gw_session_id を含むリクエストログが生成されると、セッションが自動的に集計表示されます",
+    emptyHint: "セッション ID を含むリクエストログが生成されると、セッションが自動的に集計表示されます",
   },
   userProfile: {
     loadFailed: 'ユーザープロフィールの読み込みに失敗しました。再試行してください。',
@@ -258,7 +258,7 @@ export default {
     healthMetricComplianceHint: 'プロンプトインジェクション、PII、出力コンプライアンスの結果を関連付けます。',
     healthMetricOutcome: 'セッション結果',
     healthMetricOutcomeHint: 'ヘルススコアはセッション分析データに書き込まれ、分析センターで表示できます。',
-    healthSource: 'ソース：session_inspectorモジュールの実行状態',
+    healthSource: 'ソース：セッション巡回モジュールの実行状態',
     healthViewAnalytics: "セッション分析を開く",
     // プロンプトインジェクション検出設定（2026-07-12）
     promptInjectionTab: "プロンプトインジェクション",

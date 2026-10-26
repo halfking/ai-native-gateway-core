@@ -180,7 +180,7 @@ export default {
       mediaOnlyShort: "Media",
     },
     planTypeUnset: "Not set (treated as token)",
-    planTypeHint: "Used by v_routable_credential_models rule 8; cmb.billing_mode is auto-derived from this",
+    planTypeHint: "Used for route adaptation; billing mode is auto-derived from this",
     planTypes: {
       token: "token (pay-per-use)",
       token_plan: "token_plan (subscription)",
@@ -299,12 +299,12 @@ export default {
     probeAllTitle: "Probe every model in the list to verify availability",
     // 2026-07-21 P0: shown after "Probe all" reports ok=N — explains that
     // the routing view will now re-admit the recovered bindings.
-    probeAllRecoveredHint: '✓ {n} model(s) probed OK; node_probe_state auto-recovered, routing candidates re-enabled',
+    probeAllRecoveredHint: '✓ {n} model(s) probed OK; probe status auto-recovered, routing candidates re-enabled',
     resetNodeProbeBtn: 'Clear failed probes',
     resetNodeProbeLoading: 'Clearing…',
-    resetNodeProbeTitle: 'Clear node_probe_state rows where last_direct_ok=FALSE (force-recover routing). Use when Probe all shows OK but routing candidates remain blocked.',
-    resetNodeProbeConfirm: 'Clear all failed node_probe_state rows for this provider?',
-    resetNodeProbeDone: '✓ Cleared {n} failed node_probe_state rows; routing candidates re-enabled',
+    resetNodeProbeTitle: 'Clear failed probe records (force-recover routing). Use when Probe all shows OK but routing candidates remain blocked.',
+    resetNodeProbeConfirm: 'Clear all failed probe records for this provider?',
+    resetNodeProbeDone: '✓ Cleared {n} failed probe records; routing candidates re-enabled',
     probingModels: "Probing models…",
     probeResultOk: "✅ OK {n}",
     probeResultUnavailable: "❌ Model unavailable {n}",

@@ -22,7 +22,7 @@ export default {
   },
   action: {
     apply: '应用升档建议',
-    applyConfirm: '把修正驱动的分层建议写入 tier 配置（task_type_tier_config）？',
+    applyConfirm: '把修正驱动的分层建议写入分层配置？',
     applyDone: '已应用：{types}',
     applyNone: '当前没有满足阈值的升档建议',
     reload: '重载 overlay 档案',
