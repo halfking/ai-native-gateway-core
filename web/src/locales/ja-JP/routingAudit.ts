@@ -1,7 +1,7 @@
 // Auto-synced from en-US (ja-JP)
 export default {
   title: 'Routing Overrides Audit',
-  subtitle: 'routing_overrides テーブルの変更ごとに、操作者・操作内容・行の状態が記録されます。',
+  subtitle: 'ルーティング上書きの変更ごとに、操作者・操作内容・行の状態が記録されます。',
   summary: {
     total: 'Total',
     inserts: 'Inserts',

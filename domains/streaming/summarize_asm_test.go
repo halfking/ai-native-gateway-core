@@ -171,25 +171,17 @@ func TestSummarizeASMOfflineFallsBack(t *testing.T) {
 
 func TestSummarizeASMHealthCache(t *testing.T) {
 	asm := &asmStub{}
-	srv, _ := newASMTestServer(t, asm)
-	// 拿到 svc 引用做直读断言：连续两次 available 只探一次。
-	var svc *SummarizeService
-	h := NewSummarizeHandler(NewSummarizeService())
-	_ = h
-	// 重新构造可引用的 svc（与 handler 同一实例）：
-	svc2 := NewSummarizeService()
+	svc := NewSummarizeService()
 	asmSrv := httptest.NewServer(asm.handler())
 	defer asmSrv.Close()
-	svc2.SetASMDelegate(asmSrv.URL, "ai-session-manager", "default", []byte("k"))
-	if !svc2.asm.available(t.Context()) {
+	svc.SetASMDelegate(asmSrv.URL, "ai-session-manager", "default", []byte("k"))
+	if !svc.asm.available(t.Context()) {
 		t.Fatal("first probe should be online")
 	}
-	if !svc2.asm.available(t.Context()) {
+	if !svc.asm.available(t.Context()) {
 		t.Fatal("second probe should be served from cache")
 	}
 	if asm.healthN.Load() != 1 {
 		t.Fatalf("health probes = %d, want 1 (cached)", asm.healthN.Load())
 	}
-	_ = svc
-	_ = srv
 }

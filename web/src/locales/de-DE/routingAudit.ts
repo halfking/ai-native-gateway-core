@@ -1,7 +1,7 @@
 // Auto-synced from en-US (de-DE)
 export default {
   title: 'Routing Overrides Audit',
-  subtitle: 'Jede Änderung an der Tabelle routing_overrides wird mit Akteur, Aktion und Zeilenzustand protokolliert.',
+  subtitle: 'Jede Routing-Override-Änderung wird mit Akteur, Aktion und Zeilenzustand protokolliert.',
   summary: {
     total: 'Total',
     inserts: 'Inserts',

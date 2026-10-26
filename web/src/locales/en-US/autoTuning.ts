@@ -4,7 +4,7 @@ export default {
     refreshing: 'Refreshing…',
     loadFailed: 'The auto-tuning proposals could not be loaded. Please retry.',
     panelTitle: 'Tuning proposals (approved = hot-applied within 5 min)',
-    noProposals: 'No proposals yet (feedback_analyzer generates them per window)',
+    noProposals: 'No proposals yet (feedback analyzer generates them per window)',
   filter: {
     statusAll: 'All',
     pending: 'Pending',
@@ -41,7 +41,7 @@ export default {
     generateNone: 'Not enough corrections in the window, or identical pending proposals already exist. Nothing generated',
     analyze: 'Run signal analysis',
     analyzing: 'Analyzing…',
-    analyzeConfirm: 'Run the feedback analyzer now (tuning_signals quality-driven proposals)?',
+    analyzeConfirm: 'Run the feedback analyzer now (tuning signals quality-driven proposals)?',
     analyzeDone: 'Signal analysis completed: {at}',
   },
   accuracy: {

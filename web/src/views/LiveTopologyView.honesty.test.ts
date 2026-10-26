@@ -15,7 +15,7 @@ import { describe, expect, it, vi, beforeAll, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { createRouter, createMemoryHistory } from 'vue-router'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import LiveTopologyView from './LiveTopologyView.vue'
 import zhCN from '../locales/zh-CN/liveTopology'
@@ -211,22 +211,16 @@ describe('LiveTopologyView 展示诚实性（本轮审计修复）', () => {
     expect(cellText(wrapper, '节点状态管理')).toBe('1')
   })
 
-  it('★ 放大面板的定位基准必须是所在列，不能是视口', async () => {
-    // ★ 2026-10-24 审计改写：本条断言的**原始理由已随组件退役而变**。
+  it('★ 摘要浮层的定位基准必须是所在列，不能是视口', async () => {
+    // ★ 2026-10-27 摘要浮层（RequestZoomPanel）按属主口径恢复，本条回到原始形态：
     //
-    // 原文理由：RequestZoomPanel 是 position:absolute，审计前 .live-topology__right
-    // 没有 position，containing block 退到视口，右下角 460px 面板会盖住
-    // 拓扑区与左栏，窄屏下几乎占满整屏。
+    // RequestZoomPanel 是 position:absolute，.live-topology__right 若没有
+    // position，containing block 会退到视口，右下角那块 460px 浮层会盖住
+    // 拓扑区与左栏 —— 窄屏下几乎占满整屏。必须由本列当定位基准。
     //
-    // 2026-10-23「请求详情改开新页」之后，RequestZoomPanel 已无生产引用并被
-    // 删除 ⇒ 「放大面板的定位基准」这件事**已经不存在** ⇒ 原文的「反向钉」
-    // （读那个文件的源码）变成**对着一个不存在的东西证明自己**。
-    //
-    // 现在这条断言钉的是**仍然成立**的那一半：
-    //   · 三列（left / right / stage）共享 `position: relative` —— 这条**仍在承重**：
-    //     stage 列里的 TopologyCanvas 有 8 处 position:absolute 的覆盖层
-    //     （实测 TopologyCanvas.vue），基准丢了它们就会退到视口。
-    //   · 被退役的覆盖层不得复活（文件不在、视图也不再 import 它）。
+    // 三列（left / right / stage）共享 `position: relative` 还在承重的另一半：
+    // stage 列里的 TopologyCanvas 有 8 处 position:absolute 的覆盖层
+    // （实测 TopologyCanvas.vue），基准丢了它们同样会退到视口。
     //
     // 为什么读源码而不是 getComputedStyle：vitest 默认 `css:false`，
     // SFC 的 <style scoped> 根本不进 jsdom，computed style 恒为空串 ——
@@ -243,16 +237,39 @@ describe('LiveTopologyView 展示诚实性（本轮审计修复）', () => {
     expect(rule, '三列共享的样式规则未找到').toBeTruthy()
     expect(rule![0]).toMatch(/position:\s*relative/)
 
-    // 反向钉（换成**还活着**的绝对定位宿主）：
-    // TopologyCanvas 是 stage 列里真正使用 position:absolute 的组件。
+    // 浮层本体是 absolute（恢复后是活的 absolute 宿主，靠上面的基准定位）
+    const zoomSource = readSrc('src/components/live-topology/RequestZoomPanel.vue')
+    expect(zoomSource).toMatch(/position:\s*absolute/)
+
+    // 反向钉：TopologyCanvas 是 stage 列里另一组 position:absolute 覆盖层。
     const canvasSource = readSrc('src/components/live-topology/TopologyCanvas.vue')
     expect(canvasSource).toMatch(/position:\s*absolute/)
+  })
 
-    // 已退役的覆盖层不得复活（文件 + import 两侧都钉）
-    expect(existsSync(resolve(process.cwd(), 'src/components/live-topology/RequestZoomPanel.vue'))).toBe(false)
-    // ★ 只钉 import 语句：视图里仍留着提及该组件的历史注释（说明它已下线），
-    //   那是给人读的，不是引用。
-    expect(source).not.toMatch(/import\s+RequestZoomPanel/)
-    expect(source).not.toMatch(/from\s+['"][^'"]*RequestZoomPanel/)
+  it('★ 两步交互：点行弹摘要浮层且不开新窗；浮层里「查看全景」才开新窗', async () => {
+    // owner 2026-10-27 口径：点行 → 内联摘要浮层（本页不跳转、不开新窗）；
+    // 浮层里的「查看全景」→ 全页详情开新窗。2026-10-23 曾把点行直接开新窗，
+    // 本条判据把两步流钉成事实 —— 点行若直接开窗，第一段断言立刻变红。
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
+    testApi.setRequests([
+      { ts: nowIso(), request_id: 'r-zoom', status: 'success', provider_code: 'deepseek', credential_id: 7, agent_name: 'claude-code' },
+    ])
+    const { wrapper } = await mountView()
+
+    // 第一步：点左侧面板行 → 摘要浮层出现，**没有**开新窗
+    expect(wrapper.find('.zoom').exists()).toBe(false)
+    await wrapper.get('.cp__item').trigger('click')
+    expect(wrapper.find('.zoom').exists()).toBe(true)
+    expect(openSpy).not.toHaveBeenCalled()
+
+    // 第二步：浮层里点「查看全景」→ 全页详情开新窗
+    await wrapper.get('[data-testid="zoom-open-page"]').trigger('click')
+    expect(openSpy).toHaveBeenCalledTimes(1)
+
+    // 浮层 ✕ 关闭后回到无浮层状态
+    await wrapper.get('.zoom__close').trigger('click')
+    expect(wrapper.find('.zoom').exists()).toBe(false)
+
+    openSpy.mockRestore()
   })
 })

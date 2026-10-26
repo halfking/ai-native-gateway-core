@@ -34,7 +34,7 @@ export default {
     darkTitle: 'Dark mode',
   },
   dataHorizon: {
-    title: 'Les données de trafic prennent du retard : la passerelle traite des requêtes mais session_turns ne suit pas',
+    title: 'Les données de trafic prennent du retard : la passerelle traite des requêtes mais le flux des sessions ne suit pas',
     titleUnavailable: 'Impossible de confirmer l’état des données de trafic : les chiffres de cette page peuvent être obsolètes',
     hintLabel: 'Inspecter',
     retry: 'Revérifier',

@@ -1,6 +1,6 @@
 export default {
   list: {
-    emptyHint: "Sitzungen erscheinen, sobald eine gw_session_id aus Anfrage-Logs generiert wurde",
+    emptyHint: "Sitzungen erscheinen, sobald eine Sitzungs-ID aus Anfrageprotokollen generiert wurde",
   },
   userProfile: {
     loadFailed: 'Benutzerprofil konnte nicht geladen werden. Bitte erneut versuchen.',
@@ -260,7 +260,7 @@ export default {
     healthMetricComplianceHint: 'Verknüpft Prompt-Injection-, PII- und Output-Compliance-Ergebnisse.',
     healthMetricOutcome: 'Sitzungsergebnis',
     healthMetricOutcomeHint: 'Gesundheitswerte werden in Sitzungsanalysedaten geschrieben und können im Analysezentrum eingesehen werden.',
-    healthSource: 'Quelle: Betriebsstatus des session_inspector-Moduls',
+    healthSource: 'Quelle: Betriebsstatus des Sitzungsinspektion-Moduls',
     healthViewAnalytics: "Sitzungsanalyse öffnen",
     // Prompt-Injection-Erkennung (2026-07-12)
     promptInjectionTab: "Prompt-Injection",
