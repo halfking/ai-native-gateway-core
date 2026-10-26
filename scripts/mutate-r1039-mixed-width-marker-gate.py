@@ -81,12 +81,19 @@ MUTATIONS = [
      "TestR1039MixedWidth"),
 
     # ── 2026-10-27 自审轮新增（M6~M9）──────────────────────────────
+    # ⚠ M6 的**第一版是成本臂**（「内层重扫的便宜门短路失效 ⇒ 常态成本放大」）
+    # ⇒ 实测那条变异的成本影响**不可测**（fixed 与 mut 的 ns/op 与 allocs/op
+    #   **完全相同**：短路省下的是一次「找不到匹配的正则扫描」，在真实语料上
+    #   是微秒级，而整条扫描是毫秒级）⇒ **这条臂没有牙齿** ⇒ 写成臂只会
+    #   得到一条恒绿的断言 ⇒ **作废并改写**。
+    # ⇒ 改写后的 M6 钉的是**边界**：内层重扫必须只返回**内部那一截裸形**，
+    #   返回整段候选 ⇒ 整段 JSON 会被当成标记 ⇒ span 集合错 ⇒ 契约门红。
     ("M6",
-     "内层重扫的**便宜门短路**失效（不再先用 memchr 筛）⇒ 每个候选都付一次正则扫描 ⇒ 常态成本放大",
+     "内层重扫的**边界**写错（返回整段候选而不是内部那截裸形）⇒ 整段 JSON 被当成标记 ⇒ span 集合错",
      SANITIZE_REL,
-     "\tif !containsMarkerWordAnyWidth(candidate) {\n\t\treturn nil\n\t}\n",
-     "\tif false {\n\t\treturn nil\n\t}\n",
-     "TestR1039InnerRescanScannerAllocationsAreBounded"),
+     "\t\tout = append(out, candidate[sp[0]:sp[1]])\n",
+     "\t\tout = append(out, candidate)\n",
+     "TestR1039InnerRescanSpanContractMatchesMarkerbound"),
 
     ("M7",
      "探针路径的内层重扫被删掉（= 修复前的真实形态）⇒ JSON 里的裸形标记不可见 ⇒ 参数车道被整个跳过 ⇒ 泄漏",
