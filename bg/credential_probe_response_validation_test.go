@@ -23,7 +23,6 @@ func TestCredentialProbeRequiresAssistantOutput(t *testing.T) {
 	}
 	negative := []string{"", "<html>busy</html>", "{broken", `{}`, `{"error":{"message":"busy"}}`,
 		`{"choices":"invalid"}`, `{"choices":[{"message":{"tool_calls":[{"function":{"name":"","arguments":""}}]}}]}`,
-		`{"choices":[{"message":{"reasoning_content":"thinking"},"finish_reason":"length"}]}`,
 		`{"content":[{"type":"thinking","thinking":"thinking"}],"stop_reason":"max_tokens"}`,
 		`{"output":[{"type":"reasoning","summary":[{"text":"thinking"}]}],"status":"incomplete"}`,
 		`{"type":"error","content":[{"type":"text","text":"error prose"}]}`,
@@ -32,10 +31,25 @@ func TestCredentialProbeRequiresAssistantOutput(t *testing.T) {
 		`{"status":"in_progress","output":[{"type":"message","content":[{"type":"output_text","text":"partial"}]}]}`,
 		`{"status":"queued","output":[{"type":"message","content":[{"type":"output_text","text":"partial"}]}]}`,
 	}
+	// 2026-10-26 多模态标准接口轮：reasoning-only 的 chat 探针响应从负例
+	// **移为 chat 正例**——探针问的是「节点活着吗」（liveness），与 r1029
+	// 管「能不能交付给用户」（deliverability）是两个问题。thinking 默认开启
+	// 的模型（qwen3 系）在探针固定载荷（max_tokens=32、无 think:false）下
+	// content 恒空，不认 reasoning 则节点永远翻不了绿（211 实测活锁，见
+	// credentialProbeHasOutput 头注释）。messages/responses 两臂维持原判。
+	chatReasoningPositive := []string{
+		`{"choices":[{"message":{"reasoning_content":"thinking"},"finish_reason":"length"}]}`,
+		`{"choices":[{"message":{"content":"","reasoning":"嗯，探针活性的思考"},"finish_reason":"length"}]}`,
+	}
 	for protocol, valid := range positive {
 		cases := append(append([]string{}, negative...), valid, strings.Replace(valid, "pong", strings.Repeat("p", 2048), 1))
 		if protocol == "responses" {
 			cases = append(cases, `{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`)
+		}
+		negCount := len(negative)
+		if protocol == "chat" {
+			// reasoning-only 正例挂在负例之后（want=true 段）。
+			cases = append(cases, chatReasoningPositive...)
 		}
 		for i, body := range cases {
 			t.Run(fmt.Sprintf("%s/%d", protocol, i), func(t *testing.T) {
@@ -55,7 +69,7 @@ func TestCredentialProbeRequiresAssistantOutput(t *testing.T) {
 				case "responses":
 					ok, detail, _, _ = c.miniResponses(t.Context(), srv.Client(), "", "test", srv.URL)
 				}
-				if want := i >= len(negative); ok != want {
+				if want := i >= negCount; ok != want {
 					t.Fatalf("ok=%v want=%v detail=%q", ok, want, detail)
 				}
 			})

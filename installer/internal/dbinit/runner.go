@@ -1631,6 +1631,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		//   匹配是逐字的 ⇒ COALESCE(title,'') ILIKE 用不上裸列索引。
 		//   dbinit:no-transaction（CREATE INDEX CONCURRENTLY）。
 		"909_session_summaries_search_trgm_indexes.sql",
+		// 910：本地音频（ASR/TTS）供应商 catalog 三条目（whisper-cpp /
+		//   whisper-cpp-large / macos-say），2026-10-26 多模态标准接口轮。
+		//   纯 INSERT ON CONFLICT，幂等；不 seed providers 行（运营经
+		//   admin API 创建，catalog kind='local' 自动建占位凭据）。
+		"910_local_audio_catalog.sql",
 		},
 	}
 }

@@ -2298,6 +2298,13 @@ files=(
   # ★ ★ 本条**只落仓**；★ 生产应用需属主另行授权（★ 三条索引在热写表上
   #   走 CONCURRENTLY ⇒ 不阻断在途读写，★ 但构建期吃 IO 与 CPU）。
   "$ROOT_DIR/sql/migrations/startup/909_session_summaries_search_trgm_indexes.sql"
+  # ★ 910：本地音频（ASR/TTS）供应商 catalog 三条目（whisper-cpp /
+  #   whisper-cpp-large / macos-say），2026-10-26 多模态标准接口轮。
+  #   纯 INSERT ... ON CONFLICT DO NOTHING ⇒ 幂等、零数据操作、无锁风险；
+  #   不 seed providers 行（运营经 admin API 创建，catalog kind='local'
+  #   自动建占位凭据）。配套代码：whisper /inference 传输
+  #   （domains/streaming/audio_whisper_stt.go 按 catalog_code 钉死）。
+  "$ROOT_DIR/sql/migrations/startup/910_local_audio_catalog.sql"
 )
 
 

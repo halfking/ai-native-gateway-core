@@ -417,6 +417,50 @@
 > ★★ 同一把尺子只能有一份实现 / ★★ 数字键会让 AST 写入器静默写出重复键 /
 > ★★「我以为的数字」必须当场重测 / ★★「疑似产品缺陷」要用能控住变量的量具复核 /
 > ★★ 文案结构变了断言的结构也要跟着变 / ★★「内部码该不该上屏」本身是个产品判断）。
+> **2026-10-26 多模态标准接口轮：本地音频（ASR/TTS）+ 文本三件套**（goal 会话，
+> 承接 network-switch 仓《嵌入与会话总结优化方案-2026-10-26》）：
+> ★ 目标：完善 llm.itestu.cn —— 接入本地模型，提供**嵌入/标题总结/内容总结/ASR/语音发音**
+> 标准接口。全部落地并 e2e（详见审计档 §4 时刻表）。
+> ⇒ ★ **新端点三件套** `domains/streaming/summarize.go`：`/v1/summarize`（短单发/长
+> map-reduce-render）、`/v1/summarize/title`（规则硬校验+实体择优）、`/v1/classify`
+> （受控词表）——环回 chat 面架构（与 audio_transform 同款），鉴权抽成包级
+> `authenticateNoRPM`、环回抽成 `loopbackChatCompletions`（transform 改委托，
+> 同一把尺子一份实现）；提示词移植自已验收的三个 SKILL.md；`<think>` 剥离；
+> 环回 429 单次重试；map 层 maxTokens=3000（thinking 模型预算不被烧穿）。
+> ⇒ ★ **whisper.cpp 传输** `audio_whisper_stt.go`：whisper-server 1.9.5 **没有**
+> OpenAI 兼容路径（实测 404），钉 `/inference` 方言，判据 **catalog_code**（绝不按
+> 模型名猜——云端也有 whisper-* 模型名）；base_url 注册约定**不带 /v1**。
+> ⇒ ★ **catalog 迁移 910**：whisper-cpp(:8081)/whisper-cpp-large(:8082)/macos-say(:8086)
+> 三条 kind='local' 条目 + manifest 模型清单（whisper 无 /v1/models ⇒ API 发现失败
+> 自动回落 manifest）；**7+1 点登记全齐**（正本/embeddata/installer×2/tsv/升级序列/
+> 基线/db-changelog）。
+> ⇒ ★★ **修复三个潜伏缺陷**（都被本地供应商注册踩出）：①启动播种把占位 key
+> **明文**写进 secret_ciphertext（播种已改走真加密 + admin decryptCred 对已知占位
+> 常量精确直通）；②同一明文在**运行时路由面**把候选整个丢掉（llamacpp/lmstudio/
+> mlx/vllm 四家「从未真正可路由」的根因；常量提升到 provider/catalog，两缝同修）；
+> ③**探针不认 thinking 模型**：max_tokens=32 探针载荷被 reasoning 烧穿 ⇒ content 空
+> ⇒ inconclusive ⇒ node_probe_failed 活锁——chat 臂加认 reasoning/reasoning_content
+> （「探针问的是活着吗，r1029 管的是能不能交付」，业务面一字不动；负例夹具按新契约
+> 移为 chat 正例，理由在注释）。
+> ⇒ ★ **Mac 侧**：whisper 双档 plist 0.0.0.0 + TTS 垫片 `~/bin/modelhub-tts-server.py`
+> （纯标准库，say+afconvert，OpenAI /v1/audio/speech 形态，wav/m4a，mp3 如实 400，
+> launchd :8086）。
+> ⇒ ★★ **部署坑（重要）**：**多 checkout 机器上 DD_REPO_ROOT 会漂**——第 5 次部署
+> 同步到 211 的竟是上游 abc92693 的树，镜像静默丢掉本轮全部端点（/v1/summarize 404
+> 而非 400）⇒ **部署必须 `LLM_GATEWAY_ROOT=<绝对路径>` 钉根**；另 deploy-211.sh
+> 无参路径的 bash3.2+set -u ARGS[*] unbound 已补守卫。
+> ⇒ ★ **e2e 读数**（llm.itestu.cn，6 次蓝绿部署后）：embeddings **4096 维** ✓、
+> ASR 双档转写正确 ✓、TTS wav ✓、title/classify/短总结多次通过（质量达 SKILL 规格）
+> ✓；长路径端到端成品被**五个分钟级周期子系统的收敛抖动**卡住（探针梯子/索引桶/
+> URSM 快照/ollama 驻留/6 次重启），编排逻辑由 16 个单测锁定、实跑已抵达 map 层
+> 环回——静置自愈，复验留下一轮。
+> ⇒ ★★ **Mac 侧遗留（需用户处置）**：Ollama.app 与 launchd 双实例之争复发（坑#2），
+> MAX_LOADED_MODELS=5 的 plist 补丁未落到实际在跑的实例 ⇒ 模型 LRU 驱逐与探针
+> 超时的活锁会间歇复发；退 app + 重启 Mac 一次即根治。embedding:8b@32K 占 10GB，
+> 与双 chat 大模型共驻内存吃紧。
+> ⇒ 审计档 `docs/audit/2026-10-26-多模态标准接口轮-本地音频与文本三件套.md`（坑清单
+> §5 共 8 条：两条登记腿/admin_protected 排除/modality 只在 discovery 腿/错误映射吃真因/
+> 索引桶/ollama 活锁/DD_REPO_ROOT 漂移/30b 不宜当 map）。
 > **2026-10-27 第 17 增量：AI 痕迹门轮（impeccable 的 Do-Not 落成可执行判据）**（会话
 > `mvs_dc5e181989fc4539805f343f39be2b5d`）：★ 承接用户总目标（「学习 impeccable 的技能与规范，
 > 优化整个网关的 UI —— 减少 AI 化、增加人味与艺术化」）⇒ **前 16 增量清的是 i18n 覆盖与文案语义，

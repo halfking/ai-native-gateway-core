@@ -21,12 +21,10 @@
 package streaming
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -34,7 +32,6 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
-	"github.com/kaixuan/llm-gateway-go/ratelimit"
 )
 
 // maxTransformBodyBytes 限制 refine/analyze 的请求体（纯文本，不需要
@@ -85,39 +82,11 @@ func NewAudioTransformService(svc *AudioService) *AudioTransformService {
 // 跳过这一步不产生绕过：直连打爆 /v1/audio/refine 最终仍被环回 chat 步的
 // 同一把 key 限流拦住。MCP tools/call 路径的外层 authenticate 无法按工具
 // 名选择性跳过，维持双计（MCP 是次要路径，见设计文档）。
+//
+// 2026-10-26 多模态标准接口轮：实现收敛进包级 authenticateNoRPM（refine/
+// analyze/summarize 三面同一把尺子只一份实现），本方法保留为薄委托。
 func (s *AudioService) authenticateTransform(w http.ResponseWriter, r *http.Request, requestID string) (*authentication.KeyInfo, bool) {
-	if s.keyVerifier == nil || !s.keyVerifier.Enabled() {
-		return nil, true
-	}
-	rawKey := extractBearerToken(r)
-	if rawKey == "" {
-		writeErrorJSON(w, http.StatusUnauthorized, requestID, "Missing API key", "authentication_error", "missing_key")
-		return nil, false
-	}
-	keyInfo, err := s.keyVerifier.Verify(r.Context(), rawKey)
-	if err != nil {
-		w.Header().Set("WWW-Authenticate", "Bearer")
-		writeErrorJSON(w, http.StatusUnauthorized, requestID, "Invalid or expired API key", "authentication_error", "invalid_key")
-		return nil, false
-	}
-	if keyInfo.Status == "throttled" {
-		ratelimit.MarkGatewaySharedKeyRateLimit(w)
-		writeErrorJSON(w, http.StatusTooManyRequests, requestID, "API key throttled", "rate_limit_error", "key_throttled")
-		return nil, false
-	}
-	if err := s.keyVerifier.CheckBudget(r.Context(), keyInfo.ID); err != nil {
-		if _, exceeded := err.(*authentication.BudgetExceededError); exceeded {
-			writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Budget exhausted", "insufficient_quota", "budget_exhausted")
-			return nil, false
-		}
-		slog.Error("audio transform budget check failed, failing closed",
-			"request_id", requestID,
-			"key_id", keyInfo.ID,
-			"error", err)
-		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "Budget check temporarily unavailable", "server_error", "budget_unavailable")
-		return nil, false
-	}
-	return keyInfo, true
+	return authenticateNoRPM(s.keyVerifier, w, r, requestID)
 }
 
 // AudioTransformHandler 服务 /v1/audio/refine 与 /v1/audio/analyze 两条
@@ -353,6 +322,8 @@ func (ts *AudioTransformService) decodeTransformBody(w http.ResponseWriter, r *h
 // callLoopbackChat 经环回 /v1/chat/completions 取一次 LLM 补全。转发调用
 // 方 Authorization（成本/预算/租户归属调用方）；环回目标按请求推导或用
 // 服务级覆盖。返回 content 与实际上游模型名。
+// 2026-10-26 多模态标准接口轮：HTTP 细节收敛进包级 loopbackChatCompletions
+// （与 summarize 三件套共用），本方法保留组装参数的薄包装。
 func (ts *AudioTransformService) callLoopbackChat(ctx context.Context, r *http.Request, requestID, model, system, user string) (string, string, error) {
 	endpoint := ts.baseURL
 	if endpoint == "" {
@@ -368,7 +339,7 @@ func (ts *AudioTransformService) callLoopbackChat(ctx context.Context, r *http.R
 		}
 		endpoint = scheme + "://" + host
 	}
-	payload, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"model": model,
 		"messages": []map[string]string{
 			{"role": "system", "content": system},
@@ -377,62 +348,8 @@ func (ts *AudioTransformService) callLoopbackChat(ctx context.Context, r *http.R
 		"temperature": 0.1,
 		"stream":      false,
 		"max_tokens":  ts.maxTokens,
-	})
-	if err != nil {
-		return "", "", fmt.Errorf("marshal chat payload: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/v1/chat/completions", bytes.NewReader(payload))
-	if err != nil {
-		return "", "", err
-	}
-	if auth := r.Header.Get("Authorization"); auth != "" {
-		req.Header.Set("Authorization", auth)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Request-Id", requestID)
-	req.Header.Set("X-Gateway-Internal-Purpose", "audio_transform")
-
-	resp, err := ts.hc.Do(req)
-	if err != nil {
-		return "", "", fmt.Errorf("loopback chat call: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := readLimitedResponse(resp.Body, 8<<10)
-		// 网关 chat 面的 503 no_candidate 会带 alternatives 建议列表（
-		// 按任务类可路由的模型）。转成 audioNoProviderError：HTTP 面映射
-		// 503 no_provider（与音频面同一语义），MCP 面透出完整建议清单，
-		// 调用方换一个可路由模型即可，不用去翻截断的上游原始错误体。
-		if resp.StatusCode == http.StatusServiceUnavailable {
-			if alts := extractAlternativeModels(body); len(alts) > 0 {
-				return "", "", newAudioNoProviderError(
-					"loopback chat model %q has no routable candidate; gateway alternatives: %s",
-					model, strings.Join(alts, ", "))
-			}
-			return "", "", newAudioNoProviderError(
-				"loopback chat model %q has no routable candidate", model)
-		}
-		return "", "", newAudioUpstreamError(resp.StatusCode, body)
-	}
-	var parsed struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Model string `json:"model"`
-	}
-	body, err := readLimitedResponse(resp.Body, 32<<20)
-	if err != nil {
-		return "", "", err
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", "", fmt.Errorf("loopback chat response is not JSON: %w", err)
-	}
-	if len(parsed.Choices) == 0 {
-		return "", "", fmt.Errorf("loopback chat response has no choices")
-	}
-	return parsed.Choices[0].Message.Content, parsed.Model, nil
+	return loopbackChatCompletions(ctx, ts.hc, endpoint, r.Header.Get("Authorization"), "audio_transform", requestID, payload)
 }
 
 // extractLLMJSON 从 LLM 输出里抠出最外层 JSON 对象并解析。LLM 可能包

@@ -327,3 +327,4 @@
 309	907_routing_analytics_source_lateral.sql
 310	908_route_incident_events_type_created_drop.sql
 311	909_session_summaries_search_trgm_indexes.sql
+312	910_local_audio_catalog.sql

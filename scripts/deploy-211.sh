@@ -156,7 +156,11 @@ export DD_RUNTIME_BASE_IMAGE="${DD_RUNTIME_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-
 #     生成文件 ⇒ 无此形态）⇒ 端口与槽位可以漂移 ⇒ 漂了就是 llm.itestu.cn 502。
 #   ⇒ 体检脚本：scripts/ops/deploy-doctor.sh（纯只读：cat + docker ps + 读 conf）。
 #   ⇒ 退出码：0 正常 / 2 脱节（需人工处置）/ 3 体检没做成（**不是**正常）。
-if [[ " ${ARGS[*]} " == *' --doctor '* ]]; then
+# ⚠ 2026-10-26：`ARGS[*]` 在 no-arg 路径上是 unbound（bash 3.2 + set -u 的
+#   既有坑，下方末段注释点名过同一陷阱但只守卫了最后一处）⇒ 本行同款
+#   `${ARGS[*]+...}` 守卫补齐，否则 `deploy-211.sh`（无参 = 标准部署）在
+#   macOS bash 3.2 上根本起不来。
+if [[ " ${ARGS[*]+${ARGS[*]}} " == *' --doctor '* ]]; then
   exec bash "$SCRIPT_DIR/ops/deploy-doctor.sh" \
     --ssh "$DD_SSH_TARGET" \
     --nginx-conf "$DD_NGINX_CONF" \

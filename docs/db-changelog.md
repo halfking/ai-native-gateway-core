@@ -10462,3 +10462,13 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 |-----------|------|---------|--------|
 | 909 | `909_session_summaries_search_trgm_indexes.sql` | `77d829d0289cb3e0b16dfa93b16c70addcbf84d265f58b3e4996680ac4cb8e6b` | applied+verified |
 
+## 2026-10-26T17:30:00Z — deploy 211 多模态标准接口轮（本地音频 catalog）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 910 | `910_local_audio_catalog.sql` | `3fb06de518abc39b85767057cc77c022c2a86291b71ae06e8b12140916c2023e` | applied+verified |
+
+三条 kind='local' catalog 条目（whisper-cpp :8081 / whisper-cpp-large :8082 /
+macos-say :8086），纯 INSERT ON CONFLICT 幂等；生产应用由 deploy-seamless
+引擎的迁移重放腿完成（211 蓝绿，2026-10-27 00:12 槽 b 首次应用，后续部署
+重放 no-op）。审计档：docs/audit/2026-10-26-多模态标准接口轮-本地音频与文本三件套.md
