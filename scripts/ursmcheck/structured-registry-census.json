@@ -20,7 +20,7 @@
     ],
     "why_not_scan_referrers": "★ 候选集必须【机械可算且快】⇒ ⇒ 门不能扫「谁引用了它」（★ 实测慢 30 倍）⇒ ⇒ 候选靠【文件名】定 ⇒ ⇒ 排除项由本表逐条写理由。"
   },
-  "_honest_boundary": "★ 本表实现的是【覆盖判据】（★ 每个候选都必须有归属）⇒ ⇒ ★★ 本轮**没有**为这些登记册做【行为化掏空验证】（★ 读方是 node 脚本 / vitest ⇒ ⇒ 需要另一套【格式感知的掏空变换】）⇒ ⇒ 「behaviorally_verified」一律 false ⇒ ⇒ 如实登记，不假装覆盖。",
+  "_honest_boundary": "★ R87 轮起，本表**已经**为这些登记册做了【行为化掏空验证】（★ scripts/ursmcheck/structured_registry_hollowout_test.go）⇒ ⇒ 每条 `behaviorally_verified: true` 的条目都有：★ 读方形态 ＋ 读方规格 ＋ 掏空模式 ＋ **红信号** ⇒ ⇒ ⇒ 门会**真的**把登记册掏空、跑读方、核对「红了而且红的是该红的那件事」⇒ ⇒ ★ 若实测是「仍绿」或「不可判定」⇒ ⇒ 一律标 false ⇒ ⇒ **不假装覆盖**。",
   "_kind_values": [
     "registry",
     "excluded"
@@ -29,9 +29,15 @@
     {
       "path": "bg/data/model_baseline_prices.json",
       "kind": "registry",
-      "reader": "bg/pricing_baseline_reconcile.go",
-      "behaviorally_verified": false,
-      "note": "★ 另有 bg/observation_health_empty_catalog_test.go 与 cmd/tools/propose-baseline-prices/*_test.go 读它"
+      "reader": "bg/pricing_baseline_sync_test.go",
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `models` 条目映射清零 ⇒ ⇒ 内嵌 SSOT（★ `//go:embed` ⇒ ★ 读方在**编译期**拿到内容 ⇒ ⇒ 掏空后必须**重新编译**）⇒ ⇒ 读方红且红因为「embedded catalog is empty」⇒ ⇒ 有牙。★ 另有 bg/pricing_baseline_reconcile.go（★ 生产读方）与 bg/observation_health_empty_catalog_test.go、cmd/tools/propose-baseline-prices/*_test.go 读它。",
+      "reader_kind": "gotest",
+      "reader_spec": "./bg/|TestEmbeddedCatalogIsAuditableAndNotEmpty",
+      "hollow_mode": "entries",
+      "red_signal": "embedded catalog is empty",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "cmd/auto-testbench/testdata/baseline.json",
@@ -134,88 +140,186 @@
       "reason": "★ 测试夹具（★ 会话回放输入）"
     },
     {
+      "path": "web/scripts/cjk-native-simplified-chars.json",
+      "kind": "registry",
+      "reader": "web/scripts/i18n-cjk-native-simplified-guard.mjs",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/i18n-cjk-native-simplified-guard.mjs",
+      "hollow_mode": "unusable",
+      "red_signal": "字表为空",
+      "behaviorally_verified": true,
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow",
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ **这条正是「文件名候选集漏收」的活证据**（★ 文件名里没有 registry/baseline/inventory/ledger/manifest 任何关键词 ⇒ ⇒ 只靠文件名的候选集收不到它 ⇒ ⇒ 靠「**被已登记的读方按路径读取**」这条判据才收进来）。★ ★ 字表把字存成**字符串**（★ `notBig5` 是 458 字的串 ⇒ ⇒ 逐字成集）⇒ ⇒ 「同形掏空（字符串保留）」对它**是空操作**⇒ ⇒ 必须用 `unusable` 模式（★ 真值被取走）。★ 掏空 ⇒ 读方读到空字表 ⇒ ⇒ ★★ **真洞**：★ 此前这道门一个简体字都量不出来（★ `referenced` 恒 0）却报「✅ 通过」⇒ ⇒ 假绿；★ 且 `new Set([...undefined])` 会**崩**⇒ ⇒ 已把 loader 改成「读出空表」＋ 主流程显式判红「字表为空」⇒ ⇒ 现在红因为「字表为空」⇒ ⇒ 有牙。"
+    },
+    {
       "path": "web/scripts/color-audit-baseline.json",
       "kind": "registry",
       "reader": "web/scripts/color-baseline-stale.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 颜色审计的基线（★ 门读它）"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `violations` 清零 ⇒ ⇒ 读方红且红因为「baseline 为空 —— 是不是路径写错了？」⇒ ⇒ 有牙。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/color-baseline-stale.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "baseline 为空",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/scripts/compact-card-coverage-baseline.json",
       "kind": "registry",
       "reader": "web/scripts/compact-card-coverage.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 紧凑卡片覆盖基线"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `fallback` 清零 ⇒ ⇒ 读方红且红因为「基线里有 N 条已不成立」⇒ ⇒ 有牙。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/compact-card-coverage.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "compact 下仍是「横滚宽表」",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/scripts/copy-quality-baseline.json",
       "kind": "registry",
       "reader": "web/scripts/copy-quality-audit.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 文案质量基线"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ **上限型**登记册（★ 棘轮：记的是「允许的最大值」）⇒ ⇒ 它的实测值**已经触底**（★ 每个桶都是 0）⇒ ⇒ 归零是**空操作**⇒ ⇒ 必须用 `unusable` 模式（★ 真值被取走）⇒ ⇒ 读方红且红因为「基线缺失或非法」⇒ ⇒ 有牙。★★ R87 轮**顺手补上了这个真洞**：★ 此前基线一没，`limit` 就是 undefined ⇒ ⇒ `cur > undefined` 恒假 ⇒ ⇒ 棘轮静默失效而门照样报「✅ 未发现违规」⇒ ⇒ 假绿 ⇒ ⇒ 已加红分支。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/copy-quality-audit.mjs",
+      "hollow_mode": "unusable",
+      "red_signal": "基线缺失或非法",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/scripts/design-ai-smell-registry.json",
       "kind": "registry",
       "reader": "web/scripts/design-ai-smell-guard.mjs",
-      "behaviorally_verified": false,
-      "note": "★ AI 味登记册（★ R164 轮新增）"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ 豁免清单清零 ⇒ ⇒ 被豁免的违规重新出现 ⇒ ⇒ 读方红且红因为「FAIL: N 处 AI 化视觉痕迹」⇒ ⇒ 有牙。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/design-ai-smell-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "AI 化视觉痕迹",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
+    },
+    {
+      "path": "web/scripts/design-elevation-baseline.json",
+      "kind": "registry",
+      "reader": "web/scripts/design-elevation-guard.mjs",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/design-elevation-guard.mjs",
+      "hollow_mode": "unusable",
+      "red_signal": "基线缺失或非法",
+      "behaviorally_verified": true,
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow",
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ **上限型**登记册（★ 棘轮：记的是「允许的最大值」）⇒ ⇒ 实测值已触底（★ 非规范配方 0 / 不同取值 4）⇒ ⇒ 归零是**空操作**⇒ ⇒ 改用 `unusable` 模式（★ 真值被取走）⇒ ⇒ 读方红且红因为「基线缺失或非法」⇒ ⇒ 有牙。★★ R87 轮**顺手补上了这个真洞**：★ 此前基线字段一缺，`0 > undefined` 恒假 ⇒ ⇒ 棘轮静默失效而门照样报「✅ PASS」⇒ ⇒ 假绿 ⇒ ⇒ 已加红分支。★ 本条是**并行会话 R166 轮**新增的登记册（★ 合并后由本轮的覆盖判据自动收进来）。"
     },
     {
       "path": "web/scripts/i18n-cjk-baseline.json",
       "kind": "registry",
       "reader": "web/src/i18n/hardcoded_cjk.baseline.test.ts",
-      "behaviorally_verified": false,
-      "note": "★ 硬编码中文基线"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `count` 归零 ⇒ ⇒ 读方红且红因为「Hardcoded CJK count increased: 4484 > baseline 0」⇒ ⇒ 有牙。",
+      "reader_kind": "vitest",
+      "reader_spec": "web/src/i18n/hardcoded_cjk.baseline.test.ts",
+      "hollow_mode": "entries",
+      "red_signal": "Hardcoded CJK count increased",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/scripts/i18n-cjk-native-simplified-baseline.json",
       "kind": "registry",
       "reader": "web/scripts/i18n-cjk-native-simplified-guard.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 简体残留基线"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `unreferenced` 逐语种归零 ⇒ ⇒ 读方红且红因为「未引用残留上升 0 → N（棘轮被打破）」⇒ ⇒ 有牙。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/i18n-cjk-native-simplified-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "棘轮被打破",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/scripts/i18n-empty-state-registry.json",
       "kind": "registry",
       "reader": "web/scripts/i18n-empty-state-guard.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 空状态登记册（★ 第 14 增量新增）"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `keys` 清零 ⇒ ⇒ ★★ **真洞**：★ 此前读方报「登记键: 0 个」却照样「✅ PASS」（★ 所有判据都无事可做 ⇒ ⇒ 假绿）⇒ ⇒ 已给读方补红分支「登记册为空 ⇒ 红」⇒ ⇒ 现在红因为 `empty-registry` ⇒ ⇒ 有牙。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/i18n-empty-state-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "empty-registry",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/scripts/i18n-error-clarity-registry.json",
       "kind": "registry",
       "reader": "web/scripts/i18n-error-clarity-guard.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 错误清晰度登记册"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `slots` / `exemptions` **条目映射**整体清零（★ 不是「字段变空」⇒ ⇒ 读方不会撞上「字段缺失」那种假红）⇒ ⇒ 读方红且红因为 `L1a-unregistered-bare`（★ 「该键没有登记」）⇒ ⇒ 有牙。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/i18n-error-clarity-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "该键没有登记",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/scripts/i18n-error-outlet-registry.json",
       "kind": "registry",
       "reader": "web/scripts/i18n-error-outlet-guard.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 错误出口登记册（★ R163 轮新增）"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `exemptions` / `fileExemptions` 清单清零 ⇒ ⇒ 读方红且红因为 `O1-raw-message`（★ 原始 error.message 直接上屏）⇒ ⇒ 有牙。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/i18n-error-outlet-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "O1-raw-message",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/scripts/i18n-shared-dead-baseline.json",
       "kind": "registry",
       "reader": "web/scripts/i18n-shared-dead-count.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 共有死键计数基线（★ 第 13 增量新增）"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ **上限型**登记册（★ 棘轮计数）⇒ ⇒ 它的记录值**本来就是 0**（★ 第 13 增量已清到底）⇒ ⇒ 归零是**空操作**⇒ ⇒ 改用 `unusable` 模式（★ 真值被取走 ⇒ ⇒ 读方的「基线缺失或非法」分支命中）⇒ ⇒ 有牙。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/i18n-shared-dead-count.mjs",
+      "hollow_mode": "unusable",
+      "red_signal": "missing or invalid",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/src/i18n/localeKeyParityBaseline.json",
       "kind": "registry",
       "reader": "web/src/i18n/localeKeyParity.test.ts",
-      "behaviorally_verified": false,
-      "note": "★ 键集合一致性基线"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ **上限型**登记册（★ 棘轮：记的是「允许的最大值」）⇒ ⇒ 它的实测值**已经触底**（★ 各语种缺失数与不对称键数全是 0）⇒ ⇒ 归零是**空操作**⇒ ⇒ 改用 `unusable` 模式 ⇒ ⇒ 读方红且红因为「ar-SA 不在 baseline 里」⇒ ⇒ 有牙。",
+      "reader_kind": "vitest",
+      "reader_spec": "web/src/i18n/localeKeyParity.test.ts",
+      "hollow_mode": "unusable",
+      "red_signal": "不在 baseline 里",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/src/i18n/localeValueBaseline.json",
       "kind": "registry",
       "reader": "web/src/i18n/localeValueQuality.test.ts",
-      "behaviorally_verified": false,
-      "note": "★ 语言包值质量基线"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ **上限型**登记册（★ 棘轮）⇒ ⇒ 改用 `unusable` 模式 ⇒ ⇒ 读方红且红因为「baseline 里没有这一项（新增语种必须先登记基线）」⇒ ⇒ 有牙。",
+      "reader_kind": "vitest",
+      "reader_spec": "web/src/i18n/localeValueQuality.test.ts",
+      "hollow_mode": "unusable",
+      "red_signal": "baseline 里没有这一项",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     }
   ]
 }
