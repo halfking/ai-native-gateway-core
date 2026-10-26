@@ -146,7 +146,7 @@ func TestExtractClientKey_QueryKeyIsScopedToGeminiNativePaths(t *testing.T) {
 		"/v1/chat/completions?key=AIza-query",
 		"/v1/messages?key=AIza-query",
 		"/v1/models?key=AIza-query",
-		"/v1beta/models?key=AIza-query",
+		"/v1beta/modelsXYZ?key=AIza-query",
 		"/v1beta/models/gemini-2.5-pro?key=AIza-query",
 		"/v1beta/models/gemini-2.5-pro:countTokens?key=AIza-query",
 		"/v1beta/models/a/b:generateContent?key=AIza-query",
@@ -168,6 +168,9 @@ func TestExtractClientKey_QueryKeyIsScopedToGeminiNativePaths(t *testing.T) {
 		"/v1beta/models/gemini-2.5-pro:streamGenerateContent?key=AIza-query",
 		"/v1/models/gemini-2.5-pro:generateContent?key=AIza-query",
 		"/v1beta/models/gemini-2.5-pro:generateContent/extra?key=AIza-query",
+		// The Gemini-native model list (its own mux entry) is a served
+		// Gemini route => the credential form must apply there too.
+		"/v1beta/models?key=AIza-query",
 	}
 	for _, p := range covered {
 		t.Run(p, func(t *testing.T) {
@@ -191,14 +194,28 @@ func TestIsGeminiNativePath(t *testing.T) {
 		// Served by the Gemini handler (substring parser) ⇒ covered.
 		"/v1beta/models/gemini-2.5-pro:generateContent/extra": true,
 		"/v1/models/gemini:generateContentXYZ":                true,
+		// The Gemini-NATIVE model list (domains/streaming/models.go:
+		// ServeGeminiModels, mounted at cmd/gateway/main.go as its own
+		// mux entry) is covered by the credential scope.
+		//
+		// Why: a native Gemini client (google-genai SDK) presents its
+		// credential as "?key=" (docs/vendor-formats/gemini.md). Without
+		// the scope the list 401s while generateContent (same client,
+		// header form) works -- the same "half-fixed" shape as the 433
+		// defect, one endpoint over.
+		"/v1beta/models": true,
 		// Not Gemini-native routes ⇒ not covered.
 		"/v1/models":           false,
-		"/v1beta/models":       false,
 		"/v1/chat/completions": false,
 		"/v1/messages":         false,
 		"/v1beta/models/gemini-2.5-pro:countTokens":    false,
 		"/prefix/v1beta/models/gemini:generateContent": false,
 		"/v1beta/models/a/b:generateContent":           false,
+		// The model-list alternative is EXACTLY anchored: a longer path
+		// that merely starts with "/v1beta/models" is a DIFFERENT route
+		// (the Gemini handler does not serve it), so it must not be in
+		// scope.
+		"/v1beta/modelsXYZ": false,
 	}
 	for p, want := range cases {
 		if got := IsGeminiNativePath(p); got != want {

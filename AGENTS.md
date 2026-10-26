@@ -638,6 +638,96 @@
 > （★ 需 Anthropic SSE 严格帧与 Responses 的 `response.completed` 编排 —— IR 里有序列化器，
 > **流式终态的编排**未接线）；**Gemini 上游的 `header_profile_code` 联动**；
 > **Gemini 上游的上下文超限压缩恢复**（Ollama 路径有，Gemini 路径本轮只做一次尝试）。
+> **2026-10-27 Gemini 剩余登记项处置轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
+> ★ 承接上一条清单，**做掉其中 3 项**，另 2 项按硬约束登记。
+> ⇒ ★★★★ **本轮最值钱的一处发现：「没接线」≠「不存在」** ——
+> 上一轮把 `anthropic-messages` / `openai-responses` 的客户端线格式判为「未接线」，
+> 理由写的是「Anthropic SSE 严格帧 + Responses 的终态编排未接线」⇒ ★★ **那个理由站不住**：
+> 仓内**早就有**两条现成转换（`streaming.StreamOpenAIToAnthropicSSE` /
+> `streaming.StreamOpenAIToResponsesSSE`），而且**已经挂在 Executor 上**
+> （`OpenAIToAnthropicStream` / `OpenAIToResponsesStream`，`cmd/gateway/main.go` 接线），
+> 而**本 executor 本来就产出 OpenAI 形状的帧** ⇒ ★★ **同一份转换直接可用，零新增接线**
+> ⇒ ★★ 自己手搓 Anthropic 严格帧 = 白干（LESSONS §451 通用式一）。
+> ⇒ ★ **实现方式 = `io.Pipe`**：executor 把 Gemini 流转成 OpenAI 形状的帧写进管道，
+> 桥在另一侧读管道、写客户端 ⇒ ★★ 管道无缓冲 ⇒ **转换保持流式**（不整段缓冲到内存）。
+> ⇒ ★★ **不能直接 import 那个桥**：`domains/streaming` 导入 `domains/streaming/executors`
+> ⇒ 反向 import 即**循环依赖** ⇒ ★★ 这反过来说明「桥在 streaming、executor 持回调、
+> main.go 注入」是**被依赖方向逼出来的正确形状**，不是绕路。
+> ⇒ ★ **非流式**侧不需要桥：IR 层已有 `SerializeAnthropicResponse` /
+> `SerializeResponsesResponse`，且 `IRConverter` 接口本来就带这两个方法 ⇒ 零接线。
+> ⇒ ★ **`header_profile_code` 联动**（§8.3 明写「与 endpoint 的 `header_profile_code` 关联」）：
+> 出站请求**应用 endpoint 的 header profile**（与 OpenAI 路径同款）⇒ ★★ 没有它，
+> **Gemini 兼容中转**（profile 声明 `Authorization: Bearer`）会直接 401 ⇒ ★★
+> 应用顺序在凭据头**之后** ⇒ profile 声明的凭据头覆盖默认形态（这正是该机制的意义）。
+> ⇒ ★ **Gemini 上游的上下文超限压缩恢复**：复用共享的恢复协调器，压缩后**恰好重试一次**
+> （`geminiRecoveryAttempted` 标记防递归）。
+> ⇒ ★ **门（新增 11 条）**：Anthropic/Responses 请求 ⇒ Gemini 线（**不带** `messages`/`input`）/
+> Gemini 响应 ⇒ Anthropic（`type:message`+`stop_reason`）/⇒ Responses（`object:response`）/
+> ★ 桥收到的是 **OpenAI 形状**的帧（含 `[DONE]`）且 outcome 回传/★ **反向：桥缺失 ⇒
+> `KindUnsupportedFeature` 且不写任何字节**（不产生错形状的 200）/★ header profile 到达上游
+> 且默认 `x-goog-api-key` 仍在/★ 超限 ⇒ **恰好一次**压缩重试且重试体更小、压缩原因被记账/
+> ★ 未接线协议仍然 fail closed（门不是橡皮图章）。
+> ⇒ ★★ **本轮登记项的处置（★ 登记完立刻复查 ⇒ 第 1 项当场被推翻并做掉了，
+> 见本块末尾「补做掉第 4 项」）**：**Gemini 原生模型列表**
+> （★ 避让：并行会话正在改 `cmd/gateway/main.go`；★ 起手式：显式注册精确路由
+> `/v1beta/models`，**复用 `streaming.ModelsHandler` 的同一个 DB 数据源**、只换输出形状
+> ⇒ 厂商形状 `{"models":[{"name":"models/…"}]}`；★ 注意 Go 的 `ServeMux` 对已注册的子树
+> `/v1beta/models/` 会把无斜杠形态 **301** 过去 ⇒ 只按带斜杠实现也能访问到，但多一跳）；
+> **`:countTokens`**（★ **不是「不想做」，是「不能诚实做」**：仓内**没有** Gemini 分词器 ⇒
+> 本地估算会让客户端按错预算决策 ⇒ ★★ **唯一诚实的实现是转发给上游让厂商自己算**
+> ⇒ 那是**第三条出站动作**（响应形状 `{"totalTokens":N}` 与 `GenerateContentResponse` 完全不同
+> ⇒ 不走 `ProtocolHandler` 通用路径）⇒ 独立一轮）。
+> ⇒ ★ **补做掉第 4 项（登记理由已过期）**：**Gemini 原生模型列表**
+> （`GET /v1beta/models`）—— ★★ 上一轮的登记理由是「要动 `cmd/gateway/main.go`，
+> 而并行会话正在改该文件 ⇒ 避让」⇒ ★★★ 那是**时序条件**不是永久约束 ⇒ 本轮复查：
+> 并行会话的 `main.go` 改动落在**行 913 / 2574 / 3883 / 6788**，★ 而 Gemini 的 mux 注册在
+> **行 6794~6796** ⇒ ★★ 相距 25 行、**三方合并不重叠** ⇒ 避让前提消失 ⇒ 直接做掉。
+> ⇒ ★ **实现**：`domains/streaming/models.go` 新增 `ServeGeminiModels`（厂商原生形状
+> `{"models":[{"name":"models/…",…}]}`）★ **并把取数抽成 `loadEntries(ctx)` ⇒ 两份列表
+> 共用同一个可路由模型查询**（★ 同一份「网关能服务哪些模型」的真值 ⇒ 两个数据源
+> 就是两份真值 ⇒ 会漂移）+ `cmd/gateway/main.go` **一行**路由。
+> ⇒ ★★ **`supportedGenerationMethods` 只列网关【真的】支持的动作**
+> （`generateContent`/`streamGenerateContent`）⇒ **不列 `countTokens`** ⇒ ★
+> **列一个自己做不到的方法 = 给客户端一个它会当真、然后失败的承诺**。
+> ⇒ ★ **一个诚实的边界**：`/v1/models`（无斜杠）**仍是 OpenAI 形状**（OpenAI SDK 的既有契约）
+> ⇒ ★ Gemini 的 **GA 路径（`/v1`）**拿到的仍是 OpenAI 形状 ⇒ 本轮只解决 `v1beta` 这条
+> 厂商原生路径 ⇒ 若要 GA 也原生 ⇒ 需**重新分配 `/v1/models` 的归属** ⇒ 产品决策。
+> ⇒ ★ **门（再 +4 条）**：原生形状（`name` 带 `models/` 前缀 / `displayName` / 非空 methods）/
+> 上下文窗口映射 + **`models/` 前缀不重复** + 空 id 跳过 + 未知窗口**不发**该键/
+> ★ **反向：列表不列 `countTokens`**/★ **两份列表同一个数据源**（模型集合一致）。
+> ⇒ ★★★ **本轮第二值钱的一处发现：「只挂不认」比「不挂」更坏 —— 凭据收口面
+> 必须覆盖【每一个被服务的路由】** ——
+> 挂上 `/v1beta/models`（原生模型列表）之后，★★ **只挂不认**会留下一个比原缺陷
+> 更难查的形状：同一个客户端、同一个 key，`POST …:generateContent`（`x-goog-api-key`
+> 头形态）**能通**，而 `GET /v1beta/models`（`?key=` query 形态）**401** ⇒ ⇒
+> ★★ 用户看到的是「网关时好时坏 / 认证是坏的」⇒ ★★★ 根因不是「忘了带 key」，
+> 而是 **收口面漏了一条路由**：`internal/auth.IsGeminiNativePath`（`?key=` 的收口面）
+> 只认 generateContent 两个动作 ⇒ ⇒ ★★★ 而模型列表是**第三条被服务的 Gemini 路由**，
+> 它自己的 mux 条目**不在** `/v1beta/models/` 子树里 ⇒ ⇒ ★★ 靠「前缀」根本推不出它
+> ⇒ ⇒ ★★★ ⇒ 修法：`geminiNativePathRe` 增加一个**精确锚定**分支
+> `|/v1beta/models$` ⇒ ★★ **精确锚定而不是前缀**（`/v1beta/modelsXYZ` 必须**不在**
+> 收口面内 ⇒ 否则 `?key=` 会在一堆没人服务的路径上变成凭据源）⇒ ★★ `/v1/models`
+> （OpenAI 形状）**仍然不在**收口面内 ⇒ ★★ **收口面宁窄勿宽，但宽的部分必须是
+> 「已服务的 Gemini 路由」**。
+> ⇒ ★★★★ **本轮第三值钱的一处发现：「漂移门」自己也会写下【错误的要求】** ——
+> `TestGeminiNativePathMatchesHandlerParser` 判「已服务路由」用的是
+> `served(p) && handlerOK`（**前缀** ∧ **解析器**）⇒ ★★★ 模型列表**两条都不满足**
+> ⇒ ⇒ 门会把它归进「没人服务的路径」，**反过来要求收口面别覆盖它** ⇒ ⇒
+> ★★★ ⇒ 必须显式把新路由登记进门的判定（本轮加了一张 `geminiNativeExactRoutes`）
+> ⇒ ⇒ ★★ 否则这一轮会「为了让门绿而把收口面收窄」⇒ ★★★ ★★ **门不是事实，
+> 它只是事实的一个投影 ⇒ ⇒ 加一条路由时，老的投影会【自动给出错误结论】而且是绿的**
+> ⇒ ⇒ ★★ **「门全绿」时要问的是【门测的那件事成立吗】，而不是【门红了吗】**。
+> ⇒ ★ **门（再 +5 条，三侧对拍）**：挂载侧（`cmd/gateway`，**从 main.go 源码读出挂载语句**
+> ⇒ 不自证）+ 解析侧（`domains/streaming`，★ **反向**：generateContent 解析器**不认**
+> 模型列表 ⇒ 两条路由不许混）+ 收口侧（`internal/auth`，★ **反向**：精确锚定 ⇒
+> `/v1beta/modelsXYZ` 不在面内、`/v1/models` 不在面内）。
+> ⇒ ★★★★ **变异臂 4 臂全检出**（★ 三个方向，不只「把缺陷放回去」）：A 收窄回旧形态/
+> B 删掉模型列表挂载/C1 **锚定退化成前缀**/C2 **过宽到 `/v1/models`** ⇒ ⇒
+> ★★★ 四臂还原后 **md5 逐字一致** ⇒ ⇒ ★★ C1/C2 证明这组门**分得清**
+> 「该红的路径」与「不该红的路径」（★ **只会喊「必须覆盖」的门，和只会喊「不许覆盖」
+> 的门，是同一个门的两种坏法**）。
+> ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`（子项③，§14~§20）；
+> 通用式见 `LESSONS.md` **§451**（通用式一~十三）。
 > ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`（子项②，§6~§12）；
 > 通用式见 `LESSONS.md` **§439**（通用式一~七）。
 > **2026-10-23 实时拓扑探测打标四处源真值漂移轮 + 口径收敛**（会话
