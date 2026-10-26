@@ -38,17 +38,27 @@
 --     session_turn_details_request_id_key = UNIQUE (tenant_id, request_id,
 --     partition_date)），不覆盖 hot 表 ⇒ LIMIT 1 在 hot 腿仍是必需的。
 --
--- 【★ 口径等价（252 生产实测，同一事务同一快照）】
+-- 【★ 口径等价（252 生产实测，同一事务同一快照）—— 承诺范围 = 带 ts 窗的读】
 --   · 普通_LEFT_JOIN ≡ LATERAL(... LIMIT 1)：UNIQUE (tenant_id, request_id,
 --     partition_date) 建在分区父表上并按分区传播 ⇒ 同键最多 1 行
 --     （窗口 66,838 行实测：join 后行数 66,838 = 窗口行数，无行增殖）。
 --   · 日界下推 ≡ 无日界：t.ts >= now()-7d 且 dd.partition_date =
 --     t.partition_date ⇒ dd.partition_date >= now()-8d 是被蕴含的
---     （8 天留跨日边界余量）；错位行实测 = 0
+--     （8 天留跨日边界余量；252 server TZ = Asia/Shanghai，1 天余量可吸收
+--     ≤±14h 的时区口径偏移）；错位行实测 = 0
 --     （count(*) FROM session_turns WHERE ts >= now()-7d
 --       AND partition_date < (now()-8d)::date  = 0）。
 --   · 窗口内父表腿双向 EXCEPT ALL（同一事务同一快照，66,838 行）：
 --     only_current=**0** / only_candidate=**0**。
+--   ★★ 等价范围边界（批判式审计轮 2026-10-27 补钉）：**全源等价不再成立** ——
+--     对 ts 早于 8 天的旧行，本形态返回行的 details 三列为 NULL
+--     （907/canonical 形态返回真实值）。这是**设计内边界**：本视图的等价
+--     承诺只覆盖「带 ts 窗的读」；全仓 13 处消费方逐一实测
+--     （matview ×2 / bg/mv_consistency ×2 / admin/analytics ×6 /
+--     admin/auto_route ×4）**全部带 7d 窗或为 request_id 存在性探针**
+--     （LEFT JOIN 保行存在性 ⇒ 探针不受影响）⇒ 今日零受影响消费方；
+--     夹具级边界由 TestRoutingAnalyticsSourceDayRangeBoundaryOnRealDB
+--     从两侧钉住。未来新增无窗消费方时必须重审本边界。
 --
 -- 【★ 实测收益（252，交错 A/B + 负载态对照）】
 --   结构（多轮稳定）：整计划 buffers 146,423~147,079 → **51,425~52,664**（-64%）；
