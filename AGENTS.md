@@ -567,6 +567,60 @@
 > **丢弃 → 捕获**；IR→OpenAI `annotations` **不可能 → 有引用即产出**；IR→Gemini 往返 **丢弃 → 还原**。
 > `go build ./...` ✓ / `internal/ir` ✓ / `internal/requestfact` ✓ / `domains/transformation` ✓。
 > ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`；通用式见 `LESSONS.md` **§436**（5 条）。
+> **2026-10-27 Gemini 原生出站 executor 轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
+> ★ 承接 §436 同一审计档的**子项②**（§433 清单的最后一项可做项）。
+> ⇒ ★★★★ **本轮最值钱的一处定性：缺口不是「功能没做」，是「死配置」** ——
+> `provider/catalog/protocol.go` 把 `gemini-generate` 列为合法 outbound 协议、
+> DB 的 CHECK 约束里有它、**Web UI 的协议下拉里有它**、
+> `protocol_normalize.go` 还会把 provider 配的 `gemini` **主动映射成它** ——
+> 而 dispatcher 把每个这样的候选**整条跳过**（`routeUnsupportedGemini` ⇒
+> `KindUnsupportedFeature`）⇒ **运维在 UI 里选 `gemini-generate`、配好 provider，
+> 那个 provider 就永远不会产生一包响应**。
+> ⇒ ★★ **仓内早就有这道账本**：`provider/catalog/contract_test.go` 里那条
+> `ProtocolGeminiGenerate: false`，注释明写「显式 unsupported」⇒ 本轮翻成 `true`
+> 并把**为什么**留在注释里（LESSONS §439 通用式一）。
+> ⇒ ★ **实现照抄仓内既有的设计书**（`docs/供应商协议优化.md` §8.3 逐条点名了四个配料），
+> 不自创协议语义：`internal/upstreamurl` 新增 `GenerateContentURL`（**base URL 拥有版本段**
+> ⇒ `/v1beta` 保留、`/v1` 保留、都没有才默认 `/v1beta`；★ **绝不替运维把 `/v1` 改写成
+> `/v1beta`**；**粘贴完整 endpoint URL 当 base 也能用** ⇒ 幂等性有门）；
+> 请求体走 `ir.SerializeGemini`；凭据走 **`x-goog-api-key` 头**；
+> 流式走 `ir/parse_gemini_stream.go`。
+> ⇒ ★★ **凭据形态只走头、不进 URL**：厂方两种都收（头 / `?key=`），★ 但 query 形态的凭据会进
+> **每一条** access log、**每一条** upstream-URL 日志行、**每一行**记录请求 URL 的 telemetry
+> ⇒ ⇒ 反向钉 `TestGeminiExecutor_BuildRequest_CredentialNeverInURL` 断言
+> **URL 既不含凭据、也不含任何 query**（★ 「厂商接受」≠「我们要用」）。
+> ⇒ ★★★ **顺带修掉 IR 流解析器的一个洞**：`ParseGeminiStreamChunk` 的结构体里**没有 `error`
+> 字段** ⇒ 一帧 `data: {"error":{...}}` 解析成**空 chunk** ⇒ 与心跳保活帧**不可区分**
+> ⇒ **厂商的 429/401 被静默吞掉**、客户端只看到被截断的流 ⇒ 修在 **IR 层**（事实源），
+> 且**错误判定必须在 usage/candidate 分支之前**（错误帧两者都没有，放后面永远走不到）。
+> ⇒ ★★ **客户端侧线格式只接 OpenAI Chat 一种，其余 fail closed**
+> （`anthropic-messages` / `openai-responses` ⇒ `KindUnsupportedFeature`）：
+> ★ **Gemini 原生客户端算「OpenAI Chat 客户端」** —— Gemini 入向 handler 在派发**前**就把
+> body 转成了 OpenAI 形状 ⇒ dispatcher 看到的是 `openai-completions` ⇒ 响应也是 OpenAI 形状
+> ⇒ 由 Gemini handler 自己转回 Gemini 形状 ⇒ ★ **`gemini-generate` 永远不会作为
+> 「入向客户端协议」出现**（别写「处理一种永远不会出现的形状」的分支）；
+> ★ **错形状的 200 比明确的未接线更糟**（SDK 会在离病因很远的地方解析失败）⇒ 与已上线的
+> Ollama-native executor 同一口径。
+> ⇒ ★ **门（20+ 条）**：URL/凭据（含**反向**：凭据绝不入 URL）/流式动作与 `alt=sse`/
+> 请求体转换 7 个 fail-closed 闸/**响应转 OpenAI 形状**/**厂商错误信封透传**/**畸形 ⇒
+> `KindConversion`/**流 ⇒ OpenAI SSE 且补 `[DONE]` 终态**（★ Gemini 流自己没有哨兵，
+> OpenAI 线必须有）/★ **反向：第二种厂商分帧（裸 JSON 行）也能吃**/流内厂商错误 ⇒ 错误帧 +
+> 流被打断/★★ **端到端**：真实上游收到的是 Gemini 原生体（**不是 `messages`**）、凭据在头里、
+> URL 里没有凭据/端到端流式/**401 ⇒ 类型化错误可 failover**/IR 往返不丢内容；
+> 另加 `executor_dispatch_p4_test.go` 两条（`gemini-generate` ⇒ `routeGeminiNative`，
+> ★ **且不依赖任何 P4 开关** —— 别让 native 路由被 feature flag 关掉）。
+> ⇒ ★ **读数**：`gemini-generate` provider 可否被选中 **否 → 是**；出站 URL/请求体/凭据形态
+> **不存在 → 齐备**；流内厂商错误帧 **被吞 → 解析为 `ChunkTypeError`**；
+> catalog 契约测试里 `gemini-generate` **false → true**。
+> ⇒ ★★ **本轮明确没做（留给下一轮，别重复排查）**：**Gemini 原生模型列表**
+> （`GET /v1beta/models` ⇒ 需 `cmd/gateway/main.go` 接线，★ **并行会话正在改该文件** ⇒ 避让，
+> 且要决定返回形状）；**`:countTokens`**（需**诚实**的 token 计数 ⇒ 估算会误导客户端的预算决策
+> ⇒ 独立设计题）；**`anthropic-messages` / `openai-responses` 客户端侧线格式**
+> （★ 需 Anthropic SSE 严格帧与 Responses 的 `response.completed` 编排 —— IR 里有序列化器，
+> **流式终态的编排**未接线）；**Gemini 上游的 `header_profile_code` 联动**；
+> **Gemini 上游的上下文超限压缩恢复**（Ollama 路径有，Gemini 路径本轮只做一次尝试）。
+> ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`（子项②，§6~§12）；
+> 通用式见 `LESSONS.md` **§439**（通用式一~七）。
 > **2026-10-23 实时拓扑探测打标四处源真值漂移轮 + 口径收敛**（会话
 > `mvs_64ddb526ee11405aae54d67e7c4d6161`）：用户报 154 生产上一条 32-hex
 > 请求 `af1eb6d83ef39610cc4f8be4e181b5a8` "应被识别为探测但实时拓扑 pill = 否"。
