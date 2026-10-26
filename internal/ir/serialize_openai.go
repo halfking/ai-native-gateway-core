@@ -822,21 +822,42 @@ func validateToolCallIntegrity(messages []map[string]any) error {
 // OpenAI Chat Completions audio input uses block type "input_audio", not
 // "audio"; emitting "audio" produces a block OpenAI rejects.
 // audit-provider-multimodal (2026-07-13): OpenAI audio output config + Gemini speech_config.
+//
+// 2026-10-26（Gemini fileData 转发修复）：Type="file_uri"（Gemini fileData
+// 解析产物，URI 载在 FileURI）此前没有任何分支 → 落进 default，而 default
+// 只读 Data / URL ⇒ 发出**空载荷**的 {"type":"input_audio"}（上游必 400）。
+// 现在 file_uri 与既有 url 形态同样以 url 槽位承载引用（与
+// irAudioToGeminiPart 的 FileURI 优先序一致），且 default 兜底也认 FileURI。
+// 另：Gemini 的 audio/mpeg ⇒ Format "mpeg"，而 OpenAI Chat input_audio.format
+// 的厂方枚举是 wav|mp3 ⇒ 在 OpenAI 边界归一 mpeg→mp3。
 func serializeOpenAIAudioBlock(audio *MediaSource) map[string]any {
 	// OpenAI Chat input audio block type is "input_audio".
 	block := map[string]any{"type": "input_audio"}
 	// input_audio carries data/url/file_id in the nested object.
 	inner := map[string]any{}
+	// openAIAudioFormat renders f in the OpenAI Chat format enum (wav|mp3);
+	// unknown values pass through so vendor dialects keep their own words.
+	openAIAudioFormat := func(f string) string {
+		if f == "mpeg" {
+			return "mp3"
+		}
+		return f
+	}
 	switch audio.Type {
 	case "base64":
 		inner["data"] = audio.Data
 		if audio.Format != "" {
-			inner["format"] = audio.Format
+			inner["format"] = openAIAudioFormat(audio.Format)
 		}
 	case "url":
 		inner["url"] = audio.URL
 		if audio.Format != "" {
-			inner["format"] = audio.Format
+			inner["format"] = openAIAudioFormat(audio.Format)
+		}
+	case "file_uri":
+		inner["url"] = audio.FileURI
+		if audio.Format != "" {
+			inner["format"] = openAIAudioFormat(audio.Format)
 		}
 	case "file_id":
 		inner["file_id"] = audio.FileID
@@ -845,8 +866,10 @@ func serializeOpenAIAudioBlock(audio *MediaSource) map[string]any {
 		if audio.Data != "" {
 			inner["data"] = audio.Data
 			if audio.Format != "" {
-				inner["format"] = audio.Format
+				inner["format"] = openAIAudioFormat(audio.Format)
 			}
+		} else if audio.FileURI != "" {
+			inner["url"] = audio.FileURI
 		} else if audio.URL != "" {
 			inner["url"] = audio.URL
 		}
@@ -860,9 +883,16 @@ func serializeOpenAIAudioBlock(audio *MediaSource) map[string]any {
 // serializeOpenAIVideoBlock converts a video content block to OpenAI-compatible output.
 // audit-provider-multimodal (2026-07-13): For Qwen-VL video and Gemini video input
 // (OpenAI does not have native video, so we pass through as input_file with video MIME).
+//
+// 2026-10-26（Gemini fileData 转发修复）：Type="file_uri"（Gemini fileData
+// 解析产物，URI 载在 FileURI）此前只读 video.URL ⇒ 发出 url:"" 的空 video_url
+// 块（上游必 400）。URL → FileURI 兜底与 irVideoToGeminiPart 的优先序一致。
 func serializeOpenAIVideoBlock(video *MediaSource) map[string]any {
 	block := map[string]any{"type": "video_url"}
 	urlStr := video.URL
+	if urlStr == "" {
+		urlStr = video.FileURI
+	}
 	if video.Type == "base64" && video.Data != "" {
 		mt := video.MediaType
 		if mt == "" {
