@@ -467,6 +467,80 @@
 > ★★★ 门报的行号必须指向【问题字符本身】/ ★★★ 浏览器实测是「阴性结论当缺陷一样复核」最好的触发器/
 > ★★★ 位置信号比字形本身更决定判红 / ★★ 批量替换必须两阶段 / ★★ 裸 `<svg viewBox>` 没有 width/height /
 > ★★ 排除目录是「量具口径变更」/ ★★ 登记册按行号记账会漂移 / ★★ 断言字形文本要改成更强的断言）。
+> **2026-10-26 Gemini 原生认证形态修复轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
+> 用户报「**Gemini 的数据转换好像认证没通过**，请根据我们保留的厂方标准文档修正」⇒
+> ★ **根因不是 IR 层、也不是上游 header —— 是网关自己的认证门不认 Gemini 客户端的凭据形态。**
+> ⇒ ★★★ **根因链（本轮最值钱的一处）**：本仓有**两份**凭据提取实现
+> （`middleware/auth_mw.go` 的全局静态 key 门 + `domains/streaming/handler.go: extractBearerToken`
+> 的数据面 KeyVerifier），**两份都只认** `Authorization: Bearer` + `x-api-key`（Anthropic），
+> 而**厂方标准文档写明的 Gemini 形态一张都没实现** ⇒ 三层断点：
+> ① 全局门 401 `missing_key`（**死在 mux 之前**，连 Gemini handler 都进不去）
+> ⇒ ② `newGeminiSyntheticRequest` **丢弃 query**（合成请求 URL 是新建的）⇒ `?key=` 这一形态当场蒸发
+> ⇒ ③ 数据面提取器取不到 ⇒ **即使放行①，③仍会拒 ⇒ 修一份 = 半修**。
+> ⇒ ★★★ **判据全部来自仓内已保留的厂方文档（不是外部猜测）**：
+> `docs/vendor-formats/gemini.md` §HTTP 形态（`?key={API_KEY}`）、
+> `docs/archive/process/format-conversion/厂家数据格式/gemini/generate-content.md` §认证、
+> `docs/供应商协议优化.md` §8.3（`x-goog-api-key` 或 `?key=`）、
+> ★★ `docs/QUICK_REFERENCE.md` §Gemini协议（`x-goog-api-key: xxx`）—— ★★ **最后这份记的是本仓自己的
+> 对外契约** ⇒ 照它写的客户端必然 401。
+> ⇒ ★ **修法**：新 `internal/auth/clientkey.go`（**唯一事实源**，四形态收成一份：
+> Bearer > `x-api-key` > `x-goog-api-key` > `?key=`，★ Bearer 永远优先 ⇒ 同时带多种形态的客户端
+> 不会被静默改指到另一把钥匙）+ 全局门与数据面提取器**改调同一份** ⇒ 顺手修掉两份实现的历史分叉
+> （数据面认 `bearer` 小写、全局门不认）。
+> ⇒ ★★ **`?key=` 收口到 Gemini 原生路由**（`key` 是极通用参数名 ⇒ 全局认它当凭据源会劫持未来任何
+> 把 `?key=` 当业务参数用的端点）⇒ 锚点 = **挂载 Gemini handler 的两个 mux 子树**
+> （`/v1beta/models/`、`/v1/models/`，cmd/gateway/main.go:6795-6796）。
+> ⇒ ★★ **入口一次性归一**（`handler_gemini.go: normalizeGeminiCredential`）：合成请求的凭据
+> 统一成 `Authorization: Bearer` ⇒ **下游（key verifier / static data-plane key / request-meta /
+> sanitizer）零改动** ⇒ 杜绝「入口认了、下游不认」的半修状态；★ 且**不在合成请求里保留 `?key=`**
+> （合成请求 URL 是新建的 ⇒ query 本就带不过来；把 key 留在 URL 上会进内部请求的 URL 字段）；
+> ★★ **归一只碰本轮新增的两种形态**（`x-goog-api-key` / `?key=`）⇒ `x-api-key`（Anthropic）
+> 保持原样 ⇒ 免得顺带改变「无 verifier 模式下 handoff 把 Authorization 里的客户端凭据转给
+> 摘要上游」这条**既有**路径的行为（那属于本轮范围之外）。
+> ⇒ ★★ **配套安全面（否则本轮会引入新泄漏）**：`?key=<API_KEY>` 把 key 放进 URL，而访问日志记的是
+> **原始 query 串**（`compactQuery` 此前**只截断、不脱敏**）⇒ 一旦开始认这个形态，客户端 API key
+> 会以明文写进滚动日志 + panic 日志 ⇒ 改为**先脱敏再截断**（被截断的 query 永不露出半个 secret）；
+> ★ 脱敏只认**精确参数名**（`key` / `token`）⇒ ★★ `api_key_id` / `credential_id` 是**标识符不是凭据**
+> （脱敏会毁掉运维可读性）、`apikey=` / `monkey=` 不得误伤。
+> ⇒ ★★ **契约测试当场抓到的「漂移」其实是量具的错**：`TestGeminiNativePathMatchesHandlerParser`
+> 第一版断言「收口面 ≡ handler 解析面」⇒ 报出 `/v1beta/models/x:generateContent/extra` 一处漂移
+> ⇒ 追下去发现**断言把「解析器接受」当成了「路由被服务」**（★ 路由的裁判是 **mux**，★ handler 的解析器
+> 是**子串匹配**）⇒ 判据改成「被服务面」（在挂载前缀下 ∧ 解析器接受）；
+> ★★ 第二版又把「在挂载前缀下但解析器不接受」（`:countTokens` / 裸模型名 / `/v1beta/models/`）
+> 当成违规 ⇒ 那些**根本不是 Gemini 路由**（handler 回 404）⇒ 收口面不覆盖它们是对的。
+> ⇒ ★ **⇒ 结论**：收口面宁可**偏宽**不可**偏窄**（偏窄 = 路由在服务却没法认证 = 本轮要治的病；
+> 偏宽 = mux 会 404，无害）。
+> ⇒ ★ **读数**：全局门认得的凭据形态 2 → **4**；数据面提取器 2 → **4**（与全局门**同源**）；
+> 认得同一把钥匙的实现 **2 份 → 1 份**；访问日志里的凭据明文 **0**；
+> `go build ./...` ✓ / `go vet` ✓ / 14 包测试全绿。
+> ⇒ ★★★ **转换面（IR）逐条对照厂方文档的复核**：13 条厂方契约里 **12 条实现已对**
+> （role=user/model、parts 六型、`functionDeclarations` 无包装层、`toolConfig` 三档、
+> safetySettings 透传、generationConfig 九项、响应 role=model、finishReason 大写、
+> `cachedContentTokenCount`/`thoughtsTokenCount`、`thought:true`、错误信封）。
+> ⇒ ★★ **唯一一条不一致，是【文档错、实现对】**：`docs/vendor-formats/gemini.md`
+> §System Instruction 原文「systemInstruction **必须**带 `role: "system"`」——
+> 而厂方 `GenerateContentRequest` 参考原文是「**The role field of systemInstruction is
+> ignored**」，且 `Content.role` 取值域只有 `user`/`model`（`"system"` 不在其中）
+> ⇒ 代码（`buildGeminiSystemInstruction` 不写 role）**是对的** ⇒ 本轮**改文档不改代码**
+> （否则等于把一段错的 MUST 固化成代码；§428「文档写 A、代码做 B ⇒ 门会逼人撒谎」）。
+> 已订正两份保留文档（`docs/vendor-formats/gemini.md` + 厂家数据格式/gemini/generate-content.md）。
+> ⇒ ★ **本轮明确没做（留给下一轮，别重复排查）**：**`citationMetadata` 捕获**（IR 无该字段 ⇒
+> 属**独立特性工程**，且对用户报的症状无帮助：上游是 OpenAI 形状，压根不产 Gemini 引用）；
+> **Gemini 原生模型列表**
+> （`GET /v1beta/models` 不带 action ⇒ mux 导到 Gemini handler 而 handler 只认带 action 的路径 ⇒ 404，
+> 属**路由面缺口**不是认证面缺口）；**Gemini 原生出站 executor**（`provider/catalog` 的
+> `gemini-generate` 作为**出站**协议仍是 `routeUnsupportedGemini` ⇒ `docs/供应商协议优化.md` §8.3
+> 描述的「Gemini executor + `x-goog-api-key` 出站头」**仍未实现**，网关只能把 Gemini 客户端的请求
+> 转成 OpenAI 形状发给上游）；**`?key=` 在 nginx access log 里的明文**（本仓只能保证自己的日志脱敏，
+> 边缘 nginx 需运维侧配合）；`:countTokens` 等动作未挂载；**`web-mobile` 的 Gemini 客户端形态**未核查。
+> ⇒ 审计档 `docs/audit/2026-10-26-Gemini原生认证形态修复轮.md`；
+> 通用式见 `LESSONS.md` **§433**（8 条：★★★★★「同一把钥匙」被几份实现各认一半 ⇒ 修一份 = 半修 /
+> ★★★★★ 厂方文档（含**本仓自己的对外契约文档**）写明的形态，实现里可能一张都没有 /
+> ★★★★ 通用参数名不能全局当凭据源 ⇒ 收口到「厂方契约认它的那些路由」/
+> ★★★★ 收口面必须【覆盖被服务面】而不是【覆盖解析面】—— 路由的裁判是 mux /
+> ★★★★ 契约测试报出的「漂移」有可能是【量具】的 ⇒ 先问断言写对没有 /
+> ★★★ 凭据进 URL ⇒ 日志必须脱敏且【先脱敏再截断】/ ★★★ 边界上一次性归一 ⇒ 下游零改动 /
+> ★★★ 认得同一把钥匙的实现要收成一份（解析器同理））。
 > **2026-10-23 实时拓扑探测打标四处源真值漂移轮 + 口径收敛**（会话
 > `mvs_64ddb526ee11405aae54d67e7c4d6161`）：用户报 154 生产上一条 32-hex
 > 请求 `af1eb6d83ef39610cc4f8be4e181b5a8` "应被识别为探测但实时拓扑 pill = 否"。
