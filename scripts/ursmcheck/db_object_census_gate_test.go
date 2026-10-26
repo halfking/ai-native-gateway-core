@@ -60,10 +60,11 @@ const (
 	dbObjCensusRel     = "scripts/audit/asset/db-object-census.tsv"
 	dbObjExpectRel     = "scripts/audit/asset/db-object-expect.tsv"
 	dbObjLedgerRel     = "scripts/audit/asset/db-object-gap-ledger.tsv"
+	dbObjRetiredRel   = "scripts/audit/asset/db-object-retired.tsv"
 	dbObjMigrationsRel = "sql/migrations/startup"
 	dbObjAuditRel      = "docs/audit/2026-10-27-R161-三环境真实对象底账与迁移落点缺口.md"
 
-	dbObjCensusCols = 15 // env + 14
+	dbObjCensusCols = 17 // env + 16（★ R162：从 15 列扩到 17 列，★ 多了 index_columns / index_predicate）
 	dbObjLedgerCols = 8
 )
 
@@ -71,9 +72,9 @@ const (
 // ★★ 只许下降（★ 属主把迁移补到 211/252 之后 ⇒ 数字变小 ⇒ 仍绿）。
 // ★★ 变大 ⇒ 红（★ 说明有人在别处挖了坑）。
 var dbObjGapRatchet = map[string]int{
-	"local": 66,
-	"252":   64,
-	"211":   68,
+	"local": 53,
+	"252":   51,
+	"211":   56,
 }
 
 // ─────────────────────────── 读文件 ───────────────────────────
@@ -208,6 +209,21 @@ func dbObjStripName(raw string) string {
 	return strings.ToLower(strings.Trim(strings.TrimSpace(raw), `"`))
 }
 
+// dbObjBareName 剥掉 schema 前缀后的【裸名】。
+//
+// ★★ R162 轮定位到的 R161 真缺陷（★ 差集失效 ⇒ 假缺口）：
+//    `DROP INDEX IF EXISTS public.foo` 抓到的是 `public.foo`，
+//    而 CREATE 侧存的是裸名 `foo` ⇒ `created - dropped` 永远匹配不上
+//    ⇒ ★★ 被后续迁移【明确退役】的索引仍然留在期望集里
+//    ⇒ ★★ 缺口台账于是把它们记成「三环境都没建」
+//    ⇒ ★★ 而它们在三个环境确实都不存在 ⇒ ⇒ ★★ **43 条全是工具造的假缺口**。
+//
+// ★★ ★★ 教训：**「两份独立实现互证」也可能同源同错** —— ★★ R161 的 Python 工具与
+// ★★ 这份 Go 门当时**都没剥前缀** ⇒ ★★ 互证对这批零信息 ⇒ ★★ 断言「互证通过」是假的。
+func dbObjBareName(raw string) string {
+	return dbObjStripName(raw[strings.LastIndex(raw, ".")+1:])
+}
+
 // dbObjDeriveExpected 从仓内 startup 迁移反解期望索引集（★ 独立于 Python 工具）。
 //
 // ★ 三个规格（★ 与 Python 侧同规格、★ 但代码路径不同 ⇒ ★ 互证）：
@@ -264,7 +280,7 @@ func dbObjDeriveExpected(t *testing.T) (map[string][2]string, map[string]int) {
 			created[name] = [2]string{mig, table}
 		}
 		for _, m := range dbObjReDrop.FindAllStringSubmatch(body, -1) {
-			dropped[dbObjStripName(m[1])] = true
+			dropped[dbObjBareName(m[1])] = true
 		}
 	}
 
@@ -286,6 +302,105 @@ func dbObjDeriveExpected(t *testing.T) (map[string][2]string, map[string]int) {
 	return out, stats
 }
 
+// dbObjSeverity 算 severity（★ 与 Python 侧 `_severity` 同一口径，★ 但独立实现）。
+//
+// ★★ R161 第一版写的是「生产环境有缺口 ⇒ production-gap；否则 ⇒ all-env-gap」
+// ⇒ ⇒ ★★ 于是「**只有 local 缺**」（★ 生产其实齐备）被判成 `all-env-gap`
+// ⇒ ⇒ ★★ 而「**三环境全缺**」（★ 一致退役）被判成 `production-gap`
+// ⇒ ⇒ ★★ **词表名与判据完全相反** ⇒ ★★ 谁读都会读反
+// ⇒ ⇒ ★★ 而 R161 的门只校验计数 ⇒ ★★ **门绿掩盖了这个缺陷**
+//
+// ★★ 现在词表是【每个格子组合唯一确定】的 4 值：
+//
+//	none              —— 任何环境都不缺
+//	local-only-gap    —— 只有 local 缺（★ 生产 252/211 都齐备）
+//	prod-partial-gap  —— 生产环境里缺一部分
+//	prod-full-gap     —— 生产环境【全都】缺（★ 252 与 211 都缺）
+func dbObjSeverity(cells []string, envs []string) string {
+	missing := map[string]bool{}
+	for i, c := range cells {
+		if c == "missing" {
+			missing[envs[i]] = true
+		}
+	}
+	if len(missing) == 0 {
+		return "none"
+	}
+	if len(missing) == 1 && missing["local"] {
+		return "local-only-gap"
+	}
+	prodMissing := 0
+	for _, e := range envs {
+		if e != "local" && missing[e] {
+			prodMissing++
+		}
+	}
+	prodEnvs := 0
+	for _, e := range envs {
+		if e != "local" {
+			prodEnvs++
+		}
+	}
+	if prodMissing == prodEnvs {
+		return "prod-full-gap"
+	}
+	return "prod-partial-gap"
+}
+
+// ─────────────────────── G8：退役证据台账（★ 防止假缺口复活） ───────────────────────
+//
+// ★★★ 这道门是 R162 轮加的，★ 存在的理由是 R161 轮的一次真事故：
+//
+// ★ R161 的期望集推导里，★ 【DROP 名的 schema 前缀】让差集失效
+// ⇒ ⇒ 被后续迁移【明确退役】的索引仍然留在期望集里
+// ⇒ ⇒ 缺口台账把它们记成「三个环境都没建」⇒ ★★ **43 条假缺口**
+// ⇒ ⇒ ★★ **任何人照台账去「补建」，就会复活被刻意退役的索引**
+//   （★ 例：876 退役 idx_sessions_session_id 是因为它已被前缀覆盖，★ 复活它是纯浪费写入）
+//
+// ★★ 所以这里钉死两件事：
+//   ① ★★ 退役台账里列出的索引，★ **一个都不许出现在期望集里**
+//   ② ★★ 退役台账必须【真的非空】且【真的含 876 的那一条】⇒ ★★ 否则这道门是空转的
+func TestDbObjectRetiredEvidenceLedger(t *testing.T) {
+	rows := dbObjDataLines(t, dbObjRepoPath(t, dbObjRetiredRel))
+	if len(rows) == 0 {
+		t.Fatal("★ retired ledger has zero rows ⇒ the gate asserts nothing")
+	}
+	for _, r := range rows {
+		if len(r) != 8 {
+			t.Fatalf("retired row malformed (want 8 cols, got %d): %v", len(r), r)
+		}
+	}
+
+	// ① 期望集里不得有已退役的索引
+	expected, _ := dbObjDeriveExpected(t)
+	leaked := []string{}
+	for _, r := range rows {
+		name := r[1]
+		if _, ok := expected[name]; ok {
+			leaked = append(leaked, name)
+		}
+	}
+	if len(leaked) > 0 {
+		sort.Strings(leaked)
+		t.Errorf("★ %d retired indexes leaked into the expected set: %v", len(leaked), trunc(leaked))
+	}
+
+	// ② 阳性对照：★ 必须含 876 退役的那一条（★ 否则台账没抓到真退役）
+	found876 := false
+	for _, r := range rows {
+		if r[1] == "idx_sessions_session_id" && r[4] == "876" {
+			found876 = true
+			if r[6] != "yes" {
+				t.Errorf("★ 876 的 DROP 在 DO 块内（有覆盖证明才退役）⇒ conditional 应为 yes，★ 实为 %q", r[6])
+			}
+		}
+	}
+	if !found876 {
+		t.Error("★ retired ledger lost the 876 event (idx_sessions_session_id) ⇒ the gate asserts nothing")
+	}
+	t.Logf("retired ledger: %d events", len(rows))
+}
+
 // ─────────────────────────── G1：底账形状 + sha256 自洽 ───────────────────────────
 
 func TestDbObjectCensusSnapshotIsWellFormed(t *testing.T) {
@@ -295,7 +410,7 @@ func TestDbObjectCensusSnapshotIsWellFormed(t *testing.T) {
 		t.Fatalf("read %s: %v", path, err)
 	}
 
-	// ① 每个数据行必须恰好 15 列（★ 换行污染 ⇒ 这里必须炸）
+	// ① 每个数据行必须恰好 17 列（★ 换行污染 ⇒ 这里必须炸）
 	perEnv := map[string][]string{}
 	order := []string{}
 	for _, line := range strings.Split(string(raw), "\n") {
@@ -474,24 +589,13 @@ func TestDbObjectGapLedgerIsFullyRecomputable(t *testing.T) {
 				mismatches++
 			}
 		}
-		verdict, severity := "complete", "none"
-		gap := false
-		prodGap := false
-		for i := range envs {
-			if got[3+i] == "missing" {
-				gap = true
-				if envs[i] != "local" {
-					prodGap = true
-				}
+		cells := got[3 : 3+len(envs)]
+		verdict, severity := "complete", dbObjSeverity(cells, envs)
+		for _, c := range cells {
+			if c == "missing" {
+				verdict = "gap"
+				break
 			}
-		}
-		if gap {
-			verdict = "gap"
-		}
-		if prodGap {
-			severity = "production-gap"
-		} else if gap {
-			severity = "all-env-gap"
 		}
 		if got[6] != verdict {
 			t.Errorf("index %q: verdict=%s want %s", name, got[6], verdict)
@@ -547,7 +651,7 @@ func TestDbObjectCensusRejectsMalformedRows(t *testing.T) {
 		return strings.Join(out, "\t")
 	}
 
-	// ★ 阳性对照：★ 15 列的行必须被接受
+	// ★ 阳性对照：★ 17 列的行必须被接受
 	good := filepath.Join(dir, "good.tsv")
 	writeFile(t, good, mkRow("local", "idx", "public", "i", "idx_a", "owner",
 		"", "", "", "", "", "", "", "CREATE INDEX x", "true,true,true")+"\n")
@@ -556,14 +660,14 @@ func TestDbObjectCensusRejectsMalformedRows(t *testing.T) {
 		t.Errorf("well-formed census not parsed: %v", states)
 	}
 
-	// ★ 反向对照：★ 14 列（★ 少一列 ⇒ 典型的换行截断）必须被拒
+	// ★ 反向对照：★ 16 列（★ 少一列 ⇒ 典型的换行截断）必须被拒
 	bad := filepath.Join(dir, "bad.tsv")
 	short := mkRow("local", "idx", "public", "i", "idx_a", "owner",
 		"", "", "", "", "", "", "", "CREATE INDEX x", "true,true,true")
 	short = strings.Join(strings.Split(short, "\t")[:dbObjCensusCols-1], "\t")
 	writeFile(t, bad, short+"\n")
 	if _, ok := dbObjParseCensusQuiet(bad); ok {
-		t.Error("a 14-field census row was accepted ⇒ truncated rows would be read silently")
+		t.Error("a short census row was accepted ⇒ truncated rows would be read silently")
 	}
 }
 
@@ -650,15 +754,24 @@ func TestDbObjectProductionGapRatchet(t *testing.T) {
 		}
 	}
 
-	// ★ 阳性对照：★ 台账里必须【确实】有 production-gap 行（★ 否则棘轮是空转的）
+	// ★ 阳性对照：★ 台账里必须【确实】有生产缺口行（★ 否则棘轮是空转的）
+	// ★ ★ R162：★ severity 词表改成【每个格子组合唯一确定】的 4 值 ⇒ 阳性对照跟着换
 	prodRows := 0
 	for _, r := range rows {
-		if r[7] == "production-gap" {
+		if r[7] == "prod-partial-gap" || r[7] == "prod-full-gap" {
 			prodRows++
 		}
 	}
 	if prodRows == 0 {
 		t.Error("ledger has zero production-gap rows ⇒ the ratchet asserts nothing")
+	}
+	// ★★ R162 新增：★ severity 词表本身必须【与格子状态一致】⇒ ★★ 词表名与语义不许再错位
+	for _, r := range rows {
+		want := dbObjSeverity(r[3:6], envs)
+		if r[7] != want {
+			t.Errorf("index %q: severity=%s but cells ⇒ %s (★ 词表名与语义必须一致)",
+				r[1], r[7], want)
+		}
 	}
 	t.Logf("gaps by env: %v (baseline %v)", gaps, dbObjGapRatchet)
 }
