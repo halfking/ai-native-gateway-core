@@ -3,6 +3,7 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // ParseGeminiResponse parses a Gemini generateContent response into IR.
@@ -28,6 +29,17 @@ func ParseGeminiResponse(body []byte) (*InternalResponse, error) {
 				} `json:"parts"`
 			} `json:"content"`
 			FinishReason string `json:"finishReason"`
+			// ★ 2026-10-27（Gemini 转换面补全轮）：厂方文档要求 IR 捕获
+			// 引用元数据（docs/vendor-formats/gemini.md §特殊字段）。
+			// ★ Gemini 的字段名是 `uri`（**不是** `url`）⇒ 归一时改名。
+			CitationMetadata struct {
+				Citations []struct {
+					StartIndex int    `json:"startIndex"`
+					EndIndex   int    `json:"endIndex"`
+					URI        string `json:"uri"`
+					Title      string `json:"title"`
+				} `json:"citations"`
+			} `json:"citationMetadata"`
 		} `json:"candidates"`
 		UsageMetadata struct {
 			PromptTokenCount     int `json:"promptTokenCount"`
@@ -63,6 +75,20 @@ func ParseGeminiResponse(body []byte) (*InternalResponse, error) {
 	// SerializeGeminiResponse hand Gemini clients back their own finishReason.
 	resp.StopReason = candidate.FinishReason
 	resp.FinishReason = mapGeminiFinishReason(candidate.FinishReason)
+	// ★ 2026-10-27（Gemini 转换面补全轮）：捕获引用元数据（厂方文档要求
+	// IR 捕获 ⇒ 可在序列化为 OpenAI 时映射为 annotations）。
+	// ★ 无 URL 的引用没有意义（客户端点不动）⇒ 丢弃并计数，不进 IR。
+	for _, c := range candidate.CitationMetadata.Citations {
+		if strings.TrimSpace(c.URI) == "" {
+			continue
+		}
+		resp.Citations = append(resp.Citations, ResponseCitation{
+			URL:        c.URI,
+			Title:      c.Title,
+			StartIndex: c.StartIndex,
+			EndIndex:   c.EndIndex,
+		})
+	}
 	for index, part := range candidate.Content.Parts {
 		isThought, legacyThoughtText := geminiThoughtMarker(part.Thought)
 		switch {

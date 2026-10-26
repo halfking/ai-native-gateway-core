@@ -1,0 +1,121 @@
+# 密钥 / 请求日志 / 会话分析
+# API 密钥、请求日志与全屏请求详情、用户/客户端/任务画像。
+# 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
+# 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
+#       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
+appId: ${BASE_URL}
+---
+- launchApp
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ── /keys ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/keys"
+- extendedWaitUntil:
+    visible: 'API 密钥管理'
+    timeout: 20000
+- evalScript: "${output.ms__keys = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__keys < 2000}"
+    optional: true
+    label: 'slow-check:/keys'
+
+# ── /keys/:id ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/keys/${API_KEY_ID}"
+- extendedWaitUntil:
+    visible: '密钥统计'
+    timeout: 20000
+- evalScript: "${output.ms__keys_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__keys_id < 2000}"
+    optional: true
+    label: 'slow-check:/keys/:id'
+
+# ── /request-logs ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/request-logs"
+- extendedWaitUntil:
+    visible: '请求日志'
+    timeout: 20000
+- evalScript: "${output.ms__request_logs = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__request_logs < 2000}"
+    optional: true
+    label: 'slow-check:/request-logs'
+
+# ── /request-detail/:requestId ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/request-detail/${REQUEST_ID}"
+- extendedWaitUntil:
+    visible: '单请求'
+    timeout: 20000
+- evalScript: "${output.ms__request_detail_requestId = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__request_detail_requestId < 2000}"
+    optional: true
+    label: 'slow-check:/request-detail/:requestId'
+
+# ── /admin/session-analytics/users ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/session-analytics/users"
+- extendedWaitUntil:
+    visible: '用户画像'
+    timeout: 20000
+- evalScript: "${output.ms__admin_session_analytics_users = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_session_analytics_users < 2000}"
+    optional: true
+    label: 'slow-check:/admin/session-analytics/users'
+
+# ── /admin/session-analytics/users/:owner ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/session-analytics/users/${SESSION_OWNER}"
+- extendedWaitUntil:
+    visible: '用户画像详情'
+    timeout: 20000
+- evalScript: "${output.ms__admin_session_analytics_users_owner = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_session_analytics_users_owner < 2000}"
+    optional: true
+    label: 'slow-check:/admin/session-analytics/users/:owner'
+
+# ── /admin/session-analytics/clients/:id ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/session-analytics/clients/${CLIENT_ID}"
+- extendedWaitUntil:
+    visible: '客户端分析'
+    timeout: 20000
+- evalScript: "${output.ms__admin_session_analytics_clients_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_session_analytics_clients_id < 2000}"
+    optional: true
+    label: 'slow-check:/admin/session-analytics/clients/:id'
+
+# ── /admin/session-analytics/tasks/:id ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/session-analytics/tasks/${TASK_ID}"
+- extendedWaitUntil:
+    visible: '任务分析'
+    timeout: 20000
+- evalScript: "${output.ms__admin_session_analytics_tasks_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_session_analytics_tasks_id < 2000}"
+    optional: true
+    label: 'slow-check:/admin/session-analytics/tasks/:id'
+
+# ── /admin/session-analytics/filter-options ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/session-analytics/filter-options"
+- extendedWaitUntil:
+    visible: '会话分析筛选'
+    timeout: 20000
+- evalScript: "${output.ms__admin_session_analytics_filter_options = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_session_analytics_filter_options < 2000}"
+    optional: true
+    label: 'slow-check:/admin/session-analytics/filter-options'

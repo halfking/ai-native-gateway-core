@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -73,6 +74,35 @@ type InternalResponse struct {
 	// misclassified as empty_response, demoting the provider and refusing
 	// billing for real upstream work. Deduped, capped at 8.
 	UnknownBlockTypes []string `json:"unknown_block_types,omitempty"`
+
+	// Citations carries the source citations the upstream attached to the
+	// answer.
+	//
+	// ★ 2026-10-27（Gemini 转换面补全轮）：厂方文档
+	//   （docs/vendor-formats/gemini.md §特殊字段）写明
+	//   「`citationMetadata`：Gemini 在响应中提供引用元数据，IR 需要捕获并可在
+	//   序列化为 OpenAI 时映射为 annotations」⇒ 而本仓此前**IR 里根本没有承载
+	//   它的字段** ⇒ Gemini 上游的引用在解析那一步就被丢掉了。
+	//
+	// Gemini 的原生形状是 candidates[].citationMetadata.citations[]，
+	// 字段名是 `uri`（不是 `url`）⇒ IR 归一为 URL，使 OpenAI 的
+	// `url_citation` annotation 形状可以直接产出。
+	Citations []ResponseCitation `json:"citations,omitempty"`
+}
+
+// ResponseCitation is one source citation attached to a response.
+//
+// Gemini: candidates[].citationMetadata.citations[] with
+// `uri` / `title` / `startIndex` / `endIndex`.
+//
+// OpenAI: message.annotations[] entries of type "url_citation" carrying
+// url_citation{url, title, start_index, end_index} — the serializer maps
+// this struct onto that shape.
+type ResponseCitation struct {
+	URL        string `json:"url,omitempty"`
+	Title      string `json:"title,omitempty"`
+	StartIndex int    `json:"start_index,omitempty"`
+	EndIndex   int    `json:"end_index,omitempty"`
 }
 
 // ResponseContentBlock represents a single content element in a response.
@@ -632,6 +662,15 @@ func SerializeOpenAIResponse(ir *InternalResponse, clientModel string) ([]byte, 
 	if ir.ReasoningContent != "" {
 		msg["reasoning_content"] = ir.ReasoningContent
 	}
+	// ★ 2026-10-27（Gemini 转换面补全轮）：把 IR 捕获的引用元数据映射成
+	// OpenAI 的 `annotations`（厂方文档要求的映射方向：
+	// docs/vendor-formats/gemini.md §特殊字段「可在序列化为 OpenAI 时映射为
+	// annotations」）。
+	// ★ 只在【有引用】时发这个键 ⇒ 没有引用的普通响应逐字不变（不新增
+	// 一个空数组字段，避免无谓地改变既有客户端看到的报文）。
+	if annotations := buildOpenAIAnnotations(ir.Citations); len(annotations) > 0 {
+		msg["annotations"] = annotations
+	}
 
 	// Tool calls
 	var toolCalls []map[string]any
@@ -702,6 +741,84 @@ func SerializeOpenAIResponse(ir *InternalResponse, clientModel string) ([]byte, 
 }
 
 // buildOpenAIResponseContent builds the OpenAI response content from IR.
+// buildOpenAIAnnotations maps IR citations onto OpenAI's `annotations`
+// shape (type "url_citation").
+//
+// ★ OpenAI's shape:
+//
+//	{"type": "url_citation",
+//	 "url_citation": {"url": "...", "title": "...", "start_index": 0, "end_index": 100}}
+//
+// ★ The index fields are omitted when zero — OpenAI's `start_index` is
+//
+//	optional, and emitting a hard 0 would claim "the citation starts at
+//	offset 0" when the upstream never said so (Gemini omits them when it
+//	has no span information).
+func buildOpenAIAnnotations(citations []ResponseCitation) []map[string]any {
+	if len(citations) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(citations))
+	for _, c := range citations {
+		if strings.TrimSpace(c.URL) == "" {
+			continue
+		}
+		urlCitation := map[string]any{"url": c.URL}
+		if c.Title != "" {
+			urlCitation["title"] = c.Title
+		}
+		if c.StartIndex != 0 {
+			urlCitation["start_index"] = c.StartIndex
+		}
+		if c.EndIndex != 0 {
+			urlCitation["end_index"] = c.EndIndex
+		}
+		out = append(out, map[string]any{
+			"type":         "url_citation",
+			"url_citation": urlCitation,
+		})
+	}
+	return out
+}
+
+// buildGeminiCitationMetadata maps IR citations onto Gemini's native
+// `citationMetadata` shape.
+//
+// ★ Gemini's shape:
+//
+//	{"citations": [{"startIndex": 0, "endIndex": 100, "uri": "...", "title": "..."}]}
+//
+// ★ The index fields are omitted when zero — Gemini omits them when it has
+//
+//	no span information, and inventing a 0 would claim "the citation starts
+//	at offset 0".
+func buildGeminiCitationMetadata(citations []ResponseCitation) map[string]any {
+	if len(citations) == 0 {
+		return nil
+	}
+	items := make([]map[string]any, 0, len(citations))
+	for _, c := range citations {
+		if strings.TrimSpace(c.URL) == "" {
+			continue
+		}
+		item := map[string]any{"uri": c.URL}
+		if c.Title != "" {
+			item["title"] = c.Title
+		}
+		if c.StartIndex != 0 {
+			item["startIndex"] = c.StartIndex
+		}
+		if c.EndIndex != 0 {
+			item["endIndex"] = c.EndIndex
+		}
+		items = append(items, item)
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	return map[string]any{"citations": items}
+}
+
 func buildOpenAIResponseContent(ir *InternalResponse) any {
 	if len(ir.Content) == 0 && len(ir.ToolCalls) == 0 {
 		return nil
@@ -1394,6 +1511,13 @@ func SerializeGeminiResponse(irResp *InternalResponse, clientModel string) ([]by
 			"role":  "model",
 			"parts": parts,
 		}
+	}
+
+	// ★ 2026-10-27（Gemini 转换面补全轮）：把 IR 捕获的引用元数据还原成
+	// Gemini 原生的 `citationMetadata`（字段名是 `uri`，不是 `url`）。
+	// ★ 只在【有引用】时发 ⇒ 没有引用的响应逐字不变。
+	if citations := buildGeminiCitationMetadata(irResp.Citations); citations != nil {
+		candidate["citationMetadata"] = citations
 	}
 
 	if irResp.SourceProtocol == ProtocolGeminiGenerate && irResp.StopReason != "" {
