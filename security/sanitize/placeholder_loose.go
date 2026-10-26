@@ -47,6 +47,7 @@
 package sanitize
 
 import (
+	"bytes"
 	"context"
 	"regexp"
 	"sort"
@@ -320,6 +321,75 @@ func containsMarkerWordAnyWidth(text string) bool {
 		i++
 	}
 	return false
+}
+
+// containsMarkerWordAnyWidthBytes is containsMarkerWordAnyWidth for byte
+// slices.
+//
+// 2026-10-27 审计（r1039 混拼修复轮的**后续**）：这一族原本有**三处**门，
+// 上一轮只放宽了两处（foldMarkerWidth 的前置门、mayContainMarkerText），
+// 漏掉了 `hasReservedPlaceholder` 的**预筛** —— 它用的是 ASCII-only 的
+// `containsFoldCaseWordBytes` ⇒ 混拼形态**不被识别**。
+//
+// 为什么要成对写：仓里已有 `containsFoldCaseWord` / `containsFoldCaseWordBytes`
+// 这一对；响应路径上的调用方拿的是 `[]byte` ⇒ 不该为了复用而把整个 body
+// 转成 string（响应体可达数十 KB）。
+//
+// 成本形状与 string 版**逐条对应**（两条 memchr + 候选处定长比较），
+// 与它取代的 `containsFoldCaseWordBytes` 相比只多一条 memchr。
+func containsMarkerWordAnyWidthBytes(text []byte) bool {
+	// 候选 1：ASCII 的 's' / 'S'（纯 ASCII 拼写与「尾字全角」的混拼都从这里进）
+	for i := 0; i < len(text); {
+		idx := indexAnyByteSlice(text[i:], 's', 'S')
+		if idx < 0 {
+			break
+		}
+		i += idx
+		if matchMarkerWordAnyWidthAt(text, i) {
+			return true
+		}
+		i++
+	}
+	// 候选 2：全角字母的首字节 0xEF（「首字全角」的混拼从这里进）
+	for i := 0; i < len(text); {
+		idx := bytes.IndexByte(text[i:], fullWidthBraceLeadByte)
+		if idx < 0 {
+			break
+		}
+		i += idx
+		if matchMarkerWordAnyWidthAt(text, i) {
+			return true
+		}
+		i++
+	}
+	return false
+}
+
+// innerBareMarkerCandidates returns the brace-less marker spans hidden **inside**
+// a brace-delimited run that is not itself a marker.
+//
+// 2026-10-27（r1039 混拼修复轮的**后续审计**）：brace 分支会把一整段 JSON 吞成
+// 一个候选；那个候选若不是标记就会被探针判掉，于是**它内部的裸形标记没人看见**。
+// 典型的就是工具调用参数：`function.arguments` 是一段 JSON 字符串，
+// `{"pwd":"SENSITIVE:phone"}` 整个被吞 ⇒ 裸形标记不可见。
+//
+// 这里**复用重写路径的同一个原语**（looseBareMarkerSpans）⇒ 两边不会漂。
+//
+// 成本：先用 containsMarkerWordAnyWidth（两条 memchr）筛掉绝大多数候选 ⇒
+// 只有**真的含标记词**的候选才付一次正则扫描。
+func innerBareMarkerCandidates(candidate string) []string {
+	if !containsMarkerWordAnyWidth(candidate) {
+		return nil
+	}
+	spans := looseBareMarkerSpans(candidate)
+	if len(spans) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(spans))
+	for _, sp := range spans {
+		out = append(out, candidate[sp[0]:sp[1]])
+	}
+	return out
 }
 
 // foldMarkerWidth returns a copy of text in which every full-width form the

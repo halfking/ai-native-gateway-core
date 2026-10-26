@@ -22,11 +22,22 @@ const maxNativeToolInputDepth = 256
 // carry the marker word at all, walk the decoded string leaves instead; the
 // fold-case prefilter keeps ordinary responses (and prose containing the word
 // "sensitive") on the cheap path.
+//
+// 2026-10-27（r1039 混拼修复轮的**后续审计**）：这个预筛原来用的是
+// **ASCII-only** 的 containsFoldCaseWordBytes ⇒ **混拼形态不被识别**
+// ⇒ 下面这条 JSON 里的裸形混拼标记**既不被 raw-body 扫描看到
+// （brace 分支吞掉了 JSON 段），也不被预筛放行** ⇒ 残留守卫**不触发**
+// ⇒ 「fail-closed」的拦截（畸形 body / 可见车道外的残留）**该拦的没拦**。
+// ⇒ 预筛改成宽度感知（containsMarkerWordAnyWidthBytes）。
+//
+// ⚠ **放宽预筛不等于放宽判定**：预筛只决定「要不要去做叶子重扫」，
+// 最终结论由 containsResidualPlaceholder 给，而它走的是宽度感知的
+// containsNonForeignMarker ⇒ **散文仍然判否**（不误拦）。
 func hasReservedPlaceholder(ctx context.Context, body []byte) bool {
 	if containsNonForeignMarker(ctx, body) {
 		return true
 	}
-	if !containsFoldCaseWordBytes(body, placeholderMarkerWord) {
+	if !containsMarkerWordAnyWidthBytes(body) {
 		return false
 	}
 	var decoded any
