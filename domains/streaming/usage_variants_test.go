@@ -62,6 +62,20 @@ func TestExtractUsageFromChunk_VendorVariants(t *testing.T) {
 			want:    UsageData{PromptTokens: usageVariantIntPtr(100), CompletionTokens: usageVariantIntPtr(10), CacheReadTokens: usageVariantIntPtr(64), CacheMissTokens: usageVariantIntPtr(36)},
 		},
 		{
+			// 2026-10-27 缓存监测轮：TTL 写入分档（Anthropic 嵌套 cache_creation）。
+			name:    "Anthropic cache_creation ttl split",
+			payload: `{"usage":{"input_tokens":100,"output_tokens":10,"cache_creation_input_tokens":300,"cache_creation":{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":200}}}`,
+			want: UsageData{PromptTokens: usageVariantIntPtr(100), CompletionTokens: usageVariantIntPtr(10), CacheWriteTokens: usageVariantIntPtr(300),
+				CacheWriteTTLShort: usageVariantIntPtr(100), CacheWriteTTLLong: usageVariantIntPtr(200)},
+		},
+		{
+			// OpenAI Responses cache_write_tokens_details（ttl_30m/12h）。
+			name:    "OpenAI cache_write_tokens_details ttl split",
+			payload: `{"usage":{"input_tokens":100,"output_tokens":10,"input_tokens_details":{"cached_tokens":64,"cache_write_tokens":192},"cache_write_tokens_details":{"ttl_30m_tokens":64,"ttl_12h_tokens":128}}}`,
+			want: UsageData{PromptTokens: usageVariantIntPtr(100), CompletionTokens: usageVariantIntPtr(10), CacheReadTokens: usageVariantIntPtr(64), CacheWriteTokens: usageVariantIntPtr(192),
+				CacheWriteTTLShort: usageVariantIntPtr(64), CacheWriteTTLLong: usageVariantIntPtr(128)},
+		},
+		{
 			name:    "Doubao prompt_cache_miss_tokens",
 			payload: `{"usage":{"prompt_tokens":100,"completion_tokens":10,"prompt_cache_miss_tokens":88}}`,
 			want:    UsageData{PromptTokens: usageVariantIntPtr(100), CompletionTokens: usageVariantIntPtr(10), CacheMissTokens: usageVariantIntPtr(88)},
@@ -173,4 +187,6 @@ func assertUsageEqual(t *testing.T, got, want UsageData) {
 	cmp("CacheWriteTokens", got.CacheWriteTokens, want.CacheWriteTokens)
 	cmp("ReasoningTokens", got.ReasoningTokens, want.ReasoningTokens)
 	cmp("CacheMissTokens", got.CacheMissTokens, want.CacheMissTokens)
+	cmp("CacheWriteTTLShort", got.CacheWriteTTLShort, want.CacheWriteTTLShort)
+	cmp("CacheWriteTTLLong", got.CacheWriteTTLLong, want.CacheWriteTTLLong)
 }
