@@ -440,6 +440,15 @@ func hollowTestBinaryOverlay(goBin, pkg, root string, timeout time.Duration, ove
 	if err != nil {
 		return "", "", err
 	}
+	// ★★ R87 轮收尾：★ **登记**这个临时目录 ⇒ ⇒ 跑完由 `TestMain` 统一删掉。
+	//
+	// ★ 为什么必须登记：★ 原实现**只创建、从不删除** ⇒ ⇒ 每次跑泄漏一批
+	// ★ （★ 一个二进制 ~74 MB ⇒ ⇒ 35 条目 × 2 变体 ⇒ ⇒ **单次跑 GB 级**）
+	// ⇒ ⇒ ⇒ 实测本机 tmp 里堆了 **224 个 ＝ 8.6 GB** ⇒ ⇒ ⇒ 把每用户 tmp 配额撑爆
+	// ⇒ ⇒ ⇒ ⇒ 然后门里要写临时文件的门就报 **`no space left on device`** ⇒ ⇒ ⇒
+	// ⇒ ⇒ ⇒ ★★ **红的原因不指向真正的原因**（★ 真正的原因是磁盘，不是门有洞）。
+	// ★ 详见 `scripts/ursmcheck/hollowout_bin_cleanup_test.go`。
+	registerHollowBinTmpDir(tmpDir)
 	bin := filepath.Join(tmpDir, "testbin")
 	args := []string{"test", "-c", "-o", bin}
 	if overlay != "" {
