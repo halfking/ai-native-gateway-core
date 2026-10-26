@@ -727,6 +727,7 @@ type summarizeRequest struct {
 // 去重并排时间线，render 渲染为纪要 markdown。分层与降级边界与技能
 // session-summarist 一致（2026-10-26 方案 §3.2）。
 func (s *SummarizeService) serveSummarize(w http.ResponseWriter, r *http.Request, requestID string) {
+	start := time.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), maxSummarizeDuration)
 	defer cancel()
 
@@ -789,7 +790,9 @@ func (s *SummarizeService) serveSummarize(w http.ResponseWriter, r *http.Request
 				return
 			}
 		}
-		writeSummarizeJSON(w, requestID, SummarizeResult{Summary: content, Pipeline: "single", Engine: "gateway", LLMModel: llmModel})
+		res := SummarizeResult{Summary: content, Pipeline: "single", Engine: "gateway", LLMModel: llmModel}
+		writeSummarizeJSON(w, requestID, res)
+		logSummarizeOutcome(requestID, res, start, runes)
 		return
 	}
 
@@ -813,10 +816,12 @@ func (s *SummarizeService) serveSummarize(w http.ResponseWriter, r *http.Request
 		asr, derr := s.asm.summarize(dctx, text, style, lang)
 		dcancel()
 		if derr == nil {
-			writeSummarizeJSON(w, requestID, SummarizeResult{
+			res := SummarizeResult{
 				Summary: asr.Summary, Title: asr.Title, Pipeline: "asm",
 				Engine: "asm", LLMModel: asr.Model,
-			})
+			}
+			writeSummarizeJSON(w, requestID, res)
+			logSummarizeOutcome(requestID, res, start, runes)
 			return
 		}
 		// ★ 调用方已断开 ⇒ **不**把 asm 判成离线（它可能完全健康），
@@ -909,7 +914,9 @@ func (s *SummarizeService) serveSummarize(w http.ResponseWriter, r *http.Request
 				return
 			}
 		}
-		writeSummarizeJSON(w, requestID, SummarizeResult{Summary: content, Pipeline: "map-reduce", Chunks: len(chunks), Engine: "gateway", LLMModel: llmModel})
+		res := SummarizeResult{Summary: content, Pipeline: "map-reduce", Chunks: len(chunks), Engine: "gateway", LLMModel: llmModel}
+		writeSummarizeJSON(w, requestID, res)
+		logSummarizeOutcome(requestID, res, start, runes)
 		return
 	}
 
@@ -947,7 +954,9 @@ func (s *SummarizeService) serveSummarize(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	writeSummarizeJSON(w, requestID, SummarizeResult{Summary: content, Pipeline: "map-reduce", Chunks: len(chunks), Engine: "gateway", LLMModel: llmModel})
+	res := SummarizeResult{Summary: content, Pipeline: "map-reduce", Chunks: len(chunks), Engine: "gateway", LLMModel: llmModel}
+	writeSummarizeJSON(w, requestID, res)
+	logSummarizeOutcome(requestID, res, start, runes)
 }
 
 // splitSummarizeChunks 按目标字数切段，优先在换行处断开（不撕碎一行消息）。
@@ -1095,6 +1104,25 @@ func outputLanguageDirective(language string) string {
 		return "输出使用英文。\n"
 	}
 	return "输出使用简体中文。\n"
+}
+
+// logSummarizeOutcome 是 /v1/summarize 的唯一完成记账点。
+//
+// 2026-10-27 审计轮（多模态端点调用方流量审计）：外层 /v1/summarize 调用
+// 不进 request_logs（该路径不走记账中间件），asm 委托成功路径此前完全静默、
+// 只有降级才打 WARN ⇒ engine=asm 与 engine=gateway 的占比在事后**无法回溯**
+// （24h 审计实测：只能靠时长/字节推断，asm 成功样本只能从存留容器的
+// 访问日志里考古）。这条 INFO 让每次完成的实际执行方可查：
+// grep 'summarize: completed' 即得占比与降级率。
+func logSummarizeOutcome(requestID string, res SummarizeResult, start time.Time, runes int) {
+	slog.Info("summarize: completed",
+		"request_id", requestID,
+		"pipeline", res.Pipeline,
+		"engine", res.Engine,
+		"llm_model", res.LLMModel,
+		"chunks", res.Chunks,
+		"input_runes", runes,
+		"duration_ms", time.Since(start).Milliseconds())
 }
 
 func writeSummarizeJSON(w http.ResponseWriter, requestID string, v any) {
