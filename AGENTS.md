@@ -430,7 +430,7 @@
 > ⇒ ★ **whisper.cpp 传输** `audio_whisper_stt.go`：whisper-server 1.9.5 **没有**
 > OpenAI 兼容路径（实测 404），钉 `/inference` 方言，判据 **catalog_code**（绝不按
 > 模型名猜——云端也有 whisper-* 模型名）；base_url 注册约定**不带 /v1**。
-> ⇒ ★ **catalog 迁移 910**：whisper-cpp(:8081)/whisper-cpp-large(:8082)/macos-say(:8086)
+> ⇒ ★ **catalog 迁移 911**（原取 910，未及推送被上游 R166 的 910_routing_analytics 占号 ⇒ 按「已落 origin 者保留原号」纪律让位重取；登记线由并行会话 merge 恢复）：whisper-cpp(:8081)/whisper-cpp-large(:8082)/macos-say(:8086)
 > 三条 kind='local' 条目 + manifest 模型清单（whisper 无 /v1/models ⇒ API 发现失败
 > 自动回落 manifest）；**7+1 点登记全齐**（正本/embeddata/installer×2/tsv/升级序列/
 > 基线/db-changelog）。
