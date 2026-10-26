@@ -11,6 +11,7 @@ import {
 } from '../api'
 import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
 import type { CardField, CardTone } from '../components/ui/CardList.vue'
+import { Minus, Plus } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -316,7 +317,7 @@ onMounted(load)
                 <button v-if="e.expires_at || e.old_expires_at"
                         @click="expandedId = expandedId === e.id ? null : e.id"
                         class="btn-expand">
-                  {{ expandedId === e.id ? '−' : '+' }}
+                  <Minus v-if="expandedId === e.id" /><Plus v-else />
                 </button>
               </td>
             </tr>
@@ -355,7 +356,7 @@ onMounted(load)
             class="btn-expand"
             @click="expandedId = expandedId === row.id ? null : row.id"
           >
-            {{ expandedId === row.id ? '−' : '+' }}
+            <Minus v-if="expandedId === row.id" /><Plus v-else />
           </button>
           <div v-if="expandedId === row.id" class="diff">
             <div v-if="row.old_expires_at" class="diff-field">
@@ -587,4 +588,9 @@ h2 {
 .audit-row a:hover {
   text-decoration: underline;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.btn-expand > svg { width: 12px; height: 12px; }
 </style>

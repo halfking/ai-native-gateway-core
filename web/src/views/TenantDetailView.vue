@@ -24,7 +24,7 @@ import SparkBars from '../components/ui/SparkBars.vue'
 import { chartColors, createComboChartConfig, useChart } from '../composables/useChart'
 import { useRaceGuard } from '../composables/useRaceGuard'
 import { isPlatformOpsView } from '../store'
-import { Message, Clock } from '@element-plus/icons-vue'
+import { Clock, Cpu, CreditCard, Document, Message, Money, TrendCharts, Wallet } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -533,27 +533,27 @@ watch(() => route.params.tenantId, loadTenant)
           <p class="maas-shortcuts-desc">以该租户为上下文查看模型定价、账户与消耗（不在平台侧栏展示租户菜单）。</p>
           <div class="maas-shortcut-grid">
             <RouterLink :to="maasLink('/tenant/models')" class="maas-shortcut-card">
-              <span class="maas-shortcut-icon">🤖</span>
+              <span class="maas-shortcut-icon"><Cpu /></span>
               <span class="maas-shortcut-label">{{ $t('common.terms.standardModel') }}</span>
             </RouterLink>
             <RouterLink :to="maasLink('/tenant/pricing')" class="maas-shortcut-card">
-              <span class="maas-shortcut-icon">💳</span>
+              <span class="maas-shortcut-icon"><CreditCard /></span>
               <span class="maas-shortcut-label">套餐与充值</span>
             </RouterLink>
             <RouterLink :to="maasLink('/tenant/usage')" class="maas-shortcut-card">
-              <span class="maas-shortcut-icon">📉</span>
+              <span class="maas-shortcut-icon"><TrendCharts /></span>
               <span class="maas-shortcut-label">消耗统计</span>
             </RouterLink>
             <RouterLink :to="maasLink('/tenant/account')" class="maas-shortcut-card">
-              <span class="maas-shortcut-icon">💰</span>
+              <span class="maas-shortcut-icon"><Money /></span>
               <span class="maas-shortcut-label">账户中心</span>
             </RouterLink>
             <button type="button" class="maas-shortcut-card maas-shortcut-card--tab" @click="switchTab('wallet')">
-              <span class="maas-shortcut-icon">👛</span>
+              <span class="maas-shortcut-icon"><Wallet /></span>
               <span class="maas-shortcut-label">钱包管理</span>
             </button>
             <button type="button" class="maas-shortcut-card maas-shortcut-card--tab" @click="switchTab('ledger')">
-              <span class="maas-shortcut-icon">📒</span>
+              <span class="maas-shortcut-icon"><Document /></span>
               <span class="maas-shortcut-label">账本流水</span>
             </button>
           </div>
@@ -1215,4 +1215,10 @@ watch(() => route.params.tenantId, loadTenant)
   font-size: 11.5px;
   color: var(--muted);
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.maas-shortcut-icon > svg { width: 18px; height: 18px; }
 </style>

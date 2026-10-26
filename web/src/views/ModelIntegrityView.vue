@@ -992,7 +992,6 @@ code {
   max-height: 90vh;
   overflow: auto;
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 18px;
   color: var(--text);

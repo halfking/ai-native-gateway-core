@@ -1185,7 +1185,6 @@ watch(keyId, async () => {
   transform: translate(-50%, -100%);
   pointer-events: none;
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 8px;
   font-size: 11px;

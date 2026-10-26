@@ -418,7 +418,7 @@ watch(usageRows, () => void loadBalances())
   align-items: center;
   justify-content: center;
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 700;
   color: var(--on-primary);
   flex-shrink: 0;
 }

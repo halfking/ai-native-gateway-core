@@ -706,7 +706,6 @@ function closeTimelinePanel() {
   width: 2px;
   background: var(--probe-cyan);
   border-radius: 3px 0 0 3px;
-  box-shadow: 0 0 4px color-mix(in srgb, var(--probe-cyan) 70%, transparent);
 }
 
 .request-bar--failure {
@@ -800,14 +799,14 @@ function closeTimelinePanel() {
 .request-tile--llm {
   border-style: solid;
   border-color: color-mix(in srgb, var(--accent) 55%, var(--accent-color));
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
-    0 0 10px color-mix(in srgb, var(--accent) 12%, transparent);
+  /* ★ 抬升只声明一次；这里留描边，不叠彩色光晕
+     （craft-floor：零偏移彩色光晕是装饰，不是深度）。 */
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
   animation: request-tile-llm-glow 1.8s ease-in-out infinite;
 }
 @keyframes request-tile-llm-glow {
   0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent); }
-  50% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent), 0 0 12px color-mix(in srgb, var(--accent) 18%, transparent); }
+  50% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }
 }
 
 .request-tile--probe {
@@ -887,7 +886,6 @@ function closeTimelinePanel() {
   color: var(--probe-dark-bg);
   background: linear-gradient(180deg, var(--probe-cyan-light) 0%, var(--probe-cyan) 100%);
   border: 1.5px solid var(--probe-cyan-darker);
-  box-shadow: 0 0 5px color-mix(in srgb, var(--probe-cyan) 30%, transparent);
   z-index: 3;
 }
 

@@ -2,6 +2,7 @@
 import { useI18n } from 'vue-i18n'
 import { formatTokenCount } from '../../composables/useChatCompletions'
 import type { ChatMessage } from '../../composables/useChatSessions'
+import { Check } from '@element-plus/icons-vue'
 
 defineProps<{
   messages: ChatMessage[]
@@ -63,7 +64,7 @@ function modelLabel(name: string | undefined, map: Map<string, string>) {
             :title="copiedKey === `copy-${i}` ? t('chat.copied') : t('chat.copy')"
             @click="emit('copy', msg.content, `copy-${i}`)"
           >
-            {{ copiedKey === `copy-${i}` ? '✓' : t('chat.copy') }}
+            <Check v-if="copiedKey === `copy-${i}`" /><template v-else>{{ t('chat.copy') }}</template>
           </button>
           <button
             v-if="msg.role === 'user'"
@@ -203,4 +204,9 @@ function modelLabel(name: string | undefined, map: Map<string, string>) {
   0%, 100% { opacity: 0.45; }
   50% { opacity: 1; }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.bubble-btn > svg { width: 10px; height: 10px; }
 </style>

@@ -11,7 +11,7 @@ import FilterInput from '../components/FilterInput.vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useActionMessage } from '../composables/useActionMessage'
-import { Setting } from '@element-plus/icons-vue'
+import { Check, DocumentCopy, Setting } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -696,7 +696,7 @@ onBeforeUnmount(() => {
                   @click.stop="copyKey(k, `view-${k.id}`)"
                   title="复制完整密钥"
                 >
-                  {{ copiedId === `view-${k.id}` ? '✓' : '📋' }}
+                  <Check v-if="copiedId === `view-${k.id}`" /><DocumentCopy v-else />
                 </button>
               </div>
             </td>
@@ -1186,4 +1186,9 @@ onBeforeUnmount(() => {
   color: var(--muted);
   font-style: italic;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.btn.btn-ghost.btn-xs > svg { width: 10px; height: 10px; }
 </style>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { FilterChip } from '../composables/useFilterChips'
+import { Close } from '@element-plus/icons-vue'
 
 defineProps<{
   chips: FilterChip[]
@@ -18,7 +19,7 @@ defineProps<{
       @click="chip.onRemove()"
       :title="`移除 ${chip.label}`"
     >
-      {{ chip.label }} <span class="chip-remove">×</span>
+      {{ chip.label }} <span class="chip-remove"><Close /></span>
     </button>
   </div>
 </template>
@@ -53,4 +54,10 @@ defineProps<{
   font-size: 13px;
   line-height: 1;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.chip-remove > svg { width: 10px; height: 10px; }
 </style>

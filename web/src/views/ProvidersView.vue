@@ -31,6 +31,7 @@ import { confirmDialog } from '../composables/useConfirmDialog'
 import AppModal from '../components/ui/AppModal.vue'
 import AppDrawer from '../components/ui/AppDrawer.vue'
 import KxDatePicker from '../components/ui/KxDatePicker.vue'
+import { Clock, Refresh, Search } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const pm = (k: string, params?: Record<string,unknown>): string =>
@@ -939,7 +940,7 @@ onUnmounted(() => {
           :placeholder="pm('filter.searchPlaceholder')"
           class="filter-input"
         />
-        <span class="filter-search-icon">🔍</span>
+        <span class="filter-search-icon"><Search /></span>
       </div>
       <div class="filter-tabs">
         <span class="filter-tab-label">{{ pm('filter.healthChipGroup') }}</span>
@@ -1428,7 +1429,7 @@ onUnmounted(() => {
                       :disabled="refreshingBalance[c.id]"
                       :title="pm('credential.row.balanceRefreshTooltip')"
                       @click.stop="refreshBalance(manageProvider, c)"
-                    >{{ refreshingBalance[c.id] ? '⏳' : '⟳' }}</button>
+                    ><Clock v-if="refreshingBalance[c.id]" /><Refresh v-else /></button>
                   </div>
                   <div v-if="c.balance_source" class="muted" :title="c.balance_source === 'manual' ? pm('credential.row.balanceSourceManual') : pm('credential.row.balanceSourceApi')">
                     <template v-if="c.balance_source === 'manual'">✏️ {{ pm('credential.row.balanceSourceManual') }}</template>
@@ -1950,4 +1951,15 @@ table th {
 .provider-row.row-manual-disabled:hover {
   background: rgba(255, 80, 80, 0.12);
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.filter-search-icon > svg { width: 13px; height: 13px; display: block; }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.btn.btn-ghost.btn-sm > svg { width: 12px; height: 12px; }
 </style>

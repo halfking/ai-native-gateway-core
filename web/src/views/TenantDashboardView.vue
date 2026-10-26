@@ -38,7 +38,7 @@ import { createHyperPages } from '../lib/shell/hyper/hyperPages'
 import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
 import HyperLoadMore from '../components/ui/HyperLoadMore.vue'
 import type { CardField } from '../components/ui/CardList.vue'
-import { Refresh, Loading, Warning } from '@element-plus/icons-vue'
+import { InfoFilled, Loading, Refresh, Warning } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -481,7 +481,7 @@ onUnmounted(() => {
       role="status"
       data-testid="tenant-dashboard-degraded-hint"
     >
-      <span class="alert-icon" aria-hidden="true">ℹ️</span>
+      <span class="alert-icon" aria-hidden="true"><InfoFilled /></span>
       <span class="alert-text">{{ degradedHint }}</span>
       <span v-if="degradedView" class="alert-meta">{{ t('tenants.dashboard.degradedViewLabel', { view: degradedView }) }}</span>
     </div>
@@ -1233,4 +1233,10 @@ onUnmounted(() => {
     min-width: 0;
   }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.alert-icon > svg { width: 15px; height: 15px; }
 </style>

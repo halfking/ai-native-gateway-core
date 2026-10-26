@@ -42,6 +42,7 @@ import { ApiError } from '../api/_core'
 import { assignSpacedPriorities } from '../utils/queueNodeCards'
 // 2026-09-13 P3：弹层收敛到 ui/AppModal（方案 §4.5.7）
 import AppModal from '../components/ui/AppModal.vue'
+import { CaretBottom, CaretRight, Check, Close, Rank, Refresh, StarFilled } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -1001,7 +1002,7 @@ onUnmounted(() => stopPoll())
             路由策略
           </router-link>
         </div>
-        <button class="btn btn-sm btn-ghost refresh-btn" @click="loadIndex(); loadAudit(); activeTab === 'analytics' && loadAnalytics(); activeTab === 'policy' && loadPolicy()" :title="$t('common.button.refresh')">↻</button>
+        <button class="btn btn-sm btn-ghost refresh-btn" @click="loadIndex(); loadAudit(); activeTab === 'analytics' && loadAnalytics(); activeTab === 'policy' && loadPolicy()" :title="$t('common.button.refresh')"><Refresh /></button>
       </div>
 
       <!-- L1 / L2 pipeline -->
@@ -1097,7 +1098,7 @@ onUnmounted(() => stopPoll())
               <span class="toolbar-title">模型任务指数</span>
               <span class="text-muted">{{ selectedHeatmapTask }}</span>
             </div>
-            <span class="expand-icon">{{ showModelTaskIndex ? '▼' : '▶' }}</span>
+            <span class="expand-icon"><CaretBottom v-if="showModelTaskIndex" /><CaretRight v-else /></span>
           </div>
           <ModelTaskIndexPanel v-if="showModelTaskIndex" :task-type="selectedHeatmapTask" :top="10" />
         </div>
@@ -1144,7 +1145,7 @@ onUnmounted(() => stopPoll())
                 <span class="badge badge-blue">{{ d.task_type || '-' }}</span>
                 <span v-if="d.work_type" class="badge badge-gray">{{ d.work_type }}</span>
                 <span class="model-name">{{ d.outbound_model || d.auto_decision?.chosen_model || '-' }}</span>
-                <span :class="d.success ? 'badge badge-green' : 'badge badge-red'">{{ d.success ? '✓' : '✗' }}</span>
+                <span :class="d.success ? 'badge badge-green' : 'badge badge-red'"><Check v-if="d.success" /><Close v-else /></span>
                 <span v-if="d.latency_ms" class="text-muted">{{ fmtMs(d.latency_ms) }}</span>
               </div>
             </div>
@@ -1223,7 +1224,7 @@ onUnmounted(() => stopPoll())
                     </span>
                     <span v-else class="text-muted">-</span>
                   </td>
-                  <td class="expand-icon">{{ expandedModel === m.credential_id + ':' + m.raw_model ? '▼' : '▶' }}</td>
+                  <td class="expand-icon"><CaretBottom v-if="expandedModel === m.credential_id + ':' + m.raw_model" /><CaretRight v-else /></td>
                 </tr>
                 <!-- L2 detail -->
                 <tr v-if="expandedModel === m.credential_id + ':' + m.raw_model" class="detail-row">
@@ -1467,7 +1468,7 @@ onUnmounted(() => stopPoll())
                 @drop="onCandidateDrop(c, $event)"
                 @dragend="onCandidateDragEnd"
               >
-                <td v-if="superAdmin" class="drag-cell" :title="resolveReorderDisabledHint()" aria-label="拖动以调整排序">⠿</td>
+                <td v-if="superAdmin" class="drag-cell" :title="resolveReorderDisabledHint()" aria-label="拖动以调整排序"><Rank /></td>
                 <td class="rank-cell">{{ i + 1 }}</td>
                 <td>
                   <span class="badge" :class="resolveStateBadge(c).cls">
@@ -1505,7 +1506,7 @@ onUnmounted(() => stopPoll())
                       :aria-label="`优先凭据 ${credentialDisplayName(c.credential_id)}`"
                       @change="saveCandidatePriority(c, ($event.target as HTMLInputElement).checked)"
                     />
-                    <span v-if="c.priority" class="priority-star" aria-hidden="true">★</span>
+                    <span v-if="c.priority" class="priority-star" aria-hidden="true"><StarFilled /></span>
                   </label>
                   <template v-else>
                     <span
@@ -1513,7 +1514,7 @@ onUnmounted(() => stopPoll())
                       class="priority-star"
                       :title="t('routing.dashboard.resolve.priorityTooltip')"
                       :aria-label="t('routing.dashboard.resolve.priorityTooltip')"
-                    >★</span>
+                    ><StarFilled /></span>
                     <span v-else class="text-muted">—</span>
                   </template>
                 </td>
@@ -1639,8 +1640,8 @@ onUnmounted(() => stopPoll())
                   <td>{{ d.auto_profile || d.auto_decision?.profile || '-' }}</td>
                   <td class="model-name">{{ d.auto_decision?.chosen_model || d.outbound_model || '-' }}</td>
                   <td>{{ fmt((d.auto_confidence ?? d.auto_decision?.confidence ?? 0) * 100, 0) }}%</td>
-                  <td><span :class="d.success ? 'badge badge-green' : 'badge badge-red'">{{ d.success ? '✓' : '✗' }}</span></td>
-                  <td class="expand-icon">{{ expandedDecision === d.request_id ? '▼' : '▶' }}</td>
+                  <td><span :class="d.success ? 'badge badge-green' : 'badge badge-red'"><Check v-if="d.success" /><Close v-else /></span></td>
+                  <td class="expand-icon"><CaretBottom v-if="expandedDecision === d.request_id" /><CaretRight v-else /></td>
                 </tr>
                 <tr v-if="expandedDecision === d.request_id" class="detail-row">
                   <td colspan="7">
@@ -2226,4 +2227,18 @@ onUnmounted(() => stopPoll())
   .toolbar-filters { width: 100%; }
   .inline-fields { gap: 4px; }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.refresh-btn > svg { width: 13px; height: 13px; }
+.drag-cell > svg { width: 13px; height: 13px; }
+.priority-star > svg { width: 12px; height: 12px; }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.expand-icon > svg { width: 11px; height: 11px; }
+.badge > svg { width: 11px; height: 11px; }
 </style>
