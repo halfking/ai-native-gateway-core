@@ -567,6 +567,25 @@
 > **丢弃 → 捕获**；IR→OpenAI `annotations` **不可能 → 有引用即产出**；IR→Gemini 往返 **丢弃 → 还原**。
 > `go build ./...` ✓ / `internal/ir` ✓ / `internal/requestfact` ✓ / `domains/transformation` ✓。
 > ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`；通用式见 `LESSONS.md` **§436**（5 条）。
+> **2026-10-27 Gemini 多模态审计复审轮**（会话 `mvs_dc5e181989fc4539805f343f39be2b5d`）：
+> ★ 承接 10-26 `483b60b30`（多模态转发三缺陷）的批判式复审 ⇒ 六项清单：
+> ①模态门无第二份实现（admin/models.go:199 是 UI 精确筛选器，非路由门）/ ②Responses
+> builder 调用方唯一 / ④ollama 诚实拒绝多模态 / ⑤raw input_audio 过 ValidateAndFix
+> 存活（探针实证，上轮测试缺 Validate 腿）/ ⑥executors 仅有的两处 Header.Clone 是
+> 上游**响应**头存档，无客户端凭据头泄漏 —— 五项**通过**。
+> ⇒ ★★ **审计③实锤同族四处漏网**（「空载荷块」是一族形状，修了 file_uri 一种到达方式
+> 不等于修完族）：①file_id-only video 发 `video_url.url:""`（Chat 的 video_url 没有
+> file_id 槽位）；②**`Document.Source=nil` 在 OpenAI 侧序列化成 `content:[null]` 字面量
+> null 元素**（★ 上一轮在 Responses 侧修过同款 append，OpenAI 侧漏网 ⇒ 「两侧同修」）；
+> ③`Type:"url"` 而 URL 空的 audio 无条件写 `url:""`（★ 第一版 `len(inner)==0` 守卫
+> 挡不住「键在值空」—— **新回归测试当场抓到** ⇒ 防御判据要对着【最小坏输出】写：
+> 每个槽位写入前单独判空）；④url/text 双空 document 发 `file_data:""`（OpenAI 与
+> Responses 两侧）。
+> ⇒ ★ 修法：四个 builder 无载荷一律返回 nil + OpenAI 侧三个 append 点补 nil 守卫 +
+> **跳过必留痕**（reportSerializeOpenAILosses 新增三条损失上报，与 image.file_id 惯例对齐）。
+> ⇒ ★ 新增回归测试 3 条（退化输入三连 ⇒ 线格式只剩合法块；Responses 空 file_data；
+> ValidateAndFix 完整路径）。读数：`go build` ✓ / ir+auth+provider+attachments+streaming
+> 全绿。⇒ 审计档 `docs/audit/2026-10-27-Gemini多模态审计复审轮.md`；通用式见 `LESSONS.md` **§438**（5 条）。
 > **2026-10-27 Gemini 原生出站 executor 轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
 > ★ 承接 §436 同一审计档的**子项②**（§433 清单的最后一项可做项）。
 > ⇒ ★★★★ **本轮最值钱的一处定性：缺口不是「功能没做」，是「死配置」** ——
@@ -10507,3 +10526,28 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ⇒ ★ **★ 通用式 9 条**沉淀在 `LESSONS.md` **§432**（★ ★ 原 §431 ⇒ ★★ 与并行会话的「AI 痕迹门轮 §431」撞号 ⇒ ★★ **我方让号为 §432** ⇒ ★★ 改号不改内容）
 > ⇒ ⇒ ⇒ ★ **诚实边界 8 条 / 待属主裁决 5 条**见审计档 §8 / §9（★ **待裁决**：★ **R164-DEPLOY-HOOK**（★ 对拍接进部署序列）· ★ **R164-STALENESS**（★ 要不要加时间阈值这一路）· ★ **R164-RECOLLECT-CADENCE**（★ 重采节奏）· ★ **R164-COLUMNS-VERIFY**（★ 列底账也要一份 verify）· ★ **R164-CROSS-ENV**（★ 跨环境对拍））
 > ⇒ ⇒ ★★★★ 完整记录见 `docs/audit/2026-10-27-R164-底账新鲜度与漂移判据.md`（§0~§10）。
+
+## ⑲ R165 轮（2026-10-27）· 本地部署连错集群与 psql 通道修正 —— ★★ 「连的是不是真集群」才是判据
+
+> ⇒ ⇒ ⇒ ★ **背景**：★ 原始目标第 ① 步「重新使用 deploy-local.sh 部署到本地」⇒ ⇒ ★ **连续 7 次部署全部失败，★ 7 次报错都指向与真实根因无关的位置**（★ 最误导的一个：`FATAL: database "llm_gateway" does not exist` —— ★ 而真实库一直好好地在）。
+> ⇒ ⇒ ⇒ ★ **根因（本轮实测坐实）**：★ **PATH 首位的 `~/.local/bin/psql` 是一个「丢掉 host/port」的容器转发 shim** ⇒ ⇒ 它把请求转发给「把宿主 5432 发布出来的那个容器」（★ 本机是 `ac-audit-pg17`）⇒ ⇒⇒ 而那个容器里 `llm_gateway` 库数 = 0 ⇒ ⇒⇒⇒ 于是报「库不存在」。
+> ⇒ ⇒ ⇒ ★★★ **★ 关键区分（★ 本轮最值钱的一条）**：★ **「客户端是不是 shim」不是判据，「它连的是不是真集群」才是判据** ⇒ ⇒ 本机两个 shim 的盲区【互补】（★ `~/.local/bin/psql` 丢 DSN 的 host/port、★ `~/kaixuan/pg18/bin/psql` 丢 `-h/-p`）⇒ ⇒⇒ 同一个命令家族里没有统一答案 ⇒ ⇒⇒ **答案取决于【这次调用要连的是指定 host:port，还是本机那个 PG 容器】** ⇒ ⇒⇒ **职责分离：★ 调用方负责「用哪个客户端」，脚本负责「怎么连」。**
+> ⇒ ⇒ ⇒ ★ **第 8 次部署成功**：★ `DEPLOY_EXIT=0` · 版本 **`2.5.8-a127d3ff-20261026-2872`** · **8782 已监听** · 凭据解密冒烟 `providers=2452,2453,2454 creds=3 failed=0` · PG pre-flight ready · `shared_buffers=2GB`。
+> ⇒ ⇒ ⇒ ★ **库侧退役核对（原始目标的 SQL 面，★ 直接读数）**：
+> ⇒ ⇒ ⇒ ⇒ ★ **`request_logs` 家族只剩 1 个对象**：★ 视图 `request_logs_with_current_month`（`relkind='v'`）⇒ ⇒ **无表、无物化视图残留**；★ `pg_proc` 同族函数 **0**
+> ⇒ ⇒ ⇒ ⇒ ★ ★ **该视图的定义已读 `session_turns_hot` / `session_turns`** ⇒ ⇒ ⇒ **物化视图切换已完成** ⇒ ⇒★ **它只是保留旧名的兼容入口** ⇒ ⇒⇒ ★★ **「同名 ≠ 没转化」**（★ 若按名字当残留去删，★ 会删掉正在服务的兼容视图）
+> ⇒ ⇒ ⇒ ⇒ ★ **写入可用**：★ `session_turns_hot.max_ts` 随请求**同步推进**到 22:03:01（★ 即本轮那次请求的时刻）⇒ ⇒ 冷表 2663 行由后台搬运；★ `session_turns` 列 **130+**
+> ⇒ ⇒ ⇒ ★ **模型请求/写入测试**：★ 11 轮（★ 6 条成功：glm-5.3-flash ×4、deepseek-v4-flash ×1 + 探针 ×1；★ 5 个模型 **503**）⇒ ⇒ ★★★ **那 5 个 503 不是网关缺陷**：★ 响应体给出**可用的替代模型清单**（`minimax-m3`/`glm-5.2`/`kimi-k3`…）⇒ ⇒ ★ **网关降级建议逻辑是活的**；★ 真因是**这些模型名在本地库 `providers`（47 条）里无对应通道** ⇒ ⇒ **配置/数据问题，非代码问题**。
+> ⇒ ⇒ ⇒ ★ **逐 API 巡检**（★ `scripts/audit/api-sweep.sh`，★ 576 条路由 / 520 条实跑）：★ **ok 281** · method_not_allowed 110 · bad_request 66 · not_found 47 · 401×10（★ 9 条是 API-key 端点 ⇒ cookie 不适用）· 5xx×6（★ 5 条是「功能未配置」型 503）· **timeout 0** · unexpected_status 0 ⇒ ⇒ ★ **巡检器自判 `SWEEP_EXIT=75`**（★ load 峰值 135.74 > 阈值 20 ⇒ **延迟读数不可信、状态码仍可信** —— ★ 本机 load 121，★ CPU 燃烧源是 Android 模拟器 qemu 205%，★ 与本项目无关）。
+> ⇒ ⇒ ⇒ ★★ **★ 慢端点归因（★ 原始目标第 4 条的 SQL 面）**：★ `/api/admin/sessions` 1311ms ⇒ ⇒ ★ **是 N+1，不是慢 SQL** ⇒ ⇒ ★ `handleListSessions` 先取一批 session id 再**逐个** `Get()` + `GetStats()`（N ≤ 200）⇒ ⇒ ★★ `GetStats` 走 **Redis**（`HGETALL`）⇒ ⇒ ⇒ **不是 SQL、★ 不是表扫描** ⇒ ⇒⇒ 优化方向是**批量/pipeline**，★ 不是索引 ⇒ ⇒⇒ **「慢 API」≠「慢 SQL」**。
+> ⇒ ⇒ ⇒ ★ **深链批量（107 条）**：★ **105 条 200 + 正确 SPA 壳**；★ 2 条 `/maintain` 503「运维平台不可用」（★ 外部运维 SPA 不可达 ⇒ 预期行为）；★ **零 404** ⇒ ⇒ SPA 路由兜底正确。
+> ⇒ ⇒ ⇒ ★ **交付面**：
+> ⇒ ⇒ ⇒ ⇒ ★ **修 4 个仓内文件**（★ 部署语义不变，★ 只让验证/迁移/退役腿连到【正确的集群】+【正确的口令】）：★ `scripts/deploy-local.sh`（★ `dl_dsn_pg_creds()` + `psql_query`/`apply_schema_if_empty` 的显式 TCP + DSN 口令 + **调用方已给 DSN 时不再覆盖**（★ 对齐仓内既有的 Redis 契约「caller-provided 保持权威」）+ **显式指定 `LLM_GATEWAY_PSQL`**）· ★ `scripts/deploy-local-lib.sh`（★ `dl_wait_pg_isready`/`_dl_pg_scalar` 走 `dl_host_run psql` + `dl_pg_container_name` 的扫描条件不再要求 `DL_DOCKER`）· ★ `scripts/apply-db-revision-sequence.sh`（★ 通道优先级 + 容器通道显式 TCP + DSN 口令）· ★ `scripts/retire-request-logs-v1-family.sh`（★ ★ **原始目标核心脚本**：request_logs 退役）
+> ⇒ ⇒ ⇒ ⇒ ★ **Maestro 逐页资产**（★ `maestro/`，★ 子代理生成）：★ **112 条路由全覆盖**（★ 107 个 `path:` + 5 处 redirect）· ★ **112/112 断言文案逐条回源码核对**（★ 零错配）· ★ 10 个 flow + 共享登录流 + `slow-pages.mjs`（★ >2s 慢页只标记不失败）· ★ **诚实边界：★ 本机缺 Java Runtime ⇒ ★ flow 未实跑**（★ 实跑由 Browser 工具完成）
+> ⇒ ⇒ ⇒ ★★★★ **★ 独立复核（★ 子代理，★ 只读）抓出 4 个阻断级问题 ⇒ 全部已处置**：★ ① **`dl_dsn_pg_creds()` 口令解析错**（★ 用 `%%/*` 取 creds ⇒ 口令变成 `pass@host:port`）⇒ ⇒ **已修**（★ 改用【最后一个 `@` 之前】+ percent-decode）★ ② **我加的「容器兜底探测」不判 `DL_DB_MODE`** ⇒ ⇒ **schema 可能装到另一个集群** ★ ③ 它的「成功」判据只认退出码（★ 库不存在也是 rc=0）★ ④ `HAS_DB=1` 硬编码 ⇒ ⇒⇒ ★★★ **⇒ ★ 我把整段兜底探测【删掉】了**（★ 删处留注释记录为什么删）⇒ ⇒⇒ ★★★ **★ 通用式：★ 「根因」必须能被独立复核证伪 ⇒ ⇒ 基于未复核根因写的【绕过代码】风险往往比原问题更大 ⇒ ⇒ ⇒ 绕过解决不了问题时它就是【净负收益】⇒ ⇒ ⇒ 【删掉】比【留着】好。**
+> ⇒ ⇒ ⇒ ★★★★ **★ 两条被复核推翻/纠正的初判（★ 留档）**：★ ① **「容器 env 口令漂移 ⇒ 共享库误判容器不可用」这条根因链在本机不成立**（★ loopback 是 `trust` ⇒ 瞎编的口令都成功 ⇒ `pg_container_usable` 不可能因口令失败）★ ② **「env 里的 `\?` 导致 Go 腿炸」不成立**（★ 那是 bash 未加引号时的转义，★ source 后本来就是 `?` ⇒ ⇒ 是**我的测量假象**）⇒ ⇒⇒ ★★ **⇒ 教训：★ 每次「推翻自己」都要留档，★ 否则下一个会话会把错结论再写一遍。**
+> ⇒ ⇒ ⇒ ★★★★ **★ 一个必须记录的踩坑：★ 仓内夹具用「封闭 PATH」（★ 只有 bash/psql/python3）⇒ ⇒ ⇒ 我第一版加的 `mktemp` 直接让夹具全红（★ `mktemp: command not found`）⇒ ⇒⇒ ★ **通道/解析层不能引入任何新外部命令** ⇒ ⇒⇒ 「夹具全红」极易被误读成「我的逻辑错了」。
+> ⇒ ⇒ ⇒ ★★★★ **★ 同深度对拍（★ 区分【内容效应】与【位置效应】）**：★ `tests/deploy_local_contract_test.sh` 在 worktree 里红（★ `scripts/deploy-lib` 是**相对软链** ⇒ 从 `/tmp` 下解析会逃逸）⇒ ⇒ 建**同深度** HEAD 基线副本与工作树副本对拍 ⇒ ⇒ 首轮两边同红（★ 一致 ⇒ 与改动无关）⇒ ⇒ **修正软链层级后两边都 PASS** ⇒ ⇒⇒ ★★ **结论变强：★ 不是「既有红灯」，★ 是【worktree 位置效应】⇒ ⇒ ⇒ 在正确环境下本次改动不破坏该契约。**
+> ⇒ ⇒ ⇒ ★ **通用式 10 条**沉淀在 `LESSONS.md`（★ ★ 原拟 §434 ⇒ ★★ 合并 origin/main 后【让号】⇒ ★★ ★★ **本轮共让号三次**：★ 第一次 `0eff161c6` 已占 §433 ⇒ 让到 §435；★ 第二次并行会话又占 §434 与 §435 ⇒ ⇒ ⇒ **最终 §437** ⇒ ⇒ ⇒ ★★ 改号不改内容）
+> ⇒ ⇒ ⇒ ★ **诚实边界 / 待属主裁决 11 条**见审计档 §9（★ **待裁决**：★ **R165-PSQL-SHIM**（★ `~/.local/bin/psql` 与「宿主机直连 PG」语义冲突 ⇒ ★ 它是 openpocket 夹具的依赖 ⇒ **不能改**）· ★ **R165-HOST-DOCKER-MODE**（★ 「宿主机优先」判定把「宿主上跑着 PG 容器」判成 host 模式 ⇒ ⇒ `DL_DOCKER=0`）· ★ **R165-DL-PG-TRY-HOST**（★ 复核列为最高危残留点）· ★ **R165-COMPOSE-5432** · ★ **R165-PORTABLE**（★ 本轮修法是机器局部的 ⇒ 无 `~/kaixuan` 的机器上原 bug 原样复现）· ★ **R165-BACKUPS-500**（★ `/api/admin/backups` 的 500 应统一成 503）· ★ **R165-BODIES-401** · ★ **R165-NPLUS1** · ★ **R165-MODEL-503** · ★ **R165-MAESTRO-JAVA** · ★ **R165-LOAD**）。
+> ⇒ ⇒ ⇒ ★★★★ 完整记录见 `docs/audit/2026-10-27-R165-本地部署连错集群与psql通道修正.md`（§0~§9）。

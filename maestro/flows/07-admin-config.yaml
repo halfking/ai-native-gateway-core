@@ -1,0 +1,169 @@
+# 后台配置域
+# 系统设置、模块、Agent 注册表、审批、清洗规则、合规、压缩、数据生命周期。
+# 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
+# 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
+#       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
+appId: ${BASE_URL}
+---
+- launchApp
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ── /admin/settings ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/settings"
+- extendedWaitUntil:
+    visible: '当前值'
+    timeout: 20000
+- evalScript: "${output.ms__admin_settings = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_settings < 2000}"
+    optional: true
+    label: 'slow-check:/admin/settings'
+
+# ── /admin/modules ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/modules"
+- extendedWaitUntil:
+    visible: '模块管理'
+    timeout: 20000
+- evalScript: "${output.ms__admin_modules = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_modules < 2000}"
+    optional: true
+    label: 'slow-check:/admin/modules'
+
+# ── /admin/agents ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/agents"
+- extendedWaitUntil:
+    visible: 'Agent Registry'
+    timeout: 20000
+- evalScript: "${output.ms__admin_agents = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_agents < 2000}"
+    optional: true
+    label: 'slow-check:/admin/agents'
+
+# ── /admin/prompt-injection ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/prompt-injection"
+- extendedWaitUntil:
+    visible: '提示词注入检测'
+    timeout: 20000
+- evalScript: "${output.ms__admin_prompt_injection = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_prompt_injection < 2000}"
+    optional: true
+    label: 'slow-check:/admin/prompt-injection'
+
+# ── /admin/approval-config ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/approval-config"
+- extendedWaitUntil:
+    visible: '审批模式'
+    timeout: 20000
+- evalScript: "${output.ms__admin_approval_config = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_approval_config < 2000}"
+    optional: true
+    label: 'slow-check:/admin/approval-config'
+
+# ── /admin/approvals ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/approvals"
+- extendedWaitUntil:
+    visible: '审批请求'
+    timeout: 20000
+- evalScript: "${output.ms__admin_approvals = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_approvals < 2000}"
+    optional: true
+    label: 'slow-check:/admin/approvals'
+
+# ── /admin/approvals/:id ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/approvals/${APPROVAL_ID}"
+- extendedWaitUntil:
+    visible: '审批请求详情'
+    timeout: 20000
+- evalScript: "${output.ms__admin_approvals_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_approvals_id < 2000}"
+    optional: true
+    label: 'slow-check:/admin/approvals/:id'
+
+# ── /admin/sanitize-rules ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/sanitize-rules"
+- extendedWaitUntil:
+    visible: '敏感信息规则'
+    timeout: 20000
+- evalScript: "${output.ms__admin_sanitize_rules = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_sanitize_rules < 2000}"
+    optional: true
+    label: 'slow-check:/admin/sanitize-rules'
+
+# ── /admin/output-compliance ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/output-compliance"
+- extendedWaitUntil:
+    visible: '输出合规'
+    timeout: 20000
+- evalScript: "${output.ms__admin_output_compliance = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_output_compliance < 2000}"
+    optional: true
+    label: 'slow-check:/admin/output-compliance'
+
+# ── /admin/compression ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/compression"
+- extendedWaitUntil:
+    visible: '压缩概览'
+    timeout: 20000
+- evalScript: "${output.ms__admin_compression = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_compression < 2000}"
+    optional: true
+    label: 'slow-check:/admin/compression'
+
+# ── /admin/data-lifecycle ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/data-lifecycle"
+- extendedWaitUntil:
+    visible: '数据生命周期管理'
+    timeout: 20000
+- evalScript: "${output.ms__admin_data_lifecycle = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_data_lifecycle < 2000}"
+    optional: true
+    label: 'slow-check:/admin/data-lifecycle'
+
+# ── /admin/data-lifecycle/migration-state ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/data-lifecycle/migration-state"
+- extendedWaitUntil:
+    visible: '存储迁移状态'
+    timeout: 20000
+- evalScript: "${output.ms__admin_data_lifecycle_migration_state = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_data_lifecycle_migration_state < 2000}"
+    optional: true
+    label: 'slow-check:/admin/data-lifecycle/migration-state'
+
+# ── /admin/storage-and-log-config ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/storage-and-log-config"
+- extendedWaitUntil:
+    visible: '存储与日志配置'
+    timeout: 20000
+- evalScript: "${output.ms__admin_storage_and_log_config = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_storage_and_log_config < 2000}"
+    optional: true
+    label: 'slow-check:/admin/storage-and-log-config'

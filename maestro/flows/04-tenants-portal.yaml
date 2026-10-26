@@ -1,0 +1,169 @@
+# 租户 / 租户自助门户
+# 租户管理、用户管理、/tenant/* 门户与 /maas/* 旧路径重定向。
+# 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
+# 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
+#       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
+appId: ${BASE_URL}
+---
+- launchApp
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ── /tenants ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/tenants"
+- extendedWaitUntil:
+    visible: '租户管理'
+    timeout: 20000
+- evalScript: "${output.ms__tenants = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__tenants < 2000}"
+    optional: true
+    label: 'slow-check:/tenants'
+
+# ── /tenants/:tenantId ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/tenants/${TENANT_ID}"
+- extendedWaitUntil:
+    visible: '模型管控'
+    timeout: 20000
+- evalScript: "${output.ms__tenants_tenantId = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__tenants_tenantId < 2000}"
+    optional: true
+    label: 'slow-check:/tenants/:tenantId'
+
+# ── /users ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/users"
+- extendedWaitUntil:
+    visible: '用户管理'
+    timeout: 20000
+- evalScript: "${output.ms__users = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__users < 2000}"
+    optional: true
+    label: 'slow-check:/users'
+
+# ── /tenant/models ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/tenant/models?tenant=${TENANT_CODE}"
+- extendedWaitUntil:
+    visible: '标准模型'
+    timeout: 20000
+- evalScript: "${output.ms__tenant_models = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__tenant_models < 2000}"
+    optional: true
+    label: 'slow-check:/tenant/models'
+
+# ── /tenant/account ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/tenant/account?tenant=${TENANT_CODE}"
+- extendedWaitUntil:
+    visible: '我的账户'
+    timeout: 20000
+- evalScript: "${output.ms__tenant_account = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__tenant_account < 2000}"
+    optional: true
+    label: 'slow-check:/tenant/account'
+
+# ── /tenant/pricing ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/tenant/pricing?tenant=${TENANT_CODE}"
+- extendedWaitUntil:
+    visible: '套餐与充值'
+    timeout: 20000
+- evalScript: "${output.ms__tenant_pricing = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__tenant_pricing < 2000}"
+    optional: true
+    label: 'slow-check:/tenant/pricing'
+
+# ── /tenant/orders/:id ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/tenant/orders/${ORDER_ID}?tenant=${TENANT_CODE}"
+- extendedWaitUntil:
+    visible: '订单支付'
+    timeout: 20000
+- evalScript: "${output.ms__tenant_orders_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__tenant_orders_id < 2000}"
+    optional: true
+    label: 'slow-check:/tenant/orders/:id'
+
+# ── /tenant/usage ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/tenant/usage?tenant=${TENANT_CODE}"
+- extendedWaitUntil:
+    visible: '积分流水'
+    timeout: 20000
+- evalScript: "${output.ms__tenant_usage = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__tenant_usage < 2000}"
+    optional: true
+    label: 'slow-check:/tenant/usage'
+
+# ── /maas/models ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/maas/models?tenant=${TENANT_CODE}"
+- extendedWaitUntil:
+    visible: '标准模型'
+    timeout: 20000
+- evalScript: "${output.ms__maas_models = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__maas_models < 2000}"
+    optional: true
+    label: 'slow-check:/maas/models'
+
+# ── /maas/account ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/maas/account?tenant=${TENANT_CODE}"
+- extendedWaitUntil:
+    visible: '我的账户'
+    timeout: 20000
+- evalScript: "${output.ms__maas_account = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__maas_account < 2000}"
+    optional: true
+    label: 'slow-check:/maas/account'
+
+# ── /maas/pricing ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/maas/pricing?tenant=${TENANT_CODE}"
+- extendedWaitUntil:
+    visible: '套餐与充值'
+    timeout: 20000
+- evalScript: "${output.ms__maas_pricing = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__maas_pricing < 2000}"
+    optional: true
+    label: 'slow-check:/maas/pricing'
+
+# ── /maas/orders/:id ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/maas/orders/${ORDER_ID}?tenant=${TENANT_CODE}"
+- extendedWaitUntil:
+    visible: '订单支付'
+    timeout: 20000
+- evalScript: "${output.ms__maas_orders_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__maas_orders_id < 2000}"
+    optional: true
+    label: 'slow-check:/maas/orders/:id'
+
+# ── /maas/usage ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/maas/usage?tenant=${TENANT_CODE}"
+- extendedWaitUntil:
+    visible: '积分流水'
+    timeout: 20000
+- evalScript: "${output.ms__maas_usage = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__maas_usage < 2000}"
+    optional: true
+    label: 'slow-check:/maas/usage'

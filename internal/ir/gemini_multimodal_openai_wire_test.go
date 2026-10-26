@@ -259,3 +259,127 @@ func TestGemini_FileDataAudio_SurvivesOpenAIRoundTrip(t *testing.T) {
 		t.Fatalf("audio URI lost on the mandatory re-parse round trip: %s", secondWire)
 	}
 }
+
+// TestGemini_FileDataAudio_SurvivesValidateAndFix pins the FULL executor
+// path shape: the legacy IR lane runs Parse → ValidateAndFixRequest →
+// Serialize (finalizeOpenAIUpstreamBody), not just Parse → Serialize. The
+// Validate step must not strip the raw-preserved URI-reference audio block.
+func TestGemini_FileDataAudio_SurvivesValidateAndFix(t *testing.T) {
+	irReq, err := ParseGemini([]byte(`{
+		"contents": [{
+			"role": "user",
+			"parts": [{"fileData": {"mimeType": "audio/wav", "fileUri": "https://example.com/a.wav"}}]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("ParseGemini: %v", err)
+	}
+	first, err := SerializeOpenAI(irReq)
+	if err != nil {
+		t.Fatalf("SerializeOpenAI: %v", err)
+	}
+	second, err := ParseOpenAI(first)
+	if err != nil {
+		t.Fatalf("ParseOpenAI: %v", err)
+	}
+	fixed := ValidateAndFixRequest(second, "gemini-multimodal-audit-test")
+	out, err := SerializeOpenAI(fixed)
+	if err != nil {
+		t.Fatalf("SerializeOpenAI after fix: %v", err)
+	}
+	if !strings.Contains(string(out), "https://example.com/a.wav") {
+		t.Fatalf("audio URI lost through ValidateAndFixRequest (full executor path):\n%s", out)
+	}
+}
+
+// TestSerializeOpenAI_NoEmptyPayloadOrNullBlocks pins the 2026-10-27 audit
+// round: a block the wire cannot express must be OMITTED (with a loss
+// report), never emitted as an empty-payload block or as a literal null
+// element in content[]. Three degenerate carriers are covered: file_id-only
+// video (video_url has no file_id slot on Chat Completions), a document
+// whose Source is nil (previously serialized content:[null]), and an
+// all-empty audio source.
+func TestSerializeOpenAI_NoEmptyPayloadOrNullBlocks(t *testing.T) {
+	req := &InternalRequest{
+		Model:          "m",
+		SourceProtocol: ProtocolGeminiGenerate,
+		Messages: []Message{
+			{Role: "user", Content: []ContentBlock{
+				{Type: "text", Text: "hello"},
+				{Type: "video", Video: &MediaSource{Kind: "video", Type: "file_id", FileID: "file-xyz", MediaType: "video/mp4"}},
+				{Type: "document", Document: &DocumentBlock{MIMEType: "application/pdf", Title: "t.pdf"}},
+				{Type: "audio", Audio: &MediaSource{Kind: "audio", Type: "url", MediaType: "audio/wav"}},
+			}},
+		},
+	}
+	out, err := SerializeOpenAI(req)
+	if err != nil {
+		t.Fatalf("SerializeOpenAI: %v", err)
+	}
+	var m struct {
+		Messages []struct {
+			Content []json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(m.Messages) != 1 || len(m.Messages[0].Content) == 0 {
+		t.Fatalf("unexpected shape: %s", out)
+	}
+	for _, b := range m.Messages[0].Content {
+		s := string(b)
+		if s == "null" {
+			t.Errorf("content[] contains a literal null element: %s", out)
+		}
+		if strings.Contains(s, `"url":""`) {
+			t.Errorf("content[] contains an empty-url block: %s", s)
+		}
+		if strings.Contains(s, `"input_audio":{}`) {
+			t.Errorf("content[] contains a data-less input_audio: %s", s)
+		}
+		if strings.Contains(s, `"video_url"`) {
+			t.Errorf("file_id-only video must be dropped, not serialized: %s", s)
+		}
+	}
+	// The surviving block is the text block only.
+	if len(m.Messages[0].Content) != 1 {
+		t.Errorf("expected only the text block to survive, got %d blocks: %s", len(m.Messages[0].Content), out)
+	}
+	if !strings.Contains(string(m.Messages[0].Content[0]), `"text"`) {
+		t.Errorf("expected the text block to survive, got: %s", m.Messages[0].Content[0])
+	}
+}
+
+// TestSerializeResponses_NoEmptyFileData pins the same empty-payload rule on
+// the Responses dialect: a url-type document source whose URL and Data are
+// both empty must not emit file_data:"" (nor a null content element).
+func TestSerializeResponses_NoEmptyFileData(t *testing.T) {
+	req := &InternalRequest{
+		Model:          "m",
+		SourceProtocol: ProtocolGeminiGenerate,
+		Messages: []Message{
+			{Role: "user", Content: []ContentBlock{
+				{Type: "text", Text: "hello"},
+				{Type: "document", Document: &DocumentBlock{
+					MIMEType: "application/pdf",
+					Source:   &DocumentSource{Type: "url", MediaType: "application/pdf"},
+				}},
+			}},
+		},
+	}
+	out, err := SerializeResponsesRequest(req)
+	if err != nil {
+		t.Fatalf("SerializeResponsesRequest: %v", err)
+	}
+	if strings.Contains(string(out), `"file_data":""`) {
+		t.Errorf("responses body contains an empty file_data: %s", out)
+	}
+	if strings.Contains(string(out), "null,") || strings.HasSuffix(strings.TrimSpace(string(out)), "null") {
+		t.Errorf("responses body contains a null content element: %s", out)
+	}
+	// The text block survives; the empty document is dropped.
+	if !strings.Contains(string(out), `"hello"`) {
+		t.Errorf("text block lost: %s", out)
+	}
+}
