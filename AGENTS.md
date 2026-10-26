@@ -567,6 +567,25 @@
 > **丢弃 → 捕获**；IR→OpenAI `annotations` **不可能 → 有引用即产出**；IR→Gemini 往返 **丢弃 → 还原**。
 > `go build ./...` ✓ / `internal/ir` ✓ / `internal/requestfact` ✓ / `domains/transformation` ✓。
 > ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`；通用式见 `LESSONS.md` **§436**（5 条）。
+> **2026-10-27 Gemini 多模态审计复审轮**（会话 `mvs_dc5e181989fc4539805f343f39be2b5d`）：
+> ★ 承接 10-26 `483b60b30`（多模态转发三缺陷）的批判式复审 ⇒ 六项清单：
+> ①模态门无第二份实现（admin/models.go:199 是 UI 精确筛选器，非路由门）/ ②Responses
+> builder 调用方唯一 / ④ollama 诚实拒绝多模态 / ⑤raw input_audio 过 ValidateAndFix
+> 存活（探针实证，上轮测试缺 Validate 腿）/ ⑥executors 仅有的两处 Header.Clone 是
+> 上游**响应**头存档，无客户端凭据头泄漏 —— 五项**通过**。
+> ⇒ ★★ **审计③实锤同族四处漏网**（「空载荷块」是一族形状，修了 file_uri 一种到达方式
+> 不等于修完族）：①file_id-only video 发 `video_url.url:""`（Chat 的 video_url 没有
+> file_id 槽位）；②**`Document.Source=nil` 在 OpenAI 侧序列化成 `content:[null]` 字面量
+> null 元素**（★ 上一轮在 Responses 侧修过同款 append，OpenAI 侧漏网 ⇒ 「两侧同修」）；
+> ③`Type:"url"` 而 URL 空的 audio 无条件写 `url:""`（★ 第一版 `len(inner)==0` 守卫
+> 挡不住「键在值空」—— **新回归测试当场抓到** ⇒ 防御判据要对着【最小坏输出】写：
+> 每个槽位写入前单独判空）；④url/text 双空 document 发 `file_data:""`（OpenAI 与
+> Responses 两侧）。
+> ⇒ ★ 修法：四个 builder 无载荷一律返回 nil + OpenAI 侧三个 append 点补 nil 守卫 +
+> **跳过必留痕**（reportSerializeOpenAILosses 新增三条损失上报，与 image.file_id 惯例对齐）。
+> ⇒ ★ 新增回归测试 3 条（退化输入三连 ⇒ 线格式只剩合法块；Responses 空 file_data；
+> ValidateAndFix 完整路径）。读数：`go build` ✓ / ir+auth+provider+attachments+streaming
+> 全绿。⇒ 审计档 `docs/audit/2026-10-27-Gemini多模态审计复审轮.md`；通用式见 `LESSONS.md` **§437**（5 条）。
 > **2026-10-23 实时拓扑探测打标四处源真值漂移轮 + 口径收敛**（会话
 > `mvs_64ddb526ee11405aae54d67e7c4d6161`）：用户报 154 生产上一条 32-hex
 > 请求 `af1eb6d83ef39610cc4f8be4e181b5a8` "应被识别为探测但实时拓扑 pill = 否"。
