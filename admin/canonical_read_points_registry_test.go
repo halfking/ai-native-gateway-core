@@ -2295,3 +2295,265 @@ func TestNoCanonicalReadPointReadsNullPaddedColumn(t *testing.T) {
 			len(hits))
 	}
 }
+
+// ─────────────────────── R174 · canonical 视图「无法表达分区裁剪」 ───────────────────────
+//
+// ★ 这道门守的是一条**结构性缺陷**，不是「某个读点写得不好」：
+//
+// ★ canonical 视图（`request_logs_with_current_month`）的**投影列里没有
+// `partition_date`** ⇒ ⇒ 任何经它做的读点都**无法表达分区下界**
+// ⇒ ⇒ PG 无法做**分区裁剪** ⇒ ⇒ 父表分支要把**全部分区**扫一遍。
+//
+// ★ 252 生产规模实测（只读；`ts >= 2026-01-01` + `tenant_id='default'`）：
+//
+//	形态                                          Execution(热)   planBuf
+//	A canonical 视图                                 1535 / 1306 ms     125
+//	B 两臂窄投影（无分区下界）                        1008 / 1073 ms     246
+//	C 两臂 + `partition_date >= '2026-01-01'`（下界太宽 ⇒ 裁不到）  2760 ms
+//	F 两臂 + `partition_date >= '2026-10-01'`（裁到 1 个分区）       406 ms
+//	H3 只父表 + **无**分区下界                                     845 ms
+//
+// ⇒ ★★ **最优形态比 canonical 视图快 3.2×（1306 → 406 ms）** ⇒ ★★
+// ⇒ ★★ **★ 但 H3（无下界 845 ms）比 H2（加了宽下界 1763 ms）更快** ⇒ ★★
+// ⇒ ★★ **★ ⇒ 「随便加个分区下界」可能【更慢】（planner 换了更差的计划）★ ★★**
+// ⇒ ★★ ⇒ **★ 分区下界必须【逐读点实测】，不能一刀切。★ ★★**
+//
+// ★ ★★ **为什么这道门是「双向有牙」的 ★★**
+// ★ 判据① 断言「事实源的投影列里【没有】`partition_date`」⇒ ⇒
+// ★   · 现在：读点无法分区裁剪 ⇒ ⇒ 这个分类成立；
+// ★   · 将来：**一旦有人给视图补上 `partition_date` 投影** ⇒ ⇒ 读点就能分区裁剪
+// ★     ⇒ ⇒ **门会红** ⇒ ⇒ 【届时这个分类就该退役】⇒ ⇒ ★★
+// ★   ⇒ ★★ **★ 「现在不能」与「将来能」都被同一道门盯着 ⇒ ★★
+//
+// ★ ★★ **为什么判据③ 要【对拍】而不是【只查登记簿】★★**
+// ★ 只查登记簿 ⇒ 登记漏了就是假绿；只查实测 ⇒ 没人知道该改哪里 ⇒ ⇒ **两侧都要**。
+// ★ 实测口径：**文件级**（★ 不是一个读点一个读点）—— ★
+// ★   · 该文件在登记簿里的 Form 不是「只在注释里提及」/「视图定义探针」/「holder」
+// ★     ⇒ ⇒ 它**有**真实的生产读点（★ `formSwitchLayer` 的文件也算：★ 它们的
+// ★       SQL 字面量就在本文件里，只是 FROM 走切换层 helper）；
+// ★   · 且该**整份文件**的文本里出现 ts 的**范围**谓词（★ 整文件匹配 ⇒ 跨行安全
+// ★     ⇒ 不受「谓词在下一行」影响）。
+// ★ ★★ **为什么不用「逐读点」粒度**：★ 扫描器给的 read site 的 `Text` 只是
+// ★ **所在行** ⇒ ⇒ 跨行的 ts 谓词会漏 ⇒ ⇒ 逐读点实测会【假阴性】⇒ ⇒
+// ★ ★★ **粒度必须与【量具能真正看到的东西】对齐**（★ 这是 R173「判据粒度必须与
+// ★ 被测对象粒度一致」的同族）。
+
+// canonicalViewFactsSource 是 canonical 视图定义的**仓内单一事实源**。
+//
+// ★ 它**就是**部署形态（★ 890 迁移把它从「v1 回退体」改成了「会话族两臂体」，
+// ★ 与 composer 装到库里的形态逐字相同）⇒ ⇒ ★★ **门可以静态断言它，不必连库。★★**
+const canonicalViewFactsSource = "sql/objects/views/request_logs_with_current_month.sql"
+
+// canonicalTSWindowRe 认 ts 的**范围**谓词（★ 不是等值）。
+//
+// ★ 词边界必须精确：★ `ts` 是独立词 ⇒ 不命中 `timestamps` / `start_ts` 之类。
+var canonicalTSWindowRe = regexp.MustCompile(`(?i)\bts\b\s*(>=|<>|<|>|<=)|(?i)\bBETWEEN\b[^;()]*\bts\b`)
+
+// canonicalViewProjectionColumnSet 从视图定义 SQL 里抽出**投影列集合**。
+//
+// ★ 只看「投影」，不看 JOIN 条件 ⇒ ⇒ 视图定义里的
+// `ON d.partition_date = t.partition_date` **不算**投影列（★ 它是 JOIN 键）。
+// ★ 判据要问的是「读点能不能 SELECT 到这一列」，不是「视图内部用不用这一列」。
+func canonicalViewProjectionColumnSet(sqlText string) map[string]bool {
+	cols := map[string]bool{}
+	for _, line := range strings.Split(sqlText, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "--") {
+			continue
+		}
+		// 投影形状：`<expr> AS <col>,` 或 `<expr> AS <col>`
+		i := strings.LastIndex(strings.ToUpper(line), " AS ")
+		if i < 0 {
+			continue
+		}
+		name := strings.TrimSpace(line[i+4:])
+		name = strings.TrimSuffix(name, ",")
+		name = strings.TrimSpace(name)
+		// 只认「裸标识符」形态的列名（★ `NULL::bigint AS id` ⇒ `id`）。
+		if name == "" {
+			continue
+		}
+		for _, r := range name {
+			if !(r == '_' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+				name = ""
+				break
+			}
+		}
+		if name == "" {
+			continue
+		}
+		cols[name] = true
+	}
+	return cols
+}
+
+// canonicalTimeWindowedReadPointFiles 实测出「带 ts 时间窗口且有真实生产读点」的文件集合。
+//
+// ★ 口径与上面头注释里的「为什么判据③ 是文件级」一致。
+func canonicalTimeWindowedReadPointFiles(t *testing.T, root string) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	scanned := scanCanonicalReadPoints(t, root)
+	for path, facts := range scanned {
+		// ① 该文件必须**有真实生产读点**。
+		//
+		// ★★ **★ 第一版口径写成「只要 read 形态」⇒ ⇒ 把【holder 形态】排除了 ⇒ ⇒
+		// ★★ 【门红】并指出「admin/usage_credits.go 登记为受影响但实测不满足」⇒ ⇒
+		// ★★ ⇒ ★★ **★ 那是【登记方】错了，不是【实测方】错了** ⇒ ⇒ ★★★
+		// ★★ ★★ 因为 holder 形态**也是真实读点**：★ `formSwitchLayer` 的文件
+		// ★★ （`admin/usage_credits.go` / `admin/usage_enhanced.go` /
+		// ★★  `admin/usage_trend_series.go`）的读点是 Go 字符串持有视图名，
+		// ★★ **而它们的 ts 谓词就在本文件里**（FROM 子句是本文件拼的）⇒ ⇒
+		// ★★ ★★ **★ 而且它们恰恰是本缺陷最刺眼的活标本**：★
+		// ★★ 「≤7 天走会话族热腿原生源，>7 天走 canonical 视图」⇒ ⇒
+		// ★★ ★★ **★ 「查 30 天」这种最常见的运营查询，恰好落在【>7 天 ⇒ 走
+		// ★★ ★★ canonical 视图 ⇒ ⇒ 无法分区裁剪 ⇒ ⇒ 秒级】的那一支上。★★ ★★**
+		//
+		// ★★ ⇒ 口径修正为：**有 read 或 holder 读点** ⇒ ★★ 且 ★★ 用【扫描器实测的
+		// ★★ Form】做白名单（★ 不依赖登记簿 ⇒ ★★ 避免循环依赖 ⇒ ★★ 而且登记簿的
+		// ★★ Form 已被另一道门 `TestCanonicalReadPointRegistryIsNotRot` 钉住）★★
+		hasRealRead := false
+		for _, p := range facts.ReadPoints {
+			if p.Kind == "read" || p.Kind == "holder" {
+				hasRealRead = true
+				break
+			}
+		}
+		if !hasRealRead {
+			continue
+		}
+		switch facts.Form {
+		case formDirectLiteralSQL, formHelperConcat, formSwitchLayer:
+			// ★ 这三种形态的文件里，读点是真的、ts 谓词也在本文件里 ⇒ 纳入。
+		default:
+			// ★ 「只在注释里提及」/「视图定义探针」/「视图 DDL 定义」⇒
+			// ★ 它们的 ts 谓词与「按时间窗口读」无关（★ 例如 `db/db.go` 的探针
+			// ★ 是「查视图里有哪些列」）⇒ ⇒ 不纳入。
+			continue
+		}
+		// ② 该文件整份文本里出现 ts 的范围谓词（★ 跨行安全）。
+		b, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			continue
+		}
+		if canonicalTSWindowRe.Match(b) {
+			out[path] = true
+		}
+	}
+	return out
+}
+
+// canonicalTimeWindowedReadPoints 登记「【带 ts 时间窗口】且【直接读 canonical 视图】」的生产文件，
+// 以及**人工核定**的每一条理由（★ 空说明的登记等于没有登记）。
+//
+// ★ ★★ **这张清单是【可排序的缺陷台账】**：★
+// ★   · 它列出所有「经 canonical 视图按时间窗口读」的读点面 ⇒ ⇒
+// ★     **这正是「迁到两臂直查 + 带 partition_date 下界」的候选集** ⇒ ⇒
+// ★   · 而迁移的收益**已被实测钉住**：★ 3.2×（1306 → 406 ms）⇒ ★
+// ★   · ★★ **但下界必须逐读点实测**（★ H3 845 ms vs H2 1763 ms ⇒ 宽下界反而更慢）★★
+//
+// ★ ★★ **登记与实测必须【逐文件相等】**：★ 漏登记 ⇒ 门红；多登记 ⇒ 门红。
+// ★ ★★ 登记时若认为某文件「虽然有 ts 谓词，但那个谓词与 canonical 读点无关」⇒
+// ★   ⇒ 那是**登记错误**（★ 口径是文件级）⇒ ⇒ 要么改口径、要么把它移出清单 ⇒
+// ★   ⇒ ★★ **不许用「例外」把它藏起来**：★ 藏起来就等于门看不见它。★★
+var canonicalTimeWindowedReadPoints = map[string]string{
+	"admin/compression_stats.go": "压缩带统计（token_band / success / ts）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/credential_monitor.go": "凭据监控：① live P95 回退；② 按凭据统计行数；③ 滑窗明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/credential_monitor_heatmap.go": "凭据 × 模型热力图；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/credential_success_rate.go": "凭据成功率；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/data_lifecycle.go": "数据生命周期：① 7 天趋势；② 清理预览的受影响行数（不取列，只要 COUNT(*)）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/diagnostics_credential.go": "凭据诊断明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/live_stream_sse.go": "SSE 实时流：① 全量事件行；② 按 request_id 数组取状态；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/memora_handlers.go": "memora 上下文：① 任务/会话头；② 最近一条模型；③ 计数；④ 轮次明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/model_routing_diagnostic.go": "模型路由诊断的 24h 统计；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/model_status.go": "模型状态统计；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/no_topic_session.go": "无主题会话面：① 轮次明细；② 会话日志摘要；③ 按 request_id 取 api_key_id/tenant_id；④ 取 preview/work_type/request_mode；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/probe_history.go": "探针历史；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/provider_models.go": "供应商模型面：① COUNT(*) 统计（不取列）；② 明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/route_incidents.go": "路由事故面；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/session_analytics_breakdown.go": "会话分析维度下钻：① 按模型；② 按供应商；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/session_analytics_timeseries.go": "会话分析时间序列：① 会话/请求/成本；② 成本拆分；③ 延迟分位；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/swim_lane_init.go": "泳道初始化；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/tenants.go": "租户统计（tenant_id / tokens / cost / credits_charged）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/top_problems.go": "Top 问题：① 按凭据；② 按模型；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/usage.go": "用量面：① 失败数；② 失败钻取；③ 5 分钟分桶；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/usage_credits.go": "requestLogsFromClause(days) 按天数分臂：≤7 天走会话族热腿原生源，>7 天走 canonical 视图 ⇒ 切换层契约；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/usage_enhanced.go": "planCostTrend() 按 groupBy 在计费宽表与请求表（canonical 视图）之间选基表 ⇒ 切换层契约；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/usage_trend_series.go": "usageTrendSource() 三臂切换（api_key 过滤 ⇒ canonical 视图明细面；provider 过滤 ⇒ minute 汇总；默认 ⇒ dim 汇总）；另两处是按该返回值 dispatch 的 case 标签 ⇒ 同一处切换层；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/work_types.go": "工作类型分布（work_type / is_auto_request / ts / canonical_model）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"bg/daily_probe_audit.go": "探针每日审计（离线诊断面，不在线上读路径上）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"bg/integrity_fingerprint_drift.go": "指纹漂移审计（离线诊断面）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"bg/passive_probe_listener.go": "被动探针监听器（探针系统后台面，不在管理台读路径上）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"bg/stats_minute_rollup.go": "离线分钟汇总（读视图只为把窗口内的行汇进汇总表）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"bg/stats_minute_rollup_retire.go": "离线分钟汇总退役（DELETE 的子查询用视图定位要清理的窗口）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"db/probe_views_unified.go": "探针视图的**生产者**（CREATE OR REPLACE VIEW v_model_health_dashboard）⇒ 它是视图的下游聚合面，不是终端读点；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"domains/routeincident/store.go": "路由事故 store；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"domains/sessionsummary/summarizer.go": "★ **已修（R173）**：标题解析读点原 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机 ⇒ ★ 现改为 `ORDER BY ts DESC, request_id DESC`（稳定键）；另两个读点取 reque…；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"internal/collector/gateway_adapters.go": "collector 适配：① 延迟分位；② 模型计数；③ 30 秒计数；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"internal/quality/minute_aggregator.go": "离线分钟聚合（provider_id 走 details 腿，缺 details 行的轮次被谓词排除）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"maas/usage.go": "requestLogsSource(days) 在 890 之后**恒**返回 canonical 视图（原 days>7 分臂已合并，分流本身已无意义）⇒ 源仍由 helper 决定 ⇒ 归切换层裁决；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+}
+
+// TestCanonicalViewCannotExpressPartitionPruning 是【行为判据】。
+//
+// ★ 四道判据：
+// ① 事实源（仓内 SQL）里 canonical 视图的**投影列没有 `partition_date`**
+//    ⇒ ⇒ 读点无法表达分区下界 ⇒ ⇒ 【这就是缺陷的根因】；
+// ② 登记清单非空（★ 防「登记 0 条 ⇒ 门变瞎」）；
+// ③ 登记清单与实测集合**逐文件相等**（★ 漏登记 / 多登记都红）；
+// ④ 阳性对照：★ 合成「视图定义带 `partition_date` 投影」⇒ 必须判红。
+func TestCanonicalViewCannotExpressPartitionPruning(t *testing.T) {
+	root := repoRootFromCaller(t)
+
+	// ── 判据①：事实源的投影列里没有 partition_date ──
+	sqlPath := filepath.Join(root, canonicalViewFactsSource)
+	b, err := os.ReadFile(sqlPath)
+	if err != nil {
+		t.Fatalf("读事实源失败：%v", err)
+	}
+	cols := canonicalViewProjectionColumnSet(string(b))
+	if len(cols) == 0 {
+		t.Fatalf("★ 从事实源 %s 没抽到任何投影列 ⇒ ⇒ 提取器坏了 ⇒ ⇒ 本门判红（★ 而不是判绿）",
+			canonicalViewFactsSource)
+	}
+	if cols["partition_date"] {
+		t.Fatalf("★ 事实源 %s 的投影列里【已经有】`partition_date` ⇒ ⇒ 读点【可以】做分区裁剪了 ⇒ ⇒ "+
+			"★ 【「无法表达分区裁剪」这个分类就该退役】⇒ ⇒ 请把相关登记从 canonicalTimeWindowedReadPoints 里移除，"+
+			"★ 并把本门改成断言「读点必须带 partition_date 下界」。★★", canonicalViewFactsSource)
+	}
+
+	// ── 判据②：登记清单非空 + 每条理由非空 ──
+	if len(canonicalTimeWindowedReadPoints) == 0 {
+		t.Fatalf("★ canonicalTimeWindowedReadPoints 是空的 ⇒ ⇒ 这道门【看不见任何读点】⇒ ⇒ 门变瞎了 ⇒ ⇒ "+
+			"★ 请把它填上（★ 判据③ 会逐文件对拍实测集合）")
+	}
+	for path, why := range canonicalTimeWindowedReadPoints {
+		if strings.TrimSpace(why) == "" {
+			t.Fatalf("★ 登记 %s 的理由是空的 ⇒ ⇒ 空说明的登记等于没有登记 ⇒ ⇒ 请写清「为什么这个文件受影响」", path)
+		}
+	}
+
+	// ── 判据③：登记集合 == 实测集合（逐文件） ──
+	measured := canonicalTimeWindowedReadPointFiles(t, root)
+	for path := range measured {
+		if _, ok := canonicalTimeWindowedReadPoints[path]; !ok {
+			t.Fatalf("★ %s 【实测】带 ts 范围谓词且有真实生产读点 ⇒ ⇒ 它受「canonical 视图无法分区裁剪」影响 ⇒ ⇒ "+
+				"★ 但它【没在】canonicalTimeWindowedReadPoints 里登记 ⇒ ⇒ 门红（★ 漏登记 = 缺陷被藏起来）", path)
+		}
+	}
+	for path := range canonicalTimeWindowedReadPoints {
+		if !measured[path] {
+			t.Fatalf("★ %s 【登记】为受影响，但【实测】不满足（★ 要么它没有真实生产读点，要么它整份文件里没有 ts 范围谓词）⇒ ⇒ "+
+				"★ 登记与事实不符 ⇒ ⇒ 门红（★ 多登记 = 把不相关的东西塞进台账，★ 会稀释台账）", path)
+		}
+	}
+
+	// ── 判据④：阳性对照（★ 合成坏数据必须判红） ──
+	// ★ 合成一个「投影里带 partition_date」的视图定义 ⇒ 提取器必须【认得出】。
+	synthetic := "SELECT NULL::bigint AS id,\n\t\tt.partition_date AS partition_date,\n\t\tt.ts AS ts\n\tFROM public.session_turns t"
+	if !canonicalViewProjectionColumnSet(synthetic)["partition_date"] {
+		t.Fatalf("★★ 阳性对照失败：★ 合成视图定义里的 `partition_date` 投影没被提取器认出来 ⇒ ⇒ "+
+			"★ 提取器【对 partition_date 失明】⇒ ⇒ ⇒ **判据① 就是恒绿的 ⇒ ⇒ 本门没有牙齿** ⇒ ⇒ "+
+			"★ 请修提取器（★ 注意：★ JOIN 条件里的 `d.partition_date = t.partition_date` 【不算】投影列）★★")
+	}
+}
