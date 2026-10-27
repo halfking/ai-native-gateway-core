@@ -646,6 +646,37 @@
 > 结构成形）；**asm 引擎产出仍无 per-request 日志 ⇒ 质量抽样盲区**（遗留）。
 > ⇒ 审计档 `docs/audit/2026-10-27-24h窗口审计-探针三栈读数与镜像管线.md`；
 > 通用式见 `LESSONS.md` **§457**。
+> **2026-10-27 24h 窗口审计第 2 轮：summarize 记账上线 + 366 对不健康面处置 + 镜像契约决断 + 两处既有红**
+> （goal 会话）：★ 四项全落地，提交 `84a3bef62` + `5cfe6e647`，211 部署 ×3（蓝绿 a→b→a，git_sha=84a3bef6 无树漂移）。
+> ⇒ ★ **④既有红之一 `test_fail_closed_call_sites`**：根因是**定位锚与断言意图脱钩**——`source.index('if ! verify_public_web; then')`
+> 取「文件里第一道门」，10-27 legacy 门补齐插到蓝绿门前 ⇒ 锚点指到 legacy 分支 ⇒ 假红；
+> legacy 门不调 `_bluegreen_abort` 是**有意行为**（无蓝绿候选态，exit 1 + 可粘贴回滚命令同样 fail-closed）
+> ⇒ 修法 = **穷举**（if/fi 深度计数提取全部门块 + 断言门数恰为 3 + 每门必 fail-closed + 至少一道 `_bluegreen_abort`）
+> ⇒ 穷举版同时把 legacy 两道门纳入覆盖（旧锚下它们从没被看过）。
+> ⇒ ★ **④既有红之二 `/state` 503**：定性为**设计行为**——URSM v2 默认 authoritative（config.go:211）+ 211 数据面日志实证
+> ⇒ legacy credentialstate 有意不接线（spec §10 Step 5 C-1）；**真缺陷是 503 文案不说原因** ⇒ 改为说明原因 + 指替代读数面
+> ⇒ ★ 「定性为设计行为」的输出物是文案，不是口头结论。
+> ⇒ ★★ **③scan-secrets 解释器守卫落地（修假绿）**：bash<4 ⇒ exit 64（响亮拒绝）+ sync-to-github.sh `"$BASH"` 下传
+> ⇒ **扫描器真跑后 21 条夹具 WARN 当场显形** ⇒ 逐条人工定性（sk-*-fixture/SUPERSECRET 占位）⇒ baseline 补 19 + 重钉 2
+> ⇒ **上轮 dry-run「5 步全绿」的验收证据建立在假 0 上** ⇒ 本轮 dry-run 5 步 rc=0（16165 文件 0 findings）才是真证据。
+> ⇒ ★ **③POLICY v2.0 契约决断**：**树移植 = 唯一实推通道**（镜像保留原始历史），sync-to-github.sh（filter-repo）退役为
+> --dry-run 诊断（互斥）；**sops/age 密钥本机与 252 均无** ⇒ 退役 252 口令补齐属**用户侧动作**（如实登记 §10.2）。
+> ⇒ ★★ **①部署取数 + 配置回归**：`LLM_GATEWAY_ASM_BASE_URL` 只在 10-26 部署机 shell 里存在、未按三步协议落 env 文件
+> ⇒ 本轮部署后**委托功能静默关闭**（engine=gateway 且无降级 WARN——关闭不是失败所以不响）⇒ 落 env 文件 + 重部署激活
+> ⇒ **部署冒烟全绿 ≠ 功能在，开关类配置的验收必须含一次真实调用**；已持久化进 211 env 文件（跨部署保留）。
+> ⇒ 读数：3 笔完成记账（gateway 2 / **asm 1**，降级率 0）；**engine=asm 实测**（pipeline=asm llm_model=qwen2.5:7b 124s）；
+> 质量抽样（同输入 34210 runes 对照）：asm 版 551 字含决议/待办表 + title（grounded 形态合规）vs gateway 版 269 字；
+> **asm 侧 per-request 日志仍为 0**（上轮盲区依旧）。⇒ ★★ **②366 对处置：363 → 2**——协议红（404/410 连败≥2）**291 对**
+> 绑定下线（manual:protocol_red_404_410，UPDATE 291）+ 恢复脚本协议红默认排除 + 暂时性 75 对全恢复
+> ⇒ 终态**结构性更优**：目录刷新把幻影模型连绑定带探针行剪除（协议红绑定 0 / 探针行 0；路由容量 1973/984 模型完好）。
+> ⇒ ★★★ **本轮最贵的一课**：恢复脚本 **reset-state 不带 raw_model = 整凭据 force-enable**（routing_reset.go:34）
+> ⇒ 13 次凭据级 reset 把 291 个 manual 下线**全部拉回路由**（manual:% 计数归零实证）⇒ 修成对级（5cfe6e647）
+> ⇒ ★ **脚本各步骤作用域必须一致**（warmup 对级 + reset 凭据级 = 修复被自己绕过）；★ **reset 是写不是读**——
+> 凡靠 DB 标记表达的运维决断，必须枚举「谁会整表/整凭据重写这些列」。
+> ⇒ ★ 读数修正：第一轮「82 对 auto_credential_transient」是 **join 重复行放大**（provider_models 同名多行），
+> COUNT(DISTINCT cmb.id) 后真值 282+9 ⇒ 跨表计数必须去重到被计数实体。
+> ⇒ 审计档 `docs/audit/2026-10-27-24h审计第2轮-summarize记账上线与协议红下线.md`；
+> 通用式见 `LESSONS.md` **§471**。
 > **2026-10-27 第 19 增量：内部标识泄漏轮（用户可见文案里的内部标识，改写 + 门 + 登记豁免簿）**（会话
 > `mvs_dc5e181989fc4539805f343f39be2b5d`）：★ 承接用户总目标（「优化整个网关的 UI，减少 AI 化、
 > 增加人味与艺术化、把复杂表达做得更人性化」）⇒ ★★ 落点取 impeccable `skill/reference/clarify.md`
