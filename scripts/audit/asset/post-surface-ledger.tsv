@@ -584,3 +584,13 @@
 /v2/chat/completions	ANY	cmd/gateway/main_v2_pipeline.go:369	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /v2/healthz	ANY	cmd/gateway/main_v2_pipeline.go:412	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /version	ANY	cmd/gateway/main.go:6450	unknown				not-probed-unresolved	★ 静态分级：解析不出
+# ── 2026-10-28 分支审计轮补登：wip/07 合入新增的 9 条路由（静态分级 + handler 源码复核；列：route/method/file/class/bucket-empty/code-empty/probe-empty/verdict/note）────
+/api/admin/maas/bills/issue	ANY	admin/maas_bills_handlers.go:64	write				not-probed-writes	★ 源码确证 write：POST-only（:64 method guard）出账 ⇒ 静态分级器判 read 是调用链盲区（R159 §10.2 同族反例）⇒ 按 handler 源码改判；真探测待 cookie+护栏条件
+/api/admin/maas/bills/reconcile	ANY	admin/maas_bills_handlers.go:108	read				not-probed-not-reached	★ GET-only（:108）对账读点；静态分级 read 与源码一致；未真探测
+/api/admin/maas/coupons	ANY	admin/maas_bills_handlers.go:23	write				not-probed-writes	★ 源码确证 mixed：GET 列表（:29）+ POST CreateCoupon（:43 落库写）⇒ 按 write 记（保守）；静态分级器判 read 是盲区
+/api/maas/bills	ANY	admin/maas_bills_handlers.go:132	read				not-probed-not-reached	★ GET-only（:132）租户月账单列表；未真探测
+/api/maas/bills/export	ANY	admin/maas_bills_handlers.go:161	read				not-probed-not-reached	★ GET-only（:161）CSV 导出；未真探测
+/api/maas/coupons/activate	ANY	admin/maas_bills_handlers.go:188	write				not-probed-writes	★ 源码确证 write：POST-only（:188）ActivateCoupon 落积分 ⇒ 静态分级器判 read 是盲区（空 body POST 会 400 但语义是写）
+/api/maas/coupons/redemptions	ANY	admin/maas_bills_handlers.go:218	read				not-probed-not-reached	★ GET-only（:218）兑换记录列表；未真探测
+/api/maas/invoices	ANY	admin/maas_bills_handlers.go:247	write				not-probed-writes	★ 源码确证 write：POST-only（:247）CreateInvoicePlaceholder 落占位行（202 Accepted）
+/api/v1/plugins/	ANY	cmd/gateway/main.go:6625	unknown				not-probed-unresolved	★ 前缀路由 + 闭包内部分派（/settings ⇒ SettingsHandler）⇒ 静态分级解析不出（func-not-indexed），与 /api/v1/plugins/install 同族待真探测

@@ -15,6 +15,8 @@ import { exportFile } from '../../utils/exportFile'
 import { readExportBlob, ExportTooLargeError } from '../../utils/exportResponse'
 import { formatBytes } from '../../utils/format'
 import PageBackLink from '../../components/PageBackLink.vue'
+import ResponsiveDataView from '../../components/ui/ResponsiveDataView.vue'
+import type { CardField } from '../../components/ui/CardList.vue'
 import { authBearer } from '../../store'
 
 const { t } = useI18n()
@@ -88,6 +90,16 @@ function fmtCents(c: number, currency: string) {
   return `${(c / 100).toFixed(2)} ${currency || 'CNY'}`
 }
 
+// compact 档的账单卡字段（与下方桌面表格同一份列政策；2026-10-28 分支审计轮：
+// wip/07 合入时只带了桌面 <table> ⇒ compact-card 覆盖率基线红 ⇒ 按 MaaSUsageView
+// 的同族范式接 ResponsiveDataView，compact 出卡片、桌面表格逐字保留）。
+const billCardFields = computed<CardField[]>(() => [
+  { key: 'total_credits', label: t('tenants.bills.colCredits'), type: 'metric', align: 'end', format: (v) => Number(v).toLocaleString() },
+  { key: 'total_requests', label: t('tenants.bills.colRequests'), type: 'metric', align: 'end', format: (v) => Number(v).toLocaleString() },
+  { key: 'amount_cents', label: t('tenants.bills.colAmount'), type: 'metric', align: 'end', format: (v, row) => fmtCents(Number(v), String(row.currency || 'CNY')) },
+  { key: 'status', label: t('tenants.bills.colStatus'), type: 'badge' },
+])
+
 onMounted(load)
 </script>
 
@@ -110,27 +122,38 @@ onMounted(load)
 
     <section class="card-block">
       <h2>{{ t('tenants.bills.listTitle') }}</h2>
-      <p v-if="!loading && bills.length === 0" class="empty">{{ t('tenants.bills.emptyNoResult') }}</p>
-      <table v-else class="data-table">
-        <thead>
-          <tr>
-            <th>{{ t('tenants.bills.colPeriod') }}</th>
-            <th>{{ t('tenants.bills.colCredits') }}</th>
-            <th>{{ t('tenants.bills.colRequests') }}</th>
-            <th>{{ t('tenants.bills.colAmount') }}</th>
-            <th>{{ t('tenants.bills.colStatus') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="b in bills" :key="b.id">
-            <td>{{ b.period_ym }}</td>
-            <td>{{ b.total_credits.toLocaleString() }}</td>
-            <td>{{ b.total_requests.toLocaleString() }}</td>
-            <td>{{ fmtCents(b.amount_cents, b.currency) }}</td>
-            <td>{{ b.status }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <ResponsiveDataView
+        :rows="bills"
+        title-key="period_ym"
+        :fields="billCardFields"
+        :loading="loading"
+        :empty="!loading && bills.length === 0"
+        :empty-text="t('tenants.bills.emptyNoResult')"
+        table-min-width="0px"
+      >
+        <template #table>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>{{ t('tenants.bills.colPeriod') }}</th>
+                <th>{{ t('tenants.bills.colCredits') }}</th>
+                <th>{{ t('tenants.bills.colRequests') }}</th>
+                <th>{{ t('tenants.bills.colAmount') }}</th>
+                <th>{{ t('tenants.bills.colStatus') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="b in bills" :key="b.id">
+                <td>{{ b.period_ym }}</td>
+                <td>{{ b.total_credits.toLocaleString() }}</td>
+                <td>{{ b.total_requests.toLocaleString() }}</td>
+                <td>{{ fmtCents(b.amount_cents, b.currency) }}</td>
+                <td>{{ b.status }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+      </ResponsiveDataView>
     </section>
 
     <section class="card-block">

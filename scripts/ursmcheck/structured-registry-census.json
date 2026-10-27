@@ -216,16 +216,10 @@
     },
     {
       "path": "web/scripts/design-metric-skeleton-runtime-baseline.json",
-      "kind": "registry",
+      "kind": "excluded",
       "reader": "web/scripts/design-metric-skeleton-runtime-check.mjs",
-      "behaviorally_verified": true,
       "note": "★ **行为化验证（第 30 增量，★ 2026-10-28 实测）**：★ 本条是**第 30 增量**新增的登记册（★ 与它的兄弟 `design-icon-size-runtime-baseline.json` / `design-action-density-runtime-baseline.json` 同族 ⇒ 同为浏览器运行时尺的基线）。★ ★★ **与那两个兄弟的关键差别**：★ `design-action-density-runtime-baseline.json` 当年登记为 excluded 的理由是「**本轮验不了（★ 环境限制）**——读方要浏览器」⇒ ★ 本轮有 Chrome ＋ 本地服务 ⇒ 那笔欠账实测掉了 ⇒ ★ 本条**不登记 excluded**，而是**实测归类**。★ 实测三档：① 基线态 ⇒ `rc=0`；② 整册掏空成 `{}` ⇒ **`rc=1`**；③ **基线文件删除** ⇒ **`rc=1`**（★ 后两档输出均含探针 `METRIC-SKELETON-BASELINE-UNUSABLE`）⇒ ⇒ **掏空/删除都让读方红 ⇒ 有牙** ⇒ 归 `registry`。★ ★★ **hollow_mode 为什么是 `unusable`**：★ 本基线是**上限型**（★ 逐页「落在裸指标卡网格里的卡片数」的上限）⇒ ★ `entries` 模式（容器清空 ＋ 数值归零）**不适用** ⇒ ★ 按 Go 侧口径，**上限型必须用 `unusable`**（★ 整册替换成 `{}`）⇒ ⇒ ★★ **`unusable` 恰好命中本工具的「基线不可用」分支**（★ `baselineUsable({})` ⇒ false ⇒ ⇒ 门判红）⇒ ★ 这不是巧合，是本工具**故意**把「基线没了」判成红的 ⇒ ★ 否则「**把基线删掉**」就是让门变绿的**后门**（★ 仓内 `design-spacing-scale-runtime-baseline.json` 的登记条目记过这个坑）。★ ★★ **red_signal 为什么是一个探针 token 而不是散文**：★ 门在「基线不可用」时打印 `✘ [METRIC-SKELETON-BASELINE-UNUSABLE] …` ⇒ ★ ★★ **用稳定的 token 当红信号** ⇒ 改文案不会把 Go 门打瞎（★ 第 27 增量的纪律：★ 判据落在「门输出里有没有探针」）。★ ★★ **本条与 `design-icon-size-runtime-baseline.json` 的另一个差别**：★ 本工具在「基线不可用」时**在测量之前就判红**（★ 判定不依赖测量）⇒ ⇒ 掏空态**秒级**返回 ⇒ ⇒ 不会把这个 Go 套件的时长拖长一倍（★ 88 页静态路由的浏览器尺一次 ≈ 5 分钟）。",
-      "reader_kind": "node",
-      "reader_spec": "./web/scripts/design-metric-skeleton-runtime-check.mjs",
-      "hollow_mode": "unusable",
-      "red_signal": "METRIC-SKELETON-BASELINE-UNUSABLE",
-      "hollow_result": "red",
-      "mech_check": "reader-red-on-hollow"
+      "reason": "★ **掏空实测照做且有效，但行为化验证不能进 go census 的循环**（★ 2026-10-28 分支审计轮改判，★ 全量 go test 实锤）：★ 本条的读方是**浏览器运行时尺**（与 design-action-density-runtime 同族）——★ census 行为化验证的第 ④ 步要求「基线态读方必须绿」⇒ ⇒ 那一步对运行时尺意味着 **88 页全量 Chrome 扫描 ≈ 5 分钟**（掏空态本身 0.03s 秒级判红，探针 METRIC-SKELETON-BASELINE-UNUSABLE 正确），★ 实测全量 go test 并行跑到本条时整个测试 10 分钟超时 panic（★ icon-size 兄弟条目排在字母序前面先跑完，已把预算烧掉大半 ⇒ 结构性不适配，不是单条慢）。★ ⇒ 按 **第 25 增量 design-action-density-runtime-baseline 的同族先例**登记 excluded（★ 那条的理由同样是「读方要浏览器」）。★ ★★ 三档实测**照做且录得**（第 30 增量）：① 基线态 rc=0（定向 --pages 模式）；② 整册掏空成 {} ⇒ rc=1 且秒级返回；③ 基线文件删除 ⇒ rc=1 —— 后两档输出均含探针 token ⇒ 掏空/删除都让读方红 ⇒ 有牙。★ 行为化验证的日常载体是 npm 自证（design-metric-skeleton:runtime-check:selftest 43/43）与浏览器运行时尺本身。"
     },
     {
       "path": "web/scripts/design-ai-smell-registry.json",

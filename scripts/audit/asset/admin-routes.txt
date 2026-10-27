@@ -1,4 +1,4 @@
-# admin-routes.txt —— 仓内路由清单快照 | 本文件由 scripts/audit/extract-admin-routes.sh 生成，不要手改 | 口径：源码里 mux.HandleFunc/mux.Handle 的字面量首参（path<TAB>method<TAB>file:line；method=ANY 表示源码无方法前缀；口径与已知偏差见生成器头部注释）| 数据行数=580
+# admin-routes.txt —— 仓内路由清单快照 | 本文件由 scripts/audit/extract-admin-routes.sh 生成，不要手改 | 口径：源码里 mux.HandleFunc/mux.Handle 的字面量首参（path<TAB>method<TAB>file:line；method=ANY 表示源码无方法前缀；口径与已知偏差见生成器头部注释）| 数据行数=589
 /	ANY	cmd/gateway/main.go:7043
 /	ANY	cmd/gateway/main.go:7046
 /_gateway/plugin/v1/analytics/{type}	GET	cmd/gateway/plugin_canon_init.go:204

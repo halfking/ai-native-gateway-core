@@ -12386,6 +12386,10 @@ index b953a6f03..555ef83c4 100644
 > ★ 基线 `web/scripts/design-metric-skeleton-runtime-baseline.json`（88 页 / 75 页 = 0 / 13 页 = 3~6）
 >   ⇒ `scripts/ursmcheck/structured-registry-census.json` 登记 1 条（★ `hollow_mode=unusable` /
 >   ★ `red_signal=METRIC-SKELETON-BASELINE-UNUSABLE` / ★ 三档实测：基线 rc=0 · 整册掏空 rc=1 · 文件删除 rc=1）。
+>   ⇒ ★★ **分支审计轮改判（诚实记账）**：登记为 `excluded`（★ 同族先例 = design-action-density-runtime）——
+>   ★ census 行为化验证的第 ④ 步要求「基线态读方必须绿」⇒ 对浏览器运行时尺 = 88 页全量 Chrome 扫描 ≈5 分钟，
+>   ★ 实测把全量 go test 顶到 10 分钟超时 panic（★ 字母序在前的 icon-size 兄弟条目先跑完已烧掉大半预算 ⇒ 结构性不适配）；
+>   ★ 三档实测本身照做且有效（★ 掏空态 0.03s 秒级判红、探针正确），行为化验证的日常载体 = npm 自证 43/43。
 > ★ 读数：★ 硬闸命中 修前 **1 页**（`/admin/ops-overview` 3 组 / 12 张）→ 修后 **0 页**；★ `vue-tsc` **0 错**；
 >   ★ 定向 vitest **6 通过**（★ `BoardOperationalView.test.ts` 断言随结构更新 ⇒ ★ **追加**「不再有 `.bo-card-metric`」的反向断言）；
 >   ★ 硬编码中文棘轮 **4484 → 4483**（★ 本轮**净值为 0**：★ 三份改动文件逐文件计数 44 / 26 / 5 **完全未变**
