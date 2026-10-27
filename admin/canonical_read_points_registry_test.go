@@ -493,6 +493,19 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "read", Columns: []string{"client_model:detail", "completion_tokens:base", "cost_usd:base", "credential_id:expr", "error_kind:base", "latency_ms:base", "outbound_model:base", "prompt_tokens:base", "request_id:base", "success:base", "total_tokens:expr", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "供应商模型面：① COUNT(*) 统计（不取列）；② 明细；本读点读 client_model:detail,completion_tokens:base,cost_usd:base,credential_id:expr,error_kind:base,latency_ms:base,outbound_model:base,prompt_tokens:base,request_id:base,success:base,total_tokens:expr,ts:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
 		},
 	},
+	// R172：会话族轮次读点的两臂直查 helper（internal/sessionfamily/turns_reads.go）。
+	// ★ 本文件**只在一条注释里**提到 canonical 视图（用来说明「canonical 视图没有
+	//   反连接」这个对比）⇒ 不是 canonical 读点 ⇒ 归 classNoRead。
+	// ★ 它的真实读面是**会话族**（public.session_turns_hot ∪ public.session_turns），
+	//   与 canonical 视图无关；R172 的等价性守卫在
+	//   domains/session/v2/turn_writer_family_reads_test.go。
+	"internal/sessionfamily/turns_reads.go": {
+		Form:         formCommentOrStringOnly,
+		Class:        classNoRead,
+		Exempt:       true,
+		ExemptReason: exemptNoReadPoint,
+		Note:         "R172 会话族两臂直查 helper：canonical 视图名只出现在一条注释里（对比说明「canonical 视图没有反连接」）；本文件的读面是会话族 hot ∪ 父表，与 canonical 视图无关",
+	},
 	"admin/providers.go": {
 		Form:         formCommentOrStringOnly,
 		Class:        classNoRead,
