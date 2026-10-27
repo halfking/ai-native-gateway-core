@@ -259,7 +259,8 @@ dl_atomic_switch "$RELEASE_VERSION"
 | `go build ./...` | ✅ 干净（`CGO_ENABLED=0`，go 1.27.2 工具链） |
 | `go vet ./cmd/gateway/ ./admin/` | ✅ 干净 |
 | `go test ./cmd/gateway/ -run 'TestR1039*'` | ✅ 全绿（含既有 cookie 用例 + 本轮 6 条） |
-| `go test ./admin/` | ✅ 全绿 |
+| `go test ./admin/` | ✅ 全绿（136.4s） |
+| `go test ./scripts/ursmcheck/`（**整包**） | ✅ **ok（1240.9s）** —— ★ 跑满 20.7 分钟是**机器争用**（本机 load 一度 ~99，兄弟会话并跑 `go test ./...`），不是本轮改动慢；⇒ 按仓内既有处方用 `-timeout 40m` 跑（默认 10m 会被高负载打断，r1039 审计档 §10 已登记同一形态）⇒ **包内零红**（含本轮一度弄红的 admin 路由快照那条） |
 | `bash tests/deploy_switch_lock_contract_test.sh` | ✅ ALL PASS（6 条不变量） |
 | `bash tests/deploy_local_contract_test.sh` | ⚠️ 见下方「既有环境性 flake」：本轮改动**不**让任何既有断言变红，但它自身有一条 Redis 发现断言**时绿时红**（既有，非本轮引入） |
 | `bash tests/deploy_blue_green_contract_test.sh` | ✅ OK（4 测） |
