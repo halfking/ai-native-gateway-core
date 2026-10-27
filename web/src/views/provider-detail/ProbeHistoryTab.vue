@@ -273,7 +273,7 @@ watch(stateFilter, load)
   flex-wrap: wrap;
   align-items: baseline;
   gap: 8px 16px;
-  padding: 10px 14px;
+  padding: 8px 12px;
   border-radius: var(--radius);
   font-size: 13px;
   background: color-mix(in srgb, var(--accent) 8%, transparent);
@@ -312,7 +312,7 @@ watch(stateFilter, load)
 .probe-section > summary::before {
   content: '▶';
   display: inline-block;
-  margin-right: 6px;
+  margin-right: 4px;
   transition: transform 0.15s;
   font-size: 11px;
   color: var(--muted);
@@ -374,7 +374,7 @@ watch(stateFilter, load)
 .counter {
   display: inline-block;
   min-width: 28px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
   font-size: 12px;
   font-weight: 600;

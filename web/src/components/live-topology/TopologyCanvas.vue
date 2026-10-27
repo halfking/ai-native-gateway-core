@@ -560,7 +560,7 @@ function onNodeClick(node: TopoNode) {
 .topo-canvas__chip {
   position: absolute;
   transform: translate(-50%, -50%);
-  padding: 0 6px;
+  padding: 0 4px;
   border: 1px solid;
   border-radius: 999px;
   font-size: 11px;
@@ -584,7 +584,7 @@ function onNodeClick(node: TopoNode) {
   flex-direction: column;
   justify-content: center;
   gap: 1px;
-  padding: 4px 8px 4px 20px;
+  padding: 4px 8px 4px 16px;
   border: 1px solid var(--kx-border);
   border-radius: 10px;
   background: color-mix(in srgb, var(--kx-surface) 88%, transparent);

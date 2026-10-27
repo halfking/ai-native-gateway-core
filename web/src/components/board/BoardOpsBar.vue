@@ -75,13 +75,13 @@ function fmtPct(v: number | undefined) {
 .ops-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 11px;
   color: var(--text-muted);
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 4px 11px;
+  padding: 4px 12px;
   flex-wrap: wrap;
 }
 .ops-chip--btn {

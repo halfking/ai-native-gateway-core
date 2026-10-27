@@ -72,7 +72,7 @@ const { t } = useI18n()
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-radius: 12px;
   background: color-mix(in srgb, var(--kx-surface) 97%, transparent);
   box-shadow: var(--kx-shadow-md);
@@ -83,7 +83,7 @@ const { t } = useI18n()
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 4px;
 }
 
 .zoom__title {
@@ -95,7 +95,7 @@ const { t } = useI18n()
 .zoom__actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .zoom__open {

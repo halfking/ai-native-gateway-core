@@ -250,7 +250,7 @@ function applyDraft() {
   align-items: center;
   gap: 8px;
   max-width: 100%;
-  padding: 6px 12px;
+  padding: 4px 12px;
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--card);
@@ -285,7 +285,7 @@ function applyDraft() {
   color: var(--accent);
 }
 .kx-dr-trigger__range {
-  margin-left: 6px;
+  margin-left: 4px;
   color: var(--text-muted);
   font-weight: 500;
 }
@@ -308,7 +308,7 @@ function applyDraft() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .kx-dr-panel__title {
   font-size: 12px;
@@ -318,7 +318,7 @@ function applyDraft() {
 .kx-dr-presets {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 7px;
+  gap: 8px;
 }
 .kx-dr-preset {
   border: 1px solid transparent;
@@ -326,7 +326,7 @@ function applyDraft() {
   color: var(--text);
   font-size: 12px;
   font-weight: 600;
-  padding: 7px 0;
+  padding: 8px 0;
   border-radius: 8px;
   cursor: pointer;
   transition: border-color 0.15s, color 0.15s, background 0.15s;
@@ -361,7 +361,7 @@ function applyDraft() {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-top: 13px;
+  margin-top: 12px;
 }
 .kx-dr-hint {
   font-size: 11px;
@@ -373,7 +373,7 @@ function applyDraft() {
 .kx-dr-apply {
   border: 0;
   border-radius: 8px;
-  padding: 6px 16px;
+  padding: 4px 16px;
   font-size: 12px;
   font-weight: 700;
   background: var(--accent);

@@ -162,7 +162,7 @@ onBeforeUnmount(stopPoll)
 
 <style scoped>
 .dw-page {
-  padding: 16px 20px 32px;
+  padding: 16px 16px 32px;
   color: var(--kx-text);
   background: var(--kx-bg);
   min-height: 100%;
@@ -190,7 +190,7 @@ onBeforeUnmount(stopPoll)
   color: var(--kx-danger);
   border: 1px solid var(--kx-danger);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   margin-bottom: 12px;
   font-size: 13px;
 }

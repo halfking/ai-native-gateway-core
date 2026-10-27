@@ -389,7 +389,7 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 0.75rem;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
@@ -401,20 +401,20 @@ onMounted(() => {
 .toolbar-actions {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
 .filter-bar {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin: 0.75rem 0;
+  gap: 8px;
+  margin: 12px 0;
   flex-wrap: wrap;
 }
 
 .chip {
-  padding: 0.25rem 0.75rem;
+  padding: 4px 12px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: transparent;
@@ -433,14 +433,14 @@ onMounted(() => {
 .inline-label {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 8px;
   font-size: 14px;
   color: var(--text-muted);
   margin-left: auto;
 }
 
 .select-sm {
-  padding: 0.2rem 0.4rem;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--card);
@@ -455,7 +455,7 @@ onMounted(() => {
 
 .data-table th,
 .data-table td {
-  padding: 0.45rem 0.6rem;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--border);
   text-align: left;
   vertical-align: top;
@@ -497,17 +497,17 @@ onMounted(() => {
 }
 
 .actions .btn {
-  margin-right: 0.35rem;
+  margin-right: 4px;
 }
 
 .btn-xs {
-  padding: 0.15rem 0.5rem;
+  padding: 2.4px 8px;
   font-size: 12px;
 }
 
 .status-badge {
   display: inline-block;
-  padding: 0.1rem 0.5rem;
+  padding: 1.6px 8px;
   border-radius: 999px;
   font-size: 12px;
   border: 1px solid var(--border);
@@ -540,8 +540,8 @@ onMounted(() => {
 .section-header {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  margin: 1.5rem 0 0.5rem;
+  gap: 16px;
+  margin: 24px 0 8px;
 }
 
 .section-header h3 {
@@ -552,6 +552,6 @@ onMounted(() => {
 
 .generated-at {
   font-size: 12px;
-  margin-top: 0.4rem;
+  margin-top: 8px;
 }
 </style>

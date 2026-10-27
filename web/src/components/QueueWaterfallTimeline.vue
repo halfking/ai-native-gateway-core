@@ -97,8 +97,8 @@ const hasData = computed(() => props.requests.length > 0)
 .qwt-comp {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 .qwt-comp-k {
   font-size: 11px;

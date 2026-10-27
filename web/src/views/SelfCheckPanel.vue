@@ -710,7 +710,7 @@ const probeSummaryCards = computed(() => {
 }
 
 .btn {
-  padding: 6px 16px;
+  padding: 4px 16px;
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--card);
@@ -751,7 +751,7 @@ const probeSummaryCards = computed(() => {
 }
 
 .range-select {
-  padding: 5px 12px;
+  padding: 4px 12px;
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--card);
@@ -812,7 +812,7 @@ const probeSummaryCards = computed(() => {
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
-  margin: 20px 0 12px 0;
+  margin: 16px 0 12px 0;
   padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
 }
@@ -865,7 +865,7 @@ const probeSummaryCards = computed(() => {
 .error-bars {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .error-bar {
@@ -1086,7 +1086,7 @@ const probeSummaryCards = computed(() => {
 .form-group select,
 .form-group textarea {
   width: 100%;
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--bg);
@@ -1104,7 +1104,7 @@ const probeSummaryCards = computed(() => {
 .featured-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
 }
 .featured-tag {
   display: inline-block;

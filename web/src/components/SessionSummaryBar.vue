@@ -185,8 +185,8 @@ h2 {
   font-size: 20px;
   color: var(--kx-text);
 }
-p { margin: 0 0 6px; color: var(--muted); font-size: 13px; }
-.metrics { color: var(--muted); font-size: 13px; display: flex; gap: 6px; }
+p { margin: 0 0 4px; color: var(--muted); font-size: 13px; }
+.metrics { color: var(--muted); font-size: 13px; display: flex; gap: 4px; }
 .dot { color: var(--border); }
 .right { display: flex; gap: 8px; align-items: center; }
 .err { color: var(--danger); font-size: 12px; }

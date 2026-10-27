@@ -99,7 +99,7 @@ function fmtCompact(n: number | undefined) {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 8px 11px;
+  padding: 8px 12px;
   min-width: 0;
 }
 .mini-card__label {

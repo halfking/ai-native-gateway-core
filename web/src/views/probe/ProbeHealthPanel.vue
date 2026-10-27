@@ -498,7 +498,7 @@ onUnmounted(() => {
 
 <style scoped>
 .page-container {
-  padding: 20px;
+  padding: 16px;
 }
 
 .page-container.embedded {
@@ -545,7 +545,7 @@ h1 {
 .auto-refresh-label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 13px;
   color: var(--muted);
 }
@@ -651,7 +651,7 @@ h1 {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
-  padding: 6px 10px;
+  padding: 4px 8px;
   font-size: 13px;
   outline: none;
 }
@@ -676,7 +676,7 @@ h1 {
 }
 
 .data-table tbody td {
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
 }
 

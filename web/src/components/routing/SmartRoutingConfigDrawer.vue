@@ -59,7 +59,7 @@ const { t } = useI18n()
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 14px 16px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
 .smart-drawer-head h3 {

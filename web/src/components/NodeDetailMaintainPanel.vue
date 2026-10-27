@@ -223,8 +223,8 @@ const lifecycleOptions = [
 .nd-lc-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+  gap: 4px;
+  padding: 4px 12px;
   border-radius: 16px;
   border: 1px solid var(--kx-border, var(--border));
   background: var(--kx-surface-soft, transparent);
@@ -240,7 +240,7 @@ const lifecycleOptions = [
 code.nd-lc-code { font-size: 11px; opacity: 0.75; }
 .nd-lc-current {
   font-size: 11px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 8px;
   background: var(--kx-primary-soft, var(--accent-soft));
   color: var(--kx-primary, var(--accent));
@@ -252,7 +252,7 @@ code.nd-lc-code { font-size: 11px; opacity: 0.75; }
 .nd-lc-chip--retired.is-current { color: var(--kx-muted, var(--muted)); }
 
 /* ── manual-disabled status row ─────────────────────── */
-.nd-manual-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.nd-manual-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .nd-manual-hint { margin: 8px 0 0; font-size: 11px; }
 
 .nd-priority-flag { display: flex; flex-direction: column; gap: 2px; }
@@ -260,5 +260,5 @@ code.nd-lc-code { font-size: 11px; opacity: 0.75; }
 .nd-priority-flag input[type='checkbox'] { width: 16px; height: 16px; margin: 4px 0 0; }
 .nd-stream-mode { display: flex; flex-direction: column; gap: 2px; }
 .nd-stream-mode small { color: var(--kx-muted, var(--muted)); font-size: 11px; }
-.nd-stream-mode select { padding: 4px 6px; }
+.nd-stream-mode select { padding: 4px 4px; }
 </style>

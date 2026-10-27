@@ -452,7 +452,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .approval-detail-view {
-  padding: 20px;
+  padding: 16px;
   color: var(--text-primary);
 }
 
@@ -526,14 +526,14 @@ onBeforeUnmount(() => {
 .content {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
 }
 
 .section {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 20px;
+  padding: 16px;
 }
 
 .section-header {
@@ -579,7 +579,7 @@ onBeforeUnmount(() => {
 .info-item {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .info-item-full {
@@ -611,14 +611,14 @@ onBeforeUnmount(() => {
 
 .badge {
   display: inline-block;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
 }
 
 .badge-large {
-  padding: 6px 14px;
+  padding: 4px 12px;
   font-size: 13px;
 }
 
@@ -730,7 +730,7 @@ onBeforeUnmount(() => {
 .message-redacted {
   font-size: 11px;
   color: var(--warning);
-  padding: 2px 6px;
+  padding: 2px 4px;
   background: var(--warning-bg);
   border-radius: 3px;
 }
@@ -767,7 +767,7 @@ onBeforeUnmount(() => {
 .action-form {
   background: var(--bg);
   border-radius: 6px;
-  padding: 20px;
+  padding: 16px;
 }
 
 .action-form h3 {
@@ -794,7 +794,7 @@ onBeforeUnmount(() => {
 
 .form-textarea {
   width: 100%;
-  padding: 10px 12px;
+  padding: 8px 12px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 6px;

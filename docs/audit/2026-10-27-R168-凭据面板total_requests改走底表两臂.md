@@ -65,6 +65,36 @@
 ★ ⇒ 「陈旧函数」假设不成立；★ 且 ★★ **252 上没有任何数据库函数的函数体读 canonical 视图**
 ★（`pg_proc.prosrc LIKE '%request_logs_with_current_month%'` 实测 0 行）⇒ ⇒ **DB 函数不是读点**。
 
+### 2.3 ★★★★ **pgss 总量第一那条【根本不是 canonical 视图读点】—— ★★ 「按总量排序 ⇒ 逐个改读点」会走进死胡同**
+
+★★ 把 §2.1 表里**总量第一**那条（18,062 次 / 均 410.1 ms / 总 **7,407,875 ms**）映射回源码 ⇒
+★ **它不是视图读点**：★ 它的原文是
+`WITH static AS (SELECT featured_models FROM routing_policy ...)`，★ 实测源码在
+★ **`bg/model_probe.go:416` 与 `:500`**（★ `featuredCycle` / watchdog 的 backoff 更新语句）⇒ ★★ 它的两条腿是：
+
+| 腿 | 读什么 | ★ 是不是 canonical 视图 |
+|---|---|---|
+| `static` | `routing_policy` **表本身** | ★ 否 |
+| `usage` | `db.SessionFamilyTurnsHotSourceSQL()` ⇒ **会话族热腿底表** | ★ 否（★ 已经是底表） |
+
+⇒ ⇒ ⇒ ★★ **它慢的原因不是「视图物化宽」**，★ 而是这个聚合本身重
+（★ `GROUP BY raw_model` + `count(*)` 全量扫热腿 + ★ 三臂探针排除谓词）⇒ ⇒ ⇒ ⇒ ★★ **⇒ 把它按「视图读点」去改，
+会改一个已经改过的地方** ⇒ ⇒ ⇒ ⇒ ★★ **⇒ 「pgss 排序」与「读点分类」必须【两个维度分开】**：
+
+★ ⇒ **维度 A【是否读 canonical 视图】（★ 决定「能不能改」）**
+★ ⇒ **维度 B【慢到什么程度】（★ 决定「值不值得改」）**
+★ ⇒ ⇒ ⇒ ★★ **pgss 只给出维度 B** ⇒ ⇒ ⇒ ⇒ ★★ **⇒ 拿维度 B 当维度 A 用 ⇒ 就会把非读点排到前面**
+★ ⇒ ⇒ ⇒ ⇒ ★★ ⇒ **⇒ 这正是本轮如果只按 pgss 排序就动手，会踩的第一个坑** ⇒ ⇒ ⇒ ⇒ ★★ ⇒
+★ **⇒ 而且它同时说明了为什么「量具要能直接回答问题」这条通用式需要补一句：★★ pgss 能直接回答
+「哪条语句累计最慢」，★ 但【回答不了】「哪条语句是读点」⇒ ⇒ ⇒ ⇒ ★★ ⇒ **⇒ 量具答得了的问题，
+必须是决策真正需要的那一问**（★ 决策是「改读点」，★ 不是「优化最慢的语句」）⇒ ⇒ ⇒ ⇒ ★★ ⇒
+★ ⇒ **⇒ 排序前必须先分类，★ 而分类的判据要在【源码/视图引用】这一侧，不在【耗时】这一侧**。
+
+★ ★★ **顺带**：★ 这条查询的 `calls=18,062` 落在 8.4 天窗口里 ⇒ ★ 日均约 **2,150 次** ⇒ ★ 与仓内注释
+「★ 后台 ticker 每 10min 刷新一次」量级相符 ⇒ ⇒ ★★ **⇒ 「调用次数高」本身也是一条独立线索**
+（★ 高频语句即使不慢，累计成本也会进 TOP）⇒ ⇒ ⇒ ★★ ⇒ **⇒ TOP 榜上两种东西混在一起：
+【慢而少】与【不慢而多】⇒ ★ 两者要分开处理，★ 否则会被「优化最慢」带偏**。
+
 ## §3 ★★★ 批量替换的前提：★ 三条，全部坐实
 
 ### 3.1 视图体 ≡ 原生 source（★ 逐字）
@@ -247,12 +277,248 @@ postgres    ：9072 / 9072 / only_in_view=0 / only_in_native=0 / 分组差集 0/
 252 stats_reset = 2026-10-18 22:03:37 ⇒ 窗口 8.4 天 ⇒ 文本可能来自旧二进制
 ```
 
-## §9 本轮明确没做（★ 留给下一轮，别重复排查）
+## §9 ★★★★ 本轮撞到的第二处「门红」：★★ 这次不是我的代码错，是【那道门的判据落错了地方】
+
+★★★ 慢门跑完后，除了 §9 里那些「别人家的慢点」，本轮自己的改动**引出了 2 条红**。
+★★ 两条都不是「代码错」，★ 而是「**门的判据落错了地方**」—— ★★ 这与本轮 §7「变异臂抓出来的三个洞」
+是**同一条通用式的两次成立**，★ 所以单独记一节。
+
+### 9.1 ★★ 红 A：`TestAdminRoutesSnapshotMatchesGenerator`（★ 行号漂移，★ 机械可修）
+
+```
+★ 第 358 行不一致 ⇒ 快照已漂移（或生成器口径变了）
+生成器："/api/credentials/clear-manual-disabled\tANY\tadmin/credential_monitor.go:171"
+快照　："/api/credentials/clear-manual-disabled\tANY\tadmin/credential_monitor.go:170"
+```
+
+★ 真因：本轮把 `total_requests` 那行从「一行字面量」改成「三行拼接」⇒ ★★ **`admin/credential_monitor.go`
+里它后面的每一行行号都 +1** ⇒ ★★ 路由快照（`scripts/audit/asset/admin-routes.txt`，★ 逐行记 `file:line`）
+漂了 13 行。
+
+★★ **修法不是手改快照** —— ★ 脚本头部与门都写明「**生成产物，不要手改**」⇒ ★ 用生成器自己刷：
+`bash scripts/audit/extract-admin-routes.sh --update-snapshot` ⇒ ★★ **diff 结果恰好 13 行，
+且全部是 `admin/credential_monitor.go` 的行号 +1** ⇒ ★★ **没有别的行被顺带改动**（★ 这是「修对了」的证据，
+★ 不是「跑一下看看」）。
+
+★ ★★ **顺带发现：`--update-snapshot` 这个模式是 `origin/main` 本轮新增的**（★ 2026-10-27 合并轮），
+★ ★ 且脚本注释里记着它要解决的坑：★ 原先文档里那行
+`{ head -1 …/admin-routes.txt; cat …/admin-routes.new; } > …/admin-routes.txt`
+★ ★ **是破坏性的**（★ `>` 先把目标截断 ⇒ `head -1` 读到空 ⇒ ★ **快照的口径说明头被整行丢掉** ⇒
+★ ★ 5 道 admin-routes 门全红，★ 而红的原因**完全不指向真正的原因**）⇒ ★ ★ **新模式三件事一次做对**
+（★ 先复制再读头 · ★ 改写头里的「数据行数=N」· ★ 临时文件 + `mv` 原子替换）⇒ ★ **★ 工具的演进方向是对的。
+
+### 9.2 ★★★★ 红 B：`TestMonitorSummaryCoreModeSQLShape`（★ 这条最有价值）
+
+```
+--- FAIL: TestMonitorSummaryCoreModeSQLShape (0.00s)
+    credential_monitor_toggle_test.go:71: could not locate a detail SELECT fragment that
+    touches the heavy aggregates (_request_logs / recent_success_rate / percentile_cont)
+```
+
+★★ **旧判据**：★ 在源文件里找**反引号片段**，★ 要求某个片段同时
+① 含 `"from credentials c"` 且 ② 命中 heavy 集合（`request_logs_with_current_month` /
+`recent_success_rate` / `percentile_cont` / `credential_model_index_with_current_month` /
+`credential_model_call_history`）。
+
+★★★ **真因不是「门坏了」，★ 是「门从来就没看见过它要守的东西」**：
+★★ detail 模式真正的 heavy 聚合在 `modelsSelect`（live p95 LATERAL：`percentile_cont` +
+`request_logs_with_current_month`）与 `aggregatedSuccessJoin`（`recent_success_rate`）里，
+★★ 而这两个是**被 `%s` 拼进去的局部变量** ⇒ ★★ **它们的文本里根本没有 `from credentials c`**
+⇒ ★★ **被旧判据的前置条件直接过滤掉了** ⇒ ★★ ⇒ **旧门一直是被顶层那处「字面量视图名」顺带满足的。**
+
+★★ ★★ 而本轮把那处字面量换成了 helper ⇒ ★★ **巧合消失 ⇒ 门红** ⇒ ⇒ ⇒ **⇒ 真问题是判据的位置**：
+
+| | 旧判据（扫源码片段） | 新判据（判产物 SQL） |
+|---|---|---|
+| 判据落点 | 源文件的反引号片段 | `buildMonitorSummarySQL` 的**返回值** |
+| 拼接进来的内容 | ★ **看不见** | ★ **看得见** |
+| 「字面量 → helper」 | ★★ **假红** | ★ 不受影响 |
+| 门原来真的在守 heavy 吗 | ★★ **没有**（被巧合满足） | ★ **有** |
+
+★★ **修法**：★ 判据直接调用 `buildMonitorSummarySQL`，★ 取 core / detail 两个模式的**最终 SQL** 再判。
+★★ **并且顺手加强了一条**：★ **core 产物不得命中任何 heavy 聚合** ⇒ ★ 与源码注释
+「Core mode deliberately avoids request-log and per-model rate/latency aggregates」对齐
+⇒ ★★ **旧门根本没有这条**（★ 旧门只要求 `coreFound && detailFound`，★ 两个都能在【同一种模式】里被满足）。
+
+★★ **heavy 判据盯的是【聚合/物化】语义而不是「视图名」**（★ `percentile_cont` / `COUNT` / 两个 rollup 表）
+⇒ ★★ 将来把 heavy 聚合也改走底表两臂时，★ **判据仍然成立** ⇒ ★★ **门不会因为「优化」而红。**
+
+### 9.3 ★★ 新门的「有牙」证明（★ 变异臂 2 臂全检出，★ 还原后 md5 逐字一致）
+
+| 臂 | 注入 | 期望 | 实测 |
+|---|---|---|---|
+| N1 | ★ core 产物注入 `recent_success_rate` | 红 | ★ **红**（`core 产物命中重聚合 [recent_success_rate]`） |
+| N2 | ★ detail 产物的全部 heavy marker 换成不含原子串的形式 | 红 | ★ **红**（`detail 产物没有命中任何重聚合标记`） |
+
+★★ **还原后 md5 逐字一致**：`ec3e596a14c391e9a026262db98d111b`。
+
+★★★ **★ N2 第一版是【空转】—— ★★ 这本身是本轮第二个值钱的发现**：
+★ ★ 第一版 N2 给每个 marker 加 `zz_` 前缀（`zz_request_logs_with_current_month`）⇒
+★ ★★ **判据是 `strings.Contains(sql, marker)` ⇒ ★★ 加前缀【不改变包含关系】⇒ 变异空转**
+⇒ ★★ **而脚本当时只查「文件内容变了」⇒ ★★ 差点把「臂没检出」误读成「门没牙」** ⇒ ⇒ ⇒
+★ ★★ **通用式：★★ 变异臂的注入方式必须真的改变【判据所依赖的那个性质】；
+★★ 且脚本必须能【自证注入生效】—— ★★ 否则「臂没检出」会被误读成「门没牙」，★ 而这两个结论要采取完全相反的行动**
+⇒ ⇒ ⇒ ★★ ⇒ **★★ 第二版 N2 改成「替换成完全不含原子串的形式」⇒ 检出**；
+★★ ⇒ **★★ 第三版给脚本加了「注入生效性自证」（★ heavy marker 总出现次数的变化方向）** ——
+★★ ★ 而它第一版又只查「移除型」⇒ **把 N1 反向误判成空转** ⇒ ★★ **⇒ 自证谓词必须按臂的【方向】写**
+⇒ ⇒ ⇒ ★★ ⇒ **★★ 这是本轮第二次栽在「量具自己也会错」上（★ 第一次是 §7 的三态区分）**。
+
+### 9.4 ★★ 同深度对拍：★ 新判据在 origin/main 上同样绿（★ 证明改的是判据口径，不是给自己开绿灯）
+
+★ ★ 把**同一份新门**拷进 `origin/main` 的纯净 worktree（`4dfd4696b`）跑 ⇒ **PASS** ⇒ ⇒
+★★ **⇒ 新判据在对方代码上也成立 ⇒ ⇒ ⇒ 我改的是【判据落点】，★ 不是【为了让本轮变绿而放宽判据】**。
+★★ ★★ 这一步是必需的：★ **「我改了门」这件事本身需要独立证据**，★ 否则「改门」就是最方便的开绿灯方式。
+
+## §10 ★★★ 慢门读数与红因归属（★ 「门超时」≠「门红」）
+
+★ 慢门命令：`make guards-ursmcheck`（★ `go test ./scripts/ursmcheck ./admin -count=1 -timeout=900s`）。
+
+### 10.1 ★★ 这次慢门是【超时】，不是【判决】
+
+★ 实测：`real 15m3.636s` ⇒ ★★ **`scripts/ursmcheck` 包在 900s 处被 `panic: test timed out` 打断**
+（★ 卡在 `TestV1FamilyRetirementDetectsFamilyVariants` 的子进程 IO wait，★ 栈显示它等了 8 分钟）
+⇒ ★★ **⇒ 按 §450 的老规矩：「没跑完」不能当「没红」** ⇒ ★★ **⇒ 必须在一个能跑完的负载窗口重跑**。
+
+### 10.1b ★★★★ 「门超时」的处理链（★ 本轮做完整了 ⇒ 结论是【判决】不是【超时】）
+
+★★★ 上一次慢门（不带 `-v`）是**超时**（★ `real 15m3.636s` ⇒ `panic: test timed out`）
+⇒ ★★ 按「**没跑完 ≠ 没红**」的老规矩，★ 那次**不能当判决** ⇒ ★★ 本轮重跑的纪律：
+
+| 步 | 做法 | 为什么 |
+|---|---|---|
+| ① | ★ **`-v` 重跑**（★ 不带 `-v` 时超时只会打印【失败的】⇒ ★ **已跑过的绿门全部看不到**） | ★★ 要拿到「哪些门跑过了」的完整清单 |
+| ② | ★ **解析日志**（★ 按 `=== RUN <name>` 与 `--- PASS/FAIL/SKIP: <name>` 对拍，★ 取顶层测试） | ★★ 顶层 **807 启动 / 806 有结论** ⇒ **只差 1 条** |
+| ③ | ★ **单独补跑那 1 条**（★ `TestFootprintModeUnreliableDenominatorIsNoConclusion` ⇒ **0.48s PASS**） | ★★ ★ 它本来就叫「NoConclusion」⇒ ★ **它就是设计成不出结论的那条** ⇒ ★ 恰好撞上超时 |
+| ④ | ★ 结论 | ★★ **807 条全部有判决** ⇒ ★★ **本轮慢门读数是【判决级】的** |
+
+★★★ **★ 这一步最值钱的地方**：★② 的「807 启动 / 806 有结论」是**逐条对拍出来的**，★ 不是估的
+⇒ ⇒ ⇒ ★★ ⇒ **★ ⇒ 「超时影响面 = 1 条」这个结论【有据】** ⇒ ⇒ ⇒ ★★ ⇒ **★ ⇒ 而如果只按上次那样
+⇒ ⇒ ⇒ ★★ ⇒ 「日志里有几条 FAIL」来数，★ 会得出「1 条红」的同样结论，★ ★★ **但那是巧合**
+⇒ ⇒ ⇒ ★★ ⇒ **★ ⇒ 因为「没跑完的那些」既不报红也不报绿 ⇒ ★ 它们在两种算法里都【隐身】**
+⇒ ⇒ ⇒ ★★ ⇒ **★ ⇒ 「超时的那次日志里有几条 FAIL」≠「本次有几条红」** ⇒ ⇒ ⇒ ★★ ⇒ **★ ⇒ 这就是
+⇒ ⇒ ⇒ ★★ ⇒ 「用截断的输出下结论 = 用不完整的证据下结论」的具体形态**。
+
+### 10.2 ★★ 超时前已经**跑完并打印**的红（★ 这些是判决级的）
+
+| # | 门 | 归属 | 处置 |
+|---|---|---|---|
+| A | `TestAdminRoutesSnapshotMatchesGenerator` | ★★ **本轮引入**（行号漂移） | ★ 已修（§9.1：生成器刷新，diff 恰 13 行且全是 +1） |
+| B | `TestMonitorSummaryCoreModeSQLShape` | ★★ **本轮引入**（判据落点） | ★ 已修（§9.2：判据移到产物 + 加强 core 不得含 heavy） |
+| C | `TestStructuredRegistryCensusCoversEveryCandidate` | ★★ **origin/main 既有** | ★ **同深度对拍坐实**（§10.3）⇒ 不代改 |
+
+★★ **★ 第二次重跑（★ 带 `-v`）的最终判决**：
+★ `ursmcheck` 包 **807 条顶层测试全部有判决** ⇒ ★★ **806 PASS / 1 FAIL（C 条）/ 21 SKIP**
+★ ｜ `admin` 包 ⇒ **ok 113.437s**（★ 含本轮 6 条守卫 + R167 的 4 条 + 真库逐凭据对拍）
+⇒ ⇒ ⇒ ★★ **⇒ 本轮引入零红** ⇒ ⇒ ⇒ ★★ ⇒ **⇒ 唯一那条红已用同深度对拍坐实为 origin/main 既有**。
+
+### 10.3 ★★ 红 C 的同深度对拍（★ 归属一次性坐实）
+
+★ ★ 把**同一条门**在 `origin/main` 的纯净 worktree（`4dfd4696b`）上跑 ⇒ **逐字同样的 5 条红**：
+
+```
+有 5 个「像登记册」的结构化文件没在 scripts/ursmcheck/structured-registry-census.json 里归属：
+      web/scripts/design-primary-clarity-baseline.json
+      web/scripts/design-semantic-color-baseline.json
+      web/scripts/design-spacing-scale-baseline.json
+      web/scripts/design-spacing-scale-runtime-baseline.json
+      web/scripts/design-type-scale-baseline.json
+```
+
+★ ★★ 五个文件**全是 `design-*` 基线** ⇒ ★★ **全是并行会话那几轮（间距/字号/主色/语义色/primary-clarity）的产物**
+⇒ ⇒ ⇒ **⇒ 零条本轮引入** ⇒ ⇒ ⇒ **⇒ 不代改他人工作面** ⇒ ⇒ ⇒ **⇒ 列入属主裁决清单**
+（★ 修法现成：★ census 表里二选一 —— `kind=registry` 写出读方，或 `kind=excluded` 写实质理由）。
+
+### 10.5 ★★ 顺带：★ 「校验要查 U+FFFD」这条教训写完，★ 回头一查仓里【已经有 2 个】
+
+★★ 本轮把「heredoc 追加中文会坏字节」写进 `AGENTS.md` / `LESSONS.md` 之后，★ 顺手扫了本轮改动过的
+★ 全部 7 个文件 ⇒ ★★ **本轮改的 / 新建的 7 个文件全部 U+FFFD = 0** ✔ ⇒ ★★ 但 `AGENTS.md` 里有 **2 个**。
+
+★★★ **归属坐实（★ 不是本轮引入）**：★ `origin/main` 的 `AGENTS.md` 实测 **U+FFFD = 2**
+⇒ ⇒ ⇒ ★★ **⇒ 位置在 ㉚ R87 轮那段（★ 并行会话的工作面）**，★ ★★ **⇒ 不代改** ⇒ ⇒ ⇒ ★★ **⇒ 列入属主裁决清单**
+（★ 修法：★ 把「每个还存在**节点类型**不变」那两个 U+FFFD 改回「的」）。
+
+★★ ★★ **这条发现比「修掉它」更有价值**：★ **「我刚写完『校验要查 U+FFFD 计数』这条教训，
+⇒ ⇒ ⇒ ★★ 回头一查仓里就有 2 个」⇒ ⇒ ⇒ ★★ ⇒ ⇒ 说明这条教训的【适用范围】比想象广**
+⇒ ⇒ ⇒ ★★ ⇒ **★ ⇒ 而它【抓不到自己】：★ U+FFFD 是【合法 UTF-8 码点】⇒ ⇒ `decode('utf-8')` 通过
+⇒ ⇒ ⇒ ★★ ⇒ ⇒ ⇒ ⇒ ★★ ⇒ ⇒ 而仓里【没有任何一道门】查这个 ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ⇒ ⇒ ★★ ⇒ ⇒
+★ **⇒ 「仓内零 U+FFFD」目前是【无人看守】的 ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ ⇒ ⇒ ⇒ **★ 下一轮可以加一道极便宜的门**
+★ ★★（★ 全仓 `grep -c $'\ufffd'` ⇒ ★ 零 ⇒ ★★ 绿）⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ **★ 而它会立刻抓出这 2 个**
+⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ **★ ⇒ 也就是说：★ 一道 3 行的门，能把本轮这种「看起来完全正常」的损害变成红灯**
+⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ **★ ⇒ 通用式再补一句：★★★ 「校验清单」本身也可以【变成门】⇒ ★★
+★ ★★ 凡是「靠人记得做」的校验，★ 都是【迟早会忘】的校验 ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ **★ ⇒ 该把它写成门**。
+
+### 10.5b ★★ 部署与逐 API 巡检读数（★ 部署 `2.5.8.2885`）
+
+★★ 部署：`bash scripts/deploy-local.sh deploy` ⇒ ★★ **`VERIFY_PASS=1` / `VERIFY_RELEASE=2.5.8.2885` /
+★★ `DEPLOY_EXIT=0`** ⇒ ★★ 凭据解密冒烟 `failed=0`（★ providers=16,2452,2453 · creds=3）⇒ ★★ 8781+8782 双实例 ok。
+
+★★ **本轮改动直接相关的端点冒烟**（★ ★★ 用真实 cookie（`llmgw_session`）⇒ ★★ 免鉴权时全是 401）：
+
+| 端点 | 结果 |
+|---|---|
+| `/api/credentials/monitor-summary?credential_id=21` | ★ **HTTP 200 / 122 ms** · ★ `total_requests=0`（★ 本地库该凭据无请求记录）· ★★ **无报错、无空值 ⇒ SQL 形态正确** |
+| `/api/credentials/sliding-window?window=60min|1440min` | ★ HTTP 400 `credential_id required`（★ 预期） |
+
+★★★ **★ 关于 `total_requests=0` 的读法（★ 别误读）**：★ 本地库只有 2,722 行且该凭据无记录 ⇒ ★★ **0 是正确的**，
+★★ ★★ 它**不能**用来验证口径；★ ★★ **口径等价性的判决在真库逐凭据对拍**（★ 13 个凭据 · ★ 视图计数 ≡ 窄投影两臂计数）
+⇒ ⇒ ⇒ ★★ ⇒ **★ ⇒ 端点冒烟验的是「SQL 能跑、字段有值」，★ 不是「口径对」—— ★ 两个判据各管各的**。
+
+★★ **逐 API 巡检**（★ `scripts/audit/api-sweep.sh` + ★ **仓内正本** `scripts/audit/asset/admin-routes.txt`
+★ ★★ ★ **★ 那份正是本轮用生成器刷过的快照** ⇒ ★★ 清单与源码逐字一致）：
+
+| 项 | 读数 |
+|---|---|
+| 巡检路由数 | ★ **514**（★ R166 基线 **510** ⇒ **+4**） |
+| 退出码 | ★ **75** ⇒ ★★ **load 峰值 50.10 > 阈值 20** ⇒ ★★ **延迟读数不可信，★ 状态码/分类仍可信**（★ 脚本自身明确分开报） |
+| 消失路由 | ★ **0** |
+| 新增路由 | ★ **4**：`/v1/classify` · `/v1/summarize` · `/v1/summarize/title` · `/v1beta/models` ⇒ ★★ **全部来自合并进来的 `origin/main`**（★ 本轮**未改任何路由声明** ⇒ ★★ 这 4 条必然来自 origin/main）⇒ ★★ **与 R167 的「+4 全是 origin/main 新增」逐项一致** |
+| **共有路由 status/class 差异** | ★★ **0** ⇒ ★★ **⇒ 本轮改动零行为回归** |
+| class 分布 | ok 275 · method_not_allowed 109 · bad_request 65 · not_found 47 · other_4xx 11 · server_error 6 · meta 1 |
+
+★★ ★★ **「+4」与 R167 逐项一致**这件事本身是一条独立证据：★ R167 的 +4 是 `/v1/*` 与 `/v1beta/models`，
+★★ ★★ 本轮合并 origin/main 后仍是**同一组 4 条** ⇒ ⇒ ⇒ ★★ ⇒ **★ ⇒ 说明这 4 条是 origin/main 早已存在、
+★★ ★★ 而非本轮引入的路由** ⇒ ⇒ ⇒ ★★ ⇒ **★ ⇒ 与「本轮未改任何路由声明」互相印证**。
+
+### 10.6 ★★ 本轮新增的 2 条【属主裁决项】（★ 本轮不开工，★ 但必须留档）
+
+| # | 项 | 证据 | 建议修法 | 为什么本轮不动 |
+|---|---|---|---|---|
+| 1 | ★ **`TestStructuredRegistryCensusCoversEveryCandidate` 红**（★ 5 个 `design-*.json` 未登记进 `scripts/ursmcheck/structured-registry-census.json`） | ★ 同深度对拍：★ **origin/main 纯净树上逐字同样的 5 条红** | ★ census 表里二选一：★ `kind=registry` 写出**读方**（★ 它是门读的输入 ⇒ 掏空它会让门瞎）／ ★ `kind=excluded` 写**实质理由** | ★ **属并行会话的设计门工作面** ⇒ ★ 不代改 |
+| 2 | ★ **`AGENTS.md` 里有 2 个 U+FFFD**（★ 位置：★ ㉚ R87 轮段落「每个还存在**节点类型**不变」） | ★ `origin/main` 的 `AGENTS.md` 实测 **U+FFFD = 2**（★ 非本轮引入）；★ ★ 本轮改动/新建的 7 个文件全部 **0** | ★ 把那两个 U+FFFD 改回「的」；★ ★ 并可加一道 3 行的门（★ 全仓 `grep -c $'\ufffd'` ⇒ 零 ⇒ 绿） | ★ **在对方段落里** ⇒ ★ 不代改 |
+
+★★ **★ 顺带一条建议给属主**：★ 那道 3 行的「全仓 U+FFFD = 0」门，★ **会立刻抓出上面第 2 项**
+⇒ ⇒ ⇒ ★★ ⇒ **★ ⇒ 凡是「靠人记得做」的校验，★ 都是迟早会忘的校验 ⇒ ⇒ ⇒ ★★ ⇒ **★ 该把它写成门**
+（★ ★★ 本轮 §10.5 已给出理由与形态）。
+
+## §11 本轮明确没做（★ 留给下一轮，别重复排查）
 
 - ★ **`:462` 的 live p95 LATERAL**（★ 同族，★ 但需要 details 列 ⇒ 形态不同 ⇒ 要另做窄投影+details 版本）。
 - ★ **`maas_credit_consumption_buckets` 的 INSERT…SELECT**（pgss mean 22,079 ms × 6 次）。
-- ★ **`WITH policy AS (routing_policy.featured_models)` 那条**（pgss 总量第一：7,407,875 ms / 18,062 次）。
+- ★ **`WITH policy AS (routing_policy.featured_models)` 那条**（pgss 总量第一：7,407,875 ms / 18,062 次）
+  ⇒ ★★ **但 §2.3 已坐实：它【不是 canonical 视图读点】**（★ 两条腿都不碰视图）⇒ ★★ **它要单独按「聚合本身重」处理，
+  ★ 不属于「读点迁移」这条线** ⇒ ★★ **⇒ 别按 pgss 排名直接开下一轮的工单**。
 - ★ **其余 ~93 处 canonical 视图读点**（★ 本轮只修了 TOP 1）。
+  ★★ **本轮实测起点量（★ 口径见下）**：全仓 `request_logs_with_current_month` **607 处命中 / 204 个 `.go` 文件**
+  ⇒ ★ **其中生产代码文件 ≈ 79 个**（★ 排除 `_test.go` / `sql/migrations/` / `cmd/tools/` / `tests/` / `scripts/ursmcheck/`；
+  ★ ★ 含 1 个视图定义文件 `db/request_logs_view_schema.go` + 2 个审计工具文件）⇒ ★★ **★ 这个数是「字面提到该视图名」
+  的文件数，不是「读点数」** ⇒ ★★ **★ 真正的读点数必须用仓内既有扫描器口径量**（★ 见下）。
+- ★★ **★★ 下一轮（读点登记簿）不必从零新建 —— ★★ 仓内已有登记簿原型与一整套方法论**：
+  ★ `admin/request_logs_read_inventory_test.go` 已有三张表 + 一套判据：
+  ★ ① `requestLogsReadInventory`（★ 已退役 v1 族读方清单，★ 890 之后**必须为空**）·
+  ★ ② `indirectRequestLogsReaders`（★ **切换层读方**：表名收进 Go 标识符再拼进 SQL 的那批）·
+  ★ ③ `retiredV1ReferenceExceptions`（★ 已退役关系的残留引用 = **生产缺陷台账**）·
+  ★ ④ `allKnownRequestLogsReaderFiles`（★ 前两者的**并集**，★ §9.259 明写「退役排期要用并集」）。
+  ★★ **★ 它自己记着的方法论教训（★ 直接可用，省下一轮踩坑）**：
+  ★ ★ 「**刻意不自动分类**」——★ 曾试图按「语句窗口内有无 `gw_session_id` / `request_id =`」自动分 A/B/C/D，
+  ★ ★ 拿已人工核定的 14 个点交叉验证**判错 5 个** ⇒ ★★ ⇒ **这道门只数个数，不下判定**；
+  ★ ★ 「**§9.259：这张表不是读方全集**」——★ 旧审计 §5.5.5「最终分类」只覆盖 14 个文件，
+  ★ ★ 而实际读 `_request_logs*` 的生产文件有 **104 个 / 237 个调用点**（2026-10-01 实测），
+  ★ ★ ★ **§5.5.8 自称「第一版表不完整，逐条补齐」——但那张表从未覆盖其余 90 个文件，且它自称补全过
+  ★ ★ ★ ⇒ 没有任何机制会在这个缺口扩大时报红**；
+  ★ ★ 「**扫描器必须有阳性对照**」——★ `TestRetiredV1ReferencesAreAllAccountedFor` 用「真 v1 必须命中 /
+  ★ ★ ★ canonical 视图必须不命中」钉住扫描器区分力（★ 否则「实测为空」= 恒绿）。
+  ★★ **⇒ 下一轮的正确做法是【扩展这套既有登记簿】+【给 canonical 视图读点加一列「形态/分类/豁免」】，
+  ★★ ★ 而不是另起一个表** ⇒ ★★ **★ 而且「分类」这一步必须人工核定，★ 不能自动分类**（★ 上面那条教训就是依据）。
 - ★ **`no_topic_session.go` / `session_title.go` 两道守卫的旧前提**（★ §3.4，已过期但属他人工作面）。
 - ★ **写路径效率**（★ 原始目标第 4 条的另一半）。
 - ★ **110 条非 GET 面逐条运行时验证**（★ 需属主定「可实跑 vs 只静态验」的分层口径）。

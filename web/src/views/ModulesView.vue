@@ -1157,7 +1157,7 @@ onMounted(() => {
 }
 
 .error-banner {
-  padding: 10px 14px;
+  padding: 8px 12px;
   background: color-mix(in srgb, var(--danger) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   color: var(--danger);
@@ -1170,7 +1170,7 @@ onMounted(() => {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 10px 16px;
+  padding: 8px 16px;
   margin-bottom: 16px;
   background: color-mix(in srgb, var(--el-color-primary-light-9) 60%, transparent);
   border: 1px solid var(--el-color-primary);
@@ -1208,7 +1208,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 10px 4px;
+  padding: 4px 8px 4px;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -1216,7 +1216,7 @@ onMounted(() => {
 }
 .group-count {
   font-size: 11px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   background: var(--bg);
   border-radius: 8px;
   color: var(--text-muted);
@@ -1225,8 +1225,8 @@ onMounted(() => {
 .module-card {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 10px;
+  gap: 8px;
+  padding: 8px 8px;
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.15s;
@@ -1256,7 +1256,7 @@ onMounted(() => {
 .card-title-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 .card-title {
   font-size: 13px;
@@ -1332,7 +1332,7 @@ onMounted(() => {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 20px;
+  padding: 16px;
   overflow-y: auto;
   max-height: calc(100vh - 200px);
   max-height: calc(100dvh - 200px);
@@ -1352,7 +1352,7 @@ onMounted(() => {
 .detail-header {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   margin-bottom: 16px;
   padding-bottom: 16px;
   border-bottom: 1px solid var(--border);
@@ -1366,7 +1366,7 @@ onMounted(() => {
 }
 .status-badge {
   display: inline-block;
-  padding: 2px 10px;
+  padding: 2px 8px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 500;
@@ -1382,8 +1382,8 @@ onMounted(() => {
 
 /* ── Dependency Banner (soft hint) ── */
 .dep-banner {
-  margin-bottom: 14px;
-  padding: 10px 12px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
   border-radius: 8px;
   font-size: 12px;
 }
@@ -1398,11 +1398,11 @@ onMounted(() => {
   color: var(--warning);
 }
 .dep-msg-ok { font-weight: 500; }
-.dep-msg-warn { margin-bottom: 6px; font-weight: 500; }
+.dep-msg-warn { margin-bottom: 4px; font-weight: 500; }
 .dep-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
   margin-top: 4px;
 }
 .dep-chip {
@@ -1446,7 +1446,7 @@ onMounted(() => {
 
 /* ── Tab Content ── */
 .tab-content { font-size: 13px; }
-.info-section { margin-bottom: 20px; }
+.info-section { margin-bottom: 16px; }
 .section-title {
   font-size: 13px;
   font-weight: 600;
@@ -1468,7 +1468,7 @@ onMounted(() => {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 5px 0;
+  padding: 4px 0;
   color: var(--text-secondary);
   font-size: 13px;
   line-height: 1.5;
@@ -1483,11 +1483,11 @@ onMounted(() => {
 .meta-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  padding: 14px;
+  gap: 8px;
+  padding: 12px;
   background: var(--bg);
   border-radius: 8px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .meta-item {
   display: flex;
@@ -1542,8 +1542,8 @@ onMounted(() => {
 .dep-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 8px 12px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1613,7 +1613,7 @@ onMounted(() => {
   border-top: 1px solid var(--border);
 }
 .btn-action {
-  padding: 8px 20px;
+  padding: 8px 16px;
   border: none;
   border-radius: 6px;
   font-size: 13px;
@@ -1645,7 +1645,7 @@ onMounted(() => {
 /* ── Test Result Banner ── */
 .test-result {
   margin-top: 12px;
-  padding: 10px 14px;
+  padding: 8px 12px;
   border-radius: 6px;
   font-size: 12px;
   display: flex;
@@ -1670,27 +1670,27 @@ onMounted(() => {
 
 /* ── Config Hint ── */
 .config-hint {
-  padding: 10px 12px;
+  padding: 8px 12px;
   background: color-mix(in srgb, var(--accent) 6%, transparent);
   border: 1px solid var(--accent);
   border-radius: 4px;
   font-size: 12px;
   color: var(--text-secondary);
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   line-height: 1.5;
 }
 
 /* ── Config Section (grouped) ── */
 .config-section {
-  margin-bottom: 18px;
+  margin-bottom: 16px;
 }
 .config-section-title {
   font-size: 12px;
   font-weight: 600;
   color: var(--accent-h);
   letter-spacing: 0.01em;
-  margin: 0 0 10px;
-  padding-bottom: 6px;
+  margin: 0 0 8px;
+  padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -1716,13 +1716,13 @@ onMounted(() => {
 .config-desc {
   font-size: 12px;
   color: var(--text-secondary);
-  margin: 0 0 10px;
+  margin: 0 0 8px;
 }
 
 .config-editor .number-input,
 .config-editor .text-input {
   width: 100%;
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1734,7 +1734,7 @@ onMounted(() => {
   width: auto;
   min-width: 150px;
   max-width: 100%;
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1793,7 +1793,7 @@ onMounted(() => {
 /* ── Source Badges ── */
 .src-badge {
   display: inline-block;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
   font-size: 11px;
   font-weight: 500;
@@ -1840,7 +1840,7 @@ onMounted(() => {
 }
 .integ-body { padding: 16px; }
 .integ-docs {
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   font-size: 12px;
 }
 .integ-docs-label { color: var(--text-secondary); }
@@ -1857,7 +1857,7 @@ onMounted(() => {
 }
 .steps-list {
   margin: 0;
-  padding-left: 20px;
+  padding-left: 16px;
   font-size: 13px;
   line-height: 1.8;
   color: var(--text-secondary);
@@ -1866,8 +1866,8 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 14px;
-  padding: 10px 12px;
+  margin-top: 12px;
+  padding: 8px 12px;
   background: var(--bg-card);
   border-radius: 6px;
   font-size: 12px;
@@ -1895,7 +1895,7 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 6px 10px;
+  padding: 4px 8px;
   font-size: 12px;
 }
 .status-key {
@@ -1916,10 +1916,10 @@ onMounted(() => {
   background: var(--bg-card);
   border-radius: 8px;
   border: 1px solid var(--border);
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .warning-banner {
-  padding: 10px 14px;
+  padding: 8px 12px;
   background: var(--warning-bg);
   border: 1px solid var(--warning-bd);
   color: var(--warning);
@@ -1935,8 +1935,8 @@ onMounted(() => {
 .dependency-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 8px 12px;
   background: var(--bg);
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -1982,7 +1982,7 @@ onMounted(() => {
 }
 
 .dep-title-icon {
-  margin-right: 6px;
+  margin-right: 4px;
 }
 .dependency-actions {
   display: flex;
@@ -1997,7 +1997,7 @@ onMounted(() => {
 }
 .cascade-log {
   margin-top: 12px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   background: rgba(52, 211, 153, 0.08);
   border: 1px solid var(--success-bd);
   border-radius: 6px;
@@ -2005,7 +2005,7 @@ onMounted(() => {
   color: var(--success);
 }
 .cascade-log ul {
-  margin: 6px 0 0 16px;
+  margin: 4px 0 0 16px;
   padding: 0;
 }
 
@@ -2034,7 +2034,7 @@ onMounted(() => {
 /* ── Dependency Warning ── */
 .dependency-warning {
   margin-top: 8px;
-  padding: 8px 10px;
+  padding: 8px 8px;
   background: var(--warning-bg);
   border: 1px solid var(--warning-bd);
   border-radius: 4px;

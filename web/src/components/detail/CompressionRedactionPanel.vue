@@ -210,19 +210,19 @@ const displayMatches = computed(() => {
 .cmp-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 .match-block {
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   background: var(--kx-surface, var(--surface));
 }
 .match-head {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 8px;
   font-size: 13px;
 }
@@ -234,7 +234,7 @@ const displayMatches = computed(() => {
 .match-table th,
 .match-table td {
   text-align: left;
-  padding: 4px 6px;
+  padding: 4px 4px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }

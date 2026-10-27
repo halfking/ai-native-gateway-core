@@ -184,7 +184,7 @@ function latency(value: number | null | undefined): string {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  padding: 8px 6px;
+  padding: 8px 4px;
   border: 1px solid var(--kx-border);
   border-radius: 12px;
   background: var(--kx-surface);
@@ -195,7 +195,7 @@ function latency(value: number | null | undefined): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 4px 6px;
+  padding: 0 4px 4px;
   border-bottom: 1px solid var(--kx-border);
 }
 
@@ -210,7 +210,7 @@ function latency(value: number | null | undefined): string {
 }
 
 .cp__summary {
-  margin: 0 0 6px;
+  margin: 0 0 4px;
   padding: 0;
   list-style: none;
 }
@@ -218,7 +218,7 @@ function latency(value: number | null | undefined): string {
 .cp__summary-row {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 1px 6px;
+  gap: 1px 4px;
   padding: 4px;
   border-bottom: 1px dashed color-mix(in srgb, var(--kx-border) 60%, transparent);
 }
@@ -233,7 +233,7 @@ function latency(value: number | null | undefined): string {
 
 .cp__summary-stats {
   display: flex;
-  gap: 5px;
+  gap: 4px;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--kx-text);
@@ -311,7 +311,7 @@ function latency(value: number | null | undefined): string {
   min-width: 0;
   flex-direction: column;
   gap: 1px;
-  padding: 5px 6px;
+  padding: 4px 4px;
   border: 0;
   border-radius: 7px;
   background: transparent;
@@ -322,7 +322,7 @@ function latency(value: number | null | undefined): string {
 
 .cp__open {
   flex: none;
-  padding: 0 6px;
+  padding: 0 4px;
   border: 0;
   background: transparent;
   color: var(--kx-muted);
@@ -385,14 +385,14 @@ function latency(value: number | null | undefined): string {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 5px 4px 0;
+  padding: 4px 4px 0;
   border-top: 1px solid var(--kx-border);
 }
 
 .cp__page-btn {
   min-width: 22px;
   height: 20px;
-  padding: 0 6px;
+  padding: 0 4px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   background: transparent;

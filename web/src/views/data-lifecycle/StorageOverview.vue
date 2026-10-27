@@ -638,7 +638,7 @@ function fmtNum(n: number) {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 6px 0;
+  padding: 4px 0;
   font-size: 13px;
   border-bottom: 1px solid var(--border);
 }
@@ -717,7 +717,7 @@ function fmtNum(n: number) {
 .warnings-card .card-title { color: var(--warning); }
 .warnings-list {
   margin: 0;
-  padding-left: 20px;
+  padding-left: 16px;
   font-size: 13px;
   color: var(--warning);
 }
@@ -736,7 +736,7 @@ function fmtNum(n: number) {
 .tbl-code {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
-  padding: 2px 6px;
+  padding: 2px 4px;
   background: var(--bg-subtle);
   border-radius: 4px;
   color: var(--accent-h);
@@ -797,12 +797,12 @@ function fmtNum(n: number) {
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 12px 14px;
+  padding: 12px 12px;
 }
 .columnar-stat .stat-label {
   font-size: 11px;
   color: var(--muted);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   font-weight: 500;
   letter-spacing: 0.01em;
 }
@@ -887,7 +887,7 @@ function fmtNum(n: number) {
 .row-status {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   margin-top: 4px;
   font-size: 11px;
   color: var(--warning);
@@ -921,7 +921,7 @@ function fmtNum(n: number) {
   align-items: center;
   justify-content: center;
   z-index: 9999;
-  padding: 20px;
+  padding: 16px;
 }
 .modal {
   background: var(--card);
@@ -951,7 +951,7 @@ function fmtNum(n: number) {
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   margin: 12px 0;
   color: var(--text);
   font-size: 13px;
@@ -967,8 +967,8 @@ function fmtNum(n: number) {
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 10px 12px;
-  margin: 10px 0;
+  padding: 8px 12px;
+  margin: 8px 0;
   color: var(--text);
   font-size: 13px;
   line-height: 1.6;
@@ -982,7 +982,7 @@ function fmtNum(n: number) {
   font-size: 12px;
   font-weight: 600;
   color: var(--accent-h);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   letter-spacing: 0.02em;
 }
 .modal-section-impact .modal-section-title {
@@ -997,6 +997,6 @@ function fmtNum(n: number) {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 20px;
+  margin-top: 16px;
 }
 </style>

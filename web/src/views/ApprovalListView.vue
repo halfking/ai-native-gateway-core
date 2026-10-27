@@ -579,7 +579,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 <style scoped>
 .approval-list-view {
-  padding: 20px;
+  padding: 16px;
   color: var(--text-primary);
 }
 
@@ -709,7 +709,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 .filter-group {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   min-width: 150px;
 }
 
@@ -832,7 +832,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .badge {
   display: inline-block;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
@@ -873,7 +873,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .action-buttons {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   justify-content: center;
 }
 
@@ -949,7 +949,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .btn-sm {
-  padding: 6px 12px;
+  padding: 4px 12px;
   font-size: 13px;
 }
 

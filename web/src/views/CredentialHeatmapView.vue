@@ -929,7 +929,7 @@ onUnmounted(() => {
 .filter-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
@@ -944,7 +944,7 @@ onUnmounted(() => {
 .active-count {
   font-size: 11px;
   font-weight: 600;
-  padding: 2px 7px;
+  padding: 2px 8px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 15%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
@@ -1049,7 +1049,7 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 60px;
+  padding: 64px;
   text-align: center;
   color: var(--muted);
 }
@@ -1127,7 +1127,7 @@ onUnmounted(() => {
   z-index: 2;
   background: var(--bg-subtle, var(--card));
   text-align: left;
-  padding: 5px 8px;
+  padding: 4px 8px;
   cursor: pointer;
   border-bottom: 1px solid var(--border);
 }
@@ -1324,7 +1324,7 @@ onUnmounted(() => {
 .detail-row {
   display: flex;
   justify-content: space-between;
-  padding: 6px 0;
+  padding: 4px 0;
   border-bottom: 1px solid var(--border);
   font-size: 12px;
 }

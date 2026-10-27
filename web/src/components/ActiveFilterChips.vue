@@ -42,12 +42,12 @@ defineProps<{
   border: 1px solid var(--border);
   background: var(--bg);
   border-radius: 999px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   font-size: 12px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .chip-remove {

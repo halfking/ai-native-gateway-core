@@ -257,8 +257,8 @@ const hasNodes = computed(() => nodes.value.length > 0)
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
+  gap: 8px;
+  padding: 8px 12px;
   border: 1px solid var(--kx-border);
   border-radius: var(--kx-radius-sm, 6px);
   background: var(--kx-surface);
@@ -289,7 +289,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
   background: var(--kx-surface);
   color: var(--kx-text);
   box-shadow: var(--kx-shadow-md-left);
-  padding: 18px 20px 28px;
+  padding: 16px 16px 24px;
   box-sizing: border-box;
 }
 .nm-modal-header {
@@ -328,7 +328,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
   width: 100%;
   justify-content: space-between;
   align-items: center;
-  padding: 10px 12px;
+  padding: 8px 12px;
   background: var(--bg-subtle);
   cursor: pointer;
   user-select: none;
@@ -356,13 +356,13 @@ const hasNodes = computed(() => nodes.value.length > 0)
 .nm-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 10px;
+  gap: 8px;
   padding: 12px;
 }
 .nm-card {
   border: 1px solid var(--kx-border);
   border-radius: var(--kx-radius-sm, 6px);
-  padding: 10px;
+  padding: 8px;
   cursor: pointer;
   text-align: left;
   background: var(--kx-surface);
@@ -378,15 +378,15 @@ const hasNodes = computed(() => nodes.value.length > 0)
 .nm-card-header {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .nm-card-id { font-weight: 600; font-size: 13px; color: var(--kx-text); }
 .nm-card-provider { font-size: 12px; color: var(--kx-text-secondary); }
 .nm-card-states {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 6px;
+  gap: 4px;
+  margin-bottom: 4px;
 }
 .nm-state {
   display: inline-flex;

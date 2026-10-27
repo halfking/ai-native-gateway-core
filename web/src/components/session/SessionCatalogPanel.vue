@@ -171,12 +171,12 @@ function formatWhen(iso: string | undefined): string {
 .scp-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .scp-status { display: inline-flex; border: 1px solid var(--kx-border); border-radius: 6px; overflow: hidden; }
 .scp-chip, .scp-refresh {
-  border: 0; background: transparent; color: var(--kx-text); padding: 6px 12px; font-size: 13px; cursor: pointer;
+  border: 0; background: transparent; color: var(--kx-text); padding: 4px 12px; font-size: 13px; cursor: pointer;
 }
 .scp-chip--active { background: var(--kx-primary); color: var(--on-primary); }
 .scp-search {
   flex: 1; min-width: 180px; border: 1px solid var(--kx-border); border-radius: 6px;
-  background: var(--kx-bg); color: var(--kx-text); padding: 6px 10px; font-size: 13px;
+  background: var(--kx-bg); color: var(--kx-text); padding: 4px 8px; font-size: 13px;
 }
 .scp-refresh { border: 1px solid var(--kx-border); border-radius: 6px; }
 .scp-hint { margin: 8px 0 12px; font-size: 12px; color: var(--kx-text-muted, var(--kx-text)); }

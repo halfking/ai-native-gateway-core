@@ -605,30 +605,30 @@ onMounted(() => {
 
 <style scoped>
 .output-compliance-view {
-  padding: 1.5rem;
+  padding: 24px;
 }
 
 .view-header h2 {
-  margin: 0 0 0.5rem;
+  margin: 0 0 8px;
   font-size: 24px;
   font-weight: 600;
 }
 
 .view-subtitle {
   color: var(--muted);
-  margin: 0 0 1.5rem;
+  margin: 0 0 24px;
 }
 
 /* 标签页 */
 .tab-bar {
   display: flex;
   gap: 0;
-  margin-bottom: 1.5rem;
+  margin-bottom: 24px;
   border-bottom: 1px solid var(--surface-secondary);
 }
 
 .tab-btn {
-  padding: 0.75rem 1.5rem;
+  padding: 12px 24px;
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
@@ -649,21 +649,21 @@ onMounted(() => {
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 1rem;
-  margin-bottom: 1.5rem;
+  gap: 16px;
+  margin-bottom: 24px;
 }
 
 .stat-card {
   background: var(--card);
   border: 1px solid var(--surface-secondary);
   border-radius: 8px;
-  padding: 1rem;
+  padding: 16px;
 }
 
 .stat-label {
   font-size: 14px;
   color: var(--muted);
-  margin-bottom: 0.5rem;
+  margin-bottom: 8px;
 }
 
 .stat-value {
@@ -677,8 +677,8 @@ onMounted(() => {
 /* 筛选栏 */
 .filter-bar {
   display: flex;
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
+  gap: 12px;
+  margin-bottom: 24px;
   flex-wrap: wrap;
 }
 
@@ -686,7 +686,7 @@ onMounted(() => {
 .filter-select {
   /* width:auto 覆盖全局 input/select width:100%，避免筛选控件占满整行 */
   width: auto;
-  padding: 0.5rem 0.75rem;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 14px;
@@ -705,7 +705,7 @@ onMounted(() => {
   border: 1px solid var(--surface-secondary);
   border-radius: 8px;
   overflow-x: auto;
-  margin-bottom: 1rem;
+  margin-bottom: 16px;
 }
 
 .data-table {
@@ -716,7 +716,7 @@ onMounted(() => {
 
 .data-table th {
   background: var(--surface-secondary);
-  padding: 0.75rem 1rem;
+  padding: 12px 16px;
   text-align: left;
   font-weight: 600;
   border-bottom: 1px solid var(--surface-secondary);
@@ -724,14 +724,14 @@ onMounted(() => {
 }
 
 .data-table td {
-  padding: 0.75rem 1rem;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--surface-secondary);
 }
 
 .loading-cell,
 .empty-cell {
   text-align: center;
-  padding: 2rem;
+  padding: 32px;
   color: var(--muted);
 }
 
@@ -739,7 +739,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .session-id {
@@ -768,7 +768,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 1rem;
+  gap: 16px;
 }
 
 .page-info {
@@ -779,7 +779,7 @@ onMounted(() => {
 /* 按钮 */
 .btn-primary,
 .btn-secondary {
-  padding: 0.5rem 1rem;
+  padding: 8px 16px;
   border: none;
   border-radius: 6px;
   cursor: pointer;
@@ -809,7 +809,7 @@ onMounted(() => {
 .badge-blue {
   background: var(--info-bg);
   color: var(--accent-dark);
-  padding: 0.25rem 0.5rem;
+  padding: 4px 8px;
   border-radius: 4px;
   font-size: 12px;
 }
@@ -817,7 +817,7 @@ onMounted(() => {
 .badge-yellow {
   background: var(--warning-bg);
   color: var(--warning-dark);
-  padding: 0.25rem 0.5rem;
+  padding: 4px 8px;
   border-radius: 4px;
   font-size: 12px;
 }
@@ -825,7 +825,7 @@ onMounted(() => {
 .badge-green {
   background: var(--success-bg);
   color: var(--success-strong);
-  padding: 0.25rem 0.5rem;
+  padding: 4px 8px;
   border-radius: 4px;
   font-size: 12px;
 }
@@ -833,7 +833,7 @@ onMounted(() => {
 .badge-gray {
   background: var(--surface-secondary);
   color: var(--muted);
-  padding: 0.25rem 0.5rem;
+  padding: 4px 8px;
   border-radius: 4px;
   font-size: 12px;
 }
@@ -842,8 +842,8 @@ onMounted(() => {
 .loading-state {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 2rem;
+  gap: 8px;
+  padding: 32px;
   color: var(--muted);
 }
 
@@ -863,25 +863,25 @@ onMounted(() => {
   background: var(--danger-bg);
   border: 1px solid var(--danger-bd);
   color: var(--danger);
-  padding: 0.75rem 1rem;
+  padding: 12px 16px;
   border-radius: 6px;
-  margin-bottom: 1rem;
+  margin-bottom: 16px;
 }
 
 .success-banner {
   background: var(--success-bg);
   border: 1px solid var(--success-bd);
   color: var(--success-strong);
-  padding: 0.75rem 1rem;
+  padding: 12px 16px;
   border-radius: 6px;
-  margin-bottom: 1rem;
+  margin-bottom: 16px;
 }
 
 /* 配置面板 */
 .config-panel {
   background: var(--card);
   border-radius: 8px;
-  padding: 1.5rem;
+  padding: 24px;
 }
 
 .config-form {
@@ -889,8 +889,8 @@ onMounted(() => {
 }
 
 .config-section {
-  margin-bottom: 2rem;
-  padding-bottom: 1.5rem;
+  margin-bottom: 32px;
+  padding-bottom: 24px;
   border-bottom: 1px solid var(--surface-secondary);
 }
 
@@ -899,7 +899,7 @@ onMounted(() => {
 }
 
 .config-section h3 {
-  margin: 0 0 1rem;
+  margin: 0 0 16px;
   font-size: 16px;
   font-weight: 600;
   color: var(--muted);
@@ -908,8 +908,8 @@ onMounted(() => {
 .form-row {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  margin-bottom: 1rem;
+  gap: 16px;
+  margin-bottom: 16px;
   flex-wrap: wrap;
 }
 
@@ -922,7 +922,7 @@ onMounted(() => {
 .form-input {
   flex: 1;
   min-width: 200px;
-  padding: 0.5rem 0.75rem;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 14px;
@@ -935,14 +935,14 @@ onMounted(() => {
 
 .form-input-small {
   width: 100px;
-  padding: 0.5rem 0.75rem;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 14px;
 }
 
 .form-select {
-  padding: 0.5rem 0.75rem;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 14px;
@@ -967,7 +967,7 @@ onMounted(() => {
 }
 
 .form-actions {
-  margin-top: 1.5rem;
+  margin-top: 24px;
   display: flex;
   justify-content: flex-end;
 }

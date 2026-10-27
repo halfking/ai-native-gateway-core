@@ -360,7 +360,7 @@ watch(() => props.visible, (visible) => {
   align-items: center;
   justify-content: center;
   z-index: 9999;
-  padding: 20px;
+  padding: 16px;
 }
 
 .modal-content {
@@ -378,7 +378,7 @@ watch(() => props.visible, (visible) => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px;
+  padding: 16px 16px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -413,14 +413,14 @@ watch(() => props.visible, (visible) => {
 .modal-body {
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
+  padding: 16px;
 }
 
 .modal-footer {
   display: flex;
   gap: 12px;
   justify-content: flex-end;
-  padding: 16px 20px;
+  padding: 16px 16px;
   border-top: 1px solid var(--border);
 }
 
@@ -428,7 +428,7 @@ watch(() => props.visible, (visible) => {
 .diag-context {
   display: flex;
   gap: 16px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   padding: 12px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
@@ -437,7 +437,7 @@ watch(() => props.visible, (visible) => {
 
 .diag-context-item {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   font-size: 13px;
 }
 
@@ -480,7 +480,7 @@ watch(() => props.visible, (visible) => {
 .diag-data {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
 }
 
 .diag-section {
@@ -569,7 +569,7 @@ watch(() => props.visible, (visible) => {
 }
 
 .diag-failure-item {
-  padding: 10px;
+  padding: 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -579,7 +579,7 @@ watch(() => props.visible, (visible) => {
 .diag-failure-header {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .diag-failure-model {

@@ -293,14 +293,14 @@ function closeDialog() {
 
 <style scoped>
 .journey-queues { min-width: 0; }
-.journey-trigger { width:100%; display:flex; align-items:center; gap:10px; padding:9px 12px; border:1px solid var(--kx-border); border-radius:var(--kx-radius-sm, 6px); background:var(--kx-surface); color:var(--kx-text); cursor:pointer; text-align:left; }
+.journey-trigger { width:100%; display:flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid var(--kx-border); border-radius:var(--kx-radius-sm, 6px); background:var(--kx-surface); color:var(--kx-text); cursor:pointer; text-align:left; }
 .journey-trigger:hover { border-color:var(--kx-primary); }
 .journey-trigger-title { font-weight:600; font-size:13px; }
 .journey-trigger-meta { color:var(--kx-text-secondary); font-size:11px; margin-left:auto; }
 .journey-trigger svg { width:15px; height:15px; color:var(--kx-text-secondary); }
 .journey-modal-mask { position:fixed; inset:0; z-index:2900; background:var(--overlay-medium); display:flex; justify-content:flex-end; }
-.journey-modal { width:min(760px, 96vw); height:100vh; height:100dvh; overflow:auto; background:var(--kx-surface); color:var(--kx-text); box-shadow:var(--kx-shadow-md-left); padding:18px 20px 28px; box-sizing:border-box; }
-.journey-header-actions { display:flex; gap:6px; }
+.journey-modal { width:min(760px, 96vw); height:100vh; height:100dvh; overflow:auto; background:var(--kx-surface); color:var(--kx-text); box-shadow:var(--kx-shadow-md-left); padding:16px 16px 24px; box-sizing:border-box; }
+.journey-header-actions { display:flex; gap:4px; }
 .journey-modal-sub { margin:4px 0 0; color:var(--kx-text-secondary); font-size:11px; }
 .journey-header,
 .queue-group-header,
@@ -324,7 +324,7 @@ function closeDialog() {
   flex: 0 0 28px;
   width: 28px;
   height: 28px;
-  padding: 5px;
+  padding: 4px;
   border: 1px solid var(--kx-border);
   border-radius: var(--kx-radius-sm, 6px);
   background: var(--kx-surface);
@@ -344,7 +344,7 @@ function closeDialog() {
 .journey-tab {
   flex: 0 0 auto;
   min-height: 36px;
-  padding: 7px 12px;
+  padding: 8px 12px;
   border: 0;
   border-bottom: 2px solid transparent;
   background: transparent;
@@ -359,7 +359,7 @@ function closeDialog() {
   font-weight: 600;
 }
 .journey-state {
-  padding: 18px 8px;
+  padding: 16px 8px;
   color: var(--kx-text-secondary);
   font-size: 12px;
   text-align: center;
@@ -372,7 +372,7 @@ function closeDialog() {
   color: var(--kx-primary);
   cursor: pointer;
 }
-.queue-groups { display: grid; gap: 14px; margin-top: 10px; }
+.queue-groups { display: grid; gap: 12px; margin-top: 8px; }
 .queue-group { min-width: 0; }
 .queue-group-header { margin-bottom: 4px; color: var(--kx-text-secondary); font-size: 11px; }
 .queue-group-header strong { min-width: 0; color: var(--kx-text); font-size: 12px; overflow-wrap: anywhere; }
@@ -399,10 +399,10 @@ function closeDialog() {
 .queue-position { font-variant-numeric: tabular-nums; }
 .queue-request { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
 .queue-request strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.queue-models { display: flex; flex-wrap: wrap; gap: 2px 10px; color: var(--kx-text-secondary); font-size: 11px; }
+.queue-models { display: flex; flex-wrap: wrap; gap: 2px 8px; color: var(--kx-text-secondary); font-size: 11px; }
 .queue-status {
   justify-self: start;
-  padding: 2px 7px;
+  padding: 2px 8px;
   border: 1px solid var(--kx-border);
   border-radius: var(--kx-radius-sm, 6px);
   color: var(--kx-text-secondary);
@@ -415,13 +415,13 @@ function closeDialog() {
 .queue-status--failed { border-color: var(--kx-danger); color: var(--kx-danger); }
 .queue-status--canceled { border-color: var(--kx-warning); color: var(--kx-warning); }
 .queue-updated { justify-self: end; white-space: nowrap; }
-.journey-detail { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--kx-border); min-width: 0; }
+.journey-detail { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--kx-border); min-width: 0; }
 .degraded-notice {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 8px;
   margin-top: 8px;
-  padding: 8px 10px;
+  padding: 8px 8px;
   border: 1px solid var(--kx-warning);
   background: color-mix(in srgb, var(--kx-warning) 10%, var(--kx-surface));
   color: var(--kx-text-secondary);

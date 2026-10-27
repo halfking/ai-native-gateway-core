@@ -415,7 +415,7 @@ async function runHealthCheck() {
 }
 
 .section-title {
-  margin: 0 0 14px;
+  margin: 0 0 12px;
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
@@ -424,7 +424,7 @@ async function runHealthCheck() {
 .settings-form {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 .form-grid {

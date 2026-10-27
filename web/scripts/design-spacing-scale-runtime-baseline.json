@@ -1,0 +1,34 @@
+{
+  "note": "运行时尺（design-spacing-scale-runtime-check.mjs）的**趋势基线**。★ 这道尺与源码门是【两把尺】：源码门是绝对型（离阶必须 0），本尺是趋势型（相对基线只降不升）—— 原因是运行时层合法存在源码层豁免的形态（auto / % / 发丝 / 派生对齐偏移）⇒ 运行时**不可能**要求「离阶 = 0」。",
+  "metric": "offScaleGaps = 浏览器里实测的**兄弟间隙**（rect 测量，含两侧 margin + 容器 gap + 边框；只算同一行/同一列、跳过 space-* 分布的容器、跳过超过阶顶的布局距离）里不在间距阶上的个数；overflow = 横向溢出元素数（scrollWidth > clientWidth + 1）；crowded = 0 < gap < 阶底 的「过挤」间隙数。",
+  "offScaleGapsMax": 2,
+  "overflowMax": 8,
+  "crowdedMax": 84,
+  "updated": "2026-10-27",
+  "scope": {
+    "pages": [
+      "/",
+      "/free-pool",
+      "/admin/proxy",
+      "/models",
+      "/examples",
+      "/chat",
+      "/tenant/pricing",
+      "/keys",
+      "/routing-v2"
+    ],
+    "themes": ["light", "dark"],
+    "viewport": "1440×900",
+    "measuredElements": 4776,
+    "caveat": "★ 基线绑定**这一组页面 + 当时的本地后端数据快照** ⇒ 后端数据变了读数也会变 ⇒ 本工具是**观测工具**，不是硬闸（它不在门列表里）。★ 但它的**相对变化**是可信的：同一台机器、同一批页面、同一个探针。"
+  },
+  "history": [
+    {
+      "offScaleGapsMax": 2,
+      "overflowMax": 8,
+      "crowdedMax": 84,
+      "updated": "2026-10-27",
+      "reason": "第 24 增量（间距必须落在角色阶上）建运行时尺时的实测基线。★ 口径：**同一个探针脚本**分别量两棵树 —— 前态 = HEAD 的 worktree（独立 vite 5201），后态 = 当前树（vite 5200），9 页 × 2 主题 = 4776 个渲染元素。⇒ **离阶的兄弟间隙 334 → 2（−99.4%）**；**横向溢出 8 → 8（不变）** ⇒ 收紧约 17% 没有把版面挤破；**过挤的间隙 94 → 84（−10.6%）**；计算值离阶 4718 → 50。★ 残留的 2 处离阶是**第三方组件库（Element Plus）的间距**（`.family-quick-row` 与 `el-` 组件之间的 20px）⇒ 源码层看不见、改不动 ⇒ 如实留账。★ ★ 运行时尺还抓出了**源码层结构上发现不了的**两类问题：① **发丝值相加才离阶**（容器 gap 3px + 分隔线 margin 3px ⇒ 渲染出 6px；逐值看两个 3px 都是合规的发丝豁免）—— 已修（`.toolbar-filters` gap 3→4px、`.toolbar-divider` margin 归零）；② 同族（`.sankey-legend` gap 12px + `.legend-divider` margin 2px ⇒ 14px）—— 已修（margin 归零 ⇒ 12px）。"
+    }
+  ]
+}
