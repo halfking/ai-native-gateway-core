@@ -55,6 +55,10 @@
 //	② panic ⇒ 原顺序；
 //	③ 超时 ⇒ 原顺序。
 //
+// ⇒ 外加一条**本仓自加**的：
+//
+//	④ 上下文取消 ⇒ 原顺序（且**确定**性：取消优先于策略结果）。
+//
 // # 引用
 //
 //	domains/streaming/executors/routeorder_adapter.go —— 把既有复合评分排序
@@ -157,6 +161,38 @@ func identityPermutation(n int) []int {
 	return out
 }
 
+// canceled 报告 ctx 是否**可观测地**已取消。
+//
+// ★ 「已取消」这条判据全包只此**一份**（cancel() 先写 ctx.Err() 再关 Done()
+//
+//	⇒ Err() 非空 ⇒ 取消**先于**本次观察）。
+func canceled(ctx context.Context) bool {
+	return ctx.Err() != nil
+}
+
+// orderPick 决定「策略给出的排列要不要采用」。
+//
+// ★ 这是「**取消优先于结果**」这条契约的**唯一判据**（同一契约只有一份判据）：
+//
+//	① ctx 已取消 ⇒ 原顺序（**哪怕**策略给的是合法排列）；
+//	② 不是排列 ⇒ 原顺序；
+//	③ 否则 ⇒ 如实采用。
+//
+// ★ 为什么必须把取消**排在排列校验之前**：Go 的 `select` 在**多个就绪分支之间
+//
+//	随机选** ⇒ 「ctx 已取消」与「结果已就绪」同时成立时选中哪一支是**抛硬币**。
+//	⇒ 判据里**先问取消**，两个分支就**同归**（都回原顺序）⇒ 随机性不影响输出。
+func orderPick(ctx context.Context, idx []int, n int) []int {
+	original := identityPermutation(n)
+	if canceled(ctx) {
+		return original
+	}
+	if !IsPermutation(idx, n) {
+		return original
+	}
+	return idx
+}
+
 // IsPermutation 报告 idx 是否是 0..n-1 的一个排列。
 //
 // ★ 判定包含四件：长度恰好 n、每个元素在 [0,n)、**没有重复**。
@@ -191,6 +227,19 @@ func IsPermutation(idx []int, n int) bool {
 //
 //	继续花在排序上）。
 //
+// ★ **取消的优先级是确定的**（2026-10-28 修）：
+//
+//	Go 的 `select` 在**多个就绪分支之间随机选** ⇒ 「ctx 已取消」与「策略结果
+//	已就绪」**同时**成立时，同一个输入会得到**两个不同输出**（抛硬币）。
+//	⇒ 取消**赢**，两条腿都归到「原顺序」：
+//
+//	① **入口先判**：`ctx.Err() != nil` ⇒ **根本不启动排序**（省一次无用功，
+//	   也消灭了「结果与取消同时就绪」这个随机窗口）；
+//	② **取到结果再判**：`ctx.Err() != nil` ⇒ 原顺序（cancel() 先写 err 再关
+//	   Done() ⇒ 这里读到 err ⇒ 取消**先于**本分支发生）。
+//
+//	⇒ 无论 `select` 选中 `<-ch` 还是 `<-ctx.Done()`，输出都相同 ⇒ 不再抛硬币。
+//
 // ★ **绝不返回 nil**：调用方拿到的一定是可用的排列（长度 = len(seats)）。
 func Order(ctx context.Context, s Strategy, pool string, seats []Seat, timeout time.Duration) []int {
 	original := identityPermutation(len(seats))
@@ -200,8 +249,20 @@ func Order(ctx context.Context, s Strategy, pool string, seats []Seat, timeout t
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+	// nil ctx 守卫（仓内惯例：domains/session/session_db_writer.go 同型）——
+	//   不兜住的话，下面的 ctx.Done() 会 panic（nil 接口方法调用）。
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// ★ 入口先判取消（确定性的第一条腿）—— 见文件头「取消的优先级是确定的」。
+	//   已放弃的请求**根本不启动排序**：既省一次无用功，也消灭了
+	//   「结果与取消同时就绪」这个随机窗口。
+	if canceled(ctx) {
+		return original
+	}
 
 	type result struct{ idx []int }
+	// ★ 缓冲 1 ⇒ 策略 goroutine 即使在我们提前返回后才算完，**也不会**卡在发送上。
 	ch := make(chan result, 1)
 	go func() {
 		defer func() {
@@ -214,13 +275,17 @@ func Order(ctx context.Context, s Strategy, pool string, seats []Seat, timeout t
 		ch <- result{idx: s.Order(pool, seats)}
 	}()
 
+	// ★ 用 NewTimer + Stop 而不是 time.After：取消/超时提前返回时，
+	//   time.After 的定时器仍会挂到超时才被回收 ⇒ 这里显式停掉。
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
 	select {
 	case res := <-ch:
-		if !IsPermutation(res.idx, len(seats)) {
-			return original
-		}
-		return res.idx
-	case <-time.After(timeout):
+		// ★ 「取消优先于结果」的判据在 orderPick 里（全包**唯一一份**）——
+		//   见 orderPick 的注释：取消排在排列校验之前 ⇒ select 抛硬币不影响输出。
+		return orderPick(ctx, res.idx, len(seats))
+	case <-timer.C:
 		return original
 	case <-ctx.Done():
 		return original
