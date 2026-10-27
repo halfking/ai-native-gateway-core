@@ -12233,3 +12233,102 @@ index b953a6f03..555ef83c4 100644
   **可复用采样分位工具**（本轮只做了内联三轮）；
   **3 个 `rl.id` 恒 NULL 缺陷**（`domains/sessionforensics/export.go` 的导出 id 恒空 + `ORDER BY rl.ts, rl.id` 死次序键、
   `domains/sessionsummary/summarizer.go:774` 并列 tie-break 随机）⇒ 仍待修。
+
+## ㉞ R173 轮（2026-10-28）· canonical 视图「恒 NULL 列」读点族清零（★ 结构性缺陷 ≠ 正在发生的故障；★ 要证明第二排序键无效，输入必须制造并列）
+
+> **取号说明**：本轮取 **㉞**（㉝ = 上一轮 R172；㉚ = 并行会话 R87 轮）；
+> LESSONS 取 **§482**（§481 = 上一轮 R172）。
+> ⇒ ★ ★ **本轮不是「新发现 bug」，而是【把仓内已登记、已定性为「缺陷」的那一族读点修掉】★★
+> ⇒ ★★ 登记簿 `admin/canonical_read_points_registry_test.go` 里有一类
+> `classReadsNullPaddedColumn`，定义原文：「读了 canonical 视图里**恒 NULL** 的列
+> ⇒ **视图根本给不出真值** ⇒ 该读点读到的永远是 NULL ⇒ ★ **这不是「迁移候选」，这是缺陷**」。
+
+### 背景（事实源实测）
+
+★ canonical 视图 `request_logs_with_current_month` **已经是会话族两臂体**
+（`session_turns_hot ∪ session_turns` × `LEFT JOIN session_turn_details_hot`），
+★ 而它的**第一列是 `SELECT NULL::bigint AS id`** ⇒ ★★ **`id` 被视图显式置成 NULL**
+⇒ ★★ 读它永远读不到真值。实测：视图 2758 行，**`id` 恒 NULL 2758/2758**；
+★ `request_id` 非空 2758/2758、**唯一 2758/2758** ⇒ ⇒ **现成的稳定键**。
+
+### 三个读点（本轮清零）
+
+| # | 文件 | 症状 |
+|---|---|---|
+| ① | `domains/sessionforensics/export.go`（导出 SQL 第一份） | `rl.id::text` 恒 NULL；`ORDER BY rl.ts ASC, rl.id ASC` **次序键是死的** |
+| ② | `domains/sessionforensics/export.go`（Alt 变体） | 同上 |
+| ③ | `domains/sessionsummary/summarizer.go`（标题解析取 `gw_task_id`） | `ORDER BY ts DESC, id DESC` ⇒ **同 ts 并列取哪一行随机** |
+
+★ ★★ **附带查清（比登记簿写的更严重）**：★★ `export.go` 把 `rl.id` **SELECT 出来、Scan 进变量、
+然后直接丢弃** ⇒ `ExportMessage` 里本来就有 `RequestID string \`json:"request_id,omitempty"\``，
+★ ★★ **但这条路径从未给它赋值** ⇒ ⇒ **导出包里每条 message 的 `request_id` 恒空**
+⇒ ⇒ ★★ 修死键**顺带补上了取证包的可追溯性**。★★
+
+### 实测证据（★ 第一版实验设计错了，自己抓到并订正）
+
+★ ★★ 「`id` 恒 NULL ⇒ 次序键失效」**不能靠读代码断言**，★ 真库对照实验：
+★ 用 CTE 造「同 ts 并列」的输入，★ 且**故意让物理顺序与 `request_id` 字典序相反**：
+
+| | 顺序 |
+|---|---|
+| 物理（输入）顺序 | `fffd35…` \| `ffe320…` \| `ffb9a2…` |
+| **[改前]** `ORDER BY ts, id` | **= 物理顺序** ⇒ 死键完全没起作用 |
+| **[改后]** `ORDER BY ts, request_id` | `ffb9a2…` \| `ffe320…` \| `fffd35…` ⇒ **= 字典序升序** |
+
+★ ★★ **第一版实验没把三行的 `ts` 设成相同** ⇒ ⇒ `ORDER BY ts` 已定序 ⇒ 第二键从未被触发
+⇒ ⇒ **两条 SQL 结果完全相同** ⇒ ⇒ ★★ **一个「没测到东西」的实验，长得和一个「测过了」的一模一样。★★**
+⇒ ⇒ ★★ **★ 通用式：★ 要证明「第二排序键无效」，输入必须【制造并列】。★★**
+
+★ 行集合等价（10 行真实 session，双向 `EXCEPT ALL`）：**0 / 0，10 = 10** ✔
+★ 真产品形状下 `request_id` 非空 **10 / 10**、唯一 **10 / 10** ✔
+
+### 改法与守卫
+
+★ 代码：`rl.id::text` ⇒ `rl.request_id`；`ORDER BY …, id` ⇒ `ORDER BY …, request_id`；
+★ Scan 变量 `id` ⇒ `requestID`（★ **Go 的「declared and not used」顺手把「读出来又丢掉」钉住了**）；
+★ `ExportMessage{…}` 补 `RequestID: requestID`。
+★ 登记簿：3 个条目去掉 `id:NULL`（summarizer 那个另加 `request_id:base`）、分类迁到
+`classNeedsDetailsLeg`、Note 从「缺陷」改写为「已修」⇒ ★★ **让门自己报出它期望的 Columns
+再照抄（★ 不手猜）★★**
+
+★ 新门 `TestNoCanonicalReadPointReadsNullPaddedColumn`（★ **加在已登记的那个文件里**——
+★ ★★ 不新建文件：★ 新建文件会撞「按文件管的登记簿」那道门 ⇒ **零新增登记义务**★★）：
+① **实测侧**（扫描器结果里不得有 `:NULL` 列 ⇒ **不看登记簿也能抓**）② **登记簿侧**
+（不得有该分类条目）③ **源码形态**（不得再有死键；★ 且**每个** `ExportMessage` 构造都必须
+`RequestID: requestID,`）④ **阳性对照**（合成坏数据必须被判红 ⇒ 否则「0 命中」是恒绿）。
+
+★ ★★ **变异臂把判据逼强了一次**：★★ 第一版判据 ③b 写成「整文件里至少有一处
+`RequestID: requestID,`」⇒ ⇒ **M4 只坏一处（两处只改一处）就逃过了门**
+⇒ ⇒ ★★ **★ 判据的粒度必须与被测对象的粒度一致**（★ 被测对象是【每个导出变体】）
+⇒ ⇒ 改成 **`nGot == nWanted`**（★ 逐构造点计数）★ ⇒ ★★ **★ 这是
+`TestForensicsExportSQLVariantsStayInSync` 的同族：两份变体必须同步，判据也必须逐变体地查。★★**
+
+### 读数与诚实边界
+
+★ **读数**：视图 `id` 恒 NULL **2758/2758**；`request_id` 非空且唯一 **2758/2758**；
+★ 排序对照实验（真库，CTE 构造并列）**死键版 = 物理顺序 vs 稳定键版 = 字典序 ⇒ 两者不同**；
+★ 行集合等价 **0/0（10=10）**；真产品形状 `request_id` 非空 **10/10**；
+★ 登记簿「读恒 NULL 列」这一族 **5 个条目 ⇒ 0**；变异臂 **6/6**（5 阳性 + 1 阴性对照，
+★ 三态区分，每臂 md5 还原校验）。
+
+★ ★★ **诚实边界**：★★
+① ★★ **这三个读点仍然读 canonical 视图** ⇒ ★★ 本轮修的是「读到的值」，**不是「读的是视图」**
+⇒ ⇒ 视图的展开成本（两臂体 + details LEFT JOIN）**仍在** ⇒ ⇒ 迁窄投影是**另一件事**
+⇒ （登记簿里它们现在归 `classNeedsDetailsLeg` ⇒ **要迁就得把 details 腿和 CASE 表达式一起搬走**）★★
+② ★★ **真实数据里「同 ts 并列」实测 = 0 组** ⇒ ⇒ **改前的随机性当前不发作**
+⇒ ⇒ ★★ **本轮价值是【结构性】的**（一旦出现并列，两种写法就分叉）⇒ ⇒
+⇒ ★★ **不能把它说成「修了一个正在发生的线上故障」。★★**
+③ ★★ §3.1 的对照实验用的是 **CTE 构造的同 ts 输入** ⇒ ⇒ 它证明的是【排序语义】，
+不是「真实视图上恰好有一组并列」⇒ ⇒ **诚实标注在此。★★**
+④ ★ **导出消息新增了 `request_id` 键**（此前因 `omitempty` 而整个键不存在）
+⇒ ⇒ **下游若做「字段集合严格相等」的校验需同步**（★ 已核：仓内 `extract.py` /
+`replay.go` 都**期望**该字段；且 `replay.go` 只把它透传进报告字段、不参与控制流）★★
+⑤ ★ **没有 SQL 迁移** ⇒ **部署序列不变**（⇒ 211/252 不需要为本轮做任何 DDL）。
+
+⇒ 审计档 `docs/audit/2026-10-28-R173-恒NULL列读点族清零.md`（§0~§8）；
+⇒ 通用式见 `LESSONS.md` **§482**（8 条）。
+⇒ ★ **本轮明确没做（留给下一轮，别重复排查）**：★ **三个读点仍读 canonical 视图**
+（⇒ 迁窄投影要连 details 腿 + CASE 表达式一起搬）；★ **canonical 视图的 118 列定义**未动；
+★ **登记簿里 `classNeedsDetailsLeg` / `classNeedsExpressionReplication` 两族**未批量迁移；
+★ **导出 JSON 新增 `request_id` 键的下游严格校验**；★ **前端/移动端对导出包 `request_id` 的展示**未核对；
+★ **211/252 生产执行**（本轮无 DDL）。

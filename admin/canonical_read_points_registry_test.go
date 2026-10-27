@@ -880,22 +880,22 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 	},
 	"domains/sessionforensics/export.go": {
 		Form:  formDirectLiteralSQL,
-		Class: classReadsNullPaddedColumn,
-		Note:  "★ **缺陷**：两个导出读点读 `rl.id`，而 canonical 视图的 `id` 是 v1 遗留列、**恒 NULL** ⇒ 导出里的 id 字段永远是 NULL，`ORDER BY rl.ts ASC, rl.id ASC` 的次序键也是死的；第三个读点是压缩策略聚合",
+		Class: classNeedsDetailsLeg,
+		Note: "★ **已修（R173）**：两个导出读点原读 `rl.id`（canonical 视图的 `id` 是 v1 遗留列、**恒 NULL**）⇒ 导出里的 id 字段永远是 NULL、`ORDER BY rl.ts ASC, rl.id ASC` 的次序键也是死的 ⇒ ★ 现改为读 `rl.request_id`（实测非空、视图内唯一）⇒ 导出消息终于带上轮次身份、次序键稳定；第三个读点是压缩策略聚合",
 		Points: []canonicalReadPoint{
-			{Kind: "read", Columns: []string{"attachments:detail", "client_model:detail", "compression_meta:base", "compression_reason:detail", "compression_strategy:base", "gw_session_id:expr", "id:NULL", "outbound_model:base", "parent_request_id:base", "request_id:base", "request_mode:base", "tenant_id:base", "ts:base", "work_type:base"}, Holder: "", Class: classReadsNullPaddedColumn, Exempt: false, ExemptReason: "", Note: "★ **缺陷**：两个导出读点读 `rl.id`，而 canonical 视图的 `id` 是 v1 遗留列、**恒 NULL** ⇒ 导出里的 id 字段永远是 NULL，`ORDER BY rl.ts ASC, rl.id ASC` 的次序键也是死的；第三个读点是压缩策略聚合；本读点读 attachments:detail,client_model:detail,compression_meta:base,compression_reason:detail,compression_strategy:base,gw_session_id:expr,id:NULL,outbound_model:base,parent_request_id:base,request_id:base,request_mode:base,tenant_id:base,ts:base,work_type:base ⇒ ★ 引用了视图里**恒 NULL** 的 v1 遗留列 ⇒ 视图给不出真值"},
-			{Kind: "read", Columns: []string{"attachments:detail", "client_model:detail", "compression_meta:base", "compression_reason:detail", "compression_strategy:base", "gw_session_id:expr", "id:NULL", "outbound_model:base", "parent_request_id:base", "request_id:base", "request_mode:base", "tenant_id:base", "ts:base", "work_type:base"}, Holder: "", Class: classReadsNullPaddedColumn, Exempt: false, ExemptReason: "", Note: "★ **缺陷**：两个导出读点读 `rl.id`，而 canonical 视图的 `id` 是 v1 遗留列、**恒 NULL** ⇒ 导出里的 id 字段永远是 NULL，`ORDER BY rl.ts ASC, rl.id ASC` 的次序键也是死的；第三个读点是压缩策略聚合；本读点读 attachments:detail,client_model:detail,compression_meta:base,compression_reason:detail,compression_strategy:base,gw_session_id:expr,id:NULL,outbound_model:base,parent_request_id:base,request_id:base,request_mode:base,tenant_id:base,ts:base,work_type:base ⇒ ★ 引用了视图里**恒 NULL** 的 v1 遗留列 ⇒ 视图给不出真值"},
-			{Kind: "read", Columns: []string{"client_model:detail", "completion_tokens:base", "compression_strategy:base", "cost_usd:base", "gw_session_id:expr", "prompt_tokens:base", "tenant_id:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "★ **缺陷**：两个导出读点读 `rl.id`，而 canonical 视图的 `id` 是 v1 遗留列、**恒 NULL** ⇒ 导出里的 id 字段永远是 NULL，`ORDER BY rl.ts ASC, rl.id ASC` 的次序键也是死的；第三个读点是压缩策略聚合；本读点读 client_model:detail,completion_tokens:base,compression_strategy:base,cost_usd:base,gw_session_id:expr,prompt_tokens:base,tenant_id:base,ts:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
+			{Kind: "read", Columns: []string{"attachments:detail", "client_model:detail", "compression_meta:base", "compression_reason:detail", "compression_strategy:base", "gw_session_id:expr", "outbound_model:base", "parent_request_id:base", "request_id:base", "request_mode:base", "tenant_id:base", "ts:base", "work_type:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "★ **已修（R173）**：原读 `rl.id`（恒 NULL）⇒ 现读 `rl.request_id` ⇒ 导出消息带上轮次身份、`ORDER BY rl.ts ASC, rl.request_id ASC` 次序确定；本读点仍引用 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
+			{Kind: "read", Columns: []string{"attachments:detail", "client_model:detail", "compression_meta:base", "compression_reason:detail", "compression_strategy:base", "gw_session_id:expr", "outbound_model:base", "parent_request_id:base", "request_id:base", "request_mode:base", "tenant_id:base", "ts:base", "work_type:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "★ **已修（R173）**：原读 `rl.id`（恒 NULL）⇒ 现读 `rl.request_id` ⇒ 导出消息带上轮次身份、`ORDER BY rl.ts ASC, rl.request_id ASC` 次序确定；本读点仍引用 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
+			{Kind: "read", Columns: []string{"client_model:detail", "completion_tokens:base", "compression_strategy:base", "cost_usd:base", "gw_session_id:expr", "prompt_tokens:base", "tenant_id:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "★ **已修（R173）**：两个导出读点原读 `rl.id`（canonical 视图的 `id` 是 v1 遗留列、**恒 NULL**）⇒ 导出里的 id 字段永远是 NULL、`ORDER BY rl.ts ASC, rl.id ASC` 的次序键也是死的 ⇒ ★ 现改为读 `rl.request_id`（实测非空、视图内唯一）⇒ 导出消息终于带上轮次身份、次序键稳定；第三个读点是压缩策略聚合"},
 		},
 	},
 	"domains/sessionsummary/summarizer.go": {
 		Form:  formDirectLiteralSQL,
-		Class: classReadsNullPaddedColumn,
-		Note:  "★ **缺陷**：标题解析读点 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机；另两个读点取 request_id / ts / outbound_model",
+		Class: classNeedsDetailsLeg,
+		Note: "★ **已修（R173）**：标题解析读点原 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机 ⇒ ★ 现改为 `ORDER BY ts DESC, request_id DESC`（稳定键）；另两个读点取 request_id / ts / outbound_model",
 		Points: []canonicalReadPoint{
-			{Kind: "read", Columns: []string{"gw_session_id:expr", "outbound_model:base", "request_id:base", "tenant_id:base", "ts:base"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "★ **缺陷**：标题解析读点 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机；另两个读点取 request_id / ts / outbound_model；本读点读 gw_session_id:expr,outbound_model:base,request_id:base,tenant_id:base,ts:base ⇒ 引用了视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式"},
-			{Kind: "read", Columns: []string{"gw_session_id:expr", "outbound_model:base", "request_id:base", "ts:base"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "★ **缺陷**：标题解析读点 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机；另两个读点取 request_id / ts / outbound_model；本读点读 gw_session_id:expr,outbound_model:base,request_id:base,ts:base ⇒ 引用了视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式"},
-			{Kind: "read", Columns: []string{"gw_session_id:expr", "gw_task_id:detail", "id:NULL", "is_auto_request:base", "success:base", "tenant_id:base", "ts:base"}, Holder: "", Class: classReadsNullPaddedColumn, Exempt: false, ExemptReason: "", Note: "★ **缺陷**：标题解析读点 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机；另两个读点取 request_id / ts / outbound_model；本读点读 gw_session_id:expr,gw_task_id:detail,id:NULL,is_auto_request:base,success:base,tenant_id:base,ts:base ⇒ ★ 引用了视图里**恒 NULL** 的 v1 遗留列 ⇒ 视图给不出真值"},
+			{Kind: "read", Columns: []string{"gw_session_id:expr", "outbound_model:base", "request_id:base", "tenant_id:base", "ts:base"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "★ **已修（R173）**：标题解析读点原 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机 ⇒ ★ 现改为 `ORDER BY ts DESC, request_id DESC`（稳定键）；另两个读点取 request_id / ts / outbound_model"},
+			{Kind: "read", Columns: []string{"gw_session_id:expr", "outbound_model:base", "request_id:base", "ts:base"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "★ **已修（R173）**：标题解析读点原 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机 ⇒ ★ 现改为 `ORDER BY ts DESC, request_id DESC`（稳定键）；另两个读点取 request_id / ts / outbound_model"},
+			{Kind: "read", Columns: []string{"gw_session_id:expr", "gw_task_id:detail", "is_auto_request:base", "request_id:base", "success:base", "tenant_id:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "★ **已修（R173）**：原读 `id`（恒 NULL）⇒ 现改用 `request_id`（非空、唯一）作 tie-break ⇒ 同 ts 的并列行取哪一行不再随机；本读点仍引用 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
 		},
 	},
 	"domains/sessionsummary/system_prompt_prefix.go": {
@@ -2168,4 +2168,130 @@ func canonicalRegistryExemptCount() int {
 		}
 	}
 	return n
+}
+
+// ── R173 守卫：canonical 视图的「恒 NULL 列」这一族必须保持为空 ──────────
+//
+// ★ 背景（事实源）：canonical 视图 `request_logs_with_current_month` 的第一列
+//   是 `NULL::bigint AS id` —— v1 遗留列，**视图给不出真值**（实测 2758 行
+//   全为 NULL）。⇒ 读它的读点「读到的 id 永远是 NULL」⇒
+//   ★ 按登记簿自己的分类口径：★ 这不是「迁移候选」，这是**缺陷**。
+//
+// ★ R173 的动作：把这一族（3 个读点：`export.go` 的两份导出 SQL ×2 +
+//   `summarizer.go` 的标题解析 ×1）的 `id` 依赖去掉，并把**死次序键**
+//   （`ORDER BY …, id` ⇒ 次序键恒 NULL ⇒ 并列时顺序随机）换成稳定键
+//   `request_id`（实测非空、视图内唯一）。
+//
+// ★★ 本门是**棘轮**：这一族一旦重新出现（无论是登记簿里还是源码里）⇒ 立刻红。
+//
+// ★★ ★★ **判据抽成纯函数**（`nullPaddedReadPointHits`）★★ ★★
+// ⇒ 好让「阳性对照」能用**合成数据**证明判据本身有牙
+// ⇒ ★ 否则「0 命中」有两种读法（扫到了没发现 / 根本没扫到那一段）。
+
+// nullPaddedReadPointHits 返回「读到了 canonical 视图恒 NULL 列」的读点清单。
+//
+// ★ 入参是扫描器实测的结果（不是登记簿）⇒ ⇒ **登记簿写错也不会掩盖源码事实**。
+func nullPaddedReadPointHits(scanned map[string]canonicalFileFacts) []string {
+	var hits []string
+	for file, facts := range scanned {
+		for _, p := range facts.ReadPoints {
+			for _, c := range p.Columns {
+				// ★ 扫描器给列名标了来源；`:NULL` = 视图里**恒 NULL** 的填充列。
+				if strings.HasSuffix(c, ":NULL") {
+					hits = append(hits, fmt.Sprintf("%s:%d 读 %s（列 %s 是视图里恒 NULL 的填充列）",
+						file, p.Line, c, c))
+					break
+				}
+			}
+		}
+	}
+	sort.Strings(hits)
+	return hits
+}
+
+func TestNoCanonicalReadPointReadsNullPaddedColumn(t *testing.T) {
+	root := repoRootFromCaller(t)
+	scanned := scanCanonicalReadPoints(t, root)
+
+	// ① 实测侧：源码里不得再有读点读 canonical 的恒 NULL 列。
+	//    ★ 这条**不看登记簿** ⇒ 登记簿写漏了也照样抓得到。
+	if hits := nullPaddedReadPointHits(scanned); len(hits) != 0 {
+		for _, h := range hits {
+			t.Errorf("有读点又读到了 canonical 视图里**恒 NULL** 的列：%s\n"+
+				"  ⇒ 视图给不出真值 ⇒ 该读点读到的永远是 NULL ⇒ ★ 这是缺陷不是迁移候选\n"+
+				"  ⇒ 请改读 request_id（实测非空、视图内唯一）并同步登记簿",
+				h)
+		}
+	}
+
+	// ② 登记簿侧：这一族不许重新出现（文件级 + 读点级）。
+	for file, e := range canonicalReadPointRegistry {
+		if e.Class == classReadsNullPaddedColumn {
+			t.Errorf("登记簿里 %s 的文件级分类又是 %q ⇒ 有读点回到了「读恒 NULL 列」这一族",
+				file, classReadsNullPaddedColumn)
+		}
+		for _, p := range e.Points {
+			if p.Class == classReadsNullPaddedColumn {
+				t.Errorf("登记簿里 %s 的读点 %v 又是 %q ⇒ 同上", file, p.Columns, classReadsNullPaddedColumn)
+			}
+		}
+	}
+
+	// ③ 源码形态：两个读点文件不得再依赖 canonical 的 `id` 列。
+	//    ★ SQL 片段用【拼接】写出来 ⇒ 扫描器不会把本门自己当成一个读点。
+	expFile := filepath.Join(root, "domains", "sessionforensics", "export.go")
+	sumFile := filepath.Join(root, "domains", "sessionsummary", "summarizer.go")
+	expSrc, err := os.ReadFile(expFile)
+	if err != nil {
+		t.Fatalf("read %s: %v", expFile, err)
+	}
+	sumSrc, err := os.ReadFile(sumFile)
+	if err != nil {
+		t.Fatalf("read %s: %v", sumFile, err)
+	}
+	expText := string(expSrc)
+	sumText := string(sumSrc)
+
+	// ★ 判据 ③a：`rl.id` / 裸 `id` 出现在 ORDER BY 里 ⇒ 死次序键回来了。
+	badOrderExp := "ORDER BY rl.ts ASC, rl." + "id"
+	if strings.Contains(expText, badOrderExp) {
+		t.Errorf("%s 里又有 `%s` ⇒ 视图的 id 恒 NULL ⇒ 次序键是死的 ⇒ 并列时顺序随机",
+			expFile, badOrderExp)
+	}
+	badOrderSum := "ORDER BY ts DESC, " + "id"
+	if strings.Contains(sumText, badOrderSum) {
+		t.Errorf("%s 里又有 `%s` ⇒ 视图的 id 恒 NULL ⇒ 同 ts 并列取哪一行随机",
+			sumFile, badOrderSum)
+	}
+	// ★ 判据 ③b：读出来的 request_id 必须**真的落进导出消息**
+	//    ⇒ 否则就是「读出来又丢掉」（R173 修掉的原症状）。
+	//    ★★ 用【逐字正则】而不是「含 RequestID: 且含 requestID」——
+	//    ★★ 后者会让 `RequestID: strings.TrimSpace(requestID)` 这类
+	//    「把真值加工掉」的写法逃过门（变异臂 M4 就是这种形态）。
+	//    ★★★ 而【逐字正则】本身也不够强：★★★ 「整文件里至少有一处匹配」
+	//    ★★★ 会被「**两处只坏一处**」逃过（export.go 有两份 SQL 变体、两个构造点）
+	//    ★★★ ⇒ ⇒ **判据的粒度必须与被测对象的粒度一致**：
+	//    ★★★ **每一个 `msg := ExportMessage{` 构造都必须带 `RequestID: requestID,`。**
+	//    ★★★ （★ 这是 `TestForensicsExportSQLVariantsStayInSync` 的同族：
+	//    ★★★ 两份变体必须同步，★ 判据也必须**逐变体**地查。）
+	nWanted := strings.Count(expText, "msg := ExportMessage{")
+	nGot := len(regexp.MustCompile(`RequestID:\s+requestID,`).FindAllString(expText, -1))
+	if nWanted == 0 {
+		t.Errorf("%s 里找不到 `msg := ExportMessage{` 构造点 ⇒ 判据本身失效（源码形态变了？）", expFile)
+	} else if nGot != nWanted {
+		t.Errorf("%s 里 %d 个 ExportMessage 构造中只有 %d 个把 request_id **原样**落进去"+
+			"（期望 `RequestID: requestID,` 各一处）⇒ 导出消息仍然没有轮次身份、或者落进去的是被加工过的值",
+			expFile, nWanted, nGot)
+	}
+
+	// ④ 阳性对照：★ 判据本身必须对**合成的**坏数据判红 ⇒ 否则「0 命中」是恒绿。
+	synthetic := map[string]canonicalFileFacts{
+		"synthetic/bad.go": {ReadPoints: []canonicalReadPointSite{{
+			Line: 1, Kind: "read", Columns: []string{"id:NULL", "request_id:base"},
+		}}},
+	}
+	if hits := nullPaddedReadPointHits(synthetic); len(hits) != 1 {
+		t.Errorf("合成的一条「读了恒 NULL 列」的读点被判出 %d 条（应 1 条）⇒ 判据没牙",
+			len(hits))
+	}
 }
