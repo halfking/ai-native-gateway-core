@@ -112,6 +112,8 @@
     "design-action-density:json": "node --experimental-strip-types scripts/design-action-density-guard.mjs --json",
     "design-action-density:update-baseline": "node --experimental-strip-types scripts/design-action-density-guard.mjs --update-baseline",
     "design-action-density:runtime-check": "node scripts/design-action-density-runtime-check.mjs",
+    "design-icon-size:runtime-check": "node scripts/design-icon-size-runtime-check.mjs",
+    "design-icon-size:runtime-check:selftest": "node scripts/design-icon-size-runtime-check.mjs --selftest",
     "design-motion:check": "node --experimental-strip-types scripts/design-motion-guard.mjs",
     "design-motion:selftest": "node --experimental-strip-types scripts/design-motion-guard.mjs --selftest",
     "design-motion:list": "node --experimental-strip-types scripts/design-motion-guard.mjs --list",

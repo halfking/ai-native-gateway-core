@@ -137,6 +137,18 @@
      这里补上真定义，等宽才真的生效。 */
   --mono: var(--kx-font-mono);
 
+  /* 图标边长（2026-10-27 第 28 增量 · 图标必须有尺寸）：**唯一的默认图标尺寸**。
+   * ★ 为什么需要一个令牌：`@element-plus/icons-vue` 渲染的是**裸 `<svg>`**，
+   *   **没有 width/height 属性** ⇒ 没有内在尺寸 ⇒ 尺寸完全靠 CSS 兜。
+   * ★★ 而兜底此前是**逐处**写的（每个父元素各写各的 `.xxx-glyph svg { width: 16px }`）
+   *   ⇒ **漏写一处，那个图标就塌成 0×0 ⇒ 用户看到的是一个空方块**。
+   *   ★ 实测（第 28 增量 CDP 实测，8 个页面）：**2 处 0×0**，都在仪表盘首页 ——
+ *     「刷新数据」按钮（★ 刷新数据的**唯一**入口）与「图例」开关 ⇒ 控件因此渲染成**空方块**。
+   * ★ 值 = `1em`：跟着所在文字的大小走 ⇒ 图标与它的标签同一视觉重量
+   *   （★ element-plus 自己的口径也是 `.el-icon svg { width: 1em; height: 1em }`）。
+   * ★ 主题无关 ⇒ 落在主题无关的令牌区。 */
+  --kx-icon-size: 1em;
+
   /* ── 字号阶跃（2026-10-24 排版轮）──
      此前只有 --kx-font-sm/md/lg（12/14/16）三级，撑不起「一眼看出层级」。
      这里补到 9 级：10px 的元信息到 38px 的落地页 H1，每级行高与字重步进
@@ -635,6 +647,20 @@ button { font-size: inherit; }
 :focus-visible {
   outline: 2px solid color-mix(in srgb, var(--kx-primary) 72%, transparent);
   outline-offset: 2px;
+}
+
+/* 图标尺寸兜底（2026-10-27 第 28 增量 · 图标必须有尺寸）
+ * ★ 判据：一个 `<svg>` 若既**没有 width/height 属性**（无内在尺寸），
+ *   又**没有任何更具体的 CSS 规则**给它尺寸 ⇒ 它会塌成 0×0 ⇒ **等于不存在**。
+ *   ★ 实测（本轮 CDP 实测，8 页）：**2 处 0×0**，都在仪表盘首页 ——
+ *     「刷新数据」按钮与「图例」开关 ⇒ 那两个控件渲染成**空方块**。
+ * ★ 为什么用 `:where()`：它的特异性**恒为 0** ⇒ 这是**兜底**语义 ⇒
+ *   任何既有规则（`.journey-trigger svg { width: 15px}` 之类）都压得住它
+ *   ⇒ ★★ 本条**只影响当前是 0×0 的那些**，不改动任何已经正常的图标。
+ * ★ 门：`web/scripts/design-icon-size-runtime-check.mjs`（`design-icon-size:runtime-check`）。 */
+:where(svg:not([width]):not([height])) {
+  width: var(--kx-icon-size);
+  height: var(--kx-icon-size);
 }
 
 /* 滚动条：Firefox 用 scrollbar-color，WebKit 用伪元素。 */
