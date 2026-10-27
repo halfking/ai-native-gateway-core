@@ -1,0 +1,46 @@
+{
+  "metric": "maxVisible = 该页任一动作区里同时可见的动作数上限（不得上升）；reachable = 该页一个动作区里「可见 + 「更多」菜单项」的动作总数（不得下降 ⇒ 防「删按钮让门变绿」）",
+  "maxVisible": {
+    "/free-pool": 4,
+    "/model-pricing": 2,
+    "/request-detail/0cb0f2a4c71f2685656040e6930f369d": 4,
+    "/models": 3,
+    "/admin/proxy": 3,
+    "/keys": 2,
+    "/request-logs": 2
+  },
+  "reachable": {
+    "/free-pool": 9,
+    "/model-pricing": 2,
+    "/request-detail/0cb0f2a4c71f2685656040e6930f369d": 4,
+    "/models": 3,
+    "/admin/proxy": 3,
+    "/keys": 2,
+    "/request-logs": 2
+  },
+  "updated": "2026-10-27",
+  "history": [
+    {
+      "updated": "2026-10-27",
+      "maxVisible": {
+        "/free-pool": 4,
+        "/model-pricing": 2,
+        "/request-detail/0cb0f2a4c71f2685656040e6930f369d": 4,
+        "/models": 3,
+        "/admin/proxy": 3,
+        "/keys": 2,
+        "/request-logs": 2
+      },
+      "reachable": {
+        "/free-pool": 9,
+        "/model-pricing": 2,
+        "/request-detail/0cb0f2a4c71f2685656040e6930f369d": 4,
+        "/models": 3,
+        "/admin/proxy": 3,
+        "/keys": 2,
+        "/request-logs": 2
+      },
+      "reason": "第 25 增量新建：整改后实测值。/free-pool 可见动作上限 9→4、可达动作总数 9→9（5 个动作收进「更多」，一个没丢）；/request-detail 可见 5→4（删掉与「←」同一个 goBack 的冗余「关闭」，可达随之 -1 属**刻意删除冗余入口**）。其余 5 页不变。"
+    }
+  ]
+}

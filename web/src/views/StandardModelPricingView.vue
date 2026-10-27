@@ -21,6 +21,7 @@ import { useModelCatalogFilters } from '../composables/useModelCatalogFilters'
 import { sortByName } from '../utils/sortByName'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useActionMessage } from '../composables/useActionMessage'
+import ActionOverflowMenu from '../components/ui/ActionOverflowMenu.vue'
 
 const { t } = useI18n()
 
@@ -241,6 +242,23 @@ function openEdit(row: AdminMaasModelRate) {
 
 function closeEdit() {
   editRow.value = null
+}
+
+// ★ 2026-10-27 第 25 增量（动作区必须可扫读）：编辑弹窗底栏从 5 个并列按钮
+//   收到 3 个可见动作 —— ① 明面保留「保存 / 取消」（弹窗的收尾动作）
+//   ② 3 个**整表范围**的工具动作（复制价格 / 粘贴 / 填充全局）收进「更多」。
+//   ★ 这三个动作的共同点是「一次改动全部 7 个费率字段」⇒ 它们是**表单级**工具，
+//   不是某个字段的动作 ⇒ 归到一处比平铺在底栏更贴切。
+const editModalTools = computed(() => [
+  { key: 'copy', label: '复制价格' },
+  { key: 'paste', label: '粘贴', disabled: !clipboard.value },
+  { key: 'fillGlobal', label: t('standardModelPricing.editModal.fillGlobal') },
+])
+
+function onEditModalTool(key: string) {
+  if (key === 'copy') copyEditForm()
+  else if (key === 'paste') pasteEditForm()
+  else if (key === 'fillGlobal') fillGlobalToEdit()
 }
 
 async function saveEdit() {
@@ -726,10 +744,9 @@ onMounted(load)
           <button class="btn btn-primary btn-sm" :disabled="savingRow" @click="saveEdit">
             {{ savingRow ? t('standardModelPricing.editModal.saving') : t('standardModelPricing.editModal.save') }}
           </button>
-          <button class="btn btn-ghost btn-sm" type="button" @click="copyEditForm">复制价格</button>
-          <button class="btn btn-ghost btn-sm" type="button" :disabled="!clipboard" @click="pasteEditForm">粘贴</button>
-          <button class="btn btn-ghost btn-sm" type="button" @click="fillGlobalToEdit">{{ t('standardModelPricing.editModal.fillGlobal') }}</button>
           <button class="btn btn-ghost btn-sm" type="button" @click="closeEdit">{{ t('standardModelPricing.editModal.cancel') }}</button>
+          <!-- ★ 第 25 增量：3 个表单级工具收进「更多」（复制价格 / 粘贴 / 填充全局） -->
+          <ActionOverflowMenu :items="editModalTools" @select="onEditModalTool" />
         </div>
       </div>
     </div>

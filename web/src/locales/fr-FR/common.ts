@@ -21,6 +21,7 @@ export default {
     yes: 'Oui',
     no: 'Non',
     retry: 'Réessayer',
+    more: 'Plus',
   },
   status: {
     enabled: 'Activé',
