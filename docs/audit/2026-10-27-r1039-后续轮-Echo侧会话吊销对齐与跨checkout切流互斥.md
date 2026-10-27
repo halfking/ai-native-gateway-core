@@ -267,10 +267,10 @@ dl_atomic_switch "$RELEASE_VERSION"
 | SQL | **零 DDL** ⇒ 211 / 252 无需为本轮代码应用迁移 |
 
 ⚠ **一条【既有】环境性 flake（零因果对拍已做）** —— `tests/deploy_local_contract_test.sh` 的
-「named Redis discovery should pick nbjl-redis」这条断言**时绿时红**
-（本轮实测：本树 6 次里红 4 次）。**零因果对拍**：在**不含本轮提交**的 pristine
-worktree（`e936c50b0` = 本轮合并的**另一父**）上跑同一条测试，
-**失败明细逐字相同**（pristine 侧 6 次里红 5 次）
+Redis 发现断言**时绿时红**（本轮实测：本树 6 次里红 4 次、2 次绿）。
+**零因果对拍**：在**不含本轮提交**的 pristine worktree（`e936c50b0` = 本轮合并的
+**另一父**）上跑同一条测试 ⇒ **6 次全红**（5 次红在「named Redis discovery should pick
+nbjl-redis」、1 次红在同族的「scan-without-redis-cli should accept by port heuristic」）
 ⇒ **与本轮改动零因果**（本轮改的是切流锁原语 + Echo 中间件，**不碰** Redis 发现路径）。
 ⇒ 登记为**既有环境性 flake**，本轮**不修**（要修得先弄清「mock 的 `docker ps`
 为什么偶发不生效」，属另一条工作线）。
