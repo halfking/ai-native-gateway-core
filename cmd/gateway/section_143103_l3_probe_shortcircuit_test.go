@@ -253,13 +253,21 @@ func TestSection143103_SysNamespaceIsGatewayOnly(t *testing.T) {
 	}
 
 	// ── (b) deriveGatewaySessionID：非 gw_/gt_/gs_ 一律前置 gw_ ─────────
+	// 2026-10-28 分支审计轮：wip/01 把实现收拢进 internal/sessionid（单一真值源），
+	// session_routing.go 只剩委托。门跟着委托链走：① 委托必须仍然指向
+	// sessionid.DeriveGatewayID（防静默换实现）；② gw_ 前置逻辑去它的真身里断言。
 	routingSrc := stripComments143103(readRepoFile143103(t, filepath.Join("domains", "streaming", "session_routing.go")))
 	body = funcBody143103(t, routingSrc, "deriveGatewaySessionID")
+	if !strings.Contains(body, "sessionid.DeriveGatewayID") {
+		t.Error("deriveGatewaySessionID 不再委托 sessionid.DeriveGatewayID —— 单一真值源被绕开，gw_ 前置契约的落点漂了")
+	}
+	sessionidSrc := stripComments143103(readRepoFile143103(t, filepath.Join("internal", "sessionid", "sessionid.go")))
+	body = funcBody143103(t, sessionidSrc, "DeriveGatewayID")
 	if !strings.Contains(body, "\"gw_\"+sessionID") && !strings.Contains(body, "\"gw_\" + sessionID") {
-		t.Error("deriveGatewaySessionID 不再前置 gw_ —— 客户端自报的异构命名空间会原样落库 ⇒ 承重前提破了")
+		t.Error("DeriveGatewayID 不再前置 gw_ —— 客户端自报的异构命名空间会原样落库 ⇒ 承重前提破了")
 	}
 	if strings.Contains(body, "sys:") {
-		t.Error("★ deriveGatewaySessionID 里出现 \"sys:\" ⇒ 客户端可造出合成命名空间")
+		t.Error("★ DeriveGatewayID 里出现 \"sys:\" ⇒ 客户端可造出合成命名空间")
 	}
 
 	// ── (c) 会话库 mint：gw_ + uuid ─────────────────────────────────────

@@ -11,6 +11,9 @@ import {
   type MaasCouponRedemption,
 } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
+import { exportFile } from '../../utils/exportFile'
+import { readExportBlob, ExportTooLargeError } from '../../utils/exportResponse'
+import { formatBytes } from '../../utils/format'
 import PageBackLink from '../../components/PageBackLink.vue'
 import { authBearer } from '../../store'
 
@@ -69,15 +72,15 @@ async function downloadCSV() {
       credentials: 'include',
     })
     if (!res.ok) throw new Error(`export ${res.status}`)
-    const blob = await res.blob()
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'bills.csv'
-    a.click()
-    URL.revokeObjectURL(url)
+    // UI规范 19 §3.2 D-5：下载走 exportFile 降级链（分享面→壳桥→blob）；
+    // 取流要受控（readExportBlob）—— 超限要给用户看得见的那个数。
+    const blob = await readExportBlob(res)
+    await exportFile({ filename: 'bills.csv', blob })
   } catch (e) {
-    error.value = surfaceError(e, { key: 'tenants.bills.exportFailed' })
+    error.value =
+      e instanceof ExportTooLargeError
+        ? t('common.exportTooLarge', { max: formatBytes(e.limit) })
+        : surfaceError(e, { key: 'tenants.bills.exportFailed' })
   }
 }
 
@@ -161,8 +164,8 @@ onMounted(load)
 .coupon-row { display: flex; gap: 8px; max-width: 480px; }
 .coupon-row .input { flex: 1; }
 .data-table { width: 100%; border-collapse: collapse; }
-.data-table th, .data-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border, #e5e7eb); }
-.empty, .hint { color: var(--text-secondary, #6b7280); }
-.error-banner { color: var(--danger, #b91c1c); }
-.redeem-list { margin-top: 12px; padding-left: 18px; color: var(--text-secondary, #6b7280); }
+.data-table th, .data-table td { text-align: left; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); }
+.empty, .hint { color: var(--text-secondary); }
+.error-banner { color: var(--danger); }
+.redeem-list { margin-top: var(--space-3); padding-left: var(--space-4); color: var(--text-secondary); }
 </style>

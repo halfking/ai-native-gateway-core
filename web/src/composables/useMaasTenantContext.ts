@@ -77,7 +77,6 @@ export function useMaasTenantContext() {
       case 'pricing':
         return { to: { path: '/tenant/account', ...(q ? { query: q } : {}) }, label: '返回账户' }
       case 'usage':
-        return { to: { path: '/tenant/account', ...(q ? { query: q } : {}) }, label: '返回账户' }
       case 'bills':
         return { to: { path: '/tenant/account', ...(q ? { query: q } : {}) }, label: '返回账户' }
       case 'account':
