@@ -288,18 +288,21 @@ if [ -n "$API_KEY" ]; then
 fi
 
 # ── Step 3: reset（force-enable + 立即探测）────────────────────────────────
-say "── Step 3: reset-state（trigger_probe=true）"
-awk -F'|' '{print $1}' "$TMPDIR_RECOVER/pairs.txt" | sort -u > "$TMPDIR_RECOVER/creds.txt"
-while read -r cid; do
+# ★ 必须带 raw_model（2026-10-27 二次实测教训）：reset-state 的 raw_model 为空
+#   = **整凭据** force-enable（admin/routing_reset.go:34）⇒ 会把同凭据下
+#   「manual: 前缀下线的协议红绑定」一并拉回路由 ⇒ 本轮 291 个下线被
+#   13 次凭据级 reset 全部清空的真因。带 raw_model ⇒ 只 force-enable 该对。
+say "── Step 3: reset-state（对级 raw_model，trigger_probe=true）"
+while IFS='|' read -r cid model; do
   [ -n "$cid" ] || continue
   code=$(api POST "/api/routing/credentials/$cid/reset-state" \
-    '{"reason":"credential-health-recover.sh post-deploy auto recovery","trigger_probe":true}')
+    "$(printf '{"reason":"credential-health-recover.sh post-deploy auto recovery","raw_model":"%s","trigger_probe":true}' "$model")")
   if [ "$code" = "200" ]; then
-    say "   ✓ cred=$cid reset-state OK"
+    say "   ✓ cred=$cid model=$model reset-state OK"
   else
-    say "   ⚠ cred=$cid reset-state HTTP $code: $(head -c 140 "$TMPDIR_RECOVER/last.json" 2>/dev/null)"
+    say "   ⚠ cred=$cid model=$model reset-state HTTP $code: $(head -c 140 "$TMPDIR_RECOVER/last.json" 2>/dev/null)"
   fi
-done < "$TMPDIR_RECOVER/creds.txt"
+done < "$TMPDIR_RECOVER/pairs.txt"
 
 # ── Step 4: check（轮询，全部恢复或超时为止）────────────────────────────────
 # 判据来源自动降级：优先 GET /api/credentials/{id}/models/{model}/state
