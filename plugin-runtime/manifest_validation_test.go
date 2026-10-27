@@ -1,10 +1,10 @@
 package pluginruntime
 
 import (
-	"runtime"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
