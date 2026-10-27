@@ -945,6 +945,28 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"⇒ 890 删掉 v1 族之后，本文件**不受任何影响**；" +
 			"反而是它**主动**保证 canonical 视图不再长回 v1 臂（bodyHasV1Arm 探针 + 不做 DDL 的退化分支）。",
 	},
+
+	// ── 2026-10-28 分支审计轮补登（origin a321cd963/e5651bd69 + wip/01 sessionid 收拢）──
+	"admin/credential_monitor.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via:     ":384 `COALESCE((SELECT COUNT(*) FROM ` + dbpkg.SessionFamilyCredentialCountSourceSQL(\"c.id\") + ` q), 0)`——凭据请求数窄投影（R50 探针选型读点改走会话族）。",
+		Consequence: "与 v1 无关（会话族计数源；退役时该计数列随函数一起退役）。",
+	},
+	"bg/shared_pick.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via:     ":52 `FROM ` + dbpkg.SessionFamilyMostUsedClientModelSourceSQL() + ` ` + alias + ``——探针选型的「最常用 client/model」读点（R50），两臂（hot ∪ 父表）由该 helper 内联。",
+		Consequence: "与 v1 无关（helper 即两臂并集；退役时随 helper 一起退役）。",
+	},
+	"internal/sessionfamily/exists_by_key.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via:     ":69 ExistsByKeySQL：`SELECT 1 FROM \" + src` 的 src 是**形参** ⇒ 工具判 unresolved(tool)；实际两臂在**同一函数内**以字面量传入（`leg(\"public.session_turns_hot\")` / `leg(\"public.session_turns\")`）＝ hot ∪ 父表幂等检查（写侧 NOT EXISTS 守卫）。",
+		Consequence: "与 v1 无关（两臂字面量就在本函数内；退役时随幂等守卫一起退役）。",
+	},
+	"internal/sessionfamily/turns_reads.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via:     "3 处：① :223 antiJoinPredicate `NOT EXISTS (SELECT 1 FROM public.session_turns archived`（归档腿反连接）；② :237/:245 两臂窄投影 `FROM public.session_turns_hot hot` / `FROM public.session_turns`（R172 会话族轮次读点去视图化的两臂直查，DP/AL 分离）。",
+		Consequence: "与 v1 无关（会话族两面直查；两臂列集由 TurnsReadColumns 统一，退役时随投影函数一起退役）。",
+	},
 }
 
 // repoRoot 已移到同目录 tmproot_test.go（无 build tag）。
@@ -1435,6 +1457,15 @@ var documentedSnapshot = bucketSnapshot{
 	//
 	// ★ 2026-10-20（迁移 890）：上面对「逐项判方向」的整段说明就是本版的依据。
 	//
+	// ★ 2026-10-28（分支审计轮）：147 → 156（canonical 59 → 62 文件 / 125 → 130 处、
+	//   unresolved 13 → 14 文件 / 22 → 26 处）。+9 处全部是「变大 = 把看不见变成看得见」
+	//   或新增会话族读方：① origin a321cd963（R50 探针选型读点改走会话族窄投影）
+	//   新增 admin/credential_monitor.go(1) / bg/shared_pick.go(1)（canonical）；
+	//   ② origin e5651bd69（热路径 turn INSERT 幂等检查两臂直查）新增
+	//   internal/sessionfamily/exists_by_key.go(1)（unresolved，src 是形参、两臂字面量在同函数内）；
+	//   ③ origin R172 两臂窄投影新增 internal/sessionfamily/turns_reads.go(3)（canonical）；
+	//   ④ wip/01~07 合入新增读点（recording_consent / session_trash / maas 账单族）。
+	//   4 个文件已逐站点登记进 indirectSiteAssessments（含 Via 机制与退役后果）。
 	// ★ 2026-10-21（R65 轮）：135 → 141（canonical 57 → 59 文件 / 116 → 122 处）。
 	//   成因逐站点核过（见上面第 ⑤ 条）：+7 处来自三个新增的会话族读方文件，
 	//   −1 处是一个拼接点被改写成纯字面量（离开了本工具的口径，目标仍是会话族）。
@@ -1462,7 +1493,7 @@ var documentedSnapshot = bucketSnapshot{
 	//      （唯一两个调用点的入参都是 session_turns_hot / session_turns）。
 	//   ⚠ **方向判据逐条核过**：没有任何一个桶变小 ⇒ 不是「扫描范围被改小/
 	//     解析失败被吞」；全部 5 处的 resolved 关系名都是会话族 ⇒ 无 v1 读方。
-	TotalSites: 147,
+	TotalSites: 156,
 	V1Files:    0,
 	V1Sites:    0,
 	// ★ v1 臂桶**归零**：不是「推导器坏了」，是**没有任何视图还有 v1 臂**。
@@ -1480,10 +1511,10 @@ var documentedSnapshot = bucketSnapshot{
 	// 且豁免要过三道可证伪的腿：切换迁移存在 / 在启动链里 / 排在 v1 退役之前）。
 	V1ArmFiles: 0,
 	V1ArmSites: 0,
-	CanonFiles: 59,
-	CanonSites: 125,
-	UnresFiles: 13,
-	UnresSites: 22,
+	CanonFiles: 62,
+	CanonSites: 130,
+	UnresFiles: 14,
+	UnresSites: 26,
 }
 
 func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {

@@ -43,6 +43,12 @@ var allowedParentDML = []struct {
 	Count  int
 	Reason string
 }{
+	{"admin/recording_consent.go", "session_bodies", 1,
+		"撤回录制同意时按租户清空已录 body：hot 与父表冷腿成对 DELETE（双面删习语，与 cmd/tools/validate_sessions_v2/repair.go 同族）⇒ 不存在「只删单面」漏面；回收站搬移另走 session_bodies_unified 读面。2026-10-28 分支审计轮（wip/02 合入）登记。"},
+	{"admin/session_trash.go", "session_bodies", 1,
+		"回收站搬移需要同时动冷热两面 body：读走 session_bodies_unified 合并视图（不裸读父表）、删走 hot+父表成对 DELETE ⇒ 两面覆盖由 repair_two_surface_test 逐条断言。2026-10-28 分支审计轮（wip/02 合入）登记。"},
+	{"admin/session_trash.go", "sessions", 2,
+		"回收站把会话标 deleted / 恢复时标回 active：sessions 元数据直写父表两处（trash 与 restore 各一），与 admin/session_turns_v2.go 的「会话元数据直写父表」同族，未做分区 pin 绕行 ⇒ R78 登记为待裁决的同族形态。2026-10-28 分支审计轮（wip/02 合入）登记。"},
 	{"admin/session_turns_v2.go", "sessions", 1,
 		"会话摘要/标题回写。代码自带分区 pin 绕行（partition_date = MAX(...))，注释自认「Partitioned sessions table: UPDATE ... ORDER BY/LIMIT is invalid in PostgreSQL」；改 hot 需要先有 v2 摘要投影列，R78 登记为待裁决。"},
 	{"bg/opslog_trimmer.go", "candidate_failure_logs", 1,

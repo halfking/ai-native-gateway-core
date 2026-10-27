@@ -456,6 +456,11 @@
       "red_signal": "baseline 里没有这一项",
       "hollow_result": "red",
       "mech_check": "reader-red-on-hollow"
+    },
+    {
+      "path": "plugin-runtime/testdata/hello-plugin/plugin-manifest.json",
+      "kind": "excluded",
+      "reason": "★ 测试夹具（★ plugin-runtime 的 hello-plugin 测试输入，★ 是一份样例插件清单，★ 不是任何门读的登记册 ⇒ 掏空它没有读者会瞎）"
     }
   ]
 }

@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-10-27T11:19:07.338Z",
+  "exported_at": "2026-10-27T22:21:29.802Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -65,6 +65,14 @@
           "path": "/tenant/usage",
           "labelKey": "nav.item.tenantUsage",
           "icon": "📉",
+          "tenantOnly": true,
+          "tenantScope": "tenant",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/tenant/bills",
+          "labelKey": "nav.item.tenantBills",
+          "icon": "🧾",
           "tenantOnly": true,
           "tenantScope": "tenant",
           "pluginScope": "*"
