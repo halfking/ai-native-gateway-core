@@ -273,7 +273,7 @@ func TestProbeExclusionPredicateCallSitesR50(t *testing.T) {
 		{"today_success_probe.go", 1, 0},  // recovery recheck — session
 		{"model_tier.go", 1, 0},           // Top-N usage — session
 		{"daily_probe_audit.go", 0, 1},    // 72h usage — canonical view
-		{"shared_pick.go", 0, 1},          // most-used pick — canonical view
+		{"shared_pick.go", 0, 1},          // most-used pick — native narrow projection (R170)
 		{"passive_probe_listener.go", 0, 3},
 	}
 	for _, tc := range cases {
@@ -281,10 +281,14 @@ func TestProbeExclusionPredicateCallSitesR50(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", tc.file, err)
 		}
-		if got := strings.Count(src, `fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")`); got < tc.session {
+		// ★ 计数用**不依赖别名实参**的调用形态（`fmt.Sprintf(<谓词>`），
+		//   而不是把 `"rl", "rl", "rl"` 写死 —— R170 起 shared_pick.go 的
+		//   别名变成了变量（`alias`），写死实参的判据会把「别名变了」
+		//   误报成「谓词被换掉了」⇒ ⇒ 判据必须落在**谓词身份**上。
+		if got := strings.Count(src, `fmt.Sprintf(probeTrafficExclusionPredicateSession`); got < tc.session {
 			t.Errorf("%s has %d session-family exclusion sites, want >= %d", tc.file, got, tc.session)
 		}
-		if got := strings.Count(src, `fmt.Sprintf(ProbeTrafficExclusionPredicateView, "rl", "rl", "rl")`); got < tc.view {
+		if got := strings.Count(src, `fmt.Sprintf(ProbeTrafficExclusionPredicateView`); got < tc.view {
 			t.Errorf("%s has %d frozen-view exclusion sites, want >= %d", tc.file, got, tc.view)
 		}
 	}
@@ -309,6 +313,30 @@ func TestProbeExclusionPredicateCallSitesR50(t *testing.T) {
 		// 反向：canonical 视图读面不得用会话族谓词？—— 会话族谓词的三列
 		// （origin_stage / task_type / origin_actor）在 canonical 视图里都在，
 		// 所以那不是 42703 风险；这里只做记录，不断言。
+	}
+	// ★ R170 补上**另一侧**的方向性门：shared_pick.go 在 R170 改成读
+	// **会话族窄投影**（db.SessionFamilyMostUsedClientModelSourceSQL），
+	// 那个投影**带 details 腿的 quality_flags**、但**不带 origin_stage**
+	// ⇒ ⇒ 它**必须**用 quality_flags 变体（视图变体），
+	// 且**不许**用 origin_stage 变体（会话族谓词）—— 否则真库上每次 42703。
+	//
+	// ★ 与上面那组互为镜像：上面守「有 quality_flags 却没有 origin_stage 的
+	//   读面不许用视图谓词」，这里守「有 quality_flags 但没有 origin_stage 的
+	//   窄投影读面不许用会话族谓词」。★ 两边都判的是「**这个读面有哪些列**」，
+	//   不是「它读的是不是视图」—— R170 把这条判据从「读面身份」改成「列集合」，
+	//   因为窄投影既不是视图也不是原生会话表。
+	{
+		src, err := readSource("shared_pick.go")
+		if err != nil {
+			t.Fatalf("read shared_pick.go: %v", err)
+		}
+		if !strings.Contains(src, "fmt.Sprintf(ProbeTrafficExclusionPredicateView") {
+			t.Errorf("shared_pick.go 的窄投影带 quality_flags ⇒ 必须用 quality_flags 变体谓词")
+		}
+		if strings.Contains(src, "probeTrafficExclusionPredicateSession") {
+			t.Errorf("shared_pick.go 的窄投影**没有** origin_stage 列 ⇒ " +
+				"不得使用引用 origin_stage 的会话族谓词（真库上每次 42703）")
+		}
 	}
 	// The selfcheck usage scan must NOT carry the old single-arm spelling.
 	selfcheckSrc, err := readSource("credential_selfcheck.go")

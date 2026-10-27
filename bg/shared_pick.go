@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 )
 
@@ -25,6 +26,41 @@ type pickDB interface {
 type PickProbeResult struct {
 	Model  string
 	Source string
+}
+
+// mostUsedClientModelSQL 返回「近 7 天最常用 client_model」查询的 SQL。
+//
+// ★ 为什么抽成函数（R170）：★ 判据必须落在【产物】上 —— SQL 拼在内联
+// raw string 里时，守卫只能去扫源码片段（★ 那是 R168 记过的弱判据：
+// 「Contains 在形状约束上永远是弱判据」）。抽出来后，守卫可以直接断言
+// 这条 SQL 的**最终形态**：投影了哪些列、谓词引用了哪些列、别名是否一致。
+//
+// ★ alias 是**调用方给的**：探针排除谓词 ProbeTrafficExclusionPredicateView
+// 是别名参数化（三处占位符）的 ⇒ 窄投影与视图读面共用同一条谓词 ⇒
+// 谓词需要的三列（quality_flags / task_type / origin_actor）**必须**都在
+// 窄投影里（少一列就是 42703 —— 仓内 R50 记录过同族事故）。
+//
+// ★★ **为什么用「视图变体」谓词而不是「会话族变体」谓词**（R170 定案）：
+//
+//	窄投影带 details 腿 ⇒ 有 `quality_flags`；但**没有** `origin_stage`
+//	（origin_stage 不在会话族的 details 腿上）⇒ ⇒ 会话族谓词会 42703 ⇒
+//	⇒ 只能选 quality_flags 变体。★ 这条不是「因为读的是视图」，
+//	而是「因为这个读面有哪些列」—— 与 R49 自纠的判据同源。
+func mostUsedClientModelSQL(alias string) string {
+	return `
+		SELECT client_model
+		FROM ` + dbpkg.SessionFamilyMostUsedClientModelSourceSQL() + ` ` + alias + `
+		WHERE ` + alias + `.credential_id = $1
+		  AND ` + alias + `.ts > now() - interval '7 days'
+		  AND ` + alias + `.success = TRUE
+		  -- R50 dual-arm exclusion (R49 自纠 S1：本读面有 quality_flags、无 origin_stage ⇒ 只能用 quality_flags 变体) — a model only probes ever
+		  -- touched must not win "most-used" and steer the probe target.
+		  AND ` + fmt.Sprintf(ProbeTrafficExclusionPredicateView, alias, alias, alias) + `
+		  AND ` + alias + `.client_model IS NOT NULL
+		GROUP BY ` + alias + `.client_model
+		ORDER BY count(*) DESC
+		LIMIT 1
+	`
 }
 
 // PickProbeModelForCredential implements the 4-level fallback algorithm
@@ -72,28 +108,36 @@ func PickProbeModelForCredential(ctx context.Context, db pickDB, credID int) (Pi
 		return PickProbeResult{}, nil
 	}
 
-	// Priority 1: most-used client_model in _request_logs (7d).
-	// _request_logs uses the boolean success column (NOT status_code);
-	// request_status stores the upstream HTTP code as text when present.
+	// Priority 1: most-used client_model in the session-turn family (7d).
+	//
 	// 2026-09-11: read the current-month surface — the bare parent only
 	// holds cold rows, so the 7d window was blind to the most recent days
 	// of traffic and picked a stale "most-used" model.
+	//
+	// ★ 2026-10-27（R170）：读面从 canonical 视图改为**窄投影两臂**
+	// （db.SessionFamilyMostUsedClientModelSourceSQL，7 列）。
+	//
+	// ★★ **口径等价**（252 生产规模，同快照逐值对拍）：分组多重集**逐值相同**
+	//   （9 组 / 14,317 行 / 双向差集 0/0 / top-1 相同）⇒ **不改行为**。
+	//
+	// ★★ **性能口径（R170 自己推翻了自己上一轮写的结论）**：
+	//   ★ 「改窄投影省 12.6×」是**单次采样噪声** —— 同计划形状的九个执行在 252 上
+	//     耗时 368 ms ~ 16,194 ms（**44×**）⇒ 单点读数没有分辨力。
+	//   ★ 「视图 118 列 ⇒ 每行物化 118 列」**不成立** —— PostgreSQL 会内联视图
+	//     并裁剪未引用列 ⇒ 计划代价两者几乎相同（2026.88 vs 2025.29）⇒
+	//     **执行阶段没有可省的量**。
+	//   ★ 真实且可复现的收益在**规划**：视图 Planning 25~91 ms vs 窄投影 8~13 ms
+	//     （3~11×，CPU 成本，与 IO 噪声无关，每次调用都付）。
+	//
+	// ★ 而「最常用模型」这个功能**本来就是活的**（R169 一度误判为恒失效，
+	//   真因是按列序下标读投影表 ⇒ 撞上 details 位翻转形态）⇒ 本次改写
+	//   **不改变行为** ⇒ 不需要产品裁决。
+	//
+	// ★ 本次改写的**结构性**价值：对 canonical 视图的依赖被去掉（这条读点改读
+	//   会话族原生源）⇒ 读点的形态从此由**仓内代码**钉住，而不是由一个
+	//   可能漂移的数据库对象钉住（守卫见 bg/shared_pick_most_used_model_test.go）。
 	var topModel string
-	err = db.QueryRow(ctx, `
-		SELECT client_model
-		FROM request_logs_with_current_month rl
-		WHERE rl.credential_id = $1
-		  AND ts > now() - interval '7 days'
-		  AND success = TRUE
-		  -- R50 dual-arm exclusion, frozen-view variant (R49 自纠 S1：origin_stage 不在
-		  -- 113 列契约，视图读面必须用 view 谓词；INV-3) — a model only probes ever
-		  -- touched must not win "most-used" and steer the probe target.
-		  AND `+fmt.Sprintf(ProbeTrafficExclusionPredicateView, "rl", "rl", "rl")+`
-		  AND client_model IS NOT NULL
-		GROUP BY client_model
-		ORDER BY count(*) DESC
-		LIMIT 1
-	`, credID).Scan(&topModel)
+	err = db.QueryRow(ctx, mostUsedClientModelSQL("n"), credID).Scan(&topModel)
 	if err == nil && topModel != "" {
 		if bindingAvailableForModel(ctx, db, credID, topModel) {
 			return PickProbeResult{Model: topModel, Source: "auto:request_log"}, nil

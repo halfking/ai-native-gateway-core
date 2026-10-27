@@ -764,14 +764,12 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 		ExemptReason: exemptNoReadPoint,
 		Note:         "只在注释里引用过视图名；探针策略本身不读它",
 	},
-	"bg/shared_pick.go": {
-		Form:  formDirectLiteralSQL,
-		Class: classNeedsDetailsLeg,
-		Note:  "探针挑选（探针系统后台面）",
-		Points: []canonicalReadPoint{
-			{Kind: "read", Columns: []string{"client_model:detail", "credential_id:expr", "origin_stage:base", "success:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: true, ExemptReason: exemptAuditOrToolingFace, Note: "探针挑选（探针系统后台面）；本读点读 client_model:detail,credential_id:expr,origin_stage:base,success:base,ts:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
-		},
-	},
+	// ★ R170（2026-10-27）：`bg/shared_pick.go` 的条目**已删除** ——
+	//   它的 Priority 1 读点（探针选型「近 7 天最常用 client_model」）
+	//   改读会话族原生源（db.SessionFamilyMostUsedClientModelSourceSQL），
+	//   **不再提 canonical 视图** ⇒ 它不再是 canonical 视图的读点 ⇒
+	//   「登记了但不再提及」= 登记簿腐烂（TestCanonicalReadPointRegistryIsNotRot
+	//   会红）⇒ 条目必须删，而不是把 Form 改成什么别的形状。
 	"bg/stats_minute_rollup.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,

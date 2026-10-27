@@ -942,15 +942,16 @@ func nullPaddedColWordRE(col string) *regexp.Regexp {
 // 它既引用了会话臂视图、又提到了某个 NULL 补位列。
 //
 // 为什么要「函数」而不是「字符串字面量」——这是本轮实测逼出来的：
-// 逐字面量归属会被**拼接出来的 SQL** 击穿。bg/shared_pick.go 的 Priority 1 读点里
+// 逐字面量归属会被**拼接出来的 SQL** 击穿。
 //
-//	`SELECT client_model ... FROM request_logs_with_current_month rl
-//	 WHERE ... AND client_model IS NOT NULL GROUP BY client_model`
-//
-// 夹着一个 `<ProbeTrafficExclusionPredicateView>` 占位，整条 SQL 由多个字面量拼成：
-// 含 `client_model` 的那个字面量不出现视图名，含视图名的那个字面量不含
-// `client_model`。逐字面量归属会把这条**真谓词**（该读点的唯一产出就是按
-// client_model 分组取最常用模型，而它是补位列 ⇒ 恒 0 行）误判成误触发。
+// ★ R170 更新见证：原见证 `bg/shared_pick.go` 的 Priority 1 读点已改读
+// 会话族原生源（不再提 canonical 视图 ⇒ 不再是本族成员）；
+// 新的见证是 `admin/usage_enhanced.go` —— 它的视图读与 `id` 命中**分处不同
+// 字面量**：视图名在 `"BaseTable": "request_logs_with_current_month rl"`
+// （配置常量串，不含 SQL 关键字），`id` 在 `" LEFT JOIN providers p ON
+// p.id = ul.provider_id"`（JOIN 片段，不含视图名）。
+// 逐字面量归属要求「同一片字面量里既有视图名又有补位列」⇒ 对它**恒不命中**
+// ⇒ ⇒ 一个真触发会**悄悄离开本族** ⇒ 所以必须用函数作用域口径。
 //
 // 为什么不是「整文件」——那是本轮修掉的旧形状：`id` 命中常常来自**别的表**
 // （`ak.id` on api_keys、`WHERE id = 1` on rollup cursor、`RETURNING id` on
