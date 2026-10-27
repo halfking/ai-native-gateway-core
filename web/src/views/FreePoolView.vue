@@ -718,16 +718,21 @@ onUnmounted(() => {
         <button class="btn btn-ghost" type="button" @click="runDiscover" :disabled="loading || syncing">
           {{ t('freePool.discover') }}
         </button>
-        <button class="btn btn-primary" type="button" @click="activeTab = 'assistant'; showKeyForm = false; showAddForm = false">
+        <!-- ★ 2026-10-27 第 22 增量（主色必须唯一）：这四个按钮是**并列的流程入口**，
+             互为平级，不是「一个主动作 + 几个次级」；而本页真正的主作用在各卡片里的
+             提交按钮（「探活并入库」「生成临时邮箱」），那里已经是主色 ⇒
+             工具栏里再摆四个实心主色 = 四个「主动作」= 没有主动作。
+             ⇒ 全部降为次级样式（`btn`），保留可点的可见性，不动任何动作/文案/事件。 -->
+        <button class="btn" type="button" @click="activeTab = 'assistant'; showKeyForm = false; showAddForm = false">
           {{ t('freePool.quickEntry') }}
         </button>
-        <button class="btn btn-primary" type="button" @click="showKeyForm = !showKeyForm">
+        <button class="btn" type="button" @click="showKeyForm = !showKeyForm">
           {{ showKeyForm ? t('freePool.hideKeyForm') : t('freePool.showKeyForm') }}
         </button>
-        <button class="btn btn-primary" type="button" @click="showAddForm = !showAddForm">
+        <button class="btn" type="button" @click="showAddForm = !showAddForm">
           {{ showAddForm ? t('freePool.hideKeyForm') : t('freePool.showAddForm') }}
         </button>
-        <button class="btn btn-primary" type="button" @click="showBulkForm = !showBulkForm">
+        <button class="btn" type="button" @click="showBulkForm = !showBulkForm">
           {{ showBulkForm ? t('freePool.collapseBulk') : t('freePool.bulkPool') }}
         </button>
       </div>

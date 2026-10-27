@@ -464,7 +464,12 @@ const AFFINITY_POLICIES = ['any', 'prefer_same', 'require_same']
     <!-- 状态 Tab -->
     <div v-if="activeTab === 'status'" class="tab-content">
       <div class="actions">
-        <button class="btn-primary" :disabled="batchBusy === 'health-all'" @click="handleBatchHealthCheckAll">
+        <!-- ★ 2026-10-27 第 22 增量（主色必须唯一）：本动作区原本有两个实心主色
+             （批量探活 / 强制切流）⇒ 两个「主动作」= 没有主动作；而**同一个文件的
+             另外三个动作区**（订阅管理 / 节点管理 / 选择策略）都是「一个主色 + 其余次级」
+             ⇒ 这里改成同款层级：主动作 = 「强制切流到最优节点」（改流量路由的那个），
+             「批量探活」是只读诊断 ⇒ 与「刷新」同级。 -->
+        <button class="btn-secondary" :disabled="batchBusy === 'health-all'" @click="handleBatchHealthCheckAll">
           {{ batchBusy === 'health-all' ? t('common.loading') + '…' : t('proxy.actions.batchHealthCheckAll') }}
         </button>
         <button class="btn-primary" :disabled="batchBusy === 'swap'" @click="handleForceSwap">
