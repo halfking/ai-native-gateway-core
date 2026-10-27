@@ -6556,7 +6556,7 @@ func main() {
 			ContextSecret: []byte(cfg.SecretKey),
 			SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
 		})
-		pluginBases := ScanAndStartPluginsWithRegistry(sup, pluginRegistry, pluginManifests)
+		pluginBases := ScanAndStartPluginsWithRegistryDir(sup, pluginRegistry, pluginManifests, pluginsDir)
 		for _, manifest := range pluginManifests {
 			// ★ 2026-10-24 P0-2：manifest 声明**未实现**的插件能力 ⇒ 声明即拒
 			//   （该能力永远不被授予 ⇒ 走那条路由必然 403 capability_denied）。
@@ -6614,6 +6614,24 @@ func main() {
 		}()
 	}
 	wirePluginAuthExtractor()
+	manifestByID := func(id string) *pluginruntime.Manifest {
+		for _, m := range pluginManifests {
+			if m != nil && m.PluginID == id {
+				return m
+			}
+		}
+		return nil
+	}
+	mux.Handle("/api/v1/plugins/", admin.AdminMiddleware(
+		func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/settings") {
+				pluginruntime.SettingsHandler(manifestByID).ServeHTTP(w, r)
+				return
+			}
+			http.NotFound(w, r)
+		},
+		dbConn.Pool(), cfg.SecretKey,
+	))
 	mux.Handle("/api/v1/plugin-nav", admin.AdminMiddleware(
 		func(w http.ResponseWriter, r *http.Request) {
 			pluginruntime.NavHandler(pluginRegistry, pluginruntime.ViewerFromRequest).ServeHTTP(w, r)
