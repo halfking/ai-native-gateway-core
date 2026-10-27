@@ -261,10 +261,29 @@ dl_atomic_switch "$RELEASE_VERSION"
 | `go test ./cmd/gateway/ -run 'TestR1039*'` | ✅ 全绿（含既有 cookie 用例 + 本轮 6 条） |
 | `go test ./admin/` | ✅ 全绿 |
 | `bash tests/deploy_switch_lock_contract_test.sh` | ✅ ALL PASS（6 条不变量） |
-| `bash tests/deploy_local_contract_test.sh` | ✅ 全绿（既有 29 条断言不回退） |
+| `bash tests/deploy_local_contract_test.sh` | ⚠️ 见下方「既有环境性 flake」：本轮改动**不**让任何既有断言变红，但它自身有一条 Redis 发现断言**时绿时红**（既有，非本轮引入） |
 | `bash tests/deploy_blue_green_contract_test.sh` | ✅ OK（4 测） |
 | 变异臂 | Go 侧 **M1~M4 4/4 断言红**；shell 侧 **N1~N4 4/4 断言红**；还原后 md5 逐字一致 |
 | SQL | **零 DDL** ⇒ 211 / 252 无需为本轮代码应用迁移 |
+
+⚠ **一条【既有】环境性 flake（零因果对拍已做）** —— `tests/deploy_local_contract_test.sh` 的
+「named Redis discovery should pick nbjl-redis」这条断言**时绿时红**
+（本轮实测：本树 6 次里红 4 次）。**零因果对拍**：在**不含本轮提交**的 pristine
+worktree（`e936c50b0` = 本轮合并的**另一父**）上跑同一条测试，
+**失败明细逐字相同**（pristine 侧 6 次里红 5 次）
+⇒ **与本轮改动零因果**（本轮改的是切流锁原语 + Echo 中间件，**不碰** Redis 发现路径）。
+⇒ 登记为**既有环境性 flake**，本轮**不修**（要修得先弄清「mock 的 `docker ps`
+为什么偶发不生效」，属另一条工作线）。
+
+⚠ **一条由本轮提交引入、并已由上游修掉的门红（诚实记账）** —— 本轮给
+`cmd/gateway/main.go` 加了 **3 行**（注释 + 改调用）⇒ `scripts/audit/asset/admin-routes.txt`
+快照里 **106 处 `file:line` 全部前移** ⇒ 快照与源码脱钩 ⇒
+`scripts/ursmcheck` 的 `TestAdminRoutesSnapshotMatchesGenerator` 红。
+⇒ **不是本轮判据抓到的，是并行会话在 `go test ./scripts/ursmcheck/` 全量跑时发现的**
+⇒ 已由上游提交 **`3693353b0`**「刷新 admin 路由清单快照 —— 修 r1039 提交留下的行号漂移」
+用**生成器的正规更新模式**修好（`bash scripts/audit/extract-admin-routes.sh --update-snapshot`
+⇒ 106 行差异，去掉行号后**逐行比对差异 0** ⇒ 纯行号漂移、零路径/方法变化）。
+⇒ **本轮在这条修好之后的树（`origin/main` = `3693353b0`）上复跑该门：`ok`（16.2s）**。
 
 ⚠ **既有红灯（不是本轮引入）**：`cmd/gateway` 的 **20 条 lite 存储模式用例**
 （`TestLiteRequestLogSink_*` / `TestLiteCatalog*` / `TestInitStorageMode*` …）
@@ -305,4 +324,14 @@ dl_atomic_switch "$RELEASE_VERSION"
   | `docs/audit/2026-10-27-r1039-后续轮-…md` | 本文件 |
   | `LESSONS.md` | **§476**（上游已占 §473/§474/§475 ⇒ 本轮改号） |
 
-- 推送：`origin/main`。
+- 提交：
+  - `a0609e4d1` — 本轮改动（10 个文件，含 §476）；
+  - `f17fe4c1a` — 合并上游 10 个提交（冲突只在 `LESSONS.md`，**两侧都保留**；
+    上游已占 §473/§474/§475 ⇒ 本轮让号改 **§476**）；
+  - `origin/main` 后续由并行会话推进到 `3693353b0`（含 §4 记的那条快照修复）。
+- 推送：`origin/main`；回验 `a0609e4d1` 仍是 `origin/main` 的祖先。
+- ★ **本轮留下的两处「诚实记账」**（都写进了 §4）：
+  ① 本轮给 `cmd/gateway/main.go` 加 3 行 ⇒ admin 路由快照的行号漂移
+     ⇒ `scripts/ursmcheck` 一条门红 ⇒ **已由上游 `3693353b0` 用生成器正规模式修好**；
+  ② `tests/deploy_local_contract_test.sh` 自身的 Redis 发现断言**时绿时红**
+     ⇒ **pristine（不含本轮提交）6/6 全红** ⇒ 既有环境性 flake，零因果。
