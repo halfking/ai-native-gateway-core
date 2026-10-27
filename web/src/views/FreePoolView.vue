@@ -1800,7 +1800,7 @@ onUnmounted(() => {
 }
 .guide-section h4 {
   margin: 0 0 12px;
-  font-size: 15px;
+  font-size: 16px;
   color: var(--text);
 }
 .troubleshooting-list {
@@ -1879,18 +1879,18 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text);
   text-shadow: 0 0 2px var(--bg);
 }
-.qbar-reset { font-size: 10px; margin-top: 3px; }
+.qbar-reset { font-size: 11px; margin-top: 3px; }
 
 /* Health pills — success rate + latency. */
 .health-cell { min-width: 120px; }
 .health-row { display: flex; gap: 4px; flex-wrap: wrap; }
 .health-pill {
-  font-size: 10px;
+  font-size: 11px;
   padding: 2px 6px;
   border-radius: 4px;
   background: var(--neutral-bg);
@@ -1900,15 +1900,15 @@ onUnmounted(() => {
 .hp-ok { color: var(--success); background: var(--success-bg); border-color: var(--success-bd); }
 .hp-bad { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-bd); }
 .hp-mid { color: var(--warning); background: var(--warning-bg); border-color: var(--warning-bd); }
-.fail-streak { color: var(--danger); font-size: 10px; margin-top: 3px; }
-.cooling-tag { color: var(--warning); font-size: 10px; margin-top: 2px; }
+.fail-streak { color: var(--danger); font-size: 11px; margin-top: 3px; }
+.cooling-tag { color: var(--warning); font-size: 11px; margin-top: 2px; }
 .quota-cell { min-width: 130px; }
 
 /* P2 (2026-08-11): multi-key pooling badge — shown when a credential pools
    more than one key for rotation (amplifies one account's free quota). */
 .key-count-badge {
   display: inline-block;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   padding: 1px 7px;
   margin-left: 6px;

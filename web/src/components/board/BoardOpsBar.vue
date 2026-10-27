@@ -76,7 +76,7 @@ function fmtPct(v: number | undefined) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text-muted);
   background: var(--card);
   border: 1px solid var(--border);

@@ -381,7 +381,7 @@ h1 {
 }
 h2 {
   margin: 0 0 12px;
-  font-size: 18px;
+  font-size: 20px;
   border-bottom: 1px solid var(--border);
   padding-bottom: 8px;
 }

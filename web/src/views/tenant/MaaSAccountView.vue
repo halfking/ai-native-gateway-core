@@ -377,7 +377,7 @@ onMounted(load)
 }
 .section-header h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
 }
 .empty {
   text-align: center;

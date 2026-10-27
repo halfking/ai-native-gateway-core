@@ -199,7 +199,7 @@ function itemLabel(item: ResolvedItem): string {
   border-radius: 8px;
   background: transparent;
   color: var(--kx-muted, var(--muted));
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.02em;
   cursor: pointer;
@@ -242,7 +242,7 @@ function itemLabel(item: ResolvedItem): string {
   border-radius: 8px;
   background: transparent;
   color: var(--kx-text, var(--text));
-  font-size: 13.5px;
+  font-size: 13px;
   text-decoration: none;
   cursor: pointer;
   font-family: inherit;

@@ -231,7 +231,7 @@ const TASK_LABELS: Record<string, string> = {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 9px;
+  font-size: 11px;
   color: var(--muted);
 }
 .legend-swatch {

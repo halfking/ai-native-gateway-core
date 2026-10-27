@@ -338,7 +338,7 @@ watch(usageRows, () => void loadBalances())
   flex-wrap: wrap;
 }
 .pv-sec__title {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 700;
   display: flex;
   align-items: center;
@@ -346,7 +346,7 @@ watch(usageRows, () => void loadBalances())
   margin: 0;
 }
 .pv-count {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-muted);
   background: color-mix(in srgb, var(--text-muted) 12%, transparent);
   border-radius: 999px;
@@ -357,7 +357,7 @@ watch(usageRows, () => void loadBalances())
   border: 1px solid var(--accent);
   border-radius: 8px;
   padding: 5px 12px;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
@@ -401,7 +401,7 @@ watch(usageRows, () => void loadBalances())
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 700;
   min-width: 0;
 }
@@ -417,7 +417,7 @@ watch(usageRows, () => void loadBalances())
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   color: var(--on-primary);
   flex-shrink: 0;
@@ -440,12 +440,12 @@ watch(usageRows, () => void loadBalances())
   flex-wrap: wrap;
 }
 .pv-card__cost small {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-muted);
   font-weight: 500;
 }
 .pv-score {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 700;
   padding: 1.5px 7px;
   border-radius: 999px;
@@ -494,7 +494,7 @@ watch(usageRows, () => void loadBalances())
   border-radius: 999px;
 }
 .pv-empty {
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text-muted);
   padding: 18px 0;
   text-align: center;
@@ -513,7 +513,7 @@ watch(usageRows, () => void loadBalances())
 .pv-list {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12.5px;
+  font-size: 12px;
   min-width: 640px;
 }
 .pv-list th {

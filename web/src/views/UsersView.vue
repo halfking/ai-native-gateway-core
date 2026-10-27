@@ -602,16 +602,16 @@ onMounted(() => { load(); loadTenants() })
 }
 .mini-stat { padding: 10px 14px; border-right: 1px solid var(--border); min-width: 0; }
 .mini-stat:last-child { border-right: none; }
-.mini-stat .v { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.mini-stat .v { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .mini-stat .v-ok { color: var(--success); }
 .mini-stat .v-err { color: var(--danger); }
 .mini-stat .l { font-size: 11px; color: var(--muted); }
 
 .col-num { text-align: right; font-variant-numeric: tabular-nums; }
-.cell-sub { font-size: 11.5px; color: var(--muted); }
+.cell-sub { font-size: 11px; color: var(--muted); }
 .mono-time { font-variant-numeric: tabular-nums; }
-.txt-ok { color: var(--success); font-size: 12.5px; }
-.txt-muted { color: var(--muted); font-size: 12.5px; }
+.txt-ok { color: var(--success); font-size: 12px; }
+.txt-muted { color: var(--muted); font-size: 12px; }
 .row-click { cursor: pointer; }
 
 .password-policy {

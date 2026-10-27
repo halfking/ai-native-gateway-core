@@ -257,7 +257,7 @@ onMounted(load)
   border-radius: 999px;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
-  font-size: 0.78rem;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -286,7 +286,7 @@ onMounted(load)
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  font-size: 0.85rem;
+  font-size: 14px;
   color: var(--text-muted);
 }
 
@@ -301,7 +301,7 @@ onMounted(load)
 .data-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.85rem;
+  font-size: 14px;
 }
 
 .data-table th,
@@ -344,7 +344,7 @@ onMounted(load)
   display: inline-block;
   padding: 0.1rem 0.5rem;
   border-radius: 999px;
-  font-size: 0.75rem;
+  font-size: 12px;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   border: 1px solid var(--border);
 }

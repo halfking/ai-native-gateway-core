@@ -437,7 +437,7 @@ onUnmounted(() => {
 }
 .page-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 24px;
   font-weight: 600;
   color: var(--text);
 }
@@ -474,7 +474,7 @@ onUnmounted(() => {
   margin-left: 6px;
   padding: 1px 6px;
   border-radius: 8px;
-  font-size: 10px;
+  font-size: 11px;
   background: color-mix(in srgb, var(--accent) 20%, transparent);
   color: var(--accent-h);
 }
@@ -503,7 +503,7 @@ onUnmounted(() => {
 .stat-card.segment-expired { border-color: var(--danger); }
 
 .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-.stat-value { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+.stat-value { font-size: 24px; font-weight: 700; color: var(--text); margin-bottom: 4px; font-variant-numeric: tabular-nums; }
 .stat-meta { font-size: 11px; color: var(--muted); }
 .stat-percent { color: var(--muted); margin-left: 4px; }
 

@@ -933,7 +933,7 @@ onUnmounted(() => {
                       </td>
                       <td>
                         <span class="source-chip" :class="`source-${m.data_source}`">{{ m.data_source }}</span>
-                        <span v-if="m.last_used_at" class="cell-sub" style="margin-left:4px;font-size:10px">
+                        <span v-if="m.last_used_at" class="cell-sub" style="margin-left:4px;font-size:11px">
                           {{ m.total_calls }}次
                         </span>
                       </td>
@@ -941,7 +941,7 @@ onUnmounted(() => {
                         <span v-if="m.p95_latency_ms == null" class="cell-muted">N/A</span>
                         <span v-else class="mono-sm" :class="p95Class(m.p95_latency_ms)">
                           {{ m.p95_latency_ms }}ms
-                          <span class="cell-sub" style="font-size:9px;margin-left:2px">({{ m.p95_source === 'bg_rollup' ? 'bg' : 'live' }})</span>
+                          <span class="cell-sub" style="font-size:11px;margin-left:2px">({{ m.p95_source === 'bg_rollup' ? 'bg' : 'live' }})</span>
                         </span>
                       </td>
                       <td><span class="rate-cell" :class="rateClass(m.recent_success_rate)">{{ rateText(m.recent_success_rate) }}</span></td>
@@ -1175,10 +1175,10 @@ onUnmounted(() => {
                 <tbody>
                   <tr v-for="(d, i) in credentialDecisions" :key="i" :class="d.success ? 'decision-success' : 'decision-fail'">
                     <td class="mono-sm">{{ formatTs(d.ts) }}</td>
-                    <td class="mono-sm" style="font-size:10px">{{ d.request_id.substring(0, 8) }}</td>
+                    <td class="mono-sm" style="font-size:11px">{{ d.request_id.substring(0, 8) }}</td>
                     <td>
                       <div class="mono-sm" style="font-size:11px">{{ d.client_model || d.model }}</div>
-                      <div v-if="d.outbound_model && d.outbound_model !== d.client_model" class="cell-sub" style="font-size:10px">
+                      <div v-if="d.outbound_model && d.outbound_model !== d.client_model" class="cell-sub" style="font-size:11px">
                         → {{ d.outbound_model }}
                       </div>
                     </td>
@@ -1186,10 +1186,10 @@ onUnmounted(() => {
                     <td>
                       <span v-if="d.success" class="badge badge-green"><CircleCheck /></span>
                       <span v-else class="badge badge-red"><CircleClose /></span>
-                      <span v-if="d.sticky_hit" class="badge badge-blue" style="margin-left:4px;font-size:9px">sticky</span>
+                      <span v-if="d.sticky_hit" class="badge badge-blue" style="margin-left:4px;font-size:11px">sticky</span>
                     </td>
                     <td class="mono-sm">{{ d.latency_ms != null ? d.latency_ms + 'ms' : '—' }}</td>
-                    <td class="cell-sub" style="font-size:10px">{{ d.error_class || '—' }}</td>
+                    <td class="cell-sub" style="font-size:11px">{{ d.error_class || '—' }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -1508,7 +1508,7 @@ onUnmounted(() => {
   display: inline-block;
   padding: 1px 6px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: lowercase;
   letter-spacing: 0.02em;
@@ -1582,7 +1582,7 @@ onUnmounted(() => {
   margin-left: 8px;
   padding: 1px 6px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   vertical-align: middle;
 }
@@ -1789,7 +1789,7 @@ onUnmounted(() => {
   text-align: center;
 }
 .pane-collapsed-label {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.01em;
   color: var(--muted);
 }

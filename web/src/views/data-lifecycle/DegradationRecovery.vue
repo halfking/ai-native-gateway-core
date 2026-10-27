@@ -121,7 +121,7 @@ defineExpose({ load })
   color: var(--text);
 }
 .warning-card { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
-h3 { margin: 0 0 8px; font-size: 15px; }
+h3 { margin: 0 0 8px; font-size: 16px; }
 p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .status { padding: 5px 10px; border-radius: 6px; font-size: 12px; white-space: nowrap; }
 .status.available { color: var(--success); background: var(--success-soft); }

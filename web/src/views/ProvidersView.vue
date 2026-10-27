@@ -1420,7 +1420,7 @@ onUnmounted(() => {
                   <div class="muted" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
                     <span>{{ pm('credential.row.balanceLabel') }}</span>
                     <span style="position:relative;display:inline-flex;align-items:center">
-                      <span v-if="balanceCurrencySymbol(c) !== '$'" style="position:absolute;left:4px;font-size:10px;color:var(--muted);pointer-events:none">{{ balanceCurrencySymbol(c) }}</span>
+                      <span v-if="balanceCurrencySymbol(c) !== '$'" style="position:absolute;left:4px;font-size:11px;color:var(--muted);pointer-events:none">{{ balanceCurrencySymbol(c) }}</span>
                       <input v-model.number="c.balance_usd" type="number" min="0" step="100" class="compact-input number" style="width:80px;display:inline-block" placeholder="—" />
                     </span>
                     <button

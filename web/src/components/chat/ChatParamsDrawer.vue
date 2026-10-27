@@ -181,7 +181,7 @@ function resetDefaults() {
 
 .drawer__head h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
   color: var(--kx-text, var(--text));
 }
 

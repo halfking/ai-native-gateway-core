@@ -217,7 +217,7 @@ function modelLabel(name: string | null | undefined): string {
   padding: 14px 16px;
 }
 .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-.stat-value { font-size: 22px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.stat-value { font-size: 24px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
 .stat-desc { font-size: 12px; color: var(--muted); margin-top: 6px; }
 .grade-badge {
   display: inline-block;

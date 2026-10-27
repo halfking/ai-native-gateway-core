@@ -302,7 +302,7 @@ onUnmounted(() => {
   width: 20px;
   height: 20px;
   border-radius: 3px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: bold;
   background: var(--bg-hover);
   color: var(--muted);
@@ -477,7 +477,7 @@ onUnmounted(() => {
   width: 20px;
   height: 20px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: bold;
   background: var(--bg-hover);
   color: var(--muted);

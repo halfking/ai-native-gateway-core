@@ -456,7 +456,7 @@ async function onRefresh() {
 }
 
 .stat-mini__value {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--text);
   font-variant-numeric: tabular-nums;
@@ -509,10 +509,6 @@ async function onRefresh() {
   margin-top: 24px;
 }
 
-.empty-state__icon {
-  font-size: 36px;
-  margin-bottom: 12px;
-}
 
 .empty-state__title {
   font-size: 16px;

@@ -444,7 +444,7 @@ const ledgerCardFields = computed<CardField[]>(() => [
   margin-bottom: 6px;
 }
 .stat-value {
-  font-size: 26px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--text);
 }
@@ -513,7 +513,7 @@ const ledgerCardFields = computed<CardField[]>(() => [
 .trend-bar.credits { background: var(--accent); }
 .trend-bar.requests { background: var(--success); }
 .trend-date {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   margin-top: 4px;
 }

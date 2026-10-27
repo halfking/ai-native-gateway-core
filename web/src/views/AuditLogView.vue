@@ -485,7 +485,7 @@ onMounted(reload)
 <style scoped>
 .page-header h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
 }
 
@@ -559,7 +559,7 @@ onMounted(reload)
 
 .cell-line2 {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.35;
   margin-top: 2px;
   font-variant-numeric: tabular-nums;

@@ -237,7 +237,7 @@ function handleCancel() {
 
 .form-header h3 {
   margin: 0 0 1rem 0;
-  font-size: 1.25rem;
+  font-size: 20px;
   font-weight: 600;
 }
 
@@ -245,7 +245,7 @@ function handleCancel() {
   display: flex;
   flex-wrap: wrap;
   gap: 1rem;
-  font-size: 0.875rem;
+  font-size: 14px;
 }
 
 .info-item {
@@ -260,7 +260,7 @@ function handleCancel() {
 
 .text-mono {
   font-family: var(--font-mono);
-  font-size: 0.8125rem;
+  font-size: 13px;
   word-break: break-all;
 }
 
@@ -277,7 +277,7 @@ function handleCancel() {
 }
 
 .form-label {
-  font-size: 0.875rem;
+  font-size: 14px;
   font-weight: 500;
   color: var(--text);
 }
@@ -291,7 +291,7 @@ function handleCancel() {
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: 4px;
-  font-size: 0.875rem;
+  font-size: 14px;
   background: var(--bg);
   color: var(--text);
   transition: border-color 0.2s;
@@ -314,7 +314,7 @@ function handleCancel() {
 }
 
 .error-message {
-  font-size: 0.8125rem;
+  font-size: 13px;
   color: var(--danger);
 }
 
@@ -328,7 +328,7 @@ function handleCancel() {
   align-items: center;
   gap: 0.5rem;
   cursor: pointer;
-  font-size: 0.875rem;
+  font-size: 14px;
 }
 
 .radio-label input[type="radio"] {
@@ -354,7 +354,7 @@ function handleCancel() {
 .badge {
   padding: 0.125rem 0.5rem;
   border-radius: 3px;
-  font-size: 0.75rem;
+  font-size: 12px;
   font-weight: 500;
 }
 

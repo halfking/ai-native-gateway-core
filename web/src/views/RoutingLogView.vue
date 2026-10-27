@@ -565,7 +565,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 .detail-full { grid-column: 1 / -1; }
 
 .detail-label {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   font-weight: 600;
 }

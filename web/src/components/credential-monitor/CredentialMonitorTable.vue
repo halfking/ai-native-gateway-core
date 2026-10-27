@@ -130,7 +130,7 @@ function modelsTitle(c: CredentialRow): string {
    without the right edge pushing past the sidebar. */
 .data-table.dense thead th {
   padding: 5px 8px;
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.01em;
   color: var(--muted);
   border-bottom: 1px solid var(--border);
@@ -145,7 +145,7 @@ function modelsTitle(c: CredentialRow): string {
 .data-table.dense tbody tr:last-child td { border-bottom: none; }
 
 .model-badge {
-  font-size: 10px;
+  font-size: 11px;
   padding: 1px 6px;
 }
 

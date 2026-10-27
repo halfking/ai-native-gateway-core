@@ -74,7 +74,7 @@ function topEntry(d: Record<string, number>): string {
   font-style: italic;
 }
 .kpi-label {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--muted);
   letter-spacing: 0.01em;
 }

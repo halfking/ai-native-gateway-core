@@ -424,7 +424,7 @@ onMounted(load)
   flex-wrap: wrap;
   margin-bottom: 6px;
 }
-.top-bar-head h2 { font-size: 15px; margin: 0; }
+.top-bar-head h2 { font-size: 16px; margin: 0; }
 .back-link { font-size: 11px; color: var(--muted); text-decoration: none; }
 .back-link:hover { color: var(--accent-h); }
 .refresh-btn { margin-left: auto; }
@@ -436,7 +436,7 @@ onMounted(load)
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 99px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
 .chip strong { color: var(--text); font-weight: 600; }
@@ -464,7 +464,7 @@ onMounted(load)
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 14px;
   border-radius: 3px;
-  font-size: 8px; font-weight: 700;
+  font-size: 11px; font-weight: 700;
 }
 .layer-tag.l2 { background: var(--success-bd); color: var(--success); }
 
@@ -481,7 +481,7 @@ onMounted(load)
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 99px;
-  font-size: 10px;
+  font-size: 11px;
   cursor: pointer;
   color: var(--muted);
 }
@@ -495,7 +495,7 @@ onMounted(load)
 .pill-section:last-child { margin-bottom: 0; }
 .pill-label {
   display: block;
-  font-size: 9px;
+  font-size: 11px;
   color: var(--muted);
   letter-spacing: 0.01em;
   margin-bottom: 4px;
@@ -525,7 +525,7 @@ onMounted(load)
 }
 .task-pill.featured .star { color: var(--accent-h); font-size: 9px; }
 .pill-count {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--muted);
   margin-left: 2px;
 }
@@ -539,13 +539,13 @@ onMounted(load)
 .section-head.tight { margin-bottom: 4px; }
 .section-head h3 { margin: 0; font-size: 12px; font-weight: 600; }
 
-.key-code { font-size: 10px; font-family: ui-monospace, monospace; color: var(--accent-h); }
+.key-code { font-size: 11px; font-family: ui-monospace, monospace; color: var(--accent-h); }
 .tag-row { display: flex; flex-wrap: wrap; gap: 4px; margin-left: auto; }
-.mono-sm { font-family: ui-monospace, monospace; font-size: 9px; }
-.price-cell { font-variant-numeric: tabular-nums; font-size: 10px; }
+.mono-sm { font-family: ui-monospace, monospace; font-size: 11px; }
+.price-cell { font-variant-numeric: tabular-nums; font-size: 11px; }
 
 .dense-table { font-size: 11px; width: 100%; }
-.dense-table thead th { padding: 3px 6px; font-size: 9px; white-space: nowrap; }
+.dense-table thead th { padding: 3px 6px; font-size: 11px; white-space: nowrap; }
 .dense-table tbody td { padding: 4px 6px; }
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
@@ -577,7 +577,7 @@ onMounted(load)
   line-height: 1.5;
 }
 .featured-empty-desc code {
-  font-size: 10px;
+  font-size: 11px;
   padding: 1px 4px;
   background: var(--bg-subtle);
   border-radius: 3px;
@@ -601,7 +601,7 @@ onMounted(load)
 }
 .hint-card { text-align: center; padding: 16px; }
 .hint-card p { margin: 0; }
-.text-muted { color: var(--muted); font-size: 10px; }
+.text-muted { color: var(--muted); font-size: 11px; }
 
 .readonly-summary {
   display: flex;

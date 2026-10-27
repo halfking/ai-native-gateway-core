@@ -320,7 +320,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
   margin-bottom: 10px;
 }
 .udd-identity { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1; }
-.udd-tenant { font-size: 11.5px; color: var(--muted); }
+.udd-tenant { font-size: 11px; color: var(--muted); }
 .udd-actions { display: flex; gap: 6px; }
 .udd-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .udd-chips { display: inline-flex; gap: 6px; }
@@ -330,7 +330,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
   color: var(--muted);
   border-radius: 999px;
   padding: 2px 11px;
-  font-size: 12.5px;
+  font-size: 12px;
   cursor: pointer;
 }
 .udd-chip:hover { color: var(--accent); border-color: var(--accent); }
@@ -354,7 +354,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
   padding: 12px;
   margin-bottom: 12px;
 }
-.udd-card-title { font-weight: 600; font-size: 13.5px; margin-bottom: 8px; }
+.udd-card-title { font-weight: 600; font-size: 13px; margin-bottom: 8px; }
 .udd-chart { height: 170px; position: relative; }
 .udd-chart canvas { width: 100% !important; height: 100% !important; }
 .udd-grid2 {
@@ -363,10 +363,10 @@ const canDrillKeys = computed(() => isSuperAdmin())
   gap: 12px;
 }
 @media (max-width: 768px) { .udd-grid2 { grid-template-columns: 1fr; } }
-.udd-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.udd-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .udd-table th {
   text-align: left;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.01em;
   color: var(--muted);
@@ -378,16 +378,16 @@ const canDrillKeys = computed(() => isSuperAdmin())
 .udd-table tbody tr:last-child td { border-bottom: none; }
 .udd-table .num { text-align: right; font-variant-numeric: tabular-nums; }
 .udd-table-empty { text-align: center; color: var(--muted); padding: 14px 0; }
-.udd-time { font-size: 11.5px; }
+.udd-time { font-size: 11px; }
 .udd-kv {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 4px 14px;
-  font-size: 12.5px;
+  font-size: 12px;
 }
 .udd-kv .k { color: var(--muted); }
 .udd-links { margin-top: 10px; }
-.udd-link { color: var(--accent); font-size: 12.5px; }
+.udd-link { color: var(--accent); font-size: 12px; }
 .udd-empty {
   color: var(--muted);
   text-align: center;

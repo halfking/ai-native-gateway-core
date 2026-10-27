@@ -666,7 +666,7 @@ onUnmounted(() => {
   gap: 1px;
 }
 .summary-item .label {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   letter-spacing: 0.01em;
 }
@@ -681,7 +681,7 @@ onUnmounted(() => {
 .source-pill {
   display: inline-block;
   padding: 1px 6px;
-  font-size: 10px;
+  font-size: 11px;
   border-radius: 8px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
@@ -743,7 +743,7 @@ onUnmounted(() => {
   height: 18px;
   border-radius: 50%;
   color: var(--bg);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   flex-shrink: 0;
 }
@@ -759,7 +759,7 @@ onUnmounted(() => {
   color: var(--text);
 }
 .timeline-row .module {
-  font-size: 10px;
+  font-size: 11px;
   padding: 0 5px;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -768,7 +768,7 @@ onUnmounted(() => {
 }
 .timeline-row .duration {
   font-family: ui-monospace, monospace;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   margin-left: auto;
 }
@@ -787,7 +787,7 @@ onUnmounted(() => {
   font-size: 11px;
 }
 .muted { color: var(--muted); }
-.small { font-size: 10px; margin-bottom: 4px; }
+.small { font-size: 11px; margin-bottom: 4px; }
 
 /* 错误行 — 暗色背景, 仅左侧 2px 细条, 严禁亮红填充 */
 .error-line {
@@ -860,7 +860,7 @@ onUnmounted(() => {
   border: 1px solid var(--danger);
   color: var(--danger);
   border-radius: 3px;
-  font-size: 9px;
+  font-size: 11px;
   margin-left: 4px;
 }
 .failure-hint {

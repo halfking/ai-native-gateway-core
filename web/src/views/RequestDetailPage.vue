@@ -91,7 +91,7 @@ const waitingFirstFrame = computed(() => !entry.value && !initialDataReceived.va
 
 .rdp__title {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
   color: var(--kx-text);
 }
 

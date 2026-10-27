@@ -137,7 +137,7 @@ const hasData = computed(() => props.requests.length > 0)
   display: flex;
   justify-content: space-between;
   font-variant-numeric: tabular-nums;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-muted);
   margin-top: 2px;
 }

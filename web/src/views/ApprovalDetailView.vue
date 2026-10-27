@@ -462,7 +462,7 @@ onBeforeUnmount(() => {
 
 .page-header h1 {
   margin: 8px 0;
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 600;
 }
 
@@ -545,7 +545,7 @@ onBeforeUnmount(() => {
 
 .section-header h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
   display: flex;
   align-items: center;
@@ -870,7 +870,7 @@ onBeforeUnmount(() => {
 }
 
 .timeline-title {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
   margin-bottom: 4px;

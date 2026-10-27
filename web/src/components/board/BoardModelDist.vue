@@ -102,7 +102,7 @@ function fmtCompact(n: number | undefined) {
   flex-wrap: wrap;
 }
 .mdist__title {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 700;
   margin: 0;
   display: flex;
@@ -126,7 +126,7 @@ function fmtCompact(n: number | undefined) {
   border: 0;
   background: transparent;
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 11px;
   padding: 3px 9px;
   border-radius: 5px;
   cursor: pointer;

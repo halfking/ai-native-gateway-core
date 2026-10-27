@@ -140,7 +140,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
   flex: 1;
 }
 .fp-stat-num {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text);
   line-height: 1.1;
@@ -204,7 +204,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
 
 .fp-cell-num {
   font-family: ui-monospace, monospace;
-  font-size: 10px;
+  font-size: 11px;
   opacity: 0.8;
 }
 .fp-cell-icon {
@@ -214,7 +214,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
 }
 .fp-cell-ttl {
   font-family: ui-monospace, monospace;
-  font-size: 10px;
+  font-size: 11px;
   opacity: 0.85;
 }
 .fp-cell-close {

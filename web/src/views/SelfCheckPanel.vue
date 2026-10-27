@@ -672,7 +672,7 @@ const probeSummaryCards = computed(() => {
 
 .header-left h3 {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
 }
 
 .status-badge {
@@ -926,7 +926,7 @@ const probeSummaryCards = computed(() => {
 }
 
 .trend-label {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--muted);
   margin-top: 4px;
   font-family: monospace;

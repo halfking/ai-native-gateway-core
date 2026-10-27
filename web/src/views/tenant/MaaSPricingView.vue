@@ -237,7 +237,7 @@ onMounted(load)
   margin-bottom: 6px;
 }
 .wallet-value {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--text);
 }
@@ -245,7 +245,7 @@ onMounted(load)
   color: var(--accent-h);
 }
 .section-title {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   margin: 0 0 12px;
   color: var(--text);
@@ -274,7 +274,7 @@ onMounted(load)
 }
 .pricing-price { margin: 4px 0; }
 .price-num {
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--accent-h);
 }

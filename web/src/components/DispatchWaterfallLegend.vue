@@ -40,7 +40,7 @@ const execStages = WATERFALL_STAGES.filter((s) => EXEC_STAGE_KEYS.includes(s.key
   align-items: center;
 }
 .dwf-legend-k {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.01em;
   color: var(--kx-muted);

@@ -175,7 +175,7 @@ function tokens(value: number | null | undefined): string {
 }
 
 .pp__hint {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-muted);
 }
 
@@ -267,7 +267,7 @@ function tokens(value: number | null | undefined): string {
 }
 
 .pp__error {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-danger);
 }
 
@@ -332,7 +332,7 @@ function tokens(value: number | null | undefined): string {
 }
 
 .pp__page-info {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;

@@ -466,7 +466,7 @@ onBeforeUnmount(() => {
 }
 .app-drawer__header .app-drawer__title {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
 }
 .app-drawer__close {

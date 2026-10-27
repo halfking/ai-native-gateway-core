@@ -116,7 +116,7 @@ watch(
   box-shadow: var(--kx-shadow-md);
   color: var(--kx-text);
 }
-.dialog-content h2 { margin: 0 0 1rem; font-size: 1.15rem; }
+.dialog-content h2 { margin: 0 0 1rem; font-size: 20px; }
 .agree-intro, .agree-note { color: var(--kx-muted); font-size: 13px; line-height: 1.6; }
 .agree-list { margin: 0 0 1rem; padding-left: 1.2rem; color: var(--kx-text); font-size: 13px; line-height: 1.7; }
 .agree-checkbox { display: flex; gap: 8px; align-items: flex-start; margin: 14px 0; font-size: 13px; }

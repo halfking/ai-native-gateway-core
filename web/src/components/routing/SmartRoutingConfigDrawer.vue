@@ -64,7 +64,7 @@ const { t } = useI18n()
 }
 .smart-drawer-head h3 {
   margin: 0 0 2px;
-  font-size: 15px;
+  font-size: 16px;
 }
 .hint {
   margin: 0;

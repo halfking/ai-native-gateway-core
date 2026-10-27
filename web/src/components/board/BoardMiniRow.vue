@@ -103,14 +103,14 @@ function fmtCompact(n: number | undefined) {
   min-width: 0;
 }
 .mini-card__label {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .mini-card__value {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 700;
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
@@ -120,7 +120,7 @@ function fmtCompact(n: number | undefined) {
 }
 .mini-card__value small {
   margin-left: 4px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
   font-weight: 500;
 }

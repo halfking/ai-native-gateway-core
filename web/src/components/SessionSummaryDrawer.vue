@@ -312,7 +312,7 @@ async function writeMemora() {
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border);
 }
-.ssd-title { margin: 0; font-size: 18px; font-weight: 600; }
+.ssd-title { margin: 0; font-size: 16px; font-weight: 600; }
 .ssd-sub { margin: 4px 0 0; font-size: 12px; color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; }
 .ssd-dot { opacity: 0.5; }
 .ssd-process { padding: 8px 10px; background: var(--bg-subtle); border-radius: 8px; border: 1px solid var(--border); }

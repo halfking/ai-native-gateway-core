@@ -438,7 +438,7 @@ function onSelectProvider(code: string) {
 
 .live-topology__title {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
   color: var(--kx-text);
 }
 

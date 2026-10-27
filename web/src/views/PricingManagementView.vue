@@ -1160,7 +1160,7 @@ onMounted(fetchData)
 .cov-bar { background: var(--bg-subtle); height: 16px; border-radius: 4px; overflow: hidden; border: 1px solid var(--border); }
 .cov-fill { height: 100%; transition: width 0.3s; }
 .cov-stats { color: var(--muted); text-align: right; }
-.cov-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+.cov-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
 .cov-tag-tp { background: var(--bg-hover); color: var(--warning); }
 
 /* Filters */
@@ -1183,7 +1183,7 @@ onMounted(fetchData)
 .tree-family { margin-bottom: 4px; }
 .tree-family-header { cursor: pointer; padding: 6px 8px; border-radius: 4px; display: flex; align-items: center; gap: 8px; }
 .tree-family-header:hover { background: var(--bg-hover); }
-.arrow { font-size: 10px; transition: transform 0.2s; }
+.arrow { font-size: 11px; transition: transform 0.2s; }
 .arrow.open { transform: rotate(90deg); }
 .family-name { font-weight: 600; color: var(--accent-h); }
 .family-meta { font-size: 11px; color: var(--muted); }

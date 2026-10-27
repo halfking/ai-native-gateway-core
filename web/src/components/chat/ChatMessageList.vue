@@ -192,7 +192,7 @@ function modelLabel(name: string | undefined, map: Map<string, string>) {
 
 .resumed-badge {
   margin-left: 4px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-success, var(--success));
 }
 

@@ -705,7 +705,7 @@ onMounted(() => {
 }
 
 .compare-value {
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--text);
   margin-bottom: 6px;
@@ -739,7 +739,7 @@ onMounted(() => {
   display: inline-block;
   padding: 2px 6px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   margin-left: 6px;
 }

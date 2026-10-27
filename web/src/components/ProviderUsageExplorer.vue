@@ -449,7 +449,7 @@ watch(() => props.timeQuery, () => {
 
 .pue-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1.3;
 }
 
@@ -614,7 +614,7 @@ watch(() => props.timeQuery, () => {
 }
 
 .stat strong {
-  font-size: 17px;
+  font-size: 16px;
 }
 
 .pue-period-tabs {

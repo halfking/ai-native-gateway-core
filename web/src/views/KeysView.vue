@@ -753,7 +753,7 @@ onBeforeUnmount(() => {
         <div class="drawer-panel card" @click.stop>
           <div class="drawer-header">
             <div>
-              <div style="font-size:15px;font-weight:600">密钥 #{{ selectedKey.id }}</div>
+              <div style="font-size:14px;font-weight:600">密钥 #{{ selectedKey.id }}</div>
               <div class="drawer-sub"><code>{{ selectedKey.key_prefix }}***</code> · {{ selectedKey.application_code }}</div>
             </div>
             <button class="btn btn-ghost btn-sm" @click="closeKeyDrawer">✕ 关闭</button>

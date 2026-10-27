@@ -203,7 +203,7 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
 .status-badge[data-state="active"] { background: var(--success-soft); color: var(--success); }
 .status-badge[data-state="closed"] { background: var(--primary-soft); color: var(--accent); }
 .status-badge[data-state="deleted"] { background: var(--danger-soft); color: var(--danger); }
-.session-title { font-size: 15px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 42%; }
+.session-title { font-size: 16px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 42%; }
 .session-topic { color: var(--accent); background: var(--primary-soft); }
 .session-summary { margin: 8px 0; color: var(--text-secondary); line-height: 1.5; }
 .session-summary.clamped { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

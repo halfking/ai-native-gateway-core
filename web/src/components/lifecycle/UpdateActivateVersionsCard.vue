@@ -336,7 +336,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   letter-spacing: 0.01em;
 }
 .banner-value {
-  font-size: 18px;
+  font-size: 16px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 .banner-arrow {

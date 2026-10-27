@@ -619,14 +619,14 @@ onMounted(() => {
   margin-right: auto;
   background: var(--bg-secondary);
   border-radius: 12px;
-  font-size: 0.875rem;
+  font-size: 14px;
   font-weight: 500;
 }
 
 .panel-desc {
   color: var(--text-muted);
   margin: 0 0 0.75rem;
-  font-size: 0.85rem;
+  font-size: 14px;
 }
 
 .table-container {
@@ -647,13 +647,13 @@ onMounted(() => {
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   font-weight: 600;
-  font-size: 0.875rem;
+  font-size: 14px;
 }
 
 .data-table td {
   padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--border);
-  font-size: 0.875rem;
+  font-size: 14px;
 }
 
 .data-table tbody tr:hover {
@@ -697,7 +697,7 @@ onMounted(() => {
 }
 
 .anno-annotator {
-  font-size: 0.75rem;
+  font-size: 12px;
 }
 
 .col-actions {
@@ -707,7 +707,7 @@ onMounted(() => {
 
 .text-mono {
   font-family: var(--font-mono);
-  font-size: 0.8125rem;
+  font-size: 13px;
   word-break: break-all;
 }
 
@@ -719,7 +719,7 @@ onMounted(() => {
   padding: 0;
   margin: 0 0.5rem;
   text-decoration: underline;
-  font-size: 0.875rem;
+  font-size: 14px;
 }
 
 .btn-link:hover {
@@ -752,7 +752,7 @@ label.btn.disabled {
 
 .detail-section h4 {
   margin: 0 0 0.5rem 0;
-  font-size: 0.9375rem;
+  font-size: 16px;
   font-weight: 600;
 }
 
@@ -766,7 +766,7 @@ label.btn.disabled {
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
-  font-size: 0.875rem;
+  font-size: 14px;
 }
 
 .detail-label {
@@ -783,7 +783,7 @@ label.btn.disabled {
   border: 1px solid var(--border);
   border-radius: 6px;
   font-family: var(--font-mono);
-  font-size: 0.8125rem;
+  font-size: 13px;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -791,7 +791,7 @@ label.btn.disabled {
 .badge {
   padding: 0.25rem 0.5rem;
   border-radius: 3px;
-  font-size: 0.75rem;
+  font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
 }

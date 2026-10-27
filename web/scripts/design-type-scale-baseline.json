@@ -1,0 +1,14 @@
+{
+  "metric": "offScaleFontSizes = 静态 font-size 声明里，值**不落在** DESIGN.md §4 声明的角色阶（--kx-text-* 的实际取值集合）上的声明数；em / clamp() / calc() / var() / inherit 不计（静态不可定值）；图标承载 class（模板证据可推导）与登记豁免不计。remFontSizes = 用 rem 表达的 font-size 数（同一阶的第二份真值）",
+  "offScaleFontSizes": 0,
+  "updated": "2026-10-27",
+  "history": [
+    {
+      "offScaleFontSizes": 0,
+      "updated": "2026-10-27",
+      "reason": "第 23 增量（字号必须落在角色阶上）建门时的实测基线。★ 口径：用**同一判据**扫 HEAD 的源码树（`git archive HEAD web/src` 导出）⇒ 2682 处 `font-size` 声明里 **离阶 397 处 / 139 个文件**、**rem 写法 63 处**、令牌写法仅 92 处（3.4%）。★ 清干净的手段：① 离阶值按【就近阶】/【语义裁决表】收敛到 11/12/13/14/16/20/24/30/38 九档（**10px/9px/8px/7px 一律收进 11px** —— 差 1px 的两档肉眼不可区分，impeccable typeset.md「Are adjacent sizes or weights too close to carry different jobs?」）；② 42 处 rem 写法收进 px（同一阶两份真值 ⇒ **数值逐字不变、零视觉变化**）；③ 5 条**死 CSS** 规则（class 在模板里 0 引用 ⇒ 用户看不到）**直接删掉整条规则**而不是改字号；④ 全局排版重置补上 `h1~h6`/`button` 的字号与字体（UA 默认字号是源码门的盲区）。⇒ 实测**离阶 0 · rem 0** ⇒ 基线直接建在 0（这是**新建**指标，不是从旧值降下来的）。★ 声明总数 2682 → 2682（删死 CSS −5 ＋ 全局重置 +5，恰好抵消）⇒ **没有增删任何一处字号声明**。",
+      "remFontSizes": 0
+    }
+  ],
+  "remFontSizes": 0
+}

@@ -167,7 +167,7 @@ function credentialLabel(id: number): string {
   border-radius: 2px;
 }
 .tag {
-  font-size: 10px;
+  font-size: 11px;
   padding: 1px 6px;
   border: 1px solid var(--border, var(--kx-border));
   border-radius: 999px;

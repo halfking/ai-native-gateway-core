@@ -182,7 +182,7 @@ onBeforeUnmount(() => {
 .left { min-width: 0; flex: 1; }
 h2 {
   margin: 0 0 4px;
-  font-size: 18px;
+  font-size: 20px;
   color: var(--kx-text);
 }
 p { margin: 0 0 6px; color: var(--muted); font-size: 13px; }

@@ -1111,7 +1111,7 @@ onMounted(() => {
 }
 .no-model-hint__title {
   margin: 0 0 8px;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   /* --text / --text-muted 在 style.css 的浅色与深色两块里都有定义（:52/:55 与
      :180/:183），所以原写法 var(--text, #1f2937) / var(--text-muted, #6b7280) 的

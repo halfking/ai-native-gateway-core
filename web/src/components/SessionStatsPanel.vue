@@ -268,7 +268,7 @@ function onDaysClick(next: number) {
 .mini-kpi__icon--cost { background: linear-gradient(135deg, var(--success), var(--probe-cyan-light)); }
 .mini-kpi__icon--compliance { background: linear-gradient(135deg, var(--pink), var(--warning)); }
 .mini-kpi__label { font-size: 13px; color: var(--muted, var(--text-secondary)); }
-.mini-kpi__value { font-size: 22px; font-weight: 600; }
+.mini-kpi__value { font-size: 24px; font-weight: 600; }
 .charts-row {
   display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: 16px; margin-bottom: 16px; width: 100%;

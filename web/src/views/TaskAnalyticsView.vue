@@ -307,7 +307,7 @@ function goBack() {
 }
 
 .stat-value {
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 600;
   color: var(--text);
 }

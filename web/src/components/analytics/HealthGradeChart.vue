@@ -228,7 +228,7 @@ watch(() => props.avgScore, () => {
 
 .chart-title {
   font-weight: 600;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .chart-container {

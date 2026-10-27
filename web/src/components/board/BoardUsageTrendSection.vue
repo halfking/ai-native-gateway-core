@@ -150,7 +150,7 @@ onMounted(() => void loadSeries(false))
   flex-wrap: wrap;
 }
 .trend-sec__title {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 700;
   margin: 0;
 }

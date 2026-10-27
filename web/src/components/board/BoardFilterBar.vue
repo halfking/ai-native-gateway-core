@@ -114,13 +114,13 @@ const sourceKey = computed(() => {
 .bfb__gran-auto {
   background: color-mix(in srgb, var(--accent) 16%, var(--card));
   color: var(--accent);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
   padding: 2px 9px;
   border-radius: 7px;
 }
 .bfb__gran-value {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text-muted);
 }
 .bfb__refresh {
@@ -168,7 +168,7 @@ const sourceKey = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-muted);
   border: 1px dashed var(--border);
   border-radius: 8px;

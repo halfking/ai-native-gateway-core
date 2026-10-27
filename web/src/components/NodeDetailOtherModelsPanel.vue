@@ -265,7 +265,7 @@ async function probeAll() {
 .om-table-wrap { overflow: auto; }
 .om-table { width: 100%; border-collapse: collapse; font-size: 11px; }
 .om-table th, .om-table td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--kx-border); vertical-align: top; }
-.om-sub { color: var(--kx-muted); margin-top: 2px; font-size: 10px; overflow-wrap: anywhere; }
+.om-sub { color: var(--kx-muted); margin-top: 2px; font-size: 11px; overflow-wrap: anywhere; }
 .om-row-actions { display: flex; gap: 4px; flex-wrap: wrap; }
 .is-ok { color: var(--kx-success); }
 .is-warn { color: var(--kx-warning); }

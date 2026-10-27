@@ -71,7 +71,7 @@ defineProps<{
   min-width: 0;
 }
 .app-page-header__title {
-  font-size: 18px;
+  font-size: 24px;
   font-weight: 600;
   margin: 0;
   overflow-wrap: break-word;

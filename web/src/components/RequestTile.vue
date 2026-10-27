@@ -923,7 +923,7 @@ function closeTimelinePanel() {
 }
 
 .request-tile__time {
-  font-size: 9px;
+  font-size: 11px;
   text-align: center;
   line-height: 1.1;
   color: var(--kx-muted);
@@ -958,7 +958,7 @@ function closeTimelinePanel() {
 }
 
 .request-tile__provider {
-  font-size: 8px;
+  font-size: 11px;
   line-height: 1.2;
   color: var(--kx-muted);
   white-space: nowrap;
@@ -969,7 +969,7 @@ function closeTimelinePanel() {
 }
 
 .request-tile__latency {
-  font-size: 8px;
+  font-size: 11px;
   line-height: 1.2;
   font-variant-numeric: tabular-nums;
   color: var(--kx-text);
@@ -985,7 +985,7 @@ function closeTimelinePanel() {
    - .request-tile__reason--idle:  idle lane ("空闲 X 分钟")
    - .request-tile__reason--probe: probe row, mirrors the cyan accent */
 .request-tile__reason {
-  font-size: 8px;
+  font-size: 11px;
   line-height: 1.1;
   text-align: center;
   font-weight: 600;
@@ -1033,7 +1033,7 @@ function closeTimelinePanel() {
   max-width: 46px;
   padding: 1px 3px;
   border-radius: 3px;
-  font-size: 7px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1.2;
   letter-spacing: 0.02em;
@@ -1090,7 +1090,7 @@ function closeTimelinePanel() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 8px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1;
   font-variant-numeric: tabular-nums;
@@ -1196,7 +1196,7 @@ function closeTimelinePanel() {
   text-align: center;
   padding: 1px 3px;
   border-radius: 3px;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.02em;
   color: var(--kx-primary);
@@ -1215,7 +1215,7 @@ function closeTimelinePanel() {
 
 .request-tile__child-status {
   flex: 0 0 auto;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--kx-muted);
 }
@@ -1246,7 +1246,7 @@ function closeTimelinePanel() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 8px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1;
   font-variant-numeric: tabular-nums;

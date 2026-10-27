@@ -79,7 +79,7 @@ defineEmits<{
   border-radius: 99px;
   background: var(--accent);
   color: white;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 14px;
   text-align: center;

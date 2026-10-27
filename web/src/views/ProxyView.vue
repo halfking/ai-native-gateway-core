@@ -872,7 +872,7 @@ h1 {
   border: none;
   background: transparent;
   cursor: pointer;
-  font-size: 1rem;
+  font-size: 16px;
   color: var(--text-secondary);
   border-bottom: 3px solid transparent;
   transition: all 0.2s;
@@ -994,7 +994,7 @@ h1 {
   padding: 0.15rem 0.5rem;
   border-radius: 4px;
   margin-right: 0.5rem;
-  font-size: 0.85rem;
+  font-size: 14px;
 }
 
 .inline-edit {
@@ -1011,7 +1011,7 @@ h1 {
 .regions-table th,
 .regions-table td {
   padding: 0.5rem 0.75rem;
-  font-size: 0.9rem;
+  font-size: 14px;
 }
 
 .btn-primary,
@@ -1022,7 +1022,7 @@ h1 {
   border: none;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 14px;
   transition: all 0.2s;
 }
 
@@ -1052,7 +1052,7 @@ h1 {
 
 .btn-small {
   padding: 0.25rem 0.75rem;
-  font-size: 0.85rem;
+  font-size: 14px;
   margin-right: 0.5rem;
   background: var(--card);
   color: var(--text);
@@ -1126,14 +1126,14 @@ h1 {
   padding: 0.5rem;
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  font-size: 1rem;
+  font-size: 16px;
 }
 
 .form-group small {
   display: block;
   margin-top: 0.25rem;
   color: var(--text-secondary);
-  font-size: 0.85rem;
+  font-size: 14px;
 }
 
 .modal-actions {

@@ -257,7 +257,7 @@ defineExpose({ reload: loadFpStats })
 .nd-notice--warn { background: color-mix(in srgb, var(--kx-warning) 12%, transparent); color: var(--kx-warning); }
 .nd-dialog-mask { position: fixed; inset: 0; z-index: 3050; background: color-mix(in srgb, var(--kx-text) 38%, transparent); display: flex; align-items: flex-start; justify-content: center; padding-top: 80px; }
 .nd-dialog { width: min(420px, 92vw); background: var(--kx-surface); color: var(--kx-text); border-radius: 8px; padding: 18px; box-shadow: var(--kx-shadow-md); display: grid; gap: 10px; }
-.nd-dialog h4 { margin: 0; font-size: 15px; }
+.nd-dialog h4 { margin: 0; font-size: 16px; }
 .nd-dialog label { display: grid; gap: 5px; font-size: 12px; }
 .nd-dialog input { box-sizing: border-box; width: 100%; padding: 7px; border: 1px solid var(--kx-border); border-radius: 5px; background: var(--kx-bg); color: inherit; }
 @media (max-width: 768px) { .nd-grid { grid-template-columns: 1fr; } }

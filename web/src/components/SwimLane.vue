@@ -320,7 +320,7 @@ watch(laneMode, async () => {
 .swim-lane__stats {
   display: flex;
   gap: 6px;
-  font-size: 10px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   flex-wrap: wrap;
 }
@@ -347,7 +347,7 @@ watch(laneMode, async () => {
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   font-variant-numeric: tabular-nums;
@@ -406,19 +406,6 @@ watch(laneMode, async () => {
   }
 }
 
-.swim-lane__emergency-btn {
-  margin-top: 6px;
-  padding: 2px 6px;
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--danger);
-  background: transparent;
-  border: 1px solid var(--danger);
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  align-self: flex-start;
-}
 
 .swim-lane__emergency-btn:hover {
   background: color-mix(in srgb, var(--danger) 15%, transparent);

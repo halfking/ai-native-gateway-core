@@ -946,7 +946,7 @@ watch(() => route.params.tenantId, loadTenant)
 .btn-back:hover { background: color-mix(in srgb, var(--on-primary) 5%, transparent); }
 .header-main { flex: 1; }
 .header-main h1 {
-  font-size: 22px;
+  font-size: 24px;
   margin: 0 0 8px;
   display: flex;
   align-items: center;
@@ -1011,7 +1011,7 @@ watch(() => route.params.tenantId, loadTenant)
   text-align: center;
 }
 .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-.stat-value { font-size: 22px; font-weight: 600; color: var(--text); }
+.stat-value { font-size: 24px; font-weight: 600; color: var(--text); }
 .stat-value--fee :deep(.fee-main) {
   font-size: inherit;
   font-weight: inherit;
@@ -1098,7 +1098,7 @@ watch(() => route.params.tenantId, loadTenant)
 }
 .maas-shortcuts h3 {
   margin: 0 0 6px;
-  font-size: 15px;
+  font-size: 16px;
 }
 .maas-shortcuts-desc {
   margin: 0 0 12px;
@@ -1157,7 +1157,7 @@ watch(() => route.params.tenantId, loadTenant)
   color: var(--muted);
   border-radius: 999px;
   padding: 3px 12px;
-  font-size: 12.5px;
+  font-size: 12px;
   cursor: pointer;
 }
 .chip:hover {
@@ -1212,7 +1212,7 @@ watch(() => route.params.tenantId, loadTenant)
 }
 .stats-tables-header .spacer { flex: 1; }
 .cell-sub {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--muted);
 }
 

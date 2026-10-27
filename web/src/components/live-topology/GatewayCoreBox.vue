@@ -227,7 +227,7 @@ const title = computed(() => t('liveTopology.gateway.title'))
 }
 
 .gw__flow {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.04em;
 }
 
@@ -254,7 +254,7 @@ const title = computed(() => t('liveTopology.gateway.title'))
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.14em;
   writing-mode: vertical-rl;
   text-orientation: mixed;
@@ -416,7 +416,7 @@ const title = computed(() => t('liveTopology.gateway.title'))
   flex: none;
   padding: 2px 8px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--kx-muted);
   border: 1px dashed var(--kx-border);
@@ -443,7 +443,7 @@ const title = computed(() => t('liveTopology.gateway.title'))
   align-items: center;
   padding: 1px 7px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 11px;
   white-space: nowrap;
   border: 1px solid var(--kx-border);
   color: var(--kx-text);

@@ -952,7 +952,7 @@ watch(activeTab, (tab) => {
   flex-wrap: wrap;
   margin-bottom: 6px;
 }
-.top-bar-head h2 { font-size: 15px; margin: 0; }
+.top-bar-head h2 { font-size: 16px; margin: 0; }
 .back-link { font-size: 11px; color: var(--muted); text-decoration: none; }
 .back-link:hover { color: var(--accent-h); }
 .refresh-btn { margin-left: auto; }
@@ -988,7 +988,7 @@ watch(activeTab, (tab) => {
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 99px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
 .chip strong { color: var(--text); font-weight: 600; }
@@ -1015,7 +1015,7 @@ watch(activeTab, (tab) => {
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 14px;
   border-radius: 3px;
-  font-size: 8px; font-weight: 700;
+  font-size: 11px; font-weight: 700;
 }
 .layer-tag.l1 { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent-h); }
 .layer-tag.l2 { background: var(--success-bd); color: var(--success); }
@@ -1082,12 +1082,12 @@ watch(activeTab, (tab) => {
 
 .stat-row { display: flex; gap: 16px; margin-bottom: 8px; }
 .stat-block { text-align: center; }
-.stat-val { font-size: 18px; font-weight: 700; }
-.stat-lbl { font-size: 9px; color: var(--muted); }
+.stat-val { font-size: 16px; font-weight: 700; }
+.stat-lbl { font-size: 11px; color: var(--muted); }
 
 .dist-mini { display: grid; grid-template-columns: 1fr; gap: 8px; }
 .dist-col.full { width: 100%; }
-.dist-col h4 { font-size: 9px;color: var(--muted); margin: 0 0 4px; }
+.dist-col h4 { font-size: 11px;color: var(--muted); margin: 0 0 4px; }
 .dist-row.clickable { cursor: pointer; }
 .dist-row.clickable:hover { background: var(--bg-subtle); }
 .dist-row {
@@ -1096,7 +1096,7 @@ watch(activeTab, (tab) => {
   align-items: center;
   gap: 4px;
   margin-bottom: 2px;
-  font-size: 10px;
+  font-size: 11px;
 }
 .dist-label { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dist-bar-bg { height: 6px; background: color-mix(in srgb, var(--border) 30%, transparent); border-radius: 2px; overflow: hidden; }
@@ -1105,7 +1105,7 @@ watch(activeTab, (tab) => {
 .dist-count { text-align: right; font-variant-numeric: tabular-nums; }
 
 .dense-table { font-size: 11px; width: 100%; }
-.dense-table thead th { padding: 3px 6px; font-size: 9px; }
+.dense-table thead th { padding: 3px 6px; font-size: 11px; }
 .dense-table tbody td { padding: 4px 6px; }
 .dense-table .num { color: var(--muted); width: 24px; }
 .list-table tbody td { padding: 8px 6px; }
@@ -1115,7 +1115,7 @@ watch(activeTab, (tab) => {
 .model-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .model-row.disabled { opacity: 0.55; }
 
-.key-code { font-size: 10px; font-family: ui-monospace, monospace; color: var(--accent-h); }
+.key-code { font-size: 11px; font-family: ui-monospace, monospace; color: var(--accent-h); }
 
 .card-toolbar {
   display: flex; align-items: center; justify-content: space-between;
@@ -1132,7 +1132,7 @@ watch(activeTab, (tab) => {
 .route-chip {
   padding: 1px 6px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-family: ui-monospace, monospace;
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--accent-h);
@@ -1155,7 +1155,7 @@ watch(activeTab, (tab) => {
   padding: 12px 16px;
 }
 .detail-title-block { flex: 1; min-width: 200px; }
-.detail-title-block h3 { margin: 0 0 4px; font-size: 18px; }
+.detail-title-block h3 { margin: 0 0 4px; font-size: 16px; }
 .detail-grid {
   display: grid;
   grid-template-columns: minmax(320px, 1fr) minmax(420px, 1.4fr);
@@ -1213,7 +1213,7 @@ watch(activeTab, (tab) => {
   display: inline-flex; align-items: center;
   padding: 2px 8px;
   border-radius: 99px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.01em;
 }
@@ -1228,12 +1228,12 @@ watch(activeTab, (tab) => {
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .layer-count {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 .layer-hint {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   flex: 0 1 auto;
 }
@@ -1285,7 +1285,7 @@ watch(activeTab, (tab) => {
   color: var(--muted);
 }
 .route-tier-tag {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -1306,7 +1306,7 @@ watch(activeTab, (tab) => {
 }
 .field-label {
   display: block;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   margin-bottom: 4px;
   letter-spacing: 0.01em;
@@ -1329,7 +1329,7 @@ watch(activeTab, (tab) => {
 .route-tier-summary__pill {
   padding: 1px 6px;
   border-radius: 99px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   border: 1px solid var(--border);
 }
@@ -1397,7 +1397,7 @@ watch(activeTab, (tab) => {
 }
 .form-grid label {
   display: flex; flex-direction: column; gap: 3px;
-  font-size: 10px; color: var(--muted);
+  font-size: 11px; color: var(--muted);
 }
 .form-grid label.span-2 { grid-column: span 2; }
 .form-grid input, .form-grid select { font-size: 12px; padding: 4px 6px; }

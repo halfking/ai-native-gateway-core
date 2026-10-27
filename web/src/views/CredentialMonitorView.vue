@@ -334,7 +334,7 @@ onUnmounted(() => {
 .back-link:hover { color: var(--accent-h); }
 .top-bar h1 {
   margin: 0;
-  font-size: 15px;
+  font-size: 24px;
   font-weight: 600;
   flex-shrink: 0;
   color: var(--text);
@@ -358,7 +358,7 @@ onUnmounted(() => {
   padding: 2px 6px;
 }
 .top-bar .refresh-meta {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
 }

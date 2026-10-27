@@ -186,7 +186,7 @@ async function submit() {
 
 .password-modal__header h2 {
   margin: 0;
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 600;
 }
 

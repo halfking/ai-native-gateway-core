@@ -711,7 +711,7 @@ watch(activeTab, () => { void reload() })
 
 .page-header h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -776,7 +776,7 @@ watch(activeTab, () => { void reload() })
   margin-bottom: 6px;
 }
 .stat-value {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
@@ -804,7 +804,7 @@ watch(activeTab, () => { void reload() })
   gap: 6px;
 }
 .card-title .badge {
-  font-size: 10px;
+  font-size: 11px;
   padding: 1px 6px;
   border-radius: 4px;
   background: var(--bg-hover);
@@ -876,7 +876,7 @@ watch(activeTab, () => { void reload() })
   flex-direction: column;
   justify-content: space-between;
   padding-right: 4px;
-  font-size: 9px;
+  font-size: 11px;
   color: var(--text-secondary);
   width: 32px;
   flex-shrink: 0;

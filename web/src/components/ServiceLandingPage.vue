@@ -404,7 +404,7 @@ const railPoints = computed(() => props.heroPoints)
 }
 .kx-landing__feature h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   letter-spacing: -0.01em;
   text-align: left;

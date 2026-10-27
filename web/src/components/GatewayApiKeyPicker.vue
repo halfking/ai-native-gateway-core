@@ -78,7 +78,7 @@ function goKeys(action?: string) {
 
 .key-picker__title {
   margin: 0 0 6px;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .key-picker__hint {

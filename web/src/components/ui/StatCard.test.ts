@@ -53,7 +53,14 @@ describe('StatCard', () => {
   it('keeps the small-screen value scale-down under 480px (responsive source assertion)', () => {
     expect(source).toMatch(/@media \(max-width: 480px\)/)
     const mobileBlock = source.split('@media (max-width: 480px)')[1] ?? ''
-    expect(mobileBlock).toContain('font-size: 18px')
+    // ★ 2026-10-27 第 23 增量：断言从「字面 18px」改成「**降档语义**」——
+    //   小屏值必须（a）小于桌面基准 `--kx-text-2xl` = 24px，（b）落在 DESIGN.md §4 的角色阶上。
+    //   写死 18px 会在字号阶调整时假红；「小于 24 且在阶上」才是这条断言真正的意图。
+    const m = mobileBlock.match(/font-size:\s*(\d+(?:\.\d+)?)px/)
+    expect(m).not.toBeNull()
+    const mobilePx = Number(m![1])
+    expect(mobilePx).toBeLessThan(24)
+    expect([11, 12, 13, 14, 16, 20, 24, 30, 38]).toContain(mobilePx)
     // ★ 2026-10-25：这里原来断言 source 含 'border-inline-start'，
     //   注释写「tone 色条使用逻辑属性，RTL 下自动镜像」。
     //   ★ 但那条彩色侧边条本身是 craft-floor 的**硬禁项**（卡片上 >1px 的

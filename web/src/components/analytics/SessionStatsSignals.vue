@@ -82,6 +82,6 @@ function formatMs(ms: number) {
 .detail-card__hint { font-weight: 400; font-size: 12px; color: var(--muted, var(--text-secondary)); }
 .signal-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 12px; }
 .signal-label { display: block; font-size: 12px; color: var(--muted, var(--text-secondary)); }
-.signal-value { font-size: 18px; font-weight: 600; }
+.signal-value { font-size: 16px; font-weight: 600; }
 .empty-hint { margin: 0; font-size: 13px; color: var(--muted, var(--text-secondary)); }
 </style>

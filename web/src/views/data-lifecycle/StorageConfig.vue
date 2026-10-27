@@ -382,12 +382,12 @@ function fmtNum(n?: number) {
 <style scoped>
 .storage-config { padding: 0; }
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.header h2 { margin: 0; font-size: 18px; color: var(--text); }
+.header h2 { margin: 0; font-size: 20px; color: var(--text); }
 .btn-refresh { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius, 8px); padding: 4px 12px; cursor: pointer; color: var(--text); transition: background .15s, border-color .15s; }
 .btn-refresh:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--accent); color: var(--accent-h); }
 .btn-refresh:disabled { opacity: .4; cursor: not-allowed; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius, 8px); padding: 16px 20px; margin-bottom: 16px; }
-.card-title { margin: 0 0 12px; font-size: 15px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.card-title { margin: 0 0 12px; font-size: 16px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
 .usage-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .usage-bar-track { flex: 1; height: 20px; background: var(--bg-subtle); border-radius: 10px; overflow: hidden; }
 .usage-bar-fill { height: 100%; border-radius: 10px; transition: width 0.3s; }
@@ -395,7 +395,7 @@ function fmtNum(n?: number) {
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
 .stat-item { padding: 8px 0; }
 .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-.stat-value { font-size: 15px; color: var(--text); font-weight: 500; word-break: break-all; }
+.stat-value { font-size: 14px; color: var(--text); font-weight: 500; word-break: break-all; }
 .mono { font-family: 'SF Mono', Consolas, monospace; font-size: 13px; }
 .form-group { margin-bottom: 14px; }
 .form-label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; font-weight: 500; }

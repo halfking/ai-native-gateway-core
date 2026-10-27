@@ -47,6 +47,6 @@ const emit = defineEmits<{ close: [] }>()
   margin-bottom: 4px;
 }
 .detail-title { font-size: 12px; font-weight: 600; }
-.req-id { font-size: 9px; color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.req-id { font-size: 11px; color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; }
 .text-muted { font-size: 11px; color: var(--muted); }
 </style>

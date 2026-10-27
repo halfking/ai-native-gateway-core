@@ -167,7 +167,7 @@ onUnmounted(() => {
   margin-bottom: 16px;
 }
 .order-no { font-size: 14px; color: var(--muted); }
-.order-product { font-size: 18px; font-weight: 600; margin-top: 4px; }
+.order-product { font-size: 14px; font-weight: 600; margin-top: 4px; }
 .order-meta { border-top: 1px solid var(--border); padding-top: 12px; }
 .meta-row {
   display: flex;
@@ -176,7 +176,7 @@ onUnmounted(() => {
   font-size: 13px;
 }
 .meta-row span:first-child { color: var(--muted); }
-.amount { font-size: 18px; font-weight: 700; color: var(--accent-h); }
+.amount { font-size: 24px; font-weight: 700; color: var(--accent-h); }
 .pay-section { margin-top: 20px; text-align: center; }
 .qr-box {
   display: flex;

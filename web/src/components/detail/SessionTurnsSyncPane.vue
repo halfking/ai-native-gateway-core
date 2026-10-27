@@ -595,7 +595,7 @@ function onDividerKeydown(e: KeyboardEvent) {
 .turn-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .turn-card .tn { font-weight: 600; }
 .turn-card .badge {
-  font-size: 10px; color: var(--kx-success);
+  font-size: 11px; color: var(--kx-success);
   background: color-mix(in srgb, var(--kx-success) 14%, transparent);
   padding: 0 6px; border-radius: 999px;
 }

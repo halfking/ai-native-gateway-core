@@ -92,7 +92,13 @@
     "ui:sweep:overlays": "node scripts/ui-sweep.mjs --overlays --strict",
     "census:table:mobile": "node scripts/compact-table-census.mjs --root ../web-mobile/src",
     "file-inputs:check": "node scripts/file-input-census.mjs",
-    "file-inputs:self-test": "node scripts/file-input-census.mjs --self-test"
+    "file-inputs:self-test": "node scripts/file-input-census.mjs --self-test",
+    "design-type-scale:check": "node --experimental-strip-types scripts/design-type-scale-guard.mjs",
+    "design-type-scale:selftest": "node --experimental-strip-types scripts/design-type-scale-guard.mjs --selftest",
+    "design-type-scale:list": "node --experimental-strip-types scripts/design-type-scale-guard.mjs --list",
+    "design-type-scale:json": "node --experimental-strip-types scripts/design-type-scale-guard.mjs --json",
+    "design-type-scale:update-baseline": "node --experimental-strip-types scripts/design-type-scale-guard.mjs --update-baseline",
+    "design-type-scale:migrate": "node --experimental-strip-types scripts/design-type-scale-migrate.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

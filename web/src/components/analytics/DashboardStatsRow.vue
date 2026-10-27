@@ -227,6 +227,6 @@ const changeClass = (change: number, isNegative: boolean) => {
   .dashboard-stats-row { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
   .stat-content { gap: 8px; }
   .stat-icon { width: 40px; height: 40px; }
-  .stat-value { font-size: 18px; }
+  .stat-value { font-size: 16px; }
 }
 </style>

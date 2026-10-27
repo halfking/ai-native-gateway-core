@@ -299,7 +299,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
   gap: 12px;
   margin-bottom: 12px;
 }
-.nm-modal-header h3 { margin: 0; font-size: 15px; }
+.nm-modal-header h3 { margin: 0; font-size: 16px; }
 .nm-modal-sub { margin: 4px 0 0; color: var(--kx-text-secondary); font-size: 11px; }
 .nm-modal-close {
   background: none;

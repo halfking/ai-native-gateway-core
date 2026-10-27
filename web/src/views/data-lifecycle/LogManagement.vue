@@ -421,12 +421,12 @@ function fmtNum(n: number) {
 <style scoped>
 .log-management { padding: 0; }
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.header h2 { margin: 0; font-size: 18px; color: var(--text); }
+.header h2 { margin: 0; font-size: 20px; color: var(--text); }
 .btn-refresh { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius, 8px); padding: 4px 12px; cursor: pointer; color: var(--text); transition: background .15s, border-color .15s; }
 .btn-refresh:hover:not(:disabled) { background: var(--bg-subtle); border-color: var(--muted); }
 .btn-refresh:disabled { opacity: .4; cursor: not-allowed; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius, 8px); padding: 16px 20px; margin-bottom: 16px; }
-.card-title { margin: 0 0 12px; font-size: 15px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.card-title { margin: 0 0 12px; font-size: 16px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; display: flex; align-items: center; gap: 8px; }
 .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: normal; }
 .badge.ok { background: var(--success-bg); color: var(--success); border: 1px solid var(--success-bd); }
 .badge.warn { background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning-bd); }

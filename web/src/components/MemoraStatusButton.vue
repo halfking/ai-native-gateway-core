@@ -269,7 +269,7 @@ onUnmounted(() => {
   color: var(--text);
 }
 .panel-badge {
-  font-size: 10px;
+  font-size: 11px;
   padding: 1px 6px;
   border-radius: 99px;
   border: 1px solid var(--border);
@@ -306,7 +306,7 @@ onUnmounted(() => {
 .meta-row dt { margin: 0; color: var(--muted); }
 .meta-row dd { margin: 0; color: var(--text); word-break: break-all; }
 .meta-row code {
-  font-size: 10px;
+  font-size: 11px;
   background: var(--bg);
   padding: 1px 4px;
   border-radius: 4px;
@@ -316,7 +316,7 @@ onUnmounted(() => {
 .meta-time {
   display: block;
   margin-top: 2px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
 

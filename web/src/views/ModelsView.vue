@@ -1502,7 +1502,7 @@ watch(activeTab, async (tab) => {
 
 .filter-card .card-header h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .filter-heading {
@@ -1567,7 +1567,7 @@ watch(activeTab, async (tab) => {
 
 .family-chip .cnt {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .namespace-panel {
@@ -1607,7 +1607,7 @@ watch(activeTab, async (tab) => {
 .tag-chip.active { outline: 2px solid var(--primary); }
 .tag-chip.disabled { opacity: .38; cursor: not-allowed; }
 .tag-chip:disabled { opacity: .38; cursor: not-allowed; }
-.tag-chip .cnt { color: var(--text-muted); font-size: 10px; }
+.tag-chip .cnt { color: var(--text-muted); font-size: 11px; }
 .muted { color: var(--text-muted); }
 .small { font-size: 11px; margin-top: 3px; }
 .mutedRow { opacity: .62; }
@@ -1657,7 +1657,7 @@ watch(activeTab, async (tab) => {
 
 .modal-header h3 {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
 }
 
 .modal-body {
@@ -1720,7 +1720,7 @@ watch(activeTab, async (tab) => {
 
 .section h4 {
   margin: 0 0 12px 0;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
 }
 

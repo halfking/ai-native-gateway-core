@@ -917,7 +917,7 @@ watch(keyId, async () => {
 
 .page-header h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
 }
 
 .key-info-card {
@@ -1006,7 +1006,7 @@ watch(keyId, async () => {
 }
 
 .stat-value {
-  font-size: 20px;
+  font-size: 24px;
   font-weight: 600;
 }
 
@@ -1168,14 +1168,14 @@ watch(keyId, async () => {
 
 .trend-y-label {
   fill: var(--muted);
-  font-size: 7px;
+  font-size: 11px;
   font-weight: 400;
   font-family: inherit;
 }
 
 .trend-x-label {
   fill: var(--muted);
-  font-size: 7px;
+  font-size: 11px;
   font-weight: 400;
   font-family: inherit;
 }
@@ -1266,7 +1266,7 @@ watch(keyId, async () => {
 }
 
 .key-info-title {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
 }
 

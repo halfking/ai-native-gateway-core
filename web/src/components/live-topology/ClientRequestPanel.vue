@@ -251,7 +251,7 @@ function latency(value: number | null | undefined): string {
 
 .cp__summary-model {
   grid-column: 1 / -1;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -369,7 +369,7 @@ function latency(value: number | null | undefined): string {
 }
 
 .cp__error {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-danger);
 }
 
@@ -408,7 +408,7 @@ function latency(value: number | null | undefined): string {
 }
 
 .cp__page-info {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;

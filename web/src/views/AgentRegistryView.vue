@@ -612,7 +612,7 @@ onBeforeUnmount(() => {
   letter-spacing: 0.5px;
 }
 .stat-value {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 600;
   margin-top: 4px;
 }

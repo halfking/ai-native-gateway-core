@@ -170,7 +170,7 @@ onMounted(load)
 }
 
 .panel-title {
-  font-size: 0.9375rem;
+  font-size: 16px;
   font-weight: 600;
 }
 
@@ -183,7 +183,7 @@ onMounted(load)
 
 .stats-section h3 {
   margin: 0 0 0.5rem 0;
-  font-size: 1rem;
+  font-size: 16px;
   font-weight: 600;
 }
 
@@ -198,13 +198,13 @@ onMounted(load)
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   font-weight: 600;
-  font-size: 0.8125rem;
+  font-size: 13px;
 }
 
 .data-table td {
   padding: 0.6rem 0.8rem;
   border-bottom: 1px solid var(--border);
-  font-size: 0.875rem;
+  font-size: 14px;
 }
 
 .data-table tbody tr:hover {
@@ -235,7 +235,7 @@ onMounted(load)
 .badge {
   padding: 0.25rem 0.5rem;
   border-radius: 3px;
-  font-size: 0.75rem;
+  font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
 }

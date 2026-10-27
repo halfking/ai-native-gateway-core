@@ -522,7 +522,7 @@ h1 {
 }
 .card h2 {
   margin: 0 0 8px;
-  font-size: 18px;
+  font-size: 20px;
   border-bottom: 1px solid var(--border);
   padding-bottom: 8px;
 }

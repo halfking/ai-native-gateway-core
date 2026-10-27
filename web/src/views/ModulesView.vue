@@ -1149,7 +1149,7 @@ onMounted(() => {
   color: var(--success);
 }
 .summary-sep { color: var(--text-secondary); margin: 0 2px; }
-.summary-total { font-size: 18px; color: var(--text-secondary); }
+.summary-total { font-size: 24px; color: var(--text-secondary); }
 .summary-label {
   margin-left: 8px;
   color: var(--text-secondary);
@@ -1215,7 +1215,7 @@ onMounted(() => {
   color: var(--text-secondary);
 }
 .group-count {
-  font-size: 10px;
+  font-size: 11px;
   padding: 1px 6px;
   background: var(--bg);
   border-radius: 8px;
@@ -1277,7 +1277,7 @@ onMounted(() => {
   justify-content: center;
   width: 16px;
   height: 16px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   color: color-mix(in srgb, var(--warning) 20%, var(--kx-text));
   background: var(--warning);
@@ -1361,7 +1361,7 @@ onMounted(() => {
 .detail-title-area { flex: 1; }
 .detail-title {
   margin: 0 0 4px;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
 }
 .status-badge {
@@ -1418,10 +1418,6 @@ onMounted(() => {
   transition: background 0.15s;
 }
 .dep-chip:hover { background: var(--warning-bd); }
-.dep-jump {
-  font-size: 10px;
-  opacity: 0.7;
-}
 
 /* ── Tabs ── */
 .tab-bar {
@@ -1583,7 +1579,7 @@ onMounted(() => {
 .dep-badge {
   padding: 2px 8px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   flex-shrink: 0;
 }
@@ -1799,7 +1795,7 @@ onMounted(() => {
   display: inline-block;
   padding: 1px 6px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
 }
 .src-badge.src-db {
@@ -1834,7 +1830,7 @@ onMounted(() => {
 .integ-info { flex: 1; }
 .integ-title {
   margin: 0 0 2px;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
 }
 .integ-desc {
@@ -1973,7 +1969,7 @@ onMounted(() => {
 .dep-badge {
   padding: 2px 8px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
 }
 .badge-required {
@@ -2034,16 +2030,6 @@ onMounted(() => {
 }
 
 /* ── Module Reference Badge ── */
-.module-ref-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--accent-h);
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 500;
-  margin-left: 8px;
-}
 
 /* ── Dependency Warning ── */
 .dependency-warning {

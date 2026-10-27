@@ -1213,7 +1213,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   border-radius: 3px;
   background: var(--bg);
   border: 1px solid var(--border);
-  font-size: 10px;
+  font-size: 11px;
   font-family: ui-monospace, monospace;
 }
 
@@ -1383,7 +1383,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .route-incident-drawer__footnote {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
   margin: 0;
   text-align: right;
@@ -1403,7 +1403,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .status-grid__label {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
   letter-spacing: 0.01em;
 }
@@ -1477,7 +1477,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .finding__samples {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
 }
 
@@ -1577,7 +1577,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .event-row__type {
-  font-size: 10px;
+  font-size: 11px;
   padding: 1px 6px;
   border-radius: 3px;
   letter-spacing: 0.01em;
@@ -1660,7 +1660,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-result__pill {
-  font-size: 10px;
+  font-size: 11px;
   padding: 1px 6px;
   border-radius: 999px;
   font-weight: 600;
@@ -1717,7 +1717,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .audit-row__pill {
-  font-size: 10px;
+  font-size: 11px;
   padding: 1px 6px;
   border-radius: 999px;
   font-weight: 600;
@@ -1747,7 +1747,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .audit-row__actor {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
 }
 
@@ -1816,7 +1816,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-modal__hint-small {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
   display: block;
   margin-top: 2px;
@@ -1863,7 +1863,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-modal__counter {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
   text-align: right;
 }

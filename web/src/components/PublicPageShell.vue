@@ -70,7 +70,7 @@ const { t } = useI18n()
 .pub-page__sub {
   margin: 0 auto;
   max-width: 52ch;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.6;
   color: var(--pub-muted);
 }

@@ -172,7 +172,7 @@ onMounted(load)
         </thead>
         <tbody>
           <tr v-for="f in FIELDS" :key="String(f.key)">
-            <td>{{ f.label }} <code style="font-size:10px;color:var(--muted)">{{ String(f.key) }}</code></td>
+            <td>{{ f.label }} <code style="font-size:11px;color:var(--muted)">{{ String(f.key) }}</code></td>
             <td><code>{{ (policy as any)[f.key] }}</code></td>
             <td>
               <input

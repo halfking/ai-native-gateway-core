@@ -335,7 +335,7 @@ onMounted(load)
   padding: 14px 16px 10px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--accent) 4%, transparent);
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
 }
 .card-title .hint {

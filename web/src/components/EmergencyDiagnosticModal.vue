@@ -384,7 +384,7 @@ watch(() => props.visible, (visible) => {
 
 .modal-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text);
 }

@@ -942,7 +942,7 @@ onUnmounted(() => {
 }
 
 .active-count {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   padding: 2px 7px;
   border-radius: 999px;
@@ -1099,7 +1099,7 @@ onUnmounted(() => {
   position: sticky;
   left: 0;
   z-index: 4;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--muted);
   text-align: left;
@@ -1108,7 +1108,7 @@ onUnmounted(() => {
 }
 
 .axis-cell {
-  font-size: 9px;
+  font-size: 11px;
   font-family: ui-monospace, monospace;
   color: var(--muted);
   text-align: center;
@@ -1168,7 +1168,7 @@ onUnmounted(() => {
 }
 
 .model-label code {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 400;
 }
 
@@ -1178,7 +1178,7 @@ onUnmounted(() => {
   margin-left: 4px;
   padding: 0 4px;
   border-radius: 3px;
-  font-size: 9px;
+  font-size: 11px;
   line-height: 14px;
   vertical-align: middle;
   white-space: nowrap;
@@ -1224,7 +1224,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   height: 100%;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   font-family: ui-monospace, monospace;
   color: rgba(15, 23, 42, 0.82);
@@ -1303,7 +1303,7 @@ onUnmounted(() => {
 
 .drawer-header h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .drawer-body {

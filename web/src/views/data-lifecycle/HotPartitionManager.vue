@@ -963,7 +963,7 @@ function formatNumber(num: number): string {
 }
 
 .table-name {
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
   margin: 0;
   color: var(--text);
@@ -1135,7 +1135,7 @@ function formatNumber(num: number): string {
   padding: 1px 6px;
   border-radius: 8px;
   font-weight: 500;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .dot-pulse {

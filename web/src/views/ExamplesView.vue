@@ -571,7 +571,7 @@ function toggleGuide(id: ClientGuideId) {
 }
 
 .section-heading {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   margin: 0 0 12px;
 }

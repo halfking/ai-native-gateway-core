@@ -235,7 +235,7 @@ onMounted(() => {
 
 .page-header h1 {
   margin: 0 0 8px;
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -299,7 +299,7 @@ onMounted(() => {
 
 .section-header h2 {
   margin: 0 0 4px;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -444,7 +444,7 @@ onMounted(() => {
 
 .btn-large {
   padding: 12px 24px;
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .btn-primary {

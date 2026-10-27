@@ -161,7 +161,7 @@ function currentNode(requestId?: string): number | null {
 /* 最新动作（动作事件驱动）+ stage 徽标（仅后端上报时渲染） */
 .trail-step--latest { color: var(--kx-text); font-weight: 500; }
 .trail-stage {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   padding: 0 4px;
   border-radius: 3px;

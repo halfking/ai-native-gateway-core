@@ -1207,7 +1207,7 @@ onMounted(async () => {
         >
           <span style="font-weight:600;display:flex;align-items:center;gap:6px;white-space:nowrap">
             <span>📊 统计概览</span>
-            <span class="badge badge-blue" style="font-size:10px;padding:2px 6px;white-space:nowrap">
+            <span class="badge badge-blue" style="font-size:11px;padding:2px 6px;white-space:nowrap">
               {{ formatStatNumber(aggregate.total_requests) }} 请求
             </span>
           </span>
@@ -1225,7 +1225,7 @@ onMounted(async () => {
         >
           <span style="font-weight:600;display:flex;align-items:center;gap:6px;white-space:nowrap">
             <span>📈 按模型统计</span>
-            <span v-if="aggregate.by_model && aggregate.by_model.length" class="badge badge-blue" style="font-size:10px;padding:2px 6px;white-space:nowrap">
+            <span v-if="aggregate.by_model && aggregate.by_model.length" class="badge badge-blue" style="font-size:11px;padding:2px 6px;white-space:nowrap">
               {{ aggregate.by_model.length }} 个模型
             </span>
           </span>
@@ -1319,7 +1319,7 @@ onMounted(async () => {
       >
         <span style="font-weight:600;display:flex;align-items:center;gap:6px">
           <span>🤖 压缩与会话缓存说明</span>
-          <span v-if="compressionStats.totalCompressed > 0" class="badge" style="font-size:10px;padding:2px 6px">
+          <span v-if="compressionStats.totalCompressed > 0" class="badge" style="font-size:11px;padding:2px 6px">
             本页 {{ compressionStats.totalCompressed }} 条已压缩
             <template v-if="compressionStats.deltaCount"> · 增量拼接 {{ compressionStats.deltaCount }}</template>
             <template v-if="compressionStats.slidingCount"> · 滑动窗口 {{ compressionStats.slidingCount }}</template>
@@ -1373,7 +1373,7 @@ onMounted(async () => {
       >
         <span style="font-weight:600;display:flex;align-items:center;gap:6px;white-space:nowrap">
           <span>⚙️ 筛选条件</span>
-          <span v-if="activeFilterCount > 0" class="badge badge-blue" style="font-size:10px;padding:2px 6px;white-space:nowrap">{{ activeFilterCount }} 项生效</span>
+          <span v-if="activeFilterCount > 0" class="badge badge-blue" style="font-size:11px;padding:2px 6px;white-space:nowrap">{{ activeFilterCount }} 项生效</span>
         </span>
         <span style="flex:1"></span>
         <span style="color:var(--text-secondary);font-size:12px;white-space:nowrap">共 {{ total }} 条</span>
@@ -1808,7 +1808,7 @@ onMounted(async () => {
 }
 .cell-line2 {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.35;
   margin-top: 2px;
 }
@@ -1829,7 +1829,7 @@ onMounted(async () => {
 .trace-sub {
   color: var(--muted);
   margin-top: 2px;
-  font-size: 10px;
+  font-size: 11px;
   cursor: pointer;
 }
 .trace-sub:hover {
@@ -1941,14 +1941,14 @@ onMounted(async () => {
   display: inline-block;
   padding: 1px 6px;
   border-radius: 8px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   background: color-mix(in srgb, var(--magenta) 12%, transparent);
   color: var(--purple);
 }
 .parent-id {
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: 11px;
   margin-top: 2px;
   font-family: var(--mono-font, ui-monospace, monospace);
 }
@@ -1967,7 +1967,7 @@ onMounted(async () => {
 
 /* v3 compression savings text in the table compression column */
 .cell-line2.saving-text {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--success);
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
@@ -1979,7 +1979,7 @@ onMounted(async () => {
 
 /* Compression guide card in-page styling */
 .compression-guide-card code {
-  font-size: 10px;
+  font-size: 11px;
   padding: 1px 4px;
   border-radius: 3px;
   background: var(--surface-primary, var(--bg-card));

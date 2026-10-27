@@ -79,7 +79,7 @@ function widthPct(v: number): string {
   margin-bottom: 4px;
 }
 .funnel-hint {
-  font-size: 9px;
+  font-size: 11px;
   margin-bottom: 6px;
 }
 .funnel-stages {
@@ -116,7 +116,7 @@ function widthPct(v: number): string {
   border-color: color-mix(in srgb, var(--success) 35%, var(--border));
 }
 .funnel-label {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   text-align: right;
   white-space: nowrap;
@@ -127,7 +127,7 @@ function widthPct(v: number): string {
   text-align: left;
 }
 .badge-muted {
-  font-size: 9px;
+  font-size: 11px;
   padding: 1px 5px;
   border-radius: 3px;
   background: var(--bg-subtle);

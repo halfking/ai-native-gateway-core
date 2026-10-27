@@ -610,7 +610,7 @@ onMounted(() => {
 
 .view-header h2 {
   margin: 0 0 0.5rem;
-  font-size: 1.75rem;
+  font-size: 24px;
   font-weight: 600;
 }
 
@@ -633,7 +633,7 @@ onMounted(() => {
   border: none;
   border-bottom: 2px solid transparent;
   cursor: pointer;
-  font-size: 0.9375rem;
+  font-size: 14px;
   color: var(--muted);
   transition: all 0.2s;
 }
@@ -661,13 +661,13 @@ onMounted(() => {
 }
 
 .stat-label {
-  font-size: 0.875rem;
+  font-size: 14px;
   color: var(--muted);
   margin-bottom: 0.5rem;
 }
 
 .stat-value {
-  font-size: 1.75rem;
+  font-size: 24px;
   font-weight: 600;
 }
 
@@ -689,7 +689,7 @@ onMounted(() => {
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-size: 0.875rem;
+  font-size: 14px;
   min-width: 150px;
 }
 
@@ -711,7 +711,7 @@ onMounted(() => {
 .data-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.875rem;
+  font-size: 14px;
 }
 
 .data-table th {
@@ -744,7 +744,7 @@ onMounted(() => {
 
 .session-id {
   font-family: monospace;
-  font-size: 0.8rem;
+  font-size: 13px;
   max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -759,7 +759,7 @@ onMounted(() => {
 
 .date-cell {
   white-space: nowrap;
-  font-size: 0.8rem;
+  font-size: 13px;
   color: var(--muted);
 }
 
@@ -772,7 +772,7 @@ onMounted(() => {
 }
 
 .page-info {
-  font-size: 0.875rem;
+  font-size: 14px;
   color: var(--muted);
 }
 
@@ -783,7 +783,7 @@ onMounted(() => {
   border: none;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 0.875rem;
+  font-size: 14px;
   font-weight: 500;
   transition: all 0.2s;
 }
@@ -811,7 +811,7 @@ onMounted(() => {
   color: var(--accent-dark);
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
-  font-size: 0.75rem;
+  font-size: 12px;
 }
 
 .badge-yellow {
@@ -819,7 +819,7 @@ onMounted(() => {
   color: var(--warning-dark);
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
-  font-size: 0.75rem;
+  font-size: 12px;
 }
 
 .badge-green {
@@ -827,7 +827,7 @@ onMounted(() => {
   color: var(--success-strong);
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
-  font-size: 0.75rem;
+  font-size: 12px;
 }
 
 .badge-gray {
@@ -835,7 +835,7 @@ onMounted(() => {
   color: var(--muted);
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
-  font-size: 0.75rem;
+  font-size: 12px;
 }
 
 /* 加载和错误 */
@@ -900,7 +900,7 @@ onMounted(() => {
 
 .config-section h3 {
   margin: 0 0 1rem;
-  font-size: 1rem;
+  font-size: 16px;
   font-weight: 600;
   color: var(--muted);
 }
@@ -925,7 +925,7 @@ onMounted(() => {
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-size: 0.875rem;
+  font-size: 14px;
 }
 
 .form-input:focus {
@@ -938,14 +938,14 @@ onMounted(() => {
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-size: 0.875rem;
+  font-size: 14px;
 }
 
 .form-select {
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-size: 0.875rem;
+  font-size: 14px;
   min-width: 150px;
 }
 

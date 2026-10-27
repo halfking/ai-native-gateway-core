@@ -72,7 +72,7 @@ defineProps<{
 .stage-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
 .stage-meta { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .stage-dir { display: flex; flex-direction: column; gap: 3px; }
-.dir-lbl { font-size: 10px; color: var(--text-secondary);}
+.dir-lbl { font-size: 11px; color: var(--text-secondary);}
 .pii-icon {
   margin-left: 4px;
   font-size: 10px;
@@ -85,13 +85,13 @@ defineProps<{
   color: var(--text-primary);
   max-height: 220px; overflow-y: auto;
 }
-.stage-extra { font-size: 10px; }
+.stage-extra { font-size: 11px; }
 .stage-extra.range { color: var(--accent-h); }
 .stage-extra.strat { color: var(--text-muted); }
 .stage-extra.marker { color: var(--warning); }
 .stage-tags { display: flex; flex-wrap: wrap; gap: 4px; }
-.tag { padding: 1px 6px; border-radius: 4px; font-size: 10px; }
+.tag { padding: 1px 6px; border-radius: 4px; font-size: 11px; }
 .tag-pos { background: var(--success-bg); color: var(--success); }
 .tag-audit { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent-h); }
-.no-change { font-size: 10px; color: var(--text-muted); font-style: italic; }
+.no-change { font-size: 11px; color: var(--text-muted); font-style: italic; }
 </style>

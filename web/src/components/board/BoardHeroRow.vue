@@ -197,7 +197,7 @@ function fmtTokensCompact(n: number | undefined) {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent) inset;
 }
 .hero-card__label {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text-muted);
   font-weight: 600;
 }
@@ -210,7 +210,7 @@ function fmtTokensCompact(n: number | undefined) {
 }
 .hero-card__sub {
   margin-top: 6px;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text-muted);
   display: flex;
   gap: 10px;
@@ -230,7 +230,7 @@ function fmtTokensCompact(n: number | undefined) {
   border: 0;
   background: transparent;
   color: var(--accent);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   padding: 0;

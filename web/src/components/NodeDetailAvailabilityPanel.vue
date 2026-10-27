@@ -194,7 +194,7 @@ const groups = computed(() => {
 .nd-avail-label { font-size: 12px; font-weight: 600; }
 .nd-avail-value { font-size: 12px; }
 .nd-avail-meta { margin-top: 4px; font-size: 11px; color: var(--kx-muted); display: grid; gap: 2px; }
-.nd-avail-meta code { font-size: 10px; }
+.nd-avail-meta code { font-size: 11px; }
 .sev-ok { color: var(--kx-success); }
 .sev-warn { color: var(--kx-warning); }
 .sev-danger { color: var(--kx-danger); }

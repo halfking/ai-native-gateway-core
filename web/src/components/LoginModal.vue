@@ -200,7 +200,7 @@ function onModelUpdate(v: boolean) {
 
 .login-modal__brand h2 {
   margin: 0;
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 600;
 }
 

@@ -767,7 +767,7 @@ onMounted(load)
 .rate-cell { white-space: nowrap; }
 .manual-tag {
   display: inline-block; margin-left: 4px; padding: 0 4px;
-  font-size: 10px; border-radius: 4px;
+  font-size: 11px; border-radius: 4px;
   background: var(--info-bg); color: var(--accent);
 }
 .modality-badge {
@@ -782,7 +782,7 @@ onMounted(load)
 .modality-badge.modality-embedding { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-h); }
 .multimodal-tag {
   display: inline-block; padding: 1px 6px; border-radius: 6px;
-  font-size: 10px; font-weight: 600;
+  font-size: 11px; font-weight: 600;
   background: color-mix(in srgb, var(--magenta) 18%, transparent); color: var(--purple);
   margin-left: 2px;
 }

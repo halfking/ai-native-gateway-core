@@ -592,7 +592,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .page-header h1 {
   margin: 0 0 8px;
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 600;
 }
 
@@ -671,7 +671,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .stat-value {
-  font-size: 32px;
+  font-size: 24px;
   font-weight: 600;
   color: var(--text-primary);
 }

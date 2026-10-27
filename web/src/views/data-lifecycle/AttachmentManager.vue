@@ -319,7 +319,7 @@ onMounted(load)
   padding: 12px;
 }
 .stat-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
-.stat-value { font-size: 22px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.stat-value { font-size: 24px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
 .stat-meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
 
 .breakdown h4 { font-size: 12px; color: var(--muted); margin: 8px 0; font-weight: 500; }

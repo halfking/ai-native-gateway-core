@@ -603,7 +603,7 @@ function goManageFeatured() {
   align-items: center;
   gap: 8px;
   font-weight: 600;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .drawer-body-scroll {
@@ -894,7 +894,7 @@ function goManageFeatured() {
 .model-check-name {
   color: var(--text);
   font-family: ui-monospace, 'SF Mono', Menlo, monospace;
-  font-size: 11.5px;
+  font-size: 11px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

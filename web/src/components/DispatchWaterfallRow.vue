@@ -79,7 +79,7 @@ code {
   color: var(--kx-muted);
 }
 .metrics {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-muted);
   font-variant-numeric: tabular-nums;
 }

@@ -139,7 +139,7 @@ const heartbeatDisplay = computed(() => {
 .status-dot--success { background: var(--kx-success); }
 .status-dot--warning { background: var(--kx-warning); }
 .status-dot--idle { background: var(--muted); }
-.status-label { font-size: 15px; }
+.status-label { font-size: 12px; }
 
 /* .chip / .chip--tier 从全局 styles/pill-chip.css 继承（P1-8）。
  * 注意：全局 .chip 默认带 border: 1px solid var(--kx-border)，本组件原风格

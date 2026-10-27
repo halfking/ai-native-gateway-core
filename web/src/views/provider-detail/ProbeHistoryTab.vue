@@ -314,7 +314,7 @@ watch(stateFilter, load)
   display: inline-block;
   margin-right: 6px;
   transition: transform 0.15s;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
 

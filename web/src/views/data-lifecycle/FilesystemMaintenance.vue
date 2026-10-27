@@ -560,7 +560,7 @@ defineExpose({ load })
 
 .modal-content h3 {
   margin: 0 0 16px 0;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text);
 }

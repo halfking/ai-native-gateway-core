@@ -255,7 +255,7 @@ function applyDraft() {
   border-radius: 9px;
   background: var(--card);
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: border-color 0.15s;
@@ -311,7 +311,7 @@ function applyDraft() {
   margin-bottom: 10px;
 }
 .kx-dr-panel__title {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--text-muted);
 }
@@ -364,7 +364,7 @@ function applyDraft() {
   margin-top: 13px;
 }
 .kx-dr-hint {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-muted);
 }
 .kx-dr-hint--error {

@@ -151,7 +151,7 @@ function statusClass(status: string): string {
   font-size: 12px; margin-bottom: 10px; color: var(--text-secondary);
 }
 .journal-actions { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-.journal-chip { border: 1px solid var(--border); border-radius: 999px; padding: 1px 6px; font-size: 10px; color: var(--text-secondary); }
+.journal-chip { border: 1px solid var(--border); border-radius: 999px; padding: 1px 6px; font-size: 11px; color: var(--text-secondary); }
 .degraded { color: var(--warning); }
 .flow-list { list-style: none; margin: 0; padding: 0; }
 .flow-row {

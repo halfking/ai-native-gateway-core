@@ -231,7 +231,7 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
   flex-wrap: wrap;
 }
 .dist__title {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 700;
   margin: 0;
 }
@@ -247,7 +247,7 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
   border: 0;
   background: transparent;
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 11px;
   padding: 3px 9px;
   border-radius: 5px;
   cursor: pointer;
@@ -273,7 +273,7 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
   background: var(--danger);
 }
 .dist-card__title {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 700;
   display: flex;
   justify-content: space-between;
@@ -286,7 +286,7 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
 .dist-card__cs {
   color: var(--text-muted);
   font-weight: 500;
-  font-size: 10.5px;
+  font-size: 11px;
   flex-shrink: 0;
 }
 .rank-row {
@@ -294,7 +294,7 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
   align-items: center;
   gap: 8px;
   margin: 7px 0;
-  font-size: 11.5px;
+  font-size: 11px;
 }
 .rank-row--click {
   cursor: pointer;
@@ -333,7 +333,7 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
 }
 .dist-card__hint {
   margin-top: 6px;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--accent);
 }
 .dist-card__empty {
@@ -415,7 +415,7 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
   align-items: center;
   gap: 8px;
   margin: 4px 0;
-  font-size: 11.5px;
+  font-size: 11px;
 }
 .drill-row__name {
   flex: 0 0 44%;

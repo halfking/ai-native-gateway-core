@@ -585,7 +585,7 @@ onMounted(() => {
   display: inline-block;
   padding: 1px 6px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   margin-left: 4px;
 }

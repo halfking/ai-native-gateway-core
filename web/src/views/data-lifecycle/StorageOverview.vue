@@ -623,7 +623,7 @@ function fmtNum(n: number) {
   margin: 12px 0 16px;
 }
 .big-value {
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--text);
   font-variant-numeric: tabular-nums;
@@ -807,7 +807,7 @@ function fmtNum(n: number) {
   letter-spacing: 0.01em;
 }
 .columnar-stat .stat-value {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--text);
   font-variant-numeric: tabular-nums;
@@ -939,7 +939,7 @@ function fmtNum(n: number) {
 .modal-title {
   margin: 0 0 16px 0;
   color: var(--text);
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 600;
 }
 .modal-body p {

@@ -237,9 +237,9 @@ const lifecycleOptions = [
 .nd-lc-chip:disabled { opacity: 0.55; cursor: not-allowed; }
 .nd-lc-chip.is-current { font-weight: 600; cursor: default; }
 .nd-lc-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-code.nd-lc-code { font-size: 10.5px; opacity: 0.75; }
+code.nd-lc-code { font-size: 11px; opacity: 0.75; }
 .nd-lc-current {
-  font-size: 10px;
+  font-size: 11px;
   padding: 1px 6px;
   border-radius: 8px;
   background: var(--kx-primary-soft, var(--accent-soft));

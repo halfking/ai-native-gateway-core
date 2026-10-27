@@ -992,13 +992,13 @@ onUnmounted(() => {
   font-weight: 500;
 }
 .stat-mini__value {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 .stat-mini__sub {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   margin-top: 4px;
 }
@@ -1158,7 +1158,7 @@ onUnmounted(() => {
 .trend-date {
   position: absolute;
   bottom: 0;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
 }
