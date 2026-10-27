@@ -218,9 +218,50 @@
       "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ **上限型**登记册（★ 棘轮：记的是「允许的最大值」）⇒ ⇒ 实测值已触底（★ 非规范配方 0 / 不同取值 4）⇒ ⇒ 归零是**空操作**⇒ ⇒ 改用 `unusable` 模式（★ 真值被取走）⇒ ⇒ 读方红且红因为「基线缺失或非法」⇒ ⇒ 有牙。★★ R87 轮**顺手补上了这个真洞**：★ 此前基线字段一缺，`0 > undefined` 恒假 ⇒ ⇒ 棘轮静默失效而门照样报「✅ PASS」⇒ ⇒ 假绿 ⇒ ⇒ 已加红分支。★ 本条是**并行会话 R166 轮**新增的登记册（★ 合并后由本轮的覆盖判据自动收进来）。"
     },
     {
+      "path": "web/scripts/design-primary-clarity-baseline.json",
+      "kind": "excluded",
+      "reason": "★ **上限型基线**，★ 但**掏空它不会让读方变瞎** ⇒ ⇒ 不属于「掏空 ⇒ 必红」这一族。★ 实测（R87 轮续，★ 2026-10-28，★ 合并上游之后）：★ ① 基线态 `rc=0`；★ ② 整册掏空成 `{}` ⇒ **`rc=0`**；★ ③ 基线文件**删除** ⇒ **`rc=0`**⇒ ⇒ ★★ **三档都绿，但棘轮一直生效** —— ★ 根因：★ 读方的兜底写法是 `(baseline.competingZones ?? 0)` ⇒ ⇒ ★★ 基线一空 ⇒ ⇒ **上限变成 0** ⇒ ⇒ **比原来还严**⇒ ⇒ **不会**像 `copy-quality-baseline.json` / `design-elevation-baseline.json` / `i18n-internal-jargon-baseline.json` 那三份那样静默失效（★ 那三份的兜底是 `?? Infinity`⇒ ⇒ 上限直接消失 ⇒ ⇒ 假绿 ⇒ ⇒ 已在本轮逐个补红分支）。★ 附注：★ 门自己的输出**出卖**了掏空态（★ 「基线：竞争动作区 ≤ undefined」）⇒ ⇒ ★★ **量的判定是安全的，但显示层会露出破绽** ⇒ ⇒ ★★ 这正是「★ 先问【那条命令的语义是什么】」的又一个实例。★ 本条是**上游第 23 增量**（★ `d7424f11a`）新增的登记册（★ 合并 `origin/main` 之后★ 由本轮的覆盖判据**自动收进来**）。"
+    },
+    {
       "path": "web/scripts/design-primary-focus-baseline.json",
       "kind": "excluded",
       "reason": "★ **上限型基线**，★ 但**与本轮修过的那三份基线不同** ⇒ ⇒ **掏空它不会让读方变瞎** ⇒ ⇒ 不属于「掏空 ⇒ 必红」这一族。★ 实测（R87 轮，★ 2026-10-28）：★ ① 基线态 `rc=0`；★ ② 整册掏空成 `{}` ⇒ **`rc=0`**；★ ③ 基线文件**删除** ⇒ **`rc=0`** ⇒ ⇒ ★★ **三档都绿，但棘轮一直生效** —— ★ 根因：★ 读方的兜底写法是 `(baseline.rowLevelSolidPrimary ?? 0)` ⇒ ⇒ ★★ 基线一空 ⇒ ⇒ **上限变成 0** ⇒ ⇒ **比原来还严** ⇒ ⇒ ★★ **不会像 `copy-quality-baseline.json` / `design-elevation-baseline.json` / `i18n-internal-jargon-baseline.json` 那三份那样静默失效**（★ 那三份的兜底是 `?? Infinity` ⇒ ⇒ 上限直接消失 ⇒ ⇒ 假绿 ⇒ ⇒ 已在本轮逐个补红分支）。★ ★★ 附注：★ 门自己的输出**出卖**了掏空态（★ 「基线：数据行内实心主色 ≤ undefined」）⇒ ⇒ ★★ **量的判定是安全的，但显示层会露出破绽** ⇒ ⇒ ★★ 这正是「★ 先问【那条命令的语义是什么】」的又一个实例。★ 本条是**上游第 20 增量**新增的登记册（★ 合并 `origin/main` 之后由本轮的覆盖判据**自动收进来**）。"
+    },
+    {
+      "path": "web/scripts/design-semantic-color-baseline.json",
+      "kind": "excluded",
+      "reason": "★ **上限型基线**，★ 但**掏空它不会让读方变瞎** ⇒ ⇒ 不属于「掏空 ⇒ 必红」这一族。★ 实测（R87 轮续，★ 2026-10-28，★ 合并上游之后）：★ ① 基线态 `rc=0`；★ ② 整册掏空成 `{}` ⇒ **`rc=0`**；★ ③ 基线文件**删除** ⇒ **`rc=0`**⇒ ⇒ ★★ **三档都绿，但棘轮一直生效** —— ★ 根因：★ 读方的兜底写法是 `(baseline.tintedGroupContainers ?? 0)` ⇒ ⇒ ★★ 基线一空 ⇒ ⇒ **上限变成 0** ⇒ ⇒ **比原来还严**⇒ ⇒ **不会**像 `copy-quality-baseline.json` / `design-elevation-baseline.json` / `i18n-internal-jargon-baseline.json` 那三份那样静默失效（★ 那三份的兜底是 `?? Infinity`⇒ ⇒ 上限直接消失 ⇒ ⇒ 假绿 ⇒ ⇒ 已在本轮逐个补红分支）。★ 本条是**上游第 21 增量**（★ `9a8458e8a`）新增的登记册（★ 合并 `origin/main` 之后★ 由本轮的覆盖判据**自动收进来**）。"
+    },
+    {
+      "path": "web/scripts/design-semantic-color-exemptions.json",
+      "kind": "registry",
+      "reader": "web/scripts/design-semantic-color-guard.mjs",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/design-semantic-color-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "分组容器被着色",
+      "behaviorally_verified": true,
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow",
+      "note": "★ 行为化验证（R87 轮续，★ 2026-10-28 实测）：★ **人工登记豁免表**（★ `exemptions` 数组，★ 2 条，★ 每条带 `snippet` ＋ `witness`）⇒ ⇒ 读方按 `e.file === finding.file && normalizeSnippet(e.snippet) === sn` **精确匹配** ⇒ ⇒ ★★ **豁免一被取走 ⇒ ⇒ 原先被豁免的容器就重新变成违规** ⇒ ⇒ 门必红。★ 掏空 ⇒ 读数「登记豁免 2 → 0 · 控件组容器被着色 0 → 2」⇒ ⇒ 红因为「分组容器被着色」⇒ ⇒ 有牙。★ ★ 它是**上游第 21 增量**（★ `9a8458e8a`）新增的登记册 ⇒ ★ 它的文件名**不含** registry/baseline/inventory/ledger/manifest 任何关键词 ⇒ ⇒ ★ **只靠文件名的候选集收不到它** ⇒ ⇒ ★ 靠「**被已登记的读方按路径读取**」那条判据才收进来 ⇒ ⇒ ⇒ **这条判据本轮第二次救场**。★ ★★ **量具自带的坑（★ 本轮实测踩到 ⇒ ⇒ 记在这里以免再踩）**：★ 搭 overlay 时若把 `web/src` 做成**符号链接** ⇒ ⇒ 读方按**相对路径**匹配豁免（★ `relative(rootDir, abs)`）⇒ ⇒ 符号链接让 `abs` 落到真实路径 ⇒ ⇒ 相对路径变成 `../../..` ⇒ ⇒ **豁免失效 ⇒ ⇒ 假红** ⇒ ⇒ ★ ⇒ overlay 必须**实体复制** `web/src` （★ 只 `node_modules` 可符号链接，★ 包解析按包名不走相对路径）⇒ ⇒ ★★ 且**每套 overlay 的第一档必须是「真·基线态」** （★ 第一版探针把 `asis` 落进了掏空分支 ⇒ ⇒ 读数全错 ⇒ ⇒ 又一次「量具自己会带 bug」）⇒ ⇒ ⇒ ★ **两处都是「量具坏了」而不是「门有洞」** ⇒ ⇒ ★★ 阴性结论必须先问「基线是不是绿的」。"
+    },
+    {
+      "path": "web/scripts/design-type-scale-baseline.json",
+      "kind": "excluded",
+      "reason": "★ **上限型基线**，★ 但**掏空它不会让读方变瞎** ⇒ ⇒ 不属于「掏空 ⇒ 必红」这一族。★ 实测（R87 轮续，★ 2026-10-28，★ 合并上游之后）：★ ① 基线态 `rc=0`；★ ② 整册掏空成 `{}` ⇒ **`rc=0`**；★ ③ 基线文件**删除** ⇒ **`rc=0`**⇒ ⇒ ★★ **三档都绿，但棘轮一直生效** —— ★ 根因：★ 读方的兜底写法是 `(baseline.offScaleFontSizes ?? 0)` ⇒ ⇒ ★★ 基线一空 ⇒ ⇒ **上限变成 0** ⇒ ⇒ **比原来还严**⇒ ⇒ **不会**像 `copy-quality-baseline.json` / `design-elevation-baseline.json` / `i18n-internal-jargon-baseline.json` 那三份那样静默失效（★ 那三份的兜底是 `?? Infinity`⇒ ⇒ 上限直接消失 ⇒ ⇒ 假绿 ⇒ ⇒ 已在本轮逐个补红分支）。★ 附注：★ 本份基线**有两个**上限（★ `offScaleFontSizes` ＋ `remFontSizes`）⇒ ⇒ ★ 两者**都是** `?? 0` 兜底 ⇒ ⇒ ★★ 同一条结论覆盖两个指标。★ 本条是**上游第 23 增量**（★ `02cdcafec`）新增的登记册（★ 合并 `origin/main` 之后★ 由本轮的覆盖判据**自动收进来**）。"
+    },
+    {
+      "path": "web/scripts/design-type-scale-decisions.json",
+      "kind": "registry",
+      "reader": "web/scripts/design-type-scale-guard.mjs",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/design-type-scale-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "字号落在角色阶之外",
+      "behaviorally_verified": true,
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow",
+      "note": "★ 行为化验证（R87 轮续，★ 2026-10-28 实测）：★ **语义平局档的裁决表**（★ `decisions` ＋ `manualIconExemptions` ＋ `deadCss` ＋ `remToPx`）⇒ ⇒ 读方拿它给「离阶字号」开人工豁免 ⇒ ⇒ ★★ **裁决一被取走 ⇒ ⇒ 原先被豁免的字号就重新变成离阶** ⇒ ⇒ 门必红（★ 且棘轮同时升高：★ 「offScaleFontSizes 0 → 5」⇒ ⇒ **两处同时红** ⇒ ⇒ 红因归属更硬）。★ 掏空 ⇒ 读数「离阶 0（0 个文件）→ 5（4 个文件）」⇒ ⇒ 红因为「字号落在角色阶之外」⇒ ⇒ 有牙。★ ★ 它是**上游第 23 增量**（★ `02cdcafec`）新增的登记册 ⇒ ★ 文件名**不含**任何候选集关键词 ⇒ ⇒ ★ 靠「**被已登记的读方按路径读取**」那条判据收进来。★ ★★ **读方形态的一个前置事实**：★ 这个门导入 `.ts`（★ `web/src/design/typeScale.ts`）⇒ ⇒ ★★ 本机 node 是 **v22.23.3**，★ **类型剥离已默认开启** ⇒ ⇒ ★ 不带 `--experimental-strip-types` 也能跑 ⇒ ⇒ ★★ 否则 harness 的 node 读方只会看到【崩溃红】⇒ ⇒ ★★ 那就不是「红因正确」而是「wrong-red」。"
     },
     {
       "path": "web/scripts/i18n-cjk-baseline.json",
