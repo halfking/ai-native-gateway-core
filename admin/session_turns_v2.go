@@ -608,6 +608,10 @@ func (h *Handler) serveSessionTurnsBodies(w http.ResponseWriter, r *http.Request
 		return
 	}
 	tenantID := tenantFromQueryOrContext(r)
+	// W1.3: consent=off → structured unavailable (never silent empty).
+	if !requireRecordingConsent(w, tenantID) {
+		return
+	}
 	limit := defaultTurnsListLimit
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= maxTurnsListLimit {
