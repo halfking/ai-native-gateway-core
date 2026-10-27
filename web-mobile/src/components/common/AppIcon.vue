@@ -1,9 +1,30 @@
 <script setup lang="ts">
 // AppIcon — 手写矢量图标集（UI规范 06 §7：禁用字形 ⋯/☰ 充当图标；
 // 24px viewBox stroke 风格，feather 系线条）。新增图标在 PATHS 登记路径。
+//
+// ★ 2026-10-27 第 27 增量：★ 「精选」星标与「展开」箭头原来用的是
+//   Unicode 字形（★ / ☆ / ▴ / ▾）⇒ ★ 那是 craft-floor 硬禁的
+//   「Unicode 字形顶替图标系统」⇒ ⇒ 换成**画出来的**图标。
+//   ★ 与桌面端参考实现一致（`web/src/components/ModelPicker.vue` 的
+//   `<StarFilled />`、`web/src/components/ui/FilterBar.vue` 的
+//   `<CaretBottom />` + 展开时 `rotate(180deg)`）⇒ ★ 同一个概念
+//   在两端只有一种画法。
 import { computed } from 'vue'
 
-const props = withDefaults(defineProps<{ name: IconName; size?: number }>(), { size: 22 })
+const props = withDefaults(
+  defineProps<{
+    name: IconName
+    size?: number
+    /**
+     * ★ 填充态（★ 第 27 增量新增）。
+     *   ★ 为什么需要：★ 「已精选 / 未精选」要用**实心 vs 空心**两态表达，
+     *   而这套图标集是 stroke 风格（`fill="none"`）⇒ 同一枚路径靠
+     *   `fill` 切换实心/空心 ⇒ ★ 不用登记两枚路径（★ 一个概念一份画法）。
+     */
+    filled?: boolean
+  }>(),
+  { size: 22, filled: false },
+)
 
 export type IconName =
   | 'home'
@@ -27,6 +48,8 @@ export type IconName =
   | 'check'
   | 'plus'
   | 'chevron'
+  | 'chevron-down'
+  | 'star'
   | 'copy'
   | 'clock'
   | 'cpu'
@@ -60,6 +83,15 @@ const PATHS: Record<IconName, string> = {
   check: 'M4.5 12.5 10 18 19.5 6.5',
   plus: 'M12 5v14M5 12h14',
   chevron: 'M9 5l7 7-7 7',
+  // 2026-10-27 第 27 增量：★ 展开/收起的下向箭头（feather chevron-down）。
+  //   ★ 展开态由 CSS `rotate(180deg)` 翻上去（★ 与桌面端 FilterBar 同口径）
+  //   ⇒ ⇒ 一枚路径两种朝向（★ 不是登记两枚）。
+  'chevron-down': 'M6 9l6 6 6-6',
+  // 2026-10-27 第 27 增量：★ 「精选」星标（feather star，闭合五角路径
+  //   ⇒ 实心/空心靠 `filled` 属性切 `fill`，不用登记两枚路径）。
+  //   ★ 桌面端同概念用 element-plus 的 `<StarFilled />`（ModelPicker /
+  //   RoutingOverviewView）⇒ ★ 两端同一个概念、同一枚画法。
+  star: 'M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z',
   copy: 'M9 9h11v11H9zM15 9V4H4v11h5',
   clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3.5 2',
   cpu: 'M7 7h10v10H7zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4',
@@ -76,7 +108,7 @@ const d = computed(() => PATHS[props.name] ?? '')
     :width="size"
     :height="size"
     viewBox="0 0 24 24"
-    fill="none"
+    :fill="filled ? 'currentColor' : 'none'"
     stroke="currentColor"
     stroke-width="1.8"
     stroke-linecap="round"

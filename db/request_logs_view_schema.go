@@ -765,6 +765,86 @@ func SessionFamilyCredentialCountSourceSQL(credExpr string) string {
 	return "(" + leg("public.session_turns_hot") + " UNION ALL " + leg("public.session_turns") + ")"
 }
 
+// SessionFamilyMostUsedClientModelSourceSQL 返回「**most-used client_model**」
+// 查询用的**窄投影** source（7 列；两臂 hot ∪ 母表，各带 details LEFT JOIN 腿）。
+//
+// # 用途
+//
+// bg/shared_pick.go 的探针选型（PickProbeModelForCredential 的 Priority 1）
+// 要回答「这个凭据近 7 天用得最多的 client_model 是哪个」。现状读 canonical
+// 视图 request_logs_with_current_month。
+//
+// # ★★ 它**不是**提速手段（2026-10-27 252 生产实测推翻了一个错误前提）
+//
+// ★ **错误前提**：「视图有 118 列 ⇒ 每行物化 118 列 ⇒ 改窄投影能省十几秒」。
+//   —— **不成立**：PostgreSQL 会**内联**视图并**裁剪**未被引用的列
+//   （remove_unused_subquery_outputs）⇒ 只取 1 列时，视图并不物化 118 列。
+//
+// ★ **实测（三形态同快照、同一会话、同一凭据 7 天窗）**：
+//
+//	形态                plan cost                Planning Time
+//	canonical 视图      2026.88..2027.14         25 ~ 91 ms
+//	★ 本 helper          2025.29..2025.55         8 ~ 13 ms
+//
+//   ⇒ ★★ **计划代价几乎相同**（2026.88 vs 2025.29）⇒ **执行阶段没有可省的量**；
+//   ⇒ ★★ 真正的差别在**规划**：视图读面每次都要展开 118 列的定义，
+//     规划成本是窄投影的 **3~11 倍**（CPU 成本，与 IO 噪声无关，每次调用都付）。
+//
+// ★ **为什么不能拿单次执行耗时当证据**：252 上**九个**执行（3 形态 × 3 轮交错）
+//   的**计划形状逐项相同**（同一访问路径、同一行数、同一 buffer 计数
+//   521,376 hit / 0 read），但 Execution Time 在 **368 ms ~ 16,194 ms** 之间
+//   波动（**44×**）⇒ ⇒ 单次采样分不出形态差异，只能比**计划代价 / 形状 /
+//   buffer 计数**这类确定性量。
+//
+// # 口径等价性（252 生产规模，同快照逐值对拍）
+//
+//	view_groups=9 / narrow_groups=9 / only_in_view=0 / only_in_narrow=0
+//	view_total=14317 = narrow_total
+//	top1_view=minimax-m3|6862 = top1_narrow
+//
+//   ⇒ 分组**多重集**逐值相同。（★ 比全部分组而不是只比 top-1 ——
+//     `ORDER BY count(*) DESC LIMIT 1` 在并列时**本身不确定**。）
+//
+// # 为什么保留 `::text` 转型（免费，但更稳）
+//
+//   PostgreSQL 里 `text` 相等是**字节相等**，而 `varchar` 相等走**排序规则**
+//   （确定性 ICU 排序规则下可能把规范等价的两种写法判相等）。
+//   ⇒ `d.tenant_id::text = t.tenant_id::text` 是**字节精确**的，
+//     与 canonical 视图的 join 谓词**逐字相同** ⇒ 不引入任何新的相等语义。
+//   ⇒ 而去掉转型**不省任何量**：实测两形态计划代价相同（2025.29 vs 2025.29）、
+//     buffer 计数相同 ⇒ ★ 转型是**免费的**，保守优先。
+//
+//   ★★ 订正本轮早先的一个**错误前提**：「PG 里 varchar 比较忽略尾空格、text 不忽略」
+//     —— **不成立**：252 实测 `'a'::varchar(255) = 'a '::varchar(255)` 是 **false**
+//     ⇒ varchar 也**不**忽略尾空格（只有 `char(n)` 忽略）⇒
+//     ⇒ 保留转型**不是**为了「补 varchar 的漏」，而是为了「字节精确 + 与视图逐字相同」。
+//
+// # 投影的 7 列与「视图里那几列的来源」逐字对齐：
+//
+//	client_model  ← d.client_model    （details 腿）
+//	quality_flags ← d.quality_flags   （details 腿）
+//	ts / success / task_type / origin_actor ← t.*（turns 臂）
+//	credential_id ← SessionFamilyCredentialIDExpr（与视图投影逐字相同）
+//
+// ★ join 键与视图逐字相同：`d.tenant_id::text = t.tenant_id::text` +
+//   request_id + partition_date。
+//
+// ★ 探针排除谓词需要的三列（quality_flags / task_type / origin_actor）
+//   **必须**在本投影里 —— 少一列就是 42703（仓内 R50 记录过同族事故）。
+//
+// ★ 返回值**不带别名**（调用方自己加），与 SessionFamilyTurnsSourceSQL 同约定。
+func SessionFamilyMostUsedClientModelSourceSQL() string {
+	leg := func(turns, details string) string {
+		return "(SELECT d.client_model, d.quality_flags, t.success, t.ts, t.task_type, t.origin_actor, " +
+			SessionFamilyCredentialIDExpr + " AS credential_id" +
+			" FROM " + turns + " t" +
+			" LEFT JOIN " + details + " d" +
+			" ON d.tenant_id::text = t.tenant_id::text AND d.request_id = t.request_id AND d.partition_date = t.partition_date)"
+	}
+	return "(" + leg("public.session_turns_hot", "public.session_turn_details_hot") +
+		" UNION ALL " + leg("public.session_turns", "public.session_turn_details") + ")"
+}
+
 // SessionFamilyTurnsSourceSQL returns a parenthesized FROM-source emitting the
 // frozen 113-column request-logs shape straight from the session-turn family
 // (hot ∪ parent, details-joined per 734), for S3 wave-1 native readers

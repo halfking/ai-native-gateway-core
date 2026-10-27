@@ -31,10 +31,11 @@ import (
 
 // Violation 是对分区父表的一条写操作。
 type Violation struct {
-	File  string // 仓库相对路径，斜杠分隔
-	Line  int    // 1-based
-	Stmt  string // 命中的语句形态（UPDATE/DELETE/TRUNCATE）
-	Table string // 被写的父表
+	File    string // 仓库相对路径，斜杠分隔
+	Line    int    // 1-based
+	Stmt    string // 命中的语句形态（UPDATE/DELETE/TRUNCATE）
+	Table   string // 被写的父表
+	Dynamic bool   // 目标表名在运行时决定（拼接/占位符）⇒ 表名由邻近字面量归属
 }
 
 // 标识符边界：靠捕获组的**贪婪**语义实现，不加额外断言。
@@ -111,7 +112,11 @@ func collectViolations(root string, includeSQLite bool) ([]Violation, error) {
 		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 			return nil
 		}
-		f, err := parser.ParseFile(fset, p, nil, 0)
+		src, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return nil
+		}
+		f, err := parser.ParseFile(fset, p, src, 0)
 		if err != nil {
 			return nil // 解析不了的源文件不是本门的判据范围
 		}
@@ -119,6 +124,16 @@ func collectViolations(root string, includeSQLite bool) ([]Violation, error) {
 		rel = filepath.ToSlash(rel)
 		if !includeSQLite && isSQLitePath(rel) {
 			return nil
+		}
+
+		// 动态 DML（目标表名在运行时决定）：字面量扫描器看不见它 ⇒
+		// 这里单独识别并归属到邻近字面量出现过的父表。详见 dynamic.go。
+		for _, site := range scanDynamicInFile(f, fset, src, rel, parentSet) {
+			for _, tbl := range site.Tables {
+				out = append(out, Violation{
+					File: rel, Line: site.Line, Stmt: site.Stmt, Table: tbl, Dynamic: true,
+				})
+			}
 		}
 
 		ast.Inspect(f, func(n ast.Node) bool {

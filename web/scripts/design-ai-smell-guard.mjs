@@ -29,8 +29,20 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { existsSync, readFileSync } from 'node:fs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const REPO_ROOT = resolve(ROOT, '..')
 const IMPL = join(ROOT, 'src', 'design', 'aiSmells.ts')
 const REGISTRY = join(ROOT, 'scripts', 'design-ai-smell-registry.json')
+
+// ★ 第 27 增量：★ 扫描根从「只有 web/src」扩到「web/src + web-mobile/src」。
+//   原因：移动端此前**没有任何品味门看守** ⇒ 同一个 craft-floor 硬禁在两个
+//   应用里口径不同 ⇒ ★「同一口径只能有一份实现」的第一层含义是
+//   **同一套判据要覆盖全部应用**。
+// ★ 路径口径统一到**仓根**（`web/src/…` / `web-mobile/src/…`）⇒ 两个应用的
+//   同名文件在登记簿里可区分（`src/views/ModelsView.vue` 两边都有）。
+const SCAN_ROOTS = [
+  join(ROOT, 'src'),
+  join(REPO_ROOT, 'web-mobile', 'src'),
+]
 
 const implUrl = pathToFileURL(IMPL).href
 const registryJson = existsSync(REGISTRY) ? readFileSync(REGISTRY, 'utf8') : '[]'
@@ -46,8 +58,8 @@ if (process.env.SMELL_MODE === 'selftest') {
   process.exit(r.failed.length ? 2 : 0)
 }
 const findings = detectAiSmells({
-  rootDir: ${JSON.stringify(join(ROOT, 'src'))},
-  repoDir: ${JSON.stringify(ROOT)},
+  rootDirs: ${JSON.stringify(SCAN_ROOTS)},
+  repoDir: ${JSON.stringify(REPO_ROOT)},
   registry,
 })
 console.log(JSON.stringify(findings))

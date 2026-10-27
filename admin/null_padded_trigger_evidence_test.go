@@ -38,9 +38,18 @@ import (
 //
 // 「形似 SQL」的判据是字面量正文含 SQL 关键字（SELECT/FROM/WHERE/…）。这条
 // 判据是**保守**的：它会漏掉「SQL 由多个字面量拼接、而含列名的那片碎片本身
-// 没有关键字」的形态（本仓已知真触发 `bg/shared_pick.go:82-96` 实测**不**属
-// 于这种：视图名与 `client_model` 在**同一片**字面量里，:91 的拼接发生在它们
-// 之后）。⇒ 所以 `non-sql-only` **是「值得人看一眼」而不是「已证假阳性」**。
+// 没有关键字」的形态。
+//
+// ★ R170 更新见证：本门原引用的真触发 `bg/shared_pick.go:82-96` **已不成立**
+//
+//	—— 该文件在 R170 改成读会话族原生源，不再提 canonical 视图 ⇒
+//	⇒ 它的命中不再来自「读视图 + 补位列」的组合。
+//	⇒ 新的见证是 `admin/usage_enhanced.go`：视图名在 `"BaseTable"` 配置常量串
+//	（**不含 SQL 关键字** ⇒ 不是 SQL 形字面量），`id` 在 `" LEFT JOIN providers
+//	p ON p.id = ul.provider_id"` 片段里（**不含视图名**）⇒
+//	⇒ 「同一片字面量里既有视图名又有补位列」这条逐字面量判据对它**恒不命中**。
+//
+// ⇒ 所以 `non-sql-only` **是「值得人看一眼」而不是「已证假阳性」**。
 var nullPaddedSqlShapedRE = regexp.MustCompile(`(?i)\b(SELECT|FROM|WHERE|GROUP\s+BY|JOIN|ORDER\s+BY|LIMIT|INSERT|UPDATE|DELETE)\b`)
 
 // nullPaddedLiteralEvidence 报告：在**形似 SQL 的字符串字面量**里命中的补位列。
