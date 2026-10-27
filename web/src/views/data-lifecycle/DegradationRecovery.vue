@@ -143,7 +143,7 @@ p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .file-row code { display: block; color: var(--accent-h); }
 .file-row small { display: block; color: var(--muted); margin-top: 4px; }
 .progress { height: 8px; background: var(--bg-subtle); border-radius: 4px; overflow: hidden; margin: 12px 0; }
-.progress div { height: 100%; background: var(--accent); transition: width .2s; }
+.progress div { height: 100%; background: var(--accent); transition: width .2s var(--kx-motion-ease-out); }
 .error { color: var(--danger); }
 @media (max-width: 768px) { .grid { grid-template-columns: repeat(2, 1fr); } .file-row { align-items: flex-start; flex-direction: column; } }
 </style>

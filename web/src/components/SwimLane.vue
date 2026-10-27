@@ -351,7 +351,7 @@ watch(laneMode, async () => {
   font-weight: 600;
   cursor: pointer;
   font-variant-numeric: tabular-nums;
-  transition: all 0.15s ease;
+  transition: border-color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out), opacity 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 

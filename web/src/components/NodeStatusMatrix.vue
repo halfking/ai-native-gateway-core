@@ -334,7 +334,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
   user-select: none;
   text-align: left;
   border: none;
-  transition: background 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out);
 }
 .nm-group-header:hover {
   background: var(--kx-border);
@@ -350,7 +350,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
 .nm-collapse-icon {
   font-size: 11px;
   color: var(--kx-text-secondary);
-  transition: transform 0.2s ease;
+  transition: transform 0.2s var(--kx-motion-ease-out);
 }
 
 .nm-grid {
@@ -368,7 +368,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
   background: var(--kx-surface);
   font: inherit;
   color: inherit;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: transform 0.15s var(--kx-motion-ease-out), box-shadow 0.15s var(--kx-motion-ease-out);
 }
 .nm-card:hover { transform: translateY(-2px); box-shadow: var(--kx-shadow-sm); }
 .nm-card--ok { border: 1px solid var(--kx-success); }
@@ -424,4 +424,14 @@ const hasNodes = computed(() => nodes.value.length > 0)
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .nm-collapse-icon > svg { width: 10px; height: 10px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .nm-collapse-icon { transition: none; }
+  .nm-card {
+    transition-property: box-shadow;
+  }
+  .nm-card:hover { transform: none; }
+}
 </style>

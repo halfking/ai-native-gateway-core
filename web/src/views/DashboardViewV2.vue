@@ -269,7 +269,7 @@ async function onRefresh() {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out), border-bottom 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), outline 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 
@@ -304,7 +304,7 @@ async function onRefresh() {
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), opacity 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 
@@ -363,7 +363,7 @@ async function onRefresh() {
   color: var(--text);
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), opacity 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -439,7 +439,7 @@ async function onRefresh() {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--card);
-  transition: all 0.15s ease;
+  transition: border-color 0.15s var(--kx-motion-ease-out), box-shadow 0.15s var(--kx-motion-ease-out);
 }
 
 .stat-mini:hover {

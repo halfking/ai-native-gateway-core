@@ -875,7 +875,7 @@ h1 {
   font-size: 16px;
   color: var(--text-secondary);
   border-bottom: 3px solid transparent;
-  transition: all 0.2s;
+  transition: color 0.2s var(--kx-motion-ease-out), border-bottom-color 0.2s var(--kx-motion-ease-out);
 }
 
 .tabs button:hover {
@@ -1023,7 +1023,7 @@ h1 {
   border-radius: 4px;
   cursor: pointer;
   font-size: 14px;
-  transition: all 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out), opacity 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out), transform 0.2s var(--kx-motion-ease-out), color 0.2s var(--kx-motion-ease-out);
 }
 
 .btn-primary {
@@ -1141,5 +1141,22 @@ h1 {
   gap: 8px;
   justify-content: flex-end;
   margin-top: 24px;
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .btn-primary {
+    transition-property: background, opacity, border-color, color;
+  }
+  .btn-secondary {
+    transition-property: background, opacity, border-color, color;
+  }
+  .btn-small {
+    transition-property: background, opacity, border-color, color;
+  }
+  .btn-danger {
+    transition-property: background, opacity, border-color, color;
+  }
 }
 </style>

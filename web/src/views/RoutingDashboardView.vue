@@ -1774,7 +1774,7 @@ onUnmounted(() => stopPoll())
   font-size: 11px;
   color: var(--muted);
   cursor: pointer;
-  transition: all .12s;
+  transition: color .12s var(--kx-motion-ease-out), background .12s var(--kx-motion-ease-out), box-shadow .12s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 .seg-tab:hover { color: var(--text); }
@@ -1873,7 +1873,7 @@ onUnmounted(() => stopPoll())
   border-radius: 99px;
   font-size: 11px;
   cursor: pointer;
-  transition: all .12s;
+  transition: border-color .12s var(--kx-motion-ease-out), background .12s var(--kx-motion-ease-out);
   color: var(--text);
 }
 .task-pill.sm { padding: 1px 4px; font-size: 11px; }

@@ -294,7 +294,7 @@ function handleCancel() {
   font-size: 14px;
   background: var(--bg);
   color: var(--text);
-  transition: border-color 0.2s;
+  transition: border-color 0.2s var(--kx-motion-ease-out);
 }
 
 .form-select:focus,

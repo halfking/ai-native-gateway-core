@@ -84,7 +84,7 @@ function val(k: string): number {
 .dim-bar-fill {
   height: 100%;
   border-radius: 3px;
-  transition: width 0.3s ease;
+  transition: width 0.3s var(--kx-motion-ease-out);
   min-width: 2px;
 }
 .dim-value {

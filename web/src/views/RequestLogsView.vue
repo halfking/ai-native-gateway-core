@@ -2030,7 +2030,7 @@ onMounted(async () => {
   padding: 8px 12px;
   cursor: pointer;
   background: var(--surface-primary);
-  transition: background 0.12s ease;
+  transition: background 0.12s var(--kx-motion-ease-out);
 }
 .stats-card .stats-segment:hover { background: var(--surface-secondary); }
 .stats-card .stats-segment--active {
@@ -2048,7 +2048,7 @@ onMounted(async () => {
   font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
-  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+  transition: border-color 0.12s var(--kx-motion-ease-out), color 0.12s var(--kx-motion-ease-out), background 0.12s var(--kx-motion-ease-out);
 }
 .preset-chip:hover { border-color: var(--accent); color: var(--accent-h); }
 .preset-chip--active {

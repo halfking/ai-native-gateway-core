@@ -147,7 +147,7 @@ onBeforeUnmount(() => {
   color: var(--kx-text, var(--text));
   cursor: pointer;
   font-family: inherit;
-  transition: background 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out);
   max-width: min(28vw, 200px);
 }
 
@@ -169,7 +169,7 @@ onBeforeUnmount(() => {
 .user-menu__chevron {
   font-size: 10px;
   opacity: 0.7;
-  transition: transform 0.2s ease;
+  transition: transform 0.2s var(--kx-motion-ease-out);
   flex-shrink: 0;
 }
 
@@ -212,7 +212,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  animation: user-menu-enter 0.14s ease both;
+  animation: user-menu-enter 0.14s var(--kx-motion-ease-out) both;
 }
 
 .user-menu__item {
@@ -228,7 +228,7 @@ onBeforeUnmount(() => {
   text-align: start;
   cursor: pointer;
   font-family: inherit;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
 }
 
 .user-menu__item:hover {
@@ -255,4 +255,10 @@ onBeforeUnmount(() => {
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .user-menu__chevron > svg { width: 10px; height: 10px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .user-menu__chevron { transition: none; }
+}
 </style>

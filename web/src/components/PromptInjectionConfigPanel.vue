@@ -622,8 +622,8 @@ const thresholdInvalid = computed(() => {
 
 .switch { justify-self: end; cursor: pointer; position: relative; display: inline-block; }
 .switch input { position: absolute; opacity: 0; pointer-events: none; }
-.track { display: block; width: 34px; height: 19px; background: var(--border); border-radius: 10px; padding: 2px; transition: background 0.15s; }
-.knob { display: block; width: 15px; height: 15px; border-radius: 50%; background: white; transition: transform 0.15s; }
+.track { display: block; width: 34px; height: 19px; background: var(--border); border-radius: 10px; padding: 2px; transition: background 0.15s var(--kx-motion-ease-out); }
+.knob { display: block; width: 15px; height: 15px; border-radius: 50%; background: white; transition: transform 0.15s var(--kx-motion-ease-out); }
 .switch input:checked + .track { background: var(--accent); }
 .switch input:checked + .track .knob { transform: translateX(15px); }
 .switch input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
@@ -648,7 +648,7 @@ const thresholdInvalid = computed(() => {
 
 /* Rule list */
 .rules-list { display: grid; gap: 8px; }
-.rule-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--bg); transition: opacity 0.15s; }
+.rule-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--bg); transition: opacity 0.15s var(--kx-motion-ease-out); }
 .rule-card.disabled { opacity: 0.55; }
 .rule-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .rule-title { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; }
@@ -698,4 +698,10 @@ const thresholdInvalid = computed(() => {
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .expand-btn > svg { width: 10px; height: 10px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .knob { transition: none; }
+}
 </style>

@@ -514,7 +514,7 @@ onMounted(load)
   border-radius: 99px;
   font-size: 11px;
   cursor: pointer;
-  transition: all .12s;
+  transition: border-color .12s var(--kx-motion-ease-out), background .12s var(--kx-motion-ease-out);
   color: var(--text);
   white-space: nowrap;
 }

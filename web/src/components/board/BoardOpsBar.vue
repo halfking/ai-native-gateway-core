@@ -86,7 +86,7 @@ function fmtPct(v: number | undefined) {
 }
 .ops-chip--btn {
   cursor: pointer;
-  transition: border-color 0.15s, color 0.15s;
+  transition: border-color 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
 }
 .ops-chip--btn:hover {
   border-color: var(--accent);

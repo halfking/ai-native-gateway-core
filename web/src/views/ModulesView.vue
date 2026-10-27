@@ -1229,7 +1229,7 @@ onMounted(() => {
   padding: 8px 8px;
   border-radius: 8px;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s var(--kx-motion-ease-out);
   border: 1px solid transparent;
   margin-bottom: 2px;
   position: relative;
@@ -1311,7 +1311,7 @@ onMounted(() => {
   background: var(--border);
   border-radius: 10px;
   position: relative;
-  transition: background 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out);
 }
 .toggle-knob {
   position: absolute;
@@ -1321,7 +1321,7 @@ onMounted(() => {
   height: 16px;
   background: var(--text-primary);
   border-radius: 50%;
-  transition: transform 0.2s;
+  transition: transform 0.2s var(--kx-motion-ease-out);
 }
 .toggle-input:checked + .toggle-track { background: var(--accent); }
 .toggle-input:checked + .toggle-track .toggle-knob { transform: translateX(16px); }
@@ -1415,7 +1415,7 @@ onMounted(() => {
   border-radius: 4px;
   cursor: pointer;
   font-weight: 500;
-  transition: background 0.15s;
+  transition: background 0.15s var(--kx-motion-ease-out);
 }
 .dep-chip:hover { background: var(--warning-bd); }
 
@@ -1436,7 +1436,7 @@ onMounted(() => {
   cursor: pointer;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
-  transition: color 0.15s, border-color 0.15s;
+  transition: color 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
 }
 .tab-btn:hover { color: var(--text-primary); }
 .tab-btn.active {
@@ -1547,7 +1547,7 @@ onMounted(() => {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
-  transition: background 0.15s;
+  transition: background 0.15s var(--kx-motion-ease-out);
 }
 .dep-item:hover {
   background: var(--bg-hover);
@@ -1619,7 +1619,7 @@ onMounted(() => {
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: opacity 0.15s var(--kx-motion-ease-out);
 }
 .btn-action:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-primary {
@@ -1771,7 +1771,7 @@ onMounted(() => {
   background: var(--border);
   border-radius: 9px;
   position: relative;
-  transition: background 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out);
 }
 .toggle-knob-sm {
   position: absolute;
@@ -1781,7 +1781,7 @@ onMounted(() => {
   height: 14px;
   background: var(--on-primary);
   border-radius: 50%;
-  transition: transform 0.2s;
+  transition: transform 0.2s var(--kx-motion-ease-out);
 }
 .switch-label-sm .toggle-input:checked + .toggle-track-sm { background: var(--accent); }
 .switch-label-sm .toggle-input:checked + .toggle-track-sm .toggle-knob-sm { transform: translateX(14px); }
@@ -2074,4 +2074,11 @@ onMounted(() => {
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .dep-status-icon > svg { width: 12px; height: 12px; }
 .integ-icon > svg { width: 16px; height: 16px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .toggle-knob { transition: none; }
+  .toggle-knob-sm { transition: none; }
+}
 </style>

@@ -56,7 +56,7 @@ function openDialog(tool: ToolId) {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s var(--kx-motion-ease-out);
 }
 
 .tool-card:hover {

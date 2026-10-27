@@ -193,7 +193,7 @@ const railPoints = computed(() => props.heroPoints)
   margin: 0;
   padding: clamp(36px, 5vw, 64px) var(--landing-pad-x) clamp(40px, 5vw, 72px);
   box-sizing: border-box;
-  animation: kx-landing-enter 0.45s ease both;
+  animation: kx-landing-enter 0.45s var(--kx-motion-ease-out) both;
 }
 
 .kx-landing__hero-copy {
@@ -290,7 +290,7 @@ const railPoints = computed(() => props.heroPoints)
   font-size: 14px;
   font-weight: 600;
   text-decoration: none;
-  transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease;
+  transition: transform 0.16s var(--kx-motion-ease-out), background 0.16s var(--kx-motion-ease-out), border-color 0.16s var(--kx-motion-ease-out);
 }
 .kx-landing__cta {
   border: 0;
@@ -358,7 +358,7 @@ const railPoints = computed(() => props.heroPoints)
   margin: 0;
   box-sizing: border-box;
   text-align: left;
-  animation: kx-landing-enter 0.5s ease both;
+  animation: kx-landing-enter 0.5s var(--kx-motion-ease-out) both;
   animation-delay: 0.06s;
 }
 
@@ -501,5 +501,18 @@ const railPoints = computed(() => props.heroPoints)
   .kx-landing__advantages {
     animation: none !important;
   }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .kx-landing__cta {
+    transition-property: background, border-color;
+  }
+  .kx-landing__cta-secondary:hover { transform: none; }
+  .kx-landing__cta-secondary {
+    transition-property: background, border-color;
+  }
+  .kx-landing__cta-secondary:hover { transform: none; }
 }
 </style>

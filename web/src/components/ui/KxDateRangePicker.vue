@@ -258,7 +258,7 @@ function applyDraft() {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s var(--kx-motion-ease-out);
 }
 .kx-dr-trigger:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
@@ -329,7 +329,7 @@ function applyDraft() {
   padding: 8px 0;
   border-radius: 8px;
   cursor: pointer;
-  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  transition: border-color 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out);
 }
 .kx-dr-preset:hover {
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
@@ -379,7 +379,7 @@ function applyDraft() {
   background: var(--accent);
   color: var(--on-primary);
   cursor: pointer;
-  transition: background 0.15s, opacity 0.15s;
+  transition: background 0.15s var(--kx-motion-ease-out), opacity 0.15s var(--kx-motion-ease-out);
 }
 .kx-dr-apply:hover:not(:disabled) {
   background: var(--accent-h);

@@ -196,7 +196,7 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
 .session-header:focus-visible, .turn-row:focus-visible, .link:focus-visible, .btn-mini:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .session-head-line, .session-context, .session-meta, .badges, .meta { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .sel { margin: 0; }
-.caret { display: inline-block; transition: transform .15s; color: var(--text-muted); }
+.caret { display: inline-block; transition: transform .15s var(--kx-motion-ease-out); color: var(--text-muted); }
 .caret.open { transform: rotate(90deg); }
 .status-badge, .verdict, .badge, .ctx-badge, .mini-badge, .ops-chip { padding: 2px 4px; border-radius: 4px; font-size: 11px; }
 .status-badge { font-weight: 600; }
@@ -254,5 +254,11 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
   .col + .col { padding-top: 8px; border-left: 0; border-top: 1px dashed var(--border); }
   .session-title { max-width: 100%; }
   .session-foot { flex-direction: column; align-items: flex-start; gap: 4px; }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .caret { transition: none; }
 }
 </style>

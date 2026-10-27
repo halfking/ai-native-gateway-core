@@ -460,7 +460,7 @@ onUnmounted(() => {
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s var(--kx-motion-ease-out), border-bottom-color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out);
   position: relative;
   bottom: -1px;
 }
@@ -573,7 +573,7 @@ onUnmounted(() => {
 .form-select:focus, .form-input:focus { outline: none; border-color: var(--accent); }
 .form-actions { display: flex; gap: 8px; margin-top: 4px; }
 
-.btn { padding: 4px 12px; border-radius: 6px; border: 1px solid transparent; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s; }
+.btn { padding: 4px 12px; border-radius: 6px; border: 1px solid transparent; font-size: 13px; font-weight: 500; cursor: pointer; transition: opacity 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), box-shadow 0.15s var(--kx-motion-ease-out), transform 0.15s var(--kx-motion-ease-out), outline-offset 0.15s var(--kx-motion-ease-out); }
 .btn-sm { padding: 4px 8px; font-size: 12px; }
 .btn-primary { background: var(--accent); color: var(--on-primary); }
 .btn-primary:hover:not(:disabled) { background: var(--accent-h); }
@@ -630,7 +630,7 @@ onUnmounted(() => {
     color-mix(in srgb, var(--accent) 50%, transparent),
     color-mix(in srgb, var(--accent) 80%, transparent)
   );
-  transition: width 0.3s;
+  transition: width 0.3s var(--kx-motion-ease-out);
 }
 .tenant-bar-text {
   position: absolute;
@@ -648,5 +648,13 @@ onUnmounted(() => {
   .stats-row { grid-template-columns: repeat(2, 1fr); }
   .charts-row { grid-template-columns: 1fr; }
   .form-row-dates { grid-template-columns: 1fr; }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition-property: opacity, background, color, border-color, box-shadow, outline-offset;
+  }
 }
 </style>

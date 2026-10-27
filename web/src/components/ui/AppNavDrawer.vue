@@ -204,7 +204,7 @@ function itemLabel(item: ResolvedItem): string {
   letter-spacing: 0.02em;
   cursor: pointer;
   font-family: inherit;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
 }
 .app-nav-drawer__group-header:hover {
   background: var(--kx-primary-soft, var(--bg-subtle));
@@ -215,7 +215,7 @@ function itemLabel(item: ResolvedItem): string {
 }
 
 .app-nav-drawer__chevron {
-  transition: transform 0.15s ease;
+  transition: transform 0.15s var(--kx-motion-ease-out);
 }
 .app-nav-drawer__chevron--open {
   transform: rotate(180deg);
@@ -246,7 +246,7 @@ function itemLabel(item: ResolvedItem): string {
   text-decoration: none;
   cursor: pointer;
   font-family: inherit;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
 }
 /* 2026-09-21: 导航项计数徽标（格式异常监控等）。 */
 .app-nav-drawer__badge {
@@ -283,5 +283,11 @@ function itemLabel(item: ResolvedItem): string {
   text-align: center;
   font-size: 14px;
   flex-shrink: 0;
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .app-nav-drawer__chevron { transition: none; }
 }
 </style>

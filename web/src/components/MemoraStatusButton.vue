@@ -215,7 +215,7 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--muted);
   cursor: pointer;
-  transition: border-color .15s, color .15s;
+  transition: border-color .15s var(--kx-motion-ease-out), color .15s var(--kx-motion-ease-out);
 }
 .memora-btn:hover {
   border-color: var(--accent);

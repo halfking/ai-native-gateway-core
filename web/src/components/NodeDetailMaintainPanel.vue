@@ -231,7 +231,7 @@ const lifecycleOptions = [
   color: var(--kx-muted, var(--muted));
   font-size: 12px;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s, color 0.15s;
+  transition: border-color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
 }
 .nd-lc-chip:hover:not(:disabled) { border-color: var(--kx-primary, var(--accent)); color: var(--kx-text, var(--fg)); }
 .nd-lc-chip:disabled { opacity: 0.55; cursor: not-allowed; }

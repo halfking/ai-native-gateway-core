@@ -298,7 +298,7 @@ function moveDown(index: number) {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  transition: all 0.2s;
+  transition: opacity 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out);
 }
 
 .approver-card.disabled {
@@ -360,7 +360,7 @@ function moveDown(index: number) {
   border-radius: 4px;
   cursor: pointer;
   font-size: 14px;
-  transition: all 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out), color 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out), opacity 0.2s var(--kx-motion-ease-out);
 }
 
 .btn-icon:hover:not(:disabled) {
@@ -506,7 +506,7 @@ function moveDown(index: number) {
   font-size: 13px;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: all 0.2s;
+  transition: opacity 0.2s var(--kx-motion-ease-out), background 0.2s var(--kx-motion-ease-out), color 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out), box-shadow 0.2s var(--kx-motion-ease-out), transform 0.2s var(--kx-motion-ease-out), outline-offset 0.2s var(--kx-motion-ease-out);
 }
 
 .btn-primary {
@@ -538,4 +538,12 @@ function moveDown(index: number) {
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .btn-icon > svg { width: 11px; height: 11px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition-property: opacity, background, color, border-color, box-shadow, outline-offset;
+  }
+}
 </style>

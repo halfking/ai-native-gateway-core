@@ -666,7 +666,7 @@ onBeforeUnmount(() => {
 
 .agent-row {
   cursor: pointer;
-  transition: background 0.1s ease;
+  transition: background 0.1s var(--kx-motion-ease-out);
 }
 .agent-row:hover {
   background: color-mix(in srgb, var(--accent) 6%, transparent);

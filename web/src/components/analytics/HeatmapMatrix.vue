@@ -190,7 +190,7 @@ const isEmpty = computed(() =>
 }
 .heat-cell {
   min-width: 44px;
-  transition: background 0.12s;
+  transition: background 0.12s var(--kx-motion-ease-out);
 }
 .heat-cell.clickable { cursor: pointer; }
 .heat-cell.clickable:hover {

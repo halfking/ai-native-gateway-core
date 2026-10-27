@@ -776,7 +776,7 @@ onUnmounted(() => {
   margin-left: 4px;
   font-size: 10px;
   color: var(--muted);
-  transition: transform 0.15s;
+  transition: transform 0.15s var(--kx-motion-ease-out);
 }
 .timeline-row .caret.open {
   transform: rotate(180deg);
@@ -945,4 +945,10 @@ onUnmounted(() => {
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
    尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
 .ai-panel-header .btn > svg { width: 12px; height: 12px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .timeline-row .caret { transition: none; }
+}
 </style>

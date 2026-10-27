@@ -105,7 +105,7 @@ function widthPct(v: number): string {
   background: color-mix(in srgb, var(--accent) 22%, var(--bg-subtle));
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
   clip-path: polygon(4% 0%, 96% 0%, 100% 100%, 0% 100%);
-  transition: width 0.25s ease;
+  transition: width 0.25s var(--kx-motion-ease-out);
 }
 .funnel-stage:nth-child(2) .funnel-bar {
   background: color-mix(in srgb, var(--success) 18%, var(--bg-subtle));

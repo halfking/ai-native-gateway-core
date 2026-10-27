@@ -330,6 +330,14 @@ html[data-theme='light'] {
   --kx-font-sm: 12px;
   --kx-font-md: 14px;
   --kx-font-lg: 16px;
+  /* 2026-10-27 第 26 增量（状态过渡必须以指数减速到达）：**动效曲线的唯一定义处**。
+   * ★ 值 = impeccable `animate.md`「Timing and easing」点名的
+   *   `cubic-bezier(0.16, 1, 0.3, 1)` —— 起步即快、末尾指数减速 ⇒ 「一把按到位」的手感。
+   * ★ 为什么不是 CSS 的 `ease`：它是 cubic-bezier(0.25, 0.1, 0.25, 1)，y1=0.1 ⇒ **慢起手**
+   *   ⇒ 看起来像机器在「启动」。为什么不是 `ease-out`：它是 cubic-bezier(0, 0, 0.58, 1)，
+   *   y1=0 ⇒ 起步速度为零，同样不是「快起步 + 指数减速」。
+   * ★ 门：`web/scripts/design-motion-guard.mjs`（`design-motion:check`）。 */
+  --kx-motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   /* Gateway alias bridge — 旧组件仍引用 --bg/--card/--border 等 */
   --bg:        var(--kx-bg);
   --sidebar:   var(--kx-sidebar);
@@ -667,7 +675,7 @@ input, select, textarea {
   padding: 4px 8px;
   font-size: 13px;
   outline: none;
-  transition: border-color .15s;
+  transition: border-color .15s var(--kx-motion-ease-out);
   width: 100%;
 }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
@@ -701,11 +709,11 @@ input[type="radio"], input[type="checkbox"] {
      —— 1px 描边下面压一层零模糊高光，是「有描边又要抬一层」的幽灵卡片写法
      （craft-floor 明禁）。描边已经说明了边界，阴影就不再重复声明一次。 */
   transition:
-    background-color .18s ease,
-    border-color .18s ease,
-    color .18s ease,
-    box-shadow .18s ease,
-    transform .12s ease;
+    background-color .18s var(--kx-motion-ease-out),
+    border-color .18s var(--kx-motion-ease-out),
+    color .18s var(--kx-motion-ease-out),
+    box-shadow .18s var(--kx-motion-ease-out),
+    transform .12s var(--kx-motion-ease-out);
 }
 /* 主色按钮：accent 填充 + 白字 + 强调细边框 */
 .btn-primary {
@@ -922,7 +930,7 @@ tbody tr:hover { background: var(--row-hover); }
   display: flex;
   flex-direction: column;
   padding: 16px;
-  animation: drawer-slide-in .2s ease-out;
+  animation: drawer-slide-in .2s var(--kx-motion-ease-out);
   background: var(--card);
   border-left: 1px solid var(--border);
   box-shadow: var(--kx-shadow-md-left);
@@ -989,7 +997,7 @@ tbody tr:hover { background: var(--row-hover); }
   flex-direction: column;
   gap: 4px;
   min-height: 76px;
-  transition: background 0.12s ease;
+  transition: background 0.12s var(--kx-motion-ease-out);
 }
 .stat-overview-card:hover { background: var(--surface-secondary, var(--card)); }
 .stat-overview-label {
@@ -1097,7 +1105,7 @@ tbody tr:hover { background: var(--row-hover); }
   cursor: pointer;
   font-size: 13px;
   color: var(--muted);
-  transition: color 0.15s, border-color 0.15s;
+  transition: color 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
 }
 .tabs .tab-btn:hover {
   color: var(--text);
@@ -1320,7 +1328,7 @@ tbody tr:hover { background: var(--row-hover); }
   font-size: 11px;
   cursor: pointer;
   color: var(--muted);
-  transition: color .12s, border-color .12s, background .12s;
+  transition: color .12s var(--kx-motion-ease-out), border-color .12s var(--kx-motion-ease-out), background .12s var(--kx-motion-ease-out);
 }
 .profile-pill:hover { color: var(--text); }
 .profile-pill.active {
@@ -1421,4 +1429,13 @@ tbody tr:hover { background: var(--row-hover); }
 .el-form-item__error {
   max-height: 20px !important;
   overflow: hidden !important;
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition-property: background-color, border-color, color, box-shadow;
+  }
+  .btn-success:hover:not(:disabled) { transform: none; }
 }

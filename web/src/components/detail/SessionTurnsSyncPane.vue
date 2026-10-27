@@ -567,7 +567,7 @@ function onDividerKeydown(e: KeyboardEvent) {
 .divider:hover { background: color-mix(in srgb, var(--accent, var(--kx-primary)) 12%, transparent); }
 .divider-grip {
   width: 3px; height: 38px; border-radius: 999px;
-  background: var(--border); transition: background .15s;
+  background: var(--border); transition: background .15s var(--kx-motion-ease-out);
 }
 .divider:hover .divider-grip { background: var(--accent, var(--kx-primary)); }
 .right { flex: 1 1 auto; min-width: 0; padding-left: 12px; overflow: auto; max-height: 64vh; }

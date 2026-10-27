@@ -408,7 +408,7 @@ async function handleChangePasswordSuccess() {
  */
 .page-fade-enter-active,
 .page-fade-leave-active {
-  transition: opacity 160ms ease;
+  transition: opacity 160ms var(--kx-motion-ease-out);
 }
 .page-fade-enter-from,
 .page-fade-leave-to {
@@ -550,7 +550,7 @@ async function handleChangePasswordSuccess() {
   font-weight: 600;
   text-decoration: none;
   white-space: nowrap;
-  transition: color 0.15s ease;
+  transition: color 0.15s var(--kx-motion-ease-out);
 }
 
 .guest-nav a:hover {

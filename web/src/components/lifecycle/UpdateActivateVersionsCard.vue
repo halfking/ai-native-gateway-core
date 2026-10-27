@@ -374,7 +374,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   border: 1px solid var(--kx-border, var(--overlay-faint));
   border-radius: 8px;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
+  transition: border-color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out);
 }
 .version-row:hover { border-color: var(--kx-primary, var(--accent)); }
 .version-row.is-selected {

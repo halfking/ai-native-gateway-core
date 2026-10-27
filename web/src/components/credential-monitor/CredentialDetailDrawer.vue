@@ -1549,7 +1549,7 @@ onUnmounted(() => {
   line-height: 16px;
   border: 1px solid;
   cursor: pointer;
-  transition: filter 0.15s ease, transform 0.05s ease;
+  transition: filter 0.15s var(--kx-motion-ease-out), transform 0.05s var(--kx-motion-ease-out);
   background: transparent;
   user-select: none;
 }
@@ -1722,7 +1722,7 @@ onUnmounted(() => {
   color: var(--muted);
   cursor: pointer;
   border-right: 1px solid var(--border);
-  transition: background 120ms ease-out, color 120ms ease-out;
+  transition: background 120ms var(--kx-motion-ease-out), color 120ms var(--kx-motion-ease-out);
   font-family: inherit;
   line-height: 1.4;
 }
@@ -1835,7 +1835,7 @@ onUnmounted(() => {
   height: 40px;
   border-radius: 1px;
   flex-shrink: 0;
-  transition: opacity 120ms ease-out;
+  transition: opacity 120ms var(--kx-motion-ease-out);
 }
 .window-cell:hover { opacity: 1; }
 .window-stats {
@@ -1859,7 +1859,7 @@ onUnmounted(() => {
 /* ═══ 切换动画 (200ms 渐入) ═══ */
 .pane-anim .pane-left,
 .pane-anim .pane-right {
-  animation: pane-fade-in 200ms ease-out;
+  animation: pane-fade-in 200ms var(--kx-motion-ease-out);
 }
 @keyframes pane-fade-in {
   0%   { opacity: 0.65; }
@@ -1903,4 +1903,13 @@ onUnmounted(() => {
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .drawer-section-title .btn > svg { width: 12px; height: 12px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .status-icon-btn {
+    transition-property: filter;
+  }
+  .status-icon-btn:active:not(:disabled) { transform: none; }
+}
 </style>

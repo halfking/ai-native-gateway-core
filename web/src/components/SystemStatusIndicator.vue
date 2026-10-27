@@ -288,7 +288,7 @@ onUnmounted(() => {
   gap: 4px;
   padding: 4px 4px;
   cursor: pointer;
-  transition: opacity 0.2s;
+  transition: opacity 0.2s var(--kx-motion-ease-out);
 }
 
 .status-inline:hover {
@@ -351,7 +351,7 @@ onUnmounted(() => {
 
 .fade-enter-active,
 .fade-leave-active {
-  transition: opacity 0.15s ease;
+  transition: opacity 0.15s var(--kx-motion-ease-out);
 }
 
 .fade-enter-from,
@@ -388,7 +388,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  transition: background 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out);
 }
 
 .status-item:hover {
@@ -435,7 +435,7 @@ onUnmounted(() => {
 .status-summary {
   padding: 12px;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out);
 }
 
 .status-summary:hover {
@@ -518,7 +518,7 @@ onUnmounted(() => {
   cursor: pointer;
   font-size: 16px;
   padding: 2px;
-  transition: color 0.2s;
+  transition: color 0.2s var(--kx-motion-ease-out);
 }
 
 .refresh-btn:hover:not(:disabled) {
