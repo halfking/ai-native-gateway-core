@@ -1,0 +1,22 @@
+{
+  "metric": "overloadedZones = 一个「动作区」（= 一组并列动作的**直接父容器**）里，最坏情况下的可见动作数 > 4 的动作区数（可见数按 Vue 相邻规则折叠 v-if/v-else-if/v-else 互斥链；焦点区域 / 数据行 / 导航过滤批量区 / 浮层内排除）",
+  "overloadedZones": 0,
+  "updated": "2026-10-27",
+  "history": [
+    {
+      "overloadedZones": 4,
+      "updated": "2026-10-27",
+      "reason": "★ 新建指标（非调高既有指标）：第 25 增量把「动作区必须可扫读」落成门。基线取**实测值**——全仓 431 个参与判定的动作区里，动作数分布 1→279 / 2→126 / 3→15 / 4→7 / 5→3 / 9→1，4 与 5 之间是自然断层 ⇒ 阈值取 4。超阈值的 4 处：views/FreePoolView.vue 页头 9 个、views/RequestDetailFullscreenView.vue 页头 5 个、views/StandardModelPricingView.vue 弹窗底栏 5 个、views/provider-detail/ModelsTab.vue 工具条 5 个。"
+    },
+    {
+      "overloadedZones": 0,
+      "updated": "2026-10-27",
+      "reason": "第 25 增量整改完成：4 处超阈值动作区全部收敛 —— views/FreePoolView.vue 页头 9→4（删「快速录入」这个与 tab「注册助手」重复的入口，5 个低频动作收进「更多」）；views/RequestDetailFullscreenView.vue 页头 5→4（删「关闭」这个与「←」同一个 goBack 的冗余入口）；views/StandardModelPricingView.vue 弹窗底栏 5→3（3 个表单级工具收进「更多」）；views/provider-detail/ModelsTab.vue 工具条 5→3（清空模型〔破坏性〕/刷新本地/重置探针 收进「更多」）。"
+    },
+    {
+      "overloadedZones": 0,
+      "updated": "2026-10-27",
+      "reason": "★ 判据**作用域收窄**（真仓变异臂 A2 抓出来的缺陷）：浮层排除从「在 <Teleport> 内」改成「在 role=menu / role=listbox 子树内」—— 抽屉（Teleport 到 body）也是**同屏并排**的，整区排除等于让门对抽屉失明。⇒ 参与判定的动作区 432 → 441（多判 9 个抽屉/面板区），超阈值仍为 0（新增被判的区都合规：KeysView 抽屉底栏 3 个可见动作）。"
+    }
+  ]
+}

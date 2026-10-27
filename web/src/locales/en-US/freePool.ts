@@ -205,7 +205,6 @@ export default {
   bridgeOAuth: 'OAuth bridge',
   importEnv: 'Import env-var keys',
   discover: 'Auto-learn & register',
-  quickEntry: 'Quick entry',
   notLoaded: 'Not loaded',
   loading: 'Loading…',
   p95Latency: 'P95 latency',

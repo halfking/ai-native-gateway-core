@@ -200,7 +200,6 @@ export default {
   bridgeOAuth: "OAuth-Brücke",
   importEnv: "Umgebungsvar.-Schlüssel importieren",
   discover: "Auto-Lernen & registrieren",
-  quickEntry: "Schnelleingabe",
   notLoaded: "Nicht geladen",
   loading: "Wird geladen…",
   p95Latency: "P95-Latenz",

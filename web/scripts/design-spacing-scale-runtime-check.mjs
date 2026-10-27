@@ -539,6 +539,16 @@ const readings = {
 }
 
 const baseline = existsSync(BASELINE) ? JSON.parse(readFileSync(BASELINE, 'utf8')) : null
+// ★★★ **基线必须【可用】才有资格判定** —— 缺任一上限 ⇒ ⇒ 棘轮没有门槛 ⇒ ⇒ 这道尺此刻等于没设门槛。
+// ★ 根因：★ 兜底写的是 `?? Infinity` ⇒ ⇒ 基线一空（★ 缺失或被掏空成 `{}`）⇒ ⇒ **上限直接消失**
+//   ⇒ ⇒ 任何读数都「不超」⇒ ⇒ **假绿**。
+// ★★★ 另一条同源的：★ 「没有基线 ⇒ 只测量、不判定」那条**消息是诚实的**，★ **但退出码是 0**
+//   ⇒ ⇒ 门只读退出码 ⇒ ⇒ **消息说「不是通过」而退出码说「通过」** ⇒ ⇒ 仍是假绿。
+const baselineUsable =
+  !!baseline &&
+  Number.isFinite(baseline.offScaleGapsMax) &&
+  Number.isFinite(baseline.overflowMax) &&
+  Number.isFinite(baseline.crowdedMax)
 // ★★★ **量具的适用范围必须与基线一致** —— 否则拿「1 页」的读数去比「9 页」的基线，
 //   得到的是**假绿**（实测踩过：变异臂只跑 1 页时，读数 0 < 基线 2 ⇒ 注入的离阶间隙被判绿）。
 //   ⇒ 页面集不一致 ⇒ **只测量、不判定**，并把这件事说清楚。
@@ -549,8 +559,11 @@ const pagesMatch =
   basePages.length === pages.length &&
     basePages.every((p, i) => p === pages[i])
 const regressions =
-  baseline && pagesMatch
+  // ★ 只在【基线可用】时才比 ⇒ ⇒ 「上限消失 ⇒ 任何读数都不超」这条路被彻底堵死。
+  baselineUsable && pagesMatch
     ? compareToBaseline(readings, {
+        // ★★ 这三个 `?? Infinity` 是**历史兜底**：★ 在 `baselineUsable` 之后它**永远不生效**
+        //   （★ 缺一个上限 ⇒ `baselineUsable` 就是 false ⇒ ⇒ 压根不进这个分支）⇒ ⇒ ★ 保留它只为类型完整。
         offScaleGapsMax: baseline.offScaleGapsMax ?? Infinity,
         overflowMax: baseline.overflowMax ?? Infinity,
         crowdedMax: baseline.crowdedMax ?? Infinity,
@@ -592,8 +605,17 @@ if (!baseline) {
   )
   console.log('   ★ 拿小样本的读数去比大基线会得到**假绿** ⇒ 宁可「不判定」，也不给一个假的通过。')
 }
+// ★★★ **「不判定」必须【红】** —— 消息说「不是通过」⇒ ⇒ 而**退出码说「通过」**⇒ ⇒ 门只读退出码 ⇒ ⇒ 仍是假绿。
+if (!baselineUsable) {
+  console.error('\n❌ 基线缺失或非法：scripts/design-spacing-scale-runtime-baseline.json')
+  console.error('   ⇒ 棘轮没有上限（★ 兜底 `?? Infinity` ⇒ 上限直接消失）⇒ ⇒ 这道尺此刻等于没设门槛 ⇒ ⇒ 必须红。')
+  console.error('   修法：node scripts/design-spacing-scale-runtime-check.mjs --json=out.json ⇒ 核对后写回基线。')
+} else if (!pagesMatch) {
+  console.error('\n❌ 页面集与基线不一致 ⇒ 本次**不判定**⇒ ⇒ 不是「通过」⇒ ⇒ 必须红。')
+  console.error('   ★ 拿小样本的读数去比大基线会得到**假绿**⇒ ⇒ 宁可红，也不要一个假的通过。')
+}
 if (regressions.length) {
   console.error('\nFAIL: 运行时回归。')
   console.error('  ' + regressions.join('\n  '))
 }
-process.exit(regressions.length ? 1 : 0)
+process.exit(regressions.length || !baselineUsable || !pagesMatch ? 1 : 0)

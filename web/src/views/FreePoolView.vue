@@ -36,6 +36,7 @@ import { useActionMessage } from '../composables/useActionMessage'
 import PageHeader from '../components/ui/PageHeader.vue'
 import StatsRow from '../components/ui/StatsRow.vue'
 import StatCard from '../components/ui/StatCard.vue'
+import ActionOverflowMenu from '../components/ui/ActionOverflowMenu.vue'
 import { CaretBottom, CaretTop, Check, Key, Reading } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
@@ -268,6 +269,36 @@ async function runImportEnv() {
   } finally {
     syncing.value = false
   }
+}
+
+// ★ 2026-10-27 第 25 增量（动作区必须可扫读）：页头动作区从 9 个并列按钮
+//   收到 4 个可见动作 —— ① 明面只留「刷新 / 写入 DB 凭据 / 添加 Provider」
+//   ② 5 个低频动作收进「更多」溢出菜单（入口可见、项有标签 ⇒ 仍可被找到）
+//   ③ 删掉「快速录入」：它与页面自己的 tab「注册助手」指向同一个视图
+//      （`activeTab = 'assistant'`）⇒ 真冗余；三个表单各自的底栏本来就有
+//      「关闭」按钮 ⇒ 关闭能力没有丢。
+//   ⇒ 页头不再是一排等重的药丸。
+const overflowItems = computed(() => [
+  {
+    key: 'bootstrap',
+    label: syncing.value ? t('freePool.bootstrapSyncing') : t('freePool.bootstrap'),
+    disabled: loading.value || syncing.value,
+  },
+  { key: 'bridge', label: t('freePool.bridgeOAuth'), disabled: loading.value || syncing.value },
+  { key: 'importEnv', label: t('freePool.importEnv'), disabled: loading.value || syncing.value },
+  { key: 'discover', label: t('freePool.discover'), disabled: loading.value || syncing.value },
+  {
+    key: 'bulk',
+    label: showBulkForm.value ? t('freePool.collapseBulk') : t('freePool.bulkPool'),
+  },
+])
+
+function onOverflowSelect(key: string) {
+  if (key === 'bootstrap') void runBootstrap()
+  else if (key === 'bridge') void runBridgeOAuth()
+  else if (key === 'importEnv') void runImportEnv()
+  else if (key === 'discover') void runDiscover()
+  else if (key === 'bulk') showBulkForm.value = !showBulkForm.value
 }
 
 function useTemplate(tpl: FreePoolCatalogEntry) {
@@ -706,35 +737,16 @@ onUnmounted(() => {
           {{ fetchedAt ? freshnessLabel : t('freePool.notLoaded') }}
         </span>
         <button class="btn btn-ghost" type="button" @click="load" :disabled="loading || syncing">{{ t('freePool.refresh') }}</button>
-        <button class="btn btn-ghost" type="button" @click="runBootstrap" :disabled="loading || syncing">
-          {{ syncing ? t('freePool.bootstrapSyncing') : t('freePool.bootstrap') }}
-        </button>
-        <button class="btn btn-ghost" type="button" @click="runBridgeOAuth" :disabled="loading || syncing">
-          {{ t('freePool.bridgeOAuth') }}
-        </button>
-        <button class="btn btn-ghost" type="button" @click="runImportEnv" :disabled="loading || syncing">
-          {{ t('freePool.importEnv') }}
-        </button>
-        <button class="btn btn-ghost" type="button" @click="runDiscover" :disabled="loading || syncing">
-          {{ t('freePool.discover') }}
-        </button>
-        <!-- ★ 2026-10-27 第 22 增量（主色必须唯一）：这四个按钮是**并列的流程入口**，
-             互为平级，不是「一个主动作 + 几个次级」；而本页真正的主作用在各卡片里的
-             提交按钮（「探活并入库」「生成临时邮箱」），那里已经是主色 ⇒
-             工具栏里再摆四个实心主色 = 四个「主动作」= 没有主动作。
-             ⇒ 全部降为次级样式（`btn`），保留可点的可见性，不动任何动作/文案/事件。 -->
-        <button class="btn" type="button" @click="activeTab = 'assistant'; showKeyForm = false; showAddForm = false">
-          {{ t('freePool.quickEntry') }}
-        </button>
         <button class="btn" type="button" @click="showKeyForm = !showKeyForm">
           {{ showKeyForm ? t('freePool.hideKeyForm') : t('freePool.showKeyForm') }}
         </button>
         <button class="btn" type="button" @click="showAddForm = !showAddForm">
           {{ showAddForm ? t('freePool.hideKeyForm') : t('freePool.showAddForm') }}
         </button>
-        <button class="btn" type="button" @click="showBulkForm = !showBulkForm">
-          {{ showBulkForm ? t('freePool.collapseBulk') : t('freePool.bulkPool') }}
-        </button>
+        <!-- ★ 第 25 增量：低频动作收进「更多」（5 项：一键建设 / OAuth 桥接 /
+             导入环境变量 Key / 自动学习并注册 / 多 Key 批量池化）。
+             ★ 「快速录入」已删：它与本页 tab「注册助手」指向同一个视图。 -->
+        <ActionOverflowMenu :items="overflowItems" @select="onOverflowSelect" />
       </div>
       </template>
     </PageHeader>

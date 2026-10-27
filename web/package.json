@@ -105,7 +105,13 @@
     "design-spacing-scale:json": "node --experimental-strip-types scripts/design-spacing-scale-guard.mjs --json",
     "design-spacing-scale:update-baseline": "node --experimental-strip-types scripts/design-spacing-scale-guard.mjs --update-baseline",
     "design-spacing-scale:migrate": "node --experimental-strip-types scripts/design-spacing-scale-migrate.mjs",
-    "design-spacing-scale:runtime-check": "node scripts/design-spacing-scale-runtime-check.mjs"
+    "design-spacing-scale:runtime-check": "node scripts/design-spacing-scale-runtime-check.mjs",
+    "design-action-density:check": "node --experimental-strip-types scripts/design-action-density-guard.mjs",
+    "design-action-density:selftest": "node --experimental-strip-types scripts/design-action-density-guard.mjs --selftest",
+    "design-action-density:list": "node --experimental-strip-types scripts/design-action-density-guard.mjs --list",
+    "design-action-density:json": "node --experimental-strip-types scripts/design-action-density-guard.mjs --json",
+    "design-action-density:update-baseline": "node --experimental-strip-types scripts/design-action-density-guard.mjs --update-baseline",
+    "design-action-density:runtime-check": "node scripts/design-action-density-runtime-check.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

@@ -200,7 +200,6 @@ export default {
   bridgeOAuth: "OAuth ブリッジ",
   importEnv: "環境変数キーをインポート",
   discover: "自動学習して登録",
-  quickEntry: "クイック入力",
   notLoaded: "未読み込み",
   loading: "読み込み中…",
   p95Latency: "P95 レイテンシ",

@@ -200,7 +200,6 @@ export default {
   bridgeOAuth: "Pont OAuth",
   importEnv: "Importer les clés de variables d'env.",
   discover: "Auto-apprentissage & enregistrement",
-  quickEntry: "Saisie rapide",
   notLoaded: "Non chargé",
   loading: "Chargement…",
   p95Latency: "Latence P95",

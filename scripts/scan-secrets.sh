@@ -7,6 +7,19 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 
+# ⇒ ★ bash>=4 运行时守卫（2026-10-27 审计：与 check-and-fix-missing-tables.sh 同款）。
+#   背景：sync-to-github.sh 自身用 bash5 跑，但本脚本经 `#!/usr/bin/env bash`
+#   落回 PATH 上第一个 bash —— macOS /bin/bash 3.2 下 `declare -A` 报错后
+#   脚本**继续跑完并打印 findings 0（假绿）** ⇒ 敏感信息门形同虚设。
+#   ⇒ 守卫把这条失败形态从「假绿」变成「响亮拒绝」；bash≥4 环境零行为变化。
+if [[ -z "${BASH_VERSINFO[0]:-}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+  printf '%s\n' \
+    "FATAL: scan-secrets.sh requires bash >= 4 (uses declare -A associative arrays); got: ${BASH_VERSION:-unknown}." >&2
+  printf '%s\n' \
+    "  A bash 3.2 run would fail open (exit 0 with findings 0) — refusing to scan." >&2
+  exit 64
+fi
+
 MODE="normal"
 PATHS=(".")
 FORMAT="text"
