@@ -767,6 +767,8 @@ export function scanSource(src: string, rel: string, file: string = rel): AiSmel
       }
     }
     findings.push(...detectGlyphIcons(src, rel))
+    // ★ 第 29 增量：V3b —— 数据驱动的字形图标（`icon: '📋'` 这类）
+    findings.push(...detectGlyphDataDriven(src, rel))
     // ★ 第 27 增量：从已退役的孤儿门移植进来的两条判据（判据唯一实现 = 本文件）
     findings.push(...detectKickers(src, rel))
     findings.push(...detectDecorativeNumbers(src, rel))
@@ -915,6 +917,56 @@ export function detectDecorativeNumbers(src: string, rel: string): AiSmellFindin
  *   口径必须和数字一起发布）⇒ ⇒ 现在按**元素**聚合，字形合并进 `text`。
  *   ★ 自证里钉住这一点（S-CF3 期望 1 条，不是 2 条）。
  */
+/**
+ * ★★ V3b：**数据驱动**的字形图标（第 29 增量）。
+ *
+ * ★★ 这条判据补的是 V3 的**盲区**：V3 扫的是「元素里的字面量」，
+ *   而 emoji 藏在一个**数据数组**里时（`{ key: 'x', icon: '📋' }`），
+ *   源码里的元素写的是 `{{ c.icon }}` ⇒ **V3 完全看不见它**。
+ *   ★ 真仓实证：`web/src/views/SettingsView.vue` 的 11 个设置分类图标
+ *     就是这么藏的（`icon: '📋'` / `'🗜'` / `'🚦'` …）⇒ 渲染成 16px 字形 ⇒
+ *     **用户在界面上看到的是 emoji 冒充图标**（DESIGN.md §6 明令禁止）。
+ *
+ * ★ 位置信号：**属性名含 icon / glyph / emoji** ⇒ 值**恰好是一个字形**。
+ *   ⇒ 判据宁可窄，不可宽：普通文本里的字形（文字标记）**不判**
+ *   （★ 与仓库既有口径一致：`glyphCandidates` 只认「元素里只有这个字形」）。
+ *
+ * ★ 注释免疫：`stripSourceComments` 把注释内容掩成等长空格（行号/偏移不变）
+ *   ⇒ 注释里写 `icon: '📋'` 不会造成假红（★ 本轮自己就写了这种注释 ⇒ 实测需要）。
+ */
+export function detectGlyphDataDriven(src: string, rel: string): AiSmellFinding[] {
+  const out: AiSmellFinding[] = []
+  const masked = stripSourceComments(src)
+  // ★ 属性名先捕获，再在代码里判「是否含 icon / glyph / emoji」
+  //   （★ 第一版把它写进正则 `(?:icon|glyph|emoji)` 且要求前缀至少一个字符
+  //     ⇒ **单独的 `icon:` 匹配不上** ⇒ 判据没牙 ⇒ ★ 是自证 S21a 抓出来的）
+  const re = /\b([A-Za-z_$][\w$]*)\s*[:=]\s*(['"])((?:\\.|(?!\2).)*)\2/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(masked))) {
+    const attr = m[1]
+    if (!/icon|glyph|emoji/i.test(attr)) continue
+    const value = m[3]
+    const chars = [...value]
+    if (!chars.length) continue
+    // ★ 值必须**恰好是一个字形**（⇒ 整块就是一个图标位）
+    //   ★ 修饰符（U+FE0F 变体选择符 / U+20E3 组合键帽）不单独算字形，
+    //     但它们紧跟字形时要**一起放行**（★ '⚠️' = U+26A0 + U+FE0F）
+    const core = chars.filter((c) => c !== '\uFE0F' && c !== '\u20E3')
+    if (!core.length) continue
+    if (!core.every((c) => isGlyphIconChar(c))) continue
+    out.push({
+      rule: 'V3b-glyph-data-driven',
+      file: rel,
+      line: lineOf(src, m.index),
+      selector: m[1],
+      text: value,
+      reason:
+        '数据驱动的字形图标（DESIGN.md §6：图标是画出来的，不许用 emoji / Unicode 字形冒充图标系统）',
+    })
+  }
+  return out
+}
+
 export function detectGlyphIcons(src: string, rel: string): AiSmellFinding[] {
   const out: AiSmellFinding[] = []
 
@@ -1029,10 +1081,39 @@ const ICON_ROLE_WORDS = new Set([
 ])
 
 /** 纯排印字符：正文占位符 / 分隔符，不是图标位 */
-const TYPOGRAPHIC_GLYPHS = new Set(['—', '–', '·', '…', '▍', '⋯'])
+/**
+ * ★★ 字形字符判定的**唯一实现**（第 29 增量）。
+ *
+ * ★ 一个字符是不是「emoji / 图标位字形」：
+ *  - `Extended_Pictographic` ⇒ ✅❌🔍🧹🚫⏭ 等**具象图形**；
+ *  - `Emoji_Presentation` ⇒ ⏳🟡 等**默认以 emoji 呈现**的符号；
+ *  - U+FE0F（变体选择符）/ U+20E3（组合键帽）⇒ 是 emoji 的**修饰符**，
+ *    本身不可见、单独出现不算图标（紧跟 emoji 时随那个 emoji 一起算）。
+ *
+ * ★ 排除项（与「排印符号」「流程箭头」共用同一份集合）：
+ *  `TYPOGRAPHIC_GLYPHS`（— – · … ▍ ⋯）是标点；`FLOW_ARROWS`（→ ← ↔ …）是连线示意。
+ *  ★ 真仓实证：`providerDetail.formatHint` 里的 `↔`（协议互转）**必须**不算图标。
+ *
+ * ★ 为什么放这里（而不是放 i18n 侧）：源码侧与语言包侧**共用同一份字符判定**
+ *   ⇒ 「同一口径只能有一份实现」；依赖方向是 i18n → design（单向）。
+ */
+export const GLYPH_ICON_TEST_RE =
+  /[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0F\u20E3]/u
+
+export function isGlyphIconChar(ch: string): boolean {
+  if (!GLYPH_ICON_TEST_RE.test(ch)) return false
+  if (TYPOGRAPHIC_GLYPHS.has(ch)) return false
+  if (FLOW_ARROWS.has(ch)) return false
+  // ★ 变体选择符 / 组合键帽单独出现时不可见、也不是图标
+  if (ch === '\uFE0F') return false
+  if (ch === '\u20E3') return false
+  return true
+}
+
+export const TYPOGRAPHIC_GLYPHS = new Set(['—', '–', '·', '…', '▍', '⋯'])
 
 /** 流程 / 连接箭头：在流程示意位置是连线，不是图标系统 */
-const FLOW_ARROWS = new Set([
+export const FLOW_ARROWS = new Set([
   '→', '←', '↔', '↕', '⇄', '⇅', '⇆', '↖', '↗', '↘', '↙',
   // ★ 第 27 增量补 `↑` `↓`：移动端 `RouteFunnelView` 的比率箭头 `↓` 是**流程连线示意**
   //   （class 叫 fn__rate-arrow ⇒ 位置信号命中 'arrow'）⇒ 补进流程箭头集合后，
@@ -1237,6 +1318,29 @@ export function runSelftest(): { passed: number; total: number; failed: string[]
 <span class="badge">★</span>`).filter((r) => r === 'V3-glyph-as-icon').length)
   check('S20h', '插值内容 ⇒ 不判 V3（不是字形）', 0, rules(`
 <span class="stat-icon">{{ icon }}</span>`).filter((r) => r === 'V3-glyph-as-icon').length)
+
+  // ★ S21：V3b —— 数据驱动的字形图标（第 29 增量）
+  //   ★ 真仓形态：`{ key: 'x', icon: '📋' }` ⇒ 元素里写的是 `{{ c.icon }}`
+  //   ⇒ V3（只扫元素字面量）**完全看不见** ⇒ 必须有独立判据。
+  check('S21a', "icon 属性 = 一个 emoji ⇒ 判 V3b", 1, rules(`
+const categories = [
+  { key: '', label: t('settings.category.all'), icon: '📋' },
+]`).filter((r) => r === 'V3b-glyph-data-driven').length)
+  check('S21b', "icon 属性 = 一个几何/字形（⚠️ 带变体选择符）⇒ 判 V3b", 1, rules(`
+const c = { key: 'compression', label: '压缩', icon: '⚠️' }`).filter((r) => r === 'V3b-glyph-data-driven').length)
+  check('S21c', 'icon 属性 = 图标组件名 ⇒ 不判 V3b（那是真图标）', 0, rules(`
+const categories = [
+  { key: '', label: t('settings.category.all'), icon: Files },
+]`).filter((r) => r === 'V3b-glyph-data-driven').length)
+  check('S21d', '字形 + 文本（文字标记，仓内既有惯例）⇒ 不判 V3b', 0, rules(`
+const badge = { label: '✅ 可达', tone: 'ok' }`).filter((r) => r === 'V3b-glyph-data-driven').length)
+  check('S21e', '★ 注释里的 icon: 字形 ⇒ 不判 V3b（注释免疫）', 0, rules(`
+// 旧写法：{ icon: '📋' } ⇒ 已改成图标组件
+const categories = [
+  { key: '', label: t('settings.category.all'), icon: Files },
+]`).filter((r) => r === 'V3b-glyph-data-driven').length)
+  check('S21f', '属性名不含 icon/glyph/emoji ⇒ 不判 V3b', 0, rules(`
+const mark = { badge: '📋' }`).filter((r) => r === 'V3b-glyph-data-driven').length)
 
   // S8：字重 / uppercase / 渐变文字 / 硬偏移阴影 / 字距
   check('S8a', 'font-weight:800 ⇒ V4', 1, rules(`

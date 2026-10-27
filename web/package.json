@@ -119,7 +119,10 @@
     "design-motion:list": "node --experimental-strip-types scripts/design-motion-guard.mjs --list",
     "design-motion:json": "node --experimental-strip-types scripts/design-motion-guard.mjs --json",
     "design-motion:update-baseline": "node --experimental-strip-types scripts/design-motion-guard.mjs --update-baseline",
-    "design-motion:migrate": "node --experimental-strip-types scripts/design-motion-migrate.mjs"
+    "design-motion:migrate": "node --experimental-strip-types scripts/design-motion-migrate.mjs",
+    "design-glyph-icon-locale:check": "node scripts/design-glyph-icon-locale-guard.mjs",
+    "design-glyph-icon-locale:selftest": "node scripts/design-glyph-icon-locale-guard.mjs --selftest",
+    "design-glyph-icon-locale:list": "node scripts/design-glyph-icon-locale-guard.mjs --list"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

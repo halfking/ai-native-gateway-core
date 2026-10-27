@@ -10,7 +10,23 @@ import {
   type SettingSpec,
 } from '../api'
 import { confirmDialog } from '../composables/useConfirmDialog'
-import { Warning } from '@element-plus/icons-vue'
+// ★★ 图标一律用图标库的组件（DESIGN.md §6「图标是画出来的」——不许用 emoji /
+//   Unicode 字形冒充图标系统）。第 29 增量：这一组原本是 11 个 emoji 字形
+//   （📋 🗜 🚦 ⏱ 🔁 🔀 💬 🔐 🔒 ⚡ ⚙️）⇒ **emoji 藏在一个数据数组里** ⇒
+//   源码侧的 V3 字形判据（只看元素字面量）**看不见它** ⇒ 只能靠人改 + 补判据。
+import {
+  AlarmClock,
+  ChatDotRound,
+  CircleCheck,
+  Coin,
+  Files,
+  Lock,
+  RefreshRight,
+  Setting,
+  Share,
+  Timer,
+  Warning,
+} from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -28,17 +44,17 @@ const filterCategory = ref<string>('')
 const tagInput = ref('')
 
 const categories = computed(() => [
-  { key: '',                   label: t('settings.category.all'),  icon: '📋' },
-  { key: 'compression',        label: t('settings.category.compression'),  icon: '🗜'  },
-  { key: 'rate_limit',         label: t('settings.category.rateLimit'),  icon: '🚦'  },
-  { key: 'timeout',            label: t('settings.category.timeout'),  icon: '⏱'  },
-  { key: 'retry',              label: t('settings.category.retry'),  icon: '🔁'  },
-  { key: 'routing',            label: t('settings.category.routing'),  icon: '🔀'  },
-  { key: 'session',            label: t('settings.category.session'),  icon: '💬'  },
-  { key: 'security',           label: t('settings.category.security'),  icon: '🔐'  },
-  { key: 'output_compliance',  label: t('settings.category.outputCompliance'),  icon: '🔒'  },
-  { key: 'circuit_breaker',    label: t('settings.category.circuitBreaker'),  icon: '⚡'  },
-  { key: 'general',            label: t('settings.category.general'),  icon: '⚙️' },
+  { key: '',                   label: t('settings.category.all'),  icon: Files },
+  { key: 'compression',        label: t('settings.category.compression'),  icon: Coin },
+  { key: 'rate_limit',         label: t('settings.category.rateLimit'),  icon: Timer },
+  { key: 'timeout',            label: t('settings.category.timeout'),  icon: AlarmClock },
+  { key: 'retry',              label: t('settings.category.retry'),  icon: RefreshRight },
+  { key: 'routing',            label: t('settings.category.routing'),  icon: Share },
+  { key: 'session',            label: t('settings.category.session'),  icon: ChatDotRound },
+  { key: 'security',           label: t('settings.category.security'),  icon: Lock },
+  { key: 'output_compliance',  label: t('settings.category.outputCompliance'),  icon: CircleCheck },
+  { key: 'circuit_breaker',    label: t('settings.category.circuitBreaker'),  icon: Warning },
+  { key: 'general',            label: t('settings.category.general'),  icon: Setting },
 ])
 
 function dangerLabel(level: number): string {
@@ -261,7 +277,7 @@ onMounted(() => {
           class="cat-btn" :class="{ active: filterCategory === c.key }"
           @click="switchCategory(c.key)"
         >
-          <span class="cat-icon">{{ c.icon }}</span>
+          <span class="cat-icon"><component :is="c.icon" /></span>
           <span class="cat-label">{{ c.label }}</span>
         </button>
       </aside>
