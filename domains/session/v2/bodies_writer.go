@@ -271,6 +271,14 @@ func (w *SessionBodiesWriter) WriteBodies(ctx context.Context, rec BodiesRecord)
 // *pgxpool.Pool and pgx.Tx satisfy it, so the same code path serves the
 // standalone wrapper and the atomic-coordinated caller.
 func (w *SessionBodiesWriter) WriteBodiesInTx(ctx context.Context, tx bodiesDB, rec BodiesRecord) error {
+	// W1.3: consent=off → zero bodies (usage/turns still written by the caller).
+	if !RecordingConsentAllowsWrite(rec.TenantID, 0) {
+		return nil
+	}
+	if truncated := boundBodiesRecord(&rec); truncated {
+		markTruncation(&rec)
+	}
+
 	// Serialize deltas to JSONB with safe marshaling
 	requestDeltaJSON, err := safeJSONMarshal(rec.RequestDelta)
 	if err != nil {
@@ -359,6 +367,15 @@ func (w *SessionBodiesWriter) WriteBodiesInTx(ctx context.Context, tx bodiesDB, 
 // idempotent upsert; the uq_session_bodies*_final_full partial unique indexes
 // additionally guard against stray duplicate final_full rows.
 func (w *SessionBodiesWriter) WriteFinalFullInTx(ctx context.Context, tx bodiesDB, rec FinalFullRecord) error {
+	if !RecordingConsentAllowsWrite(rec.TenantID, 0) {
+		return nil
+	}
+	tmp := BodiesRecord{OutboundBody: rec.OutboundBody}
+	if truncated := boundBodiesRecord(&tmp); truncated {
+		markTruncation(&tmp)
+	}
+	rec.OutboundBody = tmp.OutboundBody
+
 	outboundJSON, err := safeJSONMarshal(rec.OutboundBody)
 	if err != nil {
 		return fmt.Errorf("marshal final_full outbound: %w", err)
