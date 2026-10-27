@@ -20,7 +20,30 @@ func ScanAndStartPlugins(sup *pluginruntime.Supervisor, pluginsDir string, manif
 
 // ScanAndStartPluginsWithRegistry starts processes and exposes only plugins that
 // pass signature, handshake, health, and binding readiness gates.
+//
+// When pluginsDir contains (or sits beside) a plugins.yml, Reconcile is the SSOT
+// (reverse Dispose / pending / failed isolation). Otherwise legacy start-all.
 func ScanAndStartPluginsWithRegistry(sup *pluginruntime.Supervisor, reg *pluginruntime.Registry, manifests []*pluginruntime.Manifest) map[string]string {
+	return ScanAndStartPluginsWithRegistryDir(sup, reg, manifests, "")
+}
+
+// ScanAndStartPluginsWithRegistryDir is ScanAndStartPluginsWithRegistry with an
+// explicit plugins install directory for plugins.yml discovery.
+func ScanAndStartPluginsWithRegistryDir(sup *pluginruntime.Supervisor, reg *pluginruntime.Registry, manifests []*pluginruntime.Manifest, pluginsDir string) map[string]string {
+	if pluginsDir != "" {
+		if rt := reconcilePluginsFromYML(sup, reg, manifests, pluginsDir); rt != nil {
+			bases := map[string]string{}
+			for _, m := range manifests {
+				if m == nil {
+					continue
+				}
+				if p := sup.SocketPathOf(m.PluginID); p != "" && rt.Active(m.PluginID) {
+					bases[m.PluginID] = "unix://" + p
+				}
+			}
+			return bases
+		}
+	}
 	bases := map[string]string{}
 	for _, m := range manifests {
 		m2 := *m

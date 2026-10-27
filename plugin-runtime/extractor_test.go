@@ -1,12 +1,12 @@
 package pluginruntime
 
 import (
-	"runtime"
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
