@@ -21,6 +21,7 @@ export default {
     tenantModels: 'Standard Models',
     tenantAccount: 'My Account',
     tenantPricing: 'Plans & Top-up',
+    tenantBills: 'Bills',
     tenantUsage: 'My Usage',
     models: 'Models & Catalog',
     routingOverview: 'Routing Overview',

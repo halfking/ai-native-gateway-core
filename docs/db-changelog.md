@@ -10494,3 +10494,5 @@ macos-say :8086），纯 INSERT ON CONFLICT 幂等；生产应用由 deploy-seam
 |-----------|------|---------|--------|
 | 911 | `911_local_audio_catalog.sql` | `174f27ce0f6435f0c39df5a61a9deb43fb621bdc087c2bed112feeeb034f56bb` | applied+verified |
 
+| 912 | `912_maas_monthly_bills_coupons.sql` | `962b309d04414e6b629f0023ee9b3e4c71eb02c0ecc7e637cc9da241da9361eb` | pending（包 07 月账单+优惠券+发票占位，2026-10-28） |
+

@@ -1646,6 +1646,8 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		//   纯 INSERT ON CONFLICT，幂等；不 seed providers 行（运营经
 		//   admin API 创建，catalog kind='local' 自动建占位凭据）。
 		"911_local_audio_catalog.sql",
+		// 912: monthly bills + coupons + invoice placeholder (pkg 07).
+		"912_maas_monthly_bills_coupons.sql",
 		},
 	}
 }
