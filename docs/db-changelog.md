@@ -10507,6 +10507,7 @@ Recording-consent body retention is independent of request_logs TTL.
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 913 | `913_maas_monthly_bills_coupons.sql` | `962b309d04414e6b629f0023ee9b3e4c71eb02c0ecc7e637cc9da241da9361eb` | pending（包 07 月账单+优惠券+发票占位，2026-10-28） |
+| 913 | `913_maas_monthly_bills_coupons.sql` | `b17329c7295f65c2a1d0472c1f6cdd5d605f035690525ae342d516cbbfdf1b16` | pending（包 07 月账单+优惠券+发票占位，2026-10-28；★ r1041 轮订正：本行原登记的 `962b309d…` 是**分支作者自己算错的 sha** ⇒ 门 `TestRegistryShaIsActuallyTheFile` 判红 ⇒ 按仓内「多行登记、任一命中即过」的惯例补本行正确 sha，**旧行保留在下一行**供已应用库按旧字节核对） |
+| 913 | `913_maas_monthly_bills_coupons.sql` | `962b309d04414e6b629f0023ee9b3e4c71eb02c0ecc7e637cc9da241da9361eb` | pending（★ 保留原登记行 —— 分支 07 自带值，与磁盘实测不符；见上一行的订正说明） |
 
 

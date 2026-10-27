@@ -96,6 +96,17 @@ var allowedParentDML = []struct {
 		"★ 每个**失败**请求的 abandoned 标记：`UPDATE `+tbl+` SET is_abandoned = TRUE`，tbl 遍历 {hot, parent}（:211-212）。"},
 	{"internal/sessionv2mirror/final_success_turn.go", "session_turns", 1,
 		"★ 每个**成功**请求的 final 标记：`UPDATE `+tbl+` t SET is_final_success = TRUE`，tbl 遍历 {hot, parent}（:234）。这是四条热路径动态父表写里调用频次最高的一条。"},
+
+	// ── 2026-10-28（r1041）：分支 02（录制同意 + 回收站）引入的父表写 ────────
+	// ★ 下面两条都是「删除必须【两腿】」形态：★ 只删 hot 会漏掉
+	// ★ 【已从 hot 晋级到月分区】的行 ⇒ ⇒ 删除语义不完整。
+	// ★ 与 internal/trace/trace.go 同构（写面必须覆盖 hot 之外的分区行）。
+	{"admin/session_trash.go", "session_bodies", 1,
+		"★ 回收站「移入回收站」路径的第二腿：先从 unified 视图搬进 session_bodies_trash，再删 hot 与**分区父表**各一份（:121-122）。★ 删父表这一腿是必需的 —— hot 与月分区是两套存储，hot 删干净但父表留着 ⇒ 同一 session 的正文在两处可见 ⇒ 「回收站」语义破。"},
+	{"admin/session_trash.go", "sessions", 2,
+		"★ 回收站把会话标记为 deleted（:124）与恢复为 active（:192）—— 两处成对。★ sessions 是**分区父表**，且本仓既有登记（admin/session_turns_v2.go / cmd/gateway/turn_logs_aggregator.go / domains/session/v2/session_aggregator.go / internal/titlestore/store.go）都已在写它 ⇒ 本条是同一族的新站点，登记而不改代码。★ 门要求**条数**也相等（★ 只比集合的话，第二处会被第一处吸收掉 ⇒ 这就是「同文件同表再加一条」被抓的机制）。"},
+	{"admin/recording_consent.go", "session_bodies", 1,
+		"★ 关闭录制同意时的正文清空（:139-140）：hot 与**分区父表**各删一份。★ 与 admin/session_trash.go 同构 —— 关闭录制必须真的清掉正文，而正文分布在 hot + 月分区两处 ⇒ 只删 hot 会让「已关闭录制」名存实亡（★ 且这正是「默认关闭录制」的隐私承诺所在）。"},
 }
 
 type pair struct {
