@@ -11,6 +11,7 @@ import { useI18n } from 'vue-i18n'
 import type { PanelEntry } from '../../composables/useLiveTopology'
 import { clientDisplayName } from '../../lib/liveTopologyGraph'
 import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
+import { useNewArrivals } from '../../composables/useNewArrivals'
 import { CaretLeft, CaretRight, FullScreen, TopRight } from '@element-plus/icons-vue'
 
 const props = defineProps<{
@@ -82,6 +83,9 @@ function tokens(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
   return value >= 1000 ? `${(value / 1000).toFixed(1)}K tok` : `${value} tok`
 }
+
+/** 新到达的响应行做入场动画（只有新行动，见 useNewArrivals 注释）。 */
+const { fresh: freshIds } = useNewArrivals(() => props.responses.map((r) => r.requestId))
 </script>
 
 <template>
@@ -92,7 +96,7 @@ function tokens(value: number | null | undefined): string {
     </header>
     <ul ref="listRef" class="pp__list" data-testid="provider-response-list">
       <li v-for="entry in pagedResponses" :key="entry.requestId">
-        <div class="pp__row" :class="[statusClass(entry.status), { 'is-active': entry.requestId === activeRequestId, 'is-probe': entry.isProbe }]">
+        <div class="pp__row" :class="[statusClass(entry.status), { 'is-active': entry.requestId === activeRequestId, 'is-probe': entry.isProbe, 'is-new': freshIds.has(entry.requestId) }]">
           <button type="button" class="pp__main" @click="emit('zoom', entry)">
             <span class="pp__line">
               <span class="pp__time">{{ clock(entry.ts) }}</span>
@@ -336,6 +340,23 @@ function tokens(value: number | null | undefined): string {
   color: var(--kx-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* 新响应到达：只有新出现的行做入场（useNewArrivals 保证旧行不动；
+   与左面板 cp-row-in 同款语义、独立命名 —— motion 裁决簿按 name 记账）。 */
+.pp__row.is-new {
+  animation: pp-row-in 0.3s var(--kx-motion-ease-out);
+}
+
+@keyframes pp-row-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pp__row.is-new {
+    animation: none;
+  }
 }
 
 /* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──

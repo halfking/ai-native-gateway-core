@@ -18,7 +18,8 @@
 //   node --experimental-strip-types scripts/design-motion-migrate.mjs --json    # 机器可读清单
 
 import { readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   collectMotionDecls,
   scanMotionInFile,
@@ -33,8 +34,9 @@ import {
 } from '../src/design/motion.ts'
 import { readFileSync as _rf, writeFileSync as _wf } from 'node:fs'
 
-
-const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
+// ★ Windows 修正（2026-10-28，同 responsive-audit.mjs）：URL.pathname 在
+//   win32 上是 `/C:/...`，被 resolve/join 解析成「当前盘下的 C: 目录」。
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SRC = join(ROOT, 'src')
 const DECISIONS_FILE = join(ROOT, 'scripts', 'design-motion-decisions.json')
 

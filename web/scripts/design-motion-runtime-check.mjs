@@ -163,12 +163,20 @@ export function runSelftest() {
 
 // ───────────────────────── CDP ─────────────────────────
 
+// ★ 2026-10-28 Windows 可移植性：补 win32 的 Chrome/Edge 候选
+//   （Chromium 内核的 Edge 同样支持 --headless=new + CDP），
+//   并尊重 CHROME_PATH 环境变量（与 design-elevation-runtime-check 的约定一致）。
 const CHROME_PATHS = [
+  process.env.CHROME_PATH,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
   '/usr/bin/google-chrome',
   '/usr/bin/chromium',
-]
+  'C:/Program Files/Google/Chrome/Application/chrome.exe',
+  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+  'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+  'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+].filter(Boolean)
 
 function findChrome() {
   for (const p of CHROME_PATHS) if (existsSync(p)) return p

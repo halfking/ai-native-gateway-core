@@ -24403,3 +24403,71 @@ v20 = `b744cdcb…`（60 条）、v21 = `d01b1c2e…`（59 条）⇒ v21 与 v19
 —— r1036 已明确冻结该行为，且改它会**缩小 PII 覆盖面**（安全姿态变更）⇒ **属主裁决项**，
 建议只从**前导**字符类去掉「号」、**后置**保留；
 **用户日常那台本机网关（host-first）本轮未部署**（口径是 245）⇒ 状态需下一轮复核。
+## §480 · live 页动效轮（2026-10-28）—— ★★★★ **接口的返回值是最容易被静默丢弃的语义；★ 动画写前先读门，登记与代码同提交；★ lineDashOffset 正值 = 流光反向；★ 两族 Windows 路径坑；★ 「新到达」判定的语义设计；★ 「URL 对了」≠「页面渲染了」**
+
+★★★ **★ 一、接口的返回值是最容易被静默丢弃的语义** —— 粒子池 `ParticlePool.step()`
+从建仓起就返回「本轮到达终点的粒子」（注释里明写「用于触发终点闪光」），但帧循环里
+写的是 `pool.step(dt)` —— **返回值落到地上十二年无人捡**，注释承诺的「终点闪光」
+从未存在过。⇒ ⇒ ★ 一个 API 设计了「事件出口」≠ 事件被表达；**调用点不接返回值时
+TS 不报错、测试不红、用户看不见**——它是纯语义丢失。★ 排查法：给「数据事件」列
+清单（到达/落地/失败/更新），逐个问「这个事件在 UI 上有什么表达」，而不是从
+「现有动画能不能更好看」问起——**前者会直接暴露丢失的钩子，后者只会打磨已有动画**。
+（本轮修法：`for (const arrived of pool.step(dt))` → 到达扩散环。）
+
+★★★ **★ 二、动画写前先读门，登记与代码同一提交** —— 本仓动效门（`design-motion:check`）
+有七条判据：M1 缓动必须是 `--kx-motion-ease-out`、M2 禁 `all`、M3 禁过渡布局驱动属性
+（数据条须在裁决簿 `layoutDriven` 登记）、M4 transform 过渡须有 reduced-motion 中和、
+M5 transition ≤500ms / 一次性 animation ≤800ms、M6 **入场类动画（起始帧含
+`opacity: 0`）必须登记 `entrances`**、M7 循环动画用 `linear` 必须 keyframes 真匀速。
+⇒ ★ 写 CSS 动画的合规模板：**一次性**（入场/脉冲）用 `Xms var(--kx-motion-ease-out)`
++ `@keyframes` 起始帧不写 opacity:0（除非有意入场且已登记）；**呼吸/循环**用
+`ease-in-out`（opacity 呼吸）或 `linear`（background-position 匀速位移，无缝循环
+周期 = pattern 周期）；每个动画配 `@media (prefers-reduced-motion: reduce)` 中和块。
+★★ **两个文件的同类入场动画要各自命名**（`cp-row-in` / `pp-row-in`）——裁决簿按
+keyframes **name** 记账，同名两文件只登记一条会产生「登记 N ≠ 命中 M」的豁免漂移硬错。
+
+★★★ **★ 三、lineDashOffset 的正值让流光反向走** —— Canvas `setLineDash` 的
+`lineDashOffset` **正值把 dash 图案向路径起点方向回拉** ⇒ `lineDashOffset = nowMs/26`
+递增时，虚线流光沿路径**从终点流向起点**——与粒子（t: 0→1，从起点到终点）**方向相反**。
+本仓拓扑画布的流光从建成起就是反向的（视觉上「数据在倒流」，肉眼难察觉但方向感是错的）。
+⇒ ★ 要与数据流同向：`lineDashOffset = -((nowMs / speed) % period)`（**负号** + 取模
+防浮点溢出）。★ 顺带：流光按流量分级（速度/线宽/亮度随 log(requests) 提升）是
+SigNoz service map 的成熟语义——「主干道 vs 小路」一眼可辨。
+
+★★★ **★ 四、两族 Windows 路径坑（门跑不起来 = 覆盖面为零的门）** —— 本轮在
+Windows 本地首跑四道门，**四道全崩**，全部是既有 bug（main 上长期如此）：
+① `new URL('.', import.meta.url).pathname` 在 win32 返回 `/C:/...`，而
+`resolve('/C:/...')` 把它解析成「**当前盘下的 C: 目录**」⇒ ROOT = `C:\C:\workspace\...`
+（`responsive-audit.mjs` / `design-motion-migrate.mjs`）；② `startsWith(rootDir + '/')`
+剥前缀对 win32 反斜杠路径**永不匹配** ⇒ 相对路径退化成整条绝对路径 ⇒ `join(ROOT,'src',abs)`
+拼出 `src\C:\...\App.vue` 直接 ENOENT（`motion.ts` / `spacingScale.ts`）。
+⇒ ⇒ ★ 修法统一为 `relative(root, abs).replace(/\/g, '/')`（仓内其余 6 处本就这么写——
+**同仓已有正确姿势时，错姿势就是待修清单**）；★ 想找同类坑：`grep -rn
+"import.meta.url).pathname"` + `grep -rn "startsWith(rootDir"`。★★ 运行时尺的
+CHROME_PATHS 只有 mac/linux 路径时，补 win32 的 Chrome/Edge 候选
+（Chromium 内核 Edge 完整支持 `--headless=new` + CDP）+ `CHROME_PATH` 环境变量。
+★★★ **教训**：门在本机跑不起来时，「跳过」不是中性选择——它把覆盖面降为零；
+而 CI 上的绿无法替代本地迭代速度。**修好工具的本地可用性本身就是交付物**。
+
+★★★ **★ 五、「新到达」判定的语义设计（实时列表只让新行动）** —— 给实时列表加
+入场动画的正确粒度是「**只有新出现的行**动」：整列表每次刷新重放动画 = 一条新请求
+被放大成「整个面板都在动」，动画从信息变噪声。判定器（`useNewArrivals`）的四个
+语义抉择：① **首帧不标**——挂载时整页都是「新」的，那是数据初始化不是活动；
+② **头对头扫描**——只记上一帧的头部 id，从头扫到它为止都是新增（不记全量历史：
+列表有界而记忆无限涨）；③ **大换血截断**——上帧头部已滚出列表（窗口重置/断流重连
+全量重灌）时只标头部 ≤40 条，不把整页标新；④ **空列表恢复按大换血处理**——
+断流恢复后的首批请求值得有反馈，代价是少量旧 id 误标一次（自愈、可接受）。
+★ 测试钉行为时**把每个语义抉择写进断言**（首帧空 / 新增标记 / 大换血截断 40 /
+到期只清自己那批），抉择才是这个 composable 的全部价值。
+
+★★★ **★ 六、「URL 对了」≠「页面渲染了」（CDP/无头验收的 hydration 陷阱）** ——
+本地无头验收 `/dev/live-topology-preview` 首查：URL 正确、DOM 却只有 guest 外壳
+（`hasTopo=false`、行数 0/0）。真因：路由守卫等 auth hydration 有 **10s fail-open
+超时**（本地无后端 ⇒ `/api/auth/me` 探不到 ⇒ 守卫的导航 Promise 一直 pending），
+★★ **pending 期间 vue-router 已更新地址栏，但组件从未挂载**。⇒ ★ 无头/截图验收
+必须等过这类超时再读 DOM；★ 判「页面活着」的读数应该是**具体元素的存在性**
+（`.gw__cell` 数、行数、canvas 存在）而不是 URL 或标题。★★ 动画类验收加一枪
+**双帧对比**（隔 2.5s 两帧截图逐字节不等 = 动画确实在动；相等 = 要么死了要么
+reduced-motion 生效）。
+
+（审计档：`docs/audit/2026-10-28-live页动效轮.md`）
