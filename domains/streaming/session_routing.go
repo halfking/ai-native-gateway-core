@@ -2,7 +2,6 @@ package streaming
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -11,135 +10,40 @@ import (
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/settings"
+	"github.com/kaixuan/llm-gateway-go/internal/sessionid"
 )
 
-var SessionHeadersPriority = []string{
-	"X-Gw-Session-Id",
-	"X-Session-Id",
-	"X-Conversation-Id",
-	"X-Chat-Session-Id",
-	"X-Thread-Id",
-}
+// SessionHeadersPriority mirrors sessionid.DefaultHeadersPriority for
+// back-compat readers. Prefer sessionid.Headers() / sessionid.Resolve.
+var SessionHeadersPriority = sessionid.DefaultHeadersPriority
 
-// deriveGatewaySessionID maps a non-gateway client session identity onto the
-// canonical gateway namespace instead of discarding it. Clients in the wild
-// (e.g. ZCode's per-session bare-UUID x-session-id) send a STABLE id with no
-// gw_/gt_/gs_ prefix; the previous behaviour treated such ids as unknown and
-// minted a fresh gw_<uuid> per request via the CreateV2 fallback, so one
-// client conversation never grouped under a single _request_logs.gw_session_id
-// and session_turns stayed at turn 1 forever. Deriving "gw_" + <client id>
-// keeps the gateway namespace canonical while making the mapping
-// deterministic: the derived id registers via the honored gw_ branch
-// (EnsureV2WithID) and resolves via Get→Touch from the second request on, so
-// turns accumulate per client session. Input must already be sanitized.
+// deriveGatewaySessionID delegates to sessionid.DeriveGatewayID (single source).
 func deriveGatewaySessionID(sessionID string) string {
-	if sessionID == "" ||
-		strings.HasPrefix(sessionID, "gw_") ||
-		strings.HasPrefix(sessionID, "gt_") ||
-		strings.HasPrefix(sessionID, "gs_") {
-		return sessionID
-	}
-	return "gw_" + sessionID
+	return sessionid.DeriveGatewayID(sessionID)
 }
 
 func extractSessionIDFromHeaders(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	for _, header := range SessionHeadersPriority {
-		value := r.Header.Get(header)
-		if value == "" {
-			continue
-		}
-		if header == "X-Gw-Session-Id" {
-			return sanitizeGwSessionHeader(value)
-		}
-		return sanitizeRequestCorrelationID(value)
-	}
-	return ""
+	id, _ := sessionid.FromHeaders(r.Header)
+	return id
 }
 
-var defaultSessionFieldPriority = []string{
-	"gwsessionid",
-	"sessionid",
-	"session",
-	"conversationid",
-	"chatsessionid",
-	"threadid",
-}
-
-var sessionBodyKeyOverrides []string
-
+// SetSessionIDBodyKeys forwards body-field aliases to sessionid (hot path + cfg).
 func SetSessionIDBodyKeys(keys []string) {
-	sessionBodyKeyOverrides = append([]string(nil), keys...)
+	sessionid.SetBodyKeyOverrides(keys)
 }
 
-func configuredSessionFieldPriority() []string {
-	seen := make(map[string]struct{}, len(defaultSessionFieldPriority))
-	merged := make([]string, 0, len(defaultSessionFieldPriority)+4)
-	for _, key := range defaultSessionFieldPriority {
-		seen[key] = struct{}{}
-		merged = append(merged, key)
-	}
-	for _, item := range sessionBodyKeyOverrides {
-		appendSessionFieldAlias(&merged, seen, item)
-	}
-	for _, item := range sessionBodyKeySettings() {
-		appendSessionFieldAlias(&merged, seen, item)
-	}
-	return merged
-}
-
-func appendSessionFieldAlias(target *[]string, seen map[string]struct{}, item string) {
-	normalized := normalizeSessionFieldName(item)
-	if normalized == "" {
-		return
-	}
-	if _, ok := seen[normalized]; ok {
-		return
-	}
-	seen[normalized] = struct{}{}
-	*target = append(*target, normalized)
-}
-
-func sessionBodyKeySettings() []string {
-	if settings.Global == nil {
-		return nil
-	}
-	raw, _, err := settings.Global.EffectiveValue(settings.ScopePlatform, "session.id_body_keys", "")
-	if err != nil || len(raw) == 0 {
-		return nil
-	}
-	var single string
-	if err := json.Unmarshal(raw, &single); err == nil {
-		return splitSessionFieldList(single)
-	}
-	var list []string
-	if err := json.Unmarshal(raw, &list); err == nil {
-		return list
-	}
-	return nil
-}
-
-func splitSessionFieldList(raw string) []string {
-	if strings.TrimSpace(raw) == "" {
-		return nil
-	}
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed == "" {
-			continue
-		}
-		out = append(out, trimmed)
-	}
-	return out
+// SetSessionIDHeaders forwards header aliases to sessionid (hot path + cfg).
+func SetSessionIDHeaders(keys []string) {
+	sessionid.SetHeaderOverrides(keys)
 }
 
 // 2026-09-08: 过期的 //nolint:unused 已删除 — 该函数被 messages.go 与
 // responses.go 的会话解析调用,并非死代码。
+// 2026-10-28: 真值已迁 internal/sessionid；本函数保留无 Derive 语义以兼容
+// normalizeAndRegisterClientSession（其内部再 Derive）。
 func extractSessionIDFromRequest(r *http.Request, body []byte) string {
 	if sessionID := extractSessionIDFromBody(body); sessionID != "" {
 		return sessionID
@@ -148,62 +52,7 @@ func extractSessionIDFromRequest(r *http.Request, body []byte) string {
 }
 
 func extractSessionIDFromBody(body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-	var payload any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return ""
-	}
-	return findSessionIDValue(payload)
-}
-
-func findSessionIDValue(node any) string {
-	switch typed := node.(type) {
-	case map[string]any:
-		for _, key := range configuredSessionFieldPriority() {
-			for rawKey, rawValue := range typed {
-				if normalizeSessionFieldName(rawKey) != key {
-					continue
-				}
-				if sessionID := sessionValueString(rawValue); sessionID != "" {
-					return sessionID
-				}
-			}
-		}
-		for _, rawValue := range typed {
-			if sessionID := findSessionIDValue(rawValue); sessionID != "" {
-				return sessionID
-			}
-		}
-	case []any:
-		for _, item := range typed {
-			if sessionID := findSessionIDValue(item); sessionID != "" {
-				return sessionID
-			}
-		}
-	}
-	return ""
-}
-
-func sessionValueString(value any) string {
-	text, ok := value.(string)
-	if !ok {
-		return ""
-	}
-	text = sanitizeRequestCorrelationID(text)
-	if strings.HasPrefix(text, "gw_") {
-		return sanitizeGwSessionHeader(text)
-	}
-	return text
-}
-
-// sessionFieldNameReplacer is package-level (goroutine-safe); building it
-// per request showed up in alloc profiles on the streaming hot path.
-var sessionFieldNameReplacer = strings.NewReplacer("-", "", "_", "", ".", "", " ", "")
-
-func normalizeSessionFieldName(value string) string {
-	return strings.ToLower(sessionFieldNameReplacer.Replace(strings.TrimSpace(value)))
+	return sessionid.FromBody(body)
 }
 
 func detectAndHandleModelSwitch(

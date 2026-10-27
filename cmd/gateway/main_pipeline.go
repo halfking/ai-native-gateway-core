@@ -123,8 +123,9 @@ import (
 	securityplugins "github.com/kaixuan/llm-gateway-go/domains/security/plugins"             //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/sessionsummary"                               //nolint:depguard // session summary worker wiring
-	"github.com/kaixuan/llm-gateway-go/domains/streaming"                                    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
+	"github.com/kaixuan/llm-gateway-go/internal/sessionid" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/security/sensitive" //nolint:depguard // AC敏感词引擎
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
@@ -776,10 +777,10 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		// but never the canonical "X-Gw-Session-Id". As a result env.SessionID
 		// — and the analysis_events row published below — lost the gateway
 		// session id whenever the v2 pipeline was enabled. Mirror the priority
-		// used by streaming.extractSessionIDFromHeaders.
-		env.SessionID = r.Header.Get("X-Gw-Session-Id")
-		if env.SessionID == "" {
-			env.SessionID = r.Header.Get("X-Session-Id")
+		// used by internal/sessionid.FromHeaders (single source).
+		// Single source: internal/sessionid (header table + case fold).
+		if sid, _ := sessionid.FromHeaders(r.Header); sid != "" {
+			env.SessionID = sessionid.DeriveGatewayID(sid)
 		}
 
 		// 2026-08-26 (P1-20 fix): the dispatch sniff used to silently
