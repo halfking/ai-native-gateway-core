@@ -130,14 +130,14 @@ scripts/sanitize-e2e-154.sh	78	run_scenario	var-write	bare	unknown	needs-human-r
 scripts/sanitize-e2e-154.sh	87	run_scenario	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$c2" | grep -q 'SENSITIVE:'; then
 scripts/sanitize-e2e-154.sh	89	run_scenario	var-write	bare	unknown	needs-human-read	head	discarded	note "$(printf '%s' "$c2" | head -c 200)"
 scripts/sanitize-e2e-154.sh	93	run_scenario	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$c2" | grep -q "$a_phone"; then
-scripts/scan-secrets.sh	199	record_finding	var-write	judgment	scalar	safe-single-line	head	discarded	[[ "$ln" != "0" ]] && echo "    $(echo "$content" | head -c 200)"
-scripts/scan-secrets.sh	223	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$base" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
-scripts/scan-secrets.sh	257	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$content" | grep -qiE -e "$wl" 2>/dev/null; then whitelisted=1; break; fi
-scripts/scan-secrets.sh	265	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$content" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
-scripts/scan-secrets.sh	302	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(data|sops)":' || return 1
-scripts/scan-secrets.sh	303	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '\bENC\[' || return 1
-scripts/scan-secrets.sh	304	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(mac|lastmodified|version)":' || return 1
-scripts/scan-secrets.sh	305	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(age|pgp|kms)":' || return 1
+scripts/scan-secrets.sh	212	record_finding	var-write	judgment	scalar	safe-single-line	head	discarded	[[ "$ln" != "0" ]] && echo "    $(echo "$content" | head -c 200)"
+scripts/scan-secrets.sh	236	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$base" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
+scripts/scan-secrets.sh	270	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$content" | grep -qiE -e "$wl" 2>/dev/null; then whitelisted=1; break; fi
+scripts/scan-secrets.sh	278	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$content" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
+scripts/scan-secrets.sh	315	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(data|sops)":' || return 1
+scripts/scan-secrets.sh	316	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '\bENC\[' || return 1
+scripts/scan-secrets.sh	317	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(mac|lastmodified|version)":' || return 1
+scripts/scan-secrets.sh	318	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(age|pgp|kms)":' || return 1
 scripts/test-e2e-bodies.sh	104	test_e2e_001	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$API_RESPONSE" | grep -q "request_id"; then
 scripts/test-e2e-bodies.sh	192	test_perf_001	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$EXPLAIN_OUTPUT" | grep -qi "Index Scan"; then
 scripts/test-runtime-tc.sh	90	tc6	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$used_cred" | grep -q "^$test_cred_id|"; then
@@ -156,7 +156,7 @@ tests/deploy_nocgo_build_test.sh	149	test_cgo_only_package_fails_nocgo	var-write
 tests/deploy_nocgo_build_test.sh	183	test_nocgo_dep_graph_no_sqlite3	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s\n' "$deps" | grep -q "github.com/mattn/go-sqlite3"; then
 tests/deploy_nocgo_build_test.sh	201	test_nocgo_dep_graph_no_sqlite3	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$deps" | grep -q "github.com/kaixuan/llm-gateway-go/storage/sqlite"; then
 tests/deploy_promotion_test.sh	269	test_gate_refuses_promotion_on_245_failure	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$log" | grep -q "refusing 154"; then
-tests/deploy_sops_test.sh	273	test_scan_secrets_does_not_exempt_non_sops	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -qE '\[BLOCK\]'; then
+tests/deploy_sops_test.sh	294	test_scan_secrets_does_not_exempt_non_sops	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -qE '\[BLOCK\]'; then
 tests/lib/fake-remote-host.sh	117	fake_host_setup	var-write	bare	scalar	safe-single-line	grep-q	consumed	echo "$base" | grep -qE '^[0-9]{3}_' || continue
 tests/rotate_credentials_test.sh	118	test_list	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -q "SSH_PASS_252" && echo "$out" | grep -q "PG_PASS_KAIXUAN1"; then
 tests/rotate_credentials_test.sh	168	test_dry_run_no_io	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! echo "$out" | grep -q "Dry-run:.*1"; then
