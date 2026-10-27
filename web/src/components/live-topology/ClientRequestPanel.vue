@@ -15,6 +15,7 @@ import { useI18n } from 'vue-i18n'
 import type { ClientSummary, PanelEntry } from '../../composables/useLiveTopology'
 import { clientDisplayName } from '../../lib/liveTopologyGraph'
 import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
+import { useNewArrivals } from '../../composables/useNewArrivals'
 import { CaretLeft, CaretRight, TopRight } from '@element-plus/icons-vue'
 
 const props = defineProps<{
@@ -106,6 +107,9 @@ function latency(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
   return value >= 1000 ? `${(value / 1000).toFixed(2)}s` : `${Math.round(value)}ms`
 }
+
+/** 新到达的请求行做入场动画（只有新行动，见 useNewArrivals 注释）。 */
+const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.requestId))
 </script>
 
 <template>
@@ -131,7 +135,7 @@ function latency(value: number | null | undefined): string {
       <li v-for="entry in pagedRequests" :key="entry.requestId">
         <div
           class="cp__row"
-          :class="[statusClass(entry.status), { 'is-active': entry.requestId === activeRequestId, 'is-probe': entry.isProbe }]"
+          :class="[statusClass(entry.status), { 'is-active': entry.requestId === activeRequestId, 'is-probe': entry.isProbe, 'is-new': freshIds.has(entry.requestId) }]"
         >
           <button type="button" class="cp__item" @click="onItem(entry)">
             <span class="cp__line">
@@ -412,6 +416,24 @@ function latency(value: number | null | undefined): string {
   color: var(--kx-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* 新请求到达：只有新出现的行做入场（useNewArrivals 保证旧行不动）。
+   300ms 一次性入场（≤800ms 上限），指数减速；起始帧 opacity:0
+   ⇒ 入场类 ⇒ 已在 design-motion-decisions.json 登记。 */
+.cp__row.is-new {
+  animation: cp-row-in 0.3s var(--kx-motion-ease-out);
+}
+
+@keyframes cp-row-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cp__row.is-new {
+    animation: none;
+  }
 }
 
 /* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──

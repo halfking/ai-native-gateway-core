@@ -12103,7 +12103,45 @@ index b953a6f03..555ef83c4 100644
 > ⇒ 状态需下轮复核；**「第三个面」是否还有自己抄的地址族名单**待全仓普查。
 > ⇒ 审计档 `docs/audit/2026-10-28-r1038b-脱敏范围批判式审计.md`（9 节）；
 > ⇒ 通用式见 `LESSONS.md` **§479**（8 条）；⇒ handoff 见 `docs/96小时内修订审计-20261007-1350.md`
-> **§19.34**；⇒ 提交 `c20a4fa6e` ＋ `75848f692`。
+> **§19.34**；⇒ 提交 `c20a4fa6e` ＋ `75848f692`。> **2026-10-28 live 页动效轮（goal 会话）**：★ 用户目标「优化整个 live 页的展示风格，
+> 学习网上热门实时系统展示的动画模式，让数据流动直观美观、简明描述系统运作逻辑」
+> ⇒ live 页 = `/live`（LiveTopologyView，2026-10-16 起的实时拓扑首页）。
+> ★★ 调研（SigNoz service map 粒子流边·密度速度编码流量 / Kiali / Grafana Node Graph
+> 无原生动画 / 数字 ticker / 脉动状态灯）+ 勘察结论：**动画只覆盖了「在路上」，
+> 没覆盖「到达/新行/更新」**——`ParticlePool.step()` 从建仓起就返回到达粒子，
+> 帧循环却把返回值丢在地上（注释承诺的「终点闪光」从未存在）；流光 `lineDashOffset`
+> 正值递增 = 图案向路径起点移动 ⇒ **与粒子流向相反（建仓起就是反向的）**；
+> 五个面板组件零动画。
+> ⇒ ★ **方案 = 事件→动画语义映射**（每条动画都有数据语义，无纯装饰）：
+> 画布粒子**拖尾** + **到达扩散环**（接线 step() 返回值，按状态着色 460ms）+
+> 流光**按流量分级**（速度 34→12ms/周期、线宽/亮度随 log 流量，同 SigNoz 语义）+
+> 流向修正（负 offset）；网关大方块**模块格激活脉冲**（count 增加那格闪 470ms，
+> 首见不闪/回落不闪）+ 存储带 ↕ 字符升级**竖向流动虚线**（进站向下/出站向上，
+> 顺带少一个 craft-floor 禁的字形）；左右面板**只有新行**做入场（新 composable
+> `useNewArrivals`：头对头扫描判新、首帧不标、大换血截断 40、断流恢复按大换血）；
+> Rail 占比条 width 过渡 + 大数字脉冲；页头连接 chip **呼吸圆点**（open 2.2s /
+> connecting 1.1s / down 常亮）。★ 动效门 M1~M7 全前置遵守：entrances 登记
+> cp-row-in/pp-row-in 两条（★★ 同类入场各文件独立命名——裁决簿按 name 记账）、
+> layoutDriven 登记 .rail__bar width（数据条先例）。
+> ⇒ ★★ **顺手修 4+1 个既有 Windows 缺陷（main 上门长期本地跑不了 = 覆盖面为零）**：
+> ① `motion.ts:603` / `spacingScale.ts:566` 的 `startsWith(rootDir+'/')` 剥前缀在
+> win32 反斜杠路径上永不匹配 ⇒ rel 变绝对路径 ⇒ gate join 出 `src\C:\...` ENOENT
+> ⇒ 修为 `relative().replace(/\/g,'/')`（与仓内其余 6 处对齐）；② `responsive-audit.mjs`
+> / `design-motion-migrate.mjs` 的 `new URL('.', import.meta.url).pathname` 在 win32
+> = `/C:/...` 被 resolve 成「当前盘下的 C: 目录」⇒ ROOT=`C:\C:\...` ⇒ 修为
+> `dirname(fileURLToPath(...))`；③ `design-motion-runtime-check.mjs` CHROME_PATHS
+> 补 win32 Chrome/Edge + CHROME_PATH env（Chromium 内核 Edge 实测支持 headless+CDP）。
+> ⇒ ★ 读数：动效门 PASS（M1~M7 全 0）· ai-smell/elevation/color/responsive/element
+> 全 PASS · `vue-tsc` 0 错 · vitest 全量 exit 0（含 useNewArrivals 7/7）· build ✓ 8m13s ·
+> motion 运行时尺（Edge）preview 页 9 过渡元素 0 违规 · CDP 双帧截图：
+> gw__cell×9 / flow-line×2 / 行 33+33 / 两帧不等（动画在动）/ console 0 错 /
+> 截图肉眼验收三带结构完整。★★ 验收陷阱：本地无后端 ⇒ 路由守卫 auth hydration
+> 10s fail-open ⇒ pending 期间 URL 已变但组件未挂载 ⇒ 无头验收必须等过超时
+> 再读 DOM。
+> ⇒ ★ 本轮没做：旧泳道页（/dashboard?tab=stream）动效 · RoutingDecisionTimeline
+> 动画（按需查看非实时流，刻意不动）· 移动端 live 页 · 上游既有遗留清单。
+> ⇒ 审计档 `docs/audit/2026-10-28-live页动效轮.md`；通用式见 `LESSONS.md` **§480**。
+
 ## ㉝ R172 轮（2026-10-28）· 会话族「轮次读点」去视图化（★ 等价性要与事实源同源；★ 保守论证会与事实并存）
 
 > **取号说明**：本轮取 **㉝**（㉜ = 上一轮 R170；㉚ = 并行会话 R87 轮；

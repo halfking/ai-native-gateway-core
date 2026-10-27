@@ -446,6 +446,35 @@ function onSelectProvider(code: string) {
   padding: 1px 8px;
   border-radius: 999px;
   font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* 心跳圆点（2026-10-28 live 页动效轮）：「已连接」不是一句静态文案，
+   是一条活着的 SSE 连接 —— 呼吸的圆点让「在线」有生命体征。
+   connecting 呼吸更快（正在重连）；down 不呼吸（常亮红 = 故障要醒目，
+   动起来反而像「正在恢复」）。 */
+.live-topology__conn::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.live-topology__conn.is-open::before {
+  animation: conn-breathe 2.2s ease-in-out infinite;
+}
+
+.live-topology__conn.is-connecting::before {
+  animation: conn-breathe 1.1s ease-in-out infinite;
+}
+
+@keyframes conn-breathe {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
 }
 
 .live-topology__conn.is-open {
@@ -461,6 +490,13 @@ function onSelectProvider(code: string) {
 .live-topology__conn.is-down {
   color: var(--kx-danger);
   background: var(--kx-danger-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-topology__conn.is-open::before,
+  .live-topology__conn.is-connecting::before {
+    animation: none;
+  }
 }
 
 .live-topology__redis {
