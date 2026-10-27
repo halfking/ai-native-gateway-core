@@ -72,11 +72,12 @@ const (
 // classified identically to the built-in fallback — the production detector
 // and the fallback must not drift apart on this decision.
 func scopedType(typ SensitiveType) bool {
-	switch typ {
-	case TypeServerIP, TypeInternalIP, typeServerIPv6:
-		return true
-	}
-	return false
+	// r1038b（2026-10-27）：口径收进 domains/sanitizerules 的**唯一**一份
+	// （此前这里与 outputcompliance 的 isAddressPIIType 各写一份，已经漂移：
+	// 那边多出 ip/address/domain/hostname，这边没有 ⇒ 同一个类型在两个面
+	// 得到相反待遇 —— 一条 domain 类型的规则在合规面「只检出不遮蔽」，
+	// 在脱敏面却照遮）。两面必须同口径。
+	return sanitizerules.IsAddressFamilyType(string(typ))
 }
 
 // typeServerIPv6 mirrors the `server_ipv6` YAML rule name. It is not a

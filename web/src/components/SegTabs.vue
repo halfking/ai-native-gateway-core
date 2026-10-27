@@ -10,7 +10,12 @@
       :data-tab="tab.value"
       @click="$emit('update:modelValue', tab.value)"
     >
-      <span v-if="tab.icon" class="seg-tab-icon">{{ tab.icon }}</span>
+      <span v-if="tab.icon" class="seg-tab-icon">
+        <!-- ★ 第 29 增量：icon 允许是**图标组件**（DESIGN.md §6：图标是画出来的，
+             不许用 emoji / Unicode 字形冒充图标系统）⇒ 旧的字符串形态保留兼容。 -->
+        <component :is="tab.icon" v-if="typeof tab.icon !== 'string'" />
+        <template v-else>{{ tab.icon }}</template>
+      </span>
       {{ tab.label }}
       <span v-if="tab.badge !== undefined && tab.badge > 0" class="seg-tab-badge">{{ tab.badge }}</span>
     </button>
@@ -18,10 +23,13 @@
 </template>
 
 <script setup lang="ts">
+import type { Component } from 'vue'
+
 export interface SegTab {
   value: string
   label: string
-  icon?: string
+  /** ★ 允许图标组件（推荐）或旧字符串形态（兼容） */
+  icon?: string | Component
   badge?: number
 }
 
