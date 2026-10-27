@@ -205,6 +205,11 @@ type BodiesRecord struct {
 	// Attachment references
 	RequestAttachments  []AttachmentRef
 	ResponseAttachments []AttachmentRef
+
+	// ★ r1041 轮（2026-10-28）：ConsentGeneration = 请求开始时捕获的
+	// 录制同意世代号（★ 0 = 未捕获 ⇒ 只看当前开关，不做世代比对）。
+	// ★ 有了它，「disable/clear 后在途请求不能回填正文」才真正生效。
+	ConsentGeneration int
 }
 
 // FinalFullRecord is the session's latest complete outbound snapshot
@@ -217,6 +222,8 @@ type FinalFullRecord struct {
 	TenantID     string
 	Ts           time.Time
 	OutboundBody []Message
+	// ★ r1041：同上（ConsentGeneration）。
+	ConsentGeneration int
 }
 
 // safeJSONMarshal marshals v to JSON, falling back to a safe placeholder on error.
@@ -272,7 +279,7 @@ func (w *SessionBodiesWriter) WriteBodies(ctx context.Context, rec BodiesRecord)
 // standalone wrapper and the atomic-coordinated caller.
 func (w *SessionBodiesWriter) WriteBodiesInTx(ctx context.Context, tx bodiesDB, rec BodiesRecord) error {
 	// W1.3: consent=off → zero bodies (usage/turns still written by the caller).
-	if !RecordingConsentAllowsWrite(rec.TenantID, 0) {
+	if !RecordingConsentAllowsWrite(rec.TenantID, rec.ConsentGeneration) {
 		return nil
 	}
 	if truncated := boundBodiesRecord(&rec); truncated {
@@ -367,7 +374,7 @@ func (w *SessionBodiesWriter) WriteBodiesInTx(ctx context.Context, tx bodiesDB, 
 // idempotent upsert; the uq_session_bodies*_final_full partial unique indexes
 // additionally guard against stray duplicate final_full rows.
 func (w *SessionBodiesWriter) WriteFinalFullInTx(ctx context.Context, tx bodiesDB, rec FinalFullRecord) error {
-	if !RecordingConsentAllowsWrite(rec.TenantID, 0) {
+	if !RecordingConsentAllowsWrite(rec.TenantID, rec.ConsentGeneration) {
 		return nil
 	}
 	tmp := BodiesRecord{OutboundBody: rec.OutboundBody}
