@@ -7158,7 +7158,10 @@ func main() {
 		customerEcho.HidePort = true
 
 		jwtSecret := resolveJWTSecret(os.Getenv("LLM_GATEWAY_JWT_SECRET"), cfg.SecretKey)
-		jwtMiddleware := newJWTMiddleware(jwtSecret)
+		// ★ 2026-10-27（r1039 后续轮，§8 第 9 条）：把连接池交给中间件，
+		// 让 Echo 侧也能做「改密即吊销」探测（此前只有 ServeMux 侧有）。
+		// pool 为 nil 时探测 fail-open（放行），不会把管理面锁死。
+		jwtMiddleware := newJWTMiddleware(jwtSecret, dbConn.Pool())
 		e.Use(jwtMiddleware)
 
 		// 2026-07-21: 受限模式中间件必须在 jwtMiddleware 之前注册，

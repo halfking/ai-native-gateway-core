@@ -74,6 +74,9 @@ CLEANUP_DOWNLOADS=0
 DEPLOY_BUILD_LOCK_HELD=0
 # 本次部署已拉起、尚未晋升的候选实例端口（cleanup_deploy 兜底清理用）
 DEPLOY_CANDIDATE_PORT=
+# ★ 2026-10-27（r1039 后续轮，§8 第 18 条）：切流互斥锁（机器级，跨 checkout 共享）。
+# 覆盖窗口 = 候选起停 → 切流完成；构建锁在候选起停**之前**就释放了，覆盖不到这里。
+DEPLOY_SWITCH_LOCK_HELD=0
 LOCK_LOCAL_BUILD_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-build.lock"
 LOCK_BUILD_TARGET=local
 
@@ -169,6 +172,14 @@ release_build_lock() {
   fi
 }
 
+# ★ 2026-10-27（r1039 后续轮，§8 第 18 条）：释放机器级切流锁。
+release_switch_lock() {
+  if (( DEPLOY_SWITCH_LOCK_HELD )); then
+    dl_release_switch_lock || true
+    DEPLOY_SWITCH_LOCK_HELD=0
+  fi
+}
+
 cleanup_deploy() {
   local status=$?
   trap - EXIT INT TERM
@@ -181,6 +192,9 @@ cleanup_deploy() {
     DEPLOY_CANDIDATE_PORT=
   fi
   release_build_lock
+  # ★ 2026-10-27（r1039 后续轮，§8 第 18 条）：切流锁也必须在夭折路径上释放
+  # ⇒ 否则一次 Ctrl-C 会把机器级锁留成「永久占用」，后面的部署全部快速失败。
+  release_switch_lock
   exit "$status"
 }
 trap cleanup_deploy EXIT INT TERM
@@ -1776,6 +1790,16 @@ deploy() {
   gate_credential_encryption_key
   bundle=$(stage_release "$binary")
   release_build_lock
+  # ★ 2026-10-27（r1039 后续轮，§8 第 18 条）：从**候选实例起跑**到**切流完成**，
+  # 持有一把**机器级**切流锁。
+  #
+  # ⇒ 构建锁在上一行就释放了（它只保护 checkout 的版本号/web/dist 变更），
+  #   **覆盖不到切流窗口** ⇒ 本机多份 checkout 同时部署时，切流步会互相抢
+  #   8781/8782（实测：候选验证全绿、抢占 8782 失败 ⇒ 「/version body did not
+  #   match bundle metadata」⇒ 重试 3 次全红 ⇒ 整轮回滚）。
+  # ⇒ 持锁期间另一个 checkout 会**快速失败**（rc 75）而不是去抢端口。
+  dl_acquire_switch_lock || die 'another deployment is switching the active port; retry after it finishes'
+  DEPLOY_SWITCH_LOCK_HELD=1
   # 2026-09-20（端口漂移修复）：active 端口以文件/env 链为准（dl_resolve_active_port
   # 只用实测做诊断告警，不再改写结果）——本地无代理拓扑里 active 端口就是客户端
   # 直连的对外契约端口，绝不因"另一侧有残留监听"而漂移。候选 = 8781/8782 契约对
@@ -1854,6 +1878,9 @@ deploy() {
   # 收尾兜底：此刻 active 已稳定，pidfile 记录的就是唯一合法进程
   reap_stray_gateways "$(cat "$(pid_file "$candidate_port")" 2>/dev/null || true)"
   record_success
+  # ★ 2026-10-27（r1039 后续轮，§8 第 18 条）：切流完成 ⇒ 交还机器级切流锁。
+  # 失败路径由 cleanup_deploy 的 trap 释放（见 release_switch_lock）。
+  release_switch_lock
 }
 
 verify() {
