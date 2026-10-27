@@ -1,4 +1,4 @@
--- Migration 912: MaaS monthly bills + coupons (+ invoice placeholder).
+-- Migration 913: MaaS monthly bills + coupons (+ invoice placeholder).
 -- Idempotent: IF NOT EXISTS / ON CONFLICT DO NOTHING.
 -- Does NOT alter credit_ledger entry_type CHECK (coupon credits use entry_type='adjust', ref_type='coupon').
 
