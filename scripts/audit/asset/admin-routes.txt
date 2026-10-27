@@ -369,10 +369,10 @@
 /api/credentials/set-manual-disabled	ANY	admin/credential_monitor.go:172
 /api/credentials/sliding-window	ANY	admin/credential_monitor.go:161
 /api/credentials/sliding-window/batch	ANY	admin/credential_monitor.go:162
-/api/credentials/test-batch	POST	admin/credential_state_handlers.go:177
-/api/credentials/{id}/models/{model}/state	GET	admin/credential_state_handlers.go:179
-/api/credentials/{id}/models/{model}/test	POST	admin/credential_state_handlers.go:178
-/api/credentials/{id}/test	POST	admin/credential_state_handlers.go:176
+/api/credentials/test-batch	POST	admin/credential_state_handlers.go:185
+/api/credentials/{id}/models/{model}/state	GET	admin/credential_state_handlers.go:187
+/api/credentials/{id}/models/{model}/test	POST	admin/credential_state_handlers.go:186
+/api/credentials/{id}/test	POST	admin/credential_state_handlers.go:184
 /api/errors/trend	ANY	admin/handler.go:1335
 /api/free-discovery/import	POST	admin/handler.go:1404
 /api/free-discovery/scan	POST	admin/handler.go:1397
