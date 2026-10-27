@@ -31,6 +31,11 @@ type Task struct {
 	NextRetryAt    time.Time
 	LastError      string
 	CreatedAt      time.Time
+	// ★ r1041 轮（2026-10-28）：CompletedAt = 进入终态（sent / dlq）的时刻。
+	// ★ 它是**回收窗口的基准** —— ★ 没有它就只能用 CreatedAt 判龄
+	// ★ ⇒ 一个跑了很久才完成的任务会被**立刻**判为「超窗」而回收
+	// ★ ⇒ 幂等去重窗口（at-least-once 要求）就失效了。
+	CompletedAt time.Time
 }
 
 // Handler 消费端合同：必须按 IdempotencyKey 幂等。
