@@ -12506,3 +12506,56 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ★★ **⇒ 我方已改（★ 都是我方资产）**：① ★ **`measure-pipefail-race-surface.py` 的 `SKIP_DIRS` 补 `.worktrees`**（★ 按它自己写死的纪律补齐 ⇒ ★ 实测**对对方清单零影响** ⇒ 清单逐字未变）｜② ★ **`probe-pipefail-caliber-matrix.py` 增加【扫描面指纹】输出**（★ 扫描脚本数 / 排除目录 / 隐藏目录命中 ⇒ ★⇒ **以后每个矩阵读数自带分母锚点**）｜③ ★★ **`scripts/252-monitor/pg17-disk-watch.sh:165` 的 `trap 'rm -f …'` → `trap '/bin/rm -f …'`**（★ 磁盘侧第 43 轮回执定位：★ 本机裸 `rm` 是 mavis-trash 的**回收站 shim** ⇒ 只搬进 `~/.Trash`、★ 磁盘不释放 ⇒ ★ 实测 `rm is ~/.minimax/shims/rm`）⇒ ⇒ ★★ **⇒ 同仓另有约 95 处 `trap 'rm …'` ⇒ ⇒ 只改这一条（★ 高频 ＋ 已被实测证实）⇒ ⇒ 其余交属主 / 磁盘侧裁决，不擅自批量改**
 > ⇒ ★★★ **⇒ 两条自愈（★ 同一段里连踩两次）**：★ **① 「阴性读数要当缺陷一样复核」** —— ★ **「回收站 `llmgw-dw-stat.*` 命中 0 ⇒ 不是我这侧的」是【假 0】**（★ 本机 `~/.Trash` 此刻是空的 ⇒ ★ 磁盘侧证明那正是我这一侧的）⇒ ⇒ ★★ **⇒ 回收站 / 缓存 / 临时目录这类【会被清空】的载体上，★ 阴性结论不可当归属证据 ⇒ ⇒ 归属必须靠【产生者代码】来定**｜★ **② 「过期读数」在我自己身上又发生一次**：★ GOCACHE **6.9 GB（10-22）→ 实测 960 MB（10-28）** ⇒ ⇒ ★★ **⇒ 掉下来的 5.9 GB 不是谁删的 ⇒ ⇒ 是 Go 构建缓存【自己会老化清理】⇒ ⇒ ⇒ 「缓存类读数」比别的读数更不稳定**
 
+
+> **2026-10-28 r1041 分支收口与三处真缺陷轮**（goal 会话 · 7 个不活跃分支收口 + 系统/DB log 跟踪）：
+> ★ **分支治理**：★ 普查「一个月内 + 1 小时前 + 未合并」的远端分支 ⇒ **7 个**
+>   （`wip/01`~`wip/07` 六个功能包 + `wip/local-main-r1038b-r107`）⇒ ★★ **逐条判有效性
+>   ⇒ 无一条是「没有用处」的 ⇒ 全部合并进 main**（★ 逐文件合并、冲突 3 处各自处置、
+>   ★★ 节号两次让号 §484→§485 / §480→§486）⇒ **合并后删除远端分支**。
+> ⇒ ★★ **本轮三处真缺陷（全部是「门跑对了自己那份事，但采集面/设施/基线坏了」）**：
+>   ① **插件的 6 个 i18n 键被死键门误判成死键** ⇒ 键在**数据文件**里
+>   （manifest 的 `title_key` / 插件自带 `i18n.js` / `index.html` 的 `data-i18n`）
+>   ⇒ 源码里没有字面量 ⇒ 死键门的采集面（只扫 `web/src` 的 `.vue/.ts`）**够不着**
+>   ⇒ ⇒ ★ **修法是【扩采集面】不是【调高棘轮基线】**（★ 调高基线 = 把活键登记成死键
+>   ⇒ 下游删除器会真的删掉它们 ⇒ ★ **门判错了要修门，不能改读数**）
+>   ⇒ 新增 `collectManifestRefKeys` + **C 组自证 6 例**（含**阴性对照**）⇒ 自证 19 → **25/25**
+>   ⇒ 棘轮 **6 → 0**（★ baseline 0，未调高）⇒ ★ 变异臂 2 臂全按正确原因转红。
+>   ② **本机 PG 缺 `pg_stat_statements` preload** ⇒ 实测三重缺口
+>   （`shared_preload_libraries='citus'` / `log_min_duration_statement=-1` /
+>   `logging_collector=off`）⇒ ⇒ ★★ **仓内 ≥19 个以它为事实源的门在本机全是假绿**
+>   ⇒ ★ 「慢 SQL」这一整个类别不可观测 ⇒ ⇒ ★ **且仓内文档写的期望值本就是
+>   `'citus,citus_columnar,pg_stat_statements'` ⇒ 文档与实况漂移且无报警**
+>   ⇒ 修本机（直接写 `postgresql.auto.conf`，★ 不用 `ALTER SYSTEM` —— 逗号列表的引号
+>   是已知脚枪）+ 固化进 `installer/templates/compose.yml` 与 embeddata 副本
+>   + ★ **新门 `scripts/ursmcheck/pg_slow_query_observability_test.go`**
+>   （静态层：compose 必须带设施 + 两份副本逐字一致｜运行时层：**`pg_stat_statements`
+>   必须真的可查** ⇒ 「装了扩展」≠「能用」）⇒ ★★ **变异台 4 臂**：★ **首版判据写成
+>   `strings.Contains(s, "pg_stat_statements')` ⇒ 臂 A 实测【仍 PASS】** ⇒ ★★ 原因：
+>   该字符串**还出现在门文件自己的注释里** ⇒ ★★★ **⇒ 「出现过」= 恒真 = 门没牙**
+>   ⇒ ⇒ 改成解析 `key=value` 的**值** + **按逗号分段逐段比对** ⇒ 臂 A 转红
+>   ⇒ ⇒ ⇒ ★★ **通用式：★ 判据必须指名道姓到【值】，不能停在【出现过】。**
+>   ③ **一个并发会话把 `design-icon-size` 基线 JSON 清空**（30 行 → 1 行）
+>   ⇒ ★ 那道「只降不升」的棘轮被**洗白** ⇒ ⇒ ★★ **「调高基线」至少留下 diff，
+>   「清空」连 diff 都没有** ⇒ ⇒ ★ **单独一个提交还原**（不与别的修复混在一起）
+>   ⇒ ★ 教训：★ `git add -A` 会把**别人留下的东西**一起带上 ⇒ 提交前必须核对
+>   「这个文件的改动是我做的吗」。
+> ⇒ ★★★ **本轮推翻自己的三条初判（★ 审计的第一产出往往是推翻自己）**：
+>   ① 「`maas_coupons` 没开 RLS ⇒ 租户隔离缺失」⇒ **错**：该表**无 `tenant_id`**
+>   ⇒ 是平台级模板表，写路径全走 `superAdmin`/`admin` 门 ⇒ **有意设计**；
+>   ② 「优惠券兑换无锁 ⇒ 并发超发」⇒ **错**：实测 `maas/coupons.go:189` **有 `FOR UPDATE`**
+>   + `maas_coupon_redemptions` 有 `UNIQUE (coupon_id, tenant_id)`；
+>   ③ 「`provider_models` 14.5 万次 seq scan ⇒ 全表扫描问题」⇒ **错**：该表只有
+>   **263 行** ⇒ ★★ **seq scan 是规划器的正确选择** ⇒ ⇒ ★★ **「次数」不是「代价」**。
+>   ⇒ ★ 另：★ 执行计划里的 `ursm_node_snapshot_min_20261021` 被我先当成「分区名」
+>   ⇒ 实测 `tableoid` 全指向父表 ⇒ ★ 它是**索引名后缀** ⇒ 该表**不是分区表**。
+> ⇒ ★ **读数**：Go build/vet **rc=0**；`vue-tsc` **0 错**；i18n **8 门 + key-parity 全 PASS**
+>   （union 6218 / 硬闸违规 0）；共有死键 **0**；CJK **4484 = 基线**；
+>   节号唯一性门 rc=0（两次让号后各一次）；`bench/latency` 冒烟 **`[smoke] PASS`**；
+>   PG 观测门 3 腿 PASS + 变异 4/4；真库门 `TestSection14397TodayLegScansOnlyTodaysPartition` PASS。
+> ⇒ ★ **本轮明确没做（留给下一轮，别重复排查）**：★ **本机 PG 配置改动不在 git 里**
+>   （在 `postgresql.auto.conf` ⇒ 重建容器仍会丢 ⇒ 应固化成脚本，落点
+>   `scripts/local-dev/recover-pg-citus-image.sh`）；★ **web 侧完整 vitest / build** 未跑；
+>   ★ `ursm_node_snapshot_min` 的 7% 死元组（保留策略在跑，非本轮引入）；
+>   ★ 并发会话清空基线的**来源未查明**；★ 独立 verifier 的审计结论待吸收。
+> ⇒ 审计档 `docs/audit/2026-10-28-r1041-分支收口与三处真缺陷.md`；
+>   通用式见 `LESSONS.md` **§487**（★ 七条通式）。
