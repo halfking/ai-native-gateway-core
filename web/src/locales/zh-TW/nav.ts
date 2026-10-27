@@ -20,6 +20,7 @@ export default {
     tenantModels: "標準模型",
     tenantAccount: "我的帳號",
     tenantPricing: "套餐與儲值",
+    tenantBills: '月帳單',
     tenantUsage: "我的消耗",
     models: "模型與目錄",
     routingOverview: "路由全景",

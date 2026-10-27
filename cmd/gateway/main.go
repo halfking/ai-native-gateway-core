@@ -5935,6 +5935,12 @@ func main() {
 				auditTrimmer.Stop()
 			}()
 
+			// Package 07: postpaid monthly bill issuer (previous calendar month).
+			monthlyBillWorker := bg.NewMonthlyBillWorker(maas.NewService(dbConn.Pool()), 24*time.Hour).
+				WithSharedThrottleDB(dbConn.Pool())
+			monthlyBillWorker.Start(context.Background())
+			defer monthlyBillWorker.Stop()
+
 			handoffPendingTrimmer := bg.NewHandoffPendingTrimmer(dbConn.Pool())
 			handoffPendingTrimmer.Start(context.Background())
 			defer handoffPendingTrimmer.Stop()

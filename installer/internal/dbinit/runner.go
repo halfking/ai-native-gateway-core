@@ -1648,6 +1648,8 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		"911_local_audio_catalog.sql",
 		// 912：W1.5 session_bodies trash + session_hidden（录制同意轮）
 		"912_session_recording_trash.sql",
+		// 913: monthly bills + coupons + invoice placeholder (pkg 07).
+		"913_maas_monthly_bills_coupons.sql",
 		},
 	}
 }

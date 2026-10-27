@@ -10502,3 +10502,11 @@ macos-say :8086），纯 INSERT ON CONFLICT 幂等；生产应用由 deploy-seam
 
 Adds `session_bodies_trash` + `session_hidden` for soft-delete / restore / purge.
 Recording-consent body retention is independent of request_logs TTL.
+
+## 2026-10-28 — MaaS monthly bills + coupons (migration 913)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 913 | `913_maas_monthly_bills_coupons.sql` | `962b309d04414e6b629f0023ee9b3e4c71eb02c0ecc7e637cc9da241da9361eb` | pending（包 07 月账单+优惠券+发票占位，2026-10-28） |
+
+
