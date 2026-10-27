@@ -1418,3 +1418,130 @@ dl_record_verify() {
   local root="$1" db="$2" redis="$3" version="$4" port="$5"
   printf 'VERIFY_TOOL=deploy-local.sh\nVERIFY_DEVICE=local\nVERIFY_PASS=1\nVERIFY_ROOT=%s\nVERIFY_RELEASE=%s\nVERIFY_PORT=%s\nVERIFY_DATABASE=%s\nVERIFY_REDIS=%s\n' "$root" "$version" "$port" "$db" "$redis"
 }
+
+# ─────────────────────────────────────────────────────────────────────────
+# 跨 checkout 切流互斥（机器级 switch 锁）
+#
+# 2026-10-27（r1039 后续轮；审计档 docs/audit/2026-10-20-r1039-脱敏阻断与设置界面审计轮.md
+# §8 第 18 条）。
+#
+# ## 缺陷（本机实测复现过两次，不是理论风险）
+#
+# 本机有多份 checkout（llm-gateway-go / -3 / -5 / -cursor），它们**共用同一个宿主
+# 端口对**（8781/8782），而部署脚本的蓝绿切换是**固定 8781/8782 一对**的
+# ⇒ 两份 checkout 同时部署时，**切流步会互相踩**：
+#
+#   · 候选在 8781 起好、验证全绿，切流步要抢占 8782 ⇒ 那里跑着**另一个部署根**
+#     的进程（两个根各有自己的 pid/run 目录 ⇒ `stop_instance` 管不到它）
+#     ⇒ 新实例绑不上 8782 ⇒ 老进程继续应答 ⇒ 「/version body did not match
+#     bundle metadata」⇒ 重试 3 次全红 ⇒ **整轮部署回滚**。
+#   · 兄弟 checkout 还会把本轮自己的提交从 origin/main 上挤掉（推送被拒）。
+#
+# ⇒ 根因：**端口是机器级资源，锁却只覆盖「同一部署根」**。
+#
+# ## 为什么「已有的构建锁」不够
+#
+# 机器级构建锁（`kx-llm-gateway-build.lock`，LOCK_TMP_ROOT=/tmp）确实**跨 checkout
+# 共享** —— 但它在**候选实例起停之前**就被释放了（deploy-local.sh 的
+# `release_build_lock`）⇒ **切流窗口根本不受保护**。
+#
+# ## 本锁的语义
+#
+#   · **机器级**：路径在 LOCK_TMP_ROOT 下，**不含任何 checkout 路径**
+#     ⇒ 这正是「跨 checkout 互斥」能成立的前提（路径若含 checkout，两个 checkout
+#     各拿各的锁，互斥就名存实亡 —— 这类「看起来有锁」的假互斥本仓吃过亏）。
+#   · **覆盖窗口** = 候选实例起停 → 切流完成（deploy-local.sh：acquire 在
+#     `start_instance` 之前，release 在 `dl_atomic_switch` 之后）。
+#   · **争用快速失败**：rc 75（EX_TEMPFAIL），并打印持有者元数据
+#     ⇒ 第二个部署**不去抢端口**，而是明确告诉运维「有人在切流，稍后重试」。
+#   · **失败路径也释放**：deploy-local.sh 的 EXIT/INT/TERM trap 里调
+#     `release_switch_lock` ⇒ 夭折的部署不会把锁留成「永久占用」。
+#   · **硬杀留下的残锁**：元数据里有 pid，运维核对后手工删除即可
+#     （刻意**不做**基于「年龄」的自动清理 —— 部署可能正在长时间跑，
+#     按年龄删锁会打断别人）。
+# ─────────────────────────────────────────────────────────────────────────
+
+# dl_switch_lock_path 返回切流锁的**机器级**路径。
+#
+# LOCK_TMP_ROOT 只是测试隔离用的缝（与共享部署库 lock.sh 的同名变量语义一致）：
+# 生产默认 /tmp ⇒ 所有 checkout、所有部署根共用同一个路径。
+dl_switch_lock_path() {
+  printf '%s\n' "${LOCK_TMP_ROOT:-/tmp}/kx-llm-gateway-switch.lock"
+}
+
+# dl_switch_lock_write_metadata 写持有者元数据（与共享部署库 lock.sh 同字段集）。
+dl_switch_lock_write_metadata() {
+  printf 'target=local-switch\n'
+  printf 'source_user=%s\n' "${SOURCE_USER:-$(id -un 2>/dev/null || echo unknown)}"
+  printf 'source_host=%s\n' "${SOURCE_HOST:-$(hostname 2>/dev/null || echo unknown)}"
+  printf 'pid=%s\n' "$$"
+  printf 'started_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'commit=%s\n' "${SOURCE_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
+  printf 'version=%s\n' "${SOURCE_VERSION:-$(cat version.json 2>/dev/null | sed -n 's/.*\"version\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p' || echo unknown)}"
+}
+
+# dl_switch_lock_flock_bin 探测 flock 可执行文件（macOS 默认没有 ⇒ 走 mkdir 回退）。
+dl_switch_lock_flock_bin() {
+  if [[ -n "${DL_SWITCH_LOCK_FLOCK_BIN:-}" ]]; then
+    printf '%s\n' "$DL_SWITCH_LOCK_FLOCK_BIN"
+    return 0
+  fi
+  command -v flock 2>/dev/null || true
+}
+
+# dl_bash_ge 判断 bash 版本 ≥ major.minor（`exec {var}<>` 这类语法要 bash 4.1+）。
+dl_bash_ge() {
+  [[ -n "${BASH_VERSINFO[0]:-}" ]] || return 1
+  (( BASH_VERSINFO[0] > $1 )) && return 0
+  (( BASH_VERSINFO[0] == $1 && BASH_VERSINFO[1] >= $2 ))
+}
+
+# dl_acquire_switch_lock 获取机器级切流锁。
+#
+# 成功返回 0；被别的部署持有时返回 **75（EX_TEMPFAIL）**并打印持有者元数据。
+# 已经是持有者时重复获取也返回 75（同一进程重复获取视为争用 ⇒ 宁可失败，
+# 也不要让调用方以为自己持有两把锁）。
+dl_acquire_switch_lock() {
+  local path flock_bin
+  path="$(dl_switch_lock_path)"
+  flock_bin="$(dl_switch_lock_flock_bin)"
+  if [[ -n "$flock_bin" ]] && dl_bash_ge 4 1; then
+    exec {DL_SWITCH_LOCK_FD}<>"$path"
+    if ! "$flock_bin" -n "$DL_SWITCH_LOCK_FD"; then
+      eval "exec ${DL_SWITCH_LOCK_FD}<&-"
+      DL_SWITCH_LOCK_FD=
+      printf 'ERROR: deployment switch lock held at %s (another checkout is switching the active port)\n' "$path" >&2
+      if [[ -f "$path" ]]; then
+        cat "$path" >&2
+      fi
+      return 75
+    fi
+    : >"$path"
+    dl_switch_lock_write_metadata >&"$DL_SWITCH_LOCK_FD"
+    return 0
+  fi
+  # mkdir 回退：POSIX 原子操作；已存在 ⇒ 有人持有。
+  if ! mkdir "$path" 2>/dev/null; then
+    printf 'ERROR: deployment switch lock held at %s (another checkout is switching the active port)\n' "$path" >&2
+    if [[ -f "$path/metadata" ]]; then
+      cat "$path/metadata" >&2
+    elif [[ -f "$path" ]]; then
+      cat "$path" >&2
+    fi
+    return 75
+  fi
+  dl_switch_lock_write_metadata >"$path/metadata"
+}
+
+# dl_release_switch_lock 释放切流锁（未持有时是 no-op）。
+dl_release_switch_lock() {
+  local path
+  path="$(dl_switch_lock_path)"
+  if [[ -n "${DL_SWITCH_LOCK_FD:-}" ]]; then
+    eval "exec ${DL_SWITCH_LOCK_FD}<&-"
+    DL_SWITCH_LOCK_FD=
+    rm -f "$path"
+    return 0
+  fi
+  rm -rf "$path"
+}

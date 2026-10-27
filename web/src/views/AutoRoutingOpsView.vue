@@ -19,6 +19,9 @@ import { isSuperAdmin } from '../store'
 import { formatDateTime } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import SegTabs, { type SegTab } from '../components/SegTabs.vue'
+// ★ 第 29 增量：tab 图标从 emoji 字形换成图标库组件
+//   （DESIGN.md §6：图标是画出来的，不许用 emoji / Unicode 字形冒充图标系统）
+import { DataLine, EditPen, Files, Setting } from '@element-plus/icons-vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 import StatsRow from '../components/ui/StatsRow.vue'
 import StatCard from '../components/ui/StatCard.vue'
@@ -110,13 +113,13 @@ const fmtUpdatedAt = computed(() =>
 
 const tabs = computed<SegTab[]>(() => {
   const list: SegTab[] = [
-    { value: 'annotate', label: t('autoOps.tab.annotate'), icon: '✍️', badge: pendingToday.value ?? 0 },
-    { value: 'stats', label: t('autoOps.tab.stats'), icon: '🧮' },
+    { value: 'annotate', label: t('autoOps.tab.annotate'), icon: EditPen, badge: pendingToday.value ?? 0 },
+    { value: 'stats', label: t('autoOps.tab.stats'), icon: DataLine },
   ]
   if (isSuper) {
     list.push(
-      { value: 'profiles', label: t('autoOps.tab.profiles'), icon: '🗂️' },
-      { value: 'tuning', label: t('autoOps.tab.tuning'), icon: '🎛️', badge: pendingProposals.value ?? 0 },
+      { value: 'profiles', label: t('autoOps.tab.profiles'), icon: Files },
+      { value: 'tuning', label: t('autoOps.tab.tuning'), icon: Setting, badge: pendingProposals.value ?? 0 },
     )
   }
   return list

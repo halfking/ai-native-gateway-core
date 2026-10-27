@@ -437,7 +437,8 @@ const manualControlState = computed<ManualControlState | null>(() => {
 
 interface ManualControlMeta {
   label: string
-  emoji: string
+  /** ★ 状态点 class（不是 emoji）——DESIGN.md §6：状态点用真实 SVG 圆点 */
+  dot: string
   bg: string
   border: string
   color: string
@@ -447,7 +448,7 @@ function manualControlMeta(state: ManualControlState): ManualControlMeta {
   if (state === 'manual_disabled') {
     return {
       label: '手工禁用',
-      emoji: '🔴',
+      dot: 'status-dot--danger',
       bg: 'rgba(239, 68, 68, 0.12)',
       border: 'rgba(239, 68, 68, 0.4)',
       color: '#ef4444',
@@ -457,7 +458,7 @@ function manualControlMeta(state: ManualControlState): ManualControlMeta {
   if (state === 'manual_enabled') {
     return {
       label: '手工启动',
-      emoji: '🟢',
+      dot: 'status-dot--success',
       bg: 'rgba(16, 185, 129, 0.12)',
       border: 'rgba(16, 185, 129, 0.4)',
       color: '#10b981',
@@ -466,7 +467,7 @@ function manualControlMeta(state: ManualControlState): ManualControlMeta {
   }
   return {
     label: '自动',
-    emoji: '⚙️',
+    dot: 'status-dot--neutral',
     bg: 'rgba(139, 148, 158, 0.12)',
     border: 'rgba(139, 148, 158, 0.4)',
     color: '#8b949e',
@@ -1019,7 +1020,7 @@ onUnmounted(() => {
                         :disabled="!canManageMonitor || toggleBusy[selectedCred.id + '|' + selectedModel]"
                         @click="onClickManualControl"
                       >
-                        <span class="status-icon-emoji">{{ manualControlMeta(manualControlState).emoji }}</span>
+                        <span class="status-dot" :class="manualControlMeta(manualControlState).dot" />
                         <span class="status-icon-label">{{ manualControlMeta(manualControlState).label }}</span>
                       </button>
                       <!-- 总状态只读 badge (其他原因: probe / offer / binding) -->
@@ -1563,10 +1564,6 @@ onUnmounted(() => {
   opacity: 0.55;
   cursor: not-allowed;
 }
-.status-icon-emoji {
-  font-size: 11px;
-  line-height: 1;
-}
 .status-icon-label {
   font-size: 11px;
   letter-spacing: 0.02em;
@@ -1810,6 +1807,8 @@ onUnmounted(() => {
 }
 .status-dot--danger { background: var(--kx-danger); }
 .status-dot--success { background: var(--kx-success); }
+/* ★ 中性态（自动托管）：灰点——「第三信号」是形状 + 亮度，不是颜色 */
+.status-dot--neutral { background: var(--kx-muted); }
 .pane-collapsed-value {
   word-break: break-all;
   font-size: 11px;
