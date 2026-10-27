@@ -1109,7 +1109,7 @@ watch(activeTab, async (tab) => {
               <td>{{ m.standard_iq != null ? Number(m.standard_iq).toFixed(1) : '-' }}</td>
               <td>{{ m.alias_count ?? 0 }} / {{ m.offer_count ?? 0 }}</td>
               <td style="white-space:nowrap">
-                <button class="btn btn-primary btn-sm" @click="openDetail(m)">查看详情</button>
+                <button class="btn btn-ghost btn-sm" @click="openDetail(m)">查看详情</button>
                 <button class="btn btn-ghost btn-sm" @click="toggleModelStatus(m)">{{ m.status === 'active' ? t('models.disable') : t('models.enable') }}</button>
               </td>
             </tr>
