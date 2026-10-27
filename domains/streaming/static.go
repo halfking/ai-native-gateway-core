@@ -70,6 +70,15 @@ func (h *StaticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	indexFile := filepath.Join(h.distDir, "index.html")
 	if _, err := os.Stat(indexFile); err == nil {
+		// no-cache on the SPA shell: hashed assets are immutable, but index.html
+		// itself is not — without Cache-Control the browser heuristic-caches the
+		// shell (≈10% of Last-Modified age as freshness), so after a deploy
+		// newly opened tabs keep loading the retired bundle: 404 → 白屏，或
+		// 「已修复的行为看起来还没修」（2026-10-28 /live 两步交互实测：修复已
+		// 部署，用户仍见旧行为）。GET /index.html 不走这里 —— FileServer 按契约
+		// 301 到 ./，shell 仍由本回退路径交付。Same shape as the mobile SPA
+		// (cmd/gateway/mobile_static.go ServeSPA).
+		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeFile(w, r, indexFile)
 		return
 	}
