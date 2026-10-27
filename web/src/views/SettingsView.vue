@@ -467,7 +467,7 @@ onMounted(() => {
   font-size: 13px;
 }
 .error-banner {
-  padding: 10px;
+  padding: 8px;
   background: color-mix(in srgb, var(--danger) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   color: var(--danger);
@@ -536,7 +536,7 @@ onMounted(() => {
 }
 .settings-table th,
 .settings-table td {
-  padding: 10px 12px;
+  padding: 8px 12px;
   text-align: left;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
@@ -567,7 +567,7 @@ onMounted(() => {
   color: var(--text-secondary);
 }
 .cell-value code {
-  padding: 1px 6px;
+  padding: 1px 4px;
   background: var(--bg);
   border-radius: 3px;
   font-size: 11px;
@@ -583,7 +583,7 @@ onMounted(() => {
 /* === Source badges === */
 .src-badge {
   display: inline-block;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
   font-size: 11px;
   font-weight: 500;
@@ -618,7 +618,7 @@ onMounted(() => {
   font-size: 14px;
 }
 .detail-title {
-  margin: 0 0 6px;
+  margin: 0 0 4px;
   font-size: 14px;
 }
 .detail-title code {
@@ -633,7 +633,7 @@ onMounted(() => {
 .meta {
   display: grid;
   grid-template-columns: 80px 1fr;
-  gap: 6px 12px;
+  gap: 4px 12px;
   font-size: 12px;
   margin: 0 0 16px;
 }
@@ -649,7 +649,7 @@ onMounted(() => {
   gap: 4px;
 }
 .meta code {
-  padding: 1px 6px;
+  padding: 1px 4px;
   background: var(--bg);
   border-radius: 3px;
   font-size: 11px;
@@ -680,7 +680,7 @@ onMounted(() => {
   display: block;
   font-size: 12px;
   color: var(--text-secondary);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .editor-textarea {
   width: 100%;
@@ -705,7 +705,7 @@ onMounted(() => {
 
 /* === Buttons === */
 .btn {
-  padding: 6px 14px;
+  padding: 4px 12px;
   border-radius: 6px;
   font-size: 13px;
   cursor: pointer;
@@ -807,7 +807,7 @@ onMounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 10px;
+  padding: 8px;
   min-height: 44px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -817,8 +817,8 @@ onMounted(() => {
 .tag-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
+  gap: 4px;
+  padding: 4px 8px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent-h);
@@ -859,7 +859,7 @@ onMounted(() => {
 }
 
 .json-hint {
-  margin-top: 6px;
+  margin-top: 4px;
   font-size: 12px;
   color: var(--muted);
 }
@@ -876,25 +876,25 @@ onMounted(() => {
   font-size: 12px;
   font-weight: 600;
   color: var(--text);
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .alias-preview-list {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .alias-preview-card {
   border: 1px solid color-mix(in srgb, var(--accent) 14%, transparent);
   border-radius: 8px;
   background: var(--bg);
-  padding: 10px;
+  padding: 8px;
 }
 
 .alias-preview-label {
   font-size: 12px;
   color: var(--accent-h);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .alias-preview-mapping {
@@ -939,7 +939,7 @@ onMounted(() => {
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .warning-content p {
@@ -976,7 +976,7 @@ onMounted(() => {
 
 .docs-content ul {
   margin: 8px 0;
-  padding-left: 20px;
+  padding-left: 16px;
 }
 
 .docs-content li {
@@ -984,7 +984,7 @@ onMounted(() => {
 }
 
 .docs-content code {
-  padding: 2px 6px;
+  padding: 2px 4px;
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   border-radius: 3px;
   font-size: 12px;

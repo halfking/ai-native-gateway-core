@@ -720,7 +720,7 @@ onUnmounted(() => {
             <input type="checkbox" :checked="detailAutoRefresh" @change="toggleDetailAutoRefresh" />
             {{ $t('common.terms.autoRefresh') }}
           </label>
-          <select v-model.number="detailRefreshInterval" class="field-input" style="width:auto;font-size:13px;padding:2px 6px">
+          <select v-model.number="detailRefreshInterval" class="field-input" style="width:auto;font-size:13px;padding:2px 4px">
             <option :value="5">5{{ $t('common.seconds') }}</option>
             <option :value="10">10{{ $t('common.seconds') }}</option>
             <option :value="30">30{{ $t('common.seconds') }}</option>
@@ -1367,7 +1367,7 @@ onUnmounted(() => {
 }
 
 .detail-loading-state {
-  padding: 20px 16px 8px;
+  padding: 16px 16px 8px;
 }
 
 .detail-skeleton-grid {
@@ -1377,7 +1377,7 @@ onUnmounted(() => {
 }
 
 .detail-skeleton-card {
-  padding: 14px;
+  padding: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--card);
@@ -1393,13 +1393,13 @@ onUnmounted(() => {
 .skeleton-title {
   width: 36%;
   height: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .skeleton-line {
   width: 100%;
   height: 10px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .skeleton-line.short {
@@ -1408,7 +1408,7 @@ onUnmounted(() => {
 }
 
 .detail-loading-hint {
-  margin-top: 14px;
+  margin-top: 12px;
   font-size: 12px;
   color: var(--muted);
 }
@@ -1422,7 +1422,7 @@ onUnmounted(() => {
 }
 
 .detail-refresh-pill {
-  padding: 5px 10px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: color-mix(in srgb, var(--card) 92%, var(--accent) 8%);
@@ -1450,7 +1450,7 @@ onUnmounted(() => {
   font-weight: 600;
   color: var(--text);
   margin-bottom: 8px;
-  padding-bottom: 6px;
+  padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -1473,11 +1473,11 @@ onUnmounted(() => {
   font-size: 11px;
   font-weight: 600;
   color: var(--muted);
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
 }
 .model-table td {
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
 }
 .model-table tbody tr {
@@ -1506,7 +1506,7 @@ onUnmounted(() => {
 /* 🆕 2026-06-23: 数据来源 chip (live / declared) */
 .source-chip {
   display: inline-block;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
   font-size: 11px;
   font-weight: 600;
@@ -1534,7 +1534,7 @@ onUnmounted(() => {
 .model-status-icons {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
   margin-left: 4px;
 }
@@ -1580,7 +1580,7 @@ onUnmounted(() => {
 .source-tag {
   display: inline-block;
   margin-left: 8px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
   font-size: 11px;
   font-weight: 600;
@@ -1602,11 +1602,11 @@ onUnmounted(() => {
   text-align: left;
   font-size: 11px;
   color: var(--muted);
-  padding: 4px 6px;
+  padding: 4px 4px;
   border-bottom: 1px solid var(--border);
 }
 .history-table td {
-  padding: 4px 6px;
+  padding: 4px 4px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
@@ -1621,7 +1621,7 @@ onUnmounted(() => {
   font-weight: 600;
 }
 .btn-xs {
-  padding: 2px 6px;
+  padding: 2px 4px;
   font-size: 11px;
 }
 
@@ -1636,12 +1636,12 @@ onUnmounted(() => {
   text-align: left;
   font-size: 11px;
   color: var(--muted);
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   font-weight: 600;
 }
 .decision-table td {
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
@@ -1667,7 +1667,7 @@ onUnmounted(() => {
 /* models tab 外层 */
 .models-tab {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   /* 默认 split 模板,具体模板由 modifier class 覆盖 */
   grid-template-columns: minmax(280px, 320px) 1fr;
   grid-template-areas:
@@ -1682,14 +1682,14 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
 .models-toolbar-left {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
   flex: 1;
 }
@@ -1717,7 +1717,7 @@ onUnmounted(() => {
 .layout-btn {
   background: transparent;
   border: 0;
-  padding: 4px 10px;
+  padding: 4px 8px;
   font-size: 12px;
   color: var(--muted);
   cursor: pointer;
@@ -1780,7 +1780,7 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 8px;
   padding: 16px 8px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
@@ -1804,7 +1804,7 @@ onUnmounted(() => {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  margin-right: 5px;
+  margin-right: 4px;
   vertical-align: middle;
   flex: none;
 }
@@ -1820,7 +1820,7 @@ onUnmounted(() => {
 .monitor-stack {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 /* 滑动窗口条带 (从原 inline 样式抽出) */

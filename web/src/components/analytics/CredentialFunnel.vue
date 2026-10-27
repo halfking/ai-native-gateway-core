@@ -73,14 +73,14 @@ function widthPct(v: number): string {
 .funnel-title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 11px;
   font-weight: 600;
   margin-bottom: 4px;
 }
 .funnel-hint {
   font-size: 11px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .funnel-stages {
   display: flex;
@@ -128,7 +128,7 @@ function widthPct(v: number): string {
 }
 .badge-muted {
   font-size: 11px;
-  padding: 1px 5px;
+  padding: 1px 4px;
   border-radius: 3px;
   background: var(--bg-subtle);
   color: var(--muted);

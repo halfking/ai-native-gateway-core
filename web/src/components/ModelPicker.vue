@@ -454,7 +454,7 @@ watch(() => props.modelValue, () => {
   gap: 8px;
   width: 100%;
   min-height: 36px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--card);
@@ -489,7 +489,7 @@ watch(() => props.modelValue, () => {
 .mp-chip-x { border: 0; background: transparent; cursor: pointer; color: inherit; padding: 0 2px; }
 .mp-open-btn {
   border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--bg); color: var(--text); padding: 4px 10px;
+  background: var(--bg); color: var(--text); padding: 4px 8px;
   font-size: 12px; cursor: pointer; flex-shrink: 0;
 }
 
@@ -514,7 +514,7 @@ watch(() => props.modelValue, () => {
 
 .mp-header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  padding: 12px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0;
 }
 .mp-title { margin: 0; font-size: 16px; font-weight: 600; }
 .mp-close {
@@ -531,7 +531,7 @@ watch(() => props.modelValue, () => {
 
 .mp-section + .mp-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
 .mp-section-title {
-  margin: 0 0 10px; font-size: 12px; font-weight: 600;
+  margin: 0 0 8px; font-size: 12px; font-weight: 600;
   color: var(--muted);letter-spacing: 0.01em;
 }
 
@@ -539,10 +539,10 @@ watch(() => props.modelValue, () => {
   display: flex; flex-wrap: wrap; gap: 8px;
 }
 .mp-model {
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; gap: 4px;
   border: 1px solid var(--border); border-radius: 999px;
   background: var(--bg); color: var(--text);
-  padding: 6px 12px; font-size: 13px; cursor: pointer;
+  padding: 4px 12px; font-size: 13px; cursor: pointer;
   max-width: 100%;
 }
 .mp-model:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
@@ -558,7 +558,7 @@ watch(() => props.modelValue, () => {
 .mp-model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mp-badge {
   font-size: 11px; color: var(--muted);
-  border: 1px solid var(--border); border-radius: 999px; padding: 0 6px;
+  border: 1px solid var(--border); border-radius: 999px; padding: 0 4px;
 }
 
 .mp-footer {

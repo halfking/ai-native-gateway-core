@@ -214,7 +214,7 @@ onMounted(ensureReady)
   justify-content: space-between;
   gap: 16px;
   align-items: flex-start;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .lifecycle-page__header h1 { margin: 0 0 8px; font-size: 24px; }
 .lifecycle-page__header p { margin: 0; color: var(--kx-muted); font-size: 14px; }
@@ -249,5 +249,5 @@ onMounted(ensureReady)
 .muted { color: var(--kx-muted); font-size: 14px; line-height: 1.6; }
 .hint { margin-top: 8px; font-size: 12px; color: var(--muted); }
 .hint.warn { color: var(--danger); }
-.mb { margin-bottom: 14px; }
+.mb { margin-bottom: 12px; }
 </style>

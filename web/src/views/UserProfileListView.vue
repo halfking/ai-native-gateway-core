@@ -171,7 +171,7 @@ function onSearch() {
 </template>
 
 <style scoped>
-.user-profile-list { padding: 20px; }
+.user-profile-list { padding: 16px; }
 .page-header { margin-bottom: 16px; }
 .card-header-toolbar { display: flex; align-items: center; gap: 12px; }
 .pagination-wrap { margin-top: 16px; display: flex; justify-content: center; }

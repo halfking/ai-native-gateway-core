@@ -173,11 +173,11 @@ function closeDigest() {
 
 <style scoped>
 .sdp {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .sdp-mode {
   display: inline-flex;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   overflow: hidden;
@@ -186,7 +186,7 @@ function closeDigest() {
   border: 0;
   background: var(--kx-surface);
   color: var(--kx-text);
-  padding: 6px 14px;
+  padding: 4px 12px;
   font-size: 13px;
   cursor: pointer;
 }
@@ -196,7 +196,7 @@ function closeDigest() {
 }
 .sdp-back-row {
   display: flex;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .sdp-back {
   font-size: 13px;

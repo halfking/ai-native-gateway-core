@@ -336,7 +336,7 @@ const openFullscreenTitle = computed(() =>
 }
 .drawer-header h3 { margin: 0; flex: 1; font-size: 16px; }
 .mode-seg { display: flex; gap: 4px; }
-.tab-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.tab-row { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
 .drawer-body-scroll { max-height: calc(100vh - 140px); max-height: calc(100dvh - 140px); overflow: auto; }
 .drawer-loading, .drawer-error { padding: 16px; }
 .drawer-error { color: var(--danger); }
@@ -350,6 +350,6 @@ const openFullscreenTitle = computed(() =>
 .drawer-warnings li { font-family: var(--font-mono, ui-monospace, monospace); word-break: break-all; }
 .raw-pre {
   font-size: 11px; white-space: pre-wrap; word-break: break-word;
-  background: var(--bg-subtle); padding: 10px; border-radius: 6px;
+  background: var(--bg-subtle); padding: 8px; border-radius: 6px;
 }
 </style>

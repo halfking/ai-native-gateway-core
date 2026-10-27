@@ -292,14 +292,14 @@ defineExpose({ load })
 
 <style scoped>
 .filesystem-maintenance {
-  padding: 20px;
+  padding: 16px;
 }
 
 .header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .header h2 {
@@ -336,14 +336,14 @@ defineExpose({ load })
   border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   border-radius: var(--radius, 8px);
   color: var(--danger);
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
   gap: 16px;
-  margin-bottom: 30px;
+  margin-bottom: 32px;
 }
 
 .stat-card {
@@ -408,7 +408,7 @@ defineExpose({ load })
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius, 8px);
-  padding: 20px;
+  padding: 16px;
 }
 
 .cleanup-section h3 {
@@ -472,7 +472,7 @@ defineExpose({ load })
 .btn-execute,
 .btn-cancel,
 .btn-danger {
-  padding: 8px 20px;
+  padding: 8px 16px;
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -579,7 +579,7 @@ defineExpose({ load })
 }
 
 .preview-stats {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .preview-item {
@@ -631,6 +631,6 @@ defineExpose({ load })
   display: flex;
   justify-content: flex-end;
   gap: 12px;
-  margin-top: 20px;
+  margin-top: 16px;
 }
 </style>

@@ -50,13 +50,13 @@ const emit = defineEmits<{
 .dw-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
 }
 .field {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 12px;
   color: var(--kx-muted);
 }
@@ -70,7 +70,7 @@ const emit = defineEmits<{
 }
 .check {
   display: inline-flex;
-  gap: 6px;
+  gap: 4px;
   align-items: center;
   font-size: 12px;
   color: var(--kx-muted);
@@ -80,7 +80,7 @@ const emit = defineEmits<{
   background: var(--kx-primary);
   color: var(--on-primary);
   border-radius: 6px;
-  padding: 6px 12px;
+  padding: 4px 12px;
   cursor: pointer;
   font-size: 13px;
 }

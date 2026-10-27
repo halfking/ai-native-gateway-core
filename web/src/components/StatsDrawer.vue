@@ -174,7 +174,7 @@ defineExpose({ open, close })
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px;
+  padding: 16px 16px;
   border-bottom: 1px solid var(--border);
   gap: 12px;
 }
@@ -232,7 +232,7 @@ defineExpose({ open, close })
 .drawer-body {
   flex: 1 1 auto;
   overflow-y: auto;
-  padding: 20px;
+  padding: 16px;
 }
 
 .drawer-content {
@@ -245,14 +245,14 @@ defineExpose({ open, close })
 }
 
 .drawer-loading {
-  padding: 40px 20px;
+  padding: 40px 16px;
   text-align: center;
   color: var(--muted);
 }
 
 /* 降级用 warning 而非 danger：不是故障，是「这个列表别当结论看」。 */
 .drawer-degraded {
-  padding: 24px 20px;
+  padding: 24px 16px;
   text-align: center;
   color: color-mix(in srgb, var(--warning) 80%, var(--text));
   background: color-mix(in srgb, var(--warning) 8%, transparent);
@@ -262,7 +262,7 @@ defineExpose({ open, close })
 }
 
 .drawer-empty {
-  padding: 40px 20px;
+  padding: 40px 16px;
   text-align: center;
   color: var(--muted);
   font-size: 13px;
@@ -282,7 +282,7 @@ defineExpose({ open, close })
 }
 
 .stats-table th {
-  padding: 10px 12px;
+  padding: 8px 12px;
   text-align: left;
   font-weight: 600;
   color: var(--text-secondary);
@@ -290,7 +290,7 @@ defineExpose({ open, close })
 }
 
 .stats-table td {
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   color: var(--text);
 }
@@ -303,7 +303,7 @@ defineExpose({ open, close })
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   background: var(--bg-subtle);
-  padding: 2px 6px;
+  padding: 2px 4px;
   border-radius: 3px;
 }
 
@@ -358,7 +358,7 @@ defineExpose({ open, close })
 
   .stats-table th,
   .stats-table td {
-    padding: 8px 6px;
+    padding: 8px 4px;
   }
 }
 </style>

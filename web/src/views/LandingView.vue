@@ -163,7 +163,7 @@ function openLogin() {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-start;
-  gap: 14px;
+  gap: 12px;
   margin-top: 16px;
 }
 
@@ -188,12 +188,12 @@ function openLogin() {
 }
 
 .llmgo-roadmap__head {
-  margin-bottom: 18px;
+  margin-bottom: 16px;
   text-align: left;
 }
 
 .llmgo-roadmap__head h2 {
-  margin: 8px 0 6px;
+  margin: 8px 0 4px;
   font-family: var(--kx-font-sans);
   font-size: clamp(1.4rem, 2.4vw, 1.75rem);
   letter-spacing: -0.03em;
@@ -222,7 +222,7 @@ function openLogin() {
   display: grid;
   grid-template-columns: 88px minmax(0, 1fr);
   gap: 4px 16px;
-  padding: 16px 18px;
+  padding: 16px 16px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface-elevated);
@@ -233,7 +233,7 @@ function openLogin() {
   grid-row: span 2;
   align-self: start;
   width: fit-content;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 6px;
   font-size: 12px;
   font-weight: 700;
@@ -258,7 +258,7 @@ function openLogin() {
 @media (max-width: 640px) {
   .llmgo-roadmap__list li {
     grid-template-columns: 1fr;
-    gap: 6px;
+    gap: 4px;
   }
 
   .llmgo-roadmap__phase {

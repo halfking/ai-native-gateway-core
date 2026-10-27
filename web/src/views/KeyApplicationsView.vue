@@ -212,7 +212,7 @@ onMounted(load)
               <template v-if="app.status === 'pending'">
                 <button
                   class="btn btn-sm"
-                  style="margin-right:6px"
+                  style="margin-right:4px"
                   @click="openReview(app, 'approve')"
                 >{{ t('keys.applications.action.approve') }}</button>
                 <button
@@ -224,7 +224,7 @@ onMounted(load)
               <template v-else-if="app.status === 'approved' && app.issued_key_id">
                 <span
                   v-if="revealedKeys[app.id]"
-                  style="font-family:monospace;font-size:11px;background:var(--surface2);padding:2px 6px;border-radius:4px;user-select:all"
+                  style="font-family:monospace;font-size:11px;background:var(--surface2);padding:2px 4px;border-radius:4px;user-select:all"
                 >{{ revealedKeys[app.id] }}</span>
                 <button
                   v-else

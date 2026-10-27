@@ -134,7 +134,7 @@ function currentNode(requestId?: string): number | null {
 .trail-list { display: grid; gap: 8px; }
 .trail-request {
   border: 1px solid var(--kx-primary);
-  padding: 6px 0 6px 10px;
+  padding: 4px 0 4px 8px;
 }
 .trail-request--success { border-color: var(--kx-success); }
 .trail-request--danger { border-color: var(--kx-danger); }
@@ -148,8 +148,8 @@ function currentNode(requestId?: string): number | null {
 }
 .trail-status { color: var(--kx-text-secondary); margin-left: auto; }
 .trail-steps {
-  gap: 6px;
-  margin-top: 5px;
+  gap: 4px;
+  margin-top: 4px;
   color: var(--kx-text-secondary);
   font-size: 12px;
   overflow-x: auto;

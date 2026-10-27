@@ -95,9 +95,9 @@ const emit = defineEmits<{
 </template>
 
 <style scoped>
-.main { padding: 14px; overflow: auto; min-height: 0; }
+.main { padding: 12px; overflow: auto; min-height: 0; }
 .raw {
   font-size: 11px; white-space: pre-wrap; word-break: break-word;
-  background: var(--bg-subtle); padding: 10px; border-radius: 6px;
+  background: var(--bg-subtle); padding: 8px; border-radius: 6px;
 }
 </style>

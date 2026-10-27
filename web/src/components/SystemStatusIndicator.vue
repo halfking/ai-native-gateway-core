@@ -286,7 +286,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 6px;
+  padding: 4px 4px;
   cursor: pointer;
   transition: opacity 0.2s;
 }
@@ -386,8 +386,8 @@ onUnmounted(() => {
 .status-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 8px 12px;
   transition: background 0.2s;
 }
 

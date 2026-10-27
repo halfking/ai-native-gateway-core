@@ -998,7 +998,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .filter-bar {
@@ -1013,7 +1013,7 @@ onBeforeUnmount(() => {
   /* width:auto 覆盖全局 input/select width:100%，避免筛选控件占满整行 */
   width: auto;
   min-width: 180px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   font-size: 13px;
 }
 
@@ -1043,7 +1043,7 @@ onBeforeUnmount(() => {
 
 .status-tab .count {
   min-width: 20px;
-  padding: 0 6px;
+  padding: 0 4px;
   border-radius: 999px;
   background: var(--bg-subtle, var(--bg));
   color: var(--muted);
@@ -1131,7 +1131,7 @@ onBeforeUnmount(() => {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 10px 12px;
+  padding: 8px 12px;
   margin-bottom: 8px;
   word-break: break-all;
 }
@@ -1174,7 +1174,7 @@ onBeforeUnmount(() => {
 .conflict-meta {
   display: flex;
   gap: 16px;
-  margin-top: 6px;
+  margin-top: 4px;
   font-size: 12px;
   color: var(--muted);
   flex-wrap: wrap;

@@ -72,7 +72,7 @@ const hasL2 = computed(() => props.l2 && Object.keys(props.l2).length > 0)
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 6px 0;
+  padding: 4px 0;
 }
 .timeline.compact { gap: 2px; padding: 4px 0; }
 .tl-layer {
@@ -111,7 +111,7 @@ const hasL2 = computed(() => props.l2 && Object.keys(props.l2).length > 0)
 .layer-tag {
   font-size: 11px;
   font-weight: 700;
-  padding: 2px 5px;
+  padding: 2px 4px;
   border-radius: 3px;
   flex-shrink: 0;
 }

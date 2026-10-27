@@ -189,7 +189,7 @@ defineExpose({ reload: load })
 .head-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
 .head-actions select { min-width:180px; }
 .route-panel { display:flex; flex-direction:column; gap:12px; }
-.tier-group { border:1px solid var(--border); border-radius:8px; padding:10px; background:var(--card); }
+.tier-group { border:1px solid var(--border); border-radius:8px; padding:8px; background:var(--card); }
 .tier-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .tier-head h3 { margin:0; font-size:14px; }
 .tier-head small { color:var(--muted); font-weight:400; }

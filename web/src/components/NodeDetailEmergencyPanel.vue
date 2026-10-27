@@ -141,11 +141,11 @@ async function request(action: EmergencyRepairAction, label: string) {
 </template>
 
 <style scoped>
-.nd-em { border: 1px solid var(--kx-border); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+.nd-em { border: 1px solid var(--kx-border); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
 .nd-em h3 { margin: 0 0 8px; font-size: 14px; }
-.nd-em-intro, .nd-em-muted { margin: 0 0 10px; font-size: 12px; color: var(--kx-muted); }
-.nd-em-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.nd-em-card { border: 1px solid var(--kx-border); border-radius: 8px; padding: 10px; background: var(--kx-surface-soft, transparent); }
+.nd-em-intro, .nd-em-muted { margin: 0 0 8px; font-size: 12px; color: var(--kx-muted); }
+.nd-em-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.nd-em-card { border: 1px solid var(--kx-border); border-radius: 8px; padding: 8px; background: var(--kx-surface-soft, transparent); }
 .nd-em-card.disabled { opacity: 0.5; }
 .nd-em-card.danger { border: 1px solid var(--kx-danger); }
 .nd-em-card.success { border: 1px solid var(--kx-success); }

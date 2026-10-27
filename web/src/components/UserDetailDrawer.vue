@@ -315,21 +315,21 @@ const canDrillKeys = computed(() => isSuperAdmin())
 .udd-header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
-.udd-identity { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1; }
+.udd-identity { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; flex: 1; }
 .udd-tenant { font-size: 11px; color: var(--muted); }
-.udd-actions { display: flex; gap: 6px; }
+.udd-actions { display: flex; gap: 4px; }
 .udd-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-.udd-chips { display: inline-flex; gap: 6px; }
+.udd-chips { display: inline-flex; gap: 4px; }
 .udd-chip {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--muted);
   border-radius: 999px;
-  padding: 2px 11px;
+  padding: 2px 12px;
   font-size: 12px;
   cursor: pointer;
 }
@@ -343,7 +343,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
 .udd-kpis {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 12px;
 }
 .udd-unit { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 4px; }
@@ -370,28 +370,28 @@ const canDrillKeys = computed(() => isSuperAdmin())
   font-weight: 600;
   letter-spacing: 0.01em;
   color: var(--muted);
-  padding: 5px 6px;
+  padding: 4px 4px;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
-.udd-table td { padding: 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.udd-table td { padding: 4px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .udd-table tbody tr:last-child td { border-bottom: none; }
 .udd-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-.udd-table-empty { text-align: center; color: var(--muted); padding: 14px 0; }
+.udd-table-empty { text-align: center; color: var(--muted); padding: 12px 0; }
 .udd-time { font-size: 11px; }
 .udd-kv {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 4px 14px;
+  gap: 4px 12px;
   font-size: 12px;
 }
 .udd-kv .k { color: var(--muted); }
-.udd-links { margin-top: 10px; }
+.udd-links { margin-top: 8px; }
 .udd-link { color: var(--accent); font-size: 12px; }
 .udd-empty {
   color: var(--muted);
   text-align: center;
-  padding: 28px 8px;
+  padding: 24px 8px;
   font-size: 13px;
 }
 .udd-error { color: var(--danger); }

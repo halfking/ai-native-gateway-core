@@ -432,19 +432,19 @@ onBeforeUnmount(() => controller?.abort())
 .batch-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; padding: 8px 12px; border-radius: 6px; background: var(--primary-soft); color: var(--accent); }
 .error-banner { display: flex; justify-content: space-between; gap: 12px; align-items: center; background: var(--danger-soft); border: 1px solid var(--danger); border-radius: 6px; padding: 12px; margin-bottom: 16px; color: var(--danger); }
 .list { display: flex; flex-direction: column; gap: 12px; }
-.session-skeleton { display: grid; gap: 10px; }
+.session-skeleton { display: grid; gap: 8px; }
 .skeleton-card { height: 150px; border-radius: 8px; background: var(--surface-secondary); animation: turns-pulse 1.2s ease-in-out infinite alternate; }
 @keyframes turns-pulse { from { opacity: .55; } to { opacity: 1; } }
 .group-card { border: 1px solid var(--border); border-radius: 8px; background: var(--surface-primary); overflow: hidden; }
-.group-header, .task-header { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 16px; cursor: pointer; text-align: left; border: 0; background: var(--surface-secondary); color: var(--text-primary); }
-.task-header { padding: 6px 8px; background: transparent; }
+.group-header, .task-header { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 16px; cursor: pointer; text-align: left; border: 0; background: var(--surface-secondary); color: var(--text-primary); }
+.task-header { padding: 4px 8px; background: transparent; }
 .group-header:hover, .task-header:hover { background: var(--bg-hover); }
-.group-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
-.task-sessions { display: flex; flex-direction: column; gap: 10px; }
-.task-sessions.nested { padding-left: 18px; }
+.group-body { padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+.task-sessions { display: flex; flex-direction: column; gap: 8px; }
+.task-sessions.nested { padding-left: 16px; }
 .caret { display: inline-block; transition: transform .15s; color: var(--text-muted); }
 .caret.open { transform: rotate(90deg); }
-.badge { padding: 2px 6px; border-radius: 4px; font-size: 11px; background: var(--surface-secondary); color: var(--text-secondary); }
+.badge { padding: 2px 4px; border-radius: 4px; font-size: 11px; background: var(--surface-secondary); color: var(--text-secondary); }
 .badge.cost { background: var(--warning-soft); color: var(--warning); }
 .empty { text-align: center; color: var(--text-secondary); padding: 24px 16px; }
 .load-more { display: flex; justify-content: center; margin-top: 12px; }

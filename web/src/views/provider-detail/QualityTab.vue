@@ -214,16 +214,16 @@ function modelLabel(name: string | null | undefined): string {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 14px 16px;
+  padding: 12px 16px;
 }
-.stat-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.stat-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
 .stat-value { font-size: 24px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
-.stat-desc { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.stat-desc { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .grade-badge {
   display: inline-block;
   font-size: 11px;
   font-weight: 700;
-  padding: 2px 7px;
+  padding: 2px 8px;
   border-radius: 4px;
   line-height: 1.4;
 }
@@ -245,7 +245,7 @@ function modelLabel(name: string | null | undefined): string {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 12px 14px;
+  padding: 12px 12px;
 }
 .stat-cell .stat-value { font-size: 20px; }
 .stat-value.success { color: var(--success); }
@@ -256,7 +256,7 @@ function modelLabel(name: string | null | undefined): string {
 .quality-table th,
 .quality-table td {
   text-align: left;
-  padding: 8px 10px;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--border);
 }
 .quality-table th { color: var(--muted); font-weight: 600; font-size: 12px; }

@@ -746,7 +746,7 @@ watch(activeTab, () => { void reload() })
 .custom-range {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .refresh-btn {
@@ -773,7 +773,7 @@ watch(activeTab, () => { void reload() })
 .stat-label {
   font-size: 12px;
   color: var(--text-secondary);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .stat-value {
   font-size: 24px;
@@ -801,11 +801,11 @@ watch(activeTab, () => { void reload() })
   font-weight: 600;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 .card-title .badge {
   font-size: 11px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
   background: var(--bg-hover);
   color: var(--text-secondary);
@@ -826,7 +826,7 @@ watch(activeTab, () => { void reload() })
 .strategy-bars {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 .strategy-bar-row {
   display: flex;
@@ -911,14 +911,14 @@ watch(activeTab, () => { void reload() })
 }
 .data-table th {
   text-align: left;
-  padding: 8px 10px;
+  padding: 8px 8px;
   color: var(--text-secondary);
   font-weight: 500;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 .data-table td {
-  padding: 8px 10px;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--border);
   color: var(--text-primary);
 }
@@ -935,7 +935,7 @@ watch(activeTab, () => { void reload() })
 }
 .strategy-badge {
   display: inline-block;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
   font-size: 11px;
   color: var(--on-primary);
@@ -962,7 +962,7 @@ watch(activeTab, () => { void reload() })
 .config-toggle {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   background: none;
   border: none;
   cursor: pointer;
@@ -984,12 +984,12 @@ watch(activeTab, () => { void reload() })
   display: flex;
   align-items: center;
   gap: 16px;
-  margin-top: 10px;
+  margin-top: 8px;
   flex-wrap: wrap;
 }
 .chip {
   display: inline-block;
-  padding: 2px 10px;
+  padding: 2px 8px;
   border-radius: 999px;
   font-size: 11px;
   background: var(--bg-hover);
@@ -998,7 +998,7 @@ watch(activeTab, () => { void reload() })
 }
 .chip-on { background: var(--success-bg); color: var(--success); border-color: var(--success-bd); }
 .chip-off { background: var(--neutral-bg); color: var(--muted); border-color: var(--neutral-bd); }
-.chip-item { display: flex; align-items: center; gap: 6px; }
+.chip-item { display: flex; align-items: center; gap: 4px; }
 .chip-lbl { font-size: 11px; color: var(--text-secondary); }
 .code-chip { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

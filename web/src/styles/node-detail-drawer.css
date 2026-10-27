@@ -5,7 +5,7 @@
 .nd-drawer .nd-section {
   border: 1px solid var(--kx-border);
   border-radius: 8px;
-  padding: 14px;
+  padding: 12px;
   margin-bottom: 12px;
 }
 .nd-drawer .nd-section h3 {
@@ -50,7 +50,7 @@
 }
 .nd-drawer .nd-models {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 .nd-drawer .nd-model {
@@ -113,7 +113,7 @@
   font-size: 11px;
   border: 1px solid var(--kx-border);
   border-radius: 999px;
-  padding: 2px 7px;
+  padding: 2px 8px;
 }
 .nd-drawer .nd-history {
   padding: 0;
@@ -125,7 +125,7 @@
   grid-template-columns: 140px 100px 1fr;
   gap: 8px;
   border-bottom: 1px solid var(--kx-border);
-  padding: 7px 0;
+  padding: 8px 0;
   font-size: 11px;
 }
 .nd-drawer .nd-history time {
@@ -142,7 +142,7 @@
 .nd-drawer .nd-table th,
 .nd-drawer .nd-table td {
   text-align: left;
-  padding: 6px;
+  padding: 4px;
   border-bottom: 1px solid var(--kx-border);
   white-space: nowrap;
 }
@@ -155,7 +155,7 @@
 .nd-drawer .nd-form-grid label,
 .nd-drawer .nd-reason {
   display: grid;
-  gap: 5px;
+  gap: 4px;
   font-size: 12px;
 }
 .nd-drawer .nd-form-grid input,
@@ -163,14 +163,14 @@
 .nd-drawer .nd-reason input {
   box-sizing: border-box;
   width: 100%;
-  padding: 7px;
+  padding: 8px;
   border: 1px solid var(--kx-border);
   border-radius: 5px;
   background: var(--kx-bg);
   color: inherit;
 }
 .nd-drawer .nd-reason {
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   max-width: 560px;
 }
 .nd-drawer .nd-actions {

@@ -57,7 +57,7 @@ const mi = (k: string): string => t(`models.modelIdentity.${k}` as never) as str
 </template>
 
 <style scoped>
-.mic { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; font-size: 12px; }
+.mic { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; font-size: 12px; }
 .mic--compact { gap: 4px 8px; font-size: 11px; }
 .mic-part { display: inline-flex; gap: 4px; align-items: baseline; }
 .mic-part--link { cursor: pointer; }

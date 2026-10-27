@@ -129,7 +129,7 @@ function modelsTitle(c: CredentialRow): string {
    /routing-v2's overview tab so the credentials list can show more rows
    without the right edge pushing past the sidebar. */
 .data-table.dense thead th {
-  padding: 5px 8px;
+  padding: 4px 8px;
   font-size: 11px;
   letter-spacing: 0.01em;
   color: var(--muted);
@@ -137,7 +137,7 @@ function modelsTitle(c: CredentialRow): string {
   background: var(--bg-subtle);
 }
 .data-table.dense tbody td {
-  padding: 5px 8px;
+  padding: 4px 8px;
   font-size: 12px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
@@ -146,7 +146,7 @@ function modelsTitle(c: CredentialRow): string {
 
 .model-badge {
   font-size: 11px;
-  padding: 1px 6px;
+  padding: 1px 4px;
 }
 
 /* Clickable table rows (click opens the detail drawer) */

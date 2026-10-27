@@ -151,7 +151,7 @@ const isEmpty = computed(() =>
 .heatmap-table th,
 .heatmap-table td {
   border: 1px solid var(--border);
-  padding: 3px 5px;
+  padding: 3px 4px;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }

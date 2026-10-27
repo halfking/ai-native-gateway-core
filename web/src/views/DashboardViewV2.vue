@@ -193,7 +193,7 @@ async function onRefresh() {
     <!-- V3.3-OBS (OBS-FE5, 26 号 §5): 会话与统计 tab 下钻链路
          在线会话列表 → 轮次时间线（内联子请求树），手动加载、无轮询。 -->
     <template v-if="activeTab === 'stats'">
-      <SessionStatsPanel style="margin-bottom: 20px;" />
+      <SessionStatsPanel style="margin-bottom: 16px;" />
       <SessionDrilldownPanel />
     </template>
 
@@ -239,7 +239,7 @@ async function onRefresh() {
 .page-header-left {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-shrink: 0;
 }
 
@@ -296,7 +296,7 @@ async function onRefresh() {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 12px;
+  padding: 4px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -321,7 +321,7 @@ async function onRefresh() {
 .tenant-badge {
   display: inline-flex;
   align-items: center;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
@@ -343,7 +343,7 @@ async function onRefresh() {
 
 .days-select {
   width: auto;
-  padding: 6px 12px;
+  padding: 4px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -356,7 +356,7 @@ async function onRefresh() {
 }
 
 .btn-refresh {
-  padding: 6px 12px;
+  padding: 4px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -383,7 +383,7 @@ async function onRefresh() {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 16px;
-  padding: 10px 14px;
+  padding: 8px 12px;
   margin-bottom: 16px;
   border-radius: var(--radius, 6px);
   font-size: 13px;
@@ -419,7 +419,7 @@ async function onRefresh() {
 }
 
 .stats-section {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .stats-row {
@@ -478,7 +478,7 @@ async function onRefresh() {
 .alert {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
@@ -500,7 +500,7 @@ async function onRefresh() {
 
 /* 空状态 */
 .empty-state {
-  padding: 48px 20px;
+  padding: 48px 16px;
   text-align: center;
   color: var(--text-secondary);
   border: 1px dashed var(--border);
@@ -514,7 +514,7 @@ async function onRefresh() {
   font-size: 16px;
   font-weight: 600;
   color: var(--text);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .empty-state__hint {
@@ -526,7 +526,7 @@ async function onRefresh() {
 
 .empty-state__hint code {
   background: var(--bg);
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
   font-size: 12px;
   border: 1px solid var(--border);

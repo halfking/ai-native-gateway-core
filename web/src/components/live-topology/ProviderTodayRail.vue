@@ -167,7 +167,7 @@ onUnmounted(() => {
   gap: 8px;
   height: 100%;
   min-height: 0;
-  padding: 10px;
+  padding: 8px;
   border: 1px solid var(--kx-border);
   border-radius: 12px;
   background: var(--kx-surface);
@@ -204,13 +204,13 @@ onUnmounted(() => {
 .rail__totals {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px;
+  gap: 4px;
 }
 
 .rail__total {
   display: flex;
   flex-direction: column;
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-radius: 8px;
   background: var(--kx-primary-soft);
 }
@@ -238,9 +238,9 @@ onUnmounted(() => {
 .rail__row-btn {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 2px 6px;
+  gap: 2px 4px;
   width: 100%;
-  padding: 6px 4px;
+  padding: 4px 4px;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -268,7 +268,7 @@ onUnmounted(() => {
 
 .rail__figures {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   font-size: var(--kx-font-sm, 12px);
   color: var(--kx-text);
 }

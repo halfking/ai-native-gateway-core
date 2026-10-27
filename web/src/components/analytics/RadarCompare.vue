@@ -109,7 +109,7 @@ const gridLevels = [0.25, 0.5, 0.75, 1]
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 .radar-svg { display: block; }
 .grid-poly {

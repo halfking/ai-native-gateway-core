@@ -135,7 +135,7 @@ onUnmounted(() => {
 .journey-detail-view {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   min-width: 0;
 }
 
@@ -143,7 +143,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
+  gap: 4px;
 }
 
 .jdv-back {
@@ -184,7 +184,7 @@ onUnmounted(() => {
   border: 1px solid var(--kx-border);
   border-radius: 8px;
   background: var(--kx-surface);
-  padding: 10px 14px;
+  padding: 8px 12px;
 }
 
 .jdv-panel-head {
@@ -211,14 +211,14 @@ onUnmounted(() => {
 }
 
 .jdv-state {
-  padding: 18px 8px;
+  padding: 16px 8px;
   color: var(--kx-muted);
   font-size: 12px;
   text-align: center;
 }
 
 .jdv-state--error { color: var(--kx-danger); }
-.jdv-retry { margin-left: 8px; padding: 2px 10px; border: 1px solid currentColor; background: transparent; color: var(--kx-danger); border-radius: 4px; cursor: pointer; font-size: 12px; }
+.jdv-retry { margin-left: 8px; padding: 2px 8px; border: 1px solid currentColor; background: transparent; color: var(--kx-danger); border-radius: 4px; cursor: pointer; font-size: 12px; }
 .jdv-retry:hover { background: rgba(220, 53, 69, 0.08); }
 .jdv-retry:disabled { opacity: .5; cursor: not-allowed; }
 </style>

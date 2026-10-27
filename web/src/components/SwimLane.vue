@@ -280,7 +280,7 @@ watch(laneMode, async () => {
 .swim-lane {
   display: flex;
   align-items: stretch;
-  gap: 10px;
+  gap: 8px;
   min-height: 72px;
   padding: 4px 0;
   min-width: 0;
@@ -296,11 +296,11 @@ watch(laneMode, async () => {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 8px 10px;
+  padding: 8px 8px;
   background: var(--surface-secondary);
   border: 1px solid var(--border);
   border-radius: 8px;
-  gap: 5px;
+  gap: 4px;
   overflow-wrap: break-word;
 }
 
@@ -319,7 +319,7 @@ watch(laneMode, async () => {
 
 .swim-lane__stats {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   flex-wrap: wrap;
@@ -435,7 +435,7 @@ watch(laneMode, async () => {
     var(--bg-tertiary);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   overflow: hidden;
   overflow-x: hidden;
   overflow-y: hidden;

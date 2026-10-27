@@ -423,13 +423,13 @@ function onSelectProvider(code: string) {
   gap: 8px;
   height: 100%;
   min-height: 0;
-  padding: 10px 12px 12px;
+  padding: 8px 12px 12px;
 }
 
 .live-topology__bar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   /* 标题/连接态一行，过滤栏独占第二行且自身永不换行 —— owner 要求
      「筛选条件放在一行内」。浏览器实测 1600 宽下过滤控件需 ~1110px，
      挤在标题同一行只剩 ~1010px，右端必被裁。 */
@@ -471,7 +471,7 @@ function onSelectProvider(code: string) {
 .live-topology__filters {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   /* 独占一行（width:100%）、永不换行；极窄兜底横向滚动（丢滚动好过丢控件）。
      owner 2026-10-18：筛选条件一行放下，字号更小且各控件大小一致。 */
   width: 100%;
@@ -490,7 +490,7 @@ function onSelectProvider(code: string) {
 
 .live-topology__filters select {
   max-width: 120px;
-  padding: 0 5px;
+  padding: 0 4px;
   height: 24px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
@@ -506,7 +506,7 @@ function onSelectProvider(code: string) {
   align-items: center;
   gap: 3px;
   height: 24px;
-  padding: 0 6px;
+  padding: 0 4px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   background: var(--kx-surface);
@@ -545,7 +545,7 @@ function onSelectProvider(code: string) {
 
 .live-topology__banner {
   margin: 0;
-  padding: 6px 10px;
+  padding: 4px 8px;
   border-radius: 8px;
   font-size: var(--kx-font-sm, 12px);
   color: var(--kx-warning);
@@ -566,7 +566,7 @@ function onSelectProvider(code: string) {
 .live-topology__body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
+  gap: 8px;
   flex: 1;
   min-height: 0;
 }

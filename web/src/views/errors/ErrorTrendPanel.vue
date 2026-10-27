@@ -144,12 +144,12 @@ onBeforeUnmount(() => {
 .panel-title, h3 { font-size: 14px; font-weight: 600; }
 .granularity { color: var(--muted); font-weight: 400; font-size: 12px; }
 .refresh-btn {
-  padding: 4px 10px; border: 1px solid var(--border-color); border-radius: var(--radius);
+  padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius);
   background: var(--card-bg); color: inherit; cursor: pointer; font: inherit;
 }
 .refresh-btn:disabled { opacity: 0.6; cursor: default; }
 .summary-grid { display: flex; gap: 12px; align-items: stretch; flex-wrap: wrap; margin-bottom: 12px; }
-.summary-item { min-width: 130px; padding: 10px 12px; border: 1px solid var(--border-color); background: var(--card-bg); }
+.summary-item { min-width: 130px; padding: 8px 12px; border: 1px solid var(--border-color); background: var(--card-bg); }
 .summary-item span { display: block; color: var(--muted); margin-bottom: 4px; }
 .section-block { margin-top: 12px; }
 .trend-bars { display: flex; gap: 4px; align-items: flex-end; min-height: 140px; padding: 8px 0; overflow-x: auto; }

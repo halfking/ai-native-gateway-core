@@ -440,7 +440,7 @@ async function handleChangePasswordSuccess() {
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: auth-spin 0.8s linear infinite;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 .auth-loading-text {
   letter-spacing: 0.05em;
@@ -474,7 +474,7 @@ async function handleChangePasswordSuccess() {
 
 .header-alert {
   margin: 0;
-  padding: 6px 10px;
+  padding: 4px 8px;
   font-size: 12px;
 }
 
@@ -528,7 +528,7 @@ async function handleChangePasswordSuccess() {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 14px;
+  gap: 4px 12px;
   flex: 1;
   min-width: 0;
   margin-inline-start: 12px;
@@ -560,7 +560,7 @@ async function handleChangePasswordSuccess() {
 .guest-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   font-size: 14px;
   font-weight: 700;
   color: var(--text);

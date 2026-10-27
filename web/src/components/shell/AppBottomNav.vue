@@ -119,7 +119,7 @@ function go(item: NavItem): void {
   align-items: center;
   justify-content: center;
   gap: 2px;
-  padding: 6px 4px;
+  padding: 4px 4px;
   background: none;
   border: 0;
   color: var(--kx-muted);

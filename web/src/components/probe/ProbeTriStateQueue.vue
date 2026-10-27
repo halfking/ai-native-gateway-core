@@ -640,7 +640,7 @@ function credentialTitle(c: ProbeCard): string {
 .tri-chip {
   display: inline-flex;
   align-items: center;
-  padding: 2px 10px;
+  padding: 2px 8px;
   border-radius: 999px;
   font-size: 12px;
   border: 1px solid transparent;
@@ -665,7 +665,7 @@ function credentialTitle(c: ProbeCard): string {
   border: 1px solid var(--kx-border);
   border-radius: 8px;
   background: var(--kx-surface);
-  padding: 10px 12px;
+  padding: 8px 12px;
 }
 
 .tri-section-head {
@@ -723,19 +723,19 @@ function credentialTitle(c: ProbeCard): string {
   background: var(--kx-surface);
   color: var(--kx-text);
   font-size: 12px;
-  padding: 4px 6px;
+  padding: 4px 4px;
 }
 
 .probe-card {
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   background: var(--kx-surface);
-  padding: 8px 10px;
+  padding: 8px 8px;
   font-size: 12px;
   color: var(--kx-text);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .probe-card--inflight {
@@ -757,7 +757,7 @@ function credentialTitle(c: ProbeCard): string {
 .probe-card__target {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -812,7 +812,7 @@ function credentialTitle(c: ProbeCard): string {
 
 .probe-card__detail {
   border-top: 1px solid var(--kx-border);
-  padding-top: 6px;
+  padding-top: 4px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 4px 16px;
@@ -832,7 +832,7 @@ function credentialTitle(c: ProbeCard): string {
 .probe-card__backoff {
   border-top: 1px dashed var(--kx-danger);
   color: var(--kx-danger);
-  padding-top: 6px;
+  padding-top: 4px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -880,7 +880,7 @@ function credentialTitle(c: ProbeCard): string {
 .tri-skeleton {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .tri-skeleton-card {

@@ -1140,12 +1140,12 @@ onMounted(fetchData)
  * 之前硬编码了 Catppuccin Mocha 暗色调（#1e1e2e / #2a2a3e / #cba6f7 等），
  * 浅色皮肤下显示为「大量暗色块」。现在改用 --card / --border / --muted / --accent 等。
  */
-.pricing-management { padding: 20px; color: var(--text); }
+.pricing-management { padding: 16px; color: var(--text); }
 .pm-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .pm-header h2 { margin: 0; color: var(--text); }
 .pm-actions { display: flex; gap: 8px; }
 .pm-summary { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-.stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 20px; min-width: 100px; text-align: center; }
+.stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; min-width: 100px; text-align: center; }
 .stat-card-good { border-color: var(--success); }
 .stat-card-warn { border-color: var(--warning); }
 .stat-card-bad { border-color: var(--danger); }
@@ -1155,18 +1155,18 @@ onMounted(fetchData)
 /* Coverage by credential */
 .pm-coverage { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
 .pm-coverage h3 { margin: 0 0 12px 0; font-size: 14px; color: var(--text); }
-.cov-row { display: grid; grid-template-columns: 200px 1fr 200px; gap: 12px; align-items: center; margin-bottom: 6px; font-size: 12px; }
+.cov-row { display: grid; grid-template-columns: 200px 1fr 200px; gap: 12px; align-items: center; margin-bottom: 4px; font-size: 12px; }
 .cov-name { color: var(--text); font-weight: 500; }
 .cov-bar { background: var(--bg-subtle); height: 16px; border-radius: 4px; overflow: hidden; border: 1px solid var(--border); }
 .cov-fill { height: 100%; transition: width 0.3s; }
 .cov-stats { color: var(--muted); text-align: right; }
-.cov-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+.cov-tag { display: inline-block; margin-left: 4px; padding: 1px 4px; border-radius: 3px; font-size: 11px; font-weight: 600; }
 .cov-tag-tp { background: var(--bg-hover); color: var(--warning); }
 
 /* Filters */
 .pm-filters { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
 .filter-group { flex: 1; min-width: 150px; }
-.filter-input, .filter-select { width: 100%; padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 13px; }
+.filter-input, .filter-select { width: 100%; padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 13px; }
 .filter-select { cursor: pointer; }
 
 /* Tabs */
@@ -1181,13 +1181,13 @@ onMounted(fetchData)
 .drawer-title { margin: 0; color: var(--text); font-size: 16px; }
 .drawer-body { flex: 1; overflow-y: auto; }
 .tree-family { margin-bottom: 4px; }
-.tree-family-header { cursor: pointer; padding: 6px 8px; border-radius: 4px; display: flex; align-items: center; gap: 8px; }
+.tree-family-header { cursor: pointer; padding: 4px 8px; border-radius: 4px; display: flex; align-items: center; gap: 8px; }
 .tree-family-header:hover { background: var(--bg-hover); }
 .arrow { font-size: 11px; transition: transform 0.2s; }
 .arrow.open { transform: rotate(90deg); }
 .family-name { font-weight: 600; color: var(--accent-h); }
 .family-meta { font-size: 11px; color: var(--muted); }
-.tree-offers { margin-left: 20px; }
+.tree-offers { margin-left: 16px; }
 .tree-offer { padding: 4px 8px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); }
 .tree-offer:hover { background: var(--bg-hover); }
 .tree-offer.selected { background: var(--bg-secondary); border: 1px solid var(--accent); }
@@ -1215,7 +1215,7 @@ onMounted(fetchData)
 .param-val.ok { color: var(--success); }
 .form-group { margin-bottom: 12px; }
 .form-group label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-.form-group input, .form-group select { width: 100%; padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); }
+.form-group input, .form-group select { width: 100%; padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); }
 .detail-balance { margin: 12px 0; padding: 8px; background: var(--bg-subtle); border-radius: 4px; font-size: 13px; color: var(--text); }
 .form-actions { margin-top: 16px; display: flex; gap: 8px; align-items: center; }
 .save-msg { font-size: 13px; }
@@ -1227,7 +1227,7 @@ onMounted(fetchData)
 .pm-table th { background: var(--bg-subtle); padding: 8px 12px; text-align: left; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .pm-table th.sortable { cursor: pointer; }
 .pm-table th.sortable:hover { color: var(--accent-h); }
-.pm-table td { padding: 6px 12px; border-bottom: 1px solid var(--border); color: var(--text); }
+.pm-table td { padding: 4px 12px; border-bottom: 1px solid var(--border); color: var(--text); }
 .pm-table tr:hover { background: var(--bg-hover); }
 .pm-table tr.selected { background: var(--bg-secondary); }
 .pm-table .model-name { color: var(--accent-h); font-weight: 600; }
@@ -1255,7 +1255,7 @@ onMounted(fetchData)
 .pagination-info {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   color: var(--muted);
   font-size: 12px;
   flex-wrap: nowrap;
@@ -1279,16 +1279,16 @@ onMounted(fetchData)
 }
 
 /* Buttons (scoped — 与 style.css .btn 解耦以便覆盖到此处作用域) */
-.pm-actions .btn { padding: 6px 14px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); cursor: pointer; font-size: 13px; }
+.pm-actions .btn { padding: 4px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); cursor: pointer; font-size: 13px; }
 .pm-actions .btn:hover { background: var(--bg-hover); }
 .pm-actions .btn-primary { background: var(--accent); color: var(--on-primary); border-color: var(--accent); }
 .pm-actions .btn-primary:hover { background: var(--accent-h); }
 .pm-actions .btn-success { background: var(--success); color: var(--on-primary); border-color: var(--success); }
 .pm-actions .btn-success:hover { background: color-mix(in srgb, var(--success) 88%, var(--kx-text)); }
-.pm-actions .btn-sm { padding: 4px 10px; font-size: 12px; }
-.pm-actions .btn-xs { padding: 2px 6px; font-size: 11px; }
+.pm-actions .btn-sm { padding: 4px 8px; font-size: 12px; }
+.pm-actions .btn-xs { padding: 2px 4px; font-size: 11px; }
 /* 页面其他位置的按钮也覆盖（form-actions 等） */
-.form-actions .btn { padding: 6px 14px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); cursor: pointer; font-size: 13px; }
+.form-actions .btn { padding: 4px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); cursor: pointer; font-size: 13px; }
 .form-actions .btn:hover { background: var(--bg-hover); }
 .form-actions .btn-primary { background: var(--accent); color: var(--on-primary); border-color: var(--accent); }
 .form-actions .btn-primary:hover { background: var(--accent-h); }
@@ -1297,18 +1297,18 @@ onMounted(fetchData)
 .modal h3 { margin-top: 0; color: var(--text); }
 .modal { background: var(--card); color: var(--text); }
 .batch-pricing-modal { width: min(700px, 100%); max-height: 90vh; overflow-y: auto; background: var(--card); color: var(--text); }
-.batch-offers { margin: 12px 0; border: 1px solid var(--border); border-radius: 6px; padding: 10px; max-height: 240px; overflow-y: auto; }
+.batch-offers { margin: 12px 0; border: 1px solid var(--border); border-radius: 6px; padding: 8px; max-height: 240px; overflow-y: auto; }
 .batch-offers h4 { margin: 0 0 8px; font-size: 13px; color: var(--accent-h); }
-.batch-offer-select-all { margin-bottom: 6px; font-size: 13px; color: var(--text); }
+.batch-offer-select-all { margin-bottom: 4px; font-size: 13px; color: var(--text); }
 .batch-offer-list { display: flex; flex-direction: column; gap: 4px; }
-.batch-offer-row { padding: 4px 6px; border-radius: 4px; color: var(--text); }
+.batch-offer-row { padding: 4px 4px; border-radius: 4px; color: var(--text); }
 .batch-offer-row:hover { background: var(--bg-hover); }
 .batch-offer-row.selected { background: var(--bg-secondary); }
 .batch-offer-label { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--text); }
 .offer-price-mini { color: var(--warning); font-size: 12px; margin-left: auto; }
 .batch-pricing-form { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
-.batch-pricing-form h4 { margin: 0 0 10px; font-size: 13px; color: var(--accent-h); }
-.batch-pricing-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.batch-pricing-form h4 { margin: 0 0 8px; font-size: 13px; color: var(--accent-h); }
+.batch-pricing-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
 @media (max-width: 768px) { .batch-pricing-grid { grid-template-columns: 1fr 1fr; } }
 .alert-success { background: var(--success-soft); border: 1px solid var(--success); color: var(--success); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
 .alert-danger { background: var(--danger-soft); border: 1px solid var(--danger); color: var(--danger); padding: 8px 12px; border-radius: 6px; font-size: 13px; }

@@ -222,7 +222,7 @@ onMounted(() => {
 
 <style scoped>
 .approval-config-view {
-  padding: 20px;
+  padding: 16px;
   color: var(--text-primary);
 }
 
@@ -290,7 +290,7 @@ onMounted(() => {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 20px;
+  padding: 16px;
 }
 
 .section-header {
@@ -312,7 +312,7 @@ onMounted(() => {
 
 .settings-grid {
   display: grid;
-  gap: 20px;
+  gap: 16px;
 }
 
 .setting-item {
@@ -429,7 +429,7 @@ onMounted(() => {
 .bottom-actions {
   display: flex;
   justify-content: center;
-  padding: 20px 0;
+  padding: 16px 0;
 }
 
 .btn {

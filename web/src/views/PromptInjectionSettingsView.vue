@@ -590,7 +590,7 @@
             layout="total, sizes, prev, pager, next, jumper"
             @current-change="loadDetections"
             @size-change="loadDetections"
-            style="margin-top: 20px"
+            style="margin-top: 16px"
           />
         </el-card>
       </el-tab-pane>
@@ -1284,13 +1284,13 @@ onMounted(async () => {
 </script>
 
 <style scoped lang="scss">
-.prompt-injection-settings { padding: 20px; }
+.prompt-injection-settings { padding: 16px; }
 .settings-header {
   margin-bottom: 24px;
   h2 { margin: 0 0 8px 0; font-size: 24px; }
   .description { color: var(--muted); margin: 0; }
 }
-.settings-tabs :deep(.el-tabs__header) { margin-bottom: 20px; }
+.settings-tabs :deep(.el-tabs__header) { margin-bottom: 16px; }
 .section-card {
   margin-bottom: 20px;
   .card-header { display: flex; justify-content: space-between; align-items: center; }
@@ -1303,7 +1303,7 @@ onMounted(async () => {
   p { margin: 4px 0; }
   .meta { font-size: 12px; }
 }
-.state { color: var(--muted); padding: 20px 0; text-align: center; }
+.state { color: var(--muted); padding: 16px 0; text-align: center; }
 .whitelist-tags { margin-top: 8px; }
 .category-filter {
   margin-bottom: 16px;

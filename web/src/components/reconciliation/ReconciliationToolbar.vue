@@ -183,7 +183,7 @@ function onView(value: string | number | boolean | undefined) {
 <style scoped>
 .toolbar, .more { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
 .coverage { color: var(--text-muted, var(--el-text-color-secondary)); font-size: 12px; }
-.filter-badge { margin-left: 6px; }
+.filter-badge { margin-left: 4px; }
 .filter-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

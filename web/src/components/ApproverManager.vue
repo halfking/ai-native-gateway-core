@@ -336,7 +336,7 @@ function moveDown(index: number) {
 
 .priority-badge {
   font-size: 11px;
-  padding: 2px 6px;
+  padding: 2px 4px;
   background: var(--neutral-bg);
   color: var(--muted);
   border-radius: 4px;
@@ -353,7 +353,7 @@ function moveDown(index: number) {
 }
 
 .btn-icon {
-  padding: 6px 10px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-secondary);
@@ -411,7 +411,7 @@ function moveDown(index: number) {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 20px;
+  padding: 16px 16px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -435,7 +435,7 @@ function moveDown(index: number) {
 }
 
 .dialog-body {
-  padding: 20px;
+  padding: 16px;
 }
 
 .form-group {
@@ -444,7 +444,7 @@ function moveDown(index: number) {
 
 .form-group label {
   display: block;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   font-size: 13px;
   color: var(--text-secondary);
 }
@@ -496,7 +496,7 @@ function moveDown(index: number) {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding: 16px 20px;
+  padding: 16px 16px;
   border-top: 1px solid var(--border);
 }
 

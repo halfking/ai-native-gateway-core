@@ -165,7 +165,7 @@ onMounted(load)
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 0.5rem;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
@@ -177,12 +177,12 @@ onMounted(load)
 .stats-container {
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
-  margin-top: 0.75rem;
+  gap: 16px;
+  margin-top: 12px;
 }
 
 .stats-section h3 {
-  margin: 0 0 0.5rem 0;
+  margin: 0 0 8px 0;
   font-size: 16px;
   font-weight: 600;
 }
@@ -194,7 +194,7 @@ onMounted(load)
 
 .data-table th {
   text-align: left;
-  padding: 0.6rem 0.8rem;
+  padding: 8px 12px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   font-weight: 600;
@@ -202,7 +202,7 @@ onMounted(load)
 }
 
 .data-table td {
-  padding: 0.6rem 0.8rem;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   font-size: 14px;
 }
@@ -233,7 +233,7 @@ onMounted(load)
 }
 
 .badge {
-  padding: 0.25rem 0.5rem;
+  padding: 4px 8px;
   border-radius: 3px;
   font-size: 12px;
   font-weight: 500;
