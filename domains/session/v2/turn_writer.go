@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/sessionfamily"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -597,9 +598,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				-- 889：tools 接在其后（同样只追加不重编号 ⇒ 位置参数仍是 101 个）。
 				`+turnToolsJSONBExpr+`
 			WHERE NOT EXISTS (
-				SELECT 1
-				FROM public.session_turns_with_current_month
-				WHERE tenant_id = $3::varchar AND request_id = $4
+				`+sessionfamily.ExistsByKeySQL("$3::varchar", "$4")+`
 			)
 			ON CONFLICT (tenant_id, request_id, partition_date) DO NOTHING
 		`,
