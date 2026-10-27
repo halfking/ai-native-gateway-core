@@ -154,6 +154,22 @@ func checkMostUsedClientModelSQLShape(t *testing.T, alias string) {
 			t.Errorf("查询产物缺 %q（★ 别名必须逐处一致）：\n%s", want, sql)
 		}
 	}
+	// ★★ **口径钉死**（2026-10-27 补）：真库判据会把「产品形态的实际产出」与
+	//   「视图形态的 top-1」直接比对 ⇒ ⇒ 只有当**两边问的是同一个问题**时，
+	//   这个比对才是等价的 ⇒ ⇒ 口径（窗口 / 过滤 / 排序 / 取行）必须被**钉死**，
+	//   否则「口径变了」会被误判成「不等价」（**假红**），而「口径变了但两边
+	//   一起变」又会让真库判据**看不见**（**假绿**）。
+	// ⇒ ⇒ 这里逐字钉住：7 天窗、按计数降序、取 1 行。
+	for _, want := range []string{
+		"interval '7 days'",
+		"ORDER BY count(*) DESC",
+		"LIMIT 1",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("查询产物的口径被改了（缺 %q）—— ★ 真库判据拿它与视图 top-1 直接比对，"+
+				"口径不一致时那个比对**不成立**（既可能假红也可能假绿）：\n%s", want, sql)
+		}
+	}
 	// ★ 反向：别处**不得**残留别的别名（历史拼写里的 "rl" 之类）。
 	//   ⇒ 只查「逐处出现」不够 —— 残留的旧别名同样会让真库上 42703。
 	for _, stale := range []string{"rl.", "n.", "q7."} {
@@ -262,6 +278,72 @@ func TestMostUsedClientModelEquivalenceRealDB(t *testing.T) {
 	for _, d := range diffPairs(view, narrow) {
 		t.Errorf("分组结果不一致（client_model=%q：视图 %d · 窄投影 %d）", d.key, d.viewN, d.narrowN)
 	}
+
+	// ★★★ **第三段：直接跑【产品形态】**（`mostUsedClientModelSQL("n")`）。
+	//
+	// ★ 为什么必须有这一段：上面两段比的是**手写**的窄投影形态 —— 它证明的是
+	//   「窄投影这个想法与视图等价」，**没有**证明「生产函数实际发出的那条 SQL
+	//   与视图等价」⇒ ⇒ 产品形态若与手写形态不同（例如调用点忘了换 helper、
+	//   别名写错、谓词拼错、FROM 的别名与 WHERE 不一致），上面两段**照样绿** ⇒ ⇒ 必须**把产品本身**跑一遍。
+	//
+	// ★ **这个比对为什么成立**（2026-10-27 补上的一环）：它拿「产品形态的实际产出」
+	//   与「视图形态的 top-1」直接比 ⇒ ⇒ 只有两边**问同一个问题**时才等价
+	//   ⇒ ⇒ 口径（7 天窗 / success=TRUE / 按计数降序 / 取 1 行）由**判据 2 逐字钉死**
+	//   ⇒ ⇒ 口径一变，判据 2 先红 ⇒ ⇒ 这里不会因为口径漂移而误判。
+	//
+	// ★ 口径说明：产品形态带 `GROUP BY … ORDER BY count(*) DESC LIMIT 1` ⇒
+	//   它只产出**一行**。而 `LIMIT 1` 在**并列**时**本身不确定**
+	//   （既有性质，不是本轮引入）⇒ ⇒ 并列时**只要求**产品落在并列集合里，
+	//   不要求与视图的 top-1 逐字相同；不并列时才做严格相等。
+	var productModel string
+	err = pool.QueryRow(ctx, mostUsedClientModelSQL("n"), credID).Scan(&productModel)
+	if err != nil {
+		t.Fatalf("★ 产品形态查询失败（mostUsedClientModelSQL）：%v", err)
+	}
+	topCount, tieSize := topOf(view)
+	t.Logf("产品形态产出 model=%q（视图 top 计数 %d，并列规模 %d）", productModel, topCount, tieSize)
+	switch {
+	case tieSize == 0:
+		t.Errorf("视图形态没有任何分组（口径为空 ⇒ 前面已跳过，这里不该到得了）")
+	case tieSize == 1:
+		// 视图的 top-1 唯一 ⇒ 产品必须与它逐字相同。
+		var wantTop string
+		for _, p := range view {
+			if p.n == topCount {
+				wantTop = p.key
+				break
+			}
+		}
+		if productModel != wantTop {
+			t.Errorf("★ 产品形态产出 %q，视图 top-1 是 %q —— 生产函数实际发出的 SQL 与视图不等价",
+				productModel, wantTop)
+		}
+	default:
+		// 并列 ⇒ LIMIT 1 不确定 ⇒ 只要求落在并列集合里。
+		inTie := false
+		for _, p := range view {
+			if p.n == topCount && p.key == productModel {
+				inTie = true
+				break
+			}
+		}
+		if !inTie {
+			t.Errorf("★ 产品形态产出 %q，不在视图的并列 top 集合里（并列规模 %d）", productModel, tieSize)
+		}
+	}
+}
+
+// topOf 返回分组集合里最大的计数，以及**并列**它的分组数。
+func topOf(pairs []pairCount) (top int64, tie int) {
+	for _, p := range pairs {
+		if p.n > top {
+			top = p.n
+			tie = 1
+		} else if p.n == top && top > 0 {
+			tie++
+		}
+	}
+	return top, tie
 }
 
 // findNumericCredential 在「hot ∪ 母表」两腿里找一个近窗有成功轮次、
