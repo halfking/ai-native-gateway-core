@@ -716,6 +716,55 @@ func canonicalSessionOnlyDDL(hasDetails bool) string {
 		proj, parentJoin)
 }
 
+// SessionFamilyCredentialIDExpr 是 credential_id 的**唯一**规范表达式。
+//
+// 它与 canonical 视图投影里的那一项**逐字相同**
+// （projectionExprsV2 的第 9 项，见本文件上方），★ 因此：
+//
+//   - 查询侧写这个表达式 ⇒ 与视图侧的 rl.credential_id 语义相同；
+//   - 与迁移 729 的表达式索引
+//     `((CASE WHEN credential_id ~ '^[0-9]+$' THEN credential_id::bigint END), ts DESC)`
+//     **同形** ⇒ 规划器能认出来（★ PG 用 equal() 比较表达式 ⇒ 别名 t 不影响匹配）。
+const SessionFamilyCredentialIDExpr = "(CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END)"
+
+// SessionFamilyCredentialCountSourceSQL 返回「**按凭据统计行数**」的
+// **窄投影两臂** source（hot ∪ 母表，★ **不带 details 腿**）。
+//
+// # 为什么是「窄投影」而不是 SessionFamilyTurnsSourceSQL()
+//
+// canonical 视图 / 原生 118 列 source 都会让每一行**物化 118 列**
+// （252 实测 plan 里的 `width=3083` 字节/行）。★ 而「统计行数」只需要
+// credential_id 一列 ⇒ ⇒ 窄投影把 heap scan 的每行物化宽度压到 32 字节。
+//
+// # 252 生产实测（2026-10-27，只读，单凭据 count）
+//
+//	形态                                    Execution Time
+//	视图（118 列，现状）                    14,728.010 ms
+//	原生 118 列 source                        389.618 ms
+//	★ 本 helper（窄投影 UNION ALL）             247.063 ms
+//	拆成两条独立 count（各自子查询）           statement_timeout（★ 最差）
+//
+// ★★ 两版的 plan **cost 逐字相同**（cost=41.94..441.93 rows=391）
+// ⇒ ⇒ **plan cost 里没有「物化宽度」** ⇒ ★★ 「EXPLAIN 一样」不蕴含「代价一样」。
+//
+// # 口径等价性
+//
+//   - 视图的 credential_id 列 = 本表达式 ⇒ 谓词**逐字相同**；
+//   - ★ 视图的 details 腿是 LEFT JOIN 且 details 唯一键是
+//     (tenant_id, request_id, partition_date) ⇒ **同一键最多 1 行**
+//     ⇒ ⇒ LEFT JOIN **不改变行数** ⇒ ⇒ 「带 details 的视图」与
+//     「不带 details 的两臂」**行数相同** ⇒ ⇒ 计数等价。
+//
+// # 参数
+//
+//   - credExpr：凭据 id 的 SQL 表达式（如 `c.id`）。★ 它会被拼进两处谓词。
+func SessionFamilyCredentialCountSourceSQL(credExpr string) string {
+	leg := func(src string) string {
+		return "(SELECT t.credential_id FROM " + src + " t WHERE " + SessionFamilyCredentialIDExpr + " = " + credExpr + ")"
+	}
+	return "(" + leg("public.session_turns_hot") + " UNION ALL " + leg("public.session_turns") + ")"
+}
+
 // SessionFamilyTurnsSourceSQL returns a parenthesized FROM-source emitting the
 // frozen 113-column request-logs shape straight from the session-turn family
 // (hot ∪ parent, details-joined per 734), for S3 wave-1 native readers
