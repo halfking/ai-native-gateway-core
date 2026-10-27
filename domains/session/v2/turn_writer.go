@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/sessionfamily"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -597,9 +598,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				-- 889：tools 接在其后（同样只追加不重编号 ⇒ 位置参数仍是 101 个）。
 				`+turnToolsJSONBExpr+`
 			WHERE NOT EXISTS (
-				SELECT 1
-				FROM public.session_turns_with_current_month
-				WHERE tenant_id = $3::varchar AND request_id = $4
+				`+sessionfamily.ExistsByKeySQL("$3::varchar", "$4")+`
 			)
 			ON CONFLICT (tenant_id, request_id, partition_date) DO NOTHING
 		`,
@@ -655,13 +654,8 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 	if result.RowsAffected() == 0 {
 		var existingSessionID string
 		var existingPartitionDate time.Time
-		err = tx.QueryRow(ctx, `
-				SELECT session_id, turn_no, partition_date
-				FROM public.session_turns_with_current_month
-				WHERE tenant_id = $1 AND request_id = $2
-				ORDER BY partition_date ASC
-				LIMIT 1
-			`, rec.TenantID, rec.RequestID).Scan(&existingSessionID, &turnNo, &existingPartitionDate)
+		err = tx.QueryRow(ctx, sessionfamily.TurnConflictLookupSQL("$1", "$2"),
+			rec.TenantID, rec.RequestID).Scan(&existingSessionID, &turnNo, &existingPartitionDate)
 
 		if err != nil {
 			return 0, fmt.Errorf("read existing turn_no: %w", err)
@@ -811,34 +805,26 @@ func (w *TurnWriter) GetTurn(ctx context.Context, tenantID, requestID string) (*
 	var rec TurnRecord
 	var compressionMetaJSON []byte
 
-	query := `
-		SELECT
-			session_id, turn_no, tenant_id, request_id, ts,
-			COALESCE(project_id, ''), COALESCE(namespace, ''),
-			COALESCE(parent_request_id, ''), COALESCE(task_type, ''),
-			submit_mode,
-			compression_applied, compression_strategy, compression_meta,
-			COALESCE(compression_tokens_saved, 0),
-			COALESCE(injection_verdict, 'skip'),
-			COALESCE(output_verdict, 'skip'),
-			model, provider, credential_id,
-			COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0),
-			COALESCE(cache_read_tokens, 0), COALESCE(cache_write_tokens, 0),
-			COALESCE(cost_usd, 0),
-			COALESCE(latency_ms, 0), COALESCE(status_code, 0),
-			COALESCE(success, false), error_kind,
-			source_kind, quality,
-			COALESCE(attachment_count, 0),
-			COALESCE(attachment_total_bytes, 0),
-			COALESCE(multimodal_types, '{}'),
-			t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
-			t3_model_enqueued_at, t4_model_dequeued_at, t5_cred_enqueued_at,
-			t6_cred_dequeued_at, t7_forward_start_at, t8_response_start_at,
-			t9_response_end_at
-			FROM public.session_turns_with_current_month
-			WHERE tenant_id = $1 AND request_id = $2
-			LIMIT 1
-		`
+	// R172：改两臂窄投影（hot ∪ 分区父表）直查，不再打会话族视图。
+	//
+	// ★★ 关键：**视图那条反连接被【保留】了**（hot 臂仍是
+	//   `NOT EXISTS (SELECT 1 FROM session_turns archived …)`），只是把键谓词
+	//   **推进两臂内部** ⇒ 两条臂与视图**逐字同源** ⇒ 等价性是**结构性的**，
+	//   **不依赖**「hot ∩ 父表 = 0」这类数据前提
+	//   （等价性四维论证见 internal/sessionfamily/turns_reads.go）。
+	//   ★ 谓词推进把反连接的求值范围从「整张 hot 表」缩到「命中键的候选行」。
+	//
+	// ★ 252 生产规模实测（**字面量**谓词、三轮交错；★ 第一版脚本用子查询取键 ⇒
+	//   谓词不可下推 ⇒ 读数是量具伪影，已作废）：
+	//   视图形态 planning 7.9~27.5 ms（中位 11.2）、execution 0.63~1.74 ms、
+	//     shared hit 最高 **872**；
+	//   本形态   planning 7.3~14.8 ms（中位 8.6）、execution 0.38~0.75 ms、
+	//     shared hit **222**；
+	//   ⇒ ★ 可分辨的差异在**访问路径**（视图多一个 `Subquery Scan` = 逐 hot 行求值）
+	//     与 **buffer 计数**（872 → 222）；execution 中位数只差 1~2× 且区间重叠。
+	// ★★ 诚实边界：GetTurn **只有测试调用**，本轮收益是结构性的（去掉写侧最后的
+	//   会话族视图依赖）+ 省规划/IO，**不是**端点延迟改善。
+	query := sessionfamily.TurnByRequestSQL("$1", "$2")
 
 	err := w.db.QueryRow(ctx, query, tenantID, requestID).Scan(
 		&rec.SessionID, &rec.TurnNo, &rec.TenantID, &rec.RequestID, &rec.Ts,
@@ -884,35 +870,12 @@ func (w *TurnWriter) ListTurns(ctx context.Context, tenantID, sessionID string, 
 		limit = 100
 	}
 
-	query := `
-		SELECT
-			session_id, turn_no, tenant_id, request_id, ts,
-			COALESCE(project_id, ''), COALESCE(namespace, ''),
-			COALESCE(parent_request_id, ''), COALESCE(task_type, ''),
-			submit_mode,
-			compression_applied, compression_strategy, compression_meta,
-			COALESCE(compression_tokens_saved, 0),
-			COALESCE(injection_verdict, 'skip'),
-			COALESCE(output_verdict, 'skip'),
-			model, provider, credential_id,
-			COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0),
-			COALESCE(cache_read_tokens, 0), COALESCE(cache_write_tokens, 0),
-			COALESCE(cost_usd, 0),
-			COALESCE(latency_ms, 0), COALESCE(status_code, 0),
-			COALESCE(success, false), error_kind,
-			source_kind, quality,
-			COALESCE(attachment_count, 0),
-			COALESCE(attachment_total_bytes, 0),
-			COALESCE(multimodal_types, '{}'),
-			t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
-			t3_model_enqueued_at, t4_model_dequeued_at, t5_cred_enqueued_at,
-			t6_cred_dequeued_at, t7_forward_start_at, t8_response_start_at,
-			t9_response_end_at
-		FROM public.session_turns_with_current_month
-		WHERE tenant_id = $1 AND session_id = $2
-		ORDER BY turn_no ASC
-		LIMIT $3
-	`
+	// R172：同上，改两臂窄投影直查。★ 反连接**保留**（与视图逐字同源），
+	// 会话谓词**推进两臂内部** ⇒ 两条腿各自走
+	// idx_session_turns_{hot_,}session_id_turn_no_idx，而不是物化整条 UNION ALL。
+	// ★ 诚实边界：ListTurns **没有生产调用方**（cmd/gateway/lite_telemetry_sink.go:287
+	// 与 storage/consistency.go:147 调的是另一个 bodies lister 接口）。
+	query := sessionfamily.TurnsBySessionSQL("$1", "$2", "$3")
 
 	rows, err := w.db.Query(ctx, query, tenantID, sessionID, limit)
 	if err != nil {

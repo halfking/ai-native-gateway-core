@@ -92,6 +92,7 @@
  */
 
 import { readFileSync } from 'node:fs'
+import { relative } from 'node:path'
 import {
   maskCssComments,
   styleBlocksOf,
@@ -600,7 +601,11 @@ export function listMotionFiles(rootDir: string): string[] {
 export function collectMotionDecls(rootDir: string): MotionDecl[] {
   const out: MotionDecl[] = []
   for (const abs of listMotionFiles(rootDir)) {
-    const rel = abs.startsWith(rootDir + '/') ? abs.slice(rootDir.length + 1) : abs
+    // ★ Windows 上 listStyleFiles 产出反斜杠绝对路径，`startsWith(rootDir + '/')`
+    //   剥不掉前缀 ⇒ rel 变成整条绝对路径 ⇒ gate 里 join 出
+    //   `src\C:\...\src\App.vue` 直接 ENOENT（main 上 Windows 本地跑不了本门）。
+    //   与 elevation/aiSmells 等其余 6 处同款写法对齐：relative + 统一正斜杠。
+    const rel = relative(rootDir, abs).replace(/\\/g, '/')
     out.push(...scanMotionInFile({ file: rel, text: readFileSync(abs, 'utf8') }))
   }
   return out

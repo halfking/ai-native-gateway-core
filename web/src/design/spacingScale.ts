@@ -32,7 +32,7 @@
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { extname, join } from 'node:path'
+import { extname, join, relative } from 'node:path'
 
 // ───────────────────────── 阶 ─────────────────────────
 
@@ -563,7 +563,8 @@ export function scanSpacingScale(
     const ds = collectSpacingDecls(f, scalePx)
     // ★★ `d.file` 必须是**相对路径**（与 findings 的 file 字段同一个口径）——
     //   否则人工豁免的键（相对路径）永远匹配不上（实测踩过：豁免命中 0 ⇒ 门报「豁免漂移」）。
-    const rel = f.replace(rootDir + '/', '')
+    // ★ 同 motion.ts：Windows 反斜杠路径剥不掉前缀，用 relative + 统一正斜杠。
+    const rel = relative(rootDir, f).replace(/\\/g, '/')
     for (const d of ds) d.file = rel
     for (const d of ds) {
       facts.totalDeclarations++

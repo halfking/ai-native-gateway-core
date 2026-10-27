@@ -93,14 +93,36 @@ func TestNullPaddedAttributionPinsKnownCases(t *testing.T) {
 		because string
 	}{
 		{
-			file: "bg/shared_pick.go", inFam: true, via: "id",
-			// 防「逐字面量归属」这个看起来更精确、实际更危险的改法。
-			// 该读点的 SQL 由多个字面量拼成（含 <ProbeTrafficExclusionPredicateView>
-			// 占位）：含 client_model 的字面量不出现视图名，含视图名的字面量
-			// 不含 client_model。逐字面量归属会把这个**真谓词**
-			// （唯一产出是按 client_model 分组，而它是补位列 ⇒ 恒 0 行）
-			// 判成误触发，让它离开本族。
-			because: "拼接 SQL 的真谓词：函数作用域口径必须仍然命中它",
+			file: "bg/shared_pick.go", inFam: false,
+			// ★ R170（2026-10-27）：这个文件**不再读 canonical 视图**了。
+			// 它的 Priority 1 读点（探针选型「近 7 天最常用 client_model」）
+			// 改读会话族原生源（db.SessionFamilyMostUsedClientModelSourceSQL，
+			// 两臂 + details LEFT JOIN）⇒ `vi`（文件是否提到会话臂视图）= false
+			// ⇒ ⇒ 族判定不再把它带进本族。
+			//
+			// ★ 而它**仍然**有 `FROM credentials WHERE id = $1`（:62）⇒
+			//   「命中列存在」与「是否族内」**不再同源** ⇒ 这正是本门要暴露的
+			//   事实变化，不是分类器坏了。
+			because: "R170 起该文件改读会话族原生源，不再提 canonical 视图 ⇒ 不在本族（`id` 仍在，但那是 credentials 的列）",
+		},
+		{
+			file: "admin/usage_enhanced.go", inFam: true, via: "id",
+			// ★ R170：**见证迁到这里**（原见证 bg/shared_pick.go 已不再读视图）。
+			//
+			// 防「逐字面量归属」这个看起来更精确、实际更危险的改法：
+			// 本文件的**视图读点与 `id` 命中分处不同字面量**——
+			//   视图名在 `"BaseTable": "request_logs_with_current_month rl"`
+			//   （配置常量串，**不含任何 SQL 关键字** ⇒ 不是 SQL 形字面量）；
+			//   `id` 在 `" LEFT JOIN providers p ON p.id = ul.provider_id"`
+			//   （JOIN 片段，**不含视图名**）。
+			// 逐字面量归属要求「同一片字面量里既有视图名又有补位列」⇒
+			// ⇒ 会把本文件**判成不命中** ⇒ 一个真触发会**悄悄离开本族**。
+			// ⇒ 函数作用域口径（函数体 ⊇ 单片字面量）必须仍然命中它。
+			//
+			// ★ 同族形态（原见证）：视图读与 `id` 命中同处一个函数，
+			//   但 `id` 属于别的表（providers / api_keys）⇒ 保守方向刻意如此：
+			//   「宁可留在本族并要求具名论证，也不要把真触发悄悄放出族外」。
+			because: "视图名与 `id` 命中分处不同字面量：逐字面量归属会漏 ⇒ 函数作用域口径必须仍然命中它",
 		},
 		{
 			file: "bg/candidate_failure_monitor.go", inFam: false,

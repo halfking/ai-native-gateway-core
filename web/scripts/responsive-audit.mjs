@@ -17,9 +17,13 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 
-const __dirname = new URL('.', import.meta.url).pathname
+// ★ Windows 修正（2026-10-28）：`new URL('.', import.meta.url).pathname` 在
+//   win32 上是 `/C:/...`，`resolve('/C:/...')` 把它解析成「当前盘下的 C:
+//   目录」⇒ ROOT 变成 `C:\C:\workspace\...` ⇒ 本门在 Windows 上从来跑不起来。
+//   正确姿势：dirname(fileURLToPath(import.meta.url))（node 官方）。
+const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
 
 function parseArgs(argv) {

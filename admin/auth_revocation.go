@@ -50,6 +50,25 @@ var (
 // authRevocationProbe is the test seam; production uses probeAuthRevocation.
 var authRevocationProbe = probeAuthRevocation
 
+// RevokedByPasswordChange reports whether a token issued at issuedAt was
+// invalidated by a later password change for userID.
+//
+// ★ 2026-10-27（r1039 后续轮，审计档 §8 第 9 条）：ServeMux 侧的管理中间件
+// （AdminMiddleware / SuperAdminMiddleware / tenantAdminOrSuperAdmin）一直带
+// 这个探测，而 **Echo 侧**（cmd/gateway/main_jwt_middleware.go 注册的
+// `/api/admin/*`）**没有** ⇒ 改密之后，旧会话在 Echo 侧端点上继续全权可用。
+//
+// 本函数是 `authRevocationProbe` 的**导出外壳** ⇒ 两边共用同一份实现、
+// 同一份 5s TTL 缓存、同一把「读失败一律放行」的尺子 ⇒ 口径不会漂。
+//
+// 语义边界（不要误读）：
+//   - 只判「**签发时间早于该用户的改密纪元**」这一条，**不新增任何撤销条件**；
+//   - 读不到 settings_kv 一律**放行**（fail-open）：设置库不可用不能把整个
+//     管理面锁死在 401。
+func RevokedByPasswordChange(ctx context.Context, db *pgxpool.Pool, userID int, issuedAt time.Time) bool {
+	return authRevocationProbe(ctx, db, userID, issuedAt)
+}
+
 // revokeUserTokensForPasswordChange advances the user's revocation epoch to
 // now, atomically merging into the shared settings_kv row.
 func revokeUserTokensForPasswordChange(ctx context.Context, db *pgxpool.Pool, userID int) error {

@@ -856,6 +856,14 @@
         "property": "width",
         "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
         "witness": "该元素的 width 由数据绑定（.pct-fill 是进度条 / 占比条）"
+      },
+      {
+        "key": "components/live-topology/ProviderTodayRail.vue|.rail__bar|width",
+        "file": "components/live-topology/ProviderTodayRail.vue",
+        "selector": ".rail__bar",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（与 QueuePerspectivePanel .qp-node-card-wrap 同款先例 —— 供应商当日占比条，宽度 = share*100%）；60s 轮询刷新时平滑移动让「占比变了」可感知",
+        "witness": "该元素的 width 由数据绑定（:style width = share*100%）"
       }
     ]
   },
@@ -896,6 +904,16 @@
         "name": "action-overflow-enter",
         "file": "components/ui/ActionOverflowMenu.vue",
         "reason": "「更多」溢出菜单：从触发器下方展开，空间关系要连续"
+      },
+      {
+        "name": "cp-row-in",
+        "file": "components/live-topology/ClientRequestPanel.vue",
+        "reason": "/live 左面板新请求行入场：只有新到达的行动（useNewArrivals 判定），一条新请求在列表里「长出来」的空间关系要看得见 —— 实时流页面的核心信息就是「有新东西到达」"
+      },
+      {
+        "name": "pp-row-in",
+        "file": "components/live-topology/ProviderResponsePanel.vue",
+        "reason": "/live 右面板新响应行入场：与 cp-row-in 同款语义（响应侧到达的镜像表达）；独立命名保持裁决簿按 name 记账的口径"
       }
     ]
   },

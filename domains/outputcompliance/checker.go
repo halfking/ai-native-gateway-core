@@ -682,11 +682,11 @@ func (c *Checker) detectInternalIP(output string, policy *Policy) []ComplianceIs
 // 判定按**类型名**而不是按规则名——DB 里的 pattern_type 由运维写，
 // 规则名（pattern_name）各部署叫法不同，类型名才是稳定的语义轴。
 func isAddressPIIType(piiType string) bool {
-	switch strings.ToLower(strings.TrimSpace(piiType)) {
-	case "ip", "ip_address", "ipv6", "server_ip", "internal_ip", "address", "domain", "hostname":
-		return true
-	}
-	return false
+	// r1038b（2026-10-27）：口径收进 domains/sanitizerules 的**唯一**一份
+	// （此前与 security/sanitize 的 scopedType 各写一份且已漂移）。
+	// ★ 清单里**故意没有** `url`：URL 能携带凭据（?token=…），整类豁免等于
+	// 给查询串里的令牌开后门；也没有 `custom`：运维显式自定义的规则要遮。
+	return sanitizerules.IsAddressFamilyType(piiType)
 }
 
 // shouldCheckPIIType 判断是否检查某类 PII

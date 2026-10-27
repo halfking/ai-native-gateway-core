@@ -1,32 +1,38 @@
 [
   {
-    "file": "src/components/RouteIncidentDrawer.vue",
+    "file": "web/src/components/RouteIncidentDrawer.vue",
     "rule": "V5-uppercase-transform",
     "selector": ".event-row__type",
     "reason": "★ 服从仓内明文决定：这枚徽标显示的是 API 返回的**拉丁事件 token**（opened / failure_observed / recovery_progress / recovered）⇒ 属数据而非界面文案，大写后更易扫读；该文件 CSS 里已有明文论证。DESIGN.md §4 规则 5 禁的是「t() 出来的界面标签」被 uppercase。"
   },
   {
-    "file": "src/components/FpSlotVisualizer.vue",
+    "file": "web/src/components/FpSlotVisualizer.vue",
     "rule": "V1-ghost-card",
     "selector": ".fp-tooltip",
     "reason": "★ 这条描边是**语义色**（`1px solid var(--purple)`，紫 = 探针槽位）⇒ 承载信息，不是抬升声明；craft-floor 禁的是「1px 中性描边压在宽软阴影下面」的幽灵卡片。删掉描边会丢掉「这是探针槽位」这个语义 ⇒ 保留描边与阴影，登记豁免。"
   },
   {
-    "file": "src/components/RouteIncidentDrawer.vue",
+    "file": "web/src/components/RouteIncidentDrawer.vue",
     "rule": "V1-ghost-card",
     "selector": ".export-banner__panel",
     "reason": "★ 这条描边是**语义色**（`1px solid var(--success)`）⇒ 绿色描边本身就是「导出成功」这个信号（DESIGN.md §8：状态要同时有颜色、形状、颜色之外的第二信号）⇒ 不是抬升声明。删掉它会把成功横幅降级成一块无差别的灰面板。"
   },
   {
-    "file": "src/views/RoutingDashboardView.vue",
+    "file": "web/src/views/RoutingDashboardView.vue",
     "rule": "V2-colored-side-stripe",
     "selector": ".resolve-row.is-unroutable",
     "reason": "★ 服从仓内明文决定：该文件 CSS 里有明文注释记载了这个取舍 —— 「不可用行不用 opacity 叠加（半透叠半透在双主题下都糊成一团），改用 左侧 3px 红色色条 + --kx-danger-soft 浅红背景，token 已含 day/night 两套」。⇒ 色条与软填充底是**成对**的刻意设计（双主题可辨），不是 AI 痕迹 ⇒ 保留并登记。"
   },
   {
-    "file": "src/views/RoutingDashboardView.vue",
+    "file": "web/src/views/RoutingDashboardView.vue",
     "rule": "V3-glyph-as-icon",
     "selector": ".pipe-dot",
     "reason": "★ 这是 **L1/L2 pipeline 步骤之间的分隔箭头**（`选模型 › 路由 › …`），与同文件的 `.pipe-bridge`（层间的 `↓`）同族 ⇒ 属**流程连线的示意符号**，不是一套图标系统里的图标位 ⇒ 不适用 ban-glyph-icons。★ 口径差异的来源要说清楚：门命中 `.pipe-dot` 是因为 class 名里的 `dot` 属于图标语义词，而 `.pipe-bridge` 的 class 名不含图标语义词 ⇒ 两者在门里的待遇不同；这是 **class 命名差异**，不是判据对流程箭头自相矛盾（判据另有「流程箭头在非按钮位不判」的显式条款，见 aiSmells.ts 的 FLOW_ARROWS）。"
+  },
+  {
+    "file": "web/src/views/ExamplesView.vue",
+    "rule": "V3b-glyph-data-driven",
+    "selector": "icon",
+    "reason": "★ 这三枚字形（🍒 Cherry Studio / 🤖 Claude Desktop / 🧩 Roo Code）是**第三方客户端的品牌标识**，不是本产品的图标系统 ⇒ craft-floor 的 ban-glyph-icons 禁的是「用字形顶替本产品那套线性图标」，第三方 logo 没有 SVG 替代品 ⇒ 登记豁免。★ 边界：同一文件里若出现**非品牌**的 emoji 图标位（如设置分类图标那种），仍会被判红 —— 本轮那类已全部换成 element-plus 组件（见 SettingsView.vue）。★ 遗留项：这几张 guide 卡片目前共用同一个标题（客户端接入指南），品牌区分全靠这枚字形 ⇒ 更好的做法是给每张卡片自己的品牌名（列入下一轮工作线）。"
   }
 ]

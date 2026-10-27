@@ -20,7 +20,7 @@
 //
 // 每格显示窗口内命中数，失败转红；**没有数据就是 0**，不编数字。
 
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, reactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   GATEWAY_BRANCH_MODULES,
@@ -81,6 +81,39 @@ const outPlugins = computed(() => (props.plugins ?? []).filter((p) => p.directio
 
 const showQueue = computed(() => typeof props.queueDepth === 'number' && props.queueDepth >= 0)
 
+/** 模块格「刚处理过请求」脉冲（2026-10-28 live 页动效轮）：窗口内命中数
+ *  **增加**的那一格闪一次（460ms 渐隐）—— 「这个模块正在干活」在图上
+ *  有了直接表达，而不只是一个静默更新的数字。
+ *  ★ 首见不闪：stats 从空到有值是「数据到达」不是「新活动」；
+ *  ★ count 下降不闪：窗口滑动导致计数回落，不是新请求命中。 */
+const flashing = reactive(new Set<GatewayModuleKey>())
+const flashTimers = new Map<GatewayModuleKey, number>()
+const lastCounts = new Map<GatewayModuleKey, number>()
+
+watch(
+  () => props.stats,
+  (stats) => {
+    for (const [key, s] of Object.entries(stats ?? {})) {
+      const k = key as GatewayModuleKey
+      const prev = lastCounts.get(k)
+      if (prev !== undefined && s.count > prev) {
+        flashing.add(k)
+        const old = flashTimers.get(k)
+        if (old) window.clearTimeout(old)
+        flashTimers.set(
+          k,
+          window.setTimeout(() => flashing.delete(k), 470),
+        )
+      }
+      lastCounts.set(k, s.count)
+    }
+  },
+  { deep: true, immediate: true },
+)
+onBeforeUnmount(() => {
+  for (const t of flashTimers.values()) window.clearTimeout(t)
+})
+
 const title = computed(() => t('liveTopology.gateway.title'))
 </script>
 
@@ -106,7 +139,7 @@ const title = computed(() => t('liveTopology.gateway.title'))
           <button
             type="button"
             class="gw__cell"
-            :class="[`is-${cell.tone}`, { 'is-branch': cell.branch, 'is-selected': cell.key === selected }]"
+            :class="[`is-${cell.tone}`, { 'is-branch': cell.branch, 'is-selected': cell.key === selected, 'is-flash': flashing.has(cell.key) }]"
             :data-testid="`gw-cell-${cell.key}`"
             :aria-label="`${cell.label} ${cell.count}`"
             @click="emit('select-module', cell.key)"
@@ -143,7 +176,9 @@ const title = computed(() => t('liveTopology.gateway.title'))
           :class="{ 'is-busy': (queueDepth ?? 0) > 0 }"
           data-testid="gw-queue-depth"
         >{{ t('liveTopology.lane.queue', { n: queueDepth ?? 0 }) }}</span>
-        <span class="gw__store-link gw__store-link--in" aria-hidden="true">↕</span>
+        <!-- 带↕连接线：竖向流动虚线 = 「存储之后继续转发」，不是死仓库。
+             请求侧向下流入存储带（请求先落库），响应侧向上流回出站链。 -->
+        <span class="gw__store-link" aria-hidden="true"><i class="gw__flow-line gw__flow-line--down" /></span>
         <template v-for="(cell, i) in storeCells" :key="cell.key">
           <span v-if="i > 0" class="gw__store-arrow" aria-hidden="true">⇄</span>
           <button
@@ -159,7 +194,7 @@ const title = computed(() => t('liveTopology.gateway.title'))
             <span class="gw__cell-count">{{ cell.count }}</span>
           </button>
         </template>
-        <span class="gw__store-link gw__store-link--out" aria-hidden="true">↕</span>
+        <span class="gw__store-link" aria-hidden="true"><i class="gw__flow-line gw__flow-line--up" /></span>
       </div>
     </div>
 
@@ -173,7 +208,7 @@ const title = computed(() => t('liveTopology.gateway.title'))
           <button
             type="button"
             class="gw__cell"
-            :class="[`is-${cell.tone}`, { 'is-branch': cell.branch, 'is-selected': cell.key === selected }]"
+            :class="[`is-${cell.tone}`, { 'is-branch': cell.branch, 'is-selected': cell.key === selected, 'is-flash': flashing.has(cell.key) }]"
             :data-testid="`gw-cell-${cell.key}`"
             :aria-label="`${cell.label} ${cell.count}`"
             @click="emit('select-module', cell.key)"
@@ -399,17 +434,72 @@ const title = computed(() => t('liveTopology.gateway.title'))
   color: var(--kx-warning);
 }
 
-/* 带↕连接线：流动虚线 = 「存储之后继续转发」，不是死仓库 */
+/* 带↕连接线：竖向流动虚线（2026-10-28 由 ↕ 字符升级 —— 字形当图标
+   是 craft-floor 禁的形态，且一条真的在流动的线比一个闪烁的字更能
+   表达「存储后转发」的方向）。linear + background-position 匀速位移
+   ⇒ M7 的「无限循环匀速」判据成立。 */
 .gw__store-link {
   flex: none;
-  font-size: 12px;
-  color: var(--kx-warning);
-  animation: gw-store-pulse 1.8s ease-in-out infinite;
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  padding: 3px 0;
 }
 
-@keyframes gw-store-pulse {
-  0%, 100% { opacity: 0.45; }
-  50% { opacity: 1; }
+.gw__flow-line {
+  display: block;
+  width: 2px;
+  height: 100%;
+  border-radius: 1px;
+  background: repeating-linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--kx-warning) 60%, transparent) 0 3px,
+    transparent 3px 7px
+  );
+}
+
+/* 进站链收完请求向下流入存储带；出站链自存储带向上回流。
+   pattern 周期 7px ⇒ 位移 7px 无缝循环。 */
+.gw__flow-line--down {
+  animation: gw-flow-down 0.9s linear infinite;
+}
+
+.gw__flow-line--up {
+  animation: gw-flow-up 0.9s linear infinite;
+}
+
+@keyframes gw-flow-down {
+  from { background-position: 0 0; }
+  to { background-position: 0 7px; }
+}
+
+@keyframes gw-flow-up {
+  from { background-position: 0 0; }
+  to { background-position: 0 -7px; }
+}
+
+/* 模块格「刚处理过请求」脉冲：从命中色指数减速回落到默认
+   （470ms ≤ 800ms 一次性上限；起始帧不透明度不为 0 ⇒ 非入场类）。 */
+.gw__cell.is-flash {
+  animation: gw-cell-flash 0.47s var(--kx-motion-ease-out);
+}
+
+@keyframes gw-cell-flash {
+  0% {
+    border-color: color-mix(in srgb, var(--kx-primary) 80%, var(--kx-border));
+    background-color: color-mix(in srgb, var(--kx-primary) 16%, var(--kx-surface));
+  }
+}
+
+.gw__cell.is-error.is-flash {
+  animation-name: gw-cell-flash-error;
+}
+
+@keyframes gw-cell-flash-error {
+  0% {
+    border-color: var(--kx-danger);
+    background-color: color-mix(in srgb, var(--kx-danger) 14%, var(--kx-surface));
+  }
 }
 
 .gw__queue {
@@ -478,6 +568,13 @@ const title = computed(() => t('liveTopology.gateway.title'))
   .gw__cell,
   .gw__store-link {
     transition: none;
+    animation: none;
+  }
+  /* 新增动效的 reduced-motion 路径：脉冲与流线停下（静态虚线仍表达
+     「连接」，信息不丢），hover 反馈保留。 */
+  .gw__cell.is-flash,
+  .gw__flow-line--down,
+  .gw__flow-line--up {
     animation: none;
   }
 }

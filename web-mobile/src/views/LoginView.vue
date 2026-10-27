@@ -155,7 +155,7 @@ async function submit(): Promise<void> {
             <span class="login__site-env" :data-env="site.env">{{ t(`login.siteEnv.${site.env}`) }}</span>
             <span class="login__site-name">{{ site.name }}</span>
           </span>
-          <span class="login__site-caret" aria-hidden="true">{{ sitePanelOpen ? '▴' : '▾' }}</span>
+          <AppIcon name="chevron-down" :size="14" class="login__site-caret" :class="{ 'is-open': sitePanelOpen }" />
         </button>
 
         <ul v-show="sitePanelOpen" id="mobile-login-site-list" class="login__site-list">
@@ -411,9 +411,24 @@ async function submit(): Promise<void> {
   font-weight: 600;
 }
 
+/* ★ 2026-10-27 第 27 增量：★ 这里原来渲染的是 Unicode 字形 `▴` / `▾`
+ *   ⇒ ★ craft-floor 硬禁「Unicode 字形顶替图标系统」⇒ ⇒ 换成画出来的箭头。
+ *   ★ 展开态用 `rotate(180deg)` 翻上去 —— 与桌面端 `FilterBar` /
+ *     `ActionOverflowMenu` 同口径（一枚下向箭头 + 旋转，不登记第二枚路径）。 */
 .login__site-caret {
   color: var(--app-text-secondary);
-  font-size: 12px;
+  transition: transform var(--app-transition);
+}
+
+.login__site-caret.is-open {
+  transform: rotate(180deg);
+}
+
+/* prefers-reduced-motion：取消旋转（UI规范 12 §4） */
+@media (prefers-reduced-motion: reduce) {
+  .login__site-caret {
+    transition: none;
+  }
 }
 
 /* 环境徽标：生产用 danger 醒目，避免在生产站点上误操作。 */
