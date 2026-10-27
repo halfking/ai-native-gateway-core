@@ -11768,3 +11768,41 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ⇒ ★★ ⇒ **★ C 的归属用【同深度对拍】坐实：★ 同一条门在 origin/main 纯净树上逐字同样的 5 条红 ⇒ ⇒ 零条本轮引入
 > ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ⇒ 不代改他人工作面 ⇒ ⇒ ⇒ ★★ ⇒ ⇒ 列入属主裁决清单**。
 > ⇒ ⇒ ⇒ ★★★★ **★★ 完整记录见 `docs/audit/2026-10-27-R168-凭据面板total_requests改走底表两臂.md`**（§0~§11）。
+> **2026-10-28 两层路由审计与业界方案对比轮（goal 会话，纯研究轮——零代码改动）**：
+> ★ 目标（用户原话）：重新审计两层路由逻辑 + 调研业务成熟方案/算法（节点状态保持、
+> 成本计算含业务模式、粘性保持），确保高流量复杂场景稳定输出，**状态及时更新但不因
+> 闪动导致服务抖动**。产出审计档 `docs/audit/2026-10-28-两层路由审计与业界方案对比.md`
+> （现状全景 §1 / 业界普查 §2 共 13 主题 / 逐维对比 §3 / 分级方案 §4）。
+> ⇒ ★ **方法**：主会话实读核心文件（router.go / router_scoring.go / breaker.go /
+> sticky.go / v_routable 视图 / retry_schedule.go / node_state.go）+ 三个并行审计 agent
+> （主链路打分 / 节点状态全链路 / 成本粘性）交叉复核，逐条吻合；业界侧 13 主题检索
+> （Envoy outlier / NGINX+HAProxy hysteresis+slow-start / LiteLLM / OpenRouter /
+> KV-cache 感知(llm-d/SGLang/Dynamo/CacheRoute) / Azure prompt-cache 粘性 / P2C+EWMA /
+> CHWBL / CB+自适应并发(Netflix AIMD) / retry budget / one-api·new-api / hedged
+> requests / RouteLLM），每条附来源链接。
+> ⇒ ★★ **总评**：判死侧（分错误类阈值+指数退避+双确认+协议红分级）已达业界 passive
+> health check 深度；打分选路（成本约束 P2C + 11 因子 composite + 首跳加权轮询）优于
+> one-api/new-api 一个量级；**结构性差距集中在恢复侧与占比防护侧**。
+> ⇒ ★★★ **五条差距（G1~G5）**：G1 恢复无渐进——三处恢复点同构「1 成功=全量回池」
+> （breaker RecordSuccess / NodeState 成功清空滑窗 / 探针成功恢复全部绑定），无 Envoy·HAProxy
+> slow-start；G2 hysteresis 反向——判死要 2-3 连败、恢复只要 1 成功 ⇒ 亚健康节点以冷却周期
+> 持续振荡；★ **NodeState 的 disable_count 只写不读**（node_state.go:995 递增、:104 注释
+> 声明用途未实现，已 grep 复核确认），而 URSM v2 已实现同型公式 `cool×2^disable_count`
+> 封顶 1800s（config.go:95）⇒ 两套 Redis 状态面判死退避不同步；G3 无成功率统计弹出（Envoy
+> success-rate ejection 的池化偏差判定）；G4 无重试占比预算+退避无 jitter（注释自认）；
+> G5 六状态面一致性税 + URSM v2 与 legacy P2C 双真值叠加（R149 已实证「静默写回失败可架空
+> 7 级退避」）。
+> ⇒ ★★ **方案（§4，全部 env 可关、先观测后启用）**：P0-A 恢复期渐进回流量（RecoveredAt +
+> 抽签份额 ramp，纯打分层不动状态机，低流量节点不会卡死）；P0-B NodeState 判死退避对齐
+> URSM 公式（消费 disable_count，公式现成）；P0-C retry budget（重试≤活跃请求×25%+10）+
+> 全抖动 jitter；P1-A 成功率池化弹出（池深≥3+样本≥30 护栏，先 shadow）；P1-B 粘性三修
+> （settings/sticky_ttl.go 全套 TTL 无消费者 ⇒ 接线或删；删除不落 DB ⇒ 重启复活；cached_tokens
+> 占比作为新打分维度——llm-d 思想的网关版）；P1-C 成本三修（CNY cohort 未折算 7.2 倍失真 /
+> unknown 价 maximal 惩罚+46.8% 覆盖率扭曲排序 / 汇率配置化）；P1-D 状态面收敛（短期：mirror
+> 写失败升级为指标+告警+对拍门；长期：NodeState 单一权威、breaker 并入、双真值收敛——
+> v2 的 EWMA+SR5m 回流 legacy composite 治「legacy 链无 EWMA」）；P2 储备（EWMA 进 legacy /
+> hedged requests 仅非流式 / routingopt ML 启用评估 / CacheRoute 联合规划）。
+> ⇒ ★ **实施顺序建议**：P0-A+P0-B 同轮（恢复渐进+判死退避指数化=「及时更新但不闪动」
+> 闭环）；P1-D 对拍门先行（R149 教训：它是其它一切的地基）。
+> ⇒ ★★ **本轮未证实（如实记）**：生产 env 实际取值（全文按代码默认值论述）；Go 顶层 rand
+> 争用；**未改动任何生产代码**——所有方案需按 §4 各自验收量具独立实施。
