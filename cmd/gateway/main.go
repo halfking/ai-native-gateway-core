@@ -973,6 +973,8 @@ func main() {
 	// Started after dbConn is ready; stopped before pools.CloseAll so its
 	// final tick can still reach the DB.
 	var sessionAggregateOutboxReaperForShutdown any
+	// sessionBodiesCleanupForShutdown — W1.4 hourly body retention cleaner.
+	var sessionBodiesCleanupForShutdown any
 	// sessionDigestBackfillForShutdown — turn-digest 第二阶段 (2026-09-04):
 	// 后台回填 session_turns.digest jsonb envelope（存量 NULL 行）。与 reaper
 	// 同一生命周期：dbConn 就绪后启动，pools.CloseAll 前排空 in-flight 批。
@@ -2924,6 +2926,7 @@ func main() {
 		if sessionAggregateOutboxReaperForShutdown != nil {
 			slog.Info("session aggregate outbox reaper started (FOR UPDATE SKIP LOCKED, 30s tick, batch=100, max_attempts=10)")
 		}
+		sessionBodiesCleanupForShutdown = startSessionBodiesCleanupWorker(dbConn.Pool())
 
 		// Spec §12 GAP 2 closure (2026-09-15, migration 712): durable replay
 		// queue for the sessionv2mirror shadow write. Failed mirror writes
@@ -8290,6 +8293,7 @@ func main() {
 		// outbox rows are enqueued) and BEFORE pools.CloseAll (so the final
 		// tick's DB transaction can still reach the server).
 		stopSessionAggregateOutboxReaper(sessionAggregateOutboxReaperForShutdown)
+		stopSessionBodiesCleanupWorker(sessionBodiesCleanupForShutdown)
 		// GAP-2 closure (migration 712): drain the mirror outbox reaper.
 		// Same ordering contract as the aggregate reaper above.
 		stopSessionMirrorOutboxReaper(sessionMirrorOutboxReaperForShutdown)

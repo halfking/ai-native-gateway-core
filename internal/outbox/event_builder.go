@@ -3,6 +3,8 @@ package outbox
 import (
 	"fmt"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // BuildRequestCompletedEvent constructs a request.completed.v1 event envelope from
@@ -61,11 +63,8 @@ func BuildRequestCompletedEvent(
 			"total_tokens":      promptTokens + completionTokens,
 		},
 		"latency_ms": latencyMs,
-		"body_refs": map[string]string{
-			"prompt_ref":   fmt.Sprintf("internal://body/%s/prompt", requestID),
-			"response_ref": fmt.Sprintf("internal://body/%s/response", requestID),
-		},
 	}
+	attachBodyRefs(payload, tenantID, requestID)
 
 	envelope := EventEnvelope{
 		EventID:          eventID,
@@ -79,6 +78,17 @@ func BuildRequestCompletedEvent(
 	}
 
 	return envelope, nil
+}
+
+func attachBodyRefs(payload map[string]any, tenantID, requestID string) {
+	// W1.3: body_refs are Gateway pointers; omit entirely when consent=off.
+	if !settings.RecordingConsentEnabled(tenantID) {
+		return
+	}
+	payload["body_refs"] = map[string]string{
+		"prompt_ref":   fmt.Sprintf("internal://body/%s/prompt", requestID),
+		"response_ref": fmt.Sprintf("internal://body/%s/response", requestID),
+	}
 }
 
 func min(a, b int) int {
@@ -144,11 +154,8 @@ func BuildRequestCompletedEventV2(
 			"total_tokens":      promptTokens + completionTokens,
 		},
 		"latency_ms": latencyMs,
-		"body_refs": map[string]string{
-			"prompt_ref":   fmt.Sprintf("internal://body/%s/prompt", requestID),
-			"response_ref": fmt.Sprintf("internal://body/%s/response", requestID),
-		},
 	}
+	attachBodyRefs(payload, tenantID, requestID)
 
 	envelope := EventEnvelope{
 		EventID:          eventID,

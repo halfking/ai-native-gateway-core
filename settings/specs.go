@@ -87,5 +87,7 @@ func TenantSpecs() []*Spec {
 	out := RateLimitTenantSpecs()
 	// 会话全景分析模块的租户级调优配置（model/strategy/cluster 等）。
 	out = append(out, SessionAnalyticsTenantSpecs()...)
+	// 2026-10-28 W1.3: 录制同意（默认 off）+ 正文保留/容量（与 request_logs 解耦）。
+	out = append(out, RecordingConsentSpecs()...)
 	return out
 }

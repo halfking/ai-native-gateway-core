@@ -2393,6 +2393,7 @@ files=(
   #   配套代码：whisper /inference 传输
   #   （domains/streaming/audio_whisper_stt.go 按 catalog_code 钉死）。
   "$ROOT_DIR/sql/migrations/startup/911_local_audio_catalog.sql"
+  "$ROOT_DIR/sql/migrations/startup/912_session_recording_trash.sql"
 )
 
 

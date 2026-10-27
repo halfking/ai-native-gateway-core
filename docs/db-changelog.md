@@ -10494,3 +10494,11 @@ macos-say :8086），纯 INSERT ON CONFLICT 幂等；生产应用由 deploy-seam
 |-----------|------|---------|--------|
 | 911 | `911_local_audio_catalog.sql` | `174f27ce0f6435f0c39df5a61a9deb43fb621bdc087c2bed112feeeb034f56bb` | applied+verified |
 
+## 2026-10-28 — W1.5 session recording trash (migration 912)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 912 | `912_session_recording_trash.sql` | `f95e509508dcfdd4c2b9c067501e93a5d49cd3faa5300100cc8555c35c94c8c1` | pending |
+
+Adds `session_bodies_trash` + `session_hidden` for soft-delete / restore / purge.
+Recording-consent body retention is independent of request_logs TTL.
