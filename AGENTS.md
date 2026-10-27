@@ -12448,3 +12448,36 @@ index b953a6f03..555ef83c4 100644
 ★ **登记簿里 `classNeedsDetailsLeg` / `classNeedsExpressionReplication` 两族**未批量迁移；
 ★ **导出 JSON 新增 `request_id` 键的下游严格校验**；★ **前端/移动端对导出包 `request_id` 的展示**未核对；
 ★ **211/252 生产执行**（本轮无 DDL）。
+ **2026-10-28 R174：252 PG SQL 日志审计轮（24h 窗 10-27 06:05 → 10-28 06:07）**
+（会话 goal，承接 R168；★ 轮次号 R169/R170/R172/R173 均被并行会话占用 ⇒ 让号取
+R174，LESSONS §484 同被占 ⇒ 取 **§485**）：★ **主机孤儿 grep 指纹 18 小时后原样
+复发**（R168 清理后当天下午，其他项目 AI 会话再留 6 条 `bash -s`+失控 grep，
+烧 27.6 CPU 小时）⇒ PID 精确清理 **load 32.9 → 19.3**；**连续两轮同指纹 ⇒ 已是
+模式问题**，看门 cron 提案已写进审计档（需用户授权，未安装）。⇒ ★ redis bgsave
+遗留项定案：宿主 6379 的 redis 经 conmon 定位 = **pms-redis 容器（另一项目）**，
+夜间 2-3h bgsave 挂起移交该属主，本仓不再跟踪。⇒ ★★ **主修复 = 模型建议列表
+（`model alternatives`）结果缓存**：错误榜首 `WITH policy` 查询 **2,230 次/24h**
+被 800ms 同步预算取消——R148 的死上下文守卫只挡「进来前已死」，挡不住
+「跑超时被杀」；**pgss mean 411ms / max 1,734ms 横跨预算两侧**（干净负载
+EXPLAIN 1.27s，大头是 `v_routable_credential_models` 枚举 31,349 个凭据×模型对
+收敛出 51 个模型）⇒ **「换个模型试试」建议列表实际上从未送达**（负载最高、
+最需要建议时恰是必被杀的时候）。修法 = **(tenant, taskType) 键 TTL 2min 缓存 +
+serve-stale-while-revalidate + singleflight 后台重算（5s 解耦预算）+ 冷未命中保留
+一次 800ms 同步尝试**；请求级排除从 SQL `$1` 改为 Go 侧 `filterAlternatives`
+（缓存存全量、按请求过滤+截断）。⇒ ★ **验证**：7 新单测；**race 检测器当场抓到
+真数据竞争**（`lookup` 返回活条目指针、锁外读字段 ⇒ 改锁内值快照）；
+**变异臂 5/5**（摘缓存/摘死ctx守卫/TTL失效/singleflight失效/服务路径摘过滤，
+还原 md5 逐字一致）；`go build ./...` ✓ / `go vet` ✓ / streaming 全包 `-race` PASS；
+**生效待下次部署**。⇒ ★ 闭环验证：A 族 23505 / F1 / F3 / WITH neg 本窗**全零**
+（§143.105、§145 闭环持续）；stats rollup 37 次取消持续到窗末 = **R168 修复尚未
+部署**（符合预期）。⇒ ★ 测量污染记账（第三天连续）：平行会话夜间 schema 普查
+`count(*) FROM session_turns` **单条 98.9 分钟** + usage_ledger 完整性反查 3×15min。
+⇒ ★ 登记 6 项不修：`scheduled_tasks` $4 类型冲突（**pocket 项目，7,000+ 次连续
+100% 失败、每小时整 12 次，R148 移交至今未修，修法一行 `$4::bigint`**）；
+ursm 仪表（仍在 ursmcheck 轨）；probe necessity 索引 93% 读放大（35ms 健康，
+观察项）；/v1/models `WITH matched` 双峰（~70min/天，**§五 修法的下一个复用
+候选**）；assets 表 34KB/行物理膨胀（VACUUM FULL 属维护窗+授权）；外部噪音本窗
+安静（pg_sleep/search 扫表全零）。⇒ 审计档
+`docs/audit/2026-10-28-R174-252-SQL日志审计轮.md`；通用式见 `LESSONS.md` **§485**
+（预算守卫只挡一种死法 / mean-max 横跨预算=薛定谔的送达 / 受锁方法只准返回值
+快照 / Once 不得覆盖注入缝 / 孤儿进程清理是止痛不是治病）。

@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -401,5 +404,207 @@ func TestFind_DeadContextSkipsQuery(t *testing.T) {
 	}
 	if rec.called {
 		t.Fatal("dead request context must not reach the pool (Query was called)")
+	}
+}
+
+// ---- R173（2026-10-28，252 PG 日志审计）：结果缓存路径 ----
+//
+// 病：查询内在成本横跨 800ms 同步预算两侧（pgss mean 411ms / EXPLAIN 干净负载
+// 1.27s / max 1.73s），预算命中即被取消——252 生产 24h 窗 2,230 次「canceling
+// statement due to user request」，建议列表实际上从未送达。R148 的死上下文守卫
+// 只挡「进来前已死」，挡不住「跑超时被杀」。
+// 修：按 (tenant, taskType) 缓存 + singleflight 后台重算（stale-while-revalidate），
+// 冷未命中保留一次 800ms 同步尝试。以下用 queryFn 缝观察查询次数与时机。
+
+// countingQueryer 形态的 queryFn 桩：计数、可编程返回、可阻塞。
+type stubAlternativesQuery struct {
+	mu        sync.Mutex
+	calls     int
+	block     chan struct{} // 非 nil 时每次调用阻塞直到被关闭
+	failN     int           // 前 failN 次返回错误
+	result    []ModelAlternative
+	deadlines []time.Duration // 每次调用收到的 ctx 剩余预算（无预算记 0）
+}
+
+func (s *stubAlternativesQuery) recordDeadline(ctx context.Context) time.Duration {
+	d, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+	return time.Until(d)
+}
+
+func (s *stubAlternativesQuery) fn(ctx context.Context, excludeModel, tenantID, taskType string) ([]ModelAlternative, error) {
+	s.mu.Lock()
+	s.calls++
+	n := s.calls
+	bl := s.block
+	s.deadlines = append(s.deadlines, s.recordDeadline(ctx))
+	s.mu.Unlock()
+	if bl != nil {
+		<-bl
+	}
+	if n <= s.failN {
+		return nil, context.DeadlineExceeded
+	}
+	return s.result, nil
+}
+
+func (s *stubAlternativesQuery) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func waitForCalls(t *testing.T, s *stubAlternativesQuery, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.count() >= want {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("queryFn called %d times, want >= %d", s.count(), want)
+}
+
+// 缓存命中：TTL 内的第二次 Find 不得再发查询。
+func TestFind_CacheHitSkipsSecondQuery(t *testing.T) {
+	stub := &stubAlternativesQuery{result: []ModelAlternative{{Model: "alt-a"}, {Model: "Req"}, {Model: "alt-b"}}}
+	finder := &ModelAlternativesFinder{db: &recordingQueryer{}, queryFn: stub.fn}
+
+	got1 := finder.Find(context.Background(), "req", "default", "")
+	if len(got1.Alternatives) != 2 {
+		t.Fatalf("first Find alternatives = %d, want 2 (requested model excluded)", len(got1.Alternatives))
+	}
+	got2 := finder.Find(context.Background(), "req", "default", "")
+	if stub.count() != 1 {
+		t.Fatalf("queryFn called %d times across two Finds, want 1 (cache hit)", stub.count())
+	}
+	if len(got2.Alternatives) != 2 || got2.Alternatives[0].Model != "alt-a" {
+		t.Fatalf("cached result mismatch: %+v", got2.Alternatives)
+	}
+}
+
+// 缓存服务的列表必须按请求排除 requestedModel 并截断到上限。
+func TestFilterAlternatives_ExcludesRequestedAndCaps(t *testing.T) {
+	alts := make([]ModelAlternative, 0, maxModelAlternatives+2)
+	for i := 0; i < maxModelAlternatives+2; i++ {
+		alts = append(alts, ModelAlternative{Model: fmt.Sprintf("m%02d", i)})
+	}
+	alts[3].Model = "Requested"
+	got := filterAlternatives(alts, "requested")
+	if len(got) != maxModelAlternatives {
+		t.Fatalf("len = %d, want %d", len(got), maxModelAlternatives)
+	}
+	for _, a := range got {
+		if strings.EqualFold(a.Model, "requested") {
+			t.Fatalf("requested model leaked into suggestions: %+v", got)
+		}
+	}
+	if got[0].Model != "m00" || got[3].Model != "m04" {
+		t.Fatalf("unexpected filtering: %v", got)
+	}
+}
+
+// 新鲜的空列表是有意义的答案（当前无路由可达），不得触发重算。
+func TestFind_FreshEmptyServedWithoutRequery(t *testing.T) {
+	stub := &stubAlternativesQuery{result: []ModelAlternative{}}
+	finder := &ModelAlternativesFinder{db: &recordingQueryer{}, queryFn: stub.fn}
+	finder.Find(context.Background(), "req", "default", "")
+	waitForCalls(t, stub, 1)
+	time.Sleep(20 * time.Millisecond) // 给可能误触发的后台重算留窗口
+	got := finder.Find(context.Background(), "req", "default", "")
+	if stub.count() != 1 {
+		t.Fatalf("fresh empty answer must not requery; calls = %d", stub.count())
+	}
+	if len(got.Alternatives) != 0 {
+		t.Fatalf("expected empty alternatives, got %d", len(got.Alternatives))
+	}
+}
+
+// TTL 过期：服务过期值的同时后台重算恰好一次，重算完成后缓存翻新。
+func TestFind_TTLExpiryServesStaleAndRefreshesOnce(t *testing.T) {
+	stub := &stubAlternativesQuery{result: []ModelAlternative{{Model: "old"}}}
+	now := time.Now()
+	c := newAlternativesCache(time.Minute)
+	c.now = func() time.Time { return now }
+	finder := &ModelAlternativesFinder{db: &recordingQueryer{}, cache: c, queryFn: stub.fn}
+
+	if got := finder.Find(context.Background(), "req", "default", ""); got.Alternatives[0].Model != "old" {
+		t.Fatalf("first find: %+v", got.Alternatives)
+	}
+	stub.result = []ModelAlternative{{Model: "new"}}
+	now = now.Add(2 * time.Minute) // 越过 TTL
+
+	got := finder.Find(context.Background(), "req", "default", "")
+	if got.Alternatives[0].Model != "old" {
+		t.Fatalf("stale value must be served while refreshing; got %+v", got.Alternatives)
+	}
+	waitForCalls(t, stub, 2)
+	time.Sleep(10 * time.Millisecond)
+
+	// 重算完成后：新值在缓存里，且不再发查询。
+	got = finder.Find(context.Background(), "req", "default", "")
+	if stub.count() != 2 {
+		t.Fatalf("post-refresh Find must hit cache; calls = %d", stub.count())
+	}
+	if got.Alternatives[0].Model != "new" {
+		t.Fatalf("refreshed value not served: %+v", got.Alternatives)
+	}
+}
+
+// singleflight：过期键的重算权只有一个赢家，第二个请求不重复发查询。
+func TestFind_SingleflightDeduplicatesBackgroundRefresh(t *testing.T) {
+	stub := &stubAlternativesQuery{result: []ModelAlternative{{Model: "x"}}}
+	release := make(chan struct{})
+	stub.mu.Lock()
+	stub.block = release
+	stub.mu.Unlock()
+	now := time.Now()
+	c := newAlternativesCache(time.Minute)
+	c.now = func() time.Time { return now }
+	finder := &ModelAlternativesFinder{db: &recordingQueryer{}, cache: c, queryFn: stub.fn}
+
+	// 预置一个**带列表**的过期槽（nil 列表=「从未成功」态，按设计会落冷路径，
+	// 那条路径本就不在 singleflight 保护范围内——保护的是后台重算）。
+	c.store(cacheKey("default", ""), []ModelAlternative{{Model: "old"}})
+	c.mu.Lock()
+	c.entries[cacheKey("default", "")].computedAt = now.Add(-2 * time.Minute)
+	c.mu.Unlock()
+	now = now.Add(2 * time.Minute)
+
+	done := make(chan ModelAlternativesResult, 1)
+	go func() { done <- finder.Find(context.Background(), "req", "default", "") }()
+	time.Sleep(20 * time.Millisecond) // 等后台 goroutine 真的阻塞在 block 上
+	go finder.Find(context.Background(), "req", "default", "") // 竞争者：应只服务 stale
+	time.Sleep(30 * time.Millisecond)
+	close(release)
+	<-done
+	waitForCalls(t, stub, 1)
+	time.Sleep(20 * time.Millisecond)
+	if stub.count() != 1 {
+		t.Fatalf("singleflight violated: queryFn called %d times, want 1", stub.count())
+	}
+}
+
+// 冷未命中 + 同步预算失败：请求立即拿空表，后台宽预算重算补上缓存，
+// 下一个失败请求就能拿到真建议——「从未送达」到「送达」的闭环。
+func TestFind_ColdMissFailureFallsBackToBackgroundRefresh(t *testing.T) {
+	stub := &stubAlternativesQuery{failN: 1, result: []ModelAlternative{{Model: "recovered"}}}
+	finder := &ModelAlternativesFinder{db: &recordingQueryer{}, queryFn: stub.fn}
+
+	got := finder.Find(context.Background(), "req", "default", "")
+	if len(got.Alternatives) != 0 {
+		t.Fatalf("cold miss with failing query must return empty, got %+v", got.Alternatives)
+	}
+	waitForCalls(t, stub, 2) // 同步 1 + 后台 1
+
+	got = finder.Find(context.Background(), "req2", "default", "")
+	if stub.count() != 2 {
+		t.Fatalf("background-filled cache must serve without requery; calls = %d", stub.count())
+	}
+	if len(got.Alternatives) != 1 || got.Alternatives[0].Model != "recovered" {
+		t.Fatalf("background result not served: %+v", got.Alternatives)
 	}
 }
