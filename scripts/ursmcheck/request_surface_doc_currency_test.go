@@ -122,18 +122,18 @@ type docEvidence struct {
 //   ★★ 是**常态** ⇒ ⇒ 每次动 `main.go` 的中间件链，**必须回头重钉这三处**）。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 7758, to: 7776,
+		file: "cmd/gateway/main.go", from: 7770, to: 7788,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 7760, to: 7767,
+		file: "cmd/gateway/main.go", from: 7772, to: 7779,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 7749, to: 7754,
+		file: "cmd/gateway/main.go", from: 7761, to: 7766,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},

@@ -59,9 +59,18 @@ export function loadCharTables() {
     throw new Error(`字表缺失：${DATA_FILE}\n生成：node scripts/gen-cjk-native-simplified-chars.mjs`)
   }
   const d = JSON.parse(readFileSync(DATA_FILE, 'utf8'))
+  // ★★ R87 轮（★ 掏空验证查出来的真洞）：★ 字段缺失/类型不对 ⇒ **不崩**。
+  //
+  // ★ 为什么不能崩：★ 「崩」不是一条**红因**（★ 崩 = 读方自己坏了 ⇒ ⇒ 「红」这件事
+  // ★ 说明不了任何事）⇒ ⇒ 正确做法是**读出空表**，再由主流程**显式**判红
+  // ★ （★ 「字表为空 ⇒ 这道门量不出任何简体专用字」）。
+  // ★ ⇒ ⇒ 原来 `new Set([...d.notBig5])` 在字段缺失时会抛 `undefined is not iterable`
+  // ⇒ ⇒ 那会让「掏空字表」变成一次**崩溃**⇒ ⇒ 而不是一次**可判定的红**。
+  const notBig5 = typeof d.notBig5 === 'string' ? d.notBig5 : ''
+  const japaneseOk = typeof d.japaneseOk === 'string' ? d.japaneseOk : ''
   return {
-    notBig5: new Set([...d.notBig5]),
-    japaneseOk: new Set([...d.japaneseOk]),
+    notBig5: new Set([...notBig5]),
+    japaneseOk: new Set([...japaneseOk]),
     updated: d.updated,
     provenance: d.provenance,
   }
@@ -372,6 +381,18 @@ async function main() {
     failed = true
     lines.push('❌ baseline 文件缺失：scripts/i18n-cjk-native-simplified-baseline.json')
     lines.push('   生成：node scripts/i18n-cjk-native-simplified-guard.mjs --update-baseline')
+  }
+  // ★★ 字表本身必须**非空**（★ R87 轮掏空验证补上的真洞）。
+  //
+  // ★ 为什么必须有：★ 「简体专用字」的定义是「Big5 转不出的汉字」⇒ ⇒ 判据完全
+  // ★ 依赖 `tables.notBig5` ⇒ ⇒ 字表一旦被掏空（★ `notBig5: []`），
+  // ★ 这道门就**一个简体字都量不出来**⇒ ⇒ `referenced` 恒 0 ⇒ ⇒ 报「✅ 通过」
+  // ⇒ ⇒ **假绿**（★ 而「掏空字表」恰好是绕过这道门最省事的办法）。
+  // ★ ⇒ ⇒ 字表为空 ⇒ 必须红（★ 红的理由要说清「此刻量不出任何简体专用字」）。
+  if (tables.notBig5.size === 0) {
+    failed = true
+    lines.push('❌ 字表为空（scripts/cjk-native-simplified-chars.json）')
+    lines.push('   ⇒ 这道门此刻量不出任何「简体专用字」⇒ ⇒ 必须红（★ 否则「掏空字表」就能让门瞎）')
   }
   process.stdout.write(lines.join('\n') + '\n')
   if (failed) {

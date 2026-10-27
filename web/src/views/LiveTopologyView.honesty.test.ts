@@ -11,7 +11,7 @@
 //
 // mock 工厂会被提升到文件顶部，refs 必须在工厂内部创建（hoist 报错经典形态）。
 
-import { describe, expect, it, vi, beforeAll, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { createRouter, createMemoryHistory } from 'vue-router'
@@ -105,6 +105,25 @@ const nowIso = () => new Date().toISOString()
 /** 一小时前 —— 会被 5 分钟默认窗口丢掉。 */
 const oldIso = () => new Date(Date.now() - 60 * 60_000).toISOString()
 
+/** 已挂载的组件（★ 每个用例后统一 unmount ⇒ 见下面的 `afterEach`）。 */
+const mounted: Array<{ unmount: () => void }> = []
+
+afterEach(() => {
+  // ★★ **必须 unmount**：★ 被测组件里有一个 `setInterval`（★ `LiveTopologyView.vue` 的 `spawnTimer`）
+  //   ⇒ ⇒ 组件**只在 `onUnmounted` 里**清它 ⇒ ⇒ 测试不 unmount ⇒ ⇒ 定时器活过本文件
+  //   ⇒ ⇒ ⇒ jsdom 环境销毁后再触发 ⇒ ⇒ `document is not defined` ⇒ ⇒ vitest 记【未捕获异常】
+  //   ⇒ ⇒ ⇒ **用例本身全绿，但整包退出码 = 1**（★ 负载越高越容易撞上 ⇒ ⇒ **看起来像 flaky**）
+  //   ⇒ ⇒ ⇒ 仓内先例：★ `src/composables/useLiveStreamUrl.test.ts` 逐个 `wrapper.unmount()`。
+  while (mounted.length) {
+    const w = mounted.pop()
+    try {
+      w?.unmount()
+    } catch {
+      // ★ 已经卸载过 ⇒ ⇒ 忽略（★ 清理是【卫生问题】，不该变成【判据问题】）
+    }
+  }
+})
+
 async function mountView(initialPath = '/live') {
   const router = createRouter({
     history: createMemoryHistory(),
@@ -113,6 +132,7 @@ async function mountView(initialPath = '/live') {
   await router.push(initialPath)
   await router.isReady()
   const wrapper = mount(LiveTopologyView, { global: { plugins: [i18n, router] } })
+  mounted.push(wrapper)
   await flushPromises()
   return { wrapper, router }
 }

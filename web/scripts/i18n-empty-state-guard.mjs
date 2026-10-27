@@ -134,6 +134,21 @@ export function checkEmptyStateFacts(facts) {
   const kinds = registry.kindVocabulary || []
   const add = (kind, detail, extra = {}) => violations.push({ kind, detail, ...extra })
 
+  // ⓪ 登记册本身必须**非空**（★ R87 轮掏空验证补上的真洞）。
+  //
+  // ★ 为什么必须有：★ 这道门的所有判据都建立在「登记册里登记了哪些键」之上
+  // ⇒ ⇒ 登记册一旦被掏空（★ `keys: []`），下面 ①~⑥ **全部无事可做**
+  // ⇒ ⇒ `violations` 为空 ⇒ ⇒ 门报「✅ PASS」⇒ ⇒ **假绿**。
+  // ★★ 而「掏空登记册」恰恰是绕过这道门最省事的办法（★ 改一个文件 vs 改 8 个语言包）
+  // ⇒ ⇒ 这不是理论风险，是可执行的绕过路径。
+  // ★ ⇒ ⇒ 登记册为空 ⇒ 必须红（★ 红的理由要说清「此刻什么都没查」）。
+  if (!Array.isArray(registry.keys) || registry.keys.length === 0) {
+    add('empty-registry', '登记册一条键都没有 ⇒ 这道门此刻什么都没查 ⇒ ⇒ 必须红（★ 否则「掏空登记册」就能让门瞎）')
+  }
+  if (!Array.isArray(registry.kindVocabulary) || registry.kindVocabulary.length === 0) {
+    add('empty-kind-vocabulary', '状态种类词表为空 ⇒ ⇒ 无法判定「键名末段是否带 kind 标记」⇒ ⇒ 必须红')
+  }
+
   // ① 退役键：源码 0 引用 + 8 语种都不存在
   for (const dead of registry.retiredKeys || []) {
     if (refKeys.has(dead)) {
