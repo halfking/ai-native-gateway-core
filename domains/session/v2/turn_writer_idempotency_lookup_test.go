@@ -1,3 +1,11 @@
+//go:build !integration
+
+// ★ 这个 build tag 是**必需**的（2026-10-28 · R172 补）：本文件用到的
+//   realDBPool 定义在 session_family_p0_realdb_test.go
+//   （`//go:build !integration`）⇒ 没有 tag 时 `-tags=integration`
+//   的整包编译断链（`go vet -tags=integration ./domains/session/v2/`
+//   实测报 `undefined: realDBPool`）⇒ 仓内唯一的全仓 integration 作业
+//   （`go test -tags=integration ./...`）连这个包都编译不过。
 package v2
 
 // R169 · R1 守卫：热路径 turn INSERT 的**幂等检查**必须走两臂直查，

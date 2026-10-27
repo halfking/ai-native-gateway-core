@@ -7,7 +7,7 @@
 // 把它画成「看起来实时的数字」是本仓反复吃过的亏（假实时），
 // 所以水位与 degraded 状态都是一级信息，不是脚注。
 
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getProvidersToday, type TopologyProvidersToday } from '../../api/topology'
 
@@ -98,6 +98,47 @@ function successRate(item: { success: number; requests: number }): string {
   return `${((item.success / item.requests) * 100).toFixed(1)}%`
 }
 
+// ── 大数字脉冲（2026-10-28 live 页动效轮）──────────────────────
+// 60s 轮询刷新时两个汇总大数字**变化**的那格闪一次 —— 数字硬跳变没有
+// 「刚刚更新过」的痕迹，运维分不清这格是活的还是忘了刷新。
+// ★ 首见不闪（数据到达 ≠ 新活动）；**任何变化都闪**（该表是日桶累计，
+// 变化只会是增长或过滤切换，两个都值得一次反馈）。
+const pulsing = ref(new Set<'requests' | 'tokens'>())
+const lastTotals = new Map<'requests' | 'tokens', number>()
+const pulseTimers: number[] = []
+/** 脉冲键 → totals 实际字段（'tokens' 是 UI 语义，后端字段叫 total_tokens）。 */
+const PULSE_FIELDS: Array<{ key: 'requests' | 'tokens'; pick: (t: NonNullable<typeof totals.value>) => number }> = [
+  { key: 'requests', pick: (t) => t.requests },
+  { key: 'tokens', pick: (t) => t.total_tokens },
+]
+
+watch(
+  totals,
+  (t) => {
+    if (!t) return
+    for (const field of PULSE_FIELDS) {
+      const value = field.pick(t)
+      const prev = lastTotals.get(field.key)
+      if (prev !== undefined && value !== prev) {
+        pulsing.value = new Set(pulsing.value).add(field.key)
+        const added = field.key
+        pulseTimers.push(
+          window.setTimeout(() => {
+            const next = new Set(pulsing.value)
+            next.delete(added)
+            pulsing.value = next
+          }, 340),
+        )
+      }
+      lastTotals.set(field.key, value)
+    }
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => {
+  for (const handle of pulseTimers) window.clearTimeout(handle)
+})
+
 onMounted(() => {
   void load()
   timer = window.setInterval(load, 60_000)
@@ -126,11 +167,11 @@ onUnmounted(() => {
     <template v-else>
       <div v-if="totals" class="rail__totals">
         <div class="rail__total">
-          <span class="rail__total-value">{{ compactNumber(totals.requests) }}</span>
+          <span class="rail__total-value" :class="{ 'is-pulse': pulsing.has('requests') }">{{ compactNumber(totals.requests) }}</span>
           <span class="rail__total-label">{{ t('liveTopology.rail.requests') }}</span>
         </div>
         <div class="rail__total">
-          <span class="rail__total-value">{{ compactNumber(totals.total_tokens) }}</span>
+          <span class="rail__total-value" :class="{ 'is-pulse': pulsing.has('tokens') }">{{ compactNumber(totals.total_tokens) }}</span>
           <span class="rail__total-label">{{ t('liveTopology.rail.tokens') }}</span>
         </div>
       </div>
@@ -284,6 +325,29 @@ onUnmounted(() => {
   border-radius: 2px;
   background: var(--kx-primary);
   opacity: 0.65;
+  /* 60s 轮询刷新时占比条平滑移动（width 是数据编码 ⇒ 已在
+     design-motion-decisions.json 的 layoutDriven 登记）。 */
+  transition: width 0.4s var(--kx-motion-ease-out);
+}
+
+/* 大数字更新脉冲：scale 一次（一次性 ≤800ms、指数减速、非入场类）。
+   60s 轮询里只有真正变化的那格闪 —— 数字硬跳变没有「刚更新过」的痕迹。 */
+.rail__total-value.is-pulse {
+  animation: rail-num-pulse 0.32s var(--kx-motion-ease-out);
+}
+
+@keyframes rail-num-pulse {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.07); }
+  100% { transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail__bar,
+  .rail__total-value.is-pulse {
+    transition: none;
+    animation: none;
+  }
 }
 
 .rail__tokens {

@@ -173,7 +173,7 @@ function context2d(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
   }
 }
 
-function drawEdge(ctx: CanvasRenderingContext2D, edgeKey: string, dimmed: boolean, flowPhase: number) {
+function drawEdge(ctx: CanvasRenderingContext2D, edgeKey: string, dimmed: boolean, nowMs: number) {
   const edge = edgeByKey.value.get(edgeKey)
   if (!edge) return
   const [p0, p1, p2, p3] = edge.path
@@ -202,12 +202,17 @@ function drawEdge(ctx: CanvasRenderingContext2D, edgeKey: string, dimmed: boolea
   ctx.restore()
 
   if (edge.requests > 0 && !prefersReducedMotion.value) {
+    // 流光按流量分级：流量越大流得越快、线越亮 —— 「主干道 vs 小路」
+    // 一眼可辨（SigNoz service map 同款语义：密度/速度编码流量）。
+    const speed = Math.max(12, 34 - Math.log2(edge.requests + 1) * 5)
     ctx.save()
-    ctx.globalAlpha = dimmed ? 0.06 : 0.35
+    ctx.globalAlpha = dimmed ? 0.06 : 0.35 + Math.min(0.3, Math.log10(edge.requests + 1) * 0.12)
     ctx.strokeStyle = statusColor(edge.lastStatus)
-    ctx.lineWidth = 1.2
+    ctx.lineWidth = 1.2 + Math.min(1.1, Math.log10(edge.requests + 1) * 0.34)
     ctx.setLineDash([6, 10])
-    ctx.lineDashOffset = flowPhase
+    // ★ 负 offset = 虚线图案沿路径**正方向**移动，与粒子流向一致
+    //   （原先正值 offset 流光逆着数据流走，方向感是反的）。
+    ctx.lineDashOffset = -((nowMs / speed) % 16)
     ctx.beginPath()
     ctx.moveTo(p0.x, p0.y)
     ctx.bezierCurveTo(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y)
@@ -247,6 +252,46 @@ function drawNodeGlow(ctx: CanvasRenderingContext2D, node: TopoLayoutNode, time:
   ctx.restore()
 }
 
+// ── 到达闪光（2026-10-28 live 页动效轮）──────────────────────────
+// ParticlePool.step() 一直返回「本轮到达终点的粒子」，但此前从未被接线 ——
+// 粒子飞到终点就无声消失，「请求落地」这个事件在图上没有任何表达。
+// 到达环 = 一次按状态着色的扩散涟漪（成功绿 / 失败红 / 限流黄），
+// 挂在边的**终点**上：模型边到达 = token 已交付，供应边到达 = 上游已回包。
+interface ArrivalRing {
+  edgeKey: string
+  status: string
+  ageMs: number
+}
+const RING_LIFE_MS = 460
+const RING_CAP = 24
+const rings: ArrivalRing[] = []
+
+function drawArrivalRings(ctx: CanvasRenderingContext2D) {
+  if (prefersReducedMotion.value) return
+  for (const ring of rings) {
+    const edge = edgeByKey.value.get(ring.edgeKey)
+    if (!edge) continue
+    const end = edge.path[3]
+    const k = ring.ageMs / RING_LIFE_MS
+    const color = statusColor(ring.status)
+    ctx.save()
+    ctx.globalAlpha = (1 - k) * 0.75
+    ctx.strokeStyle = color
+    ctx.lineWidth = 2 - k * 1.2
+    ctx.beginPath()
+    ctx.arc(end.x, end.y, 3 + k * 13, 0, Math.PI * 2)
+    ctx.stroke()
+    if (k < 0.4) {
+      ctx.globalAlpha = (1 - k / 0.4) * 0.55
+      ctx.fillStyle = color
+      ctx.beginPath()
+      ctx.arc(end.x, end.y, 2.2, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.restore()
+  }
+}
+
 function render(nowMs: number) {
   const canvas = canvasRef.value
   if (!canvas) return
@@ -264,7 +309,6 @@ function render(nowMs: number) {
   ctx.clearRect(0, 0, width, height)
 
   const highlight = new Set(props.highlightEdges ?? [])
-  const phase = prefersReducedMotion.value ? 0 : nowMs / 26
 
   // 高亮按**原始 edge id** 匹配（见 isEdgeHighlighted 的注释）：窄屏折叠后
   // 布局边 id 变了，只比 id 的话折叠一发生高亮就静默失效。
@@ -272,7 +316,7 @@ function render(nowMs: number) {
     isEdgeHighlighted(highlight, edgeId, sourceIds)
 
   for (const edge of layout.value.edges) {
-    drawEdge(ctx, edge.id, highlight.size > 0 && !isHighlighted(edge.id, edge.sourceIds), phase)
+    drawEdge(ctx, edge.id, highlight.size > 0 && !isHighlighted(edge.id, edge.sourceIds), nowMs)
   }
 
   // reduced-motion 替代表达：每条有流量的链路一个静态密度点
@@ -292,15 +336,30 @@ function render(nowMs: number) {
     for (const particle of pool.list()) {
       const edge = edgeByKey.value.get(particle.edgeKey)
       if (!edge) continue
-      const p = bezierOn(edge.path, particle.t, particle.lateral)
       const color = statusColor(particle.status)
+      const radius = particleRadius(particle.tokens)
+      // 拖尾：沿路径反向取 3 个采样点，渐小渐淡 —— 流动的方向感
+      //（「数据正在从 A 流向 B」这件事，拖尾比一颗孤点直观得多）。
+      for (let k = 3; k >= 1; k--) {
+        const tt = particle.t - k * 0.045
+        if (tt <= 0) continue
+        const tp = bezierOn(edge.path, tt, particle.lateral * (1 - k * 0.12))
+        ctx.save()
+        ctx.globalAlpha = Math.max(0, 1 - particle.t * 0.35) * (0.4 / k)
+        ctx.fillStyle = color
+        ctx.beginPath()
+        ctx.arc(tp.x, tp.y, Math.max(0.8, radius * (1 - k * 0.18)), 0, Math.PI * 2)
+        ctx.fill()
+        ctx.restore()
+      }
+      const p = bezierOn(edge.path, particle.t, particle.lateral)
       ctx.save()
       ctx.globalAlpha = Math.max(0.25, 1 - particle.t * 0.35)
       ctx.shadowBlur = 10
       ctx.shadowColor = color
       ctx.fillStyle = color
       ctx.beginPath()
-      ctx.arc(p.x, p.y, particleRadius(particle.tokens), 0, Math.PI * 2)
+      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2)
       ctx.fill()
       if (particle.isProbe) {
         ctx.shadowBlur = 0
@@ -310,6 +369,7 @@ function render(nowMs: number) {
       }
       ctx.restore()
     }
+    drawArrivalRings(ctx)
   }
 
   for (const node of layout.value.nodes) {
@@ -338,7 +398,16 @@ function frame(nowMs: number) {
   const last = lastFrameAt.value || nowMs
   const dt = Math.min(120, nowMs - last)
   lastFrameAt.value = nowMs
-  pool.step(dt)
+  // ★ 接住 step() 的返回值（此前一直被丢弃）：到达终点 = 「请求落地」
+  //   这个事件，用一次扩散环表达（见 drawArrivalRings）。
+  for (const arrived of pool.step(dt)) {
+    if (rings.length >= RING_CAP) rings.shift()
+    rings.push({ edgeKey: arrived.edgeKey, status: arrived.status, ageMs: 0 })
+  }
+  if (rings.length) {
+    for (const ring of rings) ring.ageMs += dt
+    while (rings.length && rings[0].ageMs >= RING_LIFE_MS) rings.shift()
+  }
   render(nowMs)
 }
 
@@ -399,6 +468,7 @@ onMounted(() => {
     document.removeEventListener('visibilitychange', onVisibility)
     cancelAnimationFrame(raf)
     pool.clear()
+    rings.length = 0
   })
 })
 

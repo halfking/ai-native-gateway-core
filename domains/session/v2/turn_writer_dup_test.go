@@ -178,7 +178,7 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 		WillReturnResult(pgxmock.NewResult("INSERT", rowsAffected))
 	if !inserted {
 		// Post-conflict re-read: SELECT turn_no WHERE request_id=...
-		mock.ExpectQuery("SELECT session_id, turn_no, partition_date[[:space:]]+FROM public.session_turns_with_current_month").
+		mock.ExpectQuery("SELECT session_id, turn_no, partition_date FROM \\(\\(SELECT session_id, turn_no, partition_date FROM public\\.session_turns_hot").
 			WithArgs(rec.TenantID, rec.RequestID).
 			WillReturnRows(pgxmock.NewRows([]string{"session_id", "turn_no", "partition_date"}).AddRow(rec.SessionID, existingTurn, partitionDate))
 		// 2026-08-05 (v2 mirror bug): on the conflict path the writer backfills
@@ -252,7 +252,7 @@ func TestTurnWriterAppendTurnRejectsRequestOwnedByAnotherSession(t *testing.T) {
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
 		WithArgs(anyArgs(101)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 0))
-	mock.ExpectQuery("SELECT session_id, turn_no, partition_date[[:space:]]+FROM public.session_turns_with_current_month").
+	mock.ExpectQuery("SELECT session_id, turn_no, partition_date FROM \\(\\(SELECT session_id, turn_no, partition_date FROM public\\.session_turns_hot").
 		WithArgs(rec.TenantID, rec.RequestID).
 		WillReturnRows(pgxmock.NewRows([]string{"session_id", "turn_no", "partition_date"}).AddRow("session-existing", 9, partitionDate))
 	mock.ExpectRollback()
@@ -296,7 +296,7 @@ func TestTurnWriterAppendTurnSameRequestDifferentPartitionIsRejected(t *testing.
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
 		WithArgs(anyArgs(101)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 0))
-	mock.ExpectQuery("SELECT session_id, turn_no, partition_date[[:space:]]+FROM public.session_turns_with_current_month").
+	mock.ExpectQuery("SELECT session_id, turn_no, partition_date FROM \\(\\(SELECT session_id, turn_no, partition_date FROM public\\.session_turns_hot").
 		WithArgs(secondRec.TenantID, secondRec.RequestID).
 		WillReturnRows(pgxmock.NewRows([]string{"session_id", "turn_no", "partition_date"}).AddRow(
 			firstRec.SessionID, 1, firstRec.Ts.Truncate(24*time.Hour),

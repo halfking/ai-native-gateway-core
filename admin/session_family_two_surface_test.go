@@ -107,6 +107,28 @@ var sessionFamilyBareParentReaders = map[string]string{
 	"domains/session/v2/turn_writer.go": "MAX(turn_no) 热优先序贯：hot 臂在前，" +
 		"父表臂是「hot 无行才查」的晋升回退（两条独立 SQL，跨语句配对，逐串判看不见）；" +
 		"promote 按 ts 序 + 顾问锁串行写保证最新 turn 恒在 hot，回退臂覆盖全晋升会话。",
+	// R172：会话族轮次读点的**两臂直查** helper（冲突读回 / GetTurn / ListTurns）。
+	// 父表名出现 **2 处**，但**两处都不是「只读父表」**：
+	//  1. **父表腿** —— 与 `public.session_turns_hot` 腿同处一条 `UNION ALL`
+	//     语句（两面齐全 ⇒ 不漏读 _hot；父表落后 hot 约 8.7 小时这条约束满足）；
+	//  2. **反连接里的 `archived` 引用** —— 它只**过滤**（NOT EXISTS），
+	//     `SELECT 1` 不投影任何列 ⇒ 不是数据来源。
+	// ★ 逐字面量判据看不见第 1 条的两面配对：hot 腿、parent 腿、anti-join
+	//   分处**三个不同的字符串常量**，而判定单位是「一条字面量」
+	//   ⇒ 与 db/request_logs_view_schema.go、admin/turns_filter_options.go
+	//   是同一条盲区（门头注释已写明）。
+	// 正确性凭据：① admin/session_family_turns_reads_test.go 的
+	// TestSessionFamilyTurnsReadsBothFaces 直接断言**产物 SQL**里两面同时出现、
+	// 且反连接是「只过滤不投影」形状；
+	// ② domains/session/v2/turn_writer_family_reads_test.go 把**产品自己发出的
+	// 那条 SQL**与线上视图形态放在同一条语句、同一个快照里逐行对拍
+	// （本地真库整族 2,758 行双向 EXCEPT ALL 差集 0/0；252 生产逐读点 0/0）。
+	"internal/sessionfamily/turns_reads.go": "R172 两臂直查 helper：hot 腿与父表腿同处一条 " +
+		"UNION ALL（两面齐全），反连接对父表的引用只过滤不投影；" +
+		"三条腿分处不同字符串常量 ⇒ 逐字面量判据看不见两面配对。" +
+		"正面证明见 admin/session_family_turns_reads_test.go 的 " +
+		"TestSessionFamilyTurnsReadsBothFaces；等价性见 " +
+		"domains/session/v2/turn_writer_family_reads_test.go（真库逐行对拍）。",
 }
 
 var sessionFamilyParents = []string{"session_turns", "session_bodies", "session_turn_details"}

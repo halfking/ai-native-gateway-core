@@ -140,18 +140,128 @@ func TestOrderTimeoutFallsBackToOriginal(t *testing.T) {
 }
 
 // TestOrderContextCancelFallsBackToOriginal 断言上下文取消 ⇒ 原顺序。
+//
+// ★ **且已取消的请求根本不启动排序**（2026-10-28 补）：
+//
+//	旧实现下这条门是**概率性**的 —— 「ctx 已取消」与「策略结果已就绪」同时成立时，
+//	Go 的 `select` 在就绪分支间**随机**选 ⇒ 同一个输入时而原顺序、时而策略顺序。
+//
+//	⇒ 门要能**确定性地**抓住回归 ⇒ 额外断言**策略根本没被启动**
+//	（旧实现 100% 破，不靠概率）。
 func TestOrderContextCancelFallsBackToOriginal(t *testing.T) {
 	seats := magpieP0Seats(3)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+	started := make(chan struct{}, 1)
 	s := OrderFunc{StrategyName: "cancel", Fn: func(string, []Seat) []int {
+		started <- struct{}{}
 		return []int{2, 1, 0}
 	}}
 	got := Order(ctx, s, "pool", seats, time.Second)
-	for i, v := range got {
-		if v != i {
-			t.Fatalf("取消后排列 = %v，want [0 1 2]（原顺序）", got)
+	want := []int{0, 1, 2}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("取消后排列 = %v，want %v（原顺序）", got, want)
+	}
+	// ★ 已取消 ⇒ 不启动排序（否则「取消 ⇒ 原顺序」就得靠 select 抛硬币）。
+	select {
+	case <-started:
+		t.Fatal("已取消的请求仍启动了策略排序 —— 「取消 ⇒ 原顺序」不得依赖抛硬币")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestOrderPickCancelBeatsValidPermutation 断言「**取消优先于结果**」这条契约的
+// **唯一判据**（orderPick）。
+//
+// ★ 为什么单独单测它：这条契约在**集成层**只在一个 **ns 级窗口**里可观测
+//
+//	（「ctx 已取消」与「结果已就绪」同时成立的那一瞬间）⇒ 靠集成测试去撞要跑
+//	上万轮才有一次 ⇒ 门必须**确定性**。
+//	⇒ 把判据抽成 orderPick，直接单测它：判据一改，这里立刻红。
+func TestOrderPickCancelBeatsValidPermutation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// ① 已取消 + 合法排列 ⇒ 原顺序（取消赢）。
+	got := orderPick(ctx, []int{2, 1, 0}, 3)
+	want := []int{0, 1, 2}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("已取消时排列 = %v，want %v（取消必须赢）", got, want)
+	}
+	// ② 未取消 + 合法排列 ⇒ 如实采用。
+	got = orderPick(context.Background(), []int{2, 1, 0}, 3)
+	if !reflect.DeepEqual(got, []int{2, 1, 0}) {
+		t.Fatalf("未取消时排列 = %v，want [2 1 0]（合法排列应当被采用）", got)
+	}
+	// ③ 未取消 + 非排列 ⇒ 原顺序。
+	got = orderPick(context.Background(), []int{0, 1}, 3)
+	if !reflect.DeepEqual(got, []int{0, 1, 2}) {
+		t.Fatalf("非排列时排列 = %v，want [0 1 2]（原顺序）", got)
+	}
+}
+
+// TestOrderCancelDuringWaitBeatsReadyResult 断言：**取消与结果同时就绪时，取消赢**。
+//
+// ★ 这是旧实现里**抛硬币**的那一处：策略在返回前把 ctx 取消掉 ⇒
+//
+//	「ctx 已取消」与「结果是合法排列」**同时**成立 ⇒ 旧 `select` 随机选支
+//	⇒ 输出时而 [0 1 2]、时而 [2 1 0]。
+//
+// ★ 门要能抓住它 ⇒ 跑多轮（每轮都是一次独立抛硬币）⇒ 旧实现必红。
+//
+// ★ 轮数怎么定的：这条契约在**集成层**只在「ctx 已取消」与「结果已就绪」
+//
+//	**同时成立**的那一瞬间可观测 ⇒ 实测该窗口命中率只有 **0.145%**
+//	（策略 goroutine 必须抢在主 goroutine 走到 `select` 之前算完）
+//	⇒ 200 轮只能撞到 ~25% ⇒ 这里跑 **20000 轮**（约 18ms）
+//	⇒ 命中概率 ≈ 1-(1-0.00145)^20000 ≈ 99.999%。
+func TestOrderCancelDuringWaitBeatsReadyResult(t *testing.T) {
+	const rounds = 20000
+	for i := 0; i < rounds; i++ {
+		seats := magpieP0Seats(3)
+		ctx, cancel := context.WithCancel(context.Background())
+		s := OrderFunc{StrategyName: "cancel-inside", Fn: func(string, []Seat) []int {
+			cancel() // ★ 取消与返回**贴脸** ⇒ 两个分支同时就绪
+			return []int{2, 1, 0}
+		}}
+		got := Order(ctx, s, "pool", seats, time.Second)
+		want := []int{0, 1, 2}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("第 %d 轮：取消后排列 = %v，want %v（取消必须赢，不得抛硬币）", i+1, got, want)
 		}
+		cancel() // 兜底（cancel 可重复调用）
+	}
+}
+
+// TestOrderCancelDuringWaitReturnsPromptly 断言：**等待途中**被取消 ⇒ 立即返回原顺序。
+//
+// ★ 门不能只覆盖"自己写的那一半"：只看最终排列的话，**取消分支与超时分支同归**
+//
+//	（都返回原顺序）⇒ 把取消分支删掉，这条门照样绿。
+//	⇒ 必须额外断言**时限**：取消必须让 Order **当场**返回，而不是等超时兜底。
+func TestOrderCancelDuringWaitReturnsPromptly(t *testing.T) {
+	seats := magpieP0Seats(3)
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release) // 收尾放行策略 goroutine（否则它会一直挂着）
+	s := OrderFunc{StrategyName: "blocked", Fn: func(string, []Seat) []int {
+		close(started)
+		<-release
+		return []int{2, 1, 0}
+	}}
+	done := make(chan []int, 1)
+	go func() { done <- Order(ctx, s, "pool", seats, 30*time.Second) }()
+	<-started // 策略确实在跑
+	cancel()
+	var got []int
+	select {
+	case got = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("取消后 Order 未在 2s 内返回 —— 取消分支失效（只剩超时兜底）")
+	}
+	want := []int{0, 1, 2}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("取消后排列 = %v，want %v（原顺序）", got, want)
 	}
 }
 
