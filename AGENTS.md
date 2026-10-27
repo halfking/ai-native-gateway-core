@@ -11982,3 +11982,56 @@ index b953a6f03..555ef83c4 100644
   见证重新锚定 / ★ 语义等价逐维度查 / ★「恒 SKIP」最危险 / ★ 判据要分辨变体 / ★ gofmt 不是仓内纪律 /
   ★ 注释是事实源 / ★ 同深度对拍要同基点 / ★ 跑测试会改仓库 / ★ 已写明的坑仍会被踩 /
   ★ 等价判据先钉口径 / ★ 判据要覆盖产品本身 / ★ 注入必须仍可编译）。
+
+> **2026-10-28 R171 轮（本会话 `mvs_1fd79f579edb4ea08094fa65643cf07a`，独立 worktree
+> `/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-r1038b`，分支
+> `audit/redaction-real-shape`，基于 `origin/main` e936c50b0）**：★★ **r1038（脱敏范围与遮蔽标记，
+> `2776e55c7`）的修复本身是对的，但它的「证明」是弱的 —— 而同一份口径在仓内被写了两遍、已经漂移**。
+> ⇒ **r1038 的修复成立**（用**生产真实规则集**实测：13 类定位符在输入面与输出面**全部逐字存活**；
+> 反向对照的手机号/邮箱/身份证/信用卡/SSN **仍被遮蔽**且遮蔽物带类型 ⇒ 用户口径兑现了）。
+> ⇒ ★★ 但本轮查出 **3 个真问题**（详见审计档 §四）：
+> ★ **D1（真缺陷·main 上已存在）**「地址族」名单两份且漂移 ⇒ `security/sanitize/detector.go` 的
+> `scopedType`（server_ip/internal_ip/server_ipv6）vs `domains/outputcompliance/checker.go` 的
+> `isAddressPIIType`（多出 ip/ip_address/ipv6/**address/domain/hostname**）⇒ **同一个类型在两个面
+> 得到相反待遇**（一条 `domain` 规则在合规面不遮蔽、在脱敏面照遮）⇒ ⇒ 收进
+> **`domains/sanitizerules/address_family.go`** 当 SSOT（清单取**并集**，只增不减）。
+> ★ **D2（真缺口·潜在）**`legacyPIIRule` 的 `default: typ = "custom"` **静默丢弃运维声明的类型**
+> ⇒ 一条声明为 domain 的 legacy 行会被降级 ⇒ 仍遮蔽域名 ⇒ ⇒ domain/hostname/address 显式映射；
+> ★ ★ **`url` 刻意不映射**（URL 能携带凭据 `?token=…` ⇒ 整类豁免 = 安全后门 ⇒ 有反向对照判据守着）。
+> ★ **D3（判据盲区）** r1038 的 13 条判据钉的是**合成规则** ⇒ **生产真实规则集从未被跑过**
+> ⇒ ⇒ `legacyPIIRule` **下沉**为 `domains/sanitizerules.LegacyPIIRule`（生产与判据调同一函数）
+> ⇒ 判据从**生产事实源**（316 迁移 SQL + `RuleConfig()` + 内置基线）拼规则集 ⇒ 形态升级为
+> **属性判据**（遍历规则集找违例）。
+> ⇒ ★★ **两处自伤（自己造成的，已修已记）**：① `git checkout` 清理残留时把 detector 侧改动一并还原
+> ⇒ 提交里仍有两份名单，★ 而**当时新判据全绿**（生产种子无 domain 行 ⇒ 适用面有盲区）⇒ 补
+> 「声明类型豁免 + custom/secret 反向对照」判据；② 一度把域名类型映射成**词表外的 `domain` 类型**
+> ⇒ `NewManager` 拒绝**整份配置**（`rules[0].type must be a restorable sensitive type`）
+> ⇒ ★★ **比原缺陷严重得多** ⇒ 被新判据当场抓住 ⇒ 改用仓内既有约定 `server_ip`
+> ⇒ 并新增「legacy 产出必须能被 `Compile` 接受」判据。
+> ⇒ ★ **读数**：`go build ./...` ✅ · `go vet ./...` ✅ · 本轮相关四包全绿
+> （`security/sanitize` 18.967s / `domains/sanitizerules` 5.957s / `domains/outputcompliance` 4.157s /
+> `cmd/gateway` 26.461s）· 全量 `go test ./...` **338 ok / 6 红** ⇒ ★ 其中 `scripts/ursmcheck` 是
+> **超时假象**（汇总耗时 **600.792s** = 默认 10 分钟超时 ⇒ 单包 `-timeout 40m` 复跑 ⇒
+> **ok 670.460s** ⇒ 该包是绿的）⇒ ⇒ **真实红 5 个**（`sql_source_indirection_audit` /
+> `internal/ingressguard` / `middleware` / `sql/migrations/domain` / `sql/schema`）⇒ ★★ **在纯净
+> `origin/main` worktree 上复跑同样红** ⇒ **与本轮零关系** ⇒ 只记录不擅改。
+> ⇒ ★★★ **245 生产集成（最坏情况）**：部署 `scripts/deploy-245.sh --seq 2887` ⇒ ✅ `DEPLOY_EXIT=0`
+> ⇒ release **`2887-75848f69`**（旧 `2879-69434c88` drain）⇒ active_port **8782** ⇒
+> ★ **故意把遮蔽的门打开**再测（生产 legacy 地址规则 `enabled=true` ＋ 新增一条声明为 `server_ip`
+> 的**域名**规则）⇒ 断言 **4/4 PASS**（IPv4 / 域名 / 域名:端口逐字保留 + 无 `[REDACTED`）
+> ⇒ ★★ 台账 `sanitize_rule_events` 给出「**前提仍在场**」硬证据：
+> `compliance.r1038b.domain_locator / v20 / output / **exempted** / server_ip / **count=13**`
+> （规则**确实命中了 13 次**并被豁免 ⇒ 不是「压根没匹配」的假绿）
+> ⇒ ★ 还原用 **`md5(config)` 逐字对拍**（v19 = `d01b1c2e…`、v20 = `b744cdcb…` 60 条、
+> v21 = `d01b1c2e…` ⇒ **v21 与 v19 逐字一致** ⇒ 还原成立，**且 v20 确实不同** ⇒ 变异确实生效过）
+> ⇒ 测试 key 已吊销（复验 401）· 凭据明文**不落盘、不入库、不进文档**（只写「来自何处」）。
+> ⇒ ★ **变异臂 8/8 全检出**（每臂先断言 MUTATION 已打上 —— ★ 第一版没做，三条臂其实没打上
+> 却被记成「门没牙齿」）⇒ ⇒ 「门没红」有两种成因（门失效 / 臂无效），退出码上不可区分。
+> ⇒ ★★ **本轮明确没做（留给下一轮，别重复排查）**：**`pii.address`（中文地址规则）7 天命中 90,091 次**
+> 的误伤面（前导字符类含「号」⇒ `员工工号 12345` / `订单号 20241012` / `房间号 1201` 被当地址遮蔽）
+> —— r1036 已**明确冻结**该行为且改它会**缩小 PII 覆盖面**（安全姿态变更）⇒ **属主裁决项**，
+> 建议只从**前导**去掉「号」、**后置**保留；**本机 host-first 网关本轮未部署**（口径是 245）
+> ⇒ 状态需下轮复核；**「第三个面」是否还有自己抄的地址族名单**待全仓普查。
+> ⇒ 审计档 `docs/audit/2026-10-28-r1038b-脱敏范围批判式审计.md`（9 节）；
+> ⇒ 通用式见 `LESSONS.md` **§476**（8 条）；⇒ handoff 见 `docs/96小时内修订审计-20261007-1350.md`
+> **§19.34**；⇒ 提交 `c20a4fa6e` ＋ `75848f692`。
