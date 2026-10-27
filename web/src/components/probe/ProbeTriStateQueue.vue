@@ -897,7 +897,7 @@ function credentialTitle(c: ProbeCard): string {
 
 /* 新数据从右侧进入（只用 transform/opacity）。 */
 .probe-in-enter-active {
-  transition: transform 0.3s ease, opacity 0.3s ease;
+  transition: transform 0.3s var(--kx-motion-ease-out), opacity 0.3s var(--kx-motion-ease-out);
 }
 
 .probe-in-enter-from {
@@ -915,6 +915,15 @@ function credentialTitle(c: ProbeCard): string {
 }
 
 .probe-in-move {
-  transition: transform 0.3s ease;
+  transition: transform 0.3s var(--kx-motion-ease-out);
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .probe-in-enter-active {
+    transition-property: opacity;
+  }
+  .probe-in-move { transition: none; }
 }
 </style>

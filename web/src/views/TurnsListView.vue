@@ -442,7 +442,7 @@ onBeforeUnmount(() => controller?.abort())
 .group-body { padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
 .task-sessions { display: flex; flex-direction: column; gap: 8px; }
 .task-sessions.nested { padding-left: 16px; }
-.caret { display: inline-block; transition: transform .15s; color: var(--text-muted); }
+.caret { display: inline-block; transition: transform .15s var(--kx-motion-ease-out); color: var(--text-muted); }
 .caret.open { transform: rotate(90deg); }
 .badge { padding: 2px 4px; border-radius: 4px; font-size: 11px; background: var(--surface-secondary); color: var(--text-secondary); }
 .badge.cost { background: var(--warning-soft); color: var(--warning); }
@@ -453,4 +453,10 @@ onBeforeUnmount(() => controller?.abort())
 .btn-secondary { background: var(--surface-primary); color: var(--text-primary); border: 1px solid var(--border); }
 .btn-secondary:disabled, .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 768px) { .turns-list-view { padding: 12px; } }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .caret { transition: none; }
+}
 </style>

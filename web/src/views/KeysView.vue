@@ -1027,7 +1027,7 @@ onBeforeUnmount(() => {
   background: var(--bg);
   color: var(--text);
   cursor: pointer;
-  transition: all 0.16s ease;
+  transition: border-color 0.16s var(--kx-motion-ease-out), transform 0.16s var(--kx-motion-ease-out), background 0.16s var(--kx-motion-ease-out), color 0.16s var(--kx-motion-ease-out);
 }
 
 .status-tab:hover {
@@ -1054,7 +1054,7 @@ onBeforeUnmount(() => {
 
 .key-row {
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: background 0.12s var(--kx-motion-ease-out);
 }
 
 .key-row:hover {
@@ -1191,4 +1191,13 @@ onBeforeUnmount(() => {
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .btn.btn-ghost.btn-xs > svg { width: 10px; height: 10px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .status-tab {
+    transition-property: border-color, background, color;
+  }
+  .status-tab:hover { transform: none; }
+}
 </style>

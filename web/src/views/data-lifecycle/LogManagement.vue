@@ -422,7 +422,7 @@ function fmtNum(n: number) {
 .log-management { padding: 0; }
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .header h2 { margin: 0; font-size: 20px; color: var(--text); }
-.btn-refresh { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius, 8px); padding: 4px 12px; cursor: pointer; color: var(--text); transition: background .15s, border-color .15s; }
+.btn-refresh { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius, 8px); padding: 4px 12px; cursor: pointer; color: var(--text); transition: background .15s var(--kx-motion-ease-out), border-color .15s var(--kx-motion-ease-out); }
 .btn-refresh:hover:not(:disabled) { background: var(--bg-subtle); border-color: var(--muted); }
 .btn-refresh:disabled { opacity: .4; cursor: not-allowed; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius, 8px); padding: 16px 16px; margin-bottom: 16px; }
@@ -442,7 +442,7 @@ function fmtNum(n: number) {
 .mono { font-family: 'SF Mono', Consolas, monospace; font-size: 12px; color: var(--text); }
 .form-group { margin-bottom: 12px; }
 .form-label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
-.form-input { width: 100%; padding: 4px 8px; background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 4px; font-size: 14px; box-sizing: border-box; color: var(--text); transition: border-color .15s; }
+.form-input { width: 100%; padding: 4px 8px; background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 4px; font-size: 14px; box-sizing: border-box; color: var(--text); transition: border-color .15s var(--kx-motion-ease-out); }
 .form-input:focus { outline: none; border-color: var(--accent); }
 .form-input:disabled { background: var(--card); color: var(--muted); opacity: .5; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
@@ -453,13 +453,13 @@ function fmtNum(n: number) {
 .switch-label { display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px; color: var(--text); }
 .switch-label input { width: 15px; height: 15px; accent-color: var(--accent); }
 .form-actions { margin-top: 12px; }
-.btn-primary { background: var(--accent); color: var(--on-primary); border: none; border-radius: 4px; padding: 8px 24px; cursor: pointer; font-size: 14px; transition: opacity .15s; }
+.btn-primary { background: var(--accent); color: var(--on-primary); border: none; border-radius: 4px; padding: 8px 24px; cursor: pointer; font-size: 14px; transition: opacity .15s var(--kx-motion-ease-out); }
 .btn-primary:hover:not(:disabled) { opacity: .85; }
 .btn-primary:disabled { opacity: .4; cursor: not-allowed; }
-.btn-secondary { background: var(--card); border: 1px solid var(--accent); color: var(--accent-h); border-radius: 4px; padding: 4px 16px; cursor: pointer; margin-top: 8px; transition: opacity .15s; }
+.btn-secondary { background: var(--card); border: 1px solid var(--accent); color: var(--accent-h); border-radius: 4px; padding: 4px 16px; cursor: pointer; margin-top: 8px; transition: opacity .15s var(--kx-motion-ease-out); }
 .btn-secondary:hover:not(:disabled) { opacity: .85; }
 .btn-secondary:disabled { opacity: .4; cursor: not-allowed; }
-.btn-danger { background: var(--card); border: 1px solid var(--danger); color: var(--danger); border-radius: 4px; padding: 4px 16px; cursor: pointer; margin-top: 8px; transition: opacity .15s; }
+.btn-danger { background: var(--card); border: 1px solid var(--danger); color: var(--danger); border-radius: 4px; padding: 4px 16px; cursor: pointer; margin-top: 8px; transition: opacity .15s var(--kx-motion-ease-out); }
 .btn-danger:hover:not(:disabled) { background: var(--danger-bg); }
 .btn-danger:disabled { opacity: .4; cursor: not-allowed; }
 .save-msg { margin-top: 8px; font-size: 13px; color: var(--accent-h); }

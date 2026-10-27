@@ -60,7 +60,7 @@ defineEmits<{
   font-size: 12px;
   color: var(--muted);
   cursor: pointer;
-  transition: all 0.12s;
+  transition: color 0.12s var(--kx-motion-ease-out), background 0.12s var(--kx-motion-ease-out), box-shadow 0.12s var(--kx-motion-ease-out);
   white-space: nowrap;
   font-family: inherit;
 }

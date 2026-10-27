@@ -1158,7 +1158,7 @@ onMounted(fetchData)
 .cov-row { display: grid; grid-template-columns: 200px 1fr 200px; gap: 12px; align-items: center; margin-bottom: 4px; font-size: 12px; }
 .cov-name { color: var(--text); font-weight: 500; }
 .cov-bar { background: var(--bg-subtle); height: 16px; border-radius: 4px; overflow: hidden; border: 1px solid var(--border); }
-.cov-fill { height: 100%; transition: width 0.3s; }
+.cov-fill { height: 100%; transition: width 0.3s var(--kx-motion-ease-out); }
 .cov-stats { color: var(--muted); text-align: right; }
 .cov-tag { display: inline-block; margin-left: 4px; padding: 1px 4px; border-radius: 3px; font-size: 11px; font-weight: 600; }
 .cov-tag-tp { background: var(--bg-hover); color: var(--warning); }
@@ -1183,7 +1183,7 @@ onMounted(fetchData)
 .tree-family { margin-bottom: 4px; }
 .tree-family-header { cursor: pointer; padding: 4px 8px; border-radius: 4px; display: flex; align-items: center; gap: 8px; }
 .tree-family-header:hover { background: var(--bg-hover); }
-.arrow { font-size: 11px; transition: transform 0.2s; }
+.arrow { font-size: 11px; transition: transform 0.2s var(--kx-motion-ease-out); }
 .arrow.open { transform: rotate(90deg); }
 .family-name { font-weight: 600; color: var(--accent-h); }
 .family-meta { font-size: 11px; color: var(--muted); }
@@ -1314,4 +1314,10 @@ onMounted(fetchData)
 .alert-danger { background: var(--danger-soft); border: 1px solid var(--danger); color: var(--danger); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
 .inherit-details { max-height: 300px; overflow-y: auto; margin: 12px 0; }
 .inherit-row { padding: 4px 0; font-size: 13px; color: var(--muted); }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .arrow { transition: none; }
+}
 </style>

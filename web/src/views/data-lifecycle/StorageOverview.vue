@@ -674,7 +674,7 @@ function fmtNum(n: number) {
 }
 .bar-seg {
   height: 100%;
-  transition: width 0.3s;
+  transition: width 0.3s var(--kx-motion-ease-out);
 }
 .bar-seg.tables { background: var(--accent); }
 .bar-seg.indexes { background: var(--success); }
@@ -758,7 +758,7 @@ function fmtNum(n: number) {
     color-mix(in srgb, var(--accent) 50%, transparent),
     color-mix(in srgb, var(--accent) 80%, transparent)
   );
-  transition: width 0.3s;
+  transition: width 0.3s var(--kx-motion-ease-out);
 }
 .pct-text {
   position: absolute;
@@ -851,7 +851,7 @@ function fmtNum(n: number) {
   cursor: pointer;
   white-space: nowrap;
   font-weight: 500;
-  transition: all 0.15s ease;
+  transition: opacity 0.15s var(--kx-motion-ease-out);
 }
 .btn-xs:disabled {
   opacity: 0.5;

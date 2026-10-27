@@ -1688,7 +1688,7 @@ table th {
   border-radius: 6px;
   color: var(--text);
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s var(--kx-motion-ease-out);
 }
 .filter-input:focus {
   border-color: var(--accent);
@@ -1720,7 +1720,7 @@ table th {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 .filter-tab:hover {

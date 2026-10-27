@@ -1186,6 +1186,74 @@
 > 通用式见 `LESSONS.md` **§469**（★ 静态计数要回答「最坏情况下同时可见几个」/ ★ 组件内部渲染的按钮对父模板不可见 ⇒ 必须登记，
 > 否则「包进组件」就是后门 / ★ 源码门看不见 `v-for` 展开的运行时数量 ⇒ 两把尺互补 / ★ 探针必须等 Vue 的 DOM 更新完 / ★ 关联要在产生数据的那一层做 /
 > ★ 折叠不等于删除 ⇒ 门必须能证明它还够得着 / ★ 两个入口做同一件事 ⇒ 删冗余那个 / ★ 排除项要按形状写不能按实现机制写）。
+> **2026-10-27 第 26 增量：状态过渡必须以指数减速到达轮（到位感不是配色，是动作怎么收尾）**（会话
+> `mvs_dc5e181989fc4539805f343f39be2b5d`）：
+> ★ 承接用户的总目标（「优化整个网关的 UI，减少 AI 化、增加人味和艺术化、把复杂表达做得更人性化」）
+> ⇒ 前 25 轮治的是 **i18n 覆盖 / 文案质量 / 术语 / 颜色语义 / 字号阶 / 间距阶 / 动作区密度**
+> ⇒ ⇒ 本轮治**动效本身**：界面上的每一次状态变化，**怎么收尾**。
+> 落点 impeccable `skill/reference/animate.md`（「**Use natural deceleration such as `cubic-bezier(0.16, 1, 0.3, 1)` for
+> confident arrivals**」/「**Avoid casually animating layout-driving properties such as `width`, `height`, `top`, `left`,
+> and margins**」/「**Every web animation needs a `prefers-reduced-motion` path**」/时长表 100–150 / 150–300 / 300–500 / 500–800ms）
+> + `craft-floor.md` Motion 段（「**one authored moment, not scattered effects** and not one identical entrance on every section.
+> **Exponential ease-out from an already-visible default.** Reach past transform and opacity: blur, backdrop-filter,
+> clip-path, mask, and shadow belong to the palette **when they stay smooth**」）。
+> ⇒ ★★★ **病（本仓实测）**：`transition` 210 条 + `animation` 72 条（353 处 motion 声明 / 104 文件）
+> ⇒ 缓动分布是 **`ease` 82 + **未声明缓动 129**（浏览器默认就是 `ease`）** + `ease-in-out` 24 + `linear` 13（全是匀速旋转，合法）
+> + `ease-out` 3 + `cubic-bezier` 5** ⇒ **211/223 条状态过渡实际落在「慢起手」的默认缓动上**
+> ⇒ `ease` = `cubic-bezier(0.25,0.1,0.25,1)` ⇒ **y1=0.1 起步是软的** ⇒ 看起来像机器在「启动」；
+> ⇒ 而 `ease-out` = `cubic-bezier(0,0,0.58,1)` ⇒ **y1=0 起步速度为零** ⇒ 同样不是「快起步 + 指数减速」。
+> ⇒ ★★ **`transition: all` 53 处**（全部是按钮 / 标签 / 卡片的交互反馈）⇒ `all` 把 `width`/`height`/`top`/`left`
+> 一并拖进来 ⇒ 与 animate.md:71 直接冲突，且 `all` **保证包含不 smooth 的属性**。
+> ⇒ ★★ **`DESIGN.md` 里连「动效」这两个字都没有**（第 23/24 增量「声明了阶却写在阶外」的同构空白）。
+> ⇒ ★★★ **判据（一条判据，七个面）** —— 新门 `web/src/design/motion.ts`（判据唯一实现）+ `web/scripts/design-motion-guard.mjs`（薄壳）
+> + 裁决簿 `web/scripts/design-motion-decisions.json`（M2 53 条 / M3 21 条 / M6 7 条）+ 迁移器 `web/scripts/design-motion-migrate.mjs`
+> + 运行时尺 `web/scripts/design-motion-runtime-check.mjs`：
+> M1 **减速曲线**（状态过渡与一次性入场的缓动必须落在那条曲线上；**无限循环不判** —— 呼吸节律不是「到达」）
+> / M2 **具名属性**（禁 `transition: all`）/ M3 **布局驱动属性**（禁 width/height/top/left/…，数据条须登记）
+> / M4 **空间移动的 reduced-motion 路径**（过渡了 `transform` 就要有**真的中和**它的块 —— 光有块不够）
+> / M5 **时长上限**（transition ≤ 500ms；一次性 animation ≤ 800ms）/ M6 **入场登记**（防「散落效果」）
+> / M7 **匀速**（无限循环用 `linear` 时必须真的是匀速运动）。
+> ⇒ ★★ **缓动的唯一写法 = 令牌 `var(--kx-motion-ease-out)`**（唯一定义处 `web/src/style.css`
+> = `cubic-bezier(0.16, 1, 0.3, 1)`）⇒ 照抄第 24 增量「令牌写法 / 在阶上两计一合法」的范式。
+> ⇒ ★★ **`transition: all` 的处置不是「删掉」而是「并集展开」** —— ★ 第一版想把局部 `.btn` 的 `transition: all` 删掉、
+> 让全局 `style.css` 的具名过渡接管 ⇒ ★ 但局部 `.btn` 的 `:disabled` 改 `opacity`，而全局那份**不含 `opacity`**
+> ⇒ **删掉会丢动画** ⇒ 正解 = 展开成「状态变体实际会改的属性 ∪ 全局那份」⇒ **可证明无损**。
+> ⇒ ★★★ **本轮最值钱的一处自伤自愈**：本轮**两把尺对不上**（源码门说 M1=0，运行时尺说 17 处「非减速曲线」）
+> ⇒ 打印出来那 17 处的 timing **全是那条曲线** ⇒ ★ **先怀疑尺**：探针把 computed 的 timing-function
+> （**它是一个列表**，与 `transition-property` 一一对应）当**单串**匹配 ⇒ 17 处**全是假红**。
+> ⇒ 同族第三例：自证还抓到探针**形状判据自己写错**（`cubic-bezier(x1,y1,x2,y2)` 的 **y2 是第 4 个数**，
+> 我查了第 3 个 = x2 = 0.3）⇒ **连规范曲线自己都被判不合规** ⇒ 自证 9/12 当场抓住 ⇒ 修后 14/14。
+> ⇒ ★★ **迁移器的五道闸（把不可逆改写变成可证伪的等式）**：① 声明总数不变 ② 改写后 M1 归零（同一口径重扫）
+> ③ **值语义守恒**（逐项比对属性 / 时长 / 延迟，只有缓动允许变）④ **区间外逐字未变**
+> ⑤ **新缓动的形状** —— ★★ 闸④ 自己踩了两次坑（**起点带 delta 与终点用「起点+新长度」是两回事**；
+> **改前文本的偏移不带 delta**）⇒ 闸自己算错区间 ⇒ **假红** ⇒ 「量具自己出错时报出来的是假红」再一例。
+> ⇒ ★★ **迁移必须两段式**：先算完所有文件的改写 + 跑完所有闸，**一处失败 ⇒ 整个树一个字不动**
+> ⇒ 第一版用**全局**闸门数组判断写盘 ⇒ 一个文件失败后**后续文件全不写**（半迁移状态）⇒ 改成「全部过了才写」。
+> ⇒ ★★ **M4 的判据必须要求「真的中和」**：第一版只看「文件里有没有 `prefers-reduced-motion` 块」
+> ⇒ 那 4 个文件其实**早就有了块且已 `transition: none`** ⇒ **4 处假红**（选择器全串 vs 单项的口径不一致）⇒
+> 归一化后真相是「块在，但没有逐个中和到选择器」⇒ 判据改成按 **(文件, 选择器)** 逐个查。
+> ⇒ ★★ **本轮改动**：**353 处 motion 声明**的缓动全部换成令牌（**282 处**：129 处「没写缓动」+ 153 处显式非合规）
+> + **`transition: all` 53 处**展开成具名属性（28 文件）+ **空间移动的 reduced-motion 路径** 40 文件
+> + 令牌 `--kx-motion-ease-out` 落地 + `DESIGN.md` 新增 Motion 章节 + 新门（**自证 28/28**）+ 运行时尺（**自证 14/14**）。
+> ⇒ ★★ **运行时实测**（vite 5200 · 无头 Chrome + CDP · 4 页）：**309 个有过渡的元素** ·
+> **非减速曲线 0** · **computed 的 `transition-property` 含 `all` 0 处** · **令牌未定义 0 页**
+> ⇒ ★★ **事实真的改了**（不只是门绿）—— ★ 这正是运行时尺存在的理由：**令牌没定义 ⇒ 整条声明 invalid-at-computed-value-time
+> ⇒ 缓动静默回落成 `ease`** ⇒ 源码门全绿、手感没变。
+> ⇒ ★★ **真仓变异臂 8/8**（注入→rc=1+**探针在门输出里**→还原→md5 逐字一致）：A1 M1 / A2 M2 / A3 M3 / A4 M4 / A5 M5 / A6 M6 / A7 M7
+> + **A8 裁决簿契约**（代码改了、裁决簿没改 ⇒ 硬错误）⇒ ★★ 且**还原态门回到 PASS**。
+> ⇒ ★★ **读数**：**27 门全 PASS**（新增 `design-motion:check`）；`vue-tsc` **0 错**；`vitest` **2861 通过 / 2 跳过**
+> （281 文件；**1 处既有测试随改动更新**：`App.route-transition.spec.ts` 原来断言「easing 固定 ease（与 web-mobile 对齐）」⇒
+> 改为断言那条指数曲线，并写明**移动端是 Material 体系、两端各用自己的判据**，不再是同一条曲线）；
+> `build` ✓ 12.10s；`go test ./scripts/ursmcheck/` ok；`go build ./...` ✓；**5 个部署产物全干净**。
+> ⇒ ★★ **本轮明确没做（留给下一轮，别重复排查）**：**`web-mobile/` 未纳入本门**（Material 体系，缓动族不同 ⇒ 需要独立判据，
+> 不是放宽桌面判据）；**无限循环动画的缓动**不判（呼吸节律 ≠ 到达）；**M5 时长上限当前 0 违规**（是给未来的棘轮）；
+> **`transform` 的材料面**（impeccable「Reach past transform and opacity: blur / backdrop-filter / clip-path / mask / shadow」
+> ⇒ 本仓动效仍只用 transform + opacity + shadow + color）；**页面级动效的「一个 authored moment」**（落地页的编排是否够集中）；
+> **移动端 8 语言**；**后端下发的中文**；**页面级硬编码中文**（4510 段）。
+> ⇒ 审计档 `docs/audit/2026-10-27-第26增量-状态过渡必须以指数减速到达轮.md`（§1~§9）；
+> 通用式见 `LESSONS.md` **§472**（★ 「到位感」是缓动的形状不是配色 / ★ 两把尺对不上先怀疑尺 /
+> ★ 形状判据里的 y2 是第 4 个数 / ★ timing-function 是列表不是单串 / ★ 迁移必须两段式，一处失败整个树不动 /
+> ★ 区间守恒闸自己算错区间 ⇒ 假红 / ★ 判死键要「真的中和」而不是「有块就行」/ ★ 删掉前必须证明不丢动画）。
 > **2026-10-26 Gemini 原生认证形态修复轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
 > 用户报「**Gemini 的数据转换好像认证没通过**，请根据我们保留的厂方标准文档修正」⇒
 > ★ **根因不是 IR 层、也不是上游 header —— 是网关自己的认证门不认 Gemini 客户端的凭据形态。**

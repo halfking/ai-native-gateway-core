@@ -1194,7 +1194,7 @@ onUnmounted(() => {
   padding: 0;
   border-radius: 2px;
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: opacity 0.15s var(--kx-motion-ease-out);
   overflow: hidden;
 }
 

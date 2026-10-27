@@ -753,7 +753,7 @@ onMounted(() => {
   height: 24px;
   background: var(--border);
   border-radius: 12px;
-  transition: background 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out);
 }
 
 .switch-track::after {
@@ -765,7 +765,7 @@ onMounted(() => {
   height: 20px;
   background: white;
   border-radius: 50%;
-  transition: transform 0.2s;
+  transition: transform 0.2s var(--kx-motion-ease-out);
 }
 
 .switch-input:checked + .switch-track {
@@ -1009,5 +1009,11 @@ onMounted(() => {
     flex-direction: row;
     overflow-x: auto;
   }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .switch-track::after { transition: none; }
 }
 </style>

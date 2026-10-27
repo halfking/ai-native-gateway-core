@@ -1123,7 +1123,7 @@ watch(() => route.params.tenantId, loadTenant)
   color: var(--text);
   cursor: pointer;
   font: inherit;
-  transition: border-color .15s, background .15s;
+  transition: border-color .15s var(--kx-motion-ease-out), background .15s var(--kx-motion-ease-out);
 }
 .maas-shortcut-card:hover {
   border-color: var(--accent-h);

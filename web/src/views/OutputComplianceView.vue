@@ -635,7 +635,7 @@ onMounted(() => {
   cursor: pointer;
   font-size: 14px;
   color: var(--muted);
-  transition: all 0.2s;
+  transition: color 0.2s var(--kx-motion-ease-out), background 0.2s var(--kx-motion-ease-out), border-bottom 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out), outline 0.2s var(--kx-motion-ease-out);
 }
 
 .tab-btn:hover { color: var(--accent); }
@@ -785,7 +785,7 @@ onMounted(() => {
   cursor: pointer;
   font-size: 14px;
   font-weight: 500;
-  transition: all 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out), opacity 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out), transform 0.2s var(--kx-motion-ease-out), color 0.2s var(--kx-motion-ease-out);
 }
 
 .btn-primary {
@@ -970,5 +970,16 @@ onMounted(() => {
   margin-top: 24px;
   display: flex;
   justify-content: flex-end;
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .btn-primary {
+    transition-property: background, opacity, border-color, color;
+  }
+  .btn-secondary {
+    transition-property: background, opacity, border-color, color;
+  }
 }
 </style>

@@ -1671,7 +1671,7 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-bar-fill {
   height: 100%;
   transform-origin: left;
-  transition: transform 0.3s ease;
+  transition: transform 0.3s var(--kx-motion-ease-out);
 }
 .qp-bar-fill--total { background: var(--kx-primary); }
 .qp-bar-fill--model { background: var(--kx-success); }
@@ -1735,7 +1735,7 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-model-tag { font-size:11px; padding:2px 4px; border-radius:999px; color:var(--kx-accent); background:color-mix(in srgb, var(--kx-accent) 12%, transparent); }
 .qp-model-tag--hot { color:var(--kx-warning); background:color-mix(in srgb, var(--kx-warning) 12%, transparent); }
 .qp-model-nodes { display:flex; gap:4px; flex-wrap:wrap; flex:1 1 100%; padding-left:16px; }
-.qp-node-card-wrap { border-radius:6px; transition: background 120ms ease, outline-color 120ms ease, width 160ms ease; outline: 2px dashed transparent; outline-offset: 1px; flex: 0 0 auto; }
+.qp-node-card-wrap { border-radius:6px; transition: background 120ms var(--kx-motion-ease-out), outline-color 120ms var(--kx-motion-ease-out), width 160ms var(--kx-motion-ease-out); outline: 2px dashed transparent; outline-offset: 1px; flex: 0 0 auto; }
 .qp-node-card-wrap.is-drag-over { background: color-mix(in srgb, var(--kx-accent) 14%, transparent); outline-color: var(--kx-accent); }
 .qp-node-card { display:grid; gap:4px; text-align:left; width:100%; box-sizing:border-box; padding:8px 8px; border:1px solid var(--kx-border); border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); position:relative; }
 .qp-node-rank { margin-left:4px; font-size:11px; color:var(--kx-muted); font-variant-numeric: tabular-nums; }
@@ -1774,7 +1774,7 @@ function requestTitleTooltip(request: LiveRequest): string {
   width: 12px;
   font-size: 12px;
   color: var(--kx-muted, var(--kx-text));
-  transition: transform 120ms ease;
+  transition: transform 120ms var(--kx-motion-ease-out);
 }
 .qp-model-group-caret--open {
   transform: rotate(90deg);
@@ -1939,7 +1939,7 @@ function requestTitleTooltip(request: LiveRequest): string {
   color: var(--kx-text-secondary);
   cursor: pointer;
   user-select: none;
-  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+  transition: border-color 120ms var(--kx-motion-ease-out), color 120ms var(--kx-motion-ease-out), background 120ms var(--kx-motion-ease-out);
 }
 .qp-status-filter:hover { border-color: var(--kx-accent); color: var(--kx-text); }
 .qp-status-filter.is-active { color: var(--kx-text); border-color: color-mix(in srgb, var(--kx-accent) 50%, var(--kx-border)); background: color-mix(in srgb, var(--kx-accent) 8%, var(--kx-surface)); }
@@ -1993,7 +1993,15 @@ function requestTitleTooltip(request: LiveRequest): string {
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
    尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
-.qp-model-group-caret > svg { width: 11px; height: 11px; transition: transform 120ms ease; }
+.qp-model-group-caret > svg { width: 11px; height: 11px; transition: transform 120ms var(--kx-motion-ease-out); }
 .qp-node-card-drag-handle > svg { width: 10px; height: 10px; }
 .qp-node-priority-flag > svg { width: 10px; height: 10px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .qp-bar-fill { transition: none; }
+  .qp-model-group-caret { transition: none; }
+  .qp-model-group-caret > svg { transition: none; }
+}
 </style>

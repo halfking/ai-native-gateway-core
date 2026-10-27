@@ -123,7 +123,7 @@ onBeforeUnmount(() => {
   font-size: 14px;
   text-align: left;
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out);
 }
 
 .language-option:hover {

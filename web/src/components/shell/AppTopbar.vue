@@ -402,7 +402,7 @@ function groupActive(id: string): boolean {
   border-radius: 8px;
   white-space: nowrap;
   cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease;
+  transition: color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out);
   font-family: inherit;
 }
 .app-topbar__link:hover {
@@ -453,7 +453,7 @@ function groupActive(id: string): boolean {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  animation: app-topbar-dropdown-enter 0.14s ease both;
+  animation: app-topbar-dropdown-enter 0.14s var(--kx-motion-ease-out) both;
 }
 
 .app-topbar__dropdown-item {
@@ -468,7 +468,7 @@ function groupActive(id: string): boolean {
   font-size: 13px;
   text-decoration: none;
   white-space: nowrap;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
   cursor: pointer;
   font-family: inherit;
 }

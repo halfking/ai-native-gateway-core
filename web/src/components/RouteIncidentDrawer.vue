@@ -1620,7 +1620,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   font-weight: 600;
   cursor: pointer;
   text-align: left;
-  transition: all 0.15s ease;
+  transition: border-color 0.15s var(--kx-motion-ease-out), opacity 0.15s var(--kx-motion-ease-out);
 }
 
 .action-grid__btn:hover:not(:disabled) {
@@ -1977,7 +1977,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .route-incident-drawer-enter-active .route-incident-drawer__backdrop,
 .route-incident-drawer-leave-active .route-incident-drawer__backdrop {
-  transition: opacity 0.28s ease;
+  transition: opacity 0.28s var(--kx-motion-ease-out);
 }
 
 .route-incident-drawer-enter-from .route-incident-drawer__backdrop,
@@ -1998,4 +1998,11 @@ function hasRunValues(values: Record<string, unknown>): boolean {
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
    尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
 .route-incident-drawer__btn--close > svg { width: 10px; height: 10px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .route-incident-drawer-enter-active .route-incident-drawer__panel { transition: none; }
+  .route-incident-drawer-leave-active .route-incident-drawer__panel { transition: none; }
+}
 </style>

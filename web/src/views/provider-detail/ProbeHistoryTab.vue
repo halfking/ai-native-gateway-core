@@ -313,7 +313,7 @@ watch(stateFilter, load)
   content: '▶';
   display: inline-block;
   margin-right: 4px;
-  transition: transform 0.15s;
+  transition: transform 0.15s var(--kx-motion-ease-out);
   font-size: 11px;
   color: var(--muted);
 }
@@ -390,5 +390,11 @@ watch(stateFilter, load)
 .counter-fail {
   background: var(--danger-bg);
   color: var(--danger);
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .probe-section > summary::before { transition: none; }
 }
 </style>

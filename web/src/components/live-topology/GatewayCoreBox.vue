@@ -316,7 +316,7 @@ const title = computed(() => t('liveTopology.gateway.title'))
   background: color-mix(in srgb, var(--kx-surface) 86%, transparent);
   pointer-events: auto;
   cursor: pointer;
-  transition: transform 140ms ease, border-color 140ms ease;
+  transition: transform 140ms var(--kx-motion-ease-out), border-color 140ms var(--kx-motion-ease-out);
 }
 
 .gw__cell:hover,

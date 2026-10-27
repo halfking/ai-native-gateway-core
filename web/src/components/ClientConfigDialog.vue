@@ -691,7 +691,7 @@ function goManageFeatured() {
   color: var(--muted);
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
 }
 
 .os-tab.active {
@@ -878,7 +878,7 @@ function goManageFeatured() {
   cursor: pointer;
   font-size: 12px;
   border-radius: 4px;
-  transition: background 0.1s;
+  transition: background 0.1s var(--kx-motion-ease-out);
 }
 
 .model-check-item:hover {
@@ -960,7 +960,7 @@ function goManageFeatured() {
   cursor: pointer;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
-  transition: all 0.15s;
+  transition: color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out), border-bottom 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), outline 0.15s var(--kx-motion-ease-out);
 }
 
 .tab-btn.active {

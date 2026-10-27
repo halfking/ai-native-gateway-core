@@ -612,7 +612,7 @@ function closeTimelinePanel() {
   cursor: pointer;
   position: relative;
   overflow: hidden;
-  transition: transform 0.15s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.15s ease;
+  transition: transform 0.15s var(--kx-motion-ease-out), box-shadow 0.15s var(--kx-motion-ease-out);
 }
 
 .request-bar:hover {
@@ -733,9 +733,9 @@ function closeTimelinePanel() {
   padding: 0;
   cursor: pointer;
   transition:
-    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 0.18s ease,
-    border-color 0.18s ease;
+    transform 0.18s var(--kx-motion-ease-out),
+    box-shadow 0.18s var(--kx-motion-ease-out),
+    border-color 0.18s var(--kx-motion-ease-out);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI',
                'PingFang SC', 'Microsoft YaHei', sans-serif;
   display: flex;
@@ -1098,7 +1098,7 @@ function closeTimelinePanel() {
   background: var(--kx-primary);
   border: 1px solid var(--kx-primary);
   cursor: pointer;
-  transition: transform 0.12s ease, opacity 0.12s ease;
+  transition: transform 0.12s var(--kx-motion-ease-out), opacity 0.12s var(--kx-motion-ease-out);
 }
 
 .request-tile__children-badge:hover {
@@ -1126,7 +1126,7 @@ function closeTimelinePanel() {
   border-radius: 6px;
   box-shadow: var(--kx-shadow-md);
   z-index: 2000;
-  animation: request-tile-panel-in 0.15s ease-out;
+  animation: request-tile-panel-in 0.15s var(--kx-motion-ease-out);
 }
 
 @keyframes request-tile-panel-in {
@@ -1159,7 +1159,7 @@ function closeTimelinePanel() {
   cursor: pointer;
   padding: 2px 4px;
   border-radius: 3px;
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  transition: opacity 0.12s var(--kx-motion-ease-out), transform 0.12s var(--kx-motion-ease-out);
 }
 
 .request-tile__children-panel-close:hover {
@@ -1254,7 +1254,7 @@ function closeTimelinePanel() {
   background: var(--kx-success);
   border: 1px solid var(--kx-success);
   cursor: pointer;
-  transition: transform 0.12s ease, opacity 0.12s ease;
+  transition: transform 0.12s var(--kx-motion-ease-out), opacity 0.12s var(--kx-motion-ease-out);
 }
 
 .request-tile__timeline-badge:hover {
@@ -1282,7 +1282,7 @@ function closeTimelinePanel() {
   border-radius: 6px;
   box-shadow: var(--kx-shadow-md);
   z-index: 2000;
-  animation: request-tile-panel-in 0.15s ease-out;
+  animation: request-tile-panel-in 0.15s var(--kx-motion-ease-out);
 }
 
 .request-tile__timeline-panel-header {

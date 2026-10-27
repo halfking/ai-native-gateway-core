@@ -733,7 +733,7 @@ watch(activeTab, () => { void reload() })
   color: var(--text-secondary);
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out), border-bottom 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), outline 0.15s var(--kx-motion-ease-out);
 }
 .tab-btn.active {
   background: var(--accent);
@@ -853,7 +853,7 @@ watch(activeTab, () => { void reload() })
 .bar-fill {
   height: 100%;
   border-radius: 4px;
-  transition: width 0.3s;
+  transition: width 0.3s var(--kx-motion-ease-out);
   min-width: 2px;
 }
 .strategy-count {
@@ -900,7 +900,7 @@ watch(activeTab, () => { void reload() })
   background: var(--primary);
   border-radius: 2px 2px 0 0;
   opacity: 0.8;
-  transition: height 0.3s;
+  transition: height 0.3s var(--kx-motion-ease-out);
 }
 
 /* Table */
@@ -924,7 +924,7 @@ watch(activeTab, () => { void reload() })
 }
 .session-row {
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s var(--kx-motion-ease-out);
 }
 .session-row:hover {
   background: var(--bg-hover);
@@ -976,7 +976,7 @@ watch(activeTab, () => { void reload() })
 .config-toggle-label { font-weight: 600; color: var(--text-primary); }
 .caret {
   font-size: 9px;
-  transition: transform 0.2s;
+  transition: transform 0.2s var(--kx-motion-ease-out);
   display: inline-block;
 }
 .caret.open { transform: rotate(90deg); }
@@ -1029,5 +1029,11 @@ watch(activeTab, () => { void reload() })
   .charts-row {
     grid-template-columns: 1fr;
   }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .caret { transition: none; }
 }
 </style>

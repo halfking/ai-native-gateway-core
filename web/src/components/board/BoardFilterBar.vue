@@ -135,7 +135,7 @@ const sourceKey = computed(() => {
   border-radius: 9px;
   padding: 4px 12px;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  transition: color 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
 }
 .bfb__refresh:hover:not(:disabled) {
   color: var(--text);
@@ -157,7 +157,7 @@ const sourceKey = computed(() => {
   border-radius: 9px;
   padding: 4px 12px;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  transition: color 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
 }
 .bfb__more:hover {
   color: var(--accent);

@@ -890,7 +890,7 @@ const probeSummaryCards = computed(() => {
 
 .error-bar-fill {
   height: 100%;
-  transition: width 0.3s;
+  transition: width 0.3s var(--kx-motion-ease-out);
 }
 
 .error-count {
@@ -922,7 +922,7 @@ const probeSummaryCards = computed(() => {
   width: 100%;
   min-height: 5px;
   border-radius: 2px 2px 0 0;
-  transition: height 0.3s;
+  transition: height 0.3s var(--kx-motion-ease-out);
 }
 
 .trend-label {

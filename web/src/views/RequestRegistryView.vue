@@ -754,9 +754,21 @@ function openSearchJourney() {
   50% { opacity: 0.55; }
 }
 
-.reg-in-enter-active { transition: transform 0.3s ease, opacity 0.3s ease; }
+.reg-in-enter-active { transition: transform 0.3s var(--kx-motion-ease-out), opacity 0.3s var(--kx-motion-ease-out); }
 .reg-in-enter-from { transform: translateX(32px); opacity: 0; }
-.reg-in-leave-active { transition: transform 0.2s ease, opacity 0.2s ease; position: absolute; }
+.reg-in-leave-active { transition: transform 0.2s var(--kx-motion-ease-out), opacity 0.2s var(--kx-motion-ease-out); position: absolute; }
 .reg-in-leave-to { transform: translateX(-16px); opacity: 0; }
-.reg-in-move { transition: transform 0.3s ease; }
+.reg-in-move { transition: transform 0.3s var(--kx-motion-ease-out); }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .reg-in-enter-active {
+    transition-property: opacity;
+  }
+  .reg-in-leave-active {
+    transition-property: opacity;
+  }
+  .reg-in-move { transition: none; }
+}
 </style>

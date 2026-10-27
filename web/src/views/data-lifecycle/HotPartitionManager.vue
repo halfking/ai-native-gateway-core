@@ -906,7 +906,7 @@ function formatNumber(num: number): string {
 .reload-icon {
   display: inline-block;
   font-size: 14px;
-  transition: transform 0.2s;
+  transition: transform 0.2s var(--kx-motion-ease-out);
 }
 
 .reload-icon.spinning {
@@ -946,7 +946,7 @@ function formatNumber(num: number): string {
   border-radius: 8px;
   padding: 16px;
   background: var(--bg-subtle);
-  transition: all 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out), box-shadow 0.2s var(--kx-motion-ease-out);
 }
 
 .hot-table-card.migrating {
@@ -1090,7 +1090,7 @@ function formatNumber(num: number): string {
 .progress-fill {
   height: 100%;
   background: linear-gradient(90deg, var(--accent), var(--accent-h));
-  transition: width 0.3s ease;
+  transition: width 0.3s var(--kx-motion-ease-out);
 }
 
 .progress-text {
@@ -1373,7 +1373,7 @@ function formatNumber(num: number): string {
 .mini-progress-fill {
   height: 100%;
   background: linear-gradient(90deg, var(--accent), var(--accent-h));
-  transition: width 0.3s ease;
+  transition: width 0.3s var(--kx-motion-ease-out);
 }
 
 .storage-badge {
@@ -1434,7 +1434,7 @@ function formatNumber(num: number): string {
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: opacity 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), box-shadow 0.15s var(--kx-motion-ease-out), transform 0.15s var(--kx-motion-ease-out), outline-offset 0.15s var(--kx-motion-ease-out);
   background: transparent;
   color: var(--text);
   display: inline-flex;
@@ -1615,4 +1615,13 @@ function formatNumber(num: number): string {
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .result-icon > svg { width: 14px; height: 14px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .reload-icon { transition: none; }
+  .btn {
+    transition-property: opacity, background, color, border-color, box-shadow, outline-offset;
+  }
+}
 </style>

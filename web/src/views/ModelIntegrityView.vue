@@ -844,7 +844,7 @@ textarea {
   border-radius: 6px;
   padding: 8px 12px;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
 }
 .btn:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 12%, transparent);

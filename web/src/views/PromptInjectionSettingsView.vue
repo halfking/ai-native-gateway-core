@@ -1332,9 +1332,18 @@ onMounted(async () => {
 }
 .quick-link-card {
   cursor: pointer; text-align: center; padding: 20px;
-  transition: all 0.3s;
+  transition: transform 0.3s var(--kx-motion-ease-out), box-shadow 0.3s var(--kx-motion-ease-out);
   &:hover { transform: translateY(-4px); box-shadow: var(--kx-shadow-sm); }
   h3 { margin: 12px 0 8px; font-size: 16px; }
   p { color: var(--muted); font-size: 14px; margin: 0; }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .quick-link-card {
+    transition-property: box-shadow;
+  }
+  .quick-link-card:hover { transform: none; }
 }
 </style>

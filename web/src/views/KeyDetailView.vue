@@ -1158,7 +1158,7 @@ watch(keyId, async () => {
 
 .trend-dot {
   opacity: 0.55;
-  transition: opacity 0.15s;
+  transition: opacity 0.15s var(--kx-motion-ease-out);
 }
 
 .trend-dot--active,

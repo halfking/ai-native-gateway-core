@@ -675,7 +675,7 @@ watch(() => props.timeQuery, () => {
 
 .pue-fade-enter-active,
 .pue-fade-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity 0.2s var(--kx-motion-ease-out);
 }
 
 .pue-fade-enter-from,
@@ -684,11 +684,11 @@ watch(() => props.timeQuery, () => {
 }
 
 .pue-slide-enter-active {
-  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform 0.28s var(--kx-motion-ease-out);
 }
 
 .pue-slide-leave-active {
-  transition: transform 0.22s ease-in;
+  transition: transform 0.22s var(--kx-motion-ease-out);
 }
 
 .pue-slide-enter-from,
@@ -698,7 +698,7 @@ watch(() => props.timeQuery, () => {
 
 .pue-pane-enter-active,
 .pue-pane-leave-active {
-  transition: opacity 0.18s ease, transform 0.18s ease;
+  transition: opacity 0.18s var(--kx-motion-ease-out), transform 0.18s var(--kx-motion-ease-out);
 }
 
 .pue-pane-enter-from {

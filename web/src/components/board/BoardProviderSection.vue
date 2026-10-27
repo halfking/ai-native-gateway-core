@@ -362,7 +362,7 @@ watch(usageRows, () => void loadBalances())
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s var(--kx-motion-ease-out);
 }
 .pv-more:hover {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
@@ -378,7 +378,7 @@ watch(usageRows, () => void loadBalances())
   border-radius: 12px;
   padding: 12px 12px;
   min-width: 0;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s var(--kx-motion-ease-out), box-shadow 0.15s var(--kx-motion-ease-out);
 }
 .pv-card--clickable {
   cursor: pointer;

@@ -1511,7 +1511,7 @@ onUnmounted(() => {
 }
 .chevron {
   font-size: 10px;
-  transition: transform 0.2s;
+  transition: transform 0.2s var(--kx-motion-ease-out);
 }
 
 .tab-bar { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -1523,7 +1523,7 @@ onUnmounted(() => {
   border-radius: 8px;
   cursor: pointer;
   font-size: 13px;
-  transition: background .15s, color .15s;
+  transition: background .15s var(--kx-motion-ease-out), color .15s var(--kx-motion-ease-out);
 }
 .tab-btn:hover:not(.active) {
   border-color: var(--accent);
@@ -1785,7 +1785,7 @@ onUnmounted(() => {
   background: var(--card);
   border: none;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out);
 }
 .guide-panel-toggle:hover {
   background: var(--bg-subtle, var(--bg));
@@ -1856,7 +1856,7 @@ onUnmounted(() => {
 .fresh-stale { color: var(--danger); border-color: var(--danger-bd); }
 /* Live pulse: briefly highlights when an SSE event arrives. */
 .live-pulse {
-  animation: livePulse 0.6s ease-out;
+  animation: livePulse 0.6s var(--kx-motion-ease-out);
   border-color: var(--accent);
   color: var(--accent-h);
 }
@@ -1878,7 +1878,7 @@ onUnmounted(() => {
 .qbar-fill {
   height: 100%;
   border-radius: 9px 0 0 9px;
-  transition: width 0.4s ease;
+  transition: width 0.4s var(--kx-motion-ease-out);
 }
 .qbar-ok .qbar-fill { background: var(--success-bd); }
 .qbar-mid .qbar-fill { background: var(--warning-bd); }
@@ -1944,4 +1944,10 @@ onUnmounted(() => {
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .btn.btn-ghost.btn-sm > svg { width: 11px; height: 11px; }
 .chevron > svg { width: 10px; height: 10px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .chevron { transition: none; }
+}
 </style>

@@ -193,7 +193,7 @@ defineExpose({ open, close })
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
 }
 
 .drawer-tab:hover {
@@ -219,7 +219,7 @@ defineExpose({ open, close })
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
   flex-shrink: 0;
 }
 
@@ -236,7 +236,7 @@ defineExpose({ open, close })
 }
 
 .drawer-content {
-  animation: fade-in 0.2s ease;
+  animation: fade-in 0.2s var(--kx-motion-ease-out);
 }
 
 @keyframes fade-in {
@@ -323,7 +323,7 @@ defineExpose({ open, close })
 /* 动画 */
 .drawer-fade-enter-active,
 .drawer-fade-leave-active {
-  transition: opacity 0.25s ease;
+  transition: opacity 0.25s var(--kx-motion-ease-out);
 }
 
 .drawer-fade-enter-from,
@@ -332,11 +332,11 @@ defineExpose({ open, close })
 }
 
 .drawer-slide-enter-active {
-  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform 0.3s var(--kx-motion-ease-out);
 }
 
 .drawer-slide-leave-active {
-  transition: transform 0.25s cubic-bezier(0.64, 0, 0.78, 0);
+  transition: transform 0.25s var(--kx-motion-ease-out);
 }
 
 .drawer-slide-enter-from {
@@ -360,5 +360,12 @@ defineExpose({ open, close })
   .stats-table td {
     padding: 8px 4px;
   }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .drawer-slide-enter-active { transition: none; }
+  .drawer-slide-leave-active { transition: none; }
 }
 </style>

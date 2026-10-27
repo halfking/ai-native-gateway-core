@@ -316,7 +316,7 @@ defineExpose({ load })
   border: none;
   border-radius: var(--radius, 8px);
   cursor: pointer;
-  transition: opacity .15s;
+  transition: opacity .15s var(--kx-motion-ease-out);
 }
 
 .btn-refresh:hover:not(:disabled) {
@@ -396,7 +396,7 @@ defineExpose({ load })
 
 .disk-bar-fill {
   height: 100%;
-  transition: width 0.3s, background-color 0.3s;
+  transition: width 0.3s var(--kx-motion-ease-out), background-color 0.3s var(--kx-motion-ease-out);
 }
 
 .disk-percent {
@@ -444,7 +444,7 @@ defineExpose({ load })
   border-radius: 4px;
   font-size: 14px;
   color: var(--text);
-  transition: border-color .15s;
+  transition: border-color .15s var(--kx-motion-ease-out);
 }
 
 .form-row input[type="number"]:focus,
@@ -478,7 +478,7 @@ defineExpose({ load })
   cursor: pointer;
   font-size: 14px;
   font-weight: 500;
-  transition: opacity .15s;
+  transition: opacity .15s var(--kx-motion-ease-out);
 }
 
 .btn-preview {

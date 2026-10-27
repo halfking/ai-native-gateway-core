@@ -383,14 +383,14 @@ function fmtNum(n?: number) {
 .storage-config { padding: 0; }
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .header h2 { margin: 0; font-size: 20px; color: var(--text); }
-.btn-refresh { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius, 8px); padding: 4px 12px; cursor: pointer; color: var(--text); transition: background .15s, border-color .15s; }
+.btn-refresh { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius, 8px); padding: 4px 12px; cursor: pointer; color: var(--text); transition: background .15s var(--kx-motion-ease-out), border-color .15s var(--kx-motion-ease-out); }
 .btn-refresh:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--accent); color: var(--accent-h); }
 .btn-refresh:disabled { opacity: .4; cursor: not-allowed; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius, 8px); padding: 16px 16px; margin-bottom: 16px; }
 .card-title { margin: 0 0 12px; font-size: 16px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
 .usage-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .usage-bar-track { flex: 1; height: 20px; background: var(--bg-subtle); border-radius: 10px; overflow: hidden; }
-.usage-bar-fill { height: 100%; border-radius: 10px; transition: width 0.3s; }
+.usage-bar-fill { height: 100%; border-radius: 10px; transition: width 0.3s var(--kx-motion-ease-out); }
 .usage-pct { font-weight: 600; min-width: 60px; text-align: right; color: var(--text); }
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
 .stat-item { padding: 8px 0; }
@@ -399,7 +399,7 @@ function fmtNum(n?: number) {
 .mono { font-family: 'SF Mono', Consolas, monospace; font-size: 13px; }
 .form-group { margin-bottom: 12px; }
 .form-label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; font-weight: 500; }
-.form-input { width: 100%; padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; font-size: 14px; box-sizing: border-box; color: var(--text); transition: border-color .15s; }
+.form-input { width: 100%; padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; font-size: 14px; box-sizing: border-box; color: var(--text); transition: border-color .15s var(--kx-motion-ease-out); }
 .form-input:focus { outline: none; border-color: var(--accent); }
 .readonly-value { background: var(--bg-subtle); padding: 4px 8px; border-radius: 4px; font-size: 13px; word-break: break-all; border: 1px solid var(--border); color: var(--text); }
 .meta-hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
@@ -407,9 +407,9 @@ function fmtNum(n?: number) {
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .path-test-row { display: flex; gap: 8px; }
 .path-test-row .form-input { flex: 1; }
-.btn-secondary { background: var(--card); border: 1px solid var(--accent); color: var(--accent-h); border-radius: 4px; padding: 4px 16px; cursor: pointer; white-space: nowrap; transition: opacity .15s; }
+.btn-secondary { background: var(--card); border: 1px solid var(--accent); color: var(--accent-h); border-radius: 4px; padding: 4px 16px; cursor: pointer; white-space: nowrap; transition: opacity .15s var(--kx-motion-ease-out); }
 .btn-secondary:hover:not(:disabled) { opacity: .85; }
-.btn-primary { background: var(--accent); color: var(--on-primary); border: none; border-radius: 4px; padding: 8px 24px; cursor: pointer; font-size: 14px; transition: opacity .15s; }
+.btn-primary { background: var(--accent); color: var(--on-primary); border: none; border-radius: 4px; padding: 8px 24px; cursor: pointer; font-size: 14px; transition: opacity .15s var(--kx-motion-ease-out); }
 .btn-primary:hover:not(:disabled) { opacity: .85; }
 .btn-primary:disabled { opacity: .4; cursor: not-allowed; }
 .test-result { padding: 8px 12px; border-radius: 4px; font-size: 13px; margin-top: 8px; }
@@ -435,7 +435,7 @@ function fmtNum(n?: number) {
 .migration-arrow { color: var(--accent-h); font-weight: 600; }
 .migration-progress { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .migration-bar-track { flex: 1; height: 14px; background: var(--bg-subtle); border-radius: 7px; overflow: hidden; }
-.migration-bar-fill { height: 100%; background: var(--accent); border-radius: 7px; transition: width 0.3s; }
+.migration-bar-fill { height: 100%; background: var(--accent); border-radius: 7px; transition: width 0.3s var(--kx-motion-ease-out); }
 .migration-pct { font-weight: 600; min-width: 40px; text-align: right; color: var(--accent-h); }
 .migration-stats { color: var(--muted); font-size: 12px; }
 .migration-stats span { margin-right: 4px; }

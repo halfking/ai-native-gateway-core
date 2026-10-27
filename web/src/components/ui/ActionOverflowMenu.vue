@@ -237,7 +237,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   font-size: 10px;
   opacity: 0.7;
-  transition: transform 0.2s ease;
+  transition: transform 0.2s var(--kx-motion-ease-out);
   flex-shrink: 0;
 }
 .action-overflow__trigger[aria-expanded='true'] .action-overflow__chevron {
@@ -256,7 +256,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  animation: action-overflow-enter 0.14s ease both;
+  animation: action-overflow-enter 0.14s var(--kx-motion-ease-out) both;
 }
 
 .action-overflow__item {
@@ -274,7 +274,7 @@ onBeforeUnmount(() => {
   text-align: start;
   white-space: nowrap;
   cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition: background-color 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
 }
 .action-overflow__item:hover:not(:disabled),
 .action-overflow__item:focus-visible {
@@ -298,4 +298,10 @@ onBeforeUnmount(() => {
 /* ★ Element Plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .action-overflow__chevron > svg { width: 10px; height: 10px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .action-overflow__chevron { transition: none; }
+}
 </style>

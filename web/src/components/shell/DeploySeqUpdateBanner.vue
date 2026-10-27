@@ -86,7 +86,7 @@ const { bannerVisible, dismissBanner, applyUpdate } = useDeploySeqUpdate()
 
 .deploy-seq-bar-enter-active,
 .deploy-seq-bar-leave-active {
-  transition: opacity 200ms ease, transform 200ms ease;
+  transition: opacity 200ms var(--kx-motion-ease-out), transform 200ms var(--kx-motion-ease-out);
 }
 
 .deploy-seq-bar-enter-from,

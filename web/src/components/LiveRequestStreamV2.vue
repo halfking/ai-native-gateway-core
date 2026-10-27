@@ -702,7 +702,7 @@ function vendorOptionLabel(v: string) {
   background: var(--bg);
   color: var(--text);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
   font-weight: 500;
 }
@@ -766,7 +766,7 @@ function vendorOptionLabel(v: string) {
   background: var(--bg);
   color: var(--text);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
   display: inline-flex;
   align-items: center;
@@ -793,7 +793,7 @@ function vendorOptionLabel(v: string) {
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--bg);
-  transition: all 0.15s ease;
+  transition: border-color 0.15s var(--kx-motion-ease-out);
 }
 
 .filter-model-picker:hover {
@@ -849,7 +849,7 @@ function vendorOptionLabel(v: string) {
   padding: 4px 8px;
   cursor: pointer;
   border-radius: 4px;
-  transition: background 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out);
   font-size: 13px;
   user-select: none;
 }
@@ -890,7 +890,7 @@ function vendorOptionLabel(v: string) {
   background: var(--bg);
   color: var(--warning);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 
@@ -911,7 +911,7 @@ function vendorOptionLabel(v: string) {
   color: var(--text);
   font-size: 12px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 
@@ -985,7 +985,7 @@ function vendorOptionLabel(v: string) {
   align-items: center;
   justify-content: center;
   border-radius: 4px;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
 }
 
 .popup-close:hover {
@@ -1077,7 +1077,7 @@ function vendorOptionLabel(v: string) {
   color: var(--text-secondary);
   font-size: 11px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 
@@ -1095,7 +1095,7 @@ function vendorOptionLabel(v: string) {
   border: 1px solid var(--border);
   font-size: 11px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 
@@ -1144,7 +1144,7 @@ function vendorOptionLabel(v: string) {
   border-radius: 4px;
   font-size: 12px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
   border: 1px solid var(--border);
 }
 
