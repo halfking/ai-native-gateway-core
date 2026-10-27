@@ -68,9 +68,20 @@ func TestMostUsedClientModelSourceShape(t *testing.T) {
 		}
 	}
 
-	// join 键：★ 必须保留 ::text 转型 —— 与视图逐字同语义。
-	//   （去掉能再快 ~426 ms，但 varchar 比较忽略尾空格、text 比较不忽略 ⇒
-	//     两者**不等价** ⇒ 用边角语义换 1.5× 不划算。）
+	// join 键：★ 必须保留 ::text 转型 —— 与视图的 join 谓词**逐字相同**。
+	//
+	// ★★ 为什么保留（2026-10-27 实测订正了本轮早先的判断）：
+	//   ① **原先的理由是错的**：「varchar 比较忽略尾空格、text 不忽略 ⇒ 两者不等价」
+	//      —— 实测 `'a'::varchar(255) = 'a '::varchar(255)` 是 **false**
+	//      ⇒ **varchar 也不忽略尾空格**（只有 `char(n)` 忽略）⇒ 那条推理不成立。
+	//   ② **「去掉能快 ~426 ms」也是噪声**：同计划形状下 252 的单次耗时波动 44×，
+	//      该数字不可复现；且两形态的**计划代价与 buffer 计数完全相同** ⇒
+	//      **转型是免费的**。
+	//   ③ **真正的理由（更硬）**：`text` 相等是**字节相等**，`varchar` 相等走
+	//      **排序规则**（确定性 ICU 排序规则下可能把规范等价的两种写法判相等）
+	//      ⇒ `d.tenant_id::text = t.tenant_id::text` 是**字节精确**的，
+	//      且与 canonical 视图的 join 谓词**逐字相同** ⇒ 不引入任何新的相等语义。
+	//   ⇒ 既然转型**免费**，就按「与视图逐字同语义」这条最保守的形态钉住。
 	if !strings.Contains(src, "ON d.tenant_id::text = t.tenant_id::text AND d.request_id = t.request_id AND d.partition_date = t.partition_date") {
 		t.Errorf("窄投影的 join 键与视图不一致（★ 必须是 d.tenant_id::text = t.tenant_id::text + request_id + partition_date）：\n%s", src)
 	}

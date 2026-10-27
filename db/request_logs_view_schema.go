@@ -814,6 +814,11 @@ func SessionFamilyCredentialCountSourceSQL(credExpr string) string {
 //   ⇒ 而去掉转型**不省任何量**：实测两形态计划代价相同（2025.29 vs 2025.29）、
 //     buffer 计数相同 ⇒ ★ 转型是**免费的**，保守优先。
 //
+//   ★★ 订正本轮早先的一个**错误前提**：「PG 里 varchar 比较忽略尾空格、text 不忽略」
+//     —— **不成立**：252 实测 `'a'::varchar(255) = 'a '::varchar(255)` 是 **false**
+//     ⇒ varchar 也**不**忽略尾空格（只有 `char(n)` 忽略）⇒
+//     ⇒ 保留转型**不是**为了「补 varchar 的漏」，而是为了「字节精确 + 与视图逐字相同」。
+//
 // # 投影的 7 列与「视图里那几列的来源」逐字对齐：
 //
 //	client_model  ← d.client_model    （details 腿）
