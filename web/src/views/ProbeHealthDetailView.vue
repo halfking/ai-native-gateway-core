@@ -810,7 +810,7 @@ onMounted(() => {
 
 <style scoped>
 .detail-container {
-  padding: 20px;
+  padding: 16px;
 }
 
 .detail-header {
@@ -834,7 +834,7 @@ onMounted(() => {
 }
 
 .state-badge {
-  padding: 2px 10px;
+  padding: 2px 8px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 600;
@@ -883,7 +883,7 @@ onMounted(() => {
 }
 
 .tab-content {
-  padding: 20px;
+  padding: 16px;
   min-height: 200px;
 }
 
@@ -919,7 +919,7 @@ onMounted(() => {
 
 .node-badges {
   display: flex;
-  gap: 6px;
+  gap: 4px;
 }
 
 .node-stats {
@@ -950,7 +950,7 @@ onMounted(() => {
 .info-grid {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   padding: 12px;
   background: var(--bg-subtle);
   border-radius: var(--radius);

@@ -405,7 +405,7 @@ const channelLabels = {
 
 .form-group label {
   display: block;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   font-size: 13px;
   color: var(--text-secondary);
 }
@@ -451,7 +451,7 @@ const channelLabels = {
 }
 
 .btn-sm {
-  padding: 6px 12px;
+  padding: 4px 12px;
   font-size: 12px;
 }
 

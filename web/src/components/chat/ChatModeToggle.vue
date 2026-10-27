@@ -51,7 +51,7 @@ function setMode(mode: ChatResponseMode) {
 }
 
 .mode-toggle__btn {
-  padding: 4px 10px;
+  padding: 4px 8px;
   font-size: 12px;
   border: none;
   background: var(--kx-surface, var(--card));

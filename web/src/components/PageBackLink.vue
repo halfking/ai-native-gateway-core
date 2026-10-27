@@ -32,7 +32,7 @@ function goBack() {
 
 <style scoped>
 .page-back {
-  padding: 6px 12px;
+  padding: 4px 12px;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 4px;

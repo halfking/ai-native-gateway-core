@@ -218,14 +218,14 @@ onBeforeUnmount(() => {
   color: var(--kx-danger, var(--danger));
   background: var(--kx-danger-soft, var(--danger-bg));
   border: 1px solid color-mix(in srgb, var(--kx-danger, var(--danger)) 40%, var(--kx-border, var(--danger-bg)));
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-radius: 6px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 /* Subtask 3: body_status 横幅。中性提示色，不是错误态——正文不可用是
    常态（未采集 / 尚未写入），不该用红色吓人。 */
 .body-status-banner {
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-radius: 6px;
   margin-bottom: 12px;
   border: 1px solid var(--kx-border, var(--border-color));
@@ -252,7 +252,7 @@ onBeforeUnmount(() => {
 }
 .body-status-body,
 .body-status-meta {
-  margin: 6px 0 0;
+  margin: 4px 0 0;
   font-size: 13px;
   line-height: 1.5;
 }

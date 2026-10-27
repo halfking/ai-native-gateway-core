@@ -130,7 +130,7 @@ onMounted(() => void loadSeries(false))
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 13px 15px;
+  padding: 12px 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -140,13 +140,13 @@ onMounted(() => void loadSeries(false))
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .trend-sec__titlewrap {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .trend-sec__title {

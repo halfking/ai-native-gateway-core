@@ -50,7 +50,7 @@ const { bannerVisible, dismissBanner, applyUpdate } = useDeploySeqUpdate()
   align-items: center;
   gap: 16px;
   max-width: min(560px, calc(100vw - 32px));
-  padding: 10px 16px;
+  padding: 8px 16px;
   border-radius: 8px;
   background: var(--info-bg);
   color: var(--kx-text);

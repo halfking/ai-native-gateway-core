@@ -309,7 +309,7 @@ onUnmounted(() => {
 }
 
 .top-bar {
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -342,7 +342,7 @@ onUnmounted(() => {
 .top-bar .refresh-group {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: nowrap;
 }
 .top-bar .refresh-group label {
@@ -355,7 +355,7 @@ onUnmounted(() => {
 .top-bar .refresh-group .field-input {
   width: auto;
   font-size: 11px;
-  padding: 2px 6px;
+  padding: 2px 4px;
 }
 .top-bar .refresh-meta {
   font-size: 11px;
@@ -366,7 +366,7 @@ onUnmounted(() => {
   width: auto;
   max-width: 120px;
   font-size: 11px;
-  padding: 2px 6px;
+  padding: 2px 4px;
 }
 .top-bar .btn-sm { font-size: 11px; padding: 2px 8px; }
 

@@ -609,13 +609,13 @@ onMounted(() => {
 /* 嵌入面板：宿主 AutoRoutingOpsView 提供外层 padding 与纵向间距 */
 .panel-toolbar {
   display: flex;
-  gap: 0.5rem;
+  gap: 8px;
   align-items: center;
   flex-wrap: wrap;
 }
 
 .count-chip {
-  padding: 0.25rem 0.75rem;
+  padding: 4px 12px;
   margin-right: auto;
   background: var(--bg-secondary);
   border-radius: 12px;
@@ -625,7 +625,7 @@ onMounted(() => {
 
 .panel-desc {
   color: var(--text-muted);
-  margin: 0 0 0.75rem;
+  margin: 0 0 12px;
   font-size: 14px;
 }
 
@@ -633,7 +633,7 @@ onMounted(() => {
   overflow-x: auto;
   border: 1px solid var(--border);
   border-radius: 6px;
-  margin-top: 1rem;
+  margin-top: 16px;
 }
 
 .data-table {
@@ -643,7 +643,7 @@ onMounted(() => {
 
 .data-table th {
   text-align: left;
-  padding: 0.75rem 1rem;
+  padding: 12px 16px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   font-weight: 600;
@@ -651,7 +651,7 @@ onMounted(() => {
 }
 
 .data-table td {
-  padding: 0.75rem 1rem;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   font-size: 14px;
 }
@@ -690,9 +690,9 @@ onMounted(() => {
 
 .anno-meta {
   display: flex;
-  gap: 0.35rem;
+  gap: 4px;
   align-items: center;
-  margin-top: 0.25rem;
+  margin-top: 4px;
   flex-wrap: wrap;
 }
 
@@ -717,7 +717,7 @@ onMounted(() => {
   color: var(--primary);
   cursor: pointer;
   padding: 0;
-  margin: 0 0.5rem;
+  margin: 0 8px;
   text-decoration: underline;
   font-size: 14px;
 }
@@ -740,18 +740,18 @@ label.btn.disabled {
 .modal-sample-summary {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  padding-bottom: 0.75rem;
-  margin-bottom: 0.75rem;
+  gap: 8px;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
   border-bottom: 1px solid var(--border);
 }
 
 .detail-section {
-  margin-top: 1rem;
+  margin-top: 16px;
 }
 
 .detail-section h4 {
-  margin: 0 0 0.5rem 0;
+  margin: 0 0 8px 0;
   font-size: 16px;
   font-weight: 600;
 }
@@ -759,13 +759,13 @@ label.btn.disabled {
 .meta-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 0.5rem 1.5rem;
+  gap: 8px 24px;
 }
 
 .detail-row {
   display: flex;
   align-items: baseline;
-  gap: 0.5rem;
+  gap: 8px;
   font-size: 14px;
 }
 
@@ -778,7 +778,7 @@ label.btn.disabled {
 .request-preview {
   max-height: 260px;
   overflow: auto;
-  padding: 0.75rem;
+  padding: 12px;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -789,7 +789,7 @@ label.btn.disabled {
 }
 
 .badge {
-  padding: 0.25rem 0.5rem;
+  padding: 4px 8px;
   border-radius: 3px;
   font-size: 12px;
   font-weight: 500;

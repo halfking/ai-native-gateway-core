@@ -180,7 +180,7 @@ function fmtTokensCompact(n: number | undefined) {
   font-size: 12px;
   line-height: 1.5;
   color: var(--warning);
-  padding: 8px 10px;
+  padding: 8px 8px;
   border: 1px solid var(--warning);
   border-radius: 6px;
 }
@@ -190,7 +190,7 @@ function fmtTokensCompact(n: number | undefined) {
   background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, var(--card)), var(--card) 65%);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 14px 16px 12px;
+  padding: 12px 16px 12px;
 }
 .hero-card--highlight {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
@@ -209,11 +209,11 @@ function fmtTokensCompact(n: number | undefined) {
   letter-spacing: -0.01em;
 }
 .hero-card__sub {
-  margin-top: 6px;
+  margin-top: 4px;
   font-size: 11px;
   color: var(--text-muted);
   display: flex;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .hero-card__sub b {

@@ -400,7 +400,7 @@ load()
 <template>
   <div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-      <h4 style="margin:0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <h4 style="margin:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <span>{{ pm('title', { n: offers.length }) }}</span>
         <span v-if="refreshing" class="refresh-hint refresh-hint--loading" role="status" aria-live="polite">
           <span class="refresh-spinner" aria-hidden="true"></span>
@@ -420,7 +420,7 @@ load()
           aria-live="polite"
         >{{ refreshSummary }}</span>
       </h4>
-      <div style="display:flex;gap:6px">
+      <div style="display:flex;gap:4px">
         <button
           class="btn btn-sm"
           :disabled="refreshing || clearing"
@@ -569,11 +569,11 @@ load()
         </div>
 
         <!-- Per-credential breakdown -->
-        <div v-for="cred in routingDiag.credentials" :key="cred.credential_id" style="margin-bottom:6px;padding:6px 8px;border:1px solid var(--border);border-radius:4px">
+        <div v-for="cred in routingDiag.credentials" :key="cred.credential_id" style="margin-bottom:4px;padding:4px 8px;border:1px solid var(--border);border-radius:4px">
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">
             <div>
               <strong>{{ credentialDisplayName(cred.credential_id) }} {{ cred.credential_label }}</strong>
-              <span class="badge" :class="statusBadge(cred.status)" style="margin-left:6px">{{ cred.status }}</span>
+              <span class="badge" :class="statusBadge(cred.status)" style="margin-left:4px">{{ cred.status }}</span>
             </div>
             <div style="font-size:12px">
               {{ cred.bindings_routable }}/{{ cred.bindings_total }} 可路由 ·

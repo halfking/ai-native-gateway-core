@@ -549,7 +549,7 @@ function onDividerKeydown(e: KeyboardEvent) {
 <style scoped>
 .sync-pane { display: flex; flex-direction: column; min-height: 320px; }
 .sync-pane--timeline { min-height: 0; height: 100%; }
-.view-switch { display: flex; gap: 6px; margin-bottom: 10px; }
+.view-switch { display: flex; gap: 4px; margin-bottom: 8px; }
 .pane-body { display: flex; align-items: stretch; gap: 0; min-height: 320px; flex: 1; }
 .pane-body--single { display: block; }
 .left {
@@ -576,7 +576,7 @@ function onDividerKeydown(e: KeyboardEvent) {
 .turn-card {
   display: block; width: 100%; text-align: left;
   border: 1px solid var(--border); background: var(--bg-card, transparent);
-  border-radius: 6px; padding: 0; margin-bottom: 6px; color: inherit;
+  border-radius: 6px; padding: 0; margin-bottom: 4px; color: inherit;
 }
 /* ★ 选中态用「语义软填充底」表达，不用彩色侧边条
    （craft-floor：ban-side-stripe-borders；DESIGN.md §6 替代方案优先级：状态点 > 软填充底 > 徽标）。
@@ -597,7 +597,7 @@ function onDividerKeydown(e: KeyboardEvent) {
 .turn-card .badge {
   font-size: 11px; color: var(--kx-success);
   background: color-mix(in srgb, var(--kx-success) 14%, transparent);
-  padding: 0 6px; border-radius: 999px;
+  padding: 0 4px; border-radius: 999px;
 }
 .turn-preview {
   margin: 0; white-space: pre-wrap; word-break: break-word;
@@ -606,7 +606,7 @@ function onDividerKeydown(e: KeyboardEvent) {
 }
 .linkish { margin-top: 4px; }
 .stsp-digest {
-  margin-top: 6px;
+  margin-top: 4px;
   border: 1px solid var(--border, var(--kx-border));
   background: transparent;
   color: var(--accent, var(--kx-primary));
@@ -617,7 +617,7 @@ function onDividerKeydown(e: KeyboardEvent) {
 .turn-row {
   display: block; width: 100%; text-align: left;
   border: 1px solid var(--border); background: var(--bg-card, transparent);
-  border-radius: 6px; padding: 8px; margin-bottom: 6px; cursor: pointer; color: inherit;
+  border-radius: 6px; padding: 8px; margin-bottom: 4px; cursor: pointer; color: inherit;
 }
 .turn-row.active {
   border-color: var(--accent);
@@ -627,10 +627,10 @@ function onDividerKeydown(e: KeyboardEvent) {
 .turn--err { border: 1px solid var(--kx-error); background: color-mix(in srgb, var(--kx-error) 5%, transparent); }
 .turn--warn { border: 1px solid var(--kx-warning); }
 .turn--info { border: 1px solid var(--kx-primary); }
-.left .tn { font-weight: 600; margin-right: 6px; }
-.st, .lat, .mdl { font-size: 11px; color: var(--muted); margin-right: 6px; }
+.left .tn { font-weight: 600; margin-right: 4px; }
+.st, .lat, .mdl { font-size: 11px; color: var(--muted); margin-right: 4px; }
 /* .pill / .pill--* 全部从全局 styles/pill-chip.css 继承（P1-8）。 */
-.children { margin: 6px 0 0; padding-left: 14px; font-size: 11px; color: var(--muted); }
+.children { margin: 4px 0 0; padding-left: 12px; font-size: 11px; color: var(--muted); }
 .children li { cursor: pointer; }
 .children li:hover { color: var(--accent); }
 .facet-row { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }

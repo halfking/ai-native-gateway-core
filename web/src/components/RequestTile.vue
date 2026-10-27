@@ -919,7 +919,7 @@ function closeTimelinePanel() {
   justify-content: space-between;
   flex: 1;
   min-width: 0;
-  padding: 5px 6px 4px 9px;
+  padding: 4px 4px 4px 8px;
 }
 
 .request-tile__time {
@@ -1139,7 +1139,7 @@ function closeTimelinePanel() {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--kx-border);
   background: var(--kx-bg-accent);
 }
@@ -1179,8 +1179,8 @@ function closeTimelinePanel() {
 .request-tile__child-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 5px;
+  gap: 4px;
+  padding: 4px 4px;
   border-radius: 4px;
   font-size: 11px;
 }
@@ -1227,7 +1227,7 @@ function closeTimelinePanel() {
 
 .request-tile__children-empty {
   margin: 0;
-  padding: 10px 12px;
+  padding: 8px 12px;
   font-size: 11px;
   line-height: 1.5;
   color: var(--kx-muted);
@@ -1290,7 +1290,7 @@ function closeTimelinePanel() {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--kx-border);
   background: var(--kx-bg-accent);
 }

@@ -45,7 +45,7 @@ const credDepth = computed(() =>
 </template>
 
 <style scoped>
-.dw-status { margin-bottom: 14px; }
+.dw-status { margin-bottom: 12px; }
 .chips {
   display: flex;
   flex-wrap: wrap;

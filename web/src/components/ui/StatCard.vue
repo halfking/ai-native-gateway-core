@@ -76,7 +76,7 @@ withDefaults(defineProps<{
 .app-stat-card__label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 .app-stat-card--success .app-stat-card__label::before,
 .app-stat-card--warning .app-stat-card__label::before,

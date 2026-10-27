@@ -153,7 +153,7 @@ function tokens(value: number | null | undefined): string {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  padding: 8px 6px;
+  padding: 8px 4px;
   border: 1px solid var(--kx-border);
   border-radius: 12px;
   background: var(--kx-surface);
@@ -164,8 +164,8 @@ function tokens(value: number | null | undefined): string {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 6px;
-  padding: 0 4px 6px;
+  gap: 4px;
+  padding: 0 4px 4px;
   border-bottom: 1px solid var(--kx-border);
 }
 
@@ -228,7 +228,7 @@ function tokens(value: number | null | undefined): string {
   flex-direction: column;
   gap: 1px;
   min-width: 0;
-  padding: 5px 6px;
+  padding: 4px 4px;
   border: 0;
   background: transparent;
   cursor: pointer;
@@ -272,7 +272,7 @@ function tokens(value: number | null | undefined): string {
 }
 
 .pp__page {
-  padding: 0 5px;
+  padding: 0 4px;
   border: 0;
   background: transparent;
   color: var(--kx-muted);
@@ -285,7 +285,7 @@ function tokens(value: number | null | undefined): string {
 }
 
 .pp__zoom {
-  padding: 0 7px;
+  padding: 0 8px;
   border: 0;
   background: transparent;
   color: var(--kx-muted);
@@ -309,14 +309,14 @@ function tokens(value: number | null | undefined): string {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 5px 4px 0;
+  padding: 4px 4px 0;
   border-top: 1px solid var(--kx-border);
 }
 
 .pp__page-btn {
   min-width: 22px;
   height: 20px;
-  padding: 0 6px;
+  padding: 0 4px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   background: transparent;

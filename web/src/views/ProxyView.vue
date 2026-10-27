@@ -836,39 +836,39 @@ const AFFINITY_POLICIES = ['any', 'prefer_same', 'require_same']
 
 <style scoped>
 .proxy-view {
-  padding: 2rem;
+  padding: 32px;
 }
 
 h1 {
-  margin-bottom: 1.5rem;
+  margin-bottom: 24px;
   color: var(--text-primary);
 }
 
 .error-banner {
   background: var(--error-bg);
   color: var(--error-text);
-  padding: 0.75rem 1rem;
+  padding: 12px 16px;
   border-radius: 4px;
-  margin-bottom: 1rem;
+  margin-bottom: 16px;
 }
 
 .warning-banner {
   background: var(--warning-bg);
   color: var(--warning-text);
-  padding: 0.75rem 1rem;
+  padding: 12px 16px;
   border-radius: 4px;
-  margin-top: 1rem;
+  margin-top: 16px;
 }
 
 .tabs {
   display: flex;
-  gap: 0.5rem;
-  margin-bottom: 1.5rem;
+  gap: 8px;
+  margin-bottom: 24px;
   border-bottom: 2px solid var(--border-color);
 }
 
 .tabs button {
-  padding: 0.75rem 1.5rem;
+  padding: 12px 24px;
   border: none;
   background: transparent;
   cursor: pointer;
@@ -893,28 +893,28 @@ h1 {
 
 .actions {
   display: flex;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
+  gap: 8px;
+  margin-bottom: 16px;
   flex-wrap: wrap;
 }
 
 .loading {
   text-align: center;
-  padding: 2rem;
+  padding: 32px;
   color: var(--text-secondary);
 }
 
 .status-overview {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 1rem;
+  gap: 16px;
 }
 
 .status-card {
   background: var(--card-bg);
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  padding: 1.5rem;
+  padding: 24px;
 }
 
 .status-card-wide {
@@ -923,12 +923,12 @@ h1 {
 
 .status-card h3 {
   margin-top: 0;
-  margin-bottom: 1rem;
+  margin-bottom: 16px;
   color: var(--text-primary);
 }
 
 .status-card p {
-  margin: 0.5rem 0;
+  margin: 8px 0;
 }
 
 .error-text {
@@ -945,7 +945,7 @@ h1 {
 
 .data-table th,
 .data-table td {
-  padding: 0.75rem;
+  padding: 12px;
   text-align: left;
   border-bottom: 1px solid var(--border-color);
 }
@@ -970,7 +970,7 @@ h1 {
 .empty-state {
   text-align: center;
   color: var(--text-secondary);
-  padding: 2rem !important;
+  padding: 32px !important;
 }
 
 .status-active {
@@ -991,26 +991,26 @@ h1 {
   display: inline-block;
   background: var(--warning-bg);
   color: var(--warning-text);
-  padding: 0.15rem 0.5rem;
+  padding: 2.4px 8px;
   border-radius: 4px;
-  margin-right: 0.5rem;
+  margin-right: 8px;
   font-size: 14px;
 }
 
 .inline-edit {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: 4px;
 }
 
 .inline-edit input {
   width: 100px;
-  padding: 0.25rem 0.5rem;
+  padding: 4px 8px;
 }
 
 .regions-table th,
 .regions-table td {
-  padding: 0.5rem 0.75rem;
+  padding: 8px 12px;
   font-size: 14px;
 }
 
@@ -1018,7 +1018,7 @@ h1 {
 .btn-secondary,
 .btn-small,
 .btn-danger {
-  padding: 0.5rem 1rem;
+  padding: 8px 16px;
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -1051,9 +1051,9 @@ h1 {
 }
 
 .btn-small {
-  padding: 0.25rem 0.75rem;
+  padding: 4px 12px;
   font-size: 14px;
-  margin-right: 0.5rem;
+  margin-right: 8px;
   background: var(--card);
   color: var(--text);
 }
@@ -1087,7 +1087,7 @@ h1 {
 .modal-content {
   background: var(--card-bg);
   border-radius: 8px;
-  padding: 2rem;
+  padding: 32px;
   max-width: 600px;
   width: 90%;
   max-height: 80vh;
@@ -1096,25 +1096,25 @@ h1 {
 
 .modal-content h2 {
   margin-top: 0;
-  margin-bottom: 1.5rem;
+  margin-bottom: 24px;
   color: var(--text-primary);
 }
 
 .form-group {
-  margin-bottom: 1rem;
+  margin-bottom: 16px;
 }
 
 .form-group-inline label {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  margin-right: 1.5rem;
+  gap: 8px;
+  margin-right: 24px;
   font-weight: 400;
 }
 
 .form-group label {
   display: block;
-  margin-bottom: 0.25rem;
+  margin-bottom: 4px;
   font-weight: 500;
   color: var(--text-primary);
 }
@@ -1123,7 +1123,7 @@ h1 {
 .form-group select,
 .form-group textarea {
   width: 100%;
-  padding: 0.5rem;
+  padding: 8px;
   border: 1px solid var(--border-color);
   border-radius: 4px;
   font-size: 16px;
@@ -1131,15 +1131,15 @@ h1 {
 
 .form-group small {
   display: block;
-  margin-top: 0.25rem;
+  margin-top: 4px;
   color: var(--text-secondary);
   font-size: 14px;
 }
 
 .modal-actions {
   display: flex;
-  gap: 0.5rem;
+  gap: 8px;
   justify-content: flex-end;
-  margin-top: 1.5rem;
+  margin-top: 24px;
 }
 </style>

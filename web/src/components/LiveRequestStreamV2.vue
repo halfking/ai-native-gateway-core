@@ -612,7 +612,7 @@ function vendorOptionLabel(v: string) {
   border-radius: var(--radius, 8px);
   background: var(--card);
   padding: 12px 16px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   /* min-width:0 让组件在 flex/grid 父容器中能正确收缩 */
   min-width: 0;
   max-width: 100%;
@@ -640,13 +640,13 @@ function vendorOptionLabel(v: string) {
   align-items: center;
   /* ★ 2026-10-27 第 21 增量：分组容器不再各涂一种色调 ⇒ 组与组之间改由**间距**区分。
      组内按钮间距 4px，组间 14px ⇒ 比例 3.5:1，肉眼一眼分得开「组内」与「组间」。 */
-  gap: 14px;
+  gap: 12px;
   width: 100%;
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
   flex-wrap: nowrap;
-  padding: 2px 2px 6px;
+  padding: 2px 2px 4px;
   overscroll-behavior-inline: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
@@ -696,7 +696,7 @@ function vendorOptionLabel(v: string) {
 
 .control-btn {
   font-size: 12px;
-  padding: 5px 12px;
+  padding: 4px 12px;
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--bg);
@@ -738,7 +738,7 @@ function vendorOptionLabel(v: string) {
   flex: 0 0 auto;
   gap: 8px;
   flex-wrap: nowrap;
-  padding: 5px 10px;
+  padding: 4px 8px;
   border-radius: 6px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
@@ -760,7 +760,7 @@ function vendorOptionLabel(v: string) {
 
 .filter-btn {
   font-size: 12px;
-  padding: 5px 12px;
+  padding: 4px 12px;
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--bg);
@@ -770,7 +770,7 @@ function vendorOptionLabel(v: string) {
   white-space: nowrap;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .filter-btn:hover {
@@ -810,7 +810,7 @@ function vendorOptionLabel(v: string) {
   border: 0;
   background: transparent;
   min-height: 26px;
-  padding: 2px 6px;
+  padding: 2px 4px;
 }
 
 .filter-badge {
@@ -819,7 +819,7 @@ function vendorOptionLabel(v: string) {
   justify-content: center;
   min-width: 18px;
   height: 18px;
-  padding: 0 5px;
+  padding: 0 4px;
   border-radius: 9px;
   background: var(--accent);
   color: var(--bg);
@@ -846,7 +846,7 @@ function vendorOptionLabel(v: string) {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   cursor: pointer;
   border-radius: 4px;
   transition: background 0.15s ease;
@@ -869,7 +869,7 @@ function vendorOptionLabel(v: string) {
 
 .filter-empty {
   display: block;
-  padding: 8px 10px;
+  padding: 8px 8px;
   color: var(--text-tertiary);
   font-size: 12px;
 }
@@ -884,7 +884,7 @@ function vendorOptionLabel(v: string) {
 
 .clear-filters-btn {
   font-size: 12px;
-  padding: 5px 12px;
+  padding: 4px 12px;
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--bg);
@@ -903,8 +903,8 @@ function vendorOptionLabel(v: string) {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 12px;
+  gap: 4px;
+  padding: 4px 12px;
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--bg);
@@ -1140,7 +1140,7 @@ function vendorOptionLabel(v: string) {
 .test-btn,
 .close-btn {
   flex: 1;
-  padding: 6px 12px;
+  padding: 4px 12px;
   border-radius: 4px;
   font-size: 12px;
   cursor: pointer;
@@ -1171,8 +1171,8 @@ function vendorOptionLabel(v: string) {
 .cache-stats {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 12px;
+  gap: 4px;
+  padding: 4px 12px;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--bg);
@@ -1224,7 +1224,7 @@ function vendorOptionLabel(v: string) {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 4px 12px;
   border-radius: 6px;
   font-size: 12px;
   line-height: 1.5;
@@ -1277,7 +1277,7 @@ function vendorOptionLabel(v: string) {
 .swim-lanes {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   margin-top: 12px;
   min-width: 0;
   width: 100%;
@@ -1291,8 +1291,8 @@ function vendorOptionLabel(v: string) {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  padding: 48px 20px;
+  gap: 8px;
+  padding: 48px 16px;
   text-align: center;
   color: var(--muted);
   font-size: 13px;

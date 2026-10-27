@@ -213,7 +213,7 @@ const title = computed(() => t('liveTopology.gateway.title'))
 .gw__head {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 8px;
   flex: none;
   height: 26px;
   padding: 4px 12px 0;
@@ -245,7 +245,7 @@ const title = computed(() => t('liveTopology.gateway.title'))
   flex: 1;
   min-height: 0;
   gap: 8px;
-  padding: 0 10px;
+  padding: 0 8px;
 }
 
 .gw__lane-tag {
@@ -281,7 +281,7 @@ const title = computed(() => t('liveTopology.gateway.title'))
   flex: 1;
   min-width: 0;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   overflow: hidden;
 }
 
@@ -377,7 +377,7 @@ const title = computed(() => t('liveTopology.gateway.title'))
   min-width: 108px;
   flex-direction: row;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   border-color: color-mix(in srgb, var(--kx-warning) 40%, var(--kx-border));
   background:
     repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--kx-warning) 7%, transparent) 6px 12px),
@@ -441,7 +441,7 @@ const title = computed(() => t('liveTopology.gateway.title'))
 .gw__plugin {
   display: inline-flex;
   align-items: center;
-  padding: 1px 7px;
+  padding: 1px 8px;
   border-radius: 999px;
   font-size: 11px;
   white-space: nowrap;

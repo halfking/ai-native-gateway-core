@@ -594,13 +594,13 @@ onMounted(() => { load(); loadTenants() })
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 0;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
   background: var(--card);
 }
-.mini-stat { padding: 10px 14px; border-right: 1px solid var(--border); min-width: 0; }
+.mini-stat { padding: 8px 12px; border-right: 1px solid var(--border); min-width: 0; }
 .mini-stat:last-child { border-right: none; }
 .mini-stat .v { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .mini-stat .v-ok { color: var(--success); }
@@ -616,8 +616,8 @@ onMounted(() => { load(); loadTenants() })
 
 .password-policy {
   display: grid;
-  gap: 6px;
-  margin-top: 10px;
+  gap: 4px;
+  margin-top: 8px;
 }
 
 .password-policy__item {

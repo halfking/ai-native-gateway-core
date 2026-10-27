@@ -72,7 +72,7 @@ function formatMs(ms: number) {
   border: 1px solid var(--border, var(--surface-secondary));
   border-radius: 10px;
   background: var(--card, var(--on-primary));
-  padding: 14px 16px;
+  padding: 12px 16px;
   min-width: 0;
 }
 .detail-card__header {

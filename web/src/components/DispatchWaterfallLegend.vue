@@ -31,12 +31,12 @@ const execStages = WATERFALL_STAGES.filter((s) => EXEC_STAGE_KEYS.includes(s.key
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .dwf-legend-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 10px;
+  gap: 4px 8px;
   align-items: center;
 }
 .dwf-legend-k {

@@ -73,7 +73,7 @@ onMounted(() => {
 }
 .maintain-detail code {
   background: var(--bg-card);
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
   font-size: 12px;
 }

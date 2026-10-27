@@ -563,7 +563,7 @@ function openSearchJourney() {
 .registry-filter-input {
   flex: 1;
   min-width: 180px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   font-size: 12px;
@@ -572,7 +572,7 @@ function openSearchJourney() {
 }
 
 .registry-search-btn {
-  padding: 6px 12px;
+  padding: 4px 12px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   background: var(--kx-primary);
@@ -595,7 +595,7 @@ function openSearchJourney() {
 .reg-chip {
   display: inline-flex;
   align-items: center;
-  padding: 2px 10px;
+  padding: 2px 8px;
   border-radius: 999px;
   font-size: 12px;
   border: 1px solid transparent;
@@ -610,7 +610,7 @@ function openSearchJourney() {
   border: 1px solid var(--kx-border);
   border-radius: 8px;
   background: var(--kx-surface);
-  padding: 10px 12px;
+  padding: 8px 12px;
 }
 
 .reg-section-head {
@@ -647,7 +647,7 @@ function openSearchJourney() {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 8px 8px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   background: var(--kx-surface);
@@ -710,7 +710,7 @@ function openSearchJourney() {
 
 .reg-card__detail {
   border-top: 1px solid var(--kx-border);
-  padding-top: 6px;
+  padding-top: 4px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 4px 16px;
@@ -739,7 +739,7 @@ function openSearchJourney() {
 .registry-skeleton {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .registry-skeleton-card {

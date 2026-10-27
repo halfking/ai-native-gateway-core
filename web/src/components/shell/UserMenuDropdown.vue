@@ -139,8 +139,8 @@ onBeforeUnmount(() => {
 .user-menu__trigger {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: 4px;
+  padding: 4px 8px;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -178,7 +178,7 @@ onBeforeUnmount(() => {
 }
 
 .user-menu__header {
-  padding: 8px 10px 10px;
+  padding: 8px 8px 8px;
   margin-bottom: 4px;
   border-bottom: 1px solid var(--kx-border, var(--border));
 }
@@ -205,7 +205,7 @@ onBeforeUnmount(() => {
 
 .user-menu__dropdown {
   min-width: 180px;
-  padding: 6px;
+  padding: 4px;
   background: var(--kx-surface, var(--card));
   border-radius: 12px;
   box-shadow: var(--kx-shadow-md);
@@ -218,7 +218,7 @@ onBeforeUnmount(() => {
 .user-menu__item {
   display: block;
   width: 100%;
-  padding: 8px 10px;
+  padding: 8px 8px;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -242,7 +242,7 @@ onBeforeUnmount(() => {
 
 .user-menu__sep {
   height: 1px;
-  margin: 4px 6px;
+  margin: 4px 4px;
   background: var(--kx-border, var(--border));
 }
 

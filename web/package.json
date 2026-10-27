@@ -98,7 +98,14 @@
     "design-type-scale:list": "node --experimental-strip-types scripts/design-type-scale-guard.mjs --list",
     "design-type-scale:json": "node --experimental-strip-types scripts/design-type-scale-guard.mjs --json",
     "design-type-scale:update-baseline": "node --experimental-strip-types scripts/design-type-scale-guard.mjs --update-baseline",
-    "design-type-scale:migrate": "node --experimental-strip-types scripts/design-type-scale-migrate.mjs"
+    "design-type-scale:migrate": "node --experimental-strip-types scripts/design-type-scale-migrate.mjs",
+    "design-spacing-scale:check": "node --experimental-strip-types scripts/design-spacing-scale-guard.mjs",
+    "design-spacing-scale:selftest": "node --experimental-strip-types scripts/design-spacing-scale-guard.mjs --selftest",
+    "design-spacing-scale:list": "node --experimental-strip-types scripts/design-spacing-scale-guard.mjs --list",
+    "design-spacing-scale:json": "node --experimental-strip-types scripts/design-spacing-scale-guard.mjs --json",
+    "design-spacing-scale:update-baseline": "node --experimental-strip-types scripts/design-spacing-scale-guard.mjs --update-baseline",
+    "design-spacing-scale:migrate": "node --experimental-strip-types scripts/design-spacing-scale-migrate.mjs",
+    "design-spacing-scale:runtime-check": "node scripts/design-spacing-scale-runtime-check.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

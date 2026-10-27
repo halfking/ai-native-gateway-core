@@ -983,7 +983,7 @@ watch(keyId, async () => {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
   gap: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .stat-card {
@@ -1002,7 +1002,7 @@ watch(keyId, async () => {
 .stat-label {
   font-size: 11px;
   color: var(--muted);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .stat-value {
@@ -1026,7 +1026,7 @@ watch(keyId, async () => {
 }
 
 .section {
-  margin-top: 20px;
+  margin-top: 16px;
 }
 
 .section-title {
@@ -1043,15 +1043,15 @@ watch(keyId, async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: 8px;
+  margin-bottom: 8px;
   flex-wrap: nowrap;
 }
 
 .trend-controls {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
   min-width: 0;
   /* 2026-07-07: nowrap → wrap, 移除 overflow-x: auto
@@ -1103,7 +1103,7 @@ watch(keyId, async () => {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 10px 12px 8px;
+  padding: 8px 12px 8px;
 }
 
 .trend-hint {
@@ -1232,7 +1232,7 @@ watch(keyId, async () => {
 
 .detail-table th {
   text-align: left;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-bottom: 2px solid var(--border);
   color: var(--muted);
   font-weight: 500;
@@ -1240,7 +1240,7 @@ watch(keyId, async () => {
 }
 
 .detail-table td {
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
 }
 

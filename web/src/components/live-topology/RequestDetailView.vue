@@ -118,7 +118,7 @@ function actionLabel(action?: string): string {
 .zoom__grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 4px 10px;
+  gap: 4px 8px;
   margin: 0;
 }
 
@@ -142,7 +142,7 @@ function actionLabel(action?: string): string {
 
 .zoom__decisions {
   border-top: 1px dashed var(--kx-border);
-  padding-top: 6px;
+  padding-top: 4px;
 }
 
 .zoom__section {
@@ -152,14 +152,14 @@ function actionLabel(action?: string): string {
 
 .zoom__timeline {
   margin: 4px 0 0;
-  padding-left: 14px;
+  padding-left: 12px;
   font-size: 11px;
   color: var(--kx-text);
 }
 
 .zoom__step {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   align-items: baseline;
   padding: 2px 0;
 }

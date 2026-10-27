@@ -123,14 +123,14 @@ function isLongHeld(d: SlotDetail | null): boolean {
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 14px;
+  padding: 12px;
 }
 
 .fp-header {
   display: flex;
-  gap: 18px;
+  gap: 16px;
   margin-bottom: 12px;
-  padding-bottom: 10px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
 }
 .fp-stat {
@@ -166,7 +166,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 6px;
+  padding: 4px;
   cursor: default;
   transition: transform 0.1s, box-shadow 0.1s;
 }
@@ -251,7 +251,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
   background: var(--probe-dark-bg);
   border: 1px solid var(--purple);
   border-radius: 6px;
-  padding: 8px 10px;
+  padding: 8px 8px;
   min-width: 180px;
   max-width: 280px;
   font-size: 12px;
@@ -289,9 +289,9 @@ function isLongHeld(d: SlotDetail | null): boolean {
 
 .fp-legend {
   display: flex;
-  gap: 14px;
+  gap: 12px;
   margin-top: 12px;
-  padding-top: 10px;
+  padding-top: 8px;
   border-top: 1px solid var(--border);
   font-size: 11px;
   color: var(--muted);

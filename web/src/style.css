@@ -174,13 +174,17 @@
      ★ 这里全部桥接到 --kx-* 真值源，**不新增任何颜色**。
        放在基础 :root 而非明暗两块：每个别名都指向主题内的 --kx-*，
        计算值随主题走，不需要复制两份。 */
-  /* 间距阶 —— 对应 --kx-space-1..6（4/8/12/16/24/32px） */
+  /* 间距阶 —— 对应 --kx-space-1..9（4/8/12/16/24/32/40/48/64px）
+   * ★ 2026-10-27 第 24 增量：从 6 档补到 9 档（40/48/64 是实测用量，不是拍脑袋）。 */
   --space-1: var(--kx-space-1);
   --space-2: var(--kx-space-2);
   --space-3: var(--kx-space-3);
   --space-4: var(--kx-space-4);
   --space-5: var(--kx-space-5);
   --space-6: var(--kx-space-6);
+  --space-7: var(--kx-space-7);
+  --space-8: var(--kx-space-8);
+  --space-9: var(--kx-space-9);
   /* 字号阶 —— 对应 --kx-text-2xs..4xl（11/12/13/14/16/20/24/30/38px） */
   --text-2xs: var(--kx-text-2xs);
   --text-xs:  var(--kx-text-xs);
@@ -308,12 +312,21 @@ html[data-theme='light'] {
   --kx-shadow-md-left: -12px 0 32px rgba(30, 50, 90, 0.1);
   /* 2026-09-13 响应式改造 P0：间距/字号令牌（方案 §4.2）。
    * 新组件（components/ui/ 等）一律消费令牌，禁止再手写散落的间距/字号魔法数。 */
+  /* 2026-10-27 第 24 增量（间距必须落在角色阶上）：阶从 6 档补到 **9 档**。
+   * ★ 为什么要补：原来 6 档（4/8/12/16/24/32）的**阶顶 32px 表达不了本仓自己的页面级节奏**
+   *   —— 实测 40px 用了 23 处、48px 5 处、64px 3 处（页面容器内边距 / 空态内边距 / 落地页列间距）
+   *   ⇒ ★★ **一个表达不了现状的阶，必然被普遍违反** ⇒ 先把阶补全，再谈合规。
+   * ★ 补的 3 档是**实测用量**（40/48/64），不是拍脑袋；4-unit base 的中间步（12/16/24）保留。
+   * ★ 档数与字号阶同为 9 档 ⇒ 两套刻度的「粒度哲学」一致。 */
   --kx-space-1: 4px;
   --kx-space-2: 8px;
   --kx-space-3: 12px;
   --kx-space-4: 16px;
   --kx-space-5: 24px;
   --kx-space-6: 32px;
+  --kx-space-7: 40px;
+  --kx-space-8: 48px;
+  --kx-space-9: 64px;
   --kx-font-sm: 12px;
   --kx-font-md: 14px;
   --kx-font-lg: 16px;
@@ -651,7 +664,7 @@ input, select, textarea {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
-  padding: 6px 10px;
+  padding: 4px 8px;
   font-size: 13px;
   outline: none;
   transition: border-color .15s;
@@ -672,7 +685,7 @@ input[type="radio"], input[type="checkbox"] {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 9px 18px;
+  padding: 8px 16px;
   min-height: 36px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
@@ -763,7 +776,7 @@ input[type="radio"], input[type="checkbox"] {
 }
 /* 小尺寸：用于表格行内 / 工具栏；保留细边框与箭头 */
 .btn-sm {
-  padding: 5px 12px;
+  padding: 4px 12px;
   min-height: 28px;
   font-size: 12px;
   border-radius: calc(var(--radius) - 2px);
@@ -774,7 +787,7 @@ input[type="radio"], input[type="checkbox"] {
   background: transparent;
   border-color: transparent;
   color: var(--accent-h);
-  padding: 4px 6px;
+  padding: 4px 4px;
   min-height: auto;
   box-shadow: none;
 }
@@ -851,7 +864,7 @@ thead th {
   border-bottom: 1px solid var(--border);
 }
 tbody td {
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   color: var(--text);
   font-size: 13px;
@@ -908,7 +921,7 @@ tbody tr:hover { background: var(--row-hover); }
   border-radius: 0;
   display: flex;
   flex-direction: column;
-  padding: 20px;
+  padding: 16px;
   animation: drawer-slide-in .2s ease-out;
   background: var(--card);
   border-left: 1px solid var(--border);
@@ -956,7 +969,7 @@ tbody tr:hover { background: var(--row-hover); }
 /* 2026-08-09: 紧凑版 stat-card，用于请求日志页 stats-grid 的 token 拆分条。
    与上方突出显示的 stats-overview 形成视觉对比: 大字号 + 强调边框 vs 紧凑灰底。 */
 .stat-card--compact {
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--surface-secondary);
   font-size: 11px;
 }
@@ -986,7 +999,7 @@ tbody tr:hover { background: var(--row-hover); }
   font-weight: 600;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 /* 「这笔是 credits」的标记：一个小圆点，不是色条。 */
 .stat-overview-card[data-stat="total-credits"] .stat-overview-label::before {
@@ -1018,19 +1031,19 @@ tbody tr:hover { background: var(--row-hover); }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .page-header h2 { font-size: 20px; font-weight: 600; }
 
 .empty {
   text-align: center;
-  padding: 40px 20px;
+  padding: 40px 16px;
   color: var(--muted);
 }
 
 .tag {
   display: inline-block;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
   font-size: 11px;
   background: color-mix(in srgb, var(--accent) 15%, transparent);
@@ -1039,7 +1052,7 @@ tbody tr:hover { background: var(--row-hover); }
 }
 
 .alert {
-  padding: 10px 14px;
+  padding: 8px 12px;
   border-radius: var(--radius);
   margin-bottom: 16px;
   font-size: 13px;
@@ -1054,7 +1067,7 @@ tbody tr:hover { background: var(--row-hover); }
   flex-wrap: wrap;
   align-items: center;
   gap: 12px 16px;
-  padding: 10px 14px;
+  padding: 8px 12px;
   margin-bottom: 16px;
   border-radius: var(--radius);
   font-size: 13px;
@@ -1098,10 +1111,10 @@ tbody tr:hover { background: var(--row-hover); }
 /* Tab badge — small red count next to a tab label (e.g. probe failures) */
 .tab-badge {
   display: inline-block;
-  margin-left: 6px;
+  margin-left: 4px;
   min-width: 18px;
   height: 18px;
-  padding: 0 5px;
+  padding: 0 4px;
   line-height: 18px;
   text-align: center;
   font-size: 11px;
@@ -1184,7 +1197,7 @@ tbody tr:hover { background: var(--row-hover); }
 .compact-filter-bar--stacked {
   flex-direction: column;
   align-items: stretch;
-  gap: 10px;
+  gap: 8px;
 }
 
 .compact-filter-bar .cf-row {
@@ -1246,7 +1259,7 @@ tbody tr:hover { background: var(--row-hover); }
  * ════════════════════════════════════════════════════════════════ */
 
 /* Compact card — replaces big .card for content-heavy views */
-.compact-card { padding: 8px 10px; }
+.compact-card { padding: 8px 8px; }
 .flat-card    { box-shadow: none; }
 
 /* Card toolbar (filter chips row at top of a card) */
@@ -1254,19 +1267,22 @@ tbody tr:hover { background: var(--row-hover); }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
-  margin-bottom: 6px;
-  padding-bottom: 6px;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
 }
-.toolbar-left   { display: flex; align-items: center; gap: 6px; }
+.toolbar-left   { display: flex; align-items: center; gap: 4px; }
 .toolbar-title  { font-size: 12px; font-weight: 600; }
-.toolbar-filters{ display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
-.toolbar-divider{ width: 1px; height: 14px; background: var(--border); margin: 0 3px; }
+.toolbar-filters{ display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+/* ★ 第 24 增量：分隔线的 margin 与容器 gap **会相加** —— 原来 gap:3px + margin:0 3px
+   ⇒ 渲染出的兄弟间隙是 6px（离阶）。★ 源码层逐值看两个 3px 都是「发丝豁免」，
+   ⇒ 结构上发现不了「合起来才离阶」⇒ 由运行时尺（rect 实测）抓出并修掉。 */
+.toolbar-divider{ width: 1px; height: 14px; background: var(--border); margin: 0; }
 
 /* Section heading */
-.section-head       { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.section-head       { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
 .section-head.tight { margin-bottom: 4px; }
 .section-head h3    { margin: 0; font-size: 12px; font-weight: 600; }
 .section-head.sm    { margin-bottom: 4px; font-size: 11px; }
@@ -1275,8 +1291,8 @@ tbody tr:hover { background: var(--row-hover); }
 /* Dense table — half the padding of global table */
 .table-wrap  { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .dense-table { font-size: 11px; width: 100%; }
-.dense-table thead th { padding: 3px 6px; font-size: 11px; white-space: nowrap; }
-.dense-table tbody td { padding: 4px 6px; }
+.dense-table thead th { padding: 3px 4px; font-size: 11px; white-space: nowrap; }
+.dense-table tbody td { padding: 4px 4px; }
 
 /* Chip (inline stat / pill) */
 .chip {
@@ -1297,7 +1313,7 @@ tbody tr:hover { background: var(--row-hover); }
 
 /* Profile / task pill (filter toggle) */
 .profile-pill {
-  padding: 1px 7px;
+  padding: 1px 8px;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 99px;
@@ -1318,7 +1334,7 @@ tbody tr:hover { background: var(--row-hover); }
 /* Top bar — slim page header bar */
 .top-bar {
   margin-bottom: 8px;
-  padding: 8px 10px;
+  padding: 8px 8px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1326,9 +1342,9 @@ tbody tr:hover { background: var(--row-hover); }
 .top-bar-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .top-bar-head h2 { font-size: 16px; margin: 0; flex-shrink: 0; font-weight: 600; }
 .top-bar-head .refresh-btn { margin-left: auto; }
@@ -1351,7 +1367,7 @@ tbody tr:hover { background: var(--row-hover); }
   overflow-y: auto;
   background: var(--card);
   border-radius: var(--radius);
-  padding: 20px;
+  padding: 16px;
   box-shadow: var(--kx-shadow-md);
 }
 .modal-panel-wide { width: min(560px, 100%); }
@@ -1359,7 +1375,7 @@ tbody tr:hover { background: var(--row-hover); }
 .modal-actions    { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 .modal-form-row   { margin-bottom: 12px; }
 .modal-alert {
-  padding: 10px 12px;
+  padding: 8px 12px;
   margin-bottom: 12px;
   border-radius: 6px;
   font-size: 12px;
@@ -1370,7 +1386,7 @@ tbody tr:hover { background: var(--row-hover); }
 .modal-target {
   font-size: 12px;
   color: var(--muted);
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .modal-target code { font-size: 11px; }
 
@@ -1380,7 +1396,7 @@ tbody tr:hover { background: var(--row-hover); }
   font-size: 12px;
   font-weight: 600;
   color: var(--text);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
 }

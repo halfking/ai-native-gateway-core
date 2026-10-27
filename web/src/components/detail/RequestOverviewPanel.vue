@@ -279,7 +279,7 @@ function clip(text: string, max = 480): string {
 
 <style scoped>
 .qa-card {
-  margin-bottom: 14px; padding: 12px; border: 1px solid var(--border);
+  margin-bottom: 12px; padding: 12px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--bg-subtle, var(--surface-secondary));
 }
 .qa-head {
@@ -320,10 +320,10 @@ function clip(text: string, max = 480): string {
 /* .pill / .pill--* 全部从全局 styles/pill-chip.css 继承（P1-8）。 */
 .lbl { color: var(--muted); font-size: 11px; }
 code { font-size: 11px; word-break: break-all; }
-.flow-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.flow-links { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 12px; }
 .warn { color: var(--warning); font-size: 12px; margin-top: 8px; }
 .linkish { margin-top: 4px; }
-.chip-row { display:flex; flex-wrap:wrap; gap:6px; }
+.chip-row { display:flex; flex-wrap:wrap; gap:4px; }
 .sec-chip {
   font-size: 11px;
   padding: 2px 8px;

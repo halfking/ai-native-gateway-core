@@ -194,7 +194,7 @@ const changeClass = (change: number, isNegative: boolean) => {
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 16px;
   width: 100%;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .stat-card {
   height: 100%;

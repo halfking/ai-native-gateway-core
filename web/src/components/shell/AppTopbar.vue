@@ -344,7 +344,7 @@ function groupActive(id: string): boolean {
 .app-topbar__brand {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   text-decoration: none;
   color: var(--kx-text, var(--text));
   flex-shrink: 0;
@@ -445,7 +445,7 @@ function groupActive(id: string): boolean {
   max-height: min(70vh, 480px);
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 6px;
+  padding: 4px;
   margin: 0;
   background: var(--kx-surface, var(--card));
   border-radius: 12px;
@@ -459,8 +459,8 @@ function groupActive(id: string): boolean {
 .app-topbar__dropdown-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
+  gap: 8px;
+  padding: 8px 8px;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -491,7 +491,7 @@ function groupActive(id: string): boolean {
   margin-left: auto;
   min-width: 20px;
   height: 18px;
-  padding: 0 6px;
+  padding: 0 4px;
   border-radius: 999px;
   background: var(--danger-bg);
   border: 1px solid var(--danger-bd);
@@ -506,7 +506,7 @@ function groupActive(id: string): boolean {
 .app-topbar__actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-shrink: 0;
   margin-left: auto;
 }
@@ -515,7 +515,7 @@ function groupActive(id: string): boolean {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 8px;
   background: color-mix(in srgb, var(--accent) 6%, transparent);
   flex-shrink: 0;
@@ -560,7 +560,7 @@ function groupActive(id: string): boolean {
   gap: 4px;
   width: 40px;
   height: 40px;
-  padding: 0 9px;
+  padding: 0 8px;
   border: 1px solid var(--kx-border, var(--border));
   border-radius: 8px;
   background: transparent;
@@ -579,12 +579,12 @@ function groupActive(id: string): boolean {
 @media (max-width: 768px) {
   .app-topbar {
     flex-wrap: wrap;
-    padding: 10px 14px;
+    padding: 8px 12px;
   }
   .app-topbar__nav {
     order: 3;
     width: 100%;
-    margin-top: 6px;
+    margin-top: 4px;
     flex-wrap: nowrap;
     /* width:100% 语义下 fit-content 反向撑破容器；此处本来就该可缩（有 overflow-x:auto 兜底）。
        （≥1024 由 isMobile 换汉堡接管，本块当前实际不渲染 nav，属防御性回置。） */
@@ -614,7 +614,7 @@ function groupActive(id: string): boolean {
     display: none;
   }
   .app-topbar__actions {
-    gap: 6px;
+    gap: 4px;
     min-width: 0;
   }
 }

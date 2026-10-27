@@ -35,7 +35,7 @@ withDefaults(defineProps<{
   margin-bottom: 4px;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 .bar-cell__track {

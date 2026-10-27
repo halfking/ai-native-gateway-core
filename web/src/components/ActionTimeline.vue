@@ -237,7 +237,7 @@ const hasActions = computed(() => actions.value.length > 0)
 }
 .at-chip {
   font-size: 11px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 8px;
   background: color-mix(in srgb, var(--kx-primary) 10%, var(--kx-surface));
   color: var(--kx-text);

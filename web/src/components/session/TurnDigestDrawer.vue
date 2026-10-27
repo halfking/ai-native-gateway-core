@@ -257,16 +257,16 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .tdd-headsub { margin-bottom: 8px; }
-.tdd-waterfall { display: grid; gap: 6px; }
-.tdd-waterfall-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--kx-border); border-radius: 6px; }
+.tdd-waterfall { display: grid; gap: 4px; }
+.tdd-waterfall-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 8px; border: 1px solid var(--kx-border); border-radius: 6px; }
 .tdd-waterfall-row code { color: var(--kx-muted); font-size: 12px; }
 .tdd-sub { color: var(--kx-muted); font-size: 12px; }
 .tdd-state { padding: 24px; text-align: center; color: var(--kx-muted); }
-.tdd-error { padding: 10px 12px; color: var(--kx-danger); background: var(--kx-danger-soft); border: 1px solid var(--kx-danger); border-radius: 6px; }
+.tdd-error { padding: 8px 12px; color: var(--kx-danger); background: var(--kx-danger-soft); border: 1px solid var(--kx-danger); border-radius: 6px; }
 .tdd-tabs :deep(pre) { margin: 0; max-height: 70vh; overflow: auto; padding: 12px; background: var(--kx-bg-accent); color: var(--kx-text); border-radius: 6px; font-size: 12px; }
 .tdd-attachments { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.tdd-attachment-error { margin: 0 0 8px; padding: 6px 10px; border: 1px solid var(--kx-warning); border-radius: 6px; color: var(--kx-warning); font-size: 12px; }
-.tdd-attachments li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--kx-border); border-radius: 6px; }
+.tdd-attachment-error { margin: 0 0 8px; padding: 4px 8px; border: 1px solid var(--kx-warning); border-radius: 6px; color: var(--kx-warning); font-size: 12px; }
+.tdd-attachments li { display: flex; align-items: center; gap: 8px; padding: 8px 8px; border: 1px solid var(--kx-border); border-radius: 6px; }
 .tdd-attachment-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tdd-attachment-meta { color: var(--kx-muted); font-size: 12px; white-space: nowrap; }
 </style>

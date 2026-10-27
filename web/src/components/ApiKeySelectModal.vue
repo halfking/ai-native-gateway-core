@@ -133,7 +133,7 @@ function goKeys(action?: string) {
   width: min(520px, 100%);
   max-height: min(85vh, 640px);
   overflow-y: auto;
-  padding: 18px 20px;
+  padding: 16px 16px;
   background: var(--card);
   box-shadow: var(--kx-shadow-md);
 }
@@ -162,7 +162,7 @@ function goKeys(action?: string) {
 }
 
 .modal-panel__hint {
-  margin: 0 0 14px;
+  margin: 0 0 12px;
   font-size: 13px;
   color: var(--muted);
   line-height: 1.55;
@@ -182,7 +182,7 @@ function goKeys(action?: string) {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg);
@@ -210,7 +210,7 @@ function goKeys(action?: string) {
 }
 
 .key-list__badge {
-  margin-left: 6px;
+  margin-left: 4px;
   font-size: 11px;
   font-weight: 500;
   color: var(--warning);
@@ -226,7 +226,7 @@ function goKeys(action?: string) {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 14px;
+  margin-top: 12px;
 }
 
 /* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──

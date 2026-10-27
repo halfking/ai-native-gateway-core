@@ -194,7 +194,7 @@ function itemLabel(item: ResolvedItem): string {
   align-items: center;
   justify-content: space-between;
   gap: var(--kx-space-2);
-  padding: 10px var(--kx-space-2);
+  padding: 8px var(--kx-space-2);
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -236,8 +236,8 @@ function itemLabel(item: ResolvedItem): string {
 .app-nav-drawer__item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 11px var(--kx-space-2);
+  gap: 8px;
+  padding: 12px var(--kx-space-2);
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -253,7 +253,7 @@ function itemLabel(item: ResolvedItem): string {
   margin-left: auto;
   min-width: 20px;
   height: 18px;
-  padding: 0 6px;
+  padding: 0 4px;
   border-radius: 999px;
   background: var(--danger-bg);
   border: 1px solid var(--danger-bd);

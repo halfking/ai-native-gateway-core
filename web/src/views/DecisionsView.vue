@@ -318,7 +318,7 @@ onUnmounted(() => {
   <div>
     <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <h2 style="margin:0">{{ t('decisionsView.title') }}</h2>
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none">
+      <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none">
         <input type="checkbox" v-model="autoRefresh" style="cursor:pointer;margin:0">
         <span>{{ t('decisionsView.autoRefresh') }}</span>
       </label>
@@ -575,7 +575,7 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .data-table td {
-  padding: 7px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
@@ -596,10 +596,10 @@ onUnmounted(() => {
 .detail-body {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 20px;
+  padding: 16px 16px;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
 }
 .drawer-section {
   display: flex;

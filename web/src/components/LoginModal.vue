@@ -184,7 +184,7 @@ function onModelUpdate(v: boolean) {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .login-modal__brand {

@@ -738,19 +738,19 @@ onUnmounted(() => {
       </div>
       </template>
     </PageHeader>
-    <p style="color:var(--muted);margin-bottom:20px">{{ t('freePool.page.desc') }}</p>
+    <p style="color:var(--muted);margin-bottom:16px">{{ t('freePool.page.desc') }}</p>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
     <div v-if="message" class="alert alert-success">{{ message }}</div>
 
-    <StatsRow v-if="poolData" style="margin-bottom:20px">
+    <StatsRow v-if="poolData" style="margin-bottom:16px">
       <StatCard :label="t('freePool.stats.routableModels')" :value="poolData.stats.routable_models" tone="success" :sub="`/ ${poolData.stats.free_models} offer`" />
       <StatCard :label="t('freePool.stats.availableProviders')" :value="poolData.stats.available_providers" tone="success" :sub="`/ ${poolData.stats.total_providers}`" />
       <StatCard :label="t('freePool.stats.templatesLinked')" :value="poolData.stats.catalog_registered" :sub="`/ ${poolData.stats.catalog_templates} ${t('freePool.stats.templatesUnit')}`" />
       <StatCard :label="t('freePool.stats.templateModels')" :value="catalogSummary.templateModels" :sub="t('freePool.stats.catalogKnown')" />
     </StatsRow>
 
-    <div v-if="showKeyForm" class="card" style="margin-bottom:20px">
+    <div v-if="showKeyForm" class="card" style="margin-bottom:16px">
       <h3 style="margin-top:0">{{ t('freePool.keyForm.title') }}</h3>
       <p class="cell-muted" style="margin:0 0 12px">{{ t('freePool.keyForm.desc') }}</p>
       <div class="form-grid">
@@ -793,7 +793,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-if="showAddForm" class="card" style="margin-bottom:20px">
+    <div v-if="showAddForm" class="card" style="margin-bottom:16px">
       <h3 style="margin-top:0">{{ t('freePool.providerForm.title') }}</h3>
       <div class="form-grid">
         <div class="form-item">
@@ -851,7 +851,7 @@ onUnmounted(() => {
     </div>
 
     <!-- P2 (2026-08-11): bulk multi-key pooling form -->
-    <div v-if="showBulkForm" class="card" style="margin-bottom:20px">
+    <div v-if="showBulkForm" class="card" style="margin-bottom:16px">
       <h3 style="margin-top:0">{{ t('freePool.bulkPool') }}</h3>
       <p class="cell-muted" style="margin:0 0 12px">{{ t('freePool.bulkPoolDesc') }}</p>
       <div class="form-grid">
@@ -1110,7 +1110,7 @@ onUnmounted(() => {
                 </span>
               </div>
               <div class="cell-muted">{{ categoryLabel(p.category) }} · {{ p.difficulty }}</div>
-              <code class="model-code" style="display:block;margin:6px 0">{{ p.base_url }}</code>
+              <code class="model-code" style="display:block;margin:4px 0">{{ p.base_url }}</code>
               <p v-if="p.notes" class="cell-muted" style="margin:0 0 8px">{{ p.notes }}</p>
               <div v-if="p.models_hint" class="cell-muted">{{ t('freePool.assistant.modelsLabel') }} {{ p.models_hint }}</div>
               <div v-if="p.tags && p.tags.length" class="tag-row">
@@ -1128,7 +1128,7 @@ onUnmounted(() => {
               </div>
             </div>
           </div>
-          <div v-if="signupHub?.workflow?.length" style="margin-top:20px">
+          <div v-if="signupHub?.workflow?.length" style="margin-top:16px">
             <h4 style="margin-bottom:8px">{{ t('freePool.assistant.recommendedWorkflow') }}</h4>
             <ol class="guide-steps">
               <li v-for="step in signupHub.workflow" :key="step.step">
@@ -1494,8 +1494,8 @@ onUnmounted(() => {
   font-size: 12px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
+  gap: 4px;
+  padding: 4px 8px;
 }
 .chevron {
   font-size: 10px;
@@ -1507,7 +1507,7 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   background: var(--bg-subtle, var(--card));
   color: var(--text);
-  padding: 8px 14px;
+  padding: 8px 12px;
   border-radius: 8px;
   cursor: pointer;
   font-size: 13px;
@@ -1534,7 +1534,7 @@ onUnmounted(() => {
 .search-input { max-width: 280px; min-width: 200px; }
 
 .model-code { font-size: 12px; font-weight: 600; color: var(--accent-h); }
-.model-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.model-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 .model-tag {
   display: inline-block;
   font-size: 11px;
@@ -1594,12 +1594,12 @@ onUnmounted(() => {
   margin-bottom: 8px;
 }
 .guide-steps {
-  margin: 8px 0 8px 18px;
+  margin: 8px 0 8px 16px;
   font-size: 12px;
   color: var(--text);
 }
 .guide-steps-detail {
-  margin: 0 0 0 20px;
+  margin: 0 0 0 16px;
   padding: 0;
 }
 .guide-steps-detail li {
@@ -1657,19 +1657,19 @@ onUnmounted(() => {
 .platform-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
+  gap: 4px;
+  margin-top: 8px;
 }
 .hub-filters {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
 }
-.btn-sm { font-size: 12px; padding: 4px 10px; }
-.tag-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.btn-sm { font-size: 12px; padding: 4px 8px; }
+.tag-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .probe-box {
   margin-top: 12px;
-  padding: 10px;
+  padding: 8px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--bg);
@@ -1684,7 +1684,7 @@ onUnmounted(() => {
 .temp-email-box {
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 10px;
+  padding: 8px;
   background: var(--bg-subtle, var(--bg));
 }
 .temp-row {
@@ -1692,7 +1692,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .temp-row code { font-size: 12px; word-break: break-all; }
 .inbox-list {
@@ -1714,7 +1714,7 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   flex-wrap: wrap;
 }
 .inbox-intro {
@@ -1756,7 +1756,7 @@ onUnmounted(() => {
   outline-offset: 2px;
   border-color: var(--accent);
 }
-.tool-links { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tool-links { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 
 .guide-panel-wrapper {
   margin-top: 24px;
@@ -1788,7 +1788,7 @@ onUnmounted(() => {
   font-size: 24px;
 }
 .guide-panel-content {
-  padding: 20px;
+  padding: 16px;
   background: var(--bg-subtle, var(--bg));
   border-top: 1px solid var(--border);
 }
@@ -1823,9 +1823,9 @@ onUnmounted(() => {
 .freshness-badge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 11px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--bg-subtle, var(--card));
@@ -1891,7 +1891,7 @@ onUnmounted(() => {
 .health-row { display: flex; gap: 4px; flex-wrap: wrap; }
 .health-pill {
   font-size: 11px;
-  padding: 2px 6px;
+  padding: 2px 4px;
   border-radius: 4px;
   background: var(--neutral-bg);
   color: var(--text);
@@ -1910,8 +1910,8 @@ onUnmounted(() => {
   display: inline-block;
   font-size: 11px;
   font-weight: 700;
-  padding: 1px 7px;
-  margin-left: 6px;
+  padding: 1px 8px;
+  margin-left: 4px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 15%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);

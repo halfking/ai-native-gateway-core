@@ -1316,7 +1316,7 @@ onBeforeUnmount(() => {
 </template>
 <style scoped>
 .sanitize-rules-view {
-  padding: 20px;
+  padding: 16px;
   min-width: 0;
   color: var(--text-primary);
 }
@@ -1371,7 +1371,7 @@ onBeforeUnmount(() => {
 .rule-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(300px, 430px);
-  gap: 18px;
+  gap: 16px;
   align-items: start;
 }
 .rule-workspace:not(:has(.editor)) {
@@ -1419,7 +1419,7 @@ pre {
 label {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   font-size: 13px;
   margin-bottom: 12px;
 }
@@ -1510,7 +1510,7 @@ summary:focus-visible {
 fieldset {
   border: 1px solid var(--border);
   margin: 0 0 12px;
-  padding: 10px;
+  padding: 8px;
 }
 legend {
   font-size: 12px;
@@ -1521,11 +1521,11 @@ h4 {
 }
 summary {
   cursor: pointer;
-  padding: 10px 0;
+  padding: 8px 0;
 }
 .sample {
   border-bottom: 1px dashed var(--border);
-  padding: 10px 0;
+  padding: 8px 0;
   margin-bottom: 12px;
 }
 .publish {
@@ -1533,7 +1533,7 @@ summary {
 }
 .event > code {
   display: block;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .event > small {
   margin-bottom: 12px;
@@ -1598,11 +1598,11 @@ summary {
   color: var(--text-secondary, var(--muted));
 }
 .matched-rule {
-  margin: 10px 0;
+  margin: 8px 0;
 }
 .matched-rule__body {
   margin-top: 8px;
-  padding: 10px;
+  padding: 8px;
   border: 1px dashed var(--border);
   border-radius: 6px;
   background: var(--bg-secondary);
