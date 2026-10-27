@@ -48,6 +48,18 @@ func TestAuthMiddleware_AcceptsGeminiNativeCredentialForms(t *testing.T) {
 				r.Header.Set("x-goog-api-key", "secret-key")
 			},
 		},
+		{
+			// ★ 2026-10-28 补：Gemini 原生**模型列表**（GET /v1beta/models，
+			//   它有自己的 mux 挂载，不在 "/v1beta/models/" 子树下）也是一个
+			//   被服务的 Gemini 路由 ⇒ 同一个原生客户端的 ?key= 形态必须
+			//   在这里也通 ⇒ 否则「同一个客户端、同一个 key，列表 401 而
+			//   generateContent 通」＝ 认证看起来是坏的。
+			//   判定源：internal/auth/clientkey.go 的 geminiNativePathRe 的
+			//   精确锚定分支 |/v1beta/models$。
+			name:  "key query parameter on the Gemini-native model list",
+			path:  "/v1beta/models?key=secret-key",
+			setup: func(r *http.Request) {},
+		},
 	}
 
 	for _, tc := range cases {
@@ -86,12 +98,36 @@ func TestAuthMiddleware_AcceptsGeminiNativeCredentialForms(t *testing.T) {
 // asserting "the accepted one is in" is not enough — the "not accepted" side
 // must be nailed too, or deleting the rule from the other end keeps the
 // judgement green.)
+//
+// ★ 2026-10-28（12h 审计轮）订正：本表原先**含** "/v1beta/models?key="，
+//
+//	断言它「必须不被接受」⇒ 该断言在 659ad160b（2026-10-27 02:48「Gemini
+//	剩余登记项处置轮」）之后**一直是红的**。根因不是生产代码错，而是
+//	**这张表被上一轮漏改**：659ad160b 有意把 `/v1beta/models$`（Gemini 原生
+//	模型列表，它有自己的 mux 挂载 cmd/gateway/main.go 的
+//	`mux.HandleFunc("/v1beta/models", modelsHandler.ServeGeminiModels)`）
+//	加进凭据收口面（internal/auth/clientkey.go 的 geminiNativePathRe），
+//	**同型断言在 internal/auth/clientkey_test.go 里已被同步改正**
+//	（"/v1beta/models?key=" 从「不覆盖」挪到「覆盖」，并新增
+//	"/v1beta/modelsXYZ?key=" 作为「更长但不同路由」的负例），
+//	⇒ **唯独漏了这张 middleware 表**。
+//	⇒ 同一个契约在仓内有**两份**断言，其中一份随实现改动被改正、另一份没有
+//	  ⇒ 这正是本仓反复出现的那一类（「同一句话不许两份」）。
+//	⇒ 本轮把本表对齐到已生效的设计（模型列表在收口面内），
+//	  并**保留负例强度**：把 "/v1beta/modelsXYZ?key="（精确锚定 ⇒ 不在收口面内）
+//	  与 "/v1/models?key="（OpenAI 形状的列表 ⇒ 不在收口面内）留在负例侧，
+//	  使「收窄」这一变异臂仍然会被抓住。
 func TestAuthMiddleware_QueryKeyOnlyCountsOnGeminiNativePaths(t *testing.T) {
 	cases := []string{
 		"/v1/chat/completions?key=secret-key",
 		"/v1/messages?key=secret-key",
+		// "/v1/models" is the OpenAI-SHAPED model list (no trailing slash) ⇒
+		// deliberately NOT Gemini-native ⇒ its ?key= is not a credential.
 		"/v1/models?key=secret-key",
-		"/v1beta/models?key=secret-key",
+		// The Gemini-native model list alternative is EXACTLY anchored
+		// ("/v1beta/models$") ⇒ a longer path that merely starts with
+		// "/v1beta/models" is a DIFFERENT route ⇒ must stay out of scope.
+		"/v1beta/modelsXYZ?key=secret-key",
 	}
 
 	for _, path := range cases {
