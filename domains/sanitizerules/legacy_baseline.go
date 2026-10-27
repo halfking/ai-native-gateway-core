@@ -69,12 +69,17 @@ func LegacyPIIRule(id int, name, typ, pattern string, enabled bool) Rule {
 		// ip」相违。而 `custom` 不在地址族豁免名单里（豁免按**声明类型**
 		// 判定，不按正则内容判定）。
 		//
-		// 现在统一映射到 `domain` —— 它在地址族名单里 ⇒ 脱敏面放行、
-		// 命中照记台账（只撤遮蔽、不撤检出）。
+		// 映射到 `server_ip` 而不是新造一个 `domain` 类型：**规则类型词表是
+		// 封闭的**（Compile 只接受 phone/id_card/email/credit_card/secret/
+		// internal_ip/server_ip/account/name/custom 这 10 个）⇒ 造新类型会让
+		// **整份规则集装载失败**（实测：`invalid sanitize rule configuration:
+		// rules[0].type must be a restorable sensitive type`）。
+		// `server_ip` 是仓内既有的「网络定位符」类型（legacy 导入已经把
+		// ip/ip_address/ipv6 全映射成它）⇒ 沿用同一约定，语义与词表都不破。
 		//
 		// ★ `url` **不**在这里：URL 能携带凭据（`?token=…`），整类豁免等于
 		// 给查询串里的令牌开后门 ⇒ 它继续走 default（custom，要遮）。
-		typ = "domain"
+		typ = "server_ip"
 	case "phone", "id_card", "email", "credit_card", "secret", "account", "name", "internal_ip", "server_ip", "custom":
 	default:
 		typ = "custom"

@@ -138,6 +138,17 @@ var r1038bLocatorSamples = []string{
 	"https://example.com:8443/path?q=1",
 }
 
+// r1038bControlSample 是「前提仍在场」守卫用的**对照串**：
+// 它不该被任何**有判别力**的规则命中。
+//
+// 为什么需要它：规则集里存在 pattern = `(?s).+` 的通配规则
+// （builtin.secret_field.* / builtin.account_field.*）。只看「正则匹配不匹配
+// 样本」的话，通配规则会匹配**任何**样本 ⇒ 守卫恒成立 ⇒ 把样本换成规则集
+// 根本碰不到的东西，门禁照样绿（第一版 M6 臂实测如此）。
+//
+// 判据：命中样本**且不命中对照串** ⇒ 这条规则真的有判别力。
+const r1038bControlSample = "ZZZ_CONTROL_NO_DISCRIMINATING_RULE_MATCHES_THIS_ZZZ"
+
 // r1038bSecretSamples 是**反向对照** —— 豁免不得越界成「什么都不遮」。
 var r1038bSecretSamples = []string{
 	"13812345678",
@@ -203,13 +214,25 @@ func TestR1038bProductionRuleSetNeverMasksLocator(t *testing.T) {
 	}
 
 	// 前提仍在场：规则集里必须有规则命中定位符（否则上面是空真）。
+	//
+	// ★ r1038b 第一版的这个守卫**不够严**：它只看「正则匹配不匹配样本」，
+	//   而规则集里存在 pattern = `(?s).+` 的通配规则（builtin.secret_field.* 等）
+	//   ⇒ 任何样本都被「匹配」⇒ 守卫恒成立 ⇒ 把样本换成规则集根本碰不到的
+	//   东西也照样绿（实测：M6 臂没转红）。
+	// ⇒ 守卫改成「**有判别力**的命中」：规则必须
+	//   ① 适用在输出面（enabled + scopes 含 output）；
+	//   ② 正则命中某个定位符样本；
+	//   ③ 且**不**命中对照串（否则是通配规则的假命中）。
 	for _, r := range rules {
-		if !r.Enabled {
+		if !r.Enabled || !containsString(r.Scopes, "output") {
 			continue
 		}
 		re, err := regexp.Compile(r.Pattern)
 		if err != nil {
 			continue
+		}
+		if re.MatchString(r1038bControlSample) {
+			continue // 通配规则：没有判别力，不算「前提在场」
 		}
 		for _, sample := range r1038bLocatorSamples {
 			if re.MatchString(sample) {
@@ -222,7 +245,7 @@ func TestR1038bProductionRuleSetNeverMasksLocator(t *testing.T) {
 		}
 	}
 	if !matchedAny {
-		t.Fatal("前提失效：生产真实规则集里没有任何规则命中定位符样本 ⇒ " +
+		t.Fatal("前提失效：生产真实规则集里没有任何**有判别力**的规则命中定位符样本 ⇒ " +
 			"「没被遮蔽」只是「压根没匹配到」的假绿（种子或正则变了？）")
 	}
 
@@ -328,6 +351,73 @@ func TestR1038bEgressGuardStillSeesAddress(t *testing.T) {
 	if len(redact) != 0 {
 		t.Errorf("脱敏面仍在匹配公网地址: %v", redact)
 	}
+}
+
+// TestR1038bDeclaredAddressTypeIsHonoredByRedactionSurface 钉住
+// 「**声明出来的地址族类型**，脱敏面必须认」。
+//
+// ## 这条判据为什么必须存在（r1038b 审计的一处自伤）
+//
+// 审计过程中出了一次**自伤**：清理残留时 `git checkout` 把 detector 侧的
+// `scopedType` 改动**一起还原了**（只补回了合规面那半）⇒ 两个面又变回
+// 两份名单。
+//
+// 而当时**新判据全绿** —— 因为生产种子（`pii_patterns` 12 行）里**没有
+// domain 类型的行** ⇒ 「生产真实规则集」这条路根本走不到域名分支 ⇒
+// **判据的适用面有盲区**：它能守住「已存在的规则」，守不住「被声明的类型」。
+//
+// 这条判据补的正是那个盲区：造一条**声明为 domain** 的规则，断言脱敏面
+// **不遮蔽域名**；再用**同一条规则的 custom 形态**做反向对照，断言它
+// **照遮** —— 一正一反同时成立，才能证明「豁免是按**声明类型**判定的」，
+// 而不是「谁都不遮」。
+//
+// ★ 变异验证：
+//
+//	M1 把 scopedType 改回本地名单（丢掉 domain/hostname）⇒ 本判据转红；
+//	M7 把豁免改成「一律放行」⇒ 反向对照转红。
+func TestR1038bDeclaredAddressTypeIsHonoredByRedactionSurface(t *testing.T) {
+	const domainPattern = `[a-z0-9][a-z0-9-]*\.[a-z]{2,}`
+	const domainText = "服务地址是 api.github.com 与 redis.internal"
+
+	// 前提仍在场：规则的正则确实匹配这段文本。
+	re := regexp.MustCompile(domainPattern)
+	if !re.MatchString(domainText) {
+		t.Fatalf("前提失效：规则正则不匹配样本 %q", domainText)
+	}
+
+	run := func(t *testing.T, ruleType string, wantMasked bool) {
+		t.Helper()
+		rule := sanitizerules.Rule{
+			ID: "r1038b.declared." + ruleType, Name: "declared", Type: ruleType,
+			Kind: "pattern", Pattern: domainPattern, Scopes: []string{"output"},
+			Action: "mask", Enabled: true,
+		}
+		d := r1038ManagedDetector(t, rule)
+		s, err := NewSanitizer(d)
+		if err != nil {
+			t.Fatalf("NewSanitizer: %v", err)
+		}
+		checker := &outputSensitiveChecker{sanitizer: s, action: OutputMask}
+		res, err := checker.Check(context.Background(), "default", domainText)
+		if err != nil {
+			t.Fatalf("Check: %v", err)
+		}
+		masked := res.RedactedOutput != domainText
+		if masked != wantMasked {
+			t.Errorf("type=%q：遮蔽=%v，期望 %v\n in: %s\nout: %s",
+				ruleType, masked, wantMasked, domainText, res.RedactedOutput)
+		}
+	}
+
+	t.Run("声明为网络定位符（server_ip）⇒ 脱敏面不遮蔽域名", func(t *testing.T) {
+		run(t, "server_ip", false)
+	})
+	t.Run("反向对照：custom 形态照遮（证明豁免按类型判定）", func(t *testing.T) {
+		run(t, "custom", true)
+	})
+	t.Run("反向对照：secret 形态照遮（凭据类不得放行）", func(t *testing.T) {
+		run(t, "secret", true)
+	})
 }
 
 func containsString(list []string, want string) bool {

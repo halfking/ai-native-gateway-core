@@ -109,6 +109,41 @@ func TestR1038bLegacyURLTypeStaysMaskable(t *testing.T) {
 	}
 }
 
+// TestR1038bLegacyProducedRulesMustCompile 是「**产出的规则必须装载得上**」
+// 这道闸。
+//
+// 为什么需要它：r1038b 的审计里，我把「声明为 domain 的行」映射成了一个
+// **新造的 `domain` 类型** —— 而规则类型词表是**封闭的**（`Compile` 只接受
+// phone/id_card/email/credit_card/secret/internal_ip/server_ip/account/
+// name/custom 这 10 个）⇒ `NewManager` 直接拒绝**整份配置**
+// （`rules[0].type must be a restorable sensitive type`）。
+//
+// 也就是说：那个修法**会让整个脱敏规则集装载不起来** —— 一个比原缺陷严重得
+// 多的故障。它是被 r1038b 的新判据当场抓住的（而不是上线后才发现）。
+//
+// 这条判据把「装载得上」钉成契约：legacy 映射对**任何**输入类型产出的规则，
+// 都必须能被 `Compile` 接受。
+//
+// ★ 变异验证：把映射改成产出 `"domain"`（或任何词表外的类型）⇒ 本判据转红。
+func TestR1038bLegacyProducedRulesMustCompile(t *testing.T) {
+	types := []string{
+		"email", "phone", "id_card", "credit_card", "secret", "account", "name",
+		"internal_ip", "server_ip", "custom",
+		"ip", "ip_address", "ipv6", "bank_card",
+		"domain", "hostname", "address",
+		"url", "ssn", "some_type_nobody_declared",
+	}
+	for _, typ := range types {
+		t.Run(typ, func(t *testing.T) {
+			rule := LegacyPIIRule(1, "produced", typ, `\d+`, true)
+			cfg := Config{Rules: []Rule{rule}}
+			if _, err := Compile(cfg, 0); err != nil {
+				t.Fatalf("legacy 映射对 %q 产出的规则装载不上（会让整份规则集失效）: %v", typ, err)
+			}
+		})
+	}
+}
+
 // TestR1038bAddressFamilyListIsSharedByBothFaces 钉住「一份名单」。
 //
 // r1038b 之前有两份名单（security/sanitize 的 scopedType 与
