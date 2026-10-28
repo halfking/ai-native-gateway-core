@@ -116,7 +116,25 @@ test-short: ## 短模式，跳过 -short=false 的测试
 #   ⇒ ⇒ 仓库里一直没有任何人真正看到过绿色的审计门。
 #   ⇒ ⇒ 这是本轮挖到的最刺眼的一条**流程闭环**断裂：**门写了、没接线，
 #      而接线的那道门自己也是红的 ⇒ 没人发现。**
-GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./internal/clockguard ./internal/stopguard ./internal/testguard ./sql/schema ./internal/rewrite ./internal/routeorder ./internal/requestobserver ./domains/credential ./domains/authentication ./internal/extpointledger ./domains/hooks/response ./middleware
+# ★★★ 2026-10-28（R175 轮）★★ 补登 **`./sql/migrations/startup`**。
+#
+#   背景：★ 该包有 **~160 个迁移契约测试文件**（migration_NNN_test.go 一族），
+#   ★ 而它此前**不在** GUARD_PACKAGES / GUARD_PACKAGES_SLOW **任何一栏** ⇒
+#   ⇒ `make guards-fast`（★ CI 的 audit-guards job 跑的就是它）**从不执行它** ⇒
+#   ⇒ **本轮新增的 914 门（10 道断言）在 CI 上一次都不会跑** ⇒
+#   ⇒ ★★ **「一门没人跑的守卫是文档，不是门」**（★ 本文件上方 R69 的判词，★ 原话）。
+#
+#   ★ 为什么此前一直没人发现：★ 仓内**有**一道门在管这件事
+#   （scripts/ursmcheck/audit_guard_registration_test.go，★ 「门写了却没人跑 ⇒ CI 红」）
+#   —— ★ 但它的判据是**显式标记**：★ 门文件自己声明 `AUDIT-GUARD:` ⇒
+#   ⇒ **它所在的包必须被登记进 GUARD_PACKAGES / GUARD_PACKAGES_SLOW** ⇒
+#   ⇒ ★★ 未经声明的门**连「我该被登记」这件事都不知道** ⇒ ⇒ 只能靠**人**发现。
+#
+#   ★ 本轮处置（两处缺一不可）：★ ① 门文件头加 `AUDIT-GUARD:` 声明；
+#   ★ ② 此处补登该包 ⇒ ★★ 让那句承诺**可被机器验证**。
+#
+#   ★ 成本：★ 本地实测该包 **11.5s** 全绿 ⇒ ★ 在快门 120s/包的预算内 ⇒ ★ **净收益**。
+GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./internal/clockguard ./internal/stopguard ./internal/testguard ./sql/schema ./sql/migrations/startup ./internal/rewrite ./internal/routeorder ./internal/requestobserver ./domains/credential ./domains/authentication ./internal/extpointledger ./domains/hooks/response ./middleware
 
 # ★★★ 2026-10-22 12h 审计轮：./scripts/ursmcheck 此前**不在任何强制执行路径**上。
 #

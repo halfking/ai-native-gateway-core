@@ -1650,6 +1650,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		"912_session_recording_trash.sql",
 		// 913: monthly bills + coupons + invoice placeholder (pkg 07).
 		"913_maas_monthly_bills_coupons.sql",
+		// 914: 补回会话族 origin_stage 的 DB 级 CHECK。
+		// v1 族退役时那条 origin_stage 的 DB 级约束一起消失了，会话族从未重建
+		// ⇒ session_turns / session_turns_hot 上**无任何约束**
+		// ⇒ 「探针流量排除」只剩 Go 侧闸门，DB 级兜底消失。
+		// 允许集 = internal/probekind.ValidStages()（8 个探针 stage + 'business'）；
+		// 现役约束名 session_turns_origin_stage_check（父表）
+		// / session_turns_hot_origin_stage_check（hot 表）。
+		"914_session_turns_origin_stage_check.sql",
 		},
 	}
 }

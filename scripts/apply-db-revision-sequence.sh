@@ -2397,6 +2397,14 @@ files=(
 
   # 913: monthly bills + coupons + invoice placeholder (pkg 07)
   "$ROOT_DIR/sql/migrations/startup/913_maas_monthly_bills_coupons.sql"
+
+  # ★ 914: 补回会话族 origin_stage 的 DB 级 CHECK（R175 轮）。
+  #   缺口本体：v1 族的 request_logs_origin_stage_check 随 890 的 v1 族 DROP
+  #   一起消失，会话族从未重建 ⇒ session_turns / session_turns_hot 上
+  #   **无任何 CHECK** ⇒ 探针流量排除只剩 Go 侧闸门，DB 级兜底消失。
+  #   允许集 = internal/probekind.ValidStages()（8 个探针 stage + 'business'）。
+  #   幂等：定义感知守卫（已是规范形态就跳过重建），可重复执行。
+  "$ROOT_DIR/sql/migrations/startup/914_session_turns_origin_stage_check.sql"
 )
 
 

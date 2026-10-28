@@ -1,19 +1,21 @@
 // Package middleware — origin_mw.go
 //
 // OriginMiddleware populates request-context with the caller's origin
-// metadata that the realtime stream / _request_logs should display:
+// metadata that the realtime stream / session_turns should display:
 //
 //   - origin_stage        : self_check | node_probe | system_health | business
 //     (plus legacy probe_* values for backward
 //     compatibility with rows written before
-//     migration 341 by credential_probe_v2 /
+//     the domain-chain migration 341 —
+//     sql/migrations/domain/341_probe_origin_and_node_probe.sql —
+//     by credential_probe_v2 /
 //     model_probe / active_probe / passive_probe).
 //   - origin_actor        : worker / actor name (see commit 4/5/6).
 //   - client_ip           : real client IP (X-Real-IP > X-Forwarded-For[0]
 //     > RemoteAddr, mirroring
 //     telemetry/request_metadata.go:ExtractClientIP).
 //   - client_forwarded_for: full X-Forwarded-For header chain (capped at
-//     1024B to keep the _request_logs row narrow).
+//     1024B to keep the session_turns row narrow).
 //
 // Header trust model
 // ──────────────────
@@ -220,7 +222,7 @@ func NewOriginMiddleware() *OriginMiddleware {
 		BaseMiddleware: BaseMiddleware{
 			name: "origin",
 			bypass: BypassRule{
-				// Skip infra endpoints that don't produce _request_logs rows.
+				// Skip infra endpoints that don't produce session_turns rows.
 				ExactPaths: []string{"/healthz", "/metrics", "/"},
 			},
 		},
@@ -302,7 +304,7 @@ func (m *OriginMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 
 		// 1024B cap on the chain so a malicious header cannot bloat
-		// _request_logs rows.  The IP column is a single INET and
+		// session_turns rows.  The IP column is a single INET and
 		// stays short naturally.
 		if len(clientChain) > 1024 {
 			clientChain = clientChain[:1024]
@@ -370,8 +372,22 @@ func (m *OriginMiddleware) resolveOrigin(r *http.Request) (stage, actor string, 
 	return stage, actor, strip
 }
 
-// isValidOriginStage matches the additive CHECK on _request_logs.origin_stage
-// (see migration 341). Unknown values fall back to "business" so the
+// isValidOriginStage matches the DB-level CHECK on session_turns.origin_stage
+// (migration 914 — sql/migrations/startup/914_session_turns_origin_stage_check.sql;
+//  the same allowed set is mirrored on session_turns_hot).
+//
+// ★ 2026-10-28（R175 轮）订正：本注释此前写的是「matches the additive CHECK
+// on _request_logs.origin_stage (see migration 341)」——**两个都指错了**：
+//   ① `_request_logs` 已随 890 的 v1 族退役**真删除** ⇒ 该表不存在；
+//   ② v1 族的 `request_logs_origin_stage_check` 随那次 DROP 一起消失，
+//      会话族**从未重建** ⇒ 从 890 到 914 之间，origin_stage 在 DB 层
+//      **完全不被拒**，唯一守卫就是本函数。
+// ⇒ 914 补回后，两道闸门重新一致；本函数的判定集与 DB CHECK 的允许集
+//   由 internal/probekind.ValidStages() 单点派生，并由
+//   sql/migrations/startup/migration_914_session_turns_origin_stage_check_test.go
+//   逐项对拍（改一边，另一边必须同步）。
+//
+// Unknown values fall back to "business" so the
 // row still passes the CHECK and an operator can spot the spoof.
 //
 // 2026-10-23 审计：判定集收敛到 internal/probekind（唯一真值源）——

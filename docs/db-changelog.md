@@ -10518,3 +10518,11 @@ Recording-consent body retention is independent of request_logs TTL.
 | 913 | `913_maas_monthly_bills_coupons.sql` | `962b309d04414e6b629f0023ee9b3e4c71eb02c0ecc7e637cc9da241da9361eb` | pending（★ 保留原登记行 —— 分支 07 自带值，与磁盘实测不符；见上一行的订正说明） |
 
 
+
+## 2026-10-28 — 会话族 origin_stage 的 DB 级 CHECK 补回 (migration 914)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 914 | `914_session_turns_origin_stage_check.sql` | `12e185f15f9edcc21871d576d21d5ee576ea1c1b56be929348e40688156f6ce3` | pending（R175 轮：★ **补回 v1 族退役时丢掉的 DB 级兜底**。缺口本体——v1 族的 `request_logs_origin_stage_check`（允许集 = 8 个探针 stage + `business`）随 890 的 v1 族 DROP 一起消失，而**会话族从未重建**：`session_turns.origin_stage` / `session_turns_hot.origin_stage` 都是 `text` 且**无任何 CHECK**（PG 上 `pg_constraint` 实测 0 条）⇒ 落库前的闸门只剩 `middleware/origin_mw.go` 的 `isValidOriginStage`（Go 侧唯一守卫）⇒ **DB 完全不拒**；★ 而消费方有**两种形态、故障后果不同**（★ 本条初稿把两种形态写成一类，是**事实错误**，已订正）：① **排除集形态** `COALESCE(origin_stage,'') NOT IN (8 个探针 stage)`（`admin/analytics.go` · `bg/mv_consistency.go` · `db/db.go`）⇒ 越界值落进去 ⇒ **探针流量被算成业务流量** + 对账被污染；② **白名单形态** `COALESCE(origin_stage,'business') = 'business'`（`admin/routing.go` · `bg/probe_policy.go` 的**会话族**那条）⇒ 越界值 ≠ 'business' ⇒ **被排除** ⇒ **业务流量被静默丢弃**（少计）⇒ 是另一种故障；⇒ ⇒ 两种形态下**都没有任何一层会报错**。允许集取自唯一真值源 `internal/probekind.ValidStages()` ⇒ 落库前的闸门与落库后的约束重新一致。**两侧都加**（会话族自己的约定，见 706b 的克隆改名形态）：父表 `session_turns_origin_stage_check` + hot 表 `session_turns_hot_origin_stage_check`。**两步走**：`ADD CONSTRAINT … NOT VALID`（不扫存量、瞬时完成，新行立刻受约束）→ `VALIDATE CONSTRAINT`（ShareUpdateExclusiveLock 不阻塞读写，在分区父表上一条覆盖全族，含 DEFAULT 分区）。**定义感知守卫**：已是规范形态（定义点名 `origin_stage` ∧ 抽出的字面量集合 == 规范允许集）就跳过重建；名字在但定义不对 ⇒ 重建。**存量越界行 ⇒ VALIDATE 失败 ⇒ 迁移失败 ⇒ 部署停下**（本地与 252 实测越界行数均为 **0**） |
+
+★ **本条同时记下一处「守卫在部署通道上是装饰品」的实测发现**：`scripts/apply-db-revision-sequence.sh` 走 `psql -f -`，**不加 `--single-transaction`、也不注入 `BEGIN`** ⇒ 每个语句各自成事务 ⇒ **`SET LOCAL lock_timeout` 只打一条 WARNING 后完全失效**（本轮在 PG 17.6 上实测：`SET LOCAL lock_timeout='123ms'` 之后 `current_setting` 仍为 `0`）；installer 通道走 `--single-transaction` ⇒ 那条路径上 `SET LOCAL` 才有效。⇒ **本迁移改用会话级 `SET lock_timeout`**，两条通道都真的生效；存量迁移的 `SET LOCAL` 形态仍属已知债务（见审计档）。
