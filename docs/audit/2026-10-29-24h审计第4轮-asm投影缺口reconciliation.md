@@ -120,7 +120,24 @@ where c.aggregate_id = o.aggregate_id
 ```
 **效果立竿见影**：拆结后 2 分钟 943 条成功（~8/s 恢复满速）、失败 1 条。⇒ ★ 通用式补充：**确定性回填必须逐字段复刻代码路径的全部排序不变量**（event_id 对拍了，occurred_at 的 -1ms 漏了——同一不变量要整体搬，不是挑重要的搬）。
 
-### 3.7 验证（部署后复核）
+### 3.7 第四族回填（02:0x）+ 缺口再生速率实测
+3.5 的「清零」只在当时成立：**01:23:48 的一条 live completed（`evt-…-0923d216`）的会话又没有 opened** —— 该事件由并行会话 01:30 上线的活跃槽（`5fbba4ef-dirty`）前后发出，而**该构建不含本轮代码根修 `2c7dcf48c`**（sha 为 dirty 本地构建，祖不可验；由「修复后的终态路径同事务必发 opened」反证其缺失）⇒ 用 3.5 同款判据（这次带 `-1ms`）再回填 **11 个**新缺口会话，remaining=0。
+⇒ **缺口再生速率 ≈ 11 个/小时**（每个早失败会话 1 个）——在 `2c7dcf48c` 部署到活跃槽之前，本判据 SQL 可随时重扫；数据层无自动恶化风险（新缺口事件按背压口径 failed 重试，不落 DLQ）。
+
+### 3.8 终态读数（02:05）
+| 指标 | 起始（01:40 快照） | 终态 |
+|---|---|---|
+| outbox dlq | 34,183 | **0** |
+| outbox failed | 4,202 | **0**（最后 1 条 02:13 到期重试成功） |
+| outbox pending | 25,802 | ~390（活流量尾） |
+| asm inbox retryable | 14,456 | **0~1** |
+| asm inbox completed | 35,551 | **94,777（与网关 sent 逐位一致）** |
+| checkpoint events_processed | 35,551 | 94,777 |
+| session_projection | 38,598 | 覆盖全部有 completed 的会话 |
+
+本轮净排空 **59,226 条**（= 34,183 DLQ + 4,202 failed + ~20,800 积压），全程零丢失（asm 幂等去重，网关 sent == asm completed == projection processed 三方对拍）。
+
+### 3.9 验证（部署后复核）
 - outbox：`dlq=0 / failed=0`（或仅剩带真实原因的小残量）；
 - asm：inbox retryable → 0（对应事件被重投后幂等 claim 完成）、`session_projection` 净增 ≈ 23,150、checkpoint events_processed 同步增长；
 - 实时面：缺口会话的新请求 completed 一次成功（无 503 WARN）。
@@ -184,6 +201,7 @@ where c.aggregate_id = o.aggregate_id
 
 ## 10. 遗留（留给下一轮）
 
+0. **活跃槽（`5fbba4ef-dirty`，并行会话 01:30 部署）不含本轮代码根修 `2c7dcf48c`** —— 缺口以 ~11 会话/小时缓慢再生（§3.7）；下轮任何一次部署 origin/main HEAD 即根治；期间可用 §3.5 判据 SQL 随时清扫（注意带 `-1ms`）。本轮部署的 `533b115c`（含修复）已并行槽接管取代，镜像 `registry-211…:211-533b115c` 仍在。
 1. **DLQ completed 波排空读数**（部署后观察，§3.5；预计 ~70min 全清）；
 2. **asm audit sink 10-21~10-28 13:30 UTC 失败的最初根因**仍未知（容器日志只覆盖 10-26 后；建议 asm 侧把 audit 写失败的底层 pgx 错误打进日志——现在只包了外层 `errAuditWrite`，诊断黑洞）；
 3. **asm 契约双轨**：`contracts/event-schemas/session.opened.v1.json`（uuid/actor_id/mode）与 `internal/gatewayevents/schema/gateway-event-schema-v1.json`（session_id/user_id）并存且互斥——前者若上线会把网关现行 payload 全部判死，需 asm 会话对齐；
@@ -193,9 +211,9 @@ where c.aggregate_id = o.aggregate_id
 7. `/tmp` 两处迁移临时件清理受限（211 宿主机 rm 权限 + 容器 uid 65532）——均易逝，无风险；
 8. 上轮遗留延续：`pg_stat_statements` preload（需授权）、r98 收尾归其会话。
 
-## 11. 部署与最终读数（部署后补）
+## 11. 部署与最终读数
 
-- 部署：`LLM_GATEWAY_ROOT=/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go scripts/deploy-211.sh`（钉根防 DD_REPO_ROOT 漂移）；
-- 槽位 / build_seq / git_sha：（部署后填）
-- providers 策略生效验证：（部署后填）
-- outbox 积压趋势：（部署后填）
+- 部署：`LLM_GATEWAY_ROOT=/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go scripts/deploy-211.sh`（钉根防 DD_REPO_ROOT 漂移），01:11 完成，版本 **2.5.8-533b115c-20261029-211**（槽 a 接管，readyz/登录冒烟/公网身份全过，migrations 至 916 无漂移）；
+- **01:22 槽 a 被并行会话停掉（exit 137）、其 01:30 上线自己的构建 `5fbba4ef-dirty`（槽 b）** —— 蓝绿被并行部署接管（多会话常态）；本轮回的 SQL 层修复不受部署影响继续生效，代码根修随 origin/main 由下轮部署覆盖（§10-0）；
+- providers 策略生效：`egress_profile` direct **56** / proxy 6（TTL 60s 现读 DB，无需重启）；openrouter（唯一有凭据的 proxy 族）从此可路由；
+- outbox 积压趋势：34,183 DLQ + 4,202 failed + ~25,802 pending → **0 / 0 / ~390（活流量尾）**，asm inbox retryable 14,456 → 0~1，三方读数（网关 sent == asm completed == checkpoint）逐位一致 —— §3.8 全表。
