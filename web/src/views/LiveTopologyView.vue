@@ -4,15 +4,17 @@
 // 与旧首页并存：`/` 与 `/dashboard` 一行未改，本页是新增的 `/live`。
 // 分工：泳道页（/dashboard?tab=stream）看**逐条精确**，本页看**当下态势**。
 //
-// 版面（维护者 2026-10-17 拍板）：
+// 版面（维护者 2026-10-17 拍板；2026-10-28 汇总上移轮更新）：
 //   顶部  客户端 / 供应商 / 模型 / 节点 四维**多选**过滤（同维 OR、跨维 AND）
-//   左    客户端请求摘要（聚合摘要 + 逐条明细）
+//   头部  三块汇总条：客户端 / 供应商 / 模型（同一过滤子集，2026-10-28
+//         owner 口径：汇总信息放头部 —— 此前客户端聚合在左面板顶部）
+//   左    客户端请求逐条明细（聚合已上移头部）
 //   中    实时拓扑：上→下 客户端 → 网关核心大方块 → 供应端节点 → 模型
 //   右    供应商端响应的请求（点行弹摘要浮层，「查看全景」开新窗）
-//   左下  供应商当天请求/token 统计（UTC 日桶，水位显式展示）
+//   左下  当天请求/token 统计（UTC 日桶，水位显式展示）
 //
-// **关键约束**：图、左右两栏、左下统计必须收敛到同一个过滤子集，
-// 否则用户会看到「图里没有、右栏却有」的矛盾画面。
+// **关键约束**：图、头部三块汇总、左右两栏、左下统计必须收敛到同一个
+// 过滤子集，否则用户会看到「图里没有、右栏却有」的矛盾画面。
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -21,7 +23,7 @@ import { ElOption, ElSelect } from 'element-plus'
 import { useLiveStream } from '../composables/useLiveStream'
 import { redisHealthyRef as redisHealthy, redisErrorRef as redisError } from '../composables/liveStreamStore'
 import { useLiveTopology, type PanelEntry } from '../composables/useLiveTopology'
-import { clientKeyOf, modelKeyOf, providerNodeKeyOf } from '../lib/liveTopologyGraph'
+import { clientDisplayName, clientKeyOf, modelKeyOf, providerNodeKeyOf } from '../lib/liveTopologyGraph'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 import TopologyCanvas from '../components/live-topology/TopologyCanvas.vue'
 import ClientRequestPanel from '../components/live-topology/ClientRequestPanel.vue'
@@ -29,6 +31,7 @@ import ProviderResponsePanel from '../components/live-topology/ProviderResponseP
 import TodaySummaryRail from '../components/live-topology/TodaySummaryRail.vue'
 import RoutingDecisionTimeline from '../components/live-topology/RoutingDecisionTimeline.vue'
 import RequestZoomPanel from '../components/live-topology/RequestZoomPanel.vue'
+import SummaryHeader from '../components/live-topology/SummaryHeader.vue'
 import type { ParticleSpawn } from '../lib/liveTopologyParticles'
 import type { GatewayModuleKey, TopoNode } from '../types/liveTopology'
 import { DEFAULT_TOPO_FILTERS, TOPO_WINDOW_PRESETS } from '../types/liveTopology'
@@ -241,6 +244,37 @@ const activeProvider = computed(() => topo.filters.value.providers[0] ?? '')
 /** 模型组同理：跟随模型过滤（与图收敛到同一子集）。 */
 const activeModel = computed(() => topo.filters.value.models[0] ?? '')
 
+/** 头部三块汇总（2026-10-28 汇总上移轮）：客户端/供应商/模型。
+ *  与图、两栏同一过滤子集（顶部关键约束）；客户端走易读名，
+ *  供应商/模型本身就是显示名。行形状由 SummaryHeader 定义。 */
+const summaryClients = computed(() =>
+  topo.clientSummaries.value.map((s) => ({
+    name: clientDisplayName(s.client),
+    requests: s.requests,
+    success: s.success,
+    failure: s.failure,
+    inFlight: s.inFlight,
+  })),
+)
+const summaryProviders = computed(() =>
+  topo.providerSummaries.value.map((s) => ({
+    name: s.key,
+    requests: s.requests,
+    success: s.success,
+    failure: s.failure,
+    inFlight: s.inFlight,
+  })),
+)
+const summaryModels = computed(() =>
+  topo.modelSummaries.value.map((s) => ({
+    name: s.key,
+    requests: s.requests,
+    success: s.success,
+    failure: s.failure,
+    inFlight: s.inFlight,
+  })),
+)
+
 function onSelectProvider(code: string) {
   const list = topo.filters.value.providers
   const next = list.includes(code) ? list.filter((c) => c !== code) : [...list, code]
@@ -352,6 +386,15 @@ function onSelectModel(model: string) {
 
     <p v-if="coreSummary" class="live-topology__summary">{{ coreSummary }}</p>
 
+    <!-- 头部三块汇总（2026-10-28 owner 口径）：客户端 / 供应商 / 模型，
+         与下面的图、两栏同一过滤子集。 -->
+    <SummaryHeader
+      class="live-topology__sumhead"
+      :clients="summaryClients"
+      :providers="summaryProviders"
+      :models="summaryModels"
+    />
+
     <p v-if="connection !== 'open'" class="live-topology__banner">
       {{ t('liveTopology.banner.connecting') }}
     </p>
@@ -382,7 +425,6 @@ function onSelectModel(model: string) {
       <div class="live-topology__left">
         <ClientRequestPanel
           class="live-topology__clients"
-          :summaries="topo.clientSummaries.value"
           :requests="topo.clientRequests.value"
           :active-request-id="selectedRequestId ?? undefined"
           @select-request="onSelectRequest"
@@ -613,6 +655,11 @@ function onSelectModel(model: string) {
   margin: 0;
   font-size: var(--kx-font-sm, 12px);
   color: var(--kx-muted);
+}
+
+/* 头部三块汇总条：不参与伸缩（高度=内容），把剩余高度全部留给 body。 */
+.live-topology__sumhead {
+  flex: none;
 }
 
 .live-topology__banner {
