@@ -172,6 +172,10 @@ func TestExtractAgentNameAllThreeSignatures(t *testing.T) {
 		{"opencode-cli/2.0", "opencode"},
 		// 2026-09-21 audit: domestic coding-agent clients.
 		{"MiniMax-Code/1.0.0 (macos; arm64)", "minimax-code"},
+		// 2026-10-29 production verification: the client on the wire sends
+		// bare "MiniMaxCode" (no hyphen, no version).
+		{"MiniMaxCode", "minimax-code"},
+		{"MiniMaxCode/1.2.0", "minimax-code"},
 		{"DeepSeek-Code/2.1.0-beta", "deepseek-code"},
 		{"DeepSeek-IDE/2.0.0 (windows; amd64)", "deepseek-code"},
 		{"deepseek-cli/0.3.1 (darwin; arm64)", "deepseek-code"},

@@ -73,6 +73,13 @@ var namedParamPatterns = []*regexp.Regexp{
 	// 同族：上游补救句点名参数（gpt-6.1-sol "set reasoning_effort to
 	// 'none'"）——正文陈述里的裸词提不出来，补救句里必带引号值。
 	regexp.MustCompile("set\\s+['\"`]?([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]?\\s+to\\s+['\"`]"),
+	// 2026-10-29（211 原厂直通生产验证轮实测）：MiniMax 参数 400 方言
+	// "invalid params, invalid thinking.type: \"enabled\" (allowed:
+	// adaptive, disabled) (2013)" —— 参数名在冒号前（可带命名空间点段）、
+	// 值带双引号，上面七条全断链 ⇒ named 路径判不出 param_rejected ⇒
+	// 原生对首发全参被拒后无剥参重试、整流 503（同请求非原生对反而被
+	// 首发前改写保 200 —— 直通特性倒挂伤到它服务的客户端）。
+	regexp.MustCompile("invalid\\s+([a-z_][a-z0-9_.\\-]{1,64})\\s*[:：]\\s*['\"`]"),
 }
 
 // modeMismatchHints：端点/形态不匹配的文案信号（小写子串匹配）。
@@ -281,8 +288,15 @@ func extractNamedParam(messages []string, outbound map[string]json.RawMessage) s
 				if outbound == nil {
 					return cand
 				}
-				if _, ok := outbound[cand]; ok {
-					return cand
+				// 成员判定走别名扩展（strip.go wireKeyAliases）：上游点名
+				// 的可能是命名空间形态（MiniMax "thinking.type"），我方
+				// 线体顶层键是 "thinking" —— 直查顶层键会空手而归（211
+				// 生产实测：原生对首发 thinking.enabled 被 MiniMax 400，
+				// named 路径断链 ⇒ 无剥参重试 ⇒ client_bug 整流 503）。
+				for _, key := range resolveWireKeys(cand) {
+					if _, ok := outbound[key]; ok {
+						return cand
+					}
 				}
 			}
 		}

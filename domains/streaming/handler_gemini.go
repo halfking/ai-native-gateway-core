@@ -64,6 +64,19 @@ type geminiStreamWriter struct {
 	// failed marks the stream as terminated by a fail-closed error so
 	// subsequent Write calls are swallowed rather than emitting more frames.
 	failed bool
+	// jsonArray switches the wire framing to the vendor's default streaming
+	// shape: a chunked JSON array (elements joined by ",\n", wrapped in
+	// "[" / "]") instead of SSE "data: " frames. The vendor serves this
+	// shape for :streamGenerateContent when "alt=sse" is absent
+	// (docs/vendor-formats/gemini.md §流式响应（JSON 数组）); both official
+	// google-genai SDKs always send alt=sse, so this path only serves
+	// hand-rolled native clients that follow the vendor default.
+	jsonArray bool
+	// arrayStarted / arrayClosed track whether the "[" opener and "]"
+	// closer have been written, so error terminals and finish() always
+	// leave a parseable JSON body behind.
+	arrayStarted bool
+	arrayClosed  bool
 }
 
 // maxGeminiPendingBytes is the cap on the geminiStreamWriter pending buffer.
@@ -75,6 +88,15 @@ const maxGeminiPendingBytes = 16 << 20
 func newGeminiStreamWriter(w http.ResponseWriter) *geminiStreamWriter {
 	gw := &geminiStreamWriter{ResponseWriter: w, maxPendingBytes: maxGeminiPendingBytes}
 	gw.flusher, _ = w.(http.Flusher)
+	return gw
+}
+
+// newGeminiJSONArrayStreamWriter returns a writer that frames the Gemini
+// stream as the vendor's default chunked JSON array instead of SSE. Used
+// when the inbound request omits "alt=sse".
+func newGeminiJSONArrayStreamWriter(w http.ResponseWriter) *geminiStreamWriter {
+	gw := newGeminiStreamWriter(w)
+	gw.jsonArray = true
 	return gw
 }
 
@@ -115,6 +137,11 @@ func (w *geminiStreamWriter) Write(p []byte) (int, error) {
 // stream as failed. It is intentionally terminal: no further frames are
 // written by Write. The error shape matches writeGeminiError so a native
 // Gemini client observes a consistent {"error":{...}} payload.
+//
+// In array mode the body must stay a parseable JSON array end to end, so the
+// error is emitted as the only element (opener and closer written here when
+// the failure lands before the first data element) and the array is closed
+// immediately — no further elements follow a terminal error.
 func (w *geminiStreamWriter) failClosed(message string) {
 	if w.failed {
 		return
@@ -131,6 +158,20 @@ func (w *geminiStreamWriter) failClosed(message string) {
 			"status":  geminiStatusFor(http.StatusInternalServerError),
 		},
 	})
+	if w.jsonArray {
+		if !w.arrayStarted {
+			w.arrayStarted = true
+			w.arrayClosed = true
+			_, _ = w.ResponseWriter.Write(append(append(append([]byte("["), body...), '\n'), ']'))
+		} else if !w.arrayClosed {
+			w.arrayClosed = true
+			_, _ = w.ResponseWriter.Write(append(append([]byte(",\n"), body...), '\n', ']'))
+		}
+		if w.flusher != nil {
+			w.flusher.Flush()
+		}
+		return
+	}
 	_, _ = w.ResponseWriter.Write(append(append([]byte("data: "), body...), '\n', '\n'))
 	if w.flusher != nil {
 		w.flusher.Flush()
@@ -139,7 +180,32 @@ func (w *geminiStreamWriter) failClosed(message string) {
 
 func (w *geminiStreamWriter) WriteHeader(status int) {
 	w.status = status
+	if w.jsonArray {
+		// ChatHandler unconditionally stamps text/event-stream on its
+		// synthetic chat request, overwriting whatever ServeHTTP pre-set —
+		// the header decision therefore has to be made here, at the moment
+		// the response head is actually committed.
+		w.Header().Set("Content-Type", "application/json")
+	}
 	w.ResponseWriter.WriteHeader(status)
+}
+
+// writeArrayElement appends one JSON object as the next element of the
+// vendor-default chunked JSON array, writing the "[" opener before the
+// first element and a ",\n" separator before each subsequent one.
+func (w *geminiStreamWriter) writeArrayElement(obj []byte) error {
+	if w.failed {
+		return nil
+	}
+	if !w.arrayStarted {
+		w.arrayStarted = true
+		if _, err := w.ResponseWriter.Write(append([]byte("["), obj...)); err != nil {
+			return err
+		}
+		return nil
+	}
+	_, err := w.ResponseWriter.Write(append([]byte(",\n"), obj...))
+	return err
 }
 
 func (w *geminiStreamWriter) writeChunk(line []byte) error {
@@ -149,6 +215,13 @@ func (w *geminiStreamWriter) writeChunk(line []byte) error {
 		return nil
 	}
 	if bytes.HasPrefix(line, []byte(":")) {
+		if w.jsonArray {
+			// SSE comments cannot be carried by a JSON array body — the
+			// vendor's default streaming shape has no comment/keepalive
+			// channel. Drop them instead of corrupting the array; a stalled
+			// upstream is simply silent in this shape (same as the vendor).
+			return nil
+		}
 		// SSE comments are protocol-neutral transport frames. Preserve them
 		// verbatim so native Gemini streams receive the shared heartbeat.
 		_, err := w.ResponseWriter.Write(append(append([]byte{}, line...), '\n', '\n'))
@@ -167,15 +240,33 @@ func (w *geminiStreamWriter) writeChunk(line []byte) error {
 	if err != nil {
 		// ChatHandler can emit a non-SSE error after stream setup. Preserve it
 		// so the caller receives the original diagnostic rather than a dropped chunk.
+		if w.jsonArray {
+			// The diagnostic is only embeddable when it is a JSON object;
+			// anything else would corrupt the array, so fail closed with a
+			// well-formed error element instead of forwarding raw bytes.
+			if trimmed := bytes.TrimSpace(line); json.Valid(trimmed) {
+				return w.writeArrayElement(trimmed)
+			}
+			w.failClosed("unparsable stream frame from upstream")
+			return nil
+		}
 		_, writeErr := w.ResponseWriter.Write(append(append([]byte{}, line...), '\n'))
 		if writeErr != nil {
 			return writeErr
 		}
 		return nil
 	}
-	if output := chunk.SerializeGemini(); output != "" {
-		_, err = w.ResponseWriter.Write([]byte(output))
+	output := chunk.SerializeGemini()
+	if output == "" {
+		return nil
 	}
+	if w.jsonArray {
+		// SerializeGemini emits the SSE frame "data: {…}\n\n"; the array shape
+		// reuses that one body implementation and re-frames it as an element.
+		obj := bytes.TrimSpace(bytes.TrimPrefix([]byte(output), []byte("data: ")))
+		return w.writeArrayElement(obj)
+	}
+	_, err = w.ResponseWriter.Write([]byte(output))
 	return err
 }
 
@@ -215,12 +306,29 @@ func (w *geminiStreamWriter) finish() error {
 	if w.failed {
 		return nil
 	}
-	if len(bytes.TrimSpace(w.pending)) == 0 {
-		return nil
+	if line := bytes.TrimSpace(w.pending); len(line) > 0 {
+		w.pending = nil
+		if err := w.writeChunk(line); err != nil {
+			return err
+		}
 	}
-	line := bytes.TrimSpace(w.pending)
-	w.pending = nil
-	return w.writeChunk(line)
+	if w.jsonArray && !w.failed {
+		if !w.arrayStarted {
+			// A stream that produced no elements at all still owes the
+			// client a parseable body: the vendor's zero-chunk shape is an
+			// empty array.
+			w.arrayStarted = true
+			w.arrayClosed = true
+			_, err := w.ResponseWriter.Write([]byte("[]"))
+			return err
+		}
+		if !w.arrayClosed {
+			w.arrayClosed = true
+			_, err := w.ResponseWriter.Write([]byte("\n]"))
+			return err
+		}
+	}
+	return nil
 }
 
 // geminiModelPathRe matches the Gemini model suffix in URL paths.
@@ -234,6 +342,17 @@ func NewGeminiHandler(ch *ChatHandler) *GeminiHandler {
 		h.requestLogger = ch.requestLogger
 	}
 	return h
+}
+
+// geminiWantsSSE reports whether the inbound request explicitly selected
+// the vendor's SSE streaming shape via "alt=sse". Everything else (no alt
+// parameter, alt=json) falls back to the vendor's default chunked JSON
+// array shape.
+func geminiWantsSSE(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return r.URL.Query().Get("alt") == "sse"
 }
 
 func newGeminiSyntheticRequest(original *http.Request, body []byte) *http.Request {
@@ -412,10 +531,22 @@ func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 8: Stream through a real ResponseWriter so ChatHandler flushes
 	// reach the Gemini client as soon as each upstream chunk is available.
 	if wantStream {
-		w.Header().Set("Content-Type", "text/event-stream")
+		// Vendor dialect: "alt=sse" selects SSE framing; the default (no
+		// alt parameter) is the vendor's chunked JSON array. Both official
+		// google-genai SDKs always request alt=sse, so the array path only
+		// serves native clients that follow the vendor default.
+		sseMode := geminiWantsSSE(r)
+		if sseMode {
+			w.Header().Set("Content-Type", "text/event-stream")
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+		}
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("X-Accel-Buffering", "no")
 		streamWriter := newGeminiStreamWriter(w)
+		if !sseMode {
+			streamWriter = newGeminiJSONArrayStreamWriter(w)
+		}
 		h.chatHandler.ServeHTTP(streamWriter, synthReq)
 		if err := streamWriter.finish(); err != nil {
 			slog.Warn("gemini_handler: failed to flush final stream chunk", "err", err)
