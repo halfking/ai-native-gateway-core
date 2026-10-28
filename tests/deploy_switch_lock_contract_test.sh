@@ -481,17 +481,27 @@ fake_flock="$TMP/fake-flock"
 #   ⇒ 另一道门（跨仓对拍门）也用它 ⇒ 两边量的是同一个东西。
 # shellcheck source=lib/fake-flock.sh
 source "$ROOT/tests/lib/fake-flock.sh"
+# ★ 注意：透传 "$@"（第 2 个起）⇒ 被测脚本里的 "$1"（仓库根）才拿得到。
+# ★ ★ `flock_env` 定义在**守卫之外** ⇒ ★ 否则缺 python3 时连「定义」都没了
+#   ⇒ 后面用它的断言会报 "command not found" ⇒ ★★ 而那是**夹具坏**，
+#   不是被测行为 ⇒ ★★ 判据自己的坏必须与被测物的坏分开（★ 通式八）。
+flock_env() {
+  LOCK_TMP_ROOT="$LOCK_TMP_ROOT" DL_SWITCH_LOCK_FLOCK_BIN="$fake_flock" \
+    bash -c "source \"$ORACLE_BOOTSTRAP\"
+$1" "${@:2}"
+}
+# ★★ 缺件就明说没跑：★ 替身需要 python3（fcntl.flock）⇒ CI 的 alpine 镜像实测
+#   没有 python3 ⇒ ★★ 那时**不能**让门红（那是环境缺件，不是代码缺陷）
+#   ⇒ ⇒ 显式 SKIP 这一段（★ 仓内纪律：「本次没跑」必须写出来）。
+if ! command -v python3 >/dev/null 2>&1; then
+  printf 'SKIP I11~I13 (flock shape): python3 is not available (the true-semantics fake flock needs fcntl) — 本次没跑这一段\n'
+else
 fake_flock="$(fake_flock_make "$TMP/fake-flock")"
 
 # ★ 注意：透传 "$@"（第 2 个起）⇒ 被测脚本里的 "$1"（仓库根）才拿得到。
 # ★ 第三轮：判据已**委托**共享部署库 ⇒ 子 shell 里必须把判据一起加载
 #   （否则子 shell 会走「判据缺席 ⇒ fail-fast」那条路 ⇒ flock 形态的臂
 #   会因为**理由不对**而变绿/变红 ⇒ ★ 判据必须因为「语义」而通过）。
-flock_env() {
-  LOCK_TMP_ROOT="$LOCK_TMP_ROOT" DL_SWITCH_LOCK_FLOCK_BIN="$fake_flock" \
-    bash -c "source \"$ORACLE_BOOTSTRAP\"
-$1" "${@:2}"
-}
 
 # ── I11：flock 形态可达且语义正确 ────────────────────────────────────────
 out="$(flock_env '
@@ -551,6 +561,7 @@ grep -q 'LIVE_DIR_RC=75' <<<"$out" \
 grep -q 'STALE_DIR_RC=0' <<<"$out" \
   || fail "a stale directory-shaped lock must be taken over even when flock is available, got: $out"
 pass 'lock shape is detected from the path (a directory lock never hits the fatal exec)'
+fi
 
 # ── I18/I19/I20：★ CLI 层的「强制档」必须【只在它该生效的地方】生效 ────────
 #
@@ -604,15 +615,20 @@ rc=0
   || fail "the mkdir shape must create its own parent directory (rc=$rc)"
 [[ -d "$missing_root" ]] || fail 'the parent directory of the switch lock must have been created'
 rm -rf "$TMP/missing-root"
-out="$(flock_env '
+if command -v python3 >/dev/null 2>&1; then
+  out="$(flock_env '
   source "$1/scripts/deploy-local-lib.sh"
   export LOCK_TMP_ROOT="$2/missing-root/locks"
   if dl_acquire_switch_lock; then echo "ACQUIRE=OK"; else echo "ACQUIRE=FAIL"; fi
 ' _ "$ROOT" "$TMP/flock-parent")"
-grep -q 'ACQUIRE=OK' <<<"$out" \
-  || fail "the flock shape must create its own parent directory, got: $out"
-rm -rf "$TMP/flock-parent"
-pass 'both lock shapes create their own parent directory (no asymmetry)'
+  grep -q 'ACQUIRE=OK' <<<"$out" \
+    || fail "the flock shape must create its own parent directory, got: $out"
+  rm -rf "$TMP/flock-parent"
+  pass 'both lock shapes create their own parent directory (no asymmetry)'
+else
+  printf 'SKIP the flock half of I21: python3 is not available — 本次没跑这一段\n'
+  pass 'the mkdir shape creates its own parent directory (flock half skipped: no python3)'
+fi
 
 # ── I20：★ 争用在 **CLI 层**也必须是 75（EX_TEMPFAIL）──────────────────────
 #

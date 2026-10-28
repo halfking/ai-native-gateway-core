@@ -117,6 +117,15 @@ if [[ -z "$ssot" ]]; then
   printf 'SKIP deploy lock parity (no SSOT)\n'
   exit 0
 fi
+# ★★ 缺件就明说没跑：★ C3 的实测需要**真语义的假 flock**（python3 的 fcntl）
+#   ⇒ 没有 python3 时，★ 若照样去测 ⇒ 量到的是「替身不存在」而不是
+#   「共享库撞上致命 exec 路径」⇒ ⇒ **那会把 C3 判成别的结论** ⇒
+#   ⇒ ⇒ 显式 SKIP 整段跨仓比对（★ 不输出 ALL PASS）。
+if ! command -v python3 >/dev/null 2>&1; then
+  printf 'SKIP: python3 is not available (the true-semantics fake flock needs fcntl) — the cross-repo comparison was NOT run this time\n'
+  printf 'SKIP deploy lock parity (no python3)\n'
+  exit 0
+fi
 printf 'SSOT: %s\n' "$ssot"
 
 # ★ LOCK_TMP_ROOT 必须**在** source 之前设好 ⇒ SSOT 的 `: "${LOCK_TMP_ROOT:=/tmp}"`
