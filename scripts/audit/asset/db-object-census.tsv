@@ -1,9 +1,9 @@
 # db-object-census.tsv —— ★ 三环境【真实对象底账】（★ 只读采集）
 # ★ 生成器：scripts/audit/db-object-census.py collect | bundle
 # ★ 列：env	kind	schema	relkind	name	owner	ispartition	partition_bound	parent_table	reltuples	table_size	total_size	definition	flags	parent_index
-# ★ bundled_at=2026-10-28T13:34:44+00:00
+# ★ bundled_at=2026-10-28T14:09:20+00:00
 # ★ env=local rows=2734 sha256=da28684a3d828b7344fba8d0b413bbf4ea371df18e5911f30b01b04ef31c5d59 collected_at=2026-10-28T20:40:00+00:00
-# ★ env=fresh rows=2519 sha256=6c56b149ac9673e77ca30cb7af19cb86b39c85014a3d0da85b731b7cc9a0f9aa collected_at=2026-10-28T13:30:58+00:00
+# ★ env=fresh rows=2519 sha256=6c56b149ac9673e77ca30cb7af19cb86b39c85014a3d0da85b731b7cc9a0f9aa collected_at=2026-10-28T14:09:19+00:00
 # ★ env=252 rows=3490 sha256=a1224b3f04ed6ae2a611c727c6299ee74ea94b95bf0eccee1b72a3efacb4fff1 collected_at=2026-10-28T13:34:44+00:00
 # ★ env=211 rows=2958 sha256=05c76637b6eb982a0738e71d3ee31dc9dcad4bf418f30d1736cb3805b1545f43 collected_at=2026-10-28T13:34:44+00:00
 # ★ total_rows=11701 envs=local,fresh,252,211

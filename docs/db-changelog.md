@@ -10527,6 +10527,12 @@ Recording-consent body retention is independent of request_logs TTL.
 
 ★ **本条同时记下一处「守卫在部署通道上是装饰品」的实测发现**：`scripts/apply-db-revision-sequence.sh` 走 `psql -f -`，**不加 `--single-transaction`、也不注入 `BEGIN`** ⇒ 每个语句各自成事务 ⇒ **`SET LOCAL lock_timeout` 只打一条 WARNING 后完全失效**（本轮在 PG 17.6 上实测：`SET LOCAL lock_timeout='123ms'` 之后 `current_setting` 仍为 `0`）；installer 通道走 `--single-transaction` ⇒ 那条路径上 `SET LOCAL` 才有效。⇒ **本迁移改用会话级 `SET lock_timeout`**，两条通道都真的生效；存量迁移的 `SET LOCAL` 形态仍属已知债务（见审计档）。
 
+## 2026-10-28 — routing 侧 prompt-cache 亲和信号 (migration 915，★ 上游交付)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 915 | `915_recent_cache_hit_rate.sql` | `c4550ebf05838514875d134a4873eaec376e718736632630b1f33bafee0ea16e` | pending（★ **上游交付，★ R178 轮合并时代为补登记**。★ 上游提交该迁移时未在台账登记 ⇒ ⇒ `internal/sqlguard` 的 `TestMigrationRegistryStaysContinuous`（★ 近邻窗口 [897, 916]）红 ⇒ ⇒ 本行按台账既有形态补齐，★ **sha256 为文件实测值**（★ 未改迁移本体）。★★ ★★ **★ 已知缺陷（★ 记录不擅动）：★ 该迁移在【新装路径】失败 —— ★ `ERROR: relation "public.request_logs_hot" does not exist`（★ 那张表【已退役】，★ 本地库实测 count=0）⇒ ⇒ 归属上游。★★ ★★） |
+
 ## 2026-10-28 — 会话族 api_key_id 归一表达式的索引 (migration 916)
 
 | Migration | File | SHA-256 | Status |

@@ -6,7 +6,7 @@
 # ★ ★ baseline-dependent = ★ 创建迁移【不在安装器清单】⇒ 新装能拥有它只因为基线是 dump
 # ★ ★ new-install-gap    = ★ 创建迁移不可达 ⇒ ★★ 任何新装环境【必然缺】
 # ★ ★ installer-bug      = ★ 创建迁移【可达】、新装却没有 ⇒ ★★ 安装器自己有 bug
-# ★ generated_at=2026-10-28T13:35:28+00:00
+# ★ generated_at=2026-10-28T14:09:38+00:00
 # ★ envs=local,fresh,252,211 fresh_env=fresh manifest=319 package_up=319 rows=842
 # ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 74, "reachable-and-present": 377, "unreachable-and-missing": 49}
 idx_provider_models_canonical_raw_name	provider_models	-1	395b_dedup_provider_models_and_aliases.sql	no	local,fresh,252,211		baseline-dependent	baseline-dependent	
