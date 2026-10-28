@@ -56,7 +56,7 @@ func TestR1039NonStreamPolicyBlockCarriesRule(t *testing.T) {
 	rec := httptest.NewRecorder()
 	writeOutputPolicyBlockedJSON("openai", rec, 403, "req-1",
 		"Response blocked by output policy", "policy_violation", "output_policy_blocked",
-		rule, "the tool call appears to send data to an external destination (rule "+rule+") at $.command", "$.command")
+		rule, "the tool call appears to send data to an external destination (rule "+rule+") at $.command", "$.command", "", "")
 
 	if rec.Code != 403 {
 		t.Fatalf("状态码 = %d，期望 403", rec.Code)
@@ -80,15 +80,25 @@ func TestR1039NonStreamPolicyBlockKeepsLegacyShape(t *testing.T) {
 	rec := httptest.NewRecorder()
 	writeOutputPolicyBlockedJSON("openai", rec, 403, "req-1",
 		"Response blocked by output policy", "policy_violation", "output_policy_blocked",
-		"builtin.egress_sink", "reason text", "$.command")
+		"builtin.egress_sink", "reason text", "$.command", "", "")
 	errObj := r1039DecodeErrorBody(t, rec.Body.String())
+	// 2026-10-28 拦截审核轮：message 文本现在携带规则/请求 ID/审核状态
+	// （按最弱客户端设计），不再是裸常量——既有判据从「逐字相等」放宽为
+	// 「稳定前缀仍在」（客户端做子串匹配的既有用法不破）。
 	for key, want := range map[string]string{
 		"message":    "Response blocked by output policy",
 		"type":       "policy_violation",
 		"code":       "output_policy_blocked",
 		"request_id": "req-1",
 	} {
-		if got, _ := errObj[key].(string); got != want {
+		got, _ := errObj[key].(string)
+		if key == "message" {
+			if !strings.Contains(got, want) {
+				t.Errorf("error.message = %q，应包含稳定前缀 %q", got, want)
+			}
+			continue
+		}
+		if got != want {
 			t.Errorf("error.%s = %q，期望 %q（既有键不能丢）", key, got, want)
 		}
 	}
@@ -98,10 +108,10 @@ func TestR1039NonStreamPolicyBlockKeepsLegacyShape(t *testing.T) {
 // 标识」——这是 D3 的核心：客户端只该认一个规则名。
 func TestR1039NonStreamPolicyBlockRuleMatchesStreamingFrame(t *testing.T) {
 	const rule = "builtin.egress_sink"
-	frame := string(nativeStreamPolicyFailureFrame(r1037ProtoDefault, rule))
+	frame := string(nativeStreamPolicyFailureFrame(r1037ProtoDefault, rule, "", ""))
 	rec := httptest.NewRecorder()
 	writeOutputPolicyBlockedJSON("openai", rec, 403, "req-1",
-		"Response blocked by output policy", "api_error", "output_policy_blocked", rule, "", "")
+		"Response blocked by output policy", "api_error", "output_policy_blocked", rule, "", "", "", "")
 	errObj := r1039DecodeErrorBody(t, rec.Body.String())
 	got, _ := errObj["rule"].(string)
 	if got == "" {
@@ -117,7 +127,7 @@ func TestR1039NonStreamPolicyBlockRuleMatchesStreamingFrame(t *testing.T) {
 func TestR1039NonStreamPolicyBlockWithoutRuleOmitsKeys(t *testing.T) {
 	rec := httptest.NewRecorder()
 	writeOutputPolicyBlockedJSON("openai", rec, 403, "req-1",
-		"Response blocked by output policy", "api_error", "output_policy_blocked", "", "", "")
+		"Response blocked by output policy", "api_error", "output_policy_blocked", "", "", "", "", "")
 	errObj := r1039DecodeErrorBody(t, rec.Body.String())
 	for _, key := range []string{"rule", "reason", "field"} {
 		if _, ok := errObj[key]; ok {
@@ -136,7 +146,7 @@ func TestR1039AnthropicPolicyBlockCarriesRule(t *testing.T) {
 	rec := httptest.NewRecorder()
 	writeOutputPolicyBlockedJSON("anthropic", rec, 403, "req-1",
 		"Response blocked by output policy", "policy_violation", "output_policy_blocked",
-		"builtin.egress_sink", "reason text", "$.command")
+		"builtin.egress_sink", "reason text", "$.command", "", "")
 	var probe struct {
 		Type  string         `json:"type"`
 		Error map[string]any `json:"error"`
@@ -158,13 +168,13 @@ func TestR1039AnthropicPolicyBlockCarriesRule(t *testing.T) {
 // TestR1039PolicyBlockMetadataFromInterceptorResult 钉住元数据取值的边界：
 // 缺项返回空串，缺元数据不 panic。
 func TestR1039PolicyBlockMetadataFromInterceptorResult(t *testing.T) {
-	rule, reason, field := policyBlockMetadataFrom(nil)
-	if rule != "" || reason != "" || field != "" {
-		t.Errorf("nil 结果应返回全空: %q %q %q", rule, reason, field)
+	rule, reason, field, digest := policyBlockMetadataFrom(nil)
+	if rule != "" || reason != "" || field != "" || digest != "" {
+		t.Errorf("nil 结果应返回全空: %q %q %q %q", rule, reason, field, digest)
 	}
-	rule, reason, field = policyBlockMetadataFrom(&response.InterceptResult{})
-	if rule != "" || reason != "" || field != "" {
-		t.Errorf("无元数据应返回全空: %q %q %q", rule, reason, field)
+	rule, reason, field, digest = policyBlockMetadataFrom(&response.InterceptResult{})
+	if rule != "" || reason != "" || field != "" || digest != "" {
+		t.Errorf("无元数据应返回全空: %q %q %q %q", rule, reason, field, digest)
 	}
 }
 
@@ -175,7 +185,7 @@ func TestR1039PolicyBlockMetadataFromInterceptorResult(t *testing.T) {
 func TestR1039StreamPolicyFrameCarriesReason(t *testing.T) {
 	const reason = "output policy blocked stream lane (rule builtin.egress_sink) at $.command"
 	for _, protocol := range []string{r1037ProtoAnthropic, r1037ProtoResponses, r1037ProtoDefault} {
-		frame := string(nativeStreamPolicyFailureFrame(protocol, "builtin.egress_sink", reason))
+		frame := string(nativeStreamPolicyFailureFrame(protocol, "builtin.egress_sink", "", "", reason))
 		if !strings.Contains(frame, "builtin.egress_sink") {
 			t.Errorf("%s 终帧缺少规则名: %s", protocol, frame)
 		}
@@ -199,8 +209,8 @@ func TestR1039StreamPolicyFrameCarriesReason(t *testing.T) {
 		}
 	}
 	// 既有形状不变：没有原因时不出现 reason 键（r1037 的契约）。
-	frame := string(nativeStreamPolicyFailureFrame(r1037ProtoDefault, "builtin.egress_sink"))
-	if strings.Contains(frame, "reason") {
+	frame := string(nativeStreamPolicyFailureFrame(r1037ProtoDefault, "builtin.egress_sink", "", ""))
+	if strings.Contains(frame, "\"reason\"") {
 		t.Errorf("无原因时不应出现 reason 字段: %s", frame)
 	}
 }
@@ -211,7 +221,7 @@ func TestR1039StreamPolicyFrameCarriesReason(t *testing.T) {
 // 把它丢掉 ⇒ 表现与「空响应」一样（211 事故的形态）。
 func TestR1039StreamPolicyFrameEscapesReason(t *testing.T) {
 	const reason = `blocked at $.cmd with "quotes" and a newline` + "\n"
-	frame := string(nativeStreamPolicyFailureFrame(r1037ProtoDefault, "builtin.egress_sink", reason))
+	frame := string(nativeStreamPolicyFailureFrame(r1037ProtoDefault, "builtin.egress_sink", "", "", reason))
 	for _, line := range strings.Split(frame, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "data: ") {

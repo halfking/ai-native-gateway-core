@@ -25885,3 +25885,21 @@ R172 的守卫把「hot ∩ 父表 = 0」从**硬前提**降级成**观察项**�
 > ★ **本节证据**：★ 会话（goal 续轮，2026-10-28）；★ 审计档 `docs/audit/2026-10-28-live页汇总上移头部三块轮.md`；
 > ★ 修复（本轮提交）：`useLiveTopology.ts` DimensionSummary/summarizeBy + 解除 slice(0,8)；新组件 `SummaryHeader.vue`；
 > ★ `ClientRequestPanel.vue` 摘要区整体退役；8 语种 `summary.clients/providers/models`；测试 2925 通过 / 2 跳过。
+
+## §512 · 输出策略拦截反馈明确化与审核队列轮（goal · 2026-10-28）—— ★★★★ **旁键不是反馈：只显示 message 的客户端让「带规则名」在用户侧等于没做；拦截那一刻必须记下「放行的钥匙」（摘要键与放行判定逐字节一致）；一条载荷可命中多条规则——批准是收敛的链条，不是一次点击**
+
+★★★ **通式一（★★ 旁键不是反馈）** —— r1039 把 rule/reason 放进错误信封的**旁键**，但 ZCode 的报错卡只渲染 `message` ⇒ 用户侧（本轮需求的直接动因）始终只有一句 `Response blocked by output policy` + 客户端自造标签「TraceID: hydrate-trace」⇒ ⇒ ★★★ **按最弱客户端设计：全部可行动信息（规则/原因/位置/网关请求 ID/审核单号）必须进 message 文本本身**，旁键只是给「能读旁键的客户端」的补充 ⇒ ★ 既有子串匹配（`Contains("Response blocked by output policy")`）靠**稳定前缀**保住——契约升级与向后兼容可以同时成立。★★ **「上轮修好了」≠「用户看到了」**（第 16 增量 §429 同族，这次发生在客户端渲染层）。
+
+★★★ **通式二（★★ 拦截那一刻要记下「放行的钥匙」，且键必须与放行判定逐字节一致）** —— 审核流「批准后重试即放行」的前提：拦截现场算出的摘要 = `EgressPayloadDigest(ruleID, path, value)` 与重试时 `egressReleaseAllowed` 的判定键**逐字节相同** ⇒ 任何一边换了键（比如拿 fragment.Value 替换整串 value、拿 fragment.RuleID 替换 fragmentRuleID 的回退形态）都会变成**批了也不放行**——而且两边的单测各自全绿（各测各的键）⇒ ⇒ ★★★ **闭环必须用「登记→批准→同载荷重试通过」的端到端判据钉住，不能靠两边的单元测试间接推断**。
+
+★★★ **通式三（★★ 一条载荷可命中多条规则——批准是收敛的链条）** —— `curl -X POST https://…/upload` 同时命中形状规则（network_destination）与方向规则（egress_sink），两条**各自独立判定**：放行第一条后重试会暴露第二条（新审核单）⇒ 真实语义是「批一条、重试、暴露下一条、再批」**收敛**，不是「一次点击全放」⇒ ⇒ ★★ 判据写成**循环收敛**（≤5 轮必须通过）而不是「批准一次即通过」——后者会在多规则载荷上假红，逼着后人把规则判定改成短路合并（那是安全回退）。
+
+★★ **通式四（★ 进程内开关是运维面不是安全面）** —— 「后台一键关掉」的正确形态：运行时整表替换 `SetHardBlockAllows`（super_admin + 结构化日志留变更史 + 清空需显式确认），而**不是**让客户端自带头绕过（hop-header 教训）⇒ ★ 安全边界（清单与放行表只在服务端进程内）与止血通道（一分钟关掉误报规则）分层成立 ⇒ ★★ env 装载语义（累加）与运行时 PUT 语义（整表替换）**必须显式写清**——两个语义都对的工具拼在一起就是「我只想开一条却静默关掉了请求侧底线」。
+
+★★ **通式五（★ 量具口径要覆盖「谁把结果丢了」）** —— `interceptNativeResponseBody` 拦截时只返回 `(nil, true, nil)`，把 InterceptResult（含 policy_rule/policy_reason/policy_digest 元数据）**整个丢弃** ⇒ 上游想带规则名也拿不到 ⇒ ⇒ ★★ 链路上每一跳的**返回形状**就是信息能不能到达客户端的判据——r1039 修了三个写点却漏了这条「丢弃者」，因为当时没人问「Metadata 在哪一跳被丢」。
+
+★★ **通式六（★ 语言包值里的 `{占位符}` 会破坏「t(key) 必须等于原文」的钉死契约）** —— 想用 `t('…', {example})` 传 `egress:builtin.egress_sink`（避开 jargon 门对 snake_case 的拦截）⇒ 钉死判据 `i18n.t(key) === namespace[key]` 当场红（无参 t 把占位符解析成空串）⇒ ⇒ ★ 示例字面量放模板 `<code>`（源码侧不归语言包门管），语言包只放**纯文本**。
+
+> ★ **本节证据**：★ 会话（goal，2026-10-28）；★ 审计档 `docs/audit/2026-10-28-输出策略拦截反馈明确化与审核队列.md`；
+> ★ 修复（本轮提交）：`domains/streaming/policy_block_feedback.go`（message 组装 + 审核登记）、`domains/sanitizerules/review_queue.go`、`admin/sanitize_rules_hardblock.go`（运行时开关 + 审核入口）、`ComplianceIssue.Digest`/`PolicyBlockError{Path,Digest}` 摘要贯通、非托管 OutputBlock 补清单闸、`SanitizeRulesView.vue` 两页签 + 8 语种 +22 键；
+> ★ Go 新判据 15 条（streaming 8 + sanitize 3 + admin 4）；vitest 2925 通过 / 2 跳过。

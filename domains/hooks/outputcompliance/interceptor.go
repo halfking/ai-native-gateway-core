@@ -245,13 +245,19 @@ func policyBlockReason(ruleID, subtype, field string) string {
 //
 // 键名与流式侧一致（policy_rule，见 policyRuleFromChunkResult），写者据此
 // 渲染协议终帧；非流式侧据此渲染 403 响应体。
-func policyBlockMetadata(rule, subtype, field string) map[string]interface{} {
+//
+// 2026-10-28 拦截审核轮：digest（policy_digest）一并带出——审核队列据此对
+// 这一次载荷精确放行。原值永不进元数据。
+func policyBlockMetadata(rule, subtype, field, digest string) map[string]interface{} {
 	meta := map[string]interface{}{}
 	if rule != "" {
 		meta["policy_rule"] = rule
 	}
 	if field != "" {
 		meta["policy_field"] = field
+	}
+	if digest != "" {
+		meta["policy_digest"] = digest
 	}
 	if reason := policyBlockReason(rule, subtype, field); reason != "" {
 		meta["policy_reason"] = reason
@@ -275,7 +281,7 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 	// r1039（D3）：拦截原因（规则名 / 原因码 / 出问题的位置）在**拦截那一刻**
 	// 记下来。原来的非流式 403 只有一句 message，客户端既说不出因为什么规则
 	// 被拦，也没法据此提示用户。
-	var blockRule, blockSubtype, blockField string
+	var blockRule, blockSubtype, blockField, blockDigest string
 
 	transform := func(label, original string) (string, int, bool, error) {
 		result, err := it.checkText(ctx, req.TenantID, label, original)
@@ -293,6 +299,9 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 			}
 			if subtype, field := policyIssueDetail(result.Issues); subtype != "" || field != "" {
 				blockSubtype, blockField = subtype, field
+			}
+			if digest := policyIssueDigest(result.Issues); digest != "" {
+				blockDigest = digest
 			}
 			return "", 0, true, nil
 		}
@@ -317,7 +326,7 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 		return &response.InterceptResult{
 			ShouldBlock: true,
 			Action:      "output_compliance_block",
-			Metadata:    policyBlockMetadata(blockRule, blockSubtype, blockField),
+			Metadata:    policyBlockMetadata(blockRule, blockSubtype, blockField, blockDigest),
 		}, nil
 	}
 
