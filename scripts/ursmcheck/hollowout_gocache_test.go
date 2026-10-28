@@ -2,7 +2,29 @@ package ursm_test
 
 // AUDIT-GUARD: scripts/ursmcheck 属 GUARD_PACKAGES_SLOW ⇒ 本门在 `make guards-ursmcheck` 上真跑。
 
-// hollowout_gocache_test.go —— r1046（2026-10-28）：掏空门的【子构建】必须隔离到专用 GOCACHE
+// hollowout_gocache_test.go —— r1047 轮（2026-10-28）：掏空门的【两道泄漏】合到**一道门**里
+//
+// # ★★ 本文件为什么同时管【两半】（★ r1047 轮：★ 「同一个问题的两半」合并）★★
+//
+// ★★★ **两半是同一个问题的两面**：★★★
+//
+// ★ ① **tmp 目录那一半**（★ r1045 轮修的）：★ 掏空门为了让读方跑在「被改瞎的副本」上
+// ★★★ ⇒ ⇒ 它**现编译**被读包的测试二进制 ⇒ ⇒ 临时目录「**只创建不删除**」⇒ ⇒
+// ★★★ **每次跑泄漏一批目录**（★ 实测本机 `/private/var/folders/.../T` 里堆了 **224 个
+// ★★★ `hollowout-bin-*` ＝ 8.6 GB**）⇒ ⇒ ⇒ ★★ **把 macOS 的每用户 tmp 配额撑爆**
+// ★★★ ⇒ ⇒ ⇒ ★★ 而**配额耗尽 ⇒ ⇒ `os.WriteFile` 报 `no space left on device`**
+// ★★★ ⇒ ⇒ ⇒ ★★ ⇒ **红的原因不指向真正的原因**（★ 真正的原因是磁盘，不是门有洞）。
+//
+// ★ ② **GOCACHE 那一半**（★ r1046 轮修的）：★ 子构建写进**用户那个全局缓存**⇒ ⇒
+// ★★★ **每次新树 +1.3 GB** ⇒ ⇒ ⇒ ★★ 同款「红的原因不指向真正的原因」。
+//
+// ★★★★ **它们是同一件事的两面：★ 「门自己的产物落在磁盘上，而没人回收它」★★**
+// ★★★★ ⇒ ⇒ ★★ ⇒ **既然是同一件事，就该由**一道门**管** ⇒ ⇒ ★★ ⇒ **分在两个文件里
+// ★★★★ ⇒ ⇒ ⇒ ★★ ⇒ 【责任分散 ⇒ ⇒ ⇒ 而且【tmp 那一半压根没有判据】—— ★★ ★★ r1047
+// ★★★★ ⇒ ⇒ ⇒ ★★ ⇒ 轮实测：`hollowout_bin_cleanup_test.go` 里**一个 `Test` 函数都没有**
+// ★★★★ ⇒ ⇒ ⇒ ★★ ⇒ **那半边【修完了但没人验】** ⇒ ⇒ ★★ ⇒ ⇒ **「修了」不等于「验了」。★★★**
+//
+// # ② GOCACHE 那一半的来龙去脉（★ r1046 轮，★ 实测，2026-10-28）
 //
 // # 为什么需要这个文件（★ 实测，2026-10-28）
 //
@@ -231,7 +253,134 @@ func hollowRepoRootNoT() (string, error) {
 	return root, nil
 }
 
-// ── 判据（★ 五条，★ 必须成对） ──
+// ── ★★ tmp 目录那一半（★ r1045 轮修的 · ★ r1047 轮合到本文件）★★
+
+// hollowBinTmpDirs 登记本进程创建过的【掏空门测试二进制临时目录】。
+var (
+	hollowBinTmpMu   sync.Mutex
+	hollowBinTmpDirs []string
+)
+
+// registerHollowBinTmpDir 登记一个临时目录（★ 供 TestMain 收尾时删除）。
+func registerHollowBinTmpDir(dir string) {
+	hollowBinTmpMu.Lock()
+	defer hollowBinTmpMu.Unlock()
+	hollowBinTmpDirs = append(hollowBinTmpDirs, dir)
+}
+
+// cleanupHollowBinTmpDirs 删掉所有登记过的临时目录（★ 返回删掉几个 ＋ 第一个错误）。
+func cleanupHollowBinTmpDirs() (int, error) {
+	hollowBinTmpMu.Lock()
+	dirs := hollowBinTmpDirs
+	hollowBinTmpDirs = nil
+	hollowBinTmpMu.Unlock()
+
+	n := 0
+	var firstErr error
+	for _, d := range dirs {
+		if err := os.RemoveAll(d); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("清理 %s 失败：%w", d, err)
+			}
+			continue
+		}
+		n++
+	}
+	return n, firstErr
+}
+
+// TestMain 是本包（★ `ursm_test`）的**唯一**入口钩子。
+//
+// ★ 它只做一件事：★ 跑完所有测试后**清掉掏空门留下的测试二进制临时目录**。
+// ★★ **刻意不做别的**（★ 不改退出码 ＋ 不吞错误）⇒ ⇒ 清理失败只**打印**，不改变测试结果
+// ⇒ ⇒ ★★ 清理是**卫生问题**，不该让它变成**判据问题**。
+func TestMain(m *testing.M) {
+	// ★★★ r1046（2026-10-28）：★ 跑之前先给掏空门的【专用构建缓存】**把尺寸按住**。
+	//
+	// ★★ **为什么**：★ 掏空门每在一个**新树状态**上跑一次 ⇒ 就会往缓存里塞 ~1.3 GB
+	// ★★ ⇒ ⇒ 那些条目随树变化而**永远不再被命中** ⇒ ⇒ 事实上的垃圾 ⇒ ⇒ 必须有上限。
+	// ★★ ⇒ ⇒ 上限之内不动（★ 保热缓存 ⇒ 不让门一直冷编译）；★ 超过就**整个删掉重建**。
+	//
+	// ★★ **剪枝失败不改变测试结果**（★ 只打印）⇒ ⇒ 与本文件「清理是卫生问题，
+	// ★★ 不该让它变成判据问题」那条纪律**同款**。
+	if root, err := hollowRepoRootNoT(); err == nil {
+		dir := hollowGoCacheDir(root)
+		if pruned, perr := pruneHollowGoCache(dir, hollowGoCacheMaxBytes); perr != nil {
+			fmt.Fprintf(os.Stderr, "★ 剪枝掏空门专用构建缓存失败（★ 不影响测试结论）：%v\n", perr)
+		} else if pruned {
+			fmt.Fprintf(os.Stderr, "掏空门专用构建缓存超上限 ⇒ 已整个删掉重建（★ 这轮是冷编译）\n")
+		}
+	}
+	code := m.Run()
+	n, err := cleanupHollowBinTmpDirs()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "★ 清理掏空门测试二进制临时目录失败（★ 不影响测试结论）：%v\n", err)
+	}
+	if n > 0 {
+		fmt.Fprintf(os.Stderr, "掏空门清理：删掉 %d 个测试二进制临时目录\n", n)
+	}
+	os.Exit(code)
+}
+
+// ── ③ 判据：★ tmp 目录那一半（★ r1047 轮补的 · ★★ 此前【压根没有判据】★★） ──
+
+// TestHollowoutBinTmpDirsAreCleanedUp —— ★★ 掏空门留下的【测试二进制临时目录】
+// ★ 必须**真的被删掉**（★ 否则每次跑都泄漏一批 ⇒ ⇒ ⇒ 撑爆用户 tmp 配额）。
+//
+// ★★★★ **为什么这道判据在 r1047 轮才出现**：★★★★ r1045 轮修好了这一半
+// ★★★★ （★ 「只创建不删除」⇒ ⇒ 「登记 + 跑完统一删」）⇒ ⇒ ★★★★ **但那一轮
+// ★★★★ 【没有给这一半配任何判据】** ⇒ ⇒ ★★★★ ⇒ 「修好了」**没人验** ⇒ ⇒ ★★★★
+// ★★★★ ⇒ ⇒ 实测：★ r1047 轮合并前 `hollowout_bin_cleanup_test.go` 里**一个
+// ★★★★ `Test` 函数都没有** ⇒ ⇒ ★★★★ ⇒ **这一半是【裸奔】的** ⇒ ⇒ ★★★★ ⇒
+// ★★★★ ⇒ **「修了」不等于「验了」—— ★★ 这是本轮最朴素也最刺眼的一条。★★★★**
+//
+// ★ ★★ **为什么这条必须存在（★ 而不能只靠「肉眼读代码」）**：★ 清理失败只**打印**
+// ★ ★★ 不改变测试结果（★ 「清理是卫生问题，不该让它变成判据问题」）⇒ ⇒ ★★ ⇒ **那条
+// ★ ★★ 纪律是对的** ⇒ ⇒ ★★ ⇒ **但它同时意味着「清理坏了也没人会知道」** ⇒ ⇒ ★★ ⇒
+// ★ ★★ ⇒ **所以要有一道【直接测那个纯函数】的判据**（★ `cleanupHollowBinTmpDirs`
+// ★ ★★ 是纯函数 ⇒ ⇒ **可以直接测** ⇒ ⇒ ★★ ⇒ 而不必靠「跑一遍整个门」去观察副作用）。
+func TestHollowoutBinTmpDirsAreCleanedUp(t *testing.T) {
+	// ★ 登记两个**带内容**的目录（★ 带内容才测得出「是真删了」还是「只删了空壳」）。
+	dirs := make([]string, 0, 2)
+	for i := 0; i < 2; i++ {
+		d := t.TempDir()
+		if err := os.WriteFile(filepath.Join(d, "blob.bin"), make([]byte, 1024), 0o644); err != nil {
+			t.Fatalf("写临时文件失败：%v", err)
+		}
+		registerHollowBinTmpDir(d)
+		dirs = append(dirs, d)
+	}
+	// ★ 一个**没有登记**的目录（★ 清理**不许**碰它 ⇒ ⇒ 否则就成了「删半个 /tmp」）。
+	unregistered := t.TempDir()
+
+	n, err := cleanupHollowBinTmpDirs()
+	if err != nil {
+		t.Fatalf("★ 清理登记过的临时目录报错：%v", err)
+	}
+	if n != len(dirs) {
+		t.Fatalf("★ 清理报告删了 %d 个目录，期望 %d 个", n, len(dirs))
+	}
+	for _, d := range dirs {
+		if _, err := os.Stat(d); !os.IsNotExist(err) {
+			t.Fatalf("★ 登记过的临时目录 %s 还在（err=%v）⇒ ⇒ 每次跑都在泄漏一批目录", d, err)
+		}
+	}
+	if _, err := os.Stat(unregistered); err != nil {
+		t.Fatalf("★ 没登记过的目录 %s 被删了（err=%v）⇒ ⇒ 清理越界了", unregistered, err)
+	}
+
+	// ★ ★★ **注册表必须被清空**：★ 否则第二次清理会**重复删**同一批 ⇒ ⇒ ★★ ⇒
+	// ★★ 而更糟的是：★ 若某个目录被**别的进程**重建了 ⇒ ⇒ ★★ ⇒ 第二次会把它删掉。
+	n2, err := cleanupHollowBinTmpDirs()
+	if err != nil {
+		t.Fatalf("★ 第二次清理报错：%v", err)
+	}
+	if n2 != 0 {
+		t.Fatalf("★ 第二次清理又删了 %d 个目录（★ ⇒ 注册表没被清空）", n2)
+	}
+}
+
+// ── 判据（★ 七条，★ 必须成对） ──
 
 // TestHollowoutBuildUsesIsolatedGoCache —— ★★ 正向断言：
 // ★ 掏空门子进程用的 `GOCACHE` 必须是**专用目录**，且**不是**环境里那个。

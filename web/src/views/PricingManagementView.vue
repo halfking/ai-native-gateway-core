@@ -17,34 +17,45 @@
     </div>
     <div v-if="globalMsg" class="alert" :class="globalMsgOk ? 'alert-success' : 'alert-danger'" style="margin-bottom:12px">{{ globalMsg }}</div>
 
+    <!--
+      2026-10-28 第 32 增量（hero-metric 模板轮）：原来这里是 7 个同尺寸盒子并排，
+      每格 = 24px **主色**巨数字 + 12px 小标签 —— 即 impeccable craft-floor
+      「The hero-metric template: big number, small label, supporting stats, accent」
+      点名的模板，也是 DESIGN.md §6 明禁的「巨型数字 + 小标签 + 辅助统计 + 强调色」
+      当 hero 指标模板、且明写「不是四个数字并排」。
+      ⇒ 改成「标签 → 值」的行：一行一个事实，数字回到正文级的字号与颜色；
+        覆盖率那一格的语义状态落在**值位**（软填充 + 文字颜色 + 文字本身，
+        DESIGN.md §3：状态不能只靠颜色区分）。
+      ★ 刻意不给行加底色或四边描边 —— 只有下边框的**行**不是卡片（§6「卡片是懒容器」）。
+    -->
     <div class="pm-summary" v-if="summary">
-      <div class="stat-card">
-        <div class="stat-val">{{ summary.total_offers }}</div>
-        <div class="stat-label">总 Offer</div>
+      <div class="pm-metric">
+        <span class="pm-metric__label">总 Offer</span>
+        <span class="pm-metric__value">{{ summary.total_offers }}</span>
       </div>
-      <div class="stat-card">
-        <div class="stat-val">{{ summary.priced_in }}</div>
-        <div class="stat-label">已定价（输入）</div>
+      <div class="pm-metric">
+        <span class="pm-metric__label">已定价（输入）</span>
+        <span class="pm-metric__value">{{ summary.priced_in }}</span>
       </div>
-      <div class="stat-card">
-        <div class="stat-val">{{ summary.priced_out }}</div>
-        <div class="stat-label">已定价（输出）</div>
+      <div class="pm-metric">
+        <span class="pm-metric__label">已定价（输出）</span>
+        <span class="pm-metric__value">{{ summary.priced_out }}</span>
       </div>
-      <div class="stat-card">
-        <div class="stat-val">{{ summary.cny_offers }}</div>
-        <div class="stat-label">CNY</div>
+      <div class="pm-metric">
+        <span class="pm-metric__label">CNY</span>
+        <span class="pm-metric__value">{{ summary.cny_offers }}</span>
       </div>
-      <div class="stat-card">
-        <div class="stat-val">{{ summary.usd_offers }}</div>
-        <div class="stat-label">USD</div>
+      <div class="pm-metric">
+        <span class="pm-metric__label">USD</span>
+        <span class="pm-metric__value">{{ summary.usd_offers }}</span>
       </div>
-      <div class="stat-card">
-        <div class="stat-val">{{ summary.free_offers }}</div>
-        <div class="stat-label">免费</div>
+      <div class="pm-metric">
+        <span class="pm-metric__label">免费</span>
+        <span class="pm-metric__value">{{ summary.free_offers }}</span>
       </div>
-      <div class="stat-card" :class="coverageClass">
-        <div class="stat-val">{{ coveragePct }}%</div>
-        <div class="stat-label">覆盖率 ({{ summary.canonical_covered }}/{{ summary.total_canonical }})</div>
+      <div class="pm-metric">
+        <span class="pm-metric__label">覆盖率 ({{ summary.canonical_covered }}/{{ summary.total_canonical }})</span>
+        <span class="pm-metric__value" :class="coverageClass">{{ coveragePct }}%</span>
       </div>
     </div>
 
@@ -625,9 +636,9 @@ const coveragePct = computed(() => {
 })
 
 const coverageClass = computed(() => {
-  if (coveragePct.value >= 90) return 'stat-card-good'
-  if (coveragePct.value >= 50) return 'stat-card-warn'
-  return 'stat-card-bad'
+  if (coveragePct.value >= 90) return 'pm-metric__value--good'
+  if (coveragePct.value >= 50) return 'pm-metric__value--warn'
+  return 'pm-metric__value--bad'
 })
 
 // Helper to lookup credential label by id (uses already-fetched providers list)
@@ -1144,13 +1155,45 @@ onMounted(fetchData)
 .pm-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .pm-header h2 { margin: 0; color: var(--text); }
 .pm-actions { display: flex; gap: 8px; }
-.pm-summary { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-.stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; min-width: 100px; text-align: center; }
-.stat-card-good { border-color: var(--success); }
-.stat-card-warn { border-color: var(--warning); }
-.stat-card-bad { border-color: var(--danger); }
-.stat-val { font-size: 24px; font-weight: 700; color: var(--accent-h); }
-.stat-label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+/* ── 摘要区（第 32 增量：从「7 个主色巨数字盒子并排」改成「标签 → 值」的行）──
+ * 原来：`.stat-card` 七格并排，每格 24px 主色巨数字 + 12px 小标签
+ *       —— 即 craft-floor 点名的 hero-metric 模板（DESIGN.md §6 明禁）。
+ * 现在：一行一个事实，标签在左、值在右；值回到正文级字号，
+ *       覆盖率那格的语义状态落在值位（软填充 + 文字颜色 + 文字本身）。
+ * ★ 四列、列优先填充 ⇒ 2 + 2 + 2 + 1：每对「标签 → 值」约 330px 宽，
+ *   标签与值不会被拉到半个屏幕那么远（值班台是拿来对着读的，不是拿来欣赏的）。 */
+.pm-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-flow: column;
+  grid-template-rows: repeat(2, auto);
+  gap: 0 var(--space-6);
+  margin-bottom: var(--space-4);
+}
+.pm-metric {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--border-muted);
+  font-size: var(--text-sm);
+}
+.pm-metric__label { color: var(--muted); }
+.pm-metric__value {
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* 状态值：软填充 + 语义色文字（颜色之外还有形状与文字本身 ⇒ 状态不只靠颜色区分） */
+.pm-metric__value--good { color: var(--success); background: var(--success-soft); border-radius: 4px; padding: 0 var(--space-1); }
+.pm-metric__value--warn { color: var(--warning); background: var(--warning-soft); border-radius: 4px; padding: 0 var(--space-1); }
+.pm-metric__value--bad  { color: var(--danger);  background: var(--danger-soft);  border-radius: 4px; padding: 0 var(--space-1); }
+@media (max-width: 768px) {
+  .pm-summary { grid-template-columns: minmax(0, 1fr); grid-auto-flow: row; grid-template-rows: none; gap: 0; }
+}
 
 /* Coverage by credential */
 .pm-coverage { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }

@@ -637,7 +637,18 @@ func (r *Router) planCandidates(
 		RequestID:        requestID,
 		LoadScoreWeights: r.LoadScoreWeights,
 		StickySnapshot:   stickySnapshot,
+		// P1-A (2026-10-28 两层路由审计 G3)：离群是【池】的属性 —— 池统计在
+		// filterHealthyNodes 之后的完整候选集上算一次（这里），随上下文下发。
+		// 池太浅（合格样本 <3）时 ComputeSuccessRatePoolStats 返回 nil ⇒
+		// calculateLoadScore 的离群惩罚恒 0，行为与未接线逐字节一致。
+		SuccessRatePoolStats: ComputeSuccessRatePoolStats(available),
 	}
+	// P1-C-② shadow (audit 2026-10-28 §4): count what the proposed
+	// unknown-price→pool-median policy WOULD do, per request, without
+	// changing any score. Median over priced Round-2 candidates (USD after
+	// the FX fold — reuse calculateCostPenalty's normalization so the shadow
+	// reads the same ruler as the live penalty).
+	observeUnknownPricePool(available)
 	ordered := r.planByTier(requestCtx, round1, policy, stratIn)
 	if len(round2) > 0 {
 		ordered = append(ordered, r.planByTier(requestCtx, round2, policy, stratIn)...)

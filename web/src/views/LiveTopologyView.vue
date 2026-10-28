@@ -26,7 +26,7 @@ import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 import TopologyCanvas from '../components/live-topology/TopologyCanvas.vue'
 import ClientRequestPanel from '../components/live-topology/ClientRequestPanel.vue'
 import ProviderResponsePanel from '../components/live-topology/ProviderResponsePanel.vue'
-import ProviderTodayRail from '../components/live-topology/ProviderTodayRail.vue'
+import TodaySummaryRail from '../components/live-topology/TodaySummaryRail.vue'
 import RoutingDecisionTimeline from '../components/live-topology/RoutingDecisionTimeline.vue'
 import RequestZoomPanel from '../components/live-topology/RequestZoomPanel.vue'
 import type { ParticleSpawn } from '../lib/liveTopologyParticles'
@@ -42,8 +42,11 @@ const topo = useLiveTopology()
 
 const selectedNodeId = ref<string | null>(null)
 const selectedRequestId = ref<string | null>(null)
-/** 点行弹出的内联摘要浮层（两步交互第一步：先摘要，后全景）。 */
+/** 点行弹出的内联摘要浮层（两步交互第一步：先摘要，后全景）。
+ *  side 记录浮层归属哪一列（2026-10-28 owner 口径）：点左栏请求 → 浮层
+ *  弹在左栏、点右栏请求 → 弹在右栏 —— 摘要跟着点击侧走，不跨屏搬运。 */
 const zoomEntry = ref<PanelEntry | null>(null)
+const zoomSide = ref<'left' | 'right'>('right')
 const highlightEdges = ref<string[]>([])
 const spawns = ref<ParticleSpawn[]>([])
 /** 点网关模块 → 高亮该格（纯视觉聚焦，不改变过滤子集）。 */
@@ -112,8 +115,11 @@ const queueDepth = computed(() => {
 
 // 在用插件清单（网关大方块插件带）。挂载时拉一次 —— 插件集合只在
 // 启动/安装时变化，不值得轮询；失败 = degraded 提示 chip（不冒充空）。
+// 内部直连供应商清单（kind='local'）同批拉：选路扇出带的「直连」分桶
+// 与供应端节点的直连徽标都吃它；失败 = 扇出带标注「未测量」。
 onMounted(() => {
   void topo.loadPlugins()
+  void topo.loadLocalProviders()
 })
 
 /** 新请求 → 粒子投放清单（edgeKey 形如 `client:x->gateway:core`）。 */
@@ -183,9 +189,13 @@ function onSelectRequest(requestId: string) {
  * 2026-10-23 曾把点行改成直接开全页详情（跳过摘要）；属主实测后要求改回
  * 旧版两步流：点行 → 内联摘要浮层（本页不跳转、不开新窗，拓扑图仍在视野）；
  * 浮层里的「查看全景」（onOpenPage）才开新窗展示整个请求详情。
+ *
+ * 2026-10-28：浮层归属列 = 点击的那一列（side 由模板按面板传死，不进面板
+ * 组件 —— 面板不知道自己在屏幕哪边，知道的是布局）。
  */
-function onZoomRequest(entry: PanelEntry) {
+function onZoomRequest(entry: PanelEntry, side: 'left' | 'right') {
   zoomEntry.value = entry
+  zoomSide.value = side
   onSelectRequest(entry.requestId)
 }
 
@@ -228,11 +238,19 @@ const coreSummary = computed(() => {
 
 /** 左下统计栏跟随供应商过滤（多选时取第一项，其余靠过滤后收敛）。 */
 const activeProvider = computed(() => topo.filters.value.providers[0] ?? '')
+/** 模型组同理：跟随模型过滤（与图收敛到同一子集）。 */
+const activeModel = computed(() => topo.filters.value.models[0] ?? '')
 
 function onSelectProvider(code: string) {
   const list = topo.filters.value.providers
   const next = list.includes(code) ? list.filter((c) => c !== code) : [...list, code]
   topo.filters.value.providers = next
+}
+
+function onSelectModel(model: string) {
+  const list = topo.filters.value.models
+  const next = list.includes(model) ? list.filter((m) => m !== model) : [...list, model]
+  topo.filters.value.models = next
 }
 </script>
 
@@ -368,13 +386,25 @@ function onSelectProvider(code: string) {
           :requests="topo.clientRequests.value"
           :active-request-id="selectedRequestId ?? undefined"
           @select-request="onSelectRequest"
-          @zoom="onZoomRequest"
+          @zoom="(entry) => onZoomRequest(entry, 'left')"
           @open-page="onOpenPage"
         />
-        <ProviderTodayRail
+        <TodaySummaryRail
           class="live-topology__rail"
           :active-provider="activeProvider"
+          :active-model="activeModel"
           @select-provider="onSelectProvider"
+          @select-model="onSelectModel"
+        />
+        <!-- 内联摘要浮层（两步交互第一步）：点左栏请求时弹在本列，
+             靠 .live-topology__left 的 position:relative 当定位基准。 -->
+        <RequestZoomPanel
+          v-if="zoomEntry && zoomSide === 'left'"
+          side="left"
+          :entry="zoomEntry"
+          :decisions="zoomDecisions"
+          @close="zoomEntry = null"
+          @open-page="onOpenPage"
         />
       </div>
 
@@ -388,6 +418,9 @@ function onSelectProvider(code: string) {
           :gateway-stats="topo.gatewayStats.value"
           :plugins="topo.plugins.value"
           :queue-depth="queueDepth"
+          :selection="topo.selectionStats.value"
+          :direct-measured="topo.localProviderCodes.value !== undefined"
+          :local-provider-codes="topo.localProviderCodes.value"
           @select-node="onSelectNode"
           @select-module="onSelectModule"
         />
@@ -399,13 +432,13 @@ function onSelectProvider(code: string) {
           :responses="topo.providerResponses.value"
           :active-request-id="selectedRequestId ?? undefined"
           @select-request="onSelectRequest"
-          @zoom="onZoomRequest"
+          @zoom="(entry) => onZoomRequest(entry, 'right')"
           @open-page="onOpenPage"
         />
-        <!-- 内联摘要浮层（两步交互第一步）：absolute 定位，靠本列的
-             position:relative 当定位基准（丢了基准会退到视口盖满整屏）。 -->
+        <!-- 内联摘要浮层（两步交互第一步）：点右栏请求时弹在本列，absolute
+             定位靠本列的 position:relative 当定位基准（丢了基准会退到视口盖满整屏）。 -->
         <RequestZoomPanel
-          v-if="zoomEntry"
+          v-if="zoomEntry && zoomSide === 'right'"
           :entry="zoomEntry"
           :decisions="zoomDecisions"
           @close="zoomEntry = null"
@@ -421,7 +454,10 @@ function onSelectProvider(code: string) {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  height: 100%;
+  /* 窄屏（<1024）：高度自然增长、由 .main-body 整页滚动 —— 钉死 100% 会把
+     内容压进视口（栅格行塌成等分三段、列表 0 高，2026-10-28 实测）。
+     桌面（≥1024）：100% 铺满主区，配合栅格行 minmax(0,1fr) 收进视口。 */
+  height: auto;
   min-height: 0;
   padding: 8px 12px 12px;
 }
@@ -595,10 +631,15 @@ function onSelectProvider(code: string) {
   border: 1px dashed var(--kx-border);
 }
 
-/* 默认（窄）：单列堆叠 —— 上方拓扑，下方两个请求面板。
+/* 默认（窄）：单列堆叠 —— 客户端请求 / 拓扑 / 供应商响应。
    ≥1024：左栏 + 拓扑两列，右侧面板落到下一行；
    ≥1440：左面板 / 拓扑 / 右面板三列并排。
-   断点只允许用 scripts/responsive-audit.mjs 的白名单值（480/640/768/1024/1440）。 */
+   断点只允许用 scripts/responsive-audit.mjs 的白名单值（480/640/768/1024/1440）。
+   ★ 行高（2026-10-28 浮层归属轮）：桌面 grid 行必须收进视口（minmax(0,1fr)），
+   否则行高被 50 行/页的明细内容撑到两三千像素 —— 浮层锚在「整列底部」
+   ⇒ 点行后摘要弹在视口外一千多像素处，用户根本看不见（本轮实测抓到）。
+   窄屏两个请求列表各自限高 + 列表内滚动：不限高时整页 4623px（390 宽实测），
+   拓扑与右栏被推到「永远划不到」的地方，手机上没法观察请求。 */
 .live-topology__body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -621,6 +662,16 @@ function onSelectProvider(code: string) {
   position: relative;
 }
 
+/* 窄屏（手机/平板）：两个请求列表限高，列表体内滚动（.cp__list /
+   .pp__list 本来就是 overflow-y:auto，缺的只是容器高度约束）。 */
+.live-topology__clients {
+  max-height: 70vh;
+}
+
+.live-topology__right {
+  max-height: 70vh;
+}
+
 .live-topology__clients,
 .live-topology__rail {
   flex: 1;
@@ -637,8 +688,21 @@ function onSelectProvider(code: string) {
 }
 
 @media (min-width: 1024px) {
+  .live-topology {
+    height: 100%;
+  }
+
+  /* 统计栏是次要信息，桌面压缩到 160px（内部滚动），把列高让给
+     左栏主体（请求明细列表）—— 否则 900 高视口下明细只剩两行。 */
+  .live-topology__rail {
+    max-height: 160px;
+  }
+
   .live-topology__body {
     grid-template-columns: 260px minmax(0, 1fr);
+    /* 行收进视口：第一行（左栏+拓扑）吃满剩余高度，第二行（右栏横排）
+      由内容自定（max-height 240px 封顶）。 */
+    grid-template-rows: minmax(0, 1fr) auto;
   }
 
   .live-topology__right {
@@ -648,12 +712,16 @@ function onSelectProvider(code: string) {
 
   .live-topology__clients {
     min-height: 320px;
+    /* 桌面行高已收进视口，限高交给栅格行；65vh 帽子只在窄屏起作用。 */
+    max-height: none;
   }
 }
 
 @media (min-width: 1440px) {
   .live-topology__body {
     grid-template-columns: 280px minmax(0, 1fr) 300px;
+    /* 三列单行：行高 = 本体高度 ⇒ 三列都在视口内，浮层锚列底必然可见。 */
+    grid-template-rows: minmax(0, 1fr);
   }
 
   .live-topology__right {
@@ -662,7 +730,7 @@ function onSelectProvider(code: string) {
   }
 
   .live-topology__rail {
-    max-height: 220px;
+    max-height: 180px;
   }
 }
 </style>

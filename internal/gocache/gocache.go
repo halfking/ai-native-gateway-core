@@ -45,10 +45,12 @@ package gocache
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // RelDirPrefix 是【专用缓存目录】的**相对仓根**前缀。
@@ -79,6 +81,11 @@ func Value(root, purpose string) string {
 // ★ ★★ ⇒ ⇒ ★ 所以读这个切片时**必须取最后一个匹配**（★ Go `exec` 的语义是
 // ★ ★★ 「后出现的同名变量赢」）⇒ ⇒ ★ 本包**总是追加在最后** ⇒ ⇒ 天然满足。
 func Env(root, purpose string) []string {
+	// ★ ★★ **先把尺寸按住**（★ 每个进程只剪一次）：★ 专用缓存**自己**也会涨
+	// ★ ★★ （★ 实测 `sql/schema` 那道门**一次**就把 `integration-vet` 撑到 1.1 GB）
+	// ★ ★★ ⇒ ⇒ ★★ 隔离只解决了「不污染用户的全局缓存」，★ **没解决「自己会无限涨」**
+	// ★ ★★ ⇒ ⇒ ★★ ⇒ 必须有上限（★ 理由与读数见 `MaxBytes` 的注释）。
+	PruneOnce(root, purpose)
 	env := append([]string{}, os.Environ()...)
 	return append(env, Value(root, purpose))
 }
@@ -107,4 +114,113 @@ func RepoRoot() (string, error) {
 		return "", fmt.Errorf("解析仓根得到空串")
 	}
 	return root, nil
+}
+
+// ★★★ 尺寸上限（★ ★★ 专用缓存**自己**也是会涨的）★★★
+//
+// ★★★ **为什么专用缓存也需要上限**：★ 「隔离」解决的是「**不污染用户的全局缓存**」
+// ★★★ ⇒ ⇒ ★★ 但它**没有**解决「**这个专用目录自己会无限涨**」⇒ ⇒ ★★★
+// ★★★★ **实测（★ 2026-10-28，本机）**：★ `sql/schema` 那道门（★ `go vet -tags=integration
+// ★★★★ ./...` ⇒ ⇒ **整棵树带 tag 重编一遍**）⇒ ⇒ ★★ **一次就把
+// ★★★★ `.build-local/.gocache-integration-vet` 撑到 1.1 GB** ⇒ ⇒ ★★ 树每变一次
+// ★★★★ 就再来一批 ⇒ ⇒ ★★★ ⇒ **专用缓存也会撑爆磁盘**（★ 只是换个地方撑爆）。
+//
+// ★★★ **为什么上限取 6 GB**：★ 与掏空门那套同档（★ 掏空门每跑一次涨 ~1.3 GB
+// ★★★ ⇒ ⇒ 6 GB ≈ 4~5 次新树触发一次清理）⇒ ⇒ ★★★ **代价可接受**（★ 清理后下一轮
+// ★★★ 是冷编译，★ 实测冷 213.35s vs 热 153.99s），★ 而「磁盘被撑爆」不可接受。
+const MaxBytes int64 = 6 << 30
+
+// pruneOnces 保证【每个用途在每个进程里只剪一次】。
+//
+// ★ ★★ **为什么按用途各一个 Once**：★ 剪枝要**遍历整个缓存目录**
+// ★ ★★ （★ `filepath.WalkDir` 逐个 `stat`）⇒ ⇒ ★★ 1.1 GB 的缓存有十万级文件
+// ★ ★★ ⇒ ⇒ ★★ 每个调用点都剪一次 ⇒ ⇒ ★★ 白烧好几秒 ⇒ ⇒ ★★ ⇒ 按用途做一次性剪枝。
+//
+// ★ ★★ **为什么不能用【单个全局 Once】**：★ 那样**整个进程里只有第一个用途**
+// ★ ★★ 会被剪 ⇒ ⇒ ★★ 其它用途的缓存**永远长下去** ⇒ ⇒ ★★ ⇒ **那等于没剪**。
+var (
+	pruneMu   sync.Mutex
+	pruneOnes = map[string]*sync.Once{}
+)
+
+// pruneOnceFor 取某个用途的【一次性剪枝】闸。
+func pruneOnceFor(purpose string) *sync.Once {
+	pruneMu.Lock()
+	defer pruneMu.Unlock()
+	o, ok := pruneOnes[purpose]
+	if !ok {
+		o = &sync.Once{}
+		pruneOnes[purpose] = o
+	}
+	return o
+}
+
+// Prune 若 dir 的总字节数超过 maxBytes ⇒ **整个删掉**（★ 下一轮重建）。
+//
+// ★ 返回值：★ `pruned=true` 表示**确实删过**（★ 用来在日志里说清「为什么这轮是冷的」）。
+//
+// ★ ★★ **为什么「整个删掉」而不是「删一部分」**：★ Go 的构建缓存**不支持按条目删除**
+// ★ ★★ ⇒ ⇒ ★ 只能全清 ⇒ ⇒ ★★ 这也是「专用」的价值：★ **全清的代价被限制在一个
+// ★ ★★ 专用目录里**（★ 而不是用户的全局缓存 —— ★ 全清那个要重编整个仓的一切）。
+//
+// ★ ★★ **为什么「删了也不影响正确性」**：★ Go 的构建缓存是**内容寻址**的
+// ★ ★★ ⇒ ⇒ ★ **它不可能返回陈旧的产物** ⇒ ⇒ ★★ ⇒ 全清之后只是**冷编译一次**。
+func Prune(dir string, maxBytes int64) (bool, error) {
+	size, err := dirSizeBytes(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// ★ 目录本来就没有 ⇒ ★ 没什么可剪的 ⇒ ★★ **不是错误**。
+			return false, nil
+		}
+		return false, fmt.Errorf("量专用构建缓存大小失败（%s）：%w", dir, err)
+	}
+	if size <= maxBytes {
+		return false, nil
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return false, fmt.Errorf("删专用构建缓存失败（%s）：%w", dir, err)
+	}
+	return true, nil
+}
+
+// PruneDefault 用 MaxBytes 剪掉某个用途的专用缓存（★ 幂等）。
+//
+// ★ ★★ **剪枝失败不改变调用方的结果**：★ 本函数只返回 error，由调用方决定怎么处理
+// ★ ★★ ⇒ ⇒ ★ 与仓内「★ 清理是卫生问题，★ 不该让它变成判据问题」那条纪律**同款**。
+func PruneDefault(root, purpose string) (bool, error) {
+	return Prune(Dir(root, purpose), MaxBytes)
+}
+
+// PruneOnce 在**本进程第一次**用到某个用途时剪一次（★ 每个进程只剪一次）。
+//
+// ★ ★★ **为什么每个进程只剪一次**：★ 剪枝要**遍历整个缓存目录**（★ `filepath.WalkDir`
+// ★ ★★ 逐个 `stat`）⇒ ⇒ ★★ 1.1 GB 的缓存有十万级文件 ⇒ ⇒ ★★ 每个调用点都剪一次
+// ★ ★★ ⇒ ⇒ ★★ 白烧好几秒 ⇒ ⇒ ★★ ⇒ **按用途做一次性剪枝**（★ `sync.Once`）。
+func PruneOnce(root, purpose string) {
+	pruneOnceFor(purpose).Do(func() {
+		if _, err := PruneDefault(root, purpose); err != nil {
+			// ★ ★★ **不致命**：★ 剪枝失败只是「这次不省空间」，★ 不该让调用方失败。
+			fmt.Fprintf(os.Stderr, "★ 剪枝专用构建缓存失败（★ 不影响结果）：%v\n", err)
+		}
+	})
+}
+
+// dirSizeBytes 递归求目录里**文件**的总字节数（★ 不计目录自身）。
+func dirSizeBytes(dir string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return ierr
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
 }

@@ -4,8 +4,8 @@
 # ★ 这层事实此前**不存在** ⇒ ⇒ 「列没了 ⇒ 索引被 PG 级联删掉」在仓内不可见
 # ★   ⇒ ⇒ 假缺口的第三种来源一直躺着（★ idx_sessions_last_full_at 实测命中）
 # ★ scope=expected-index-key-columns
-# ★ bundled_at=2026-10-28T13:03:48+00:00
-# ★ 211 rows=905 sha256=c5838ffc10b578b26199ffcf8afa3de1f8c9be5a8f727db7a10d17d5b0f0d0ca collected_at=2026-10-28T13:03:48+00:00 | 252 rows=912 sha256=f9bffcbf710e2ca274e4fb3988a8a1f6b41e3f01627acb5d7c05d6d08271898f collected_at=2026-10-28T13:03:47+00:00 | fresh rows=902 sha256=188c852da26ce35583d54e5866db16b2e8e7281d4e52ba00c191bc64fd1f006e collected_at=2026-10-28T13:03:42+00:00 | local rows=891 sha256=8890f9e51e0d60665a87061f80c00e85c5cbc66ca7206887256e4a16409c83b3 collected_at=2026-10-28T13:03:42+00:00
+# ★ bundled_at=2026-10-28T13:31:12+00:00
+# ★ 211 rows=905 sha256=c5838ffc10b578b26199ffcf8afa3de1f8c9be5a8f727db7a10d17d5b0f0d0ca collected_at=2026-10-28T13:31:11+00:00 | 252 rows=912 sha256=f9bffcbf710e2ca274e4fb3988a8a1f6b41e3f01627acb5d7c05d6d08271898f collected_at=2026-10-28T13:31:11+00:00 | fresh rows=902 sha256=188c852da26ce35583d54e5866db16b2e8e7281d4e52ba00c191bc64fd1f006e collected_at=2026-10-28T13:31:00+00:00 | local rows=891 sha256=8890f9e51e0d60665a87061f80c00e85c5cbc66ca7206887256e4a16409c83b3 collected_at=2026-10-28T13:31:00+00:00
 local	public	agent_relationships	dst_agent_id
 local	public	agent_relationships	src_agent_id
 local	public	agents	kind
