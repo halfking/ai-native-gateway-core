@@ -142,7 +142,7 @@ func TestTopologyModelsTodayByProviderFoldsAndSharesWithinModel(t *testing.T) {
 		AddRow(42, "glm-4.5", "glm-4.5-vendor", 0, "", "", 300, 300, 0, 0, 50, 25, 0, 0, 75, 1, 0.2, pgtype.Timestamptz{Time: ts, Valid: true}).
 		AddRow(0, "", "vendor-raw-model", 13, "moonshot", "Moonshot", 100, 100, 0, 0, 10, 5, 0, 0, 15, 1, 0.1, pgtype.Timestamptz{Time: ts, Valid: true})
 
-	mock.ExpectQuery(`(?s)WITH agg AS .* GROUP BY canonical_id, provider_id`).
+	mock.ExpectQuery(`(?s)WITH agg AS .* GROUP BY canonical_id, provider_id, CASE WHEN canonical_id = 0 THEN COALESCE\(raw_model_name, ''\) ELSE '' END`).
 		WithArgs(day, "", modelsTodayLimit).
 		WillReturnRows(rows)
 
@@ -179,7 +179,7 @@ func TestTopologyModelsTodayByProviderFoldsAndSharesWithinModel(t *testing.T) {
 }
 
 // 5. 默认调用（无 by 参数）响应形状兼容：不出现 providers 键（omitempty），
-//    且走原 SQL（GROUP BY canonical_id，非二元组）。
+//    且走单维聚合 SQL（GROUP BY canonical_id + passthrough 拆名 CASE）。
 func TestTopologyModelsTodayDefaultShapeHasNoProvidersKey(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	require.NoError(t, err)
@@ -187,9 +187,10 @@ func TestTopologyModelsTodayDefaultShapeHasNoProvidersKey(t *testing.T) {
 
 	day := todayUTCDay(time.Now())
 	// pgxmock 的 stripQuery 把所有空白（含换行）归一成单空格 ⇒ 断言
-	// 默认路径走的是 canonical 单键聚合（"GROUP BY canonical_id )"），
-	// 而 by=provider 路径是二元组聚合——两条 SQL 在这里分叉。
-	mock.ExpectQuery(`(?s)WITH agg AS .* GROUP BY canonical_id \)`).
+	// 默认路径走的是单维聚合（canonical + passthrough 拆名 CASE 收在
+	// 单个 GROUP BY 里），而 by=provider 路径是三元组聚合——两条 SQL 在
+	// 这里分叉。
+	mock.ExpectQuery(`(?s)WITH agg AS .* GROUP BY canonical_id, CASE WHEN canonical_id = 0 THEN COALESCE\(raw_model_name, ''\) ELSE '' END \)`).
 		WithArgs(day, "", modelsTodayLimit).
 		WillReturnRows(modelsTodayRowSet())
 
@@ -200,5 +201,58 @@ func TestTopologyModelsTodayDefaultShapeHasNoProvidersKey(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.NotContains(t, rec.Body.String(), `"providers"`)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// 6. ★ passthrough 拆名（2026-10-28 审计轮修）：canonical_id=0 的不同
+//    raw 名是**不同模型**（图 modelKeyOf 按原始名分节点；211 实测一天
+//    189 个不同 raw 名）。Go 折叠键必须镜像 SQL 的分组 CASE——只按
+//    CanonicalID 折叠会把全部 passthrough 并回一行（名字 MAX 任选、
+//    请求量合并），SQL 拆了 Go 又合上。本测试钉住折叠键：
+//    两个 canonical=0 的不同 raw 名 ⇒ 两个父行，providers 不串。
+func TestTopologyModelsTodayByProviderPassthroughRawNamesDoNotMerge(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	day := todayUTCDay(time.Now())
+	ts := time.Date(2026, 10, 28, 11, 59, 0, 0, time.UTC)
+	rows := pgxmock.NewRows([]string{
+		"canonical_id", "canonical_name", "raw_model_name",
+		"provider_id", "catalog_code", "display_name",
+		"requests", "success", "failure", "rate_limited",
+		"prompt_tokens", "completion_tokens", "cache_read_tokens",
+		"cache_write_tokens", "total_tokens", "credits_charged",
+		"cost_usd", "watermark",
+	}).
+		AddRow(0, "", "alpha-raw", 12, "deepseek", "DeepSeek", 100, 100, 0, 0, 10, 5, 0, 0, 15, 1, 0.1, pgtype.Timestamptz{Time: ts, Valid: true}).
+		AddRow(0, "", "beta-raw", 12, "deepseek", "DeepSeek", 50, 50, 0, 0, 5, 3, 0, 0, 8, 1, 0.05, pgtype.Timestamptz{Time: ts, Valid: true}).
+		AddRow(0, "", "beta-raw", 13, "moonshot", "Moonshot", 30, 30, 0, 0, 3, 2, 0, 0, 5, 1, 0.03, pgtype.Timestamptz{Time: ts, Valid: true})
+
+	mock.ExpectQuery(`(?s)WITH agg AS .* GROUP BY canonical_id, provider_id, CASE`).
+		WithArgs(day, "", modelsTodayLimit).
+		WillReturnRows(rows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/topology/models-today?by=provider", nil)
+	req = SetAuthContext(req, &AuthContext{Role: "super_admin", TenantID: "default", UserID: 1})
+	rec := httptest.NewRecorder()
+	(&Handler{topologyStatsDB: mock}).handleTopologyModelsToday(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	out := decodeTopologyToday(t, rec.Body.Bytes())
+	items := out["items"].([]any)
+	// 两个不同 raw 名的 passthrough = 两个模型行，不许并成一行
+	require.Len(t, items, 2)
+
+	first := items[0].(map[string]any)
+	require.Equal(t, "alpha-raw", first["raw_model_name"])
+	require.Equal(t, float64(100), first["requests"])
+	require.Len(t, first["providers"].([]any), 1)
+
+	second := items[1].(map[string]any)
+	require.Equal(t, "beta-raw", second["raw_model_name"])
+	// beta-raw 折叠了 deepseek(50) + moonshot(30) 两个子行
+	require.Equal(t, float64(80), second["requests"])
+	require.Len(t, second["providers"].([]any), 2)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

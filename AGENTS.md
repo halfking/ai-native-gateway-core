@@ -1430,6 +1430,48 @@
 > 列缺失吃 V2 写入；Responses 侧 URI-only 音频跳过无损失上报；`alt=sse` 缺省时形态
 > 与厂方 JSON 数组方言不一致（既有行为）。
 > ⇒ 审计档 `docs/audit/2026-10-28-Gemini批判审计三轮.md`；通用式见 `LESSONS.md` **§521**（4 条：声明逐条对实证 / 测试词表≠生产词表=恒绿假象 / 注释里的假设要当场证伪 / 并行修复不免除验证）。
+> **2026-10-29 Gemini 批判审计三轮遗留收口轮**（本 checkout）：★ 处置上条 §六遗留
+> 1/3/4 三项，每项**先定性再动手**。
+> ⇒ ★★ **遗留 1（`session_turns_hot.host` 缺列）三库对拍定性为【本地库漂移】**：
+> 252（pg-252-pg17）/211（acc-llm_gateway）实测 `host`/`tags` 五列全齐、只有本地缺——
+> 两列同缺 = 整条**迁移 885 没落**，不是代码缺列（安装器 runner:1243 启动清单里有它 ⇒
+> 新装库不缺）；本地 `schema_migrations` 停在 869（2026-10-18）而 `tools`/`client_protocol`
+> 列却在 ⇒ **旁路结构演进补了后到的列、漏了没被旁路的 885**。处置：本地幂等应用 885
+> （父表+hot 两侧同形）+ 按 693/701 先例 stamp 台账；`TestTurnWriterHostTagsRealDB` +
+> `TestPromoteColumnContractRealDB`（707 列集合契约）双绿；真机 8799（V2 shadow write）
+> 写入 12 行 turn 全部成功、`host='g3-temp-8799'` 落值正确——修复前全部 42703。
+> ⇒ ★★ **遗留 3（Responses 侧损失上报缺失）**：`reportSerializeResponsesLosses` 补两个
+> 上报点（audio / document），**判据直接调 `buildResponsesInputAudio`/`buildResponsesInputFile`
+> 看 nil 才上报** ⇒ 上报的恰好就是序列化器会丢的，两份判据永不漂移；同协议守卫沿用函数顶
+> 早退；document 新分支与既有 file_id 双空分支**互斥不双报**（有测试钉住：file_id 双空走
+> 旧分支、块仍以 filename-only 发出，不算消失）。真机实证：Gemini fileData 音频 →
+> responses 候选**主动升级桥** → 捕获体音频块消失（正确语义）+ `ir.anomaly
+> ir_protocol_loss … carrier=url` 留痕——修复前纯静默。
+> ⇒ ★★★ **遗留 4（`alt=sse` 缺省形态）落地为厂方缺省 JSON 数组**：**决策依据是两个官方
+> SDK 的源码而非文档**（Python google-genai 2.33.0 models.py:4758 等 8 处、JS @google/genai
+> 1.7.0 dist 仅一种拼接——**全部无条件硬编码 `?alt=sse`** ⇒ 官方客户端零回归，数组模式只
+> 服务手写原生客户端）；官方文档只写「stream of instances」不钉线体 ⇒ **别只看文档**。
+> 实现：`geminiWantsSSE`（显式 alt=sse 才 SSE）+ 数组模式 writer；帧转换**复用
+> `StreamChunk.SerializeGemini()` 同一份 body**（剥 `data: ` 重排元素），不第二份实现；
+> SSE 注释/[DONE] 哨兵不落数组（数组无注释通道）；**错误终态与零帧态都保持合法数组**
+> （`[error]`/`[]`）——第一版「数组未开写裸错误对象」被自己的测试当场抓包 ⇒
+> **数组模式的 body 恒为数组**这一条不变量必须钉死。
+> ⇒ ★★★ **真机抓到 Content-Type 真缺陷**：首版在 ServeHTTP 预设的 `application/json`
+> 被 ChatHandler **无条件重设**的 `text/event-stream` 覆盖 ⇒ **响应头的形态决策必须在
+> `WriteHeader` 提交前一刻做**（数组模式 writer 在 WriteHeader 里重设），提前设置必被下游
+> 覆盖。真机 A/B：无 alt ⇒ `application/json`+合法数组（3 元素含 usageMetadata 尾帧）/
+> alt=sse ⇒ SSE+keep-alive；音频请求经 Responses 桥完整闭环 200+数组；错误终态数组
+> `[{"error":…}]` 真机自然出现一次，形态正确。
+> ⇒ ★ 读数：`internal/ir` 全包 ✓（新增 6 条）/ `domains/streaming` 全包 ✓ 156.9s（新增 6 条）/
+> executors 全包 ✓ 45.8s / session/v2 全包 ✓ / `go build ./...` rc=0（★ 全局 go-build 缓存被
+> 并行会话竞态打坏——**远端 106ee9126 已补记同款现象**，隔离 GOCACHE 串行重跑为准）；
+> 环境已恢复（protocol/modality/endpoint 行/能力行/probe_state/key/turns 测试行回原值，
+> 885 两列+stamp 保留）。
+> ⇒ ★ 本轮明确没做：数组模式心跳（JSON 数组无注释通道，停滞感知靠客户端读超时——与厂方
+> 缺省形态一致）；`schema_migrations` 与本地真实结构的**全量**漂移对拍（只治了 42703 点名的
+> 885）；遗留 2（首流失败进熔断）属既有行为有恢复脚本，未动。
+> ⇒ 审计档 `docs/audit/2026-10-29-Gemini批判审计三轮-遗留收口轮.md`；
+> 通用式见 `LESSONS.md` **§535**。
 > **2026-10-27 Gemini 原生出站 executor 轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
 > ★ 承接 §436 同一审计档的**子项②**（§433 清单的最后一项可做项）。
 > ⇒ ★★★★ **本轮最值钱的一处定性：缺口不是「功能没做」，是「死配置」** ——
@@ -14205,6 +14247,40 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > ★ 老积压 attempts 当指数底数「首拍落 cap」恰是想要的 / ★★ 终态等最后写的字段 /
 > ★★ 登记的红会过期 + 量具缺席找同层数据源）。
 
+**2026-10-29 24h 审计第 4 轮：asm 投影缺口 reconciliation（结构性 opened 缺口根修 + DLQ 34,183 排空）**（goal 会话）：
+★ 承接第 3 轮遗留 1~4 项全部收口；提交 `2c7dcf48c`（telemetry 终态补发 opened + 测试）。
+> ⇒ ★★ **根因反转（本轮最值钱）**：asm「连续 503」不是 asm 故障，是**网关侧结构性数据缺口** ——
+> `session.opened.v1` 只在请求日志**新建插入**路径发射，**早失败请求（39ms、provider=unknown）
+> 只走终态更新路径** ⇒ 这些会话永远没有 opened ⇒ asm `session_projection` 无行 ⇒ 其所有
+> `request.completed.v1` 命中 `projection row missing` → Retryable → 整批 503。
+> **生产实测 14,369 个会话**无 opened（outbox 对拍：任何状态都无行），DLQ 34,183
+> （8,781 opened + 25,402 completed）皆源于此；上轮的 audit sink 失败窗口（10-28 09:20~13:30 UTC）
+> 是第二重独立诱因（把正常 opened 挡在 claim 前）。**熔断器/退避治不了它**：缺口事件重试一万次也是 503。
+> ⇒ ★★ **修复三件套**：① SQL 回填 14,369 条 opened（event_id=`sha256(tenant‖NUL‖session)[:8]`
+> 确定性公式**先本地对拍生产已知样本**再执行；`chr(0)` 不合法 ⇒ `convert_to(bytea)` 拼接；
+> occurred_at 取该会话最早 completed）+ ② DLQ opened 8,781 翻 pending 重放（先排空）⇒
+> ③ DLQ completed 25,402 **在 opened 全部送出后**才翻（乱序先到 ⇒ 每条一次 64s 熔断暂停，交错会拖成天级）；
+> 4,201 条 failed 排空期间挂 8h 再释放（防到期重试插进排空流）。重放全靠人工翻状态：dispatcher
+> claim 只取 pending/failed 到期，**DLQ 永不自动重拾**。
+> ⇒ ★ **代码根修**（`2c7dcf48c`）：`updateRequestLog` 终态块同事务先 INSERT opened（幂等 ON CONFLICT；
+> occurred_at 比 completed 早 1ms 保证投影行先建）+ `sessionOpenedUserID()` 两条发射路径共用一份推导；
+> pgxmock 测试钉 event_type 实参 + writer nil 反例。
+> ⇒ ★ **asm 迁移 36 → 56 一次通过**（`cmd/asm-migrate` 交叉编译 docker cp 进容器跑，37~56 全幂等
+> 增量 DDL）⇒ 9 张 capgov_* 表落地、digest 缺关系报错归零；**重启评估：不需要**（DB 可达、checkpoint
+> 秒级推进、503 已止息）。★★ **契约双轨陷阱**：`contracts/event-schemas/session.opened.v1.json`
+> （uuid/actor_id/mode）与 `internal/gatewayevents/schema/gateway-event-schema-v1.json`（session_id/user_id）
+> 并存互斥——回填验收以前者为准会全判死；前者若上线会把现行 payload 全判死，需 asm 会话对齐。
+> ⇒ ★ **③ 13 家 proxy 决断**：211 直连实测 7 家可达（anthropic/cohere/fireworks/github-copilot/groq/
+> openrouter/together，403/404 快速响应=TLS 通）⇒ 切 direct（direct 49→56；openrouter 是唯一有凭据者）；
+> 6 家不可达（openai/gemini/mistral/perplexity/xai 8s 超时、azure 模板域）保留 proxy——反正
+> `proxy_subscriptions` 双 0 行 proxy 路径本来就断，不为零流量配置翻烧饼。
+> ⇒ ★ **④ NVIDIA 幻影定论**：DLQ `failed/nvidia` 2,993 条的模型名在 `provider_models` 已零行、
+> 请求流 10-27 剪除后归零——**机制已生效无残留**；cred 23 陈旧 warning（last_probe 10-11）登记观察。
+> ⇒ ★ **巡检**：网关近 1h 0 ERROR/WARN（背压风暴消失实证）；慢 SQL 仅例行 `routing_analytics_7d`
+> 物化视图刷新 ~1.8s——无优化项；唯一未合并分支 r98 活跃（窗口外）登记不删，死 worktree ×2 已 prune。
+> ⇒ 审计档 `docs/audit/2026-10-29-24h审计第4轮-asm投影缺口reconciliation.md`；
+> 通用式见 `LESSONS.md` **§530**（跨号留 §527~529 缓冲）。
+
 ## ㊶ 原厂直通生产验证轮 + 批判式复审（2026-10-28）· zcode 实流量收口 RISK-5（★ 「保真」可能被方言合法性冒名顶替；★ 生效点清单要按【谁做序列化】数；★ 聚合口径必须与断言语义逐字对齐 —— 说「首发」就取第一次尝试）
 > 承接 ㊲ 的 RISK-5。★ **211 部署身份**：a 槽（28776060）与 b 槽（dc55570a）二进制探针均含直通代码 ⇒ nativepair 自 2026-10-28 08:20Z 起在线（**09:31 切流不是「无→有」边界**；版本号 `-dirty` 不算数，`grep -c 特征串 二进制` 才算）。
 > ⇒ ★ **取证通道盘点**（先做这张表）：211 无 `request_logs` 表、`request_wal_bodies` 0 行 ⇒ 唯一 body 通道 = 容器 `/app/logs/raw_data/*.jsonl`（100MB×10 firehose，client_request/upstream_request 双向 base64 完整 body）+ `docker logs` **stderr** 的 `http_request`（UA/request_id 关联；只接 stdout = 假阴性 0 条）。
@@ -14270,9 +14346,161 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > 通用式见 `LESSONS.md` **§525**（六条：★★★★ 常量拼接让 AST 量具失明 /
 > ★★★★ 全局表单规则越过 flex 预期 / ★★★★ 短窗口统计先量缓冲覆盖面 /
 > ★★ 口径回显以响应为准 / ★★ 登记簿「提及即登记」+证人失效即红 / ★★ 两段式验证）。
-## ㊸ R179 轮（2026-10-29）· 「读点的实测计划形态」（★ 「索引存在」≠「索引被用上」；★ 静态重建 SQL 是【不完整】的 ⇒ 事实源换成生产真语句；★ 用 NULL 填未知参数会【毁掉整个计划形态】；★ 「测不出来」必须是一等状态）
+**2026-10-29 ㊷ RISK-3 收口轮：原厂直通 strip 绕过留痕 Debug→Info + 211 strip 实配普查**：
+★ 承接 ㊶ 登记的 RISK-3（「`native_pair_bypass` 日志 0 条 = 预期（matrix 无 strip +
+**Debug 级在生产 Info 级不可见** ⇒ 留痕机制默认不可观测」）⇒ 本轮小改动 + 自证 +
+生产普查三件收口。
+> ⇒ ★ **改动一处**：`executor_chat.go` strip 绕过分支 `slog.Debug` → `slog.Info`，
+> **消息文本逐字不变**（211 取证 grep 口径是契约）、字段不动；注释补记升级理由
+> （该行出现 = 运营配置与直通语义冲突，是运营侧要知晓的运行事实，不是调试细节）。
+> ⇒ ★ **生效点盘点（照 ㊶ 教训按序列化站点数）**：nativePair 判定与 strip 绕过
+> **全仓唯一**在 `prepareRequestBodyWithNative`（openai-chat 腿）；
+> `executor_anthropic.go` **0 引用** nativePair（= RISK-6 缺口本体，未动）；
+> `inline_validation.go` 只盖章无 strip 语义 ⇒ 升一处即全量覆盖。
+> ⇒ ★ **自证**：`TestPrepareRequestBodyWithNative_StripBypassLoggedAtInfo`
+> （正臂断言恰好 1 条 + `level=="INFO"` + 4 字段逐值；负臂 2 条：空 strip 0 条 /
+> 非原生对 0 条）；**变异臂**：回注 Debug ⇒ rc=1 报 `level = DEBUG, want INFO` ⇒
+> 还原 rc=0 ⇒ md5 逐字一致 —— 级别这类属性的可证伪检验就是「回注旧值断言必红」。
+> ⇒ ★★ **211 strip 实配普查（六通道盘点表全空）**：① 容器内全盘 find 默认 YAML
+> 0 命中 ② `TRANSFORM_MATRIX_PATH` 未设置 ③ 挂载卷 host 侧 find 0 命中
+> ④ DB 通道**结构性不存在**（strip 只从 YAML doc 解析，无 DB 读取方）
+> ⑤ 运行时改写**结构性不存在**（matrix 仅启动时加载一次，无 admin reload）
+> ⑥ b / b-aux×2 / legacy 四个停用槽共用同一挂载无孤立配置（docker inspect 实测）
+> ⇒ **strip 实配 = 0 条** ⇒ Info 行当前预期 0 触发（空 matrix 下
+> `Matrix.Resolve` 仍返回非 nil Transform 但 `StripRequestFields=nil`，
+> `transform.go:234` 实读；负臂 1 在代码层钉住同一形状）；一旦运营配 strip
+> 即刻在 Info 级可见。
+> ⇒ ★ 读数：`go build ./...` ✔；executors / transformation / `./domains/streaming/...`
+> 全绿；变异臂 1/1；`gofmt -l` 报 3 个**既有**未格式化文件（非本轮触碰，不擅动）。
+> ⇒ ★ **未部署（如实记）**：strip 实配=0 ⇒ 行为零变化，随下次例行部署生效；
+> 211 蓝绿窗口归并行部署会话（a 槽本轮实测 12 分钟前刚被重启），不抢。
+> ⇒ ★ **本轮没做（留给后续）**：**RISK-6**（Anthropic 腿 NativePassthrough 补盖章
+> —— §2 盘点实测 `executor_anthropic.go` 0 引用，开工先枚举该腿全部序列化站点）；
+> **RISK-2**（工具顶层非标准键被丢，对所有客户端一致）；**RISK-1**（deepseek 400
+> 出现时配能力表，不恢复钳制；窗口仍无该流量 ⇒ 维持「未观察」）。
+> ⇒ 审计档 `docs/audit/2026-10-29-RISK3-strip绕过留痕升级轮.md`；
+> 通用式见 `LESSONS.md` **§526**。
+> **2026-10-29 第 35 增量：live 遗留轮批判式复审轮（对第 33/两轮 live 统计的再审计）**
+> （会话续）：★ 承接「审计-修正-推送」指令，对 8c56a4845 + fd5b4fee2 两轮做批判式复审。
+> ⇒ ★ **§8 修复重验闭合**：压缩格数据源=平铺缓冲（gatewayStats←filteredRequests←
+> requestsRef=liveStreamState.requests，非 tile）；三条入腿全通——initial_data 回放
+> （payload 五字段修复）、实时帧（终态 telemetry worker 落库后补偿**二次广播**，
+> main_livestream.go 注释明载两调用点）、同 id 第二帧 pushOrQueue **原地替换**；
+> tile_delta 不带五字段但**无任何消费者**（全 UI grep 实证）⇒ 无害。
+> ⇒ ★★ **新抓真缺陷（两轮共有）：models-today 把全部 passthrough 并成一行**——
+> `GROUP BY canonical_id` 单键对 canonical_id=0 不成立：图 modelKeyOf 按**原始名**
+> 分节点，211 实测每天 **127~189 个不同 raw 名**（10-28：189 名/13,877 请求被并成
+> 1 行、名字 MAX 任选；10-29 当天榜首全是 passthrough ⇒ 整栏信息被毁）。恰违背该
+> SQL 注释自己写的「图栏对账」理由——**「注释声明与事实不符」族在分组语义上的形态**。
+> ⇒ ★★ **修法=SQL 与 Go 折叠键必须同步（只修一边=白修）**：两条 SQL 分组键 +
+> `CASE WHEN canonical_id=0 THEN COALESCE(raw_model_name,'') ELSE '' END`；
+> by=provider 的 models/kept 带 raw_key + JOIN 双条件（单条件会把 canonical=0
+> 多名**交叉放大**）；**raw_key 必须钳非 NULL——`NULL=NULL` 不成立 ⇒ 空/NULL 名组
+> 被 JOIN 静默丢行（本轮自己踩到）**；Go 折叠键 map[int]→(canonical,raw) struct
+> 镜像 SQL CASE。
+> ⇒ ★★★ **验证不靠 mock 自证**：pgxmock 不执行 SQL ⇒ 两条新 SQL **只读真跑 211
+> 生产**——canonical=0 按名拆开（MiniMax-M3 3297/glm-5.3-flash 1924/…）、
+> by=provider 与默认口径**逐模型守恒**（1924=1814+99+9+2）；★ 坑：psql 会话
+> TimeZone=Asia/Shanghai ⇒ `CURRENT_DATE` 比 UTC 日快一天 ⇒ 首跑 0 行**假阴性**，
+> 验证 SQL 必须用 `((now() AT TIME ZONE 'utc')::date)`。
+> ⇒ ★ **同族延伸**：合并 origin 后核查并行会话头部统计轮新加的 `modelsWindowSQL`
+> （5m/1h 口径）——同病同修 + 211 真跑 1h 窗口验证拆分；该轮删了 TodaySummaryRail
+> （by=provider 展开钮迁进 StatsPanel，day 区间仍消费）⇒ 修复未变孤儿。
+> ⇒ ★ **量具自坑**：全量 vitest 从仓库根跑（未钉 cwd）⇒ 301 假红（`@/` 别名解析
+> 失败）；钉 web/ 真读数 **2925 通过/2 跳过/2 失败**——两失败=并行会话 logo 换
+> SSOT 资产未更新 theme.logoAssets.test 断言的 **main 既有红**（对方 in-flight，
+> 登记不越界）。★ 变异臂：折叠键退回单键 ⇒ 拆分测试红（1 行 180 请求精确复现）
+> ⇒ 还原绿 ⇒ md5 一致；`go test ./admin/` ok 117.4s。
+> ⇒ 审计档 §9（同文件追加）；提交 273e4926a + 671e70ac1。
+**2026-10-29 ㊸ RISK-6 收口轮：Anthropic 协议腿（Claude Code↔Claude）接直通 + 逐站点盖章**：
+★ 承接 ㊲ 登记的 RISK-6（「该腿仍走既有改写路径 ⇒ 独立一轮；机制与本轮相同」）⇒
+照 ㊶ 教训**先枚举该腿全部序列化站点再补盖章，别按 paramguard 数**。
+> ⇒ ★ **nativepair 表 +1 行**：`"claude-code": {"claude"}`（第 4 条内置原生对；
+> 宿主前缀 anthropic/claude-… 由 Match 既有剥离容忍）⇒ chat 腿既有门控自动覆盖
+> claude-code 经 openai 宿主打 claude 的形态（表级测试钉住，无需新代码）。
+> ⇒ ★★ **生效点盘点（按「谁做序列化」数）**：请求侧 IR 序列化站点全仓 **5 处**
+> （chat 腿 3 + inline 1 + anthropic 腿 1）——anthropic 腿唯一站点
+> `SerializeAnthropic`（prepareAnthropicRequestBody IR 分支）**漏盖** ⇒ 本轮补
+> `irReq.NativePassthrough`（65d24d0df 在 chat 腿修的同族缺陷）；全仓 grep
+> `NativePassthrough = ` 与 Serialize 站点逐一对拍无第二处漏盖。
+> ⇒ ★ **S2/S3 门控**（chat 腿同款豁免）：SanitizeAnthropicTools（两分支）原生对跳过
+> （工具形重写族，sanitize 重建丢顶层自定义键）；finalizeAnthropicRequestBody 的
+> paramguard(DialectAnthropic)+reqprobeApplyLearned 原生对跳过（学习式预剥离会让
+> 一次瞬态 400 把原生参数静默剥离 24h）。S4/S5 结构性变换（FixAnthropicMessages /
+> 模型替换 / 压缩 / repairOutboundToolHistory）**保留**；S6 响应侧无请求盖章语义。
+> ⇒ ★★ **靶字段必须按目标方言 knownBy 真值选**：Q3 对照臂初版用
+> `CatalogCode:"minimax"` 不裁 —— `BaseProtocol(DialectMiniMax)` 继承 openai-chat
+> 基协议 ⇒ moderation 被认为「认识」⇒ 放行；换 anthropic 目录（DialectAnthropic
+> 不继承）后两臂分离 ⇒ **「这个方言裁不裁」要查 BaseProtocol 继承链，不能只看
+> Dialects 白名单**。
+> ⇒ ★ 自证 3+1 测试（Q4 paramguard / Q4 工具形 / Q3 盖章 + 表级 8 例），变异臂
+> **3/3**（摘章 / 恢复 paramguard / 恢复 sanitize ⇒ 各自红且隔离 ⇒ 还原 md5 一致）；
+> ★ 首次 M3 无效的两个坑：perl 只替第一处（Q4 走的 legacy 分支没被变异）+
+> `(cached)` 结果不作数 ⇒ **变异臂一律 `-count=1` 且变异面要覆盖测试真实走的分支**。
+> ⇒ ★ 读数：build ✔；nativepair/paramguard/paramreg/executors `-count=1` 全绿；
+> 共享 go-build 缓存竞态复发一次 ⇒ `go clean -cache` 恢复（R34 先例）。
+> ⇒ ★★ **语义边界（如实记）**：本腿 `anthropicSameCandidateStripRetry=false`（P0-B
+> 契约）⇒ 原生对被上游硬拒时**无剥参重试回退 = 诚实失败**（修法是能力表不是恢复钳制，
+> 与 RISK-1 同语义）；Claude Code 无 body marker ⇒ 无 header/UA 形态识别不出 ⇒
+> 保守不直通（RISK-7 既有语义）；**RISK-2 不动**（Q3 IR 往返的工具顶层键丢失是
+> 全客户端一致既有行为，只在 S2 门控第二遍 sanitize，不在原生对下特判 IR 解析）。
+> ⇒ ★ **未做（如实记）**：真机部署验证（照 ㊶ 先例，部署后按 claude-code 实流量
+> 复核：① 首发 body 厂商参数保真；② 非原生零变化）；RISK-2 / RISK-1 留独立轮。
+> ⇒ 审计档 `docs/audit/2026-10-29-RISK6-anthropic腿直通轮.md`；
+> 通用式见 `LESSONS.md` **§536**（并行会话占 §535 并留 §532~534 缓冲 ⇒ 跨号取 §536）。
+**2026-10-29 ㊹ 原厂直通生产验证第 2 轮：ClientType 请求边界命中 + UA 线材实态订正**（goal 会话）：
+★ 承接 ㊶ + 408150bd3（三巡接线）⇒ 目标「部署后用三客户端真实流量确认
+ClientType 在请求边界被命中（header/UA 首选路径），非原生零变化」。
+⇒ ★★ **本轮最值钱的发现（①）：真实 MiniMax Code 客户端的 UA 是裸复合词
+`MiniMaxCode`（无连字符无版本；12h 窗口 23 条 http_request 实测），两张 UA
+识别表（extractClientType / ExtractAgentNameFromRequest）只认档案里的
+`MiniMax-Code/{ver}` ⇒ header/UA 首选路径对该客户端整体是暗的**，检测跌落
+body 标记兜底层，而真实 body 无 metadata ⇒ 实际 unknown。档案是写入时的
+快照，客户端会变 ⇒ 识别判据要与生产 UA 分布定期对账（client-formats 档案
+已补订正块）。修 = 两表各补 `minimaxcode` 裸形态 case（与连字符形态互不可
+匹配；同事实两处消费必须同修，fdd11735f）。
+⇒ ★★ **发现（②）更狠：直通倒挂伤到它服务的客户端**——原生对首发全参
+`thinking{type:enabled}` 原样到达 MiniMax ⇒ 上游 400「invalid params,
+invalid thinking.type: "enabled" (allowed: adaptive, disabled) (2013)」，
+而 reqprobe 剥参重试的判型链（namedParamPatterns 七条 + paramRejectionHints
+十五条）对该方言**全断链** ⇒ 无重试、client_bug 整流 503；同请求非原生对
+反而被首发前 translate 改写 adaptive 保 200。**上游的 400 恰恰是直通机制
+命中的直接证据**（非原生对根本不会把参数送出去）——别把上游报错一律当失败。
+修 = named 精准路径三处（第 8 条正则 `invalid <param>: "<value>"` +
+wireKeyAliases `thinking.type→thinking` + extractNamedParam 成员判定走
+resolveWireKeys 别名扩展——判型侧与剥离侧必须同一份别名表，52ace2e02）。
+⇒ ★ **验证形态学**：合成臂 body 一律**无任何 body 标记**（无 metadata.* /
+zcode_* 工具 / X-Code-Session-Id）⇒ ClientType 只能来自 header/UA ⇒ 兜底
+层不可能代答；UA 路径（n1 zcode→glm 保真 200 / n3 MiniMaxCode→minimax
+首发 enabled→400→剥参→200）与 header 路径（n2：UA=curl 仅凭
+X-Gw-Client-Type=zcode，同批 z-ai 候选对 curl 剥参、对 zcode 保真——glm 腿
+干净差分）各有决定性臂。firehose 取证指纹必须盖住判别字段（首版 [16:80]
+切片只盖到 model 键 ⇒ 五臂串号）。
+⇒ ★ **零变化判定**：z1/z2（curl / 跨厂）与部署前基线逐字段一致（首发前
+adaptive、单次尝试、200）；**「拒绝即学习」是设计内的行为漂移源**——n3
+剥参成功后 p1 的首发从「adaptive 改写」变「整键剥除」⇒ 零变化读数必须在
+预学习态取（对照臂先行的外序纪律要写进验证脚本）；glm-5.3 候选簇抖动期
+的 503 与身份无关（同为原生臂的 n1 成功夹在两次 503 之间）；deepseek 上游
+0 候选 ⇒ 双臂如实记「未观察到」。
+⇒ ★ **部署纪律实战**：DD_REPO_ROOT 树移植语义下「部署 = 工作树快照」，
+主 checkout 常驻并行会话 WIP 时必须 `LLM_GATEWAY_ROOT=<干净 worktree>`
+钉根（本轮两次蓝绿 499a2146 / 5fbba4ef 均钉独立 worktree，版本串无
+-dirty）；二进制探针照 ㊶ 口径（`grep -c minimaxcode` 等）。
+⇒ ★ **取号与推送实战**：本地 main 的两个修复被并行会话原样推上 origin
+（patch-id 相同）⇒ worktree 变基时被正确去重 ⇒ 推送前 fetch 不只防撞号，
+还防「自己推自己的重复提交」；代码已在 origin（fdd11735f / 52ace2e02），
+本轮文档随本条提交推送。211 现跑 5fbba4ef（含两修复，c90f687b9 基）；RISK-6
+轮的 5c8d655c2 在 origin 未部署（该轮自己的真机验证清单接管）。
+⇒ ★ **挂账**：RISK-2（工具顶层非标准键）不动；映射表 4 对（RISK-6 轮已按
+触发器补第 4 对 claude-code↔claude）；deepseek 腿待上游恢复后补实测；
+学习态对非原生 minimax thinking 的「剥除 vs adaptive」语义取舍属 reqprobe
+子系统，登记待观察。
+⇒ 审计档 `docs/audit/2026-10-29-原厂直通生产验证第2轮-ClientType边界与UA线材订正.md`；
+通用式见 `LESSONS.md` **§537**。
 
-> **取号说明**：★ 本轮开工时我方上一节是 **㊵**（★ R178）⇒ ⇒ ★★ **【合并上游之前】查 `origin/main`：上游已占 **㊶** ⇒ ⇒ ⇒ 本节让到 **㊷** ⇒ ⇒ ★★★ **【【推送前】再查】★ 上游已占 ㊷ ⇒ ⇒ ⇒ ⇒ 本节再让到 **㊸** ✓****（★ LESSONS 同步：**让号四次**：§516 → **§522** → **§526** → **§531**，★ 因为上游依次取号 **§525**（★ 并预留 §522~§524）· **§526** · **§530**）⇒ ⇒ ★★★ **★ ⇒ 纪律复述：★ LESSONS 节号与 AGENTS 标记是【两套】编号 ⇒ ★ 两套都要查 ⇒ ★★ **【推送前】还要再 fetch 一次再查一次** ★★**
+## ㊺ R179 轮（2026-10-29）· 「读点的实测计划形态」（★ 「索引存在」≠「索引被用上」；★ 静态重建 SQL 是【不完整】的 ⇒ 事实源换成生产真语句；★ 用 NULL 填未知参数会【毁掉整个计划形态】；★ 「测不出来」必须是一等状态）
+
+> **取号说明**：★ 本轮开工时我方上一节是 **㊵**（★ R178）⇒ ⇒ ★★ **【合并上游之前】查 `origin/main`：上游已占 **㊶** ⇒ ⇒ ⇒ 本节让到 **㊷** ⇒ ⇒ ★★★ **【【推送前】再查】★ 上游已占 ㊷ ⇒ ⇒ ⇒ ⇒ 本节再让到 **㊺** ✓**（★ LESSONS 同步：**让号四次**：§516 → **§522** → **§526** → **§NEW**，★ 因为上游依次取号 **§525**（★ 并预留 §522~§524）· **§526** · **§530**）⇒ ⇒ ★★★ **★ ⇒ 纪律复述：★ LESSONS 节号与 AGENTS 标记是【两套】编号 ⇒ ★ 两套都要查 ⇒ ★★ **【推送前】还要再 fetch 一次再查一次** ★★**
 
 ★★ **本轮性质：★★ R178 造了一条「键与视图投影逐字同形」的表达式索引并证明它「能被用上」——
 ★★ 但那只证明了「查询写成那个 CASE 形态时能用」。本轮问的是下一个问题：
@@ -14312,7 +14540,7 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 ★★（★ 全部只改仓外副本 ⇒ ★ **门运行期零污染**）★★。
 
 ★★ **审计档**：`docs/audit/2026-10-29-R179-读点的实测计划形态.md`（10 节）；
-★★ **通用式**：`LESSONS.md` **§531**（通用式一~七）。
+★★ **通用式**：`LESSONS.md` **§538**（通用式一~七）。
 
 ★★ **★ 本轮明确没做（★ 留给下一轮，★ 别重复排查）★★**：
 ★★ ① **census 采集器修表达式键**（★ 本轮已取证：★ 本地 44 条；★ 修它要重采四环境 +
