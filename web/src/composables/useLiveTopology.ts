@@ -83,6 +83,15 @@ export interface ClientSummary {
   topModel: string
 }
 
+/** 头部汇总条的通用行（客户端/供应商/模型三块共用同一形状）。 */
+export interface DimensionSummary {
+  key: string
+  requests: number
+  success: number
+  failure: number
+  inFlight: number
+}
+
 export function useLiveTopology(opts?: { now?: () => number }) {
   const clock = opts?.now ?? (() => Date.now())
   const filters = ref<TopoFilters>({ ...DEFAULT_TOPO_FILTERS })
@@ -117,7 +126,10 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     filterOptions(filteredRequests.value as never, now(), filters.value.windowMs),
   )
 
-  /** 左面板：客户端请求摘要（按客户端聚合，最新在前）。 */
+  /** 头部汇总条（2026-10-28 汇总上移轮）：客户端/供应商/模型三块聚合。
+   *  与图、两栏共用同一过滤子集（本文件顶部的关键约束）。
+   *  ★ 不在上游截断 —— 「渲染了几行 / 总共几项」的诚实计数由展示层做，
+   *    上游截断会让真实总数永远不可见（表头宣传不存在的行的镜像问题）。 */
   const clientSummaries = computed<ClientSummary[]>(() => {
     const map = new Map<string, ClientSummary & { last: number; modelCount: Map<string, number> }>()
     for (const req of filteredRequests.value) {
@@ -146,8 +158,35 @@ export function useLiveTopology(opts?: { now?: () => number }) {
         topModel: [...modelCount.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? '',
       }))
       .sort((a, b) => b.requests - a.requests || a.client.localeCompare(b.client))
-      .slice(0, 8)
   })
+
+  /** 供应商/模型聚合：keyOf 返回空串的请求不进块（如网关侧拒掉的请求
+   *  没有供应商 —— 它在客户端块里看得到，硬塞进供应商块只会造一个假桶）。 */
+  function summarizeBy(keyOf: (req: LiveRequest) => string): DimensionSummary[] {
+    const map = new Map<string, DimensionSummary>()
+    for (const req of filteredRequests.value) {
+      const key = keyOf(req)
+      if (!key) continue
+      let entry = map.get(key)
+      if (!entry) {
+        entry = { key, requests: 0, success: 0, failure: 0, inFlight: 0 }
+        map.set(key, entry)
+      }
+      entry.requests += 1
+      if (req.status === 'success') entry.success += 1
+      if (req.status === 'failure' || req.status === 'rate_limited') entry.failure += 1
+      if (req.status === 'in_progress') entry.inFlight += 1
+    }
+    return [...map.values()].sort((a, b) => b.requests - a.requests || a.key.localeCompare(b.key))
+  }
+
+  const providerSummaries = computed<DimensionSummary[]>(() =>
+    summarizeBy((req) => (req.provider_code ?? '').trim()),
+  )
+
+  const modelSummaries = computed<DimensionSummary[]>(() =>
+    summarizeBy((req) => modelKeyOf(req as never)),
+  )
 
   /** 左面板的逐条请求（最新在前；面板内部按 50/页翻页，这里不再预截断）。 */
   const clientRequests = computed<PanelEntry[]>(() =>
@@ -380,6 +419,8 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     graph,
     options,
     clientSummaries,
+    providerSummaries,
+    modelSummaries,
     clientRequests,
     providerResponses,
     gatewayStats,
