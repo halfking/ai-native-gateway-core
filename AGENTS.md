@@ -12481,3 +12481,65 @@ ursm 仪表（仍在 ursmcheck 轨）；probe necessity 索引 93% 读放大（3
 `docs/audit/2026-10-28-R174-252-SQL日志审计轮.md`；通用式见 `LESSONS.md` **§485**
 （预算守卫只挡一种死法 / mean-max 横跨预算=薛定谔的送达 / 受锁方法只准返回值
 快照 / Once 不得覆盖注入缝 / 孤儿进程清理是止痛不是治病）。
+
+**2026-10-29 R175 · routing_analytics_7d REFRESH 降本轮（★ 成本口径换轴时必须同时换报数；★ 同一批次同样 buffer 量 30 倍墙钟差 ⇒ 差异来自环境；★ 「抬资源上限」可能早就做过且已经足够）**（goal 会话）：
+★承接 R166（迁移 910 已于 **10-27 02:57:44+08** 应用 252）的遗留项 + 拍板材料㉙(d)；
+**对生产的写入 = 0**（252 全程只读：pgss / pg_get_viewdef / EXPLAIN(ANALYZE,BUFFERS) 只读 SELECT /
+目录表查询 / pg_stat_activity 采样 / 154 与 245 的 journalctl 读取；**本轮连一个索引都没建**）。
+⇒ ★★ **① 目标的优先次序被证伪（且是反过来的）**：目标给的
+「pgss 5.2 天 4.97h / 293 calls / mean 61s」是 **R147 在 10-24 02:51 的读数**，落在
+**907 应用（10-24 23:07）之前**；本轮实查 910 应用时刻并按它切段 ⇒ **910 后段
+100 次 / 4,301s / 均值 43.0s**（窗口 **1.926** 天）；单周期实测 **routing 族 0.33h/天
+vs session 族 2.70h/天（8.2 倍）** ⇒ **单看 matrix 一族就是 5.0 倍** ⇒ **「先修 routing」
+的前提今天正好是反的**。⇒ ★★ **② 单周期分解（2026-10-29 01:00 那一轮，pgss 逐周期差分 +
+pg_stat_activity 采样）**：`routing_analytics_7d` **21.6s / read 0 / hit 64,293 / temp 0**；
+`session_client_task_matrix` **203.0s**；`session_task_stats` **122.6s**；
+`session_client_stats` 6.9s；`routing_audit_summary_7d` **0.7s**。
+★ **routing 族的 REFRESH 从磁盘读 0 块** ⇒ 按 §143.29「成本问 shared_blks_read」，
+**这一族在 I/O 轴上已是零成本**；21.6s 的墙钟**不是锁等待**（采样抓到全程
+`state=active` / `wait_event_type='-'`）⇒ ★★ **同一批次、同样 buffer 量（48,786 vs 64,293）、
+30 倍墙钟差（0.7s vs 21.6s）⇒ 墙钟差异来自环境，不来自 SQL**。
+⇒ ★★ **③ EXPLAIN 分解（910 现行形态，root hit=47,203）**：turns 腿 **31,724（67%）** ——
+扫 **75,809** 元组只留 **28,436**，**47,373 行被过滤**；★ **这 47,346 行全部是探针流量**
+（`origin_stage` ∈ 8 阶段，`origin_stage IS NULL` 的行 = 0）⇒ **窗口内 62.5% 的行是白搬的**；
+details 腿 12,521（26%，哈希 **80,705** 行而只有 ~28,436 可匹配）；hot 腿 2,958（6%）；
+Sort `quicksort` 3,550kB 内存内、HashAgg `Batches 1`、**零 temp**。
+⇒ ★★ **④ 漂移核查是同量级隐藏成本**：每次刷新后 `checkConsistency` 把7 天基准聚合
+**重算一遍** ⇒ 实测 **48,541 buffers/次** ⇒ **整条链每周期 ~96,221 buffers，核查占 50%**
+⇒ ★★ **⑤ ㉙(d) 的实测结论 = 「别再抬」**：部署态逐周期差分 **五个 REFRESH 条目
+Δtemp_blks_written 全为 0** ⇒ §109「收益未验证」的边界**被实测关闭**；
+同缓存态 A/B：session 族 8MB ⇒ 溢写 **151MB**、Sort external merge、HashAgg `Batches 4`；
+256MB ⇒ **temp=0**、quicksort 56MB、`Batches 1`；**routing 族 8/64/256MB 三档
+buffer 足迹逐字相同 ⇒ work_mem 对 routing族不是杠杆**。
+⇒ ★★★ **⑥ 本轮最值钱的新发现（一个此前无人看的轴）：`jit`** —— 252 库级 `jit=on` /
+`jit_above_cost=100000`，而 `routing_analytics_7d` 的**定义查询计划代价 193,601
+⇒ 超阈值 1.93× ⇒ 每次刷新付 91 个函数的编译代价**；★ **同 session 交错 8 轮：
+`jit=on` 中位 2,494ms vs `jit=off` 中位 1,257ms ⇒ 8/8 轮更快（1.98×，最坏一轮 5.2×）**；
+session 族 matrix 交错 5 轮：`jit=on` 最坏轮 **75,471ms** vs `jit=off` **6,401ms**
+（中位 7,185 vs 5,791）⇒ **削长尾**（★ 同一臂两轮相差 14× ⇒ 宿主抖动大于臂间差异 ⇒
+**不能承诺倍率**）；★ **两臂 buffer 足迹逐项相等 ⇒ 纯 CPU/编译时间轴，不动成本口径**。
+⇒ ★ **落地面（仓库内，未部署）**：`bg/materialized_view_refresher.go` 的 `refreshView`
+会话画像由「一个 statement_timeout」扩成**三轴分族（statement_timeout / work_mem / jit）**，
+两个族各传各的常量（`mvRefreshWorkMem`/`sessionViewsWorkMem`/`mvRefreshJIT`/`sessionViewsJIT`），
+三处 RESET 全在 `defer` + `WithoutCancel` 上；门 `bg/materialized_view_refresher_workmem_test.go`
+**改写为 R75 分族同款**（参数必须是摆设的反向判据 / RESET 精确形态 / 两族标识符必须不同 /
+**逐族**的下界不等式 / JIT 三条）；`materialized_view_refresher_session_timeout_test.go`
+的调用点判据同步放宽并**补一条反向判据**（session 调用点不得出现 routing 族常量）。
+★ **语义边界照实写**：`jit=off` **不是**严格零语义（PG 文档：JIT 浮点可能差最后一位；
+本仓 matview 有 `percentile_cont`）⇒ 但漂移核查比的是**计数**不是分位数，且固定成一种模式后
+值**稳定** ⇒ 取舍写进常量注释与门里，**没有藏进「零语义」四个字**。
+⇒ ★ **读数**：`go build ./...` ✓ / `go vet` ✓ / `bg` 包测试 ✓（含新门 13 条 +改写的 R75 门）；
+★ **本轮明确没做（留给下一轮，别重复排查）**：★ **turns 腿 62.5% 探针行**（治它要么新部分索引、
+要么探针写入分表 ⇒ **DDL / 写路径语义，需属主授权**）；★ **漂移核查的 48,541 buffers/次**
+（要么降节奏要么换独立源 ⇒ 属主决策）；★ **10.5% 窗口的双领票放大**（105/95；
+pgss 54.6 次/天 vs 名义 48）**归因未查**；★ **session 族是刷新链现在的最大头**
+（2.70h/天）⇒ **下一轮第一候选应是 session 族而不是 routing 族**；★ **252 宿主内存预算**
+（`shared_buffers` 仅 3.5GB 而工作集远超缓存 ⇒ 刷新墙钟在 2.4s↔23s 摆动 ⇒ 宿主级配置，属主面）；
+★ **`ursm_node_snapshot_min` 的 `WITH win` 族**（79/65/25 次、均值 236~257s、合计 10.7h
+DB 时间）**未展开**（另一条线）。
+⇒审计档 `docs/audit/2026-10-29-R175-routing-analytics-7d-REFRESH降本-逐周期分解与分族会话画像.md`；
+通用式见 `LESSONS.md` **§535**（8 条形态：★ 成本口径换轴必须同时换报数 /
+★ 同批次同 buffer 量 30 倍墙钟差 ⇒ 差异来自环境 / ★ 累计计数器会被淘汰静默清零 ⇒ 必须查
+`stats_since` / ★ 搬视图定义查询做 A/B 必须搬整个 WHERE / ★ 「抬上限」可能早已足够 ⇒ 该钉下界
+而不是再抬 / ★ JIT 值不值得取决于「计划代价/阈值」比值 / ★ 协调正常 ≠ 节奏正常 /
+★ 「先修 X」的前提每轮要重排）。
