@@ -293,6 +293,11 @@ def compared_cols(sql: str) -> list[str]:
 
 # ── 主流程 ──────────────────────────────────────────────────────────────
 
+def die(msg: str) -> None:
+    print(f"ERROR: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--statements", required=True)
@@ -301,6 +306,9 @@ def main() -> int:
     ap.add_argument("--out-map", required=True)
     args = ap.parse_args()
 
+    # ★★ 空输入 ⇒ 判据失效 ⇒ ★ 直接失败（★ 掏空法门会真的跑这个读方 ⇒ ★ 必须红）
+    if os.path.getsize(args.statements) == 0:
+        die("★ 生产语句台账是空的 ⇒ ⇒ 事实源没了 ⇒ ⇒ 判据失效 ⇒ ⇒ 退出码非 0")
     source_shapes = load_source_shapes(args.source_shapes_json)
 
     shapes = []
@@ -378,6 +386,8 @@ def main() -> int:
                 r["rows"], r["source_shape_id"], r["source"], r["map_reason"], r["candidates"], r["filter_cols"],
             ]) + "\n")
 
+    if not map_rows:
+        die("★ 没解析出任何生产语句 ⇒ ⇒ 事实源是空的 ⇒ ⇒ 退出码非 0")
     matched = sum(1 for r in map_rows if r["source_shape_id"])
     print(f"★ 生产语句 = {len(map_rows)} 条；映射到源码形态 = {matched} 条")
     return 0

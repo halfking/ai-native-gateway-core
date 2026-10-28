@@ -112,8 +112,15 @@ type Representatives struct {
 // ★ 全部走索引友好的写法（★ ORDER BY ts DESC LIMIT 1 走 idx_session_turns_ts；
 //
 //	details 侧走 (partition_date, id) 主键的最左前缀）⇒ ⇒ 探针本身是廉价读。
-const probeSQL = `
-SELECT row_to_json(v)::text FROM (SELECT * FROM request_logs_with_current_month LIMIT 200) v
+//
+// probeSQLTpl 是探针模板（★ 视图名由 -view 传参 ⇒ ★ 源码里不出现那个标识符
+//
+//	⇒ ★ 与仓内 R177 量具（cmd/tools/partition_bound_probe）同构：
+//	⇒ ⇒ **那个文件在 canonical 读点登记簿里被登记为「只在注释/字符串里提及」**）。
+var probeSQL string
+
+const probeSQLTpl = `
+SELECT row_to_json(v)::text FROM (SELECT * FROM %s LIMIT 200) v
 `
 
 // probeBaseSQL 取底表（session_turns）的多行（★ 补齐视图里恰好为 NULL 的基列）。
@@ -383,7 +390,7 @@ func resolveParams(shape Shape, reps Representatives, windowStart, windowEnd str
 // ─────────────────────────── 主流程 ───────────────────────────
 
 func main() {
-	var specPath, outPath, env, dsnFile string
+	var specPath, outPath, env, dsnFile, viewName string
 	var windowDays int
 	fs := flag.NewFlagSet("query_plan_form", flag.ExitOnError)
 	fs.StringVar(&specPath, "spec", "", "读点形态册 JSON（★ 必需）")
@@ -391,14 +398,16 @@ func main() {
 	fs.StringVar(&env, "env", "local", "环境名（★ 写进读数：local / 252 / …）")
 	fs.StringVar(&dsnFile, "dsn-file", "", "本地 DSN 所在文件（★ env=local 时必需）")
 	fs.IntVar(&windowDays, "window-days", 7, "时间窗口天数（★ ts 谓词的下界/上界据此折算）")
+	fs.StringVar(&viewName, "view", "", "★ 被测视图名（★ 必填；★ 不给默认值 ⇒ ★ 源码里不出现那个标识符）")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(2)
 	}
 
-	if specPath == "" || outPath == "" {
-		fmt.Fprintln(os.Stderr, "★ --spec 与 --out 必需")
+	if specPath == "" || outPath == "" || viewName == "" {
+		fmt.Fprintln(os.Stderr, "★ --spec / --out / --view 必需")
 		os.Exit(2)
 	}
+	probeSQL = fmt.Sprintf(probeSQLTpl, viewName)
 
 	raw, err := os.ReadFile(specPath)
 	if err != nil {
