@@ -383,3 +383,57 @@ func TestSerializeResponses_NoEmptyFileData(t *testing.T) {
 		t.Errorf("text block lost: %s", out)
 	}
 }
+
+// TestAnthropic_MediaURIRef_HonestlyRejected pins the 2026-10-27 critical
+// audit round: media references that Anthropic cannot represent must be
+// rejected at the boundary (unsupported_modality), never emitted verbatim
+// onto the Anthropic wire where they 400 and poison the credential's error
+// stats. Two carriers: the URI-reference audio (12h-audit round reparses it
+// as a typed audio block) and the OpenAI video_url block (R148 keeps its
+// wire type + RawContent — the raw default branch would otherwise re-emit
+// it verbatim; the legacy converter domains/transformation/anthropic has
+// always listed video_url as unsupported, this aligns the IR path).
+func TestAnthropic_MediaURIRef_HonestlyRejected(t *testing.T) {
+	// Build the audio variant through the real Gemini inbound chain so the
+	// block shape is what production produces (synthetic OpenAI wire →
+	// ParseOpenAI re-parse).
+	irReq, err := ParseGemini([]byte(`{
+		"contents": [{
+			"role": "user",
+			"parts": [{"fileData": {"mimeType": "audio/wav", "fileUri": "https://example.com/a.wav"}}]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("ParseGemini: %v", err)
+	}
+	synthetic, err := SerializeOpenAI(irReq)
+	if err != nil {
+		t.Fatalf("SerializeOpenAI: %v", err)
+	}
+	reparsed, err := ParseOpenAI(synthetic)
+	if err != nil {
+		t.Fatalf("ParseOpenAI: %v", err)
+	}
+	if _, err := SerializeAnthropic(reparsed); err == nil {
+		t.Fatal("URI-reference audio routed to an Anthropic upstream must fail with unsupported_modality, got nil error")
+	} else if !strings.Contains(err.Error(), "unsupported_modality") {
+		t.Fatalf("expected unsupported_modality rejection, got: %v", err)
+	}
+
+	// video_url variant: R148's parse keeps Type="video_url" + RawContent.
+	videoReq, err := ParseOpenAI([]byte(`{
+		"model": "m",
+		"messages": [{"role": "user", "content": [
+			{"type": "text", "text": "watch"},
+			{"type": "video_url", "video_url": {"url": "https://example.com/v.mp4", "mime_type": "video/mp4"}}
+		]}]
+	}`))
+	if err != nil {
+		t.Fatalf("ParseOpenAI (video): %v", err)
+	}
+	if _, err := SerializeAnthropic(videoReq); err == nil {
+		t.Fatal("video_url block routed to an Anthropic upstream must fail with unsupported_modality, got nil error")
+	} else if !strings.Contains(err.Error(), "unsupported_modality") {
+		t.Fatalf("expected unsupported_modality rejection, got: %v", err)
+	}
+}

@@ -1404,6 +1404,32 @@
 > ⇒ ★ 新增回归测试 3 条（退化输入三连 ⇒ 线格式只剩合法块；Responses 空 file_data；
 > ValidateAndFix 完整路径）。读数：`go build` ✓ / ir+auth+provider+attachments+streaming
 > 全绿。⇒ 审计档 `docs/audit/2026-10-27-Gemini多模态审计复审轮.md`；通用式见 `LESSONS.md` **§438**（5 条）。
+> **2026-10-28 Gemini 批判审计三轮（真机实证补全 + 跨会话词表分叉根修）**（会话
+> `mvs_dc5e181989fc4539805f343f39be2b5d`）：★ 批判口径 = 把前两轮每条「已完成」按
+> 【只读代码 / 单测绿 / 真机实证】三档标级 ⇒ 三个低档声明全部补上真机证据：
+> **附件真实落盘**（`/attachments/2026/10/…/<sha256>.png`）、**真实访问日志
+> `query='key=REDACTED'`**（明文 0 次）、**流式 200 + 标准 Gemini SSE 帧**
+> （★ 首测失败是我自己的 mock 缺 `data: [DONE]`——网关 `eof_without_done` 判定正确；
+> ★ **量具本身没被审计过**是真因）。
+> ⇒ ★★★★ **真机抓到跨会话 P0：`openai-chat` 词表分叉断掉 Gemini→原生上游** ——
+> `handler.go:4428` 用 `ir.DetectProtocol` 填 ClientProtocol（OpenAI Chat 线体 ⇒
+> **`openai-chat`**，Gemini 入站合成体同），而 executor_gemini/ollama 的 client-wire
+> 白名单只认 legacy 词 **`openai-completions`**（IR==nil 时代的兜底值）⇒ 生产必 501
+> `client protocol "openai-chat" not yet wired`；**两个执行器的既有测试全部用 legacy
+> 词写 ⇒ 测试全绿而生产断**（catalog 别名表与 connection_registry 早把两词当同义词
+> ——三份词表，executor 用了窄的那份）。修法：`canonicalInboundWire()` 四处接线
+> （gemini finalize 门+clientWire、ollama 同）+ 三条**用生产词表**的参数化测试 +
+> 真机复验：Gemini 入站 fileData 音频/视频 → **原生上游收到原生 `fileData{fileUri,
+> mimeType}` 形态**（这也是对并行会话「12h 审计轮」MediaSource 修复的**首次端到端
+> 实证**，此前只有单测）；原生上游流式 ✓。
+> ⇒ ★★ 另修 P2：`validateAnthropicMedia` 拒绝表补 `video_url`（R148 让 parse_openai
+> 保 Type+RawContent 后，raw default 分支会把 video_url 原样发 Anthropic 线 ⇒ 上游
+> 400 污染凭据记账；旧转换器 chat_to_anthropic.go:445 一直拒它——两份实现口径分叉）。
+> ⇒ ★ 读数：executors 全包 44.7s ✓ / ir ✓ / streaming 全包 156.6s ✓ / build ✓ /
+> 密钥扫描 0 BLOCK / 守卫七包 ✓。★ 遗留（审计档 §六）：本地库 `session_turns_hot.host`
+> 列缺失吃 V2 写入；Responses 侧 URI-only 音频跳过无损失上报；`alt=sse` 缺省时形态
+> 与厂方 JSON 数组方言不一致（既有行为）。
+> ⇒ 审计档 `docs/audit/2026-10-28-Gemini批判审计三轮.md`；通用式见 `LESSONS.md` **§521**（4 条：声明逐条对实证 / 测试词表≠生产词表=恒绿假象 / 注释里的假设要当场证伪 / 并行修复不免除验证）。
 > **2026-10-27 Gemini 原生出站 executor 轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
 > ★ 承接 §436 同一审计档的**子项②**（§433 清单的最后一项可做项）。
 > ⇒ ★★★★ **本轮最值钱的一处定性：缺口不是「功能没做」，是「死配置」** ——
