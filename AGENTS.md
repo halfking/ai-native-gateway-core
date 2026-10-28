@@ -12385,9 +12385,16 @@ index b953a6f03..555ef83c4 100644
   `ClientType` → 头/UA → body 标记，**仅弱名（空/unknown）才采信 body 标记**
   （`metadata.zcode_version` 等）⇒ 强名冲突（头说 cursor、body 带 zcode 标记）
   **保守判非原生对**。
-- ★★★ **变异台 5 臂全检出**（注入→跑→还原→md5 逐字一致）：
+- ★★★ **完成审计时才发现的一处补漏（legacy 路径）**：`finalizeOpenAIUpstreamBodyNative`
+  的 **legacy 分支**（`e.IR == nil` ⇒ `LLM_GATEWAY_IR_CONVERTER=false` 的紧急回退
+  形态）会调 `applyInlineValidation` ⇒ 它把 body **整体经 IR 往返一次**
+  ⇒ Extensions **第二次**被方言裁剪 ⇒ ★★ **只修 IR 路径 = 原生对保证只在半条路上
+  成立** ⇒ 修法：`applyInlineValidation` 增 `nativePair` 参数并盖同一标志
+  ⇒ 新增测试 + **M6 变异臂检出**。
+- ★★★ **变异台 6 臂全检出**（注入→跑→还原→md5 逐字一致）：
   M1 映射表恒 false / M2 IR `NativePassthrough` 分支失效 / M3 尾段 paramguard
-  跳过被摘 / M4 白名单 strip 跳过被摘 / M5 学习式预剥离跳过被摘。
+  跳过被摘 / M4 白名单 strip 跳过被摘 / M5 学习式预剥离跳过被摘 /
+  M6 legacy 路径盖章被摘。
   ⇒ ★★ **M3 首跑未被检出**：靶点只覆盖了请求体准备、没覆盖**尾段**
   （IR 路径不走前者）⇒ ★★★ **通用式：★ 变异臂首跑不红要先问【靶点】再问【门】**
   ⇒ 补断言（客户端带显式 `tool_choice`）后 M3 检出
@@ -12407,4 +12414,4 @@ index b953a6f03..555ef83c4 100644
   ⑤ **未在 211 生产跑端到端**（本轮读数全来自仓内单测 + 假上游夹具）
  ⇒ 生产验证需部署后用 zcode 实流量确认。
 ⇒ 审计档 `docs/audit/2026-10-28-原厂工具与原厂模型直连全参数直通轮.md`（§1~§8，
-  含「全参数透传 vs 出错回退」两条独立证据链与 5 臂变异台）。
+  含「全参数透传 vs 出错回退」两条独立证据链与 6 臂变异台）。
