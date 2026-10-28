@@ -52,6 +52,7 @@ func TestWriteModalityMismatchError_AnthropicEnvelope(t *testing.T) {
 		Type  string `json:"type"`
 		Error struct {
 			Type    string `json:"type"`
+			Code    string `json:"code"`
 			Message string `json:"message"`
 			Request string `json:"request_id"`
 			Detail  struct {
@@ -72,6 +73,9 @@ func TestWriteModalityMismatchError_AnthropicEnvelope(t *testing.T) {
 		t.Errorf("error.type = %q, want invalid_request_error (NOT overloaded_error: "+
 			"that tells an auto-retrying SDK to retry a request that can never succeed)",
 			body.Error.Type)
+	}
+	if body.Error.Code != "modality_mismatch" {
+		t.Errorf("error.code = %q, want modality_mismatch", body.Error.Code)
 	}
 	if body.Error.Request != "req-anthropic" {
 		t.Errorf("request_id = %q, want req-anthropic", body.Error.Request)

@@ -9355,7 +9355,14 @@ func (h *ChatHandler) writeModalityMismatchError(
 		json.NewEncoder(w).Encode(map[string]any{
 			"type": "error",
 			"error": map[string]any{
-				"type":              anthropicErrorType("server_error", "modality_mismatch"),
+				"type": anthropicErrorType("server_error", "modality_mismatch"),
+				// The Anthropic SDK's error object officially carries
+				// type + message only, but "code" is additive and is what
+				// every OpenAI-shaped client in this repo already keys off
+				// (the diagnostics UI reads error.code). Leaving it out on
+				// this one path would make the same condition look
+				// different depending on which endpoint the client used.
+				"code":              "modality_mismatch",
 				"message":           msg,
 				"request_id":        requestID,
 				"modality_mismatch": detail,

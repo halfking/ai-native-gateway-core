@@ -75,6 +75,19 @@ func detectRequestModality(bodyBytes []byte) string {
 	var body struct {
 		Messages []json.RawMessage `json:"messages"`
 		Contents []json.RawMessage `json:"contents"` // Gemini native
+		// ★2026-10-28: OpenAI Responses API 的 input[]。
+		//
+		// 此前检测器只认 messages[] 与 Gemini 的 contents[]，于是
+		// /v1/responses 的带图请求被判为 **text** ⇒ 模态门对这条路径
+		// 从不生效 ⇒ 带图请求原样发给上游，由上游回 400
+		// （生产实测：glm-5.3-flash 收到 image 块，上游智谱回 400，
+		//   网关把它记成 provider_unavailable 503「All providers unavailable」
+		//   —— 把「上游不收这个模态」说成了「所有供应商都不可用」，
+		//   同样是误导，而且比模态不匹配更难排查）。
+		//
+		// input[] 的条目结构与 messages[] 相同（role + content），
+		// 所以复用同一条遍历路径。
+		Input []json.RawMessage `json:"input"`
 	}
 	if err := json.Unmarshal(bodyBytes, &body); err != nil {
 		return modalityText
@@ -84,6 +97,23 @@ func detectRequestModality(bodyBytes []byte) string {
 
 	// Walk each top-level message (OpenAI / Anthropic shape).
 	for _, raw := range body.Messages {
+		var msg struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			continue
+		}
+		if len(msg.Content) == 0 {
+			continue
+		}
+		walkContent(msg.Content, &hasVision, &hasAudio, &hasVideo)
+	}
+
+	// Walk each Responses API input[] entry. Same shape as messages[]:
+	// {role, content}. A bare string entry (the "input": "hello" shorthand)
+	// carries no media and is skipped by the content check.
+	for _, raw := range body.Input {
 		var msg struct {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
