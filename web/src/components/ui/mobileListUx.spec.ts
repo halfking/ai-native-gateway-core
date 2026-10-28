@@ -148,6 +148,14 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
   //   与 QualityCorrelationsView（186→223）、UserProfileView（285/308→286/309）同类。
   ['src/views/tenant/MaaSAccountView.vue', 283, '账号内嵌表，无账号详情页'],
+  // ⚠ 行号锚点：2026-10-28 **新登记**（此前本视图不在表里 ⇒ 不是行号漂移）。
+  //   起因：`eb6f6582d`（分支审计轮）为修「compact-card 覆盖率基线红」，
+  //   给本视图接上了 <ResponsiveDataView>（compact 出卡片、桌面 <table> 逐字保留）。
+  //   那个调用点只带 `#table` 插槽 ⇒ compact 无入口 ⇒ 本门要求登记，
+  //   而**那次改动漏了登记** ⇒ ⇒ 本门在合并后判红（合并带进来的红）。
+  //   归属 NON_NAVIGABLE：本文件里 router.push / router.replace 出现 0 次，
+  //   路由表也只有 `/tenant/bills`（无账单详情页）⇒ 属「本就没有详情目的地」。
+  ['src/views/tenant/MaaSBillsView.vue', 125, '月账单内嵌表（title-key=period_ym）：/tenant/bills 无账单详情页，本视图无二级目的地'],
   // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 354 改为 355。
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
