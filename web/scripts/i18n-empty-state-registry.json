@@ -22,28 +22,101 @@
     "dashboard.noData"
   ],
   "keys": [
-    { "key": "common.empty.noResult", "kind": "NoResult" },
-    { "key": "credentialMonitor.chart.emptyFiltered", "kind": "Filtered" },
-    { "key": "dashboard.board.emptyNoResultProviders", "kind": "NoResult" },
-    { "key": "dashboard.board.emptyNoResultDist", "kind": "NoResult" },
-    { "key": "dashboard.board.emptyNoResultDrill", "kind": "NoResult" },
-    { "key": "dashboard.board.emptyNoResultModelDist", "kind": "NoResult" },
-    { "key": "dashboard.board.emptyNoResultModelTrend", "kind": "NoResult" },
-    { "key": "dashboard.board.emptyNoResultTrend", "kind": "NoResult" },
-    { "key": "dashboard.board.emptyNoResultDiscovery", "kind": "NoResult" },
-    { "key": "dashboard.board.emptyNoResultProbe", "kind": "NoResult" },
-    { "key": "dashboard.providerUsage.emptyNoResult", "kind": "NoResult" },
-    { "key": "dashboard.charts.emptyNoResultHealthGrade", "kind": "NoResult" },
-    { "key": "dashboard.charts.emptyNoResultSessionTrend", "kind": "NoResult" },
-    { "key": "sessions.stats.emptyNoResultTopClients", "kind": "NoResult" },
-    { "key": "sessions.stats.emptyNoResultTopTasks", "kind": "NoResult" },
-    { "key": "sessions.stats.emptyFailedErrorSummary", "kind": "Failed" },
-    { "key": "sessions.userProfile.emptyFirstUseTopTasks", "kind": "FirstUse" },
-    { "key": "sessions.userProfile.emptyFirstUseTopEndUsers", "kind": "FirstUse" },
-    { "key": "sessions.userProfile.emptyFirstUseRecentSessions", "kind": "FirstUse" },
-    { "key": "ops.vibecoding.emptyFirstUseProjects", "kind": "FirstUse" },
-    { "key": "ops.vibecoding.emptyFilteredSessions", "kind": "Filtered" },
-    { "key": "ops.vibecoding.emptyFilteredReviews", "kind": "Filtered" },
-    { "key": "dataLifecycle.blob.emptyNoResult", "kind": "NoResult" }
+    {
+      "key": "common.empty.noResult",
+      "kind": "NoResult"
+    },
+    {
+      "key": "credentialMonitor.chart.emptyFiltered",
+      "kind": "Filtered"
+    },
+    {
+      "key": "dashboard.board.emptyNoResultProviders",
+      "kind": "NoResult"
+    },
+    {
+      "key": "dashboard.board.emptyNoResultDist",
+      "kind": "NoResult"
+    },
+    {
+      "key": "dashboard.board.emptyNoResultDrill",
+      "kind": "NoResult"
+    },
+    {
+      "key": "dashboard.board.emptyNoResultModelDist",
+      "kind": "NoResult"
+    },
+    {
+      "key": "dashboard.board.emptyNoResultModelTrend",
+      "kind": "NoResult"
+    },
+    {
+      "key": "dashboard.board.emptyNoResultTrend",
+      "kind": "NoResult"
+    },
+    {
+      "key": "dashboard.board.emptyNoResultDiscovery",
+      "kind": "NoResult"
+    },
+    {
+      "key": "dashboard.board.emptyNoResultProbe",
+      "kind": "NoResult"
+    },
+    {
+      "key": "dashboard.providerUsage.emptyNoResult",
+      "kind": "NoResult"
+    },
+    {
+      "key": "dashboard.charts.emptyNoResultHealthGrade",
+      "kind": "NoResult"
+    },
+    {
+      "key": "dashboard.charts.emptyNoResultSessionTrend",
+      "kind": "NoResult"
+    },
+    {
+      "key": "sessions.stats.emptyNoResultTopClients",
+      "kind": "NoResult"
+    },
+    {
+      "key": "sessions.stats.emptyNoResultTopTasks",
+      "kind": "NoResult"
+    },
+    {
+      "key": "sessions.stats.emptyFailedErrorSummary",
+      "kind": "Failed"
+    },
+    {
+      "key": "sessions.userProfile.emptyFirstUseTopTasks",
+      "kind": "FirstUse"
+    },
+    {
+      "key": "sessions.userProfile.emptyFirstUseTopEndUsers",
+      "kind": "FirstUse"
+    },
+    {
+      "key": "sessions.userProfile.emptyFirstUseRecentSessions",
+      "kind": "FirstUse"
+    },
+    {
+      "key": "ops.vibecoding.emptyFirstUseProjects",
+      "kind": "FirstUse"
+    },
+    {
+      "key": "ops.vibecoding.emptyFilteredSessions",
+      "kind": "Filtered"
+    },
+    {
+      "key": "ops.vibecoding.emptyFilteredReviews",
+      "kind": "Filtered"
+    },
+    {
+      "key": "dataLifecycle.blob.emptyNoResult",
+      "kind": "NoResult"
+    },
+    {
+      "key": "liveTopology.stats.emptyNoResultWindow",
+      "kind": "NoResult"
+    }
   ]
 }

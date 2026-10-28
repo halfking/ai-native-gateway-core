@@ -1,0 +1,790 @@
+<script setup lang="ts">
+// StatsPanel.vue — 头部区间统计面板（2026-10-28 头部统计轮）
+//
+// owner 口径：所有统计放页面上部、可折叠展开；左下统计栏（TodaySummaryRail）
+// 同轮退役，供应商/模型明细与点行联动过滤在这里延续。
+//
+// 区间口径（必须对用户说清，不许混）：
+//   · 当天 = stats_usage_daily 日桶（providers-today / models-today 既有口径，
+//     rollup 每小时重建 ⇒ 水位滞后 ≤1h，口径行显式展示）；
+//   · 5 分钟 / 1 小时 = 同一端点 ?window= 直查 request_logs（实时、无 rollup
+//     滞后）。★ 绝不从实时流（SSE）聚合短窗口：Redis 快照每泳道只留
+//     LiveStreamLaneVisibleLimit=100 条，高峰期聚合出的「1 小时」系统性偏低
+//     —— 把低估说成统计是本仓反复吃过的亏。
+//
+// 面板结构：
+//   · 总量行（请求数/成功率/输入/输出/缓存/失败）**永远可见** —— 折叠只收
+//     明细两组；把总账藏起来，面板就失去了「有地方显示所有请求数」的意义。
+//   · 口径行以**响应自己的 window 字段**为准（数据说自己是什么口径），
+//     不以当前选中的区间为准 —— 切换瞬间数据未到时不会把旧数据标成新口径。
+//   · 明细两组与图、左右面板收敛到同一过滤子集（点行联动过滤）。
+
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { CaretRight } from '@element-plus/icons-vue'
+import {
+  getProvidersToday,
+  getTopologyModelsToday,
+  type TopologyModelsToday,
+  type TopologyProvidersToday,
+} from '../../api/topology'
+
+const props = defineProps<{
+  /** 当前过滤的供应商 code（空 = 不过滤）。面板与图收敛到同一子集。 */
+  activeProvider?: string
+  /** 当前过滤的模型 canonical 名（空 = 不过滤）。 */
+  activeModel?: string
+}>()
+
+const emit = defineEmits<{
+  (e: 'select-provider', code: string): void
+  (e: 'select-model', model: string): void
+}>()
+
+const { t } = useI18n()
+
+type StatsInterval = '5m' | '1h' | 'day'
+
+const interval = ref<StatsInterval>('day')
+/** 折叠只收明细两组；总量行常驻（见文件头）。 */
+const collapsed = ref(false)
+
+const providersData = ref<TopologyProvidersToday | null>(null)
+const modelsData = ref<TopologyModelsToday | null>(null)
+const providersFailed = ref(false)
+const modelsFailed = ref(false)
+let timer: number | null = null
+let controller: AbortController | null = null
+
+async function load() {
+  controller?.abort()
+  controller = new AbortController()
+  const win = interval.value === 'day' ? undefined : interval.value
+  // 两组独立加载：一组失败/降级不拖垮另一组（allSettled 语义）。
+  // day 区间才带 ?by=provider 交叉展开（窗口口径后端不提供）。
+  const [providersRes, modelsRes] = await Promise.allSettled([
+    getProvidersToday({ signal: controller.signal, window: win }),
+    getTopologyModelsToday({ signal: controller.signal, byProvider: !win, window: win }),
+  ])
+  if (providersRes.status === 'fulfilled') {
+    providersData.value = providersRes.value
+    providersFailed.value = false
+  } else if ((providersRes.reason as Error)?.name !== 'AbortError') {
+    providersFailed.value = true
+  }
+  if (modelsRes.status === 'fulfilled') {
+    modelsData.value = modelsRes.value
+    modelsFailed.value = false
+  } else if ((modelsRes.reason as Error)?.name !== 'AbortError') {
+    modelsFailed.value = true
+  }
+}
+
+/** 短窗口 30s、日桶 60s（日桶本身每小时才重建，更快轮询是假动作）。 */
+const pollMs = computed(() => (interval.value === 'day' ? 60_000 : 30_000))
+
+function startTimer() {
+  if (timer) window.clearInterval(timer)
+  timer = window.setInterval(() => void load(), pollMs.value)
+}
+
+watch(interval, () => {
+  void load()
+  startTimer()
+})
+
+onMounted(() => {
+  void load()
+  startTimer()
+})
+
+onUnmounted(() => {
+  if (timer) window.clearInterval(timer)
+  controller?.abort()
+})
+
+// ── 口径行：以响应自己的 window 字段为准（数据说自己是什么口径）────────
+const dataWindow = computed(() => providersData.value?.window ?? modelsData.value?.window ?? '')
+const isDayData = computed(() => !dataWindow.value)
+
+const watermark = computed(() => {
+  if (!isDayData.value) return ''
+  const raw = providersData.value?.source_high_watermark ?? modelsData.value?.source_high_watermark
+  if (!raw) return ''
+  const at = Date.parse(raw)
+  return Number.isFinite(at) ? new Date(at).toLocaleTimeString() : ''
+})
+
+const dayUtc = computed(() =>
+  isDayData.value ? (providersData.value?.day_utc ?? modelsData.value?.day_utc ?? '') : '',
+)
+
+const intervalText = computed(() =>
+  dataWindow.value === '1h' ? t('liveTopology.stats.interval1h') : t('liveTopology.stats.interval5m'),
+)
+
+const noteText = computed(() => {
+  if (isDayData.value) {
+    if (!dayUtc.value) return ''
+    const base = t('liveTopology.rail.dayUtc', { day: dayUtc.value })
+    return watermark.value ? `${base} · ${t('liveTopology.rail.watermark', { time: watermark.value })}` : base
+  }
+  return t('liveTopology.stats.realtimeNote', { window: intervalText.value })
+})
+
+/** 空态文案：day 与短窗口分开说（点名缺的是什么、哪个区间）。 */
+const emptyText = computed(() =>
+  isDayData.value ? t('liveTopology.rail.empty') : t('liveTopology.stats.emptyNoResultWindow', { window: intervalText.value }),
+)
+
+// ── 总量行（常驻）───────────────────────────────────────────────────
+// 总账取 provider 维度聚合的 totals（含 provider_id=0 未知桶 —— 客户端侧
+// 被拒/未归因的流量不丢，只标未知；两口径的 handler 都算这份 totals）。
+const totals = computed(() => providersData.value?.totals ?? null)
+
+/** 失败 = failure ∪ rate_limited —— 与页面其它失败口径一致
+ *  （SummaryHeader 的 failure 同样把 rate_limited 并进来）。 */
+const failureCount = computed(() => (totals.value ? totals.value.failure + totals.value.rate_limited : 0))
+
+const successRateText = computed(() => {
+  const v = totals.value
+  if (!v || !v.requests) return '—'
+  return `${((v.success / v.requests) * 100).toFixed(1)}%`
+})
+
+const providersUnavailable = computed(() => providersFailed.value || providersData.value?.degraded === true)
+const modelsUnavailable = computed(() => modelsFailed.value || modelsData.value?.degraded === true)
+
+/** 总量行的降级文案：day 日桶未初始化与「服务不可用」是两句话。 */
+const totalsDownText = computed(() =>
+  providersFailed.value || !isDayData.value
+    ? t('liveTopology.rail.unavailable')
+    : t('liveTopology.rail.degraded'),
+)
+
+// ── 明细两组（折叠目标）─────────────────────────────────────────────
+// 默认：供应商组展开（沿袭退役栏的既有行为），模型组收起。
+const groupOpen = ref({ providers: true, models: false })
+
+function toggleGroup(key: 'providers' | 'models') {
+  groupOpen.value = { ...groupOpen.value, [key]: !groupOpen.value[key] }
+}
+
+const providerItems = computed(() => {
+  const list = providersData.value?.items ?? []
+  const filtered = props.activeProvider
+    ? list.filter((i) => i.catalog_code === props.activeProvider || `cred:${i.provider_id}` === props.activeProvider)
+    : list
+  return filtered.slice(0, 14)
+})
+
+const modelItems = computed(() => {
+  const list = modelsData.value?.items ?? []
+  const filtered = props.activeModel ? list.filter((i) => modelName(i) === props.activeModel) : list
+  return filtered.slice(0, 14)
+})
+
+/** 模型行显示名：canonical 优先、raw 兜底（与拓扑图 modelKeyOf 同一口径）。 */
+function modelName(item: { canonical_name?: string; raw_model_name?: string }): string {
+  return (item.canonical_name ?? '').trim() || (item.raw_model_name ?? '').trim() || '—'
+}
+
+// ── 模型行内供应商展开（day 区间 ?by=provider 交叉展开）──────────────
+// 展开态按模型行的 key 记（轮询重载后保持展开，不闪回）。
+const expandedModels = ref(new Set<string>())
+
+function modelRowKey(item: { canonical_id?: number; raw_model_name?: string }): string {
+  return String(item.canonical_id || item.raw_model_name || '')
+}
+
+function toggleModelProviders(item: { canonical_id?: number; raw_model_name?: string }) {
+  const key = modelRowKey(item)
+  const next = new Set(expandedModels.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  expandedModels.value = next
+}
+
+function modelProvidersExpanded(item: { canonical_id?: number; raw_model_name?: string }): boolean {
+  return expandedModels.value.has(modelRowKey(item))
+}
+
+/** 子行供应商显示名：display_name → catalog_code → 未知桶。 */
+function providerName(item: { display_name?: string; catalog_code?: string }): string {
+  return (
+    (item.display_name ?? '').trim() ||
+    (item.catalog_code ?? '').trim() ||
+    t('liveTopology.rail.unknownProvider')
+  )
+}
+
+const providerTotals = computed(() => {
+  const raw = providersData.value?.totals
+  if (!raw) return null
+  if (!props.activeProvider) return raw
+  const sum = providerItems.value.reduce(
+    (acc, i) => ({
+      requests: acc.requests + i.requests,
+      success: acc.success + i.success,
+      failure: acc.failure + i.failure,
+      total_tokens: acc.total_tokens + i.total_tokens,
+      cache_read_tokens: (acc.cache_read_tokens ?? 0) + i.cache_read_tokens,
+      cache_write_tokens: (acc.cache_write_tokens ?? 0) + i.cache_write_tokens,
+      cost_usd: acc.cost_usd + i.cost_usd,
+    }),
+    { requests: 0, success: 0, failure: 0, total_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 0 },
+  )
+  return { ...sum } as typeof raw
+})
+
+const modelTotals = computed(() => {
+  const list = modelsData.value?.items ?? []
+  const filtered = props.activeModel ? list.filter((i) => modelName(i) === props.activeModel) : list
+  return filtered.reduce(
+    (acc, i) => ({
+      requests: acc.requests + i.requests,
+      total_tokens: acc.total_tokens + i.total_tokens,
+      cache_read_tokens: acc.cache_read_tokens + i.cache_read_tokens,
+      cache_write_tokens: acc.cache_write_tokens + i.cache_write_tokens,
+    }),
+    { requests: 0, total_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 },
+  )
+})
+
+function compactNumber(value: number): string {
+  if (!Number.isFinite(value)) return '—'
+  if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`
+  if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`
+  if (value >= 1e3) return `${(value / 1e3).toFixed(1)}K`
+  return String(value)
+}
+
+/** token 量。缺省返回 `—`，不带单位：拼成「— tok」等于把「没有数据」
+ *  说成一个零值，违反本仓的假零禁令。 */
+function tokens(value: number): string {
+  const n = compactNumber(value)
+  return n === '—' ? n : `${n} tok`
+}
+
+/** 缓存量 = cache_read + cache_write（命中 + 写入都是缓存层的量）。 */
+function cacheSum(item: { cache_read_tokens?: number; cache_write_tokens?: number }): number {
+  return (item.cache_read_tokens ?? 0) + (item.cache_write_tokens ?? 0)
+}
+
+function successRate(item: { success?: number; requests: number }): string {
+  if (!item.requests) return '—'
+  return `${(((item.success ?? 0) / item.requests) * 100).toFixed(1)}%`
+}
+</script>
+
+<template>
+  <section class="stats" data-testid="stats-panel">
+    <header class="stats__bar">
+      <button
+        type="button"
+        class="stats__toggle"
+        :aria-expanded="!collapsed"
+        :aria-label="t(collapsed ? 'liveTopology.stats.expand' : 'liveTopology.stats.collapse')"
+        data-testid="stats-toggle"
+        @click="collapsed = !collapsed"
+      >
+        <CaretRight class="stats__caret" :class="{ 'is-open': !collapsed }" aria-hidden="true" />
+        <span class="stats__title">{{ t('liveTopology.stats.title') }}</span>
+      </button>
+
+      <select
+        v-model="interval"
+        class="stats__interval"
+        :aria-label="t('liveTopology.stats.intervalLabel')"
+        data-testid="stats-interval"
+      >
+        <option value="5m">{{ t('liveTopology.stats.interval5m') }}</option>
+        <option value="1h">{{ t('liveTopology.stats.interval1h') }}</option>
+        <option value="day">{{ t('liveTopology.stats.intervalDay') }}</option>
+      </select>
+
+      <!-- 总量行常驻（折叠也可见）：请求数 / 成功率 / 输入 / 输出 / 缓存 / 失败 -->
+      <div v-if="providersUnavailable" class="stats__totals stats__totals--down" data-testid="stats-totals-down">
+        {{ totalsDownText }}
+      </div>
+      <div v-else-if="totals" class="stats__totals" data-testid="stats-totals">
+        <span class="stats__metric">
+          <i>{{ t('liveTopology.stats.requests') }}</i>
+          <b>{{ compactNumber(totals.requests) }}</b>
+        </span>
+        <span class="stats__metric">
+          <i>{{ t('liveTopology.stats.successRate') }}</i>
+          <b>{{ successRateText }}</b>
+        </span>
+        <span class="stats__metric">
+          <i>{{ t('liveTopology.stats.inputTokens') }}</i>
+          <b>{{ tokens(totals.prompt_tokens) }}</b>
+        </span>
+        <span class="stats__metric">
+          <i>{{ t('liveTopology.stats.outputTokens') }}</i>
+          <b>{{ tokens(totals.completion_tokens) }}</b>
+        </span>
+        <span class="stats__metric">
+          <i>{{ t('liveTopology.rail.cache') }}</i>
+          <b>{{ tokens(cacheSum(totals)) }}</b>
+        </span>
+        <span class="stats__metric">
+          <i>{{ t('liveTopology.stats.failures') }}</i>
+          <b>{{ compactNumber(failureCount) }}</b>
+        </span>
+      </div>
+    </header>
+
+    <template v-if="!collapsed">
+      <p v-if="noteText" class="stats__note" data-testid="stats-note">{{ noteText }}</p>
+
+      <div class="stats__groups">
+        <!-- ── 供应商组 ─────────────────────────────────────────── -->
+        <section class="stats__group" data-testid="stats-group-providers">
+          <button
+            type="button"
+            class="stats__group-head"
+            :aria-expanded="groupOpen.providers"
+            :aria-label="t('liveTopology.rail.toggle', { group: t('liveTopology.rail.providerGroup') })"
+            @click="toggleGroup('providers')"
+          >
+            <CaretRight class="stats__caret stats__caret--sub" :class="{ 'is-open': groupOpen.providers }" aria-hidden="true" />
+            <span class="stats__group-title">{{ t('liveTopology.rail.providerGroup') }}</span>
+            <span v-if="!providersUnavailable && providerTotals" class="stats__group-sum">
+              {{ compactNumber(providerTotals.requests) }} · {{ tokens(providerTotals.total_tokens) }} ·
+              {{ t('liveTopology.rail.cache') }} {{ compactNumber(cacheSum(providerTotals)) }}
+            </span>
+          </button>
+
+          <p v-if="providersUnavailable" class="stats__group-down">
+            {{ providersFailed ? t('liveTopology.rail.unavailable') : t('liveTopology.rail.degraded') }}
+          </p>
+          <template v-else-if="groupOpen.providers">
+            <ul v-if="providerItems.length" class="stats__list">
+              <li
+                v-for="item in providerItems"
+                :key="item.provider_id || item.catalog_code"
+                class="stats__row"
+                :class="{ 'is-active': activeProvider === item.catalog_code, 'is-unknown': !item.known }"
+              >
+                <button type="button" class="stats__row-btn" @click="emit('select-provider', item.catalog_code)">
+                  <span class="stats__name">
+                    {{ item.display_name || item.catalog_code || t('liveTopology.rail.unknownProvider') }}
+                  </span>
+                  <span class="stats__figures">
+                    <b>{{ compactNumber(item.requests) }}</b>
+                    <i>{{ successRate(item) }}</i>
+                  </span>
+                  <span class="stats__share" :style="{ width: `${Math.round((item.share || 0) * 100)}%` }" />
+                  <span class="stats__tokens">
+                    {{ tokens(item.total_tokens) }}<template v-if="cacheSum(item)"> · {{ t('liveTopology.rail.cache') }} {{ compactNumber(cacheSum(item)) }}</template>
+                  </span>
+                </button>
+              </li>
+            </ul>
+            <p v-else class="stats__empty">{{ emptyText }}</p>
+          </template>
+        </section>
+
+        <!-- ── 模型组 ───────────────────────────────────────────── -->
+        <section class="stats__group" data-testid="stats-group-models">
+          <button
+            type="button"
+            class="stats__group-head"
+            :aria-expanded="groupOpen.models"
+            :aria-label="t('liveTopology.rail.toggle', { group: t('liveTopology.rail.modelGroup') })"
+            @click="toggleGroup('models')"
+          >
+            <CaretRight class="stats__caret stats__caret--sub" :class="{ 'is-open': groupOpen.models }" aria-hidden="true" />
+            <span class="stats__group-title">{{ t('liveTopology.rail.modelGroup') }}</span>
+            <span v-if="!modelsUnavailable" class="stats__group-sum">
+              {{ compactNumber(modelTotals.requests) }} · {{ tokens(modelTotals.total_tokens) }} ·
+              {{ t('liveTopology.rail.cache') }} {{ compactNumber(modelTotals.cache_read_tokens + modelTotals.cache_write_tokens) }}
+            </span>
+          </button>
+
+          <p v-if="modelsUnavailable" class="stats__group-down">
+            {{ modelsFailed ? t('liveTopology.rail.unavailable') : t('liveTopology.rail.degraded') }}
+          </p>
+          <template v-else-if="groupOpen.models">
+            <ul v-if="modelItems.length" class="stats__list">
+              <li
+                v-for="item in modelItems"
+                :key="item.canonical_id || item.raw_model_name"
+                class="stats__row"
+                :class="{ 'is-active': activeModel === modelName(item) }"
+              >
+                <button type="button" class="stats__row-btn" @click="emit('select-model', modelName(item))">
+                  <span class="stats__name">{{ modelName(item) }}</span>
+                  <span class="stats__figures">
+                    <b>{{ compactNumber(item.requests) }}</b>
+                    <i>{{ successRate(item) }}</i>
+                  </span>
+                  <span class="stats__share" :style="{ width: `${Math.round((item.share || 0) * 100)}%` }" />
+                  <span class="stats__tokens">
+                    {{ tokens(item.total_tokens) }}<template v-if="cacheSum(item)"> · {{ t('liveTopology.rail.cache') }} {{ compactNumber(cacheSum(item)) }}</template>
+                  </span>
+                </button>
+                <!-- 行内供应商展开（仅 day 区间有子行）：该模型在哪些供应商上
+                     各跑了多少。展开钮与选行钮分开：展开不触发图过滤。 -->
+                <button
+                  v-if="item.providers?.length"
+                  type="button"
+                  class="stats__expand"
+                  :aria-expanded="modelProvidersExpanded(item)"
+                  :aria-label="t('liveTopology.rail.toggleProviders', { model: modelName(item) })"
+                  data-testid="stats-model-expand"
+                  @click.stop="toggleModelProviders(item)"
+                >
+                  <CaretRight class="stats__caret stats__caret--leaf" :class="{ 'is-open': modelProvidersExpanded(item) }" aria-hidden="true" />
+                  {{ t('liveTopology.rail.providersCount', { n: item.providers.length }) }}
+                </button>
+                <ul v-if="item.providers?.length && modelProvidersExpanded(item)" class="stats__sublist" data-testid="stats-model-providers">
+                  <li
+                    v-for="sub in item.providers"
+                    :key="sub.provider_id || sub.catalog_code"
+                    class="stats__subrow"
+                    :class="{ 'is-unknown': !sub.known }"
+                  >
+                    <span class="stats__name">{{ providerName(sub) }}</span>
+                    <span class="stats__figures">
+                      <b>{{ compactNumber(sub.requests) }}</b>
+                      <i>{{ successRate(sub) }}</i>
+                    </span>
+                    <span class="stats__share" :style="{ width: `${Math.round((sub.share || 0) * 100)}%` }" />
+                    <span class="stats__tokens">{{ Math.round((sub.share || 0) * 100) }}%</span>
+                  </li>
+                </ul>
+              </li>
+            </ul>
+            <p v-else class="stats__empty">{{ emptyText }}</p>
+          </template>
+        </section>
+      </div>
+    </template>
+  </section>
+</template>
+
+<style scoped>
+.stats {
+  padding: 6px 10px 8px;
+  border: 1px solid var(--kx-border);
+  border-radius: 10px;
+  background: var(--kx-surface);
+}
+
+.stats__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 折叠开关（caret + 标题一个按钮）；窗口区间选择独占其余空间。 */
+.stats__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+  flex: none;
+}
+
+.stats__toggle:hover {
+  background: var(--kx-primary-soft);
+}
+
+.stats__title {
+  font-size: var(--kx-font-md, 14px);
+  font-weight: 600;
+  color: var(--kx-text);
+}
+
+.stats__interval {
+  /* 全局 select { width: 100% }（style.css 浏览器表面轮）会把表单控件撑满
+     父容器 —— 头部这里必须收回内容宽（与过滤栏 select 的 max-width 同款修法）。 */
+  width: auto;
+  min-width: 72px;
+  padding: 0 4px;
+  height: 24px;
+  border: 1px solid var(--kx-border);
+  border-radius: 6px;
+  background: var(--kx-surface);
+  color: var(--kx-text);
+  font-size: 11px;
+  flex: none;
+}
+
+/* SVG 图标必须显式尺寸（裸 svg 按包含块宽度渲染会撑爆布局）。 */
+.stats__caret {
+  flex: none;
+  color: var(--kx-muted);
+  transform: rotate(0deg);
+  transition: transform 0.15s var(--kx-motion-ease-out);
+}
+
+.stats__caret.is-open {
+  transform: rotate(90deg);
+}
+
+.stats__caret > svg {
+  width: 12px;
+  height: 12px;
+}
+
+.stats__caret--leaf > svg {
+  width: 10px;
+  height: 10px;
+}
+
+/* 总量行：一个指标 = 标签 + 数值；窄屏换行不截断（总账不容许被裁）。 */
+.stats__totals {
+  display: flex;
+  align-items: baseline;
+  gap: 4px 14px;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats__totals--down {
+  font-size: var(--kx-font-sm, 12px);
+  color: var(--kx-warning);
+}
+
+.stats__metric {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.stats__metric i {
+  font-size: 11px;
+  font-style: normal;
+  color: var(--kx-muted);
+}
+
+.stats__metric b {
+  font-size: var(--kx-font-sm, 12px);
+  font-weight: 600;
+  color: var(--kx-text);
+}
+
+.stats__note {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--kx-muted);
+}
+
+/* 明细两组：桌面并排、窄屏单列（断点白名单 768）。 */
+.stats__groups {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px 16px;
+  margin-top: 4px;
+}
+
+@media (min-width: 768px) {
+  .stats__groups {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.stats__group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.stats__group-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  flex: none;
+}
+
+.stats__group-head:hover {
+  background: var(--kx-primary-soft);
+}
+
+.stats__group-title {
+  flex: none;
+  font-size: var(--kx-font-sm, 12px);
+  font-weight: 600;
+  color: var(--kx-text);
+}
+
+/* 组头合计（折叠态也可见的「即时汇总」）：请求 · token · 缓存 */
+.stats__group-sum {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--kx-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats__group-down {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: var(--kx-font-sm, 12px);
+  color: var(--kx-warning);
+  background: var(--kx-warning-soft);
+}
+
+.stats__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.stats__row-btn {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 4px;
+  width: 100%;
+  padding: 3px 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+
+.stats__row-btn:hover,
+.stats__row.is-active .stats__row-btn {
+  background: var(--kx-primary-soft);
+}
+
+.stats__name {
+  font-size: var(--kx-font-sm, 12px);
+  color: var(--kx-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stats__row.is-unknown .stats__name {
+  color: var(--kx-muted);
+}
+
+.stats__figures {
+  display: flex;
+  gap: 4px;
+  font-size: var(--kx-font-sm, 12px);
+  color: var(--kx-text);
+}
+
+.stats__figures i {
+  color: var(--kx-muted);
+  font-style: normal;
+}
+
+.stats__share {
+  grid-column: 1 / -1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--kx-primary);
+  opacity: 0.65;
+  /* 轮询刷新时占比条平滑移动（width 是数据编码 ⇒ 已在
+     design-motion-decisions.json 的 layoutDriven 登记）。 */
+  transition: width 0.4s var(--kx-motion-ease-out);
+}
+
+.stats__tokens {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: var(--kx-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 模型行内供应商展开（day 区间）───────────────────────────────── */
+.stats__expand {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  padding: 1px 4px 1px 12px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: 11px;
+  color: var(--kx-muted);
+}
+
+.stats__expand:hover {
+  color: var(--kx-text);
+  background: var(--kx-primary-soft);
+}
+
+.stats__sublist {
+  margin: 0;
+  padding: 0 0 2px 14px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.stats__subrow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 1px 4px;
+  padding: 2px 4px;
+  border-left: 2px solid var(--kx-border);
+  border-radius: 0 6px 6px 0;
+}
+
+.stats__subrow .stats__name {
+  font-size: 11px;
+  color: var(--kx-muted);
+}
+
+.stats__subrow .stats__figures {
+  font-size: 11px;
+}
+
+.stats__subrow .stats__figures b {
+  font-weight: 500;
+}
+
+.stats__subrow .stats__share {
+  height: 2px;
+  opacity: 0.45;
+}
+
+.stats__empty {
+  margin: 0;
+  font-size: var(--kx-font-sm, 12px);
+  color: var(--kx-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stats__share,
+  .stats__caret {
+    transition: none;
+  }
+}
+</style>

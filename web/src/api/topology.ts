@@ -49,6 +49,8 @@ export interface TopologyProvidersToday {
   /** 聚合表的数据水位：与真实发生时刻可能差 ≤1h，UI 必须显式展示 */
   source_high_watermark?: string
   rollup_cadence?: string
+  /** 短窗口口径回显（2026-10-28 头部统计轮）：?window= 请求时为 "5m"/"1h" */
+  window?: string
   totals?: TopologyProviderTodayTotals
   items?: TopologyProviderTodayItem[]
   /** 聚合表未迁移 / 未装配 —— 必须渲染成「统计不可用」，不是零行 */
@@ -56,8 +58,13 @@ export interface TopologyProvidersToday {
   error_code?: string
 }
 
-export function getProvidersToday(options?: { signal?: AbortSignal }): Promise<TopologyProvidersToday> {
-  return req<TopologyProvidersToday>('GET', '/api/admin/topology/providers-today', undefined, {
+export function getProvidersToday(options?: {
+  signal?: AbortSignal
+  /** 短窗口口径（5m / 1h）：request_logs 直查，实时无 rollup 滞后 */
+  window?: '5m' | '1h'
+}): Promise<TopologyProvidersToday> {
+  const query = options?.window ? `?window=${options.window}` : ''
+  return req<TopologyProvidersToday>('GET', `/api/admin/topology/providers-today${query}`, undefined, {
     signal: options?.signal,
   })
 }
@@ -176,6 +183,8 @@ export interface TopologyModelsToday {
   generated_at?: string
   rollup_cadence?: string
   source_high_watermark?: string
+  /** 短窗口口径回显（2026-10-28 头部统计轮）：?window= 请求时为 "5m"/"1h" */
+  window?: string
   items?: TopologyModelTodayItem[]
   truncated?: boolean
   total_requests?: number
@@ -186,10 +195,15 @@ export interface TopologyModelsToday {
 
 export function getTopologyModelsToday(options?: {
   signal?: AbortSignal
-  /** 交叉展开：每个模型附 providers 子行（模型内分布） */
+  /** 交叉展开：每个模型附 providers 子行（模型内分布）。仅 day 日桶提供 */
   byProvider?: boolean
+  /** 短窗口口径（5m / 1h）：request_logs 直查，实时无 rollup 滞后 */
+  window?: '5m' | '1h'
 }): Promise<TopologyModelsToday> {
-  const query = options?.byProvider ? '?by=provider' : ''
+  const params = new URLSearchParams()
+  if (options?.byProvider) params.set('by', 'provider')
+  if (options?.window) params.set('window', options.window)
+  const query = params.size ? `?${params.toString()}` : ''
   return req<TopologyModelsToday>('GET', `/api/admin/topology/models-today${query}`, undefined, {
     signal: options?.signal,
   })

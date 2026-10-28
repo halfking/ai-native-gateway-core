@@ -73,10 +73,10 @@ vi.mock('../api/topology', () => ({
   getTopologyPlugins: vi.fn().mockResolvedValue({ builtin: [], external: [] }),
 }))
 
-// 统计栏的统计口径由 TodaySummaryRail.test.ts 单独钉，这里只验它收到的过滤值。
-vi.mock('../components/live-topology/TodaySummaryRail.vue', () => ({
+// 统计面板的统计口径由 StatsPanel.test.ts 单独钉，这里只验它收到的过滤值。
+vi.mock('../components/live-topology/StatsPanel.vue', () => ({
   default: {
-    name: 'TodaySummaryRailStub',
+    name: 'StatsPanelStub',
     props: ['activeProvider', 'activeModel'],
     emits: ['select-provider', 'select-model'],
     template: '<div class="rail-stub" :data-provider="activeProvider" :data-model="activeModel"></div>',

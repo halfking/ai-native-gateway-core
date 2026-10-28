@@ -14214,3 +14214,59 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > ⇒ ★ **批判式复审（同日第 3 轮，f12ba085c）**：① 上轮「87 中 86 保真」是【末次尝试】口径 ⇒ 洗白了 1 个首发即裁的请求 ⇒ 首发语义订正 85/87（**聚合口径必须与断言语义逐字对齐**，LESSONS §504 通式八）；② 「MiniMax 49 之 1」核实为政策正确行为；③ 断路器兜底补测试+变异臂；④ 复审时原 b 槽容器已被并行会话两次蓝绿替换（UA 日志源丢失）⇒ 结构指纹法补位。
 > ⇒ ★ 部署：修复随 `1e66996f` 上线（18:40+08 蓝绿）；复审时生产已推进到 `3d7b7d3a`，**血缘验证仍含修复**。z-ai 路由 + 厂商参数组合**线上尚未自然复现**（nvidia 处于 upstream_down 惩罚期）—— 由单测钉死、待自然样本。
 > ⇒ 审计档 `docs/audit/2026-10-28-原厂直通生产验证轮.md`（§0~§11）；通用式见 `LESSONS.md` **§504**（八条；取号两次让号 §503→§504）。
+> **2026-10-28~29 第 34 增量：live 页头部区间统计轮（统计上移头部 + 5m/1h/当天
+> 区间切换 + 左下统计退役）**（goal 会话）：★ 承接 owner 指令（统计数据放页面
+> 头部：请求次数/token输入/缓存/输出/成功率；区间可选当天/1小时/5分钟；左下
+> 统计取消；所有统计在上部可折叠展开；要有地方显示所有请求的总量）。
+> ⇒ ★ **新组件 `web/src/components/live-topology/StatsPanel.vue`**（头部区间统计
+> 面板）：总量行**常驻**（请求数/成功率/输入/输出/缓存/失败——折叠只收明细两组，
+> 把总账藏起来面板就失去意义）+ 区间选择器（原生 select）+ 供应商/模型两组
+> 可折叠明细（点行联动图过滤，与图/两栏同一过滤子集）+ day 交叉展开
+> （?by=provider）保留 + 口径行/空态**以响应自己的 window 字段为准**（数据说话，
+> 切换瞬间不会把旧数据标成新口径；对旧后端忽略未知参数返回 day 数据也自然降级
+> 正确）。轮询 day 60s / 窗口 30s。`TodaySummaryRail.vue` + 测试删除，
+> 左栏回归纯明细。
+> ⇒ ★★ **短窗口唯一如实的来源是 request_logs 直查**：`stats_usage_daily` 是纯
+> 日粒度（无 hour 列）且 rollup 每小时重建；**实时流绝不能当统计源**（Redis 快照
+> 每泳道 100 条，高峰期聚合「1 小时」系统性偏低=把低估说成统计）⇒ 后端
+> `providers-today` / `models-today` 加 `?window=5m|1h`（`admin/topology_window_stats.go`）：
+> 归并口径与 live-stream SSE catch-up **逐字同款**（credentials→providers /
+> models_canonical / request_status CASE 表达式）、列形状与 day SQL 逐列一致 ⇒
+> handler **双口径共用同一段行处理/totals/share**，响应加 `window` 回显
+> （day 契约逐字节兼容）、`day_utc` 置空、`cadence=realtime`；只认 5m/1h，
+> 其余值一律回落 day；`?by=provider` 仅 day 提供。
+> ⇒ ★★★ **本轮最值钱的一处：共享 SQL 片段抽成 Go 常量拼接 ⇒ AST 量具失明** ——
+> canonical 读点登记簿扫描器（go/ast 只认字面量）把内含在常量里的
+> `rl.request_status`/`rl.success` 从读点清单隐身（门红才暴露）⇒ 修法=逐字内联
+> + 契约测试钉「内联文本==常量」⇒ **「抽常量」这类重构对文本级量具是语义丢失**。
+> ⇒ ★★★ **第二处（浏览器实测抓到）：全局 `select{width:100%}`**（style.css
+> 浏览器表面轮）把头部新区间选择器撑到 1554px；`flex:none` 管伸缩不管基准宽度
+> ⇒ 组件内每个原生控件都要显式宽度 ⇒ **vue-tsc/vitest 全绿 ≠ 布局对**。
+> ⇒ ★ **登记簿/证人三处随改动同步**：canonical 读点登记簿 + 时间窗缺陷台账
+> （新文件提及视图名即登记）；空态登记簿 +1（`stats.emptyNoResultWindow`，
+> kind=NoResult，点名区间与主体；规模钉 23→24）；jargon 豁免簿 `catalog_code`
+> 的 witness 从被删的 rail 改指 StatsPanel（**证人失效=门红**，删除组件要先
+> grep 登记簿里指向它的证人）。
+> ⇒ ★ **i18n**：8 语种 `liveTopology.stats.*` 16 键 + 删 `rail.title`（避免死键），
+> 其余 `rail.*` 键原样复用（同一句话不许两份）。
+> ⇒ ★ **读数**：`vue-tsc` 0 错 / `vitest` **2929 通过 / 2 跳过**（StatsPanel 新增
+> 14 例）/ `build` ✓ 17.16s / `go build ./...` ✓ / `go test ./admin/` 全绿
+> （窗口测试 6 条 + 登记簿两门）/ **15 道前端门全 PASS**（i18n audit、硬编码中文
+> 4483=基线、共有死键 0、空态、内部标识、错误清晰、错误出口、AI 痕迹、浮起、
+> 颜色 39 基线、copy-clarity×2、响应式、element、copy-quality）。
+> ⇒ ★ **211 部署 + 生产实测**（蓝绿槽 a，`2.5.8-5b753fc5-dirty`，钉根部署）：
+> 树 grep 核验新符号在远端（DD_REPO_ROOT 漂移防线）；**API 三区间数字自洽**
+> （day 13,877 ⊃ 1h 272 ⊃ 5m 16；window 回显/cadence=realtime/day_utc 置空/
+> 窗口模式忽略 by=provider）；**浏览器真数据**：总量行与 API totals 逐字一致
+> （13.9K · 52.4% · 1.08B tok · 3.13M tok · 662.36M tok · 6.6K）、切 5m 口径行
+> 变「Realtime: aggregated straight from request logs (last 5 min)」、折叠交互
+> 通过、**键路径上屏 0**。
+> ⇒ ★ **本轮明确没做 / 如实记**：区间选择不进 URL；窗口口径无供应商分布展开
+> （仅 day）；本机 8782 旧网关（另一 checkout 2.5.8.2896）JWT 401 未深挖
+> （旧构建，生产无此问题）；**访客外壳 guest-header 390px 横向溢出**（预存在，
+> 与本轮无关）；总量行不受页面过滤影响（设计如此：它就是总账，明细仍联动）；
+> 折叠态不持久化（与退役栏一致）。
+> ⇒ 审计档 `docs/audit/2026-10-28-live页头部区间统计轮.md`；
+> 通用式见 `LESSONS.md` **§525**（六条：★★★★ 常量拼接让 AST 量具失明 /
+> ★★★★ 全局表单规则越过 flex 预期 / ★★★★ 短窗口统计先量缓冲覆盖面 /
+> ★★ 口径回显以响应为准 / ★★ 登记簿「提及即登记」+证人失效即红 / ★★ 两段式验证）。
