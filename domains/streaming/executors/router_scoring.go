@@ -743,13 +743,17 @@ func candidateRecoveredAtUnix(c provider.Candidate, r *Router) int64 {
 // 形状同 recencyPenalty（线性衰减），区别只在与地平线的语义：recency 的
 // 地平线是"最近一次请求"，recovery 的是"最近一次恢复"。无恢复证据 = 0
 //（常规候选不受影响）。时钟回拨导致 age<0 时按 1.0 保守处理（刚恢复）。
+//
+// 顺序（批判审计轮修正）：**信号前置、env 后读**——绝大多数候选无恢复
+// 证据，先查信号即可 0 分配返回；仅对真正处于恢复期的候选才读一次
+// RAMP_SECONDS env（与 recentRequestPenalty 的 horizon 现场读同模式）。
 func recoveryPenaltyForCandidate(c provider.Candidate, r *Router) float64 {
-	window := recoveryRampWindowSeconds()
-	if window <= 0 {
-		return 0
-	}
 	recoveredAt := candidateRecoveredAtUnix(c, r)
 	if recoveredAt <= 0 {
+		return 0
+	}
+	window := recoveryRampWindowSeconds()
+	if window <= 0 {
 		return 0
 	}
 	age := float64(time.Now().Unix() - recoveredAt)
@@ -768,12 +772,12 @@ func recoveryPenaltyForCandidate(c provider.Candidate, r *Router) float64 {
 // 在 P2C 里排后（failover 顺序），份额把恢复节点的新会话首跳流量压到
 // 20% 起步（slow-start 本体）。floor 由调用方的 max(1, …) 兜底叠加。
 func recoveryRampFactor(c provider.Candidate, r *Router) float64 {
-	window := recoveryRampWindowSeconds()
-	if window <= 0 {
-		return 1.0
-	}
 	recoveredAt := candidateRecoveredAtUnix(c, r)
 	if recoveredAt <= 0 {
+		return 1.0
+	}
+	window := recoveryRampWindowSeconds()
+	if window <= 0 {
 		return 1.0
 	}
 	age := float64(time.Now().Unix() - recoveredAt)
