@@ -14270,3 +14270,35 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > 通用式见 `LESSONS.md` **§525**（六条：★★★★ 常量拼接让 AST 量具失明 /
 > ★★★★ 全局表单规则越过 flex 预期 / ★★★★ 短窗口统计先量缓冲覆盖面 /
 > ★★ 口径回显以响应为准 / ★★ 登记簿「提及即登记」+证人失效即红 / ★★ 两段式验证）。
+> **2026-10-29 第 35 增量：live 遗留轮批判式复审轮（对第 33/两轮 live 统计的再审计）**
+> （会话续）：★ 承接「审计-修正-推送」指令，对 8c56a4845 + fd5b4fee2 两轮做批判式复审。
+> ⇒ ★ **§8 修复重验闭合**：压缩格数据源=平铺缓冲（gatewayStats←filteredRequests←
+> requestsRef=liveStreamState.requests，非 tile）；三条入腿全通——initial_data 回放
+> （payload 五字段修复）、实时帧（终态 telemetry worker 落库后补偿**二次广播**，
+> main_livestream.go 注释明载两调用点）、同 id 第二帧 pushOrQueue **原地替换**；
+> tile_delta 不带五字段但**无任何消费者**（全 UI grep 实证）⇒ 无害。
+> ⇒ ★★ **新抓真缺陷（两轮共有）：models-today 把全部 passthrough 并成一行**——
+> `GROUP BY canonical_id` 单键对 canonical_id=0 不成立：图 modelKeyOf 按**原始名**
+> 分节点，211 实测每天 **127~189 个不同 raw 名**（10-28：189 名/13,877 请求被并成
+> 1 行、名字 MAX 任选；10-29 当天榜首全是 passthrough ⇒ 整栏信息被毁）。恰违背该
+> SQL 注释自己写的「图栏对账」理由——**「注释声明与事实不符」族在分组语义上的形态**。
+> ⇒ ★★ **修法=SQL 与 Go 折叠键必须同步（只修一边=白修）**：两条 SQL 分组键 +
+> `CASE WHEN canonical_id=0 THEN COALESCE(raw_model_name,'') ELSE '' END`；
+> by=provider 的 models/kept 带 raw_key + JOIN 双条件（单条件会把 canonical=0
+> 多名**交叉放大**）；**raw_key 必须钳非 NULL——`NULL=NULL` 不成立 ⇒ 空/NULL 名组
+> 被 JOIN 静默丢行（本轮自己踩到）**；Go 折叠键 map[int]→(canonical,raw) struct
+> 镜像 SQL CASE。
+> ⇒ ★★★ **验证不靠 mock 自证**：pgxmock 不执行 SQL ⇒ 两条新 SQL **只读真跑 211
+> 生产**——canonical=0 按名拆开（MiniMax-M3 3297/glm-5.3-flash 1924/…）、
+> by=provider 与默认口径**逐模型守恒**（1924=1814+99+9+2）；★ 坑：psql 会话
+> TimeZone=Asia/Shanghai ⇒ `CURRENT_DATE` 比 UTC 日快一天 ⇒ 首跑 0 行**假阴性**，
+> 验证 SQL 必须用 `((now() AT TIME ZONE 'utc')::date)`。
+> ⇒ ★ **同族延伸**：合并 origin 后核查并行会话头部统计轮新加的 `modelsWindowSQL`
+> （5m/1h 口径）——同病同修 + 211 真跑 1h 窗口验证拆分；该轮删了 TodaySummaryRail
+> （by=provider 展开钮迁进 StatsPanel，day 区间仍消费）⇒ 修复未变孤儿。
+> ⇒ ★ **量具自坑**：全量 vitest 从仓库根跑（未钉 cwd）⇒ 301 假红（`@/` 别名解析
+> 失败）；钉 web/ 真读数 **2925 通过/2 跳过/2 失败**——两失败=并行会话 logo 换
+> SSOT 资产未更新 theme.logoAssets.test 断言的 **main 既有红**（对方 in-flight，
+> 登记不越界）。★ 变异臂：折叠键退回单键 ⇒ 拆分测试红（1 行 180 请求精确复现）
+> ⇒ 还原绿 ⇒ md5 一致；`go test ./admin/` ok 117.4s。
+> ⇒ 审计档 §9（同文件追加）；提交 273e4926a + 窗口口径追加提交。
