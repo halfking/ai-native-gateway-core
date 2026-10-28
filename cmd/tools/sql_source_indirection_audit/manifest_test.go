@@ -953,27 +953,6 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"⇒ 890 删掉 v1 族之后，本文件**不受任何影响**；" +
 			"反而是它**主动**保证 canonical 视图不再长回 v1 臂（bodyHasV1Arm 探针 + 不做 DDL 的退化分支）。",
 	},
-
-	// ── 2026-10-28 分支审计轮补登（origin a321cd963/e5651bd69 + wip/01 sessionid 收拢）──
-	"admin/credential_monitor.go": {
-		Verdict: verdictNonV1ByInspection,
-		Via:     ":384 `COALESCE((SELECT COUNT(*) FROM ` + dbpkg.SessionFamilyCredentialCountSourceSQL(\"c.id\") + ` q), 0)`——凭据请求数窄投影（R50 探针选型读点改走会话族）。",
-		Consequence: "与 v1 无关（会话族计数源；退役时该计数列随函数一起退役）。",
-	},
-	"bg/shared_pick.go": {
-		Verdict: verdictNonV1ByInspection,
-		Via:     ":52 `FROM ` + dbpkg.SessionFamilyMostUsedClientModelSourceSQL() + ` ` + alias + ``——探针选型的「最常用 client/model」读点（R50），两臂（hot ∪ 父表）由该 helper 内联。",
-		Consequence: "与 v1 无关（helper 即两臂并集；退役时随 helper 一起退役）。",
-	},
-	"internal/sessionfamily/exists_by_key.go": {
-		Verdict: verdictNonV1ByInspection,
-		Via:     ":69 ExistsByKeySQL：`SELECT 1 FROM \" + src` 的 src 是**形参** ⇒ 工具判 unresolved(tool)；实际两臂在**同一函数内**以字面量传入（`leg(\"public.session_turns_hot\")` / `leg(\"public.session_turns\")`）＝ hot ∪ 父表幂等检查（写侧 NOT EXISTS 守卫）。",
-		Consequence: "与 v1 无关（两臂字面量就在本函数内；退役时随幂等守卫一起退役）。",
-	},
-	"internal/sessionfamily/turns_reads.go": {
-		Verdict: verdictNonV1ByInspection,
-		Via:     "3 处：① :223 antiJoinPredicate `NOT EXISTS (SELECT 1 FROM public.session_turns archived`（归档腿反连接）；② :237/:245 两臂窄投影 `FROM public.session_turns_hot hot` / `FROM public.session_turns`（R172 会话族轮次读点去视图化的两臂直查，DP/AL 分离）。",
-		Consequence: "与 v1 无关（会话族两面直查；两臂列集由 TurnsReadColumns 统一，退役时随投影函数一起退役）。",
 	// ── 2026-10-28（r1040「事实源漂移」线）：本工具自身的清单漂移 ──────────
 	//
 	// ★ 这四条是**样板自身的漂移**：r1038b 轮实测时是「清单 72 vs 实测 75」，
