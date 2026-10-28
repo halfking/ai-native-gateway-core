@@ -148,6 +148,27 @@ func TestFirstHopLotteryWeights_RecoveryRamp(t *testing.T) {
 		t.Fatalf("刚恢复（0.2 因子）份额应 = 100×0.2 = 20，got %d", got[1])
 	}
 
+	// ①b 叠加路径（批判审计轮补）：p 折算与 ramp 因子**相乘**而非互斥——
+	// 低余额（balancePenalty=1，sum=wBalance）+ 无恢复的候选：p=1 ⇒
+	// 份额 = int(100×(1−0.9)) = int(9.999…) = 9（浮点 + int 截断，R46
+	// F8② 注明的截断语义）；同一候选**加上**刚恢复信号后 ramp 0.2 再乘
+	// ⇒ int(9.999…×0.2) = int(1.999…) = 1。9 → 1 证明是乘法叠加
+	//（若 recovery 被错误地放进 p 折算，两者会是同一个数）。
+	t.Setenv("LLM_GATEWAY_ROUTING_W_BALANCE", "0.05") // sum=0.05，weighted=1×0.05 → p=1
+	lowBal := 0.0
+	lowBalNoRecovery := provider.Candidate{ProviderID: 1, CredentialID: 3, Weight: 100, BillingMode: "per_token"}
+	lowBalNoRecovery.BalanceUSD = &lowBal
+	lowBalRecovering := lowBalNoRecovery
+	lowBalRecovering.RoutedNodeState = &credentialfpslot.NodeState{RecoveredAt: now}
+	gotB := firstHopLotteryWeights([]provider.Candidate{healthy, lowBalNoRecovery}, r)
+	if gotB == nil || gotB[1] != 9 {
+		t.Fatalf("纯 p 路径份额应 = int(100×0.1) = 9（浮点截断），got %v", gotB)
+	}
+	got = firstHopLotteryWeights([]provider.Candidate{healthy, lowBalRecovering}, r)
+	if got == nil || got[1] != 1 {
+		t.Fatalf("p×ramp 叠加份额应 = int(9.999…×0.2) = 1，got %v", got)
+	}
+
 	// ② 窗口外：全部候选无折算 → nil（走纯 Weight 原路径，与现状一致）。
 	recovered := provider.Candidate{ProviderID: 1, CredentialID: 2, Weight: 100}
 	recovered.RoutedNodeState = &credentialfpslot.NodeState{RecoveredAt: now - 301}

@@ -366,4 +366,13 @@ const { fresh: freshIds } = useNewArrivals(() => props.responses.map((r) => r.re
 .pp__open > svg { width: 11px; height: 11px; }
 .pp__zoom > svg { width: 12px; height: 12px; }
 .pp__page-btn > svg { width: 10px; height: 10px; }
+
+/* ── 手机（≤768，2026-10-28 手机观察轮）：行是触控目标 ──
+   同 ClientRequestPanel：行高 44px、加宽 ↗ / ⤢ 按钮命中区。 */
+@media (max-width: 768px) {
+  .pp__row { min-height: 44px; }
+
+  .pp__page,
+  .pp__zoom { padding: 0 10px; }
+}
 </style>

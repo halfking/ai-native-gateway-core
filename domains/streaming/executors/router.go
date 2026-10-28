@@ -637,6 +637,11 @@ func (r *Router) planCandidates(
 		RequestID:        requestID,
 		LoadScoreWeights: r.LoadScoreWeights,
 		StickySnapshot:   stickySnapshot,
+		// P1-A (2026-10-28 两层路由审计 G3)：离群是【池】的属性 —— 池统计在
+		// filterHealthyNodes 之后的完整候选集上算一次（这里），随上下文下发。
+		// 池太浅（合格样本 <3）时 ComputeSuccessRatePoolStats 返回 nil ⇒
+		// calculateLoadScore 的离群惩罚恒 0，行为与未接线逐字节一致。
+		SuccessRatePoolStats: ComputeSuccessRatePoolStats(available),
 	}
 	ordered := r.planByTier(requestCtx, round1, policy, stratIn)
 	if len(round2) > 0 {

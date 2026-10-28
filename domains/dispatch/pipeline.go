@@ -358,6 +358,7 @@ func NewPipeline(deps Deps) *Pipeline {
 		MaxKeys:        defaultDimensionMaxKeys,
 	})
 	p.cfg.Store(&cfg)
+	SetRetryJitterEnabled(cfg.RetryJitterEnabled)
 	return p
 }
 
@@ -916,6 +917,7 @@ func (p *Pipeline) modelChangeEnabled() bool {
 // pick up immediately.
 func (p *Pipeline) Reload(cfg Config) {
 	p.cfg.Store(&cfg)
+	SetRetryJitterEnabled(cfg.RetryJitterEnabled)
 	if p.registry != nil {
 		p.registry.UpdateLimits(cfg.RegistryCapacity, cfg.CompletedWatermark, 0)
 	}
