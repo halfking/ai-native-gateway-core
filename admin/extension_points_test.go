@@ -15,14 +15,14 @@ package admin
 // ★★★★ 2026-10-24 §3.17 订正（原注释的三处错误，勿回退）：
 //
 //	① 「⇒ ★ **本包不在 `GUARD_PACKAGES` 里** ⇒ 这道门在 CI 上**不跑**」
-//	   ——★ **错**。本包现在**登记在 `GUARD_PACKAGES_SLOW`**（慢门，900s 预算）。
+//	   ——★ **错**。本包现在**登记在 `GUARD_PACKAGES_SLOW`**（慢门，1800s 预算）。
 //	② 「⇒ ⇒ 所以它只做**兜底**，**主要**判据在台账包与 ursmcheck 里」
 //	   ——★ **仍然成立**（薄壳只覆盖序列化 + 路由 + 鉴权三件事），但
 //	   「不跑」的说法已废：慢门在本地 `make guards` 与官方门 `verify.sh`
 //	   的 `go test ./...` 里都跑它。
 //	③ 「⇒ ⇒ ★★ **整个 `admin` 包的测试没有任何 CI 路径**」
 //	   ——★ **错**，见审计档 §3.17.2：官方门 `verify.sh` 跑的是
-//	   `go test ./... -count=1 -timeout=900s` ⇒ **`./admin` 在其中**
+//	   `go test ./... -count=1 -timeout=1800s` ⇒ **`./admin` 在其中**
 //	   （实测：红过的那条 `TestTurnsSessionSQLHasNoFormatArtifacts`
 //	   在 `-short` 模式下同样复现 ⇒ 它在官方门上**会被看见**）。
 //	   ⇒ ★ 真正缺的不是「admin 的红没人看」，而是「**审计守卫体系整体在 CI 上空转**」
