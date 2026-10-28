@@ -9341,8 +9341,27 @@ func (h *ChatHandler) writeModalityMismatchError(
 	}
 
 	if protocolOfRequest(r) == "anthropic" {
-		writeErrorAnthropicWithAlternatives(w, http.StatusBadRequest,
-			requestID, msg, "modality_mismatch", alts)
+		// ★ The Anthropic envelope gets the same machine-readable detail as
+		// the OpenAI one. An SDK that only reads error.type learns "invalid
+		// request" from the type; an SDK that reads the detail learns WHICH
+		// modality was rejected and what the model does accept — without
+		// that, an Anthropic client has to parse the English prose.
+		w.Header().Set("Content-Type", "application/json")
+		if requestID != "" {
+			w.Header().Set("X-Request-Id", requestID)
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		//nolint:errcheck // HTTP write error non-recoverable
+		json.NewEncoder(w).Encode(map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type":              anthropicErrorType("server_error", "modality_mismatch"),
+				"message":           msg,
+				"request_id":        requestID,
+				"modality_mismatch": detail,
+				"alternatives":      alts,
+			},
+		})
 		return
 	}
 
@@ -9465,6 +9484,14 @@ func anthropicErrorType(errType, code string) string {
 	case "content_filter":
 		return "invalid_request_error"
 	case "unsupported_feature":
+		return "invalid_request_error"
+	case "modality_mismatch":
+		// A modality mismatch is a client-side problem: the request carries
+		// media the requested model cannot read. Anthropic SDKs type-check
+		// error.type against a closed set, so it must be one of the SDK's own
+		// types — "invalid_request_error" is the one that means "change the
+		// request", as opposed to "overloaded_error", which would tell the
+		// client to retry the identical request and fail forever.
 		return "invalid_request_error"
 	case "insufficient_quota", "budget_exhausted", "insufficient_credits":
 		return "invalid_request_error"
