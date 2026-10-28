@@ -783,6 +783,10 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			SuppressSuccessWrite: !isStream,
 			ClientProtocol:       "anthropic-messages",
 			ClientModel:          clientModel,
+			// 原厂直通（2026-10-28 三巡）：请求边界一次确定客户端类型，
+			// executor 的 nativePairFor 以此为首选（此前生产从未填过该字段，
+			// 只能靠 executor 内 header/UA 兜底 + 每候选重复解析 body 标记）。
+			ClientType: extractClientType(r),
 			// See domains/streaming/handler.go for the rationale: the
 			// executor resolves the upstream model per candidate using
 			// params.Transform + cand.RawModel, so we deliberately pass
