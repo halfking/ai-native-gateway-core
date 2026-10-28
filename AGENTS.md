@@ -14270,6 +14270,40 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > 通用式见 `LESSONS.md` **§525**（六条：★★★★ 常量拼接让 AST 量具失明 /
 > ★★★★ 全局表单规则越过 flex 预期 / ★★★★ 短窗口统计先量缓冲覆盖面 /
 > ★★ 口径回显以响应为准 / ★★ 登记簿「提及即登记」+证人失效即红 / ★★ 两段式验证）。
+**2026-10-29 ㊷ RISK-3 收口轮：原厂直通 strip 绕过留痕 Debug→Info + 211 strip 实配普查**：
+★ 承接 ㊶ 登记的 RISK-3（「`native_pair_bypass` 日志 0 条 = 预期（matrix 无 strip +
+**Debug 级在生产 Info 级不可见** ⇒ 留痕机制默认不可观测」）⇒ 本轮小改动 + 自证 +
+生产普查三件收口。
+> ⇒ ★ **改动一处**：`executor_chat.go` strip 绕过分支 `slog.Debug` → `slog.Info`，
+> **消息文本逐字不变**（211 取证 grep 口径是契约）、字段不动；注释补记升级理由
+> （该行出现 = 运营配置与直通语义冲突，是运营侧要知晓的运行事实，不是调试细节）。
+> ⇒ ★ **生效点盘点（照 ㊶ 教训按序列化站点数）**：nativePair 判定与 strip 绕过
+> **全仓唯一**在 `prepareRequestBodyWithNative`（openai-chat 腿）；
+> `executor_anthropic.go` **0 引用** nativePair（= RISK-6 缺口本体，未动）；
+> `inline_validation.go` 只盖章无 strip 语义 ⇒ 升一处即全量覆盖。
+> ⇒ ★ **自证**：`TestPrepareRequestBodyWithNative_StripBypassLoggedAtInfo`
+> （正臂断言恰好 1 条 + `level=="INFO"` + 4 字段逐值；负臂 2 条：空 strip 0 条 /
+> 非原生对 0 条）；**变异臂**：回注 Debug ⇒ rc=1 报 `level = DEBUG, want INFO` ⇒
+> 还原 rc=0 ⇒ md5 逐字一致 —— 级别这类属性的可证伪检验就是「回注旧值断言必红」。
+> ⇒ ★★ **211 strip 实配普查（六通道盘点表全空）**：① 容器内全盘 find 默认 YAML
+> 0 命中 ② `TRANSFORM_MATRIX_PATH` 未设置 ③ 挂载卷 host 侧 find 0 命中
+> ④ DB 通道**结构性不存在**（strip 只从 YAML doc 解析，无 DB 读取方）
+> ⑤ 运行时改写**结构性不存在**（matrix 仅启动时加载一次，无 admin reload）
+> ⑥ b / b-aux×2 / legacy 四个停用槽共用同一挂载无孤立配置（docker inspect 实测）
+> ⇒ **strip 实配 = 0 条** ⇒ Info 行当前预期 0 触发（空 matrix 下
+> `Matrix.Resolve` 仍返回非 nil Transform 但 `StripRequestFields=nil`，
+> `transform.go:234` 实读；负臂 1 在代码层钉住同一形状）；一旦运营配 strip
+> 即刻在 Info 级可见。
+> ⇒ ★ 读数：`go build ./...` ✔；executors / transformation / `./domains/streaming/...`
+> 全绿；变异臂 1/1；`gofmt -l` 报 3 个**既有**未格式化文件（非本轮触碰，不擅动）。
+> ⇒ ★ **未部署（如实记）**：strip 实配=0 ⇒ 行为零变化，随下次例行部署生效；
+> 211 蓝绿窗口归并行部署会话（a 槽本轮实测 12 分钟前刚被重启），不抢。
+> ⇒ ★ **本轮没做（留给后续）**：**RISK-6**（Anthropic 腿 NativePassthrough 补盖章
+> —— §2 盘点实测 `executor_anthropic.go` 0 引用，开工先枚举该腿全部序列化站点）；
+> **RISK-2**（工具顶层非标准键被丢，对所有客户端一致）；**RISK-1**（deepseek 400
+> 出现时配能力表，不恢复钳制；窗口仍无该流量 ⇒ 维持「未观察」）。
+> ⇒ 审计档 `docs/audit/2026-10-29-RISK3-strip绕过留痕升级轮.md`；
+> 通用式见 `LESSONS.md` **§526**。
 > **2026-10-29 第 35 增量：live 遗留轮批判式复审轮（对第 33/两轮 live 统计的再审计）**
 > （会话续）：★ 承接「审计-修正-推送」指令，对 8c56a4845 + fd5b4fee2 两轮做批判式复审。
 > ⇒ ★ **§8 修复重验闭合**：压缩格数据源=平铺缓冲（gatewayStats←filteredRequests←
@@ -14301,4 +14335,4 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > SSOT 资产未更新 theme.logoAssets.test 断言的 **main 既有红**（对方 in-flight，
 > 登记不越界）。★ 变异臂：折叠键退回单键 ⇒ 拆分测试红（1 行 180 请求精确复现）
 > ⇒ 还原绿 ⇒ md5 一致；`go test ./admin/` ok 117.4s。
-> ⇒ 审计档 §9（同文件追加）；提交 273e4926a + 窗口口径追加提交。
+> ⇒ 审计档 §9（同文件追加）；提交 273e4926a + 671e70ac1。
