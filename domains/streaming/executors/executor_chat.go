@@ -3049,6 +3049,12 @@ func (e *Executor) finalizeOpenAIUpstreamBodyNative(params *ExecParams, cand pro
 			} else {
 				irReq.TargetProvider = paramreg.CatalogCodeUnknownRelay
 			}
+			// 原厂直通（2026-10-28 生产验证轮补盖）：本路径（legacy_with_ir，
+			// OpenAI 入向主路径）此前漏盖 NativePassthrough —— GLM 原厂上游
+			// 靠方言恰好认 GLM 键而「看起来」保真，zcode→glm 路由到第三方
+			// 宿主（nvidia / 空 catalog 中继）时 enable_thinking/thinking 被
+			// paramreg RejectedByUnknown 裁掉（211 实测 87 中 1）。
+			irReq.NativePassthrough = nativePair
 			// R45 (2026-09-19, Gemini thinking 专项): Gemini 入向在 handler
 			// step-6 路由前序列化，thinkingConfig 的 budget 形 intent 已在
 			// 合成 body 中丢失。从请求 context 恢复（见 ir.SourceReasoning），
@@ -3110,6 +3116,10 @@ func (e *Executor) finalizeOpenAIUpstreamBodyNative(params *ExecParams, cand pro
 				} else {
 					irReq2.TargetProvider = paramreg.CatalogCodeUnknownRelay
 				}
+				// 原厂直通（2026-10-28 生产验证轮补盖）：断路器兜底分支与
+				// legacy_with_ir 主分支同族，同样必须盖章（漏一处生效点 =
+				// 没跳，本轮生产验证教训）。
+				irReq2.NativePassthrough = nativePair
 				// R45: 断路器兜底路径同样恢复 context 携带的入向推理意图。
 				irReq2 = ir.RestoreSourceReasoning(irReq2, params.R.Context())
 				// R61 S2-F3 续：断路器兜底路径同样 stamp。

@@ -230,6 +230,11 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
   margin: 0 0 4px;
   padding: 0;
   list-style: none;
+  /* 聚合摘要限高可滚（≈4 行）：面板高度受限时（桌面收进视口 / 手机 70vh 帽），
+     8 行摘要会把下面的请求明细挤到只剩一两行 —— 明细才是这个面板的主体。
+     数据没删：滚动能看到全部 8 行，与表头计数（8 / N）对得上账。 */
+  max-height: 176px;
+  overflow-y: auto;
 }
 
 .cp__summary-row {
@@ -493,4 +498,13 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
    尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
 .cp__open > svg { width: 11px; height: 11px; }
 .cp__page-btn > svg { width: 10px; height: 10px; }
+
+/* ── 手机（≤768，2026-10-28 手机观察轮）：行是触控目标 ──
+   抬高行高到 44px、加宽 ↗ 按钮的命中区（padding 0 4px → 0 10px），
+   手指才点得中；桌面鼠标不受影响。 */
+@media (max-width: 768px) {
+  .cp__row { min-height: 44px; }
+
+  .cp__open { padding: 0 10px; }
+}
 </style>

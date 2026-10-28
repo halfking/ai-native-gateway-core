@@ -346,6 +346,22 @@ describe('LiveTopologyView filter convergence', () => {
     expect(wrapper.find('.cp__row.is-active').exists()).toBe(true)
   })
 
+  it('★★ the summary overlay lives in the column whose row was clicked (left click → left, right click → right)', async () => {
+    // 2026-10-28 owner 口径：点左栏请求摘要浮层必须出现在左栏，点右栏在右栏。
+    // 旧行为是浮层固定挂在右栏 —— 点左侧请求时摘要跨屏跑到右边，本轮修掉。
+    const { wrapper } = await mountView()
+    await wrapper.get('.cp__item').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.live-topology__left .zoom').exists()).toBe(true)
+    expect(wrapper.find('.live-topology__right .zoom').exists()).toBe(false)
+
+    // 换点右栏：浮层搬到右栏（同一时刻只有一个 —— 左栏那个必须消失）
+    await wrapper.get('.pp__zoom').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.live-topology__right .zoom').exists()).toBe(true)
+    expect(wrapper.find('.live-topology__left .zoom').exists()).toBe(false)
+  })
+
   it('★ the right panel row pops the summary overlay too; 「查看全景」inside opens the NEW page', async () => {
     const { wrapper } = await mountView()
     const rows = wrapper.findAll('.pp__row')

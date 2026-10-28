@@ -608,7 +608,11 @@ function onNodeClick(node: TopoNode) {
 .topo-canvas {
   position: relative;
   width: 100%;
-  height: 100%;
+  /* stage 列（flex column：画布 + 路由决策时间线）里的一员：用 flex 占满
+     剩余高度，而不是 height:100%（百分比会把时间线挤到容器外 —— 2026-10-28
+     桌面栅格行收进视口后 stage 高度变为有限值，两种写法从此分道）。
+     窄屏 stage 高度未受限时退化为内容高度，min-height 480 兜底不变。 */
+  flex: 1 1 auto;
   min-height: 480px;
   overflow: hidden;
   background:

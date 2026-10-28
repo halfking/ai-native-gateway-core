@@ -212,3 +212,63 @@ func TestNativePairFor_Detection(t *testing.T) {
 		})
 	}
 }
+
+// TestFinalizeNative_LegacyWithIR_NativePairStampsPassthrough（2026-10-28
+// 生产验证轮）：legacy_with_ir（OpenAI 入向、e.IR != nil —— 211 生产日志里的
+// 实际 path）此前只盖 TargetProvider、不盖 NativePassthrough ⇒ zcode→glm
+// 路由到第三方宿主（catalog=nvidia，或空 catalog 的中继）时，enable_thinking
+// /thinking 被 paramreg 的 RejectedByUnknown 政策裁掉。生产实测 87 个
+// zcode→glm 请求里 86 个保真靠的是 GLM 原厂（zhipu 方言）恰好认这些键，
+// 不是直通机制在起作用。本测试把第三方宿主形态钉死。
+func TestFinalizeNative_LegacyWithIR_NativePairStampsPassthrough(t *testing.T) {
+	body := []byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}],` +
+		`"enable_thinking":true,"thinking":{"type":"enabled","budget_tokens":4096},` +
+		`"reasoning_effort":"max","tool_choice":"auto"}`)
+
+	run := func(native bool) map[string]any {
+		executor := &Executor{IR: &irAdapterForTest{}}
+		params := &ExecParams{
+			R:              httptest.NewRequest("POST", "/v1/chat/completions", nil),
+			RequestID:      "npv-legacy-ir",
+			BodyBytes:      body,
+			ClientModel:    "glm-5.3",
+			OutboundModel:  "z-ai/glm-5.3-flash",
+			ClientProtocol: "openai-completions",
+			Model:          "glm-5.3",
+		}
+		cand := nativePairCandidate("nvidia", "z-ai/glm-5.3-flash")
+		out, err := executor.finalizeOpenAIUpstreamBodyNative(params, cand, body, native)
+		if err != nil {
+			t.Fatalf("finalize (native=%v): %v", native, err)
+		}
+		return mustJSON(t, out)
+	}
+
+	native := run(true)
+	if v, ok := native["enable_thinking"].(bool); !ok || !v {
+		t.Fatalf("native legacy_with_ir: enable_thinking = %#v, want true（第三方宿主上原厂对首发全参）\nout: %s", native["enable_thinking"], mustJSONRaw(t, native))
+	}
+	th, ok := native["thinking"].(map[string]any)
+	if !ok || th["type"] != "enabled" || th["budget_tokens"] != float64(4096) {
+		t.Fatalf("native legacy_with_ir: thinking = %#v, want verbatim {type:enabled,budget_tokens:4096}", native["thinking"])
+	}
+
+	// 对照臂：非原生对在同一未知方言目标上仍被 RejectedByUnknown 裁剪
+	//（r1021 政策必须保住牙齿——本修复只影响原生对）。
+	legacy := run(false)
+	if _, present := legacy["enable_thinking"]; present {
+		t.Fatalf("non-native 对照: enable_thinking 应被裁（未知方言 RejectedByUnknown）\nout: %s", mustJSONRaw(t, legacy))
+	}
+	if _, present := legacy["thinking"]; present {
+		t.Fatalf("non-native 对照: thinking 应被裁/翻译走（未知方言）\nout: %s", mustJSONRaw(t, legacy))
+	}
+}
+
+func mustJSONRaw(t *testing.T, obj map[string]any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return raw
+}

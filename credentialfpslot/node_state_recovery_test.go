@@ -350,3 +350,39 @@ func TestNodeState_RecoveredAtNotWrittenOnNormalSuccess(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, state.RecoveredAt, "常规成功不产生恢复证据")
 }
+
+// TestNodeState_ResetWritesRecoveredAt 钉 P0-A 批判审计轮修正：admin 手动
+// reset 节点健康（ResetNodeHealthState，admin/routing.go 的手动恢复路径）
+// 是「未经流量验证的恢复」——恰是 re-flapping 风险最高、最需要 ramp 的
+// 场景，必须**写** recovered_at=now（与 breaker.Reset 对称），而不是清零。
+// 首版误写清零 ⇒ 同一场景两面语义相反（breaker 进 ramp / NodeState 不进）。
+func TestNodeState_ResetWritesRecoveredAt(t *testing.T) {
+	s := miniredis.RunT(t)
+	defer s.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: s.Addr()})
+	defer client.Close()
+
+	mgr := &Manager{client: client, cfg: Config{Enabled: true}}
+	ctx := context.Background()
+	credID := 21
+	model := "p0a-reset-ramp-model"
+
+	// 先制造一次禁用（保证 key 存在且处于健康字段非零态）。
+	for i := 0; i < 3; i++ {
+		require.NoError(t, mgr.RecordNodeFailure(ctx, credID, model, "rst-"+string(rune('1'+i)), "timeout"))
+	}
+	state, err := mgr.GetNodeState(ctx, credID, model)
+	require.NoError(t, err)
+	require.True(t, state.Disabled)
+	require.Zero(t, state.RecoveredAt, "禁用中不应有恢复证据")
+
+	// admin reset：健康字段清零 + recovered_at 写当前时刻（进 ramp）。
+	before := time.Now().Unix()
+	require.NoError(t, mgr.ResetNodeHealthState(ctx, credID, model))
+	state, err = mgr.GetNodeState(ctx, credID, model)
+	require.NoError(t, err)
+	assert.False(t, state.Disabled, "reset 后应回池")
+	assert.GreaterOrEqual(t, state.RecoveredAt, before, "reset 应写 recovered_at（手动恢复进 ramp）")
+	assert.LessOrEqual(t, state.RecoveredAt, time.Now().Unix(), "recovered_at 不应来自未来")
+}

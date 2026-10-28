@@ -13514,6 +13514,103 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > ⇒ 通用式见 `LESSONS.md` **§502**（★ 七条通式：★ 治理动作本身也是被治理对象 / ★ 值有界与值被用上
 > ⇒ ⇒ 必须成对 / ★ 判据要数调用表达式而不是文本 / ★ 门禁用「带」而不是「钉死」/ ★ 粒度也是要验的 /
 > ⇒ ⇒ ★ 推断要落成实测 / ★ 隔离的收益是【可回收】不是【变小】）。
+
+## ㊴ R177 轮（2026-10-28）· 「逐读点实测分区下界」（★ R174 只立了口径、没做脚本；★ 实测【否决】三条路线并找出真根因：`api_key_id` 没有可用索引 ⇒ 全窗口扫描；★ 量具自己会骗你：顺序偏差 + 多变量对照 + buffers 口径虚高 7 倍）
+
+> **取号说明**：★ 本轮开工时取 **㊳**（㊲ = 上一轮 R175 的段）；★ 开工时重查 `origin/main`（= `0c86d8c23`）⇒ 上游 AGENTS 最高 **㊳** ⇒ 当时不冲突 ✓；⇒ ⇒ ★★★ **★ 【合并上游之后】复查：上游又连推 5 个提交到 `dc55570a0` ⇒ 上游 AGENTS 最高仍是 ㊳ ⇒ ★★ 本轮仍取 ㊴ ✓**（★ LESSONS 同步：§501 → **§502** ⇒ **§503** ⇒ ★ 上游 §501 = 「r1039 后续轮的批判性审计轮」；★★ **【第二次让号】★ 慢门跑完后上游又推 2 个提交到 `ee0f0062d`（★ r1047 轮）⇒ 上游已占 LESSONS §502 ⇒ ⇒ 本节最终取 §503；★ ★ 而 AGENTS 侧上游仍最高 ㊳ ⇒ 本轮 ㊴ 不冲突。★★**）★★
+
+★ ★★ **本轮性质：★★ R174 轮把「必须逐读点实测」写成了判据，却【没给脚本】⇒ ★★ 本轮把量具建出来并在 252 上真跑 ⇒ ★★ 结果是【否掉了三条既定路线】并【找出了真根因】★★**
+
+★★ **① 「迁读点 + 加 partition_date 下界」⇒ 无效（实测）** ——
+★★ buffers 跨三轮恒定（**−48 / −3 / 0**），墙钟方向随机（1.35× 慢 → 1.47× 快 → 持平）⇒ ⇒ **裁掉的正是那个「79.8 万行但在 7 天窗内是空」的分区 ⇒ 裁掉的是空气。**
+★★ 根因：**每个分区都有 `session_turns_YYYY_MM_ts_idx`，Index Cond 已经在索引层把窗口卡住** ⇒ ⇒ ★★ **「先看 plan」比「先跑基准」便宜两个数量级。★★**
+
+★★ **② 「迁读点 + 窄投影（118 → 7 列）」⇒ 也不省 I/O（实测）** ——
+★★ 单变量对照：canonical 118 列 vs 派生窄投影 7 列（表达式原样保留 ⇒ 语义不变）⇒ **buffers 220,359 → 220,386（+27）** ⇒ ⇒ **列宽不是瓶颈**（★ 且 PG 会在计划期删掉没人用的输出列 ⇒ `COUNT(*)` 读点量不出投影宽度的代价 ⇒ 本地实测 1100 vs 1100）。
+★★ ⇒ ★★ **⇒ 首轮审计档写的「代价在 118 列的物化」被本轮自己的对照推翻。★★**
+
+★★ **③ 「摘掉 `details` LEFT JOIN」⇒ 在真读点上也省 0（实测）** ——
+★★ COUNT 形态读点上省 24%（33,879 → 25,624 块），**但 `usage.go` 真读点上只省 7 块** ⇒ ⇒ **它不是瓶颈**（★ 且已实测 JOIN 不放大行数：75,449 = 75,449）。
+
+★★★ **④ ★★ 真根因（★ 本轮最有价值的发现）：★★ `session_turns` 上【没有任何以 `api_key_id` 为键列的索引】★★** ——
+★★ 252 实测：名字带 api_key 的 4 个索引，键其实都是 `(session_id, turn_no DESC)`，只有谓词 `WHERE api_key_id ~ '^[0-9]+$'` ⇒ ⇒ **`api_key_id = 113` 只能全窗口扫**：
+★★ plan 实测 `Index Scan using session_turns_2026_10_ts_idx` + `Rows Removed by Filter: 37825`（窗口内 75,449 行全扫、留 37,624 行）⇒ ⇒ **窗口内 75,449 行被全部读出来、37,825 行读出来又被丢掉 ⇒ ⇒ 「一半的行是白读的」⇒ ⇒ 这就是瓶颈。**
+★★ ★★ **而仓里对 `credential_id` 早就有同款表达式索引**（`idx_session_turns_credential_ts` = `(CASE WHEN credential_id ~ '^[0-9]+$' THEN credential_id::bigint END), ts DESC`）⇒ ⇒ **★ 修法有现成范式：给 `api_key_id` 补一个同款表达式索引 ⇒ ★ 且必须补【表达式索引】—— 因为 canonical 视图把 `api_key_id` 归一成了 CASE ⇒ 普通的 `api_key_id` btree 用不上。★★**
+
+★★ **量具自身本轮修了 3 个缺陷（★ 都是「跑通了 ≠ 读到了数」★★★）**：
+★★ ① **顺序偏差**：原实现「A 跑 n 次 → B 跑 n 次」⇒ **B 永远吃更热的缓存** ⇒ 首轮「B 快 1.12×」在第二轮变成「B 慢 1.28×」⇒ ⇒ 修法：**交错执行**（偶数轮 A 先、奇数轮 B 先）；
+★★ ② **对照多变量**：首轮那个「窄投影」对照同时改了来源/列宽/有没有 JOIN ⇒ 结论不成立 ⇒ 修法：**拆成一串单变量对照**；
+★★ ③ **buffers 口径虚高 7 倍**：原实现把**所有节点**的 buffers 相加，而 PG 每个节点的 `Buffers:` 行**已含其子节点** ⇒ ⇒ **权威口径 = 根节点那一个数**（★ 252 上真实 220,401 块被算成 1,796,812 块）。
+
+★★ **新增文件**：`cmd/tools/partition_bound_probe/`（★ AST 分类器 + EXPLAIN 对拍 harness + SSH/PGX 双通道 + **视图名不硬编码** ⇒ 仓内那道「canonical 视图提及登记门」反而逼出了更好的抽象）· `admin/data_lifecycle_storage_residue_test.go`（★ R174-H：dlperf 残留判据限定到本运行创建的 schema + 阳性/阴性对照 + 变异臂）· `cmd/tools/partition_bound_probe/specs/r177-read-points.json`（★ 7 个读点登记册，可复现）。
+★★ **修改文件**：`admin/canonical_read_points_registry_test.go`（登记量具条目）· `admin/data_lifecycle_storage_perf_test.go`（R174-H）。
+★★ **审计档**：`docs/audit/2026-10-28-R177-逐读点实测分区下界.md`（★ 含 §4.5「本轮的三处自我修正」）· **LESSONS §503**。
+
+★★ **canonical 视图退役（★ 本轮只定形、不改）**：变更面已查死 = **生产 208 行 / 90 文件**（★ 运行时 SQL 98 · 注释 90 · 常量 8 · **API 对外契约 3** · 日志 6 · i18n 2 · 指向另一张已退役视图 1 ⇒ 勿动）+ **测试 128 文件**（★ 108 个含字面量 ⇒ 改名后会红）+ **2 个「复活旧名」点**（`db/request_logs_view_schema.go` 的 `ensureRequestLogsCurrentMonthView` · `scripts/apply-db-revision-sequence.sh:2692 repair_request_logs_view_tail()`）+ 6 条同批改风险；★★ **新名不得撞 `public.session_turns_with_current_month`（55 列）**；★ 迁移号 **915** 空闲，两份 TSV 均不需登记。
+
+★★ **⇒ ⇒ 下一轮的正确次序（★ 本轮最重要的一条交接 ★）**：★★
+★★ ① **先给 `api_key_id` 补表达式索引**（★ 照 `idx_session_turns_credential_ts` 的范式）—— ★★ **这是唯一被实测指向的抓手**，★★ **但 252 是只读库 ⇒ 必须在本地真库 / 预发上量出收益再谈上生产**；
+★★ ② 再按「**这个读点要不要 `details` 侧的列**」重新给 35 个读点分类（★ **不是**「读了哪些列」—— 实测证明列宽不是瓶颈）；
+★★ ③ 最后才谈 canonical 视图改名（★ 它的前置是「所有读点迁走」）。
+
+★★ **本轮明确没做（留给下一轮，别重复排查）**：★★ `api_key_id` 表达式索引的**实建与收益实测**（★ 252 只读 ⇒ 需本地/预发）· ★ 35 读点按「要不要 JOIN」重分类 · ★ canonical 视图改名 · ★ **211 未连 ⇒ 本轮全部读数结论只对 252 成立** · ★ 90 天窗读点冷缓存下 >180s（热缓存 ~15s）⇒ **「超时」这个结论对缓存状态敏感** · ★ U+FFFD 专项（182 处 / 48 文件）· ★ POST 面 110 条 · ★ 35 读点 rollup/现算分类（8 个「混合」待人工判定）· ★ 承 R174/R176：★ 211/252 执行 914（属主放行）· ★ 共享库 `pg_container_usable` 探针缺陷（属主裁决）· ★ `router.ts:490` 的 `/ops/*` 死代码（产品决策）· ★ 存量迁移 `SET LOCAL` → 会话级 `SET`。
+> **2026-10-28 恢复侧防抖实施轮 + 批判审计轮：P0-A 恢复期渐进回流量 + P0-B NodeState 判死退避对齐 URSM**（goal 会话）：
+> ★ 承接同日研究档 `docs/audit/2026-10-28-两层路由审计与业界方案对比.md` §4.1 的「P0-A+P0-B 同轮」建议，落地 + 211 蓝绿实测 + 批判复审三步走。
+> ⇒ ★ **P0-B（治 G2）**：`credentialfpslot/node_state.go` 的 recordNodeOutcomeScript 禁用时长从固定 300s 改为
+> **cooldown×2^(N−1) 封顶 1800**（与 URSM record_request.lua 的 cool×2^disable_count→min(cap) **逐操作对齐**，
+> 幂取递增前 disable_count ⇒ 首次禁用与旧行为逐秒相等）；**冷却到期+失败分支（恢复试探失败）从「固定时长+不动计数」
+> 改为同公式消费计数并 +1**——那正是振荡节点恒定周期翻红的直接根因；settings 热更键
+> `routing.node_disabled_backoff_cap_seconds`（默认 1800=URSM BackoffCapSeconds）。
+> ⇒ ★★ **顺手修掉一个既有缺陷**：正常路径禁用分支的 after_recovery 判定里 `last_success_at > last_disabled_at`
+> 是**死条件**（判定前 last_disabled_at 已被覆盖为 now，恒 false）⇒ 改为覆盖前先取 prev_disabled_at。
+> ⇒ ★ **P0-A（治 G1）**：breaker 加 `RecoveredAt`（RecordSuccess prev≠CLOSED / Reset 写、翻红清）+ NodeState 加
+> `recovered_at`（Lua 到期+成功分支写）⇒ 两路信号**取较晚**；`calculateLoadScore` 第 7 维 `recoveryPenalty`
+>（W_RECOVERY 默认 0.10，线性 1→0 over RAMP_SECONDS 默认 300s）+ `firstHopLotteryWeights` 恢复期份额乘
+> **ramp 因子 0.2→1.0**（不进 p 折算、与 max(1,…) floor 叠加）；任一 env 置 0 ⇒ **全链路与现状逐字节一致**（单测钉）。
+> ⇒ ★ **接线**：Router 新增 `CircuitRecovery` 窄接口（main.go 装配 cm——**与 Executor.Circuit 同一 Manager**，批判轮核实调用点实参）；
+> **authoritative 模式下 NodeState 一路无快照**（filterHealthyNodes 只在非 authoritative 跑）⇒ ramp 靠 breaker 一路
+> （executor 层写入不分路由模式）——生产主路径仍生效。
+> ⇒ ★★ **批判审计轮（e51befcec）抓到三处缺陷并修正**：
+> ★★ ① **reset 脚本 ramp 语义与 breaker.Reset 相反**（真缺陷）：breaker.Reset 写 recoveredAt（手动恢复进 ramp）而首版
+> resetNodeHealthStateScript **清** recovered_at ⇒ admin 手动恢复路由健康两面语义相反 ⇒ 改为写 recovered_at=redis TIME（对称）+ 新测试钉住；
+> ★ ② **settings 注册守卫测试没覆盖新键**（守卫缺口——热更静默失效测试不红，默认值恰与 fallback 同值更难察觉）⇒ 补 want 清单 + defaults 表；
+> ★ ③ **热路径 env 读序**：无恢复信号的候选不该读 RAMP_SECONDS env ⇒ 信号前置早退（0 env 读返回）。
+> ⇒ ★★ **批判轮的两个「断言自己写错」教训**（测试实现对、断言错，各修一次）：「两路取较晚」期待值算错（0.5 写成 1.0）；
+> p×ramp 叠加份额忽略 int() **截断**语义（int(1.99…)=1 不是 2，R46 F8② 早有注明）⇒ 改为 9 vs 1 的对照断言（乘法叠加的区分度证明）。
+> ⇒ ★ **核查记录（未改动但已核实，下轮勿重复）**：NewExecutor 第二实参=main 的 cm（接线正确）；SetNodeState/ResetAll
+> **生产调用方为零**（Go 懒翻转的 disable_count 清零无写回路径、无「全池同时进 ramp」风险）；fpSlotRedis→cfg.RedisDB=db5
+> （上轮「db5 键为 0」解读正确）；W_RECOVERY 两处读法不同源（EnvWeights 预解析 vs firstHop 现场 env）**与 sticky/recency
+> 既有模式一致**、容器形态无分叉窗口 ⇒ 登记不改（统一需重构四维，独立小轮）。
+> ⇒ ★ **211 验证链**：蓝绿 a→b（脚本、readyz 后切流、旧槽保留）；二进制新符号全命中（树无漂移；**量具先修再下结论**——
+> 首报 0 命中是路径笔误 llm-gateway-go≠llm-gateway）；**真实 Redis 上逐字提取 Lua 原文 EVAL 全序列实测**：300→600→1200→
+> 1800(cap)→到期成功（recovered_at 落地+dc 归零）全部符合；LOAD_SCORE_V2 已带 recovery_penalty 字段；公网 200、切流后零 panic。
+> ⇒ ★ **读数**：`go build ./...` ✓；受影响 4 包 + dispatch + ursm/v2 全家(17 包)测试全绿；211 两轮部署（7792a4125 → e51befcec）。
+> ⇒ ★ **本轮明确没做（留给下一轮，别重复排查）**：**P0-C 重试占比预算+jitter** · **P1-A 成功率池化弹出** ·
+> **P1-B sticky 工程三件**（TTL 无消费者/删除不落 DB/cached_tokens 打分）· **P1-C CNY cohort 未折 7.2 倍 + unknown 价=max 惩罚扭曲** ·
+> **P1-D 状态面对拍门**（R149 教训的地基）· **「恢复节点 5min 内首跳占比」专用指标**（LOAD_SCORE_V2 recovery_penalty 已可观测，专用指标待有真实翻红样本再评估）·
+> **sticky 族与 recovery 族的「两处 env 读法不同源」既有债务统一**。
+> ⇒ 实施档 `docs/audit/2026-10-28-恢复侧防抖实施轮-P0A-P0B.md`（§6 为批判审计轮）。
+> **2026-10-28 live 页浮层归属 + 手机适配轮**（goal 会话）：
+> ★ 两件事：① 修「点左栏请求、摘要浮层却弹在右栏」；② /live 适配手机观察模式。
+> ⇒ ★★ **病根有两层**：第一层 DOM 归属（`RequestZoomPanel` 只挂右栏）好修；
+> ★★★ 第二层是修完归属后**视觉复核**抓到的 —— **浮层 y=1552 > 视口 900**：
+> grid 行是内容高，50 行/页明细把两栏撑到 ~2000px，浮层锚「整列底部」
+> ⇒ **点行后摘要弹在视口外 1000+px，用户根本看不见** ⇒ 「位置不对」的一半
+> 其实是「看不见」⇒ 修法：桌面行收口 `minmax(0,1fr)`，列表回到内滚+分页形态。
+> ⇒ ★★ **手机端（390 实测）**：窄屏 `.live-topology` 钉死 100% 会把栅格行
+> 塌成等分三段 159px/列表 0 高（定高+flex-basis:0 子项+行 auto 连锁塌陷）
+> ⇒ 改自然流式 + 两列表限高 70vh 内滚（整页 4623→2191px）+ 聚合摘要限高
+> 176px 可滚（否则 8 行摘要把明细挤到一两行）+ ≤768 行高 44px 触控加大；
+> `TopologyCanvas` height:100%→flex（时间线不再被挤出）。
+> ⇒ ★★ **量具坑两枚**：DEV 预览页是 public 路由走 guest 外壳（min-height 增长链）
+> ≠ 生产 app 外壳（100dvh 定高链）⇒ **在访客外壳上量已登录页面几何 = 错误量具**
+> （本轮 CDP 注入等价外壳样式复测）；IAB click 在实时流页持续超时 ⇒ 无头 Chrome+CDP。
+> ⇒ ★ **验证**：vitest 2900 过/2 跳（新增浮层归属列断言）；vue-tsc 0 错；6 门 PASS；
+> build ✓；桌面/手机截图视觉+几何双证。
+> ⇒ ★ **211**：干净 worktree（部署 tar 工作树，共享 checkout 有并行会话未提交
+> Go 改动 ⇒ worktree + LLM_GATEWAY_ROOT 钉根规避）蓝绿部署 `2.5.8-d626bfa8`；
+> /version git_sha ✓；线上 CSS 含新符号 `zoom--left` ✓；/live 移动 UA 深链不重定向 ✓。
+> ⇒ 审计档 `docs/audit/2026-10-28-live页浮层归属与手机适配轮.md`；通用式见 LESSONS.md **§505**。
 > **2026-10-28 live 页选路层表达轮 + 当天汇总轮（含批判式审计）**（会话 goal 轮）：
 > ★ 承接 owner 口径（「内部直连模型 / auto 按任务选模这层没表达；缓存→脱敏→压缩
 > 三层缺压缩；路由与节点状态属基础服务放一侧」）+ 追加需求（「当天模型×供应商

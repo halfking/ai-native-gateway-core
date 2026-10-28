@@ -480,6 +480,28 @@ var (
 		},
 		[]string{"result"},
 	)
+
+	// P1-D (audit 2026-10-28 §4): node_probe_state mirror write
+	// observability. A mirror write failure is the ONE observable point on
+	// the "退避阶梯被架空" chain (R149): when the failure UPDATE does not
+	// land, next_retry_at stops advancing and the pump re-fires the pair
+	// every 45~60s instead of honoring the 5min/6h ladder. Historically this
+	// failure was a Warn-only log ("WARN 不是告警" — ursm_persist_alert.go's
+	// 701-failure/62h lesson), so these counters turn it into a rateable
+	// signal; nodeProbeMirrorWriteFailureStreak feeds the sustained-outage
+	// log wording.
+	nodeProbeMirrorWriteRetriesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "llmgw_node_probe_mirror_write_retry_total",
+		Help: "Immediate in-cycle retries of a failed node_probe_state mirror write (success-reset or failure-backoff UPDATE).",
+	})
+	nodeProbeMirrorWriteFailuresTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "llmgw_node_probe_mirror_write_failed_total",
+		Help: "node_probe_state mirror writes that failed even after the bounded immediate retry (backoff ladder left unadvanced for these pairs).",
+	}, []string{"branch"}) // branch: success|failure
+	nodeProbeMirrorWriteFailureStreak = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "llmgw_node_probe_mirror_write_failure_streak",
+		Help: "Consecutive node_probe_state mirror write failures (any branch); 0 on the first success.",
+	})
 )
 
 // recordMVRefreshSuccess records a successful MV refresh with its duration.
