@@ -65,6 +65,12 @@ type writePolicyResolver struct{ candidates []provider.Candidate }
 
 func (writePolicyResolver) Enabled() bool                           { return true }
 func (writePolicyResolver) ModelKnown(context.Context, string) bool { return true }
+
+func (writePolicyResolver) ModelModalityMismatch(context.Context, string, string, string, string) (*provider.ModalityMismatch, error) {
+	// 默认：不是模态不匹配。既有测试的语义是「零候选」，不应被新的
+	// 模态诊断分支改变行为；需要覆盖模态分支的测试单独提供自己的替身。
+	return nil, nil
+}
 func (r writePolicyResolver) GetCandidates(context.Context, string, string, string) ([]provider.Candidate, *provider.Policy, error) {
 	return r.candidates, provider.DefaultPolicy(), nil
 }

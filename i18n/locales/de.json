@@ -44,6 +44,27 @@
   "unsupported_feature": {
     "other": "Das ausgewählte Modell unterstützt dieses Anfrageformat oder diese Modalität nicht."
   },
+  "modality_mismatch": {
+    "other": "Modell „{{.Model}}“ akzeptiert keine {{.Modality}}-Eingaben. Diese Anfrage enthält {{.Modality}}-Inhalte, das Modell ist jedoch nur als {{.RegisteredModality}} registriert. Senden Sie eine reine Textanfrage an dieses Modell oder leiten Sie die Anfrage an ein Modell weiter, das {{.Modality}} unterstützt."
+  },
+  "modality_vision": {
+    "other": "Bild"
+  },
+  "modality_audio": {
+    "other": "Audio"
+  },
+  "modality_video": {
+    "other": "Video"
+  },
+  "modality_image": {
+    "other": "Bilderzeugung"
+  },
+  "modality_multimodal": {
+    "other": "multimodal"
+  },
+  "modality_text": {
+    "other": "Text"
+  },
   "model_deprecated": {
     "other": "Das angeforderte Modell wurde vom Upstream-Anbieter dauerhaft eingestellt (End-of-Life)."
   },

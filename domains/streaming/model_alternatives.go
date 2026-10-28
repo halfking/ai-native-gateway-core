@@ -44,6 +44,16 @@ type ModelAlternativesResult struct {
 	// TaskType is the session's inferred task type when one was available,
 	// so the client can explain WHY these models were suggested.
 	TaskType string `json:"task_type,omitempty"`
+	// RequestedModality is the media modality the request carried, when it
+	// carried one. It is set only on the modality-mismatch path, where the
+	// client needs to know that the suggestions were filtered to models that
+	// can actually read that media.
+	//
+	// ★ Without it, the client cannot tell "these are models that can take
+	// your images" from "these are models that happen to be up" — and the
+	// second reading is how a user ends up switching to another text-only
+	// model and hitting the same wall.
+	RequestedModality string `json:"requested_modality,omitempty"`
 	// Alternatives is ordered best-first and may be empty, which is a
 	// meaningful answer: nothing at all is routable right now, so the
 	// client should wait rather than retry a different name.
@@ -110,7 +120,11 @@ type ModelAlternativesFinder struct {
 	// queryFn 是查询缝：默认走 alternativesSQL + db.Query；测试注入以观察
 	// 「缓存命中不再发查询」「后台重算只发一次」「冷未命中同步预算失败后转后台」。
 	// nil ⇒ 默认实现。
-	queryFn func(ctx context.Context, excludeModel, tenantID, taskType string) ([]ModelAlternative, error)
+	// requestModality（★ 2026-10-28 模态不匹配轮）：过滤建议列表，只留真能
+	// 服务该媒体模态的模型；'' = 不过滤。★ 合并教训：上游的缓存重构与本轮的
+	// 模态过滤在同一条缝上相撞——缝必须带 modality，缓存键按模态分开，
+	// 否则 vision 请求会命中「含 text-only 模型」的缓存列表，过滤形同虚设。
+	queryFn func(ctx context.Context, excludeModel, tenantID, taskType, requestModality string) ([]ModelAlternative, error)
 }
 
 // alternativesCacheEntry 是一个 (tenant, taskType) 键的缓存槽。alts 为空且
@@ -147,8 +161,8 @@ func (c *alternativesCache) clockNow() time.Time {
 	return time.Now()
 }
 
-func cacheKey(tenantID, taskType string) string {
-	return tenantID + "\x00" + taskType
+func cacheKey(tenantID, taskType, requestModality string) string {
+	return tenantID + "\x00" + taskType + "\x00" + requestModality
 }
 
 // lookup 返回该键的**快照**（列表切片头 + 新鲜度 + 是否存在）。必须在锁内取值：
@@ -264,17 +278,29 @@ func (f *ModelAlternativesFinder) SetIntentCache(c *autoroute.SessionIntentCache
 // higher recent usage wins.
 //
 // taskType may be "" when nothing is known about the session; the query then
-// degrades to featured-then-popular. Errors are logged and reported as an empty
-// list, never propagated: the caller is already writing an error response and
-// must not be derailed by a failure in the suggestion path.
+// degrades to featured-then-popular.
+//
+// requestModality filters the suggestions to models that can actually serve
+// that media modality ("" = no filter, the historical behaviour). Errors are
+// logged and reported as an empty list, never propagated: the caller is
+// already writing an error response and must not be derailed by a failure in
+// the suggestion path.
+//
+// ★ Why the filter exists: the modality-mismatch path tells the client
+// "this model cannot read your images — use one that can". A list that still
+// contains text-only models makes that advice unusable: the user follows it
+// and hits the identical wall one model over. The filter uses the SAME
+// acceptance rule as the router's modality gate (provider.modalityAccepts),
+// so a suggested model is guaranteed to be routable for that modality.
 func (f *ModelAlternativesFinder) Find(
 	ctx context.Context,
-	requestedModel, tenantID, taskType string,
+	requestedModel, tenantID, taskType, requestModality string,
 ) ModelAlternativesResult {
 	result := ModelAlternativesResult{
-		RequestedModel: requestedModel,
-		TaskType:       taskType,
-		Alternatives:   []ModelAlternative{},
+		RequestedModel:    requestedModel,
+		TaskType:          taskType,
+		RequestedModality: strings.TrimSpace(strings.ToLower(requestModality)),
+		Alternatives:      []ModelAlternative{},
 	}
 	if f == nil || f.db == nil {
 		return result
@@ -296,14 +322,17 @@ func (f *ModelAlternativesFinder) Find(
 		qfn = f.queryAlternativesSQL
 	}
 	c := f.ensureCache()
-	key := cacheKey(tenantID, taskType)
+	// ★ 缓存键必须含 modality：同一 (tenant, taskType) 下，vision 请求与
+	// 文本请求的合法建议集合不同——共享键会让 vision 请求命中一份
+	// 「含 text-only 模型」的列表（2026-10-28 合并抓到）。
+	key := cacheKey(tenantID, taskType, result.RequestedModality)
 
 	// 命中（新鲜或过期）：条目存在就直接服务——过期条目后台重算（singleflight
 	// 由 beginCompute 保证），请求侧零新增延迟。空列表且新鲜是**有意义的答案**
 	//（当前无路由可达），照答，不重算。
 	if cachedAlts, fresh, found := c.lookup(key); found {
 		if !fresh && c.beginCompute(key) {
-			f.refreshInBackground(key, tenantID, taskType, qfn)
+			f.refreshInBackground(key, tenantID, taskType, result.RequestedModality, qfn)
 		}
 		if cachedAlts != nil {
 			result.Alternatives = filterAlternatives(cachedAlts, requestedModel)
@@ -319,7 +348,7 @@ func (f *ModelAlternativesFinder) Find(
 	// 进缓存；失败（多半是被预算取消）不阻塞请求——转后台用宽预算重算，给
 	// 下一个失败请求用。
 	syncCtx, cancel := context.WithTimeout(ctx, alternativesQueryTimeout)
-	alts, err := qfn(syncCtx, requestedModel, tenantID, taskType)
+	alts, err := qfn(syncCtx, requestedModel, tenantID, taskType, result.RequestedModality)
 	cancel()
 	if err == nil {
 		c.store(key, alts)
@@ -328,7 +357,7 @@ func (f *ModelAlternativesFinder) Find(
 	}
 	slog.WarnContext(ctx, "model alternatives lookup failed; returning plain no_candidate",
 		"error", err, "requested_model", requestedModel, "tenant_id", tenantID)
-	f.refreshInBackground(key, tenantID, taskType, qfn)
+	f.refreshInBackground(key, tenantID, taskType, result.RequestedModality, qfn)
 	return result
 }
 
@@ -336,13 +365,14 @@ func (f *ModelAlternativesFinder) Find(
 // 视为整体失败（不留部分行进缓存）。超时预算由调用方决定：同步路径
 // alternativesQueryTimeout、后台路径 alternativesRefreshBudget。
 func (f *ModelAlternativesFinder) queryAlternativesSQL(
-	ctx context.Context, excludeModel, tenantID, taskType string,
+	ctx context.Context, excludeModel, tenantID, taskType, requestModality string,
 ) ([]ModelAlternative, error) {
 	rows, err := f.db.Query(ctx, alternativesSQL,
 		strings.ToLower(strings.TrimSpace(excludeModel)),
 		tenantID,
 		taskType,
 		maxModelAlternatives,
+		strings.TrimSpace(strings.ToLower(requestModality)),
 	)
 	if err != nil {
 		return nil, err
@@ -380,14 +410,14 @@ func (f *ModelAlternativesFinder) queryAlternativesSQL(
 // 调用方必须已通过 beginCompute 拿到重算权；成功进缓存，失败保留旧值并清
 // computing 标志，让下一次失败请求能再试。
 func (f *ModelAlternativesFinder) refreshInBackground(
-	key, tenantID, taskType string,
-	qfn func(ctx context.Context, excludeModel, tenantID, taskType string) ([]ModelAlternative, error),
+	key, tenantID, taskType, requestModality string,
+	qfn func(ctx context.Context, excludeModel, tenantID, taskType, requestModality string) ([]ModelAlternative, error),
 ) {
 	go func() {
 		defer f.cache.endCompute(key)
 		ctx, cancel := context.WithTimeout(context.Background(), alternativesRefreshBudget)
 		defer cancel()
-		alts, err := qfn(ctx, "", tenantID, taskType)
+		alts, err := qfn(ctx, "", tenantID, taskType, requestModality)
 		if err != nil {
 			slog.WarnContext(ctx, "model alternatives background refresh failed",
 				"error", err, "tenant_id", tenantID, "task_type", taskType)
@@ -411,6 +441,8 @@ func (f *ModelAlternativesFinder) refreshInBackground(
 //	$2 tenant id                    — own-tenant plus shared 'default' providers
 //	$3 task type ('' when unknown)  — drives the task_match tier
 //	$4 row limit
+//	$5 requested modality ('' = no filter) — restricts suggestions to models
+//	   that can serve that media modality; see the routable CTE for the rule
 //
 // Ordering tiers (tier 1 first):
 //
@@ -450,6 +482,20 @@ routable AS (
       AND (v.tenant_id = $2 OR v.tenant_id = 'default')
       AND COALESCE(mc.status, 'active') = 'active'
       AND mc.canonical_name <> $1
+      -- ★ 2026-10-28: 模态过滤（$5）。当本次请求带图/音频而请求的模型是
+      -- 文本模型时，建议列表必须只列**真能读该模态**的模型。
+      -- 判据与路由器模态门逐字同源（provider.modalityAccepts）：
+      --   vision/audio/video → mc.modality IN (该模态, 'multimodal')
+      --   multimodal           → mc.modality = 'multimodal'
+      --   image                → mc.modality IN ('image','vision','multimodal')
+      -- $5 为空（文本请求 / 历史路径）⇒ 不过滤，保持既有行为。
+      AND (
+          $5 = ''
+          OR $5 = 'text'
+          OR ($5 IN ('vision','audio','video') AND COALESCE(mc.modality,'text') IN ($5, 'multimodal'))
+          OR ($5 = 'multimodal' AND COALESCE(mc.modality,'text') = 'multimodal')
+          OR ($5 = 'image' AND COALESCE(mc.modality,'text') IN ('image','vision','multimodal'))
+      )
     GROUP BY mc.id, mc.canonical_name, mc.display_name, mc.family
 ),
 task_models AS (
@@ -595,12 +641,16 @@ func (h *ChatHandler) SetModelAlternativesFinder(f *ModelAlternativesFinder) {
 // Never returns an error: this runs while the handler is already committed to
 // writing a 503, so every failure degrades to an empty list and the client gets
 // the plain error it would have received before.
+//
+// requestModality filters the suggestions to models that can serve that media
+// modality; "" keeps the historical unfiltered behaviour.
 func (h *ChatHandler) findModelAlternatives(
 	r *http.Request,
 	reqBody *chatRequestBody,
 	bodyBytes []byte,
 	clientModel string,
 	keyInfo *authentication.KeyInfo,
+	requestModality string,
 ) ModelAlternativesResult {
 	if h == nil || h.altFinder == nil {
 		return ModelAlternativesResult{
@@ -624,7 +674,7 @@ func (h *ChatHandler) findModelAlternatives(
 		sigs,
 	)
 
-	return h.altFinder.Find(r.Context(), clientModel, tenantID, taskType)
+	return h.altFinder.Find(r.Context(), clientModel, tenantID, taskType, requestModality)
 }
 
 // isKnownTaskType validates a client-supplied X-Gw-Task-Hint against

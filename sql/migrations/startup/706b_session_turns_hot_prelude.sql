@@ -21,10 +21,21 @@
 -- So this file creates the table the way 526 means it, derived from the live
 -- parent catalog so the shapes cannot drift:
 --   * CREATE TABLE ... LIKE public.session_turns INCLUDING ALL copies column
---     names, types, defaults, NOT NULL, identity and storage parameters.
---   * LIKE does not copy UNIQUE/PRIMARY KEY or CHECK constraints, so those
---     are re-created explicitly, with the same names and definitions 526
---     declares and its post-condition checks for.
+--     names, types, defaults, NOT NULL, identity and storage parameters, and
+--     (INCLUDING ALL implies INCLUDING CONSTRAINTS + INCLUDING INDEXES) the
+--     parent's CHECK / UNIQUE constraints and indexes -- under names derived
+--     from the PARENT table.
+--   * Those copied constraints are therefore RENAMED below (see the constraint
+--     block), not re-created: re-adding would fail with "multiple primary
+--     keys".
+--     ★★ 2026-10-28（R175 轮）订正：★★ 本段原先写的是「LIKE does not copy
+--     UNIQUE/PRIMARY KEY or CHECK constraints, so those are re-created
+--     explicitly, with the same names and definitions 526 declares」——
+--     ★★ **那是错的**：★★ PG 的 INCLUDING ALL 含 INCLUDING CONSTRAINTS
+--     ⇒ ★ CHECK / UNIQUE **会被复制**（名字取自父表）⇒ ★★ 与本文件下方
+--     第 49 行起的实际做法（**改名**，而不是重建）**自相矛盾**；
+--     ★★ 而 R175 的迁移 914 把「**两侧都要加**」这条范式**建立在这个真实行为上**
+--     ⇒ ★★ 这处订正不是文字游戏：★ 它决定着 914 该不该给 hot 表也加一条约束。
 --
 -- The table is empty on a fresh deploy, so creating it here is lossless. On
 -- a database where it already exists this file is a no-op and 526's own

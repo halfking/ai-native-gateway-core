@@ -1251,6 +1251,12 @@ var maasMonthlyBillsCoupons913 []byte
 //go:embed embeddata/startup/913_maas_monthly_bills_coupons.down.sql
 var maasMonthlyBillsCoupons913Down []byte
 
+//go:embed embeddata/startup/914_session_turns_origin_stage_check.sql
+var sessionTurnsOriginStageCheck914 []byte
+
+//go:embed embeddata/startup/914_session_turns_origin_stage_check.down.sql
+var sessionTurnsOriginStageCheck914Down []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1623,6 +1629,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/912_session_recording_trash.down.sql":                                 sessionRecordingTrash912Down,
 	"startup/913_maas_monthly_bills_coupons.sql":                                   maasMonthlyBillsCoupons913,
 	"startup/913_maas_monthly_bills_coupons.down.sql":                              maasMonthlyBillsCoupons913Down,
+	"startup/914_session_turns_origin_stage_check.sql":                            sessionTurnsOriginStageCheck914,
+	"startup/914_session_turns_origin_stage_check.down.sql":                       sessionTurnsOriginStageCheck914Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,
