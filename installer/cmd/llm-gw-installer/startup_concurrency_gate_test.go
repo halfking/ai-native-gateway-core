@@ -212,7 +212,7 @@ var knownStartupChainConcurrencyViolations = map[string]int{
 	// 计数 4：4 条 CREATE INDEX CONCURRENTLY IF NOT EXISTS（注释里的提法
 	// 已被剥注释器排除）。
 	"909_session_summaries_search_trgm_indexes.sql": 4,
-	// 915（2026-10-28 R178 轮）与 877/887/888/898/902/909 **同类**：携带
+	// 916（2026-10-28 R178 轮）与 877/887/888/898/902/909 **同类**：携带
 	// dbinit:no-transaction 标记 ⇒ 非事务通道，能正常应用。
 	//
 	// 它给会话族建 api_key_id **归一表达式**的索引
@@ -227,7 +227,7 @@ var knownStartupChainConcurrencyViolations = map[string]int{
 	// 计数 2：一条生成器形态的 CREATE INDEX CONCURRENTLY（逐分区那条，
 	// 藏在 format() 的字符串字面量里）+ 一条 hot 表的 CREATE INDEX CONCURRENTLY
 	// （注释里的提法已被剥注释器排除）。
-	"915_session_turns_api_key_ts_index.sql": 2,
+	"916_session_turns_api_key_ts_index.sql": 2,
 }
 
 // countConcurrentlyIn counts CONCURRENTLY occurrences in the given file content.

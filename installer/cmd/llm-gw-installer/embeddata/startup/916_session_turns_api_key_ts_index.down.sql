@@ -1,12 +1,12 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/915_session_turns_api_key_ts_index.down.sql
--- Migration:     915 (down)
+-- File:          sql/migrations/startup/916_session_turns_api_key_ts_index.down.sql
+-- Migration:     916 (down)
 -- Database:      llm_gateway
--- Purpose:       回滚 915 —— 移除会话族 api_key_id 归一表达式的 (CASE, ts DESC) 索引
+-- Purpose:       回滚 916 —— 移除会话族 api_key_id 归一表达式的 (CASE, ts DESC) 索引
 --                 （父壳连带分区子索引一并消失）+ 热侧独立索引。
 --
 -- ── 回滚后的行为 ────────────────────────────────────────────────────────
--- 「按 api_key 过滤会话」退回 915 前：ts 索引 + 逐行 CASE 过滤 ⇒
+-- 「按 api_key 过滤会话」退回 916 前：ts 索引 + 逐行 CASE 过滤 ⇒
 --   252 实测（7 天窗、api_key=113）：窗口内 75,449 行全读、丢掉 37,825 行，
 --   一次读点 220,401 块（根节点口径）。
 --   ⇒ ★★ **除非确认索引本身引发问题（写入放大 / 空间），不建议回滚。★★

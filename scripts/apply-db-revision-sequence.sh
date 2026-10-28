@@ -2406,7 +2406,7 @@ files=(
   #   幂等：定义感知守卫（已是规范形态就跳过重建），可重复执行。
   "$ROOT_DIR/sql/migrations/startup/914_session_turns_origin_stage_check.sql"
 
-  # ★ 915: 会话族 api_key_id **归一表达式**的 (CASE, ts DESC) 索引（R178 轮）。
+  # ★ 916: 会话族 api_key_id **归一表达式**的 (CASE, ts DESC) 索引（R178 轮）。
   #   缺口本体（252 生产只读实测）：按 api_key 过滤会话的读点
   #   （admin/usage.go:841-859，7 天窗）实测「窗口内 75,449 行全读、丢掉
   #   37,825 行」，一次读点 220,401 块 ⇒ **一半的行是白读的**。
@@ -2417,7 +2417,7 @@ files=(
   #     ⇒ 普通 btree 与部分索引都承不住（PG 的谓词蕴含是语法的）
   #     ⇒ ⇒ 只能建**与投影逐字一致的表达式索引**。
   #   ★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带 dbinit:no-transaction 标记。
-  "$ROOT_DIR/sql/migrations/startup/915_session_turns_api_key_ts_index.sql"
+  "$ROOT_DIR/sql/migrations/startup/916_session_turns_api_key_ts_index.sql"
 )
 
 

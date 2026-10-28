@@ -1,7 +1,7 @@
 -- dbinit:no-transaction —— 本文件含 CREATE INDEX CONCURRENTLY（PG 不允许在事务块内执行），installer 的 applySQL 据此走非事务通道（见 installer/internal/dbinit/runner.go noTransactionMarker，887/888/729 同款）。无该标记时全新安装会失败于 "CREATE INDEX CONCURRENTLY cannot run inside a transaction block"。
 -- ===========================================================================
--- File:          sql/migrations/startup/915_session_turns_api_key_ts_index.sql
--- Migration:     915
+-- File:          sql/migrations/startup/916_session_turns_api_key_ts_index.sql
+-- Migration:     916
 -- Database:      llm_gateway
 -- Purpose:       给会话族的 api_key_id **归一表达式**建索引 —— 让「按 api_key 过滤会话」
 --                 能用上【索引 seek】而不是【逐行过滤】。

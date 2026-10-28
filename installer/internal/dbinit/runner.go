@@ -1658,7 +1658,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		// 现役约束名 session_turns_origin_stage_check（父表）
 		// / session_turns_hot_origin_stage_check（hot 表）。
 		"914_session_turns_origin_stage_check.sql",
-		// 915: 会话族 api_key_id **归一表达式**的 (CASE, ts DESC) 索引。
+		// 916: 会话族 api_key_id **归一表达式**的 (CASE, ts DESC) 索引。
 		// ★ 缺口本体（R177 轮，252 生产只读实测）：按 api_key 过滤会话的读点
 		//   （admin/usage.go:841-859，7 天窗）实测「窗口内 75,449 行全读、
 		//   丢掉 37,825 行」，一次读点 220,401 块 ⇒ **一半的行是白读的**。
@@ -1670,7 +1670,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		//   ⇒ 普通 btree 用不上；**部分索引也用不上**（PG 的谓词蕴含是语法的）。
 		// ★ 含 CREATE INDEX CONCURRENTLY ⇒ 本文件带 dbinit:no-transaction 标记（首行），
 		//   applySQL 据此不加 --single-transaction（887/888/729 同款）。
-		"915_session_turns_api_key_ts_index.sql",
+		"916_session_turns_api_key_ts_index.sql",
 		},
 	}
 }
