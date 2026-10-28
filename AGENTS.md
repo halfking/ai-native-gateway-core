@@ -14003,3 +14003,34 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > 六条：★★ 旁键不是反馈 / ★★ 拦截那一刻记下放行的钥匙
 > 且键逐字节一致 / ★★ 一条载荷多条规则——批准是收敛链条 / ★ 进程内开关是运维面不是安全面 /
 > ★ 量具口径要覆盖「谁把结果丢了」 / ★ 语言包值里的占位符破坏钉死契约）。
+> **2026-10-28 live 页选路层遗留轮：models-today 交叉展开 + 压缩格环回口径**（会话轮）：
+> ★ 承接 §507（live 页选路层表达轮）遗留四项——①②④ 落地、③ 登记。
+> 审计档 `docs/audit/2026-10-28-live页选路层遗留轮-交叉展开与压缩环回口径.md`。
+> ⇒ ★ **① `?by=provider` 交叉展开**：stats_usage_daily 的 provider_model 维度原生带
+> provider_id ⇒ 新 SQL 在 (canonical_id, provider_id) 二元组聚合（top-N canonical
+> 同默认截断语义）⇒ Go 折叠成父行+providers 子行，**父=Σ子由构造保证**（同一
+> WHERE/GROUP BY，LEFT JOIN 不丢 provider_id=0 未知桶）测试钉住；**两层 share 分层**
+> （父行=当日总量占比 / 子行=模型内分布，测试断言 600/900 而非 600/1000）；
+> 默认调用响应形状逐字节兼容（providers omitempty + 断言不出现）。
+> ⇒ 前端 TodaySummaryRail 模型行内展开钮（aria-expanded 如实、展开不触发图过滤、
+> 60s 轮询保持展开态）；8 语种 +2 键（toggleProviders/providersCount）。
+> ⇒ ★★ **② 压缩格换判据（先量后定）**：211 生产 session_turns 实测——7 天 band 口径
+> 3,676 vs 实际改写（strategy ∉ {'',delta_append'}）4,665（**+29%**）、全量 5,579 vs
+> 8,932（**1.6×**）；差异全来自 **band=below 但实际压缩**的 1,069 条（滑窗压缩的
+> COUNT/相对窗口/IDLE 三个触发器与绝对档位无关）+ 80 条 band 越线未遂（summary
+> 失败 trim 无收缩）⇒ **档位观测≠压缩发生** ⇒ SSE 新增 additive 字段
+> **`compressed`**（同一把尺覆盖滑窗 LLM summary 环回/memo 回放/mechanical/4xx
+> 恢复全族）；★ 顺带修正 TokenBand 字段注释的错误声明（「preliminary|forced=
+> 触发过压缩」实测为假——前端旧判据正是照它写的）；前端压缩桶改判
+> `compressed===true`；4xx 恢复环回族 211 全量 0 条（接入零读数影响，字段顺手覆盖）。
+> ⇒ ★ **④ 变异臂**：靶点选 GATEWAY_IN_MODULES（带内顺序唯一事实源）注入反序 ⇒
+> ★ in-lane DOM order 断言精确一条红（rc=1）⇒ 还原 rc=0 ⇒ md5 逐字一致。
+> ⇒ ★ **③ 登记**：非 default 租户 e2e 验 provider-kinds 需 owner 凭据（用户侧动作）。
+> ⇒ 读数：go test ./admin/ 全量 ok（86.4s）；vue-tsc 0 错；vitest 2923 通过/2 跳过；
+> build ✓（menu-config 时间戳已还原并行会话版本）；15 道门全 PASS；CDP 预览页：
+> 主线顺序 DOM 序一致、**压缩9 非零**（compressed 口径数据通路）、三分桶守恒、
+> 键路径 0、console 0。
+> ⇒ 通用式 LESSONS **§515**（七条：★ 换判据要用生产实测定夺 / ★ 注释里的语义声明
+> 错了与代码错一样致命 / ★ pgxmock 空白归一让 SQL 形状断言假红（stripQuery 把两侧
+> 空白归一成单空格，\n 永远匹配不上）/ ★ 变异臂靶点选唯一事实源 / ★ 同名 share
+> 不同分母要断言能区分两者的数字 / ★ 两种意图两个钮 / ★ 构造即守恒）。

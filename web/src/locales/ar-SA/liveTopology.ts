@@ -70,6 +70,8 @@ export default {
     toggle: 'تبديل {group}',
     cache: 'ذاكرة',
     unknownProvider: 'Unknown provider',
+    toggleProviders: 'تبديل توزيع مزوّدي {model}',
+    providersCount: '{n} مزوّدًا',
     empty: 'No traffic today',
     degraded: 'لم تُهيَّأ عملية التجميع، والإحصاءات غير متاحة',
     unavailable: 'Statistics service unavailable',

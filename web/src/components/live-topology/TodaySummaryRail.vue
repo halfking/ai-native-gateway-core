@@ -51,9 +51,12 @@ async function load() {
   controller = new AbortController()
   loading.value = true
   // 两组独立加载：一组失败/降级不拖垮另一组（沿用 KPI 行的 allSettled 语义）。
+  // 模型组带 ?by=provider 交叉展开（2026-10-28 遗留①）：行内可展开
+  // 「该模型在哪些供应商上各跑了多少」——单次请求带回全部子行，展开
+  // 即时无二次往返；行数有界（top-N canonical × 各自的 provider 数）。
   const [providersRes, modelsRes] = await Promise.allSettled([
     getProvidersToday({ signal: controller.signal }),
-    getTopologyModelsToday({ signal: controller.signal }),
+    getTopologyModelsToday({ signal: controller.signal, byProvider: true }),
   ])
   if (providersRes.status === 'fulfilled') {
     providersData.value = providersRes.value
@@ -99,6 +102,35 @@ const modelItems = computed(() => {
 /** 模型行显示名：canonical 优先、raw 兜底（与拓扑图 modelKeyOf 同一口径）。 */
 function modelName(item: { canonical_name?: string; raw_model_name?: string }): string {
   return (item.canonical_name ?? '').trim() || (item.raw_model_name ?? '').trim() || '—'
+}
+
+// ── 模型行内供应商展开（2026-10-28 遗留①）──────────────────────────
+// 展开态按模型行的 key 记（60s 轮询重载后保持展开，不闪回）。
+const expandedModels = ref(new Set<string>())
+
+function modelRowKey(item: { canonical_id?: number; raw_model_name?: string }): string {
+  return String(item.canonical_id || item.raw_model_name || '')
+}
+
+function toggleModelProviders(item: { canonical_id?: number; raw_model_name?: string }) {
+  const key = modelRowKey(item)
+  const next = new Set(expandedModels.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  expandedModels.value = next
+}
+
+function modelProvidersExpanded(item: { canonical_id?: number; raw_model_name?: string }): boolean {
+  return expandedModels.value.has(modelRowKey(item))
+}
+
+/** 子行供应商显示名：display_name → catalog_code → 未知桶。 */
+function providerName(item: { display_name?: string; catalog_code?: string }): string {
+  return (
+    (item.display_name ?? '').trim() ||
+    (item.catalog_code ?? '').trim() ||
+    t('liveTopology.rail.unknownProvider')
+  )
 }
 
 const providerTotals = computed(() => {
@@ -281,6 +313,37 @@ onUnmounted(() => {
                 {{ tokens(item.total_tokens) }}<template v-if="cacheSum(item)"> · {{ t('liveTopology.rail.cache') }} {{ cacheText(item) }}</template>
               </span>
             </button>
+            <!-- 行内供应商展开（2026-10-28 遗留①）：该模型在哪些供应商上
+                 各跑了多少。子行 share 是模型内分布（后端 ?by=provider）。
+                 展开钮与选行钮分开：展开不触发图过滤，点行不过滤也不折叠。 -->
+            <button
+              v-if="item.providers?.length"
+              type="button"
+              class="rail__expand"
+              :aria-expanded="modelProvidersExpanded(item)"
+              :aria-label="t('liveTopology.rail.toggleProviders', { model: modelName(item) })"
+              data-testid="rail-model-expand"
+              @click.stop="toggleModelProviders(item)"
+            >
+              <CaretRight class="rail__caret rail__caret--sub" :class="{ 'is-open': modelProvidersExpanded(item) }" aria-hidden="true" />
+              {{ t('liveTopology.rail.providersCount', { n: item.providers.length }) }}
+            </button>
+            <ul v-if="item.providers?.length && modelProvidersExpanded(item)" class="rail__sublist" data-testid="rail-model-providers">
+              <li
+                v-for="sub in item.providers"
+                :key="sub.provider_id || sub.catalog_code"
+                class="rail__subrow"
+                :class="{ 'is-unknown': !sub.known }"
+              >
+                <span class="rail__name">{{ providerName(sub) }}</span>
+                <span class="rail__figures">
+                  <b>{{ compactNumber(sub.requests) }}</b>
+                  <i>{{ successRate(sub) }}</i>
+                </span>
+                <span class="rail__bar" :style="{ width: `${Math.round((sub.share || 0) * 100)}%` }" />
+                <span class="rail__tokens">{{ Math.round((sub.share || 0) * 100) }}%</span>
+              </li>
+            </ul>
           </li>
         </ul>
         <p v-else class="rail__empty">{{ t('liveTopology.rail.empty') }}</p>
@@ -463,6 +526,67 @@ onUnmounted(() => {
   font-size: 11px;
   color: var(--kx-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* ── 模型行内供应商展开（2026-10-28 遗留①）────────────────────── */
+.rail__expand {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  padding: 1px 4px 1px 12px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: 11px;
+  color: var(--kx-muted);
+}
+
+.rail__expand:hover {
+  color: var(--kx-text);
+  background: var(--kx-primary-soft);
+}
+
+.rail__caret--sub > svg {
+  width: 10px;
+  height: 10px;
+}
+
+.rail__sublist {
+  margin: 0;
+  padding: 0 0 2px 14px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rail__subrow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 1px 4px;
+  padding: 2px 4px;
+  border-left: 2px solid var(--kx-border);
+  border-radius: 0 6px 6px 0;
+}
+
+.rail__subrow .rail__name {
+  font-size: 11px;
+  color: var(--kx-muted);
+}
+
+.rail__subrow .rail__figures {
+  font-size: 11px;
+}
+
+.rail__subrow .rail__figures b {
+  font-weight: 500;
+}
+
+.rail__subrow .rail__bar {
+  height: 2px;
+  opacity: 0.45;
 }
 
 .rail__empty {
