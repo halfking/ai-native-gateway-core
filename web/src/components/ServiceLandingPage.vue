@@ -227,11 +227,8 @@ const railPoints = computed(() => props.heroPoints)
 .kx-landing__brand-logo {
   width: 60px;
   height: 60px;
-  border-radius: 12px;
   object-fit: contain;
   flex-shrink: 0;
-  background: var(--surface-elevated);
-  box-shadow: var(--kx-shadow-sm);
 }
 .kx-landing__brand-text {
   min-width: 0;

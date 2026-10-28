@@ -5,7 +5,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
+
+func enableRecordingConsentForOutboxTest(t *testing.T) {
+	t.Helper()
+	on := true
+	prev := settings.TestingConsentOverride
+	settings.TestingConsentOverride = &on
+	t.Cleanup(func() { settings.TestingConsentOverride = prev })
+}
 
 func TestBuildSessionOpenedEventV1_DeterministicAndValid(t *testing.T) {
 	envelope, err := BuildSessionOpenedEventV1("tenant-123", "session-abc", "42")
@@ -110,6 +120,7 @@ func TestBuildRequestCompletedEventV3_DeterministicIDAndOrdering(t *testing.T) {
 	}
 }
 func TestBuildRequestCompletedEvent(t *testing.T) {
+	enableRecordingConsentForOutboxTest(t)
 	envelope, err := BuildRequestCompletedEvent(
 
 		"tenant-123",

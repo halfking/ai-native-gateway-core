@@ -18,6 +18,7 @@ export default {
     tenantModels: "النماذج القياسية",
     tenantAccount: "حسابي",
     tenantPricing: "الباقات والشحن",
+    tenantBills: 'الفواتير',
     tenantUsage: "استهلاكي",
     models: "النماذج والكتالوج",
     routingOverview: "نظرة التوجيه",

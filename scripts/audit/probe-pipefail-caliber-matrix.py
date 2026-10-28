@@ -182,6 +182,20 @@ def main():
 
         out = []
         out.append("### 树：%s" % (args.archive and ("git archive %s" % args.archive) or root))
+        # ★★★ 扫描面指纹（★ 第三个锚点）：读数要钉【基线 SHA（内容）】＋【扫描面（分母）】＋【工具版本（判据）】
+        #   ⇒ ⇒ ★ 因为污染源（残留 worktree / 临时校验区）**不在 git 里** ⇒ ⇒ ⇒ 基线 SHA 钉不住它。
+        files = pp.collect_scripts(root, ("vendor/",))
+        hidden = sorted({rel.split("/")[0] for _p, rel in files if rel.startswith(".")})
+        out.append("== 扫描面（★ 钉分母的第三个锚点）==")
+        out.append("  扫描脚本数   = %d" % len(files))
+        out.append("  排除目录     = %s" % ", ".join(sorted(getattr(pp, "SKIP_DIRS", ()))))
+        out.append("  隐藏目录命中 = %s" % (", ".join(hidden) if hidden else "(无)"))
+        if hidden:
+            out.append("  ★ 命中隐藏目录 %d 个（%s）⇒ ⇒ 读数【是否可跨机比较】取决于它们是否命中判据"
+                       " ⇒ ⇒ ★ **必须用 --archive <sha> 对拍确认**"
+                       % (len(hidden), ", ".join(hidden)))
+        else:
+            out.append("  ✓ 扫描面无隐藏目录副本 ⇒ 读数可跨机比较")
         if args.verify_manifest:
             out.append("  清单 ↔ 生成器 强判据：%s" % verify_manifest(root))
         out.append("")

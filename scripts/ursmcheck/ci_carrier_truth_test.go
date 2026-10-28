@@ -231,7 +231,7 @@ func TestCICarrierRunsGuardGate(t *testing.T) {
 //	§3.16.3 写「`admin` 套件不在 `GUARD_PACKAGES` ⇒ 它的测试**没有任何 CI 路径**
 //	⇒ 它的红没人看见」——★ **前半句对，后半句错**。
 //
-// ★ 事实：`verify.sh`（README 明定的官方门）跑的是 `go test ./... -count=1 -timeout=900s`
+// ★ 事实：`verify.sh`（README 明定的官方门）跑的是 `go test ./... -count=1 -timeout=1800s`
 //
 //	⇒ **`./admin` 在其中** ⇒ admin 的红**会被官方门看见**。
 //	⇒ 而「它不在 GUARD_PACKAGES」这件事的**真实后果**不是「没人看它的红」，

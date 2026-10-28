@@ -241,5 +241,23 @@ export default {
     typeTopup: "Aufladungspaket"
   },
 
-
+  bills: {
+    title: 'Monatsrechnungen & Gutscheine',
+    refresh: 'Aktualisieren',
+    exportCsv: 'CSV exportieren',
+    listTitle: 'Monatsrechnungen',
+    emptyNoResult: 'Noch keine ausgestellten Monatsrechnungen',
+    colPeriod: 'Zeitraum',
+    colCredits: 'Credits',
+    colRequests: 'Anfragen',
+    colAmount: 'Betrag',
+    colStatus: 'Status',
+    couponTitle: 'Gutschein aktivieren',
+    couponPlaceholder: 'Gutscheincode',
+    couponActivate: 'Aktivieren',
+    couponOk: '{n} Credits gutgeschrieben ({code})',
+    couponFailed: 'Gutschein konnte nicht aktiviert werden. Code prüfen und erneut versuchen',
+    loadFailed: 'Monatsrechnungen konnten nicht geladen werden. Bitte erneut versuchen',
+    exportFailed: 'CSV-Export fehlgeschlagen. Bitte erneut versuchen',
+  },
 }
