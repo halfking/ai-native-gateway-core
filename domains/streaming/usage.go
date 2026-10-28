@@ -6,11 +6,18 @@ import (
 	"log/slog"
 	"math"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // CNYToUSDFX converts native CNY upstream cost to USD for KPI aggregation.
 // Matches pricing research docs (2026-06-12-cny-fix).
-const CNYToUSDFX = 7.2
+//
+// P1-C (audit 2026-10-28 §4): the constant's authority moved to
+// settings.CNYToUSDFX (billing anchor); this alias keeps the billing
+// arithmetic byte-identical. Routing cost scoring reads settings.CNYScoreFX()
+// — configurable (LLM_GATEWAY_CNY_TO_USD_FX), same default ⇒ 同尺.
+const CNYToUSDFX = settings.CNYToUSDFX
 
 var errNotFound = errors.New("key not found")
 
