@@ -1654,6 +1654,11 @@ func main() {
 		// 导致 routing 永远按 weight 而不是实时并发分摊。把 PeakCollector
 		// 注入 Router.LiveLoad，使 P2C 拿到真正的 in-flight 计数。
 		router.LiveLoad = peakCollector
+		// P0-A (2026-10-28 两层路由审计 G1): 内存熔断面的恢复时刻接入
+		// 路由评分——恢复期渐进回流量（recovery ramp）的信号源之一。
+		// cm 与 Executor.Circuit 是同一个 Manager（executor.go:1035），
+		// 读写同一份内存状态。
+		router.CircuitRecovery = cm
 		routingRouter = router
 
 		// 2026-09-19 sticky-session load balancing：每凭据 5 分钟 sticky

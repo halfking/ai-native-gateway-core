@@ -48,6 +48,11 @@ type LoadScoreEnvWeights struct {
 	PlanQuotaWeight float64 // LLM_GATEWAY_ROUTING_W_PLANQUOTA (default 0.10)
 	HeadroomWeight  float64 // LLM_GATEWAY_ROUTING_W_HEADROOM (default 0.05)
 	CapacityWeight  float64 // LLM_GATEWAY_ROUTING_W_CAPACITY (default 0.02)
+	// RecoveryWeight (P0-A, 2026-10-28 两层路由审计 G1) 恢复期惩罚权重
+	//（LLM_GATEWAY_ROUTING_W_RECOVERY，默认 0.10）——刚从熔断/禁用中恢复
+	// 的候选在 ramp 窗口内线性降权。置 0 时 recovery 维度整体关闭，
+	// composite 与首跳份额和关闭前逐字节一致。
+	RecoveryWeight float64 // LLM_GATEWAY_ROUTING_W_RECOVERY (default 0.10)
 }
 
 // DefaultLoadScoreWeights 返回默认权重配置
@@ -93,17 +98,18 @@ func DefaultLoadScoreEnvWeights() LoadScoreEnvWeights {
 		PlanQuotaWeight: clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_PLANQUOTA", 0.10)),
 		HeadroomWeight:  clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_HEADROOM", 0.05)),
 		CapacityWeight:  clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_CAPACITY", 0.02)),
+		RecoveryWeight:  clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_RECOVERY", 0.10)),
 	}
 }
 
-// readEnvWeights 返回 calculateLoadScore 所需的 6 个维度权重。
+// readEnvWeights 返回 calculateLoadScore 所需的 7 个维度权重。
 // 优先读 Router.EnvWeights 缓存（NewRouter 时一次性预解析）。
 // 兼容回退：当 r == nil 或 r.EnvWeights 未初始化（早期测试 / 自定义 Router），
 // 实时走 envFloat+clampEnvWeight，保持与 R47 行为逐字节一致。
-func readEnvWeights(r *Router) (sticky, recency, balance, planQuota, headroom, capacity float64) {
+func readEnvWeights(r *Router) (sticky, recency, balance, planQuota, headroom, capacity, recovery float64) {
 	if r != nil && r.EnvWeights != nil {
 		ew := r.EnvWeights
-		return ew.StickyWeight, ew.RecencyWeight, ew.BalanceWeight, ew.PlanQuotaWeight, ew.HeadroomWeight, ew.CapacityWeight
+		return ew.StickyWeight, ew.RecencyWeight, ew.BalanceWeight, ew.PlanQuotaWeight, ew.HeadroomWeight, ew.CapacityWeight, ew.RecoveryWeight
 	}
 	sticky = clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_STICKY", 0.15))
 	recency = clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_RECENCY", 0.05))
@@ -111,6 +117,7 @@ func readEnvWeights(r *Router) (sticky, recency, balance, planQuota, headroom, c
 	planQuota = clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_PLANQUOTA", 0.10))
 	headroom = clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_HEADROOM", 0.05))
 	capacity = clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_CAPACITY", 0.02))
+	recovery = clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_RECOVERY", 0.10))
 	return
 }
 
@@ -137,7 +144,7 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 	// ——10 候选 × 6 = 60 次 hash lookup + ParseFloat + strconv 分配。
 	// 新路径直接读 struct 字段，0 分配、0 syscalls。回退路径：当 r == nil 或
 	// r.EnvWeights 未初始化（极早期/自定义测试）时仍走 env 实时读，保证向后兼容。
-	stickyWeight, recencyWeight, balanceWeight, planQuotaWeight, headroomWeight, capacityWeight := readEnvWeights(r)
+	stickyWeight, recencyWeight, balanceWeight, planQuotaWeight, headroomWeight, capacityWeight, recoveryWeight := readEnvWeights(r)
 	latencyPenalty := 1.0 - latencyScore
 	headroomPenalty := 1.0 - headroom
 	// Capacity nudge (2026-08-13): a deliberately tiny term so the credential's
@@ -212,10 +219,26 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 	if planQuotaWeight > 0 {
 		planQuotaPenalty = planQuotaPenaltyForCandidate(c)
 	}
+	// P0-A (2026-10-28 两层路由审计 G1) 恢复期渐进回流量（recovery ramp）：
+	// 刚从熔断/禁用恢复的候选在 ramp 窗口内吃线性惩罚——治「1 成功即全量
+	// 回池 → 二次打挂 → 再翻红」的 re-flapping 振荡（HAProxy slow-start 的
+	// 打分层实现）。信号源两路（任一路「晚恢复」即生效）：
+	//   - NodeState.RecoveredAt：Redis 状态面（filterHealthyNodes 已把快照
+	//     挂在 c.RoutedNodeState 上，零额外 IO；authoritative 模式下此路无
+	//     快照、自然不参与）；
+	//   - breaker.RecoveredAt：内存熔断面（Router.CircuitRecovery，两种
+	//     路由模式下 executor 都在写）。
+	// 无信号/窗口外 → 0（与历史 composite 逐字节一致）；recoveryWeight=0
+	// 或 ramp 窗口 env=0 时整个维度关闭。
+	var recoveryPenalty float64
+	if recoveryWeight > 0 {
+		recoveryPenalty = recoveryPenaltyForCandidate(c, r)
+	}
 	composite += stickyPenalty*stickyWeight +
 		recencyPenalty*recencyWeight +
 		balancePenalty*balanceWeight +
-		planQuotaPenalty*planQuotaWeight
+		planQuotaPenalty*planQuotaWeight +
+		recoveryPenalty*recoveryWeight
 
 	if rand.Float64() < 0.1 {
 		slog.Info("LOAD_SCORE_V2",
@@ -235,6 +258,7 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 			"recency_penalty", recencyPenalty,
 			"balance_penalty", balancePenalty,
 			"plan_quota_penalty", planQuotaPenalty,
+			"recovery_penalty", recoveryPenalty,
 			"composite", composite,
 		)
 	}
@@ -687,6 +711,81 @@ func clampEnvWeight(w float64) float64 {
 	return w
 }
 
+// recoveryRampWindowSeconds 返回恢复期渐进回流量窗口（秒，env
+// LLM_GATEWAY_ROUTING_RECOVERY_RAMP_SECONDS，默认 300）。现场 env 读而非
+// EnvWeights 预解析——与 recency horizon 同理由：窗口是运营可动态调整的
+// 量，权重才是启动常量。≤0 视为整个 recovery 维度关闭。
+func recoveryRampWindowSeconds() float64 {
+	return envFloat("LLM_GATEWAY_ROUTING_RECOVERY_RAMP_SECONDS", 300)
+}
+
+// candidateRecoveredAtUnix 返回候选的「恢复被验证」时刻（unix seconds，
+// 0 = 无证据）。两路信号取**较晚**的一路：候选的总体恢复风险由最晚恢复
+// 的那个状态面决定（breaker 凭据级恢复于 5min 前、NodeState (凭据,模型)
+// 级恢复于 1min 前 ⇒ 以 1min 前为准）。
+func candidateRecoveredAtUnix(c provider.Candidate, r *Router) int64 {
+	var latest int64
+	if c.RoutedNodeState != nil && c.RoutedNodeState.RecoveredAt > latest {
+		latest = c.RoutedNodeState.RecoveredAt
+	}
+	if r != nil && r.CircuitRecovery != nil {
+		if at := r.CircuitRecovery.RecoveredAt(c.ProviderID, c.CredentialID); !at.IsZero() {
+			if sec := at.Unix(); sec > latest {
+				latest = sec
+			}
+		}
+	}
+	return latest
+}
+
+// recoveryPenaltyForCandidate 把「距恢复被验证的时长」归一成 0..1 惩罚
+//（P0-A）：恢复瞬间 = 1.0，ramp 窗口边界线性衰减到 0，窗口外 = 0。
+// 形状同 recencyPenalty（线性衰减），区别只在与地平线的语义：recency 的
+// 地平线是"最近一次请求"，recovery 的是"最近一次恢复"。无恢复证据 = 0
+//（常规候选不受影响）。时钟回拨导致 age<0 时按 1.0 保守处理（刚恢复）。
+func recoveryPenaltyForCandidate(c provider.Candidate, r *Router) float64 {
+	window := recoveryRampWindowSeconds()
+	if window <= 0 {
+		return 0
+	}
+	recoveredAt := candidateRecoveredAtUnix(c, r)
+	if recoveredAt <= 0 {
+		return 0
+	}
+	age := float64(time.Now().Unix() - recoveredAt)
+	if age < 0 {
+		return 1.0
+	}
+	if age >= window {
+		return 0
+	}
+	return 1.0 - age/window
+}
+
+// recoveryRampFactor 是首跳抽签份额的 ramp 因子（P0-A）：恢复瞬间 0.2，
+// 窗口边界线性升到 1.0，窗口外/无证据 = 1.0（份额不受影响）。与评分惩罚
+// recoveryPenaltyForCandidate 是同一窗口的两个消费面——评分把恢复节点
+// 在 P2C 里排后（failover 顺序），份额把恢复节点的新会话首跳流量压到
+// 20% 起步（slow-start 本体）。floor 由调用方的 max(1, …) 兜底叠加。
+func recoveryRampFactor(c provider.Candidate, r *Router) float64 {
+	window := recoveryRampWindowSeconds()
+	if window <= 0 {
+		return 1.0
+	}
+	recoveredAt := candidateRecoveredAtUnix(c, r)
+	if recoveredAt <= 0 {
+		return 1.0
+	}
+	age := float64(time.Now().Unix() - recoveredAt)
+	if age < 0 {
+		return 0.2
+	}
+	if age >= window {
+		return 1.0
+	}
+	return 0.2 + 0.8*(age/window)
+}
+
 // firstHopLotteryWeights 把三新惩罚+计划额度惩罚折算成首跳加权轮询
 // （promoteWeightedCandidateWithWeights）的有效权重（2026-09-19，计划额度
 // 维度为 2026-09-19 成本感知轮新增）。
@@ -712,16 +811,22 @@ func firstHopLotteryWeights(cands []provider.Candidate, r *Router) []int {
 	wRecency := envFloat("LLM_GATEWAY_ROUTING_W_RECENCY", 0.05)
 	wBalance := envFloat("LLM_GATEWAY_ROUTING_W_BALANCE", 0.05)
 	wPlanQuota := envFloat("LLM_GATEWAY_ROUTING_W_PLANQUOTA", 0.10)
+	// P0-A：recovery 在 lottery 侧不进 p 折算——它有自己的独立机制
+	//（recoveryRampFactor 直接乘份额，见下）。读 wRecovery 只用于
+	// 「整体关闭」判定：W_RECOVERY=0 或 RAMP_SECONDS=0 任一置 0，
+	// scoring 惩罚与份额因子同时归零，全链路与现状逐字节一致。
+	wRecovery := envFloat("LLM_GATEWAY_ROUTING_W_RECOVERY", 0.10)
 	// R46 F8④: 负权重按 0 处理——负值会缩小 sum、放大他人相对份额甚至
 	// 产生负折算权重（份额 > 原 Weight 的反向倾斜）。
-	wSticky, wRecency, wBalance, wPlanQuota =
-		clampEnvWeight(wSticky), clampEnvWeight(wRecency), clampEnvWeight(wBalance), clampEnvWeight(wPlanQuota)
+	wSticky, wRecency, wBalance, wPlanQuota, wRecovery =
+		clampEnvWeight(wSticky), clampEnvWeight(wRecency), clampEnvWeight(wBalance), clampEnvWeight(wPlanQuota), clampEnvWeight(wRecovery)
+	recoveryOff := wRecovery <= 0 || recoveryRampWindowSeconds() <= 0
 	stickyWired := r != nil && r.StickyLoad != nil
 	sum := wBalance + wPlanQuota
 	if stickyWired {
 		sum += wSticky + wRecency
 	}
-	if sum <= 0 {
+	if sum <= 0 && recoveryOff {
 		return nil
 	}
 
@@ -743,11 +848,24 @@ func firstHopLotteryWeights(cands []provider.Candidate, r *Router) []int {
 		}
 		weighted += balancePenaltyForCandidate(c)*wBalance +
 			planQuotaPenaltyForCandidate(c)*wPlanQuota
-		p := weighted / sum
-		if p > 1.0 {
-			p = 1.0
+		// sum<=0（四折算权重全关但 recovery 开着）：p=0 不折算，
+		// 份额只由 ramp 因子决定——置零权重的语义是「不折算」，不是
+		//「最大折算」。
+		p := 0.0
+		if sum > 0 {
+			p = weighted / sum
+			if p > 1.0 {
+				p = 1.0
+			}
 		}
-		w := int(float64(c.Weight) * (1.0 - 0.9*p))
+		// P0-A：恢复期 ramp 因子直接乘份额（不进 p 折算）——「恢复的节点
+		// 慢慢接客」做在份额层：刚恢复 0.2，ramp 窗口边界线性升到 1.0。
+		// 与 p 折算叠加后满载恢复节点的份额下限仍是 max(1, W×0.1×0.2)。
+		rampFactor := 1.0
+		if !recoveryOff {
+			rampFactor = recoveryRampFactor(c, r)
+		}
+		w := int(float64(c.Weight) * (1.0 - 0.9*p) * rampFactor)
 		if w < 1 {
 			w = 1
 		}
