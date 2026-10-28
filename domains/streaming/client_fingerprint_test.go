@@ -22,6 +22,13 @@ func TestExtractClientType_UserAgent(t *testing.T) {
 		{"windsurf with slash", "Windsurf/1.0", "windsurf"},
 		{"zed with slash", "Zed/2.0", "zed"},
 		{"jetbrains", "JetBrains/2024.1", "jetbrains"},
+		// 2026-09-21 audit: domestic coding-agent clients.
+		{"minimax-code with slash", "MiniMax-Code/1.0.0 (macos; arm64)", "minimax-code"},
+		// 2026-10-29 production verification: wire-real bare form (211 logs).
+		{"minimax-code bare compound", "MiniMaxCode", "minimax-code"},
+		{"minimax-code bare compound with version", "MiniMaxCode/1.2.0", "minimax-code"},
+		{"deepseek-code with slash", "DeepSeek-Code/1.0.0 (darwin; arm64)", "deepseek-code"},
+		{"deepseek-cli", "deepseek-cli/0.3.1", "deepseek-code"},
 		{"unknown agent", "SomeRandomClient/1.0", ""},
 		{"empty user-agent", "", ""},
 	}

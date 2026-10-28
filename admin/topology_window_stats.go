@@ -107,6 +107,9 @@ LIMIT $3`
 // 供应商/别名合并一行 —— 与 modelsTodaySQL 同一归并粒度；raw_model_name
 // 取窗口内出现过的原始请求模型名，canonical_id=0 的 passthrough 行回落
 // 原始名）。列形状与 modelsTodaySQL 一致。
+// ★ 2026-10-29 复审轮修：与 modelsTodaySQL 同款 passthrough 拆名——
+// canonical_id=0 的不同 raw 名是不同模型（图 modelKeyOf 按原始名分节点），
+// 单键 GROUP BY 会把窗口内所有 passthrough 并成一行、名字 MAX 任选。
 const modelsWindowSQL = `
 WITH base AS (
 	SELECT COALESCE(mc.id, 0)                        AS canonical_id,
@@ -138,6 +141,7 @@ SELECT canonical_id,
        COALESCE(SUM(cost_usd),0)::float8           AS cost_usd,
        NULL::timestamptz                           AS watermark
 FROM base
-GROUP BY canonical_id
-ORDER BY requests DESC, canonical_id
+GROUP BY canonical_id,
+         CASE WHEN canonical_id = 0 THEN COALESCE(raw_model_name, '') ELSE '' END
+ORDER BY requests DESC, canonical_id, raw_model_name
 LIMIT $3`

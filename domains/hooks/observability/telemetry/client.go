@@ -1444,15 +1444,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	// Publish only the session opener here. The request is provisional until
 	// its terminal update supplies final usage, latency, and status.
 	if c.outboxWriter != nil && entry.GwSessionID != nil && *entry.GwSessionID != "" {
-
-		tenantID := nonEmpty(entry.TenantID, "default")
-		userID := "unknown"
-		if entry.EndUserID != nil && strings.TrimSpace(*entry.EndUserID) != "" {
-			userID = *entry.EndUserID
-		} else if entry.APIKeyID != nil {
-			userID = strconv.Itoa(*entry.APIKeyID)
-		}
-		opened, err := outbox.BuildSessionOpenedEventV1(tenantID, stringValue(entry.GwSessionID), userID)
+		opened, err := outbox.BuildSessionOpenedEventV1(
+			nonEmpty(entry.TenantID, "default"), stringValue(entry.GwSessionID), sessionOpenedUserID(entry))
 		if err != nil {
 			return err
 		}
@@ -1462,6 +1455,19 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	}
 
 	return tx.Commit(ctx)
+}
+
+// sessionOpenedUserID derives the opened payload's user_id identically on both
+// emission paths (request insert + terminal update): end-user id, else
+// api-key id, else "unknown".
+func sessionOpenedUserID(entry *RequestLogEntry) string {
+	if entry.EndUserID != nil && strings.TrimSpace(*entry.EndUserID) != "" {
+		return *entry.EndUserID
+	}
+	if entry.APIKeyID != nil {
+		return strconv.Itoa(*entry.APIKeyID)
+	}
+	return "unknown"
 }
 
 // insertSessionOpenedEvent writes the idempotent session opener as part of the
@@ -1708,6 +1714,25 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.FinalSuccessClaimed = true
 	}
 	if c.outboxWriter != nil && entry.GwSessionID != nil && *entry.GwSessionID != "" && requestLogEntryTerminal(entry) {
+		// ★ 2026-10-29（asm 投影缺口 reconciliation 轮）：终态路径同事务补发
+		// opened。此前 opened 只在新插入路径发射——不走插入路径的终态写
+		// （早失败直写终态等）会让会话永远没有 opened ⇒ asm 的
+		// session_projection 无行 ⇒ 该会话后续所有 completed 永久 503
+		// （211 生产实测 14,369 个会话、outbox DLQ 34,183 条皆源于此）。
+		// event_id 由 tenant+session 确定性派生，正常会话在此命中
+		// ON CONFLICT no-op。
+		opened, err := outbox.BuildSessionOpenedEventV1(
+			nonEmpty(entry.TenantID, "default"), stringValue(entry.GwSessionID), sessionOpenedUserID(entry))
+		if err != nil {
+			return err
+		}
+		// dispatcher 按 occurred_at ASC 逐条投递 ⇒ opened 比同事务的
+		// completed 早 1ms，保证两者同批到达时 asm 先见到 opened（投影行
+		// 先建，completed 才能落账）。
+		opened.OccurredAt = time.Now().UTC().Add(-time.Millisecond)
+		if err := insertSessionOpenedEvent(ctx, tx, opened, entry.RequestID); err != nil {
+			return err
+		}
 		completed, err := buildRequestCompletedEvent(ctx, tx, entry)
 		if err != nil {
 			return err

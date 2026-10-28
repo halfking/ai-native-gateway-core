@@ -156,6 +156,7 @@ tests/deploy_nocgo_build_test.sh	149	test_cgo_only_package_fails_nocgo	var-write
 tests/deploy_nocgo_build_test.sh	183	test_nocgo_dep_graph_no_sqlite3	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s\n' "$deps" | grep -q "github.com/mattn/go-sqlite3"; then
 tests/deploy_nocgo_build_test.sh	201	test_nocgo_dep_graph_no_sqlite3	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$deps" | grep -q "github.com/kaixuan/llm-gateway-go/storage/sqlite"; then
 tests/deploy_promotion_test.sh	269	test_gate_refuses_promotion_on_245_failure	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$log" | grep -q "refusing 154"; then
+tests/deploy_seamless_version_identity_test.sh	86	build_machine_gate	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s' "$gate" | grep -q 'rev-parse --short=8 HEAD' || return 1
 tests/deploy_sops_test.sh	294	test_scan_secrets_does_not_exempt_non_sops	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -qE '\[BLOCK\]'; then
 tests/lib/fake-remote-host.sh	117	fake_host_setup	var-write	bare	scalar	safe-single-line	grep-q	consumed	echo "$base" | grep -qE '^[0-9]{3}_' || continue
 tests/rotate_credentials_test.sh	118	test_list	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -q "SSH_PASS_252" && echo "$out" | grep -q "PG_PASS_KAIXUAN1"; then

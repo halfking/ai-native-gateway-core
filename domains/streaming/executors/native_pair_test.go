@@ -1,12 +1,15 @@
 package executors
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -317,5 +320,79 @@ func TestFinalizeNative_CircuitOpenFallback_NativePairStampsPassthrough(t *testi
 	}
 	if _, present := legacy["thinking"]; present {
 		t.Fatalf("non-native 对照（断路器兜底）: thinking 应被裁/翻译走")
+	}
+}
+
+// TestPrepareRequestBodyWithNative_StripBypassLoggedAtInfo（RISK-3 收口，
+// 2026-10-29）：原厂直通绕过 admin 配置的 strip_request_fields 时必须在
+// **Info** 级留痕 —— 此前是 Debug，生产日志 Info 级不可见 ⇒ 留痕机制默认
+// 不可观测（2026-10-28 生产验证轮 §7 观察盲区）。消息文本逐字不变
+// （211 取证的 grep 口径依赖它）。正臂断言级别、字段与条数；两条对照臂
+// 钉住「不该留痕的形态不留痕」：strip 为空（当前生产实态）与
+// nativePair=false（白名单通道正常执行 strip，不打绕过行）。
+func TestPrepareRequestBodyWithNative_StripBypassLoggedAtInfo(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	const bypassMsg = "native pair bypasses transform strip_request_fields"
+	run := func(nativePair bool, strip []string) []map[string]any {
+		t.Helper()
+		buf.Reset()
+		params := &ExecParams{
+			R:              httptest.NewRequest("POST", "/v1/chat/completions", nil),
+			RequestID:      "risk3-strip-bypass",
+			BodyBytes:      []byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`),
+			ClientModel:    "glm-5.3",
+			ClientProtocol: "openai-completions",
+			Transform:      &transformation.TransformResult{StripRequestFields: strip},
+		}
+		cand := nativePairCandidate("zhipu", "glm-5.3")
+		prepareRequestBodyWithNative(params, cand, nativePair)
+
+		var matched []map[string]any
+		dec := json.NewDecoder(strings.NewReader(buf.String()))
+		for dec.More() {
+			var rec map[string]any
+			if err := dec.Decode(&rec); err != nil {
+				t.Fatalf("decode slog line: %v\nbuf: %s", err, buf.String())
+			}
+			if rec["msg"] == bypassMsg {
+				matched = append(matched, rec)
+			}
+		}
+		return matched
+	}
+
+	// 正臂：原生对 × 非空 strip ⇒ 恰好一行，且必须是 Info 级。
+	native := run(true, []string{"reasoning_effort", "thinking"})
+	if len(native) != 1 {
+		t.Fatalf("native pair with strip config: got %d bypass log lines, want exactly 1\nbuf: %s", len(native), buf.String())
+	}
+	rec := native[0]
+	if rec["level"] != "INFO" {
+		t.Fatalf("bypass log level = %v, want INFO (Debug is invisible on production Info-level logs — the whole point of RISK-3)", rec["level"])
+	}
+	if rec["request_id"] != "risk3-strip-bypass" {
+		t.Errorf("request_id = %v, want risk3-strip-bypass", rec["request_id"])
+	}
+	if rec["catalog_code"] != "zhipu" {
+		t.Errorf("catalog_code = %v, want zhipu", rec["catalog_code"])
+	}
+	if rec["raw_model"] != "glm-5.3" {
+		t.Errorf("raw_model = %v, want glm-5.3", rec["raw_model"])
+	}
+	if rec["stripped_fields"] != "reasoning_effort,thinking" {
+		t.Errorf("stripped_fields = %v, want \"reasoning_effort,thinking\"", rec["stripped_fields"])
+	}
+
+	// 对照臂 1：原生对 × 空 strip（当前生产实态）⇒ 不得留痕。
+	if got := run(true, nil); len(got) != 0 {
+		t.Fatalf("native pair without strip config: got %d bypass log lines, want 0", len(got))
+	}
+	// 对照臂 2：非原生对 × 非空 strip ⇒ 白名单通道正常执行，无绕过行。
+	if got := run(false, []string{"reasoning_effort"}); len(got) != 0 {
+		t.Fatalf("non-native pair with strip config: got %d bypass log lines, want 0 (whitelist path applies strip, not a bypass)", len(got))
 	}
 }

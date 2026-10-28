@@ -14,14 +14,16 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import StatsPanel from './StatsPanel.vue'
-import { getProvidersToday, getTopologyModelsToday } from '../../api/topology'
+import { getClientsToday, getProvidersToday, getTopologyModelsToday } from '../../api/topology'
 import zhCN from '../../locales/zh-CN/liveTopology'
 
 vi.mock('../../api/topology', () => ({
+  getClientsToday: vi.fn(),
   getProvidersToday: vi.fn(),
   getTopologyModelsToday: vi.fn(),
 }))
 
+const mockedClients = vi.mocked(getClientsToday)
 const mockedProviders = vi.mocked(getProvidersToday)
 const mockedModels = vi.mocked(getTopologyModelsToday)
 
@@ -32,7 +34,13 @@ const i18n = createI18n({
   messages: { 'zh-CN': { liveTopology: zhCN as never } },
 })
 
-type PanelProps = { activeProvider?: string; activeModel?: string }
+type PanelProps = {
+  activeClient?: string
+  activeProvider?: string
+  activeModel?: string
+  inFlight?: number | null
+  queueDepth?: number | null
+}
 
 // 后端 totals 是全字段返回的；夹具也写全，避免「半个信封」假绿。
 function totals(over: Partial<Record<string, number>> = {}) {
@@ -40,6 +48,15 @@ function totals(over: Partial<Record<string, number>> = {}) {
     requests: 0, success: 0, failure: 0, rate_limited: 0,
     prompt_tokens: 0, completion_tokens: 0, cache_read_tokens: 0,
     cache_write_tokens: 0, total_tokens: 0, credits_charged: 0, cost_usd: 0,
+    ...over,
+  } as never
+}
+
+function clientItem(over: Record<string, unknown> = {}) {
+  return {
+    client_key: 'claude-code', requests: 50, success: 48, failure: 2, rate_limited: 0,
+    prompt_tokens: 800, completion_tokens: 400, cache_read_tokens: 30, cache_write_tokens: 6,
+    total_tokens: 1200, credits_charged: 1, cost_usd: 0.2, share: 1,
     ...over,
   } as never
 }
@@ -71,15 +88,18 @@ function mountPanel(props: PanelProps = {}) {
 
 describe('StatsPanel 区间切换与口径', () => {
   beforeEach(() => {
+    mockedClients.mockReset()
     mockedProviders.mockReset()
     mockedModels.mockReset()
+    mockedClients.mockResolvedValue({ day_utc: '2026-10-28', items: [] })
     mockedProviders.mockResolvedValue({ day_utc: '2026-10-28', totals: totals({ requests: 10, success: 9 }), items: [] })
     mockedModels.mockResolvedValue({ day_utc: '2026-10-28', items: [] })
   })
 
-  it('默认当天区间：day 端点带 ?by=provider，不带 window', async () => {
+  it('默认当天区间：day 端点带 ?by=provider，不带 window；clients 端点同参', async () => {
     mountPanel()
     await flushPromises()
+    expect(mockedClients).toHaveBeenCalledWith(expect.objectContaining({ window: undefined }))
     expect(mockedProviders).toHaveBeenCalledWith(expect.objectContaining({ window: undefined }))
     expect(mockedModels).toHaveBeenCalledWith(expect.objectContaining({ byProvider: true, window: undefined }))
   })
@@ -90,6 +110,7 @@ describe('StatsPanel 区间切换与口径', () => {
     ;(w.find('[data-testid="stats-interval"]').element as HTMLSelectElement).value = '5m'
     ;(w.find('[data-testid="stats-interval"]').element as HTMLSelectElement).dispatchEvent(new Event('change'))
     await flushPromises()
+    expect(mockedClients).toHaveBeenLastCalledWith(expect.objectContaining({ window: '5m' }))
     expect(mockedProviders).toHaveBeenLastCalledWith(expect.objectContaining({ window: '5m' }))
     expect(mockedModels).toHaveBeenLastCalledWith(expect.objectContaining({ window: '5m', byProvider: false }))
   })
@@ -112,16 +133,17 @@ describe('StatsPanel 区间切换与口径', () => {
     mockedModels.mockResolvedValue({ window: '5m', items: [] })
     const w = mountPanel()
     await flushPromises()
-    // 模型组默认收起，展开后才能看到空态
-    await w.find('[data-testid="stats-group-models"] .stats__group-head').trigger('click')
+    // 三组默认全展开（2026-10-29 单一统计轮）
     expect(w.find('[data-testid="stats-group-models"] .stats__empty').text()).toContain('5分钟')
   })
 })
 
 describe('StatsPanel 总量行（常驻）', () => {
   beforeEach(() => {
+    mockedClients.mockReset()
     mockedProviders.mockReset()
     mockedModels.mockReset()
+    mockedClients.mockResolvedValue({ items: [] })
     mockedModels.mockResolvedValue({ items: [] })
   })
 
@@ -195,10 +217,84 @@ describe('StatsPanel 总量行（常驻）', () => {
   })
 })
 
+describe('StatsPanel 客户端组（2026-10-29 单一统计轮并入）', () => {
+  beforeEach(() => {
+    mockedClients.mockReset()
+    mockedProviders.mockReset()
+    mockedModels.mockReset()
+    mockedProviders.mockResolvedValue({ day_utc: '2026-10-28', totals: totals({ requests: 10, success: 9 }), items: [] })
+    mockedModels.mockResolvedValue({ day_utc: '2026-10-28', items: [] })
+  })
+
+  it('三组并陈：clients/providers/models 各自渲染（组头合计来自各自数据）', async () => {
+    mockedClients.mockResolvedValue({
+      day_utc: '2026-10-28',
+      items: [clientItem(), clientItem({ client_key: 'unknown', requests: 2, success: 0, share: 0 })],
+    })
+    const w = mountPanel()
+    await flushPromises()
+    expect(w.find('[data-testid="stats-group-clients"]').exists()).toBe(true)
+    expect(w.find('[data-testid="stats-group-providers"]').exists()).toBe(true)
+    expect(w.find('[data-testid="stats-group-models"]').exists()).toBe(true)
+    const rows = w.findAll('[data-testid="stats-group-clients"] .stats__row')
+    expect(rows.length).toBe(2)
+    expect(rows[0].text()).toContain('Claude Code')
+    // unknown 桶不丢、走 i18n 显示名
+    expect(rows[1].text()).toContain('未知客户端')
+    expect(rows[1].classes()).toContain('is-unknown')
+  })
+
+  it('点客户端行发 select-client；activeClient 命中的行带 is-active', async () => {
+    mockedClients.mockResolvedValue({ day_utc: '2026-10-28', items: [clientItem()] })
+    const w = mountPanel({ activeClient: 'claude-code' })
+    await flushPromises()
+    expect(w.find('[data-testid="stats-group-clients"] .stats__row.is-active').exists()).toBe(true)
+    await w.find('[data-testid="stats-group-clients"] .stats__row-btn').trigger('click')
+    expect(w.emitted('select-client')?.[0]).toEqual(['claude-code'])
+  })
+
+  it('客户端组降级独立（不拖垮供应商/模型组）', async () => {
+    mockedClients.mockRejectedValue(new Error('503'))
+    const w = mountPanel()
+    await flushPromises()
+    expect(w.find('[data-testid="stats-group-clients"] .stats__group-down').exists()).toBe(true)
+    expect(w.find('[data-testid="stats-totals"]').exists()).toBe(true)
+    expect(w.find('[data-testid="stats-group-providers"] .stats__group-down').exists()).toBe(false)
+  })
+})
+
+describe('StatsPanel 实时流程状态（在途/排队并入总量行）', () => {
+  beforeEach(() => {
+    mockedClients.mockReset()
+    mockedProviders.mockReset()
+    mockedModels.mockReset()
+    mockedClients.mockResolvedValue({ items: [] })
+    mockedProviders.mockResolvedValue({ day_utc: '2026-10-28', totals: totals({ requests: 10, success: 9 }), items: [] })
+    mockedModels.mockResolvedValue({ items: [] })
+  })
+
+  it('给到 inFlight/queueDepth 时在失败指标后并排显示（与 DB 指标隔开）', async () => {
+    const w = mountPanel({ inFlight: 3, queueDepth: 2 })
+    await flushPromises()
+    expect(w.find('[data-testid="stats-inflight"]').text()).toContain('在途')
+    expect(w.find('[data-testid="stats-inflight"]').text()).toContain('3')
+    expect(w.find('[data-testid="stats-queue"]').text()).toContain('排队')
+    expect(w.find('.stats__live-divider').exists()).toBe(true)
+  })
+
+  it('未测量（null/undefined）时不显示，也不冒充 0', async () => {
+    const w = mountPanel({ inFlight: null, queueDepth: undefined })
+    await flushPromises()
+    expect(w.find('[data-testid="stats-inflight"]').exists()).toBe(false)
+    expect(w.find('[data-testid="stats-queue"]').exists()).toBe(false)
+  })
+})
+
 describe('StatsPanel 明细与过滤联动', () => {
   beforeEach(() => {
     mockedProviders.mockReset()
     mockedModels.mockReset()
+    mockedClients.mockResolvedValue({ day_utc: '2026-10-28', items: [] })
     mockedProviders.mockResolvedValue({
       day_utc: '2026-10-28',
       totals: totals({ requests: 10, success: 9 }),
@@ -235,7 +331,6 @@ describe('StatsPanel 明细与过滤联动', () => {
     })
     const w = mountPanel()
     await flushPromises()
-    await w.find('[data-testid="stats-group-models"] .stats__group-head').trigger('click')
 
     const before = w.emitted('select-model')?.length ?? 0
     await w.find('[data-testid="stats-model-expand"]').trigger('click')
@@ -247,7 +342,6 @@ describe('StatsPanel 明细与过滤联动', () => {
     mockedModels.mockResolvedValue({ window: '5m', items: [modelItem()] })
     const w = mountPanel()
     await flushPromises()
-    await w.find('[data-testid="stats-group-models"] .stats__group-head').trigger('click')
     expect(w.find('[data-testid="stats-model-expand"]').exists()).toBe(false)
   })
 })

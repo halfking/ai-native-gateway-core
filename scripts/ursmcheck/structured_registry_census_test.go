@@ -383,7 +383,7 @@ func TestStructuredRegistryCensusBehaviorFlagIsHonest(t *testing.T) {
 		}
 		// ★ 标 true ⇒ 必须给出机器可核的四件套。
 		if !structuredReaderKinds[e.ReaderKind] {
-			t.Errorf("%s：behaviorally_verified=true ⇒ 必须给出 reader_kind（★ 可用：node / vitest / gotest，实际 %q）",
+			t.Errorf("%s：behaviorally_verified=true ⇒ 必须给出 reader_kind（★ 可用：node / vitest / gotest / shell，实际 %q）",
 				e.Path, e.ReaderKind)
 		}
 		if strings.TrimSpace(e.ReaderSpec) == "" {

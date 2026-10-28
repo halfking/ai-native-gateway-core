@@ -947,6 +947,9 @@ func serializeAnthropicTools(tools []ToolDefinition) []map[string]any {
 				toolMap["input_schema"] = tool.Parameters
 			}
 		}
+		// RISK-2（2026-10-29）：工具顶层非标准键并回（不覆盖已写入键；
+		// anthropic 目标上非规范键由 sanitize（非原生）/直通（原生）语义接管）。
+		mergeToolExtras(toolMap, tool.Extra)
 		result = append(result, toolMap)
 	}
 	return result
