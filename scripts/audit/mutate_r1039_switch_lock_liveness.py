@@ -458,7 +458,7 @@ def main() -> int:
                 failures.append(arm["name"])
             else:
                 print(f"     restored {target.relative_to(ROOT)} md5={md5_after}")
-            # ★ 副作用文件同样逐字还原（★ 顺序：★ 先还原副作用，再报靶点）。
+            # ★ 副作用文件同样逐字还原（★ 顺序：★ 先还原靶点，★ 再还原副作用文件）。
             for p, blob in side_originals.items():
                 Path(p).write_bytes(blob)
                 if Path(p).read_bytes() != blob:
