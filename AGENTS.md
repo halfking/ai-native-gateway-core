@@ -13382,3 +13382,68 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 >   （★ 事实源比判据宽）；★ **只量了默认激活的 tab**（★ Element Plus 只渲染激活的 tab-pane）；
 >   ★ **读数是「当次数据」的快照**（★ `.rule-card` 在审批规则为空时不渲染）；★ 卡片里套 chip 群 /
 >   表格外套卡等其它形态；★ 页面级硬编码中文；★ 第 30 增量遗留的其余入口。
+
+
+## ㊳ R176 轮（2026-10-28）· Maestro 逐页浏览器验证**首次实跑**（★ 资产里写的「跑法」只是假设 ⇒ 第一次实跑才是事实源；★ 「超时兜底」一旦成为常规路径它就是缺陷；★ 文案断言的真实语义 = 全匹配 + 不 trim + 取 `textContent`；★ 遇首败即停 ⇒ 必须一次性收齐失败清单）
+
+> **取号说明**：★ 本轮开工时取 **㊲**（㊱ = 上一轮 R175）；★ 开工时重查 `origin/main`（= `a6c7204c0`）⇒ 上游 AGENTS 最高 **㊱** ⇒ 当时不冲突 ✓；⇒ ⇒ ★★★ **★ 【推送前】再查一次 ⇒ 上游已连推 18 个提交到 `287760604` ⇒ 上游 AGENTS 最高已是 **㊲** ⇒ ⇒ ⇒ **★ ⇒ 本轮让号：㊲ → ㊳。★★**（★ LESSONS 同步让号：§497 → **§500**）★★
+> ★★ **LESSONS 让号**：★ 详见 `LESSONS.md` §500 的「让号留痕」条 ⇒ ★★ **【第四次让号】再次被「推送前再查一次」接住 ⇒ 一次都没撞号。★★**
+
+★ ★★ **本轮性质：★★ 这是原始目标里唯一从未实跑过的那一步（逐页浏览器验证）⇒ ★★ 本轮把它跑通了，并顺带挖出 **2 个真实产品缺陷** + **26 处 flow 资产错误** + **3 处 CLI 层面的事实错误**★★**
+★★ ⇒ ★★ **产品侧改动只有 2 处（★ 都是「等待判据」类的，无一条改业务逻辑）**：★★
+★★ ① `web/src/router.ts` 的守卫等 hydration 判据（★ 抽成 `web/src/router/authHydration.ts` 纯函数）⇒ ⇒ **访客面每页白等 10 秒**被修掉（★ 10131ms → 181ms）；
+★★ ② `web/src/composables/useDeploySeqUpdate.ts` 的 `msSinceInteraction` 基准（★ 改为「页面加载时刻」+ `scroll` 计入交互）⇒ ⇒ **页面打开 5 秒后整页 reload**被修掉（★ 违反 `docs/UI规范/18 §4`）。
+
+⇒ ★★ **核心事实一（★ 实测，非推断）：★★ 访客面每页白等 10 秒的真缺陷** ⇒
+★★ `web/src/router.ts` 的就绪判据是 `store.authHydrated && store.userInfo && store.userInfo.id`
+⇒ ★★ **访客永远没有 `userInfo`** ⇒ ⇒ 唯一出口是 `AUTH_HYDRATE_MAX_WAIT_MS = 10_000`
+⇒ ★★ 实测（同页 DOMContentLoaded 89.8ms · FCP 100~492ms · 仅 1 个 68ms longtask ⇒ ★★ **慢的是「等」不是渲染**）
+⇒ ★★ `/forbidden` **10131ms** · `/bootstrap` **10108ms** · `/customer/update-activate` **10116ms**
+⇒ ⇒ ⇒ ★★★ ⇒ **判据把「事实成立（探测完成）」偷换成了「主体存在（拿到了用户）」** ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ★★★ **⇒ 通式：★★ 凡是「A 且 B」形式的就绪判据，都要问「**B 在最常见的场景下成立吗？**」★★**
+⇒ ⇒ ⇒ ★★★ **⇒ 修法：★★ 判据只留 `authHydrated`；等待循环与判据一起抽成**可单测的纯函数**（★ `authHydration.ts` + 7 条测试）⇒ ⇒ 复测 **10131ms → 181ms（≈56×）**，★ 变异臂（改回旧口径）**4 条红** ★★★**
+
+⇒ ★★ **核心事实二：★★ 页面在自己打开 5 秒后整页 reload（★ 违反自家规范 `docs/UI规范/18 §4`）★★** ⇒
+★★ `useDeploySeqUpdate.ts` 的 `msSinceInteraction: lastInteractionAt === 0 ? Number.POSITIVE_INFINITY : …`
+⇒ ★★ 「**从未交互**」被当成「**静置 ∞**」⇒ ⇒ 首查（`UPDATE_FIRST_CHECK_DELAY_MS = 5_000`）必满足 ⇒ ⇒ **整页 reload**
+⇒ ⇒ ★★★ ⇒ **规范里已经写了判据（「距上次交互超过阈值」），实现却另有发明 ⇒ ⇒ 实现要回到规范** ★★★
+⇒ ⇒ ⇒ ★★★ ⇒ **修法：★★ 新增 `loadedAt`（页面加载时刻）作基准 + `scroll` 计入 `INTERACTION_EVENTS`；★ 测试改为可推进假时钟 + 2 条新回归；★ 变异臂（改回 `POSITIVE_INFINITY`）**1 条红** ★★★**
+
+⇒ ★★ **核心事实三：★★ Maestro 的文案断言语义 = 【全匹配 + 不 trim + 取 `textContent`（不是 `innerText`）】★★** ⇒
+★★ 第二轮一次收齐 **14 处**「文案基本对、只差一个字符」的失败（★ 审计档 §7.2）⇒
+★★ 三种污染形态：① **前后空白**（★ 页签按钮 `textContent` = `" 标注工作台 "`，★ **而 `innerText` 会折叠掉** ⇒ ★★ 肉眼/截图/innerText 三种观测全都看不出来）② **上下文前后缀**（★ `"默认租户 · 套餐与充值"` / `"客户端分析: mistral-7b-instruct-v0.3"`）③ **徽标数字**（★ `"密钥申请 1 待审"`）
+⇒ ⇒ ⇒ ★★★ ⇒ **⇒ 修法：两侧加 `.*` 的正则，只锚住稳定的那一段；★★ 且必须配【阴性对照】才敢用**（★ 本轮实测 `.*标注工作台.*` COMPLETED，★ 而 `.*绝不存在的文案ZZZQQQ.*` **FAILED** ⇒ ★★ **「正则放行了」不等于「什么都没匹配上」**）★★★**
+
+⇒ ★★ **核心事实四：★★ 资产里写的「跑法」三处是错的 ⇒ ★★ 第一次实跑才是事实源★★** ⇒
+★★ ① **YAML 头必须是 `url:`**（★ `appId:` ⇒ 被判成**移动端** flow ⇒ **一条命令都不跑**）；★★
+★★ ② **CLI 没有 `--env-file`**，且 **shell 环境变量不参与 flow 的 `${}` 解析** ⇒ ★★ **唯一通道是 `-e KEY=VALUE`**（★ 仓库提供 `maestro/run-local.sh` 从仓根 `.env.local` 代传 ⇒ **口令不落仓内任何文件**）；★★
+★★ ③ **不要加 `-p web`**（★ 会把设备筛成 0）⇒ 用 `--driver-host-port` 连自起的 CDP Chrome。
+⇒ ⇒ ⇒ ★★★ ⇒ **⇒ 顺带：★★ `evalScript`/`runScript` 在 web 模式下跑在【Maestro 侧 JS 沙箱】（★ `location`/`performance` 都是 `undefined`）⇒ ⇒ `output.ms__*` 是**真实墙钟**、跨导航不丢 ⇒ ★★ **这条计时通道可信**；★★ 而【页面内部】时间线必须另用 CDP 探针 ★★★**
+
+⇒ ★★ **核心事实五：★★ 「遇首败即停」⇒ 一次只暴露一个失败 ⇒ 必须有【一次性收齐】的旁路★★** ⇒
+★★ 本轮第二轮 14 处失败若逐个修 ⇒ 要 14 轮 ⇒ ⇒ **做法：把 `extendedWaitUntil` 全部降级为 `optional: true`（★ 保留 `login.yaml` 严格）⇒ 一次跑完 10 个 flow ⇒ 失败清单一次收齐 ⇒ 再用辅助匹配器批量产出候选 ⇒ ★★ 最后逐条用 CDP 探针取 `textContent` 原文坐实才落笔**。
+⇒ ⇒ ⇒ ★★★ ⇒ **⇒ 连带：★★ 降级跑里的「slow-check WARNED」是【伴生假象】—— ★★ 等待失败会烧满 `timeout`（20s）⇒ ⇒ **看到「某页 22 秒」先问「是它慢，还是它没等到」** ★★★**
+
+⇒ ★★ **核心事实六：★★ 工具的「读取路径」可能是【假通道】★★** ⇒
+★★ `maestro/tools/slow-pages.mjs` 旧版从 **CLI 文本**正则抠 `ms__<slug> = <ms>` ⇒ ★★ **抠不到**（Maestro 只打 `Run ${...}... COMPLETED`，★ **从不回显赋值结果**）
+⇒ ⇒ **真正的机器可读通道 = 调试产物 `commands.json` 的 `metadata.duration`** ⇒ **页面打开耗时 = `openLink` 的 duration + 其后「等可见」的 duration**
+⇒ ⇒ ⇒ ★★★ ⇒ **⇒ 通式：★★ 「工具跑成功了」与「工具读到了数」是两个命题 ⇒ ⇒ 必须用【对拍】验**（★ 本轮：`/forbidden` 813+9275=10088ms vs flow 实测 10463ms）★★★
+
+⇒ ★★ **核心事实七：★★ 动态路由必须喂真值；且【每个变量都必须有兜底】★★** ⇒
+★★ ① Maestro 的 `${}` **只做字符串替换** ⇒ 16 处动态路由变量不喂真值就会打开 `/providers/` 这种打不开的 URL ⇒ ⇒ 新增 `maestro/tools/resolve-ids.mjs` 从**活网关**解析真 ID；★★
+★★ ② ★★ **`${VAR}` 找不到变量时【不报错】，而是渲染成字面量 `undefined`** ⇒ ⇒ `SESSION_OWNER` 缺兜底 ⇒ URL 变成 `/admin/session-analytics/users/undefined` ⇒ ⇒ **标题是「用户画像详情: undefined」** ⇒ ⇒ **已补哨兵值 `unknown`**（★ 与 `TASK_ID` 一致 ⇒ 语义自洽）★★
+
+⇒ ★★ **最终读数（★ 部署 `2.5.8.2896`（`VERIFY_PASS=1`）之后 · 严格模式 · 产物 `maestro/reports/20261028-154944`）★★** ⇒
+★★ **10/10 flow 全绿**：★ 01~09 全部 `rc=0 / FAILED=0 / WARNED=0`；★ 90-dev-only `rc=0 / FAILED=0 / WARNED=4`（★ 那 4 个是**预期**的：★ dev 路由在**生产构建下不注册** ⇒ optional 等待烧满 20s ⇒ **连带**让 slow-check 也 WARNED ⇒ ★★ **是「等不到」不是「页面慢」**，★ 已用 CDP 独立坐实 `location.href` 落回 `/`）；
+★★ 实测 **112 个页面**，**超过 2000ms 的只有 2 个**（★ 就是上面那两条 dev 路由）⇒ ⇒ **真实路由全部在 2 秒内**，★ 最慢的 `/login` **1876ms**；
+★★ 产品缺陷修复前后：`/forbidden` **10131 → 181ms** · `/bootstrap` **10108 → 182ms** · `/customer/update-activate` **10116 → 170ms**（★ ≈56×）；
+★★ 资产侧共修 **26 处**（★ 首轮 12 ＋ 第二轮 14）＋ 1 处工具侧（★ `SESSION_OWNER` 无兜底）；
+★★ 测试：`web/src/router/authHydration.test.ts` **7/7** · `web/src/composables/useDeploySeqUpdate.spec.ts` **13/13**（★ 各配 1 条变异臂 ⇒ **4 红 / 1 红**）；★ `vue-tsc` **rc=0**；★ `vitest` **284 文件通过 / 1 跳过、2899 测试通过 / 2 跳过**。
+★★ ⇒ 审计档 `docs/audit/2026-10-28-R176-Maestro逐页实跑.md`；通用式见 `LESSONS.md` **§500**（★ 10 条）。
+
+⇒ ★★ **本轮明确没做（留给下一轮，别重复排查）★★**
+⇒ ★★ **产品侧**：`web/src/router.ts:490` 的 `if (to.path.startsWith('/ops') && !showOpsPlatform())` 是**死代码**（★ 5 条 `externalMaintainRedirect` 路由被自己的 `beforeEnter` 抢先整页跳走；★ 剩下的 `/ops/vibecoding` 由 `meta.requiresOpsPlatform` 覆盖）⇒ ⇒ **删还是改 = 产品决策**，★ 本轮只记录不改；
+⇒ ★★ **CI 化**：Maestro 逐页验证是否接进 CI（★ 需要 Chrome ＋ JDK ＋ 活网关）—— 未定；
+⇒ ★★ **本机环境物**（★ JDK 17.0.21 · ChromeDriver 156 · chromium wrapper · CDP Chrome）**全在仓外**，★ 不入 git；★ 仓内只留 `maestro/run-local.sh`（★ 自动探测 JDK · 自动起/复用 CDP Chrome · 自动解析真 ID · 逐 flow 留档）；
+⇒ ★★ `maestro/env.yaml` 的**字段口径**与 `resolve-ids.mjs` 那套变量口径尚未统一（★ 本轮已把它的**用法**从「`--env-file` 模板」订正为「变量名清单 + 样例值」）；
+⇒ ★★ **承前轮**：★ **211 / 252 执行 914**（★ 需属主放行；★ 252 只读、5 个月分区无 DEFAULT、迁移幂等可重放）；★ **共享库 `pg_container_usable` 探针缺陷**（★ 仓外 `~/workspace/ai-native-tools/deploy-lib/smart-discovery.sh`）；★ **存量迁移 `SET LOCAL` → 会话级 `SET`**（★ 需人拍板）；★ **逐读点实测分区下界**（13 个参数化绝对窗口文件）；★ **35 读点 rollup/现算分类**（★ 8 个「混合」需人工判定）；★ **canonical 视图退役**（118 列、名字仍带 `request_logs`）；★ **U+FFFD 专项**（182 处 / 48 文件）；★ **POST 面 110 条**；★ **移动端 8 语言**；★ **页面级硬编码中文**。

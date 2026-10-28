@@ -3,7 +3,7 @@
 # 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
 # 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
 #       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
-appId: ${BASE_URL}
+url: ${BASE_URL}
 ---
 - launchApp
 - runFlow:
@@ -16,10 +16,18 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/ops/licenses"
 - extendedWaitUntil:
-    visible: '更新与激活'
+    # ★ 这 5 条是 externalMaintainRedirect 造的「整页跳 maintain SPA」路由
+    #   （router.ts:117-127，component 渲染 null + beforeEnter 里 window.location.replace）
+    #   ⇒ 落地页由**部署拓扑**决定：
+    #     ① maintain 已部署 ⇒ maintain SPA（本地没有 ⇒ 不可能）
+    #     ② maintain 未部署 ⇒ Go 的 maintain_proxy.go:186 吐静态 503 页
+    #        「运维平台暂时不可用」
+    #     ③ 守卫的 /ops/* 改写规则生效 ⇒ /customer/update-activate「更新与激活」
+    #   ⇒ 断言取三者并集，别把其中一套写死。
+    visible: '更新与激活|运维平台暂时不可用'
     timeout: 20000
 - assertVisible:
-    text: '503 · 运维平台不可用'
+    text: '运维平台暂时不可用|503 · 运维平台不可用|更新与激活'
     optional: true
 - evalScript: "${output.ms__ops_licenses = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
@@ -31,10 +39,18 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/ops/faults"
 - extendedWaitUntil:
-    visible: '更新与激活'
+    # ★ 这 5 条是 externalMaintainRedirect 造的「整页跳 maintain SPA」路由
+    #   （router.ts:117-127，component 渲染 null + beforeEnter 里 window.location.replace）
+    #   ⇒ 落地页由**部署拓扑**决定：
+    #     ① maintain 已部署 ⇒ maintain SPA（本地没有 ⇒ 不可能）
+    #     ② maintain 未部署 ⇒ Go 的 maintain_proxy.go:186 吐静态 503 页
+    #        「运维平台暂时不可用」
+    #     ③ 守卫的 /ops/* 改写规则生效 ⇒ /customer/update-activate「更新与激活」
+    #   ⇒ 断言取三者并集，别把其中一套写死。
+    visible: '更新与激活|运维平台暂时不可用'
     timeout: 20000
 - assertVisible:
-    text: '503 · 运维平台不可用'
+    text: '运维平台暂时不可用|503 · 运维平台不可用|更新与激活'
     optional: true
 - evalScript: "${output.ms__ops_faults = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
@@ -46,10 +62,18 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/ops/autoupdate"
 - extendedWaitUntil:
-    visible: '更新与激活'
+    # ★ 这 5 条是 externalMaintainRedirect 造的「整页跳 maintain SPA」路由
+    #   （router.ts:117-127，component 渲染 null + beforeEnter 里 window.location.replace）
+    #   ⇒ 落地页由**部署拓扑**决定：
+    #     ① maintain 已部署 ⇒ maintain SPA（本地没有 ⇒ 不可能）
+    #     ② maintain 未部署 ⇒ Go 的 maintain_proxy.go:186 吐静态 503 页
+    #        「运维平台暂时不可用」
+    #     ③ 守卫的 /ops/* 改写规则生效 ⇒ /customer/update-activate「更新与激活」
+    #   ⇒ 断言取三者并集，别把其中一套写死。
+    visible: '更新与激活|运维平台暂时不可用'
     timeout: 20000
 - assertVisible:
-    text: '503 · 运维平台不可用'
+    text: '运维平台暂时不可用|503 · 运维平台不可用|更新与激活'
     optional: true
 - evalScript: "${output.ms__ops_autoupdate = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
@@ -61,10 +85,18 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/ops/center"
 - extendedWaitUntil:
-    visible: '更新与激活'
+    # ★ 这 5 条是 externalMaintainRedirect 造的「整页跳 maintain SPA」路由
+    #   （router.ts:117-127，component 渲染 null + beforeEnter 里 window.location.replace）
+    #   ⇒ 落地页由**部署拓扑**决定：
+    #     ① maintain 已部署 ⇒ maintain SPA（本地没有 ⇒ 不可能）
+    #     ② maintain 未部署 ⇒ Go 的 maintain_proxy.go:186 吐静态 503 页
+    #        「运维平台暂时不可用」
+    #     ③ 守卫的 /ops/* 改写规则生效 ⇒ /customer/update-activate「更新与激活」
+    #   ⇒ 断言取三者并集，别把其中一套写死。
+    visible: '更新与激活|运维平台暂时不可用'
     timeout: 20000
 - assertVisible:
-    text: '503 · 运维平台不可用'
+    text: '运维平台暂时不可用|503 · 运维平台不可用|更新与激活'
     optional: true
 - evalScript: "${output.ms__ops_center = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
@@ -76,10 +108,18 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/ops"
 - extendedWaitUntil:
-    visible: '更新与激活'
+    # ★ 这 5 条是 externalMaintainRedirect 造的「整页跳 maintain SPA」路由
+    #   （router.ts:117-127，component 渲染 null + beforeEnter 里 window.location.replace）
+    #   ⇒ 落地页由**部署拓扑**决定：
+    #     ① maintain 已部署 ⇒ maintain SPA（本地没有 ⇒ 不可能）
+    #     ② maintain 未部署 ⇒ Go 的 maintain_proxy.go:186 吐静态 503 页
+    #        「运维平台暂时不可用」
+    #     ③ 守卫的 /ops/* 改写规则生效 ⇒ /customer/update-activate「更新与激活」
+    #   ⇒ 断言取三者并集，别把其中一套写死。
+    visible: '更新与激活|运维平台暂时不可用'
     timeout: 20000
 - assertVisible:
-    text: '503 · 运维平台不可用'
+    text: '运维平台暂时不可用|503 · 运维平台不可用|更新与激活'
     optional: true
 - evalScript: "${output.ms__ops = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
@@ -91,7 +131,21 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/ops/vibecoding"
 - extendedWaitUntil:
-    visible: '更新与激活'
+    # ★ 这 5 条是 externalMaintainRedirect 造的「整页跳 maintain SPA」路由
+    #   （router.ts:117-127，component 渲染 null + beforeEnter 里 window.location.replace）
+    #   ⇒ 落地页由**部署拓扑**决定：
+    #     ① maintain 已部署 ⇒ maintain SPA（本地没有 ⇒ 不可能）
+    #     ② maintain 未部署 ⇒ Go 的 maintain_proxy.go:186 吐静态 503 页
+    #        「运维平台暂时不可用」
+    #     ③ 守卫的 /ops/* 改写规则生效 ⇒ /customer/update-activate「更新与激活」
+    #   ⇒ 断言取三者并集，别把其中一套写死。
+    # ★ /ops/vibecoding 是**本仓组件页**（VibeCoding 项目列表，router.ts:361），
+    #   不是 externalMaintainRedirect 造的整页跳转路由 ⇒ 落地页就是它自己
+    #   （实测 2026-10-28 R176：渲染「VibeCoding / + 创建项目 / 项目 / 表格 / 卡片 …」）。
+    # ★★ 由此坐实：router.ts:490 的 `to.path.startsWith('/ops')` 改写规则是**死代码** ——
+    #   ① 5 条 externalMaintainRedirect 路由被自己 beforeEnter 的 window.location.replace 抢先；
+    #   ② 剩下的 /ops/vibecoding 由 meta.requiresOpsPlatform 那条规则覆盖。
+    visible: 'VibeCoding'
     timeout: 20000
 - assertVisible:
     text: 'VibeCoding'
