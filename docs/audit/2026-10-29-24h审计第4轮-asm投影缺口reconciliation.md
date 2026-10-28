@@ -108,7 +108,19 @@ insert into outbox_events (…同 3.2 形态…) select … from src on conflict
 ```
 **缺口数据层清零**（每个有 completed 的会话都有 opened）；未来缺口由代码根修（§4）在源头闭合。
 
-### 3.6 验证（部署后复核）
+### 3.6 occurred_at 打结拆解（01:52，排空速率塌方定位）
+第二波翻完后吞吐从 ~15/s 塌到 **~0.23/s**（15 条突发 + 64s 熔断暂停循环，按此速率剩余积压要 ~32h）。定位：**3.2/3.5 的 SQL 回填把 opened 的 occurred_at 设成该会话 min(completed.occurred_at) —— 与那一条 completed 完全同刻**；claim `ORDER BY occurred_at ASC` 在同刻上顺序不定，completed 先被 claim ⇒ asm 503 ⇒ 熔断暂停 64s ⇒ 下一轮 probe 又撞下一对同刻。代码根修（§4）用 `-1ms` 防了未来，**SQL 回填没有复制这个偏移**——补上：
+```sql
+update outbox_events o set occurred_at = o.occurred_at - interval '1 millisecond', updated_at = now()
+from outbox_events c
+where c.aggregate_id = o.aggregate_id
+  and o.event_type='session.opened.v1' and c.event_type='request.completed.v1'
+  and o.status='pending' and c.status in ('pending','failed')
+  and o.occurred_at = c.occurred_at;   -- UPDATE 5755
+```
+**效果立竿见影**：拆结后 2 分钟 943 条成功（~8/s 恢复满速）、失败 1 条。⇒ ★ 通用式补充：**确定性回填必须逐字段复刻代码路径的全部排序不变量**（event_id 对拍了，occurred_at 的 -1ms 漏了——同一不变量要整体搬，不是挑重要的搬）。
+
+### 3.7 验证（部署后复核）
 - outbox：`dlq=0 / failed=0`（或仅剩带真实原因的小残量）；
 - asm：inbox retryable → 0（对应事件被重投后幂等 claim 完成）、`session_projection` 净增 ≈ 23,150、checkpoint events_processed 同步增长；
 - 实时面：缺口会话的新请求 completed 一次成功（无 503 WARN）。
