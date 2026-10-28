@@ -21,9 +21,18 @@ export interface ModelFamily {
   versions: AvailableVersion[]
 }
 
+/** popular 条目：Go 端 popularModelEntry（admin/routing.go）—— 对象数组,
+ * 与桌面端 web/src/api/models.ts 的 PopularModel 同一契约。 */
+export interface PopularModel {
+  canonical_name: string
+  display_name: string
+  source: 'policy' | 'usage' | string
+  count?: number | null
+}
+
 export interface AvailableModelsResponse {
   families: ModelFamily[]
-  popular?: string[]
+  popular?: PopularModel[]
   unmapped?: number
   total_raw?: number
 }

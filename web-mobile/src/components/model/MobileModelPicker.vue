@@ -79,7 +79,14 @@ async function load(force = false): Promise<void> {
   try {
     const response = await fetchAvailableModels()
     families.value = response.families ?? []
-    popular.value = [...new Set(response.popular ?? [])]
+    // ★ 2026-10-28：popular 的线上契约是 Go popularModelEntry 对象数组
+    // （{canonical_name, display_name, source}，admin/routing.go:2702）——
+    // 此前按 string[] 直接消费：插值把整个对象渲染成 JSON 字样（用户看到的
+    // 「路由检查选模型是一列 JSON」），点选还会把对象塞进 v-model。
+    // 这里归一成 canonical_name 字符串；string 分支纯防御，兼容旧形状。
+    popular.value = [...new Set((response.popular ?? [])
+      .map((entry) => typeof entry === 'string' ? entry : entry?.canonical_name)
+      .filter((name): name is string => typeof name === 'string' && name.length > 0))]
     loaded.value = true
   } catch (reason) {
     error.value = reason instanceof Error ? formatApiError(reason) : t('modelPicker.loadFailed')
