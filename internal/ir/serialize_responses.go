@@ -552,6 +552,8 @@ func buildResponsesTools(tools []ToolDefinition) []map[string]any {
 		if tool.Parameters != nil {
 			entry["parameters"] = tool.Parameters
 		}
+		// RISK-2（2026-10-29）：工具顶层非标准键并回（不覆盖已写入键）。
+		mergeToolExtras(entry, tool.Extra)
 		result = append(result, entry)
 	}
 	return result
