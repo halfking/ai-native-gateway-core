@@ -140,11 +140,16 @@ const maxOllamaNDJSONLineSize = 4 * 1024 * 1024
 // ollamaClientWire returns the ClientProtocol default ("openai-completions")
 // when unset. The downstream OpenAI client today is the only supported
 // inbound wire; anthropic/responses variants are future work.
+//
+// 2026-10-28（批判审计轮）："openai-chat"（ir.DetectProtocol 对 OpenAI Chat
+// 线体的实际检出值——OpenAI 入站与 Gemini 入站的合成体都是它）经
+// canonicalInboundWire 归一到 openai-completions，否则本执行器的
+// client-wire 门会把它 501 掉（与 executor_gemini 同款词表分叉）。
 func (o *OllamaExecutor) clientWire() string {
-	if o == nil || o.ClientProtocol == "" {
+	if o == nil || canonicalInboundWire(o.ClientProtocol) == "" {
 		return "openai-completions"
 	}
-	return o.ClientProtocol
+	return canonicalInboundWire(o.ClientProtocol)
 }
 
 // BuildRequest assembles the upstream HTTP POST against the Ollama
@@ -1422,9 +1427,10 @@ func (e *Executor) finalizeOllamaUpstreamBody(params *ExecParams, cand provider.
 	// the response write path (StreamResponse / WriteNonStreamResponse)
 	// is OpenAI-Chat-shaped only, so a Responses request would get
 	// a wrong-shape response back. Fail closed at the gate.
-	switch params.ClientProtocol {
+	switch canonicalInboundWire(params.ClientProtocol) {
 	case "", "openai-completions":
-		// supported
+		// supported — "openai-chat" normalizes onto this arm
+		// (canonicalInboundWire; see clientWire for the vocabulary note).
 	case "openai-responses":
 		return nil, &upstreampkg.Error{
 			Kind:       errorsx.KindUnsupportedFeature,

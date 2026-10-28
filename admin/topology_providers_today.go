@@ -97,14 +97,17 @@ type topologyProviderTodayItem struct {
 }
 
 type topologyProvidersTodayResponse struct {
-	DayUTC              string                      `json:"day_utc"`
-	WindowStartUTC      time.Time                   `json:"window_start_utc"`
-	TenantScope         string                      `json:"tenant_scope"`
-	GeneratedAt         time.Time                   `json:"generated_at"`
-	SourceHighWatermark *time.Time                  `json:"source_high_watermark,omitempty"`
-	RollupCadence       string                      `json:"rollup_cadence"`
-	Totals              topologyProviderTodayTotals `json:"totals"`
-	Items               []topologyProviderTodayItem `json:"items"`
+	DayUTC              string     `json:"day_utc"`
+	WindowStartUTC      time.Time  `json:"window_start_utc"`
+	TenantScope         string     `json:"tenant_scope"`
+	GeneratedAt         time.Time  `json:"generated_at"`
+	SourceHighWatermark *time.Time `json:"source_high_watermark,omitempty"`
+	RollupCadence       string     `json:"rollup_cadence"`
+	// 短窗口口径回显（2026-10-28 头部统计轮）：?window=5m|1h 时为 "5m"/"1h"，
+	// day 路径不输出（omitempty，既有契约逐字节兼容）。
+	Window string                      `json:"window,omitempty"`
+	Totals topologyProviderTodayTotals `json:"totals"`
+	Items  []topologyProviderTodayItem `json:"items"`
 }
 
 // providersTodayLimit 是返回行数上限。供应商数量是几十量级，500 是「足够全 +
@@ -185,7 +188,19 @@ func (h *Handler) handleTopologyProvidersToday(w http.ResponseWriter, r *http.Re
 		limit = n
 	}
 
-	rows, err := querier.Query(r.Context(), providersTodaySQL, day, strings.TrimSpace(tenant), limit)
+	// 双口径（2026-10-28 头部统计轮）：day = stats_usage_daily 日桶；5m/1h =
+	// request_logs 直查（见 topology_window_stats.go）。两条 SQL 的 SELECT 列
+	// 形状完全一致 ⇒ 下面的行处理 / totals 累加 / share 计算共用同一份实现，
+	// 不为窗口口径另写一份循环。
+	win, isWindow := topologyWindowParam(r)
+	sqlStr, args := providersTodaySQL, []any{day, strings.TrimSpace(tenant), limit}
+	windowStart := day
+	if isWindow {
+		windowStart = time.Now().UTC().Add(-win)
+		sqlStr, args = providersWindowSQL, []any{windowStart, strings.TrimSpace(tenant), limit}
+	}
+
+	rows, err := querier.Query(r.Context(), sqlStr, args...)
 	if err != nil {
 		if isMissingStatsRelation(err) {
 			// 聚合表还没迁移/不存在：与 /api/admin/stats/* 同契约 —— 200 + degraded，
@@ -270,14 +285,22 @@ func (h *Handler) handleTopologyProvidersToday(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	writeJSON(w, http.StatusOK, topologyProvidersTodayResponse{
+	resp := topologyProvidersTodayResponse{
 		DayUTC:              day.Format("2006-01-02"),
-		WindowStartUTC:      day,
+		WindowStartUTC:      windowStart,
 		TenantScope:         tenant,
 		GeneratedAt:         time.Now().UTC(),
 		SourceHighWatermark: watermark,
 		RollupCadence:       "1h",
 		Totals:              totals,
 		Items:               items,
-	})
+	}
+	if isWindow {
+		// 窗口口径：没有 UTC 日桶、没有 rollup 滞后 —— day_utc 置空、
+		// cadence 记 realtime、window 回显，供前端把口径行画对。
+		resp.DayUTC = ""
+		resp.RollupCadence = "realtime"
+		resp.Window = topologyWindowLabel(win)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

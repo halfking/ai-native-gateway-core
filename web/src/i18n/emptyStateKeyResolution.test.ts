@@ -74,8 +74,9 @@ const REGISTERED_KEYS = (registry.keys ?? [])
 describe('空状态新键的运行时解析（键 → 译文，不是键路径）', { timeout: 120_000 }, () => {
   it('登记簿非空（负控前提：门要真的量到东西）', () => {
     // ★★ 「一个键都没量」也是绿的 ⇒ 假绿 ⇒ 必须有非空下限。
+    // 2026-10-28 头部统计轮 +1（liveTopology.stats.emptyNoResultWindow，NoResult）。
     expect(REGISTERED_KEYS.length).toBeGreaterThan(0)
-    expect(REGISTERED_KEYS.length).toBe(23)
+    expect(REGISTERED_KEYS.length).toBe(24)
   })
 
   for (const locale of LOCALES) {

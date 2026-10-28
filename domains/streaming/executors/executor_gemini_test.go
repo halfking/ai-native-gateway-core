@@ -216,6 +216,61 @@ func TestFinalizeGeminiUpstreamBody_OpenAIWireToGeminiWire(t *testing.T) {
 	}
 }
 
+// TestFinalizeGeminiUpstreamBody_ProductionClientProtocolVocabulary pins the
+// 2026-10-28 critical-audit fix: in production (IR converter wired) the
+// dispatcher fills ExecParams.ClientProtocol from ir.DetectProtocol, which
+// reports "openai-chat" for the OpenAI Chat wire — including the Gemini
+// ingress's synthetic body. The client-wire gate previously whitelisted only
+// the legacy "openai-completions" fallback, so every real Gemini-native
+// ingress routed to a gemini-generate upstream died with 501 `client
+// protocol "openai-chat" not yet wired` (live-verified on a temp gateway).
+// The existing tests passed because they were written against the legacy
+// name only. Both spellings must work; neither may regress.
+func TestFinalizeGeminiUpstreamBody_ProductionClientProtocolVocabulary(t *testing.T) {
+	e := newGeminiTestExecutor()
+	cand := newGeminiCandidate("https://generativelanguage.googleapis.com")
+	wire := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+
+	for _, protocol := range []string{"openai-chat", "openai-completions", ""} {
+		params := &ExecParams{ClientProtocol: protocol, ClientModel: "m", OutboundModel: "gemini-2.5-flash"}
+		out, err := e.finalizeGeminiUpstreamBody(params, cand, wire)
+		if err != nil {
+			t.Fatalf("ClientProtocol %q must be accepted (canonicalInboundWire normalizes it): %v", protocol, err)
+		}
+		var parsed map[string]any
+		if json.Unmarshal(out, &parsed) != nil {
+			t.Fatalf("ClientProtocol %q: output not JSON", protocol)
+		}
+		if _, ok := parsed["contents"]; !ok {
+			t.Errorf("ClientProtocol %q: gemini body missing contents", protocol)
+		}
+	}
+}
+
+// TestGeminiSerializeResponse_OpenAIChatVocabulary pins the response-side
+// switch: a GeminiExecutor answering an "openai-chat" client must serialize
+// the OpenAI Chat response shape (previously fell into the default arm and
+// failed with 501 "not yet wired").
+func TestGeminiSerializeResponse_OpenAIChatVocabulary(t *testing.T) {
+	for _, protocol := range []string{"openai-chat", "openai-completions", ""} {
+		g := &GeminiExecutor{ClientProtocol: protocol}
+		out, err := g.serializeResponse(&ir.InternalResponse{
+			Content: []ir.ResponseContentBlock{{Type: "text", Text: "ok"}},
+			Model:   "m",
+		}, "m")
+		if err != nil {
+			t.Fatalf("ClientProtocol %q: serializeResponse: %v", protocol, err)
+		}
+		var parsed map[string]any
+		if json.Unmarshal(out, &parsed) != nil {
+			t.Fatalf("ClientProtocol %q: output not JSON", protocol)
+		}
+		if _, ok := parsed["choices"]; !ok {
+			t.Errorf("ClientProtocol %q: expected OpenAI Chat choices shape, got %s", protocol, out)
+		}
+	}
+}
+
 // TestFinalizeGeminiUpstreamBody_GatesFailClosed pins every rejection
 // gate. Each one must produce a typed error rather than a body that
 // would fail at the vendor with a confusing error.
