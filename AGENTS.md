@@ -12341,3 +12341,36 @@ index b953a6f03..555ef83c4 100644
 >   **独立一轮**（带变更点清单），**勿批量格式化**；★ ③ `r98` 分支与两个 stash
 >   ⇒ **待属主会话收口**（本轮只记录不动）；★ ④ ★ **建议优先**：给「跨文件同型
 >   断言」做一道**同步门**（★ 难点：跨包无共同事实源 ⇒ **必须先指定事实源**）。
+
+**2026-10-28 模态不匹配诊断轮 + 批判式审计轮**（本地提交 `6d489b129`/`a1e5f85c3`/
+`fea5b02af` + 本轮审计提交）：★ **问题定性**：用户报「glm-5.3-flash 永远调不通」——
+根因不是网关故障：ZCode IDE 智能体的会话历史带 8 张 computer-use 截图 ⇒ 每轮请求
+被判 vision ⇒ glm-5.3-flash 登记为 text-only ⇒ 每轮 503 no_candidate；旧文案
+「没有可用供应商」说的是**网关的状态** ⇒ 客户端（含 Anthropic SDK 的自动退避）
+无限重试一个必然失败的请求；纯文本同模型 24h 内 77 笔成功。
+⇒ ★★ **修复**：新错误码 `modality_mismatch`（400，invalid_request_error），
+判据 = 「去掉模态门后模型仍可路由」**且**「登记模态服务不了本次模态」两条同时成立
+（`provider.ModalityMismatch`，800ms 超时）；响应体带机器可读事实
+（requested/registered/supported_modalities）；**替代建议按模态过滤**
+（修掉旧列表把 text-only 模型当 vision 替代推荐的误导——真库 8 featured 里 4 个
+text-only）；8 语种文案；三个协议入口（chat/messages/responses）各自接诊断。
+⇒ ★★ **生产验证照出的第三个缺口**：`detectRequestModality` 不认 Responses API 的
+`input[]` ⇒ 该路径带图请求被判 text ⇒ 模态门对它**从不生效** ⇒ 带图原样发上游
+⇒ 上游 400 被网关说成 503「All providers unavailable」（供应商好好的，是请求带
+了它不收的模态）——已修（input[] 与 messages[] 同构，复用遍历）。
+⇒ ★★★ **批判式审计（本轮）抓到自己的 5 个问题**（详见
+`docs/audit/2026-10-28-模态不匹配诊断轮-批判式审计.md`）：
+① 诊断 SQL 两处列选择缺陷（`mo.canonical_id` 漏 alias 臂 + EXISTS 按 canonical_id
+join）——**潜伏**（211 现状 0 条 alias-only offer 才没咬人），红-绿修两轮才收口
+（第一轮「修复」仍被夹具打回）；② 夹具跨连接不可见（tx 插行、池连接读 ⇒ 恒红）；
+③ 接线守卫缺失（协议测试调共享函数，调用点被删仍绿）⇒ 照
+`auto_route_wiring_guard_test.go` 先例补三文件源码守卫，守卫第一版自身有
+Index 范围假阳性（在真实文件上跑一次就现形）；④ 诊断查询无超时 ⇒ 补 800ms；
+⑤ 「与路由器逐字同源」措辞过强（实为语义同源，Go↔SQL 锁步判据留遗留）。
+⇒ 读数：全量套件绿（provider 两个既有失败与本轮无关：211 providers 表缺
+name 列，基线相同）；211 蓝绿重部署后三协议 400 modality_mismatch /
+纯文本 200 / multimodal（minimax-m3）带图 200。
+⇒ ★ 遗留（下一轮可领）：Go 判据 ↔ SQL 接受臂的模板级锁步；「调用点挪到
+fallback 后」的纯语义变异守卫；provider 两测试夹具与现网 schema 对齐；
+glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人工正名单思路）。
+⇒ 通用式见 `LESSONS.md` **§497**。

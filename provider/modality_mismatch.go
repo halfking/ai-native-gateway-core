@@ -3,9 +3,15 @@ package provider
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/modelname"
 )
+
+// modalityMismatchQueryTimeout bounds the diagnosis query. Same budget and
+// same rationale as streaming.alternativesQueryTimeout: a nicety on an
+// already-failing request must never extend the client's wait.
+const modalityMismatchQueryTimeout = 800 * time.Millisecond
 
 // ModalityMismatch describes why a request found no candidate even though the
 // model itself is known and routable.
@@ -78,12 +84,20 @@ func (c *Client) ModelModalityMismatch(ctx context.Context, model, profile, tena
 		return nil, nil
 	}
 
+	// ★ Bounded like the alternatives lookup (800ms): this runs on a request
+	// that has ALREADY failed candidate resolution. The diagnosis is an
+	// improvement over the plain 503, never a reason to make a failing
+	// client wait longer — a slow query here must degrade to the plain 503
+	// (the caller swallows errors) rather than extend the failure latency.
+	diagCtx, cancel := context.WithTimeout(ctx, modalityMismatchQueryTimeout)
+	defer cancel()
+
 	var (
 		registeredModality       string
 		canonicalModel           string
 		routableIgnoringModality bool
 	)
-	err := c.dbPool.QueryRow(ctx, modalityMismatchSQL, lookup, tenantID).Scan(
+	err := c.dbPool.QueryRow(diagCtx, modalityMismatchSQL, lookup, tenantID).Scan(
 		&registeredModality, &canonicalModel, &routableIgnoringModality)
 	if err != nil {
 		return nil, err
@@ -159,8 +173,18 @@ func ModalityAccepts(registeredModality, requestedModality string) bool {
 // drift apart.
 const modalityMismatchSQL = `
 WITH matched AS MATERIALIZED (
-    SELECT mo.canonical_id, mo.canonical_raw_name, mo.standardized_name,
-           mc.canonical_name, mc.modality
+    -- ★ The canonical comes from mc.id (COALESCE(mo.canonical_id, ma.canonical_id)),
+    -- NOT from mo.canonical_id: an offer whose own canonical_id is NULL can
+    -- still resolve through the alias join, and the router counts exactly
+    -- those. Selecting mo.canonical_id here made every alias-resolved offer
+    -- read as "unresolved" ⇒ the routable EXISTS came back false ⇒ the
+    -- diagnosis stayed silent for models the router was happily excluding
+    -- by modality (found in the 2026-10-28 critical audit; conservative
+    -- miss, not a false positive — but the whole point of this query is to
+    -- catch those).
+    SELECT mc.id AS canonical_id, mo.canonical_raw_name, mo.standardized_name,
+           mc.canonical_name, mc.modality,
+           mo.id AS offer_id
     FROM model_offers mo
     LEFT JOIN model_name_mapping mnm
            ON mnm.raw_model_name = mo.canonical_raw_name
@@ -186,6 +210,11 @@ WITH matched AS MATERIALIZED (
       AND COALESCE(mc.status, 'active') != 'disabled'
 ),
 resolved AS (
+    -- A request name can match offers bound to more than one canonical
+    -- (the router then returns the union). The diagnosis only runs when the
+    -- router returned ZERO candidates, which means every matched canonical
+    -- failed the modality filter — so any single canonical answers the
+    -- "what is it registered as" question; deterministic pick for stability.
     SELECT m.canonical_name, m.modality, m.canonical_id
     FROM matched m
     WHERE m.canonical_id IS NOT NULL
@@ -202,12 +231,23 @@ SELECT
         $1
     ),
     EXISTS (
+        -- ★ Join by the OFFER's binding identity, NOT by pm.canonical_id:
+        -- an alias-only offer's provider_models row has canonical_id = NULL —
+        -- that is what "alias-only" means — so a canonical_id join drops
+        -- exactly the rows this diagnosis exists to see. The test proved it
+        -- twice: matched resolved the canonical correctly both times, and
+        -- routable still came back false, because the EXISTS keyed on a
+        -- column that alias-only offers leave NULL.
+        --
+        -- model_offers.id IS the credential_model_bindings id (the view is
+        -- cmb ⋈ pm), so the direct route is the binding view itself:
+        -- v_routable_credential_models carries binding_id /
+        -- provider_model_id / credential_id and is the same availability
+        -- gate the router consults.
         SELECT 1
-        FROM matched m
-        JOIN provider_models pm ON pm.canonical_id = m.canonical_id
-        JOIN v_routable_credential_models v
-             ON v.provider_model_id = pm.id
-        WHERE v.is_routable = TRUE
+        FROM v_routable_credential_models v
+        WHERE v.binding_id IN (SELECT m.offer_id FROM matched m)
+          AND v.is_routable = TRUE
           AND (v.tenant_id = $2 OR v.tenant_id = 'default')
     )
 `
