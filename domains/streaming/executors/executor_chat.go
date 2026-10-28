@@ -3360,7 +3360,10 @@ func prepareRequestBodyWithNative(params *ExecParams, cand provider.Candidate, n
 		// 出错才回退」）。当前仓内 matrix 默认无 strip（data/
 		// request_transform_matrix.yaml 不存在 ⇒ 默认规则）；若运营为某客户端
 		// 配了 strip，这里是它对原生对失效的唯一痕迹。
-		slog.Debug("native pair bypasses transform strip_request_fields",
+		// RISK-3（2026-10-29）：Debug 在生产 Info 级不可见 ⇒ 留痕机制默认
+		// 不可观测（原厂直通生产验证轮 §7），升 Info —— 该行出现即意味着
+		// 运营配置与直通语义冲突，属于需要运营侧知晓的运行事实而非调试细节。
+		slog.Info("native pair bypasses transform strip_request_fields",
 			"request_id", params.RequestID,
 			"catalog_code", cand.CatalogCode,
 			"raw_model", cand.RawModel,
