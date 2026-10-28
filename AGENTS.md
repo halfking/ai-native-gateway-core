@@ -14205,6 +14205,40 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > ★ 老积压 attempts 当指数底数「首拍落 cap」恰是想要的 / ★★ 终态等最后写的字段 /
 > ★★ 登记的红会过期 + 量具缺席找同层数据源）。
 
+**2026-10-29 24h 审计第 4 轮：asm 投影缺口 reconciliation（结构性 opened 缺口根修 + DLQ 34,183 排空）**（goal 会话）：
+★ 承接第 3 轮遗留 1~4 项全部收口；提交 `2c7dcf48c`（telemetry 终态补发 opened + 测试）。
+> ⇒ ★★ **根因反转（本轮最值钱）**：asm「连续 503」不是 asm 故障，是**网关侧结构性数据缺口** ——
+> `session.opened.v1` 只在请求日志**新建插入**路径发射，**早失败请求（39ms、provider=unknown）
+> 只走终态更新路径** ⇒ 这些会话永远没有 opened ⇒ asm `session_projection` 无行 ⇒ 其所有
+> `request.completed.v1` 命中 `projection row missing` → Retryable → 整批 503。
+> **生产实测 14,369 个会话**无 opened（outbox 对拍：任何状态都无行），DLQ 34,183
+> （8,781 opened + 25,402 completed）皆源于此；上轮的 audit sink 失败窗口（10-28 09:20~13:30 UTC）
+> 是第二重独立诱因（把正常 opened 挡在 claim 前）。**熔断器/退避治不了它**：缺口事件重试一万次也是 503。
+> ⇒ ★★ **修复三件套**：① SQL 回填 14,369 条 opened（event_id=`sha256(tenant‖NUL‖session)[:8]`
+> 确定性公式**先本地对拍生产已知样本**再执行；`chr(0)` 不合法 ⇒ `convert_to(bytea)` 拼接；
+> occurred_at 取该会话最早 completed）+ ② DLQ opened 8,781 翻 pending 重放（先排空）⇒
+> ③ DLQ completed 25,402 **在 opened 全部送出后**才翻（乱序先到 ⇒ 每条一次 64s 熔断暂停，交错会拖成天级）；
+> 4,201 条 failed 排空期间挂 8h 再释放（防到期重试插进排空流）。重放全靠人工翻状态：dispatcher
+> claim 只取 pending/failed 到期，**DLQ 永不自动重拾**。
+> ⇒ ★ **代码根修**（`2c7dcf48c`）：`updateRequestLog` 终态块同事务先 INSERT opened（幂等 ON CONFLICT；
+> occurred_at 比 completed 早 1ms 保证投影行先建）+ `sessionOpenedUserID()` 两条发射路径共用一份推导；
+> pgxmock 测试钉 event_type 实参 + writer nil 反例。
+> ⇒ ★ **asm 迁移 36 → 56 一次通过**（`cmd/asm-migrate` 交叉编译 docker cp 进容器跑，37~56 全幂等
+> 增量 DDL）⇒ 9 张 capgov_* 表落地、digest 缺关系报错归零；**重启评估：不需要**（DB 可达、checkpoint
+> 秒级推进、503 已止息）。★★ **契约双轨陷阱**：`contracts/event-schemas/session.opened.v1.json`
+> （uuid/actor_id/mode）与 `internal/gatewayevents/schema/gateway-event-schema-v1.json`（session_id/user_id）
+> 并存互斥——回填验收以前者为准会全判死；前者若上线会把现行 payload 全判死，需 asm 会话对齐。
+> ⇒ ★ **③ 13 家 proxy 决断**：211 直连实测 7 家可达（anthropic/cohere/fireworks/github-copilot/groq/
+> openrouter/together，403/404 快速响应=TLS 通）⇒ 切 direct（direct 49→56；openrouter 是唯一有凭据者）；
+> 6 家不可达（openai/gemini/mistral/perplexity/xai 8s 超时、azure 模板域）保留 proxy——反正
+> `proxy_subscriptions` 双 0 行 proxy 路径本来就断，不为零流量配置翻烧饼。
+> ⇒ ★ **④ NVIDIA 幻影定论**：DLQ `failed/nvidia` 2,993 条的模型名在 `provider_models` 已零行、
+> 请求流 10-27 剪除后归零——**机制已生效无残留**；cred 23 陈旧 warning（last_probe 10-11）登记观察。
+> ⇒ ★ **巡检**：网关近 1h 0 ERROR/WARN（背压风暴消失实证）；慢 SQL 仅例行 `routing_analytics_7d`
+> 物化视图刷新 ~1.8s——无优化项；唯一未合并分支 r98 活跃（窗口外）登记不删，死 worktree ×2 已 prune。
+> ⇒ 审计档 `docs/audit/2026-10-29-24h审计第4轮-asm投影缺口reconciliation.md`；
+> 通用式见 `LESSONS.md` **§530**（跨号留 §527~529 缓冲）。
+
 ## ㊶ 原厂直通生产验证轮 + 批判式复审（2026-10-28）· zcode 实流量收口 RISK-5（★ 「保真」可能被方言合法性冒名顶替；★ 生效点清单要按【谁做序列化】数；★ 聚合口径必须与断言语义逐字对齐 —— 说「首发」就取第一次尝试）
 > 承接 ㊲ 的 RISK-5。★ **211 部署身份**：a 槽（28776060）与 b 槽（dc55570a）二进制探针均含直通代码 ⇒ nativepair 自 2026-10-28 08:20Z 起在线（**09:31 切流不是「无→有」边界**；版本号 `-dirty` 不算数，`grep -c 特征串 二进制` 才算）。
 > ⇒ ★ **取证通道盘点**（先做这张表）：211 无 `request_logs` 表、`request_wal_bodies` 0 行 ⇒ 唯一 body 通道 = 容器 `/app/logs/raw_data/*.jsonl`（100MB×10 firehose，client_request/upstream_request 双向 base64 完整 body）+ `docker logs` **stderr** 的 `http_request`（UA/request_id 关联；只接 stdout = 假阴性 0 条）。
@@ -14304,3 +14338,35 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > 出现时配能力表，不恢复钳制；窗口仍无该流量 ⇒ 维持「未观察」）。
 > ⇒ 审计档 `docs/audit/2026-10-29-RISK3-strip绕过留痕升级轮.md`；
 > 通用式见 `LESSONS.md` **§526**。
+> **2026-10-29 第 35 增量：live 遗留轮批判式复审轮（对第 33/两轮 live 统计的再审计）**
+> （会话续）：★ 承接「审计-修正-推送」指令，对 8c56a4845 + fd5b4fee2 两轮做批判式复审。
+> ⇒ ★ **§8 修复重验闭合**：压缩格数据源=平铺缓冲（gatewayStats←filteredRequests←
+> requestsRef=liveStreamState.requests，非 tile）；三条入腿全通——initial_data 回放
+> （payload 五字段修复）、实时帧（终态 telemetry worker 落库后补偿**二次广播**，
+> main_livestream.go 注释明载两调用点）、同 id 第二帧 pushOrQueue **原地替换**；
+> tile_delta 不带五字段但**无任何消费者**（全 UI grep 实证）⇒ 无害。
+> ⇒ ★★ **新抓真缺陷（两轮共有）：models-today 把全部 passthrough 并成一行**——
+> `GROUP BY canonical_id` 单键对 canonical_id=0 不成立：图 modelKeyOf 按**原始名**
+> 分节点，211 实测每天 **127~189 个不同 raw 名**（10-28：189 名/13,877 请求被并成
+> 1 行、名字 MAX 任选；10-29 当天榜首全是 passthrough ⇒ 整栏信息被毁）。恰违背该
+> SQL 注释自己写的「图栏对账」理由——**「注释声明与事实不符」族在分组语义上的形态**。
+> ⇒ ★★ **修法=SQL 与 Go 折叠键必须同步（只修一边=白修）**：两条 SQL 分组键 +
+> `CASE WHEN canonical_id=0 THEN COALESCE(raw_model_name,'') ELSE '' END`；
+> by=provider 的 models/kept 带 raw_key + JOIN 双条件（单条件会把 canonical=0
+> 多名**交叉放大**）；**raw_key 必须钳非 NULL——`NULL=NULL` 不成立 ⇒ 空/NULL 名组
+> 被 JOIN 静默丢行（本轮自己踩到）**；Go 折叠键 map[int]→(canonical,raw) struct
+> 镜像 SQL CASE。
+> ⇒ ★★★ **验证不靠 mock 自证**：pgxmock 不执行 SQL ⇒ 两条新 SQL **只读真跑 211
+> 生产**——canonical=0 按名拆开（MiniMax-M3 3297/glm-5.3-flash 1924/…）、
+> by=provider 与默认口径**逐模型守恒**（1924=1814+99+9+2）；★ 坑：psql 会话
+> TimeZone=Asia/Shanghai ⇒ `CURRENT_DATE` 比 UTC 日快一天 ⇒ 首跑 0 行**假阴性**，
+> 验证 SQL 必须用 `((now() AT TIME ZONE 'utc')::date)`。
+> ⇒ ★ **同族延伸**：合并 origin 后核查并行会话头部统计轮新加的 `modelsWindowSQL`
+> （5m/1h 口径）——同病同修 + 211 真跑 1h 窗口验证拆分；该轮删了 TodaySummaryRail
+> （by=provider 展开钮迁进 StatsPanel，day 区间仍消费）⇒ 修复未变孤儿。
+> ⇒ ★ **量具自坑**：全量 vitest 从仓库根跑（未钉 cwd）⇒ 301 假红（`@/` 别名解析
+> 失败）；钉 web/ 真读数 **2925 通过/2 跳过/2 失败**——两失败=并行会话 logo 换
+> SSOT 资产未更新 theme.logoAssets.test 断言的 **main 既有红**（对方 in-flight，
+> 登记不越界）。★ 变异臂：折叠键退回单键 ⇒ 拆分测试红（1 行 180 请求精确复现）
+> ⇒ 还原绿 ⇒ md5 一致；`go test ./admin/` ok 117.4s。
+> ⇒ 审计档 §9（同文件追加）；提交 273e4926a + 671e70ac1。
