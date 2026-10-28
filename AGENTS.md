@@ -14087,7 +14087,7 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 ★★ ★ 存量迁移 `SET LOCAL` → 会话级 `SET`（★ 本轮新迁移已用会话级）；★★ ★ **729 / 906 那批索引的 fresh-install 缺口**（★ 它们没登记进 StartupFiles ⇒ 新装库本来就没有 ⇒ **家族级缺口**，★ 本轮只记录未修）；
 ★★ ★ 承前轮：★ 211/252 执行 914（属主放行）· ★ 共享库 `pg_container_usable` 探针缺陷（属主裁决）· ★ `router.ts:490` 的 `/ops/*` 死代码（产品决策）· ★ U+FFFD 专项 · ★ POST 面 110 条。
 
-★★ **★ 合并上游带来的 4 处慢门红（★ 全部归属上游，★ 登记不擅动）★★**：★ ① `TestPostSurfaceLedgerCoversEveryRoute`（★ 上游加 2 端点 ⇒ POST 台账没同步）· ② `TestProbeMirrorWriteFailureMustBeLogged`（★ probe 镜像写失败留痕缺失）· ③ `TestStructuredRegistryHollowoutReadersRejectEmptyRegistry`（★ 上游新增 `components/live-topology/*` 违反他们自己的设计阶棘轮）· ④ `TestTsvHollowoutReadersRejectEmptyRegistry`（★ ① 的连锁）
+★★ **★ 合并上游带来的 6 处慢门红（★ 全部归属上游，★ 登记不擅动）★★**：★ ① `TestPostSurfaceLedgerCoversEveryRoute`（★ 上游加 2 端点 ⇒ POST 台账没同步）· ② `TestProbeMirrorWriteFailureMustBeLogged`（★ probe 镜像写失败留痕缺失）· ③ `TestStructuredRegistryHollowoutReadersRejectEmptyRegistry`（★ 上游新增 `components/live-topology/*` 违反他们自己的设计阶棘轮）· ④ `TestTsvHollowoutReadersRejectEmptyRegistry`（★ ① 的连锁）· ⑤ `TestPGTestEnvRegistryCoversEveryGapName`（★ 上游新增的 PG 测试环境名没进登记册）· ⑥ `TestStructuredRegistryCensusCoversEveryCandidate`（★ 上游新增 `tests/deploy_lock_parity_baseline.json` 没进结构化登记册普查表）
 ★★ ⇒ ★★ **这 4 处在 pristine 上游树（★ `origin/main` 3d7b7d3af）上同名同数同红** ⇒ ⇒ 归属上游，不是我方引入 ★★。
 
 ★★ **审计档**：`docs/audit/2026-10-28-R178-api_key表达式索引.md`（★ 11 节）· **LESSONS §515**（★ ★ 让号四次：★ §504 → §505 → §510 → §512 → **§515**）。
