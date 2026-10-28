@@ -132,6 +132,14 @@ const modelsTodayLimit = 500
 // modelsTodaySQL：canonical_id 上聚合（canonical 名 LEFT JOIN models_canonical
 // 解析；canonical_id=0 的 passthrough 行回落 raw_model_name 当名字——
 // 与拓扑图 modelKeyOf「canonical 优先、原始名兜底」同一口径）。
+//
+// ★ 2026-10-28 审计轮修：GROUP BY 不能只按 canonical_id——canonical_id=0 的
+// 行涵盖**所有**未映射 passthrough 模型，单键分组会把 N 个不同 raw 名合并成
+// 一行、名字 MAX 任选（211 实测 10-28 当天 189 个不同 raw 名 / 13,877 请求
+// 被并成 1 行），而图上 modelKeyOf 对 canonical 空的请求按**原始名分节点**
+// ⇒ 图上 N 个模型、栏里 1 行，恰违背本注释自己写的「图栏对账」理由。
+// 分组键与图口径对齐：canonical>0 按 canonical_id（别名仍合并）；
+// canonical_id=0 按 raw_model_name 各自成行（NULL/'' 同组）。
 const modelsTodaySQL = `
 WITH agg AS (
 	SELECT canonical_id,
@@ -142,7 +150,7 @@ WITH agg AS (
 	       SUM(rate_limited_count)::bigint   AS rate_limited,
 	       COALESCE(SUM(prompt_tokens),0)::bigint      AS prompt_tokens,
 	       COALESCE(SUM(completion_tokens),0)::bigint  AS completion_tokens,
-	       COALESCE(SUM(cache_read_tokens),0)::bigint  AS cache_read_tokens,
+	       COALESCE(SUM(cache_read_tokens),0)::bigint   AS cache_read_tokens,
 	       COALESCE(SUM(cache_write_tokens),0)::bigint AS cache_write_tokens,
 	       COALESCE(SUM(total_tokens),0)::bigint       AS total_tokens,
 	       COALESCE(SUM(credits_charged),0)::bigint    AS credits_charged,
@@ -151,7 +159,8 @@ WITH agg AS (
 	FROM stats_usage_daily
 	WHERE day_utc = $1::date AND dimension_type = 'provider_model'
 	  AND ($2::text = '' OR tenant_id = $2)
-	GROUP BY canonical_id
+	GROUP BY canonical_id,
+	         CASE WHEN canonical_id = 0 THEN COALESCE(raw_model_name, '') ELSE '' END
 )
 SELECT a.canonical_id,
        COALESCE(NULLIF(mc.canonical_name, ''), ''),
@@ -162,16 +171,22 @@ SELECT a.canonical_id,
        a.credits_charged, a.cost_usd, a.watermark
 FROM agg a
 LEFT JOIN models_canonical mc ON mc.id = a.canonical_id
-ORDER BY a.requests DESC, a.canonical_id
+ORDER BY a.requests DESC, a.canonical_id, a.raw_model_name
 LIMIT $3`
 
 // modelsTodayByProviderSQL：?by=provider 交叉展开（2026-10-28 遗留①）。
 // provider_model 维度原生带 provider_id（rollup 按 (provider, credential,
 // canonical, raw_model) 落桶）⇒ 在 (canonical_id, provider_id) 上聚合，先取
-// 请求量 top-N 的 canonical（与默认口径同一截断语义），再返回每个模型的
+// 请求量 top-N 的模型（与默认口径同一截断语义），再返回每个模型的
 // 逐供应商行。Go 侧把同一模型的行折叠成父行 + providers 子行——父行指标
 // 由子行求和而来（同一 WHERE/GROUP BY，无 join 丢失），「父 = Σ子」由
 // 构造保证，测试断言这条不变量。
+//
+// ★ 2026-10-28 审计轮修：与默认 SQL 同款 passthrough 口径——canonical_id=0
+// 的不同 raw 名是**不同模型**（图 modelKeyOf 按原始名分节点），三元组
+// 分组键 (canonical_id, provider_id, raw 名[仅 canonical=0])；models/kept
+// 带 raw_key，JOIN 必须同时匹配 canonical_id + raw_key，否则 canonical=0 的
+// 多个 raw 名会在 JOIN 上交叉放大。
 const modelsTodayByProviderSQL = `
 WITH agg AS (
 	SELECT canonical_id,
@@ -192,19 +207,24 @@ WITH agg AS (
 	FROM stats_usage_daily
 	WHERE day_utc = $1::date AND dimension_type = 'provider_model'
 	  AND ($2::text = '' OR tenant_id = $2)
-	GROUP BY canonical_id, provider_id
+	GROUP BY canonical_id, provider_id,
+	         CASE WHEN canonical_id = 0 THEN COALESCE(raw_model_name, '') ELSE '' END
 ),
 models AS (
 	SELECT canonical_id,
+	       CASE WHEN canonical_id = 0 THEN COALESCE(raw_model_name, '') ELSE '' END AS raw_key,
 	       SUM(requests)::bigint AS model_requests,
 	       MAX(raw_model_name)   AS raw_model_name
 	FROM agg
-	GROUP BY canonical_id
+	GROUP BY canonical_id,
+	         CASE WHEN canonical_id = 0 THEN COALESCE(raw_model_name, '') ELSE '' END
 ),
 kept AS (
-	SELECT canonical_id, model_requests
+	SELECT canonical_id,
+	       raw_key,
+	       model_requests
 	FROM models
-	ORDER BY model_requests DESC, canonical_id
+	ORDER BY model_requests DESC, canonical_id, raw_key
 	LIMIT $3
 )
 SELECT a.canonical_id,
@@ -219,10 +239,12 @@ SELECT a.canonical_id,
        a.credits_charged, a.cost_usd, a.watermark
 FROM agg a
 JOIN kept k ON k.canonical_id = a.canonical_id
+           AND k.raw_key = (CASE WHEN a.canonical_id = 0 THEN COALESCE(a.raw_model_name, '') ELSE '' END)
 JOIN models m ON m.canonical_id = a.canonical_id
+             AND m.raw_key = (CASE WHEN a.canonical_id = 0 THEN COALESCE(a.raw_model_name, '') ELSE '' END)
 LEFT JOIN models_canonical mc ON mc.id = a.canonical_id
 LEFT JOIN providers p ON p.id = a.provider_id
-ORDER BY k.model_requests DESC, a.canonical_id, a.requests DESC, a.provider_id`
+ORDER BY k.model_requests DESC, a.canonical_id, a.raw_model_name, a.requests DESC, a.provider_id`
 
 // handleTopologyModelsToday 服务实时拓扑「当天模型请求/token/缓存汇总」。
 func (h *Handler) handleTopologyModelsToday(w http.ResponseWriter, r *http.Request) {
@@ -354,8 +376,8 @@ func (h *Handler) handleTopologyModelsToday(w http.ResponseWriter, r *http.Reque
 // 构造保证，测试断言这条不变量，防止将来有人在父行再算一套。
 //
 // 异常路径与默认口径同款（§507 通式六的五件套）：同 tenant scope、同
-// 降级信封、同水位取法、同坏行跳过、同截断标注（截断按 canonical 行数
-// 判，与默认口径一致）。
+// 降级信封、同水位取法、同坏行跳过、同截断标注（截断按模型行数判
+// ——canonical>0 每标准模型一行、canonical=0 每 raw 名一行，与默认口径一致）。
 func (h *Handler) handleTopologyModelsTodayByProvider(
 	w http.ResponseWriter, r *http.Request, querier topologyStatsDB,
 	day time.Time, tenant string, limit int,
@@ -384,7 +406,21 @@ func (h *Handler) handleTopologyModelsTodayByProvider(
 	defer rows.Close()
 
 	items := make([]topologyModelTodayItem, 0, 16)
-	index := make(map[int]int, 16) // canonical_id → items 下标
+	// 折叠键镜像 SQL 的分组 CASE（2026-10-28 审计轮修）：canonical>0 按
+	// canonical_id 折叠（别名合并，raw 名不同不许拆开）；canonical_id=0 按
+	// raw_model_name 折叠（不同 raw 名是不同模型）。只按 CanonicalID 折叠
+	// 会把全部 passthrough 重新并回一行——SQL 拆了、Go 又合上，白修。
+	type modelFoldKey struct {
+		canonical int
+		raw       string
+	}
+	foldKeyOf := func(row topologyModelsTodayProviderRow) modelFoldKey {
+		if row.CanonicalID > 0 {
+			return modelFoldKey{canonical: row.CanonicalID}
+		}
+		return modelFoldKey{raw: row.RawModelName}
+	}
+	index := make(map[modelFoldKey]int, 16) // 折叠键 → items 下标
 	var totalRequests int64
 	var watermark *time.Time
 	for rows.Next() {
@@ -406,7 +442,7 @@ func (h *Handler) handleTopologyModelsTodayByProvider(
 			ts := row.Watermark.Time
 			watermark = &ts
 		}
-		at, ok := index[row.CanonicalID]
+		at, ok := index[foldKeyOf(row)]
 		if !ok {
 			items = append(items, topologyModelTodayItem{
 				CanonicalID:   row.CanonicalID,
@@ -415,7 +451,7 @@ func (h *Handler) handleTopologyModelsTodayByProvider(
 				Providers:     make([]topologyModelProviderItem, 0, 4),
 			})
 			at = len(items) - 1
-			index[row.CanonicalID] = at
+			index[foldKeyOf(row)] = at
 		}
 		parent := &items[at]
 		// 父行指标 = Σ 子行（构造保证的守恒，不另算一份）。
