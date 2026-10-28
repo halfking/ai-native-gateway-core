@@ -614,7 +614,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		durableStream = binding
 	}
 
-	candidates, policy, _, candErr := resolveCandidatesForRequest(r.Context(), h.chatHandler.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes)
+	candidates, policy, requestModality, candErr := resolveCandidatesForRequest(r.Context(), h.chatHandler.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes)
 	// SP-02: state machine — routing produced a final candidate set.
 	rt.Emit(state.EventRouted)
 	if candErr != nil {
@@ -633,6 +633,27 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	}
 	survivalEligible := isStream && (durableStream != nil || h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID))
 	if len(candidates) == 0 && !survivalEligible {
+		// ── 2026-10-28: 模态不匹配优先于通用 no_candidate ────────────────
+		//
+		// 与 /v1/chat/completions同一判据：零候选若是因为「模型可路由但登记
+		// 模态服务不了本次请求」，那503 overloaded_error 是**误导**——
+		// overloaded_error 告诉客户端「过载了，重试」，而重试同一个请求必然
+		// 再次失败。Anthropic SDK 的客户端尤其如此：它们看到 overloaded_error
+		// 就会自动退避重试。
+		//
+		// ⇒ 这里必须说清楚：请求带了图/音频，模型读不了。
+		if mismatch := h.chatHandler.diagnoseModalityMismatch(r.Context(), clientModel,
+			clientID.Fingerprint.ClientProfile, tenantID, requestModality); !mismatch.IsZero() {
+			attemptErrCode = "modality_mismatch"
+			attemptErrMsg = fmt.Sprintf("Model '%s' does not accept %s input", clientModel, requestModality)
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+				nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			releaseDurableBeforeSurvival(durableStream, "modality_mismatch")
+			h.chatHandler.writeModalityMismatchError(r, w, requestID, clientModel, mismatch, nil, bodyBytes, keyInfo)
+			return
+		}
 		// This is the real no_candidate case - no database error, just no matching providers
 		attemptErrCode = "no_candidate"
 		attemptErrMsg = fmt.Sprintf("No available provider for model '%s'", clientModel)

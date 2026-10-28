@@ -386,6 +386,14 @@ type autoRouteCandidate struct {
 //
 // 新增（需求 #1）：IDE 客户端指纹提取（ClientType）
 func extractSignalsForAuto(reqBody *chatRequestBody, rawBody []byte) autoroute.ClassificationSignals {
+	// ★ A nil reqBody is legal: the Anthropic /v1/messages path has no
+	// chatRequestBody parsed yet, and it calls into the alternatives finder
+	// (which needs signals for task-type ordering). Reading
+	// reqBody.Messages on a nil pointer would panic on an already-failing
+	// request — the one place a panic is least acceptable.
+	if reqBody == nil {
+		reqBody = &chatRequestBody{}
+	}
 	sigs := autoroute.ClassificationSignals{
 		ToolCount:       countToolsInBody(rawBody),
 		HasImages:       false,
