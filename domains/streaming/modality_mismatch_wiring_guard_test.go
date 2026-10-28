@@ -28,6 +28,13 @@ import (
 //	The guard is deliberately presence+order, not semantics: it cannot prove
 //	the branch conditions are right, only that deleting or reordering the
 //	diagnosis relative to the fallback cannot pass silently.
+//
+//	★ 2026-10-28 补位（批判式审计遗留 2）：纯语义变异（调用仍在原位、
+//	守卫恒假 / 调用挪进不可达分支）这个文本守卫看不见——实测把守卫改成
+//	`mismatch != nil && false` 后本守卫仍绿。控制流可达性由
+//	modality_mismatch_behavioural_wiring_test.go 的行为通道负责：它走各协议
+//	的真实入口管线（serveWithExecutor / serveHTTPInner），那条变异下当场红
+//	（status=503）。两个守卫同族不同牙，缺一不可。
 func TestModalityMismatchWiringGuard(t *testing.T) {
 	type site struct {
 		file           string
