@@ -1,25 +1,24 @@
 <script setup lang="ts">
-// ClientRequestPanel.vue —— 左侧「客户端请求摘要」面板（2026-10-18 分页版）
+// ClientRequestPanel.vue —— 左侧「客户端请求」面板（2026-10-18 分页版）
 //
-// 两段结构（先看聚合、再看明细）：
-//   · 顶部按客户端聚合的摘要（请求数 / 成功率 / 在途 / 主要模型）
-//   · 下面逐条请求（最新在前）——**分页输出**，单页 ≤50 条（owner 拍板），
-//     点条目 = 选中高亮 + 弹出摘要浮层（RequestZoomPanel，两步交互第一步）；
-//     浮层里的「查看全景」/行尾 ↗ 才开新页（owner 2026-10-27 口径）
+// 单段结构：逐条请求明细（最新在前）——**分页输出**，单页 ≤50 条（owner 拍板），
+// 点条目 = 选中高亮 + 弹出摘要浮层（RequestZoomPanel，两步交互第一步）；
+// 浮层里的「查看全景」/行尾 ↗ 才开新页（owner 2026-10-27 口径）。
+// 按客户端聚合的摘要 2026-10-28 上移到头部三块汇总（SummaryHeader），
+// 本面板从此只做明细这一件事。
 //
 // 滚动语义：列表本体可滚动；翻页后回到列表顶部。第 1 页是最新数据，
 // 实时新请求到达时第 1 页自然滚动输出（prepend 最新在前）。
 
 import { computed, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { ClientSummary, PanelEntry } from '../../composables/useLiveTopology'
+import type { PanelEntry } from '../../composables/useLiveTopology'
 import { clientDisplayName } from '../../lib/liveTopologyGraph'
 import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
 import { useNewArrivals } from '../../composables/useNewArrivals'
 import { CaretLeft, CaretRight, TopRight, ArrowRight } from '@element-plus/icons-vue'
 
 const props = defineProps<{
-  summaries: ClientSummary[]
   requests: PanelEntry[]
   activeRequestId?: string
 }>()
@@ -31,8 +30,6 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-
-const visibleSummaries = computed(() => props.summaries.slice(0, 8))
 
 const page = ref(1)
 const pageCount = computed(() => Math.max(1, Math.ceil(props.requests.length / PANEL_PAGE_SIZE)))
@@ -69,22 +66,8 @@ function displayName(client: string): string {
   return clientDisplayName(client)
 }
 
-/**
- * 表头的客户端数。
- * **必须与下面实际渲染的行数一致**：只显示 `summaries.length`（上限 60）
- * 而正文只画 8 行的话，表头就在宣传不存在的行，同时把真实总数藏起来。
- * 超出时补成「8 / N」，两边对得上账。
- */
-const headerCount = computed(() =>
-  props.summaries.length > visibleSummaries.value.length
-    ? `${visibleSummaries.value.length} / ${props.summaries.length}`
-    : String(visibleSummaries.value.length),
-)
-
-function rate(summary: ClientSummary): string {
-  if (!summary.requests) return '—'
-  return `${((summary.success / summary.requests) * 100).toFixed(0)}%`
-}
+/** 表头计数 = 请求明细总数（与分页器的「共 N 条」同源；聚合摘要已上移头部）。 */
+const headerCount = computed(() => String(props.requests.length))
 
 function statusClass(status: string): string {
   switch (status) {
@@ -113,23 +96,11 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
 </script>
 
 <template>
-  <aside class="cp" aria-label="client request summary">
+  <aside class="cp" aria-label="client requests">
     <header class="cp__head">
       <span class="cp__title">{{ t('liveTopology.panel.clients') }}</span>
-      <span class="cp__count">{{ headerCount }}</span>
+      <span class="cp__count" data-testid="client-request-count">{{ headerCount }}</span>
     </header>
-
-    <ul class="cp__summary">
-      <li v-for="s in visibleSummaries" :key="s.client" class="cp__summary-row">
-        <span class="cp__summary-name">{{ displayName(s.client) }}</span>
-        <span class="cp__summary-stats">
-          <b>{{ s.requests }}</b>
-          <i>{{ rate(s) }}</i>
-          <em v-if="s.inFlight">{{ s.inFlight }}↻</em>
-        </span>
-        <span class="cp__summary-model">{{ s.topModel || '—' }}</span>
-      </li>
-    </ul>
 
     <ul ref="listRef" class="cp__list" data-testid="client-request-list">
       <li v-for="entry in pagedRequests" :key="entry.requestId">
@@ -224,60 +195,6 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
 .cp__count {
   font-size: 11px;
   color: var(--kx-muted);
-}
-
-.cp__summary {
-  margin: 0 0 4px;
-  padding: 0;
-  list-style: none;
-  /* 聚合摘要限高可滚（≈4 行）：面板高度受限时（桌面收进视口 / 手机 70vh 帽），
-     8 行摘要会把下面的请求明细挤到只剩一两行 —— 明细才是这个面板的主体。
-     数据没删：滚动能看到全部 8 行，与表头计数（8 / N）对得上账。 */
-  max-height: 176px;
-  overflow-y: auto;
-}
-
-.cp__summary-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 1px 4px;
-  padding: 4px;
-  border-bottom: 1px dashed color-mix(in srgb, var(--kx-border) 60%, transparent);
-}
-
-.cp__summary-name {
-  font-size: var(--kx-font-sm, 12px);
-  color: var(--kx-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.cp__summary-stats {
-  display: flex;
-  gap: 4px;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--kx-text);
-}
-
-.cp__summary-stats i {
-  color: var(--kx-muted);
-  font-style: normal;
-}
-
-.cp__summary-stats em {
-  color: var(--kx-primary);
-  font-style: normal;
-}
-
-.cp__summary-model {
-  grid-column: 1 / -1;
-  font-size: 11px;
-  color: var(--kx-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .cp__list {

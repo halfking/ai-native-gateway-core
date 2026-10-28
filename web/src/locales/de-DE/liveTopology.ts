@@ -29,6 +29,9 @@ export default {
     success: '{n} Erfolg',
     failure: '{n} Fehler',
     queue: '{n} in Warteschlange',
+    clients: 'Clients',
+    providers: 'Anbieter',
+    models: 'Modelle',
   },
   window: {
     '5m': 'Letzte 5 Min.',

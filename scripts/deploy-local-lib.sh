@@ -1490,9 +1490,25 @@ dl_record_verify() {
 #     （进程退出/OS 关闭 fd 即自动释放）。
 #
 # ★ 本节现在的口径：**「持有者是否还活着」只由一个判据回答 —— pid 存在与否**
-#   （`ps -p`，跨用户安全；`kill -0` 只作同用户的快速通道），★ 两侧（共享部署库
-#   lock.sh / 本仓）必须给出同一个答案 ⇒ 由 tests/deploy_switch_lock_parity_test.sh
-#   逐 pid 对拍。
+#   （`ps -p`，跨用户安全），★ 两侧（共享部署库 lock.sh / 本仓）必须给出同一个答案
+#   ⇒ 由 tests/deploy_switch_lock_parity_test.sh 逐 pid 对拍。
+#
+# ★★ 2026-10-28（第三轮 · 合并就绪轮）：★ **F-A 已收口** ——
+#   本仓**不再自带**存活探针 ⇒ `dl_pid_alive` 改为**委托**共享部署库的
+#   `lock_pid_alive` ⇒ **同一套机制不再有两份实现** ⇒ 第二轮的结论
+#   「★ 同一套机制有两份实现 ⇒ 必然漂移」这一缺陷类别，在【存活判据】
+#   这一格上**归零**（⇒ 本轮是「把切流锁并进仓外共享部署库 SSOT」的
+#   **第一片**：不需要跨仓写入就能收掉的那一格）。
+#   ★ 委托带来的**新前提**：「共享部署库没被 source」从「实现细节」变成
+#     「可用性前提」⇒ ⇒ 本节新增 `dl_switch_lock_require_ssot`：
+#     **缺判据 ⇒ 显式失败**，绝不猜（★ 猜「死」= 把活锁当残锁接管
+#     ⇒ **F1 的新变体**）。缺判据时 `dl_pid_alive` 返回 **2（不知道）**，
+#     「残锁判定」与「恢复命令」都把「不知道」当**不是**残锁 ⇒ fail-closed。
+#   ★ 仍未收口（**待合并项**，见 tests/deploy_lock_parity_baseline.json）：
+#     C3 形态判定（SSOT 按「有没有 flock」定形态 ⇒ 本仓已改为按路径形态）；
+#     C4 释放语义（SSOT 的 flock 释放会 unlink ⇒ unlink-after-unlock 竞态）；
+#     C5 pid 正则（SSOT `^[0-9]+$` 接受 0 与前导零 ⇒ 本仓 `^[1-9][0-9]*$`）。
+#     ⇒ 这三条要在**共享部署库**那一侧修（跨仓写入）⇒ 本轮只登记 + 建棘轮门。
 # ─────────────────────────────────────────────────────────────────────────
 
 # dl_switch_lock_path 返回切流锁的**机器级**路径。
@@ -1622,18 +1638,41 @@ dl_pid_valid() {
 #     · ps 说没有 ⇒ 才判死。
 #   ⇒ 取值顺序让「证据不足」偏向**活着** ⇒ 宁可拒绝接管，不可误杀活锁。
 #
-# ★ 两个探针各自独立成函数：**判据的缝**（测试可替换）。
-#   生产默认走真 kill / 真 ps；判据侧用替换探针**模拟 EPERM** ——
-#   ★ 那个分支在普通用户下无法自然复现（root 跑判据时 kill -0 谁都成功）
-#   ⇒ 模拟臂保证判据在任何 uid 下都有牙（★ 仓内纪律：判据必须能红）。
-dl_pid_probe_kill() { kill -0 "$1" 2>/dev/null; }
-dl_pid_probe_ps() { ps -p "$1" -o pid= >/dev/null 2>&1; }
-
+# ★★ 2026-10-28（第三轮 · 合并就绪轮）：**本仓不再自带存活探针**。
+#
+#   ★ 缺陷类别（第二轮的结论）：**同一套机制存在两份实现 ⇒ 必然漂移**
+#     —— 共享部署库 2026-09-18 就把口径从 `kill -0` 换成 `ps -p`，
+#     本仓 2026-10-27 新写的 `dl_pid_alive` 却把那个**旧版本**抄了回来（F1）。
+#   ★ 本轮把这一格**收口**：判据改为**委托共享部署库**的 `lock_pid_alive`
+#     ⇒ 本仓与 SSOT 不再是两份实现 ⇒ 这条缺陷类别在【存活判据】上**归零**。
+#   ★ 本仓保留 `dl_pid_valid`（pid 形态校验）—— 那**不是**第二份实现，
+#     而是更严的调用侧校验：SSOT 的 `^[0-9]+$` 接受 `0` 与前导零
+#     ⇒ 收紧到 SSOT 属待合并项 C5（见 tests/deploy_lock_parity_baseline.json）。
+#
+# ★ **判据「不知道」时必须显式说不知道（rc=2），绝不能猜**：
+#   猜「死」= 把一把可能还活着的锁当残锁接管 ⇒ **F1 的新变体**。
 dl_pid_alive() {
   local pid="$1"
   dl_pid_valid "$pid" || return 1
-  dl_pid_probe_kill "$pid" && return 0
-  dl_pid_probe_ps "$pid" && return 0
+  if ! command -v lock_pid_alive >/dev/null 2>&1; then
+    printf 'ERROR: shared deploy library liveness oracle (lock_pid_alive) is not loaded\n' >&2
+    return 2
+  fi
+  lock_pid_alive "$pid"
+}
+
+# dl_switch_lock_require_ssot —— 切流锁入口的**前置检查**。
+#
+# ★ 为什么要有它：委托之后，「SSOT 没被 source」从「实现细节」变成了
+#   **可用性前提** ⇒ 若悄悄退化（猜一个答案 / 当成持有者已死），
+#   F1 就以新形态复活 ⇒ ⇒ 所以这里**显式失败**（fail-fast），
+#   而不是让调用方拿到一个假的「活着 / 死了」。
+dl_switch_lock_require_ssot() {
+  if command -v lock_pid_alive >/dev/null 2>&1; then
+    return 0
+  fi
+  printf 'ERROR: shared deploy library is not loaded (lock_pid_alive missing) — refusing to run the deployment switch lock without its liveness oracle\n' >&2
+  printf 'HINT: run via scripts/deploy-local.sh (it sources %s/lock.sh), or export AIAN_DEPLOY_LIB to a deploy-lib checkout\n' "${AIAN_DEPLOY_LIB:-<unset>}" >&2
   return 1
 }
 
@@ -1643,11 +1682,17 @@ dl_pid_alive() {
 #   —— 部署可能正在长时间跑，按年龄清锁会打断别人。
 # ★ pid 读不出来（元数据缺失/损坏）⇒ **不算残锁**（保守：宁可拒绝也不误杀）。
 dl_switch_lock_is_stale() {
-  local holder_pid
+  local holder_pid rc
   holder_pid="$(dl_switch_lock_holder_pid 2>/dev/null || true)"
   [[ -n "$holder_pid" ]] || return 1
-  dl_pid_alive "$holder_pid" && return 1
-  return 0
+  if dl_pid_alive "$holder_pid"; then
+    return 1        # 活着 ⇒ 不是残锁
+  else
+    rc=$?
+  fi
+  # ★ rc=1 = 确实死了（残锁）；rc=2 = **判据不知道**（共享部署库没加载）
+  #   ⇒ 「不知道」**不等于**「死了」⇒ fail-closed ⇒ 不接管。
+  [[ "$rc" -eq 1 ]]
 }
 
 # dl_acquire_switch_lock 获取机器级切流锁。
@@ -1673,6 +1718,9 @@ dl_switch_lock_is_stale() {
 #   ⇒ 现在：**目录形态 ⇒ 一律走目录语义**（残锁接管 / 拒绝），绝不碰 exec。
 dl_acquire_switch_lock() {
   local path flock_bin
+  # ★ 前置检查：判据（共享部署库）必须已加载 ⇒ 否则**显式失败**（rc 75），
+  #   绝不靠「猜持有者已死」来继续（★ 那会把一把活锁当残锁接管 = F1 的新变体）。
+  dl_switch_lock_require_ssot || return 75
   path="$(dl_switch_lock_path)"
   flock_bin="$(dl_switch_lock_flock_bin)"
   # ★ 已经是持有者时重复获取 ⇒ 75（同一进程重复获取视为争用 ⇒ 宁可失败，
@@ -1748,8 +1796,14 @@ dl_acquire_switch_lock_flock() {
 #   「残锁判定 ⇒ 接管 / 拒绝」的路（读元数据时认文件形态，见
 #   dl_switch_lock_metadata_file）⇒ 形态迁移不需要人工清理。
 dl_acquire_switch_lock_dir() {
-  local path
+  local path dir
   path="$(dl_switch_lock_path)"
+  dir="$(dirname "$path")"
+  # ★ 父目录要**先建**（flock 形态那一支一直这么做 ⇒ ★ 两种形态不该有差别）。
+  #   缺了它 ⇒ 父目录不存在时 `mkdir "$path"` 直接失败 ⇒ 报出来的是
+  #   「锁被占用」，而真相是「路径不存在」⇒ ★ 报错理由不对，运维会照着
+  #   错误结论去 unlock 一把并不存在的锁。
+  mkdir -p "$dir" 2>/dev/null || true
   if ! mkdir "$path" 2>/dev/null; then
     # ★ 残锁判定：持有者进程已死 ⇒ 接管（否则本机会被永久卡死）。
     if dl_switch_lock_is_stale; then
@@ -1798,13 +1852,18 @@ dl_acquire_switch_lock_dir() {
 # ★ 口径与共享部署库 unlock-local.sh 对齐：**持有者还活着 ⇒ 拒绝**；
 #   **持有者已死 ⇒ 才允许清**；★ 而「持有者是谁」读不出来时 ⇒ **也拒绝**。
 dl_recover_switch_lock() {
-  local force=0 path holder_pid meta
+  local force=0 path holder_pid meta pid_rc=0
   if [[ "${1:-}" == "--force" ]]; then force=1; fi
   path="$(dl_switch_lock_path)"
   if [[ ! -e "$path" ]]; then
     printf 'no deployment switch lock at %s — nothing to recover\n' "$path"
     return 0
   fi
+  # ★ 恢复路径**不**做入口前置检查（否则下面的「判据不知道 ⇒ 拒绝」那支
+  #   永远到不了 ⇒ 变成一段**从未被执行**的分支 ⇒ 它的缺陷对门不可见
+  #   ⇒ ★ 这正是第二轮 F2 的教训：★ 守卫之间不能互相遮蔽 ⇒
+  #   ⇒ 这里的 fail-closed 由下面那处「判据不知道 ⇒ 拒绝」独立承担。
+  #   ⇒ 强制档（--force）不依赖判据（运维的显式授权 ⇒ 清锁，但不杀进程）。
   meta="$(dl_switch_lock_metadata_file 2>/dev/null || true)"
   holder_pid="$(dl_switch_lock_holder_pid 2>/dev/null || true)"
   if (( force )); then
@@ -1830,6 +1889,13 @@ dl_recover_switch_lock() {
   if dl_pid_alive "$holder_pid"; then
     printf 'ERROR: refusing to remove the deployment switch lock: holder pid %s is still alive\n' "$holder_pid" >&2
     printf 'HINT: wait for that deploy to finish; only recover a lock whose holder is gone\n' >&2
+    return 1
+  else
+    pid_rc=$?
+  fi
+  # ★ 「判据不知道」（rc=2）⇒ **不等于「持有者已死」** ⇒ 拒绝（fail-closed）。
+  if [[ "$pid_rc" -ne 1 ]]; then
+    printf 'ERROR: refusing to remove the deployment switch lock: liveness of holder pid %s could not be determined (the shared deploy library oracle is not loaded)\n' "$holder_pid" >&2
     return 1
   fi
   rm -rf "$path"
