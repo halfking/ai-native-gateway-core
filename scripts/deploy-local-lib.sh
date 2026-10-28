@@ -1796,8 +1796,14 @@ dl_acquire_switch_lock_flock() {
 #   「残锁判定 ⇒ 接管 / 拒绝」的路（读元数据时认文件形态，见
 #   dl_switch_lock_metadata_file）⇒ 形态迁移不需要人工清理。
 dl_acquire_switch_lock_dir() {
-  local path
+  local path dir
   path="$(dl_switch_lock_path)"
+  dir="$(dirname "$path")"
+  # ★ 父目录要**先建**（flock 形态那一支一直这么做 ⇒ ★ 两种形态不该有差别）。
+  #   缺了它 ⇒ 父目录不存在时 `mkdir "$path"` 直接失败 ⇒ 报出来的是
+  #   「锁被占用」，而真相是「路径不存在」⇒ ★ 报错理由不对，运维会照着
+  #   错误结论去 unlock 一把并不存在的锁。
+  mkdir -p "$dir" 2>/dev/null || true
   if ! mkdir "$path" 2>/dev/null; then
     # ★ 残锁判定：持有者进程已死 ⇒ 接管（否则本机会被永久卡死）。
     if dl_switch_lock_is_stale; then

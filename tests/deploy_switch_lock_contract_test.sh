@@ -51,6 +51,11 @@
 #      ⇒ 钉三件事：① 判据缺席时 `dl_pid_alive` 返回 **2（未知）**而不是 1（死）；
 #        ② acquire **rc=75 + 可读原因**，且**不创建、不接管**；
 #        ③ 残锁判定把「未知」判成**不是残锁**（fail-closed）。
+#      ⇒ ④（第三轮补）恢复命令在判据缺席时也必须**拒绝**清锁。
+#   I20 **争用在 CLI 层也必须是 75（EX_TEMPFAIL）**
+#      ⇒ ★ 注释与设计都写着「rc 75」，而生产入口是 `|| die …` ⇒ `die` 退 **1**
+#        ⇒ ⇒ **「稍后重试」与「硬失败」在监督方眼里不可区分**。
+#      ⇒ 钉两件事：① `die75` 的退出码真的是 75（行为级）；② 争用调用点用它。
 #
 # ## 判据纪律
 #
@@ -583,5 +588,52 @@ if [[ -n "$ssot" ]]; then
 else
   printf 'SKIP I18~I20: shared deploy lib not found (the recover-switch-lock --force CLI needs it)\n'
 fi
+
+# ── I21：两种形态都必须能自己建父目录（★ 实测发现的形态不对称）────────────
+#
+# ★ 2026-10-28 第三轮：★ 实测跨进程互斥时**当场撞到** ——
+#   flock 形态那支建父目录（`mkdir -p "$dir"`），★ mkdir 形态那支**不建**
+#   ⇒ ⇒ 父目录不存在时，mkdir 形态的 `mkdir "$path"` 直接失败 ⇒
+#   ⇒ 报出来的是「**锁被占用**」，而真相是「**路径不存在**」
+#   ⇒ ⇒ **报错理由不对** ⇒ 运维会照着错误结论去 unlock 一把并不存在的锁。
+# ⇒ 两条断言：① mkdir 形态在父目录不存在时也能拿到锁；② flock 形态同样。
+missing_root="$TMP/missing-root/locks"
+rc=0
+( export LOCK_TMP_ROOT="$missing_root"; dl_acquire_switch_lock ) >/dev/null 2>&1 || rc=$?
+[[ "$rc" -eq 0 ]] \
+  || fail "the mkdir shape must create its own parent directory (rc=$rc)"
+[[ -d "$missing_root" ]] || fail 'the parent directory of the switch lock must have been created'
+rm -rf "$TMP/missing-root"
+out="$(flock_env '
+  source "$1/scripts/deploy-local-lib.sh"
+  export LOCK_TMP_ROOT="$2/missing-root/locks"
+  if dl_acquire_switch_lock; then echo "ACQUIRE=OK"; else echo "ACQUIRE=FAIL"; fi
+' _ "$ROOT" "$TMP/flock-parent")"
+grep -q 'ACQUIRE=OK' <<<"$out" \
+  || fail "the flock shape must create its own parent directory, got: $out"
+rm -rf "$TMP/flock-parent"
+pass 'both lock shapes create their own parent directory (no asymmetry)'
+
+# ── I20：★ 争用在 **CLI 层**也必须是 75（EX_TEMPFAIL）──────────────────────
+#
+# ★ 2026-10-28 第三轮：★ **声名与实现不符** ——
+#   切流锁争用的注释与设计都说「rc 75（EX_TEMPFAIL）」，而生产入口用的是
+#   `|| die …` ⇒ `die` 退 **1** ⇒ ⇒ **CLI 层的 rc 75 契约从来没兑现过**
+#   ⇒ ⇒ 监督方（CI / 脚本 / 运维手册）按 75 判断「这是争用、稍后重试」，
+#     而实际拿到的是 1 ⇒ **「稍后重试」与「硬失败」不可区分**。
+# ⇒ 两条断言：
+#   ① `die75` 的退出码真的是 75（★ **行为级**：把它抠出来真跑一次）；
+#   ② 争用的调用点用的是 die75 而不是 die（★ **源码级**，如实标注）。
+die75_fn="$(sed -n '/^die75()/,/^}/p' "$deploy_script")"
+[[ -n "$die75_fn" ]] \
+  || fail 'deploy-local.sh must define a 75-exit helper for the contention path'
+rc=0
+( eval "$die75_fn"; die75 'contention probe' ) >/dev/null 2>&1 || rc=$?
+[[ "$rc" -eq 75 ]] \
+  || fail "the contention exit helper must exit 75 (EX_TEMPFAIL), got rc=$rc"
+acquire_line="$(grep -n 'dl_acquire_switch_lock ||' "$deploy_script" | head -1)"
+[[ "$acquire_line" == *die75* ]] \
+  || fail "the switch-lock acquire call site must use the 75-exit helper (rc 75 is the documented contract), got: $acquire_line"
+pass 'contention is rc 75 (EX_TEMPFAIL) at the CLI level too, not only inside the library'
 
 printf 'ALL PASS deploy switch lock contract\n'

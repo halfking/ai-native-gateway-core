@@ -220,6 +220,32 @@ ARMS = [
             (CONTRACT, "--force with a non-recover action must be refused with 64"),
         ],
     },
+    {
+        # ★ 第三轮新增：争用退回普通 die ⇒ rc 75 的 CLI 契约失效
+        #   ⇒ 「稍后重试」与「硬失败」在监督方眼里不可区分。
+        "name": "N10 · 争用退回普通 die（rc 75 的 CLI 契约失效）",
+        "target": ROOT / "scripts" / "deploy-local.sh",
+        "old": """  dl_acquire_switch_lock || die75 'another deployment is switching the active port; retry after it finishes'""",
+        "new": """  dl_acquire_switch_lock || die 'another deployment is switching the active port; retry after it finishes'""",
+        "gates": [
+            (CONTRACT, "must use the 75-exit helper"),
+        ],
+    },
+    {
+        # ★ 第三轮新增：mkdir 形态不再自己建父目录（形态不对称 ⇒ 报错理由不对）
+        "name": "N11 · mkdir 形态不再建父目录（与 flock 形态不对称）",
+        "target": LIB,
+        "old": """  # ★ 父目录要**先建**（flock 形态那一支一直这么做 ⇒ ★ 两种形态不该有差别）。
+  #   缺了它 ⇒ 父目录不存在时 `mkdir "$path"` 直接失败 ⇒ 报出来的是
+  #   「锁被占用」，而真相是「路径不存在」⇒ ★ 报错理由不对，运维会照着
+  #   错误结论去 unlock 一把并不存在的锁。
+  mkdir -p "$dir" 2>/dev/null || true
+""",
+        "new": "",
+        "gates": [
+            (CONTRACT, "the mkdir shape must create its own parent directory"),
+        ],
+    },
 ]
 
 
