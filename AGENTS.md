@@ -14448,3 +14448,52 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > 复核：① 首发 body 厂商参数保真；② 非原生零变化）；RISK-2 / RISK-1 留独立轮。
 > ⇒ 审计档 `docs/audit/2026-10-29-RISK6-anthropic腿直通轮.md`；
 > 通用式见 `LESSONS.md` **§536**（并行会话占 §535 并留 §532~534 缓冲 ⇒ 跨号取 §536）。
+**2026-10-29 ㊹ 原厂直通生产验证第 2 轮：ClientType 请求边界命中 + UA 线材实态订正**（goal 会话）：
+★ 承接 ㊶ + 408150bd3（三巡接线）⇒ 目标「部署后用三客户端真实流量确认
+ClientType 在请求边界被命中（header/UA 首选路径），非原生零变化」。
+⇒ ★★ **本轮最值钱的发现（①）：真实 MiniMax Code 客户端的 UA 是裸复合词
+`MiniMaxCode`（无连字符无版本；12h 窗口 23 条 http_request 实测），两张 UA
+识别表（extractClientType / ExtractAgentNameFromRequest）只认档案里的
+`MiniMax-Code/{ver}` ⇒ header/UA 首选路径对该客户端整体是暗的**，检测跌落
+body 标记兜底层，而真实 body 无 metadata ⇒ 实际 unknown。档案是写入时的
+快照，客户端会变 ⇒ 识别判据要与生产 UA 分布定期对账（client-formats 档案
+已补订正块）。修 = 两表各补 `minimaxcode` 裸形态 case（与连字符形态互不可
+匹配；同事实两处消费必须同修，fdd11735f）。
+⇒ ★★ **发现（②）更狠：直通倒挂伤到它服务的客户端**——原生对首发全参
+`thinking{type:enabled}` 原样到达 MiniMax ⇒ 上游 400「invalid params,
+invalid thinking.type: "enabled" (allowed: adaptive, disabled) (2013)」，
+而 reqprobe 剥参重试的判型链（namedParamPatterns 七条 + paramRejectionHints
+十五条）对该方言**全断链** ⇒ 无重试、client_bug 整流 503；同请求非原生对
+反而被首发前 translate 改写 adaptive 保 200。**上游的 400 恰恰是直通机制
+命中的直接证据**（非原生对根本不会把参数送出去）——别把上游报错一律当失败。
+修 = named 精准路径三处（第 8 条正则 `invalid <param>: "<value>"` +
+wireKeyAliases `thinking.type→thinking` + extractNamedParam 成员判定走
+resolveWireKeys 别名扩展——判型侧与剥离侧必须同一份别名表，52ace2e02）。
+⇒ ★ **验证形态学**：合成臂 body 一律**无任何 body 标记**（无 metadata.* /
+zcode_* 工具 / X-Code-Session-Id）⇒ ClientType 只能来自 header/UA ⇒ 兜底
+层不可能代答；UA 路径（n1 zcode→glm 保真 200 / n3 MiniMaxCode→minimax
+首发 enabled→400→剥参→200）与 header 路径（n2：UA=curl 仅凭
+X-Gw-Client-Type=zcode，同批 z-ai 候选对 curl 剥参、对 zcode 保真——glm 腿
+干净差分）各有决定性臂。firehose 取证指纹必须盖住判别字段（首版 [16:80]
+切片只盖到 model 键 ⇒ 五臂串号）。
+⇒ ★ **零变化判定**：z1/z2（curl / 跨厂）与部署前基线逐字段一致（首发前
+adaptive、单次尝试、200）；**「拒绝即学习」是设计内的行为漂移源**——n3
+剥参成功后 p1 的首发从「adaptive 改写」变「整键剥除」⇒ 零变化读数必须在
+预学习态取（对照臂先行的外序纪律要写进验证脚本）；glm-5.3 候选簇抖动期
+的 503 与身份无关（同为原生臂的 n1 成功夹在两次 503 之间）；deepseek 上游
+0 候选 ⇒ 双臂如实记「未观察到」。
+⇒ ★ **部署纪律实战**：DD_REPO_ROOT 树移植语义下「部署 = 工作树快照」，
+主 checkout 常驻并行会话 WIP 时必须 `LLM_GATEWAY_ROOT=<干净 worktree>`
+钉根（本轮两次蓝绿 499a2146 / 5fbba4ef 均钉独立 worktree，版本串无
+-dirty）；二进制探针照 ㊶ 口径（`grep -c minimaxcode` 等）。
+⇒ ★ **取号与推送实战**：本地 main 的两个修复被并行会话原样推上 origin
+（patch-id 相同）⇒ worktree 变基时被正确去重 ⇒ 推送前 fetch 不只防撞号，
+还防「自己推自己的重复提交」；代码已在 origin（fdd11735f / 52ace2e02），
+本轮文档随本条提交推送。211 现跑 5fbba4ef（含两修复，c90f687b9 基）；RISK-6
+轮的 5c8d655c2 在 origin 未部署（该轮自己的真机验证清单接管）。
+⇒ ★ **挂账**：RISK-2（工具顶层非标准键）不动；映射表 4 对（RISK-6 轮已按
+触发器补第 4 对 claude-code↔claude）；deepseek 腿待上游恢复后补实测；
+学习态对非原生 minimax thinking 的「剥除 vs adaptive」语义取舍属 reqprobe
+子系统，登记待观察。
+⇒ 审计档 `docs/audit/2026-10-29-原厂直通生产验证第2轮-ClientType边界与UA线材订正.md`；
+通用式见 `LESSONS.md` **§537**。
