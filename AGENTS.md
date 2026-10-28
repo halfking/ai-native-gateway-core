@@ -12833,5 +12833,20 @@ ursm 仪表（仍在 ursmcheck 轨）；probe necessity 索引 93% 读放大（3
 >   ★★ 批量落地就是在改无辜的代码）；★ **没有**静止窗口复测两个 p99 性能门（★ load 26~36）；
 >   ★ r1041/r1042/r1043 遗留项（截断率观测 / `ursm_node_snapshot_min` 死元组 / 页面级硬编码中文 /
 >   ★ 「源码抄语言包」族 / 语言包死键 / 真库写入形状推广 / 写入失败计数信号）本轮未动。
+>   ★ （★ 上游那两个新提交都没写节号）⇒ ★ 真实合并**零冲突、一次成功**。
+> ★★★ **第二次合并（★ 推送前 fetch ⇒ 远端又多了 3 个提交）⇒ 两处内容冲突**：
+>   ★ `internal/partguard/guard_test.go` —— ★★ 两侧**白名单条目完全相同**（★ 都删了那 3 条
+>   ★ ★ 重复登记）⇒ ★ 只差注释 ⇒ 取双方信息量之和（★ 采上游「同 (file,table) 只许一行」
+>   ★ ★ + 我方 r1043「本门比【条数】⇒ 重复登记会让实际条数与期望对不上」）。
+>   ★ `admin/session_family_two_surface_test.go` —— ★★ 两侧**都撤了同两条过期登记**
+>   ★ ★（★ 结论一致）⇒ ★★ 但**依据不同** ⇒ ⇒ ★★ 逐条**实证核验**上游的依据：
+>   ★ ★ 「由 `internal/partguard` 的 `allowedParentDML` 白名单管 + `repair_two_surface_test.go`
+>   ★ ★ 的逐条断言」⇒ ★★ **两处都不足以覆盖 admin 侧**：★ partguard 的白名单答的是
+>   ★ ★ 「**允许**写吗」，★ **不答**「两面**成对**吗」；★ `repair_two_surface_test.go` 在
+>   ★ ★ `cmd/tools/validate_sessions_v2/` 下、★ 实测只有两条 `TestExecuteRepair*`
+>   ★ ★ ⇒ ★★ **只覆盖那个修复工具，完全没覆盖 admin 侧** ⇒ ⇒ ★★ 唯一真正覆盖 admin 侧
+>   ★ ★ 两面 DELETE 的仍是 r1043 新立的那道门 ⇒ ⇒ **以本轮的门为准**。
+>   ★ ★ 另采上游一条**属实**的补充：★ 「DELETE FROM 不算读」这条排除本身有正反对照
+>   ★ ★ （★ `TestBareParentReadIgnoresPairedDelete`，★ 同文件）⇒ ★★ 缺的只是**覆盖面**。
 > ⇒ 审计档 `docs/audit/2026-10-28-r1044-合并收口与登记表自身重复.md`（9 节）；
->   通用式见 `LESSONS.md` **§493**（★ 六条通式）。
+>   通用式见 `LESSONS.md` **§493**（★ 七条通式）。
