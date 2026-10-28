@@ -181,6 +181,25 @@ func isArmRelation(name string) bool {
 	return strings.HasPrefix(name, "session_turns") || strings.HasPrefix(name, "session_turn_details")
 }
 
+// isBaseRelation 判是不是【视图基表】的关系（★ `session_turns*` / `session_turns_hot`）。
+//
+// ★★ R179 轮第三次修正（★ 判决对象错了）：★★ 视图的定义是
+//
+//	FROM session_turns_hot t LEFT JOIN session_turn_details_hot d ON …
+//	UNION ALL
+//	FROM session_turns t LEFT JOIN session_turn_details d ON …
+//
+// ★★ ⇒ ⇒ 计划里**同时**有【基表扫描】与【明细表扫描】⇒ ⇒ 而本轮要判的是
+// ★★ **「canonical 视图的读有没有被索引承重」** ⇒ ⇒ ⇒ **判决只能由基表扫描做**。
+// ★★ ⇒ ⇒ 否则：★ 明细侧（★ request_id 索引）行数估得比基表侧多时，
+// ★★ ⇒ ⇒ 判决会变成「明细表被索引承重了」⇒ ⇒ **答非所问**。
+func isBaseRelation(name string) bool {
+	if name == "" {
+		return false
+	}
+	return strings.HasPrefix(name, "session_turns")
+}
+
 type armScan struct {
 	relation  string
 	nodeType  string
@@ -211,15 +230,16 @@ type armScan struct {
 // ★ ★ ⇒ ⇒ 而「索引扫描 + 残留 Filter」的计划会被**误判成 `seek`** ⇒ ⇒ **假绿**。
 //
 // ★ 新判据（★ 两条都能被 EXPLAIN 的字段证伪）：
-//   ① 没有会话族扫描节点 ⇒ `no-scan`（★ 答案来自别的关系）
-//   ② 取**承载行数的那次扫描**（★ Plan Rows 最大 ⇒ 并列时取 Total Cost 最大）★ 作为主体
-//   ③ 主体是顺序扫描 ⇒ `seq-scan`
-//   ④ 主体是索引扫描、但**节点上还有残留 Filter** ⇒ `filter`（★ 索引没接住谓词）
-//   ⑤ 主体是索引扫描、且**没有残留 Filter** ⇒ `seek`（★ 谓词全在 Index Cond 里）
+//
+//	① 没有会话族扫描节点 ⇒ `no-scan`（★ 答案来自别的关系）
+//	② 取**承载行数的那次扫描**（★ Plan Rows 最大 ⇒ 并列时取 Total Cost 最大）★ 作为主体
+//	③ 主体是顺序扫描 ⇒ `seq-scan`
+//	④ 主体是索引扫描、但**节点上还有残留 Filter** ⇒ `filter`（★ 索引没接住谓词）
+//	⑤ 主体是索引扫描、且**没有残留 Filter** ⇒ `seek`（★ 谓词全在 Index Cond 里）
 //
 // ★ 另记：★ 主体之外**还有几个会话族关系被顺序扫描**（★ 通常是「时间窗裁不掉的旧月分区」）
 // ★ ⇒ ⇒ 这一项单独记进 TSV ⇒ ⇒ 「旧分区没被裁掉」这个事实不会因为分类修正而丢失。
-func classify(root planNode) (string, []armScan, string, int) {
+func classify(root planNode) (string, []armScan, string, string, int) {
 	var scans []armScan
 	var walk func(n planNode)
 	walk = func(n planNode) {
@@ -242,23 +262,32 @@ func classify(root planNode) (string, []armScan, string, int) {
 	walk(root)
 
 	if len(scans) == 0 {
-		return "no-scan", nil, "", 0
+		return "no-scan", nil, "", "", 0
 	}
 
-	// ★ 主体 = 承载行数的那次扫描（★ Plan Rows 最大 ⇒ 并列时 Total Cost 最大）。
-	dom := 0
-	for i := 1; i < len(scans); i++ {
-		if scans[i].planRows > scans[dom].planRows ||
-			(scans[i].planRows == scans[dom].planRows && scans[i].totalCost > scans[dom].totalCost) {
+	// ★ 主体 = 承载行数的那次【基表】扫描（★ Plan Rows 最大 ⇒ 并列时 Total Cost 最大）。
+	// ★ ★ 注意：★ 只在【基表】里挑（★ 见 isBaseRelation 的注释）⇒ ⇒ 明细表侧不参与判决。
+	dom := -1
+	for i, s := range scans {
+		if !isBaseRelation(s.relation) {
+			continue
+		}
+		if dom < 0 ||
+			s.planRows > scans[dom].planRows ||
+			(s.planRows == scans[dom].planRows && s.totalCost > scans[dom].totalCost) {
 			dom = i
 		}
+	}
+	if dom < 0 {
+		// ★ 只有明细表扫描 ⇒ ★ 视图基表没被扫 ⇒ ⇒ 答案不来自会话族基表。
+		return "no-scan", scans, "", "", 0
 	}
 	d := scans[dom]
 
 	// ★ 主体之外的顺序扫描数（★ 「时间窗裁不掉的旧分区」这件事要单独留痕）。
 	otherSeq := 0
 	for i, s := range scans {
-		if i == dom {
+		if i == dom || !isBaseRelation(s.relation) {
 			continue
 		}
 		if isSeqScanType(s.nodeType) {
@@ -268,14 +297,14 @@ func classify(root planNode) (string, []armScan, string, int) {
 
 	switch {
 	case isSeqScanType(d.nodeType):
-		return "seq-scan", scans, d.relation, otherSeq
+		return "seq-scan", scans, d.relation, d.filter, otherSeq
 	case strings.TrimSpace(d.filter) != "":
 		// ★★ 残留 Filter 还在 ⇒ ⇒ 谓词**没有**被索引完全接住 ⇒ ⇒ `filter`。
 		// ★ ★ 注意：★ 这里判的是【节点上有没有 Filter】，★ 不是 Rows Removed by Filter
 		// ★ ★（★ 后者是执行期统计 ⇒ ★ EXPLAIN 不带 ANALYZE 时恒为 0 ⇒ ★ 不可测）。
-		return "filter", scans, d.relation, otherSeq
+		return "filter", scans, d.relation, d.filter, otherSeq
 	default:
-		return "seek", scans, d.relation, otherSeq
+		return "seek", scans, d.relation, d.filter, otherSeq
 	}
 }
 
@@ -519,14 +548,14 @@ func main() {
 	var out strings.Builder
 	out.WriteString("# query-plan-observations.tsv —— R179 轮：**读点的实测计划形态**观测台账\n")
 	out.WriteString("# ★ 生成器：cmd/tools/query_plan_form（★ EXPLAIN，★ 不带 ANALYZE ⇒ 只读库安全）\n")
-	out.WriteString("# ★ 列：shape_id\tenv\tplan_form\tindex_names\tarm_scans\tindex_cond_cols\tfilter_cols\trows_removed_by_filter\tplan_rows\tplanning_ms\tsource\tparams\tnote\tdominant_rel\tother_seq_rels\n")
+	out.WriteString("# ★ 列：shape_id\tenv\tplan_form\tindex_names\tarm_scans\tindex_cond_cols\tfilter_cols\trows_removed_by_filter\tplan_rows\tplanning_ms\tsource\tparams\tnote\tdominant_rel\tdominant_filter\tother_seq_rels\n")
 	out.WriteString("# ★ plan_form 判据：★ 主体 = 承载行数的那次会话族扫描（★ Plan Rows 最大）★ ⇒ 主体是顺序扫描 ⇒ seq-scan；★ 主体是索引扫描且**节点上还有残留 Filter** ⇒ filter；★ 主体是索引扫描且无残留 Filter ⇒ seek\n")
 	out.WriteString("# ★ ★ rows_removed_by_filter 在 EXPLAIN（★ 不带 ANALYZE）下恒为 0（★ 执行期统计）⇒ ⇒ 【不可测】⇒ ⇒ 不参与 plan_form 判定\n")
-	out.WriteString("# ★ dominant_rel = 决定 plan_form 的那次扫描所在的关系；★ other_seq_rels = 主体之外**还被顺序扫描**的会话族关系数（★ 通常是「时间窗裁不掉的旧月分区」）\n")
+	out.WriteString("# ★ dominant_rel = 决定 plan_form 的那次【基表】扫描所在的关系；★ dominant_filter = 该节点上的残留 Filter（★ 判决证据）；★ other_seq_rels = 主体之外**还被顺序扫描**的基表关系数（★ 通常是「时间窗裁不掉的旧月分区」）\n")
 
 	for _, sh := range sp.Shapes {
 		if sh.Dynamic {
-			writeRow(&out, sh, env, "dynamic", "", "", "", "", 0, 0, 0, "", "", "★ SQL 含 fmt 占位 ⇒ 静态不可知", "", 0)
+			writeRow(&out, sh, env, "dynamic", "", "", "", "", 0, 0, 0, "", "", "★ SQL 含 fmt 占位 ⇒ 静态不可知", "", "", 0)
 			continue
 		}
 		params, faithful := resolveParams(sh, reps,
@@ -534,7 +563,7 @@ func main() {
 		if !faithful {
 			writeRow(&out, sh, env, "error", "", "", "", "", 0, 0, 0, "", "",
 				"★ 有【列角色】的参数拿不到有效代表值 ⇒ ⇒ 只能填 NULL ⇒ ⇒ **谓词语义失真**"+
-					"（★ 例：success = NULL ⇒ ⇒ 规划器把谓词优化掉 ⇒ ⇒ 读出来会是假的 no-scan）⇒ ⇒ 本条读数作废", "", 0)
+					"（★ 例：success = NULL ⇒ ⇒ 规划器把谓词优化掉 ⇒ ⇒ 读出来会是假的 no-scan）⇒ ⇒ 本条读数作废", "", "", 0)
 			continue
 		}
 		sql := inlineParams(sh.SQL, params)
@@ -560,17 +589,17 @@ func main() {
 		}
 		if qerr != nil {
 			writeRow(&out, sh, env, "error", "", "", "", "", 0, 0, 0, "", "",
-				"★ EXPLAIN 失败: "+strings.ReplaceAll(qerr.Error(), "\t", " "), "", 0)
+				"★ EXPLAIN 失败: "+strings.ReplaceAll(qerr.Error(), "\t", " "), "", "", 0)
 			continue
 		}
 		var ps []explainPayload
 		if err := json.Unmarshal([]byte(strings.TrimSpace(outRaw)), &ps); err != nil || len(ps) == 0 {
 			writeRow(&out, sh, env, "error", "", "", "", "", 0, 0, 0, "", "",
-				"★ EXPLAIN 输出解析失败: "+strings.ReplaceAll(errText(err), "\t", " "), "", 0)
+				"★ EXPLAIN 输出解析失败: "+strings.ReplaceAll(errText(err), "\t", " "), "", "", 0)
 			continue
 		}
 		p := ps[0]
-		form, scans, dominantRel, otherSeq := classify(p.Plan)
+		form, scans, dominantRel, dominantFilter, otherSeq := classify(p.Plan)
 		idxNames := []string{}
 		idxCondCols := []string{}
 		filterCols := []string{}
@@ -606,7 +635,7 @@ func main() {
 			rowsRm, planRows, int64(p.PlanningMs),
 			fmt.Sprintf("%s:%d", sh.File, sh.Line),
 			describeParams(params),
-			"", dominantRel, otherSeq)
+			"", dominantRel, dominantFilter, otherSeq)
 	}
 
 	if err := os.WriteFile(outPath, []byte(out.String()), 0o644); err != nil {
@@ -731,14 +760,14 @@ func truncate(s string, n int) string {
 }
 
 func writeRow(out *strings.Builder, sh Shape, env, form, idxNames, armScans, idxCondCols, filterCols string,
-	rowsRm, planRows, planningMs int64, source, params, note, dominantRel string, otherSeq int) {
+	rowsRm, planRows, planningMs int64, source, params, note, dominantRel, dominantFilter string, otherSeq int) {
 	note = strings.ReplaceAll(note, "\t", " ")
 	note = strings.ReplaceAll(note, "\n", " ")
 	out.WriteString(strings.Join([]string{
 		sh.ShapeID, env, form, idxNames, armScans, idxCondCols, filterCols,
 		strconv.FormatInt(rowsRm, 10), strconv.FormatInt(planRows, 10),
 		strconv.FormatInt(planningMs, 10), source, params, note,
-		dominantRel, strconv.Itoa(otherSeq),
+		dominantRel, truncateForCell(dominantFilter), strconv.Itoa(otherSeq),
 	}, "\t") + "\n")
 }
 
@@ -823,4 +852,13 @@ func errText(err error) string {
 func die(msg string) {
 	fmt.Fprintln(os.Stderr, "ERROR: "+msg)
 	os.Exit(1)
+}
+
+// truncateForCell 把长文本压进 TSV 单元格（★ 保留头尾 ⇒ ⇒ 证据可见但不撑爆行宽）。
+func truncateForCell(s string) string {
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "\t", " "), "\n", " ")
+	if len(s) <= 160 {
+		return s
+	}
+	return s[:80] + " … " + s[len(s)-60:]
 }

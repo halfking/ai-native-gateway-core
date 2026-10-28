@@ -62,7 +62,7 @@ func realProductionPlan() planNode {
 }
 
 func TestClassifyRealProductionPlanIsFilterNotSeqScan(t *testing.T) {
-	form, scans, dominant, otherSeq := classify(realProductionPlan())
+	form, scans, dominant, _, otherSeq := classify(realProductionPlan())
 	if form != "filter" {
 		t.Fatalf("真实生产计划应判 `filter`（★ 承载数据的那次扫描是索引扫描 + 残留 Filter），实际 %q", form)
 	}
@@ -83,7 +83,7 @@ func TestClassifyResidualFilterIsNeverSeek(t *testing.T) {
 		scanNode("session_turns_2026_10", "Index Scan", "session_turns_2026_10_ts_idx",
 			"(ts >= … AND ts < …)", "(CASE … END = 113)", 357, 17110.77),
 	}}
-	form, _, dominant, otherSeq := classify(p)
+	form, _, dominant, _, otherSeq := classify(p)
 	if form == "seek" {
 		t.Fatalf("★ 节点上还有残留 Filter ⇒ ⇒ 谓词没被索引完全接住 ⇒ ⇒ 不得判 `seek`（★ 那是假绿）")
 	}
@@ -102,7 +102,7 @@ func TestClassifyOldUnprunedPartitionDoesNotDominate(t *testing.T) {
 		scanNode("session_turns_2026_10", "Index Scan", "session_turns_2026_10_ts_idx",
 			"(ts >= … AND ts < … AND (CASE … END = 113))", "", 357, 17110.77),
 	}}
-	form, _, dominant, otherSeq := classify(p)
+	form, _, dominant, _, otherSeq := classify(p)
 	if form != "seek" {
 		t.Fatalf("应判 `seek`（★ 主体是索引扫描且无残留 Filter），实际 %q", form)
 	}
@@ -119,7 +119,7 @@ func TestClassifyPureSeqScan(t *testing.T) {
 	p := planNode{NodeType: "Append", Plans: []planNode{
 		scanNode("session_turns_2026_10", "Seq Scan", "", "", "(ts … AND CASE …)", 5000, 12345),
 	}}
-	form, _, dominant, _ := classify(p)
+	form, _, dominant, _, _ := classify(p)
 	if form != "seq-scan" {
 		t.Fatalf("应判 `seq-scan`，实际 %q", form)
 	}
@@ -133,7 +133,7 @@ func TestClassifyNoSessionFamilyScan(t *testing.T) {
 	p := planNode{NodeType: "Aggregate", Plans: []planNode{
 		{NodeType: "Seq Scan", RelationName: "stats_usage_daily", Filter: "(x)", PlanRows: 10},
 	}}
-	form, scans, dominant, otherSeq := classify(p)
+	form, scans, dominant, _, otherSeq := classify(p)
 	if form != "no-scan" {
 		t.Fatalf("应判 `no-scan`，实际 %q", form)
 	}
@@ -149,8 +149,45 @@ func TestClassifyFilterClassIsReachable(t *testing.T) {
 		scanNode("session_turns_2026_10", "Index Scan", "idx_x",
 			"(ts >= …)", "(CASE … END = 7)", 10, 100),
 	}}
-	form, _, _, _ := classify(p)
+	form, _, _, _, _ := classify(p)
 	if form != "filter" {
 		t.Fatalf("`filter` 这一类必须【可达】（★ 否则就是死代码），实际 %q", form)
+	}
+}
+
+// ★★ 判决对象夹具：★★ 明细表（★ LEFT JOIN 的一侧）**不得**当主体。
+// ★ 视图的定义 = FROM session_turns* LEFT JOIN session_turn_details* ⇒ ⇒
+// ★ ★ 本轮要判的是「【基表】的访问路径有没有被索引承重」⇒ ⇒ 明细侧行数估得更大时，
+// ★ ★ 判决仍必须由基表侧给出（★ 否则就是「答非所问」）。
+func TestClassifyDetailsSideNeverDominatesVerdict(t *testing.T) {
+	p := planNode{NodeType: "Append", Plans: []planNode{
+		{NodeType: "Hash Join", Plans: []planNode{
+			// ★ 基表：顺序扫描（★ 形态最差）
+			scanNode("session_turns_2026_10", "Seq Scan", "", "", "(ts … AND CASE … END = 7)", 120, 900),
+			// ★ 明细表：索引扫描，★ 但**行数估得更大**（★ 旧口径会挑它当主体）
+			scanNode("session_turn_details_2026_10", "Index Scan", "session_turn_details_2026_10_request_id_idx",
+				"(request_id = …)", "", 5000, 800),
+		}},
+	}}
+	form, _, dominant, _, _ := classify(p)
+	if form != "seq-scan" {
+		t.Fatalf("判决必须由【基表】给出（★ 基表是顺序扫描 ⇒ seq-scan），实际 %q", form)
+	}
+	if dominant != "session_turns_2026_10" {
+		t.Fatalf("主体应是基表 session_turns_2026_10，实际 %q（★ 明细侧不得当主体）", dominant)
+	}
+}
+
+// ★★ 只有明细表扫描 ⇒ ★ 视图基表没被扫 ⇒ `no-scan`（★ 答案不来自会话族基表）。
+func TestClassifyOnlyDetailsScansIsNoScan(t *testing.T) {
+	p := planNode{NodeType: "Nested Loop", Plans: []planNode{
+		scanNode("session_turn_details_2026_10", "Index Scan", "idx_req", "(request_id = …)", "", 5000, 800),
+	}}
+	form, _, dominant, _, _ := classify(p)
+	if form != "no-scan" {
+		t.Fatalf("只有明细表扫描时不得判成 seek（★ 那会答非所问），实际 %q", form)
+	}
+	if dominant != "" {
+		t.Fatalf("no-scan 时主体应为空，实际 %q", dominant)
 	}
 }
