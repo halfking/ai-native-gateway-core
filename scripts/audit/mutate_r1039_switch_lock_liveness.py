@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +27,8 @@ ROOT = Path(__file__).resolve().parents[2]
 LIB = ROOT / "scripts" / "deploy-local-lib.sh"
 CONTRACT = ROOT / "tests" / "deploy_switch_lock_contract_test.sh"
 PARITY = ROOT / "tests" / "deploy_switch_lock_parity_test.sh"
+BASELINE = ROOT / "tests" / "deploy_lock_parity_baseline.json"
+HOLLOWOUT_GO = ROOT / "scripts" / "ursmcheck" / "structured_registry_hollowout_test.go"
 
 # ── 各臂的「靶点」与「必须抓住它的判据」────────────────────────────────────
 ARMS = [
@@ -246,14 +250,144 @@ ARMS = [
             (CONTRACT, "the mkdir shape must create its own parent directory"),
         ],
     },
+    {
+        # ★ 第三轮（收尾）新增：★ 把「基线形状契约」从对拍门里删掉
+        #   ⇒ ⇒ 漂移账被掏空时，**读方会改用另一条理由红**（★ P3 的
+        #   「豁免表空了」⇒ 探针命中无人认领）⇒ ⇒ 而普查册登记的
+        #   red_signal 是 "baseline shape broken" ⇒ ⇒ **红因对不上**
+        #   ⇒ ⇒ 普查侧的掏空门必须报「红了，但红因不对」⇒ ⇒ 证明
+        #   ★★ **red_signal 是承重的**（★ 不是「退出码非 0 就算有牙」）。
+        "name": "N12 · 对拍门删掉基线形状契约（掏空后改用别的理由红 ⇒ 红因对不上）",
+        "target": PARITY,
+        "old": r"""for key in '"note"' '"pendingMergeCriteria"' '"probeExemptions"'; do
+  if ! grep -qF "$key" "$BASELINE"; then
+    printf 'FAIL baseline shape broken: %s is missing from %s\n' "$key" "$BASELINE" >&2
+    printf '  the drift ledger is a registry this gate reads: its keys are part of the contract\n' >&2
+    printf '  (★ a missing key would silently read as an empty list ⇒ the ratchet would compare against nothing)\n' >&2
+    exit 1
+  fi
+done
+""",
+        "new": "",
+        # ★ ★ 副作用：★ 掏空门会**真的把漂移账掏空再还原** ⇒ ⇒ 本臂
+        #   额外盯一次基线文件（★ 门自己会还原，★ 这里再兜一层）。
+        "side_files": [BASELINE],
+        "gates": [
+            (
+                {
+                    "cmd": [
+                        "go",
+                        "test",
+                        "./scripts/ursmcheck/",
+                        "-run",
+                        "TestStructuredRegistryHollowoutReadersRejectEmptyRegistry/tests/deploy_lock_parity_baseline.json",
+                        "-timeout",
+                        "10m",
+                    ]
+                },
+                "红了，但红因不对",
+            ),
+        ],
+    },
+    {
+        # ★ 第三轮（收尾）新增：★ 把普查侧的读方形态词表里新加的 `shell` 删掉
+        #   ⇒ ⇒ 漂移账这条条目（★ 读方是 shell 脚本）就**不再有归属**
+        #   ⇒ ⇒ 普查门必须红 ⇒ ⇒ 证明词表那一行是承重的（★ 词表比
+        #   共享 harness 窄这件事，必须有人补上，否则新登记册只能被当
+        #   「没归属」⇒ ⇒ 那是一条**假红**，不是一条有牙的门）。
+        "name": "N13 · 普查侧读方词表去掉 shell（这条登记册就变成「没归属」）",
+        "target": HOLLOWOUT_GO,
+        "old": '\t"shell":  true,\n',
+        "new": "",
+        "gates": [
+            (
+                {
+                    "cmd": [
+                        "go",
+                        "test",
+                        "./scripts/ursmcheck/",
+                        "-run",
+                        "TestStructuredRegistryCensus",
+                        "-timeout",
+                        "10m",
+                    ]
+                },
+                "必须给出 reader_kind",
+            ),
+        ],
+    },
+    {
+        # ★ 第三轮（收尾）新增：★ 让 `--update-baseline` 的写入器**丢掉豁免表**
+        #   （★ 这是本轮当场抓到的潜伏缺陷）⇒ ⇒ 基线被改写后 P3 的豁免表没了
+        #   ⇒ ⇒ 下一个跑门的人会看到「登记册里没有豁免」的假红
+        #   ⇒ ⇒ 写回器必须让这条**当场红**。
+        "name": "N14 · --update-baseline 丢掉豁免表（改写后基线让 P3 假红）",
+        "target": PARITY,
+        "old": r"""  exemptions_block="$(sed -n '/"probeExemptions"/,/^  ]/p' "$BASELINE" || true)"
+""",
+        "new": """  exemptions_block='  "probeExemptions": []'
+""",
+        # ★ ★ 副作用：★ 这条臂会真的改写基线文件 ⇒ ⇒ 跑完必须逐字还原。
+        "side_files": [BASELINE],
+        "gates": [
+            (
+                {
+                    "cmd": [
+                        "bash",
+                        "-c",
+                        "bash tests/deploy_switch_lock_parity_test.sh --update-baseline >/dev/null 2>&1 || true; "
+                        "bash tests/deploy_switch_lock_parity_test.sh",
+                    ]
+                },
+                "the repo must not carry its own liveness probe",
+            ),
+        ],
+    },
 ]
 
 
-def run_gate(gate: Path) -> tuple[int, str]:
+def resolve_go() -> str:
+    """★ 解析 go 二进制（★ 与仓内 Go 侧 harness 同一套兜底）。
+
+    ★ 为什么要有：★ 变异臂要在**本机**跑 Go 门（★ 普查 / 掏空那两道在
+    `scripts/ursmcheck/`）⇒ ⇒ 而本机的 go 不一定在 PATH 上
+    （★ `/Users/niuer/sdk/go/bin`）⇒ ⇒ 找不到就报清楚，别静默跳过。
+    """
+    p = shutil.which("go")
+    if p:
+        return p
+    goroot = os.environ.get("GOROOT", "")
+    if goroot:
+        cand = Path(goroot) / "bin" / "go"
+        if cand.exists():
+            return str(cand)
+    raise RuntimeError("找不到 go 二进制（★ 本臂需要跑 Go 门）")
+
+
+def run_gate(gate) -> tuple[int, str]:
+    """★ 跑一道门 ⇒ 返回 (退出码, 输出)。
+
+    ★ 门有两种形态：
+      · `Path`         ⇒ `bash <脚本>`（★ 本轮前 11 条臂都是这一种）
+      · `{"cmd": [...]}` ⇒ 任意命令（★ 第三轮收尾新增：★ 有些判据在
+        Go 侧（★ 普查门 / 掏空门）⇒ ⇒ 只跑 shell 门够不着它们）
+    """
+    if isinstance(gate, dict):
+        argv = list(gate["cmd"])
+        if argv and argv[0] == "go":
+            argv[0] = resolve_go()
+        proc = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+        return proc.returncode, proc.stdout + proc.stderr
     proc = subprocess.run(
         ["bash", str(gate)], cwd=ROOT, capture_output=True, text=True
     )
     return proc.returncode, proc.stdout + proc.stderr
+
+
+def gate_label(gate) -> str:
+    if isinstance(gate, dict):
+        return " ".join(gate["cmd"])[:120]
+    return str(Path(gate).relative_to(ROOT))
 
 
 def main() -> int:
@@ -289,6 +423,12 @@ def main() -> int:
             failures.append(arm["name"])
             continue
 
+        # ★ ★ 副作用文件：★ 有些臂会**真的改写别的文件**（★ 例：N14 让
+        #   `--update-baseline` 重写漂移账）⇒ ⇒ 跑完必须逐字还原 ⇒ ⇒ 否则
+        #   「臂跑过了」会留下一个**被改坏的仓**（★ 而仓里的门正在读它）。
+        side_files = arm.get("side_files", [])
+        side_originals = {p: Path(p).read_bytes() for p in side_files}
+
         try:
             mutated = text
             for old, new in anchors:
@@ -297,7 +437,7 @@ def main() -> int:
             for gate, expect in arm["gates"]:
                 markers = [expect] if isinstance(expect, str) else list(expect)
                 rc, out = run_gate(gate)
-                rel = gate.relative_to(ROOT)
+                rel = gate_label(gate)
                 if rc == 0:
                     print(f"FAIL {arm['name']}: {rel} did NOT go red (rc=0)")
                     failures.append(arm["name"])
@@ -318,6 +458,14 @@ def main() -> int:
                 failures.append(arm["name"])
             else:
                 print(f"     restored {target.relative_to(ROOT)} md5={md5_after}")
+            # ★ 副作用文件同样逐字还原（★ 顺序：★ 先还原副作用，再报靶点）。
+            for p, blob in side_originals.items():
+                Path(p).write_bytes(blob)
+                if Path(p).read_bytes() != blob:
+                    print(f"FAIL {arm['name']}: side file {p} was NOT restored byte-identically")
+                    failures.append(arm["name"])
+                else:
+                    print(f"     restored {Path(p).relative_to(ROOT)} md5={hashlib.md5(blob).hexdigest()}")
 
     print()
     if failures:

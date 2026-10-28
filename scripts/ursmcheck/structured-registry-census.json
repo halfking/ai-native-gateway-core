@@ -469,6 +469,19 @@
       "reader": "web/scripts/design-hero-metric-runtime-check.mjs",
       "note": "★ **行为化验证（第 32 增量，★ 2026-10-28 实测）**：★ 本条是**第 32 增量**新增的登记册（★ 与 `design-metric-skeleton-runtime-baseline.json` / `design-nested-card-runtime-baseline.json` / `design-icon-size-runtime-baseline.json` 同族 ⇒ 同为浏览器运行时尺的基线）。★ 实测三档：① 基线态 ⇒ `rc=0`；② 整册掏空成 `{}` ⇒ **`rc=1`**（★ 秒级返回，★ 因为本工具在「基线不可用」时**在测量之前**就判红）；③ **基线文件删除** ⇒ **`rc=1`**（★ 后两档输出均含探针 `HERO-METRIC-BASELINE-UNUSABLE`）⇒ ⇒ **掏空/删除都让读方红 ⇒ 有牙**。★★ **hollow_mode 语义**：★ 本基线是**上限型**（★ 逐页「装饰性指标墙」数的上限）⇒ ★ `entries` 模式（容器清空 ＋ 数值归零）**不适用** ⇒ ★ 整册替换成 `{}` 才是正确的掏空形态 ⇒ ★★ **`unusable` 恰好命中本工具的「基线不可用」分支**（★ `baselineUsable({})` ⇒ false ⇒ 门判红）⇒ ★★ **「把基线删掉」不是让门变绿的后门**。★★ **red_signal 是一个探针 token 而不是散文**（★ 判据落在「门输出里有没有探针」⇒ 改文案不会把 Go 门打瞎）。★★ **本轮把「基线没了 ⇒ 必红」这条【接线】也纳入了 npm 自证**（★ 新增 S-HM51~S-HM54，★ 自证 **55/55**）：★ 抽纯函数 `baselineGateDecision(baseline)` ⇒ ★ CLI 与自证走**同一份**判定 ⇒ ★★ 此前自证只喂谓词 `baselineUsable` ⇒ **测不到 CLI 到底判没判红**（★ 与本轮 §8.3(a)「产出方与消费方不同形 ⇒ 门绿其实是门没走到那段代码」同源）。★★ **本工具比两个兄弟多两道闸**：① `--update-baseline` 写回的值**只许降不许升**（★ 已有页取「旧值与新值里的较小者」）⇒ ★ **重建基线这条路也放松不了棘轮**；② **强调色集合解析不出来 ⇒ 不许判绿**（★ 打印 `HERO-METRIC-ACCENT-UNRESOLVED`）⇒ ★ 「量具自己坏了」不会伪装成「没有违规」。★★ **字段名是 `wallCount` 而不是 `walls`**（★ 读数对象里的 `walls` 是**数组**、基线里的 `wallCount` 是**数字**）⇒ ★ 「同名不同形」是本轮真 bug 的同源 ⇒ ★ 产出与消费都走同一个纯函数 `buildPageReading` ⇒ 形状不一致就再也发生不了。",
       "reason": "★ **掏空实测照做且有效，但行为化验证不进 go census 的循环**（★ 与第 30/31 增量的两个兄弟基线同族先例）：★ 本条的读方是**浏览器运行时尺** —— ★ census 行为化验证的第 ④ 步要求「基线态读方必须绿」⇒ ⇒ 那一步对运行时尺意味着**一次 108 页全量 Chrome 扫描**。★ ★★ **本轮实测的计时**（★ 合并 origin/main 之后、★ 机器负载 ~6）：★ `design-icon-size` **87s** · `design-metric-skeleton` **364s** · `design-nested-card` **403s** · **本门 `design-hero-metric` 420s** ⇒ ⇒ ★★ **★ 算术（★ 合并后实测：272.8s → **299.98s**，★ 因为合并进来的 58 个文件多了编译量）**：★ ★ 合并 origin/main **之后**重跑实测 `go test ./scripts/ursmcheck/ -run Hollowout` 整体 **299.98s（5m09s）**，★ 而那条链路里**已经包含一条浏览器运行时尺的基线态绿检查**（★ `design-icon-size-runtime-baseline.json` 是 census 里唯一的 `kind=registry` 运行时尺条目，★ 它在本次运行里**通过了** ⇒ ⇒ 浏览器扫描**确实在整体耗时里**）⇒ ⇒ 再加上本门的 420s ⇒ **≈720s** vs go test 的 **900s 上限** ⇒ ⇒ ★★ **低负载下【塞得下】**（★ 余量约 180s）。★★ **但本仓机器负载常态在 23+**（★ 本轮早前实测同一扇门 8~13 分钟 ⇒ 420s 会变成 720s+）⇒ ⇒ 合计 **≈1020s ⇒ 超过 900s 上限** ⇒ ⇒ ⇒ **⇒ 结构性不适配，不是单条慢** ⇒ ★ **保守判 excluded**（★ 代价写明：★ 本条的行为化验证的日常载体是 **npm 自证（55/55，含 S-HM51~54 盖住「基线没了 ⇒ 必红」这条接线）** ＋ 真仓变异臂 M4/M5（★ 整册掏空 / 文件删除 ⇒ rc=1 + 探针），★ 两者都**不依赖** go 循环）。★★ 三档实测**照做且录得**（第 32 增量）：① 基线态 rc=0；② 整册掏空成 {} ⇒ rc=1 且秒级返回；③ 基线文件删除 ⇒ rc=1 —— 后两档输出均含探针 token ⇒ 掏空/删除都让读方红 ⇒ 有牙。"
+    },
+    {
+      "path": "tests/deploy_lock_parity_baseline.json",
+      "kind": "registry",
+      "reader": "tests/deploy_switch_lock_parity_test.sh",
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（r1039 后续轮第三轮，★ 2026-10-28 实测）：★ 本条是本轮**新增**的跨仓漂移账（★ `pendingMergeCriteria` = 共享部署库与本仓仍然不同的判据，★ 只降不升的棘轮；★ 另有 `probeExemptions` = P3 结构性判据的豁免登记）。★★ **读方是 shell** ⇒ ★ 本表的读方形态词表原本**比共享 harness 窄**（★ `runHollowReaderOverlay` 早就支持 shell，★ 只有本表没有）⇒ ★ 本轮把词表补齐（★ 只**加**不**改**：★ 既有 54 条的行为不变）⇒ ⇒ ★★ **掏空实测**：① 基线态 ⇒ 读方绿（ALL PASS deploy lock parity）；② 整册掏空成 `{}` ⇒ **读方红**，★ 且红因为「漂移账的键不在了」（★ `baseline shape broken`）⇒ ⇒ **红因与共享库在不在无关**（★ 缺 SSOT 时本门整段是 SKIP ⇒ 若红因依赖 SSOT，★ 掏空态就会「仍绿」⇒ ⇒ 假的有牙）⇒ ⇒ 有牙。★★ `hollow_mode` 用 `unusable`（★ 整册替换成 `{}`）而不是 `entries`：★ 本基线是【清单型】（★ 两个数组）⇒ `entries` 只清空数组而**保留键**⇒ ⇒ 「键还在」这条判据就抓不到 ⇒ ⇒ 而 `unusable` 让**键也消失**⇒ ⇒ 判据在任何环境下都成立。★★ **诚实边界**：★ 本条的行为化验证只覆盖「掏空 ⇒ 读方红且红因正确」这一条；★ 漂移账**内容**的正确性由它自己的门承担（★ P3 结构性判据 + P4 棘轮 + 15 条变异臂）。",
+      "reader_kind": "shell",
+      "reader_spec": "bash tests/deploy_switch_lock_parity_test.sh",
+      "hollow_mode": "unusable",
+      "red_signal": "baseline shape broken",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     }
   ]
 }
