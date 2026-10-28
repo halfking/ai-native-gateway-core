@@ -92,6 +92,27 @@ type Config struct {
 	// 0 keeps the default (128); negative disables the index.
 	// Hotconfig: llmgw_dispatch_dimension_capacity.
 	DimensionCapacity int
+	// RetryBudgetPercent is the P0-C in-flight retry budget slope (Envoy
+	// form): parked same-credential retries may exceed active×percent/100 by
+	// at most RetryBudgetFloor before the budget bites. 0/negative disables
+	// the budget entirely (legacy unlimited parking). Default 25 (=25%),
+	// floor 10 — audit 2026-10-28 §4 P0-C. Hotconfig:
+	// llmgw_dispatch_retry_budget_percent / llmgw_dispatch_retry_budget_floor.
+	RetryBudgetPercent int
+	// RetryBudgetFloor is the +10 constant of the retry budget; it keeps tiny
+	// deployments (single-digit active) from tripping the budget on noise.
+	RetryBudgetFloor int
+	// RetryBudgetEnforce switches the retry budget from shadow (count only)
+	// to enforce (refuse scheduler admission → the mover falls through to the
+	// sibling switch ladder). Default false: observe the exceed rate first
+	// (audit 2026-10-28 §4 P0-C: "先 shadow 观测预算触达率再 enforce").
+	// Hotconfig: llmgw_dispatch_retry_budget_enforce.
+	RetryBudgetEnforce bool
+	// RetryJitterEnabled flips the dispatch-layer ±20% retry-backoff jitter.
+	// Default true (anti retry-storm is the P0-C goal); false restores the
+	// exact pre-P0-C deterministic ladder. Hotconfig:
+	// llmgw_dispatch_retry_jitter_enabled.
+	RetryJitterEnabled bool
 }
 
 // adaptiveWorkerBounds clamp AdaptiveWorkerCount.
@@ -132,6 +153,10 @@ func DefaultConfig() Config {
 		CompletedWatermark:   DefaultCompletedWatermark,
 		DimensionTTLSeconds:  DefaultDimensionTTLSeconds,
 		DimensionCapacity:    DefaultDimensionCapacity,
+		RetryBudgetPercent:   25,
+		RetryBudgetFloor:     10,
+		RetryBudgetEnforce:   false,
+		RetryJitterEnabled:   true,
 	}
 }
 
@@ -157,6 +182,10 @@ func LoadConfig(hotCfg *hotconfig.Config) Config {
 		CompletedWatermark:   clampInt(hotCfg.GetInt(HotKeyCompletedWatermark, DefaultCompletedWatermark), 0, 100000),
 		DimensionTTLSeconds:  clampInt(hotCfg.GetInt("llmgw_dispatch_dimension_ttl_seconds", DefaultDimensionTTLSeconds), 1, 86400),
 		DimensionCapacity:    clampInt(hotCfg.GetInt("llmgw_dispatch_dimension_capacity", DefaultDimensionCapacity), -1, 100000),
+		RetryBudgetPercent:   clampInt(hotCfg.GetInt("llmgw_dispatch_retry_budget_percent", 25), 0, 100),
+		RetryBudgetFloor:     clampInt(hotCfg.GetInt("llmgw_dispatch_retry_budget_floor", 10), 0, 100000),
+		RetryBudgetEnforce:   hotCfg.GetBool("llmgw_dispatch_retry_budget_enforce", false),
+		RetryJitterEnabled:   hotCfg.GetBool("llmgw_dispatch_retry_jitter_enabled", true),
 	}
 }
 

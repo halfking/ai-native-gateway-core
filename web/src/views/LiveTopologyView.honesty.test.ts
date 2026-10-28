@@ -68,15 +68,18 @@ vi.mock('../composables/useLiveStream', async () => {
 
 vi.mock('../api/topology', () => ({
   getProvidersToday: vi.fn().mockResolvedValue({ day_utc: '2026-10-17', totals: {}, items: [] }),
+  getTopologyModelsToday: vi.fn().mockResolvedValue({ day_utc: '2026-10-17', items: [] }),
+  getTopologyProviderKinds: vi.fn().mockResolvedValue({ items: [] }),
+  getTopologyPlugins: vi.fn().mockResolvedValue({ builtin: [], external: [] }),
 }))
 
-// 统计栏的统计口径由 ProviderTodayRail.test.ts 单独钉，这里只验它收到的过滤值。
-vi.mock('../components/live-topology/ProviderTodayRail.vue', () => ({
+// 统计面板的统计口径由 StatsPanel.test.ts 单独钉，这里只验它收到的过滤值。
+vi.mock('../components/live-topology/StatsPanel.vue', () => ({
   default: {
-    name: 'ProviderTodayRailStub',
-    props: ['activeProvider'],
-    emits: ['select-provider'],
-    template: '<div class="rail-stub" :data-provider="activeProvider"></div>',
+    name: 'StatsPanelStub',
+    props: ['activeProvider', 'activeModel'],
+    emits: ['select-provider', 'select-model'],
+    template: '<div class="rail-stub" :data-provider="activeProvider" :data-model="activeModel"></div>',
   },
 }))
 

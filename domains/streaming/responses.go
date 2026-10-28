@@ -591,7 +591,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		durableStream = binding
 	}
 
-	candidates, policy, _, candErr := resolveCandidatesForRequest(r.Context(), h.chatHandler.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes)
+	candidates, policy, requestModality, candErr := resolveCandidatesForRequest(r.Context(), h.chatHandler.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes)
 	// SP-02: state machine — routing produced a final candidate set.
 	rt.Emit(state.EventRouted)
 	if candErr != nil {
@@ -626,6 +626,24 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		}
 		survivalEligible := isStream && (durableStream != nil || h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID))
 		if !survivalEligible {
+			// ── 2026-10-28: 模态不匹配优先于通用 no_candidate ────────────────
+			//
+			// 与 /v1/chat/completions、/v1/messages 同一判据：零候选若是因为
+			// 「模型可路由但登记模态服务不了本次请求」，503 no_candidate 是
+			// **误导** —— 它说的是「网关暂时没东西可路由」，客户端的理性反应
+			// 是重试，而重试同一个请求必然再次失败。
+			if mismatch := h.chatHandler.diagnoseModalityMismatch(r.Context(), clientModel,
+				clientID.Fingerprint.ClientProfile, tenantID, requestModality); !mismatch.IsZero() {
+				attemptErrCode = "modality_mismatch"
+				attemptErrMsg = fmt.Sprintf("Model '%s' does not accept %s input", clientModel, requestModality)
+				latency := int(time.Since(startTime).Milliseconds())
+				h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+					nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
+				*attemptLogged = true
+				releaseDurableBeforeSurvival(durableStream, "modality_mismatch")
+				h.chatHandler.writeModalityMismatchError(r, w, requestID, clientModel, mismatch, nil, bodyBytes, keyInfo)
+				return
+			}
 			// This is the real no_candidate case - no database error, just no matching providers
 			attemptErrCode = "no_candidate"
 			attemptErrMsg = fmt.Sprintf("No available provider for model '%s'", clientModel)
@@ -757,6 +775,9 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			// clients, instead of the IR-based Responses translator.
 			ClientProtocol: "openai-responses",
 			ClientModel:    clientModel,
+			// 原厂直通（2026-10-28 三巡）：请求边界一次确定客户端类型（同
+			// messages.go 处的说明）。
+			ClientType: extractClientType(r),
 			// See domains/streaming/handler.go for the rationale: the
 			// executor resolves the upstream model per candidate, so we
 			// pass clientModel here to avoid leaking the FIRST candidate's
@@ -906,7 +927,16 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	}
 
 	if errors.Is(execErr, errorsx.ErrOutputPolicyBlocked) {
-		const code, message = "output_policy_blocked", "Response blocked by output policy"
+		const code = "output_policy_blocked"
+		// 2026-10-28 拦截审核轮：/v1/responses 的非流式 403 此前**只有一句
+		// message**（r1039 D3 只补了 chat 路径）——同一个拦截在这里既没有
+		// 规则名也没有审核单。与 chat 路径同口径：规则/原因/摘要 → 审核
+		// 单 → message 与旁键都带。
+		rule, reason := policyBlockErrorDetail(execErr)
+		field, digest := policyBlockPathFromError(execErr), policyBlockDigestFromError(execErr)
+		blockTenant := tenant(keyInfo)
+		reviewID := registerPolicyBlockReview(blockTenant, requestID, rule, reason, field, digest)
+		message := policyBlockClientMessage(rule, reason, field, requestID, reviewID)
 		attemptErrCode, attemptErrMsg = code, message
 		auditBuilder.Success(false)
 		rt.Emit(state.EventFailed)
@@ -924,7 +954,8 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 				providerID, credentialID, code, message, latency, chatBodyBytes, keyInfo, r)
 		}
 		*attemptLogged = true
-		writeResponsesError(w, http.StatusForbidden, message, code, "blocked")
+		writeResponsesError(w, http.StatusForbidden, message, code, "blocked",
+			policyBlockErrorExtras(rule, reason, field, digest, requestID, reviewID))
 		return
 	}
 	if execErr != nil {
@@ -1448,7 +1479,7 @@ func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, body []
 		// failure (policy DB down) must not kill all traffic. The stream
 		// path stays fail-closed because mid-stream bytes already left and
 		// cannot be recalled; the asymmetry is deliberate.
-		if modified, blocked, err := interceptNativeResponseBody(h.chatHandler.responseInterceptor, &opt, respBody); err == nil && !blocked && modified != nil {
+		if modified, blocked, interceptResult, err := interceptNativeResponseBody(h.chatHandler.responseInterceptor, &opt, respBody); err == nil && !blocked && modified != nil {
 			respBody = modified
 		} else if blocked {
 			// R25-V (2026-09-30 round 30): the blocked provider body must be
@@ -1459,7 +1490,12 @@ func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, body []
 			if opt.failureEmit != nil {
 				opt.failureEmit()
 			}
-			writeResponsesError(w, http.StatusForbidden, "Response blocked by output policy", "output_policy_blocked", "blocked")
+			// 2026-10-28 拦截审核轮：带规则/原因/审核单（此前只有一句 message）。
+			rule, reason, field, digest := policyBlockMetadataFrom(interceptResult)
+			reviewID := registerPolicyBlockReview(opt.request.TenantID, requestID, rule, reason, field, digest)
+			message := policyBlockClientMessage(rule, reason, field, requestID, reviewID)
+			writeResponsesError(w, http.StatusForbidden, message, "output_policy_blocked", "blocked",
+				policyBlockErrorExtras(rule, reason, field, digest, requestID, reviewID))
 			return nil
 		}
 	}
@@ -1624,17 +1660,26 @@ func writeResponsesStreamError(w http.ResponseWriter, message, code string) {
 	}
 }
 
-func writeResponsesError(w http.ResponseWriter, statusCode int, message, errType, code string) {
+func writeResponsesError(w http.ResponseWriter, statusCode int, message, errType, code string, extras ...map[string]any) {
+	errObj := map[string]any{
+		"message": message,
+		"type":    errType,
+		"param":   "model",
+		"code":    code,
+	}
+	// 2026-10-28 拦截审核轮：extras 把策略拦截的旁键（rule/reason/field/
+	// digest/request_id/review）并入错误对象；非拦截调用点不传，形状不变。
+	for _, extra := range extras {
+		for k, v := range extra {
+			if v == nil || v == "" {
+				continue
+			}
+			errObj[k] = v
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{
-			"message": message,
-			"type":    errType,
-			"param":   "model",
-			"code":    code,
-		},
-	})
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": errObj})
 }
 
 // responsesStreamWrapper is a deprecated compatibility wrapper around the

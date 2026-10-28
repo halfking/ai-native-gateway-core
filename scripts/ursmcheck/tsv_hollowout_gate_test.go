@@ -378,11 +378,10 @@ func runHollowReaderOverlay(kind, spec string, root string, timeout time.Duratio
 		return -1, "", fmt.Errorf("未知 reader_kind：%q", kind)
 	}
 	cmd.Dir = cmdDir
-	cmd.Env = append(os.Environ(),
-		"GIT_TERMINAL_PROMPT=0",
-		// ★ 把 go 放进 PATH（★ shell 读方可能自己调 go）
-		"PATH="+goBinDir()+string(os.PathListSeparator)+os.Getenv("PATH"),
-	)
+	// ★★ r1046：★ 用 `hollowBuildEnv`（★ 而不是裸 `os.Environ()`）
+	// ★★ ⇒ ⇒ 它会把 `GOCACHE` **覆盖**成掏空门的**专用目录**
+	// ★★ ⇒ ⇒ 子构建不再往用户的全局缓存里塞「随树变化而失效」的一次性产物。
+	cmd.Env = hollowBuildEnv(root)
 	out, err := runWithTimeout(cmd, timeout)
 	code := 0
 	if err != nil {
@@ -457,8 +456,12 @@ func hollowTestBinaryOverlay(goBin, pkg, root string, timeout time.Duration, ove
 	args = append(args, pkg)
 	build := exec.Command(goBin, args...)
 	build.Dir = root
-	build.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0",
-		"PATH="+goBinDir()+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// ★★ r1046：★ 用 `hollowBuildEnv`（★ 而不是裸 `os.Environ()`）
+	// ★★ ⇒ ⇒ 它会把 `GOCACHE` **覆盖**成掏空门的**专用目录**
+	// ★★ ⇒ ⇒ **子构建**不再往用户的全局缓存里塞「随树变化而失效」的一次性产物
+	// ★★ ⇒ ⇒ ★ 依据：★ 实测每个新树状态 ⇒ 这道门往全局缓存里塞 **~1.3 GB**
+	// ★★ ⇒ ⇒ ★ 而那些条目在树再变之后**永远不会再被命中** ⇒ ⇒ 事实上的垃圾。
+	build.Env = hollowBuildEnv(root)
 	if out, err := runWithTimeout(build, timeout); err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return "", "", fmt.Errorf("编译 %s 的测试二进制失败：%v\n%s", pkg, err, tailLines(string(out), 10))

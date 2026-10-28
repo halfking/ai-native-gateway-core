@@ -30,6 +30,29 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
       POSTGRES_DB: llm_gateway
       PGDATA: /var/lib/postgresql/data/pgdata
+    # ★ r1041 轮（2026-10-28）：慢 SQL 观测设施。
+    #   起因：仓内 ≥19 个门以 pg_stat_statements 为事实源（§143.77~§143.99 等）
+    #   ⇒ 而 pg_stat_statements **必须 postmaster preload** 才可用
+    #   ⇒ 只 CREATE EXTENSION 不 preload ⇒ 每次查询报
+    #     「pg_stat_statements must be loaded via shared_preload_libraries」
+    #   ⇒ ⇒ 那些门**永远拿不到数据** = 假绿。
+    #   同时 log_min_duration_statement 默认 -1 ⇒ 慢查询日志从不开。
+    #   ⇒ 这里显式打开两者，让「慢 SQL」在客户实例上也可观测。
+    #   ★ 用 command 的 postgres 参数（而非 ALTER SYSTEM）：逗号列表的引号
+    #     在 ALTER SYSTEM 下是已知脚枪（docs/06-deployment/02-database/
+    #     local-pg-sync-from-252.md §5 Q6）。
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=citus,citus_columnar,pg_stat_statements
+      - -c
+      - log_min_duration_statement=1000
+      - -c
+      - logging_collector=on
+      - -c
+      - log_line_prefix=%m [%p] %q%u@%d
+      - -c
+      - log_statement=none
     ports:
       - "${PG_PORT:-5432}:5432"
     volumes:

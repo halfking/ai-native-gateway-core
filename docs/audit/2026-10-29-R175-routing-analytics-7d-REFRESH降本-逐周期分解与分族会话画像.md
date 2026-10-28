@@ -341,3 +341,38 @@ SET jit               = '"+jitMode+"'            // 新：按族
 写「零语义」之前先查 PG 文档那一句，并写明取舍，而不是把它藏起来。
 11. ★★ **协调正常 ≠ 节奏正常**：本轮 95 个窗口 0 缺失，但**多出 10.5% 的双领票**
     ⇒ 两者要分别量（缺领票与多领票是相反方向的缺陷）。
+
+---
+
+## §9 合并与验收（诚实边界）
+
+### §9.1 合并上游
+
+- 开工时 `origin/main` 已推进到 **`LESSONS.md` §531**（本机基点只有 §485）⇒
+ 按仓内「**跨号 + 留缓冲**」惯例（远端取号成对：515/516 · 520/521 · 525/526 · 530/531）
+  ⇒ 本轮取 **§535**（跳过 532~534 缓冲带，与远端同节奏）。
+- 合并：`AGENTS.md` / `LESSONS.md` 两侧都是**追加**，冲突1 处/文件 ⇒
+  按仓内先例「**对方的块在前、本分支新增块在后**」解。
+ ⇒ **合并后逐字复核**：远端 `LESSONS.md` / `AGENTS.md` 全文作为**连续块**完整存在
+  （`r in merged` 实测 True），本轮 §535 / R175 块在其**之后**。
+
+### §9.2 全量测试基线（逐条在干净 HEAD 树上复现）
+
+`go test ./...` 本轮读到 **4 个失败包**。逐条用 `git worktree add /tmp/head-check HEAD`
+的**干净树**复跑（串行）：
+
+| 包 | 干净 HEAD | 本轮树 | 判定 |
+|---|---|---|---|
+| `cmd/tools/sql_source_indirection_audit`（2 条） | **FAIL（同样2 条）** | FAIL | **既有红**（清单72 条 / 实测 76 文件；报出的文件里**没有**本轮改的 `bg/materialized_view_refresher.go`） |
+| `sql/migrations/domain`（`TestStandardModelSeedsStayIdentical`） | **FAIL** | FAIL | **既有红**（与本轮无关：SQL seed 比对，本轮未动任何 SQL） |
+| `scripts/ursmcheck`（`TestStructuredRegistryHollowoutReadersRejectEmptyRegistry`） | **FAIL（同样 2 个子项）** | FAIL | **既有红**（`web/scripts/i18n-error-*-registry.json` 的读方在基线就红 ⇒不可判定） |
+| `domains/streaming/state`（`TestRuntime_RaceCancellation`） | PASS（串行） | **并行跑时 FAIL、串行重跑 PASS** | **并行跑 go 命令抢 build 缓存的假失败**（远端 HEAD 提交信息已记录该陷阱） |
+
+⇒ ★★ **本轮零新增失败。** ★★
+
+### §9.3 本轮读数
+
+- `go build ./...` ✓ ／ `go vet ./bg/` ✓
+- `go test ./bg/ -count=1` ✓（含本轮新门 **13 条** + 改写的 R75 分族门）
+- 合并上游后**重跑**：`go build ./...` ✓ ／ `go vet ./bg/` ✓ ／ `go test ./bg/` ✓
+- 252 生产写入 = **0**；**未部署**（154=69434c88 / 245=75848f69 都不含本轮改动）

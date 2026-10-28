@@ -193,6 +193,17 @@ type Router struct {
 	//（内部按 refresh TTL 节流 + 单飞）。
 	StickyLoad StickyLoadView
 
+	// CircuitRecovery (P0-A, 2026-10-28 两层路由审计 G1) 内存熔断面的
+	// 恢复时刻查询（credential.Manager.RecoveredAt 的窄接口）。恢复期
+	// 渐进回流量（recoveryPenaltyForCandidate / recoveryRampFactor）用它
+	// 读「breaker 从非 CLOSED 拉回 CLOSED」的时刻。nil = 未接线
+	//（breaker 侧信号不参与，NodeState 侧 RoutedNodeState 信号仍可用）。
+	// 两种路由模式（legacy / URSM authoritative）下 executor 都在调
+	// Circuit.RecordSuccess，所以这条信号面在生产两模式下都有写入。
+	CircuitRecovery interface {
+		RecoveredAt(providerID, credentialID int) time.Time
+	}
+
 	// ShadowStrategy (GW-03, omni-ref2): 可选的路由策略，仅用于 shadow 评分
 	// 对比，不改变实际选中候选。nil = 现状（P2C 行为零变化）。
 	// 非 nil 时，planByTier 在每个 tier bucket 用 ShadowStrategy 独立评分，
@@ -207,7 +218,7 @@ type Router struct {
 }
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
-	ew := DefaultLoadScoreEnvWeights() // R48 §3 A2：6 维度 env 启动期预解析
+	ew := DefaultLoadScoreEnvWeights() // R48 §3 A2：7 维度 env 启动期预解析（P0-A 起含 recovery）
 	return &Router{
 		Sticky:                 sticky,
 		Limiter:                lim,
@@ -626,7 +637,18 @@ func (r *Router) planCandidates(
 		RequestID:        requestID,
 		LoadScoreWeights: r.LoadScoreWeights,
 		StickySnapshot:   stickySnapshot,
+		// P1-A (2026-10-28 两层路由审计 G3)：离群是【池】的属性 —— 池统计在
+		// filterHealthyNodes 之后的完整候选集上算一次（这里），随上下文下发。
+		// 池太浅（合格样本 <3）时 ComputeSuccessRatePoolStats 返回 nil ⇒
+		// calculateLoadScore 的离群惩罚恒 0，行为与未接线逐字节一致。
+		SuccessRatePoolStats: ComputeSuccessRatePoolStats(available),
 	}
+	// P1-C-② shadow (audit 2026-10-28 §4): count what the proposed
+	// unknown-price→pool-median policy WOULD do, per request, without
+	// changing any score. Median over priced Round-2 candidates (USD after
+	// the FX fold — reuse calculateCostPenalty's normalization so the shadow
+	// reads the same ruler as the live penalty).
+	observeUnknownPricePool(available)
 	ordered := r.planByTier(requestCtx, round1, policy, stratIn)
 	if len(round2) > 0 {
 		ordered = append(ordered, r.planByTier(requestCtx, round2, policy, stratIn)...)

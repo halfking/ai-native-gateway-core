@@ -25,7 +25,14 @@ import (
 // R45 (2026-09-19, Gemini thinking 专项): take ctx so the executor can restore
 // a context-carried inbound reasoning intent (ir.SourceReasoning) — the
 // Gemini handler's step-6 pre-routing serialization loses it from the body.
-func applyInlineValidation(bodyBytes []byte, requestID string, targetCatalogCode string, ctx context.Context) []byte {
+//
+// 2026-10-28 (原厂直通轮): take nativePair so the legacy path (e.IR == nil)
+// 也能保住原厂对（internal/nativepair）的客户端私有参数 —— 本函数把 body
+// 整体经 IR 往返一次，Extensions 若不盖 NativePassthrough 会被 paramreg
+// 方言裁剪（与 IR 路径同样的漏法）。生产默认启用 IR，但本函数是紧急回退
+// 形态（LLM_GATEWAY_IR_CONVERTER=false）的必经之路 ⇒ 原生对的保证必须
+// 在两条路径上都成立。
+func applyInlineValidation(bodyBytes []byte, requestID string, targetCatalogCode string, ctx context.Context, nativePair bool) []byte {
 	// Debug level: this runs on every request, so Info-level would flood
 	// production logs. Operators can opt-in via LLM_GATEWAY_DEBUG_INLINE_VALIDATION=1
 	// by switching back to slog.Info in a per-deploy override if needed.
@@ -44,6 +51,8 @@ func applyInlineValidation(bodyBytes []byte, requestID string, targetCatalogCode
 	// Validate and fix
 	irReq = ir.ValidateAndFixRequest(irReq, requestID)
 	irReq.TargetProvider = targetCatalogCode
+	// 原厂直通（2026-10-28）：Extensions 全量原样还原，不做方言裁剪。
+	irReq.NativePassthrough = nativePair
 	// R45: 恢复 context 携带的入向推理意图（Gemini handler step-6 丢失的
 	// budget 形 intent）。无携带值时为无操作。
 	irReq = ir.RestoreSourceReasoning(irReq, ctx)

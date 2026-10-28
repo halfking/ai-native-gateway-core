@@ -26,6 +26,8 @@ const NODES: LiveNodeStatus[] = [
   { credential_id: 9, manual_disabled: false, credential_label: 'qz-key-c', provider_code: 'qianwen', health_status: 'warning', circuit_state: 'half_open', availability_state: 'available', quota_state: 'quota_low', in_flight: 0, last_latency_ms: 2400 },
   { credential_id: 10, manual_disabled: false, credential_label: 'zs-key-d', provider_code: 'zhipu', health_status: 'unreachable', circuit_state: 'open', availability_state: 'unavailable', quota_state: 'ok', in_flight: 0, last_error: 'upstream_timeout' },
   { credential_id: 11, manual_disabled: false, credential_label: 'ds-key-e', provider_code: 'deepseek', health_status: 'healthy', circuit_state: 'closed', availability_state: 'available', quota_state: 'ok', in_flight: 0 },
+  // 内部直连节点（2026-10-28 选路层轮）：本地托管供应商，供直连徽标/分桶验收。
+  { credential_id: 21, manual_disabled: false, credential_label: 'local-no-key', provider_code: 'local-ollama', health_status: 'healthy', circuit_state: 'closed', availability_state: 'available', quota_state: 'ok', in_flight: 1, last_latency_ms: 950 },
 ]
 
 const CLIENTS = [
@@ -72,9 +74,34 @@ function buildRequests(): LiveRequest[] {
         agent_type: 'cli',
         client_protocol: client.client_protocol,
         is_probe: k % 11 === 0,
+        // 2026-10-28 选路层轮：让选路扇出带与压缩格有非零读数可验收。
+        // 每 7 条里 1 条 auto（带任务类型分布）；压缩按环回口径标
+        // compressed（2026-10-28 遗留②：压缩格计数判据从 token_band 档位
+        // 换成「压缩层实际改写出站体」——每 6 条里 1 条实际压缩）。
+        ...(k % 7 === 3
+          ? { is_auto_request: true, task_type: (['code', 'chat', 'reasoning'] as const)[k % 3], client_model: chain.canonical_name }
+          : {}),
+        ...(k % 6 === 2
+          ? { compressed: true, token_band: k % 12 === 2 ? ('below' as const) : ('forced' as const) }
+          : {}),
       } satisfies LiveRequest)
       i += 1
     }
+  }
+  // 内部直连链（2026-10-28 选路层轮）：本地托管供应商（kind='local'）的
+  // 请求 + 对应 node_update —— 验收「直连」扇出分桶与供应端节点直连徽标。
+  // ★ 直连判定靠 providers.kind，DEV 夹具页没有后端可查 —— 由本页在挂载时
+  //   向 useLiveTopology 注入一个 dev-only 集合（见下方 loadLocalProviders 桩）。
+  for (let k = 0; k < 5; k += 1) {
+    out.push({
+      type: 'request', request_id: `preview-local-${k}`, ts: iso(800 + k * 640),
+      model: k % 2 ? 'qwen3:30b-a3b' : 'qwen3.8:27b-mlx',
+      canonical_name: k % 2 ? 'qwen3:30b-a3b' : 'qwen3.8:27b-mlx',
+      provider_code: 'local-ollama', credential_id: 21, credential_label: 'local-no-key',
+      status: 'success', latency_ms: 900 + k * 120,
+      prompt_tokens: 400, completion_tokens: 180, total_tokens: 580,
+      agent_name: 'zcode', client_protocol: 'openai',
+    } satisfies LiveRequest)
   }
   // 两条在途请求：让「进行中」状态与在途环有东西可画
   out.push({
@@ -109,6 +136,30 @@ function buildActions(): Map<string, ActionEvent[]> {
 
 let restore: (() => void) | null = null
 
+/** DEV 夹具页没有后端可查 provider kinds（kind='local' 判定直连分桶）。
+ *  只拦这一个端点、回夹具 JSON；卸载时还原 —— 不在生产代码加 dev 分支。
+ *  ★ 在 **setup 顶层**装（不是 onMounted）：LiveTopologyView 是子组件，
+ *    它的 onMounted（loadLocalProviders 发 fetch）先于本页 onMounted 执行，
+ *    装晚了拦截就是死的（请求已飞）。 */
+const unpatchKinds = patchProviderKindsFetch()
+
+function patchProviderKindsFetch(): () => void {
+  const raw = window.fetch.bind(window)
+  window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    if (url.includes('/api/admin/topology/provider-kinds')) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ items: [{ code: 'local-ollama', kind: 'local' }, { code: 'local-mlx-lm', kind: 'local' }] }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      )
+    }
+    return raw(input, init)
+  }) as typeof window.fetch
+  return () => { window.fetch = raw }
+}
+
 onMounted(() => {
   const snapshot = {
     requests: [...liveStreamState.requests],
@@ -130,6 +181,7 @@ onMounted(() => {
     liveStreamState.connection = snapshot.connection
     liveStreamState.initialDataReceived = snapshot.initialDataReceived
     liveStreamState.lastEventAt = snapshot.lastEventAt
+    unpatchKinds()
   }
 })
 

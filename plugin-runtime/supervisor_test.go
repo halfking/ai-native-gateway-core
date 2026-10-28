@@ -1,17 +1,29 @@
 package pluginruntime
 
 import (
-	"runtime"
 	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/gocache"
 )
+
+// gocacheRoot 返回仓根（★ 用于定位本包的【专用 GOCACHE】目录）。
+func gocacheRoot(t *testing.T) string {
+	t.Helper()
+	root, err := gocache.RepoRoot()
+	if err != nil {
+		t.Fatalf("解析仓根失败：%v", err)
+	}
+	return root
+}
 
 func TestSupervisor_StartStop(t *testing.T) {
 	fake := &fakeProc{}
@@ -106,7 +118,9 @@ import ("os";"time")
 func main(){ _=os.WriteFile(os.Getenv("PID_FILE"), []byte("alive"), 0644); time.Sleep(30*time.Second) }
 `), 0644)
 	build := exec.Command("go", "build", "-o", helperBin, helperSrc)
-	build.Env = append(os.Environ(), "GO111MODULE=off")
+	// ★★ r1047 轮（★ 2026-10-28）：★ 子构建走【专用 GOCACHE】⇒ ⇒ 不再往用户
+	// ★★ 的全局缓存里写产物（★ 理由与读数见 `internal/gocache` 的包注释）。
+	build.Env = append(gocache.Env(gocacheRoot(t), "plugin-runtime"), "GO111MODULE=off")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build helper: %v %s", err, out)
 	}
@@ -211,7 +225,9 @@ func main(){
 	_ = os.WriteFile(os.Getenv("MARKER"), []byte("graceful"), 0644)
 }`), 0644)
 	build := exec.Command("go", "build", "-o", helperBin, helperSrc)
-	build.Env = append(os.Environ(), "GO111MODULE=off")
+	// ★★ r1047 轮（★ 2026-10-28）：★ 子构建走【专用 GOCACHE】⇒ ⇒ 不再往用户
+	// ★★ 的全局缓存里写产物（★ 理由与读数见 `internal/gocache` 的包注释）。
+	build.Env = append(gocache.Env(gocacheRoot(t), "plugin-runtime"), "GO111MODULE=off")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build helper: %v %s", err, out)
 	}

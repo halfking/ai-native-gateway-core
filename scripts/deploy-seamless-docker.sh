@@ -530,17 +530,29 @@ if [[ -n "$VIA" ]]; then
   #     · 只是构建产物的时间戳变了 ⇒ 不再误报。
   #   （构建生成的那份 menu-config.json 仍会随 tar 上树 —— 那本来就是
   #     要进 SPA 的构建产物。）
-  DD_BUILD_SHA="$(git -C "$DD_REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || true)"
-  # ★ 2026-10-23（12h 审计轮修）：dirty 判定**排除三个版本产物**。
-  #   理由：bump-version.sh（systemd 路径 245/154 的 1/9 步）会改
-  #   VERSION / version.json / web/public/version.json 三个**被 git 跟踪**的文件
-  #   **且从不提交** ⇒ ⇒ 任意一次 245/154 部署之后，这个共享 checkout 就长期脏
-  #   ⇒ ⇒ 若把它们算进 dirty 判定 ⇒ ⇒ 2026-10-22 那次「版本戳不再恒带 -dirty」
-  #   ⇒ ⇒ 的修复会**从另一扇门被原样顶回来**（告警永久失效）。
-  #   ⇒ 版本产物的漂移 ≠ 源码漂移 ⇒ ⇒ 故排除。
-  #   ⇒ 门：scripts/ursmcheck/deploy_shared_build_lock_guard_test.go 判据④。
-  if [[ -n "$DD_BUILD_SHA" && -n "$(git -C "$DD_REPO_ROOT" status --porcelain --untracked-files=no -- . ':(exclude)VERSION' ':(exclude)version.json' ':(exclude)web/public/version.json' 2>/dev/null)" ]]; then
-    DD_BUILD_SHA="${DD_BUILD_SHA}-dirty"
+  # ★ 2026-10-28 修：显式给的 DD_BUILD_SHA 不被 git 覆盖。
+  #   理由：这一行原本**无条件**用 git rev-parse 的结果覆盖 DD_BUILD_SHA ⇒
+  #   运维在部署机上 `export DD_BUILD_SHA=<号>` 的逃生门被静默吃掉 ⇒ 运维
+  #   声明的身份永远到不了目标机（目标机侧会因空号而 fail-closed ⇒ 部署
+  #   变成「两条出路都走不通」的死路）。
+  #   ⇒ 语义改为：**显式给的值优先**（运维声明）；没给才从 git 取。
+  #   ⇒ dirty 判定只对 git 取到的号有意义（声明的号是运维自称，不追加
+  #     -dirty——追加反而会让「声明的号」与「实际树」的关系更难读）。
+  if [[ -z "${DD_BUILD_SHA:-}" ]]; then
+    DD_BUILD_SHA="$(git -C "$DD_REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || true)"
+    # ★ 2026-10-23（12h 审计轮修）：dirty 判定**排除三个版本产物**。
+    #   理由：bump-version.sh（systemd 路径 245/154 的 1/9 步）会改
+    #   VERSION / version.json / web/public/version.json 三个**被 git 跟踪**的文件
+    #   **且从不提交** ⇒ ⇒ 任意一次 245/154 部署之后，这个共享 checkout 就长期脏
+    #   ⇒ ⇒ 若把它们算进 dirty 判定 ⇒ ⇒ 2026-10-22 那次「版本戳不再恒带 -dirty」
+    #   ⇒ ⇒ 的修复会**从另一扇门被原样顶回来**（告警永久失效）。
+    #   ⇒ 版本产物的漂移 ≠ 源码漂移 ⇒ ⇒ 故排除。
+    #   ⇒ 门：scripts/ursmcheck/deploy_shared_build_lock_guard_test.go 判据④。
+    if [[ -n "$DD_BUILD_SHA" && -n "$(git -C "$DD_REPO_ROOT" status --porcelain --untracked-files=no -- . ':(exclude)VERSION' ':(exclude)version.json' ':(exclude)web/public/version.json' 2>/dev/null)" ]]; then
+      DD_BUILD_SHA="${DD_BUILD_SHA}-dirty"
+    fi
+  else
+    log "DD_BUILD_SHA=${DD_BUILD_SHA} 为显式声明（不取 git、不追加 -dirty；部署机侧的运维声明）"
   fi
   # ★ 前端自动构建（2026-10-22）：**先构建，再判新鲜度**。
   # 顺序不能反：门判的是「产物是否比源码新」，不构建就判 ⇒ 门只会把
@@ -619,6 +631,16 @@ if [[ -n "$VIA" ]]; then
   DD_GO_BASE_IMAGE="${DD_GO_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
   DD_RUNTIME_BASE_IMAGE="${DD_RUNTIME_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
   log "在 $VIA 上执行 deploy（builder=${DD_GO_BASE_IMAGE} runtime=${DD_RUNTIME_BASE_IMAGE}）..."
+  # ★ 2026-10-28：--via 路径的版本身份闸（部署机侧）。
+  #   这一段在**目标机侧的门之前**（目标机侧那份脚本会在本脚本 exit 之后
+  #   独立执行）⇒ ⇒部署机侧取不到号时若不拦，目标机会撞上 fail-closed die
+  #   ⇒ ⇒ 报错发生在远端、看起来像「远端坏了」，而根因在部署机 ⇒ 排查
+  #   成本极高。⇒ 在这里（信息最全的地方）拦：号为空 ⇒ 不发这次 ssh。
+  #   ⇒ 与目标机侧的门同语义、同措辞（两边都是「宁可不部署，也不要
+  #     产出一份身份不明的生产槽」）。
+  if [[ -z "${DD_BUILD_SHA:-}" ]]; then
+    die "部署机侧取不到构建提交号（DD_REPO_ROOT=$DD_REPO_ROOT 无 .git 或 git rev-parse 失败）⇒ 转发给目标机的号会是空 ⇒ 目标机将因 /version 身份不明而拒绝部署。两条出路：① 换一个带 .git 的部署树（LLM_GATEWAY_ROOT 指向它）；② 显式 export DD_BUILD_SHA=<8位提交号> 后重跑（运维声明的身份，不会追加 -dirty）。"
+  fi
   ssh "$VIA" "cd '$DD_REMOTE_ROOT' && DD_BUILD_SHA='${DD_BUILD_SHA}'${_dd_fwd} LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS:-}' bash scripts/deploy-seamless-docker.sh ${_dd_args}"
   _dd_rc=$?
   # 只有远端真的跑完了，才置完成标记（fail-closed 的另一半）。
@@ -638,6 +660,37 @@ fi
 #   「看一眼」的动作，不该被「没走到完成标记」判成失败。
 if [[ "$MODE" == "deploy" ]]; then
   dd_install_exit_guard
+fi
+
+# =============================================================================
+# 版本身份链（2026-10-28）：目标机直跑必须有真实构建提交号
+# =============================================================================
+# ★ 根因（/version 谎报家族，本轮实证）：同步树不含 .git（tar --exclude=.git），
+#   目标机直跑本引擎时 `git rev-parse` 必然失败 ⇒ DD_BUILD_SHA 为空 ⇒
+#   下方版本戳改写、部署后版本核验、切流后公网身份核对【三道闸全部静默
+#   跳过】⇒ 候选槽沿用仓库里任意一次 154/245/本地部署留下的旧戳上生产
+#   ⇒ /version 报的是别人的身份（实测 211 曾出现 dc55570a-dirty 恰因 --via
+#   路径带号才正确；直跑路径永远是空）。这与「版本戳 2886 收口轮」钉的
+#   「git_sha 可追溯」原则正面冲突。
+# ⇒ deploy 模式 + DD_BUILD_SHA 未显式给出 + DD_REPO_ROOT 无 .git ⇒ 响亮拒绝
+#   （fail-closed）：宁可不部署，也不要产出一份身份不明的生产槽。
+# ⇒ 两条出路：① 正路 = 从部署机走 `deploy-211.sh`（--via 自动取号并转发）；
+#   ② 逃生门 = 目标机上显式 `DD_BUILD_SHA=<8位提交号>`（如镜像审计已知身份，
+#   或纯重建槽位等场景），此时号来自运维声明而非 git ⇒ 部署日志会注明。
+if [[ "$MODE" == "deploy" && -z "${DD_BUILD_SHA:-}" ]]; then
+  if [[ ! -e "$DD_REPO_ROOT/.git" ]]; then
+    die "目标树没有 .git（同步树形态）且未显式给 DD_BUILD_SHA ⇒ /version 将沿用旧戳说谎。两条出路：① 从部署机跑 scripts/deploy-211.sh（--via 自动取号）；② 显式 export DD_BUILD_SHA=<8位提交号> 后重跑（运维声明的身份，日志将注明）。"
+  fi
+  DD_BUILD_SHA="$(git -C "$DD_REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || true)"
+  if [[ -z "$DD_BUILD_SHA" ]]; then
+    die "DD_REPO_ROOT 有 .git 但 git rev-parse 失败（损坏的检出？）且未显式给 DD_BUILD_SHA ⇒ 拒绝产出身份不明的部署。"
+  fi
+  if [[ -n "$(git -C "$DD_REPO_ROOT" status --porcelain --untracked-files=no -- . ':(exclude)VERSION' ':(exclude)version.json' ':(exclude)web/public/version.json' 2>/dev/null)" ]]; then
+    DD_BUILD_SHA="${DD_BUILD_SHA}-dirty"
+  fi
+  log "目标机直跑：DD_BUILD_SHA 从本仓 git 取得 ${DD_BUILD_SHA}"
+elif [[ "$MODE" == "deploy" && -n "${DD_BUILD_SHA:-}" && ! -e "$DD_REPO_ROOT/.git" ]]; then
+  log "DD_BUILD_SHA=${DD_BUILD_SHA} 为显式提供（目标树无 .git：或来自 --via 部署机转发，或来自运维声明；两种来源的号都会写进 /version）"
 fi
 
 mkdir -p "$DD_STATE_DIR/env" "$DD_STATE_DIR/logs"
@@ -2031,6 +2084,66 @@ if [[ -f "$REVISION_SEQ" ]]; then
 else
   echo "warning: apply-db-revision-sequence.sh 不在场，跳过迁移重放" >&2
 fi
+
+# ── 候选 SQL 函数依赖硬门（2026-10-28 211 routing_schema_error 事故）──────
+# provider/client.go 的候选查询以 CROSS JOIN LATERAL 调用 public 下的 DB 函数
+# （recent_success_rate / recent_cache_hit_rate…）。「二进制已引用、库未建
+# 函数」的切流 = 全站 500：当晚 211 部署序列漏登记 915 ⇒ 函数从未建 ⇒
+# 每个 /v1/chat/completions 都 42883。此门在迁移重放之后、起候选容器之前：
+#   ① 从**本次要部署的树**的 client.go 里提取全部 LATERAL 函数引用；
+#   ② 逐个核对 pg_proc 里存在同名重载（缺 = die，旧槽仍在服务，损失为零）；
+#   ③ 对每个引用做一次 NULL 实参 smoke 调用——LANGUAGE sql 的函数体在
+#      CREATE 时已校验表引用，但真调用 additionally 把它 plan 一遍，
+#      「建得起来但调用即炸」的形态在这里当场现形。
+# 注意：这是「切流前」硬门；boot 侧另有 db.ensureRecentCacheHitRate 自愈
+# （rsr 同款防线），两层叠加后「库没函数 + 二进制引用它」不可能再上流量。
+dd_verify_candidate_fn_deps() {
+  local client_go="${DD_REPO_ROOT}/provider/client.go"
+  local seg fn argc n nulls q cnt
+  if [[ ! -f "$client_go" ]]; then
+    warn "provider/client.go 不在场（${client_go}），跳过候选函数依赖门"
+    return 0
+  fi
+  # 提取 'CROSS JOIN LATERAL fn(args)' 的完整调用（fn 名 + 实参元数——
+  # smoke 要按调用点元数造 NULL 实参；当前调用点无嵌套括号，形态由
+  # provider 的 shape 测试钉住）。
+  local -a found=()
+  while IFS='|' read -r fn argc; do
+    [[ -n "$fn" ]] && found+=("${fn}|${argc}")
+  done < <(grep -oE 'CROSS JOIN LATERAL [a-z_]+\([^)]*\)' "$client_go" | \
+           sed -e 's/^CROSS JOIN LATERAL //' | awk -F'[(]' '{
+             fn = $1; sub(/\)$/, "", $2);
+             n = 1; if ($2 == "") n = 0; else n = gsub(/,/, ",", $2) + 1;
+             print fn "|" n }' | sort -u)
+  if [[ ${#found[@]} -eq 0 ]]; then
+    warn "client.go 里没有 CROSS JOIN LATERAL 函数引用（形态变了？）—— 候选函数依赖门空转"
+    return 0
+  fi
+  local entry
+  for entry in "${found[@]}"; do
+    fn="${entry%%|*}"; argc="${entry##*|}"
+    # 存在性：public 下必须有同名函数（≥1 行）。
+    q="SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = '${fn}'"
+    cnt="$(docker exec -e PGPASSWORD="${PG_PASS:-unused}" "$PG_CONTAINER" \
+      psql -X -Atqc "$q" -h 127.0.0.1 -p 5432 -U "${PG_USER:-postgres}" -d "${DD_PG_DB}" 2>&1)" \
+      || die "候选函数依赖门：psql 探测 ${fn} 失败（${cnt}）—— 旧槽仍在服务，先修库"
+    [[ "$cnt" =~ ^[0-9]+$ && "$cnt" -ge 1 ]] || \
+      die "候选函数依赖门：public.${fn} 不在库里（psql 计数='${cnt}'）—— 候选查询会整条 42883 ⇒ 100% 流量 500（2026-10-28 211 事故形态）。旧槽仍在服务；先把迁移补齐再部署"
+    # smoke：按调用点元数造 NULL 实参调用，必须不报错（空窗语义 = 无行，安全）。
+    nulls=""
+    if (( argc > 0 )); then
+      nulls="NULL"; n=1
+      while (( n < argc )); do nulls="${nulls}, NULL"; ((n++)); done
+    fi
+    if ! docker exec -e PGPASSWORD="${PG_PASS:-unused}" "$PG_CONTAINER" \
+      psql -X -Atqc "SELECT * FROM public.${fn}(${nulls})" \
+        -h 127.0.0.1 -p 5432 -U "${PG_USER:-postgres}" -d "${DD_PG_DB}" >/dev/null 2>&1; then
+      die "候选函数依赖门：public.${fn}(${nulls}) smoke 调用失败—— 函数体可能引用了不存在的关系（首调 42P01 与「上游全挂」同形）或调用元数对不上。旧槽仍在服务；先修函数体再部署"
+    fi
+    log "候选函数依赖门：public.${fn} 存在且 smoke 通过（argc=${argc}）"
+  done
+}
+dd_verify_candidate_fn_deps
 
 # ── 蓝绿：确定本次的活跃槽与候选槽 ─────────────────────────────────────
 # 活跃槽 = 状态文件记录的槽（缺省 a）；候选槽 = 另一个。

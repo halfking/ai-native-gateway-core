@@ -132,4 +132,32 @@ export default {
   expectedMiss: "Must not match",
   eventEvidenceNote:
     "Hit records never store request plaintext. Confirm with type/field plus the rule pattern and invented samples below; edit the matched rule or add a scoped supplement after review. Local clients still see restored values in scripts/docs; outbound provider traffic stays masked. Optional output compliance is off by default.",
+  hardblock: "Hard block switch",
+  hardblockHint:
+    "Controls which rules may terminate a whole response. Rules absent from this list only log or mask instead of cutting the turn; changes apply immediately.",
+  hardblockProcessOnly:
+    "Changes here live for this gateway process only; a restart falls back to the list loaded from the deployment environment.",
+  hardblockListLabel: "Rules allowed to hard block",
+  hardblockFormatNote:
+    "Scope is one of input, output or egress; a rule may be an exact ID, a prefix family or *. The egress scope accepts only individual builtin rules.",
+  hardblockCommentLabel: "Reason for this change",
+  hardblockDisableConfirm:
+    "I confirm turning off every hard block, including the request-side guard on plaintext credentials",
+  hardblockSave: "Save list",
+  hardblockSaved: "Hard block list updated and now in effect.",
+  blockedReviews: "Blocked reviews",
+  blockedReviewsHint:
+    "Every policy-blocked response creates a pending record here. After approval the same content passes on the next retry; rejection keeps the block.",
+  blockedReviewsNote:
+    "Records keep only rule, reason and payload digest, never the blocked text. The queue lives in the gateway process and clears on restart.",
+  blockedReviewsNone: "No blocked-response reviews under the current filter",
+  reviewPending: "Waiting for review",
+  reviewApproved: "Released",
+  reviewRejected: "Rejected (block kept)",
+  reviewReasonLabel: "Block reason",
+  reviewFieldLabel: "Argument path",
+  reviewRequestLabel: "Request",
+  reviewDigestLabel: "Payload digest",
+  reviewApprove: "Approve and release",
+  reviewReject: "Keep block",
 };

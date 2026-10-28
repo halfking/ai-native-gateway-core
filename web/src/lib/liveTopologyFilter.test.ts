@@ -12,7 +12,7 @@
 // （判据纪律第 3 条的实证：只测允许侧会漏掉「压根没匹配上」）。
 
 import { describe, expect, it } from 'vitest'
-import { applyFilters, filterOptions, gatewayModuleStats, matchesFilters } from '../lib/liveTopologyFilter'
+import { applyFilters, filterOptions, gatewayModuleStats, localProviderCodesOf, matchesFilters, modelSelectionStats } from '../lib/liveTopologyFilter'
 import { DEFAULT_TOPO_FILTERS, GATEWAY_MODULES } from '../types/liveTopology'
 
 const NOW = Date.parse('2026-10-17T12:00:00Z')
@@ -183,6 +183,7 @@ describe('gatewayModuleStats', () => {
     // 主链路：每条请求都经过
     expect(stats.sanitize.count).toBe(3)
     expect(stats.route.count).toBe(3)
+    expect(stats.modelSelect.count).toBe(3)
     // 会话写入/文件：只有带 gw_session_id 的两条
     expect(stats.sessionWrite.count).toBe(2)
     expect(stats.sessionFile.count).toBe(2)
@@ -194,6 +195,21 @@ describe('gatewayModuleStats', () => {
     expect(stats.taskDetect.count).toBe(1)
     // 节点状态管理 = 上报的节点数
     expect(stats.nodeState.count).toBe(2)
+  })
+
+  it('★ compress counts only requests the compression layer actually rewrote (compressed flag)', () => {
+    // 环回口径（2026-10-28 修正）：判据是 compressed（strategy 非空且非
+    // delta_append），不是 token_band 档位。band=below + compressed 的请求
+    // （COUNT/相对窗口/IDLE 触发，211 实测 7 天 1069 条）必须计入；
+    // band=forced 但没改成的（summary 失败，实测 80 条）不计。
+    const requests = [
+      { ...base, compressed: true },                                  // 环回压缩（band 任意）
+      { ...base, request_id: 'r2', compressed: true, token_band: 'below' }, // below 但实际压缩 ⇒ 计
+      { ...base, request_id: 'r3', token_band: 'forced' },             // 档位越线没改成 ⇒ 不计
+      { ...base, request_id: 'r4' },                                  // 未上报 ⇒ 不计
+    ]
+    const stats = gatewayModuleStats(requests, NOW, 5 * 60_000, 0)
+    expect(stats.compress.count).toBe(2)
   })
 
   it('★ never reports a cache hit as an error', () => {
@@ -236,5 +252,74 @@ describe('gatewayModuleStats', () => {
     expect(stats.taskDetect.count).toBe(1)
     // 没带该字段 = 未上报，保持 0 而不是编一个数
     expect(gatewayModuleStats([base], NOW, WINDOW, 0).taskDetect.count).toBe(0)
+  })
+})
+
+// ── 选路扇出统计（2026-10-28 选路层轮）──────────────────────────────
+// 判据钉三件事：三分桶互斥且守恒（auto+direct+explicit == total）；
+// auto 的任务分布按计数降序取 top；供应商清单未测量时 direct 如实为 0
+// 且不许把「未测量」伪装成「分拣完成」。
+describe('modelSelectionStats', () => {
+  const WINDOW = 5 * 60_000
+
+  it('buckets mutually exclusively and total is conserved', () => {
+    const requests = [
+      { ...base, is_auto_request: true, task_type: 'code' },
+      { ...base, request_id: 'r2', is_auto_request: true, task_type: 'chat' },
+      { ...base, request_id: 'r3', provider_code: 'local-ollama' },
+      { ...base, request_id: 'r4', provider_code: 'local-mlx-lm' },
+      { ...base, request_id: 'r5' },
+    ]
+    const local = new Set(['local-ollama', 'local-mlx-lm', 'ollama', 'mlx'])
+    const stats = modelSelectionStats(requests, NOW, WINDOW, local)
+    expect(stats.auto).toBe(2)
+    expect(stats.direct).toBe(2)
+    expect(stats.explicit).toBe(1)
+    expect(stats.total).toBe(5)
+    // 守恒等式：三分桶之和 == 总量（分拣漏一条立刻红）
+    expect(stats.auto + stats.direct + stats.explicit).toBe(stats.total)
+  })
+
+  it('ranks auto task types by count and caps the list', () => {
+    const requests = [
+      { ...base, is_auto_request: true, task_type: 'chat' },
+      { ...base, request_id: 'r2', is_auto_request: true, task_type: 'code' },
+      { ...base, request_id: 'r3', is_auto_request: true, task_type: 'code' },
+      { ...base, request_id: 'r4', is_auto_request: true, task_type: 'reasoning' },
+    ]
+    const stats = modelSelectionStats(requests, NOW, WINDOW, undefined, 2)
+    expect(stats.autoTasks.map((x) => x.type)).toEqual(['code', 'chat'])
+    expect(stats.autoTasks[0].count).toBe(2)
+  })
+
+  it('★ leaves direct at 0 (not fabricated) when the provider list is unmeasured', () => {
+    // 供应商清单没拉到 = 「未测量」，不是「没有直连」。此时直连请求会落进
+    // explicit 桶（调用方必须据此把扇出带标注「未测量」），但守恒式仍成立。
+    const requests = [
+      { ...base, provider_code: 'local-ollama' },
+      { ...base, request_id: 'r2' },
+    ]
+    const stats = modelSelectionStats(requests, NOW, WINDOW, undefined)
+    expect(stats.direct).toBe(0)
+    expect(stats.explicit).toBe(2)
+    expect(stats.auto + stats.direct + stats.explicit).toBe(stats.total)
+  })
+
+  it('ignores out-of-window requests', () => {
+    const old = { ...base, ts: new Date(NOW - 60 * 60_000).toISOString(), is_auto_request: true }
+    const stats = modelSelectionStats([old], NOW, WINDOW, new Set())
+    expect(stats.total).toBe(0)
+  })
+})
+
+describe('localProviderCodesOf', () => {
+  it('collects only kind=local provider codes (case/whitespace tolerant)', () => {
+    const codes = localProviderCodesOf([
+      { code: 'deepseek', kind: 'cloud' },
+      { code: 'ollama', kind: 'local' },
+      { code: 'local-mlx-lm', kind: ' Local ' },
+      { code: 'no-kind-provider' },
+    ])
+    expect([...codes].sort()).toEqual(['local-mlx-lm', 'ollama'])
   })
 })

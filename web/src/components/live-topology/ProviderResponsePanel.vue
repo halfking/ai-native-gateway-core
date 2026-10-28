@@ -12,7 +12,7 @@ import type { PanelEntry } from '../../composables/useLiveTopology'
 import { clientDisplayName } from '../../lib/liveTopologyGraph'
 import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
 import { useNewArrivals } from '../../composables/useNewArrivals'
-import { CaretLeft, CaretRight, FullScreen, TopRight } from '@element-plus/icons-vue'
+import { CaretLeft, CaretRight, FullScreen, TopRight, ArrowRight } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   responses: PanelEntry[]
@@ -104,7 +104,18 @@ const { fresh: freshIds } = useNewArrivals(() => props.responses.map((r) => r.re
               <span class="pp__latency">{{ latency(entry.latencyMs) }}</span>
             </span>
             <span class="pp__line pp__line--sub">
-              <span class="pp__model">{{ entry.model }}</span>
+              <!-- auto 请求：点名 auto，最终模型由网关按任务选出（与左侧面板同款表达）。 -->
+              <span class="pp__model">
+                <template v-if="entry.isAuto">
+                  <span
+                    class="pp__auto-chip"
+                    :data-testid="`pp-auto-chip-${entry.requestId}`"
+                    :title="entry.taskType ? `${t('liveTopology.panel.autoChip')} · ${entry.taskType}` : t('liveTopology.panel.autoChip')"
+                  >auto</span>
+                  <ArrowRight class="pp__auto-arrow" aria-hidden="true" />
+                </template>
+                <span class="pp__model-name">{{ entry.model }}</span>
+              </span>
               <span class="pp__tokens">{{ tokens(entry.tokens) }}</span>
             </span>
             <span v-if="entry.errorKind" class="pp__error">{{ entry.errorKind }}</span>
@@ -266,6 +277,43 @@ const { fresh: freshIds } = useNewArrivals(() => props.responses.map((r) => r.re
   text-overflow: ellipsis;
 }
 
+/* auto 请求「auto → 最终模型」前缀（2026-10-28 选路层轮，与左侧面板同款）。
+   箭头用 SVG（按钮位禁 → 字形，V3）；裸 <svg viewBox> 显式定尺寸。 */
+.pp__model {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.pp__auto-chip {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--kx-primary);
+  border: 1px solid color-mix(in srgb, var(--kx-primary) 45%, var(--kx-border));
+  background: color-mix(in srgb, var(--kx-surface) 82%, transparent);
+}
+
+.pp__auto-arrow {
+  flex: none;
+  color: var(--kx-muted);
+}
+
+.pp__auto-arrow > svg {
+  width: 10px;
+  height: 10px;
+}
+
+.pp__model-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .pp__tokens {
   font-variant-numeric: tabular-nums;
 }
@@ -366,4 +414,13 @@ const { fresh: freshIds } = useNewArrivals(() => props.responses.map((r) => r.re
 .pp__open > svg { width: 11px; height: 11px; }
 .pp__zoom > svg { width: 12px; height: 12px; }
 .pp__page-btn > svg { width: 10px; height: 10px; }
+
+/* ── 手机（≤768，2026-10-28 手机观察轮）：行是触控目标 ──
+   同 ClientRequestPanel：行高 44px、加宽 ↗ / ⤢ 按钮命中区。 */
+@media (max-width: 768px) {
+  .pp__row { min-height: 44px; }
+
+  .pp__page,
+  .pp__zoom { padding: 0 10px; }
+}
 </style>

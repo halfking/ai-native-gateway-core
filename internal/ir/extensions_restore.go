@@ -50,6 +50,21 @@ func restoreExtensions(out map[string]any, req *InternalRequest, targetProtocol 
 		return
 	}
 
+	// 原厂直通（2026-10-28）：NativePassthrough 置位时 Extensions 全量
+	// 原样还原，仅让位于 IR 序列化器已输出的键（结构性字段）。既不走
+	// paramreg 的方言裁剪，也不做 unknown-relay 的 thinking 翻译 ——
+	// 原厂对原厂，客户端自己的参数表达即事实源；上游拒绝的回退在执行器
+	// （reqprobe 4xx 剥参重试），不在序列化层。
+	if req.NativePassthrough {
+		for key, val := range req.Extensions {
+			if _, exists := out[key]; exists {
+				continue
+			}
+			out[key] = preservedRawValue(val)
+		}
+		return
+	}
+
 	if !paramregEnabled() {
 		// 回退路径：旧的同协议门禁行为。
 		if req.SourceProtocol != "" && req.SourceProtocol != targetProtocol {

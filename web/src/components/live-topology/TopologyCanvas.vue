@@ -29,6 +29,7 @@ import {
   GATEWAY_CORE_ID,
   type GatewayCoreBox,
   type GatewayModuleKey,
+  type ModelSelectionStats,
   type TopoLayoutEdge,
   type TopoLayoutNode,
   type TopoNode,
@@ -50,6 +51,12 @@ const props = defineProps<{
   plugins?: TopoPluginChip[]
   /** 转发队列深度（存储转发带徽标；null = 未上报）。 */
   queueDepth?: number | null
+  /** 选路扇出统计（大方块选路扇出带）。 */
+  selection?: ModelSelectionStats | null
+  /** 内部直连分桶是否完成测量（false = 大方块标注「未测量」）。 */
+  directMeasured?: boolean
+  /** 内部直连供应商 code 集合（providers.kind='local'）；供应端节点卡据此挂直连徽标。 */
+  localProviderCodes?: ReadonlySet<string>
 }>()
 
 const emit = defineEmits<{
@@ -515,6 +522,13 @@ function clientSubLine(node: TopoNode): string {
   return parts.join(' · ')
 }
 
+/** 供应端节点是否内部直连（providers.kind='local'：本地托管推理服务，
+ *  网关直连内网端点）。图上与云端供应商区分表达（2026-10-28 选路层轮）。 */
+function isDirectProvider(node: TopoNode): boolean {
+  if (node.column !== 'provider' || !node.providerCode) return false
+  return props.localProviderCodes?.has(node.providerCode) ?? false
+}
+
 function onNodeEnter(id: string) {
   hoveredId.value = id
 }function onNodeLeave() {
@@ -553,6 +567,8 @@ function onNodeClick(node: TopoNode) {
       :selected="selectedModule"
       :plugins="plugins"
       :queue-depth="queueDepth"
+      :selection="selection"
+      :direct-measured="directMeasured"
       @select-module="emit('select-module', $event)"
     />
     <ul class="topo-canvas__nodes">
@@ -579,6 +595,9 @@ function onNodeClick(node: TopoNode) {
         <span v-if="node.column === 'client' ? clientSubLine(node) : node.sub" class="topo-node__sub">
           {{ node.column === 'client' ? clientSubLine(node) : node.sub }}
         </span>
+        <span v-if="isDirectProvider(node)" class="topo-node__direct" :data-testid="`topo-direct-${node.providerCode}`">
+          {{ t('liveTopology.provider.direct') }}
+        </span>
         <span class="topo-node__metric">{{ node.metric.requests }}<i v-if="node.metric.inFlight">·{{ node.metric.inFlight }}↻</i></span>
       </li>
     </ul>
@@ -589,7 +608,11 @@ function onNodeClick(node: TopoNode) {
 .topo-canvas {
   position: relative;
   width: 100%;
-  height: 100%;
+  /* stage 列（flex column：画布 + 路由决策时间线）里的一员：用 flex 占满
+     剩余高度，而不是 height:100%（百分比会把时间线挤到容器外 —— 2026-10-28
+     桌面栅格行收进视口后 stage 高度变为有限值，两种写法从此分道）。
+     窄屏 stage 高度未受限时退化为内容高度，min-height 480 兜底不变。 */
+  flex: 1 1 auto;
   min-height: 480px;
   overflow: hidden;
   background:
@@ -695,6 +718,22 @@ function onNodeClick(node: TopoNode) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 内部直连徽标（2026-10-28 选路层轮）：本地托管供应商（kind='local'）
+   的供应端节点卡右上角小徽标 —— 与云端供应商的区分不靠猜。 */
+.topo-node__direct {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--kx-primary);
+  border: 1px solid color-mix(in srgb, var(--kx-primary) 45%, var(--kx-border));
+  background: color-mix(in srgb, var(--kx-surface) 82%, transparent);
+  white-space: nowrap;
 }
 
 .topo-node__metric {

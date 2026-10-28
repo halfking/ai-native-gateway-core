@@ -11,7 +11,7 @@
 //  - 过滤**只影响呈现**，不下推到 SSE（SSE 是全局广播）；
 //  - 状态过滤只过滤请求与粒子，不改节点健康着色。
 
-import type { GatewayModuleKey, TopoFilters } from '../types/liveTopology'
+import type { GatewayModuleKey, ModelSelectionStats, TopoFilters } from '../types/liveTopology'
 import { GATEWAY_MODULES } from '../types/liveTopology'
 import type { GraphRequestInput } from './liveTopologyGraph'
 import { clientKeyOf, modelKeyOf, providerNodeKeyOf } from './liveTopologyGraph'
@@ -135,12 +135,19 @@ export function filterOptions(
 }
 
 /**
- * 网关核心九个模块的窗口内命中统计。
+ * 网关核心各模块的窗口内命中统计。
  *
  * 口径说明（**能算的算，算不出的留空**）：
  *  - cache：**缓存命中**的请求数（带 cache_read/cache_write token 的那些）——
  *    只有命中才有可看的量，「全部请求都过了缓存」这种数字等于没说；
- *  - sanitize / route：主链路请求数（每条都经过）；
+ *  - sanitize / route / modelSelect：主链路请求数（每条都经过；modelSelect
+ *    的明细分桶见 modelSelectionStats —— 网格上的数字是总量，扇出带才是分层）；
+ *  - compress：compressed === true 的请求数 —— **压缩层实际改写出站体**的量
+ *    （环回口径，2026-10-28 修正；此前判 token_band ∈ {preliminary, forced}）。
+ *    修正依据（211 生产 7 天实测）：band 只按绝对 token 档位分类，
+ *    COUNT/相对窗口/IDLE 触发的压缩 band='below'（1069 条被旧口径漏计）；
+ *    band 越线但 summary 失败且 trim 无收缩的 80 条被旧口径多计。
+ *    档位观测（token_band）保留为字段，但不再是压缩格的计数判据；
  *  - sessionFile / sessionWrite：带 gw_session_id 的请求数（会话真的被写了）；
  *  - nodeState：node_update 上报的节点数（在图上有供应端节点 = 有状态可管）；
  *  - errorRecord：失败请求数；
@@ -172,6 +179,11 @@ export function gatewayModuleStats(
     if ((req.cache_read_tokens ?? 0) > 0 || (req.cache_write_tokens ?? 0) > 0) stats.cache.count += 1
     stats.sanitize.count += 1
     stats.route.count += 1
+    stats.modelSelect.count += 1
+    // 压缩：只数「压缩层实际改写出站体」的请求（compressed 由后端从
+    // compression_strategy 判定，环回口径）。band 越线但没改成的不计——
+    // 档位观测与实际压缩是两件事（见函数头注释的实测读数）。
+    if (req.compressed === true) stats.compress.count += 1
     stats.sessionWrite.count += req.gw_session_id ? 1 : 0
     stats.sessionFile.count += req.gw_session_id ? 1 : 0
     if (req.is_probe) stats.probeTask.count += 1
@@ -181,4 +193,69 @@ export function gatewayModuleStats(
   stats.errorRecord.count = failures
   stats.errorRecord.errors = failures
   return stats
+}
+
+/**
+ * 选路扇出统计（模型选择的三个出口，2026-10-28 选路层轮）。
+ *
+ * 分桶判据（优先级从上到下，一条请求只进一个桶）：
+ *  1. is_auto_request → auto（并累计 task_type 分布，top `taskLimit` 个）；
+ *  2. provider_code ∈ localProviderCodes → direct（内部直连：本地托管
+ *     供应商 kind='local'，网关直连内网端点、无真实 API key）；
+ *  3. 其余 → explicit（客户端点名模型 / 别名解析）。
+ *
+ * localProviderCodes 传 undefined = 「供应商清单未测量」（接口失败/未加载）：
+ * direct 桶如实为 0 且 total 与 auto+direct+explicit 仍守恒 —— 未测量
+ * 的直连请求会落在 explicit 桶，调用方必须据此把扇出带标注为「未测量」，
+ * 不许静默当成分桶完成（「量具挂起」是读不到，不是读到了 0）。
+ */
+export function modelSelectionStats(
+  requests: readonly GraphRequestInput[],
+  now: number,
+  windowMs: number,
+  localProviderCodes?: ReadonlySet<string>,
+  taskLimit = 3,
+): ModelSelectionStats {
+  let auto = 0
+  let direct = 0
+  let explicit = 0
+  const tasks = new Map<string, number>()
+
+  for (const req of requests) {
+    if (!withinWindow(req, now, windowMs)) continue
+    if (req.is_auto_request) {
+      auto += 1
+      const task = (req.task_type ?? '').trim()
+      if (task) tasks.set(task, (tasks.get(task) ?? 0) + 1)
+      continue
+    }
+    const code = (req.provider_code ?? '').trim()
+    if (localProviderCodes && code && localProviderCodes.has(code)) {
+      direct += 1
+      continue
+    }
+    explicit += 1
+  }
+
+  const autoTasks = [...tasks.entries()]
+    .map(([type, count]) => ({ type, count }))
+    .sort((a, b) => b.count - a.count || a.type.localeCompare(b.type))
+    .slice(0, taskLimit)
+
+  return { auto, autoTasks, direct, explicit, total: auto + direct + explicit }
+}
+
+/**
+ * 从 /api/admin/topology/provider-kinds 投影「内部直连」供应商 code 集合
+ * （kind === 'local'）。纯函数：判据与调用方共用同一份分拣规则
+ * （哪些 kind 算直连只写这一处）。
+ */
+export function localProviderCodesOf(
+  providers: ReadonlyArray<{ code?: string; kind?: string | null }>,
+): Set<string> {
+  const out = new Set<string>()
+  for (const p of providers) {
+    if ((p.kind ?? '').trim().toLowerCase() === 'local' && p.code) out.add(p.code)
+  }
+  return out
 }

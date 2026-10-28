@@ -132,4 +132,32 @@ export default {
   expectedMiss: "Ne doit pas correspondre",
   eventEvidenceNote:
     "La liste des hits ne stocke pas le texte brut. Confirmez avec type/champ, motif et exemples fictifs ; corrigez via édition ou règle limitée. Les clients locaux voient les valeurs restaurées ; le trafic fournisseur reste masqué. La conformité de sortie optionnelle est désactivée par défaut.",
+  hardblock: "Interrupteur de blocage dur",
+  hardblockHint:
+    "Définit quelles règles peuvent couper une réponse entière. Hors de cette liste, une règle se contente de journaliser ou masquer ; les changements s'appliquent immédiatement.",
+  hardblockProcessOnly:
+    "Les changements ici ne valent que pour la vie de ce processus ; au redémarrage, la liste chargée depuis l'environnement de déploiement revient.",
+  hardblockListLabel: "Règles autorisées à bloquer dur",
+  hardblockFormatNote:
+    "La portée est input, output ou egress ; une règle est un ID exact, une famille de préfixe ou *. La portée egress n'accepte que des règles intégrées individuelles.",
+  hardblockCommentLabel: "Motif du changement",
+  hardblockDisableConfirm:
+    "Je confirme la désactivation de tout blocage dur, y compris la garde des identifiants en clair côté requête",
+  hardblockSave: "Enregistrer la liste",
+  hardblockSaved: "Liste de blocage dur mise à jour et déjà en vigueur.",
+  blockedReviews: "Revues des blocages",
+  blockedReviewsHint:
+    "Chaque réponse bloquée par la politique crée ici une fiche en attente. Après approbation, le même contenu passe à la nouvelle tentative ; un refus maintient le blocage.",
+  blockedReviewsNote:
+    "Les fiches ne gardent que règle, motif et empreinte de charge, jamais le texte bloqué. La file vit dans le processus et se vide au redémarrage.",
+  blockedReviewsNone: "Aucune revue de blocage avec le filtre actuel",
+  reviewPending: "En attente de revue",
+  reviewApproved: "Libéré",
+  reviewRejected: "Refusé (blocage maintenu)",
+  reviewReasonLabel: "Motif du blocage",
+  reviewFieldLabel: "Chemin de l'argument",
+  reviewRequestLabel: "Requête",
+  reviewDigestLabel: "Empreinte de charge",
+  reviewApprove: "Approuver et libérer",
+  reviewReject: "Maintenir le blocage",
 };

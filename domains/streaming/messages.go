@@ -614,7 +614,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		durableStream = binding
 	}
 
-	candidates, policy, _, candErr := resolveCandidatesForRequest(r.Context(), h.chatHandler.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes)
+	candidates, policy, requestModality, candErr := resolveCandidatesForRequest(r.Context(), h.chatHandler.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes)
 	// SP-02: state machine — routing produced a final candidate set.
 	rt.Emit(state.EventRouted)
 	if candErr != nil {
@@ -633,6 +633,27 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	}
 	survivalEligible := isStream && (durableStream != nil || h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID))
 	if len(candidates) == 0 && !survivalEligible {
+		// ── 2026-10-28: 模态不匹配优先于通用 no_candidate ────────────────
+		//
+		// 与 /v1/chat/completions同一判据：零候选若是因为「模型可路由但登记
+		// 模态服务不了本次请求」，那503 overloaded_error 是**误导**——
+		// overloaded_error 告诉客户端「过载了，重试」，而重试同一个请求必然
+		// 再次失败。Anthropic SDK 的客户端尤其如此：它们看到 overloaded_error
+		// 就会自动退避重试。
+		//
+		// ⇒ 这里必须说清楚：请求带了图/音频，模型读不了。
+		if mismatch := h.chatHandler.diagnoseModalityMismatch(r.Context(), clientModel,
+			clientID.Fingerprint.ClientProfile, tenantID, requestModality); !mismatch.IsZero() {
+			attemptErrCode = "modality_mismatch"
+			attemptErrMsg = fmt.Sprintf("Model '%s' does not accept %s input", clientModel, requestModality)
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+				nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			releaseDurableBeforeSurvival(durableStream, "modality_mismatch")
+			h.chatHandler.writeModalityMismatchError(r, w, requestID, clientModel, mismatch, nil, bodyBytes, keyInfo)
+			return
+		}
 		// This is the real no_candidate case - no database error, just no matching providers
 		attemptErrCode = "no_candidate"
 		attemptErrMsg = fmt.Sprintf("No available provider for model '%s'", clientModel)
@@ -762,6 +783,10 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			SuppressSuccessWrite: !isStream,
 			ClientProtocol:       "anthropic-messages",
 			ClientModel:          clientModel,
+			// 原厂直通（2026-10-28 三巡）：请求边界一次确定客户端类型，
+			// executor 的 nativePairFor 以此为首选（此前生产从未填过该字段，
+			// 只能靠 executor 内 header/UA 兜底 + 每候选重复解析 body 标记）。
+			ClientType: extractClientType(r),
 			// See domains/streaming/handler.go for the rationale: the
 			// executor resolves the upstream model per candidate using
 			// params.Transform + cand.RawModel, so we deliberately pass
@@ -904,7 +929,15 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	}
 
 	if errors.Is(execErr, errorsx.ErrOutputPolicyBlocked) {
-		const code, message = "output_policy_blocked", "Response blocked by output policy"
+		const code = "output_policy_blocked"
+		// 2026-10-28 拦截审核轮：/v1/messages 的非流式 403 此前**只有一句
+		// message**（r1039 D3 只补了 chat 路径）。与 chat/responses 同口径：
+		// 规则/原因/摘要 → 审核单 → message 与旁键都带。
+		rule, reason := policyBlockErrorDetail(execErr)
+		field, digest := policyBlockPathFromError(execErr), policyBlockDigestFromError(execErr)
+		blockTenant := tenant(keyInfo)
+		reviewID := registerPolicyBlockReview(blockTenant, requestID, rule, reason, field, digest)
+		message := policyBlockClientMessage(rule, reason, field, requestID, reviewID)
 		attemptErrCode, attemptErrMsg = code, message
 		auditBuilder.Success(false)
 		rt.Emit(state.EventFailed)
@@ -922,7 +955,8 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 				providerID, credentialID, code, message, latency, upstreamBody, keyInfo, r)
 		}
 		*attemptLogged = true
-		writeAnthropicError(w, http.StatusForbidden, code, message)
+		writeAnthropicError(w, http.StatusForbidden, code, message,
+			policyBlockErrorExtras(rule, reason, field, digest, requestID, reviewID))
 		return
 	}
 	if execErr != nil {
@@ -1554,7 +1588,7 @@ func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []b
 		// failure (policy DB down) must not kill all traffic. The stream
 		// path stays fail-closed because mid-stream bytes already left and
 		// cannot be recalled; the asymmetry is deliberate.
-		if modified, blocked, err := interceptNativeResponseBody(h.chatHandler.responseInterceptor, &opt, anthropicBody); err == nil && !blocked && modified != nil {
+		if modified, blocked, interceptResult, err := interceptNativeResponseBody(h.chatHandler.responseInterceptor, &opt, anthropicBody); err == nil && !blocked && modified != nil {
 			anthropicBody = modified
 		} else if blocked {
 			// R25-V (2026-09-30 round 30): the blocked provider body must be
@@ -1565,7 +1599,12 @@ func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []b
 			if opt.failureEmit != nil {
 				opt.failureEmit()
 			}
-			writeAnthropicError(w, http.StatusForbidden, "output_policy_blocked", "Response blocked by output policy")
+			// 2026-10-28 拦截审核轮：带规则/原因/审核单（此前只有一句 message）。
+			rule, reason, field, digest := policyBlockMetadataFrom(interceptResult)
+			reviewID := registerPolicyBlockReview(opt.request.TenantID, requestID, rule, reason, field, digest)
+			writeAnthropicError(w, http.StatusForbidden, "output_policy_blocked",
+				policyBlockClientMessage(rule, reason, field, requestID, reviewID),
+				policyBlockErrorExtras(rule, reason, field, digest, requestID, reviewID))
 			return nil
 		}
 	}
@@ -1762,13 +1801,24 @@ func writeAnthropicStreamError(w http.ResponseWriter, errType, message string) {
 	}
 }
 
-func writeAnthropicError(w http.ResponseWriter, statusCode int, errType, message string) {
+func writeAnthropicError(w http.ResponseWriter, statusCode int, errType, message string, extras ...map[string]any) {
+	errObj := map[string]any{"type": errType, "message": message}
+	// 2026-10-28 拦截审核轮：extras 把策略拦截的旁键（rule/reason/field/
+	// digest/request_id/review）并入 error 对象；非拦截调用点不传，形状不变。
+	for _, extra := range extras {
+		for k, v := range extra {
+			if v == nil || v == "" {
+				continue
+			}
+			errObj[k] = v
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(map[string]any{
 		"type":  "error",
-		"error": map[string]any{"type": errType, "message": message},
+		"error": errObj,
 	})
 }
 

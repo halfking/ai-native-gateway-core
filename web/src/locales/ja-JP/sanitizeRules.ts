@@ -131,4 +131,32 @@ export default {
   expectedMiss: "一致してはいけない",
   eventEvidenceNote:
     "ヒット一覧はリクエスト原文を保存しません。種別・フィールドとルール式・架空サンプルで確認し、誤検知ならルール編集または限定ルール追加へ。ローカルのスクリプト/文書は復元後の真値を表示し、上流プロバイダ側はマスクのままです。任意の出力コンプライアンスは既定でオフです。",
+  hardblock: "ハードブロック切替",
+  hardblockHint:
+    "レスポ全体を中断できるルールを制御します。一覧にないルールは記録またはマスクのみで、ターンを止めません。保存後すぐ反映されます。",
+  hardblockProcessOnly:
+    "ここでの変更はこのゲートウェイ・プロセスの間だけ有効で、再起動するとデプロイ環境から読み込んだ一覧へ戻ります。",
+  hardblockListLabel: "ハードブロックを許可するルール一覧",
+  hardblockFormatNote:
+    "スコープは input・output・egress のいずれか。ルールは完全 ID・プレフィックス族・* を指定できます。egress は個別の内蔵ルールのみ受け付けます。",
+  hardblockCommentLabel: "変更理由",
+  hardblockDisableConfirm:
+    "リクエスト側の平文資格情報ガードを含むすべてのハードブロックを無効にすることを確認します",
+  hardblockSave: "一覧を保存",
+  hardblockSaved: "ハードブロック一覧を更新し、即時反映しました。",
+  blockedReviews: "ブロック審査",
+  blockedReviewsHint:
+    "ポリシーでブロックされたレスポンスごとに審査待ちレコードが作られます。承認すると同じ内容は次の再試行で通り、拒否するとブロック維持です。",
+  blockedReviewsNote:
+    "記録はルール・理由・ペイロードDigest のみで、ブロック原文は保存しません。キューはプロセス内にあり再起動で消えます。",
+  blockedReviewsNone: "現在の絞り込み条件ではブロック審査レコードはありません",
+  reviewPending: "審査待ち",
+  reviewApproved: "承認済み（解放）",
+  reviewRejected: "却下（ブロック維持）",
+  reviewReasonLabel: "ブロック理由",
+  reviewFieldLabel: "引数パス",
+  reviewRequestLabel: "リクエスト",
+  reviewDigestLabel: "ペイロードDigest",
+  reviewApprove: "承認して解放",
+  reviewReject: "ブロック維持",
 };

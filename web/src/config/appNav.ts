@@ -125,6 +125,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/tenant/account', labelKey: 'nav.item.tenantAccount', icon: '💰', tenantOnly: true },
       { path: '/tenant/pricing', labelKey: 'nav.item.tenantPricing', icon: '💳', tenantOnly: true },
       { path: '/tenant/usage', labelKey: 'nav.item.tenantUsage', icon: '📉', tenantOnly: true },
+      { path: '/tenant/bills', labelKey: 'nav.item.tenantBills', icon: '🧾', tenantOnly: true },
     ],
   },
   {

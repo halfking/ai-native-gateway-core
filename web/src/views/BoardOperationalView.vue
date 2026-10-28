@@ -139,25 +139,32 @@ onMounted(() => {
       </section>
 
       <!-- 2. selfcheck 块 -->
+      <!--
+        2026-10-28 第 30 增量：原来这里是 4 张同尺寸同构的「小标签 + 巨数字」卡并排
+        （DESIGN.md §6 明禁「同尺寸卡片当页面骨架」「四个数字并排」）。
+        ⇒ 改成「标签 → 值」的行，**照抄本页上方「后台任务」块已有的范式**
+          （那一块本来就用 .bo-row 的标签→值行）⇒ 页内两段同形。
+        ★ 顺带修掉「卡片套卡片」（§6：卡片是懒容器）：自检段不再多套一层卡。
+      -->
       <section class="bo-section">
         <h2 class="bo-section-title">自检（最近 24 小时）</h2>
 
-        <div class="bo-cards">
-          <div class="bo-card">
-            <h3 class="bo-card-title">总运行次数</h3>
-            <p class="bo-card-metric">{{ formatNumber(data.selfcheck?.total_runs_24h) }}</p>
+        <div class="bo-metrics">
+          <div class="bo-metric">
+            <span class="bo-metric-label">总运行次数</span>
+            <span class="bo-metric-value">{{ formatNumber(data.selfcheck?.total_runs_24h) }}</span>
           </div>
-          <div class="bo-card">
-            <h3 class="bo-card-title">{{ $t('common.terms.successRate') }}</h3>
-            <p class="bo-card-metric">{{ formatPct(data.selfcheck?.success_rate) }}</p>
+          <div class="bo-metric">
+            <span class="bo-metric-label">{{ $t('common.terms.successRate') }}</span>
+            <span class="bo-metric-value">{{ formatPct(data.selfcheck?.success_rate) }}</span>
           </div>
-          <div class="bo-card">
-            <h3 class="bo-card-title">最近状态</h3>
-            <p class="bo-card-metric">{{ statusLabel(data.selfcheck?.last_status) }}</p>
+          <div class="bo-metric">
+            <span class="bo-metric-label">最近状态</span>
+            <span class="bo-metric-value">{{ statusLabel(data.selfcheck?.last_status) }}</span>
           </div>
-          <div class="bo-card">
-            <h3 class="bo-card-title">最近运行</h3>
-            <p class="bo-card-metric">{{ formatTimestamp(data.selfcheck?.last_run_at) }}</p>
+          <div class="bo-metric">
+            <span class="bo-metric-label">最近运行</span>
+            <span class="bo-metric-value">{{ formatTimestamp(data.selfcheck?.last_run_at) }}</span>
           </div>
         </div>
 
@@ -199,11 +206,10 @@ onMounted(() => {
   padding: var(--space-3);
 }
 .bo-section {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--space-3);
-  margin-bottom: var(--space-3);
+  /* 2026-10-28 第 31 增量（DESIGN.md §6「卡片套卡片永远不对」）：
+     原来这是一个白盒，里面装着 bo-card ⇒ 降级为「标题 + 内容区」：
+     去表面，间距改用 margin；下面的 bo-card 自己成为卡面。 */
+  margin-bottom: var(--space-4);
 }
 .bo-section-title {
   font-size: var(--text-md);
@@ -262,9 +268,36 @@ onMounted(() => {
   color: var(--danger);
   font-size: var(--text-sm);
 }
-.bo-card-metric {
-  font-size: var(--text-2xl);
+/* ── 指标行（2026-10-28 第 30 增量）─────────────────────────────────────
+ * 自检段原来是一排 4 张「小标签 + 巨数字」的同尺寸卡（DESIGN.md §6 明禁）。
+ * ⇒ 改成「标签 → 值」的行：值在右、标签在左，行间一条细线。
+ * ★ 只有下边框的**行**不是卡片 ⇒ 不会被「同尺寸卡片网格」那条判据当成卡。
+ */
+.bo-metrics {
+  display: flex;
+  flex-direction: column;
+}
+.bo-metric {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--border-muted);
+  font-size: var(--text-sm);
+}
+.bo-metric:last-child {
+  border-bottom: none;
+}
+.bo-metric-label {
+  color: var(--text-muted);
+}
+.bo-metric-value {
+  color: var(--text);
+  font-size: var(--text-lg);
   font-weight: var(--font-semibold);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .bo-footer {
   margin-top: var(--space-3);

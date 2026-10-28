@@ -10494,3 +10494,47 @@ macos-say :8086），纯 INSERT ON CONFLICT 幂等；生产应用由 deploy-seam
 |-----------|------|---------|--------|
 | 911 | `911_local_audio_catalog.sql` | `174f27ce0f6435f0c39df5a61a9deb43fb621bdc087c2bed112feeeb034f56bb` | applied+verified |
 
+## 2026-10-28 — W1.5 session recording trash (migration 912)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 912 | `912_session_recording_trash.sql` | `f95e509508dcfdd4c2b9c067501e93a5d49cd3faa5300100cc8555c35c94c8c1` | pending |
+| 912 | `912_session_recording_trash.sql` | `4a912eb530f795bd98d3fbb4b2c3ef4cbc7a4182941bc064d0a1df1696d9e6e7` | pending（2026-10-28 分支审计轮追认：合并后按锁守卫门补 `SET LOCAL lock_timeout`/`statement_timeout` 头部守卫，DDL 语句零改动、canonical↔embeddata 双侧字节一致；原登记行 f95e5095… 保留——已应用库按旧字节核对仍有效，verify-migration-checksums 任一命中即过） |
+
+Adds `session_bodies_trash` + `session_hidden` for soft-delete / restore / purge.
+Recording-consent body retention is independent of request_logs TTL.
+
+## 2026-10-28 — MaaS monthly bills + coupons (migration 913, 包 07)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 913 | `913_maas_monthly_bills_coupons.sql` | `962b309d04414e6b629f0023ee9b3e4c71eb02c0ecc7e637cc9da241da9361eb` | pending（包 07 月账单+优惠券+发票占位，2026-10-28） |
+| 913 | `913_maas_monthly_bills_coupons.sql` | `22af37d57c01e94b71a44c0c8527cb63e1e1119b921f6e54cce0fbce0a100d19` | pending（2026-10-28 分支审计轮追认：① down 文件头注释 `-- Down 912:` 让号漏改修正；② 按锁守卫门补 `SET LOCAL lock_timeout`/`statement_timeout` 头部守卫。DDL 语句零改动、canonical↔embeddata 双侧字节一致；原登记行 962b309d… 保留——已应用库按旧字节核对仍有效，verify-migration-checksums 任一命中即过） |
+## 2026-10-28 — MaaS monthly bills + coupons (migration 913)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 913 | `913_maas_monthly_bills_coupons.sql` | `b17329c7295f65c2a1d0472c1f6cdd5d605f035690525ae342d516cbbfdf1b16` | pending（包 07 月账单+优惠券+发票占位，2026-10-28；★ r1041 轮订正：本行原登记的 `962b309d…` 是**分支作者自己算错的 sha** ⇒ 门 `TestRegistryShaIsActuallyTheFile` 判红 ⇒ 按仓内「多行登记、任一命中即过」的惯例补本行正确 sha，**旧行保留在下一行**供已应用库按旧字节核对） |
+| 913 | `913_maas_monthly_bills_coupons.sql` | `962b309d04414e6b629f0023ee9b3e4c71eb02c0ecc7e637cc9da241da9361eb` | pending（★ 保留原登记行 —— 分支 07 自带值，与磁盘实测不符；见上一行的订正说明） |
+
+
+
+## 2026-10-28 — 会话族 origin_stage 的 DB 级 CHECK 补回 (migration 914)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 914 | `914_session_turns_origin_stage_check.sql` | `12e185f15f9edcc21871d576d21d5ee576ea1c1b56be929348e40688156f6ce3` | pending（R175 轮：★ **补回 v1 族退役时丢掉的 DB 级兜底**。缺口本体——v1 族的 `request_logs_origin_stage_check`（允许集 = 8 个探针 stage + `business`）随 890 的 v1 族 DROP 一起消失，而**会话族从未重建**：`session_turns.origin_stage` / `session_turns_hot.origin_stage` 都是 `text` 且**无任何 CHECK**（PG 上 `pg_constraint` 实测 0 条）⇒ 落库前的闸门只剩 `middleware/origin_mw.go` 的 `isValidOriginStage`（Go 侧唯一守卫）⇒ **DB 完全不拒**；★ 而消费方有**两种形态、故障后果不同**（★ 本条初稿把两种形态写成一类，是**事实错误**，已订正）：① **排除集形态** `COALESCE(origin_stage,'') NOT IN (8 个探针 stage)`（`admin/analytics.go` · `bg/mv_consistency.go` · `db/db.go`）⇒ 越界值落进去 ⇒ **探针流量被算成业务流量** + 对账被污染；② **白名单形态** `COALESCE(origin_stage,'business') = 'business'`（`admin/routing.go` · `bg/probe_policy.go` 的**会话族**那条）⇒ 越界值 ≠ 'business' ⇒ **被排除** ⇒ **业务流量被静默丢弃**（少计）⇒ 是另一种故障；⇒ ⇒ 两种形态下**都没有任何一层会报错**。允许集取自唯一真值源 `internal/probekind.ValidStages()` ⇒ 落库前的闸门与落库后的约束重新一致。**两侧都加**（会话族自己的约定，见 706b 的克隆改名形态）：父表 `session_turns_origin_stage_check` + hot 表 `session_turns_hot_origin_stage_check`。**两步走**：`ADD CONSTRAINT … NOT VALID`（不扫存量、瞬时完成，新行立刻受约束）→ `VALIDATE CONSTRAINT`（ShareUpdateExclusiveLock 不阻塞读写，在分区父表上一条覆盖全族，含 DEFAULT 分区）。**定义感知守卫**：已是规范形态（定义点名 `origin_stage` ∧ 抽出的字面量集合 == 规范允许集）就跳过重建；名字在但定义不对 ⇒ 重建。**存量越界行 ⇒ VALIDATE 失败 ⇒ 迁移失败 ⇒ 部署停下**（本地与 252 实测越界行数均为 **0**） |
+
+★ **本条同时记下一处「守卫在部署通道上是装饰品」的实测发现**：`scripts/apply-db-revision-sequence.sh` 走 `psql -f -`，**不加 `--single-transaction`、也不注入 `BEGIN`** ⇒ 每个语句各自成事务 ⇒ **`SET LOCAL lock_timeout` 只打一条 WARNING 后完全失效**（本轮在 PG 17.6 上实测：`SET LOCAL lock_timeout='123ms'` 之后 `current_setting` 仍为 `0`）；installer 通道走 `--single-transaction` ⇒ 那条路径上 `SET LOCAL` 才有效。⇒ **本迁移改用会话级 `SET lock_timeout`**，两条通道都真的生效；存量迁移的 `SET LOCAL` 形态仍属已知债务（见审计档）。
+
+## 2026-10-28 — recent_cache_hit_rate 首版读死表订正 (migration 915, 211 routing_schema_error 事故)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 915 | `915_recent_cache_hit_rate.sql` | `c4550ebf05838514875d134a4873eaec376e718736632630b1f33bafee0ea16e` | pending→部分 applied（211 库内已手工落**同义体**；本文件下次部署经内容指纹重放收敛为同一形态）—— ★ **首版 9fc5335b4 读的是 `request_logs_hot`（已随 890 随 v1 族整体退役）+ 旧列名 `outbound_model`/`client_model`（会话族不存在）** ⇒ LANGUAGE sql 在 CREATE 时校验表引用 ⇒ 族退役库上本迁移本身 42P01。当晚 211 事故是**两层叠加**：① 部署序列 `files=()` 漏登记 915（5fd8e600c 已补）⇒ 函数从未建 ⇒ 候选查询的 chr LATERAL 整条 42883 ⇒ `/v1/chat/completions` 全量 500；② 即便登记，首版文件也建不出来。本版函数体镜像 211 生产在役 `recent_success_rate` 的 890 后形态：`FROM public.session_turns_hot`（credential_id TEXT 数字守卫 CAST、`lower(COALESCE(model, canonical_model))` 回退链、同款 task_type/origin_stage/request_id 探针排除），token 加权 `cache_read/prompt`（仅 `prompt_tokens > 0` 行计入分子分母、逐行 clamp、分母 NULLIF 兜底；空窗 ⇒ rate NULL + samples 0 ⇒ 路由侧 fail-open 中性）。★ 配套防线（本轮同批）：`db.ensureRecentCacheHitRate` boot 自愈（rsr 的 ensureRoutingRecentSuccessRate 同款，迁移通道断链时二进制自补函数）+ 契约门 `sql/migrations/startup/migration_915_recent_cache_hit_rate_test.go`（迁移体 ⇔ `db.RecentCacheHitRateEnsureSQLForTest()` 归一化文本相等 / 可执行文本无 v1 族表列名 / 三通道登记核对 / down 精确签名）+ 部署门 `scripts/deploy-seamless-docker.sh` 的 `dd_verify_candidate_fn_deps`（迁移重放后、起候选容器前，对 client.go 全部 `CROSS JOIN LATERAL` 函数引用做 pg_proc 存在性 + NULL 实参 smoke 调用，缺一即 die——「二进制已引用、库未建函数」的切流从此被拦在切流前）。down：`915_recent_cache_hit_rate.down.sql`（sha256 `80abbad4fc28624ff6c7190a7bf12a343a7c40a7f399f0b009568ff4d867d71a`；down 注释同步订正 + 注明 boot ensure 会复活函数，down 仅对不含 ensure 的旧二进制有意义） |
+| 915 | `915_recent_cache_hit_rate.sql` | `e4f5178aa91f4c52bb1e606990fa655f32ce4b3e95274ed177b2ec4c902a0d84` | ★ 保留首版坏体登记行（9fc5335b4 的字节）—— 211 的 `gateway_db_revision_sequences` 台账按该 sha 记过账（函数体实际由人工 CREATE OR REPLACE 修正）；保留本行供已记账库按旧字节核对，**不要按此字节重放**（族退役库上 CREATE 即 42P01） |
+## 2026-10-28 — 会话族 api_key_id 归一表达式的索引 (migration 916)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 916 | `916_session_turns_api_key_ts_index.sql` | `4402d54fbdb49b925aa2c288e10448c7f0418748c94149a6841ac10852e10670` | pending（R178 轮：★ **给「按 api_key 过滤会话」补上索引承重**。缺口本体——252 生产只读实测：读点 `admin/usage.go:841-859`（7 天窗、`api_key_id = 113`）的 plan 是 `Index Scan using session_turns_2026_10_ts_idx` + `Filter: (CASE WHEN (api_key_id ~ '^[0-9]+$'::text) THEN (api_key_id)::bigint END = 113)` + `Rows Removed by Filter: 37825` ⇒ **窗口内 75,449 行被全部读出来、只有 37,624 行匹配** ⇒ 一次读点 220,401 块（根节点口径）⇒ **一半的行是白读的**。⇒ **906 那条部分索引承不住**（`idx_session_turns_api_key_numeric` 的**键是 `(session_id, turn_no DESC)`**，`api_key_id` 只在**谓词**里 ⇒ 它承的是「按 session_id 找轮次」）⇒ ⇒ **canonical 视图把 api_key_id 投影成 CASE 表达式**（唯一真值源 `db/request_logs_view_schema.go` 的 `SessionFamilyAPIKeyIDExpr`）⇒ ⇒ **普通 btree 用不上、部分索引也用不上**（★ PG 的谓词蕴含是**语法的** ⇒ 无法证明「CASE 形式蕴含 `api_key_id ~ '^[0-9]+$'`」⇒ 这条结论仓内 `SessionFamilyAPIKeyIDNumericPredExpr` 的注释里已经写死）⇒ ⇒ ⇒ **唯一形态：索引键 = 与视图投影逐字一致的 CASE 表达式**，形态照 729 的 `idx_session_turns_credential_ts`（父壳 + 逐分区 CONCURRENTLY + ATTACH + hot 表独立一条）。★ 含 CONCURRENTLY ⇒ 文件首行带 `dbinit:no-transaction` 标记 ⇒ installer 的 applySQL 不加 `--single-transaction`（887/888/729 同款）⇒ ★ **fresh install 也跑得到**（★ 与 729 那两条不同：它们**没**登记进 StartupFiles ⇒ 新装库缺 ⇒ 存量缺口，本轮只记录不修）。★ 锁守卫用**会话级** `SET lock_timeout`/`statement_timeout`（★ 914 文件头实测：`SET LOCAL` 在本通道不在事务块内 ⇒ 只打 WARNING 后完全失效）） |

@@ -12,55 +12,299 @@
   },
   "_witness_note": "witness = 该标识符在【界面 / 前端代码】里真的出现过的文件。门会核对该文件里仍然存在该标识符 ⇒ ★ 豁免不能靠「文件改了」继续挂着 ⇒ 豁免过期必须重新裁决。",
   "exemptions": [
-    { "identifier": "task_type", "category": "payload-field", "reason": "用户要在「工作类型」里填 ACC 侧的 task_type 标识符，是载荷不是内部名", "witness": "src/views/WorkTypesView.vue" },
-    { "identifier": "tenant_id", "category": "payload-field", "reason": "筛选器里按租户标识符过滤，用户要照着填", "witness": "src/views/AgentRegistryView.vue" },
-    { "identifier": "canonical_name", "category": "payload-field", "reason": "「租户模型策略」对话框里用户要填的字段名，提示语必须与输入框对得上", "witness": "src/components/TenantModelPolicyPanel.vue" },
-    { "identifier": "models_canonical", "category": "payload-field", "reason": "用户填 canonical_name 时要匹配的表名，提示语必须给出", "witness": "src/components/TenantModelPolicyPanel.vue" },
-    { "identifier": "request_id", "category": "payload-field", "reason": "搜索框按请求标识符过滤，是筛选字段名", "witness": "src/components/EmergencyDiagnosticModal.vue" },
-    { "identifier": "api_key", "category": "payload-field", "reason": "用户要填的字段名（与「API Key」徽标同源）", "witness": "src/components/reconciliation/ReconciliationToolbar.vue" },
-    { "identifier": "provider_id", "category": "payload-field", "reason": "用户要先选供应商，指纹槽位按它装载", "witness": "src/components/EmergencyDiagnosticModal.vue" },
-    { "identifier": "model_chosen", "category": "payload-field", "reason": "封禁规则里用户要填的模型字段名", "witness": "src/views/RoutingOverrideView.vue" },
-    { "identifier": "ref_id", "category": "payload-field", "reason": "Agent 注册表里用户要填的目标标识符", "witness": "src/views/tenant/MaaSUsageView.vue" },
-    { "identifier": "base_url", "category": "payload-field", "reason": "用户要编辑的上游地址字段名（凭据表单里同名字段）", "witness": "src/components/MemoraStatusButton.vue" },
-    { "identifier": "raw_model_name", "category": "payload-field", "reason": "调用时要用的模型名字段，用户按它填", "witness": "src/components/EmergencyDiagnosticModal.vue" },
-    { "identifier": "outbound_model_name", "category": "payload-field", "reason": "模型清单里用户要编辑的出站名字段", "witness": "src/components/model/ModelOfferDetailDrawer.vue" },
-    { "identifier": "acquisition_source", "category": "payload-field", "reason": "Key 表单里用户要填的来源字段", "witness": "src/views/FreePoolView.vue" },
-    { "identifier": "acquisition_detail", "category": "payload-field", "reason": "Key 表单里用户要填的来源明细字段", "witness": "src/views/FreePoolView.vue" },
-    { "identifier": "catalog_code", "category": "payload-field", "reason": "用户要填的目录编码", "witness": "src/components/live-topology/ProviderTodayRail.vue" },
-    { "identifier": "application_code", "category": "payload-field", "reason": "客户端配置里用户要填的应用编码", "witness": "src/components/ClientConfigDialog.vue" },
-    { "identifier": "platform_ops", "category": "ui-visible-term", "reason": "权限角色名，用户要照着它去找管理员申请", "witness": "src/config/appNav.ts" },
-    { "identifier": "broken_confirmed", "category": "ui-visible-term", "reason": "节点状态徽章原样显示探测状态的值，散文里提它是术语一致而不是泄漏", "witness": "src/components/credential-monitor/CredentialDetailDrawer.vue" },
-    { "identifier": "manual_disabled", "category": "ui-visible-term", "reason": "同上：状态值在界面上原样出现", "witness": "src/composables/liveStreamStore.ts" },
-    { "identifier": "in_flight", "category": "ui-visible-term", "reason": "注册表三态之一，界面状态列原样出现", "witness": "src/composables/liveStreamStore.ts" },
-    { "identifier": "node_update", "category": "ui-visible-term", "reason": "拓扑节点事件名，界面上按事件分类展示", "witness": "src/types/liveTopology.ts" },
-    { "identifier": "expires_at", "category": "ui-visible-term", "reason": "审计展开里对比的两列名，界面与后端同源", "witness": "src/api-autoroute.ts" },
-    { "identifier": "request_body", "category": "ui-visible-term", "reason": "清理确认里点名的两列，用户要知道清的是哪两列", "witness": "src/components/detail/UnifiedRequestSessionDrawer.vue" },
-    { "identifier": "outbound_body", "category": "ui-visible-term", "reason": "同上", "witness": "src/components/detail/SessionTurnsSyncPane.vue" },
-    { "identifier": "media_only", "category": "ui-visible-term", "reason": "凭据类型的枚举值，用户要选", "witness": "src/views/provider-detail/CredsTab.vue" },
-    { "identifier": "chat_only", "category": "ui-visible-term", "reason": "凭据类型的枚举值，用户要选", "witness": "src/views/provider-detail/CredsTab.vue" },
-    { "identifier": "token_plan", "category": "ui-visible-term", "reason": "套餐类型枚举值，用户要选；定价页有明文「技术术语保留不译」先例", "witness": "src/views/PricingManagementView.vue" },
-    { "identifier": "code_plan", "category": "ui-visible-term", "reason": "套餐类型枚举值，用户要选", "witness": "src/views/PricingManagementView.vue" },
-    { "identifier": "agent_plan", "category": "ui-visible-term", "reason": "套餐类型枚举值，用户要选", "witness": "src/views/provider-detail/CredsTab.vue" },
-    { "identifier": "routing_tier", "category": "ui-visible-term", "reason": "定价页的路由层级字段名，定价页顶部有明文「技术术语保留不译」先例", "witness": "src/views/PricingManagementView.vue" },
-    { "identifier": "billing_mode", "category": "ui-visible-term", "reason": "定价页与供应商徽标上展示的计费字段名，定价页顶部有明文「技术术语保留不译」先例", "witness": "src/views/PricingManagementView.vue" },
-    { "identifier": "composite_score", "category": "ui-visible-term", "reason": "综合评分指标名，图表轴与评分公式里原样出现", "witness": "src/components/analytics/RadarCompare.vue" },
-    { "identifier": "avg_quality", "category": "ui-visible-term", "reason": "质量指标名，界面原样出现", "witness": "src/api/tuning.ts" },
-    { "identifier": "max_tokens", "category": "ui-visible-term", "reason": "上游 API 的输出上限参数名，运维按它排查截断", "witness": "src/composables/useChatCompletions.ts" },
-    { "identifier": "completion_tokens", "category": "ui-visible-term", "reason": "上游 API 的用量字段名，异常分析里按它对齐", "witness": "src/types/swimlane.ts" },
-    { "identifier": "content_filter", "category": "ui-visible-term", "reason": "上游返回的拒绝原因名，与仓内错误词表同源", "witness": "src/utils/errorVocab.ts" },
-    { "identifier": "endpoint_id_required", "category": "ui-visible-term", "reason": "错误码，用户要在日志里按它搜", "witness": "src/views/provider-detail/ProbeHistoryTab.vue" },
-    { "identifier": "context_length_exceeded", "category": "ui-visible-term", "reason": "上游 4xx 错误码，压缩策略的说明里要点名它", "witness": "src/views/SettingsView.vue" },
-    { "identifier": "model_forbidden", "category": "error-code", "reason": "403 错误码，用户要按它排查被拒的模型；★ 该码由后端定义，前端代码里没有它的定义" },
-    { "identifier": "auto_threshold", "category": "ui-visible-term", "reason": "压缩模式的枚举值，用户要选", "witness": "src/views/provider-detail/SettingsTab.vue" },
-    { "identifier": "on_4xx", "category": "ui-visible-term", "reason": "压缩模式的枚举值，用户要选", "witness": "src/views/provider-detail/SettingsTab.vue" },
-    { "identifier": "depends_on", "category": "ui-visible-term", "reason": "Agent 关系类型枚举值，用户要选", "witness": "src/views/AgentRegistryView.vue" },
-    { "identifier": "similar_to", "category": "ui-visible-term", "reason": "Agent 关系类型枚举值，用户要选", "witness": "src/views/AgentRegistryView.vue" },
-    { "identifier": "citus_columnar", "category": "ui-visible-term", "reason": "PostgreSQL 扩展名，存储概览里按扩展名显示开关状态", "witness": "src/views/data-lifecycle/StorageOverview.vue" },
-    { "identifier": "prompt_injection", "category": "ui-visible-term", "reason": "模块名，「模块管理」页里同名模块原样出现", "witness": "src/components/SessionStatsPanel.vue" },
-    { "identifier": "reasoning_effort", "category": "external-service", "reason": "上游 API 的请求参数名（OpenAI 兼容协议），用户要按它改请求" },
-    { "identifier": "system_fingerprint", "category": "external-service", "reason": "上游 API 的响应字段名，漂移检测的对象就是它" },
-    { "identifier": "secret_ciphertext", "category": "db-standard-term", "reason": "Key 落库的列名，运维要照着查库" },
-    { "identifier": "pg_database_size", "category": "db-standard-term", "reason": "PostgreSQL 内置函数名，DBA 语境下的标准术语" },
-    { "identifier": "custom_injection_1", "category": "example-value", "reason": "输入框占位符里的示例值（用户照着编一个），不是系统内部名" }
+    {
+      "identifier": "task_type",
+      "category": "payload-field",
+      "reason": "用户要在「工作类型」里填 ACC 侧的 task_type 标识符，是载荷不是内部名",
+      "witness": "src/views/WorkTypesView.vue"
+    },
+    {
+      "identifier": "tenant_id",
+      "category": "payload-field",
+      "reason": "筛选器里按租户标识符过滤，用户要照着填",
+      "witness": "src/views/AgentRegistryView.vue"
+    },
+    {
+      "identifier": "canonical_name",
+      "category": "payload-field",
+      "reason": "「租户模型策略」对话框里用户要填的字段名，提示语必须与输入框对得上",
+      "witness": "src/components/TenantModelPolicyPanel.vue"
+    },
+    {
+      "identifier": "models_canonical",
+      "category": "payload-field",
+      "reason": "用户填 canonical_name 时要匹配的表名，提示语必须给出",
+      "witness": "src/components/TenantModelPolicyPanel.vue"
+    },
+    {
+      "identifier": "request_id",
+      "category": "payload-field",
+      "reason": "搜索框按请求标识符过滤，是筛选字段名",
+      "witness": "src/components/EmergencyDiagnosticModal.vue"
+    },
+    {
+      "identifier": "api_key",
+      "category": "payload-field",
+      "reason": "用户要填的字段名（与「API Key」徽标同源）",
+      "witness": "src/components/reconciliation/ReconciliationToolbar.vue"
+    },
+    {
+      "identifier": "provider_id",
+      "category": "payload-field",
+      "reason": "用户要先选供应商，指纹槽位按它装载",
+      "witness": "src/components/EmergencyDiagnosticModal.vue"
+    },
+    {
+      "identifier": "model_chosen",
+      "category": "payload-field",
+      "reason": "封禁规则里用户要填的模型字段名",
+      "witness": "src/views/RoutingOverrideView.vue"
+    },
+    {
+      "identifier": "ref_id",
+      "category": "payload-field",
+      "reason": "Agent 注册表里用户要填的目标标识符",
+      "witness": "src/views/tenant/MaaSUsageView.vue"
+    },
+    {
+      "identifier": "base_url",
+      "category": "payload-field",
+      "reason": "用户要编辑的上游地址字段名（凭据表单里同名字段）",
+      "witness": "src/components/MemoraStatusButton.vue"
+    },
+    {
+      "identifier": "raw_model_name",
+      "category": "payload-field",
+      "reason": "调用时要用的模型名字段，用户按它填",
+      "witness": "src/components/EmergencyDiagnosticModal.vue"
+    },
+    {
+      "identifier": "outbound_model_name",
+      "category": "payload-field",
+      "reason": "模型清单里用户要编辑的出站名字段",
+      "witness": "src/components/model/ModelOfferDetailDrawer.vue"
+    },
+    {
+      "identifier": "acquisition_source",
+      "category": "payload-field",
+      "reason": "Key 表单里用户要填的来源字段",
+      "witness": "src/views/FreePoolView.vue"
+    },
+    {
+      "identifier": "acquisition_detail",
+      "category": "payload-field",
+      "reason": "Key 表单里用户要填的来源明细字段",
+      "witness": "src/views/FreePoolView.vue"
+    },
+    {
+      "identifier": "catalog_code",
+      "category": "payload-field",
+      "reason": "用户要填的目录编码",
+      "witness": "src/components/live-topology/StatsPanel.vue"
+    },
+    {
+      "identifier": "application_code",
+      "category": "payload-field",
+      "reason": "客户端配置里用户要填的应用编码",
+      "witness": "src/components/ClientConfigDialog.vue"
+    },
+    {
+      "identifier": "platform_ops",
+      "category": "ui-visible-term",
+      "reason": "权限角色名，用户要照着它去找管理员申请",
+      "witness": "src/config/appNav.ts"
+    },
+    {
+      "identifier": "broken_confirmed",
+      "category": "ui-visible-term",
+      "reason": "节点状态徽章原样显示探测状态的值，散文里提它是术语一致而不是泄漏",
+      "witness": "src/components/credential-monitor/CredentialDetailDrawer.vue"
+    },
+    {
+      "identifier": "manual_disabled",
+      "category": "ui-visible-term",
+      "reason": "同上：状态值在界面上原样出现",
+      "witness": "src/composables/liveStreamStore.ts"
+    },
+    {
+      "identifier": "in_flight",
+      "category": "ui-visible-term",
+      "reason": "注册表三态之一，界面状态列原样出现",
+      "witness": "src/composables/liveStreamStore.ts"
+    },
+    {
+      "identifier": "node_update",
+      "category": "ui-visible-term",
+      "reason": "拓扑节点事件名，界面上按事件分类展示",
+      "witness": "src/types/liveTopology.ts"
+    },
+    {
+      "identifier": "expires_at",
+      "category": "ui-visible-term",
+      "reason": "审计展开里对比的两列名，界面与后端同源",
+      "witness": "src/api-autoroute.ts"
+    },
+    {
+      "identifier": "request_body",
+      "category": "ui-visible-term",
+      "reason": "清理确认里点名的两列，用户要知道清的是哪两列",
+      "witness": "src/components/detail/UnifiedRequestSessionDrawer.vue"
+    },
+    {
+      "identifier": "outbound_body",
+      "category": "ui-visible-term",
+      "reason": "同上",
+      "witness": "src/components/detail/SessionTurnsSyncPane.vue"
+    },
+    {
+      "identifier": "media_only",
+      "category": "ui-visible-term",
+      "reason": "凭据类型的枚举值，用户要选",
+      "witness": "src/views/provider-detail/CredsTab.vue"
+    },
+    {
+      "identifier": "chat_only",
+      "category": "ui-visible-term",
+      "reason": "凭据类型的枚举值，用户要选",
+      "witness": "src/views/provider-detail/CredsTab.vue"
+    },
+    {
+      "identifier": "token_plan",
+      "category": "ui-visible-term",
+      "reason": "套餐类型枚举值，用户要选；定价页有明文「技术术语保留不译」先例",
+      "witness": "src/views/PricingManagementView.vue"
+    },
+    {
+      "identifier": "code_plan",
+      "category": "ui-visible-term",
+      "reason": "套餐类型枚举值，用户要选",
+      "witness": "src/views/PricingManagementView.vue"
+    },
+    {
+      "identifier": "agent_plan",
+      "category": "ui-visible-term",
+      "reason": "套餐类型枚举值，用户要选",
+      "witness": "src/views/provider-detail/CredsTab.vue"
+    },
+    {
+      "identifier": "routing_tier",
+      "category": "ui-visible-term",
+      "reason": "定价页的路由层级字段名，定价页顶部有明文「技术术语保留不译」先例",
+      "witness": "src/views/PricingManagementView.vue"
+    },
+    {
+      "identifier": "billing_mode",
+      "category": "ui-visible-term",
+      "reason": "定价页与供应商徽标上展示的计费字段名，定价页顶部有明文「技术术语保留不译」先例",
+      "witness": "src/views/PricingManagementView.vue"
+    },
+    {
+      "identifier": "composite_score",
+      "category": "ui-visible-term",
+      "reason": "综合评分指标名，图表轴与评分公式里原样出现",
+      "witness": "src/components/analytics/RadarCompare.vue"
+    },
+    {
+      "identifier": "avg_quality",
+      "category": "ui-visible-term",
+      "reason": "质量指标名，界面原样出现",
+      "witness": "src/api/tuning.ts"
+    },
+    {
+      "identifier": "max_tokens",
+      "category": "ui-visible-term",
+      "reason": "上游 API 的输出上限参数名，运维按它排查截断",
+      "witness": "src/composables/useChatCompletions.ts"
+    },
+    {
+      "identifier": "completion_tokens",
+      "category": "ui-visible-term",
+      "reason": "上游 API 的用量字段名，异常分析里按它对齐",
+      "witness": "src/types/swimlane.ts"
+    },
+    {
+      "identifier": "content_filter",
+      "category": "ui-visible-term",
+      "reason": "上游返回的拒绝原因名，与仓内错误词表同源",
+      "witness": "src/utils/errorVocab.ts"
+    },
+    {
+      "identifier": "endpoint_id_required",
+      "category": "ui-visible-term",
+      "reason": "错误码，用户要在日志里按它搜",
+      "witness": "src/views/provider-detail/ProbeHistoryTab.vue"
+    },
+    {
+      "identifier": "context_length_exceeded",
+      "category": "ui-visible-term",
+      "reason": "上游 4xx 错误码，压缩策略的说明里要点名它",
+      "witness": "src/views/SettingsView.vue"
+    },
+    {
+      "identifier": "model_forbidden",
+      "category": "error-code",
+      "reason": "403 错误码，用户要按它排查被拒的模型；★ 该码由后端定义，前端代码里没有它的定义"
+    },
+    {
+      "identifier": "auto_threshold",
+      "category": "ui-visible-term",
+      "reason": "压缩模式的枚举值，用户要选",
+      "witness": "src/views/provider-detail/SettingsTab.vue"
+    },
+    {
+      "identifier": "on_4xx",
+      "category": "ui-visible-term",
+      "reason": "压缩模式的枚举值，用户要选",
+      "witness": "src/views/provider-detail/SettingsTab.vue"
+    },
+    {
+      "identifier": "depends_on",
+      "category": "ui-visible-term",
+      "reason": "Agent 关系类型枚举值，用户要选",
+      "witness": "src/views/AgentRegistryView.vue"
+    },
+    {
+      "identifier": "similar_to",
+      "category": "ui-visible-term",
+      "reason": "Agent 关系类型枚举值，用户要选",
+      "witness": "src/views/AgentRegistryView.vue"
+    },
+    {
+      "identifier": "citus_columnar",
+      "category": "ui-visible-term",
+      "reason": "PostgreSQL 扩展名，存储概览里按扩展名显示开关状态",
+      "witness": "src/views/data-lifecycle/StorageOverview.vue"
+    },
+    {
+      "identifier": "prompt_injection",
+      "category": "ui-visible-term",
+      "reason": "模块名，「模块管理」页里同名模块原样出现",
+      "witness": "src/components/SessionStatsPanel.vue"
+    },
+    {
+      "identifier": "reasoning_effort",
+      "category": "external-service",
+      "reason": "上游 API 的请求参数名（OpenAI 兼容协议），用户要按它改请求"
+    },
+    {
+      "identifier": "system_fingerprint",
+      "category": "external-service",
+      "reason": "上游 API 的响应字段名，漂移检测的对象就是它"
+    },
+    {
+      "identifier": "secret_ciphertext",
+      "category": "db-standard-term",
+      "reason": "Key 落库的列名，运维要照着查库"
+    },
+    {
+      "identifier": "pg_database_size",
+      "category": "db-standard-term",
+      "reason": "PostgreSQL 内置函数名，DBA 语境下的标准术语"
+    },
+    {
+      "identifier": "custom_injection_1",
+      "category": "example-value",
+      "reason": "输入框占位符里的示例值（用户照着编一个），不是系统内部名"
+    }
   ]
 }

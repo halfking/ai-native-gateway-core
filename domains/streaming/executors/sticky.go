@@ -15,30 +15,49 @@ import (
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
+// stickyTTLConfig is the wired source of TTL truth (P1-B-①, audit
+// 2026-10-28 §4): settings.StickyTTLConfig existed with zero consumers while
+// this file hardcoded byte-identical values — the LiteLLM #28427 drift shape
+// (config says one thing, code does another; future edits to the settings
+// file silently no-op). Now every TTL site reads the config; the values
+// stay identical to the previous hardcodes so behavior is unchanged.
+//
+// Cached once (the config has no live-reload path today); tests may swap it
+// via setStickyTTLConfigForTest.
+var stickyTTLConfig = settings.DefaultStickyTTLConfig()
+
+// setStickyTTLConfigForTest swaps the sticky TTL config (test seam).
+func setStickyTTLConfigForTest(cfg settings.StickyTTLConfig) { stickyTTLConfig = cfg }
+
 // calculateSessionStickyTTL 根据模型类型计算动态 TTL（Phase 1）
+// P1-B-①：数值来源从硬编码改为 settings.StickyTTLConfig（逐字节同值接线）。
 func calculateSessionStickyTTL(model string) time.Duration {
 	modelLower := strings.ToLower(model)
 
 	// embedding 模型：短期任务
 	if strings.Contains(modelLower, "embedding") || strings.Contains(modelLower, "embed") {
-		return 30 * time.Second
+		return stickyTTLConfig.EmbeddingTTL
 	}
 
 	// completion 模型：长文本生成（需要在 chat 之前检查，因为有些模型名包含两者）
 	if strings.Contains(modelLower, "completion") || strings.Contains(modelLower, "instruct") ||
 		strings.Contains(modelLower, "davinci") {
-		return 30 * time.Minute
+		return stickyTTLConfig.CompletionTTL
 	}
 
 	// chat 模型：对话上下文
 	if strings.Contains(modelLower, "chat") || strings.Contains(modelLower, "gpt") ||
 		strings.Contains(modelLower, "claude") || strings.Contains(modelLower, "gemini") {
-		return 10 * time.Minute
+		return stickyTTLConfig.ChatTTL
 	}
 
-	// 默认：15分钟
-	return 15 * time.Minute
+	// 默认
+	return stickyTTLConfig.DefaultL1TTL
 }
+
+// stickyL3TTL is the client-baseline (L3) TTL — P1-B-① wiring of
+// ClientBaselineTTL (was the hardcoded 24h at four call sites).
+func stickyL3TTL() time.Duration { return stickyTTLConfig.ClientBaselineTTL }
 
 // StickyLevel defines the priority hierarchy for sticky session streaming.
 //
@@ -197,6 +216,19 @@ func (s *StickyCache) ClearForCredential(credID int) (int, error) {
 	}
 	s.mu.Unlock()
 
+	// P1-B-② (audit 2026-10-28 §4): the in-memory + (best-effort) Redis clear
+	// above left the durable rows behind — RestoreFromDB on the next process
+	// restart resurrected exactly the bindings this call removed (the L3 24h
+	// window made a fatal credential routable again via sticky). Delete the
+	// DB face too; one keyed statement, same best-effort contract.
+	if pool := s.db(); pool != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if _, err := pool.Exec(ctx, `DELETE FROM sticky_sessions WHERE credential_id = $1`, credID); err != nil {
+			slog.Debug("sticky db clear-for-credential failed", "credential_id", credID, "error", err)
+		}
+		cancel()
+	}
+
 	if cleared > 0 {
 		slog.Info("sticky hot-reload: cleared bindings for credential",
 			"credential_id", credID,
@@ -347,7 +379,7 @@ func (s *StickyCache) GetMultiLevel(
 		}
 		levels := []lv{{l1, int(StickyLevelSession), calculateSessionStickyTTL(model)}}
 		if !hasSessionModel {
-			levels = append(levels, lv{l3, int(StickyLevelClient), 24 * time.Hour})
+			levels = append(levels, lv{l3, int(StickyLevelClient), stickyL3TTL()})
 		}
 		for _, k := range levels {
 			if k.key == "" {
@@ -529,7 +561,7 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 			failures:            0,
 			consecutiveFailures: 0,
 			lastFailureAt:       time.Time{},
-			expiresAt:           now.Add(24 * time.Hour),
+			expiresAt:           now.Add(stickyL3TTL()),
 		}
 	}
 	s.mu.Unlock()
@@ -550,7 +582,7 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 				key string
 				lvl int
 				ttl time.Duration
-			}{l3, int(StickyLevelClient), 24 * time.Hour})
+			}{l3, int(StickyLevelClient), stickyL3TTL()})
 		}
 		for _, lv := range levels {
 			if lv.key == "" {
@@ -597,7 +629,7 @@ func (s *StickyCache) dbSetMultiLevel(pool *pgxpool.Pool, l1, l3, model string, 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	l1TTL := 15 * time.Minute
+	l1TTL := stickyTTLConfig.DefaultL1TTL
 	if model != "" {
 		l1TTL = calculateSessionStickyTTL(model)
 	}
@@ -606,7 +638,7 @@ func (s *StickyCache) dbSetMultiLevel(pool *pgxpool.Pool, l1, l3, model string, 
 		ttl time.Duration
 	}{
 		{l1, l1TTL},
-		{l3, 24 * time.Hour},
+		{l3, stickyL3TTL()},
 	}
 
 	for _, k := range keys {
@@ -709,6 +741,36 @@ func (s *StickyCache) DeleteMultiLevel(
 			if err := store.DeleteLevelIfCredential(ctx, item.level, item.key, credentialID); err != nil {
 				slog.Debug("sticky redis delete failed", "key", item.key, "error", err)
 			}
+		}
+	}
+	// P1-B-② (audit 2026-10-28 §4): delete must reach the DB too — a
+	// memory+Redis-only delete is undone by RestoreFromDB on the next process
+	// restart (a fatal credential's binding resurrects within the remaining
+	// L3 24h window). Same-owner guard as the in-memory branch: only rows
+	// still pointing at this credential are removed, so a binding that has
+	// already moved to a healthier credential is never deleted here.
+	s.dbDeleteIfCredential(ctx, credentialID, l1, l2, l3)
+}
+
+// dbDeleteIfCredential deletes sticky_sessions rows owned by credentialID
+// for the given keys (P1-B-②). Best-effort like every other sticky DB write
+// (slog.Debug) — the durable row's remaining lifetime is bounded by its own
+// expires_at, so a failed delete degrades to the pre-fix behavior, never to
+// data loss.
+func (s *StickyCache) dbDeleteIfCredential(ctx context.Context, credentialID int, keys ...string) {
+	pool := s.db()
+	if pool == nil {
+		return
+	}
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if _, err := pool.Exec(ctx, `
+			DELETE FROM sticky_sessions
+			WHERE sticky_key = $1 AND credential_id = $2
+		`, key, credentialID); err != nil {
+			slog.Debug("sticky db delete failed", "key", key, "error", err)
 		}
 	}
 }

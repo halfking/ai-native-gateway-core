@@ -448,6 +448,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureRoutingRecentSuccessRate(migCtx); err != nil {
 		return err
 	}
+	// P1-B-③（迁移 915）：紧跟 rsr——同读 session_turns_hot、同一失败语义
+	//（响亮失败），且必须排在会话族就位之后。缺这条 boot 自愈时，「二进制
+	// 已带 chr LATERAL、库未建函数」的窗口只能靠部署序列兜（2026-10-28
+	// 211 事故形态）。
+	if err := db.ensureRecentCacheHitRate(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureUnavailableRecoverAtSchema(migCtx); err != nil {
 		return err
 	}

@@ -20,6 +20,7 @@ export default {
     tenantModels: "Modèles standards",
     tenantAccount: "Mon compte",
     tenantPricing: "Forfaits et recharge",
+    tenantBills: 'Factures',
     tenantUsage: "Mon utilisation",
     models: "Modèles et catalogue",
     routingOverview: "Aperçu du routage",

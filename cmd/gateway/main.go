@@ -973,6 +973,8 @@ func main() {
 	// Started after dbConn is ready; stopped before pools.CloseAll so its
 	// final tick can still reach the DB.
 	var sessionAggregateOutboxReaperForShutdown any
+	// sessionBodiesCleanupForShutdown — W1.4 hourly body retention cleaner.
+	var sessionBodiesCleanupForShutdown any
 	// sessionDigestBackfillForShutdown — turn-digest 第二阶段 (2026-09-04):
 	// 后台回填 session_turns.digest jsonb envelope（存量 NULL 行）。与 reaper
 	// 同一生命周期：dbConn 就绪后启动，pools.CloseAll 前排空 in-flight 批。
@@ -1652,6 +1654,11 @@ func main() {
 		// 导致 routing 永远按 weight 而不是实时并发分摊。把 PeakCollector
 		// 注入 Router.LiveLoad，使 P2C 拿到真正的 in-flight 计数。
 		router.LiveLoad = peakCollector
+		// P0-A (2026-10-28 两层路由审计 G1): 内存熔断面的恢复时刻接入
+		// 路由评分——恢复期渐进回流量（recovery ramp）的信号源之一。
+		// cm 与 Executor.Circuit 是同一个 Manager（executor.go:1035），
+		// 读写同一份内存状态。
+		router.CircuitRecovery = cm
 		routingRouter = router
 
 		// 2026-09-19 sticky-session load balancing：每凭据 5 分钟 sticky
@@ -2924,6 +2931,7 @@ func main() {
 		if sessionAggregateOutboxReaperForShutdown != nil {
 			slog.Info("session aggregate outbox reaper started (FOR UPDATE SKIP LOCKED, 30s tick, batch=100, max_attempts=10)")
 		}
+		sessionBodiesCleanupForShutdown = startSessionBodiesCleanupWorker(dbConn.Pool())
 
 		// Spec §12 GAP 2 closure (2026-09-15, migration 712): durable replay
 		// queue for the sessionv2mirror shadow write. Failed mirror writes
@@ -5932,6 +5940,12 @@ func main() {
 				auditTrimmer.Stop()
 			}()
 
+			// Package 07: postpaid monthly bill issuer (previous calendar month).
+			monthlyBillWorker := bg.NewMonthlyBillWorker(maas.NewService(dbConn.Pool()), 24*time.Hour).
+				WithSharedThrottleDB(dbConn.Pool())
+			monthlyBillWorker.Start(context.Background())
+			defer monthlyBillWorker.Stop()
+
 			handoffPendingTrimmer := bg.NewHandoffPendingTrimmer(dbConn.Pool())
 			handoffPendingTrimmer.Start(context.Background())
 			defer handoffPendingTrimmer.Stop()
@@ -6547,7 +6561,7 @@ func main() {
 			ContextSecret: []byte(cfg.SecretKey),
 			SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
 		})
-		pluginBases := ScanAndStartPluginsWithRegistry(sup, pluginRegistry, pluginManifests)
+		pluginBases := ScanAndStartPluginsWithRegistryDir(sup, pluginRegistry, pluginManifests, pluginsDir)
 		for _, manifest := range pluginManifests {
 			// ★ 2026-10-24 P0-2：manifest 声明**未实现**的插件能力 ⇒ 声明即拒
 			//   （该能力永远不被授予 ⇒ 走那条路由必然 403 capability_denied）。
@@ -6605,6 +6619,24 @@ func main() {
 		}()
 	}
 	wirePluginAuthExtractor()
+	manifestByID := func(id string) *pluginruntime.Manifest {
+		for _, m := range pluginManifests {
+			if m != nil && m.PluginID == id {
+				return m
+			}
+		}
+		return nil
+	}
+	mux.Handle("/api/v1/plugins/", admin.AdminMiddleware(
+		func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/settings") {
+				pluginruntime.SettingsHandler(manifestByID).ServeHTTP(w, r)
+				return
+			}
+			http.NotFound(w, r)
+		},
+		dbConn.Pool(), cfg.SecretKey,
+	))
 	mux.Handle("/api/v1/plugin-nav", admin.AdminMiddleware(
 		func(w http.ResponseWriter, r *http.Request) {
 			pluginruntime.NavHandler(pluginRegistry, pluginruntime.ViewerFromRequest).ServeHTTP(w, r)
@@ -8290,6 +8322,7 @@ func main() {
 		// outbox rows are enqueued) and BEFORE pools.CloseAll (so the final
 		// tick's DB transaction can still reach the server).
 		stopSessionAggregateOutboxReaper(sessionAggregateOutboxReaperForShutdown)
+		stopSessionBodiesCleanupWorker(sessionBodiesCleanupForShutdown)
 		// GAP-2 closure (migration 712): drain the mirror outbox reaper.
 		// Same ordering contract as the aggregate reaper above.
 		stopSessionMirrorOutboxReaper(sessionMirrorOutboxReaperForShutdown)

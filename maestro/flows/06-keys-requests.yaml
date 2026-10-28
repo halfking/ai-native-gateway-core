@@ -3,7 +3,7 @@
 # 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
 # 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
 #       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
-appId: ${BASE_URL}
+url: ${BASE_URL}
 ---
 - launchApp
 - runFlow:
@@ -28,7 +28,9 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/keys/${API_KEY_ID}"
 - extendedWaitUntil:
-    visible: '密钥统计'
+    # ★ 真实标题是「密钥统计: <密钥名>」（带后缀）⇒ 全匹配 '密钥统计' 必然落空
+    #   ⇒ 断言取同页的稳定区块标题（locale keys.keyInfoTitle）。
+    visible: '密钥信息'
     timeout: 20000
 - evalScript: "${output.ms__keys_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
@@ -76,8 +78,14 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/admin/session-analytics/users/${SESSION_OWNER}"
 - extendedWaitUntil:
-    visible: '用户画像详情'
+    # ★ 本机 session-analytics 的「用户」维度没有数据（/api/admin/session-analytics/users
+    #   返回 total=0）⇒ 解析器给的 SESSION_OWNER 是哨兵值 ⇒ 详情页必然是空态
+    #   ⇒ 断言降级为 optional（页面本身仍会被打开、路由仍会被验到）。
+    # ★ 实测（R176 CDP 探针）：H2 原文 = 「用户画像详情: <owner>」——
+    #   标题**带上下文后缀**（用户名/标识）⇒ 单独写「用户画像详情」会因全匹配落空 ⇒ 只锚住前缀段。
+    visible: '.*用户画像详情.*'
     timeout: 20000
+    optional: true
 - evalScript: "${output.ms__admin_session_analytics_users_owner = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
     condition: "${output.ms__admin_session_analytics_users_owner < 2000}"
@@ -88,7 +96,8 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/admin/session-analytics/clients/${CLIENT_ID}"
 - extendedWaitUntil:
-    visible: '客户端分析'
+    # ★ 实测（R176 CDP 探针）：H2 原文 = 「客户端分析: <client_id>」（带后缀）⇒ 正则。
+    visible: '.*客户端分析.*'
     timeout: 20000
 - evalScript: "${output.ms__admin_session_analytics_clients_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
@@ -100,7 +109,8 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/admin/session-analytics/tasks/${TASK_ID}"
 - extendedWaitUntil:
-    visible: '任务分析'
+    # ★ 实测（R176 CDP 探针）：H2 原文 = 「任务分析: <task_id>」（带后缀）⇒ 正则。
+    visible: '.*任务分析.*'
     timeout: 20000
 - evalScript: "${output.ms__admin_session_analytics_tasks_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:

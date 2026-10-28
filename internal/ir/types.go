@@ -227,6 +227,13 @@ type InternalRequest struct {
 	// 常见值: "minimax"、"anthropic"、"openai"。
 	TargetProvider string `json:"target_provider,omitempty"`
 
+	// NativePassthrough（2026-10-28 原厂直通轮）：客户端是目标厂商自己的
+	// 编码智能体（internal/nativepair 命中，如 zcode→glm）时由执行器按候选
+	// 盖章。restoreExtensions 对 Extensions 不再做方言裁剪与 thinking 翻译
+	// —— 原厂工具对自己模型的参数集最权威；上游拒绝时的回退由执行器
+	// reqprobe 的 4xx 剥参重试承担。json:"-"：不进会话恢复快照。
+	NativePassthrough bool `json:"-"`
+
 	// ─── Gateway-internal metadata (V6-W1.6 R8, 定时请求) ───
 
 	// Class is the request type: immediate | scheduled. Stamped by

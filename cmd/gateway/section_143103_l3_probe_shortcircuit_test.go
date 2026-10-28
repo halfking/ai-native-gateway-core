@@ -253,13 +253,41 @@ func TestSection143103_SysNamespaceIsGatewayOnly(t *testing.T) {
 	}
 
 	// ── (b) deriveGatewaySessionID：非 gw_/gt_/gs_ 一律前置 gw_ ─────────
+	// 2026-10-28 分支审计轮：wip/01 把实现收拢进 internal/sessionid（单一真值源），
+	// session_routing.go 只剩委托。门跟着委托链走：① 委托必须仍然指向
+	// sessionid.DeriveGatewayID（防静默换实现）；② gw_ 前置逻辑去它的真身里断言。
 	routingSrc := stripComments143103(readRepoFile143103(t, filepath.Join("domains", "streaming", "session_routing.go")))
 	body = funcBody143103(t, routingSrc, "deriveGatewaySessionID")
-	if !strings.Contains(body, "\"gw_\"+sessionID") && !strings.Contains(body, "\"gw_\" + sessionID") {
-		t.Error("deriveGatewaySessionID 不再前置 gw_ —— 客户端自报的异构命名空间会原样落库 ⇒ 承重前提破了")
+	// ★★ r1041 轮（2026-10-28）：★ 本条的**实现位置变了** ——
+	//   分支 01 把会话身份解析收拢为 `internal/sessionid` 单一真值源
+	//   （`deriveGatewaySessionID` 现在只是**委托**：`return sessionid.DeriveGatewayID(sessionID)`）
+	//   ⇒ ★ 首版判据仍要求「这个函数的函数体里出现 `"gw_"+sessionID`」⇒ 红了。
+	// ⇒ ★★ 但**契约本身没有破**：「客户端自报的异构命名空间必须被前置 gw_」仍然成立
+	//   —— 实测 `internal/sessionid/sessionid.go` 的 `DeriveGatewayID` 里
+	//   `return "gw_" + sessionID` 逐字在位。
+	// ⇒ ⇒ ★★ **处置：改门跟上真值源，而不是回退代码** ——
+	//   ★★ 门测的是【契约】，不是【某一行代码在哪】；
+	//   ★★ 代码搬家 ⇒ 门要跟着搬 ⇒ 若门是「形态断言」则它必须锚【新的落点】。
+	//   ⇒ ⇒ 本条改成**两腿**：
+	//     腿① 真值源 `internal/sessionid.DeriveGatewayID` 里必须有 `"gw_"+sessionID`；
+	//     腿② `domains/streaming` 侧必须是【委托形态】（不得自己再抄一份映射 ——
+	//        ★ 「同一口径只能有一份实现」，抄第二份正是 r1040 治的那类漂移）。
+	sessionidSrc := stripComments143103(readRepoFile143103(t, filepath.Join("internal", "sessionid", "sessionid.go")))
+	deriveBody := funcBody143103(t, sessionidSrc, "DeriveGatewayID")
+	if !strings.Contains(deriveBody, "\"gw_\"+sessionID") && !strings.Contains(deriveBody, "\"gw_\" + sessionID") {
+		t.Error("internal/sessionid.DeriveGatewayID 不再前置 gw_ —— 客户端自报的异构命名空间会原样落库 ⇒ 承重前提破了")
 	}
-	if strings.Contains(body, "sys:") {
-		t.Error("★ deriveGatewaySessionID 里出现 \"sys:\" ⇒ 客户端可造出合成命名空间")
+	if strings.Contains(deriveBody, "sys:") {
+		t.Error("★ internal/sessionid.DeriveGatewayID 里出现 \"sys:\" ⇒ 客户端可造出合成命名空间")
+	}
+	// ★ 腿②：streaming 侧必须是【委托】，不得自己抄一份「gw_ 前缀」映射。
+	if !strings.Contains(body, "sessionid.DeriveGatewayID") {
+		t.Error("domains/streaming 的 deriveGatewaySessionID 不再委托 internal/sessionid ⇒ " +
+			"会话身份解析又出现了【第二份实现】⇒ 口径会漂移（★ r1040 同族：修漂移要删副本，不是补副本）")
+	}
+	if strings.Contains(body, "\"gw_\"") {
+		t.Error("★ domains/streaming 的 deriveGatewaySessionID 里自己写了 \"gw_\" ⇒ " +
+			"⇒ 与 internal/sessionid 各留一份前缀映射 ⇒ 迟早漂移")
 	}
 
 	// ── (c) 会话库 mint：gw_ + uuid ─────────────────────────────────────

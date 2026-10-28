@@ -31,15 +31,16 @@ import {
   type GraphNodeInput,
   type TopoGraph,
 } from '../lib/liveTopologyGraph'
-import { applyFilters, filterOptions, gatewayModuleStats } from '../lib/liveTopologyFilter'
+import { applyFilters, filterOptions, gatewayModuleStats, localProviderCodesOf, modelSelectionStats } from '../lib/liveTopologyFilter'
 import {
   DEFAULT_TOPO_FILTERS,
   GATEWAY_CORE_ID,
   type GatewayModuleKey,
+  type ModelSelectionStats,
   type TopoFilters,
   type TopoPluginChip,
 } from '../types/liveTopology'
-import { getTopologyPlugins } from '../api/topology'
+import { getTopologyPlugins, getTopologyProviderKinds } from '../api/topology'
 
 export interface PanelEntry {
   requestId: string
@@ -49,6 +50,13 @@ export interface PanelEntry {
   provider: string
   nodeId: string
   model: string
+  /** 客户端原始请求模型名（auto 请求在后端已被改写为选中模型 —— 这里存的是
+   *  改写后的名字；「要的是 auto」由 isAuto 表达）。 */
+  requestedModel?: string
+  /** model=auto 的请求（2026-10-28 选路层轮：面板上显示 auto → 最终模型）。 */
+  isAuto?: boolean
+  /** auto 分类的任务类型（后端原始词：chat/reasoning/code/…）。 */
+  taskType?: string
   status: string
   latencyMs?: number | null
   tokens?: number | null
@@ -73,6 +81,15 @@ export interface ClientSummary {
   tokens: number
   lastTs?: string
   topModel: string
+}
+
+/** 头部汇总条的通用行（客户端/供应商/模型三块共用同一形状）。 */
+export interface DimensionSummary {
+  key: string
+  requests: number
+  success: number
+  failure: number
+  inFlight: number
 }
 
 export function useLiveTopology(opts?: { now?: () => number }) {
@@ -109,7 +126,10 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     filterOptions(filteredRequests.value as never, now(), filters.value.windowMs),
   )
 
-  /** 左面板：客户端请求摘要（按客户端聚合，最新在前）。 */
+  /** 头部汇总条（2026-10-28 汇总上移轮）：客户端/供应商/模型三块聚合。
+   *  与图、两栏共用同一过滤子集（本文件顶部的关键约束）。
+   *  ★ 不在上游截断 —— 「渲染了几行 / 总共几项」的诚实计数由展示层做，
+   *    上游截断会让真实总数永远不可见（表头宣传不存在的行的镜像问题）。 */
   const clientSummaries = computed<ClientSummary[]>(() => {
     const map = new Map<string, ClientSummary & { last: number; modelCount: Map<string, number> }>()
     for (const req of filteredRequests.value) {
@@ -138,8 +158,35 @@ export function useLiveTopology(opts?: { now?: () => number }) {
         topModel: [...modelCount.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? '',
       }))
       .sort((a, b) => b.requests - a.requests || a.client.localeCompare(b.client))
-      .slice(0, 8)
   })
+
+  /** 供应商/模型聚合：keyOf 返回空串的请求不进块（如网关侧拒掉的请求
+   *  没有供应商 —— 它在客户端块里看得到，硬塞进供应商块只会造一个假桶）。 */
+  function summarizeBy(keyOf: (req: LiveRequest) => string): DimensionSummary[] {
+    const map = new Map<string, DimensionSummary>()
+    for (const req of filteredRequests.value) {
+      const key = keyOf(req)
+      if (!key) continue
+      let entry = map.get(key)
+      if (!entry) {
+        entry = { key, requests: 0, success: 0, failure: 0, inFlight: 0 }
+        map.set(key, entry)
+      }
+      entry.requests += 1
+      if (req.status === 'success') entry.success += 1
+      if (req.status === 'failure' || req.status === 'rate_limited') entry.failure += 1
+      if (req.status === 'in_progress') entry.inFlight += 1
+    }
+    return [...map.values()].sort((a, b) => b.requests - a.requests || a.key.localeCompare(b.key))
+  }
+
+  const providerSummaries = computed<DimensionSummary[]>(() =>
+    summarizeBy((req) => (req.provider_code ?? '').trim()),
+  )
+
+  const modelSummaries = computed<DimensionSummary[]>(() =>
+    summarizeBy((req) => modelKeyOf(req as never)),
+  )
 
   /** 左面板的逐条请求（最新在前；面板内部按 50/页翻页，这里不再预截断）。 */
   const clientRequests = computed<PanelEntry[]>(() =>
@@ -184,6 +231,45 @@ export function useLiveTopology(opts?: { now?: () => number }) {
   )
 
   const queue = computed<LiveQueueSnapshot | null>(() => queueRef.value)
+
+  /**
+   * 选路扇出统计（模型选择三出口：auto 按任务 / 内部直连 / 指定模型）。
+   * 与 gatewayStats 一样收敛到同一个过滤子集 —— 扇出带的三个数加起来
+   * 必须等于主线「模型选择」格的数，否则大方块自己就矛盾了。
+   */
+  const selectionStats = computed<ModelSelectionStats>(() =>
+    modelSelectionStats(
+      filteredRequests.value as never,
+      now(),
+      filters.value.windowMs,
+      localProviderCodes.value,
+    ),
+  )
+
+  /**
+   * 内部直连供应商 code 集合（providers.kind === 'local'：本地托管推理服务，
+   * 网关直连内网端点、无真实 API key）。挂载时拉一次 —— kind 只在供应商
+   * 增删时变化，不值得轮询；undefined = 未测量（接口未返回/失败/degraded），
+   * 直连分桶按「未测量」如实标注，不冒充 0 完成分拣。
+   *
+   * ★ 数据源是 /api/admin/topology/provider-kinds（admin 权限）而不是
+   * /api/providers（providerConsole 权限）：/live 任意租户管理员可进，
+   * 辅助信息不该要求更高权限（批判式审计修正 2026-10-28）。
+   */
+  const localProviderCodes = ref<ReadonlySet<string> | undefined>(undefined)
+
+  async function loadLocalProviders(): Promise<void> {
+    try {
+      const resp = await getTopologyProviderKinds()
+      if (resp.degraded) {
+        localProviderCodes.value = undefined
+        return
+      }
+      localProviderCodes.value = localProviderCodesOf(resp.items ?? [])
+    } catch {
+      localProviderCodes.value = undefined
+    }
+  }
 
   const coreMetric = computed(() => graph.value.nodes.find((n) => n.id === GATEWAY_CORE_ID)?.metric)
 
@@ -333,6 +419,8 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     graph,
     options,
     clientSummaries,
+    providerSummaries,
+    modelSummaries,
     clientRequests,
     providerResponses,
     gatewayStats,
@@ -352,6 +440,9 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     plugins,
     pluginsDegraded,
     loadPlugins,
+    selectionStats,
+    localProviderCodes,
+    loadLocalProviders,
     connection: connectionRef,
     initialDataReceived: initialDataReceivedRef,
     redisHealthy: redisHealthyRef,
@@ -367,6 +458,9 @@ function toPanelEntry(req: LiveRequest): PanelEntry {
     provider: (req.provider_code ?? '').trim() || '—',
     nodeId: providerNodeKeyOf(req as never),
     model: modelKeyOf(req as never),
+    requestedModel: (req.client_model ?? '').trim() || undefined,
+    isAuto: !!req.is_auto_request,
+    taskType: (req.task_type ?? '').trim() || undefined,
     status: req.status ?? 'in_progress',
     latencyMs: req.latency_ms ?? null,
     tokens: req.total_tokens ?? null,

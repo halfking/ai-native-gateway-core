@@ -2393,6 +2393,36 @@ files=(
   #   配套代码：whisper /inference 传输
   #   （domains/streaming/audio_whisper_stt.go 按 catalog_code 钉死）。
   "$ROOT_DIR/sql/migrations/startup/911_local_audio_catalog.sql"
+  "$ROOT_DIR/sql/migrations/startup/912_session_recording_trash.sql"
+
+  # 913: monthly bills + coupons + invoice placeholder (pkg 07)
+  "$ROOT_DIR/sql/migrations/startup/913_maas_monthly_bills_coupons.sql"
+
+  # ★ 914: 补回会话族 origin_stage 的 DB 级 CHECK（R175 轮）。
+  #   缺口本体：v1 族的 request_logs_origin_stage_check 随 890 的 v1 族 DROP
+  #   一起消失，会话族从未重建 ⇒ session_turns / session_turns_hot 上
+  #   **无任何 CHECK** ⇒ 探针流量排除只剩 Go 侧闸门，DB 级兜底消失。
+  #   允许集 = internal/probekind.ValidStages()（8 个探针 stage + 'business'）。
+  #   幂等：定义感知守卫（已是规范形态就跳过重建），可重复执行。
+  "$ROOT_DIR/sql/migrations/startup/914_session_turns_origin_stage_check.sql"
+
+  # ★ 915: recent_cache_hit_rate（P1-B-③，audit 2026-10-28 §4）路由侧
+  #   prompt-cache 亲和信号。CREATE OR REPLACE FUNCTION，幂等、零 DDL 锁面；
+  #   候选扫描（provider/client.go 的 chr LATERAL）依赖它存在 —— 缺函数时
+  #   候选查询整条 42803，所以它必须进部署序列而不是只进 installer。
+  "$ROOT_DIR/sql/migrations/startup/915_recent_cache_hit_rate.sql"
+  # ★ 916: 会话族 api_key_id **归一表达式**的 (CASE, ts DESC) 索引（R178 轮）。
+  #   缺口本体（252 生产只读实测）：按 api_key 过滤会话的读点
+  #   （admin/usage.go:841-859，7 天窗）实测「窗口内 75,449 行全读、丢掉
+  #   37,825 行」，一次读点 220,401 块 ⇒ **一半的行是白读的**。
+  #   ⇒ 906 那条部分索引承不住（它的键是 (session_id, turn_no DESC)，
+  #     api_key_id 只在谓词里）；⇒ canonical 视图把 api_key_id 投影成
+  #     CASE WHEN api_key_id ~ '^[0-9]+$' THEN api_key_id::bigint END
+  #     （db/request_logs_view_schema.go 的 SessionFamilyAPIKeyIDExpr）
+  #     ⇒ 普通 btree 与部分索引都承不住（PG 的谓词蕴含是语法的）
+  #     ⇒ ⇒ 只能建**与投影逐字一致的表达式索引**。
+  #   ★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带 dbinit:no-transaction 标记。
+  "$ROOT_DIR/sql/migrations/startup/916_session_turns_api_key_ts_index.sql"
 )
 
 

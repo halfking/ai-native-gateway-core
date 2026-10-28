@@ -1,9 +1,16 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { fetchAvailableModels, type AvailableVersion, type ModelFamily } from '@/api/models'
+import { fetchAvailableModels, type AvailableVersion, type ModelFamily, type PopularModel } from '@/api/models'
 import { t } from '@/i18n'
 import AppSheet from '@/components/common/AppSheet.vue'
 import { formatApiError } from '@/utils/errors'
+import {
+  modelDisplayName,
+  popularKeys,
+  projectFamilies,
+  projectPopularModels,
+  versionDisplayName,
+} from '@/utils/availableModels'
 
 const props = withDefaults(defineProps<{
   modelValue: string | string[]
@@ -22,7 +29,7 @@ const debouncedSearch = ref('')
 const loading = ref(false)
 const error = ref('')
 const families = ref<ModelFamily[]>([])
-const popular = ref<string[]>([])
+const popular = ref<PopularModel[]>([])
 const loaded = ref(false)
 const draft = ref<Set<string>>(new Set())
 let debounceTimer: ReturnType<typeof setTimeout> | undefined
@@ -49,9 +56,18 @@ watch(() => [props.modelValue, props.mode], ([value]) => {
 
 onBeforeUnmount(() => { if (debounceTimer) clearTimeout(debounceTimer) })
 
+const popularModels = computed(() => {
+  const needle = debouncedSearch.value.trim().toLowerCase()
+  return popular.value.filter((model) => !needle ||
+    `${model.canonical_name} ${model.display_name ?? ''}`.toLowerCase().includes(needle))
+})
+
 const filteredFamilies = computed(() => {
   const needle = debouncedSearch.value.trim().toLowerCase()
-  return families.value.map((family) => {
+  // 已在「常用模型」里出现过的模型不再在家族分组里重复列一遍
+  // （与桌面 projectAvailableModels 的「一个模型只出现一次」合并语义一致）。
+  const exclude = popularKeys(popularModels.value)
+  return projectFamilies({ families: families.value }, exclude).map((family) => {
     const seen = new Set<string>()
     return { ...family, versions: family.versions.filter((version) => {
       const canonical = version.canonical_name.toLowerCase()
@@ -61,11 +77,6 @@ const filteredFamilies = computed(() => {
         `${family.vendor} ${version.canonical_name} ${version.display_name} ${(version.aliases ?? []).join(' ')}`.toLowerCase().includes(needle)
     }) }
   }).filter((family) => family.versions.length > 0)
-})
-
-const popularModels = computed(() => {
-  const needle = debouncedSearch.value.trim().toLowerCase()
-  return popular.value.filter((name) => !needle || name.toLowerCase().includes(needle))
 })
 
 const triggerLabel = computed(() => isMulti.value
@@ -79,7 +90,13 @@ async function load(force = false): Promise<void> {
   try {
     const response = await fetchAvailableModels()
     families.value = response.families ?? []
-    popular.value = [...new Set(response.popular ?? [])]
+    // ★ 2026-10-28：popular 的线上契约是 Go popularModelEntry 对象数组
+    // （{canonical_name, display_name, source}，admin/routing.go:2702）——
+    // 此前按 string[] 直接消费：插值把整个对象渲染成 JSON 字样（用户看到的
+    // 「路由检查选模型是一列 JSON」），点选还会把对象塞进 v-model。
+    // 现在统一走 utils/availableModels 的投影：显示 display_name、
+    // 选中仍产出 canonical_name（查询接口只认 canonical）。
+    popular.value = projectPopularModels(response)
     loaded.value = true
   } catch (reason) {
     error.value = reason instanceof Error ? formatApiError(reason) : t('modelPicker.loadFailed')
@@ -118,7 +135,7 @@ function isSelected(name: string): boolean {
 watch(open, (value) => { if (value) void load() })
 
 function displayName(version: AvailableVersion): string {
-  return version.display_name || version.canonical_name
+  return versionDisplayName(version)
 }
 </script>
 
@@ -136,8 +153,14 @@ function displayName(version: AvailableVersion): string {
       <template v-else>
         <section v-if="popularModels.length" class="model-picker__group">
           <h3>{{ t('modelPicker.popular') }}</h3>
-          <button v-for="name in popularModels" :key="`popular-${name}`" type="button" class="model-picker__item" :aria-pressed="isSelected(name)" @click="choose(name)">
-            <span>{{ name }}</span><span v-if="isSelected(name)" class="model-picker__selected">{{ t('modelPicker.selected') }}</span>
+          <button v-for="model in popularModels" :key="`popular-${model.canonical_name}`" type="button" class="model-picker__item" :aria-pressed="isSelected(model.canonical_name)" @click="choose(model.canonical_name)">
+                       <!-- 显示友好名（display_name），但选中产出 canonical_name ——
+ 查询接口（/api/routing/resolve）只认 canonical。 -->
+            <span>
+              <strong>{{ modelDisplayName(model) }}</strong>
+              <small v-if="modelDisplayName(model) !== model.canonical_name">{{ model.canonical_name }}</small>
+            </span>
+            <span v-if="isSelected(model.canonical_name)" class="model-picker__selected">{{ t('modelPicker.selected') }}</span>
           </button>
         </section>
         <section v-for="family in filteredFamilies" :key="family.id" class="model-picker__group">

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # 变异验证：db/db.go 里 ensureQualityFixModeSchema 的 providers 目录短路守卫
 # 规则：还原一律用 cp 文件副本，禁止 git checkout --
+# ★★ r1047 轮（★ 2026-10-28）：★ 本脚本【改树 ⇒ 跑 go test ⇒ 还原】⇒ ⇒ 树每变一次
+# ★★ ⇒ ⇒ 编译产物的 action ID 就变 ⇒ ⇒ 旧的【永远不会再被命中】⇒ ⇒ 纯垃圾 ⇒ ⇒
+# ★★ ⇒ ⇒ 绝不能落在用户的全局缓存里 ⇒ ⇒ 指向【专用缓存】（★ 目录约定与 6 GB 上限见
+# ★★ `scripts/lib/gocache.sh`；★ 理由与实测读数见 `internal/gocache` 的包注释）。
+export GOCACHE="$("$(git rev-parse --show-toplevel)/scripts/lib/gocache.sh" mutate)"
+
 set -uo pipefail
 cd "$(dirname "$0")/.."
 

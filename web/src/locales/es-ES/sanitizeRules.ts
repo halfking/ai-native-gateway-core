@@ -132,4 +132,32 @@ export default {
   expectedMiss: "No debe coincidir",
   eventEvidenceNote:
     "La lista de aciertos no guarda el texto original. Confirme con tipo/campo, patrón y ejemplos inventados; edite la regla o añada un suplemento acotado. Los clientes locales ven valores restaurados; el proveedor sigue enmascarado. El cumplimiento de salida opcional está desactivado por defecto.",
+  hardblock: "Interruptor de bloqueo duro",
+  hardblockHint:
+    "Controla qué reglas pueden cortar una respuesta completa. Las reglas fuera de esta lista solo registran o enmascaran; los cambios se aplican de inmediato.",
+  hardblockProcessOnly:
+    "Los cambios aquí solo valen mientras viva este proceso del gateway; al reiniciar vuelve la lista cargada del entorno de despliegue.",
+  hardblockListLabel: "Reglas con bloqueo duro permitido",
+  hardblockFormatNote:
+    "El ámbito es input, output o egress; una regla puede ser un ID exacto, una familia de prefijo o *. El ámbito egress solo acepta reglas integradas individuales.",
+  hardblockCommentLabel: "Motivo del cambio",
+  hardblockDisableConfirm:
+    "Confirmo desactivar todos los bloqueos duros, incluida la protección de credenciales en texto plano del lado de la petición",
+  hardblockSave: "Guardar lista",
+  hardblockSaved: "Lista de bloqueo duro actualizada y ya en vigor.",
+  blockedReviews: "Revisión de bloqueos",
+  blockedReviewsHint:
+    "Cada respuesta bloqueada por la política crea aquí un registro pendiente. Tras aprobarlo, el mismo contenido pasa en el siguiente reintento; rechazarlo mantiene el bloqueo.",
+  blockedReviewsNote:
+    "Los registros guardan solo regla, motivo y resumen de carga, nunca el texto bloqueado. La cola vive en el proceso y se vacía al reiniciar.",
+  blockedReviewsNone: "No hay revisiones de bloqueos con el filtro actual",
+  reviewPending: "Esperando revisión",
+  reviewApproved: "Liberado",
+  reviewRejected: "Rechazado (bloqueo mantenido)",
+  reviewReasonLabel: "Motivo del bloqueo",
+  reviewFieldLabel: "Ruta del argumento",
+  reviewRequestLabel: "Petición",
+  reviewDigestLabel: "Resumen de carga",
+  reviewApprove: "Aprobar y liberar",
+  reviewReject: "Mantener bloqueo",
 };
