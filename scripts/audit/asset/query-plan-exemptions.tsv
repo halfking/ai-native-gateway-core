@@ -33,6 +33,9 @@ tenants-f741c6818f	★ 生产上无匹配流量（★ pg_stat_statements 窗口�
 tenants-643eda89d5	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
 top_problems-895618708c	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
 top_problems-f13a678ffe	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+topology_clients_today-3330a325de	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+topology_window_stats-a5549d01e5	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+topology_window_stats-63de1235bc	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
 usage-fac0c8ab96	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
 usage-ecc57218c4	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
 usage_credits-e1251bbcfa	★ 实测失败：★ EXPLAIN 失败: ssh/psql 失败: exit status 3（stderr: psql:<stdin>:1: ERROR:  missing FROM-clause entry for table "m" LINE 1: ...day', r.ts AT TIME ZONE NULL) AT TIME ZONE NULL = m.bucket A...                                                              ^）

@@ -28,6 +28,7 @@ R179 要回答的是：**这 68 个读点，每一个「能不能用索引 seek�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -48,7 +49,14 @@ VIEW_RE = re.compile(r"\b(?:public\.)?" + re.escape(CANONICAL_VIEW) + r"\b")
 
 
 def load_affected_files(repo_root: str) -> list[str]:
-    """从 canonical 读点登记簿里取 R174 的 35 个受影响文件（单一事实源）。"""
+    """从 canonical 读点登记簿里取受影响文件清单（★ 单一事实源）。
+
+    ★★ R179 轮修正（本轮自伤自愈）：★★ 原来这里硬编码「期望 35」⇒ ⇒ 上游新增一个
+    ★★ 时间窗读点（`admin/topology_clients_today.go`）⇒ ⇒ 提取器**直接死掉**⇒ ⇒
+    ★★ 产物再生成路径断了 ⇒ ⇒ 而**登记簿才是事实源**⇒ ⇒ 清单条数变了是【正常事件】，
+    ★★ 不是缺陷 ⇒ ⇒ 现在改成【读登记簿，不设死数】⇒ ⇒ 死数只留在**产物头**里当【来源快照】。
+    ★★ ⇒ ⇒ 上游再加读点，提取器不再死 ⇒ ⇒ 产物能不能跟上，由**漂移校验**去报。
+    """
     path = os.path.join(repo_root, "admin", "canonical_read_points_registry_test.go")
     with open(path, encoding="utf-8") as fh:
         src = fh.read()
@@ -58,9 +66,26 @@ def load_affected_files(repo_root: str) -> list[str]:
     blk = src.split(marker, 1)[1]
     blk = blk.split("\n}\n", 1)[0]
     files = re.findall(r'^\t"([^"]+)"', blk, re.M)
-    if len(files) != 35:
-        die(f"受影响文件数 = {len(files)}（期望 35）⇒ 登记簿结构变了 ⇒ 工具要跟着改")
+    if not files:
+        die("登记簿里的受影响文件清单是空的 ⇒ 工具没有扫描面")
     return files
+
+
+def load_file_list(path: str) -> list[str]:
+    """读【钉住的文件清单】（★ 产物自证来源 ⇒ 漂移校验按它重放 ⇒ 不受上游新增影响）。"""
+    with open(path, encoding="utf-8") as fh:
+        files = [ln.strip() for ln in fh if ln.strip() and not ln.lstrip().startswith("#")]
+    if not files:
+        die(f"钉住的文件清单是空的：{path}")
+    return files
+
+
+def files_digest(files: list[str]) -> str:
+    """文件清单的指纹（★ 排序后 sha256 前 12 位 ⇒ 写进产物头当【来源快照】）。"""
+    h = hashlib.sha256()
+    for f in sorted(files):
+        h.update((f + "\n").encode("utf-8"))
+    return h.hexdigest()[:12]
 
 
 def strip_sql_comments(s: str) -> str:
@@ -410,10 +435,16 @@ def main() -> int:
     ap.add_argument("--out-shapes", required=True)
     ap.add_argument("--out-points", required=True)
     ap.add_argument("--json", default="")
+    ap.add_argument(
+        "--file-list",
+        default="",
+        help="★ 钉住的文件清单（★ 产物自证来源 ⇒ 漂移校验按它重放 ⇒ 上游新增读点不影响重放）",
+    )
     args = ap.parse_args()
 
     root = args.repo_root
-    files = load_affected_files(root)
+    files = load_file_list(args.file_list) if args.file_list else load_affected_files(root)
+    digest = files_digest(files)
 
     shapes: "OrderedDict[str, dict]" = OrderedDict()
     points: list[dict] = []
@@ -474,7 +505,8 @@ def main() -> int:
     with open(args.out_shapes, "w", encoding="utf-8") as fh:
         fh.write("# canonical-read-point-shapes.tsv —— R179 轮：canonical 视图读点的**形态册**\n")
         fh.write("# ★ 生成器：scripts/audit/extract-canonical-read-point-shapes.py（★ 机械抽取，★ 非手抄）\n")
-        fh.write("# ★ 口径：从 R174 登记的 35 个受影响文件里，扫出所有提到 canonical 视图的 SQL 语句\n")
+        fh.write("# ★ 口径：从 canonical 读点登记簿列出的受影响文件里，扫出所有提到 canonical 视图的 SQL 语句\n")
+        fh.write(f"# ★ 来源快照：受影响文件 {len(files)} 个 · 指纹 {digest}（★ 漂移校验按此快照重放 ⇒ 上游新增读点不影响重放）\n")
         fh.write("# ★ 形态键 = 删掉顶层 SELECT 列表后的归一化 SQL（★ 计划形态只由 关系/谓词/分组/排序 决定）\n")
         fh.write("# ★ 列：shape_id\toccurrence_count\tfile_count\tdynamic\tfilter_cols\torder_cols\trepresentative_file:line\tsql_digest\n")
         for sh in shapes.values():
@@ -496,6 +528,7 @@ def main() -> int:
 
     with open(args.out_points, "w", encoding="utf-8") as fh:
         fh.write("# canonical-read-points.tsv —— R179 轮：逐读点清单\n")
+        fh.write(f"# ★ 来源快照：受影响文件 {len(files)} 个 · 指纹 {digest}\n")
         fh.write("# ★ 列：file\tline\tshape_id\tsql_digest\n")
         for p in sorted(points, key=lambda x: (x["file"], x["line"])):
             fh.write(
@@ -513,7 +546,10 @@ def main() -> int:
                         "★ R179 轮：canonical 视图读点的**形态册**（机器抽取，★ 非手抄）。",
                         "★ 每个形态带【真实 SQL】+【参数角色】⇒ 实测工具按角色取真实值再 EXPLAIN。",
                         "★ dynamic=true 的形态含 fmt 占位（%s/%d）⇒ ★ 静态不可知 ⇒ 实测须先解析 helper。",
+                        "★ source_files = 本册的【来源快照】（★ 受影响文件清单）⇒ 漂移校验按它重放。",
                     ],
+                    "source_files": list(files),
+                    "source_files_digest": digest,
                     "shapes": [
                         {
                             "shape_id": sh["shape_id"],

@@ -2,8 +2,49 @@
   "_comment": [
     "★ R179 轮：canonical 视图读点的**形态册**（机器抽取，★ 非手抄）。",
     "★ 每个形态带【真实 SQL】+【参数角色】⇒ 实测工具按角色取真实值再 EXPLAIN。",
-    "★ dynamic=true 的形态含 fmt 占位（%s/%d）⇒ ★ 静态不可知 ⇒ 实测须先解析 helper。"
+    "★ dynamic=true 的形态含 fmt 占位（%s/%d）⇒ ★ 静态不可知 ⇒ 实测须先解析 helper。",
+    "★ source_files = 本册的【来源快照】（★ 受影响文件清单）⇒ 漂移校验按它重放。"
   ],
+  "source_files": [
+    "admin/compression_stats.go",
+    "admin/credential_monitor.go",
+    "admin/credential_monitor_heatmap.go",
+    "admin/credential_success_rate.go",
+    "admin/data_lifecycle.go",
+    "admin/diagnostics_credential.go",
+    "admin/live_stream_sse.go",
+    "admin/memora_handlers.go",
+    "admin/model_routing_diagnostic.go",
+    "admin/model_status.go",
+    "admin/no_topic_session.go",
+    "admin/probe_history.go",
+    "admin/provider_models.go",
+    "admin/route_incidents.go",
+    "admin/session_analytics_breakdown.go",
+    "admin/session_analytics_timeseries.go",
+    "admin/swim_lane_init.go",
+    "admin/tenants.go",
+    "admin/top_problems.go",
+    "admin/topology_clients_today.go",
+    "admin/topology_window_stats.go",
+    "admin/usage.go",
+    "admin/usage_credits.go",
+    "admin/usage_enhanced.go",
+    "admin/usage_trend_series.go",
+    "admin/work_types.go",
+    "bg/daily_probe_audit.go",
+    "bg/integrity_fingerprint_drift.go",
+    "bg/passive_probe_listener.go",
+    "bg/stats_minute_rollup.go",
+    "bg/stats_minute_rollup_retire.go",
+    "db/probe_views_unified.go",
+    "domains/routeincident/store.go",
+    "domains/sessionsummary/summarizer.go",
+    "internal/collector/gateway_adapters.go",
+    "internal/quality/minute_aggregator.go",
+    "maas/usage.go"
+  ],
+  "source_files_digest": "9809f051fcdd",
   "shapes": [
     {
       "shape_id": "compression_stats-dd0e70a936",
@@ -667,6 +708,69 @@
           "index": 2,
           "column": "ts",
           "op": "<"
+        }
+      ]
+    },
+    {
+      "shape_id": "topology_clients_today-3330a325de",
+      "file": "admin/topology_clients_today.go",
+      "line": 97,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "WITH base AS (\n\tSELECT COALESCE(NULLIF(rl.agent_name, ''), NULLIF(rl.client_profile, ''),\n\t                NULLIF(rl.client_protocol, ''),\n\t                LEFT(NULLIF(rl.identity_hash, ''), 8), 'unknown') AS client_key,\n\t       COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status,\n\t       rl.prompt_tokens, rl.completion_tokens, rl.total_tokens,\n\t       rl.cache_read_tokens, rl.cache_write_tokens,\n\t       rl.credits_charged, rl.cost_usd\n\tFROM request_logs_with_current_month rl\n\tWHERE rl.ts >= $1::timestamptz\n\t  AND ($3::timestamptz IS NULL OR rl.ts <= $3::timestamptz)\n\t  AND ($2::text = '' OR rl.tenant_id = $2)\n)\nSELECT client_key,\n       COUNT(*)::bigint                                AS requests,\n       COUNT(*) FILTER (WHERE status = 'success')::bigint      AS success,\n       COUNT(*) FILTER (WHERE status = 'failure')::bigint      AS failure,\n       COUNT(*) FILTER (WHERE status = 'rate_limited')::bigint AS rate_limited,\n       COALESCE(SUM(prompt_tokens),0)::bigint      AS prompt_tokens,\n       COALESCE(SUM(completion_tokens),0)::bigint  AS completion_tokens,\n       COALESCE(SUM(cache_read_tokens),0)::bigint  AS cache_read_tokens,\n       COALESCE(SUM(cache_write_tokens),0)::bigint AS cache_write_tokens,\n       COALESCE(SUM(total_tokens),0)::bigint       AS total_tokens,\n       COALESCE(SUM(credits_charged),0)::bigint    AS credits_charged,\n       COALESCE(SUM(cost_usd),0)::float8           AS cost_usd\nFROM base\nGROUP BY client_key\nORDER BY requests DESC, client_key\nLIMIT $4",
+      "sql_filter_cols": [
+        "ts",
+        "status"
+      ],
+      "sql_order_cols": "requests DESC,client_key",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
+        }
+      ]
+    },
+    {
+      "shape_id": "topology_window_stats-a5549d01e5",
+      "file": "admin/topology_window_stats.go",
+      "line": 71,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "WITH base AS (\n\tSELECT COALESCE(p.id, 0)                       AS provider_id,\n\t       COALESCE(p.catalog_code, '')            AS catalog_code,\n\t       COALESCE(NULLIF(p.display_name, ''), '') AS display_name,\n\t       COALESCE(p.enabled, FALSE)              AS enabled,\n\t       COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status,\n\t       -- ★ status 表达式 = requestLogsStatusExpr（逐字内联，见该常量注释）\n\t       rl.prompt_tokens, rl.completion_tokens, rl.total_tokens,\n\t       rl.cache_read_tokens, rl.cache_write_tokens,\n\t       rl.credits_charged, rl.cost_usd\n\tFROM request_logs_with_current_month rl\n\tLEFT JOIN credentials c ON c.id = rl.credential_id\n\tLEFT JOIN providers p ON p.id = COALESCE(c.provider_id, rl.provider_id)\n\tWHERE rl.ts >= $1::timestamptz\n\t  AND ($2::text = '' OR rl.tenant_id = $2)\n)\nSELECT provider_id, catalog_code, display_name, enabled,\n       COUNT(*)::bigint                                AS requests,\n       COUNT(*) FILTER (WHERE status = 'success')::bigint      AS success,\n       COUNT(*) FILTER (WHERE status = 'failure')::bigint      AS failure,\n       COUNT(*) FILTER (WHERE status = 'rate_limited')::bigint AS rate_limited,\n       COALESCE(SUM(prompt_tokens),0)::bigint      AS prompt_tokens,\n       COALESCE(SUM(completion_tokens),0)::bigint  AS completion_tokens,\n       COALESCE(SUM(cache_read_tokens),0)::bigint  AS cache_read_tokens,\n       COALESCE(SUM(cache_write_tokens),0)::bigint AS cache_write_tokens,\n       COALESCE(SUM(total_tokens),0)::bigint       AS total_tokens,\n       COALESCE(SUM(credits_charged),0)::bigint    AS credits_charged,\n       COALESCE(SUM(cost_usd),0)::float8           AS cost_usd,\n       NULL::timestamptz                           AS watermark\nFROM base\nGROUP BY provider_id, catalog_code, display_name, enabled\nORDER BY requests DESC, provider_id\nLIMIT $3",
+      "sql_filter_cols": [
+        "ts",
+        "status"
+      ],
+      "sql_order_cols": "requests DESC,provider_id",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
+        }
+      ]
+    },
+    {
+      "shape_id": "topology_window_stats-63de1235bc",
+      "file": "admin/topology_window_stats.go",
+      "line": 113,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "WITH base AS (\n\tSELECT COALESCE(mc.id, 0)                        AS canonical_id,\n\t       COALESCE(NULLIF(mc.canonical_name, ''), '') AS canonical_name,\n\t       COALESCE(NULLIF(rl.client_model, ''), '')   AS raw_model_name,\n\t       COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status,\n\t       -- ★ status 表达式 = requestLogsStatusExpr（逐字内联，见该常量注释）\n\t       rl.prompt_tokens, rl.completion_tokens, rl.total_tokens,\n\t       rl.cache_read_tokens, rl.cache_write_tokens,\n\t       rl.credits_charged, rl.cost_usd\n\tFROM request_logs_with_current_month rl\n\tLEFT JOIN models_canonical mc ON mc.id = rl.canonical_id\n\tWHERE rl.ts >= $1::timestamptz\n\t  AND ($2::text = '' OR rl.tenant_id = $2)\n)\nSELECT canonical_id,\n       COALESCE(MAX(canonical_name), '')                    AS canonical_name,\n       COALESCE(MAX(NULLIF(raw_model_name, '')), '')        AS raw_model_name,\n       COUNT(*)::bigint                                AS requests,\n       COUNT(*) FILTER (WHERE status = 'success')::bigint      AS success,\n       COUNT(*) FILTER (WHERE status = 'failure')::bigint      AS failure,\n       COUNT(*) FILTER (WHERE status = 'rate_limited')::bigint AS rate_limited,\n       COALESCE(SUM(prompt_tokens),0)::bigint      AS prompt_tokens,\n       COALESCE(SUM(completion_tokens),0)::bigint  AS completion_tokens,\n       COALESCE(SUM(cache_read_tokens),0)::bigint  AS cache_read_tokens,\n       COALESCE(SUM(cache_write_tokens),0)::bigint AS cache_write_tokens,\n       COALESCE(SUM(total_tokens),0)::bigint       AS total_tokens,\n       COALESCE(SUM(credits_charged),0)::bigint    AS credits_charged,\n       COALESCE(SUM(cost_usd),0)::float8           AS cost_usd,\n       NULL::timestamptz                           AS watermark\nFROM base\nGROUP BY canonical_id,\n         CASE WHEN canonical_id = 0 THEN COALESCE(raw_model_name, '') ELSE '' END\nORDER BY requests DESC, canonical_id, raw_model_name\nLIMIT $3",
+      "sql_filter_cols": [
+        "ts",
+        "status"
+      ],
+      "sql_order_cols": "requests DESC,canonical_id,raw_model_name",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
         }
       ]
     },
@@ -1472,6 +1576,24 @@
       "line": 227,
       "shape_id": "top_problems-f13a678ffe",
       "sql_digest": "SELECT rl.client_model, COUNT(*) AS request_count, COUNT(*) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE) AS failure_count, CASE WHEN COUNT(*) > 0 THEN (COUNT(*) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE))::float8 / COUNT(*)::float8 ELSE 0 END AS failure_rate, COALESCE(MODE() WITHIN GROUP (ORDER BY rl.error_kind) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE), '') AS top_failure_k"
+    },
+    {
+      "file": "admin/topology_clients_today.go",
+      "line": 97,
+      "shape_id": "topology_clients_today-3330a325de",
+      "sql_digest": "WITH base AS ( SELECT COALESCE(NULLIF(rl.agent_name, ''), NULLIF(rl.client_profile, ''), NULLIF(rl.client_protocol, ''), LEFT(NULLIF(rl.identity_hash, ''), 8), 'unknown') AS client_key, COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status, rl.prompt_tokens, rl.completion_tokens, rl.total_tokens, rl.cach"
+    },
+    {
+      "file": "admin/topology_window_stats.go",
+      "line": 71,
+      "shape_id": "topology_window_stats-a5549d01e5",
+      "sql_digest": "WITH base AS ( SELECT COALESCE(p.id, 0) AS provider_id, COALESCE(p.catalog_code, '') AS catalog_code, COALESCE(NULLIF(p.display_name, ''), '') AS display_name, COALESCE(p.enabled, FALSE) AS enabled, COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status, -- ★ status 表达式 = requestLogsStatusExpr（逐字内联，见该常量注释"
+    },
+    {
+      "file": "admin/topology_window_stats.go",
+      "line": 113,
+      "shape_id": "topology_window_stats-63de1235bc",
+      "sql_digest": "WITH base AS ( SELECT COALESCE(mc.id, 0) AS canonical_id, COALESCE(NULLIF(mc.canonical_name, ''), '') AS canonical_name, COALESCE(NULLIF(rl.client_model, ''), '') AS raw_model_name, COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status, -- ★ status 表达式 = requestLogsStatusExpr（逐字内联，见该常量注释） rl.prompt_token"
     },
     {
       "file": "admin/usage.go",

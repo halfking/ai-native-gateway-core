@@ -226,6 +226,89 @@ def main() -> int:
     check("M6 plan_shape 在观测台账里不存在", "⑦ 台账 ⇄ 观测台账一致",
           {"URSM_QUERY_INDEX_REQUIREMENTS_TSV": str(m6)})
 
+    # ── M7：★ 「人读视图漂移 ⇒ 读方必须红」这条腿（★ 漂移校验） ──
+    #   ★ 本轮新增的读方：scripts/audit/check-canonical-read-point-views.py
+    #   ★ 它现在是人读视图（canonical-read-point-shapes.tsv / canonical-read-points.tsv）
+    #     的【真读方】⇒ ⇒ 掏空/手改 ⇒ 必须被它抓到 ⇒ ⇒ 逐字比对这条腿要单独钉住。
+    #   ★ 做法：★ 把【校验所需的最小子集】拷到仓外副本 ⇒ 在副本上改 ⇒ 跑副本上的校验
+    #     ⇒ ⇒ 仓内文件一个字节都不动（★ 本脚本的既有纪律）。
+    m7root = tmp / "m7-repo"
+    try:
+        import json as _json
+
+        with open(REPO / "scripts/audit/asset/canonical-read-point-shapes.json", encoding="utf-8") as fh:
+            src_files = _json.load(fh).get("source_files") or []
+        if not src_files:
+            print("★ M7 前提不成立：形态册 JSON 里没有 source_files", file=sys.stderr)
+            return 1
+        need = [
+            "scripts/audit/extract-canonical-read-point-shapes.py",
+            "scripts/audit/check-canonical-read-point-views.py",
+            "scripts/audit/asset/canonical-read-point-shapes.json",
+            "scripts/audit/asset/canonical-read-point-shapes.tsv",
+            "scripts/audit/asset/canonical-read-points.tsv",
+            "admin/canonical_read_points_registry_test.go",
+        ] + list(src_files)
+        for rel in need:
+            src = REPO / rel
+            if not src.exists():
+                print(f"★ M7 前提不成立：副本需要的文件不存在 {rel}", file=sys.stderr)
+                return 1
+            dst = m7root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+        m7_check = m7root / "scripts/audit/check-canonical-read-point-views.py"
+
+        def run_m7() -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [sys.executable, str(m7_check)],
+                cwd=str(m7root), capture_output=True, text=True,
+            )
+
+        m7_base = run_m7()
+        if m7_base.returncode != 0:
+            print("★ M7 阳性对照失败：★ 副本上的漂移校验在未变异时就红了", file=sys.stderr)
+            print(m7_base.stdout[-2000:], file=sys.stderr)
+            return 1
+        # ⇒ 变异：★ 改副本里的形态册 TSV 的**一个数据行** ⇒ ⇒ 逐字比对必须抓到。
+        m7_tsv = m7root / "scripts/audit/asset/canonical-read-point-shapes.tsv"
+        m7_orig = m7_tsv.read_text(encoding="utf-8")
+        m7_lines = m7_orig.split("\n")
+        m7_hit = False
+        for i, ln in enumerate(m7_lines):
+            if ln and not ln.startswith("#"):
+                m7_lines[i] = ln + "\tmutated"
+                m7_hit = True
+                break
+        if not m7_hit:
+            print("★ M7 前提不成立：形态册 TSV 里没有数据行", file=sys.stderr)
+            return 1
+        m7_tsv.write_text("\n".join(m7_lines), encoding="utf-8")
+        m7_run = run_m7()
+        m7_out = (m7_run.stdout or "") + (m7_run.stderr or "")
+        if m7_run.returncode == 0:
+            results.append(("M7 人读视图漂移 ⇒ 漂移校验红", False, "★ 校验没红（★ 它没有牙齿）"))
+            print("★ M7 人读视图漂移 ⇒ 校验**没红** ✗", file=sys.stderr)
+        elif "漂移" not in m7_out:
+            results.append(("M7 人读视图漂移 ⇒ 漂移校验红", False,
+                            "★ 红了但理由不是漂移（★ 可能红在别处 ⇒ 验到的腿不对）"))
+            print("★ M7 红了但理由不是漂移 ✗\n%s" % m7_out[-1500:], file=sys.stderr)
+        else:
+            results.append(("M7 人读视图漂移 ⇒ 漂移校验红", True, "① 人读视图与机器真值必须同源"))
+            print("★ M7 人读视图漂移 ⇒ 校验红 ✔（① 人读视图与机器真值必须同源）")
+        # ⇒ 还原副本并复跑（★ 证明红的是【漂移】不是【别的】）
+        m7_tsv.write_text(m7_orig, encoding="utf-8")
+        m7_after = run_m7()
+        if m7_after.returncode != 0:
+            results.append(("M7 还原后校验必须恢复绿", False, "★ 还原后仍红"))
+            print("★ M7 还原后仍红 ✗", file=sys.stderr)
+        else:
+            results.append(("M7 还原后校验必须恢复绿", True, "① 还原后绿"))
+            print("★ M7 还原后校验恢复绿 ✔")
+    except Exception as exc:  # noqa: BLE001
+        results.append(("M7 漂移校验变异臂", False, "★ 执行异常：%s" % exc))
+        print("★ M7 执行异常：%s" % exc, file=sys.stderr)
+
     # ── 还原核对（★ 仓内文件一个字节都不该动）──
     for p, h in before.items():
         after = md5(p)
