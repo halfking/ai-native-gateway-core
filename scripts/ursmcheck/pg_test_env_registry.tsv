@@ -38,6 +38,7 @@ LLM_GATEWAY_SSOT_DRAFT	component	草稿文件路径（SSOT 导入用）
 LLM_GATEWAY_TESTDB_SIGNAL_CHILD	component	子进程模式标记（=1 时该进程走「建一次性库并阻塞等信号」分支，是父进程 spawn 出来的夹具参数）：不决定连哪个库、不取消任何保护 ⇒ 既非 DSN 也非隔离开关
 LLM_GATEWAY_USE_NEW_PROBE_MODE	component	特性开关：新探针模式
 MEMORA_REPO_PATH	component	外部仓库路径（memora 记忆仓的本地 checkout 路径）；不是 DSN，是拼装型外部依赖路径
+NATIVEPAIR_OFFSWITCH_CHILD	component	子进程自识别哨兵（offswitch_test.go 重跑自身时置 1），与连库目标无关
 O5_FALLBACK_FILE_EVIDENCE	component	取证文件路径（降级读文件的真实样本）
 ONNXRUNTIME_SHARED_LIBRARY_PATH	component	ONNX 动态库路径（本地库，与 PG 无关）
 PARITY_UPDATE_GOLDEN	component	更新 golden 文件的开关（布尔）

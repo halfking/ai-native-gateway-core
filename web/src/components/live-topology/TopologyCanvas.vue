@@ -728,7 +728,7 @@ function onNodeClick(node: TopoNode) {
   right: 4px;
   padding: 0 4px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 14px;
   color: var(--kx-primary);
   border: 1px solid color-mix(in srgb, var(--kx-primary) 45%, var(--kx-border));
