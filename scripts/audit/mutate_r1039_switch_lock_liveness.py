@@ -29,24 +29,73 @@ PARITY = ROOT / "tests" / "deploy_switch_lock_parity_test.sh"
 # ── 各臂的「靶点」与「必须抓住它的判据」────────────────────────────────────
 ARMS = [
     {
-        "name": "N1 · 存活判据退回 kill -0 单判（EPERM 被当成进程已死）",
+        # ★ 第三轮重写：判据已**委托**共享部署库 ⇒ 这条臂改成
+        #   「把委托换回自带探针」⇒ 复现「两份实现」这个缺陷类别本身。
+        #   ⇒ 它必须同时被两道门抓住：
+        #     ① 契约门：判据说「活」时本仓必须说「活」⇒ 本仓自带 kill -0
+        #        单判会说「死」⇒ 红；
+        #     ② 跨仓门：**结构性**判据 ⇒ 生产脚本里出现了 `kill -0` ⇒ 红。
+        "name": "N1 · 把委托换回自带 kill -0 探针（EPERM 被当成进程已死 ⇒ 又变成两份实现）",
         "target": LIB,
         "old": """dl_pid_alive() {
   local pid="$1"
   dl_pid_valid "$pid" || return 1
-  dl_pid_probe_kill "$pid" && return 0
-  dl_pid_probe_ps "$pid" && return 0
-  return 1
+  if ! command -v lock_pid_alive >/dev/null 2>&1; then
+    printf 'ERROR: shared deploy library liveness oracle (lock_pid_alive) is not loaded\\n' >&2
+    return 2
+  fi
+  lock_pid_alive "$pid"
 }""",
         "new": """dl_pid_alive() {
   local pid="$1"
   dl_pid_valid "$pid" || return 1
-  dl_pid_probe_kill "$pid" && return 0
+  kill -0 "$pid" 2>/dev/null && return 0
   return 1
 }""",
         "gates": [
-            (CONTRACT, "a live process we may not signal (EPERM) must be judged ALIVE"),
-            (PARITY, "repo oracle says DEAD, OS says ALIVE"),
+            (CONTRACT, "a live foreign-user pid must be ALIVE"),
+            (PARITY, "the repo must not carry its own liveness probe"),
+        ],
+    },
+    {
+        # ★ 第三轮新增：委托之后，「判据不知道」必须**说不知道**（rc=2）。
+        #   猜「死」= 把一把可能还活着的锁当残锁接管 ⇒ F1 换入口复活。
+        "name": "N7 · 判据缺席时「猜死」（把 UNKNOWN 降级成 DEAD）",
+        "target": LIB,
+        "old": """  if ! command -v lock_pid_alive >/dev/null 2>&1; then
+    printf 'ERROR: shared deploy library liveness oracle (lock_pid_alive) is not loaded\\n' >&2
+    return 2
+  fi""",
+        "new": """  if ! command -v lock_pid_alive >/dev/null 2>&1; then
+    return 1
+  fi""",
+        "gates": [
+            (CONTRACT, "must be UNKNOWN (rc=2), not DEAD (rc=1)"),
+        ],
+    },
+    {
+        # ★ 第三轮新增：入口的前置检查去掉 ⇒ 判据缺席也继续跑
+        #   ⇒ 要么把「不知道」当「没人持有」而接管活锁，要么造出一把没人认领的锁。
+        "name": "N8 · 去掉入口的 fail-fast 前置检查（判据缺席也继续跑）",
+        "target": LIB,
+        "old": """  dl_switch_lock_require_ssot || return 75""",
+        "new": """  :""",
+        "gates": [
+            (CONTRACT, "acquiring the switch lock must fail fast with 75"),
+        ],
+    },
+    {
+        # ★ 第三轮新增：恢复命令在「判据不知道」时照样清锁 ⇒ fail-open。
+        "name": "N9 · 恢复命令在「判据不知道」时照样清锁（fail-open）",
+        "target": LIB,
+        "old": """  if [[ "$pid_rc" -ne 1 ]]; then
+    printf 'ERROR: refusing to remove the deployment switch lock: liveness of holder pid %s could not be determined (the shared deploy library oracle is not loaded)\\n' "$holder_pid" >&2
+    return 1
+  fi
+""",
+        "new": "",
+        "gates": [
+            (CONTRACT, "recovery must refuse when the liveness of the holder cannot be determined"),
         ],
     },
     {

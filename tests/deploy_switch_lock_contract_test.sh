@@ -43,6 +43,15 @@
 #      ② 真能清掉「持有者读不出来」的锁；
 #      ③ 默认档在同一状态下**仍然拒绝**（⇒ --force 是【升级档】不是【默认档】）。
 #
+#   ── 2026-10-28 追加（第三轮 · 合并就绪轮）─────────────────────────────────
+#   I19 **判据不可用 ⇒ 显式失败，不许猜**
+#      ⇒ ★ 判据已**委托**共享部署库 ⇒ 「共享部署库没被 source」从「实现细节」
+#        变成「可用性前提」⇒ 若把「不知道」当成「持有者已死」⇒ 接管掉一把
+#        活锁 ⇒ ★ **F1 换了个入口复活** ⇒ 必须有专门的判据。
+#      ⇒ 钉三件事：① 判据缺席时 `dl_pid_alive` 返回 **2（未知）**而不是 1（死）；
+#        ② acquire **rc=75 + 可读原因**，且**不创建、不接管**；
+#        ③ 残锁判定把「未知」判成**不是残锁**（fail-closed）。
+#
 # ## 判据纪律
 #
 #   - 行为判据（I1~I3）用**真函数**跑：LOCK_TMP_ROOT 指向临时目录 ⇒ 不碰机器上
@@ -58,6 +67,36 @@ TMP=$(mktemp -d -t kx-switch-lock.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 export LOCK_TMP_ROOT="$TMP/locks"
 mkdir -p "$LOCK_TMP_ROOT"
+
+# ── 存活判据从哪来（★ 第三轮起：委托共享部署库）────────────────────────────
+#
+# ★ 本仓的 `dl_pid_alive` 现在**委托**共享部署库的 `lock_pid_alive`
+#   ⇒ 判据必须**真的被加载** ⇒ 这里按「有则用真、无则用同语义替身」接入，
+#     并**显式打印用的是哪一种** ⇒ 避免「以为在测真实现、其实测的是替身」。
+ORACLE_ORIGIN=''
+ORACLE_BOOTSTRAP="$TMP/oracle-bootstrap.sh"
+ssot=''
+for cand in "${AIAN_DEPLOY_LIB:-}" "$ROOT/scripts/deploy-lib" "$HOME/workspace/ai-native-workspace/deploy-lib" "$HOME/workspace/ai-native-tools/deploy-lib"; do
+  if [[ -n "$cand" && -f "$cand/lock.sh" ]]; then
+    ssot="$(cd "$cand" && pwd -P)"
+    break
+  fi
+done
+if [[ -n "$ssot" ]]; then
+  # shellcheck source=/dev/null
+  source "$ssot/lock.sh"
+  ORACLE_ORIGIN="shared SSOT ($ssot/lock.sh)"
+  printf 'source %q\n' "$ssot/lock.sh" > "$ORACLE_BOOTSTRAP"
+else
+  # 测试替身：与共享部署库 `lock_pid_alive` 同语义（ps 口径）的最小实现。
+  # ★ 它是**替身**，不是第二份生产实现 —— 生产路径只认共享部署库那一份。
+  lock_pid_alive() { ps -p "$1" -o pid= >/dev/null 2>&1; }
+  ORACLE_ORIGIN="test double (shared SSOT not found — 本次没比对真实现)"
+  cat > "$ORACLE_BOOTSTRAP" <<'STUB'
+lock_pid_alive() { ps -p "$1" -o pid= >/dev/null 2>&1; }
+STUB
+fi
+printf 'liveness oracle: %s\n' "$ORACLE_ORIGIN"
 
 fail() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
 pass() { printf 'PASS %s\n' "$*"; }
@@ -198,10 +237,7 @@ grep -q 'dl_recover_switch_lock' <<<"$recover_fn" \
   || fail 'recover_switch_lock must delegate to dl_recover_switch_lock'
 
 # 真调用（需要仓外共享部署库存在；缺了就留痕，不当成通过）。
-ssot=''
-for cand in "${AIAN_DEPLOY_LIB:-}" "$HOME/workspace/ai-native-workspace/deploy-lib" "$HOME/workspace/ai-native-tools/deploy-lib"; do
-  [[ -n "$cand" && -d "$cand" ]] && { ssot="$cand"; break; }
-done
+# ★ SSOT 的解析已在文件开头完成（`ssot`）⇒ 这里不重复解析。
 if [[ -n "$ssot" ]]; then
   mkdir -p "$lock_path"
   printf 'target=local-switch\npid=999999\nstarted_at=2026-10-28T00:00:00Z\n' > "$lock_path/metadata"
@@ -218,59 +254,87 @@ fi
 # 2026-10-28（第二轮批判性审计）：★ 「锁到底互斥吗」—— 存活判据本身的四条不变量
 # ═════════════════════════════════════════════════════════════════════════
 
-# ── I14：存活判据 —— EPERM ≠ ESRCH ───────────────────────────────────────
+# ── I14：存活判据 —— 「持有者还活着吗」必须由【共享部署库那一份】回答 ─────
 #
-# ★ 这是本轮最值钱的一条：**「持有者还活着吗」这个判据本身**此前是错的。
-#   旧实现只判 `kill -0` ⇒ 它对「进程存在但不属于我」返回 EPERM，**退出码与
-#   「进程真没了」的 ESRCH 完全一样** ⇒ ⇒ 持有者是别的用户的进程时，一把**活锁**
-#   被当成残锁 ⇒ 接管掉 ⇒ **互斥被拆** ⇒ 两份 checkout 同时切流。
+# ★ 第三轮（合并就绪轮）起，本仓**不再自带**存活探针 ⇒ `dl_pid_alive` 改为
+#   **委托**共享部署库的 `lock_pid_alive` ⇒ 这条不变量现在钉的是**委托后的
+#   整条链**：本仓的 `dl_pid_alive` 必须与共享部署库的 `lock_pid_alive`
+#   给出**同一个答案**，且等于 **OS 的事实**。
+#   ★「委托」不等于「判据消失」：委托之后，**前提**（共享部署库已加载）
+#     变成新的失效面 ⇒ 由 I19 单独钉它。
 #
 # ★ 三个臂：
-#   (a) **模拟 EPERM**（替换 OS 探针，只换环境不换被测对象）⇒ ★ 任何 uid 下都有牙
-#       （root 跑判据时 kill -0 谁都成功 ⇒ 真机复现不出 EPERM ⇒ 必须有模拟臂）。
-#   (b) **真机跨用户**：pid 1（launchd / systemd，root 的）⇒ 普通用户对它 kill -0
-#       只会得到 EPERM ⇒ 这是**真实**的 EPERM 场景。
-#   (c) **否定臂**：死 pid / pid 0 / 畸形 pid 必须判「死」⇒ 防止判据变成「永远活着」。
-verdict_sim="$(bash -c '
+#   (a) **模拟臂**：把判据换成会说「死」/说「活」的替身 ⇒ 本仓必须**跟着**
+#       说 ⇒ 证明链是通的（不是本仓自己另算了一套）。
+#   (b) **真机跨用户**：pid 1（launchd / systemd，root 的）⇒ 普通用户对它
+#       kill -0 只会得到 EPERM ⇒ 这是**真实**的 EPERM 场景。
+#   (c) **否定臂**：死 pid / pid 0 / 畸形 pid 必须判「死」⇒ 防止判据变成
+#       「永远活着」。
+# ★ ★ 模拟 EPERM 臂在第三轮**退役**：判据已归共享部署库（ps 口径）⇒ 实现里
+#   **不再有 EPERM 分支** ⇒「模拟 EPERM」这件事本身已不存在 ⇒ 留着它会让人
+#   误以为本仓还有一个 kill -0 快通道。⇒ EPERM 类的牙现在由「真机跨用户臂」
+#   + 变异臂（把委托换回 kill -0-only 实现 ⇒ 必须红）承担。
+#
+# ★ 前提检查（★ 仓内纪律：造「某件事不会发生」的前提时，先证这个前提成立）：
+#   否定臂在「判据没加载」时也会输出 DEAD ⇒ **假绿** ⇒ 先证判据确实可用。
+if ! command -v lock_pid_alive >/dev/null 2>&1; then
+  fail 'precondition: the liveness oracle must be loaded (shared SSOT or its test double)'
+fi
+
+verdict_sim_dead="$(bash -c '
   source "$1/scripts/deploy-local-lib.sh"
-  # 模拟 EPERM：kill 探针失败（无权限），ps 探针看得见（跨用户安全）
-  dl_pid_probe_kill() { return 1; }
-  dl_pid_probe_ps() { return 0; }
+  source "$2"
+  # 模拟：判据说「这个 pid 不存在」
+  lock_pid_alive() { return 1; }
   dl_pid_alive 424242 && printf ALIVE || printf DEAD
-' _ "$ROOT")"
-[[ "$verdict_sim" == "ALIVE" ]] \
-  || fail "a live process we may not signal (EPERM) must be judged ALIVE, got $verdict_sim"
+' _ "$ROOT" "$ORACLE_BOOTSTRAP")"
+[[ "$verdict_sim_dead" == "DEAD" ]] \
+  || fail "the repo must follow the shared oracle verdict (a dead pid must be DEAD), got $verdict_sim_dead"
+
+verdict_sim_alive="$(bash -c '
+  source "$1/scripts/deploy-local-lib.sh"
+  source "$2"
+  # 模拟：判据说「这个 pid 活着」（跨用户的活进程 ⇒ ps 看得见）
+  lock_pid_alive() { return 0; }
+  dl_pid_alive 424242 && printf ALIVE || printf DEAD
+' _ "$ROOT" "$ORACLE_BOOTSTRAP")"
+[[ "$verdict_sim_alive" == "ALIVE" ]] \
+  || fail "the repo must follow the shared oracle verdict (a live foreign-user pid must be ALIVE), got $verdict_sim_alive"
 
 verdict_live="$(bash -c '
   source "$1/scripts/deploy-local-lib.sh"
+  source "$2"
   dl_pid_alive $$ && printf ALIVE || printf DEAD
-' _ "$ROOT")"
+' _ "$ROOT" "$ORACLE_BOOTSTRAP")"
 [[ "$verdict_live" == "ALIVE" ]] || fail "the calling process must be judged ALIVE, got $verdict_live"
 
 verdict_dead="$(bash -c '
   source "$1/scripts/deploy-local-lib.sh"
+  source "$2"
   dl_pid_alive 999999 && printf ALIVE || printf DEAD
-' _ "$ROOT")"
+' _ "$ROOT" "$ORACLE_BOOTSTRAP")"
 [[ "$verdict_dead" == "DEAD" ]] || fail "a dead pid must be judged DEAD, got $verdict_dead"
 
 # ★ pid 0 不是真进程（`kill -0 0` 探的是**进程组**、恒成功）⇒ 必须判死，
 #   否则一份 pid=0 的坏元数据会让锁**永远不可接管** ⇒ 机器被永久卡死。
 verdict_zero="$(bash -c '
   source "$1/scripts/deploy-local-lib.sh"
+  source "$2"
   dl_pid_alive 0 && printf ALIVE || printf DEAD
-' _ "$ROOT")"
+' _ "$ROOT" "$ORACLE_BOOTSTRAP")"
 [[ "$verdict_zero" == "DEAD" ]] || fail "pid 0 is not a process and must be judged DEAD, got $verdict_zero"
 
 verdict_junk="$(bash -c '
   source "$1/scripts/deploy-local-lib.sh"
+  source "$2"
   dl_pid_alive abc && printf ALIVE || printf DEAD
-' _ "$ROOT")"
+' _ "$ROOT" "$ORACLE_BOOTSTRAP")"
 [[ "$verdict_junk" == "DEAD" ]] || fail "a malformed pid must be judged DEAD, got $verdict_junk"
 
 # (b) 真机跨用户臂：先证「EPERM 前提在判据运行时真的成立」，再判结论。
 #     ★ 仓内纪律：造「某件事不会发生」的前提时，先证这个前提成立。
 if [[ "$(id -u)" -eq 0 ]]; then
-  printf 'SKIP real cross-user liveness arm: running as root (no EPERM observable; the simulated arm above covers it)\n'
+  printf 'SKIP real cross-user liveness arm: running as root (no EPERM observable; the simulated arms above cover it)\n'
 elif kill -0 1 2>/dev/null; then
   printf 'SKIP real cross-user liveness arm: pid 1 is signalable by this user (no EPERM to observe)\n'
 else
@@ -279,13 +343,76 @@ else
     || fail 'precondition: pid 1 must be visible to ps for the cross-user liveness arm to mean anything'
   verdict_x="$(bash -c '
     source "$1/scripts/deploy-local-lib.sh"
+    source "$2"
     dl_pid_alive 1 && printf ALIVE || printf DEAD
-  ' _ "$ROOT")"
+  ' _ "$ROOT" "$ORACLE_BOOTSTRAP")"
   [[ "$verdict_x" == "ALIVE" ]] \
     || fail "a live process owned by another user must be judged ALIVE (EPERM is not death), got $verdict_x"
   pass 'cross-user liveness: a live foreign-user process is ALIVE (real EPERM observed)'
 fi
-pass 'liveness oracle: EPERM != ESRCH (simulated arm), dead/zero/malformed are DEAD'
+pass 'liveness oracle: delegated to the shared SSOT (dead/zero/malformed are DEAD)'
+
+# ── I19：判据不可用 ⇒ **显式失败**，不许猜（★ F1 的新变体的专治）───────────
+#
+# ★ 委托之后的新失效面：「共享部署库没被 source」⇒ 若本仓悄悄退化
+#   （把「不知道」当成「持有者已死」）⇒ **接管掉一把活锁** ⇒ 互斥被拆
+#   ⇒ ★ 这就是 F1 换了个入口 ⇒ 必须有专门的判据。
+# ⇒ 三条断言：
+#   ① `dl_pid_alive` 在判据缺席时返回 **2（不知道）**，不是 1（死）；
+#   ② `dl_acquire_switch_lock` 在判据缺席时 **rc=75 + 可读原因**
+#      ⇒ 绝不接管、绝不创建锁；
+#   ③ `dl_switch_lock_is_stale` 在判据缺席时判 **不是残锁**（fail-closed）。
+nossot_root="$TMP/nossot"
+mkdir -p "$nossot_root"
+unknown_rc="$(bash -c '
+  source "$1/scripts/deploy-local-lib.sh"
+  # ★ 库文件自带 `set -euo pipefail` ⇒ 非零返回会**中断**子 shell
+  #   ⇒ 取退出码必须放在条件上下文里（★ 与生产代码同一纪律）。
+  if dl_pid_alive $$ >/dev/null 2>&1; then rc=0; else rc=$?; fi
+  printf "rc=%s\n" "$rc"
+' _ "$ROOT")"
+[[ "$unknown_rc" == "rc=2" ]] \
+  || fail "without the shared oracle the liveness verdict must be UNKNOWN (rc=2), not DEAD (rc=1), got $unknown_rc"
+
+rc=0
+nossot_out="$(bash -c '
+  source "$1/scripts/deploy-local-lib.sh"
+  export LOCK_TMP_ROOT="$2"
+  dl_acquire_switch_lock
+' _ "$ROOT" "$nossot_root" 2>&1)" || rc=$?
+[[ "$rc" -eq 75 ]] \
+  || fail "without the shared oracle, acquiring the switch lock must fail fast with 75, got rc=$rc ($nossot_out)"
+grep -qi 'not loaded' <<<"$nossot_out" \
+  || fail "the refusal must say WHY (the shared oracle is missing), got: $nossot_out"
+[[ ! -e "$nossot_root/kx-llm-gateway-switch.lock" ]] \
+  || fail 'without the shared oracle the switch lock must not be created or taken over'
+
+stale_verdict="$(bash -c '
+  source "$1/scripts/deploy-local-lib.sh"
+  export LOCK_TMP_ROOT="$2"
+  p="$LOCK_TMP_ROOT/kx-llm-gateway-switch.lock"
+  mkdir -p "$p"
+  printf "target=local-switch\npid=%s\nstarted_at=2026-10-28T00:00:00Z\n" "$$" > "$p/metadata"
+  dl_switch_lock_is_stale && printf STALE || printf NOT-STALE
+' _ "$ROOT" "$nossot_root")"
+[[ "$stale_verdict" == "NOT-STALE" ]] \
+  || fail "an UNKNOWN holder liveness must not be treated as a stale lock (fail-closed), got $stale_verdict"
+
+# ④ 恢复命令在判据缺席时也必须**拒绝**（不猜、不清）。
+recover_nossot_rc=0
+recover_nossot="$(bash -c '
+  source "$1/scripts/deploy-local-lib.sh"
+  export LOCK_TMP_ROOT="$2"
+  p="$LOCK_TMP_ROOT/kx-llm-gateway-switch.lock"
+  mkdir -p "$p"
+  printf "target=local-switch\npid=%s\nstarted_at=2026-10-28T00:00:00Z\n" "$$" > "$p/metadata"
+  dl_recover_switch_lock
+' _ "$ROOT" "$nossot_root" 2>&1)" || recover_nossot_rc=$?
+[[ "$recover_nossot_rc" -ne 0 ]] \
+  || fail "recovery must refuse when the liveness of the holder cannot be determined, got rc=0 ($recover_nossot)"
+[[ -e "$nossot_root/kx-llm-gateway-switch.lock" ]] \
+  || fail 'recovery must not remove the lock when the shared oracle is missing'
+pass 'a missing shared oracle fails fast and never guesses (UNKNOWN != DEAD)'
 
 # ── I15：恢复命令的两档（持有者读不出来 ⇒ 默认档拒绝；--force 才清）──────
 #
@@ -345,23 +472,21 @@ pass 'a live holder is refused because it is alive (not because metadata was unr
 #   同样语义：抢不到就退出 1）⇒ 把 flock 分支拉进**生产路径**
 #   （dl_acquire_switch_lock 自己按可用性选分支，不是直接调内部函数）。
 fake_flock="$TMP/fake-flock"
-cat > "$fake_flock" <<'PYEOF'
-#!/usr/bin/env python3
-import fcntl, sys
-args = sys.argv[1:]
-if args and args[0] == "-n":
-    args = args[1:]
-fd = int(args[0])
-try:
-    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except OSError:
-    sys.exit(1)
-sys.exit(0)
-PYEOF
-chmod +x "$fake_flock"
+# ★ 假 flock 来自**共享 helper**（tests/lib/fake-flock.sh）⇒ 仓内只此一份
+#   ⇒ 另一道门（跨仓对拍门）也用它 ⇒ 两边量的是同一个东西。
+# shellcheck source=lib/fake-flock.sh
+source "$ROOT/tests/lib/fake-flock.sh"
+fake_flock="$(fake_flock_make "$TMP/fake-flock")"
 
 # ★ 注意：透传 "$@"（第 2 个起）⇒ 被测脚本里的 "$1"（仓库根）才拿得到。
-flock_env() { LOCK_TMP_ROOT="$LOCK_TMP_ROOT" DL_SWITCH_LOCK_FLOCK_BIN="$fake_flock" bash -c "$1" "${@:2}"; }
+# ★ 第三轮：判据已**委托**共享部署库 ⇒ 子 shell 里必须把判据一起加载
+#   （否则子 shell 会走「判据缺席 ⇒ fail-fast」那条路 ⇒ flock 形态的臂
+#   会因为**理由不对**而变绿/变红 ⇒ ★ 判据必须因为「语义」而通过）。
+flock_env() {
+  LOCK_TMP_ROOT="$LOCK_TMP_ROOT" DL_SWITCH_LOCK_FLOCK_BIN="$fake_flock" \
+    bash -c "source \"$ORACLE_BOOTSTRAP\"
+$1" "${@:2}"
+}
 
 # ── I11：flock 形态可达且语义正确 ────────────────────────────────────────
 out="$(flock_env '
