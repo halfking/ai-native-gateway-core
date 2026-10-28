@@ -1,6 +1,7 @@
 package executors
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
@@ -121,6 +122,50 @@ func TestPrepareRequestBodyWithNative_DeepSeekMaxTokensPreserved(t *testing.T) {
 	lobj := mustJSON(t, legacy)
 	if lobj["max_tokens"] != float64(8192) {
 		t.Fatalf("non-native deepseek: max_tokens = %v, want 8192 (cap must keep its teeth)", lobj["max_tokens"])
+	}
+}
+
+// TestApplyInlineValidation_NativePairKeepsVendorParams：legacy 路径
+// （e.IR == nil，LLM_GATEWAY_IR_CONVERTER=false 的紧急回退形态）把 body
+// 整体经 IR 往返一次 —— 原生对必须在这条路径上也保住厂商私有参数
+// （否则「IR 路径修了、legacy 路径漏了」= 原生对保证只在半条路上成立）。
+func TestApplyInlineValidation_NativePairKeepsVendorParams(t *testing.T) {
+	// thinking{type:enabled} 在 MiniMax 目标上会被 paramreg 改写为
+	// {"type":"adaptive"}（IR 层的对照臂已钉）；原生对必须原样。
+	body := []byte(`{"model":"minimax-m2","messages":[{"role":"user","content":"hi"}],` +
+		`"thinking":{"type":"enabled","budget_tokens":1024},"zcode_vendor_flag":true}`)
+
+	native := applyInlineValidation(body, "np-inline", "minimax", context.Background(), true)
+	var nObj map[string]any
+	if err := json.Unmarshal(native, &nObj); err != nil {
+		t.Fatalf("unmarshal native: %v\n%s", err, native)
+	}
+	thinking, ok := nObj["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("native legacy path: thinking missing/not an object:\n%s", native)
+	}
+	if thinking["type"] != "enabled" {
+		t.Fatalf("native legacy path: thinking.type = %v, want \"enabled\" (verbatim)\n%s", thinking["type"], native)
+	}
+	if thinking["budget_tokens"] != float64(1024) {
+		t.Fatalf("native legacy path: thinking.budget_tokens = %v, want 1024 (verbatim)\n%s", thinking["budget_tokens"], native)
+	}
+	if _, present := nObj["zcode_vendor_flag"]; !present {
+		t.Fatalf("native legacy path: vendor param dropped:\n%s", native)
+	}
+
+	// 对照臂：非原生对仍走既有方言策略（thinking 被改写）。
+	legacy := applyInlineValidation(body, "np-inline", "minimax", context.Background(), false)
+	var lObj map[string]any
+	if err := json.Unmarshal(legacy, &lObj); err != nil {
+		t.Fatalf("unmarshal legacy: %v\n%s", err, legacy)
+	}
+	lThinking, ok := lObj["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("non-native legacy path: thinking missing/not an object:\n%s", legacy)
+	}
+	if lThinking["type"] != "adaptive" {
+		t.Fatalf("non-native legacy path: thinking.type = %v, want \"adaptive\" (dialect policy must keep its teeth)\n%s", lThinking["type"], legacy)
 	}
 }
 

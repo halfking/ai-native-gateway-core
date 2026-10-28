@@ -3170,7 +3170,7 @@ func (e *Executor) finalizeOpenAIUpstreamBodyNative(params *ExecParams, cand pro
 		// tool messages reach upstream unmangled; MiniMax 4xx-cascades;
 		// gateway loops 90s; client gets 503.
 		preBodyBytes := len(bodyBytes)
-		bodyBytes = applyInlineValidation(bodyBytes, params.RequestID, cand.CatalogCode, params.R.Context())
+		bodyBytes = applyInlineValidation(bodyBytes, params.RequestID, cand.CatalogCode, params.R.Context(), nativePair)
 		postBodyBytes := len(bodyBytes)
 		slog.Info("finalizeOpenAIUpstreamBody: legacy path (no IR) + inline validation",
 			"request_id", params.RequestID,
