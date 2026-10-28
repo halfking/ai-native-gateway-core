@@ -72,8 +72,11 @@ describe('BoardOperationalView', () => {
     expect(w.text()).toContain('运行中')
     // 缺字段的安全兜底
     expect(w.text()).toContain('—')
-    // 4 张 selfcheck 卡片在 selfcheck 部分
-    expect(w.findAll('.bo-section')[1].findAll('.bo-card-metric')).toHaveLength(4)
+    // 4 行 selfcheck 指标（2026-10-28 第 30 增量：原来是 4 张同尺寸同构的
+    // 「小标签 + 巨数字」卡并排 ⇒ 改成「标签 → 值」的行）
+    expect(w.findAll('.bo-section')[1].findAll('.bo-metric')).toHaveLength(4)
+    // ★ 断言「不再有那 4 张卡」本身 ⇒ 防止有人把卡片形态改回来
+    expect(w.findAll('.bo-section')[1].findAll('.bo-card-metric')).toHaveLength(0)
   })
 
   it('shows error message on fetch failure and keeps refresh button re-clickable', async () => {

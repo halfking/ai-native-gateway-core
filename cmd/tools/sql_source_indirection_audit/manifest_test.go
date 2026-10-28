@@ -1497,6 +1497,15 @@ var documentedSnapshot = bucketSnapshot{
 	//
 	// ★ 2026-10-20（迁移 890）：上面对「逐项判方向」的整段说明就是本版的依据。
 	//
+	// ★ 2026-10-28（分支审计轮）：147 → 156（canonical 59 → 62 文件 / 125 → 130 处、
+	//   unresolved 13 → 14 文件 / 22 → 26 处）。+9 处全部是「变大 = 把看不见变成看得见」
+	//   或新增会话族读方：① origin a321cd963（R50 探针选型读点改走会话族窄投影）
+	//   新增 admin/credential_monitor.go(1) / bg/shared_pick.go(1)（canonical）；
+	//   ② origin e5651bd69（热路径 turn INSERT 幂等检查两臂直查）新增
+	//   internal/sessionfamily/exists_by_key.go(1)（unresolved，src 是形参、两臂字面量在同函数内）；
+	//   ③ origin R172 两臂窄投影新增 internal/sessionfamily/turns_reads.go(3)（canonical）；
+	//   ④ wip/01~07 合入新增读点（recording_consent / session_trash / maas 账单族）。
+	//   4 个文件已逐站点登记进 indirectSiteAssessments（含 Via 机制与退役后果）。
 	// ★ 2026-10-21（R65 轮）：135 → 141（canonical 57 → 59 文件 / 116 → 122 处）。
 	//   成因逐站点核过（见上面第 ⑤ 条）：+7 处来自三个新增的会话族读方文件，
 	//   −1 处是一个拼接点被改写成纯字面量（离开了本工具的口径，目标仍是会话族）。
@@ -1524,6 +1533,7 @@ var documentedSnapshot = bucketSnapshot{
 	//      （唯一两个调用点的入参都是 session_turns_hot / session_turns）。
 	//   ⚠ **方向判据逐条核过**：没有任何一个桶变小 ⇒ 不是「扫描范围被改小/
 	//     解析失败被吞」；全部 5 处的 resolved 关系名都是会话族 ⇒ 无 v1 读方。
+
 	// ★ 2026-10-28（r1040「事实源漂移」线）：147 → 156。
 	//   **不是只改数字** —— 逐文件逐桶对拍过（两个时点各跑一次本工具）：
 	//

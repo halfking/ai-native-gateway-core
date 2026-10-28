@@ -349,6 +349,14 @@ func relationUsedAsSource(flat, rel string) bool {
 		pre := strings.TrimRight(flat[:abs], " \t\n")
 		for _, kw := range []string{"FROM", "JOIN", "INTO", "UPDATE"} {
 			if len(pre) >= len(kw) && strings.EqualFold(pre[len(pre)-len(kw):], kw) {
+				// ★ DELETE FROM parent 不是「读」（2026-10-28 分支审计轮）：
+				//   wip/02 的 session_trash.go / recording_consent.go 用
+				//   「DELETE FROM hot + DELETE FROM 父表」的双面删习语 ⇒ 被本门当裸读误伤。
+				//   真读法必须走合并视图（trash 的 INSERT..SELECT 就走 session_bodies_unified）；
+				//   DELETE 的两面覆盖由 repair_two_surface_test.go 逐条断言 ⇒ 本门只管读。
+				if kw == "FROM" && endsWithWord(strings.TrimRight(pre[:len(pre)-len(kw)], " \t\n"), "DELETE") {
+					break
+				}
 				return true
 			}
 		}
@@ -370,6 +378,34 @@ func occurrencesOf(flat, sub string) []int {
 
 func isIdentChar(c byte) bool {
 	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// endsWithWord reports whether s ends with `word` as a complete identifier
+// (preceded by a non-identifier char or at string start).
+func endsWithWord(s, word string) bool {
+	if len(s) < len(word) || !strings.EqualFold(s[len(s)-len(word):], word) {
+		return false
+	}
+	boundary := len(s) == len(word) || !isIdentChar(s[len(s)-len(word)-1])
+	return boundary
+}
+
+// TestBareParentReadIgnoresPairedDelete 2026-10-28 分支审计轮的反向+正向对照：
+// 双面 DELETE 的父表腿不算裸读；真读法（SELECT / INSERT..SELECT）仍要红。
+func TestBareParentReadIgnoresPairedDelete(t *testing.T) {
+	pairedDelete := `DELETE FROM public.session_bodies_hot WHERE tenant_id = $1;
+	                 DELETE FROM public.session_bodies WHERE tenant_id = $1`
+	if hits := bareParentReadsIn(pairedDelete); len(hits) != 0 {
+		t.Fatalf("双面 DELETE 的父表腿被当裸读误伤：%v", hits)
+	}
+	bareSelect := `SELECT body FROM public.session_bodies WHERE tenant_id = $1`
+	if hits := bareParentReadsIn(bareSelect); len(hits) != 1 {
+		t.Fatalf("裸父表 SELECT 应被本门判红，实测 %d 处", len(hits))
+	}
+	insertSelect := `INSERT INTO public.session_bodies_trash SELECT * FROM public.session_bodies WHERE tenant_id = $1`
+	if hits := bareParentReadsIn(insertSelect); len(hits) != 1 {
+		t.Fatalf("INSERT..SELECT 裸父表读应被本门判红，实测 %d 处", len(hits))
+	}
 }
 
 func hasSQLKeywordBefore(pre string) bool {

@@ -2,6 +2,12 @@
 -- Idempotent: IF NOT EXISTS / ON CONFLICT DO NOTHING.
 -- Does NOT alter credit_ledger entry_type CHECK (coupon credits use entry_type='adjust', ref_type='coupon').
 
+-- 锁守卫（startup_ddl_lock_guard_gate_test.go）：本文件含 CREATE INDEX（非 CONCURRENTLY，
+-- 拿 ShareLock）与 ALTER TABLE ... ENABLE ROW LEVEL SECURITY ⇒ 必须自带 lock_timeout，
+-- 避免等锁期间堵住全库（参见 §44）。幂等 DDL 本身在锁等待前就会跳过已存在对象。
+SET LOCAL lock_timeout = '2s';
+SET LOCAL statement_timeout = '30s';
+
 CREATE TABLE IF NOT EXISTS maas_monthly_bills (
     id              BIGSERIAL PRIMARY KEY,
     tenant_id       VARCHAR(64) NOT NULL REFERENCES tenants(code) ON DELETE CASCADE,

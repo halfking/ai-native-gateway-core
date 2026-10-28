@@ -253,6 +253,9 @@ func TestSection143103_SysNamespaceIsGatewayOnly(t *testing.T) {
 	}
 
 	// ── (b) deriveGatewaySessionID：非 gw_/gt_/gs_ 一律前置 gw_ ─────────
+	// 2026-10-28 分支审计轮：wip/01 把实现收拢进 internal/sessionid（单一真值源），
+	// session_routing.go 只剩委托。门跟着委托链走：① 委托必须仍然指向
+	// sessionid.DeriveGatewayID（防静默换实现）；② gw_ 前置逻辑去它的真身里断言。
 	routingSrc := stripComments143103(readRepoFile143103(t, filepath.Join("domains", "streaming", "session_routing.go")))
 	body = funcBody143103(t, routingSrc, "deriveGatewaySessionID")
 	// ★★ r1041 轮（2026-10-28）：★ 本条的**实现位置变了** ——

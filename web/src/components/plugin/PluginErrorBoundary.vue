@@ -28,6 +28,6 @@ function retry() {
 </template>
 
 <style scoped>
-.plugin-error-boundary__panel { padding: 12px; border: 1px solid var(--danger, #b42318); border-radius: 6px; }
-.plugin-error-boundary__detail { color: var(--text-secondary, #666); font-size: 0.875rem; }
+.plugin-error-boundary__panel { padding: 12px; border: 1px solid var(--danger); border-radius: 6px; }
+.plugin-error-boundary__detail { color: var(--text-secondary); font-size: 14px; }
 </style>

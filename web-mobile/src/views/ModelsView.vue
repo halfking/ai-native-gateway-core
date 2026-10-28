@@ -329,12 +329,21 @@ onMounted(() => { void load() })
    本页左 1.0pt / 右 1.0pt，而正常页是 15.5~16pt。
    ⚠️ 同一批测量里其余页面全是 15.5~16pt ⇒ 影响面**不是全站**，逐页量、逐页改。
    ⚠️ 别改成 `.page` 类 —— 本视图不是滚动宿主（滚动宿主是 HyperList）。
-   ⚠️ 只补横向；`padding-bottom` 原来就有。 */
+   ⚠️ 只补横向；`padding-bottom` 原来就有。
+   ⚠️ 2026-10-28 订正：上面「滚动宿主是 HyperList」对本页**从未成立** —— 目录是
+   一次性全量加载（无分页 API），从未接 HyperList，根容器也不带 overflow ⇒ 壳层
+   `.hyper-app__main`（纯布局容器，overflow:hidden，07 §1 一个轴一个主宿主）把首屏
+   以下全部剪裁。真机实测（vivo V2436A / llm.itestu.cn /m/models）CDP 读数：内容
+   scrollHeight 421,636px、链上**零滚动宿主** ⇒「模型目录无法滑动」。修法：根容器
+   自任滚动宿主（UsageView 根即 `.page`，同一形态；`.page` 同款 overflow 三件套）。 */
 .model-catalog {
   display: grid;
   gap: 12px;
   padding-inline: var(--app-space-content-x);
   padding-bottom: var(--app-safe-bottom);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
 }
 .model-catalog__toolbar, .model-catalog__featured, .model-catalog__identity, .model-catalog__meta, .model-catalog__alias { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
 .model-catalog__tabs { display: flex; gap: 6px; overflow-x: auto; }

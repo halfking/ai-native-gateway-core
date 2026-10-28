@@ -147,7 +147,7 @@ function onSubmit() {
 <style scoped>
 .plugin-settings-form { display: flex; flex-direction: column; gap: 12px; max-width: 28rem; }
 .plugin-settings-form__row { display: flex; flex-direction: column; gap: 4px; }
-.plugin-settings-form__hint { margin: 0; color: var(--text-secondary, #666); font-size: 0.875rem; }
-.plugin-settings-form__error { color: var(--danger, #b42318); }
-.plugin-settings-form__empty { color: var(--text-secondary, #666); }
+.plugin-settings-form__hint { margin: 0; color: var(--text-secondary); font-size: 14px; }
+.plugin-settings-form__error { color: var(--danger); }
+.plugin-settings-form__empty { color: var(--text-secondary); }
 </style>

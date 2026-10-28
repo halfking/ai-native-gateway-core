@@ -281,6 +281,30 @@ export async function computeDeadKeyFacts(loadLocale) {
     walkPluginManifests(pluginManifestDir)
   }
 
+  // ②′ 插件清单侧引用（2026-10-28 分支审计轮）：插件运行时的 settings schema
+  //   用 **Go 结构体 tag**（`title_key:"ns.key"`）与 `LabelKey:` 字段承载 i18n 键，
+  //   前端 PluginSettingsForm 按它调 t() ⇒ 这些键是**活键**，但上面的 walk 只扫
+  //   `web/src`（.vue/.ts/.js）⇒ Go 侧引用看不见 ⇒ 6 个 `plugin.hello.*` 被误判死。
+  //   ⇒ 引用面扩到仓库根的 plugins/ 与 plugin-runtime/（.go/.json/.yaml + 插件自带
+  //   web 资产 .js/.html —— hello 插件的 `data-i18n="ns.key"` 与自带 i18n.js 都在此）。
+  //   ★ 只往保守方向扩（多判活键 ⇒ 少删 ⇒ 不会误删）；不扫 docs（幽灵引用教训，第 14 增量）。
+  const repoRoot = join(ROOT, '..')
+  const walkGo = (dir) => {
+    if (!existsSync(dir)) return
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) {
+        if (e.name === 'node_modules' || e.name === '.worktrees' || e.name.startsWith('.')) continue
+        walkGo(p); continue
+      }
+      if (!/\.(go|json|ya?ml|js|html)$/.test(e.name)) continue
+      const src = readFileSync(p, 'utf8')
+      for (const k of collectStaticRefKeys(src)) refKeys.add(k)
+    }
+  }
+  walkGo(join(repoRoot, 'plugins'))
+  walkGo(join(repoRoot, 'plugin-runtime'))
+
   // ③ 判死（跨语种独有）
   const dead = []
   for (const loc of LOCALES) {
