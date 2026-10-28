@@ -70,8 +70,11 @@ type DispatcherConfig struct {
 	HTTPTimeout time.Duration
 	// BackpressureCooldown is how long the dispatcher pauses the whole loop
 	// after the first destination-backpressure failure in a batch. Defaults
-	// to 64s (backpressureRetryCap) so the aggregate probe cadence matches
-	// the per-event retry cap.
+	// to backpressureProbeCooldown (64s). ★ 刻意**不**复用
+	// backpressureRetryCap：那是「单条事件的退避上限」（指数封顶 10min），
+	// 而这是「整个派发循环的探测节奏」—— 探测是单条廉价请求，用 10min 的
+	// 盲区换不来任何额外减压（暂停期间本来就是 0 req/s），只会把「门已重开」
+	// 的发现延迟最多 10 分钟。两个常数语义不同，解耦就是防漂移。
 	BackpressureCooldown time.Duration
 	Logger               *slog.Logger
 }
@@ -94,7 +97,7 @@ func NewDispatcher(cfg DispatcherConfig) *Dispatcher {
 		cfg.HTTPTimeout = 10 * time.Second
 	}
 	if cfg.BackpressureCooldown == 0 {
-		cfg.BackpressureCooldown = backpressureRetryCap
+		cfg.BackpressureCooldown = backpressureProbeCooldown
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -335,9 +338,11 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) (dispatchOutcome, error) {
 			}
 			// 背压是目的地的全局属性：第一条就足以断定「门关了」。挂起整个
 			// 派发循环并停批（返回值告诉 dispatchBatch 别再 claim 下一条）。
-			// 211 实测（2026-10-28）：4191 条积压各自按 64s 退避独立重试，
-			// 合成 ~65 req/s 的送达风暴 + 24h 29.4 万条 WARN；asm inbox 排空
-			// 速率为 0——风暴没有换回任何进展，只是给关门的入口持续加压。
+			// 211 实测（2026-10-28）：4191 条积压各自独立重试（当时固定 64s
+			// 退避），合成 ~65 req/s 的送达风暴 + 24h 29.4 万条 WARN；asm
+			// inbox 排空速率为 0——风暴没有换回任何进展，只是给关门的入口
+			// 持续加压。停批后即使单条退避再怎么衰减，整循环也只有每个
+			// cooldown 一次探测。
 			d.tripBackpressurePause(time.Now())
 			return dispatchOutcomeBackpressure, nil
 		case Retryable(err):
@@ -426,6 +431,14 @@ const (
 	backpressureRetryFloor = 8 * time.Second
 	backpressureRetryCap   = 10 * time.Minute
 )
+
+// backpressureProbeCooldown 是背压熔断器的探测节奏（与单条事件的退避上限
+// backpressureRetryCap **刻意解耦**）：暂停期间整循环本来就是 0 req/s，
+// 探测又只是单条廉价请求，64s 的节奏让「门已重开」最多 64s 就被发现，
+// 而把 10min 级的盲区留给它只会白白拖慢恢复。（2026-10-29 合并防漂移：
+// backpressureRetryCap 曾从 64s 改为 10min，若默认值继续引用它，探测节奏
+// 会被动跟着变成 10 分钟。）
+const backpressureProbeCooldown = 64 * time.Second
 
 // backpressureBackoff 由 attempts 推导本次退避时长：floor × 2^(attempts-1)
 // 截到 cap。attempts 是历史累计值（含固定 64s 时代），老积压事件首拍即落
