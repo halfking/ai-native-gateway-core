@@ -12823,11 +12823,23 @@ ursm 仪表（仍在 ursmcheck 轨）；probe necessity 索引 93% 读放大（3
 >   ★ （★ **只有**第 8 条红、★ **其余 7 条既有断言照常绿** ⇒ ⇒ **盲区是真的**的证据）；
 >   ★ M03 **掏空臂**（★ 掏空判据令其恒真 + 保留重复登记 ⇒ 全部转绿 ⇒ ⇒ **归因 + 非空洞**）。
 >   ★ 台账**逐条指名道姓到【断言名】**（★ vitest JSON reporter 取每条 status ⇒ 只看 rc 不算数）。
-> ★ 读数：★ `go test ./scripts/ursmcheck/ -count=1 -timeout=1800s` **全包 ok 1011.711s**
->   （★ 含新增的 `live_write_shape_test.go`）；★ `npx vitest run src/components/ui/mobileListUx.spec.ts` **8/8**；
->   ★ 变异台 **4/4**；★ 还原 md5 逐字复核一致（`87d50772caa04cbe3500c47aaf58bee2`）。
-> ★★ **读数要标注负载**：★ 该窗口机器上**同时有两个** ursmcheck 全包在跑（★ 我方 + 并发会话），
->   ★ `load average 26.8/30.2/36.4` ⇒ ★★ 1011.7s 是**上界**不是基线。
+> ★ 读数（★ 全部在最终树 `991a19546` 上取得）：★ `go test ./... -count=1 -timeout=1800s`
+>   **346 包 ok / 1 红**（★ 红的唯一一处是仓内 **2026-09-21 已登记**的 flake
+>   `cmd/gateway.TestLiteRequestLogSink_TurnNoContinuesAcrossRestart` ⇒ macOS 临时目录
+>   `MkdirAll invalid argument` ⇒ ★★ **不是本轮回归**（★ 上游合并没碰 `cmd/gateway/`、
+>   ★ ★ 本会话 r1042–r1044 也没碰 `cmd/gateway/` 或 `storage/file/`；★ 精确用例隔离 **4/4 PASS**、
+>   ★ ★ 整包 `-count=10` **ok 76.885s**）⇒ ★★ **也仍未关闭**（★ 登记档明写「不能据一次
+>   ★ ★ 单包通过关闭」）⇒ ★ 本轮**没有**用加重试/换目录去抹平它）；
+>   ★ `go test ./scripts/ursmcheck/ -count=1 -timeout=1800s` **ok 789.672s**（★ 负载降后复测）；
+>   ★ `go build ./...` / `go vet ./...` / `gofmt -l` ✓；★ web `vue-tsc` **0 错** +
+>   ★ **27 个离线门 27/27 PASS** + 全量 `vitest` **282 文件通过 + 1 跳过 / 2880 通过 / 2 跳过 / 0 红**；
+>   ★ `npx vitest run src/components/ui/mobileListUx.spec.ts` **8/8**；★ 变异台 **4/4**；
+>   ★ 还原 md5 逐字复核一致（`87d50772caa04cbe3500c47aaf58bee2`）；
+>   ★ `bash tests/verify_cgo_convention_test.sh` ✓ / `bash scripts/checks/guards-sync.sh` ✓。
+> ★★ **读数要标注负载**：★ 同一棵树的 `ursmcheck` 两次读数 = **1011.711s**（load 26.8/30.2/36.4）
+>   ★ ⇒ **789.672s**（负载降后）⇒ ★★ 相差 222s（28%）⇒ ⇒ ★★ **1011.7s 是上界不是基线**
+>   ★ ⇒ ⇒ **真值 ≈ 790s** ⇒ ⇒ ★★ **900s 预算的余量只有 ~110s**（★ 仓内自记口径 ~60s）
+>   ★ ⇒ ⇒ ⇒ 本轮把预算提到 **1800s** 是**必要**的，不是宽松。
 > ★ **本轮明确没做（留给下一轮，别重复排查）**：★ **没有**把「登记表自身不重复」**批量推广**到
 >   ★ 其它登记表型文件（★ `internal/partguard` 白名单 / `admin` 裸父表登记表等 ⇒ ★★ **先出清单再动手**，
 >   ★★ 批量落地就是在改无辜的代码）；★ **没有**静止窗口复测两个 p99 性能门（★ load 26~36）；
