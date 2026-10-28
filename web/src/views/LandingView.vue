@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router'
 import ServiceLandingPage from '../components/ServiceLandingPage.vue'
 import { localeArray } from '../i18n'
 import { SITE_LOGO_SIZE } from '../config/brand'
-import { detectTheme, logoSrc } from '../theme'
+import { currentTheme, detectTheme, logoSrc } from '../theme'
 
 const { t, tm } = useI18n()
 const router = useRouter()
@@ -14,7 +14,7 @@ let logoObserver: MutationObserver | null = null
 
 onMounted(() => {
   brandLogo.value = logoSrc(detectTheme())
-  logoObserver = new MutationObserver(() => { brandLogo.value = logoSrc(detectTheme()) })
+  logoObserver = new MutationObserver(() => { brandLogo.value = logoSrc(currentTheme()) })
   logoObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 })
 onUnmounted(() => logoObserver?.disconnect())
