@@ -530,17 +530,29 @@ if [[ -n "$VIA" ]]; then
   #     · 只是构建产物的时间戳变了 ⇒ 不再误报。
   #   （构建生成的那份 menu-config.json 仍会随 tar 上树 —— 那本来就是
   #     要进 SPA 的构建产物。）
-  DD_BUILD_SHA="$(git -C "$DD_REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || true)"
-  # ★ 2026-10-23（12h 审计轮修）：dirty 判定**排除三个版本产物**。
-  #   理由：bump-version.sh（systemd 路径 245/154 的 1/9 步）会改
-  #   VERSION / version.json / web/public/version.json 三个**被 git 跟踪**的文件
-  #   **且从不提交** ⇒ ⇒ 任意一次 245/154 部署之后，这个共享 checkout 就长期脏
-  #   ⇒ ⇒ 若把它们算进 dirty 判定 ⇒ ⇒ 2026-10-22 那次「版本戳不再恒带 -dirty」
-  #   ⇒ ⇒ 的修复会**从另一扇门被原样顶回来**（告警永久失效）。
-  #   ⇒ 版本产物的漂移 ≠ 源码漂移 ⇒ ⇒ 故排除。
-  #   ⇒ 门：scripts/ursmcheck/deploy_shared_build_lock_guard_test.go 判据④。
-  if [[ -n "$DD_BUILD_SHA" && -n "$(git -C "$DD_REPO_ROOT" status --porcelain --untracked-files=no -- . ':(exclude)VERSION' ':(exclude)version.json' ':(exclude)web/public/version.json' 2>/dev/null)" ]]; then
-    DD_BUILD_SHA="${DD_BUILD_SHA}-dirty"
+  # ★ 2026-10-28 修：显式给的 DD_BUILD_SHA 不被 git 覆盖。
+  #   理由：这一行原本**无条件**用 git rev-parse 的结果覆盖 DD_BUILD_SHA ⇒
+  #   运维在部署机上 `export DD_BUILD_SHA=<号>` 的逃生门被静默吃掉 ⇒ 运维
+  #   声明的身份永远到不了目标机（目标机侧会因空号而 fail-closed ⇒ 部署
+  #   变成「两条出路都走不通」的死路）。
+  #   ⇒ 语义改为：**显式给的值优先**（运维声明）；没给才从 git 取。
+  #   ⇒ dirty 判定只对 git 取到的号有意义（声明的号是运维自称，不追加
+  #     -dirty——追加反而会让「声明的号」与「实际树」的关系更难读）。
+  if [[ -z "${DD_BUILD_SHA:-}" ]]; then
+    DD_BUILD_SHA="$(git -C "$DD_REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || true)"
+    # ★ 2026-10-23（12h 审计轮修）：dirty 判定**排除三个版本产物**。
+    #   理由：bump-version.sh（systemd 路径 245/154 的 1/9 步）会改
+    #   VERSION / version.json / web/public/version.json 三个**被 git 跟踪**的文件
+    #   **且从不提交** ⇒ ⇒ 任意一次 245/154 部署之后，这个共享 checkout 就长期脏
+    #   ⇒ ⇒ 若把它们算进 dirty 判定 ⇒ ⇒ 2026-10-22 那次「版本戳不再恒带 -dirty」
+    #   ⇒ ⇒ 的修复会**从另一扇门被原样顶回来**（告警永久失效）。
+    #   ⇒ 版本产物的漂移 ≠ 源码漂移 ⇒ ⇒ 故排除。
+    #   ⇒ 门：scripts/ursmcheck/deploy_shared_build_lock_guard_test.go 判据④。
+    if [[ -n "$DD_BUILD_SHA" && -n "$(git -C "$DD_REPO_ROOT" status --porcelain --untracked-files=no -- . ':(exclude)VERSION' ':(exclude)version.json' ':(exclude)web/public/version.json' 2>/dev/null)" ]]; then
+      DD_BUILD_SHA="${DD_BUILD_SHA}-dirty"
+    fi
+  else
+    log "DD_BUILD_SHA=${DD_BUILD_SHA} 为显式声明（不取 git、不追加 -dirty；部署机侧的运维声明）"
   fi
   # ★ 前端自动构建（2026-10-22）：**先构建，再判新鲜度**。
   # 顺序不能反：门判的是「产物是否比源码新」，不构建就判 ⇒ 门只会把
@@ -619,6 +631,16 @@ if [[ -n "$VIA" ]]; then
   DD_GO_BASE_IMAGE="${DD_GO_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
   DD_RUNTIME_BASE_IMAGE="${DD_RUNTIME_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
   log "在 $VIA 上执行 deploy（builder=${DD_GO_BASE_IMAGE} runtime=${DD_RUNTIME_BASE_IMAGE}）..."
+  # ★ 2026-10-28：--via 路径的版本身份闸（部署机侧）。
+  #   这一段在**目标机侧的门之前**（目标机侧那份脚本会在本脚本 exit 之后
+  #   独立执行）⇒ ⇒部署机侧取不到号时若不拦，目标机会撞上 fail-closed die
+  #   ⇒ ⇒ 报错发生在远端、看起来像「远端坏了」，而根因在部署机 ⇒ 排查
+  #   成本极高。⇒ 在这里（信息最全的地方）拦：号为空 ⇒ 不发这次 ssh。
+  #   ⇒ 与目标机侧的门同语义、同措辞（两边都是「宁可不部署，也不要
+  #     产出一份身份不明的生产槽」）。
+  if [[ -z "${DD_BUILD_SHA:-}" ]]; then
+    die "部署机侧取不到构建提交号（DD_REPO_ROOT=$DD_REPO_ROOT 无 .git 或 git rev-parse 失败）⇒ 转发给目标机的号会是空 ⇒ 目标机将因 /version 身份不明而拒绝部署。两条出路：① 换一个带 .git 的部署树（LLM_GATEWAY_ROOT 指向它）；② 显式 export DD_BUILD_SHA=<8位提交号> 后重跑（运维声明的身份，不会追加 -dirty）。"
+  fi
   ssh "$VIA" "cd '$DD_REMOTE_ROOT' && DD_BUILD_SHA='${DD_BUILD_SHA}'${_dd_fwd} LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS:-}' bash scripts/deploy-seamless-docker.sh ${_dd_args}"
   _dd_rc=$?
   # 只有远端真的跑完了，才置完成标记（fail-closed 的另一半）。
@@ -668,7 +690,7 @@ if [[ "$MODE" == "deploy" && -z "${DD_BUILD_SHA:-}" ]]; then
   fi
   log "目标机直跑：DD_BUILD_SHA 从本仓 git 取得 ${DD_BUILD_SHA}"
 elif [[ "$MODE" == "deploy" && -n "${DD_BUILD_SHA:-}" && ! -e "$DD_REPO_ROOT/.git" ]]; then
-  log "DD_BUILD_SHA=${DD_BUILD_SHA} 为显式提供（目标树无 .git，身份来自运维声明而非 git）"
+  log "DD_BUILD_SHA=${DD_BUILD_SHA} 为显式提供（目标树无 .git：或来自 --via 部署机转发，或来自运维声明；两种来源的号都会写进 /version）"
 fi
 
 mkdir -p "$DD_STATE_DIR/env" "$DD_STATE_DIR/logs"

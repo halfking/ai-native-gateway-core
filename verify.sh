@@ -106,6 +106,15 @@ bash tests/deploy_local_reap_test.sh
 echo "[verify] deploy-211 docker contracts"
 bash tests/deploy_211_contract_test.sh
 
+# 2026-10-28：/version 身份链（版本戳谎报家族）的**行为门**。
+# 上一轮只加了实现（fail-closed die）没加测试 ⇒ 有功能没牙齿；且当时的实现
+# 有两处真缺陷（显式给的号被 git 覆盖、--via 路径的门根本不执行）。这道门
+# 把引擎里那段身份闸的真代码抠出来驱动，断言它**真的拒绝**（三个变异臂：
+# 显式号被覆盖 / 第一道门降级为 log / --via 侧的门被删，逐个被抓红）。
+# ★ 零外部依赖：纯 bash，不碰 docker、不碰目标机。
+echo "[verify] deploy seamless version identity (behavior)"
+bash tests/deploy_seamless_version_identity_test.sh
+
 # 2026-10-23：211 的 nginx X-Real-IP 修补此前**从来没生效过**（引擎只在自己的
 # conf 里找「按域 443 块」，而 211 的 443 腿在通用 TLS 终结器里 ⇒ 每次部署
 # 打一条**假**告警「块形态变了?」）。判定逻辑已挪到
