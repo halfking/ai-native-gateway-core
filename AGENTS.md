@@ -13210,6 +13210,24 @@ canonical 视图 **1306 / 1536 ms**（热）· **3191 ms**（冷）· 两臂窄�
   ⇒ ★ **变异台累计 7 臂全检出**（M7 = executor IR 盖章）；★ 审计档补 **§9 核查清单
   + §10 遗留风险（8 条，含量化触发条件/后果/处置/缓解，并列出「已核实为不成立」的
   3 条不登记项）**。
+- ★★★ **第三轮批判审计（三巡，同日）：「接线存在但从未被喂过」一族** ——
+  ⇒ ★★ **T1 最值钱**：★ `ExecParams.ClientType` 的字段注释声称「Empty is only
+  allowed for legacy direct executor callers」，**但生产三个构造点（messages.go /
+  responses.go / handler.go）从没人填过它** ⇒ grep 实证零填充 ⇒ 功能没断纯因
+  `nativePairFor` 有 header/UA + body 标记两层兜底 ⇒ ★★ **「兜底链会掩盖断线」：
+  功能全绿 ≠ 输入真的到了门口** ⇒ 修：三构造点补 `ClientType: extractClientType(r)`。
+  ⇒ ★★ **M8 变异臂的诚实结论**：摘掉接线**没有任何行为测试会红**（兜底让功能等价）
+  ⇒ ★★ **行为测试在此结构性失效 ⇒ 源码钉测是唯一可红形态**
+  （`clienttype_wiring_pin_test.go`，仓内先例 modality_mismatch_wiring_guard）。
+  ⇒ ★ **T2**：`LLM_GATEWAY_NATIVE_PASSTHROUGH=off` 紧急开关**零测试**
+  （`sync.OnceValue` 进程内缓存 ⇒ 同进程测试翻转不了）⇒ 固化成**子进程双臂**
+  （★ 外层判断先写反过一次——变量叫 `ok` 语义是「子进程失败」，改名 `childPassed`
+  才对 ⇒ ★ **双臂变量命名要陈述被断言的事实**）。
+  ⇒ ★ **T3 量化的拒绝**：弱名 body 标记每候选重复解析实测 **3 候选×200KB =
+  0.608ms/请求**（强名 0.29µs）⇒ 占上游 RTT <1%、三客户端 UA 均有特征（弱名非
+  主路径）、修复需破坏 ExecParams 值语义 ⇒ **不修，登记 RISK-9（写清数字）**。
+  ⇒ ★ 变异台累计 **8 臂**（M8 = ClientType 接线摘除）；
+  审计档补 **§11 三巡**（T1~T4 核查表 + 4 条通用式）。
 ⇒ 审计档 `docs/audit/2026-10-28-原厂工具与原厂模型直连全参数直通轮.md`（§1~§8，
   含「全参数透传 vs 出错回退」两条独立证据链与 6 臂变异台）。
 
