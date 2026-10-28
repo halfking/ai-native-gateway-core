@@ -92,3 +92,73 @@ export function getTopologyPlugins(options?: { signal?: AbortSignal }): Promise<
     signal: options?.signal,
   })
 }
+
+// ── 供应商 kind（2026-10-28 选路层轮）──────────────────────────────
+// GET /api/admin/topology/provider-kinds —— 「内部直连」判定（kind='local'）
+// 的真值来源。★ 刻意不走 /api/providers：那个端点要求 providerConsole 权限
+// （super_admin / default 租户 tenant_admin），而 /live 任意租户管理员可进，
+// 辅助信息不该要求更高权限（批判式审计修正）。degraded = DB 不可用 ——
+// 前端渲染成「未测量」，不是「没有直连供应商」。
+
+export interface TopologyProviderKind {
+  code: string
+  kind: string
+}
+
+export interface TopologyProviderKinds {
+  generated_at?: string
+  items?: TopologyProviderKind[]
+  degraded?: boolean
+  error_code?: string
+}
+
+export function getTopologyProviderKinds(options?: { signal?: AbortSignal }): Promise<TopologyProviderKinds> {
+  return req<TopologyProviderKinds>('GET', '/api/admin/topology/provider-kinds', undefined, {
+    signal: options?.signal,
+  })
+}
+
+// ── 模型当天统计（2026-10-28 live 页当天汇总轮）────────────────────
+// GET /api/admin/topology/models-today —— 与 providers-today 同表同口径
+// （stats_usage_daily 的 provider_model 维度在 canonical_id 上再聚合）。
+// 同一标准模型跨供应商/凭据/别名合并成一行（与拓扑图模型列的 canonical
+// 口径一致）。水位语义同 providers-today：rollup 每小时重建，≤1h 滞后。
+
+export interface TopologyModelTodayItem {
+  canonical_id: number
+  canonical_name: string
+  raw_model_name: string
+  requests: number
+  success: number
+  failure: number
+  rate_limited: number
+  prompt_tokens: number
+  completion_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  total_tokens: number
+  credits_charged: number
+  cost_usd: number
+  /** 占当日总请求的比重（0..1） */
+  share: number
+}
+
+export interface TopologyModelsToday {
+  day_utc?: string
+  tenant_scope?: string
+  generated_at?: string
+  rollup_cadence?: string
+  source_high_watermark?: string
+  items?: TopologyModelTodayItem[]
+  truncated?: boolean
+  total_requests?: number
+  /** 聚合表未迁移 / 未装配 —— 必须渲染成「统计不可用」，不是零行 */
+  degraded?: boolean
+  error_code?: string
+}
+
+export function getTopologyModelsToday(options?: { signal?: AbortSignal }): Promise<TopologyModelsToday> {
+  return req<TopologyModelsToday>('GET', '/api/admin/topology/models-today', undefined, {
+    signal: options?.signal,
+  })
+}

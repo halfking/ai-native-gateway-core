@@ -16,7 +16,7 @@ import type { ClientSummary, PanelEntry } from '../../composables/useLiveTopolog
 import { clientDisplayName } from '../../lib/liveTopologyGraph'
 import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
 import { useNewArrivals } from '../../composables/useNewArrivals'
-import { CaretLeft, CaretRight, TopRight } from '@element-plus/icons-vue'
+import { CaretLeft, CaretRight, TopRight, ArrowRight } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   summaries: ClientSummary[]
@@ -144,7 +144,20 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
               <span class="cp__latency">{{ latency(entry.latencyMs) }}</span>
             </span>
             <span class="cp__line cp__line--sub">
-              <span class="cp__model">{{ entry.model }}</span>
+              <!-- auto 请求：点名的是 auto，最终模型由网关按任务选出 —— 面板上
+                   用「auto → 最终模型」把这一步表达出来（箭头用 SVG 图标：
+                   行是 button，V3 门禁按钮位的 → 字形）。 -->
+              <span class="cp__model">
+                <template v-if="entry.isAuto">
+                  <span
+                    class="cp__auto-chip"
+                    :data-testid="`auto-chip-${entry.requestId}`"
+                    :title="entry.taskType ? `${t('liveTopology.panel.autoChip')} · ${entry.taskType}` : t('liveTopology.panel.autoChip')"
+                  >auto</span>
+                  <ArrowRight class="cp__auto-arrow" aria-hidden="true" />
+                </template>
+                <span class="cp__model-name">{{ entry.model }}</span>
+              </span>
               <span class="cp__provider">{{ entry.provider }}</span>
             </span>
             <span v-if="entry.errorKind" class="cp__error">{{ entry.errorKind }}</span>
@@ -370,6 +383,44 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
 
 .cp__model {
   flex: 1;
+}
+
+/* auto 请求的「auto → 最终模型」前缀（2026-10-28 选路层轮）。
+   chip 是产品术语（model=auto 的字面值，不进语言包）；箭头是 SVG 图标 ——
+   按钮位禁用 → 字形（V3），且裸 <svg viewBox> 必须显式定尺寸。 */
+.cp__model {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.cp__auto-chip {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--kx-primary);
+  border: 1px solid color-mix(in srgb, var(--kx-primary) 45%, var(--kx-border));
+  background: color-mix(in srgb, var(--kx-surface) 82%, transparent);
+}
+
+.cp__auto-arrow {
+  flex: none;
+  color: var(--kx-muted);
+}
+
+.cp__auto-arrow > svg {
+  width: 10px;
+  height: 10px;
+}
+
+.cp__model-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cp__error {

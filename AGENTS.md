@@ -13514,3 +13514,50 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > ⇒ 通用式见 `LESSONS.md` **§502**（★ 七条通式：★ 治理动作本身也是被治理对象 / ★ 值有界与值被用上
 > ⇒ ⇒ 必须成对 / ★ 判据要数调用表达式而不是文本 / ★ 门禁用「带」而不是「钉死」/ ★ 粒度也是要验的 /
 > ⇒ ⇒ ★ 推断要落成实测 / ★ 隔离的收益是【可回收】不是【变小】）。
+> **2026-10-28 live 页选路层表达轮 + 当天汇总轮（含批判式审计）**（会话 goal 轮）：
+> ★ 承接 owner 口径（「内部直连模型 / auto 按任务选模这层没表达；缓存→脱敏→压缩
+> 三层缺压缩；路由与节点状态属基础服务放一侧」）+ 追加需求（「当天模型×供应商
+> 即时汇总，可折叠，显示更多动态信息」）。★ 本轮分两段：第一段实现+验证全绿；
+> 第二段批判式审计**证实 4 项缺陷**（全部有代码出处）并修正——审计档
+> `docs/audit/2026-10-28-live页选路层表达轮-含批判式审计.md`。
+> ⇒ ★ **大方块改版**（GatewayCoreBox）：三带 9 格 → **四带 11 格 + 基础服务侧条**——
+> 主线 缓存→脱敏→(插件)→**模型选择→压缩**→⬇派发（★ 压缩在候选解析**之后**，
+> SessionCompressor.Prepare 要目标模型上下文窗口——第一段排反，审计抓回）；
+> **选路扇出带** = 模型选择的三出口分解（auto 按任务 N+任务分布 / 内部直连 M /
+> 指定 K，三分桶互斥守恒，判据钉 auto+direct+explicit==total）；**基础服务侧条**
+> = 路由管理+节点状态管理（右侧虚线竖条，挪出主链）。
+> ⇒ ★ **SSE 4 字段**（admin.LiveRequest additive）：`client_model / is_auto_request /
+> task_type / token_band`——全部来自 telemetry 既有持久化投影（零新采集）；
+> omitempty 序列化双向断言（缺省四键不上线）。★ 语义注解：auto 请求的
+> client_model 已被后端改写为选中模型 ⇒「要的是 auto」由 is_auto_request 表达，
+> **不能靠 client_model=='auto' 反推**。
+> ⇒ ★ **新端点 ×2**（admin 权限、200+degraded 契约）：`/api/admin/topology/provider-kinds`
+> （code/kind 两列投影，判内部直连 kind='local'——★ **不复用 /api/providers**：
+> 那个端点走 providerConsole 权限（super_admin/default 租户），/live 任意租户
+> 管理员可进 ⇒ 第一段用它 = 非 default 租户直连桶恒「未测量」）；`/api/admin/topology/
+> models-today`（stats_usage_daily `provider_model` 维度在 canonical_id 再聚合，
+> 同表同口径零新真值；canonical_id=0 回落 raw_model_name 与 modelKeyOf 同口径）。
+> ⇒ ★ **左栏升级**：ProviderTodayRail → **TodaySummaryRail**（供应商+模型两组、
+> 各组可折叠（折叠后组头合计仍在）、行内 请求/成功率/占比/token/**缓存**
+> （cache_read+write；无缓存量不显示「缓存 —」）、点行联动图过滤、两组独立降级
+> （allSettled 语义）；旧组件与旧测试删除，5 条不变量迁移 + 新增 5 条）。
+> ⇒ ★★ **批判式审计 4 缺陷**（详审计档 §3）：① 主线顺序排反（压缩须在模型选择后）
+> ② `requestedModel` 死字段（0 消费 ⇒ 接进详情面板 `别名 → 标准名` 行）
+> ③ /api/providers 权限错配 ④ **预览夹具无新数据 ⇒ CDP 验证的是全 0 读数**
+> （补 auto/直连/token_band 夹具 + DEV fetch 拦截 provider-kinds 后重测：
+> auto=5(chat×2·code×2·reasoning×1)/direct=5/explicit=28/compress=11/modelSelect=38，
+> 守恒 ✓，直连徽标上卡 ✓）。★ 顺带：jargon 门当场抓到豁免簿 `catalog_code` 的
+> witness 指向已删组件 ⇒ 重指 TodaySummaryRail（**删组件要 grep 登记簿**）；
+> models-today 自查修掉两处与同族不一致（水位用 now() 冒充→改 DB 行 watermark
+> 最大值；scan 坏行整端点降级→warnRowSkip 跳行）。
+> ⇒ ★ **读数**：`go test ./admin/` 全量 **ok**；`vue-tsc` **0 错**；`vitest` **2920 通过/
+> 2 跳过**；`build` ✓；i18n/design 门全 PASS（jargon 证人迁移后）；8 语种 **141 键**
+> 一致+占位符零失配；硬编码中文 **4483=基线**。新增测试：后端 models-today ×3 /
+> provider-kinds ×3 / omitempty 序列化断言；前端 TodaySummaryRail ×10（含迁移 5）。
+> ⇒ ★★ **本轮没做 / 留给下一轮**：模型×供应商**交叉行**（provider_model 维度自带
+> provider_id，可加 `?by=provider` 展开；本轮只做 canonical 合并行）；压缩格口径
+> 不含环回路（title/summary）的 compression_meta；真实非 default 租户的端到端
+> 截图验证（无凭据）。
+> ⇒ 通用式见 `LESSONS.md` **§507**（七条：流程图每个箭头都是对管线的断言 /
+> 结构验证≠数据通路验证 / 死字段是化石 / 辅助信息权限不得高于宿主页 /
+> 删组件 grep 登记簿 / 同族端点五件套对拍 / 语义反直觉字段注释写「不能怎么用」）。
