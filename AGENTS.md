@@ -14178,3 +14178,13 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > 五条：★★ 「不可路由」区分配置事实与网络事实 / ★★ 重试节奏本身就是负载 /
 > ★ 老积压 attempts 当指数底数「首拍落 cap」恰是想要的 / ★★ 终态等最后写的字段 /
 > ★★ 登记的红会过期 + 量具缺席找同层数据源）。
+
+## ㊶ 原厂直通生产验证轮 + 批判式复审（2026-10-28）· zcode 实流量收口 RISK-5（★ 「保真」可能被方言合法性冒名顶替；★ 生效点清单要按【谁做序列化】数；★ 聚合口径必须与断言语义逐字对齐 —— 说「首发」就取第一次尝试）
+> 承接 ㊲ 的 RISK-5。★ **211 部署身份**：a 槽（28776060）与 b 槽（dc55570a）二进制探针均含直通代码 ⇒ nativepair 自 2026-10-28 08:20Z 起在线（**09:31 切流不是「无→有」边界**；版本号 `-dirty` 不算数，`grep -c 特征串 二进制` 才算）。
+> ⇒ ★ **取证通道盘点**（先做这张表）：211 无 `request_logs` 表、`request_wal_bodies` 0 行 ⇒ 唯一 body 通道 = 容器 `/app/logs/raw_data/*.jsonl`（100MB×10 firehose，client_request/upstream_request 双向 base64 完整 body）+ `docker logs` **stderr** 的 `http_request`（UA/request_id 关联；只接 stdout = 假阴性 0 条）。
+> ⇒ ★★ **验证①（首发 body 含厂商私有参数）成立**：zcode→glm 87 个主路径请求（UA 关联 + 结构指纹两法互证同 87），**首发语义 = 85 个首发 全参数保真（键集零差异 + 值级 max_tokens 85/85 相等、thinking 逐字相等）+ 2 个首发 drop**（332b3c20 / 3c1db75e，同分钟撞 nvidia 首跳）。`enable_thinking`/`reasoning{effort:max}`/`thinking{enabled}`/`tool_choice`/128000 全透传；唯一结构性改写 = `max_completion_tokens→max_tokens`（值不变）。
+> ⇒ ★★★ **挖出真缺陷并修（65d24d0df）**：`legacy_with_ir`（OpenAI 入向、`e.IR != nil` 的生产主路径）+ 同族断路器兜底**漏盖 `NativePassthrough`** ⇒ glm 走第三方宿主（nvidia catalog / 空 catalog ⇒ paramreg `RejectedByUnknown`）时厂商参数首发被裁。★★ **GLM 原厂路由（首发 85）的保真是 zhipu 方言恰好认这些键 = 方言合法性冒名顶替直通机制** ⇒ 验证样本必须含「机制缺席时结论会翻」的形态（= 非原厂 catalog 宿主）。★★ **IR 往返有四个序列化站点**（anthropic 入向 / legacy_with_ir / 断路器兜底 / inline no-IR），上轮按「谁做 paramguard」数只盖了三个 ⇒ **生效点清单要按【标志的消费方 = 谁做 SerializeOpenAI】数**。红转绿回归 ×2（主路径 + 断路器兜底）+ 变异臂（摘章必红/还原绿/md5 一致）⇒ 四站点全有测试。
+> ⇒ ★★ **验证②（非原生零变化）成立**：同一 zcode 打 MiniMax（非原生对）49 个带 thinking 请求 = **48 个 enabled→adaptive 改写 + 1 个本就 disabled 原样放行（政策精确生效非反例）**；两槽 1350 上游尝试 **0×400**、reqprobe 剥参重试 **0**、zcode 客户端 **402×200**。RISK-1 vacuous（窗口无 deepseek-code 流量 ⇒ 记「未观察到」非「未发生」）。`native_pair_bypass` 日志 0 条 = 预期（matrix 无 strip + **Debug 级在生产 Info 级不可见** ⇒ RISK-3 留痕机制默认不可观测，已登记）。
+> ⇒ ★ **批判式复审（同日第 3 轮，f12ba085c）**：① 上轮「87 中 86 保真」是【末次尝试】口径 ⇒ 洗白了 1 个首发即裁的请求 ⇒ 首发语义订正 85/87（**聚合口径必须与断言语义逐字对齐**，LESSONS §504 通式八）；② 「MiniMax 49 之 1」核实为政策正确行为；③ 断路器兜底补测试+变异臂；④ 复审时原 b 槽容器已被并行会话两次蓝绿替换（UA 日志源丢失）⇒ 结构指纹法补位。
+> ⇒ ★ 部署：修复随 `1e66996f` 上线（18:40+08 蓝绿）；复审时生产已推进到 `3d7b7d3a`，**血缘验证仍含修复**。z-ai 路由 + 厂商参数组合**线上尚未自然复现**（nvidia 处于 upstream_down 惩罚期）—— 由单测钉死、待自然样本。
+> ⇒ 审计档 `docs/audit/2026-10-28-原厂直通生产验证轮.md`（§0~§11）；通用式见 `LESSONS.md` **§504**（八条；取号两次让号 §503→§504）。
