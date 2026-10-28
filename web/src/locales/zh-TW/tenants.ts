@@ -241,5 +241,23 @@ export default {
     typeTopup: "儲值包"
   },
 
-
+  bills: {
+    title: '月帳單與優惠券',
+    refresh: '重新整理',
+    exportCsv: '匯出 CSV',
+    listTitle: '月度帳單',
+    emptyNoResult: '還沒有已出帳的月帳單',
+    colPeriod: '帳期',
+    colCredits: '積分',
+    colRequests: '請求數',
+    colAmount: '金額',
+    colStatus: '狀態',
+    couponTitle: '啟用優惠券',
+    couponPlaceholder: '輸入券碼',
+    couponActivate: '啟用',
+    couponOk: '已入帳 {n} 積分（{code}）',
+    couponFailed: '優惠券未能啟用，請核對券碼後重試',
+    loadFailed: '月帳單未能載入，請重試',
+    exportFailed: '帳單 CSV 未能匯出，請重試',
+  },
 }

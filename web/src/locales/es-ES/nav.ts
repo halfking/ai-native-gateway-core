@@ -19,6 +19,7 @@ export default {
     tenantModels: "Modelos estándar",
     tenantAccount: "Mi cuenta",
     tenantPricing: "Planes y recarga",
+    tenantBills: 'Facturas',
     tenantUsage: "Mi consumo",
     models: "Modelos y catálogo",
     routingOverview: "Panorama de enrutamiento",

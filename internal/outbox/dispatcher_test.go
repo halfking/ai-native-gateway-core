@@ -591,3 +591,77 @@ func TestClassifyError(t *testing.T) {
 		})
 	}
 }
+
+// TestDispatcher_DispatchOne_BackpressureNeverDLQs —— 2026-10-28 生产审计轮：
+// asm 就绪门抖动（503 ingress_unavailable / event_retryable）以分钟计，而
+// maxAttempts=5 × 指数退避（≈31s 窗口）曾把 34,793 条**完全合法**的事件永久打进
+// DLQ。⇒ 背压类失败改为「不计数转 DLQ、64s 封顶退避无限重试」：
+// 本用例钉「在 maxAttempts 处背压 503 仍走 failed 退避而不是 dlq」。
+func TestDispatcher_DispatchOne_BackpressureNeverDLQs(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// 真 503 + asm 背压错误码（连接拒绝对 DeliveryError 形态不可达 ⇒ 用 httptest）。
+	var delivererTarget string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"code":"ingress_unavailable","message":"event consumer is unavailable"}`))
+	}))
+	t.Cleanup(srv.Close)
+	delivererTarget = srv.URL + "/events"
+
+	d := NewDispatcher(DispatcherConfig{
+		DB:           db,
+		ASMEndpoint:  delivererTarget,
+		HMACSecret:   "test-secret",
+		PollInterval: time.Hour,
+		MaxAttempts:  3,
+		HTTPTimeout:  500 * time.Millisecond,
+		Logger:       slog.Default(),
+	})
+
+	// attempts=2 → attempts+1=3 == maxAttempts=3：旧行为会走 markDLQ，
+	// 新行为（背压）必须走 failed 退避 —— 期待的是 failed UPDATE 且 **不是** dlq UPDATE。
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id, event_id, event_type, schema_version, tenant_id,\n\t\t       aggregate_id, aggregate_version, occurred_at, payload,\n\t\t       status, attempts, last_error, next_retry_at\n\t\tFROM outbox_events\n\t\tWHERE (status = 'pending' OR (status = 'failed' AND next_retry_at <= NOW()))\n\t\tORDER BY occurred_at ASC\n\t\tLIMIT 1\n\t\tFOR UPDATE SKIP LOCKED").WillReturnRows(outboxRow(7, "evt-bp", 2))
+	mock.ExpectExec("UPDATE outbox_events\n\t\tSET status = 'failed', attempts = $1, last_error = $2,\n\t\t    last_attempt_at = NOW(), next_retry_at = $3, updated_at = NOW()\n\t\tWHERE id = $4").WithArgs(3, sqlmock.AnyArg(), sqlmock.AnyArg(), int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	outcome, err := d.dispatchOne(context.Background())
+	if err != nil {
+		t.Fatalf("dispatchOne: %v", err)
+	}
+	if outcome != dispatchOutcomeFailed {
+		t.Errorf("outcome = %v, want dispatchOutcomeFailed", outcome)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations（背压在 maxAttempts 处必须走 failed 退避，绝不落 dlq）: %v", err)
+	}
+}
+
+// TestIsBackpressure_ClassifiesASMCodes —— 判据自身：503 + asm 两个背压码才
+// 算背压；其它 5xx、其它码、连接错误都不算。
+func TestIsBackpressure_ClassifiesASMCodes(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"503 ingress_unavailable", &DeliveryError{StatusCode: 503, Body: `{"code":"ingress_unavailable","message":"event consumer is unavailable"}`}, true},
+		{"503 event_retryable", &DeliveryError{StatusCode: 503, Body: `{"code":"event_retryable","message":"event consumption will be retried"}`}, true},
+		{"503 other code", &DeliveryError{StatusCode: 503, Body: `{"code":"rate_limited"}`}, false},
+		{"500 ingress_unavailable（非 503）", &DeliveryError{StatusCode: 500, Body: `{"code":"ingress_unavailable"}`}, false},
+		{"502 bad gateway", &DeliveryError{StatusCode: 502, Body: "bad gateway"}, false},
+		{"连接错误（非 DeliveryError）", fmt.Errorf("post delivery request: dial tcp: connect refused"), false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		if got := IsBackpressure(tc.err); got != tc.want {
+			t.Errorf("%s: IsBackpressure = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

@@ -1,5 +1,6 @@
 // de-DE/index.ts — Deutsch. Aggregiert die einzelnen Modulübersetzungen.
 import common from './common'
+import plugin from './plugin'
 import customer from './customer'
 import annotation from './annotation'
 import nav from './nav'
@@ -87,6 +88,7 @@ export default {
   hyper,
   usageTrend,
   common,
+  plugin,
   customer,
   annotation,
   nav,

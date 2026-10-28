@@ -10494,3 +10494,27 @@ macos-say :8086），纯 INSERT ON CONFLICT 幂等；生产应用由 deploy-seam
 |-----------|------|---------|--------|
 | 911 | `911_local_audio_catalog.sql` | `174f27ce0f6435f0c39df5a61a9deb43fb621bdc087c2bed112feeeb034f56bb` | applied+verified |
 
+## 2026-10-28 — W1.5 session recording trash (migration 912)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 912 | `912_session_recording_trash.sql` | `f95e509508dcfdd4c2b9c067501e93a5d49cd3faa5300100cc8555c35c94c8c1` | pending |
+| 912 | `912_session_recording_trash.sql` | `4a912eb530f795bd98d3fbb4b2c3ef4cbc7a4182941bc064d0a1df1696d9e6e7` | pending（2026-10-28 分支审计轮追认：合并后按锁守卫门补 `SET LOCAL lock_timeout`/`statement_timeout` 头部守卫，DDL 语句零改动、canonical↔embeddata 双侧字节一致；原登记行 f95e5095… 保留——已应用库按旧字节核对仍有效，verify-migration-checksums 任一命中即过） |
+
+Adds `session_bodies_trash` + `session_hidden` for soft-delete / restore / purge.
+Recording-consent body retention is independent of request_logs TTL.
+
+## 2026-10-28 — MaaS monthly bills + coupons (migration 913, 包 07)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 913 | `913_maas_monthly_bills_coupons.sql` | `962b309d04414e6b629f0023ee9b3e4c71eb02c0ecc7e637cc9da241da9361eb` | pending（包 07 月账单+优惠券+发票占位，2026-10-28） |
+| 913 | `913_maas_monthly_bills_coupons.sql` | `22af37d57c01e94b71a44c0c8527cb63e1e1119b921f6e54cce0fbce0a100d19` | pending（2026-10-28 分支审计轮追认：① down 文件头注释 `-- Down 912:` 让号漏改修正；② 按锁守卫门补 `SET LOCAL lock_timeout`/`statement_timeout` 头部守卫。DDL 语句零改动、canonical↔embeddata 双侧字节一致；原登记行 962b309d… 保留——已应用库按旧字节核对仍有效，verify-migration-checksums 任一命中即过） |
+## 2026-10-28 — MaaS monthly bills + coupons (migration 913)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 913 | `913_maas_monthly_bills_coupons.sql` | `b17329c7295f65c2a1d0472c1f6cdd5d605f035690525ae342d516cbbfdf1b16` | pending（包 07 月账单+优惠券+发票占位，2026-10-28；★ r1041 轮订正：本行原登记的 `962b309d…` 是**分支作者自己算错的 sha** ⇒ 门 `TestRegistryShaIsActuallyTheFile` 判红 ⇒ 按仓内「多行登记、任一命中即过」的惯例补本行正确 sha，**旧行保留在下一行**供已应用库按旧字节核对） |
+| 913 | `913_maas_monthly_bills_coupons.sql` | `962b309d04414e6b629f0023ee9b3e4c71eb02c0ecc7e637cc9da241da9361eb` | pending（★ 保留原登记行 —— 分支 07 自带值，与磁盘实测不符；见上一行的订正说明） |
+
+

@@ -760,7 +760,7 @@ func TestSanitizeInputMiddleware_AlternativeSessionHeaders(t *testing.T) {
 // TestSanitizeInputMiddleware_SessionHeaderPriority
 // 当多个 sessionID header 同时存在时，应按 X-Gw-Session-Id >
 // X-Session-Id > X-Conversation-Id > X-Chat-Session-Id > X-Thread-Id
-// 的顺序取最高优先级（与 chatHandler SessionHeadersPriority 一致）。
+// 的顺序取最高优先级（与 internal/sessionid.Headers 一致）。
 func TestSanitizeInputMiddleware_SessionHeaderPriority(t *testing.T) {
 	rdb := setupSaniGuardRedis(t)
 	s, err := NewSanitizer(NewPatternDetector())

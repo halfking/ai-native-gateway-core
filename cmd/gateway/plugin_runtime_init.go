@@ -8,6 +8,8 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
+
+	_ "github.com/kaixuan/llm-gateway-go/plugins/all"
 )
 
 // ScanPlugins 扫描 pluginsDir 下的插件 manifest，校验后把 pages 写入 registry，

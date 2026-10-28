@@ -22,6 +22,7 @@ export default {
     tenantModels: '标准模型',
     tenantAccount: '我的账户',
     tenantPricing: '套餐与充值',
+    tenantBills: '月账单',
     tenantUsage: '我的消耗',
     models: '模型与目录',
     routingOverview: '路由全景',

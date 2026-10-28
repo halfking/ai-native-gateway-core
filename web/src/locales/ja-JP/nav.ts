@@ -18,6 +18,7 @@ export default {
     tenantModels: "標準モデル",
     tenantAccount: "マイアカウント",
     tenantPricing: "プランとチャージ",
+    tenantBills: '月次請求',
     tenantUsage: "私の利用状況",
     models: "モデルとカタログ",
     routingOverview: "ルーティング概要",
