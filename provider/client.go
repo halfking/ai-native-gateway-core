@@ -236,6 +236,15 @@ type Candidate struct {
 	// hits the hard-exclude threshold. Added 2026-06-22 (defect ③ soft layer).
 	RecentSuccessRate *float64 `json:"recent_success_rate,omitempty"`
 	RecentSamples     int      `json:"recent_samples,omitempty"`
+	// RecentCacheRate / RecentCacheSamples (P1-B-③, audit 2026-10-28 §4) are
+	// the token-weighted cached-input share over the same last-N business
+	// rows (migration 915 recent_cache_hit_rate). Consumed by the router's
+	// prompt-cache-aware score dimension: a credential whose upstream honors
+	// prompt caching for this model is worth more than its raw price suggests
+	// (discounted cached input + lower TTFT). nil/low samples = no signal →
+	// the dimension is neutral for that candidate (fail-open).
+	RecentCacheRate    *float64 `json:"recent_cache_rate,omitempty"`
+	RecentCacheSamples int      `json:"recent_cache_samples,omitempty"`
 	// NativeEndpoints is the supplier's full set of protocol endpoints
 	// (provider_endpoint_protocols rows for this candidate's provider).
 	// It feeds the endpointselect.Select() decision that drives the
@@ -1805,6 +1814,11 @@ SELECT
 			-- RecentSuccessRate field) for soft de-prioritization in the router.
 			rsr.rate   AS recent_success_rate,
 			rsr.samples AS recent_samples,
+			-- P1-B-③ (audit 2026-10-28 §4): prompt-cache affinity — see the
+			-- chr LATERAL above. Feeds the router's cache dimension
+			-- (RecentCacheRate); NULL = no signal → neutral.
+			chr.rate   AS recent_cache_rate,
+			chr.samples AS recent_cache_samples,
 			-- r0924 supplier-protocol-optimization §3.4: per-candidate
 			-- JSONB projection of the provider_endpoint_protocols rows
 			-- (see pep_lateral LATERAL below). Empty array preserves the
@@ -1896,6 +1910,12 @@ SELECT
 		-- LIMIT 50 is a 50-row index descent per candidate — not a window
 		-- aggregate over the whole partitioned table.
 		CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
+		-- P1-B-③ (audit 2026-10-28 §4): prompt-cache affinity signal — same
+		-- last-N business rows, token-weighted cached-input share (migration
+		-- 915). Same index-descent cost shape as rsr. NULL/0 samples = no
+		-- signal; the router's cache dimension fail-opens to neutral exactly
+		-- like rsr at cold start.
+		CROSS JOIN LATERAL recent_cache_hit_rate(c.id, mo.raw_model_name, 50) AS chr
 			WHERE (p.tenant_id = $2 OR p.tenant_id = 'default')
 
 
@@ -2081,6 +2101,8 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.QualityFixMode,
 			&cand.RecentSuccessRate,
 			&cand.RecentSamples,
+			&cand.RecentCacheRate,
+			&cand.RecentCacheSamples,
 			&nativeEndpointsJSON,
 		); err != nil {
 			return nil, err

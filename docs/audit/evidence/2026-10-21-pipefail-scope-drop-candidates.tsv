@@ -81,9 +81,9 @@
 scripts/.coverage-820-probe.sh	33	covered	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s\n' "$startup_files"  | grep -Fxq "$name" && { echo StartupFiles; return; }
 scripts/.coverage-820-probe.sh	34	covered	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s\n' "$sequence_files" | grep -Fxq "$name" && { echo sequence; return; }
 scripts/.coverage-820-probe.sh	35	covered	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s\n' "$ensure_allowlist" | grep -Fxq "$name" && { echo ensure_allowlist; return; }
-scripts/.mutate-840-throttle.sh	57	mutate	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -qE "FAIL"; then
-scripts/.mutate-841-retention.sh	48	run	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -qE "build failed|cannot find|undefined:|syntax error"; then
-scripts/.mutate-841-retention.sh	52	run	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if [[ -n "$want" ]] && ! echo "$out" | grep -q "$want"; then
+scripts/.mutate-840-throttle.sh	63	mutate	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -qE "FAIL"; then
+scripts/.mutate-841-retention.sh	54	run	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -qE "build failed|cannot find|undefined:|syntax error"; then
+scripts/.mutate-841-retention.sh	58	run	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if [[ -n "$want" ]] && ! echo "$out" | grep -q "$want"; then
 scripts/252-monitor/ursm-snapshot-health.sh	321	sql_failed	var-write	bare	unknown	needs-human-read	grep-q	discarded	sql_failed() { printf '%s\n' "$1" | grep -qE '^\s*(ERROR|FATAL)'; }
 scripts/252-monitor/ursm-snapshot-slot-refresh.sh	157	sql_failed	var-write	bare	unknown	needs-human-read	grep-q	discarded	sql_failed() { printf '%s\n' "$1" | grep -qE '^\s*(ERROR|FATAL)'; }
 scripts/audit-all-tables.sh	268	audit_request_wal	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$updated" | grep -q "completed"; then
@@ -94,8 +94,8 @@ scripts/audit/verify-l11b-cost-view-rowset.sh	316	expect_red	var-write	bare	bulk
 scripts/audit/verify-nonplain-migration-delivery.sh	533	expect_red_go	var-write	bare	unknown	needs-human-read	head	discarded	echo "$output" | head -12
 scripts/audit/verify-stop-write-interlock-realdb.sh	87	verdict	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$1" | grep -qE '^--- FAIL:|^FAIL'; then echo FAIL
 scripts/audit/verify-stop-write-interlock-realdb.sh	88	verdict	var-write	judgment	unknown	needs-human-read	grep-q	consumed	elif echo "$1" | grep -qE '^--- PASS:|^ok |^PASS'; then echo PASS
-scripts/audit/verify-v1-retirement-red-gates.sh	109	expect_red	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "${out}" | grep -qE 'build failed|undefined:|cannot use|syntax error|declared and not used'; then
-scripts/audit/verify-v1-retirement-red-gates.sh	118	expect_red	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "${got}" | grep -qxF "${name}"; then
+scripts/audit/verify-v1-retirement-red-gates.sh	115	expect_red	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "${out}" | grep -qE 'build failed|undefined:|cannot use|syntax error|declared and not used'; then
+scripts/audit/verify-v1-retirement-red-gates.sh	124	expect_red	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "${got}" | grep -qxF "${name}"; then
 scripts/checks/install-entrypoints-test.sh	32	contains	var-write	judgment	unknown	needs-human-read	grep-q	consumed	contains() { if printf '%s' "$2" | grep -qF -- "$3"; then ok "$1"; else bad "$1 (输出里没有 '$3')"; fi; }
 scripts/checks/install-entrypoints-test.sh	33	absent	var-write	judgment	unknown	needs-human-read	grep-q	consumed	absent()   { if printf '%s' "$2" | grep -qF -- "$3"; then bad "$1 (输出里不该有 '$3')"; else ok "$1"; fi; }
 scripts/configure-journald.sh	316	do_verify	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if ! printf '%s' "$merged" | grep -qE '^\s*SystemMaxUse\s*='; then

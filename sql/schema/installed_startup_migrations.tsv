@@ -332,3 +332,4 @@
 314	912_session_recording_trash.sql
 315	913_maas_monthly_bills_coupons.sql
 316	914_session_turns_origin_stage_check.sql
+317	915_recent_cache_hit_rate.sql
