@@ -142,8 +142,12 @@ export function filterOptions(
  *    只有命中才有可看的量，「全部请求都过了缓存」这种数字等于没说；
  *  - sanitize / route / modelSelect：主链路请求数（每条都经过；modelSelect
  *    的明细分桶见 modelSelectionStats —— 网格上的数字是总量，扇出带才是分层）；
- *  - compress：token_band ∈ {preliminary, forced} 的请求数 —— 即**本条请求
- *    触发过会话滑窗压缩**的量（below/缺省 = 没触发，不冒充）；
+ *  - compress：compressed === true 的请求数 —— **压缩层实际改写出站体**的量
+ *    （环回口径，2026-10-28 修正；此前判 token_band ∈ {preliminary, forced}）。
+ *    修正依据（211 生产 7 天实测）：band 只按绝对 token 档位分类，
+ *    COUNT/相对窗口/IDLE 触发的压缩 band='below'（1069 条被旧口径漏计）；
+ *    band 越线但 summary 失败且 trim 无收缩的 80 条被旧口径多计。
+ *    档位观测（token_band）保留为字段，但不再是压缩格的计数判据；
  *  - sessionFile / sessionWrite：带 gw_session_id 的请求数（会话真的被写了）；
  *  - nodeState：node_update 上报的节点数（在图上有供应端节点 = 有状态可管）；
  *  - errorRecord：失败请求数；
@@ -176,10 +180,10 @@ export function gatewayModuleStats(
     stats.sanitize.count += 1
     stats.route.count += 1
     stats.modelSelect.count += 1
-    // 压缩：只数「触发过滑窗压缩」的请求（token_band 由后端 SessionCompressor
-    // 打点；below/缺省 = 没触发）。below 不算 —— 没触发的请求计进来，
-    // 「压缩层在干活」就被摊平成「所有请求都过了压缩」，等于没说。
-    if (req.token_band === 'preliminary' || req.token_band === 'forced') stats.compress.count += 1
+    // 压缩：只数「压缩层实际改写出站体」的请求（compressed 由后端从
+    // compression_strategy 判定，环回口径）。band 越线但没改成的不计——
+    // 档位观测与实际压缩是两件事（见函数头注释的实测读数）。
+    if (req.compressed === true) stats.compress.count += 1
     stats.sessionWrite.count += req.gw_session_id ? 1 : 0
     stats.sessionFile.count += req.gw_session_id ? 1 : 0
     if (req.is_probe) stats.probeTask.count += 1

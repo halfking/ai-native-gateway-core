@@ -220,4 +220,54 @@ describe('TodaySummaryRail 模型组 + 折叠（2026-10-28 当天汇总轮）', 
 
     expect(w.findAll('[data-testid="rail-group-models"] .rail__row')[0].text()).toContain('vendor-raw-name')
   })
+
+  // ── 行内供应商展开（2026-10-28 遗留①：?by=provider 交叉展开）──────
+  function modelItemWithProviders() {
+    return modelItem({
+      canonical_name: 'glm-4.5',
+      requests: 900,
+      providers: [
+        { provider_id: 12, catalog_code: 'deepseek', display_name: 'DeepSeek', known: true, requests: 600, success: 590, failure: 10, rate_limited: 0, prompt_tokens: 0, completion_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 100, credits_charged: 1, cost_usd: 0.5, share: 600 / 900 },
+        { provider_id: 0, catalog_code: '', display_name: '', known: false, requests: 300, success: 300, failure: 0, rate_limited: 0, prompt_tokens: 0, completion_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 50, credits_charged: 1, cost_usd: 0.2, share: 300 / 900 },
+      ],
+    })
+  }
+
+  it('★ loads with by=provider and expands per-provider sub-rows inside the model row', async () => {
+    mockedModels.mockResolvedValue({ day_utc: '2026-10-16', items: [modelItemWithProviders()] })
+    const w = mountRail()
+    await flushPromises()
+
+    // 请求参数带交叉展开（子行一次带回，展开无二次往返）
+    expect(mockedModels.mock.calls[0][0]).toMatchObject({ byProvider: true })
+
+    await w.find('[data-testid="rail-group-models"] .rail__group-head').trigger('click')
+    const expandBtn = w.find('[data-testid="rail-model-expand"]')
+    expect(expandBtn.exists()).toBe(true)
+    expect(expandBtn.attributes('aria-expanded')).toBe('false')
+    // 折叠态：子行不渲染
+    expect(w.find('[data-testid="rail-model-providers"]').exists()).toBe(false)
+
+    await expandBtn.trigger('click')
+    expect(expandBtn.attributes('aria-expanded')).toBe('true')
+    const subRows = w.findAll('[data-testid="rail-model-providers"] .rail__subrow')
+    expect(subRows).toHaveLength(2)
+    expect(subRows[0].text()).toContain('DeepSeek')
+    // 模型内分布：600/900 = 67%（子行 share 是模型内分布，不是当日占比）
+    expect(subRows[0].text()).toContain('67%')
+    // provider_id=0 的未知桶：显示「未知供应商」，流量不丢
+    expect(subRows[1].text()).toContain('未知供应商')
+    expect(subRows[1].text()).toContain('300')
+  })
+
+  it('★ expanding providers does not trigger the graph model filter (two intents, two buttons)', async () => {
+    mockedModels.mockResolvedValue({ day_utc: '2026-10-16', items: [modelItemWithProviders()] })
+    const w = mountRail()
+    await flushPromises()
+    await w.find('[data-testid="rail-group-models"] .rail__group-head').trigger('click')
+
+    await w.find('[data-testid="rail-model-expand"]').trigger('click')
+    // 展开是看明细，不是选行 —— select-model 不许被牵连触发
+    expect(w.emitted('select-model')).toBeUndefined()
+  })
 })

@@ -75,12 +75,15 @@ function buildRequests(): LiveRequest[] {
         client_protocol: client.client_protocol,
         is_probe: k % 11 === 0,
         // 2026-10-28 选路层轮：让选路扇出带与压缩格有非零读数可验收。
-        // 每 7 条里 1 条 auto（带任务类型分布）、每 6 条里 1 条触发滑窗压缩
-        //（token_band=forced/preliminary —— below 是「没触发」不标）。
+        // 每 7 条里 1 条 auto（带任务类型分布）；压缩按环回口径标
+        // compressed（2026-10-28 遗留②：压缩格计数判据从 token_band 档位
+        // 换成「压缩层实际改写出站体」——每 6 条里 1 条实际压缩）。
         ...(k % 7 === 3
           ? { is_auto_request: true, task_type: (['code', 'chat', 'reasoning'] as const)[k % 3], client_model: chain.canonical_name }
           : {}),
-        ...(k % 6 === 2 ? { token_band: 'forced' as const } : k % 6 === 5 ? { token_band: 'preliminary' as const } : {}),
+        ...(k % 6 === 2
+          ? { compressed: true, token_band: k % 12 === 2 ? ('below' as const) : ('forced' as const) }
+          : {}),
       } satisfies LiveRequest)
       i += 1
     }

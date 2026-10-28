@@ -399,21 +399,34 @@ type LiveRequest struct {
 	CredentialID    int    `json:"credential_id,omitempty"`
 	CredentialLabel string `json:"credential_label,omitempty"`
 
-	// 2026-10-28（live 拓扑·模型选择层表达轮）: 模型选择与压缩的可观测字段。
+	// 2026-10-28（live 拓扑·模型选择层表达轮）: 模型选择与压缩可观测字段。
 	// 四个字段全部来自 telemetry.RequestLogEntry 的既有投影（不新增采集），
 	// 只是此前没上 SSE —— 线上只有最终 canonical 模型，看不出「客户端要的
 	// 是 auto 还是具体名字」「auto 按任务选了谁」「这条请求是否触发压缩」。
 	//   ClientModel   客户端原始请求模型名（"auto" / 别名 / 具体名）；
 	//   IsAutoRequest model=auto 的请求（handler 侧 post-auto 改写前打的标）；
 	//   TaskType      auto 分类的任务类型（chat/reasoning/code/…）；
-	//   TokenBand     会话滑窗压缩档位（below/preliminary/forced），
-	//                 preliminary|forced = 本条请求触发过上下文压缩。
+	//   TokenBand     会话滑窗压缩的**档位观测**（below/preliminary/forced）。
+	//   Compressed    压缩层**实际改写**了出站体（2026-10-28 环回口径轮补）。
+	//
+	// ★ TokenBand ≠ 「触发过压缩」（2026-10-28 实测修正，211 生产 7 天读数）：
+	//   band 只按**绝对 token 档位**分类（200k/400k），而滑窗压缩还有
+	//   COUNT（消息数）/相对窗口（contextWindow×0.8）/IDLE 三个与档位无关的
+	//   触发器——实测 4665 条实际压缩里 1069 条 band='below'；另有 80 条
+	//   band 越线但 summary 失败且 trim 无收缩（档位越了，什么都没改成）。
+	//   ⇒ 「这条请求被压缩了吗」必须看 Compressed，不能看 band。
+	//
+	// ★ Compressed 的判据 = compression_strategy ∉ {"", "delta_append"}：
+	//   strategy 非空即压缩层改写了出站体（滑窗 LLM summary 环回 / memo 回放 /
+	//   mechanical_trim / 4xx 恢复全族同一把尺）；delta_append 是会话增量
+	//   组装不是压缩，排除（211 全量实测 0 条，排除是语义性的不是凑数）。
 	// in_progress 预投影帧可能尚未携带（logCtx 后补）——optional 字段，
 	// 缺省渲染成「未知」，禁止用零值冒充。
 	ClientModel    string `json:"client_model,omitempty"`
 	IsAutoRequest  bool   `json:"is_auto_request,omitempty"`
 	TaskType       string `json:"task_type,omitempty"`
 	TokenBand      string `json:"token_band,omitempty"`
+	Compressed     bool   `json:"compressed,omitempty"`
 }
 
 // LiveStreamConfig controls hub behaviour. Zero values are safe and
@@ -3143,6 +3156,16 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 		}
 		if entry.TokenBand != nil {
 			out.TokenBand = strings.TrimSpace(*entry.TokenBand)
+		}
+		// 压缩实际发生判据（环回口径，2026-10-28）：strategy 非空且非
+		// delta_append（增量组装不是压缩）。band 越线但 summary 失败的
+		// 请求不算——档位观测与实际改写是两件事，见结构体注释的实测读数。
+		if s := entry.CompressionStrategy; s != nil {
+			switch strings.TrimSpace(*s) {
+			case "", "delta_append":
+			default:
+				out.Compressed = true
+			}
 		}
 		if entry.GwSessionID != nil && out.GwSessionID == "" {
 			out.GwSessionID = strings.TrimSpace(*entry.GwSessionID)

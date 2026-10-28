@@ -118,3 +118,87 @@ func TestTopologyModelsTodayCanonicalNameFallbackAndShare(t *testing.T) {
 	require.Equal(t, "", second["canonical_name"])
 	require.Equal(t, "vendor-raw-model", second["raw_model_name"])
 }
+
+// 4. ?by=provider 交叉展开：父行指标 = Σ 子行（构造守恒），子行 share
+//    是**模型内**分布（分母 = 该模型的 requests，不是当日总量），
+//    provider_id=0 的未知桶 known=false。
+func TestTopologyModelsTodayByProviderFoldsAndSharesWithinModel(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	day := todayUTCDay(time.Now())
+	ts := time.Date(2026, 10, 28, 11, 59, 0, 0, time.UTC)
+	// glm-4.5 跨两个供应商（600 + 300）+ 一个 passthrough 模型（100）
+	rows := pgxmock.NewRows([]string{
+		"canonical_id", "canonical_name", "raw_model_name",
+		"provider_id", "catalog_code", "display_name",
+		"requests", "success", "failure", "rate_limited",
+		"prompt_tokens", "completion_tokens", "cache_read_tokens",
+		"cache_write_tokens", "total_tokens", "credits_charged",
+		"cost_usd", "watermark",
+	}).
+		AddRow(42, "glm-4.5", "glm-4.5-vendor", 12, "deepseek", "DeepSeek", 600, 590, 10, 0, 100, 50, 0, 0, 150, 1, 0.5, pgtype.Timestamptz{Time: ts, Valid: true}).
+		AddRow(42, "glm-4.5", "glm-4.5-vendor", 0, "", "", 300, 300, 0, 0, 50, 25, 0, 0, 75, 1, 0.2, pgtype.Timestamptz{Time: ts, Valid: true}).
+		AddRow(0, "", "vendor-raw-model", 13, "moonshot", "Moonshot", 100, 100, 0, 0, 10, 5, 0, 0, 15, 1, 0.1, pgtype.Timestamptz{Time: ts, Valid: true})
+
+	mock.ExpectQuery(`(?s)WITH agg AS .* GROUP BY canonical_id, provider_id`).
+		WithArgs(day, "", modelsTodayLimit).
+		WillReturnRows(rows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/topology/models-today?by=provider", nil)
+	req = SetAuthContext(req, &AuthContext{Role: "super_admin", TenantID: "default", UserID: 1})
+	rec := httptest.NewRecorder()
+	(&Handler{topologyStatsDB: mock}).handleTopologyModelsToday(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	out := decodeTopologyToday(t, rec.Body.Bytes())
+	require.Equal(t, false, out["degraded"])
+	items := out["items"].([]any)
+	require.Len(t, items, 2)
+
+	first := items[0].(map[string]any)
+	require.Equal(t, "glm-4.5", first["canonical_name"])
+	// 守恒：父 requests = Σ 子行（600+300），不是单独一份再算的数
+	require.Equal(t, float64(900), first["requests"])
+	// 父 share 分母 = 当日总量 1000（与默认口径同分母）
+	require.InDelta(t, 0.9, first["share"], 1e-9)
+
+	providers := first["providers"].([]any)
+	require.Len(t, providers, 2)
+	known := providers[0].(map[string]any)
+	require.Equal(t, "deepseek", known["catalog_code"])
+	require.Equal(t, true, known["known"])
+	// 子行 share 是模型内分布：600/900，不是 600/1000
+	require.InDelta(t, 600.0/900.0, known["share"], 1e-9)
+	// provider_id=0 的未知桶：known=false，但流量不丢（300 计入父行）
+	unknown := providers[1].(map[string]any)
+	require.Equal(t, false, unknown["known"])
+	require.Equal(t, float64(300), unknown["requests"])
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// 5. 默认调用（无 by 参数）响应形状兼容：不出现 providers 键（omitempty），
+//    且走原 SQL（GROUP BY canonical_id，非二元组）。
+func TestTopologyModelsTodayDefaultShapeHasNoProvidersKey(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	day := todayUTCDay(time.Now())
+	// pgxmock 的 stripQuery 把所有空白（含换行）归一成单空格 ⇒ 断言
+	// 默认路径走的是 canonical 单键聚合（"GROUP BY canonical_id )"），
+	// 而 by=provider 路径是二元组聚合——两条 SQL 在这里分叉。
+	mock.ExpectQuery(`(?s)WITH agg AS .* GROUP BY canonical_id \)`).
+		WithArgs(day, "", modelsTodayLimit).
+		WillReturnRows(modelsTodayRowSet())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/topology/models-today", nil)
+	req = SetAuthContext(req, &AuthContext{Role: "super_admin", TenantID: "default", UserID: 1})
+	rec := httptest.NewRecorder()
+	(&Handler{topologyStatsDB: mock}).handleTopologyModelsToday(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotContains(t, rec.Body.String(), `"providers"`)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
