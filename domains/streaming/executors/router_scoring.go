@@ -34,6 +34,11 @@ type LoadScoreWeights struct {
 	// 开始 env 调起」）。判据见 strategy.go 的 SuccessRatePoolStats。置 0 时
 	// composite 与关闭前逐字节一致（OffIsByteIdentical 同族测试钉住）。
 	OutlierWeight float64 // 可选：池内成功率离群强惩罚权重
+	// CacheAffinityWeight (P1-B-③, 2026-10-28 两层路由审计) prompt-cache 亲和
+	// 权重（LLM_GATEWAY_ROUTING_W_CACHE，默认 0 —— 与离群同款「从 0 调起」：
+	// 命中率数据先观测，运营确认分布后调起）。cachePenalty = 1 − 命中率，
+	// 高命中 ⇒ 低惩罚 ⇒ 更易被选中。置 0 时 composite 逐字节一致。
+	CacheAffinityWeight float64 // 可选：prompt-cache 亲和（1−命中率）惩罚权重
 }
 
 // LoadScoreEnvWeights 是 R48 §3 A2 改造的载体——把 calculateLoadScore 中
@@ -90,6 +95,9 @@ func DefaultLoadScoreWeights() LoadScoreWeights {
 		// P1-A 默认 0（审计档「惩罚权重从 0 开始 env 调起」）——只观测不罚，
 		// 运营按 llmgw_routing_outlier_candidates 观测读数调起。
 		OutlierWeight: envFloat("LLM_GATEWAY_ROUTING_W_OUTLIER", 0),
+		// P1-B-③ 默认 0：命中率信号（migration 915 / Candidate.RecentCacheRate）
+		// 先随候选带出、随 LOAD_SCORE_V2 日志观测；分布确认后再调起。
+		CacheAffinityWeight: envFloat("LLM_GATEWAY_ROUTING_W_CACHE", 0),
 	}
 }
 
@@ -256,12 +264,19 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 	if weights.OutlierWeight > 0 {
 		outlierPenalty = successRateOutlierPenalty(c, stratIn.SuccessRatePoolStats)
 	}
+	// P1-B-③ prompt-cache 亲和（可选维度，默认 0）：与 CostWeight/IQWeight
+	// 同族——随 weights 下发，无信号候选中性 0。
+	var cachePenalty float64
+	if weights.CacheAffinityWeight > 0 {
+		cachePenalty = calculateCacheAffinityPenalty(c)
+	}
 	composite += stickyPenalty*stickyWeight +
 		recencyPenalty*recencyWeight +
 		balancePenalty*balanceWeight +
 		planQuotaPenalty*planQuotaWeight +
 		recoveryPenalty*recoveryWeight +
-		outlierPenalty*weights.OutlierWeight
+		outlierPenalty*weights.OutlierWeight +
+		cachePenalty*weights.CacheAffinityWeight
 
 	if rand.Float64() < 0.1 {
 		slog.Info("LOAD_SCORE_V2",
@@ -283,6 +298,7 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 			"plan_quota_penalty", planQuotaPenalty,
 			"recovery_penalty", recoveryPenalty,
 			"outlier_penalty", outlierPenalty,
+			"cache_penalty", cachePenalty,
 			"composite", composite,
 		)
 	}
@@ -339,6 +355,30 @@ func calculateCostPenalty(c provider.Candidate) float64 {
 		p = 1.0
 	}
 	return p
+}
+
+// calculateCacheAffinityPenalty (P1-B-③, audit 2026-10-28 §4) turns the
+// candidate's token-weighted cached-input share (Candidate.RecentCacheRate,
+// migration 915) into a 0..1 penalty: high hit rate → low penalty → preferred.
+// 与 sticky 保留机制互证：sticky = 保持亲和，本维度 = 把亲和的价值量化进
+// 打分（cache 折扣价 + 更低 TTFT）。
+//
+// 无信号语义（与 rsr 冷启动同款 fail-open）：nil rate / samples 不足 ⇒ 0
+//（中性，不奖不罚）——命中率数据缺失的候选不能因为「没数据」被压。
+// 实测 0 命中（样本充足）≠ 无信号：那是「上游不给这个模型缓存」的证据，
+// 吃满惩罚 1.0。样本下限复用 calculateQualityScore 的 ≥10 惯例。
+func calculateCacheAffinityPenalty(c provider.Candidate) float64 {
+	if c.RecentCacheRate == nil || c.RecentCacheSamples < 10 {
+		return 0
+	}
+	rate := *c.RecentCacheRate
+	if rate <= 0 {
+		return 1.0
+	}
+	if rate >= 1.0 {
+		return 0
+	}
+	return 1.0 - rate
 }
 
 // calculateIQPenalty turns the model's standard IQ (AA Intelligence Index,

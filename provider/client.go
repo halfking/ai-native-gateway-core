@@ -236,6 +236,15 @@ type Candidate struct {
 	// hits the hard-exclude threshold. Added 2026-06-22 (defect ③ soft layer).
 	RecentSuccessRate *float64 `json:"recent_success_rate,omitempty"`
 	RecentSamples     int      `json:"recent_samples,omitempty"`
+	// RecentCacheRate / RecentCacheSamples (P1-B-③, audit 2026-10-28 §4) are
+	// the token-weighted cached-input share over the same last-N business
+	// rows (migration 915 recent_cache_hit_rate). Consumed by the router's
+	// prompt-cache-aware score dimension: a credential whose upstream honors
+	// prompt caching for this model is worth more than its raw price suggests
+	// (discounted cached input + lower TTFT). nil/low samples = no signal →
+	// the dimension is neutral for that candidate (fail-open).
+	RecentCacheRate    *float64 `json:"recent_cache_rate,omitempty"`
+	RecentCacheSamples int      `json:"recent_cache_samples,omitempty"`
 	// NativeEndpoints is the supplier's full set of protocol endpoints
 	// (provider_endpoint_protocols rows for this candidate's provider).
 	// It feeds the endpointselect.Select() decision that drives the
@@ -481,6 +490,9 @@ type Client struct {
 	fernetKey           []byte
 	keyring             *secret.Keyring
 	asyncExitSuspicious func(credentialID int, rawModel string)
+	// candCircuit（2026-10-28 routing_schema_error 轮）候选查询组件熔断器：
+	// 连续失败 open + 请求 park 延迟到冷却点半开探测。见 candidates_circuit.go。
+	candCircuit candidatesCircuit
 
 	// keyRotator holds per-credential multi-key rotation state (per-key health +
 	// round-robin). nil when the DB/keyring isn't configured (single-key mode).
@@ -1805,6 +1817,11 @@ SELECT
 			-- RecentSuccessRate field) for soft de-prioritization in the router.
 			rsr.rate   AS recent_success_rate,
 			rsr.samples AS recent_samples,
+			-- P1-B-③ (audit 2026-10-28 §4): prompt-cache affinity — see the
+			-- chr LATERAL above. Feeds the router's cache dimension
+			-- (RecentCacheRate); NULL = no signal → neutral.
+			chr.rate   AS recent_cache_rate,
+			chr.samples AS recent_cache_samples,
 			-- r0924 supplier-protocol-optimization §3.4: per-candidate
 			-- JSONB projection of the provider_endpoint_protocols rows
 			-- (see pep_lateral LATERAL below). Empty array preserves the
@@ -1896,6 +1913,12 @@ SELECT
 		-- LIMIT 50 is a 50-row index descent per candidate — not a window
 		-- aggregate over the whole partitioned table.
 		CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
+		-- P1-B-③ (audit 2026-10-28 §4): prompt-cache affinity signal — same
+		-- last-N business rows, token-weighted cached-input share (migration
+		-- 915). Same index-descent cost shape as rsr. NULL/0 samples = no
+		-- signal; the router's cache dimension fail-opens to neutral exactly
+		-- like rsr at cold start.
+		CROSS JOIN LATERAL recent_cache_hit_rate(c.id, mo.raw_model_name, 50) AS chr
 			WHERE (p.tenant_id = $2 OR p.tenant_id = 'default')
 
 
@@ -1980,19 +2003,55 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 	var err error
 	const maxAttempts = 3
 
+	// 候选查询熔断（2026-10-28 routing_schema_error 轮）：open 期不碰库，
+	// 把本请求 park 到冷却到期点（半开探测由醒来的第一个请求承担）。
+	// parkCap 内循环等待/重试；预算耗尽快速失败（ErrCandidatesCircuitOpen），
+	// handler 走既有 no-candidates 路径返回 503 —— 坏路径在断路期每个冷却窗
+	// 只被真实查询一次，而不是每个请求一撞。
+	allow, retryAt := c.candCircuit.AllowProbe(time.Now())
+	if !allow {
+		parkCap := candidatesCircuitParkCap()
+		parked := false
+		for !allow {
+			remaining := parkCap
+			if wait := time.Until(retryAt); wait < remaining {
+				remaining = wait
+			}
+			if remaining <= 0 {
+				return nil, fmt.Errorf("%w (retry after %s)", ErrCandidatesCircuitOpen, retryAt.Format(time.RFC3339))
+			}
+			if !parked {
+				candidatesCircuitParkedTotal.Inc()
+				parked = true
+			}
+			slog.Warn("[candidate_diag] circuit open — parking request until cooldown probe",
+				"model", clientModel, "tenant_id", tenantID, "modality", modality,
+				"park_seconds", remaining.Seconds())
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(remaining):
+			}
+			allow, retryAt = c.candCircuit.AllowProbe(time.Now())
+		}
+	}
+
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		rows, err = c.dbPool.Query(ctx, candidateQuerySQL(),
 			clientModelLower, tenantID, modality)
 
 		if err == nil {
+			c.candCircuit.RecordSuccess()
 			break
 		}
 
 		if !isRetryableDBError(err) {
+			c.candCircuit.RecordFailure(time.Now())
 			return nil, fmt.Errorf("query candidates failed: %w (context: model=%s, tenant_id=%s)", err, clientModel, tenantID)
 		}
 
 		if attempt == maxAttempts-1 {
+			c.candCircuit.RecordFailure(time.Now())
 			return nil, fmt.Errorf("query candidates failed after %d attempts: %w (context: model=%s, tenant_id=%s)", maxAttempts, err, clientModel, tenantID)
 		}
 
@@ -2081,6 +2140,8 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.QualityFixMode,
 			&cand.RecentSuccessRate,
 			&cand.RecentSamples,
+			&cand.RecentCacheRate,
+			&cand.RecentCacheSamples,
 			&nativeEndpointsJSON,
 		); err != nil {
 			return nil, err

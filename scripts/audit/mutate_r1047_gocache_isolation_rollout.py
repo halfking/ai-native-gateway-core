@@ -22,7 +22,7 @@
 ★★ ② **建门**：★ 新门 `scripts/ursmcheck/gocache_isolation_guard_test.go`
 ★★    ⇒ ⇒ 扫出全仓所有 Go 工具链子进程点 ⇒ ⇒ 断言它们的 env 指向专用目录。
 
-★★ 本台覆盖的 4 个臂（★ 每个臂对应一条「断言没牙齿」的可能）：
+★★ 本台覆盖的 5 个臂（★ 每个臂对应一条「断言没牙齿」的可能）：
 
 ★   B00 ★★★ **惰性变异筛查**：★ 先跑一遍【未变异】的基线 ⇒ 确认它本来就绿。
 ★   M01 ★★★ 把 `sql/schema` 那道门的两处隔离**删掉**（★ ⇒ 子进程回落用全局缓存）
@@ -30,6 +30,8 @@
 ★   M02 ★★★ 把 `plugin-runtime` 那两处的隔离**换回 `os.Environ()`**
 ★        ⇒ 期望：新门**转红**且**只报 1 处** ⇒ ⇒ 证明「同包里的另一处仍隔离」
 ★        ⇒ ⇒ **不会连坐**（★ ⇒ ⇒ 证明它报的是【具体那处】不是【整个包】）。
+★   M04 ★★★ **删掉一个 shell 变异台的 GOCACHE 隔离** ⇒ ⇒ 期望：【脚本家族】那道门转红
+★        ⇒ ⇒ ★★ 证明第二面**确实有牙齿**（★ 否则 66 个脚本那一族完全裸奔）。
 ★   M03 ★★★ **掏空新门自己的断言**（★ `t.Fatalf` ⇒ `t.Logf`）★ **再叠加 M01**
 ★        ⇒ 期望：**全部转绿**
 ★        ⇒ ⇒ ⇒ 证明新门的断言**合起来才是必需的**（★ 没有它，★ 「把隔离改没了」
@@ -56,7 +58,24 @@ import mutate_r1046_hollowout_gocache_isolation as base  # noqa: E402
 
 # ★ 本台要跑的是【新门】⇒ ⇒ 覆盖掉基座里的 TESTS 口径。
 GATE_TEST = "TestGoToolchainSubprocessesUseDedicatedGoCache"
-base.TESTS = GATE_TEST
+# ★★ 第二面（★ 脚本家族）那道门也归本台管（★ 它和第一面是同一个问题）。
+SCRIPT_GATE_TEST = "TestMutationHarnessScriptsUseDedicatedGoCache"
+base.TESTS = GATE_TEST + "|" + SCRIPT_GATE_TEST
+
+
+# ★★ r1047 轮（★ 2026-10-28）：★ 本台**自己**把 `GOCACHE` 指向【专用目录】⇒ ⇒
+# ★★ ★★ 原来它只是**继承**基座的 `go_env()` ⇒ ⇒ ★★ 「约定」就有两份（★ 一份在
+# ★★ 基座、一份在本台）⇒ ⇒ ★★ ★★ 而**文件级**的判据（★ 门
+# ★★ `TestMutationHarnessScriptsUseDedicatedGoCache`）**看不见**继承 ⇒ ⇒ ★★ ⇒
+# ★★ ⇒ **继承**是「约定有两份」的形态 ⇒ ⇒ ★★ ⇒ **每台自己写出来**。
+def _go_env():
+    env = dict(os.environ)
+    env["PATH"] = base.GO_BIN + os.pathsep + env.get("PATH", "")
+    env["GOCACHE"] = os.path.join(base.ROOT, ".build-local", ".gocache-mutate")
+    return env
+
+
+base.go_env = _go_env
 
 TARGET_REL = "scripts/ursmcheck/gocache_isolation_guard_test.go"
 TARGET = os.path.join(base.ROOT, TARGET_REL)
@@ -67,7 +86,11 @@ SQL = os.path.join(base.ROOT, "sql", "schema", "integration_gate_test.go")
 PLUGIN_REL = "plugin-runtime/supervisor_test.go"
 PLUGIN = os.path.join(base.ROOT, PLUGIN_REL)
 
-ALL_TARGETS = (TARGET, SQL, PLUGIN)
+# ★★ 第三个目标：★ 一个 shell 变异台（★ 用来验【脚本家族】那道门）。
+SHELL_REL = "scripts/.mutate-840-throttle.sh"
+SHELL = os.path.join(base.ROOT, SHELL_REL)
+
+ALL_TARGETS = (TARGET, SQL, PLUGIN, SHELL)
 
 # ── M01 锚点：把 sql/schema 那道门的隔离删掉 ────────────────────────────
 M01_NEEDLES = (
@@ -84,6 +107,15 @@ M02_REPL = 'os.Environ()'
 # ★★★ **编译红** ⇒ ⇒ 按纪律「编译红 ≠ 断言红 ⇒ 不算数」。
 M03_NEEDLE = "t.Fatalf("
 M03_REPL = "t.Logf(/* MUTATION M03: 断言被掏空 */"
+
+# ── M04 锚点（★ r1047 轮第二面）：★ 把一个 shell 变异台的 GOCACHE 隔离删掉 ──
+#
+# ★★★ **为什么这一臂不可省**：★★ 第一面（★ Go 文件）那道门**看不见 shell / Python**
+# ★★★ ⇒ ⇒ ★★★ 「脚本家族」那一族（★ ★★ 70 个脚本、★ 其中 66 个调 go 工具链）
+# ★★★ ⇒ ⇒ ★★★ **改树 ⇒ 跑 go test ⇒ 还原** ⇒ ⇒ ★★★ **每次跑都产生一批永不复用的
+# ★★★ 缓存条目** ⇒ ⇒ ★★★ ⇒ **没有第二面 ⇒ ⇒ 这一族完全裸奔**。
+M04_NEEDLE = 'export GOCACHE="$("$(git rev-parse --show-toplevel)/scripts/lib/gocache.sh" mutate)"'
+M04_REPL = 'export GOCACHE="$HOME/.cache/go-build"  # MUTATION M04: 回落用用户的全局缓存' 
 
 
 def replace_first(text, needle, repl, expect_count):
@@ -235,6 +267,35 @@ def main() -> int:
         )
         if not restore():
             print("M03 还原后 md5 不一致 ⇒ 中止", file=sys.stderr)
+            return 1
+
+        # ── M04：删掉一个 shell 变异台的 GOCACHE 隔离 ⇒ 脚本家族那道门必须转红 ──
+        text = read(SHELL)
+        text = base.replace_once(text, M04_NEEDLE, M04_REPL)
+        write(SHELL, text)
+
+        ok_build, build_out = base.compile_ok()
+        rc, out = base.run_tests()
+        failed = base.failed_tests(out)
+        detail = out
+        ok = (
+            ok_build
+            and rc != 0
+            and SCRIPT_GATE_TEST in failed
+            and GATE_TEST not in failed
+            and SHELL_REL in detail
+        )
+        base.record(
+            "M04 删掉一个 shell 变异台的 GOCACHE 隔离",
+            "仍能编译；★ **只有**「MutationHarnessScriptsUseDedicatedGoCache」转红"
+            "（★ ⇒ 证明「脚本家族」那一面【确实有牙齿】⇒ ⇒ 不是恒绿）",
+            "编译=%s，rc=%s，红：%s%s" % (
+                "OK" if ok_build else "红(" + build_out[:200] + ")",
+                rc, failed, "" if ok_build else " ★ 编译红不算数"),
+            ok,
+        )
+        if not restore():
+            print("M04 还原后 md5 不一致 ⇒ 中止", file=sys.stderr)
             return 1
 
     finally:

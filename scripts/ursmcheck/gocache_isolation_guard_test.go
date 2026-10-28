@@ -55,6 +55,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -344,4 +345,158 @@ func TestGoToolchainSubprocessesUseDedicatedGoCache(t *testing.T) {
 func gocacheGateRepoRoot(t *testing.T) string {
 	t.Helper()
 	return hollowRepoRoot(t)
+}
+
+// ── ★★ 第二面：★【脚本家族】（★ shell / Python）★★ ──
+
+// gocacheScriptFamily 是【本门覆盖的脚本族】。
+//
+// ★ ★★ **为什么只覆盖这一族**：★★ 本门的**判据是【文件级】的**（★ 「这个文件有没有
+// ★ ★★ 设置 GOCACHE」）⇒ ⇒ ★★ 而文件级的判据对【部署脚本 / 压测脚本】那一族
+// ★ ★★ **判不准**（★ 那些脚本的 go 调用形态五花八门：★ 有的是 `go build`、
+// ★ ★★ 有的是在容器里编、★ 有的是 `go list`）⇒ ⇒ ★★ ⇒ **那一族归下一轮**
+// ★ ★★ （★ 需要【逐个读懂那个脚本在干什么】才判得准 ⇒ ⇒ ★★ 不是一条正则能做的）。
+//
+// ★ ★★ **这一族为什么【必须】管**：★★ 它们是【**改树 ⇒ 跑 go test ⇒ 还原**】
+// ★ ★★ ⇒ ⇒ ★★ 树每变一次 ⇒ ⇒ ★★ 编译产物的 action ID 就变 ⇒ ⇒ ★★ 旧的【永远
+// ★ ★★ 不会再被命中】⇒ ⇒ ★★ ⇒ **每次跑都产生一批纯垃圾** ⇒ ⇒ ★★ ⇒ **A 级**
+// ★ ★★ （★ 而审计脚本那一族在**固定树**上跑 ⇒ ⇒ 条目可复用 ⇒ ⇒ 是**容量**问题
+// ★ ★★ 不是**垃圾**问题 ⇒ ⇒ 优先级低一档）。
+var gocacheScriptFamily = []string{
+	"scripts/.mutate-*.sh",
+	"scripts/.mutate-*.py",
+	"scripts/mut-*.sh",
+	"scripts/mutate-*.py",
+	"scripts/audit/mutate_*.sh",
+	"scripts/audit/mutate_*.py",
+}
+
+// gocacheGoCmdRE 认【go 工具链的编译型子命令】。
+//
+// ★ ★★ **两种形态都要认**：★★ ① `go test …`（★ shell 与字符串里）② `["go", "test", …]`
+// ★ ★★ （★ Python 的列表形态）⇒ ⇒ ★★ ⇒ **只认第一种 ⇒ ★★ 会漏掉一半**
+// ★ ★★ ⇒ ⇒ ★★ （★ 实测：★ 仓里 `scripts/mutate-14336-*.py` 就是列表形态）。
+var gocacheGoCmdRE = regexp.MustCompile(`\bgo\s+(build|test|vet|run)\b`)
+
+// gocacheGoCmdListRE 认【列表形态】的 go 工具链调用。
+var gocacheGoCmdListRE = regexp.MustCompile(`["']go["']\s*,\s*["'](build|test|vet|run)["']`)
+
+// gocacheSetRE 认【设置了 GOCACHE】的各种写法。
+//
+// ★ ★★ **为什么认这几种形态**：★★ shell 侧是 `export GOCACHE=…`（★ 或
+// ★ ★★ `GOCACHE=…` 在 env 数组里），Python 侧是 `["GOCACHE"] = …`（★ 或
+// ★ ★★ `env["GOCACHE"] = …`），还有两边的**共享入口**（★ `gocache_use` /
+// ★ ★★ `gocache.env(` / `gocache.dir_for(`）⇒ ⇒ ★★ ⇒ **一个都不许漏**。
+var gocacheSetRE = regexp.MustCompile(`GOCACHE\s*=|["']GOCACHE["']\s*\]|gocache_use|gocache\.env\(|gocache\.dir_for\(`)
+
+// gocacheDedicatedRE 认【指向【专用目录】】的写法。
+//
+// ★★★★ **为什么必须有这一条（★ 本轮被变异臂逼出来的）**：★★★★ 第一版只判
+// ★★★★ 「这个文件有没有设置 GOCACHE」⇒ ⇒ ★★★★ **而那是一道【假绿】的判据**：
+// ★★★★ `export GOCACHE="$HOME/.cache/go-build"`（★ **用户的全局缓存**）⇒ ⇒ ★★★★
+// ★★★★ **也算「设置了 GOCACHE」** ⇒ ⇒ ★★★★ ⇒ **门照样绿** ⇒ ⇒ ★★★★ ⇒ **隔离
+// ★★★★ 根本没生效，而门在报「已覆盖」** ⇒ ⇒ ★★★★ ⇒ **★ 这正是「变异臂的价值
+// ★★★★ 不在『红』而在『其余照常绿』」那条纪律的现场：★ M04 臂把隔离改成
+// ★★★★ 「用户的全局缓存」⇒ ⇒ ★★★★ 门**没有红** ⇒ ⇒ ★★★★ ⇒ 门有洞。
+//
+// ★★★★ **修法**：★★★★ 「设置了 GOCACHE」**还不够**，★ 必须指向【专用目录】⇒ ⇒
+// ★★★★ **两种算专用**：★★ ① **委托给共享入口**（★ `gocache.sh` / `gocache_use`
+// ★★★★ / `gocache.env(` / `gocache.dir_for(`）⇒ ⇒ **按构造就是专用的**；
+// ★★★★ ② **字面路径在 `.build-local/` 下**（★ ⇒ ⇒ 在 `.gitignore` 里 ⇒ ⇒
+// ★★★★ `git clean -xfd` 一把回收）。
+var gocacheDedicatedRE = regexp.MustCompile(`\.build-local/|gocache\.sh|gocache_use|gocache\.env\(|gocache\.dir_for\(`)
+
+// gocacheCodeLines 去掉【整行注释】后的行（★ shell 的 `#` 与 python 的 `#` 同形）。
+func gocacheCodeLines(src string) []string {
+	var out []string
+	for _, line := range strings.Split(src, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// TestMutationHarnessScriptsUseDedicatedGoCache —— ★★ 第二面：
+// ★ 凡是【改树 ⇒ 跑 go test ⇒ 还原】的脚本 ⇒ 都必须把 `GOCACHE` 指向【专用目录】。
+func TestMutationHarnessScriptsUseDedicatedGoCache(t *testing.T) {
+	root := gocacheGateRepoRoot(t)
+
+	var checked, invoking []string
+	var offenders []string
+
+	for _, pattern := range gocacheScriptFamily {
+		matches, err := filepath.Glob(filepath.Join(root, pattern))
+		if err != nil {
+			t.Fatalf("展开 %s 失败：%v", pattern, err)
+		}
+		for _, path := range matches {
+			src, rerr := os.ReadFile(path)
+			if rerr != nil {
+				t.Fatalf("读 %s 失败：%v", path, rerr)
+			}
+			rel, _ := filepath.Rel(root, path)
+			checked = append(checked, rel)
+
+			code := gocacheCodeLines(string(src))
+			hasGoCmd := false
+			for _, line := range code {
+				if gocacheGoCmdRE.MatchString(line) || gocacheGoCmdListRE.MatchString(line) {
+					hasGoCmd = true
+					break
+				}
+			}
+			if !hasGoCmd {
+				continue
+			}
+			invoking = append(invoking, rel)
+
+			hasSet := false
+			for _, line := range code {
+				if gocacheSetRE.MatchString(line) {
+					hasSet = true
+					break
+				}
+			}
+			if !hasSet {
+				offenders = append(offenders, rel+"（★ 压根没设置 GOCACHE）")
+				continue
+			}
+			// ★★★ **「设置了」还不够**：★ 必须指向【专用目录】⇒ ⇒ ⇒
+			// ★★★ （★ `GOCACHE=$HOME/.cache/go-build` ⇒ ⇒ 是【用户的全局缓存】
+			// ★★★ ⇒ ⇒ ⇒ **隔离没生效，而门在报「已覆盖」** ⇒ ⇒ ⇒ **假绿**）。
+			dedicated := false
+			for _, line := range code {
+				if gocacheDedicatedRE.MatchString(line) {
+					dedicated = true
+					break
+				}
+			}
+			if !dedicated {
+				offenders = append(offenders, rel+"（★ 设了 GOCACHE，但**没指向专用目录**）")
+			}
+		}
+	}
+
+	// ★★ **搜索面完整性自检**（★ 与本门第一面同款）：★★ 一个脚本都没扫到 ⇒ ⇒ 门是瞎的。
+	if len(checked) == 0 {
+		t.Fatalf("★ 脚本家族里一个文件都没扫到 ⇒ ⇒ 【搜索面不完整】⇒ ⇒ 本门是瞎的")
+	}
+	if len(invoking) == 0 {
+		t.Fatalf("★ 脚本家族里一个【调 go 工具链】的脚本都没扫到 ⇒ ⇒ 【搜索面不完整】⇒ ⇒ 本门是瞎的")
+	}
+
+	if len(offenders) > 0 {
+		sort.Strings(offenders)
+		t.Fatalf("★ %d 个【调 go 工具链】的脚本**没有**把 GOCACHE 指向专用目录"+
+			"（★ 本族共扫到 %d 个脚本、其中 %d 个调 go 工具链）：\n  %s\n"+
+			"★ ⇒ ⇒ 判据有两条：★ ① **必须设置** GOCACHE ② **必须指向专用目录**"+
+			"（★ `.build-local/` 下 ⇒ ⇒ 在 .gitignore 里 ⇒ ⇒ `git clean -xfd` 可回收）\n"+
+			"★ ⇒ ⇒ 它们【改树 ⇒ 跑 go test ⇒ 还原】⇒ ⇒ 树每变一次就产生一批"+
+			"【永远不会再被命中】的缓存条目 ⇒ ⇒ ⇒ 纯垃圾\n"+
+			"★ ⇒ ⇒ ⇒ 修法：★ shell 用 `export GOCACHE=\"$(\"$(git rev-parse --show-toplevel)/scripts/lib/gocache.sh\" mutate)\"`；\n"+
+			"★ ⇒ ⇒ ★ Python 用 `os.environ[\"GOCACHE\"] = gocache.dir_for(gocache.repo_root(), \"mutate\")`",
+			len(offenders), len(checked), len(invoking), strings.Join(offenders, "\n  "))
+	}
 }
