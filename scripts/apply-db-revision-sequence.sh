@@ -2405,6 +2405,12 @@ files=(
   #   允许集 = internal/probekind.ValidStages()（8 个探针 stage + 'business'）。
   #   幂等：定义感知守卫（已是规范形态就跳过重建），可重复执行。
   "$ROOT_DIR/sql/migrations/startup/914_session_turns_origin_stage_check.sql"
+
+  # ★ 915: recent_cache_hit_rate（P1-B-③，audit 2026-10-28 §4）路由侧
+  #   prompt-cache 亲和信号。CREATE OR REPLACE FUNCTION，幂等、零 DDL 锁面；
+  #   候选扫描（provider/client.go 的 chr LATERAL）依赖它存在 —— 缺函数时
+  #   候选查询整条 42803，所以它必须进部署序列而不是只进 installer。
+  "$ROOT_DIR/sql/migrations/startup/915_recent_cache_hit_rate.sql"
 )
 
 
