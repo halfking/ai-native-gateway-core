@@ -22,6 +22,10 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 		t.Skip("TEST_SESSION_V2_ISOLATED=1 is required for mutating V2 database tests")
 	}
 
+	// W1.3: production default is consent=off. Mutating V2 fixtures opt in
+	// explicitly so they still exercise the write path.
+	enableRecordingConsentForTest(t)
+
 	ctx := context.Background()
 	db, err := pgxpool.New(ctx, dbURL)
 	require.NoError(t, err)
@@ -34,6 +38,13 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("refusing mutating V2 database test against database %q; use a dedicated *_test database", database)
 	}
 	return db
+}
+
+func enableRecordingConsentForTest(t *testing.T) {
+	t.Helper()
+	prev := allowBodiesWriteHook
+	allowBodiesWriteHook = func(string, int) bool { return true }
+	t.Cleanup(func() { allowBodiesWriteHook = prev })
 }
 
 // cleanupTestDB cleans up test data from all V2 tables

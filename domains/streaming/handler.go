@@ -51,6 +51,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
+	"github.com/kaixuan/llm-gateway-go/internal/sessionid"
 	sseparser "github.com/kaixuan/llm-gateway-go/internal/sse"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/maas"
@@ -2787,23 +2788,14 @@ func (h *ChatHandler) serveWithExecutor(
 	// where the provisional id (generated for early-failure logging)
 	// shadowed a body-supplied session on the first request of a new
 	// client conversation.
-	// Precedence:
+	// Precedence (locked; single source = internal/sessionid.Resolve):
 	//   1. body session_id (highest — most explicit)
-	//   2. client header X-Gw-Session-Id / legacy X-Session-Id
-	//   3. assignment (auto-create / recent-session reuse)
-	//   4. provisional id (used only as a last-resort fallback for early
-	//      failure logging; the safety net re-applies it via
-	//      applyProvisionalGatewaySessionHeader).
-	sessionID = extractSessionIDFromBody(bodyBytes)
-	if sessionID == "" {
-		sessionID = extractSessionIDFromHeaders(r)
-	}
+	//   2. client header X-Gw-Session-Id
+	//   3. legacy / native header table
+	//   4. assignment (auto-create / recent-session reuse) — caller below
+	//   5. provisional id (last-resort; applyProvisionalGatewaySessionHeader)
+	sessionID, _ = sessionid.ResolveRequest(r, bodyBytes)
 	if sessionID != "" {
-		// 2026-09-08: a stable non-gateway client identity (e.g. ZCode's
-		// bare-UUID x-session-id) maps deterministically onto gw_<id>;
-		// letting it fall through to the CreateV2 fallback minted a fresh
-		// gw_<uuid> per request and turn aggregation never left 1.
-		sessionID = deriveGatewaySessionID(sessionID)
 		// Only inherit the request header for the lookup; the final
 		// resolved value is written back via applyResolvedGatewaySession
 		// once assignment finishes.

@@ -191,6 +191,10 @@ func (h *Handler) handleTenants(w http.ResponseWriter, r *http.Request) {
 		h.handleTenantModelPolicies(w, r, code)
 		return
 	}
+	if isRecordingConsentSubResource(sub) {
+		h.handleTenantRecordingConsent(w, r, code, sub)
+		return
+	}
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -64,10 +65,30 @@ type ModelAlternativesResult struct {
 // person will read before giving up.
 const maxModelAlternatives = 8
 
-// alternativesQueryTimeout bounds the lookup. This runs on an already-failing
-// request, so it must not add meaningful latency: better to return the plain
-// 503 than to make a stalled client wait longer for a nicety.
+// alternativesQueryTimeout bounds the SYNCHRONOUS lookup on a cache miss. This
+// runs on an already-failing request, so it must not add meaningful latency:
+// better to return the plain 503 than to make a stalled client wait longer for
+// a nicety.
 const alternativesQueryTimeout = 800 * time.Millisecond
+
+// alternativesRefreshBudget bounds the BACKGROUND recompute that fills the
+// cache. It is decoupled from any request, so it can afford the query's
+// intrinsic cost: R173（2026-10-28，252 PG 日志审计）EXPLAIN ANALYZE 实测本查询
+// 干净负载下就要 1.27s（v_routable_credential_models 枚举 3.1 万凭据×模型对），
+// 而 pgss 全量 mean 411ms / max 1.73s——横跨 800ms 同步预算两侧，预算命中即取消
+// （252 生产 24h 窗实测 2,230 次「canceling statement due to user request」，
+// 建议列表实际上从未送达）。后台预算放开到 5s，让重算真正算完进缓存。
+const alternativesRefreshBudget = 5 * time.Second
+
+// alternativesCacheTTL：缓存新鲜窗。数据源（可路由集=探针状态、featured=运营
+// 编辑、热度=7 天流量）都是分钟级慢变量，2 分钟陈旧度对「换一个模型试试」的
+// 建议场景无感；过长会让模型下线后建议仍指向它。
+const alternativesCacheTTL = 2 * time.Minute
+
+// alternativesCacheMaxKeys bounds the cache: key = (tenant, taskType)。taskType
+// 来自 isKnownTaskType 的小闭集加 ""，tenant 在本部署面个位数 ⇒ 正常远小于上限；
+// 上限只防异常面（如租户爆量）把缓存变成无界结构，超限逐出最旧。
+const alternativesCacheMaxKeys = 64
 
 // alternativesQueryer is the narrow slice of *pgxpool.Pool the finder needs,
 // so tests can hand in a mock that would otherwise answer the lookup and
@@ -92,6 +113,150 @@ type ModelAlternativesFinder struct {
 	// simply means no session-level task type, and the result falls back to
 	// featured + popularity ordering.
 	intentCache *autoroute.SessionIntentCache
+	// cacheOnce/cache：结果缓存（按 tenant+taskType），见 alternativesCache。
+	// ensureCache 惰性初始化，零值字面量构造（测试路径）同样可用。
+	cacheOnce sync.Once
+	cache     *alternativesCache
+	// queryFn 是查询缝：默认走 alternativesSQL + db.Query；测试注入以观察
+	// 「缓存命中不再发查询」「后台重算只发一次」「冷未命中同步预算失败后转后台」。
+	// nil ⇒ 默认实现。
+	// requestModality（★ 2026-10-28 模态不匹配轮）：过滤建议列表，只留真能
+	// 服务该媒体模态的模型；'' = 不过滤。★ 合并教训：上游的缓存重构与本轮的
+	// 模态过滤在同一条缝上相撞——缝必须带 modality，缓存键按模态分开，
+	// 否则 vision 请求会命中「含 text-only 模型」的缓存列表，过滤形同虚设。
+	queryFn func(ctx context.Context, excludeModel, tenantID, taskType, requestModality string) ([]ModelAlternative, error)
+}
+
+// alternativesCacheEntry 是一个 (tenant, taskType) 键的缓存槽。alts 为空且
+// computedAt 有效是**有意义的答案**（当前什么路由都不可达），不是「没算过」。
+type alternativesCacheEntry struct {
+	alts       []ModelAlternative
+	computedAt time.Time
+	computing  bool
+}
+
+// alternativesCache 是 Find 的结果缓存：TTL 新鲜期内直接命中；过期条目继续
+// 服务（stale-while-revalidate）并由单个后台 goroutine 重算（beginCompute
+// 即 singleflight）；真正的冷未命中才走同步查询路径。
+//
+// ★ R173 修的病不是「查询慢」本身——慢是内在的（pgss mean 411ms，EXPLAIN
+// 干净负载 1.27s），而是「每次失败请求都从头算一遍、算不完就被 800ms 预算
+// 杀掉、建议列表从未送达」。分钟级慢变量的结果集按 (tenant, taskType) 缓存
+// 后，DB 每个键每 TTL 至多算一次，失败请求零新增延迟。
+type alternativesCache struct {
+	mu      sync.Mutex
+	now     func() time.Time // 可注入时钟；nil ⇒ time.Now
+	ttl     time.Duration
+	entries map[string]*alternativesCacheEntry
+}
+
+func newAlternativesCache(ttl time.Duration) *alternativesCache {
+	return &alternativesCache{ttl: ttl, entries: make(map[string]*alternativesCacheEntry)}
+}
+
+func (c *alternativesCache) clockNow() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func cacheKey(tenantID, taskType, requestModality string) string {
+	return tenantID + "\x00" + taskType + "\x00" + requestModality
+}
+
+// lookup 返回该键的**快照**（列表切片头 + 新鲜度 + 是否存在）。必须在锁内取值：
+// 后台 store 会并发写条目字段，调用方绝不能拿着活条目指针在锁外读。
+// 切片内容视为不可变（store 只换新切片，从不原位改写），快照因此安全。
+func (c *alternativesCache) lookup(key string) (alts []ModelAlternative, fresh, found bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	if !ok {
+		return nil, false, false
+	}
+	return e.alts, c.clockNow().Sub(e.computedAt) < c.ttl, true
+}
+
+// beginCompute 抢后台重算权：返回 false 表示已有 goroutine 在算（singleflight）。
+func (c *alternativesCache) beginCompute(key string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	if !ok {
+		e = &alternativesCacheEntry{}
+		c.entries[key] = e
+		c.evictLocked()
+	}
+	if e.computing {
+		return false
+	}
+	e.computing = true
+	return true
+}
+
+func (c *alternativesCache) endCompute(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[key]; ok {
+		e.computing = false
+	}
+}
+
+func (c *alternativesCache) store(key string, alts []ModelAlternative) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	if !ok {
+		e = &alternativesCacheEntry{}
+		c.entries[key] = e
+		c.evictLocked()
+	}
+	e.alts = alts
+	e.computedAt = c.clockNow()
+}
+
+// evictLocked 在超限时逐出 computedAt 最旧的槽。调用方必须已持锁。
+func (c *alternativesCache) evictLocked() {
+	if len(c.entries) <= alternativesCacheMaxKeys {
+		return
+	}
+	var oldestKey string
+	var oldest time.Time
+	for k, e := range c.entries {
+		if oldest.IsZero() || e.computedAt.Before(oldest) {
+			oldestKey, oldest = k, e.computedAt
+		}
+	}
+	delete(c.entries, oldestKey)
+}
+
+func (f *ModelAlternativesFinder) ensureCache() *alternativesCache {
+	f.cacheOnce.Do(func() {
+		// 已注入的缓存（测试缝）不覆盖——Once 只补默认值，不做替换。
+		if f.cache == nil {
+			f.cache = newAlternativesCache(alternativesCacheTTL)
+		}
+	})
+	return f.cache
+}
+
+// filterAlternatives 是缓存服务路径的按请求收口：共享缓存里存的是**不排除任何
+// 模型**的全量列表（后台重算传 ""），请求级排除（别把自己建议给自己）与条数
+// 上限在这里补做。必须返回新切片——调用方还会改 Result 的其余字段，缓存槽里
+// 的底层数组不能被外头共享。
+func filterAlternatives(alts []ModelAlternative, requestedModel string) []ModelAlternative {
+	out := make([]ModelAlternative, 0, len(alts))
+	for _, a := range alts {
+		if requestedModel != "" && strings.EqualFold(a.Model, requestedModel) {
+			continue
+		}
+		out = append(out, a)
+	}
+	if len(out) > maxModelAlternatives {
+		out = out[:maxModelAlternatives]
+	}
+	return out
 }
 
 func NewModelAlternativesFinder(db *pgxpool.Pool) *ModelAlternativesFinder {
@@ -146,27 +311,74 @@ func (f *ModelAlternativesFinder) Find(
 	// 随响应一起被丢弃，再往下的查询注定以「canceling statement due to user
 	// request」收场：252 生产日志 10-24~10-26 三天实测 1,399 次取消（本查询独占
 	// 同期 PG ERROR 噪音约 46%）。ctx 已死即返回空表，不再向连接池要连接。
+	// （R173 复测：该守卫之后仍有 2,230 次/天取消——守卫只挡「进来前已死」，
+	// 挡不住「跑超时被杀」，见下方缓存路径的由来。）
 	if err := ctx.Err(); err != nil {
 		return result
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, alternativesQueryTimeout)
-	defer cancel()
+	qfn := f.queryFn
+	if qfn == nil {
+		qfn = f.queryAlternativesSQL
+	}
+	c := f.ensureCache()
+	// ★ 缓存键必须含 modality：同一 (tenant, taskType) 下，vision 请求与
+	// 文本请求的合法建议集合不同——共享键会让 vision 请求命中一份
+	// 「含 text-only 模型」的列表（2026-10-28 合并抓到）。
+	key := cacheKey(tenantID, taskType, result.RequestedModality)
 
+	// 命中（新鲜或过期）：条目存在就直接服务——过期条目后台重算（singleflight
+	// 由 beginCompute 保证），请求侧零新增延迟。空列表且新鲜是**有意义的答案**
+	//（当前无路由可达），照答，不重算。
+	if cachedAlts, fresh, found := c.lookup(key); found {
+		if !fresh && c.beginCompute(key) {
+			f.refreshInBackground(key, tenantID, taskType, result.RequestedModality, qfn)
+		}
+		if cachedAlts != nil {
+			result.Alternatives = filterAlternatives(cachedAlts, requestedModel)
+			return result
+		}
+		if fresh {
+			return result
+		}
+		// 过期且从未成功存过列表（历史重算一直失败）⇒ 落到冷路径再试一次。
+	}
+
+	// 冷未命中：同步尝试一次（800ms 预算，维持既有失败路径延迟契约）。成功即
+	// 进缓存；失败（多半是被预算取消）不阻塞请求——转后台用宽预算重算，给
+	// 下一个失败请求用。
+	syncCtx, cancel := context.WithTimeout(ctx, alternativesQueryTimeout)
+	alts, err := qfn(syncCtx, requestedModel, tenantID, taskType, result.RequestedModality)
+	cancel()
+	if err == nil {
+		c.store(key, alts)
+		result.Alternatives = filterAlternatives(alts, requestedModel)
+		return result
+	}
+	slog.WarnContext(ctx, "model alternatives lookup failed; returning plain no_candidate",
+		"error", err, "requested_model", requestedModel, "tenant_id", tenantID)
+	f.refreshInBackground(key, tenantID, taskType, result.RequestedModality, qfn)
+	return result
+}
+
+// queryAlternativesSQL 是生产查询实现：alternativesSQL + db.Query，行扫描错误
+// 视为整体失败（不留部分行进缓存）。超时预算由调用方决定：同步路径
+// alternativesQueryTimeout、后台路径 alternativesRefreshBudget。
+func (f *ModelAlternativesFinder) queryAlternativesSQL(
+	ctx context.Context, excludeModel, tenantID, taskType, requestModality string,
+) ([]ModelAlternative, error) {
 	rows, err := f.db.Query(ctx, alternativesSQL,
-		strings.ToLower(strings.TrimSpace(requestedModel)),
+		strings.ToLower(strings.TrimSpace(excludeModel)),
 		tenantID,
 		taskType,
 		maxModelAlternatives,
-		result.RequestedModality,
+		strings.TrimSpace(strings.ToLower(requestModality)),
 	)
 	if err != nil {
-		slog.WarnContext(ctx, "model alternatives lookup failed; returning plain no_candidate",
-			"error", err, "requested_model", requestedModel, "tenant_id", tenantID)
-		return result
+		return nil, err
 	}
 	defer rows.Close()
-
+	alts := []ModelAlternative{}
 	for rows.Next() {
 		var (
 			alt           ModelAlternative
@@ -186,13 +398,33 @@ func (f *ModelAlternativesFinder) Find(
 			alt.Family = *family
 		}
 		alt.ContextWindow = contextWindow
-		result.Alternatives = append(result.Alternatives, alt)
+		alts = append(alts, alt)
 	}
 	if err := rows.Err(); err != nil {
-		slog.WarnContext(ctx, "model alternatives iteration failed", "error", err)
+		return nil, err
 	}
+	return alts, nil
+}
 
-	return result
+// refreshInBackground 用与请求解耦的 ctx（Background + 5s 预算）重算一个键。
+// 调用方必须已通过 beginCompute 拿到重算权；成功进缓存，失败保留旧值并清
+// computing 标志，让下一次失败请求能再试。
+func (f *ModelAlternativesFinder) refreshInBackground(
+	key, tenantID, taskType, requestModality string,
+	qfn func(ctx context.Context, excludeModel, tenantID, taskType, requestModality string) ([]ModelAlternative, error),
+) {
+	go func() {
+		defer f.cache.endCompute(key)
+		ctx, cancel := context.WithTimeout(context.Background(), alternativesRefreshBudget)
+		defer cancel()
+		alts, err := qfn(ctx, "", tenantID, taskType, requestModality)
+		if err != nil {
+			slog.WarnContext(ctx, "model alternatives background refresh failed",
+				"error", err, "tenant_id", tenantID, "task_type", taskType)
+			return
+		}
+		f.cache.store(key, alts)
+	}()
 }
 
 // alternativesSQL selects canonical models that have at least one routable

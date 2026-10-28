@@ -85,26 +85,37 @@ onMounted(() => {
 
     <template v-else-if="data">
       <!-- 1. 中心实例统计 -->
+      <!--
+        2026-10-28 第 30 增量：原来这里是 4 张同尺寸同构的「小标签 + 巨数字」卡并排
+        （DESIGN.md §6 明禁「同尺寸卡片当页面骨架」「四个数字并排」；impeccable
+        craft-floor 的 hero-metric 模板也是同一件事）。
+        ⇒ 改成一行一行的「标签 → 值」：值班台看的是「总实例数 10 / 在线 7」，
+        不是四个并排的盒子。★ 顺带修掉两个真缺陷：
+          ① 「在线/离线/降级」原来靠 1px 彩色描边区分（DESIGN.md §6 状态表达要求
+             软填充 + 文字颜色 + 文字本身），现在改成值位的软填充 + 语义色；
+          ② 中心实例的 4 个数字与下面「区域分布」表的 4 列**完全重复** ——
+             并排放 4 张卡等于把同一组事实说两遍。
+      -->
       <section class="oo-section">
         <h2 class="oo-section-title">中心实例</h2>
-        <div class="oo-cards">
-          <div class="oo-card">
-            <h3 class="oo-card-title">总实例数</h3>
-            <p class="oo-card-metric">{{ formatNumber(data.center_stats?.total_instances) }}</p>
-          </div>
-          <div class="oo-card oo-card-online">
-            <h3 class="oo-card-title">在线</h3>
-            <p class="oo-card-metric">{{ formatNumber(data.center_stats?.online_instances) }}</p>
-          </div>
-          <div class="oo-card oo-card-offline">
-            <h3 class="oo-card-title">离线</h3>
-            <p class="oo-card-metric">{{ formatNumber(data.center_stats?.offline_instances) }}</p>
-          </div>
-          <div class="oo-card oo-card-degraded">
-            <h3 class="oo-card-title">降级</h3>
-            <p class="oo-card-metric">{{ formatNumber(data.center_stats?.degraded_instances) }}</p>
-          </div>
-        </div>
+        <ul class="oo-metrics">
+          <li class="oo-metric">
+            <span class="oo-metric-label">总实例数</span>
+            <span class="oo-metric-value">{{ formatNumber(data.center_stats?.total_instances) }}</span>
+          </li>
+          <li class="oo-metric">
+            <span class="oo-metric-label">在线</span>
+            <span class="oo-metric-value oo-metric-value--ok">{{ formatNumber(data.center_stats?.online_instances) }}</span>
+          </li>
+          <li class="oo-metric">
+            <span class="oo-metric-label">离线</span>
+            <span class="oo-metric-value oo-metric-value--bad">{{ formatNumber(data.center_stats?.offline_instances) }}</span>
+          </li>
+          <li class="oo-metric">
+            <span class="oo-metric-label">降级</span>
+            <span class="oo-metric-value oo-metric-value--warn">{{ formatNumber(data.center_stats?.degraded_instances) }}</span>
+          </li>
+        </ul>
       </section>
 
       <!-- 2. 区域分布 -->
@@ -173,39 +184,39 @@ onMounted(() => {
       <!-- 5. License 与离线激活 -->
       <section class="oo-section">
         <h2 class="oo-section-title">许可证</h2>
-        <div class="oo-cards">
-          <div class="oo-card">
-            <h3 class="oo-card-title">有效 License 总数</h3>
-            <p class="oo-card-metric">{{ formatNumber(data.license_total) }}</p>
-          </div>
-          <div class="oo-card">
-            <h3 class="oo-card-title">离线激活请求</h3>
-            <p class="oo-card-metric">{{ formatNumber(data.offline_requests?.length) }}</p>
-          </div>
-        </div>
+        <ul class="oo-metrics">
+          <li class="oo-metric">
+            <span class="oo-metric-label">有效 License 总数</span>
+            <span class="oo-metric-value">{{ formatNumber(data.license_total) }}</span>
+          </li>
+          <li class="oo-metric">
+            <span class="oo-metric-label">离线激活请求</span>
+            <span class="oo-metric-value">{{ formatNumber(data.offline_requests?.length) }}</span>
+          </li>
+        </ul>
       </section>
 
       <!-- 6. 故障统计与最近事件 -->
       <section v-if="data.fault_stats" class="oo-section">
         <h2 class="oo-section-title">故障</h2>
-        <div class="oo-cards">
-          <div class="oo-card">
-            <h3 class="oo-card-title">总故障数</h3>
-            <p class="oo-card-metric">{{ formatNumber(data.fault_stats?.total) }}</p>
-          </div>
-          <div class="oo-card">
-            <h3 class="oo-card-title">已解决</h3>
-            <p class="oo-card-metric">{{ formatNumber(data.fault_stats?.resolved) }}</p>
-          </div>
-          <div class="oo-card">
-            <h3 class="oo-card-title">{{ $t('common.status.pending') }}</h3>
-            <p class="oo-card-metric">{{ formatNumber(data.fault_stats?.pending) }}</p>
-          </div>
-          <div class="oo-card">
-            <h3 class="oo-card-title">最近故障</h3>
-            <p class="oo-card-metric">{{ data.recent_faults?.length ?? 0 }} 条</p>
-          </div>
-        </div>
+        <ul class="oo-metrics">
+          <li class="oo-metric">
+            <span class="oo-metric-label">总故障数</span>
+            <span class="oo-metric-value">{{ formatNumber(data.fault_stats?.total) }}</span>
+          </li>
+          <li class="oo-metric">
+            <span class="oo-metric-label">已解决</span>
+            <span class="oo-metric-value oo-metric-value--ok">{{ formatNumber(data.fault_stats?.resolved) }}</span>
+          </li>
+          <li class="oo-metric">
+            <span class="oo-metric-label">{{ $t('common.status.pending') }}</span>
+            <span class="oo-metric-value">{{ formatNumber(data.fault_stats?.pending) }}</span>
+          </li>
+          <li class="oo-metric">
+            <span class="oo-metric-label">最近故障</span>
+            <span class="oo-metric-value">{{ data.recent_faults?.length ?? 0 }} 条</span>
+          </li>
+        </ul>
         <table v-if="data.recent_faults?.length" class="oo-table">
           <thead>
             <tr><th>{{ $t('common.terms.severity') }}</th><th>{{ $t('common.terms.message') }}</th><th>{{ $t('common.terms.status') }}</th><th>{{ $t('common.terms.triggeredAt') }}</th></tr>
@@ -243,39 +254,42 @@ onMounted(() => {
       <!-- 8. 下载统计 -->
       <section v-if="data.download_stats" class="oo-section">
         <h2 class="oo-section-title">下载统计</h2>
-        <div class="oo-cards">
-          <div class="oo-card">
-            <h3 class="oo-card-title">总下载数</h3>
-            <p class="oo-card-metric">{{ formatNumber(data.download_stats.total_downloads) }}</p>
-          </div>
-          <div class="oo-card">
-            <h3 class="oo-card-title">近 24 小时</h3>
-            <p class="oo-card-metric">{{ formatNumber(data.download_stats.last_24h) }}</p>
-          </div>
-        </div>
+        <ul class="oo-metrics">
+          <li class="oo-metric">
+            <span class="oo-metric-label">总下载数</span>
+            <span class="oo-metric-value">{{ formatNumber(data.download_stats.total_downloads) }}</span>
+          </li>
+          <li class="oo-metric">
+            <span class="oo-metric-label">近 24 小时</span>
+            <span class="oo-metric-value">{{ formatNumber(data.download_stats.last_24h) }}</span>
+          </li>
+        </ul>
       </section>
 
       <!-- 9. 运行时指标摘要 -->
       <section v-if="data.runtime_metrics_summary" class="oo-section">
         <h2 class="oo-section-title">运行时指标</h2>
-        <div class="oo-cards">
-          <div class="oo-card">
-            <h3 class="oo-card-title">运行时长</h3>
-            <p class="oo-card-metric">{{ formatUptime(data.runtime_metrics_summary.uptime_seconds) }}</p>
-          </div>
-          <div class="oo-card">
-            <h3 class="oo-card-title">内存 RSS</h3>
-            <p class="oo-card-metric">{{ formatBytes(data.runtime_metrics_summary.memory_rss_bytes) }}</p>
-          </div>
-          <div class="oo-card">
-            <h3 class="oo-card-title">Goroutine</h3>
-            <p class="oo-card-metric">{{ formatNumber(data.runtime_metrics_summary.goroutines) }}</p>
-          </div>
-          <div class="oo-card">
-            <h3 class="oo-card-title">CPU</h3>
-            <p class="oo-card-metric">{{ data.runtime_metrics_summary.cpu_percent?.toFixed(1) ?? '—' }}%</p>
-          </div>
-        </div>
+        <ul class="oo-metrics">
+          <li class="oo-metric">
+            <span class="oo-metric-label">运行时长</span>
+            <span class="oo-metric-value">{{ formatUptime(data.runtime_metrics_summary.uptime_seconds) }}</span>
+          </li>
+          <li class="oo-metric">
+            <span class="oo-metric-label">内存 RSS</span>
+            <span class="oo-metric-value">{{ formatBytes(data.runtime_metrics_summary.memory_rss_bytes) }}</span>
+          </li>
+          <li class="oo-metric">
+            <span class="oo-metric-label">Goroutine</span>
+            <span class="oo-metric-value">{{ formatNumber(data.runtime_metrics_summary.goroutines) }}</span>
+          </li>
+          <li class="oo-metric">
+            <span class="oo-metric-label">CPU</span>
+            <!-- ★ 2026-10-28 第 30 增量：原来写的是
+                 `{{ cpu?.toFixed(1) ?? '—' }}%` ⇒ 后端没上报 CPU 时**渲染成「—%」**
+                 （一个悬空的百分号）。⇒ 百分号跟着数值走，没有数就没有百分号。 -->
+            <span class="oo-metric-value">{{ data.runtime_metrics_summary.cpu_percent != null ? data.runtime_metrics_summary.cpu_percent.toFixed(1) + '%' : '—' }}</span>
+          </li>
+        </ul>
       </section>
 
       <footer class="oo-footer">
@@ -295,13 +309,60 @@ onMounted(() => {
 .oo-loading { color: var(--text-muted); padding: var(--space-3); }
 .oo-section { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-3); margin-bottom: var(--space-3); }
 .oo-section-title { font-size: var(--text-md); font-weight: var(--font-semibold); margin-bottom: var(--space-2); }
-.oo-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-3); }
-.oo-card { background: var(--bg-surface); border: 1px solid var(--border-muted); border-radius: var(--radius); padding: var(--space-3); }
-.oo-card-title { font-size: var(--text-sm); color: var(--text-muted); margin-bottom: var(--space-1); }
-.oo-card-metric { font-size: var(--text-2xl); font-weight: var(--font-semibold); }
-.oo-card-online { border: 1px solid var(--success); }
-.oo-card-offline { border: 1px solid var(--danger); }
-.oo-card-degraded { border: 1px solid var(--warning); }
+/* ── 指标区（2026-10-28 第 30 增量）─────────────────────────────────────
+ * 原来这里是一套 `.oo-cards` 网格（4 张同尺寸的「小标签 + 巨数字」卡并排）。
+ * 那是 DESIGN.md §6 明禁的「同尺寸卡片当页面骨架」+ impeccable craft-floor 的
+ * hero-metric 模板（大数字 / 小标签 / 辅助统计 / 强调色）。
+ * ⇒ 改成「标签 → 值」的行：一行一个事实，值在右、标签在左；
+ *   语义状态落在**值位**（软填充 + 文字颜色 + 文字本身三者同进，DESIGN.md §3）。
+ * ★ 刻意不给行加底色或四边描边 —— 只有下边框的**行**不是卡片（§6「卡片是懒容器」）。
+ */
+.oo-metrics {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.oo-metric {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--border-muted);
+  font-size: var(--text-sm);
+}
+.oo-metric:last-child {
+  border-bottom: none;
+}
+.oo-metric-label {
+  color: var(--text-muted);
+}
+.oo-metric-value {
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* 状态值：软填充 + 语义色文字（颜色之外还有形状与文字本身 ⇒ 状态不只靠颜色区分） */
+.oo-metric-value--ok {
+  color: var(--success);
+  background: var(--success-soft);
+  border-radius: 4px;
+  padding: 0 var(--space-1);
+}
+.oo-metric-value--bad {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-radius: 4px;
+  padding: 0 var(--space-1);
+}
+.oo-metric-value--warn {
+  color: var(--warning);
+  background: var(--warning-soft);
+  border-radius: 4px;
+  padding: 0 var(--space-1);
+}
 .oo-table { width: 100%; border-collapse: collapse; margin-top: var(--space-2); }
 .oo-table th, .oo-table td { text-align: left; padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--border-muted); font-size: var(--text-sm); }
 .oo-table th { color: var(--text-muted); font-weight: var(--font-semibold); }
@@ -309,5 +370,5 @@ onMounted(() => {
 .oo-list-row { display: flex; justify-content: space-between; padding: var(--space-1) 0; border-bottom: 1px solid var(--border-muted); font-size: var(--text-sm); }
 .oo-list-row:last-child { border-bottom: none; }
 .oo-footer { margin-top: var(--space-3); color: var(--text-muted); font-size: var(--text-sm); display: flex; gap: var(--space-2); }
-@media (max-width: 768px) { .oo-cards { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 768px) { .oo-metric { font-size: var(--text-xs); } }
 </style>

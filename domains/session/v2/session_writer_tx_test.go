@@ -93,6 +93,9 @@ func TestUpdateSessionAggregate_RetriesTransientFailure(t *testing.T) {
 
 func newMockedSessionWriter(t *testing.T) (*SessionWriterV2, pgxmock.PgxPoolIface) {
 	t.Helper()
+	// W1.3: production default is consent=off; mock write-path fixtures that
+	// expect session_bodies INSERT must opt in (same hook as setupTestDB).
+	enableRecordingConsentForTest(t)
 	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
 	require.NoError(t, err)
 
@@ -455,6 +458,7 @@ func TestStop_ContextDeadline(t *testing.T) {
 }
 
 func TestWrite_AggregateSnapshotIsIndependentOfCaller(t *testing.T) {
+	enableRecordingConsentForTest(t)
 	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
 	require.NoError(t, err)
 	defer func() { _ = mock.ExpectationsWereMet(); mock.Close() }()
@@ -516,6 +520,7 @@ func TestWrite_AggregateSnapshotIsIndependentOfCaller(t *testing.T) {
 }
 
 func TestWrite_AggregateGoroutineManagedByLifecycle(t *testing.T) {
+	enableRecordingConsentForTest(t)
 	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
 	require.NoError(t, err)
 	defer func() { _ = mock.ExpectationsWereMet(); mock.Close() }()

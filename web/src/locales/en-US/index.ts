@@ -1,5 +1,6 @@
 // en-US/index.ts — aggregate English modules. Add new modules here.
 import common from './common'
+import plugin from './plugin'
 import nav from './nav'
 import taskProfile from './taskProfile'
 import autoTuning from './autoTuning'
@@ -86,6 +87,7 @@ export default {
   hyper,
   usageTrend,
   common,
+  plugin,
   nav,
   taskProfile,
   autoTuning,

@@ -43,6 +43,14 @@ var allowedParentDML = []struct {
 	Count  int
 	Reason string
 }{
+	// ★ 2026-10-28 两处并行改动（★ 分支审计轮 wip/02 合入 与 r1041 各登了一份**同 3 条**：
+	// ★ recording_consent.go / session_trash.go × session_bodies 与 sessions）
+	// ★ ⇒ ⇒ 合并后按「**同一 (file, table) 只许一行**」去重（★ 保留已推送复核过的那份）
+	// ★ ⇒ ⇒ 保留文末那组（★ 理由更完整、且带行号）。
+	// ★★ r1043 轮补充的**为什么必须去重**（★ 本门自己也报出了「白名单重复登记」）：
+	// ★ ★ 本门要求**条数**相等（★ 若只比集合，第二处会被第一处吸收掉 ⇒ 重复项查不出来）
+	// ★ ★ ⇒ ⇒ ★★ 登记必须**一条**配一个**含条数**的 Count
+	// ★ ★ ⇒ ★★ 重复登记会让实际条数与期望对不上 ⇒ ⇒ 门报红。
 	{"admin/session_turns_v2.go", "sessions", 1,
 		"会话摘要/标题回写。代码自带分区 pin 绕行（partition_date = MAX(...))，注释自认「Partitioned sessions table: UPDATE ... ORDER BY/LIMIT is invalid in PostgreSQL」；改 hot 需要先有 v2 摘要投影列，R78 登记为待裁决。"},
 	{"bg/opslog_trimmer.go", "candidate_failure_logs", 1,
@@ -96,6 +104,17 @@ var allowedParentDML = []struct {
 		"★ 每个**失败**请求的 abandoned 标记：`UPDATE `+tbl+` SET is_abandoned = TRUE`，tbl 遍历 {hot, parent}（:211-212）。"},
 	{"internal/sessionv2mirror/final_success_turn.go", "session_turns", 1,
 		"★ 每个**成功**请求的 final 标记：`UPDATE `+tbl+` t SET is_final_success = TRUE`，tbl 遍历 {hot, parent}（:234）。这是四条热路径动态父表写里调用频次最高的一条。"},
+
+	// ── 2026-10-28（r1041）：分支 02（录制同意 + 回收站）引入的父表写 ────────
+	// ★ 下面两条都是「删除必须【两腿】」形态：★ 只删 hot 会漏掉
+	// ★ 【已从 hot 晋级到月分区】的行 ⇒ ⇒ 删除语义不完整。
+	// ★ 与 internal/trace/trace.go 同构（写面必须覆盖 hot 之外的分区行）。
+	{"admin/session_trash.go", "session_bodies", 1,
+		"★ 回收站「移入回收站」路径的第二腿：先从 unified 视图搬进 session_bodies_trash，再删 hot 与**分区父表**各一份（:121-122）。★ 删父表这一腿是必需的 —— hot 与月分区是两套存储，hot 删干净但父表留着 ⇒ 同一 session 的正文在两处可见 ⇒ 「回收站」语义破。"},
+	{"admin/session_trash.go", "sessions", 2,
+		"★ 回收站把会话标记为 deleted（:124）与恢复为 active（:192）—— 两处成对。★ sessions 是**分区父表**，且本仓既有登记（admin/session_turns_v2.go / cmd/gateway/turn_logs_aggregator.go / domains/session/v2/session_aggregator.go / internal/titlestore/store.go）都已在写它 ⇒ 本条是同一族的新站点，登记而不改代码。★ 门要求**条数**也相等（★ 只比集合的话，第二处会被第一处吸收掉 ⇒ 这就是「同文件同表再加一条」被抓的机制）。"},
+	{"admin/recording_consent.go", "session_bodies", 1,
+		"★ 关闭录制同意时的正文清空（:139-140）：hot 与**分区父表**各删一份。★ 与 admin/session_trash.go 同构 —— 关闭录制必须真的清掉正文，而正文分布在 hot + 月分区两处 ⇒ 只删 hot 会让「已关闭录制」名存实亡（★ 且这正是「默认关闭录制」的隐私承诺所在）。"},
 }
 
 type pair struct {

@@ -362,6 +362,12 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry, sessionID string)
 		StatusCode:    statusCode(entry),
 		StartedAt:     eventTime,
 		CompletedAt:   eventTime,
+		// ★ r1041 轮（2026-10-28）：捕获录制同意世代号。
+		// ★ 背景：分支 02 承诺「disable/clear 后在途请求不能回填正文」，
+		// ★ 但写点恒传 0 ⇒ RecordingConsentAllowsWrite 的
+		// ★ 「capturedGeneration <= 0 ⇒ 直接放行」让它**从未生效**。
+		// ★ ⇒ 这里在【请求开始时】取一次，写点拿它与当前世代比对。
+		ConsentGeneration: settings.RecordingConsentGeneration(entry.TenantID),
 	}
 
 	// Usage & cost
