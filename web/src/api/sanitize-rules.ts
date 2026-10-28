@@ -174,6 +174,62 @@ export const listSanitizeRuleInstances = (options?: RequestOptions) =>
     options,
   );
 
+/** 硬阻断清单条目（哪些规则允许终止回合）。 */
+export interface HardBlockRule {
+  scope: RulePhase;
+  rule: string;
+}
+/** 拦截审核记录（一次 output/egress 硬阻断的待审单）。 */
+export interface BlockReview {
+  id: number;
+  tenant_id: string;
+  scope: string;
+  rule: string;
+  reason?: string;
+  field?: string;
+  digest?: string;
+  request_id?: string;
+  status: "pending" | "approved" | "rejected";
+  created_at: string;
+  decided_by?: string;
+  decided_at?: string;
+}
+export const getHardBlockRules = (options?: RequestOptions) =>
+  req<{ rules: HardBlockRule[]; note: string }>(
+    "GET",
+    `${root}/hardblock`,
+    undefined,
+    options,
+  );
+export const updateHardBlockRules = (body: {
+  rules: string[];
+  comment?: string;
+  confirm_disable_all?: boolean;
+}) =>
+  req<{ rules: HardBlockRule[]; comment: string }>(
+    "PUT",
+    `${root}/hardblock`,
+    body,
+  );
+export function listBlockedReviews(
+  filter: { status?: string; limit?: number } = {},
+  options?: RequestOptions,
+) {
+  const query = new URLSearchParams();
+  if (filter.status) query.set("status", filter.status);
+  query.set("limit", String(filter.limit ?? 100));
+  return req<{ reviews: BlockReview[]; process_only: boolean }>(
+    "GET",
+    `${root}/blocked-reviews?${query}`,
+    undefined,
+    options,
+  );
+}
+export const decideBlockedReview = (
+  id: number,
+  body: { decision: "approve" | "reject"; comment?: string },
+) => req<BlockReview>("POST", `${root}/blocked-reviews/${id}/review`, body);
+
 /** Validate editor JSON shapes before rendering it; RE2/sample semantics stay on the server. */
 export function isRuleConfig(value: unknown): value is RuleConfig {
   if (

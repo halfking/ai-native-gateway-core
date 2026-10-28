@@ -13956,3 +13956,50 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > （四条：★ 信息搬家时旧位置隐藏缺陷一起曝光——搬家是修复的唯一窗口 / ★ 第 N+1 个维度的成本
 > 必须只是一个 keyOf / ★ 聚合跳过空键——「未派发」不是「派发给未知」/ ★ 视觉复核通道失败时用
 > 同判据机械化版顶上并如实记「未测」）。
+> **2026-10-28 第 33 增量：输出策略拦截反馈明确化轮（goal 会话）**：★ 承接用户需求
+> （「常碰到 ZCode 报 `Response blocked by output policy / TraceID: hydrate-trace`，
+> 没有明确原因、检查输入无违规 ⇒ 反馈要更明确、解决误报、后台要有一次性关掉的开关、
+> 或后台审核列表——审核完成后返回前端，前端显示等待审核有敏感内容」）。
+> ⇒ ★★ **原因分析（四层叠加）**：① message 是常量串，r1039 的 rule/reason 在**旁键**——
+> ZCode 报错卡只渲染 message ⇒ 用户侧永远一句话；「hydrate-trace」是 ZCode 自造标签，
+> 网关从未给过可对账 ID。② **三条非流式路径连旁键都没有**（/v1/responses 与 /v1/messages
+> 的 execErr 分支 + 两处 native body 拦截——`interceptNativeResponseBody` 把 InterceptResult
+> 连 Metadata 一起丢弃，只返回 blocked 布尔）。③ 流式终帧没有 request_id。④ 误报面：
+> 硬阻断清单 env 配置管理面够不着；**非托管 OutputBlock 的
+> `block := action==block && !managed()` 完全绕过清单**——部署设
+> `LLM_GATEWAY_SANITIZE_OUTPUT_ACTION=block` 且规则管理器不可用时，正文一个
+> email 就整条掐断（r1037 裁决在这条路上从未生效；托管路径 ErrRuleBlocked 早就过清单）。
+> ⇒ ★★ **修法**：★★ **message 文本本身携带全部可行动信息**（稳定前缀 + `(rule=…)` +
+> 原因 + `at $.路径` + `request=<id>` + 中文行动指引「内容含敏感信息，等待审核（审核单
+> rv-N）：管理员放行后重试即可获得内容」）——按最弱客户端设计，六个拦截落点全接线
+> （流式终帧新签名带 requestID/reviewID/field + chat 非流式 ×2 + responses ×2 + messages ×2）；
+> ★★ **审核队列**（`domains/sanitizerules/review_queue.go`，进程内、上限 1000、同键 pending
+> 去重）：批准 ⇒ `AddEgressRelease` **精确绑定载荷摘要** ⇒ **用户重试即拿到内容**
+> （流式响应拦截那刻已终止，「返回前端」= 重试即返回，不做事后补发）；
+> ★★ **载荷摘要贯通**：`ComplianceIssue.Digest` ← `setToolIssueRule` 拦截那一刻算
+> `EgressPayloadDigest(ruleID, path, value)`（与放行判定**逐字节同键**）→
+> `PolicyBlockError{Path, Digest}` → chunk/InterceptResult metadata → 六个落点；
+> ★★ **运行时硬阻断开关**（`admin/sanitize_rules_hardblock.go`：GET/PUT 整表替换、
+> 立即生效、egress 逐条内建规则的 r1039 限制在解析层继续生效、清空需
+> `confirm_disable_all=true`、变更进结构化日志）；
+> ★ **非托管 OutputBlock 补清单闸**（`anyOutputFragmentMayBlock`，scope=output）：
+> 默认降级遮蔽、`output:*` 显式打开恢复阻断。
+> ⇒ ★ **前端**：SanitizeRulesView 新增「硬阻断开关」（super_admin）与「拦截审核」
+> （super 全部 / tenant_admin 本租户）两页签 + api 4 函数 + 8 语种 +22 键（119→141，
+> 钉死判据同步；示例字面量放模板 `<code>`——语言包值带 `{占位符}` 会破坏
+> 「t(key)==原文」钉死契约）。
+> ⇒ ★ **读数**：`go build ./...` ✓；go test 全绿（streaming 160s / admin 106s 全量 +
+> sanitize / sanitizerules / hooks / errorsx / outputcompliance）；新判据 15 条
+> （含「登记→批准→同载荷放行→异载荷不放行→已决不可再决」「多规则批准链条 5 轮收敛」
+> 「摘要与放行键逐字节一致」）；`vue-tsc` 0 错；`vitest` 2925 通过 / 2 跳过；
+> 12 道 i18n 门全 PASS（jargon 命中 0 / copy-quality PASS——语言包值里的破折号
+> 当标点被抓，改逗号）；`build` ✓ 25.11s；admin 路由快照 0 漂移。
+> ⇒ ★★ **本轮没做 / 如实记**：审核队列与放行表的**持久化**（进程内、重启清空，UI 已写明；
+> 持久化需新表+迁移号协调）；「审核后推送原文」不做（拦截那刻流已终止，契约=重试即返回）；
+> output 侧文本 lane 按载荷放行（放行机制只有 egress scope；output 侧治理通道=硬阻断清单）；
+> 211 部署未执行。
+> ⇒ 审计档 `docs/audit/2026-10-28-输出策略拦截反馈明确化与审核队列.md`；
+> 通用式见 `LESSONS.md` **§513**（★ 让号：原拟 §512，与上游 r1039 三轮撞号，已推送一侧保留 §512；
+> 六条：★★ 旁键不是反馈 / ★★ 拦截那一刻记下放行的钥匙
+> 且键逐字节一致 / ★★ 一条载荷多条规则——批准是收敛链条 / ★ 进程内开关是运维面不是安全面 /
+> ★ 量具口径要覆盖「谁把结果丢了」 / ★ 语言包值里的占位符破坏钉死契约）。
