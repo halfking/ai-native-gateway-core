@@ -91,7 +91,24 @@ where status='failed' and event_type='request.completed.v1';  -- 释放 4202
 ```
 **次序纪律**：completed 波必须在 opened 波**全部送出后**才翻——否则乱序 completed 先到 ⇒ asm 503 ⇒ 熔断暂停 64s/次，25,402 条交错会把排空拖成天级。opened 波按 `occurred_at ASC` 天然先于各自 completed。
 
-### 3.5 验证（部署后复核）
+### 3.5 第三族缺口（部署后终验发现，01:15 补）
+第二波翻完后终验出现 1 条新 503（`evt-request-completed-7f70b2bd…`，10-24 的 DLQ completed）：其会话 `gw_c067804b…` **连 asm inbox 行都没有**（10-24 被 audit sink 挡在 claim 之前）⇒ 不在 3.2 的缺口清单里 ⇒ 没被回填。
+**清单口径订正**：asm inbox retryable 清单天生漏掉「audit sink 弹掉、无 inbox 行」一族；正确的闭环判据是 **outbox 里有 `request.completed.v1` 而无任何 `session.opened.v1`**：
+```sql
+with src as (
+  select o.aggregate_id as sid, o.tenant_id, min(o.occurred_at) as occ
+  from outbox_events o
+  where o.event_type='request.completed.v1'
+    and not exists (select 1 from outbox_events x
+                    where x.aggregate_id=o.aggregate_id and x.event_type='session.opened.v1')
+  group by o.aggregate_id, o.tenant_id
+)
+insert into outbox_events (…同 3.2 形态…) select … from src on conflict (event_id) do nothing;
+-- INSERT 0 5862；复验 remaining_gaps = 0
+```
+**缺口数据层清零**（每个有 completed 的会话都有 opened）；未来缺口由代码根修（§4）在源头闭合。
+
+### 3.6 验证（部署后复核）
 - outbox：`dlq=0 / failed=0`（或仅剩带真实原因的小残量）；
 - asm：inbox retryable → 0（对应事件被重投后幂等 claim 完成）、`session_projection` 净增 ≈ 23,150、checkpoint events_processed 同步增长；
 - 实时面：缺口会话的新请求 completed 一次成功（无 503 WARN）。
