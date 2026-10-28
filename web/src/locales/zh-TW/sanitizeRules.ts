@@ -123,4 +123,32 @@ export default {
   expectedMiss: "應當不命中",
   eventEvidenceNote:
     "命中列表不保存請求原文（防二次洩露）。請對照類型/欄位與下方規則運算式、虛構樣例複核；確認誤報後可直接編輯命中規則或新建限定補充規則。客戶端本地腳本/文件經還原仍顯示真值；出站供應商側繼續脫敏。可選輸出合規模組預設關閉。",
+  hardblock: "硬阻斷開關",
+  hardblockHint:
+    "控制哪些規則允許把整個回應掐斷。清單裡沒有的規則只記錄或遮蔽，不會終止回合；儲存後立即生效。",
+  hardblockProcessOnly:
+    "此處修改只在本程序生命週期內生效，閘道重啟後回到部署環境變數裝載的清單。",
+  hardblockListLabel: "允許硬阻斷的規則清單",
+  hardblockFormatNote:
+    "階段可選 input、output、egress；規則支援精確 ID、前綴族和 *。egress 階段只接受逐條內建規則。",
+  hardblockCommentLabel: "變更原因",
+  hardblockDisableConfirm:
+    "我確認關閉全部硬阻斷，包括請求側對明文憑證的攔截",
+  hardblockSave: "儲存清單",
+  hardblockSaved: "硬阻斷清單已更新並立即生效。",
+  blockedReviews: "攔截審核",
+  blockedReviewsHint:
+    "每次回應被策略攔截都會在這裡生成一條待審記錄。核准後，這條內容在下一次重試時放行；拒絕則維持攔截。",
+  blockedReviewsNote:
+    "記錄只保留規則、原因與載荷摘要，不保存被攔原文。佇列保存在閘道程序內，重啟後清空。",
+  blockedReviewsNone: "當前篩選條件下沒有攔截待審記錄",
+  reviewPending: "等待審核",
+  reviewApproved: "已放行",
+  reviewRejected: "已拒絕（維持攔截）",
+  reviewReasonLabel: "攔截原因",
+  reviewFieldLabel: "參數位置",
+  reviewRequestLabel: "請求",
+  reviewDigestLabel: "載荷摘要",
+  reviewApprove: "核准放行",
+  reviewReject: "維持攔截",
 };

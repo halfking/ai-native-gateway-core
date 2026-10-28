@@ -7,10 +7,12 @@ import (
 	"math/rand"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/modeliqdata"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // LoadScoreWeights 定义路由评分的权重配置（Phase 1）
@@ -27,6 +29,16 @@ type LoadScoreWeights struct {
 	//     （calculateIQPenalty，未知 IQ=中性 0.5，fail-open）。
 	CostWeight float64 // 可选：混合单价（in+out per 1M）惩罚权重
 	IQWeight   float64 // 可选：标准 IQ 惩罚权重
+	// OutlierWeight (P1-A, 2026-10-28 两层路由审计 G3) 池内成功率离群惩罚
+	// 权重（LLM_GATEWAY_ROUTING_W_OUTLIER，默认 0 —— 审计档「惩罚权重从 0
+	// 开始 env 调起」）。判据见 strategy.go 的 SuccessRatePoolStats。置 0 时
+	// composite 与关闭前逐字节一致（OffIsByteIdentical 同族测试钉住）。
+	OutlierWeight float64 // 可选：池内成功率离群强惩罚权重
+	// CacheAffinityWeight (P1-B-③, 2026-10-28 两层路由审计) prompt-cache 亲和
+	// 权重（LLM_GATEWAY_ROUTING_W_CACHE，默认 0 —— 与离群同款「从 0 调起」：
+	// 命中率数据先观测，运营确认分布后调起）。cachePenalty = 1 − 命中率，
+	// 高命中 ⇒ 低惩罚 ⇒ 更易被选中。置 0 时 composite 逐字节一致。
+	CacheAffinityWeight float64 // 可选：prompt-cache 亲和（1−命中率）惩罚权重
 }
 
 // LoadScoreEnvWeights 是 R48 §3 A2 改造的载体——把 calculateLoadScore 中
@@ -80,6 +92,12 @@ func DefaultLoadScoreWeights() LoadScoreWeights {
 		// 间倾斜。env 置 0 可整体关闭（关闭时评分公式与 RT-2 之前完全一致）。
 		CostWeight: envFloat("LLM_GATEWAY_ROUTING_W_COST", 0.15),
 		IQWeight:   envFloat("LLM_GATEWAY_ROUTING_W_IQ", 0),
+		// P1-A 默认 0（审计档「惩罚权重从 0 开始 env 调起」）——只观测不罚，
+		// 运营按 llmgw_routing_outlier_candidates 观测读数调起。
+		OutlierWeight: envFloat("LLM_GATEWAY_ROUTING_W_OUTLIER", 0),
+		// P1-B-③ 默认 0：命中率信号（migration 915 / Candidate.RecentCacheRate）
+		// 先随候选带出、随 LOAD_SCORE_V2 日志观测；分布确认后再调起。
+		CacheAffinityWeight: envFloat("LLM_GATEWAY_ROUTING_W_CACHE", 0),
 	}
 }
 
@@ -234,11 +252,31 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 	if recoveryWeight > 0 {
 		recoveryPenalty = recoveryPenaltyForCandidate(c, r)
 	}
+	// P1-A (2026-10-28 两层路由审计 G3) 慢性病离群惩罚：成功率显著低于池内
+	// 同伴（均值−3×MAD）、样本充足（≥30）、池够深（≥3）的候选吃固定强惩罚。
+	// 治「成功率 60% 但无连败 ⇒ 判死面（NodeState/breaker）永远抓不到」的
+	// 慢性病形态——Envoy success-rate ejection 的池深护栏版，第一步只降权
+	// 不硬弹出（权重默认 0，LLM_GATEWAY_ROUTING_W_OUTLIER 调起）。权重走
+	// weights.OutlierWeight（与 CostWeight/IQWeight 的可选维度同族：随每次
+	// 评分的 weights 下发，不进 Router 启动期缓存）。
+	// 池统计为 nil（未接线/池太浅）时惩罚恒 0，composite 逐字节一致。
+	var outlierPenalty float64
+	if weights.OutlierWeight > 0 {
+		outlierPenalty = successRateOutlierPenalty(c, stratIn.SuccessRatePoolStats)
+	}
+	// P1-B-③ prompt-cache 亲和（可选维度，默认 0）：与 CostWeight/IQWeight
+	// 同族——随 weights 下发，无信号候选中性 0。
+	var cachePenalty float64
+	if weights.CacheAffinityWeight > 0 {
+		cachePenalty = calculateCacheAffinityPenalty(c)
+	}
 	composite += stickyPenalty*stickyWeight +
 		recencyPenalty*recencyWeight +
 		balancePenalty*balanceWeight +
 		planQuotaPenalty*planQuotaWeight +
-		recoveryPenalty*recoveryWeight
+		recoveryPenalty*recoveryWeight +
+		outlierPenalty*weights.OutlierWeight +
+		cachePenalty*weights.CacheAffinityWeight
 
 	if rand.Float64() < 0.1 {
 		slog.Info("LOAD_SCORE_V2",
@@ -259,6 +297,8 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 			"balance_penalty", balancePenalty,
 			"plan_quota_penalty", planQuotaPenalty,
 			"recovery_penalty", recoveryPenalty,
+			"outlier_penalty", outlierPenalty,
+			"cache_penalty", cachePenalty,
 			"composite", composite,
 		)
 	}
@@ -285,6 +325,13 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 //     $30/1M blended — roughly the premium-model frontier) so a single
 //     expensive outlier cannot dominate the composite. Unknown prices keep
 //     the RT-2 "unknown is NOT free" semantics: max penalty 1.0.
+//
+// P1-C (audit 2026-10-28 §4): CNY-denominated offers are converted to USD via
+// settings.CNYScoreFX() BEFORE the cap division — previously a ¥60/1M CNY
+// offer was divided by the $30/1M USD cap and read as "2× the premium
+// frontier" (max penalty) while billing booked it as ~$8.3 (记账侧
+// CNYToUSDFX 同尺折算)。混币种 cohort 里 CNY 候选被系统性压死，两侧口径
+// 不可比。汇率可配（LLM_GATEWAY_CNY_TO_USD_FX），默认与记账同锚 7.2。
 func calculateCostPenalty(c provider.Candidate) float64 {
 	if provider.BillingRound(c.BillingMode) == 1 {
 		return 0
@@ -300,11 +347,38 @@ func calculateCostPenalty(c provider.Candidate) float64 {
 	if blended <= 0 {
 		return 0
 	}
+	if strings.EqualFold(strings.TrimSpace(c.Currency), "CNY") {
+		blended /= settings.CNYScoreFX()
+	}
 	p := blended / cap
 	if p > 1.0 {
 		p = 1.0
 	}
 	return p
+}
+
+// calculateCacheAffinityPenalty (P1-B-③, audit 2026-10-28 §4) turns the
+// candidate's token-weighted cached-input share (Candidate.RecentCacheRate,
+// migration 915) into a 0..1 penalty: high hit rate → low penalty → preferred.
+// 与 sticky 保留机制互证：sticky = 保持亲和，本维度 = 把亲和的价值量化进
+// 打分（cache 折扣价 + 更低 TTFT）。
+//
+// 无信号语义（与 rsr 冷启动同款 fail-open）：nil rate / samples 不足 ⇒ 0
+//（中性，不奖不罚）——命中率数据缺失的候选不能因为「没数据」被压。
+// 实测 0 命中（样本充足）≠ 无信号：那是「上游不给这个模型缓存」的证据，
+// 吃满惩罚 1.0。样本下限复用 calculateQualityScore 的 ≥10 惯例。
+func calculateCacheAffinityPenalty(c provider.Candidate) float64 {
+	if c.RecentCacheRate == nil || c.RecentCacheSamples < 10 {
+		return 0
+	}
+	rate := *c.RecentCacheRate
+	if rate <= 0 {
+		return 1.0
+	}
+	if rate >= 1.0 {
+		return 0
+	}
+	return 1.0 - rate
 }
 
 // calculateIQPenalty turns the model's standard IQ (AA Intelligence Index,
@@ -743,13 +817,17 @@ func candidateRecoveredAtUnix(c provider.Candidate, r *Router) int64 {
 // 形状同 recencyPenalty（线性衰减），区别只在与地平线的语义：recency 的
 // 地平线是"最近一次请求"，recovery 的是"最近一次恢复"。无恢复证据 = 0
 //（常规候选不受影响）。时钟回拨导致 age<0 时按 1.0 保守处理（刚恢复）。
+//
+// 顺序（批判审计轮修正）：**信号前置、env 后读**——绝大多数候选无恢复
+// 证据，先查信号即可 0 分配返回；仅对真正处于恢复期的候选才读一次
+// RAMP_SECONDS env（与 recentRequestPenalty 的 horizon 现场读同模式）。
 func recoveryPenaltyForCandidate(c provider.Candidate, r *Router) float64 {
-	window := recoveryRampWindowSeconds()
-	if window <= 0 {
-		return 0
-	}
 	recoveredAt := candidateRecoveredAtUnix(c, r)
 	if recoveredAt <= 0 {
+		return 0
+	}
+	window := recoveryRampWindowSeconds()
+	if window <= 0 {
 		return 0
 	}
 	age := float64(time.Now().Unix() - recoveredAt)
@@ -768,12 +846,12 @@ func recoveryPenaltyForCandidate(c provider.Candidate, r *Router) float64 {
 // 在 P2C 里排后（failover 顺序），份额把恢复节点的新会话首跳流量压到
 // 20% 起步（slow-start 本体）。floor 由调用方的 max(1, …) 兜底叠加。
 func recoveryRampFactor(c provider.Candidate, r *Router) float64 {
-	window := recoveryRampWindowSeconds()
-	if window <= 0 {
-		return 1.0
-	}
 	recoveredAt := candidateRecoveredAtUnix(c, r)
 	if recoveredAt <= 0 {
+		return 1.0
+	}
+	window := recoveryRampWindowSeconds()
+	if window <= 0 {
 		return 1.0
 	}
 	age := float64(time.Now().Unix() - recoveredAt)

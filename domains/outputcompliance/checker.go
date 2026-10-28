@@ -135,6 +135,12 @@ type ComplianceIssue struct {
 	// 「因为什么规则被拦」，没有规则名的拦截理由对客户端不可用。
 	RuleID     string `json:"rule_id,omitempty"`
 	Description string `json:"description"`
+	// Digest 是被拦载荷的摘要（security/sanitize.EgressPayloadDigest 的输出：
+	// sha256(ruleID + path + value)）。2026-10-28 拦截审核轮：拦截那一刻记下
+	// 摘要，管理面据此对**这一次**的具体载荷放行（重试即放行），而不是只能
+	// 整条规则开/关。摘要不含原文（不可逆），与「payload preview 不进日志」
+	// 的纪律一致。
+	Digest string `json:"digest,omitempty"`
 	// ExceptionMatched 为 true 表示命中身份感知例外规则（不会被脱敏/阻断）。
 	ExceptionMatched bool `json:"exception_matched,omitempty"`
 	// DetectOnly 为 true 表示「只检出、不改写客户端可见文本」。

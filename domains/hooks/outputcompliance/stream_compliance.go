@@ -78,6 +78,19 @@ func policyRuleFromIssues(issues []outputcompliance.ComplianceIssue) string {
 
 // policyIssueLocation 取第一条带位置的问题（tool 参数是 JSON 路径，纯文本是
 // 字符区间）。
+// policyIssueDigest 取拦截结果里第一条带摘要的 issue 的载荷摘要（无则空串）。
+//
+// 2026-10-28 拦截审核轮：摘要由 sanitize 侧在拦截那一刻计算
+// （sha256(ruleID+path+value)，见 setToolIssueRule），审核批准后管理面用同
+// 一个键放行这一次载荷。
+func policyIssueDigest(issues []outputcompliance.ComplianceIssue) string {
+	for _, issue := range issues {
+		if issue.Digest != "" {
+			return issue.Digest
+		}
+	}
+	return ""
+}
 func policyIssueLocation(issues []outputcompliance.ComplianceIssue) string {
 	for _, issue := range issues {
 		if issue.Location != "" {
@@ -103,7 +116,36 @@ func blockedChunkResult(err error) *response.ChunkResult {
 	if reason := policyBlockReasonFromError(err); reason != "" {
 		meta["policy_reason"] = reason
 	}
+	// 2026-10-28 拦截审核轮：把载荷摘要与位置一并带给出帧方——审核队列据此
+	// 对这一次载荷精确放行（重试即放行），不需要整条规则开/关。
+	var pbe *errorsx.PolicyBlockError
+	if errors.As(err, &pbe) && pbe != nil {
+		if pbe.Path != "" {
+			meta["policy_field"] = pbe.Path
+		}
+		if pbe.Digest != "" {
+			meta["policy_digest"] = pbe.Digest
+		}
+	}
 	return &response.ChunkResult{ShouldBlock: true, Metadata: meta}
+}
+
+// policyBlockDigestFromError 从策略拦截错误里取被拦载荷的摘要（可为空）。
+func policyBlockDigestFromError(err error) string {
+	var pbe *errorsx.PolicyBlockError
+	if errors.As(err, &pbe) && pbe != nil {
+		return pbe.Digest
+	}
+	return ""
+}
+
+// policyBlockPathFromError 从策略拦截错误里取被拦载荷的位置（可为空）。
+func policyBlockPathFromError(err error) string {
+	var pbe *errorsx.PolicyBlockError
+	if errors.As(err, &pbe) && pbe != nil {
+		return pbe.Path
+	}
+	return ""
 }
 
 // policyBlockReasonFromError 从策略拦截错误里取人类可读原因短语。
@@ -312,6 +354,8 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 			return nil, &errorsx.PolicyBlockError{
 				RuleID: ruleID,
 				Reason: policyBlockErrorReason("output policy blocked stream lane", ruleID, policyIssueLocation(result.Issues)),
+				Path:   policyIssueLocation(result.Issues),
+				Digest: policyIssueDigest(result.Issues),
 			}
 		}
 		if !state.redact || result.RedactedOutput == "" || result.RedactedOutput == original {
@@ -584,6 +628,8 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 			return nil, &errorsx.PolicyBlockError{
 				RuleID: ruleID,
 				Reason: policyBlockErrorReason("output policy blocked stream event", ruleID, policyIssueLocation(result.Issues)),
+				Path:   policyIssueLocation(result.Issues),
+				Digest: policyIssueDigest(result.Issues),
 			}
 		}
 		if incremental {

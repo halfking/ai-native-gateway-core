@@ -24,8 +24,10 @@ const expectedKeys = Object.keys(en.sanitizeRules).sort();
 describe("sanitize rules in actual bundled and lazy locale exports", () => {
   it("pins the complete source namespace", () =>
     // 2026-10-20：+2（perMode / perModeHint）—— 按模式启停矩阵的表头与说明。
+    // 2026-10-28：+22（hardblock* / blockedReviews* / review*）—— 硬阻断
+    // 开关与拦截审核队列两个新页签的文案。
     // 计数只许增：每加一个键都要同步 8 个语种 + 这里。
-    expect(expectedKeys).toHaveLength(119));
+    expect(expectedKeys).toHaveLength(141));
   for (const [locale, bundle] of Object.entries(bundles)) {
     it(`${locale} exports and resolves every rule-management message`, () => {
       const namespace = bundle.sanitizeRules as

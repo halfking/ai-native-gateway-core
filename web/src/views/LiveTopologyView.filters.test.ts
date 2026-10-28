@@ -82,6 +82,8 @@ vi.mock('../composables/useLiveStream', async () => {
 
 vi.mock('../api/topology', () => ({
   getProvidersToday: vi.fn().mockResolvedValue({ day_utc: '2026-10-17', totals: {}, items: [] }),
+  getTopologyModelsToday: vi.fn().mockResolvedValue({ day_utc: '2026-10-17', items: [] }),
+  getTopologyProviderKinds: vi.fn().mockResolvedValue({ items: [] }),
   getTopologyPlugins: vi.fn().mockResolvedValue({
     builtin: [{ name: 'prompt_injection', direction: 'input' }],
     external: [{ plugin_id: 'ai-session-manager', plugin_version: '1.0.0', status: 'ready' }],
@@ -89,13 +91,13 @@ vi.mock('../api/topology', () => ({
 }))
 
 // 左下统计栏在这个判据里只验「是否收到同一个过滤值」，统计口径由
-// ProviderTodayRail.test.ts 单独钉，避免两头都浅。
-vi.mock('../components/live-topology/ProviderTodayRail.vue', () => ({
+// TodaySummaryRail.test.ts 单独钉，避免两头都浅。
+vi.mock('../components/live-topology/TodaySummaryRail.vue', () => ({
   default: {
-    name: 'ProviderTodayRailStub',
-    props: ['activeProvider'],
-    emits: ['select-provider'],
-    template: '<div class="rail-stub" :data-provider="activeProvider"></div>',
+    name: 'TodaySummaryRailStub',
+    props: ['activeProvider', 'activeModel'],
+    emits: ['select-provider', 'select-model'],
+    template: '<div class="rail-stub" :data-provider="activeProvider" :data-model="activeModel"></div>',
   },
 }))
 
@@ -344,6 +346,22 @@ describe('LiveTopologyView filter convergence', () => {
     expect(wrapper.find('.cp__row.is-active').exists()).toBe(true)
   })
 
+  it('★★ the summary overlay lives in the column whose row was clicked (left click → left, right click → right)', async () => {
+    // 2026-10-28 owner 口径：点左栏请求摘要浮层必须出现在左栏，点右栏在右栏。
+    // 旧行为是浮层固定挂在右栏 —— 点左侧请求时摘要跨屏跑到右边，本轮修掉。
+    const { wrapper } = await mountView()
+    await wrapper.get('.cp__item').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.live-topology__left .zoom').exists()).toBe(true)
+    expect(wrapper.find('.live-topology__right .zoom').exists()).toBe(false)
+
+    // 换点右栏：浮层搬到右栏（同一时刻只有一个 —— 左栏那个必须消失）
+    await wrapper.get('.pp__zoom').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.live-topology__right .zoom').exists()).toBe(true)
+    expect(wrapper.find('.live-topology__left .zoom').exists()).toBe(false)
+  })
+
   it('★ the right panel row pops the summary overlay too; 「查看全景」inside opens the NEW page', async () => {
     const { wrapper } = await mountView()
     const rows = wrapper.findAll('.pp__row')
@@ -359,9 +377,11 @@ describe('LiveTopologyView filter convergence', () => {
     expect(openSpy.mock.calls[0]?.[1]).toBe('_blank')
   })
 
-  it('renders the gateway core as one box holding all nine modules', async () => {
+  it('renders the gateway core as one box holding all eleven modules', async () => {
+    // 2026-10-28 选路层轮：九格 → 十一格（主线加 压缩/模型选择；路由/节点状态
+    // 挪进基础服务侧条，仍是大方块的一部分）。
     const { wrapper } = await mountView()
-    expect(wrapper.findAll('.gw__cell')).toHaveLength(9)
+    expect(wrapper.findAll('.gw__cell')).toHaveLength(11)
     // 主链路模块与旁路模块的视觉语义必须分开（旁路不能画成串行流水线的一步）
     expect(wrapper.findAll('.gw__cell.is-branch')).toHaveLength(3)
     // 大方块里能看到会话存储的命中（r-ds-1 带 gw_session_id）

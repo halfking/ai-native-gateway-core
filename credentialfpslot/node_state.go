@@ -815,6 +815,13 @@ var setNodeCapabilityScript = redis.NewScript(`
 // resetNodeHealthStateScript resets health/circuit fields without discarding
 // the independent capability sub-tree. It runs atomically with the outcome
 // and capability scripts because all three mutate the same Redis JSON key.
+//
+// P0-A (2026-10-28): 与 breaker.Reset 的语义对称——admin 手动恢复是
+// 「未经流量验证的恢复」，恰恰是 re-flapping 风险最高、最需要 recovery
+// ramp 渐进回流量的场景（HAProxy slow-start 对手动 up 的节点同样生效）。
+// 因此这里**写** recovered_at=now（而非清零），让评分侧对该节点从 reset
+// 时刻起做 5min 渐进回流量。批判审计轮发现首版误写成清零——同一场景
+// 在 breaker 面（进 ramp）与 NodeState 面（不进 ramp）语义相反。
 var resetNodeHealthStateScript = redis.NewScript(`
 	local key = KEYS[1]
 	local raw = redis.call('GET', key)
@@ -823,6 +830,8 @@ var resetNodeHealthStateScript = redis.NewScript(`
 		local ok, decoded = pcall(cjson.decode, raw)
 		if ok and type(decoded) == 'table' then state = decoded end
 	end
+
+	local now = tonumber(redis.call('TIME')[1])
 
 	state.credential_id = tonumber(ARGV[1])
 	state.model = ARGV[2]
@@ -836,7 +845,7 @@ var resetNodeHealthStateScript = redis.NewScript(`
 	state.disabled_reason = nil
 	state.last_disabled_at = nil
 	state.disable_count = nil
-	state.recovered_at = nil
+	state.recovered_at = now
 
 	if type(state.capabilities) ~= 'table' or type(state.capabilities.supports_responses) ~= 'boolean' then
 		state.capabilities = nil
