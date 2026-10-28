@@ -334,16 +334,14 @@ onMounted(() => { void load() })
    一次性全量加载（无分页 API），从未接 HyperList，根容器也不带 overflow ⇒ 壳层
    `.hyper-app__main`（纯布局容器，overflow:hidden，07 §1 一个轴一个主宿主）把首屏
    以下全部剪裁。真机实测（vivo V2436A / llm.itestu.cn /m/models）CDP 读数：内容
-   scrollHeight 421,636px、链上**零滚动宿主** ⇒「模型目录无法滑动」。修法：根容器
-   自任滚动宿主（UsageView 根即 `.page`，同一形态；`.page` 同款 overflow 三件套）。 */
+   scrollHeight 421,636px、链上**零滚动宿主** ⇒「模型目录无法滑动」。修法已上移到
+   全局兜底：shared.css 的 `.hyper-app__main > *`（2026-10-28 审计 88 个视图同病，
+   逐页补不现实）；本页根类因此不再自带 overflow，避免同一元素两处声明。 */
 .model-catalog {
   display: grid;
   gap: 12px;
   padding-inline: var(--app-space-content-x);
   padding-bottom: var(--app-safe-bottom);
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior-y: contain;
 }
 .model-catalog__toolbar, .model-catalog__featured, .model-catalog__identity, .model-catalog__meta, .model-catalog__alias { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
 .model-catalog__tabs { display: flex; gap: 6px; overflow-x: auto; }
