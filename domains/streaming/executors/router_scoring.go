@@ -7,10 +7,12 @@ import (
 	"math/rand"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/modeliqdata"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // LoadScoreWeights 定义路由评分的权重配置（Phase 1）
@@ -307,6 +309,13 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 //     $30/1M blended — roughly the premium-model frontier) so a single
 //     expensive outlier cannot dominate the composite. Unknown prices keep
 //     the RT-2 "unknown is NOT free" semantics: max penalty 1.0.
+//
+// P1-C (audit 2026-10-28 §4): CNY-denominated offers are converted to USD via
+// settings.CNYScoreFX() BEFORE the cap division — previously a ¥60/1M CNY
+// offer was divided by the $30/1M USD cap and read as "2× the premium
+// frontier" (max penalty) while billing booked it as ~$8.3 (记账侧
+// CNYToUSDFX 同尺折算)。混币种 cohort 里 CNY 候选被系统性压死，两侧口径
+// 不可比。汇率可配（LLM_GATEWAY_CNY_TO_USD_FX），默认与记账同锚 7.2。
 func calculateCostPenalty(c provider.Candidate) float64 {
 	if provider.BillingRound(c.BillingMode) == 1 {
 		return 0
@@ -321,6 +330,9 @@ func calculateCostPenalty(c provider.Candidate) float64 {
 	blended := *c.PriceInPer1M + *c.PriceOutPer1M
 	if blended <= 0 {
 		return 0
+	}
+	if strings.EqualFold(strings.TrimSpace(c.Currency), "CNY") {
+		blended /= settings.CNYScoreFX()
 	}
 	p := blended / cap
 	if p > 1.0 {

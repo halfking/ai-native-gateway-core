@@ -174,6 +174,7 @@ func TestScanIndexRow_LoadsAvailabilityAndTier(t *testing.T) {
 		"token",
 		10.0,
 		20.0,
+		"USD", // price_currency (P1-C)
 		0.97,
 		950,
 		2,
@@ -233,6 +234,7 @@ func TestScanIndexRow_MapsSecondaryAndFallback(t *testing.T) {
 				"token",
 				1.0,
 				1.0,
+				"USD", // price_currency (P1-C)
 				0.9,
 				500,
 				0,
@@ -275,6 +277,7 @@ func TestScanIndexRow_LoadsCostTier(t *testing.T) {
 		"token", // 非 free billing_mode
 		5.0,     // 非零价格
 		5.0,
+		"USD",   // price_currency (P1-C)
 		0.95,
 		1000,
 		0,
@@ -316,5 +319,98 @@ func TestComputeCostContext_SpeedP95Unsorted(t *testing.T) {
 	ctx := computeCostContext(cands)
 	if ctx.SpeedP95 != 2000 {
 		t.Fatalf("SpeedP95: got %.0f, want 2000 (true max)", ctx.SpeedP95)
+	}
+}
+
+// TestComputeCostContext_CNYSingleCurrency_NominalFold — P1-C (audit
+// 2026-10-28 §4): a pure-CNY cohort folds to USD before the P75. With the
+// default rate 7.2, blended ¥72/1M ≈ $10 — the P75 must reflect the folded
+// value, not the raw CNY numeral. (旧实现：P75 直接用 CNY 数值 ⇒ 比同档 USD
+// 贵 7.2 倍的假象。)
+func TestComputeCostContext_CNYSingleCurrency_NominalFold(t *testing.T) {
+	cands := []Candidate{
+		{UnitPriceInPer1M: 36, UnitPriceOutPer1M: 36, Currency: "CNY"}, // ¥72 → $10
+		{UnitPriceInPer1M: 72, UnitPriceOutPer1M: 72, Currency: "CNY"}, // ¥144 → $20
+		{UnitPriceInPer1M: 108, UnitPriceOutPer1M: 108, Currency: "CNY"}, // ¥216 → $30
+		{UnitPriceInPer1M: 180, UnitPriceOutPer1M: 180, Currency: "CNY"}, // ¥360 → $50
+	}
+	ctx := computeCostContext(cands)
+	if !ctx.HasMixedPrices {
+		t.Fatal("CNY fold must flip HasMixedPrices")
+	}
+	// Folded prices: 10/20/30/50 sorted; P75 (nearest-rank ceil(4×0.75)=3) = 30.
+	assertDelta(t, 30.0, ctx.PriceP75)
+}
+
+// TestComputeCostContext_MixedCohort_OneRuler — the audit's headline case:
+// CNY and USD candidates must compete on the same scale. A ¥20/1M CNY offer
+// (~$2.8) must rank CHEAPER than a $10/1M USD offer; the old code read the
+// CNY numeral 20 as $20 and ranked it more expensive.
+func TestComputeCostContext_MixedCohort_OneRuler(t *testing.T) {
+	cands := []Candidate{
+		{UnitPriceInPer1M: 10, UnitPriceOutPer1M: 10, Currency: "USD"},    // $20
+		{UnitPriceInPer1M: 10, UnitPriceOutPer1M: 10, Currency: "USD"},    // $20
+		{UnitPriceInPer1M: 5, UnitPriceOutPer1M: 5, Currency: "CNY"},      // ¥10 → ~$1.39
+		{UnitPriceInPer1M: 7, UnitPriceOutPer1M: 7, Currency: "CNY"},      // ¥14 → ~$1.94
+		{UnitPriceInPer1M: 100, UnitPriceOutPer1M: 100, Currency: "USD"},  // $200
+	}
+	ctx := computeCostContext(cands)
+	if !ctx.HasMixedPrices {
+		t.Fatal("mixed cohort must flip HasMixedPrices")
+	}
+	// Folded: 1.39, 1.94, 20, 20, 200 → P75 rank ceil(5×0.75)=4 → 20.
+	if ctx.PriceP75 < 19.9 || ctx.PriceP75 > 20.1 {
+		t.Fatalf("P75 = %v, want ≈20 (CNY folded under USD before ranking)", ctx.PriceP75)
+	}
+	// Direct: scorePrice must rank the CNY candidate better than the equal-
+	// numeral USD one would have been.
+	cheapCNY := scorePrice(cands[2], ctx)
+	expensiveUSD := scorePrice(cands[4], ctx)
+	if cheapCNY <= expensiveUSD {
+		t.Fatalf("folded CNY (%.1f) must out-score $200/1M USD (%.1f)", cheapCNY, expensiveUSD)
+	}
+}
+
+// TestComputeCostContext_USDOnly_Unchanged — USD-only cohorts keep the exact
+// pre-P1-C baseline (no fold applied, HasMixedPrices stays false).
+func TestComputeCostContext_USDOnly_Unchanged(t *testing.T) {
+	cands := []Candidate{
+		{UnitPriceInPer1M: 10, UnitPriceOutPer1M: 10, Currency: "USD"},
+		{UnitPriceInPer1M: 20, UnitPriceOutPer1M: 20, Currency: "USD"},
+		{UnitPriceInPer1M: 30, UnitPriceOutPer1M: 30, Currency: "USD"},
+		{UnitPriceInPer1M: 40, UnitPriceOutPer1M: 40, Currency: "USD"},
+	}
+	ctx := computeCostContext(cands)
+	if ctx.HasMixedPrices {
+		t.Fatal("USD-only cohort must not flip HasMixedPrices")
+	}
+	// Sorted 20/40/60/80; P75 rank 3 = 60.
+	assertDelta(t, 60.0, ctx.PriceP75)
+}
+
+// TestComputeCostContext_EmptyCurrencyMeansUSD — zero-value snapshots
+// (Currency "" from old code paths) must score exactly as before.
+func TestComputeCostContext_EmptyCurrencyMeansUSD(t *testing.T) {
+	cands := []Candidate{
+		{UnitPriceInPer1M: 10, UnitPriceOutPer1M: 10}, // Currency "" — old snapshot
+		{UnitPriceInPer1M: 20, UnitPriceOutPer1M: 20},
+		{UnitPriceInPer1M: 30, UnitPriceOutPer1M: 30},
+		{UnitPriceInPer1M: 40, UnitPriceOutPer1M: 40},
+	}
+	ctx := computeCostContext(cands)
+	if ctx.HasMixedPrices {
+		t.Fatal("empty currency must mean USD, not a fold")
+	}
+	assertDelta(t, 60.0, ctx.PriceP75)
+}
+
+func assertDelta(t *testing.T, want, got float64) {
+	t.Helper()
+	d := want - got
+	if d < 0 {
+		d = -d
+	}
+	if d > 0.2 {
+		t.Fatalf("got %v, want %v (±0.2)", got, want)
 	}
 }
