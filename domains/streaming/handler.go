@@ -4688,6 +4688,10 @@ func (h *ChatHandler) serveWithExecutor(
 			},
 			ClientProtocol: clientProtocol,
 			ClientModel:    clientModel,
+			// 原厂直通（2026-10-28 三巡）：请求边界一次确定客户端类型，
+			// executor 的 nativePairFor 以此为首选（此前该字段只在连接
+			// 注册表用，ExecParams 从未填过）。
+			ClientType: extractClientType(r),
 			// OutboundModel is intentionally set to clientModel here so the
 			// upstream body builder (executor_chat.prepareRequestBody /
 			// executor_anthropic.prepareAnthropicRequestBody) does NOT echo

@@ -775,6 +775,9 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			// clients, instead of the IR-based Responses translator.
 			ClientProtocol: "openai-responses",
 			ClientModel:    clientModel,
+			// 原厂直通（2026-10-28 三巡）：请求边界一次确定客户端类型（同
+			// messages.go 处的说明）。
+			ClientType: extractClientType(r),
 			// See domains/streaming/handler.go for the rationale: the
 			// executor resolves the upstream model per candidate, so we
 			// pass clientModel here to avoid leaking the FIRST candidate's
