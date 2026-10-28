@@ -153,7 +153,7 @@ var requestSurfaceDocEvidence = []docEvidence{
 		why: "Hook 的 5 个旧阶段名（别名视图的词表）",
 	},
 	{
-		file: "domains/streaming/executors/executor_chat.go", from: 60, to: 67,
+		file: "domains/streaming/executors/executor_chat.go", from: 95, to: 102,
 		mustContain: "type ExecuteHooks struct", kind: evidenceCode,
 		why: "执行器生命周期钩子的类型定义",
 	},

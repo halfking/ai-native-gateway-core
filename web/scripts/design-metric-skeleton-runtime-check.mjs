@@ -393,11 +393,17 @@ const PROBE = `(() => {
     //   ★ 只有下边框的**行**（列表行 / 指标行）不算卡片 ——
     //   否则「一列 label → value 的行」会被误认成「一列同尺寸指标卡」，
     //   判据就宽过了事实源（★ 第 29 增量踩过的那个坑）。
+    // ★★ 2026-10-28 第 31 增量补：描边必须**可见** —— 宽度 >= 1px **且**颜色非透明。
+    //   「1px solid transparent」的**占位描边**不是描边（实测 ModulesView.vue 的
+    //   .module-card 常态就是无底色 + 占位描边 ⇒ 那是**列表行**不是卡）。
+    //   ★ 这条修正**只往保守方向**收窄（卡片候选集只会变小 ⇒ 裸指标卡数只可能降）。
+    //   ★ 全量 89 页实测：修正前后**逐页读数零变化**（差异页 = 0）⇒ 这条疏漏是**潜伏的**、
+    //     不是活的；补上它是为了让两道门的「卡」定义一致，不是为了让读数变。
+    const isTransparent = (c) => !c || c === 'transparent' || /^rgba\\(0,\\s*0,\\s*0,\\s*0\\)$/.test(c)
+    const borderSide = (side) =>
+      num(cs['border' + side + 'Width']) >= 1 && !isTransparent(cs['border' + side + 'Color'])
     const boxBorder =
-      num(cs.borderTopWidth) >= 1 &&
-      num(cs.borderBottomWidth) >= 1 &&
-      num(cs.borderLeftWidth) >= 1 &&
-      num(cs.borderRightWidth) >= 1
+      borderSide('Top') && borderSide('Bottom') && borderSide('Left') && borderSide('Right')
     return hasBg || boxBorder
   })
   const cards = candidates.map((el) => {

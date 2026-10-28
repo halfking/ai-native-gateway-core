@@ -78,10 +78,14 @@ func r1039TokenAt(t *testing.T, userID int, role string, issuedAt time.Time) str
 }
 
 // r1039RevocationEcho 造一个只挂本中间件 + 一个记录是否到达 handler 的 Echo。
-func r1039RevocationEcho(t *testing.T, reached *bool) *echo.Echo {
+//
+// ★ db 是**显式参数**：上一轮这个助手把池写死成 nil ⇒ 探针恒 fail-open ⇒
+//   「真库端到端」那条判据会**恒不吊销**（编译器在第一次跑时抓到了它）。
+//   ⇒ 池必须由调用方给，且**真库腿必须传真池**。
+func r1039RevocationEcho(t *testing.T, db *pgxpool.Pool, reached *bool) *echo.Echo {
 	t.Helper()
 	e := echo.New()
-	e.Use(newJWTMiddleware(r1039JWTSecret, nil))
+	e.Use(newJWTMiddleware(r1039JWTSecret, db))
 	e.GET("/probe", func(c echo.Context) error {
 		*reached = true
 		role, _ := c.Get("role").(string)
@@ -103,7 +107,7 @@ func TestR1039EchoMiddlewareRevokesBearerAfterPasswordChange(t *testing.T) {
 	})
 
 	reached := false
-	e := r1039RevocationEcho(t, &reached)
+	e := r1039RevocationEcho(t, nil, &reached)
 	req := httptest.NewRequest(http.MethodGet, "/probe", nil)
 	req.Header.Set("Authorization", "Bearer "+r1039TokenAt(t, 42, "super_admin", time.Now().Add(-time.Hour)))
 	rec := httptest.NewRecorder()
@@ -134,7 +138,7 @@ func TestR1039EchoMiddlewareRevokesCookieSessionAfterPasswordChange(t *testing.T
 	})
 
 	reached := false
-	e := r1039RevocationEcho(t, &reached)
+	e := r1039RevocationEcho(t, nil, &reached)
 	req := httptest.NewRequest(http.MethodGet, "/probe", nil)
 	req.AddCookie(&http.Cookie{Name: admin.CookieName, Value: r1039TokenAt(t, 42, "super_admin", time.Now().Add(-time.Hour))})
 	rec := httptest.NewRecorder()
@@ -164,7 +168,7 @@ func TestR1039EchoMiddlewareKeepsSessionIssuedAfterPasswordChange(t *testing.T) 
 	})
 
 	reached := false
-	e := r1039RevocationEcho(t, &reached)
+	e := r1039RevocationEcho(t, nil, &reached)
 	req := httptest.NewRequest(http.MethodGet, "/probe", nil)
 	req.Header.Set("Authorization", "Bearer "+r1039TokenAt(t, 42, "super_admin", time.Now().Add(time.Minute)))
 	rec := httptest.NewRecorder()
@@ -200,7 +204,7 @@ func TestR1039EchoMiddlewareRevocationProbeSeesTokenClaims(t *testing.T) {
 
 	issuedAt := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
 	reached := false
-	e := r1039RevocationEcho(t, &reached)
+	e := r1039RevocationEcho(t, nil, &reached)
 	req := httptest.NewRequest(http.MethodGet, "/probe", nil)
 	req.Header.Set("Authorization", "Bearer "+r1039TokenAt(t, 77, "super_admin", issuedAt))
 	rec := httptest.NewRecorder()
@@ -234,7 +238,7 @@ func TestR1039EchoMiddlewareRevocationFailsOpenWithoutDatabase(t *testing.T) {
 	}
 
 	reached := false
-	e := r1039RevocationEcho(t, &reached)
+	e := r1039RevocationEcho(t, nil, &reached)
 	req := httptest.NewRequest(http.MethodGet, "/probe", nil)
 	req.Header.Set("Authorization", "Bearer "+r1039TokenAt(t, 42, "super_admin", time.Now().Add(-time.Hour)))
 	rec := httptest.NewRecorder()
@@ -256,7 +260,7 @@ func TestR1039EchoMiddlewareRevocationDoesNotShadowCredentialErrors(t *testing.T
 	r1039RevocationStub(t, func(context.Context, *pgxpool.Pool, int, time.Time) bool { return true })
 
 	reached := false
-	e := r1039RevocationEcho(t, &reached)
+	e := r1039RevocationEcho(t, nil, &reached)
 	req := httptest.NewRequest(http.MethodGet, "/probe", nil)
 	req.Header.Set("Authorization", "Bearer not-a-jwt")
 	rec := httptest.NewRecorder()

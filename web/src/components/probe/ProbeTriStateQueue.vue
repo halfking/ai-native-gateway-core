@@ -661,11 +661,10 @@ function credentialTitle(c: ProbeCard): string {
   background: var(--kx-danger-soft);
 }
 
+/* 2026-10-28 第 31 增量（DESIGN.md §6「卡片套卡片永远不对」）：
+   原来这是一个白盒，里面装着 probe-card ⇒ 降级为「标题 + 内容区」。 */
 .tri-section {
-  border: 1px solid var(--kx-border);
-  border-radius: 8px;
-  background: var(--kx-surface);
-  padding: 8px 12px;
+  margin-bottom: 16px;
 }
 
 .tri-section-head {

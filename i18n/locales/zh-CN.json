@@ -44,6 +44,27 @@
   "unsupported_feature": {
     "other": "所选模型不支持此请求格式或模态。"
   },
+  "modality_mismatch": {
+    "other": "模型“{{.Model}}”不接受{{.Modality}}输入。本次请求含有{{.Modality}}内容，而该模型仅登记为{{.RegisteredModality}}。请改用纯文本请求调用此模型，或把该请求转给支持{{.Modality}}的模型。"
+  },
+  "modality_vision": {
+    "other": "图片"
+  },
+  "modality_audio": {
+    "other": "音频"
+  },
+  "modality_video": {
+    "other": "视频"
+  },
+  "modality_image": {
+    "other": "图像生成"
+  },
+  "modality_multimodal": {
+    "other": "多模态"
+  },
+  "modality_text": {
+    "other": "文本"
+  },
   "model_deprecated": {
     "other": "请求的模型已被上游服务商永久下线（停止服务）。"
   },

@@ -1002,6 +1002,16 @@ type providerResolver interface {
 	GetCandidates(ctx context.Context, model, profile, tenantID string) ([]provider.Candidate, *provider.Policy, error)
 	GetCandidatesByModality(ctx context.Context, model, profile, tenantID, modality string) ([]provider.Candidate, *provider.Policy, error)
 	ModelKnown(ctx context.Context, model string) bool
+	// ModelModalityMismatch reports whether the request's modality — not a
+	// lack of routable providers — is what excluded the model from the
+	// candidate set. A zero-candidate exit caused by this is a client-side
+	// problem (the request carries media the model cannot read) and must be
+	// reported as such, not as a retryable "no provider available".
+	//
+	// Returning a nil mismatch means "not a modality problem" — either the
+	// model has no live binding at all, or it could serve this modality and
+	// was excluded for some other reason.
+	ModelModalityMismatch(ctx context.Context, model, profile, tenantID, requestModality string) (*provider.ModalityMismatch, error)
 }
 
 // requestKeyVerifier is the authorization surface used by request handlers.
@@ -3762,6 +3772,35 @@ func (h *ChatHandler) serveWithExecutor(
 			writeErrorJSONCtx(r.Context(), w, http.StatusBadRequest, requestID, "invalid_request_error", i18n.MsgInvalidModel, map[string]any{"Model": clientModel})
 			return
 		}
+		// ── 2026-10-28: 模态不匹配（modality_mismatch）───────────────────────
+		//
+		// 零候选有两种成因，客户端要采取的动作**完全相反**：
+		//
+		//	(a) 模型本身没有可路由的凭据（配额/探针/租户范围）⇒ 「等一会儿」
+		//	    → 503 no_candidate，客户端重试是对的；
+		//	(b) 模型可路由，但登记模态服务不了本次请求（文本模型收到带图请求）
+		//	    ⇒ 「等一会儿」永远没用，重试同一请求会永远失败 ⇒ 必须说清楚。
+		//
+		// ★ 为什么以前要说清楚：旧文案统一是「没有可用于模型 X 的供应商」，
+		// 客户端读到的是**网关的状态**（暂时没东西可路由）⇒ 于是重试。
+		// 真实案例（211 生产）：ZCode IDE 智能体的会话历史里带着 8 张桌面
+		// 截图（computer-use 拍的），于是每一轮请求都被判为 vision，而
+		// glm-5.3-flash 登记为 text-only ⇒ 每轮 503 ⇒ 表现为「这个模型永远
+		// 调不通」。而纯文本请求同一个模型一直正常（24h 内 77 笔成功）。
+		//
+		// 判据交给 provider 层（provider.ModalityMismatch）：它要求
+		// 「去掉模态门后模型确实可路由」且「登记模态服务不了本次模态」
+		// **两条同时成立**——只有第一条成立时零候选与模态无关，仍是 503。
+		if mismatch := h.diagnoseModalityMismatch(r.Context(), clientModel,
+			clientID.Fingerprint.ClientProfile, tenantID, requestModality); !mismatch.IsZero() {
+			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "modality_mismatch", nil, int(time.Since(startTime).Milliseconds()))
+			logCtx.failAndMark("modality_mismatch",
+				fmt.Sprintf("Model '%s' does not accept %s input", clientModel, requestModality), nil, nil,
+				http.StatusBadRequest)
+			markLogged()
+			h.writeModalityMismatchError(r, w, requestID, clientModel, mismatch, &reqBody, bodyBytes, keyInfo)
+			return
+		}
 		// 2026-07-20: Record routing attempts for the no_candidate exit so
 		// /api/logs/<id> 详情页 surfaces the full decision chain instead of
 		// an empty routing_attempts JSONB. The tracker is stored on logCtx
@@ -3807,7 +3846,7 @@ func (h *ChatHandler) serveWithExecutor(
 			// ordered featured-then-popular. Availability is judged by
 			// v_routable_credential_models.is_routable — the same gate the router
 			// uses — so a suggested model is genuinely reachable right now.
-			alts := h.findModelAlternatives(r, &reqBody, bodyBytes, clientModel, keyInfo)
+			alts := h.findModelAlternatives(r, &reqBody, bodyBytes, clientModel, keyInfo, requestModality)
 			writeNoCandidateWithAlternatives(r.Context(), w, r, requestID, clientModel, alts)
 			return
 		}
@@ -9150,6 +9189,246 @@ func writeNoCandidateWithAlternatives(
 	})
 }
 
+// diagnoseModalityMismatch decides whether the request's modality — rather
+// than a lack of routable providers — is what emptied the candidate set.
+//
+// ★ It is a separate function, not an inline block, for one concrete reason:
+//
+//	the wiring is what regresses. The body of this function (the rule, the
+//	provider query, the message) is easy to test in isolation; the CALL —
+//	"does the handler reach this diagnosis before it gives up with 503?" —
+//	is not, unless the call site is a named thing a test can invoke.
+//
+//	The mutation arm made that concrete: replacing the guard at the call
+//	site with `if false` left the entire suite green while production
+//	silently reverted to the unhelpful 503. A named function the tests call
+//	is what makes that mutation fail.
+//
+// Returns a nil (IsZero) mismatch when the zero candidates have nothing to
+// do with modality — the caller must then keep reporting the retryable 503.
+//
+// A resolver error is deliberately swallowed here: the diagnosis is an
+// improvement over the plain 503, never a new way to fail a request.
+func (h *ChatHandler) diagnoseModalityMismatch(
+	ctx context.Context,
+	clientModel, clientProfile, tenantID, requestModality string,
+) *provider.ModalityMismatch {
+	if h == nil || h.provider == nil {
+		return nil
+	}
+	// A text request is never excluded by the modality gate, so there is
+	// nothing to diagnose — and the resolver must not be consulted for it.
+	//
+	// ★ Normalise before comparing: the modality string reaches here from
+	// request-body detection and from caller-supplied values, and "TEXT" or
+	// " text " must not slip past the guard into a diagnosis that says
+	// "this model cannot read your images" for a request that carried none.
+	normalized := strings.ToLower(strings.TrimSpace(requestModality))
+	if normalized == "" || normalized == modalityText {
+		return nil
+	}
+	mismatch, err := h.provider.ModelModalityMismatch(ctx, clientModel, clientProfile, tenantID, requestModality)
+	if err != nil {
+		slog.WarnContext(ctx, "modality diagnosis failed; falling back to plain no_candidate",
+			"error", err, "requested_model", clientModel, "request_modality", requestModality)
+		return nil
+	}
+	if mismatch.IsZero() {
+		return nil
+	}
+	return mismatch
+}
+
+// writeModalityMismatchError writes the 400 response for a request whose
+// media content the requested model cannot read.
+//
+// ★ Why this is a distinct response shape rather than another no_candidate:
+//
+//	The no_candidate 503 says "nothing is routable right now", which reads as
+//	the gateway's state and invites a retry. But in the modality-mismatch
+//	case the model is perfectly routable — it is the REQUEST that cannot be
+//	served. A client that retries the identical request fails forever, and
+//	(measured on 211, 2026-10-28) a UI agent does exactly that: ZCode re-sent
+//	the same 2.1 MB body — screenshots included — every few seconds, each time
+//	drawing a fresh 503.
+//
+//	So the response has to say three things a bare503 cannot:
+//	  1. WHAT is wrong — the request carries media, the model cannot read it;
+//	  2. WHICH modalities are involved — machine-readable, so a client can
+//	     strip the images itself instead of guessing;
+//	  3. WHAT to do instead — models that can read that media, right now.
+//
+//	Alternatives on this path are filtered by modality, so every suggestion
+//	really can serve the request; the generic no_candidate list is not,
+//	because it is ordered by task type and popularity, not by capability.
+//
+// Shape (OpenAI envelope):
+//
+//	{"error": {
+//	   "message": "Model 'glm-5.3-flash' does not accept vision input. ...",
+//	   "type": "invalid_request_error", "code": "modality_mismatch",
+//	   "kind": "modality_mismatch", "request_id": "...",
+//	   "modality_mismatch": {
+//	     "requested_modality": "vision",
+//	     "registered_modality": "text",
+//	     "supported_modalities": ["vision", "multimodal"]
+//	   },
+//	   "alternatives": { ... }
+//	 }}
+//
+// The dedicated "modality_mismatch" object is additive; clients that only
+// read "code" still get the actionable distinction from the status code and
+// the message.
+func (h *ChatHandler) writeModalityMismatchError(
+	r *http.Request,
+	w http.ResponseWriter,
+	requestID, clientModel string,
+	mismatch *provider.ModalityMismatch,
+	reqBody *chatRequestBody,
+	bodyBytes []byte,
+	keyInfo *authentication.KeyInfo,
+) {
+	ctx := r.Context()
+
+	// ★ A nil mismatch means "this is not a modality problem" — the caller
+	// must not claim otherwise. Guarding here rather than relying on the
+	// caller's check keeps the writer total: a nil mismatch would otherwise
+	// panic on the first field access, turning a diagnosis mistake into a
+	// crashed request instead of a wrong-but-readable response.
+	if mismatch.IsZero() {
+		writeErrorJSONWithKindProto(protocolOfRequest(r), w, http.StatusServiceUnavailable,
+			requestID, i18n.T(ctx, i18n.MsgNoCandidate, map[string]any{"Model": clientModel}),
+			"server_error", "no_candidate", "no_candidate", nil)
+		return
+	}
+
+	// Localise the modality names: they are shown to a human in the message.
+	modalityLabel := localiseModality(ctx, mismatch.RequestedModality)
+	registeredModality := mismatch.RegisteredModality
+	if registeredModality == "" {
+		registeredModality = modalityText
+	}
+	// The message shows the localised word ("文本" / "text"), while the
+	// machine-readable field keeps the raw token ("text") — a client keys off
+	// the token, a human reads the word. Mixing them up would make one of the
+	// two wrong for somebody.
+	registeredLabel := localiseModality(ctx, registeredModality)
+
+	msg := i18n.T(ctx, i18n.MsgModalityMismatch, map[string]any{
+		"Model":              clientModel,
+		"Modality":           modalityLabel,
+		"RegisteredModality": registeredLabel,
+	})
+
+	// Suggestions restricted to models that can serve this modality.
+	alts := h.findModelAlternatives(r, reqBody, bodyBytes, clientModel, keyInfo, mismatch.RequestedModality)
+
+	detail := map[string]any{
+		"requested_modality":  mismatch.RequestedModality,
+		"registered_modality": registeredModality,
+		// The modalities this model WOULD accept, so a client can check
+		// before retrying. Derived from the same acceptance rule the router
+		// uses, so it cannot drift from the gate that rejected the request.
+		"supported_modalities": supportedModalitiesFor(registeredModality),
+	}
+
+	if protocolOfRequest(r) == "anthropic" {
+		// ★ The Anthropic envelope gets the same machine-readable detail as
+		// the OpenAI one. An SDK that only reads error.type learns "invalid
+		// request" from the type; an SDK that reads the detail learns WHICH
+		// modality was rejected and what the model does accept — without
+		// that, an Anthropic client has to parse the English prose.
+		w.Header().Set("Content-Type", "application/json")
+		if requestID != "" {
+			w.Header().Set("X-Request-Id", requestID)
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		//nolint:errcheck // HTTP write error non-recoverable
+		json.NewEncoder(w).Encode(map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type": anthropicErrorType("server_error", "modality_mismatch"),
+				// The Anthropic SDK's error object officially carries
+				// type + message only, but "code" is additive and is what
+				// every OpenAI-shaped client in this repo already keys off
+				// (the diagnostics UI reads error.code). Leaving it out on
+				// this one path would make the same condition look
+				// different depending on which endpoint the client used.
+				"code":              "modality_mismatch",
+				"message":           msg,
+				"request_id":        requestID,
+				"modality_mismatch": detail,
+				"alternatives":      alts,
+			},
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if requestID != "" {
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	w.WriteHeader(http.StatusBadRequest)
+	//nolint:errcheck // HTTP write error non-recoverable
+	json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"message":           msg,
+			"type":              "invalid_request_error",
+			"code":              "modality_mismatch",
+			"kind":              "modality_mismatch",
+			"request_id":        requestID,
+			"modality_mismatch": detail,
+			"alternatives":      alts,
+		},
+	})
+}
+
+// localiseModality renders a modality token for human consumption.
+//
+// Falls back to the raw token when the catalogue has no entry for it, so an
+// unrecognised modality still produces a readable message instead of an
+// unresolved message key on the screen.
+func localiseModality(ctx context.Context, modality string) string {
+	modality = strings.TrimSpace(strings.ToLower(modality))
+	if modality == "" {
+		return modality
+	}
+	label := i18n.T(ctx, "modality_"+modality)
+	if label == "modality_"+modality {
+		return modality
+	}
+	return label
+}
+
+// supportedModalitiesFor lists the request modalities a model registered as
+// registeredModality would be accepted for.
+//
+// It mirrors provider.modalityAccepts: a "multimodal" row serves every media
+// modality; a "text" row serves text only. The list is published so a client
+// can decide on its own whether to strip the attachments or switch model,
+// without having to hard-code the acceptance table.
+func supportedModalitiesFor(registeredModality string) []string {
+	switch registeredModality {
+	case "multimodal":
+		// A multimodal row serves every media modality — including a request
+		// that carries several of them at once, which is what the
+		// "multimodal" request modality means. Leaving it out would tell a
+		// client that a multimodal model cannot take a multimodal request,
+		// which is false.
+		return []string{"text", "vision", "audio", "video", "image", "multimodal"}
+	case "vision":
+		return []string{"text", "vision", "image"}
+	case "audio":
+		return []string{"text", "audio"}
+	case "video":
+		return []string{"text", "video"}
+	case "image":
+		return []string{"text", "image"}
+	default:
+		return []string{"text"}
+	}
+}
+
 // writeErrorAnthropicWithAlternatives mirrors writeErrorAnthropic and adds the
 // alternatives payload. Anthropic SDKs type-check error.type against a closed
 // set, so the type is mapped through anthropicErrorType; the extra key sits
@@ -9204,6 +9483,14 @@ func anthropicErrorType(errType, code string) string {
 	case "content_filter":
 		return "invalid_request_error"
 	case "unsupported_feature":
+		return "invalid_request_error"
+	case "modality_mismatch":
+		// A modality mismatch is a client-side problem: the request carries
+		// media the requested model cannot read. Anthropic SDKs type-check
+		// error.type against a closed set, so it must be one of the SDK's own
+		// types — "invalid_request_error" is the one that means "change the
+		// request", as opposed to "overloaded_error", which would tell the
+		// client to retry the identical request and fail forever.
 		return "invalid_request_error"
 	case "insufficient_quota", "budget_exhausted", "insufficient_credits":
 		return "invalid_request_error"

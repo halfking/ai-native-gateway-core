@@ -185,6 +185,14 @@ type Breaker struct {
 	halfOpenProbes atomic.Int32
 	freeTier       atomic.Bool // billing_mode='free': use freeTierPolicies cooling
 	coolingPolicy  CoolingPolicy
+	// recoveredAtUnix (P0-A, 2026-10-28 两层路由审计 G1) 最近一次「从非健康态
+	// 转回 CLOSED」的时刻（unix seconds；0 = 无恢复证据）。RecordSuccess 在
+	// prev != CLOSED 时写入、Reset（管理员手动恢复）写入、RecordFailure 进入
+	// OPEN/QUARANTINED 时清零。路由评分侧（executors.recoveryPenaltyForCandidate
+	// → Router.CircuitRecovery）用它对恢复期候选做渐进回流量（recovery ramp），
+	// 防止「1 成功即全量回池 → 二次打挂 → 再翻红」的 re-flapping 振荡。
+	// atomic 而非 mu 保护：读方在路由热路径上无锁快照，写方在既有 mu 区间内。
+	recoveredAtUnix atomic.Int64
 
 	// onChange 是状态迁移观察者（Manager.SetObserver 装配，nil 安全）。
 	// 契约：必须非阻塞（原子计数 + buffered channel send 级别），因为它在
@@ -465,6 +473,9 @@ func (b *Breaker) openAlignedToQuotaReset(kind ErrorKind, resetAt, now time.Time
 	b.openSince = now
 	b.coolingCycle = 0 // not part of the exponential ladder
 	b.coolingExpires = now.Add(cooling)
+	// P0-A: 重新进入 OPEN ⇒ 上一次的恢复证据作废（ramp 只属于当前
+	// CLOSED 会话，翻红后旧 recoveredAt 留着会让恢复期判定读到幽灵时刻）。
+	b.recoveredAtUnix.Store(0)
 
 	slog.Warn("circuit quota cooling aligned to upstream reset",
 		"key", b.key,
@@ -630,6 +641,7 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 	case RecoveryPermanent:
 		b.state.Store(int32(StateQuarantined))
 		b.coolingCycle = 0
+		b.recoveredAtUnix.Store(0) // P0-A: 翻红即作废旧恢复证据（同 OPEN 分支）
 		slog.Warn("circuit quarantined",
 			"key", b.key,
 			"previous_state", previous.String(),
@@ -642,6 +654,7 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 		b.state.Store(int32(StateOpen))
 		b.halfOpenProbes.Store(0)
 		b.openSince = now
+		b.recoveredAtUnix.Store(0) // P0-A: 翻红即作废旧恢复证据
 
 		var coolingDuration time.Duration
 		if policy.RecoveryType == RecoveryExponential {
@@ -781,6 +794,10 @@ func (b *Breaker) RecordSuccess() {
 	b.lastFailureAt = time.Time{}
 
 	if prev != StateClosed {
+		// P0-A: 这次成功把 breaker 从 OPEN/HALF_OPEN/QUARANTINED 拉回
+		// CLOSED——「恢复被验证」的时刻，recovery ramp 由此起算。一直
+		// CLOSED 的常规成功不写（写了会让所有节点永远处于"刚恢复"）。
+		b.recoveredAtUnix.Store(time.Now().Unix())
 		slog.Info("circuit closed",
 			"key", b.key,
 			"previous_state", prev.String(),
@@ -790,6 +807,17 @@ func (b *Breaker) RecordSuccess() {
 		)
 		b.notify(prev, StateClosed, b.lastErrorKind, time.Time{})
 	}
+}
+
+// RecoveredAt returns the instant this breaker last recovered from a
+// non-CLOSED state (P0-A). Zero time = no recovery evidence — the credential
+// either never tripped or recovered before this process started.
+func (b *Breaker) RecoveredAt() time.Time {
+	sec := b.recoveredAtUnix.Load()
+	if sec == 0 {
+		return time.Time{}
+	}
+	return time.Unix(sec, 0)
 }
 
 // Reset resets the breaker to CLOSED state (admin/manual recovery).
@@ -803,6 +831,10 @@ func (b *Breaker) Reset() {
 	b.coolingCycle = 0
 	b.halfOpenProbes.Store(0)
 	b.lastFailureAt = time.Time{}
+	// P0-A: 管理员手动恢复同样进入 ramp——「未经流量验证的恢复」恰是
+	// re-flapping 风险最高的时候（HAProxy slow-start 对手动 up 的节点
+	// 同样生效）。方案（审计 P0-A）明确 RecordSuccess/Reset 两处都写。
+	b.recoveredAtUnix.Store(time.Now().Unix())
 	// 2026-10-01 第十八轮审计：Reset 必须同时清掉剩余冷却窗口，否则管理面
 	// 复位后最长 30 分钟内同一事件的判定窗仍在（R87 的 sameIncident 时间窗
 	// 以 coolingExpires 为界），交替故障族的计数不归零、复位后反而更易跳闸
@@ -838,6 +870,9 @@ func (b *Breaker) Stats() map[string]any {
 	if !b.lastFailureAt.IsZero() {
 		stats["last_failure_at"] = b.lastFailureAt.Format(time.RFC3339)
 		stats["last_error_kind"] = string(b.lastErrorKind)
+	}
+	if sec := b.recoveredAtUnix.Load(); sec > 0 {
+		stats["recovered_at"] = time.Unix(sec, 0).Format(time.RFC3339)
 	}
 	if !b.openSince.IsZero() {
 		stats["open_since"] = b.openSince.Format(time.RFC3339)
@@ -994,6 +1029,17 @@ func (m *Manager) RecordFailureWithReset(providerID, credentialID int, kind Erro
 func (m *Manager) RecordModelScopedFailure(providerID, credentialID int, kind ErrorKind, model string) {
 	b := m.GetOrCreate(providerID, credentialID)
 	b.RecordModelScopedFailure(kind, model)
+}
+
+// RecoveredAt returns the last recovery instant for the given
+// provider/credential's breaker, or zero time when no breaker exists or it
+// has no recovery evidence. Lock-free single-map read on the routing hot
+// path (P0-A recovery ramp).
+func (m *Manager) RecoveredAt(providerID, credentialID int) time.Time {
+	if b := m.Get(providerID, credentialID); b != nil {
+		return b.RecoveredAt()
+	}
+	return time.Time{}
 }
 
 // RecordSuccess records a success on the appropriate breaker.
