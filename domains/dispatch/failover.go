@@ -322,10 +322,20 @@ func (p *Pipeline) scheduleSameCredRetry(qr *QueuedRequest, out ForwardOutcome, 
 	}
 	errorKind := observation.RetryReason
 	if p.retryScheduler != nil && ctxOf(qr).Err() == nil {
+		// P0-C retry budget runs BEFORE any event emission: in enforce mode an
+		// over-budget refusal falls through to the sibling ladder without
+		// emitting retry_scheduled at all (nothing was scheduled).
+		if !p.observeRetryBudget(qr) {
+			qr.notifyDispatch(p.retryNotice(qr, out, err, time.Time{}, errorKind))
+			return p.tryEnqueueCred(cred, qr)
+		}
 		// Timed retry: registry parks back to pending with retry_at
 		// (spec §6), the event carries retry_at, and the scheduler re-injects
 		// the request at the due time.
-		retryAt := time.Now().Add(NextRetryDelay(qr.CredRetryCount, out.RetryAfter))
+		// P0-C (audit 2026-10-28 §4): ±20% jitter desynchronizes parked
+		// cohorts so a same-instant upstream outage cannot re-fire as a
+		// synchronized retry wave (thundering herd).
+		retryAt := time.Now().Add(ApplyRetryJitter(NextRetryDelay(qr.CredRetryCount, out.RetryAfter), nil))
 		at := retryAt
 		observation.RetryAt = &at
 		qr.emitObservation(observation)
@@ -345,6 +355,38 @@ func (p *Pipeline) scheduleSameCredRetry(qr *QueuedRequest, out ForwardOutcome, 
 	qr.emitObservation(observation)
 	qr.notifyDispatch(p.retryNotice(qr, out, err, time.Time{}, errorKind))
 	return p.tryEnqueueCred(cred, qr)
+}
+
+// observeRetryBudget is the P0-C retry-budget counter (shadow first): when a
+// same-credential retry is about to park, compare the aggregate in-flight
+// gauge against the Envoy-form budget
+//
+//	budget = active×25% + 10   (hotconfig: llmgw_dispatch_retry_budget_percent /
+//	                           llmgw_dispatch_retry_budget_floor)
+//
+// exceeded_total{mode} counts over-budget sightings; enforce=1 ALSO returns
+// false for the scheduler path so the caller falls through to its existing
+// immediate switch-credential ladder (a refused admission is always safe —
+// the scheduler is best-effort and never the owner of record). Shadow mode
+// (default, enforce off) only counts: observe first, enforce later.
+func (p *Pipeline) observeRetryBudget(qr *QueuedRequest) bool {
+	cfg := p.config()
+	if cfg.RetryBudgetPercent <= 0 {
+		return true // budget disabled (percent 0/negative ⇒ legacy unlimited)
+	}
+	budget := int64(p.inFlight.Load())*int64(cfg.RetryBudgetPercent)/100 + int64(cfg.RetryBudgetFloor)
+	parked := int64(p.retryScheduler.Len())
+	if parked < budget {
+		return true
+	}
+	mode := "shadow"
+	if cfg.RetryBudgetEnforce {
+		mode = "enforce"
+		metricRetryBudgetExceeded.WithLabelValues(mode).Inc()
+		return false
+	}
+	metricRetryBudgetExceeded.WithLabelValues(mode).Inc()
+	return true
 }
 
 // retryNotice builds the same-credential retry notice (v6 G-Ⅲ).

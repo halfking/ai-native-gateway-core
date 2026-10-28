@@ -398,6 +398,22 @@ type LiveRequest struct {
 	// 空时由 liveStreamCredentialKey / 前端回退为 "凭据 #ID"。
 	CredentialID    int    `json:"credential_id,omitempty"`
 	CredentialLabel string `json:"credential_label,omitempty"`
+
+	// 2026-10-28（live 拓扑·模型选择层表达轮）: 模型选择与压缩的可观测字段。
+	// 四个字段全部来自 telemetry.RequestLogEntry 的既有投影（不新增采集），
+	// 只是此前没上 SSE —— 线上只有最终 canonical 模型，看不出「客户端要的
+	// 是 auto 还是具体名字」「auto 按任务选了谁」「这条请求是否触发压缩」。
+	//   ClientModel   客户端原始请求模型名（"auto" / 别名 / 具体名）；
+	//   IsAutoRequest model=auto 的请求（handler 侧 post-auto 改写前打的标）；
+	//   TaskType      auto 分类的任务类型（chat/reasoning/code/…）；
+	//   TokenBand     会话滑窗压缩档位（below/preliminary/forced），
+	//                 preliminary|forced = 本条请求触发过上下文压缩。
+	// in_progress 预投影帧可能尚未携带（logCtx 后补）——optional 字段，
+	// 缺省渲染成「未知」，禁止用零值冒充。
+	ClientModel    string `json:"client_model,omitempty"`
+	IsAutoRequest  bool   `json:"is_auto_request,omitempty"`
+	TaskType       string `json:"task_type,omitempty"`
+	TokenBand      string `json:"token_band,omitempty"`
 }
 
 // LiveStreamConfig controls hub behaviour. Zero values are safe and
@@ -3107,6 +3123,26 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 		}
 		if entry.CacheWriteTokens != nil {
 			out.CacheWriteTokens = entry.CacheWriteTokens
+		}
+		// 2026-10-28（live 拓扑·模型选择层表达轮）: 模型选择与压缩可观测字段。
+		// 只透传既有持久化投影；缺省保持空（前端按「未知」渲染，不冒充）。
+		// ClientModel 与入参 clientModel 同一事实源（入参就是从 entry 投出来的），
+		// 入参优先；语义注意：auto 请求的 client_model 在 handler 侧已被改写为
+		// 「选中的模型」（preAutoModel 只进 requestjourney），所以「客户端要的是
+		// auto」这件事由 IsAutoRequest 表达，不能靠 ClientModel=="auto" 反推。
+		if clientModel != "" {
+			out.ClientModel = clientModel
+		} else if entry.ClientModel != nil {
+			out.ClientModel = strings.TrimSpace(*entry.ClientModel)
+		}
+		if entry.IsAutoRequest != nil && *entry.IsAutoRequest {
+			out.IsAutoRequest = true
+		}
+		if entry.TaskType != nil {
+			out.TaskType = strings.TrimSpace(*entry.TaskType)
+		}
+		if entry.TokenBand != nil {
+			out.TokenBand = strings.TrimSpace(*entry.TokenBand)
 		}
 		if entry.GwSessionID != nil && out.GwSessionID == "" {
 			out.GwSessionID = strings.TrimSpace(*entry.GwSessionID)

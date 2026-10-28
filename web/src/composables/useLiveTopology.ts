@@ -31,15 +31,16 @@ import {
   type GraphNodeInput,
   type TopoGraph,
 } from '../lib/liveTopologyGraph'
-import { applyFilters, filterOptions, gatewayModuleStats } from '../lib/liveTopologyFilter'
+import { applyFilters, filterOptions, gatewayModuleStats, localProviderCodesOf, modelSelectionStats } from '../lib/liveTopologyFilter'
 import {
   DEFAULT_TOPO_FILTERS,
   GATEWAY_CORE_ID,
   type GatewayModuleKey,
+  type ModelSelectionStats,
   type TopoFilters,
   type TopoPluginChip,
 } from '../types/liveTopology'
-import { getTopologyPlugins } from '../api/topology'
+import { getTopologyPlugins, getTopologyProviderKinds } from '../api/topology'
 
 export interface PanelEntry {
   requestId: string
@@ -49,6 +50,13 @@ export interface PanelEntry {
   provider: string
   nodeId: string
   model: string
+  /** 客户端原始请求模型名（auto 请求在后端已被改写为选中模型 —— 这里存的是
+   *  改写后的名字；「要的是 auto」由 isAuto 表达）。 */
+  requestedModel?: string
+  /** model=auto 的请求（2026-10-28 选路层轮：面板上显示 auto → 最终模型）。 */
+  isAuto?: boolean
+  /** auto 分类的任务类型（后端原始词：chat/reasoning/code/…）。 */
+  taskType?: string
   status: string
   latencyMs?: number | null
   tokens?: number | null
@@ -184,6 +192,45 @@ export function useLiveTopology(opts?: { now?: () => number }) {
   )
 
   const queue = computed<LiveQueueSnapshot | null>(() => queueRef.value)
+
+  /**
+   * 选路扇出统计（模型选择三出口：auto 按任务 / 内部直连 / 指定模型）。
+   * 与 gatewayStats 一样收敛到同一个过滤子集 —— 扇出带的三个数加起来
+   * 必须等于主线「模型选择」格的数，否则大方块自己就矛盾了。
+   */
+  const selectionStats = computed<ModelSelectionStats>(() =>
+    modelSelectionStats(
+      filteredRequests.value as never,
+      now(),
+      filters.value.windowMs,
+      localProviderCodes.value,
+    ),
+  )
+
+  /**
+   * 内部直连供应商 code 集合（providers.kind === 'local'：本地托管推理服务，
+   * 网关直连内网端点、无真实 API key）。挂载时拉一次 —— kind 只在供应商
+   * 增删时变化，不值得轮询；undefined = 未测量（接口未返回/失败/degraded），
+   * 直连分桶按「未测量」如实标注，不冒充 0 完成分拣。
+   *
+   * ★ 数据源是 /api/admin/topology/provider-kinds（admin 权限）而不是
+   * /api/providers（providerConsole 权限）：/live 任意租户管理员可进，
+   * 辅助信息不该要求更高权限（批判式审计修正 2026-10-28）。
+   */
+  const localProviderCodes = ref<ReadonlySet<string> | undefined>(undefined)
+
+  async function loadLocalProviders(): Promise<void> {
+    try {
+      const resp = await getTopologyProviderKinds()
+      if (resp.degraded) {
+        localProviderCodes.value = undefined
+        return
+      }
+      localProviderCodes.value = localProviderCodesOf(resp.items ?? [])
+    } catch {
+      localProviderCodes.value = undefined
+    }
+  }
 
   const coreMetric = computed(() => graph.value.nodes.find((n) => n.id === GATEWAY_CORE_ID)?.metric)
 
@@ -352,6 +399,9 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     plugins,
     pluginsDegraded,
     loadPlugins,
+    selectionStats,
+    localProviderCodes,
+    loadLocalProviders,
     connection: connectionRef,
     initialDataReceived: initialDataReceivedRef,
     redisHealthy: redisHealthyRef,
@@ -367,6 +417,9 @@ function toPanelEntry(req: LiveRequest): PanelEntry {
     provider: (req.provider_code ?? '').trim() || '—',
     nodeId: providerNodeKeyOf(req as never),
     model: modelKeyOf(req as never),
+    requestedModel: (req.client_model ?? '').trim() || undefined,
+    isAuto: !!req.is_auto_request,
+    taskType: (req.task_type ?? '').trim() || undefined,
     status: req.status ?? 'in_progress',
     latencyMs: req.latency_ms ?? null,
     tokens: req.total_tokens ?? null,

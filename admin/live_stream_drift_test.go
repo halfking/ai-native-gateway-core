@@ -2,8 +2,12 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
 // TestClassifyModelCategoryFallback_Minimax covers the 2026-07-09 fix for
@@ -224,5 +228,82 @@ func TestCanonicalNameFor_NilHubDoesNotPanic(t *testing.T) {
 	got := nilHub.CanonicalNameFor(context.Background(), 42)
 	if got != "" {
 		t.Errorf("nil hub should return empty string, got %q", got)
+	}
+}
+
+// TestLiveRequestFromTelemetry_ModelSelectionFields 是 2026-10-28（live 拓扑·
+// 模型选择层表达轮）的投影判据：admin.LiveRequest 新增四个 additive 字段
+// （client_model / is_auto_request / task_type / token_band），全部来自
+// telemetry.RequestLogEntry 的既有投影 —— 前端据此表达「auto 按任务选模 /
+// 内部直连 / 指定模型」三层选路与「缓存→脱敏→压缩」里的压缩档位。
+//
+// 断言三件事：
+//  1. entry 带值 ⇒ 四个字段如实上 SSE；
+//  2. entry 为 nil / 字段缺省 ⇒ 四个字段保持零值（optional 语义，
+//     前端按「未知」渲染，禁止零值冒充）；
+//  3. IsAutoRequest=false 时不序列化（omitempty），线上不会出现
+//     "is_auto_request":false 与旧客户端产生语义分歧。
+func TestLiveRequestFromTelemetry_ModelSelectionFields(t *testing.T) {
+	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{})
+	strPtr := func(s string) *string { return &s }
+	boolPtr := func(b bool) *bool { return &b }
+
+	entry := &telemetry.RequestLogEntry{
+		RequestID:     "req-auto-1",
+		ClientModel:   strPtr("glm-5.3"),
+		IsAutoRequest: boolPtr(true),
+		TaskType:      strPtr("code"),
+		TokenBand:     strPtr("forced"),
+	}
+	got := hub.LiveRequestFromTelemetry(
+		context.Background(), "req-auto-1", time.Now().UTC(), "tenant-a",
+		"glm-5.3", "glm-5.3-raw", 0, "", "zhipu",
+		"success", true, nil, nil, nil, nil, nil, nil, nil,
+		"", "", "", entry,
+	)
+	if got.ClientModel != "glm-5.3" {
+		t.Errorf("ClientModel = %q, want %q", got.ClientModel, "glm-5.3")
+	}
+	if !got.IsAutoRequest {
+		t.Error("IsAutoRequest must be true when entry says so")
+	}
+	if got.TaskType != "code" {
+		t.Errorf("TaskType = %q, want %q", got.TaskType, "code")
+	}
+	if got.TokenBand != "forced" {
+		t.Errorf("TokenBand = %q, want %q", got.TokenBand, "forced")
+	}
+
+	// 缺省路径：entry 全空 + 入参 clientModel 也为空 ⇒ 四字段零值。
+	bare := hub.LiveRequestFromTelemetry(
+		context.Background(), "req-plain", time.Now().UTC(), "tenant-a",
+		"", "", 0, "", "openai",
+		"success", true, nil, nil, nil, nil, nil, nil, nil,
+		"", "", "", &telemetry.RequestLogEntry{RequestID: "req-plain"},
+	)
+	if bare.ClientModel != "" || bare.IsAutoRequest || bare.TaskType != "" || bare.TokenBand != "" {
+		t.Errorf("absent entry fields must stay zero-value, got %+v", bare)
+	}
+
+	// omitempty 序列化：缺省字段不上线（旧客户端不会看到 "is_auto_request":false
+	// 与既有语义产生分歧；线上帧保持向后兼容的 optional 形态）。
+	blob, err := json.Marshal(bare)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{"client_model", "is_auto_request", "task_type", "token_band"} {
+		if strings.Contains(string(blob), key) {
+			t.Errorf("wire must omit %q when absent, got %s", key, blob)
+		}
+	}
+	// 反向：带值时四个键必须都在线上。
+	full, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal full: %v", err)
+	}
+	for _, key := range []string{"client_model", "is_auto_request", "task_type", "token_band"} {
+		if !strings.Contains(string(full), key) {
+			t.Errorf("wire must carry %q when present, got %s", key, full)
+		}
 	}
 }

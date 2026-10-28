@@ -24,7 +24,12 @@ type Candidate struct {
 	BillingMode       string
 	UnitPriceInPer1M  float64
 	UnitPriceOutPer1M float64
-	ContextWindow     int
+	// Currency (P1-C, audit 2026-10-28 §4) is the offer's price denomination
+	// ("USD" | "CNY"; the index scan COALESCEs to 'USD'). computeCostContext
+	// folds CNY to USD before the P75 so mixed cohorts normalize on one
+	// ruler. Empty (= zero value) means USD — old snapshots score unchanged.
+	Currency      string
+	ContextWindow int
 	Tags              []string // e.g. ["reasoning", "code", "agent"]
 	// 新增（需求 #4）：标准模型能力字段
 	ReleasedAt  *time.Time // 发布日期，用于 version_recency 评分

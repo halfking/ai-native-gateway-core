@@ -71,6 +71,10 @@ ROOT_OVERRIDE=
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 KEEP_RELEASES="${KEEP_RELEASES:-3}"
 CLEANUP_DOWNLOADS=0
+# ★ 2026-10-28（第二轮批判性审计 · F-B）：recover-switch-lock 的强制档开关。
+#   在【顶层】初始化（不是只在参数解析块里）⇒ 脚本被 source 时也不会触发
+#   `set -u` 的 unbound variable。
+RECOVER_FORCE=0
 DEPLOY_BUILD_LOCK_HELD=0
 # 本次部署已拉起、尚未晋升的候选实例端口（cleanup_deploy 兜底清理用）
 DEPLOY_CANDIDATE_PORT=
@@ -102,6 +106,8 @@ Options:
   --timeout SECS          health probe timeout (default: 60)
   --cleanup-downloads     remove the obsolete ~/Downloads/llm-gateway-files copies
                           (only after PG migration is verified). Off by default.
+  --force                 with recover-switch-lock only: remove the lock even when
+                          its holder cannot be identified (explicit operator force)
   --help
 
 Project layout:
@@ -130,6 +136,7 @@ EOF
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  # ★ RECOVER_FORCE 在【顶层】初始化（见上）⇒ 环境里预置的同名变量不会变成隐式授权。
   while [[ $# -gt 0 ]]; do
     case "$1" in
       deploy|status|verify|rollback|start|stop|logs|recover-switch-lock) ACTION=$1; shift ;;
@@ -139,10 +146,22 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       --minimal) MINIMAL_DEPLOY=1; shift ;;
       --timeout) HEALTH_TIMEOUT=${2:?--timeout requires seconds}; shift 2 ;;
       --cleanup-downloads) CLEANUP_DOWNLOADS=1; shift ;;
+      # ★ 2026-10-28（第二轮批判性审计 · F-B）：recover-switch-lock 的**强制档**。
+      #   默认档在「持有者读不出来」（元数据缺失/损坏/半截）时**拒绝**⇒ 与「残锁判定」
+      #   口径一致 ⇒ 但那样一来「元数据坏掉的锁」就没有任何恢复路径 ⇒ 机器被永久卡死
+      #   ⇒ 所以必须给一条**显式授权**的强制档（与共享部署库 unlock-local.sh --force 同构）。
+      #   ★ 只允许与 recover-switch-lock 同用（下面统一校验）⇒ 不会变成「到处都能 --force」。
+      --force) RECOVER_FORCE=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) printf 'error: unknown argument: %s\n' "$1" >&2; usage >&2; exit 64 ;;
     esac
   done
+  # ★ --force 只对 recover-switch-lock 有意义 ⇒ 与别的动作同用 ⇒ 直接拒绝（fail-closed）：
+  #   静默忽略一个「强制」标记，比报错危险得多。
+  if (( RECOVER_FORCE )) && [[ "${ACTION:-}" != "recover-switch-lock" ]]; then
+    printf 'error: --force is only valid with recover-switch-lock (got action: %s)\n' "${ACTION:-<none>}" >&2
+    exit 64
+  fi
 fi
 
 if [[ -n "$ROOT_OVERRIDE" ]]; then export LLM_GATEWAY_ROOT="$ROOT_OVERRIDE"; fi
@@ -1924,7 +1943,18 @@ start() { ensure_resources; local b="$BIN_DIR/current"; [[ -d "$b" ]] || die 'no
 #   上一轮只在审计档里写了「运维核对后手工删除」——★ 那是【声名】：仓内没有任何
 #   命令能做这件事 ⇒ 机器重启 / SIGKILL 留下的残锁会把**每一次后续部署**永久卡死。
 #   ⇒ 这里给一条**真命令**：持有者还活着 ⇒ 拒绝；持有者已死 ⇒ 清掉。
-recover_switch_lock() { dl_recover_switch_lock || die 'switch lock recovery refused'; }
+# ★ 2026-10-28（第二轮批判性审计 · F-B）：加**强制档** --force
+#   —— 默认档在「持有者读不出来」时拒绝（与残锁判定同口径），
+#   而 --force 是运维的显式授权（清掉并打印读到的元数据）。
+recover_switch_lock() {
+  # ★ bash 3.2（本机 /bin/bash）+ `set -u` 下 `"${arr[@]}"` 对空数组会报 unbound variable
+  #   ⇒ 不用数组，直接两分支。
+  if (( RECOVER_FORCE )); then
+    dl_recover_switch_lock --force || die 'switch lock recovery refused'
+  else
+    dl_recover_switch_lock || die 'switch lock recovery refused'
+  fi
+}
 stop() { dl_detect_resources; stop_instance 8782; stop_instance 8781; stop_instance 8783; }
 logs() { exec tail -f "$LOG_DIR/gateway-$(dl_active_port).log"; }
 

@@ -139,14 +139,18 @@ const GATEWAY_BOX = { xRatio: 0.05, wRatio: 0.9, hRatio: 0.62 }
 /** 大方块高度上限：三条内容带的紧包裹（浏览器实测约 200~260px，留余量）。 */
 const GATEWAY_BOX_MAX_H = 320
 /**
- * 大方块内部：标题带 + 三条流程带。带高占比按内容密度分配：
- * 进站链最多格（4 格 + 插件 chip）→ 最高；存储带两格 + 队列徽标 → 中；
- * 出站链三格（旁路）→ 与进站等高。gapPx 是带与带之间的空隙。
+ * 大方块内部：标题带 + 四条流程带（2026-10-28 选路层轮：在进站链与存储带
+ * 之间加入「选路扇出带」—— 模型选择的三个出口 auto/直连/指定；路由与
+ * 节点状态移出主链进右侧基础服务竖条，不占带）。带高占比按内容密度分配：
+ * 进站链 4 格 + 插件 chip → 最高；选路扇出带 3 张出口卡（单行）→ 最矮；
+ * 存储带 2 格 + 队列徽标 → 中；出站链 3 格（旁路）→ 与进站等高。
+ * gapPx 是带与带之间的空隙。
  */
-const GATEWAY_LANES: Array<{ lane: 'in' | 'store' | 'out'; ratio: number }> = [
-  { lane: 'in', ratio: 0.36 },
-  { lane: 'store', ratio: 0.28 },
-  { lane: 'out', ratio: 0.36 },
+const GATEWAY_LANES: Array<{ lane: 'in' | 'select' | 'store' | 'out'; ratio: number }> = [
+  { lane: 'in', ratio: 0.3 },
+  { lane: 'select', ratio: 0.16 },
+  { lane: 'store', ratio: 0.2 },
+  { lane: 'out', ratio: 0.34 },
 ]
 const GATEWAY_BOX_HEADER = 26
 const GATEWAY_LANE_GAP = 6

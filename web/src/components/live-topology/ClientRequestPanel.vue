@@ -16,7 +16,7 @@ import type { ClientSummary, PanelEntry } from '../../composables/useLiveTopolog
 import { clientDisplayName } from '../../lib/liveTopologyGraph'
 import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
 import { useNewArrivals } from '../../composables/useNewArrivals'
-import { CaretLeft, CaretRight, TopRight } from '@element-plus/icons-vue'
+import { CaretLeft, CaretRight, TopRight, ArrowRight } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   summaries: ClientSummary[]
@@ -144,7 +144,20 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
               <span class="cp__latency">{{ latency(entry.latencyMs) }}</span>
             </span>
             <span class="cp__line cp__line--sub">
-              <span class="cp__model">{{ entry.model }}</span>
+              <!-- auto 请求：点名的是 auto，最终模型由网关按任务选出 —— 面板上
+                   用「auto → 最终模型」把这一步表达出来（箭头用 SVG 图标：
+                   行是 button，V3 门禁按钮位的 → 字形）。 -->
+              <span class="cp__model">
+                <template v-if="entry.isAuto">
+                  <span
+                    class="cp__auto-chip"
+                    :data-testid="`auto-chip-${entry.requestId}`"
+                    :title="entry.taskType ? `${t('liveTopology.panel.autoChip')} · ${entry.taskType}` : t('liveTopology.panel.autoChip')"
+                  >auto</span>
+                  <ArrowRight class="cp__auto-arrow" aria-hidden="true" />
+                </template>
+                <span class="cp__model-name">{{ entry.model }}</span>
+              </span>
               <span class="cp__provider">{{ entry.provider }}</span>
             </span>
             <span v-if="entry.errorKind" class="cp__error">{{ entry.errorKind }}</span>
@@ -217,6 +230,11 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
   margin: 0 0 4px;
   padding: 0;
   list-style: none;
+  /* 聚合摘要限高可滚（≈4 行）：面板高度受限时（桌面收进视口 / 手机 70vh 帽），
+     8 行摘要会把下面的请求明细挤到只剩一两行 —— 明细才是这个面板的主体。
+     数据没删：滚动能看到全部 8 行，与表头计数（8 / N）对得上账。 */
+  max-height: 176px;
+  overflow-y: auto;
 }
 
 .cp__summary-row {
@@ -372,6 +390,44 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
   flex: 1;
 }
 
+/* auto 请求的「auto → 最终模型」前缀（2026-10-28 选路层轮）。
+   chip 是产品术语（model=auto 的字面值，不进语言包）；箭头是 SVG 图标 ——
+   按钮位禁用 → 字形（V3），且裸 <svg viewBox> 必须显式定尺寸。 */
+.cp__model {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.cp__auto-chip {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--kx-primary);
+  border: 1px solid color-mix(in srgb, var(--kx-primary) 45%, var(--kx-border));
+  background: color-mix(in srgb, var(--kx-surface) 82%, transparent);
+}
+
+.cp__auto-arrow {
+  flex: none;
+  color: var(--kx-muted);
+}
+
+.cp__auto-arrow > svg {
+  width: 10px;
+  height: 10px;
+}
+
+.cp__model-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cp__error {
   font-size: 11px;
   color: var(--kx-danger);
@@ -442,4 +498,13 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
    尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
 .cp__open > svg { width: 11px; height: 11px; }
 .cp__page-btn > svg { width: 10px; height: 10px; }
+
+/* ── 手机（≤768，2026-10-28 手机观察轮）：行是触控目标 ──
+   抬高行高到 44px、加宽 ↗ 按钮的命中区（padding 0 4px → 0 10px），
+   手指才点得中；桌面鼠标不受影响。 */
+@media (max-width: 768px) {
+  .cp__row { min-height: 44px; }
+
+  .cp__open { padding: 0 10px; }
+}
 </style>

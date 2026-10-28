@@ -57,11 +57,13 @@ export default {
     showInvalid: '显示无效节点',
   },
   rail: {
-    title: '供应商当天统计',
+    title: '当天汇总',
     dayUtc: '{day}（UTC 日桶）',
     watermark: '数据水位 {time}',
-    requests: '请求',
-    tokens: 'Token',
+    providerGroup: '供应商',
+    modelGroup: '模型',
+    toggle: '收起/展开 {group}',
+    cache: '缓存',
     unknownProvider: '未知供应商',
     empty: '当天暂无流量',
     degraded: '聚合统计尚未初始化，数据不可用',
@@ -98,22 +100,38 @@ export default {
     title: '网关核心',
     cache: '缓存',
     sanitize: '脱敏',
-    route: '路由',
+    compress: '压缩',
+    modelSelect: '模型选择',
+    route: '路由管理',
     nodeState: '节点状态管理',
     sessionFile: '会话数据文件存储',
     sessionWrite: '数据会话写入',
     errorRecord: '错误记录',
     probeTask: '探测任务',
     taskDetect: '任务识别',
+    infra: '基础服务',
   },
-  /** 三条流程带（2026-10-18 owner 拍板：进/出双链路 + 存储转发）。 */
+  /** 流程带（2026-10-18 owner 拍板：进/出双链路 + 存储转发；
+   *  2026-10-28 选路层轮：新增「选路扇出带」）。 */
   lane: {
     in: '进：请求链',
+    select: '选：模型去向',
     out: '出：响应链',
     store: '存储转发',
     toProvider: '派发供应端',
     fromProvider: '供应端返回',
     queue: '转发队列 {n}',
+  },
+  /** 选路扇出带的三个出口（模型选择这一步的并行去向）。 */
+  selection: {
+    auto: 'auto 按任务选模',
+    direct: '内部直连模型',
+    explicit: '指定模型',
+    unmeasured: '内部直连未测量',
+  },
+  /** 供应端节点的「内部直连」徽标（providers.kind='local'）。 */
+  provider: {
+    direct: '直连',
   },
   node: {
     requests: '{n} 次请求',
@@ -137,6 +155,7 @@ export default {
     empty: '窗口内暂无请求',
     page: '第 {page}/{pages} 页',
     total: '共 {n} 条',
+    autoChip: '客户端请求 auto，最终模型由网关按任务选出',
   },
   zoom: {
     title: '请求详情',
