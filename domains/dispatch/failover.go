@@ -325,9 +325,16 @@ func (p *Pipeline) scheduleSameCredRetry(qr *QueuedRequest, out ForwardOutcome, 
 		// P0-C retry budget runs BEFORE any event emission: in enforce mode an
 		// over-budget refusal falls through to the sibling ladder without
 		// emitting retry_scheduled at all (nothing was scheduled).
+		// P0-C 验收轮修正（2026-10-28）：首版此处 return p.tryEnqueueCred(cred,
+		// qr) —— 拒绝后又同凭据立即入队，梯子结构与放行完全相同 ⇒ 仿真实测
+		// 总上游尝试次数 off=shadow=enforce=600，预算 enforce 零效果（方案
+		// 原文「超预算的重试直接走 failover 换凭据而不是等退避」与
+		// observeRetryBudget 自己的注释说的都是落到换凭据梯子）。
+		// return false ⇒ 调用方落入既有 switch-credential 梯子（含队列满
+		// 同款路径）：超预算重试不再等退避也不在同凭据上继续烧尝试。
 		if !p.observeRetryBudget(qr) {
 			qr.notifyDispatch(p.retryNotice(qr, out, err, time.Time{}, errorKind))
-			return p.tryEnqueueCred(cred, qr)
+			return false
 		}
 		// Timed retry: registry parks back to pending with retry_at
 		// (spec §6), the event carries retry_at, and the scheduler re-injects
