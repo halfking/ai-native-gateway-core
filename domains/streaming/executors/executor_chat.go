@@ -3345,6 +3345,17 @@ func prepareRequestBodyWithNative(params *ExecParams, cand provider.Candidate, n
 			params.Transform.StripRequestFields,
 			cand.Protocol,
 		)
+	} else if params.Transform != nil && nativePair && len(params.Transform.StripRequestFields) > 0 {
+		// 原厂直通有意绕过 admin 配置的 strip 列表（用户要求「所有参数保留，
+		// 出错才回退」）。当前仓内 matrix 默认无 strip（data/
+		// request_transform_matrix.yaml 不存在 ⇒ 默认规则）；若运营为某客户端
+		// 配了 strip，这里是它对原生对失效的唯一痕迹。
+		slog.Debug("native pair bypasses transform strip_request_fields",
+			"request_id", params.RequestID,
+			"catalog_code", cand.CatalogCode,
+			"raw_model", cand.RawModel,
+			"stripped_fields", strings.Join(params.Transform.StripRequestFields, ","),
+		)
 	}
 	if !transformation.IsToolUseCapable(cand.CatalogCode, cand.Protocol) && transformation.NeedsToolCollapse(bodyBytes) {
 		bodyBytes = transformation.CollapseToolHistory(bodyBytes)

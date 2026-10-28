@@ -12413,5 +12413,26 @@ index b953a6f03..555ef83c4 100644
   ④ 「同厂上游也对自家参数有约束」的反向情形未处理（会多一跳 400 再回退，可恢复）；
   ⑤ **未在 211 生产跑端到端**（本轮读数全来自仓内单测 + 假上游夹具）
  ⇒ 生产验证需部署后用 zcode 实流量确认。
+- ★★★ **批判式审计轮（同一日第二轮）：把「只是声明、未验证」的点逐条核查** ——
+  ⇒ ★ **最重要的发现**：★ `docs/client-formats/minimax-code.md` 白纸黑字
+  **MiniMax Code 默认走 Anthropic Messages 协议** ⇒ ★★ **上一轮的端到端测的不是
+  minimax-code 的主路径**（它测的是 openai 入向 → legacy 路径）⇒ **主路径正是
+  anthropic 入向 → IR 分支** ⇒ 本轮补测该路径（正臂 Extensions 原样 + thinking
+  渲染为 glm 方言 / 对照臂方言守卫仍裁）⇒ **M7 变异臂检出**。
+  ⇒ ★ **靶点选错两处（都当场修）**：① 对照臂第一版选 `moderation`——**裁不掉**
+  ⇒ 根因是 paramreg 的**方言继承**（`BaseProtocol(glm)=openai-chat` ⇒ glm 认识
+  openai-chat 协议级字段）⇒ 换 `search_parameters`（grok 私有）后对照臂红
+  ⇒ ★★ **通用式：选「必被裁」的靶字段要先查方言继承**；
+  ② 上一轮声称「`NormalizeOpenAITools` 是结构性的」**未给证据** ⇒ 实测：canonical
+  工具也会被重建（只留 `type`+`function`）⇒ **对三条原生对无损**（openai 形态工具
+  顶层只有这两个键），anthropic 形态必须转换 ⇒ 既有窄盲区（工具顶层非标准键被丢）
+  **对所有客户端一致、非本轮引入** ⇒ 不改、登记为 RISK-2。
+  ⇒ ★ **`max_tokens` 不可剥**（`internal/reqprobe` 的 `coreNeverStrip`）⇒ deepseek-code
+  发超限值时 **400 无回退通道** ⇒ 诚实失败 ⇒ 保持透传（用户显式要求）⇒ 登记 RISK-1。
+  ⇒ ★ **admin strip 配置张力**：native 对绕过 `strip_request_fields`（当前仓内 matrix
+  **零 strip** ⇒ 无实际冲突）⇒ 绕过非空列表时**加 `slog.Debug` 留痕** ⇒ 登记 RISK-3。
+  ⇒ ★ **变异台累计 7 臂全检出**（M7 = executor IR 盖章）；★ 审计档补 **§9 核查清单
+  + §10 遗留风险（8 条，含量化触发条件/后果/处置/缓解，并列出「已核实为不成立」的
+  3 条不登记项）**。
 ⇒ 审计档 `docs/audit/2026-10-28-原厂工具与原厂模型直连全参数直通轮.md`（§1~§8，
   含「全参数透传 vs 出错回退」两条独立证据链与 6 臂变异台）。
