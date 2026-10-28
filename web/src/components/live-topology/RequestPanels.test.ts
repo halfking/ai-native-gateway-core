@@ -29,7 +29,6 @@ import ClientRequestPanel from './ClientRequestPanel.vue'
 import ProviderResponsePanel from './ProviderResponsePanel.vue'
 import RequestDetailView from './RequestDetailView.vue'
 import RequestZoomPanel from './RequestZoomPanel.vue'
-import SummaryHeader, { type SummaryRow } from './SummaryHeader.vue'
 import type { PanelEntry } from '../../composables/useLiveTopology'
 import type { ActionEvent } from '../../composables/liveStreamStore'
 import zhCN from '../../locales/zh-CN/liveTopology'
@@ -59,18 +58,6 @@ function entry(over: Partial<PanelEntry> = {}): PanelEntry {
     failureStage: null,
     sessionId: 's-1',
     requestType: 'chat',
-    ...over,
-  }
-}
-
-/** SummaryHeader 的行夹具（3/4 成功 = 75%，沿用旧摘要断言的口径）。 */
-function row(over: Partial<SummaryRow> = {}): SummaryRow {
-  return {
-    name: 'claude-code',
-    requests: 4,
-    success: 3,
-    failure: 1,
-    inFlight: 0,
     ...over,
   }
 }
@@ -450,70 +437,3 @@ describe('RequestDetailView', () => {
   })
 })
 
-describe('SummaryHeader（2026-10-28 汇总上移轮：头部三块汇总）', () => {
-  it('renders three blocks — clients / providers / models — from their own props', () => {
-    const wrapper = mount(SummaryHeader, {
-      props: {
-        clients: [row({ name: 'Claude Code' })],
-        providers: [row({ name: 'deepseek', requests: 9, success: 9 })],
-        models: [row({ name: 'glm-4.5', requests: 7, success: 6 })],
-      },
-      global: { plugins: [i18n] },
-    })
-    expect(wrapper.get('[data-testid="summary-block-clients"]').text()).toContain('客户端')
-    expect(wrapper.get('[data-testid="summary-block-clients"]').text()).toContain('Claude Code')
-    expect(wrapper.get('[data-testid="summary-block-providers"]').text()).toContain('供应商')
-    expect(wrapper.get('[data-testid="summary-block-providers"]').text()).toContain('deepseek')
-    expect(wrapper.get('[data-testid="summary-block-models"]').text()).toContain('模型')
-    expect(wrapper.get('[data-testid="summary-block-models"]').text()).toContain('glm-4.5')
-  })
-
-  it('computes the success rate from the aggregate (3/4 = 75%), not a made-up number', () => {
-    // 沿用旧面板摘要的断言口径：成功率按聚合口径算
-    const wrapper = mount(SummaryHeader, {
-      props: { clients: [row()], providers: [], models: [] },
-      global: { plugins: [i18n] },
-    })
-    expect(wrapper.get('.sumhead__stats').text()).toContain('75%')
-  })
-
-  it('★ block header shows "shown / total" when truncated, plain total when it fits', () => {
-    // 截断计数纪律（同旧面板表头）：只画前 4 行时表头必须写「4 / 12」——
-    // 只写总数 = 宣传不存在的行；只写行数 = 藏起真实总数。
-    const many = Array.from({ length: 12 }, (_, i) => row({ name: `c-${i}` }))
-    const wrapper = mount(SummaryHeader, {
-      props: { clients: many, providers: [row({ name: 'p' })], models: [] },
-      global: { plugins: [i18n] },
-    })
-    const clientsBlock = wrapper.get('[data-testid="summary-block-clients"]')
-    expect(clientsBlock.findAll('.sumhead__row')).toHaveLength(4)
-    expect(clientsBlock.get('.sumhead__count').text().trim()).toBe('4 / 12')
-    expect(clientsBlock.get('.sumhead__count').text().trim()).not.toBe('12')
-    // 恰好放得下（1 项 < 4）⇒ 显示真实总数
-    expect(wrapper.get('[data-testid="summary-block-providers"] .sumhead__count').text().trim()).toBe('1')
-  })
-
-  it('marks in-flight traffic and never fakes a 0% rate for zero requests', () => {
-    const wrapper = mount(SummaryHeader, {
-      props: {
-        clients: [row({ name: 'a', inFlight: 2 })],
-        providers: [row({ name: 'p', requests: 0, success: 0 })],
-        models: [],
-      },
-      global: { plugins: [i18n] },
-    })
-    expect(wrapper.get('[data-testid="summary-block-clients"] .sumhead__stats').text()).toContain('2↻')
-    // 没有请求 = 没有成功率（—），不是 0%（假零禁令）
-    expect(wrapper.get('[data-testid="summary-block-providers"] .sumhead__stats').text()).toContain('—')
-    expect(wrapper.get('[data-testid="summary-block-providers"] .sumhead__stats').text()).not.toContain('0%')
-  })
-
-  it('says "no requests" for an empty dimension instead of an empty box', () => {
-    const wrapper = mount(SummaryHeader, {
-      props: { clients: [], providers: [], models: [row({ name: 'm' })] },
-      global: { plugins: [i18n] },
-    })
-    expect(wrapper.get('[data-testid="summary-block-clients"]').text()).toContain('窗口内暂无请求')
-    expect(wrapper.get('[data-testid="summary-block-clients"] .sumhead__count').text().trim()).toBe('0')
-  })
-})

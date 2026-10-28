@@ -2,8 +2,11 @@
 //
 // 职责：把 live-stream SSE 的请求/节点帧 + 本地过滤态，编排成
 // 「图（纵向四层）+ 左右两个请求面板 + 网关核心模块统计」共用的同一份数据。
-// **关键约束**：图、左面板、右面板、左栏当天统计必须收敛到同一个过滤子集，
+// **关键约束**：图、左面板、右面板、头部统计面板必须收敛到同一个过滤子集，
 // 否则用户会看到「图里没有、右面板却有」的矛盾画面。
+// （2026-10-29 单一统计轮：原 clientSummaries/providerSummaries/modelSummaries
+// 三块 SSE 聚合随 SummaryHeader 退役 —— 头部统计由 StatsPanel 的 DB 口径供数，
+// 面板组件不读这里的聚合层。）
 //
 // 这里不碰 DOM、不碰 Canvas —— 渲染在组件里，纯函数在 lib/。
 
@@ -72,26 +75,6 @@ export interface PanelEntry {
   clientProtocol?: string
 }
 
-export interface ClientSummary {
-  client: string
-  requests: number
-  success: number
-  failure: number
-  inFlight: number
-  tokens: number
-  lastTs?: string
-  topModel: string
-}
-
-/** 头部汇总条的通用行（客户端/供应商/模型三块共用同一形状）。 */
-export interface DimensionSummary {
-  key: string
-  requests: number
-  success: number
-  failure: number
-  inFlight: number
-}
-
 export function useLiveTopology(opts?: { now?: () => number }) {
   const clock = opts?.now ?? (() => Date.now())
   const filters = ref<TopoFilters>({ ...DEFAULT_TOPO_FILTERS })
@@ -124,68 +107,6 @@ export function useLiveTopology(opts?: { now?: () => number }) {
 
   const options = computed(() =>
     filterOptions(filteredRequests.value as never, now(), filters.value.windowMs),
-  )
-
-  /** 头部汇总条（2026-10-28 汇总上移轮）：客户端/供应商/模型三块聚合。
-   *  与图、两栏共用同一过滤子集（本文件顶部的关键约束）。
-   *  ★ 不在上游截断 —— 「渲染了几行 / 总共几项」的诚实计数由展示层做，
-   *    上游截断会让真实总数永远不可见（表头宣传不存在的行的镜像问题）。 */
-  const clientSummaries = computed<ClientSummary[]>(() => {
-    const map = new Map<string, ClientSummary & { last: number; modelCount: Map<string, number> }>()
-    for (const req of filteredRequests.value) {
-      const key = clientKeyOf(req as never)
-      let entry = map.get(key)
-      if (!entry) {
-        entry = { client: key, requests: 0, success: 0, failure: 0, inFlight: 0, tokens: 0, topModel: '', last: 0, modelCount: new Map() }
-        map.set(key, entry)
-      }
-      entry.requests += 1
-      if (req.status === 'success') entry.success += 1
-      if (req.status === 'failure' || req.status === 'rate_limited') entry.failure += 1
-      if (req.status === 'in_progress') entry.inFlight += 1
-      entry.tokens += req.total_tokens ?? 0
-      const ts = req.ts ? Date.parse(req.ts) : 0
-      if (Number.isFinite(ts) && ts > entry.last) {
-        entry.last = ts
-        entry.lastTs = req.ts
-      }
-      const model = modelKeyOf(req as never)
-      entry.modelCount.set(model, (entry.modelCount.get(model) ?? 0) + 1)
-    }
-    return [...map.values()]
-      .map(({ last, modelCount, ...rest }) => ({
-        ...rest,
-        topModel: [...modelCount.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? '',
-      }))
-      .sort((a, b) => b.requests - a.requests || a.client.localeCompare(b.client))
-  })
-
-  /** 供应商/模型聚合：keyOf 返回空串的请求不进块（如网关侧拒掉的请求
-   *  没有供应商 —— 它在客户端块里看得到，硬塞进供应商块只会造一个假桶）。 */
-  function summarizeBy(keyOf: (req: LiveRequest) => string): DimensionSummary[] {
-    const map = new Map<string, DimensionSummary>()
-    for (const req of filteredRequests.value) {
-      const key = keyOf(req)
-      if (!key) continue
-      let entry = map.get(key)
-      if (!entry) {
-        entry = { key, requests: 0, success: 0, failure: 0, inFlight: 0 }
-        map.set(key, entry)
-      }
-      entry.requests += 1
-      if (req.status === 'success') entry.success += 1
-      if (req.status === 'failure' || req.status === 'rate_limited') entry.failure += 1
-      if (req.status === 'in_progress') entry.inFlight += 1
-    }
-    return [...map.values()].sort((a, b) => b.requests - a.requests || a.key.localeCompare(b.key))
-  }
-
-  const providerSummaries = computed<DimensionSummary[]>(() =>
-    summarizeBy((req) => (req.provider_code ?? '').trim()),
-  )
-
-  const modelSummaries = computed<DimensionSummary[]>(() =>
-    summarizeBy((req) => modelKeyOf(req as never)),
   )
 
   /** 左面板的逐条请求（最新在前；面板内部按 50/页翻页，这里不再预截断）。 */
@@ -418,9 +339,6 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     filteredRequests,
     graph,
     options,
-    clientSummaries,
-    providerSummaries,
-    modelSummaries,
     clientRequests,
     providerResponses,
     gatewayStats,
