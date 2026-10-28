@@ -12341,3 +12341,70 @@ index b953a6f03..555ef83c4 100644
 >   **独立一轮**（带变更点清单），**勿批量格式化**；★ ③ `r98` 分支与两个 stash
 >   ⇒ **待属主会话收口**（本轮只记录不动）；★ ④ ★ **建议优先**：给「跨文件同型
 >   断言」做一道**同步门**（★ 难点：跨包无共同事实源 ⇒ **必须先指定事实源**）。
+
+## ㉟ 原厂直通轮（2026-10-28）· 原厂工具↔原厂模型直连全参数直通（★ 「全参数透传」与「出错回退」必须分别有证据；★ 跳过一门 = 在【每一处生效点】都跳过）
+
+> **取号说明**：本轮取 **㉟**（远端 `origin/main` 已推进到 **㉞** = R173 轮 ⇒ 让号）。
+> —— ★★ 全参数透传与出错回退是两件事；★★ paramguard 有**两处**生效点，漏一处等于没跳；★★ 变异臂首跑不红要先问靶点、再问门
+
+> **一句话**：zcode / minimax-code / deepseek-code 是各自厂商官方的编码智能体，
+> 网关此前在【首发】阶段就有 **5 处主动改写/剥离**客户端参数（+ IR 层 Extensions
+> 方言裁剪）⇒ 原厂工具的私有参数被网关改写后再发给原厂模型。
+> 本轮：原厂对首发**一字不改**，上游 4xx 才剥参回退到必要参数。
+
+- ★★★ **本轮最值钱的一处（用户目标本身就拆出了两半）**：「保留所有参数」与
+  「出错才回退」是**两件独立的事**，必须**分别有证据** ⇒ 只做前半 = 参数删了没回退；
+  只做后半 = 原厂参数照样被改写 ⇒ ★ 本轮两条断言各有一条：
+  端到端假上游夹具里，**第一发** body 含客户端原参数（含被上游点名的那一个），
+  **第二发**（400 后）该参数消失而 `messages` 保留。
+- ★★ **链路盘点（首发改写共 5 处 + IR 1 处）**：① transform 白名单 strip
+  ② 能力清洗器（minimax 简化工具 / deepseek 砍 `max_tokens` 到 8192）
+  ③ paramguard（GLM `tool_choice`→`auto` / MiniMax `n`→1 / `reasoning_effort` 钳制）
+  ④ **尾段 paramguard第二次应用**（IR 路径不经过 ③ ⇒ 尾段才是真生效点之一）
+  ⑤ 学习式预剥离（24h 记忆）+ 拒识记忆预剥离；IR 层 Extensions 方言裁剪/翻译
+  （实测 MiniMax 目标上 `thinking{type:enabled}` 被改写成 `{"type":"adaptive"}`、
+  `budget_tokens` 丢弃 ⇒ **网关在改写原厂自己的参数**）。
+  ⇒ ★ **回退路径本来就有**（`reqprobe` 上游 4xx ⇒ 点名剥参重试，最多 3 轮，
+  剥到骨架参数）⇒ **缺的只是「首发不要被主动改写」**。
+- ★★ **方案裁决（用户给了两个方案）**：★ 取**内置映射表**
+  （`internal/nativepair`：zcode→glm / minimax-code→minimax /
+  deepseek-code→deepseek；模型名按「前缀段」匹配、容忍 `vendor/name` 宿主前缀）；
+  ★ **不取**「DB 加属性」——★ **落点错**：厂商归属是**模型**的属性，而「原厂智能体
+  名称」是**客户端**的属性（zcode 一个客户端可配多厂模型）⇒ 塞进
+  `provider_catalog`/`models_canonical` 都会造成同一客户端在 N 行里各写一遍；
+  ★ 且 `provider_catalog` **没有 admin 写路径**（只读 API，写入仅靠迁移/种子）；
+  ★ 且「自动对应」省不掉**客户端名归一化**（`internal/clienttype`，别名/大小写/头
+  三形态）⇒ DB 化只省 3 行代码、多付三面工程；
+  ★ **仓内同款先例**：厂商归属本来就是内置默认表（`internal/reasoncap` 的
+  `reasoning_defaults.go`、`catalog/display.go` 的 `nameVendorPrefixes`）。
+  ⇒ ★ **将来正确落点**：原生对多到需要运营自助时，建**独立新表**（client→vendor），
+  `nativepair` 读「内置 ∪ DB」（DB 优先），本轮接口不用改。
+- ★★ **判定口径（两条容易做错的地方）**：① **按【候选的出站模型】判定**，不按
+  客户端请求的模型名 ⇒ zcode 首发打 GLM 命中（直通）、失败转移到 deepseek 候选时
+  **不命中**（不粘到不相干的厂商上）；② **弱名才用弱证据**：客户端身份取
+  `ClientType` → 头/UA → body 标记，**仅弱名（空/unknown）才采信 body 标记**
+  （`metadata.zcode_version` 等）⇒ 强名冲突（头说 cursor、body 带 zcode 标记）
+  **保守判非原生对**。
+- ★★★ **变异台 5 臂全检出**（注入→跑→还原→md5 逐字一致）：
+  M1 映射表恒 false / M2 IR `NativePassthrough` 分支失效 / M3 尾段 paramguard
+  跳过被摘 / M4 白名单 strip 跳过被摘 / M5 学习式预剥离跳过被摘。
+  ⇒ ★★ **M3 首跑未被检出**：靶点只覆盖了请求体准备、没覆盖**尾段**
+  （IR 路径不走前者）⇒ ★★★ **通用式：★ 变异臂首跑不红要先问【靶点】再问【门】**
+  ⇒ 补断言（客户端带显式 `tool_choice`）后 M3 检出
+  ⇒ ★ **「跳过一门」= 在【每一处生效点】都跳过**，否则等于没跳。
+- ★★ **非原生对零变化（逐条对拍）**：所有新增分支都在 `!nativePair` 门内；
+  历史三参签名（`finalizeOpenAIUpstreamBody` / `prepareRequestBody` /
+  `applyOpenAITailTransforms`）转发 Native 变体且传 `false` ⇒ 代码路径逐字等价；
+  ★ 既有夹具（GLM tool_choice 归一 / minimax n=1）本轮后**仍全绿**（自身即证据）。
+- ★★ **读数**：`go build ./...` ✔；`internal/ir` / `internal/nativepair` /
+  `internal/paramguard` / `internal/paramreg` / `internal/reqprobe` /
+  `domains/transformation` / `domains/streaming/...` **全 PASS**；
+  本轮 4 个新测试文件；提交 `1a87b5599`。
+- ★★ **本轮明确没做（如实登记）**：① **Anthropic 协议腿未接直通**
+  （`executor_anthropic.go`；用户举例的三对都是 chat 面 ⇒ 不无证据扩张）；
+  ② `capabilityscore` 等其它能力层的原厂豁免未审；③ DB 属性方案未落地（已裁决）；
+  ④ 「同厂上游也对自家参数有约束」的反向情形未处理（会多一跳 400 再回退，可恢复）；
+  ⑤ **未在 211 生产跑端到端**（本轮读数全来自仓内单测 + 假上游夹具）
+ ⇒ 生产验证需部署后用 zcode 实流量确认。
+⇒ 审计档 `docs/audit/2026-10-28-原厂工具与原厂模型直连全参数直通轮.md`（§1~§8，
+  含「全参数透传 vs 出错回退」两条独立证据链与 5 臂变异台）。
