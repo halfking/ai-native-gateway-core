@@ -1257,6 +1257,13 @@ var sessionTurnsOriginStageCheck914 []byte
 //go:embed embeddata/startup/914_session_turns_origin_stage_check.down.sql
 var sessionTurnsOriginStageCheck914Down []byte
 
+// ★ 916（R178 轮）：会话族 api_key_id **归一表达式**的 (CASE, ts DESC) 索引。
+// ★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带 dbinit:no-transaction 标记 ⇒ applySQL 不加 --single-transaction。
+//go:embed embeddata/startup/916_session_turns_api_key_ts_index.sql
+var sessionTurnsAPIKeyTSIndex916 []byte
+
+//go:embed embeddata/startup/916_session_turns_api_key_ts_index.down.sql
+var sessionTurnsAPIKeyTSIndex916Down []byte
 //go:embed embeddata/startup/915_recent_cache_hit_rate.sql
 var recentCacheHitRate915 []byte
 
@@ -1637,6 +1644,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/913_maas_monthly_bills_coupons.down.sql":                              maasMonthlyBillsCoupons913Down,
 	"startup/914_session_turns_origin_stage_check.sql":                            sessionTurnsOriginStageCheck914,
 	"startup/914_session_turns_origin_stage_check.down.sql":                       sessionTurnsOriginStageCheck914Down,
+	"startup/916_session_turns_api_key_ts_index.sql":                              sessionTurnsAPIKeyTSIndex916,
+	"startup/916_session_turns_api_key_ts_index.down.sql":                         sessionTurnsAPIKeyTSIndex916Down,
 	"startup/915_recent_cache_hit_rate.sql":                                       recentCacheHitRate915,
 	"startup/915_recent_cache_hit_rate.down.sql":                                  recentCacheHitRate915Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,

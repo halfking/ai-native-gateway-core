@@ -362,19 +362,50 @@ func (d *Dispatcher) markFailed(ctx context.Context, ex execer, id int64, newAtt
 	}
 }
 
-// backpressureRetryCap caps the retry delay for destination-backpressure
-// failures. asm 的就绪门抖动以分钟计（实测突发 1~5 分钟），固定 64s 的
-// 再试节奏保证：asm 一恢复就绪，队列在一分钟内开始排空。
-const backpressureRetryCap = 64 * time.Second
+// 背压退避：8s 起、每次 ×2、封顶 10 分钟。
+//
+// 2026-10-28 生产实测（acc-pg17）修订：固定 64s 在长窗口背压下会变成
+// 「永久锤击」——asm 连续 503 约 10 小时后积压 ~3.9k 条，3904/64s ≈
+// 61 req/s 的 HTTP + 每条一个 DB 事务 + 每秒 ~60 条 WARN 日志，全部打在
+// 一个本就在拒绝的目的地上；而成功速率（~880/h）低于事件产生速率
+// （~1400/h），积压还在涨。指数退避把稳态压力从 61 req/s 衰减到
+// ~6.5 req/s（3904/600s），asm 真正恢复后整个积压 ≤ 10 分钟内排空
+// （每条事件的下一次重试至多落后一个 cap），对「事件到达即消费」的
+// request.completed 语义足够及时。
+const (
+	backpressureRetryFloor = 8 * time.Second
+	backpressureRetryCap   = 10 * time.Minute
+)
+
+// backpressureBackoff 由 attempts 推导本次退避时长：floor × 2^(attempts-1)
+// 截到 cap。attempts 是历史累计值（含固定 64s 时代），老积压事件首拍即落
+// cap —— 正是想要的「长背压下先安静」；移位先钳位防大 attempts 溢出。
+func backpressureBackoff(attempts int) time.Duration {
+	shift := attempts - 1
+	if shift < 0 {
+		shift = 0
+	}
+	if shift > 20 {
+		shift = 20
+	}
+	backoff := backpressureRetryFloor << uint(shift)
+	if backoff > backpressureRetryCap || backoff <= 0 {
+		return backpressureRetryCap
+	}
+	return backoff
+}
 
 // markBackpressure 是 markFailed 的「永不 DLQ」变体：目的地背压（asm 就绪门
 // 抖动 503）不消耗 maxAttempts 预算 —— 事件本身完全合法，唯一的问题是
-// 「目的地暂时关门」。status 保持 'failed'、64s 封顶退避无限重试；
-// attempts 仍递增（可观测性），但本函数**绝不**调 markDLQ。
+// 「目的地暂时关门」。status 保持 'failed'、按 attempts 指数退避（封顶
+// backpressureRetryCap）无限重试；attempts 仍递增（可观测性），但本函数
+// **绝不**调 markDLQ。
 // 若 asm 永久宕机，行以 failed 累积（与 DLQ 同样占表、同样可见），
 // 但 asm 恢复后自动排空 —— 这正是 outbox「至少一次」该有的语义。
+// （asm 的 Retry-After: 5 是「单事件可立即重试」的地板提示，不构成对
+// 数千条积压的重放时间表 —— 按它重试等于把锤击恢复到 61 req/s。）
 func (d *Dispatcher) markBackpressure(ctx context.Context, ex execer, id int64, newAttempts int, errMsg string) {
-	backoff := backpressureRetryCap
+	backoff := backpressureBackoff(newAttempts)
 	const query = `
 		UPDATE outbox_events
 		SET status = 'failed', attempts = $1, last_error = $2,
