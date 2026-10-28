@@ -208,9 +208,16 @@ guards-shell: ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描�
 	@bash scripts/guards/check-shell-fullwidth-var.sh
 
 # scripts/ursmcheck 的 94 个门文件（≈5~6 分钟，比主门慢一个量级 ⇒ 独立 timeout）
+# ★★ 2026-10-28 r1044 轮：慢门预算由 900s 提到 **1800s**（★ 与 verify.sh 的
+#   ★ 全量测试腿**同一档** ⇒ ★★ 两处必须同步改）。
+#   依据：★ 仓内自记该包实测 **840.111s / timeout 900s**（⇒ 当时余量只剩 ~60s，
+#   ★ 见 scripts/ursmcheck/shell_fullwidth_var_gate_test.go）；★ 本轮隔离实测
+#   ★ **1011.711s**（★ load 26.8/30.2/36.4 ⇒ 上界）⇒ ★★ **越过了 900s** ⇒ ⇒
+#   ★★ 超时被 SIGKILL ⇒ ★★ `testing` 的 panic 在 alarm goroutine 里 ⇒ 其它 goroutine
+#   ★★ 的 `defer` 不执行 ⇒ ★★ **被跟踪的台账静默留空** ⇒ ⇒ 预算必须给足。
 .PHONY: guards-ursmcheck
 guards-ursmcheck: ## scripts/ursmcheck 全量门（94 个门文件；CI 上此前从未执行过）
-	$(GO) test $(GUARD_PACKAGES_SLOW) -count=1 -timeout=900s
+	$(GO) test $(GUARD_PACKAGES_SLOW) -count=1 -timeout=1800s
 
 # R48-B1 后续（R48 报告 §五-3）：installer 是独立 go.mod，根目录
 # `go test ./...` 永远不跑它的门——tsv 派生清单缺 831 的红因此在
