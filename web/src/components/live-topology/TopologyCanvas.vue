@@ -29,6 +29,7 @@ import {
   GATEWAY_CORE_ID,
   type GatewayCoreBox,
   type GatewayModuleKey,
+  type ModelSelectionStats,
   type TopoLayoutEdge,
   type TopoLayoutNode,
   type TopoNode,
@@ -50,6 +51,12 @@ const props = defineProps<{
   plugins?: TopoPluginChip[]
   /** 转发队列深度（存储转发带徽标；null = 未上报）。 */
   queueDepth?: number | null
+  /** 选路扇出统计（大方块选路扇出带）。 */
+  selection?: ModelSelectionStats | null
+  /** 内部直连分桶是否完成测量（false = 大方块标注「未测量」）。 */
+  directMeasured?: boolean
+  /** 内部直连供应商 code 集合（providers.kind='local'）；供应端节点卡据此挂直连徽标。 */
+  localProviderCodes?: ReadonlySet<string>
 }>()
 
 const emit = defineEmits<{
@@ -515,6 +522,13 @@ function clientSubLine(node: TopoNode): string {
   return parts.join(' · ')
 }
 
+/** 供应端节点是否内部直连（providers.kind='local'：本地托管推理服务，
+ *  网关直连内网端点）。图上与云端供应商区分表达（2026-10-28 选路层轮）。 */
+function isDirectProvider(node: TopoNode): boolean {
+  if (node.column !== 'provider' || !node.providerCode) return false
+  return props.localProviderCodes?.has(node.providerCode) ?? false
+}
+
 function onNodeEnter(id: string) {
   hoveredId.value = id
 }function onNodeLeave() {
@@ -553,6 +567,8 @@ function onNodeClick(node: TopoNode) {
       :selected="selectedModule"
       :plugins="plugins"
       :queue-depth="queueDepth"
+      :selection="selection"
+      :direct-measured="directMeasured"
       @select-module="emit('select-module', $event)"
     />
     <ul class="topo-canvas__nodes">
@@ -578,6 +594,9 @@ function onNodeClick(node: TopoNode) {
         <span class="topo-node__label">{{ node.column === 'client' ? displayLabel(node) : node.label }}</span>
         <span v-if="node.column === 'client' ? clientSubLine(node) : node.sub" class="topo-node__sub">
           {{ node.column === 'client' ? clientSubLine(node) : node.sub }}
+        </span>
+        <span v-if="isDirectProvider(node)" class="topo-node__direct" :data-testid="`topo-direct-${node.providerCode}`">
+          {{ t('liveTopology.provider.direct') }}
         </span>
         <span class="topo-node__metric">{{ node.metric.requests }}<i v-if="node.metric.inFlight">·{{ node.metric.inFlight }}↻</i></span>
       </li>
@@ -699,6 +718,22 @@ function onNodeClick(node: TopoNode) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 内部直连徽标（2026-10-28 选路层轮）：本地托管供应商（kind='local'）
+   的供应端节点卡右上角小徽标 —— 与云端供应商的区分不靠猜。 */
+.topo-node__direct {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--kx-primary);
+  border: 1px solid color-mix(in srgb, var(--kx-primary) 45%, var(--kx-border));
+  background: color-mix(in srgb, var(--kx-surface) 82%, transparent);
+  white-space: nowrap;
 }
 
 .topo-node__metric {

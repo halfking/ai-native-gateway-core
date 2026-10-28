@@ -31,6 +31,12 @@ export interface LiveRequest {
   canonical_name?: string
   credential_id?: number
   credential_label?: string
+  // 2026-10-28（live 拓扑·模型选择层表达轮）: 选路与压缩可观测字段
+  // （后端 admin.LiveRequest additive 投影，缺省 = 未上报）。
+  client_model?: string
+  is_auto_request?: boolean
+  task_type?: string
+  token_band?: string
   model_category?: LiveModelCategory
   provider_code?: string
   status?: LiveStatus

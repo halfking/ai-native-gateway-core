@@ -1,22 +1,24 @@
 <script setup lang="ts">
-// GatewayCoreBox.vue —— 网关核心「大方块」（2026-10-18 三带改版）
+// GatewayCoreBox.vue —— 网关核心「大方块」（2026-10-18 三带版；
+// 2026-10-28 选路层改版）
 //
-// owner 拍板（2026-10-18）：模块要按**处理流程的真实位置**排布，进/出两条
-// 链路要分开，还要有「存储转发」的效果，并且在用插件要显示出来。
+// owner 口径（2026-10-28）：「内部直连模型」与「auto 按任务选最终模型」这层
+// 此前没有表达；缓存→脱敏→压缩三层数据处理缺压缩；路由与节点状态属
+// 基础服务，放一侧，突出核心逻辑。
 //
-// 三条流程带（自上而下）：
-//   进·请求链   缓存 → 脱敏 →（插件 chip）→ 路由 → 节点状态   →⬇ 派发
-//   存储转发带  转发队列 N · 数据会话写入 ⇄ 会话文件存储
-//   出·响应链   ⬆ 任务识别 · 错误记录 · 探测任务（旁路，虚线）
+// 版面（主线居中，基础服务侧置；顺序=真实管线，批判式审计修正 2026-10-28）：
+//   进·请求链（主线）  缓存 → 脱敏 →（插件 chip）→ 模型选择 → 压缩 → ⬇ 派发
+//   选路扇出带          模型选择的出口分解：auto 按任务 N（任务分布）· 内部直连 M · 指定 K
+//   存储转发带          转发队列 N · 数据会话写入 ⇄ 会话文件存储
+//   出·响应链          ⬆ 任务识别 · 错误记录 · 探测任务（旁路，虚线）
+//   基础服务侧条（右侧竖条）  路由管理 · 节点状态管理
 //
-//  · 进站链 L→R（请求自顶边进入、从底边派发出去）；出站链上的模块是
-//    响应侧/观测侧（虚线 = 旁路，不是每个请求都串行走一遍）；
-//  · 存储带夹在两链之间：响应先落库（写入 ⇄ 文件），再继续转发 —— 带
-//    间 ↕ 连接线用流动虚线表达「存储后转发」；转发队列深度来自真实
-//    queue 快照（pipeline.depth），不是编的；
-//  · 插件 chip 按 direction 落带：input/both → 进站链（请求进上游前
-//    检查），output → 出站链（响应回客户端前检查）。外部插件按进程
-//    状态着色（ready 绿 / degraded 黄 / failed 红）。
+//  · 进站链 L→R；选路扇出带是「模型选择」这一步的三个**并行出口**
+//    （不是串行步骤，卡之间不画箭头）；出站链上的模块是响应侧/观测侧
+//    （虚线 = 旁路）；
+//  · 存储带夹在两链之间：响应先落库（写入 ⇄ 文件），再继续转发；
+//  · 基础服务侧条服务于主线（凭据选择、熔断/健康管理）但不是数据
+//    处理步骤 —— 虚线竖条与主线分开，格子仍可点选聚焦。
 //
 // 每格显示窗口内命中数，失败转红；**没有数据就是 0**，不编数字。
 
@@ -24,10 +26,12 @@ import { computed, onBeforeUnmount, reactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   GATEWAY_BRANCH_MODULES,
+  GATEWAY_INFRA_MODULES,
   GATEWAY_IN_MODULES,
   GATEWAY_OUT_MODULES,
   GATEWAY_STORE_MODULES,
   type GatewayModuleKey,
+  type ModelSelectionStats,
   type TopoPluginChip,
 } from '../../types/liveTopology'
 import type { GatewayCoreBox } from '../../types/liveTopology'
@@ -42,6 +46,10 @@ const props = defineProps<{
   plugins?: TopoPluginChip[]
   /** 转发队列深度（queue 快照 pipeline.depth；null = 管线未上报，隐藏徽标）。 */
   queueDepth?: number | null
+  /** 选路扇出统计（模型选择三出口）；null/缺省 = 尚无数据，三卡画 0。 */
+  selection?: ModelSelectionStats | null
+  /** 内部直连分桶是否完成测量（供应商清单加载失败 = false，须标注未测量）。 */
+  directMeasured?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -72,8 +80,35 @@ function cellOf(key: GatewayModuleKey): CellView {
 }
 
 const inCells = computed<CellView[]>(() => GATEWAY_IN_MODULES.map((m) => cellOf(m.key)))
+const infraCells = computed<CellView[]>(() => GATEWAY_INFRA_MODULES.map((m) => cellOf(m.key)))
 const storeCells = computed<CellView[]>(() => GATEWAY_STORE_MODULES.map((m) => cellOf(m.key)))
 const outCells = computed<CellView[]>(() => GATEWAY_OUT_MODULES.map((m) => cellOf(m.key)))
+
+/** 选路扇出三出口卡（并行出口，非串行步骤）。 */
+const modeCards = computed(() => {
+  const sel = props.selection
+  return [
+    {
+      key: 'auto' as const,
+      label: t('liveTopology.selection.auto'),
+      count: sel?.auto ?? 0,
+      /** auto 的任务分布（后端原始词：chat/reasoning/code/…，跨语种一致）。 */
+      detail: (sel?.autoTasks ?? []).map((x) => `${x.type} ×${x.count}`).join(' · '),
+    },
+    {
+      key: 'direct' as const,
+      label: t('liveTopology.selection.direct'),
+      count: sel?.direct ?? 0,
+      detail: '',
+    },
+    {
+      key: 'explicit' as const,
+      label: t('liveTopology.selection.explicit'),
+      count: sel?.explicit ?? 0,
+      detail: '',
+    },
+  ]
+})
 
 /** 插件 chip 按方向落带：input/both 在请求侧，output 在响应侧。 */
 const inPlugins = computed(() => (props.plugins ?? []).filter((p) => p.direction !== 'output'))
@@ -115,6 +150,7 @@ onBeforeUnmount(() => {
 })
 
 const title = computed(() => t('liveTopology.gateway.title'))
+const infraTitle = computed(() => t('liveTopology.gateway.infra'))
 </script>
 
 <template>
@@ -130,85 +166,146 @@ const title = computed(() => t('liveTopology.gateway.title'))
       <span class="gw__flow gw__flow--out" data-testid="gw-flow-out">▲ {{ t('liveTopology.lane.out') }}</span>
     </header>
 
-    <!-- 进·请求链：客户端自顶边进 → 缓存 → 脱敏 → 插件 → 路由 → 节点状态 → 底边派发 -->
-    <div class="gw__lane gw__lane--in" data-testid="gw-lane-in">
-      <span class="gw__lane-tag gw__lane-tag--in">{{ t('liveTopology.lane.in') }}</span>
-      <div class="gw__lane-body">
-        <template v-for="(cell, i) in inCells" :key="cell.key">
-          <span v-if="i > 0" class="gw__arrow" aria-hidden="true">→</span>
-          <button
-            type="button"
-            class="gw__cell"
-            :class="[`is-${cell.tone}`, { 'is-branch': cell.branch, 'is-selected': cell.key === selected, 'is-flash': flashing.has(cell.key) }]"
-            :data-testid="`gw-cell-${cell.key}`"
-            :aria-label="`${cell.label} ${cell.count}`"
-            @click="emit('select-module', cell.key)"
-          >
-            <span class="gw__cell-label">{{ cell.label }}</span>
-            <span class="gw__cell-count">{{ cell.count }}</span>
-          </button>
-          <!-- 插件带挂在脱敏之后（治理 stage 在 sanitize 与 route 之间） -->
-          <template v-if="cell.key === 'sanitize' && inPlugins.length">
-            <span class="gw__arrow" aria-hidden="true">→</span>
-            <span class="gw__plugins" data-testid="gw-plugins-in">
+    <!-- 主体：左侧四条流程带（主线），右侧基础服务竖条（2026-10-28）。 -->
+    <div class="gw__body">
+      <div class="gw__lanes">
+        <!-- 进·请求链（主线）：缓存 → 脱敏 → 插件 → 模型选择 → 压缩 → 派发。
+             ★ 压缩在模型选择**之后**（真实管线：候选解析先定目标模型，
+             SessionCompressor 才按其上下文窗口做滑窗压缩）。 -->
+        <div class="gw__lane gw__lane--in" data-testid="gw-lane-in">
+          <span class="gw__lane-tag gw__lane-tag--in">{{ t('liveTopology.lane.in') }}</span>
+          <div class="gw__lane-body">
+            <template v-for="(cell, i) in inCells" :key="cell.key">
+              <span v-if="i > 0" class="gw__arrow" aria-hidden="true">→</span>
+              <button
+                type="button"
+                class="gw__cell"
+                :class="[`is-${cell.tone}`, { 'is-branch': cell.branch, 'is-selected': cell.key === selected, 'is-flash': flashing.has(cell.key) }]"
+                :data-testid="`gw-cell-${cell.key}`"
+                :aria-label="`${cell.label} ${cell.count}`"
+                @click="emit('select-module', cell.key)"
+              >
+                <span class="gw__cell-label">{{ cell.label }}</span>
+                <span class="gw__cell-count">{{ cell.count }}</span>
+              </button>
+              <!-- 插件带挂在脱敏之后（输入侧治理件在请求进上游前检查） -->
+              <template v-if="cell.key === 'sanitize' && inPlugins.length">
+                <span class="gw__arrow" aria-hidden="true">→</span>
+                <span class="gw__plugins" data-testid="gw-plugins-in">
+                  <span
+                    v-for="p in inPlugins"
+                    :key="p.id"
+                    class="gw__plugin"
+                    :class="`is-${p.status}`"
+                    :title="`${p.name} · ${p.status}`"
+                  >{{ p.name }}</span>
+                </span>
+                <span class="gw__arrow" aria-hidden="true">→</span>
+              </template>
+            </template>
+            <span class="gw__arrow gw__arrow--exit" aria-hidden="true">⬇ {{ t('liveTopology.lane.toProvider') }}</span>
+          </div>
+        </div>
+
+        <!-- 选路扇出带：模型选择这一步的三个出口分解（并行、非串行步骤）。
+             是「模型选择」格的明细注解带：不带派发箭头（主链出口在进站链末尾）。 -->
+        <div class="gw__lane gw__lane--select" data-testid="gw-lane-select">
+          <span class="gw__lane-tag gw__lane-tag--select">{{ t('liveTopology.lane.select') }}</span>
+          <div class="gw__lane-body">
+            <span
+              v-for="mode in modeCards"
+              :key="mode.key"
+              class="gw__mode"
+              :class="{ 'is-active': mode.count > 0 }"
+              :data-testid="`gw-mode-${mode.key}`"
+              :aria-label="`${mode.label} ${mode.count}`"
+              :title="mode.detail || mode.label"
+            >
+              <span class="gw__mode-label">{{ mode.label }}</span>
+              <span class="gw__mode-count">{{ mode.count }}</span>
+              <span v-if="mode.detail" class="gw__mode-detail">{{ mode.detail }}</span>
+            </span>
+            <!-- 直连分桶未测量必须说出口：0 是「没有直连」，「没测过」不是 0。 -->
+            <span v-if="directMeasured === false" class="gw__mode-note" data-testid="gw-mode-unmeasured">
+              {{ t('liveTopology.selection.unmeasured') }}
+            </span>
+          </div>
+        </div>
+
+        <!-- 存储转发带：写入 ⇄ 文件存储；两侧 ↕ 与进出链相连（流动虚线 = 转发） -->
+        <div class="gw__lane gw__lane--store" data-testid="gw-lane-store">
+          <span class="gw__lane-tag gw__lane-tag--store">{{ t('liveTopology.lane.store') }}</span>
+          <div class="gw__lane-body">
+            <span
+              v-if="showQueue"
+              class="gw__queue"
+              :class="{ 'is-busy': (queueDepth ?? 0) > 0 }"
+              data-testid="gw-queue-depth"
+            >{{ t('liveTopology.lane.queue', { n: queueDepth ?? 0 }) }}</span>
+            <!-- 带↕连接线：竖向流动虚线 = 「存储之后继续转发」，不是死仓库。
+                 请求侧向下流入存储带（请求先落库），响应侧向上流回出站链。 -->
+            <span class="gw__store-link" aria-hidden="true"><i class="gw__flow-line gw__flow-line--down" /></span>
+            <template v-for="(cell, i) in storeCells" :key="cell.key">
+              <span v-if="i > 0" class="gw__store-arrow" aria-hidden="true">⇄</span>
+              <button
+                type="button"
+                class="gw__cell gw__cell--store"
+                :class="[`is-${cell.tone}`]"
+                :data-testid="`gw-cell-${cell.key}`"
+                :aria-label="`${cell.label} ${cell.count}`"
+                @click="emit('select-module', cell.key)"
+              >
+                <span class="gw__store-icon" aria-hidden="true"><Coin /></span>
+                <span class="gw__cell-label">{{ cell.label }}</span>
+                <span class="gw__cell-count">{{ cell.count }}</span>
+              </button>
+            </template>
+            <span class="gw__store-link" aria-hidden="true"><i class="gw__flow-line gw__flow-line--up" /></span>
+          </div>
+        </div>
+
+        <!-- 出·响应链：自底边收回响应 → 旁路观测模块 → 顶边回客户端 -->
+        <div class="gw__lane gw__lane--out" data-testid="gw-lane-out">
+          <span class="gw__lane-tag gw__lane-tag--out">{{ t('liveTopology.lane.out') }}</span>
+          <div class="gw__lane-body">
+            <span class="gw__arrow gw__arrow--entry" aria-hidden="true">{{ t('liveTopology.lane.fromProvider') }} ⬆</span>
+            <template v-for="(cell, i) in outCells" :key="cell.key">
+              <span v-if="i > 0" class="gw__arrow" aria-hidden="true">→</span>
+              <button
+                type="button"
+                class="gw__cell"
+                :class="[`is-${cell.tone}`, { 'is-branch': cell.branch, 'is-selected': cell.key === selected, 'is-flash': flashing.has(cell.key) }]"
+                :data-testid="`gw-cell-${cell.key}`"
+                :aria-label="`${cell.label} ${cell.count}`"
+                @click="emit('select-module', cell.key)"
+              >
+                <span class="gw__cell-label">{{ cell.label }}</span>
+                <span class="gw__cell-count">{{ cell.count }}</span>
+              </button>
+            </template>
+            <span v-if="outPlugins.length" class="gw__plugins gw__plugins--out" data-testid="gw-plugins-out">
               <span
-                v-for="p in inPlugins"
+                v-for="p in outPlugins"
                 :key="p.id"
                 class="gw__plugin"
                 :class="`is-${p.status}`"
                 :title="`${p.name} · ${p.status}`"
               >{{ p.name }}</span>
             </span>
-            <span class="gw__arrow" aria-hidden="true">→</span>
-          </template>
-        </template>
-        <span class="gw__arrow gw__arrow--exit" aria-hidden="true">⬇ {{ t('liveTopology.lane.toProvider') }}</span>
+          </div>
+        </div>
       </div>
-    </div>
 
-    <!-- 存储转发带：写入 ⇄ 文件存储；两侧 ↕ 与进出链相连（流动虚线 = 转发） -->
-    <div class="gw__lane gw__lane--store" data-testid="gw-lane-store">
-      <span class="gw__lane-tag gw__lane-tag--store">{{ t('liveTopology.lane.store') }}</span>
-      <div class="gw__lane-body">
-        <span
-          v-if="showQueue"
-          class="gw__queue"
-          :class="{ 'is-busy': (queueDepth ?? 0) > 0 }"
-          data-testid="gw-queue-depth"
-        >{{ t('liveTopology.lane.queue', { n: queueDepth ?? 0 }) }}</span>
-        <!-- 带↕连接线：竖向流动虚线 = 「存储之后继续转发」，不是死仓库。
-             请求侧向下流入存储带（请求先落库），响应侧向上流回出站链。 -->
-        <span class="gw__store-link" aria-hidden="true"><i class="gw__flow-line gw__flow-line--down" /></span>
-        <template v-for="(cell, i) in storeCells" :key="cell.key">
-          <span v-if="i > 0" class="gw__store-arrow" aria-hidden="true">⇄</span>
+      <!-- 基础服务侧条：路由管理 · 节点状态管理（服务于主线，不在主链上） -->
+      <aside class="gw__infra" data-testid="gw-infra" :aria-label="infraTitle">
+        <span class="gw__infra-tag">{{ infraTitle }}</span>
+        <div class="gw__infra-cells">
           <button
+            v-for="cell in infraCells"
+            :key="cell.key"
             type="button"
-            class="gw__cell gw__cell--store"
-            :class="[`is-${cell.tone}`]"
-            :data-testid="`gw-cell-${cell.key}`"
-            :aria-label="`${cell.label} ${cell.count}`"
-            @click="emit('select-module', cell.key)"
-          >
-            <span class="gw__store-icon" aria-hidden="true"><Coin /></span>
-            <span class="gw__cell-label">{{ cell.label }}</span>
-            <span class="gw__cell-count">{{ cell.count }}</span>
-          </button>
-        </template>
-        <span class="gw__store-link" aria-hidden="true"><i class="gw__flow-line gw__flow-line--up" /></span>
-      </div>
-    </div>
-
-    <!-- 出·响应链：自底边收回响应 → 旁路观测模块 → 顶边回客户端 -->
-    <div class="gw__lane gw__lane--out" data-testid="gw-lane-out">
-      <span class="gw__lane-tag gw__lane-tag--out">{{ t('liveTopology.lane.out') }}</span>
-      <div class="gw__lane-body">
-        <span class="gw__arrow gw__arrow--entry" aria-hidden="true">{{ t('liveTopology.lane.fromProvider') }} ⬆</span>
-        <template v-for="(cell, i) in outCells" :key="cell.key">
-          <span v-if="i > 0" class="gw__arrow" aria-hidden="true">→</span>
-          <button
-            type="button"
-            class="gw__cell"
-            :class="[`is-${cell.tone}`, { 'is-branch': cell.branch, 'is-selected': cell.key === selected, 'is-flash': flashing.has(cell.key) }]"
+            class="gw__cell gw__cell--infra"
+            :class="[`is-${cell.tone}`, { 'is-selected': cell.key === selected, 'is-flash': flashing.has(cell.key) }]"
             :data-testid="`gw-cell-${cell.key}`"
             :aria-label="`${cell.label} ${cell.count}`"
             @click="emit('select-module', cell.key)"
@@ -216,17 +313,8 @@ const title = computed(() => t('liveTopology.gateway.title'))
             <span class="gw__cell-label">{{ cell.label }}</span>
             <span class="gw__cell-count">{{ cell.count }}</span>
           </button>
-        </template>
-        <span v-if="outPlugins.length" class="gw__plugins gw__plugins--out" data-testid="gw-plugins-out">
-          <span
-            v-for="p in outPlugins"
-            :key="p.id"
-            class="gw__plugin"
-            :class="`is-${p.status}`"
-            :title="`${p.name} · ${p.status}`"
-          >{{ p.name }}</span>
-        </span>
-      </div>
+        </div>
+      </aside>
     </div>
   </section>
 </template>
@@ -274,13 +362,29 @@ const title = computed(() => t('liveTopology.gateway.title'))
   color: var(--kx-success);
 }
 
-/* ── 三条流程带 ─────────────────────────────────────────── */
+/* ── 主体：左流程带列 + 右基础服务竖条 ───────────────────── */
+.gw__body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+
+.gw__lanes {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ── 流程带 ──────────────────────────────────────────────── */
 .gw__lane {
   display: flex;
   flex: 1;
   min-height: 0;
   gap: 8px;
-  padding: 0 8px;
 }
 
 .gw__lane-tag {
@@ -299,6 +403,11 @@ const title = computed(() => t('liveTopology.gateway.title'))
 .gw__lane-tag--in {
   color: var(--kx-primary);
   background: color-mix(in srgb, var(--kx-primary) 12%, transparent);
+}
+
+.gw__lane-tag--select {
+  color: var(--kx-primary);
+  background: color-mix(in srgb, var(--kx-primary) 8%, transparent);
 }
 
 .gw__lane-tag--store {
@@ -404,6 +513,100 @@ const title = computed(() => t('liveTopology.gateway.title'))
 
 .gw__cell.is-idle .gw__cell-count {
   color: var(--kx-muted);
+}
+
+/* ── 选路扇出带：三个并行出口卡 ─────────────────────────── */
+.gw__mode {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--kx-primary) 25%, var(--kx-border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--kx-surface) 86%, transparent);
+}
+
+.gw__mode.is-active {
+  border-color: color-mix(in srgb, var(--kx-primary) 55%, var(--kx-border));
+}
+
+.gw__mode-label {
+  font-size: var(--kx-font-sm, 12px);
+  color: var(--kx-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gw__mode-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--kx-primary);
+}
+
+.gw__mode-detail {
+  font-size: 11px;
+  color: var(--kx-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gw__mode-note {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--kx-muted);
+  border: 1px dashed var(--kx-border);
+  white-space: nowrap;
+}
+
+/* ── 基础服务侧条 ────────────────────────────────────────── */
+.gw__infra {
+  flex: none;
+  width: 92px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 4px 4px 8px;
+  border-left: 1px dashed color-mix(in srgb, var(--kx-muted) 45%, var(--kx-border));
+}
+
+.gw__infra-tag {
+  flex: none;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--kx-muted);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gw__infra-cells {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 侧条格：横排（窄列里竖排放不下两行文字），占比语义与主链格一致 */
+.gw__cell--infra {
+  flex: 1 1 0;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  border-style: dashed;
+}
+
+.gw__cell--infra .gw__cell-label {
+  flex: 1;
+  font-size: 11px;
 }
 
 /* ── 存储转发带 ─────────────────────────────────────────── */

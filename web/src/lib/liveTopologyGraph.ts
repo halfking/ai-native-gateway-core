@@ -19,6 +19,13 @@ export interface GraphRequestInput {
   request_id?: string
   model?: string
   canonical_name?: string
+  client_model?: string
+  /** model=auto 的请求（2026-10-28 选路层轮：SSE additive 字段）。 */
+  is_auto_request?: boolean
+  /** auto 分类的任务类型（chat/reasoning/code/…，后端原始词）。 */
+  task_type?: string
+  /** 会话滑窗压缩档位（below/preliminary/forced）。 */
+  token_band?: string
   provider_code?: string
   credential_id?: number
   credential_label?: string
