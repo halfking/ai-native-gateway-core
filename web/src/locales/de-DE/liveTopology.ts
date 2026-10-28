@@ -68,6 +68,8 @@ export default {
     toggle: '{group} ein-/ausklappen',
     cache: 'Cache',
     unknownProvider: 'Unbekannter Anbieter',
+    toggleProviders: 'Anbieter-Aufschlüsselung von {model} ein-/ausklappen',
+    providersCount: '{n} Anbieter',
     empty: 'Heute kein Traffic',
     degraded: 'Aggregation nicht initialisiert – Statistik nicht verfügbar',
     unavailable: 'Statistikdienst nicht verfügbar',

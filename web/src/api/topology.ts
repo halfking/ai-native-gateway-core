@@ -123,6 +123,31 @@ export function getTopologyProviderKinds(options?: { signal?: AbortSignal }): Pr
 // （stats_usage_daily 的 provider_model 维度在 canonical_id 上再聚合）。
 // 同一标准模型跨供应商/凭据/别名合并成一行（与拓扑图模型列的 canonical
 // 口径一致）。水位语义同 providers-today：rollup 每小时重建，≤1h 滞后。
+//
+// ?by=provider（2026-10-28 遗留①）：交叉展开——items 各带 providers 子行
+// （该模型在哪些供应商上各跑了多少）。子行 share 是**模型内**分布
+// （分母 = 该模型的 requests），父行 share 仍是当日总量占比。
+
+export interface TopologyModelProviderItem {
+  provider_id: number
+  catalog_code: string
+  display_name: string
+  /** providers 表里查得到；provider_id=0 的未知桶为 false（不丢流量，只标未知） */
+  known: boolean
+  requests: number
+  success: number
+  failure: number
+  rate_limited: number
+  prompt_tokens: number
+  completion_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  total_tokens: number
+  credits_charged: number
+  cost_usd: number
+  /** 模型内分布（0..1，分母 = 该模型的 requests） */
+  share: number
+}
 
 export interface TopologyModelTodayItem {
   canonical_id: number
@@ -141,6 +166,8 @@ export interface TopologyModelTodayItem {
   cost_usd: number
   /** 占当日总请求的比重（0..1） */
   share: number
+  /** ?by=provider 交叉展开的子行；默认调用不出现（形状兼容） */
+  providers?: TopologyModelProviderItem[]
 }
 
 export interface TopologyModelsToday {
@@ -157,8 +184,13 @@ export interface TopologyModelsToday {
   error_code?: string
 }
 
-export function getTopologyModelsToday(options?: { signal?: AbortSignal }): Promise<TopologyModelsToday> {
-  return req<TopologyModelsToday>('GET', '/api/admin/topology/models-today', undefined, {
+export function getTopologyModelsToday(options?: {
+  signal?: AbortSignal
+  /** 交叉展开：每个模型附 providers 子行（模型内分布） */
+  byProvider?: boolean
+}): Promise<TopologyModelsToday> {
+  const query = options?.byProvider ? '?by=provider' : ''
+  return req<TopologyModelsToday>('GET', `/api/admin/topology/models-today${query}`, undefined, {
     signal: options?.signal,
   })
 }

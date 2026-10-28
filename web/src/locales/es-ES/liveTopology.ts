@@ -68,6 +68,8 @@ export default {
     toggle: 'Alternar {group}',
     cache: 'caché',
     unknownProvider: 'Proveedor desconocido',
+    toggleProviders: 'Alternar desglose por proveedor de {model}',
+    providersCount: '{n} proveedores',
     empty: 'Hoy sin tráfico',
     degraded: 'Agregación no inicializada: estadísticas no disponibles',
     unavailable: 'Servicio de estadísticas no disponible',

@@ -68,6 +68,8 @@ export default {
     toggle: '{group} を開閉',
     cache: 'キャッシュ',
     unknownProvider: '不明なプロバイダ',
+    toggleProviders: '{model} のプロバイダ分布を開閉',
+    providersCount: 'プロバイダ {n} 社',
     empty: '本日のトラフィックなし',
     degraded: '集計未初期化 — 統計を利用できません',
     unavailable: '統計サービスを利用できません',
