@@ -161,6 +161,10 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
   //   与 QualityCorrelationsView（186→223）、UserProfileView（285/308→286/309）同类。
   ['src/views/tenant/MaaSUsageView.vue', 355, '用量内嵌表，无用量详情页'],
+  // ⚠ 行号锚点：2026-10-28 分支审计轮（wip/07 合入 + 本轮接 ResponsiveDataView）。
+  //   月账单行的载荷是账期聚合（period_ym + 合计），不存在账单详情页 ⇒
+  //   与上方 MaaSAccountView / MaaSUsageView 同族 NON_NAVIGABLE。
+  ['src/views/tenant/MaaSBillsView.vue', 125, '月账单内嵌表（账期聚合行），无账单详情页'],
   // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 207 改为 208。
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
