@@ -3,6 +3,7 @@ package stats
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -511,4 +512,175 @@ func TestReconciliationWorker_PhantomAndRepairCounted(t *testing.T) {
 				"phantom_open rows must never be counted as auto-repaired; the pendingRepairs path also bypasses Refresh() entirely")
 		})
 	}
+}
+
+// ── r1045（2026-10-28）：★ 「差异写入失败」不得被降级成 warn ⇒ 账本不许说谎 ──
+//
+// ★ 背景（★ 实测，2026-10-28 07:32:39~07:32:42）：542 条
+// ★ `INSERT INTO stats_reconciliation_diffs` 全部失败（★ 那次的**近因**是本机库缺
+// ★ `tenant_id` 列 ⇒ ★ 已由 r1043 补迁移修掉；★ ★★ 但**让这族失败静默无声的机制**
+// ★ ★★ 还在仓里 ⇒ ★★ 本组断言钉的就是它）。
+//
+// ★ ★★ 那一轮在 `stats_reconciliation_runs` 账本里记的是：
+// ★ ★★ `status=completed, rows_compared=0, rows_repaired=0, diff_count=0, error=''`
+// ★ ★★ ⇒ 「0 差异、没有错误、已完成」⇒ ★★ **账本、管理界面
+// ★ ★★ （admin/stats.go 读 status + diff_count）、指标
+// ★ ★★ （RecordStatsReconciliationRun("completed")）三处都在说谎**。
+//
+// ★★ 机制：写入失败被 `slog.Warn` + `continue` 吞掉 ⇒ `totalDiffs` 不加 ⇒
+// ★★ `diff_count = diffs - repaired = 0` ⇒ ★★ 而那条差异**从未进表** ⇒
+// ★★ 下一窗口也不覆盖它 ⇒ ★★ 永久丢失。
+//
+// ★★★ 本组断言的契约：★ **写入失败 ⇒ 这一轮必须失败**（★ `status ≠ 'completed'`、
+// ★ ★ `error` 列必须写上原因）⇒ ★★★ 账本恢复诚实；★ 而滚动 lookback 窗口会在
+// ★ ★ 下一 tick 重新覆盖这段区间 ⇒ ★★ 数据自己回来。
+//
+// ★ ★★ **反向守卫（★ 必须有！）**：★ 没有它的话，「把这一轮改成**永远**失败」也能让
+// ★ ★ 上面的断言变绿 ⇒ ★★ 那就把功能改没了 ⇒ ★★ 所以下面同时钉住
+// ★ ★ 「写入成功 ⇒ 仍然 `completed`、且 diff_count 正确」。
+
+// nonEmptyStringArg 匹配「非空字符串」参数。
+//
+// ★ 用于断言账本的 `error` 列**必须被写上原因** —— ★ 用 `pgxmock.AnyArg()`
+// ★ 等于没断言（★ 任何值都过 ⇒ ★ 那这条断言就只是装饰）。
+type nonEmptyStringArg struct{}
+
+func (nonEmptyStringArg) Match(v interface{}) bool {
+	s, ok := v.(string)
+	return ok && strings.TrimSpace(s) != ""
+}
+
+// reconciliationFactCols 是 facts 查询与 projections 查询**共有**的 15 列
+// （★ 两者列序完全一致 ⇒ ★ 共用一份 ⇒ ★ 免得改一处忘一处）。
+var reconciliationFactCols = []string{
+	"day_utc", "tenant_id", "provider_id", "credential_id", "canonical_id",
+	"raw_model_name", "traffic_class",
+	"request_count", "success_count", "failure_count",
+	"prompt_tokens", "completion_tokens", "total_tokens",
+	"cost_usd", "credits_charged",
+}
+
+// queueReconcileFactsAndProjections 铺好「facts 有 1 行 + projections 有 1 行」的
+// 场景，★ 两者**只有 request_count 不同**（10 vs 5）⇒ ★⇒ 恰好产生 **1 条差异**
+// ⇒ ⇒ `canAutoRepair(10,5)` 的 relDiff=1.0 ≫ 2% ⇒ ★★ 不自动修复 ⇒
+// ★★ resolution='open' ⇒ ★★ pendingRepairs=0 ⇒ ★★ 不会触发 Refresh（★ 省掉一堆 mock）。
+func queueReconcileFactsAndProjections(mock pgxmock.PgxPoolIface, day time.Time) {
+	factRow := []interface{}{
+		day, "tenant-a", int64(1), int64(2), int64(3), "gpt-x", "default",
+		int64(10), int64(10), int64(0), int64(100), int64(50), int64(150), 1.5, int64(2),
+	}
+	projRow := []interface{}{
+		day, "tenant-a", int64(1), int64(2), int64(3), "gpt-x", "default",
+		int64(5), int64(10), int64(0), int64(100), int64(50), int64(150), 1.5, int64(2),
+	}
+	mock.ExpectQuery(`FROM usage_facts f`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows(reconciliationFactCols).AddRow(factRow...))
+	mock.ExpectQuery(`FROM stats_usage_daily`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows(reconciliationFactCols).AddRow(projRow...))
+}
+
+// TestReconciliationWorker_DiffWriteFailureMarksRunFailed —— ★★★ 正向断言：
+// ★ 「差异写入失败 ⇒ 这一轮必须被记成 failed，且 error 列写上原因」。
+func TestReconciliationWorker_DiffWriteFailureMarksRunFailed(t *testing.T) {
+	mock := newReconciliationMockEnv(t)
+	queueReconcilePeriodHappyPath(mock)
+
+	day := time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)
+	queueReconcileFactsAndProjections(mock, day)
+
+	// 差异写入失败（★ 模拟 r1043 那次缺列的失败形态）。
+	mock.ExpectExec(`INSERT INTO stats_reconciliation_diffs`).
+		WithArgs(
+			pgxmock.AnyArg(), // run_id
+			pgxmock.AnyArg(), // tenant_id
+			pgxmock.AnyArg(), // dimension_key
+			pgxmock.AnyArg(), // metric
+			pgxmock.AnyArg(), // source_value
+			pgxmock.AnyArg(), // projected_value
+			pgxmock.AnyArg(), // difference
+			pgxmock.AnyArg(), // resolution
+		).
+		WillReturnError(fmt.Errorf(`column "tenant_id" of relation "stats_reconciliation_diffs" does not exist`))
+	// 复位本轮已插入的 pending repairs（★ 不留孤儿行）。
+	// ★ 该 UPDATE 只带 1 个参数（run_id）—— ★ 参数个数必须对上，★ 否则 pgxmock 的
+	// ★ ordered 匹配会整条错位（★ 后面的账本断言会拿错期望去比）。
+	mock.ExpectExec(`UPDATE stats_reconciliation_diffs`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	// ★★★ 账本这一行才是本测试的真正靶心：
+	// ★ status 必须是 **failed**（★ 不是 'completed'），★ error 列必须**非空**。
+	mock.ExpectExec(`UPDATE stats_reconciliation_runs`).
+		WithArgs(
+			pgxmock.AnyArg(),    // run_id
+			"failed",            // status ★★★ 核心断言
+			pgxmock.AnyArg(),    // events_seen
+			pgxmock.AnyArg(),    // rows_compared
+			pgxmock.AnyArg(),    // rows_repaired
+			pgxmock.AnyArg(),    // diff_count
+			pgxmock.AnyArg(),    // source_watermark
+			nonEmptyStringArg{}, // error ★★★ 必须写上原因（★ 空串 ⇒ 账本仍然说谎）
+		).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	worker := newReconciliationWorkerWithDB(mock, time.Minute)
+
+	start := day
+	end := day.Add(24 * time.Hour)
+	err := worker.ReconcilePeriod(context.Background(), start, end, "write_fail")
+	require.Error(t, err, "★ 差异写入失败必须让这一轮失败（★ 否则账本说谎）")
+	require.Contains(t, err.Error(), "record diff",
+		"★ 错误必须指名道姓到「写差异」这一步（★ 不能是一个笼统的失败）")
+	require.NoError(t, mock.ExpectationsWereMet(),
+		"★ 账本那一行必须真的带 status='failed' 且 error 非空")
+}
+
+// TestReconciliationWorker_DiffWriteSuccessStillCompletes —— ★★★ 反向守卫：
+// ★ 「写入成功 ⇒ 仍然 completed，且 diff_count 正确」。
+//
+// ★★★ 没有这条，上面那条断言可以靠「把这一轮改成**永远**失败」来满足 ⇒
+// ★★★ 那就把功能改没了 ⇒ ★★★ 所以这两条必须**成对**存在。
+func TestReconciliationWorker_DiffWriteSuccessStillCompletes(t *testing.T) {
+	mock := newReconciliationMockEnv(t)
+	queueReconcilePeriodHappyPath(mock)
+
+	day := time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)
+	queueReconcileFactsAndProjections(mock, day)
+
+	// 差异写入成功（★ 恰好 1 条差异 ⇒ diff_count 应为 1）。
+	mock.ExpectExec(`INSERT INTO stats_reconciliation_diffs`).
+		WithArgs(
+			pgxmock.AnyArg(), // run_id
+			pgxmock.AnyArg(), // tenant_id
+			pgxmock.AnyArg(), // dimension_key
+			pgxmock.AnyArg(), // metric
+			pgxmock.AnyArg(), // source_value
+			pgxmock.AnyArg(), // projected_value
+			pgxmock.AnyArg(), // difference
+			pgxmock.AnyArg(), // resolution
+		).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	// 账本：★ status 必须是 'completed'，★ diff_count 必须是 1。
+	mock.ExpectExec(`UPDATE stats_reconciliation_runs`).
+		WithArgs(
+			pgxmock.AnyArg(), // run_id
+			"completed",      // status
+			pgxmock.AnyArg(), // events_seen
+			int64(1),         // rows_compared ★ 1 条差异
+			int64(0),         // rows_repaired ★ 未自动修复
+			int64(1),         // diff_count ★★★ 1
+			pgxmock.AnyArg(), // source_watermark
+			"",               // error ★ 成功时为空
+		).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	worker := newReconciliationWorkerWithDB(mock, time.Minute)
+
+	start := day
+	end := day.Add(24 * time.Hour)
+	require.NoError(t, worker.ReconcilePeriod(context.Background(), start, end, "write_ok"),
+		"★ 写入成功 ⇒ 这一轮必须正常完成（★ 反向守卫）")
+	require.NoError(t, mock.ExpectationsWereMet(),
+		"★ 账本必须记 completed + diff_count=1")
 }
