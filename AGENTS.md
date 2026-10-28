@@ -1430,6 +1430,48 @@
 > 列缺失吃 V2 写入；Responses 侧 URI-only 音频跳过无损失上报；`alt=sse` 缺省时形态
 > 与厂方 JSON 数组方言不一致（既有行为）。
 > ⇒ 审计档 `docs/audit/2026-10-28-Gemini批判审计三轮.md`；通用式见 `LESSONS.md` **§521**（4 条：声明逐条对实证 / 测试词表≠生产词表=恒绿假象 / 注释里的假设要当场证伪 / 并行修复不免除验证）。
+> **2026-10-29 Gemini 批判审计三轮遗留收口轮**（本 checkout）：★ 处置上条 §六遗留
+> 1/3/4 三项，每项**先定性再动手**。
+> ⇒ ★★ **遗留 1（`session_turns_hot.host` 缺列）三库对拍定性为【本地库漂移】**：
+> 252（pg-252-pg17）/211（acc-llm_gateway）实测 `host`/`tags` 五列全齐、只有本地缺——
+> 两列同缺 = 整条**迁移 885 没落**，不是代码缺列（安装器 runner:1243 启动清单里有它 ⇒
+> 新装库不缺）；本地 `schema_migrations` 停在 869（2026-10-18）而 `tools`/`client_protocol`
+> 列却在 ⇒ **旁路结构演进补了后到的列、漏了没被旁路的 885**。处置：本地幂等应用 885
+> （父表+hot 两侧同形）+ 按 693/701 先例 stamp 台账；`TestTurnWriterHostTagsRealDB` +
+> `TestPromoteColumnContractRealDB`（707 列集合契约）双绿；真机 8799（V2 shadow write）
+> 写入 12 行 turn 全部成功、`host='g3-temp-8799'` 落值正确——修复前全部 42703。
+> ⇒ ★★ **遗留 3（Responses 侧损失上报缺失）**：`reportSerializeResponsesLosses` 补两个
+> 上报点（audio / document），**判据直接调 `buildResponsesInputAudio`/`buildResponsesInputFile`
+> 看 nil 才上报** ⇒ 上报的恰好就是序列化器会丢的，两份判据永不漂移；同协议守卫沿用函数顶
+> 早退；document 新分支与既有 file_id 双空分支**互斥不双报**（有测试钉住：file_id 双空走
+> 旧分支、块仍以 filename-only 发出，不算消失）。真机实证：Gemini fileData 音频 →
+> responses 候选**主动升级桥** → 捕获体音频块消失（正确语义）+ `ir.anomaly
+> ir_protocol_loss … carrier=url` 留痕——修复前纯静默。
+> ⇒ ★★★ **遗留 4（`alt=sse` 缺省形态）落地为厂方缺省 JSON 数组**：**决策依据是两个官方
+> SDK 的源码而非文档**（Python google-genai 2.33.0 models.py:4758 等 8 处、JS @google/genai
+> 1.7.0 dist 仅一种拼接——**全部无条件硬编码 `?alt=sse`** ⇒ 官方客户端零回归，数组模式只
+> 服务手写原生客户端）；官方文档只写「stream of instances」不钉线体 ⇒ **别只看文档**。
+> 实现：`geminiWantsSSE`（显式 alt=sse 才 SSE）+ 数组模式 writer；帧转换**复用
+> `StreamChunk.SerializeGemini()` 同一份 body**（剥 `data: ` 重排元素），不第二份实现；
+> SSE 注释/[DONE] 哨兵不落数组（数组无注释通道）；**错误终态与零帧态都保持合法数组**
+> （`[error]`/`[]`）——第一版「数组未开写裸错误对象」被自己的测试当场抓包 ⇒
+> **数组模式的 body 恒为数组**这一条不变量必须钉死。
+> ⇒ ★★★ **真机抓到 Content-Type 真缺陷**：首版在 ServeHTTP 预设的 `application/json`
+> 被 ChatHandler **无条件重设**的 `text/event-stream` 覆盖 ⇒ **响应头的形态决策必须在
+> `WriteHeader` 提交前一刻做**（数组模式 writer 在 WriteHeader 里重设），提前设置必被下游
+> 覆盖。真机 A/B：无 alt ⇒ `application/json`+合法数组（3 元素含 usageMetadata 尾帧）/
+> alt=sse ⇒ SSE+keep-alive；音频请求经 Responses 桥完整闭环 200+数组；错误终态数组
+> `[{"error":…}]` 真机自然出现一次，形态正确。
+> ⇒ ★ 读数：`internal/ir` 全包 ✓（新增 6 条）/ `domains/streaming` 全包 ✓ 156.9s（新增 6 条）/
+> executors 全包 ✓ 45.8s / session/v2 全包 ✓ / `go build ./...` rc=0（★ 全局 go-build 缓存被
+> 并行会话竞态打坏——**远端 106ee9126 已补记同款现象**，隔离 GOCACHE 串行重跑为准）；
+> 环境已恢复（protocol/modality/endpoint 行/能力行/probe_state/key/turns 测试行回原值，
+> 885 两列+stamp 保留）。
+> ⇒ ★ 本轮明确没做：数组模式心跳（JSON 数组无注释通道，停滞感知靠客户端读超时——与厂方
+> 缺省形态一致）；`schema_migrations` 与本地真实结构的**全量**漂移对拍（只治了 42703 点名的
+> 885）；遗留 2（首流失败进熔断）属既有行为有恢复脚本，未动。
+> ⇒ 审计档 `docs/audit/2026-10-29-Gemini批判审计三轮-遗留收口轮.md`；
+> 通用式见 `LESSONS.md` **§535**。
 > **2026-10-27 Gemini 原生出站 executor 轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
 > ★ 承接 §436 同一审计档的**子项②**（§433 清单的最后一项可做项）。
 > ⇒ ★★★★ **本轮最值钱的一处定性：缺口不是「功能没做」，是「死配置」** ——
