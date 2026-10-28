@@ -1,8 +1,10 @@
 <script setup lang="ts">
-// StatsPanel.vue — 头部区间统计面板（2026-10-28 头部统计轮）
+// StatsPanel.vue — 头部区间统计面板（2026-10-28 头部统计轮；2026-10-29 单一统计轮扩三组）
 //
 // owner 口径：所有统计放页面上部、可折叠展开；左下统计栏（TodaySummaryRail）
-// 同轮退役，供应商/模型明细与点行联动过滤在这里延续。
+// 与下方 SSE 三块汇总（SummaryHeader）先后退役 —— **全页只有这一份统计**：
+// 客户端 + 供应商 + 模型三组 + 总量行，区间 5分钟/1小时/当天。
+// 客户端组的数据源与供应商/模型组不同（见 load 注释），口径行对用户说清。
 //
 // 区间口径（必须对用户说清，不许混）：
 //   · 当天 = stats_usage_daily 日桶（providers-today / models-today 既有口径，
@@ -23,20 +25,30 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { CaretRight } from '@element-plus/icons-vue'
 import {
+  getClientsToday,
   getProvidersToday,
   getTopologyModelsToday,
+  type TopologyClientsToday,
   type TopologyModelsToday,
   type TopologyProvidersToday,
 } from '../../api/topology'
+import { clientDisplayName } from '../../lib/liveTopologyGraph'
 
 const props = defineProps<{
-  /** 当前过滤的供应商 code（空 = 不过滤）。面板与图收敛到同一子集。 */
+  /** 当前过滤的客户端身份键（空 = 不过滤）。面板与图收敛到同一子集。 */
+  activeClient?: string
+  /** 当前过滤的供应商 code（空 = 不过滤）。 */
   activeProvider?: string
   /** 当前过滤的模型 canonical 名（空 = 不过滤）。 */
   activeModel?: string
+  /** 实时在途数（拓扑窗口口径，来自网关核心节点）——null/undefined = 未测量不显示。 */
+  inFlight?: number | null
+  /** 转发队列深度（未接线时 null —— 隐藏，不冒充 0）。 */
+  queueDepth?: number | null
 }>()
 
 const emit = defineEmits<{
+  (e: 'select-client', key: string): void
   (e: 'select-provider', code: string): void
   (e: 'select-model', model: string): void
 }>()
@@ -49,8 +61,10 @@ const interval = ref<StatsInterval>('day')
 /** 折叠只收明细两组；总量行常驻（见文件头）。 */
 const collapsed = ref(false)
 
+const clientsData = ref<TopologyClientsToday | null>(null)
 const providersData = ref<TopologyProvidersToday | null>(null)
 const modelsData = ref<TopologyModelsToday | null>(null)
+const clientsFailed = ref(false)
 const providersFailed = ref(false)
 const modelsFailed = ref(false)
 let timer: number | null = null
@@ -60,12 +74,21 @@ async function load() {
   controller?.abort()
   controller = new AbortController()
   const win = interval.value === 'day' ? undefined : interval.value
-  // 两组独立加载：一组失败/降级不拖垮另一组（allSettled 语义）。
+  // 三组独立加载：一组失败/降级不拖垮另一组（allSettled 语义）。
+  // ★ 客户端组恒走 request_logs 直查（clients-today）：stats 事件链不带客户端
+  // 身份列 ⇒ 没有日桶；day 模式后端自行以 rollup 水位封顶，与日桶对账。
   // day 区间才带 ?by=provider 交叉展开（窗口口径后端不提供）。
-  const [providersRes, modelsRes] = await Promise.allSettled([
+  const [clientsRes, providersRes, modelsRes] = await Promise.allSettled([
+    getClientsToday({ signal: controller.signal, window: win }),
     getProvidersToday({ signal: controller.signal, window: win }),
     getTopologyModelsToday({ signal: controller.signal, byProvider: !win, window: win }),
   ])
+  if (clientsRes.status === 'fulfilled') {
+    clientsData.value = clientsRes.value
+    clientsFailed.value = false
+  } else if ((clientsRes.reason as Error)?.name !== 'AbortError') {
+    clientsFailed.value = true
+  }
   if (providersRes.status === 'fulfilled') {
     providersData.value = providersRes.value
     providersFailed.value = false
@@ -152,6 +175,7 @@ const successRateText = computed(() => {
   return `${((v.success / v.requests) * 100).toFixed(1)}%`
 })
 
+const clientsUnavailable = computed(() => clientsFailed.value || clientsData.value?.degraded === true)
 const providersUnavailable = computed(() => providersFailed.value || providersData.value?.degraded === true)
 const modelsUnavailable = computed(() => modelsFailed.value || modelsData.value?.degraded === true)
 
@@ -162,13 +186,24 @@ const totalsDownText = computed(() =>
     : t('liveTopology.rail.degraded'),
 )
 
-// ── 明细两组（折叠目标）─────────────────────────────────────────────
-// 默认：供应商组展开（沿袭退役栏的既有行为），模型组收起。
-const groupOpen = ref({ providers: true, models: false })
+// ── 明细三组（折叠目标；2026-10-29 单一统计轮：clients 并入）────────
+// 默认全展开：桌面三列并排、高度可控；窄屏单列，需要时可各自收起。
+const groupOpen = ref({ clients: true, providers: true, models: true })
 
-function toggleGroup(key: 'providers' | 'models') {
+function toggleGroup(key: 'clients' | 'providers' | 'models') {
   groupOpen.value = { ...groupOpen.value, [key]: !groupOpen.value[key] }
 }
+
+/** 客户端行显示名：品牌映射（clientDisplayName）+ unknown 走 i18n。 */
+function clientName(key: string): string {
+  return key === 'unknown' ? t('liveTopology.client.unknown') : clientDisplayName(key)
+}
+
+const clientItems = computed(() => {
+  const list = clientsData.value?.items ?? []
+  const filtered = props.activeClient ? list.filter((i) => i.client_key === props.activeClient) : list
+  return filtered.slice(0, 14)
+})
 
 const providerItems = computed(() => {
   const list = providersData.value?.items ?? []
@@ -217,6 +252,18 @@ function providerName(item: { display_name?: string; catalog_code?: string }): s
     t('liveTopology.rail.unknownProvider')
   )
 }
+
+const clientTotals = computed(() =>
+  clientItems.value.reduce(
+    (acc, i) => ({
+      requests: acc.requests + i.requests,
+      total_tokens: acc.total_tokens + i.total_tokens,
+      cache_read_tokens: acc.cache_read_tokens + i.cache_read_tokens,
+      cache_write_tokens: acc.cache_write_tokens + i.cache_write_tokens,
+    }),
+    { requests: 0, total_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 },
+  ),
+)
 
 const providerTotals = computed(() => {
   const raw = providersData.value?.totals
@@ -332,6 +379,19 @@ function successRate(item: { success?: number; requests: number }): string {
           <i>{{ t('liveTopology.stats.failures') }}</i>
           <b>{{ compactNumber(failureCount) }}</b>
         </span>
+        <!-- 实时流程状态（网关核心窗口口径）：左栏明细/图看得到「正在发生」，
+             DB 统计永远只看得到「已记账」——两个观测层在这里并排。 -->
+        <template v-if="typeof inFlight === 'number'">
+          <span class="stats__live-divider" aria-hidden="true" />
+          <span class="stats__metric stats__metric--live" data-testid="stats-inflight">
+            <i>{{ t('liveTopology.stats.inFlight') }}</i>
+            <b>{{ compactNumber(inFlight) }}</b>
+          </span>
+          <span v-if="typeof queueDepth === 'number'" class="stats__metric stats__metric--live" data-testid="stats-queue">
+            <i>{{ t('liveTopology.stats.queue') }}</i>
+            <b>{{ compactNumber(queueDepth) }}</b>
+          </span>
+        </template>
       </div>
     </header>
 
@@ -339,6 +399,51 @@ function successRate(item: { success?: number; requests: number }): string {
       <p v-if="noteText" class="stats__note" data-testid="stats-note">{{ noteText }}</p>
 
       <div class="stats__groups">
+        <!-- ── 客户端组（2026-10-29 单一统计轮：原 SSE 三块汇总的 clients 维度并入）── -->
+        <section class="stats__group" data-testid="stats-group-clients">
+          <button
+            type="button"
+            class="stats__group-head"
+            :aria-expanded="groupOpen.clients"
+            :aria-label="t('liveTopology.rail.toggle', { group: t('liveTopology.summary.clients') })"
+            @click="toggleGroup('clients')"
+          >
+            <CaretRight class="stats__caret stats__caret--sub" :class="{ 'is-open': groupOpen.clients }" aria-hidden="true" />
+            <span class="stats__group-title">{{ t('liveTopology.summary.clients') }}</span>
+            <span v-if="!clientsUnavailable" class="stats__group-sum">
+              {{ compactNumber(clientTotals.requests) }} · {{ tokens(clientTotals.total_tokens) }} ·
+              {{ t('liveTopology.rail.cache') }} {{ compactNumber(clientTotals.cache_read_tokens + clientTotals.cache_write_tokens) }}
+            </span>
+          </button>
+
+          <p v-if="clientsUnavailable" class="stats__group-down">
+            {{ clientsFailed ? t('liveTopology.rail.unavailable') : t('liveTopology.rail.degraded') }}
+          </p>
+          <template v-else-if="groupOpen.clients">
+            <ul v-if="clientItems.length" class="stats__list">
+              <li
+                v-for="item in clientItems"
+                :key="item.client_key"
+                class="stats__row"
+                :class="{ 'is-active': activeClient === item.client_key, 'is-unknown': item.client_key === 'unknown' }"
+              >
+                <button type="button" class="stats__row-btn" @click="emit('select-client', item.client_key)">
+                  <span class="stats__name">{{ clientName(item.client_key) }}</span>
+                  <span class="stats__figures">
+                    <b>{{ compactNumber(item.requests) }}</b>
+                    <i>{{ successRate(item) }}</i>
+                  </span>
+                  <span class="stats__share" :style="{ width: `${Math.round((item.share || 0) * 100)}%` }" />
+                  <span class="stats__tokens">
+                    {{ tokens(item.total_tokens) }}<template v-if="cacheSum(item)"> · {{ t('liveTopology.rail.cache') }} {{ compactNumber(cacheSum(item)) }}</template>
+                  </span>
+                </button>
+              </li>
+            </ul>
+            <p v-else class="stats__empty">{{ emptyText }}</p>
+          </template>
+        </section>
+
         <!-- ── 供应商组 ─────────────────────────────────────────── -->
         <section class="stats__group" data-testid="stats-group-providers">
           <button
@@ -576,6 +681,20 @@ function successRate(item: { success?: number; requests: number }): string {
   color: var(--kx-text);
 }
 
+/* 实时流程状态（在途/排队）与 DB 记账指标的分隔：细竖线。 */
+.stats__live-divider {
+  align-self: stretch;
+  width: 1px;
+  background: var(--kx-border);
+  flex: none;
+}
+
+/* 在途/排队的数值用主色：它们是「正在发生的流程」——与「已记账」的
+   DB 指标在视觉上分层（文本色不算装饰性着色，第 21 轮判据不管文本）。 */
+.stats__metric--live b {
+  color: var(--kx-primary);
+}
+
 .stats__note {
   margin: 4px 0 0;
   font-size: 11px;
@@ -592,7 +711,7 @@ function successRate(item: { success?: number; requests: number }): string {
 
 @media (min-width: 768px) {
   .stats__groups {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -656,6 +775,11 @@ function successRate(item: { success?: number; requests: number }): string {
   list-style: none;
   display: flex;
   flex-direction: column;
+  /* 三组默认全展开时必须限高：14 行 × 两行文本会把面板撑到两千多像素
+     （2026-10-29 生产实测 2660px，拓扑被推出视口）——「所有统计可见」
+     与「节约头部空间」的平衡点 = 组内滚动（旧左下栏同款手法）。 */
+  max-height: 240px;
+  overflow-y: auto;
 }
 
 .stats__row-btn {
