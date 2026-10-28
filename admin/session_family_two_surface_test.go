@@ -142,6 +142,17 @@ var sessionFamilyBareParentReaders = map[string]string{
 	// ★ ★★ `cmd/tools/validate_sessions_v2/` 下的那一份 ⇒ ★★ 它**只覆盖那个工具**
 	// ★ ★★ （★ 实测：★ 只有 ExecuteRepair 那两条测试）⇒ ★★ **完全没覆盖 admin 侧**
 	// ★ ★★ ⇒ ⇒ ★★ 排除的理由当时是**假**的 ⇒ ⇒ ⇒ 本轮补上了真正的那道门。
+	// ★★ 合并对拍（r1044）：★ 上游一侧同样撤了这两条登记（★ 结论一致），★ 但其依据
+	// ★ ★ 是「由 internal/partguard 的 allowedParentDML 白名单管（r1041 版三条已登记）」
+	// ★ ★ + 「repair_two_surface_test.go 的逐条断言」⇒ ⇒ ★★ **两处依据都不足以覆盖
+	// ★ ★ admin 侧**：★ partguard 的白名单答的是「**允许**写吗」，★ **不答**「两面
+	// ★ ★ **成对**吗」（★ 那正是 admin/session_family_delete_two_surface_test.go 的事）；
+	// ★ ★ repair_two_surface_test.go 在 cmd/tools/validate_sessions_v2/ 下 ⇒ ★ 只覆盖
+	// ★ ★ 那个修复工具 ⇒ ⇒ ★★ 上游的依据里**唯一真正覆盖 admin 侧的两面 DELETE**的，
+	// ★ ★ 仍然只有本轮新立的那道门 ⇒ ⇒ ★★ 本条以**本轮的门**为准。
+	// ★★ 另采上游一条**属实**的补充：★ 「DELETE FROM 不算读」这条排除本身是有
+	// ★ ★ 正反对照的（★ TestBareParentReadIgnoresPairedDelete，★ 在**本文件**）
+	// ★ ★ ⇒ ★★ 排除的**行为**是验过的 ⇒ ★★ 缺的只是**覆盖面**，不是排除本身。
 }
 
 var sessionFamilyParents = []string{"session_turns", "session_bodies", "session_turn_details"}
