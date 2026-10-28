@@ -63,6 +63,30 @@ trap 'rm -rf "$TMP"' EXIT
 fail() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
 pass() { printf 'PASS %s\n' "$*"; }
 
+# ── 基线形状契约（★ 与「共享库在不在」无关）──────────────────────────────
+#
+# ★★ 为什么要有这一条（★ r1039 第三轮实测出来的）：
+#   ★ 这道门必须能在「漂移账被掏空 / 丢失」时**红** ⇒ ⇒ 红的理由必须
+#     **与「共享部署库在不在」无关** —— ★ 缺 SSOT 时本门整段是 SKIP（★ exit 0）
+#     ⇒ ⇒ 若红因依赖 SSOT，★ 掏空态就会「仍绿」⇒ ⇒ **假的有牙**。
+#   ★ 而本门是用 sed/grep 从漂移账里取两个清单 ⇒ ⇒ **键缺失时取到的是空串**
+#     ⇒ ⇒ 棘轮会拿一个空基线去比 ⇒ ⇒ 结论是假的（★ 「空基线」与
+#     「没有待合并项」在文本上**长得一样**）⇒ ⇒ **键的存在性本身就是契约**。
+#   ★ ⇒ 这条判据跑在 P3 之前（★ P3 也要读漂移账的豁免表）⇒ ⇒ 掏空态下
+#     **第一个**失败一定是本条 ⇒ ⇒ 红因（red_signal）在任何环境下都一致。
+if [[ ! -f "$BASELINE" ]]; then
+  printf 'FAIL baseline missing: %s (the cross-repo drift ledger is part of the repo)\n' "$BASELINE" >&2
+  exit 1
+fi
+for key in '"note"' '"pendingMergeCriteria"' '"probeExemptions"'; do
+  if ! grep -qF "$key" "$BASELINE"; then
+    printf 'FAIL baseline shape broken: %s is missing from %s\n' "$key" "$BASELINE" >&2
+    printf '  the drift ledger is a registry this gate reads: its keys are part of the contract\n' >&2
+    printf '  (★ a missing key would silently read as an empty list ⇒ the ratchet would compare against nothing)\n' >&2
+    exit 1
+  fi
+done
+
 # ── 解析共享部署库 SSOT（与 deploy-local.sh 的候选顺序一致）──────────────
 ssot=''
 for cand in "${AIAN_DEPLOY_LIB:-}" "$ROOT/scripts/deploy-lib" "$HOME/workspace/ai-native-workspace/deploy-lib" "$HOME/workspace/ai-native-tools/deploy-lib"; do
@@ -284,12 +308,9 @@ fi
 
 # ── 棘轮判定：待合并集合只准变小 ──────────────────────────────────────────
 base_pending=''
-if [[ -f "$BASELINE" ]]; then
-  base_pending="$(sed -n '/"pendingMergeCriteria"/,/]/p' "$BASELINE" | grep -o '"[^"]*"' | tr -d '"' | grep -v '^pendingMergeCriteria$' || true)"
-else
-  printf 'FAIL baseline missing: %s (run with --update-baseline after reviewing the drift list)\n' "$BASELINE" >&2
-  exit 1
-fi
+# ★ 基线的**存在性与形状**已在【基线形状契约】那一段验过（★ 那一段跑在 P3 之前
+#   ⇒ 掏空态下第一个失败一定是它 ⇒ 红因稳定）⇒ ⇒ 这里直接取清单。
+base_pending="$(sed -n '/"pendingMergeCriteria"/,/]/p' "$BASELINE" | grep -o '"[^"]*"' | tr -d '"' | grep -v '^pendingMergeCriteria$' || true)"
 
 regressed=0
 improved=0
@@ -310,6 +331,18 @@ done
 [[ "$regressed" -eq 0 ]] || fail 'a previously-agreed cross-repo criterion regressed'
 
 if [[ "$UPDATE_BASELINE" -eq 1 ]]; then
+  # ★★ 豁免表必须**原样保留**（★ r1039 第三轮当场抓到的潜伏缺陷）：
+  #   ★ 第一版写入器只写 `note` + `pendingMergeCriteria` ⇒ ★ **不写
+  #     `probeExemptions`** ⇒ ⇒ 用它更新一次基线，P3 的豁免表就没了
+  #     ⇒ ⇒ 下一个跑门的人会看到「登记册里没有豁免」的假红。
+  #   ⇒ ⇒ 这里**逐字**取出原文件里的那一段并写回；★ 取不到就**拒绝写**
+  #     （★ 静默写成空数组 = 悄悄丢掉 P3 的豁免 ⇒ 比报错更糟）。
+  exemptions_block="$(sed -n '/"probeExemptions"/,/^  ]/p' "$BASELINE" || true)"
+  if [[ -z "$exemptions_block" ]]; then
+    printf 'FAIL cannot locate the "probeExemptions" block in %s — refusing to rewrite the ledger\n' "$BASELINE" >&2
+    printf '  (★ writing it back empty would silently drop every P3 exemption ⇒ the next run would report a false red)\n' >&2
+    exit 1
+  fi
   {
     printf '{\n'
     printf '  "note": "跨仓漂移账（只降不升）：pendingMergeCriteria = 共享部署库与本仓仍然不同的判据。改动 = 先改共享库，再改本仓，最后更新本基线。",\n'
@@ -321,7 +354,8 @@ if [[ "$UPDATE_BASELINE" -eq 1 ]]; then
       printf '    "%s"' "$crit"
       first=0
     done
-    printf '\n  ]\n'
+    printf '\n  ],\n'
+    printf '%s\n' "$exemptions_block"
     printf '}\n'
   } > "$BASELINE"
   printf 'UPDATED baseline: %s (pending=%s)\n' "$BASELINE" "${#pending_now[@]}"

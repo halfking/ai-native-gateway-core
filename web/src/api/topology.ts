@@ -208,3 +208,56 @@ export function getTopologyModelsToday(options?: {
     signal: options?.signal,
   })
 }
+
+// ── 客户端区间统计（2026-10-29 单一统计轮）────────────────────────────
+// GET /api/admin/topology/clients-today —— 客户端维度没有日桶（usage_facts 不
+// 携带客户端身份列），恒直查 request_logs；day 模式后端自行以 rollup 水位封顶
+// （对齐 providers/models 组的日桶滞后，同面板三组对得上账）。client_key 与
+// 前端 clientKeyOf 同口径，显示名由 clientDisplayName 映射。
+
+export interface TopologyClientTodayItem {
+  /** 稳定身份键（agent → profile → protocol → identity 前 8 位 → unknown） */
+  client_key: string
+  requests: number
+  success: number
+  failure: number
+  rate_limited: number
+  prompt_tokens: number
+  completion_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  total_tokens: number
+  credits_charged: number
+  cost_usd: number
+  /** 占区间总请求的比重（0..1） */
+  share: number
+}
+
+export interface TopologyClientsToday {
+  day_utc?: string
+  /** 窗口口径的区间起点（day 模式不输出） */
+  window_start_utc?: string
+  tenant_scope?: string
+  generated_at?: string
+  rollup_cadence?: string
+  /** 短窗口口径回显：?window= 请求时为 "5m"/"1h" */
+  window?: string
+  /** day 模式实际套用的 rollup 水位封顶（对齐日桶滞后） */
+  source_high_watermark?: string
+  items?: TopologyClientTodayItem[]
+  truncated?: boolean
+  total_requests?: number
+  degraded?: boolean
+  error_code?: string
+}
+
+export function getClientsToday(options?: {
+  signal?: AbortSignal
+  /** 短窗口口径（5m / 1h）；缺省 = 当天（UTC 日起点 + 水位封顶） */
+  window?: '5m' | '1h'
+}): Promise<TopologyClientsToday> {
+  const query = options?.window ? `?window=${options.window}` : ''
+  return req<TopologyClientsToday>('GET', `/api/admin/topology/clients-today${query}`, undefined, {
+    signal: options?.signal,
+  })
+}

@@ -1430,48 +1430,6 @@
 > 列缺失吃 V2 写入；Responses 侧 URI-only 音频跳过无损失上报；`alt=sse` 缺省时形态
 > 与厂方 JSON 数组方言不一致（既有行为）。
 > ⇒ 审计档 `docs/audit/2026-10-28-Gemini批判审计三轮.md`；通用式见 `LESSONS.md` **§521**（4 条：声明逐条对实证 / 测试词表≠生产词表=恒绿假象 / 注释里的假设要当场证伪 / 并行修复不免除验证）。
-> **2026-10-29 Gemini 批判审计三轮遗留收口轮**（本 checkout）：★ 处置上条 §六遗留
-> 1/3/4 三项，每项**先定性再动手**。
-> ⇒ ★★ **遗留 1（`session_turns_hot.host` 缺列）三库对拍定性为【本地库漂移】**：
-> 252（pg-252-pg17）/211（acc-llm_gateway）实测 `host`/`tags` 五列全齐、只有本地缺——
-> 两列同缺 = 整条**迁移 885 没落**，不是代码缺列（安装器 runner:1243 启动清单里有它 ⇒
-> 新装库不缺）；本地 `schema_migrations` 停在 869（2026-10-18）而 `tools`/`client_protocol`
-> 列却在 ⇒ **旁路结构演进补了后到的列、漏了没被旁路的 885**。处置：本地幂等应用 885
-> （父表+hot 两侧同形）+ 按 693/701 先例 stamp 台账；`TestTurnWriterHostTagsRealDB` +
-> `TestPromoteColumnContractRealDB`（707 列集合契约）双绿；真机 8799（V2 shadow write）
-> 写入 12 行 turn 全部成功、`host='g3-temp-8799'` 落值正确——修复前全部 42703。
-> ⇒ ★★ **遗留 3（Responses 侧损失上报缺失）**：`reportSerializeResponsesLosses` 补两个
-> 上报点（audio / document），**判据直接调 `buildResponsesInputAudio`/`buildResponsesInputFile`
-> 看 nil 才上报** ⇒ 上报的恰好就是序列化器会丢的，两份判据永不漂移；同协议守卫沿用函数顶
-> 早退；document 新分支与既有 file_id 双空分支**互斥不双报**（有测试钉住：file_id 双空走
-> 旧分支、块仍以 filename-only 发出，不算消失）。真机实证：Gemini fileData 音频 →
-> responses 候选**主动升级桥** → 捕获体音频块消失（正确语义）+ `ir.anomaly
-> ir_protocol_loss … carrier=url` 留痕——修复前纯静默。
-> ⇒ ★★★ **遗留 4（`alt=sse` 缺省形态）落地为厂方缺省 JSON 数组**：**决策依据是两个官方
-> SDK 的源码而非文档**（Python google-genai 2.33.0 models.py:4758 等 8 处、JS @google/genai
-> 1.7.0 dist 仅一种拼接——**全部无条件硬编码 `?alt=sse`** ⇒ 官方客户端零回归，数组模式只
-> 服务手写原生客户端）；官方文档只写「stream of instances」不钉线体 ⇒ **别只看文档**。
-> 实现：`geminiWantsSSE`（显式 alt=sse 才 SSE）+ 数组模式 writer；帧转换**复用
-> `StreamChunk.SerializeGemini()` 同一份 body**（剥 `data: ` 重排元素），不第二份实现；
-> SSE 注释/[DONE] 哨兵不落数组（数组无注释通道）；**错误终态与零帧态都保持合法数组**
-> （`[error]`/`[]`）——第一版「数组未开写裸错误对象」被自己的测试当场抓包 ⇒
-> **数组模式的 body 恒为数组**这一条不变量必须钉死。
-> ⇒ ★★★ **真机抓到 Content-Type 真缺陷**：首版在 ServeHTTP 预设的 `application/json`
-> 被 ChatHandler **无条件重设**的 `text/event-stream` 覆盖 ⇒ **响应头的形态决策必须在
-> `WriteHeader` 提交前一刻做**（数组模式 writer 在 WriteHeader 里重设），提前设置必被下游
-> 覆盖。真机 A/B：无 alt ⇒ `application/json`+合法数组（3 元素含 usageMetadata 尾帧）/
-> alt=sse ⇒ SSE+keep-alive；音频请求经 Responses 桥完整闭环 200+数组；错误终态数组
-> `[{"error":…}]` 真机自然出现一次，形态正确。
-> ⇒ ★ 读数：`internal/ir` 全包 ✓（新增 6 条）/ `domains/streaming` 全包 ✓ 156.9s（新增 6 条）/
-> executors 全包 ✓ 45.8s / session/v2 全包 ✓ / `go build ./...` rc=0（★ 全局 go-build 缓存被
-> 并行会话竞态打坏——**远端 106ee9126 已补记同款现象**，隔离 GOCACHE 串行重跑为准）；
-> 环境已恢复（protocol/modality/endpoint 行/能力行/probe_state/key/turns 测试行回原值，
-> 885 两列+stamp 保留）。
-> ⇒ ★ 本轮明确没做：数组模式心跳（JSON 数组无注释通道，停滞感知靠客户端读超时——与厂方
-> 缺省形态一致）；`schema_migrations` 与本地真实结构的**全量**漂移对拍（只治了 42703 点名的
-> 885）；遗留 2（首流失败进熔断）属既有行为有恢复脚本，未动。
-> ⇒ 审计档 `docs/audit/2026-10-29-Gemini批判审计三轮-遗留收口轮.md`；
-> 通用式见 `LESSONS.md` **§535**。
 > **2026-10-27 Gemini 原生出站 executor 轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
 > ★ 承接 §436 同一审计档的**子项②**（§433 清单的最后一项可做项）。
 > ⇒ ★★★★ **本轮最值钱的一处定性：缺口不是「功能没做」，是「死配置」** ——
@@ -14412,6 +14370,57 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > 登记不越界）。★ 变异臂：折叠键退回单键 ⇒ 拆分测试红（1 行 180 请求精确复现）
 > ⇒ 还原绿 ⇒ md5 一致；`go test ./admin/` ok 117.4s。
 > ⇒ 审计档 §9（同文件追加）；提交 273e4926a + 671e70ac1。
+> **2026-10-29 第 35 增量：live 页单一统计轮（三组合一 + 客户端维度直查 + 流程
+> 状态并入总量行）**（goal 会话）：★ 承接 owner 指令（第一批统计 providers+models
+> 扩成 **clients+providers+models**，删除下方 SSE 三块汇总，**全页只有一份统计**；
+> 节约表头部空间，尽量显示请求/服务的流程状态）。
+> ⇒ ★★★ **关键决定：clients 组恒直查 request_logs**（新端点
+> `GET /api/admin/topology/clients-today?window=5m|1h|day`）—— stats Event JSON
+> 里有客户端身份（agent_name/client_profile/identity_hash）但 **usage_facts 表
+> 没这些列** ⇒ stats_usage_daily 永远不会有 client 维度；扩列 = 分区表 DDL +
+> rollup 改动（风险面，不为本轮引入）⇒ 「没有日桶」≠「不能统计」：day = UTC 日起点、
+> 5m/1h = 窗口家族同款；客户端取键与前端 clientKeyOf **逐字同款**
+> （agent → profile → protocol → identity 前 8 位 → unknown）。
+> ⇒ ★★★ **day 模式以 rollup 水位封顶**（`ts <= MAX(source_max_occurred_at)`，
+> 水位 NULL fail-open 不封顶）—— providers/models 组的 day 数字来自 rollup
+> （≤1h 滞后、止于水位），客户端不封顶就多出最后一小时全量 ⇒ 同面板三组
+> 对不上账；封顶后 211 同刻实测 **14,452 / 14,454 / 14,452**（差 2 笔 =
+> rollup 边沿 0.01%）⇒ **响应回显实际套用的水位**（对齐了什么可被审计）。
+> ⇒ ★ **前端**：StatsPanel 三组（clients 默认展开；桌面三列 ≥768、窄屏单列；
+> clientDisplayName 品牌映射 + `client.unknown` 复用；点行联动 clients 过滤）；
+> **SummaryHeader.vue 删除**（含测试段）+ coreSummary 行删除 ⇒
+> **useLiveTopology 的孤儿聚合层退役**（clientSummaries/summarizeBy/
+> providerSummaries/modelSummaries/ClientSummary/DimensionSummary —— 其唯一
+> 消费方就是被删的三块汇总）；总量行并入实时**在途/排队**（网关核心窗口口径，
+> 与 DB 记账指标分隔线分层 + 主色数值 + **未测量隐藏不冒充 0**）。
+> ⇒ ★ **「所有统计可见」与「节约空间」的平衡 = 明细限高滚动**（三组默认展开
+> 实测 2660px 把拓扑推出视口 ⇒ 组内 max-height 240 + overflow ⇒ 桌面 329px）
+> ⇒ ★ **布局数字必须真的量且钉视口**：无头 Chrome 默认 ~752 宽会把「桌面
+> 三列」读数变成手机单列的 952px ⇒ `Emulation.setDeviceMetricsOverride` 钉
+> 1600 后才量到真值。
+> ⇒ ★ **登记簿三处随改动同步**：canonical 读点登记簿（79 文件/98 读点；
+> client_profile:detail 等 15 列与扫描器**逐字对拍通过**）+ 时间窗缺陷台账 +
+> handler 接口补 QueryRow（pgxmock/真实池都实现）。
+> ⇒ ★ **i18n**：8 语种复用 `summary.clients/providers/models`（组标题，随消费方
+> 迁移而存活）+ `client.unknown`；新增 `stats.inFlight/queue`；**删
+> `summary.inFlight/success/failure/queue`**（coreSummary 退役后 0 引用，
+> 共有死键棘轮 0 硬约束）。
+> ⇒ ★ **读数**：`vue-tsc` 0 错 / `vitest` 2927 通过（StatsPanel 19 例；
+> ★ 唯一 2 红 = `theme.logoAssets` 资产 ratio/inkLuma，**干净 HEAD worktree
+> 复现 ⇒ 归属并行品牌轮 6cc313eee，登记不擅动**）/ `go test ./admin/` 全量绿 /
+> 15 道前端门 PASS / 硬编码中文 4483=基线 / 共有死键 0。
+> ⇒ ★ **211 部署 + 生产实测**（`2.5.8-cbeb6898-dirty`，槽 b）：API 三组对账
+> 闭环（上）；浏览器（无头 Chrome + 登录态 + Emulation 钉视口）：三列
+> 14/13/14 行、总量行 `… · 在途 3 · 排队 0`、口径行随区间切换、
+> `.sumhead__block`=0、键路径 0、面板 329px、折叠后总量行与在途常驻。
+> ⇒ ★ **本轮明确没做 / 如实记**：clients 维度不进日桶（历史分布查不到，
+> 扩列 = DDL 工程）；logo 资产 2 红未修（上游）；折叠态/区间不持久化；
+> 在途/排队是拓扑窗口口径（与 DB 区间无关，以分隔线表达两观测层差异）。
+> ⇒ 审计档 `docs/audit/2026-10-29-live页单一统计轮.md`；
+> 通用式见 `LESSONS.md` **§544**（★ 让号：初拟 §526 撞并行 RISK-3 轮，重取 §544；五条：★★★★ 同面板多组必须同刻同界 /
+> ★★★★ 缺维度先查事实链哪环丢的字段 / ★★★ 两观测层可并排不可混算 /
+> ★★★ 可见与节约的平衡 = 限高滚动 + 布局数字必须钉视口量 /
+> ★★ 共享树 HEAD 会自己前进）。
 **2026-10-29 ㊸ RISK-6 收口轮：Anthropic 协议腿（Claude Code↔Claude）接直通 + 逐站点盖章**：
 ★ 承接 ㊲ 登记的 RISK-6（「该腿仍走既有改写路径 ⇒ 独立一轮；机制与本轮相同」）⇒
 照 ㊶ 教训**先枚举该腿全部序列化站点再补盖章，别按 paramguard 数**。

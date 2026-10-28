@@ -6,14 +6,14 @@
 //
 // 版面（维护者 2026-10-17 拍板；2026-10-28 头部统计轮更新）：
 //   顶部  客户端 / 供应商 / 模型 / 节点 四维**多选**过滤（同维 OR、跨维 AND）
-//   头部  区间统计面板（请求数/token/成功率，5分钟/1小时/当天，可折叠，
-//         2026-10-28 owner 口径：所有统计放页面上部，左下统计栏退役）
-//         + 三块汇总条：客户端 / 供应商 / 模型（同一过滤子集）
+//   头部  区间统计面板（客户端+供应商+模型三组 + 请求数/token/成功率总量行，
+//         5分钟/1小时/当天，可折叠；2026-10-29 owner 口径：全页只有这一份统计，
+//         SSE 三块汇总退役；在途/排队等流程状态并入总量行）
 //   左    客户端请求逐条明细（聚合已上移头部）
 //   中    实时拓扑：上→下 客户端 → 网关核心大方块 → 供应端节点 → 模型
 //   右    供应商端响应的请求（点行弹摘要浮层，「查看全景」开新窗）
 //
-// **关键约束**：图、头部统计与三块汇总、左右两栏必须收敛到同一个
+// **关键约束**：图、头部统计面板、左右两栏必须收敛到同一个
 // 过滤子集，否则用户会看到「图里没有、右栏却有」的矛盾画面。
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -23,7 +23,7 @@ import { ElOption, ElSelect } from 'element-plus'
 import { useLiveStream } from '../composables/useLiveStream'
 import { redisHealthyRef as redisHealthy, redisErrorRef as redisError } from '../composables/liveStreamStore'
 import { useLiveTopology, type PanelEntry } from '../composables/useLiveTopology'
-import { clientDisplayName, clientKeyOf, modelKeyOf, providerNodeKeyOf } from '../lib/liveTopologyGraph'
+import { clientKeyOf, modelKeyOf, providerNodeKeyOf } from '../lib/liveTopologyGraph'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 import TopologyCanvas from '../components/live-topology/TopologyCanvas.vue'
 import ClientRequestPanel from '../components/live-topology/ClientRequestPanel.vue'
@@ -31,7 +31,6 @@ import ProviderResponsePanel from '../components/live-topology/ProviderResponseP
 import StatsPanel from '../components/live-topology/StatsPanel.vue'
 import RoutingDecisionTimeline from '../components/live-topology/RoutingDecisionTimeline.vue'
 import RequestZoomPanel from '../components/live-topology/RequestZoomPanel.vue'
-import SummaryHeader from '../components/live-topology/SummaryHeader.vue'
 import type { ParticleSpawn } from '../lib/liveTopologyParticles'
 import type { GatewayModuleKey, TopoNode } from '../types/liveTopology'
 import { DEFAULT_TOPO_FILTERS, TOPO_WINDOW_PRESETS } from '../types/liveTopology'
@@ -225,54 +224,16 @@ const decisions = computed(() => (selectedRequestId.value ? topo.decisionsFor(se
 /** 摘要浮层里的路由决策时间线（与左侧 timeline 同一份数据源）。 */
 const zoomDecisions = computed(() => (zoomEntry.value ? topo.decisionsFor(zoomEntry.value.requestId) : []))
 
-
-const coreSummary = computed(() => {
-  const m = topo.coreMetric.value
-  const q = topo.queue.value
-  if (!m) return ''
-  const parts = [
-    t('liveTopology.summary.inFlight', { n: m.inFlight }),
-    t('liveTopology.summary.success', { n: m.success }),
-    t('liveTopology.summary.failure', { n: m.failure }),
-  ]
-  if (q?.pipeline?.depth) parts.push(t('liveTopology.summary.queue', { n: q.pipeline.depth }))
-  return parts.join(' · ')
-})
-
-/** 头部统计面板跟随供应商/模型过滤（多选时取第一项，其余靠过滤后收敛）。 */
+/** 头部统计面板跟随客户端/供应商/模型过滤（多选时取第一项，其余靠过滤后收敛）。 */
+const activeClient = computed(() => topo.filters.value.clients[0] ?? '')
 const activeProvider = computed(() => topo.filters.value.providers[0] ?? '')
 const activeModel = computed(() => topo.filters.value.models[0] ?? '')
 
-/** 头部三块汇总（2026-10-28 汇总上移轮）：客户端/供应商/模型。
- *  与图、两栏同一过滤子集（顶部关键约束）；客户端走易读名，
- *  供应商/模型本身就是显示名。行形状由 SummaryHeader 定义。 */
-const summaryClients = computed(() =>
-  topo.clientSummaries.value.map((s) => ({
-    name: clientDisplayName(s.client),
-    requests: s.requests,
-    success: s.success,
-    failure: s.failure,
-    inFlight: s.inFlight,
-  })),
-)
-const summaryProviders = computed(() =>
-  topo.providerSummaries.value.map((s) => ({
-    name: s.key,
-    requests: s.requests,
-    success: s.success,
-    failure: s.failure,
-    inFlight: s.inFlight,
-  })),
-)
-const summaryModels = computed(() =>
-  topo.modelSummaries.value.map((s) => ({
-    name: s.key,
-    requests: s.requests,
-    success: s.success,
-    failure: s.failure,
-    inFlight: s.inFlight,
-  })),
-)
+function onSelectClient(key: string) {
+  const list = topo.filters.value.clients
+  const next = list.includes(key) ? list.filter((c) => c !== key) : [...list, key]
+  topo.filters.value.clients = next
+}
 
 function onSelectProvider(code: string) {
   const list = topo.filters.value.providers
@@ -388,21 +349,14 @@ function onSelectModel(model: string) {
          点行联动图过滤（与图、两栏同一过滤子集）。 -->
     <StatsPanel
       class="live-topology__statspanel"
+      :active-client="activeClient"
       :active-provider="activeProvider"
       :active-model="activeModel"
+      :in-flight="topo.coreMetric.value?.inFlight ?? null"
+      :queue-depth="queueDepth"
+      @select-client="onSelectClient"
       @select-provider="onSelectProvider"
       @select-model="onSelectModel"
-    />
-
-    <p v-if="coreSummary" class="live-topology__summary">{{ coreSummary }}</p>
-
-    <!-- 头部三块汇总（2026-10-28 owner 口径）：客户端 / 供应商 / 模型，
-         与下面的图、两栏同一过滤子集。 -->
-    <SummaryHeader
-      class="live-topology__sumhead"
-      :clients="summaryClients"
-      :providers="summaryProviders"
-      :models="summaryModels"
     />
 
     <p v-if="connection !== 'open'" class="live-topology__banner">
@@ -654,15 +608,7 @@ function onSelectModel(model: string) {
   flex: none;
 }
 
-.live-topology__summary {
-  margin: 0;
-  font-size: var(--kx-font-sm, 12px);
-  color: var(--kx-muted);
-}
-
-/* 头部三块汇总条与区间统计面板：不参与伸缩（高度=内容），
-   把剩余高度全部留给 body。 */
-.live-topology__sumhead,
+/* 头部区间统计面板：不参与伸缩（高度=内容），把剩余高度全部留给 body。 */
 .live-topology__statspanel {
   flex: none;
 }

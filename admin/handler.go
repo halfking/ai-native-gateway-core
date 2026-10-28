@@ -62,6 +62,9 @@ type controlledBodyDB interface {
 // 单测钉住，所以按 controlledBodyDB 的同款范式开一个窄口。
 type topologyStatsDB interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	// QueryRow 供 clients-today 的 rollup 水位封顶查询（单值行）；pgxmock 与
+	// 真实连接池都实现它。2026-10-29 头部统计轮扩展。
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 type Handler struct {
@@ -1151,6 +1154,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-10-28（live 页当天汇总轮）：模型当天聚合（stats_usage_daily 的
 	// provider_model 维度在 canonical_id 上再聚合）。同表同口径，不引入第二套真值。
 	mux.HandleFunc("/api/admin/topology/models-today", admin(h.handleTopologyModelsToday))
+	// 2026-10-29（live 页单一统计轮）：客户端区间聚合 —— 客户端维度没有日桶
+	// （usage_facts 不携带客户端身份列），恒直查 request_logs；day 模式以 rollup
+	// 水位封顶对齐 providers/models 组的日桶滞后（同面板三组对得上账）。
+	mux.HandleFunc("/api/admin/topology/clients-today", admin(h.handleTopologyClientsToday))
 	// 2026-09-25: 对账报表（供应商/内部双视角区间汇总 + xlsx 双 sheet 导出
 	// + 单日手动重跑）。superAdmin——数据含全租户内部计费。
 	mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(h.handleReportRollup))

@@ -669,6 +669,14 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "read", Columns: []string{"client_model:detail", "error_kind:base", "failure_detail_code:base", "success:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "Top 问题：① 按凭据；② 按模型；本读点读 client_model:detail,error_kind:base,failure_detail_code:base,success:base,ts:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
 		},
 	},
+	"admin/topology_clients_today.go": {
+		Form:  formDirectLiteralSQL,
+		Class: classNeedsDetailsLeg,
+		Note:  "头部统计客户端组（单一统计轮）：request_logs 直查按 clientKeyOf 同款表达式聚合",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{"agent_name:base", "cache_read_tokens:base", "cache_write_tokens:base", "client_profile:detail", "client_protocol:base", "completion_tokens:base", "cost_usd:base", "credits_charged:base", "identity_hash:base", "prompt_tokens:base", "request_status:expr", "success:base", "tenant_id:base", "total_tokens:expr", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "头部统计客户端组（单一统计轮）；本读点读 agent_name:base,cache_read_tokens:base,cache_write_tokens:base,client_profile:detail,client_protocol:base,completion_tokens:base,cost_usd:base,credits_charged:base,identity_hash:base,prompt_tokens:base,request_status:expr,success:base,tenant_id:base,total_tokens:expr,ts:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
+		},
+	},
 	"admin/topology_window_stats.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,
@@ -2510,6 +2518,7 @@ var canonicalTimeWindowedReadPoints = map[string]string{
 	"admin/swim_lane_init.go":                "泳道初始化；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/tenants.go":                       "租户统计（tenant_id / tokens / cost / credits_charged）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/top_problems.go":                  "Top 问题：① 按凭据；② 按模型；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/topology_clients_today.go":        "头部统计客户端组（单一统计轮）：request_logs 直查按客户端聚合；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/topology_window_stats.go":         "头部统计短窗口口径（?window=5m|1h）：① 供应商聚合；② 模型聚合；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/usage.go":                         "用量面：① 失败数；② 失败钻取；③ 5 分钟分桶；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/usage_credits.go":                 "requestLogsFromClause(days) 按天数分臂：≤7 天走会话族热腿原生源，>7 天走 canonical 视图 ⇒ 切换层契约；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
