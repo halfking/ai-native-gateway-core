@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/admin"
+	"github.com/kaixuan/llm-gateway-go/internal/testdb"
 )
 
 // r1039_jwt_middleware_revocation_realdb_test.go — 2026-10-28 批判性审计轮补的
@@ -58,46 +59,56 @@ func r1039RealDBDSN(t *testing.T) string {
 	return ""
 }
 
+// r1039CheckCreateDatabase 预检当前角色有没有 CREATEDB。
+//
+// 为什么预检（与 admin/scratch_db_test.go 同款）：internal/testdb.Create 在建库
+// 失败时是 t.Fatalf ⇒ 一个**权限受限**的 CI 角色会把「跑不了」变成「红门」
+// ⇒ 那是假红。但也**不能**因此 fallback 到共享库 ⇒ 只能明说没跑。
+func r1039CheckCreateDatabase(baseDSN string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, baseDSN)
+	if err != nil {
+		return errors.New("连接 base DSN 失败: " + err.Error())
+	}
+	defer pool.Close()
+	var can bool
+	if err := pool.QueryRow(ctx,
+		`SELECT rolcreatedb FROM pg_roles WHERE rolname = current_user`).Scan(&can); err != nil {
+		return errors.New("查询 current_user 的 CREATEDB 失败: " + err.Error())
+	}
+	if !can {
+		return errors.New("当前角色没有 CREATEDB —— 一次性库建不出来")
+	}
+	return nil
+}
+
 // r1039RealDBPool 建一次性库 + 只建判据需要的 settings_kv 表，并写入改密纪元。
+//
+// ★★ **2026-10-28 批判式审计轮·第二次修订**：本函数原先**自己** CREATE / DROP
+//   DATABASE，且**没有信号接管** ⇒ 进程被 SIGTERM 时 Go 运行时**不执行**
+//   t.Cleanup ⇒ 一次性库**泄漏**（★ 这正是 internal/testdb 存在的原因）。
+//   ⇒ 改用**共享 helper** internal/testdb.Create：它带进程级信号注册表
+//   （SIGINT/SIGTERM ⇒ 回收全部已登记库 ⇒ 重发信号 ⇒ 仍以「被信号杀死」退出）、
+//   `WITH (FORCE)` 回收、120s 清理超时，以及 `mustLandInScratch`
+//   （★ 断言 DSN **真的**落在新库上 ⇒ 杜绝「静默跑在共享库上」）。
+// ⇒ CREATEDB 预检：权限受限的角色 ⇒ **明说没跑**（SKIP），不让 testdb.Fatalf
+//   把「跑不了」变成「红门」。
 func r1039RealDBPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := r1039RealDBDSN(t)
+	baseDSN := r1039RealDBDSN(t)
+	if err := r1039CheckCreateDatabase(baseDSN); err != nil {
+		t.Skip(err.Error() + " —— 本次**没有**跑真库端到端验证（刻意：宁可明说没跑，" +
+			"也不退回共享库去破坏它）")
+	}
+	dsn := testdb.Create(t, baseDSN)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	t.Cleanup(cancel)
 
-	adminCfg, err := pgxpool.ParseConfig(dsn)
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		t.Fatalf("parse dsn: %v", err)
-	}
-	adminCfg.ConnConfig.Database = "postgres"
-	maintenance, err := pgx.ConnectConfig(ctx, adminCfg.ConnConfig)
-	if err != nil {
-		t.Skipf("connect maintenance db: %v", err)
-	}
-	t.Cleanup(func() { _ = maintenance.Close(context.Background()) })
-
-	dbName := fmt.Sprintf("itgate_r1039revoke_%d", time.Now().UnixNano()%1_000_000)
-	if _, err := maintenance.Exec(ctx, `CREATE DATABASE `+pgx.Identifier{dbName}.Sanitize()); err != nil {
-		t.Fatalf("create disposable db %s: %v", dbName, err)
-	}
-	t.Cleanup(func() {
-		bg, bgCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer bgCancel()
-		_, _ = maintenance.Exec(bg, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-			WHERE datname = $1 AND pid <> pg_backend_pid()`, dbName)
-		if _, err := maintenance.Exec(bg, `DROP DATABASE IF EXISTS `+pgx.Identifier{dbName}.Sanitize()); err != nil {
-			t.Logf("cleanup: drop %s: %v", dbName, err)
-		}
-	})
-
-	targetCfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("parse dsn: %v", err)
-	}
-	targetCfg.ConnConfig.Database = dbName
-	pool, err := pgxpool.NewWithConfig(ctx, targetCfg)
-	if err != nil {
-		t.Fatalf("connect %s: %v", dbName, err)
+		t.Fatalf("连接一次性库失败: %v", err)
 	}
 	t.Cleanup(pool.Close)
 

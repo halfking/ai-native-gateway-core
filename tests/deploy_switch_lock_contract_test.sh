@@ -73,7 +73,10 @@ pass 'lock is re-acquirable after release (no permanent deadlock)'
 
 # ── I4/I5/I6：源码顺序判据（deploy-local.sh）────────────────────────────
 deploy_script="$ROOT/scripts/deploy-local.sh"
-line_of() { grep -nF -- "$1" "$deploy_script" | head -1 | cut -d: -f1; }
+# ★ 用 `grep -m1` 而不是 `grep -n ... | head -1`：★ 后者让 `head` 提前退出 ⇒
+#   上游 `grep` 可能收到 SIGPIPE（141）⇒ ★ 在 `set -euo pipefail` 下把判据
+#   变成「随文件内容漂移的随机中止」。★ 语义等价（都取第一处匹配），无竞态。
+line_of() { grep -m1 -nF -- "$1" "$deploy_script" | cut -d: -f1; }
 
 acquire_line="$(line_of 'dl_acquire_switch_lock || die')"
 [[ -n "$acquire_line" ]] || fail 'deploy-local.sh must acquire the switch lock'
@@ -148,7 +151,7 @@ pass 'recovery removes a dead-holder lock and refuses a live one'
 # ⇒ 这里钉三处注册（usage / 参数白名单 / case 分派）+ 一次**真调用**。
 grep -q 'recover-switch-lock' "$deploy_script" \
   || fail 'deploy-local.sh must expose a recover-switch-lock action'
-usage_line="$(grep -n 'Usage: deploy-local.sh' "$deploy_script" | head -1)"
+usage_line="$(grep -m1 -n 'Usage: deploy-local.sh' "$deploy_script")"
 grep -q 'recover-switch-lock' <<<"$usage_line" \
   || fail 'recover-switch-lock must appear in the usage line'
 grep -q 'recover-switch-lock) ACTION=\$1' "$deploy_script" \
