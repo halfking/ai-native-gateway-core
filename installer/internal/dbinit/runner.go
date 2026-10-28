@@ -1658,6 +1658,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		// 现役约束名 session_turns_origin_stage_check（父表）
 		// / session_turns_hot_origin_stage_check（hot 表）。
 		"914_session_turns_origin_stage_check.sql",
+		// 915: recent_cache_hit_rate — P1-B-③（audit 2026-10-28 §4）路由侧
+		//   prompt-cache 亲和信号。(credential, model) 最近 N 条业务行的
+		//   token 加权 cache_read/prompt 占比，形态与探针排除同 428 的
+		//   recent_success_rate。纯 CREATE OR REPLACE FUNCTION，幂等，
+		//   零 DDL 风险；评分侧把 NULL/低样本当「无信号 → 中性」fail-open。
+		"915_recent_cache_hit_rate.sql",
 		},
 	}
 }
