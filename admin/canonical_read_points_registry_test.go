@@ -833,6 +833,24 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 		ExemptReason: exemptNoReadPoint,
 		Note:         "SQL 间接层审计工具；只在注释里讨论视图名清单",
 	},
+	// ★ 2026-10-28（R177 轮新增）：「逐读点实测分区下界」的量具。
+	//
+	// ★★ **视图名不硬编码在源码里** —— 它由 `--canonical-view` 传进来
+	//   ⇒ ⇒ 源码里只在**注释**里提到那个名字 ⇒ ⇒ 因此这两条是
+	//   「仅注释/字符串提及、本文件没有读点」形态。
+	//
+	// ★ 这不是「为了过门而登记」：★ 仓内那道门
+	//   （`TestCanonicalReadPointRegistryCoversEveryMentionedFile`）扫**全仓生产 .go**
+	//   里对 canonical 视图名的提及 ⇒ ⇒ **工具源码里出现那个名字就会被算成一个
+	//   「提及该视图的生产文件」** ⇒ ⇒ 而它**不是**读点 ⇒ ⇒ 必须登记为无读点。
+	// ⇒ ⇒ 顺带得到一个**更好的设计**：★ 量具不再绑死某一个视图 ⇒ 对任何 canonical 视图都适用。
+	"cmd/tools/partition_bound_probe/main.go": {
+		Form:         formCommentOrStringOnly,
+		Class:        classNoRead,
+		Exempt:       true,
+		ExemptReason: exemptNoReadPoint,
+		Note:         "分区下界实测量具；视图名由 --canonical-view 传参，源码里只在注释里提到它 ⇒ 不是生产读点",
+	},
 	"db/db.go": {
 		Form:         formViewDefinitionProbe,
 		Class:        classViewDefinitionFace,

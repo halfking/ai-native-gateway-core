@@ -11,6 +11,9 @@
 //     也证明数据源本身没坏（真建表、真比对字节数），避免"看不见"被当成
 //     "没发生"。
 //   - 不只断言 status==200：并发用例断言聚合**实打实只跑一次**。
+//   - 残留判据只覆盖「本次运行自己创建的 schema 集合」：原判据查全库
+//     dlperf_*，别的来源留下的同名 schema 会让本用例误红（红得与被测代码
+//     无关，是环境脏）。口径与来由见下面「隔离 schema 的命名与残留判据」。
 //
 // 运行：
 //
@@ -25,8 +28,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,27 +58,225 @@ func callStorageOverview(t *testing.T, h *Handler) (int, storageOverview, time.D
 	return rec.Code, ov, elapsed
 }
 
-// newStoragePerfHandler 连真实 PG 并返回隔离好的 handler。
+// ---------------------------------------------------------------------------
+// 隔离 schema 的命名与「残留」判据
 //
-// 每个用例独立 schema（dlperf_<test>_<pid>_<nanos>），退出时 DROP CASCADE。
-// 快照按 *pgxpool.Pool 分桶，池一换就是一份全新缓存，用例之间天然隔离。
-func newStoragePerfHandler(t *testing.T) (*Handler, *pgxpool.Pool, string) {
+// ★ 原判据（病灶，本轮修的就是它）：cleanup 里查的是**全库**所有 `dlperf_%`：
+//
+//	SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'dlperf\_%'
+//
+// 它判的是【这个库干不干净】，不是【我这次跑完干不干净】⇒
+// 并行会话留下的同名 schema、上一轮 panic/超时留下的残骸、别人手工建的，
+// 都会让**本用例**报红 —— 而那个红**与被测代码无关**，是环境脏。
+// 实证：本机 llm_gateway 库里长期躺着 3 个别的 PID 留下的 dlperf_* 残骸：
+//
+//	dlperf_testdatalifecyclestorageoverviewfieldsarecomplete_25590_
+//	dlperf_testdatalifecyclestorageoverviewfieldsarecomplete_26683_
+//	dlperf_testdatalifecyclestablesizesttlexpiryrefetches_14324_1792
+//
+// ⇒ 旧判据在这些库上恒红。
+//
+// ★ 现判据：**只判「本次运行自己创建的 schema 集合」**。集合怎么界定（两处都要写明）：
+//
+//  ① **名字**（dlPerfNewSchemaName）：
+//     `dlperf_<本次运行令牌>_<用例名><纳秒>_<序号>`，其中「本次运行令牌」
+//     = pid + 进程启动纳秒（base36）⇒ **全库唯一**、且带本次运行的指纹。
+//     ⚠ PG 标识符上限 63 字节，超了会被**静默截断** ⇒ 旧命名
+//     `dlperf_<test>_<pid>_<nanos>` 在用例名较长时末尾的 nanos 会被切掉
+//     （上面那 3 个残骸正是 63 字节整）⇒ 「按名字认定是我建的」本来就不可靠。
+//     现命名按预算截用例名、并保证 ≤ 63 字节 ⇒ 唯一性不靠截断维持。
+//  ② **名单**（dlPerfCreated 登记表）：**本次进程运行**创建过的 schema 名。
+//     别的进程 / 别的来源的 schema 根本不在表里 ⇒ 判据天然看不见它们。
+//
+// ⇒ 判据是变窄了，但**没有放宽成「忽略残留」**：自己建的 schema 一个都跑不掉，
+//   且「声称删掉了却还在」会被复查判红（dlPerfAssertNoResidue）。
+//   ⇒ 收窄是否过头，由同目录 data_lifecycle_storage_residue_test.go 的
+//     阳性/阴性对照各自证明（缺一不可）。
+// ---------------------------------------------------------------------------
+
+// dlPerfMaxIdentifierBytes 是 PG 标识符上限（NAMEDATALEN-1）。
+const dlPerfMaxIdentifierBytes = 63
+
+// dlPerfRunToken 是**本次测试进程运行**的专属令牌：pid + 进程启动时刻（base36）。
+var dlPerfRunToken = fmt.Sprintf("%s_%s",
+	strconv.FormatInt(int64(os.Getpid()), 36),
+	strconv.FormatInt(time.Now().UnixNano(), 36))
+
+// dlPerfRunPrefix 是**本次运行创建**的隔离 schema 的专属前缀。
+var dlPerfRunPrefix = "dlperf_" + dlPerfRunToken + "_"
+
+// dlPerfSchemaSeq 是同进程内的建表序号，保证同一进程多次建 schema 不重名。
+var dlPerfSchemaSeq int64
+
+// dlPerfSchemaRecord 记录一个「本次运行创建过」的隔离 schema。
+type dlPerfSchemaRecord struct {
+	name string
+	// claimed = 已声称删除完成 ⇒ 残留判据必须复查它**真的**不在了。
+	claimed bool
+}
+
+var (
+	dlPerfCreatedMu sync.Mutex
+	dlPerfCreated   = map[string]*dlPerfSchemaRecord{}
+)
+
+// dlPerfTestDSN 返回真库 DSN；未配置则显式 skip 并说明原因（绝不静默通过）。
+func dlPerfTestDSN(t *testing.T) string {
 	t.Helper()
 	// DSN 回退链必须与 admin500DSN 同构。此前只认 TEST_DATABASE_URL，
 	// 而本仓真库判据的实际来源是 LLM_GATEWAY_DATABASE_URL
 	// （见 /tmp/lgw-env.sh 与 scripts/audit/run-integration-gate.sh），
 	// 于是这些用例在**每一个**真实环境里都静默 SKIP —— 报 PASS 却一测未测，
 	// 快照缓存/singleflight 优化等于没有判据守护。
-	dbURL := ""
 	for _, key := range []string{"TEST_DATABASE_URL", "LLM_GATEWAY_DATABASE_URL", "DATABASE_URL"} {
 		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-			dbURL = v
-			break
+			return v
 		}
 	}
-	if dbURL == "" {
-		t.Skip("set TEST_DATABASE_URL (or LLM_GATEWAY_DATABASE_URL); skipping real-DB perf test")
+	t.Skip("set TEST_DATABASE_URL (or LLM_GATEWAY_DATABASE_URL) to run the real-DB legs; " +
+		"no DSN ⇒ real-DB legs did NOT run (skip is not a pass)")
+	return ""
+}
+
+// dlPerfNewSchemaName 生成本次运行下一个隔离 schema 的名字。
+//
+// 两条硬要求（缺一条，「按名字认定是我建的」就不成立）：
+//
+//	① **长度 ≤ 63 字节**（PG 标识符上限）—— 超了会被**静默截断**；
+//	② 在 ① 之下**全库唯一**：本次运行令牌（pid + 进程启动纳秒）+ 纳秒 + 进程内序号。
+//
+// 用例名只作可读性尾巴，预算不够就截（截了也不影响唯一性）。
+func dlPerfNewSchemaName(t *testing.T, testName string) string {
+	t.Helper()
+	seq := atomic.AddInt64(&dlPerfSchemaSeq, 1)
+	suffix := "_" + strconv.FormatInt(time.Now().UnixNano(), 36) + "_" + strconv.FormatInt(seq, 36)
+	budget := dlPerfMaxIdentifierBytes - len(dlPerfRunPrefix) - len(suffix)
+	if budget < 0 {
+		budget = 0
 	}
+	token := sanitizeSchemaToken(testName)
+	if len(token) > budget {
+		token = token[:budget]
+	}
+	name := dlPerfRunPrefix + token + suffix
+	if len(name) > dlPerfMaxIdentifierBytes {
+		// 不可达（构造时已按预算截），但 PG 会静默截断 ⇒ 宁可炸掉，
+		// 也不要静默丢掉唯一性（那正是原病灶的根因之一）。
+		t.Fatalf("dlPerfNewSchemaName: %q 超过 PG 标识符上限 %d 字节", name, dlPerfMaxIdentifierBytes)
+	}
+	return name
+}
+
+// dlPerfRegisterSchema 把「本次运行创建过」的 schema 登记进集合（判据的集合界定）。
+func dlPerfRegisterSchema(name string) {
+	dlPerfCreatedMu.Lock()
+	defer dlPerfCreatedMu.Unlock()
+	dlPerfCreated[name] = &dlPerfSchemaRecord{name: name}
+}
+
+// dlPerfClaimSchemaDropped 记下「这个 schema 我声称删掉了」⇒ 判据要复查它。
+func dlPerfClaimSchemaDropped(name string) {
+	dlPerfCreatedMu.Lock()
+	defer dlPerfCreatedMu.Unlock()
+	if rec, ok := dlPerfCreated[name]; ok {
+		rec.claimed = true
+	}
+}
+
+// dlPerfRunCreatedNames 返回本次运行创建过的全部 schema 名（判据的集合）。
+func dlPerfRunCreatedNames() []string {
+	dlPerfCreatedMu.Lock()
+	defer dlPerfCreatedMu.Unlock()
+	names := make([]string, 0, len(dlPerfCreated))
+	for n := range dlPerfCreated {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// dlPerfRunClaimedDroppedNames 返回本次运行**声称已删**的 schema 名。
+//
+// ★ 为什么只查「声称已删」的那部分：同一用例里若有多个 helper 调用，cleanup 是
+//
+//	LIFO 执行的 ⇒ 先跑的那个 cleanup 若查「全部已创建」，会把**兄弟调用还没轮到
+//	删除**的 schema 误判成残留 ⇒ 假红。
+//	「声称已删 ⇒ 必须真的不在了」既是真判据，又天然无竞态。
+func dlPerfRunClaimedDroppedNames() []string {
+	dlPerfCreatedMu.Lock()
+	defer dlPerfCreatedMu.Unlock()
+	var names []string
+	for n, rec := range dlPerfCreated {
+		if rec.claimed {
+			names = append(names, n)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// dlPerfResidueNames 返回给定的 schema 名中**仍然残留在库里**的那些。
+//
+// ★ 口径：**精确按名字匹配**，不查 `LIKE 'dlperf\_%'` ——
+//
+//	后者判的是【全库】，别的来源留下的同名 schema 会被算到我头上（= 原病灶）。
+func dlPerfResidueNames(ctx context.Context, pool *pgxpool.Pool, names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	rows, err := pool.Query(ctx,
+		"SELECT nspname FROM pg_namespace WHERE nspname = ANY($1::text[])", names)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var residue []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		residue = append(residue, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	slices.Sort(residue)
+	return residue, nil
+}
+
+// dlPerfRunResidueNames 返回「本次运行创建过、却仍残留在库里」的 schema 名。
+func dlPerfRunResidueNames(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
+	return dlPerfResidueNames(ctx, pool, dlPerfRunCreatedNames())
+}
+
+// dlPerfReporter 是断言的落点：*testing.T 天然满足它；
+// 自证测试把它换成收集器，以便「验证判据会红」而不真的让用例红。
+type dlPerfReporter interface {
+	Errorf(format string, args ...any)
+}
+
+// dlPerfAssertNoResidue 把「自己建的 schema 还有残留」落成**断言**
+// （不是"清理没报错就算过"）。
+func dlPerfAssertNoResidue(ctx context.Context, pool *pgxpool.Pool, names []string, rep dlPerfReporter) {
+	residue, err := dlPerfResidueNames(ctx, pool, names)
+	if err != nil {
+		rep.Errorf("cleanup: residue check: %v", err)
+		return
+	}
+	if len(residue) > 0 {
+		rep.Errorf("cleanup: %d isolated schema(s) left behind: %v", len(residue), residue)
+	}
+}
+
+// newStoragePerfHandler 连真实 PG 并返回隔离好的 handler。
+//
+// 每个用例独立 schema（dlperf_<本次运行令牌>_<用例名>_<纳秒>_<序号>），退出时 DROP CASCADE。
+// 快照按 *pgxpool.Pool 分桶，池一换就是一份全新缓存，用例之间天然隔离。
+func newStoragePerfHandler(t *testing.T) (*Handler, *pgxpool.Pool, string) {
+	t.Helper()
+	dbURL := dlPerfTestDSN(t)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -85,26 +289,25 @@ func newStoragePerfHandler(t *testing.T) (*Handler, *pgxpool.Pool, string) {
 		t.Fatalf("ping: %v", err)
 	}
 
-	schema := fmt.Sprintf("dlperf_%s_%d_%d",
-		sanitizeSchemaToken(t.Name()), os.Getpid(), time.Now().UnixNano())
+	schema := dlPerfNewSchemaName(t, t.Name())
 	if _, err := pool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		pool.Close()
 		t.Fatalf("create schema %s: %v", schema, err)
 	}
+	dlPerfRegisterSchema(schema)
 	t.Cleanup(func() {
 		dropCtx, dropCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer dropCancel()
 		if _, err := pool.Exec(dropCtx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE"); err != nil {
 			t.Errorf("cleanup: drop schema %s: %v", schema, err)
 		}
-		// 残留=0 是硬要求，落成断言而不是"清理没报错就算过"
-		var n int
-		if err := pool.QueryRow(dropCtx,
-			"SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'dlperf\\_%'").Scan(&n); err != nil {
-			t.Errorf("cleanup: residue check: %v", err)
-		} else if n != 0 {
-			t.Errorf("cleanup: %d isolated schema(s) left behind", n)
-		}
+		// 声称删掉了（哪怕 DROP 报过错）⇒ 残留判据去复查它**真的**不在了。
+		dlPerfClaimSchemaDropped(schema)
+		// 残留=0 是硬要求，落成断言而不是"清理没报错就算过"。
+		// ★ 判据集合 = 「本次运行创建过、且已声称删除」的 schema（口径见文件顶部）：
+		//   别的来源留下的 dlperf_* 不在我这次的集合里 ⇒ 不再让我误红；
+		//   但**我自己**的残留（包括这次没删掉的）一个都跑不掉。
+		dlPerfAssertNoResidue(dropCtx, pool, dlPerfRunClaimedDroppedNames(), t)
 		pool.Close()
 	})
 

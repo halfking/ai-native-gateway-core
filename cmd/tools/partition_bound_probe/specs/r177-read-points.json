@@ -1,0 +1,288 @@
+{
+  "_comment": [
+    "★★ R177 轮「逐读点实测分区下界」的读点登记册（2026-10-28）。",
+    "",
+    "★ 每个读点两条【可比】的 SQL：",
+    "  A 形 = 生产原样（读 canonical 视图 public.request_logs_with_current_month）；",
+    "  B 形 = 把 canonical 视图引用改写成【两臂派生表】，并把 partition_date 下界【推进两臂内部】。",
+    "★ B 形由工具从**生产部署形态**的视图体派生（不是手抄）⇒ 两形只差「有没有分区下界」这一处。",
+    "",
+    "★★ 窗口参数全部取自 252 的真实数据；★ 窗口下界 = partition_date 下界（已实测不变式：",
+    "   partition_date == (ts AT TIME ZONE 'UTC')::date，本地 2763 行 / 252 4558 行 均 0 例外）",
+    "   ⇒ ⇒ 两形的【行集完全相同】⇒ 读数可比。",
+    "",
+    "★ 覆盖的窗口形态（★ 这是本轮的核心判据：「窗口是否落在同一个月分区」）：",
+    "  · 7 天  ⇒ 必然同月（除非跨月界）⇒ 下界能裁掉整个月分区",
+    "  · 24 小时 ⇒ 同上",
+    "  · 90 天 ⇒ **必然跨月** ⇒ 下界裁不掉任何有数据的分区 ⇒ 预期【无收益、甚至略慢】",
+    "    ⇒ 这条是【负例】：它证明「加下界」不是无条件收益。",
+    "",
+    "★ 252 是**只读**库 ⇒ 只登记 SELECT 读点；★ INSERT…SELECT 的读点",
+    "  （bg/stats_minute_rollup.go 等）**不在此册**（它们是写路径）。"
+  ],
+  "read_points": [
+    {
+      "id": "admin/usage.go:841-859|7d|api_key=113",
+      "file": "admin/usage.go",
+      "note": "密钥用量详情的「峰值 5 分钟」子查询 + 外层统计；默认窗口 7 天（resolveUsageTimeRange(r,7)）",
+      "variants": [
+        {
+          "name": "A_现状_canonical视图",
+          "sql": "SELECT COUNT(*) FILTER (WHERE COALESCE(failure_stage,'')='gateway' OR COALESCE(failure_detail_code,'') LIKE 'gw_%'), COUNT(*) FILTER (WHERE COALESCE(failure_stage,'')='upstream' OR (NOT success AND COALESCE(failure_stage,'')='' AND provider_id IS NOT NULL AND COALESCE(request_status,'')<>'rate_limited')), COALESCE((SELECT MAX(bucket_count) FROM (SELECT COUNT(*) AS bucket_count FROM request_logs_with_current_month rl2 WHERE rl2.api_key_id = $1 AND rl2.ts >= $2 AND rl2.ts < $3 GROUP BY date_trunc('hour', rl2.ts) + (FLOOR(EXTRACT(minute FROM rl2.ts) / 5) * INTERVAL '5 minutes')) peaks), 0) FROM request_logs_with_current_month WHERE api_key_id = $1 AND ts >= $2 AND ts < $3",
+          "params": [
+            113,
+            "2026-10-21T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        },
+        {
+          "name": "B_两臂加分区下界",
+          "sql": "SELECT COUNT(*) FILTER (WHERE COALESCE(failure_stage,'')='gateway' OR COALESCE(failure_detail_code,'') LIKE 'gw_%'), COUNT(*) FILTER (WHERE COALESCE(failure_stage,'')='upstream' OR (NOT success AND COALESCE(failure_stage,'')='' AND provider_id IS NOT NULL AND COALESCE(request_status,'')<>'rate_limited')), COALESCE((SELECT MAX(bucket_count) FROM (SELECT COUNT(*) AS bucket_count FROM request_logs_with_current_month rl2 WHERE rl2.api_key_id = $1 AND rl2.ts >= $2 AND rl2.ts < $3 GROUP BY date_trunc('hour', rl2.ts) + (FLOOR(EXTRACT(minute FROM rl2.ts) / 5) * INTERVAL '5 minutes')) peaks), 0) FROM request_logs_with_current_month WHERE api_key_id = $1 AND ts >= $2 AND ts < $3",
+          "rewrite_canonical": "derived_with_bound",
+          "bound_date": "2026-10-21",
+          "params": [
+            113,
+            "2026-10-21T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "admin/session_analytics_breakdown.go:256-280|7d",
+      "file": "admin/session_analytics_breakdown.go",
+      "note": "会话分析「模型维度分解」；默认窗口 7 天（filters.dateFrom..dateTo+1d）",
+      "variants": [
+        {
+          "name": "A_现状_canonical视图",
+          "sql": "WITH model_agg AS (SELECT COALESCE(NULLIF(TRIM(rl.outbound_model),''),'<unknown>') AS model, COUNT(*) AS request_count, COUNT(DISTINCT rl.gw_session_id) AS session_count, COALESCE(SUM(rl.cost_usd),0) AS total_cost_usd, COALESCE(SUM(rl.prompt_tokens + rl.completion_tokens),0) AS total_tokens, COALESCE(AVG(rl.latency_ms),0) AS avg_latency_ms, COUNT(*) FILTER (WHERE rl.request_status='failure') AS error_count FROM request_logs_with_current_month rl WHERE rl.ts >= $1 AND rl.ts < $2 GROUP BY rl.outbound_model) SELECT model, request_count, session_count, total_cost_usd, total_tokens, ROUND(avg_latency_ms)::int AS avg_latency_ms, CASE WHEN request_count > 0 THEN ROUND((error_count::numeric / request_count::numeric),3) ELSE 0 END AS error_rate FROM model_agg ORDER BY total_cost_usd DESC",
+          "params": [
+            "2026-10-21T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        },
+        {
+          "name": "B_两臂加分区下界",
+          "sql": "WITH model_agg AS (SELECT COALESCE(NULLIF(TRIM(rl.outbound_model),''),'<unknown>') AS model, COUNT(*) AS request_count, COUNT(DISTINCT rl.gw_session_id) AS session_count, COALESCE(SUM(rl.cost_usd),0) AS total_cost_usd, COALESCE(SUM(rl.prompt_tokens + rl.completion_tokens),0) AS total_tokens, COALESCE(AVG(rl.latency_ms),0) AS avg_latency_ms, COUNT(*) FILTER (WHERE rl.request_status='failure') AS error_count FROM request_logs_with_current_month rl WHERE rl.ts >= $1 AND rl.ts < $2 GROUP BY rl.outbound_model) SELECT model, request_count, session_count, total_cost_usd, total_tokens, ROUND(avg_latency_ms)::int AS avg_latency_ms, CASE WHEN request_count > 0 THEN ROUND((error_count::numeric / request_count::numeric),3) ELSE 0 END AS error_rate FROM model_agg ORDER BY total_cost_usd DESC",
+          "rewrite_canonical": "derived_with_bound",
+          "bound_date": "2026-10-21",
+          "params": [
+            "2026-10-21T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "admin/compression_stats.go:285-293|24h",
+      "file": "admin/compression_stats.go",
+      "note": "压缩率分档统计（band 步）；默认窗口 24 小时（hours 默认 24、上限 720）",
+      "variants": [
+        {
+          "name": "A_现状_canonical视图",
+          "sql": "SELECT COALESCE(token_band,'') AS band, COUNT(*) AS cnt FROM request_logs_with_current_month WHERE ts >= $1 AND ts <= $2 AND ($3 OR success) GROUP BY token_band ORDER BY cnt DESC",
+          "params": [
+            "2026-10-27T00:00:00Z",
+            "2026-10-28T00:00:00Z",
+            true
+          ]
+        },
+        {
+          "name": "B_两臂加分区下界",
+          "sql": "SELECT COALESCE(token_band,'') AS band, COUNT(*) AS cnt FROM request_logs_with_current_month WHERE ts >= $1 AND ts <= $2 AND ($3 OR success) GROUP BY token_band ORDER BY cnt DESC",
+          "rewrite_canonical": "derived_with_bound",
+          "bound_date": "2026-10-27",
+          "params": [
+            "2026-10-27T00:00:00Z",
+            "2026-10-28T00:00:00Z",
+            true
+          ]
+        }
+      ]
+    },
+    {
+      "id": "admin/session_analytics_timeseries.go:183-200|90d|负例",
+      "file": "admin/session_analytics_timeseries.go",
+      "note": "★ 负例：90 天窗口**必然跨月**（2026-07-30 → 2026-10-28，覆盖 2026_09 与 2026_10 两个有数据的分区）⇒ 下界裁不掉任何有数据的分区 ⇒ 预期【无收益或略慢】",
+      "variants": [
+        {
+          "name": "A_现状_canonical视图",
+          "sql": "SELECT date_trunc($1, rl.ts)::date AS date, COUNT(DISTINCT rl.gw_session_id) AS session_count, COUNT(*) AS request_count, SUM(CASE WHEN rl.success THEN 1 ELSE 0 END) AS success_count, SUM(CASE WHEN lower(COALESCE(rl.request_status,'')) = 'failure' THEN 1 ELSE 0 END) AS error_count, SUM(COALESCE(rl.cost_usd,0)) AS total_cost_usd, SUM(COALESCE(rl.prompt_tokens,0) + COALESCE(rl.completion_tokens,0)) AS total_tokens, COUNT(DISTINCT rl.end_user_id) AS distinct_users FROM request_logs_with_current_month rl WHERE rl.ts >= $2 AND rl.ts < $3 GROUP BY date_trunc($1, rl.ts) ORDER BY date ASC",
+          "params": [
+            "day",
+            "2026-07-30T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        },
+        {
+          "name": "B_两臂加分区下界",
+          "sql": "SELECT date_trunc($1, rl.ts)::date AS date, COUNT(DISTINCT rl.gw_session_id) AS session_count, COUNT(*) AS request_count, SUM(CASE WHEN rl.success THEN 1 ELSE 0 END) AS success_count, SUM(CASE WHEN lower(COALESCE(rl.request_status,'')) = 'failure' THEN 1 ELSE 0 END) AS error_count, SUM(COALESCE(rl.cost_usd,0)) AS total_cost_usd, SUM(COALESCE(rl.prompt_tokens,0) + COALESCE(rl.completion_tokens,0)) AS total_tokens, COUNT(DISTINCT rl.end_user_id) AS distinct_users FROM request_logs_with_current_month rl WHERE rl.ts >= $2 AND rl.ts < $3 GROUP BY date_trunc($1, rl.ts) ORDER BY date ASC",
+          "rewrite_canonical": "derived_with_bound",
+          "bound_date": "2026-07-30",
+          "params": [
+            "day",
+            "2026-07-30T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "对照①|投影宽度|canonical118列 vs 派生窄投影1列|7d",
+      "file": "(读点族对比)",
+      "note": "★★ 一次只变一个变量：★ A=canonical 视图原样（118 列投影 + details LEFT JOIN）★ B=【从 canonical 视图体派生的窄投影】（只投影 t.ts，但 FROM / JOIN / WHERE 全部保留）⇒ ⇒ 两者之差 = 【纯投影宽度】的代价（★ 而「迁读点 + 加分区下界」那条路已实测≈0）",
+      "variants": [
+        {
+          "name": "A_canonical视图_118列",
+          "sql": "SELECT COUNT(*) FROM request_logs_with_current_month WHERE ts >= $1 AND ts < $2",
+          "params": [
+            "2026-10-21T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        },
+        {
+          "name": "B_派生窄投影_1列_同JOIN",
+          "sql": "SELECT COUNT(*) FROM request_logs_with_current_month WHERE ts >= $1 AND ts < $2",
+          "rewrite_canonical": "derived_narrow",
+          "narrow_columns": [
+            "t.ts AS ts"
+          ],
+          "params": [
+            "2026-10-21T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "对照②|details JOIN|派生窄投影1列 vs 裸表窄投影|7d",
+      "file": "(读点族对比)",
+      "note": "★★ 一次只变一个变量：★ A=派生窄投影（1 列，**带** details LEFT JOIN）★ B=裸表窄投影（1 列，**不带** details JOIN）⇒ ⇒ 两者之差 = 【details LEFT JOIN】的代价（★ 首轮那个多变量对照把它和「投影宽度」混在一起测了 ⇒ 结论不成立）",
+      "variants": [
+        {
+          "name": "A_派生窄投影_1列_带JOIN",
+          "sql": "SELECT COUNT(*) FROM request_logs_with_current_month WHERE ts >= $1 AND ts < $2",
+          "rewrite_canonical": "derived_narrow",
+          "narrow_columns": [
+            "t.ts AS ts"
+          ],
+          "params": [
+            "2026-10-21T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        },
+        {
+          "name": "B_裸表窄投影_1列_无JOIN",
+          "sql": "SELECT COUNT(*) FROM (SELECT t.ts AS ts FROM public.session_turns_hot t UNION ALL SELECT t.ts AS ts FROM public.session_turns t) x WHERE x.ts >= $1 AND x.ts < $2",
+          "params": [
+            "2026-10-21T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "对照③|真读点窄投影|usage.go 读点 118列 vs 只投影被消费的7列|7d",
+      "file": "admin/usage.go",
+      "note": "★★★ 决定性对照：在**真读点**上量「窄投影」的收益（★ 前两个对照都落在 COUNT 上 ⇒ PG 会把没被用到的输出列在计划期删掉 ⇒ 读不出投影宽度的代价）★ A=canonical 视图原样 ★ B=派生表【按别名只保留读点真正消费的 7 列】（表达式原样保留 ⇒ 语义不变）⇒ ⇒ 只差「投影宽度」一个变量",
+      "variants": [
+        {
+          "name": "A_canonical视图_118列",
+          "sql": "SELECT COUNT(*) FILTER (WHERE COALESCE(failure_stage,'')='gateway' OR COALESCE(failure_detail_code,'') LIKE 'gw_%'), COUNT(*) FILTER (WHERE COALESCE(failure_stage,'')='upstream' OR (NOT success AND COALESCE(failure_stage,'')='' AND provider_id IS NOT NULL AND COALESCE(request_status,'')<>'rate_limited')), COALESCE((SELECT MAX(bucket_count) FROM (SELECT COUNT(*) AS bucket_count FROM request_logs_with_current_month rl2 WHERE rl2.api_key_id = $1 AND rl2.ts >= $2 AND rl2.ts < $3 GROUP BY date_trunc('hour', rl2.ts) + (FLOOR(EXTRACT(minute FROM rl2.ts) / 5) * INTERVAL '5 minutes')) peaks), 0) FROM request_logs_with_current_month WHERE api_key_id = $1 AND ts >= $2 AND ts < $3",
+          "params": [
+            113,
+            "2026-10-21T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        },
+        {
+          "name": "B_派生窄投影_7列_同JOIN",
+          "sql": "SELECT COUNT(*) FILTER (WHERE COALESCE(failure_stage,'')='gateway' OR COALESCE(failure_detail_code,'') LIKE 'gw_%'), COUNT(*) FILTER (WHERE COALESCE(failure_stage,'')='upstream' OR (NOT success AND COALESCE(failure_stage,'')='' AND provider_id IS NOT NULL AND COALESCE(request_status,'')<>'rate_limited')), COALESCE((SELECT MAX(bucket_count) FROM (SELECT COUNT(*) AS bucket_count FROM request_logs_with_current_month rl2 WHERE rl2.api_key_id = $1 AND rl2.ts >= $2 AND rl2.ts < $3 GROUP BY date_trunc('hour', rl2.ts) + (FLOOR(EXTRACT(minute FROM rl2.ts) / 5) * INTERVAL '5 minutes')) peaks), 0) FROM request_logs_with_current_month WHERE api_key_id = $1 AND ts >= $2 AND ts < $3",
+          "rewrite_canonical": "derived_narrow_alias",
+          "narrow_aliases": [
+            "ts",
+            "api_key_id",
+            "failure_stage",
+            "failure_detail_code",
+            "success",
+            "provider_id",
+            "request_status"
+          ],
+          "params": [
+            113,
+            "2026-10-21T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "对照④|details JOIN 代价归因|真读点 7列带JOIN vs 7列无JOIN|7d",
+      "file": "admin/usage.go",
+      "note": "★★★ 代价归因测量：★ A=派生窄投影 7 列，**带** details LEFT JOIN ★ B=同一条读点，**摘掉** details LEFT JOIN（details 侧的列换成 NULL::bigint ⇒ 行集不变、语义变）⇒ ⇒ 两者之差 = 【details JOIN】在这个读点上要读的块数 ⇒ ⇒ ★ 这是「下一个抓手」的量化值",
+      "variants": [
+        {
+          "name": "A_派生窄投影_7列_带JOIN",
+          "sql": "SELECT COUNT(*) FILTER (WHERE COALESCE(failure_stage,'')='gateway' OR COALESCE(failure_detail_code,'') LIKE 'gw_%'), COUNT(*) FILTER (WHERE COALESCE(failure_stage,'')='upstream' OR (NOT success AND COALESCE(failure_stage,'')='' AND provider_id IS NOT NULL AND COALESCE(request_status,'')<>'rate_limited')), COALESCE((SELECT MAX(bucket_count) FROM (SELECT COUNT(*) AS bucket_count FROM request_logs_with_current_month rl2 WHERE rl2.api_key_id = $1 AND rl2.ts >= $2 AND rl2.ts < $3 GROUP BY date_trunc('hour', rl2.ts) + (FLOOR(EXTRACT(minute FROM rl2.ts) / 5) * INTERVAL '5 minutes')) peaks), 0) FROM request_logs_with_current_month WHERE api_key_id = $1 AND ts >= $2 AND ts < $3",
+          "rewrite_canonical": "derived_narrow_alias",
+          "narrow_aliases": [
+            "ts",
+            "api_key_id",
+            "failure_stage",
+            "failure_detail_code",
+            "success",
+            "provider_id",
+            "request_status"
+          ],
+          "params": [
+            113,
+            "2026-10-21T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        },
+        {
+          "name": "B_派生窄投影_7列_无JOIN",
+          "sql": "SELECT COUNT(*) FILTER (WHERE COALESCE(failure_stage,'')='gateway' OR COALESCE(failure_detail_code,'') LIKE 'gw_%'), COUNT(*) FILTER (WHERE COALESCE(failure_stage,'')='upstream' OR (NOT success AND COALESCE(failure_stage,'')='' AND provider_id IS NOT NULL AND COALESCE(request_status,'')<>'rate_limited')), COALESCE((SELECT MAX(bucket_count) FROM (SELECT COUNT(*) AS bucket_count FROM request_logs_with_current_month rl2 WHERE rl2.api_key_id = $1 AND rl2.ts >= $2 AND rl2.ts < $3 GROUP BY date_trunc('hour', rl2.ts) + (FLOOR(EXTRACT(minute FROM rl2.ts) / 5) * INTERVAL '5 minutes')) peaks), 0) FROM request_logs_with_current_month WHERE api_key_id = $1 AND ts >= $2 AND ts < $3",
+          "rewrite_canonical": "derived_narrow_alias_nojoin",
+          "narrow_aliases": [
+            "ts",
+            "api_key_id",
+            "failure_stage",
+            "failure_detail_code",
+            "success",
+            "provider_id",
+            "request_status"
+          ],
+          "params": [
+            113,
+            "2026-10-21T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "线索|多变量|canonical118列 vs 裸表4列|7d",
+      "file": "(读点族对比)",
+      "note": "★ 首轮那个对照的原始形态（同时变了来源 / 列宽 / 有没有 JOIN）⇒ ★ **只作线索，不作结论**；★ 结论看对照①与对照②",
+      "variants": [
+        {
+          "name": "A_canonical视图_118列",
+          "sql": "SELECT COUNT(*) FROM request_logs_with_current_month WHERE ts >= $1 AND ts < $2",
+          "params": [
+            "2026-10-21T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        },
+        {
+          "name": "B_两臂窄投影_4列",
+          "sql": "SELECT COUNT(*) FROM (SELECT credential_id, ts, tenant_id, api_key_id FROM public.session_turns_hot UNION ALL SELECT credential_id, ts, tenant_id, api_key_id FROM public.session_turns) t WHERE t.ts >= $1 AND t.ts < $2",
+          "params": [
+            "2026-10-21T00:00:00Z",
+            "2026-10-28T00:00:00Z"
+          ]
+        }
+      ]
+    }
+  ]
+}
