@@ -137,3 +137,85 @@ func envValueFirst(env []string, key string) string {
 	}
 	return ""
 }
+
+// TestMaxBytesIsBounded —— ★ 专用缓存的**上限本身**必须是有界的。
+//
+// ★ ★★ **为什么这道判据存在**：★ 「有上限」与「**上限守得住**」是两件事
+// ★ ★★ （★ 仓内 `LESSONS.md` §498 的通式）⇒ ⇒ ★★ ⇒ ★★ 上限被改成
+// ★★ `math.MaxInt64` ⇒ ⇒ ★★ 专用缓存重新变成无界增长 ⇒ ⇒ ★★ 而**剪枝函数
+// ★★ 行为完全正确** ⇒ ⇒ ★★ ⇒ ★★ **没有任何门会红**。
+//
+// ★ ★★ **为什么这里也用「带」而不是「钉死 6 GiB」**：★ 与掏空门那条判据同款
+// ★ ★★ （★ `hollowGoCacheCapFloor` / `hollowGoCacheCapCeiling`）⇒ ⇒ ★★ 带内自由、
+// ★ ★★ 带外是缺陷 ⇒ ⇒ ★★ ⇒ **调参的自由保留在带内**。
+func TestMaxBytesIsBounded(t *testing.T) {
+	const floor int64 = 1 << 30    // 1 GiB
+	const ceiling int64 = 16 << 30 // 16 GiB
+
+	if MaxBytes < floor {
+		t.Fatalf("★ 专用缓存上限 %d 字节（%.2f GiB）低于下界 %.2f GiB ⇒ ⇒ "+
+			"每次跑都全清 ⇒ ⇒ 永远冷编译", MaxBytes, float64(MaxBytes)/(1<<30), float64(floor)/(1<<30))
+	}
+	if MaxBytes > ceiling {
+		t.Fatalf("★ 专用缓存上限 %d 字节（%.2f GiB）超过上界 %.2f GiB ⇒ ⇒ "+
+			"专用缓存无界增长 ⇒ ⇒ 又会撑爆磁盘", MaxBytes, float64(MaxBytes)/(1<<30), float64(ceiling)/(1<<30))
+	}
+}
+
+// TestPruneRespectsSizeCap —— ★ 剪枝必须**真的会删**，且**没超上限时不能删**。
+func TestPruneRespectsSizeCap(t *testing.T) {
+	dir := t.TempDir()
+	blob := filepath.Join(dir, "blob.bin")
+	if err := os.WriteFile(blob, make([]byte, 4096), 0o644); err != nil {
+		t.Fatalf("写测试文件失败：%v", err)
+	}
+
+	// ★ 没超上限 ⇒ 不删。
+	pruned, err := Prune(dir, 1<<20)
+	if err != nil {
+		t.Fatalf("剪枝（未超上限）报错：%v", err)
+	}
+	if pruned {
+		t.Fatalf("★ 未超上限却被剪了（★ ⇒ 会一直冷编译）")
+	}
+	if _, err := os.Stat(blob); err != nil {
+		t.Fatalf("★ 未超上限时文件不该被删：%v", err)
+	}
+
+	// ★ 超上限 ⇒ 删掉整个目录。
+	pruned, err = Prune(dir, 1024)
+	if err != nil {
+		t.Fatalf("剪枝（超上限）报错：%v", err)
+	}
+	if !pruned {
+		t.Fatalf("★ 超上限却没剪（★ ⇒ 专用缓存会无界增长）")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("★ 超上限后目录还在（err=%v）⇒ ⇒ 剪枝没真删", err)
+	}
+
+	// ★ 目录不存在 ⇒ **不是错误**（★ 幂等）。
+	pruned, err = Prune(filepath.Join(dir, "nope"), 1)
+	if err != nil {
+		t.Fatalf("★ 剪枝不存在的目录不该报错：%v", err)
+	}
+	if pruned {
+		t.Fatalf("★ 目录不存在却被判成「剪过」")
+	}
+}
+
+// TestPruneOnceIsPerPurpose —— ★★ 剪枝闸必须**按用途各一个**。
+//
+// ★ ★★ **为什么这条要测**：★ 第一版用的是**单个全局 `sync.Once`** ⇒ ⇒ ★★
+// ★★ 整个进程里**只有第一个用途**会被剪 ⇒ ⇒ ★★ 其它用途的缓存**永远长下去**
+// ★★ ⇒ ⇒ ★★ ⇒ **那等于没剪** ⇒ ⇒ ★★ 而这条缺陷**测不出来**（★ 单用途时看不出）。
+func TestPruneOnceIsPerPurpose(t *testing.T) {
+	a := pruneOnceFor("purpose-a")
+	b := pruneOnceFor("purpose-b")
+	if a == b {
+		t.Fatalf("★ 两个用途共用同一个剪枝闸 ⇒ ⇒ 整个进程只有第一个用途会被剪")
+	}
+	if pruneOnceFor("purpose-a") != a {
+		t.Fatalf("★ 同一用途两次拿到了不同的剪枝闸 ⇒ ⇒ 「每个用途只剪一次」这条口径没被覆盖到")
+	}
+}

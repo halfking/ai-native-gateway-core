@@ -25,7 +25,7 @@
 ★★★ `go test ./...` **编译阶段**就报 `no space left on device`
 ★★★ ⇒ ⇒ ★★ **红的原因不指向真正的原因**（★ 真正的原因是磁盘，不是门有洞）。
 
-★★ 本台覆盖的 7 个臂（★ 每个臂对应一条「断言没牙齿」的可能）：
+★★ 本台覆盖的 8 个臂（★ 每个臂对应一条「断言没牙齿」的可能）：
 
 ★   B00 ★★★ **惰性变异筛查**：★ 先跑一遍【未变异】的基线 ⇒ 确认它本来就绿
 ★        ⇒ ⇒ 否则「变异后红」可能只是【基线本来就红】。
@@ -38,7 +38,7 @@
 ★        ⇒ 期望：「剪枝」那条**转红** ⇒ ⇒ 证明剪枝真的有牙齿。
 ★   M04 ★★★ **掏空全部断言**（★ 把 `t.Fatalf` 改成 `t.Logf`）★ **再叠加 M01**
 ★        ⇒ 期望：**全部转绿**
-★        ⇒ ⇒ ⇒ 证明这五条断言**合起来才是必需的**（★ 没有它们，★ 「把隔离改没了」
+★        ⇒ ⇒ ⇒ 证明这六条断言**合起来才是必需的**（★ 没有它们，★ 「把隔离改没了」
 ★        ⇒ ⇒ ⇒ 也能全绿 ⇒ ⇒ ⇒ **功能被改没了而门全绿**）。
 ★   M05 ★★★ **r1047 轮新增**：★ 把【上限常量本身】改成 `math.MaxInt64`
 ★        ⇒ 期望：「上限有界」那条**转红** ⇒ ⇒ 证明【常量本身】被门钉住了
@@ -46,6 +46,10 @@
 ★   M06 ★★★ **r1047 轮新增**：★ 把【生产剪枝调用点】的上限改传 `math.MaxInt64`
 ★        ⇒ 期望：「上限接到剪枝上」那条**转红** ⇒ ⇒ 证明「常量有界」不等于
 ★        ⇒ ⇒ ⇒ 「上限真的被用上了」（★ 否则上限是个没人读的装饰）。
+★   M07 ★★★ **r1047 轮合并后新增**：★ 让【tmp 目录清理】**不删目录**
+★        ⇒ 期望：「tmp 目录被清理」那条**转红** ⇒ ⇒ 证明那一半**有人验**
+★        ⇒ ⇒ ⇒ （★ 合并前实测：`hollowout_bin_cleanup_test.go` 里【一个 `Test`
+★        ⇒ ⇒ ⇒ 函数都没有】⇒ ⇒ 「修完了但没人验」⇒ ⇒ 这是本轮最刺眼的一条缺口）。
 ★★ 纪律（★ 与 scripts/audit/mutate_r1045_reconciliation_diff_write_truth.py 同构）：
 
 ★   ① 还原必须按【原路径】做 **md5 逐字校验**；
@@ -69,13 +73,19 @@ GO_BIN = os.path.join(os.path.expanduser("~"), "sdk", "go", "bin")
 TARGET_REL = "scripts/ursmcheck/hollowout_gocache_test.go"
 TARGET = os.path.join(ROOT, TARGET_REL)
 
-# ★★ r1047 轮新增：★ M06 臂要改【另一个文件】—— ★ 生产剪枝调用点在
-# ★★ `hollowout_bin_cleanup_test.go` 的 `TestMain` 里（★ 不在本文件里）
-# ★★ ⇒ ⇒ 本台必须支持【多目标文件】（★ 还原仍按【原路径】逐个 md5 校验）。
-TARGET2_REL = "scripts/ursmcheck/hollowout_bin_cleanup_test.go"
-TARGET2 = os.path.join(ROOT, TARGET2_REL)
-
-ALL_TARGETS = (TARGET, TARGET2)
+# ★★ r1047 轮【合并后】：★★ 原 `scripts/ursmcheck/hollowout_bin_cleanup_test.go`
+# ★★ 【已被删除】⇒ ⇒ 它的内容（★ tmp 登记 + 清理 + `TestMain`）**并进了** `TARGET`
+# ★★ ⇒ ⇒ 「第二个目标文件」这个概念**消失了**⇒ ⇒ ★★ 本台仍是**单文件**变异台。
+# ★★
+# ★★ ★★★ **教训（★ 合并必然带来的后果，★ 别再踩）**：★★★ 变异台的「目标清单」是
+# ★★ ★★★ **对源码结构的假设**⇒ ⇒ ★★ ★★★ 源码一旦合并文件 ⇒ ⇒ 那个假设就**过期**了
+# ★★ ★★★ ⇒ ⇒ ★★ ★★★ 而**过期假设的失败形态是「静默的」**：★ 若还按老清单去改一个
+# ★★ ★★★ **已不存在的文件**⇒ ⇒ ★★ ★★★ 写回时会**新建**它 ⇒ ⇒ ★★ ★★★ 门里那半边
+# ★★ ★★★ **凭空复活**⇒ ⇒ ★★ ★★★ 而【原路径的 md5 还原校验】**照样通过**（★ 因为
+# ★★ ★★★ 还原校验比的是【自己刚写的字节】）⇒ ⇒ ★★ ★★★ ⇒ **rc=0 也可能是错的**。
+# ★★ ★★★ ⇒ ⇒ 正确做法：★ 合并文件后**同步收敛变异台的目标清单**，并让**目标文件存在性**
+# ★★ ★★★ 成为**开跑前的硬前置**（★ 下面 `main()` 里已经这么做了）。
+ALL_TARGETS = (TARGET,)
 
 PKG = "./scripts/ursmcheck/"
 TESTS = (
@@ -84,6 +94,7 @@ TESTS = (
     "|TestPruneHollowGoCacheRespectsSizeCap"
     "|TestHollowoutGoCacheSizeCapIsBounded"
     "|TestHollowoutGoCacheSizeCapReachesPrune"
+    "|TestHollowoutBinTmpDirsAreCleanedUp"
 )
 
 # ★★ 「把上限改成 math.MaxInt64」需要 import "math" ⇒ ★ 每个臂都要自带
@@ -139,6 +150,22 @@ M05_REPL = """	hollowGoCacheMaxBytes int64 = math.MaxInt64 // MUTATION M05: 上�
 M06_NEEDLE = """		if pruned, perr := pruneHollowGoCache(dir, hollowGoCacheMaxBytes); perr != nil {"""
 M06_REPL = """		if pruned, perr := pruneHollowGoCache(dir, math.MaxInt64); perr != nil { // MUTATION M06: 绕过被钉住的上限"""
 
+# ── M07 锚点（★ r1047 轮合并后新增）：让【tmp 目录清理】不删目录 ──────────
+#
+# ★★★ **为什么这条臂是必须的**：★★★ r1045 轮把 tmp 那一半「修好了」（★ 登记 + 跑完统一删）
+# ★★★ ⇒ ⇒ ★★★ **但那一轮【没有给这一半配任何判据】** ⇒ ⇒ ★★★ ⇒ 「修完了」**没人验**
+# ★★★ ⇒ ⇒ ★★★ 合并前实测：`hollowout_bin_cleanup_test.go` 里**一个 `Test` 函数都没有**
+# ★★★ ⇒ ⇒ ★★★ ⇒ ⇒ **那一半是【裸奔】的** ⇒ ⇒ ★★★ r1047 轮补了判据⑥
+# ★★★ ⇒ ⇒ ★★★ ⇒ **判据必须有变异臂**，否则「判据本身没牙齿」这件事没法证伪。
+#
+# ★★ **变异形态的选择**：★ 不能把 `os.RemoveAll` 直接删掉（★ 删掉会**编译红**
+# ★★ ⇒ ⇒ 按本台纪律「编译红 ≠ 断言红」⇒ ⇒ 不算数）⇒ ⇒ 改成【删一个不存在的子路径】：
+# ★★ ⇒ ⇒ `os.RemoveAll` 对不存在的路径**返回 nil**（★ 不报错）⇒ ⇒ **仍能编译**
+# ★★ ⇒ ⇒ ⇒ **计数照旧**（★ `n++` 照走 ⇒ ⇒ 「删了几个」那条断言照样绿）
+# ★★ ⇒ ⇒ ⇒ **只有「目录真的不在了」那条断言会红** ⇒ ⇒ ⇒ ★★ **精准命中判据⑥**。
+M07_NEEDLE = """		if err := os.RemoveAll(d); err != nil {"""
+M07_REPL = """		if err := os.RemoveAll(filepath.Join(d, "MUTATION-M07-never-deletes")); err != nil { // MUTATION M07: 清理不删目录"""
+
 
 # ───────────────────────── 基础工具 ─────────────────────────
 
@@ -171,7 +198,10 @@ def go_env():
     """
     env = dict(os.environ)
     env["PATH"] = GO_BIN + os.pathsep + env.get("PATH", "")
-    env["GOCACHE"] = os.path.join(ROOT, ".build-local", ".gocache-mutate-r1046")
+    # ★★ 路径与仓内**全族**（★ shell / Python / Go 的变异台）**同一份约定**：
+    # ★★ `<仓根>/.build-local/.gocache-mutate` ⇒ ⇒ 在 `.gitignore` 里 ⇒ ⇒
+    # ★★ **`git clean -xfd` 一把回收**（★ 共享同一个目录 ⇒ ⇒ 6 GB 上限对它也生效）。
+    env["GOCACHE"] = os.path.join(ROOT, ".build-local", ".gocache-mutate")
     return env
 
 
@@ -231,16 +261,18 @@ def record(arm, expect, got, ok):
 
 
 def main() -> int:
-    if not os.path.exists(TARGET):
-        print("目标文件不存在：%s" % TARGET, file=sys.stderr)
-        return 2
+    # ★★ 纪律 ⑥b：★ **目标文件存在性是开跑前的硬前置** ⇒ ⇒ 「过期假设」不许
+    # ★★ 静默过去（★ 详见上面 `ALL_TARGETS` 处的注释：★ 写回一个已删除的文件会
+    # ★★ **凭空把它新建出来**⇒ ⇒ 而【md5 还原校验】照样通过 ⇒ ⇒ rc=0 也可能是错的）。
+    for path in ALL_TARGETS:
+        if not os.path.exists(path):
+            print("目标文件不存在：%s（★ 源码结构变了？★ 变异台的目标清单该收敛了）" % path,
+                  file=sys.stderr)
+            return 2
 
     original = snap(TARGET)
-    original2 = snap(TARGET2)
     base_md5 = md5(original)
-    base_md5_2 = md5(original2)
     print("目标：%s（基线 md5 %s）" % (TARGET_REL, base_md5))
-    print("目标：%s（基线 md5 %s）" % (TARGET2_REL, base_md5_2))
     print("")
 
     def write(text, path=None):
@@ -254,10 +286,7 @@ def main() -> int:
     def restore():
         """还原【全部】目标文件（★ 逐个按原路径 md5 校验）。"""
         ok = True
-        for path, data, want in (
-            (TARGET, original, base_md5),
-            (TARGET2, original2, base_md5_2),
-        ):
+        for path, data, want in ((TARGET, original, base_md5),):
             with open(path, "wb") as f:
                 f.write(data)
             now = md5(snap(path))
@@ -278,7 +307,7 @@ def main() -> int:
         )
         return 1
     record("B00 基线（惰性变异筛查）", "rc=0 且 0 条测试失败",
-           "rc=0，五条断言全绿", True)
+           "rc=0，六条断言全绿", True)
 
     try:
         # ── M01：去掉 GOCACHE 覆盖 ⇒ 隔离那条必须转红 ──────────
@@ -376,7 +405,7 @@ def main() -> int:
         ok = ok_build and rc == 0 and not failed
         record(
             "M04 掏空全部断言 + M01 的「去掉隔离」变异",
-            "仍能编译；★ **全部测试转绿**（★ ⇒ ⇒ 证明这五条断言**合起来才是必需的**："
+            "仍能编译；★ **全部测试转绿**（★ ⇒ ⇒ 证明这六条断言**合起来才是必需的**："
             "没有它们，★ 「把隔离改没了」也能全绿 ⇒ ★★ 功能被改没了而门全绿）",
             "编译=%s，rc=%s，红：%s%s（★ 掏空了 %d 处 t.Fatalf）" % (
                 "OK" if ok_build else "红(" + build_out[:200] + ")",
@@ -429,10 +458,13 @@ def main() -> int:
         # ★★★ ⇒ ⇒ 但若**调用点没有用那个常量**（★ 改传 math.MaxInt64）⇒ ⇒
         # ★★★ 常量照样有界（★ M05 那条绿）⇒ ⇒ ★★★ 而**上限根本没被用上**
         # ★★★ ⇒ ⇒ ★★★ 专用缓存照样无界增长 ⇒ ⇒ ★★★ 「常量有界」是假绿。
-        text2 = read(TARGET2)
-        text2 = replace_once(text2, MATH_IMPORT_NEEDLE, MATH_IMPORT_REPL)
-        text2 = replace_once(text2, M06_NEEDLE, M06_REPL)
-        write(text2, TARGET2)
+        # ★★
+        # ★★ r1047 轮合并后：★ 该调用点**从 `hollowout_bin_cleanup_test.go` 搬进了**
+        # ★★ `hollowout_gocache_test.go`（★ `TestMain` 那一块）⇒ ⇒ **本臂现在也改 TARGET**。
+        text = read(TARGET)
+        text = replace_once(text, MATH_IMPORT_NEEDLE, MATH_IMPORT_REPL)
+        text = replace_once(text, M06_NEEDLE, M06_REPL)
+        write(text)
 
         ok_build, build_out = compile_ok()
         rc, out = run_tests()
@@ -457,6 +489,42 @@ def main() -> int:
             print("M06 还原后 md5 不一致 ⇒ 中止", file=sys.stderr)
             return 1
 
+        # ── M07（★ r1047 合并后新增）：tmp 目录清理不删目录 ⇒ 「tmp 被清理」必须转红 ──
+        #
+        # ★★★ **这一臂补的是 r1045 轮留下的最刺眼缺口**：★ tmp 那一半「修好了」
+        # ★★★ ⇒ ⇒ ★★★ **但没有任何判据**⇒ ⇒ ★★★ ⇒ 「修完了」**没人验**⇒ ⇒ ★★★
+        # ★★★ 合并前实测那个文件里【一个 `Test` 函数都没有】⇒ ⇒ ★★★ 合并后补了判据⑥
+        # ★★★ ⇒ ⇒ ★★★ ⇒ **判据必须自带变异臂**，否则「判据没牙齿」不可证伪。
+        text = read(TARGET)
+        text = replace_once(text, M07_NEEDLE, M07_REPL)
+        write(text)
+
+        ok_build, build_out = compile_ok()
+        rc, out = run_tests()
+        failed = failed_tests(out)
+        ok = (
+            ok_build
+            and rc != 0
+            and "TestHollowoutBinTmpDirsAreCleanedUp" in failed
+            and "TestHollowoutBuildUsesIsolatedGoCache" not in failed
+            and "TestHollowoutGoCacheSizeCapIsBounded" not in failed
+            and "TestHollowoutGoCacheSizeCapReachesPrune" not in failed
+            and "TestPruneHollowGoCacheRespectsSizeCap" not in failed
+            and "TestHollowoutGoCacheDirIsNotTracked" not in failed
+        )
+        record(
+            "M07 让 tmp 目录清理不删目录（★ r1047 轮合并后补的臂）",
+            "仍能编译；★ 且**只有**「BinTmpDirsAreCleanedUp」转红"
+            "（★ ⇒ 证明 tmp 那一半【现在真的有人验】⇒ ⇒ 不再是裸奔的）",
+            "编译=%s，rc=%s，红：%s%s" % (
+                "OK" if ok_build else "红(" + build_out[:200] + ")",
+                rc, failed, "" if ok_build else " ★ 编译红不算数"),
+            ok,
+        )
+        if not restore():
+            print("M07 还原后 md5 不一致 ⇒ 中止", file=sys.stderr)
+            return 1
+
     finally:
         # ── 纪律 ①：还原必须按原路径做 md5 逐字校验（★ 全部目标文件）────
         if not restore():
@@ -468,7 +536,6 @@ def main() -> int:
     for r in LEDGER:
         print("  %s %s" % ("OK " if r["ok"] else "FAIL", r["arm"]))
     print("还原校验：md5 %s（%s，与基线一致）" % (base_md5, TARGET_REL))
-    print("还原校验：md5 %s（%s，与基线一致）" % (base_md5_2, TARGET2_REL))
     return 0 if passed == len(LEDGER) else 1
 
 
