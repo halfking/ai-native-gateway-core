@@ -344,3 +344,60 @@ func TestLiveRequestFromTelemetry_ModelSelectionFields(t *testing.T) {
 		}
 	}
 }
+
+// TestLiveRequestRedisPayloadRoundTripsSelectionFields（2026-10-28 审计轮）钉住
+// 模型选择层五字段在 Redis payload 往返中的保真。实时帧直接广播 LiveRequest
+// 结构体，但 initial_data 回放 / snapshot_refresh / tile delta 全部从
+// liveRequestRedisPayload 重建——上一轮四字段（client_model / is_auto_request /
+// task_type / token_band）与本轮 compressed 都只接了 LiveRequest 与前端，
+// 漏了这条持久化路径：Redis 部署上页面加载的整个初始窗口压缩格恒 0、
+// 模型选择全「未知」。本测试是往返漂移门：往 LiveRequest 加了字段而 payload
+// 忘了跟，这里红。
+func TestLiveRequestRedisPayloadRoundTripsSelectionFields(t *testing.T) {
+	full := LiveRequest{
+		Type:          "request",
+		RequestID:     "req-rt-1",
+		Ts:            time.Now().UTC().Format(time.RFC3339),
+		TenantID:      "tenant-a",
+		ClientModel:   "auto",
+		IsAutoRequest: true,
+		TaskType:      "code",
+		TokenBand:     "below",
+		Compressed:    true,
+	}
+	data, err := marshalLiveRequestRedisPayload(full)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := unmarshalLiveRequestRedisPayload(data)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.ClientModel != "auto" {
+		t.Errorf("ClientModel = %q, want %q (payload must persist it)", got.ClientModel, "auto")
+	}
+	if !got.IsAutoRequest {
+		t.Error("IsAutoRequest must survive the payload round-trip")
+	}
+	if got.TaskType != "code" {
+		t.Errorf("TaskType = %q, want %q (payload must persist it)", got.TaskType, "code")
+	}
+	if got.TokenBand != "below" {
+		t.Errorf("TokenBand = %q, want %q (payload must persist it)", got.TokenBand, "below")
+	}
+	if !got.Compressed {
+		t.Error("Compressed must survive the payload round-trip — snapshots rebuild from it and the compress grid counts 0 otherwise")
+	}
+
+	// omitempty 负例：五字段缺省时 payload 不得带出这些键（与 SSE 线上
+	// 契约同型——旧 payload 的消费者不会看到 "is_auto_request":false）。
+	bare, err := marshalLiveRequestRedisPayload(LiveRequest{RequestID: "req-rt-2", Ts: full.Ts})
+	if err != nil {
+		t.Fatalf("marshal bare: %v", err)
+	}
+	for _, key := range []string{"client_model", "is_auto_request", "task_type", "token_band", "compressed"} {
+		if strings.Contains(bare, key) {
+			t.Errorf("payload must omit %q when absent, got %s", key, bare)
+		}
+	}
+}

@@ -90,11 +90,11 @@ vi.mock('../api/topology', () => ({
   }),
 }))
 
-// 左下统计栏在这个判据里只验「是否收到同一个过滤值」，统计口径由
-// TodaySummaryRail.test.ts 单独钉，避免两头都浅。
-vi.mock('../components/live-topology/TodaySummaryRail.vue', () => ({
+// 头部统计面板在这个判据里只验「是否收到同一个过滤值」，统计口径由
+// StatsPanel.test.ts 单独钉，避免两头都浅。
+vi.mock('../components/live-topology/StatsPanel.vue', () => ({
   default: {
-    name: 'TodaySummaryRailStub',
+    name: 'StatsPanelStub',
     props: ['activeProvider', 'activeModel'],
     emits: ['select-provider', 'select-model'],
     template: '<div class="rail-stub" :data-provider="activeProvider" :data-model="activeModel"></div>',

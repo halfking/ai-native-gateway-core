@@ -4,16 +4,16 @@
 // 与旧首页并存：`/` 与 `/dashboard` 一行未改，本页是新增的 `/live`。
 // 分工：泳道页（/dashboard?tab=stream）看**逐条精确**，本页看**当下态势**。
 //
-// 版面（维护者 2026-10-17 拍板；2026-10-28 汇总上移轮更新）：
+// 版面（维护者 2026-10-17 拍板；2026-10-28 头部统计轮更新）：
 //   顶部  客户端 / 供应商 / 模型 / 节点 四维**多选**过滤（同维 OR、跨维 AND）
-//   头部  三块汇总条：客户端 / 供应商 / 模型（同一过滤子集，2026-10-28
-//         owner 口径：汇总信息放头部 —— 此前客户端聚合在左面板顶部）
+//   头部  区间统计面板（请求数/token/成功率，5分钟/1小时/当天，可折叠，
+//         2026-10-28 owner 口径：所有统计放页面上部，左下统计栏退役）
+//         + 三块汇总条：客户端 / 供应商 / 模型（同一过滤子集）
 //   左    客户端请求逐条明细（聚合已上移头部）
 //   中    实时拓扑：上→下 客户端 → 网关核心大方块 → 供应端节点 → 模型
 //   右    供应商端响应的请求（点行弹摘要浮层，「查看全景」开新窗）
-//   左下  当天请求/token 统计（UTC 日桶，水位显式展示）
 //
-// **关键约束**：图、头部三块汇总、左右两栏、左下统计必须收敛到同一个
+// **关键约束**：图、头部统计与三块汇总、左右两栏必须收敛到同一个
 // 过滤子集，否则用户会看到「图里没有、右栏却有」的矛盾画面。
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -28,7 +28,7 @@ import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 import TopologyCanvas from '../components/live-topology/TopologyCanvas.vue'
 import ClientRequestPanel from '../components/live-topology/ClientRequestPanel.vue'
 import ProviderResponsePanel from '../components/live-topology/ProviderResponsePanel.vue'
-import TodaySummaryRail from '../components/live-topology/TodaySummaryRail.vue'
+import StatsPanel from '../components/live-topology/StatsPanel.vue'
 import RoutingDecisionTimeline from '../components/live-topology/RoutingDecisionTimeline.vue'
 import RequestZoomPanel from '../components/live-topology/RequestZoomPanel.vue'
 import SummaryHeader from '../components/live-topology/SummaryHeader.vue'
@@ -239,9 +239,8 @@ const coreSummary = computed(() => {
   return parts.join(' · ')
 })
 
-/** 左下统计栏跟随供应商过滤（多选时取第一项，其余靠过滤后收敛）。 */
+/** 头部统计面板跟随供应商/模型过滤（多选时取第一项，其余靠过滤后收敛）。 */
 const activeProvider = computed(() => topo.filters.value.providers[0] ?? '')
-/** 模型组同理：跟随模型过滤（与图收敛到同一子集）。 */
 const activeModel = computed(() => topo.filters.value.models[0] ?? '')
 
 /** 头部三块汇总（2026-10-28 汇总上移轮）：客户端/供应商/模型。
@@ -384,6 +383,17 @@ function onSelectModel(model: string) {
       </div>
     </header>
 
+    <!-- 头部区间统计面板（2026-10-28 owner 口径：所有统计放页面上部）：
+         区间 5分钟/1小时/当天 + 总量行常驻 + 供应商/模型明细可折叠，
+         点行联动图过滤（与图、两栏同一过滤子集）。 -->
+    <StatsPanel
+      class="live-topology__statspanel"
+      :active-provider="activeProvider"
+      :active-model="activeModel"
+      @select-provider="onSelectProvider"
+      @select-model="onSelectModel"
+    />
+
     <p v-if="coreSummary" class="live-topology__summary">{{ coreSummary }}</p>
 
     <!-- 头部三块汇总（2026-10-28 owner 口径）：客户端 / 供应商 / 模型，
@@ -430,13 +440,6 @@ function onSelectModel(model: string) {
           @select-request="onSelectRequest"
           @zoom="(entry) => onZoomRequest(entry, 'left')"
           @open-page="onOpenPage"
-        />
-        <TodaySummaryRail
-          class="live-topology__rail"
-          :active-provider="activeProvider"
-          :active-model="activeModel"
-          @select-provider="onSelectProvider"
-          @select-model="onSelectModel"
         />
         <!-- 内联摘要浮层（两步交互第一步）：点左栏请求时弹在本列，
              靠 .live-topology__left 的 position:relative 当定位基准。 -->
@@ -657,8 +660,10 @@ function onSelectModel(model: string) {
   color: var(--kx-muted);
 }
 
-/* 头部三块汇总条：不参与伸缩（高度=内容），把剩余高度全部留给 body。 */
-.live-topology__sumhead {
+/* 头部三块汇总条与区间统计面板：不参与伸缩（高度=内容），
+   把剩余高度全部留给 body。 */
+.live-topology__sumhead,
+.live-topology__statspanel {
   flex: none;
 }
 
@@ -719,15 +724,9 @@ function onSelectModel(model: string) {
   max-height: 70vh;
 }
 
-.live-topology__clients,
-.live-topology__rail {
+.live-topology__clients {
   flex: 1;
   min-height: 0;
-}
-
-.live-topology__rail {
-  max-height: 240px;
-  overflow-y: auto;
 }
 
 .live-topology__stage {
@@ -737,12 +736,6 @@ function onSelectModel(model: string) {
 @media (min-width: 1024px) {
   .live-topology {
     height: 100%;
-  }
-
-  /* 统计栏是次要信息，桌面压缩到 160px（内部滚动），把列高让给
-     左栏主体（请求明细列表）—— 否则 900 高视口下明细只剩两行。 */
-  .live-topology__rail {
-    max-height: 160px;
   }
 
   .live-topology__body {
@@ -774,10 +767,6 @@ function onSelectModel(model: string) {
   .live-topology__right {
     grid-column: auto;
     max-height: none;
-  }
-
-  .live-topology__rail {
-    max-height: 180px;
   }
 }
 </style>

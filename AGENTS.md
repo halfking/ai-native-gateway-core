@@ -1404,6 +1404,32 @@
 > ⇒ ★ 新增回归测试 3 条（退化输入三连 ⇒ 线格式只剩合法块；Responses 空 file_data；
 > ValidateAndFix 完整路径）。读数：`go build` ✓ / ir+auth+provider+attachments+streaming
 > 全绿。⇒ 审计档 `docs/audit/2026-10-27-Gemini多模态审计复审轮.md`；通用式见 `LESSONS.md` **§438**（5 条）。
+> **2026-10-28 Gemini 批判审计三轮（真机实证补全 + 跨会话词表分叉根修）**（会话
+> `mvs_dc5e181989fc4539805f343f39be2b5d`）：★ 批判口径 = 把前两轮每条「已完成」按
+> 【只读代码 / 单测绿 / 真机实证】三档标级 ⇒ 三个低档声明全部补上真机证据：
+> **附件真实落盘**（`/attachments/2026/10/…/<sha256>.png`）、**真实访问日志
+> `query='key=REDACTED'`**（明文 0 次）、**流式 200 + 标准 Gemini SSE 帧**
+> （★ 首测失败是我自己的 mock 缺 `data: [DONE]`——网关 `eof_without_done` 判定正确；
+> ★ **量具本身没被审计过**是真因）。
+> ⇒ ★★★★ **真机抓到跨会话 P0：`openai-chat` 词表分叉断掉 Gemini→原生上游** ——
+> `handler.go:4428` 用 `ir.DetectProtocol` 填 ClientProtocol（OpenAI Chat 线体 ⇒
+> **`openai-chat`**，Gemini 入站合成体同），而 executor_gemini/ollama 的 client-wire
+> 白名单只认 legacy 词 **`openai-completions`**（IR==nil 时代的兜底值）⇒ 生产必 501
+> `client protocol "openai-chat" not yet wired`；**两个执行器的既有测试全部用 legacy
+> 词写 ⇒ 测试全绿而生产断**（catalog 别名表与 connection_registry 早把两词当同义词
+> ——三份词表，executor 用了窄的那份）。修法：`canonicalInboundWire()` 四处接线
+> （gemini finalize 门+clientWire、ollama 同）+ 三条**用生产词表**的参数化测试 +
+> 真机复验：Gemini 入站 fileData 音频/视频 → **原生上游收到原生 `fileData{fileUri,
+> mimeType}` 形态**（这也是对并行会话「12h 审计轮」MediaSource 修复的**首次端到端
+> 实证**，此前只有单测）；原生上游流式 ✓。
+> ⇒ ★★ 另修 P2：`validateAnthropicMedia` 拒绝表补 `video_url`（R148 让 parse_openai
+> 保 Type+RawContent 后，raw default 分支会把 video_url 原样发 Anthropic 线 ⇒ 上游
+> 400 污染凭据记账；旧转换器 chat_to_anthropic.go:445 一直拒它——两份实现口径分叉）。
+> ⇒ ★ 读数：executors 全包 44.7s ✓ / ir ✓ / streaming 全包 156.6s ✓ / build ✓ /
+> 密钥扫描 0 BLOCK / 守卫七包 ✓。★ 遗留（审计档 §六）：本地库 `session_turns_hot.host`
+> 列缺失吃 V2 写入；Responses 侧 URI-only 音频跳过无损失上报；`alt=sse` 缺省时形态
+> 与厂方 JSON 数组方言不一致（既有行为）。
+> ⇒ 审计档 `docs/audit/2026-10-28-Gemini批判审计三轮.md`；通用式见 `LESSONS.md` **§521**（4 条：声明逐条对实证 / 测试词表≠生产词表=恒绿假象 / 注释里的假设要当场证伪 / 并行修复不免除验证）。
 > **2026-10-27 Gemini 原生出站 executor 轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
 > ★ 承接 §436 同一审计档的**子项②**（§433 清单的最后一项可做项）。
 > ⇒ ★★★★ **本轮最值钱的一处定性：缺口不是「功能没做」，是「死配置」** ——
@@ -14132,9 +14158,121 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 ★★ ③ **252/211 的底账其实是 2026-10-26 的旧快照**（★ 本轮前半程沿用）⇒ ⇒ 被工具自带的 **`verify`** 抓出（★ 252 +21/-4、211 +111）
 ★★ 　 ⇒ ⇒ **211 的真缺口 62 → 49** ⇒ ⇒ **棘轮基线同步下调 211: 62 → 49**（★ 按 R161 审计档 §棘轮 的纪律手工下调）⇒ ⇒ **「资产新鲜度要靠对拍，不靠记忆」**。
 
+**2026-10-28 24h 审计第 3 轮：出口修复 + 背压退避 + 上游红收口**（goal 会话）：
+★ 四项全落地，3 次独立提交推送（f4246ef8a / 1ffdeeeb8+c8989b337 / a7012fae1+dbfa47e2b）。
+> ⇒ ★★ **发现一（211 ERROR 风暴根因，已修已验证）**：provider 18（nvidia）
+> `egress_profile='proxy'` 而 `proxy_subscriptions`/`proxy_nodes` **双 0 行** ⇒
+> R28-P-1 must-proxy 契约结构性拒发 ⇒ 探针纯失败循环（近 2h 100%
+> traffic_class=probe；自 10-12 起 29,280 条 usage_facts 成功 0）；★★ 关键反转：
+> **211 宿主机与容器直连 `integrate.api.nvidia.com` 实测 200/0.2s** ⇒ 不可路由是
+> **配置事实**不是网络事实 ⇒ `UPDATE providers SET egress_profile='direct' WHERE id=18`
+> （1 行，策略 TTL 60s 免重启）⇒ 75s 后 ERROR 52→23 每分钟级、探针真实到达
+> （`llama-guard-4-12b` last_gateway_ok=t，幻影模型如实报 404 进协议红通道）。
+> ★ 其余 13 家 proxy 出口供应商**未动**（无凭据无流量、直连未实测，不扩爆炸半径）；
+> 回滚 SQL 在审计档 §2。
+> ⇒ ★★ **发现二（outbox 背压固定退避 = 永久锤击，已修）**：asm 连续 503 十小时
+> （其 audit sink 13:30 UTC 失败窗口起）⇒ 积压 3,909 条 `request.completed.v1`；
+> 固定 64s ⇒ **61 req/s 持续 POST + 等量 DB 事务 + 每秒 60 条 WARN**
+> （8 分钟实测 28,742 failed vs 117 成功 = 0.4%/拍）且成功速率 < 产生速率
+> ⇒ 积压反涨 ⇒ `markBackpressure` 改 `backpressureBackoff(attempts) = 8s ×
+> 2^(attempts-1)` 封顶 10min（永不 DLQ 语义不变；asm `Retry-After: 5` 是单事件
+> 地板提示不是积压重放时间表）⇒ 新增 `TestBackpressureBackoff_Exponential` 8 例。
+> ⇒ ★ **发现三（asm 侧，只读定性未动）**：503=Consume 基础设施错误非缺口分支；
+> audit sink 现已恢复（实测可写、近 2h 3,476 行）；DLQ 存量 34,183 条投影缺口、
+> `capgov_assets` 缺关系 ⇒ **asm 专属审计轮建议**（含重启评估），不越权重启兄弟产品。
+> ⇒ ★ **发现四（3 条上游红逐条复核）**：① post-surface 台账兄弟已修（复验绿）；
+> ② `NATIVEPAIR_OFFSWITCH_CHILD` 登记册 **仍红** ⇒ 登记 component 收口；
+> ③ live-topology 三组件 `font-size:10px` **仍红** ⇒ 按门自带修法收进 11px ⇒
+> 字号门 PASS、**棘轮基线保持 0 未动** ⇒ ⇒ ★ **「登记的红」会过期，收口前必须逐条复核**。
+> ⇒ ★ **发现五（全量 Go 测试唯一红）**：`TestGenericRecovery_CleanFileArchives`
+> 并发偶发 stat ENOENT ⇒ 根因是 execute() 锁内置 completed、**归档 I/O 在锁外**
+> ⇒ 测试抢跑 ⇒ 终态改等 `CompletedAt`（归档后落）⇒ 产品代码零改动。
+> ⇒ ★ **慢 SQL（只读）**：24h 仅 168 条 >500ms；12.0s 主犯 = `session_turns_hot`
+> api_key 归一化正则查询 ⇒ **r98 迁移 916 正是修它的**（本轮中途由其会话合入
+> main，不重复动）；24.3s = 另一产品 `daily_kline` COPY；`pg_stat_statements`
+> 未 preload（需共享 PG 重启授权，登记）。
+> ⇒ ★ **分支/本地审计**：唯一未合并分支 r98 审计时活跃（7 分钟前，不满足 1h 窗口）
+> 不动 ⇒ 本轮中途其内容已并入 main（`--is-ancestor` 实证），worktree 删除留给
+> 其会话；冗余 stash R75（R147 全部内容已进 main）⇒ drop（SHA
+> 09ae5c96 留痕）；menu-config.json 纯时间戳改动 ⇒ 丢弃。
+> ⇒ ★ **读数**：`go build ./...` ✓ / 全量 `go test ./...` 唯一红=发现五（修后绿）/
+> `vue-tsc` 0 错 / `vitest` 复跑 **2925 通过 / 2 跳过**（首轮 1 偶发，日志截断
+> 未定位用例名，如实记）/ `web build` ✓ 22.55s / TestPGTestEnv 红→绿 /
+> design-type-scale-guard 红→PASS。211 部署（含背压修复生效验证）在本轮收口执行。
+> ⇒ 审计档 `docs/audit/2026-10-28-24h审计第3轮-出口修复与背压退避.md`；
+> 通用式见 `LESSONS.md` **§520**（★ 让号：最高 §516，跨号取 §520 留 §517~519 缓冲；
+> 五条：★★ 「不可路由」区分配置事实与网络事实 / ★★ 重试节奏本身就是负载 /
+> ★ 老积压 attempts 当指数底数「首拍落 cap」恰是想要的 / ★★ 终态等最后写的字段 /
+> ★★ 登记的红会过期 + 量具缺席找同层数据源）。
+
+## ㊶ 原厂直通生产验证轮 + 批判式复审（2026-10-28）· zcode 实流量收口 RISK-5（★ 「保真」可能被方言合法性冒名顶替；★ 生效点清单要按【谁做序列化】数；★ 聚合口径必须与断言语义逐字对齐 —— 说「首发」就取第一次尝试）
+> 承接 ㊲ 的 RISK-5。★ **211 部署身份**：a 槽（28776060）与 b 槽（dc55570a）二进制探针均含直通代码 ⇒ nativepair 自 2026-10-28 08:20Z 起在线（**09:31 切流不是「无→有」边界**；版本号 `-dirty` 不算数，`grep -c 特征串 二进制` 才算）。
+> ⇒ ★ **取证通道盘点**（先做这张表）：211 无 `request_logs` 表、`request_wal_bodies` 0 行 ⇒ 唯一 body 通道 = 容器 `/app/logs/raw_data/*.jsonl`（100MB×10 firehose，client_request/upstream_request 双向 base64 完整 body）+ `docker logs` **stderr** 的 `http_request`（UA/request_id 关联；只接 stdout = 假阴性 0 条）。
+> ⇒ ★★ **验证①（首发 body 含厂商私有参数）成立**：zcode→glm 87 个主路径请求（UA 关联 + 结构指纹两法互证同 87），**首发语义 = 85 个首发 全参数保真（键集零差异 + 值级 max_tokens 85/85 相等、thinking 逐字相等）+ 2 个首发 drop**（332b3c20 / 3c1db75e，同分钟撞 nvidia 首跳）。`enable_thinking`/`reasoning{effort:max}`/`thinking{enabled}`/`tool_choice`/128000 全透传；唯一结构性改写 = `max_completion_tokens→max_tokens`（值不变）。
+> ⇒ ★★★ **挖出真缺陷并修（65d24d0df）**：`legacy_with_ir`（OpenAI 入向、`e.IR != nil` 的生产主路径）+ 同族断路器兜底**漏盖 `NativePassthrough`** ⇒ glm 走第三方宿主（nvidia catalog / 空 catalog ⇒ paramreg `RejectedByUnknown`）时厂商参数首发被裁。★★ **GLM 原厂路由（首发 85）的保真是 zhipu 方言恰好认这些键 = 方言合法性冒名顶替直通机制** ⇒ 验证样本必须含「机制缺席时结论会翻」的形态（= 非原厂 catalog 宿主）。★★ **IR 往返有四个序列化站点**（anthropic 入向 / legacy_with_ir / 断路器兜底 / inline no-IR），上轮按「谁做 paramguard」数只盖了三个 ⇒ **生效点清单要按【标志的消费方 = 谁做 SerializeOpenAI】数**。红转绿回归 ×2（主路径 + 断路器兜底）+ 变异臂（摘章必红/还原绿/md5 一致）⇒ 四站点全有测试。
+> ⇒ ★★ **验证②（非原生零变化）成立**：同一 zcode 打 MiniMax（非原生对）49 个带 thinking 请求 = **48 个 enabled→adaptive 改写 + 1 个本就 disabled 原样放行（政策精确生效非反例）**；两槽 1350 上游尝试 **0×400**、reqprobe 剥参重试 **0**、zcode 客户端 **402×200**。RISK-1 vacuous（窗口无 deepseek-code 流量 ⇒ 记「未观察到」非「未发生」）。`native_pair_bypass` 日志 0 条 = 预期（matrix 无 strip + **Debug 级在生产 Info 级不可见** ⇒ RISK-3 留痕机制默认不可观测，已登记）。
+> ⇒ ★ **批判式复审（同日第 3 轮，f12ba085c）**：① 上轮「87 中 86 保真」是【末次尝试】口径 ⇒ 洗白了 1 个首发即裁的请求 ⇒ 首发语义订正 85/87（**聚合口径必须与断言语义逐字对齐**，LESSONS §504 通式八）；② 「MiniMax 49 之 1」核实为政策正确行为；③ 断路器兜底补测试+变异臂；④ 复审时原 b 槽容器已被并行会话两次蓝绿替换（UA 日志源丢失）⇒ 结构指纹法补位。
+> ⇒ ★ 部署：修复随 `1e66996f` 上线（18:40+08 蓝绿）；复审时生产已推进到 `3d7b7d3a`，**血缘验证仍含修复**。z-ai 路由 + 厂商参数组合**线上尚未自然复现**（nvidia 处于 upstream_down 惩罚期）—— 由单测钉死、待自然样本。
+> ⇒ 审计档 `docs/audit/2026-10-28-原厂直通生产验证轮.md`（§0~§11）；通用式见 `LESSONS.md` **§504**（八条；取号两次让号 §503→§504）。
+> **2026-10-28~29 第 34 增量：live 页头部区间统计轮（统计上移头部 + 5m/1h/当天
+> 区间切换 + 左下统计退役）**（goal 会话）：★ 承接 owner 指令（统计数据放页面
+> 头部：请求次数/token输入/缓存/输出/成功率；区间可选当天/1小时/5分钟；左下
+> 统计取消；所有统计在上部可折叠展开；要有地方显示所有请求的总量）。
+> ⇒ ★ **新组件 `web/src/components/live-topology/StatsPanel.vue`**（头部区间统计
+> 面板）：总量行**常驻**（请求数/成功率/输入/输出/缓存/失败——折叠只收明细两组，
+> 把总账藏起来面板就失去意义）+ 区间选择器（原生 select）+ 供应商/模型两组
+> 可折叠明细（点行联动图过滤，与图/两栏同一过滤子集）+ day 交叉展开
+> （?by=provider）保留 + 口径行/空态**以响应自己的 window 字段为准**（数据说话，
+> 切换瞬间不会把旧数据标成新口径；对旧后端忽略未知参数返回 day 数据也自然降级
+> 正确）。轮询 day 60s / 窗口 30s。`TodaySummaryRail.vue` + 测试删除，
+> 左栏回归纯明细。
+> ⇒ ★★ **短窗口唯一如实的来源是 request_logs 直查**：`stats_usage_daily` 是纯
+> 日粒度（无 hour 列）且 rollup 每小时重建；**实时流绝不能当统计源**（Redis 快照
+> 每泳道 100 条，高峰期聚合「1 小时」系统性偏低=把低估说成统计）⇒ 后端
+> `providers-today` / `models-today` 加 `?window=5m|1h`（`admin/topology_window_stats.go`）：
+> 归并口径与 live-stream SSE catch-up **逐字同款**（credentials→providers /
+> models_canonical / request_status CASE 表达式）、列形状与 day SQL 逐列一致 ⇒
+> handler **双口径共用同一段行处理/totals/share**，响应加 `window` 回显
+> （day 契约逐字节兼容）、`day_utc` 置空、`cadence=realtime`；只认 5m/1h，
+> 其余值一律回落 day；`?by=provider` 仅 day 提供。
+> ⇒ ★★★ **本轮最值钱的一处：共享 SQL 片段抽成 Go 常量拼接 ⇒ AST 量具失明** ——
+> canonical 读点登记簿扫描器（go/ast 只认字面量）把内含在常量里的
+> `rl.request_status`/`rl.success` 从读点清单隐身（门红才暴露）⇒ 修法=逐字内联
+> + 契约测试钉「内联文本==常量」⇒ **「抽常量」这类重构对文本级量具是语义丢失**。
+> ⇒ ★★★ **第二处（浏览器实测抓到）：全局 `select{width:100%}`**（style.css
+> 浏览器表面轮）把头部新区间选择器撑到 1554px；`flex:none` 管伸缩不管基准宽度
+> ⇒ 组件内每个原生控件都要显式宽度 ⇒ **vue-tsc/vitest 全绿 ≠ 布局对**。
+> ⇒ ★ **登记簿/证人三处随改动同步**：canonical 读点登记簿 + 时间窗缺陷台账
+> （新文件提及视图名即登记）；空态登记簿 +1（`stats.emptyNoResultWindow`，
+> kind=NoResult，点名区间与主体；规模钉 23→24）；jargon 豁免簿 `catalog_code`
+> 的 witness 从被删的 rail 改指 StatsPanel（**证人失效=门红**，删除组件要先
+> grep 登记簿里指向它的证人）。
+> ⇒ ★ **i18n**：8 语种 `liveTopology.stats.*` 16 键 + 删 `rail.title`（避免死键），
+> 其余 `rail.*` 键原样复用（同一句话不许两份）。
+> ⇒ ★ **读数**：`vue-tsc` 0 错 / `vitest` **2929 通过 / 2 跳过**（StatsPanel 新增
+> 14 例）/ `build` ✓ 17.16s / `go build ./...` ✓ / `go test ./admin/` 全绿
+> （窗口测试 6 条 + 登记簿两门）/ **15 道前端门全 PASS**（i18n audit、硬编码中文
+> 4483=基线、共有死键 0、空态、内部标识、错误清晰、错误出口、AI 痕迹、浮起、
+> 颜色 39 基线、copy-clarity×2、响应式、element、copy-quality）。
+> ⇒ ★ **211 部署 + 生产实测**（蓝绿槽 a，`2.5.8-5b753fc5-dirty`，钉根部署）：
+> 树 grep 核验新符号在远端（DD_REPO_ROOT 漂移防线）；**API 三区间数字自洽**
+> （day 13,877 ⊃ 1h 272 ⊃ 5m 16；window 回显/cadence=realtime/day_utc 置空/
+> 窗口模式忽略 by=provider）；**浏览器真数据**：总量行与 API totals 逐字一致
+> （13.9K · 52.4% · 1.08B tok · 3.13M tok · 662.36M tok · 6.6K）、切 5m 口径行
+> 变「Realtime: aggregated straight from request logs (last 5 min)」、折叠交互
+> 通过、**键路径上屏 0**。
+> ⇒ ★ **本轮明确没做 / 如实记**：区间选择不进 URL；窗口口径无供应商分布展开
+> （仅 day）；本机 8782 旧网关（另一 checkout 2.5.8.2896）JWT 401 未深挖
+> （旧构建，生产无此问题）；**访客外壳 guest-header 390px 横向溢出**（预存在，
+> 与本轮无关）；总量行不受页面过滤影响（设计如此：它就是总账，明细仍联动）；
+> 折叠态不持久化（与退役栏一致）。
+> ⇒ 审计档 `docs/audit/2026-10-28-live页头部区间统计轮.md`；
+> 通用式见 `LESSONS.md` **§525**（六条：★★★★ 常量拼接让 AST 量具失明 /
+> ★★★★ 全局表单规则越过 flex 预期 / ★★★★ 短窗口统计先量缓冲覆盖面 /
+> ★★ 口径回显以响应为准 / ★★ 登记簿「提及即登记」+证人失效即红 / ★★ 两段式验证）。
 ## ㊷ R179 轮（2026-10-29）· 「读点的实测计划形态」（★ 「索引存在」≠「索引被用上」；★ 静态重建 SQL 是【不完整】的 ⇒ 事实源换成生产真语句；★ 用 NULL 填未知参数会【毁掉整个计划形态】；★ 「测不出来」必须是一等状态）
 
-> **取号说明**：★ 本轮开工时我方上一节是 **㊵**（★ R178）⇒ ⇒ ★★ **【合并上游之前】查 `origin/main`：上游已占 **㊶** ⇒ ⇒ ⇒ 本节让到 **㊷** ✓**（★ LESSONS 同步：**让号一次**：§516 → **§522**，★ 因为上游已开到 §521）⇒ ⇒ ★★★ **★ ⇒ 纪律复述：★ LESSONS 节号与 AGENTS 标记是【两套】编号 ⇒ ★ 两套都要查 ⇒ ★★ **【推送前】还要再 fetch 一次再查一次** ★★**
+> **取号说明**：★ 本轮开工时我方上一节是 **㊵**（★ R178）⇒ ⇒ ★★ **【合并上游之前】查 `origin/main`：上游已占 **㊶** ⇒ ⇒ ⇒ 本节让到 **㊷** ✓**（★ LESSONS 同步：**让号两次**：§516 → **§522** → **§526**，★ 因为上游开到 §521 后又取号 **§525** 并**预留了 §522~§524**）⇒ ⇒ ★★★ **★ ⇒ 纪律复述：★ LESSONS 节号与 AGENTS 标记是【两套】编号 ⇒ ★ 两套都要查 ⇒ ★★ **【推送前】还要再 fetch 一次再查一次** ★★**
 
 ★★ **本轮性质：★★ R178 造了一条「键与视图投影逐字同形」的表达式索引并证明它「能被用上」——
 ★★ 但那只证明了「查询写成那个 CASE 形态时能用」。本轮问的是下一个问题：
@@ -14172,7 +14310,7 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 ★★（★ 全部只改仓外副本 ⇒ ★ **门运行期零污染**）★★。
 
 ★★ **审计档**：`docs/audit/2026-10-29-R179-读点的实测计划形态.md`（10 节）；
-★★ **通用式**：`LESSONS.md` **§522**（通用式一~七）。
+★★ **通用式**：`LESSONS.md` **§526**（通用式一~七）。
 
 ★★ **★ 本轮明确没做（★ 留给下一轮，★ 别重复排查）★★**：
 ★★ ① **census 采集器修表达式键**（★ 本轮已取证：★ 本地 44 条；★ 修它要重采四环境 +
