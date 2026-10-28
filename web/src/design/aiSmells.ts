@@ -772,6 +772,8 @@ export function scanSource(src: string, rel: string, file: string = rel): AiSmel
     // ★ 第 27 增量：从已退役的孤儿门移植进来的两条判据（判据唯一实现 = 本文件）
     findings.push(...detectKickers(src, rel))
     findings.push(...detectDecorativeNumbers(src, rel))
+    // ★ 第 36 增量：V11b —— **手写字面量**的装饰序号（V11 只认 `padStart` 生成的那种）
+    findings.push(...detectDecorativeNumberLiterals(src, rel))
   }
   return findings
 }
@@ -903,6 +905,48 @@ export function detectDecorativeNumbers(src: string, rel: string): AiSmellFindin
       text: m[0],
       reason:
         "padStart(2, '0') 生成的 01/02 序号 —— craft-floor：序号只在序列本身携带信息时才用",
+    })
+  }
+  return out
+}
+
+/**
+ * ★★ V11b：**手写字面量**的装饰序号（第 36 增量）。
+ *
+ * ★★ 这条判据补的是 V11 的**盲区**：V11 只认 `padStart(2, '0')` **生成**的序号
+ *   ⇒ 而数据数组里**手写**的 `'01'` / `'02'` 它完全看不见
+ *   ⇒ ★ 与 V3b（第 29 增量补的「emoji 藏在数据数组里」）**完全同型**：
+ *   「检测器只认一种形态 ⇒ 另一种形态整族漏网」。
+ * ★ 真仓实证：`web/src/views/LandingView.vue` 的 8 个特性卡写死了
+ *   `icon: '01'` … `icon: '08'` ⇒ ★ 模板压根不渲染 `item.icon`
+ *   （`LandingFeature` 类型里也没有这个字段）⇒ 是**死数据**，但它是颗地雷：
+ *   哪天有人把它接回模板，界面上就会冒出 01/02 装饰序号（craft-floor 明禁）。
+ *
+ * ★ 位置信号 = **属性名**（与 V3b 同款思路）：属性名含序号/图标位语义
+ *   （icon / glyph / emoji / num / seq / idx / index / order / step / badge / marker / ordinal）
+ *   ⇒ ★ 判据宁可窄，不可宽：普通文本里的 '01'（比如限额 '50'）**不判**。
+ * ★ 值只认**零填充两位数**（`'01'` … `'09'`）—— 这正是 craft-floor 写的
+ *   「Section numbers (01 / 02 / 03)」那个形状 ⇒ ⇒ 实测全仓假阳性 0 处
+ *   （`step="60"` 那种属性值不是零填充 ⇒ 不命中）。
+ */
+export function detectDecorativeNumberLiterals(src: string, rel: string): AiSmellFinding[] {
+  const out: AiSmellFinding[] = []
+  const masked = stripSourceComments(src)
+  // ★ 属性名先捕获（与 V3b 同构），值只认 '01'..'09'。
+  const re = /\b([A-Za-z_$][\w$]*)\s*[:=]\s*(['"])(0[1-9])\2/g
+  const NAME = /icon|glyph|emoji|num|seq|idx|index|order|step|badge|marker|ordinal/i
+  let m: RegExpExecArray | null
+  while ((m = re.exec(masked))) {
+    const attr = m[1]
+    if (!NAME.test(attr)) continue
+    out.push({
+      rule: 'V11b-section-number-literal',
+      file: rel,
+      line: lineOf(src, m.index),
+      selector: attr,
+      text: m[3],
+      reason:
+        "手写的 '01' 装饰序号 —— craft-floor：序号只在序列本身携带信息时才用（V11 只认 padStart 生成的那种）",
     })
   }
   return out
@@ -1595,6 +1639,34 @@ h2 { font-weight: 700; }
 /* 这里原来写的是 ▴ */
 .probe { color: red; }
 </style>`).filter((r) => r === 'V3-glyph-as-icon').length)
+
+  // ── 第 36 增量：V11b —— **手写字面量**的装饰序号（★ V11 只认 padStart 生成的那种）──
+  check('S-CF22', "数据数组里手写的 icon: '01' / '02' ⇒ V11b 两条（★ 按出现次数计，与 V3b 同款口径）", 2, rules(`
+<script setup>
+const features = computed(() => [
+  { icon: '01', title: 'a' },
+  { icon: '02', title: 'b' },
+])
+</script>`).filter((r) => r === 'V11b-section-number-literal').length)
+  check('S-CF23', "非序号语义属性名（limit: '01'）⇒ 不判 V11b（★ 判据宁可窄不可宽）", 0, rules(`
+<script setup>
+const cfg = { limit: '01' }
+</script>`).filter((r) => r === 'V11b-section-number-literal').length)
+  check('S-CF24', "非零填充的 '60' ⇒ 不判 V11b（★ 只认 01..09 这个 craft-floor 形状）", 0, rules(`
+<script setup>
+const cfg = { icon: '60' }
+</script>`).filter((r) => r === 'V11b-section-number-literal').length)
+  check('S-CF25', "注释里的 icon: '01' ⇒ 不判 V11b（★ 注释不是声明）", 0, rules(`
+<script setup>
+// icon: '01' —— 这是注释
+const cfg = { name: 'x' }
+</script>`).filter((r) => r === 'V11b-section-number-literal').length)
+  check('S-CF26', "padStart 生成的那种仍归 V11（★ V11b 不重复报）", 0, rules(`
+<template><span>{{ String(index + 1).padStart(2, '0') }}</span></template>`).filter((r) => r === 'V11b-section-number-literal').length)
+  check('S-CF27', 'V11b 的 selector 报的是属性名（★ 报告要能指出「哪个属性」）', 1, scan(`
+<script setup>
+const features = [{ icon: '01' }]
+</script>`).filter((f) => f.rule === 'V11b-section-number-literal' && f.selector === 'icon').length)
 
   const failed: string[] = []
   let passed = 0
