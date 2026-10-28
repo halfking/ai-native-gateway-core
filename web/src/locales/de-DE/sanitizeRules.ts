@@ -134,4 +134,32 @@ export default {
   expectedMiss: "Darf nicht treffen",
   eventEvidenceNote:
     "Trefferlisten speichern keinen Anfragetext. Prüfen Sie Typ/Feld sowie Regelmuster und erfundene Beispiele; bei Fehlalarm Regel bearbeiten oder ergänzen. Lokale Skripte/Dokumente zeigen nach Wiederherstellung echte Werte; Upstream bleibt maskiert. Optionale Output-Compliance ist standardmäßig aus.",
+  hardblock: "Hartblock-Schalter",
+  hardblockHint:
+    "Steuert, welche Regeln eine ganze Antwort abbrechen dürfen. Regeln außerhalb dieser Liste protokollieren oder maskieren nur; Änderungen greifen sofort.",
+  hardblockProcessOnly:
+    "Änderungen gelten nur für diesen Gateway-Prozess; nach einem Neustart gilt wieder die aus der Deployment-Umgebung geladene Liste.",
+  hardblockListLabel: "Regeln mit erlaubtem Hartblock",
+  hardblockFormatNote:
+    "Gültige Scopes: input, output, egress; eine Regel ist eine exakte ID, eine Präfixfamilie oder *. Der Scope egress akzeptiert nur einzelne Builtin-Regeln.",
+  hardblockCommentLabel: "Grund der Änderung",
+  hardblockDisableConfirm:
+    "Ich bestätige, alle Hartblocks zu deaktivieren, auch den seitenschutz der Anfragen gegen Klartext-Zugangsdaten",
+  hardblockSave: "Liste speichern",
+  hardblockSaved: "Hartblock-Liste aktualisiert und sofort wirksam.",
+  blockedReviews: "Blockierte Anfragen prüfen",
+  blockedReviewsHint:
+    "Jede durch die Richtlinie blockierte Antwort erzeugt hier einen offenen Eintrag. Nach Freigabe passiert derselbe Inhalt beim nächsten Wiederholungsversuch; Ablehnung hält den Block.",
+  blockedReviewsNote:
+    "Einträge speichern nur Regel, Grund und Prüfsumme, nie den blockierten Text. Die Warteschlange lebt im Prozess und ist nach Neustart leer.",
+  blockedReviewsNone: "Keine Prüfungen blockierter Antworten unter dem aktuellen Filter",
+  reviewPending: "Wartet auf Prüfung",
+  reviewApproved: "Freigegeben",
+  reviewRejected: "Abgelehnt (Block bleibt)",
+  reviewReasonLabel: "Blockgrund",
+  reviewFieldLabel: "Argumentpfad",
+  reviewRequestLabel: "Anfrage",
+  reviewDigestLabel: "Prüfsumme",
+  reviewApprove: "Freigeben",
+  reviewReject: "Block halten",
 };

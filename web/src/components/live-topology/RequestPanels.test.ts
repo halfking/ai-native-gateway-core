@@ -29,7 +29,8 @@ import ClientRequestPanel from './ClientRequestPanel.vue'
 import ProviderResponsePanel from './ProviderResponsePanel.vue'
 import RequestDetailView from './RequestDetailView.vue'
 import RequestZoomPanel from './RequestZoomPanel.vue'
-import type { ClientSummary, PanelEntry } from '../../composables/useLiveTopology'
+import SummaryHeader, { type SummaryRow } from './SummaryHeader.vue'
+import type { PanelEntry } from '../../composables/useLiveTopology'
 import type { ActionEvent } from '../../composables/liveStreamStore'
 import zhCN from '../../locales/zh-CN/liveTopology'
 
@@ -62,36 +63,36 @@ function entry(over: Partial<PanelEntry> = {}): PanelEntry {
   }
 }
 
-const SUMMARY: ClientSummary = {
-  client: 'claude-code',
-  requests: 4,
-  success: 3,
-  failure: 1,
-  inFlight: 0,
-  tokens: 900,
-  topModel: 'glm-4.5',
+/** SummaryHeader 的行夹具（3/4 成功 = 75%，沿用旧摘要断言的口径）。 */
+function row(over: Partial<SummaryRow> = {}): SummaryRow {
+  return {
+    name: 'claude-code',
+    requests: 4,
+    success: 3,
+    failure: 1,
+    inFlight: 0,
+    ...over,
+  }
 }
 
 describe('ClientRequestPanel', () => {
-  it('renders one summary row per client and one row per request', () => {
+  it('renders one row per request (aggregates moved to the header strip, 2026-10-28)', () => {
     const wrapper = mount(ClientRequestPanel, {
       props: {
-        summaries: [SUMMARY, { ...SUMMARY, client: 'codex', requests: 1, success: 1 }],
         requests: [entry(), entry({ requestId: 'r-2', status: 'failure', errorKind: 'upstream_timeout' })],
       },
       global: { plugins: [i18n] },
     })
-    expect(wrapper.findAll('.cp__summary-row')).toHaveLength(2)
     expect(wrapper.findAll('.cp__item')).toHaveLength(2)
     expect(wrapper.text()).toContain('Claude Code')
     expect(wrapper.text()).toContain('upstream_timeout')
-    // 成功率按聚合口径算（3/4 = 75%），不是随手编的数字
-    expect(wrapper.find('.cp__summary-stats').text()).toContain('75%')
+    // 聚合摘要已上移头部：面板里不得再有摘要行残留
+    expect(wrapper.find('.cp__summary-row').exists()).toBe(false)
   })
 
   it('emits the request id when a row is clicked', async () => {
     const wrapper = mount(ClientRequestPanel, {
-      props: { summaries: [SUMMARY], requests: [entry()] },
+      props: { requests: [entry()] },
       global: { plugins: [i18n] },
     })
     await wrapper.get('.cp__item').trigger('click')
@@ -100,7 +101,7 @@ describe('ClientRequestPanel', () => {
 
   it('says "no requests" instead of rendering an empty box', () => {
     const wrapper = mount(ClientRequestPanel, {
-      props: { summaries: [], requests: [] },
+      props: { requests: [] },
       global: { plugins: [i18n] },
     })
     expect(wrapper.text()).toContain('窗口内暂无请求')
@@ -108,36 +109,21 @@ describe('ClientRequestPanel', () => {
 
   it('renders a missing latency as an em dash, not 0ms', () => {
     const wrapper = mount(ClientRequestPanel, {
-      props: { summaries: [SUMMARY], requests: [entry({ latencyMs: null })] },
+      props: { requests: [entry({ latencyMs: null })] },
       global: { plugins: [i18n] },
     })
     expect(wrapper.get('.cp__latency').text()).toBe('—')
     expect(wrapper.get('.cp__latency').text()).not.toContain('0ms')
   })
 
-  it('★ header count always matches the rows actually rendered', () => {
-    // 表头原来直接显示 summaries.length（上限 60），正文只画 8 行 ——
-    // 表头在宣传不存在的行，同时把真实客户端总数藏起来。
-    const many = Array.from({ length: 12 }, (_, i) => ({ ...SUMMARY, client: `c-${i}` }))
+  it('★ header count is the request total (same number the pager shows)', () => {
+    // 摘要上移后表头计数改为请求总数 —— 与分页器「共 N 条」同源，
+    // 不许再出现「表头一个数、正文另一个数」的两份真值。
     const wrapper = mount(ClientRequestPanel, {
-      props: { summaries: many, requests: [] },
+      props: { requests: Array.from({ length: 7 }, (_, i) => entry({ requestId: `r-${i}` })) },
       global: { plugins: [i18n] },
     })
-    const rows = wrapper.findAll('.cp__summary-row').length
-    const header = wrapper.get('.cp__count').text().trim()
-    expect(rows).toBe(8)
-    // 8 / 12：渲染行数与真实总数两个数都看得见
-    expect(header).toBe('8 / 12')
-    expect(header).not.toBe('12')
-  })
-
-  it('shows a plain count when every client fits', () => {
-    const wrapper = mount(ClientRequestPanel, {
-      props: { summaries: [SUMMARY, { ...SUMMARY, client: 'codex' }], requests: [] },
-      global: { plugins: [i18n] },
-    })
-    expect(wrapper.findAll('.cp__summary-row')).toHaveLength(2)
-    expect(wrapper.get('.cp__count').text().trim()).toBe('2')
+    expect(wrapper.get('[data-testid="client-request-count"]').text().trim()).toBe('7')
   })
 
   it('★ renders auto requests as auto → final model (2026-10-28 选路层轮)', () => {
@@ -145,7 +131,6 @@ describe('ClientRequestPanel', () => {
     // auto chip + 箭头 + 最终模型名。普通请求不出现该表达。
     const wrapper = mount(ClientRequestPanel, {
       props: {
-        summaries: [SUMMARY],
         requests: [
           entry({ requestId: 'r-auto', isAuto: true, taskType: 'code', model: 'glm-4.5' }),
           entry({ requestId: 'r-plain' }),
@@ -220,7 +205,7 @@ describe('ClientRequestPanel 分页（owner 2026-10-18：单页 ≤50 条）', (
 
   function mountClient(requests: PanelEntry[] = many) {
     return mount(ClientRequestPanel, {
-      props: { summaries: [SUMMARY], requests },
+      props: { requests },
       global: { plugins: [i18n] },
     })
   }
@@ -274,8 +259,6 @@ describe('ClientRequestPanel 分页（owner 2026-10-18：单页 ≤50 条）', (
   it('★ renders the human-readable client name (claude-code → Claude Code)', () => {
     const wrapper = mountClient([entry()])
     expect(wrapper.get('.cp__client').text()).toBe('Claude Code')
-    // 摘要行同样走易读名（同一显示口径）
-    expect(wrapper.get('.cp__summary-name').text()).toBe('Claude Code')
   })
 
   it('★ emits open-page with the entry when the ↗ link is clicked (全页详情入口)', async () => {
@@ -464,5 +447,73 @@ describe('RequestDetailView', () => {
     expect(wrapper.emitted('open-page')?.[0]?.[0]).toMatchObject({ requestId: 'r-1' })
     await wrapper.get('.zoom__close').trigger('click')
     expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+})
+
+describe('SummaryHeader（2026-10-28 汇总上移轮：头部三块汇总）', () => {
+  it('renders three blocks — clients / providers / models — from their own props', () => {
+    const wrapper = mount(SummaryHeader, {
+      props: {
+        clients: [row({ name: 'Claude Code' })],
+        providers: [row({ name: 'deepseek', requests: 9, success: 9 })],
+        models: [row({ name: 'glm-4.5', requests: 7, success: 6 })],
+      },
+      global: { plugins: [i18n] },
+    })
+    expect(wrapper.get('[data-testid="summary-block-clients"]').text()).toContain('客户端')
+    expect(wrapper.get('[data-testid="summary-block-clients"]').text()).toContain('Claude Code')
+    expect(wrapper.get('[data-testid="summary-block-providers"]').text()).toContain('供应商')
+    expect(wrapper.get('[data-testid="summary-block-providers"]').text()).toContain('deepseek')
+    expect(wrapper.get('[data-testid="summary-block-models"]').text()).toContain('模型')
+    expect(wrapper.get('[data-testid="summary-block-models"]').text()).toContain('glm-4.5')
+  })
+
+  it('computes the success rate from the aggregate (3/4 = 75%), not a made-up number', () => {
+    // 沿用旧面板摘要的断言口径：成功率按聚合口径算
+    const wrapper = mount(SummaryHeader, {
+      props: { clients: [row()], providers: [], models: [] },
+      global: { plugins: [i18n] },
+    })
+    expect(wrapper.get('.sumhead__stats').text()).toContain('75%')
+  })
+
+  it('★ block header shows "shown / total" when truncated, plain total when it fits', () => {
+    // 截断计数纪律（同旧面板表头）：只画前 4 行时表头必须写「4 / 12」——
+    // 只写总数 = 宣传不存在的行；只写行数 = 藏起真实总数。
+    const many = Array.from({ length: 12 }, (_, i) => row({ name: `c-${i}` }))
+    const wrapper = mount(SummaryHeader, {
+      props: { clients: many, providers: [row({ name: 'p' })], models: [] },
+      global: { plugins: [i18n] },
+    })
+    const clientsBlock = wrapper.get('[data-testid="summary-block-clients"]')
+    expect(clientsBlock.findAll('.sumhead__row')).toHaveLength(4)
+    expect(clientsBlock.get('.sumhead__count').text().trim()).toBe('4 / 12')
+    expect(clientsBlock.get('.sumhead__count').text().trim()).not.toBe('12')
+    // 恰好放得下（1 项 < 4）⇒ 显示真实总数
+    expect(wrapper.get('[data-testid="summary-block-providers"] .sumhead__count').text().trim()).toBe('1')
+  })
+
+  it('marks in-flight traffic and never fakes a 0% rate for zero requests', () => {
+    const wrapper = mount(SummaryHeader, {
+      props: {
+        clients: [row({ name: 'a', inFlight: 2 })],
+        providers: [row({ name: 'p', requests: 0, success: 0 })],
+        models: [],
+      },
+      global: { plugins: [i18n] },
+    })
+    expect(wrapper.get('[data-testid="summary-block-clients"] .sumhead__stats').text()).toContain('2↻')
+    // 没有请求 = 没有成功率（—），不是 0%（假零禁令）
+    expect(wrapper.get('[data-testid="summary-block-providers"] .sumhead__stats').text()).toContain('—')
+    expect(wrapper.get('[data-testid="summary-block-providers"] .sumhead__stats').text()).not.toContain('0%')
+  })
+
+  it('says "no requests" for an empty dimension instead of an empty box', () => {
+    const wrapper = mount(SummaryHeader, {
+      props: { clients: [], providers: [], models: [row({ name: 'm' })] },
+      global: { plugins: [i18n] },
+    })
+    expect(wrapper.get('[data-testid="summary-block-clients"]').text()).toContain('窗口内暂无请求')
+    expect(wrapper.get('[data-testid="summary-block-clients"] .sumhead__count').text().trim()).toBe('0')
   })
 })

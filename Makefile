@@ -166,8 +166,23 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 GUARD_PACKAGES_SLOW := ./scripts/ursmcheck ./admin
 
 .PHONY: guards
-guards: guards-installer guards-ursmcheck guards-shell ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门）
+guards: guards-installer guards-ursmcheck guards-shell guards-deploy ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门 + 切流锁两门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
+
+# ── 切流锁契约门 + 跨仓对拍门 ───────────────────────────────────────────────
+#
+# ★ 2026-10-28（r1039 后续轮 · 第三轮）：★ §507 的教训「**门没有调用方 = 声明
+#   不是门**」—— tests/deploy_switch_lock_contract_test.sh（20 条不变量）与
+#   tests/deploy_switch_lock_parity_test.sh（跨仓对拍）自 2026-10-27 起
+#   **没有任何 Make / CI 调用方** ⇒ ⇒ 只有「人恰好记得跑」时它们才跑。
+#   ⇒ ⇒ 这里给它们一个调用方（★ 前两轮的判据成果由此才真正【承重】）。
+# ★ 缺件时的行为（★ 两条门都遵守「本次没跑」纪律，**不**伪装成通过）：
+#   · 跨仓对拍门缺仓外共享部署库 ⇒ 明确 SKIP（不输出 ALL PASS）；
+#   · 契约门的 flock 形态臂缺 python3（真语义假 flock 需要 fcntl）⇒ 明确 SKIP 那一段。
+.PHONY: guards-deploy
+guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，不伪装成通过）
+	@bash tests/deploy_switch_lock_contract_test.sh
+	@bash tests/deploy_switch_lock_parity_test.sh
 
 # ★★★ 2026-10-24 magpie 对齐轮 §3.17：**在跑的 CI 载体专用 target**。
 #

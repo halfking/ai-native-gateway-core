@@ -13210,6 +13210,24 @@ canonical 视图 **1306 / 1536 ms**（热）· **3191 ms**（冷）· 两臂窄�
   ⇒ ★ **变异台累计 7 臂全检出**（M7 = executor IR 盖章）；★ 审计档补 **§9 核查清单
   + §10 遗留风险（8 条，含量化触发条件/后果/处置/缓解，并列出「已核实为不成立」的
   3 条不登记项）**。
+- ★★★ **第三轮批判审计（三巡，同日）：「接线存在但从未被喂过」一族** ——
+  ⇒ ★★ **T1 最值钱**：★ `ExecParams.ClientType` 的字段注释声称「Empty is only
+  allowed for legacy direct executor callers」，**但生产三个构造点（messages.go /
+  responses.go / handler.go）从没人填过它** ⇒ grep 实证零填充 ⇒ 功能没断纯因
+  `nativePairFor` 有 header/UA + body 标记两层兜底 ⇒ ★★ **「兜底链会掩盖断线」：
+  功能全绿 ≠ 输入真的到了门口** ⇒ 修：三构造点补 `ClientType: extractClientType(r)`。
+  ⇒ ★★ **M8 变异臂的诚实结论**：摘掉接线**没有任何行为测试会红**（兜底让功能等价）
+  ⇒ ★★ **行为测试在此结构性失效 ⇒ 源码钉测是唯一可红形态**
+  （`clienttype_wiring_pin_test.go`，仓内先例 modality_mismatch_wiring_guard）。
+  ⇒ ★ **T2**：`LLM_GATEWAY_NATIVE_PASSTHROUGH=off` 紧急开关**零测试**
+  （`sync.OnceValue` 进程内缓存 ⇒ 同进程测试翻转不了）⇒ 固化成**子进程双臂**
+  （★ 外层判断先写反过一次——变量叫 `ok` 语义是「子进程失败」，改名 `childPassed`
+  才对 ⇒ ★ **双臂变量命名要陈述被断言的事实**）。
+  ⇒ ★ **T3 量化的拒绝**：弱名 body 标记每候选重复解析实测 **3 候选×200KB =
+  0.608ms/请求**（强名 0.29µs）⇒ 占上游 RTT <1%、三客户端 UA 均有特征（弱名非
+  主路径）、修复需破坏 ExecParams 值语义 ⇒ **不修，登记 RISK-9（写清数字）**。
+  ⇒ ★ 变异台累计 **8 臂**（M8 = ClientType 接线摘除）；
+  审计档补 **§11 三巡**（T1~T4 核查表 + 4 条通用式）。
 ⇒ 审计档 `docs/audit/2026-10-28-原厂工具与原厂模型直连全参数直通轮.md`（§1~§8，
   含「全参数透传 vs 出错回退」两条独立证据链与 6 臂变异台）。
 
@@ -13910,6 +13928,81 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > **语言包死键**（ja-JP 294 / zh-TW 288）；**字表完整正名单**（185 候选）；**移动端 8 语言**；
 > **后端下发的中文**；**图标体系统一**；`/admin/usage-enhanced` 的 4 张 `enhanced-card`
 > （★ 本轮判为**合法**：数字是正文色）。
+> **2026-10-28 live 页汇总上移头部三块轮（goal 续轮·第二段）**：★ 承接用户指令
+> 「**需要将汇总信息放到头部，分客户端、供应商与模型三块**」⇒ 旧版面把「按客户端聚合
+> 的摘要」钉在**左栏顶部**（`ClientRequestPanel` 内部 `.slice(0, 8)` 截断且**不显示总数**）
+> ⇒ 三个病：位置错（汇总是整个过滤子集的态势，不是客户端栏私产）/ 维度缺（客户端有聚合、
+> **供应商与模型没有** ⇒ 同页两套真相口径）/ 截断不诚实（真实客户端数永远不可见）。
+> ⇒ ★ **composable**：新增 `DimensionSummary` + `summarizeBy(keyOf)`（**跳过空键**——
+> 被网关拒绝的请求没有 provider，「未派发」不许混进维度桶）；`providerSummaries` /
+> `modelSummaries` 走同一份实现；`clientSummaries` **解除 slice(0,8)**（截断职责移交展示层）。
+> ⇒ ★ **新组件 `SummaryHeader.vue`**：头部三块（`summary-block-clients/providers/models`），
+> 每块 ≤4 行「名称+请求数+成功率+在途↻」；**截断诚实**（超限显示 `N / 总数`）；
+> **缺省诚实**（无请求显示 `—` 不显示假 0%）；`≥768px` 三块并排、窄屏单列；空态复用
+> `panel.empty`（同一句话不许两份）。
+> ⇒ ★ **左面板回归纯明细**：删 `summaries` prop 与 `.cp__summary*` 全部 CSS；表头计数 =
+> `requests.length`（单一口径）⇒ 列表高 96px → 253px。
+> ⇒ ★ **语言包**：8 语种 `summary` 块 +3 键（clients/providers/models）。
+> ⇒ ★ **测试**：面板旧摘要断言移除 + 新增「表头计数=明细总数」；SummaryHeader 组 5 例
+> （三块渲染 / 75% 算术 / 截断 "4 / 12" / 在途↻ 无假 0% / 空态）。
+> ⇒ ★ **读数**：`vue-tsc` 0 错；`vitest` **2925 通过 / 2 跳过**；`i18n:check:strict` /
+> `responsive:check` / `design-ai-smell` PASS；`i18n-cjk-count` 4483=基线；`build` ✓；
+> CDP 几何：桌面三块并排同行（y=198、计数 4/3/4、左栏无摘要区、浮层回归在视口内）、
+> 手机 390px 单列堆叠无横向溢出（汇总条 327px / 列表 478px / console 0 错）。
+> ★ 像素级视觉复核未完成（analyze_image 通道故障）—— 以同判据 DOM 几何读数 + 渲染测试覆盖，
+> 如实记「未测」。
+> ⇒ ★ **本轮没做**：211 部署（指令止于推送）；汇总块「点行过滤到该维度」联动；maxRows 展开交互。
+> ⇒ 审计档 `docs/audit/2026-10-28-live页汇总上移头部三块轮.md`；通用式见 `LESSONS.md` **§511**
+> （四条：★ 信息搬家时旧位置隐藏缺陷一起曝光——搬家是修复的唯一窗口 / ★ 第 N+1 个维度的成本
+> 必须只是一个 keyOf / ★ 聚合跳过空键——「未派发」不是「派发给未知」/ ★ 视觉复核通道失败时用
+> 同判据机械化版顶上并如实记「未测」）。
+> **2026-10-28 第 33 增量：输出策略拦截反馈明确化轮（goal 会话）**：★ 承接用户需求
+> （「常碰到 ZCode 报 `Response blocked by output policy / TraceID: hydrate-trace`，
+> 没有明确原因、检查输入无违规 ⇒ 反馈要更明确、解决误报、后台要有一次性关掉的开关、
+> 或后台审核列表——审核完成后返回前端，前端显示等待审核有敏感内容」）。
+> ⇒ ★★ **原因分析（四层叠加）**：① message 是常量串，r1039 的 rule/reason 在**旁键**——
+> ZCode 报错卡只渲染 message ⇒ 用户侧永远一句话；「hydrate-trace」是 ZCode 自造标签，
+> 网关从未给过可对账 ID。② **三条非流式路径连旁键都没有**（/v1/responses 与 /v1/messages
+> 的 execErr 分支 + 两处 native body 拦截——`interceptNativeResponseBody` 把 InterceptResult
+> 连 Metadata 一起丢弃，只返回 blocked 布尔）。③ 流式终帧没有 request_id。④ 误报面：
+> 硬阻断清单 env 配置管理面够不着；**非托管 OutputBlock 的
+> `block := action==block && !managed()` 完全绕过清单**——部署设
+> `LLM_GATEWAY_SANITIZE_OUTPUT_ACTION=block` 且规则管理器不可用时，正文一个
+> email 就整条掐断（r1037 裁决在这条路上从未生效；托管路径 ErrRuleBlocked 早就过清单）。
+> ⇒ ★★ **修法**：★★ **message 文本本身携带全部可行动信息**（稳定前缀 + `(rule=…)` +
+> 原因 + `at $.路径` + `request=<id>` + 中文行动指引「内容含敏感信息，等待审核（审核单
+> rv-N）：管理员放行后重试即可获得内容」）——按最弱客户端设计，六个拦截落点全接线
+> （流式终帧新签名带 requestID/reviewID/field + chat 非流式 ×2 + responses ×2 + messages ×2）；
+> ★★ **审核队列**（`domains/sanitizerules/review_queue.go`，进程内、上限 1000、同键 pending
+> 去重）：批准 ⇒ `AddEgressRelease` **精确绑定载荷摘要** ⇒ **用户重试即拿到内容**
+> （流式响应拦截那刻已终止，「返回前端」= 重试即返回，不做事后补发）；
+> ★★ **载荷摘要贯通**：`ComplianceIssue.Digest` ← `setToolIssueRule` 拦截那一刻算
+> `EgressPayloadDigest(ruleID, path, value)`（与放行判定**逐字节同键**）→
+> `PolicyBlockError{Path, Digest}` → chunk/InterceptResult metadata → 六个落点；
+> ★★ **运行时硬阻断开关**（`admin/sanitize_rules_hardblock.go`：GET/PUT 整表替换、
+> 立即生效、egress 逐条内建规则的 r1039 限制在解析层继续生效、清空需
+> `confirm_disable_all=true`、变更进结构化日志）；
+> ★ **非托管 OutputBlock 补清单闸**（`anyOutputFragmentMayBlock`，scope=output）：
+> 默认降级遮蔽、`output:*` 显式打开恢复阻断。
+> ⇒ ★ **前端**：SanitizeRulesView 新增「硬阻断开关」（super_admin）与「拦截审核」
+> （super 全部 / tenant_admin 本租户）两页签 + api 4 函数 + 8 语种 +22 键（119→141，
+> 钉死判据同步；示例字面量放模板 `<code>`——语言包值带 `{占位符}` 会破坏
+> 「t(key)==原文」钉死契约）。
+> ⇒ ★ **读数**：`go build ./...` ✓；go test 全绿（streaming 160s / admin 106s 全量 +
+> sanitize / sanitizerules / hooks / errorsx / outputcompliance）；新判据 15 条
+> （含「登记→批准→同载荷放行→异载荷不放行→已决不可再决」「多规则批准链条 5 轮收敛」
+> 「摘要与放行键逐字节一致」）；`vue-tsc` 0 错；`vitest` 2925 通过 / 2 跳过；
+> 12 道 i18n 门全 PASS（jargon 命中 0 / copy-quality PASS——语言包值里的破折号
+> 当标点被抓，改逗号）；`build` ✓ 25.11s；admin 路由快照 0 漂移。
+> ⇒ ★★ **本轮没做 / 如实记**：审核队列与放行表的**持久化**（进程内、重启清空，UI 已写明；
+> 持久化需新表+迁移号协调）；「审核后推送原文」不做（拦截那刻流已终止，契约=重试即返回）；
+> output 侧文本 lane 按载荷放行（放行机制只有 egress scope；output 侧治理通道=硬阻断清单）；
+> 211 部署未执行。
+> ⇒ 审计档 `docs/audit/2026-10-28-输出策略拦截反馈明确化与审核队列.md`；
+> 通用式见 `LESSONS.md` **§513**（★ 让号：原拟 §512，与上游 r1039 三轮撞号，已推送一侧保留 §512；
+> 六条：★★ 旁键不是反馈 / ★★ 拦截那一刻记下放行的钥匙
+> 且键逐字节一致 / ★★ 一条载荷多条规则——批准是收敛链条 / ★ 进程内开关是运维面不是安全面 /
+> ★ 量具口径要覆盖「谁把结果丢了」 / ★ 语言包值里的占位符破坏钉死契约）。
 > **2026-10-28 live 页选路层遗留轮：models-today 交叉展开 + 压缩格环回口径**（会话轮）：
 > ★ 承接 §507（live 页选路层表达轮）遗留四项——①②④ 落地、③ 登记。
 > 审计档 `docs/audit/2026-10-28-live页选路层遗留轮-交叉展开与压缩环回口径.md`。

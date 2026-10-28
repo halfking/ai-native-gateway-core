@@ -29,6 +29,9 @@ export default {
     success: '成功 {n}',
     failure: '失敗 {n}',
     queue: '排隊 {n}',
+    clients: '客戶端',
+    providers: '供應商',
+    models: '模型',
   },
   window: {
     '5m': '近 5 分鐘',

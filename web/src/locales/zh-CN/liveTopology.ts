@@ -29,6 +29,9 @@ export default {
     success: '成功 {n}',
     failure: '失败 {n}',
     queue: '排队 {n}',
+    clients: '客户端',
+    providers: '供应商',
+    models: '模型',
   },
   window: {
     '5m': '近 5 分钟',

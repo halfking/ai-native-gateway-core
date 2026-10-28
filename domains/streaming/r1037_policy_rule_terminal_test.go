@@ -39,7 +39,7 @@ const (
 func TestR1037PolicyFailureFrameCarriesRule(t *testing.T) {
 	const rule = "builtin.network_destination"
 	for _, protocol := range []string{r1037ProtoAnthropic, r1037ProtoResponses, r1037ProtoDefault} {
-		frame := string(nativeStreamPolicyFailureFrame(protocol, rule))
+		frame := string(nativeStreamPolicyFailureFrame(protocol, rule, "", ""))
 		if !strings.Contains(frame, rule) {
 			t.Errorf("%s 终帧缺少规则名 %q: %s", protocol, rule, frame)
 		}
@@ -54,7 +54,7 @@ func TestR1037PolicyFailureFrameCarriesRule(t *testing.T) {
 // 终帧写坏一个逗号，客户端就会整帧丢弃——表现与「空响应」一模一样。
 func TestR1037PolicyFailureFrameIsValidJSON(t *testing.T) {
 	for _, protocol := range []string{r1037ProtoAnthropic, r1037ProtoResponses, r1037ProtoDefault} {
-		frame := string(nativeStreamPolicyFailureFrame(protocol, "builtin.network_destination"))
+		frame := string(nativeStreamPolicyFailureFrame(protocol, "builtin.network_destination", "", ""))
 		for _, line := range strings.Split(frame, "\n") {
 			line = strings.TrimSpace(line)
 			if !strings.HasPrefix(line, "data: ") {
@@ -78,7 +78,7 @@ func TestR1037PolicyFailureFrameIsValidJSON(t *testing.T) {
 // 211 现场的 zcode 走的就是 /v1/responses；客户端解析器按 response 对象校验，
 // 缺 id/object/status 会让整帧被丢掉——表现仍是「空响应」。
 func TestR1037ResponsesFailureFrameCarriesResponseIdentity(t *testing.T) {
-	frame := string(nativeStreamPolicyFailureFrame(r1037ProtoResponses, "builtin.network_destination"))
+	frame := string(nativeStreamPolicyFailureFrame(r1037ProtoResponses, "builtin.network_destination", "", ""))
 	var payload struct {
 		Type     string `json:"type"`
 		Response struct {
@@ -122,7 +122,7 @@ func TestR1037ResponsesFailureFrameCarriesResponseIdentity(t *testing.T) {
 // 仍然要渲染终帧。渲染不出来 = 客户端看到连接被截断 = 又变成「空响应」。
 func TestR1037PolicyFailureFrameWithoutRuleStillRenders(t *testing.T) {
 	for _, protocol := range []string{r1037ProtoAnthropic, r1037ProtoResponses, r1037ProtoDefault} {
-		frame := string(nativeStreamPolicyFailureFrame(protocol, ""))
+		frame := string(nativeStreamPolicyFailureFrame(protocol, "", "", ""))
 		if !strings.Contains(frame, "output_policy_blocked") {
 			t.Errorf("%s 无规则名时终帧缺失: %s", protocol, frame)
 		}

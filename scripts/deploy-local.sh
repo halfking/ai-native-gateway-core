@@ -183,6 +183,15 @@ VERSION_FILE="$PROJECT_ROOT/VERSION"
 log() { printf '[deploy-local] %s\n' "$*" >&2; }
 warn() { printf '[deploy-local] warning: %s\n' "$*" >&2; }
 die() { printf '[deploy-local] error: %s\n' "$*" >&2; exit 1; }
+# die75 —— 「**稍后重试**」这一类失败的专用退出码（EX_TEMPFAIL / 75）。
+#
+# ★ 2026-10-28（第三轮 · 合并就绪轮）：★ **声名与实现不符** ——
+#   切流锁争用的注释与设计都说「rc 75（EX_TEMPFAIL）」，但生产入口用的是
+#   `|| die …` ⇒ `die` 退 **1** ⇒ ⇒ **CLI 层的 rc 75 契约从来没兑现过**
+#   ⇒ ⇒ 监督方（CI / 脚本 / 运维手册）按 75 判断「这是争用、稍后重试」，
+#     而实际拿到的是 1 ⇒ **「稍后重试」与「硬失败」不可区分**。
+#   ⇒ ⇒ 争用这一处改用 die75 ⇒ 契约在**函数层与 CLI 层同时**成立。
+die75() { printf '[deploy-local] temporarily unavailable: %s\n' "$*" >&2; exit 75; }
 
 release_build_lock() {
   if (( DEPLOY_BUILD_LOCK_HELD )); then
@@ -1817,7 +1826,9 @@ deploy() {
   #   8781/8782（实测：候选验证全绿、抢占 8782 失败 ⇒ 「/version body did not
   #   match bundle metadata」⇒ 重试 3 次全红 ⇒ 整轮回滚）。
   # ⇒ 持锁期间另一个 checkout 会**快速失败**（rc 75）而不是去抢端口。
-  dl_acquire_switch_lock || die 'another deployment is switching the active port; retry after it finishes'
+  #   ★ rc 75 = EX_TEMPFAIL = 「稍后重试」⇒ ⇒ 必须用 die75（退 75）而不是
+  #   普通 die（退 1）⇒ 否则监督方无法区分「有人正在切流」与「真出错了」。
+  dl_acquire_switch_lock || die75 'another deployment is switching the active port; retry after it finishes'
   DEPLOY_SWITCH_LOCK_HELD=1
   # 2026-09-20（端口漂移修复）：active 端口以文件/env 链为准（dl_resolve_active_port
   # 只用实测做诊断告警，不再改写结果）——本地无代理拓扑里 active 端口就是客户端

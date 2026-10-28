@@ -31,6 +31,9 @@ export default {
     success: '{n} success',
     failure: '{n} failure',
     queue: '{n} queued',
+    clients: 'العملاء',
+    providers: 'المزوّدون',
+    models: 'النماذج',
   },
   window: {
     '5m': 'آخر 5 دقائق',

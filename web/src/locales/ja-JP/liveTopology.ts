@@ -29,6 +29,9 @@ export default {
     success: '成功 {n}',
     failure: '失敗 {n}',
     queue: '待機 {n}',
+    clients: 'クライアント',
+    providers: 'プロバイダー',
+    models: 'モデル',
   },
   window: {
     '5m': '直近 5 分',

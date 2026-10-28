@@ -29,6 +29,9 @@ export default {
     success: '{n} réussies',
     failure: '{n} échecs',
     queue: '{n} en file',
+    clients: 'Clients',
+    providers: 'Fournisseurs',
+    models: 'Modèles',
   },
   window: {
     '5m': '5 dernières min',

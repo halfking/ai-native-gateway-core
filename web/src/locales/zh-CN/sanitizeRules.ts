@@ -123,4 +123,32 @@ export default {
   expectedMiss: "应当不命中",
   eventEvidenceNote:
     "命中列表不保存请求原文（防二次泄露）。请对照类型/字段与下方规则表达式、虚构样例复核；确认误报后可直接编辑命中规则或新建限定补充规则。客户端本地脚本/文档经还原仍显示真值；出站供应商侧继续脱敏。可选输出合规模块默认关闭。",
+  hardblock: "硬阻断开关",
+  hardblockHint:
+    "控制哪些规则允许把整个响应掐断。清单里没有的规则只记录或遮蔽，不会终止回合；保存后立即生效。",
+  hardblockProcessOnly:
+    "此处修改只在本进程生命周期内生效，网关重启后回到部署环境变量装载的清单。",
+  hardblockListLabel: "允许硬阻断的规则清单",
+  hardblockFormatNote:
+    "阶段可选 input、output、egress；规则支持精确 ID、前缀族和 *。egress 阶段只接受逐条内建规则。",
+  hardblockCommentLabel: "变更原因",
+  hardblockDisableConfirm:
+    "我确认关闭全部硬阻断，包括请求侧对明文凭据的拦截",
+  hardblockSave: "保存清单",
+  hardblockSaved: "硬阻断清单已更新并立即生效。",
+  blockedReviews: "拦截审核",
+  blockedReviewsHint:
+    "每次响应被策略拦截都会在这里生成一条待审记录。批准后，这条内容在下一次重试时放行；拒绝则维持拦截。",
+  blockedReviewsNote:
+    "记录只保留规则、原因与载荷摘要，不保存被拦原文。队列保存在网关进程内，重启后清空。",
+  blockedReviewsNone: "当前筛选条件下没有拦截待审记录",
+  reviewPending: "等待审核",
+  reviewApproved: "已放行",
+  reviewRejected: "已拒绝（维持拦截）",
+  reviewReasonLabel: "拦截原因",
+  reviewFieldLabel: "参数位置",
+  reviewRequestLabel: "请求",
+  reviewDigestLabel: "载荷摘要",
+  reviewApprove: "批准放行",
+  reviewReject: "维持拦截",
 };
