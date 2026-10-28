@@ -476,6 +476,41 @@ export function baselineUsable(baseline) {
   return true
 }
 
+/**
+ * ★★ 「基线没了 ⇒ 必红」这条**接线**本身也要能被自证覆盖（★ 本轮 §8.3(a) 的同源教训：
+ * ★   自证只喂纯函数 ⇒ 断言恒真 ⇒ 测不到真正的接线）。
+ * ★ 这里把 CLI 的判定抽成纯函数：产出方（自证）与消费方（CLI）走同一份。
+ */
+export function baselineGateDecision(baseline) {
+  if (baselineUsable(baseline)) return { red: false, probe: null }
+  return { red: true, probe: 'HERO-METRIC-BASELINE-UNUSABLE' }
+}
+
+/**
+ * ★★ 写回时追加的那条 history 记录（★ 抽成纯函数 ⇒ 与自证同源）。
+ *
+ * ★★ **为什么要抽**：★ 本轮实测到 M6 臂跑完，基线里多出一条 `"pages": 1`
+ *   —— 而 history 里另两条的 `pages` 说的是「**基线覆盖多少页**」（108）。
+ *   ⇒ ★★ **同一个字段名在同一个数组里有两种含义** ⇒ 子集跑一次就把基线「写成只剩 1 页」的观感。
+ *   ⇒ ★★ 修法：**`pages` 只表示「基线覆盖的页数」**（与另两条同义），
+ *   ★ 「本次实测了多少页」另起字段 `measuredPages` ⇒ ★ 两个含义各归各的字段。
+ */
+export function buildBaselineHistoryEntry(baselinePageCount, measuredPages) {
+  const total = Number(baselinePageCount) || 0
+  const measured = Number(measuredPages) || 0
+  return {
+    at: '2026-10-28',
+    change: '基线更新（只许降）',
+    pages: total,
+    measuredPages: measured,
+    note:
+      measured < total
+        ? `写回值 = min(旧值, 实测值)；★ 本次只实测了 ${measured} 页（子集运行）` +
+          `⇒ 其余 ${total - measured} 页**未参与写回**（它们的值原样保留）。`
+        : '写回值 = min(旧值, 实测值)',
+  }
+}
+
 /** 读数页集合与基线页集合是否一致（页面清单变了 ⇒ 基线过期）。 */
 export function pagesMatchBaseline(readings, baseline) {
   const base = baseline && typeof baseline === 'object' ? baseline.pages ?? {} : {}
@@ -904,6 +939,37 @@ export function runRuntimeSelftest() {
       [r.isViolation, collectHardGateViolations([r]).length], [true, 1])
   }
 
+  // ── 「基线没了 ⇒ 必红」这条**接线**也要被自证盖住 ──────────────────────
+  // ★ 与 §8.3(a) 同源：★ 只测 `baselineUsable` 这个谓词 ⇒ 测不到「CLI 到底判没判红」。
+  // ★ 这里测的是**判定结果 + 探针 token**（★ 探针是 go 掏空门认的红信号 ⇒ token 不能变）。
+  eq('S-HM51 ★ 基线可用 ⇒ 不判红',
+    baselineGateDecision(base).red, false)
+  eq('S-HM52 ★ 基线空 ⇒ 判红 + 探针',
+    baselineGateDecision({ pages: {} }),
+    { red: true, probe: 'HERO-METRIC-BASELINE-UNUSABLE' })
+  eq('S-HM53 ★ 基线文件缺失（null）⇒ 判红 + 同一个探针',
+    baselineGateDecision(null).probe, 'HERO-METRIC-BASELINE-UNUSABLE')
+  eq('S-HM54 ★ 判红的出口码必须是 1（★ 「量具自己坏了」不许伪装成「没有违规」）',
+    (baselineGateDecision(null).red ? 1 : 0), 1)
+
+  // ── 写回基线时追加的 history 记录：★ `pages` 只能有一种含义 ─────────────
+  // ★ M6 臂实测出来的坑：★ 旧写法把「本次实测了几页」写进 `pages`
+  //   ⇒ 而另两条的 `pages` 说的是「基线覆盖多少页」⇒ 同名不同形。
+  {
+    const full = buildBaselineHistoryEntry(108, 108)
+    eq('S-HM55 ★ 全量写回：pages = 基线总页数',
+      full.pages, 108)
+    eq('S-HM56 ★ 全量写回：measuredPages = 实测页数',
+      full.measuredPages, 108)
+    const sub = buildBaselineHistoryEntry(108, 1)
+    eq('S-HM57 ★ 子集写回：pages 仍是基线总页数（★ 绝不写成实测页数）',
+      sub.pages, 108)
+    eq('S-HM58 ★ 子集写回：measuredPages 单独记实测页数',
+      sub.measuredPages, 1)
+    eq('S-HM59 ★ 子集写回的 note 必须点明「其余页未参与写回」',
+      /未参与写回/.test(sub.note), true)
+  }
+
   const failed = cases.filter((x) => !x.ok)
   for (const x of cases) console.log(`  ${x.ok ? '✓' : '✘'} ${x.name}${x.ok ? '' : ' —— ' + x.msg}`)
   console.log(
@@ -935,9 +1001,10 @@ export async function main(argv = process.argv.slice(2)) {
   const baseline = readBaseline()
   // ★ 基线不可用 ⇒ **测量之前**就判红（★ 与第 30 轮门同口径）：
   //   「棘轮的尺没了」这件事本身就已经是红的，再去跑一遍 108 页浏览器只是白花时间。
-  const baseOk = baselineUsable(baseline)
-  if (!baseOk) {
-    console.log('✘ HERO-METRIC-BASELINE-UNUSABLE —— 基线缺失或结构不对，未测量。')
+  // ★ 判定走纯函数 `baselineGateDecision` ⇒ 与自证同源（★ 别让 CLI 自己写一份）。
+  const gate = baselineGateDecision(baseline)
+  if (gate.red) {
+    console.log(`✘ ${gate.probe} —— 基线缺失或结构不对，未测量。`)
     console.log(`  期望：${BASELINE}`)
     console.log('  ★ 判定不依赖测量 ⇒ 本次**没有**跑浏览器（基线没了，测了也无处判）。')
     process.exitCode = 1
@@ -1002,12 +1069,7 @@ export async function main(argv = process.argv.slice(2)) {
     }
     next.history = [
       ...(Array.isArray(baseline.history) ? baseline.history : []),
-      {
-        at: '2026-10-28',
-        change: '基线更新（只许降）',
-        pages: readings.length,
-        note: '写回值 = min(旧值, 实测值)',
-      },
+      buildBaselineHistoryEntry(Object.keys(next.pages).length, readings.length),
     ]
     writeFileSync(BASELINE, `${JSON.stringify(next, null, 2)}\n`)
     console.log(`基线已更新 → ${BASELINE}`)
