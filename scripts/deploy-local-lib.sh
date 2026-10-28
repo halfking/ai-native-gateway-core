@@ -1496,11 +1496,56 @@ dl_bash_ge() {
   (( BASH_VERSINFO[0] == $1 && BASH_VERSINFO[1] >= $2 ))
 }
 
+# dl_switch_lock_holder_pid 从锁的元数据里读出持有者 pid（读不到 ⇒ 空串）。
+#
+# ★ 两种锁形态都要认：flock 分支是**文件**（元数据写在文件里），
+# mkdir 分支是**目录**（元数据在目录下的 metadata 文件里）。
+dl_switch_lock_holder_pid() {
+  local path meta pid
+  path="$(dl_switch_lock_path)"
+  meta="$path/metadata"
+  [[ -f "$meta" ]] || meta="$path"
+  [[ -f "$meta" ]] || return 1
+  pid="$(awk -F= '$1=="pid"{print $2; exit}' "$meta" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$pid"
+}
+
+# dl_pid_alive 判 pid 是否还活着。
+#
+# ★ 用 `kill -0` 而不是 `ps`：ps 在部分容器里缺 procfs 语义。
+# ★ EPERM（存在但无权限）也**算活着** ⇒ 只在「确实没有这个进程」时才判死。
+dl_pid_alive() {
+  local pid="$1"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+# dl_switch_lock_is_stale 判当前锁是不是**残锁**（持有者进程已死）。
+#
+# ★ 口径与共享部署库 lock.sh 一致：**只看「持有者 pid 是否还活着」，不按年龄判**
+#   —— 部署可能正在长时间跑，按年龄清锁会打断别人。
+# ★ pid 读不出来（元数据缺失/损坏）⇒ **不算残锁**（保守：宁可拒绝也不误杀）。
+dl_switch_lock_is_stale() {
+  local holder_pid
+  holder_pid="$(dl_switch_lock_holder_pid 2>/dev/null || true)"
+  [[ -n "$holder_pid" ]] || return 1
+  dl_pid_alive "$holder_pid" && return 1
+  return 0
+}
+
 # dl_acquire_switch_lock 获取机器级切流锁。
 #
 # 成功返回 0；被别的部署持有时返回 **75（EX_TEMPFAIL）**并打印持有者元数据。
 # 已经是持有者时重复获取也返回 75（同一进程重复获取视为争用 ⇒ 宁可失败，
 # 也不要让调用方以为自己持有两把锁）。
+#
+# ★★ **残锁接管**（2026-10-28 批判性审计轮补）：mkdir 回退路径下，进程被
+#   SIGKILL / 机器重启 ⇒ 锁目录**留在原地** ⇒ 若不处理，**每一次后续部署都会
+#   rc=75 永久失败**（把「偶发互踩」换成「必然卡死」，比原缺陷更糟）。
+#   ⇒ 争用时先判持有者 pid 是否还活着：**已死 ⇒ 判定残锁 ⇒ 接管**；
+#     **还活着 ⇒ 拒绝**（那是真的有人在切流）。
+#   ⇒ flock 分支不需要这条：flock 随进程退出**自动释放**。
 dl_acquire_switch_lock() {
   local path flock_bin
   path="$(dl_switch_lock_path)"
@@ -1514,6 +1559,7 @@ dl_acquire_switch_lock() {
       if [[ -f "$path" ]]; then
         cat "$path" >&2
       fi
+      printf 'HINT: if the holder is gone but the lock remains, run: bash scripts/deploy-local.sh recover-switch-lock\n' >&2
       return 75
     fi
     : >"$path"
@@ -1522,15 +1568,51 @@ dl_acquire_switch_lock() {
   fi
   # mkdir 回退：POSIX 原子操作；已存在 ⇒ 有人持有。
   if ! mkdir "$path" 2>/dev/null; then
+    # ★ 残锁判定：持有者进程已死 ⇒ 接管（否则本机会被永久卡死）。
+    if dl_switch_lock_is_stale; then
+      local stale_pid
+      stale_pid="$(dl_switch_lock_holder_pid 2>/dev/null || true)"
+      printf 'WARNING: taking over stale deployment switch lock at %s (holder pid %s is gone)\n' "$path" "$stale_pid" >&2
+      rm -rf "$path"
+      if mkdir "$path" 2>/dev/null; then
+        dl_switch_lock_write_metadata >"$path/metadata"
+        return 0
+      fi
+      printf 'ERROR: failed to take over the stale deployment switch lock at %s\n' "$path" >&2
+      return 75
+    fi
     printf 'ERROR: deployment switch lock held at %s (another checkout is switching the active port)\n' "$path" >&2
     if [[ -f "$path/metadata" ]]; then
       cat "$path/metadata" >&2
     elif [[ -f "$path" ]]; then
       cat "$path" >&2
     fi
+    printf 'HINT: if the holder is gone but the lock remains, run: bash scripts/deploy-local.sh recover-switch-lock\n' >&2
     return 75
   fi
   dl_switch_lock_write_metadata >"$path/metadata"
+}
+
+# dl_recover_switch_lock 强制清掉切流锁（**运维显式动作**，不是自动行为）。
+#
+# ★ 口径与共享部署库 unlock-local.sh 一致：**持有者还活着 ⇒ 拒绝**；
+#   持有者已死 ⇒ 才允许清。
+# ★ 用途：机器重启 / 断电 / SIGKILL 之后，把机器级锁从「永久占用」状态救回来。
+dl_recover_switch_lock() {
+  local path holder_pid
+  path="$(dl_switch_lock_path)"
+  if [[ ! -e "$path" ]]; then
+    printf 'no deployment switch lock at %s — nothing to recover\n' "$path"
+    return 0
+  fi
+  holder_pid="$(dl_switch_lock_holder_pid 2>/dev/null || true)"
+  if [[ -n "$holder_pid" ]] && dl_pid_alive "$holder_pid"; then
+    printf 'ERROR: refusing to remove the deployment switch lock: holder pid %s is still alive\n' "$holder_pid" >&2
+    printf 'HINT: wait for that deploy to finish; only recover a lock whose holder is gone\n' >&2
+    return 1
+  fi
+  rm -rf "$path"
+  printf 'deployment switch lock removed: %s\n' "$path"
 }
 
 # dl_release_switch_lock 释放切流锁（未持有时是 no-op）。

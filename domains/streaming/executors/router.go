@@ -193,6 +193,17 @@ type Router struct {
 	//（内部按 refresh TTL 节流 + 单飞）。
 	StickyLoad StickyLoadView
 
+	// CircuitRecovery (P0-A, 2026-10-28 两层路由审计 G1) 内存熔断面的
+	// 恢复时刻查询（credential.Manager.RecoveredAt 的窄接口）。恢复期
+	// 渐进回流量（recoveryPenaltyForCandidate / recoveryRampFactor）用它
+	// 读「breaker 从非 CLOSED 拉回 CLOSED」的时刻。nil = 未接线
+	//（breaker 侧信号不参与，NodeState 侧 RoutedNodeState 信号仍可用）。
+	// 两种路由模式（legacy / URSM authoritative）下 executor 都在调
+	// Circuit.RecordSuccess，所以这条信号面在生产两模式下都有写入。
+	CircuitRecovery interface {
+		RecoveredAt(providerID, credentialID int) time.Time
+	}
+
 	// ShadowStrategy (GW-03, omni-ref2): 可选的路由策略，仅用于 shadow 评分
 	// 对比，不改变实际选中候选。nil = 现状（P2C 行为零变化）。
 	// 非 nil 时，planByTier 在每个 tier bucket 用 ShadowStrategy 独立评分，
@@ -207,7 +218,7 @@ type Router struct {
 }
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
-	ew := DefaultLoadScoreEnvWeights() // R48 §3 A2：6 维度 env 启动期预解析
+	ew := DefaultLoadScoreEnvWeights() // R48 §3 A2：7 维度 env 启动期预解析（P0-A 起含 recovery）
 	return &Router{
 		Sticky:                 sticky,
 		Limiter:                lim,

@@ -93,7 +93,7 @@ export interface UpdateRuntimeOptions {
   activeElementProvider?: () => Element | null
 }
 
-const INTERACTION_EVENTS: Array<keyof DocumentEventMap> = ['pointerdown', 'touchstart', 'keydown']
+const INTERACTION_EVENTS: Array<keyof DocumentEventMap> = ['pointerdown', 'touchstart', 'keydown', 'scroll']
 
 // 模块级单例：App.vue 挂载时 start() 一次，Banner / AccountSheet 共享状态。
 const status = ref<UpdateCheckStatus>('idle')
@@ -107,6 +107,19 @@ let started = false
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let firstTimer: ReturnType<typeof setTimeout> | null = null
 let lastInteractionAt = 0
+/**
+ * ★ 2026-10-28（R176 实测修正）：页面加载时刻。
+ * 旧实现把「从未交互过」（lastInteractionAt === 0）当成 **静置 ∞**
+ * ⇒ 首查（UPDATE_FIRST_CHECK_DELAY_MS = 5s）时条件必然满足
+ * ⇒ **页面在自己打开 5 秒后整页 reload**（实测 2026-10-28：文档导航序列里
+ *   5.09s 处出现 fetch('/index.html') + 紧接着一次整页导航）。
+ * 这与 docs/UI规范/18 §4 的明文判据冲突：
+ *   「自动应用必须满足：页面已静置一段时间 **且** 焦点不在输入控件
+ *     **且** 距上次交互超过阈值。三者任一不满足就降级为提示条」
+ * ⇒ 「距上次交互」必须从**页面加载时刻**起算（还没交互过 = 距上次交互 = 页面活了多久），
+ *   而不是无穷大。
+ */
+let loadedAt = 0
 let fetchImpl: FetchLike = (u, i) => fetch(u, i)
 let nowImpl: () => number = () => Date.now()
 let reloadImpl: () => void = () => window.location.reload()
@@ -153,7 +166,8 @@ async function runCheck(): Promise<void> {
   if (relation === 'available') {
     const cond = {
       hasInputFocus: elementBlocksAutoReload(getActiveElement()),
-      msSinceInteraction: lastInteractionAt === 0 ? Number.POSITIVE_INFINITY : nowImpl() - lastInteractionAt,
+      // ★ 从未交互过时以「页面加载时刻」为基准（见 loadedAt 的注释）。
+      msSinceInteraction: lastInteractionAt === 0 ? nowImpl() - loadedAt : nowImpl() - lastInteractionAt,
     }
     if (shouldAutoReload(cond)) {
       reloadImpl()
@@ -191,6 +205,8 @@ function startDeploySeqUpdate(options?: UpdateRuntimeOptions): void {
     const d = options.doc
     getDoc = () => d
   }
+  // 基准时刻要在 nowImpl 替换之后再取（nowImpl 可能是测试注入的假时钟）。
+  loadedAt = nowImpl()
   for (const ev of INTERACTION_EVENTS) {
     document.addEventListener(ev, onInteraction, { passive: true, capture: true })
   }
@@ -216,6 +232,7 @@ function resetDeploySeqUpdateForTest(): void {
   lastCheckedAt.value = null
   local.value = null
   lastInteractionAt = 0
+  loadedAt = 0
   fetchImpl = (u, i) => fetch(u, i)
   nowImpl = () => Date.now()
   reloadImpl = () => window.location.reload()

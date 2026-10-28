@@ -92,7 +92,7 @@ fi
 
 usage() {
   cat <<'EOF'
-Usage: deploy-local.sh [deploy|status|verify|rollback|start|stop|logs] [options]
+Usage: deploy-local.sh [deploy|status|verify|rollback|start|stop|logs|recover-switch-lock] [options]
 
 Options:
   --root PATH             install root (otherwise OS default)
@@ -132,7 +132,7 @@ EOF
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      deploy|status|verify|rollback|start|stop|logs) ACTION=$1; shift ;;
+      deploy|status|verify|rollback|start|stop|logs|recover-switch-lock) ACTION=$1; shift ;;
       --root) ROOT_OVERRIDE=${2:?--root requires a path}; shift 2 ;;
       --dry-run) DRY_RUN=1; shift ;;
       --no-frontend) SKIP_FRONTEND=1; shift ;;
@@ -1920,6 +1920,11 @@ rollback() {
 }
 
 start() { ensure_resources; local b="$BIN_DIR/current"; [[ -d "$b" ]] || die 'no active release'; start_instance "$b" "$(dl_active_port)"; verify; }
+# ★ 2026-10-28（批判性审计轮）：切流锁的**仓内恢复入口**。
+#   上一轮只在审计档里写了「运维核对后手工删除」——★ 那是【声名】：仓内没有任何
+#   命令能做这件事 ⇒ 机器重启 / SIGKILL 留下的残锁会把**每一次后续部署**永久卡死。
+#   ⇒ 这里给一条**真命令**：持有者还活着 ⇒ 拒绝；持有者已死 ⇒ 清掉。
+recover_switch_lock() { dl_recover_switch_lock || die 'switch lock recovery refused'; }
 stop() { dl_detect_resources; stop_instance 8782; stop_instance 8781; stop_instance 8783; }
 logs() { exec tail -f "$LOG_DIR/gateway-$(dl_active_port).log"; }
 
@@ -1931,4 +1936,5 @@ case "$ACTION" in
   start) start ;;
   stop) stop ;;
   logs) logs ;;
+  recover-switch-lock) recover_switch_lock ;;
 esac
