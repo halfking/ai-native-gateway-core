@@ -794,7 +794,24 @@ function fmtNum(n: number) {
   gap: 16px;
 }
 .columnar-stat {
-  background: var(--bg-subtle);
+  /*
+   * ★ 2026-10-28 第 36 增量（hero-metric 禁令的覆盖面轮）：这一行原来 4 个盒子
+   *   各自 `background: var(--bg-subtle)` —— ★ 浅色模式下 `--bg-subtle` 就是
+   *   **主色淡染** `--kx-primary-soft`（#eaf0ff）⇒ 四张并排的淡蓝指标盒
+   *   = craft-floor 点名的 hero-metric 模板：巨数字 + 小标签 + 辅助统计 + **强调色**。
+   * ⇒ 改法：**只换底色这一处** —— `var(--bg-subtle)`（主色淡染）→ `var(--card)`
+   *   （中性表面色，浅色模式 = #ffffff，与本页其它 `.card` 一致）。
+   * ★★ 为什么**不**把盒子整个拆掉（第一版就是这么写的，后来实测推翻了）：
+   *   两道浏览器尺的「候选格」判定都是「**有底色** 或 **四边描边**」
+   *   （design-hero-metric-runtime-check.mjs / design-metric-skeleton-runtime-check.mjs）
+   *   ⇒ ★★ 拆掉底色与描边 ⇒ 这 4 格**不再是候选格** ⇒ 它们**从这两把尺的分母里消失**
+   *   ⇒ ★★ 后果有二：① 前后读数不可归因（post-fix 的「0 处」里混着「它已经不是指标格了」）
+   *   ② ★★ **这一页从此失监**（谁再把淡染放回去，两道尺都看不见）。
+   *   ⇒ ★★ 所以改法**必须只动判据盯的那一个变量**（底色是不是主色淡染），
+   *   盒子形态、字号、口径说明**一律不动**。
+   * ★ 数值仍 24px：低于 24px 就不是「巨数字」⇒ 这一格整体不再是指标格 ⇒ 同样失监。
+   */
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 12px 12px;

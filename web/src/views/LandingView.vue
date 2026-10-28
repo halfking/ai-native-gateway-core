@@ -22,46 +22,44 @@ onUnmounted(() => logoObserver?.disconnect())
 // ⚠ 数组型语言包键不能经 t() 取（见 i18n.ts 的 localeArray() 注释）
 const heroPoints = localeArray<string[]>('landing.heroPoints')
 
+// ★ 2026-10-28 第 36 增量：这里原来每张特性卡都写死了 `icon: '01'` … `icon: '08'`。
+// ⇒ ★ 它们是**死数据**：`LandingFeature` 类型里没有 `icon` 字段，
+//   `ServiceLandingPage` 的模板也只渲染 title / badge / description ⇒ 压根不上屏。
+// ⇒ ★ 留着它有两个坏处：① 它是 craft-floor 明禁的「01/02 装饰序号」；
+//   ② 哪天有人把它接回模板，界面上就会冒出装饰序号。
+// ⇒ 删掉（V11b 那条判据就是为它们加的）。
 const features = computed(() => [
   {
-    icon: '01',
     title: t('landing.features.smartRouting.title'),
     description: t('landing.features.smartRouting.description'),
   },
   {
-    icon: '02',
     title: t('landing.features.safety.title'),
     description: t('landing.features.safety.description'),
     badge: t('landing.features.safety.badge'),
   },
   {
-    icon: '03',
     title: t('landing.features.cache.title'),
     description: t('landing.features.cache.description'),
   },
   {
-    icon: '04',
     title: t('landing.features.agent.title'),
     description: t('landing.features.agent.description'),
     badge: t('landing.features.agent.badge'),
   },
   {
-    icon: '05',
     title: t('landing.features.observability.title'),
     description: t('landing.features.observability.description'),
   },
   {
-    icon: '06',
     title: t('landing.features.billing.title'),
     description: t('landing.features.billing.description'),
   },
   {
-    icon: '07',
     title: t('landing.features.multiProtocol.title'),
     description: t('landing.features.multiProtocol.description'),
   },
   {
-    icon: '08',
     title: t('landing.features.multiTenant.title'),
     description: t('landing.features.multiTenant.description'),
   },
