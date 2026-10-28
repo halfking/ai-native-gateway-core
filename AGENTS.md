@@ -12720,3 +12720,83 @@ ursm 仪表（仍在 ursmcheck 轨）；probe necessity 索引 93% 读放大（3
 >   ★ ★「同一批 7 个分支被两个会话各合一遍」的来源未查明（★ 内容同源 ⇒ 合并无冲突）。
 > ⇒ 审计档 `docs/audit/2026-10-28-r1042-会话正文1MiB上限.md`（11 节）；
 >   通用式见 `LESSONS.md` **§491**（★ 七条通式）。
+
+> **2026-10-28 r1043 轮：真库「写入形状」漂移轮**（会话 `mvs_71bac5a6cb0343848c727f01fc8e45b8`）：
+> ★ 起因：★ r1041 轮把 PG **观测设施**补齐了（preload / 慢查询阈值 / 日志采集），
+>   ★ 但**没有真正读过那些日志里的错误** ⇒ ★★ 本轮读了 ⇒ ⇒ 撞出一件此前
+>   ★★ **没有任何门**能看见的事。
+> ★ ★★ 实测：★ 本机 PG 日志里有 **542 条**同一种错误，
+>   ★ **全部集中在 07:32:42 的 3 秒内**（★ 那是本机 gateway 重启时跑的那一轮对账）：
+>   `ERROR: column "tenant_id" of relation "stats_reconciliation_diffs" does not exist`
+>   ★ ⇒ ⇒ 生产代码 `domains/stats/reconciliation.go` 的 INSERT 带 `tenant_id`，
+>   ★ ★★ 且它的 `ON CONFLICT` 仲裁目标 `(run_id, tenant_id, dimension_type, dimension_key, metric)`
+>   ★ ★★ 依赖迁移 548 建的唯一索引 ⇒ ⇒ ⇒ **那一族写入整条失败**（不是写小了，是写不进去）
+>   ★ ⇒ ⇒ ★★ **对账差异全部丢失**（只剩 `slog.Warn` 留痕 ⇒ 没人看 ⇒
+>   ★ ★★ 「0 差异」看起来像好消息）⇒ ⇒ ★★ 而**当时仓内所有门都是绿的**。
+> ★ ★★ 这就是 LESSONS §488 通式一的又一次应验：★ 「门全绿」与「系统健康」之间没有推理链 ——
+>   ★ ★★ 本仓的门验的是【仓内的形状】，★★ **没有一道门问过「真库现在长什么样」**。
+> ★ ★★ 根因链（★ 逐环实测）：★ 真库的 `stats_reconciliation_diffs` **缺 `tenant_id` 列**、
+>   ★ ★★ 缺 545 的 `resolution` CHECK、缺 546/548 的唯一索引 ⇒ ⇒ 本机库是**从 252 同步来的
+>   ★ ★★ 旧快照**（★ 运行时不跑启动迁移链；★ `db/db.go` 的手写镜像 `ensureXxx` 族里
+>   ★ ★★ `stats_reconciliation_*` **没有镜像**）⇒ ⇒ ★★ **仓内链条是对的**（536→539→545→546→548）。
+> ★ ★★ **台账不是水位**：★ 本机 `schema_migrations` 的 530~560 段全空，★ 乍看像「迁移没跑」，
+>   ★ ★★ 但仓内文档明写「**迁移跟踪表随数据复制，不能反映真实结构**」⇒ ⇒ ★★ 判漂移要看**结构**。
+> ★ ★★ 修法一（★ 环境侧，不在 git 里）：★ 表为空（0 行、无重复）⇒ 零风险 ⇒ 按序补跑
+>   ★ 539 / 545 / 546 / 548（★ 补跑前核对 embeddata 副本 md5 逐字一致 ✓）
+>   ★ ⇒ ⇒ 结构对齐（★ tenant_id + 仲裁唯一索引 + resolution CHECK）⇒ ⇒
+>   ★ ★★ 用**生产同款 SQL**（含 ON CONFLICT）实测落库成功 ⇒ ⇒ 修复后 PG 日志**零新增错误**。
+> ★ ★★ 修法二（★ 仓内的部分）：★ 新门 `scripts/ursmcheck/live_write_shape_test.go`
+>   ★ —— **静态层**（恒跑）：★ **从生产代码派生**「写入所需形状」（★ 每张目标表的 INSERT 列清单
+>   ★ + ON CONFLICT 仲裁目标）⇒ ⇒ 问「仓内迁移链能不能造出它」；
+>   ★ —— **运行时层**（需 `TEST_DATABASE_URL`）：★ 问「真库现在是不是已经是它」
+>   ★ ⇒ ⇒ 无 DSN 时 **SKIP 而非 PASS**（★ 仓内既有惯例）⇒ ⇒ ★★ 静态层必须独立有效。
+>   ★ ★★ **判据从代码派生而非手写清单** ⇒ ★★ 手写清单会随代码漂移 ⇒ ★★ 门一直绿着，
+>   ★ ★★ 而生产已经在写一个库里没有的列（★ 本轮的原样）。
+> ★ ★★ 门自己的两处自伤自愈：★ ① 第一版「全局第一条 INSERT + 全局第一条 ON CONFLICT」
+>   ★ ★★ ⇒ 把 diffs 的仲裁目标安到了 runs 头上 ⇒ ★★ 报出**假缺口** ⇒ ★★ 门差点被自己的
+>   ★ ★★ 第一版判红 ⇒ ⇒ 改成**按 INSERT 切段**；★ ② 唯一索引没按表分组 ⇒ ★★ 别的表的索引
+>   ★ ★★ 会被当成本表的仲裁索引 ⇒ ⇒ 改成 `map[table][]cols`（★ 自证加第 4 臂「多表串味」）。
+> ★ ★★ 自证 4 臂 ✓；★ 真仓变异臂（★ 对真库 `DROP COLUMN tenant_id`）⇒ ★★ 运行时层红且
+>   ★★ 指名道姓 ⇒ ⇒ 还原后绿 ✓。
+> ★ 顺带修合并带进来的红：★ 上游 `eb6f6582d` 给 `MaaSBillsView` 接 `ResponsiveDataView`
+>   ★ ★★ 时**漏了登记**（★ 该调用点只带 `#table` 插槽 ⇒ compact 无入口 ⇒ 本门要求登记）
+>   ★ ⇒ ⇒ 登记进 `NON_NAVIGABLE`（★ 本文件 `router.push` 出现 **0 次**、路由只有
+>   ★ `/tenant/bills` 无详情页）⇒ ⇒ ★★ 上游自己报的「vitest 0 失败」是**改动落地前**取的读数
+>   ★ ★★ ⇒ ★★ **合并带进来的红必须在合并后重跑全量**。
+> ★ ★★ 慢 SQL 读数**被污染**（★ 诚实边界）：★ top 两条是 `pg_total_relation_size` 全量扫描
+>   ★ ★★ （★ **仓内已知且已优化**：30s TTL 快照 + 采集超时抬到 60s）⇒ ★★ 本轮均值 6300ms
+>   ★ ★★ vs 文档记的 1622–1724ms ⇒ ★★ 差 3~4 倍 ⇒ ★★ **读数期间全量测试正在并发打同一个库**
+>   ★ ★★ ⇒ ★★ 那是**上界**不是基线 ⇒ ★★ 关系数实测 3642（+8.3%）**解释不了** ⇒ ★★ 不能当性能退化。
+> ★ 读数：★ `go build ./...` ✓；★ `go vet` ✓；★ `gofmt` ✓；★ 静态层 ✓；★ 运行时层（真库）✓；
+>   ★ 自证 4/4 ✓；★ 真仓变异臂 ✓（红→绿）；★ 生产同款 SQL 实测落库 ✓；★ 修复后零新增错误 ✓；
+>   ★ 定向 vitest `mobileListUx.spec.ts` 7/7 ✓。
+> ⇒ ★★ **本轮明确没做（留给下一轮，别重复排查）**：★ **没有**把「真库形状 vs 代码」推广到
+>   ★ **所有**写路径（★ 本轮只覆盖 `domains/stats` 这一族 ⇒ ★★ 其余写入路径未查）；
+>   ★ 门在 CI 里**恒 SKIP 运行时层** ⇒ ★★ 真库漂移**只有本地能发现**；
+>   ★ 「失败降级成 warn ⇒ 结论不可信」这族**没有**加信号（★ 该加的是**写入失败计数**）；
+>   ★ 慢 SQL **没有**在静止窗口重测；★ r1041/r1042 遗留项（`ursm_node_snapshot_min` 死元组 /
+>   ★ 页面级硬编码中文 /「源码抄语言包」族 / 语言包死键 / **截断率观测**）本轮未动。
+> ★ ★★ 顺带：★ 合并上游后跑全量 `go test ./...` ⇒ ⇒ **4 个包红** ⇒ ★★ 逐条定性：
+>   ★ **① `admin` 登记表过期**（★ `TestSessionFamilyBareParentRegistryIsHonest`）★ ★★ 已修 ——
+>     ★ 上游给「`DELETE FROM <父表>`」加了排除（★ DELETE 是写不是读 ⇒ 排除对）⇒ ★★ **但同一次改动里**
+>     ★ ★★ 又 admin 的两个文件登记进「裸父表**读**方」登记表 ⇒ ⇒ ★★ 排除让它们不再命中 ⇒ ⇒ 登记当场过期。
+>     ★ ★★ **而排除的理由是假的**：★ 注释引用的 `repair_two_surface_test.go` 在
+>     ★ ★★ `cmd/tools/validate_sessions_v2/` 下 ⇒ ★★ 只覆盖那个工具 ⇒ ★★ **admin 侧两面 DELETE 覆盖无人断言**
+>     ★ ⇒ ⇒ ★★ 修法三步：★ 撤过期登记 + **补上真正的那道门**
+>     ★ `admin/session_family_delete_two_surface_test.go`（★ 逐条断「父表 DELETE ↔ 同 WHERE 的 hot DELETE」
+>     ★ ★★ ⇒ WHERE 不同 ⇒ 删的不是同一批行）+ 把指错的守卫引用改对。
+>   ★ **② `internal/partguard` 白名单重复登记**（★ `TestNoParentTableDMLBeyondKnown`）★★ 已修 ——
+>     ★ 同一 (file, table) 登了两次且 Count 相同 ⇒ ★★ 门要求**条数**相等 ⇒ ⇒ 删掉前一组（保留理由更全的那组）。
+>   ★ ★★ **③④ 两个性能门是负载伪影**（★ `TestSelectP99Under1ms` p99 2.023ms / ★
+>     ★ `TestStress_IRSerialize_Concurrency50_P99` p99 19.103ms）★ ★★ **记录但不修** ——
+>     ★ ★★ 论据一：★ `git diff --stat` 证明本轮**一行都没碰**这两个包；
+>     ★ ★★ 论据二：★ 隔离复测 IR stress **3/3 过**、nodestatecache 1 过 2 红（★ 1.17/1.01ms）；
+>     ★ ★★ 论据三：★ 读数窗口机器 **load average 39~43** ⇒ ★★ 那是**上界**；★ 机理是墙钟 p99 测的是
+>     ★ ★★ 「等待」⇒ ★★ 负载机上调度抢占撑起尾部（★ p50 74~98µs vs p99 1~2ms ⇒ 差 20 倍）。
+>     ★ ★★ 本轮**试过**「跑 N 批取最小 p99」⇒ ★★ 3/3 从「1 过 2 红」变「2 过 1 红」⇒ ★★ **只是缓解**
+>     ★ ★★ ⇒ ★★ 且会**掩盖真实退化** ⇒ ⇒ ★★ **撤回**（★ `git checkout --` 还原）⇒ ⇒ ★★ 留给下一轮。
+> ★ 读数（补）：★ `go test ./internal/partguard/ -run TestNoParentTableDMLBeyondKnown` ✓；
+>   ★ `go test ./admin/ -run 'TestSessionFamilyBareParentRegistryIsHonest|TestSessionFamilyDelete'` ✓（4/4）；
+>   ★ 新两面 DELETE 门自证 5/5 ✓；★ 真仓变异臂（★ 删 session_trash.go 父表 DELETE 腿）✓ 红→绿。
+> ⇒ 审计档 `docs/audit/2026-10-28-r1043-真库写入形状漂移.md`（9 节）；
+>   通用式见 `LESSONS.md` **§492**（★ 六条通式）。
