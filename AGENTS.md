@@ -14131,3 +14131,50 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 ★★ ④ **上游那条 915 没进 `docs/db-changelog.md` 台账** ⇒ ⇒ `internal/sqlguard` 的 `TestMigrationRegistryStaysContinuous` 红（★ 近邻窗口 [897, 916]）⇒ ⇒ **本轮一度代为补登记行**（★ sha256 = 文件实测值，★ 不改迁移本体）⇒ ★★ **上游随后自己也补了 ⇒ 我方那行已撤**（★ 代补是止血不是接管）★★ ⇒ ⇒ ★★ **「六点位登记」其实不止六面 —— 台账登记是第七面** ★★；
 ★★ ③ **252/211 的底账其实是 2026-10-26 的旧快照**（★ 本轮前半程沿用）⇒ ⇒ 被工具自带的 **`verify`** 抓出（★ 252 +21/-4、211 +111）
 ★★ 　 ⇒ ⇒ **211 的真缺口 62 → 49** ⇒ ⇒ **棘轮基线同步下调 211: 62 → 49**（★ 按 R161 审计档 §棘轮 的纪律手工下调）⇒ ⇒ **「资产新鲜度要靠对拍，不靠记忆」**。
+
+**2026-10-28 24h 审计第 3 轮：出口修复 + 背压退避 + 上游红收口**（goal 会话）：
+★ 四项全落地，3 次独立提交推送（f4246ef8a / 1ffdeeeb8+c8989b337 / a7012fae1+dbfa47e2b）。
+> ⇒ ★★ **发现一（211 ERROR 风暴根因，已修已验证）**：provider 18（nvidia）
+> `egress_profile='proxy'` 而 `proxy_subscriptions`/`proxy_nodes` **双 0 行** ⇒
+> R28-P-1 must-proxy 契约结构性拒发 ⇒ 探针纯失败循环（近 2h 100%
+> traffic_class=probe；自 10-12 起 29,280 条 usage_facts 成功 0）；★★ 关键反转：
+> **211 宿主机与容器直连 `integrate.api.nvidia.com` 实测 200/0.2s** ⇒ 不可路由是
+> **配置事实**不是网络事实 ⇒ `UPDATE providers SET egress_profile='direct' WHERE id=18`
+> （1 行，策略 TTL 60s 免重启）⇒ 75s 后 ERROR 52→23 每分钟级、探针真实到达
+> （`llama-guard-4-12b` last_gateway_ok=t，幻影模型如实报 404 进协议红通道）。
+> ★ 其余 13 家 proxy 出口供应商**未动**（无凭据无流量、直连未实测，不扩爆炸半径）；
+> 回滚 SQL 在审计档 §2。
+> ⇒ ★★ **发现二（outbox 背压固定退避 = 永久锤击，已修）**：asm 连续 503 十小时
+> （其 audit sink 13:30 UTC 失败窗口起）⇒ 积压 3,909 条 `request.completed.v1`；
+> 固定 64s ⇒ **61 req/s 持续 POST + 等量 DB 事务 + 每秒 60 条 WARN**
+> （8 分钟实测 28,742 failed vs 117 成功 = 0.4%/拍）且成功速率 < 产生速率
+> ⇒ 积压反涨 ⇒ `markBackpressure` 改 `backpressureBackoff(attempts) = 8s ×
+> 2^(attempts-1)` 封顶 10min（永不 DLQ 语义不变；asm `Retry-After: 5` 是单事件
+> 地板提示不是积压重放时间表）⇒ 新增 `TestBackpressureBackoff_Exponential` 8 例。
+> ⇒ ★ **发现三（asm 侧，只读定性未动）**：503=Consume 基础设施错误非缺口分支；
+> audit sink 现已恢复（实测可写、近 2h 3,476 行）；DLQ 存量 34,183 条投影缺口、
+> `capgov_assets` 缺关系 ⇒ **asm 专属审计轮建议**（含重启评估），不越权重启兄弟产品。
+> ⇒ ★ **发现四（3 条上游红逐条复核）**：① post-surface 台账兄弟已修（复验绿）；
+> ② `NATIVEPAIR_OFFSWITCH_CHILD` 登记册 **仍红** ⇒ 登记 component 收口；
+> ③ live-topology 三组件 `font-size:10px` **仍红** ⇒ 按门自带修法收进 11px ⇒
+> 字号门 PASS、**棘轮基线保持 0 未动** ⇒ ⇒ ★ **「登记的红」会过期，收口前必须逐条复核**。
+> ⇒ ★ **发现五（全量 Go 测试唯一红）**：`TestGenericRecovery_CleanFileArchives`
+> 并发偶发 stat ENOENT ⇒ 根因是 execute() 锁内置 completed、**归档 I/O 在锁外**
+> ⇒ 测试抢跑 ⇒ 终态改等 `CompletedAt`（归档后落）⇒ 产品代码零改动。
+> ⇒ ★ **慢 SQL（只读）**：24h 仅 168 条 >500ms；12.0s 主犯 = `session_turns_hot`
+> api_key 归一化正则查询 ⇒ **r98 迁移 916 正是修它的**（本轮中途由其会话合入
+> main，不重复动）；24.3s = 另一产品 `daily_kline` COPY；`pg_stat_statements`
+> 未 preload（需共享 PG 重启授权，登记）。
+> ⇒ ★ **分支/本地审计**：唯一未合并分支 r98 审计时活跃（7 分钟前，不满足 1h 窗口）
+> 不动 ⇒ 本轮中途其内容已并入 main（`--is-ancestor` 实证），worktree 删除留给
+> 其会话；冗余 stash R75（R147 全部内容已进 main）⇒ drop（SHA
+> 09ae5c96 留痕）；menu-config.json 纯时间戳改动 ⇒ 丢弃。
+> ⇒ ★ **读数**：`go build ./...` ✓ / 全量 `go test ./...` 唯一红=发现五（修后绿）/
+> `vue-tsc` 0 错 / `vitest` 复跑 **2925 通过 / 2 跳过**（首轮 1 偶发，日志截断
+> 未定位用例名，如实记）/ `web build` ✓ 22.55s / TestPGTestEnv 红→绿 /
+> design-type-scale-guard 红→PASS。211 部署（含背压修复生效验证）在本轮收口执行。
+> ⇒ 审计档 `docs/audit/2026-10-28-24h审计第3轮-出口修复与背压退避.md`；
+> 通用式见 `LESSONS.md` **§520**（★ 让号：最高 §516，跨号取 §520 留 §517~519 缓冲；
+> 五条：★★ 「不可路由」区分配置事实与网络事实 / ★★ 重试节奏本身就是负载 /
+> ★ 老积压 attempts 当指数底数「首拍落 cap」恰是想要的 / ★★ 终态等最后写的字段 /
+> ★★ 登记的红会过期 + 量具缺席找同层数据源）。
