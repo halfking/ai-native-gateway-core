@@ -13905,6 +13905,9 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 ★★ ★ 存量迁移 `SET LOCAL` → 会话级 `SET`（★ 本轮新迁移已用会话级）；★★ ★ **729 / 906 那批索引的 fresh-install 缺口**（★ 它们没登记进 StartupFiles ⇒ 新装库本来就没有 ⇒ **家族级缺口**，★ 本轮只记录未修）；
 ★★ ★ 承前轮：★ 211/252 执行 914（属主放行）· ★ 共享库 `pg_container_usable` 探针缺陷（属主裁决）· ★ `router.ts:490` 的 `/ops/*` 死代码（产品决策）· ★ U+FFFD 专项 · ★ POST 面 110 条。
 
+★★ **★ 合并上游带来的 4 处慢门红（★ 全部归属上游，★ 登记不擅动）★★**：★ ① `TestPostSurfaceLedgerCoversEveryRoute`（★ 上游加 2 端点 ⇒ POST 台账没同步）· ② `TestProbeMirrorWriteFailureMustBeLogged`（★ probe 镜像写失败留痕缺失）· ③ `TestStructuredRegistryHollowoutReadersRejectEmptyRegistry`（★ 上游新增 `components/live-topology/*` 违反他们自己的设计阶棘轮）· ④ `TestTsvHollowoutReadersRejectEmptyRegistry`（★ ① 的连锁）
+★★ ⇒ ★★ **这 4 处在 pristine 上游树（★ `origin/main` 3d7b7d3af）上同名同数同红** ⇒ ⇒ 归属上游，不是我方引入 ★★。
+
 ★★ **审计档**：`docs/audit/2026-10-28-R178-api_key表达式索引.md`（★ 11 节）· **LESSONS §510**（★ ★ 让号两次：★ §504 → §505 → **§510**）。
 
 ★★ **★★ 合并上游（★ `origin/main` 341ce0b34，★ 7 个提交 / 179 文件）时又撞出三件 ★★**：
@@ -13912,5 +13915,6 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 ★★ 　 ⇒ ⇒ **canonical 视图改名随之从 916 改成 917**；★ LESSONS 节号让两次（§504 → §505 → **§510**），★ AGENTS 侧上游最高仍是 ㊴ ⇒ **㊵ 不用让**；
 ★★ ② **上游那条 915 在新装路径失败**（★ `relation "public.request_logs_hot" does not exist` ⇒ ★ 那张表**已退役**，★ 本地库实测 count=0）
 ★★ 　 ⇒ ⇒ **上游缺陷**：★ 本轮**记录不擅动**（★ `sql/migrations/startup/` 的迁移是历史证据）；★ 但它**不影响本轮台账**（★ 它建的是 FUNCTION，★ 不进对象底账）；
+★★ ④ **上游那条 915 没进 `docs/db-changelog.md` 台账** ⇒ ⇒ `internal/sqlguard` 的 `TestMigrationRegistryStaysContinuous` 红（★ 近邻窗口 [897, 916]）⇒ ⇒ **本轮代为补登记行**（★ sha256 = 文件实测值，★ 不改迁移本体）⇒ ⇒ ★★ **「六点位登记」其实不止六面 —— 台账登记是第七面** ★★；
 ★★ ③ **252/211 的底账其实是 2026-10-26 的旧快照**（★ 本轮前半程沿用）⇒ ⇒ 被工具自带的 **`verify`** 抓出（★ 252 +21/-4、211 +111）
 ★★ 　 ⇒ ⇒ **211 的真缺口 62 → 49** ⇒ ⇒ **棘轮基线同步下调 211: 62 → 49**（★ 按 R161 审计档 §棘轮 的纪律手工下调）⇒ ⇒ **「资产新鲜度要靠对拍，不靠记忆」**。
