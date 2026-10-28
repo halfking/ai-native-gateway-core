@@ -12651,3 +12651,35 @@ ursm 仪表（仍在 ursmcheck 轨）；probe necessity 索引 93% 读放大（3
 >   ⇒ ★ 另补 census 一条 `excluded`（`plugin-runtime/testdata/hello-plugin/plugin-manifest.json` ⇒ 测试夹具）；
 >   ⇒ ★ 读数：**30 门 30 PASS / 0 FAIL** · 自证 43/43 · 全量 89 页基线态 rc=0 · 变异臂 **9/9** · vue-tsc 0 错 ·
 >   vitest **2879 通过 / 2 跳过 / 0 失败** · build ✓ 12.77s · 硬编码中文 4483 = 基线 4483。
+
+> **2026-10-28 24h 审计与完善轮：分支合并收口 + outbox 背压 DLQ 修复**（goal 会话，
+> 与 r1041 并行收敛）：★ 五项任务全落地（合并 origin/main ×2 次含并发收敛、
+> 分支审计与收口、提交/本地修改逐项批判审计、生产 log/DB 审计、多次提交推送）。
+> ⇒ ★ **分支面**：6 条 wip 分支逐条合并进 main（每条独立合并提交 + 构建测试），
+> codex 分支（零独有内容）删除；与 r1041 同构收敛（同判断、同批门修复）。
+> ⇒ ★★ **门面**：合并暴露 ~20 道门红全部修绿——迁移三缺陷（down 头注释让号漏改 +
+> 912/913 缺 lock_timeout）、台账三件套再生、正典目录补条目、sha 多行追认、
+> seed 三拷贝漂移、路由快照、POST 台账 9 条新路由（★ 3 条按 handler 源码确证为
+> write——静态分级器判 read 是 R159 同族盲区）、partguard 登记、reads 清单、
+> 文档证据第四次三面同钉、web 侧（shared-dead 引用面扩插件 Go tag + 插件资产、
+> 色令牌化、间距落阶、MaaSBillsView 接 ResponsiveDataView、契约 C 豁免）。
+> ⇒ ★★★ **census 改判（诚实记账）**：metric-skeleton-runtime-baseline 改 excluded
+> ——census 第④步「基线态必须绿」对浏览器运行时尺=88 页全扫 ≈5min，实测把全量
+> go test 顶到 10min 超时 panic；同族先例=action-density-runtime；掏空态 0.03s
+> 判红复测有效，三档实测照录。
+> ⇒ ★★★★ **生产面（本轮最值钱）**：211 网关→asm 事件派发 503 风暴 ⇒ outbox DLQ
+> **34,793 条且 ~170/小时增长**。三层根因：asm 就绪门设计性抖动（分钟级）×
+> 网关重试窗过短（maxAttempts=5 ≈31s）× asm 把未分类错误默认当 retryable。
+> ⇒ **网关修复**（319cc1e5e 已推 main）：`IsBackpressure`（503+两背压码）⇒
+> `markBackpressure` 永不 DLQ、64s 封顶退避；sqlmock 钉 maxAttempts 处不落 dlq。
+> ⇒ **数据对账**（dlq 34,847）：25%（8,753）**已在 asm inbox**（投递成功响应丢失
+> ——不是丢失）；75% 真未达，其中「聚合序列头」缺口可重放——
+> `cmd/tools/outbox-dlq-replay` 交叉编译进 211 容器分窗重放回收 **1,173 条**
+> （10-24~26 窗口 100% 可重放段；asm freshness 全程正常）。
+> ⇒ ★ **遗留**：asm 侧两缺陷（重复投递应返回 Duplicate 而非 503；有序投影的
+> 乱序重放语义）决定剩余 ~33.7k 的回收路径（属主=asm 仓）；凭据 18 熔断快速开合
+> （transient threshold=2 对抖动上游过敏感）；local-gitea 502。
+> ⇒ 审计档 `docs/audit/2026-10-28-24h审计与完善轮-分支合并与outbox背压DLQ.md`；
+> 通用式见 `LESSONS.md` **§490**（5 条：★ 背压≠事件失败 / ★ 有牙要量在 harness 里的
+> 成本 / ★ DLQ≠丢失先对账再处置 / ★ 未分类默认 retryable 是双刃 / ★ 并行会话
+> 对拍是常态）。
