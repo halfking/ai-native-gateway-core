@@ -377,7 +377,7 @@ function getRiskLevelLabel(level: string): string {
 
 .rule-card {
   padding: 12px;
-  background: var(--bg);
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: 6px;
   cursor: move;

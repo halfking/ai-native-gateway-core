@@ -606,11 +606,12 @@ function openSearchJourney() {
 .reg-chip.is-danger { color: var(--kx-danger); background: var(--kx-danger-soft); }
 .reg-chip.is-muted { color: var(--kx-muted); background: var(--kx-bg-accent); }
 
+/* 2026-10-28 第 31 增量（DESIGN.md §6「卡片套卡片永远不对」）：
+   原来这是一个白盒（描边 + 底色 + 圆角 + 内边距），里面装着 reg-card。
+   ⇒ 降级为「标题 + 内容区」：去表面，间距改用 margin。
+   ★ 16px = --space-4（★ 落在仓内间距阶上：4/8/12/16/24/32/40/48/64）。 */
 .reg-section {
-  border: 1px solid var(--kx-border);
-  border-radius: 8px;
-  background: var(--kx-surface);
-  padding: 8px 12px;
+  margin-bottom: 16px;
 }
 
 .reg-section-head {

@@ -5,9 +5,13 @@
       <p class="description">{{ t('sessions.promptInjectionFull.subtitle') }}</p>
     </div>
 
+    <!-- 2026-10-28 第 31 增量：原来是 type="border-card" ——
+         Element Plus 会把 tab 容器画成一张**白卡**（底色 + 描边 + 圆角），
+         而 rule-card 就在它里面 ⇒ 卡片套卡片（DESIGN.md §6「卡片套卡片永远不对」）。
+         ⇒ 改回默认 tab：内容区不再是一张卡，rule-card 直接落在页面底上。
+         ★ 全仓只有这一处用 type="border-card"。 -->
     <el-tabs
       v-model="activeTab"
-      type="border-card"
       class="settings-tabs"
     >
       <!-- Tab 1: 策略（折叠嵌入配置面板） -->
