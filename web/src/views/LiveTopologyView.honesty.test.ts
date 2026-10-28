@@ -77,7 +77,7 @@ vi.mock('../api/topology', () => ({
 vi.mock('../components/live-topology/StatsPanel.vue', () => ({
   default: {
     name: 'StatsPanelStub',
-    props: ['activeProvider', 'activeModel'],
+    props: ['activeClient', 'activeProvider', 'activeModel', 'inFlight', 'queueDepth'],
     emits: ['select-provider', 'select-model'],
     template: '<div class="rail-stub" :data-provider="activeProvider" :data-model="activeModel"></div>',
   },
