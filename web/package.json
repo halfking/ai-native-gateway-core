@@ -116,6 +116,8 @@
     "design-icon-size:runtime-check:selftest": "node scripts/design-icon-size-runtime-check.mjs --selftest",
     "design-metric-skeleton:runtime-check": "node scripts/design-metric-skeleton-runtime-check.mjs",
     "design-metric-skeleton:runtime-check:selftest": "node scripts/design-metric-skeleton-runtime-check.mjs --selftest",
+    "design-nested-card:runtime-check": "node scripts/design-nested-card-runtime-check.mjs",
+    "design-nested-card:runtime-check:selftest": "node scripts/design-nested-card-runtime-check.mjs --selftest",
     "design-motion:check": "node --experimental-strip-types scripts/design-motion-guard.mjs",
     "design-motion:selftest": "node --experimental-strip-types scripts/design-motion-guard.mjs --selftest",
     "design-motion:list": "node --experimental-strip-types scripts/design-motion-guard.mjs --list",

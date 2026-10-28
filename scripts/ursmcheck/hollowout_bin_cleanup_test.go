@@ -78,6 +78,22 @@ func cleanupHollowBinTmpDirs() (int, error) {
 // ★★ **刻意不做别的**（★ 不改退出码 ＋ 不吞错误）⇒ ⇒ 清理失败只**打印**，不改变测试结果
 // ⇒ ⇒ ★★ 清理是**卫生问题**，不该让它变成**判据问题**。
 func TestMain(m *testing.M) {
+	// ★★★ r1046（2026-10-28）：★ 跑之前先给掏空门的【专用构建缓存】**把尺寸按住**。
+	//
+	// ★★ **为什么**：★ 掏空门每在一个**新树状态**上跑一次 ⇒ 就会往缓存里塞 ~1.3 GB
+	// ★★ ⇒ ⇒ 那些条目随树变化而**永远不再被命中** ⇒ ⇒ 事实上的垃圾 ⇒ ⇒ 必须有上限。
+	// ★★ ⇒ ⇒ 上限之内不动（★ 保热缓存 ⇒ 不让门一直冷编译）；★ 超过就**整个删掉重建**。
+	//
+	// ★★ **剪枝失败不改变测试结果**（★ 只打印）⇒ ⇒ 与本文件「清理是卫生问题，
+	// ★★ 不该让它变成判据问题」那条纪律**同款**。
+	if root, err := hollowRepoRootNoT(); err == nil {
+		dir := hollowGoCacheDir(root)
+		if pruned, perr := pruneHollowGoCache(dir, hollowGoCacheMaxBytes); perr != nil {
+			fmt.Fprintf(os.Stderr, "★ 剪枝掏空门专用构建缓存失败（★ 不影响测试结论）：%v\n", perr)
+		} else if pruned {
+			fmt.Fprintf(os.Stderr, "掏空门专用构建缓存超上限 ⇒ 已整个删掉重建（★ 这轮是冷编译）\n")
+		}
+	}
 	code := m.Run()
 	n, err := cleanupHollowBinTmpDirs()
 	if err != nil {

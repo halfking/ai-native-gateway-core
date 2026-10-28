@@ -1089,7 +1089,10 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div class="card platform-hub">
+        <!-- 2026-10-28 第 31 增量：原来是 <div class="card platform-hub"> ——
+             一张白卡里套着 15 张 platform-card（DESIGN.md §6「卡片套卡片永远不对」）。
+             ⇒ 外层降级为「标题 + 内容区」，platform-card 直接落在页面底上。 -->
+        <div class="platform-hub">
           <div class="section-header">
             <div>
               <h3 style="margin:0">{{ t('freePool.assistant.hubTitle') }}</h3>

@@ -3,7 +3,6 @@
 // sparkline + 模型分布 + 后台任务 chips。下拉刷新 = 整页重查（保旧刷新，
 // 13 §3：后台刷新不整页换骨架）。
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import type { ComponentPublicInstance } from 'vue'
 import { useHyperPage } from '@/hyper'
 import { fetchHealthz, type HealthzInfo } from '@/api/system'
 import { fetchBoard, type BoardPayload } from '@/api/board'
@@ -16,11 +15,22 @@ import Sparkline from '@/components/common/Sparkline.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import { fmtInt, fmtNum, fmtTime, fmtUsd, relativeTime } from '@/utils/format'
 
-const pullRef = ref<ComponentPublicInstance<{ rootRef: HTMLElement | null }> | null>(null)
+/**
+ * ★ 总览页的**真实滚动宿主**是插槽里的 `.home__page`（`.page` 自带
+ * `overflow-y:auto`），不是外层的 `.ptr-container`。
+ *
+ * 2026-10-28 修复「滑下去、滑不回来」：`.home` 是 flex 列 ⇒ `.home__page`
+ * （flex:1）正好填满 `.ptr-container` ⇒ **后者永远不滚**、scrollTop 恒为 0；
+ * 而下拉刷新的到顶判据读的就是它 ⇒ 页面滚到任何位置后，任何向下拖动都会被
+ * 下拉刷新抢走并 preventDefault ⇒ 往回滑被吃掉。
+ * ⇒ 到顶判据与 Hyper 的滚动根登记都必须指向 `.home__page`。
+ */
+const homePageRef = ref<HTMLElement | null>(null)
+const homeScroller = (): HTMLElement | null => homePageRef.value
 
 useHyperPage({
   title: () => t('home.title'),
-  scrollRoots: () => [pullRef.value?.rootRef ?? null],
+  scrollRoots: () => [homeScroller()],
 })
 
 const healthz = ref<HealthzInfo | null>(null)
@@ -120,8 +130,8 @@ const creditsMissing = computed(() => !!summary.value?.credits_missing_view)
 </script>
 
 <template>
-  <PullRefreshContainer ref="pullRef" :on-refresh="refresh" class="home">
-    <div class="page home__page">
+  <PullRefreshContainer :on-refresh="refresh" :scroller="homeScroller" class="home">
+    <div ref="homePageRef" class="page home__page">
       <p v-if="lastRefreshFailed" class="home__refresh-failed" role="status">{{ t('common.refreshFailed') }}</p>
 
       <AppStateView :loading="initialLoading && !board" :error="loadError" :skeleton-rows="5" @retry="refresh">

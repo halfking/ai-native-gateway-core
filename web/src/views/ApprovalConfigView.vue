@@ -286,11 +286,11 @@ onMounted(() => {
   gap: 24px;
 }
 
+/* 2026-10-28 第 31 增量（DESIGN.md §6「卡片套卡片永远不对」）：
+   原来这是一个白盒，里面装着 channel-card ⇒ 降级为「标题 + 内容区」：
+   去表面，间距改用 margin；下面的 setting-item / channel-card 自己成为卡面。 */
 .section {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 16px;
+  margin-bottom: 24px;
 }
 
 .section-header {
@@ -321,7 +321,7 @@ onMounted(() => {
   gap: 16px;
   align-items: center;
   padding: 16px;
-  background: var(--bg);
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: 6px;
 }

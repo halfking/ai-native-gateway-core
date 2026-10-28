@@ -206,11 +206,10 @@ onMounted(() => {
   padding: var(--space-3);
 }
 .bo-section {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--space-3);
-  margin-bottom: var(--space-3);
+  /* 2026-10-28 第 31 增量（DESIGN.md §6「卡片套卡片永远不对」）：
+     原来这是一个白盒，里面装着 bo-card ⇒ 降级为「标题 + 内容区」：
+     去表面，间距改用 margin；下面的 bo-card 自己成为卡面。 */
+  margin-bottom: var(--space-4);
 }
 .bo-section-title {
   font-size: var(--text-md);

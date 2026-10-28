@@ -44,6 +44,27 @@
   "unsupported_feature": {
     "other": "選択したモデルはこのリクエスト形式またはモダリティをサポートしていません。"
   },
+  "modality_mismatch": {
+    "other": "モデル「{{.Model}}」は{{.Modality}}入力を受け付けません。このリクエストには{{.Modality}}内容が含まれていますが、モデルは{{.RegisteredModality}}のみとして登録されています。このモデルにはテキストのみのリクエストを送るか、{{.Modality}}に対応したモデルにルーティングしてください。"
+  },
+  "modality_vision": {
+    "other": "画像"
+  },
+  "modality_audio": {
+    "other": "音声"
+  },
+  "modality_video": {
+    "other": "動画"
+  },
+  "modality_image": {
+    "other": "画像生成"
+  },
+  "modality_multimodal": {
+    "other": "マルチモーダル"
+  },
+  "modality_text": {
+    "other": "テキスト"
+  },
   "model_deprecated": {
     "other": "要求されたモデルは上流プロバイダーによって恒久的に提供終了（EOL）されました。"
   },
