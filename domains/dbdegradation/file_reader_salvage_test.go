@@ -416,13 +416,17 @@ func TestGenericRecovery_CleanFileArchives(t *testing.T) {
 	taskID, err := gr.Recover(context.Background(), filename, true)
 	require.NoError(t, err)
 
+	// 终态判定：CompletedAt 在归档 I/O 之后落（execute 尾部），只看 Status=="completed"
+	// 会在归档 rename 前抢跑 —— 全量并发下实测偶发 stat archive/ ENOENT。
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		task, ok := gr.Status(taskID)
 		require.True(t, ok)
 		if task.Status == "completed" || task.Status == "completed_with_errors" || task.Status == "failed" {
 			assert.Equal(t, "completed", task.Status)
-			break
+			if !task.CompletedAt.IsZero() {
+				break
+			}
 		}
 		require.Less(t, time.Now(), deadline, "recovery task did not finish")
 		time.Sleep(10 * time.Millisecond)
