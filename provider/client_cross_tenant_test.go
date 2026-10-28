@@ -58,32 +58,35 @@ func TestLoadCandidatesDB_CrossTenantProviderSharing(t *testing.T) {
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	// 1. 创建 default 租户的供应商
+	// ★ 2026-10-28 夹具对齐现网 schema：providers 无 name 列（code +
+	// display_name 才是现网形态，见 01-schema.sql 与 211 现网实测）。name
+	// 列从不存在 ⇒ 本测试此前在真库上恒红（批判式审计 §2 记的既有失败）。
 	var defaultProviderID int
 	err = tx.QueryRow(ctx, `
-		INSERT INTO providers (tenant_id, name, base_url, protocol)
-		VALUES ('default', 'test-provider-default', 'https://api.example.com', 'openai')
+		INSERT INTO providers (tenant_id, code, display_name, base_url, protocol)
+		VALUES ('default', 'test-provider-default', 'test-provider-default', 'https://api.example.com', 'openai')
 		RETURNING id
 	`).Scan(&defaultProviderID)
 	if err != nil {
 		t.Fatalf("failed to create default provider: %v", err)
 	}
 
-	// 2. 创建 hansi 租户的私有供应商
+	// 2. 创建 hansi 租户的私有供应商（列形态同上：code + display_name）
 	var hansiProviderID int
 	err = tx.QueryRow(ctx, `
-		INSERT INTO providers (tenant_id, name, base_url, protocol)
-		VALUES ('hansi', 'test-provider-hansi', 'https://api.hansi.com', 'openai')
+		INSERT INTO providers (tenant_id, code, display_name, base_url, protocol)
+		VALUES ('hansi', 'test-provider-hansi', 'test-provider-hansi', 'https://api.hansi.com', 'openai')
 		RETURNING id
 	`).Scan(&hansiProviderID)
 	if err != nil {
 		t.Fatalf("failed to create hansi provider: %v", err)
 	}
 
-	// 3. 创建 other 租户的私有供应商
+	// 3. 创建 other 租户的私有供应商（列形态同上）
 	var otherProviderID int
 	err = tx.QueryRow(ctx, `
-		INSERT INTO providers (tenant_id, name, base_url, protocol)
-		VALUES ('other', 'test-provider-other', 'https://api.other.com', 'openai')
+		INSERT INTO providers (tenant_id, code, display_name, base_url, protocol)
+		VALUES ('other', 'test-provider-other', 'test-provider-other', 'https://api.other.com', 'openai')
 		RETURNING id
 	`).Scan(&otherProviderID)
 	if err != nil {
@@ -94,21 +97,36 @@ func TestLoadCandidatesDB_CrossTenantProviderSharing(t *testing.T) {
 	testModel := "gpt-4-test"
 	for _, providerID := range []int{defaultProviderID, hansiProviderID, otherProviderID} {
 		var credID int
+		// credentials.label NOT NULL（本仓与 211 现网一致）——夹具必须给值。
 		err = tx.QueryRow(ctx, `
-			INSERT INTO credentials (provider_id, lifecycle_status, availability_state)
-			VALUES ($1, 'active', 'ready')
+			INSERT INTO credentials (provider_id, label, lifecycle_status, availability_state)
+			VALUES ($1, $2, 'active', 'ready')
 			RETURNING id
-		`, providerID).Scan(&credID)
+		`, providerID, "cross-tenant-test-cred").Scan(&credID)
 		if err != nil {
 			t.Fatalf("failed to create credential for provider %d: %v", providerID, err)
 		}
 
-		_, err = tx.Exec(ctx, `
-			INSERT INTO model_offers (credential_id, raw_model_name, routing_tier)
-			VALUES ($1, $2, 1)
-		`, credID, testModel)
+		// ★ 2026-10-28：model_offers 是视图，不可 INSERT——改写两张底表
+		// （provider_models + credential_model_bindings；routing_tier 在
+		// binding 侧）。原夹具写视图必然 55000（批判式审计 §2 的既有失败）。
+		// modality 不显式给：本地 llm_gateway_test 尚无该列（DEFAULT 'text'
+		// 兜住；显式写会在旧库 42703）。
+		var pmID int
+		err = tx.QueryRow(ctx, `
+			INSERT INTO provider_models (provider_id, raw_model_name, canonical_raw_name, available)
+			VALUES ($1, $2, $2, TRUE)
+			RETURNING id
+		`, providerID, testModel).Scan(&pmID)
 		if err != nil {
-			t.Fatalf("failed to create model offer for credential %d: %v", credID, err)
+			t.Fatalf("failed to create provider_model for provider %d: %v", providerID, err)
+		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO credential_model_bindings (credential_id, provider_model_id, routing_tier)
+			VALUES ($1, $2, 1)
+		`, credID, pmID)
+		if err != nil {
+			t.Fatalf("failed to create binding for credential %d: %v", credID, err)
 		}
 	}
 
@@ -194,10 +212,11 @@ func TestLoadCandidatesDB_CrossTenantProviderSharing(t *testing.T) {
 		}
 	})
 
-	// 清理测试数据
+	// 清理测试数据（按底表：先 binding 后 provider_models；model_offers 是视图）
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = pool.Exec(cleanupCtx, `DELETE FROM model_offers WHERE raw_model_name = $1`, testModel)
+	_, _ = pool.Exec(cleanupCtx, `DELETE FROM credential_model_bindings WHERE provider_model_id IN (SELECT id FROM provider_models WHERE raw_model_name = $1)`, testModel)
+	_, _ = pool.Exec(cleanupCtx, `DELETE FROM provider_models WHERE raw_model_name = $1`, testModel)
 	_, _ = pool.Exec(cleanupCtx, `DELETE FROM credentials WHERE provider_id IN ($1, $2, $3)`, 
 		defaultProviderID, hansiProviderID, otherProviderID)
 	_, _ = pool.Exec(cleanupCtx, `DELETE FROM providers WHERE id IN ($1, $2, $3)`, 

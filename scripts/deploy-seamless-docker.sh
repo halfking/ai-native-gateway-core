@@ -640,6 +640,37 @@ if [[ "$MODE" == "deploy" ]]; then
   dd_install_exit_guard
 fi
 
+# =============================================================================
+# 版本身份链（2026-10-28）：目标机直跑必须有真实构建提交号
+# =============================================================================
+# ★ 根因（/version 谎报家族，本轮实证）：同步树不含 .git（tar --exclude=.git），
+#   目标机直跑本引擎时 `git rev-parse` 必然失败 ⇒ DD_BUILD_SHA 为空 ⇒
+#   下方版本戳改写、部署后版本核验、切流后公网身份核对【三道闸全部静默
+#   跳过】⇒ 候选槽沿用仓库里任意一次 154/245/本地部署留下的旧戳上生产
+#   ⇒ /version 报的是别人的身份（实测 211 曾出现 dc55570a-dirty 恰因 --via
+#   路径带号才正确；直跑路径永远是空）。这与「版本戳 2886 收口轮」钉的
+#   「git_sha 可追溯」原则正面冲突。
+# ⇒ deploy 模式 + DD_BUILD_SHA 未显式给出 + DD_REPO_ROOT 无 .git ⇒ 响亮拒绝
+#   （fail-closed）：宁可不部署，也不要产出一份身份不明的生产槽。
+# ⇒ 两条出路：① 正路 = 从部署机走 `deploy-211.sh`（--via 自动取号并转发）；
+#   ② 逃生门 = 目标机上显式 `DD_BUILD_SHA=<8位提交号>`（如镜像审计已知身份，
+#   或纯重建槽位等场景），此时号来自运维声明而非 git ⇒ 部署日志会注明。
+if [[ "$MODE" == "deploy" && -z "${DD_BUILD_SHA:-}" ]]; then
+  if [[ ! -e "$DD_REPO_ROOT/.git" ]]; then
+    die "目标树没有 .git（同步树形态）且未显式给 DD_BUILD_SHA ⇒ /version 将沿用旧戳说谎。两条出路：① 从部署机跑 scripts/deploy-211.sh（--via 自动取号）；② 显式 export DD_BUILD_SHA=<8位提交号> 后重跑（运维声明的身份，日志将注明）。"
+  fi
+  DD_BUILD_SHA="$(git -C "$DD_REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || true)"
+  if [[ -z "$DD_BUILD_SHA" ]]; then
+    die "DD_REPO_ROOT 有 .git 但 git rev-parse 失败（损坏的检出？）且未显式给 DD_BUILD_SHA ⇒ 拒绝产出身份不明的部署。"
+  fi
+  if [[ -n "$(git -C "$DD_REPO_ROOT" status --porcelain --untracked-files=no -- . ':(exclude)VERSION' ':(exclude)version.json' ':(exclude)web/public/version.json' 2>/dev/null)" ]]; then
+    DD_BUILD_SHA="${DD_BUILD_SHA}-dirty"
+  fi
+  log "目标机直跑：DD_BUILD_SHA 从本仓 git 取得 ${DD_BUILD_SHA}"
+elif [[ "$MODE" == "deploy" && -n "${DD_BUILD_SHA:-}" && ! -e "$DD_REPO_ROOT/.git" ]]; then
+  log "DD_BUILD_SHA=${DD_BUILD_SHA} 为显式提供（目标树无 .git，身份来自运维声明而非 git）"
+fi
+
 mkdir -p "$DD_STATE_DIR/env" "$DD_STATE_DIR/logs"
 chmod 700 "$DD_STATE_DIR" 2>/dev/null || true
 
