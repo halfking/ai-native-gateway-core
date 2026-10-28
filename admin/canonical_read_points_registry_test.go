@@ -861,6 +861,13 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 	//   里对 canonical 视图名的提及 ⇒ ⇒ **工具源码里出现那个名字就会被算成一个
 	//   「提及该视图的生产文件」** ⇒ ⇒ 而它**不是**读点 ⇒ ⇒ 必须登记为无读点。
 	// ⇒ ⇒ 顺带得到一个**更好的设计**：★ 量具不再绑死某一个视图 ⇒ 对任何 canonical 视图都适用。
+	"cmd/tools/query_plan_form/main.go": {
+		Form:         formCommentOrStringOnly,
+		Class:        classNoRead,
+		Exempt:       true,
+		ExemptReason: exemptNoReadPoint,
+		Note:         "R179 轮的实测计划形态量具（★ EXPLAIN ⇒ 计划形态分类）；★ 视图名由 --view 传参，★ 源码里只在注释里提到它 ⇒ 不是生产读点",
+	},
 	"cmd/tools/partition_bound_probe/main.go": {
 		Form:         formCommentOrStringOnly,
 		Class:        classNoRead,
