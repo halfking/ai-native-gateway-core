@@ -545,14 +545,16 @@ func parseAnthropicDocumentBlock(block map[string]any) *DocumentBlock {
 
 // parseAnthropicTools parses Anthropic tool definitions into IR ToolDefinition.
 func parseAnthropicTools(raw json.RawMessage) ([]ToolDefinition, error) {
-	var tools []any
+	var tools []json.RawMessage
 	if err := json.Unmarshal(raw, &tools); err != nil {
 		return nil, fmt.Errorf("unmarshal tools: %w", err)
 	}
 
 	result := make([]ToolDefinition, 0, len(tools))
-	for _, t := range tools {
-		tool, ok := t.(map[string]any)
+	for _, tr := range tools {
+		// RISK-2（2026-10-29）：按原始字节拆「消费视图 + 剩余键视图」，
+		// 剩余键收进 Extra（工具顶层非标准键如 cache_control 无损往返）。
+		tool, leftovers, ok := splitToolRaw(tr)
 		if !ok {
 			continue
 		}
@@ -597,6 +599,7 @@ func parseAnthropicTools(raw json.RawMessage) ([]ToolDefinition, error) {
 		} else {
 			td.Parameters = marshalAnyToRaw(tool["parameters"])
 		}
+		td.Extra = toolExtrasFrom(leftovers, irToolKnownKeysAnthropic)
 
 		result = append(result, td)
 	}

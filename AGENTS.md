@@ -14497,3 +14497,32 @@ adaptive、单次尝试、200）；**「拒绝即学习」是设计内的行为�
 子系统，登记待观察。
 ⇒ 审计档 `docs/audit/2026-10-29-原厂直通生产验证第2轮-ClientType边界与UA线材订正.md`；
 通用式见 `LESSONS.md` **§537**。
+**2026-10-29 ㊺ RISK-2 收口轮：工具顶层非标准键全站点保真（对所有客户端一致）**：
+★ 承接 ㊲ 登记的 RISK-2（「NormalizeOpenAIToolDefinitions 重建 canonical 工具时
+只保留 type+function ⇒ 工具顶层自定义键丢失」）⇒ 逐站点盘点发现同一症状共
+**4 对 IR 站点 + 2 个 streaming 站点**，只修登记点会留下「修了 normalizer、
+IR 往返照丢」的假绿（IR round trip 在 openai 入向主路径先于 normalizer 执行）。
+> ⇒ ★ **修法**：`ToolDefinition.Extra`（顶层非标准键的**原始字节**载体，
+> `tool_extra,omitempty` 向后兼容）+ `splitToolRaw`（消费视图/剩余键视图，字节
+> 保真不过 float64）/ `toolExtrasFrom` / `mergeToolExtras`（并回**不覆盖**
+> canonical 键）；streaming 侧 `copyToolExtras` × 4 处接线 +
+> `normalizeToolsInBody` 切 **UseNumber**（anthropic_message_fix 同款纪律）。
+> ⇒ ★ **哲学对齐**：与 paramreg「未知字段无条件透传」同一 fail-open —— 网关
+> 不做静默裁剪，上游拒绝由 reqprobe 学习承担；anthropic 目标上并回的非规范键
+> 由既有语义接管（sanitize 裁 / 原生对直通）。
+> ⇒ ★ **真实战果**：Anthropic 工具级缓存断点 **cache_control** 此前在 IR 往返
+> 必丢（parseAnthropicTools 消费集只有 name/description/input_schema）⇒ 现在
+> 同协议往返字节级保真。
+> ⇒ ★ 自证：IR 5 测试 + streaming 2 测试（含 >2^53 整数不漂移 / 内部载体键
+> `tool_extra` 永不上线 / Raw 工具逐字直传不受影响）；**变异臂 4/4**（parse 摘收集 /
+> openai 摘并回 / responses 摘并回 / normalize 摘拷贝 ⇒ 各自红且隔离 ⇒ 还原
+> md5 一致，`-count=1`）。
+> ⇒ ★ 读数：build ✔；ir / streaming / executors / transformation / paramreg /
+> paramguard / nativepair `-count=1` 全绿。
+> ⇒ ★★ **相邻新发现（本轮不修）**：**function 对象内部**非标准键（如 OpenAI
+> structured outputs 的 `strict:true`）在 IR 往返仍丢 —— 需第二个载体，机制同构，
+> 独立小轮；真实影响面 = openai 入向 IR 主路径 + structured outputs 客户端。
+> ⇒ ★ **④ RISK-1 条件核查**：211 生产 48h `deepseek×400` **0 条**（有流量 64 行
+> 日志）⇒ 维持「未观察」；预案不变（出现 400 配能力表，不恢复钳制）。
+> ⇒ 审计档 `docs/audit/2026-10-29-RISK2-工具顶层键保真轮.md`；
+> 通用式见 `LESSONS.md` **§538**。
