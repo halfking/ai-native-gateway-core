@@ -118,7 +118,7 @@ func TestFindModelAlternatives_NilFinderDegradesCleanly(t *testing.T) {
 	h := &ChatHandler{} // altFinder deliberately nil
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
 
-	got := h.findModelAlternatives(r, &chatRequestBody{}, []byte("{}"), "gpt-5.6-luna", nil)
+	got := h.findModelAlternatives(r, &chatRequestBody{}, []byte("{}"), "gpt-5.6-luna", nil, "")
 
 	if got.RequestedModel != "gpt-5.6-luna" {
 		t.Errorf("RequestedModel = %q, want %q", got.RequestedModel, "gpt-5.6-luna")
@@ -136,13 +136,13 @@ func TestFindModelAlternatives_NilFinderDegradesCleanly(t *testing.T) {
 // well-formed empty result instead of panicking.
 func TestFind_NilReceiverAndNilDB(t *testing.T) {
 	var nilFinder *ModelAlternativesFinder
-	got := nilFinder.Find(context.Background(), "m", "default", "code")
+	got := nilFinder.Find(context.Background(), "m", "default", "code", "")
 	if len(got.Alternatives) != 0 || got.RequestedModel != "m" {
 		t.Errorf("nil receiver produced %+v", got)
 	}
 
 	empty := &ModelAlternativesFinder{} // db == nil
-	got = empty.Find(context.Background(), "m", "default", "code")
+	got = empty.Find(context.Background(), "m", "default", "code", "")
 	if len(got.Alternatives) != 0 {
 		t.Errorf("nil db produced %d alternatives", len(got.Alternatives))
 	}
@@ -394,7 +394,7 @@ func TestFind_DeadContextSkipsQuery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // 客户端在查找开始前就已断开
 
-	got := finder.Find(ctx, "requested-model", "default", "")
+	got := finder.Find(ctx, "requested-model", "default", "", "")
 	if len(got.Alternatives) != 0 {
 		t.Fatalf("alternatives = %d entries, want 0: dead request context must skip the lookup entirely",
 			len(got.Alternatives))

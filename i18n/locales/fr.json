@@ -44,6 +44,27 @@
   "unsupported_feature": {
     "other": "Le modèle sélectionné ne prend pas en charge ce format ou cette modalité de requête."
   },
+  "modality_mismatch": {
+    "other": "Le modèle « {{.Model}} » n'accepte pas les entrées de type {{.Modality}}. Cette requête contient du contenu {{.Modality}}, mais le modèle est enregistré uniquement comme {{.RegisteredModality}}. Envoyez une requête textuelle à ce modèle, ou dirigez la requête vers un modèle prenant en charge {{.Modality}}."
+  },
+  "modality_vision": {
+    "other": "image"
+  },
+  "modality_audio": {
+    "other": "audio"
+  },
+  "modality_video": {
+    "other": "vidéo"
+  },
+  "modality_image": {
+    "other": "génération d'images"
+  },
+  "modality_multimodal": {
+    "other": "multimodal"
+  },
+  "modality_text": {
+    "other": "texte"
+  },
   "model_deprecated": {
     "other": "Le modèle demandé a été définitivement retiré (fin de vie) par le fournisseur en amont."
   },

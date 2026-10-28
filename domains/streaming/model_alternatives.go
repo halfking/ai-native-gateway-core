@@ -43,6 +43,16 @@ type ModelAlternativesResult struct {
 	// TaskType is the session's inferred task type when one was available,
 	// so the client can explain WHY these models were suggested.
 	TaskType string `json:"task_type,omitempty"`
+	// RequestedModality is the media modality the request carried, when it
+	// carried one. It is set only on the modality-mismatch path, where the
+	// client needs to know that the suggestions were filtered to models that
+	// can actually read that media.
+	//
+	// ★ Without it, the client cannot tell "these are models that can take
+	// your images" from "these are models that happen to be up" — and the
+	// second reading is how a user ends up switching to another text-only
+	// model and hitting the same wall.
+	RequestedModality string `json:"requested_modality,omitempty"`
 	// Alternatives is ordered best-first and may be empty, which is a
 	// meaningful answer: nothing at all is routable right now, so the
 	// client should wait rather than retry a different name.
@@ -103,17 +113,29 @@ func (f *ModelAlternativesFinder) SetIntentCache(c *autoroute.SessionIntentCache
 // higher recent usage wins.
 //
 // taskType may be "" when nothing is known about the session; the query then
-// degrades to featured-then-popular. Errors are logged and reported as an empty
-// list, never propagated: the caller is already writing an error response and
-// must not be derailed by a failure in the suggestion path.
+// degrades to featured-then-popular.
+//
+// requestModality filters the suggestions to models that can actually serve
+// that media modality ("" = no filter, the historical behaviour). Errors are
+// logged and reported as an empty list, never propagated: the caller is
+// already writing an error response and must not be derailed by a failure in
+// the suggestion path.
+//
+// ★ Why the filter exists: the modality-mismatch path tells the client
+// "this model cannot read your images — use one that can". A list that still
+// contains text-only models makes that advice unusable: the user follows it
+// and hits the identical wall one model over. The filter uses the SAME
+// acceptance rule as the router's modality gate (provider.modalityAccepts),
+// so a suggested model is guaranteed to be routable for that modality.
 func (f *ModelAlternativesFinder) Find(
 	ctx context.Context,
-	requestedModel, tenantID, taskType string,
+	requestedModel, tenantID, taskType, requestModality string,
 ) ModelAlternativesResult {
 	result := ModelAlternativesResult{
-		RequestedModel: requestedModel,
-		TaskType:       taskType,
-		Alternatives:   []ModelAlternative{},
+		RequestedModel:    requestedModel,
+		TaskType:          taskType,
+		RequestedModality: strings.TrimSpace(strings.ToLower(requestModality)),
+		Alternatives:      []ModelAlternative{},
 	}
 	if f == nil || f.db == nil {
 		return result
@@ -136,6 +158,7 @@ func (f *ModelAlternativesFinder) Find(
 		tenantID,
 		taskType,
 		maxModelAlternatives,
+		result.RequestedModality,
 	)
 	if err != nil {
 		slog.WarnContext(ctx, "model alternatives lookup failed; returning plain no_candidate",
@@ -186,6 +209,8 @@ func (f *ModelAlternativesFinder) Find(
 //	$2 tenant id                    — own-tenant plus shared 'default' providers
 //	$3 task type ('' when unknown)  — drives the task_match tier
 //	$4 row limit
+//	$5 requested modality ('' = no filter) — restricts suggestions to models
+//	   that can serve that media modality; see the routable CTE for the rule
 //
 // Ordering tiers (tier 1 first):
 //
@@ -225,6 +250,20 @@ routable AS (
       AND (v.tenant_id = $2 OR v.tenant_id = 'default')
       AND COALESCE(mc.status, 'active') = 'active'
       AND mc.canonical_name <> $1
+      -- ★ 2026-10-28: 模态过滤（$5）。当本次请求带图/音频而请求的模型是
+      -- 文本模型时，建议列表必须只列**真能读该模态**的模型。
+      -- 判据与路由器模态门逐字同源（provider.modalityAccepts）：
+      --   vision/audio/video → mc.modality IN (该模态, 'multimodal')
+      --   multimodal           → mc.modality = 'multimodal'
+      --   image                → mc.modality IN ('image','vision','multimodal')
+      -- $5 为空（文本请求 / 历史路径）⇒ 不过滤，保持既有行为。
+      AND (
+          $5 = ''
+          OR $5 = 'text'
+          OR ($5 IN ('vision','audio','video') AND COALESCE(mc.modality,'text') IN ($5, 'multimodal'))
+          OR ($5 = 'multimodal' AND COALESCE(mc.modality,'text') = 'multimodal')
+          OR ($5 = 'image' AND COALESCE(mc.modality,'text') IN ('image','vision','multimodal'))
+      )
     GROUP BY mc.id, mc.canonical_name, mc.display_name, mc.family
 ),
 task_models AS (
@@ -370,12 +409,16 @@ func (h *ChatHandler) SetModelAlternativesFinder(f *ModelAlternativesFinder) {
 // Never returns an error: this runs while the handler is already committed to
 // writing a 503, so every failure degrades to an empty list and the client gets
 // the plain error it would have received before.
+//
+// requestModality filters the suggestions to models that can serve that media
+// modality; "" keeps the historical unfiltered behaviour.
 func (h *ChatHandler) findModelAlternatives(
 	r *http.Request,
 	reqBody *chatRequestBody,
 	bodyBytes []byte,
 	clientModel string,
 	keyInfo *authentication.KeyInfo,
+	requestModality string,
 ) ModelAlternativesResult {
 	if h == nil || h.altFinder == nil {
 		return ModelAlternativesResult{
@@ -399,7 +442,7 @@ func (h *ChatHandler) findModelAlternatives(
 		sigs,
 	)
 
-	return h.altFinder.Find(r.Context(), clientModel, tenantID, taskType)
+	return h.altFinder.Find(r.Context(), clientModel, tenantID, taskType, requestModality)
 }
 
 // isKnownTaskType validates a client-supplied X-Gw-Task-Hint against
