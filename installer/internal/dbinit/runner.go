@@ -1664,6 +1664,19 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		//   recent_success_rate。纯 CREATE OR REPLACE FUNCTION，幂等，
 		//   零 DDL 风险；评分侧把 NULL/低样本当「无信号 → 中性」fail-open。
 		"915_recent_cache_hit_rate.sql",
+		// 916: 会话族 api_key_id **归一表达式**的 (CASE, ts DESC) 索引。
+		// ★ 缺口本体（R177 轮，252 生产只读实测）：按 api_key 过滤会话的读点
+		//   （admin/usage.go:841-859，7 天窗）实测「窗口内 75,449 行全读、
+		//   丢掉 37,825 行」，一次读点 220,401 块 ⇒ **一半的行是白读的**。
+		// ★ 为什么 906 那条部分索引承不住：它的**键是 (session_id, turn_no DESC)**，
+		//   api_key_id 只在**谓词**里 ⇒ 它承的是「按 session_id 找轮次」。
+		// ★ 为什么必须是【表达式索引】：canonical 视图把 api_key_id 投影成
+		//   CASE WHEN api_key_id ~ '^[0-9]+$' THEN api_key_id::bigint END
+		//   （唯一真值源 db/request_logs_view_schema.go 的 SessionFamilyAPIKeyIDExpr）
+		//   ⇒ 普通 btree 用不上；**部分索引也用不上**（PG 的谓词蕴含是语法的）。
+		// ★ 含 CREATE INDEX CONCURRENTLY ⇒ 本文件带 dbinit:no-transaction 标记（首行），
+		//   applySQL 据此不加 --single-transaction（887/888/729 同款）。
+		"916_session_turns_api_key_ts_index.sql",
 		},
 	}
 }

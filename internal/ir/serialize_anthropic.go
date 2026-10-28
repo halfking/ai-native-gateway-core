@@ -669,6 +669,17 @@ func validateAnthropicMedia(req *InternalRequest) error {
 			switch block.Type {
 			case "audio", "input_audio", "video":
 				return fmt.Errorf("unsupported_modality: Anthropic Messages cannot represent %s content", block.Type)
+			case "video_url":
+				// 2026-10-27（批判审计轮）：与旧转换器对齐。domains/
+				// transformation/anthropic/chat_to_anthropic.go 的拒绝表
+				// 一直列着 video_url；R148 让 parse_openai 把 video_url
+				// 解析成「保留 Type=video_url + RawContent」的块后，本表
+				// 若不加它，块会落进 Anthropic 序列化器的 default 分支被
+				// **原样发到 Anthropic 线上** —— Anthropic Messages 没有
+				// video_url 块类型 ⇒ 上游 400 ⇒ 错误记账归到凭据/节点
+				// （2026-09-09 gemini dispatch 同族病理）。在边界上诚实
+				// 拒绝，与 audio/video 一致。
+				return fmt.Errorf("unsupported_modality: Anthropic Messages cannot represent %s content", block.Type)
 			case "image":
 				if block.Image == nil {
 					return fmt.Errorf("invalid image content: source is missing")

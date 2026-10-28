@@ -1404,6 +1404,32 @@
 > ⇒ ★ 新增回归测试 3 条（退化输入三连 ⇒ 线格式只剩合法块；Responses 空 file_data；
 > ValidateAndFix 完整路径）。读数：`go build` ✓ / ir+auth+provider+attachments+streaming
 > 全绿。⇒ 审计档 `docs/audit/2026-10-27-Gemini多模态审计复审轮.md`；通用式见 `LESSONS.md` **§438**（5 条）。
+> **2026-10-28 Gemini 批判审计三轮（真机实证补全 + 跨会话词表分叉根修）**（会话
+> `mvs_dc5e181989fc4539805f343f39be2b5d`）：★ 批判口径 = 把前两轮每条「已完成」按
+> 【只读代码 / 单测绿 / 真机实证】三档标级 ⇒ 三个低档声明全部补上真机证据：
+> **附件真实落盘**（`/attachments/2026/10/…/<sha256>.png`）、**真实访问日志
+> `query='key=REDACTED'`**（明文 0 次）、**流式 200 + 标准 Gemini SSE 帧**
+> （★ 首测失败是我自己的 mock 缺 `data: [DONE]`——网关 `eof_without_done` 判定正确；
+> ★ **量具本身没被审计过**是真因）。
+> ⇒ ★★★★ **真机抓到跨会话 P0：`openai-chat` 词表分叉断掉 Gemini→原生上游** ——
+> `handler.go:4428` 用 `ir.DetectProtocol` 填 ClientProtocol（OpenAI Chat 线体 ⇒
+> **`openai-chat`**，Gemini 入站合成体同），而 executor_gemini/ollama 的 client-wire
+> 白名单只认 legacy 词 **`openai-completions`**（IR==nil 时代的兜底值）⇒ 生产必 501
+> `client protocol "openai-chat" not yet wired`；**两个执行器的既有测试全部用 legacy
+> 词写 ⇒ 测试全绿而生产断**（catalog 别名表与 connection_registry 早把两词当同义词
+> ——三份词表，executor 用了窄的那份）。修法：`canonicalInboundWire()` 四处接线
+> （gemini finalize 门+clientWire、ollama 同）+ 三条**用生产词表**的参数化测试 +
+> 真机复验：Gemini 入站 fileData 音频/视频 → **原生上游收到原生 `fileData{fileUri,
+> mimeType}` 形态**（这也是对并行会话「12h 审计轮」MediaSource 修复的**首次端到端
+> 实证**，此前只有单测）；原生上游流式 ✓。
+> ⇒ ★★ 另修 P2：`validateAnthropicMedia` 拒绝表补 `video_url`（R148 让 parse_openai
+> 保 Type+RawContent 后，raw default 分支会把 video_url 原样发 Anthropic 线 ⇒ 上游
+> 400 污染凭据记账；旧转换器 chat_to_anthropic.go:445 一直拒它——两份实现口径分叉）。
+> ⇒ ★ 读数：executors 全包 44.7s ✓ / ir ✓ / streaming 全包 156.6s ✓ / build ✓ /
+> 密钥扫描 0 BLOCK / 守卫七包 ✓。★ 遗留（审计档 §六）：本地库 `session_turns_hot.host`
+> 列缺失吃 V2 写入；Responses 侧 URI-only 音频跳过无损失上报；`alt=sse` 缺省时形态
+> 与厂方 JSON 数组方言不一致（既有行为）。
+> ⇒ 审计档 `docs/audit/2026-10-28-Gemini批判审计三轮.md`；通用式见 `LESSONS.md` **§521**（4 条：声明逐条对实证 / 测试词表≠生产词表=恒绿假象 / 注释里的假设要当场证伪 / 并行修复不免除验证）。
 > **2026-10-27 Gemini 原生出站 executor 轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
 > ★ 承接 §436 同一审计档的**子项②**（§433 清单的最后一项可做项）。
 > ⇒ ★★★★ **本轮最值钱的一处定性：缺口不是「功能没做」，是「死配置」** ——
@@ -14034,3 +14060,157 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > 错了与代码错一样致命 / ★ pgxmock 空白归一让 SQL 形状断言假红（stripQuery 把两侧
 > 空白归一成单空格，\n 永远匹配不上）/ ★ 变异臂靶点选唯一事实源 / ★ 同名 share
 > 不同分母要断言能区分两者的数字 / ★ 两种意图两个钮 / ★ 构造即守恒）。
+
+## ㊵ R178 轮（2026-10-28）· 「api_key_id 归一表达式的索引」（★ 承接 R177 找到的真根因 ⇒ 本轮把它变成一条可部署的迁移 + 一道防漂移的门 + 一组实测读数；★ 「索引的名字不等于索引的键」；★ CASE 归一过的列要【表达式索引】且部分索引用不上；★ 「迁移写好了」≠「各环境会执行它」；★ 计数型棘轮会把「还没部署」当成「挖坑」⇒ 只能改量具不能抬基线）
+
+> **取号说明**：★ 本轮开工时取 **㊴**（㊴ = 上一轮 R177）；★ 开工时重查 `origin/main` ⇒ 上游 AGENTS 最高 **㊴** ⇒ 当时不冲突 ✓；⇒ ⇒ ★★★ **★ 【合并上游之后】复查：上游已把我方的 ㊴（R177）带进去 ⇒ ⇒ 本轮让号到 ㊵ ✓**（★ LESSONS 同步：**让号五次**：§504 → §505 → §510 → §512 → §515 → **§516** ⇒ ★ 上游那条 §504 = 「原厂直通生产验证轮」⇒ ★★ **注意上游那条提交信息里写的是「§503」，实际落盘是 §504 ⇒ 它自己已经避开了撞号**）★★
+
+★ ★★ **本轮性质：★★ R177 用排除法把「慢」的原因逼到「读到了不要的行」，本轮把那行「不要的行」的成因修掉：★★**
+★★ **给 `api_key_id` 的归一表达式建一条索引（迁移 916），并用四道契约门把它钉住不许漂移。★★**
+
+★★ **缺口本体（252 生产只读实测，承接 R177）**：★★
+★★ 读点 `admin/usage.go:841-859`（7 天窗、`api_key_id = 113`）的 plan 是
+★★ `Index Scan using session_turns_2026_10_ts_idx` + `Filter: (CASE WHEN (api_key_id ~ '^[0-9]+$'::text) THEN (api_key_id)::bigint END = 113)`
+★★ + `Rows Removed by Filter: 37825` ⇒ ⇒ **窗口内 75,449 行被全部读出来、只有 37,624 行匹配** ⇒ ⇒ **37,825 行读完丢掉** ⇒ 一次读点 **220,401 块**。
+
+★★ **三层排除（★ 为什么现有索引全都承不住）★★：
+★★ ① **名字带 api_key 的 4 个索引，键全是 `(session_id, turn_no DESC)`**，`api_key_id` 只在**谓词**里
+★★ 　 ⇒ 它们承的是「按 session_id 找轮次」⇒ ⇒ **「按 api_key 过滤会话」从来没被索引承重过**；
+★★ ② **普通 btree 用不上** ⇒ canonical 视图把 `api_key_id` 投影成 CASE 表达式
+★★ 　 （唯一真值源 `db/request_logs_view_schema.go` 的 `SessionFamilyAPIKeyIDExpr`）；
+★★ ③ ★★ **部分索引也用不上** ⇒ ★★ PG 的「谓词蕴含」判定是**语法的**
+★★ 　 ⇒ 无法证明「CASE 形式蕴含裸正则谓词」⇒ ★★ **仓里 `SessionFamilyAPIKeyIDNumericPredExpr` 的注释早写死了这条**。
+
+★★ **迁移 916**（`sql/migrations/startup/916_session_turns_api_key_ts_index.sql` + 同名 `.down.sql`）：
+★★ 索引键 = `((CASE WHEN api_key_id ~ '^[0-9]+$' THEN api_key_id::bigint END), ts DESC)`；
+★★ 形态照 729 的三段式（逐分区 `CONCURRENTLY` → 父表 `ON ONLY` 壳 → `ATTACH`）+ hot 表独立一条；
+★★ ★ 首行 `dbinit:no-transaction`（★ 含 CONCURRENTLY ⇒ installer 的 applySQL 不加 `--single-transaction`）；
+★★ ★ 锁守卫用**会话级** `SET lock_timeout`/`statement_timeout`（★ 本通道不在事务块内 ⇒ `SET LOCAL` 只打 WARNING 后完全失效 ⇒ 914 文件头实测）。
+★★ **五处登记**：★ installer StartupFiles（★ **新装路径**）· ★ 部署通道脚本（★ **存量路径**）· ★ changelog sha256 · ★ 期望对象表 · ★ 可达性表。
+
+★★ **契约门** `sql/migrations/startup/migration_915_session_turns_api_key_ts_index_test.go`：四类断言 ——
+★★ ① **索引表达式 == `db.SessionFamilyAPIKeyIDExpr`（去别名后逐字一致）**（★ 表达一分叉 ⇒ 索引**静默不被使用** ⇒ 读数上完全看不出异常）；
+★★ ② **承重查询在位**（★ 888 立的规矩：没有查询承重的索引是缺陷）；
+★★ ③ **906 那条部分索引的键里没有 CASE 表达式**（★ 反向自证 ⇒ 避免重复吃写入放大）；
+★★ ④ 形态与登记面（★ 含 changelog 的 sha256 与磁盘实测一致）。
+★★ ★ **三个变异臂全检出**：★ 表达式改成 `::int` ⇒ 红 · ★ 守卫写成 `SET LOCAL` ⇒ 红 · ★ 撤掉 StartupFiles 登记 ⇒ 红（还原后 md5 一致）。
+
+★★ **实测读数**：★★
+★★ ★ **本地真库**（已应用 916）：★ CASE 从 **`Filter` 变成 `Index Cond`**；
+★★ ★★ 且 `details` 的 LEFT JOIN 从「按 request_id 走索引查找」退化成 **Join Filter**（无索引那臂）⇒ ★★ **索引不只省块，还把 join 的计划形态救回来了**；
+★★ ★★ 另：**PG 建索引时把索引表达式归一成了视图投影的完全同形**（`::text` + `ELSE NULL::bigint` 都补上）⇒ ★★ **这是「表达式确实等价」的最强证据**；
+★★ ★ **规模化 A/B**（隔离 scratch 库，1,314,449 行 / 262 MB，★ 已 DROP 零残留）：
+★★ 　命中≈50%（252 形状）⇒ **根节点 buffers 2836 → 1415（−50.1%，≈2.00×）**，`Rows Removed by Filter` **51,451 → 0**，墙钟 64.3 → 50.0 ms（★ 1.29×，★ **偏保守**：B 臂全程 0 个并行 worker，而 A 臂拿到 2~4 个）；
+★★ 　命中≈0% ⇒ **218×**（连窗都不扫）；★ 命中≈100% ⇒ **1.00×**（无收益也无损害）；
+★★ 　★ **保真度自证**：★ 合成库 A 臂 `Rows Removed by Filter` = 36,298 + 1,527 = **37,825** ⇒ **与 252 逐位相同**；
+★★ 　★ **收益公式**：★ buffer 倍数 ≈ 1 + (1−h)×窗内行数/命中行数（h=命中率）⇒ h=50% ⇒ 2.00×、h→1 ⇒ 1.00×、h→0 ⇒ 被「索引探测恒定开销」截断在 ~13 块；
+★★ ★ **成本侧记账**：★ 索引体积 ≈ **39.7 MiB / 1.31M 行**（对 252 的 4.7 GB 同量级写入放大）· ★ 建索引期父表仍需一次短暂元数据锁（PG17 不支持父表 CONCURRENTLY）· ★ **不能用部分索引 ⇒ 探针流量（`api_key_id` 全 NULL 的 46 万行）也会进索引**（★ 替代形态「取消视图侧 CASE 归一」属**契约变更**，不在本轮范围）。
+
+★★ **★★ 本轮第二件大事（★ 量具侧）：★★ 棘轮把「待部署」当成「有人在别处挖了坑」⇒ ★ 结构性挡住「加一条迁移」⇒ ★ 只能改量具、不能抬基线 ★★** ——
+★★ 新增 916 后 `TestDbObjectProductionGapRatchet` 红（fresh/252/211 各 +2）⇒ ⇒ **根因是口径不是缺口**：
+★★ **一条新迁移在【还没部署到】的环境里，它的对象必然是 `missing`** ⇒ ⇒ 计数型棘轮把它当挖坑
+★★ ⇒ ⇒ ⇒ **这道门结构性地挡住了「加一条迁移」** ⇒ ⇒ 唯一出路是抬基线 ⇒ ⇒ ★★ 而抬基线被仓内明令禁止
+★★ （R161 审计档原话：「调高基线的理由必须是『检测器变准』而不是『新增了未修的缺口』」）⇒ ⇒ ⇒ **只能改量具。**
+★★ **修法（★ 只改门 `scripts/ursmcheck/db_object_census_gate_test.go`，★ 不动任何台账格式）**：
+★★ 「待部署」须**三条同时**成立 —— ① 迁移号 > epoch（914，在途）② 该迁移在安装器清单里**可达**
+★★ （★ 不可达 ⇒ 永远不会被应用 ⇒ 那是**永久缺口**）③ 该迁移声明的对象在目标环境里**一个都不存在**
+★★ （★ ⇒ 该环境还没应用过它；★ 判据成立是因为迁移要么全成要么全败）。
+★★ **读数**：★★ 真缺口 local 56 / fresh 49 / 252 56 / 211 62 ⇒ **与基线逐项相等（diff 全 0）**；
+★★ pending 252 2 / 211 2（★ 正是 916 的两个索引）⇒ ⇒ ★★ **基线一个数都没抬，「只许下降」守住** ★★
+★★ ★ 另修：★ `TestDbObjectAuditDocQuotesTheLedger` 原按**原始 missing** 计数 ⇒ 同一份台账会有两种数
+★★ ⇒ ⇒ 审计档与门各说各的 ⇒ ⇒ ★★ 现改为与棘轮**同口径**（★ R161 审计档里的 `56/49/56/62` 恰好就是 hole 口径 ⇒ 那份历史文档一个字没改）。
+
+★★ **★★ fresh（新装）环境重建 —— ★ 六点位登记必须被【真的跑一遍】验证 ★★** ——
+★★ 可达性生成器给 916 判了 `reachable-but-missing-in-fresh`（severity = `installer-bug`）
+★★ ⇒ 门明写「『安装器自己有 bug』必须为 0」⇒ 红 ⇒ ⇒ ★★ 这不是误报：★ fresh 快照早于这次登记。
+★★ **重建方法（★ 不是 `fresh-schema-from-migrations.sh`，★ 它用 `--single-transaction` ⇒ CONCURRENTLY 必失败）**：
+★★ **00-prereqs → 01-schema → 02-seed → 按 `runner.go` 的 `StartupFiles` 逐条（★ 带 `dbinit:no-transaction` 的走非事务通道）**。
+★★ **读数**：★★ **318/318 成功、失败 0** ⇒ ⇒ 916 的两个索引在**新装库里真实存在** ⇒ ⇒
+★★ `installer-bug` **2 → 0**、`reachable-and-present` **369 → 377**、★ fresh 缺口 **51 → 49**、★ 列底账 **3576 → 3610 行**。
+★★ ★⇒ ★★ **静态证明（「清单里有它」）≠ 动态证明（「新装库真的有它」）★★。
+
+★★ **★ 门失败归因（★ 慢门首跑红 6 处，★ 每条都是量具纪律问题）★★：
+★★ ① 上游 `27e412f56` 改了 `cmd/gateway/main.go` ⇒ 路由快照行号漂移（★ **路由集合逐字一致**，★ 只有 `file:line` 动）
+★★ 　⇒ 用 `bash scripts/audit/extract-admin-routes.sh --update-snapshot` 刷新（★ **别手拼 `head -1` + `cat`**）；
+★★ ② 台账 840 vs 842 = ★ **门读到了半成品态**（★ 门 20:30 起跑、资产 20:41 才刷完）⇒ ⇒ **别边重生成边跑门**；
+★★ ③–⑥ 5 个 reachability 门 = ★★ **我手写的两行只有 9 字段（缺 `severity` 列）** ⇒ ⇒ ★★ **手写台账行必红：内容几乎对也没用，字段数不对就是非法** ★★。
+★★ ★ 另附采集口径：★ `psql -X -A -t` 会把 `SET` 的**命令标签**当一行吐出来 ⇒ ⇒ 采集 SQL 首行若是 `SET …` ⇒ ⇒ **必须加 `-q`**。
+
+★★ **本轮明确没做（留给下一轮，别重复排查）**：★★
+★★ **在 211 / 252 上执行 914 与 916（★ 252 是只读库 ⇒ 建索引需属主放行；★ 本轮只做了本地真库应用 + 隔离 scratch 库 A/B）**；
+★★ ★ **枚举 252 上「按 api_key 过滤会话」的全部读点及其命中率分布**（★ 量具 `cmd/tools/partition_bound_probe` 已备好，★ 但读点清单要补齐）⇒ ★★ 别把「h≈100% 无收益」误读成「索引没用」；
+★★ ★ 35 读点按「**能不能用索引 seek**」重分类（★ R177 已把「读了哪些列 × 多少行」两轴推翻）；
+★★ ★ canonical 视图改名（★ **916 已被本轮占用 ⇒ 改名用 917**；★ 变更面清单在 R177 §6）；
+★★ ★ 存量迁移 `SET LOCAL` → 会话级 `SET`（★ 本轮新迁移已用会话级）；★★ ★ **729 / 906 那批索引的 fresh-install 缺口**（★ 它们没登记进 StartupFiles ⇒ 新装库本来就没有 ⇒ **家族级缺口**，★ 本轮只记录未修）；
+★★ ★ 承前轮：★ 211/252 执行 914（属主放行）· ★ 共享库 `pg_container_usable` 探针缺陷（属主裁决）· ★ `router.ts:490` 的 `/ops/*` 死代码（产品决策）· ★ U+FFFD 专项 · ★ POST 面 110 条。
+
+★★ **★ 合并上游带来的 6 处慢门红（★ 全部归属上游，★ 登记不擅动）★★**：★ ① `TestPostSurfaceLedgerCoversEveryRoute`（★ 上游加 2 端点 ⇒ POST 台账没同步）· ② `TestProbeMirrorWriteFailureMustBeLogged`（★ probe 镜像写失败留痕缺失）· ③ `TestStructuredRegistryHollowoutReadersRejectEmptyRegistry`（★ 上游新增 `components/live-topology/*` 违反他们自己的设计阶棘轮）· ④ `TestTsvHollowoutReadersRejectEmptyRegistry`（★ ① 的连锁）· ⑤ `TestPGTestEnvRegistryCoversEveryGapName`（★ 上游新增的 PG 测试环境名没进登记册）· ⑥ `TestStructuredRegistryCensusCoversEveryCandidate`（★ 上游新增 `tests/deploy_lock_parity_baseline.json` 没进结构化登记册普查表）
+★★ ⇒ ★★ **这 4 处在 pristine 上游树（★ `origin/main` 3d7b7d3af）上同名同数同红** ⇒ ⇒ 归属上游，不是我方引入 ★★。
+
+★★ **审计档**：`docs/audit/2026-10-28-R178-api_key表达式索引.md`（★ 11 节）· **LESSONS §515**（★ ★ 让号五次：★ §504 → §505 → §510 → §512 → §515 → **§516**）。
+
+★★ **★★ 合并上游（★ `origin/main` 341ce0b34，★ 7 个提交 / 179 文件）时又撞出三件 ★★**：
+★★ ① **上游也占了迁移号 915**（★ `915_recent_cache_hit_rate.sql`）⇒ ⇒ **本轮迁移改号 916**（★ 文件 / 登记面 / 测试 / 文档 / **sha256 重算**）
+★★ 　 ⇒ ⇒ **canonical 视图改名随之从 916 改成 917**；★ LESSONS 节号让两次（§504 → §505 → **§510**），★ AGENTS 侧上游最高仍是 ㊴ ⇒ **㊵ 不用让**；
+★★ ② **上游那条 915 在新装路径失败**（★ `relation "public.request_logs_hot" does not exist` ⇒ ★ 那张表**已退役**，★ 本地库实测 count=0）
+★★ 　 ⇒ ⇒ **上游缺陷**：★ 本轮**记录不擅动**（★ `sql/migrations/startup/` 的迁移是历史证据）；★ 但它**不影响本轮台账**（★ 它建的是 FUNCTION，★ 不进对象底账）；
+★★ ④ **上游那条 915 没进 `docs/db-changelog.md` 台账** ⇒ ⇒ `internal/sqlguard` 的 `TestMigrationRegistryStaysContinuous` 红（★ 近邻窗口 [897, 916]）⇒ ⇒ **本轮一度代为补登记行**（★ sha256 = 文件实测值，★ 不改迁移本体）⇒ ★★ **上游随后自己也补了 ⇒ 我方那行已撤**（★ 代补是止血不是接管）★★ ⇒ ⇒ ★★ **「六点位登记」其实不止六面 —— 台账登记是第七面** ★★；
+★★ ③ **252/211 的底账其实是 2026-10-26 的旧快照**（★ 本轮前半程沿用）⇒ ⇒ 被工具自带的 **`verify`** 抓出（★ 252 +21/-4、211 +111）
+★★ 　 ⇒ ⇒ **211 的真缺口 62 → 49** ⇒ ⇒ **棘轮基线同步下调 211: 62 → 49**（★ 按 R161 审计档 §棘轮 的纪律手工下调）⇒ ⇒ **「资产新鲜度要靠对拍，不靠记忆」**。
+
+**2026-10-28 24h 审计第 3 轮：出口修复 + 背压退避 + 上游红收口**（goal 会话）：
+★ 四项全落地，3 次独立提交推送（f4246ef8a / 1ffdeeeb8+c8989b337 / a7012fae1+dbfa47e2b）。
+> ⇒ ★★ **发现一（211 ERROR 风暴根因，已修已验证）**：provider 18（nvidia）
+> `egress_profile='proxy'` 而 `proxy_subscriptions`/`proxy_nodes` **双 0 行** ⇒
+> R28-P-1 must-proxy 契约结构性拒发 ⇒ 探针纯失败循环（近 2h 100%
+> traffic_class=probe；自 10-12 起 29,280 条 usage_facts 成功 0）；★★ 关键反转：
+> **211 宿主机与容器直连 `integrate.api.nvidia.com` 实测 200/0.2s** ⇒ 不可路由是
+> **配置事实**不是网络事实 ⇒ `UPDATE providers SET egress_profile='direct' WHERE id=18`
+> （1 行，策略 TTL 60s 免重启）⇒ 75s 后 ERROR 52→23 每分钟级、探针真实到达
+> （`llama-guard-4-12b` last_gateway_ok=t，幻影模型如实报 404 进协议红通道）。
+> ★ 其余 13 家 proxy 出口供应商**未动**（无凭据无流量、直连未实测，不扩爆炸半径）；
+> 回滚 SQL 在审计档 §2。
+> ⇒ ★★ **发现二（outbox 背压固定退避 = 永久锤击，已修）**：asm 连续 503 十小时
+> （其 audit sink 13:30 UTC 失败窗口起）⇒ 积压 3,909 条 `request.completed.v1`；
+> 固定 64s ⇒ **61 req/s 持续 POST + 等量 DB 事务 + 每秒 60 条 WARN**
+> （8 分钟实测 28,742 failed vs 117 成功 = 0.4%/拍）且成功速率 < 产生速率
+> ⇒ 积压反涨 ⇒ `markBackpressure` 改 `backpressureBackoff(attempts) = 8s ×
+> 2^(attempts-1)` 封顶 10min（永不 DLQ 语义不变；asm `Retry-After: 5` 是单事件
+> 地板提示不是积压重放时间表）⇒ 新增 `TestBackpressureBackoff_Exponential` 8 例。
+> ⇒ ★ **发现三（asm 侧，只读定性未动）**：503=Consume 基础设施错误非缺口分支；
+> audit sink 现已恢复（实测可写、近 2h 3,476 行）；DLQ 存量 34,183 条投影缺口、
+> `capgov_assets` 缺关系 ⇒ **asm 专属审计轮建议**（含重启评估），不越权重启兄弟产品。
+> ⇒ ★ **发现四（3 条上游红逐条复核）**：① post-surface 台账兄弟已修（复验绿）；
+> ② `NATIVEPAIR_OFFSWITCH_CHILD` 登记册 **仍红** ⇒ 登记 component 收口；
+> ③ live-topology 三组件 `font-size:10px` **仍红** ⇒ 按门自带修法收进 11px ⇒
+> 字号门 PASS、**棘轮基线保持 0 未动** ⇒ ⇒ ★ **「登记的红」会过期，收口前必须逐条复核**。
+> ⇒ ★ **发现五（全量 Go 测试唯一红）**：`TestGenericRecovery_CleanFileArchives`
+> 并发偶发 stat ENOENT ⇒ 根因是 execute() 锁内置 completed、**归档 I/O 在锁外**
+> ⇒ 测试抢跑 ⇒ 终态改等 `CompletedAt`（归档后落）⇒ 产品代码零改动。
+> ⇒ ★ **慢 SQL（只读）**：24h 仅 168 条 >500ms；12.0s 主犯 = `session_turns_hot`
+> api_key 归一化正则查询 ⇒ **r98 迁移 916 正是修它的**（本轮中途由其会话合入
+> main，不重复动）；24.3s = 另一产品 `daily_kline` COPY；`pg_stat_statements`
+> 未 preload（需共享 PG 重启授权，登记）。
+> ⇒ ★ **分支/本地审计**：唯一未合并分支 r98 审计时活跃（7 分钟前，不满足 1h 窗口）
+> 不动 ⇒ 本轮中途其内容已并入 main（`--is-ancestor` 实证），worktree 删除留给
+> 其会话；冗余 stash R75（R147 全部内容已进 main）⇒ drop（SHA
+> 09ae5c96 留痕）；menu-config.json 纯时间戳改动 ⇒ 丢弃。
+> ⇒ ★ **读数**：`go build ./...` ✓ / 全量 `go test ./...` 唯一红=发现五（修后绿）/
+> `vue-tsc` 0 错 / `vitest` 复跑 **2925 通过 / 2 跳过**（首轮 1 偶发，日志截断
+> 未定位用例名，如实记）/ `web build` ✓ 22.55s / TestPGTestEnv 红→绿 /
+> design-type-scale-guard 红→PASS。211 部署（含背压修复生效验证）在本轮收口执行。
+> ⇒ 审计档 `docs/audit/2026-10-28-24h审计第3轮-出口修复与背压退避.md`；
+> 通用式见 `LESSONS.md` **§520**（★ 让号：最高 §516，跨号取 §520 留 §517~519 缓冲；
+> 五条：★★ 「不可路由」区分配置事实与网络事实 / ★★ 重试节奏本身就是负载 /
+> ★ 老积压 attempts 当指数底数「首拍落 cap」恰是想要的 / ★★ 终态等最后写的字段 /
+> ★★ 登记的红会过期 + 量具缺席找同层数据源）。
+
+## ㊶ 原厂直通生产验证轮 + 批判式复审（2026-10-28）· zcode 实流量收口 RISK-5（★ 「保真」可能被方言合法性冒名顶替；★ 生效点清单要按【谁做序列化】数；★ 聚合口径必须与断言语义逐字对齐 —— 说「首发」就取第一次尝试）
+> 承接 ㊲ 的 RISK-5。★ **211 部署身份**：a 槽（28776060）与 b 槽（dc55570a）二进制探针均含直通代码 ⇒ nativepair 自 2026-10-28 08:20Z 起在线（**09:31 切流不是「无→有」边界**；版本号 `-dirty` 不算数，`grep -c 特征串 二进制` 才算）。
+> ⇒ ★ **取证通道盘点**（先做这张表）：211 无 `request_logs` 表、`request_wal_bodies` 0 行 ⇒ 唯一 body 通道 = 容器 `/app/logs/raw_data/*.jsonl`（100MB×10 firehose，client_request/upstream_request 双向 base64 完整 body）+ `docker logs` **stderr** 的 `http_request`（UA/request_id 关联；只接 stdout = 假阴性 0 条）。
+> ⇒ ★★ **验证①（首发 body 含厂商私有参数）成立**：zcode→glm 87 个主路径请求（UA 关联 + 结构指纹两法互证同 87），**首发语义 = 85 个首发 全参数保真（键集零差异 + 值级 max_tokens 85/85 相等、thinking 逐字相等）+ 2 个首发 drop**（332b3c20 / 3c1db75e，同分钟撞 nvidia 首跳）。`enable_thinking`/`reasoning{effort:max}`/`thinking{enabled}`/`tool_choice`/128000 全透传；唯一结构性改写 = `max_completion_tokens→max_tokens`（值不变）。
+> ⇒ ★★★ **挖出真缺陷并修（65d24d0df）**：`legacy_with_ir`（OpenAI 入向、`e.IR != nil` 的生产主路径）+ 同族断路器兜底**漏盖 `NativePassthrough`** ⇒ glm 走第三方宿主（nvidia catalog / 空 catalog ⇒ paramreg `RejectedByUnknown`）时厂商参数首发被裁。★★ **GLM 原厂路由（首发 85）的保真是 zhipu 方言恰好认这些键 = 方言合法性冒名顶替直通机制** ⇒ 验证样本必须含「机制缺席时结论会翻」的形态（= 非原厂 catalog 宿主）。★★ **IR 往返有四个序列化站点**（anthropic 入向 / legacy_with_ir / 断路器兜底 / inline no-IR），上轮按「谁做 paramguard」数只盖了三个 ⇒ **生效点清单要按【标志的消费方 = 谁做 SerializeOpenAI】数**。红转绿回归 ×2（主路径 + 断路器兜底）+ 变异臂（摘章必红/还原绿/md5 一致）⇒ 四站点全有测试。
+> ⇒ ★★ **验证②（非原生零变化）成立**：同一 zcode 打 MiniMax（非原生对）49 个带 thinking 请求 = **48 个 enabled→adaptive 改写 + 1 个本就 disabled 原样放行（政策精确生效非反例）**；两槽 1350 上游尝试 **0×400**、reqprobe 剥参重试 **0**、zcode 客户端 **402×200**。RISK-1 vacuous（窗口无 deepseek-code 流量 ⇒ 记「未观察到」非「未发生」）。`native_pair_bypass` 日志 0 条 = 预期（matrix 无 strip + **Debug 级在生产 Info 级不可见** ⇒ RISK-3 留痕机制默认不可观测，已登记）。
+> ⇒ ★ **批判式复审（同日第 3 轮，f12ba085c）**：① 上轮「87 中 86 保真」是【末次尝试】口径 ⇒ 洗白了 1 个首发即裁的请求 ⇒ 首发语义订正 85/87（**聚合口径必须与断言语义逐字对齐**，LESSONS §504 通式八）；② 「MiniMax 49 之 1」核实为政策正确行为；③ 断路器兜底补测试+变异臂；④ 复审时原 b 槽容器已被并行会话两次蓝绿替换（UA 日志源丢失）⇒ 结构指纹法补位。
+> ⇒ ★ 部署：修复随 `1e66996f` 上线（18:40+08 蓝绿）；复审时生产已推进到 `3d7b7d3a`，**血缘验证仍含修复**。z-ai 路由 + 厂商参数组合**线上尚未自然复现**（nvidia 处于 upstream_down 惩罚期）—— 由单测钉死、待自然样本。
+> ⇒ 审计档 `docs/audit/2026-10-28-原厂直通生产验证轮.md`（§0~§11）；通用式见 `LESSONS.md` **§504**（八条；取号两次让号 §503→§504）。

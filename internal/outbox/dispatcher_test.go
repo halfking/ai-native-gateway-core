@@ -807,3 +807,29 @@ func TestIsBackpressure_ClassifiesASMCodes(t *testing.T) {
 		}
 	}
 }
+
+// TestBackpressureBackoff_Exponential —— 2026-10-28 生产审计轮：固定 64s 在
+// 长窗口背压下退化为「61 req/s 永久锤击」（asm 连续 503 十小时、积压 3.9k 条、
+// 8 分钟 2.9 万次失败尝试）。退避改为 8s × 2^(attempts-1)、封顶 10min：
+// 本表钉「首拍 8s / 每次翻倍 / 大 attempts 与溢出都落 cap」三个承重点。
+func TestBackpressureBackoff_Exponential(t *testing.T) {
+	cases := []struct {
+		name     string
+		attempts int
+		want     time.Duration
+	}{
+		{"首次背压 attempts=1 → 8s", 1, 8 * time.Second},
+		{"attempts=2 → 16s", 2, 16 * time.Second},
+		{"attempts=3 → 32s", 3, 32 * time.Second},
+		{"attempts=4 → 64s（旧封顶值只是一档）", 4, 64 * time.Second},
+		{"attempts=6 → 256s", 6, 256 * time.Second},
+		{"attempts=8 越过 cap → 10min", 8, 10 * time.Minute},
+		{"老积压 attempts=665 → 10min（不溢出）", 665, 10 * time.Minute},
+		{"防御 attempts=0 → 地板 8s", 0, 8 * time.Second},
+	}
+	for _, tc := range cases {
+		if got := backpressureBackoff(tc.attempts); got != tc.want {
+			t.Errorf("%s: backpressureBackoff(%d) = %v, want %v", tc.name, tc.attempts, got, tc.want)
+		}
+	}
+}
