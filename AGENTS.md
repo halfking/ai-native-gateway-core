@@ -12879,3 +12879,61 @@ ursm 仪表（仍在 ursmcheck 轨）；probe necessity 索引 93% 读放大（3
 >   ★ ★ 禁止拆开 `go test ./...` 的目标集）⇒ ★★ **动契约前先找那条钉住契约的门**。
 > ⇒ 审计档 `docs/audit/2026-10-28-r1044-合并收口与登记表自身重复.md`（9 节）；
 >   通用式见 `LESSONS.md` **§493**（★ 八条通式）。
+
+> **2026-10-28 r1045 轮：对账「账本说谎」轮**（会话 `mvs_71bac5a6cb0343848c727f01fc8e45b8`）：
+> ★ 起因：★ r1044 收尾后回头把要求④「**实施并验证**」做完 ⇒ ★★ 在**系统运行 log**
+>   ★★ 里读到一条**早就该被发现**的信号。
+> ★★★ **本轮最值钱的发现：★ 对账差异的写入失败被 `slog.Warn` + `continue` 吞掉 ⇒
+>   ★★★ 那一轮的账本记的是「`status=completed, diff_count=0, error=''`」⇒
+>   ★★★ ⇒ 账本、管理界面（`admin/stats.go` 读 status + diff_count）、指标
+>   ★★★ ⇒ （`RecordStatsReconciliationRun("completed")`）**三处同时说谎**。**
+> ★ 实测（★ 2026-10-28 07:32:39~42）：★ 542 条 `INSERT INTO stats_reconciliation_diffs`
+>   ★ 全部失败（★ 那次的**近因**是本机库缺 `tenant_id` 列 ⇒ ★ 已由 r1043 补迁移修掉）
+>   ★ ⇒ 而**让这族失败静默无声的机制还在仓里** ⇒ ★★ 这才是 r1043 没修掉的那一半。
+> ★★ 根因链（★ `domains/stats/reconciliation.go`）：★ ① 写入失败 ⇒ `slog.Warn` + `continue`
+>   ★ ⇒ ② `totalDiffs` 不增 ⇒ ③ `diff_count = diffs - repaired = 0` ⇒
+>   ★ ⇒ ④ `finishRun(..., "completed", …, "")` ⇒ ⑤ 指标记 completed ⇒ ★★ **差异从未进表**
+>   ★ ⇒ ★★ 下一窗口也不覆盖它 ⇒ ★★ **永久丢失**。
+> ★★★ **而代码自己的注释写着**（★ 原 457-460 行）：★ 「the aggregates stay truthful」
+>   ★★★ ⇒ ★★★ **该不变量只在「重复被 `ON CONFLICT` 吸收」时成立，在「写入失败」时不成立**
+>   ★★★ ⇒ ⇒ ★★ 这正是「★ **失败被降级成 warn + continue ⇒ 结论不可信**」的极端形态：
+>   ★★★ ⇒ ★★ **542 ⇒ 0** ⇒ ★★ **「变小」最危险**。
+> ★ 修法（★ **零签名改动**）：★ 两处 `INSERT` 失败分支由 `warn`+`continue` ⇒ **返回 error**
+>   ★ ⇒ ⇒ `run()` **既有的**失败分支自动把 status 置 `failed`、写 error 列、指标记 failed
+>   ★ ⇒ ⇒ 账本 / 界面 / 指标**三处一起恢复诚实**；★★ `run()` 的失败分支**先
+>   ★★ `resetPendingRepairs(ctx, runID)`**（★ 不留孤儿 `auto_repair_pending` 行）★ 位置在
+>   ★★ **调用方**（★ 写入点在 `for projRows.Next()` 循环里 ⇒ ★★ rows 未关时再发查询会
+>   ★★ 「conn busy」）⇒ ★★ 与文件里已有的「Refresh 失败 ⇒ 先复位再返回」那条路径**同款**；
+>   ★★ 数据靠**滚动 lookback 窗口**在下一 tick 重新检出 ⇒ ★★ **数据自己回来**。
+> ★ 判据（★ 2 条，★ **必须成对**）：★ 断言落在**账本那一行的 SQL 参数**上
+>   ★ ⇒ `TestReconciliationWorker_DiffWriteFailureMarksRunFailed`（★ status 参数必须是
+>   ★ `'failed'` 且 **error 参数必须非空** ⇒ ★ **自定义 matcher `nonEmptyStringArg`**
+>   ★ ⇒ ★ **不用 `AnyArg()`** ⇒ ★ 因为 `AnyArg` 对任何值都过 ⇒ ★★ 那条断言就只是装饰）
+>   ★ ⇒ `TestReconciliationWorker_DiffWriteSuccessStillCompletes`（★ **反向守卫**：
+>   ★★ 仍 `'completed'` 且 `diff_count` 正确等于 1）。
+> ★ 变异台 `scripts/audit/mutate_r1045_reconciliation_diff_write_truth.py` **5/5**：
+>   ★ B00 基线惰性筛查 / M01 **回退**成 warn+continue（★ **只有**正向断言红）
+>   ★ / M02 error 写**空串**（★ 正向红 ⇒ ⇒ 证明「error 非空」有牙齿 ⇒ ⇒ **`AnyArg` 不够**）
+>   ★ / M03 让这一轮**永远失败**（★ **只有**反向守卫红 ⇒ ⇒ 正向断言**单独**抓不住这种退化）
+>   ★ / M04 **掏空反向守卫** + M03（★ 全绿 ⇒ ⇒ ⇒ 证明反向守卫**不可省**）。
+> ★ ★★ **顺带的核验（★ 差点推翻自己）**：★ 第一遍 awk 按时间戳过滤得「07:32:42 之后还有
+>   ★ ★ 107 条 `tenant_id` 错误」⇒ ★★★ **那会把 r1043 的正确结论当众推翻** ⇒ ★★ 核第二遍
+>   ★ ★ 才发现是**过滤式写错了**（★ 字符串比较只比到分钟 ⇒ 同分钟的行也判真）⇒ ★★ 精确按秒
+>   ★ ★ ⇒ 07:32:39=93 / :40=141 / :41=201 / :42=107、★ **07:33:00 之后 0 条** ⇒ ⇒
+>   ★ ★ **r1043 的结论是对的** ⇒ ★★★ **对自己上一轮的结论也要做「差集对拍」**。
+> ★ ★★ **PG 日志里 5 个「表/列不存在」族逐族定性 ⇒ 全部是仓内 realdb 测试产物**
+>   ★ ★ （★ `_request_logs_hot` ×11 / `::regclass` 查存在性 / `usage_ledger` columnar
+>   ★ ★ DELETE 静默失败 ×67 / `f.raw_model_name` 临时表形状不同 / 退役表查询）⇒
+>   ★ ★ ⇒ **不是生产缺陷** ⇒ ⇒ ★★ **差点被当成 5 个新真缺陷去查** ⇒ ★★ 判读必须
+>   ★ ★ **逐族追到仓内调用点**（★ 网关与 realdb 测试**共用同一个库**）。
+> ★ 读数：★ `go test ./domains/stats/ -count=1` **ok**；★ 定向 **2/2 PASS**；
+>   ★ 变异台 **5/5**；★ `go build ./...` / `go vet ./...` / `gofmt -l` 干净；
+>   ★ `go test ./scripts/ursmcheck/ -run 'TestSectionNumber|TestLessonsFile'` ✓（节号唯一）。
+> ★ **本轮明确没做（留给下一轮，别重复排查）**：★ **没有普查「写入失败 ⇒ 计数变小」这一族**
+>   ★ （★ 本仓**只有 `domains/stats` 这一处被治** ⇒ ★★ 同族未普查 ⇒ ★★ 是「没查」不是
+>   ★★ 「已确认干净」）；★ **没有**修本机库 `usage_ledger` 的 columnar DELETE 失败（★ 67 条
+>   ★★ ⇒ 测试清理不干净 ⇒ 测试数据残留）；★ **没有**给 realdb 测试**独立数据库**；
+>   ★ ★ **没有**把 PG 日志里剩下 4 个族逐个定性；★ ★ **没有**加「账本说 failed」的
+>   ★★ 重试/退避读法（★ ⇒ 一次瞬时 DB 抖动就会让整轮记 failed）。
+> ⇒ 审计档 `docs/audit/2026-10-28-r1045-对账账本说谎.md`（10 节）；
+>   通用式见 `LESSONS.md` **§494**（★ 七条通式）。
