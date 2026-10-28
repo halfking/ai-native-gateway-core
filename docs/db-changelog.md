@@ -10527,12 +10527,12 @@ Recording-consent body retention is independent of request_logs TTL.
 
 ★ **本条同时记下一处「守卫在部署通道上是装饰品」的实测发现**：`scripts/apply-db-revision-sequence.sh` 走 `psql -f -`，**不加 `--single-transaction`、也不注入 `BEGIN`** ⇒ 每个语句各自成事务 ⇒ **`SET LOCAL lock_timeout` 只打一条 WARNING 后完全失效**（本轮在 PG 17.6 上实测：`SET LOCAL lock_timeout='123ms'` 之后 `current_setting` 仍为 `0`）；installer 通道走 `--single-transaction` ⇒ 那条路径上 `SET LOCAL` 才有效。⇒ **本迁移改用会话级 `SET lock_timeout`**，两条通道都真的生效；存量迁移的 `SET LOCAL` 形态仍属已知债务（见审计档）。
 
-## 2026-10-28 — routing 侧 prompt-cache 亲和信号 (migration 915，★ 上游交付)
+## 2026-10-28 — recent_cache_hit_rate 首版读死表订正 (migration 915, 211 routing_schema_error 事故)
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 915 | `915_recent_cache_hit_rate.sql` | `c4550ebf05838514875d134a4873eaec376e718736632630b1f33bafee0ea16e` | pending（★ **上游交付，★ R178 轮合并时代为补登记**。★ 上游提交该迁移时未在台账登记 ⇒ ⇒ `internal/sqlguard` 的 `TestMigrationRegistryStaysContinuous`（★ 近邻窗口 [897, 916]）红 ⇒ ⇒ 本行按台账既有形态补齐，★ **sha256 为文件实测值**（★ 未改迁移本体）。★★ ★★ **★ 已知缺陷（★ 记录不擅动）：★ 该迁移在【新装路径】失败 —— ★ `ERROR: relation "public.request_logs_hot" does not exist`（★ 那张表【已退役】，★ 本地库实测 count=0）⇒ ⇒ 归属上游。★★ ★★） |
-
+| 915 | `915_recent_cache_hit_rate.sql` | `c4550ebf05838514875d134a4873eaec376e718736632630b1f33bafee0ea16e` | pending→部分 applied（211 库内已手工落**同义体**；本文件下次部署经内容指纹重放收敛为同一形态）—— ★ **首版 9fc5335b4 读的是 `request_logs_hot`（已随 890 随 v1 族整体退役）+ 旧列名 `outbound_model`/`client_model`（会话族不存在）** ⇒ LANGUAGE sql 在 CREATE 时校验表引用 ⇒ 族退役库上本迁移本身 42P01。当晚 211 事故是**两层叠加**：① 部署序列 `files=()` 漏登记 915（5fd8e600c 已补）⇒ 函数从未建 ⇒ 候选查询的 chr LATERAL 整条 42883 ⇒ `/v1/chat/completions` 全量 500；② 即便登记，首版文件也建不出来。本版函数体镜像 211 生产在役 `recent_success_rate` 的 890 后形态：`FROM public.session_turns_hot`（credential_id TEXT 数字守卫 CAST、`lower(COALESCE(model, canonical_model))` 回退链、同款 task_type/origin_stage/request_id 探针排除），token 加权 `cache_read/prompt`（仅 `prompt_tokens > 0` 行计入分子分母、逐行 clamp、分母 NULLIF 兜底；空窗 ⇒ rate NULL + samples 0 ⇒ 路由侧 fail-open 中性）。★ 配套防线（本轮同批）：`db.ensureRecentCacheHitRate` boot 自愈（rsr 的 ensureRoutingRecentSuccessRate 同款，迁移通道断链时二进制自补函数）+ 契约门 `sql/migrations/startup/migration_915_recent_cache_hit_rate_test.go`（迁移体 ⇔ `db.RecentCacheHitRateEnsureSQLForTest()` 归一化文本相等 / 可执行文本无 v1 族表列名 / 三通道登记核对 / down 精确签名）+ 部署门 `scripts/deploy-seamless-docker.sh` 的 `dd_verify_candidate_fn_deps`（迁移重放后、起候选容器前，对 client.go 全部 `CROSS JOIN LATERAL` 函数引用做 pg_proc 存在性 + NULL 实参 smoke 调用，缺一即 die——「二进制已引用、库未建函数」的切流从此被拦在切流前）。down：`915_recent_cache_hit_rate.down.sql`（sha256 `80abbad4fc28624ff6c7190a7bf12a343a7c40a7f399f0b009568ff4d867d71a`；down 注释同步订正 + 注明 boot ensure 会复活函数，down 仅对不含 ensure 的旧二进制有意义） |
+| 915 | `915_recent_cache_hit_rate.sql` | `e4f5178aa91f4c52bb1e606990fa655f32ce4b3e95274ed177b2ec4c902a0d84` | ★ 保留首版坏体登记行（9fc5335b4 的字节）—— 211 的 `gateway_db_revision_sequences` 台账按该 sha 记过账（函数体实际由人工 CREATE OR REPLACE 修正）；保留本行供已记账库按旧字节核对，**不要按此字节重放**（族退役库上 CREATE 即 42P01） |
 ## 2026-10-28 — 会话族 api_key_id 归一表达式的索引 (migration 916)
 
 | Migration | File | SHA-256 | Status |

@@ -16,6 +16,10 @@ import {
   listSanitizeRuleInstances,
   reviewSanitizeRuleEvent,
   rollbackSanitizeRules,
+  getHardBlockRules,
+  updateHardBlockRules,
+  listBlockedReviews,
+  decideBlockedReview,
   isRuleConfig,
   type RuleConfig,
   type SensitiveRule,
@@ -25,6 +29,7 @@ import {
   type RuleVersion,
   type RuleInstance,
   type ReviewStatus,
+  type BlockReview,
 } from "../api/sanitize-rules";
 import PageHeader from "../components/ui/PageHeader.vue";
 import { fmtDateTime24h } from "../i18n/useFormat";
@@ -35,6 +40,11 @@ const labels = computed<Record<string, string>>(() => ({
   versions: t("sanitizeRules.versions"),
   instances: t("sanitizeRules.instances"),
   parameters: t("sanitizeRules.parameters"),
+  hardblock: t("sanitizeRules.hardblock"),
+  blockedReviews: t("sanitizeRules.blockedReviews"),
+  review_pending: t("sanitizeRules.reviewPending"),
+  review_approved: t("sanitizeRules.reviewApproved"),
+  review_rejected: t("sanitizeRules.reviewRejected"),
   pending: t("sanitizeRules.pending"),
   confirmed_sensitive: t("sanitizeRules.confirmed_sensitive"),
   false_positive: t("sanitizeRules.false_positive"),
@@ -67,6 +77,19 @@ const eventError = ref(""),
   versionError = ref(""),
   instanceError = ref(""),
   parameterError = ref("");
+const hardblockText = ref(""),
+  hardblockComment = ref(""),
+  hardblockConfirmOff = ref(false),
+  hardblockError = ref(""),
+  hardblockNotice = ref(""),
+  hardblockLoading = ref(false),
+  hardblockBusy = ref(false);
+const blockedReviews = ref<BlockReview[]>([]),
+  reviewStatusFilter = ref("pending"),
+  blockedReviewError = ref(""),
+  blockedReviewLoading = ref(false),
+  blockedReviewBusy = ref<number | null>(null),
+  reviewDecideComments = ref<Record<number, string>>({});
 const eventLoading = ref(false),
   versionLoading = ref(false),
   instanceLoading = ref(false);
@@ -241,11 +264,88 @@ function visibility() {
   void loadInstances();
   schedulePoll();
 }
+async function loadHardBlock() {
+  if (!superAdmin.value || hardblockLoading.value) return;
+  hardblockLoading.value = true;
+  hardblockError.value = "";
+  try {
+    const value = await getHardBlockRules({ signal: controller.signal });
+    if (disposed) return;
+    hardblockText.value = (value.rules ?? [])
+      .map((r) => `${r.scope}:${r.rule}`)
+      .join("\n");
+    hardblockConfirmOff.value = false;
+  } catch (e) {
+    if (!disposed) hardblockError.value = message(e);
+  } finally {
+    if (!disposed) hardblockLoading.value = false;
+  }
+}
+async function saveHardBlock() {
+  if (!superAdmin.value || hardblockBusy.value) return;
+  hardblockBusy.value = true;
+  hardblockError.value = "";
+  hardblockNotice.value = "";
+  const rules = hardblockText.value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  try {
+    await updateHardBlockRules({
+      rules,
+      comment: hardblockComment.value || undefined,
+      confirm_disable_all: rules.length === 0 && hardblockConfirmOff.value,
+    });
+    if (disposed) return;
+    hardblockNotice.value = t("sanitizeRules.hardblockSaved");
+    hardblockComment.value = "";
+    await loadHardBlock();
+  } catch (e) {
+    if (!disposed) hardblockError.value = message(e);
+  } finally {
+    if (!disposed) hardblockBusy.value = false;
+  }
+}
+async function loadBlockedReviews() {
+  if (!allowed.value || blockedReviewLoading.value) return;
+  blockedReviewLoading.value = true;
+  blockedReviewError.value = "";
+  try {
+    const value = await listBlockedReviews(
+      { status: reviewStatusFilter.value },
+      { signal: controller.signal },
+    );
+    if (!disposed) blockedReviews.value = value.reviews ?? [];
+  } catch (e) {
+    if (!disposed) blockedReviewError.value = message(e);
+  } finally {
+    if (!disposed) blockedReviewLoading.value = false;
+  }
+}
+async function decideReview(review: BlockReview, decision: "approve" | "reject") {
+  if (!superAdmin.value || blockedReviewBusy.value !== null) return;
+  blockedReviewBusy.value = review.id;
+  blockedReviewError.value = "";
+  try {
+    await decideBlockedReview(review.id, {
+      decision,
+      comment: reviewDecideComments.value[review.id] || undefined,
+    });
+    if (disposed) return;
+    await loadBlockedReviews();
+  } catch (e) {
+    if (!disposed) blockedReviewError.value = message(e);
+  } finally {
+    if (!disposed) blockedReviewBusy.value = null;
+  }
+}
 function chooseTab(value: string) {
   tab.value = value;
   if (value === "events") void loadEvents();
   if (value === "versions") void loadVersions();
   if (value === "instances") void loadInstances();
+  if (value === "hardblock") void loadHardBlock();
+  if (value === "blockedReviews") void loadBlockedReviews();
 }
 function addRule() {
   const id = "custom." + Date.now().toString(36);
@@ -521,6 +621,7 @@ onMounted(() => {
     schedulePoll();
   }
   void loadEvents();
+  void loadBlockedReviews();
   document.addEventListener("visibilitychange", visibility);
 });
 onBeforeUnmount(() => {
@@ -577,8 +678,16 @@ onBeforeUnmount(() => {
       <nav class="tabs" :aria-label="t('sanitizeRules.title')">
         <button
           v-for="key in superAdmin
-            ? ['rules', 'events', 'versions', 'instances', 'parameters']
-            : ['events']"
+            ? [
+                'rules',
+                'hardblock',
+                'blockedReviews',
+                'events',
+                'versions',
+                'instances',
+                'parameters',
+              ]
+            : ['blockedReviews', 'events']"
           :key="key"
           class="tab"
           :class="{ active: tab === key }"
@@ -933,6 +1042,159 @@ onBeforeUnmount(() => {
         ><button v-else class="btn" @click="loadCurrent(true)">
           {{ t("sanitizeRules.retry") }}
         </button>
+      </section>
+      <section
+        v-if="tab === 'hardblock' && superAdmin"
+        :aria-busy="hardblockLoading"
+      >
+        <p class="muted">{{ t("sanitizeRules.hardblockHint") }}</p>
+        <p class="event-note">{{ t("sanitizeRules.hardblockProcessOnly") }}</p>
+        <p v-if="hardblockError" role="alert" class="error-banner">
+          {{ hardblockError }}
+        </p>
+        <p v-if="hardblockNotice" role="status" class="notice">
+          {{ hardblockNotice }}
+        </p>
+        <p v-if="hardblockLoading">{{ t("sanitizeRules.loading") }}</p>
+        <form v-else class="card" @submit.prevent="saveHardBlock">
+          <label
+            >{{ t("sanitizeRules.hardblockListLabel")
+            }}<textarea
+              v-model="hardblockText"
+              data-test="hardblock-rules"
+              rows="6"
+              spellcheck="false"
+              class="mono-area"
+          /></label>
+          <p class="event-note">
+            <code>egress:builtin.egress_sink</code> · <code>output:*</code> ·
+            <code>input:*</code>
+            {{ t("sanitizeRules.hardblockFormatNote") }}
+          </p>
+          <label
+            >{{ t("sanitizeRules.hardblockCommentLabel")
+            }}<input
+              v-model="hardblockComment"
+              data-test="hardblock-comment"
+              maxlength="500"
+          /></label>
+          <label
+            v-if="!hardblockText.trim()"
+            class="danger-zone"
+            data-test="hardblock-disable-confirm"
+            ><input v-model="hardblockConfirmOff" type="checkbox" />
+            {{ t("sanitizeRules.hardblockDisableConfirm") }}</label
+          >
+          <div class="toolbar">
+            <button
+              class="btn btn-primary"
+              type="submit"
+              data-test="hardblock-save"
+              :disabled="hardblockBusy"
+            >
+              {{ t("sanitizeRules.hardblockSave") }}
+            </button>
+            <button
+              class="btn"
+              type="button"
+              :disabled="hardblockBusy || hardblockLoading"
+              @click="loadHardBlock()"
+            >
+              {{ t("sanitizeRules.refresh") }}
+            </button>
+          </div>
+        </form>
+      </section>
+      <section
+        v-if="tab === 'blockedReviews'"
+        :aria-busy="blockedReviewLoading"
+      >
+        <p class="muted">{{ t("sanitizeRules.blockedReviewsHint") }}</p>
+        <p class="event-note">{{ t("sanitizeRules.blockedReviewsNote") }}</p>
+        <form class="toolbar" @submit.prevent="loadBlockedReviews">
+          <label
+            >{{ t("sanitizeRules.status")
+            }}<select v-model="reviewStatusFilter" data-test="review-status">
+              <option value="">{{ t("sanitizeRules.all") }}</option>
+              <option
+                v-for="status in ['pending', 'approved', 'rejected']"
+                :key="status"
+                :value="status"
+              >
+                {{ labels['review_' + status] }}
+              </option>
+            </select></label
+          ><button class="btn" :disabled="blockedReviewLoading">
+            {{ t("sanitizeRules.filter") }}
+          </button>
+        </form>
+        <p v-if="blockedReviewError" role="alert" class="error-banner">
+          {{ blockedReviewError }}
+        </p>
+        <p v-if="blockedReviewLoading">{{ t("sanitizeRules.loading") }}</p>
+        <p v-else-if="!blockedReviews.length && !blockedReviewError">
+          {{ t("sanitizeRules.blockedReviewsNone") }}
+        </p>
+        <article
+          v-for="review in blockedReviews"
+          :key="review.id"
+          class="card event"
+          :data-test="'blocked-review-' + review.id"
+        >
+          <div class="toolbar">
+            <strong>rv-{{ review.id }} · {{ review.rule || "—" }}</strong
+            ><span>{{ labels['review_' + review.status] }}</span
+            ><span>{{ review.tenant_id || "—" }}</span>
+            <span>{{ date(review.created_at) }}</span>
+          </div>
+          <p class="event-meta">
+            <span>{{ t("sanitizeRules.reviewReasonLabel") }}: {{ review.reason || "—" }}</span>
+            ·
+            <span>{{ t("sanitizeRules.reviewFieldLabel") }}: {{ review.field || "—" }}</span>
+          </p>
+          <p class="event-meta">
+            <span
+              >{{ t("sanitizeRules.reviewRequestLabel") }}:
+              <code>{{ review.request_id || "—" }}</code></span
+            >
+            ·
+            <span :title="review.digest"
+              >{{ t("sanitizeRules.reviewDigestLabel") }}:
+              <code>{{ (review.digest || "—").slice(0, 16) }}</code></span
+            >
+          </p>
+          <template v-if="review.status === 'pending' && superAdmin">
+            <label
+              >{{ t("sanitizeRules.reviewComment")
+              }}<input
+                v-model="reviewDecideComments[review.id]"
+                :data-test="'blocked-review-comment-' + review.id"
+                maxlength="500"
+                :disabled="blockedReviewBusy !== null"
+            /></label>
+            <div class="toolbar">
+              <button
+                class="btn"
+                :data-test="'blocked-review-approve-' + review.id"
+                :disabled="blockedReviewBusy !== null"
+                @click="decideReview(review, 'approve')"
+              >
+                {{ t("sanitizeRules.reviewApprove") }}
+              </button>
+              <button
+                class="btn"
+                :data-test="'blocked-review-reject-' + review.id"
+                :disabled="blockedReviewBusy !== null"
+                @click="decideReview(review, 'reject')"
+              >
+                {{ t("sanitizeRules.reviewReject") }}
+              </button>
+            </div>
+          </template>
+          <small v-if="review.decided_by"
+            >{{ review.decided_by }} · {{ date(review.decided_at || "") }}</small
+          >
+        </article>
       </section>
       <section v-if="tab === 'events'" :aria-busy="eventLoading">
         <p class="muted">{{ t("sanitizeRules.reviewOnly") }}</p>
@@ -1591,6 +1853,16 @@ summary {
   color: var(--muted);
   font-size: 13px;
   margin: 0 0 12px;
+}
+.mono-area {
+  font-family: var(--mono, monospace);
+  min-height: 120px;
+}
+.danger-zone {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--warning);
 }
 .event-meta {
   margin: 0 0 8px;

@@ -36,13 +36,25 @@ func (h *Handler) handleSanitizeRules(w http.ResponseWriter, r *http.Request) {
 	// r1039（D4）：租户管理员要能**看**自己租户的放行情况（「为什么我被拦了」），
 	// 但**写**（授予/撤销放行）只给超管 —— 判定在 handleEgressReleases 内部。
 	egressReleaseRead := path == "/egress-releases"
-	if !super && !(auth.Role == "tenant_admin" && auth.TenantID != "" && (eventRead || eventReview || egressReleaseRead)) {
+	// 2026-10-28 拦截审核轮：租户管理员可读自己租户的拦截审核队列；批准/拒绝
+	// 与硬阻断清单读写仍只给超管（判定在各 handler 内部）。
+	blockedReviewRead := path == "/blocked-reviews" || path == "/blocked-reviews/"
+	if !super && !(auth.Role == "tenant_admin" && auth.TenantID != "" && (eventRead || eventReview || egressReleaseRead || blockedReviewRead)) {
 		writeError(w, 403, "insufficient permission for rule management")
 		return
 	}
 	if path == "/egress-releases" {
 		// 放行表不依赖规则管理器 ⇒ 放在这个 503 之前。
 		h.handleEgressReleases(w, r, auth)
+		return
+	}
+	if path == "/hardblock" {
+		// 硬阻断清单同样不依赖规则管理器（进程内清单）。
+		h.handleHardBlockRules(w, r)
+		return
+	}
+	if strings.HasPrefix(path, "/blocked-reviews") {
+		h.handleBlockedReviews(w, r, auth)
 		return
 	}
 	if h.sanitizeRuleManager == nil {
