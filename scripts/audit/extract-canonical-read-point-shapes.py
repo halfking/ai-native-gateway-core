@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #!/usr/bin/env python3
 """extract-canonical-read-point-shapes.py —— R179 轮：从【活代码】里机械抽取
 canonical 视图（request_logs_with_current_month）的读点 SQL，并把它们**按形态归组**。

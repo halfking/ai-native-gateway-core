@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #!/usr/bin/env python3
 """build-query-index-requirements.py —— R179 轮：把【读点】接进 query-index 台账。
 
@@ -160,14 +161,11 @@ def main() -> int:
         for parts in read_tsv(args.existing):
             if len(parts) < 8:
                 continue
-            row = parts[:8]
-            while len(row) < 10:
-                row.append("")
-            # ★ 已有行**没有实测形态** ⇒ ★ 如实写 unmeasured（★ 门会要求豁免登记）
-            if row[7] == "":
-                row[7] = ""
-                row[8] = "unmeasured"
-                row[9] = ""
+            # ★★ 旧 8 列 ⇒ 新 11 列：★ **note 要挪到最后**（★ 新列插在它前面）
+            #   旧：query_id source table filter_cols order_cols status fresh_status note
+            #   新：query_id source table filter_cols order_cols status fresh_status
+            #       plan_shape plan_form plan_env note
+            row = parts[:7] + ["", "unmeasured", "", parts[7] if len(parts) > 7 else ""]
             kept.append(row)
             # ★★ 原有行**没有实测形态** ⇒ ⇒ 门会要求豁免登记（★ 如实登记，★ 不许默认放行）
             exemptions.append((row[0],

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #!/usr/bin/env python3
 """build-plan-form-spec.py —— R179 轮：把「生产真实语句」变成【实测计划形态】的 spec。
 

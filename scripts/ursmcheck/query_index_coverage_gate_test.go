@@ -769,25 +769,26 @@ func TestQueryIndexCoverageRequirements(t *testing.T) {
 		// ⑥ ★★★ **登记 covered 者必须实测走索引** ★★★（★ 本轮要的那颗牙）
 		//    ★ 反过来说：★ 静态轴说「有索引覆盖」，★ 实测却是 filter / seq-scan
 		//    ⇒ ⇒ 门红 ⇒ ⇒ **「索引在却静默退回」被抓出来**。
+		//
+		// ★★ 口径（★ R179 轮自纠）：★ **「没测」与「测了但不是 seek」必须分开判** ——
+		//   ★ 「没测」（unmeasured / no-traffic / error）⇒ ⇒ 走【豁免机制】（★ 判据⑧）
+		//     ⇒ ⇒ 那里必须写清「为什么测不出来」；
+		//   ★ 「测了」⇒ ⇒ 才是这里的硬判据。
+		//   ★ ⇒ 否则「一条从没被实测过的旧登记」会把门直接顶红，★ 而它并没有违反任何承诺。
+		measured := req.planForm != qicPlanFormUnmeas && req.planForm != qicPlanFormNoTrf && req.planForm != qicPlanFormError
 		switch req.status {
 		case "covered":
-			if req.planForm != qicPlanFormSeek {
+			if measured && req.planForm != qicPlanFormSeek {
 				t.Errorf("★ [实测轴] query_id=%q（★ 来源 %s）登记成 covered（★ 静态轴说【有索引覆盖】），"+
 					"★ 但实测形态是 %q（★ 在 %s 环境实测）⇒ ⇒ **索引在却没被用上** ⇒ ⇒ 门红"+
 					"（★ 要么改成 known-gap，★ 要么把索引修到真能用）",
 					req.queryID, req.source, req.planForm, req.planEnv)
 			}
 		case "known-gap":
-			if req.planForm == qicPlanFormSeek {
+			if measured && req.planForm == qicPlanFormSeek {
 				t.Errorf("★ [实测轴] query_id=%q（★ 来源 %s）登记成 known-gap，★ 但实测形态是 seek"+
 					"（★ 在 %s 环境实测）⇒ ⇒ **登记已经过期**（★ 索引补上了）⇒ ⇒ 门红（★ 请把登记改成 covered）",
 					req.queryID, req.source, req.planEnv)
-			}
-		case "measured-only":
-			if req.planForm == qicPlanFormUnmeas || req.planForm == qicPlanFormError {
-				t.Errorf("★ [实测轴] query_id=%q（★ 来源 %s）登记成 measured-only（★ 以实测为准），"+
-					"★ 但 plan_form=%q（★ 实测没成功）⇒ ⇒ 门红（★ 测不出来就不能声称「以实测为准」）",
-					req.queryID, req.source, req.planForm)
 			}
 		}
 

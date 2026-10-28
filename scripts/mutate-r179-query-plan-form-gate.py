@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """R179 轮的变异验证脚本（★ 实测计划形态轴：★ 「登记 covered 者必须实测走索引」）。
@@ -144,17 +145,20 @@ def main() -> int:
     m1 = tmp / "req-m1.tsv"
     header, rows = read_rows(req)
     mutated = False
+    # ★★ 挑一行【静态轴说 covered】的（★ ★ 这样【只有动态轴】那条腿会红，
+    #   ★ 静态轴那条腿不会 ⇒ ⇒ 红的理由唯一 ⇒ ⇒ 验到的就是我们要验的那条腿）。
+    #   ★ ★ 注意：★ 不能用视图行的 measured-only ⇒ 改它会同时触发静态轴那条腿 ⇒ ⇒ 验不准。
     for r in rows:
-        if len(r) >= 9 and r[5] == "measured-only" and r[8] == "seek":
-            r[5] = "covered"
-            r[8] = "filter"
+        if len(r) >= 9 and r[5] == "covered":
+            r[8] = "seq-scan"
+            r[9] = "252"
             mutated = True
             break
     if not mutated:
-        print("★ M1 前提不成立：台账里没有 (measured-only, seek) 的行", file=sys.stderr)
+        print("★ M1 前提不成立：台账里没有 status=covered 的行", file=sys.stderr)
         return 1
     write_rows(m1, header, rows)
-    check("M1 登记 covered + 实测 filter", "① 登记 covered 者必须实测走索引",
+    check("M1 登记 covered + 实测 seq-scan", "① 登记 covered 者必须实测走索引",
           {"URSM_QUERY_INDEX_REQUIREMENTS_TSV": str(m1)})
 
     # ── M2：★ 「测不出来必须写清为什么」这条腿（★ 豁免登记） ──
