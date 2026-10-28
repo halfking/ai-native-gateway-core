@@ -14205,6 +14205,40 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > ★ 老积压 attempts 当指数底数「首拍落 cap」恰是想要的 / ★★ 终态等最后写的字段 /
 > ★★ 登记的红会过期 + 量具缺席找同层数据源）。
 
+**2026-10-29 24h 审计第 4 轮：asm 投影缺口 reconciliation（结构性 opened 缺口根修 + DLQ 34,183 排空）**（goal 会话）：
+★ 承接第 3 轮遗留 1~4 项全部收口；提交 `2c7dcf48c`（telemetry 终态补发 opened + 测试）。
+> ⇒ ★★ **根因反转（本轮最值钱）**：asm「连续 503」不是 asm 故障，是**网关侧结构性数据缺口** ——
+> `session.opened.v1` 只在请求日志**新建插入**路径发射，**早失败请求（39ms、provider=unknown）
+> 只走终态更新路径** ⇒ 这些会话永远没有 opened ⇒ asm `session_projection` 无行 ⇒ 其所有
+> `request.completed.v1` 命中 `projection row missing` → Retryable → 整批 503。
+> **生产实测 14,369 个会话**无 opened（outbox 对拍：任何状态都无行），DLQ 34,183
+> （8,781 opened + 25,402 completed）皆源于此；上轮的 audit sink 失败窗口（10-28 09:20~13:30 UTC）
+> 是第二重独立诱因（把正常 opened 挡在 claim 前）。**熔断器/退避治不了它**：缺口事件重试一万次也是 503。
+> ⇒ ★★ **修复三件套**：① SQL 回填 14,369 条 opened（event_id=`sha256(tenant‖NUL‖session)[:8]`
+> 确定性公式**先本地对拍生产已知样本**再执行；`chr(0)` 不合法 ⇒ `convert_to(bytea)` 拼接；
+> occurred_at 取该会话最早 completed）+ ② DLQ opened 8,781 翻 pending 重放（先排空）⇒
+> ③ DLQ completed 25,402 **在 opened 全部送出后**才翻（乱序先到 ⇒ 每条一次 64s 熔断暂停，交错会拖成天级）；
+> 4,201 条 failed 排空期间挂 8h 再释放（防到期重试插进排空流）。重放全靠人工翻状态：dispatcher
+> claim 只取 pending/failed 到期，**DLQ 永不自动重拾**。
+> ⇒ ★ **代码根修**（`2c7dcf48c`）：`updateRequestLog` 终态块同事务先 INSERT opened（幂等 ON CONFLICT；
+> occurred_at 比 completed 早 1ms 保证投影行先建）+ `sessionOpenedUserID()` 两条发射路径共用一份推导；
+> pgxmock 测试钉 event_type 实参 + writer nil 反例。
+> ⇒ ★ **asm 迁移 36 → 56 一次通过**（`cmd/asm-migrate` 交叉编译 docker cp 进容器跑，37~56 全幂等
+> 增量 DDL）⇒ 9 张 capgov_* 表落地、digest 缺关系报错归零；**重启评估：不需要**（DB 可达、checkpoint
+> 秒级推进、503 已止息）。★★ **契约双轨陷阱**：`contracts/event-schemas/session.opened.v1.json`
+> （uuid/actor_id/mode）与 `internal/gatewayevents/schema/gateway-event-schema-v1.json`（session_id/user_id）
+> 并存互斥——回填验收以前者为准会全判死；前者若上线会把现行 payload 全判死，需 asm 会话对齐。
+> ⇒ ★ **③ 13 家 proxy 决断**：211 直连实测 7 家可达（anthropic/cohere/fireworks/github-copilot/groq/
+> openrouter/together，403/404 快速响应=TLS 通）⇒ 切 direct（direct 49→56；openrouter 是唯一有凭据者）；
+> 6 家不可达（openai/gemini/mistral/perplexity/xai 8s 超时、azure 模板域）保留 proxy——反正
+> `proxy_subscriptions` 双 0 行 proxy 路径本来就断，不为零流量配置翻烧饼。
+> ⇒ ★ **④ NVIDIA 幻影定论**：DLQ `failed/nvidia` 2,993 条的模型名在 `provider_models` 已零行、
+> 请求流 10-27 剪除后归零——**机制已生效无残留**；cred 23 陈旧 warning（last_probe 10-11）登记观察。
+> ⇒ ★ **巡检**：网关近 1h 0 ERROR/WARN（背压风暴消失实证）；慢 SQL 仅例行 `routing_analytics_7d`
+> 物化视图刷新 ~1.8s——无优化项；唯一未合并分支 r98 活跃（窗口外）登记不删，死 worktree ×2 已 prune。
+> ⇒ 审计档 `docs/audit/2026-10-29-24h审计第4轮-asm投影缺口reconciliation.md`；
+> 通用式见 `LESSONS.md` **§530**（跨号留 §527~529 缓冲）。
+
 ## ㊶ 原厂直通生产验证轮 + 批判式复审（2026-10-28）· zcode 实流量收口 RISK-5（★ 「保真」可能被方言合法性冒名顶替；★ 生效点清单要按【谁做序列化】数；★ 聚合口径必须与断言语义逐字对齐 —— 说「首发」就取第一次尝试）
 > 承接 ㊲ 的 RISK-5。★ **211 部署身份**：a 槽（28776060）与 b 槽（dc55570a）二进制探针均含直通代码 ⇒ nativepair 自 2026-10-28 08:20Z 起在线（**09:31 切流不是「无→有」边界**；版本号 `-dirty` 不算数，`grep -c 特征串 二进制` 才算）。
 > ⇒ ★ **取证通道盘点**（先做这张表）：211 无 `request_logs` 表、`request_wal_bodies` 0 行 ⇒ 唯一 body 通道 = 容器 `/app/logs/raw_data/*.jsonl`（100MB×10 firehose，client_request/upstream_request 双向 base64 完整 body）+ `docker logs` **stderr** 的 `http_request`（UA/request_id 关联；只接 stdout = 假阴性 0 条）。
@@ -14214,3 +14248,125 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > ⇒ ★ **批判式复审（同日第 3 轮，f12ba085c）**：① 上轮「87 中 86 保真」是【末次尝试】口径 ⇒ 洗白了 1 个首发即裁的请求 ⇒ 首发语义订正 85/87（**聚合口径必须与断言语义逐字对齐**，LESSONS §504 通式八）；② 「MiniMax 49 之 1」核实为政策正确行为；③ 断路器兜底补测试+变异臂；④ 复审时原 b 槽容器已被并行会话两次蓝绿替换（UA 日志源丢失）⇒ 结构指纹法补位。
 > ⇒ ★ 部署：修复随 `1e66996f` 上线（18:40+08 蓝绿）；复审时生产已推进到 `3d7b7d3a`，**血缘验证仍含修复**。z-ai 路由 + 厂商参数组合**线上尚未自然复现**（nvidia 处于 upstream_down 惩罚期）—— 由单测钉死、待自然样本。
 > ⇒ 审计档 `docs/audit/2026-10-28-原厂直通生产验证轮.md`（§0~§11）；通用式见 `LESSONS.md` **§504**（八条；取号两次让号 §503→§504）。
+> **2026-10-28~29 第 34 增量：live 页头部区间统计轮（统计上移头部 + 5m/1h/当天
+> 区间切换 + 左下统计退役）**（goal 会话）：★ 承接 owner 指令（统计数据放页面
+> 头部：请求次数/token输入/缓存/输出/成功率；区间可选当天/1小时/5分钟；左下
+> 统计取消；所有统计在上部可折叠展开；要有地方显示所有请求的总量）。
+> ⇒ ★ **新组件 `web/src/components/live-topology/StatsPanel.vue`**（头部区间统计
+> 面板）：总量行**常驻**（请求数/成功率/输入/输出/缓存/失败——折叠只收明细两组，
+> 把总账藏起来面板就失去意义）+ 区间选择器（原生 select）+ 供应商/模型两组
+> 可折叠明细（点行联动图过滤，与图/两栏同一过滤子集）+ day 交叉展开
+> （?by=provider）保留 + 口径行/空态**以响应自己的 window 字段为准**（数据说话，
+> 切换瞬间不会把旧数据标成新口径；对旧后端忽略未知参数返回 day 数据也自然降级
+> 正确）。轮询 day 60s / 窗口 30s。`TodaySummaryRail.vue` + 测试删除，
+> 左栏回归纯明细。
+> ⇒ ★★ **短窗口唯一如实的来源是 request_logs 直查**：`stats_usage_daily` 是纯
+> 日粒度（无 hour 列）且 rollup 每小时重建；**实时流绝不能当统计源**（Redis 快照
+> 每泳道 100 条，高峰期聚合「1 小时」系统性偏低=把低估说成统计）⇒ 后端
+> `providers-today` / `models-today` 加 `?window=5m|1h`（`admin/topology_window_stats.go`）：
+> 归并口径与 live-stream SSE catch-up **逐字同款**（credentials→providers /
+> models_canonical / request_status CASE 表达式）、列形状与 day SQL 逐列一致 ⇒
+> handler **双口径共用同一段行处理/totals/share**，响应加 `window` 回显
+> （day 契约逐字节兼容）、`day_utc` 置空、`cadence=realtime`；只认 5m/1h，
+> 其余值一律回落 day；`?by=provider` 仅 day 提供。
+> ⇒ ★★★ **本轮最值钱的一处：共享 SQL 片段抽成 Go 常量拼接 ⇒ AST 量具失明** ——
+> canonical 读点登记簿扫描器（go/ast 只认字面量）把内含在常量里的
+> `rl.request_status`/`rl.success` 从读点清单隐身（门红才暴露）⇒ 修法=逐字内联
+> + 契约测试钉「内联文本==常量」⇒ **「抽常量」这类重构对文本级量具是语义丢失**。
+> ⇒ ★★★ **第二处（浏览器实测抓到）：全局 `select{width:100%}`**（style.css
+> 浏览器表面轮）把头部新区间选择器撑到 1554px；`flex:none` 管伸缩不管基准宽度
+> ⇒ 组件内每个原生控件都要显式宽度 ⇒ **vue-tsc/vitest 全绿 ≠ 布局对**。
+> ⇒ ★ **登记簿/证人三处随改动同步**：canonical 读点登记簿 + 时间窗缺陷台账
+> （新文件提及视图名即登记）；空态登记簿 +1（`stats.emptyNoResultWindow`，
+> kind=NoResult，点名区间与主体；规模钉 23→24）；jargon 豁免簿 `catalog_code`
+> 的 witness 从被删的 rail 改指 StatsPanel（**证人失效=门红**，删除组件要先
+> grep 登记簿里指向它的证人）。
+> ⇒ ★ **i18n**：8 语种 `liveTopology.stats.*` 16 键 + 删 `rail.title`（避免死键），
+> 其余 `rail.*` 键原样复用（同一句话不许两份）。
+> ⇒ ★ **读数**：`vue-tsc` 0 错 / `vitest` **2929 通过 / 2 跳过**（StatsPanel 新增
+> 14 例）/ `build` ✓ 17.16s / `go build ./...` ✓ / `go test ./admin/` 全绿
+> （窗口测试 6 条 + 登记簿两门）/ **15 道前端门全 PASS**（i18n audit、硬编码中文
+> 4483=基线、共有死键 0、空态、内部标识、错误清晰、错误出口、AI 痕迹、浮起、
+> 颜色 39 基线、copy-clarity×2、响应式、element、copy-quality）。
+> ⇒ ★ **211 部署 + 生产实测**（蓝绿槽 a，`2.5.8-5b753fc5-dirty`，钉根部署）：
+> 树 grep 核验新符号在远端（DD_REPO_ROOT 漂移防线）；**API 三区间数字自洽**
+> （day 13,877 ⊃ 1h 272 ⊃ 5m 16；window 回显/cadence=realtime/day_utc 置空/
+> 窗口模式忽略 by=provider）；**浏览器真数据**：总量行与 API totals 逐字一致
+> （13.9K · 52.4% · 1.08B tok · 3.13M tok · 662.36M tok · 6.6K）、切 5m 口径行
+> 变「Realtime: aggregated straight from request logs (last 5 min)」、折叠交互
+> 通过、**键路径上屏 0**。
+> ⇒ ★ **本轮明确没做 / 如实记**：区间选择不进 URL；窗口口径无供应商分布展开
+> （仅 day）；本机 8782 旧网关（另一 checkout 2.5.8.2896）JWT 401 未深挖
+> （旧构建，生产无此问题）；**访客外壳 guest-header 390px 横向溢出**（预存在，
+> 与本轮无关）；总量行不受页面过滤影响（设计如此：它就是总账，明细仍联动）；
+> 折叠态不持久化（与退役栏一致）。
+> ⇒ 审计档 `docs/audit/2026-10-28-live页头部区间统计轮.md`；
+> 通用式见 `LESSONS.md` **§525**（六条：★★★★ 常量拼接让 AST 量具失明 /
+> ★★★★ 全局表单规则越过 flex 预期 / ★★★★ 短窗口统计先量缓冲覆盖面 /
+> ★★ 口径回显以响应为准 / ★★ 登记簿「提及即登记」+证人失效即红 / ★★ 两段式验证）。
+**2026-10-29 ㊷ RISK-3 收口轮：原厂直通 strip 绕过留痕 Debug→Info + 211 strip 实配普查**：
+★ 承接 ㊶ 登记的 RISK-3（「`native_pair_bypass` 日志 0 条 = 预期（matrix 无 strip +
+**Debug 级在生产 Info 级不可见** ⇒ 留痕机制默认不可观测」）⇒ 本轮小改动 + 自证 +
+生产普查三件收口。
+> ⇒ ★ **改动一处**：`executor_chat.go` strip 绕过分支 `slog.Debug` → `slog.Info`，
+> **消息文本逐字不变**（211 取证 grep 口径是契约）、字段不动；注释补记升级理由
+> （该行出现 = 运营配置与直通语义冲突，是运营侧要知晓的运行事实，不是调试细节）。
+> ⇒ ★ **生效点盘点（照 ㊶ 教训按序列化站点数）**：nativePair 判定与 strip 绕过
+> **全仓唯一**在 `prepareRequestBodyWithNative`（openai-chat 腿）；
+> `executor_anthropic.go` **0 引用** nativePair（= RISK-6 缺口本体，未动）；
+> `inline_validation.go` 只盖章无 strip 语义 ⇒ 升一处即全量覆盖。
+> ⇒ ★ **自证**：`TestPrepareRequestBodyWithNative_StripBypassLoggedAtInfo`
+> （正臂断言恰好 1 条 + `level=="INFO"` + 4 字段逐值；负臂 2 条：空 strip 0 条 /
+> 非原生对 0 条）；**变异臂**：回注 Debug ⇒ rc=1 报 `level = DEBUG, want INFO` ⇒
+> 还原 rc=0 ⇒ md5 逐字一致 —— 级别这类属性的可证伪检验就是「回注旧值断言必红」。
+> ⇒ ★★ **211 strip 实配普查（六通道盘点表全空）**：① 容器内全盘 find 默认 YAML
+> 0 命中 ② `TRANSFORM_MATRIX_PATH` 未设置 ③ 挂载卷 host 侧 find 0 命中
+> ④ DB 通道**结构性不存在**（strip 只从 YAML doc 解析，无 DB 读取方）
+> ⑤ 运行时改写**结构性不存在**（matrix 仅启动时加载一次，无 admin reload）
+> ⑥ b / b-aux×2 / legacy 四个停用槽共用同一挂载无孤立配置（docker inspect 实测）
+> ⇒ **strip 实配 = 0 条** ⇒ Info 行当前预期 0 触发（空 matrix 下
+> `Matrix.Resolve` 仍返回非 nil Transform 但 `StripRequestFields=nil`，
+> `transform.go:234` 实读；负臂 1 在代码层钉住同一形状）；一旦运营配 strip
+> 即刻在 Info 级可见。
+> ⇒ ★ 读数：`go build ./...` ✔；executors / transformation / `./domains/streaming/...`
+> 全绿；变异臂 1/1；`gofmt -l` 报 3 个**既有**未格式化文件（非本轮触碰，不擅动）。
+> ⇒ ★ **未部署（如实记）**：strip 实配=0 ⇒ 行为零变化，随下次例行部署生效；
+> 211 蓝绿窗口归并行部署会话（a 槽本轮实测 12 分钟前刚被重启），不抢。
+> ⇒ ★ **本轮没做（留给后续）**：**RISK-6**（Anthropic 腿 NativePassthrough 补盖章
+> —— §2 盘点实测 `executor_anthropic.go` 0 引用，开工先枚举该腿全部序列化站点）；
+> **RISK-2**（工具顶层非标准键被丢，对所有客户端一致）；**RISK-1**（deepseek 400
+> 出现时配能力表，不恢复钳制；窗口仍无该流量 ⇒ 维持「未观察」）。
+> ⇒ 审计档 `docs/audit/2026-10-29-RISK3-strip绕过留痕升级轮.md`；
+> 通用式见 `LESSONS.md` **§526**。
+> **2026-10-29 第 35 增量：live 遗留轮批判式复审轮（对第 33/两轮 live 统计的再审计）**
+> （会话续）：★ 承接「审计-修正-推送」指令，对 8c56a4845 + fd5b4fee2 两轮做批判式复审。
+> ⇒ ★ **§8 修复重验闭合**：压缩格数据源=平铺缓冲（gatewayStats←filteredRequests←
+> requestsRef=liveStreamState.requests，非 tile）；三条入腿全通——initial_data 回放
+> （payload 五字段修复）、实时帧（终态 telemetry worker 落库后补偿**二次广播**，
+> main_livestream.go 注释明载两调用点）、同 id 第二帧 pushOrQueue **原地替换**；
+> tile_delta 不带五字段但**无任何消费者**（全 UI grep 实证）⇒ 无害。
+> ⇒ ★★ **新抓真缺陷（两轮共有）：models-today 把全部 passthrough 并成一行**——
+> `GROUP BY canonical_id` 单键对 canonical_id=0 不成立：图 modelKeyOf 按**原始名**
+> 分节点，211 实测每天 **127~189 个不同 raw 名**（10-28：189 名/13,877 请求被并成
+> 1 行、名字 MAX 任选；10-29 当天榜首全是 passthrough ⇒ 整栏信息被毁）。恰违背该
+> SQL 注释自己写的「图栏对账」理由——**「注释声明与事实不符」族在分组语义上的形态**。
+> ⇒ ★★ **修法=SQL 与 Go 折叠键必须同步（只修一边=白修）**：两条 SQL 分组键 +
+> `CASE WHEN canonical_id=0 THEN COALESCE(raw_model_name,'') ELSE '' END`；
+> by=provider 的 models/kept 带 raw_key + JOIN 双条件（单条件会把 canonical=0
+> 多名**交叉放大**）；**raw_key 必须钳非 NULL——`NULL=NULL` 不成立 ⇒ 空/NULL 名组
+> 被 JOIN 静默丢行（本轮自己踩到）**；Go 折叠键 map[int]→(canonical,raw) struct
+> 镜像 SQL CASE。
+> ⇒ ★★★ **验证不靠 mock 自证**：pgxmock 不执行 SQL ⇒ 两条新 SQL **只读真跑 211
+> 生产**——canonical=0 按名拆开（MiniMax-M3 3297/glm-5.3-flash 1924/…）、
+> by=provider 与默认口径**逐模型守恒**（1924=1814+99+9+2）；★ 坑：psql 会话
+> TimeZone=Asia/Shanghai ⇒ `CURRENT_DATE` 比 UTC 日快一天 ⇒ 首跑 0 行**假阴性**，
+> 验证 SQL 必须用 `((now() AT TIME ZONE 'utc')::date)`。
+> ⇒ ★ **同族延伸**：合并 origin 后核查并行会话头部统计轮新加的 `modelsWindowSQL`
+> （5m/1h 口径）——同病同修 + 211 真跑 1h 窗口验证拆分；该轮删了 TodaySummaryRail
+> （by=provider 展开钮迁进 StatsPanel，day 区间仍消费）⇒ 修复未变孤儿。
+> ⇒ ★ **量具自坑**：全量 vitest 从仓库根跑（未钉 cwd）⇒ 301 假红（`@/` 别名解析
+> 失败）；钉 web/ 真读数 **2925 通过/2 跳过/2 失败**——两失败=并行会话 logo 换
+> SSOT 资产未更新 theme.logoAssets.test 断言的 **main 既有红**（对方 in-flight，
+> 登记不越界）。★ 变异臂：折叠键退回单键 ⇒ 拆分测试红（1 行 180 请求精确复现）
+> ⇒ 还原绿 ⇒ md5 一致；`go test ./admin/` ok 117.4s。
+> ⇒ 审计档 §9（同文件追加）；提交 273e4926a + 671e70ac1。
