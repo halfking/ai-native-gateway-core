@@ -139,6 +139,28 @@ describe('ClientRequestPanel', () => {
     expect(wrapper.findAll('.cp__summary-row')).toHaveLength(2)
     expect(wrapper.get('.cp__count').text().trim()).toBe('2')
   })
+
+  it('★ renders auto requests as auto → final model (2026-10-28 选路层轮)', () => {
+    // 「客户端点名的是 auto，最终模型由网关按任务选出」这一步要在行内表达：
+    // auto chip + 箭头 + 最终模型名。普通请求不出现该表达。
+    const wrapper = mount(ClientRequestPanel, {
+      props: {
+        summaries: [SUMMARY],
+        requests: [
+          entry({ requestId: 'r-auto', isAuto: true, taskType: 'code', model: 'glm-4.5' }),
+          entry({ requestId: 'r-plain' }),
+        ],
+      },
+      global: { plugins: [i18n] },
+    })
+    const autoRow = wrapper.get('[data-testid="auto-chip-r-auto"]')
+    expect(autoRow.text()).toBe('auto')
+    // auto 行的模型名仍是**最终选中的模型**（网关改写后的 canonical 名）
+    const modelCell = wrapper.findAll('.cp__model').find((c) => c.text().includes('glm-4.5'))
+    expect(modelCell?.text()).toContain('auto')
+    // 非自动请求不出现 chip
+    expect(wrapper.find('[data-testid="auto-chip-r-plain"]').exists()).toBe(false)
+  })
 })
 
 describe('ProviderResponsePanel', () => {

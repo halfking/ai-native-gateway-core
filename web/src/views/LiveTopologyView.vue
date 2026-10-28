@@ -26,7 +26,7 @@ import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 import TopologyCanvas from '../components/live-topology/TopologyCanvas.vue'
 import ClientRequestPanel from '../components/live-topology/ClientRequestPanel.vue'
 import ProviderResponsePanel from '../components/live-topology/ProviderResponsePanel.vue'
-import ProviderTodayRail from '../components/live-topology/ProviderTodayRail.vue'
+import TodaySummaryRail from '../components/live-topology/TodaySummaryRail.vue'
 import RoutingDecisionTimeline from '../components/live-topology/RoutingDecisionTimeline.vue'
 import RequestZoomPanel from '../components/live-topology/RequestZoomPanel.vue'
 import type { ParticleSpawn } from '../lib/liveTopologyParticles'
@@ -115,8 +115,11 @@ const queueDepth = computed(() => {
 
 // 在用插件清单（网关大方块插件带）。挂载时拉一次 —— 插件集合只在
 // 启动/安装时变化，不值得轮询；失败 = degraded 提示 chip（不冒充空）。
+// 内部直连供应商清单（kind='local'）同批拉：选路扇出带的「直连」分桶
+// 与供应端节点的直连徽标都吃它；失败 = 扇出带标注「未测量」。
 onMounted(() => {
   void topo.loadPlugins()
+  void topo.loadLocalProviders()
 })
 
 /** 新请求 → 粒子投放清单（edgeKey 形如 `client:x->gateway:core`）。 */
@@ -235,11 +238,19 @@ const coreSummary = computed(() => {
 
 /** 左下统计栏跟随供应商过滤（多选时取第一项，其余靠过滤后收敛）。 */
 const activeProvider = computed(() => topo.filters.value.providers[0] ?? '')
+/** 模型组同理：跟随模型过滤（与图收敛到同一子集）。 */
+const activeModel = computed(() => topo.filters.value.models[0] ?? '')
 
 function onSelectProvider(code: string) {
   const list = topo.filters.value.providers
   const next = list.includes(code) ? list.filter((c) => c !== code) : [...list, code]
   topo.filters.value.providers = next
+}
+
+function onSelectModel(model: string) {
+  const list = topo.filters.value.models
+  const next = list.includes(model) ? list.filter((m) => m !== model) : [...list, model]
+  topo.filters.value.models = next
 }
 </script>
 
@@ -378,10 +389,12 @@ function onSelectProvider(code: string) {
           @zoom="(entry) => onZoomRequest(entry, 'left')"
           @open-page="onOpenPage"
         />
-        <ProviderTodayRail
+        <TodaySummaryRail
           class="live-topology__rail"
           :active-provider="activeProvider"
+          :active-model="activeModel"
           @select-provider="onSelectProvider"
+          @select-model="onSelectModel"
         />
         <!-- 内联摘要浮层（两步交互第一步）：点左栏请求时弹在本列，
              靠 .live-topology__left 的 position:relative 当定位基准。 -->
@@ -405,6 +418,9 @@ function onSelectProvider(code: string) {
           :gateway-stats="topo.gatewayStats.value"
           :plugins="topo.plugins.value"
           :queue-depth="queueDepth"
+          :selection="topo.selectionStats.value"
+          :direct-measured="topo.localProviderCodes.value !== undefined"
+          :local-provider-codes="topo.localProviderCodes.value"
           @select-node="onSelectNode"
           @select-module="onSelectModule"
         />

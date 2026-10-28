@@ -68,6 +68,9 @@ type Handler struct {
 	db                   *pgxpool.Pool
 	bodyDB               controlledBodyDB
 	topologyStatsDB      topologyStatsDB
+	// topologyProviderKindsDB（2026-10-28 选路层轮）：provider-kinds 端点的
+	// 注入口，理由与 topologyStatsDB 相同 —— 单测要能注入 pgxmock。
+	topologyProviderKindsDB topologyStatsDB
 	bodyServiceJWTSecret string
 	secret               string
 	encKey               []byte
@@ -1140,6 +1143,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-10-18: 实时拓扑网关大方块「在用插件」清单（builtin 治理插件 +
 	// external 插件进程状态）。装配缺失返回 200 + degraded 而不是零清单。
 	mux.HandleFunc("/api/admin/topology/plugins", admin(h.handleTopologyPlugins))
+	// 2026-10-28（live 拓扑·选路层轮）：供应商 kind 两列投影（判定内部直连
+	// kind='local'）。走 admin 权限而非 /api/providers 的 providerConsole ——
+	// /live 任意租户管理员可进，辅助信息不该要求更高权限。DB 不可用 →
+	// 200 + degraded（与 plugins 同契约，前端渲染「未测量」）。
+	mux.HandleFunc("/api/admin/topology/provider-kinds", admin(h.handleTopologyProviderKinds))
+	// 2026-10-28（live 页当天汇总轮）：模型当天聚合（stats_usage_daily 的
+	// provider_model 维度在 canonical_id 上再聚合）。同表同口径，不引入第二套真值。
+	mux.HandleFunc("/api/admin/topology/models-today", admin(h.handleTopologyModelsToday))
 	// 2026-09-25: 对账报表（供应商/内部双视角区间汇总 + xlsx 双 sheet 导出
 	// + 单日手动重跑）。superAdmin——数据含全租户内部计费。
 	mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(h.handleReportRollup))

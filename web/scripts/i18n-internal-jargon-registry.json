@@ -26,7 +26,7 @@
     { "identifier": "outbound_model_name", "category": "payload-field", "reason": "模型清单里用户要编辑的出站名字段", "witness": "src/components/model/ModelOfferDetailDrawer.vue" },
     { "identifier": "acquisition_source", "category": "payload-field", "reason": "Key 表单里用户要填的来源字段", "witness": "src/views/FreePoolView.vue" },
     { "identifier": "acquisition_detail", "category": "payload-field", "reason": "Key 表单里用户要填的来源明细字段", "witness": "src/views/FreePoolView.vue" },
-    { "identifier": "catalog_code", "category": "payload-field", "reason": "用户要填的目录编码", "witness": "src/components/live-topology/ProviderTodayRail.vue" },
+    { "identifier": "catalog_code", "category": "payload-field", "reason": "用户要填的目录编码", "witness": "src/components/live-topology/TodaySummaryRail.vue" },
     { "identifier": "application_code", "category": "payload-field", "reason": "客户端配置里用户要填的应用编码", "witness": "src/components/ClientConfigDialog.vue" },
     { "identifier": "platform_ops", "category": "ui-visible-term", "reason": "权限角色名，用户要照着它去找管理员申请", "witness": "src/config/appNav.ts" },
     { "identifier": "broken_confirmed", "category": "ui-visible-term", "reason": "节点状态徽章原样显示探测状态的值，散文里提它是术语一致而不是泄漏", "witness": "src/components/credential-monitor/CredentialDetailDrawer.vue" },
