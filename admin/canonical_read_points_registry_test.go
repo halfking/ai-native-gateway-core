@@ -880,22 +880,22 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 	},
 	"domains/sessionforensics/export.go": {
 		Form:  formDirectLiteralSQL,
-		Class: classReadsNullPaddedColumn,
-		Note:  "★ **缺陷**：两个导出读点读 `rl.id`，而 canonical 视图的 `id` 是 v1 遗留列、**恒 NULL** ⇒ 导出里的 id 字段永远是 NULL，`ORDER BY rl.ts ASC, rl.id ASC` 的次序键也是死的；第三个读点是压缩策略聚合",
+		Class: classNeedsDetailsLeg,
+		Note: "★ **已修（R173）**：两个导出读点原读 `rl.id`（canonical 视图的 `id` 是 v1 遗留列、**恒 NULL**）⇒ 导出里的 id 字段永远是 NULL、`ORDER BY rl.ts ASC, rl.id ASC` 的次序键也是死的 ⇒ ★ 现改为读 `rl.request_id`（实测非空、视图内唯一）⇒ 导出消息终于带上轮次身份、次序键稳定；第三个读点是压缩策略聚合",
 		Points: []canonicalReadPoint{
-			{Kind: "read", Columns: []string{"attachments:detail", "client_model:detail", "compression_meta:base", "compression_reason:detail", "compression_strategy:base", "gw_session_id:expr", "id:NULL", "outbound_model:base", "parent_request_id:base", "request_id:base", "request_mode:base", "tenant_id:base", "ts:base", "work_type:base"}, Holder: "", Class: classReadsNullPaddedColumn, Exempt: false, ExemptReason: "", Note: "★ **缺陷**：两个导出读点读 `rl.id`，而 canonical 视图的 `id` 是 v1 遗留列、**恒 NULL** ⇒ 导出里的 id 字段永远是 NULL，`ORDER BY rl.ts ASC, rl.id ASC` 的次序键也是死的；第三个读点是压缩策略聚合；本读点读 attachments:detail,client_model:detail,compression_meta:base,compression_reason:detail,compression_strategy:base,gw_session_id:expr,id:NULL,outbound_model:base,parent_request_id:base,request_id:base,request_mode:base,tenant_id:base,ts:base,work_type:base ⇒ ★ 引用了视图里**恒 NULL** 的 v1 遗留列 ⇒ 视图给不出真值"},
-			{Kind: "read", Columns: []string{"attachments:detail", "client_model:detail", "compression_meta:base", "compression_reason:detail", "compression_strategy:base", "gw_session_id:expr", "id:NULL", "outbound_model:base", "parent_request_id:base", "request_id:base", "request_mode:base", "tenant_id:base", "ts:base", "work_type:base"}, Holder: "", Class: classReadsNullPaddedColumn, Exempt: false, ExemptReason: "", Note: "★ **缺陷**：两个导出读点读 `rl.id`，而 canonical 视图的 `id` 是 v1 遗留列、**恒 NULL** ⇒ 导出里的 id 字段永远是 NULL，`ORDER BY rl.ts ASC, rl.id ASC` 的次序键也是死的；第三个读点是压缩策略聚合；本读点读 attachments:detail,client_model:detail,compression_meta:base,compression_reason:detail,compression_strategy:base,gw_session_id:expr,id:NULL,outbound_model:base,parent_request_id:base,request_id:base,request_mode:base,tenant_id:base,ts:base,work_type:base ⇒ ★ 引用了视图里**恒 NULL** 的 v1 遗留列 ⇒ 视图给不出真值"},
-			{Kind: "read", Columns: []string{"client_model:detail", "completion_tokens:base", "compression_strategy:base", "cost_usd:base", "gw_session_id:expr", "prompt_tokens:base", "tenant_id:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "★ **缺陷**：两个导出读点读 `rl.id`，而 canonical 视图的 `id` 是 v1 遗留列、**恒 NULL** ⇒ 导出里的 id 字段永远是 NULL，`ORDER BY rl.ts ASC, rl.id ASC` 的次序键也是死的；第三个读点是压缩策略聚合；本读点读 client_model:detail,completion_tokens:base,compression_strategy:base,cost_usd:base,gw_session_id:expr,prompt_tokens:base,tenant_id:base,ts:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
+			{Kind: "read", Columns: []string{"attachments:detail", "client_model:detail", "compression_meta:base", "compression_reason:detail", "compression_strategy:base", "gw_session_id:expr", "outbound_model:base", "parent_request_id:base", "request_id:base", "request_mode:base", "tenant_id:base", "ts:base", "work_type:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "★ **已修（R173）**：原读 `rl.id`（恒 NULL）⇒ 现读 `rl.request_id` ⇒ 导出消息带上轮次身份、`ORDER BY rl.ts ASC, rl.request_id ASC` 次序确定；本读点仍引用 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
+			{Kind: "read", Columns: []string{"attachments:detail", "client_model:detail", "compression_meta:base", "compression_reason:detail", "compression_strategy:base", "gw_session_id:expr", "outbound_model:base", "parent_request_id:base", "request_id:base", "request_mode:base", "tenant_id:base", "ts:base", "work_type:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "★ **已修（R173）**：原读 `rl.id`（恒 NULL）⇒ 现读 `rl.request_id` ⇒ 导出消息带上轮次身份、`ORDER BY rl.ts ASC, rl.request_id ASC` 次序确定；本读点仍引用 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
+			{Kind: "read", Columns: []string{"client_model:detail", "completion_tokens:base", "compression_strategy:base", "cost_usd:base", "gw_session_id:expr", "prompt_tokens:base", "tenant_id:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "★ **已修（R173）**：两个导出读点原读 `rl.id`（canonical 视图的 `id` 是 v1 遗留列、**恒 NULL**）⇒ 导出里的 id 字段永远是 NULL、`ORDER BY rl.ts ASC, rl.id ASC` 的次序键也是死的 ⇒ ★ 现改为读 `rl.request_id`（实测非空、视图内唯一）⇒ 导出消息终于带上轮次身份、次序键稳定；第三个读点是压缩策略聚合"},
 		},
 	},
 	"domains/sessionsummary/summarizer.go": {
 		Form:  formDirectLiteralSQL,
-		Class: classReadsNullPaddedColumn,
-		Note:  "★ **缺陷**：标题解析读点 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机；另两个读点取 request_id / ts / outbound_model",
+		Class: classNeedsDetailsLeg,
+		Note: "★ **已修（R173）**：标题解析读点原 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机 ⇒ ★ 现改为 `ORDER BY ts DESC, request_id DESC`（稳定键）；另两个读点取 request_id / ts / outbound_model",
 		Points: []canonicalReadPoint{
-			{Kind: "read", Columns: []string{"gw_session_id:expr", "outbound_model:base", "request_id:base", "tenant_id:base", "ts:base"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "★ **缺陷**：标题解析读点 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机；另两个读点取 request_id / ts / outbound_model；本读点读 gw_session_id:expr,outbound_model:base,request_id:base,tenant_id:base,ts:base ⇒ 引用了视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式"},
-			{Kind: "read", Columns: []string{"gw_session_id:expr", "outbound_model:base", "request_id:base", "ts:base"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "★ **缺陷**：标题解析读点 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机；另两个读点取 request_id / ts / outbound_model；本读点读 gw_session_id:expr,outbound_model:base,request_id:base,ts:base ⇒ 引用了视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式"},
-			{Kind: "read", Columns: []string{"gw_session_id:expr", "gw_task_id:detail", "id:NULL", "is_auto_request:base", "success:base", "tenant_id:base", "ts:base"}, Holder: "", Class: classReadsNullPaddedColumn, Exempt: false, ExemptReason: "", Note: "★ **缺陷**：标题解析读点 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机；另两个读点取 request_id / ts / outbound_model；本读点读 gw_session_id:expr,gw_task_id:detail,id:NULL,is_auto_request:base,success:base,tenant_id:base,ts:base ⇒ ★ 引用了视图里**恒 NULL** 的 v1 遗留列 ⇒ 视图给不出真值"},
+			{Kind: "read", Columns: []string{"gw_session_id:expr", "outbound_model:base", "request_id:base", "tenant_id:base", "ts:base"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "★ **已修（R173）**：标题解析读点原 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机 ⇒ ★ 现改为 `ORDER BY ts DESC, request_id DESC`（稳定键）；另两个读点取 request_id / ts / outbound_model"},
+			{Kind: "read", Columns: []string{"gw_session_id:expr", "outbound_model:base", "request_id:base", "ts:base"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "★ **已修（R173）**：标题解析读点原 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机 ⇒ ★ 现改为 `ORDER BY ts DESC, request_id DESC`（稳定键）；另两个读点取 request_id / ts / outbound_model"},
+			{Kind: "read", Columns: []string{"gw_session_id:expr", "gw_task_id:detail", "is_auto_request:base", "request_id:base", "success:base", "tenant_id:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "★ **已修（R173）**：原读 `id`（恒 NULL）⇒ 现改用 `request_id`（非空、唯一）作 tie-break ⇒ 同 ts 的并列行取哪一行不再随机；本读点仍引用 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
 		},
 	},
 	"domains/sessionsummary/system_prompt_prefix.go": {
@@ -2168,4 +2168,392 @@ func canonicalRegistryExemptCount() int {
 		}
 	}
 	return n
+}
+
+// ── R173 守卫：canonical 视图的「恒 NULL 列」这一族必须保持为空 ──────────
+//
+// ★ 背景（事实源）：canonical 视图 `request_logs_with_current_month` 的第一列
+//   是 `NULL::bigint AS id` —— v1 遗留列，**视图给不出真值**（实测 2758 行
+//   全为 NULL）。⇒ 读它的读点「读到的 id 永远是 NULL」⇒
+//   ★ 按登记簿自己的分类口径：★ 这不是「迁移候选」，这是**缺陷**。
+//
+// ★ R173 的动作：把这一族（3 个读点：`export.go` 的两份导出 SQL ×2 +
+//   `summarizer.go` 的标题解析 ×1）的 `id` 依赖去掉，并把**死次序键**
+//   （`ORDER BY …, id` ⇒ 次序键恒 NULL ⇒ 并列时顺序随机）换成稳定键
+//   `request_id`（实测非空、视图内唯一）。
+//
+// ★★ 本门是**棘轮**：这一族一旦重新出现（无论是登记簿里还是源码里）⇒ 立刻红。
+//
+// ★★ ★★ **判据抽成纯函数**（`nullPaddedReadPointHits`）★★ ★★
+// ⇒ 好让「阳性对照」能用**合成数据**证明判据本身有牙
+// ⇒ ★ 否则「0 命中」有两种读法（扫到了没发现 / 根本没扫到那一段）。
+
+// nullPaddedReadPointHits 返回「读到了 canonical 视图恒 NULL 列」的读点清单。
+//
+// ★ 入参是扫描器实测的结果（不是登记簿）⇒ ⇒ **登记簿写错也不会掩盖源码事实**。
+func nullPaddedReadPointHits(scanned map[string]canonicalFileFacts) []string {
+	var hits []string
+	for file, facts := range scanned {
+		for _, p := range facts.ReadPoints {
+			for _, c := range p.Columns {
+				// ★ 扫描器给列名标了来源；`:NULL` = 视图里**恒 NULL** 的填充列。
+				if strings.HasSuffix(c, ":NULL") {
+					hits = append(hits, fmt.Sprintf("%s:%d 读 %s（列 %s 是视图里恒 NULL 的填充列）",
+						file, p.Line, c, c))
+					break
+				}
+			}
+		}
+	}
+	sort.Strings(hits)
+	return hits
+}
+
+func TestNoCanonicalReadPointReadsNullPaddedColumn(t *testing.T) {
+	root := repoRootFromCaller(t)
+	scanned := scanCanonicalReadPoints(t, root)
+
+	// ① 实测侧：源码里不得再有读点读 canonical 的恒 NULL 列。
+	//    ★ 这条**不看登记簿** ⇒ 登记簿写漏了也照样抓得到。
+	if hits := nullPaddedReadPointHits(scanned); len(hits) != 0 {
+		for _, h := range hits {
+			t.Errorf("有读点又读到了 canonical 视图里**恒 NULL** 的列：%s\n"+
+				"  ⇒ 视图给不出真值 ⇒ 该读点读到的永远是 NULL ⇒ ★ 这是缺陷不是迁移候选\n"+
+				"  ⇒ 请改读 request_id（实测非空、视图内唯一）并同步登记簿",
+				h)
+		}
+	}
+
+	// ② 登记簿侧：这一族不许重新出现（文件级 + 读点级）。
+	for file, e := range canonicalReadPointRegistry {
+		if e.Class == classReadsNullPaddedColumn {
+			t.Errorf("登记簿里 %s 的文件级分类又是 %q ⇒ 有读点回到了「读恒 NULL 列」这一族",
+				file, classReadsNullPaddedColumn)
+		}
+		for _, p := range e.Points {
+			if p.Class == classReadsNullPaddedColumn {
+				t.Errorf("登记簿里 %s 的读点 %v 又是 %q ⇒ 同上", file, p.Columns, classReadsNullPaddedColumn)
+			}
+		}
+	}
+
+	// ③ 源码形态：两个读点文件不得再依赖 canonical 的 `id` 列。
+	//    ★ SQL 片段用【拼接】写出来 ⇒ 扫描器不会把本门自己当成一个读点。
+	expFile := filepath.Join(root, "domains", "sessionforensics", "export.go")
+	sumFile := filepath.Join(root, "domains", "sessionsummary", "summarizer.go")
+	expSrc, err := os.ReadFile(expFile)
+	if err != nil {
+		t.Fatalf("read %s: %v", expFile, err)
+	}
+	sumSrc, err := os.ReadFile(sumFile)
+	if err != nil {
+		t.Fatalf("read %s: %v", sumFile, err)
+	}
+	expText := string(expSrc)
+	sumText := string(sumSrc)
+
+	// ★ 判据 ③a：`rl.id` / 裸 `id` 出现在 ORDER BY 里 ⇒ 死次序键回来了。
+	badOrderExp := "ORDER BY rl.ts ASC, rl." + "id"
+	if strings.Contains(expText, badOrderExp) {
+		t.Errorf("%s 里又有 `%s` ⇒ 视图的 id 恒 NULL ⇒ 次序键是死的 ⇒ 并列时顺序随机",
+			expFile, badOrderExp)
+	}
+	badOrderSum := "ORDER BY ts DESC, " + "id"
+	if strings.Contains(sumText, badOrderSum) {
+		t.Errorf("%s 里又有 `%s` ⇒ 视图的 id 恒 NULL ⇒ 同 ts 并列取哪一行随机",
+			sumFile, badOrderSum)
+	}
+	// ★ 判据 ③b：读出来的 request_id 必须**真的落进导出消息**
+	//    ⇒ 否则就是「读出来又丢掉」（R173 修掉的原症状）。
+	//    ★★ 用【逐字正则】而不是「含 RequestID: 且含 requestID」——
+	//    ★★ 后者会让 `RequestID: strings.TrimSpace(requestID)` 这类
+	//    「把真值加工掉」的写法逃过门（变异臂 M4 就是这种形态）。
+	//    ★★★ 而【逐字正则】本身也不够强：★★★ 「整文件里至少有一处匹配」
+	//    ★★★ 会被「**两处只坏一处**」逃过（export.go 有两份 SQL 变体、两个构造点）
+	//    ★★★ ⇒ ⇒ **判据的粒度必须与被测对象的粒度一致**：
+	//    ★★★ **每一个 `msg := ExportMessage{` 构造都必须带 `RequestID: requestID,`。**
+	//    ★★★ （★ 这是 `TestForensicsExportSQLVariantsStayInSync` 的同族：
+	//    ★★★ 两份变体必须同步，★ 判据也必须**逐变体**地查。）
+	nWanted := strings.Count(expText, "msg := ExportMessage{")
+	nGot := len(regexp.MustCompile(`RequestID:\s+requestID,`).FindAllString(expText, -1))
+	if nWanted == 0 {
+		t.Errorf("%s 里找不到 `msg := ExportMessage{` 构造点 ⇒ 判据本身失效（源码形态变了？）", expFile)
+	} else if nGot != nWanted {
+		t.Errorf("%s 里 %d 个 ExportMessage 构造中只有 %d 个把 request_id **原样**落进去"+
+			"（期望 `RequestID: requestID,` 各一处）⇒ 导出消息仍然没有轮次身份、或者落进去的是被加工过的值",
+			expFile, nWanted, nGot)
+	}
+
+	// ④ 阳性对照：★ 判据本身必须对**合成的**坏数据判红 ⇒ 否则「0 命中」是恒绿。
+	synthetic := map[string]canonicalFileFacts{
+		"synthetic/bad.go": {ReadPoints: []canonicalReadPointSite{{
+			Line: 1, Kind: "read", Columns: []string{"id:NULL", "request_id:base"},
+		}}},
+	}
+	if hits := nullPaddedReadPointHits(synthetic); len(hits) != 1 {
+		t.Errorf("合成的一条「读了恒 NULL 列」的读点被判出 %d 条（应 1 条）⇒ 判据没牙",
+			len(hits))
+	}
+}
+
+// ─────────────────────── R174 · canonical 视图「无法表达分区裁剪」 ───────────────────────
+//
+// ★ 这道门守的是一条**结构性缺陷**，不是「某个读点写得不好」：
+//
+// ★ canonical 视图（`request_logs_with_current_month`）的**投影列里没有
+// `partition_date`** ⇒ ⇒ 任何经它做的读点都**无法表达分区下界**
+// ⇒ ⇒ PG 无法做**分区裁剪** ⇒ ⇒ 父表分支要把**全部分区**扫一遍。
+//
+// ★ 252 生产规模实测（只读；`ts >= 2026-01-01` + `tenant_id='default'`）：
+//
+//	形态                                          Execution(热)   planBuf
+//	A canonical 视图                                 1535 / 1306 ms     125
+//	B 两臂窄投影（无分区下界）                        1008 / 1073 ms     246
+//	C 两臂 + `partition_date >= '2026-01-01'`（下界太宽 ⇒ 裁不到）  2760 ms
+//	F 两臂 + `partition_date >= '2026-10-01'`（裁到 1 个分区）       406 ms
+//	H3 只父表 + **无**分区下界                                     845 ms
+//
+// ⇒ ★★ **最优形态比 canonical 视图快 3.2×（1306 → 406 ms）** ⇒ ★★
+// ⇒ ★★ **★ 但 H3（无下界 845 ms）比 H2（加了宽下界 1763 ms）更快** ⇒ ★★
+// ⇒ ★★ **★ ⇒ 「随便加个分区下界」可能【更慢】（planner 换了更差的计划）★ ★★**
+// ⇒ ★★ ⇒ **★ 分区下界必须【逐读点实测】，不能一刀切。★ ★★**
+//
+// ★ ★★ **为什么这道门是「双向有牙」的 ★★**
+// ★ 判据① 断言「事实源的投影列里【没有】`partition_date`」⇒ ⇒
+// ★   · 现在：读点无法分区裁剪 ⇒ ⇒ 这个分类成立；
+// ★   · 将来：**一旦有人给视图补上 `partition_date` 投影** ⇒ ⇒ 读点就能分区裁剪
+// ★     ⇒ ⇒ **门会红** ⇒ ⇒ 【届时这个分类就该退役】⇒ ⇒ ★★
+// ★   ⇒ ★★ **★ 「现在不能」与「将来能」都被同一道门盯着 ⇒ ★★
+//
+// ★ ★★ **为什么判据③ 要【对拍】而不是【只查登记簿】★★**
+// ★ 只查登记簿 ⇒ 登记漏了就是假绿；只查实测 ⇒ 没人知道该改哪里 ⇒ ⇒ **两侧都要**。
+// ★ 实测口径：**文件级**（★ 不是一个读点一个读点）—— ★
+// ★   · 该文件在登记簿里的 Form 不是「只在注释里提及」/「视图定义探针」/「holder」
+// ★     ⇒ ⇒ 它**有**真实的生产读点（★ `formSwitchLayer` 的文件也算：★ 它们的
+// ★       SQL 字面量就在本文件里，只是 FROM 走切换层 helper）；
+// ★   · 且该**整份文件**的文本里出现 ts 的**范围**谓词（★ 整文件匹配 ⇒ 跨行安全
+// ★     ⇒ 不受「谓词在下一行」影响）。
+// ★ ★★ **为什么不用「逐读点」粒度**：★ 扫描器给的 read site 的 `Text` 只是
+// ★ **所在行** ⇒ ⇒ 跨行的 ts 谓词会漏 ⇒ ⇒ 逐读点实测会【假阴性】⇒ ⇒
+// ★ ★★ **粒度必须与【量具能真正看到的东西】对齐**（★ 这是 R173「判据粒度必须与
+// ★ 被测对象粒度一致」的同族）。
+
+// canonicalViewFactsSource 是 canonical 视图定义的**仓内单一事实源**。
+//
+// ★ 它**就是**部署形态（★ 890 迁移把它从「v1 回退体」改成了「会话族两臂体」，
+// ★ 与 composer 装到库里的形态逐字相同）⇒ ⇒ ★★ **门可以静态断言它，不必连库。★★**
+const canonicalViewFactsSource = "sql/objects/views/request_logs_with_current_month.sql"
+
+// canonicalTSWindowRe 认 ts 的**范围**谓词（★ 不是等值）。
+//
+// ★ 词边界必须精确：★ `ts` 是独立词 ⇒ 不命中 `timestamps` / `start_ts` 之类。
+var canonicalTSWindowRe = regexp.MustCompile(`(?i)\bts\b\s*(>=|<>|<|>|<=)|(?i)\bBETWEEN\b[^;()]*\bts\b`)
+
+// canonicalViewProjectionColumnSet 从视图定义 SQL 里抽出**投影列集合**。
+//
+// ★ 只看「投影」，不看 JOIN 条件 ⇒ ⇒ 视图定义里的
+// `ON d.partition_date = t.partition_date` **不算**投影列（★ 它是 JOIN 键）。
+// ★ 判据要问的是「读点能不能 SELECT 到这一列」，不是「视图内部用不用这一列」。
+func canonicalViewProjectionColumnSet(sqlText string) map[string]bool {
+	cols := map[string]bool{}
+	for _, line := range strings.Split(sqlText, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "--") {
+			continue
+		}
+		// 投影形状：`<expr> AS <col>,` 或 `<expr> AS <col>`
+		i := strings.LastIndex(strings.ToUpper(line), " AS ")
+		if i < 0 {
+			continue
+		}
+		name := strings.TrimSpace(line[i+4:])
+		name = strings.TrimSuffix(name, ",")
+		name = strings.TrimSpace(name)
+		// 只认「裸标识符」形态的列名（★ `NULL::bigint AS id` ⇒ `id`）。
+		if name == "" {
+			continue
+		}
+		for _, r := range name {
+			if !(r == '_' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+				name = ""
+				break
+			}
+		}
+		if name == "" {
+			continue
+		}
+		cols[name] = true
+	}
+	return cols
+}
+
+// canonicalTimeWindowedReadPointFiles 实测出「带 ts 时间窗口且有真实生产读点」的文件集合。
+//
+// ★ 口径与上面头注释里的「为什么判据③ 是文件级」一致。
+func canonicalTimeWindowedReadPointFiles(t *testing.T, root string) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	scanned := scanCanonicalReadPoints(t, root)
+	for path, facts := range scanned {
+		// ① 该文件必须**有真实生产读点**。
+		//
+		// ★★ **★ 第一版口径写成「只要 read 形态」⇒ ⇒ 把【holder 形态】排除了 ⇒ ⇒
+		// ★★ 【门红】并指出「admin/usage_credits.go 登记为受影响但实测不满足」⇒ ⇒
+		// ★★ ⇒ ★★ **★ 那是【登记方】错了，不是【实测方】错了** ⇒ ⇒ ★★★
+		// ★★ ★★ 因为 holder 形态**也是真实读点**：★ `formSwitchLayer` 的文件
+		// ★★ （`admin/usage_credits.go` / `admin/usage_enhanced.go` /
+		// ★★  `admin/usage_trend_series.go`）的读点是 Go 字符串持有视图名，
+		// ★★ **而它们的 ts 谓词就在本文件里**（FROM 子句是本文件拼的）⇒ ⇒
+		// ★★ ★★ **★ 而且它们恰恰是本缺陷最刺眼的活标本**：★
+		// ★★ 「≤7 天走会话族热腿原生源，>7 天走 canonical 视图」⇒ ⇒
+		// ★★ ★★ **★ 「查 30 天」这种最常见的运营查询，恰好落在【>7 天 ⇒ 走
+		// ★★ ★★ canonical 视图 ⇒ ⇒ 无法分区裁剪 ⇒ ⇒ 秒级】的那一支上。★★ ★★**
+		//
+		// ★★ ⇒ 口径修正为：**有 read 或 holder 读点** ⇒ ★★ 且 ★★ 用【扫描器实测的
+		// ★★ Form】做白名单（★ 不依赖登记簿 ⇒ ★★ 避免循环依赖 ⇒ ★★ 而且登记簿的
+		// ★★ Form 已被另一道门 `TestCanonicalReadPointRegistryIsNotRot` 钉住）★★
+		hasRealRead := false
+		for _, p := range facts.ReadPoints {
+			if p.Kind == "read" || p.Kind == "holder" {
+				hasRealRead = true
+				break
+			}
+		}
+		if !hasRealRead {
+			continue
+		}
+		switch facts.Form {
+		case formDirectLiteralSQL, formHelperConcat, formSwitchLayer:
+			// ★ 这三种形态的文件里，读点是真的、ts 谓词也在本文件里 ⇒ 纳入。
+		default:
+			// ★ 「只在注释里提及」/「视图定义探针」/「视图 DDL 定义」⇒
+			// ★ 它们的 ts 谓词与「按时间窗口读」无关（★ 例如 `db/db.go` 的探针
+			// ★ 是「查视图里有哪些列」）⇒ ⇒ 不纳入。
+			continue
+		}
+		// ② 该文件整份文本里出现 ts 的范围谓词（★ 跨行安全）。
+		b, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			continue
+		}
+		if canonicalTSWindowRe.Match(b) {
+			out[path] = true
+		}
+	}
+	return out
+}
+
+// canonicalTimeWindowedReadPoints 登记「【带 ts 时间窗口】且【直接读 canonical 视图】」的生产文件，
+// 以及**人工核定**的每一条理由（★ 空说明的登记等于没有登记）。
+//
+// ★ ★★ **这张清单是【可排序的缺陷台账】**：★
+// ★   · 它列出所有「经 canonical 视图按时间窗口读」的读点面 ⇒ ⇒
+// ★     **这正是「迁到两臂直查 + 带 partition_date 下界」的候选集** ⇒ ⇒
+// ★   · 而迁移的收益**已被实测钉住**：★ 3.2×（1306 → 406 ms）⇒ ★
+// ★   · ★★ **但下界必须逐读点实测**（★ H3 845 ms vs H2 1763 ms ⇒ 宽下界反而更慢）★★
+//
+// ★ ★★ **登记与实测必须【逐文件相等】**：★ 漏登记 ⇒ 门红；多登记 ⇒ 门红。
+// ★ ★★ 登记时若认为某文件「虽然有 ts 谓词，但那个谓词与 canonical 读点无关」⇒
+// ★   ⇒ 那是**登记错误**（★ 口径是文件级）⇒ ⇒ 要么改口径、要么把它移出清单 ⇒
+// ★   ⇒ ★★ **不许用「例外」把它藏起来**：★ 藏起来就等于门看不见它。★★
+var canonicalTimeWindowedReadPoints = map[string]string{
+	"admin/compression_stats.go": "压缩带统计（token_band / success / ts）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/credential_monitor.go": "凭据监控：① live P95 回退；② 按凭据统计行数；③ 滑窗明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/credential_monitor_heatmap.go": "凭据 × 模型热力图；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/credential_success_rate.go": "凭据成功率；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/data_lifecycle.go": "数据生命周期：① 7 天趋势；② 清理预览的受影响行数（不取列，只要 COUNT(*)）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/diagnostics_credential.go": "凭据诊断明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/live_stream_sse.go": "SSE 实时流：① 全量事件行；② 按 request_id 数组取状态；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/memora_handlers.go": "memora 上下文：① 任务/会话头；② 最近一条模型；③ 计数；④ 轮次明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/model_routing_diagnostic.go": "模型路由诊断的 24h 统计；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/model_status.go": "模型状态统计；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/no_topic_session.go": "无主题会话面：① 轮次明细；② 会话日志摘要；③ 按 request_id 取 api_key_id/tenant_id；④ 取 preview/work_type/request_mode；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/probe_history.go": "探针历史；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/provider_models.go": "供应商模型面：① COUNT(*) 统计（不取列）；② 明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/route_incidents.go": "路由事故面；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/session_analytics_breakdown.go": "会话分析维度下钻：① 按模型；② 按供应商；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/session_analytics_timeseries.go": "会话分析时间序列：① 会话/请求/成本；② 成本拆分；③ 延迟分位；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/swim_lane_init.go": "泳道初始化；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/tenants.go": "租户统计（tenant_id / tokens / cost / credits_charged）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/top_problems.go": "Top 问题：① 按凭据；② 按模型；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/usage.go": "用量面：① 失败数；② 失败钻取；③ 5 分钟分桶；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/usage_credits.go": "requestLogsFromClause(days) 按天数分臂：≤7 天走会话族热腿原生源，>7 天走 canonical 视图 ⇒ 切换层契约；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/usage_enhanced.go": "planCostTrend() 按 groupBy 在计费宽表与请求表（canonical 视图）之间选基表 ⇒ 切换层契约；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/usage_trend_series.go": "usageTrendSource() 三臂切换（api_key 过滤 ⇒ canonical 视图明细面；provider 过滤 ⇒ minute 汇总；默认 ⇒ dim 汇总）；另两处是按该返回值 dispatch 的 case 标签 ⇒ 同一处切换层；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/work_types.go": "工作类型分布（work_type / is_auto_request / ts / canonical_model）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"bg/daily_probe_audit.go": "探针每日审计（离线诊断面，不在线上读路径上）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"bg/integrity_fingerprint_drift.go": "指纹漂移审计（离线诊断面）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"bg/passive_probe_listener.go": "被动探针监听器（探针系统后台面，不在管理台读路径上）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"bg/stats_minute_rollup.go": "离线分钟汇总（读视图只为把窗口内的行汇进汇总表）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"bg/stats_minute_rollup_retire.go": "离线分钟汇总退役（DELETE 的子查询用视图定位要清理的窗口）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"db/probe_views_unified.go": "探针视图的**生产者**（CREATE OR REPLACE VIEW v_model_health_dashboard）⇒ 它是视图的下游聚合面，不是终端读点；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"domains/routeincident/store.go": "路由事故 store；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"domains/sessionsummary/summarizer.go": "★ **已修（R173）**：标题解析读点原 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机 ⇒ ★ 现改为 `ORDER BY ts DESC, request_id DESC`（稳定键）；另两个读点取 reque…；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"internal/collector/gateway_adapters.go": "collector 适配：① 延迟分位；② 模型计数；③ 30 秒计数；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"internal/quality/minute_aggregator.go": "离线分钟聚合（provider_id 走 details 腿，缺 details 行的轮次被谓词排除）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"maas/usage.go": "requestLogsSource(days) 在 890 之后**恒**返回 canonical 视图（原 days>7 分臂已合并，分流本身已无意义）⇒ 源仍由 helper 决定 ⇒ 归切换层裁决；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+}
+
+// TestCanonicalViewCannotExpressPartitionPruning 是【行为判据】。
+//
+// ★ 四道判据：
+// ① 事实源（仓内 SQL）里 canonical 视图的**投影列没有 `partition_date`**
+//    ⇒ ⇒ 读点无法表达分区下界 ⇒ ⇒ 【这就是缺陷的根因】；
+// ② 登记清单非空（★ 防「登记 0 条 ⇒ 门变瞎」）；
+// ③ 登记清单与实测集合**逐文件相等**（★ 漏登记 / 多登记都红）；
+// ④ 阳性对照：★ 合成「视图定义带 `partition_date` 投影」⇒ 必须判红。
+func TestCanonicalViewCannotExpressPartitionPruning(t *testing.T) {
+	root := repoRootFromCaller(t)
+
+	// ── 判据①：事实源的投影列里没有 partition_date ──
+	sqlPath := filepath.Join(root, canonicalViewFactsSource)
+	b, err := os.ReadFile(sqlPath)
+	if err != nil {
+		t.Fatalf("读事实源失败：%v", err)
+	}
+	cols := canonicalViewProjectionColumnSet(string(b))
+	if len(cols) == 0 {
+		t.Fatalf("★ 从事实源 %s 没抽到任何投影列 ⇒ ⇒ 提取器坏了 ⇒ ⇒ 本门判红（★ 而不是判绿）",
+			canonicalViewFactsSource)
+	}
+	if cols["partition_date"] {
+		t.Fatalf("★ 事实源 %s 的投影列里【已经有】`partition_date` ⇒ ⇒ 读点【可以】做分区裁剪了 ⇒ ⇒ "+
+			"★ 【「无法表达分区裁剪」这个分类就该退役】⇒ ⇒ 请把相关登记从 canonicalTimeWindowedReadPoints 里移除，"+
+			"★ 并把本门改成断言「读点必须带 partition_date 下界」。★★", canonicalViewFactsSource)
+	}
+
+	// ── 判据②：登记清单非空 + 每条理由非空 ──
+	if len(canonicalTimeWindowedReadPoints) == 0 {
+		t.Fatalf("★ canonicalTimeWindowedReadPoints 是空的 ⇒ ⇒ 这道门【看不见任何读点】⇒ ⇒ 门变瞎了 ⇒ ⇒ "+
+			"★ 请把它填上（★ 判据③ 会逐文件对拍实测集合）")
+	}
+	for path, why := range canonicalTimeWindowedReadPoints {
+		if strings.TrimSpace(why) == "" {
+			t.Fatalf("★ 登记 %s 的理由是空的 ⇒ ⇒ 空说明的登记等于没有登记 ⇒ ⇒ 请写清「为什么这个文件受影响」", path)
+		}
+	}
+
+	// ── 判据③：登记集合 == 实测集合（逐文件） ──
+	measured := canonicalTimeWindowedReadPointFiles(t, root)
+	for path := range measured {
+		if _, ok := canonicalTimeWindowedReadPoints[path]; !ok {
+			t.Fatalf("★ %s 【实测】带 ts 范围谓词且有真实生产读点 ⇒ ⇒ 它受「canonical 视图无法分区裁剪」影响 ⇒ ⇒ "+
+				"★ 但它【没在】canonicalTimeWindowedReadPoints 里登记 ⇒ ⇒ 门红（★ 漏登记 = 缺陷被藏起来）", path)
+		}
+	}
+	for path := range canonicalTimeWindowedReadPoints {
+		if !measured[path] {
+			t.Fatalf("★ %s 【登记】为受影响，但【实测】不满足（★ 要么它没有真实生产读点，要么它整份文件里没有 ts 范围谓词）⇒ ⇒ "+
+				"★ 登记与事实不符 ⇒ ⇒ 门红（★ 多登记 = 把不相关的东西塞进台账，★ 会稀释台账）", path)
+		}
+	}
+
+	// ── 判据④：阳性对照（★ 合成坏数据必须判红） ──
+	// ★ 合成一个「投影里带 partition_date」的视图定义 ⇒ 提取器必须【认得出】。
+	synthetic := "SELECT NULL::bigint AS id,\n\t\tt.partition_date AS partition_date,\n\t\tt.ts AS ts\n\tFROM public.session_turns t"
+	if !canonicalViewProjectionColumnSet(synthetic)["partition_date"] {
+		t.Fatalf("★★ 阳性对照失败：★ 合成视图定义里的 `partition_date` 投影没被提取器认出来 ⇒ ⇒ "+
+			"★ 提取器【对 partition_date 失明】⇒ ⇒ ⇒ **判据① 就是恒绿的 ⇒ ⇒ 本门没有牙齿** ⇒ ⇒ "+
+			"★ 请修提取器（★ 注意：★ JOIN 条件里的 `d.partition_date = t.partition_date` 【不算】投影列）★★")
+	}
 }

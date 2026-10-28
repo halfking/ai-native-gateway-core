@@ -33,6 +33,8 @@ func (h *Handler) registerMaasRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/maas/orders", h.admin(h.handleMaasOrders))
 	mux.HandleFunc("/api/maas/orders/", h.admin(h.handleMaasOrderByID))
 	mux.HandleFunc("/api/maas/usage/summary", h.admin(h.handleMaasUsageSummary))
+
+	h.registerMaasBillingRoutes(mux)
 }
 
 func (h *Handler) maasSvc() *maas.Service {

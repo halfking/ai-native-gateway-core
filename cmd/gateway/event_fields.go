@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domain"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // extractRequestCompletedPayload extracts the complete payload for request.completed.v1
@@ -62,13 +63,8 @@ func extractRequestCompletedPayload(
 	// Extract turn_no (from session cache or default to 1)
 	turnNo := extractTurnNo(env)
 
-	// Generate body_refs (internal references)
-	bodyRefs := map[string]string{
-		"prompt_ref":   fmt.Sprintf("internal://body/%s/prompt", requestID),
-		"response_ref": fmt.Sprintf("internal://body/%s/response", requestID),
-	}
-
-	// Build contract-compliant payload
+	// Build contract-compliant payload. body_refs only when consent=on
+	// (W1.3: ASM gets pointers, never bodies; consent=off → omit).
 	payload := map[string]any{
 		"session_id":      env.SessionID,
 		"turn_no":         turnNo,
@@ -80,7 +76,12 @@ func extractRequestCompletedPayload(
 		"status":          status,
 		"token_usage":     tokenUsage,
 		"latency_ms":      latencyMs,
-		"body_refs":       bodyRefs,
+	}
+	if settings.RecordingConsentEnabled(env.TenantID) {
+		payload["body_refs"] = map[string]string{
+			"prompt_ref":   fmt.Sprintf("internal://body/%s/prompt", requestID),
+			"response_ref": fmt.Sprintf("internal://body/%s/response", requestID),
+		}
 	}
 
 	return payload

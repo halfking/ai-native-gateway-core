@@ -156,6 +156,34 @@ export function collectStaticRefKeys(src) {
  *     ④ 判死：跨语种独有的 = 源语种没有 + 全仓 0 引用 + 不在动态前缀下
  *     ⑤ sharedDead：8 语种**共有** + 全仓 0 引用 + 不在动态前缀下
  */
+export function collectManifestRefKeys(text) {
+  // ★ 插件资源（manifest JSON + 自带 web 资源）里提供的 i18n 键。
+  //   抽成导出函数 ⇒ 可被自证直接覆盖（★ 「量具自己也要被量」）。
+  const keys = new Set()
+  // manifest 里的 i18n 键字段：title_key / description_key / label_key /
+  //   hint_key / i18n_key —— ★ 一律按「键字面量」收进引用集。
+  for (const m of text.matchAll(/"(?:title_key|description_key|label_key|hint_key|i18n_key)"\s*:\s*"([A-Za-z][A-Za-z0-9_.\-]*)"/g)) {
+    keys.add(m[1])
+  }
+  // ★ 兜底：任何「点分键路径形态」的字符串字面量也计入
+  //   （与 collectStaticRefKeys 的 KEYLIKE_LIT_RE 同向，保守方向）。
+  for (const m of text.matchAll(/"([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+)"/g)) {
+    keys.add(m[1])
+  }
+  // ★★ 插件自带的前端资源（`web/i18n.js` + `web/index.html`）：
+  //   · `i18n.js` 形如 `export default { 'zh-CN': { 'plugin.hello.title': '…' } }`
+  //   · `index.html` 形如 `<h1 data-i18n="plugin.hello.title">`
+  //   ⇒ ★ 两者提供的键**运行时由插件自己的前端取用**，
+  //   源码侧同样没有字面量 ⇒ 必须显式收进引用集。
+  for (const m of text.matchAll(/'([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+)'/g)) {
+    keys.add(m[1])
+  }
+  for (const m of text.matchAll(/data-i18n\s*=\s*"([A-Za-z][A-Za-z0-9_.\-]*)"/g)) {
+    keys.add(m[1])
+  }
+  return keys
+}
+
 export async function computeDeadKeyFacts(loadLocale) {
   // ① 8 语种的键集合（命名空间 = 模块名）
   //    ⚠️ 死键判定用**叶子**口径：容器路径不是「键」（没人会 t() 一个对象），
@@ -211,6 +239,71 @@ export async function computeDeadKeyFacts(loadLocale) {
     }
   }
   walk(join(ROOT, 'src'))
+
+  // ②′ 插件 manifest 采集面（2026-10-28 r1041 轮新增）。
+  //
+  //   起因：合并 `wip/04-pluginrt-maturity` 后，棘轮门
+  //   `i18n-shared-dead-count.mjs` 报出 **6 个新增共有死键**
+  //   （`plugin.hello.greeting` / `greetingDesc` / `times` / `enabled` /
+  //     `navSettings` / `title`）⇒ 而这 6 个键**是活键**。
+  //
+  //   根因：★ **插件的 i18n 键不是源码字面量，而是 manifest 里的数据** ——
+  //   `plugin-runtime/testdata/hello-plugin/plugin-manifest.json` 的
+  //   `settings_schema.properties.greeting.title_key = "plugin.hello.greeting"`
+  //   ⇒ ★ 前端 `PluginSettingsForm.vue` 在**运行时**拿这个键去 `t()`，
+  //   而**源码里根本没有这个字符串** ⇒ 静态扫描（只扫 .vue/.ts）永远看不见它。
+  //
+  //   ★ ⇒ 这是与 r1038b「属性承载键」**同族但更隐蔽**的一类：
+  //   上一轮修的是「源码里的 `labelKey: '…'`」；
+  //   这一类是「**JSON 数据文件里的** `title_key: '…'`」⇒ ★ 连 KEY_PROP_RE
+  //   的扫描面都够不着（它只处理 .vue/.ts 源码）。
+  //
+  //   ⇒ 修法：★ **扩采集面**（把插件 manifest 目录也纳入引用集），
+  //   **不是**调高棘轮基线 —— ★ 调高基线等于把活键登记成死键，
+  //   下游的删除器就会真的把它们删掉 ⇒ ★ **门判错了要修门，不能改读数**。
+  //
+  //   ★ 方向是**保守**的（多判活键 ⇒ 少判死 ⇒ 不会误删）⇒ 与本门
+  //   「宁可漏报，不误报」的既定边界一致。
+  const pluginManifestDir = resolve(ROOT, '..', 'plugin-runtime')
+  if (existsSync(pluginManifestDir)) {
+    const walkPluginManifests = (dir) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name)
+        if (e.isDirectory()) { walkPluginManifests(p); continue }
+        const isJson = e.name.endsWith('.json')
+        const isJs = e.name.endsWith('.js')
+        if (!isJson && !isJs) continue
+        let text
+        try { text = readFileSync(p, 'utf8') } catch { continue }
+        for (const k of collectManifestRefKeys(text)) refKeys.add(k)
+      }
+    }
+    walkPluginManifests(pluginManifestDir)
+  }
+
+  // ②′ 插件清单侧引用（2026-10-28 分支审计轮）：插件运行时的 settings schema
+  //   用 **Go 结构体 tag**（`title_key:"ns.key"`）与 `LabelKey:` 字段承载 i18n 键，
+  //   前端 PluginSettingsForm 按它调 t() ⇒ 这些键是**活键**，但上面的 walk 只扫
+  //   `web/src`（.vue/.ts/.js）⇒ Go 侧引用看不见 ⇒ 6 个 `plugin.hello.*` 被误判死。
+  //   ⇒ 引用面扩到仓库根的 plugins/ 与 plugin-runtime/（.go/.json/.yaml + 插件自带
+  //   web 资产 .js/.html —— hello 插件的 `data-i18n="ns.key"` 与自带 i18n.js 都在此）。
+  //   ★ 只往保守方向扩（多判活键 ⇒ 少删 ⇒ 不会误删）；不扫 docs（幽灵引用教训，第 14 增量）。
+  const repoRoot = join(ROOT, '..')
+  const walkGo = (dir) => {
+    if (!existsSync(dir)) return
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) {
+        if (e.name === 'node_modules' || e.name === '.worktrees' || e.name.startsWith('.')) continue
+        walkGo(p); continue
+      }
+      if (!/\.(go|json|ya?ml|js|html)$/.test(e.name)) continue
+      const src = readFileSync(p, 'utf8')
+      for (const k of collectStaticRefKeys(src)) refKeys.add(k)
+    }
+  }
+  walkGo(join(repoRoot, 'plugins'))
+  walkGo(join(repoRoot, 'plugin-runtime'))
 
   // ③ 判死（跨语种独有）
   const dead = []
@@ -388,6 +481,41 @@ function selftest() {
   const mustLive = ['x.y', 'x.b', 'x.c', 'x.d', 'x.e', 'x.f.any', 'x.g.any']
   const wronglyDead = mustLive.filter((k) => isDead({ ...base2, key: k }))
   check('B7', '六种取键形态下的键一律不判死', [], wronglyDead)
+
+  // ── C 组：2026-10-28 r1041 轮新增（★ 插件资源里的 i18n 键）
+  // 起因：合并 wip/04-pluginrt-maturity 后棘轮门报出 6 个「新增共有死键」
+  //   （plugin.hello.*）⇒ 实测**全是活键** —— 它们由插件 manifest 与插件自带
+  //   的 web 资源在**运行时**提供，源码里没有字面量 ⇒ 静态扫描看不见。
+  // C1 manifest 的 title_key / description_key / label_key 计入引用集
+  const manifestJson = JSON.stringify({
+    settings_schema: { properties: { greeting: { title_key: 'plugin.hello.greeting', description_key: 'plugin.hello.greetingDesc' } } },
+    nav: [{ label_key: 'plugin.hello.navSettings' }],
+  })
+  const mk = collectManifestRefKeys(manifestJson)
+  check('C1', 'manifest 的 title_key/description_key/label_key 计入引用集', true,
+    mk.has('plugin.hello.greeting') && mk.has('plugin.hello.greetingDesc') && mk.has('plugin.hello.navSettings'))
+  // C2 插件自带 i18n.js 的键（单引号形态）
+  check('C2', '插件 i18n.js 的单引号键计入引用集', true,
+    collectManifestRefKeys("export default { 'zh-CN': { 'plugin.hello.title': '你好插件' } }").has('plugin.hello.title'))
+  // C3 插件 index.html 的 data-i18n 属性
+  check('C3', '插件 index.html 的 data-i18n 计入引用集', true,
+    collectManifestRefKeys('<h1 data-i18n="plugin.hello.title">Hello</h1>').has('plugin.hello.title'))
+  // C4 ★ 反向自证：manifest 提供的键**必须不判死**（这是本轮修的门本身）
+  const base3 = { sourceKeys: new Set(), refKeys: mk, dynPrefixes: [] }
+  check('C4', 'manifest 提供的键一律不判死', [],
+    ['plugin.hello.greeting', 'plugin.hello.greetingDesc', 'plugin.hello.navSettings']
+      .filter((k) => isDead({ ...base3, key: k })))
+  // C5 ★ 阴性对照：**非**键形态的字符串不得被误收（否则引用集会无脑膨胀）
+  check('C5', '非键形态字符串不计入引用集', false,
+    collectManifestRefKeys('{"display_name": "Hello Plugin", "plugin_id": "hello"}').has('Hello Plugin'))
+  // C6 ★ 真实仓内夹具：hello 插件 manifest 的 6 个键必须全部被收进来
+  const realManifest = readFileSync(
+    resolve(ROOT, '..', 'plugin-runtime', 'testdata', 'hello-plugin', 'plugin-manifest.json'), 'utf8')
+  const realKeys = collectManifestRefKeys(realManifest)
+  const expectedReal = ['plugin.hello.greeting', 'plugin.hello.greetingDesc', 'plugin.hello.times',
+    'plugin.hello.enabled', 'plugin.hello.navSettings']
+  check('C6', '真实 hello manifest 的 5 个键全部计入引用集', [],
+    expectedReal.filter((k) => !realKeys.has(k)))
 
   return cases
 }

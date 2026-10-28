@@ -278,9 +278,21 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) (dispatchOutcome, error) {
 	if err != nil {
 		d.logger.Warn("dispatch failed", "event_id", eventID, "attempts", attempts+1, "error", err)
 		RecordEventFailed(classifyError(err))
-		if Retryable(err) {
+		switch {
+		case IsBackpressure(err):
+			// ★ 下游背压（asm 就绪门抖动 ⇒ 503 ingress_unavailable / event_retryable）
+			//   不是「这条事件有问题」，是「目的地暂时关门」⇒ 永不 DLQ：
+			//   2026-10-28 生产审计实测：asm runner 就绪门的抖动以分钟计，而
+			//   maxAttempts=5 × 指数退避（≈31s 窗口）会把**完全合法的事件**永久打进
+			//   DLQ（acc-pg17 实测 dlq=34,793 且以 ~170/小时增长，26,079 条
+			//   ingress_unavailable + 8,699 条 event_retryable）⇒ 数据白白丢掉。
+			//   ⇒ 背压类改为**不计数转 DLQ**、64s 封顶退避无限重试（asm 恢复就绪
+			//   即送达；若 asm 永久宕机，行以 failed 累积而非 DLQ —— 同样占表，
+			//   但可恢复，且与 DLQ 一样可被运维裁决）。
+			d.markBackpressure(ctx, tx, id, attempts+1, err.Error())
+		case Retryable(err):
 			d.markFailed(ctx, tx, id, attempts+1, err.Error())
-		} else {
+		default:
 			d.markDLQ(ctx, tx, id, attempts+1, err.Error())
 		}
 		if err := tx.Commit(); err != nil {
@@ -316,8 +328,7 @@ func (d *Dispatcher) markSent(ctx context.Context, ex execer, id int64) {
 }
 
 // markFailed updates the event status to 'failed' or 'dlq'. ex is the tx
-// that holds the claim lock (or d.db for non-transactional callers).
-//
+// that holds the claim lock (or d.db for non-transactional callers).//
 // Exponential backoff:
 //   - Attempt 1: retry after 1s
 //   - Attempt 2: retry after 2s
@@ -348,6 +359,30 @@ func (d *Dispatcher) markFailed(ctx context.Context, ex execer, id int64, newAtt
 	`
 	if _, err := ex.ExecContext(ctx, query, newAttempts, errMsg, nextRetry, id); err != nil {
 		d.logger.Error("mark failed failed", "id", id, "error", err)
+	}
+}
+
+// backpressureRetryCap caps the retry delay for destination-backpressure
+// failures. asm 的就绪门抖动以分钟计（实测突发 1~5 分钟），固定 64s 的
+// 再试节奏保证：asm 一恢复就绪，队列在一分钟内开始排空。
+const backpressureRetryCap = 64 * time.Second
+
+// markBackpressure 是 markFailed 的「永不 DLQ」变体：目的地背压（asm 就绪门
+// 抖动 503）不消耗 maxAttempts 预算 —— 事件本身完全合法，唯一的问题是
+// 「目的地暂时关门」。status 保持 'failed'、64s 封顶退避无限重试；
+// attempts 仍递增（可观测性），但本函数**绝不**调 markDLQ。
+// 若 asm 永久宕机，行以 failed 累积（与 DLQ 同样占表、同样可见），
+// 但 asm 恢复后自动排空 —— 这正是 outbox「至少一次」该有的语义。
+func (d *Dispatcher) markBackpressure(ctx context.Context, ex execer, id int64, newAttempts int, errMsg string) {
+	backoff := backpressureRetryCap
+	const query = `
+		UPDATE outbox_events
+		SET status = 'failed', attempts = $1, last_error = $2,
+		    last_attempt_at = NOW(), next_retry_at = $3, updated_at = NOW()
+		WHERE id = $4
+	`
+	if _, err := ex.ExecContext(ctx, query, newAttempts, errMsg, time.Now().Add(backoff), id); err != nil {
+		d.logger.Error("mark backpressure failed", "id", id, "error", err)
 	}
 }
 

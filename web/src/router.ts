@@ -45,6 +45,7 @@ const CompressionView = () => import('./views/CompressionView.vue')
 const DataLifecycleView = () => import('./views/DataLifecycleView.vue')
 const SettingsView = () => import('./views/SettingsView.vue')
 const MaaSAccountView = () => import('./views/tenant/MaaSAccountView.vue')
+const MaaSBillsView = () => import('./views/tenant/MaaSBillsView.vue')
 const MaaSPricingView = () => import('./views/tenant/MaaSPricingView.vue')
 const MaaSUsageView = () => import('./views/tenant/MaaSUsageView.vue')
 const MaaSOrderView = () => import('./views/tenant/MaaSOrderView.vue')
@@ -264,6 +265,7 @@ export const router = createRouter({
     // Tenant portal (non-default tenant self-service; admin uses ?tenant=code)
     { path: '/tenant/models',      component: TenantModelsView },
     { path: '/tenant/account',     component: MaaSAccountView },
+    { path: '/tenant/bills',       component: MaaSBillsView },
     { path: '/tenant/pricing',     component: MaaSPricingView },
     { path: '/tenant/orders/:id',  component: MaaSOrderView },
     { path: '/tenant/usage',       component: MaaSUsageView },

@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -92,6 +93,28 @@ func startSessionAggregateOutboxReaper(ctx context.Context, pool *pgxpool.Pool) 
 	}
 	aggregator := v2.NewSessionAggregator(pool)
 	return v2.StartSessionAggregateOutboxReaper(ctx, pool, aggregator)
+}
+
+// startSessionBodiesCleanupWorker boots the W1.4 hourly body retention
+// cleaner (decoupled from request_logs lifecycle).
+func startSessionBodiesCleanupWorker(pool *pgxpool.Pool) any {
+	if pool == nil {
+		return nil
+	}
+	w := v2.NewBodiesCleanupWorker(pool, time.Hour)
+	w.Start()
+	slog.Info("session bodies cleanup worker started", "interval", "1h")
+	return w
+}
+
+func stopSessionBodiesCleanupWorker(worker any) {
+	if worker == nil {
+		return
+	}
+	type stopper interface{ Stop() }
+	if s, ok := worker.(stopper); ok {
+		s.Stop()
+	}
 }
 
 // stopSessionAggregateOutboxReaper drains the reaper's in-flight tick.

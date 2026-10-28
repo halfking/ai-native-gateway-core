@@ -126,7 +126,7 @@ type Recorder interface {
 	// request to Redis (graceful degradation when Redis is unavailable or
 	// the per-request lock cannot be acquired). Without this counter the
 	// operator has no signal that the live stream hub is silently losing
-	// tiles while the canonical record still lands in request_logs.
+	// tiles while the canonical record still lands in session_turns.
 	//
 	// reason values:
 	//   - "store_unconfigured" : store/Redis client is nil (operator never wired it).

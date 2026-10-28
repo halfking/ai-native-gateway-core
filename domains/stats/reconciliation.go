@@ -221,6 +221,12 @@ func (w *ReconciliationWorker) ReconcilePeriod(ctx context.Context, start, end t
 	// source fact; keep them out of the ordinary open mismatch metric.
 	diffs, repaired, phantomDiffs, err := w.reconcileDaily(ctx, runID, start, end)
 	if err != nil {
+		// ★★★ r1045：★ 差异写入失败（★ 或任何让本轮无法完成的错误）⇒ ★★ 先把本轮
+		// ★★ 已插入的 'auto_repair_pending' 复位回 'open' ⇒ ★★ 不留孤儿行
+		// ★★ （★ 它们的差异是真的 ⇒ ★★ 应当以 'open' 留在表里被看见）。
+		// ★★ 位置在这里（★ 而不是在写入循环里）⇒ ★★ 因为那时 rows 还没关
+		// ★★ ⇒ ★★ 再发查询会「conn busy」。
+		w.resetPendingRepairs(ctx, runID)
 		w.finishRun(ctx, runID, "failed", eventsSeen, rowsCompared, rowsRepaired, diffCount, sourceWatermark, err.Error())
 		metrics.RecordStatsReconciliationRun("failed", 1)
 		return fmt.Errorf("reconcile daily: %w", err)
@@ -467,8 +473,24 @@ func (w *ReconciliationWorker) reconcileDailyOnce(ctx context.Context, runID str
 			`, runID, key.tenantID, dimensionKey, d.metric,
 				d.source, d.projected, diff, resolution)
 			if err != nil {
-				slog.Warn("failed to record diff", "error", err, "run_id", runID)
-				continue
+				// ★★★ r1045（2026-10-28）：★ 写入失败**不再降级成 warn + continue**。
+				// ★ 降级 ⇒ totalDiffs 不加 ⇒ diff_count=0 ⇒ status='completed'、error=''
+				// ★ ⇒ **账本 / 管理界面（admin/stats.go 读 status+diff_count）/ 指标
+				// ★ （RecordStatsReconciliationRun("completed")）三处都说「没有差异、没有错」**
+				// ★ ⇒ 而这条差异**从未进表** ⇒ ★★ 下一个窗口也不覆盖它 ⇒ ★★ 永久丢失。
+				// ★ 2026-10-28 实测：542 条写入全失败的那一轮，runs 账本记的是
+				// ★ `status=completed, rows_compared=0, diff_count=0, error=''`
+				// ★ ⇒ 「0 差异」看起来像好消息，而数据整族没了。
+				// ⇒ 现在它让整轮**失败**：run() 的失败分支把 status 置 'failed'、
+				// ⇒ 写 error 列、指标记 failed ⇒ ★★ 账本恢复诚实；
+				// ⇒ 而滚动 lookback 窗口会在下一 tick 重新覆盖这段区间 ⇒ ★★ 数据自己回来。
+				// ★⇒ **失败让上层读到的数变小 ⇒ 是最危险的方向** ⇒ 必须响。
+				// ★★ 复位（把本轮已插入的 'auto_repair_pending' 放回 'open'）由**调用方**
+				// ★★ run() 统一做一次（★ 这里还在 rows 未关的循环里 ⇒ ★★ 此时再发查询
+				// ★★ 会「conn busy」⇒ ★★ 位置必须在外面）。
+				return totalDiffs, autoRepaired, phantomDiffs, false,
+					fmt.Errorf("record diff (tenant=%s dim=%s metric=%s): %w",
+						key.tenantID, dimensionKey, d.metric, err)
 			}
 			if ct.RowsAffected() == 0 {
 				// Duplicate absorbed by the unique index; do not
@@ -510,8 +532,11 @@ func (w *ReconciliationWorker) reconcileDailyOnce(ctx context.Context, runID str
 			ON CONFLICT (run_id, tenant_id, dimension_type, dimension_key, metric) DO NOTHING
 		`, runID, key.tenantID, dimensionKey, source.requests, resolution)
 		if err != nil {
-			slog.Warn("failed to record missing projection diff", "error", err)
-			continue
+			// ★★★ r1045：同族 —— 「缺投影的差异」写入失败**也不再降级成 warn + continue**
+			// ★ ⇒ 理由与上面那处完全相同（★ 失败让计数变小 ⇒ 账本说谎）。
+			return totalDiffs, autoRepaired, phantomDiffs, false,
+				fmt.Errorf("record missing projection diff (tenant=%s dim=%s): %w",
+					key.tenantID, dimensionKey, err)
 		}
 		if ct.RowsAffected() == 0 {
 			continue

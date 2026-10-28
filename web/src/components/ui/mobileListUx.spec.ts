@@ -148,6 +148,23 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
   //   与 QualityCorrelationsView（186→223）、UserProfileView（285/308→286/309）同类。
   ['src/views/tenant/MaaSAccountView.vue', 283, '账号内嵌表，无账号详情页'],
+  // ⚠ 行号锚点：2026-10-28 **新登记**（此前本视图不在表里 ⇒ 不是行号漂移）。
+  //   起因：`eb6f6582d`（分支审计轮）为修「compact-card 覆盖率基线红」，
+  //   给本视图接上了 <ResponsiveDataView>（compact 出卡片、桌面 <table> 逐字保留）。
+  //   那个调用点只带 `#table` 插槽 ⇒ compact 无入口 ⇒ 本门要求登记，
+  //   而**那次改动漏了登记** ⇒ ⇒ 本门在合并后判红（合并带进来的红）。
+  //   归属 NON_NAVIGABLE：本文件里 router.push / router.replace 出现 0 次，
+  //   路由表也只有 `/tenant/bills`（无账单详情页）⇒ 属「本就没有详情目的地」。
+  // ★ 并行会话（a82ebec4f）为**同一个 (文件, 行号)** 独立登记过一次
+  //   （月账单行的载荷是账期聚合 period_ym + 合计 ⇒ 无账单详情页 ⇒
+  //   与 MaaSAccountView / MaaSUsageView 同族 NON_NAVIGABLE），
+  //   两边都推上 origin/main ⇒ 合并时 git **自动合并成功**，
+  //   但合并后的登记表里同一 (文件, 行号) 出现了**两条登记** ⇒
+  //   ⇒ 登记必须收敛成一条（同一句话不许两份），理由取信息量最大的一份。
+  //   ★ 这是【登记表自身重复】的第一个实例 ⇒ 已补断言兜住
+  //     （见「登记表自身不得有重复的 (文件, 行号)」那条）——
+  //     此前登记集收进 `Set` 会被去重 ⇒ 重复项对既有断言**完全不可见**。
+  ['src/views/tenant/MaaSBillsView.vue', 125, '月账单内嵌表（账期聚合行，title-key=period_ym）：/tenant/bills 无账单详情页，本视图无二级目的地'],
   // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 354 改为 355。
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
@@ -197,6 +214,45 @@ describe('03 §3.3 移动端行点击契约', () => {
       `登记表里有**已不成立**的调用点 —— 要么该处已具备 compact 入口（缺陷已修，未销账），要么行号漂移/文件已改名：\n  ${stale.join('\n  ')}`,
     ).toEqual([])
     expect(measured.size, '实测集合大小变化时务必复核上面两条的输出').toBe(registered.size)
+  })
+
+  /**
+   * ★ 登记表**自身**不得有重复的 (文件, 行号)。
+   *
+   * 为什么要单列一条（★ 这是本门自己的盲区，不是新增的规约）：
+   * 上面那条「双向相等」把登记集收进 `Set`，而 `Set` 会**去重** ⇒
+   * 同一个 (文件, 行号) 被登记两次时：
+   *   · `registered.size` 不变 ⇒ `measured.size === registered.size` 照常绿；
+   *   · `unregistered` / `stale` 都是集合差 ⇒ 照常绿；
+   *   · 「每条登记都必须写明理由」把同一条跑两遍 ⇒ 照常绿；
+   *   · 「NON_NAVIGABLE 的每一项…」也是逐条遍历 ⇒ 照常绿。
+   * ⇒ **重复登记对既有断言完全不可见** —— 门全绿，但登记表已经脏了。
+   *
+   * 第一个实例（2026-10-28 实测）：并行会话与本会话**各自**为
+   * `src/views/tenant/MaaSBillsView.vue:125` 登记了一条（同一行号、两条理由），
+   * 两边都推上 origin/main ⇒ `git merge` **自动合并成功、零冲突** ⇒
+   * 合并后的登记表里同一 (文件, 行号) 出现两条 ⇒ 而门全绿 ⇒
+   * ★ 「git 合干净了」≠「语义合干净了」；★ 「门全绿」≠「登记表是干净的」。
+   *
+   * 为什么重复本身是缺陷（而不只是冗余）：
+   *   ① 两条理由会**各自漂移**（后来只改一条 ⇒ 登记理由与事实脱节）；
+   *   ② 行号漂移时要改**两处**，漏改一处就留下一个「看似已登记、实则对不上」的幽灵；
+   *   ③ 按行号查登记表会看到两条 ⇒ 「这条到底登记了几次」变成不确定问题；
+   *   ④ 跨表重复（同一行号既在 NON_NAVIGABLE 又在 KNOWN_GAP）会把
+   *      「已确认合格」与「不合格但已知」两个互斥结论同时挂在同一处。
+   */
+  it('登记表自身不得有重复的 (文件, 行号)', () => {
+    const seen = new Map<string, number>()
+    for (const [f, l] of [...NON_NAVIGABLE, ...KNOWN_GAP, ...ASYMMETRY]) {
+      const k = key(f, l)
+      seen.set(k, (seen.get(k) ?? 0) + 1)
+    }
+    const dup = [...seen.entries()].filter(([, n]) => n > 1).map(([k, n]) => `${k} × ${n}`)
+    expect(
+      dup,
+      `登记表里有重复的 (文件, 行号)：\n  ${dup.join('\n  ')}\n`
+        + '  ⇒ 收敛成一条（理由取信息量最大的一份）；★ 注意：git 自动合并成功不代表语义合干净',
+    ).toEqual([])
   })
 
   it('每条登记都必须写明理由（拒绝空理由的走过场）', () => {

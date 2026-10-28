@@ -66,7 +66,7 @@ export function useMaasTenantContext() {
   })
 
   /** Default back link per MaaS page (admin tenant context vs normal tenant user). */
-  function maasBackLink(page: 'models' | 'pricing' | 'usage' | 'account' | 'order'): MaasBackLink | null {
+  function maasBackLink(page: 'models' | 'pricing' | 'usage' | 'account' | 'order' | 'bills'): MaasBackLink | null {
     if (isAdminTenantView.value) {
       return tenantDetailBack.value
     }
@@ -77,6 +77,7 @@ export function useMaasTenantContext() {
       case 'pricing':
         return { to: { path: '/tenant/account', ...(q ? { query: q } : {}) }, label: '返回账户' }
       case 'usage':
+      case 'bills':
         return { to: { path: '/tenant/account', ...(q ? { query: q } : {}) }, label: '返回账户' }
       case 'account':
         return { to: { path: '/' }, label: '返回仪表盘' }

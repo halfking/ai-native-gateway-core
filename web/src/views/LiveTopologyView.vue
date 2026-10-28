@@ -448,7 +448,7 @@ function onSelectProvider(code: string) {
   font-size: 11px;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-1);
 }
 
 /* 心跳圆点（2026-10-28 live 页动效轮）：「已连接」不是一句静态文案，

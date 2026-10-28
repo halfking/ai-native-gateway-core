@@ -134,6 +134,10 @@ type ProcessedRequest struct {
 	CompressionMeta     map[string]interface{}
 	TokensSaved         int
 
+	// ★ r1041 轮（2026-10-28）：ConsentGeneration = 请求开始时捕获的
+	// 录制同意世代号（★ 0 = 未捕获 ⇒ 旧语义：只看当前开关）。
+	ConsentGeneration int
+
 	// Governance
 	InjectionVerdict string
 	OutputVerdict    string
@@ -288,6 +292,7 @@ func convertToV2Request(req *ProcessedRequest) *v2.ProcessedRequest {
 		TokensSaved:         req.TokensSaved,
 		InjectionVerdict:    req.InjectionVerdict,
 		OutputVerdict:       req.OutputVerdict,
+		ConsentGeneration:   req.ConsentGeneration,
 		ClientModel:         req.ClientModel,
 		ProviderID:          req.ProviderID,
 		CredentialID:        req.CredentialID,

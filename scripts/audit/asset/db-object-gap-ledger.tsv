@@ -5,8 +5,8 @@
 # ★   ★★ retired-by-column-drop = ★ 索引的键列在本环境已被 DROP COLUMN 删掉
 # ★   ★★ ⇒ PG 自动删掉了那个索引 ⇒ ⇒ 它【不是】缺口（★ 假缺口的第三种来源）
 # ★ verdict：complete | gap　　severity：none | prod-full-gap | prod-partial-gap | local-only-gap | fresh-only-gap | new-install-gap
-# ★ generated_at=2026-10-26T10:23:43+00:00
-# ★ expected=834 envs=local,fresh,252,211 gaps_by_env={"211": 62, "252": 56, "fresh": 49, "local": 56} production_gaps=77
+# ★ generated_at=2026-10-27T22:32:38+00:00
+# ★ expected=840 envs=local,fresh,252,211 gaps_by_env={"211": 62, "252": 56, "fresh": 49, "local": 56} production_gaps=77
 -1	idx_provider_models_canonical_raw_name	provider_models	present	present	present	present	complete	none
 -1	idx_request_logs_hot_auto_task_ts	request_logs_hot	retired	retired	retired	retired	complete	none
 -1	idx_request_logs_hot_gw_session_id	request_logs_hot	retired	retired	retired	retired	complete	none
@@ -841,3 +841,9 @@
 909	idx_session_summaries_primary_model_trgm	session_summaries	present	present	present	missing	gap	prod-partial-gap
 909	idx_session_summaries_session_key_trgm	session_summaries	present	present	present	missing	gap	prod-partial-gap
 909	idx_session_summaries_title_trgm	session_summaries	present	present	present	missing	gap	prod-partial-gap
+912	idx_session_bodies_trash_session	session_bodies_trash	retired	retired	retired	retired	complete	none
+912	idx_session_bodies_trash_trashed_at	session_bodies_trash	retired	retired	retired	retired	complete	none
+913	idx_maas_coupon_redemptions_tenant	maas_coupon_redemptions	retired	retired	retired	retired	complete	none
+913	idx_maas_coupons_status	maas_coupons	retired	retired	retired	retired	complete	none
+913	idx_maas_invoice_requests_tenant	maas_invoice_requests	retired	retired	retired	retired	complete	none
+913	idx_maas_monthly_bills_tenant_issued	maas_monthly_bills	retired	retired	retired	retired	complete	none

@@ -116,7 +116,25 @@ test-short: ## 短模式，跳过 -short=false 的测试
 #   ⇒ ⇒ 仓库里一直没有任何人真正看到过绿色的审计门。
 #   ⇒ ⇒ 这是本轮挖到的最刺眼的一条**流程闭环**断裂：**门写了、没接线，
 #      而接线的那道门自己也是红的 ⇒ 没人发现。**
-GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./internal/clockguard ./internal/stopguard ./internal/testguard ./sql/schema ./internal/rewrite ./internal/routeorder ./internal/requestobserver ./domains/credential ./domains/authentication ./internal/extpointledger ./domains/hooks/response ./middleware
+# ★★★ 2026-10-28（R175 轮）★★ 补登 **`./sql/migrations/startup`**。
+#
+#   背景：★ 该包有 **~160 个迁移契约测试文件**（migration_NNN_test.go 一族），
+#   ★ 而它此前**不在** GUARD_PACKAGES / GUARD_PACKAGES_SLOW **任何一栏** ⇒
+#   ⇒ `make guards-fast`（★ CI 的 audit-guards job 跑的就是它）**从不执行它** ⇒
+#   ⇒ **本轮新增的 914 门（10 道断言）在 CI 上一次都不会跑** ⇒
+#   ⇒ ★★ **「一门没人跑的守卫是文档，不是门」**（★ 本文件上方 R69 的判词，★ 原话）。
+#
+#   ★ 为什么此前一直没人发现：★ 仓内**有**一道门在管这件事
+#   （scripts/ursmcheck/audit_guard_registration_test.go，★ 「门写了却没人跑 ⇒ CI 红」）
+#   —— ★ 但它的判据是**显式标记**：★ 门文件自己声明 `AUDIT-GUARD:` ⇒
+#   ⇒ **它所在的包必须被登记进 GUARD_PACKAGES / GUARD_PACKAGES_SLOW** ⇒
+#   ⇒ ★★ 未经声明的门**连「我该被登记」这件事都不知道** ⇒ ⇒ 只能靠**人**发现。
+#
+#   ★ 本轮处置（两处缺一不可）：★ ① 门文件头加 `AUDIT-GUARD:` 声明；
+#   ★ ② 此处补登该包 ⇒ ★★ 让那句承诺**可被机器验证**。
+#
+#   ★ 成本：★ 本地实测该包 **11.5s** 全绿 ⇒ ★ 在快门 120s/包的预算内 ⇒ ★ **净收益**。
+GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./internal/clockguard ./internal/stopguard ./internal/testguard ./sql/schema ./sql/migrations/startup ./internal/rewrite ./internal/routeorder ./internal/requestobserver ./domains/credential ./domains/authentication ./internal/extpointledger ./domains/hooks/response ./middleware
 
 # ★★★ 2026-10-22 12h 审计轮：./scripts/ursmcheck 此前**不在任何强制执行路径**上。
 #
@@ -208,9 +226,16 @@ guards-shell: ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描�
 	@bash scripts/guards/check-shell-fullwidth-var.sh
 
 # scripts/ursmcheck 的 94 个门文件（≈5~6 分钟，比主门慢一个量级 ⇒ 独立 timeout）
+# ★★ 2026-10-28 r1044 轮：慢门预算由 900s 提到 **1800s**（★ 与 verify.sh 的
+#   ★ 全量测试腿**同一档** ⇒ ★★ 两处必须同步改）。
+#   依据：★ 仓内自记该包实测 **840.111s / timeout 900s**（⇒ 当时余量只剩 ~60s，
+#   ★ 见 scripts/ursmcheck/shell_fullwidth_var_gate_test.go）；★ 本轮隔离实测
+#   ★ **1011.711s**（★ load 26.8/30.2/36.4 ⇒ 上界）⇒ ★★ **越过了 900s** ⇒ ⇒
+#   ★★ 超时被 SIGKILL ⇒ ★★ `testing` 的 panic 在 alarm goroutine 里 ⇒ 其它 goroutine
+#   ★★ 的 `defer` 不执行 ⇒ ★★ **被跟踪的台账静默留空** ⇒ ⇒ 预算必须给足。
 .PHONY: guards-ursmcheck
 guards-ursmcheck: ## scripts/ursmcheck 全量门（94 个门文件；CI 上此前从未执行过）
-	$(GO) test $(GUARD_PACKAGES_SLOW) -count=1 -timeout=900s
+	$(GO) test $(GUARD_PACKAGES_SLOW) -count=1 -timeout=1800s
 
 # R48-B1 后续（R48 报告 §五-3）：installer 是独立 go.mod，根目录
 # `go test ./...` 永远不跑它的门——tsv 派生清单缺 831 的红因此在

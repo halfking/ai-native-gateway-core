@@ -66,11 +66,39 @@ export function detectTheme(): ThemeMode {
 
 export function applyTheme(theme: ThemeMode) {
   if (typeof document === 'undefined') return
-  document.documentElement.setAttribute('data-theme', theme)
+  const root = document.documentElement
+  // ★ 2026-10-28 幂等写：属性值没变就不重写。
+  //   监听 data-theme 的 MutationObserver 会被「自己触发的写入」再次唤醒，
+  //   而回调里若调用 detectTheme() → applyThemeFromUrl() → applyTheme()
+  //   （又写同一个 data-theme）⇒ 自激微任务循环 ⇒ 渲染主线程 100% 空转 ⇒
+  //   整个 SPA 冻结（实测：无头 Chrome 下 `?theme=light` 页面连 setTimeout(0)
+  //   都不再触发、截图挂起；去掉参数即恢复）。
+  //   MutationObserver 对「值未变的 setAttribute」同样投递记录 ⇒ 必须显式判等。
+  if (root.getAttribute('data-theme') !== theme) {
+    root.setAttribute('data-theme', theme)
+  }
   // Element Plus 暗色变量（theme-chalk/dark/css-vars.css）以 html.dark 为门控，
   // 必须与 data-theme 同步切换，否则 el-* 组件在暗色下保持亮色皮肤。
-  document.documentElement.classList.toggle('dark', theme === 'dark')
-  document.documentElement.style.colorScheme = theme
+  root.classList.toggle('dark', theme === 'dark')
+  root.style.colorScheme = theme
+}
+
+/**
+ * 读**当前生效**的主题（纯读，无副作用）。
+ *
+ * 与 detectTheme() 的区别：detectTheme() 会走 applyThemeFromUrl()，
+ * 那是一次**写**（把 URL 上的主题写回 documentElement.data-theme）。
+ * 因此 detectTheme() 只能用于「启动时求值一次」的场景；
+ * 监听 data-theme 的回调里必须用本函数，否则观察者会被自己的写入唤醒
+ * ⇒ 自激循环（见 applyTheme 的幂等写注释）。
+ */
+export function currentTheme(): ThemeMode {
+  if (typeof document !== 'undefined') {
+    const attr = document.documentElement.getAttribute('data-theme')
+    if (isThemeMode(attr)) return attr
+  }
+  // 属性还没落上（首屏脚本未跑 / 单测环境）→ 退回既有求值口径。
+  return detectTheme()
 }
 
 export function setTheme(theme: ThemeMode) {

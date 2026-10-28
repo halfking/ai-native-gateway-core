@@ -162,7 +162,16 @@ _llmgw_run_bounded() {
 #   调用方一律写成 `x=$(de ...)`，那是子 shell，变量自增出不来
 #   （第一版就是这么写的，于是失败计数恒为 0，等于没记）。
 _DE_STAT_FILE=$(mktemp "${TMPDIR:-/tmp}/llmgw-dw-stat.XXXXXX")
-trap 'rm -f "$_DE_STAT_FILE"' EXIT
+# ★★ 2026-10-28：这里必须用 **绝对路径** `/bin/rm`，不能写裸 `rm`。
+#   起因：macOS 本机 PATH 上的 `rm` 是 mavis-trash 的**回收站 shim**
+#   ⇒ 它只把字节搬进 `~/.Trash`，**磁盘不释放**。
+#   实测（磁盘侧会话第 43 轮回执）：回收站里 `llmgw-dw-stat.*` 的条目
+#   **每个小时约 120 条**（本脚本每次调用留一个），⇒ ⇒ **裸 `rm` 在本机 = 零回收**。
+#   ⇒ `/bin/rm` 在 macOS 与 Linux 都存在（Linux 上 /bin → /usr/bin 合并）⇒ ⇒ 两端通用。
+#   ⇒ ★ 同仓还有约 95 处 `trap 'rm …'`（多为 `rm -rf`）⇒ ⇒ **本轮只改这一条**
+#   （★ 它是**高频**且**已被实测证实**漏空间的那一条）⇒ ⇒ 其余属同类低频项，
+#   ⇒ ⇒ **交属主 / 磁盘侧裁决，不擅自批量改**（★ 判据比事实源宽 ⇒ 批量落地就是在改无辜的代码）。
+trap '/bin/rm -f "$_DE_STAT_FILE"' EXIT
 
 de() {
   local out rc

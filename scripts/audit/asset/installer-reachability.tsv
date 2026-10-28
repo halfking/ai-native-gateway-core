@@ -6,9 +6,9 @@
 # ★ ★ baseline-dependent = ★ 创建迁移【不在安装器清单】⇒ 新装能拥有它只因为基线是 dump
 # ★ ★ new-install-gap    = ★ 创建迁移不可达 ⇒ ★★ 任何新装环境【必然缺】
 # ★ ★ installer-bug      = ★ 创建迁移【可达】、新装却没有 ⇒ ★★ 安装器自己有 bug
-# ★ generated_at=2026-10-26T10:23:55+00:00
-# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=312 package_up=312 rows=834
-# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 74, "reachable-and-present": 369, "unreachable-and-missing": 49}
+# ★ generated_at=2026-10-27T22:32:18+00:00
+# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=316 package_up=316 rows=840
+# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 80, "reachable-and-present": 369, "unreachable-and-missing": 49}
 idx_provider_models_canonical_raw_name	provider_models	-1	395b_dedup_provider_models_and_aliases.sql	no	local,fresh,252,211		baseline-dependent	baseline-dependent	
 idx_request_logs_hot_auto_task_ts	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
 idx_request_logs_hot_gw_session_id	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
@@ -843,3 +843,9 @@ idx_session_turns_hot_api_key_numeric	session_turns_hot	906	906_turns_api_key_nu
 idx_session_summaries_primary_model_trgm	session_summaries	909	909_session_summaries_search_trgm_indexes.sql	yes	local,fresh,252	211	reachable-and-present	none	
 idx_session_summaries_session_key_trgm	session_summaries	909	909_session_summaries_search_trgm_indexes.sql	yes	local,fresh,252	211	reachable-and-present	none	
 idx_session_summaries_title_trgm	session_summaries	909	909_session_summaries_search_trgm_indexes.sql	yes	local,fresh,252	211	reachable-and-present	none	
+idx_session_bodies_trash_session	session_bodies_trash	912	912_session_recording_trash.sql	yes			reachable-and-legitimately-retired	none	
+idx_session_bodies_trash_trashed_at	session_bodies_trash	912	912_session_recording_trash.sql	yes			reachable-and-legitimately-retired	none	
+idx_maas_coupon_redemptions_tenant	maas_coupon_redemptions	913	913_maas_monthly_bills_coupons.sql	yes			reachable-and-legitimately-retired	none	
+idx_maas_coupons_status	maas_coupons	913	913_maas_monthly_bills_coupons.sql	yes			reachable-and-legitimately-retired	none	
+idx_maas_invoice_requests_tenant	maas_invoice_requests	913	913_maas_monthly_bills_coupons.sql	yes			reachable-and-legitimately-retired	none	
+idx_maas_monthly_bills_tenant_issued	maas_monthly_bills	913	913_maas_monthly_bills_coupons.sql	yes			reachable-and-legitimately-retired	none	
