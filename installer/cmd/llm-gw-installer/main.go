@@ -1244,6 +1244,7 @@ var sessionRecordingTrash912 []byte
 
 //go:embed embeddata/startup/912_session_recording_trash.down.sql
 var sessionRecordingTrash912Down []byte
+
 //go:embed embeddata/startup/913_maas_monthly_bills_coupons.sql
 var maasMonthlyBillsCoupons913 []byte
 

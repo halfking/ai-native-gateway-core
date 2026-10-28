@@ -15,7 +15,26 @@ type Dispatcher struct {
 	pollInterval time.Duration
 	batchSize    int
 	logger       *slog.Logger
+	// ★ r1041 轮（2026-10-28）：sweepEvery = 每隔多少轮做一次回收。
+	// ★ 0 = 不回收（★ 那就退化成旧行为 ⇒ 内存无界增长 ⇒ 所以生产必须 > 0）。
+	sweepEvery int
+	sweepTick  int
 }
+
+// Sweeper 是**可选**的回收接口（★ 不加进 Store —— ★ Store 是持久化契约，
+// ★ 回收是内存实现的专属关注点 ⇒ ★ 混进同一个接口会让 DB 实现也被迫实现它）。
+//
+// ★ r1041：MemoryStore 实现它（★ 旧实现里完成的条目永不删除 ⇒ 内存无界增长）。
+type Sweeper interface {
+	// Sweep 回收超保留窗口的已完成任务，返回回收条数。
+	Sweep(now time.Time) int
+}
+
+// sweepIntervalDefault = 每 60 轮回收一次。
+//
+// ★ 权衡：★ 太频繁 ⇒ 回收本身有成本；★ 太稀疏 ⇒ 内存峰值偏高。
+// ★ 60 轮 × 100ms = 6 秒一次 ⇒ 对「10 分钟保留窗口」来说足够密。
+const sweepIntervalDefault = 60
 
 // DispatcherConfig 配置。
 type DispatcherConfig struct {
@@ -25,6 +44,8 @@ type DispatcherConfig struct {
 	PollInterval time.Duration
 	BatchSize    int
 	Logger       *slog.Logger
+	// ★ r1041：SweepEvery = 每多少轮回收一次（0 = 缺省 60；< 0 = 关闭）。
+	SweepEvery int
 }
 
 // NewDispatcher 构造；缺省 MaxAttempts=5 / Poll=100ms（测试友好）/ Batch=32。
@@ -41,6 +62,11 @@ func NewDispatcher(cfg DispatcherConfig) *Dispatcher {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	// ★ r1041：★ 回收默认**开启**（每 60 轮一次）——
+	// ★ 旧行为（永不回收）等于「内存随流量单调增长」⇒ ⇒ 不该是缺省。
+	if cfg.SweepEvery == 0 {
+		cfg.SweepEvery = sweepIntervalDefault
+	}
 	return &Dispatcher{
 		store:        cfg.Store,
 		registry:     cfg.Registry,
@@ -48,6 +74,7 @@ func NewDispatcher(cfg DispatcherConfig) *Dispatcher {
 		pollInterval: cfg.PollInterval,
 		batchSize:    cfg.BatchSize,
 		logger:       cfg.Logger,
+		sweepEvery:   cfg.SweepEvery,
 	}
 }
 
@@ -68,7 +95,29 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) (handled int, err error) 
 		handled++
 	}
 	d.refreshGauges(ctx)
+	d.maybeSweep(ctx)
 	return handled, nil
+}
+
+// maybeSweep 按周期触发回收（★ r1041：★ 这是「内存不再无界增长」的那一刀）。
+//
+// ★ 只对实现了 Sweeper 的 Store 生效（★ 内存实现才有这个关注点）。
+func (d *Dispatcher) maybeSweep(ctx context.Context) {
+	if d.sweepEvery <= 0 {
+		return
+	}
+	sw, ok := d.store.(Sweeper)
+	if !ok {
+		return
+	}
+	d.sweepTick++
+	if d.sweepTick < d.sweepEvery {
+		return
+	}
+	d.sweepTick = 0
+	if n := sw.Sweep(time.Now().UTC()); n > 0 {
+		d.logger.Info("taskbus swept completed tasks", "count", n)
+	}
 }
 
 // Start 阻塞轮询直到 ctx 取消。

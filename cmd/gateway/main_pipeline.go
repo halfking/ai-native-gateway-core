@@ -125,9 +125,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/sessionsummary"                               //nolint:depguard // session summary worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
-	"github.com/kaixuan/llm-gateway-go/internal/sessionid" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/internal/taskbus"    //nolint:depguard // 03: Hook 双模 taskbus 内核
-	"github.com/kaixuan/llm-gateway-go/security/sensitive"  //nolint:depguard // AC敏感词引擎
+	"github.com/kaixuan/llm-gateway-go/internal/sessionid"                                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/taskbus"                                     //nolint:depguard // 03: Hook 双模 taskbus 内核
+	"github.com/kaixuan/llm-gateway-go/security/sensitive"                                   //nolint:depguard // AC敏感词引擎
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
 )

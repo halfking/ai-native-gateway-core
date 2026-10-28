@@ -30,7 +30,15 @@ import (
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
 // 2026-10-21 / R65 轮更新）：
 //
-//	全仓拼接点 147 处（v1 0 文件/0 处、canonical 59/125、unresolved 13/22、v1arm 0/0）
+//	全仓拼接点 156 处（v1 0 文件/0 处、canonical 62/130、unresolved 14/26、v1arm 0/0）
+//
+//	（2026-10-28 r1040「事实源漂移」线刷新：147 → 156。★ 不是只改数字 ——
+//	  两个时点各跑一次本工具做逐文件逐桶对拍：**没有任何一个桶变小**（v1 与 v1 臂
+//	  两个桶逐字未动）⇒ 方向 = 变大 ⇒ 可改数字；五处新拼接点读的都是会话族
+//	  （成因逐条与上游提交记在 documentedSnapshot 的注释里）。
+//	  ★★ 附带查出：这组旧数字（147/125/22）**既不等于**快照所在提交 a2ac50e37 的
+//	  实测（142/122/20），**也不等于**今天的实测 ⇒ 它在一次合并之后就没再被对拍过，
+//	  而「合并后没人重测」这件事没有任何东西会报警 ⇒ **事实源漂移家族的最纯形态**。）
 //
 //	（2026-10-25 R152 轮刷新：142 → 147。★ 不是只改数字 —— 逐站点对拍过：
 //	  净增 5 处 = admin/compression_sessions.go +1、admin/compression_stats.go +2
@@ -966,6 +974,59 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Verdict: verdictNonV1ByInspection,
 		Via:     "3 处：① :223 antiJoinPredicate `NOT EXISTS (SELECT 1 FROM public.session_turns archived`（归档腿反连接）；② :237/:245 两臂窄投影 `FROM public.session_turns_hot hot` / `FROM public.session_turns`（R172 会话族轮次读点去视图化的两臂直查，DP/AL 分离）。",
 		Consequence: "与 v1 无关（会话族两面直查；两臂列集由 TurnsReadColumns 统一，退役时随投影函数一起退役）。",
+	// ── 2026-10-28（r1040「事实源漂移」线）：本工具自身的清单漂移 ──────────
+	//
+	// ★ 这四条是**样板自身的漂移**：r1038b 轮实测时是「清单 72 vs 实测 75」，
+	//   本轮实测已是「清单 72 vs 实测 76」（见 §r1040 审计档）。
+	//   ⇒ 漂移**只会单向变大**（新增读点没人登记），不会自己收敛。
+	//
+	// ★ 本轮把 r1040 新立的「事实源漂移」线**先落在样板自己身上**：
+	//   样板是这条线的**形态来源** ⇒ 一个自身还红的样板立不住。
+	//   ⇒ 四条都**逐个读源码**后判定（不是抄工具输出），机制与后果写在下面。
+	"admin/credential_monitor.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "1 处（384 行）：`COALESCE((SELECT COUNT(*) FROM ` + " +
+			"`dbpkg.SessionFamilyCredentialCountSourceSQL(\"c.id\")` + ` q), 0) AS total_requests`。" +
+			"★ 该 helper（db/request_logs_view_schema.go:761）返回**会话族两臂**：" +
+			"`(SELECT t.credential_id FROM public.session_turns_hot t WHERE …) UNION ALL " +
+			"(SELECT t.credential_id FROM public.session_turns t WHERE …)` ⇒ 两个关系名都是**会话族**。",
+		Consequence: "凭据面板的 total_requests 走**会话族窄投影**（session_turns_hot ∪ session_turns），" +
+			"不读 v1 族 ⇒ 退役 v1 对它无影响。" +
+			"⚠ 该文件另有 `request_logs_with_current_month` 的**字面量**读法（546 行的 canonical 臂、" +
+			"468 行的 p95 live 腿）—— 那些是**字面量**读点，不在本工具的口径里（本工具只管" +
+			"「关系名不是字面量」的拼接点）。",
+	},
+	"bg/shared_pick.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "1 处（52 行）：`FROM ` + `dbpkg.SessionFamilyMostUsedClientModelSourceSQL()` + ` ` + alias。" +
+			"★ 该 helper（db/request_logs_view_schema.go:836）返回**会话族两臂**：" +
+			"`(SELECT … FROM public.session_turns_hot t LEFT JOIN public.session_turn_details_hot d …) UNION ALL " +
+			"(SELECT … FROM public.session_turns t LEFT JOIN public.session_turn_details d …)` ⇒ 会话族。",
+		Consequence: "探针选型（most-used client_model）走会话族窄投影（session_turns_hot+details_hot ∪ " +
+			"session_turns+details）⇒ 不读 v1 族 ⇒ 退役 v1 对它无影响。" +
+			"⚠ 该文件其余 SQL（158/197/237 行）都是**字面量**读（credential_model_bindings / provider_models），" +
+			"与 v1 无关、也不在本工具口径内。",
+	},
+	"internal/sessionfamily/turns_reads.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "3 处（262、271、281 行）：`TurnConflictLookupSQL` / `TurnByRequestSQL` / `TurnsBySessionSQL` " +
+			"都走 `TurnsArmsSQL`（236 行）⇒ 拼出 `(SELECT … FROM public.session_turns_hot hot …) UNION ALL " +
+			"(SELECT … FROM public.session_turns)`。★ **两个关系名都是字面量** ⇒ 工具能解析 ⇒ 判 canonical。",
+		Consequence: "写路径的幂等检查与冲突读回（按 (tenant_id, request_id) / (tenant_id, session_id) 读轮次）" +
+			"读的是**会话族两臂** ⇒ 与 v1 退役无关。" +
+			"⚠ hot 臂带**相关反连接**（`antiJoinPredicate`，剔除已晋级到父表的重复行）⇒ " +
+			"「该键是否存在」的答案与视图形态恒等（文件头 49~57 行给了双向论证）。",
+	},
+	"internal/sessionfamily/exists_by_key.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "1 处（69 行）：`\"(SELECT 1 FROM \" + src + \" WHERE tenant_id = \" + tenantExpr + …`。" +
+			"★ `src` 是**形参** ⇒ 工具解析不到 ⇒ 判 unresolved。" +
+			"★★ 但**唯一的两个调用点在同文件 71 行**：`leg(\"public.session_turns_hot\")` 与 " +
+			"`leg(\"public.session_turns\")` ⇒ **两个入参都是会话族字面量**，没有第三个入参。",
+		Consequence: "写路径每请求的幂等存在性检查，读**会话族两臂**（session_turns_hot ∪ session_turns）⇒ " +
+			"与 v1 退役无关。★ 该文件刻意**不用视图**（22~57 行：视图形态多一次相关反连接 + 12 处分区引用，" +
+			"252 生产规模实测规划时间中位 ~67 ms vs 两臂形态 ~4 ms）⇒ 两臂形态是**更省**的那一支，" +
+			"不是退化。",
 	},
 }
 
@@ -1493,6 +1554,38 @@ var documentedSnapshot = bucketSnapshot{
 	//      （唯一两个调用点的入参都是 session_turns_hot / session_turns）。
 	//   ⚠ **方向判据逐条核过**：没有任何一个桶变小 ⇒ 不是「扫描范围被改小/
 	//     解析失败被吞」；全部 5 处的 resolved 关系名都是会话族 ⇒ 无 v1 读方。
+
+	// ★ 2026-10-28（r1040「事实源漂移」线）：147 → 156。
+	//   **不是只改数字** —— 逐文件逐桶对拍过（两个时点各跑一次本工具）：
+	//
+	//   ① 方向判定（先问「桶有没有变小」）：
+	//      v1 0→0、v1 臂 0→0（**两个 v1 桶逐字未动** ⇒ 没有新的 v1 读方）、
+	//      canonical 59→62 文件 / 125→130 处、unresolved 13→14 文件 / 22→26 处
+	//      ⇒ **没有任何一个桶变小** ⇒ 不是「扫描范围被改小 / 解析失败被吞」
+	//      ⇒ 是「把看不见变成看得见 + 上游新增读点」⇒ 按本文件自己的规则可改数字。
+	//
+	//   ② 成因（逐个文件读过源码，并回溯到上游提交）：
+	//      · admin/credential_monitor.go（+1，canonical）—— 5a58cde8b
+	//        「凭据面板 total_requests 改走底表两臂窄投影」；
+	//      · bg/shared_pick.go（+1，canonical）—— a321cd963
+	//        「R50 探针选型读点改走会话族窄投影」；
+	//      · internal/sessionfamily/turns_reads.go（+3，canonical）—— 465a2d7c4
+	//        「R172 会话族轮次读点去视图化（两臂窄投影直查）」；
+	//      · internal/sessionfamily/exists_by_key.go（+1，unresolved）—— e5651bd69
+	//        「热路径 turn INSERT 的幂等检查改走两臂直查」；
+	//      · db/request_logs_view_schema.go（unresolved 处数 +4）—— 同上那轮的
+	//        写路径改写（该文件在 R152 已登记，此处只是处数变多）。
+	//      ⇒ **五处新拼接点读的都是会话族**（session_turns_hot / session_turns）⇒ 无 v1 读方。
+	//
+	//   ③ ★★ 本轮附带查出的一条**更值得记的事**：
+	//      文档里这组数字（147 / canonical 125 / unresolved 22）**既不等于**
+	//      快照所在提交 a2ac50e37 的实测（142 / 122 / 20），**也不等于**今天的实测
+	//      （156 / 130 / 26）⇒ ⇒ **它在一次合并之后就没有再被对拍过**，
+	//      而「合并之后没人重测」这件事本身**没有任何东西会报警**。
+	//      ⇒ 这正是「事实源漂移」家族的**最纯形态**：数字没有错，
+	//      只是**不再描述任何一棵存在的树**。
+	//      ⇒ 本轮把它改成**今天的实测值**，并把上面的成因写进注释 ——
+	//      下一次漂移时，**下一个读这段注释的人能知道上一次是怎么判的**。
 	TotalSites: 156,
 	V1Files:    0,
 	V1Sites:    0,
