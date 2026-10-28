@@ -25926,3 +25926,46 @@ R172 的守卫把「hot ∩ 父表 = 0」从**硬前提**降级成**观察项**�
 > ★ **本节证据**：★ 会话（goal，2026-10-28）；★ 审计档 `docs/audit/2026-10-28-输出策略拦截反馈明确化与审核队列.md`；
 > ★ 修复（本轮提交）：`domains/streaming/policy_block_feedback.go`（message 组装 + 审核登记）、`domains/sanitizerules/review_queue.go`、`admin/sanitize_rules_hardblock.go`（运行时开关 + 审核入口）、`ComplianceIssue.Digest`/`PolicyBlockError{Path,Digest}` 摘要贯通、非托管 OutputBlock 补清单闸、`SanitizeRulesView.vue` 两页签 + 8 语种 +22 键；
 > ★ Go 新判据 15 条（streaming 8 + sanitize 3 + admin 4）；vitest 2925 通过 / 2 跳过。
+
+## §514 ·（原拟 §501，与上游 r1039 三轮/拦截反馈轮连续撞号，跨段让号） 模态诊断批判式审计遗留收口轮（goal · 2026-10-28）—— ★★★★ **「不可行」的测量要先找到 panic 点再下结论；对拍域要取运行时事实值域而不是想象全集；不可达的分歧也要登记在案；身份链的闸不能只在一条路径上存在** ★★★★
+
+- ★★★★ **「不可行」的测量要先找到 panic 点再下结论**：上一轮（§497）判
+  「serveWithExecutor panics on a bare ChatHandler, measured」⇒ 接线守卫只能
+  做文本形态。本轮把 panic 栈打出来看了：崩点在零候选分支**之前**的 preStream
+  defer `h.auditor.Emit`——全链路唯一没有 nil 保护的硬依赖。补一个无副作用的
+  `audit.LogSink{}`，三条协议（chat/messages/responses）的真实入口管线
+  （serveWithExecutor / serveHTTPInner）就全部全链路可达。⇒ ★ 一次
+  「measured panics」的结论里藏着一个没被追问的「为什么 panic」；把 panic 点
+  补掉，比接受不可行便宜得多。⇒ ★★ 决定性对照：把守卫改成
+  `mismatch != nil && false`（调用仍在原位、恒不触发）——**文本守卫仍绿，
+  行为测试当场红（503）**。这正是「文本守卫覆盖不了纯语义变异」的实证：
+  两个守卫同族不同牙，缺一不可。
+- ★★★★ **对拍域要取【运行时事实值域】，不是想象全集**：给 ModalityAccepts 与
+  candidateQuerySQLBase 做逐格对拍时，「全部模态笛卡尔积」会立刻撞上不可达格
+  （multimodal 请求 / chart 之类未知值 / image 登记侧不存在）。正确做法是把
+  两轴都钉在事实上：请求侧 = detectRequestModality 的产物 ∪ 各专用端点的
+  字面量 ∪ ""；登记侧 = DB CHECK 约束的枚举（211 现网实测对拍：image 在
+  请求侧存在、登记侧不存在——admin validModalities 与 CHECK 一致）。
+  ★★ 对拍域本身要在测试里写明依据（哪个函数产什么值、哪个端点传什么字面量），
+  否则下次扩值域的人不知道先统一两臂再扩域。
+- ★★★ **不可达的分歧也要登记在案**：Go default 臂与 SQL 兜底臂在
+  (multimodal, embedding) 格语义相反（true/false）——今天不可达（诊断入口
+  收不到 embedding 请求值），但「不可达」是接线形状给的，不是类型系统给的。
+  处置不是修（会改变 API 语义）也不是藏（下个人对拍时会再撞一次），而是
+  在锁步门头注释里写明格子、写明不可达的理由、写明扩域前提。★ 与
+  「潜伏缺陷 ≠ 无害」（§497 第一条）互为镜像：那条说「当前没咬人也要造出
+  能让它现形的夹具」，这条说「判定不修的分歧要留下判定的证据链」。
+- ★★★ **身份链的闸不能只在一条路径上存在**：DD_BUILD_SHA 的取号在部署机侧
+  （git 树上成立），转发只覆盖 --via 路径；目标机直跑（tar 同步树无 .git）
+  时 `git rev-parse || true` 静默置空 ⇒ 下游三道闸（槽戳改写 / 部署后版本
+  核验 / 切流后公网身份核对）**全部以 `[[ -n ]]` 前缀静默跳过** ⇒ /version
+  沿用别人的旧戳说谎。⇒ ★ 修法是给缺口路径装 fail-closed（die + 两条出路），
+  不是把三道闸逐个改成可空——闸的数量不重要，闸共享的前置存在性才重要。
+- ★★ **生成器产物冲突的解法是「重刷」不是「手挑」**：合并 70 提交撞
+  admin-routes.txt（快照门数据）⇒ 取任一侧 + 生成器 `--update-snapshot`
+  重刷 ⇒ 门绿且 diff 恰好是行号漂移。与「守卫先在真实文件上跑过」同理：
+  数据冲突的正确仲裁者是生成器，不是合并人。
+- ★★ **夹具漂移是三层叠加的**（providers.name 列不存在 × credentials.label
+  NOT NULL × model_offers 是视图不可 INSERT）：第一层修完才暴露第二层。
+  「夹具对齐」的完成判据是测试真跑过，不是 grep 过；红-绿的「绿」要等
+  全部已知漂移修完（§497「修了一半不重跑就带出去」的夹具版）。
