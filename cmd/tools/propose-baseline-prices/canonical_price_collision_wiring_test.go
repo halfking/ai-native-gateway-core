@@ -26,6 +26,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/gocache"
 )
 
 // collisionProposal 是这条判据要读的那几栏。
@@ -61,7 +63,10 @@ func runProposalToolForTest(t *testing.T, args ...string) ([]byte, string) {
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	cmd.Stdout = os.Stdout
-	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	// ★★ r1047 轮（★ 2026-10-28）：★ `go run .` 会编译并运行本包 ⇒ ⇒ 子进程走
+	// ★★ 【专用 GOCACHE】⇒ ⇒ 不再往用户的全局缓存里写产物
+	// ★★ （★ 理由与读数见 `internal/gocache` 的包注释）。
+	cmd.Env = append(gocache.Env(gocacheRoot(t), "propose-baseline-prices"), "GOFLAGS=")
 
 	done := make(chan error, 1)
 	if err := cmd.Start(); err != nil {

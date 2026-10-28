@@ -51,6 +51,9 @@ package ursm_test
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -75,6 +78,26 @@ const (
 	// ★ ⇒ ⇒ 清理后下一轮是**冷编译**（★ 实测 213.35s vs 153.99s，★ 冷热差 ~1.4x）
 	// ★ ⇒ ⇒ **代价可接受**，★ 而「磁盘被撑爆」的代价不可接受。
 	hollowGoCacheMaxBytes int64 = 6 << 30
+
+	// hollowGoCacheCapFloor 是【专用缓存上限】允许的**下界**（★ 1 GiB）。
+	//
+	// ★★ **为什么要有下界**：★ 上限若低于 1 GiB ⇒ ⇒ 掏空门每跑一次（新树状态）
+	// ★★ 就必然超限 ⇒ ⇒ **每次都全清** ⇒ ⇒ 门**永远冷编译**（★ 实测冷 213.35s
+	// ★★ vs 热 153.99s ⇒ ★ 冷热差 ~1.4x）⇒ ⇒ ⇒ 那个数写小了，门会恒定地慢。
+	hollowGoCacheCapFloor int64 = 1 << 30
+
+	// hollowGoCacheCapCeiling 是【专用缓存上限】允许的**上界**（★ 16 GiB）。
+	//
+	// ★★ **为什么是 16 GiB**：★ 实测每「新树状态」往缓存里塞 ~1.3 GB ⇒ ⇒
+	// ★★ 16 GiB ≈ 12 个新树状态 ⇒ ⇒ 本机实测磁盘余量 75 GiB（★ 占用 92%）
+	// ★★ ⇒ ⇒ 16 GiB 占余量 ~21% ⇒ ⇒ 仍在【一把可回收】的范围内（★ `.build-local/`
+	// ★★ 在 `.gitignore` 里 ⇒ ⇒ `git clean -xfd` 一把回收）。
+	//
+	// ★★★ **上界的作用是【挡住「无界」这个形态】**（★ `math.MaxInt64` /
+	// ★★★ `math.MaxInt32` / `1<<40` 这类）⇒ ⇒ ★★ **不是**把上限钉死成 6 GiB
+	// ★★★ ⇒ ⇒ 那样会让「有意调参」也变红 ⇒ ⇒ 门变成「不许调参」的官僚门
+	// ★★★ ⇒ ⇒ ★★ **调参的自由保留在带内**（★ 带外才是缺陷）。
+	hollowGoCacheCapCeiling int64 = 16 << 30
 )
 
 var (
@@ -208,7 +231,7 @@ func hollowRepoRootNoT() (string, error) {
 	return root, nil
 }
 
-// ── 判据（★ 三条，★ 必须成对） ──
+// ── 判据（★ 五条，★ 必须成对） ──
 
 // TestHollowoutBuildUsesIsolatedGoCache —— ★★ 正向断言：
 // ★ 掏空门子进程用的 `GOCACHE` 必须是**专用目录**，且**不是**环境里那个。
@@ -316,4 +339,158 @@ func envValueFirst(env []string, key string) string {
 		}
 	}
 	return ""
+}
+
+// ── ④ 判据：★ 上限**常量本身**（★ r1047 轮补的已知缺口） ──
+
+// TestHollowoutGoCacheSizeCapIsBounded —— ★★ 上限**常量本身**必须落在有界区间里。
+//
+// ★★★★ **为什么这道门必须存在（★ 已知缺口，★ r1046 轮自己写下的）**：
+// ★★★★ 既有那三条判据里，「剪枝」那条钉的是【**函数行为**】（★ 给定 maxBytes
+// ★★★★ 时剪不剪）⇒ ⇒ ★★★★ **常量本身**从来没有任何门管 ⇒ ⇒ ★★★★ 有人把
+// ★★★★ `hollowGoCacheMaxBytes` 改成 `math.MaxInt64` ⇒ ⇒ ★★ 剪枝函数**行为
+// ★★★★ 完全正确**（★ 该剪的照剪、该不剪的不剪）⇒ ⇒ ★★ **既有的门一条都不红**
+// ★★★★ ⇒ ⇒ ★★ 而专用缓存重新变成**无界增长** ⇒ ⇒ ⇒ 磁盘又会被撑爆
+// ★★★★ ⇒ ⇒ ★★ 而**红的原因仍然不指向真正的原因**（★ 是磁盘，不是门有洞）。
+//
+// ★★ **为什么是「带」而不是「等于 6 GiB」**：★ 钉死成 6 GiB ⇒ ⇒ 任何有意
+// ★★ 的调参（★ 磁盘小的机器想调小、缓存增长变快了想调大）都会变红 ⇒ ⇒ 门变成
+// ★★ 「不许调参」的官僚门 ⇒ ⇒ ★★ 而门真正要挡的是【无界】这个形态 ⇒ ⇒
+// ★★ **带内自由、带外是缺陷**。
+func TestHollowoutGoCacheSizeCapIsBounded(t *testing.T) {
+	got := hollowGoCacheMaxBytes
+
+	if got < hollowGoCacheCapFloor {
+		t.Fatalf("★ 专用缓存上限 %d 字节（%.2f GiB）低于下界 %d 字节（%.2f GiB）⇒ ⇒ "+
+			"掏空门每跑一次就必然超限 ⇒ ⇒ **每次都全清** ⇒ ⇒ 门永远冷编译"+
+			"（★ 实测冷 213.35s vs 热 153.99s）",
+			got, float64(got)/(1<<30),
+			hollowGoCacheCapFloor, float64(hollowGoCacheCapFloor)/(1<<30))
+	}
+	if got > hollowGoCacheCapCeiling {
+		t.Fatalf("★ 专用缓存上限 %d 字节（%.2f GiB）超过上界 %d 字节（%.2f GiB）⇒ ⇒ "+
+			"专用缓存**无界增长** ⇒ ⇒ 又会撑爆磁盘"+
+			"（★ 上界的作用是挡住 math.MaxInt64 / math.MaxInt32 这类形态）",
+			got, float64(got)/(1<<30),
+			hollowGoCacheCapCeiling, float64(hollowGoCacheCapCeiling)/(1<<30))
+	}
+}
+
+// ── ⑤ 判据：★ 上限必须【真的接到剪枝上】 ──
+
+// hollowCapArgKind 分类【剪枝调用的上限实参】的形态。
+//
+// ★ "pinned"    = 恰好是被钉住的常量标识符（★ **唯一允许的「生产上限」形态**）
+// ★ "synthetic" = 纯整数字面量的算术表达式（★ 如 `1<<20` / `1024` / `1`）
+// ★              ⇒ ⇒ 单测里那种「故意用小上限造出超限」的**假上限**
+// ★ "bypass"    = 其余一切（★ 如 `math.MaxInt64` / 某个变量 / 某个函数调用）
+// ★              ⇒ ⇒ **绕过了**被钉住的上限
+func hollowCapArgKind(e ast.Expr) string {
+	if ident, ok := e.(*ast.Ident); ok && ident.Name == "hollowGoCacheMaxBytes" {
+		return "pinned"
+	}
+	if hollowIntLiteralExpr(e) {
+		return "synthetic"
+	}
+	return "bypass"
+}
+
+// hollowIntLiteralExpr 判「这个表达式是不是纯整数字面量的算术组合」。
+func hollowIntLiteralExpr(e ast.Expr) bool {
+	switch v := e.(type) {
+	case *ast.BasicLit:
+		return v.Kind == token.INT
+	case *ast.ParenExpr:
+		return hollowIntLiteralExpr(v.X)
+	case *ast.UnaryExpr:
+		if v.Op != token.SUB && v.Op != token.ADD {
+			return false
+		}
+		return hollowIntLiteralExpr(v.X)
+	case *ast.BinaryExpr:
+		return hollowIntLiteralExpr(v.X) && hollowIntLiteralExpr(v.Y)
+	}
+	return false
+}
+
+// TestHollowoutGoCacheSizeCapReachesPrune —— ★★ 上限必须【真的接到剪枝上】。
+//
+// ★★★★ **为什么「常量有界」还不够**：★ 常量有界 ⇒ ⇒ 上限**本身**是可信的
+// ★★★★ ⇒ ★★ 但若**剪枝那一步没有用它**（★ 例如调用点改传 `math.MaxInt64`，
+// ★★★★ 或者干脆把剪枝调用删掉）⇒ ⇒ ★★ 上限就是一个【没人读的装饰】
+// ★★★★ ⇒ ⇒ ★★ 专用缓存照样无界增长 ⇒ ⇒ ⇒ 而**既有的门一条都不红**。
+//
+// ★★★★ **为什么判据用 AST 而不是正则**：★ 正则会把【注释里写的调用】也算进去
+// ★★★★ ⇒ ⇒ ★★ 一条注释就能把这条门变成假绿 ⇒ ⇒ ★★ AST 只认【真的调用表达式】
+// ★★★★ ⇒ ⇒ 注释天然不进判据（★ `go/parser` 把注释挂在 `File.Comments` 上，
+// ★★★★ 不在表达式树里）⇒ ⇒ ★★ **判据与「注释里的假调用」天然免疫**。
+//
+// ★★ **判据的两条**：
+// ① 至少有一处调用把**被钉住的常量**接到剪枝上（★ ⇒ 上限不是装饰）；
+// ② 没有任何一处调用**绕过**它（★ ⇒ 上限是唯一的真值）。
+func TestHollowoutGoCacheSizeCapReachesPrune(t *testing.T) {
+	root := hollowRepoRoot(t)
+	dir := filepath.Join(root, "scripts", "ursmcheck")
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("读 %s 失败：%v", dir, err)
+	}
+
+	fset := token.NewFileSet()
+	var pinned, synthetic, bypass []string
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("读 %s 失败：%v", path, err)
+		}
+		// ★ 预筛：只有【提到剪枝函数】的文件才值得解析（★ 162 个文件逐个解析太慢）。
+		if !strings.Contains(string(src), "pruneHollowGoCache") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("解析 %s 失败：%v", path, err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			ident, ok := call.Fun.(*ast.Ident)
+			if !ok || ident.Name != "pruneHollowGoCache" {
+				return true
+			}
+			where := fmt.Sprintf("%s:%d", e.Name(), fset.Position(call.Pos()).Line)
+			if len(call.Args) != 2 {
+				bypass = append(bypass, where+"（★ 实参数不是 2 个）")
+				return true
+			}
+			switch hollowCapArgKind(call.Args[1]) {
+			case "pinned":
+				pinned = append(pinned, where)
+			case "synthetic":
+				synthetic = append(synthetic, where)
+			default:
+				bypass = append(bypass, where+"（★ 上限实参绕过了被钉住的常量）")
+			}
+			return true
+		})
+	}
+
+	if len(pinned) == 0 {
+		t.Fatalf("★ 本包里没有任何一处剪枝调用把**被钉住的上限常量**接上去"+
+			"（★ 实测：单测里的假上限 %d 处、绕过 %d 处）⇒ ⇒ "+
+			"上限是个没人读的装饰 ⇒ ⇒ 专用缓存照样无界增长",
+			len(synthetic), len(bypass))
+	}
+	if len(bypass) > 0 {
+		t.Fatalf("★ %d 处剪枝调用**绕过**了被钉住的上限（★ ⇒ 上限不是唯一真值）：\n  %s",
+			len(bypass), strings.Join(bypass, "\n  "))
+	}
 }
