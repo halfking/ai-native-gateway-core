@@ -58,6 +58,16 @@ func extractClientType(r *http.Request) string {
 	//   "minimax" appearing in other Anthropic forks.
 	case strings.Contains(ua, "minimax-code/"), strings.Contains(ua, "minimax-code-"):
 		return "minimax-code"
+	//   2026-10-29 production verification (211 llm.itestu.cn): the client
+	//   on the wire today sends bare "MiniMaxCode" (no hyphen, no version —
+	//   23 requests in 12h, docker logs http_request). The hyphenated
+	//   patterns above never matched, so the header/UA preferred path was
+	//   dark for this client and detection fell through to the body-marker
+	//   fallback (real bodies carry no metadata ⇒ effectively unknown).
+	//   "minimaxcode" as a substring cannot collide with the hyphenated
+	//   forms (the hyphen breaks the match), so both spellings coexist.
+	case strings.Contains(ua, "minimaxcode"):
+		return "minimax-code"
 	//   DeepSeek Code ships User-Agent "DeepSeek-Code/{ver}" /
 	//   "DeepSeek-IDE/{ver}" / "deepseek-cli/{ver}". Match on "deepseek-"
 	//   which is a stable prefix across all of them. Note: this only

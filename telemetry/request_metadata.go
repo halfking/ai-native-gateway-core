@@ -427,6 +427,12 @@ func ExtractAgentNameFromRequest(r *http.Request, body []byte) string {
 		// 2026-09-21 audit: domestic coding-agent clients.
 		case strings.Contains(uaLower, "minimax-code"):
 			return "minimax-code"
+		// 2026-10-29 production verification (211): the client on the wire
+		// sends bare "MiniMaxCode" — matched here so client stats don't
+		// misattribute real MiniMax Code traffic as unknown. Same reasoning
+		// as the streaming-side table (client_fingerprint.go).
+		case strings.Contains(uaLower, "minimaxcode"):
+			return "minimax-code"
 		case strings.Contains(uaLower, "deepseek-code"), strings.Contains(uaLower, "deepseek-ide"),
 			strings.Contains(uaLower, "deepseek-cli"):
 			return "deepseek-code"
