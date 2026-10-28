@@ -30,6 +30,11 @@ var clientModelPrefixes = map[string][]string{
 	"zcode":         {"glm"},
 	"minimax-code":  {"minimax"},
 	"deepseek-code": {"deepseek"},
+	// RISK-6（2026-10-29）：Claude Code↔Claude 原厂对。claude-code 说
+	// anthropic-messages 协议，主路径走 executor_anthropic.go（Q4 直传，
+	// 无协议转换）；模型名族 claude-*（claude-sonnet-5 / claude-opus-4.5 /
+	// claude-haiku-…，宿主前缀形态 anthropic/claude-… 已由 Match 剥离）。
+	"claude-code": {"claude"},
 }
 
 var enabled = sync.OnceValue(func() bool {

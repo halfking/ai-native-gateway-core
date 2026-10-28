@@ -16,6 +16,11 @@ func TestMatch_BuiltinPairs(t *testing.T) {
 		{"minimax-code", "MiniMax-M2.7", true}, // 大小写不敏感
 		{"deepseek-code", "deepseek-chat", true},
 		{"deepseek-code", "deepseek-reasoner", true},
+		// RISK-6（2026-10-29）：第四条内置原生对 Claude Code↔Claude
+		{"claude-code", "claude-sonnet-5", true},
+		{"claude-code", "claude-opus-4.5", true},
+		{"claude-code", "Claude-Haiku-4", true},            // 大小写不敏感
+		{"claude-code", "anthropic/claude-sonnet-5", true}, // 宿主前缀容忍
 		// 同名前缀但非「前缀-」段 —— 不得误判
 		{"zcode", "glmm-x", false},
 		{"zcode", "glmxx", false},
@@ -23,9 +28,10 @@ func TestMatch_BuiltinPairs(t *testing.T) {
 		{"zcode", "deepseek-chat", false},
 		{"minimax-code", "glm-5.3", false},
 		{"deepseek-code", "kimi-k2", false},
+		{"claude-code", "minimax-m2", false},
+		{"claude-code", "glm-5.3", false},
 		// 非原生客户端打到原生模型 —— 也不是
 		{"cursor", "glm-5.3", false},
-		{"claude-code", "minimax-m2", false},
 		{"unknown", "glm-5.3", false},
 		{"", "glm-5.3", false},
 		// 空模型

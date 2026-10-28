@@ -14412,3 +14412,39 @@ glm-5.3-flash 是否真支持 vision（上游页面复核，`BIG5_TRAPS` 式人�
 > 登记不越界）。★ 变异臂：折叠键退回单键 ⇒ 拆分测试红（1 行 180 请求精确复现）
 > ⇒ 还原绿 ⇒ md5 一致；`go test ./admin/` ok 117.4s。
 > ⇒ 审计档 §9（同文件追加）；提交 273e4926a + 671e70ac1。
+**2026-10-29 ㊸ RISK-6 收口轮：Anthropic 协议腿（Claude Code↔Claude）接直通 + 逐站点盖章**：
+★ 承接 ㊲ 登记的 RISK-6（「该腿仍走既有改写路径 ⇒ 独立一轮；机制与本轮相同」）⇒
+照 ㊶ 教训**先枚举该腿全部序列化站点再补盖章，别按 paramguard 数**。
+> ⇒ ★ **nativepair 表 +1 行**：`"claude-code": {"claude"}`（第 4 条内置原生对；
+> 宿主前缀 anthropic/claude-… 由 Match 既有剥离容忍）⇒ chat 腿既有门控自动覆盖
+> claude-code 经 openai 宿主打 claude 的形态（表级测试钉住，无需新代码）。
+> ⇒ ★★ **生效点盘点（按「谁做序列化」数）**：请求侧 IR 序列化站点全仓 **5 处**
+> （chat 腿 3 + inline 1 + anthropic 腿 1）——anthropic 腿唯一站点
+> `SerializeAnthropic`（prepareAnthropicRequestBody IR 分支）**漏盖** ⇒ 本轮补
+> `irReq.NativePassthrough`（65d24d0df 在 chat 腿修的同族缺陷）；全仓 grep
+> `NativePassthrough = ` 与 Serialize 站点逐一对拍无第二处漏盖。
+> ⇒ ★ **S2/S3 门控**（chat 腿同款豁免）：SanitizeAnthropicTools（两分支）原生对跳过
+> （工具形重写族，sanitize 重建丢顶层自定义键）；finalizeAnthropicRequestBody 的
+> paramguard(DialectAnthropic)+reqprobeApplyLearned 原生对跳过（学习式预剥离会让
+> 一次瞬态 400 把原生参数静默剥离 24h）。S4/S5 结构性变换（FixAnthropicMessages /
+> 模型替换 / 压缩 / repairOutboundToolHistory）**保留**；S6 响应侧无请求盖章语义。
+> ⇒ ★★ **靶字段必须按目标方言 knownBy 真值选**：Q3 对照臂初版用
+> `CatalogCode:"minimax"` 不裁 —— `BaseProtocol(DialectMiniMax)` 继承 openai-chat
+> 基协议 ⇒ moderation 被认为「认识」⇒ 放行；换 anthropic 目录（DialectAnthropic
+> 不继承）后两臂分离 ⇒ **「这个方言裁不裁」要查 BaseProtocol 继承链，不能只看
+> Dialects 白名单**。
+> ⇒ ★ 自证 3+1 测试（Q4 paramguard / Q4 工具形 / Q3 盖章 + 表级 8 例），变异臂
+> **3/3**（摘章 / 恢复 paramguard / 恢复 sanitize ⇒ 各自红且隔离 ⇒ 还原 md5 一致）；
+> ★ 首次 M3 无效的两个坑：perl 只替第一处（Q4 走的 legacy 分支没被变异）+
+> `(cached)` 结果不作数 ⇒ **变异臂一律 `-count=1` 且变异面要覆盖测试真实走的分支**。
+> ⇒ ★ 读数：build ✔；nativepair/paramguard/paramreg/executors `-count=1` 全绿；
+> 共享 go-build 缓存竞态复发一次 ⇒ `go clean -cache` 恢复（R34 先例）。
+> ⇒ ★★ **语义边界（如实记）**：本腿 `anthropicSameCandidateStripRetry=false`（P0-B
+> 契约）⇒ 原生对被上游硬拒时**无剥参重试回退 = 诚实失败**（修法是能力表不是恢复钳制，
+> 与 RISK-1 同语义）；Claude Code 无 body marker ⇒ 无 header/UA 形态识别不出 ⇒
+> 保守不直通（RISK-7 既有语义）；**RISK-2 不动**（Q3 IR 往返的工具顶层键丢失是
+> 全客户端一致既有行为，只在 S2 门控第二遍 sanitize，不在原生对下特判 IR 解析）。
+> ⇒ ★ **未做（如实记）**：真机部署验证（照 ㊶ 先例，部署后按 claude-code 实流量
+> 复核：① 首发 body 厂商参数保真；② 非原生零变化）；RISK-2 / RISK-1 留独立轮。
+> ⇒ 审计档 `docs/audit/2026-10-29-RISK6-anthropic腿直通轮.md`；
+> 通用式见 `LESSONS.md` **§536**（并行会话占 §535 并留 §532~534 缓冲 ⇒ 跨号取 §536）。
