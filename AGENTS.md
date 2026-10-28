@@ -12848,8 +12848,25 @@ ursm 仪表（仍在 ursmcheck 轨）；probe necessity 索引 93% 读放大（3
 >   ★ ★ 两面 DELETE 的仍是 r1043 新立的那道门 ⇒ ⇒ **以本轮的门为准**。
 >   ★ ★ 另采上游一条**属实**的补充：★ 「DELETE FROM 不算读」这条排除本身有正反对照
 >   ★ ★ （★ `TestBareParentReadIgnoresPairedDelete`，★ 同文件）⇒ ★★ 缺的只是**覆盖面**。
+> ★★★ **慢门超时预算**：★ 全量 `go test ./...` 首次跑出 `scripts/ursmcheck` 包
+>   ★★★ `panic: test timed out after 10m0s` ⇒ ★ 隔离跑（`-timeout=1800s`）= **1011.711s ok**
+>   ★ ⇒ ★★ **它没坏，它只是慢** ⇒ 而默认单包超时 10 分钟 ⇒ ⇒ **必然腰斩**。
+>   ★★ 而腰斩的代价不是「红」：★ `testing` 的超时是 **alarm goroutine 里的 panic**
+>   ★ ⇒ 其它 goroutine 的 `defer` **不执行** ⇒ ⇒ 掏空法门正在**真的掏空仓内被跟踪的
+>   ★ `.tsv`** ⇒ ⇒ ★★ **被跟踪的台账静默留空**（★ `verify.sh` 2026-10-24 注释写的就是它）。
+>   ★★ 仓内**早就记着余量快没了**：★ `shell_fullwidth_var_gate_test.go` 写着该包实测
+>   ★ **840.111s / timeout 900s**（★ 余量只剩 ~60s）⇒ ★★ **本轮只是跨过了线**。
+>   ★ 修法：★ 预算 **900s → 1800s**（★ `verify.sh:166` 全量腿 + `Makefile:213`
+>   ★ `guards-ursmcheck` 腿，★ ★ 两处必须同步 ⇒ ★★ 否则慢门与官方门给出不同的结论），
+>   ★ 覆盖上界 1011.711s 并留 ~1.8x 余量；★ 顺带同步 4 处**当前事实性**陈述
+>   ★ （`admin/extension_points_test.go` ×2 / `ci_carrier_truth_test.go` ×1 /
+>   ★ `measure-selfcreated-cleanup.sh` ×1）⇒ ★★ **历史测量记录不动**（★ 改它就是篡改历史）。
+>   ★★ **这不是「把阈值调大以让检测变松」**：★ 超时是 harness 的**杀开关**，★ 调大它
+>   ★ ★ 不会让任何一道门从红变绿 ⇒ ★★ 它只影响「健康但慢的包会不会被腰斩」；
+>   ★ ★ ★★ 而**唯一被允许的修法**是调预算（★ `tests/verify_cgo_convention_test.sh`
+>   ★ ★ 禁止拆开 `go test ./...` 的目标集）⇒ ★★ **动契约前先找那条钉住契约的门**。
 > ⇒ 审计档 `docs/audit/2026-10-28-r1044-合并收口与登记表自身重复.md`（9 节）；
->   通用式见 `LESSONS.md` **§493**（★ 七条通式）。
+>   通用式见 `LESSONS.md` **§493**（★ 八条通式）。
 
 ## ㉟ R174 轮（2026-10-28）· canonical 视图的「分区裁剪盲区」（★ 测量可以否证方案；★ 「读了更少的数据」≠「同数据更快」；★ 加过滤不等于更快）
 
