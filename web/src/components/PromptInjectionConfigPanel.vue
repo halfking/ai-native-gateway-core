@@ -604,7 +604,11 @@ const thresholdInvalid = computed(() => {
 .action-bar strong { font-size: 14px; }
 .meta { color: var(--muted); font-size: 11px; margin-left: 8px; }
 .panel-subtitle { color: var(--muted); font-size: 12px; margin: 0; line-height: 1.5; }
-.config-section { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; }
+/* 2026-10-28 第 31 增量（DESIGN.md §6「卡片套卡片永远不对」）：
+   原来这里是一张**白卡**（底色 + 描边 + 圆角 + 内边距），里面又装着 rule-card。
+   ⇒ 外层盒子降级为「标题 + 内容区」：去表面，间距改用 margin；
+     里面的 rule-card 自己成为这一屏唯一的卡面。 */
+.config-section { margin-bottom: 24px; }
 .section-head { margin-bottom: 8px; }
 .section-head h2 { font-size: 13px; margin: 0; color: var(--text); }
 .section-head p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
@@ -648,7 +652,7 @@ const thresholdInvalid = computed(() => {
 
 /* Rule list */
 .rules-list { display: grid; gap: 8px; }
-.rule-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--bg); transition: opacity 0.15s var(--kx-motion-ease-out); }
+.rule-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--card); transition: opacity 0.15s var(--kx-motion-ease-out); }
 .rule-card.disabled { opacity: 0.55; }
 .rule-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .rule-title { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; }
@@ -671,7 +675,7 @@ const thresholdInvalid = computed(() => {
 
 /* Links */
 .link-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
-.link-card { appearance: none; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; text-align: left; cursor: pointer; display: grid; gap: 4px; color: var(--text); }
+.link-card { appearance: none; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; text-align: left; cursor: pointer; display: grid; gap: 4px; color: var(--text); }
 .link-card:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
 .link-title { font-size: 13px; font-weight: 600; }
 .link-hint { color: var(--muted); font-size: 11px; }

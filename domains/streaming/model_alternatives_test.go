@@ -121,7 +121,7 @@ func TestFindModelAlternatives_NilFinderDegradesCleanly(t *testing.T) {
 	h := &ChatHandler{} // altFinder deliberately nil
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
 
-	got := h.findModelAlternatives(r, &chatRequestBody{}, []byte("{}"), "gpt-5.6-luna", nil)
+	got := h.findModelAlternatives(r, &chatRequestBody{}, []byte("{}"), "gpt-5.6-luna", nil, "")
 
 	if got.RequestedModel != "gpt-5.6-luna" {
 		t.Errorf("RequestedModel = %q, want %q", got.RequestedModel, "gpt-5.6-luna")
@@ -139,13 +139,13 @@ func TestFindModelAlternatives_NilFinderDegradesCleanly(t *testing.T) {
 // well-formed empty result instead of panicking.
 func TestFind_NilReceiverAndNilDB(t *testing.T) {
 	var nilFinder *ModelAlternativesFinder
-	got := nilFinder.Find(context.Background(), "m", "default", "code")
+	got := nilFinder.Find(context.Background(), "m", "default", "code", "")
 	if len(got.Alternatives) != 0 || got.RequestedModel != "m" {
 		t.Errorf("nil receiver produced %+v", got)
 	}
 
 	empty := &ModelAlternativesFinder{} // db == nil
-	got = empty.Find(context.Background(), "m", "default", "code")
+	got = empty.Find(context.Background(), "m", "default", "code", "")
 	if len(got.Alternatives) != 0 {
 		t.Errorf("nil db produced %d alternatives", len(got.Alternatives))
 	}
@@ -397,7 +397,7 @@ func TestFind_DeadContextSkipsQuery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // 客户端在查找开始前就已断开
 
-	got := finder.Find(ctx, "requested-model", "default", "")
+	got := finder.Find(ctx, "requested-model", "default", "", "")
 	if len(got.Alternatives) != 0 {
 		t.Fatalf("alternatives = %d entries, want 0: dead request context must skip the lookup entirely",
 			len(got.Alternatives))
@@ -434,7 +434,7 @@ func (s *stubAlternativesQuery) recordDeadline(ctx context.Context) time.Duratio
 	return time.Until(d)
 }
 
-func (s *stubAlternativesQuery) fn(ctx context.Context, excludeModel, tenantID, taskType string) ([]ModelAlternative, error) {
+func (s *stubAlternativesQuery) fn(ctx context.Context, excludeModel, tenantID, taskType, requestModality string) ([]ModelAlternative, error) {
 	s.mu.Lock()
 	s.calls++
 	n := s.calls
@@ -473,11 +473,11 @@ func TestFind_CacheHitSkipsSecondQuery(t *testing.T) {
 	stub := &stubAlternativesQuery{result: []ModelAlternative{{Model: "alt-a"}, {Model: "Req"}, {Model: "alt-b"}}}
 	finder := &ModelAlternativesFinder{db: &recordingQueryer{}, queryFn: stub.fn}
 
-	got1 := finder.Find(context.Background(), "req", "default", "")
+	got1 := finder.Find(context.Background(), "req", "default", "", "")
 	if len(got1.Alternatives) != 2 {
 		t.Fatalf("first Find alternatives = %d, want 2 (requested model excluded)", len(got1.Alternatives))
 	}
-	got2 := finder.Find(context.Background(), "req", "default", "")
+	got2 := finder.Find(context.Background(), "req", "default", "", "")
 	if stub.count() != 1 {
 		t.Fatalf("queryFn called %d times across two Finds, want 1 (cache hit)", stub.count())
 	}
@@ -511,10 +511,10 @@ func TestFilterAlternatives_ExcludesRequestedAndCaps(t *testing.T) {
 func TestFind_FreshEmptyServedWithoutRequery(t *testing.T) {
 	stub := &stubAlternativesQuery{result: []ModelAlternative{}}
 	finder := &ModelAlternativesFinder{db: &recordingQueryer{}, queryFn: stub.fn}
-	finder.Find(context.Background(), "req", "default", "")
+	finder.Find(context.Background(), "req", "default", "", "")
 	waitForCalls(t, stub, 1)
 	time.Sleep(20 * time.Millisecond) // 给可能误触发的后台重算留窗口
-	got := finder.Find(context.Background(), "req", "default", "")
+	got := finder.Find(context.Background(), "req", "default", "", "")
 	if stub.count() != 1 {
 		t.Fatalf("fresh empty answer must not requery; calls = %d", stub.count())
 	}
@@ -531,13 +531,13 @@ func TestFind_TTLExpiryServesStaleAndRefreshesOnce(t *testing.T) {
 	c.now = func() time.Time { return now }
 	finder := &ModelAlternativesFinder{db: &recordingQueryer{}, cache: c, queryFn: stub.fn}
 
-	if got := finder.Find(context.Background(), "req", "default", ""); got.Alternatives[0].Model != "old" {
+	if got := finder.Find(context.Background(), "req", "default", "", ""); got.Alternatives[0].Model != "old" {
 		t.Fatalf("first find: %+v", got.Alternatives)
 	}
 	stub.result = []ModelAlternative{{Model: "new"}}
 	now = now.Add(2 * time.Minute) // 越过 TTL
 
-	got := finder.Find(context.Background(), "req", "default", "")
+	got := finder.Find(context.Background(), "req", "default", "", "")
 	if got.Alternatives[0].Model != "old" {
 		t.Fatalf("stale value must be served while refreshing; got %+v", got.Alternatives)
 	}
@@ -545,7 +545,7 @@ func TestFind_TTLExpiryServesStaleAndRefreshesOnce(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// 重算完成后：新值在缓存里，且不再发查询。
-	got = finder.Find(context.Background(), "req", "default", "")
+	got = finder.Find(context.Background(), "req", "default", "", "")
 	if stub.count() != 2 {
 		t.Fatalf("post-refresh Find must hit cache; calls = %d", stub.count())
 	}
@@ -568,16 +568,16 @@ func TestFind_SingleflightDeduplicatesBackgroundRefresh(t *testing.T) {
 
 	// 预置一个**带列表**的过期槽（nil 列表=「从未成功」态，按设计会落冷路径，
 	// 那条路径本就不在 singleflight 保护范围内——保护的是后台重算）。
-	c.store(cacheKey("default", ""), []ModelAlternative{{Model: "old"}})
+	c.store(cacheKey("default", "", ""), []ModelAlternative{{Model: "old"}})
 	c.mu.Lock()
-	c.entries[cacheKey("default", "")].computedAt = now.Add(-2 * time.Minute)
+	c.entries[cacheKey("default", "", "")].computedAt = now.Add(-2 * time.Minute)
 	c.mu.Unlock()
 	now = now.Add(2 * time.Minute)
 
 	done := make(chan ModelAlternativesResult, 1)
-	go func() { done <- finder.Find(context.Background(), "req", "default", "") }()
-	time.Sleep(20 * time.Millisecond) // 等后台 goroutine 真的阻塞在 block 上
-	go finder.Find(context.Background(), "req", "default", "") // 竞争者：应只服务 stale
+	go func() { done <- finder.Find(context.Background(), "req", "default", "", "") }()
+	time.Sleep(20 * time.Millisecond)                              // 等后台 goroutine 真的阻塞在 block 上
+	go finder.Find(context.Background(), "req", "default", "", "") // 竞争者：应只服务 stale
 	time.Sleep(30 * time.Millisecond)
 	close(release)
 	<-done
@@ -594,17 +594,43 @@ func TestFind_ColdMissFailureFallsBackToBackgroundRefresh(t *testing.T) {
 	stub := &stubAlternativesQuery{failN: 1, result: []ModelAlternative{{Model: "recovered"}}}
 	finder := &ModelAlternativesFinder{db: &recordingQueryer{}, queryFn: stub.fn}
 
-	got := finder.Find(context.Background(), "req", "default", "")
+	got := finder.Find(context.Background(), "req", "default", "", "")
 	if len(got.Alternatives) != 0 {
 		t.Fatalf("cold miss with failing query must return empty, got %+v", got.Alternatives)
 	}
 	waitForCalls(t, stub, 2) // 同步 1 + 后台 1
 
-	got = finder.Find(context.Background(), "req2", "default", "")
+	got = finder.Find(context.Background(), "req2", "default", "", "")
 	if stub.count() != 2 {
 		t.Fatalf("background-filled cache must serve without requery; calls = %d", stub.count())
 	}
 	if len(got.Alternatives) != 1 || got.Alternatives[0].Model != "recovered" {
 		t.Fatalf("background result not served: %+v", got.Alternatives)
+	}
+}
+
+// TestFind_CacheKeyIncludesModality 是 2026-10-28 合并冲突的回归钉：
+// 上游的缓存重构（key = tenant+taskType）与本轮的模态过滤在同一条缝上相撞，
+// 合并后键不含 modality ⇒ vision 请求命中「含 text-only 模型」的缓存列表，
+// 过滤形同虚设。本钉要求：不同 modality **必须**各发一次查询。
+func TestFind_CacheKeyIncludesModality(t *testing.T) {
+	stub := &stubAlternativesQuery{result: []ModelAlternative{
+		{Model: "text-only-m", DisplayName: "t"}, {Model: "Req"},
+	}}
+	finder := &ModelAlternativesFinder{db: &recordingQueryer{}, queryFn: stub.fn}
+
+	// 同一 (tenant, taskType)、不同 modality：两次都必须真查询。
+	finder.Find(context.Background(), "req", "default", "", "")
+	finder.Find(context.Background(), "req", "default", "", "vision")
+	if stub.count() != 2 {
+		t.Fatalf("queryFn called %d times across text+vision Finds, want 2 — "+
+			"the cache key lost its modality dimension and a vision request would "+
+			"be served a text-scoped suggestion list (2026-10-28 merge regression)", stub.count())
+	}
+
+	// 同键重复请求仍走缓存（原有的省钱语义不回归）。
+	finder.Find(context.Background(), "req", "default", "", "vision")
+	if stub.count() != 2 {
+		t.Fatalf("third (same-key) Find re-queried: %d calls, want 2 (cache hit)", stub.count())
 	}
 }
