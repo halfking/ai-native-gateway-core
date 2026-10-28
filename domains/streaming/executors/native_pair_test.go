@@ -272,3 +272,50 @@ func mustJSONRaw(t *testing.T, obj map[string]any) []byte {
 	}
 	return raw
 }
+
+// TestFinalizeNative_CircuitOpenFallback_NativePairStampsPassthrough：
+// 断路器兜底分支（e.IR.ParseOpenAI 返回 ErrConverterCircuitOpen ⇒ 走
+// breaker-independent 的包级 ir.ParseOpenAI/SerializeOpenAI）与
+// legacy_with_ir 主分支同族，NativePassthrough 补盖（65d24d0df）必须在
+// 这条分支上也成立 —— 本测试钉住它；对照臂断言非原生对在该分支仍被裁。
+func TestFinalizeNative_CircuitOpenFallback_NativePairStampsPassthrough(t *testing.T) {
+	body := []byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}],` +
+		`"enable_thinking":true,"thinking":{"type":"enabled","budget_tokens":2048},` +
+		`"reasoning_effort":"max"}`)
+
+	run := func(native bool) map[string]any {
+		executor := &Executor{IR: &circuitOpenIRAdapter{}}
+		params := &ExecParams{
+			R:              httptest.NewRequest("POST", "/v1/chat/completions", nil),
+			RequestID:      "npv-circuit-open",
+			BodyBytes:      body,
+			ClientModel:    "glm-5.3",
+			OutboundModel:  "z-ai/glm-5.3-flash",
+			ClientProtocol: "openai-completions",
+			Model:          "glm-5.3",
+		}
+		cand := nativePairCandidate("nvidia", "z-ai/glm-5.3-flash")
+		out, err := executor.finalizeOpenAIUpstreamBodyNative(params, cand, body, native)
+		if err != nil {
+			t.Fatalf("finalize (native=%v): %v", native, err)
+		}
+		return mustJSON(t, out)
+	}
+
+	native := run(true)
+	if v, ok := native["enable_thinking"].(bool); !ok || !v {
+		t.Fatalf("native circuit-open fallback: enable_thinking = %#v, want true", native["enable_thinking"])
+	}
+	th, ok := native["thinking"].(map[string]any)
+	if !ok || th["type"] != "enabled" || th["budget_tokens"] != float64(2048) {
+		t.Fatalf("native circuit-open fallback: thinking = %#v, want verbatim {type:enabled,budget_tokens:2048}", native["thinking"])
+	}
+
+	legacy := run(false)
+	if _, present := legacy["enable_thinking"]; present {
+		t.Fatalf("non-native 对照（断路器兜底）: enable_thinking 应被裁")
+	}
+	if _, present := legacy["thinking"]; present {
+		t.Fatalf("non-native 对照（断路器兜底）: thinking 应被裁/翻译走")
+	}
+}

@@ -1412,3 +1412,27 @@ func runFinalizeOllamaOkWithStream(t *testing.T, body []byte, clientProtocol str
 	}
 	return e.finalizeOllamaUpstreamBody(params, cand, body)
 }
+
+// TestFinalizeOllamaUpstreamBody_ProductionClientProtocolVocabulary pins the
+// 2026-10-28 critical-audit fix: production fills ClientProtocol from
+// ir.DetectProtocol, which reports "openai-chat" for the OpenAI Chat wire.
+// The gate previously whitelisted only the legacy "openai-completions"
+// fallback, so an ollama-native upstream (FF_OLLAMA_NATIVE on) would 501 on
+// every real request — same vocabulary drift as executor_gemini (see
+// TestFinalizeGeminiUpstreamBody_ProductionClientProtocolVocabulary).
+func TestFinalizeOllamaUpstreamBody_ProductionClientProtocolVocabulary(t *testing.T) {
+	body := buildOpenAIChatBody(t, "llama3.1", true)
+	for _, protocol := range []string{"openai-chat", "openai-completions", ""} {
+		out, err := runFinalizeOllamaOk(t, body, protocol)
+		if err != nil {
+			t.Fatalf("ClientProtocol %q must be accepted: %v", protocol, err)
+		}
+		var parsed map[string]any
+		if json.Unmarshal(out, &parsed) != nil {
+			t.Fatalf("ClientProtocol %q: output not JSON", protocol)
+		}
+		if _, ok := parsed["messages"]; !ok {
+			t.Errorf("ClientProtocol %q: ollama body missing messages: %s", protocol, out)
+		}
+	}
+}

@@ -68,16 +68,19 @@ type topologyModelTodayItem struct {
 }
 
 type topologyModelsTodayResponse struct {
-	DayUTC              string                   `json:"day_utc"`
-	TenantScope         string                   `json:"tenant_scope,omitempty"`
-	GeneratedAt         string                   `json:"generated_at"`
-	RollupCadence       string                   `json:"rollup_cadence,omitempty"`
-	SourceHighWatermark *time.Time               `json:"source_high_watermark,omitempty"`
-	Items               []topologyModelTodayItem `json:"items"`
-	Truncated           bool                     `json:"truncated"`
-	TotalRequests       int64                    `json:"total_requests"`
-	Degraded            bool                     `json:"degraded"`
-	ErrorCode           string                   `json:"error_code,omitempty"`
+	DayUTC              string     `json:"day_utc"`
+	TenantScope         string     `json:"tenant_scope,omitempty"`
+	GeneratedAt         string     `json:"generated_at"`
+	RollupCadence       string     `json:"rollup_cadence,omitempty"`
+	SourceHighWatermark *time.Time `json:"source_high_watermark,omitempty"`
+	// 短窗口口径回显（2026-10-28 头部统计轮）：?window=5m|1h 时为 "5m"/"1h"，
+	// day 路径不输出（omitempty，既有契约逐字节兼容）。
+	Window        string                   `json:"window,omitempty"`
+	Items         []topologyModelTodayItem `json:"items"`
+	Truncated     bool                     `json:"truncated"`
+	TotalRequests int64                    `json:"total_requests"`
+	Degraded      bool                     `json:"degraded"`
+	ErrorCode     string                   `json:"error_code,omitempty"`
 }
 
 // topologyModelProviderItem 是 ?by=provider 展开后的子行：一个模型在一个
@@ -272,13 +275,24 @@ func (h *Handler) handleTopologyModelsToday(w http.ResponseWriter, r *http.Reque
 		limit = n
 	}
 
+	win, isWindow := topologyWindowParam(r)
 	// ?by=provider：交叉展开路径（canonical × provider 二元组，Go 侧折叠）。
-	if strings.TrimSpace(r.URL.Query().Get("by")) == "provider" {
+	// 仅 day 日桶提供 —— 短窗口头部明细不做供应商分布展开（前端只在 day
+	// 区间传 by=provider；两参同传时窗口口径优先，by 被忽略）。
+	if !isWindow && strings.TrimSpace(r.URL.Query().Get("by")) == "provider" {
 		h.handleTopologyModelsTodayByProvider(w, r, querier, day, tenant, limit)
 		return
 	}
 
-	rows, err := querier.Query(r.Context(), modelsTodaySQL, day, strings.TrimSpace(tenant), limit)
+	// 双口径（2026-10-28 头部统计轮）：day = stats_usage_daily 日桶；5m/1h =
+	// request_logs 直查（见 topology_window_stats.go）。两条 SQL 的 SELECT 列
+	// 形状完全一致 ⇒ 下面的行处理 / share 计算共用同一份实现。
+	sqlStr, args := modelsTodaySQL, []any{day, strings.TrimSpace(tenant), limit}
+	if isWindow {
+		sqlStr, args = modelsWindowSQL, []any{time.Now().UTC().Add(-win), strings.TrimSpace(tenant), limit}
+	}
+
+	rows, err := querier.Query(r.Context(), sqlStr, args...)
 	if err != nil {
 		if isMissingStatsRelation(err) {
 			writeJSON(w, http.StatusOK, topologyModelsTodayResponse{
@@ -357,7 +371,7 @@ func (h *Handler) handleTopologyModelsToday(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	writeJSON(w, http.StatusOK, topologyModelsTodayResponse{
+	resp := topologyModelsTodayResponse{
 		DayUTC:              day.Format("2006-01-02"),
 		TenantScope:         tenant,
 		GeneratedAt:         time.Now().UTC().Format(time.RFC3339),
@@ -366,7 +380,15 @@ func (h *Handler) handleTopologyModelsToday(w http.ResponseWriter, r *http.Reque
 		Items:               items,
 		Truncated:           len(items) >= limit,
 		TotalRequests:       totalRequests,
-	})
+	}
+	if isWindow {
+		// 窗口口径：没有 UTC 日桶、没有 rollup 滞后 —— day_utc 置空、
+		// cadence 记 realtime、window 回显，供前端把口径行画对。
+		resp.DayUTC = ""
+		resp.RollupCadence = "realtime"
+		resp.Window = topologyWindowLabel(win)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleTopologyModelsTodayByProvider 是 ?by=provider 的折叠实现：
