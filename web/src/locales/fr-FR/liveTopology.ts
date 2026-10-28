@@ -65,6 +65,8 @@ export default {
     toggle: 'Basculer {group}',
     cache: 'cache',
     unknownProvider: 'Fournisseur inconnu',
+    toggleProviders: 'Basculer la répartition par fournisseur de {model}',
+    providersCount: '{n} fournisseurs',
     empty: 'Aucun trafic aujourd’hui',
     degraded: 'Agrégation non initialisée: statistiques indisponibles',
     unavailable: 'Service de statistiques indisponible',

@@ -197,14 +197,16 @@ describe('gatewayModuleStats', () => {
     expect(stats.nodeState.count).toBe(2)
   })
 
-  it('★ compress only counts requests that actually triggered sliding-window compression', () => {
-    // token_band=below 是「没触发」；缺省是「未上报」。两者都不许计数 ——
-    // 把所有请求都算进来，「压缩层在干活」会被摊平成「都过了压缩」，等于没说。
+  it('★ compress counts only requests the compression layer actually rewrote (compressed flag)', () => {
+    // 环回口径（2026-10-28 修正）：判据是 compressed（strategy 非空且非
+    // delta_append），不是 token_band 档位。band=below + compressed 的请求
+    // （COUNT/相对窗口/IDLE 触发，211 实测 7 天 1069 条）必须计入；
+    // band=forced 但没改成的（summary 失败，实测 80 条）不计。
     const requests = [
-      { ...base, token_band: 'preliminary' },
-      { ...base, request_id: 'r2', token_band: 'forced' },
-      { ...base, request_id: 'r3', token_band: 'below' },
-      { ...base, request_id: 'r4' }, // 未上报
+      { ...base, compressed: true },                                  // 环回压缩（band 任意）
+      { ...base, request_id: 'r2', compressed: true, token_band: 'below' }, // below 但实际压缩 ⇒ 计
+      { ...base, request_id: 'r3', token_band: 'forced' },             // 档位越线没改成 ⇒ 不计
+      { ...base, request_id: 'r4' },                                  // 未上报 ⇒ 不计
     ]
     const stats = gatewayModuleStats(requests, NOW, 5 * 60_000, 0)
     expect(stats.compress.count).toBe(2)

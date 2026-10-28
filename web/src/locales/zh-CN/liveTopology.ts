@@ -65,6 +65,8 @@ export default {
     toggle: '收起/展开 {group}',
     cache: '缓存',
     unknownProvider: '未知供应商',
+    toggleProviders: '收起/展开 {model} 的供应商分布',
+    providersCount: '{n} 家供应商',
     empty: '当天暂无流量',
     degraded: '聚合统计尚未初始化，数据不可用',
     unavailable: '统计服务不可用',

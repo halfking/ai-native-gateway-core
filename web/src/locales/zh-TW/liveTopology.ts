@@ -65,6 +65,8 @@ export default {
     toggle: '收合/展開 {group}',
     cache: '快取',
     unknownProvider: '未知供應商',
+    toggleProviders: '收合/展開 {model} 的供應商分佈',
+    providersCount: '{n} 家供應商',
     empty: '當天暫無流量',
     degraded: '聚合統計尚未初始化，資料不可用',
     unavailable: '統計服務不可用',

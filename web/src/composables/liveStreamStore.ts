@@ -37,6 +37,11 @@ export interface LiveRequest {
   is_auto_request?: boolean
   task_type?: string
   token_band?: string
+  // 2026-10-28 环回口径轮：压缩层实际改写出站体（strategy 非空且非
+  // delta_append）。★ token_band ≠ 压缩发生：档位只按绝对 token 量分类，
+  // COUNT/相对窗口/IDLE 触发的压缩 band 可以是 below（211 实测 4665 条
+  // 实际压缩里 1069 条 band='below'）——压缩格计数只认本字段。
+  compressed?: boolean
   model_category?: LiveModelCategory
   provider_code?: string
   status?: LiveStatus

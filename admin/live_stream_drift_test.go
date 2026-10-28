@@ -254,6 +254,9 @@ func TestLiveRequestFromTelemetry_ModelSelectionFields(t *testing.T) {
 		IsAutoRequest: boolPtr(true),
 		TaskType:      strPtr("code"),
 		TokenBand:     strPtr("forced"),
+		// 环回口径轮（2026-10-28 遗留②）：strategy 非空且非 delta_append
+		// ⇒ Compressed=true。
+		CompressionStrategy: strPtr("sliding_window_count"),
 	}
 	got := hub.LiveRequestFromTelemetry(
 		context.Background(), "req-auto-1", time.Now().UTC(), "tenant-a",
@@ -273,15 +276,49 @@ func TestLiveRequestFromTelemetry_ModelSelectionFields(t *testing.T) {
 	if got.TokenBand != "forced" {
 		t.Errorf("TokenBand = %q, want %q", got.TokenBand, "forced")
 	}
+	if !got.Compressed {
+		t.Error("Compressed must be true for a real compression strategy (sliding_window_count)")
+	}
 
-	// 缺省路径：entry 全空 + 入参 clientModel 也为空 ⇒ 四字段零值。
+	// delta_append 是会话增量组装不是压缩：strategy 有值但 Compressed
+	// 必须为 false（211 全量实测 delta_append=0，此排除是语义判据不是凑数）。
+	deltaOnly := hub.LiveRequestFromTelemetry(
+		context.Background(), "req-delta", time.Now().UTC(), "tenant-a",
+		"glm-5.3", "glm-5.3-raw", 0, "", "zhipu",
+		"success", true, nil, nil, nil, nil, nil, nil, nil,
+		"", "", "", &telemetry.RequestLogEntry{
+			RequestID:           "req-delta",
+			TokenBand:           strPtr("below"),
+			CompressionStrategy: strPtr("delta_append"),
+		},
+	)
+	if deltaOnly.Compressed {
+		t.Error("delta_append is session delta assembly, not compression — Compressed must stay false")
+	}
+
+	// band 越线但 strategy 空（summary 失败且 trim 无收缩）：档位观测在，
+	// 实际压缩没发生 ⇒ Compressed=false。band ≠ 压缩发生（实测修正）。
+	bandOnly := hub.LiveRequestFromTelemetry(
+		context.Background(), "req-band-only", time.Now().UTC(), "tenant-a",
+		"glm-5.3", "glm-5.3-raw", 0, "", "zhipu",
+		"success", true, nil, nil, nil, nil, nil, nil, nil,
+		"", "", "", &telemetry.RequestLogEntry{
+			RequestID: "req-band-only",
+			TokenBand: strPtr("forced"),
+		},
+	)
+	if bandOnly.Compressed {
+		t.Error("token_band=forced with empty strategy = threshold observed, nothing applied — Compressed must stay false")
+	}
+
+	// 缺省路径：entry 全空 + 入参 clientModel 也为空 ⇒ 五字段零值。
 	bare := hub.LiveRequestFromTelemetry(
 		context.Background(), "req-plain", time.Now().UTC(), "tenant-a",
 		"", "", 0, "", "openai",
 		"success", true, nil, nil, nil, nil, nil, nil, nil,
 		"", "", "", &telemetry.RequestLogEntry{RequestID: "req-plain"},
 	)
-	if bare.ClientModel != "" || bare.IsAutoRequest || bare.TaskType != "" || bare.TokenBand != "" {
+	if bare.ClientModel != "" || bare.IsAutoRequest || bare.TaskType != "" || bare.TokenBand != "" || bare.Compressed {
 		t.Errorf("absent entry fields must stay zero-value, got %+v", bare)
 	}
 
@@ -291,17 +328,17 @@ func TestLiveRequestFromTelemetry_ModelSelectionFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	for _, key := range []string{"client_model", "is_auto_request", "task_type", "token_band"} {
+	for _, key := range []string{"client_model", "is_auto_request", "task_type", "token_band", "compressed"} {
 		if strings.Contains(string(blob), key) {
 			t.Errorf("wire must omit %q when absent, got %s", key, blob)
 		}
 	}
-	// 反向：带值时四个键必须都在线上。
+	// 反向：带值时五个键必须都在线上。
 	full, err := json.Marshal(got)
 	if err != nil {
 		t.Fatalf("marshal full: %v", err)
 	}
-	for _, key := range []string{"client_model", "is_auto_request", "task_type", "token_band"} {
+	for _, key := range []string{"client_model", "is_auto_request", "task_type", "token_band", "compressed"} {
 		if !strings.Contains(string(full), key) {
 			t.Errorf("wire must carry %q when present, got %s", key, full)
 		}

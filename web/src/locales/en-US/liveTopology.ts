@@ -65,6 +65,8 @@ export default {
     toggle: 'Toggle {group}',
     cache: 'cache',
     unknownProvider: 'Unknown provider',
+    toggleProviders: 'Toggle provider breakdown of {model}',
+    providersCount: '{n} providers',
     empty: 'No traffic today',
     degraded: 'Aggregation is not initialized: statistics unavailable',
     unavailable: 'Statistics service unavailable',
