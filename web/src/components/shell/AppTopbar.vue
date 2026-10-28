@@ -14,7 +14,7 @@ import LanguageSelector from '../LanguageSelector.vue'
 import ThemeToggle from '../ThemeToggle.vue'
 import SystemStatusIndicator from '../SystemStatusIndicator.vue'
 import UserMenuDropdown from './UserMenuDropdown.vue'
-import { detectTheme, logoSrc } from '../../theme'
+import { currentTheme, detectTheme, logoSrc } from '../../theme'
 import { SITE_LOGO_SIZE, SITE_TITLE_LINE_ONE } from '../../config/brand'
 import { isNavItemActive } from '../../config/appNav'
 // 2026-09-13: 菜单构建（静态分组 + 插件/运维中心合并 + 角色过滤）抽到
@@ -50,7 +50,7 @@ let logoObserver: MutationObserver | null = null
 
 onMounted(() => {
   brandLogo.value = logoSrc(detectTheme())
-  logoObserver = new MutationObserver(() => { brandLogo.value = logoSrc(detectTheme()) })
+  logoObserver = new MutationObserver(() => { brandLogo.value = logoSrc(currentTheme()) })
   logoObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
   document.addEventListener('click', handleOutside)
   window.addEventListener('resize', onWindowChange)
@@ -353,10 +353,7 @@ function groupActive(id: string): boolean {
 .app-topbar__brand-img {
   width: 36px;
   height: 36px;
-  border-radius: 8px;
   object-fit: contain;
-  background: var(--kx-surface, var(--card));
-  box-shadow: var(--kx-shadow-sm);
   flex-shrink: 0;
 }
 

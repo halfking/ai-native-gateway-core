@@ -31,7 +31,7 @@ import AppAccountSheet from './components/shell/AppAccountSheet.vue'
 import { useWindowClass, getWindowClass } from './composables/useWindowClass'
 import { installHyper, navigation, type NavigationScope } from './lib/shell/hyper'
 import { navDrawerOpen } from './composables/useAppNav'
-import { detectTheme, logoSrc } from './theme'
+import { currentTheme, detectTheme, logoSrc } from './theme'
 import { SITE_LOGO_SIZE, SITE_TITLE_LINE_ONE } from './config/brand'
 import { useLoginModal } from './composables/useLoginModal'
 import { onMaintainAvailabilityChange, probeMaintainAvailable } from './config/edition'
@@ -57,7 +57,7 @@ const isHydrating = computed(() => !store.authHydrated)
 const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey || store.userInfo))
 const brandLogo = ref(logoSrc(detectTheme()))
 const logoObserver = typeof MutationObserver !== 'undefined'
-  ? new MutationObserver(() => { brandLogo.value = logoSrc(detectTheme()) })
+  ? new MutationObserver(() => { brandLogo.value = logoSrc(currentTheme()) })
   : null
 let stopMaintainAvailabilityWatch: (() => void) | null = null
 
