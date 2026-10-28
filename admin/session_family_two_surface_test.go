@@ -129,27 +129,19 @@ var sessionFamilyBareParentReaders = map[string]string{
 		"正面证明见 admin/session_family_turns_reads_test.go 的 " +
 		"TestSessionFamilyTurnsReadsBothFaces；等价性见 " +
 		"domains/session/v2/turn_writer_family_reads_test.go（真库逐行对拍）。",
-	// ★ r1041 轮（2026-10-28）：分支 02（录制同意 + 回收站）引入的两处。
-	// ★ 它们是 **DELETE 的父表腿**，与紧邻其上一条独立语句的 hot 腿成对：
-	//   ① admin/session_trash.go:121-122 ——
-	//      DELETE FROM public.session_bodies_hot（hot 腿）
-	//      DELETE FROM public.session_bodies    （父表腿）★ 本条
-	//   ② admin/recording_consent.go:139-140 ——
-	//      DELETE FROM public.session_bodies_hot（hot 腿）
-	//      DELETE FROM public.session_bodies    （父表腿）★ 本条
-	// ★⇒ 两处都是「**删除必须覆盖两个面**」的两腿形态（★ 与
-	// cmd/tools/validate_sessions_v2/repair.go 同族：跨语句配对，逐字面量判看不见）。
-	// ★⇒ 正确性凭据：hot 与月分区是两套存储 ⇒ 只删 hot 会漏掉【已从 hot
-	//   晋级到月分区】的行 ⇒ 「回收站」「关闭录制清空正文」两个语义都会破。
-	"admin/session_trash.go": "回收站「移入回收站」路径的删除两腿（:121-122）：" +
-		"紧邻的上一条独立语句就是 DELETE FROM public.session_bodies_hot（hot 腿），" +
-		"父表腿在下一条（跨语句配对，逐字面量判看不见）。★ 两腿缺一 ⇒ " +
-		"hot 删干净但已晋级的月分区行留着 ⇒ 同一 session 的正文在两处可见 ⇒ 「回收站」语义破。",
-	"admin/recording_consent.go": "关闭录制同意时的正文清空两腿（:139-140）：" +
-		"紧邻的上一条独立语句就是 DELETE FROM public.session_bodies_hot（hot 腿），" +
-		"父表腿在下一条（跨语句配对，逐字面量判看不见）。★ 与 admin/session_trash.go 同构 —— " +
-		"★ 关闭录制必须真的清掉正文，而正文分布在 hot + 月分区两处 ⇒ " +
-		"只删 hot ⇒ 「默认关闭录制」的隐私承诺名存实亡。",
+	// ★★ r1043 轮（2026-10-28）：★ 下面这两条**已撤**（★ 登记过期）。
+	// ★ 起因：★ 上游在 `relationUsedAsSource` 里给「DELETE FROM <父表>」加了排除
+	// ★ （★ DELETE 是写不是读 ⇒ 排除本身是对的）⇒ ⇒ ★ 但**同一次改动里**
+	// ★ ★★ 又把 admin 的这两个文件登记进本表 ⇒ ⇒ ★★ 排除让它们不再命中本门
+	// ★ ★★ ⇒ ⇒ 本表里这两条**当场就过期了**（★ 本门的「登记已失效」判定
+	// ★ ★★ 如实报了出来 ⇒ ★★ 这是本门有牙的证据）。
+	// ★ ★★ 撤登记后，★ 这两处的「删除必须覆盖两面」由**真实存在**的那道门管：
+	// ★ ★★ admin/session_family_delete_two_surface_test.go
+	// ★ ★★ （★ 逐条断「父表 DELETE ↔ 同 WHERE 的 hot DELETE」成对）。
+	// ★ ★★ ★★ 此前这条注释引用的 `repair_two_surface_test.go` 指的是
+	// ★ ★★ `cmd/tools/validate_sessions_v2/` 下的那一份 ⇒ ★★ 它**只覆盖那个工具**
+	// ★ ★★ （★ 实测：★ 只有 ExecuteRepair 那两条测试）⇒ ★★ **完全没覆盖 admin 侧**
+	// ★ ★★ ⇒ ⇒ ★★ 排除的理由当时是**假**的 ⇒ ⇒ ⇒ 本轮补上了真正的那道门。
 }
 
 var sessionFamilyParents = []string{"session_turns", "session_bodies", "session_turn_details"}
@@ -352,8 +344,16 @@ func relationUsedAsSource(flat, rel string) bool {
 				// ★ DELETE FROM parent 不是「读」（2026-10-28 分支审计轮）：
 				//   wip/02 的 session_trash.go / recording_consent.go 用
 				//   「DELETE FROM hot + DELETE FROM 父表」的双面删习语 ⇒ 被本门当裸读误伤。
-				//   真读法必须走合并视图（trash 的 INSERT..SELECT 就走 session_bodies_unified）；
-				//   DELETE 的两面覆盖由 repair_two_surface_test.go 逐条断言 ⇒ 本门只管读。
+				//   真读法必须走合并视图（trash 的 INSERT..SELECT 就走 session_bodies_unified）。
+				// ★ ★★ r1043 轮修正：★ 这条排除的**依据原先是假的** ——
+				// ★ ★★ 注释当时指的是 `repair_two_surface_test.go`，★ 而那一道
+				// ★ ★★ （cmd/tools/validate_sessions_v2/ 下）**只覆盖那个修复工具**，
+				// ★ ★★ **完全没覆盖 admin 侧** ⇒ ⇒ ★★ 排除一旦生效，admin 侧的
+				// ★ ★★ 两面 DELETE 覆盖就**无人断言**。
+				// ★ ⇒ ⇒ 现由**真实存在**的那道门管：
+				// ★     admin/session_family_delete_two_surface_test.go
+				// ★   （★ 逐条断「父表 DELETE ↔ 同 WHERE 的 hot DELETE」成对）。
+				// ★ ★★ 本门只管读。
 				if kw == "FROM" && endsWithWord(strings.TrimRight(pre[:len(pre)-len(kw)], " \t\n"), "DELETE") {
 					break
 				}
