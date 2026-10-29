@@ -138,6 +138,11 @@ const DYNAMIC_KEYS: Array<[prefix: string, suffixes: readonly string[]]> = [
   ['sc.status.', SELF_CHECK_RUN_STATUSES], // SelfCheckView.vue:91 RUN_STATUS_FILTERS 的非空部分
   ['ue.field.', ['dollars_saved', 'compression_saved', 'total_saved']], // UsageEnhancedView.vue:139
   ['usage.dim.', ['model', 'provider', 'key', 'application', 'tenant']], // UsageView.vue:71 COST_DIMS
+  // ★ live 实时页（2026-10-29）：区间三态（WINDOW_KEYS，LiveView.vue 内联
+  //   as const）与分组 tab 三态（同文件内联 as const）。后缀是**视图自己
+  //   的字面量集**，不是后端枚举 —— 改视图里的 WindowKey/tab 联合就得同步。
+  ['live.window.', ['5m', '1h', 'day']], // LiveView.vue WINDOW_KEYS
+  ['live.tab.', ['providers', 'models', 'clients']], // LiveView.vue tab as const
   // ── ② 区结束 ──────────────────────────────────────────────────────────
 ]
 
@@ -157,7 +162,7 @@ const OPEN_PREFIXES: readonly string[] = [
  * ★ 生成键总数（本批钉死）。改了 DYNAMIC_KEYS 的后缀集就会动它 ⇒ ⑥-6 会红。
  * ⚠️ 红了不许直接改数字：先重量一遍，确认是真的增减。
  */
-const GENERATED_KEY_TOTAL = 185 // 本批实测：46 个前缀 × 各自后缀数
+const GENERATED_KEY_TOTAL = 191 // 本批实测（live 页 +6：window 3 + tab 3）：48 个前缀 × 各自后缀数
 
 describe('动态 i18n 键在两侧词典里都存在', () => {
   for (const [prefix, suffixes] of DYNAMIC_KEYS) {
