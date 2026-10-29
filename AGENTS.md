@@ -4,6 +4,48 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker 全部缺失」的判断已被实测推翻，见下。
+> **2026-10-30 第 15 增量：耗时治理 + count_tokens 限流收口轮**（会话
+> `mvs_bebea3efc1bd4fee824da9780c6ddce2`）：★ 承接 `docs/audit/2026-10-29-Gemini-countTokens诚实实现轮.md`
+> §9 登记的三项（转发上游那一支 / Anthropic count_tokens 无 RPM 缺口 / streaming 耗时逼近余量）。
+> ⇒ ★★★ **第 3 项的登记描述与事实不符**（本轮最值钱的一处发现）：登记写的是
+> 「约 150s，**逼近** `-timeout=120s` 的余量」⇒ ★★★ **实测是已经越界**：
+> 全包 **163.561s**、`-short` 口径 **120.249s 直接超时 panic** ⇒ ★★★
+> **`make test-short` 当前就是红的**（它是 `.github/workflows/sessionforensics-ci.yml:42`
+> 的调用方）⇒ ★★★ **⇒ 通式：「余量还剩多少」是【会漂的读数】不是事实**
+> ⇒ ★★★ `ingressguard` 文件头那句「余量只剩 13.5 秒」**写下时就已经过期了**
+> ⇒ ★★★ **注释里的读数不会自己失效** ⇒ 它会变成一句**指向相反结论的可信假话**。
+> ⇒ ★★★★ **根因一：测试构造了一个【生产不存在的客户端】** —— **32 处**测试用
+> `upstream.New()`（`maxRetries=2` + 5s/10s 退避 ⇒ 15s），而**生产用
+> `upstream.NewWithRetries(0)`**（`cmd/gateway/main.go:828`）⇒ ★★★ **这不只是慢，
+> 是【口径漂移】：测试测的失败语义与生产不同** ⇒ ★★★ **改动性质是「让测试测回生产」**。
+> ⇒ ★★★ **根因二：「超时参数」≠「超时后返回」** —— `sse.LineReader.ReadLineWithContext`
+> 超时后走「`closer.Close()` → 再 `<-results` 等读协程退出」⇒ ★★★ 若 `Close()`
+> 不解除 `Read` 的阻塞，**超时门设成 1s 也要等满 sleep** ⇒ ★★★
+> 修法用 channel（★ 仓内 `internal/sse/line_reader_test.go` 已有对照实现）。
+> ⇒ ★★★ **改共享测试设施的外溢成本**（本轮自愈）：给 `hangingBody` 加字段后
+> ★ **另一个文件复用它却不初始化该字段 ⇒ `close(nil channel)` panic** ⇒ ★★★
+> ★ **改共享测试设施前先数清复用面**（★ 本轮 3 个构造点）+ 字段做 nil-safe。
+> ⇒ ★★★ **第 2 项（Anthropic count_tokens 补 RPM 闸）已落地**：闸位在
+> **鉴权之后、读 body 之前** ⇒ ★★★ **闸位就是它的全部意义**（否则被拒的请求
+> **已经付掉了 128MB 的读取成本**）⇒ ★★★ **⇒ 必须有一条【位置断言】**
+> （★ 只断言状态码的门挡不住「闸被挪位」）⇒ 登记册 `gateNone` → `gateOwn`。
+> ⇒ ★★★ **两个方向的变异臂都验证过**：闸挪到读 body 之后 ⇒ 位置断言 rc=1；
+> ★ 删掉整道闸 ⇒ 登记册门 rc=1（报「登记为 own，但锚点出现 0 次」）⇒ ★★★
+> ★ **⇒ 登记表与代码必须【双向咬合】**（只做「代码改了就更新表」是单向的）。
+> ⇒ ★★ **一张测试表要容纳语义不同的成员时【显式区分】优于【放宽】**
+> （★ count_tokens 不是推理面 ⇒ 不写请求日志 ⇒ 给表加一列显式声明，
+> ★ **而不是把「恰好 1 条」放宽** ⇒ 放宽会架空既有三面的断言）。
+> ⇒ ★★ **测试判据坑**：`checkGatewayRateLimit` **只在 ctx 带 deadline 时**才走
+> `AdmitRPMWithBudget` ⇒ 用只实现了该方法的桩去测**不带 deadline 会假绿**。
+> ⇒ ★★ **第 1 项（转发上游那一支）未做**：★ **其口径前提被代码推翻了** ——
+> ★ 网关出站体就是 `ir.SerializeGemini(IR)`（`executor_gemini.go:1454`）
+> ⇒ ★★ **转发归一后的体**（而非客户端原文）⇒ ★★ **「两个口径」的前提被消解**
+> ⇒ ★★ 但「以哪个为准」仍是产品裁决 ⇒ **已向 Owner 发问，裁决前不实现**。
+> ⇒ ★★ **读数**：全包 **163.6s → 59.2s**；`-short` **120.249s(panic) → 55.8s**
+> （★ **从红变绿**）；`-race` **260.4s → 123.7s**；`ingressguard` 绿；
+> `go build ./...` ✅；`go vet` ✅；两向变异臂 rc=1 且还原后 **md5 逐字一致**。
+> ⇒ 审计档 `docs/audit/2026-10-30-耗时治理与count_tokens限流收口轮.md`（8 节）；
+> 通用式见 `LESSONS.md` **§576**（6 条）。
 > **2026-10-27 第 9 增量：属性承载键 / 运行时拼键 两类引用集盲区修复轮**（会话
 > `mvs_dc5e181989fc4539805f343f39be2b5d`）：★ 承接第 8 增量（§414）——**新门
 > `i18n-cjk-native-simplified-guard.mjs` 的「用户可见」口径只认字面量调用**
@@ -15606,8 +15648,11 @@ guards-win-baseline` + CI 载体静态自证腿（Linux 裸跑实测腿=整片�
  ⇒ 全部为空 ⇒ **空白审核单**）⇒ ★★ **审批也救不了**：放行键 = (租户, 规则)，★ 规则
  为空 ⇒ ★★ 批准写进去的是一条**空规则**的放行 ⇒ ★★ 既放行不了，也**没记下规则**
  ⇒ ★★ **同一个误报无限复发**。
- ⇒ ★ **三件事**：★ ① **守卫不再杀响应**：★ 出厂上限 **1 MiB → 8 MiB**
- （`LLM_GATEWAY_OUTPUT_GUARD_PENDING_MAX_BYTES` 可配）+ 默认 **release** 模式
+ ⇒ ★ **三件事**：★ ① **守卫不再杀响应**：★ 出厂上限 **保持 1 MiB**
+ （★ **审计轮更正**：★ 误报的修复点是**降级放行**，★ 不是抬上限 ⇒ ★★ 抬上限对修复
+ 没有必要、却把存储侧记忆体预算放大 8 倍（★ 1 MiB 是 2026-10-02 存储审计的 wire
+ cap 契约）★★ ⇒ ★★ 出厂值改回 1 MiB，★ 需要更大缓冲的部署自己抬（★ 启动即打
+ 生效值）★★；★ `LLM_GATEWAY_OUTPUT_GUARD_PENDING_MAX_BYTES` 仍可配）+ 默认 **release** 模式
  （放行已逐帧检查过的帧、后续帧逐帧放行）+ 降级**必留痕**（`policy_rule=
  builtin.guard.capacity_exceeded` + `policy_degraded` + 摘录）+ 降级**也登记审核单**
  + 严格模式 `block` 保留 fail-closed 但**必须带规则名**；★ ② **拦截审核工作台**
@@ -15668,7 +15713,7 @@ guards-win-baseline` + CI 载体静态自证腿（Linux 裸跑实测腿=整片�
  ④ 规则级读数（★ **无归因桶可见**：`rule=unattributed total=22 labeled=1 false_positive=1`）★★ ⑤ **自动
  放行对空规则不生效**（★ 放行表里 **0 条**空规则）★★ ⑥ 日志里**无** sanitize 读库告警。
  ⇒ ★ **附带**：★ 输出守卫**启动即打生效值**（`pending_max_mib` / `cap_mode` / `capacity_rule`）⇒ ★★ 运维
- 不用读代码就知道线上跑的是哪套（★ 出厂：8 MiB / release / `builtin.guard.capacity_exceeded`）★★。
+ 不用读代码就知道线上跑的是哪套（★ 出厂：1 MiB / release / `builtin.guard.capacity_exceeded`）★★。
  ⇒ ★ **判据**：★ `TestStoreErrorKeepsRootCause`（对外消息不变 + 参数不回显 + 非 PG 错误不许编切片）★
  + `TestStoreErrorDetailCarriesPGFields`（PG 错误 ⇒ 切片带 SQLSTATE 与 message）★★ + ★
  `TestBlockReviewInsightsIncludesUnattributed`（无归因必须进读数）★★ + ★
@@ -15679,6 +15724,49 @@ guards-win-baseline` + CI 载体静态自证腿（Linux 裸跑实测腿=整片�
  ★★ **8 个语种** +计数 +1 ★★。
  ⇒ ★ **通用式见 `LESSONS.md` **§566**（5 条）；★★ 审计档 `docs/audit/2026-10-29-输出合规误报轮.md`
  （★ §7 终验回读）。
+ **2026-10-30 第 51 增量：输出合规误报轮**第二轮**（审核面原始上下文 + 规则说明 + ★★ 审计自我推翻：出厂上限改回 1 MiB + 部署测试闸门 ★★）**（goal 会话）：
+ ★ **承接**第 44/45 增量（守卫越界不再杀响应 + 审核工作台 + 输出合规全局开关 + 生产终验回读）★★
+ ★ owner 的两条反馈：① 「**审批列表里看不到原始的上下文**，搞不明白是什么原因被拦截，**无法进行审批**」；
+ ★② 「**规则说明太简单**（看不懂它在判什么）」★★
+ ⇒ ★ **审核面的原始上下文（读时联表，★ 不落库 ——917 的「审核表不含载荷原文」契约不破）★：
+ ★ 按 `request_id` 联**会话族**读面取回 ★ 请求预览 / 响应预览 / 模型 / 会话 ID / 失败口径 / 失败阶段 /
+ ★ token 数 / 时延 ★★ ⇒ ★★ 历史那 22 条**立刻可用**（★ 它们的原文本来就在请求日志里）★★
+ ⇒ ★ **归因三档（★ 措辞与证据强度匹配，★★ 不许把推断说成事实 ★★）★：
+ ★① `rule` = 审核单自带规则 ⇒ 直接说规则名；★ ② `guard` = 无规则 + `output_policy_blocked` +
+ ★ **邻近 ±15 分钟无内容规则阻断** ⇒ 「**守卫侧拦截**（不是内容规则命中）」★ ★★ 这就是误报轮的形态 ⇒
+ ★ 审核员据此**直接判误报**★★；★ ③ `unknown` = 邻近**有**规则命中 ⇒ 只给**候选**（★ 措辞与字段名都写明
+ ★ 「候选」）★★
+ ⇒ ★ **规则说明走完 YAML → 规则模型 → 规则说明目录**（★ `patternDefinition.description` ★★ 此前 YAML 里
+ ★ **一直写着**说明而装载器**没读** ⇒装载即丢）★★ ⇒ ★★ **事实源只有一处**（★ 目录 + YAML；★★ **不在
+ ★ SQL/迁移里抄一份** —— 抄一份 = 两处事实源 = 必然漂移）★★ ⇒ ★★ 管理面「读规则」时 `ApplyRuleDescriptions`
+ ★ **只补缺省**的 ⇒ ★★ **历史规则快照不用重发**就有说明 ★★ ⇒ ★★ 规则页每行加「规则说明」+「查看规则详情」★★
+ ⇒ ★★★ **审计自我推翻（★ 本轮最值钱的一条 ★★★）**：★ 第 44 增量为修误报把守卫**出厂上限从 1 MiB 抬到
+ ★ 8 MiB** ⇒ ★★ 而 1 MiB 是 **2026-10-02 存储审计**定下的 **wire cap 契约** ⇒ ★★★ 抬到 8 MiB = 每并发流
+ ★ 8 MiB（★ 存储审计轮才该做的记忆体决定）★★★ ⇒ ★★★ **误报修复根本不需要抬上限**（★ 修复点是**降级放行**）
+ ★★★ ⇒ ★★★ 抬上限对修复**没有必要**、却把记忆体预算放大 8 倍 ⇒ ★★★ **纯风险、无收益** ⇒ ★★★ ⇒
+ ★ **出厂值改回 1 MiB**（★ 上限仍可配，★ 启动即打生效值，★ 要更大缓冲的部署自己 knowingly 地抬）★★ ⇒ ★★★
+ ★ 两条**红测试**（★ `TestStorageAuditStreamTerminalCapacity` / `TestGuardCapacityDefaultCapIsNotTheOldOneMegabyte`）
+ ★ 重写成**新契约**（★ 越界 ⇒ **不阻断** + 降级放行 + **缓冲被释放** ⇒ ★★ 存储侧的有界契约那一半**不变**）★★
+ ⇒ ★★★ **红灯为什么能上线**：★ 部署脚本**只 `docker build`、不跑 `go test`** ⇒ ★★编译错会拦、**测试红不会**
+ ★★★ ⇒ ★★★ 新增 `scripts/deploy-test-gate.sh` + 接入 `scripts/deploy-211.sh`（★ **新红才拦**：★ 当前红灯
+ ★ **−** 基线红灯 = 新红；★ 基线红**大声告警**；★ 基线 = 与 `origin/main` 的 merge-base ⇒ ★★ 仓库里有别的在途
+ ★ 改动带来的环境相关红灯（★ `./db` 的 Lite/StorageMode 系列）⇒ ★★ 一刀切拦 ⇒ 闸门天天被跳过 ⇒ 等于没有 ★★）★★
+ ★★ ⇒ ★★ **闸门当场抓到了那两条红测试** ⇒ ★★ 上线前停住，而不是上线后去 211 上读数 ★★
+ ⇒ ★ **顺带**：★ 审核列表的 `pending_count` 从「再列一次 1000 条取 len」（★ **两遍全表**）改成 `count(*)`★★；
+ ★ ★ 候选规则的窗口判据从「区间重叠」改成「**最近一次命中（last_seen）落在窗内**」（★ 指纹聚合事件的区间能
+ ★ 横跨数周 ⇒ ★★ 「重叠」几乎恒真 ⇒ ★★ 实测把候选刷到 26 条 ⇒ ★★ 封顶 8 条 + 其余只给计数）★★
+ ⇒ ★ **211 生产终验（★ 本轮读数 ★）**：★ ① 守卫启动日志 `pending_max_mib=1 cap_mode=release`（★ 上限已改回）★★
+ ★ ② 审核单 `pending_count=22`（★ count(*) 路径）★★ ③ **每条审核单带 `context`**（★ `attribution_kind` /
+ ★ 模型 / 会话 ID / `error_kind=output_policy_blocked` / **请求预览原文**（★ 实测读到 Codex 的真实 prompt）/
+ ★ token 数 221552 / 时延 110887ms /候选规则）★★
+ ⇒ ★ **判据**：★ `TestYAMLDescriptionsReachRuleConfig` + `TestYAMLDescriptionsRegisteredInCatalog`（★ 说明不许再
+ ★ 被悄悄丢掉）★★ + ★ `TestLoadBlockReviewContextRowsReadsRequestLog`（★ 上下文读面）★★ + ★
+ ★ `TestDeriveBlockReviewAttribution`（★ 归因三档 + ★ **候选只出现在「待人工判断」那一档**）★★ + ★
+ ★ `TestBlockReviewCandidateWindowUsesLastSeen` + `TestDeriveBlockReviewAttributionCapsCandidates`（★ 窗口判据
+ ★ + 封顶）★★ + ★ `TestGuardCapacityMisreportFixDoesNotDependOnTheCap`（★ 误报修复**不依赖**上限大小）★★
+ ⇒ ★ **通用式见 `LESSONS.md` **§577**（5 条）；★★ 审计档 `docs/audit/2026-10-29-输出合规误报轮.md`
+ （★ §9 第二轮：审计发现 A1~A5 + 原始上下文与归因 + 规则说明 + 部署闸门）；★★ 存储审计档
+ （★ `2026-10-02-conversation-storage-stream-audit.md`）已补**契约更正**说明。
 > **2026-10-29 24h 审计第 7 轮：合并收口 + 分支清退 + W1.3 读门逐文件合入 + 211 生产三修**（goal 会话）：
 > ★ 承接第 5/6 轮 ⇒ 入场是**半完成的合并**（80 远端提交、三处冲突）。★★ **最值钱的一处对拍**：
 > 本地「第 39 增量」与远端「第 40 增量」**同题** ⇒ 补丁级对拍（1730 vs 1733 行，差 3 行 = 改号说明

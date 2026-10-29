@@ -41,6 +41,13 @@ export interface RuleSample {
 export interface SensitiveRule {
   id: string;
   name: string;
+  /**
+   * 规则说明（判什么形状、命中意味着什么）。
+   *
+   * ★ 2026-10-29 输出合规误报轮：★ 说明的事实源是 YAML + 内建目录 ⇒ ★★ 服务端
+   *   在读规则时补齐（★ 历史规则快照里没有说明）★★。
+   */
+  description?: string;
   type: (typeof RULE_TYPES)[number];
   kind: (typeof RULE_KINDS)[number];
   pattern: string;
@@ -197,6 +204,46 @@ export interface EgressReleaseRecord {
  * label/label_*（人工标注：这次拦得对不对）、evidence/evidence_kind/
  * evidence_truncated（被拦内容的**有界摘录** —— 原始会话内容）。
  */
+/**
+ * 审核单的**原始上下文**与**归因**（2026-10-29 输出合规误报轮）。
+ *
+ * ★ 为什么需要它：★ 审核单自带「为什么」的字段（rule / reason / field /
+ *   digest）全靠拦截点自报 ⇒ ★★ 历史记录这四个字段全空 ⇒ ★★ 审核面既没有
+ *   「为什么」也没有「拦了什么」⇒ ★★ 审核员无法审批 ⇒ ★★ 服务端在**读时**
+ *   联请求日志补上这些（★ 不落库：917 的契约是审核表不含载荷原文）★★。
+ */
+export interface BlockReviewCandidateRule {
+  rule_id: string;
+  action?: string;
+  status?: string;
+  count?: number;
+  first_seen?: string;
+  last_seen?: string;
+}
+export interface BlockReviewContext {
+  /** 这次请求的原始上下文（请求体预览，有界）。 */
+  request_preview?: string;
+  /** 响应预览（★ 多数被拦请求为空：响应在落库前就被拦住了）。 */
+  response_preview?: string;
+  model?: string;
+  session_id?: string;
+  error_kind?: string;
+  failure_stage?: string;
+  failure_detail_code?: string;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  latency_ms?: number;
+  client_profile?: string;
+  /**
+   * 归因类别：rule（审核单自带规则）/ guard（守卫侧拦截，非内容规则命中）/
+   * unknown（判不了，只给候选）。
+   */
+  attribution_kind?: "rule" | "guard" | "unknown";
+  /** 归因结论（人话）。 */
+  attribution?: string;
+  /** 邻近时段命中的出站规则（★ 候选，不是事实）。 */
+  candidate_rules?: BlockReviewCandidateRule[];
+}
 export interface BlockReview {
   id: number;
   tenant_id: string;
@@ -221,6 +268,8 @@ export interface BlockReview {
   evidence?: string;
   evidence_kind?: string;
   evidence_truncated?: boolean;
+  /** ★ 原始上下文与归因（★ 读时补齐；★ 补不齐时整块缺失）。 */
+  context?: BlockReviewContext;
 }
 
 /**

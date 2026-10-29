@@ -24,10 +24,12 @@ package admin
 // 自己租户的审核列表（「为什么我被拦了」），不可写。
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/sanitizerules"
 )
@@ -104,10 +106,10 @@ func (h *Handler) handleHardBlockRules(w http.ResponseWriter, r *http.Request) {
 		auditLog := strings.TrimSpace(req.Comment)
 		writeSanitizeRuleAudit("hardblock_allowlist_updated", auditLog, allows)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"rules":    sanitizerules.HardBlockAllows(),
-			"comment":  auditLog,
-			"source":   "managed-state",
-			"preset":   req.Preset,
+			"rules":   sanitizerules.HardBlockAllows(),
+			"comment": auditLog,
+			"source":  "managed-state",
+			"preset":  req.Preset,
 		})
 	default:
 		w.Header().Set("Allow", "GET, PUT")
@@ -169,6 +171,19 @@ func (h *Handler) handleBlockedReviews(w http.ResponseWriter, r *http.Request, a
 			tenant = auth.TenantID
 		}
 		reviews := sanitizerules.ListBlockReviews(status, tenant, limit)
+		// ★ 2026-10-29 输出合规误报轮（owner 反馈「看不到原始的上下文」）：
+		// ★★ 给每条审核单补上**原始上下文**与**归因**（★ 读时联表，★ 不落库）
+		//   —— 审核单自带的四个「为什么」字段在历史记录里全空 ⇒ ★★ 审核员
+		//   无从判断「这次拦得对不对」★★。
+		// ★ 补上下文有自己的**超时预算**（★ 读请求日志 + 邻近时段规则事件）：
+		// ★ 补不齐不许拖垮列表（★ 超时 ⇒ 只丢上下文，★ 列表照常）★★
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		contexts := h.attachBlockReviewContexts(ctx, reviews)
+		cancel()
+		rows := make([]blockReviewRow, 0, len(reviews))
+		for _, rv := range reviews {
+			rows = append(rows, blockReviewRow{BlockReview: rv, Context: contexts[rv.ID]})
+		}
 		// 2026-10-29 持久化轮：一并返回放行表（租户过滤同 reviews），前端在
 		// 已批准单上展示「放行有效期至」。持久化装载后含历史放行（含剩余期限）。
 		releases := sanitizerules.EgressReleases()
@@ -182,10 +197,13 @@ func (h *Handler) handleBlockedReviews(w http.ResponseWriter, r *http.Request, a
 			releases = filtered
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"reviews":       reviews,
-			"releases":      releases,
-			"process_only":  false,
-			"pending_count": len(sanitizerules.ListBlockReviews(sanitizerules.BlockReviewPending, tenant, 1000)),
+			"reviews": rows,
+			// ★ 放行表口径不变（★ 租户过滤同 reviews）。
+			"releases":     releases,
+			"process_only": false,
+			// ★ 用 count(*) 而不是「再列一次 1000 条」（★那是全表读，★
+			//   而列表已经读过一次 ⇒ ★★ 每次打开审核面读两遍全表★★）。
+			"pending_count": sanitizerules.CountBlockReviews(sanitizerules.BlockReviewPending, tenant),
 		})
 	case strings.HasPrefix(path, "/") && strings.HasSuffix(path, "/review"):
 		if r.Method != http.MethodPost {

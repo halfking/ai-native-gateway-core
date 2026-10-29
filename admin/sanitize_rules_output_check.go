@@ -33,9 +33,9 @@ package admin
 // （「为什么我被拦了」），不可写。
 
 import (
-	"log/slog"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -121,7 +121,8 @@ func (h *Handler) handleOutputCheckSwitch(w http.ResponseWriter, r *http.Request
 // outputCheckSwitchState 组装开关的读数（当前值 + 生效来源 + 语义说明）。
 //
 // ★ 「来源」必须给出来：运维要知道这个值是**默认**、**库里存着**、还是**刚被
-//   改过** —— 三者的可动性不同（默认的要写库才持久）。
+//
+//	改过** —— 三者的可动性不同（默认的要写库才持久）。
 func (h *Handler) outputCheckSwitchState() map[string]any {
 	state := map[string]any{
 		"key":   outputCheckSettingKey,
@@ -162,9 +163,12 @@ func (h *Handler) outputCheckSwitchState() map[string]any {
 //	             "comment": "…"}
 //
 // ★ 与 approve/reject **正交**：状态回答「现在放不放行」，标注回答「这次拦得
-//   对不对」。一个已批准的审核单也可以补标（规则太宽 ⇒ 该改规则）。
+//
+//	对不对」。一个已批准的审核单也可以补标（规则太宽 ⇒ 该改规则）。
+//
 // ★ 标成 false_positive / rule_too_broad 时会触发**自动优化**判定：
-//   同租户同规则的误报标注累计到阈值 ⇒ 自动写入该租户该规则的 7 天放行。
+//
+//	同租户同规则的误报标注累计到阈值 ⇒ 自动写入该租户该规则的 7 天放行。
 func (h *Handler) handleBlockReviewLabel(w http.ResponseWriter, r *http.Request, auth *AuthContext) {
 	if !IsSuperAdminOrLegacy(r) {
 		writeError(w, http.StatusForbidden, "only super_admin can label a blocked review")
@@ -212,7 +216,8 @@ func (h *Handler) handleBlockReviewLabel(w http.ResponseWriter, r *http.Request,
 //	GET /api/admin/sanitize-rules/blocked-reviews/insights?tenant_id=…&limit=…
 //
 // ★ 误报率的分母是**有判断的记录数**（标注过的），不是总量 —— 用总量做分母会让
-//   「没人看的记录」把误报率稀释成假绿。
+//
+//	「没人看的记录」把误报率稀释成假绿。
 func (h *Handler) handleBlockReviewInsights(w http.ResponseWriter, r *http.Request, auth *AuthContext) {
 	super := IsSuperAdminOrLegacy(r)
 	tenant := strings.TrimSpace(r.URL.Query().Get("tenant_id"))

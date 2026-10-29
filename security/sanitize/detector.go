@@ -100,6 +100,11 @@ type patternEntry struct {
 	id, kind, action string
 	scopes           []DetectionScope
 	exemptions       []string
+	// description 是这条规则的中文说明（来自 YAML 的 description 字段）。
+	//
+	// ★ 2026-10-29 输出合规误报轮：★ YAML 里写着说明，★ 装载器原先**没读**
+	// ⇒ ★★ 说明在装载时丢掉 ⇒ ★★ 管理面「规则说明」永远是空的。
+	description string
 }
 
 // PatternDetector 基于正则模式匹配的检测器
