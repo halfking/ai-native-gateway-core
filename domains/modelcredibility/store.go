@@ -367,19 +367,19 @@ func (s *Store) SaveResult(ctx context.Context, res Result) error {
 	if res.Observed.ReportedModel != "" {
 		reported = res.Observed.ReportedModel
 	}
-		if _, err := tx.Exec(ctx, insertCurrent,
-			tenant, res.CredentialID, res.ProviderID, res.RawModelName,
-			nullableID(res.CanonicalID), nullableStr(res.CanonicalName),
-			scoreOrNull(res.Scores, 0, res.Overall),
-			scoreOrNull(res.Scores, DimIdentity, res.Scores.Identity),
-			scoreOrNull(res.Scores, DimCapability, res.Scores.Capability),
-			scoreOrNull(res.Scores, DimConsistency, res.Scores.Consistency),
-			scoreOrNull(res.Scores, DimReference, res.Scores.Reference),
-			string(res.Verdict), res.Status,
-			reported, sig, fp,
-			evidence, anomalies,
-			res.Scores.Measured.DimensionCount(), res.MeasuredAt,
-		); err != nil {
+	if _, err := tx.Exec(ctx, insertCurrent,
+		tenant, res.CredentialID, res.ProviderID, res.RawModelName,
+		nullableID(res.CanonicalID), nullableStr(res.CanonicalName),
+		scoreOrNull(res.Scores, 0, res.Overall),
+		scoreOrNull(res.Scores, DimIdentity, res.Scores.Identity),
+		scoreOrNull(res.Scores, DimCapability, res.Scores.Capability),
+		scoreOrNull(res.Scores, DimConsistency, res.Scores.Consistency),
+		scoreOrNull(res.Scores, DimReference, res.Scores.Reference),
+		string(res.Verdict), res.Status,
+		reported, sig, fp,
+		evidence, anomalies,
+		res.Scores.Measured.DimensionCount(), res.MeasuredAt,
+	); err != nil {
 		return fmt.Errorf("upsert provider_model_credibility: %w", err)
 	}
 
@@ -394,15 +394,15 @@ func (s *Store) SaveResult(ctx context.Context, res Result) error {
 	if res.Status == StatusFailed {
 		runErr = "probe_failed"
 	}
-		if _, err := tx.Exec(ctx, insertRun,
-			tenant, res.CredentialID, res.ProviderID, res.RawModelName,
-			nullableID(res.CanonicalID), nullableStr(res.CanonicalName),
-			scoreOrNull(res.Scores, 0, res.Overall),
-			scoreOrNull(res.Scores, DimIdentity, res.Scores.Identity),
-			scoreOrNull(res.Scores, DimCapability, res.Scores.Capability),
-			scoreOrNull(res.Scores, DimConsistency, res.Scores.Consistency),
-			scoreOrNull(res.Scores, DimReference, res.Scores.Reference),
-			string(res.Verdict), res.Status,
+	if _, err := tx.Exec(ctx, insertRun,
+		tenant, res.CredentialID, res.ProviderID, res.RawModelName,
+		nullableID(res.CanonicalID), nullableStr(res.CanonicalName),
+		scoreOrNull(res.Scores, 0, res.Overall),
+		scoreOrNull(res.Scores, DimIdentity, res.Scores.Identity),
+		scoreOrNull(res.Scores, DimCapability, res.Scores.Capability),
+		scoreOrNull(res.Scores, DimConsistency, res.Scores.Consistency),
+		scoreOrNull(res.Scores, DimReference, res.Scores.Reference),
+		string(res.Verdict), res.Status,
 		res.Scores.Measured.DimensionCount(),
 		reported, sig, fp,
 		res.Observed.HTTPStatus, res.Observed.LatencyMs,
@@ -531,17 +531,17 @@ func (s *Store) ListVerdicts(ctx context.Context, f VerdictFilter) ([]VerdictRow
 
 // RunRow 是一次判定历史。
 type RunRow struct {
-	MeasuredAt        string   `json:"measured_at"`
-	CredibilityScore  float64  `json:"credibility_score"`
-	IdentityScore     float64  `json:"identity_score"`
-	CapabilityScore   float64  `json:"capability_score"`
-	ConsistencyScore  float64  `json:"consistency_score"`
-	ReferenceScore    float64  `json:"reference_score"`
-	Verdict           string   `json:"verdict"`
-	Status            string   `json:"status"`
-	ReportedModel     string   `json:"reported_model"`
-	Anomalies         []string `json:"anomalies"`
-	MeasuredDims      int      `json:"measured_dimensions"`
+	MeasuredAt       string   `json:"measured_at"`
+	CredibilityScore float64  `json:"credibility_score"`
+	IdentityScore    float64  `json:"identity_score"`
+	CapabilityScore  float64  `json:"capability_score"`
+	ConsistencyScore float64  `json:"consistency_score"`
+	ReferenceScore   float64  `json:"reference_score"`
+	Verdict          string   `json:"verdict"`
+	Status           string   `json:"status"`
+	ReportedModel    string   `json:"reported_model"`
+	Anomalies        []string `json:"anomalies"`
+	MeasuredDims     int      `json:"measured_dimensions"`
 }
 
 // ListRuns 列出某节点的判定历史。
@@ -722,31 +722,32 @@ func (s *Store) RollupProviderModelFiltered(ctx context.Context, targets []NodeT
 	if err != nil {
 		return nil, err
 	}
-	want := make(map[struct {
-		p int64
-		m string
-	}]struct{}, len(targets))
+	want := make(map[rollupKey]struct{}, len(targets))
 	for _, t := range targets {
 		if t.RawModelName == "" {
 			continue
 		}
-		key := struct {
-			p int64
-			m string
-		}{t.ProviderID, strings.ToLower(t.RawModelName)}
-		want[key] = struct{}{}
+		want[rollupKey{t.ProviderID, strings.ToLower(t.RawModelName)}] = struct{}{}
 	}
+	return filterRollup(all, want), nil
+}
+
+// rollupKey 是 (provider_id, 归一化模型名) 的过滤键。
+type rollupKey struct {
+	p int64
+	m string
+}
+
+// filterRollup 是纯过滤函数：只保留 want 里的 (provider, model)。
+// 抽出来是为了直接单测（不碰 DB）。
+func filterRollup(all []ProviderModelScore, want map[rollupKey]struct{}) []ProviderModelScore {
 	out := make([]ProviderModelScore, 0, len(want))
 	for _, r := range all {
-		key := struct {
-			p int64
-			m string
-		}{r.ProviderID, strings.ToLower(r.RawModelName)}
-		if _, ok := want[key]; ok {
+		if _, ok := want[rollupKey{r.ProviderID, strings.ToLower(r.RawModelName)}]; ok {
 			out = append(out, r)
 		}
 	}
-	return out, nil
+	return out
 }
 
 // scoreOrNull 把「没测到的维度」写成 SQL NULL，而不是 0。
