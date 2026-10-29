@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { ApiError } from '../../api/_core'
 import {
   getSessionTurn,
+  isRecordingUnavailable,
   type TurnAttachment,
   type TurnDetail,
 } from '../../api/sessions_v2'
@@ -34,6 +35,10 @@ const { t } = useI18n()
 const detail = ref<TurnDetail | null>(null)
 const loading = ref(false)
 const error = ref('')
+// W1.3（24h 审计第 7 轮遗留收口）：consent=off 时 turn detail 回
+// 409 + recording_unavailable。这是「录制未开启」的中性状态，不是故障
+// ——单独点亮，不走红色错误态（重试也修不了功能开关）。
+const consentOff = ref(false)
 // 2026-09-05 audit F2-#10: attachment-level failures must not clobber the
 // global error ref (that swap replaced the whole tabs area with an error
 // state and never recovered until reload). Attachment problems render as an
@@ -128,6 +133,7 @@ function reload() {
   // The watcher resets state and refetches when the props tuple changes.
   error.value = ''
   attachmentError.value = ''
+  consentOff.value = false
   if (props.modelValue && props.sessionId && props.turnNo != null) {
     // Force re-execution by resetting detail + bumping the seq, then
     // delegating to the same async fetch path used by the watch.
@@ -142,6 +148,10 @@ function reload() {
       })
       .catch((cause) => {
         if (seq !== requestSeq || (cause instanceof DOMException && cause.name === 'AbortError')) return
+        if (isRecordingUnavailable(cause)) {
+          consentOff.value = true
+          return
+        }
         error.value = cause instanceof ApiError ? cause.detail : surfaceError(cause)
       })
       .finally(() => {
@@ -159,6 +169,7 @@ watch(
     detail.value = null
     error.value = ''
     attachmentError.value = ''
+    consentOff.value = false
     openingAttachment.value = null
     activeTab.value = 'summary'
     if (!open || !sessionId || turnNo == null) {
@@ -174,6 +185,10 @@ watch(
       })
       .catch((cause) => {
         if (seq !== requestSeq || (cause instanceof DOMException && cause.name === 'AbortError')) return
+        if (isRecordingUnavailable(cause)) {
+          consentOff.value = true
+          return
+        }
         error.value = cause instanceof ApiError ? cause.detail : surfaceError(cause)
       })
       .finally(() => {
@@ -203,6 +218,10 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="loading" class="tdd-state">{{ t('turnDigest.loading') }}</div>
+    <!-- W1.3：录制未开启是中性状态，给专属空态（不给重试——开关不在本页）。 -->
+    <div v-else-if="consentOff" class="tdd-state" data-testid="tdd-consent-off">
+      <el-empty :description="t('requestDetail.bodyStatus.consentOffInline')" />
+    </div>
     <div v-else-if="error" class="tdd-error" role="alert" data-testid="tdd-error">
       <el-empty :description="error" />
       <el-button size="small" @click="reload">{{ t('turnDigest.retry') }}</el-button>

@@ -30,6 +30,8 @@ const props = defineProps<{ sessionId: string }>()
 const emit = defineEmits<{
   openRequest: [payload: { requestId: string; turnNumber: number }]
   showDigest: [payload: { turnNumber: number }]
+  /** W1.3：列表响应带的会话正文录制同意态；后端旧版本缺字段时发 undefined。 */
+  recordingConsent: [consent: boolean | undefined]
 }>()
 
 const { t } = useI18n()
@@ -66,6 +68,7 @@ async function load(reset = true) {
     turns.value = reset ? r.turns : [...turns.value, ...r.turns]
     hasMore.value = r.has_more
     nextCursor.value = r.next_cursor || ''
+    emit('recordingConsent', r.recording_consent)
     loaded.value = true
   } catch (e) {
     error.value =

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // TurnsListView — 多维层级会话工作台（项目/用户/客户端/API Key + 总结资产化）
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { surfaceError } from '../i18n/errorSurface'
 import { useRouter } from 'vue-router'
 import {
@@ -8,7 +9,7 @@ import {
   extractSessionToMemora,
 } from '../api/memora'
 import { fetchSessionTurnsTree, type SessionTurnTreeItem } from '../api/sessionTurnsTree'
-import { triggerInstantSummary } from '../api/sessions_v2'
+import { triggerInstantSummary, isRecordingUnavailable } from '../api/sessions_v2'
 import {
   listTurnsFilterOptions,
   listTurnsSessions,
@@ -28,6 +29,7 @@ import {
 import { CaretRight } from '@element-plus/icons-vue'
 
 const router = useRouter()
+const { t } = useI18n()
 const loading = ref(false)
 const loadingMore = ref(false)
 const loaded = ref(false)
@@ -228,7 +230,12 @@ async function resummarize(session: TurnsSessionGroup) {
       [session.session_id]: refreshed ? '已触发重新归纳' : '已触发重新归纳，但新归纳没取回来（当前显示的是旧内容）',
     }
   } catch (cause) {
-    assetMsg.value = { ...assetMsg.value, [session.session_id]: surfaceError(cause, { key: 'common.feedback.sessionSummarizeFailed' }) }
+    // W1.3：consent=off ⇒ 409 recording_unavailable。说「录制未开启」，
+    // 不说「归纳失败」——重试修不了租户开关，也不把英文后端原样当原因挂上。
+    const msg = isRecordingUnavailable(cause)
+      ? t('requestDetail.bodyStatus.consentOffInline')
+      : surfaceError(cause, { key: 'common.feedback.sessionSummarizeFailed' })
+    assetMsg.value = { ...assetMsg.value, [session.session_id]: msg }
   } finally {
     summaryBusy.value = { ...summaryBusy.value, [session.session_id]: false }
   }

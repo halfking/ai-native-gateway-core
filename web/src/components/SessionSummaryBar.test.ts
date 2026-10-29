@@ -1,19 +1,33 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, afterEach, vi } from 'vitest'
+import { createI18n } from 'vue-i18n'
+import zhCN from '../locales/zh-CN'
 import SessionSummaryBar from './SessionSummaryBar.vue'
 
 const triggerInstantSummaryMock = vi.fn()
 const getSessionSnapshotMock = vi.fn()
 
-vi.mock('../api/sessions_v2', () => ({
+vi.mock('../api/sessions_v2', async (importOriginal) => ({
+  // isRecordingUnavailable 走真实现（与生产同一份口径）；
+  // 其余被测调用逐个桩掉。
+  ...(await importOriginal<typeof import('../api/sessions_v2')>()),
   triggerInstantSummary: (...args: unknown[]) => triggerInstantSummaryMock(...args),
   getSessionSnapshot: (...args: unknown[]) => getSessionSnapshotMock(...args),
 }))
+
+// 挂真实 zh-CN 语言包（LoginModal.test.ts 先例）：断言「用户真正看到的字」，
+// 键缺了直接让测试失败，而不是静默渲染键路径。
+const i18n = createI18n({
+  legacy: false,
+  locale: 'zh-CN',
+  messages: { 'zh-CN': zhCN as any },
+})
 
 function mountBar(props: Record<string, unknown> = {}) {
   return mount(SessionSummaryBar, {
     props: { sessionId: 'session-a', ...props },
     global: {
+      plugins: [i18n],
       stubs: {
         'el-button': {
           props: ['loading', 'disabled'],

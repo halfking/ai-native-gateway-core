@@ -28,6 +28,7 @@ import {
 } from './messageHelpers'
 import {
   fetchSessionTurnsBodies,
+  isRecordingUnavailable,
   type SessionTurnBodiesResponse,
 } from '../../api/sessions_v2'
 import TurnDigestDrawer from '../session/TurnDigestDrawer.vue'
@@ -102,6 +103,10 @@ const leftWidth = ref(36) // percentage width of the left panel
 // case we fall back to deriving turns from the request_logs body.
 const v2Bodies = ref<SessionTurnBodiesResponse | null>(null)
 const v2Error = ref('')
+// W1.3（24h 审计第 7 轮遗留收口）：consent=off 时 bodies 端点回
+// 409 + recording_unavailable —— 轮次空态要说「录制未开启」，不能冒充
+// 「这个会话没有轮次」。
+const v2ConsentOff = ref(false)
 const treeHasMore = ref(false)
 let sessionLoadSeq = 0
 
@@ -117,6 +122,7 @@ watch(
     treeSelectedTurn.value = null
     v2Bodies.value = null
     v2Error.value = ''
+    v2ConsentOff.value = false
     treeHasMore.value = false
     if (!id) return
     loading.value = true
@@ -140,7 +146,11 @@ watch(
       v2Bodies.value = bodies
     } catch (e: unknown) {
       if (seq !== sessionLoadSeq) return
-      v2Error.value = surfaceError(e)
+      if (isRecordingUnavailable(e)) {
+        v2ConsentOff.value = true
+      } else {
+        v2Error.value = surfaceError(e)
+      }
       v2Bodies.value = null
     }
   },
@@ -364,7 +374,12 @@ function onDividerKeydown(e: KeyboardEvent) {
         :style="timelineOnly ? undefined : { width: leftWidth + '%' }"
       >
         <div v-if="hasMoreTurns" class="warn">{{ t('requestDetail.turns.truncatedHint') }}</div>
-        <div v-if="!displayTurns.length" class="muted">{{ t('requestDetail.turns.empty') }}</div>
+        <!-- W1.3：录制未开启时 V2 bodies 恒缺，列表只剩 V1 派生轮次。注记常显；
+             列表也真为空时它取代 generic empty（「录制没开」≠「没有轮次」）。 -->
+        <div v-if="v2ConsentOff" class="muted" data-testid="sync-pane-consent-off">
+          {{ t('requestDetail.bodyStatus.consentOffInline') }}
+        </div>
+        <div v-else-if="!displayTurns.length" class="muted">{{ t('requestDetail.turns.empty') }}</div>
         <div
           v-for="turn in displayTurns"
           :key="turn.index"

@@ -203,6 +203,9 @@ export default {
     unavailableBody: 'No body was captured for these turns (the feature is off for them, or the turn simply had no content). Summaries, metrics and token usage are unaffected.',
     affectedTurns: 'Affected turns: {list}',
     dismiss: 'Got it',
+    consentOffTitle: 'Session body recording is off',
+    consentOffBody: 'Body recording is disabled for this tenant: turn bodies, summaries and forensics content are unavailable; token usage and billing are unaffected. Ask an administrator to enable it for this tenant if bodies are needed.',
+    consentOffInline: 'Session body recording is off; bodies and summaries are unavailable',
 
   },
 }

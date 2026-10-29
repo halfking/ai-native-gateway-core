@@ -11,7 +11,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { surfaceError } from '../../i18n/errorSurface'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { getSessionDetailV2, getSessionSnapshot } from '../../api/sessions_v2'
+import { getSessionDetailV2, getSessionSnapshot, isRecordingUnavailable } from '../../api/sessions_v2'
 import { ApiError } from '../../api/_core'
 import SessionSummaryBar from '../../components/SessionSummaryBar.vue'
 import SessionTurnsTimeline from '../../components/session/SessionTurnsTimeline.vue'
@@ -98,6 +98,21 @@ function openTurn(payload: { requestId: string; turnNumber: number }) {
 const bodyStatusBanner = ref<{ kind: 'unavailable'; turns: number[] } | null>(null)
 const bodyStatusDismissed = ref(false)
 
+// W1.3（24h 审计第 7 轮遗留收口）：会话正文录制未开启的显式状态。
+// 两个信号源，取先到者：
+//   ① turns 列表响应的 recording_consent 字段（元数据主路，不打 409 门）；
+//   ② /detail 端点的 409 + code=recording_unavailable（列表还没回来时的兜底，
+//      旧后端列表没带字段时是唯一信号）。
+// 这是「功能未开启」的中性说明，不是错误——渲染专属横幅，不再让
+// body_status 的「部分轮次没有正文」横幅同时出现（后者此时是噪音：
+// 全部轮次都没正文，不是「部分」）。
+const recordingConsentOff = ref(false)
+
+function onRecordingConsent(consent: boolean | undefined) {
+  // undefined = 后端旧版本没透出该字段：不改动现有状态，等 409 兜底。
+  if (typeof consent === 'boolean') recordingConsentOff.value = !consent
+}
+
 function collectBodyStatus(detail: { turns?: { turn_no?: number; body_status?: string }[] }) {
   const unavailable: number[] = []
   for (const turn of detail.turns ?? []) {
@@ -119,13 +134,17 @@ async function loadBodyStatus() {
   if (!id) return
   bodyStatusBanner.value = null
   bodyStatusDismissed.value = false
+  recordingConsentOff.value = false
   try {
     const detail = await getSessionDetailV2(id)
     // 用户在请求返回前已经切走会话：丢弃这次结果。
     if (id !== sessionId.value) return
     collectBodyStatus(detail)
-  } catch {
-    // 横幅是增强信息，取不到就不显示；不能让它把整个详情页带崩。
+  } catch (e) {
+    // consent=off 时 /detail 整体 409（code=recording_unavailable）：这是
+    // 显式状态，点亮「录制未开启」横幅。其余错误横幅是增强信息，取不到
+    // 就不显示；不能让它把整个详情页带崩。
+    if (isRecordingUnavailable(e)) recordingConsentOff.value = true
     bodyStatusBanner.value = null
   }
 }
@@ -164,10 +183,20 @@ onBeforeUnmount(() => {
       <div v-if="snapshotError" class="error snapshot-error" role="alert">
         会话摘要加载失败：{{ snapshotError }}
       </div>
+      <!-- W1.3：会话正文录制未开启（consent=false）。中性说明态，不是错误。 -->
+      <div v-if="recordingConsentOff" class="body-status-banner body-status-consent-off" role="status" data-testid="consent-off-banner">
+        <div class="body-status-head">
+          <strong>{{ t('requestDetail.bodyStatus.consentOffTitle') }}</strong>
+        </div>
+        <p class="body-status-body">
+          {{ t('requestDetail.bodyStatus.consentOffBody') }}
+        </p>
+      </div>
       <!-- Subtask 3 (handoff §5): body_status 横幅。role=status 而非 alert
-           —— 这是常驻说明，不是需要打断操作的错误。 -->
+           —— 这是常驻说明，不是需要打断操作的错误。consent=off 时不出现：
+           全部轮次都没正文，不是「部分」。 -->
       <div
-        v-if="bodyStatusBanner && !bodyStatusDismissed"
+        v-if="bodyStatusBanner && !bodyStatusDismissed && !recordingConsentOff"
         class="body-status-banner body-status-unavailable"
         role="status"
       >
@@ -190,6 +219,7 @@ onBeforeUnmount(() => {
         :session-id="sessionId"
         @open-request="openTurn"
         @show-digest="showDigest"
+        @recording-consent="onRecordingConsent"
       />
       <TurnDigestDrawer
         v-if="sessionId"
@@ -234,6 +264,11 @@ onBeforeUnmount(() => {
 .body-status-unavailable {
   border-color: var(--kx-border, var(--border-color));
   background: var(--kx-surface-secondary, var(--surface-secondary));
+}
+/* W1.3：consent-off 与 unavailable 同为中性说明态，但要有可区分的标记
+   （空状态要能区分「没采集到」与「功能没开」）。 */
+.body-status-consent-off {
+  border-color: color-mix(in srgb, var(--kx-border, var(--border-color)) 70%, var(--kx-text-secondary, var(--text-secondary)) 30%);
 }
 .body-status-head {
   display: flex;

@@ -135,6 +135,12 @@ export interface SessionTurnsTreeResponse {
   next_cursor: string
   source?: 'tree' | 'v2' | 'tree_fallback' | string
   v2_shadow?: Record<string, unknown>
+  /**
+   * W1.3（24h 审计第 7 轮补）：会话正文录制同意态。列表是元数据主路，
+   * 不打 409 门，由后端显式透出（admin/session_turns_tree.go）。缺失
+   * （undefined）表示后端版本较旧没带这个字段，不能当成 false。
+   */
+  recording_consent?: boolean
 }
 
 export interface OnlineSessionFreshness {

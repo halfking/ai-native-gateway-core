@@ -5,7 +5,17 @@
 // Convention: every call goes through `req<T>()` from _core so we get
 // unified 401-handling and JSON error parsing for free.
 
-import { req, type RequestOptions } from './_core'
+import { ApiError, req, type RequestOptions } from './_core'
+
+/**
+ * W1.3（24h 审计第 7 轮遗留）：consent=off 时所有读正文的端点回
+ * 409 + code=recording_unavailable（admin/recording_consent.go 的
+ * requireRecordingConsent）。这是「功能未开启」的中性状态，不是故障
+ * ——调用方拿到 true 应渲染「录制未开启」态，而不是把它当错误抛给用户。
+ */
+export function isRecordingUnavailable(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 409 && e.code === 'recording_unavailable'
+}
 
 export interface TurnDigest {
   user_input: string
