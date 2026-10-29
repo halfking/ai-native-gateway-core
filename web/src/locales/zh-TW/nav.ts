@@ -58,6 +58,7 @@ export default {
     dataLifecycle: "資料生命週期",
     formatAnomalies: "格式異常監控",
     modelIntegrity: "模型完整性監控",
+    modelCredibility: "模型可信度",
     modules: "模組管理",
     sessionAnalytics: "會話分析中心",
     sessionAnalyticsFilterOptions: "會話分析篩選",

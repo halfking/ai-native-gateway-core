@@ -56,6 +56,7 @@ export default {
     dataLifecycle: "دورة حياة البيانات",
     formatAnomalies: "مراقبة شذوذ التنسيق",
     modelIntegrity: "مراقبة سلامة النموذج",
+    modelCredibility: "موثوقية النماذج",
     modules: "إدارة الوحدات",
     sessionAnalytics: "مركز تحليل الجلسات",
     sessionAnalyticsFilterOptions: "مرشحات تحليل الجلسات",

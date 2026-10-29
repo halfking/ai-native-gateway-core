@@ -28,6 +28,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
+	"github.com/kaixuan/llm-gateway-go/domains/modelcredibility" // model-credibility backend interface (modelCredibilityBackend)
 	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"    // 对账报表读面/导出（2026-09-25）
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
 	"github.com/kaixuan/llm-gateway-go/domains/sanitizerules"
@@ -266,6 +267,16 @@ type Handler struct {
 	// by reading the DB directly). Wired from cmd/gateway/main.go.
 	modelQualityBackend interface {
 		TestSingleNode(ctx context.Context, credentialID int, rawModel string) (*modelquality.QualityScore, error)
+	}
+	// modelCredibilityBackend (2026-10-29) backs the model-credibility admin
+	// endpoints:
+	//   POST /api/admin/model-credibility/trigger — scan one node on demand
+	//   POST /api/admin/model-credibility/scan    — scan all active nodes
+	// nil disables those two endpoints; list/catalog/detail/history read the
+	// DB directly and keep working. Wired from cmd/gateway/main.go.
+	modelCredibilityBackend interface {
+		ScanNode(ctx context.Context, credentialID int64, rawModelName string) (*modelcredibility.Result, error)
+		ScanAll(ctx context.Context) (int, error)
 	}
 	// providerSettingsResolver (2026-06-20) provides provider-level setting
 	// overrides for compression, cache, etc. Wired from cmd/gateway/main.go.
@@ -791,6 +802,16 @@ func (h *Handler) SetModelQualityBackend(b interface {
 	TestSingleNode(ctx context.Context, credentialID int, rawModel string) (*modelquality.QualityScore, error)
 }) {
 	h.modelQualityBackend = b
+}
+
+// SetModelCredibilityBackend wires the model-credibility worker for the
+// on-demand scan endpoints. Pass nil to disable only those endpoints;
+// list/catalog/detail/history read the DB directly.
+func (h *Handler) SetModelCredibilityBackend(b interface {
+	ScanNode(ctx context.Context, credentialID int64, rawModelName string) (*modelcredibility.Result, error)
+	ScanAll(ctx context.Context) (int, error)
+}) {
+	h.modelCredibilityBackend = b
 }
 
 // SetStateManager wires the credential-state manager for /api/credentials/*/state
@@ -1576,6 +1597,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/api/admin/model-iq/node-latest", h.superAdmin(h.handleModelIQNodeLatest))
 		mux.HandleFunc("/api/admin/model-iq/history", h.superAdmin(h.handleModelIQHistory))
 		mux.HandleFunc("/api/admin/model-iq/trigger", h.superAdmin(h.handleModelIQTrigger))
+
+		// 2026-10-29: 模型可信度（防掺水）— 身份判定 / 判定历史 / 立即检测。
+		// list/catalog/detail/history 只读 DB；trigger/scan 调用 modelCredibilityBackend。
+		mux.HandleFunc("/api/admin/model-credibility/list", h.superAdmin(h.handleModelCredibilityList))
+		mux.HandleFunc("/api/admin/model-credibility/catalog", h.superAdmin(h.handleModelCredibilityCatalog))
+		mux.HandleFunc("/api/admin/model-credibility/detail", h.superAdmin(h.handleModelCredibilityDetail))
+		mux.HandleFunc("/api/admin/model-credibility/history", h.superAdmin(h.handleModelCredibilityHistory))
+		mux.HandleFunc("/api/admin/model-credibility/trigger", h.superAdmin(h.handleModelCredibilityTrigger))
+		mux.HandleFunc("/api/admin/model-credibility/scan", h.superAdmin(h.handleModelCredibilityScan))
 
 		h.registerMaasRoutes(mux)
 	}

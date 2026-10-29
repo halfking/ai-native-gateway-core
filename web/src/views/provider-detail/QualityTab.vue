@@ -65,6 +65,8 @@ const radarData = computed(() => {
     { name: qp('performance'), value: scores.performance },
     { name: qp('stability'), value: scores.stability },
     { name: qp('costEfficiency'), value: scores.cost_efficiency },
+    // 2026-10-29: 模型可信度。null = 没测过，显示「—」而不是 0 分。
+    { name: qp('credibility'), value: scores.credibility ?? 0, optional: scores.credibility == null },
   ]
 })
 
@@ -154,10 +156,15 @@ function modelLabel(name: string | null | undefined): string {
         <div class="stat-card" v-for="item in radarData" :key="item.name">
           <div class="stat-label">{{ item.name }}</div>
           <div class="stat-value" :style="{ color: scoreColor(item.value) }">
-            {{ formatQualityScore(item.value) }}
+            <!-- 可选维度（可信度）未启用时没有数据 ⇒ 显示「—」而不是 0 分：
+                 0 分在质量语境里读作「极差」，而这里其实是「没测」。 -->
+            {{ item.optional && !item.value ? '—' : formatQualityScore(item.value) }}
           </div>
           <div class="bar-track">
-            <div class="bar-fill" :style="{ width: barWidth(item.value), background: scoreColor(item.value) }" />
+            <div
+              class="bar-fill"
+              :style="{ width: item.optional && !item.value ? '0%' : barWidth(item.value), background: scoreColor(item.value) }"
+            />
           </div>
         </div>
       </div>

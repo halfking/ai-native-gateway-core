@@ -25,7 +25,11 @@ type DimensionScores struct {
 	AvailabilityWindowScore float64 // 不可用窗口得分
 	QualityStabilityScore   float64 // 综合分稳定性得分
 
-	// 以下维度暂时设为0，后续阶段实现
+	// 2026-10-29: CredibilityScore 从「暂未实现 / 恒 0」变成**模型可信度维度**
+	// （来源 provider_model_credibility）。语义 = 该凭据下**最差**节点的可信度分
+	// （掺水是「至少有一条线是假的」⇒ 平均会把假线稀释掉）。
+	// 缺数据时 CredibilityScore=0 且 MeasuredDimensions 不含该位，
+	// CalculateTotalScore 自动跳过 ⇒ 对未跑过可信度扫描的凭据总分零影响。
 	CredibilityScore  float64
 	CostAccuracyScore float64
 	PriceScore        float64
@@ -81,6 +85,7 @@ func (s *DefaultScorer) CalculateDimensionScores(snapshots []*MetricSnapshot, we
 		AvailabilityWindowScore: calculateAvailabilityWindowScore(snapshots),
 		QualityStabilityScore:   calculateQualityStabilityScore(snapshots),
 		ModelIQScore:            calculateModelIQScore(snapshots),
+		CredibilityScore:        calculateCredibilityScore(snapshots),
 	}
 	for _, snap := range snapshots {
 		if snap == nil {
@@ -112,8 +117,43 @@ func (s *DefaultScorer) CalculateDimensionScores(snapshots []*MetricSnapshot, we
 		if snap.ModelIQSignal != nil && snap.ModelIQSignal.SampleN > 0 {
 			result.MeasuredDimensions |= dimensionModelIQ
 		}
+		// 2026-10-29: 模型可信度维度。SampleN>0 才算已测量
+		// （credibility_score 为 NULL = 该节点一个维度都没测到，不是 0 分）。
+		if snap.CredibilitySignal != nil && snap.CredibilitySignal.SampleN > 0 {
+			result.MeasuredDimensions |= dimensionCredibility
+		}
 	}
 	return result
+}
+
+// calculateCredibilityScore 计算模型可信度维度得分（0-100）。
+//
+// ★ 取各快照里 **MinCredibility**（最差节点）的**样本数加权平均**，
+// 而不是 AvgCredibility：
+//
+//	掺水是「这家供应商在卖这个模型时至少有一条线是假的」——
+//	平均会把掺水的那条线稀释掉（3 条好线 + 1 条掺水线 ⇒ 平均分仍很高
+//	⇒ 看板上看不出这家在卖假货）。
+//
+// 缺失（SampleN=0 或 nil）的快照不参与。返回 0 表示该维度未测量，
+// 会被 CalculateTotalScore 跳过。
+func calculateCredibilityScore(snapshots []*MetricSnapshot) float64 {
+	if len(snapshots) == 0 {
+		return 0
+	}
+	var sum float64
+	var totalN int
+	for _, snap := range snapshots {
+		if snap == nil || snap.CredibilitySignal == nil || snap.CredibilitySignal.SampleN <= 0 {
+			continue
+		}
+		sum += snap.CredibilitySignal.MinCredibility * float64(snap.CredibilitySignal.SampleN)
+		totalN += snap.CredibilitySignal.SampleN
+	}
+	if totalN == 0 {
+		return 0
+	}
+	return sum / float64(totalN)
 }
 
 // calculateModelIQScore 计算模型智商维度得分（0-100）。

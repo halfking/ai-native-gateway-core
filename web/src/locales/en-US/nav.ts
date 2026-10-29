@@ -67,6 +67,7 @@ export default {
     dataLifecycle: 'Data Lifecycle',
     formatAnomalies: 'Format Anomalies',
     modelIntegrity: 'Model Integrity',
+    modelCredibility: 'Model Credibility',
     modules: 'Module Management',
     sessionAnalytics: 'Session Analytics',
     sessionAnalyticsFilterOptions: 'Session Analytics Filters',

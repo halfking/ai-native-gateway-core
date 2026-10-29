@@ -1693,6 +1693,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		//   session_id / label 四件套 + 证据表 sanitize_block_evidence（原始
 		//   会话内容的有界摘录，7 天 TTL）+ 放行来源扩 'auto_label'。
 		"921_sanitize_block_workbench.sql",
+		// ★ 922（2026-10-29 模型可信度轮）：模型可信度（防掺水）体系 ——
+		//   provider_model_credibility（当前判定）+ provider_model_credibility_runs
+		//   （判定历史）+ 补齐 provider_quality_profiles 的 reliability_score /
+		//   calculated_at（435 遗漏 ⇒ 全新安装缺列 ⇒ internal/quality INSERT 42703）。
+		//   纯新增两表 + 幂等补列，全部 IF NOT EXISTS ⇒ 无 CONCURRENTLY，走事务通道。
+		"922_model_credibility.sql",
 	},
 	}
 }

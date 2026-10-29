@@ -1302,6 +1302,17 @@ var sanitizeBlockWorkbench921 []byte
 
 //go:embed embeddata/startup/921_sanitize_block_workbench.down.sql
 var sanitizeBlockWorkbench921Down []byte
+
+// ★ 922（2026-10-29 模型可信度轮）：模型可信度（防掺水）体系的两张新表
+//   —— provider_model_credibility（当前判定）+ provider_model_credibility_runs
+//   （判定历史）；顺带补齐 provider_quality_profiles 的 reliability_score /
+//   calculated_at 两列（migration 435 遗漏、pg_dump 基线里有 ⇒ 只跑迁移的
+//   全新安装会缺列，internal/quality 的 INSERT 会 42703）。
+//go:embed embeddata/startup/922_model_credibility.sql
+var modelCredibility922 []byte
+
+//go:embed embeddata/startup/922_model_credibility.down.sql
+var modelCredibility922Down []byte
 //go:embed embeddata/startup/915_recent_cache_hit_rate.sql
 var recentCacheHitRate915 []byte
 
@@ -1692,6 +1703,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/920_node_probe_runs_cred_completed_idx.down.sql":                     nodeProbeRunsCredCompletedIdx920Down,
 	"startup/921_sanitize_block_workbench.sql":                                    sanitizeBlockWorkbench921,
 	"startup/921_sanitize_block_workbench.down.sql":                               sanitizeBlockWorkbench921Down,
+	"startup/922_model_credibility.sql":                                           modelCredibility922,
+	"startup/922_model_credibility.down.sql":                                      modelCredibility922Down,
 	"startup/915_recent_cache_hit_rate.sql":                                       recentCacheHitRate915,
 	"startup/915_recent_cache_hit_rate.down.sql":                                  recentCacheHitRate915Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,

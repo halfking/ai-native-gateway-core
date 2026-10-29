@@ -2462,6 +2462,15 @@ files=(
   #   - sanitize_egress_releases.source 的 CHECK 扩一个取值 'auto_label'
   #     （误报标注累计到阈值后的自动放行；与人工批准同键同语义）。
   "$ROOT_DIR/sql/migrations/startup/921_sanitize_block_workbench.sql"
+  # ★ 922（2026-10-29 模型可信度轮）：模型可信度（防掺水）体系。
+  #   - 新表 provider_model_credibility：每个 (凭据,模型) 节点的当前判定
+  #     （四维度分数 + verdict + 指纹基线 + 证据 JSONB）；
+  #   - 新表 provider_model_credibility_runs：判定历史（append-only）；
+  #   - 补齐 provider_quality_profiles 的 reliability_score / calculated_at
+  #     （migration 435 遗漏、pg_dump 基线里有 ⇒ 只跑迁移的全新安装会缺列 ⇒
+  #      internal/quality/profile_updater.go 的 INSERT 会 42703）。
+  #   纯新增两表 + 幂等补列，全部 IF NOT EXISTS ⇒ 走事务通道。
+  "$ROOT_DIR/sql/migrations/startup/922_model_credibility.sql"
 )
 
 
@@ -2952,6 +2961,8 @@ ledger_artifact_probe "920_node_probe_runs_cred_completed_idx.sql" \
   "to_regclass('public.idx_node_probe_runs_cred_completed') IS NOT NULL"
 ledger_artifact_probe "921_sanitize_block_workbench.sql" \
   "to_regclass('public.sanitize_block_evidence') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='sanitize_block_reviews' AND column_name='label') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='sanitize_block_reviews' AND column_name='session_id')"
+ledger_artifact_probe "922_model_credibility.sql" \
+  "to_regclass('public.provider_model_credibility') IS NOT NULL AND to_regclass('public.provider_model_credibility_runs') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_quality_profiles' AND column_name='reliability_score') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_quality_profiles' AND column_name='calculated_at')"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

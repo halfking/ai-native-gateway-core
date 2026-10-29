@@ -120,6 +120,7 @@ var Writers = map[string]Writer{
 	"self-check-worker":           {Stage: "self_check", ViaHTTP: true}, // bg/self_check_worker.go
 	"credential-selfcheck-worker": {Stage: "self_check", ViaHTTP: true}, // bg/credential_selfcheck.go
 	"model-quality-worker":        {Stage: "self_check", ViaHTTP: true}, // domains/modelquality/invoker.go
+	"model-credibility-worker":    {Stage: "self_check", ViaHTTP: true}, // domains/modelcredibility/probe.go
 	"mock-probe-client":           {Stage: "self_check", ViaHTTP: true}, // internal/mockprobe/client.go
 	"node-probe-worker":           {Stage: "node_probe", ViaHTTP: true}, // bg/node_probe.go
 	"probe-service":               {Stage: "node_probe", ViaHTTP: true}, // bg/active_probe_executor.go

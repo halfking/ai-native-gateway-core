@@ -337,3 +337,5 @@
 319	917_sanitize_block_reviews.sql
 320	919_ursm_slot_daily_active_minutes.sql
 321	920_node_probe_runs_cred_completed_idx.sql
+322	921_sanitize_block_workbench.sql
+323	922_model_credibility.sql

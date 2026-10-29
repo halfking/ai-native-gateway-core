@@ -56,6 +56,7 @@ export default {
     dataLifecycle: "データライフサイクル",
     formatAnomalies: "フォーマット異常モニター",
     modelIntegrity: "モデル整合性モニター",
+    modelCredibility: "モデルの信頼性",
     modules: "モジュール管理",
     sessionAnalytics: "セッション分析センター",
     sessionAnalyticsFilterOptions: "セッション分析フィルター",

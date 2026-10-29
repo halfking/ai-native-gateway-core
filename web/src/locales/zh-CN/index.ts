@@ -59,6 +59,7 @@ import modelPicker from './modelPicker'
 import modulesView from './modulesView'
 import formatAnomaliesView from './formatAnomaliesView'
 import modelIntegrityView from './modelIntegrityView'
+import modelCredibilityView from './modelCredibilityView'
 import agentRegistryView from './agentRegistryView'
 import outputCompliance from './outputCompliance'
 import sanitizeRules from './sanitizeRules'
@@ -144,6 +145,7 @@ export default {
   modulesView,
   formatAnomaliesView,
   modelIntegrityView,
+  modelCredibilityView,
   agentRegistryView,
   outputCompliance,
   sanitizeRules,

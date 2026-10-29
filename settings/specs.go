@@ -36,6 +36,8 @@ func PlatformSpecs() []*Spec {
 	out = append(out, AutoSummarySpecs()...)
 	// 2026-08-06: Model Quality Monitoring (模型质量监控) - MMLU benchmark testing for featured models
 	out = append(out, ModelQualitySpecs()...)
+	// 2026-10-29: 模型可信度检测（防掺水/防偷换模型）—— 身份维度的主动探测与判定。
+	out = append(out, ModelCredibilitySpecs()...)
 	// 2026-08-07: V2 session read-path master switch (docs/omni-ref3 A1).
 	// Platform-scoped, default on, kill-switch via admin/platform settings.
 	out = append(out, SessionsV2CompressionPlatformSpecs()...)
