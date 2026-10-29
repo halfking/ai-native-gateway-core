@@ -421,6 +421,6 @@ const { fresh: freshIds } = useNewArrivals(() => props.responses.map((r) => r.re
   .pp__row { min-height: 44px; }
 
   .pp__page,
-  .pp__zoom { padding: 0 10px; }
+  .pp__zoom { padding: 0 8px; }
 }
 </style>

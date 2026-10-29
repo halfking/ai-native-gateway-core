@@ -367,7 +367,7 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
   display: flex;
   flex: 1;
   min-height: 0;
-  gap: 6px;
+  gap: 4px;
   padding: 0 8px 8px;
 }
 
@@ -376,7 +376,7 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
   flex: 1;
   min-width: 0;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 /* ── 流程带 ──────────────────────────────────────────────── */

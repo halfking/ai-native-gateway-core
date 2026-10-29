@@ -422,6 +422,6 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
 @media (max-width: 768px) {
   .cp__row { min-height: 44px; }
 
-  .cp__open { padding: 0 10px; }
+  .cp__open { padding: 0 8px; }
 }
 </style>

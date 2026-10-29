@@ -5,8 +5,8 @@
 # ★   ★★ retired-by-column-drop = ★ 索引的键列在本环境已被 DROP COLUMN 删掉
 # ★   ★★ ⇒ PG 自动删掉了那个索引 ⇒ ⇒ 它【不是】缺口（★ 假缺口的第三种来源）
 # ★ verdict：complete | gap　　severity：none | prod-full-gap | prod-partial-gap | local-only-gap | fresh-only-gap | new-install-gap
-# ★ generated_at=2026-10-28T14:09:38+00:00
-# ★ expected=842 envs=local,fresh,252,211 gaps_by_env={"211": 51, "252": 58, "fresh": 49, "local": 56} production_gaps=66
+# ★ generated_at=2026-10-29T01:14:33+00:00
+# ★ expected=845 envs=local,fresh,252,211 gaps_by_env={"211": 51, "252": 58, "fresh": 49, "local": 56} production_gaps=66
 -1	idx_provider_models_canonical_raw_name	provider_models	present	present	present	present	complete	none
 -1	idx_request_logs_hot_auto_task_ts	request_logs_hot	retired	retired	retired	retired	complete	none
 -1	idx_request_logs_hot_gw_session_id	request_logs_hot	retired	retired	retired	retired	complete	none
@@ -849,3 +849,6 @@
 913	idx_maas_monthly_bills_tenant_issued	maas_monthly_bills	present	present	retired	retired	complete	none
 916	idx_session_turns_api_key_ts	session_turns	present	present	missing	missing	gap	prod-full-gap
 916	idx_session_turns_hot_api_key_ts	session_turns_hot	present	present	missing	missing	gap	prod-full-gap
+917	sanitize_block_reviews_status_created_idx	sanitize_block_reviews	retired	retired	retired	retired	complete	none
+917	sanitize_block_reviews_tenant_created_idx	sanitize_block_reviews	retired	retired	retired	retired	complete	none
+917	sanitize_egress_releases_key_idx	sanitize_egress_releases	retired	retired	retired	retired	complete	none
