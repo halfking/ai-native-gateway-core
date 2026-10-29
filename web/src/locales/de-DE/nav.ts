@@ -58,6 +58,7 @@ export default {
     dataLifecycle: "Datenlebenszyklus",
     formatAnomalies: "Formatanomalie-Überwachung",
     modelIntegrity: "Modellintegritäts-Monitor",
+    modelCredibility: "Modellglaubwürdigkeit",
     modules: "Modulverwaltung",
     sessionAnalytics: "Sitzungsanalyse-Zentrum",
     sessionAnalyticsFilterOptions: "Sitzungsanalyse-Filter",

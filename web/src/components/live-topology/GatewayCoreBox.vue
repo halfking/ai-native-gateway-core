@@ -329,7 +329,11 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--kx-primary) 10%, transparent), transparent 40%),
     color-mix(in srgb, var(--kx-surface) 92%, transparent);
-  pointer-events: none;
+  pointer-events: auto;
+  /* 2026-10-29 空白清空轮：面板表面必须自己接住点击。此前 none 让点击
+     穿透到画布根 —— 画布根的空白点击=清除点选，而大方块占画面正中，
+     用户不会认为点它是「点空白」⇒ 过滤被误清。TopologyCanvas 在本组件
+     根上挂了 @click.stop：表面/头部/格子的点击到此为止，不再冒泡。 */
   overflow: hidden;
 }
 
@@ -367,7 +371,7 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
   display: flex;
   flex: 1;
   min-height: 0;
-  gap: 6px;
+  gap: 4px;
   padding: 0 8px 8px;
 }
 
@@ -376,7 +380,7 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
   flex: 1;
   min-width: 0;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 /* ── 流程带 ──────────────────────────────────────────────── */

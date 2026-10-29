@@ -13,6 +13,11 @@
 //   中    实时拓扑：上→下 客户端 → 网关核心大方块 → 供应端节点 → 模型
 //   右    供应商端响应的请求（点行弹摘要浮层，「查看全景」开新窗）
 //
+// 点选联动（owner 2026-10-29）：点中间图的客户端/供应端/模型节点 ⇒ 左右
+// 两栏自动收敛到该节点（写入同一份 filters，与 URL 双向同步）；再点同一个
+// 节点 = 取消该维过滤；点画布空白区 = 三个维度全部失效，恢复完整数据。
+// 网关大方块的模块点选仍是纯视觉聚焦，不参与过滤。
+//
 // **关键约束**：图、头部统计面板、左右两栏必须收敛到同一个
 // 过滤子集，否则用户会看到「图里没有、右栏却有」的矛盾画面。
 
@@ -21,7 +26,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElOption, ElSelect } from 'element-plus'
 import { useLiveStream } from '../composables/useLiveStream'
-import { redisHealthyRef as redisHealthy, redisErrorRef as redisError } from '../composables/liveStreamStore'
+import { redisHealthyRef as redisHealthy, redisErrorRef as redisError, liveDataRevision } from '../composables/liveStreamStore'
 import { useLiveTopology, type PanelEntry } from '../composables/useLiveTopology'
 import { clientKeyOf, modelKeyOf, providerNodeKeyOf } from '../lib/liveTopologyGraph'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
@@ -171,12 +176,44 @@ function onSelectNode(node: TopoNode | null) {
   if (!node) {
     selectedRequestId.value = null
     highlightEdges.value = []
+    // 空白区 = 点选失效：四个内容维度全部恢复不过滤（owner 2026-10-29 口径：
+    // 「点空白重新显示完整的数据」——nodes 维与点选写入的三维同族，URL/顶栏
+    // 带进来的 node 过滤不清的话「完整数据」不成立；审计轮判据钉住）。
+    // status / 窗口 / 数据开关不属于「点选」这件事，不动 —— 那是顶部
+    // 「清除」按钮的职责。
+    topo.filters.value.clients = []
+    topo.filters.value.providers = []
+    topo.filters.value.models = []
+    topo.filters.value.nodes = []
     return
   }
   // 点节点 → 高亮它的相关链路
   highlightEdges.value = topo.graph.value.edges
     .filter((e) => e.id.includes(`${node.id}->`) || e.id.includes(`->${node.id}`))
     .map((e) => e.id)
+  // 点节点 → 左右两栏与图收敛到该节点（同一个过滤子集，owner 2026-10-29 口径）
+  applyNodeFilter(node)
+}
+
+/** 画布点节点 ⇒ 把对应维度收敛为该节点（再点同一个 = 取消该维过滤）。
+ *  供应端节点 id（`cred:<id>` / `pcode:<code>`）本身就是 providers 维度的
+ *  合法值 —— matchesFilters 对该维度同时比对 provider_code 与节点键。
+ *  聚合节点（「+N」）不是任何真实键：高亮可以，过滤不行（设了必是空集）。 */
+function applyNodeFilter(node: TopoNode) {
+  if (node.isAggregate) return
+  if (node.id.startsWith('client:')) {
+    topo.filters.value.clients = toggleSingle(topo.filters.value.clients, node.id.slice('client:'.length))
+  } else if (node.column === 'provider') {
+    topo.filters.value.providers = toggleSingle(topo.filters.value.providers, node.id)
+  } else if (node.id.startsWith('model:')) {
+    topo.filters.value.models = toggleSingle(topo.filters.value.models, node.id.slice('model:'.length))
+  }
+}
+
+/** 单值切换：已收敛到该值 → 清空（取消）；否则收敛为该值（替换，不叠加 ——
+ *  图上点的是「这一个节点」，不是「往多选里再加一项」）。 */
+function toggleSingle(list: readonly string[], value: string): string[] {
+  return list.length === 1 && list[0] === value ? [] : [value]
 }
 
 function onSelectRequest(requestId: string) {
@@ -354,6 +391,7 @@ function onSelectModel(model: string) {
       :active-model="activeModel"
       :in-flight="topo.coreMetric.value?.inFlight ?? null"
       :queue-depth="queueDepth"
+      :data-revision="liveDataRevision"
       @select-client="onSelectClient"
       @select-provider="onSelectProvider"
       @select-model="onSelectModel"

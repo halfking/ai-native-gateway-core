@@ -65,6 +65,14 @@ func TestRealComplianceStreamCapAndFlushFailureRenderOneProtocolTerminal(t *test
 	} {
 		for _, failure := range []string{"pending cap", "flush check"} {
 			t.Run(tc.protocol+"/"+failure, func(t *testing.T) {
+				// ★ 2026-10-29 输出合规误报轮：待检缓冲上限从 1 MiB 抬到
+				// 8 MiB（出厂值可配）⇒ 这条用例不能再依赖「1 MiB 这个数」，
+				// 必须**显式**把上限调小，否则它测的是「1.26 MB 的帧在 8 MiB
+				// 上限下放过去了」——那不是它要断言的东西。
+				// 严格模式（block）保留本用例的原始意图：越界 ⇒ 阻断 ⇒
+				// 只渲染一个协议终帧。
+				t.Setenv(outputhook.OutputGuardPendingMaxBytesEnv, "65536")
+				t.Setenv(outputhook.OutputGuardCapModeEnv, "block")
 				var checker interface {
 					Check(context.Context, string, string) (*outputcompliance.ComplianceResult, error)
 				} = nativePassingChecker{}

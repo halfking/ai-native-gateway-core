@@ -68,12 +68,15 @@ type ScaleProvider interface {
 // 旧版本或单元测试场景），scorer 会按缺失维度处理。
 //
 // 2026-08-11: ModelIQSignal 可选字段，nil 表示未测量（冷启动无智商数据）。
+//
+// 2026-10-29: CredibilitySignal 可选字段，nil 表示未测量（还没跑过可信度扫描）。
 type ScaleData struct {
 	ProviderID          int64
 	TotalModels         int
 	AvailableModels     int
 	ConcurrencyCapacity *ConcurrencyCapacity
 	ModelIQSignal       *ModelIQSignal
+	CredibilitySignal   *CredibilitySignal
 }
 
 // CredentialLister 凭证列表提供者接口
@@ -215,6 +218,9 @@ func (c *LightweightCollector) collectForCredential(ctx context.Context, credent
 		// 2026-08-11: 节点智商维度。GetModelScale 从 node_iq_latest 聚合；
 		// nil（冷启动无测试数据）时 scorer 跳过。
 		ModelIQSignal: scaleData.ModelIQSignal,
+		// 2026-10-29: 模型可信度维度。GetModelScale 从
+		// provider_model_credibility 聚合；nil（还没跑过可信度扫描）时跳过。
+		CredibilitySignal: scaleData.CredibilitySignal,
 	}
 
 	// 5. 保存到数据库

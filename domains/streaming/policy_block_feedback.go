@@ -25,22 +25,121 @@ package streaming
 //   3. 管理员批准后（admin 后台），用户**重试**即拿到内容。
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	"github.com/kaixuan/llm-gateway-go/domains/sanitizerules"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
-// registerPolicyBlockReview 登记一次硬阻断的审核记录，返回可展示的审核单号
+// PolicyBlockReviewInput 是登记一条拦截审核单的入参。
+//
+// ★ 用结构体而不是十个位置参数：审核单现在有 13 个字段（2026-10-29 输出合规
+// 误报轮补了 session_id / evidence），位置参数在那种长度下**读错位不会报错**
+// ⇒ 会写出「规则名写进了原因字段」这种脏数据（而审核单是空白的，更难发现）。
+type PolicyBlockReviewInput struct {
+	TenantID   string
+	ClientType string
+	// SessionID 是被拦请求的会话 ID（原始会话内容的入口：审核员据此打开
+	// 该会话看上下文）。
+	SessionID string
+	RequestID string
+	// Rule 是命中的规则 ID；Reason 是人类可读原因；Field 是位置；Digest 是
+	// 载荷摘要（不可逆）。
+	Rule   string
+	Reason string
+	Field  string
+	Digest string
+	// Evidence 是被拦内容的**有界摘录**（原始会话内容）。只落证据表
+	// （带 TTL），不进审核记录表本体。
+	Evidence     string
+	EvidenceKind string
+}
+
+// policyBlockEvidenceKind 按规则名推断证据种类（审核员据此判断摘录代表什么）。
+//
+// 合成规则（builtin.guard.capacity_exceeded）⇒ 容量降级，不是内容命中。
+func policyBlockEvidenceKind(rule string) string {
+	if strings.HasPrefix(rule, "builtin.guard.") {
+		return "guard_capacity"
+	}
+	return "tool_argument"
+}
+
+// policyBlockEvidenceFromError 从策略拦截错误里取被拦内容的**有界摘录**。
+//
+// ★ 摘录**不进**错误信封（客户端拿不到载荷原文），只进审核面。
+func policyBlockEvidenceFromError(err error) string {
+	var pbe *errorsx.PolicyBlockError
+	if errors.As(err, &pbe) && pbe != nil {
+		return pbe.Evidence
+	}
+	return ""
+}
+
+// policyBlockEvidenceFromMetadata 从拦截结果元数据里取摘录（非流式路径）。
+func policyBlockEvidenceFromMetadata(result *response.InterceptResult) string {
+	if result == nil || result.Metadata == nil {
+		return ""
+	}
+	evidence, _ := result.Metadata["policy_evidence"].(string)
+	return evidence
+}
+
+// registerPolicyBlockReview 登记一条拦截审核记录，返回审核单号
 // （rv-N）；登记不了（极老形态 / 无租户）返回空串，message 走「联系管理员」
 // 的兜底话术。
 //
-// 租户为空时也登记（TenantID 留空，列表可见、按 ID 可批），但批准时
-// DecideBlockReview 对空租户不会放行（放行表 fail-closed）——列表里可见
-// 即可定位；这里不丢记录。
-func registerPolicyBlockReview(tenantID, requestID, rule, reason, field, digest string) string {
-	entry := sanitizerules.AddBlockReview(tenantID, "egress", rule, reason, field, digest, requestID)
+// 2026-10-29 拦截持久化轮：记录补 clientType（哪个客户端被拦）、规则展示名
+// 与匹配说明（审核员判断「是不是规则问题」的入口）；记录落库（迁移 917），
+// 重启可回溯。租户为空时也登记，但批准时空租户不放行（放行表 fail-closed）。
+//
+// 2026-10-29 输出合规误报轮：记录补 sessionID（原始会话内容的入口）与
+// **有界摘录**（被拦的那段内容）⇒ 审核员能判断「这次拦得对不对」。
+func registerPolicyBlockReview(in PolicyBlockReviewInput) string {
+	info, _ := sanitizerules.BuiltinRuleInfoFor(in.Rule)
+	entry := sanitizerules.AddBlockReview(sanitizerules.BlockReviewInput{
+		TenantID:     in.TenantID,
+		ClientType:   in.ClientType,
+		Scope:        "egress",
+		Rule:         in.Rule,
+		RuleName:     info.Name,
+		Reason:       in.Reason,
+		Field:        in.Field,
+		Digest:       in.Digest,
+		RequestID:    in.RequestID,
+		MatchDetail:  policyMatchDetail(in.Rule, info, in.Reason, in.Field),
+		SessionID:    in.SessionID,
+		Evidence:     in.Evidence,
+		EvidenceKind: in.EvidenceKind,
+	})
 	return fmt.Sprintf("rv-%d", entry.ID)
+}
+
+// policyMatchDetail 组装审核记录的匹配说明。
+//
+// 结构化成分（规则语义 / 判定短语 / 参数位置 / 载荷摘要指纹）分行动词开头，
+// 给审核员一条「这条规则在判什么 → 为什么命中我 → 是不是规则问题」的阅读线。
+// 托管（YAML）规则的语义在前端按 rule_id 关联规则配置（这里不重复）。
+func policyMatchDetail(rule string, info sanitizerules.BuiltinRuleInfo, reason, field string) string {
+	var b strings.Builder
+	if info.Description != "" {
+		b.WriteString("规则语义：" + info.Description + "\n")
+	} else {
+		b.WriteString("规则语义：（托管规则，表达式与适用范围见规则配置）\n")
+	}
+	if reason != "" {
+		b.WriteString("判定：" + reason + "\n")
+	}
+	if field != "" {
+		b.WriteString("参数位置：" + field + "\n")
+	}
+	if rule != "" {
+		b.WriteString("规则 ID：" + rule)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // policyBlockClientMessage 组装客户端可见的 message 文本。

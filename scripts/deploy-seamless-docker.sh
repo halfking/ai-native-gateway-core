@@ -1879,6 +1879,27 @@ if [[ -n "$HARD_BLOCK_RULES" && ! "$HARD_BLOCK_RULES" =~ ^[A-Za-z0-9:_.*,-]+$ ]]
   HARD_BLOCK_RULES=""
 fi
 
+# ── 可信代理网段（2026-10-29 客户端识别轮）────────────────────────────
+# 网关 origin_mw 只对**白名单网段的直连 peer**信任 X-Real-IP / X-Forwarded-For；
+# 默认只有 loopback ⇒ 容器部署里 peer 恒是 docker 网桥 IP（211 实测 24h
+# 全部落 172.21.0.1/127.0.0.1），真实客户端 IP 被吞。配置成 docker 网段后
+# XFF 链恢复（上游 nginx 已把 proxy_protocol 真实 IP 放进 X-Real-IP）。
+#
+# 取值优先级与全文件同款：部署机环境变量 > env 文件里上次落下的值（运维
+# 手工改过的那份，跨部署保留） > 不设（网关回落 loopback-only 默认）。
+# ⚠ env 文件每次部署都被重写 ⇒ 要长期生效就改 env 文件里的这一行。
+TRUSTED_PROXY_CIDRS="${LLM_GATEWAY_TRUSTED_PROXY_CIDRS:-}"
+if [[ -z "$TRUSTED_PROXY_CIDRS" && -f "$ENV_FILE" ]]; then
+  TRUSTED_PROXY_CIDRS="$(sed -nE 's/^(export )?LLM_GATEWAY_TRUSTED_PROXY_CIDRS=(.*)$/\2/p' "$ENV_FILE" | tail -1)"
+  TRUSTED_PROXY_CIDRS="${TRUSTED_PROXY_CIDRS%\'}"; TRUSTED_PROXY_CIDRS="${TRUSTED_PROXY_CIDRS#\'}"
+  TRUSTED_PROXY_CIDRS="${TRUSTED_PROXY_CIDRS%\"}"; TRUSTED_PROXY_CIDRS="${TRUSTED_PROXY_CIDRS#\"}"
+fi
+# 格式体检：只接受 CIDR 逗号列表字符集。非法值不注入（网关回落内置默认）。
+if [[ -n "$TRUSTED_PROXY_CIDRS" && ! "$TRUSTED_PROXY_CIDRS" =~ ^[0-9a-fA-F:.,/]+$ ]]; then
+  log "可信代理网段值含非法字符，忽略: ${TRUSTED_PROXY_CIDRS}"
+  TRUSTED_PROXY_CIDRS=""
+fi
+
 # ── 网关 → ASM 事件投递开关（2026-10-21）──────────────────────────────
 # 网关把 outbox 事件投给 ai-session-manager，需要**两个开关同时非空**：
 #   ASM_INTERNAL_ENDPOINT                    —— ASM 的 /internal/v1/events 地址
@@ -1965,6 +1986,11 @@ dd_auto_generator_env "$ENV_FILE"
   if [[ -n "$HARD_BLOCK_RULES" ]]; then
     printf 'export LLM_GATEWAY_HARD_BLOCK_RULES=%q\n' "$HARD_BLOCK_RULES"
   fi
+  # 可信代理网段（空 = 网关回落 loopback-only 默认）。写进 env 文件是为了
+  # 跨部署保留，同 ASM 开关的口径。
+  if [[ -n "$TRUSTED_PROXY_CIDRS" ]]; then
+    printf 'export LLM_GATEWAY_TRUSTED_PROXY_CIDRS=%q\n' "$TRUSTED_PROXY_CIDRS"
+  fi
   # 网关 → ASM 事件投递开关（空 = 不投事件）。写进 env 文件是为了**跨部署保留**
   # （运维手工改过的值下次部署还在），不是给 docker --env-file 用的。
   if [[ -n "$ASM_INTERNAL_ENDPOINT" ]]; then
@@ -2012,6 +2038,13 @@ if [[ -n "$HARD_BLOCK_RULES" ]]; then
   log "硬阻断清单 LLM_GATEWAY_HARD_BLOCK_RULES=${HARD_BLOCK_RULES}"
 else
   log "硬阻断清单未配置 → 用网关内置默认（只有 input 允许硬阻断，egress/output 不终止回合）"
+fi
+# 可信代理网段（2026-10-29 客户端识别轮）：空值不注入 ⇒ 网关回落 loopback-only。
+if [[ -n "$TRUSTED_PROXY_CIDRS" ]]; then
+  GW_ENV+=( -e "LLM_GATEWAY_TRUSTED_PROXY_CIDRS=${TRUSTED_PROXY_CIDRS}" )
+  log "可信代理网段 LLM_GATEWAY_TRUSTED_PROXY_CIDRS=${TRUSTED_PROXY_CIDRS}"
+else
+  log "可信代理网段未配置 → X-Real-IP/XFF 只信任 loopback peer（容器部署 client_ip 将是网桥 IP）"
 fi
 
 # ── ASM-ENV-INJECT:BEGIN ──

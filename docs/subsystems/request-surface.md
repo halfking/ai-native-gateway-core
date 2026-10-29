@@ -60,7 +60,7 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 | `HookRegistry` | `domains/hooks/registry.go:36` | **判死** | ❌（生产零调用方） | — |
 | Hook 阶段词表（5 个旧名） | `domains/hooks/types.go:13-23` | **别名视图** | ❌ | 映射到骨架的同名 phase |
 | ★ 执行器生命周期钩子 | `domains/streaming/executors/executor_chat.go:95-102` | ★ **判死**（2026-10-24 订正：类型在、读取方在，但**零生产安装方** ⇒ 钩子从不触发） | ❌ | — |
-| 响应拦截链 | `domains/hooks/response/types.go:179` | **挂在 phase** | ✅ | `response` |
+| 响应拦截链 | `domains/hooks/response/types.go:185` | **挂在 phase** | ✅ | `response` |
 
 > ★ **2026-10-24 订正**（审计档 §3.14）：本页原写「执行器生命周期钩子 = 挂在 phase（upstream）、✅ 在生产」。
 > ⇒ **不成立**：`WithExecuteHooks(` 在**生产代码里零调用**（只有测试在调）

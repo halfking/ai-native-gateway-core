@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/kaixuan/llm-gateway-go/internal/clienttype"
 )
 
 // ─── Agent system prompt pattern registry ───
@@ -71,6 +73,14 @@ func defaultAgentPatterns() []agentPatternEntry {
 			"minimax code by anthropic",
 			"minimax-code interactive",
 			"minimax's official cli",
+			// 2026-10-29 identification round (211 24h UA 分布实测): the
+			// shipping MiniMax Code client self-describes as "You are Mavis
+			// … You run inside MiniMax Code" — the archived "you are minimax
+			// code" form never fires on it, which left 2,300+ requests/day
+			// with an empty agent_name despite a clean self-identification
+			// sitting in the system prompt.
+			"you run inside minimax code",
+			"you are mavis",
 		}},
 		{"deepseek-code", []string{
 			"you are deepseek code",
@@ -401,50 +411,66 @@ func ExtractAgentNameFromRequest(r *http.Request, body []byte) string {
 	uaDerived := ""
 	if ua != "" {
 		uaLower := strings.ToLower(ua)
+		// 2026-10-29 identification round: every token match goes through
+		// clienttype.HasToken (dual token boundary) — plain Contains
+		// over-matches lookalikes ("ZCodex/2.0" would hit zcode before the
+		// codex branch, "MiniMaxCoder/1.0" would hit minimaxcode,
+		// "visualized/2.0" contains "zed"). Same matcher as the streaming
+		// table (client_fingerprint.go) — one implementation, two tables.
 		switch {
-		case strings.Contains(uaLower, "claude-code"):
+		case clienttype.HasToken(uaLower, "claude-code"):
 			return "claude-code"
-		case strings.Contains(uaLower, "opencode"):
+		// 2026-10-29 identification round: Claude Code's real wire UA is
+		// "claude-cli/{ver}" — add it so client stats don't misattribute
+		// real Claude Code traffic as unknown (RISK-7).
+		case clienttype.HasToken(uaLower, "claude-cli"):
+			return "claude-code"
+		case clienttype.HasToken(uaLower, "opencode"):
 			return "opencode"
-		case strings.Contains(uaLower, "zcode"):
+		case clienttype.HasToken(uaLower, "zcode"):
 			return "zcode"
-		case strings.Contains(uaLower, "codex"):
+		case clienttype.HasToken(uaLower, "codex"):
 			return "codex"
-		case strings.Contains(uaLower, "cursor"):
+		case clienttype.HasToken(uaLower, "cursor"):
 			return "cursor"
-		case strings.Contains(uaLower, "vscode"):
+		case clienttype.HasToken(uaLower, "vscode"):
 			return "vscode"
-		case strings.Contains(uaLower, "roocode"), strings.Contains(uaLower, "roo-code"):
+		case clienttype.HasToken(uaLower, "roocode"), clienttype.HasToken(uaLower, "roo-code"):
 			return "roocode"
-		case strings.Contains(uaLower, "windsurf"):
+		case clienttype.HasToken(uaLower, "windsurf"):
 			return "windsurf"
-		case strings.Contains(uaLower, "zed"):
+		case clienttype.HasToken(uaLower, "zed"):
 			return "zed"
-		case strings.Contains(uaLower, "jetbrains"):
+		case clienttype.HasToken(uaLower, "jetbrains"):
 			return "jetbrains"
-		case strings.Contains(uaLower, "github-copilot"), strings.Contains(uaLower, "copilot"):
+		case clienttype.HasToken(uaLower, "github-copilot"), clienttype.HasToken(uaLower, "copilot"):
 			return "copilot"
 		// 2026-09-21 audit: domestic coding-agent clients.
-		case strings.Contains(uaLower, "minimax-code"):
+		case clienttype.HasToken(uaLower, "minimax-code"):
 			return "minimax-code"
 		// 2026-10-29 production verification (211): the client on the wire
 		// sends bare "MiniMaxCode" — matched here so client stats don't
 		// misattribute real MiniMax Code traffic as unknown. Same reasoning
 		// as the streaming-side table (client_fingerprint.go).
-		case strings.Contains(uaLower, "minimaxcode"):
+		case clienttype.HasToken(uaLower, "minimaxcode"):
 			return "minimax-code"
-		case strings.Contains(uaLower, "deepseek-code"), strings.Contains(uaLower, "deepseek-ide"),
-			strings.Contains(uaLower, "deepseek-cli"):
+		case clienttype.HasToken(uaLower, "deepseek-code"), clienttype.HasToken(uaLower, "deepseek-ide"),
+			clienttype.HasToken(uaLower, "deepseek-cli"):
 			return "deepseek-code"
-		case strings.Contains(uaLower, "postman"):
+		// 2026-10-29 identification round: pi coding agent (pi.dev) —
+		// official UA "pi/{ver} ({platform}; node/{v}; {arch})". Same
+		// boundary rule as the clienttype table; must stay in sync.
+		case clienttype.HasToken(uaLower, "pi"):
+			return "pi"
+		case clienttype.HasToken(uaLower, "postman"):
 			uaDerived = "postman"
-		case strings.Contains(uaLower, "insomnia"):
+		case clienttype.HasToken(uaLower, "insomnia"):
 			uaDerived = "insomnia"
-		case strings.Contains(uaLower, "python"):
+		case clienttype.HasToken(uaLower, "python"):
 			uaDerived = "python-client"
-		case strings.Contains(uaLower, "go-http-client"):
+		case clienttype.HasToken(uaLower, "go-http-client"):
 			uaDerived = "go-client"
-		case strings.Contains(uaLower, "curl"):
+		case clienttype.HasToken(uaLower, "curl"):
 			uaDerived = "curl"
 		default:
 			uaDerived = "unknown"
@@ -499,6 +525,7 @@ func ExtractAgentType(r *http.Request) string {
 		strings.Contains(ua, "zcode") ||
 		// R52：国内编程客户端注册补齐——缺这里会使 source_channel 落空。
 		strings.Contains(ua, "minimax-code") ||
+		strings.Contains(ua, "minimaxcode") ||
 		strings.Contains(ua, "deepseek-code") ||
 		strings.Contains(ua, "deepseek-ide") ||
 		strings.Contains(ua, "deepseek-cli") ||
@@ -510,7 +537,12 @@ func ExtractAgentType(r *http.Request) string {
 		strings.Contains(ua, "zed") ||
 		strings.Contains(ua, "github-copilot") ||
 		strings.Contains(ua, "copilot") ||
-		strings.Contains(ua, "jetbrains") {
+		strings.Contains(ua, "jetbrains") ||
+		// 2026-10-29 identification round: pi coding agent is a CLI
+		// harness — without this its source_channel falls through to ""
+		// exactly like the R52 domestic clients did.
+		strings.Contains(ua, " pi/") ||
+		strings.HasPrefix(ua, "pi/") {
 		return "cli"
 	}
 

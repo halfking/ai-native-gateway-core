@@ -562,14 +562,61 @@ func TestStreamComplianceChecksCommentTextAcrossFrames(t *testing.T) {
 	}
 }
 
-func TestStreamCompliancePendingLimitFailsClosed(t *testing.T) {
+// TestStreamCompliancePendingLimitReleasesAndRecords 钉住 2026-10-29 输出合规
+// 误报轮的**新契约**：待检缓冲越界**不再杀请求**。
+//
+// 211 生产实测：越界此前返回**不带任何元数据**的 ShouldBlock ⇒ 客户端整条
+// 响应作废（已流出的 3806~10529 个 chunk 全丢）、审核单**空白**（rule_id /
+// reason 全空）⇒ 审核员既说不出规则也批不了 ⇒ 同一个误报无限复发。
+//
+// ⇒ 现在默认 **release**：把已逐帧检查过的帧放行、后续帧改为逐帧放行，
+// 并**留痕**（policy_rule=builtin.guard.capacity_exceeded + policy_degraded）。
+func TestStreamCompliancePendingLimitReleasesAndRecords(t *testing.T) {
+	t.Setenv(OutputGuardCapModeEnv, "release")
+	it := NewOutputComplianceInterceptor(&protocolChecker{}, nil)
+	meta := &response.StreamMeta{TenantID: "t", State: response.NewStreamState()}
+	meta.State.GetOrCreate("output_compliance.pending", func() any { return &complianceStreamState{enabled: true, redact: true} })
+	fragment := strings.Repeat("a", 8192)
+	frame := []byte(`data: {"choices":[{"index":0,"delta":{"content":` + strconv.Quote(fragment) + `}}]}` + "\n\n")
+	degraded := false
+	released := 0
+	for i := 0; i < compliancePendingCap()/len(frame)+2; i++ {
+		result, err := it.processStreamChunk(context.Background(), frame, meta)
+		if err != nil || result == nil {
+			t.Fatalf("frame %d result=%+v err=%v", i, result, err)
+		}
+		if result.ShouldBlock {
+			t.Fatalf("frame %d 越界后仍阻断（默认应是降级放行，不杀业务）: %+v", i, result)
+		}
+		if result.Metadata != nil && result.Metadata["policy_degraded"] == true {
+			degraded = true
+			if result.Metadata["policy_rule"] != GuardCapacityRuleID {
+				t.Errorf("降级必须点名合成规则名，实际 %v", result.Metadata["policy_rule"])
+			}
+			released = len(result.ModifiedChunk)
+			break
+		}
+	}
+	if !degraded {
+		t.Fatal("越界没有留痕（降级必须可观测、可审核）")
+	}
+	if released == 0 {
+		t.Error("降级放行必须把已扣下的帧还给客户端（否则响应内容凭空消失）")
+	}
+}
+
+// TestStreamCompliancePendingLimitFailsClosedInBlockMode 钉住严格模式的旧语义
+// 仍然可用：LLM_GATEWAY_OUTPUT_GUARD_CAP_MODE=block ⇒ 越界即阻断，
+// ★ **但必须带元数据**（不再静默）⇒ 审核单能说出「是缓冲越界，不是规则命中」。
+func TestStreamCompliancePendingLimitFailsClosedInBlockMode(t *testing.T) {
+	t.Setenv(OutputGuardCapModeEnv, "block")
 	it := NewOutputComplianceInterceptor(&protocolChecker{}, nil)
 	meta := &response.StreamMeta{TenantID: "t", State: response.NewStreamState()}
 	meta.State.GetOrCreate("output_compliance.pending", func() any { return &complianceStreamState{enabled: true, redact: true} })
 	fragment := strings.Repeat("a", 8192)
 	frame := []byte(`data: {"choices":[{"index":0,"delta":{"content":` + strconv.Quote(fragment) + `}}]}` + "\n\n")
 	blocked := false
-	for i := 0; i < maxCompliancePendingBytes/len(frame)+2; i++ {
+	for i := 0; i < compliancePendingCap()/len(frame)+2; i++ {
 		result, err := it.processStreamChunk(context.Background(), frame, meta)
 		if err != nil || result == nil {
 			t.Fatalf("frame %d result=%+v err=%v", i, result, err)
@@ -578,12 +625,15 @@ func TestStreamCompliancePendingLimitFailsClosed(t *testing.T) {
 			if len(result.ModifiedChunk) != 0 {
 				t.Fatalf("oversize leaked bytes: %+v", result)
 			}
+			if result.Metadata == nil || result.Metadata["policy_rule"] != GuardCapacityRuleID {
+				t.Fatalf("严格模式的阻断必须带规则名（审核单不能是空白的）: %+v", result.Metadata)
+			}
 			blocked = true
 			break
 		}
 	}
 	if !blocked {
-		t.Fatal("pending byte limit did not fail closed")
+		t.Fatal("block 模式下待检上限没有 fail closed")
 	}
 }
 

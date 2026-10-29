@@ -20,6 +20,10 @@ import {
   updateHardBlockRules,
   listBlockedReviews,
   decideBlockedReview,
+  labelBlockedReview,
+  listBlockReviewInsights,
+  getOutputCheckSwitch,
+  updateOutputCheckSwitch,
   isRuleConfig,
   type RuleConfig,
   type SensitiveRule,
@@ -30,6 +34,10 @@ import {
   type RuleInstance,
   type ReviewStatus,
   type BlockReview,
+  type BlockReviewLabel,
+  type BlockReviewRuleInsight,
+  type EgressReleaseRecord,
+  type OutputCheckSwitch,
 } from "../api/sanitize-rules";
 import PageHeader from "../components/ui/PageHeader.vue";
 import { fmtDateTime24h } from "../i18n/useFormat";
@@ -85,11 +93,28 @@ const hardblockText = ref(""),
   hardblockLoading = ref(false),
   hardblockBusy = ref(false);
 const blockedReviews = ref<BlockReview[]>([]),
+  activeReleases = ref<EgressReleaseRecord[]>([]),
   reviewStatusFilter = ref("pending"),
   blockedReviewError = ref(""),
   blockedReviewLoading = ref(false),
   blockedReviewBusy = ref<number | null>(null),
-  reviewDecideComments = ref<Record<number, string>>({});
+  reviewDecideComments = ref<Record<number, string>>({}),
+  expandedReview = ref<number | null>(null),
+  hardblockBusyEntry = ref("");
+// ★ 2026-10-29 输出合规误报轮：人工标注（这次拦得对不对）+ 规则级读数。
+const reviewLabels = ref<Record<number, BlockReviewLabel>>({}),
+  reviewLabelComments = ref<Record<number, string>>({}),
+  reviewLabelBusy = ref<number | null>(null),
+  reviewLabelError = ref(""),
+  reviewInsights = ref<BlockReviewRuleInsight[]>([]),
+  autoRelaxThreshold = ref(0),
+  autoRelaxEnabled = ref(false),
+  insightsLoading = ref(false);
+// ★ 输出合规**全局开关**（写的是同一个设置键 sanitize.output_check_enabled）。
+const outputCheck = ref<OutputCheckSwitch | null>(null),
+  outputCheckBusy = ref(false),
+  outputCheckError = ref(""),
+  outputCheckNotice = ref("");
 const eventLoading = ref(false),
   versionLoading = ref(false),
   instanceLoading = ref(false);
@@ -315,11 +340,110 @@ async function loadBlockedReviews() {
       { status: reviewStatusFilter.value },
       { signal: controller.signal },
     );
-    if (!disposed) blockedReviews.value = value.reviews ?? [];
+    if (!disposed) {
+      blockedReviews.value = value.reviews ?? [];
+      activeReleases.value = value.releases ?? [];
+    }
   } catch (e) {
     if (!disposed) blockedReviewError.value = message(e);
   } finally {
     if (!disposed) blockedReviewLoading.value = false;
+  }
+}
+/**
+ * 给一条审核单打人工标注（★ 与 approve/reject 正交）。
+ *
+ * 标成误报/规则太宽时，服务端会累计「同租户同规则」的误报条数，达到阈值
+ * ⇒ 自动写入该租户该规则的 7 天放行（自动优化规则的落点）。
+ */
+async function applyReviewLabel(review: BlockReview, label: BlockReviewLabel) {
+  if (!superAdmin.value || reviewLabelBusy.value !== null) return;
+  reviewLabelBusy.value = review.id;
+  reviewLabelError.value = "";
+  try {
+    await labelBlockedReview(review.id, {
+      label,
+      comment: reviewLabelComments.value[review.id] || undefined,
+    });
+    if (disposed) return;
+    await Promise.all([loadBlockedReviews(), loadReviewInsights()]);
+  } catch (e) {
+    if (!disposed) reviewLabelError.value = message(e);
+  } finally {
+    if (!disposed) reviewLabelBusy.value = null;
+  }
+}
+/**
+ * 标注的展示文案。
+ *
+ * ★ 这里**逐个分支写死**而不是用「前缀 + 变量」拼键：
+ *   运行时拼键的键进不了引用集（i18n-key-parity 门当场报「前缀键缺 8 个语种」）
+ *   ⇒ 这些键会从「用户可见残留 = 0」那道硬闸的视野里消失。
+ *   （★ 本注释刻意**不写出那个前缀字面量** —— 扫描器不剥注释，
+ *     注释里出现的键名会被当成真引用。）
+ */
+function labelText(label?: string): string {
+  switch (label) {
+    case "false_positive":
+      return t("sanitizeRules.label_false_positive");
+    case "true_positive":
+      return t("sanitizeRules.label_true_positive");
+    case "rule_too_broad":
+      return t("sanitizeRules.label_rule_too_broad");
+    case "needs_rule":
+      return t("sanitizeRules.label_needs_rule");
+    default:
+      return label ?? "";
+  }
+}
+/** 规则级复核读数（误报最集中的规则排在前面）。 */
+async function loadReviewInsights() {
+  if (!allowed.value || insightsLoading.value) return;
+  insightsLoading.value = true;
+  try {
+    const value = await listBlockReviewInsights(
+      {},
+      { signal: controller.signal },
+    );
+    if (!disposed) {
+      reviewInsights.value = value.insights ?? [];
+      autoRelaxThreshold.value = value.auto_relax_threshold ?? 0;
+      autoRelaxEnabled.value = !!value.auto_relax_enabled;
+    }
+  } catch (e) {
+    if (!disposed) reviewLabelError.value = message(e);
+  } finally {
+    if (!disposed) insightsLoading.value = false;
+  }
+}
+/** 输出合规总开关的读数。 */
+async function loadOutputCheck() {
+  if (!superAdmin.value) return;
+  try {
+    const value = await getOutputCheckSwitch({ signal: controller.signal });
+    if (!disposed) outputCheck.value = value;
+  } catch (e) {
+    if (!disposed) outputCheckError.value = message(e);
+  }
+}
+/** 输出合规总开关的写入。 */
+async function saveOutputCheck(enabled: boolean) {
+  if (!superAdmin.value || outputCheckBusy.value) return;
+  outputCheckBusy.value = true;
+  outputCheckError.value = "";
+  outputCheckNotice.value = "";
+  try {
+    const value = await updateOutputCheckSwitch({ enabled });
+    if (!disposed) {
+      outputCheck.value = value;
+      outputCheckNotice.value = enabled
+        ? t("sanitizeRules.outputCheckOn")
+        : t("sanitizeRules.outputCheckOff");
+    }
+  } catch (e) {
+    if (!disposed) outputCheckError.value = message(e);
+  } finally {
+    if (!disposed) outputCheckBusy.value = false;
   }
 }
 async function decideReview(review: BlockReview, decision: "approve" | "reject") {
@@ -339,13 +463,82 @@ async function decideReview(review: BlockReview, decision: "approve" | "reject")
     if (!disposed) blockedReviewBusy.value = null;
   }
 }
+/** 放行有效期（同租户同规则的最新一条 review 来源放行）。 */
+function releaseExpiryFor(review: BlockReview): string {
+  let best = "";
+  for (const rel of activeReleases.value) {
+    if (
+      rel.tenant_id === review.tenant_id &&
+      rel.rule === review.rule &&
+      rel.expires_at &&
+      rel.expires_at > best
+    )
+      best = rel.expires_at;
+  }
+  return best;
+}
+/** 单条规则的同步开/关：当前清单做集合手术，整表 PUT（单一写路径）。 */
+async function toggleHardBlockEntry(entry: HardBlockLine, enabled: boolean) {
+  if (!superAdmin.value || hardblockBusy.value || hardblockBusyEntry.value) return;
+  hardblockBusyEntry.value = entry.scope + ":" + entry.rule;
+  hardblockError.value = "";
+  hardblockNotice.value = "";
+  const rules = hardblockText.value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const key = entry.scope + ":" + entry.rule;
+  const next = enabled
+    ? rules.includes(key)
+      ? rules
+      : [...rules, key]
+    : rules.filter((line) => line !== key);
+  try {
+    await updateHardBlockRules({
+      rules: next,
+      comment: (enabled ? "enable " : "disable ") + key,
+    });
+    if (disposed) return;
+    hardblockNotice.value = t("sanitizeRules.hardblockSaved");
+    await loadHardBlock();
+  } catch (e) {
+    if (!disposed) hardblockError.value = message(e);
+  } finally {
+    if (!disposed) hardblockBusyEntry.value = "";
+  }
+}
+/** 整批同步开/关：preset all/none（none 需显式确认）。 */
+async function applyHardBlockPreset(preset: "all" | "none") {
+  if (!superAdmin.value || hardblockBusy.value) return;
+  hardblockBusy.value = true;
+  hardblockError.value = "";
+  hardblockNotice.value = "";
+  try {
+    await updateHardBlockRules({
+      preset,
+      comment: "preset " + preset,
+      confirm_disable_all: preset === "none",
+    });
+    if (disposed) return;
+    hardblockNotice.value = t("sanitizeRules.hardblockSaved");
+    await loadHardBlock();
+  } catch (e) {
+    if (!disposed) hardblockError.value = message(e);
+  } finally {
+    if (!disposed) hardblockBusy.value = false;
+  }
+}
 function chooseTab(value: string) {
   tab.value = value;
   if (value === "events") void loadEvents();
   if (value === "versions") void loadVersions();
   if (value === "instances") void loadInstances();
   if (value === "hardblock") void loadHardBlock();
-  if (value === "blockedReviews") void loadBlockedReviews();
+  if (value === "blockedReviews") {
+    void loadBlockedReviews();
+    void loadReviewInsights();
+    void loadOutputCheck();
+  }
 }
 function addRule() {
   const id = "custom." + Date.now().toString(36);
@@ -604,6 +797,31 @@ async function saveParams() {
   else notice.value = t("sanitizeRules.parametersSaved");
   paramsBusy.value = false;
 }
+interface HardBlockLine {
+  scope: string;
+  rule: string;
+}
+const hardblockEntries = computed<HardBlockLine[]>(() =>
+  hardblockText.value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [scope, ...rest] = line.split(":");
+      return { scope, rule: rest.join(":") };
+    })
+    .filter((entry) => entry.scope && entry.rule),
+);
+const entryInfo = (entry: HardBlockLine) => {
+  if (entry.scope !== "egress" || !entry.rule.startsWith("builtin."))
+    return "";
+  const known: Record<string, string> = {
+    "builtin.egress_sink": t("sanitizeRules.ruleSinkInfo"),
+    "builtin.network_destination": t("sanitizeRules.ruleShapeInfo"),
+    "builtin.secret_field.egress": t("sanitizeRules.ruleSecretFieldInfo"),
+  };
+  return known[entry.rule] ?? "";
+};
 const date = (value: string) =>
   !value || value.startsWith("0001-")
     ? t("sanitizeRules.never")
@@ -1056,7 +1274,56 @@ onBeforeUnmount(() => {
           {{ hardblockNotice }}
         </p>
         <p v-if="hardblockLoading">{{ t("sanitizeRules.loading") }}</p>
-        <form v-else class="card" @submit.prevent="saveHardBlock">
+        <template v-else>
+          <div class="toolbar">
+            <button
+              class="btn"
+              type="button"
+              data-test="hardblock-preset-all"
+              :disabled="hardblockBusy"
+              @click="applyHardBlockPreset('all')"
+            >
+              {{ t("sanitizeRules.hardblockPresetAll") }}
+            </button>
+            <button
+              class="btn"
+              type="button"
+              data-test="hardblock-preset-none"
+              :disabled="hardblockBusy"
+              @click="applyHardBlockPreset('none')"
+            >
+              {{ t("sanitizeRules.hardblockPresetNone") }}
+            </button>
+          </div>
+          <div
+            v-if="hardblockEntries.length"
+            class="card"
+            data-test="hardblock-entries"
+          >
+            <div
+              v-for="entry in hardblockEntries"
+              :key="entry.scope + ':' + entry.rule"
+              class="toolbar hardblock-entry"
+            >
+              <code>{{ entry.scope }}:{{ entry.rule }}</code>
+              <small v-if="entryInfo(entry)" class="muted">{{
+                entryInfo(entry)
+              }}</small>
+              <button
+                class="btn"
+                type="button"
+                :data-test="
+                  'hardblock-off-' + entry.scope + '-' + entry.rule
+                "
+                :disabled="hardblockBusy || hardblockBusyEntry !== ''"
+                @click="toggleHardBlockEntry(entry, false)"
+              >
+                {{ t("sanitizeRules.hardblockEntryOff") }}
+              </button>
+            </div>
+          </div>
+        </template>
+        <form v-if="!hardblockLoading" class="card" @submit.prevent="saveHardBlock">
           <label
             >{{ t("sanitizeRules.hardblockListLabel")
             }}<textarea
@@ -1109,6 +1376,63 @@ onBeforeUnmount(() => {
         v-if="tab === 'blockedReviews'"
         :aria-busy="blockedReviewLoading"
       >
+        <!-- ★ 输出合规全局开关：owner 口径「能在全局关闭或开启输出合规的检查」。
+             放在这一页的最上面，是因为「被拦了」的人第一眼要看到的就是它。 -->
+        <div
+          v-if="superAdmin"
+          class="card"
+          data-test="output-check-switch"
+        >
+          <div class="toolbar">
+            <strong>{{ t("sanitizeRules.outputCheckTitle") }}</strong>
+            <span v-if="outputCheck" data-test="output-check-state">{{
+              outputCheck.enabled
+                ? t("sanitizeRules.outputCheckOn")
+                : t("sanitizeRules.outputCheckOff")
+            }}</span>
+            <span v-if="outputCheck" class="muted">{{
+              t("sanitizeRules.outputCheckSource") + ": " + outputCheck.source
+            }}</span>
+          </div>
+          <p class="event-note">{{
+            outputCheck?.semantics || t("sanitizeRules.outputCheckHint")
+          }}</p>
+          <p v-if="outputCheckError" role="alert" class="error-banner">
+            {{ outputCheckError }}
+          </p>
+          <p v-if="outputCheckNotice" role="status" class="notice">
+            {{ outputCheckNotice }}
+          </p>
+          <div class="toolbar">
+            <button
+              class="btn btn-primary"
+              type="button"
+              data-test="output-check-on"
+              :disabled="outputCheckBusy || !!outputCheck?.enabled"
+              @click="saveOutputCheck(true)"
+            >
+              {{ t("sanitizeRules.outputCheckEnable") }}
+            </button>
+            <button
+              class="btn"
+              type="button"
+              data-test="output-check-off"
+              :disabled="outputCheckBusy || outputCheck?.enabled === false"
+              @click="saveOutputCheck(false)"
+            >
+              {{ t("sanitizeRules.outputCheckDisable") }}
+            </button>
+            <button
+              class="btn"
+              type="button"
+              data-test="output-check-refresh"
+              :disabled="outputCheckBusy"
+              @click="loadOutputCheck()"
+            >
+              {{ t("sanitizeRules.refresh") }}
+            </button>
+          </div>
+        </div>
         <p class="muted">{{ t("sanitizeRules.blockedReviewsHint") }}</p>
         <p class="event-note">{{ t("sanitizeRules.blockedReviewsNote") }}</p>
         <form class="toolbar" @submit.prevent="loadBlockedReviews">
@@ -1154,6 +1478,11 @@ onBeforeUnmount(() => {
           </p>
           <p class="event-meta">
             <span
+              >{{ t("sanitizeRules.reviewClientLabel") }}:
+              <code>{{ review.client_type || "—" }}</code></span
+            >
+            ·
+            <span
               >{{ t("sanitizeRules.reviewRequestLabel") }}:
               <code>{{ review.request_id || "—" }}</code></span
             >
@@ -1163,6 +1492,66 @@ onBeforeUnmount(() => {
               <code>{{ (review.digest || "—").slice(0, 16) }}</code></span
             >
           </p>
+          <p v-if="review.session_id" class="event-meta">
+            {{ t("sanitizeRules.reviewSessionLabel") }}:
+            <code>{{ review.session_id }}</code>
+          </p>
+          <p v-if="review.label" class="event-meta">
+            {{ t("sanitizeRules.reviewLabelLabel") }}:
+            <strong>{{ labelText(review.label) }}</strong>
+            <span v-if="review.labeled_by"
+              >· {{ review.labeled_by }} ·
+              {{ date(review.labeled_at || "") }}</span
+            >
+            <span v-if="review.label_comment"
+              >· {{ review.label_comment }}</span
+            >
+          </p>
+          <!-- ★ 原始会话内容：被拦的那段内容的有界摘录（审核员据此判断
+               「这次拦得对不对」）。服务端只存 4 KiB 且带 7 天 TTL。 -->
+          <div v-if="review.evidence" class="matched-rule">
+            <strong class="muted">{{
+              t("sanitizeRules.reviewEvidenceLabel")
+            }}</strong>
+            <pre
+              class="match-detail"
+              data-test="review-evidence"
+              >{{ review.evidence }}</pre
+            >
+            <small v-if="review.evidence_truncated" class="muted">{{
+              t("sanitizeRules.reviewEvidenceTruncated")
+            }}</small>
+          </div>
+          <p v-if="releaseExpiryFor(review)" class="event-meta">
+            {{ t("sanitizeRules.reviewReleasedUntil") }}:
+            {{ date(releaseExpiryFor(review)) }}
+          </p>
+          <div class="matched-rule">
+            <button
+              class="btn"
+              type="button"
+              :data-test="'review-detail-' + review.id"
+              @click="
+                expandedReview = expandedReview === review.id ? null : review.id
+              "
+            >
+              {{
+                expandedReview === review.id
+                  ? t("sanitizeRules.reviewDetailHide")
+                  : t("sanitizeRules.reviewDetailShow")
+              }}
+            </button>
+            <div
+              v-if="expandedReview === review.id"
+              class="matched-rule__body"
+              :data-test="'review-detail-body-' + review.id"
+            >
+              <p v-if="review.rule_name">
+                <strong>{{ review.rule_name }}</strong>
+              </p>
+              <pre class="match-detail">{{ review.match_detail || "—" }}</pre>
+            </div>
+          </div>
           <template v-if="review.status === 'pending' && superAdmin">
             <label
               >{{ t("sanitizeRules.reviewComment")
@@ -1191,10 +1580,118 @@ onBeforeUnmount(() => {
               </button>
             </div>
           </template>
+          <!-- ★ 人工标注：与「通过/拒绝」正交的一维 —— 状态回答「现在放不放行」，
+               标注回答「这次拦得对不对」。标注是规则优化的唯一输入。 -->
+          <template v-if="superAdmin">
+            <label
+              >{{ t("sanitizeRules.reviewLabelComment")
+              }}<input
+                v-model="reviewLabelComments[review.id]"
+                :data-test="'blocked-review-label-comment-' + review.id"
+                maxlength="500"
+                :disabled="reviewLabelBusy !== null"
+            /></label>
+            <div class="toolbar">
+              <button
+                class="btn"
+                type="button"
+                :data-test="'blocked-review-label-false-positive-' + review.id"
+                :disabled="reviewLabelBusy !== null"
+                @click="applyReviewLabel(review, 'false_positive')"
+              >
+                {{ t("sanitizeRules.label_false_positive") }}
+              </button>
+              <button
+                class="btn"
+                type="button"
+                :data-test="'blocked-review-label-rule-too-broad-' + review.id"
+                :disabled="reviewLabelBusy !== null"
+                @click="applyReviewLabel(review, 'rule_too_broad')"
+              >
+                {{ t("sanitizeRules.label_rule_too_broad") }}
+              </button>
+              <button
+                class="btn"
+                type="button"
+                :data-test="'blocked-review-label-true-positive-' + review.id"
+                :disabled="reviewLabelBusy !== null"
+                @click="applyReviewLabel(review, 'true_positive')"
+              >
+                {{ t("sanitizeRules.label_true_positive") }}
+              </button>
+              <button
+                class="btn"
+                type="button"
+                :data-test="'blocked-review-label-needs-rule-' + review.id"
+                :disabled="reviewLabelBusy !== null"
+                @click="applyReviewLabel(review, 'needs_rule')"
+              >
+                {{ t("sanitizeRules.label_needs_rule") }}
+              </button>
+            </div>
+          </template>
           <small v-if="review.decided_by"
             >{{ review.decided_by }} · {{ date(review.decided_at || "") }}</small
           >
         </article>
+        <!-- ★ 规则级复核读数：误报最集中的规则排在前面 —— 这是「规则该改了」
+             的入口面（自动优化据此累计，达到阈值就自动放行该租户该规则）。 -->
+        <div class="card" data-test="review-insights">
+          <div class="toolbar">
+            <strong>{{ t("sanitizeRules.reviewInsightsTitle") }}</strong>
+            <span class="muted">{{
+              autoRelaxEnabled
+                ? t("sanitizeRules.reviewInsightsAutoRelax") +
+                  String(autoRelaxThreshold)
+                : t("sanitizeRules.reviewInsightsAutoRelaxOff")
+            }}</span>
+          </div>
+          <p v-if="reviewLabelError" role="alert" class="error-banner">
+            {{ reviewLabelError }}
+          </p>
+          <p v-if="insightsLoading">{{ t("sanitizeRules.loading") }}</p>
+          <p v-else-if="!reviewInsights.length">
+            {{ t("sanitizeRules.reviewInsightsNone") }}
+          </p>
+          <table v-else class="insights-table">
+            <thead>
+              <tr>
+                <th>{{ t("sanitizeRules.reviewInsightsRule") }}</th>
+                <th>{{ t("sanitizeRules.reviewInsightsTotal") }}</th>
+                <th>{{ t("sanitizeRules.reviewInsightsFalsePositive") }}</th>
+                <th>{{ t("sanitizeRules.reviewInsightsRatio") }}</th>
+                <th>{{ t("sanitizeRules.reviewInsightsAutoRelaxed") }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="insight in reviewInsights"
+                :key="(insight.tenant_id || '-') + '|' + insight.rule"
+                :data-test="'review-insight-' + insight.rule"
+              >
+                <td>
+                  <code>{{
+                    insight.rule === "unattributed"
+                      ? t("sanitizeRules.reviewUnattributedRule")
+                      : insight.rule
+                  }}</code>
+                  <small v-if="insight.rule_name" class="muted">{{
+                    insight.rule_name
+                  }}</small>
+                </td>
+                <td>{{ insight.total }}</td>
+                <td>{{ insight.false_positive }}</td>
+                <td>{{ Math.round(insight.false_positive_ratio * 100) }}%</td>
+                <td>
+                  <span v-if="insight.auto_relaxed">{{
+                    t("sanitizeRules.reviewInsightsAutoRelaxedYes")
+                  }}</span>
+                  <span v-else class="muted">—</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
       <section v-if="tab === 'events'" :aria-busy="eventLoading">
         <p class="muted">{{ t("sanitizeRules.reviewOnly") }}</p>
@@ -1864,6 +2361,15 @@ summary {
   gap: 8px;
   color: var(--warning);
 }
+.match-detail {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  font-size: 12px;
+  color: var(--text-secondary, var(--muted));
+}
+.hardblock-entry {
+  margin-bottom: 4px;
+}
 .event-meta {
   margin: 0 0 8px;
   font-size: 13px;
@@ -1891,5 +2397,25 @@ summary {
 }
 .matched-samples li {
   margin-bottom: 4px;
+}
+/* 规则级复核读数（★ 2026-10-29 输出合规误报轮）。 */
+.insights-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.insights-table th,
+.insights-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border, var(--surface-secondary));
+  text-align: left;
+}
+.insights-table th {
+  color: var(--text-secondary, var(--muted));
+  font-weight: 500;
+}
+.review-evidence {
+  max-height: 220px;
+  overflow: auto;
 }
 </style>

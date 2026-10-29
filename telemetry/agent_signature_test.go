@@ -319,3 +319,31 @@ func TestAgentSignatureDomesticBeforeClaudeFallback(t *testing.T) {
 		})
 	}
 }
+
+// TestExtractAgentName_ClaudeCodeWireForms（2026-10-29 identification round）：
+// 统计侧与直通侧同一事实（claude-cli 线材形态 + 旗标头），两表必须同修。
+func TestExtractAgentName_ClaudeCodeWireForms(t *testing.T) {
+	cases := []struct {
+		name string
+		ua   string
+		want string
+	}{
+		{"real claude-cli UA", "claude-cli/2.1.75 (external, cli)", "claude-code"},
+		{"claude-cli sdk-cli form", "claude-cli/2.1.270 (external, sdk-cli)", "claude-code"},
+		{"archive hyphenated form", "Claude-Code/1.0.0", "claude-code"},
+		{"MiniMaxCoder lookalike negative", "MiniMaxCoder/1.0", "unknown"},
+		{"ZCodex lookalike negative", "ZCodex/2.0", "unknown"},
+		{"visualized zed-token negative", "visualized/2.0", "unknown"},
+		{"real MiniMaxCode regression", "MiniMaxCode", "minimax-code"},
+		{"real ZCode regression", "ZCode/3.16.3 ai-sdk/provider-utils/4.0.39 runtime/node.js/24", "zcode"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/v1/messages", nil)
+			req.Header.Set("User-Agent", tc.ua)
+			if got := ExtractAgentName(req); got != tc.want {
+				t.Errorf("ExtractAgentName(%q) = %q, want %q", tc.ua, got, tc.want)
+			}
+		})
+	}
+}

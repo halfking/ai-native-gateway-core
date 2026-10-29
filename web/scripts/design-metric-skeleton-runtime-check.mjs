@@ -860,8 +860,16 @@ let report
 try {
   report = await runChrome(port, pages)
 } catch (e) {
-  console.error('✘ 浏览器驱动失败：' + (e?.message || e))
-  process.exit(2)
+  // ★★ 2026-10-29：**环境失败 ≠ 判据失败**（★ 与 icon-size 兄弟同款）。
+  //   旧写法 exit 2 —— 而 exit 2 在本工具里是「自证失败」的码 ⇒ 仓内 Go 侧
+  //   「掏空登记册 ⇒ 读方必须红且红因正确」那道门会把「浏览器连不上」判成
+  //   「红了但红因不对」⇒ **在负载下随机误判「门没牙」**。
+  //   ⇒ 环境失败走 exit 3（= 本工具既有的「未测量」约定）＋ 专属探针 token。
+  console.error(
+    '✘ [METRIC-SKELETON-NOT-MEASURED] 浏览器驱动失败：' + (e?.message || e) +
+      '\n   ★ 这是**环境失败**（不是判据失败）⇒ 本次**未测量**（不是通过）',
+  )
+  process.exit(3)
 }
 
 const readings = {

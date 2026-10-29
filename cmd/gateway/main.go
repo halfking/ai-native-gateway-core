@@ -4031,6 +4031,7 @@ func main() {
 		return em
 	}
 	var modelQualityWorker *bg.ModelQualityWorker
+	var modelCredibilityWorker *bg.ModelCredibilityWorker
 	var modelIQCleaner *bg.ModelIQCleaner
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
@@ -5245,6 +5246,55 @@ func main() {
 					"timeout_seconds", mqTimeoutSec,
 					"use_lite", mqUseLite,
 					"per_node", mqEnablePerNode)
+
+				// 2026-10-29: 模型可信度（防掺水）扫描 worker。
+				//
+				// ★ 与 model_quality_worker 的关系：两者互补不重叠 ——
+				//   model_quality_worker 跑 MMLU 题库 ⇒「这个模型答对多少题」（质量）；
+				//   model_credibility_worker 发一次标定请求 + 复用上面的实测 ⇒
+				//   「这个供应商给的是不是它声称的那个模型」（身份）。
+				// ⇒ 后者依赖前者的产出（model_iq_runs 的准确率）：前者没跑过时，
+				//   能力维度记为「未测量」，判定只靠身份与指纹两把尺。
+				//
+				// ★ 需要解密 key（直连上游发标定请求）⇒ keyring / fernetKey 至少
+				//   有一个可用，否则 worker 不启动（admin API 仍可读已落库的判定）。
+					// ★ 默认关。worker 启动后会对每个活跃节点直连上游发真实请求，
+					// 消耗 token、打到供应商限流。必须显式打开，不能靠零值当「开」。
+					mcEnabled := false
+					if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_credibility.enabled", ""); len(raw) > 0 {
+						jsoncol.Decode("gateway.modelCredibility/enabled", raw, &mcEnabled)
+					}
+				mcIntervalHours := 6
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_credibility.interval_hours", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelCredibility/interval_hours", raw, &mcIntervalHours)
+				}
+				if mcIntervalHours < 1 {
+					mcIntervalHours = 6
+				}
+				mcProbeTimeoutSec := 60
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_credibility.probe_timeout_seconds", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelCredibility/probe_timeout_seconds", raw, &mcProbeTimeoutSec)
+				}
+				if mcProbeTimeoutSec < 10 {
+					mcProbeTimeoutSec = 60
+				}
+				if mcEnabled {
+					if keyring != nil || len(fernetKey) == 32 {
+						mcCfg := bg.DefaultModelCredibilityWorkerConfig()
+						mcCfg.Enabled = true
+						mcCfg.Interval = time.Duration(mcIntervalHours) * time.Hour
+						mcCfg.ProbeTimeout = time.Duration(mcProbeTimeoutSec) * time.Second
+						modelCredibilityWorker = bg.NewModelCredibilityWorker(dbConn.Pool(), keyring, fernetKey, mcCfg)
+						modelCredibilityWorker.Start(context.Background())
+						slog.Info("CHECKPOINT: model_credibility_worker started",
+							"interval_hours", mcIntervalHours,
+							"probe_timeout_seconds", mcProbeTimeoutSec)
+					} else {
+						slog.Warn("model_credibility_worker: keyring/fernet key unavailable, not started")
+					}
+				} else {
+					slog.Info("model_credibility_worker: disabled by settings")
+				}
 			}
 		}
 
@@ -6065,6 +6115,12 @@ func main() {
 			// read-only catalog/history/node-latest endpoints still work.
 			if modelQualityWorker != nil {
 				adminHandler.SetModelQualityBackend(modelQualityWorker)
+			}
+			// 2026-10-29: 模型可信度（防掺水）admin 后端。
+			// 读端点（list/catalog/detail/history）直接查 DB ⇒ worker 未启动
+			// 也能读已落库的判定；只有 trigger/scan 端点需要 worker。
+			if modelCredibilityWorker != nil {
+				adminHandler.SetModelCredibilityBackend(modelCredibilityWorker)
 			}
 			// Wire redis for credential monitor endpoints (2026-06-22).
 			if fpSlotRedis != nil {
@@ -8230,6 +8286,9 @@ func main() {
 		}
 		if modelQualityWorker != nil {
 			modelQualityWorker.Stop()
+		}
+		if modelCredibilityWorker != nil {
+			modelCredibilityWorker.Stop()
 		}
 		if modelIQCleaner != nil {
 			modelIQCleaner.Stop()

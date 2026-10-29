@@ -79,6 +79,26 @@ type MetricSnapshot struct {
 	// 2026-08-11: 节点智商信号（来自 node_iq_latest）。nil = 未测量（冷启动），
 	// scorer 跳过该维度。
 	ModelIQSignal *ModelIQSignal
+	// 2026-10-29: 模型可信度信号（来自 provider_model_credibility）。
+	// nil = 未测量（还没跑过可信度扫描），scorer 跳过该维度。
+	CredibilitySignal *CredibilitySignal
+}
+
+// CredibilitySignal 模型可信度维度数据。
+//
+// 数据来源：provider_model_credibility 按 credential 聚合其下所有节点的
+// 可信度判定分（0-100）。SampleN=0 表示尚无任何可信度判定数据，
+// 应视为未测量（scorer 跳过，不按 0 分算）。
+//
+// ★ 与 ModelIQSignal 的区别：ModelIQ 测的是「这个模型答对多少题」，
+//   Credibility 测的是「这个供应商给的是不是它声称的那个模型」
+//   （掺水检测）。两者互补：同族降级（Sonnet→Haiku）会让 IQ 掉，
+//   但只有 Credibility 能直接说出「它在卖假货」。
+type CredibilitySignal struct {
+	AvgCredibility float64 // 该凭据下各节点可信度分的平均值（0-100）
+	MinCredibility float64 // 最差节点的可信度分（0-100）——掺水要看这个
+	SampleN        int     // 参与聚合的节点数
+	SuspectCount   int     // 判定为存疑/渗水的节点数
 }
 
 // ModelIQSignal 节点智商维度数据。
@@ -127,7 +147,10 @@ type DailyProfile struct {
 
 	// 各维度分数
 	NetworkScore      float64
-	CredibilityScore  float64
+	// CredibilityScore 是模型可信度（0-100）。CredibilityMeasured=false
+	// 时该值为 0 但含义是「没测过」，落库必须写成 NULL。
+	CredibilityScore     float64
+	CredibilityMeasured  bool
 	AvailabilityScore float64
 	StabilityScore    float64
 	ScaleScore        float64

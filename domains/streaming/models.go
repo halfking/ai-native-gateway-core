@@ -313,10 +313,16 @@ type geminiModelEntry struct {
 // this gateway serve".
 //
 // ★ The supported generation methods are the ones this gateway ACTUALLY
-// serves for a Gemini upstream: generateContent and streamGenerateContent.
-// "countTokens" is deliberately NOT listed — the gateway does not
-// implement it (see the audit doc), and listing a method the gateway
-// cannot serve would be a promise it does not keep.
+// serves for a Gemini upstream: generateContent, streamGenerateContent and
+// countTokens.
+//
+// ★★ 2026-10-29（Gemini countTokens 轮）：countTokens **从「不列」变成「列」**
+// —— 上一轮刻意不列它，理由是「网关没实现 ⇒ 列一个自己做不到的方法 =
+// 给客户端一个它会当真、然后失败的承诺」。⇒ 本轮**把它实现了**
+// （domains/streaming/handler_gemini.go: serveCountTokens）⇒ ⇒ 承诺兑现了
+// ⇒ ⇒ **现在必须列**：仍然不列 = 网关明明做得到却对外说做不到 ⇒ 客户端
+// 会去问厂商要（而厂商那边要另一次凭证/网络往返）⇒ ⇒ **能力清单必须与
+// 实现逐项对账，两个方向都对**。
 func (h *ModelsHandler) ServeGeminiModels(w http.ResponseWriter, r *http.Request) {
 	if !h.authenticate(w, r) {
 		return
@@ -384,7 +390,7 @@ func (h *ModelsHandler) writeGeminiEntries(w http.ResponseWriter, entries []mode
 		out = append(out, geminiModelEntry{
 			Name:                       name,
 			DisplayName:                e.ID,
-			SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
+			SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent", "countTokens"},
 			InputTokenLimit:            e.ContextWindow,
 		})
 	}

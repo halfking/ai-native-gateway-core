@@ -200,9 +200,17 @@ func (h *Handler) handleTurnsList(w http.ResponseWriter, r *http.Request) {
 // handler and a live database.
 func buildTurnsListWhere(r *http.Request, tenantID string, tsFrom, tsTo, beforeTS time.Time, beforeSessionID string, beforeTurnNo int) (string, []any, int) {
 	q := r.URL.Query()
-	clauses := []string{"t.ts >= $1", "t.ts <= $2"}
-	args := []any{tsFrom, tsTo}
-	argIdx := 3
+	// ★★ R181 轮：★ 带上【分区键下界】⇒ ⇒ PG 能对按 partition_date 分区的
+	// session_turns 做月分区裁剪（只按 ts 过滤 ⇒ 一个都裁不掉 ⇒ 窗口内
+	// 每个月分区都要探一遍）。
+	// ★★ 口径不变：★ partition_date = calendarDate(ts)（所有写入方都用它）
+	// ⇒ ⇒ 该谓词是 ts 谓词的蕴含条件 ⇒ ⇒ **不丢行**；精确过滤仍由 ts 做。
+	// ★★ 参数编号后移两位：★ $1/$2 = partition_date 上下界，★ $3/$4 = ts 窗口，
+	// ★ $5… = 过滤条件。
+	pdFrom, pdTo := sessionPartitionDateBounds(tsFrom, tsTo)
+	clauses := []string{"t.ts >= $3", "t.ts <= $4", "t.partition_date >= $1", "t.partition_date <= $2"}
+	args := []any{pdFrom, pdTo, tsFrom, tsTo}
+	argIdx := 5
 
 	if tenantID != "" {
 		clauses = append(clauses, fmt.Sprintf("t.tenant_id = $%d", argIdx))

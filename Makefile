@@ -184,6 +184,10 @@ guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，
 	@bash tests/deploy_switch_lock_contract_test.sh
 	@bash tests/deploy_switch_lock_parity_test.sh
 
+.PHONY: guards-win-baseline
+guards-win-baseline: ## Windows 全量测试基线门（bash scripts/guards/check-win-test-baseline.sh <日志>；无参=自跑全量，约 10 分钟）
+	@bash scripts/guards/check-win-test-baseline.sh $(WIN_TEST_LOG)
+
 # ★★★ 2026-10-24 magpie 对齐轮 §3.17：**在跑的 CI 载体专用 target**。
 #
 #   起因（★ 本轮实测推翻了自己审计档 §3.16.3 的结论）：

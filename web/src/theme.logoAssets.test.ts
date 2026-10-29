@@ -153,6 +153,80 @@ function readPngInkBox(file: string): {
 // zlib inflate：Node 内置，避免为测试引入依赖
 import { inflateSync } from 'node:zlib'
 
+/** 复用 readPngInkBox 的解码路径：返回不透明（alpha ≥128）像素占画布比例。 */
+function readOpaqueRatio(file: string): number {
+  const { width, height, alphaData } = decodePngAlpha(file)
+  let opaque = 0
+  for (let i = 3; i < alphaData.length; i += 4) if (alphaData[i] >= 128) opaque++
+  return opaque / (width * height)
+}
+
+/** 读取单个像素的 alpha（0-255）。 */
+function alphaAt(file: string, x: number, y: number): number {
+  const { width, alphaData } = decodePngAlpha(file)
+  return alphaData[(y * width + x) * 4 + 3]
+}
+
+/** 解 PNG → 未滤波的 RGBA 字节（readPngInkBox 内联逻辑抽出共享，同一解码只有一份实现）。 */
+function decodePngAlpha(file: string): { width: number; height: number; alphaData: Buffer } {
+  const buf = readFileSync(resolve(publicDir, file))
+  let off = 8
+  let width = 0
+  let height = 0
+  const idat: Buffer[] = []
+  while (off < buf.length) {
+    const len = buf.readUInt32BE(off)
+    const type = buf.subarray(off + 4, off + 8).toString('ascii')
+    const data = buf.subarray(off + 8, off + 8 + len)
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0)
+      height = data.readUInt32BE(4)
+    } else if (type === 'IDAT') {
+      idat.push(Buffer.from(data))
+    } else if (type === 'IEND') {
+      break
+    }
+    off += 12 + len
+  }
+  const raw = inflateSync(Buffer.concat(idat))
+  const bpp = 4
+  const stride = width * bpp
+  const out = Buffer.alloc(height * stride)
+  let pos = 0
+  for (let y = 0; y < height; y++) {
+    const filter = raw[pos++]
+    const row = raw.subarray(pos, pos + stride)
+    pos += stride
+    const cur = out.subarray(y * stride, (y + 1) * stride)
+    const prev = y > 0 ? out.subarray((y - 1) * stride, y * stride) : null
+    for (let x = 0; x < stride; x++) {
+      const rawByte = row[x]
+      const a = x >= bpp ? cur[x - bpp] : 0
+      const b = prev ? prev[x] : 0
+      const c = prev && x >= bpp ? prev[x - bpp] : 0
+      let v: number
+      switch (filter) {
+        case 0: v = rawByte; break
+        case 1: v = rawByte + a; break
+        case 2: v = rawByte + b; break
+        case 3: v = rawByte + ((a + b) >> 1); break
+        case 4: {
+          const p = a + b - c
+          const pa = Math.abs(p - a)
+          const pb = Math.abs(p - b)
+          const pc = Math.abs(p - c)
+          const pred = pa <= pb && pa <= pc ? a : pb <= pc ? b : c
+          v = rawByte + pred
+          break
+        }
+        default: throw new Error(`未处理的 PNG filter: ${filter}`)
+      }
+      cur[x] = v & 0xff
+    }
+  }
+  return { width, height, alphaData: out }
+}
+
 describe('品牌 logo 资产（web/public）', () => {
   it('logo-icon.png / logo-icon-dark.png 都是 1024² RGBA（文件名被 auth 白名单硬编码）', () => {
     for (const f of ['logo-icon.png', 'logo-icon-dark.png']) {
@@ -161,26 +235,41 @@ describe('品牌 logo 资产（web/public）', () => {
     }
   })
 
-  it('图形占画布宽度 ≥ 30%（经典资产 48%；缩水 bug 会掉到 12%）', () => {
+  it('图形铺满画布（全画布徽章设计 ≥85%；缩水 bug 会掉到 12%）且四角圆角透明', () => {
+    // 2026-10-28 SSOT 紫金版（rule 70 对齐，6cc313eee）是全画布超椭圆徽章：
+    // 不透明区域占画布 95.4%（旧经典资产是透明底字形、墨迹占 48%）。
+    // 断言不钉当前配色/形状细节，只守两类原始缺陷：
+    // ① 几何缩水（render_icon 时代图形只占 12%）⇒ 不透明覆盖率必须 ≥85%；
+    // ② 徽章必须是圆角形状（四角透明），防止被替换成满铺方块。
     for (const f of ['logo-icon.png', 'logo-icon-dark.png']) {
       const box = readPngInkBox(f)
-      // 60px 展示位上，12% ⇒ 实际图形 7px（糊成一团）；48% ⇒ 29px（可辨）
-      expect(`${f} ratio=${box.ratio.toFixed(3)}`).toMatch(/ratio=0\.[3-9]/)
-      expect(box.ratio).toBeGreaterThanOrEqual(0.3)
-      // 高宽比 ~1.24（496×601 的窗格纹+字标），缩水不改变比例但会变小
-      expect(box.inkH / box.inkW).toBeGreaterThan(1.0)
+      const opaqueRatio = readOpaqueRatio(f)
+      expect(`${f} opaque=${opaqueRatio.toFixed(3)}`).toMatch(/opaque=0\.[89]/)
+      expect(opaqueRatio).toBeGreaterThanOrEqual(0.85)
+      // 圆角：四角采样点必须透明（角点在超椭圆外）
+      for (const [x, y] of [[2, 2], [1021, 2], [2, 1021], [1021, 1021]] as const) {
+        expect(alphaAt(f, x, y)).toBeLessThan(128)
+      }
+      // 明暗两版几何必须一致（同一枚 logo 的两个变体，不是两个设计）
+      expect(box.width).toBe(1024)
+      expect(box.height).toBe(1024)
     }
-  })
-
-  it('亮版是深墨、暗版是亮墨（暗色皮肤上必须看得见）', () => {
     const light = readPngInkBox('logo-icon.png')
     const dark = readPngInkBox('logo-icon-dark.png')
-    // 亮版深海军蓝（墨迹平均亮度 < 110）、暗版冰蓝（> 140）
-    expect(light.inkLuma).toBeLessThan(110)
-    expect(dark.inkLuma).toBeGreaterThan(140)
-    // 两版几何必须一致（同一枚 logo 的明暗变体，不是两个设计）
     expect(Math.abs(light.inkW - dark.inkW)).toBeLessThanOrEqual(2)
     expect(Math.abs(light.inkH - dark.inkH)).toBeLessThanOrEqual(2)
+  })
+
+  it('亮暗两版是不同配色（明暗成对；「只换一版」会让两版 luma 落进同带）', () => {
+    // 2026-10-28 实测：亮版徽章平均 luma 139.5（紫金）、暗版 64.1（深紫）。
+    // 带宽取宽松区间不钉具体色相：亮版必须亮于 100、暗版必须暗于 100，
+    // 两版差距 ≥30 —— 「暗色变体不换色」的原始缺陷（两版几乎不可分）会在此翻红。
+    const light = readPngInkBox('logo-icon.png')
+    const dark = readPngInkBox('logo-icon-dark.png')
+    expect(`${light.inkLuma.toFixed(1)}`).toMatch(/^\d{3}\./)
+    expect(light.inkLuma).toBeGreaterThan(100)
+    expect(dark.inkLuma).toBeLessThan(100)
+    expect(Math.abs(light.inkLuma - dark.inkLuma)).toBeGreaterThanOrEqual(30)
   })
 
   it('logoSrc() 按皮肤选亮暗两版', () => {

@@ -1687,7 +1687,23 @@ func candidateQuerySQL() string {
 }
 
 func candidateQuerySQLBase() string {
-	return `
+	// ★ 模态接受臂**不在本文件里抄写**——它由 provider/modality_accept.go 的
+	// 唯一片段渲染（$MODALITY → "$3"）。理由见该文件的注释：要防止
+	// 「改一份忘另一份」（零候选建议列表那份 SQL 抄本曾经就在 domains/streaming
+	// 里各写一遍）。
+	// ★ 替换（而不是把片段拼进 raw string 中间）：拼接会把 raw string 拆成
+	// 半个 ⇒ sql_comment_syntax_test.go 的扫描器在拆分点失明 ⇒ 那一段里的
+	// `//` 注释对门完全隐形（实测见该测试的 TestSQLCommentScanner_SeesPastConcatenation）。
+	//   占位符 + strings.Replace 保持主 SQL 是**一个**完整 raw string。
+	return strings.Replace(candidateQuerySQLBaseTemplate, "/*MODALITY_ACCEPT_ARMS*/", ModalityAcceptArmsSQL("$3"), 1)
+}
+
+// candidateQuerySQLBaseTemplate 是候选集查询的正文；模态接受臂以
+// /*MODALITY_ACCEPT_ARMS*/ 占位（见 candidateQuerySQLBase 的替换）。
+// ★ 是 var 不是 const：正文里有 `+ brokenPairExcludeSQL(...) +` 的拼接
+//
+//	⇒ 不是常量表达式。
+var candidateQuerySQLBaseTemplate = `
 		WITH matched AS MATERIALIZED (
 		SELECT mo.*, mc.id AS _mc_id, mc.context_window_override AS _mc_cw_override, mc.context_window AS _mc_cw
 		FROM model_offers mo
@@ -1722,20 +1738,7 @@ func candidateQuerySQLBase() string {
 			)
 		  AND COALESCE(mc.status, 'active') != 'disabled'
 		  			  AND (
-			      $3 = ''
-			      OR $3 = 'text'
-			      -- 2026-10-26：vision/audio/video 三种媒体请求都放行
-			      -- multimodal 登记的模型。video 此前缺席（只有精确
-			      -- mc.modality = 'video' 一条臂）⇒ 任何带视频块的
-			      -- Gemini/Qwen-VL 请求对全部 multimodal 模型 503，
-			      -- 而判定门（modalityVerdictGateSQL）早已把 video 与
-			      -- vision/audio 同列 —— 迁移 451 把 video 加进枚举的
-			      -- 理由正是「modality_detect 能返回 video」。
-			      OR ($3 IN ('vision', 'audio', 'video') AND COALESCE(mc.modality, 'text') IN ($3, 'multimodal'))
-			      -- 2026-10-08 Phase C: dedicated /v1/images/* uses modality=image
-			      -- and accepts vision|image|multimodal catalog rows.
-			      OR ($3 = 'image' AND COALESCE(mc.modality, 'text') IN ('image', 'vision', 'multimodal'))
-			      OR COALESCE(mc.modality, 'text') = $3
+			      /*MODALITY_ACCEPT_ARMS*/
 			  )
 			  /*MODALITY_VERDICT_GATE*/
 		)
@@ -1980,7 +1983,6 @@ SELECT
 			-- above soft-degraded ones even when the static column is equal.
 			COALESCE(rsr.rate, mo.success_rate, 0.9) DESC
 	` // closing backtick shares the line (lone trailing backtick confuses the sql_comment_syntax_test scanner)
-}
 
 func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, tenantID, modality string) ([]Candidate, error) {
 	if c.dbPool == nil {

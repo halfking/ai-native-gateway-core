@@ -6,12 +6,32 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type PostgresStore struct{ db *sql.DB }
 
 func NewPostgresStore(db *sql.DB) *PostgresStore { return &PostgresStore{db: db} }
+// storeError 把底层错误洗成「sanitize rule <操作> failed」。
+//
+// ★ 2026-10-29（输出合规误报轮）：**清洗不能把根因一起洗掉**。洗涤前的
+// 版本把原始错误整个丢掉 ⇒ 生产上「审核单列表读库失败」只留下一句没有线索
+// 的话（operation 名 + failed），根因（哪一列不存在 / 哪个连接池被关 / 权限
+// 不足）一个都看不到 ⇒ 定位只能靠猜（本次在 211 上就为此绕了很久）。
+//
+// ★ 但**根因不能原样回显**：PG 驱动的自由文本会把**绑定参数**一起带出来
+// （形如「insert failed: password=… at character 1」）⇒ 直接挂 %w 等于把
+// 载荷原文泄漏进日志（TestPgErrorSanitized 钉的就是这条）。
+//
+// ⇒ 现在的形态：**对外消息逐字不变**（仍是「sanitize rule <op> failed」），
+// **另带一个【可安全外露】的结构化根因切片**（pgconn.PgError 的 SQLSTATE /
+// message / 约束名 / 列名 —— 这些**不含绑定参数**），由日志侧打出来。
 func storeError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -21,7 +41,58 @@ func storeError(operation string, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return context.DeadlineExceeded
 	}
-	return errors.New("sanitize rule " + operation + " failed")
+	return &sanitizeStoreError{op: operation, detail: pgErrorDetail(err)}
+}
+
+// sanitizeStoreError 是 storeError 的返回类型：消息对外不可变，根因切片可查。
+type sanitizeStoreError struct {
+	op     string
+	detail string
+}
+
+func (e *sanitizeStoreError) Error() string { return "sanitize rule " + e.op + " failed" }
+
+// Detail 返回可安全外露的结构化根因切片（无绑定参数回显）。
+func (e *sanitizeStoreError) Detail() string { return e.detail }
+
+// StoreErrorDetail 导出根因切片取值器（给管理面日志用）。
+//
+// ★ 为什么导出：管理面把 store 的错误转成 HTTP 响应时，若只写「failed to read …」
+// ⇒ 生产上排障时看不到根因。本函数给出**可安全外露**的结构化切片（SQLSTATE /
+// PG message / 约束名 / 列名），**不含绑定参数**。
+func StoreErrorDetail(err error) string { return storeErrorDetail(err) }
+
+// storeErrorDetail 从任意错误里取根因切片；不是 storeError 包装的错误返回
+// 「detail_unavailable」（而不是猜一个字符串）。
+func storeErrorDetail(err error) string {
+	var se *sanitizeStoreError
+	if errors.As(err, &se) {
+		return se.detail
+	}
+	return "detail_unavailable"
+}
+
+// pgErrorDetail 从错误里抽【可安全外露】的根因切片。
+//
+// ★ 只取 pgconn.PgError 的结构化字段（SQLSTATE / message / 约束名 / 列名）——
+// 它们**不含绑定参数**；驱动的自由文本（"insert failed: password=…"）会
+// 回显参数 ⇒ 不能外露。
+func pgErrorDetail(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		parts := []string{"sqlstate=" + pgErr.Code}
+		if pgErr.Message != "" {
+			parts = append(parts, "message="+pgErr.Message)
+		}
+		if pgErr.ConstraintName != "" {
+			parts = append(parts, "constraint="+pgErr.ConstraintName)
+		}
+		if pgErr.ColumnName != "" {
+			parts = append(parts, "column="+pgErr.ColumnName)
+		}
+		return strings.Join(parts, " ")
+	}
+	return "detail_unavailable"
 }
 
 type rowScanner interface{ Scan(...any) error }

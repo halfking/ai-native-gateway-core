@@ -125,6 +125,15 @@ type interceptingStreamWriter struct {
 	// 拦截审核轮）——审核队列据此对这一次载荷精确放行。
 	blockField  string
 	blockDigest string
+	// blockEvidence 是被拦内容的**有界摘录**（原始会话内容），2026-10-29
+	// 输出合规误报轮补——审核员据此判断「这次拦得对不对」。
+	blockEvidence string
+	// degraded 记录「守卫降级放行」（待检缓冲越界但没有规则命中）。
+	// ★ 降级**不是**拦截 ⇒ 不渲染失败终帧，但**要留痕**（登记审核单）。
+	degraded     bool
+	degradedRule string
+	degradedReason string
+	degradedEvidence string
 }
 
 func newInterceptingStreamWriter(w http.ResponseWriter, chain ResponseInterceptor, ctx context.Context, meta response.StreamMeta) *interceptingStreamWriter {
@@ -309,10 +318,36 @@ func (w *interceptingStreamWriter) finish() {
 		// 2026-10-28 拦截审核轮：终帧落线前登记审核单。message 文本与旁键
 		// 都带审核单号——客户端（含只显示 message 的那类）能看到
 		// 「等待审核，含敏感内容」，管理员在后台批准后重试即放行。
-		reviewID := registerPolicyBlockReview(w.meta.TenantID, w.meta.RequestID,
-			w.blockRule, w.blockReason, w.blockField, w.blockDigest)
+		reviewID := registerPolicyBlockReview(PolicyBlockReviewInput{
+			TenantID:   w.meta.TenantID,
+			ClientType: w.meta.ClientType,
+			SessionID:  w.meta.SessionID,
+			RequestID:  w.meta.RequestID,
+			Rule:       w.blockRule,
+			Reason:     w.blockReason,
+			Field:      w.blockField,
+			Digest:     w.blockDigest,
+			Evidence:   w.blockEvidence,
+			EvidenceKind: policyBlockEvidenceKind(w.blockRule),
+		})
 		w.writeTrustedTerminal(nativeStreamPolicyFailureFrame(w.meta.ClientProtocol,
 			w.blockRule, w.meta.RequestID, reviewID, w.blockReason, w.blockField))
+		return
+	}
+	// ★ 2026-10-29 输出合规误报轮：降级放行（缓冲越界、无规则命中）也要
+	// **留痕** —— 登记一条审核单，让运维看得到「守卫在什么规模上让过步」。
+	// 降级**不是**拦截 ⇒ 不渲染失败终帧（响应已经成功返回）。
+	if w.degraded && !w.terminalRendered {
+		registerPolicyBlockReview(PolicyBlockReviewInput{
+			TenantID:     w.meta.TenantID,
+			ClientType:   w.meta.ClientType,
+			SessionID:    w.meta.SessionID,
+			RequestID:    w.meta.RequestID,
+			Rule:         w.degradedRule,
+			Reason:       w.degradedReason,
+			Evidence:     w.degradedEvidence,
+			EvidenceKind: policyBlockEvidenceKind(w.degradedRule),
+		})
 	}
 }
 
@@ -421,6 +456,29 @@ func policyDigestFromChunkResult(result *response.ChunkResult) string {
 	return digest
 }
 
+// policyEvidenceFromChunkResult 取拦截/降级结果里的**有界摘录**（原始会话
+// 内容，2026-10-29 输出合规误报轮）。
+//
+// ★ 只走审核面：它进审核单的证据表，**不进**客户端信封与失败审计行。
+func policyEvidenceFromChunkResult(result *response.ChunkResult) string {
+	if result == nil || result.Metadata == nil {
+		return ""
+	}
+	evidence, _ := result.Metadata["policy_evidence"].(string)
+	return evidence
+}
+
+// policyDegradedFromChunkResult 报告这次结果是不是「守卫降级放行」。
+//
+// 降级 ≠ 拦截：待检缓冲越界但没有规则命中时，守卫放行并留痕。
+func policyDegradedFromChunkResult(result *response.ChunkResult) bool {
+	if result == nil || result.Metadata == nil {
+		return false
+	}
+	degraded, _ := result.Metadata["policy_degraded"].(bool)
+	return degraded
+}
+
 // policyBlockReasonFromError 从策略拦截错误里取人类可读原因短语。
 func policyBlockReasonFromError(err error) string {
 	var pbe *errorsx.PolicyBlockError
@@ -489,11 +547,22 @@ func (w *interceptingStreamWriter) writeFrame(frame []byte) {
 				w.blockReason = policyReasonFromChunkResult(result)
 				w.blockField = policyFieldFromChunkResult(result)
 				w.blockDigest = policyDigestFromChunkResult(result)
+				w.blockEvidence = policyEvidenceFromChunkResult(result)
 				// R25-F: wrap the protocol-terminal sentinel so the handler's
 				// execErr fallback recognizes the policy terminal frame we
 				// already rendered and does not emit a second terminal.
 				w.writeErr = fmt.Errorf("output stream blocked by response interceptor: %w", errorsx.ErrProtocolTerminalRendered)
 				return
+			}
+			// ★ 2026-10-29 输出合规误报轮：「守卫降级放行」（待检缓冲越界、
+			// 但**没有规则命中**）⇒ 不阻断、但要留痕。这里把降级事实记到
+			// 写者上，finish() 据此登记一条审核单 ⇒ 运维看得到
+			// 「守卫在什么规模上让过步」，而不是「什么都不知道」。
+			if !result.ShouldBlock && policyDegradedFromChunkResult(result) {
+				w.degraded = true
+				w.degradedRule = policyRuleFromChunkResult(result)
+				w.degradedReason = policyReasonFromChunkResult(result)
+				w.degradedEvidence = policyEvidenceFromChunkResult(result)
 			}
 			// Suppression withholds the current frame from the wire. A
 			// same-result ModifiedChunk may carry an earlier frame
@@ -1663,6 +1732,23 @@ func (h *ChatHandler) SetStaticDataPlaneKey(key string) {
 	h.staticDataPlaneKey = key
 }
 
+// staticDataPlaneKeyMatches reports whether rawKey is exactly the deployed
+// static data-plane key.
+//
+// ★ 常量时间比较（subtle.ConstantTimeCompare）：静态键是**部署级共享凭据**，
+// 时序侧信道会泄露它 ⇒ 不比较长度捷径（ConstantTimeCompare 自身在长度不等时
+// 立即返回，但空串在**比较之前**就被拒 ⇒ 不泄露任何关于正确密钥的信息）。
+//
+// ★ 抽成函数是为了**一份实现**：ChatHandler 的静态键回退与 Gemini 原生
+// :countTokens 的静态键回退必须判得一模一样，否则同一个部署里两条入向
+// 面对「lite 模式 + 配了静态键」给出不同的放行结论。
+func staticDataPlaneKeyMatches(rawKey, staticKey string) bool {
+	if rawKey == "" || staticKey == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(staticKey), []byte(rawKey)) == 1
+}
+
 // SetAdminAPIKey configures the operator token used to gate the
 // X-LLMGW-Preferred-Credential routing override.
 func (h *ChatHandler) SetAdminAPIKey(key string) {
@@ -2527,7 +2613,7 @@ func (h *ChatHandler) serveWithExecutor(
 		// deployed static key instead; downstream already handles the
 		// keyInfo==nil shape (it is today's path for this state).
 		rawKey := extractBearerToken(r)
-		if rawKey == "" || subtle.ConstantTimeCompare([]byte(h.staticDataPlaneKey), []byte(rawKey)) != 1 {
+		if !staticDataPlaneKeyMatches(rawKey, h.staticDataPlaneKey) {
 			captureAndEmitFailure("invalid_key", "invalid api key (static-key fallback auth)", nil, nil, http.StatusUnauthorized)
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgInvalidKey, nil)
@@ -4836,6 +4922,7 @@ func (h *ChatHandler) serveWithExecutor(
 		var survivalIntercepted *interceptingStreamWriter
 		if h.responseInterceptor != nil {
 			survivalIntercepted = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
+				ClientType:  extractClientType(r),
 				SessionID:      gwSessionID,
 				RequestID:      requestID,
 				TenantID:       tenantID,
@@ -4918,6 +5005,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		if isStream && h.responseInterceptor != nil {
 			interceptedWriter = newInterceptingStreamWriter(streamWriter, h.responseInterceptor, r.Context(), response.StreamMeta{
+				ClientType:  extractClientType(r),
 				SessionID:      gwSessionID,
 				RequestID:      requestID,
 				TenantID:       tenantID,
@@ -5041,7 +5129,18 @@ goalRetryLoopDone:
 		if keyInfo != nil {
 			blockTenant = keyInfo.TenantID
 		}
-		reviewID := registerPolicyBlockReview(blockTenant, requestID, rule, reason, field, digest)
+		reviewID := registerPolicyBlockReview(PolicyBlockReviewInput{
+			TenantID:     blockTenant,
+			ClientType:   extractClientType(r),
+			SessionID:    gwSessionID,
+			RequestID:    requestID,
+			Rule:         rule,
+			Reason:       reason,
+			Field:        field,
+			Digest:       digest,
+			Evidence:     policyBlockEvidenceFromError(execErr),
+			EvidenceKind: policyBlockEvidenceKind(rule),
+		})
 		writeOutputPolicyBlockedJSON(protocolOfRequest(r), w, http.StatusForbidden, requestID,
 			"Response blocked by output policy", "policy_violation", "output_policy_blocked", rule, reason, field, digest, reviewID)
 		return
@@ -5915,6 +6014,7 @@ goalRetryLoopDone:
 			CallerOwner:    callerOwner,
 			ClientProtocol: clientProtocolLane,
 			ClientModel:    clientModel,
+			ClientType:     extractClientType(r),
 			ResponseBody:   result.ResponseBody,
 			TokensUsed:     extractTotalTokens(result.ResponseBody, streamCapture),
 			ContextWindow: func() int {
@@ -6023,7 +6123,18 @@ goalRetryLoopDone:
 					// （拦截器在拦截那一刻记下的，见 outputcompliance 的
 					// policyBlockMetadata）——客户端据此提示用户「要不要继续」。
 					rule, reason, field, digest := policyBlockMetadataFrom(interceptResult)
-					reviewID := registerPolicyBlockReview(tenantID, requestID, rule, reason, field, digest)
+					reviewID := registerPolicyBlockReview(PolicyBlockReviewInput{
+						TenantID:     tenantID,
+						ClientType:   extractClientType(r),
+						SessionID:    gwSessionID,
+						RequestID:    requestID,
+						Rule:         rule,
+						Reason:       reason,
+						Field:        field,
+						Digest:       digest,
+						Evidence:     policyBlockEvidenceFromMetadata(interceptResult),
+						EvidenceKind: policyBlockEvidenceKind(rule),
+					})
 					writeOutputPolicyBlockedJSON(protocolOfRequest(r), w, http.StatusForbidden, requestID,
 						"Response blocked by output policy", "api_error", "output_policy_blocked", rule, reason, field, digest, reviewID)
 					return
@@ -9498,30 +9609,45 @@ func localiseModality(ctx context.Context, modality string) string {
 // supportedModalitiesFor lists the request modalities a model registered as
 // registeredModality would be accepted for.
 //
-// It mirrors provider.modalityAccepts: a "multimodal" row serves every media
-// modality; a "text" row serves text only. The list is published so a client
-// can decide on its own whether to strip the attachments or switch model,
-// without having to hard-code the acceptance table.
+// ★2026-10-29：这张表**不再手写**——它由 provider.ModalityAccepts（判据的
+// 唯一 Go 实现）逐个请求模态过滤出来。理由与「同一句话不许两份」同族：
+// 手写的表与判据是两份真值 ⇒ 改判据时忘了改表 ⇒ 客户端会被告知「这个模型
+// 接音频」，而网关实际上拒掉每一个音频请求。
+// ⇒ 词表 = provider.ModalityRequestModalities（请求模态词表，双向锚在
+//
+//	事实源上，见 domains/streaming/modality_single_source_test.go）。
+//
+// The list is published so a client can decide on its own whether to strip
+// the attachments or switch model, without having to hard-code the
+// acceptance table.
+//
+// ★ 派生出来的形状（登记 → 发布清单）：
+//
+//	text       → [text]
+//	vision     → [text, vision, image]
+//	audio      → [text, audio]
+//	video      → [text, video]
+//	image      → [text, image]
+//	multimodal → [text, vision, audio, video, image, multimodal]
+//	embedding  → [text, embedding]
+//
+// ★ 'multimodal' 那行**不含** 'embedding'：登记为 multimodal 的模型不接
+// 嵌入请求（兜底精确臂：只接同名登记的行）—— 判据说什么，这里就说什么。
 func supportedModalitiesFor(registeredModality string) []string {
-	switch registeredModality {
-	case "multimodal":
-		// A multimodal row serves every media modality — including a request
-		// that carries several of them at once, which is what the
-		// "multimodal" request modality means. Leaving it out would tell a
-		// client that a multimodal model cannot take a multimodal request,
-		// which is false.
-		return []string{"text", "vision", "audio", "video", "image", "multimodal"}
-	case "vision":
-		return []string{"text", "vision", "image"}
-	case "audio":
-		return []string{"text", "audio"}
-	case "video":
-		return []string{"text", "video"}
-	case "image":
-		return []string{"text", "image"}
-	default:
-		return []string{"text"}
+	return filterSupportedModalities(registeredModality, provider.ModalityRequestModalities)
+}
+
+// filterSupportedModalities 是 supportedModalitiesFor 的可注入版本：把请求
+// 模态词表作为参数传进来 ⇒ 测试可以换掉词表来证明「这张表真的是过滤出来的」
+// （而不是又一份手写的表）。
+func filterSupportedModalities(registeredModality string, requestModalities []string) []string {
+	out := make([]string, 0, len(requestModalities))
+	for _, req := range requestModalities {
+		if provider.ModalityAccepts(registeredModality, req) {
+			out = append(out, req)
+		}
 	}
+	return out
 }
 
 // writeErrorAnthropicWithAlternatives mirrors writeErrorAnthropic and adds the

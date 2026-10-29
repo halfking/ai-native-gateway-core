@@ -1,0 +1,41 @@
+# query-plan-cost-exemptions.tsv —— R180 轮：**代价豁免登记**
+#
+# ★ 列：shape_id	category	reason
+# ★ category 取值：slow（★ 应用读点超阈值 ⇒ ★ 必须写清为什么慢）· non-app（★ 工具自己造成的慢 ⇒ ★ 不参与阈值判定）
+#
+# ★★ 这份登记**不是保护，是记账**★★
+# ★★ 「把慢语句标成 non-app」是唯一的逃生舱 ⇒ ★ 而它要求**必须留下一条会被复核的理由**
+# ★★ ⇒ ⇒ 逃不掉，只是要付账。
+#
+# ★★ 为什么会有 non-app 这一类 ★★
+# ★★ 本轮先试过「语句同时读 canonical 视图与底表 ⇒ 是审计对拍语句」⇒ ⇒ **实测被证伪**：
+# ★★ 累计代价 Top 1 那条（★ 路由策略读点）也被判成审计 ⇒ ★★ 它其实是应用读点；
+# ★★ `INSERT INTO provider_metrics_minute`（★ rollup 写入）也被判成审计 ⇒ ★★ 它是写入路径。
+# ★★ ⇒ ⇒ **机器不猜「这条慢是谁的慢」** ⇒ ⇒ 改口径：★ non-app **由人工登记** ⇒ ⇒ 门只校验登记的完备性。
+#
+# ★★ 阈值（★ 门与生成器共用）：★ mean_ms >= 2000（★ **2 秒 = 用户原话**）· total_ms >= 300000（★ 累计 5 分钟）
+#
+# ★★ ★★ 诚实边界：★ 本文件里的「慢在哪」多数是**形态与调用方层面的定位**，★ 不是根因定位。
+# ★★ 根因要单独 EXPLAIN 那几段才能拿到 ⇒ ⇒ 「登记」只是把【已知的代价】摆到台面上，★ 不是「已经修好」。
+stmt-a05d1ad0a0	slow	★★ 累计代价 Top 1（★ 145 分钟 / 21240 次 / 单次 410ms）★ 调用方 domains/streaming/model_alternatives.go:466（★ 模型替代/路由 ⇒ 每次请求都跑）★ 慢在哪：★ CTE + 去重 + 多表 join ⇒ ★★ 形态轴【测不出来】（★ EXPLAIN 失败：canonical_model 不在 GROUP BY ⇒ ★ 本轮已知的抽取缺陷）★ ★★ 这是全库收益最大的一条（★ 21240 次调用）★ 下一步：★ 单独 EXPLAIN 那段 CTE ⇒ 定位是哪个子查询贵 ⇒ 再判索引可行性（★ 本轮只记账，★ 不谎称已修）
+stmt-2fcecccb17	slow	★ 累计 13.2 分钟 / 26548 次 / 单次 29.9ms ★ 调用方 admin/data_horizon.go（★ 数据地平线：按 request_id 批量查 request_status）★ 慢在哪：★ 形态是 filter（★ 索引扫描 + 残留过滤 ⇒ 谓词没被索引完全接住）★ 下一步：★ 与 stmt-2bc804a643 同族 ⇒ 一起查「残留过滤」能否消掉（★ R179 已定位：★ 视图把 api_key_id 包成表达式 ⇒ 谓词无处可去）
+stmt-2bc804a643	slow	★ 累计 12.2 分钟 / 1556 次 / 单次 468.5ms ★ 调用方 bg/shared_pick.go（★ 背景任务：模型探测 dual-arm）★ 慢在哪：★ 形态 filter + 按 credential_id + 时间窗扫 2026_09（★ 79 万行 / 2.7 GB）★ ★ 后台任务 ⇒ 不在用户请求路径上 ★ 下一步：★ 查 dual-arm 的两臂能不能走同一份索引（★ 未定位到具体哪个子查询）
+stmt-22df452662	slow	★ 累计 10.0 分钟 / 1499 次 / 单次 398.8ms ★ 调用方 bg/shared_pick.go（★ 背景任务的 dual-arm 变体）★ 慢在哪：★ 与 stmt-2bc804a643 同族（★ 同一文件的两条语句）★ 下一步：★ 同上（★ 一并处理）
+stmt-72e5900c3e	slow	★ 累计 9.2 分钟 / 32708 次 / 单次 16.9ms ★ 调用方 domains/sessionsummary/summarizer.go:778（★ 会话摘要判重 EXISTS）★★ **这条是「累计代价轴存在理由」的活证据**：★ 单次 16.9ms 不算慢（★ 形态轴与单次阈值都抓不到它）★ 但 3.2 万次调用 ⇒ 累计 9.2 分钟 ★ 下一步：★ 查能否用唯一约束或幂等键替代 EXISTS 判重（★ 未定位）
+stmt-1351d16ca9	slow	★ 累计 8.0 分钟 / 29004 次 / 单次 16.5ms ★ 调用方 internal/quality/minute_aggregator（★ provider_metrics_minute 的 rollup 写入）★★ 这是【写入路径】⇒ 用户目标里「写入过程的效率」也管它 ★ 慢在哪：★ 读视图 + 聚合 + 写聚合表 ⇒ ★ 写入侧聚合的输入面就是视图的全量展开 ★ 下一步：★ 查能否改成增量/按 bucket 裁剪（★ 未定位）
+stmt-ef61fbcdc5	slow	★★ 单次 22.1 秒（★ 远超用户给的 2 秒线）★ / 累计 2.2 分钟 / 6 次 ★ 调用方 maas/credit_buckets.go（★ credits rollup 写入）★ 慢在哪：★ 形态测不出来（★ error）★ ★★ 单次 22 秒 ⇒ 这是【写入路径】里最可疑的一条 ⇒ 下一步：★ 单独 EXPLAIN（★ 它 6 次调用 ⇒ 可能是大窗口全量重算）★ ★★ 待属主裁决（★ 是否允许它继续这么慢）
+stmt-682369a71d	slow	★★ 单次 16.9 秒 / 6 次 ★ 调用方 admin/model_routing_diagnostic.go + admin/credential_success_rate.go（★ 凭据可路由性诊断）★ ★ 管理面 API ⇒ 低频（★ 6 次）⇒ 累计只有 1.7 分钟 ★ 下一步：★ 诊断类接口 ⇒ 考虑加超时/降级（★ 用户目标里「超过 2 秒打开的网页需要检查」⇒ ★ 管理面同样适用）
+stmt-24b3b7ed56	slow	★★ 单次 20.2 秒 / 5 次 ★ 调用方 domains/analysis/optimizer.go（★ 会话压缩统计）★ 慢在哪：★ 形态测不出来（★ error）★ 下一步：★ 单独 EXPLAIN ★ ★★ 待属主裁决
+stmt-67035274be	slow	★ 单次 5.8 秒 / 7 次 / 累计 40.5 秒 ★ 调用方 dataLifecycleCanonicalSourceSQL（★ 趋势统计）★ ★ 已知慢点：★ 仓内注释记载 2026-10-19 那轮已把源从视图换成等价源（★ 视图的全量展开 >60s ⇒ 端点打不进 30s 预算）★ ★ 实测 5.8s 与注释里「~7s」一致 ⇒ ⇒ **已优化过一轮，★ 现在这个量级是已知且已接受的** ★ 下一步：★ 无（★ 若要再降 ⇒ 需要按 bucket 裁剪，★ 收益小）
+stmt-fc102610bd	slow	★ 单次 4.9 秒 / 5 次 ★ 调用方 domains/sessionsummary/summarizer.go + admin/compression_stats.go（★ 扫 request_body）★ ★ 慢在哪：★ 它扫的是 request_bodies（★ 不是会话族表）⇒ ★★ 形态轴的判决对象（★ session_turns*）对它结构性不适用 ⇒ ★ 形态多半是 no-scan/error ★ 下一步：★ 查 request_body 的 jsonb 路径能否走 GIN 索引（★ 未定位）
+stmt-2a46836e29	slow	★ 单次 8.0 秒 / 3 次 ★ 调用方 admin/session_turns_tree.go（★ 父子请求树）★ 慢在哪：★ 形态测不出来（★ error：★ missing FROM-clause entry for table "m" ⇒ ★ 本轮已知的抽取缺陷）★ 下一步：★ 修抽取器后重测（★ 见 R180-3）
+stmt-2c2cfeb9d9	slow	★ 单次 2.7 秒 / 4 次 ★ 调用方 domains/routeincident（★ 失败阶段统计）★ 慢在哪：★ 形态测不出来 ★ 下一步：★ 单独 EXPLAIN
+stmt-b40c5ee03a	non-app	★★ **审计对拍语句**（★ R168 轮的 view_cnt vs 底表 count 对拍）★ 仓内出处：docs/audit/2026-10-27-R168-凭据面板total_requests改走底表两臂.md ★ ★★ 它在 252 生产库上跑了 5 次 × 5 秒 ⇒ ⇒ **是审计自己造成的慢，不是产品读点** ⇒ ⇒ 不参与阈值判定 ★ ★★ 但这条本身是个发现：★ 对拍脚本不该在生产库上跑全量 count
+stmt-ecd4ee52f2	non-app	★ 人工排障语句（★ 语句以 EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) 开头）⇒ ⇒ 排障/审计自己跑的，不是应用读点 ⇒ ⇒ 不参与阈值判定 ★ ★★ 附带发现：★ 生产库上有人在跑 EXPLAIN ANALYZE（★ 22 次）⇒ ⇒ 该行为本身值得属主知晓
+stmt-b5ed49db7f	non-app	★ 人工排障语句（★ EXPLAIN ANALYZE）⇒ ⇒ 不参与阈值判定
+stmt-b0046676a0	non-app	★ 人工排障语句（★ EXPLAIN ANALYZE）⇒ ⇒ 不参与阈值判定
+stmt-a72f0391a2	non-app	★ 人工排障语句（★ EXPLAIN ANALYZE）⇒ ⇒ 不参与阈值判定
+stmt-fc9d67c0cc	non-app	★ 人工排障语句（★ EXPLAIN ANALYZE，★ 单次 20.4 秒）⇒ ⇒ 不参与阈值判定 ★ ★★ 它是这批里最慢的排障语句
+stmt-f4a806a702	non-app	★ 人工排障语句（★ EXPLAIN ANALYZE）⇒ ⇒ 不参与阈值判定
+stmt-aca168eb19	non-app	★ 人工排障语句（★ EXPLAIN ANALYZE）⇒ ⇒ 不参与阈值判定
+stmt-638b7f78b1	non-app	★ 人工排障语句（★ EXPLAIN ANALYZE）⇒ ⇒ 不参与阈值判定

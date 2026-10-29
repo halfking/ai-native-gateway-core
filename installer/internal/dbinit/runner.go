@@ -1677,7 +1677,29 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		// ★ 含 CREATE INDEX CONCURRENTLY ⇒ 本文件带 dbinit:no-transaction 标记（首行），
 		//   applySQL 据此不加 --single-transaction（887/888/729 同款）。
 		"916_session_turns_api_key_ts_index.sql",
-		},
+		// 917: 拦截审核/放行/硬阻断状态的持久化表（拦截持久化轮，2026-10-29）。
+		//   纯新增三表 + 索引，全部 IF NOT EXISTS ⇒ 幂等、零锁面风险。
+		"917_sanitize_block_reviews.sql",
+		// ★ 919（R176 轮）：P11 第二期 —— slot_daily.active_minutes + 填充函数升级
+		//   （巡检 base_active 走汇总表的落点）。无 CONCURRENTLY ⇒ 事务通道。
+		//   ★ 让号记录：初拟 917，push 前 fetch 实测 origin 已被并行会话
+		//   「拦截审核与放行落库」（ddd762e7a）占用 ⇒ 重取 919/920。
+		"919_ursm_slot_daily_active_minutes.sql",
+		// ★ 920（R176 轮）：node_probe_runs (credential_id, completed_at) 覆盖索引
+		//   （INV-4 双模型探测成功门的 24h 关联子查询，252 实测 549 次/天 慢+取消）。
+		//   ★ 含 CREATE INDEX CONCURRENTLY ⇒ 首行 dbinit:no-transaction 标记。
+		"920_node_probe_runs_cred_completed_idx.sql",
+		// ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台 —— 审核单追加
+		//   session_id / label 四件套 + 证据表 sanitize_block_evidence（原始
+		//   会话内容的有界摘录，7 天 TTL）+ 放行来源扩 'auto_label'。
+		"921_sanitize_block_workbench.sql",
+		// ★ 922（2026-10-29 模型可信度轮）：模型可信度（防掺水）体系 ——
+		//   provider_model_credibility（当前判定）+ provider_model_credibility_runs
+		//   （判定历史）+ 补齐 provider_quality_profiles 的 reliability_score /
+		//   calculated_at（435 遗漏 ⇒ 全新安装缺列 ⇒ internal/quality INSERT 42703）。
+		//   纯新增两表 + 幂等补列，全部 IF NOT EXISTS ⇒ 无 CONCURRENTLY，走事务通道。
+		"922_model_credibility.sql",
+	},
 	}
 }
 

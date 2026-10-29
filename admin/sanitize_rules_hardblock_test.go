@@ -160,10 +160,16 @@ func TestBlockedReviewsAdminListAndDecide(t *testing.T) {
 	sanitizerules.SetEgressReleases(nil)
 	defer sanitizerules.SetEgressReleases(nil)
 
-	entry := sanitizerules.AddBlockReview("acme", "egress", "builtin.egress_sink",
-		"sink destination", "$.command", "digest-1", "req-100")
-	sanitizerules.AddBlockReview("other", "egress", "builtin.secret_field.egress",
-		"credential", "$.password", "digest-2", "req-101")
+	entry := sanitizerules.AddBlockReview(sanitizerules.BlockReviewInput{
+		TenantID: "acme", ClientType: "zcode", Scope: "egress",
+		Rule: "builtin.egress_sink", Reason: "sink destination",
+		Field: "$.command", Digest: "digest-1", RequestID: "req-100",
+	})
+	sanitizerules.AddBlockReview(sanitizerules.BlockReviewInput{
+		TenantID: "other", ClientType: "claude-code", Scope: "egress",
+		Rule: "builtin.secret_field.egress", Reason: "credential",
+		Field: "$.password", Digest: "digest-2", RequestID: "req-101",
+	})
 
 	h := &Handler{}
 	superAuth := authCtxFor("super_admin", "", "root")
@@ -226,8 +232,10 @@ func TestBlockedReviewsAdminRejectsBadInput(t *testing.T) {
 	sanitizerules.SetEgressReleases(nil)
 	defer sanitizerules.SetEgressReleases(nil)
 
-	entry := sanitizerules.AddBlockReview("acme", "egress", "builtin.egress_sink",
-		"sink destination", "", "", "req-1")
+	entry := sanitizerules.AddBlockReview(sanitizerules.BlockReviewInput{
+		TenantID: "acme", ClientType: "zcode", Scope: "egress",
+		Rule: "builtin.egress_sink", Reason: "sink destination", RequestID: "req-1",
+	})
 
 	h := &Handler{}
 	superAuth := authCtxFor("super_admin", "", "root")

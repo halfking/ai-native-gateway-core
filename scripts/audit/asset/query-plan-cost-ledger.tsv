@@ -1,0 +1,113 @@
+# query-plan-cost-ledger.tsv —— R180 轮：**生产语句代价台账**
+# ★ 生成器：scripts/audit/build-query-plan-cost-ledger.py
+# ★ 列：shape_id	kind	calls	total_ms	mean_ms	rows	plan_form	over_threshold
+# ★ 事实源：252 的 pg_stat_statements（★ calls / total_exec_time_ms / mean_exec_time_ms / rows）
+# ★ ★ kind：app（★ 应用读点）· non-app（★ 工具自己造成的慢 ⇒ ★ 不参与阈值判定）
+# ★ ★ ★ non-app **只能**由人工在 query-plan-cost-exemptions.tsv 里登记（★ category=non-app）⇒ ★ 生成器不猜
+# ★ 阈值：★ mean_ms >= 2000（★ **2 秒 = 用户原话**）★ 或 ★ total_ms >= 300000（★ 累计 5 分钟）
+# ★ ★ over_threshold 非空 ⇒ 该语句必须挂【代价豁免】登记（★ category=slow）⇒ 否则门红
+# ★ ★ plan_form 取自实测形态观测台账（★ error = 测不出来；★ ★ 【测不出来】≠ 不重要 ⇒ 它可能正是最贵的那批）
+stmt-a05d1ad0a0	app	21240	8714833.1	410.303	169902	error	total>=5min
+stmt-2fcecccb17	app	26548	793879.4	29.904	2729636	filter	total>=5min
+stmt-2bc804a643	app	1556	729012.1	468.517	268	filter	total>=5min
+stmt-22df452662	app	1499	597770.6	398.780	249	filter	total>=5min
+stmt-72e5900c3e	app	32708	552952.0	16.906	32708	no-scan	total>=5min
+stmt-1351d16ca9	app	29004	479361.7	16.527	80280	error	total>=5min
+stmt-ef61fbcdc5	app	6	132475.5	22079.252	384	error	mean>=2s
+stmt-682369a71d	app	6	101500.7	16916.782	11706	error	mean>=2s
+stmt-24b3b7ed56	app	5	100821.4	20164.282	250	error	mean>=2s
+stmt-67035274be	app	7	40506.3	5786.621	49	error	mean>=2s
+stmt-fc102610bd	app	5	24607.0	4921.396	5	error	mean>=2s
+stmt-2a46836e29	app	3	24029.8	8009.923	0	error	mean>=2s
+stmt-2c2cfeb9d9	app	4	10759.4	2689.840	4	error	mean>=2s
+stmt-5ee949e6a2	app	6957	85332.9	12.266	10283	error	
+stmt-68730eda4d	app	6956	72631.9	10.442	6804	error	
+stmt-e1762c8f07	app	7547	66576.3	8.822	8052	error	
+stmt-95643a0f23	app	6956	62939.1	9.048	8008	error	
+stmt-279c34c60a	app	7547	61577.3	8.159	5847	error	
+stmt-773f848286	app	7547	60166.3	7.972	5584	error	
+stmt-87ce32cb74	app	6956	46502.4	6.685	2025	error	
+stmt-1d7be58136	app	41	41646.9	1015.778	3145	seek	
+stmt-3a40e23afe	app	26	39097.8	1503.761	81	filter	
+stmt-241779cec0	app	2291	38575.1	16.838	2291	seq-scan	
+stmt-66582fd2a5	app	7547	38280.0	5.072	1964	error	
+stmt-20dc099515	app	69	37751.3	547.121	0	seq-scan	
+stmt-11d0945262	app	42	26635.3	634.173	840	error	
+stmt-410cf33921	app	5833	25997.2	4.457	5833	error	
+stmt-85d7974418	app	6956	25481.8	3.663	14417	error	
+stmt-20b48c2a70	app	2894	24405.2	8.433	2894	error	
+stmt-e6462dd730	app	6956	24346.1	3.500	11236	error	
+stmt-53aeac96cc	app	6956	24224.1	3.482	10512	error	
+stmt-9cb27a7f81	app	6956	23992.2	3.449	14217	error	
+stmt-db782e0543	app	6956	23354.9	3.358	3224	error	
+stmt-66d399070a	app	6955	23220.7	3.339	3215	error	
+stmt-df999f137c	app	7547	21082.1	2.793	10842	error	
+stmt-f4dc1a85b8	app	6956	20494.8	2.946	2497	error	
+stmt-6a52a7afaa	app	6956	20377.4	2.929	10347	error	
+stmt-b027721ad2	app	27	20273.2	750.858	27	error	
+stmt-816c4ef8c7	app	7547	20055.0	2.657	7738	error	
+stmt-030d1217b1	app	6956	19878.8	2.858	1853	error	
+stmt-4afefb4654	app	7547	19380.9	2.568	8800	error	
+stmt-aa0158be4f	app	6956	18984.7	2.729	6836	error	
+stmt-9190547ef8	app	2894	18796.1	6.495	40372	no-scan	
+stmt-6573097c01	app	6956	18183.5	2.614	6822	error	
+stmt-1d8c92067a	app	6955	17701.7	2.545	2024	error	
+stmt-73358a4cb7	app	2902	17371.8	5.986	0	no-scan	
+stmt-aafc180eb7	app	7547	17233.8	2.284	7003	error	
+stmt-e30469ba01	app	7547	16612.5	2.201	8089	error	
+stmt-4069b57c71	app	7547	16564.3	2.195	5853	error	
+stmt-bdb4d951be	app	6956	16333.5	2.348	932	error	
+stmt-6cc33ec7b6	app	7547	15818.1	2.096	5860	error	
+stmt-f596755350	app	7547	14959.8	1.982	2959	error	
+stmt-7bfbd2c9a1	app	7547	14506.1	1.922	1964	error	
+stmt-9d1dc2e638	app	35	14394.3	411.265	69	error	
+stmt-d116202242	app	7547	14060.1	1.863	2237	error	
+stmt-b271b5c6d5	app	24	13740.3	572.513	240	no-scan	
+stmt-a70a74cd4b	app	6955	13700.0	1.970	931	error	
+stmt-0ea9f07a52	app	6956	13668.1	1.965	4605	error	
+stmt-d7f7c13b45	app	7547	13644.7	1.808	1214	error	
+stmt-599cc0d192	app	6956	13620.2	1.958	932	error	
+stmt-b871c09f7c	app	7547	12121.5	1.606	2000	error	
+stmt-b3b46d5629	app	7547	12105.5	1.604	1214	error	
+stmt-c90b024b02	app	25	11858.0	474.318	25	error	
+stmt-3c045e9b67	app	7547	11800.1	1.564	3130	error	
+stmt-ea85dcbaf9	app	7547	11213.2	1.486	1633	error	
+stmt-4f0b6e3793	app	36	10957.9	304.387	0	no-scan	
+stmt-6fde17c457	app	7547	10641.2	1.410	1214	error	
+stmt-9a946b9a43	app	36	9859.4	273.871	56	error	
+stmt-6d02e043ab	app	40	8217.7	205.444	40	seek	
+stmt-9571b7d4ed	app	23	7386.2	321.137	0	error	
+stmt-bbb1ce06f6	app	6955	6635.5	0.954	1109	error	
+stmt-4f0576debd	app	6955	6085.4	0.875	2217	error	
+stmt-e1c92af125	app	11	5746.5	522.406	1100	no-scan	
+stmt-49dc365b2e	app	7547	5319.3	0.705	787	error	
+stmt-43a2967e55	app	2894	4940.2	1.707	2894	seq-scan	
+stmt-7e82986080	app	9	4540.8	504.533	0	error	
+stmt-7818afd241	app	69	4207.7	60.982	0	seq-scan	
+stmt-7d91dc47b2	app	7547	4177.7	0.554	1610	error	
+stmt-7680556245	app	15	3958.8	263.923	15	no-scan	
+stmt-d70b6eb838	app	99	2790.4	28.185	73	error	
+stmt-e0293a4ef0	app	17	2593.2	152.539	5816	filter	
+stmt-dc134fac36	app	21	2141.0	101.954	7817	seek	
+stmt-75d8949be0	app	5	1594.0	318.794	124	filter	
+stmt-68facd535a	app	6	1554.5	259.079	1518	no-scan	
+stmt-95161b01ea	app	14	1319.9	94.281	340	error	
+stmt-7462a7cbba	app	6	830.1	138.348	12864	no-scan	
+stmt-84b300ea80	app	10	684.5	68.454	10	error	
+stmt-f764e25810	app	12	502.2	41.853	46	filter	
+stmt-972919ad0f	app	8	185.1	23.138	0	error	
+stmt-20ad906539	app	9	161.7	17.962	0	error	
+stmt-be93989894	app	9	157.9	17.542	0	error	
+stmt-c884d61bf8	app	9	149.0	16.558	0	error	
+stmt-c74e5d38f6	app	17	8.2	0.485	17	seek	
+stmt-b967cdbe0a	app	3	1.5	0.493	3	seek	
+stmt-f72ea7c5ca	app	3	1.2	0.389	3	seek	
+stmt-fc9d67c0cc	non-app	4	81751.1	20437.767	0	error	
+stmt-ecd4ee52f2	non-app	22	43961.0	1998.229	0	error	
+stmt-b40c5ee03a	non-app	5	25043.4	5008.678	5	seq-scan	
+stmt-aca168eb19	non-app	3	17893.5	5964.493	0	no-scan	
+stmt-a72f0391a2	non-app	14	12684.8	906.059	0	no-scan	
+stmt-f4a806a702	non-app	3	6061.4	2020.467	0	error	
+stmt-b5ed49db7f	non-app	19	5707.8	300.409	0	no-scan	
+stmt-b0046676a0	non-app	14	1718.0	122.716	0	filter	
+stmt-638b7f78b1	non-app	3	133.4	44.461	0	filter	

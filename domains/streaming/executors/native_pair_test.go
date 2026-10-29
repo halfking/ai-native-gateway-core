@@ -8,8 +8,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -194,22 +196,26 @@ func TestNativePairFor_Detection(t *testing.T) {
 	cases := []struct {
 		name   string
 		params *ExecParams
-		model  string
+		cand   provider.Candidate
 		want   bool
 	}{
-		{"header zcode + glm", newParams("zcode", "", `{"messages":[]}`), "glm-5.3", true},
-		{"header zcode + host-prefixed glm", newParams("zcode", "", `{"messages":[]}`), "z-ai/glm-5.2", true},
-		{"header zcode + deepseek model → 非原生对", newParams("zcode", "", `{"messages":[]}`), "deepseek-chat", false},
-		{"UA minimax-code + minimax", newParams("", "minimax-code/1.0", `{"messages":[]}`), "minimax-m2", true},
-		{"body marker zcode_version（弱名回退）", newParams("", "", `{"metadata":{"zcode_version":"1.2"},"messages":[]}`), "glm-5.3", true},
-		{"X-Code-Session-Id → minimax-code", newParamsWithSession("sess-1", `{"messages":[]}`), "minimax-m2", true},
-		{"强名冲突：header cursor + body zcode 标记 → 保守不直通", newParams("cursor", "cursor/1.0", `{"metadata":{"zcode_version":"1.2"},"messages":[]}`), "glm-5.3", false},
-		{"未知客户端 + glm", newParams("", "", `{"messages":[]}`), "glm-5.3", false},
+		{"header zcode + glm", newParams("zcode", "", `{"messages":[]}`), provider.Candidate{CatalogCode: "zhipu", RawModel: "glm-5.3", Protocol: "openai-completions"}, true},
+		{"header zcode + host-prefixed glm", newParams("zcode", "", `{"messages":[]}`), provider.Candidate{CatalogCode: "zhipu", RawModel: "z-ai/glm-5.2", Protocol: "openai-completions"}, true},
+		{"header zcode + deepseek model → 非原生对", newParams("zcode", "", `{"messages":[]}`), provider.Candidate{CatalogCode: "zhipu", RawModel: "deepseek-chat", Protocol: "openai-completions"}, false},
+		{"UA minimax-code + minimax", newParams("", "minimax-code/1.0", `{"messages":[]}`), provider.Candidate{CatalogCode: "minimax", RawModel: "minimax-m2", Protocol: "openai-completions"}, true},
+		{"body marker zcode_version（弱名回退）", newParams("", "", `{"metadata":{"zcode_version":"1.2"},"messages":[]}`), provider.Candidate{CatalogCode: "zhipu", RawModel: "glm-5.3", Protocol: "openai-completions"}, true},
+		{"X-Code-Session-Id → minimax-code", newParamsWithSession("sess-1", `{"messages":[]}`), provider.Candidate{CatalogCode: "minimax", RawModel: "minimax-m2", Protocol: "openai-completions"}, true},
+		{"强名冲突：header cursor + body zcode 标记 → 保守不直通", newParams("cursor", "cursor/1.0", `{"metadata":{"zcode_version":"1.2"},"messages":[]}`), provider.Candidate{CatalogCode: "zhipu", RawModel: "glm-5.3", Protocol: "openai-completions"}, false},
+		{"未知客户端 + glm", newParams("", "", `{"messages":[]}`), provider.Candidate{CatalogCode: "zhipu", RawModel: "glm-5.3", Protocol: "openai-completions"}, false},
+		// 2026-10-29 厂商感知（nvidia 直通事故轮）：zcode → nvidia 托管的
+		// z-ai/glm-5.3-flash 不构成原厂对 ⇒ 学习式预剥离/paramguard 照常
+		// 生效（事故形态：每请求两轮 400 剥参重试且学习永不回应用）。
+		{"事故回归：zcode + nvidia 宿主 glm", newParams("zcode", "", `{"messages":[]}`), provider.Candidate{CatalogCode: "nvidia", RawModel: "z-ai/glm-5.3-flash", Protocol: "openai-completions"}, false},
+		{"zcode + 空 catalog 中继 glm", newParams("zcode", "", `{"messages":[]}`), provider.Candidate{RawModel: "glm-5.3", Protocol: "openai-completions"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cand := provider.Candidate{RawModel: tc.model, Protocol: "openai-completions"}
-			if got := nativePairFor(tc.params, cand, tc.params.BodyBytes); got != tc.want {
+			if got := nativePairFor(tc.params, tc.cand, tc.params.BodyBytes); got != tc.want {
 				t.Fatalf("nativePairFor = %v, want %v", got, tc.want)
 			}
 		})
@@ -218,11 +224,13 @@ func TestNativePairFor_Detection(t *testing.T) {
 
 // TestFinalizeNative_LegacyWithIR_NativePairStampsPassthrough（2026-10-28
 // 生产验证轮）：legacy_with_ir（OpenAI 入向、e.IR != nil —— 211 生产日志里的
-// 实际 path）此前只盖 TargetProvider、不盖 NativePassthrough ⇒ zcode→glm
-// 路由到第三方宿主（catalog=nvidia，或空 catalog 的中继）时，enable_thinking
-// /thinking 被 paramreg 的 RejectedByUnknown 政策裁掉。生产实测 87 个
-// zcode→glm 请求里 86 个保真靠的是 GLM 原厂（zhipu 方言）恰好认这些键，
-// 不是直通机制在起作用。本测试把第三方宿主形态钉死。
+// 实际 path）此前只盖 TargetProvider、不盖 NativePassthrough ⇒ 直通腿的
+// enable_thinking /thinking 被 paramreg 的 RejectedByUnknown 政策裁掉。
+// 本测试钉住 finalize 的 NativePassthrough 盖章链路本身（native 参数直灌，
+// 绕过 nativePairFor）。2026-10-29 厂商感知修正后，nvidia 宿主在生产的
+// native 恒为 false（见 TestNativePairFor_Detection 事故回归臂）——这里
+// 用 nvidia 候选是为了 dst=Unknown 的对照臂形状；对照臂（native=false）
+// 同时就是 nvidia 宿主今天在生产走到的真实形态。
 func TestFinalizeNative_LegacyWithIR_NativePairStampsPassthrough(t *testing.T) {
 	body := []byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}],` +
 		`"enable_thinking":true,"thinking":{"type":"enabled","budget_tokens":4096},` +
@@ -394,5 +402,81 @@ func TestPrepareRequestBodyWithNative_StripBypassLoggedAtInfo(t *testing.T) {
 	// 对照臂 2：非原生对 × 非空 strip ⇒ 白名单通道正常执行，无绕过行。
 	if got := run(false, []string{"reasoning_effort"}); len(got) != 0 {
 		t.Fatalf("non-native pair with strip config: got %d bypass log lines, want 0 (whitelist path applies strip, not a bypass)", len(got))
+	}
+}
+
+// TestNvidiaHostIncident_LearnedStripsApply（2026-10-29 nvidia 直通事故轮）：
+// 事故链：zcode → nvidia 托管的 z-ai/glm-5.3-flash 被误判原厂对 ⇒ 直通腿
+// 豁免学习式预剥离 ⇒ NVIDIA 拒 reasoning/enable_thinking（一次点名一个）
+// ⇒ 每请求两轮 400 剥参重试（211 实测 53 请求、TTFB 29s+），Redis 学习
+// 记录（recovered_count=1）永不回应用。厂商感知修正后 nvidia 候选不再直通
+// （nativePairFor=false，见 TestNativePairFor_Detection），本测试钉住
+// 「学习记录 → 首发前置剥离」在 nvidia 候选上确实生效，且事故错误文案
+// （"Validation: Unsupported parameter(s): `reasoning`"）能被 Diagnose
+// 点名提取。
+func TestNvidiaHostIncident_LearnedStripsApply(t *testing.T) {
+	store := reqprobe.NewMemoryStore()
+	coord := reqprobe.NewCoordinator(store)
+	defer coord.Close()
+
+	// 事故错误文案（211 生产 2026-10-29 00:04–01:32Z 实测原文）必须能被
+	// Diagnose 判为 param_rejected 并点名 reasoning。
+	incidentBody := []byte(`{"message":"Validation: Unsupported parameter(s): ` + "`reasoning`" + `","type":"Bad Request","code":400}`)
+	outbound := []byte(`{"model":"z-ai/glm-5.3-flash","messages":[{"role":"user","content":"hi"}],` +
+		`"reasoning":{"effort":"max"},"enable_thinking":true}`)
+	diag, ok := reqprobe.Diagnose(reqprobe.Input{
+		HTTPStatus:   400,
+		ErrorBody:    incidentBody,
+		OutboundBody: outbound,
+	})
+	if !ok || diag.Trigger != reqprobe.TriggerParamRejected {
+		t.Fatalf("Diagnose(incident body) ok=%v trigger=%q, want param_rejected", ok, diag.Trigger)
+	}
+	if !strings.Contains(diag.Param, "reasoning") {
+		t.Fatalf("Diagnose param = %q, want it to name reasoning", diag.Param)
+	}
+
+	// 学习记录（Redis 实测形态：剥后成功，param=enable_thinking,reasoning）。
+	coord.RecordTerminal(
+		reqprobe.Input{HTTPStatus: 400, ErrorBody: incidentBody, Protocol: "openai-completions"},
+		reqprobe.Diagnosis{Trigger: reqprobe.TriggerParamRejected, Param: "enable_thinking,reasoning"},
+		reqprobe.TerminalMeta{ProviderID: 18, ProviderCode: "nvidia", ClientModel: "glm-5.3-flash", OutboundModel: "z-ai/glm-5.3-flash"},
+		true,
+	)
+	deadline := time.Now().Add(2 * time.Second)
+	visible := false
+	for time.Now().Before(deadline) {
+		recs, _, err := store.List(context.Background(), reqprobe.Filter{ProviderCode: "nvidia", Model: "z-ai/glm-5.3-flash"})
+		if err == nil && len(recs) > 0 {
+			visible = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !visible {
+		t.Fatalf("record never landed in store — worker did not drain the queue")
+	}
+
+	// nvidia 候选（厂商感知修正后非原厂对）首发前必须前置剥离学习参数。
+	e := &Executor{RequestProbe: coord}
+	cand := provider.Candidate{
+		ProviderID:  18,
+		CatalogCode: "nvidia",
+		RawModel:    "z-ai/glm-5.3-flash",
+		Protocol:    "openai-completions",
+	}
+	if nativePairFor(&ExecParams{ClientType: "zcode"}, cand, outbound) {
+		t.Fatalf("zcode × nvidia host must not be a native pair after the 2026-10-29 vendor gate")
+	}
+	out := e.reqprobeApplyLearned(outbound, cand, "openai-completions", "nvidia-incident")
+	obj := mustJSON(t, out)
+	if _, present := obj["reasoning"]; present {
+		t.Fatalf("learned strip did not remove reasoning from nvidia outbound:\n%s", out)
+	}
+	if _, present := obj["enable_thinking"]; present {
+		t.Fatalf("learned strip did not remove enable_thinking from nvidia outbound:\n%s", out)
+	}
+	if _, present := obj["messages"]; !present {
+		t.Fatalf("learned strip lost core field messages:\n%s", out)
 	}
 }

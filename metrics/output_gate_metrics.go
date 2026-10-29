@@ -51,6 +51,11 @@ const (
 
 	OutputGateSourceTransformError = "transform_error"
 	OutputGateSourceChainFailClose = "chain_fail_closed"
+	// OutputGateSourceCapacity 是「待检缓冲越界」这一**容量性**事件
+	// （2026-10-29 输出合规误报轮）。它不是内容违规，但过去它以
+	// 「静默阻断」的形式上屏 ⇒ 客户端整条响应丢失、审核单空白。
+	// 现在它有独立 series ⇒ 「守卫装不下」这件事本身可观测。
+	OutputGateSourceCapacity = "capacity"
 )
 
 func init() {
@@ -67,6 +72,7 @@ func init() {
 	}
 	for _, source := range []string{
 		OutputGateSourceTransformError, OutputGateSourceChainFailClose,
+		OutputGateSourceCapacity,
 	} {
 		OutputGateFailClosedErrorsTotal.WithLabelValues(OutputGateNameCompliance, source).Add(0)
 	}

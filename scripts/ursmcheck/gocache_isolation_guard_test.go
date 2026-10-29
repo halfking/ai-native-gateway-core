@@ -386,8 +386,18 @@ var gocacheGoCmdListRE = regexp.MustCompile(`["']go["']\s*,\s*["'](build|test|ve
 // ★ ★★ **为什么认这几种形态**：★★ shell 侧是 `export GOCACHE=…`（★ 或
 // ★ ★★ `GOCACHE=…` 在 env 数组里），Python 侧是 `["GOCACHE"] = …`（★ 或
 // ★ ★★ `env["GOCACHE"] = …`），还有两边的**共享入口**（★ `gocache_use` /
-// ★ ★★ `gocache.env(` / `gocache.dir_for(`）⇒ ⇒ ★★ ⇒ **一个都不许漏**。
-var gocacheSetRE = regexp.MustCompile(`GOCACHE\s*=|["']GOCACHE["']\s*\]|gocache_use|gocache\.env\(|gocache\.dir_for\(`)
+// ★ ★★ `gocache.env(` / `gocache.dir_for(` / ★ ★★ `gocache.apply_to_environ(`）
+// ★ ★★ ⇒ ⇒ ★★ ⇒ **一个都不许漏**。
+//
+// ★ ★★★★ **r1048 收尾轮补的一条（★ 治「两门口径不一致」）**：★★★★ 本门（★ A 级）
+// ★ ★★★★ 原先**只认** `gocache.dir_for(` ⇒ ⇒ ★★★★ **不认** `gocache.apply_to_environ(`
+// ★ ★★★★ ⇒ ⇒ ★★★★ 而 r1048 轮的 B 级门**两个都认** ⇒ ⇒ ★★★★ ⇒ ⇒ ★★ **同一个脚本
+// ★ ★★★★ 在一道门里绿、在另一道门里红** ⇒ ⇒ ★★★★ ⇒ ⇒ ★★ **两门对「什么算隔离」
+// ★ ★★★★ 必须说同一句话** ⇒ ⇒ ★★★★ ⇒ ⇒ ★★ ⇒ ⇒ **本轮实测**：★ 上游新脚本
+// ★ ★★★★ `scripts/mutate-r180-query-plan-cost-gate.py` 被改成失败安全形态
+// ★ ★★★★ （★ `gocache.apply_to_environ("mutate")`）⇒ ⇒ ★★★★ ⇒ ⇒ ★★ **本门当场红**
+// ★ ★★★★ ⇒ ⇒ ★★★★ ⇒ ⇒ ★★ **⇒ ⇒ 两门口径统一（★ 本次改动）⇒ ⇒ ★★ ⇒ ⇒ ⇒ 绿**。
+var gocacheSetRE = regexp.MustCompile(`GOCACHE\s*=|["']GOCACHE["']\s*\]|gocache_use|gocache\.env\(|gocache\.dir_for\(|gocache\.apply_to_environ\(`)
 
 // gocacheDedicatedRE 认【指向【专用目录】】的写法。
 //
@@ -401,10 +411,16 @@ var gocacheSetRE = regexp.MustCompile(`GOCACHE\s*=|["']GOCACHE["']\s*\]|gocache_
 //
 // ★★★★ **修法**：★★★★ 「设置了 GOCACHE」**还不够**，★ 必须指向【专用目录】⇒ ⇒
 // ★★★★ **两种算专用**：★★ ① **委托给共享入口**（★ `gocache.sh` / `gocache_use`
-// ★★★★ / `gocache.env(` / `gocache.dir_for(`）⇒ ⇒ **按构造就是专用的**；
+// ★★★★ / `gocache.env(` / `gocache.dir_for(` / ★ ★★ `gocache.apply_to_environ(`）
+// ★★★★ ⇒ ⇒ **按构造就是专用的**；
 // ★★★★ ② **字面路径在 `.build-local/` 下**（★ ⇒ ⇒ 在 `.gitignore` 里 ⇒ ⇒
 // ★★★★ `git clean -xfd` 一把回收）。
-var gocacheDedicatedRE = regexp.MustCompile(`\.build-local/|gocache\.sh|gocache_use|gocache\.env\(|gocache\.dir_for\(`)
+//
+// ★ ★★★★ **r1048 收尾轮补的一条**：★★★★ `gocache.apply_to_environ(` 与
+// ★ ★★★★ `gocache.dir_for(` **同列**⇒ ⇒ ★★★★ ⇒ **因为它比 `dir_for` 更严**
+// ★ ★★★★ （★ 内部先 `ensure()` 建目录并查可写 ⇒ ⇒ 失败就不设 ⇒ ⇒ 脚本照常跑）
+// ★ ★★★★ ⇒ ⇒ ★★ **它才是 python 侧该用的那个**（★ 见下面的修法提示）。
+var gocacheDedicatedRE = regexp.MustCompile(`\.build-local/|gocache\.sh|gocache_use|gocache\.env\(|gocache\.dir_for\(|gocache\.apply_to_environ\(`)
 
 // gocacheCodeLines 去掉【整行注释】后的行（★ shell 的 `#` 与 python 的 `#` 同形）。
 func gocacheCodeLines(src string) []string {
@@ -496,7 +512,51 @@ func TestMutationHarnessScriptsUseDedicatedGoCache(t *testing.T) {
 			"★ ⇒ ⇒ 它们【改树 ⇒ 跑 go test ⇒ 还原】⇒ ⇒ 树每变一次就产生一批"+
 			"【永远不会再被命中】的缓存条目 ⇒ ⇒ ⇒ 纯垃圾\n"+
 			"★ ⇒ ⇒ ⇒ 修法：★ shell 用 `export GOCACHE=\"$(\"$(git rev-parse --show-toplevel)/scripts/lib/gocache.sh\" mutate)\"`；\n"+
-			"★ ⇒ ⇒ ★ Python 用 `os.environ[\"GOCACHE\"] = gocache.dir_for(gocache.repo_root(), \"mutate\")`",
+			"★ ⇒ ⇒ ★ Python 用 `gocache.apply_to_environ(\"mutate\")`（★ ★★ 失败安全：★ 专用目录建不出来时**不设** GOCACHE ⇒ ⇒ 脚本照常跑；\n"+
+			"★ ⇒ ⇒ ★ ★★ 旧写法 `os.environ[\"GOCACHE\"] = gocache.dir_for(gocache.repo_root(), \"mutate\")` 也算隔离 ⇒ ⇒ 但它**没有失败安全**（★ 建不出来时 go 会直接报错 ⇒ ⇒ 脚本坏掉）⇒ ⇒ ★★ 优先用前者",
 			len(offenders), len(checked), len(invoking), strings.Join(offenders, "\n  "))
+	}
+}
+
+// ★★★★ TestGoCacheDedicatedFormsAreRecognized ★★★★
+//
+// ★ ★★★ **这是【正则扩大】的自证（★ r1048 收尾轮加）★★★**：★★★
+// ★ 本轮把 `gocache.apply_to_environ(` 加进 `gocacheDedicatedRE`（★ 为了跟 B 级门
+// ★ 说同一句话）⇒ ⇒ ★★ ⇒ **「正则扩大」天然有【假绿】的风险**（★ 把用户全局缓存
+// ★ 顺手一起认了 ⇒ ⇒ 门就看不见真泄漏）⇒ ⇒ ★★★ ⇒ ⇒ **所以必须自带反向断言**：
+// ★★★ ⇒ ⇒ ★★ **正向**：★ 两种 python 形态 + shell 形态都必须判「专用」；
+// ★★★ ⇒ ⇒ ★★ **反向**：★ 指向【用户全局缓存】的两种写法必须**判不专用**。
+//
+// ★ ★★ **为什么放在这个文件里**：★ 这条自证量的就是【本门自己的正则】⇒ ⇒
+// ★ ★★ 它必须与被量的判据同源 ⇒ ⇒ ★★ 放别处就变成「另一份量具」⇒ ⇒ ★★ ⇒ ★★
+// ★ ★★ 而「两份量具」可能【口径不一致】⇒ ⇒ ★★ ⇒ ⇒ **⇒ 那样这条自证就是假绿**。
+func TestGoCacheDedicatedFormsAreRecognized(t *testing.T) {
+	// ── 正向：★ 这些形态都必须被认成「指向专用目录」──
+	dedicated := []string{
+		`os.environ["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")`,
+		`gocache.apply_to_environ("mutate")`,
+		`os.environ["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")`,
+		`export GOCACHE="$("$(git rev-parse --show-toplevel)/scripts/lib/gocache.sh" mutate)"`,
+		`export GOCACHE="$(cd "$(dirname "$0")" && pwd)/.build-local/.gocache-script"`,
+	}
+	for _, s := range dedicated {
+		if !gocacheDedicatedRE.MatchString(s) {
+			t.Fatalf("★ ★★ 这条形态本门必须认成【指向专用目录】★★ ⇒ ⇒ 但它没被认 ⇒ ⇒ 本门的正则退化了：\n  %s", s)
+		}
+		if !gocacheSetRE.MatchString(s) {
+			t.Fatalf("★ ★★ 这条形态本门必须认成【设置了 GOCACHE】★★ ⇒ ⇒ 但它没被认 ⇒ ⇒ 本门的正则退化了：\n  %s", s)
+		}
+	}
+
+	// ── 反向：★ 指向【用户全局缓存】的写法必须【判不专用】──
+	notDedicated := []string{
+		`export GOCACHE="$HOME/.cache/go-build"`,
+		`os.environ["GOCACHE"] = os.path.expanduser("~/.cache/go-build")`,
+		`os.environ["GOCACHE"] = "/tmp/go-build-cache"`,
+	}
+	for _, s := range notDedicated {
+		if gocacheDedicatedRE.MatchString(s) {
+			t.Fatalf("★ ★★ 这条形态必须【判不专用】★★（★ 它指向用户的全局缓存 ⇒ ⇒ ⇒ 门不能认）⇒ ⇒ 但本门把它认成专用 ⇒ ⇒ 【假绿】：\n  %s", s)
+		}
 	}
 }

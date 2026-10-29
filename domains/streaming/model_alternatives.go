@@ -13,6 +13,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // matches handler.go's existing import of the same package
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 // ModelAlternative is one entry in the "pick a different model" list returned
@@ -455,7 +456,22 @@ func (f *ModelAlternativesFinder) refreshInBackground(
 //
 // 2026-10-13 S3 波 2：usage_7d 热面由字面量常量改为拼接表达式（会话族原生
 // 源），const 随之降为 var——见 usage_7d CTE 内注释。
-var alternativesSQL = `
+//
+// ★★ 2026-10-29：模态接受臂（/*MODALITY_ACCEPT_ARMS*/）由
+// provider/modality_accept.go 的**唯一片段**渲染（$MODALITY → "$5"）⇒ 本文件
+// 不再是判据的第二份抄本 ⇒ 「改一份忘另一份」从根上消失（此前只有锁步门
+// 让它「当场红」）。渲染用 strings.Replace 而不是把片段拼进 raw string 中间：
+// 拼接会把 raw string 拆成半个 ⇒ 扫描器在拆分点失明（实测见
+// provider/sql_comment_syntax_test.go 的 TestSQLCommentScanner_SeesPastConcatenation）。
+var alternativesSQL = strings.Replace(
+	alternativesSQLRaw,
+	"/*MODALITY_ACCEPT_ARMS*/",
+	provider.ModalityAcceptArmsSQL("$5"),
+	1,
+)
+
+// alternativesSQLRaw 是建议列表查询的正文（模态接受臂以占位符留在里面）。
+var alternativesSQLRaw = `
 WITH policy AS (
     SELECT COALESCE(featured_models, ARRAY[]::TEXT[]) AS featured
     FROM routing_policy
@@ -484,17 +500,15 @@ routable AS (
       AND mc.canonical_name <> $1
       -- ★ 2026-10-28: 模态过滤（$5）。当本次请求带图/音频而请求的模型是
       -- 文本模型时，建议列表必须只列**真能读该模态**的模型。
-      -- 判据与路由器模态门逐字同源（provider.modalityAccepts）：
-      --   vision/audio/video → mc.modality IN (该模态, 'multimodal')
-      --   multimodal           → mc.modality = 'multimodal'
-      --   image                → mc.modality IN ('image','vision','multimodal')
       -- $5 为空（文本请求 / 历史路径）⇒ 不过滤，保持既有行为。
+      -- ★★ 2026-10-29：判据**不再在本文件里抄写**——模态接受臂由
+      -- provider/modality_accept.go 的唯一片段渲染（$MODALITY → "$5"）。
+      -- 本块此前是判据的**第二份 SQL 抄本**（闭世界：无兜底精确臂，未知请求
+      -- 值 ⇒ 建议列表为空；而第一份 candidateQuerySQLBase 是开世界兜底）⇒
+      -- 两份抄本在域外语义相反 ⇒ 现在同源渲染 ⇒ 分歧从根上消失。
+      -- 「只有一份」由 domains/streaming/modality_single_source_test.go 钉住。
       AND (
-          $5 = ''
-          OR $5 = 'text'
-          OR ($5 IN ('vision','audio','video') AND COALESCE(mc.modality,'text') IN ($5, 'multimodal'))
-          OR ($5 = 'multimodal' AND COALESCE(mc.modality,'text') = 'multimodal')
-          OR ($5 = 'image' AND COALESCE(mc.modality,'text') IN ('image','vision','multimodal'))
+          /*MODALITY_ACCEPT_ARMS*/
       )
     GROUP BY mc.id, mc.canonical_name, mc.display_name, mc.family
 ),

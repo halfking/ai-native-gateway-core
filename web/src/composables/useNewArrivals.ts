@@ -13,6 +13,12 @@
 //    不把整页标新；
 //  · 标记存活 lifetimeMs 后自动清除（入场动画 300ms，标记多留一点余量）。
 //
+// 计时器形态（2026-10-29 统计同步轮泄漏审计重设计）：**单一清扫定时器**
+// —— 每批新增只写 Map（id → 到期时刻），挂起的 setTimeout 任意时刻最多
+// 1 个（按最早到期触发，扫完有剩余则按下一最早续约）。旧实现每批挂一个
+// 句柄且数组只增不减：句柄触发后数组里的死句柄无限累积，长驻页面是
+// 纯内存泄漏。到期清除语义逐批不变（「到期只清自己那批」判据钉住）。
+//
 // reduced-motion：本 composable 只负责标记，动画由 CSS 层负责并在
 // prefers-reduced-motion 下中和（见面板样式）—— 标记本身无副作用。
 
@@ -26,14 +32,39 @@ export interface NewArrivals {
 /** 兜底上限：上一帧头部滚出列表时最多标记的头部条数。 */
 const MASS_TURNOVER_MARK_CAP = 40
 
+const EMPTY_FRESH: ReadonlySet<string> = new Set<string>()
+
 export function useNewArrivals(
   ids: () => readonly string[],
   lifetimeMs = 700,
 ): NewArrivals {
-  const fresh = ref<ReadonlySet<string>>(new Set<string>())
+  const fresh = ref<ReadonlySet<string>>(EMPTY_FRESH)
   let primed = false
   let lastHead: string | null = null
-  const timers: number[] = []
+  /** id → 到期时刻（epoch ms）。有界：条目数 ≤ fresh 大小（大换血每批
+   *  封顶 40），到期即被清扫删除；不复用旧句柄数组（只增不减）。 */
+  const expiries = new Map<string, number>()
+  let sweepTimer: number | null = null
+
+  function scheduleSweep(): void {
+    if (sweepTimer !== null) return // 已有待触发的清扫：它扫完会按需续约
+    let earliest = Infinity
+    for (const at of expiries.values()) earliest = Math.min(earliest, at)
+    if (!Number.isFinite(earliest)) return
+    sweepTimer = window.setTimeout(() => {
+      sweepTimer = null
+      sweep()
+    }, Math.max(0, earliest - Date.now()))
+  }
+
+  function sweep(): void {
+    const now = Date.now()
+    for (const [id, at] of expiries) {
+      if (at <= now) expiries.delete(id)
+    }
+    fresh.value = expiries.size ? new Set(expiries.keys()) : EMPTY_FRESH
+    scheduleSweep()
+  }
 
   function track(list: readonly string[]): void {
     if (!list.length) {
@@ -52,22 +83,24 @@ export function useNewArrivals(
     lastHead = list[0]
     if (stop <= 0) return
     const added = list.slice(0, stop)
-    const next = new Set(fresh.value)
-    for (const id of added) next.add(id)
+    const expireAt = Date.now() + lifetimeMs
+    const next = fresh.value === EMPTY_FRESH ? new Set<string>() : new Set(fresh.value)
+    for (const id of added) {
+      next.add(id)
+      expiries.set(id, expireAt)
+    }
     fresh.value = next
-    timers.push(
-      window.setTimeout(() => {
-        const after = new Set(fresh.value)
-        for (const id of added) after.delete(id)
-        fresh.value = after
-      }, lifetimeMs),
-    )
+    scheduleSweep()
   }
 
   watch(ids, track, { immediate: true })
 
   onBeforeUnmount(() => {
-    for (const handle of timers) window.clearTimeout(handle)
+    if (sweepTimer !== null) {
+      window.clearTimeout(sweepTimer)
+      sweepTimer = null
+    }
+    expiries.clear()
   })
 
   return { fresh }

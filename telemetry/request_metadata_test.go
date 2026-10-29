@@ -163,6 +163,19 @@ func TestExtractAgentName(t *testing.T) {
 			expectedAgent: "copilot",
 		},
 		{
+			// 2026-10-29 identification round: pi coding agent (pi.dev)
+			// — official formatUserAgent() wire form, 211 实测 2385 条/24h
+			// 此前全部落 unknown。
+			name:          "pi coding agent detailed UA",
+			headers:       map[string]string{"User-Agent": "pi/1.4.0 (linux; node/v22.23.4; x64)"},
+			expectedAgent: "pi",
+		},
+		{
+			name:          "pip must stay a weak client lib",
+			headers:       map[string]string{"User-Agent": "pip/24.0"},
+			expectedAgent: "unknown",
+		},
+		{
 			name:          "Python client",
 			headers:       map[string]string{"User-Agent": "python-requests/2.28.0"},
 			expectedAgent: "python-client",
@@ -224,6 +237,18 @@ func TestDetectAgentFromSystemPrompt(t *testing.T) {
 			name:   "zcode",
 			prompt: "You are ZCode (Claude Code) — ACC 团队标准系统提示",
 			want:   "zcode",
+		},
+		{
+			// 2026-10-29 identification round: MiniMax Code 现役客户端的
+			// 真实自报形态（211 24h 实测 2300+ 条空 agent_name 的根因）。
+			name:   "minimax-code wire-real Mavis self-description",
+			prompt: "You are Mavis. The name stands for MiniMax As a Jarvis.\n\nYou run inside MiniMax Code. MiniMax Code is a coding agent / agentic coding workspace developed by MiniMax.",
+			want:   "minimax-code",
+		},
+		{
+			name:   "minimax-code short Mavis form",
+			prompt: "You are Mavis, an interactive coding agent.",
+			want:   "minimax-code",
 		},
 		{
 			name:   "vscode",
@@ -292,6 +317,18 @@ func TestExtractAgentType(t *testing.T) {
 			name:         "CLI - zcode",
 			headers:      map[string]string{"User-Agent": "ZCode/1.0"},
 			expectedType: "cli",
+		},
+		{
+			// 2026-10-29 identification round: pi 是 CLI harness——缺这条
+			// 会让 source_channel 落空（R52 国内客户端同款教训）。
+			name:         "CLI - pi coding agent",
+			headers:      map[string]string{"User-Agent": "pi/1.4.0 (linux; node/v22.23.4; x64)"},
+			expectedType: "cli",
+		},
+		{
+			name:         "Unknown - pip is not the pi agent",
+			headers:      map[string]string{"User-Agent": "pip/24.0"},
+			expectedType: "unknown",
 		},
 		{
 			name:         "CLI - codex",

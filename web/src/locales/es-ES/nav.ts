@@ -57,6 +57,7 @@ export default {
     dataLifecycle: "Ciclo de vida de datos",
     formatAnomalies: "Monitor de anomalías de formato",
     modelIntegrity: "Monitor de integridad del modelo",
+    modelCredibility: "Fiabilidad de modelos",
     modules: "Gestión de módulos",
     sessionAnalytics: "Centro de análisis de sesiones",
     sessionAnalyticsFilterOptions: "Filtros de análisis de sesiones",

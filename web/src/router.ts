@@ -56,6 +56,7 @@ const ProbeHealthDetailView = () => import('./views/ProbeHealthDetailView.vue')
 const AgentRegistryView = () => import('./views/AgentRegistryView.vue')
 const FormatAnomaliesView = () => import('./views/FormatAnomaliesView.vue')
 const ModelIntegrityView = () => import('./views/ModelIntegrityView.vue')
+const ModelCredibilityView = () => import('./views/ModelCredibilityView.vue')
 const ModulesView = () => import('./views/ModulesView.vue')
 const PromptInjectionSettingsView = () => import('./views/PromptInjectionSettingsView.vue')
 const ApprovalConfigView = () => import('./views/ApprovalConfigView.vue')
@@ -256,6 +257,7 @@ export const router = createRouter({
     { path: '/audit-logs',        component: AuditLogView,         meta: { requiresSuper: true } },
     { path: '/format-anomalies',  component: FormatAnomaliesView,  meta: { requiresSuper: true } },
     { path: '/model-integrity',  component: ModelIntegrityView,   meta: { requiresSuper: true } },
+    { path: '/model-credibility', component: ModelCredibilityView, meta: { requiresSuper: true } },
 
     // Platform ops only (super_admin + default tenant)
     { path: '/users',              component: UsersView },
