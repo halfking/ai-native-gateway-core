@@ -158,7 +158,7 @@ var requestSurfaceDocEvidence = []docEvidence{
 		why: "执行器生命周期钩子的类型定义",
 	},
 	{
-		file: "domains/hooks/response/types.go", from: 179, to: 179,
+		file: "domains/hooks/response/types.go", from: 185, to: 185,
 		mustContain: "type ResponseInterceptor interface", kind: evidenceCode,
 		why: "响应拦截链的接口（挂在 phase 上的那套机制）",
 	},

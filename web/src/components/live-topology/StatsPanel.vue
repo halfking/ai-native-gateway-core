@@ -572,7 +572,7 @@ function successRate(item: { success?: number; requests: number }): string {
 
 <style scoped>
 .stats {
-  padding: 6px 10px 8px;
+  padding: 4px 8px 8px;
   border: 1px solid var(--kx-border);
   border-radius: 10px;
   background: var(--kx-surface);
@@ -650,7 +650,7 @@ function successRate(item: { success?: number; requests: number }): string {
 .stats__totals {
   display: flex;
   align-items: baseline;
-  gap: 4px 14px;
+  gap: 4px 12px;
   flex: 1;
   min-width: 0;
   flex-wrap: wrap;
@@ -762,7 +762,7 @@ function successRate(item: { success?: number; requests: number }): string {
 
 .stats__group-down {
   margin: 0;
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-radius: 8px;
   font-size: var(--kx-font-sm, 12px);
   color: var(--kx-warning);
@@ -865,7 +865,7 @@ function successRate(item: { success?: number; requests: number }): string {
 
 .stats__sublist {
   margin: 0;
-  padding: 0 0 2px 14px;
+  padding: 0 0 2px 12px;
   list-style: none;
   display: flex;
   flex-direction: column;
