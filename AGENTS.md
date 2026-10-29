@@ -15153,3 +15153,67 @@ sequence.sh、concurrency gate 计数（920: 1）、db-changelog 三行（917 sa
 > paramreg 方言级 nvidia 硬拒登记（学习系统正为此存在）。
 > ⇒ 审计档 `docs/audit/2026-10-29-nvidia直通事故轮-参数兼容学习闭环.md`；
 > 通用式见 `LESSONS.md` **§558**（fetch 实测 origin 最高 §556 ⇒ 跨号取 §558 留 §557 缓冲）。
+> **2026-10-29 第 40 增量：模型列表口径改造（默认只列特色模型）+ Gemini 认证核验**（会话
+> `mvs_3819385bca0f43d7bf0c059acb269bda`）：★ 承接 owner 指令两件事 —— ①「网关对外的模型
+> 列表 API，默认只输出特色模型，全量需要加参数才输出」；②「网关对 gemini 的适配好像有些
+> 问题，请检查原厂文档，检查认证相关的信息是否正确」。
+> ⇒ ★★★ **开工前的重大更正（别重复排查）**：本轮开工时读到的 `AGENTS.md` 快照是
+>   **2026-10-25 的树**；期间并行会话已把 Gemini 原生认证与原生模型列表落地
+>   （`0eff161c6` / `659ad160b`，`internal/auth/clientkey.go` + `models.go:ServeGeminiModels`）
+>   ⇒ **「Gemini 认证没做」是过期结论**。★ **开工前必须读当前树，不是读快照**。
+> ⇒ ★ **Part 1（模型列表口径）**：新文件 `domains/streaming/models_scope.go`；`/v1/models`
+>   与 `/v1beta/models` **默认只列特色模型**（`routing_policy.featured_models`，tenant
+>   `default` —— 全仓既有的一等概念：autoroute 的 FeaturedBonus / bg/shared_pick.go 的
+>   featured 优先 / alternativesSQL 的 tier-2 / admin 的精选过滤，四处同源）；全量需显式
+>   **`?scope=all`**（或 `?all=true`）。★ 口径优先级 = **请求参数 > 运维默认**；
+>   新增热加载设置 **`models.list_scope`**（`TypeEnum{featured,all}`，默认 `featured`）
+>   = **逃生舱**（改它即可无发版回到全量；与 r1027 的 `models.list_only_routable` 同款形状
+>   —— 公开契约的默认值变更必须可无发版回退）。
+> ⇒ ★★★ **本轮最值钱的一处**：精选过滤做成**同一个查询里的布尔参数 `$1`**（不是第二份
+>   SQL 常量 ⇒ 十几条活度门只存在一份）；★ 但**两处坑** —— (a) 匹配**三种名字形态**
+>   （canonical / raw / standardized）：`bg/shared_pick.go` 解析 featured 时认的是供应商侧
+>   名字 ⇒ 只认 canonical 会让「路由当特色、发现当不存在」的模型被藏起来；
+>   (b) ★★ **PostgreSQL 的 set-returning function 在 target list 里先于 LIMIT 展开**
+>   ⇒ `SELECT LOWER(unnest(featured_models)) ... LIMIT 1` 只返回**数组第一个元素** ⇒
+>   精选过滤静默只认一个模型，而**纯文本判据钉不住**（两种写法都含 unnest 与 LIMIT）
+>   ⇒ 改写成两个 CTE（policy 先钉行、featured 再展开数组）+ 真库判据直问「CTE 产出几个名字」=3。
+> ⇒ ★ **两个发现查询都带同一份过滤**（scope 与活度源正交，翻活度开关不得顺带改变公布范围）。
+> ⇒ ★ **安全降级**：精选口径筛不出模型（清单为空 / 精选模型当前全不可路由）⇒ **退回全量
+>   + WARN**，不是交空清单（发现端点回空会打断所有读它的客户端）；**缓存按口径分槽**
+>   （`ModelsHandler.stale` map）⇒ 口径进了查询，缓存只有一格会**静默少报模型**。
+> ⇒ ★ **非法 scope 报 400**（不静默回落）：客户端要全量却拿到精选（或反之）会**静默**得出
+>   错误结论。
+> ⇒ ★ **Part 2（Gemini 认证核验）**：★ 厂方原文实读留证 —— Gemini API reference：「**All
+>   requests to the Gemini API must include a `x-goog-api-key` header**」；OpenAI 兼容文档：
+>   兼容端点鉴权是 `Authorization: Bearer`。⇒ **入向**（`internal/auth.ExtractClientKey`：
+>   Bearer → `x-api-key` → `x-goog-api-key` → `?key=`，`?key=` 仅在 Gemini 原生路径生效）
+>   **正确**；⇒ **出向**（走厂方 OpenAI 兼容端点 `.../v1beta/openai`，executor 统一
+>   `Authorization: Bearer`）**正确**。★ **入向收三种、出向用 Bearer 不是不一致，是两个端点的
+>   厂方契约本来就不同**。
+> ⇒ ★★ **本轮实际修掉的一处**：`docs/vendor-formats/gemini.md` 的认证说明**漏了厂方强制的
+>   `x-goog-api-key` 头形态**（只写了 query string / Bearer 两种；同仓
+>   `docs/QUICK_REFERENCE.md` 的 Gemini 示例用的恰是这个头 ⇒ 仓内两份文档彼此不自洽）
+>   ⇒ 已订正并补齐「模型列表」一节（原生形状 + scope 口径）。
+> ⇒ ★ **顺带修掉的一处**：`154-production-release-checklist` 把「`/v1/models` 模型数与 245
+>   同级（685）」当**部署放行标准** ⇒ 默认口径改 featured 后该读数必然变小 ⇒ 按原文判会
+>   读成「掉模型」而误回滚 ⇒ 已改为**两口径分列**（默认 vs `?scope=all`）。
+> ⇒ ★ **验证**：真库判据（Postgres 17 隔离容器；夹具走仓 SSOT `internal/schemaobj.Table`
+>   不手抄 DDL；样本**每条只验一件事**：canonical 命中 / 供应商侧名命中 / 不精选 / 精选但
+>   凭据已死）⇒ 默认 2 条、`?scope=all` 3 条、筛空退回 3 条、CTE 产出 3 个名字；
+>   ★ **变异臂三臂全红**（M1 CTE 改一行 / M2 删供应商侧名匹配 / M3 删回退 ⇒ 三处都精确报红）
+>   且还原后源文件 **md5 逐字一致**；`go build ./...` ✓；`gofmt`+`golangci-lint fmt`
+>   本轮文件 **0 差异**、`golangci-lint run` **0 命中**；
+>   `go test ./domains/streaming/ ./settings/ ./cmd/gateway/ ./internal/ingressguard/ ./maas/`
+>   **全绿**；顺手清掉 `models.go` 的死函数 `writeDBFailure`（0 调用方，且调的是旧签名的
+>   `lastGoodEntries()`）。
+> ⇒ ★ **本轮明确没做**：web 前端（其 `/v1/models` 引用全是**上游供应商**目录发现，非网关
+>   自己的发现端点）；`/api/maas/models`（租户价目目录，另一套东西）；`GET /v1/models/{model}`
+>   与 `/v1beta/models/{model}` 的 retrieve（本轮未加，需两套形状一个数据源一起设计）；
+>   **多租户精选清单**（`featured_models` 表结构按租户，但全仓一律读 `default`，本轮沿用）。
+> ⇒ 审计档 `docs/audit/2026-10-29-模型列表口径与Gemini认证核验.md`；
+>   通用式见 `LESSONS.md` **§557**（★ 取号记录：初取 §545 / AGENTS.md 初取「第 37 增量」
+>   —— **推送前实测 `origin/main` 已被并行会话占用**（AGENTS「第 37 增量」= 拦截持久化与规则
+>   管理轮；LESSONS §545 已存在）⇒ 按「**后到者取下一个空闲号**」让号 ⇒ **§556 / 第 39 增量**
+>   （★ 实测当时上游最大节号 §555、最大增量号「第 38 增量」）—— ★★ **再次让号**：合入前上游
+>   又推进（§556 = r1048 轮 / 第 39 增量 = Gemini `countTokens` 诚实实现轮）⇒ 再让 ⇒
+>   **§557 / 第 40 增量**（★ 实测当时上游最大节号 §556、最大增量号「第 39 增量」）。
