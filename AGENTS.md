@@ -15969,3 +15969,42 @@ guards-win-baseline` + CI 载体静态自证腿（Linux 裸跑实测腿=整片�
 ★ ★ 且客户端**无自定义 CSS 注入入口** ⇒ ★ 只能等客户端发版）。
 ⇒ 审计档 `docs/audit/2026-10-29-会话闸与列表塌陷轮.md` §2.4.1（重写）/ §2.4.2（删）/ §2.4.3（新增）；
 通用式见 `LESSONS.md` **§575**（6 条）。
+
+**2026-10-30 24h 审计第 8 轮：main 编译修复 + 测试基线收紧 + 211 生产日志审计**（goal 会话）：
+★ 拉取 origin/main 24 提交（59b054cc → 7a237edff72c）后**第一件事实锤：
+main 自 `6680908aa` 起编译必红** —— Mavis 合并 bot 注入 `internal/registration`
+import+两处调用，该包**在任何提交、本机任何工作区都不存在**（bot 的 "go build ✓"
+建立在其工作区未提交的包上）⇒ 删 3 行、设计事实抢救成「实现未落地」注释（6bf8c3a5b174）。
+⇒ ★ 全量 Go/vitest 暴露 **17 处非基线红**，逐条真修：
+① `modelcredibility/store.go` 把 `json.Marshal` []byte 裸传 pgx 写参（SimpleProtocol
+bytea hex ⇒ jsonb 解析必炸 ⇒ 可信度探测每次落库失败；jsonb 守门 4 红）⇒ string()+::jsonb
+先例修（e2ad1d6ecb2a）；② §143.83/84 门用 `filepath.Rel` 反斜杠产物比对正斜杠常量 ⇒
+调用点计数全判 0 假红 ⇒ `ToSlash` 归一（0ae77ddcb8d7）；③ R75 漂移工具自检 9009
+（python3 双劫持：Git Bash shim 不可执行 + Store 0 字节 stub）⇒ 真跑 --version 验明正身、
+缺位显式 SKIP（3dd0d173c7b1）；④ vitest 6 红：scanner `includes('/locales/')` Windows
+永不命中 ⇒ 681 个 locale 文件被当源码扫（幽灵注释引用混进引用集）+ 3 个门正斜杠白名单
+vs 反斜杠 rel ⇒ 全族 `toSlash`/`relPosix` 归一；⑤ useClientConfig 套件：argv 经
+CreateProcess 字符串往返搅碎 9KB 生成脚本 ⇒ **落盘执行**；env 值经 MSYS 链路反斜杠被
+C 转义吃掉 ⇒ 钉子路径全正斜杠；★ **Windows 上 `Path.home()` 走 USERPROFILE 不走 HOME**
+⇒ 不钉 USERPROFILE/APPDATA/XDG_CONFIG_HOME 时脚本把测试供应商**写进真实用户配置**
+（实测泄漏）⇒ 三项全钉临时目录 + zcode 期望路径按 os.name 分支；⑥ consent 读门 9 个旧
+夹具假红（上游只跑 `-run Consent` 子集）⇒ `callTurnDetail` 唯一入口开 override
+（c77e134b216e）；⑦ autoroute 计时精度（Windows 时钟粒度 0.5ms ⇒ LatencyNs=0）⇒
+用例加 1ms Delay；⑧ address_family 未登记面 BuiltinHardBlockAll ⇒ 登记 not-a-decision。
+⇒ ★★ **211 生产日志审计最值钱的一处**：modelbinding 归一化歧义回落按字典序取第一个候选
+⇒ requested=glm-5.3-flash 每次选中 `z-ai/glm-5.3`（**非 flash**，24h 48 次 WARN）——
+静默模型替换。修法=候选按「命中最特异变体下标」（WITH ORDINALITY min(i)）排序+DISTINCT ON，
+**211 真库 A/B**：旧序=错 / 新序=对，EXPLAIN 1.2ms（83013cce4a69）。
+⇒ ★ 慢 SQL/错误读数（acc-pg17 24h）：慢语句 300 条最大 24.5s（同实例另一产品 kline COPY，
+非本产品）；`column "rule"`/UTF8 截断 165 次全在 10:12~12:59 一个人工窗口 ⇒ ad-hoc 运维
+会话非应用缺陷；遗留建议：解密失败凭据停放（99007/99012）、Batch-only 凭据的探针停放
+（credential 44 连败 3691）、telemetry 非 JSON 正文 JSON-quote 保留。
+⇒ ★ 分支清退：**仓内只有 main**（fetch --prune + for-each-ref 实测），唯一在途
+wip/02-consent-read-gates 已被上游第 7 轮逐文件合入；旧 stash 4 个（2026-09 R44/R51 时代）
+超「一周内」窗口保留（部分内容已被收编，删属用户决定）。
+⇒ ★ win-test-baseline 棘轮收紧 7 条（只降不升，删行各对应 fix 提交）：guard
+`check-win-test-baseline.sh` 无「可收紧」提示；终态 **go test ./... 全绿（除 4 项环境基线：
+symlink×2/路径断言×2 + discovery 组播）/ vue-tsc 0 错 / vitest 2949 通过 / 2 跳过**。
+⇒ 审计档 `docs/audit/2026-10-30-24h审计第8轮-main编译修复与生产日志审计.md`；
+通用式见 `LESSONS.md` **§569**（七条：bot 读数必须重测 / 路径口径归一 / Windows exec
+两层转换 + home 语义 / python3 验真 / 真库 A-B / 唯一入口修夹具 / 棘轮删行对应 fix）。

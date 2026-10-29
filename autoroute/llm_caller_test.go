@@ -111,7 +111,9 @@ func TestCircuitBreakerCaller_ResetsOnSuccess(t *testing.T) {
 }
 
 func TestInstrumentedCaller_RecordsMetrics(t *testing.T) {
-	inner := NoopCaller{FixedTask: "code"}
+	// Delay 1ms：Windows 单调时钟粒度 ~0.5ms，无延迟的 no-op 调用
+	// LatencyNs 会累计成 0（Linux 上 >0）⇒ 断言必须建立在可测的时间量上。
+	inner := NoopCaller{FixedTask: "code", Delay: 1 * time.Millisecond}
 	ic := NewInstrumentedCaller(inner)
 
 	// 3 successes + 1 failure

@@ -27466,3 +27466,54 @@ nativepair 厂商感知后，anthropic 腿 IRStamp 测试的老正臂（minimax-
     ⇒ ★★ ⇒ ★★ **按字节窗口切片 + 定位命中 + 取命中点的上下文分类**（★ 本轮：★ 24 个命中的上下文
     ★★ 全部是 CSS 选择器形态、★ 1 个是 `className:"…"` 形态 ⇒ ★★ 一眼可分）★★
     ⇒ ★★★ **分类上下文比计数更能定性**（★ 「命中 24 处」不说明任何事、★「24 处全在 CSS、0 处在 JS」才说明）★★。
+
+## §576 ·（★ 让号：原拟 §569 ⇒ push 前 fetch 实测 origin/main 已占 §569~§575（并行会话 R183 收官批）⇒ 按「后到者取下一个空闲号」改取 §576）24h 审计第 8 轮（2026-10-30）—— ★★★★★ bot 的「go build ✓」必须本机重测（它建立在其工作区未提交的包上）；★★★★ 量具的路径口径在 Windows 必须归一（正斜杠字面量 vs Rel/join 产物永不相等 ⇒ 门全瞎）；★★★★ Windows 的 exec 链路有两层隐藏转换（argv 字符串往返 + env 值 C 转义）
+
+> ★★★★★ **通用式一：合并 bot 的「验证：go build ✓」是它自己工作区的读数，不是 main 的。**
+> `6680908aa`（Mavis Merge Bot）往 cmd/gateway/main.go 注入 `internal/registration` 的
+> import + 两处调用，该包**在任何提交、本机任何工作区都不存在** ⇒ main 自该提交起
+> `go build ./...` 必红，而 bot 的提交信息声称 build ✓ —— 它的工作区里有一个**未提交**的包。
+> ⇒ 任何 bot/并行会话的合并提交，落地后第一件事是**本机重新构建**；「注释里写的读数」
+> 与「注释里写的设计」要分开审（设计事实可抢救成注释，读数必须重测）。
+
+> ★★★★ **通用式二：量具的路径口径在 Windows 必须归一，正斜杠字面量与 Rel/join 产物
+> 永不相等。** 同族 7 处一起爆：Go 门用 `filepath.Rel` 的产物（反斜杠）当 map 键比对
+> 正斜杠常量 ⇒ 调用点计数全判 0（假红）；TS scanner 的 `!f.includes('/locales/')` 在
+> Windows 永不命中 ⇒ 681 个 locale 文件被当源码扫，注释里的幽灵 `t()` 混进引用集；
+> 3 个 vitest 门的白名单正斜杠路径永远匹配不上。修法一律是**归一成正斜杠再比**
+> （Go `filepath.ToSlash` / TS `replace(/\/g,'/')`）——Linux 上是 no-op，Windows 上是
+> 从「全瞎」到「能用」。⇒ 在 Windows 上跑过一次全量测试，是量具跨平台的唯一验收方式。
+
+> ★★★★ **通用式三：Windows 的 exec 链路有两层隐藏转换，POSIX 语义的测试基建都会踩。**
+> ① **argv**：Node spawn 的参数要经 CreateProcess 命令行**字符串**往返，9KB 生成脚本
+> 里的引号/反斜杠/换行会被搅碎（实测 python 段被截断 ⇒ SyntaxError；macOS fork/exec
+> 直传 argv 所以绿）⇒ 复杂脚本**落盘执行**（与生产形态一致，还消灭了平台差）。
+> ② **env**：env 值经 MSYS sh → python 链路时反斜杠被按 C 转义吃掉
+> （`D:\temp\X\.config` → `D:tempX.config`，`\t` 直接变 TAB）⇒ 钉子路径必须**正斜杠**。
+> ③ **home 语义**：Windows 上 Python `Path.home()` 走 USERPROFILE（无视 HOME）、zcode
+> 走 APPDATA、opencode 走 XDG_CONFIG_HOME ⇒ 「用 env 钉 home」的测试必须把三个变量
+> 全钉到临时目录，否则测试**写穿到真实用户配置**（本轮实测泄漏）。
+
+> ★★★ **通用式四：python3 在 Windows 不可信（shim 脚本 + Store stub 双劫持 LookPath）。**
+> `exec.LookPath("python3")` 会命中 %LOCALAPPDATA%/Microsoft/WindowsApps/python3.exe
+> （0 字节占位，一执行就 9009），Git Bash 的 python3 又是 CreateProcess 执行不了的
+> shim 脚本 ⇒ 解释器解析必须**真跑 `--version` 验明正身**（输出含 "Python 3" 才认），
+> 全缺位时显式 SKIP（「未测量」，不伪装成通过）。R75 自检与 useClientConfig 同修。
+
+> ★★★ **通用式五：「同一生产告警」要在真库 A/B 下判决。** modelbinding 歧义回落按
+> 字典序取第一个候选，211 日志 48 次/日 WARN（requested=glm-5.3-flash ⇒ 选中
+> z-ai/glm-5.3 非-flash）。修法（候选按命中最特异变体下标排序）在 211 真库上
+> **同一凭据同一参数新旧各跑一遍**：旧序=z-ai/glm-5.3（错）/ 新序=z-ai/glm-5.3-flash
+> （对）——比读代码硬得多，且顺手验证了 SQL 在真实 schema 上合法（EXPLAIN 1.2ms）。
+> ⇒ 改 SQL 的排序/过滤语义，必须在真实数据分布上 A/B，单元 mock 只能证「查询发了」。
+
+> ★★ **通用式六：修测试夹具先找唯一入口。** consent 读门落地后 9 个旧用例 409 假红
+> （上游提交只跑了 `-run Consent` 子集——「-run 子集绿 ≠ 包绿」第三次实证）。
+> 9 个用例全走 `callTurnDetail` 一个 helper ⇒ 在**唯一入口**开
+> `settings.TestingConsentOverride` 一处收口，而不是 9 个用例各贴一遍；
+> 409 形态本身由 consent 自己的测试用反向 override 覆盖，不产生判定冲突。
+
+> ★★ **通用式七：棘轮基线是「修好的证据链」的最后一环。** win-test-baseline.json
+> 列的 7 条本轮真修（不是豁免）：幽灵 import 修掉后 R75/§143 门随 ToSlash 归一转绿、
+> 未登记面登记、计时精度用例加 1ms Delay——每一条删行都对应一个 fix 提交。
+> 保留的条目（LAN 组播/symlink/路径断言）是环境类，删了才是掩耳盗铃。
