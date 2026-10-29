@@ -2423,6 +2423,11 @@ files=(
   #     ⇒ ⇒ 只能建**与投影逐字一致的表达式索引**。
   #   ★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带 dbinit:no-transaction 标记。
   "$ROOT_DIR/sql/migrations/startup/916_session_turns_api_key_ts_index.sql"
+
+  # ★ 917: 输出策略拦截审核记录 / 放行表 / 硬阻断清单管理面状态的持久化表
+  #   （拦截持久化轮，2026-10-29）。纯新增三表 + 索引，全部 IF NOT EXISTS
+  #   ⇒ 幂等、零锁面风险；进程内的审核队列与放行表从此重启可恢复。
+  "$ROOT_DIR/sql/migrations/startup/917_sanitize_block_reviews.sql"
 )
 
 

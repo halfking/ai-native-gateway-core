@@ -309,7 +309,7 @@ func (w *interceptingStreamWriter) finish() {
 		// 2026-10-28 拦截审核轮：终帧落线前登记审核单。message 文本与旁键
 		// 都带审核单号——客户端（含只显示 message 的那类）能看到
 		// 「等待审核，含敏感内容」，管理员在后台批准后重试即放行。
-		reviewID := registerPolicyBlockReview(w.meta.TenantID, w.meta.RequestID,
+		reviewID := registerPolicyBlockReview(w.meta.TenantID, w.meta.ClientType, w.meta.RequestID,
 			w.blockRule, w.blockReason, w.blockField, w.blockDigest)
 		w.writeTrustedTerminal(nativeStreamPolicyFailureFrame(w.meta.ClientProtocol,
 			w.blockRule, w.meta.RequestID, reviewID, w.blockReason, w.blockField))
@@ -4836,6 +4836,7 @@ func (h *ChatHandler) serveWithExecutor(
 		var survivalIntercepted *interceptingStreamWriter
 		if h.responseInterceptor != nil {
 			survivalIntercepted = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
+				ClientType:  extractClientType(r),
 				SessionID:      gwSessionID,
 				RequestID:      requestID,
 				TenantID:       tenantID,
@@ -4918,6 +4919,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		if isStream && h.responseInterceptor != nil {
 			interceptedWriter = newInterceptingStreamWriter(streamWriter, h.responseInterceptor, r.Context(), response.StreamMeta{
+				ClientType:  extractClientType(r),
 				SessionID:      gwSessionID,
 				RequestID:      requestID,
 				TenantID:       tenantID,
@@ -5041,7 +5043,7 @@ goalRetryLoopDone:
 		if keyInfo != nil {
 			blockTenant = keyInfo.TenantID
 		}
-		reviewID := registerPolicyBlockReview(blockTenant, requestID, rule, reason, field, digest)
+		reviewID := registerPolicyBlockReview(blockTenant, extractClientType(r), requestID, rule, reason, field, digest)
 		writeOutputPolicyBlockedJSON(protocolOfRequest(r), w, http.StatusForbidden, requestID,
 			"Response blocked by output policy", "policy_violation", "output_policy_blocked", rule, reason, field, digest, reviewID)
 		return
@@ -5915,6 +5917,7 @@ goalRetryLoopDone:
 			CallerOwner:    callerOwner,
 			ClientProtocol: clientProtocolLane,
 			ClientModel:    clientModel,
+			ClientType:     extractClientType(r),
 			ResponseBody:   result.ResponseBody,
 			TokensUsed:     extractTotalTokens(result.ResponseBody, streamCapture),
 			ContextWindow: func() int {
@@ -6023,7 +6026,7 @@ goalRetryLoopDone:
 					// （拦截器在拦截那一刻记下的，见 outputcompliance 的
 					// policyBlockMetadata）——客户端据此提示用户「要不要继续」。
 					rule, reason, field, digest := policyBlockMetadataFrom(interceptResult)
-					reviewID := registerPolicyBlockReview(tenantID, requestID, rule, reason, field, digest)
+					reviewID := registerPolicyBlockReview(tenantID, extractClientType(r), requestID, rule, reason, field, digest)
 					writeOutputPolicyBlockedJSON(protocolOfRequest(r), w, http.StatusForbidden, requestID,
 						"Response blocked by output policy", "api_error", "output_policy_blocked", rule, reason, field, digest, reviewID)
 					return

@@ -63,11 +63,16 @@ func installSanitizeRuleManager(h *streaming.ChatHandler, d *sanitize.PatternDet
 	if rc != nil {
 		opts.Notifications = sanitizerules.NewRedisNotifications(rc, "llm-gateway:sanitize-rules:published")
 	}
-	m, err := newSanitizeRuleManager(d, db, sanitizerules.NewPostgresStore(db), opts)
+	store := sanitizerules.NewPostgresStore(db)
+	m, err := newSanitizeRuleManager(d, db, store, opts)
 	if err != nil {
 		slog.Error("sanitize rules baseline invalid; version manager unavailable", "error", err)
 		return
 	}
+	// 2026-10-29 拦截持久化轮：审核记录 / 放行表 / 硬阻断清单管理面状态落库
+	// （迁移 917）。启动即装载放行与管理面清单；装载失败只告警（放行缺失的
+	// 后果是误报复发，比网关起不来轻）。
+	sanitizerules.InstallReviewPersistence(store)
 	// Install the local protective snapshot before any DB I/O. Run keeps trying
 	// after a transient import/read failure; existing heads bypass legacy import.
 	d.SetRuleManager(m)

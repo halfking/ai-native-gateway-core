@@ -1264,6 +1264,14 @@ var sessionTurnsAPIKeyTSIndex916 []byte
 
 //go:embed embeddata/startup/916_session_turns_api_key_ts_index.down.sql
 var sessionTurnsAPIKeyTSIndex916Down []byte
+
+// ★ 917（拦截持久化轮，2026-10-29）：输出策略拦截审核记录 / 放行表 / 硬阻断
+// 清单管理面状态的持久化表。全部幂等（CREATE TABLE/INDEX IF NOT EXISTS）。
+//go:embed embeddata/startup/917_sanitize_block_reviews.sql
+var sanitizeBlockReviews917 []byte
+
+//go:embed embeddata/startup/917_sanitize_block_reviews.down.sql
+var sanitizeBlockReviews917Down []byte
 //go:embed embeddata/startup/915_recent_cache_hit_rate.sql
 var recentCacheHitRate915 []byte
 
@@ -1646,6 +1654,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/914_session_turns_origin_stage_check.down.sql":                       sessionTurnsOriginStageCheck914Down,
 	"startup/916_session_turns_api_key_ts_index.sql":                              sessionTurnsAPIKeyTSIndex916,
 	"startup/916_session_turns_api_key_ts_index.down.sql":                         sessionTurnsAPIKeyTSIndex916Down,
+	"startup/917_sanitize_block_reviews.sql":                                      sanitizeBlockReviews917,
+	"startup/917_sanitize_block_reviews.down.sql":                                 sanitizeBlockReviews917Down,
 	"startup/915_recent_cache_hit_rate.sql":                                       recentCacheHitRate915,
 	"startup/915_recent_cache_hit_rate.down.sql":                                  recentCacheHitRate915Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,

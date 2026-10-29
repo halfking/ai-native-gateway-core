@@ -1677,6 +1677,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		// ★ 含 CREATE INDEX CONCURRENTLY ⇒ 本文件带 dbinit:no-transaction 标记（首行），
 		//   applySQL 据此不加 --single-transaction（887/888/729 同款）。
 		"916_session_turns_api_key_ts_index.sql",
+		// 917: 拦截审核/放行/硬阻断状态的持久化表（拦截持久化轮，2026-10-29）。
+		//   纯新增三表 + 索引，全部 IF NOT EXISTS ⇒ 幂等、零锁面风险。
+		"917_sanitize_block_reviews.sql",
 		},
 	}
 }

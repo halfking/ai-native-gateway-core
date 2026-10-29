@@ -850,6 +850,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 				ClientProtocol: "anthropic-messages",
 				SanitizeHop:    sanitize.SanitizeHopFromContext(r.Context()),
 				ClientModel:    clientModel,
+				ClientType:     extractClientType(r),
 			})
 			base = nativeStreamWriter
 			defer nativeStreamWriter.finish()
@@ -880,6 +881,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 				ClientProtocol: "anthropic-messages",
 				SanitizeHop:    sanitize.SanitizeHopFromContext(r.Context()),
 				ClientModel:    clientModel,
+				ClientType:     extractClientType(r),
 			})
 			defer nativeStreamWriter.finish()
 			execWriter = nativeStreamWriter
@@ -936,7 +938,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		rule, reason := policyBlockErrorDetail(execErr)
 		field, digest := policyBlockPathFromError(execErr), policyBlockDigestFromError(execErr)
 		blockTenant := tenant(keyInfo)
-		reviewID := registerPolicyBlockReview(blockTenant, requestID, rule, reason, field, digest)
+		reviewID := registerPolicyBlockReview(blockTenant, extractClientType(r), requestID, rule, reason, field, digest)
 		message := policyBlockClientMessage(rule, reason, field, requestID, reviewID)
 		attemptErrCode, attemptErrMsg = code, message
 		auditBuilder.Success(false)
@@ -1042,6 +1044,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 				CallerOwner:    callerOwner,
 				ClientProtocol: "anthropic-messages",
 				ClientModel:    clientModel,
+				ClientType:     extractClientType(r),
 			},
 			failureEmit: func() {
 				outputBlocked = true
@@ -1601,7 +1604,7 @@ func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []b
 			}
 			// 2026-10-28 拦截审核轮：带规则/原因/审核单（此前只有一句 message）。
 			rule, reason, field, digest := policyBlockMetadataFrom(interceptResult)
-			reviewID := registerPolicyBlockReview(opt.request.TenantID, requestID, rule, reason, field, digest)
+			reviewID := registerPolicyBlockReview(opt.request.TenantID, opt.request.ClientType, requestID, rule, reason, field, digest)
 			writeAnthropicError(w, http.StatusForbidden, "output_policy_blocked",
 				policyBlockClientMessage(rule, reason, field, requestID, reviewID),
 				policyBlockErrorExtras(rule, reason, field, digest, requestID, reviewID))
