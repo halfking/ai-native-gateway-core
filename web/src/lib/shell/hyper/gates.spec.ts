@@ -442,11 +442,14 @@ describe('手势仲裁单点（规范 12 §1 / §6）', () => {
    *  —— 带 g 的正则做 .test() 是**有状态**的（lastIndex 残留），会漏判。 */
   const POINTER_BINDINGS_G = new RegExp(POINTER_BINDINGS.source, 'g')
 
+  // Windows 的 join 产生反斜杠 ⇒ 仲裁点/登记表的正斜杠路径永不命中 ⇒ 假红。
+  const relPosix = (f: string) => f.slice(SRC.length + 1).replace(/\\/g, '/')
+
   const offenders = ALL_FILES.filter((f) => {
-    const rel = f.slice(SRC.length + 1)
+    const rel = relPosix(f)
     if (ARBITRATION_FILES.includes(rel) || rel in REGISTERED_OTHERS) return false
     return POINTER_BINDINGS.test(stripComments(readFileSync(f, 'utf8')))
-  }).map((f) => f.slice(SRC.length + 1))
+  }).map(relPosix)
 
   it('量具自证：扫描器确实找到了仲裁点自己（防正则失效导致空集恒真）', () => {
     const src = readFileSync(resolve(SRC, ARBITRATION_FILES[0]), 'utf8')
