@@ -92,20 +92,40 @@ func TestPgUpsertEgressReleaseBindsExpiry(t *testing.T) {
 }
 
 // TestPgLoadHardBlockStateParsesStoredList：装载解析存储的 `scope:rule` 列表；
-// 坏 JSON 报错而非静默用默认清单。
+// 坏 JSON 报错而非静默用默认清单；★ 种子行（updated_by=''）不算已管理。
 func TestPgLoadHardBlockStateParsesStoredList(t *testing.T) {
 	s, mock := newMockStore(t)
-	mock.ExpectQuery(`SELECT rules FROM sanitize_hardblock_state`).WillReturnRows(
-		sqlmock.NewRows([]string{"rules"}).AddRow(`["input:*","egress:builtin.egress_sink"]`))
+	mock.ExpectQuery(`SELECT rules, updated_by FROM sanitize_hardblock_state`).WillReturnRows(
+		sqlmock.NewRows([]string{"rules", "updated_by"}).AddRow(`["input:*","egress:builtin.egress_sink"]`, "boss"))
 	allows, found, err := s.LoadHardBlockState(context.Background())
 	if err != nil || !found || len(allows) != 2 {
 		t.Fatalf("load: found=%v err=%v allows=%+v", found, err, allows)
 	}
 
+	// ★ 211 实测踩到的坑（拦截持久化轮当轮止血）：迁移 917 种下的默认行
+	// （rules='[]'、updated_by=''）被当成「管理员保存的空清单」⇒ 首次启动
+	// 把硬阻断清单覆盖成空。种子行必须不算 found（回落 env/出厂默认）。
 	s2, mock2 := newMockStore(t)
-	mock2.ExpectQuery(`SELECT rules FROM sanitize_hardblock_state`).WillReturnRows(
-		sqlmock.NewRows([]string{"rules"}).AddRow(`"not-an-array"`))
-	if _, _, err := s2.LoadHardBlockState(context.Background()); err == nil {
+	mock2.ExpectQuery(`SELECT rules, updated_by FROM sanitize_hardblock_state`).WillReturnRows(
+		sqlmock.NewRows([]string{"rules", "updated_by"}).AddRow(`[]`, ""))
+	_, found2, err := s2.LoadHardBlockState(context.Background())
+	if err != nil || found2 {
+		t.Fatalf("种子行不得视为已管理: found=%v err=%v", found2, err)
+	}
+
+	// 空清单 + 非空 actor = 管理员显式保存的空清单 ⇒ found 且生效为空。
+	s3, mock3 := newMockStore(t)
+	mock3.ExpectQuery(`SELECT rules, updated_by FROM sanitize_hardblock_state`).WillReturnRows(
+		sqlmock.NewRows([]string{"rules", "updated_by"}).AddRow(`[]`, "boss"))
+	allows3, found3, err := s3.LoadHardBlockState(context.Background())
+	if err != nil || !found3 || len(allows3) != 0 {
+		t.Fatalf("显式空清单: found=%v err=%v allows=%+v", found3, err, allows3)
+	}
+
+	s4, mock4 := newMockStore(t)
+	mock4.ExpectQuery(`SELECT rules, updated_by FROM sanitize_hardblock_state`).WillReturnRows(
+		sqlmock.NewRows([]string{"rules", "updated_by"}).AddRow(`"not-an-array"`, "boss"))
+	if _, _, err := s4.LoadHardBlockState(context.Background()); err == nil {
 		t.Fatal("坏存储必须报错（不能静默回落默认清单）")
 	}
 }

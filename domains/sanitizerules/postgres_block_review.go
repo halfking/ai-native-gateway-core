@@ -193,12 +193,22 @@ FROM sanitize_egress_releases`)
 
 func (s *PostgresStore) LoadHardBlockState(ctx context.Context) ([]HardBlockAllow, bool, error) {
 	var raw []byte
-	err := s.db.QueryRowContext(ctx, `SELECT rules FROM sanitize_hardblock_state WHERE singleton=TRUE`).Scan(&raw)
+	var updatedBy string
+	err := s.db.QueryRowContext(ctx, `SELECT rules, updated_by FROM sanitize_hardblock_state WHERE singleton=TRUE`).Scan(&raw, &updatedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, sanitizeDBErr(err)
+	}
+	// ★ 迁移 917 会种下一行默认记录（rules='[]'、updated_by=''）——那不是
+	// 「管理员保存了空清单」，是「从未被管理面保存过」。判据用 updated_by：
+	// 管理面保存（SaveHardBlockState）恒写非空 actor，种子行恒为空 ⇒
+	// 种子行不算 found ⇒ 启动回落 env/出厂默认。否则全新安装会在首次启动
+	// 把硬阻断清单覆盖成空（211 实测踩到：种子行让 allows=[]，含请求侧
+	// fail-closed 一并被覆盖；当时以 SQL 恢复 ["input:*"] 止血）。
+	if strings.TrimSpace(updatedBy) == "" {
+		return nil, false, nil
 	}
 	var items []string
 	if err := json.Unmarshal(raw, &items); err != nil {
