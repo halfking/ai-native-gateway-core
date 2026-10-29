@@ -125,6 +125,33 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	// ★★ 2026-10-30：★★ 池子上限随【实例容量】自适应（★ 211 共享实例读数 ⇒ 32 槽对 100 槽实例太肥）。
+	//
+	// ★ 背景：★ newPoolConfig 的 32 是按【1000 槽集群 × 31 消费方 Pod】预算的；★ 而 211 的
+	// ★ PG 是多服务共用的 100 槽实例 ⇒ 网关一家 idle 就占 19~30 槽（★ 并发实测 0~1）。
+	//
+	// ★ 规则：★ 运维**显式**设了 LLM_GATEWAY_DB_MAX_CONNS ⇒ 原样尊重（★ 运维意图优先）；
+	// ★ 否则 ⇒ cap = clamp(instanceMax/8, 4, 32)（★ 100 槽 ⇒ 12；★ 1000 槽 ⇒ 32 ⇒ **行为不变**）。
+	// ★ 探针失败 ⇒ **保持既有上限**（★ fail-open）。
+	if !poolMaxConnsEnvExplicit() {
+		if instanceMax, ok := probeInstanceMaxConnections(ctx, databaseURL); ok {
+			capped := poolCapForInstance(instanceMax)
+			if capped < cfg.MaxConns {
+				slog.Info("postgres: pool cap reduced to fit instance capacity",
+					"instance_max_connections", instanceMax,
+					"pool_max_conns_before", cfg.MaxConns,
+					"pool_max_conns", capped)
+				cfg.MaxConns = capped
+			} else {
+				slog.Info("postgres: pool cap kept (instance has headroom)",
+					"instance_max_connections", instanceMax,
+					"pool_max_conns", cfg.MaxConns)
+			}
+		} else {
+			slog.Warn("postgres: instance max_connections probe failed, keeping pool cap",
+				"pool_max_conns", cfg.MaxConns)
+		}
+	}
 	var migrationsPinned atomic.Bool
 	cfg.BeforeAcquire = func(ctx context.Context, conn *pgx.Conn) bool {
 		if migrationsPinned.Load() {
@@ -202,6 +229,75 @@ func poolMaxConnsFromEnv(def int32) int32 {
 		return def
 	}
 	return int32(n)
+}
+
+// poolCapForInstance 把池子上限收敛到【实例容量的 1/8】以内（★ 且不超过 32）。
+//
+// ★ 为什么（★ 211 生产读数，★ 2026-10-30）：
+//
+//	★ 211 的 PG 是**多服务共用**实例：max_connections=**100**，★ 实测全实例 81 条
+//	★ （memora 14 / kaixuan 8 / acc_db 7 / smm 4 / shiyi 3 / redclaw 栈 / …）；
+//	★ 网关一家占 **19~30 条**，★ 而**并发实测 0~1**（★ 连续 10 次采样 active ≤ 1）。
+//	★ ⇒ 池子上限 32 是按【1000 槽集群 × 31 个消费方 Pod】预算的（★ 见 newPoolConfig 注释），
+//	★ 落到 100 槽共享实例上 ⇒ **单家就占 19~32%**，★ 槽位被 idle 连接占着
+//	★ （MaxConnIdleTime=5min ⇒ 流量一有就长到上限再慢慢回收）。
+//
+// ★ 规则：cap = clamp(instanceMax/8, 4, 32)
+//	★ 100 槽 ⇒ **12**（★ 比实测并发高一个数量级 ⇒ 吞吐无虞，★ 且给其它服务让出 ~8~18 槽）
+//	★ 1000 槽 ⇒ 125 ⇒ 仍被 32 封顶 ⇒ ★ **大集群行为完全不变**（★ 零回归面）。
+//
+// ★ 未知（探针失败）⇒ 返回 32 ⇒ **保持既有行为**（★ fail-open，★ 不因探测失败改变任何现状）。
+func poolCapForInstance(instanceMax int32) int32 {
+	const (
+		absCap     int32 = 32
+		minCap     int32 = 4
+		shareShift       = 3 // /8
+	)
+	if instanceMax <= 0 {
+		return absCap
+	}
+	cap := instanceMax >> shareShift
+	if cap > absCap {
+		cap = absCap
+	}
+	if cap < minCap {
+		cap = minCap
+	}
+	return cap
+}
+
+// poolMaxConnsEnvExplicit 报告运维是否【显式】设了 LLM_GATEWAY_DB_MAX_CONNS。
+//
+// ★ 显式值优先于实例自适应（★ 运维意图高于自动推导）：★ 显式设了就**原样尊重**，
+// ★ 不再按实例容量收敛（★ 运维知道自己在干什么）。
+func poolMaxConnsEnvExplicit() bool {
+	v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_DB_MAX_CONNS"))
+	if v == "" {
+		return false
+	}
+	n, err := strconv.ParseInt(v, 10, 32)
+	return err == nil && n > 0
+}
+
+// probeInstanceMaxConnections 读实例的 max_connections。
+//
+// ★ 单连接、★ 有界超时（3s）、★ 失败即放弃（★ 调用方保持原池上限）。
+func probeInstanceMaxConnections(ctx context.Context, databaseURL string) (int32, bool) {
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(probeCtx, databaseURL)
+	if err != nil {
+		return 0, false
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+	var n int32
+	if err := conn.QueryRow(probeCtx, "SHOW max_connections").Scan(&n); err != nil {
+		return 0, false
+	}
+	if n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // ApplyMigrations runs all idempotent schema migrations.
