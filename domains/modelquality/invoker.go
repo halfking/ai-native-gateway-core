@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 )
 
 // buildQuestionPrompt 把一道选择题构造成发给模型的 prompt。
@@ -222,7 +224,11 @@ type GatewayModelInvoker struct {
 // timeout: HTTP客户端超时，0则使用默认30秒
 func NewGatewayModelInvoker(baseURL, apiKey string, timeout time.Duration) *GatewayModelInvoker {
 	if baseURL == "" {
-		baseURL = "http://localhost:8787" // 默认本地网关
+		// 2026-10-29 (24h 审计第 7 轮): 8787 是从未存在的历史端口（见
+		// bg/model_quality_worker.go 同日注释）。invoker 的 URL 拼法在
+		// InvokeModel 里统一剥尾再补 /v1（允许带或不带 /v1 的 baseURL），
+		// loopback.GatewayBase() 不带路径 ⇒ 两种形态都正确。
+		baseURL = loopback.GatewayBase()
 	}
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -264,8 +270,9 @@ func (g *GatewayModelInvoker) InvokeModel(ctx context.Context, provider string, 
 		return "", 0, time.Since(startTime), fmt.Errorf("marshal request: %w", err)
 	}
 
-	// 构造请求URL
-	url := g.baseURL + "/v1/chat/completions"
+	// 构造请求URL（baseURL 允许带或不带 /v1 —— worker 侧默认带 /v1，
+	// settings 里的 model_quality.base_url 历史上可能不带 ⇒ 统一剥尾再拼）
+	url := strings.TrimRight(g.baseURL, "/") + "/v1/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return "", 0, time.Since(startTime), fmt.Errorf("create request: %w", err)

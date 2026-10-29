@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"
+	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 )
 
 // ModelQualityWorker 模型质量监控后台任务
@@ -75,7 +76,15 @@ type ModelQualityWorker struct {
 // timeout: 单次测试超时，0则使用默认30秒
 func NewModelQualityWorker(dataDir string, apiKey string, baseURL string, timeout time.Duration) *ModelQualityWorker {
 	if baseURL == "" {
-		baseURL = "http://localhost:8787" // 默认本地网关
+		// 2026-10-29 (24h 审计第 7 轮): 历史默认 http://localhost:8787 是一个
+		// 从未存在的监听端口——本实例实际监听 LLM_GATEWAY_LISTEN（蓝绿下
+		// 8781/8782 轮换）。211 生产实测（2026-10-29）：每次 24h 定时检查
+		// 12 个模型全部 "dial tcp [::1]:8787: connect: connection refused"
+		// （error_count=50/50，accuracy=0, overall_score=10, grade=F），
+		// 且误差被 report.ErrorCount 静默吞掉、db 侧 model_iq_runs 0 行。
+		// 与 self_check / node_probe / credential_selfcheck 同源走
+		// loopback.GatewayBase()（读 LLM_GATEWAY_LISTEN）。
+		baseURL = loopback.GatewayBase() + "/v1"
 	}
 	if timeout <= 0 {
 		timeout = 30 * time.Second
