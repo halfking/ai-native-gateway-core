@@ -104,6 +104,5 @@ export default {
     loadFailed: 'No se pudieron cargar los datos de fiabilidad de los modelos. Vuelve a intentarlo.',
     scanFailed: 'No se pudo completar el análisis de fiabilidad. Vuelve a intentarlo.',
     detailFailed: 'No se pudo cargar el detalle del veredicto de fiabilidad. Vuelve a intentarlo.',
-    historyFailed: 'No se pudo cargar el historial de veredictos de fiabilidad. Vuelve a intentarlo.',
   },
 }

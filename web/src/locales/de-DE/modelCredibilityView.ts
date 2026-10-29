@@ -104,6 +104,5 @@ export default {
     loadFailed: 'Die Glaubwürdigkeitsdaten der Modelle konnten nicht geladen werden. Bitte erneut versuchen.',
     scanFailed: 'Die Glaubwürdigkeitsprüfung konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
     detailFailed: 'Die Details zum Glaubwürdigkeitsurteil konnten nicht geladen werden. Bitte erneut versuchen.',
-    historyFailed: 'Der Verlauf der Glaubwürdigkeitsurteile konnte nicht geladen werden. Bitte erneut versuchen.',
   },
 }

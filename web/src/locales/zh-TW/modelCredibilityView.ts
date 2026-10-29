@@ -101,6 +101,5 @@ export default {
     loadFailed: '模型可信度資料沒能載入出來，請重試',
     scanFailed: '模型可信度檢測沒能完成，請重試',
     detailFailed: '模型可信度判定詳情沒能載入出來，請重試',
-    historyFailed: '模型可信度判定歷史沒能載入出來，請重試',
   },
 }
