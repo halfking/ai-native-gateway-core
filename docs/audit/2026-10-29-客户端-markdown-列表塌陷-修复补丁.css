@@ -41,7 +41,10 @@
 
 /* ── P2（承重·保底不塌陷）：正文容器给宽度下限（≈18 个中文字） ─────────────────
    ★ 与 P1 互为兜底：即便兄弟仍不可收缩，正文也不会被压到 0 宽
-   （实测：拿掉 P1 时正文仍 280px 宽、li 两行，不塌陷）。 */
+   （实测：拿掉 P1 时正文仍 280px 宽、li 两行，不塌陷）。
+   ★ 实现二选一：① 样式表加本条；② ★ tailwind 侧加类 `min-w-[280px]`
+   （★ `.message-content` 在客户端是 tailwind 工具类串：
+   `flex-1 relative max-w-full overflow-hidden text-pretty` ⇒ ★ 加类即可）。 */
 .message-content {
   min-width: 280px;
 }
