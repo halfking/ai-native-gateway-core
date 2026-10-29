@@ -15749,3 +15749,31 @@ guards-win-baseline` + CI 载体静态自证腿（Linux 裸跑实测腿=整片�
 > 未出现该错 ⇒ **未定性**）；★ `normalizeOpenAIStreamContent` 的无分隔符拼接（★ 既有语义、★ 非成因）；
 > ★ `outputcompliance` 帧重建路径（★ 未证实与附图相关）。
 > ⇒ ★ **通用式见 `LESSONS.md` **§570**（6 条；★ 让号记录：★ 初拟 §569 ⇒ ★ push 前 fetch 实测上游已占 §569 ⇒ ★★ 改取 §570）；★★ 审计档 `docs/audit/2026-10-29-会话闸与列表塌陷轮.md`。
+> **2026-10-29 智能体识别与 IP 落库轮：非 chat 路径识别链接线**（goal 会话，承接用户目标
+> 「学习原产智能体工具文档，精准识别客户端智能体 + 准确识别 IP + 落进会话存储」）：
+> ★ 211 生产 24h 取证 ⇒ 空名 1375 条里系统提示词自报 MiniMax Code ~930 / ZCode ~560；
+> UA `pi/1.4.0` 2385 条全 unknown；client_ip 全是 docker 网桥。
+> ⇒ ★★★★ **根因（两个，各自独立）**：① `/v1/responses` 与 `/v1/messages` 主流程**从不调
+> SetKey/EnsureCaptured**（只有限流分支调）⇒ fillAttemptMeta 整块未跑 ⇒ 侧表客户端字段
+> 全 NULL、**系统提示词兜底从未运行**（用户指认的 ZCode 自报「You are ZCode, an interactive
+> coding agent」单测早已命中——病不在判据，在兜底没被喂到）；② 211 env 没配
+> TRUSTED_PROXY_CIDRS ⇒ origin_mw 白名单挡掉上游 X-Real-IP ⇒ 真实 IP 被网桥 IP 吞。
+> ⇒ ★ **第一批 cec052086**：模式表补 Mavis 实态（`you run inside minimax code` /
+> `you are mavis`——档案形态在现役客户端零命中）+ pi(pi.dev) UA 三处（官方 formatUserAgent
+> 源码取证；HasToken 双边界：pip/api 拒绝、raspberry-pi 连字符边界=已知假阳性）+
+> deploy-seamless-docker.sh 新增 TRUSTED_PROXY_CIDRS 沿用链 + 211 env 落
+> 172.21.0.0/16。**端到端验证**：UA=pi + XFF=203.0.113.77 ⇒ attrs/turns/sessions 三层
+> 同值落库；真实流量 zcode 行 client_ip 变 192.168.31.32。
+> ⇒ ★★ **第二批 88e277974**：responses/messages 主流程接 SetKey+Body+EnsureCaptured
+> （与 chat 同序）+ body-marker memo body 感知（空 body 置位的空结论在 body 到达后重算）。
+> **端到端**：/v1/responses + ZCode 自报 + 弱 UA ⇒ agent_name=zcode + 真实 IP；
+> /v1/messages + Mavis 自报 ⇒ minimax-code；三层落库同值。streaming 全套件 159.1s 绿。
+> ⇒ ★★★ **接管事故（根因已定）**：并行会话从其本地树 0d9fd015 发起蓝绿部署，杀我方活跃
+> 槽 + 旧引擎重写 gateway.env **静默丢掉 TRUSTED 行** ⇒ 失明 100 分钟 ⇒ 通用式：后部署者
+> 的引擎版本决定 env 文件的存活集合；部署必须从 origin/main 最新树（本批用干净 worktree
+> /tmp/deploy-88e277974，并行未提交改动不进镜像）。
+> ⇒ ★ 明确没做：turn_no 仍全 NULL（权威口径在 ROW_NUMBER 派生，SetTurnNo 无调用方——
+> 独立小工程）；`x-app: cli` 头未纳入判据（㊻ §6 口径延续）；agent_type=api 与
+> agent_name=zcode 并存是【传输分类 vs 身份】的语义，未合并。
+> ⇒ 审计档 `docs/audit/2026-10-29-智能体识别与IP落库轮-非chat路径识别链接线.md`；
+> 通用式见 `LESSONS.md` **§571**（7 条）。

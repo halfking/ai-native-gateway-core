@@ -27163,3 +27163,41 @@ nativepair 厂商感知后，anthropic 腿 IRStamp 测试的老正臂（minimax-
 ★ **★ 本轮读数** —— ★★ **门**：★★ `go build ./...` ✓；★★ `go vet ./domains/hooks/compression/` ✓；★★ `go test ./domains/hooks/compression/` ✓（既有 12 + 上游新增 7 + 本会话 e2e 3 + 生产 ID 全集 47/47）；★★ `scripts/ursmcheck` 节号门 4 条 ✓；★★ `go test ./...` 全仓 —— ★ **5 个包红（★ `admin` 10 / `address_family_decision_audit` 1 / `jsonbguard` 1 / `nodestatecache` 1 / `ursmcheck` 9）★ 且★ 逐条在 `origin/main` 干净 worktree 上复现**（★ ⇒ **与本轮改动无关**；★ 本轮只加 1 个测试文件 + 3 个文档）★★；★★ `go test -race -count=2 ./domains/hooks/compression/` ✓；★★ **211 生产（当前构建 `008546aa`）**：★ `invalid session_id` **57/h → 0**；★ `final cache commit failed` **57/h → 0**；★ `gw_session_*` 压缩命中 **0 → 88 条/1h**（★ 近 1h 终验读数），★ token 节省 **76.4% / 81.5% / 87.5%**（313606→57934 / 511321→64165 / 280588→66104），★ semantic_fidelity 0.73~1.00；★★ **浏览器量测**：★ 7 档视口宽度逐档实测（见上）；★★ **变异臂**：★ 上游豁免关掉 ⇒ 本会话 e2e **两条立刻红**（★ 报错正是生产形态 `session_id contains forbidden keyword 'session'`）⇒ ★ 还原 ⇒ 全绿（★ `git diff` 对被变异文件为空 ⇒ 逐字还原）。
 ★ **★ 本轮通用式（一句话版）★★** —— ★★ **守卫要按【生成惯例】裁决而不是按【子串】裁决，★ 因为派生命名空间会自己撞进黑名单；★★ 「命中 0」先问分母再问分子；★★ 守卫收紧前先把生产真实 ID 全集喂给真实实现，★ 「更严」不等于「更对」；★★ 同一根因的两份实现要退役一份而不是并存；★★ 跨仓交接的读数必须是对方能自己量出来的数字。★★** ★★
 ★ **★ 本轮明确没做（★ 留给下一轮，★ 别重复排查）★★** —— ★★ ① **客户端 CSS 修复本身**（落点不在本网关仓：★ `web/`、`web-mobile/`、`llm-gateway-client/`、`ai-session-manager` 均无该 markdown 渲染器）★★；★★ ② **211 PG 连接打满**（★ `max_connections=100`、★ ESTAB 常满 100/100、★ psql 常报 `too many clients`，★ 网关自身日志未出现该错 ⇒ **未定性**）★★；★★ ③ `normalizeOpenAIStreamContent` 对 content 数组的**无分隔符拼接**（★ 既有语义、★ 只影响数组形态输入、★ **不是附图成因**）★★；★★ ④ `domains/hooks/outputcompliance/stream_compliance.go` 的**帧重建**路径（★ 唯一重建帧的路径，★ 但**未证实**与附图相关）★★。
+
+## §571 · 「智能体识别与 IP 落库」轮（2026-10-29 · llm-gateway-go）—— ★★★★ 判据收口了 ≠ 接线收口了：三个入口三份接线，两份是空的；★★★★ 「主流程没有、分支才有」是结构性盲区；★★★★ 侧表「整块同空」是路径缺失的指纹；★★★★ 兜底链的每一层都要【喂到】；★★★ memo 必须感知其输入的到达时机；★★★★ 后部署者的引擎版本决定 env 文件的存活集合
+> 承接用户目标（「学习原产智能体工具文档，精准识别请求的客户端智能体类型/名称 + 准确识别
+> IP，落进会话存储」）。211 生产 24h 取证（session_turns_hot × request_context_attrs 对拍）
+> ⇒ 空名 1375 条里系统提示词自报 MiniMax Code ~930 条 / ZCode ~560 条；UA `pi/1.4.0` 2385 条
+> 全落 unknown；client_ip 24h 全是 docker 网桥/回环 ⇒ 事实源（识别链/IP 白名单/三层落库）
+> 仓内齐备，缺的是【调用】与【配置】。
+> ⇒ ★★★★ **判据收口 ≠ 接线收口**：㊻ 轮把识别判据收敛成 `clienttype.DetectFromRequest`
+> 一份实现，但【哪个入口调用它】没有核销——chat / responses / messages 三份接线，
+> **responses 与 messages 的主流程从未调 `SetKey`（只有限流分支调了）也从未调
+> `EnsureCaptured`** ⇒ fillAttemptMeta 整块未跑 ⇒ 侧表客户端字段全 NULL，系统提示词兜底
+> 从未有机会运行。判据唯一化之后，**接线点必须逐入口核销**（或结构上唯一化）。
+> ⇒ ★★★★ **「主流程没有、分支才有」**：SetKey 只写在限流分支里，成功路径（99% 流量）反而不跑。
+> 按「谁写日志谁负责」的直觉找不到它——要按【这个字段在哪条路径上第一次被赋值】倒查。
+> ⇒ ★★★★ **侧表「整块同空」是路径缺失的指纹**：`api_key_id ✓`（fillFromKeyInfo）而
+> agent_name / client_ip / client_protocol / fingerprint_raw / turn_no **整组全空**
+> （fillFromMeta）⇒ 不是客户端不发，是 meta 没被填 ⇒ 用【字段组的相关性】反查代码路径，
+> 比逐字段猜快一个量级；空名行 request_id 反查网关日志 `path=/v1/responses` 一锤定音。
+> ⇒ ★★★★ **兜底链的每一层都要【喂到】**：系统提示词兜底的输入（meta.SystemPrompt）只在
+> EnsureCaptured 里生产——一个入口不调它，兜底就是死代码。用户指认的会话（ZCode 自报
+> 「You are ZCode, an interactive coding agent」）单元测试早已能命中 ⇒ **病不在判据，
+> 在兜底没被运行** ⇒ 「链存在」与「链被运行」要分开验证。
+> ⇒ ★★★ **memo 必须感知其输入的到达时机**：responses/messages 接线后顺序变为
+> SetKey（auth 后，Body 未缓冲）→ EnsureCaptured（body 读后）；依赖 Body 的 body-marker
+> memo 若在空 body 上置位就永久失检 ⇒ memo 改 body 感知（`bodyMarkerHadBody`：空 body
+> 下的空结论在 body 到达后重算一次；chat 路径首跑即有 body，行为不变）。
+> ⇒ ★★★★ **后部署者的引擎版本决定 env 文件的存活集合**：并行会话从其本地树（0d9fd015，
+> 不在 origin/main 历史）发起蓝绿部署，其引擎早于我方 cec052086 ⇒ gateway.env 被重写时
+> **静默丢掉它不认识的 TRUSTED_PROXY_CIDRS 行** + 杀掉我方活跃槽 ⇒ 新配置失明 100 分钟。
+> ⇒ env 文件每一行都要在引擎里有【识别+保留】逻辑；部署引擎必须从 origin/main 最新树跑
+> （stale 树部署 = env 行删除器 + 二进制回退器）。
+> ⇒ ★★ **UA 分布对账是识别档案的活水**：pi 官方 `formatUserAgent()` 产
+> `pi/{ver} ({platform}; node/{v}; {arch})`——不查生产分布就永远不会进表；裸 token "pi" 的
+> 双边界（pip/api 拒绝；raspberry-pi 因连字符是边界会命中 ⇒ 登记为已知假阳性）。
+> ⇒ 读数：客户端 type/name/ip 三层落库端到端全通（responses 臂 zcode+198.51.100.42 /
+> messages 臂 minimax-code+198.51.100.43，sessions/session_turns/attrs 同值）；streaming
+> 全套件 159.1s 绿；clienttype +7 自证 / telemetry +5 用例。审计档
+> `docs/audit/2026-10-29-智能体识别与IP落库轮-非chat路径识别链接线.md`。
