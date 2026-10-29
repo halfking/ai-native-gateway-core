@@ -138,8 +138,20 @@ WHERE tenant_id=$1 AND rule_id=$2 AND label=$3`, tenantID, rule, label).Scan(&co
 //
 // ★ 误报率的分母是**有判断的记录数**（labeled > 0），不是总量 —— 用总量做
 // 分母会让「没人看的记录」把误报率稀释成假绿。
+// unattributedRuleBucket 是「拦截点没说出规则」那批记录的读数桶名。
+//
+// ★ 它是一个**哨兵**，不是一条规则：自动放行不会拿它当键（自动放行走标注
+// 事件里的 entry.Rule，空规则在 maybeAutoRelax 里已被显式跳过）。
+const unattributedRuleBucket = "unattributed"
+
 func (s *PostgresStore) BlockReviewInsightsDB(ctx context.Context, tenantID string, limit int) ([]BlockReviewRuleInsight, error) {
-	q := `SELECT tenant_id, rule_id, max(rule_name) AS rule_name,
+	// ★ 2026-10-29：**没有规则归因**的记录也要进读数（否则它们在读数上「不存在」）。
+	// 空白审核单（拦截点没说话 ⇒ rule_id 为空）是**误报轮最重要的信号** ——
+	// 把它藏起来，读数就会长成「没有数据」而不是「22 条没有归因」。
+	// ⇒ 空 rule_id 归到哨兵桶 `unattributed`（★ 哨兵**不是**真实规则 ⇒
+	// 自动放行不会碰它：自动放行走标注事件里的 entry.Rule，空规则在
+	// maybeAutoRelax 里已被显式跳过）。
+	q := `SELECT tenant_id, CASE WHEN rule_id='' THEN '` + unattributedRuleBucket + `' ELSE rule_id END AS rule_id, max(rule_name) AS rule_name,
  count(*) AS total,
  count(*) FILTER (WHERE status='pending')  AS pending,
  count(*) FILTER (WHERE status='approved') AS approved,
@@ -149,13 +161,13 @@ func (s *PostgresStore) BlockReviewInsightsDB(ctx context.Context, tenantID stri
  count(*) FILTER (WHERE label='rule_too_broad') AS rule_too_broad,
  count(*) FILTER (WHERE label='needs_rule')     AS needs_rule,
  count(*) FILTER (WHERE label <> '')           AS labeled
-FROM sanitize_block_reviews WHERE rule_id <> ''`
+FROM sanitize_block_reviews`
 	args := []any{}
 	if tenantID != "" {
 		args = append(args, tenantID)
 		q += fmt.Sprintf(" AND tenant_id=$%d", len(args))
 	}
-	q += " GROUP BY tenant_id, rule_id ORDER BY count(*) DESC, rule_id ASC"
+	q += " GROUP BY tenant_id, CASE WHEN rule_id='' THEN '" + unattributedRuleBucket + "' ELSE rule_id END ORDER BY count(*) DESC, rule_id ASC"
 	args = append(args, limit)
 	q += fmt.Sprintf(" LIMIT $%d", len(args))
 	rows, err := s.db.QueryContext(ctx, q, args...)

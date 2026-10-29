@@ -189,6 +189,7 @@ export default {
   reviewInsightsTitle: "Indicateurs de revue par règle",
   reviewInsightsNone: "Aucun indicateur de revue à agréger pour l'instant",
   reviewInsightsRule: "Règle",
+  reviewUnattributedRule: "(non attribué)",
   reviewInsightsTotal: "Blocages",
   reviewInsightsFalsePositive: "Faux positifs",
   reviewInsightsRatio: "Taux de faux positifs",

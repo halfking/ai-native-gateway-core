@@ -1670,7 +1670,11 @@ onBeforeUnmount(() => {
                 :data-test="'review-insight-' + insight.rule"
               >
                 <td>
-                  <code>{{ insight.rule }}</code>
+                  <code>{{
+                    insight.rule === "unattributed"
+                      ? t("sanitizeRules.reviewUnattributedRule")
+                      : insight.rule
+                  }}</code>
                   <small v-if="insight.rule_name" class="muted">{{
                     insight.rule_name
                   }}</small>

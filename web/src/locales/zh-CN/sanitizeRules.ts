@@ -180,6 +180,7 @@ export default {
   reviewInsightsTitle: "规则级复核读数",
   reviewInsightsNone: "还没有可聚合的复核读数",
   reviewInsightsRule: "规则",
+  reviewUnattributedRule: "（无规则归因）",
   reviewInsightsTotal: "拦截次数",
   reviewInsightsFalsePositive: "误报次数",
   reviewInsightsRatio: "误报率",

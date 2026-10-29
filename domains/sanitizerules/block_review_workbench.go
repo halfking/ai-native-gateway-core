@@ -366,10 +366,16 @@ func blockReviewInsightsMemory(tenantID string, limit int) []BlockReviewRuleInsi
 		if tenantID != "" && e.TenantID != tenantID {
 			continue
 		}
-		key := e.TenantID + "|" + e.Rule
+		// ★ 与 DB 路径同口径：空规则归到哨兵桶（否则内存降级路径会把
+		// 「没有归因」的记录单列成一条空规则，与 DB 路径的读数对不上）。
+		bucket := e.Rule
+		if bucket == "" {
+			bucket = unattributedRuleBucket
+		}
+		key := e.TenantID + "|" + bucket
 		insight, ok := byRule[key]
 		if !ok {
-			insight = &BlockReviewRuleInsight{Rule: e.Rule, RuleName: e.RuleName, TenantID: e.TenantID}
+			insight = &BlockReviewRuleInsight{Rule: bucket, RuleName: e.RuleName, TenantID: e.TenantID}
 			byRule[key] = insight
 			order = append(order, key)
 		}

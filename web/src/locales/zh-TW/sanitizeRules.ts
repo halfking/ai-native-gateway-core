@@ -180,6 +180,7 @@ export default {
   reviewInsightsTitle: "規則級複核讀數",
   reviewInsightsNone: "尚無可聚合的複核讀數",
   reviewInsightsRule: "規則",
+  reviewUnattributedRule: "（無規則歸因）",
   reviewInsightsTotal: "攔截次數",
   reviewInsightsFalsePositive: "誤報次數",
   reviewInsightsRatio: "誤報率",

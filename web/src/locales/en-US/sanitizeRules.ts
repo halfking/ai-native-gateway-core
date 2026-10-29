@@ -189,6 +189,7 @@ export default {
   reviewInsightsTitle: "Per-rule review insights",
   reviewInsightsNone: "No review insights to aggregate yet",
   reviewInsightsRule: "Rule",
+  reviewUnattributedRule: "(unattributed)",
   reviewInsightsTotal: "Blocks",
   reviewInsightsFalsePositive: "False positives",
   reviewInsightsRatio: "False-positive rate",

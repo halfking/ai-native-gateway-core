@@ -186,6 +186,7 @@ export default {
   reviewInsightsTitle: "قراءات المراجعة حسب القاعدة",
   reviewInsightsNone: "لا توجد قراءات مراجعة للتجميع بعد",
   reviewInsightsRule: "القاعدة",
+  reviewUnattributedRule: "(غير منسوب)",
   reviewInsightsTotal: "مرات الحظر",
   reviewInsightsFalsePositive: "الإنذارات الكاذبة",
   reviewInsightsRatio: "نسبة الإنذارات الكاذبة",

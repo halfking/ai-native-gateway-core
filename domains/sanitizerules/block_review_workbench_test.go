@@ -209,3 +209,41 @@ func TestBlockReviewInsightsCountsLabels(t *testing.T) {
 		t.Fatalf("误报率的分母必须是【有判断的记录数】（1/2），实际 %v", insight.FalsePositiveR)
 	}
 }
+
+// TestBlockReviewInsightsIncludesUnattributed 钉住读数口径：**没有规则归因**
+// 的拦截记录**必须进读数**（否则它们在读数上「不存在」）。
+//
+// ★ 生产实测（211，2026-10-29）：22 条审核单的 rule_id 全为空（拦截点没说话）
+// ⇒ 旧口径（WHERE rule_id <> ''）把它们全藏起来 ⇒ 读数长成「没有数据」，
+// 而真相是「22 条没有归因」。这正是误报轮最该被看见的信号。
+func TestBlockReviewInsightsIncludesUnattributed(t *testing.T) {
+	resetWorkbenchState(t)
+	// 一条有规则的 + 一条没有归因的（Rule 为空 ⇒ 拦截点没说话）。
+	AddBlockReview(BlockReviewInput{
+		TenantID: "tenant-unattr", ClientType: "codex", Scope: "egress",
+		Rule: "builtin.egress_sink", RequestID: "req-with-rule",
+	})
+	AddBlockReview(BlockReviewInput{
+		TenantID: "tenant-unattr", ClientType: "codex", Scope: "egress",
+		Rule: "", RequestID: "req-no-rule",
+	})
+	insights, err := BlockReviewInsights("tenant-unattr", 10)
+	if err != nil {
+		t.Fatalf("读数失败: %v", err)
+	}
+	if len(insights) != 2 {
+		t.Fatalf("读数条数 = %d，期望 2（有规则 + 无归因各一条），实际 %+v", len(insights), insights)
+	}
+	var unattributed *BlockReviewRuleInsight
+	for i := range insights {
+		if insights[i].Rule == unattributedRuleBucket {
+			unattributed = &insights[i]
+		}
+	}
+	if unattributed == nil {
+		t.Fatalf("没有归因的那条必须出现在读数里（桶名 %q），实际 %+v", unattributedRuleBucket, insights)
+	}
+	if unattributed.Total != 1 {
+		t.Fatalf("无归因桶的拦截次数 = %d，期望 1", unattributed.Total)
+	}
+}

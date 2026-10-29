@@ -9,6 +9,7 @@ package sanitizerules
 // 否则用例间互相污染；每个「降级」用例都有对照（持久化正常时行为不同）。
 
 import (
+	"sync/atomic"
 	"context"
 	"errors"
 	"sync"
@@ -494,4 +495,84 @@ func TestHardblockSingleRuleToggle(t *testing.T) {
 	if !HardBlockAllowed("input", "any") {
 		t.Fatal("单条开关不得波及其它条目")
 	}
+}
+
+// flakyReviewPersistence：前 N 次装载失败，之后成功（模拟启动瞬间的读库抖动）。
+type flakyReviewPersistence struct {
+	fakeReviewPersistence
+	failures int32
+	calls    int32
+}
+
+func (f *flakyReviewPersistence) LoadEgressReleasesDB(ctx context.Context) ([]EgressRelease, error) {
+	atomic.AddInt32(&f.calls, 1)
+	if atomic.AddInt32(&f.failures, -1) >= 0 {
+		return nil, errors.New("transient db read failure")
+	}
+	return f.fakeReviewPersistence.LoadEgressReleasesDB(ctx)
+}
+
+// TestEgressReleaseBootLoadRetriesTransientFailure 钉住「启动装载放行表」必须
+// **有界重试**：一次瞬时读库失败不该让放行表装载成空。
+//
+// ★ 211 生产实测（2026-10-29）：启动那一刻的一次瞬时失败 ⇒ 放行表空 ⇒
+// 管理员批过的规则**继续被拦**（误报无限复发），而日志只有一句 failed。
+func TestEgressReleaseBootLoadRetriesTransientFailure(t *testing.T) {
+	resetWorkbenchState(t)
+	flaky := &flakyReviewPersistence{failures: 1}
+	flaky.releases = []EgressRelease{{TenantID: "tenant-boot", Scope: "egress", Rule: "builtin.egress_sink"}}
+
+	InstallReviewPersistence(flaky)
+	t.Cleanup(ResetReviewPersistence)
+
+	if got := atomic.LoadInt32(&flaky.calls); got < 2 {
+		t.Fatalf("装载必须重试（至少 2 次尝试），实际 %d 次", got)
+	}
+	releases := EgressReleases()
+	if len(releases) != 1 {
+		t.Fatalf("重试成功后放行表必须有 1 条，实际 %d 条（放行表空 ⇒ 批过的规则继续被拦）", len(releases))
+	}
+	if releases[0].Rule != "builtin.egress_sink" {
+		t.Fatalf("放行内容不对: %+v", releases[0])
+	}
+}
+
+// TestBlockReviewListRetriesTransientFailure 钉住审核单列表的读库路径必须
+// **重试一次**：瞬时抖动不该让审核面整页空白。
+//
+// ★ 211 生产实测（2026-10-29）：列表读库一次失败 ⇒ 回落进程内队列（空）⇒
+// 审核员看到的是「没有待复核」⇒ 误报看起来像不存在。
+func TestBlockReviewListRetriesTransientFailure(t *testing.T) {
+	resetWorkbenchState(t)
+	flaky := &flakyListReviewPersistence{fakeReviewPersistence: fakeReviewPersistence{}, failures: 1}
+	flaky.rows = map[int64]BlockReview{
+		1: {ID: 1, TenantID: "tenant-boot", Status: BlockReviewPending, Scope: "egress"},
+	}
+	flaky.nextID = 1
+
+	InstallReviewPersistence(flaky)
+	t.Cleanup(ResetReviewPersistence)
+
+	rows := ListBlockReviews("", "", 10)
+	if len(rows) != 1 {
+		t.Fatalf("重试成功后列表必须有 1 条，实际 %d 条（列表恒空 ⇒ 误报看起来像不存在）", len(rows))
+	}
+	if atomic.LoadInt32(&flaky.listCalls) < 2 {
+		t.Fatalf("列表读库必须重试（至少 2 次尝试），实际 %d 次", atomic.LoadInt32(&flaky.listCalls))
+	}
+}
+
+// flakyListReviewPersistence：列表读前 N 次失败。
+type flakyListReviewPersistence struct {
+	fakeReviewPersistence
+	failures  int32
+	listCalls int32
+}
+
+func (f *flakyListReviewPersistence) ListBlockReviewsDB(ctx context.Context, status, tenantID string, limit int) ([]BlockReview, error) {
+	atomic.AddInt32(&f.listCalls, 1)
+	if atomic.AddInt32(&f.failures, -1) >= 0 {
+		return nil, errors.New("transient db read failure")
+	}
+	return f.fakeReviewPersistence.ListBlockReviewsDB(ctx, status, tenantID, limit)
 }

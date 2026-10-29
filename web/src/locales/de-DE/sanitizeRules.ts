@@ -191,6 +191,7 @@ export default {
   reviewInsightsTitle: "Prüfkennzahlen je Regel",
   reviewInsightsNone: "Noch keine aggregierbaren Prüfkennzahlen",
   reviewInsightsRule: "Regel",
+  reviewUnattributedRule: "(nicht zugeordnet)",
   reviewInsightsTotal: "Blockaden",
   reviewInsightsFalsePositive: "Fehlalarme",
   reviewInsightsRatio: "Fehlalarmquote",

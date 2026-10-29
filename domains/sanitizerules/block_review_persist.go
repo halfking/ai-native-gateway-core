@@ -88,6 +88,11 @@ var reviewPersistence atomic.Pointer[ReviewPersistence]
 // InstallReviewPersistence 安装落库通道并做启动装载：
 // 放行表 → 进程内 atomic 表；硬阻断状态（若存在）→ 覆盖当前清单。
 // 装载失败只告警：放行缺失的后果是「误报复发」，比「网关起不来」轻。
+//
+// ★ 2026-10-29（211 生产实测）：启动那一刻的一次瞬时读库失败 ⇒ **放行表装载
+// 成了空** ⇒ 管理员明明批过的那条规则**继续被拦**（误报无限复发），而日志
+// 只有一句 failed。⇒ 装载改为**有界重试**（3 次，退避 200ms/600ms）：瞬时
+// 抖动（刚做完 DDL 的连接、首包未就绪、PG 锁窗口）自愈；持续失败才告警。
 func InstallReviewPersistence(p ReviewPersistence) {
 	if p == nil {
 		return
@@ -95,7 +100,7 @@ func InstallReviewPersistence(p ReviewPersistence) {
 	reviewPersistence.Store(&p)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if releases, err := p.LoadEgressReleasesDB(ctx); err != nil {
+	if releases, err := loadEgressReleasesWithRetry(ctx, p); err != nil {
 		slog.Warn("sanitize egress release boot load failed; releases fall back to empty",
 			"error", err, "root_cause", storeErrorDetail(err))
 	} else {
@@ -114,6 +119,33 @@ func InstallReviewPersistence(p ReviewPersistence) {
 		slog.Info("sanitize hardblock allowlist loaded from managed state (overrides env)",
 			"allows", items)
 	}
+}
+
+// loadEgressReleasesWithRetry 启动装载放行表，带有界重试。
+//
+// ★ 只重试**读**（幂等）；连续失败才把错误交给调用方告警。
+func loadEgressReleasesWithRetry(ctx context.Context, p ReviewPersistence) ([]EgressRelease, error) {
+	backoff := []time.Duration{0, 200 * time.Millisecond, 600 * time.Millisecond}
+	var lastErr error
+	for attempt, wait := range backoff {
+		if wait > 0 {
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return nil, lastErr
+			}
+		}
+		releases, err := p.LoadEgressReleasesDB(ctx)
+		if err == nil {
+			if attempt > 0 {
+				slog.Info("sanitize egress release boot load recovered after retry",
+					"attempts", attempt+1)
+			}
+			return releases, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 // ResetReviewPersistence 撤下落库通道（测试用）；进程内行为不变。

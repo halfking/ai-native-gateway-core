@@ -230,7 +230,16 @@ func ListBlockReviews(status, tenantID string, limit int) []BlockReview {
 	if p := reviewPersistenceInstalled(); p != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		// ★ 有界重试一次：瞬时读库抖动不该让审核面「整页空白」（211 生产实测：
+		// 一次瞬时失败 ⇒ 审核单列表恒空 ⇒ 审核员看到的是「没有待复核」）。
 		rows, err := p.ListBlockReviewsDB(ctx, status, tenantID, limit)
+		if err != nil {
+			select {
+			case <-time.After(200 * time.Millisecond):
+			case <-ctx.Done():
+			}
+			rows, err = p.ListBlockReviewsDB(ctx, status, tenantID, limit)
+		}
 		if err == nil {
 			attachBlockReviewEvidence(ctx, p, rows)
 			return rows

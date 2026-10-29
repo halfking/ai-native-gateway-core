@@ -189,6 +189,7 @@ export default {
   reviewInsightsTitle: "Métricas de revisión por regla",
   reviewInsightsNone: "Aún no hay métricas de revisión agregables",
   reviewInsightsRule: "Regla",
+  reviewUnattributedRule: "(sin atribución)",
   reviewInsightsTotal: "Bloqueos",
   reviewInsightsFalsePositive: "Falsos positivos",
   reviewInsightsRatio: "Tasa de falsos positivos",

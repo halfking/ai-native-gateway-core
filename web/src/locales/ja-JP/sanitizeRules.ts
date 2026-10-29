@@ -188,6 +188,7 @@ export default {
   reviewInsightsTitle: "ルール別のレビュー指標",
   reviewInsightsNone: "集計できるレビュー指標はまだありません",
   reviewInsightsRule: "ルール",
+  reviewUnattributedRule: "（ルール未特定）",
   reviewInsightsTotal: "ブロック回数",
   reviewInsightsFalsePositive: "誤検知回数",
   reviewInsightsRatio: "誤検知率",
