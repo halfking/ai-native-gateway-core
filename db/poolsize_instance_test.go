@@ -1,7 +1,14 @@
 package db
 
 import (
+	"context"
+	"os"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestPoolCapForInstance 覆盖「池子上限随实例容量自适应」的判据。
@@ -105,4 +112,76 @@ func TestPoolCapRespectsExplicitEnvOverride(t *testing.T) {
 	if got := poolCapForInstance(100); got != 12 {
 		t.Fatalf("poolCapForInstance(100) = %d, want 12", got)
 	}
+}
+
+// TestProbeInstanceMaxConnectionsRealDB 探针的**真库腿**。
+//
+// ★★★ 为什么必须有这条腿（★ 2026-10-30 生产实测的教训）：
+//
+//	★ 第一版门只测了**纯函数** poolCapForInstance（★ clamp 边界 / 全域不变式 / env 显式性）
+//	★ ⇒ ★ **门全绿** ★ 但 211 生产上探针**恒失败**（★ 日志「probe failed, keeping pool cap=32」）
+//	★ ⇒ ★ **修复根本没生效** ★ 而 fail-open 让行为保持原样 ⇒ ★ **假绿**。
+//	★ 真因：★ `SHOW max_connections` 返回 **text（OID 25）** ⇒ ★ 扫进 *int32 必然失败
+//	★ ⇒ ★ 纯函数门**结构上不可能**发现它（★ 它压根不碰数据库）。
+//	★ ⇒ ⇒ 本腿**真的连库跑探针** ⇒ ★ 扫错类型 ⇒ ★ 探针返回 false ⇒ ★ 本门红。
+//
+// ★ 门控（★ 与仓内既有真库门同形态）：★ 无 TEST_DATABASE_URL / TEST_DB_URL 时跳过。
+func TestProbeInstanceMaxConnectionsRealDB(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		dsn = os.Getenv("TEST_DB_URL")
+	}
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置 —— 真库腿跳过" +
+			"（★ 注意：★ 本门是探针**唯一**能抓到扫描类型错误的腿；★ 纯函数门抓不到）")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	got, ok := probeInstanceMaxConnections(ctx, dsn)
+	if !ok {
+		t.Fatal("probeInstanceMaxConnections returned ok=false against a reachable database — " +
+			"the probe cannot read max_connections (★ check the scan target type: " +
+			"SHOW max_connections returns text/OID 25, NOT int4)")
+	}
+	if got <= 0 {
+		t.Fatalf("probeInstanceMaxConnections returned %d, want a positive instance capacity", got)
+	}
+	// ★ 交叉核对：★ 同一个库上用独立连接再查一次（★ 不同实现 ⇒ 不同失败模式）。
+	want := queryMaxConnectionsViaPool(t, ctx, dsn)
+	if got != want {
+		t.Fatalf("probe says max_connections=%d, but the pool-based cross-check says %d", got, want)
+	}
+	// ★ 不变式：★ 探针读到的值必须能推出一个合法 cap。
+	if cap := poolCapForInstance(got); cap < 4 || cap > 32 {
+		t.Fatalf("poolCapForInstance(%d) = %d, outside the legal clamp range [4,32]", got, cap)
+	}
+}
+
+// queryMaxConnectionsViaPool 用**池**（而非独立连接）再读一次 max_connections。
+//
+// ★ 存在的理由：★ 探针走独立连接、★ 交叉核对走池 ⇒ ★ 两条**不同**的实现路径
+// ⇒ ★ 任一条坏掉都会被另一条抓到（★ 而不是一个恒绿摆设）。
+func queryMaxConnectionsViaPool(t *testing.T, ctx context.Context, dsn string) int32 {
+	t.Helper()
+	cfg, err := newPoolConfig(dsn)
+	if err != nil {
+		t.Fatalf("newPoolConfig: %v", err)
+	}
+	cfg.MaxConns = 1
+	cfg.MinConns = 0
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("pgxpool.NewWithConfig: %v", err)
+	}
+	defer pool.Close()
+	var raw string
+	if err := pool.QueryRow(ctx, "SHOW max_connections").Scan(&raw); err != nil {
+		t.Fatalf("pool cross-check query: %v", err)
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 32)
+	if err != nil {
+		t.Fatalf("pool cross-check parse %q: %v", raw, err)
+	}
+	return int32(n)
 }

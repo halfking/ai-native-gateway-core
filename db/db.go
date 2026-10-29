@@ -282,22 +282,53 @@ func poolMaxConnsEnvExplicit() bool {
 // probeInstanceMaxConnections 读实例的 max_connections。
 //
 // ★ 单连接、★ 有界超时（3s）、★ 失败即放弃（★ 调用方保持原池上限）。
+//
+// ★★ 2026-10-30 生产读数修正（★ **第一次实现是坏的**，★ 211 实测证伪）：
+//
+//	★ 第一版用 `Scan(&n)`（n 为 int32）⇒ ★ **探针在 211 生产上恒失败**
+//	★   ⇒ 日志「probe failed, keeping pool cap pool_max_conns=32」⇒ ★ 修复**没有生效**
+//	★   （★ 而 fail-open 让行为保持原样 ⇒ ★ **假绿**：★ 门绿、行为旧、且**无人发现**）。
+//	★ 真因（★ 211 容器内用**同一个 DSN** 跑探针二进制实测）：
+//	★   `pgx.Connect err=<nil>`（★ 连接**成功**）★ 但
+//	★   `can't scan into dest[0] (col: max_connections): cannot scan text (OID 25) in text format into *int32`
+//	★   ⇒ ★ **`SHOW max_connections` 返回的是 text 类型（OID 25）**，★ 不是 int4
+//	★   ⇒ ★ 扫进 *int32 直接失败 ⇒ ★ 探针永远返回 false。
+//	★ ⇒ 修法：★ **按 text 扫 + 自行 ParseInt**（★ 不依赖驱动对 SHOW 的类型推断）。
+//
+// ★★ 第二个缺陷（★ 同一轮修）：★ 第一版把探针**错误吞掉**（★ 只回 false、★ 不记 err）
+//	★ ⇒ ★ 正是这个吞错让「探针失败」**看起来像网络问题**（★ 实际 PG 侧连一条拒绝日志都没有）
+//	★ ⇒ ★ 我先怀疑了 DNS、★ 又怀疑了槽位耗尽、★ 又怀疑了 URL 里未编码的 `@`
+//	★ ⇒ ★ **全是错的假设** ⇒ ★ 教训：★ **探针必须把失败原因记出来**，
+//	★ 否则「探针失败」是一个**不可诊断**的读数。
 func probeInstanceMaxConnections(ctx context.Context, databaseURL string) (int32, bool) {
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	conn, err := pgx.Connect(probeCtx, databaseURL)
 	if err != nil {
+		slog.Warn("postgres: instance max_connections probe: connect failed",
+			"error", err)
 		return 0, false
 	}
 	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
-	var n int32
-	if err := conn.QueryRow(probeCtx, "SHOW max_connections").Scan(&n); err != nil {
+	// ★ SHOW 的返回类型是 text（OID 25）⇒ 必须扫进 string 再自己解析。
+	var raw string
+	if err := conn.QueryRow(probeCtx, "SHOW max_connections").Scan(&raw); err != nil {
+		slog.Warn("postgres: instance max_connections probe: query failed",
+			"error", err)
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 32)
+	if err != nil {
+		slog.Warn("postgres: instance max_connections probe: unparsable value",
+			"raw", raw, "error", err)
 		return 0, false
 	}
 	if n <= 0 {
+		slog.Warn("postgres: instance max_connections probe: non-positive value",
+			"raw", raw)
 		return 0, false
 	}
-	return n, true
+	return int32(n), true
 }
 
 // ApplyMigrations runs all idempotent schema migrations.
