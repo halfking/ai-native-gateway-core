@@ -2423,6 +2423,25 @@ files=(
   #     ⇒ ⇒ 只能建**与投影逐字一致的表达式索引**。
   #   ★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带 dbinit:no-transaction 标记。
   "$ROOT_DIR/sql/migrations/startup/916_session_turns_api_key_ts_index.sql"
+  # ★ 919（2026-10-29 R176 轮；★ 让号记录：初拟 917，push 前 fetch 实测 origin 已被并行会话「拦截审核与放行落库」占用（ddd762e7a）⇒ 重取 919/920）：P11 第二期 —— ursm_snapshot_slot_daily 补
+  #   active_minutes 列（hour: count(DISTINCT minute)；minute: 恒 1），
+  #   填充函数 refresh_ursm_snapshot_slot_daily 升级为同步产出它（签名不变）。
+  #   落点 = 巡检 ursm-snapshot-health.sh 的 base_active 基线改走汇总表
+  #   （252 实测：主判据 WITH win 族 22 次/5,339s 每 26.4h，独立臂 EXPLAIN
+  #   ANALYZE 158s ⇒ 行量自 R97 起涨 3.4×，892 只搬了 base_buckets）。
+  #   ★ 部署次序契约：列加上后存量行 active_minutes=NULL，巡检探测失败自动回退
+  #   源表路（慢但不失明）⇒ 落地后尽快手工触发全量回填
+  #   SELECT public.refresh_ursm_snapshot_slot_daily(8, 'hour');
+  #   （不放迁移文件：全量刷新按 2026-10-29 行量需 10min+，迁移通道预算承不住。）
+  "$ROOT_DIR/sql/migrations/startup/919_ursm_slot_daily_active_minutes.sql"
+  # ★ 920（2026-10-29 R176 轮）：node_probe_runs (credential_id, completed_at)
+  #   INCLUDE (raw_model_name, started_at, success) 覆盖索引。缺口本体 =
+  #   INV-4 门（bg/probe_policy.go credentialTwoProbeSuccessGateSQL，五个调度
+  #   读点逐行求值）：completed_at 不在任何索引里 ⇒ 每次评估扫该凭据全史
+  #   （顶层凭据 ≈3.5 万索引项）只为留 24h 的 ~1,300 条 ⇒ 252 实测慢查 325 次
+  #   /1,395s + 被取消 224 次/26.4h。★ 含 CREATE INDEX CONCURRENTLY ⇒
+  #   文件首行带 dbinit:no-transaction 标记。
+  "$ROOT_DIR/sql/migrations/startup/920_node_probe_runs_cred_completed_idx.sql"
 )
 
 
