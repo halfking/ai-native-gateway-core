@@ -122,4 +122,21 @@ describe('useNewArrivals', () => {
     expect(clearSpy).toHaveBeenCalled()
     clearSpy.mockRestore()
   })
+
+  it('★ 挂起句柄有界：任意多批次最多 1 个清扫定时器，到期后归零', async () => {
+    // 2026-10-29 统计同步轮泄漏审计：旧实现每批 push 一个 setTimeout 句柄
+    // 且数组只增不减 —— 长驻 /live 页面上万批次的死句柄无限累积（句柄本身
+    // 已触发，数组纯属内存泄漏）。清扫式重设计后：单一定时器按最早到期
+    // 触发，批次数与挂起句柄数解耦。
+    const h = harness(['a'], 700)
+    for (let i = 0; i < 50; i += 1) {
+      await h.set([`k${i}`, 'a'])
+      await vi.advanceTimersByTimeAsync(50) // 每批间隔 50ms < lifetime：上一批还没到期
+    }
+    expect(vi.getTimerCount()).toBeLessThanOrEqual(1)
+    await vi.advanceTimersByTimeAsync(700)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(h.fresh.size).toBe(0)
+    h.unmount()
+  })
 })
