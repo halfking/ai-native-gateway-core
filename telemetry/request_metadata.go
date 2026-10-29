@@ -73,6 +73,14 @@ func defaultAgentPatterns() []agentPatternEntry {
 			"minimax code by anthropic",
 			"minimax-code interactive",
 			"minimax's official cli",
+			// 2026-10-29 identification round (211 24h UA 分布实测): the
+			// shipping MiniMax Code client self-describes as "You are Mavis
+			// … You run inside MiniMax Code" — the archived "you are minimax
+			// code" form never fires on it, which left 2,300+ requests/day
+			// with an empty agent_name despite a clean self-identification
+			// sitting in the system prompt.
+			"you run inside minimax code",
+			"you are mavis",
 		}},
 		{"deepseek-code", []string{
 			"you are deepseek code",
@@ -449,6 +457,11 @@ func ExtractAgentNameFromRequest(r *http.Request, body []byte) string {
 		case clienttype.HasToken(uaLower, "deepseek-code"), clienttype.HasToken(uaLower, "deepseek-ide"),
 			clienttype.HasToken(uaLower, "deepseek-cli"):
 			return "deepseek-code"
+		// 2026-10-29 identification round: pi coding agent (pi.dev) —
+		// official UA "pi/{ver} ({platform}; node/{v}; {arch})". Same
+		// boundary rule as the clienttype table; must stay in sync.
+		case clienttype.HasToken(uaLower, "pi"):
+			return "pi"
 		case clienttype.HasToken(uaLower, "postman"):
 			uaDerived = "postman"
 		case clienttype.HasToken(uaLower, "insomnia"):
@@ -512,6 +525,7 @@ func ExtractAgentType(r *http.Request) string {
 		strings.Contains(ua, "zcode") ||
 		// R52：国内编程客户端注册补齐——缺这里会使 source_channel 落空。
 		strings.Contains(ua, "minimax-code") ||
+		strings.Contains(ua, "minimaxcode") ||
 		strings.Contains(ua, "deepseek-code") ||
 		strings.Contains(ua, "deepseek-ide") ||
 		strings.Contains(ua, "deepseek-cli") ||
@@ -523,7 +537,12 @@ func ExtractAgentType(r *http.Request) string {
 		strings.Contains(ua, "zed") ||
 		strings.Contains(ua, "github-copilot") ||
 		strings.Contains(ua, "copilot") ||
-		strings.Contains(ua, "jetbrains") {
+		strings.Contains(ua, "jetbrains") ||
+		// 2026-10-29 identification round: pi coding agent is a CLI
+		// harness — without this its source_channel falls through to ""
+		// exactly like the R52 domestic clients did.
+		strings.Contains(ua, " pi/") ||
+		strings.HasPrefix(ua, "pi/") {
 		return "cli"
 	}
 

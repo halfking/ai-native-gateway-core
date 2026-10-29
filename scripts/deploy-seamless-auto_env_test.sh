@@ -22,6 +22,10 @@ block() {
 read_block=$(block AUTO-GENERATOR-ENV) || { echo 'missing auto flag reader' >&2; exit 1; }
 write_block=$(block GATEWAY-ENV-WRITE)
 inject_block=$(block AUTO-GENERATOR-INJECT)
+# 2026-10-29 客户端识别轮：GATEWAY-ENV-WRITE 块引用了同一文件更早段落的
+# TRUSTED_PROXY_CIDRS（可信代理网段分支），沙箱只抽块不抽全文件 ⇒ set -u 下
+# 必须在这里先给缺省值（空 = 分支不写，正是要测的缺省形态）。
+TRUSTED_PROXY_CIDRS=''
 forward_block=$(awk '/^  _dd_fwd=""$/ { active=1 } active { print } active && /^  done$/ { exit }' "$engine")
 [[ -n "$forward_block" ]]
 die() { echo "$*" >&2; exit 1; }
@@ -37,6 +41,9 @@ run_case() (
   export CRED_ENC_KEY='' URSM_REDIS_DB=2 GW_STATIC_API_KEY=placeholder GW_ADMIN_API_KEY=placeholder
   export GW_CURSOR_HMAC=placeholder HARD_BLOCK_RULES='' ASM_INTERNAL_ENDPOINT='' ASM_EVENT_SECRET=''
   export LLM_GATEWAY_ASM_BASE_URL='' LLM_GATEWAY_ASM_PLUGIN_ID=''
+  # 2026-10-29 客户端识别轮：write_block 新增了可信代理网段分支（同 HARD_BLOCK_RULES
+  # 的空值可省写形态），set -u 沙箱里必须先给值。
+  export LLM_GATEWAY_TRUSTED_PROXY_CIDRS=''
   eval "$read_block"
   dd_auto_generator_env "$ENV_FILE"
   eval "$write_block"

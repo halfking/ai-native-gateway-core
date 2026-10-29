@@ -56,7 +56,7 @@ func Normalize(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	switch value {
 	case "cursor", "claude-code", "opencode", "zcode", "codex", "roocode",
-		"vscode", "copilot", "windsurf", "zed", "jetbrains",
+		"vscode", "copilot", "windsurf", "zed", "jetbrains", "pi",
 		// 2026-09-21: domestic coding-agent clients
 		"minimax-code", "deepseek-code",
 		Unknown:
@@ -138,13 +138,23 @@ func DetectFromRequest(r *http.Request) string {
 	//   HasToken keeps "MiniMaxCoder/1.0" from false-positive.
 	case HasToken(ua, "minimax-code"), HasToken(ua, "minimaxcode"):
 		return "minimax-code"
-	//   DeepSeek Code ships "DeepSeek-Code/{ver}" / "DeepSeek-IDE/{ver}" /
-	//   "deepseek-cli/{ver}". Client side only — the gateway's outbound
-	//   UA toward DeepSeek upstreams is governed by the upstream-dialect
-	//   path, not by this detection.
+		//   DeepSeek Code ships "DeepSeek-Code/{ver}" / "DeepSeek-IDE/{ver}" /
+		//   "deepseek-cli/{ver}". Client side only — the gateway's outbound
+		//   UA toward DeepSeek upstreams is governed by the upstream-dialect
+		//   path, not by this detection.
 	case HasToken(ua, "deepseek-code"), HasToken(ua, "deepseek-ide"),
 		HasToken(ua, "deepseek-cli"):
 		return "deepseek-code"
+	// 2026-10-29 identification round: pi coding agent (pi.dev,
+	// badlogic/pi-mono, npm @earendil-works/pi-coding-agent). Official
+	// formatUserAgent() emits "pi/{ver} ({platform}; node/{v}; {arch})"
+	// — 2,385 requests/day on 211 were falling through to "unknown"
+	// because no table matched the bare "pi" product token. HasToken's
+	// dual boundary keeps ordinary prose containing "pi" (e.g.
+	// "raspberry-pi/1.0", "pip/24.0") from matching: "i" and "p" are
+	// alnum, so only a slash/space/string-end delimiter fires.
+	case HasToken(ua, "pi"):
+		return "pi"
 	}
 	// 3. Vendor beta-flag header. Claude Code always carries
 	//    "anthropic-beta: claude-code-20250219,…" — a match is deliberate

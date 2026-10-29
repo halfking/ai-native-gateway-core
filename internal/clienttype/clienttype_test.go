@@ -18,6 +18,9 @@ func TestNormalize(t *testing.T) {
 		{"MINIMAX-CODE", "minimax-code"},
 		{"DeepSeek-Code", "deepseek-code"},
 		{"deepseek-code", "deepseek-code"},
+		// 2026-10-29 identification round: pi coding agent (pi.dev)
+		{"pi", "pi"},
+		{"Pi", "pi"},
 	} {
 		if got := Normalize(tt.in); got != tt.want {
 			t.Errorf("Normalize(%q) = %q, want %q", tt.in, got, tt.want)
@@ -83,6 +86,19 @@ func TestHasToken(t *testing.T) {
 		{"hyphenated vendor form", "minimax-code/1.0.0 (macos; arm64)", "minimax-code", true},
 		{"deepseek-cli", "deepseek-cli/0.3.1 (darwin; arm64)", "deepseek-cli", true},
 		{"codex-cli", "codex-cli/0.1", "codex", true},
+		// 2026-10-29 identification round: pi coding agent（pi.dev 官方
+		// formatUserAgent 形态，211 实测 2385 条/24h）。裸 "pi" token 的
+		// 双边界是本轮最关键的负臂面：普通英文/工具名里 "pi" 太常见。
+		{"pi detailed UA", "pi/1.4.0 (linux; node/v22.23.4; x64)", "pi", true},
+		{"pi short form", "pi", "pi", true},
+		{"pi after product prefix", "proxy pi/1.0", "pi", true},
+		// 误报防线（负臂）：字母数字延续必须拒绝。连字符也是边界，所以
+		// "raspberry-pi" 会命中裸 "pi" —— 它不是 UA 产品形态（真实 UA 里
+		// 不会出现），登记为已知假阳性而非防线；真正的防线是 "pip"/"api"
+		// 这类字母数字延续（均拒绝）。
+		{"pip must not match", "pip/24.0", "pi", false},
+		{"api must not match", "api-client/2.0", "pi", false},
+		{"openai-sdk must not match", "openai-python/1.0", "pi", false},
 		// 误报防线（负臂）
 		{"MiniMaxCoder must not match", "minimaxcoder/1.0", "minimaxcode", false},
 		{"ZCodex must not match zcode", "zcodex/2.0", "zcode", false},
