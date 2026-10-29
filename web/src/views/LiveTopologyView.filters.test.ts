@@ -690,6 +690,19 @@ describe('LiveTopologyView 点选联动过滤（owner 2026-10-29）', () => {
     expect(wrapper.findAll('.cp__item')).toHaveLength(4)
   })
 
+  it('★ blank click also clears a URL-carried node filter (nodes 维同属内容维)', async () => {
+    // 审计轮补的口径：「重新显示完整的数据」必须把 nodes 维一并清掉 ——
+    // 顶栏/URL 带进来的 node 过滤与点选写入的三个内容维同族，点空白
+    // 后数据仍被节点维过滤的话，「完整数据」不成立。
+    const { wrapper, router } = await mountView('/live?node=cred:7')
+    expect(wrapper.findAll('.cp__item')).toHaveLength(2)
+    await wrapper.get('.topo-canvas').trigger('click')
+    await flushPromises()
+    await flushPromises()
+    expect(String(router.currentRoute.value.query.node ?? '')).toBe('')
+    expect(wrapper.findAll('.cp__item')).toHaveLength(4)
+  })
+
   it('★ clicking the blank canvas clears the node-driven filters (full data back)', async () => {
     const { wrapper, router } = await mountView()
     await topoNode(wrapper, 'Claude Code').trigger('click')

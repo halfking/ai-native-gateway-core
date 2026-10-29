@@ -176,12 +176,15 @@ function onSelectNode(node: TopoNode | null) {
   if (!node) {
     selectedRequestId.value = null
     highlightEdges.value = []
-    // 空白区 = 点选失效：三个内容维度全部恢复不过滤（owner 2026-10-29 口径：
-    // 「点空白重新显示完整的数据」）。status / 窗口 / 数据开关不属于「点选」
-    // 这件事，不动 —— 那是顶部「清除」按钮的职责。
+    // 空白区 = 点选失效：四个内容维度全部恢复不过滤（owner 2026-10-29 口径：
+    // 「点空白重新显示完整的数据」——nodes 维与点选写入的三维同族，URL/顶栏
+    // 带进来的 node 过滤不清的话「完整数据」不成立；审计轮判据钉住）。
+    // status / 窗口 / 数据开关不属于「点选」这件事，不动 —— 那是顶部
+    // 「清除」按钮的职责。
     topo.filters.value.clients = []
     topo.filters.value.providers = []
     topo.filters.value.models = []
+    topo.filters.value.nodes = []
     return
   }
   // 点节点 → 高亮它的相关链路

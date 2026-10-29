@@ -413,12 +413,31 @@ describe('StatsPanel 新数据同步刷新（2026-10-29 统计同步轮）', () 
     w.unmount()
   })
 
+  it('★ 突发在时间上铺开（间隔小于防抖窗）也只补一轮 —— 钉的是防抖窗本身', async () => {
+    // 审计轮发现上一条合流判据是弱的：同步连打 setProps 时 fake timers
+    // 里定时器从未有机会触发，防抖=0 也能过。真突发是**时间上铺开**的
+    // SSE 帧 —— 本判据把「4s 窗口内的多次到达 ⇒ 尾沿只补一轮」钉死。
+    const w = await mountWithRevision()
+    const before = clientCalls()
+    await w.setProps({ dataRevision: 1 })
+    await vi.advanceTimersByTimeAsync(2_000)
+    await w.setProps({ dataRevision: 2 })
+    await vi.advanceTimersByTimeAsync(1_500)
+    await w.setProps({ dataRevision: 3 }) // 距首次 3.5s，仍在 4s 窗内
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(clientCalls() - before).toBe(1)
+    w.unmount()
+  })
+
   it('★ 后台标签页不拉取（只记账），回前台后补一次', async () => {
     const hiddenSpy = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
     const w = await mountWithRevision()
     const before = clientCalls()
     await w.setProps({ dataRevision: 1 })
-    await vi.advanceTimersByTimeAsync(60_000)
+    // 推进 30s（< 60s 轮询周期）：数据未过期，回前台走的是「记账 → 防抖」
+    // 这条路 —— 推进整 60s 会撞上「数据过旧立即补拉」边界，那是另一条
+    // 判据（下面的用例）管的事，别把两条语义挤在一个夹具里。
+    await vi.advanceTimersByTimeAsync(30_000)
     expect(clientCalls()).toBe(before)
     // 回前台：挂起的那次同步要补上（仍走防抖，不打突刺）
     hiddenSpy.mockReturnValue(false)
@@ -452,5 +471,42 @@ describe('StatsPanel 新数据同步刷新（2026-10-29 统计同步轮）', () 
     w.unmount()
     await vi.advanceTimersByTimeAsync(30_000)
     expect(clientCalls()).toBe(before)
+  })
+
+  it('★ 防抖已武装后再转隐藏：到期不得拉取（隐藏页不打端点），回前台再补', async () => {
+    // 审计轮抓到的缺口：scheduleSyncLoad 只在排定时查 hidden —— 定时器
+    // 武装后再转隐藏，回调无条件 load()，隐藏页照样打端点。判据必须覆盖
+    // 「武装在前、隐藏在后」这条时序（先隐藏再 bump 的用例踩不到它）。
+    const hiddenSpy = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    const w = await mountWithRevision()
+    const before = clientCalls()
+    await w.setProps({ dataRevision: 1 }) // 可见时武装防抖
+    hiddenSpy.mockReturnValue(true) // 武装之后、触发之前转隐藏
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(clientCalls(), '武装后转隐藏：到期不得拉取').toBe(before)
+    hiddenSpy.mockReturnValue(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+    expect(clientCalls()).toBe(before) // 仍走防抖，不立即打
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(clientCalls()).toBe(before + 1)
+    w.unmount()
+  })
+
+  it('★ 回前台「数据过旧立即补拉」后，挂着的防抖不得再补第二轮', async () => {
+    const hiddenSpy = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    const w = await mountWithRevision()
+    const before = clientCalls()
+    await w.setProps({ dataRevision: 1 }) // 可见时武装防抖（此刻未触发）
+    hiddenSpy.mockReturnValue(true)
+    await vi.advanceTimersByTimeAsync(120_000) // 隐藏 2 分钟：防抖到期被隐藏拦截
+    expect(clientCalls()).toBe(before)
+    hiddenSpy.mockReturnValue(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+    expect(clientCalls(), '数据旧过轮询周期 ⇒ 立即补一轮').toBe(before + 1)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(clientCalls(), '立即补拉已覆盖，防抖不得再打一轮').toBe(before + 1)
+    w.unmount()
   })
 })
