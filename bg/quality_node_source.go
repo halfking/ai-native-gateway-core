@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -35,8 +36,61 @@ func NewCredentialNodeSource(db *pgxpool.Pool, keyring *secret.Keyring, encKey [
 // DiscoverActiveNodes 列出所有活跃的 (credential, model) 节点。
 // 过滤条件复用 model_probe 的 active/ready 规则。
 func (s *CredentialNodeSource) DiscoverActiveNodes(ctx context.Context) ([]modelquality.CredentialNode, error) {
+	return s.discoverNodes(ctx, discoverOpts{})
+}
+
+// discoverOpts 控制 discoverNodes 的可选收窄面。
+type discoverOpts struct {
+	// scope: "featured" 只测 routing_policy.featured_models 命中的绑定
+	// （与 model_credibility.scope 的 featured 同一口径）；空/"all" 不收窄。
+	scope string
+	// minInterval > 0 时跳过窗口内已有成功 IQ 实测的节点（防止每次部署
+	// 重启的「启动立即跑一次」把同一批节点反复打满——211 实测 2026-10-29
+	// 商汤凭据被连打 200 题触发 TPM 429 的教训）。
+	minInterval time.Duration
+}
+
+// DiscoverPerNodeTargets 列出 per-node IQ 测试的目标节点：
+// 活跃规则同 DiscoverActiveNodes，外加 scope 收窄与最近已测跳过。
+func (s *CredentialNodeSource) DiscoverPerNodeTargets(ctx context.Context, scope string, minInterval time.Duration) ([]modelquality.CredentialNode, error) {
+	return s.discoverNodes(ctx, discoverOpts{scope: scope, minInterval: minInterval})
+}
+
+func (s *CredentialNodeSource) discoverNodes(ctx context.Context, opt discoverOpts) ([]modelquality.CredentialNode, error) {
 	if s.db == nil {
 		return nil, fmt.Errorf("node source: db pool is nil")
+	}
+	// 2026-10-30 (24h 审计第 7 轮 / 用户指令「参考其它的模型确认提高可信度」)：
+	// per-node IQ 是 model_iq_runs 的唯一写入方，而同伴对比（PeerReference）
+	// 与参考基线校准（FitCalibration）都从它取数——不开它，能力维/参考维
+	// 结构性缺失（可信度审计档 §8.2）。但它原先无范围、无去重：
+	// 211 全量活跃绑定 ~3500，每次 boot 立即跑一遍 = token 爆炸。
+	// ⇒ 两道闸：featured 范围（对齐 model_credibility.scope 口径）+
+	//   min-interval 跳过（成功实测在窗口内的节点跳过）。
+	featuredFilter := ""
+	if opt.scope == "featured" {
+		// ★ CROSS JOIN 只在 featured 收窄时加入：routing_policy 每租户一行，
+		//   无条件 CROSS JOIN 会让非 featured 模式下的行数按租户数放大。
+		featuredFilter = `
+		CROSS JOIN routing_policy pol
+		WHERE pol.tenant_id = 'default'
+		  AND (
+		    pm.standardized_name = ANY(COALESCE(pol.featured_models, ARRAY[]::text[]))
+		    OR pm.raw_model_name = ANY(COALESCE(pol.featured_models, ARRAY[]::text[]))
+		  )`
+	}
+	recentFilter := ""
+	args := []any{}
+	if opt.minInterval > 0 {
+		recentFilter = `
+		  AND NOT EXISTS (
+		    SELECT 1 FROM model_iq_runs r
+		    WHERE r.credential_id = cmb.credential_id
+		      AND lower(r.raw_model_name) = lower(pm.raw_model_name)
+		      AND r.status = 'success'
+		      AND r.tested_at > now() - $1::interval
+		  )`
+		args = append(args, opt.minInterval)
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT c.id, COALESCE(p.display_name, p.code, ''), COALESCE(c.label, ''),
@@ -49,7 +103,7 @@ func (s *CredentialNodeSource) DiscoverActiveNodes(ctx context.Context) ([]model
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
 		JOIN credentials c ON c.id = cmb.credential_id
-		JOIN providers p ON p.id = c.provider_id
+		JOIN providers p ON p.id = c.provider_id`+featuredFilter+recentFilter+`
 		WHERE COALESCE(c.status, 'active') = 'active'
 		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
 		  AND COALESCE(c.availability_state, 'ready') NOT IN ('suspended')
@@ -57,7 +111,7 @@ func (s *CredentialNodeSource) DiscoverActiveNodes(ctx context.Context) ([]model
 		  AND COALESCE(p.enabled, FALSE) = TRUE
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		ORDER BY c.id, pm.raw_model_name
-	`)
+	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query credential nodes: %w", err)
 	}
