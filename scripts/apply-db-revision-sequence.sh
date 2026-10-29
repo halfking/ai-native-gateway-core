@@ -2484,6 +2484,14 @@ legacy_content_replays=(
 # SQL line/block comments and dollar-quoted bodies, so prose or dynamic SQL
 # that merely mentions CREATE OR REPLACE cannot trigger it.
 intentional_function_chains=(
+  # 919（2026-10-29，R176 252 SQL 日志审计轮）重定义
+  # refresh_ursm_snapshot_slot_daily：在 892 的体上增加 active_minutes 列
+  # （hour 粒度 = count(DISTINCT date_trunc('minute', snapshot_ts))，minute 恒 1）
+  # 并让 ON CONFLICT DO UPDATE 同步该列。签名不变、调用方零改动。
+  # 链序 = 投递序 892 → 919，**919 必须是最后一项**——它是活库里应有的最终体。
+  # 少这一行，部署会在应用任何文件之前 abort（exit 5）。登记由 24h 审计第 5 轮
+  # 之后的 /live 点选联动轮补录（部署被本守卫拦下时按错误消息逐字补登）。
+  'refresh_ursm_snapshot_slot_daily|892_ursm_snapshot_slot_daily.sql|919_ursm_slot_daily_active_minutes.sql|'
   # 857 (2026-10-13) 重定义 analyze_llm_gateway_table_stats：给「当月列存分区」
   # 分支加陈旧度闸门。链序必须是 838 → 839 → 857，且 **857 必须是最后一项**——
   # 它是活库里应有的最终体。少这一行，部署会在应用任何文件之前 abort（exit 5），
