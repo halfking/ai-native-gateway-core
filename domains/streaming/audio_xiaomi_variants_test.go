@@ -265,7 +265,7 @@ func newTTSAudioService(t *testing.T, rawModel string, handler http.HandlerFunc)
 		RawModel: rawModel, Routable: true, APIKey: "sk-test",
 	}
 	cand.AvailabilityState = "ready"
-	return NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.New())
+	return NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.NewWithRetries(0))
 }
 
 func ttsBridgePayload(t *testing.T, rawModel, body string) (map[string]any, int, *httptest.ResponseRecorder) {

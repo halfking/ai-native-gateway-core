@@ -133,12 +133,63 @@ func TestGuardCapacityBlockModeCarriesRule(t *testing.T) {
 	}
 }
 
-// TestGuardCapacityDefaultCapIsNotTheOldOneMegabyte 钉住出厂上限**不再是**
-// 1 MiB（1 MiB 正好落在真实 agent 响应的分布里 ⇒ 那台误报机器的来源）。
-func TestGuardCapacityDefaultCapIsNotTheOldOneMegabyte(t *testing.T) {
-	if defaultMaxCompliancePendingBytes <= 1<<20 {
-		t.Fatalf("出厂上限仍是 %d 字节（1 MiB）——211 生产实测它落在真实 agent 响应的分布里",
+// ★★ TestGuardCapacityDefaultCapIsTheAuditedOneMegabyte 钉住出厂上限**是**
+// 1 MiB（★ 2026-10-29 审计轮更正：★ 出厂值曾被抬到 8 MiB，★ 同日改回 ★★）。
+//
+// ★ 为什么必须是 1 MiB：★ 它是 2026-10-02 存储审计定下的 **wire cap 契约**
+//
+//	（docs/audit/2026-10-02-conversation-storage-stream-audit.md）★ ⇒ ★★ 抬到
+//	8 MiB = 每并发流 8 MiB ⇒ ★★那是**存储审计轮**该做的记忆体决定 ★★
+//
+// ★★ 而误报的修复**不依赖**抬上限（★ 修复点是**降级放行**）★★ ⇒ ★★ 抬上限
+//
+//	对修复**没有必要**，★ 却把记忆体预算放大 8 倍 ⇒ ★★ **纯风险、无收益** ★★
+//
+// ★★ ⇒ 出厂值必须保持 1 MiB；★ 需要更大缓冲的部署**自己 knowingly 地抬**
+//
+//	（env，★ 启动即打生效值）★★。
+//
+// ★★ 这条测试就是「别再顺手抬上限」的守门人 ★★
+func TestGuardCapacityDefaultCapIsTheAuditedOneMegabyte(t *testing.T) {
+	if defaultMaxCompliancePendingBytes != 1<<20 {
+		t.Fatalf("出厂上限必须是 1 MiB（2026-10-02 存储审计的 wire cap 契约），实际 %d 字节",
 			defaultMaxCompliancePendingBytes)
+	}
+}
+
+// ★★ TestGuardCapacityMisreportFixDoesNotDependOnTheCap 钉住误报修复的**真正
+// 支点**：★ **越界不再杀请求** ★★ —— ★★ 与上限多大**无关** ★★
+// （★ 这正是「抬上限对修复没有必要」的实证 ★★）。
+func TestGuardCapacityMisreportFixDoesNotDependOnTheCap(t *testing.T) {
+	// ★ 出厂上限下（1 MiB）★ 越界 ⇒ **不许阻断**（★ 默认 release 模式）★★
+	it := NewMandatoryOutputComplianceInterceptor(neverBlockingChecker{}, "repro.guard.overflow.release")
+	meta := &response.StreamMeta{
+		TenantID: "t", SessionID: "s", RequestID: "r3",
+		State: response.NewStreamState(),
+	}
+	ctx := context.Background()
+	degraded := false
+	for i := 0; i < 400; i++ {
+		frame := chatDeltaFrame(64 * 1024)
+		res, err := it.InterceptStreamChunk(ctx, frame, meta)
+		if err != nil {
+			t.Fatalf("InterceptStreamChunk: %v", err)
+		}
+		if res != nil && res.ShouldBlock {
+			t.Fatalf("越界不许阻断请求（误报修复点）: %+v", res)
+		}
+		if res != nil && res.Metadata != nil {
+			if d, _ := res.Metadata["policy_degraded"].(bool); d {
+				degraded = true
+				if res.Metadata["policy_rule"] != GuardCapacityRuleID {
+					t.Fatalf("降级必须带规则名: %+v", res.Metadata)
+				}
+				break
+			}
+		}
+	}
+	if !degraded {
+		t.Fatal("越界应当降级放行并留痕（默认 release 模式）")
 	}
 }
 

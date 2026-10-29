@@ -23,7 +23,7 @@ func (f *fakeVideoResolver) GetCandidatesByModality(ctx context.Context, model, 
 
 func TestVideosGenerations_noCandidates(t *testing.T) {
 	resolver := &fakeVideoResolver{}
-	h := NewVideosGenerationsHandler(resolver, upstream.New())
+	h := NewVideosGenerationsHandler(resolver, upstream.NewWithRetries(0))
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{"model":"sora","prompt":"clip"}`))
 	h.ServeHTTP(rec, req)

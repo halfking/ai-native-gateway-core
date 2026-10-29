@@ -57,6 +57,9 @@ type ReviewPersistence interface {
 	InsertBlockReview(ctx context.Context, r BlockReview) (BlockReview, error)
 	// ListBlockReviewsDB 按（状态可选、租户可选）倒序列出。
 	ListBlockReviewsDB(ctx context.Context, status, tenantID string, limit int) ([]BlockReview, error)
+	// CountBlockReviewsDB 数符合条件的审核单（★ 列表端点的「待处理数」用它，
+	// ★ 不再用「再列一次 1000 条」来数 —— ★★ 那是一次全表读★★）。
+	CountBlockReviewsDB(ctx context.Context, status, tenantID string) (int, error)
 	// GetBlockReviewDB 按 ID 取一条。
 	GetBlockReviewDB(ctx context.Context, id int64) (BlockReview, error)
 	// DecideBlockReviewDB 置状态与审核人；返回更新后的行。
@@ -67,6 +70,10 @@ type ReviewPersistence interface {
 	CountBlockReviewLabelsDB(ctx context.Context, tenantID, rule, label string) (int, error)
 	// BlockReviewInsightsDB 按规则聚合复核读数。
 	BlockReviewInsightsDB(ctx context.Context, tenantID string, limit int) ([]BlockReviewRuleInsight, error)
+	// ListEgressRuleEventsInWindowDB 取与时间窗有重叠的出站规则命中事件
+	//（★ 候选规则的来源：★ 审核单没记规则时，靠它判断「邻近时段有没有内容
+	// 规则命中」★★）。
+	ListEgressRuleEventsInWindowDB(ctx context.Context, from, to time.Time, limit int) ([]EgressRuleEventInWindow, error)
 	// InsertBlockReviewEvidence 落一条证据摘录（有界、带 TTL）。
 	InsertBlockReviewEvidence(ctx context.Context, e BlockReviewEvidence) error
 	// ListBlockReviewEvidenceDB 按审核单 ID 批量取证据摘录。

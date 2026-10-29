@@ -29,7 +29,7 @@ func (h *EmbeddingsHandler) setKeyVerifierForTest(verifier embeddingKeyVerifier)
 }
 
 func TestEmbeddingsHandlerMarksThrottledAPIKeyAsGateway429(t *testing.T) {
-	handler := NewEmbeddingsHandler(&embeddingResolverStub{}, upstream.New())
+	handler := NewEmbeddingsHandler(&embeddingResolverStub{}, upstream.NewWithRetries(0))
 	handler.setKeyVerifierForTest(&stubKeyVerifier{info: &authentication.KeyInfo{ID: 7, Status: "throttled"}})
 	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", stringsReader(`{"model":"m","input":"x"}`))
 	req.Header.Set("Authorization", "Bearer user-key")
@@ -78,7 +78,7 @@ func TestEmbeddingsHandlerProxiesBatchRequest(t *testing.T) {
 		AvailabilityState: "ready",
 		QuotaState:        "ok",
 	}}}
-	handler := NewEmbeddingsHandler(resolver, upstream.New())
+	handler := NewEmbeddingsHandler(resolver, upstream.NewWithRetries(0))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", stringsReader(`{"model":"embedding-fast","input":["你好","世界"],"dimensions":1024,"encoding_format":"float","user":"tenant-user"}`))
 	recorder := httptest.NewRecorder()
@@ -117,7 +117,7 @@ func TestEmbeddingsHandlerFailsOverOnServerError(t *testing.T) {
 		embeddingCandidate(failedServer.URL, "primary"),
 		embeddingCandidate(healthyServer.URL, "backup"),
 	}}
-	handler := NewEmbeddingsHandler(resolver, upstream.New())
+	handler := NewEmbeddingsHandler(resolver, upstream.NewWithRetries(0))
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/embeddings", stringsReader(`{"model":"embedding-fast","input":"hello"}`)))
 
@@ -148,7 +148,7 @@ func TestEmbeddingsHandlerFailsOverOnCredentialError(t *testing.T) {
 		embeddingCandidate(unauthorizedServer.URL, "primary"),
 		embeddingCandidate(healthyServer.URL, "backup"),
 	}}
-	handler := NewEmbeddingsHandler(resolver, upstream.New())
+	handler := NewEmbeddingsHandler(resolver, upstream.NewWithRetries(0))
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/embeddings", stringsReader(`{"model":"embedding-fast","input":"hello"}`)))
 
@@ -158,7 +158,7 @@ func TestEmbeddingsHandlerFailsOverOnCredentialError(t *testing.T) {
 }
 
 func TestEmbeddingsHandlerValidatesRequest(t *testing.T) {
-	handler := NewEmbeddingsHandler(&embeddingResolverStub{}, upstream.New())
+	handler := NewEmbeddingsHandler(&embeddingResolverStub{}, upstream.NewWithRetries(0))
 	tests := []struct {
 		name   string
 		method string

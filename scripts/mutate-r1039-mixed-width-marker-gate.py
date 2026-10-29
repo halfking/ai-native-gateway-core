@@ -149,8 +149,7 @@ def md5(path):
 
 
 def run_go(cwd, args):
-    env = dict(os.environ)
-    env["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")
+    env = gocache.env("mutate")
     env.setdefault("CGO_ENABLED", "0")
     return subprocess.run(args, cwd=cwd, env=env, capture_output=True, encoding='utf-8', errors='replace')
 

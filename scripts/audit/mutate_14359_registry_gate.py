@@ -24,7 +24,7 @@ for _gc_lib in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"),
         sys.path.insert(0, _gc_lib)
         break
 import gocache  # noqa: E402
-os.environ["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")
+gocache.apply_to_environ("mutate")
 
 ROOT = "/Users/xutaohuang/workspace/ai-native-tools/syncfield/llm-gateway-go-4"
 GATE_FILE = os.path.join(ROOT, "admin/section_14359_retention_registry_test.go")
