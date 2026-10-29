@@ -20,6 +20,7 @@ import (
 type fakeReviewPersistence struct {
 	mu        sync.Mutex
 	rows      map[int64]BlockReview
+	evidence  map[int64]BlockReviewEvidence
 	nextID    int64
 	releases  []EgressRelease
 	hardblock []HardBlockAllow
@@ -171,6 +172,108 @@ func (f *fakeReviewPersistence) LoadHardBlockState(_ context.Context) ([]HardBlo
 	return append([]HardBlockAllow(nil), f.hardblock...), true, nil
 }
 
+// ── 2026-10-29 输出合规误报轮：工作台相关方法的最小实现 ──
+
+func (f *fakeReviewPersistence) LabelBlockReviewDB(_ context.Context, id int64, label, comment, labeledBy string, labeledAt time.Time) (BlockReview, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.rows[id]
+	if !ok {
+		return BlockReview{}, ErrNotFound
+	}
+	r.Label = label
+	r.LabelComment = comment
+	r.LabeledBy = labeledBy
+	r.LabeledAt = labeledAt
+	f.rows[id] = r
+	return r, nil
+}
+
+func (f *fakeReviewPersistence) CountBlockReviewLabelsDB(_ context.Context, tenantID, rule, label string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	count := 0
+	for _, r := range f.rows {
+		if r.TenantID == tenantID && r.Rule == rule && r.Label == label {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (f *fakeReviewPersistence) BlockReviewInsightsDB(_ context.Context, tenantID string, limit int) ([]BlockReviewRuleInsight, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	byRule := map[string]*BlockReviewRuleInsight{}
+	for _, r := range f.rows {
+		if tenantID != "" && r.TenantID != tenantID {
+			continue
+		}
+		key := r.TenantID + "|" + r.Rule
+		insight, ok := byRule[key]
+		if !ok {
+			insight = &BlockReviewRuleInsight{Rule: r.Rule, RuleName: r.RuleName, TenantID: r.TenantID}
+			byRule[key] = insight
+		}
+		insight.Total++
+		switch r.Status {
+		case BlockReviewPending:
+			insight.Pending++
+		case BlockReviewApproved:
+			insight.Approved++
+		case BlockReviewRejected:
+			insight.Rejected++
+		}
+		switch r.Label {
+		case BlockReviewLabelFalsePositive:
+			insight.FalsePositive++
+			insight.Labeled++
+		case BlockReviewLabelTruePositive:
+			insight.TruePositive++
+			insight.Labeled++
+		case BlockReviewLabelRuleTooBroad:
+			insight.RuleTooBroad++
+			insight.Labeled++
+		case BlockReviewLabelNeedsRule:
+			insight.NeedsRule++
+			insight.Labeled++
+		}
+	}
+	out := make([]BlockReviewRuleInsight, 0, len(byRule))
+	for _, insight := range byRule {
+		if insight.Labeled > 0 {
+			insight.FalsePositiveR = float64(insight.FalsePositive) / float64(insight.Labeled)
+		}
+		out = append(out, *insight)
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeReviewPersistence) InsertBlockReviewEvidence(_ context.Context, e BlockReviewEvidence) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.evidence == nil {
+		f.evidence = map[int64]BlockReviewEvidence{}
+	}
+	f.evidence[e.ReviewID] = e
+	return nil
+}
+
+func (f *fakeReviewPersistence) ListBlockReviewEvidenceDB(_ context.Context, reviewIDs []int64) (map[int64]BlockReviewEvidence, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[int64]BlockReviewEvidence{}
+	for _, id := range reviewIDs {
+		if e, ok := f.evidence[id]; ok {
+			out[id] = e
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeReviewPersistence) SaveHardBlockState(_ context.Context, allows []HardBlockAllow, _ string) error {
 	if f.errSaveHB != nil {
 		return f.errSaveHB
@@ -202,13 +305,21 @@ func TestPersistedReviewRoundTripAndApproval(t *testing.T) {
 	InstallReviewPersistence(p)
 	t.Cleanup(ResetReviewPersistence)
 
-	first := AddBlockReview("acme", "zcode", "egress", "builtin.egress_sink",
-		"", "sink destination", "$.command", "digest-x", "req-77", "说明")
+	first := AddBlockReview(BlockReviewInput{
+		TenantID: "acme", ClientType: "zcode", Scope: "egress",
+		Rule: "builtin.egress_sink", Reason: "sink destination",
+		Field: "$.command", Digest: "digest-x", RequestID: "req-77",
+		MatchDetail: "说明",
+	})
 	if first.ID == 0 {
 		t.Fatal("持久化路径必须给出 DB 序列号")
 	}
-	again := AddBlockReview("acme", "zcode", "egress", "builtin.egress_sink",
-		"", "sink destination", "$.command", "digest-x", "req-77", "说明")
+	again := AddBlockReview(BlockReviewInput{
+		TenantID: "acme", ClientType: "zcode", Scope: "egress",
+		Rule: "builtin.egress_sink", Reason: "sink destination",
+		Field: "$.command", Digest: "digest-x", RequestID: "req-77",
+		MatchDetail: "说明",
+	})
 	if again.ID != first.ID {
 		t.Fatalf("同键 pending 应复用同一行: %d vs %d", again.ID, first.ID)
 	}
@@ -244,8 +355,11 @@ func TestPersistedReviewDBFailureFallsBackToMemory(t *testing.T) {
 	InstallReviewPersistence(p)
 	t.Cleanup(ResetReviewPersistence)
 
-	entry := AddBlockReview("acme", "zcode", "egress", "builtin.egress_sink",
-		"", "sink", "$.command", "digest-y", "req-88", "")
+	entry := AddBlockReview(BlockReviewInput{
+		TenantID: "acme", ClientType: "zcode", Scope: "egress",
+		Rule: "builtin.egress_sink", Reason: "sink",
+		Field: "$.command", Digest: "digest-y", RequestID: "req-88",
+	})
 	if entry.ID == 0 {
 		t.Fatal("DB 插入失败应降级内存路径（仍有单号）")
 	}

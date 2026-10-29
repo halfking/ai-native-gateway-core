@@ -2454,6 +2454,14 @@ files=(
   #   /1,395s + 被取消 224 次/26.4h。★ 含 CREATE INDEX CONCURRENTLY ⇒
   #   文件首行带 dbinit:no-transaction 标记。
   "$ROOT_DIR/sql/migrations/startup/920_node_probe_runs_cred_completed_idx.sql"
+  # ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
+  #   - sanitize_block_reviews 追加 session_id / label / label_comment /
+  #     labeled_by / labeled_at（末尾追加，既有列序不变）；
+  #   - 新表 sanitize_block_evidence：被拦内容的**有界摘录**（原始会话内容），
+  #     带 7 天 TTL（★ 单独一张表 ⇒ 917 的「审核记录表不含载荷原文」契约不破）；
+  #   - sanitize_egress_releases.source 的 CHECK 扩一个取值 'auto_label'
+  #     （误报标注累计到阈值后的自动放行；与人工批准同键同语义）。
+  "$ROOT_DIR/sql/migrations/startup/921_sanitize_block_workbench.sql"
 )
 
 
@@ -2942,6 +2950,8 @@ ledger_artifact_probe "919_ursm_slot_daily_active_minutes.sql" \
   "EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='ursm_snapshot_slot_daily' AND column_name='active_minutes') AND EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'refresh_ursm_snapshot_slot_daily')"
 ledger_artifact_probe "920_node_probe_runs_cred_completed_idx.sql" \
   "to_regclass('public.idx_node_probe_runs_cred_completed') IS NOT NULL"
+ledger_artifact_probe "921_sanitize_block_workbench.sql" \
+  "to_regclass('public.sanitize_block_evidence') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='sanitize_block_reviews' AND column_name='label') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='sanitize_block_reviews' AND column_name='session_id')"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

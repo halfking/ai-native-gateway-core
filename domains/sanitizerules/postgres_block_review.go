@@ -19,7 +19,7 @@ import (
 )
 
 func (s *PostgresStore) FindPendingBlockReview(ctx context.Context, tenantID, scope, rule, digest, requestID string) (BlockReview, bool, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, client_type, scope, rule_id, rule_name, reason, field_path, payload_digest, request_id, match_detail, status, created_at, decided_by, decided_at
+	row := s.db.QueryRowContext(ctx, `SELECT `+blockReviewColumns+`
 FROM sanitize_block_reviews
 WHERE status='pending' AND tenant_id=$1 AND scope=$2 AND rule_id=$3 AND payload_digest=$4 AND request_id=$5
 ORDER BY id DESC LIMIT 1`, tenantID, scope, rule, digest, requestID)
@@ -35,11 +35,11 @@ ORDER BY id DESC LIMIT 1`, tenantID, scope, rule, digest, requestID)
 
 func (s *PostgresStore) InsertBlockReview(ctx context.Context, r BlockReview) (BlockReview, error) {
 	row := s.db.QueryRowContext(ctx, `INSERT INTO sanitize_block_reviews
- (tenant_id, client_type, scope, rule_id, rule_name, reason, field_path, payload_digest, request_id, match_detail, status, created_at)
- VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
- RETURNING id, tenant_id, client_type, scope, rule_id, rule_name, reason, field_path, payload_digest, request_id, match_detail, status, created_at, decided_by, decided_at`,
+ (tenant_id, client_type, scope, rule_id, rule_name, reason, field_path, payload_digest, request_id, match_detail, session_id, status, created_at)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+ RETURNING `+blockReviewColumns,
 		r.TenantID, r.ClientType, r.Scope, r.Rule, r.RuleName, r.Reason, r.Field,
-		r.Digest, r.RequestID, r.MatchDetail, BlockReviewPending, r.CreatedAt)
+		r.Digest, r.RequestID, r.MatchDetail, r.SessionID, BlockReviewPending, r.CreatedAt)
 	out, err := scanBlockReview(row)
 	if err != nil {
 		return BlockReview{}, storeError("block review insert", err)
@@ -48,7 +48,7 @@ func (s *PostgresStore) InsertBlockReview(ctx context.Context, r BlockReview) (B
 }
 
 func (s *PostgresStore) ListBlockReviewsDB(ctx context.Context, status, tenantID string, limit int) ([]BlockReview, error) {
-	q := `SELECT id, tenant_id, client_type, scope, rule_id, rule_name, reason, field_path, payload_digest, request_id, match_detail, status, created_at, decided_by, decided_at
+	q := `SELECT ` + blockReviewColumns + `
 FROM sanitize_block_reviews WHERE TRUE`
 	args := []any{}
 	if status != "" {
@@ -78,7 +78,7 @@ FROM sanitize_block_reviews WHERE TRUE`
 }
 
 func (s *PostgresStore) GetBlockReviewDB(ctx context.Context, id int64) (BlockReview, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, client_type, scope, rule_id, rule_name, reason, field_path, payload_digest, request_id, match_detail, status, created_at, decided_by, decided_at
+	row := s.db.QueryRowContext(ctx, `SELECT `+blockReviewColumns+`
 FROM sanitize_block_reviews WHERE id=$1`, id)
 	r, err := scanBlockReview(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -108,6 +108,126 @@ WHERE id=$1 AND status='pending'`, id, status, decidedBy, decidedAt)
 	return s.GetBlockReviewDB(ctx, id)
 }
 
+// LabelBlockReviewDB 打人工标注。标注与状态**正交** ⇒ 允许对已决定的单
+// 补标（规则优化需要「已放行但其实是误报」这类知识）。
+func (s *PostgresStore) LabelBlockReviewDB(ctx context.Context, id int64, label, comment, labeledBy string, labeledAt time.Time) (BlockReview, error) {
+	tag, err := s.db.ExecContext(ctx, `UPDATE sanitize_block_reviews
+SET label=$2, label_comment=$3, labeled_by=$4, labeled_at=$5
+WHERE id=$1`, id, label, comment, labeledBy, labeledAt)
+	if err != nil {
+		return BlockReview{}, storeError("block review label", err)
+	}
+	if affectedRows, _ := tag.RowsAffected(); affectedRows == 0 {
+		return BlockReview{}, ErrNotFound
+	}
+	return s.GetBlockReviewDB(ctx, id)
+}
+
+// CountBlockReviewLabelsDB 数同租户同规则的某标注条数。
+func (s *PostgresStore) CountBlockReviewLabelsDB(ctx context.Context, tenantID, rule, label string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sanitize_block_reviews
+WHERE tenant_id=$1 AND rule_id=$2 AND label=$3`, tenantID, rule, label).Scan(&count)
+	if err != nil {
+		return 0, storeError("block review label count", err)
+	}
+	return count, nil
+}
+
+// BlockReviewInsightsDB 按规则聚合复核读数。
+//
+// ★ 误报率的分母是**有判断的记录数**（labeled > 0），不是总量 —— 用总量做
+// 分母会让「没人看的记录」把误报率稀释成假绿。
+func (s *PostgresStore) BlockReviewInsightsDB(ctx context.Context, tenantID string, limit int) ([]BlockReviewRuleInsight, error) {
+	q := `SELECT tenant_id, rule_id, max(rule_name) AS rule_name,
+ count(*) AS total,
+ count(*) FILTER (WHERE status='pending')  AS pending,
+ count(*) FILTER (WHERE status='approved') AS approved,
+ count(*) FILTER (WHERE status='rejected') AS rejected,
+ count(*) FILTER (WHERE label='false_positive') AS false_positive,
+ count(*) FILTER (WHERE label='true_positive')  AS true_positive,
+ count(*) FILTER (WHERE label='rule_too_broad') AS rule_too_broad,
+ count(*) FILTER (WHERE label='needs_rule')     AS needs_rule,
+ count(*) FILTER (WHERE label <> '')           AS labeled
+FROM sanitize_block_reviews WHERE rule_id <> ''`
+	args := []any{}
+	if tenantID != "" {
+		args = append(args, tenantID)
+		q += fmt.Sprintf(" AND tenant_id=$%d", len(args))
+	}
+	q += " GROUP BY tenant_id, rule_id ORDER BY count(*) DESC, rule_id ASC"
+	args = append(args, limit)
+	q += fmt.Sprintf(" LIMIT $%d", len(args))
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, storeError("block review insights read", err)
+	}
+	defer rows.Close()
+	out := make([]BlockReviewRuleInsight, 0, limit)
+	for rows.Next() {
+		var insight BlockReviewRuleInsight
+		if err := rows.Scan(&insight.TenantID, &insight.Rule, &insight.RuleName,
+			&insight.Total, &insight.Pending, &insight.Approved, &insight.Rejected,
+			&insight.FalsePositive, &insight.TruePositive, &insight.RuleTooBroad,
+			&insight.NeedsRule, &insight.Labeled); err != nil {
+			return nil, storeError("block review insights read", err)
+		}
+		if insight.Labeled > 0 {
+			insight.FalsePositiveR = float64(insight.FalsePositive) / float64(insight.Labeled)
+		}
+		out = append(out, insight)
+	}
+	return out, storeError("block review insights read", rows.Err())
+}
+
+// InsertBlockReviewEvidence 落一条证据摘录。
+//
+// ★ 幂等：同一 review_id 重复落 ⇒ 覆盖（审核单只有一条证据）。
+func (s *PostgresStore) InsertBlockReviewEvidence(ctx context.Context, e BlockReviewEvidence) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sanitize_block_evidence
+ (review_id, tenant_id, kind, content, content_bytes, truncated, created_at, expires_at)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+ ON CONFLICT (review_id) DO UPDATE SET kind=EXCLUDED.kind, content=EXCLUDED.content,
+   content_bytes=EXCLUDED.content_bytes, truncated=EXCLUDED.truncated,
+   created_at=EXCLUDED.created_at, expires_at=EXCLUDED.expires_at`,
+		e.ReviewID, e.TenantID, e.Kind, e.Content, e.Bytes, e.Truncated, e.CreatedAt, e.ExpiresAt)
+	if err != nil {
+		return storeError("block review evidence insert", err)
+	}
+	return nil
+}
+
+// ListBlockReviewEvidenceDB 按审核单 ID 批量取证据摘录（过期的不返回）。
+func (s *PostgresStore) ListBlockReviewEvidenceDB(ctx context.Context, reviewIDs []int64) (map[int64]BlockReviewEvidence, error) {
+	out := map[int64]BlockReviewEvidence{}
+	if len(reviewIDs) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, 0, len(reviewIDs))
+	args := make([]any, 0, len(reviewIDs)+1)
+	for i, id := range reviewIDs {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+		args = append(args, id)
+	}
+	args = append(args, time.Now().UTC())
+	q := `SELECT review_id, tenant_id, kind, content, content_bytes, truncated, created_at, expires_at
+FROM sanitize_block_evidence WHERE review_id IN (` + strings.Join(placeholders, ",") + `) AND expires_at > $` + fmt.Sprint(len(args))
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, storeError("block review evidence list read", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var e BlockReviewEvidence
+		if err := rows.Scan(&e.ReviewID, &e.TenantID, &e.Kind, &e.Content, &e.Bytes,
+			&e.Truncated, &e.CreatedAt, &e.ExpiresAt); err != nil {
+			return nil, storeError("block review evidence list read", err)
+		}
+		out[e.ReviewID] = e
+	}
+	return out, storeError("block review evidence list read", rows.Err())
+}
+
 func (s *PostgresStore) UpsertEgressReleaseDB(ctx context.Context, r EgressRelease) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO sanitize_egress_releases
  (tenant_id, scope, rule_id, payload_digest, client_type, approved_by, source, created_at, expires_at)
@@ -124,10 +244,12 @@ func (s *PostgresStore) UpsertEgressReleaseDB(ctx context.Context, r EgressRelea
 }
 
 func releaseSourceOrManual(source string) string {
-	if source != "review" {
+	switch source {
+	case "review", ReleaseSourceAutoLabel:
+		return source
+	default:
 		return "manual"
 	}
-	return source
 }
 
 func (s *PostgresStore) DeleteEgressReleaseDB(ctx context.Context, tenantID, scope, rule, digest string) (bool, error) {
@@ -229,17 +351,26 @@ ON CONFLICT (singleton) DO UPDATE SET rules=EXCLUDED.rules, updated_by=EXCLUDED.
 	return nil
 }
 
+// blockReviewColumns 是审核单的列序唯一真值源：所有 SELECT 与 RETURNING
+// 都引用它，scanBlockReview 与它逐字对应。
+//
+// ★ 迁移 921 追加了 session_id / label / label_comment / labeled_by / labeled_at
+// —— 追加在**末尾**，这样既有列序不变（列序变更会静默改错 scan 的对应关系）。
+const blockReviewColumns = `id, tenant_id, client_type, scope, rule_id, rule_name, reason, field_path, payload_digest, request_id, match_detail, status, created_at, decided_by, decided_at, session_id, label, label_comment, labeled_by, labeled_at`
+
 // scanBlockReview 是列序的唯一真值源：查询列序与这里逐字对应。
 // （rowScanner 由 postgres.go 声明，这里复用同一份。）
 func scanBlockReview(row rowScanner) (BlockReview, error) {
 	var r BlockReview
-	var decidedAt sql.NullTime
+	var decidedAt, labeledAt sql.NullTime
 	err := row.Scan(&r.ID, &r.TenantID, &r.ClientType, &r.Scope, &r.Rule, &r.RuleName,
 		&r.Reason, &r.Field, &r.Digest, &r.RequestID, &r.MatchDetail, &r.Status,
-		&r.CreatedAt, &r.DecidedBy, &decidedAt)
+		&r.CreatedAt, &r.DecidedBy, &decidedAt, &r.SessionID, &r.Label,
+		&r.LabelComment, &r.LabeledBy, &labeledAt)
 	if err != nil {
 		return BlockReview{}, err
 	}
 	r.DecidedAt = decidedAt.Time
+	r.LabeledAt = labeledAt.Time
 	return r, nil
 }

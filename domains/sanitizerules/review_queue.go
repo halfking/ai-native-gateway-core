@@ -77,6 +77,21 @@ type BlockReview struct {
 	// DecidedBy / DecidedAt 是审核人与审核时间（未决为空）。
 	DecidedBy string    `json:"decided_by,omitempty"`
 	DecidedAt time.Time `json:"decided_at,omitempty"`
+	// SessionID 是被拦请求的会话 ID（原始会话内容的入口：审核员可据此
+	// 打开该会话的详情页看上下文）。2026-10-29 输出合规误报轮补。
+	SessionID string `json:"session_id,omitempty"`
+	// Label 是人工标注（闭集见 BlockReviewLabels）：这次拦得对不对。
+	// ★ 与 Status 正交：状态回答「现在放不放行」，标注回答「拦得对不对」。
+	Label string `json:"label,omitempty"`
+	// LabelComment / LabeledBy / LabeledAt 是标注的说明与责任人。
+	LabelComment string    `json:"label_comment,omitempty"`
+	LabeledBy    string    `json:"labeled_by,omitempty"`
+	LabeledAt    time.Time `json:"labeled_at,omitempty"`
+	// Evidence 是被拦内容的**有界摘录**（原始会话内容），由证据表按需装配
+	// （不在本表落原文——迁移 917 的契约）。EvidenceKind 说明摘录代表什么。
+	Evidence         string `json:"evidence,omitempty"`
+	EvidenceKind     string `json:"evidence_kind,omitempty"`
+	EvidenceTruncated bool   `json:"evidence_truncated,omitempty"`
 }
 
 // 审核状态。
@@ -98,59 +113,102 @@ type blockReviewStore struct {
 
 var blockReviews = &blockReviewStore{}
 
+// BlockReviewInput 是登记一次硬阻断审核单的入参。
+//
+// ★ 用结构体而不是十个位置参数：审核单现在有 13 个字段（2026-10-29 输出合规
+// 误报轮补了 session_id / evidence），位置参数在那种长度下**读错位不会报错**
+// ⇒ 会写出「规则名写进了原因字段」这种脏数据（而且审核单是空白的，更难发现）。
+type BlockReviewInput struct {
+	TenantID   string
+	ClientType string
+	Scope      string
+	Rule       string
+	RuleName   string
+	Reason     string
+	Field      string
+	Digest     string
+	RequestID  string
+	// MatchDetail 是给审核员看的匹配说明。
+	MatchDetail string
+	// SessionID 是被拦请求的会话 ID（原始会话内容的入口）。
+	SessionID string
+	// EvidenceKind / Evidence 是被拦内容的**有界摘录**（原始会话内容）。
+	// 证据单独落证据表（带 TTL），本表只落摘要与说明。
+	EvidenceKind string
+	Evidence     string
+}
+
 // AddBlockReview 登记一次硬阻断，返回审核单。
 //
 // 去重：同一 (tenant, scope, rule, digest, requestID) 已有 **pending** 记录时
 // 不重复登记（同一次请求的重试路径 / 多 lane 拦截只占一单）。持久化通道
 // 已安装时先查 DB 再插 DB；DB 查询失败降级内存（拦截主路径不因记录失败
 // 中断）。
-func AddBlockReview(tenantID, clientType, scope, rule, ruleName, reason, field, digest, requestID, matchDetail string) BlockReview {
+func AddBlockReview(in BlockReviewInput) BlockReview {
+	scope := in.Scope
 	if scope == "" {
 		scope = "egress"
 	}
+	evidence, evidenceTruncated := boundedEvidence(in.Evidence)
 	if p := reviewPersistenceInstalled(); p != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if existing, found, err := p.FindPendingBlockReview(ctx, tenantID, scope, rule, digest, requestID); err == nil && found {
+		if existing, found, err := p.FindPendingBlockReview(ctx, in.TenantID, scope, in.Rule, in.Digest, in.RequestID); err == nil && found {
 			return existing
 		} else if err != nil {
 			slog.Warn("sanitize block review dedupe query failed; inserting new row",
-				"error", err, "rule", rule, "request_id", requestID)
+				"error", err, "rule", in.Rule, "request_id", in.RequestID)
 		}
 		entry := BlockReview{
-			TenantID: tenantID, ClientType: clientType, Scope: scope, Rule: rule,
-			RuleName: ruleName, Reason: reason, Field: field, Digest: digest,
-			RequestID: requestID, MatchDetail: matchDetail,
+			TenantID: in.TenantID, ClientType: in.ClientType, Scope: scope, Rule: in.Rule,
+			RuleName: in.RuleName, Reason: in.Reason, Field: in.Field, Digest: in.Digest,
+			RequestID: in.RequestID, MatchDetail: in.MatchDetail, SessionID: in.SessionID,
 			Status: BlockReviewPending, CreatedAt: time.Now().UTC(),
 		}
 		inserted, err := p.InsertBlockReview(ctx, entry)
 		if err != nil {
 			slog.Warn("sanitize block review persist failed; review falls back to in-process queue",
-				"error", err, "rule", rule, "request_id", requestID)
+				"error", err, "rule", in.Rule, "request_id", in.RequestID)
 		} else {
+			if evidence != "" {
+				if err := p.InsertBlockReviewEvidence(ctx, BlockReviewEvidence{
+					ReviewID: inserted.ID, TenantID: in.TenantID, Kind: in.EvidenceKind,
+					Content: evidence, Bytes: len(evidence), Truncated: evidenceTruncated,
+					CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(BlockReviewEvidenceTTL),
+				}); err != nil {
+					slog.Warn("sanitize block review evidence persist failed",
+						"error", err, "review_id", inserted.ID)
+				} else {
+					inserted.Evidence = evidence
+					inserted.EvidenceKind = in.EvidenceKind
+					inserted.EvidenceTruncated = evidenceTruncated
+				}
+			}
 			return inserted
 		}
 	}
-	return addBlockReviewMemory(tenantID, clientType, scope, rule, ruleName, reason, field, digest, requestID, matchDetail)
+	return addBlockReviewMemory(in, scope, evidence, evidenceTruncated)
 }
 
 // addBlockReviewMemory 进程内回退路径（原第 33 增量行为）。
-func addBlockReviewMemory(tenantID, clientType, scope, rule, ruleName, reason, field, digest, requestID, matchDetail string) BlockReview {
+func addBlockReviewMemory(in BlockReviewInput, scope, evidence string, evidenceTruncated bool) BlockReview {
 	blockReviews.mu.Lock()
 	defer blockReviews.mu.Unlock()
 	for _, e := range blockReviews.entries {
 		if e.Status == BlockReviewPending &&
-			e.TenantID == tenantID && e.Scope == scope && e.Rule == rule &&
-			e.Digest == digest && e.RequestID == requestID {
+			e.TenantID == in.TenantID && e.Scope == scope && e.Rule == in.Rule &&
+			e.Digest == in.Digest && e.RequestID == in.RequestID {
 			return e
 		}
 	}
 	blockReviews.next++
 	entry := BlockReview{
-		ID: blockReviews.next, TenantID: tenantID, ClientType: clientType,
-		Scope: scope, Rule: rule, RuleName: ruleName, Reason: reason,
-		Field: field, Digest: digest, RequestID: requestID,
-		MatchDetail: matchDetail, Status: BlockReviewPending, CreatedAt: time.Now().UTC(),
+		ID: blockReviews.next, TenantID: in.TenantID, ClientType: in.ClientType,
+		Scope: scope, Rule: in.Rule, RuleName: in.RuleName, Reason: in.Reason,
+		Field: in.Field, Digest: in.Digest, RequestID: in.RequestID,
+		MatchDetail: in.MatchDetail, SessionID: in.SessionID,
+		Evidence: evidence, EvidenceKind: in.EvidenceKind, EvidenceTruncated: evidenceTruncated,
+		Status: BlockReviewPending, CreatedAt: time.Now().UTC(),
 	}
 	blockReviews.entries = append(blockReviews.entries, entry)
 	if len(blockReviews.entries) > blockReviewCapacity {
@@ -174,12 +232,42 @@ func ListBlockReviews(status, tenantID string, limit int) []BlockReview {
 		defer cancel()
 		rows, err := p.ListBlockReviewsDB(ctx, status, tenantID, limit)
 		if err == nil {
+			attachBlockReviewEvidence(ctx, p, rows)
 			return rows
 		}
 		slog.Warn("sanitize block review list from db failed; falling back to in-process queue",
 			"error", err)
 	}
 	return listBlockReviewsMemory(status, tenantID, limit)
+}
+
+// attachBlockReviewEvidence 把证据摘录装进审核单（原始会话内容）。
+//
+// ★ 证据在**另一张表**（sanitize_block_evidence，带 TTL）⇒ 这里按 ID 批量取，
+// 一次往返。取不到证据不是错误（记录可能早于 921 迁移，或证据已过期）。
+func attachBlockReviewEvidence(ctx context.Context, p ReviewPersistence, rows []BlockReview) {
+	if len(rows) == 0 {
+		return
+	}
+	ids := make([]int64, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+	}
+	evidence, err := p.ListBlockReviewEvidenceDB(ctx, ids)
+	if err != nil {
+		slog.Warn("sanitize block review evidence read failed; showing records without evidence",
+			"error", err)
+		return
+	}
+	for i := range rows {
+		e, ok := evidence[rows[i].ID]
+		if !ok {
+			continue
+		}
+		rows[i].Evidence = e.Content
+		rows[i].EvidenceKind = e.Kind
+		rows[i].EvidenceTruncated = e.Truncated
+	}
 }
 
 func listBlockReviewsMemory(status, tenantID string, limit int) []BlockReview {

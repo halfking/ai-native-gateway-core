@@ -140,6 +140,14 @@ func (h *Handler) handleBlockedReviews(w http.ResponseWriter, r *http.Request, a
 	super := IsSuperAdminOrLegacy(r)
 	path := strings.TrimPrefix(r.URL.Path, sanitizeRulesPath+"/blocked-reviews")
 	switch {
+	case path == "/insights":
+		// ★ 2026-10-29 输出合规误报轮：按规则聚合的复核读数（规则优化的输入面）。
+		h.handleBlockReviewInsights(w, r, auth)
+		return
+	case strings.HasPrefix(path, "/") && strings.HasSuffix(path, "/label"):
+		// ★ 2026-10-29 输出合规误报轮：人工标注（与 approve/reject 正交）。
+		h.handleBlockReviewLabel(w, r, auth)
+		return
 	case path == "" || path == "/":
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")

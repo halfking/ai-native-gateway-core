@@ -28,12 +28,15 @@ func TestPgInsertBlockReviewRoundTrip(t *testing.T) {
 	s, mock := newMockStore(t)
 	now := time.Now().UTC()
 	mock.ExpectQuery(`INSERT INTO sanitize_block_reviews`).WillReturnRows(
+		// ★ 列序与 blockReviewColumns 逐字对应（迁移 921 末尾追加了
+		//   session_id / label / label_comment / labeled_by / labeled_at）。
 		sqlmock.NewRows([]string{"id", "tenant_id", "client_type", "scope", "rule_id", "rule_name",
 			"reason", "field_path", "payload_digest", "request_id", "match_detail", "status",
-			"created_at", "decided_by", "decided_at"}).
+			"created_at", "decided_by", "decided_at", "session_id", "label", "label_comment",
+			"labeled_by", "labeled_at"}).
 			AddRow(7, "acme", "zcode", "egress", "builtin.egress_sink", "外传方向",
 				"sink destination", "$.command", "digest", "req-1", "说明",
-				"pending", now, "", nil))
+				"pending", now, "", nil, "sess-1", "", "", "", nil))
 	got, err := s.InsertBlockReview(context.Background(), BlockReview{
 		TenantID: "acme", ClientType: "zcode", Scope: "egress", Rule: "builtin.egress_sink",
 		RuleName: "外传方向", Reason: "sink destination", Field: "$.command",
@@ -61,9 +64,10 @@ func TestPgDecideBlockReviewZeroRowsMeansConflict(t *testing.T) {
 	mock.ExpectQuery(`SELECT id, tenant_id, client_type`).WillReturnRows(
 		sqlmock.NewRows([]string{"id", "tenant_id", "client_type", "scope", "rule_id", "rule_name",
 			"reason", "field_path", "payload_digest", "request_id", "match_detail", "status",
-			"created_at", "decided_by", "decided_at"}).
+			"created_at", "decided_by", "decided_at", "session_id", "label", "label_comment",
+			"labeled_by", "labeled_at"}).
 			AddRow(3, "acme", "", "egress", "builtin.egress_sink", "", "", "", "", "", "",
-				"approved", time.Now(), "", nil))
+				"approved", time.Now(), "", nil, "", "", "", "", nil))
 	_, err := s.DecideBlockReviewDB(context.Background(), 3, "rejected", "boss", time.Now())
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("已决记录应报 Conflict，got %v", err)

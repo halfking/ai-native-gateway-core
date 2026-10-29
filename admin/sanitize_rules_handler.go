@@ -38,7 +38,12 @@ func (h *Handler) handleSanitizeRules(w http.ResponseWriter, r *http.Request) {
 	egressReleaseRead := path == "/egress-releases"
 	// 2026-10-28 拦截审核轮：租户管理员可读自己租户的拦截审核队列；批准/拒绝
 	// 与硬阻断清单读写仍只给超管（判定在各 handler 内部）。
-	blockedReviewRead := path == "/blocked-reviews" || path == "/blocked-reviews/"
+	//
+	// ★ 2026-10-29 输出合规误报轮：读面扩到「规则级复核读数」
+	//（/blocked-reviews/insights）—— 租户管理员同样能看自己租户的误报分布
+	//（那是「我为什么老被拦」的答案）。
+	blockedReviewRead := path == "/blocked-reviews" || path == "/blocked-reviews/" ||
+		path == "/blocked-reviews/insights"
 	if !super && !(auth.Role == "tenant_admin" && auth.TenantID != "" && (eventRead || eventReview || egressReleaseRead || blockedReviewRead)) {
 		writeError(w, 403, "insufficient permission for rule management")
 		return
@@ -51,6 +56,12 @@ func (h *Handler) handleSanitizeRules(w http.ResponseWriter, r *http.Request) {
 	if path == "/hardblock" {
 		// 硬阻断清单同样不依赖规则管理器（进程内清单）。
 		h.handleHardBlockRules(w, r)
+		return
+	}
+	if path == "/output-check" {
+		// ★ 2026-10-29 输出合规误报轮：输出合规**全局开关**的专属入口
+		//（写的是同一个设置键 sanitize.output_check_enabled，不另立真值）。
+		h.handleOutputCheckSwitch(w, r)
 		return
 	}
 	if strings.HasPrefix(path, "/blocked-reviews") {

@@ -61,6 +61,16 @@ type ReviewPersistence interface {
 	GetBlockReviewDB(ctx context.Context, id int64) (BlockReview, error)
 	// DecideBlockReviewDB 置状态与审核人；返回更新后的行。
 	DecideBlockReviewDB(ctx context.Context, id int64, status, decidedBy string, decidedAt time.Time) (BlockReview, error)
+	// LabelBlockReviewDB 打人工标注（与状态正交）；返回更新后的行。
+	LabelBlockReviewDB(ctx context.Context, id int64, label, comment, labeledBy string, labeledAt time.Time) (BlockReview, error)
+	// CountBlockReviewLabelsDB 数同租户同规则的某标注条数（自动优化的输入）。
+	CountBlockReviewLabelsDB(ctx context.Context, tenantID, rule, label string) (int, error)
+	// BlockReviewInsightsDB 按规则聚合复核读数。
+	BlockReviewInsightsDB(ctx context.Context, tenantID string, limit int) ([]BlockReviewRuleInsight, error)
+	// InsertBlockReviewEvidence 落一条证据摘录（有界、带 TTL）。
+	InsertBlockReviewEvidence(ctx context.Context, e BlockReviewEvidence) error
+	// ListBlockReviewEvidenceDB 按审核单 ID 批量取证据摘录。
+	ListBlockReviewEvidenceDB(ctx context.Context, reviewIDs []int64) (map[int64]BlockReviewEvidence, error)
 	// 放行表落库（与进程内表同键：tenant+scope+rule+digest 唯一，同键覆盖）。
 	UpsertEgressReleaseDB(ctx context.Context, r EgressRelease) error
 	// DeleteEgressReleaseDB 删除放行（含按 digest 前缀语义：digest 为空删

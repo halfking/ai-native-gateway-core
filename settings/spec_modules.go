@@ -51,6 +51,17 @@ func ModuleSpecs() []*Spec {
 			HotReload:       true,
 		},
 		{
+			Key:         "sanitize.output_guard_autorelax_threshold",
+			Type:        TypeInt,
+			Scope:       ScopePlatform,
+			Category:    CategoryModules,
+			Default:     3,
+			Description: "误报自动放行阈值",
+			DescriptionLong: "同一租户、同一规则的「误报」人工标注累计到该条数时，自动写入该租户该规则的 7 天放行（与人工批准同键同语义，可撤销、会过期）。0 = 关闭自动优化。规则是全局的，但误报是租户事实 ⇒ 自动动作只收窄到「这个租户、这条规则、一周」。",
+			DangerLevel: Warning,
+			HotReload:   true,
+		},
+		{
 			Key:             "output_compliance.redaction_mode",
 			Type:            TypeEnum,
 			Scope:           ScopePlatform,

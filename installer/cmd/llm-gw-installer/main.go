@@ -1290,6 +1290,18 @@ var nodeProbeRunsCredCompletedIdx920 []byte
 
 //go:embed embeddata/startup/920_node_probe_runs_cred_completed_idx.down.sql
 var nodeProbeRunsCredCompletedIdx920Down []byte
+
+// ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
+//   - sanitize_block_reviews 追加 session_id / label / label_comment /
+//     labeled_by / labeled_at（末尾追加，既有列序不变）；
+//   - 新表 sanitize_block_evidence：被拦内容的**有界摘录**（原始会话内容），
+//     带 7 天 TTL（★ 单独一张表 ⇒ 917 的「审核记录表不含载荷原文」契约不破）；
+//   - sanitize_egress_releases.source 的 CHECK 扩一个取值 'auto_label'。
+//go:embed embeddata/startup/921_sanitize_block_workbench.sql
+var sanitizeBlockWorkbench921 []byte
+
+//go:embed embeddata/startup/921_sanitize_block_workbench.down.sql
+var sanitizeBlockWorkbench921Down []byte
 //go:embed embeddata/startup/915_recent_cache_hit_rate.sql
 var recentCacheHitRate915 []byte
 
@@ -1678,6 +1690,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/919_ursm_slot_daily_active_minutes.down.sql":                         ursmSlotDailyActiveMinutes919Down,
 	"startup/920_node_probe_runs_cred_completed_idx.sql":                          nodeProbeRunsCredCompletedIdx920,
 	"startup/920_node_probe_runs_cred_completed_idx.down.sql":                     nodeProbeRunsCredCompletedIdx920Down,
+	"startup/921_sanitize_block_workbench.sql":                                    sanitizeBlockWorkbench921,
+	"startup/921_sanitize_block_workbench.down.sql":                               sanitizeBlockWorkbench921Down,
 	"startup/915_recent_cache_hit_rate.sql":                                       recentCacheHitRate915,
 	"startup/915_recent_cache_hit_rate.down.sql":                                  recentCacheHitRate915Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,

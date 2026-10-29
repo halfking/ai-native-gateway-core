@@ -56,9 +56,23 @@ type EgressRelease struct {
 	// ClientType 记录触发审核单的客户端类型（展示与追溯用；放行键仍按
 	// 租户——见 block_review_persist.go 的语义说明）。
 	ClientType string `json:"client_type,omitempty"`
-	// Source 记录放行来源：manual（管理面直接授予）/ review（审核批准）。
+	// Source 记录放行来源：manual（管理面直接授予）/ review（审核批准）/
+	// auto_label（误报标注累计到阈值后的**自动**放行，2026-10-29 输出合规
+	// 误报轮）。三者写同一张表、同一套键 ⇒ 撤销/过期/可见性语义一致。
 	Source string `json:"source,omitempty"`
 }
+
+// 放行来源的闭集。
+const (
+	// ReleaseSourceManual 是管理面直接授予。
+	ReleaseSourceManual = "manual"
+	// ReleaseSourceReview 是审核单批准产生。
+	ReleaseSourceReview = "review"
+	// ReleaseSourceAutoLabel 是误报标注累计到阈值后自动产生
+	//（2026-10-29 输出合规误报轮）。它与人工批准**同键同语义** ⇒
+	// 撤销、过期、可见性都走同一条路。
+	ReleaseSourceAutoLabel = "auto_label"
+)
 
 // egressReleases 是进程级放行表。原子替换，读侧无锁。
 var egressReleases atomic.Pointer[[]EgressRelease]

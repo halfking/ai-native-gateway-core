@@ -28,8 +28,13 @@ describe("sanitize rules in actual bundled and lazy locale exports", () => {
     // 开关与拦截审核队列两个新页签的文案。
     // 2026-10-29：+10（preset / 单条开关 / 匹配说明 / 客户端 / 放行有效期）。
     //  ↑ 让号记录：硬阻断文案总 +32，key 集合 119 → 151。
+    //
+    // 2026-10-29（输出合规误报轮）：+26 —— 输出合规**总开关**
+    // （outputCheck*）、人工标注与标注闭集（reviewLabel*/label_*）、
+    // 被拦内容的摘录（reviewEvidence*）、规则级复核读数（reviewInsights*）。
+    //  ↑ 让号记录：key 集合 151 → 177。
     // 计数只许增：每加一个键都要同步 8 个语种 + 这里。
-    expect(expectedKeys).toHaveLength(151));
+    expect(expectedKeys).toHaveLength(177));
   for (const [locale, bundle] of Object.entries(bundles)) {
     it(`${locale} exports and resolves every rule-management message`, () => {
       const namespace = bundle.sanitizeRules as

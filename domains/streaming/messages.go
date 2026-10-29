@@ -938,7 +938,16 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		rule, reason := policyBlockErrorDetail(execErr)
 		field, digest := policyBlockPathFromError(execErr), policyBlockDigestFromError(execErr)
 		blockTenant := tenant(keyInfo)
-		reviewID := registerPolicyBlockReview(blockTenant, extractClientType(r), requestID, rule, reason, field, digest)
+		reviewID := registerPolicyBlockReview(PolicyBlockReviewInput{
+			TenantID:     blockTenant,
+			ClientType:   extractClientType(r),
+			RequestID:    requestID,
+			Rule:         rule,
+			Reason:       reason,
+			Field:        field,
+			Digest:       digest,
+			EvidenceKind: policyBlockEvidenceKind(rule),
+		})
 		message := policyBlockClientMessage(rule, reason, field, requestID, reviewID)
 		attemptErrCode, attemptErrMsg = code, message
 		auditBuilder.Success(false)
@@ -1604,7 +1613,16 @@ func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []b
 			}
 			// 2026-10-28 拦截审核轮：带规则/原因/审核单（此前只有一句 message）。
 			rule, reason, field, digest := policyBlockMetadataFrom(interceptResult)
-			reviewID := registerPolicyBlockReview(opt.request.TenantID, opt.request.ClientType, requestID, rule, reason, field, digest)
+			reviewID := registerPolicyBlockReview(PolicyBlockReviewInput{
+				TenantID:     opt.request.TenantID,
+				ClientType:   opt.request.ClientType,
+				RequestID:    requestID,
+				Rule:         rule,
+				Reason:       reason,
+				Field:        field,
+				Digest:       digest,
+				EvidenceKind: policyBlockEvidenceKind(rule),
+			})
 			writeAnthropicError(w, http.StatusForbidden, "output_policy_blocked",
 				policyBlockClientMessage(rule, reason, field, requestID, reviewID),
 				policyBlockErrorExtras(rule, reason, field, digest, requestID, reviewID))

@@ -190,7 +190,13 @@ export interface EgressReleaseRecord {
   source?: "manual" | "review";
   expires_at?: string;
 }
-/** 拦截审核记录（一次 output/egress 硬阻断的待审单；持久化轮补客户端与匹配说明）。 */
+/**
+ * 拦截审核记录（一次 output/egress 硬阻断的待审单）。
+ *
+ * ★ 2026-10-29 输出合规误报轮补：session_id（原始会话内容的入口）、
+ * label/label_*（人工标注：这次拦得对不对）、evidence/evidence_kind/
+ * evidence_truncated（被拦内容的**有界摘录** —— 原始会话内容）。
+ */
 export interface BlockReview {
   id: number;
   tenant_id: string;
@@ -207,6 +213,58 @@ export interface BlockReview {
   created_at: string;
   decided_by?: string;
   decided_at?: string;
+  session_id?: string;
+  label?: BlockReviewLabel;
+  label_comment?: string;
+  labeled_by?: string;
+  labeled_at?: string;
+  evidence?: string;
+  evidence_kind?: string;
+  evidence_truncated?: boolean;
+}
+
+/**
+ * 人工标注的闭集。
+ *
+ * ★ 与审核状态（pending/approved/rejected）**正交**：状态回答「现在放不放行」，
+ * 标注回答「这次拦得对不对」—— 后者是规则优化的唯一输入。
+ */
+export type BlockReviewLabel =
+  | "false_positive"
+  | "true_positive"
+  | "rule_too_broad"
+  | "needs_rule";
+
+/** 按规则聚合的复核读数（规则优化的输入面）。 */
+export interface BlockReviewRuleInsight {
+  rule: string;
+  rule_name?: string;
+  tenant_id?: string;
+  total: number;
+  pending: number;
+  approved: number;
+  rejected: number;
+  false_positive: number;
+  true_positive: number;
+  rule_too_broad: number;
+  needs_rule: number;
+  labeled: number;
+  false_positive_ratio: number;
+  auto_relaxed: boolean;
+  auto_relax_until?: string;
+}
+
+/** 输出合规总开关的读数（2026-10-29 输出合规误报轮）。 */
+export interface OutputCheckSwitch {
+  key: string;
+  scope: string;
+  enabled: boolean;
+  source: string;
+  default: boolean;
+  semantics: string;
+  description?: string;
+  description_long?: string;
+  hot_reload?: boolean;
 }
 export const getHardBlockRules = (options?: RequestOptions) =>
   req<{ rules: HardBlockRule[]; note: string }>(
@@ -243,6 +301,43 @@ export const decideBlockedReview = (
   id: number,
   body: { decision: "approve" | "reject"; comment?: string },
 ) => req<BlockReview>("POST", `${root}/blocked-reviews/${id}/review`, body);
+
+/**
+ * 给一条审核单打人工标注（2026-10-29 输出合规误报轮）。
+ *
+ * ★ 与 approve/reject 正交：标 false_positive / rule_too_broad 时，
+ *   同租户同规则的误报标注累计到阈值 ⇒ 服务端自动写入该租户该规则的 7 天放行。
+ */
+export const labelBlockedReview = (
+  id: number,
+  body: { label: BlockReviewLabel; comment?: string },
+) => req<BlockReview>("POST", `${root}/blocked-reviews/${id}/label`, body);
+
+/** 按规则聚合的复核读数（规则优化的输入面）。 */
+export function listBlockReviewInsights(
+  filter: { tenant_id?: string; limit?: number } = {},
+  options?: RequestOptions,
+) {
+  const query = new URLSearchParams();
+  if (filter.tenant_id) query.set("tenant_id", filter.tenant_id);
+  query.set("limit", String(filter.limit ?? 50));
+  return req<{
+    insights: BlockReviewRuleInsight[];
+    auto_relax_threshold: number;
+    auto_relax_enabled: boolean;
+    tenant_id?: string;
+  }>("GET", `${root}/blocked-reviews/insights?${query}`, undefined, options);
+}
+
+/** 输出合规总开关的读数。 */
+export const getOutputCheckSwitch = (options?: RequestOptions) =>
+  req<OutputCheckSwitch>("GET", `${root}/output-check`, undefined, options);
+
+/** 输出合规总开关的写入（写的是同一个设置键，不另立真值）。 */
+export const updateOutputCheckSwitch = (body: {
+  enabled: boolean;
+  comment?: string;
+}) => req<OutputCheckSwitch>("PUT", `${root}/output-check`, body);
 
 /** Validate editor JSON shapes before rendering it; RE2/sample semantics stay on the server. */
 export function isRuleConfig(value: unknown): value is RuleConfig {

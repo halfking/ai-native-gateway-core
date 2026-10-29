@@ -1689,7 +1689,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		//   （INV-4 双模型探测成功门的 24h 关联子查询，252 实测 549 次/天 慢+取消）。
 		//   ★ 含 CREATE INDEX CONCURRENTLY ⇒ 首行 dbinit:no-transaction 标记。
 		"920_node_probe_runs_cred_completed_idx.sql",
-		},
+		// ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台 —— 审核单追加
+		//   session_id / label 四件套 + 证据表 sanitize_block_evidence（原始
+		//   会话内容的有界摘录，7 天 TTL）+ 放行来源扩 'auto_label'。
+		"921_sanitize_block_workbench.sql",
+	},
 	}
 }
 

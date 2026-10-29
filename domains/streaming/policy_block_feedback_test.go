@@ -165,8 +165,11 @@ func TestBlockReviewApproveReleasesSamePayload(t *testing.T) {
 	sanitizerules.SetEgressReleases(nil)
 	t.Cleanup(func() { sanitizerules.SetEgressReleases(prevReleases) })
 
-	reviewID := registerPolicyBlockReview("tenant-a", "zcode", "req-42",
-		"builtin.egress_sink", "sink destination", "$.command", "digest-of-cmd")
+	reviewID := registerPolicyBlockReview(PolicyBlockReviewInput{
+		TenantID: "tenant-a", ClientType: "zcode", RequestID: "req-42",
+		Rule: "builtin.egress_sink", Reason: "sink destination",
+		Field: "$.command", Digest: "digest-of-cmd",
+	})
 	if !strings.HasPrefix(reviewID, "rv-") {
 		t.Fatalf("审核单号形态不对: %q", reviewID)
 	}
@@ -175,8 +178,11 @@ func TestBlockReviewApproveReleasesSamePayload(t *testing.T) {
 		t.Fatalf("pending 记录数 = %d，期望 1", len(pending))
 	}
 	// 同键再拦（重试路径）不重复占单。
-	if again := registerPolicyBlockReview("tenant-a", "zcode", "req-42",
-		"builtin.egress_sink", "sink destination", "$.command", "digest-of-cmd"); again != reviewID {
+	if again := registerPolicyBlockReview(PolicyBlockReviewInput{
+		TenantID: "tenant-a", ClientType: "zcode", RequestID: "req-42",
+		Rule: "builtin.egress_sink", Reason: "sink destination",
+		Field: "$.command", Digest: "digest-of-cmd",
+	}); again != reviewID {
 		t.Errorf("同键 pending 应复用同一单: got %q want %q", again, reviewID)
 	}
 	if sanitizerules.EgressReleaseAllowed("tenant-a", "egress", "builtin.egress_sink", "digest-of-cmd") {
@@ -234,8 +240,11 @@ func TestBlockReviewApprovalExpiresAfterSevenDays(t *testing.T) {
 	sanitizerules.SetEgressReleases(nil)
 	t.Cleanup(func() { sanitizerules.SetEgressReleases(prevReleases) })
 
-	registerPolicyBlockReview("tenant-ttl", "zcode", "req-ttl",
-		"builtin.egress_sink", "sink", "$.command", "digest-ttl")
+	registerPolicyBlockReview(PolicyBlockReviewInput{
+		TenantID: "tenant-ttl", ClientType: "zcode", RequestID: "req-ttl",
+		Rule: "builtin.egress_sink", Reason: "sink",
+		Field: "$.command", Digest: "digest-ttl",
+	})
 	pending := sanitizerules.ListBlockReviews(sanitizerules.BlockReviewPending, "tenant-ttl", 10)
 	if _, err := sanitizerules.DecideBlockReview(pending[0].ID, true, "admin"); err != nil {
 		t.Fatalf("批准失败: %v", err)
@@ -261,7 +270,10 @@ func TestBlockReviewRejectKeepsBlock(t *testing.T) {
 	sanitizerules.SetEgressReleases(nil)
 	t.Cleanup(func() { sanitizerules.SetEgressReleases(prevReleases) })
 
-	registerPolicyBlockReview("tenant-b", "claude-code", "req-7", "builtin.secret_field.egress", "credential", "$.password", "")
+	registerPolicyBlockReview(PolicyBlockReviewInput{
+		TenantID: "tenant-b", ClientType: "claude-code", RequestID: "req-7",
+		Rule: "builtin.secret_field.egress", Reason: "credential", Field: "$.password",
+	})
 	pending := sanitizerules.ListBlockReviews(sanitizerules.BlockReviewPending, "", 10)
 	if len(pending) != 1 {
 		t.Fatalf("pending 记录数 = %d，期望 1", len(pending))
