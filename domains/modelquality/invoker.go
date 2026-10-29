@@ -14,6 +14,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 )
 
 // buildQuestionPrompt 把一道选择题构造成发给模型的 prompt。
@@ -275,9 +276,10 @@ func (g *GatewayModelInvoker) InvokeModel(ctx context.Context, provider string, 
 		return "", 0, time.Since(startTime), fmt.Errorf("marshal request: %w", err)
 	}
 
-	// 构造请求URL（baseURL 允许带或不带 /v1 —— worker 侧默认带 /v1，
-	// settings 里的 model_quality.base_url 历史上可能不带 ⇒ 统一剥尾再拼）
-	url := strings.TrimRight(g.baseURL, "/") + "/v1/chat/completions"
+	// 构造请求URL（2026-10-30 改走 upstreamurl.Build 归一化：settings 里
+	// model_quality.base_url 可能带 /v1 之外的版本段，硬拼会产出
+	// /vN/v1/... 双前缀；与直连调用器同一把尺，SSoT 单一实现）
+	url := upstreamurl.Build(g.baseURL, upstreamurl.EpChatCompletions)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return "", 0, time.Since(startTime), fmt.Errorf("create request: %w", err)
@@ -367,7 +369,13 @@ func (d *DirectNodeInvoker) InvokeModel(ctx context.Context, node CredentialNode
 		return "", 0, time.Since(startTime), fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := strings.TrimRight(node.BaseURL, "/") + "/v1/chat/completions"
+	// 2026-10-30 (24h 审计第 7 轮)：走 upstreamurl.Build 归一化——
+	// 211 的 providers.base_url 注册时自带 API 前缀（sensenova/nvidia 的
+	// /v1、zhipu 的 /api/coding/paas/v4），硬拼 "/v1/chat/completions"
+	// 产出 /v1/v1/... 与 /v4/v1/... ⇒ 211 实测 per-node IQ 首轮 365/365
+	// 全 fail（连真实流量正常的 zhipu/nvidia 也挂）。upstreamurl 是
+	// 上游 URL 构造的唯一事实源（SSoT），网关自己的上游调用全走它。
+	url := upstreamurl.Build(node.BaseURL, upstreamurl.EpChatCompletions)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return "", 0, time.Since(startTime), fmt.Errorf("create request: %w", err)

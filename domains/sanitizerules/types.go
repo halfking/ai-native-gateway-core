@@ -35,6 +35,14 @@ type Rule struct {
 	Fields     []string `json:"fields,omitempty"`
 	Samples    []Sample `json:"samples,omitempty"`
 	Exemptions []string `json:"exemptions,omitempty"`
+	// Description 是这条规则的**说明**（判什么形状、命中意味着什么、怎么调）。
+	//
+	// ★ 2026-10-29 输出合规误报轮：★ 规则说明原先在**装载时就被丢掉**了
+	// （YAML 里有 description，模型里没有这个字段）⇒ ★★ 管理面只能显示一个
+	// 规则 ID ⇒ ★★ 「规则太简单，看不懂它在判什么」⇒ ★★ 误报只能靠猜。
+	// ★ 事实源是 YAML + 内建目录（见 rule_descriptions.go）⇒ ★★ 读面在装载时
+	// 补齐（ApplyRuleDescriptions）⇒ ★★ 历史快照不需要重发。
+	Description string `json:"description,omitempty"`
 }
 type Config struct {
 	Rules []Rule `json:"rules"`

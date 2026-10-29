@@ -42,14 +42,24 @@ import (
 // ⇒ 「越界 = 没有任何规则命中，只是缓冲装不下」被当成「策略拦截」上屏，
 // 用户看到的是「被某条规则拦了」，管理员看到的是一条**空白**审核单。
 // ⇒ 本轮把三件事拆开：
-//	① **上限可配置**（LLM_GATEWAY_OUTPUT_GUARD_PENDING_MAX_BYTES，默认 8 MiB，
-//	   原来是 1 MiB）——1 MiB 的门槛正好落在真实 agent 响应的分布里。
+//
+//	① **上限可配置**（LLM_GATEWAY_OUTPUT_GUARD_PENDING_MAX_BYTES）★
+//	   **出厂值仍是 1 MiB**（★ 见 defaultMaxCompliancePendingBytes 的理由）★
 //	② **越界不再悄悄杀请求**：默认 **release**（把已逐帧检查过的帧放行、
 //	   后续帧改为逐帧放行，不再合并检查），并**大声记录**（WARN + 指标 +
 //	   审核单，规则名 builtin.guard.capacity_exceeded）。
 //	   需要 fail-closed 的部署可用 LLM_GATEWAY_OUTPUT_GUARD_CAP_MODE=block 恢复，
 //	   但那条路径从此**也带元数据**（不再静默）。
 //	③ **任何阻断都必须能说出规则**：所有阻断分支都带 policy_rule/policy_reason。
+//
+// ★★ 2026-10-29 审计轮更正（同日第二轮）：★ 误报的修复**不依赖**把上限抬大
+//
+//	—— **降级放行**（②）才是修复点 ⇒ ★★ 把出厂上限从 1 MiB 抬到 8 MiB
+//	**既无必要、又把存储侧的记忆体预算放大了 8 倍**（★ 每并发流）★★
+//	⇒ ★★ 出厂值**恢复 1 MiB**（★ 那是 2026-10-02 存储审计定下的 wire cap
+//	契约：★ docs/audit/2026-10-02-conversation-storage-stream-audit.md）★★
+//	⇒ ★★ 上限**仍可配**（env），且启动即打生效值（★ 运维要更大缓冲可以自己抬，
+//	但那是** knowingly 的记忆体决定**，不是本轮顺手带上的）★★。
 const (
 	// OutputGuardPendingMaxBytesEnv 是待检缓冲上限的环境变量名。
 	OutputGuardPendingMaxBytesEnv = "LLM_GATEWAY_OUTPUT_GUARD_PENDING_MAX_BYTES"
@@ -60,13 +70,26 @@ const (
 	GuardCapacityRuleID = "builtin.guard.capacity_exceeded"
 )
 
-// defaultMaxCompliancePendingBytes 是待检缓冲上限的出厂值（8 MiB）。
+// defaultMaxCompliancePendingBytes 是待检缓冲上限的出厂值（1 MiB）。
 //
-// 出厂值从 1 MiB 抬到 8 MiB 的依据：211 生产被拦的请求都是多分钟长回合
-// （请求体 300KB+、响应 >1 MiB），1 MiB 的门槛正好落在真实分布里 ⇒
-// 守卫把「长回复」当成了「违规回复」。8 MiB 覆盖真实分布，同时仍是**有界**
-// 的（每并发流 ≤8 MiB；对比 pending 捕获器 1 MiB / durable 捕获 1 MiB）。
-const defaultMaxCompliancePendingBytes = 8 << 20
+// ★ 出厂值**就是 1 MiB**，而且**必须是 1 MiB**（★ 2026-10-29 审计轮更正）★★
+//
+// ★ 为什么不能顺手抬到 8 MiB（★ 这条曾经被抬过，同日被审计轮改回来）★★：
+//
+//	① **它是存储侧的 wire cap 契约**：★ docs/audit/2026-10-02-conversation-
+//	   storage-stream-audit.md 定的就是「pending + 当前完整帧 ≤ 1 MiB，超出
+//	   阻断」⇒ ★★ 抬到 8 MiB = 每并发流 8 MiB ⇒ ★★ 那是一个**存储审计轮**该做
+//	   的记忆体决定（★ 要连带复核分区/并发/峰值）★★ 不是误报轮能顺手带的 ★★
+//	② **抬它对误报修复没有必要**：★ 误报（业务被拦）的修复点是**降级放行**
+//	   （release 模式 + 留痕）★ ⇒ ★★ 上限是多少都不再杀请求 ★★ ⇒ ⇒抬上限是
+//	   **纯风险、无收益** ★★。
+//
+// ★ 真实的长回合会在1 MiB 处触发降级（可见、可审核），★ 代价是降级段不再做
+//
+//	lane 合并检查（★ 一个被拆成多帧的凭据可能漏检）★ ⇒ ★★ 需要更严的部署可以
+//	自己抬上限（LLM_GATEWAY_OUTPUT_GUARD_PENDING_MAX_BYTES）★★ ⇒ ★★ **代价写
+//	在明处**，而不是由出厂值悄悄替运维做决定 ★★。
+const defaultMaxCompliancePendingBytes = 1 << 20
 
 // compliancePendingCap 返回当前生效的待检缓冲上限（字节）。
 //
@@ -268,7 +291,8 @@ type complianceStreamState struct {
 // pendingCap 返回本流的待检缓冲上限（零值 ⇒ 取当前 env 默认）。
 //
 // ★ 零值必须回落，不能当成「上限 0」——手工构造状态的调用方（测试、降级
-//   重建路径）会把每一帧都判成越界（本轮第一版就踩了这个坑）。
+//
+//	重建路径）会把每一帧都判成越界（本轮第一版就踩了这个坑）。
 func (s *complianceStreamState) pendingCap() int {
 	if s != nil && s.capBytes > 0 {
 		return s.capBytes
@@ -532,9 +556,9 @@ func (it *OutputComplianceInterceptor) overCapacityResult(state *complianceStrea
 		SuppressChunk: true,
 		ModifiedChunk: released,
 		Metadata: map[string]interface{}{
-			"policy_rule":     GuardCapacityRuleID,
-			"policy_reason":   reason,
-			"policy_degraded": true,
+			"policy_rule":             GuardCapacityRuleID,
+			"policy_reason":           reason,
+			"policy_degraded":         true,
 			PolicyEvidenceMetadataKey: boundedPolicyEvidence(string(released)),
 		},
 	}, nil

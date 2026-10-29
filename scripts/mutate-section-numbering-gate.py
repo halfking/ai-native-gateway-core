@@ -68,8 +68,7 @@ def md5(path):
 
 
 def run_gate():
-    env = dict(os.environ)
-    env["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")
+    env = gocache.env("mutate")
     r = subprocess.run(
         ["go", "test", "./scripts/ursmcheck/", "-run", GATE_TEST, "-count=1"],
         cwd=ROOT, capture_output=True, text=True, env=env,

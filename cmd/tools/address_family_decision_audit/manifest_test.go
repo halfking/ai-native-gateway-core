@@ -149,6 +149,14 @@ var addressFamilySiteAssessments = map[string]siteAssessment{
 		Why: "★ **另一个问题**：事件台账的**结构标签词表**（证据里能出现哪些类型名）。" +
 			"它不决定遮不遮（词表外的类型落进 custom 是**证据**的降级，不是脱敏的豁免）。",
 	},
+	"domains/sanitizerules/builtin_rules_meta.go|BuiltinHardBlockAll|type-list": {
+		Class: classNotADecision,
+		Why: "2026-10-30 审计登记：这是**内置规则的 RuleID 词表**（\"builtin.\"+类型名 拼 " +
+			"egress 允许项的 ID），不是「算不算地址族」的判定面——遮不遮由 SSOT 编译出的" +
+			"规则本身决定。与 SSOT 类型的**拼写一致性**由 r1041 的清单闸守（未知 ID 被" +
+			"当「不在清单里」，方向安全）；名单里混入的 server_ip/internal_ip 是 ID 词表" +
+			"的成员，不是新写了一份地址族名单。",
+	},
 
 	// ── 量具自己的副本 ──────────────────────────────────────────────────
 	"cmd/tools/address_family_decision_audit/main.go||type-list": {

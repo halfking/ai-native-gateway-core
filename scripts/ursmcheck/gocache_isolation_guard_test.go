@@ -420,18 +420,33 @@ var gocacheSetRE = regexp.MustCompile(`GOCACHE\s*=|["']GOCACHE["']\s*\]|gocache_
 // ★ ★★★★ `gocache.dir_for(` **同列**⇒ ⇒ ★★★★ ⇒ **因为它比 `dir_for` 更严**
 // ★ ★★★★ （★ 内部先 `ensure()` 建目录并查可写 ⇒ ⇒ 失败就不设 ⇒ ⇒ 脚本照常跑）
 // ★ ★★★★ ⇒ ⇒ ★★ **它才是 python 侧该用的那个**（★ 见下面的修法提示）。
-var gocacheDedicatedRE = regexp.MustCompile(`\.build-local/|gocache\.sh|gocache_use|gocache\.env\(|gocache\.dir_for\(|gocache\.apply_to_environ\(`)
+// ★ ★★★★ **r1049 审计轮移除的一条（★ `gocache\.dir_for(`）**：★★★★
+// ★ ★★★★ `dir_for()` **只算路径** ⇒ ⇒ ★★ 它**不建目录**、★★ **不查可写**
+// ★ ★★★★ ⇒ ⇒ ★★ 而 go 拿到一个**不可用**的 GOCACHE 会直接报
+// ★ ★★★★ `failed to initialize build cache` ⇒ ⇒ ★★ ⇒ **脚本直接坏掉** ⇒ ⇒ ★★
+// ★ ★★★★ ⇒ ★★ ⇒ 而本正则原先把它认作「已指向专用目录」⇒ ⇒ ★★ ⇒ **门绿着，
+// ★ ★★★★ 而脚本在受限环境下会坏** ⇒ ⇒ ★★ ⇒ ★★ ⇒ 移出去 ⇒ ⇒ ★★ ⇒ 只认
+// ★ ★★★★ **真正失败安全**的入口（★ `gocache_use` / `gocache.env(` /
+// ★ ★★★★ `gocache.apply_to_environ(`）。
+//
+// ★ ★★ **注意 `gocacheSetRE` 里【还留着** `gocache\.dir_for(`**：★★ 那一只是
+// ★ ★★ 「这个文件**碰过** GOCACHE 吗」⇒ ⇒ ★★ ⇒ 留着它 ⇒ ⇒ ★★ ⇒ 一个只用
+// ★ ★★ `dir_for` 的文件会落到「**设了 GOCACHE，但没指向专用目录**」那条红 ⇒ ⇒
+// ★ ★★ ⇒ ★★ ⇒ **红的理由更准确** ⇒ ⇒ ★★ ⇒ 而不是落到「压根没设置 GOCACHE」。
+var gocacheDedicatedRE = regexp.MustCompile(`\.build-local/|gocache\.sh|gocache_use|gocache\.env\(|gocache\.apply_to_environ\(`)
 
-// gocacheCodeLines 去掉【整行注释】后的行（★ shell 的 `#` 与 python 的 `#` 同形）。
-func gocacheCodeLines(src string) []string {
-	var out []string
-	for _, line := range strings.Split(src, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "#") {
-			continue
-		}
-		out = append(out, line)
-	}
-	return out
+// gocacheRawLines 把源码切成【未经任何剥离】的行。
+//
+// ★ ★★ **为什么【不许在打掩码前剥整行注释】**（★ ★★ r1049 审计轮实测踩到 ★★）：★★
+// ★ ★★ Python 里三引号块**内部**的 `#` **不是注释** ⇒ ⇒ ★★ ⇒ 一段三引号字符串的
+// ★ ★★ **闭合定界符**若落在某条「以 `#` 开头的行」上 ⇒ ⇒ ★★ ⇒ 那行会被「剥整行
+// ★ ★★ 注释」这一步**删掉** ⇒ ⇒ ★★ ⇒ **闭合符消失** ⇒ ⇒ ★★ ⇒ 掩码的状态机从此
+// ★ ★★ 错位 ⇒ ⇒ ★★ ⇒ **该文件后半段全被当成数据** ⇒ ⇒ ★★ ⇒ 它调的那些 go 命令
+// ★ ★★ **门看不见** ⇒ ⇒ ★★ ⇒ **假绿**（★ 实测：`scripts/mutate-r164-freshness-gate.py`
+// ★ ★★ ⇒ ⇒ 它的 `["go", "test", …]` 在门眼里**根本不存在** ⇒ ⇒ ⇒ 作用域少算 1 个）。
+// ★ ★★ ⇒ ⇒ 所以顺序必须是【先打掩码（★ 掩码自己认注释）⇒ ⇒ 再取代码视图】。
+func gocacheRawLines(src string) []string {
+	return strings.Split(src, "\n")
 }
 
 // TestMutationHarnessScriptsUseDedicatedGoCache —— ★★ 第二面：
@@ -455,7 +470,13 @@ func TestMutationHarnessScriptsUseDedicatedGoCache(t *testing.T) {
 			rel, _ := filepath.Rel(root, path)
 			checked = append(checked, rel)
 
-			code := gocacheCodeLines(string(src))
+			// ★ ★★ **r1049 审计轮**：★ 编译型判定改走【编译型掩码】⇒ ⇒ ★★ ⇒
+			// ★ ★★ 注释与 docstring 里的 go 字样**不算**调用 ⇒ ⇒ ★★ ⇒ **两门口径
+			// ★ ★★ 说同一句话**（★ 与 B 级门 `gocacheScriptHasCompile` 同实现）。
+			// ★ ★★ ★★ **不许在打掩码前剥整行注释**（★ ★★ 见 `gocacheRawLines` 的
+			// ★ ★★ 注释：★ ★★ 三引号的闭合符若落在注释行上 ⇒ ⇒ ★★ ⇒ 掩码错位 ⇒ ⇒
+			// ★ ★★ ⇒ ★★ **那个文件后半段全被当成数据** ⇒ ⇒ ★★ ⇒ ★★ **假绿** ★★）。
+			code := gocacheScriptCompileCode(rel, gocacheRawLines(string(src)))
 			hasGoCmd := false
 			for _, line := range code {
 				if gocacheGoCmdRE.MatchString(line) || gocacheGoCmdListRE.MatchString(line) {
@@ -533,9 +554,8 @@ func TestMutationHarnessScriptsUseDedicatedGoCache(t *testing.T) {
 func TestGoCacheDedicatedFormsAreRecognized(t *testing.T) {
 	// ── 正向：★ 这些形态都必须被认成「指向专用目录」──
 	dedicated := []string{
-		`os.environ["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")`,
 		`gocache.apply_to_environ("mutate")`,
-		`os.environ["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")`,
+		`env = gocache.env("mutate")`,
 		`export GOCACHE="$("$(git rev-parse --show-toplevel)/scripts/lib/gocache.sh" mutate)"`,
 		`export GOCACHE="$(cd "$(dirname "$0")" && pwd)/.build-local/.gocache-script"`,
 	}
@@ -553,6 +573,12 @@ func TestGoCacheDedicatedFormsAreRecognized(t *testing.T) {
 		`export GOCACHE="$HOME/.cache/go-build"`,
 		`os.environ["GOCACHE"] = os.path.expanduser("~/.cache/go-build")`,
 		`os.environ["GOCACHE"] = "/tmp/go-build-cache"`,
+		// ★ ★★ **r1049 审计轮加的一条（★ 最重要的一条）**：★★ `gocache.dir_for(`
+		// ★ ★★ **只算路径** ⇒ ⇒ ★★ 它**不建目录**、★★ **不查可写** ⇒ ⇒ ★★ ⇒
+		// ★ ★★ 而 go 拿到一个**不可用**的 GOCACHE 会直接报
+		// ★ ★★ `failed to initialize build cache` ⇒ ⇒ ★★ ⇒ **脚本直接坏掉**
+		// ★ ★★ ⇒ ⇒ ★★ ⇒ 所以它**不算**「指向专用目录」⇒ ⇒ ★★ ⇒ 必须判红。
+		`os.environ["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")`,
 	}
 	for _, s := range notDedicated {
 		if gocacheDedicatedRE.MatchString(s) {

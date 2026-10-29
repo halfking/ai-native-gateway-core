@@ -66,6 +66,21 @@ import os
 import subprocess
 import sys
 
+# ★★ r1049 审计轮补：★ 本台自己**也要**用【共享入口】拿专用 GOCACHE。
+# ★★ 原来这里是**自己拼路径**（★ `os.path.join(ROOT, ".build-local", ".gocache-mutate")`）
+# ★★ ⇒ ⇒ ★★ 而 `scripts/lib/gocache.py` 的包注释**明文禁止**「自己拼路径」
+# ★★ ⇒ ⇒ ★★ ⇒ ★★ ⇒ 而且那条拼出来的形态**在门里认不出来**（★ `.build-local/` 与
+# ★★ `.gocache-mutate` 被 `os.path.join` **拆成两段** ⇒ ⇒ ★★ 门那条正则
+# ★★ `\.build-local/\.gocache-` 匹配不到）⇒ ⇒ ★★ ⇒ ★★ ⇒ 而且它是**不失败安全**的
+# ★★ （★ 不建目录、不查可写）⇒ ⇒ ★★ ⇒ 本台**曾经靠一个变异载荷字符串**
+# ★★ （★ `M02_NEEDLE` 里那句 `.build-local/.gocache-hollowout`）**蒙混过关**。
+for _gc_lib in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")):
+    if os.path.isfile(os.path.join(_gc_lib, "gocache.py")):
+        sys.path.insert(0, _gc_lib)
+        break
+import gocache  # noqa: E402
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 GO_BIN = os.path.join(os.path.expanduser("~"), "sdk", "go", "bin")
@@ -195,13 +210,19 @@ def go_env():
     ★★★ 「读数窗口内的并发负载」⇒ ⇒ ★★★ **工具自己也是被测对象**）。
     ★★★ ⇒ ⇒ ⇒ **无条件覆盖**（★ 不是 setdefault）⇒ ⇒ 即便用户环境里已经设了
     ★★★ `GOCACHE`，子进程也用专用目录（★ 与 `hollowBuildEnv` 同款语义）。
+
+    ★★★★ **r1049 审计轮改的（★ 原来是自己拼路径）**：★★★★ 原来写的是
+    ★★★★ `env["GOCACHE"] = os.path.join(ROOT, ".build-local", ".gocache-mutate")`
+    ★★★★ ⇒ ⇒ ★★★★ ① **不失败安全**（★ 不建目录、不查可写）★★ ⇒ ⇒ ★★★★ ②
+    ★★★★ **自己拼路径**（★ `gocache.py` 的包注释**明文禁止**）★★ ⇒ ⇒ ★★★★ ③
+    ★★★★ **门认不出来**（★ `os.path.join` 把约定**拆成两段**）★★ ⇒ ⇒ ★★★★ ⇒ ★★★
+    ★★★★ ⇒ ★★★ ⇒ 现在走**共享入口** `gocache.env("mutate")`（★ ★★ 它先
+    ★★★★ `ensure()` 建目录并查可写 ⇒ ⇒ 建不出来就**不覆盖** ⇒ ⇒ 脚本照常跑
+    ★★★★ ⇒ ⇒ ★★★ ⇒ ★★★ ⇒ ★★★ ★★ 与仓内**全族**同一份约定 ⇒ ⇒ ★★ ⇒ ★★★
+    ★★★★ ⇒ ★★★★ ⇒ ★★ 6 GB 上限对它也生效（★ ★★ `env()` 内部会剪枝）。
     """
-    env = dict(os.environ)
+    env = gocache.env("mutate")
     env["PATH"] = GO_BIN + os.pathsep + env.get("PATH", "")
-    # ★★ 路径与仓内**全族**（★ shell / Python / Go 的变异台）**同一份约定**：
-    # ★★ `<仓根>/.build-local/.gocache-mutate` ⇒ ⇒ 在 `.gitignore` 里 ⇒ ⇒
-    # ★★ **`git clean -xfd` 一把回收**（★ 共享同一个目录 ⇒ ⇒ 6 GB 上限对它也生效）。
-    env["GOCACHE"] = os.path.join(ROOT, ".build-local", ".gocache-mutate")
     return env
 
 

@@ -1,9 +1,7 @@
 {
   "note": "跨仓漂移账（只降不升）：pendingMergeCriteria = 共享部署库与本仓仍然不同的判据。改动 = 先改共享库，再改本仓，最后更新本基线。",
   "pendingMergeCriteria": [
-    "C3-lock-shape",
-    "C4-release-unlink",
-    "C5-pid-regex"
+
   ],
   "probeExemptions": [
     {

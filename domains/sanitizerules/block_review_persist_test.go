@@ -9,10 +9,10 @@ package sanitizerules
 // 否则用例间互相污染；每个「降级」用例都有对照（持久化正常时行为不同）。
 
 import (
-	"sync/atomic"
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -63,6 +63,26 @@ func (f *fakeReviewPersistence) InsertBlockReview(_ context.Context, r BlockRevi
 	}
 	f.rows[r.ID] = r
 	return r, nil
+}
+
+func (f *fakeReviewPersistence) CountBlockReviewsDB(_ context.Context, status, tenantID string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	count := 0
+	for _, r := range f.rows {
+		if status != "" && r.Status != status {
+			continue
+		}
+		if tenantID != "" && r.TenantID != tenantID {
+			continue
+		}
+		count++
+	}
+	return count, nil
+}
+
+func (f *fakeReviewPersistence) ListEgressRuleEventsInWindowDB(_ context.Context, from, to time.Time, limit int) ([]EgressRuleEventInWindow, error) {
+	return nil, nil
 }
 
 func (f *fakeReviewPersistence) ListBlockReviewsDB(_ context.Context, status, tenantID string, limit int) ([]BlockReview, error) {

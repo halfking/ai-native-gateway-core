@@ -1041,16 +1041,22 @@ for m in re.finditer(r'^ledger_artifact_probe "[^"]+"\s*\\\n\s*".*"$', text, re.
 PYEOF
 )"
 [[ -n "$probe_block" ]] || { printf 'could not extract ledger_artifact_probe calls\n' >&2; exit 1; }
-declare -A probed=()
+# ★ bash 3.2 没有 declare -A（关联数组是 bash 4+）⇒ macOS 自带 bash 在这里
+#   直接死（rc=2）⇒ 掏空门的「读方」在这台机器上**永远起不来** ⇒ 门判「不可判定」。
+#   ⇒ 改用「probed 列表 + 精确匹配」：语义等价（键集合的成员判定），
+#     但不依赖 bash 4。键是受限字符集（迁移文件名 [0-9]{3}_*.sql）⇒
+#     用换行拼接 + grep -Fx 精确整行匹配即可，无歧义。
+probed_list=""
 while IFS= read -r line; do
   target="$(sed -E 's/^ledger_artifact_probe "([^"]+)".*/\1/' <<<"$line")"
-  probed["$target"]=1
+  probed_list+="${target}"$'\n'
 done <<<"$probe_block"
+probed_has() { grep -qFx -- "$1" <<<"$probed_list"; }
 for f in "$ROOT_DIR"/sql/migrations/startup/*.sql; do
   base="$(basename "$f")"
   case "$base" in *.down.sql|*.skip|*.bak.skip) continue;; esac
   case "$base" in 9[0-2][0-9]_*) ;; *) continue;; esac
-  [[ -n "${probed[$base]:-}" ]] || \
+  probed_has "$base" || \
     gate_fail "startup migration ${base} has no ledger_artifact_probe (artifact drift would be silent again)"
 done
 while IFS= read -r line; do
