@@ -220,6 +220,29 @@ const (
 	StatusInconclusive = "inconclusive"
 )
 
+// 扫描面口径。
+//
+// ★ ScopeFeatured 是默认：只探测 routing_policy.featured_models 命中的绑定，
+// 与 model_probe 的 featuredCycle / shared_pick 的 Priority 2 同一张清单。
+// 目的是把「真实 token 成本 + 对上游的请求量」钉在运维真正在用的模型上，
+// 而不是全量目录（全量目录里有大量未投流的长尾绑定）。
+const (
+	// ScopeFeatured 只扫特色模型（routing_policy.featured_models）。
+	ScopeFeatured = "featured"
+	// ScopeAll 扫全部活跃绑定。
+	ScopeAll = "all"
+)
+
+// ValidScope 判断字符串是否是合法扫描面。
+func ValidScope(s string) bool {
+	switch s {
+	case ScopeFeatured, ScopeAll:
+		return true
+	default:
+		return false
+	}
+}
+
 // Anomaly 字符串常量（异常项清单用，跨版本稳定）。
 const (
 	// AnomalyIdentityMismatch 上游自报的模型名与请求模型不同名。

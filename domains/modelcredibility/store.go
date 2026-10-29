@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -535,6 +536,9 @@ func (s *Store) ListRuns(ctx context.Context, credentialID int64, rawModelName s
 // WriteProviderQualityProfiles 把供应商×模型粒度的可信度汇总写到
 // provider_quality_profiles 的 model_credibility_* 三列。
 //
+// ★ targets 为 nil 时写全量（旧行为）；传 targets 时只写本轮扫到的
+// (provider, model) —— 防止已下线模型的历史残留行被误写。
+//
 // ★ 为什么写这三列而不是 reliability_score：
 // reliability_score 在仓内已被 internal/quality/scorer_reliability.go 占用，
 // 含义是「服务可靠性（在线率/一致性/趋势）」⇒ 与「模型是否被偷换」不是
@@ -543,11 +547,17 @@ func (s *Store) ListRuns(ctx context.Context, credentialID int64, rawModelName s
 // ★ 取「最差」而不是平均：掺水是「这家供应商在卖这个模型时至少有一条线
 // 是假的」⇒ 平均会把掺水的那条线稀释掉（3 条好线 + 1 条渗水线 ⇒ 平均分
 // 仍很高 ⇒ 看板上这家仍然「正常」）。
-func (s *Store) WriteProviderQualityProfiles(ctx context.Context) (int, error) {
+func (s *Store) WriteProviderQualityProfiles(ctx context.Context, targets []NodeTarget) (int, error) {
 	if s.db == nil {
 		return 0, fmt.Errorf("store: db pool is nil")
 	}
-	rows, err := s.RollupProviderModel(ctx)
+	var rows []ProviderModelScore
+	var err error
+	if targets == nil {
+		rows, err = s.RollupProviderModel(ctx)
+	} else {
+		rows, err = s.RollupProviderModelFiltered(ctx, targets)
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -629,6 +639,52 @@ func (s *Store) RollupProviderModel(ctx context.Context) ([]ProviderModelScore, 
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate provider model rollup: %w", err)
+	}
+	return out, nil
+}
+
+// RollupProviderModelFiltered 按**本轮扫到的目标**汇总到供应商×模型粒度。
+//
+// ★ 与 RollupProviderModel 的区别：只统计 targets 里出现过的
+// (provider_id, raw_model_name)。没有这个过滤，provider_quality_profiles 会
+// 被历史残留行（模型已下线 / 已移出特色清单）覆盖出与现状无关的行。
+//
+// ★ duplicate 保留：同一 provider+model 有多个凭据时都进结果，
+// 由 upsert 的 ON CONFLICT 收敛到最后一行。
+func (s *Store) RollupProviderModelFiltered(ctx context.Context, targets []NodeTarget) ([]ProviderModelScore, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("store: db pool is nil")
+	}
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	all, err := s.RollupProviderModel(ctx)
+	if err != nil {
+		return nil, err
+	}
+	want := make(map[struct {
+		p int64
+		m string
+	}]struct{}, len(targets))
+	for _, t := range targets {
+		if t.RawModelName == "" {
+			continue
+		}
+		key := struct {
+			p int64
+			m string
+		}{t.ProviderID, strings.ToLower(t.RawModelName)}
+		want[key] = struct{}{}
+	}
+	out := make([]ProviderModelScore, 0, len(want))
+	for _, r := range all {
+		key := struct {
+			p int64
+			m string
+		}{r.ProviderID, strings.ToLower(r.RawModelName)}
+		if _, ok := want[key]; ok {
+			out = append(out, r)
+		}
 	}
 	return out, nil
 }

@@ -57,5 +57,27 @@ func ModelCredibilitySpecs() []*Spec {
 			DangerLevel: Safe,
 			HotReload:   false,
 		},
+		{
+			// 扫描面：featured = routing_policy.featured_models 命中的绑定；
+			// all = 全部活跃绑定。
+			//
+			// ★ 默认 featured 的理由：探测消耗真实 token 并打到上游限流，
+			// 全量目录里有大量未投流的长尾绑定，扫它们花钱又不出结论。
+			// featured 与 model_probe 的 featuredCycle / shared_pick 的
+			// Priority 2 同一张清单 ⇒ 三个探测层对「哪些模型值得看」口径一致。
+			Key:         "model_credibility.scope",
+			Type:        TypeString,
+			Scope:       ScopePlatform,
+			Category:    CategoryModelCredibility,
+			Default:     "featured",
+			Options:     []string{"featured", "all"},
+			Description: "可信度扫描面：featured（只扫特色模型）| all（全部活跃绑定）",
+			DescriptionLong: "featured = 只扫 routing_policy.featured_models 命中的 (凭据,模型) 绑定" +
+				"（与模型探测 featuredCycle、探针模型选择 shared_pick 同一张特色清单）；" +
+				"all = 扫全部活跃绑定（长尾模型也会被打真实请求，token 成本显著上升）。" +
+				"★ 手动单点检测不受本项限制。",
+			DangerLevel: Safe,
+			HotReload:   false,
+		},
 	}
 }

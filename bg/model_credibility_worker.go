@@ -50,14 +50,21 @@ type ModelCredibilityWorkerConfig struct {
 	ProbeTimeout time.Duration
 	// Enabled 为假时 worker 不启动（但仍可被 admin API 手动触发）。
 	Enabled bool
+	// Scope 是扫描面："featured"（默认，只扫 routing_policy.featured_models）
+	// 或 "all"（全部活跃绑定）。
+	Scope string
 }
 
 // DefaultModelCredibilityWorkerConfig 返回默认参数。
+//
+// ★ Scope 默认 featured：把真实 token 成本与对上游的请求量钉在
+// routing_policy.featured_models 命中的绑定上，不扫全量目录。
 func DefaultModelCredibilityWorkerConfig() ModelCredibilityWorkerConfig {
 	return ModelCredibilityWorkerConfig{
 		Interval:     6 * time.Hour,
 		ProbeTimeout: 60 * time.Second,
-		Enabled:      true,
+		Enabled:      false,
+		Scope:        modelcredibility.ScopeFeatured,
 	}
 }
 
@@ -112,8 +119,15 @@ func (w *ModelCredibilityWorker) Start(ctx context.Context) {
 	}
 	w.mu.Unlock()
 
-	slog.Info("model credibility worker started", "interval", interval)
-	go w.loop(ctx, interval, stopCh, doneCh)
+	slog.Info("model credibility worker started", "interval", interval, "scope", w.scope())
+	// ★ Go（bg/spawn.go）而不是裸 go：本仓 2026-09-30（三十七轮审计）把 bg/ 内的
+	// 裸 go 全部收口（panic recover + 日志 + 指标）。
+	// 裸 go 里一个 panic 会带崩整个网关进程（所有在途请求陪葬）。
+	// doneCh 握手保留在 loop 内（close 所有权仍归 loop 自己），
+	// Stop 只等待 30s，语义不变。
+	Go("model_credibility_worker.loop", func() {
+		w.loop(ctx, interval, stopCh, doneCh)
+	})
 }
 
 // Stop 停止 worker。
@@ -142,7 +156,8 @@ func (w *ModelCredibilityWorker) Stop() {
 	slog.Info("model credibility worker stopped")
 }
 
-// loop 扫描主循环。
+// loop 扫描主循环。由 Start 通过 bg.Go（panic 收口）拉起；
+// close(doneCh) 的所有权归本函数。
 func (w *ModelCredibilityWorker) loop(ctx context.Context, interval time.Duration, stopCh <-chan struct{}, doneCh chan<- struct{}) {
 	defer close(doneCh)
 	ticker := time.NewTicker(interval)
@@ -166,12 +181,28 @@ func (w *ModelCredibilityWorker) loop(ctx context.Context, interval time.Duratio
 	}
 }
 
+// scope 返回本次扫描面；配置缺失或非法时回落 featured。
+//
+// ★ 回落而不是报错：一个填错值的配置不应该让扫描整个停摆，
+// 但必须打 WARN 让运维看到「他配的值没生效」。
+func (w *ModelCredibilityWorker) scope() string {
+	if w.cfg.Scope == "" {
+		return modelcredibility.ScopeFeatured
+	}
+	if !modelcredibility.ValidScope(w.cfg.Scope) {
+		slog.Warn("model credibility worker: invalid scope, falling back to featured",
+			"configured", w.cfg.Scope)
+		return modelcredibility.ScopeFeatured
+	}
+	return w.cfg.Scope
+}
+
 // ScanAll 扫描全部活跃节点。
 func (w *ModelCredibilityWorker) ScanAll(ctx context.Context) (int, error) {
 	if w.db == nil {
 		return 0, fmt.Errorf("model credibility worker: db pool is nil")
 	}
-	targets, err := w.source.DiscoverTargets(ctx)
+	targets, err := w.source.DiscoverTargets(ctx, w.scope())
 	if err != nil {
 		return 0, fmt.Errorf("discover credibility targets: %w", err)
 	}
@@ -185,7 +216,9 @@ func (w *ModelCredibilityWorker) ScanAll(ctx context.Context) (int, error) {
 		return len(results), err
 	}
 	// 把供应商×模型粒度的汇总写回 provider_quality_profiles。
-	if n, err := scanner.Store.WriteProviderQualityProfiles(ctx); err != nil {
+	// ★ 传 targets：只写本轮扫到的 (provider, model)，防止历史残留行
+	// （已下线/已移出特色清单的模型）被误写。
+	if n, err := scanner.Store.WriteProviderQualityProfiles(ctx, targets); err != nil {
 		slog.Warn("model credibility: write provider quality profiles failed", "error", err)
 	} else if n > 0 {
 		slog.Info("model credibility: provider quality profiles updated", "rows", n)
@@ -207,7 +240,7 @@ func (w *ModelCredibilityWorker) ScanNode(ctx context.Context, credentialID int6
 	if err != nil {
 		return nil, err
 	}
-	if _, err := scanner.Store.WriteProviderQualityProfiles(ctx); err != nil {
+	if _, err := scanner.Store.WriteProviderQualityProfiles(ctx, nil); err != nil {
 		slog.Warn("model credibility: write provider quality profiles failed", "error", err)
 	}
 	return &res, nil

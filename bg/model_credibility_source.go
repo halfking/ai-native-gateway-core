@@ -37,18 +37,21 @@ func NewCredibilityNodeSource(db *pgxpool.Pool, keyring *secret.Keyring, encKey 
 	return &CredibilityNodeSource{db: db, keyring: keyring, encKey: encKey}
 }
 
-// DiscoverTargets 列出所有活跃的 (凭据, 模型) 节点，带上探测所需字段。
+// buildCredibilityTargetsSQL 生成节点发现 SQL。
 //
-// ★ 过滤口径（与 bg/quality_node_source.go 一致，另加两条）：
-//   - 凭据/供应商/模型绑定都必须是活跃可路由的；
-//   - ★ 排除 unavailable_reason LIKE 'manual%' 的绑定 —— 那是**运维人工
-//     下线**（含「协议红批量下线」），不是「这家的模型是假的」⇒ 不该被
-//     可信度扫描重新评价，也不该因为探测失败而被记成掺水。
-func (s *CredibilityNodeSource) DiscoverTargets(ctx context.Context) ([]modelcredibility.NodeTarget, error) {
-	if s.db == nil {
-		return nil, fmt.Errorf("credibility node source: db pool is nil")
+// ★ 抽成函数（照搬 R170 的判据原则：判据必须落在【产物】上）——
+// scope 过滤的形态断言测试直接断言这条 SQL 的最终形态，
+// 而不是去扫源码片段。
+func buildCredibilityTargetsSQL(scope string) string {
+	featuredFilter := ""
+	if scope == modelcredibility.ScopeFeatured {
+		featuredFilter = `
+		  AND (
+		    pm.standardized_name = ANY(COALESCE(pol.featured_models, ARRAY[]::text[]))
+		    OR pm.raw_model_name = ANY(COALESCE(pol.featured_models, ARRAY[]::text[]))
+		  )`
 	}
-	rows, err := s.db.Query(ctx, `
+	return `
 		SELECT c.id,
 		       c.provider_id,
 		       COALESCE(p.display_name, p.code, ''),
@@ -65,7 +68,9 @@ func (s *CredibilityNodeSource) DiscoverTargets(ctx context.Context) ([]modelcre
 		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
 		JOIN credentials c ON c.id = cmb.credential_id
 		JOIN providers p ON p.id = c.provider_id
-		WHERE COALESCE(c.status, 'active') = 'active'
+		CROSS JOIN routing_policy pol
+		WHERE pol.tenant_id = 'default'` + featuredFilter + `
+		  AND COALESCE(c.status, 'active') = 'active'
 		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
 		  AND COALESCE(c.availability_state, 'ready') NOT IN ('suspended')
 		  AND COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted','balance_exhausted')
@@ -76,7 +81,26 @@ func (s *CredibilityNodeSource) DiscoverTargets(ctx context.Context) ([]modelcre
 		  AND COALESCE(pm.available, TRUE) = TRUE
 		  AND COALESCE(pm.unavailable_reason, '') NOT LIKE 'manual%'
 		ORDER BY c.id, pm.raw_model_name
-	`)
+	`
+}
+
+// DiscoverTargets 列出所有活跃的 (凭据, 模型) 节点，带上探测所需字段。
+//
+// scope 控制扫描面：
+//   - ScopeFeatured（默认）：只取 routing_policy.featured_models 命中的绑定
+//     ——与 model_probe featuredCycle / shared_pick Priority 2 同一张清单。
+//   - ScopeAll：全部活跃绑定。
+//
+// ★ 过滤口径（与 bg/quality_node_source.go 一致，另加两条）：
+//   - 凭据/供应商/模型绑定都必须是活跃可路由的；
+//   - ★ 排除 unavailable_reason LIKE 'manual%' 的绑定 —— 那是**运维人工
+//     下线**（含「协议红批量下线」），不是「这家的模型是假的」⇒ 不该被
+//     可信度扫描重新评价，也不该因为探测失败而被记成掺水。
+func (s *CredibilityNodeSource) DiscoverTargets(ctx context.Context, scope string) ([]modelcredibility.NodeTarget, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("credibility node source: db pool is nil")
+	}
+	rows, err := s.db.Query(ctx, buildCredibilityTargetsSQL(scope))
 	if err != nil {
 		return nil, fmt.Errorf("query credibility node targets: %w", err)
 	}
@@ -123,11 +147,13 @@ func (s *CredibilityNodeSource) DiscoverTargets(ctx context.Context) ([]modelcre
 //
 // rawModelName 大小写不敏感匹配 raw_model_name 或 outbound_model_name
 // （运维在界面上看到的可能是其中任一个）。
+// ★ 手动触发不受 scope 限制：单点排查时运维就是要看指定的那个模型，
+//   哪怕它不在特色清单里。
 func (s *CredibilityNodeSource) FindTarget(ctx context.Context, credentialID int64, rawModelName string) (*modelcredibility.NodeTarget, error) {
 	if rawModelName == "" {
 		return nil, fmt.Errorf("rawModelName required")
 	}
-	targets, err := s.DiscoverTargets(ctx)
+	targets, err := s.DiscoverTargets(ctx, modelcredibility.ScopeAll)
 	if err != nil {
 		return nil, err
 	}
