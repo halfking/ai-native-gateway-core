@@ -90,6 +90,15 @@ func NewMandatoryOutputComplianceInterceptor(checker interface {
 	if stateKey == "" {
 		stateKey = "mandatory_output.pending"
 	}
+	// ★ 启动即把【生效值】说清楚（2026-10-29 输出合规误报轮）：
+	// 运维要能在日志里直接确认「缓冲上限抬到多少、越界是放行还是阻断」——
+	// 否则只能读代码才知道线上跑的是哪套。
+	slog.Info("output compliance guard configured",
+		"pending_max_bytes", compliancePendingCap(),
+		"pending_max_mib", compliancePendingCap()>>20,
+		"cap_mode", complianceCapMode(),
+		"capacity_rule", GuardCapacityRuleID,
+	)
 	return &OutputComplianceInterceptor{checker: checker, mandatory: true, stateKey: stateKey}
 }
 
