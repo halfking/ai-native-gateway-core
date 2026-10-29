@@ -236,7 +236,7 @@ func ListBlockReviews(status, tenantID string, limit int) []BlockReview {
 			return rows
 		}
 		slog.Warn("sanitize block review list from db failed; falling back to in-process queue",
-			"error", err)
+			"error", err, "root_cause", storeErrorDetail(err))
 	}
 	return listBlockReviewsMemory(status, tenantID, limit)
 }
@@ -256,7 +256,7 @@ func attachBlockReviewEvidence(ctx context.Context, p ReviewPersistence, rows []
 	evidence, err := p.ListBlockReviewEvidenceDB(ctx, ids)
 	if err != nil {
 		slog.Warn("sanitize block review evidence read failed; showing records without evidence",
-			"error", err)
+			"error", err, "root_cause", storeErrorDetail(err))
 		return
 	}
 	for i := range rows {

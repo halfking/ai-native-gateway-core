@@ -6,11 +6,13 @@ package sanitizerules
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func newMockStore(t *testing.T) (*PostgresStore, sqlmock.Sqlmock) {
@@ -184,5 +186,58 @@ func TestPgGetMissingReviewMapsNotFound(t *testing.T) {
 			"created_at", "decided_by", "decided_at"}))
 	if _, err := s.GetBlockReviewDB(context.Background(), 999); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("不存在的单应映射 ErrNotFound（404），got %v", err)
+	}
+}
+
+// TestStoreErrorKeepsRootCause：错误清洗**不能把根因一起洗掉**，但**也不能
+// 把绑定参数回显出来**。
+//
+// ★ 2026-10-29（211 生产实测）：「审核单列表读库失败」只留下一句
+// 「sanitize rule block review list read failed」⇒ 根因（哪一列不存在 /
+// 哪个连接池被关 / 权限不足）一个都看不到 ⇒ 定位只能靠猜。
+// ⇒ 对外消息**逐字不变**，另带一个**可安全外露**的结构化根因切片。
+func TestStoreErrorKeepsRootCause(t *testing.T) {
+	root := errors.New(`ERROR: relation "sanitize_block_reviews" does not exist (SQLSTATE 42P01)`)
+	err := storeError("block review list read", root)
+	if err == nil {
+		t.Fatal("storeError 不该返回 nil")
+	}
+	if !strings.Contains(err.Error(), "sanitize rule block review list read failed") {
+		t.Fatalf("对外消息必须逐字不变，got %q", err.Error())
+	}
+	// 自由文本（含参数回显）**不能**出现在对外消息里。
+	if strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("原始错误文本不得外露（可能回显绑定参数），got %q", err.Error())
+	}
+	// 根因切片：非 PG 错误 ⇒ detail_unavailable（不许编）。
+	if got := storeErrorDetail(err); got != "detail_unavailable" {
+		t.Fatalf("非 PG 错误的根因切片应是 detail_unavailable，got %q", got)
+	}
+}
+
+// TestStoreErrorDetailCarriesPGFields：PG 错误 ⇒ 根因切片带 SQLSTATE 与
+// 约束/列名（这些**不含绑定参数**），但**不含**驱动的自由文本。
+func TestStoreErrorDetailCarriesPGFields(t *testing.T) {
+	pgErr := &pgconn.PgError{
+		Code:           "42P01",
+		Message:        "relation \"sanitize_block_reviews\" does not exist",
+		ConstraintName: "",
+		ColumnName:     "",
+	}
+	// 驱动会把绑定参数回显在自由文本里，但**结构化的 PgError 仍在链上**。
+	wrapped := fmt.Errorf("insert failed: password=[REDACTED:secret]] at character 1: %w", pgErr)
+	err := storeError("block review insert", wrapped)
+	if !strings.Contains(err.Error(), "sanitize rule block review insert failed") {
+		t.Fatalf("对外消息必须逐字不变，got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "password=[REDACTED:secret]]") {
+		t.Fatalf("参数回显不得外露，got %q", err.Error())
+	}
+	detail := storeErrorDetail(err)
+	if !strings.Contains(detail, "sqlstate=42P01") {
+		t.Fatalf("根因切片必须带 SQLSTATE，got %q", detail)
+	}
+	if !strings.Contains(detail, "does not exist") {
+		t.Fatalf("根因切片必须带 PG message，got %q", detail)
 	}
 }

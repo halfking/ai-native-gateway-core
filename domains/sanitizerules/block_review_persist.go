@@ -97,14 +97,14 @@ func InstallReviewPersistence(p ReviewPersistence) {
 	defer cancel()
 	if releases, err := p.LoadEgressReleasesDB(ctx); err != nil {
 		slog.Warn("sanitize egress release boot load failed; releases fall back to empty",
-			"error", err)
+			"error", err, "root_cause", storeErrorDetail(err))
 	} else {
 		SetEgressReleases(releases)
 		slog.Info("sanitize egress releases loaded from database", "count", len(releases))
 	}
 	if allows, found, err := p.LoadHardBlockState(ctx); err != nil {
 		slog.Warn("sanitize hardblock state boot load failed; keeping env/default list",
-			"error", err)
+			"error", err, "root_cause", storeErrorDetail(err))
 	} else if found {
 		SetHardBlockAllows(allows)
 		items := make([]string, 0, len(allows))

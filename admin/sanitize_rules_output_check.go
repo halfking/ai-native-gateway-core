@@ -33,6 +33,7 @@ package admin
 // （「为什么我被拦了」），不可写。
 
 import (
+	"log/slog"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -229,6 +230,10 @@ func (h *Handler) handleBlockReviewInsights(w http.ResponseWriter, r *http.Reque
 	}
 	insights, err := sanitizerules.BlockReviewInsights(tenant, limit)
 	if err != nil {
+		// ★ 根因要进日志（对外消息保持不变）：只写「failed to read …」时，生产上
+		// 看不到「哪一列不存在 / 哪个连接池被关 / 权限不足」⇒ 定位只能靠猜。
+		slog.Warn("sanitize block review insights read failed",
+			"error", err, "root_cause", sanitizerules.StoreErrorDetail(err))
 		writeError(w, http.StatusServiceUnavailable, "failed to read block review insights")
 		return
 	}
