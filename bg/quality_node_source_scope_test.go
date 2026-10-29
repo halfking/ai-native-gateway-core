@@ -24,7 +24,11 @@ func TestPerNodeTargetsScopedAndDeduped(t *testing.T) {
 		// featured 收窄：与 model_credibility 的 buildCredibilityTargetsSQL 同口径
 		"pm.standardized_name = ANY(COALESCE(pol.featured_models, ARRAY[]::text[]))",
 		"pm.raw_model_name = ANY(COALESCE(pol.featured_models, ARRAY[]::text[]))",
-		"WHERE pol.tenant_id = 'default'",
+		"pol.tenant_id = 'default'",
+		// ★ 装配纪律：JOIN 片段与条件片段分离，单 WHERE（首版双 WHERE ⇒ 42601）
+		`joinFrag := ""`,
+		`condFrags := []string{}`,
+		"extraConds",
 		// 去重：成功实测在窗口内的节点跳过
 		"FROM model_iq_runs r",
 		"AND r.status = 'success'",
