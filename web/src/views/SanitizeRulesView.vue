@@ -2052,7 +2052,7 @@ summary {
   color: var(--text-secondary, var(--muted));
 }
 .hardblock-entry {
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .event-meta {
   margin: 0 0 8px;

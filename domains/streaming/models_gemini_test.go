@@ -30,6 +30,7 @@ func TestServeGeminiModels_NativeShape(t *testing.T) {
 	rows := pgxmock.NewRows([]string{"canonical_name", "family", "modality", "context_window"}).
 		AddRow("gemini-2.5-flash", "gemini", "text", nil)
 	mock.ExpectQuery(`credential_model_bindings cmb`).
+		WithArgs(true).
 		WillReturnRows(rows)
 
 	h := NewModelsHandler()
@@ -99,15 +100,18 @@ func TestWriteGeminiEntries_MapsContextWindow(t *testing.T) {
 	}
 }
 
-// ★ TestServeGeminiModels_DoesNotPromiseCountTokens pins that the list
-// only advertises the generation methods this gateway ACTUALLY serves
-// for a Gemini upstream.
+// ★ TestServeGeminiModels_AdvertisesCountTokens pins that the list
+// advertises exactly the actions this gateway ACTUALLY serves.
 //
-// ★ The gateway does not implement :countTokens (it needs an honest
-// token count, which means forwarding to the upstream — see the audit
-// doc). Listing it would be a promise the gateway does not keep, and a
-// native SDK that trusts the list would then call it and fail.
-func TestServeGeminiModels_DoesNotPromiseCountTokens(t *testing.T) {
+// ★ 2026-10-29（countTokens 轮）：这条门**方向翻转过**——上一轮它断言
+// 「列表**不列** countTokens」（理由：网关没实现它 ⇒ 列一个自己做不到的
+// 方法 = 给客户端一个它会当真、然后失败的承诺）。⇒ 本轮**实现了**
+// countTokens ⇒ ⇒ 承诺兑现 ⇒ ⇒ **必须列** ⇒ ⇒ 门改成断言「列」。
+//
+// ★★ 能力清单必须与实现**双向**对账：实现了不列 = 对外说做不到（客户端
+// 于是去找厂商要）；列了不做 = 承诺不兑现（客户端当真然后失败）。
+// ★ 两个方向都会骗到人 ⇒ 门必须钉住**集合相等**，而不是钉住"包含"。
+func TestServeGeminiModels_AdvertisesCountTokens(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("pgxmock: %v", err)
@@ -117,6 +121,7 @@ func TestServeGeminiModels_DoesNotPromiseCountTokens(t *testing.T) {
 	rows := pgxmock.NewRows([]string{"canonical_name", "family", "modality", "context_window"}).
 		AddRow("gemini-2.5-flash", "gemini", "text", nil)
 	mock.ExpectQuery(`credential_model_bindings cmb`).
+		WithArgs(true).
 		WillReturnRows(rows)
 
 	h := NewModelsHandler()
@@ -130,11 +135,30 @@ func TestServeGeminiModels_DoesNotPromiseCountTokens(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+	if len(payload.Models) != 1 {
+		t.Fatalf("models = %+v, want exactly one entry", payload.Models)
+	}
+
+	// The advertised set must EQUAL the set the gateway serves.
+	want := map[string]bool{
+		"generateContent":       true,
+		"streamGenerateContent": true,
+		"countTokens":           true,
+	}
+	got := map[string]bool{}
 	for _, m := range payload.Models {
 		for _, method := range m.SupportedGenerationMethods {
-			if method == "countTokens" {
-				t.Errorf("model %q advertises countTokens, which the gateway does not implement", m.Name)
-			}
+			got[method] = true
+		}
+	}
+	for method := range want {
+		if !got[method] {
+			t.Errorf("the list does not advertise %q, but the gateway serves it", method)
+		}
+	}
+	for method := range got {
+		if !want[method] {
+			t.Errorf("the list advertises %q, which the gateway does not serve", method)
 		}
 	}
 }
@@ -156,6 +180,7 @@ func TestServeGeminiModels_SameSourceAsOpenAIList(t *testing.T) {
 		rows := pgxmock.NewRows([]string{"canonical_name", "family", "modality", "context_window"}).
 			AddRow("gemini-2.5-flash", "gemini", "text", nil)
 		mock.ExpectQuery(`credential_model_bindings cmb`).
+			WithArgs(true).
 			WillReturnRows(rows)
 	}
 

@@ -36,6 +36,7 @@
 
 import os
 import shutil
+import sys
 
 # MAX_BYTES 是【专用缓存】的尺寸上限（★ 6 GB）。
 #
@@ -64,6 +65,67 @@ def repo_root() -> str:
 def dir_for(root: str, purpose: str = "mutate") -> str:
     """返回某个用途的【专用构建缓存目录】的绝对路径（★ **不创建**）。"""
     return os.path.join(root, REL_DIR_PREFIX + purpose)
+
+
+def ensure(root: str, purpose: str = "mutate") -> bool:
+    """确保专用缓存目录**建得出来** ⇒ 返回它是否可用。
+
+    ★★★★ **失败安全**（★ r1048 轮加的）：★★★★ 目录**建不出来**时
+    ★★★★ **不许把它当 GOCACHE** ⇒ ⇒ ★★★★ 因为 go 拿到一个**不可用**的 GOCACHE
+    ★★★★ 会直接报 `failed to initialize build cache` ⇒ ⇒ ★★★★ ⇒ **脚本直接坏掉**
+    ★★★★ ⇒ ⇒ ★★★★ 而「脚本坏掉」比「这次没隔离」**严重得多** ⇒ ⇒ ★★★★ ⇒
+    ★★★★ ⇒ **宁可漏隔离，也不许把脚本弄坏**（★ 与仓内「★ 清理是卫生问题，
+    ★★★★ ★★ 不该让它变成判据问题」那条纪律**同款**）。
+    """
+    d = dir_for(root, purpose)
+    try:
+        os.makedirs(d, exist_ok=True)
+    except OSError as exc:
+        sys.stderr.write(
+            "★ 专用构建缓存 %s 建不出来 ⇒ ⇒ 本次**不设** GOCACHE（★ 回落用环境里的那个 ⇒ ⇒ 脚本照常跑）：%s\n"
+            % (d, exc)
+        )
+        return False
+    # ★ ★★ **可写性也要查**（★ r1048 轮运行期实测逼出来的）：★★ 只查「目录在不在」
+    # ★ ★★ ⇒ ⇒ ★★ 是不够的 ⇒ ⇒ ★★ 因为目录**早就建好了**（★ 上一次跑过）⇒ ⇒ ★★
+    # ★ ★★ `makedirs(exist_ok=True)` 会**成功** ⇒ ⇒ ★★ ⇒ 「在不在」这一条**判绿**
+    # ★ ★★ ⇒ ⇒ ★★ ⇒ 而那个目录**其实不可写** ⇒ ⇒ ★★ ⇒ go 照样会报错 ⇒ ⇒ ★★ ⇒
+    # ★ ★★ ⇒ **脚本照样坏掉** ⇒ ⇒ ★★ ⇒ 所以必须查**可写性**。
+    if not os.access(d, os.W_OK | os.X_OK):
+        sys.stderr.write(
+            "★ 专用构建缓存 %s 不可写 ⇒ ⇒ 本次**不设** GOCACHE（★ 回落用环境里的那个 ⇒ ⇒ 脚本照常跑）\n"
+            % d
+        )
+        return False
+    return True
+
+
+def apply_to_environ(purpose: str = "mutate", root: str = None) -> bool:
+    """把**当前进程**的 `GOCACHE` 指向专用目录（★ 返回是否生效）。
+
+    ★★ **为什么需要这个形态**：★★ Python 的 `subprocess` **默认继承**
+    ★★ `os.environ` ⇒ ⇒ ★★ 所以**在脚本开头改一次 `os.environ`** ⇒ ⇒ ★★
+    ★★ ⇒ 后面所有 `subprocess.run(…)`（★ **只要没有显式传 `env=`**）⇒ ⇒
+    ★★ ⇒ 都会拿到专用目录 ⇒ ⇒ ★★ ⇒ **一处改动 ⇒ 覆盖整份脚本**。
+
+    ★★ **无条件覆盖**（★ 不是 `setdefault`）：★★ ★★ 否则用户环境里已经设了
+    ★★ `GOCACHE` ⇒ ⇒ ★★ **悄悄回落用全局缓存** ⇒ ⇒ ★★ ⇒ **门绿着，而隔离
+    ★★ 根本没生效**（★ ★★ 这正是 r1047 轮 M04 臂逼出来的那条纪律）。
+
+    ★★ **失败时不改**（★ 见 `ensure` 的注释）：★★ ⇒ ⇒ ★★ 脚本照常跑。
+    """
+    if root is None:
+        try:
+            root = repo_root()
+        except Exception as exc:  # ★ 问不到仓根 ⇒ ⇒ 宁可漏隔离 ⇒ ⇒ 也不许坏脚本
+            sys.stderr.write(
+                "★ 解析仓根失败 ⇒ ⇒ 本次**不设** GOCACHE（★ 不影响脚本继续跑）：%s\n" % exc
+            )
+            return False
+    if not ensure(root, purpose):
+        return False
+    os.environ["GOCACHE"] = dir_for(root, purpose)
+    return True
 
 
 def prune(root: str, purpose: str = "mutate") -> bool:
@@ -104,5 +166,14 @@ def env(purpose: str = "mutate", root: str = None) -> dict:
         root = repo_root()
     prune(root, purpose)
     e = dict(os.environ)
-    e["GOCACHE"] = dir_for(root, purpose)
+    # ★★★★ **失败安全**（★ r1048 轮）：★★★★ 专用目录**建不出来**时
+    # ★★★★ **不覆盖** GOCACHE ⇒ ⇒ ★★★★ 因为 go 拿到一个**不可用**的 GOCACHE
+    # ★★★★ 会直接报错 ⇒ ⇒ ★★★★ ⇒ **脚本直接坏掉** ⇒ ⇒ ★★★★ ⇒
+    # ★★★★ ⇒ **宁可漏隔离，也不许把脚本弄坏** ⇒ ⇒ ★★★★ ⇒ 此时**原样保留**
+    # ★★★★ ⇒ 环境里原本的那个（★ 它可能是**空的** ⇒ ⇒ 那种情况下**删掉这个键**
+    # ★★★★ ⇒ ⇒ 别让子进程拿到空串 ⇒ ⇒ go 会报「不是绝对路径」）。
+    if ensure(root, purpose):
+        e["GOCACHE"] = dir_for(root, purpose)
+    elif not os.environ.get("GOCACHE"):
+        e.pop("GOCACHE", None)
     return e

@@ -14850,6 +14850,45 @@ upstream_request 完整在场。
 ⇒ 提交 `51cb63a80`（已推 origin）；审计档
 `docs/audit/2026-10-29-客户端识别轮-原厂规范对照与线材实态.md`；
 通用式见 `LESSONS.md` **§551**。
+ **2026-10-29 24h 审计第 5 轮：opened 缺口复扫 + asm audit sink 根因轮**（goal 会话）：
+ ★ 承接第 4 轮遗留四项（①origin/main HEAD 部署确认+§3.5 复扫 ②asm audit sink 根因
+ ③6 家 proxy 供应商复查 ④零基线复核）⇒ 全部收口。
+ ⇒ ★ **①缺口再生 = 0**（§3.5 判据原样重扫：total/6h 窗/1h 窗全 0；对照上轮 ~11/h ⇒
+ 期望 ~66）⇒ 行为上 `2c7dcf48c` 的根修已在活跃槽生效；活跃槽镜像仍 sha 不可验祖
+ （`5fbba4ef-dirty`，02:00 上线）⇒ 本轮以 origin/main HEAD 正式部署收掉不确定性。
+ **④零基线全保持**：outbox dlq 0/failed 0/pending 1；asm inbox retryable 0；
+ 三方对拍 97,100 逐位一致（sent==inbox==projection==checkpoint）；session_projection
+ 45,655 == opened sent 45,655。
+ ⇒ ★★ **②asm audit sink 最初根因 = acc-pg17 连接耗尽**：1,572 条 WARN 聚 7 个突发，
+ 每个突发分钟 PG 日志都有 `too many clients already`（全窗 724 次，最后 10-28 21:30，
+ 此后 26h+ 零复发）；asm 二进制把 pgx 底因整体丢弃 ⇒ asm 仓 `internal/audit/mapping.go`
+ 改双 `%w`（sentinel + 底因可 As）⇒ 提交 `61aa202` 已推 asm origin（容器下次构建生效）。
+ 数据零丢失：97,100 三方一致；失败窗 audit_events 仍有 10,259 行 ⇒ 部分失败非断供。
+ ⇒ ★ **③6 家 proxy 供应商（azure/gemini/mistral/openai/perplexity/xai）= 结构性休眠**：
+ 0 凭据 / 0 订阅（`proxy_subscriptions` 空表）/ 7 天 0 流量 ⇒ 无候选不进路由无故障面，
+ 处置=保持不动。第 4 轮 7 家 proxy→direct 切换 211 已生效（updated_at 10-29）。
+ ⇒ ★★ **同轮修掉的既有红（全 origin/main 实测红）**：合并三股（origin/main 含 sanitize
+ 917 族+客户端识别轮、本地第 4 轮终态文档、**r98 R179 分支 15 提交**——唯一未合并
+ 不活跃子分支，逐文件 merge 一次落位）；design-spacing 门 9 处离阶归零（平局取下界：
+ 6→4/10→8/14→12）；db-object 台账三件套按仓内工具原路再生（917 三索引，diff 先行
+ 确认只有新增）；request-surface 文档证据行号重锚（179→185）；**917 族连带四件套补齐**
+ （manifest 行 / lock guard 999d1c9e6 同款 / embed 字节副本 / 台账最后再生一遍——
+ manifest 变化会让 reachability 翻转，台账必须收尾再生）。
+ ⇒ ★ **runner 台账↔产物对账门**（`apply-db-revision-sequence.sh`）：912「台账 sha 一致
+ 而产物缺席」挂了两天才被发现 ⇒ 对本轮按指纹跳过/重放的 912/913 逐表 to_regclass 探针，
+ 产物不在 ⇒ exit 5 响亮失败。★ 第一版被 runtime fixture 抓回（夹具故意造「记账行在
+ 产物不在」测 legacy-skip）⇒ 探针范围收窄到 `sha_matched_markers`（本轮认过账的文件），
+ 不是「库里所有记账行」。
+ ⇒ ★ **如实记**：vitest 2 红（`theme.logoAssets.test.ts`）= pure origin/main 既有红 ——
+ a83698efc 换入的经典 logo 资产（ratio=1.000/luma 139.5）不满足同提交自己的测试合同
+ （48%/<110），换资产还是改阈值属品牌设计判断 ⇒ 移交品牌轮当事会话，本轮不代拍板。
+ 慢 SQL：6h 慢日志全部为有界维护作业（REFRESH 1.7s / promote ~1s / URSM health 4.3s/h
+ ——5.3M 行 7d 全窗扫是设计固有，不为 4.3s 冒语义险）；`pg_stat_statements` 未进
+ shared_preload_libraries（需重启 acc-pg17，留用户决断）。
+ ⇒ 审计档 `docs/audit/2026-10-29-24h审计第5轮-opened缺口复扫与asm审计根因.md`；
+ 通用式见 `LESSONS.md` **§552**（6 条：Retryable 别丢底因 / 突发分钟按分钟对拍 /
+ 指纹证明执行不证明在场+探针范围=本轮认账 / 结构休眠≠故障 / 资产换代同轮过测试 /
+ 上游红条按依赖序收口且台账最后再生）。
 **2026-10-29 第 38 增量：252 SQL 日志审计 R176 轮（ursm 巡检三族降本 + INV-4 探针资格门索引化）**（goal 会话）：
 ★ 承接例行 252 审计节奏（R175 同日为 routing REFRESH 深潜、未做日志窗）⇒ 本轮 26.4h 全窗
 （10-28 03:37 → 10-29 06:03，真实内容 178MB，**copytruncate NUL 洞 1.12GB 第四次复发**）
@@ -14899,3 +14938,241 @@ sequence.sh、concurrency gate 计数（920: 1）、db-changelog 三行（917 sa
 容器仍修复前代码 N+5）；8 条 ursmcheck 既有红的修复（属上游引入轮）。
 ⇒ 审计档 `docs/audit/2026-10-29-R176-252SQL日志审计-ursm三族降本与探针资格索引化.md`；
 通用式见 `LESSONS.md` **§555**（8 条形态）。
+
+**2026-10-29 ㊼ r1048 轮：B 级脚本族 ⇒ 专用构建缓存 + 普查结论 + 三处收口决策**（会话 `mvs_fa34e3337b364fbeb9bc961fac211729`）：
+> ★ 承接 r1047 轮 —— 那一轮**诚实地**把【B 级脚本族】（审计 / 部署 / 压测）写成
+> 【**明确的漏判面**】⇒ ⇒ ★★ ⇒ **本轮是那个缺口的兑现**（★ 不是「假装覆盖了」）。
+> ⇒ ★★ **普查（★ 仓内全部 `.sh` / `.py`，★ 排除 `docs/` / `web/` / `web-mobile/`）**：
+> ⇒ **编译型**脚本 **165** 个 ⇒ ★★ A 级（改树 ⇒ 跑 go test ⇒ 还原）**68** +
+> ⇒ B 级 **97**（★ shell 94 + python 3）⇒ ⇒ ★★ ⇒ **B 级轮前覆盖 0**。
+> ⇒ ★★★ **体积实测（★ 两个全新空缓存，★ 本机）**：★★★ **单包**
+> ⇒ `go test ./admin/` = **846 MB**；**整模块带 tag** `go build -tags=integration ./...`
+> ⇒ = **997 MB** ⇒ ⇒ ★★ **单包是整模块的 85%** ⇒ ⇒ ★★ ⇒ **体积由【传递依赖闭包】
+> ⇒ 决定、不由【包个数】决定** ⇒ ⇒ ★★ ⇒ ⇒ **「单包小可以放过」是错的** ⇒ ⇒ ★★ ⇒
+> ⇒ ⇒ **「按编译范围分层豁免」在实测面前不成立** ⇒ ⇒ ★★ ⇒ ⇒ **全隔离**。
+> ⇒ ★★★ **普查里最值钱的一处**：★★★ `scripts/deploy-local.sh` /
+> ⇒ `scripts/deploy-252-gateway.sh` / `scripts/deploy-seamless.sh` 三家**同时**有
+> ⇒ **宿主腿**（★ `GOOS=linux go build` ⇒ ⇒ **一个字都没设 GOCACHE** ⇒ ⇒ 泄漏）与
+> ⇒ **容器腿**（★ `-e GOCACHE=/tmp/go-build-cache` ⇒ ⇒ 容器自带缓存 + `--rm` ⇒ ⇒
+> ⇒ 本来就隔离）⇒ ⇒ ★★★ ⇒ ⇒ **「容器腿已隔离」不能代表「宿主腿也隔离」** ⇒ ⇒ ★★★ ⇒
+> ⇒ ⇒ **普查读到「某条腿隔离了」必须逐条腿点名**。
+> ⇒ ★★★ **逐个读懂读出来的一处**：★★★ `scripts/audit/measure-factsource-cost-matrix.sh`
+> ⇒ 用 `env -i "${BASE_ENV[@]}" … go test` ⇒ ⇒ **`env -i` 清空环境** ⇒ ⇒ 顶部那个
+> ⇒ `export GOCACHE` **被抹掉** ⇒ ⇒ ⇒ **隔离失效而门是绿的** ⇒ ⇒ ★★★ ⇒ 「设了」≠「用上了」。
+> ⇒ ★★ **新门** `scripts/ursmcheck/gocache_script_family_guard_test.go`（★ **5 条判据**，
+> ⇒ ★★ 每条一个独立 `Test` 函数 ⇒ ⇒ 好让变异臂**精准命中**）：★ ① 覆盖面 + 证据形态
+> ⇒ （★ 共享入口委托 **或** `.build-local/.gocache-` 字面路径 ⇒ ★★ ★★ 路径形态**收紧**成
+> ⇒ `.gocache-` 是因为 `.build-local/` 在本仓**同时**用于【构建产物】⇒ ⇒ 只认 `.build-local/`
+> ⇒ ⇒ **假绿** ⇒ ★ 实测命中 5 个文件）；★ ② **条件式不算隔离**（★ `${GOCACHE:-…}` /
+> ⇒ `setdefault` ⇒ ⇒ 悄悄回落）；★ ③ **`env -i` 不许抹掉隔离**；★ ③' **不许「两处都有」**
+> ⇒ （★ 有对的那处 + 有**覆盖它**的那处 ⇒ ⇒ 「有没有专用证据」判绿 ⇒ ⇒ **假绿**）；
+> ⇒ ★ ④ **GOMODCACHE 不许进 `.build-local/`**（★ 反向判据 ⇒ 防「隔离过头」）；★ ⑤
+> ⇒ **排除清单逐字对拍**。★★ 另加 **2 条搜索面完整性自检**（★ 「0 命中」有两种读法 ⇒
+> ⇒ §419 的通式）。★★ **排除清单登记簿** `scripts/ursmcheck/gocache_script_family_exclusions.json`
+> ⇒ ★★ 登记的是【**目录** + 理由 + 实测计数】⇒ ⇒ ★★ ⇒ 目录里的脚本**仍受门管**
+> ⇒ ⇒ ★★ ⇒ ⇒ **白名单没有退化成「点名制」**（★ r1047 轮自己提过这个两难）。
+> ⇒ ★★ **改动面**：★ **94 个 shell + 3 个 python** 接上【专用缓存】（★ 目录统一
+> ⇒ `.build-local/.gocache-script`、★ 6 GB 上限自动剪枝、★ `git clean -xfd` 可回收）；
+> ⇒ ★★ 另加 **2 处定点修法**（★ ① `env -i` 那个 env 数组里的 GOCACHE ⇒ ⇒ 改成**显式带出**
+> ⇒ 专用目录；★ ② `r1039-mixed-width-e2e-ab.py` 里 `GOCACHE=~/sdk/gocache` ⇒ ⇒ **删掉**
+> ⇒ ⇒ ⇒ **它会覆盖掉**前导块设好的那个）。
+> ⇒ ★★ **硬化两个共享入口（★ 这是「让 97 个文件改动变安全」的前置）**：★
+> ⇒ `scripts/lib/gocache.sh` / `.py` ⇒ ⇒ 专用目录**建不出来**或**不可写** ⇒ ⇒
+> ⇒ **不 export GOCACHE** ⇒ ⇒ 回落用环境里的那个 ⇒ ⇒ **脚本照常跑** ⇒ ⇒ ★★ ⇒
+> ⇒ ⇒ **「宁可漏隔离，也不许把脚本弄坏」**（★ 隔离是卫生问题、★ 脚本坏掉是事故问题）。
+> ⇒ ★★★ **运行期验证（★ 这一步不能省）**：★★★ 门是**静态**判据 ⇒ ⇒ 只能证明「代码里
+> ⇒ 有那个形态」⇒ ⇒ ⇒ 不能证明「跑起来真的是那样」⇒ ⇒ ⇒ 逐文件把那段前导块**真的执行
+> ⇒ 一次** ⇒ ⇒ **94/94** 命中 ⇒ ⇒ 且**两种失败安全形态**（★ 目录不可写 / ★ 父目录不可写
+> ⇒ ⇒ `mkdir` 失败）⇒ ⇒ ⇒ 都**不设** GOCACHE ⇒ ⇒ ⇒ ⇒ **本轮最值钱的一处**：
+> ⇒ ⇒ **失败安全的第一版只查「目录在不在」⇒ ⇒ 而目录早就建好了 ⇒ ⇒ `mkdir -p` 成功
+> ⇒ ⇒ ⇒ 「在不在」判绿而它其实不可写 ⇒ ⇒ ⇒ **静态门永远看不到这里**。
+> ⇒ ★★ **变异台** `scripts/audit/mutate_r1048_gocache_script_family.py`（★ **7/7**）：
+> ⇒ B00 惰性变异筛查 + M08（删前导块）/ M09（改成用户全局缓存）/ M10（改成条件式）/
+> ⇒ M11（删 `env -i` 数组里的 GOCACHE）/ M12（GOMODCACHE 进 `.build-local/`）/
+> ⇒ M13（掏空新门自己的断言 ⇒ 期望全部转绿）⇒ ⇒ ★★ ⇒ **每臂「只红自己那一条」
+> ⇒ ⇒ 其余照常绿** ⇒ ⇒ ★★ ⇒ （★ 「rc=1 可能来自任何一条」⇒ ⇒ **只看 rc 不算数**）。
+> ⇒ ★★★ **三处收口决策（本轮必须给结论，★ 不能再拖）**：★★★ ① **两套 GOCACHE 实现**
+> ⇒ （★ `internal/gocache` vs 掏空门自有实现）⇒ ⇒ **不收口**（★ 语义不同：★ 前者**总是**
+> ⇒ 追加、★ 后者建不出来时**回落** ⇒ ⇒ 收口要有一方失去回落语义 ⇒ ⇒ 而判据依赖这个
+> ⇒ 差别 ⇒ ⇒ ★★ 独立实现才有独立证据 ⇒ ⇒ 动它还要改 M01/M02 的锚点）；② **GOMODCACHE**
+> ⇒ ⇒ **不隔离**（★ 内容寻址且可复用 ⇒ ⇒ 不是垃圾 ⇒ ⇒ 隔离它 ⇒ ⇒ `git clean -xfd`
+> ⇒ ⇒ 会删掉它 ⇒ ⇒ 每次重下整个模块图 ⇒ ⇒ **比不隔离更糟**）⇒ ⇒ ★★ ⇒ **但反过来加门**
+> ⇒ ⇒ **不许它进 `.build-local/`**；③ **专用缓存跨仓共享** ⇒ ⇒ **不共享**（★ 「专用」的
+> ⇒ ⇒ 全部收益是「`git clean -xfd` 能一把收掉」⇒ ⇒ 放到仓外 ⇒ ⇒ 收益没了 ⇒ ⇒ ★★ ⇒
+> ⇒ 且 6 GB 上限是**按仓**的 ⇒ ⇒ 共享要全局淘汰策略 ⇒ ⇒ ★★ ⇒ 且共享会把「互相失效」
+> ⇒ ⇒ 重新引回来 ⇒ ⇒ 聚合大小不受任何仓的上限约束）。
+> ⇒ ★★ **整包门读数（★ 本轮跑了）**：★ `go test ./scripts/ursmcheck/ -count=1 -timeout=1800s`
+> ⇒ ⇒ **1537.434s** ⇒ ⇒ **FAIL 4 条** ⇒ ⇒ ★★ ⇒ **全部是上游带进来的**：★ ①
+> ⇒ `TestTsvHollowoutReadersRejectEmptyRegistry` 的 **5 个子用例**；★ ② 其下 4 个读方
+> ⇒ （★ `expect set size: tool=842 go=845` 等）⇒ ⇒ ★★ ⇒ **根因 = 上游迁移 917 建的那 3 个
+> ⇒ 索引（★ 842 + 3 = 845）⇒ ⇒ ⇒ 普查台账相对 Go 侧过期** ⇒ ⇒ ★★ ⇒ **pristine
+> ⇒ `origin/main` 上同名同数同红**（★ 已实测）⇒ ⇒ ★★ ⇒ **登记不擅动** ⇒ ⇒ ★★ ⇒
+> ⇒ ⇒ **我方新增的 5 条判据在整包跑里全部 PASS**（★ 红名单里没有它们）。
+> ⇒ ★★ **本轮明确没做（如实记）**：★ CI（★ `.github/workflows/*.yml`）⇒ ⇒ 已登记为排除
+> ⇒ ⇒ 理由：★ `setup-go` 的 `cache: true` 自己管缓存、★ runner 缓存随 job 消亡；★
+> ⇒ `docs/` 下 8 个留档脚本的收编；★ `go list` / `go env` 的隔离（★ 它们不写构建缓存）；
+> ⇒ ★ Makefile / 其它语言；★ ★★ **修那 4 条上游的红**（★ 那是上游的裁决面 ⇒ ⇒ 不擅动）。
+> ⇒ ★★★ 「设了」≠「用上了」★★ 行级判据看不见四类假阳性 ★★★ 门是静态的 ⇒ 运行期验证不能省
+> ⇒ ★★★ 白名单不要退化成点名制 ★★★ 「一半隔离」比「不隔离」更危险）。
+> **取号说明**：★ 本轮开工时取 AGENTS **㊼**（★ ㊻ = 上游 2026-10-29 客户端识别轮）
+> ⇒ ⇒ ★★ **合并上游后复核**：★ 上游 AGENTS 已占到 **㐀**（★ U+3400）⇒ ⇒ ★★ ⇒
+> ⇒ ⇒ **㊼（★ U+32BC）在上游仍然空着** ⇒ ⇒ ★★ ⇒ ⇒ **本轮 ㊼ 不冲突 ✓**
+> ⇒ ⇒ ★★ （★ ★★ 这是**让号落在【推送前再查】**而不是开工时的回报 ★★）。
+> ⇒ LESSONS 同步：★ 开工时取 **§552** ⇒ ⇒ ★★ ⇒ **合并上游后让号** ⇒ ⇒ 上游已占
+> ⇒ ⇒ **§552**（★ 24h 审计第 5 轮）与 **§555**（★ R176 轮，★ 且上游**故意留了
+> ⇒ ⇒ §552~554 作缓冲**）⇒ ⇒ ★★ ⇒ ⇒ 本轮最终取 **§556** ✓（★ 逐项复核：★ §550 /
+> ⇒ ⇒ §551 / §552 / §555 / §556 各 1 个标题 ⇒ ⇒ ★★ ⇒ **无重复**）。
+> **2026-10-29 第 39 增量：Gemini `countTokens` 诚实实现轮**（会话
+> `mvs_42f116b20f694164b00900d451db1ca0`）：★ ★★ **取号说明：★ 本轮开工时
+> 取的是「第 38 增量」，⇒ ⇒ 合并 `origin/main`（`05a490d93`）时发现并行会话
+> 已占用「第 38 增量」（252 SQL 日志审计 R176 轮）⇒ ⇒ ⇒ **本块让号，改为
+> 「第 39 增量」** ⇒ ⇒ ★★ 而 **`LESSONS.md` 侧也发生了让号**：★ 第一次合并时
+> `LESSONS.md` 的 §552 尚空闲 ⇒ ⇒ ★★★ **第二次合并（`2d66c3ac3`）时并行会话的
+> 「24h 审计第 5 轮」把它占了** ⇒ ⇒ ⇒ ★★ ⇒ **本轮 `LESSONS.md` 侧让号 ⇒ §553**
+> ⇒ ⇒ ⇒ ★★★ ⇒ **⇒ 通式：★★ 让号不是「一次核对」而是【每次合并都要重核】，
+> ⇒ ⇒ ⇒ ★★ 且【两个文件分别核】⇒ ⇒ ⇒ ★★ ⇒ **核号必须放进【push 前的最后一次】**
+> ⇒ ⇒ ⇒ ★★ ⇒ ⇒ （承第 36 增量那条纪律）★★ 而**第三次合并（`6b660599c`）**
+> ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ 并行会话的新块用 `㊼` 记法（不是「第 N 增量」）⇒ ⇒ ⇒
+> ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ **未撞「第 39 增量」** ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ 且
+> ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ `LESSONS.md` 的 §553 仍空闲 ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ **不再让号**
+> ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ ★★ ⇒ ★★ ⇒ **⇒ 但这仍是「实测后才敢说」的结论，不是推断。**
+> ⇒ ★ 承接上一轮审计档 §17 登记的
+> `:countTokens` 项（Gemini 原生入向尚未提供 token 计数面）⇒ ★★ 但**先复核
+> 登记前提，再动手实现** ⇒ ★★★ **复核结论：上一轮写进登记册的「实现要点」
+> 同时错在三处** ⇒ ⇒ **①转发上游算的是【另一份请求】**（Gemini 的
+> `:countTokens` 对**客户端原文**计数，而网关发出去的是**IR 归一后**那份
+> ⇒ ⇒ 转发回来的数字描述的是一个「不会发生的请求」⇒ ⇒ 不是更诚实，是另一种
+> 不诚实）⇒ ⇒ **②转发并非普遍可用**（只有 `gemini-generate` 协议的上游才有
+> 那个端点，而本仓 Gemini 入向可由任意上游服务）⇒ ⇒ **③误用了仓内先例的
+> 理由**（Anthropic `/v1/messages/count_tokens` 之所以转发，是因为 **SSE 响应
+> 无法回填 `message_start`**；而 Gemini 响应本就带精确
+> `usageMetadata.promptTokenCount` ⇒ 该前提**不迁移** ⇒ 抄结论抄出了错方案）
+> ⇒ ⇒ ★★★★ **⇒ 方案改为【本地估算】，口径 = 网关真正会发出的那份**：
+> `ir.ParseGemini` → `ir.SerializeOpenAI` → 复用既有
+> `domains/streaming/usage_estimator.go` 的 `estimatePromptTokens`（**不新写
+> 第四个估算器**）⇒ ⇒ 出站 `{"totalTokens": N}` ⇒ ⇒ **两个 Gemini 面对同一
+> 提示词口径一致**（同一把尺）⇒ ⇒ ⇒ ★★ **转发上游那一支登记为下一轮**
+> （需第三条出站动作、且必须先定「以哪个为准」才能与本轮口径共存）。
+> ⇒ ★★ **三侧齐改**（新路由必须同时落在三面，缺一面就是假支持）：
+> ① **凭据收口面** `internal/auth/clientkey.go` 的 `geminiNativePathRe`
+> 动作集加 `countTokens`（`IsGeminiNativePath` / `ExtractClientKey` 随之生效）
+> ⇒ ② **解析面** `domains/streaming/handler_gemini.go` 的 `geminiModelPathRe`
+> 加 `countTokens` ⇒ ③ **能力清单** `domains/streaming/models.go` 的
+> `supportedGenerationMethods` 加 `countTokens` ⇒ ⇒ ⇒ ★★★ **模型清单这一侧
+> 顺带翻转了上一轮的反向钉**：上一轮专门写了「模型列表**不得**承诺
+> `countTokens`」，本轮实现了 ⇒ ⇒ **门的方向跟着实现一起翻**
+> ⇒ ⇒ 判据从「集合包含」升级为**「集合相等」** ⇒ ⇒ ★★ **「实现了不列」=
+> 对外说做不到；「列了不做」= 承诺不兑现 ⇒ ⇒ 两个方向都在骗人。**
+> ⇒ ★★★ **挂载面刻意不改**：Go 1.22 `ServeMux` **不允许**「通配符段 +
+> 字面量」混在同一段（实测 `bad wildcard segment (must end with '}'）`）
+> ⇒ ⇒ `POST /v1beta/models/{model}:countTokens` **挂不上去** ⇒ ⇒ 只能在
+> `GeminiHandler` 内部按动作分派 ⇒ ⇒ 而登记册「同一路由不能登两次、
+> **一源文件只能登记一次**」又**反向约束**了实现落点 ⇒ ⇒ **实现必须落在
+> `handler_gemini.go` 内** ⇒ ⇒ ⇒ ★★ **⇒ 于是有了两处共享 helper 抽取**：
+> `domains/streaming/summarize.go` 拆出 `authenticateNoRPMWith`（可注入错误
+> 信封；Gemini 侧只注入信封形状，不另写鉴权逻辑 ⇒ 且同文件 ⇒ `.CheckBudget(`
+> 锚点计数不变 ⇒ summarize 的登记项不受影响）、
+> `domains/streaming/handler.go` 抽出 `staticDataPlaneKeyMatches`（lite 模式
+> 静态键回退 ⇒ 与 ChatHandler **一份实现**）。
+> ⇒ ★★★ **限流口径**：`:countTokens` **消耗 RPM**（与同路由生成动作同一把尺）
+> ⇒ ⇒ 理由：summarize / transform 之所以「刻意不计」，是因为它们**经环回
+> chat 面**携带同一把 key（不计则双计）；而 `:countTokens` **完全不产生上游
+> 调用**、没有别处替它计过 ⇒ ⇒ ⇒ ★★ **⇒ 不计 RPM = 一把 key 可以无限刷这个
+> 端点** ⇒ ⇒ ⇒ ⇒ ★★ ⇒ 而仓内早已把 Anthropic 的「无 RPM 的
+> `count_tokens`」登记成 P2 缺口 ⇒ ⇒ ⇒ ⇒ ⇒ **⇒ 新端点不应再制造同一个缺口
+> 的第二个实例。** ⇒ ⇒ ⇒ 登记册 Gemini 条目相应改为 **RateLimit=own**
+> （`checkGatewayRateLimit(` 在 `handler_gemini.go` 内恰好 1 次）、
+> **Budget=delegated**（委派 `authenticateNoRPMWith` 的 `kv.CheckBudget`），
+> 理由文字写清三个动作各自的闸。
+> ⇒ ★★ **门**（`domains/streaming/gemini_count_tokens_test.go`，11 个测试函数）：
+> 厂商形状 / **口径门**（估的是归一后的出站体、不是客户端原文）/ 随提示词增长 /
+> 两个 Gemini 厂商前缀都能服务 / 必须凭据 / 三种 Gemini 凭据形态都收 /
+> 错凭据拒 / 非 POST 拒 / 非法体返**厂商形状**的 400 / lite 模式静态键回退 /
+> **不碰 chat 管线**；另扩面既有门：`internal/auth/clientkey_test.go`、
+> `domains/streaming/handler_gemini_auth_test.go`（漂移门显式登记两条
+> `:countTokens` 为已服务）、`domains/streaming/handler_gemini_test.go`
+> （解析面认 countTokens、反向钉仍不认 `:embedContent`）。
+> ⇒ ★★ **四臂变异全检出**（还原后 md5 逐字一致）：A 收窄凭据收口面 ✓、
+> B 解析面不认 ✓、C ★ **口径改成「估原文」**（**第一次注入编译不过 ⇒ 该臂
+> 根本没跑到门 ⇒ 重做到可编译后**才由门检出，检出信息是读数差
+> `totalTokens = 0, want 10`）✓、D 能力清单不列 ✓。
+> ⇒ ★★ **读数**：`go build ./...` ✓、`go vet` ✓、gofmt clean（仅本轮文件）、
+> 全量扫描 ✓（`internal/auth`、`internal/ingressguard`、`internal/ir`、
+> `internal/upstreamurl`、`domains/streaming/…`、`cmd/gateway/…`、
+> `provider/catalog`、`internal/requestfact`、`domains/transformation`）。
+> ⇒ ★★ **既有红灯归属判定**：`scripts/ursmcheck` 的
+> `TestRequestSurfaceDocEvidenceStillHolds`（`domains/hooks/response/types.go`
+> 区间漂移）**非本轮引入**（该文件未被本轮改动）⇒ 已写入审计档 §10；
+> 另记录 `domains/streaming` 全包 ~160s 逼近 `make guards` 的 `-timeout=120s`
+> 余量（本轮又加 12 条门）。
+> ⇒ ★★ **本轮明确没做（留给下一轮，别重复排查）**：**转发上游那一支**
+> （仅 `gemini-generate` 协议上游成立、需第三条出站动作、且与本轮本地口径
+> 不同 ⇒ **两者共存前必须先定「以哪个为准」**）；**Anthropic `count_tokens`
+> 的无 RPM 缺口**（仓内 P2 登记项）；**`scripts/ursmcheck` 既有红灯**；
+> **包测试时长余量**（`domains/streaming` 需要拆分或提额）。
+> ⇒ 审计档 `docs/audit/2026-10-29-Gemini-countTokens诚实实现轮.md`（§1~§10）；
+> 通用式见 `LESSONS.md` **§553**（通用式一~八）。
+> **2026-10-29 第 40 增量：模型列表口径改造（默认只列特色模型）+ Gemini 认证核验**（会话
+> `mvs_3819385bca0f43d7bf0c059acb269bda`）：★ 承接 owner 指令两件事 —— ①「网关对外的模型
+> 列表 API，默认只输出特色模型，全量需要加参数才输出」；②「网关对 gemini 的适配好像有些
+> 问题，请检查原厂文档，检查认证相关的信息是否正确」。
+> ⇒ ★★★ **开工前的重大更正（别重复排查）**：本轮开工时读到的 `AGENTS.md` 快照是
+>   **2026-10-25 的树**；期间并行会话已把 Gemini 原生认证与原生模型列表落地
+>   （`0eff161c6` / `659ad160b`，`internal/auth/clientkey.go` + `models.go:ServeGeminiModels`）
+>   ⇒ **「Gemini 认证没做」是过期结论**。★ **开工前必须读当前树，不是读快照**。
+> ⇒ ★ **Part 1（模型列表口径）**：新文件 `domains/streaming/models_scope.go`；`/v1/models`
+>   与 `/v1beta/models` **默认只列特色模型**（`routing_policy.featured_models`，tenant
+>   `default` —— 全仓既有的一等概念：autoroute 的 FeaturedBonus / bg/shared_pick.go 的
+>   featured 优先 / alternativesSQL 的 tier-2 / admin 的精选过滤，四处同源）；全量需显式
+>   **`?scope=all`**（或 `?all=true`）。★ 口径优先级 = **请求参数 > 运维默认**；
+>   新增热加载设置 **`models.list_scope`**（`TypeEnum{featured,all}`，默认 `featured`）
+>   = **逃生舱**（改它即可无发版回到全量；与 r1027 的 `models.list_only_routable` 同款形状
+>   —— 公开契约的默认值变更必须可无发版回退）。
+> ⇒ ★★★ **本轮最值钱的一处**：精选过滤做成**同一个查询里的布尔参数 `$1`**（不是第二份
+>   SQL 常量 ⇒ 十几条活度门只存在一份）；★ 但**两处坑** —— (a) 匹配**三种名字形态**
+>   （canonical / raw / standardized）：`bg/shared_pick.go` 解析 featured 时认的是供应商侧
+>   名字 ⇒ 只认 canonical 会让「路由当特色、发现当不存在」的模型被藏起来；
+>   (b) ★★ **PostgreSQL 的 set-returning function 在 target list 里先于 LIMIT 展开**
+>   ⇒ `SELECT LOWER(unnest(featured_models)) ... LIMIT 1` 只返回**数组第一个元素** ⇒
+>   精选过滤静默只认一个模型，而**纯文本判据钉不住**（两种写法都含 unnest 与 LIMIT）
+>   ⇒ 改写成两个 CTE（policy 先钉行、featured 再展开数组）+ 真库判据直问「CTE 产出几个名字」=3。
+> ⇒ ★ **两个发现查询都带同一份过滤**（scope 与活度源正交，翻活度开关不得顺带改变公布范围）。
+> ⇒ ★ **安全降级**：精选口径筛不出模型（清单为空 / 精选模型当前全不可路由）⇒ **退回全量
+>   + WARN**，不是交空清单（发现端点回空会打断所有读它的客户端）；**缓存按口径分槽**
+>   （`ModelsHandler.stale` map）⇒ 口径进了查询，缓存只有一格会**静默少报模型**。
+> ⇒ ★ **非法 scope 报 400**（不静默回落）：客户端要全量却拿到精选（或反之）会**静默**得出
+>   错误结论。
+> ⇒ ★ **Part 2（Gemini 认证核验）**：★ 厂方原文实读留证 —— Gemini API reference：「**All
+>   requests to the Gemini API must include a `x-goog-api-key` header**」；OpenAI 兼容文档：
+>   兼容端点鉴权是 `Authorization: Bearer`。⇒ **入向**（`internal/auth.ExtractClientKey`：
+>   Bearer → `x-api-key` → `x-goog-api-key` → `?key=`，`?key=` 仅在 Gemini 原生路径生效）
+>   **正确**；⇒ **出向**（走厂方 OpenAI 兼容端点 `.../v1beta/openai`，executor 统一
+>   `Authorization: Bearer`）**正确**。★ **入向收三种、出向用 Bearer 不是不一致，是两个端点的
+>   厂方契约本来就不同**。
+> ⇒ ★★ **本轮实际修掉的一处**：`docs/vendor-formats/gemini.md` 的认证说明**漏了厂方强制的
+>   `x-goog-api-key` 头形态**（只写了 query string / Bearer 两种；同仓
+>   `docs/QUICK_REFERENCE.md` 的 Gemini 示例用的恰是这个头 ⇒ 仓内两份文档彼此不自洽）
+>   ⇒ 已订正并补齐「模型列表」一节（原生形状 + scope 口径）。
+> ⇒ ★ **顺带修掉的一处**：`154-production-release-checklist` 把「`/v1/models` 模型数与 245
+>   同级（685）」当**部署放行标准** ⇒ 默认口径改 featured 后该读数必然变小 ⇒ 按原文判会
+>   读成「掉模型」而误回滚 ⇒ 已改为**两口径分列**（默认 vs `?scope=all`）。
+> ⇒ ★ **验证**：真库判据（Postgres 17 隔离容器；夹具走仓 SSOT `internal/schemaobj.Table`
+>   不手抄 DDL；样本**每条只验一件事**：canonical 命中 / 供应商侧名命中 / 不精选 / 精选但
+>   凭据已死）⇒ 默认 2 条、`?scope=all` 3 条、筛空退回 3 条、CTE 产出 3 个名字；
+>   ★ **变异臂三臂全红**（M1 CTE 改一行 / M2 删供应商侧名匹配 / M3 删回退 ⇒ 三处都精确报红）
+>   且还原后源文件 **md5 逐字一致**；`go build ./...` ✓；`gofmt`+`golangci-lint fmt`
+>   本轮文件 **0 差异**、`golangci-lint run` **0 命中**；
+>   `go test ./domains/streaming/ ./settings/ ./cmd/gateway/ ./internal/ingressguard/ ./maas/`
+>   **全绿**；顺手清掉 `models.go` 的死函数 `writeDBFailure`（0 调用方，且调的是旧签名的
+>   `lastGoodEntries()`）。
+> ⇒ ★ **本轮明确没做**：web 前端（其 `/v1/models` 引用全是**上游供应商**目录发现，非网关
+>   自己的发现端点）；`/api/maas/models`（租户价目目录，另一套东西）；`GET /v1/models/{model}`
+>   与 `/v1beta/models/{model}` 的 retrieve（本轮未加，需两套形状一个数据源一起设计）；
+>   **多租户精选清单**（`featured_models` 表结构按租户，但全仓一律读 `default`，本轮沿用）。
+> ⇒ 审计档 `docs/audit/2026-10-29-模型列表口径与Gemini认证核验.md`；
+>   通用式见 `LESSONS.md` **§557**（★ 取号记录：初取 §545 / AGENTS.md 初取「第 37 增量」
+>   —— **推送前实测 `origin/main` 已被并行会话占用**（AGENTS「第 37 增量」= 拦截持久化与规则
+>   管理轮；LESSONS §545 已存在）⇒ 按「**后到者取下一个空闲号**」让号 ⇒ **§556 / 第 39 增量**
+>   （★ 实测当时上游最大节号 §555、最大增量号「第 38 增量」）—— ★★ **再次让号**：合入前上游
+>   又推进（§556 = r1048 轮 / 第 39 增量 = Gemini `countTokens` 诚实实现轮）⇒ 再让 ⇒
+>   **§557 / 第 40 增量**（★ 实测当时上游最大节号 §556、最大增量号「第 39 增量」）。

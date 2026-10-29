@@ -240,14 +240,31 @@ var registry = []surface{
 		// ⚠️ 这一条正是 215 号与 217 号两轮各错一次的位置（一次错判「零脱敏」、
 		// 一次错判「无配额闸」），所以它必须被显式登记成 delegated，
 		// 否则下一个人还会把「它没有自己的闸」读成「它没有闸」。
+		//
+		// ★★ 2026-10-29（Gemini countTokens 轮）改了 RateLimit 的声明：
+		// 这一条路由现在有**三个动作**，两个委派、一个自带：
+		//   generateContent / streamGenerateContent → 委派 chatHandler
+		//       （配额闸 + RPM 闸都在 serveHTTPInner 里）
+		//   countTokens                              → 自带
+		//       · 配额闸：委派包级 authenticateNoRPMWith（summarize.go）
+		//       · RPM 闸：自带 checkGatewayRateLimit（handler_gemini.go 内
+		//         **恰好 1 次** ⇒ 本条按锚点计数必须是 gateOwn）
+		//
+		// ★ 为什么 countTokens 不与 summarize 一样「刻意不消耗 RPM」：
+		// 那三个面的 LLM 步骤**经环回 chat 面携带同一把调用方 key**，那一跳
+		// 已计一次 ⇒ 再计即双计；而 countTokens **不产生任何上游调用** ⇒
+		// 不存在「已计一次」的那一跳 ⇒ 按同路由其他动作的口径计一次，
+		// 是唯一自洽的选择。★★ 而且仓内已把 Anthropic 的
+		// /v1/messages/count_tokens「无 RPM 限流」登记成 P2 缺口
+		// （见本表上一条）⇒ **新端点不应再制造同一个缺口的第二个实例**。
 		Plane:          planeInference,
 		Routes:         []string{"/v1beta/models/", "/v1/models/"},
 		HandlerVars:    []string{"geminiHandler"},
 		File:           "../../domains/streaming/handler_gemini.go",
 		Budget:         gateDelegated,
-		BudgetDelegate: "chatHandler -> serveHTTPInner -> handler.go 的 CheckBudget",
-		RateLimit:      gateDelegated,
-		RateLimitWhy:   "同 Budget：同一个委派方",
+		BudgetDelegate: "generateContent/streamGenerateContent → chatHandler -> serveHTTPInner -> handler.go 的 CheckBudget；countTokens → 包级 authenticateNoRPMWith（summarize.go:1142）内的 kv.CheckBudget（同一把 keyVerifier）",
+		RateLimit:      gateOwn,
+		RateLimitWhy:   "countTokens 自带 checkGatewayRateLimit（handler_gemini.go 内恰好 1 次 ⇒ 按锚点计数必须声明 own）；generateContent/streamGenerateContent 委派 chatHandler 的同一把尺（handler.go 的 checkGatewayRateLimit）⇒ 同一路由的三个动作同一把尺，无第二个实例",
 	},
 
 	// ── 控制面：不调上游、不消耗额度，故不要求配额闸/限流声明 ────────────

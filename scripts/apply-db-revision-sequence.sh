@@ -2484,6 +2484,14 @@ legacy_content_replays=(
 # SQL line/block comments and dollar-quoted bodies, so prose or dynamic SQL
 # that merely mentions CREATE OR REPLACE cannot trigger it.
 intentional_function_chains=(
+  # 919（2026-10-29，R176 252 SQL 日志审计轮）重定义
+  # refresh_ursm_snapshot_slot_daily：在 892 的体上增加 active_minutes 列
+  # （hour 粒度 = count(DISTINCT date_trunc('minute', snapshot_ts))，minute 恒 1）
+  # 并让 ON CONFLICT DO UPDATE 同步该列。签名不变、调用方零改动。
+  # 链序 = 投递序 892 → 919，**919 必须是最后一项**——它是活库里应有的最终体。
+  # 少这一行，部署会在应用任何文件之前 abort（exit 5）。登记由 24h 审计第 5 轮
+  # 之后的 /live 点选联动轮补录（部署被本守卫拦下时按错误消息逐字补登）。
+  'refresh_ursm_snapshot_slot_daily|892_ursm_snapshot_slot_daily.sql|919_ursm_slot_daily_active_minutes.sql|'
   # 857 (2026-10-13) 重定义 analyze_llm_gateway_table_stats：给「当月列存分区」
   # 分支加陈旧度闸门。链序必须是 838 → 839 → 857，且 **857 必须是最后一项**——
   # 它是活库里应有的最终体。少这一行，部署会在应用任何文件之前 abort（exit 5），
@@ -2766,6 +2774,11 @@ END
 \$repair\$;"
 }
 
+# 本轮按指纹命中跳过 / 按内容重放的文件（⇒ 终态探针只对这些文件做：
+# fixture 树与合成的 legacy 记账行不在其中 —— 探针判的是「本轮认过账的文件，
+# 产物必须真实在场」，不是「库里所有记账行」）。
+declare -a sha_matched_markers=()
+
 for file in "${files[@]}"; do
   [[ -f "$file" ]] || { printf 'error: missing migration %s\n' "$file" >&2; exit 4; }
   base="$(basename "$file")"
@@ -2783,12 +2796,14 @@ for file in "${files[@]}"; do
   stored_sha="$(psql_query "SELECT content_sha256 FROM public.gateway_db_revision_sequences WHERE sequence_name='${marker}' LIMIT 1")"
   if [[ -n "$stored_sha" ]]; then
     if [[ "$stored_sha" == "$file_sha" ]]; then
+      sha_matched_markers+=("${base}")
       printf 'already applied: %s\n' "${file#"$ROOT_DIR/"}"
       continue
     fi
     # 台账已记指纹且与当前文件不同：文件在应用后被内容加固过。通道契约
     # （每个迁移幂等）兜底重放安全性，重放使库状态收敛到当前文件内容。
     printf 'content replay (ledger %.12s -> file %.12s): applying %s\n' "$stored_sha" "$file_sha" "${file#"$ROOT_DIR/"}"
+    sha_matched_markers+=("${base}")
     psql_file "$file"
     psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}', execution_sha256='${execution_sha}', runtime_adaptation='${runtime_adaptation}' WHERE sequence_name='${marker}'"
     continue
@@ -2798,6 +2813,7 @@ for file in "${files[@]}"; do
       # 遗留记账（指纹通道上线前应用）且登记在重放清单：按当前内容重放
       # 一次，之后进入常规指纹管理。
       printf 'content replay (legacy, registered): applying %s\n' "${file#"$ROOT_DIR/"}"
+      sha_matched_markers+=("${base}")
       psql_file "$file"
       psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}', execution_sha256='${execution_sha}', runtime_adaptation='${runtime_adaptation}' WHERE sequence_name='${marker}'"
     else
@@ -2811,6 +2827,41 @@ for file in "${files[@]}"; do
 done
 # Fingerprints cannot detect physical drift after delivery. Fail before cutover.
 psql_query "SELECT public.assert_session_bodies_kind_contract()"
+
+# ── 台账 ↔ 产物对账门（2026-10-29 审计轮，211 实测教训）───────────────────
+# ★ 912/913 在 211 上「台账有行、内容指纹一致、产物缺席」—— 回收站清理 worker
+#   每小时 42P01，挂了两天才被发现
+#   （docs/audit/2026-10-29-24h审计轮-背压熔断与迁移账本补齐.md §实测）。
+#   指纹通道只能证明「文件执行过」，证明不了「对象还在」⇒ 对**本轮按指纹命中
+#   跳过 / 内容重放**的关键迁移逐一探测其头产物；产物不在 ⇒ 响亮失败（此时旧槽
+#   仍在服务，损失为零），处置 = 删除对应 ledger 行让重放通道再应用（迁移幂等）。
+# ★ 探针范围 = sha_matched_markers（本轮 files 里真的走过 skip/replay 分支的）——
+#   不是「库里所有记账行」：fixture 树（runtime_test 的合成 shim 台账）与
+#   legacy 无指纹记账行不在此列（后者的产物缺失仍靠 census drift verifier 与
+#   worker 42P01 兜底 —— 如实记，不是装作覆盖了）。
+# 局限（如实记）：头产物清单是**策展**的（与 assert_session_bodies_kind_contract
+# 同一模式），只覆盖真正咬过人的迁移；通用 runner 化仍是下一轮工作。
+ledger_artifact_probe() {
+  local marker_suffix="$1" probe_sql="$2" artifact
+  local known=0
+  for seen in "${sha_matched_markers[@]:-}"; do
+    [[ "$seen" == "$marker_suffix" ]] && { known=1; break; }
+  done
+  [[ "$known" == "0" ]] && return 0
+  artifact="$(psql_query "SELECT ${probe_sql}")"
+  if [[ "$artifact" != "t" ]]; then
+    printf 'error: 台账 ↔ 产物对账失败：%s 本轮按指纹认账但其产物缺失（%s ⇒ %s）\n' \
+      "$marker_suffix" "$probe_sql" "$artifact" >&2
+    printf 'error: 处置：删除 gateway_db_revision_sequences 里 sequence_name=%s:%s 的行，再重放本序列（迁移幂等）\n' \
+      "$sequence_name" "$marker_suffix" >&2
+    exit 5
+  fi
+  printf 'ledger/artifact probe ok: %s\n' "$marker_suffix"
+}
+ledger_artifact_probe "912_session_recording_trash.sql" \
+  "to_regclass('public.session_bodies_trash') IS NOT NULL AND to_regclass('public.session_hidden') IS NOT NULL"
+ledger_artifact_probe "913_maas_monthly_bills_coupons.sql" \
+  "to_regclass('public.maas_monthly_bills') IS NOT NULL AND to_regclass('public.maas_coupons') IS NOT NULL AND to_regclass('public.maas_coupon_redemptions') IS NOT NULL AND to_regclass('public.maas_invoice_requests') IS NOT NULL"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"
