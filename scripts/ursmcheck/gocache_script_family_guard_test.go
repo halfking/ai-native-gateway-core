@@ -134,9 +134,10 @@ var gocacheScriptInfraSkipDirs = map[string]bool{
 
 // gocacheScriptExclusionRegistry 是【排除清单登记簿】的结构。
 type gocacheScriptExclusionRegistry struct {
-	Note            string                        `json:"note"`
-	MinCompileFiles int                           `json:"minCompileFiles"`
-	ExcludedPaths   []gocacheScriptExclusionEntry `json:"excludedPaths"`
+	Note                 string                        `json:"note"`
+	MinCompileFiles      int                           `json:"minCompileFiles"`
+	MeasuredCompileFiles int                           `json:"measuredCompileFiles"`
+	ExcludedPaths        []gocacheScriptExclusionEntry `json:"excludedPaths"`
 }
 
 // gocacheScriptExclusionEntry 是登记簿里的一条排除记录。
@@ -192,8 +193,30 @@ var gocacheScriptCompileListRE = regexp.MustCompile(`["']go["']\s*,\s*["'](build
 //
 // ★ ★★ **注意路径形态写的是 `.build-local/.gocache-`**（★ 不是 `.build-local/`）
 // ★ ★★ ⇒ ⇒ 理由见文件头判据①b。
+//
+// ★ ★★★★ **r1049 审计轮移除的一条（★ `gocache\.dir_for(`）**：★★★★
+// ★ ★★★★ `dir_for()` **只算路径**：★★ 它**不建目录**、★★ **不查可写** ⇒ ⇒ ★★
+// ★ ★★★★ ⇒ ★★ 而 go 拿到一个**不可用**的 GOCACHE 会直接报
+// ★ ★★★★ `failed to initialize build cache` ⇒ ⇒ ★★ ⇒ **脚本直接坏掉** ⇒ ⇒ ★★
+// ★ ★★★★ ⇒ ★★ ⇒ 而本正则原先把它认作「已指向专用缓存」⇒ ⇒ ★★ ⇒ **门绿着，
+// ★ ★★★★ 而脚本在受限环境下会坏** ⇒ ⇒ ★★ ⇒ ★★ ⇒ **这是 r1048 第一原则
+// ★ ★★★★ （「宁可漏隔离，也不许把脚本弄坏」）的正面破口** ⇒ ⇒ ★★ ⇒ ★★ ⇒
+// ★ ★★★★ ⇒ 移出去 ⇒ ⇒ ★★ ⇒ 只认**真正失败安全**的入口
+// ★ ★★★★ （★ `gocache_use` / `gocache.env(` / `gocache.apply_to_environ(`）。
 var gocacheScriptDedicatedRE = regexp.MustCompile(
-	`\.build-local/\.gocache-|gocache\.sh|gocache_use|gocache\.env\(|gocache\.dir_for\(|gocache\.apply_to_environ\(`)
+	`\.build-local/\.gocache-|gocache\.sh|gocache_use|gocache\.env\(|gocache\.apply_to_environ\(`)
+
+// gocacheScriptDirForGocacheRE 认【把 GOCACHE 设成「只算路径」的结果】的形态。
+//
+// ★ ★★ **为什么它必须存在（★ r1049 审计轮）**：★★ 上面的 `gocacheScriptDedicatedRE`
+// ★ ★★ 把 `dir_for(` 踢出去之后 ⇒ ⇒ ★★ 「一个文件**只**用 `dir_for` 设 GOCACHE」
+// ★ ★★ 就**没有任何专用证据**了 ⇒ ⇒ ★★ 判据① 会**自动**红 ⇒ ⇒ ★★ ⇒ ★★ ⇒ 那就够了吗？
+// ★ ★★ ⇒ ⇒ ★★ **不够**：★★ ★★ 判据① 是**文件级**的 ⇒ ⇒ ★★ 一个文件里
+// ★ ★★ 「既有 `apply_to_environ`（★ 合格）又有 `dir_for`（★ 不合格）」⇒ ⇒ ★★
+// ★ ★★ 判据① 仍然绿 ⇒ ⇒ ★★ ⇒ ★★ ⇒ **不合格的那一处会被漏掉** ⇒ ⇒ ★★ ⇒ ★★ ⇒
+// ★ ★★ ⇒ 所以要**单独**盯住这一处（★ 与判据③「不许同时有一处指向用户目录」同款）。
+var gocacheScriptDirForGocacheRE = regexp.MustCompile(
+	`GOCACHE[^\n=]{0,4}=[^\n]*gocache\.dir_for\(`)
 
 // gocacheScriptSetdefaultRE 认【条件式】的 GOCACHE 设定。
 //
@@ -204,6 +227,29 @@ var gocacheScriptSetdefaultRE = regexp.MustCompile(
 
 // gocacheScriptGocacheAssignRE 认【任何形态】的 GOCACHE 赋值。
 var gocacheScriptGocacheAssignRE = regexp.MustCompile(`\bGOCACHE\s*=`)
+
+// gocacheScriptSubscriptGocacheRE 认【Python 下标形态】的 GOCACHE 赋值，
+// 且【取值】指向仓外的用户目录。
+//
+// ★ ★★ **为什么它必须单列（★ r1049 审计轮）**：★★ 判据③ 的主检测器跑在
+// ★ ★★ 【普通字符串算数据】的掩码上 ⇒ ⇒ ★★ ⇒ 而 `os.environ["GOCACHE"] = …`
+// ★ ★★ 里的 `"GOCACHE"` **是字符串** ⇒ ⇒ ★★ ⇒ **整条赋值对它不可见** ⇒ ⇒ ★★ ⇒
+// ★ ★★ ⇒ **判据③ 只对 shell 形态有效** ⇒ ⇒ ★★ ⇒ 一个 Python 脚本写
+// ★ ★★ `os.environ["GOCACHE"] = os.path.expanduser("~/.cache/go-build")`
+// ★ ★★ ⇒ ⇒ ★★ ⇒ **门照样绿** ⇒ ⇒ ★★ ⇒ **那是假绿** ⇒ ⇒ ★★ ⇒ ★★ ⇒
+// ★ ★★ ⇒ 这里补一条**窄**判据：★ 【下标形态】＋ ★ 【取值】指向用户目录。
+//
+// ★ ★★ **为什么窄**：★★ 宽了就会误伤【变异台的载荷字符串】（★ 载荷是**数据**
+// ★ ★★ ⇒ ⇒ 按仓内既有约定「字符串里的 `GOCACHE=` 不是赋值」⇒ ⇒ ★★ ⇒ 不算）★★
+// ★ ★★ ⇒ ⇒ ★★ ⇒ 而本仓现存的载荷**都是 shell 形态** ⇒ ⇒ ★★ ⇒ 窄判据够用。
+var gocacheScriptSubscriptGocacheRE = regexp.MustCompile(
+	`\w+(?:\.\w+)*\s*\[\s*['"]GOCACHE['"]\s*\]\s*=\s*[^\n]*` +
+		`(\$\{?HOME\b|~/|expanduser|go-build|sdk/gocache|Library/Caches)`)
+
+// gocacheScriptSubscriptGomodcacheRE 认【Python 下标形态】的 GOMODCACHE 赋值，
+// 且【取值】落在 `.build-local/` 下（★ 判据④ 的同款盲区）。
+var gocacheScriptSubscriptGomodcacheRE = regexp.MustCompile(
+	`\w+(?:\.\w+)*\s*\[\s*['"]GOMODCACHE['"]\s*\]\s*=\s*[^\n]*\.build-local`)
 
 // gocacheScriptEnvDashI_RE 认 `env -i`（★ 清空环境）。
 var gocacheScriptEnvDashI_RE = regexp.MustCompile(`\benv\s+-i\b`)
@@ -296,7 +342,13 @@ func gocacheScriptMaskPython(code []string) []gocacheScriptLine {
 				}
 				i += 3
 			case strings.HasPrefix(line[i:], `'''`):
-				inTriple = `''`
+				// ★ ★★ **r1049 审计轮修的**：★ 原来这里写的是 `inTriple = "''"`
+				// ★ ★★ （★ **两个**引号 ★★）⇒ ⇒ ★★ ⇒ 闭合时找的是 `''` ⇒ ⇒ ★★ ⇒
+				// ★ ★★ ⇒ 块**内部**只要出现 `''`（★ 例：★ `don''t` ★ 或一段
+				// ★ ★★ 空串）⇒ ⇒ ★★ ⇒ **提前闭合** ⇒ ⇒ ★★ ⇒ 块后面的代码被当成
+				// ★ ★★ 数据 ⇒ ⇒ ★★ ⇒ **又一处错位** ⇒ ⇒ ★★ ⇒ 定界符必须是
+				// ★ ★★ **三个**引号 ★★。
+				inTriple = `'''`
 				for j := 0; j < 3 && i+j < len(line); j++ {
 					mask[i+j] = false
 				}
@@ -512,15 +564,217 @@ func gocacheScriptIsUserGlobalGoCacheValue(rest string) bool {
 type gocacheScriptFile struct {
 	// Rel 是【相对仓根】的路径。
 	Rel string
-	// Code 是【去掉整行注释】后的代码行（★ shell 的 `#` 与 python 的 `#` 同形）。
+	// Code 是【未经任何剥离】的原始行（★ ★★ 行号与文件一一对应 ★★）。
+	//
+	// ★ ★★ **r1049 审计轮改的（★ 原来这里是「剥掉整行注释」的行）**：★★
+	// ★ ★★ **「先剥整行注释、再打掩码」这个次序本身是错的** ⇒ ⇒ ★★ ⇒ 因为
+	// ★ ★★ Python 里三引号块**内部**的 `#` **不是注释** ⇒ ⇒ ★★ ⇒ 一段三引号
+	// ★ ★★ 字符串的**闭合定界符**若落在某条「以 `#` 开头的行」上 ⇒ ⇒ ★★ ⇒ 那行
+	// ★ ★★ 会被「剥整行注释」**删掉** ⇒ ⇒ ★★ ⇒ **闭合符消失** ⇒ ⇒ ★★ ⇒ 掩码的
+	// ★ ★★ 状态机从此错位 ⇒ ⇒ ★★ ⇒ **该文件后半段全被当成数据** ⇒ ⇒ ★★ ⇒
+	// ★ ★★ ⇒ 它调的那些 go 命令**门看不见** ⇒ ⇒ ★★ ⇒ **假绿**（★ 实测：
+	// ★ ★★ ⇒ `scripts/mutate-r164-freshness-gate.py` 的 `["go", "test", …]`
+	// ★ ★★ ⇒ ⇒ 在门眼里**根本不存在** ⇒ ⇒ ⇒ 作用域少算 1 个 ⇒ ⇒ ⇒ 是本轮
+	// ★ ★★ ⇒ ★★ **独立量具交叉对拍**抓出来的（★ 不是门自己抓到的）★★）。
+	// ★ ★★ ⇒ ⇒ 所以顺序必须是【先打掩码（★ 掩码自己认注释）⇒ ⇒ 再取代码视图】。
 	Code []string
 	// Excluded 标记它是否落在登记簿的排除路径里。
 	Excluded bool
 }
 
+// ── ★★ 编译型判定用的掩码（★ r1049 审计轮新增）★★
+
+// gocacheScriptCompileMask 给源码打【编译型判定用】的掩码。
+//
+// ★ ★★ **规则（三档）**：★★
+// ★ ① **注释** ⇒ ⇒ 数据（★ 不是代码）；
+// ★ ② **三引号块**（★ Python 的 docstring / 多行字符串）⇒ ⇒ 数据（★ 散文，不是调用）；
+// ★ ③ **其余一律算代码**（★ ★★ 含**普通字符串** ★★ —— 因为
+// ★ ★★ `["go", "test"]` 这种**列表形态的 go 调用**本身就在字符串里 ★★
+// ★ ★★ ⇒ ⇒ 若把普通字符串也当数据 ⇒ ⇒ ★★ ⇒ 门会漏掉一半的 go 调用 ⇒ ⇒ ★★ ⇒ 危险）。
+//
+// ★ ★★ **为什么 ② 只认三引号**：★★ 普通字符串里的散文（如 `"go test failed"`）
+// ★ ★★ 会造成**虚高** ⇒ ⇒ 但那是【安全的方向】（★ 多要求 ⇒ ⇒ 假红 ⇒ 不漏判）
+// ★ ★★ ⇒ ⇒ ★★ 而三引号块里的 `go test ./...` 是**成段散文** ⇒ ⇒ ★★ 命中率最高 ⇒ ⇒
+// ★ ★★ ⇒ 优先在那一层消掉虚高（★ 实测：★ 3 个文件 ⇒ ★ `scripts/lib/gocache.py`
+// ★ ★★ / `scripts/perf/bench_compare.py` / `scripts/audit/mutate_r1047_gocache_isolation_rollout.py`）。
+//
+// ★ ★★ **与 `gocacheScriptMaskPython` 的区别（★ 别混用）**：★★ 那一个把
+// ★ ★★ **普通字符串也当数据**（★ 因为它服务的是「这个 GOCACHE 赋值是不是真赋值」
+// ★ ★★ ⇒ ⇒ 字符串里的 `GOCACHE=` 不是赋值）★★ ⇒ ⇒ **两个掩码服务两个问题**
+// ★ ★★ ⇒ ⇒ ★★ ⇒ **各写各的** ⇒ ⇒ ★★ ⇒ **别为了省代码复用错的那个**。
+func gocacheScriptCompileMask(rel string, code []string) []gocacheScriptLine {
+	out := make([]gocacheScriptLine, 0, len(code))
+	isPy := strings.HasSuffix(rel, ".py")
+	inTriple := ""
+	inSingle, inDouble := false, false
+	for _, line := range code {
+		mask := make([]bool, len(line))
+		i := 0
+		for i < len(line) {
+			// ★ 在跨行三引号块里 ⇒ ⇒ 直到闭合定界符都是数据。
+			if inTriple != "" {
+				if strings.HasPrefix(line[i:], inTriple) {
+					for j := 0; j < len(inTriple) && i+j < len(line); j++ {
+						mask[i+j] = false
+					}
+					i += len(inTriple)
+					inTriple = ""
+					continue
+				}
+				mask[i] = false
+				i++
+				continue
+			}
+			c := line[i]
+			if isPy {
+				switch {
+				case c == '#':
+					// ★ 注释到行尾（★ Python 没有行续注释）。
+					for ; i < len(line); i++ {
+						mask[i] = false
+					}
+				case strings.HasPrefix(line[i:], `"""`):
+					inTriple = `"""`
+					for j := 0; j < 3 && i+j < len(line); j++ {
+						mask[i+j] = false
+					}
+					i += 3
+				case strings.HasPrefix(line[i:], `'''`):
+					inTriple = `'''`
+					for j := 0; j < 3 && i+j < len(line); j++ {
+						mask[i+j] = false
+					}
+					i += 3
+				case c == '\'' || c == '"':
+					// ★ 普通字符串 ⇒ ⇒ **算代码**（★ 见函数头规则③），
+					// ★ ★★ 但仍要跟踪转义与闭合 ⇒ ⇒ ★★ ⇒ 否则字符串里的 `#`
+					// ★ ★★ 会被当成注释 ⇒ ⇒ ★★ ⇒ 后面真正的代码会被误当数据。
+					mask[i] = true
+					i++
+					for i < len(line) {
+						if line[i] == '\\' && i+1 < len(line) {
+							mask[i] = true
+							mask[i+1] = true
+							i += 2
+							continue
+						}
+						mask[i] = true
+						if line[i] == c {
+							i++
+							break
+						}
+						i++
+					}
+				default:
+					mask[i] = true
+					i++
+				}
+				continue
+			}
+			// ── shell ──
+			if inSingle || inDouble {
+				mask[i] = true
+				if inDouble && line[i] == '\\' && i+1 < len(line) {
+					mask[i+1] = true
+					i += 2
+					continue
+				}
+				if inSingle && line[i] == '\'' {
+					inSingle = false
+				}
+				if inDouble && line[i] == '"' {
+					inDouble = false
+				}
+				i++
+				continue
+			}
+			switch {
+			case c == '#':
+				// ★ 词首的 `#` 才是注释（★ 否则 `a#b` 是一个词）。
+				prevOK := i == 0 || line[i-1] == ' ' || line[i-1] == '\t' ||
+					line[i-1] == ';' || line[i-1] == '&' || line[i-1] == '|'
+				if prevOK {
+					for ; i < len(line); i++ {
+						mask[i] = false
+					}
+				} else {
+					mask[i] = true
+					i++
+				}
+			case c == '\'':
+				inSingle = true
+				mask[i] = true
+				i++
+			case c == '"':
+				inDouble = true
+				mask[i] = true
+				i++
+			default:
+				mask[i] = true
+				i++
+			}
+		}
+		out = append(out, gocacheScriptLine{Text: line, IsCode: mask})
+	}
+	return out
+}
+
+// gocacheScriptCodeText 把掩码里的【数据】字节换成空格 ⇒ ⇒ 得到【只看代码】的文本。
+func gocacheScriptCodeText(lines []gocacheScriptLine) []string {
+	out := make([]string, 0, len(lines))
+	for _, ml := range lines {
+		b := []byte(ml.Text)
+		for i := range b {
+			if i < len(ml.IsCode) && !ml.IsCode[i] {
+				b[i] = ' '
+			}
+		}
+		out = append(out, string(b))
+	}
+	return out
+}
+
+// gocacheScriptCompileCode 返回【只看代码】的行（★ 注释与三引号块已被抹掉）。
+func gocacheScriptCompileCode(rel string, code []string) []string {
+	return gocacheScriptCodeText(gocacheScriptCompileMask(rel, code))
+}
+
+// gocacheScriptFullCodeText 用【完整掩码】（★ ★★ 普通字符串也算数据 ★★）产出
+// 【只看代码】的文本。
+//
+// ★ ★★ **它与 `gocacheScriptCompileCode` 的区别（★ 两个问题，两个掩码）**：★★
+// ★ ★★ ① 「这个 `dir_for(` **调用**是不是真代码」★★ ⇒ ⇒ **普通字符串是数据**
+// ★ ★★ ⇒ ⇒ ★★ ⇒ ★★ ⇒ （★ 变异台的【载荷字符串】里的 `gocache.dir_for(` ⇒ ⇒ ★★
+// ★ ★★ ⇒ ⇒ **不是调用** ⇒ ⇒ ★★ ⇒ 不该被算成「设了 GOCACHE」）★★；
+// ★ ★★ ② 「这个 `["go", "test"]` **列表**是不是真调用」★★ ⇒ ⇒ **普通字符串是代码**
+// ★ ★★ ⇒ ⇒ ★★ ⇒ （★ 否则会漏掉一半的 go 调用 ⇒ ⇒ 那是**危险方向**）。
+func gocacheScriptFullCodeText(rel string, code []string) []string {
+	masked := gocacheScriptMask(rel, code)
+	out := make([]string, 0, len(masked))
+	for _, ml := range masked {
+		b := []byte(ml.Text)
+		for i := range b {
+			if i < len(ml.IsCode) && !ml.IsCode[i] {
+				b[i] = ' '
+			}
+		}
+		out = append(out, string(b))
+	}
+	return out
+}
+
 // gocacheScriptHasCompile 判「这个文件有没有【编译型】go 调用」。
-func gocacheScriptHasCompile(code []string) bool {
-	for _, l := range code {
+//
+// ★ ★★ **r1049 审计轮改的（★ 原来跑在【未剥注释】的 `f.Code` 上）**：★★
+// ★ ★★ 原口径把【注释里】和【docstring 里】提到的 go 命令也当成调用 ⇒ ⇒ ★★
+// ★ ★★ ⇒ 作用域虚高（★ 实测：★ 3 个文件只在 docstring 里提到 go 命令）⇒ ⇒ ★★
+// ★ ★★ ⇒ 现在跑在【编译型掩码】上 ⇒ ⇒ ★★ ⇒ **注释与三引号块不算**。
+//
+// ★ ★★ **为什么这不是「漏判」**：★★ 掩码只抹掉【注释】与【三引号块】⇒ ⇒ ★★
+// ★ ★★ ⇒ **真正的调用一定还在** ⇒ ⇒ ★★ ⇒ 方向是【少要求】⇒ ⇒ ★★ ⇒ 安全。
+func gocacheScriptHasCompile(rel string, code []string) bool {
+	for _, l := range gocacheScriptCompileCode(rel, code) {
 		if gocacheScriptCompileRE.MatchString(l) || gocacheScriptCompileListRE.MatchString(l) {
 			return true
 		}
@@ -561,7 +815,7 @@ func gocacheScriptScan(root string, excluded map[string]bool) ([]gocacheScriptFi
 		}
 		out = append(out, gocacheScriptFile{
 			Rel:      rel,
-			Code:     gocacheCodeLines(string(raw)),
+			Code:     gocacheRawLines(string(raw)),
 			Excluded: isExcluded,
 		})
 		return nil
@@ -574,9 +828,15 @@ func gocacheScriptScan(root string, excluded map[string]bool) ([]gocacheScriptFi
 }
 
 // gocacheScriptDedicatedLines 返回【指向专用目录】的代码行。
-func gocacheScriptDedicatedLines(code []string) []string {
+//
+// ★ ★★ **r1049 审计轮：★ 走【编译型掩码】**（★ 注释与 docstring 不算）★★
+// ★ ★★ ⇒ ⇒ ★★ ⇒ 一个「只在变异载荷字符串里」写着 `.build-local/.gocache-` 的
+// ★ ★★ ⇒ ⇒ ★★ 文件**不再**算有专用证据 ⇒ ⇒ ★★ ⇒ **那才是真证据** ⇒ ⇒ ★★ ⇒
+// ★ ★★ ⇒ 门因此抓到了 `scripts/audit/mutate_r1046_hollowout_gocache_isolation.py`
+// ★ ★★ ⇒ ⇒ ★★ ⇒ ★★ 那个「自己拼路径 + 不失败安全 + 靠载荷蒙混过关」的真缺陷。
+func gocacheScriptDedicatedLines(rel string, code []string) []string {
 	var out []string
-	for _, l := range code {
+	for _, l := range gocacheScriptCompileCode(rel, code) {
 		if gocacheScriptDedicatedRE.MatchString(l) {
 			out = append(out, strings.TrimSpace(l))
 		}
@@ -589,9 +849,9 @@ func gocacheScriptDedicatedLines(code []string) []string {
 // ★ ★★ **为什么要把「条件式」剔掉**：★★ `GOCACHE="${GOCACHE:-$(…/gocache.sh …)}"`
 // ★ ★★ ⇒ ⇒ 条件式 ⇒ ⇒ 用户环境里已设 ⇒ ⇒ 悄悄回落用全局缓存 ⇒ ⇒ ★★
 // ★ ★★ ⇒ ⇒ **门绿着，而隔离根本没生效** ⇒ ⇒ ★★ ⇒ ⇒ 判据①c 靠它。
-func gocacheScriptUnconditionalDedicatedLines(code []string) []string {
+func gocacheScriptUnconditionalDedicatedLines(rel string, code []string) []string {
 	var out []string
-	for _, l := range gocacheScriptDedicatedLines(code) {
+	for _, l := range gocacheScriptDedicatedLines(rel, code) {
 		if gocacheScriptSetdefaultRE.MatchString(l) {
 			continue
 		}
@@ -605,9 +865,9 @@ func gocacheScriptUnconditionalDedicatedLines(code []string) []string {
 // ★ ★★ **为什么单列这个口径**：★★ `env -i` **清空环境** ⇒ ⇒ ★★ 顶部那个
 // ★★ `export GOCACHE` **被抹掉** ⇒ ⇒ ★★ ⇒ 必须有一个**显式列进 env 数组**的
 // ★★ ⇒ ⇒ GOCACHE 赋值才活得下来（★ ⇒ ⇒ 判据② 靠它）。
-func gocacheScriptNonExportGocacheLines(code []string) []string {
+func gocacheScriptNonExportGocacheLines(rel string, code []string) []string {
 	var out []string
-	for _, l := range code {
+	for _, l := range gocacheScriptCompileCode(rel, code) {
 		t := strings.TrimSpace(l)
 		if strings.HasPrefix(t, "export ") || strings.HasPrefix(t, "#") {
 			continue
@@ -626,10 +886,102 @@ func gocacheScriptInScope(files []gocacheScriptFile) []gocacheScriptFile {
 		if f.Excluded {
 			continue
 		}
-		if !gocacheScriptHasCompile(f.Code) {
+		if !gocacheScriptHasCompile(f.Rel, f.Code) {
 			continue
 		}
 		out = append(out, f)
+	}
+	return out
+}
+
+// ── ★★ 作用域清单导出（★ r1049 审计轮加）★★
+
+// gocacheScriptScopeDumpEnv 是【把作用域清单导出到文件】的环境变量名。
+//
+// ★ ★★ **为什么要有它**：★★ 本门是【静态】判据 ⇒ ⇒ 它只说得出「这个文件**有**那个
+// ★★ 形态」⇒ ⇒ **说不出「跑起来真的是那样」** ⇒ ⇒ ★★ ⇒ 而上一轮那版运行期验证器
+// ★★ **自己重新枚举脚本族** ⇒ ⇒ ⇒ 两边的【枚举集】可能不同 ⇒ ⇒ ⇒ 「覆盖完整」这句话
+// ★★ 就只是【两把尺各自量自己】⇒ ⇒ ⇒ **量具不同源 ⇒ ⇒ 结论不可比**。
+// ★★ ⇒ ⇒ 本导出把【本门认定的作用域集】交给运行期验证器 ⇒ ⇒ ⇒ 两边**对着同一份
+// ★★ 清单**逐个核对 ⇒ ⇒ ⇒ 「静态覆盖的每一个，都被运行期验过」才成立。
+//
+// ★ ★★ **默认不写任何文件**（★ 环境变量没设 ⇒ ⇒ 直接返回）★★ ⇒ ⇒ ⇒ 跑整包门时
+// ★★ **不会在仓里落下垃圾** ⇒ ⇒ ⇒ 也不会影响「工作区必须干净」那些纪律。
+const gocacheScriptScopeDumpEnv = "GOCACHE_GATE_SCOPE_DUMP"
+
+// gocacheScriptDumpScope 把【在作用域内的编译型脚本清单】写到环境变量指向的文件。
+//
+// ★ ★★ **格式**：★ 一行一个【相对仓根的路径】⇒ ⇒ ⇒ 可直接 `diff`。
+func gocacheScriptDumpScope(inScope []gocacheScriptFile) {
+	dst := os.Getenv(gocacheScriptScopeDumpEnv)
+	if dst == "" {
+		return
+	}
+	var b strings.Builder
+	for _, f := range inScope {
+		b.WriteString(f.Rel)
+		b.WriteString("\n")
+	}
+	if err := os.WriteFile(dst, []byte(b.String()), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "★ 写作用域清单失败（%s）：%v\n", dst, err)
+	}
+}
+
+// ── ★★ GOCACHE 赋值点（★ r1049 审计轮重做：★ 支持【下标形态】）★★
+
+// gocacheScriptVarAssignsMasked 找【某个变量的赋值点】（★ 走【编译型掩码】）。
+//
+// ★ ★★ **为什么要重做（★ 旧的那个看不见 Python 形态）**：★★ 旧的
+// ★ ★★ `gocacheScriptVarAssignments` 跑在【普通字符串算数据】的掩码上 ⇒ ⇒ ★★
+// ★ ★★ ⇒ `os.environ["GOCACHE"] = …` 里的 `"GOCACHE"` 是**字符串** ⇒ ⇒ ★★ ⇒
+// ★ ★★ ⇒ **整条赋值对它是不可见的** ⇒ ⇒ ★★ ⇒ **判据③（不许指向用户目录）只对
+// ★ ★★ shell 形态有效** ⇒ ⇒ ★★ ⇒ 一个 Python 脚本写
+// ★ ★★ `os.environ["GOCACHE"] = os.path.expanduser("~/.cache/go-build")`
+// ★ ★★ ⇒ ⇒ ★★ ⇒ **门照样绿** ⇒ ⇒ ★★ ⇒ **那是假绿** ⇒ ⇒ ★★ ⇒ 本函数用
+// ★ ★★ 【编译型掩码】（★ 普通字符串算代码）⇒ ⇒ ★★ ⇒ 下标形态看得见。
+//
+// ★ ★★ **两种形态都要认**：★★
+// ★ 形态甲：★ `GOCACHE = …`（★ shell 的 `export GOCACHE=…` / python 裸变量）；
+// ★ 形态乙：★ `["GOCACHE"] = …` / `['GOCACHE'] = …`（★ python 下标形态）。
+func gocacheScriptVarAssignsMasked(rel string, code []string, varName string) []gocacheGocacheAssign {
+	masked := gocacheScriptCompileMask(rel, code)
+	var out []gocacheGocacheAssign
+	for li, ml := range masked {
+		for j := 0; j+len(varName) <= len(ml.Text); j++ {
+			if !ml.IsCode[j] {
+				continue
+			}
+			if !strings.HasPrefix(ml.Text[j:], varName) {
+				continue
+			}
+			// ★ 变量名本身必须**完整在代码里**（★ 否则会撞上更长名字的前缀）。
+			k := j + len(varName)
+			if k < len(ml.IsCode) && ml.IsCode[k] && isIdentChar(ml.Text[k]) {
+				continue
+			}
+			// ★ ★★ 形态乙：★ `["GOCACHE"]` / `['GOCACHE']` ⇒ ⇒ 跳过闭合的引号与方括号。
+			if k+1 < len(ml.Text) && (ml.Text[k] == '"' || ml.Text[k] == '\'') &&
+				ml.Text[k+1] == ']' && k+1 < len(ml.IsCode) && ml.IsCode[k+1] {
+				k += 2
+			}
+			for k < len(ml.Text) && (ml.Text[k] == ' ' || ml.Text[k] == '\t') {
+				if k < len(ml.IsCode) && !ml.IsCode[k] {
+					break
+				}
+				k++
+			}
+			if k >= len(ml.Text) || ml.Text[k] != '=' {
+				continue
+			}
+			k++
+			end := gocacheScriptValueEnd(ml.Text, k)
+			out = append(out, gocacheGocacheAssign{
+				Line: li + 1,
+				Rest: strings.TrimSpace(ml.Text[k:end]),
+				Text: strings.TrimSpace(ml.Text),
+			})
+			j = k
+		}
 	}
 	return out
 }
@@ -653,6 +1005,8 @@ func TestScriptFamilyCompileSitesUseDedicatedGoCache(t *testing.T) {
 		t.Fatalf("扫描脚本族失败：%v", err)
 	}
 	inScope := gocacheScriptInScope(files)
+	// ★★ 作用域清单导出（★ 默认不写 ⇒ ⇒ 不给仓留垃圾）★★
+	gocacheScriptDumpScope(inScope)
 
 	// ★★ **搜索面完整性自检**（★ 与仓内其它门同款）。
 	if len(files) == 0 {
@@ -668,15 +1022,36 @@ func TestScriptFamilyCompileSitesUseDedicatedGoCache(t *testing.T) {
 			"要么有脚本被移走/改名了，要么扫描口径变了 ⇒ ⇒ 重新审一遍",
 			len(inScope), reg.MinCompileFiles)
 	}
+	// ★ ★★ **逐字对拍（★ r1049 审计轮加）**：★★ 作用域的**实测个数**必须与登记簿
+	// ★ ★★ 里的 `measuredCompileFiles` **完全相等** ⇒ ⇒ ★★ ⇒ 漂了就当场红。
+	//
+	// ★ ★★ **为什么地板不够**：★★ `minCompileFiles` 是**地板** ⇒ ⇒ ★★ ⇒ 它只挡
+	// ★ ★★ 「掉得太多」⇒ ⇒ ★★ ⇒ **挡不住「口径悄悄变了个形状」** ⇒ ⇒ ★★ ⇒ 实测
+	// ★ ★★ ★★ 缺陷就是证据：★ 本轮掩码状态机错位 ⇒ ⇒ 作用域从 164 掉到 163 ⇒ ⇒
+	// ★ ★★ ⇒ ★★ 地板 100 **照样绿** ⇒ ⇒ ★★ ⇒ ★★ **地板抓不住这一类缺陷** ⇒ ⇒ ⇒
+	// ★ ★★ ⇒ 真正抓住它的是【独立量具交叉对拍】★ ⇒ ⇒ ⇒ ⇒ 本条登记值是给
+	// ★ ★★ ⇒ **下一次**漂移兜底的（★ 漂了就得有人重新审一遍口径 ★）。
+	if reg.MeasuredCompileFiles <= 0 {
+		t.Fatalf("★ 登记簿里没有 `measuredCompileFiles`（★ 实测 %d）⇒ ⇒ 【逐字对拍失效】⇒ ⇒ "+
+			"★ ⇒ ★★ 作用域漂了没人知道 ⇒ ⇒ ⇒ 补上这个字段", len(inScope))
+	}
+	if len(inScope) != reg.MeasuredCompileFiles {
+		t.Fatalf("★ 扫到 %d 个【在作用域内的编译型脚本】，登记簿记的是 %d 个 ⇒ ⇒ "+
+			"★ ⇒ 【作用域漂了】⇒ ⇒ ★★ 本门此刻盖的**不是**登记册上那一套 ⇒ ⇒ ⇒ "+
+			"★ ⇒ 要么有人新加了 / 删了编译型脚本，要么**扫描口径变了**（★ ★★ 口径漂了 ⇒ ⇒ "+
+			"★ ⇒ ★★ 【假绿】就是这么来的 ★★）⇒ ⇒ ⇒ 重新审一遍，★ 然后把登记簿里的 "+
+			"★ ⇒ `measuredCompileFiles` 改成实测值",
+			len(inScope), reg.MeasuredCompileFiles)
+	}
 
 	var noEvidence, onlySetdefault []string
 	for _, f := range inScope {
-		dedicated := gocacheScriptDedicatedLines(f.Code)
+		dedicated := gocacheScriptDedicatedLines(f.Rel, f.Code)
 		if len(dedicated) == 0 {
 			noEvidence = append(noEvidence, f.Rel)
 			continue
 		}
-		if len(gocacheScriptUnconditionalDedicatedLines(f.Code)) == 0 {
+		if len(gocacheScriptUnconditionalDedicatedLines(f.Rel, f.Code)) == 0 {
 			onlySetdefault = append(onlySetdefault, f.Rel)
 		}
 	}
@@ -723,7 +1098,7 @@ func TestScriptFamilyIsolationSurvivesEnvDashI(t *testing.T) {
 	var offenders []string
 	for _, f := range inScope {
 		usesEnvDashI := false
-		for _, l := range f.Code {
+		for _, l := range gocacheScriptCompileCode(f.Rel, f.Code) {
 			if gocacheScriptEnvDashI_RE.MatchString(l) {
 				usesEnvDashI = true
 				break
@@ -741,9 +1116,9 @@ func TestScriptFamilyIsolationSurvivesEnvDashI(t *testing.T) {
 		// ★ ② 那一行是**原样带出**（★ `GOCACHE="$GOCACHE"`）⇒ ⇒ ★★ 但这**有前提**：
 		// ★★ 本文件别处必须有【**无条件**】的专用指向 ⇒ ⇒ ★★ ⇒ **那个被引用的
 		// ★★ `$GOCACHE` 才真的是专用目录** ⇒ ⇒ ★★ ⇒ 隔离才成立。
-		fileHasDedicated := len(gocacheScriptUnconditionalDedicatedLines(f.Code)) > 0
+		fileHasDedicated := len(gocacheScriptUnconditionalDedicatedLines(f.Rel, f.Code)) > 0
 		ok := false
-		for _, l := range gocacheScriptNonExportGocacheLines(f.Code) {
+		for _, l := range gocacheScriptNonExportGocacheLines(f.Rel, f.Code) {
 			if gocacheScriptSetdefaultRE.MatchString(l) {
 				continue
 			}
@@ -795,12 +1170,34 @@ func TestScriptFamilyHasNoUserGlobalGoCacheOverride(t *testing.T) {
 
 	var offenders []string
 	for _, f := range files {
-		if !gocacheScriptHasCompile(f.Code) {
+		if !gocacheScriptHasCompile(f.Rel, f.Code) {
 			continue
 		}
 		for _, a := range gocacheScriptVarAssignments(f.Rel, f.Code, "GOCACHE") {
 			if gocacheScriptIsUserGlobalGoCacheValue(a.Rest) {
 				offenders = append(offenders, fmt.Sprintf("%s:%d（★ %s）", f.Rel, a.Line, a.Text))
+				break
+			}
+		}
+	}
+	// ★ ★★ **r1049 审计轮补的一条（★ 补上【Python 下标形态】的盲区）**：★★
+	// ★ ★★ 上面那个检测器跑在【普通字符串算数据】的掩码上 ⇒ ⇒ ★★ ⇒ 而
+	// ★ ★★ `os.environ["GOCACHE"] = …` 里的 `"GOCACHE"` **是字符串** ⇒ ⇒ ★★ ⇒
+	// ★ ★★ ⇒ **整条赋值对它不可见** ⇒ ⇒ ★★ ⇒ **判据③ 只对 shell 形态有效**
+	// ★ ★★ ⇒ ⇒ ★★ ⇒ 一个 Python 脚本写
+	// ★ ★★ `os.environ["GOCACHE"] = os.path.expanduser("~/.cache/go-build")`
+	// ★ ★★ ⇒ ⇒ ★★ ⇒ **门照样绿** ⇒ ⇒ ★★ ⇒ **那是假绿** ⇒ ⇒ ★★ ⇒ ★★ ⇒
+	// ★ ★★ ⇒ 这里补一条【窄】判据：★ **下标形态** ＋ ★ **取值**指向用户目录。
+	// ★ ★★ ⇒ ⇒ ★★ ⇒ **窄**是为了不误伤【变异台的载荷字符串】（★ 载荷是**数据**，
+	// ★ ★★ ⇒ ⇒ 按仓内既有约定「字符串里的 GOCACHE= 不是赋值」⇒ ⇒ ★★ ⇒ 不算）。
+	for _, f := range files {
+		if !gocacheScriptHasCompile(f.Rel, f.Code) {
+			continue
+		}
+		for i, l := range f.Code {
+			if gocacheScriptSubscriptGocacheRE.MatchString(l) {
+				offenders = append(offenders, fmt.Sprintf("%s:%d（★ %s）",
+					f.Rel, i+1, strings.TrimSpace(l)))
 				break
 			}
 		}
@@ -838,6 +1235,18 @@ func TestGomodcacheMustNotLiveUnderBuildLocal(t *testing.T) {
 			}
 		}
 	}
+	// ★ ★★ **r1049 审计轮补的（★ 判据④ 的同款盲区）**：★★ Python 下标形态
+	// ★ ★★ `os.environ["GOMODCACHE"] = "…/.build-local/…"` ⇒ ⇒ ★★ ⇒ 主检测器
+	// ★ ★★ 看不见（★ `"GOMODCACHE"` 是字符串）⇒ ⇒ ★★ ⇒ 这里补一条**窄**判据。
+	for _, f := range files {
+		for i, l := range f.Code {
+			if gocacheScriptSubscriptGomodcacheRE.MatchString(l) {
+				offenders = append(offenders, fmt.Sprintf("%s:%d（★ %s）",
+					f.Rel, i+1, strings.TrimSpace(l)))
+				break
+			}
+		}
+	}
 	if len(offenders) > 0 {
 		sort.Strings(offenders)
 		t.Fatalf("★ %d 处把 **GOMODCACHE** 指向了 `.build-local/` 下：\n  %s\n"+
@@ -871,7 +1280,7 @@ func TestScriptFamilyExclusionRegistryIsExact(t *testing.T) {
 		if !f.Excluded {
 			continue
 		}
-		if !gocacheScriptHasCompile(f.Code) {
+		if !gocacheScriptHasCompile(f.Rel, f.Code) {
 			continue
 		}
 		for _, e := range reg.ExcludedPaths {
@@ -916,5 +1325,381 @@ func TestScriptFamilyExclusionRegistryIsExact(t *testing.T) {
 			"★ ⇒ ⇒ 排除是【政策】⇒ ⇒ 政策会漂 ⇒ ⇒ ★★ ⇒ **「新增没人发现」与「登记值过期」\n"+
 			"★ ⇒ ⇒ ⇒ 是排除清单最典型的两种失效形态** ⇒ ⇒ ⇒ 门在这里盯着它们",
 			gocacheScriptExclusionRegistryRel, strings.Join(problems, "\n  "))
+	}
+}
+
+// ── ★★ 判据⑥（★ r1049 审计轮新增）：不许用「只算路径」的入口设 GOCACHE ──
+
+// TestScriptFamilyNeverSetsGoCacheFromDirFor —— ★★ 判据⑥：
+// ★ 凡是**把 GOCACHE 设成 `gocache.dir_for(...)` 的结果**的脚本 ⇒ ⇒ 必须红。
+//
+// ★ ★★ **为什么这一条独立于判据①**：★★ 判据① 是**文件级**的 ⇒ ⇒ ★★ 一个文件里
+// ★ ★★ 「既有 `apply_to_environ`（★ 合格）又有 `dir_for`（★ 不合格）」⇒ ⇒ ★★
+// ★ ★★ 判据① 仍然绿 ⇒ ⇒ ★★ ⇒ ★★ ⇒ **不合格的那一处会被漏掉** ⇒ ⇒ ★★ ⇒ ★★ ⇒
+// ★ ★★ ⇒ 所以要**单独**盯住那一处（★ 与判据③ 同款思路）。
+//
+// ★ ★★ **为什么它是真的缺陷（★ 不是洁癖）**：★★ `dir_for()` **只算路径**：★★
+// ★ ★★ 它**不建目录**、★★ **不查可写** ⇒ ⇒ ★★ 而 go 拿到一个**不可用**的
+// ★ ★★ GOCACHE 会直接报 `failed to initialize build cache` ⇒ ⇒ ★★ ⇒ **脚本坏掉**
+// ★ ★★ ⇒ ⇒ ★★ ⇒ 违反 r1048 第一原则「**宁可漏隔离，也不许把脚本弄坏**」。
+//
+// ★ ★★ **作用域**：★ **全部**脚本（★ 不只是编译型）⇒ ⇒ ★★ 因为「把 GOCACHE 指到
+// ★ ★★ 一个建不出来的目录」这件事本身就有害 ⇒ ⇒ ★★ ⇒ 与它是否编译型无关。
+func TestScriptFamilyNeverSetsGoCacheFromDirFor(t *testing.T) {
+	root := hollowRepoRoot(t)
+	reg := gocacheLoadExclusionRegistry(t, root)
+	files, err := gocacheScriptScan(root, gocacheExcludedPrefixes(reg))
+	if err != nil {
+		t.Fatalf("扫描脚本族失败：%v", err)
+	}
+
+	var offenders []string
+	var sawGoCacheAssign int
+	for _, f := range files {
+		// ★ ★★ **按【原始行】扫**（★ `f.Code` 现在就是原始行 ⇒ ⇒ 行号一一对应）★★
+		codeText := gocacheScriptFullCodeText(f.Rel, f.Code)
+		for i, cl := range codeText {
+			if i >= len(f.Code) {
+				break
+			}
+			// ★ ★★ **搜索面完整性自检**：★ 一个 GOCACHE 赋值都没扫到 ⇒ ⇒
+			// ★ ★★ ⇒ 本判据的**正则**可能已经失效 ⇒ ⇒ ★★ ⇒ 当场红（★ 不许假绿）。
+			if strings.Contains(cl, "GOCACHE") {
+				sawGoCacheAssign++
+			}
+			// ★ ★★ **判别式（★ 本轮被 B00 逼出来的）**：★★
+			// ★ ★★ `gocache.dir_for(` **这个调用本身**必须在【代码】里 ⇒ ⇒ ★★ ⇒
+			// ★ ★★ ⇒ ★★ 否则【变异台的载荷字符串】会被当成真赋值 ⇒ ⇒ ★★ ⇒ ★★ ⇒
+			// ★ ★★ ⇒ ★★ ★★ （★ 事实：★ 本轮 B00 惰性筛查就抓到了这个 —— 事实是
+			// ★ ★★ ★★ ★★ 本台自己的 M14 载荷里那句 `os.environ["GOCACHE"] =
+			// ★ ★★ ★★ ★★ gocache.dir_for(...)` ⇒ ⇒ ★★ ⇒ 把基线搞红了 ⇒ ⇒ ★★ ⇒
+			// ★ ★★ ★★ ★★ ⇒ ★★ ★★ ⇒ **载荷是数据，不是赋值** ⇒ ⇒ ★★ ⇒ ★★ ⇒ ★★）。
+			if !strings.Contains(cl, "gocache.dir_for(") {
+				continue
+			}
+			if gocacheScriptDirForGocacheRE.MatchString(f.Code[i]) {
+				offenders = append(offenders, fmt.Sprintf("%s:%d（★ %s）",
+					f.Rel, i+1, strings.TrimSpace(f.Code[i])))
+				break
+			}
+		}
+	}
+
+	if sawGoCacheAssign == 0 {
+		t.Fatalf("★ 一个【带 GOCACHE 的行】都没扫到 ⇒ ⇒ 【本判据的搜索面不完整】⇒ ⇒ " +
+			"★ 正则可能已失效 ⇒ ⇒ 本门是瞎的 ⇒ ⇒ 重新审一遍")
+	}
+	if len(offenders) > 0 {
+		sort.Strings(offenders)
+		t.Fatalf("★ %d 处把 **GOCACHE** 设成了 `gocache.dir_for(...)` 的结果（★ ⇒ ⇒ "+
+			"★ **只算路径**：★ **不建目录**、★ **不查可写** ⇒ ⇒ ★★ ⇒ 而 go 拿到一个"+
+			"**不可用**的 GOCACHE 会直接报 `failed to initialize build cache` ⇒ ⇒ ★★ ⇒ "+
+			"**脚本直接坏掉** ⇒ ⇒ ★★ ⇒ 违反 r1048 第一原则「宁可漏隔离，也不许把脚本弄坏」）：\n  %s\n"+
+			"★ ⇒ ⇒ 修法：★ Python 用 `gocache.apply_to_environ(\"mutate\")`"+
+			"（★ 当前进程）★ 或 `gocache.env(\"mutate\")`（★ 子进程 env）★ ⇒ ⇒ "+
+			"★ 两者都先 `ensure()` 建目录并查可写 ⇒ ⇒ 建不出来就**不设** ⇒ ⇒ 脚本照常跑",
+			len(offenders), strings.Join(offenders, "\n  "))
+	}
+}
+
+// ── ★★ 门内自证：判据⑥「`dir_for` 不许当 GOCACHE 值」（★ r1049 审计轮新增）★★
+
+// TestScriptFamilyDirForJudgeDistinguishesPayloadFromCode —— ★★ 门内自证：
+// ★ 判据⑥ 必须分得清「**代码里**的 `dir_for` 调用」与「**载荷字符串**里提到它」。
+//
+// ★ ★★ **为什么必须自证（★ 本轮被 B00 惰性筛查当场抓到）**：★★ 第一版判据⑥
+// ★ ★★ 跑在【普通字符串算代码】的视图上 ⇒ ⇒ ★★ ⇒ ★★ ⇒ 结果**本台自己的 M14
+// ★ ★★ 载荷字符串**（★ `M14_REPL` 里那句 `os.environ["GOCACHE"] =
+// ★ ★★ gocache.dir_for(...)`）★ ⇒ ⇒ ★★ ⇒ ★★ ⇒ **被当成了真赋值** ⇒ ⇒ ★★ ⇒ ★★ ⇒
+// ★ ★★ ⇒ ★★ **基线就红** ⇒ ⇒ ★★ ⇒ ★★ ⇒ ⇒ ★★ ⇒ **B00 惰性筛查救了这一轮**。
+func TestScriptFamilyDirForJudgeDistinguishesPayloadFromCode(t *testing.T) {
+	// ── 正向：★ 代码里的真调用必须被抓 ──
+	codeMustCatch := []string{
+		`os.environ["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")`,
+		`env["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")`,
+	}
+	for _, s := range codeMustCatch {
+		rel := "scripts/x.py"
+		raw := strings.Split(s, "\n")
+		text := gocacheScriptFullCodeText(rel, raw)
+		caught := false
+		for i, cl := range text {
+			if strings.Contains(cl, "gocache.dir_for(") &&
+				gocacheScriptDirForGocacheRE.MatchString(raw[i]) {
+				caught = true
+				break
+			}
+		}
+		if !caught {
+			t.Fatalf("★ ★★ 这条形态必须被判【用 dir_for 设了 GOCACHE】★★ ⇒ ⇒ 但没抓到 ⇒ ⇒ "+
+				"★ **判据⑥ 是瞎的** ⇒ ⇒ 【假绿】：\n  %s", s)
+		}
+	}
+
+	// ── 反向：★ 载荷字符串（★ 数据）**不许**被抓 ──
+	payloadMustNotCatch := []string{
+		`M14_REPL = 'os.environ["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")'`,
+		`# os.environ["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")`,
+		// ★ ★★ docstring 那一条必须**写成【同一个字符串里的三行】** ★ ⇒ ⇒ ★★
+		// ★ ★★ 否则拆行后就不是 docstring 了 ⇒ ⇒ ★★ ⇒ ★★ ⇒ （★ 本轮第一版就
+		// ★ ★★ 踩了这个 ⇒ ⇒ ★★ ⇒ ★★ ⇒ **是测试写错，不是掩码错** ⇒ ⇒ ★★ ⇒ ★★ ⇒
+		// ★ ★★ ⇒ ★★ ⇒ ★★ ★★ 「拆行」会改变语言语义 ⇒ ⇒ ★★ ⇒ ★★ ⇒ ★★ ⇒ 写自证
+		// ★ ★★ ⇒ ★★ ⇒ ★★ ⇒ 样例时必须**整体给**）。
+		"\"\"\"\nos.environ[\"GOCACHE\"] = gocache.dir_for(gocache.repo_root(), \"mutate\")\n\"\"\"",
+	}
+	for _, s := range payloadMustNotCatch {
+		rel := "scripts/x.py"
+		raw := strings.Split(s, "\n")
+		text := gocacheScriptFullCodeText(rel, raw)
+		for i, cl := range text {
+			if strings.Contains(cl, "gocache.dir_for(") &&
+				gocacheScriptDirForGocacheRE.MatchString(raw[i]) {
+				t.Fatalf("★ ★★ 这条形态**不许**被抓（★ 它是【载荷 / 注释 / docstring】★ ⇒ ⇒ "+
+					"★ ⇒ 数据，不是赋值 ⇒ ⇒ ⇒ 抓它 ⇒ ⇒ ⇒ **误伤【治病的工具自己】**）：\n  %s", s)
+			}
+		}
+	}
+}
+
+// ── ★★ 门内自证：用户目录覆盖的两种形态（★ r1049 审计轮新增）★★
+
+// TestScriptFamilyUserGlobalOverrideDetectsBothForms —— ★★ 门内自证：
+// ★ 「把 GOCACHE 指向仓外用户目录」这条判据 ⇒ ⇒ 必须**两种形态都抓得到**。
+//
+// ★ ★★ **为什么必须自证**：★★ 判据③ 的主检测器跑在【普通字符串算数据】的
+// ★ ★★ 掩码上 ⇒ ⇒ ★★ ⇒ **看不见** Python 的 `os.environ["GOCACHE"] = …` 形态
+// ★ ★★ ⇒ ⇒ ★★ ⇒ 补了一条**窄**正则 ⇒ ⇒ ★★ ⇒ **窄正则自己也要被量** ⇒ ⇒ ★★ ⇒
+// ★ ★★ ⇒ 否则「窄」可能窄到**什么都抓不到** ⇒ ⇒ ★★ ⇒ 而它绿着。
+func TestScriptFamilyUserGlobalOverrideDetectsBothForms(t *testing.T) {
+	// ── 正向：★ Python 下标形态（★ 主检测器看不见的那一种）必须被抓 ──
+	subscriptMustCatch := []string{
+		`os.environ["GOCACHE"] = os.path.expanduser("~/.cache/go-build")`,
+		`env["GOCACHE"] = "/Users/someone/.cache/go-build"`,
+		`os.environ["GOCACHE"] = os.path.join(HOME, "go-build")`,
+	}
+	for _, s := range subscriptMustCatch {
+		if !gocacheScriptSubscriptGocacheRE.MatchString(s) {
+			t.Fatalf("★ ★★ 这条形态必须被判【指向仓外用户目录】★★ ⇒ ⇒ 但窄判据没抓到 ⇒ ⇒ "+
+				"★ **判据③ 对 Python 形态就是瞎的** ⇒ ⇒ 【假绿】：\n  %s", s)
+		}
+	}
+
+	// ── 正向：★ shell 形态（★ 主检测器负责的那一种）必须被抓 ──
+	shellMustCatch := []string{
+		`export GOCACHE="$HOME/.cache/go-build"`,
+		`GOCACHE="$HOME/.cache/go-build"`,
+	}
+	for _, s := range shellMustCatch {
+		rel := "scripts/x.sh"
+		code := []string{s}
+		caught := false
+		for _, a := range gocacheScriptVarAssignments(rel, code, "GOCACHE") {
+			if gocacheScriptIsUserGlobalGoCacheValue(a.Rest) {
+				caught = true
+				break
+			}
+		}
+		if !caught {
+			t.Fatalf("★ ★★ 这条形态必须被判【指向仓外用户目录】★★ ⇒ ⇒ 但主检测器没抓到 ⇒ ⇒ "+
+				"★ 判据③ 退化了 ⇒ ⇒ 【假绿】：\n  %s", s)
+		}
+	}
+
+	// ── 反向：★ 变异台的【载荷字符串】是数据 ⇒ ⇒ 不许被当成赋值 ──
+	payloadMustNotCatch := []string{
+		`M09_REPL = '  export GOCACHE="$HOME/.cache/go-build"  # MUTATION M09'`,
+		`M12_REPL = 'GOMODCACHE="${GOMODCACHE:-$HOME/.build-local/gomodcache}"'`,
+		`env = gocache.env("mutate")`,
+		`gocache.apply_to_environ("mutate")`,
+	}
+	for _, s := range payloadMustNotCatch {
+		if gocacheScriptSubscriptGocacheRE.MatchString(s) {
+			t.Fatalf("★ ★★ 这条形态**不许**被抓 ⇒ ⇒ 它是【载荷字符串】（★ 数据 ⇒ ⇒ "+
+				"★ 按仓内约定「字符串里的 GOCACHE= 不是赋值」）⇒ ⇒ ⇒ 抓它 ⇒ ⇒ ⇒ "+
+				"★ **误伤【治病的工具自己】**：\n  %s", s)
+		}
+		rel := "scripts/x.py"
+		for _, a := range gocacheScriptVarAssignments(rel, []string{s}, "GOCACHE") {
+			if gocacheScriptIsUserGlobalGoCacheValue(a.Rest) {
+				t.Fatalf("★ ★★ 这条形态**不许**被抓（★ 载荷是数据）：\n  %s", s)
+			}
+		}
+	}
+}
+
+// ── ★★ 门内自证：编译型判定的作用域口径（★ r1049 审计轮新增）★★
+
+// TestScriptFamilyCompileScopeIgnoresDocstrings —— ★★ 门内自证：
+// ★ 编译型判定**必须**分得清「代码里的 go 调用」与「注释 / docstring 里的 go 字样」。
+//
+// ★ ★★ **为什么这条自证不可省**：★★ ★★ 「把 docstring 里的 `go test ./...` 也算成
+// ★ ★★ 编译调用」⇒ ⇒ ★★ 作用域虚高（★ 实测 3 个文件）⇒ ⇒ ★★ ⇒ 那些文件被**要求**
+// ★ ★★ 提供专用隔离 ⇒ ⇒ ★★ ⇒ **假红** ⇒ ⇒ ★★ ⇒ ⇒ 而「把真正的调用也抹掉」⇒ ⇒
+// ★ ★★ ⇒ **漏判** ⇒ ⇒ ★★ ⇒ **更糟** ⇒ ⇒ ★★ ⇒ ⇒ 两个方向都要钉住。
+func TestScriptFamilyCompileScopeIgnoresDocstrings(t *testing.T) {
+	// ── 正向：★ 真调用必须被认成【编译型】──
+	positive := []struct {
+		name string
+		rel  string
+		code []string
+	}{
+		{"shell 裸词形态", "scripts/x.sh", []string{"go test ./admin/ -count=1"}},
+		{"python 列表形态", "scripts/x.py", []string{`cmd = ["go", "test", "./admin/"]`}},
+		{"python 字符串里的裸词形态", "scripts/x.py", []string{`run("go vet ./scripts/ursmcheck/")`}},
+		{"shell 行尾注释不算", "scripts/x.sh", []string{"go build ./cmd/...  # 不是测试"}},
+	}
+	for _, c := range positive {
+		if !gocacheScriptHasCompile(c.rel, c.code) {
+			t.Fatalf("★ ★★ %s：这形态必须判【编译型】★★ ⇒ ⇒ 但它没被认 ⇒ ⇒ "+
+				"★ 本门的编译型判定退化了 ⇒ ⇒ **真调用被漏掉了**（★ 比虚高危险得多）", c.name)
+		}
+	}
+
+	// ── 反向：★ 注释 / docstring 里的 go 字样**不算**编译调用 ──
+	negative := []struct {
+		name string
+		rel  string
+		code []string
+	}{
+		{"python 整行注释", "scripts/x.py", []string{"# go test ./admin/"}},
+		{"shell 整行注释", "scripts/x.sh", []string{"# go test ./admin/"}},
+		{"python 模块 docstring", "scripts/x.py", []string{`"""`, `★ 实测：★ go test ./... **编译阶段**就红`, `"""`}},
+		{"python docstring 里的列表形态", "scripts/x.py", []string{`"""`, `["go", "test"]`, `"""`}},
+	}
+	for _, c := range negative {
+		if gocacheScriptHasCompile(c.rel, c.code) {
+			t.Fatalf("★ ★★ %s：这形态必须判【非编译型】★★（★ 它在注释 / docstring 里 ⇒ ⇒ "+
+				"★ ⇒ ★★ 算进去会让作用域虚高 ⇒ ⇒ 那些文件被无谓地要求隔离 ⇒ ⇒ 假红）⇒ ⇒ "+
+				"★ 但它被判成了编译型", c.name)
+		}
+	}
+
+	// ── 仓库级回归：★ 那 3 个「只在 docstring 里提到 go 命令」的文件必须**不在作用域内** ──
+	root := hollowRepoRoot(t)
+	reg := gocacheLoadExclusionRegistry(t, root)
+	files, err := gocacheScriptScan(root, gocacheExcludedPrefixes(reg))
+	if err != nil {
+		t.Fatalf("扫描脚本族失败：%v", err)
+	}
+	inScope := map[string]bool{}
+	for _, f := range gocacheScriptInScope(files) {
+		inScope[f.Rel] = true
+	}
+	mustBeOut := []string{
+		"scripts/lib/gocache.py",
+		"scripts/perf/bench_compare.py",
+		"scripts/audit/mutate_r1047_gocache_isolation_rollout.py",
+	}
+	for _, rel := range mustBeOut {
+		if inScope[rel] {
+			t.Fatalf("★ ★★ %s 必须**不在**编译型作用域内 ★★（★ 它只在 docstring 里提到 go "+
+				"★ 命令 ⇒ ⇒ ★★ ⇒ 进作用域 ⇒ ⇒ 就要被无谓地要求专用隔离 ⇒ ⇒ 假红）★ ⇒ ⇒ "+
+				"★ 但它在里面", rel)
+		}
+	}
+
+	// ★ ★★ **搜索面完整性自检**：★ 在作用域内的脚本一个都没有 ⇒ ⇒ 本门是瞎的。
+	if len(inScope) == 0 {
+		t.Fatalf("★ 一个【在作用域内、且调编译型 go 命令】的脚本都没扫到 ⇒ ⇒ 【搜索面不完整】")
+	}
+}
+
+// ── ★★ 门内自证：掩码的「状态机不许错位」（★ r1049 审计轮新增）★★
+
+// TestScriptFamilyCompileScopeSurvivesTripleQuoteClosingOnCommentLine —— ★★
+// ★ 编译型判定**必须**扛得住「三引号块的闭合定界符落在一条以 `#` 开头的行上」。
+//
+// ★ ★★ **这是 r1049 审计轮实测踩到的真缺陷（★ 而且是【假绿】）**：★★
+// ★ ★★ 旧实现是【先剥整行注释 ⇒ ⇒ 再打掩码】⇒ ⇒ ★★ ⇒ 而 Python 里三引号块
+// ★ ★★ **内部**的 `#` **不是注释** ⇒ ⇒ ★★ ⇒ 那条「以 `#` 开头」的行里装的是
+// ★ ★★ **闭合定界符** ⇒ ⇒ ★★ ⇒ 「剥整行注释」把它**删掉** ⇒ ⇒ ★★ ⇒ 闭合符消失
+// ★ ★★ ⇒ ⇒ 掩码状态机从此错位 ⇒ ⇒ ★★ ⇒ **该文件后半段全被当成数据** ⇒ ⇒ ★★ ⇒
+// ★ ★★ ⇒ 它调的那些 go 命令**门看不见** ⇒ ⇒ ★★ ⇒ **作用域少算** ⇒ ⇒ ★★ ⇒
+// ★ ★★ ⇒ **那个文件整个逃出了门的管辖** ⇒ ⇒ ★★ ⇒ **假绿**。
+// ★ ★★ ⇒ ⇒ 实测受害者：`scripts/mutate-r164-freshness-gate.py`（★ 它的
+// ★ ★★ ⇒ `["go", "test", "./scripts/ursmcheck/", …]` 在旧口径下**根本不存在**）。
+// ★ ★★ ⇒ ⇒ ★★ 它是本轮【独立量具（★ Python `tokenize` 口径）交叉对拍】抓到的
+// ★ ★★ ⇒ ⇒ ★★ 不是门自己抓到的 ⇒ ⇒ ★★ ⇒ **门在自己的盲区里是绿的**。
+func TestScriptFamilyCompileScopeSurvivesTripleQuoteClosingOnCommentLine(t *testing.T) {
+	// ── 正向：★ 闭合定界符落在「以 `#` 开头」的行上 ⇒ ⇒ ★★ 后面那个真调用
+	// ── ⇒ ⇒ **必须**仍然被认成编译型 ⇒ ⇒ ★★ 否则整个文件逃出管辖。
+	code := []string{
+		`X = """def die(msg: str, code: int = 3):`,
+		`    # ★ 对照变异：★ 只加注释 ⇒ ★ 行为不变 ⇒ ★ 门必须仍绿"""`,
+		`cmd = ["go", "test", "./scripts/ursmcheck/"]`,
+	}
+	if !gocacheScriptHasCompile("scripts/x.py", code) {
+		t.Fatalf("★ ★★ 三引号块的闭合定界符落在注释行上时 ⇒ ⇒ 后面那个 `[\"go\", \"test\"]` " +
+			"★ **必须**仍被判【编译型】★★ ⇒ ⇒ 但它没被认 ⇒ ⇒ ⇒ ★★ **掩码状态机错位了** " +
+			"★ ⇒ ⇒ ⇒ 那个文件整个逃出本门管辖 ⇒ ⇒ ⇒ **假绿**")
+	}
+
+	// ── 反向：★ 整段都在三引号块里 ⇒ ⇒ ★★ 仍然**不算**编译型（★ 别矫枉过正）。
+	only := []string{
+		`X = """def die(msg: str, code: int = 3):`,
+		`    # ★ 对照变异：★ 只加注释 ⇒ ★ 行为不变 ⇒ ★ 门必须仍绿"""`,
+		`cmd = ["list", "of", "things"]`,
+	}
+	if gocacheScriptHasCompile("scripts/x.py", only) {
+		t.Fatalf("★ ★★ 这段里没有编译型 go 调用 ⇒ ⇒ 必须判【非编译型】★★ ⇒ ⇒ 但它被判成了编译型")
+	}
+
+	// ── ★★ 仓库级回归：★ 那个受害者文件必须**回到**作用域内 ★─
+	root := hollowRepoRoot(t)
+	reg := gocacheLoadExclusionRegistry(t, root)
+	files, err := gocacheScriptScan(root, gocacheExcludedPrefixes(reg))
+	if err != nil {
+		t.Fatalf("扫描脚本族失败：%v", err)
+	}
+	inScope := map[string]bool{}
+	for _, f := range gocacheScriptInScope(files) {
+		inScope[f.Rel] = true
+	}
+	const victim = "scripts/mutate-r164-freshness-gate.py"
+	if !inScope[victim] {
+		t.Fatalf("★ ★★ %s 必须在编译型作用域内 ★★（★ 它的 `[\"go\", \"test\", …]` 是**真调用** "+
+			"★ ⇒ ⇒ ⇒ 它必须被本门管辖 ⇒ ⇒ ⇒ 它不在 ⇒ ⇒ ⇒ **掩码状态机又错位了** ★★ ⇒ ⇒ ⇒ "+
+			"★ ⇒ ⇒ ⇒ **假绿**（★ r1049 审计轮实测：★ 旧口径下它整个逃出了管辖））", victim)
+	}
+}
+
+// TestScriptFamilyFullMaskTripleSingleQuoteDoesNotCloseEarly —— ★★
+// ★ 【完整掩码】（★ 普通字符串 = 数据 ⇒ 服务于「这个 `dir_for(` 是不是真代码」）
+// ★ **不许**在 `”'` 块内部遇到 `”` 时提前闭合。
+//
+// ★ ★★ **为什么**：★★ 旧实现把 `”'` 的闭合定界符写成了**两个**引号（★ `”`）★ ⇒
+// ★ ★★ ⇒ 块内部只要出现 `”`（★ 例：★ 空串 `”` ★ 或 `don”t` ★）⇒ ⇒ ★★ ⇒ 提前闭合
+// ★ ★★ ⇒ ⇒ 块后面的**真代码**被当成数据 ⇒ ⇒ ★★ ⇒ 判据⑥ 会漏掉真的 `dir_for(`。
+func TestScriptFamilyFullMaskTripleSingleQuoteDoesNotCloseEarly(t *testing.T) {
+	code := []string{
+		`X = '''`,
+		`payload = ''`,
+		`'''`,
+		`os.environ["GOCACHE"] = gocache.dir_for(root, "mutate")`,
+	}
+	full := gocacheScriptFullCodeText("scripts/x.py", code)
+	joined := ""
+	for _, l := range full {
+		joined += l + "\n"
+	}
+	if !strings.Contains(joined, "dir_for") {
+		t.Fatalf("★ ★★ `'''` 块内的 `''` **不许**让块提前闭合 ★★ ⇒ ⇒ ⇒ 块后面那行真代码 "+
+			"★ ⇒ ⇒ ⇒ 必须仍看得见 `dir_for(` ⇒ ⇒ ⇒ 但它被当成数据抹掉了 ⇒ ⇒ ⇒ ⇒ "+
+			"★ ⇒ ⇒ ⇒ **判据⑥ 会漏判**（★ 实测掩码输出：\n%s）", joined)
+	}
+	// ★ ★★ 反向：★ `'''` 块**内部**的 `dir_for(` 必须仍被当成数据。
+	inside := []string{
+		`X = '''`,
+		`os.environ["GOCACHE"] = gocache.dir_for(root, "mutate")`,
+		`'''`,
+	}
+	full2 := gocacheScriptFullCodeText("scripts/x.py", inside)
+	joined2 := ""
+	for _, l := range full2 {
+		joined2 += l + "\n"
+	}
+	if strings.Contains(joined2, "dir_for") {
+		t.Fatalf("★ ★★ `'''` 块内部的 `dir_for(` 必须仍被当成数据 ★★（★ 载荷 ⇒ ⇒ 数据）⇒ ⇒ ⇒ "+
+			"★ ⇒ ⇒ ⇒ 但它没被抹掉 ⇒ ⇒ ⇒ ⇒ （★ 实测掩码输出：\n%s）", joined2)
 	}
 }

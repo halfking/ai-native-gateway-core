@@ -154,6 +154,29 @@ def prune(root: str, purpose: str = "mutate") -> bool:
     return True
 
 
+# _pruned_once 登记【本进程已剪过】的用途（★ 每进程每用途只剪一次）。
+#
+# ★ ★★ **为什么要有它**：★★ 剪枝要**遍历整个缓存目录**（★ 逐个 `stat`）⇒ ⇒ ★★
+# ★★ 实测（★ 2026-10-29，本机）：★★ 3.7 GB 的专用缓存 ⇒ ⇒ ★★ 一次 **0.133 s**
+# ★★ ⇒ ⇒ ★★ 若**每次**调用都剪 ⇒ ⇒ ★★ 变异台里 `run_go` 调 N 次就多烧 N × 0.13 s
+# ★★ ⇒ ⇒ ★★ ⇒ ★★ 而 Go 侧 `internal/gocache.Env` 走的是 `PruneOnce`
+# ★★ （★ ★★ **每进程只剪一次**）⇒ ⇒ ★★ ⇒ ★★ ⇒ **两边的口径必须说同一句话**
+# ★★ ⇒ ⇒ ★★ ⇒ ★★ ⇒ 三边共用同一个约定 ⇒ ⇒ ★★ ⇒ 本模块与 Go 侧对齐。
+_pruned_once = set()
+
+
+def prune_once(root: str, purpose: str = "mutate") -> bool:
+    """剪枝，但**每进程每用途只剪一次**（★ 与 Go 侧 `PruneOnce` 同口径）。
+
+    ★ ★★ **失败不致命**：★ 剪枝失败只是「这次不省空间」⇒ ⇒ ★ 与 `prune` 同款。
+    """
+    key = (os.path.abspath(root), purpose)
+    if key in _pruned_once:
+        return False
+    _pruned_once.add(key)
+    return prune(root, purpose)
+
+
 def env(purpose: str = "mutate", root: str = None) -> dict:
     """返回给子进程用的环境（★ `os.environ` + 【GOCACHE 覆盖】）。
 
@@ -161,10 +184,18 @@ def env(purpose: str = "mutate", root: str = None) -> dict:
     ★ ★★ 「**后出现的同名变量赢**」⇒ ⇒ ★★ ⇒ 即便用户环境里已经设了 `GOCACHE`，
     ★ ★★ 子进程也会用专用目录（★ ★★ 条件式 ⇒ ⇒ 用户环境里已设 ⇒ ⇒ ★★ **悄悄
     ★ ★★ 回落用全局缓存** ⇒ ⇒ ★★ ⇒ **门绿着，而隔离根本没生效**）。
+
+    ★★★★ **剪枝按【每进程每用途一次】**（★ r1049 审计轮实测逼出来的）：★★★★
+    ★★★★ 剪枝要**遍历整个缓存目录**（★ 逐个 `stat`）⇒ ⇒ ★★★★ 3.7 GB 的缓存
+    ★★★★ 实测**一次 0.133 s** ⇒ ⇒ ★★★★ 若每次调用都剪 ⇒ ⇒ ★★★★ 变异台里
+    ★★★★ `run_go` 调 N 次就多烧 N × 0.13 s ⇒ ⇒ ★★★★ ⇒ ★★ 而 Go 侧
+    ★★★★ `internal/gocache.Env` 走的是 `PruneOnce`（★ ★★ **每进程只剪一次**）
+    ★★★★ ⇒ ⇒ ★★★★ ⇒ ★★ ⇒ **两边的口径必须说同一句话** ⇒ ⇒ ★★ ⇒ ★★ ⇒
+    ★★★★ ⇒ 本函数与 Go 侧对齐（★ 三边共用同一个约定）。
     """
     if root is None:
         root = repo_root()
-    prune(root, purpose)
+    prune_once(root, purpose)
     e = dict(os.environ)
     # ★★★★ **失败安全**（★ r1048 轮）：★★★★ 专用目录**建不出来**时
     # ★★★★ **不覆盖** GOCACHE ⇒ ⇒ ★★★★ 因为 go 拿到一个**不可用**的 GOCACHE
