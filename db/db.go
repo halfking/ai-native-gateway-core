@@ -1333,8 +1333,10 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 			break
 		}
 		rows, err := conn.Query(ctx, `
-			WITH chunk AS (
-				SELECT session_key, max(session_key) OVER () AS chunk_max
+			UPDATE public.session_summaries ss
+			SET last_accessed_at = ss.last_request_at
+			WHERE ss.session_key IN (
+				SELECT session_key
 				FROM public.session_summaries
 				WHERE session_key > $1
 				  AND last_accessed_at IS NULL
@@ -1342,11 +1344,7 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 				ORDER BY session_key
 				LIMIT $2
 			)
-			UPDATE public.session_summaries ss
-			SET last_accessed_at = ss.last_request_at
-			FROM chunk c
-			WHERE ss.session_key = c.session_key
-			RETURNING c.chunk_max
+			RETURNING ss.session_key
 		`, watermark, sessionSummariesBackfillBatch)
 		if err != nil {
 			var pgErr *pgconn.PgError
@@ -1364,7 +1362,14 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 		if len(watermarks) == 0 {
 			break
 		}
-		watermark = watermarks[0]
+		// 2026-10-30 24h 审计第 7 轮：子查询按 session_key 有序 LIMIT ⇒ 返回的
+		// 最大值即新水位。不再用 max(session_key) OVER () 窗口列——
+		// 252 生产实测（909k 行表，395k 待回填）：窗口聚合迫使 planner 从
+		// pkey 顺序扫全 NULL 集（Buffer 16 万/12s > 5s statement_timeout）⇒
+		// chunk 永远烧穿 ⇒ boot 预算耗尽 ⇒ "postgres disabled" ⇒ 245 蓝绿
+		// 候选槽数活 600s 超时（部署 blocker 实锤）。keyset 分页 LIMIT 的
+		// 子查询在扫满 500 行即停，与回填批大小同阶。
+		watermark = watermarks[len(watermarks)-1]
 		backfilled += len(watermarks)
 	}
 

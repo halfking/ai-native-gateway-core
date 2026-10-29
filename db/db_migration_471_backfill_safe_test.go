@@ -32,7 +32,13 @@ func TestEnsureSessionSummariesArchivalLockSafe(t *testing.T) {
 		// backfill: PK-watermark chunk with DB-collation boundary + bounded slice
 		"sessionSummariesBackfillBatch",
 		"sessionSummariesBackfillSlice",
-		"max(session_key) OVER () AS chunk_max",
+		// 2026-10-30 24h 审计第 7 轮：watermark 改 keyset 子查询（有序 LIMIT，
+		// 取末位）——原 max() OVER () 窗口列迫使 planner 顺序扫全 NULL 集
+		// （252 实测 395k 行 12s > 5s statement_timeout ⇒ chunk 永远烧穿 ⇒
+		// "postgres disabled" ⇒ 245 蓝绿候选槽数活 600s 超时）。契约钉住
+		// keyset 形态与窗口列的消亡。
+		"ORDER BY session_key\n\t\t\t\tLIMIT $2",
+		"watermarks[len(watermarks)-1]",
 		"AND last_request_at IS NOT NULL",
 		// indexes: concurrent builds + INVALID-corpse repair
 		"CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_session_summaries_archival",
