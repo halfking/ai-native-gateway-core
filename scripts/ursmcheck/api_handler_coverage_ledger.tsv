@@ -29,7 +29,7 @@
 #   （同名方法在包内多见时只能按字段名近似匹配）⇒ 复核时以 def_file 里的源码为准。
 # gen_tool_sha=ada637544b6b53de878eeb7085145278c4ee1880c6ac62ece52a1348d457dfac
 # gen_pkgs=admin,cmd/gateway,api,taskprofile,internal/quality
-# gen_cover_sha=a10f2f6db3a82de275c93df7c87a4bf4b84a283605ffeab8499ba7012261ecb5
+# gen_cover_sha=9c40e582faffbcf2627d210bab321b12553dd966f5c49dc9eef08e38043423dd
 # gen_cover_mode=joint
 # gen_coverpkg=./admin/,./api/,./cmd/gateway/,./internal/quality/,./taskprofile/
 # gen_defpkgs=admin api cmd/gateway internal/quality taskprofile 

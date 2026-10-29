@@ -50,7 +50,17 @@ for _gc_lib in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"),
         sys.path.insert(0, _gc_lib)
         break
 import gocache  # noqa: E402
-os.environ["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")
+
+# ★★★ r1048 轮（★ 2026-10-29）：★★ 【失败安全】★★
+# ★★★ 原写法是 `os.environ["GOCACHE"] = gocache.dir_for(...)` ⇒ ⇒ ★ **dir_for 只算路径，
+# ★★★ 不建目录、也不查可写** ⇒ ⇒ ★★ 专用缓存目录**建不出来**时 ⇒ ⇒ ★ go 拿到一个
+# ★★★ 不可用的 GOCACHE ⇒ ⇒ ★★ 会直接报 `failed to initialize build cache` ⇒ ⇒ ★★
+# ★★★ **脚本直接坏掉** ⇒ ⇒ ★★ 而「脚本坏掉」比「这次没隔离」**严重得多** ⇒ ⇒ ★★★
+# ★★★ ⇒ ⇒ ★★ 改走 `apply_to_environ()`（★ 内部先 `ensure()` 建目录并查可写 ⇒ ⇒
+# ★★★ 建不出来就**不设** GOCACHE ⇒ ⇒ ★ 子进程回落用环境里原本的那个 ⇒ ⇒ ★ 脚本照常跑）
+# ★★★ ⇒ ⇒ ★★ 原则：**宁可漏隔离，也不许把脚本弄坏**（★ 与 `scripts/lib/gocache.py`
+# ★★★ 的 `ensure()` / `apply_to_environ()` 注释同款）。
+_GC_OK = gocache.apply_to_environ("mutate")
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
@@ -63,7 +73,12 @@ LEDGER_REL = "scripts/audit/asset/query-plan-cost-ledger.tsv"
 EXEMPT_REL = "scripts/audit/asset/query-plan-cost-exemptions.tsv"
 
 GATE_TEST = "TestQueryPlanCostLedgerMatchesFacts"
-GO_ENV = {"GOCACHE": os.environ["GOCACHE"], "GOFLAGS": "-mod=mod"}
+# ★ 专用缓存**没生效**时（★ `_GC_OK` 为假 ⇒ ★ 专用目录建不出来）⇒ ⇒ ★★ **不许**把
+# ★ GOCACHE 设成空串 ⇒ ⇒ ★★ go 会报「不是绝对路径」⇒ ⇒ ★★ ⇒ ⇒ 所以**只在生效时**
+# ★ 才显式带出（★ 不带这个键 ⇒ ⇒ 子进程用 `os.environ` 原本的那个 ⇒ ⇒ 脚本照常跑）。
+GO_ENV = {"GOFLAGS": "-mod=mod"}
+if _GC_OK:
+    GO_ENV["GOCACHE"] = os.environ["GOCACHE"]
 
 
 def md5(path: pathlib.Path) -> str:
