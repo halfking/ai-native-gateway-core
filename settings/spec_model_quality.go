@@ -130,5 +130,37 @@ func ModelQualitySpecs() []*Spec {
 			DangerLevel: Warning, // 会产生真实 token 费用
 			HotReload:   true,
 		},
+		{
+			// 2026-10-30 (24h 审计第 7 轮)：per-node IQ 的范围收窄。
+			// featured = routing_policy.featured_models 命中的绑定（与
+			// model_credibility.scope 的 featured 同一口径）。无收窄时
+			// 每次 boot 对全量活跃绑定打真实请求（211 ~3500 绑定）。
+			Key:         "model_quality.per_node_scope",
+			Type:        TypeString,
+			Scope:       ScopePlatform,
+			Category:    CategoryModelQuality,
+			Default:     "featured",
+			Description: "per-node 智商测试的节点范围（featured=仅特色模型，all=全量）",
+			DescriptionLong: "featured（默认）只测 routing_policy.featured_models 命中的绑定，" +
+				"与 model_credibility.scope 的 featured 同口径；all 不收窄（token 成本高，慎用）。",
+			DangerLevel: Safe,
+			HotReload:   false, // 每次 per-node 周期开始时读取，无需热更
+		},
+		{
+			// 2026-10-30: 成功 IQ 实测在此窗口内的节点跳过——防止每次部署
+			// 重启的「启动立即跑一次」反复打同一批节点（商汤 429 教训）。
+			Key:         "model_quality.per_node_min_interval_hours",
+			Type:        TypeInt,
+			Scope:       ScopePlatform,
+			Category:    CategoryModelQuality,
+			Default:     24,
+			Min:         floatPtr(0),
+			Max:         floatPtr(168),
+			Description: "per-node 智商测试的最小重测间隔（小时；窗口内已成功实测的节点跳过）",
+			DescriptionLong: "窗口内已有成功 IQ 实测的节点跳过本轮；0 = 不跳过（每次 boot 全量重测，" +
+				"token 成本高，慎用）。默认 24 与定时周期一致。",
+			DangerLevel: Safe,
+			HotReload:   false,
+		},
 	}
 }

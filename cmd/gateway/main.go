@@ -5218,6 +5218,18 @@ func main() {
 				}
 				mqConfig.EnablePerNodeTesting = mqEnablePerNode
 
+				// 2026-10-30 (24h 审计第 7 轮)：per-node 范围与去重窗口。
+				// featured 默认 —— 与 model_credibility.scope 的 featured 同口径；
+				// min-interval 默认 24h —— 防止每次部署重启把同一批节点重打一遍。
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.per_node_scope", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelQuality/per_node_scope", raw, &mqConfig.PerNodeScope)
+				}
+				var mqPerNodeMinHours float64
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.per_node_min_interval_hours", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelQuality/per_node_min_interval_hours", raw, &mqPerNodeMinHours)
+				}
+				mqConfig.PerNodeMinIntervalHours = int(mqPerNodeMinHours)
+
 				modelQualityWorker = bg.NewModelQualityWorker(mqDataDir, mqAPIKey, mqBaseURL, time.Duration(mqTimeoutSec)*time.Second)
 				// ★ nodeSource 常驻注入（db + 解密 key 可用即设）。
 				// enable_per_node 只控制**定时** per-node 循环（loop 里的

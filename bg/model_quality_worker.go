@@ -275,10 +275,28 @@ func (w *ModelQualityWorker) RunPerNodeCheck(ctx context.Context, storage modelq
 	if src == nil || invoker == nil {
 		return 0, fmt.Errorf("node source not configured (call SetNodeSource first)")
 	}
-	nodes, err := src.DiscoverActiveNodes(ctx)
+	// 2026-10-30 (24h 审计第 7 轮)：scope 收窄 + 最近已测跳过。无这两道闸时
+	// 每次 boot 立即跑一遍全量活跃节点（211 ~3500 绑定），token 成本与上游
+	// 限流都不可接受（商汤 200 题触发 429 的实测教训）；同时 per-node IQ 是
+	// 可信度同伴对比/校准的数据源，featured 面已覆盖判定所需。
+	scope := w.config.PerNodeScope
+	if scope == "" {
+		scope = "featured"
+	}
+	minInterval := time.Duration(w.config.PerNodeMinIntervalHours) * time.Hour
+	if w.config.PerNodeMinIntervalHours <= 0 {
+		minInterval = 24 * time.Hour
+	}
+	var nodes []modelquality.CredentialNode
+	// nodeSource 是具体类型（*CredentialNodeSource）而非接口；scope/min-interval
+	// 收窄只在 per-node 路径生效，FindNode 单点直连不走这里（手动「立即测试」
+	// 不受 scope 限制，与 model_credibility.FindTarget 同语义）。
+	nodes, err := src.DiscoverPerNodeTargets(ctx, scope, minInterval)
 	if err != nil {
 		return 0, fmt.Errorf("discover nodes: %w", err)
 	}
+	slog.Info("per-node check targets resolved",
+		"scope", scope, "min_interval", minInterval.String(), "targets", len(nodes))
 	suite := modelquality.GetMMLULiteSuite()
 	calculator := &modelquality.ScoreCalculator{}
 	tested := 0
