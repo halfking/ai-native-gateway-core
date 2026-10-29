@@ -10,8 +10,8 @@
 //  4. 成功率的假零禁令：0 请求显示「—」，不显示 0%；
 //  5. 口径行以响应自己的 window 字段为准（数据说话，不是选中态说话）。
 
-import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
+import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import StatsPanel from './StatsPanel.vue'
 import { getClientsToday, getProvidersToday, getTopologyModelsToday } from '../../api/topology'
@@ -40,6 +40,7 @@ type PanelProps = {
   activeModel?: string
   inFlight?: number | null
   queueDepth?: number | null
+  dataRevision?: number
 }
 
 // 后端 totals 是全字段返回的；夹具也写全，避免「半个信封」假绿。
@@ -82,9 +83,24 @@ function modelItem(over: Record<string, unknown> = {}) {
   } as never
 }
 
+// 挂载登记簿：本文件所有 describe 共用。组件 onMounted 注册了真实的
+// 60s 轮询 interval + document 级 visibilitychange 监听 —— 用例不 unmount
+// 的话，遗留面板会跨用例存活：后续用例一 dispatch visibilitychange，
+// 几十个遗留面板各自「回前台补拉」，把共享的 mock 调用计数打爆
+// （2026-10-29 统计同步轮实测：20 = 1 个本尊 + 19 个遗留面板）。
+// ★ 组件本身卸载即清理（interval / 定时器 / 监听三样全摘）；漏释放的
+//   是测试自己 —— 泄漏治理对量具同样生效。
+const mountedWrappers: VueWrapper[] = []
+
 function mountPanel(props: PanelProps = {}) {
-  return mount(StatsPanel, { props: props as never, global: { plugins: [i18n] } })
+  const w = mount(StatsPanel, { props: props as never, global: { plugins: [i18n] } })
+  mountedWrappers.push(w)
+  return w
 }
+
+afterEach(() => {
+  for (const w of mountedWrappers.splice(0)) w.unmount()
+})
 
 describe('StatsPanel 区间切换与口径', () => {
   beforeEach(() => {
@@ -343,5 +359,98 @@ describe('StatsPanel 明细与过滤联动', () => {
     const w = mountPanel()
     await flushPromises()
     expect(w.find('[data-testid="stats-model-expand"]').exists()).toBe(false)
+  })
+})
+
+describe('StatsPanel 新数据同步刷新（2026-10-29 统计同步轮）', () => {
+  // 统计是 DB 直查口径，此前只靠 30s/60s 轮询 ⇒ 新请求进来图和面板立刻动、
+  // 统计最多滞后一个轮询周期。现在 dataRevision（liveStreamStore 修订号）
+  // 驱动尾沿防抖刷新：突发合流、后台标签页只记账、回前台补拉、卸载清干净。
+  beforeEach(() => {
+    vi.useFakeTimers()
+    mockedClients.mockReset()
+    mockedProviders.mockReset()
+    mockedModels.mockReset()
+    mockedClients.mockResolvedValue({ items: [] })
+    mockedProviders.mockResolvedValue({ day_utc: '2026-10-28', totals: totals(), items: [] })
+    mockedModels.mockResolvedValue({ items: [] })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  async function mountWithRevision() {
+    const w = mountPanel({ dataRevision: 0 })
+    await flushPromises()
+    return w
+  }
+
+  function clientCalls(): number {
+    return mockedClients.mock.calls.length
+  }
+
+  it('★ dataRevision 变化 ⇒ 防抖窗口后统计重新拉取（新数据落地即同步）', async () => {
+    const w = await mountWithRevision()
+    const before = clientCalls()
+    await w.setProps({ dataRevision: 1 })
+    // 防抖窗口内不打端点（突发合流的前提）
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(clientCalls()).toBe(before)
+    await vi.advanceTimersByTimeAsync(1_500)
+    expect(clientCalls()).toBeGreaterThan(before)
+    w.unmount()
+  })
+
+  it('★ 一次突发（多帧连续 bump）合流成一次拉取，不打爆端点', async () => {
+    const w = await mountWithRevision()
+    const before = clientCalls()
+    for (let i = 1; i <= 10; i += 1) await w.setProps({ dataRevision: i })
+    await vi.advanceTimersByTimeAsync(10_000)
+    // 尾沿防抖：无论 bump 多少次，只补 1 轮（每轮 = clients/providers/models 各 1 次）
+    expect(clientCalls() - before).toBe(1)
+    w.unmount()
+  })
+
+  it('★ 后台标签页不拉取（只记账），回前台后补一次', async () => {
+    const hiddenSpy = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    const w = await mountWithRevision()
+    const before = clientCalls()
+    await w.setProps({ dataRevision: 1 })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(clientCalls()).toBe(before)
+    // 回前台：挂起的那次同步要补上（仍走防抖，不打突刺）
+    hiddenSpy.mockReturnValue(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+    expect(clientCalls()).toBe(before)
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(clientCalls()).toBe(before + 1)
+    w.unmount()
+  })
+
+  it('★ 回前台时数据已旧过轮询周期 ⇒ 立即补拉（隐藏期间轮询 tick 被跳过）', async () => {
+    const hiddenSpy = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    const w = await mountWithRevision()
+    const before = clientCalls()
+    hiddenSpy.mockReturnValue(true)
+    await vi.advanceTimersByTimeAsync(120_000) // 隐藏 2 分钟：60s 轮询 tick 全部跳过
+    expect(clientCalls()).toBe(before)
+    hiddenSpy.mockReturnValue(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+    // 不用等防抖：数据旧过 pollMs ⇒ 立即补一轮
+    expect(clientCalls()).toBe(before + 1)
+    w.unmount()
+  })
+
+  it('★ 卸载时挂起的同步定时器一并清掉，离开页面后不再打端点', async () => {
+    const w = await mountWithRevision()
+    const before = clientCalls()
+    await w.setProps({ dataRevision: 1 })
+    w.unmount()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(clientCalls()).toBe(before)
   })
 })
