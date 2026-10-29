@@ -14813,3 +14813,40 @@ adaptive、单次尝试、200）；**「拒绝即学习」是设计内的行为�
 > 通用式见 `LESSONS.md` **§550**（五条：★★ 需求口径推翻机制时判据整体重写 /
 > ★★★ 落库移植先问「哪一层丢得起」/ ★★ 预设必须过自己的校验器 /
 > ★★ 展示名与匹配说明分开、一个信息一个事实源 / ★★ 记录维度与判定键分开）。
+**2026-10-29 ㊻ 客户端识别轮：原厂规范对照 + 识别链收敛 + claude-cli 线材实态**（goal 会话）：
+★ 承接 ㊹（MiniMaxCode 单点修复）⇒ 本轮把「档案形态 ≠ 线上实态」升级为
+**四家原厂规范档逐家对照三条识别链 + 211 生产 24h UA 分布实测校准**。
+⇒ ★★ **RISK-7 收口（本轮主缺口）**：Claude Code 真实线材 UA 是
+`claude-cli/{ver}`（OAuth 流实测 + pi-cc-compat + 自定义 API 文档三源核实），
+档案只记了 `anthropic-beta` 旗标 ⇒ 两张 UA 表都不认 ⇒ RISK-6 加的
+claude-code↔claude 原生对在 header/UA 首选路径**永不命中**。修：`claude-cli`
+token 进两表 + `Anthropic-Beta: claude-code-` 旗标（UA 未命中后的强信号，
+普通 SDK 不带）。
+⇒ ★★ **识别链三副本收敛成一份**：executors 包的「行为一致镜像」副本
+（注释契约「两份必须保持一致」）**事实已漂移**（缺 ㊹ minimaxcode、缺
+claude-cli = nativePairFor 兜底路径同盲）⇒ 检测逻辑进
+`clienttype.DetectFromRequest` 唯一实现，streaming / executors 两处薄委托
+——「镜像契约没有执行机制 ⇒ 漂移是时间问题」，收敛让「新厂商工具只改
+一张表」成为结构保证。
+⇒ ★ **裸 token 双边界匹配（`clienttype.HasToken`）**：形近词防线
+（MiniMaxCoder≠minimaxcode、ZCodex 不抢 zcode/codex、visualized≠zed）；
+自证 20 例 + 三表正负臂。★ **ZCode 3.x 线材实态（firehose 实证）**：
+Claude Code 分支版——2MB 请求无 metadata、工具为 Claude Code 2.x 原名
+（Agent/Bash/CronCreate…）、无 zcode_* 命名空间 ⇒ body 标记对现役客户端
+永不命中，**UA 是唯一活信号**；**不得按工具名识别**（分支共享工具集）。
+两份档案补订正块（claude-code.md 新增识别章节带源；zcode.md 补 3.x 注）。
+⇒ ★ **线上取证（211 bfd7f76f 槽 a）**：glm 腿六臂差分——claude-cli /
+仅旗标 / 仅 header 三种单信号臂首发厂商参数**保真**，curl 臂第 2 跳
+**被剥 enable_thinking**，MiniMaxCoder 形近词臂**未误判**，zcode 回归臂
+无变化（firehose 逐臂独立 rid）。
+⇒ ★★ **claude 对线上机制臂受阻（如实记）**：211 claude 凭据面全线不可用
+（fable-5 唯二 ready = #17 deleted / #33 disabled，余者 exhausted /
+unreachable）⇒ `db_empty` 是正确行为（视图暴露非 active 行，终态由
+`c.status='active'` 裁决；DB 层最小复现 14 行/视图 12 行健康）⇒ 识别侧
+单测+glm 差分已就绪，**待上游凭据恢复后按 ㊸ 轮真机清单复核**。
+⇒ ★ **判定面纪律**：上游故障窗（glm 候选簇 12/15 全败，与 ㊹ 同源抖动）
+不妨碍识别差分——**判定面是出站 body 不是 HTTP 态**，firehose 里
+upstream_request 完整在场。
+⇒ 提交 `51cb63a80`（已推 origin）；审计档
+`docs/audit/2026-10-29-客户端识别轮-原厂规范对照与线材实态.md`；
+通用式见 `LESSONS.md` **§551**。
