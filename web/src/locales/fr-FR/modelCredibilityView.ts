@@ -104,6 +104,5 @@ export default {
     loadFailed: 'Les données de fiabilité des modèles n\'ont pas pu être chargées. Veuillez réessayer.',
     scanFailed: 'L\'analyse de fiabilité n\'a pas pu être terminée. Veuillez réessayer.',
     detailFailed: 'Le détail du verdict de fiabilité n\'a pas pu être chargé. Veuillez réessayer.',
-    historyFailed: 'L\'historique des verdicts de fiabilité n\'a pas pu être chargé. Veuillez réessayer.',
   },
 }

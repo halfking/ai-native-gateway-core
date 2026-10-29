@@ -104,6 +104,5 @@ export default {
     loadFailed: 'The model credibility data could not be loaded. Please retry.',
     scanFailed: 'The model credibility scan could not be completed. Please retry.',
     detailFailed: 'The model credibility verdict detail could not be loaded. Please retry.',
-    historyFailed: 'The model credibility verdict history could not be loaded. Please retry.',
   },
 }
