@@ -31,11 +31,14 @@ function* walk(dir: string): Generator<string> {
   }
 }
 
+// Windows 的 join 产生反斜杠 ⇒ 豁免清单的正斜杠路径永不命中 ⇒ 假红。
+const relPosix = (file: string) => file.slice(SRC.length + 1).replace(/\\/g, '/')
+
 describe('D-5 源码门禁：下载不得绕过 exportFile 降级链', () => {
   it('createObjectURL 只允许出现在 exportFile 及其单测（其余全走降级链）', () => {
     const offenders: string[] = []
     for (const file of walk(SRC)) {
-      const rel = file.slice(SRC.length + 1)
+      const rel = relPosix(file)
       if (CREATE_OBJECT_URL_ALLOWLIST.has(rel)) continue
       const text = readFileSync(file, 'utf8')
       if (text.includes('createObjectURL')) offenders.push(rel)
