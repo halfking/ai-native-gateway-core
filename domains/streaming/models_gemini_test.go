@@ -30,6 +30,7 @@ func TestServeGeminiModels_NativeShape(t *testing.T) {
 	rows := pgxmock.NewRows([]string{"canonical_name", "family", "modality", "context_window"}).
 		AddRow("gemini-2.5-flash", "gemini", "text", nil)
 	mock.ExpectQuery(`credential_model_bindings cmb`).
+		WithArgs(true).
 		WillReturnRows(rows)
 
 	h := NewModelsHandler()
@@ -117,6 +118,7 @@ func TestServeGeminiModels_DoesNotPromiseCountTokens(t *testing.T) {
 	rows := pgxmock.NewRows([]string{"canonical_name", "family", "modality", "context_window"}).
 		AddRow("gemini-2.5-flash", "gemini", "text", nil)
 	mock.ExpectQuery(`credential_model_bindings cmb`).
+		WithArgs(true).
 		WillReturnRows(rows)
 
 	h := NewModelsHandler()
@@ -156,6 +158,7 @@ func TestServeGeminiModels_SameSourceAsOpenAIList(t *testing.T) {
 		rows := pgxmock.NewRows([]string{"canonical_name", "family", "modality", "context_window"}).
 			AddRow("gemini-2.5-flash", "gemini", "text", nil)
 		mock.ExpectQuery(`credential_model_bindings cmb`).
+			WithArgs(true).
 			WillReturnRows(rows)
 	}
 
