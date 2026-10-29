@@ -22,6 +22,9 @@ export default {
     source: {
       memory: 'En mémoire',
       file: 'Fichier local',
+      requestLogs: 'Journal des requêtes',
+      sessionTurns: 'Tours de session',
+      liveStream: 'Flux en direct',
     },
     labels: {
       requestId: 'ID de requête',

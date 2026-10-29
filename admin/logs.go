@@ -642,6 +642,12 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	//（storage.admin_logs_native_turns_read，默认视图）。两种形态在 rl 别名下
 	// 逐列同形，WHERE/JOIN/扫描零改动。全查询共用一次取值，保证 COUNT/聚合/
 	// 分页列表读到同一行集。
+	//
+	// ★★★ R182 轮订正（★★ 注释已陈旧，会误导下一轮 ★★★）：★★
+	// ★ R181 之后，**列表路径已经不再走这个开关**——★ 它固定走
+	// ★ `logsSourceFromSQLWindowed(...)`（原生两臂 + 分区键下界）⇒ ⇒
+	// ★ **本开关现在的真实作用范围收窄为【详情路径】**的形态选择
+	// ★（见 `logsSourceFromSQL()` 与 `admin/logs_turns_source.go` 的头注）。
 	// Super-admin path keeps the original narrow shape (no api_keys join —
 	// api_keys is not needed for the row count or for the SUM aggregate and
 	// adding it would inflate the query plan on the busiest list endpoint).
@@ -928,15 +934,54 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	// 语义不变：request_id 命中优先于 client_request_id 命中（拆分天然
 	// 保序），段内仍按 ts DESC。
 	scanDetailRow := func(whereLeg string) error {
-		return h.db.QueryRow(ctx, fmt.Sprintf(`
-			SELECT %s
+		// ★★ R181 轮（第 ⑨ 项）：★ 详情路径**两阶段化** ⇒ LIMIT 先于 JOIN 生效。
+		//
+		// ★ 原形态的问题：★ `ORDER BY rl.ts DESC LIMIT 1` 写在 JOIN **之后** ⇒
+		// ★ planner 必须先为**每一个候选行**跑完 5 个维度 JOIN + 2 个 LATERAL
+		// ★ （session_titles 取一、model_offers 挑一 —— 后者带 OR 条件与多键
+		// ★ ORDER BY，是这套 JOIN 里最贵的一段），**然后**才排序取 1 行
+		// ⇒ ⇒ LIMIT 根本没有减少 JOIN 的工作量。
+		// ★ 本地真库实测（改前）：★ Sort → Limit → … → Append（JOIN 全在
+		// ★ Limit 之下）⇒ LIMIT 未下推。
+		//
+		// ★ 两阶段：★ ① 先在**不 JOIN** 的源上定位唯一一行（只取 request_id）；
+		// ★ ② 再拿这一行的 JOIN 结果。⇒ JOIN 只发生 **1 次**，而不是候选行数次。
+		//
+		// ★ 等价性：★ JOIN 全是**行保持**的（维度表按 id 的 LEFT JOIN + 两个
+		// ★ `LEFT JOIN LATERAL … LIMIT 1`）⇒ 同一个 rl 行，JOIN 结果与
+		// ★ 「先排序取 1 行再 JOIN」逐字相同 ⇒ 阶段二按 request_id 定位到
+		// ★ **同一行**（request_id 是该族的行身份）⇒ 值逐字相同。
+		//
+		// ★★★ R182 轮修正（★★ 审出的一处**确定性回退**）：★★
+		// ★ 阶段二**必须带 `ORDER BY rl.ts DESC LIMIT 1`** ⇒ ★ 否则当
+		// ★ 同一个 request_id 在源里出现【两行】时，阶段二会返回**任意一行**。
+		// ★ 当下不会发生（★ promote 是**单条原子 CTE**：`WITH moved AS (DELETE …
+		// ★ RETURNING), inserted AS (INSERT … SELECT FROM moved)` ⇒ hot 与父表
+		// ★ **不会同时**持有同一行 ⇒ 实测本地 hot∩父表 = 0）⇒ ★ 所以这是
+		// ★ **纵深防御**，不是现网缺陷 ⇒ ★ 但代价为零（就一行）⇒ ★ 加上。
+		// ★★ 留着的价值：★ 一旦这个不变量被破（★ 手工 INSERT / 将来改成非原子
+		// ★ 搬运 / 补迁移写错），旧形态（单查询 ORDER BY ts DESC LIMIT 1）是
+		// ★ **确定性**的，新形态不该比旧形态更弱。
+		var pickedRequestID string
+		if err := h.db.QueryRow(ctx, fmt.Sprintf(`
+			SELECT rl.request_id
 			  FROM %s
-			%s
 			 WHERE %s
 			   AND ($2 OR rl.tenant_id = $3)
 			 ORDER BY rl.ts DESC
 			 LIMIT 1
-			`, requestLogsDetailCols, logsSourceFromSQL(), requestLogsJoins, whereLeg), requestID, IsSuperAdminOrLegacy(r), GetTenantID(r)).Scan(
+			`, logsSourceFromSQL(), whereLeg), requestID, IsSuperAdminOrLegacy(r), GetTenantID(r)).Scan(&pickedRequestID); err != nil {
+			return err
+		}
+		return h.db.QueryRow(ctx, fmt.Sprintf(`
+			SELECT %s
+			  FROM %s
+			%s
+			 WHERE rl.request_id = $4
+			   AND ($2 OR rl.tenant_id = $3)
+			 ORDER BY rl.ts DESC
+			 LIMIT 1
+			`, requestLogsDetailCols, logsSourceFromSQL(), requestLogsJoins), requestID, IsSuperAdminOrLegacy(r), GetTenantID(r), pickedRequestID).Scan(
 			&detail.Ts,
 			&detail.RequestID,
 			&detail.APIKeyID,

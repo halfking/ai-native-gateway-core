@@ -38,6 +38,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // SessionTurnTreeItem 是一轮（主请求 + 内联子请求树）。
@@ -202,11 +203,16 @@ func (h *Handler) handleSessionTurnsTree(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"session_id":  sessionID,
-		"turns":       result.Turns,
-		"count":       len(result.Turns),
-		"has_more":    result.HasMore,
+		"session_id": sessionID,
+		"turns":      result.Turns,
+		"count":      len(result.Turns),
+		"has_more":   result.HasMore,
 		"next_cursor": nextCursor,
+		// W1.3（24h 审计第 7 轮补）：211 生产 turns 列表默认走 tree 模式
+		// （sessions_v2.turns_list_routing 缺省 tree）——v2/unified 两路已透出
+		// recording_consent，tree 路不透出 ⇒ 同一 UI 在不同模式下对「正文为空」
+		// 的归因能力不一致。列表是元数据主路（不打 409 门），只显式透出同意态。
+		"recording_consent": settings.RecordingConsentEnabled(tenantID),
 	})
 }
 

@@ -35,6 +35,7 @@ import {
   type FpSlotStats,
   type CredentialRoutingDecision,
   type CredentialMonitorMeta,
+  type SlidingWindowSource,
 } from '../../api'
 import AppDrawer from '../ui/AppDrawer.vue'
 import AppModal from '../ui/AppModal.vue'
@@ -87,7 +88,7 @@ const lastDetailRefreshAt = ref<Date | null>(null)
 const detailMeta = ref<CredentialMonitorMeta | null>(null)
 const selectedModel = ref('')
 const windowEntries = ref<CallEntry[]>([])
-const windowSource = ref<'redis' | 'request_logs'>('redis')
+const windowSource = ref<SlidingWindowSource>('redis')
 const windowLoading = ref(false)
 
 type DetailTab = 'overview' | 'models' | 'history'
@@ -991,8 +992,13 @@ onUnmounted(() => {
               <div class="drawer-section">
                 <div class="drawer-section-title">
                   滑动窗口 (最近 1 小时)
+                  <!-- ★ R182 轮修正：★ 原来写死 `windowSource === 'redis' ? 'Redis' : 'request_logs'`
+                       ⇒ ★ 后端回退腿（source="session_turns"）被**错标成 "request_logs"**
+                       ⇒ ★ 【退役表的旧名直接上屏】。★ 现在按真实取值渲染标签。
+                       ★ ★ 'Redis' 是**产品名**（★ 8 个语种逐字相同）⇒ ★ 刻意**不进** i18n
+                       ★ ★（★ 进了会被 locale-value 门判成「与 en-US 逐字相同 = 没翻」★）。 -->
                   <span class="source-tag" :class="windowSource === 'redis' ? 'src-redis' : 'src-rl'">
-                    {{ windowSource === 'redis' ? 'Redis' : 'request_logs' }}
+                    {{ windowSource === 'redis' ? 'Redis' : $t('credentialMonitor.drawer.sourceSessionTurns') }}
                   </span>
                 </div>
                 <div v-if="!selectedModel" class="cell-muted">{{ $t('credentialMonitor.drawer.selectModelRow') }}</div>

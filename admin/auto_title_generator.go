@@ -749,6 +749,19 @@ func (g *AutoTitleGenerator) detectIDESource(preview string) string {
 		"you are continue": "[Continue]",
 		"you are copilot":  "[Copilot]",
 		"you are kiro":     "[Kiro]",
+		// 2026-10-29 domestic-vendor round：与 telemetry 的
+		// agentPatterns 同批接入的 CN 厂商编码工具（标题前缀只认
+		// "you are …" 自述形态，与该表原有条目同一严格度）。
+		"you are codebuddy": "[CodeBuddy]",
+		"you are trae":      "[Trae]",
+		"you are zulu":      "[Zulu]",
+		"you are comate":    "[Comate]",
+		"you are qwen code": "[Qwen Code]",
+		"you are kimi":      "[Kimi]",
+		"you are iflow":     "[iFlow]",
+		"you are raccoon":   "[Raccoon]",
+		"iflycode":          "[iFlyCode]",
+		"you are lingma":    "[Lingma]",
 	}
 
 	for signature, prefix := range ideSignatures {

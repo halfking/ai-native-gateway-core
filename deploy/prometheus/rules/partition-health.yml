@@ -104,7 +104,9 @@ groups:
             
             **紧急操作**：
             1. 查看 PostgreSQL 日志
-            2. 验证月度分区存在：SELECT * FROM pg_inherits WHERE inhparent = 'request_logs'::regclass
+            2. 验证月度分区存在：SELECT * FROM pg_inherits WHERE inhparent = 'session_turns'::regclass
+               （v1 `request_logs` 族已随迁移 890 **物理删除** ⇒ 照旧名去查会 42P01；
+                现役分区母表是 `session_turns`，hot 表 `session_turns_hot` 不参与分区继承）
             3. 检查磁盘空间：df -h
           runbook_url: "https://docs.example.com/partition-runbook#promote-error"
       
@@ -132,7 +134,9 @@ groups:
             
             **紧急修复**：
             1. 立即 DETACH 当月分区：
-               ALTER TABLE request_logs DETACH PARTITION request_logs_2026_07;
+               ALTER TABLE session_turns DETACH PARTITION session_turns_2026_07;
+               （v1 `request_logs` 族已随迁移 890 物理删除 ⇒ 旧示例里的那张母表
+                与分区已不存在，照抄会 42P01；现役母表是 `session_turns`）
             2. 验证所有表的当月分区状态
             3. 重新应用 migration 337（如需要）
             
@@ -225,8 +229,9 @@ groups:
 #    - pg_errors_total: PostgreSQL 日志 exporter 或 pg_stat_database
 #
 # 3. 测试告警：
-#    # 模拟 default 表膨胀
-#    INSERT INTO request_logs_default (...) SELECT ... FROM generate_series(1, 1000000);
+#    # 模拟 default 分区膨胀（v1 的 `request_logs_default` 已随迁移 890 删除，
+#    #    现役 default 分区在 `session_turns_default`）
+#    INSERT INTO session_turns_default (...) SELECT ... FROM generate_series(1, 1000000);
 #
 #    # 检查告警状态
 #    curl http://localhost:9090/api/v1/alerts | jq '.data.alerts[] | select(.labels.component=="partition")'

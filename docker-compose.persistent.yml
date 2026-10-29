@@ -31,7 +31,23 @@ services:
       # ── 基础配置 ──────────────────────────────────────────────────
       LLM_GATEWAY_ENV: ${LLM_GATEWAY_ENV:-local}
       LLM_GATEWAY_LISTEN: ":8781"
-      
+
+      # ── goacos 服务发现注册（方案 54 / CO-20）────────────────────────
+      # 开关默认**关**：装上 SDK 就往注册中心写东西，不是我们要的默认值。
+      GOACOS_ENABLED: ${GOACOS_ENABLED:-false}
+      # 注册中心地址与**本机地址**：地址必须显式给 —— 多网卡机器（netbird +
+      # 内网 + docker bridge）上探测出来的地址常常是 peer 拨不通的那个。
+      GOACOS_SERVER_ADDR: ${GOACOS_SERVER_ADDR:-}
+      GOACOS_IP: ${GOACOS_IP:-}
+      GOACOS_NAMESPACE: ${GOACOS_NAMESPACE:-public}
+      # ⚠ **这里没有 GOACOS_PORT，而且不该有。**
+      #   llm-gateway 属于「直接监听」这一类：对外通告的端口 = 进程实际 bind
+      #   的那个端口（由 LLM_GATEWAY_LISTEN 派生），**不是**任何部署面变量 ——
+      #   蓝绿切流时活跃端口在 8781 / 8782 之间来回换，任何变量都会过期。
+      # ⚠ 本面必须是**恒等映射**（宿主侧 == 容器侧）这条口径才成立：
+      #   宿主侧一旦 ≠ 容器侧，peer 拨的是宿主侧、通告的却是容器侧 ⇒ 502。
+      #   本面：宿主侧 ${PORT:-8781} == 容器侧 8781 == LLM_GATEWAY_LISTEN 8781。
+
       # ── 数据库 ────────────────────────────────────────────────────
       LLM_GATEWAY_DATABASE_URL: ${LLM_GATEWAY_DATABASE_URL:?LLM_GATEWAY_DATABASE_URL is required}
       

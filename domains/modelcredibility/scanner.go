@@ -136,12 +136,25 @@ func (s *Scanner) ScanNode(ctx context.Context, target NodeTarget) (Result, erro
 		in.Calibration = cal
 	}
 
-	// 上一次签名基线。
+	// 上一次签名基线（含 verdict / verified 连击，供共识门）。
 	prev, err := s.Store.LoadPrevious(ctx, target.CredentialID, target.RawModelName)
 	if err != nil {
 		return Result{}, fmt.Errorf("load previous verdict: %w", err)
 	}
 	in.Previous = prev
+
+	// 被动完整性信号（真实流量侧的 model_mismatch / fingerprint_drift）。
+	// ★ 读取失败**降级不致命**：被动通道拿不到时主动判定照常
+	// （211 实测网关连库角色可能没有该表读权限）。空信号 ≠ 读失败，
+	// 两者在 evidence 里分别留痕。
+	passive, perr := s.Store.LoadPassiveSignals(ctx, target.CredentialID, target.RawModelName)
+	if perr != nil {
+		slog.Warn("model credibility: passive signals unavailable (degraded)",
+			"credential_id", target.CredentialID, "model", target.RawModelName, "error", perr)
+		in.PassiveReadFailed = true
+	} else {
+		in.Passive = passive
+	}
 
 	// 身份探测。
 	obs, probeErr := s.Prober.Probe(ctx, target)

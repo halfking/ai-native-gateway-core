@@ -803,10 +803,11 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	finalFullWritten := false
 	if settings.GetPlatformBool("storage.session_final_full_enabled", false) && len(req.OutboundBody) > 0 {
 		if err := w.bodiesWriter.WriteFinalFullInTx(lockCtx, tx, FinalFullRecord{
-			SessionID:    req.SessionID,
-			TenantID:     req.TenantID,
-			Ts:           req.Timestamp,
-			OutboundBody: req.OutboundBody,
+			SessionID:         req.SessionID,
+			TenantID:          req.TenantID,
+			Ts:                req.Timestamp,
+			OutboundBody:      req.OutboundBody,
+			ConsentGeneration: req.ConsentGeneration,
 		}); err != nil {
 			return fmt.Errorf("write final_full: %w", err)
 		}

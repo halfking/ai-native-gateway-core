@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -201,12 +202,16 @@ func (s *Store) StandardIQ(ctx context.Context, canonicalID int64) (float64, err
 }
 
 // LoadPrevious 取该节点上一次判定的签名基线（nil = 首次测量）。
+//
+// ★ 顺带带出上一次的 verdict 与 verified 连击数 —— verified 的连续共识
+// 需要它们（bg/model_probe RequiredConsensus 同思路）。
 func (s *Store) LoadPrevious(ctx context.Context, credentialID int64, rawModelName string) (*Previous, error) {
 	if s.db == nil {
 		return nil, fmt.Errorf("store: db pool is nil")
 	}
 	const q = `
-		SELECT prompt_token_signature, system_fingerprint, reported_model, measured_at
+		SELECT prompt_token_signature, system_fingerprint, reported_model, measured_at,
+		       COALESCE(verdict,''), COALESCE((evidence->>'consensus_streak')::int, 0)
 		FROM provider_model_credibility
 		WHERE tenant_id = 'default'
 		  AND credential_id = $1
@@ -214,14 +219,17 @@ func (s *Store) LoadPrevious(ctx context.Context, credentialID int64, rawModelNa
 	var sig *int
 	var fp, model *string
 	var measuredAt *time.Time
-	err := s.db.QueryRow(ctx, q, credentialID, rawModelName).Scan(&sig, &fp, &model, &measuredAt)
+	var prevVerdict string
+	var streak int
+	err := s.db.QueryRow(ctx, q, credentialID, rawModelName).
+		Scan(&sig, &fp, &model, &measuredAt, &prevVerdict, &streak)
 	if err != nil {
 		if isNoRows(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("query previous verdict: %w", err)
 	}
-	prev := &Previous{}
+	prev := &Previous{Verdict: Verdict(prevVerdict), VerifiedStreak: streak}
 	if sig != nil {
 		prev.PromptTokens = *sig
 		prev.HasPromptTokens = true
@@ -236,6 +244,59 @@ func (s *Store) LoadPrevious(ctx context.Context, credentialID int64, rawModelNa
 		prev.MeasuredAt = *measuredAt
 	}
 	return prev, nil
+}
+
+// LoadPassiveSignals 读该节点的被动完整性信号（真实流量侧证据）。
+//
+// 数据来源：model_integrity_events（domains/streaming/integrity 落），
+// 未解决 + 近 7 天 + severity high/critical，按 (credential_id, 模型名) 匹配。
+// 取 model_mismatch 与 fingerprint_drift 各自最新一条。
+//
+// ★ 查询失败（表权限不足 / 表不存在）**降级为 nil** 并返回 err —— 调用方
+// 决定是否致命。211 实测网关连库角色对该表无读权限 ⇒ 生产上这条通道
+// 可能整段降级，主动探测照常工作（scanner 打 WARN）。
+// ★ 找不到事件返回 (&PassiveSignals{}, nil)：空结构 = 「读了，没有信号」，
+// 与「没读到」区分（evidence 里可如实标注）。
+func (s *Store) LoadPassiveSignals(ctx context.Context, credentialID int64, rawModelName string) (*PassiveSignals, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("store: db pool is nil")
+	}
+	const q = `
+		SELECT DISTINCT ON (anomaly_type)
+		       anomaly_type, COALESCE(expected_value,''), COALESCE(actual_value,'')
+		FROM model_integrity_events
+		WHERE resolved = FALSE
+		  AND severity IN ('high','critical')
+		  AND ts > now() - interval '7 days'
+		  AND anomaly_type IN ('model_mismatch','fingerprint_drift')
+		  AND credential_id = $1
+		  AND (lower(COALESCE(raw_model_name,'')) = lower($2)
+		       OR lower(COALESCE(client_model,'')) = lower($2))
+		ORDER BY anomaly_type, ts DESC`
+	rows, err := s.db.Query(ctx, q, credentialID, rawModelName)
+	if err != nil {
+		return nil, fmt.Errorf("query passive signals: %w", err)
+	}
+	defer rows.Close()
+	out := &PassiveSignals{}
+	for rows.Next() {
+		var atype, expected, actual string
+		if err := rows.Scan(&atype, &expected, &actual); err != nil {
+			return nil, fmt.Errorf("scan passive signals: %w", err)
+		}
+		switch atype {
+		case "model_mismatch":
+			out.HasMismatch = true
+			out.MismatchExpected = expected
+			out.MismatchActual = actual
+		case "fingerprint_drift":
+			out.HasFingerprintDrift = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate passive signals: %w", err)
+	}
+	return out, nil
 }
 
 // SaveResult 落盘一次判定：更新当前态 + 追加一条历史。
@@ -306,19 +367,19 @@ func (s *Store) SaveResult(ctx context.Context, res Result) error {
 	if res.Observed.ReportedModel != "" {
 		reported = res.Observed.ReportedModel
 	}
-		if _, err := tx.Exec(ctx, insertCurrent,
-			tenant, res.CredentialID, res.ProviderID, res.RawModelName,
-			nullableID(res.CanonicalID), nullableStr(res.CanonicalName),
-			scoreOrNull(res.Scores, 0, res.Overall),
-			scoreOrNull(res.Scores, DimIdentity, res.Scores.Identity),
-			scoreOrNull(res.Scores, DimCapability, res.Scores.Capability),
-			scoreOrNull(res.Scores, DimConsistency, res.Scores.Consistency),
-			scoreOrNull(res.Scores, DimReference, res.Scores.Reference),
-			string(res.Verdict), res.Status,
-			reported, sig, fp,
-			evidence, anomalies,
-			res.Scores.Measured.DimensionCount(), res.MeasuredAt,
-		); err != nil {
+	if _, err := tx.Exec(ctx, insertCurrent,
+		tenant, res.CredentialID, res.ProviderID, res.RawModelName,
+		nullableID(res.CanonicalID), nullableStr(res.CanonicalName),
+		scoreOrNull(res.Scores, 0, res.Overall),
+		scoreOrNull(res.Scores, DimIdentity, res.Scores.Identity),
+		scoreOrNull(res.Scores, DimCapability, res.Scores.Capability),
+		scoreOrNull(res.Scores, DimConsistency, res.Scores.Consistency),
+		scoreOrNull(res.Scores, DimReference, res.Scores.Reference),
+		string(res.Verdict), res.Status,
+		reported, sig, fp,
+		jsonTextParam(evidence), jsonTextParam(anomalies),
+		res.Scores.Measured.DimensionCount(), res.MeasuredAt,
+	); err != nil {
 		return fmt.Errorf("upsert provider_model_credibility: %w", err)
 	}
 
@@ -333,19 +394,19 @@ func (s *Store) SaveResult(ctx context.Context, res Result) error {
 	if res.Status == StatusFailed {
 		runErr = "probe_failed"
 	}
-		if _, err := tx.Exec(ctx, insertRun,
-			tenant, res.CredentialID, res.ProviderID, res.RawModelName,
-			nullableID(res.CanonicalID), nullableStr(res.CanonicalName),
-			scoreOrNull(res.Scores, 0, res.Overall),
-			scoreOrNull(res.Scores, DimIdentity, res.Scores.Identity),
-			scoreOrNull(res.Scores, DimCapability, res.Scores.Capability),
-			scoreOrNull(res.Scores, DimConsistency, res.Scores.Consistency),
-			scoreOrNull(res.Scores, DimReference, res.Scores.Reference),
-			string(res.Verdict), res.Status,
+	if _, err := tx.Exec(ctx, insertRun,
+		tenant, res.CredentialID, res.ProviderID, res.RawModelName,
+		nullableID(res.CanonicalID), nullableStr(res.CanonicalName),
+		scoreOrNull(res.Scores, 0, res.Overall),
+		scoreOrNull(res.Scores, DimIdentity, res.Scores.Identity),
+		scoreOrNull(res.Scores, DimCapability, res.Scores.Capability),
+		scoreOrNull(res.Scores, DimConsistency, res.Scores.Consistency),
+		scoreOrNull(res.Scores, DimReference, res.Scores.Reference),
+		string(res.Verdict), res.Status,
 		res.Scores.Measured.DimensionCount(),
 		reported, sig, fp,
 		res.Observed.HTTPStatus, res.Observed.LatencyMs,
-		evidence, anomalies, runErr, res.MeasuredAt,
+		jsonTextParam(evidence), jsonTextParam(anomalies), runErr, res.MeasuredAt,
 	); err != nil {
 		return fmt.Errorf("insert provider_model_credibility_runs: %w", err)
 	}
@@ -470,17 +531,17 @@ func (s *Store) ListVerdicts(ctx context.Context, f VerdictFilter) ([]VerdictRow
 
 // RunRow 是一次判定历史。
 type RunRow struct {
-	MeasuredAt        string   `json:"measured_at"`
-	CredibilityScore  float64  `json:"credibility_score"`
-	IdentityScore     float64  `json:"identity_score"`
-	CapabilityScore   float64  `json:"capability_score"`
-	ConsistencyScore  float64  `json:"consistency_score"`
-	ReferenceScore    float64  `json:"reference_score"`
-	Verdict           string   `json:"verdict"`
-	Status            string   `json:"status"`
-	ReportedModel     string   `json:"reported_model"`
-	Anomalies         []string `json:"anomalies"`
-	MeasuredDims      int      `json:"measured_dimensions"`
+	MeasuredAt       string   `json:"measured_at"`
+	CredibilityScore float64  `json:"credibility_score"`
+	IdentityScore    float64  `json:"identity_score"`
+	CapabilityScore  float64  `json:"capability_score"`
+	ConsistencyScore float64  `json:"consistency_score"`
+	ReferenceScore   float64  `json:"reference_score"`
+	Verdict          string   `json:"verdict"`
+	Status           string   `json:"status"`
+	ReportedModel    string   `json:"reported_model"`
+	Anomalies        []string `json:"anomalies"`
+	MeasuredDims     int      `json:"measured_dimensions"`
 }
 
 // ListRuns 列出某节点的判定历史。
@@ -535,6 +596,9 @@ func (s *Store) ListRuns(ctx context.Context, credentialID int64, rawModelName s
 // WriteProviderQualityProfiles 把供应商×模型粒度的可信度汇总写到
 // provider_quality_profiles 的 model_credibility_* 三列。
 //
+// ★ targets 为 nil 时写全量（旧行为）；传 targets 时只写本轮扫到的
+// (provider, model) —— 防止已下线模型的历史残留行被误写。
+//
 // ★ 为什么写这三列而不是 reliability_score：
 // reliability_score 在仓内已被 internal/quality/scorer_reliability.go 占用，
 // 含义是「服务可靠性（在线率/一致性/趋势）」⇒ 与「模型是否被偷换」不是
@@ -543,11 +607,17 @@ func (s *Store) ListRuns(ctx context.Context, credentialID int64, rawModelName s
 // ★ 取「最差」而不是平均：掺水是「这家供应商在卖这个模型时至少有一条线
 // 是假的」⇒ 平均会把掺水的那条线稀释掉（3 条好线 + 1 条渗水线 ⇒ 平均分
 // 仍很高 ⇒ 看板上这家仍然「正常」）。
-func (s *Store) WriteProviderQualityProfiles(ctx context.Context) (int, error) {
+func (s *Store) WriteProviderQualityProfiles(ctx context.Context, targets []NodeTarget) (int, error) {
 	if s.db == nil {
 		return 0, fmt.Errorf("store: db pool is nil")
 	}
-	rows, err := s.RollupProviderModel(ctx)
+	var rows []ProviderModelScore
+	var err error
+	if targets == nil {
+		rows, err = s.RollupProviderModel(ctx)
+	} else {
+		rows, err = s.RollupProviderModelFiltered(ctx, targets)
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -633,6 +703,53 @@ func (s *Store) RollupProviderModel(ctx context.Context) ([]ProviderModelScore, 
 	return out, nil
 }
 
+// RollupProviderModelFiltered 按**本轮扫到的目标**汇总到供应商×模型粒度。
+//
+// ★ 与 RollupProviderModel 的区别：只统计 targets 里出现过的
+// (provider_id, raw_model_name)。没有这个过滤，provider_quality_profiles 会
+// 被历史残留行（模型已下线 / 已移出特色清单）覆盖出与现状无关的行。
+//
+// ★ duplicate 保留：同一 provider+model 有多个凭据时都进结果，
+// 由 upsert 的 ON CONFLICT 收敛到最后一行。
+func (s *Store) RollupProviderModelFiltered(ctx context.Context, targets []NodeTarget) ([]ProviderModelScore, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("store: db pool is nil")
+	}
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	all, err := s.RollupProviderModel(ctx)
+	if err != nil {
+		return nil, err
+	}
+	want := make(map[rollupKey]struct{}, len(targets))
+	for _, t := range targets {
+		if t.RawModelName == "" {
+			continue
+		}
+		want[rollupKey{t.ProviderID, strings.ToLower(t.RawModelName)}] = struct{}{}
+	}
+	return filterRollup(all, want), nil
+}
+
+// rollupKey 是 (provider_id, 归一化模型名) 的过滤键。
+type rollupKey struct {
+	p int64
+	m string
+}
+
+// filterRollup 是纯过滤函数：只保留 want 里的 (provider, model)。
+// 抽出来是为了直接单测（不碰 DB）。
+func filterRollup(all []ProviderModelScore, want map[rollupKey]struct{}) []ProviderModelScore {
+	out := make([]ProviderModelScore, 0, len(want))
+	for _, r := range all {
+		if _, ok := want[rollupKey{r.ProviderID, strings.ToLower(r.RawModelName)}]; ok {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // scoreOrNull 把「没测到的维度」写成 SQL NULL，而不是 0。
 //
 // ★ dim=0 表示综合分：一个维度都没测到时综合分的 0 是「没测过」，
@@ -665,4 +782,17 @@ func nullableStr(v string) any {
 		return nil
 	}
 	return v
+}
+
+// jsonTextParam 把 JSON 字节转成 string 再交给 pgx。
+//
+// ★ 裸 []byte 在 SimpleProtocol 下被内联为 bytea hex 字面量 ⇒ jsonb 解析
+// 必炸（SQLSTATE 22P02）。211 实测 2026-10-30：trigger 落库即炸
+// （"invalid input syntax for type json"）。与 bg/capability_backfill.go
+// 的 capabilityEvidenceParam 同坑同修（仓内 R24 记录过 6 次真库失败）。
+func jsonTextParam(b []byte) interface{} {
+	if len(b) == 0 {
+		return nil
+	}
+	return string(b)
 }

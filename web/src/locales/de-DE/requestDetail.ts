@@ -22,6 +22,9 @@ export default {
     source: {
       memory: 'Im Speicher',
       file: 'Lokale Datei',
+      requestLogs: 'Anfrage-Ledger',
+      sessionTurns: 'Sitzungs-Instanzen',
+      liveStream: 'Live-Stream',
     },
     labels: {
       requestId: 'Anfrage-ID',

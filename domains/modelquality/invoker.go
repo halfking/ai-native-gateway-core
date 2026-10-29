@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 )
 
 // buildQuestionPrompt 把一道选择题构造成发给模型的 prompt。
@@ -260,7 +261,11 @@ func (g *GatewayModelInvoker) InvokeModel(ctx context.Context, provider string, 
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
-		"max_tokens":  50,  // 质量测试只需要简短回答
+		// 2026-10-30（211 实测）：50 对推理模型必然不足 —— reasoning 把预算
+		// 吃光 ⇒ content 空 ⇒ 50 题全错（accuracy=0 / grade=F，error 为空）。
+		// 与 providercap.ProbePingMaxTokens=1024（R151/R152 轮）同根因同修法：
+		// 「质量测试只需要简短回答」的前提是模型不先思考。
+		"max_tokens":  providercap.ProbePingMaxTokens,
 		"temperature": 0.1, // 低温度保证稳定性
 		"stream":      false,
 	}
@@ -352,7 +357,8 @@ func (d *DirectNodeInvoker) InvokeModel(ctx context.Context, node CredentialNode
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
-		"max_tokens":  50,
+		// 同上：推理模型 50 不够（211 实测 deepseek-v4-flash 两家全 0 分）。
+		"max_tokens":  providercap.ProbePingMaxTokens,
 		"temperature": 0.1,
 		"stream":      false,
 	}

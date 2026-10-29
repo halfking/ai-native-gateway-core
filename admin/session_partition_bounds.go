@@ -24,10 +24,18 @@ import "time"
 //	-- 加 partition_date 下界后
 //	Seq Scan on session_turns_2026_10                ← ★ 只剩 1 个分区 ★
 //
-// ★★ 生产侧同一形态已被台账记下：252 的 pg_stat_statements 观测台账
+// ★★ 生产侧同一形态已被台账记下：252 的 **EXPLAIN 计划形态**观测台账
 // （`scripts/audit/asset/query-plan-observations.tsv`）里，/api/logs 的列表语句
 // （stmt-1d7be58136）在**1 秒窗口**上 Seq Scan 了 **4 个整月分区**
 // ⇒ ⇒ 这正是「不要有表扫描」这条诉求的实测落点。
+//
+// ★★★ R182 轮订正（★★ 事实性错误，不改会误导下一轮 ★★★）：★★
+// ★ 这份台账**不是** `pg_stat_statements` 的统计快照 ★★ —— ★ 它的头注释写明
+// ★ 「生成器：cmd/tools/query_plan_form（★ EXPLAIN，★ 不带 ANALYZE ⇒ 只读库
+// ★ 安全）」⇒ ⇒ 它是**逐语句 EXPLAIN 的计划形态快照** ⇒ ⇒ 全文件里
+// ★ `pg_stat_statements` 出现 **0 次** ⇒ ⇒ 「台账实测」指的是**计划形态**
+// ★ （扫了哪些关系、用的什么索引），**不是**执行期统计。★ 同款错标在
+// ★ `admin/logs_turns_source.go` 里也有一处，本轮一并订正。
 
 // # 口径：为什么可以取【精确】边界（而不是 ±1 天外扩）
 //

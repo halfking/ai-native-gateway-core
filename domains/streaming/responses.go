@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -244,6 +246,16 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		}
 		keyInfo = ki
 		attemptKeyInfo = ki
+		// 2026-10-29 identification round: the main flow never called SetKey
+		// (only the rate-limit branch did) ⇒ refreshMeta/fillAttemptMeta never
+		// ran ⇒ the whole client-perception block (agent_name / client_ip /
+		// client_protocol / fingerprint_raw) was persisted empty on
+		// request_context_attrs — 211 measured: the /v1/responses family
+		// (ZCode CLI, key huangxt-coding) carried the user-visible ZCode
+		// self-identification in its system prompt yet landed with an empty
+		// agent_name on every row. Same wiring order as the chat path
+		// (SetKey after auth → Body → EnsureCaptured after body read).
+		logCtx.SetKey(ki)
 		bindRequestJourney(r, ki.TenantID, attemptClientModel)
 		// SP-02: state machine — auth succeeded.
 		rt.Emit(state.EventAuthed)
@@ -272,6 +284,16 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	if len(bodyBytes) > 0 {
 		attemptRequestBody = bodyBytes
 	}
+	// 2026-10-29 identification round: mirror the chat path's
+	// EnsureCaptured — extract the system prompt from the buffered body
+	// and run the shared identification chain (UA tokens → body marker →
+	// system-prompt self-identification). readRequestBody above already
+	// restored r.Body, and pre-setting logCtx.Body keeps EnsureCaptured
+	// from re-reading it; without this the agent fallback never saw the
+	// body, so clients that only self-identify in the prompt (ZCode /
+	// MiniMax Code "You are Mavis…") landed as empty agent_name.
+	logCtx.Body = bodyBytes
+	logCtx.EnsureCaptured()
 	if prov := buildOutboundProvenance(r, nil); len(prov) > 0 {
 		logCtx.OutboundProvenance = prov
 	}
@@ -1123,8 +1145,23 @@ func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
 					}
 					content := normalizeItemContent(item["content"])
 					if content == nil {
-						slog.Warn("responses input item dropped: no usable content after conversion",
-							"item_keys", mapKeys(item), "role", role)
+						// 2026-10-29 24h 审计轮：211 实测 13,448 条 / 2h —— 同一批
+						// item_keys 形态每请求重复告警，属客户端数据卫生（status-only
+						// assistant item）而非网关故障。首次出现保留 Warn（守住
+						// 2026-07-23「no instruction」审计家族的取证信号），同形态重复
+						// 降为 Debug。★ 去重键必须**排序后**拼接：mapKeys 按 map
+						// 迭代序返回（Go 迭代随机）⇒ 不排序则同一形态被键序打散成
+						// 多个键（211 首验实测同形态同秒 3 条「first occurrence」）。
+						sortedKeys := mapKeys(item)
+						sort.Strings(sortedKeys)
+						if _, loaded := droppedItemShapeOnce.LoadOrStore(strings.Join(sortedKeys, ","), true); !loaded {
+							slog.Warn("responses input item dropped: no usable content after conversion",
+								"item_keys", mapKeys(item), "role", role,
+								"note", "first occurrence for this item shape; repeats logged at debug")
+						} else {
+							slog.Debug("responses input item dropped: no usable content after conversion",
+								"item_keys", mapKeys(item), "role", role)
+						}
 						continue
 					}
 					messages = append(messages, map[string]any{"role": role, "content": content})
@@ -1400,6 +1437,11 @@ func normalizeItemContent(v any) any {
 	// silently drop audio inputs and break multimodal features.
 	return v
 }
+
+// droppedItemShapeOnce dedupes the "input item dropped" diagnostic: first
+// occurrence per item-shape warns, repeats go to debug (211 实测同 5 种形态
+// 2h 刷 13,448 条)。
+var droppedItemShapeOnce sync.Map
 
 // mapKeys returns the keys of a map for diagnostic logging.
 func mapKeys(m map[string]any) []string {

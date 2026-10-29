@@ -115,6 +115,18 @@ export const DRAWER_NAV: readonly NavItem[] = [
   // 「现在生效的是什么」）。★ 整条 auto-route 线是 superAdmin
   //（handler.go:1381 RegisterAutoRouteRoutes(mux, h.superAdmin)），必挡。
   { key: 'overrides', to: '/overrides', icon: 'expand', titleKey: 'nav.overrides', requiresRole: 'super_admin' },
+  // ★ 实时页（2026-10-29）。三条腿全部 `admin(...)` 注册：
+  //   topology/providers-today（admin/handler.go:1145）· models-today（:1156）·
+  //   clients-today（:1160）· live-stream/stats（admin/handler.go:1092）
+  //   ⇒ tenant_admin 可用 ⇒ **不设** requiresRole。
+  //   journey queues 是 `requestJourneyWrapAdmin`（cmd/gateway/main.go:7376）
+  //   = AdminMiddleware 只认证不检角色；数据作用域在后端收口：queues 非
+  //   super_admin 只看本租户（admin/request_journey.go:41-44 scope=all 才要
+  //   超管，本页不传）；topology 三组由 statsTenantScope 一族按租户过滤；
+  //   live-stream hub 逐帧租户过滤（live_stream_sse.go HandleLiveStream）。
+  //   桌面同功能是 /live（superAdmin 门是**桌面**nav 的 platformOps 标记，
+  //   而桌面路由只要求登录 —— 移动端按可执行注册（admin 档）放行 admin。
+  { key: 'live', to: '/live', icon: 'play', titleKey: 'nav.live' },
   // ── 自动调优面（2026-10-07）────────────────────────────────────────────
   // 与 /overrides 配对闭环：那页答「现在生效的规则是什么」，这两页答
   // 「规则对不对、该怎么调」。
