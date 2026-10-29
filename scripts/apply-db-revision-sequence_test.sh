@@ -1033,7 +1033,7 @@ done
 #     ★ 提取器必须抓**完整调用**（调用行以 `\` 结尾 ⇒ SQL 在下一行）：
 #       第一版用 awk '/^ledger_artifact_probe /' 只抓到调用行、SQL 行从未进过
 #       判据 ⇒ 产物名保真判据整个空转（变异臂注入 TYPO 名照旧全绿才暴露）。
-probe_block="$(python - "$SCRIPT" <<'PYEOF'
+probe_block="$(python3 - "$SCRIPT" <<'PYEOF'
 import re, sys
 text = open(sys.argv[1], encoding='utf-8').read()
 for m in re.finditer(r'^ledger_artifact_probe "[^"]+"\s*\\\n\s*".*"$', text, re.M):

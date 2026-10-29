@@ -9518,30 +9518,45 @@ func localiseModality(ctx context.Context, modality string) string {
 // supportedModalitiesFor lists the request modalities a model registered as
 // registeredModality would be accepted for.
 //
-// It mirrors provider.modalityAccepts: a "multimodal" row serves every media
-// modality; a "text" row serves text only. The list is published so a client
-// can decide on its own whether to strip the attachments or switch model,
-// without having to hard-code the acceptance table.
+// ★2026-10-29：这张表**不再手写**——它由 provider.ModalityAccepts（判据的
+// 唯一 Go 实现）逐个请求模态过滤出来。理由与「同一句话不许两份」同族：
+// 手写的表与判据是两份真值 ⇒ 改判据时忘了改表 ⇒ 客户端会被告知「这个模型
+// 接音频」，而网关实际上拒掉每一个音频请求。
+// ⇒ 词表 = provider.ModalityRequestModalities（请求模态词表，双向锚在
+//
+//	事实源上，见 domains/streaming/modality_single_source_test.go）。
+//
+// The list is published so a client can decide on its own whether to strip
+// the attachments or switch model, without having to hard-code the
+// acceptance table.
+//
+// ★ 派生出来的形状（登记 → 发布清单）：
+//
+//	text       → [text]
+//	vision     → [text, vision, image]
+//	audio      → [text, audio]
+//	video      → [text, video]
+//	image      → [text, image]
+//	multimodal → [text, vision, audio, video, image, multimodal]
+//	embedding  → [text, embedding]
+//
+// ★ 'multimodal' 那行**不含** 'embedding'：登记为 multimodal 的模型不接
+// 嵌入请求（兜底精确臂：只接同名登记的行）—— 判据说什么，这里就说什么。
 func supportedModalitiesFor(registeredModality string) []string {
-	switch registeredModality {
-	case "multimodal":
-		// A multimodal row serves every media modality — including a request
-		// that carries several of them at once, which is what the
-		// "multimodal" request modality means. Leaving it out would tell a
-		// client that a multimodal model cannot take a multimodal request,
-		// which is false.
-		return []string{"text", "vision", "audio", "video", "image", "multimodal"}
-	case "vision":
-		return []string{"text", "vision", "image"}
-	case "audio":
-		return []string{"text", "audio"}
-	case "video":
-		return []string{"text", "video"}
-	case "image":
-		return []string{"text", "image"}
-	default:
-		return []string{"text"}
+	return filterSupportedModalities(registeredModality, provider.ModalityRequestModalities)
+}
+
+// filterSupportedModalities 是 supportedModalitiesFor 的可注入版本：把请求
+// 模态词表作为参数传进来 ⇒ 测试可以换掉词表来证明「这张表真的是过滤出来的」
+// （而不是又一份手写的表）。
+func filterSupportedModalities(registeredModality string, requestModalities []string) []string {
+	out := make([]string, 0, len(requestModalities))
+	for _, req := range requestModalities {
+		if provider.ModalityAccepts(registeredModality, req) {
+			out = append(out, req)
+		}
 	}
+	return out
 }
 
 // writeErrorAnthropicWithAlternatives mirrors writeErrorAnthropic and adds the

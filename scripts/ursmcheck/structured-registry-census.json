@@ -206,7 +206,7 @@
       "kind": "registry",
       "reader": "web/scripts/design-icon-size-runtime-check.mjs",
       "behaviorally_verified": true,
-      "note": "★ **行为化验证（第 28 增量，★ 2026-10-27 实测）**：★ 本条是**第 28 增量**新增的登记册（★ 与它的两个兄弟 `design-action-density-runtime-baseline.json` / `design-spacing-scale-runtime-baseline.json` **同族** ⇒ 同为浏览器运行时尺的基线）。★ ★★ **与那两个兄弟的关键差别**：★ 那两条登记为 excluded 的理由是「**本轮验不了（★ 环境限制）**——读方要浏览器」⇒ ★★ **本轮有 Chrome ＋ 本地服务 ⇒ 那笔欠账实测掉了** ⇒ ★ 本条**不登记 excluded**，而是**实测归类**。★ 实测三档：① 基线态 ⇒ `rc=0`；② 整册掏空 ⇒ **`rc=1`**；③ **基线文件删除** ⇒ **`rc=1`**（★ 后两档输出均含探针）⇒ ⇒ **掏空/删除都让读方红 ⇒ 有牙** ⇒ 归 `registry`。★ ★★ **hollow_mode 为什么是 `unusable`**：★ 本基线是**上限型**（★ 每页一个「零尺寸图标数」的上限）⇒ ★ `entries` 模式（容器清空 ＋ 数值归零）**不适用** ⇒ ★ 按 Go 侧口径，**上限型必须用 `unusable`**（★ 整册替换成 `{}`）⇒ ⇒ ★★ **`unusable` 恰好命中本工具的「基线不可用」分支**（★ `baselineUsable({})` ⇒ false ⇒ ⇒ 门判红 ⇒ ★ 这不是巧合，是本工具**故意**把「基线没了」判成红的 ⇒ ★ 否则「**把基线删掉**」就是让门变绿的**后门**（★ 仓内 `design-spacing-scale-runtime-baseline.json` 的登记条目记过这个坑）。★ ★★ **red_signal 为什么是一个探针 token 而不是散文**：★ 门在「基线不可用」时打印 `✘ [ICON-SIZE-BASELINE-UNUSABLE] …` ⇒ ★ ★★ **用稳定的 token 当红信号** ⇒ 改文案不会把 Go 门打瞎（★ 第 27 增量的纪律：★ 判据落在「门输出里有没有探针」）。",
+      "note": "★ **行为化验证（第 28 增量，★ 2026-10-27 实测）**：★ 本条是**第 28 增量**新增的登记册（★ 与它的两个兄弟 `design-action-density-runtime-baseline.json` / `design-spacing-scale-runtime-baseline.json` **同族** ⇒ 同为浏览器运行时尺的基线）。★ ★★ **与那两个兄弟的关键差别**：★ 那两条登记为 excluded 的理由是「**本轮验不了（★ 环境限制）**——读方要浏览器」⇒ ★★ **本轮有 Chrome ＋ 本地服务 ⇒ 那笔欠账实测掉了** ⇒ ★ 本条**不登记 excluded**，而是**实测归类**。★ 实测三档：① 基线态 ⇒ `rc=0`；② 整册掏空 ⇒ **`rc=1`**；③ **基线文件删除** ⇒ **`rc=1`**（★ 后两档输出均含探针）⇒ ⇒ **掏空/删除都让读方红 ⇒ 有牙** ⇒ 归 `registry`。★ ★★ **hollow_mode 为什么是 `unusable`**：★ 本基线是**上限型**（★ 每页一个「零尺寸图标数」的上限）⇒ ★ `entries` 模式（容器清空 ＋ 数值归零）**不适用** ⇒ ★ 按 Go 侧口径，**上限型必须用 `unusable`**（★ 整册替换成 `{}`）⇒ ⇒ ★★ **`unusable` 恰好命中本工具的「基线不可用」分支**（★ `baselineUsable({})` ⇒ false ⇒ ⇒ 门判红 ⇒ ★ 这不是巧合，是本工具**故意**把「基线没了」判成红的 ⇒ ★ 否则「**把基线删掉**」就是让门变绿的**后门**（★ 仓内 `design-spacing-scale-runtime-baseline.json` 的登记条目记过这个坑）。★ ★★ **red_signal 为什么是一个探针 token 而不是散文**：★ 门在「基线不可用」时打印 `✘ [ICON-SIZE-BASELINE-UNUSABLE] …` ⇒ ★ ★★ **用稳定的 token 当红信号** ⇒ 改文案不会把 Go 门打瞎（★ 第 27 增量的纪律：★ 判据落在「门输出里有没有探针」）。\n★ ★★ 【2026-10-29 第 42 增量增补：读方把「环境失败」与「判据失败」分开 + 早退】（★ 审计轮实测三项）：① **读方新增「基线不可用 ⇒ 在测量之前就判红」的早退**（★ 与两个兄弟读方design-metric-skeleton / design-nested-card 同款）⇒ ★★ 掏空态**从 87s 变成 0.03s**（★ 不再跑浏览器）⇒ ★★ 顺带**修掉一个随机误判**：掏空态此前要跑全量浏览器 ⇒ 负载下浏览器驱动 fetch failed ⇒ 读方以「环境失败」退出 ⇒ 仓内 Go 侧掏空门把它判成「红了但红因不对」⇒ ★ **随机误判「门没牙」**。② **环境失败现在与判据失败分开**：浏览器驱动失败 ⇒ 退出码 **3**（= 本工具既有的「未测量」约定）＋ 探针 token `[ICON-SIZE-NOT-MEASURED]` ⇒ ★ 仓内 Go 侧掏空门（scripts/ursmcheck/structured_registry_hollowout_test.go）据此把它分类成**「环境不可用 ⇒ 本条不可判定 ⇒ 跳过」**，而**不是**「读方坏了 ⇒ 先把读方修绿」（★ 端到端实测：旧形态 ⇒ 门 FAIL 且假指责；新形态 ⇒ 门 SKIP 且说清原因）。③ **--update-baseline 的写回值改为「只许降不许升」**（★ 与两个兄弟读方同款）⇒ ★ 此前它直接写实测值 ⇒ 一次误操作就能把上限型棘轮放松 ⇒ 已堵。★ ★★ 三项都**不动 red_signal**（★ 判据落在「输出里有没有探针」⇒ 改文案不会把门打瞎）。",
       "reader_kind": "node",
       "reader_spec": "./web/scripts/design-icon-size-runtime-check.mjs",
       "hollow_mode": "unusable",
@@ -482,6 +482,11 @@
       "red_signal": "baseline shape broken",
       "hollow_result": "red",
       "mech_check": "reader-red-on-hollow"
+    },
+    {
+      "path": "scripts/guards/win-test-baseline.json",
+      "kind": "excluded",
+      "reason": "★ 规则文件（★ Windows 全量测试基线：记的是「实测失败集」的名单位棘轮，只降不升）⇒ 读方 scripts/guards/check-win-test-baseline.sh。★★ 归 excluded 而不是 registry 的**实质理由**：★ 该读方**无参运行会跑整仓 `go test ./...`**（★ 读方用法：`bash check-win-test-baseline.sh <go-test 输出日志>`）⇒ ⇒ 把它登记成 registry 会让掏空门**跑两遍整仓测试**（★ 实测量级：小时级）⇒ ⇒ 掏空态**不可承受** ⇒ ⇒ 因此不进行为化掏空覆盖。★ ★★ **登记于 2026-10-29（第 42 增量）**：★ 该文件由上游 24h 审计第 6 轮（e37fce837）新增 ⇒ 合并 origin/main 时**漏了登记** ⇒ 门红 ⇒ 本轮补登记（★ 只补归属，不改上游的门）。"
     }
   ]
 }
