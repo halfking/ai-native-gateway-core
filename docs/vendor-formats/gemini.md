@@ -23,8 +23,54 @@ POST /v1beta/models/{MODEL}:streamGenerateContent?alt=sse HTTP/1.1
 ```
 
 注意：
-- API key 通过 query string 或 `Authorization: Bearer` 头传递。
+- API key 有三种传递形态，**网关三种都收**（提取逻辑收口在
+  `internal/auth.ExtractClientKey`，是全仓唯一事实源）：
+  - `x-goog-api-key: {API_KEY}` 头 —— 厂方 API reference 的**强制形态**：
+    "All requests to the Gemini API must include a `x-goog-api-key` header with
+    your API key."（https://ai.google.dev/gemini-api/docs/api-overview）
+  - `?key={API_KEY}` query —— 厂方 REST 示例也用这一种
+    （`POST /v1beta/models/{MODEL}:generateContent?key={API_KEY}`）。
+    ★ 这一形态**只在 Gemini 原生路径上生效**：`key` 是个极通用的 query 参数名，
+    全局认它当凭据源 ⇒ 未来任何一个把 `?key=` 当业务参数用的端点都会被静默劫持。
+  - `Authorization: Bearer {ACCESS_TOKEN}` —— OpenAI 兼容端点
+    （`https://generativelanguage.googleapis.com/v1beta/openai/…`）与 Vertex AI
+    的形态。
+
+  ⇒ 优先级 Bearer → `x-api-key` → `x-goog-api-key` → `?key=`；显式
+  `Authorization: Bearer` 永远最高，同一客户端带多种形态时不会被悄悄改指向
+  另一把凭据。
+
+- 网关**出向**打厂方时走的是 OpenAI 兼容端点
+  （`https://generativelanguage.googleapis.com/v1beta/openai`），其鉴权形态是
+  `Authorization: Bearer {API_KEY}`（厂方 OpenAI 兼容文档的 REST 示例即如此）
+  ⇒ 出向用 Bearer、入向收三种，**两者不一致是对的**（两个端点的厂方契约不同）。
+
 - 流式响应使用 `alt=sse` 时为 SSE；省略时为分块 JSON 数组。
+
+## 模型列表
+
+```
+GET /v1beta/models HTTP/1.1
+Host: <gateway>
+x-goog-api-key: {API_KEY}
+```
+
+响应是**厂方原生形状**（不是 OpenAI 的 `{"object":"list","data":[…]}`）：
+
+```json
+{"models":[{"name":"models/gemini-2.5-flash","displayName":"gemini-2.5-flash",
+            "supportedGenerationMethods":["generateContent","streamGenerateContent"],
+            "inputTokenLimit":1048576}]}
+```
+
+★ `supportedGenerationMethods` 只列网关**真的能服务**的动作：
+`generateContent` / `streamGenerateContent`。`countTokens` **不列** —— 网关没有实现
+它，列出来就是一张兑现不了的承诺。
+
+★ **口径**：模型列表端点（`/v1beta/models` 与 `/v1/models`）默认只输出**特色模型**
+（`routing_policy.featured_models`，与路由侧的精选优先级、管理侧精选过滤同源）；
+要全量清单请显式加参数 `?scope=all`（或 `?all=true`）。两个端点共用同一份数据源与
+同一套口径规则 —— 只有线上格式不同。
 
 ## 请求 Body（顶层字段）
 

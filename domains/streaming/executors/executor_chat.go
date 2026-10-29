@@ -45,11 +45,13 @@ import (
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
-// nativePairFor 判定「本请求的客户端 × 本候选的出站模型」是否构成原厂
-// 直连对（internal/nativepair）。客户端身份优先取请求边界的归一化类型
-// （ExecParams.ClientType → X-Gw-Client-Type/UA）；仅当其为弱名（空或
-// unknown）时才采信 body 标记（metadata.zcode_version 等，R52 语义：
-// body marker 只覆盖弱名，强名冲突时保守不直通）。
+// nativePairFor 判定「本请求的客户端 × 本候选」是否构成原厂直连对
+// （internal/nativepair；2026-10-29 起含厂商感知：候选的 CatalogCode 必须
+// 是该模型族的原厂码——nvidia 托管的 z-ai/glm-5.3-flash 不再直通）。
+// 客户端身份优先取请求边界的归一化类型（ExecParams.ClientType →
+// X-Gw-Client-Type/UA）；仅当其为弱名（空或 unknown）时才采信 body 标记
+// （metadata.zcode_version 等，R52 语义：body marker 只覆盖弱名，强名冲突
+// 时保守不直通）。
 func nativePairFor(params *ExecParams, cand provider.Candidate, sourceBody []byte) bool {
 	if !nativepair.Enabled() {
 		return false
@@ -74,7 +76,7 @@ func nativePairFor(params *ExecParams, cand provider.Candidate, sourceBody []byt
 	if cand.RawModel == "" {
 		return false
 	}
-	return nativepair.Match(ct, cand.RawModel)
+	return nativepair.Match(ct, cand.CatalogCode, cand.RawModel)
 }
 
 // ExecuteHooks (SP-03, 2026-08-19) lets the streaming state machine observe
@@ -989,10 +991,13 @@ func (e *Executor) executeOpenAI(
 		}
 	}
 	// reqprobe: 前置应用已学习的参数剔除规则（此前已被"剔除后重试成功"
-	// 验证过的参数，24h 滑窗；LLM_GATEWAY_REQPROBE_LEARN=off 关闭）。实际
-	// 出站 wire 在 native 闸门已决定后才可确定，不能使用候选声明协议。
+	// 验证过的参数，learnedTTL 滑窗（默认 1h，LLM_GATEWAY_REQPROBE_LEARNED_TTL
+	// 可配）；LLM_GATEWAY_REQPROBE_LEARN=off 关闭）。实际出站 wire 在 native
+	// 闸门已决定后才可确定，不能使用候选声明协议。
 	// 原厂直通对不预剥离（首发永远全参数；上游拒绝由本请求内的 4xx 剥参
-	// 重试回退），否则一次瞬态 400 会让原生参数被静默剥离 24h。
+	// 重试回退）。2026-10-29 厂商感知修正后这里只剩【原厂端点】候选会跳过
+	// （第三方宿主如 nvidia 托管的 glm 走正常路径，学习预剥离生效——否则
+	// 第三方宿主每请求吃 N 轮 400 且学习永不回应用）。
 	if !nativePair {
 		bodyBytes = e.reqprobeApplyLearned(bodyBytes, cand,
 			actualOutboundWire(cand, nativeNonStream || nativeStream), params.RequestID)

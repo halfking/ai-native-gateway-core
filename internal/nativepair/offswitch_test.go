@@ -18,13 +18,13 @@ func TestEnabledOffSwitch(t *testing.T) {
 	if os.Getenv("NATIVEPAIR_OFFSWITCH_CHILD") == "1" {
 		// 子进程：只跑正例表，off 下应全红 ⇒ 本函数在子进程里必然失败，
 		// 外层以「失败」为期望。
-		for _, tc := range []struct{ client, model string }{
-			{"zcode", "glm-5.3"},
-			{"minimax-code", "minimax-m2"},
-			{"deepseek-code", "deepseek-chat"},
+		for _, tc := range []struct{ client, catalog, model string }{
+			{"zcode", "zhipu", "glm-5.3"},
+			{"minimax-code", "minimax", "minimax-m2"},
+			{"deepseek-code", "deepseek", "deepseek-chat"},
 		} {
-			if Match(tc.client, tc.model) {
-				t.Errorf("off switch: Match(%q,%q) = true, want false", tc.client, tc.model)
+			if Match(tc.client, tc.catalog, tc.model) {
+				t.Errorf("off switch: Match(%q,%q,%q) = true, want false", tc.client, tc.catalog, tc.model)
 			}
 		}
 		return

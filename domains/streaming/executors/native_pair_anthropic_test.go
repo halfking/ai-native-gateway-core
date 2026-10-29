@@ -236,23 +236,25 @@ func TestPrepareAnthropicRequestBody_NativePair_ToolShapeVerbatim(t *testing.T) 
 }
 
 // TestPrepareAnthropicRequestBody_NativePair_IRStamp（S1）：Q3 转换路径
-// （openai 入向 → anthropic-messages 上游，如 minimax-code 的模型经
-// anthropic 方言宿主中转）—— IR 序列化站点漏盖 NativePassthrough 时
-// 厂商 Extensions 被 paramreg 方言裁剪（65d24d0df 在 chat 腿修的同族缺陷）。
-// 靶字段 moderation：KindDialectOnly 注册方言 [openai-chat, responses]；
-// 目标 CatalogCode=anthropic（DialectAnthropic，BaseProtocol 不继承
-// openai-chat）⇒ 非原生必裁、原生必须原样。★ 靶字段必须按目标方言的
-// knownBy 真值选 —— minimax 目录继承 openai-chat 基协议，moderation 对
-// dst=minimax 是放行的（本轮实测踩过）。
+// （openai 入向 → anthropic-messages 上游）—— IR 序列化站点漏盖
+// NativePassthrough 时厂商 Extensions 被 paramreg 方言裁剪（65d24d0df 在
+// chat 腿修的同族缺陷）。靶字段 moderation：KindDialectOnly 注册方言
+// [openai-chat, responses]；目标 CatalogCode=anthropic（DialectAnthropic，
+// BaseProtocol 不继承 openai-chat）⇒ 非原生必裁、原生必须原样。★ 靶字段
+// 必须按目标方言的 knownBy 真值选 —— minimax 目录继承 openai-chat 基协议，
+// moderation 对 dst=minimax 是放行的（本轮实测踩过）。
+// 2026-10-29 厂商感知修正：anthropic 方言宿主上唯一的原厂对是
+// claude-code×claude（minimax-code×anthropic 宿主按模型名误判的老正臂
+// 已随厂商闸门退役——第三方宿主就该走方言裁剪 + 学习预剥离）。
 func TestPrepareAnthropicRequestBody_NativePair_IRStamp(t *testing.T) {
-	body := []byte(`{"model":"minimax-m2.5","max_tokens":1024,` +
+	body := []byte(`{"model":"claude-sonnet-5","max_tokens":1024,` +
 		`"messages":[{"role":"user","content":"hi"}],"moderation":true}`)
 	cand := provider.Candidate{
 		ProviderID:   7,
 		CredentialID: 55,
 		Protocol:     "anthropic-messages",
 		CatalogCode:  "anthropic",
-		RawModel:     "minimax-m2.5",
+		RawModel:     "claude-sonnet-5",
 	}
 	newParams := func(clientType string) *ExecParams {
 		r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
@@ -260,20 +262,20 @@ func TestPrepareAnthropicRequestBody_NativePair_IRStamp(t *testing.T) {
 		return &ExecParams{
 			R:              r,
 			ClientType:     clientType,
-			ClientModel:    "minimax-m2.5",
-			OutboundModel:  "minimax-m2.5",
+			ClientModel:    "claude-sonnet-5",
+			OutboundModel:  "claude-sonnet-5",
 			ClientProtocol: "openai-completions",
 		}
 	}
 	executor := &Executor{IR: &irAdapterForTest{}}
 
-	native, err := executor.prepareAnthropicRequestBody(newParams("minimax-code"), cand, body)
+	native, err := executor.prepareAnthropicRequestBody(newParams("claude-code"), cand, body)
 	if err != nil {
 		t.Fatalf("native prepare: %v", err)
 	}
 	nm := decodeUpstreamBody(t, native)
 	if _, ok := nm["moderation"]; !ok {
-		t.Fatalf("native minimax pair (Q3): moderation dropped — IR serialize site missing NativePassthrough stamp:\n%s", native)
+		t.Fatalf("native claude-code pair (Q3): moderation dropped — IR serialize site missing NativePassthrough stamp:\n%s", native)
 	}
 
 	legacy, err := executor.prepareAnthropicRequestBody(newParams("cursor"), cand, body)
