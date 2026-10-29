@@ -10,11 +10,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"strings"
 
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/internal/auth"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 )
 
 // GeminiHandler serves Google's native Gemini generateContent API endpoints.
@@ -332,7 +335,16 @@ func (w *geminiStreamWriter) finish() error {
 }
 
 // geminiModelPathRe matches the Gemini model suffix in URL paths.
-var geminiModelPathRe = regexp.MustCompile(`/(?:v1beta|v1)/models/([^:/]+)(?::(generateContent|streamGenerateContent))`)
+//
+// ★ 动作集合含 countTokens（2026-10-29 Gemini countTokens 轮）：厂商原生
+// 客户端在发 generateContent 之前会先探一次 token 计数（google-genai SDK 的
+// models.count_tokens）⇒ 不认这个动作 ⇒ 原生客户端拿到 404 ⇒ 上下文管理
+// 整条链断在第一步。
+//
+// ★ 三个动作共用同一个路径形状 `{model}:{action}` ⇒ **必须由同一个解析器
+// 认全**，否则「解析面」与「凭据收口面」（internal/auth.IsGeminiNativePath，
+// 锚在同一组动作上）会各认一半 ⇒ 一个能认证、另一个 404。
+var geminiModelPathRe = regexp.MustCompile(`/(?:v1beta|v1)/models/([^:/]+)(?::(generateContent|streamGenerateContent|countTokens))`)
 
 // NewGeminiHandler constructs a Gemini handler that delegates to the
 // existing ChatHandler after IR translation.
@@ -466,7 +478,16 @@ func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 1: Extract model name and action from URL path
 	model, action, ok := extractGeminiPath(r.URL.Path)
 	if !ok {
-		writeGeminiError(w, http.StatusNotFound, "URL path must match /v{1beta,1}/models/{model}:(generateContent|streamGenerateContent)")
+		writeGeminiError(w, http.StatusNotFound, "URL path must match /v{1beta,1}/models/{model}:(generateContent|streamGenerateContent|countTokens)")
+		return
+	}
+
+	// Step 1.5: :countTokens 是**另一个动作**，不进生成链路 ——
+	// 它不调上游、不产生内容，只回答「这段提示词有多少 token」。
+	// ★ 分派必须在这里（读 body 之前），因为它与生成路径的 body 解析、
+	// 鉴权、闸门全部不同。
+	if action == "countTokens" {
+		h.serveCountTokens(w, r, model)
 		return
 	}
 
@@ -613,6 +634,175 @@ func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(respStatus)
 		_, _ = w.Write(geminiRespBytes)
 	}
+}
+
+// ── :countTokens（2026-10-29 Gemini countTokens 轮）────────────────────
+
+// serveCountTokens answers POST /v{1beta,1}/models/{model}:countTokens.
+//
+// # 口径：为什么是「估算」，以及估算的是**哪一份**文本
+//
+// ★★ 本仓**没有**任何供应商分词器 ⇒ 网关给不出厂商那个精确数字 ⇒
+// **任何**答案都是估算 ⇒ 于是唯一的问题是「这个估算指的是什么」。
+//
+// ★★★ 本实现估的是**网关真正会发出去的那份文本**，不是客户端原始请求：
+//
+//  1. Gemini 原生请求在本仓会被 IR 归一（ir.ParseGemini → ir.SerializeOpenAI）
+//     才进主链路（handler_gemini.go 的 Step 3 / Step 6）；
+//  2. 上游看到的是**归一之后**的那份，不是客户端写的那份；
+//  3. ⇒ 所以「客户端原文的 token 数」与「网关实际会被计费/被拒的那个 token 数」
+//     **不是同一个数** ⇒ 回答前者会答非所问。
+//
+// ★ ⇒ 因此估算走的是**与生成路径同一份归一**：同一个 ir.ParseGemini +
+// ir.SerializeOpenAI ⇒ ★★ **两个 Gemini 面对同一段提示词给出的口径一致**
+// ⇒ 客户端的「预检数字」与「网关实际发出的内容」不会各说各话。
+//
+// ★ 为什么**不转发上游让厂商算**（2026-10-27 那一轮的登记理由是「唯一诚实的
+// 实现是转发上游」）—— ★★★ 本轮把这个理由推翻了，三条：
+//
+//  1. ★ **转发算的是另一份请求**：厂商的 :countTokens 会对**客户端原文**
+//     （Gemini 形状）计数，而网关发出去的是**归一后**的那份 ⇒ 转发得到的
+//     数字描述的是**一个不会发生的请求** ⇒ 它不是更诚实，是**另一种不诚实**。
+//  2. ★ **转发并非普遍可用**：只有 gemini-generate 协议的上游才有 :countTokens；
+//     而本仓的 Gemini 入向可以被**任意**上游服务（IR 翻译到 OpenAI/Anthropic/
+//     Ollama）⇒ 对这类上游「转发」根本无处可转。
+//  3. ★ **转发只在一种情况下更准**：上游协议恰好是 gemini-generate 时 ⇒
+//     那一支的精确值由**下一轮**单独做（本轮登记，见审计档），本轮不混进来。
+//
+// ★ 与 Anthropic 的 /v1/messages/count_tokens 的差别（那一条是仓内先例）：
+// Anthropic 那边估算的是**原始 Anthropic 体**，本条估的是**归一后的体**；
+// 而 Anthropic 之所以必须估原文，是因为 **SSE 无法回填 message_start**
+// （Anthropic 客户端只在流首拿得到输入 token）⇒ 那个数字是它**唯一**能看到的
+// 数字 ⇒ 两个面必须一致。★ Gemini 的响应**本来就带精确的
+// usageMetadata.promptTokenCount** ⇒ 预检数字与事后用量之间的漂移
+// **不是同一类失败** ⇒ ⇒ 那条「一致性」理由**不迁移** ⇒ 本条可以取
+// 「与网关实际发送一致」这个更强的口径。
+//
+// ★ RPM：**消耗**（与同一条路由上的生成动作同一把尺，checkGatewayRateLimit）。
+//
+// ★ 为什么本地计算面也要限流：refine/analyze/summarize 之所以「刻意不消耗」
+// （见 authenticateNoRPM），是因为它们的 LLM 步骤**经环回 chat 面携带同一把
+// 调用方 key**，那一跳已计过一次 ⇒ 再计即双计。而本面**不产生任何上游调用**
+// ⇒ 不存在「已计过一次」的那一跳 ⇒ 按路由上其他动作计一次，是唯一自洽的选择。
+// ★ 而仓内已把 Anthropic 的 /v1/messages/count_tokens 登记成 P2 缺口
+// （「无 RPM 限流」）⇒ 新端点不应再制造同一个缺口的第二个实例。
+func (h *GeminiHandler) serveCountTokens(w http.ResponseWriter, r *http.Request, model string) {
+	if r.Method != http.MethodPost {
+		writeGeminiError(w, http.StatusMethodNotAllowed, "method not allowed: :countTokens requires POST")
+		return
+	}
+
+	// 鉴权 + 预算闸（复用包级共享实现，错误信封换成 Gemini 形状）。
+	keyInfo, ok := h.authenticateGeminiNative(w, r)
+	if !ok {
+		return
+	}
+
+	// ★ RPM 闸：**与同一条路由上的生成动作同一把尺**（checkGatewayRateLimit）。
+	//
+	// ★ 为什么本地计算面也要限流：仓内对 Anthropic 的 /v1/messages/count_tokens
+	// 登记过一条 P2 缺口（「无 RPM 限流；单请求可读至 128MB 且无频率上限 ⇒
+	// 待裁决是否补」——见 internal/ingressguard 的登记表）。⇒ ★ **新端点不应
+	// 再制造同一个缺口的第二个实例**：本面要读整个 body 并做一次解析 + 估算，
+	// 是网关自己的算力开销 ⇒ 有频率上限才是对的。
+	//
+	// ★ 与 summarize/transform 的「刻意不消耗 RPM」不同：那三个面的 LLM 步骤
+	// **经环回 chat 面携带同一把调用方 key**，那一跳已计一次 ⇒ 再计即双计；
+	// 而本面**不产生任何上游调用** ⇒ 不存在「已计一次」的那一跳 ⇒ 按路由上
+	// 其他动作的口径计一次，是唯一自洽的选择。
+	rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, false))
+	if !rlOutcome.Skipped {
+		writeRateLimitHeaders(w, rlOutcome)
+		if rlOutcome.Blocked {
+			recordGatewayRateLimitRejection(rlOutcome)
+			ratelimit.MarkGatewaySharedKeyRateLimit(w)
+			writeGeminiError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+	}
+
+	bodyBytes, err := readRequestBody(r.Context(), r.Body, maxBodySize)
+	if err != nil {
+		status := http.StatusBadRequest
+		message := "failed to read body"
+		if len(bodyBytes) > maxBodySize {
+			status = http.StatusRequestEntityTooLarge
+			message = "request body exceeds gateway limit"
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			message = "request body read timed out"
+		}
+		writeGeminiError(w, status, message)
+		return
+	}
+	_ = r.Body.Close()
+
+	// 与生成路径**同一份**归一：ParseGemini → SerializeOpenAI。
+	irReq, err := ir.ParseGemini(bodyBytes)
+	if err != nil {
+		writeGeminiError(w, http.StatusBadRequest, fmt.Sprintf("invalid Gemini request body: %v", err))
+		return
+	}
+	if irReq.Model == "" {
+		irReq.Model = model
+	}
+	openaiBody, err := ir.SerializeOpenAI(irReq)
+	if err != nil {
+		writeGeminiError(w, http.StatusInternalServerError,
+			fmt.Sprintf("IR → OpenAI serialization failed: %v", err))
+		return
+	}
+
+	// ★ 复用仓内既有的 OpenAI 形状估算器（domains/streaming/usage_estimator.go
+	// 的 estimatePromptTokens：CJK 1 字≈1 token、其余 4 字≈1 token、
+	// 图片块 765）⇒ **不写第四个 token 估算器**。
+	total := estimatePromptTokens(openaiBody)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	// ★ 厂商响应形状：{"totalTokens": N}（docs/vendor-formats/gemini.md 的
+	// 模型列表同款命名法）。
+	_, _ = w.Write([]byte(`{"totalTokens":` + strconv.Itoa(total) + `}`))
+}
+
+// authenticateGeminiNative 校验 Gemini 原生入向的凭据，并把失败写成
+// **厂商原生形状**的错误信封。
+//
+// ★ 判定复用包级共享实现 authenticateNoRPMWith（校验 key + 键状态 + 预算闸，
+// 不消耗 RPM）⇒ 与 refine/analyze/summarize 与 ChatHandler 判得同一把尺。
+//
+// ★ lite 模式（DB 校验器不可用）的静态键回退：与 ChatHandler 的静态数据面
+// 键**同一份判定**（staticDataPlaneKeyMatches）⇒ 否则同一个部署里
+// 「generateContent 要静态键、:countTokens 不要」会是一个真实的鉴权洞。
+//
+// ★ 返回的 keyInfo 供 RPM 闸使用（checkGatewayRateLimit 需要它算配额）；
+// lite 模式下它为 nil，而该闸对 nil keyInfo 是 Skipped（与 ChatHandler 同）。
+func (h *GeminiHandler) authenticateGeminiNative(w http.ResponseWriter, r *http.Request) (*authentication.KeyInfo, bool) {
+	var kv SummarizeKeyVerifier
+	var staticKey string
+	if h != nil && h.chatHandler != nil {
+		kv = h.chatHandler.keyVerifier
+		staticKey = h.chatHandler.staticDataPlaneKey
+	}
+
+	// ★ 校验器可用时：共享实现负责 key + 键状态 + 预算闸。
+	if kv != nil && kv.Enabled() {
+		return authenticateNoRPMWith(kv, w, r, "", func(w http.ResponseWriter, status int, requestID, msg, errType, code string) {
+			writeGeminiError(w, status, msg)
+		})
+	}
+
+	// ★ lite 模式：校验器不可用 ⇒ 退到静态数据面键（与 ChatHandler 同款）。
+	// 两边都没有 ⇒ 放行（无凭据体系可校验；全局 AuthMiddleware 仍是第一道闸）。
+	if staticKey == "" {
+		return nil, true
+	}
+	rawKey := extractBearerToken(r)
+	if !staticDataPlaneKeyMatches(rawKey, staticKey) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeGeminiError(w, http.StatusUnauthorized, "invalid api key")
+		return nil, false
+	}
+	return nil, true
 }
 
 // extractGeminiPath parses a URL path like /v1beta/models/{m}:generateContent.

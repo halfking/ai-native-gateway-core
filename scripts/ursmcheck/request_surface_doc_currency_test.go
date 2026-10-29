@@ -160,6 +160,8 @@ var requestSurfaceDocEvidence = []docEvidence{
 	{
 		// ★ 2026-10-29（R180 轮）：★ 上游把这段代码挪了位（★ 179 ⇒ 185）⇒ ⇒ 对拍表的行号区间跟着更新
 		// ★ （★ 区间指向的【内容】没变 ⇒ ⇒ 这是【位置漂移】，★ 不是「证据没了」）。
+		// ★★ R180 轮实测：★ 上游也独立把区间改到了 185 ⇒ ⇒ ★★ 双方改法【逐字一致】★
+		// ★★ ⇒ ⇒ 合并时只冲突在【注释】上（★ 上游没写注释）⇒ ⇒ 这里两边都留。
 		file: "domains/hooks/response/types.go", from: 185, to: 185,
 		mustContain: "type ResponseInterceptor interface", kind: evidenceCode,
 		why: "响应拦截链的接口（挂在 phase 上的那套机制）",

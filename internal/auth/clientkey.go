@@ -90,8 +90,10 @@ const RedactedValue = "REDACTED"
 //
 //	POST /v1beta/models/{model}:generateContent
 //	POST /v1beta/models/{model}:streamGenerateContent
+//	POST /v1beta/models/{model}:countTokens
 //	POST /v1/models/{model}:generateContent
 //	POST /v1/models/{model}:streamGenerateContent
+//	POST /v1/models/{model}:countTokens
 //	GET  /v1beta/models                      ← the Gemini-NATIVE model list
 //
 // ★ Anchored at the START, deliberately NOT at the end.
@@ -109,6 +111,15 @@ const RedactedValue = "REDACTED"
 //     the defect this round fixes), while a wider one is harmless (the mux
 //     404s what it does not serve).
 //
+// ★ The action set must stay in lockstep with the handler's own parser
+// (domains/streaming/handler_gemini.go: geminiModelPathRe). Both list the
+// SAME three actions (generateContent / streamGenerateContent /
+// countTokens): a scope that misses one leaves that action unable to
+// authenticate, while a parser that misses one 404s a route the scope
+// happily serves. ⇒ They are two copies of one fact ⇒ they are pinned
+// against each other by TestGeminiNativePathMatchesHandlerParser
+// (domains/streaming).
+//
 // ★ The model-list alternative is EXACTLY anchored ("/v1beta/models$"): it
 // is a distinct route, not a prefix, so "/v1beta/modelsXYZ" must NOT be
 // in scope. And "/v1/models" (no trailing slash) is deliberately NOT
@@ -123,7 +134,7 @@ const RedactedValue = "REDACTED"
 //
 // Kept in sync with domains/streaming/handler_gemini.go by the contract
 // test TestGeminiNativePathMatchesHandlerParser (domains/streaming).
-var geminiNativePathRe = regexp.MustCompile(`^(?:/(?:v1beta|v1)/models/[^/:]+:(?:generateContent|streamGenerateContent)|/v1beta/models$)`)
+var geminiNativePathRe = regexp.MustCompile(`^(?:/(?:v1beta|v1)/models/[^/:]+:(?:generateContent|streamGenerateContent|countTokens)|/v1beta/models$)`)
 
 // IsGeminiNativePath reports whether p is a Gemini-native generateContent
 // path (the routes served by domains/streaming/handler_gemini.go).

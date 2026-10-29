@@ -235,6 +235,10 @@ func TestGeminiNativePathMatchesHandlerParser(t *testing.T) {
 		"/v1/models/gemini-2.5-pro:streamGenerateContent",
 		"/v1beta/models/gemini:generateContent",
 		"/v1/models/gemini-pro:streamGenerateContent",
+		// The countTokens action (2026-10-29 countTokens round): served on
+		// BOTH vendor prefixes => the credential scope must cover both.
+		"/v1beta/models/gemini-2.5-pro:countTokens",
+		"/v1/models/gemini-2.5-pro:countTokens",
 		// The handler's parser is a substring match ⇒ it also serves these
 		// malformed-but-matched shapes. The credential scope must cover
 		// them too, otherwise a served Gemini route cannot authenticate.
@@ -242,7 +246,6 @@ func TestGeminiNativePathMatchesHandlerParser(t *testing.T) {
 		"/v1/models/gemini:generateContentXYZ",
 		// Under a mounted prefix but not a Gemini action — neither the
 		// handler nor the scope may treat them as Gemini routes.
-		"/v1beta/models/gemini-2.5-pro:countTokens",
 		"/v1beta/models/gemini-2.5-pro",
 		"/v1beta/models/a/b:generateContent",
 		"/v1beta/models/",

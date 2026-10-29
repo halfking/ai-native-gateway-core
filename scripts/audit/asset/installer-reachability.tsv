@@ -6,9 +6,9 @@
 # ★ ★ baseline-dependent = ★ 创建迁移【不在安装器清单】⇒ 新装能拥有它只因为基线是 dump
 # ★ ★ new-install-gap    = ★ 创建迁移不可达 ⇒ ★★ 任何新装环境【必然缺】
 # ★ ★ installer-bug      = ★ 创建迁移【可达】、新装却没有 ⇒ ★★ 安装器自己有 bug
-# ★ generated_at=2026-10-29T01:36:18+00:00
-# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=320 package_up=320 rows=845
-# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 77, "reachable-and-present": 377, "unreachable-and-missing": 49}
+# ★ generated_at=2026-10-29T01:48:45+00:00
+# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=322 package_up=322 rows=846
+# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 78, "reachable-and-present": 377, "unreachable-and-missing": 49}
 idx_provider_models_canonical_raw_name	provider_models	-1	395b_dedup_provider_models_and_aliases.sql	no	local,fresh,252,211		baseline-dependent	baseline-dependent	
 idx_request_logs_hot_auto_task_ts	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
 idx_request_logs_hot_gw_session_id	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
@@ -854,3 +854,4 @@ idx_session_turns_hot_api_key_ts	session_turns_hot	916	916_session_turns_api_key
 sanitize_block_reviews_status_created_idx	sanitize_block_reviews	917	917_sanitize_block_reviews.sql	yes			reachable-and-legitimately-retired	none	
 sanitize_block_reviews_tenant_created_idx	sanitize_block_reviews	917	917_sanitize_block_reviews.sql	yes			reachable-and-legitimately-retired	none	
 sanitize_egress_releases_key_idx	sanitize_egress_releases	917	917_sanitize_block_reviews.sql	yes			reachable-and-legitimately-retired	none	
+idx_node_probe_runs_cred_completed	node_probe_runs	920	920_node_probe_runs_cred_completed_idx.sql	yes			reachable-and-legitimately-retired	none	

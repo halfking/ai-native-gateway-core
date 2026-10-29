@@ -335,3 +335,5 @@
 317	915_recent_cache_hit_rate.sql
 318	916_session_turns_api_key_ts_index.sql
 319	917_sanitize_block_reviews.sql
+320	919_ursm_slot_daily_active_minutes.sql
+321	920_node_probe_runs_cred_completed_idx.sql
