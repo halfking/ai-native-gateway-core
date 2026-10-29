@@ -179,16 +179,30 @@ export interface HardBlockRule {
   scope: RulePhase;
   rule: string;
 }
-/** 拦截审核记录（一次 output/egress 硬阻断的待审单）。 */
-export interface BlockReview {
-  id: number;
+/** 放行记录（持久化轮 2026-10-29：含来源与有效期）。 */
+export interface EgressReleaseRecord {
   tenant_id: string;
   scope: string;
   rule: string;
+  payload_digest?: string;
+  client_type?: string;
+  approved_by?: string;
+  source?: "manual" | "review";
+  expires_at?: string;
+}
+/** 拦截审核记录（一次 output/egress 硬阻断的待审单；持久化轮补客户端与匹配说明）。 */
+export interface BlockReview {
+  id: number;
+  tenant_id: string;
+  client_type?: string;
+  scope: string;
+  rule: string;
+  rule_name?: string;
   reason?: string;
   field?: string;
   digest?: string;
   request_id?: string;
+  match_detail?: string;
   status: "pending" | "approved" | "rejected";
   created_at: string;
   decided_by?: string;
@@ -202,7 +216,8 @@ export const getHardBlockRules = (options?: RequestOptions) =>
     options,
   );
 export const updateHardBlockRules = (body: {
-  rules: string[];
+  rules?: string[];
+  preset?: "all" | "none";
   comment?: string;
   confirm_disable_all?: boolean;
 }) =>
@@ -218,12 +233,11 @@ export function listBlockedReviews(
   const query = new URLSearchParams();
   if (filter.status) query.set("status", filter.status);
   query.set("limit", String(filter.limit ?? 100));
-  return req<{ reviews: BlockReview[]; process_only: boolean }>(
-    "GET",
-    `${root}/blocked-reviews?${query}`,
-    undefined,
-    options,
-  );
+  return req<{
+    reviews: BlockReview[];
+    releases: EgressReleaseRecord[];
+    process_only: boolean;
+  }>("GET", `${root}/blocked-reviews?${query}`, undefined, options);
 }
 export const decideBlockedReview = (
   id: number,

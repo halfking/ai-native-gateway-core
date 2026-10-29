@@ -1265,23 +1265,31 @@ var sessionTurnsAPIKeyTSIndex916 []byte
 //go:embed embeddata/startup/916_session_turns_api_key_ts_index.down.sql
 var sessionTurnsAPIKeyTSIndex916Down []byte
 
-// ★ 917（R176 轮）：P11 第二期 —— ursm_snapshot_slot_daily 补 active_minutes 列，
-//   填充函数升级为同步产出它；巡检 base_active 基线由此也能走汇总表。
-//   无 CONCURRENTLY ⇒ 默认 --single-transaction 通道。
+// ★ 917（拦截持久化轮，2026-10-29）：输出策略拦截审核记录 / 放行表 / 硬阻断
+// 清单管理面状态的持久化表。全部幂等（CREATE TABLE/INDEX IF NOT EXISTS）。
+//go:embed embeddata/startup/917_sanitize_block_reviews.sql
+var sanitizeBlockReviews917 []byte
+
+//go:embed embeddata/startup/917_sanitize_block_reviews.down.sql
+var sanitizeBlockReviews917Down []byte
+
+// ★ 919（R176 轮；让号记录：初拟 917，被上方拦截持久化轮占用 ⇒ 重取 919/920）：
+//   ursm_snapshot_slot_daily 补 active_minutes 列，填充函数升级为同步产出它；
+//   巡检 base_active 基线由此也能走汇总表。无 CONCURRENTLY ⇒ 默认 --single-transaction 通道。
 //go:embed embeddata/startup/919_ursm_slot_daily_active_minutes.sql
-var ursmSlotDailyActiveMinutes917 []byte
+var ursmSlotDailyActiveMinutes919 []byte
 
 //go:embed embeddata/startup/919_ursm_slot_daily_active_minutes.down.sql
-var ursmSlotDailyActiveMinutes917Down []byte
+var ursmSlotDailyActiveMinutes919Down []byte
 
-// ★ 918（R176 轮）：node_probe_runs 的 (credential_id, completed_at) 覆盖索引，
+// ★ 920（R176 轮）：node_probe_runs 的 (credential_id, completed_at) 覆盖索引，
 //   承接 INV-4「双模型探测成功门」的 24h 关联子查询（252 实测 549 次/天 慢+取消）。
 //   ★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带 dbinit:no-transaction 标记 ⇒ applySQL 不加 --single-transaction。
 //go:embed embeddata/startup/920_node_probe_runs_cred_completed_idx.sql
-var nodeProbeRunsCredCompletedIdx918 []byte
+var nodeProbeRunsCredCompletedIdx920 []byte
 
 //go:embed embeddata/startup/920_node_probe_runs_cred_completed_idx.down.sql
-var nodeProbeRunsCredCompletedIdx918Down []byte
+var nodeProbeRunsCredCompletedIdx920Down []byte
 //go:embed embeddata/startup/915_recent_cache_hit_rate.sql
 var recentCacheHitRate915 []byte
 
@@ -1664,10 +1672,12 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/914_session_turns_origin_stage_check.down.sql":                       sessionTurnsOriginStageCheck914Down,
 	"startup/916_session_turns_api_key_ts_index.sql":                              sessionTurnsAPIKeyTSIndex916,
 	"startup/916_session_turns_api_key_ts_index.down.sql":                         sessionTurnsAPIKeyTSIndex916Down,
-	"startup/919_ursm_slot_daily_active_minutes.sql":                              ursmSlotDailyActiveMinutes917,
-	"startup/919_ursm_slot_daily_active_minutes.down.sql":                         ursmSlotDailyActiveMinutes917Down,
-	"startup/920_node_probe_runs_cred_completed_idx.sql":                          nodeProbeRunsCredCompletedIdx918,
-	"startup/920_node_probe_runs_cred_completed_idx.down.sql":                     nodeProbeRunsCredCompletedIdx918Down,
+	"startup/917_sanitize_block_reviews.sql":                                      sanitizeBlockReviews917,
+	"startup/917_sanitize_block_reviews.down.sql":                                 sanitizeBlockReviews917Down,
+	"startup/919_ursm_slot_daily_active_minutes.sql":                              ursmSlotDailyActiveMinutes919,
+	"startup/919_ursm_slot_daily_active_minutes.down.sql":                         ursmSlotDailyActiveMinutes919Down,
+	"startup/920_node_probe_runs_cred_completed_idx.sql":                          nodeProbeRunsCredCompletedIdx920,
+	"startup/920_node_probe_runs_cred_completed_idx.down.sql":                     nodeProbeRunsCredCompletedIdx920Down,
 	"startup/915_recent_cache_hit_rate.sql":                                       recentCacheHitRate915,
 	"startup/915_recent_cache_hit_rate.down.sql":                                  recentCacheHitRate915Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,

@@ -45,16 +45,16 @@ import (
 )
 
 const (
-	mig917File     = "919_ursm_slot_daily_active_minutes.sql"
-	mig917DownFile = "919_ursm_slot_daily_active_minutes.down.sql"
-	mig918File     = "920_node_probe_runs_cred_completed_idx.sql"
-	mig918DownFile = "920_node_probe_runs_cred_completed_idx.down.sql"
+	mig919R176File     = "919_ursm_slot_daily_active_minutes.sql"
+	mig919R176DownFile = "919_ursm_slot_daily_active_minutes.down.sql"
+	mig920R176File     = "920_node_probe_runs_cred_completed_idx.sql"
+	mig920R176DownFile = "920_node_probe_runs_cred_completed_idx.down.sql"
 
-	healthScript917 = "../../../scripts/252-monitor/ursm-snapshot-health.sh"
-	probePolicyFile = "../../../bg/probe_policy.go"
+	healthScriptR176 = "../../../scripts/252-monitor/ursm-snapshot-health.sh"
+	probePolicyFileR176 = "../../../bg/probe_policy.go"
 )
 
-func readRepo917(t *testing.T, rel string) string {
+func readRepoR176(t *testing.T, rel string) string {
 	t.Helper()
 	raw, err := os.ReadFile(rel)
 	if err != nil {
@@ -66,7 +66,7 @@ func readRepo917(t *testing.T, rel string) string {
 // ---- 919-A/B：函数体同步产出并同步更新 active_minutes -----------------------
 
 func TestMigration919FunctionProducesActiveMinutes(t *testing.T) {
-	body := stripSQLComments(readRepo917(t, mig917File))
+	body := stripSQLComments(readRepoR176(t, mig919R176File))
 
 	for _, frag := range []string{
 		"ADD COLUMN IF NOT EXISTS active_minutes integer",
@@ -91,7 +91,7 @@ func TestMigration919FunctionProducesActiveMinutes(t *testing.T) {
 // ---- 919-C：down 的顺序（先还原函数，再删列）--------------------------------
 
 func TestMigration919DownRestoresFunctionBeforeDroppingColumn(t *testing.T) {
-	down := stripSQLComments(readRepo917(t, mig917DownFile))
+	down := stripSQLComments(readRepoR176(t, mig919R176DownFile))
 	fnIdx := strings.Index(down, "CREATE OR REPLACE FUNCTION public.refresh_ursm_snapshot_slot_daily")
 	colIdx := strings.Index(down, "DROP COLUMN IF EXISTS active_minutes")
 	if fnIdx < 0 || colIdx < 0 {
@@ -108,7 +108,7 @@ func TestMigration919DownRestoresFunctionBeforeDroppingColumn(t *testing.T) {
 // ---- 919-D：巡检脚本的三件套 ------------------------------------------------
 
 func TestMigration919PatrolHasV2VariantAndProbe(t *testing.T) {
-	body := readRepo917(t, healthScript917)
+	body := readRepoR176(t, healthScriptR176)
 
 	// ① V2 变体在位，且过去天读汇总表。
 	for _, frag := range []string{
@@ -145,9 +145,9 @@ func TestMigration919PatrolHasV2VariantAndProbe(t *testing.T) {
 // ---- 919-E：V2 与 892 的 slot/bucket 表达式逐字一致 --------------------------
 
 func TestMigration919V2SlotExpressionsMatchMigration892(t *testing.T) {
-	mig892 := stripSQLComments(readRepo917(t, "892_ursm_snapshot_slot_daily.sql"))
-	mig917 := stripSQLComments(readRepo917(t, mig917File))
-	patrol := readRepo917(t, healthScript917)
+	mig892 := stripSQLComments(readRepoR176(t, "892_ursm_snapshot_slot_daily.sql"))
+	mig917 := stripSQLComments(readRepoR176(t, mig919R176File))
+	patrol := readRepoR176(t, healthScriptR176)
 
 	// 892 与 917 的函数体里，hour 粒度的 slot 表达式必须逐字一致。
 	const slotExpr = "'extract(hour from date_trunc(''hour'', snapshot_ts))::int'"
@@ -169,7 +169,7 @@ func TestMigration919V2SlotExpressionsMatchMigration892(t *testing.T) {
 // ---- 920-A：索引形态钉死 ----------------------------------------------------
 
 func TestMigration920IndexShape(t *testing.T) {
-	body := stripSQLComments(readRepo917(t, mig918File))
+	body := stripSQLComments(readRepoR176(t, mig920R176File))
 	const want = "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_node_probe_runs_cred_completed\n    ON public.node_probe_runs (credential_id, completed_at)\n    INCLUDE (raw_model_name, started_at, success)"
 	if !strings.Contains(body, want) {
 		t.Errorf("918 索引形态漂移。\n★ 期望：%s\n★ 前导 credential_id=门的关联键；第二键 completed_at=时间谓词（Index Cond）；\n  INCLUDE 三列=DISTINCT ON 的输出列（Index Only Scan 的前提）——\n  任何一项变了，252 实测的 58× buffer 缩减就不成立。", want)
@@ -179,7 +179,7 @@ func TestMigration920IndexShape(t *testing.T) {
 // ---- 920-B：承重查询在位 ----------------------------------------------------
 
 func TestMigration920HasBearingQuery(t *testing.T) {
-	policy := readRepo917(t, probePolicyFile)
+	policy := readRepoR176(t, probePolicyFileR176)
 	for _, frag := range []string{
 		"func credentialTwoProbeSuccessGateSQL",
 		"FROM node_probe_runs npr",
@@ -198,7 +198,7 @@ func TestMigration920HasBearingQuery(t *testing.T) {
 // ---- 920-C：通道与锁守卫 ----------------------------------------------------
 
 func TestMigration920ChannelAndLocks(t *testing.T) {
-	raw := readRepo917(t, mig918File)
+	raw := readRepoR176(t, mig920R176File)
 	lines := strings.Split(strings.TrimLeft(raw, "\n"), "\n")
 	body := stripSQLComments(raw)
 
@@ -212,7 +212,7 @@ func TestMigration920ChannelAndLocks(t *testing.T) {
 		t.Error("918 不得用 SET LOCAL lock_timeout（本通道完全失效）")
 	}
 
-	down := stripSQLComments(readRepo917(t, mig918DownFile))
+	down := stripSQLComments(readRepoR176(t, mig920R176DownFile))
 	if !strings.Contains(down, "DROP INDEX IF EXISTS public.idx_node_probe_runs_cred_completed") {
 		t.Error("918 down 必须删除这条索引")
 	}
@@ -224,9 +224,9 @@ func TestMigration920ChannelAndLocks(t *testing.T) {
 // ---- 920-D：登记面齐全 ------------------------------------------------------
 
 func TestMigration919And918RegisteredEverywhere(t *testing.T) {
-	runner := readRepo917(t, "../../../installer/internal/dbinit/runner.go")
-	seq := readRepo917(t, "../../../scripts/apply-db-revision-sequence.sh")
-	for _, mig := range []string{mig917File, mig918File} {
+	runner := readRepoR176(t, "../../../installer/internal/dbinit/runner.go")
+	seq := readRepoR176(t, "../../../scripts/apply-db-revision-sequence.sh")
+	for _, mig := range []string{mig919R176File, mig920R176File} {
 		if !strings.Contains(runner, mig) {
 			t.Errorf("★ %s 必须登记进 installer 的 StartupFiles（否则全新安装缺该对象）", mig)
 		}
@@ -234,31 +234,31 @@ func TestMigration919And918RegisteredEverywhere(t *testing.T) {
 			t.Errorf("★ %s 必须登记进 scripts/apply-db-revision-sequence.sh（否则 211/252 存量库部署不到）", mig)
 		}
 		// 双目录逐字一致。
-		embed := readRepo917(t, "../../../installer/cmd/llm-gw-installer/embeddata/startup/"+mig)
-		src := readRepo917(t, mig)
+		embed := readRepoR176(t, "../../../installer/cmd/llm-gw-installer/embeddata/startup/"+mig)
+		src := readRepoR176(t, mig)
 		if embed != src {
 			t.Errorf("★ %s 在 sql/migrations/startup 与 embeddata 不一致（fresh-install 与存量库会拿到不同内容）", mig)
 		}
-		downEmbed := readRepo917(t, "../../../installer/cmd/llm-gw-installer/embeddata/startup/"+mig917DownFile)
+		downEmbed := readRepoR176(t, "../../../installer/cmd/llm-gw-installer/embeddata/startup/"+mig919R176DownFile)
 		_ = downEmbed
 	}
 
 	// db-changelog.md 必须带当前文件的 sha256。
-	for _, mig := range []string{mig917File, mig918File} {
+	for _, mig := range []string{mig919R176File, mig920R176File} {
 		raw, err := os.ReadFile(mig)
 		if err != nil {
 			t.Fatalf("read %s: %v", mig, err)
 		}
 		sum := sha256.Sum256(raw)
 		want := hex.EncodeToString(sum[:])
-		changelog := readRepo917(t, "../../../docs/db-changelog.md")
+		changelog := readRepoR176(t, "../../../docs/db-changelog.md")
 		if !strings.Contains(changelog, want) {
 			t.Errorf("★ docs/db-changelog.md 里没有 %s 当前的 sha256（%s）⇒ 登记册与磁盘不一致", mig, want)
 		}
 	}
 
 	// concurrency gate：918 必须以「已知的非事务通道文件」身份在册。
-	gate := readRepo917(t, "../../../installer/cmd/llm-gw-installer/startup_concurrency_gate_test.go")
+	gate := readRepoR176(t, "../../../installer/cmd/llm-gw-installer/startup_concurrency_gate_test.go")
 	if !strings.Contains(gate, `"920_node_probe_runs_cred_completed_idx.sql": 1,`) {
 		t.Errorf("★ startup_concurrency_gate_test.go 缺 918 的 CONCURRENTLY 计数登记（⇒ 该文件会被判为「未登记的通道违规」）")
 	}

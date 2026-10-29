@@ -4,6 +4,8 @@
 #gen_target	127.0.0.1:8782
 #gen_verdict_rule	verdict=derive(class,bucket,excluded)
 #gen_exclude_asset	unsafe-post-routes.txt
+# ── 2026-10-28 分支审计轮补登：wip/07 合入新增的 9 条路由（静态分级 + handler 源码复核；列：route/method/file/class/bucket-empty/code-empty/probe-empty/verdict/note）────
+#gen_append	2026-10-29 审计轮 —— 补 3 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 589 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7019	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7019	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /_gateway/plugin/v1/analytics/{type}	GET	cmd/gateway/plugin_canon_init.go:204	unknown				not-probed-unresolved	★ 静态分级：解析不出
@@ -158,6 +160,9 @@
 /api/admin/logs/config	ANY	admin/handler.go:1200	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/logs/files	ANY	admin/handler.go:1201	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/logs/stats	ANY	admin/handler.go:1202	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/maas/bills/issue	ANY	admin/maas_bills_handlers.go:64	write				not-probed-writes	★ 源码确证 write：POST-only（:64 method guard）出账 ⇒ 静态分级器判 read 是调用链盲区（R159 §10.2 同族反例）⇒ 按 handler 源码改判；真探测待 cookie+护栏条件
+/api/admin/maas/bills/reconcile	ANY	admin/maas_bills_handlers.go:108	read				not-probed-not-reached	★ GET-only（:108）对账读点；静态分级 read 与源码一致；未真探测
+/api/admin/maas/coupons	ANY	admin/maas_bills_handlers.go:23	write				not-probed-writes	★ 源码确证 mixed：GET 列表（:29）+ POST CreateCoupon（:43 落库写）⇒ 按 write 记（保守）；静态分级器判 read 是盲区
 /api/admin/maas/model-rates	ANY	admin/maas_handlers.go:18	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/maas/model-rates/	ANY	admin/maas_handlers.go:19	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/maas/model-rates/batch	ANY	admin/maas_handlers.go:15	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
@@ -329,7 +334,10 @@
 /api/admin/tools/reload	ANY	cmd/gateway/main.go:7388	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/tools/stats	ANY	cmd/gateway/main.go:7417	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/tools/top	ANY	cmd/gateway/main.go:7418	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/topology/clients-today	ANY	admin/handler.go:1160	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/topology/models-today	ANY	admin/handler.go:1156	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/topology/plugins	ANY	admin/handler.go:1142	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/topology/provider-kinds	ANY	admin/handler.go:1153	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/topology/providers-today	ANY	admin/handler.go:1139	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/turns	ANY	admin/handler.go:1360	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/turns/sessions	ANY	admin/handler.go:1362	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
@@ -423,6 +431,11 @@
 /api/logs	ANY	admin/handler.go:1355	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/logs/	ANY	admin/handler.go:1356	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/maas/account	ANY	admin/maas_handlers.go:31	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/maas/bills	ANY	admin/maas_bills_handlers.go:132	read				not-probed-not-reached	★ GET-only（:132）租户月账单列表；未真探测
+/api/maas/bills/export	ANY	admin/maas_bills_handlers.go:161	read				not-probed-not-reached	★ GET-only（:161）CSV 导出；未真探测
+/api/maas/coupons/activate	ANY	admin/maas_bills_handlers.go:188	write				not-probed-writes	★ 源码确证 write：POST-only（:188）ActivateCoupon 落积分 ⇒ 静态分级器判 read 是盲区（空 body POST 会 400 但语义是写）
+/api/maas/coupons/redemptions	ANY	admin/maas_bills_handlers.go:218	read				not-probed-not-reached	★ GET-only（:218）兑换记录列表；未真探测
+/api/maas/invoices	ANY	admin/maas_bills_handlers.go:247	write				not-probed-writes	★ 源码确证 write：POST-only（:247）CreateInvoicePlaceholder 落占位行（202 Accepted）
 /api/maas/ledger	ANY	admin/maas_handlers.go:32	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/maas/models	ANY	admin/maas_handlers.go:27	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/maas/orders	ANY	admin/maas_handlers.go:33	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
@@ -515,6 +528,7 @@
 /api/users/	ANY	admin/handler.go:999	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/v1/approvals/	ANY	cmd/gateway/main.go:7657	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/v1/plugin-nav	ANY	cmd/gateway/main.go:6608	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/v1/plugins/	ANY	cmd/gateway/main.go:6625	unknown				not-probed-unresolved	★ 前缀路由 + 闭包内部分派（/settings ⇒ SettingsHandler）⇒ 静态分级解析不出（func-not-indexed），与 /api/v1/plugins/install 同族待真探测
 /api/v1/plugins/install	POST	cmd/gateway/main.go:6636	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/v1/plugins/{id}/activate	POST	cmd/gateway/main.go:6647	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/v1/plugins/{id}/deactivate	POST	cmd/gateway/main.go:6651	unknown				not-probed-unresolved	★ 静态分级：解析不出
@@ -584,13 +598,3 @@
 /v2/chat/completions	ANY	cmd/gateway/main_v2_pipeline.go:369	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /v2/healthz	ANY	cmd/gateway/main_v2_pipeline.go:412	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /version	ANY	cmd/gateway/main.go:6450	unknown				not-probed-unresolved	★ 静态分级：解析不出
-# ── 2026-10-28 分支审计轮补登：wip/07 合入新增的 9 条路由（静态分级 + handler 源码复核；列：route/method/file/class/bucket-empty/code-empty/probe-empty/verdict/note）────
-/api/admin/maas/bills/issue	ANY	admin/maas_bills_handlers.go:64	write				not-probed-writes	★ 源码确证 write：POST-only（:64 method guard）出账 ⇒ 静态分级器判 read 是调用链盲区（R159 §10.2 同族反例）⇒ 按 handler 源码改判；真探测待 cookie+护栏条件
-/api/admin/maas/bills/reconcile	ANY	admin/maas_bills_handlers.go:108	read				not-probed-not-reached	★ GET-only（:108）对账读点；静态分级 read 与源码一致；未真探测
-/api/admin/maas/coupons	ANY	admin/maas_bills_handlers.go:23	write				not-probed-writes	★ 源码确证 mixed：GET 列表（:29）+ POST CreateCoupon（:43 落库写）⇒ 按 write 记（保守）；静态分级器判 read 是盲区
-/api/maas/bills	ANY	admin/maas_bills_handlers.go:132	read				not-probed-not-reached	★ GET-only（:132）租户月账单列表；未真探测
-/api/maas/bills/export	ANY	admin/maas_bills_handlers.go:161	read				not-probed-not-reached	★ GET-only（:161）CSV 导出；未真探测
-/api/maas/coupons/activate	ANY	admin/maas_bills_handlers.go:188	write				not-probed-writes	★ 源码确证 write：POST-only（:188）ActivateCoupon 落积分 ⇒ 静态分级器判 read 是盲区（空 body POST 会 400 但语义是写）
-/api/maas/coupons/redemptions	ANY	admin/maas_bills_handlers.go:218	read				not-probed-not-reached	★ GET-only（:218）兑换记录列表；未真探测
-/api/maas/invoices	ANY	admin/maas_bills_handlers.go:247	write				not-probed-writes	★ 源码确证 write：POST-only（:247）CreateInvoicePlaceholder 落占位行（202 Accepted）
-/api/v1/plugins/	ANY	cmd/gateway/main.go:6625	unknown				not-probed-unresolved	★ 前缀路由 + 闭包内部分派（/settings ⇒ SettingsHandler）⇒ 静态分级解析不出（func-not-indexed），与 /api/v1/plugins/install 同族待真探测

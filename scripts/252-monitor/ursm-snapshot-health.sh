@@ -478,7 +478,7 @@ base_active AS (
   GROUP BY 1, $G_TRUNC snapshot_ts))
 "
 
-# ==== P11 第二期变体（R176 / 迁移 917）：base_active 的过去天也走汇总表 ==========
+# ==== P11 第二期变体（R176 / 迁移 919）：base_active 的过去天也走汇总表 ==========
 # ★ 与 BUCKETS_SQL_DAILY 唯一的差别就是 base_active 这一段（其余逐字相同）：
 #   两个变体并存是【有意的】—— active 探测失败时（917 未落 / 回填未跑 / 列缺），
 #   巡检必须能整体回退到上一代的 DAILY 变体（源表路）。
@@ -559,8 +559,8 @@ base_buckets AS (
      --     ★ 实证：改写前后 10 个判据字段逐字相同（生产 A/B + 本地真库门）。
      AND snapshot_ts >= (now() AT TIME ZONE current_setting('TimeZone'))::date::timestamptz
    GROUP BY 1, $G_TRUNC snapshot_ts)),
--- 活跃子单位的基线（★ P11 第二期，2026-10-29 R176 轮 / 迁移 917）：
--- ★★ 过去天走【汇总表】—— 917 给 ursm_snapshot_slot_daily 补了 active_minutes 列
+-- 活跃子单位的基线（★ P11 第二期，2026-10-29 R176 轮 / 迁移 919）：
+-- ★★ 过去天走【汇总表】—— 919 给 ursm_snapshot_slot_daily 补了 active_minutes 列
 --   （hour: count(DISTINCT minute)，minute: 恒 1），与本段旧路（源表 3 天实时扫）
 --   产出**同一批 (slot, 桶) 行**：count、DISTINCT 分钟两个量逐字相同。
 --   ★ 为什么必须搬：252 实测（R176，EXPLAIN ANALYZE 独立臂）源表路 3 天 =
@@ -663,7 +663,7 @@ if ! sql_failed "$base_probe"; then
     fi
   fi
 fi
-# === active_minutes 覆盖探针（P11 第二期，迁移 917 / R176 轮）=================
+# === active_minutes 覆盖探针（P11 第二期，迁移 919 / R176 轮）=================
 #
 # ★ 与上面的 base_probe 同一哲学：探测失败 ⇒ 回退源表路 ⇒ 慢，但不失明。
 # ★ 三个失败形态都要接得住：

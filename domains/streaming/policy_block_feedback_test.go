@@ -28,6 +28,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/sanitizerules"
 )
@@ -164,7 +165,7 @@ func TestBlockReviewApproveReleasesSamePayload(t *testing.T) {
 	sanitizerules.SetEgressReleases(nil)
 	t.Cleanup(func() { sanitizerules.SetEgressReleases(prevReleases) })
 
-	reviewID := registerPolicyBlockReview("tenant-a", "req-42",
+	reviewID := registerPolicyBlockReview("tenant-a", "zcode", "req-42",
 		"builtin.egress_sink", "sink destination", "$.command", "digest-of-cmd")
 	if !strings.HasPrefix(reviewID, "rv-") {
 		t.Fatalf("审核单号形态不对: %q", reviewID)
@@ -174,7 +175,7 @@ func TestBlockReviewApproveReleasesSamePayload(t *testing.T) {
 		t.Fatalf("pending 记录数 = %d，期望 1", len(pending))
 	}
 	// 同键再拦（重试路径）不重复占单。
-	if again := registerPolicyBlockReview("tenant-a", "req-42",
+	if again := registerPolicyBlockReview("tenant-a", "zcode", "req-42",
 		"builtin.egress_sink", "sink destination", "$.command", "digest-of-cmd"); again != reviewID {
 		t.Errorf("同键 pending 应复用同一单: got %q want %q", again, reviewID)
 	}
@@ -188,16 +189,67 @@ func TestBlockReviewApproveReleasesSamePayload(t *testing.T) {
 	if decided.Status != sanitizerules.BlockReviewApproved {
 		t.Fatalf("状态 = %q，期望 approved", decided.Status)
 	}
+	// 2026-10-29 拦截持久化轮的新契约：批准 = **规则级 7 天放行**（owner 口径
+	// 「同一客户端一周内的同样的规则将同样放行」）——同规则任意载荷都放行，
+	// 且带 7 天过期与 review 来源。
 	if !sanitizerules.EgressReleaseAllowed("tenant-a", "egress", "builtin.egress_sink", "digest-of-cmd") {
-		t.Fatal("批准后同载荷应放行")
+		t.Fatal("批准后同规则应放行")
 	}
-	// 放行只对同载荷生效：另一个摘要不放行。
-	if sanitizerules.EgressReleaseAllowed("tenant-a", "egress", "builtin.egress_sink", "digest-other") {
-		t.Fatal("带摘要的放行不应覆盖其它载荷")
+	if !sanitizerules.EgressReleaseAllowed("tenant-a", "egress", "builtin.egress_sink", "digest-other") {
+		t.Fatal("规则级放行应覆盖同规则的其它载荷（7 天窗口）")
+	}
+	// 别的租户与别的规则不受影响（放行边界仍在）。
+	if sanitizerules.EgressReleaseAllowed("tenant-b", "egress", "builtin.egress_sink", "digest-of-cmd") ||
+		sanitizerules.EgressReleaseAllowed("tenant-a", "egress", "builtin.secret_field.egress", "digest-of-cmd") {
+		t.Fatal("规则级放行不得越租户/越规则")
+	}
+	var granted *sanitizerules.EgressRelease
+	for _, rel := range sanitizerules.EgressReleases() {
+		if rel.TenantID == "tenant-a" && rel.Rule == "builtin.egress_sink" {
+			granted = &rel
+			break
+		}
+	}
+	if granted == nil {
+		t.Fatal("进程内放行表必须有本次批准的记录")
+	}
+	if granted.Source != "review" {
+		t.Errorf("放行来源 = %q，期望 review", granted.Source)
+	}
+	if granted.ExpiresAt.IsZero() || time.Until(granted.ExpiresAt) < 6*24*time.Hour || time.Until(granted.ExpiresAt) > 8*24*time.Hour {
+		t.Errorf("7 天放行的过期时间不对: %v", granted.ExpiresAt)
 	}
 	// 已决的单不能再次决定。
 	if _, err := sanitizerules.DecideBlockReview(pending[0].ID, false, "admin-test"); err == nil {
 		t.Error("已决记录应拒绝再决")
+	}
+}
+
+// TestBlockReviewApprovalExpiresAfterSevenDays：放行过期后不再生效
+// （「一周内」的另一半——过期自动收紧）。
+func TestBlockReviewApprovalExpiresAfterSevenDays(t *testing.T) {
+	sanitizerules.ResetBlockReviews()
+	t.Cleanup(func() { sanitizerules.ResetBlockReviews() })
+	prevReleases := sanitizerules.EgressReleases()
+	sanitizerules.SetEgressReleases(nil)
+	t.Cleanup(func() { sanitizerules.SetEgressReleases(prevReleases) })
+
+	registerPolicyBlockReview("tenant-ttl", "zcode", "req-ttl",
+		"builtin.egress_sink", "sink", "$.command", "digest-ttl")
+	pending := sanitizerules.ListBlockReviews(sanitizerules.BlockReviewPending, "tenant-ttl", 10)
+	if _, err := sanitizerules.DecideBlockReview(pending[0].ID, true, "admin"); err != nil {
+		t.Fatalf("批准失败: %v", err)
+	}
+	// 把放行的过期时间拨到过去 ⇒ 同载荷不再放行（EgressReleaseAllowed 跳过过期行）。
+	stale := sanitizerules.EgressReleases()
+	for i := range stale {
+		if stale[i].TenantID == "tenant-ttl" {
+			stale[i].ExpiresAt = time.Now().Add(-time.Minute)
+		}
+	}
+	sanitizerules.SetEgressReleases(stale)
+	if sanitizerules.EgressReleaseAllowed("tenant-ttl", "egress", "builtin.egress_sink", "digest-ttl") {
+		t.Fatal("过期放行不得继续生效")
 	}
 }
 
@@ -209,7 +261,7 @@ func TestBlockReviewRejectKeepsBlock(t *testing.T) {
 	sanitizerules.SetEgressReleases(nil)
 	t.Cleanup(func() { sanitizerules.SetEgressReleases(prevReleases) })
 
-	registerPolicyBlockReview("tenant-b", "req-7", "builtin.secret_field.egress", "credential", "$.password", "")
+	registerPolicyBlockReview("tenant-b", "claude-code", "req-7", "builtin.secret_field.egress", "credential", "$.password", "")
 	pending := sanitizerules.ListBlockReviews(sanitizerules.BlockReviewPending, "", 10)
 	if len(pending) != 1 {
 		t.Fatalf("pending 记录数 = %d，期望 1", len(pending))

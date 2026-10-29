@@ -2423,11 +2423,17 @@ files=(
   #     ⇒ ⇒ 只能建**与投影逐字一致的表达式索引**。
   #   ★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带 dbinit:no-transaction 标记。
   "$ROOT_DIR/sql/migrations/startup/916_session_turns_api_key_ts_index.sql"
-  # ★ 919（2026-10-29 R176 轮；★ 让号记录：初拟 917，push 前 fetch 实测 origin 已被并行会话「拦截审核与放行落库」占用（ddd762e7a）⇒ 重取 919/920）：P11 第二期 —— ursm_snapshot_slot_daily 补
-  #   active_minutes 列（hour: count(DISTINCT minute)；minute: 恒 1），
-  #   填充函数 refresh_ursm_snapshot_slot_daily 升级为同步产出它（签名不变）。
-  #   落点 = 巡检 ursm-snapshot-health.sh 的 base_active 基线改走汇总表
-  #   （252 实测：主判据 WITH win 族 22 次/5,339s 每 26.4h，独立臂 EXPLAIN
+
+  # ★ 917: 输出策略拦截审核记录 / 放行表 / 硬阻断清单管理面状态的持久化表
+  #   （拦截持久化轮，2026-10-29）。纯新增三表 + 索引，全部 IF NOT EXISTS
+  #   ⇒ 幂等、零锁面风险；进程内的审核队列与放行表从此重启可恢复。
+  "$ROOT_DIR/sql/migrations/startup/917_sanitize_block_reviews.sql"
+  # ★ 919（2026-10-29 R176 轮；★ 让号记录：初拟 917，push 前 fetch 实测 origin 已被
+  #   并行会话「拦截审核与放行落库」占用（ddd762e7a）⇒ 重取 919/920）：P11 第二期
+  #   —— ursm_snapshot_slot_daily 补 active_minutes 列（hour: count(DISTINCT minute)；
+  #   minute: 恒 1），填充函数 refresh_ursm_snapshot_slot_daily 升级为同步产出它
+  #   （签名不变）。落点 = 巡检 ursm-snapshot-health.sh 的 base_active 基线改走
+  #   汇总表（252 实测：主判据 WITH win 族 22 次/5,339s 每 26.4h，独立臂 EXPLAIN
   #   ANALYZE 158s ⇒ 行量自 R97 起涨 3.4×，892 只搬了 base_buckets）。
   #   ★ 部署次序契约：列加上后存量行 active_minutes=NULL，巡检探测失败自动回退
   #   源表路（慢但不失明）⇒ 落地后尽快手工触发全量回填

@@ -51,7 +51,13 @@ type EgressRelease struct {
 	// ApprovedBy 记录放行人（审计用）。
 	ApprovedBy string `json:"approved_by,omitempty"`
 	// ExpiresAt 为零表示不过期；非零且已过期则该记录不再生效。
+	// 拦截持久化轮（2026-10-29）：审核批准的放行写 now+168h（7 天）。
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	// ClientType 记录触发审核单的客户端类型（展示与追溯用；放行键仍按
+	// 租户——见 block_review_persist.go 的语义说明）。
+	ClientType string `json:"client_type,omitempty"`
+	// Source 记录放行来源：manual（管理面直接授予）/ review（审核批准）。
+	Source string `json:"source,omitempty"`
 }
 
 // egressReleases 是进程级放行表。原子替换，读侧无锁。

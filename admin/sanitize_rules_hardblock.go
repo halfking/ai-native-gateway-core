@@ -52,36 +52,62 @@ func (h *Handler) handleHardBlockRules(w http.ResponseWriter, r *http.Request) {
 		allows := sanitizerules.HardBlockAllows()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"rules": allows,
-			"note":   "runtime view; PUT replaces the whole list for this process lifetime, restart falls back to LLM_GATEWAY_HARD_BLOCK_RULES",
+			// 2026-10-29 拦截持久化轮：管理面保存的清单已落库（迁移 917 的
+			// sanitize_hardblock_state），重启后仍是这份；env 只在从未用管理面
+			// 保存过时才是生效值。
+			"note": "runtime view; PUT replaces the whole list and persists to the database (restart keeps it). Without any managed save, the list comes from LLM_GATEWAY_HARD_BLOCK_RULES.",
 		})
 	case http.MethodPut:
 		var req struct {
 			Rules             []string `json:"rules"`
+			Preset            string   `json:"preset"`
 			Comment           string   `json:"comment"`
 			ConfirmDisableAll bool     `json:"confirm_disable_all"`
 		}
 		if !decodeSanitizeRuleBody(w, r, &req) {
 			return
 		}
-		if len(req.Rules) == 0 && !req.ConfirmDisableAll {
-			writeError(w, http.StatusBadRequest, "empty rules would disable every hard block including the input-side fail-closed guard; pass confirm_disable_all=true to do that explicitly")
-			return
-		}
-		allows := make([]sanitizerules.HardBlockAllow, 0, len(req.Rules))
-		for _, raw := range req.Rules {
-			parsed, err := sanitizerules.ParseHardBlockAllows(raw)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
+		// 2026-10-29 拦截持久化轮：preset 是「整批同步开/关」的一键形态——
+		// all = 请求侧全量 + 输出侧全量 + egress 逐条内建规则（r1039 禁止
+		// egress 通配，必须枚举）；none = 清空（等价 rules:[]，仍要求显式确认）。
+		var allows []sanitizerules.HardBlockAllow
+		switch req.Preset {
+		case "":
+			if len(req.Rules) == 0 && !req.ConfirmDisableAll {
+				writeError(w, http.StatusBadRequest, "empty rules would disable every hard block including the input-side fail-closed guard; pass confirm_disable_all=true to do that explicitly")
 				return
 			}
-			allows = append(allows, parsed...)
+			allows = make([]sanitizerules.HardBlockAllow, 0, len(req.Rules))
+			for _, raw := range req.Rules {
+				parsed, err := sanitizerules.ParseHardBlockAllows(raw)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+				allows = append(allows, parsed...)
+			}
+		case "all":
+			allows = sanitizerules.BuiltinHardBlockAll()
+		case "none":
+			if !req.ConfirmDisableAll {
+				writeError(w, http.StatusBadRequest, "preset none disables every hard block including the input-side fail-closed guard; pass confirm_disable_all=true to do that explicitly")
+				return
+			}
+			allows = nil
+		default:
+			writeError(w, http.StatusBadRequest, "preset must be all or none")
+			return
 		}
-		sanitizerules.SetHardBlockAllows(allows)
+		// 写穿透：进程内立即生效 + DB 持久化（重启后仍是这份清单，env 退化为
+		// 没有管理面覆盖时的出厂默认）。
+		sanitizerules.SaveHardBlockStatePersistent(r.Context(), allows, sanitizeRuleActor(GetAuthContext(r)))
 		auditLog := strings.TrimSpace(req.Comment)
 		writeSanitizeRuleAudit("hardblock_allowlist_updated", auditLog, allows)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"rules":   sanitizerules.HardBlockAllows(),
-			"comment": auditLog,
+			"rules":    sanitizerules.HardBlockAllows(),
+			"comment":  auditLog,
+			"source":   "managed-state",
+			"preset":   req.Preset,
 		})
 	default:
 		w.Header().Set("Allow", "GET, PUT")
@@ -135,9 +161,22 @@ func (h *Handler) handleBlockedReviews(w http.ResponseWriter, r *http.Request, a
 			tenant = auth.TenantID
 		}
 		reviews := sanitizerules.ListBlockReviews(status, tenant, limit)
+		// 2026-10-29 持久化轮：一并返回放行表（租户过滤同 reviews），前端在
+		// 已批准单上展示「放行有效期至」。持久化装载后含历史放行（含剩余期限）。
+		releases := sanitizerules.EgressReleases()
+		if !super {
+			filtered := make([]sanitizerules.EgressRelease, 0, len(releases))
+			for _, rel := range releases {
+				if tenant != "" && rel.TenantID == tenant {
+					filtered = append(filtered, rel)
+				}
+			}
+			releases = filtered
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"reviews":       reviews,
-			"process_only":  true,
+			"releases":      releases,
+			"process_only":  false,
 			"pending_count": len(sanitizerules.ListBlockReviews(sanitizerules.BlockReviewPending, tenant, 1000)),
 		})
 	case strings.HasPrefix(path, "/") && strings.HasSuffix(path, "/review"):
@@ -172,7 +211,9 @@ func (h *Handler) handleBlockedReviews(w http.ResponseWriter, r *http.Request, a
 		if req.Comment != "" {
 			decidedBy += " (" + req.Comment + ")"
 		}
-		review, err := sanitizerules.DecideBlockReview(id, approve, decidedBy)
+		// 2026-10-29 持久化轮：决定落库；批准写规则级 7 天放行（租户+规则，
+		// 同一租户一周内同规则不再拦），进程内与 DB 同时生效。
+		review, err := sanitizerules.DecideBlockReviewWithContext(r.Context(), id, approve, decidedBy)
 		if err != nil {
 			writeSanitizeRuleError(w, err)
 			return

@@ -35,12 +35,38 @@ import (
 // （rv-N）；登记不了（极老形态 / 无租户）返回空串，message 走「联系管理员」
 // 的兜底话术。
 //
-// 租户为空时也登记（TenantID 留空，列表可见、按 ID 可批），但批准时
-// DecideBlockReview 对空租户不会放行（放行表 fail-closed）——列表里可见
-// 即可定位；这里不丢记录。
-func registerPolicyBlockReview(tenantID, requestID, rule, reason, field, digest string) string {
-	entry := sanitizerules.AddBlockReview(tenantID, "egress", rule, reason, field, digest, requestID)
+// 2026-10-29 拦截持久化轮：记录补 clientType（哪个客户端被拦）、规则展示名
+// 与匹配说明（审核员判断「是不是规则问题」的入口）；记录落库（迁移 917），
+// 重启可回溯。租户为空时也登记，但批准时空租户不放行（放行表 fail-closed）。
+func registerPolicyBlockReview(tenantID, clientType, requestID, rule, reason, field, digest string) string {
+	info, _ := sanitizerules.BuiltinRuleInfoFor(rule)
+	entry := sanitizerules.AddBlockReview(tenantID, clientType, "egress", rule,
+		info.Name, reason, field, digest, requestID, policyMatchDetail(rule, info, reason, field))
 	return fmt.Sprintf("rv-%d", entry.ID)
+}
+
+// policyMatchDetail 组装审核记录的匹配说明。
+//
+// 结构化成分（规则语义 / 判定短语 / 参数位置 / 载荷摘要指纹）分行动词开头，
+// 给审核员一条「这条规则在判什么 → 为什么命中我 → 是不是规则问题」的阅读线。
+// 托管（YAML）规则的语义在前端按 rule_id 关联规则配置（这里不重复）。
+func policyMatchDetail(rule string, info sanitizerules.BuiltinRuleInfo, reason, field string) string {
+	var b strings.Builder
+	if info.Description != "" {
+		b.WriteString("规则语义：" + info.Description + "\n")
+	} else {
+		b.WriteString("规则语义：（托管规则，表达式与适用范围见规则配置）\n")
+	}
+	if reason != "" {
+		b.WriteString("判定：" + reason + "\n")
+	}
+	if field != "" {
+		b.WriteString("参数位置：" + field + "\n")
+	}
+	if rule != "" {
+		b.WriteString("规则 ID：" + rule)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // policyBlockClientMessage 组装客户端可见的 message 文本。

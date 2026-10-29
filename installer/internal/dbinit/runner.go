@@ -1677,10 +1677,15 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		// ★ 含 CREATE INDEX CONCURRENTLY ⇒ 本文件带 dbinit:no-transaction 标记（首行），
 		//   applySQL 据此不加 --single-transaction（887/888/729 同款）。
 		"916_session_turns_api_key_ts_index.sql",
-		// ★ 917（R176 轮）：P11 第二期 —— slot_daily.active_minutes + 填充函数升级
+		// 917: 拦截审核/放行/硬阻断状态的持久化表（拦截持久化轮，2026-10-29）。
+		//   纯新增三表 + 索引，全部 IF NOT EXISTS ⇒ 幂等、零锁面风险。
+		"917_sanitize_block_reviews.sql",
+		// ★ 919（R176 轮）：P11 第二期 —— slot_daily.active_minutes + 填充函数升级
 		//   （巡检 base_active 走汇总表的落点）。无 CONCURRENTLY ⇒ 事务通道。
+		//   ★ 让号记录：初拟 917，push 前 fetch 实测 origin 已被并行会话
+		//   「拦截审核与放行落库」（ddd762e7a）占用 ⇒ 重取 919/920。
 		"919_ursm_slot_daily_active_minutes.sql",
-		// ★ 918（R176 轮）：node_probe_runs (credential_id, completed_at) 覆盖索引
+		// ★ 920（R176 轮）：node_probe_runs (credential_id, completed_at) 覆盖索引
 		//   （INV-4 双模型探测成功门的 24h 关联子查询，252 实测 549 次/天 慢+取消）。
 		//   ★ 含 CREATE INDEX CONCURRENTLY ⇒ 首行 dbinit:no-transaction 标记。
 		"920_node_probe_runs_cred_completed_idx.sql",
