@@ -37,6 +37,7 @@ vi.mock('../composables/liveStreamStore', async () => {
   const initialDataReceivedRef = ref(true)
   const redisHealthyRef = ref(true)
   const redisErrorRef = ref('')
+  const liveDataRevision = ref(0)
   return {
     requestsRef,
     nodesRef,
@@ -46,6 +47,7 @@ vi.mock('../composables/liveStreamStore', async () => {
     initialDataReceivedRef,
     redisHealthyRef,
     redisErrorRef,
+    liveDataRevision,
     __test: {
       setRequests: (v: Frame[]) => (requestsRef.value = v),
       setNodes: (v: Frame[]) => (nodesRef.value = v),
