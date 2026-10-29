@@ -144,7 +144,7 @@ func TestWhisperBaseURLPathJoining(t *testing.T) {
 	}))
 	defer srv.Close()
 	cand := provider.Candidate{BaseURL: srv.URL, CatalogCode: "whisper-cpp", RawModel: "m", Protocol: "openai-completions", Routable: true, APIKey: "sk-test", AvailabilityState: "ready"}
-	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.New())
+	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.NewWithRetries(0))
 	if _, err := svc.Transcribe(context.Background(), TranscribeRequest{
 		Model: "m", File: tinyWAVForTest(), Filename: "a.wav", ContentType: "audio/wav",
 	}, nil); err != nil {

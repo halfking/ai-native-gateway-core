@@ -10559,3 +10559,8 @@ Recording-consent body retention is independent of request_logs TTL.
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 923 | `923_schema_migrations_ledger_backfill.sql` | `2d4103410770b008d55114c628f2572dde2c0bded4d8afa7df162bea8f2f7a22` | prepared（2026-10-29 记账补齐轮；**待部署**：211/154/245/252 列车）—— ★ **只补记账，不改 schema**。缺口本体——本仓有**两个迁移台账**，记的不是同一段：①`public.schema_migrations`（version / description / applied_at）是**人读视图**，本地真库实测 74 行、max version=**899**；②`public.gateway_db_revision_sequences`（sequence_name / content_sha256 / execution_sha256 / runtime_adaptation / applied_at）是**部署通道的权威台账**（`scripts/apply-db-revision-sequence.sh:2857` 写入），本地真库实测 287 行、**900~920 全在里面**。⇒ ★★ 900~920 **早已应用**，缺的是**记账**不是**应用**（逐条核对过特征产物：索引/约束/函数/种子行；部署脚本的 `ledger_artifact_probe` 段对 900~922 每条迁移都配了产物探针）⇒ 本条**只写台账、绝不重跑**那 20 条迁移（902 换 pkey / 908 删索引 / 910 换视图体 —— 重放是**改 schema**不是补记账）。★ 本仓惯例：迁移文件自己往 `schema_migrations` 插一行自登记（695-705 定式，见 `899_session_bodies_promote_body_sink.sql:237`）⇒ 本条把 900~920 补成同样形态。★ 幂等：`ON CONFLICT (version) DO NOTHING`（version 上有主键 `schema_migrations_pkey`）⇒ 重复执行不写重行、也不覆盖运维手改过的 description。★ **918 号不存在**（917 之后直接是 919）⇒ 900~920 去掉 918 = **20 条**，899 及以前一个字不动。★ 本条**不自登记**（否则 max(version) 会被顶到 923、污染「schema 侧水位」读数；923 是记账动作、不改任何 schema 对象）⇒ 补完后 max(version) 仍应是 **920**；923 自身在权威台账里有行。★ 纯 DML ⇒ 不拿强锁、无 CONCURRENTLY ⇒ 走事务通道。 |
+## 2026-10-29T17:28:17Z — deploy 245 build_seq 2909 (8b57eddb)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 923 | `923_schema_migrations_ledger_backfill.sql` | `2d4103410770b008d55114c628f2572dde2c0bded4d8afa7df162bea8f2f7a22` | applied+verified |

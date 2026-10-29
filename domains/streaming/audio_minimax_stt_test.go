@@ -38,7 +38,7 @@ func newSpeechToTextTestService(t *testing.T, catalogCode, rawModel string, upst
 		APIKey:            "sk-test",
 		AvailabilityState: "ready",
 	}
-	return NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.New())
+	return NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.NewWithRetries(0))
 }
 
 func minimaxTestCandidate(baseURL string) provider.Candidate {
@@ -195,7 +195,7 @@ func TestPreferSpeechToTextMatchesOnlyMinimax(t *testing.T) {
 
 // MCP 面在注入 transform 后 tools/list 必须出现四个工具（锁定工具面扩张）。
 func TestMCPToolsListIncludesTransformTools(t *testing.T) {
-	svc := NewAudioService(&fakeAudioResolver{}, upstream.New())
+	svc := NewAudioService(&fakeAudioResolver{}, upstream.NewWithRetries(0))
 	h := NewAudioMCPHandler(svc)
 	h.SetTransformService(NewAudioTransformService(svc))
 
@@ -226,7 +226,7 @@ func TestMCPToolsListIncludesTransformTools(t *testing.T) {
 
 // 未注入 transform 时 tools/list 不得声明新工具（旧部署零行为变化）。
 func TestMCPToolsListWithoutTransformOmitsTransformTools(t *testing.T) {
-	h := NewAudioMCPHandler(NewAudioService(&fakeAudioResolver{}, upstream.New()))
+	h := NewAudioMCPHandler(NewAudioService(&fakeAudioResolver{}, upstream.NewWithRetries(0)))
 	payload := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/mcp", strings.NewReader(payload))
 	rec := httptest.NewRecorder()
@@ -295,7 +295,7 @@ func TestAnthropicCandidateRateLimitMappedToHTTP429(t *testing.T) {
 		Protocol: "anthropic-messages", CatalogCode: "zhipu", RawModel: "glm-asr",
 		Routable: true, APIKey: "sk-test", AvailabilityState: "ready",
 	}
-	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.New())
+	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.NewWithRetries(0))
 	h := NewAudioTranscriptionsHandler(svc)
 	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", nil)
 	buildTranscriptionsMultipartBody(t, req, tinyWAVForTest(), "a.wav", "glm-asr", "")
