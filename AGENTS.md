@@ -15679,3 +15679,28 @@ guards-win-baseline` + CI 载体静态自证腿（Linux 裸跑实测腿=整片�
  ★★ **8 个语种** +计数 +1 ★★。
  ⇒ ★ **通用式见 `LESSONS.md` **§566**（5 条）；★★ 审计档 `docs/audit/2026-10-29-输出合规误报轮.md`
  （★ §7 终验回读）。
+> **2026-10-29 24h 审计第 7 轮：合并收口 + 分支清退 + W1.3 读门逐文件合入 + 211 生产三修**（goal 会话）：
+> ★ 承接第 5/6 轮 ⇒ 入场是**半完成的合并**（80 远端提交、三处冲突）。★★ **最值钱的一处对拍**：
+> 本地「第 39 增量」与远端「第 40 增量」**同题** ⇒ 补丁级对拍（1730 vs 1733 行，差 3 行 = 改号说明
+> + countTokens 测试演进）证明**本地侧是被吸收的旧编号副本** ⇒ 三处冲突全取远端、零内容损失
+> （staged diff vs origin/main 恰好只剩 mobile-live 12 文件为证）⇒ ★★ **拓扑（git cherry）说
+> 「未合并」不代表内容未合并 —— 改号重推的等价性要用补丁对拍下判决**。
+> ⇒ ★ **分支清退**：q34-merge（三点树 diff 空 ⇒ 删）、wip/02-consent-read-gates（在途 W1.3
+> 逐文件合入后删）；8 个 /tmp 探针 worktree 清除（q36-red-probe = 故意 revert 的变异臂）；
+> 死镜像 remote local-gitea（localhost:3030 不可达）移除 —— 62 个陈旧引用里 5 个含 main 外
+> 提交，**逐个按内容核实**均已落在 main（改名/重制路线）。
+> ⇒ ★★ **W1.3 读门收口**（wip/02 在途工作）：summary/detail/instant-summary 三面 409 门 +
+> turns 列表/unified 透出 `recording_consent` + **FinalFullRecord 补传 ConsentGeneration**
+> （r1041 加了字段、调用点漏传 ⇒ 「disable 后在途请求不能回填正文」对 final_full 行不生效）
+> + 契约测试（≥3 调用点 + 409 行为 + 门先于任何 DB 查询）。
+> ⇒ ★★ **211 生产三修**（2h 窗口实测）：① `gw_session_*` 被 forbidden 'session' 子串规则整族
+> 误拒（28 条/2h ⇒ 压缩历史断链）—— 修成「仅 session 享有前缀段+分隔符+≥8 位熵豁免」，
+> ★ 首轮豁免面过宽（demo-user-456 漏过）被**既有用例当场抓回**后收紧；② resolve 预览把
+> `EffectiveTenantIDAll` 的「空=全租户」SQL 语义传进路由链 ⇒ URSM 拒空租户（22 条/2h）——
+> livePlanOrder 回落 default；③ dropped-item 洪水 13,448 条/2h —— 每形态首次 Warn + 重复降 Debug。
+> ⇒ ★ verify.sh 首门即红（**origin/main 本身即红**）：r1048 头块把 CGO export 挤出 head -60
+> 契约区 ⇒ 上移修复。★ LESSONS §482 撞号 ⇒ 让号 §567。
+> ⇒ ★ 慢 SQL 面（>500ms/24h）：ursm 日刷 6.9s×1、MV 刷新 0.5~1.7s×32、杂项 <1.1s —— 无危机，
+> 不动作；PG ERROR 均为运维 ad-hoc 诊断 SQL。
+> ⇒ 审计档 `docs/audit/2026-10-29-24h审计第7轮-合并收口与211生产三修.md`；
+> 通用式见 `LESSONS.md` **§568**。
