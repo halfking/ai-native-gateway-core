@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -1123,8 +1124,19 @@ func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
 					}
 					content := normalizeItemContent(item["content"])
 					if content == nil {
-						slog.Warn("responses input item dropped: no usable content after conversion",
-							"item_keys", mapKeys(item), "role", role)
+						// 2026-10-29 24h 审计轮：211 实测 13,448 条 / 2h —— 同一批
+						// item_keys 形态（键序不同共 5 种）每请求重复告警，属客户端
+						// 数据卫生（status-only assistant item）而非网关故障。
+						// 首次出现保留 Warn（守住 2026-07-23「no instruction」审计
+						// 家族的取证信号），同形态重复降为 Debug。
+						if _, loaded := droppedItemShapeOnce.LoadOrStore(strings.Join(mapKeys(item), ","), true); !loaded {
+							slog.Warn("responses input item dropped: no usable content after conversion",
+								"item_keys", mapKeys(item), "role", role,
+								"note", "first occurrence for this item shape; repeats logged at debug")
+						} else {
+							slog.Debug("responses input item dropped: no usable content after conversion",
+								"item_keys", mapKeys(item), "role", role)
+						}
 						continue
 					}
 					messages = append(messages, map[string]any{"role": role, "content": content})
@@ -1400,6 +1412,11 @@ func normalizeItemContent(v any) any {
 	// silently drop audio inputs and break multimodal features.
 	return v
 }
+
+// droppedItemShapeOnce dedupes the "input item dropped" diagnostic: first
+// occurrence per item-shape warns, repeats go to debug (211 实测同 5 种形态
+// 2h 刷 13,448 条)。
+var droppedItemShapeOnce sync.Map
 
 // mapKeys returns the keys of a map for diagnostic logging.
 func mapKeys(m map[string]any) []string {
