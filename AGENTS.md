@@ -15433,3 +15433,24 @@ guards-win-baseline` + CI 载体静态自证腿（Linux 裸跑实测腿=整片�
 >   排序列抽取）★ 已过编译但**尚未跑完整门 + 变异臂**
 > ⇒ 审计档 `docs/audit/2026-10-29-R181-request_logs退役收尾与分区裁剪轮.md`（11 节）；
 >   通用式见 `LESSONS.md` **§564**（9 条）。
+ **2026-10-29 §9 跟进轮（同会话续）：asm 61aa202 上容器 + compose 网络事故闭环**：
+ ★ rsync 同步 asm 源到 /opt/asm/app（无 git）+ compose build 用本地 daocloud 基镜像
+ （gcr.io distroless 拉取超时是 211 网络常态，BASE_BUILDER/BASE_RUNTIME 走
+ docker.m.daocloud.io/library/*）⇒ 双 %w 二进制上容器（`failed: %w` 实测在位）。
+ ⇒ ★★ **我方 compose up -d 重建引发的事故（当场闭环）**：重建丢失了手动 attach 的
+ `llm-gateway-net` ⇒ `acc-pg17` DNS 回落宿主解析 = 公网 IP 115.29.212.252 ⇒ asm
+ `database unavailable` 启动降级 ⇒ 网关投递全 503 ⇒ **1,324 条新 DLQ**（14:44–15:33）。
+ ★★★ 第 4 轮「asm DNS 曾解析到公网 IP」的归属就在这：**compose 网络里没有 acc-pg17
+ 容器，Docker 内嵌 DNS 查不到就回落宿主解析**。修法 = `docker network connect
+ llm-gateway-net ai-session-manager-asm-1` + restart ⇒ 启动零 WARN。
+ ★★ **遗留**：附着在 compose 重建后会再次丢失 ⇒ 下轮把 `networks: llm-gateway-net:
+ external: true` 写进 docker-compose.production.yml 本体。
+ ⇒ ★ DLQ 重放：211 宿主也解析不到 acc-pg17（psql-acc-pg17.sh 走 docker exec 不受影响；
+ 宿主直连 DSN 的工具必中公网 IP）⇒ `cmd/tools/outbox-dlq-replay` 交叉编译
+ （linux/amd64，首次实战）在 llm-gateway-net 容器内跑两批 -execute ⇒ 全量投递成功，
+ 3 条 in-flight 503 自带 retryable 排程自愈 ⇒ **终态：outbox 只剩 sent + 活尾 pending；
+ asm inbox retryable 0**。
+ ⇒ ★ 919 回填完成（8 天窗 130/130；10-20/21 的 47 行 NULL 在窗外且不在
+ ACTIVE_DAYS=3 探测窗内 ⇒ 不触发回退）；巡检脚本 V2 已同步 211 并实测绿
+ （活跃分钟占比 100% = 汇总表路生效）。
+ ⇒ ★ 缺口复扫 0；零基线恢复。§9 五项全部闭环。
