@@ -278,3 +278,29 @@ IR→**Gemini** 体，与这里估算用的 IR→OpenAI 体**框架不同**（�
 
 · ★★ ⇒ 登记：**下一轮若有人要动 `domains/streaming` 的测试时长**，
 ⇒ ⇒ 先看 `make guards` 的 120s 超时余量（本轮把它又压低了一点）。
+
+### 10.1 ★★★ 合并 `origin/main` 后**新发现**的两处 installer 红灯（非本轮引入）
+
+★ ★★★ 本轮合并 `origin/main`（`05a490d93`）后，**installer 是独立 Go 模块**
+（`installer/go.mod`，不在主模块的 `./...` 内）⇒ ⇒ **主模块的 `go test ./...`
+根本扫不到它** ⇒ ⇒ ⇒ ★★ **⇒ 这就是「它为什么能红着推到 main」的原因**
+⇒ ⇒ ⇒ ★★★ ⇒ **⇒ 「模块边界」也是一种覆盖盲区** ⇒ ⇒ ⇒ ★★★
+⇒ ⇒ ⇒ ★★ ⇒ ★★ **⇒ 全量验证必须【按模块逐个跑】，不能只跑主模块的 `./...`。**
+
+| 红灯 | 归属 | 依据（**基线复现**） |
+|---|---|---|
+| `installer/internal/dbinit` 的 `TestStartupManifestMatchesStartupFiles`：`manifest has 319 entries, StartupFiles has 322` | ★ **不是本轮**：本轮**未改** `installer/`、未改 `sql/` ⇒ 是并行会话 R176 轮（新增迁移 919/920）**漏了重铸** `sql/schema/installed_startup_migrations.tsv` | ★★ **用 `git archive origin/main` 导出完整树单跑，失败信息逐字相同** ⇒ 基线即红 |
+| `installer/cmd/llm-gw-installer` 的 `TestStartupMigrationsAboveCutoffHaveLockGuard`：迁移 `917_sanitize_block_reviews.sql` 含强锁 DDL 但没有 `lock_timeout` | ★ **不是本轮**：本轮**未改**该迁移 ⇒ 属第 37 增量（sanitize 轮）的产物 | ★★ 同上，`origin/main` 完整树基线即红 |
+
+· ★★★ **本轮为什么不顺手修**（照仓内「一轮一件事 / 归属判定」的纪律）：
+· ① 两者都是**别的轮次**的产物（919/920 是 R176 轮的；917 是第 37 增量轮的）⇒ ⇒
+· ⇒ ⇒ **改它们会把别的轮次的责任混进本轮提交** ⇒ ⇒ ⇒ ★★ ⇒ **归属要清楚**。
+· ② ★★ 第 ② 条尤其**不能顺手改**：917 可能**已在服务器上落库** ⇒ ⇒
+· ⇒ ⇒ ★★ ⇒ **已落库迁移不可原地改**（改了与已落库的 checksum 不一致）⇒ ⇒ ⇒
+· ⇒ ⇒ ★★ ⇒ ⇒ 正解应是**新增一条前向迁移**（补 `lock_timeout` 的等价方案）
+· ⇒ ⇒ ⇒ ★★ ⇒ ⇒ 而不是编辑历史文件 ⇒ ⇒ ⇒ ★★★ ⇒ ⇒ **⇒ 需要单独裁决**。
+· ③ ⇒ ⇒ ⇒ ★★ ⇒ ★★ 第 ① 条是**机械重铸**（门自己写明了命令：
+· ⇒ ⇒ ⇒ ★★ ⇒ ⇒ `cd installer && go test ./internal/dbinit/ -run TestStartupManifest -update`）
+· ⇒ ⇒ ⇒ ★★ ⇒ ⇒ **但它属于 R176 轮的责任面** ⇒ ⇒ ⇒ ⇒ ★★ ⇒ ⇒ **交回该轮**
+· ⇒ ⇒ ⇒ ★★ ⇒ ⇒ （★ 若该轮已收工 ⇒ ⇒ ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ⇒ 则应**单独开一轮**处理
+· ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ⇒ ★★ 两处红灯 + 一条「按模块逐个跑」的验证纪律补强）。
