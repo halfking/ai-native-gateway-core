@@ -377,7 +377,7 @@ func (s *Store) SaveResult(ctx context.Context, res Result) error {
 		scoreOrNull(res.Scores, DimReference, res.Scores.Reference),
 		string(res.Verdict), res.Status,
 		reported, sig, fp,
-		evidence, anomalies,
+		jsonTextParam(evidence), jsonTextParam(anomalies),
 		res.Scores.Measured.DimensionCount(), res.MeasuredAt,
 	); err != nil {
 		return fmt.Errorf("upsert provider_model_credibility: %w", err)
@@ -406,7 +406,7 @@ func (s *Store) SaveResult(ctx context.Context, res Result) error {
 		res.Scores.Measured.DimensionCount(),
 		reported, sig, fp,
 		res.Observed.HTTPStatus, res.Observed.LatencyMs,
-		evidence, anomalies, runErr, res.MeasuredAt,
+		jsonTextParam(evidence), jsonTextParam(anomalies), runErr, res.MeasuredAt,
 	); err != nil {
 		return fmt.Errorf("insert provider_model_credibility_runs: %w", err)
 	}
@@ -782,4 +782,17 @@ func nullableStr(v string) any {
 		return nil
 	}
 	return v
+}
+
+// jsonTextParam 把 JSON 字节转成 string 再交给 pgx。
+//
+// ★ 裸 []byte 在 SimpleProtocol 下被内联为 bytea hex 字面量 ⇒ jsonb 解析
+// 必炸（SQLSTATE 22P02）。211 实测 2026-10-30：trigger 落库即炸
+// （"invalid input syntax for type json"）。与 bg/capability_backfill.go
+// 的 capabilityEvidenceParam 同坑同修（仓内 R24 记录过 6 次真库失败）。
+func jsonTextParam(b []byte) interface{} {
+	if len(b) == 0 {
+		return nil
+	}
+	return string(b)
 }
