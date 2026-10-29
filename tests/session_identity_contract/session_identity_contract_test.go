@@ -38,6 +38,7 @@ import (
 	"github.com/pashagolub/pgxmock/v4"
 
 	"github.com/kaixuan/llm-gateway-go/admin"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // sessionDetailV2DBContract 是 resolveSessionID 与 querySession 共用的最小
@@ -47,6 +48,23 @@ type sessionDetailV2DBContract interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+// enableConsentForTest 打开 body 录制同意（W1.3 读门要求 consent=on 才放行
+// detail 读面；本包用例测的是五类 ID 契约与错误语义，不是 consent 门本身
+// ⇒ 显式开启，否则 409 recording_unavailable 先行短路。与
+// admin/session_detail_v2_test.go 同款；24h 审计第 9 轮补——W1.3 落地时
+// 只修了 admin 包的旧夹具，本包 7 个用例在 main 上持续红）。
+//
+// 只给「越过门之后还要继续走」的 200/500 路径用例开；404（不存在/跨租户）
+// 与歧义 409 在 consent 门**之前**裁决（第 9 轮把门移到 resolveSessionID
+// 成功之后），开着也不影响其语义 ⇒ 不开，让「门不遮蔽存在性」持续被断言。
+func enableConsentForTest(t *testing.T) {
+	t.Helper()
+	prev := settings.TestingConsentOverride
+	on := true
+	settings.TestingConsentOverride = &on
+	t.Cleanup(func() { settings.TestingConsentOverride = prev })
 }
 
 // TestSessionSummary_FiveIDContractLocksJSONTags 锁定 admin.SessionSummary
@@ -257,6 +275,7 @@ func TestSessionListV2_TenantPinnedToAuthContext(t *testing.T) {
 // 失败语义：5 类 ID 互不替代 → 输入 gw_session_id 时，绝不允许 querySession
 // 把 input 直接作为 session_id 查 sessions 表（那样会漏匹配）。
 func TestSessionDetailV2_ResolveGwSessionIDToSessionID(t *testing.T) {
+	enableConsentForTest(t)
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -348,6 +367,7 @@ func TestSessionTurnV2_TurnPKNotSerialized(t *testing.T) {
 // gw_session_id 保持一致），但必须在 spec 上存在 —— 老的 V1-only 数据
 // 也能被详情端点查到。
 func TestSessionDetailV2_ReverseMapFallbackToPrimaryRequestID(t *testing.T) {
+	enableConsentForTest(t)
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -518,6 +538,9 @@ func TestSessionDetailV2_ResolveFailureDoesNotLeakInternalError(t *testing.T) {
 // 的失败臂仍把 pgx 原始错误（含 SQL 片段/约束名/租户参数）回显进 500
 // 响应体且无服务端日志。修复后与 resolve 分款同构：固定文案 + slog。
 func TestSessionDetailV2_QueryFailureDoesNotLeakInternalError(t *testing.T) {
+	// 查询故障的 500 必须能到达 querySessionDetail —— consent 门（第 9 轮起
+	// 在 resolve 之后、query 之前）不能把它拦成 409 ⇒ 显式开 consent。
+	enableConsentForTest(t)
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)

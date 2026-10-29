@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,8 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/pashagolub/pgxmock/v4"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -82,7 +80,23 @@ func TestSessionDetailV2_ConsentOffUnavailable(t *testing.T) {
 	settings.TestingConsentOverride = &off
 	t.Cleanup(func() { settings.TestingConsentOverride = prev })
 
-	api := &SessionDetailV2API{pool: consentGateDB{}}
+	// ★ 24h 审计第 9 轮订正后的契约：consent 门在 **resolveSessionID 成功之后、
+	// 正文查询（LEFT JOIN LATERAL）之前** —— 404（不存在/跨租户）与 500
+	// （resolve/query 故障）必须先于 409 裁决（否则「不存在 ⇒ 409」既遮蔽
+	// 存在性语义、又给调用方一个 consent 探针；session_identity_contract
+	// 四用例实抓）。本用例相应改为：resolve 允许查（direct hit 一行），
+	// consent=off ⇒ 409 recording_unavailable，且**正文查询从不执行**
+	//（pgxmock 无后续期望 ⇒ 若门没拦住，下一个查询报错 ⇒ 500 ≠ 409 ⇒ 红）。
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	mock.ExpectQuery(`SELECT session_id FROM public\.sessions`).
+		WithArgs("s1", "t1").
+		WillReturnRows(pgxmock.NewRows([]string{"session_id"}).AddRow("s1"))
+
+	api := NewSessionDetailV2APIWithDB(mock)
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/sessions/detail?session_id=s1&tenant=t1", nil)
 	req = SetAuthContext(req, &AuthContext{Role: "super_admin", TenantID: "t1"})
 	rec := httptest.NewRecorder()
@@ -93,17 +107,10 @@ func TestSessionDetailV2_ConsentOffUnavailable(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), RecordingUnavailableCode) {
 		t.Fatalf("body missing %s: %s", RecordingUnavailableCode, rec.Body.String())
 	}
-}
-
-// consentGateDB panics if touched — consent must return before any query.
-type consentGateDB struct{}
-
-func (consentGateDB) Query(context.Context, string, ...any) (pgx.Rows, error) {
-	panic("consent gate should return before Query")
-}
-func (consentGateDB) QueryRow(context.Context, string, ...any) pgx.Row {
-	panic("consent gate should return before QueryRow")
-}
-func (consentGateDB) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
-	panic("consent gate should return before Exec")
+	// 正文查询（LEFT JOIN LATERAL）必须没跑：若跑了，上面的 409 不可能成立
+	//（pgxmock 遇到未期望的查询返回错误 ⇒ 处理器走 500）。这里再核对一次
+	// 已满足的期望只有 resolve 那一条。
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected query pattern: %v", err)
+	}
 }
