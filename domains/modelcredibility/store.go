@@ -272,7 +272,7 @@ func (s *Store) SaveResult(ctx context.Context, res Result) error {
 		    credibility_score, identity_score, capability_score, consistency_score, reference_score,
 		    verdict, status, reported_model, prompt_token_signature, system_fingerprint,
 		    evidence, anomalies, measured_dimensions, measured_at, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,now(),now())
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::text::jsonb,$18::text::jsonb,$19,$20,now(),now())
 		ON CONFLICT (tenant_id, credential_id, raw_model_name) DO UPDATE SET
 		    provider_id           = EXCLUDED.provider_id,
 		    canonical_id          = EXCLUDED.canonical_id,
@@ -317,7 +317,11 @@ func (s *Store) SaveResult(ctx context.Context, res Result) error {
 			scoreOrNull(res.Scores, DimReference, res.Scores.Reference),
 			string(res.Verdict), res.Status,
 			reported, sig, fp,
-			evidence, anomalies,
+			// evidence/anomalies 是 json.Marshal 的 []byte：SimpleProtocol 下
+			// 裸传会被内联成 bytea hex 字面量，jsonb 列解析必炸（门
+			// TestNoBareMarshalBytesIntoDBWriteParams 抓到的）⇒ 包 string +
+			// SQL 位点 ::text::jsonb（先例：bg/integrity_harvester.go）。
+			string(evidence), string(anomalies),
 			res.Scores.Measured.DimensionCount(), res.MeasuredAt,
 		); err != nil {
 		return fmt.Errorf("upsert provider_model_credibility: %w", err)
@@ -329,7 +333,7 @@ func (s *Store) SaveResult(ctx context.Context, res Result) error {
 		    credibility_score, identity_score, capability_score, consistency_score, reference_score,
 		    verdict, status, measured_dimensions, reported_model, prompt_token_signature,
 		    system_fingerprint, http_status, latency_ms, evidence, anomalies, error, measured_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::text::jsonb,$21::text::jsonb,$22,$23)`
 	var runErr any
 	if res.Status == StatusFailed {
 		runErr = "probe_failed"
@@ -346,7 +350,7 @@ func (s *Store) SaveResult(ctx context.Context, res Result) error {
 		res.Scores.Measured.DimensionCount(),
 		reported, sig, fp,
 		res.Observed.HTTPStatus, res.Observed.LatencyMs,
-		evidence, anomalies, runErr, res.MeasuredAt,
+		string(evidence), string(anomalies), runErr, res.MeasuredAt,
 	); err != nil {
 		return fmt.Errorf("insert provider_model_credibility_runs: %w", err)
 	}
