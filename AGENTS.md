@@ -15112,6 +15112,47 @@ sequence.sh、concurrency gate 计数（920: 1）、db-changelog 三行（917 sa
 > **包测试时长余量**（`domains/streaming` 需要拆分或提额）。
 > ⇒ 审计档 `docs/audit/2026-10-29-Gemini-countTokens诚实实现轮.md`（§1~§10）；
 > 通用式见 `LESSONS.md` **§553**（通用式一~八）。
+> **2026-10-29 第 41 增量：nvidia 直通事故轮（参数兼容学习闭环）**（goal 会话，★ 取号两次让号：origin「第 39 增量」被并行会话（Gemini countTokens 轮）占用 ⇒ 第 40 ⇒ push 前 fetch 实测「第 40 增量」又被并行会话（模型列表特色模型轮）占用 ⇒ 最终第 41 增量）：
+> ★ 用户报障：llm.itestu.cn 请求 nvidia 的 `z-ai/glm-5.3-flash` 经常 400
+> `{"message":"Validation: Unsupported parameter(s): `reasoning`","type":"Bad Request","code":400}`，
+> 要求「剥参重试 + Redis 记录需拿掉的参数（时效 1h）+ 发送前查 (供应商,模型)
+> 兼容缓存 + 定期失效再探测」。
+> ⇒ ★ **取证（211 三通道互证）**：reqprobe 剥参-重试-学习管线**本来就在工作**——
+> 5 分钟窗口 53 个事故请求全部被「400 点名→剥参→免费重试」救回（终态 200），
+> Redis `llmgw:reqanom:records` 学习记录（`param=reasoning,enable_thinking`、
+> recovered_count=1、occurrences 246/257）完好；**但「applying learned param
+> strips」×13 永远只有 prompt_cache_key** ⇒ 学习永不回应用于预剥离 ⇒ 每请求
+> 白付两轮 400 往返（600KB body ×2、TTFB 29s+）。
+> ⇒ ★★ **根因 = 第 36 增量原厂直通轮的「按模型名前缀判原厂对」**：
+> `nativepair.Match(zcode, "z-ai/glm-5.3-flash")` 命中 glm 前缀 ⇒ nvidia 候选
+> 首发全参数透传且**直通腿豁免学习式预剥离**（executor_chat `if !nativePair`）
+> ⇒ 必然性的参数拒绝被当成瞬态拒绝处理 ⇒ 不收敛。10-28 验证档 §10.1 自己登记
+> 「第三方宿主+厂商参数组合待自然复现」——本轮即复现，**结论推翻按模型名判对**：
+> ★★ **参数兼容性是【端点 API 形状】的属性，不是模型权重的属性**（ZCode 的
+> reasoning/enable_thinking 是智谱线格式参数；nvidia 对 thinking/reasoning_effort
+> 却容忍——剥完前两者 200 实证）。
+> ⇒ ★ **修法一（根修）**：`nativepair.Match(clientType, catalogCode, outboundModel)`
+> 厂商感知——每对登记原厂 catalog 集（glm→{zhipu,glm,bigmodel,zai} /
+> minimax→{minimax,minimaxai} / deepseek→{deepseek,deepseek-ai} /
+> claude→{anthropic}，与 paramreg.catalogToDialect 同源）⇒ 第三方宿主与空
+> catalog 中继一律走正常路径（paramguard + RejectedByUnknown 裁剪 + **学习式
+> 预剥离生效**——Redis 记录已在，部署即收敛首发 200）；真原厂对（zcode→zhipu，
+> 10-28 验证 85/85）行为零变化。
+> ⇒ ★ **修法二**：`learnedTTL` 常量→可配函数 `LLM_GATEWAY_REQPROBE_LEARNED_TTL`，
+> **默认 24h→1h**（用户要求时效 1h、定期再探测）；过期代价 = 每 (provider,model,
+> wire) 每窗口一跳 400 再学习。
+> ⇒ ★ **测试**：nativepair 事故臂（zcode×nvidia=false / 空 catalog=false）；
+> executor 级 `TestNvidiaHostIncident_LearnedStripsApply`（事故错误原文→Diagnose
+> 点名 reasoning + 学习记录→nvidia 候选首发前剥掉 reasoning/enable_thinking）；
+> TTL 边界 59min/61min；anthropic 腿 IRStamp 正臂换 claude-code×claude（真对）。
+> ⇒ ★ **读数**：`go build ./...` ✔；nativepair/reqprobe/executors/streaming/
+> paramrefusal/paramreg/ir/errorsx/cmd/admin 测试全绿（唯一红
+> address_family_decision_audit = 并行 sanitize 轮 ddd762e7a 带入，本轮未触碰）。
+> ⇒ ★ 本轮明确没做：volcengine-coding 是否入 glm 原厂集（方舟对
+> reasoning_effort 真机接受、正常路径安全；要直通需单列证据加一行）；
+> paramreg 方言级 nvidia 硬拒登记（学习系统正为此存在）。
+> ⇒ 审计档 `docs/audit/2026-10-29-nvidia直通事故轮-参数兼容学习闭环.md`；
+> 通用式见 `LESSONS.md` **§558**（fetch 实测 origin 最高 §556 ⇒ 跨号取 §558 留 §557 缓冲）。
 > **2026-10-29 第 40 增量：模型列表口径改造（默认只列特色模型）+ Gemini 认证核验**（会话
 > `mvs_3819385bca0f43d7bf0c059acb269bda`）：★ 承接 owner 指令两件事 —— ①「网关对外的模型
 > 列表 API，默认只输出特色模型，全量需要加参数才输出」；②「网关对 gemini 的适配好像有些

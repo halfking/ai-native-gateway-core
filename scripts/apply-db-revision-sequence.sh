@@ -88,7 +88,13 @@ _dl_container_psql() {
   local pw="${DL_DSN_PG_PASS:-${LLM_GATEWAY_PG_PASSWORD:-}}"
   local u="${DL_DSN_PG_USER:-${LLM_GATEWAY_PG_USER:-llm_gateway}}"
   local d="${DL_DSN_PG_DB:-${LLM_GATEWAY_PG_DATABASE:-llm_gateway}}"
-  docker exec -e PGPASSWORD="$pw" "$LLM_GATEWAY_PG_CONTAINER" \
+  # ★ -i 不可省（2026-10-29 审计第 5 轮实锤）：psql_stream 走 `-f -`（stdin 流），
+  #   docker exec 不带 -i ⇒ stdin 不接通 ⇒ psql 读到立即 EOF ⇒ **一条语句都不执行
+  #   却 exit 0** ⇒ 下面的台账 INSERT 照写 ⇒ 「台账有行、产物缺席」——912/913
+  #   （10-28 08:49）与 919/920（10-29 09:58）两次整批失踪的同一个根。
+  #   有宿主 psql shim 的机器走宿主通道不受影响 ⇒ 缺陷只在「无宿主 psql 的机器
+  #   部署」时显形（211 宿主无任何 psql，ssh 直跑必中）。
+  docker exec -i -e PGPASSWORD="$pw" "$LLM_GATEWAY_PG_CONTAINER" \
     psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U "$u" -d "$d" "$@"
 }
 

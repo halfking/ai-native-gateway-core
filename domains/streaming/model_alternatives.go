@@ -489,6 +489,11 @@ routable AS (
       --   multimodal           → mc.modality = 'multimodal'
       --   image                → mc.modality IN ('image','vision','multimodal')
       -- $5 为空（文本请求 / 历史路径）⇒ 不过滤，保持既有行为。
+      -- 本块是模态接受判据的第二份 SQL 抄本（闭世界：无兜底精确臂，未知请求
+      -- 值 ⇒ 建议列表为空；第一份 candidateQuerySQLBase 是开世界兜底）。它与
+      -- provider.ModalityAccepts 的逐处锁步由
+      -- model_alternatives_modality_lockstep_test.go 守着：改这里的判据必须
+      -- 同步 Go 侧，否则该测试当场红。
       AND (
           $5 = ''
           OR $5 = 'text'
