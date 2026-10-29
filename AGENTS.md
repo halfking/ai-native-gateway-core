@@ -14889,3 +14889,52 @@ upstream_request 完整在场。
  通用式见 `LESSONS.md` **§552**（6 条：Retryable 别丢底因 / 突发分钟按分钟对拍 /
  指纹证明执行不证明在场+探针范围=本轮认账 / 结构休眠≠故障 / 资产换代同轮过测试 /
  上游红条按依赖序收口且台账最后再生）。
+**2026-10-29 第 38 增量：252 SQL 日志审计 R176 轮（ursm 巡检三族降本 + INV-4 探针资格门索引化）**（goal 会话）：
+★ 承接例行 252 审计节奏（R175 同日为 routing REFRESH 深潜、未做日志窗）⇒ 本轮 26.4h 全窗
+（10-28 03:37 → 10-29 06:03，真实内容 178MB，**copytruncate NUL 洞 1.12GB 第四次复发**）
+⇒ 慢查 6,043 条/49,180s、错误 2,731 条、无事件级爆发、无新错误签名。
+⇒ ★ **主修复一 = 迁移 919（P11 第二期）**：巡检 `ursm-snapshot-health.sh` 的 base_active
+基线（ACTIVE_DAYS=3 的 count+DISTINCT 分钟）也走 892 汇总表 —— ★★ 892 当年只搬了
+base_buckets，base_active 因「3 天才 9.7s」没搬 ⇒ **行量自 R97 涨 3.4×（日分区 290 万行）
+⇒ 同一段实测 158.1s** ⇒ 主判据（WITH win 族）22 次/5,339.5s/每小时 1 次 = 全窗第一大
+慢查族（10.9%）。修法：`ursm_snapshot_slot_daily` 加 `active_minutes` 列（hour:
+count(DISTINCT minute)；minute: 恒 1）+ 填充函数升级（**签名不变**；ON CONFLICT DO UPDATE
+同步更新）+ 巡检脚本 `BUCKETS_SQL_DAILY_V2` 变体 + active 探针（列缺/NULL/无行三形态
+⇒ 回退 892 老路，慢但不失明）+ 三态选择。★ **同刻 A/B：V1 100.9s → V2 2.7s（36×），
+判据输出逐字相同**。★ 部署次序契约：列加后 NULL ⇒ 探针回退 ⇒ 落地后手工全量回填
+（252 已做，hour 臂 216/216）。
+⇒ ★ **主修复二 = 迁移 920**：`node_probe_runs` 补 `(credential_id, completed_at) INCLUDE
+(raw_model_name, started_at, success)` 覆盖索引 —— INV-4 双模型探测成功门
+（`bg/probe_policy.go credentialTwoProbeSuccessGateSQL`，五个调度读点逐行求值）的
+completed_at **不在任何索引里** ⇒ 每次评估扫凭据全史 3.8 万条只留 4% ⇒ 慢查 325 次
+/1,395s + 被取消 224 次/26.4h。★ **A/B：18,885 → 321 buffers（58×）**（UPDATE pg_index
+失活臂 + ROLLBACK，indisvalid 复查 t）。
+⇒ ★ **252 预应用 + 双台账**（736/882/892 先例通道）：917 号事务通道、918 号（=现 919/920）
+CONCURRENTLY（indisvalid=t）、schema_migrations + checksums 双行（advisory lock 契约）；
+全量回填触发。★ **252 台账水位 911**：912~916 是并行会话部署列车的欠账，本轮不代应用；
+919/920 不受影响（文件级 marker 收敛；252 台账里的 917/918 行=本轮 ursm/探针内容，
+**不是** sanitize 轮的 917 —— deploy 按文件名 marker 以 919/920 重登记收敛）。
+⇒ ★ **让号记录（两次）**：① 迁移号初拟 917/918 ⇒ push 前 fetch 实测 origin 已被并行会话
+「拦截审核与放行落库」（ddd762e7a，917_sanitize_block_reviews）占用 ⇒ **重取 919/920**
+（全登记面同步改号：双目录文件名/文件头/runner/main.go/apply 脚本/concurrency gate/
+db-changelog sha256/契约门标识符——★ 契约门还撞了 sanitize 轮测试的 `mig917File`
+同包常量名 ⇒ 加 R176 后缀）；② LESSONS 取号 fetch 实测 origin 最高 §551 ⇒ 跨号取
+**§555**（留 §552~554 缓冲）；AGENTS 取 **第 38 增量**。
+⇒ ★ **登记面**：双目录（sql/migrations/startup + embeddata）逐字一致、installer main.go
+embeds、runner.go StartupFiles（917 sanitize 在前 → 919 → 920）、apply-db-revision-
+sequence.sh、concurrency gate 计数（920: 1）、db-changelog 三行（917 sanitize 轮的行
+保留 + 919/920 双行含 sha256）；契约门 `migration_919_920_r176_ursm_probe_gate_test.go`
+9 例。
+⇒ ★ **读数**：契约门 9/9 绿；installer 门绿；ursmcheck 相关门绿；startup 全包测试绿；
+**8 条 ursmcheck 既有红在干净 HEAD worktree 复现** = 全部上游带入（零新增）。
+⇒ ★★ **本轮最值钱的通用式**（LESSONS §555）：**注释里的性能实测值有时点与行量半衰期
+—— 892「base_active 不值得物化」的前提（3 天 9.7s）在行量 ×3.4 后翻转，但没有任何机制
+提醒 ⇒ 跨轮复用「不修它」的结论前必须重测**；配套：基线物化是分期的，「第一期没搬的
+那半边」会在第二期变成主成本；物化列与 ON CONFLICT DO UPDATE 同生共死（半截基线无报错）。
+⇒ ★ **本轮明确没做（留给下一轮，别重复排查）**：919/920 随部署列车到 211/154/245；
+**R175 的 refresher 三轴分族（jit=off）仍未部署**（session 族 2.7h/天在烧）；
+**V2 后对账**（WITH win 族与 INV-4 族应从慢查榜消失，下轮首查）；latest_bucket
+479×2,763s 未展开；外部杀查询 192/天 基线重测；pocket $4（317 次/26.4h，openpocket
+容器仍修复前代码 N+5）；8 条 ursmcheck 既有红的修复（属上游引入轮）。
+⇒ 审计档 `docs/audit/2026-10-29-R176-252SQL日志审计-ursm三族降本与探针资格索引化.md`；
+通用式见 `LESSONS.md` **§555**（8 条形态）。
