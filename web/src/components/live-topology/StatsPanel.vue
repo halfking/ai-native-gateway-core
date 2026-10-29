@@ -135,20 +135,34 @@ function scheduleSyncLoad() {
   if (syncTimer) window.clearTimeout(syncTimer)
   syncTimer = window.setTimeout(() => {
     syncTimer = null
+    // 排定时查过 hidden 还不够：武装在前、转隐藏在后这条时序下，到期
+    // 这刻必须再查一次 —— 隐藏页不打端点，转成「挂起」等回前台补
+    // （审计轮判据「防抖已武装后再转隐藏：到期不得拉取」钉住）。
+    if (document.hidden) {
+      syncPendingWhileHidden = true
+      return
+    }
     void load()
   }, SYNC_DEBOUNCE_MS)
 }
 
 function onVisibilityChange() {
   if (document.hidden) return
+  // 数据已旧过本区间的轮询周期 ⇒ 立即补一轮，并把挂起的防抖/记账一并
+  // 消化（同一轮已覆盖，4 秒后不得再补打一轮）。
+  if (Date.now() - lastLoadAt >= pollMs.value) {
+    if (syncTimer) {
+      window.clearTimeout(syncTimer)
+      syncTimer = null
+    }
+    syncPendingWhileHidden = false
+    void load()
+    return
+  }
   if (syncPendingWhileHidden) {
     syncPendingWhileHidden = false
     scheduleSyncLoad()
-    return
   }
-  // 回前台时数据若已旧过本区间的轮询周期，立即补一轮（隐藏期间的
-  // 轮询 tick 被跳过，靠这里补齐）。
-  if (Date.now() - lastLoadAt >= pollMs.value) void load()
 }
 
 watch(
