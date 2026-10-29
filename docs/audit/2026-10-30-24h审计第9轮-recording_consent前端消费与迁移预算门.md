@@ -259,6 +259,25 @@ main 上自 W1.3 落地起持续红——第 8 轮只修了 admin 包的 9 个�
 - 245/154 前端更新（随下次部署）。
 - 第 8 轮 §9 遗留清单继续有效（L1 未登记槽位、`e.message` 出口覆盖面等）。
 
-## 10. 部署与推送补记
+## 10. 推送与部署读数（回填）
 
-（推送/部署后回填）
+- **推送**：`478182c35..14593283c main -> main`。推送窗口与并行会话**撞号三连**：
+  首推被拒（origin 推进 a2818aaff，§577/§578 被占）⇒ 我方 LESSONS §577→**§581**
+  （跨号留缓冲）+ AGENTS/LESSONS 双侧条目并存解冲突；二推再被拒（origin 再推进
+  478182c35，其部署轮自己也让号 §577→§579）⇒ 二次合并（LESSONS 一处冲突：
+  origin §579 在前、我方 §581 在后），终态序列 §576→577→578→579→(580 空留缓冲)→**581**。
+- **211 蓝绿部署**（干净 worktree `/tmp/lgw-r9-deploy-wt` @ `14593283c` +
+  `LLM_GATEWAY_ROOT` 钉根，`DEPLOY_EXIT=0`）：
+  - 版本 `2.5.8-14593283-20261030-211`（git_sha=**14593283**，无 `-dirty` ⇒ 无树漂移，
+    DD_REPO_ROOT 第四次钉根纪律生效）；
+  - 活跃槽 b → **a @8781** 接管；readyz OK（DB 103µs + Redis）；公网版本身份 OK；
+    登录冒烟 OK（连登 6 次无 429）；无 pending 迁移（914 族 already applied）。
+  - **前端修复上屏证据**：线上 bundle `index-CyDosYzo.js` 含 `recording_unavailable`
+    判码与 `consentOffTitle/consentOffBody/consentOffInline` 三键（curl grep 实测）。
+  - **③ 数据面跨部署复核**：部署重启后 818875/818876 **仍 disabled**（启动同步
+    未复活——operator-kill 语义的第一次跨重启实证）；重启后 10 分钟窗口 glm
+    歧义 WARN **0** 条。
+  - 部署临时 worktree 已清退（仅 menu-config.json 构建时间戳差异，`--force` 删除）。
+- **245/154 未部署**（本轮无后端行为变更需部署；consent 门位订正属 admin 端点，
+  随下次自然部署携带——§4 的数据面修复已覆盖其 DB，UI 侧 consent-off 租户
+  在 245/154 的会话详情页仍旧行为，已在本节如实登记）。
