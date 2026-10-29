@@ -2666,6 +2666,14 @@ intentional_function_chains=(
   'promote_request_wal_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
   'promote_credential_model_index_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
   'promote_routing_decision_log_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
+  # 919 (R176, 2026-10-29) redefines refresh_ursm_snapshot_slot_daily on top of
+  # 892's body to also produce the active_minutes column. Chain order = delivery
+  # order 892 → 919, and **919 must stay the later entry** — it is the final body
+  # production should have. Without this line the pre-flight guard aborts every
+  # deploy at exit 5. (Registered 2026-10-29 audit round: the parallel R176 deploy
+  # tree carried it, but the merge back to main dropped the chain entry while
+  # keeping both files — first caught by the fake-psql selftest below.)
+  'refresh_ursm_snapshot_slot_daily|892_ursm_snapshot_slot_daily.sql|919_ursm_slot_daily_active_minutes.sql|'
 )
 redefined_functions="$(
   for file in "${files[@]}"; do
@@ -2845,8 +2853,11 @@ psql_query "SELECT public.assert_session_bodies_kind_contract()"
 #   不是「库里所有记账行」：fixture 树（runtime_test 的合成 shim 台账）与
 #   legacy 无指纹记账行不在此列（后者的产物缺失仍靠 census drift verifier 与
 #   worker 42P01 兜底 —— 如实记，不是装作覆盖了）。
-# 局限（如实记）：头产物清单是**策展**的（与 assert_session_bodies_kind_contract
-# 同一模式），只覆盖真正咬过人的迁移；通用 runner 化仍是下一轮工作。
+# 局限（如实记）：头产物清单仍带策展成分——900~920 已逐迁移核对（上表），但
+# 412~899 只覆盖 912/913 两个「咬过人」的；通用 runner 化（从迁移体自动推导
+# 头产物）仍是下一轮工作。契约测试 apply_db_sequence_artifact_probe_test.sh
+# 把「清单里每个探针的产物名必须真实出现在对应迁移文件里」钉成硬门——
+# 文件改了而探针没跟 ⇒ 红。
 ledger_artifact_probe() {
   local marker_suffix="$1" probe_sql="$2" artifact
   local known=0
@@ -2868,6 +2879,58 @@ ledger_artifact_probe "912_session_recording_trash.sql" \
   "to_regclass('public.session_bodies_trash') IS NOT NULL AND to_regclass('public.session_hidden') IS NOT NULL"
 ledger_artifact_probe "913_maas_monthly_bills_coupons.sql" \
   "to_regclass('public.maas_monthly_bills') IS NOT NULL AND to_regclass('public.maas_coupons') IS NOT NULL AND to_regclass('public.maas_coupon_redemptions') IS NOT NULL AND to_regclass('public.maas_invoice_requests') IS NOT NULL"
+# ── 900+ 全覆盖（2026-10-29 第二轮通用化）：上一版只有 912/913 两条「咬过人」的，
+# 但 211 实测的静默缺失是**整族**（900/902/904/912/913/914/916 七个迁移的对象全部
+# 缺席，见 docs/audit/2026-10-29-24h审计轮-背压熔断与迁移账本补齐.md §5）⇒
+# 头产物清单补齐 900~920 每个迁移。判据逐文件核对过迁移体：
+#   · 表/索引/函数 → to_regclass / to_regprocedure；
+#   · 902（pkey 换体）→ pg_index.indisprimary + INCLUDE 列（includedattrs 列在
+#     PG17 不存在 ⇒ 用 indnkeyatts < indnatts + indkey 尾段判定，211 实测 t）；
+#     tmp 名会被 ADD CONSTRAINT ... USING INDEX 改掉，探针必须认终态名；
+#   · 908（drop 语义）→ 产物是「索引不在场」，反向断言；
+#   · 911（catalog 种子）→ provider_catalog 按 catalog_code 计数；
+#   · 914（CHECK 约束）→ pg_constraint.convalidated（约束在且已验证）。
+# 917/919/920 同时列内 ⇒ 新库首跑（无 sha_matched 命中）与重放路径都覆盖。
+ledger_artifact_probe "900_freediscovery_schema_reassert.sql" \
+  "to_regclass('public.provider_templates') IS NOT NULL AND to_regclass('public.discovery_tasks') IS NOT NULL AND to_regclass('public.discovery_results') IS NOT NULL"
+ledger_artifact_probe "901_usage_ledger_api_key_id_ts_idx.sql" \
+  "to_regclass('public.idx_usage_ledger_api_key_id_ts') IS NOT NULL"
+ledger_artifact_probe "902_stats_event_dedup_pkey_include.sql" \
+  "EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'stats_event_dedup_pkey' AND i.indisprimary AND i.indnkeyatts < i.indnatts AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = i.indrelid AND a.attname = 'occurred_at' AND a.attnum > i.indnkeyatts AND a.attnum <= i.indnatts AND a.attnum = ANY(i.indkey::int2[])))"
+ledger_artifact_probe "903_sessions_updated_at_session_id_index.sql" \
+  "to_regclass('public.idx_sessions_updated_at_session_id') IS NOT NULL"
+ledger_artifact_probe "904_inspector_stats_partial_indexes.sql" \
+  "to_regclass('public.idx_session_dim_closed_at_closed') IS NOT NULL AND to_regclass('public.idx_session_summaries_health_score_notnull') IS NOT NULL"
+ledger_artifact_probe "905_turns_session_model_index.sql" \
+  "to_regclass('public.idx_session_turns_model_session') IS NOT NULL AND to_regclass('public.idx_session_turns_hot_model_session') IS NOT NULL"
+ledger_artifact_probe "906_turns_api_key_numeric_partial_index.sql" \
+  "to_regclass('public.idx_session_turns_api_key_numeric') IS NOT NULL AND to_regclass('public.idx_session_turns_hot_api_key_numeric') IS NOT NULL"
+ledger_artifact_probe "907_routing_analytics_source_lateral.sql" \
+  "to_regclass('public.routing_analytics_source') IS NOT NULL"
+# 908 是 drop 语义：产物 = 索引不在场（反向断言）。
+ledger_artifact_probe "908_route_incident_events_type_created_drop.sql" \
+  "to_regclass('public.idx_route_incident_events_type_created') IS NULL"
+ledger_artifact_probe "909_session_summaries_search_trgm_indexes.sql" \
+  "to_regclass('public.idx_session_summaries_session_key_trgm') IS NOT NULL AND to_regclass('public.idx_session_summaries_title_trgm') IS NOT NULL AND to_regclass('public.idx_session_summaries_primary_model_trgm') IS NOT NULL"
+# 910 与 907 是同一视图（CREATE OR REPLACE 保留 OID）⇒ 探针同一个头产物；
+# 换体只改 plan 形态，视图在位即对账成立。
+ledger_artifact_probe "910_routing_analytics_source_hashjoin.sql" \
+  "to_regclass('public.routing_analytics_source') IS NOT NULL"
+# 911 种子行：三条本地音频 catalog 记录在位（ON CONFLICT DO NOTHING，任一缺席即假）。
+ledger_artifact_probe "911_local_audio_catalog.sql" \
+  "(SELECT count(*) FROM public.provider_catalog WHERE code IN ('whisper-cpp','whisper-cpp-large','macos-say') AND kind = 'local') >= 3"
+ledger_artifact_probe "914_session_turns_origin_stage_check.sql" \
+  "(SELECT count(*) FROM pg_constraint WHERE conname IN ('session_turns_origin_stage_check','session_turns_hot_origin_stage_check') AND convalidated) = 2"
+ledger_artifact_probe "915_recent_cache_hit_rate.sql" \
+  "to_regprocedure('public.recent_cache_hit_rate(integer,integer,timestamp with time zone,integer)') IS NOT NULL OR EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'recent_cache_hit_rate')"
+ledger_artifact_probe "916_session_turns_api_key_ts_index.sql" \
+  "to_regclass('public.idx_session_turns_api_key_ts') IS NOT NULL AND to_regclass('public.idx_session_turns_hot_api_key_ts') IS NOT NULL"
+ledger_artifact_probe "917_sanitize_block_reviews.sql" \
+  "to_regclass('public.sanitize_block_reviews') IS NOT NULL AND to_regclass('public.sanitize_egress_releases') IS NOT NULL AND to_regclass('public.sanitize_hardblock_state') IS NOT NULL"
+ledger_artifact_probe "919_ursm_slot_daily_active_minutes.sql" \
+  "EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='ursm_snapshot_slot_daily' AND column_name='active_minutes') AND EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'refresh_ursm_snapshot_slot_daily')"
+ledger_artifact_probe "920_node_probe_runs_cred_completed_idx.sql" \
+  "to_regclass('public.idx_node_probe_runs_cred_completed') IS NOT NULL"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

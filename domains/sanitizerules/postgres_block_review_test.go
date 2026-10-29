@@ -6,6 +6,7 @@ package sanitizerules
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,7 +93,7 @@ func TestPgUpsertEgressReleaseBindsExpiry(t *testing.T) {
 }
 
 // TestPgLoadHardBlockStateParsesStoredList：装载解析存储的 `scope:rule` 列表；
-// 坏 JSON 报错而非静默用默认清单；★ 种子行（updated_by=''）不算已管理。
+// 坏 JSON 报错而非静默用默认清单；★ 种子行（updated_by=”）不算已管理。
 func TestPgLoadHardBlockStateParsesStoredList(t *testing.T) {
 	s, mock := newMockStore(t)
 	mock.ExpectQuery(`SELECT rules, updated_by FROM sanitize_hardblock_state`).WillReturnRows(
@@ -130,7 +131,12 @@ func TestPgLoadHardBlockStateParsesStoredList(t *testing.T) {
 	}
 }
 
-// TestPgErrorSanitized：驱动错误可能携带参数原文（含被拦载荷）——返回前必须清洗。
+// TestPgErrorSanitized：驱动错误可能携带参数原文（含被拦载荷）——错误必须是
+// 固定文案（storeError），原文一个字节都不许出现。
+//
+// 审计修（2026-10-29）：旧判据只断言长度 ≤120，而驱动消息本身就没有
+// " - " 分隔符时 sanitizeDBErr 原文照传且长度合法 ⇒ 断言恒绿。现在的判据
+// 是「秘密词不出现」。
 func TestPgErrorSanitized(t *testing.T) {
 	s, mock := newMockStore(t)
 	mock.ExpectQuery(`INSERT INTO sanitize_block_reviews`).WillReturnError(
@@ -139,7 +145,40 @@ func TestPgErrorSanitized(t *testing.T) {
 	if err == nil {
 		t.Fatal("必须返回错误")
 	}
-	if got := err.Error(); len(got) > 120 {
-		t.Fatalf("错误信息过长（可能携带原文）: %q", got)
+	if strings.Contains(err.Error(), "supersecret-value") {
+		t.Fatalf("错误信息携带参数原文: %q", err.Error())
+	}
+}
+
+// TestPgFindPendingNoRowsIsNotError：首插（无同键 pending）的 no-rows 是
+// 「没找到」，不是错误——否则生产上每次首插都误报 dedupe WARN。
+//
+// 审计修（2026-10-29）：旧实现判 pgx.ErrNoRows，而 database/sql 通道实际
+// 返回 sql.ErrNoRows ⇒ no-rows 恒走错误分支。
+func TestPgFindPendingNoRowsIsNotError(t *testing.T) {
+	s, mock := newMockStore(t)
+	mock.ExpectQuery(`FROM sanitize_block_reviews`).WillReturnRows(
+		sqlmock.NewRows([]string{"id", "tenant_id", "client_type", "scope", "rule_id", "rule_name",
+			"reason", "field_path", "payload_digest", "request_id", "match_detail", "status",
+			"created_at", "decided_by", "decided_at"}))
+	_, found, err := s.FindPendingBlockReview(context.Background(), "acme", "egress", "r", "d", "q")
+	if err != nil {
+		t.Fatalf("no-rows 必须是 (found=false, err=nil)，got err=%v", err)
+	}
+	if found {
+		t.Fatal("空结果不得报 found")
+	}
+}
+
+// TestPgGetMissingReviewMapsNotFound：按 ID 取不存在的单必须映射成 ErrNotFound
+// （admin 层据此给 404；旧实现透传 sql.ErrNoRows ⇒ 503）。
+func TestPgGetMissingReviewMapsNotFound(t *testing.T) {
+	s, mock := newMockStore(t)
+	mock.ExpectQuery(`FROM sanitize_block_reviews WHERE id=\$1`).WillReturnRows(
+		sqlmock.NewRows([]string{"id", "tenant_id", "client_type", "scope", "rule_id", "rule_name",
+			"reason", "field_path", "payload_digest", "request_id", "match_detail", "status",
+			"created_at", "decided_by", "decided_at"}))
+	if _, err := s.GetBlockReviewDB(context.Background(), 999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("不存在的单应映射 ErrNotFound（404），got %v", err)
 	}
 }
