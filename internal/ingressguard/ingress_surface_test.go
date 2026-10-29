@@ -13,6 +13,15 @@
 // ⚠️ 补两道闸**都会改变对外行为**（402 / 429），属产品裁决 ⇒ 本包**不改行为**，
 // 只把现状**钉成可执行登记表**。
 //
+// ★ 2026-10-30（ingressguard P2 缺口收口轮）：上面那条 P2 缺口**已补**
+//   —— `/v1/messages/count_tokens` 现在**自带 RPM 闸**
+//   （messages_count_tokens.go 的 checkGatewayRateLimit，闸位在鉴权之后、
+//    读 body 之前 ⇒ 被限流的请求不读那 128MB 的 body）。
+//   ⇒ 本包的职责不变（仍不改行为、只钉现状），但**现状本身变了** ⇒
+//   登记册里那一条的 RateLimit 由 gateNone 翻成 gateOwn。
+//   ★ 依据：2026-10-29 的 Gemini :countTokens 轮把同一个缺口登记成 P2 时，
+//     明写「新端点不应再制造同一个缺口的第二个实例」⇒ 那个缺口就是本条。
+//
 // ── 为什么要单独建包，而不是把门放进 domains/streaming ──────────────────
 // 217 号留下的顺位是「先把 domains/streaming 纳入 GUARD_PACKAGES 再加覆盖面门」。
 // 218 号**先量了预算**，结论是**它进不去**：
@@ -24,9 +33,38 @@
 //	（同机、同样代码、相邻两次就差 42 秒）⇒ 环境相关的波动足以吃掉这点余量。
 //	⇒ 登记它 = 给 CI 埋一个**只在慢机器上才炸**的雷。
 //
+// ★★ 2026-10-30（耗时治理轮）：**这段读数已过期，且当时的问题比记录的更严重**。
+//   本轮实测（同一台机器，Go 1.27.2 darwin/arm64）：
+//
+//	全包                    → **ok 163.561s**（不是 106s ⇒ 期间涨了 57s）
+//	`-short`（make test-short 的口径，-timeout=120s）→ **120.249s 超时 panic**
+//	`-race`（make test-race-core 的口径，-timeout=600s）→ ok 260.384s
+//
+//   ⇒ ★★★ **「余量只剩 13.5 秒」这个判断在 218 号写下时就已经过期了**：
+//   真正的读数是**已经越过预算**（-short 口径直接 panic）⇒ 那时
+//   `make test-short` 就是**红的**，而 `make test-short` 是
+//   `.github/workflows/sessionforensics-ci.yml:42` 的调用方。
+//   ⇒ ★★★ **教训：「余量还剩多少」是【一个会漂的读数】，不是事实** ——
+//   上一轮写在注释里的数字，在下一轮代码变动后就已经不成立了，
+//   而注释**不会自己失效** ⇒ ⇒ ★ 读数必须**定期重测**，否则它就是一句
+//   看起来很可信的假话（与 §9.5「口径要写在代码里，不能只写在注释里」同源）。
+//
+//   本轮的处置（把耗时从 163.6s 降到 59.2s，详见 §「耗时治理轮」）：
+//   · 32 处测试用 `upstream.New()`（maxRetries=2 + 5s/10s 退避），
+//     而**生产用 `upstream.NewWithRetries(0)`**（cmd/gateway/main.go:828）
+//     ⇒ 测试构造的是一个**生产不存在的客户端** ⇒ 每次 5xx 都要白等 15s。
+//   · `hangingBody.Close()` 不解除 `Read` 的阻塞 ⇒ 超时门即使设成 1s，
+//     测试仍要等满 sleep 时长。
+//
 // 所以本包刻意**不导入 domains/streaming**：它只做**静态文本判据**
 // （读 cmd/gateway/main.go 的路由注册 + 各 handler 源文件里锚点字符串的出现次数），
 // 因此编译与运行都是毫秒级，可以安全进 CI。
+//
+// ★ 2026-10-30 复测（治理后）：全包 **ok 59.2s**、`-short` 口径在 120s 内通过
+//   ⇒ 余量从「已经越界」变成 **~60s** ⇒ ★ 但**本包仍不导入它**：
+//   导入一个 59s 的包会让这道本该「毫秒级」的守卫变成 CI 里最慢的一步，
+//   而它本来就不需要被导入（静态判据足够）⇒ ★ 治理的目的是**消除红灯**，
+//   不是把它搬进 GUARD_PACKAGES。
 //
 // ── 本门是「契约钉桩」，不是「检测活缺陷」──
 // 它断言的是**现状**（含缺口）。缺口被如实登记，所以现在**是绿的**；
@@ -141,14 +179,27 @@ var registry = []surface{
 		//   responses.go:422、embeddings.go:390、audio_service.go:697），
 		//   而 CountTokensHandler 是**另一个类型**、自己的 ServeHTTP 里那道调用没有
 		//   ⇒ 「同级有、自己没有」不是偶然，也不是 wrapper 漏包。
-		Plane:        planeInference,
-		Routes:       []string{"/v1/messages/count_tokens"},
-		HandlerVars:  []string{"chatHandler"},
-		File:         "../../domains/streaming/messages_count_tokens.go",
-		Budget:       gateNone,
-		RateLimit:    gateNone,
-		BudgetWhy:    "不调上游、无上游花费 ⇒ 无累计配额闸是合理的",
-		RateLimitWhy: "无 RPM 限流；单请求可读至 128MB（handler.go:69 的 maxBodySize）且无频率上限 ⇒ P2 缺口，待裁决是否补",
+		//
+		// ★★ 2026-10-30（ingressguard P2 缺口收口轮）：**这个缺口已补** ⇒
+		//   RateLimit 由 gateNone 翻成 gateOwn。
+		//   ★ 理由与 2026-10-29 的 Gemini :countTokens 轮同源（那一轮把
+		//     countTokens 登记成 P2 缺口时，明写「新端点不应再制造同一个缺口的
+		//     第二个实例」⇒ 那个缺口就是本条）：
+		//     ① 本面消耗网关自身算力（读最多 128MB + 解析 + 估算）⇒ 该有频率上限；
+		//     ② 本面**不产生任何上游调用** ⇒ 不存在 summarize/transform 那种
+		//        「环回 chat 面已计过一次」的双计问题 ⇒ 按同族动作计一次是
+		//        唯一自洽的选择；
+		//     ③ 同级 /v1/messages 本来就有 RPM 闸 ⇒ 「同级有、自己没有」要消除。
+		//   ★ 闸位在**鉴权之后、读 body 之前** ⇒ 被限流的请求不会去读那 128MB
+		//     ⇒ 限流真的挡住了算力开销（放在读 body 之后就只剩「拒绝」语义）。
+		//   ★ 限流状态码 529 ⇒ 与同路由族 /v1/messages 同口径（messages.go:462）。
+		Plane:       planeInference,
+		Routes:      []string{"/v1/messages/count_tokens"},
+		HandlerVars: []string{"chatHandler"},
+		File:        "../../domains/streaming/messages_count_tokens.go",
+		Budget:      gateNone,
+		RateLimit:   gateOwn,
+		BudgetWhy:   "不调上游、无上游花费 ⇒ 无累计配额闸是合理的",
 	},
 	{
 		Plane:        planeInference,

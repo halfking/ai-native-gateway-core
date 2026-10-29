@@ -89,6 +89,9 @@ func countNonTestCallSites14383(t *testing.T, fnName string) map[string]int {
 		if relErr != nil {
 			rel = path
 		}
+		// Windows 上 Rel 返回反斜杠 ⇒ 与下方正斜杠常量永不相等 ⇒
+		// 判据全判 0（假红）。归一到正斜杠（仓内先例：internal/clockguard/scan.go）。
+		rel = filepath.ToSlash(rel)
 		lines := strings.Split(string(raw), "\n")
 		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)

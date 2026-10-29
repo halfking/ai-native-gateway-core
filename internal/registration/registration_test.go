@@ -118,6 +118,125 @@ func TestTheAdvertisedPortComesFromTheListenAddressNotFromTheEnvironment(t *test
 	}
 }
 
+// A face WITH a port-mapping layer (the k3s NodePort face on 184) cannot
+// derive the published port from the bind address: peers dial the node port
+// (10023), not the container port (8781). That face declares it instead.
+//
+// The declaration is per face, so the same binary keeps its bind-derived
+// behaviour on every face that does not declare one.
+func TestTheFaceLevelPortDeclarationOverridesTheBindDerivedPort(t *testing.T) {
+	outcome := ReadSettings(func(key string) string {
+		switch key {
+		case "GOACOS_ENABLED":
+			return "true"
+		case "GOACOS_IP":
+			return "172.31.0.4"
+		case PublishedPortEnv:
+			return "10023"
+		}
+		return ""
+	}, ":8781")
+	if !outcome.Enabled {
+		t.Fatalf("expected registration to be enabled: %s", outcome.Reason)
+	}
+	if outcome.Settings.Port != 10023 {
+		t.Errorf("advertised port = %d, want 10023 (the port peers dial on this face)",
+			outcome.Settings.Port)
+	}
+}
+
+// The other half of the same rule: a face that declares nothing keeps the
+// bind-derived port. This is what the systemd faces (154 / 245) rely on, and
+// their behaviour must not change because another face got a new mechanism.
+func TestWithoutTheFaceLevelDeclarationThePortStillComesFromTheBindAddress(t *testing.T) {
+	outcome := ReadSettings(func(key string) string {
+		switch key {
+		case "GOACOS_ENABLED":
+			return "true"
+		case "GOACOS_IP":
+			return "100.106.178.9"
+		}
+		return ""
+	}, ":8782")
+	if !outcome.Enabled {
+		t.Fatalf("expected registration to be enabled: %s", outcome.Reason)
+	}
+	if outcome.Settings.Port != 8782 {
+		t.Errorf("advertised port = %d, want 8782 (the port the process binds)",
+			outcome.Settings.Port)
+	}
+}
+
+// GOACOS_PORT is the fleet-wide name for "the published port of a
+// containerised service". This service must never read it: on the
+// blue/green faces the published port follows the bind address, and a
+// leftover variable would advertise a port nobody listens on.
+func TestTheFaceLevelDeclarationDoesNotReviveTheForbiddenPortVariable(t *testing.T) {
+	outcome := ReadSettings(func(key string) string {
+		switch key {
+		case "GOACOS_ENABLED":
+			return "true"
+		case "GOACOS_IP":
+			return "172.31.0.4"
+		case "GOACOS_PORT":
+			return "9999"
+		case PublishedPortEnv:
+			return "10023"
+		}
+		return ""
+	}, ":8781")
+	if !outcome.Enabled {
+		t.Fatalf("expected registration to be enabled: %s", outcome.Reason)
+	}
+	if outcome.Settings.Port != 10023 {
+		t.Errorf("advertised port = %d, want 10023 — GOACOS_PORT must be ignored",
+			outcome.Settings.Port)
+	}
+}
+
+// A declaration that is not a port must not fall back to the bind address:
+// falling back would advertise the container-internal port, which is the
+// exact "registry says healthy, real traffic 502" failure.
+func TestAnIllegalFaceLevelDeclarationDoesNotRegister(t *testing.T) {
+	for _, value := range []string{"abc", "0", "-1", "70000", "8781/tcp", "87 81"} {
+		outcome := ReadSettings(func(key string) string {
+			switch key {
+			case "GOACOS_ENABLED":
+				return "true"
+			case "GOACOS_IP":
+				return "172.31.0.4"
+			case PublishedPortEnv:
+				return value
+			}
+			return ""
+		}, ":8781")
+		if outcome.Enabled {
+			t.Errorf("%s=%q must not register (it would advertise %d or a fallback)",
+				PublishedPortEnv, value, outcome.Settings.Port)
+		}
+		if outcome.Reason == "" {
+			t.Errorf("%s=%q must say why it did not register", PublishedPortEnv, value)
+		}
+	}
+}
+
+func TestPublishedPortReportsWhetherItWasDeclared(t *testing.T) {
+	if port, declared, err := PublishedPort(func(string) string { return "" }); err != nil ||
+		declared || port != 0 {
+		t.Errorf("an absent declaration = (0, false, nil), got (%d, %t, %v)", port, declared, err)
+	}
+	if port, declared, err := PublishedPort(func(string) string { return "  10023  " }); err != nil ||
+		!declared || port != 10023 {
+		t.Errorf("a padded declaration = (10023, true, nil), got (%d, %t, %v)", port, declared, err)
+	}
+	for _, value := range []string{"abc", "0", "-1", "70000"} {
+		if _, declared, err := PublishedPort(func(string) string { return value }); err == nil ||
+			!declared {
+			t.Errorf("%q must be an error on a declared-but-illegal port", value)
+		}
+	}
+}
+
 func TestTheNamespaceDefaultsToPublicAndTheNameFollowsTheDeclaration(t *testing.T) {
 	outcome := ReadSettings(func(key string) string {
 		switch key {

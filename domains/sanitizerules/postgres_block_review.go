@@ -386,3 +386,53 @@ func scanBlockReview(row rowScanner) (BlockReview, error) {
 	r.LabeledAt = labeledAt.Time
 	return r, nil
 }
+
+// ListEgressRuleEventsInWindowDB 取与 [from, to] 有重叠的出站侧规则命中事件。
+//
+// ★ 只取 phase='egress'（★ 出站侧 = 拦截发生的那一侧）★★
+// ★ 窗口判据是「**last_seen 落在窗内**」（★ 不是「[first_seen,last_seen] 与窗重叠」★★）：
+// ★ 事件是**按指纹聚合**的（★ 同一规则反复命中聚成一行）⇒ ★★ 它的 first/last
+//
+//	可以**横跨数周**（★ 211 生产实测：★ 一条 pii.server_ip 事件的 first_seen
+//	在 10-15、last_seen 在 10-29）★★ ⇒ ★★ 于是「区间重叠」几乎**恒真** ⇒ ★★
+//	候选清单会被**全量历史**淹没（★ 实测 26 条）★★ ⇒ ★★ 真正有意义的问题是
+//	「**这条规则在拦截前后还在命中吗**」⇒ ★★ 那就是 **last_seen**（★ 每次命中
+//	都会刷新 last_seen ⇒ ★★ 它就是「最近一次命中时间」）★★。
+func (s *PostgresStore) ListEgressRuleEventsInWindowDB(ctx context.Context, from, to time.Time, limit int) ([]EgressRuleEventInWindow, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if from.IsZero() || to.IsZero() || !to.After(from) {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT rule_id, COALESCE(action,''), COALESCE(status,''), COALESCE(count,0), first_seen, last_seen
+FROM sanitize_rule_events
+WHERE phase='egress' AND last_seen >= $2 AND last_seen <= $1
+ORDER BY last_seen DESC, id DESC LIMIT $3`, to, from, limit)
+	if err != nil {
+		return nil, storeError("egress rule events window read", err)
+	}
+	defer rows.Close()
+	out := make([]EgressRuleEventInWindow, 0, limit)
+	for rows.Next() {
+		var ev EgressRuleEventInWindow
+		if err := rows.Scan(&ev.RuleID, &ev.Action, &ev.Status, &ev.Count, &ev.FirstSeen, &ev.LastSeen); err != nil {
+			return nil, storeError("egress rule events window read", err)
+		}
+		out = append(out, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, storeError("egress rule events window read", err)
+	}
+	return out, nil
+}
+
+// CountBlockReviewsDB 数符合条件的审核单。
+func (s *PostgresStore) CountBlockReviewsDB(ctx context.Context, status, tenantID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sanitize_block_reviews WHERE ($1='' OR status=$1) AND ($2='' OR tenant_id=$2)`, status, tenantID).Scan(&n)
+	if err != nil {
+		return 0, storeError("block review count read", err)
+	}
+	return n, nil
+}

@@ -32,9 +32,9 @@ describe("sanitize rules in actual bundled and lazy locale exports", () => {
     // 2026-10-29（输出合规误报轮）：+26 —— 输出合规**总开关**
     // （outputCheck*）、人工标注与标注闭集（reviewLabel*/label_*）、
     // 被拦内容的摘录（reviewEvidence*）、规则级复核读数（reviewInsights*）。
-    //  ↑ 让号记录：key 集合 151 → 178（2026-10-29 输出合规误报轮加 reviewUnattributedRule）。
+    //  ↑ 让号记录：key 集合 151 → 201（2026-10-29 输出合规误报轮：reviewUnattributedRule + 审核归因/原始上下文 8键 + 规则详情 14 键）。
     // 计数只许增：每加一个键都要同步 8 个语种 + 这里。
-    expect(expectedKeys).toHaveLength(178));
+    expect(expectedKeys).toHaveLength(201));
   for (const [locale, bundle] of Object.entries(bundles)) {
     it(`${locale} exports and resolves every rule-management message`, () => {
       const namespace = bundle.sanitizeRules as

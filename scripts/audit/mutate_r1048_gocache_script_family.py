@@ -53,6 +53,13 @@
 ★        ⇒ 期望：**全部转绿**
 ★        ⇒ ⇒ ⇒ 证明这五条断言**合起来才是必需的**（★ 没有它们，★ 「把隔离改没了」
 ★        ⇒ ⇒ ⇒ 也能全绿 ⇒ ⇒ ⇒ **功能被改没了而门全绿**）。
+★   M14 ★★★ **r1049 审计轮加的臂**：★ 在一个**已经合格**的 Python 脚本里
+★        **额外**插一处【只算路径】的 GOCACHE 赋值
+★        （★ `os.environ["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")`）
+★        ⇒ 期望：**只**红 `TestScriptFamilyNeverSetsGoCacheFromDirFor`
+★        ⇒ ⇒ ★★ ⇒ **判据①（文件级）照样绿**（★ 因为那个文件本来就有合格的
+★        ⇒ ⇒ ★★ `gocache.apply_to_environ(`）⇒ ⇒ ★★ ⇒ **判据⑥ 是唯一能抓住
+★        ⇒ ⇒ ★★ 它的判据** ⇒ ⇒ ★★ ⇒ 这一臂就是判据⑥「不可省」的**证据**。
 """
 
 import hashlib
@@ -79,9 +86,11 @@ M09_REL = "scripts/audit/verify-outbox-reaper.sh"
 M10_REL = "scripts/audit/verify-outbox-reaper.sh"
 M11_REL = "scripts/audit/measure-factsource-cost-matrix.sh"
 M12_REL = "scripts/audit/measure-factsource-cost-matrix.sh"
+# ★★ r1049 审计轮加的 M14 目标（★ 一个 Python 形态的变异台）★★
+M14_REL = "scripts/audit/mutate_14385_gate.py"
 ALL_TARGETS = tuple(
     os.path.join(ROOT, r)
-    for r in (GUARD_REL, M08_REL, M11_REL)
+    for r in (GUARD_REL, M08_REL, M11_REL, M14_REL)
 )
 
 PKG = "./scripts/ursmcheck/"
@@ -94,6 +103,12 @@ TESTS = (
     "|TestScriptFamilyHasNoUserGlobalGoCacheOverride"
     "|TestGomodcacheMustNotLiveUnderBuildLocal"
     "|TestScriptFamilyExclusionRegistryIsExact"
+    "|TestScriptFamilyNeverSetsGoCacheFromDirFor"
+    "|TestScriptFamilyCompileScopeIgnoresDocstrings"
+    "|TestScriptFamilyUserGlobalOverrideDetectsBothForms"
+    "|TestScriptFamilyDirForJudgeDistinguishesPayloadFromCode"
+    "|TestGoCacheDedicatedFormsAreRecognized"
+    "|TestMutationHarnessScriptsUseDedicatedGoCache"
 )
 
 # ── ★★ 变异锚点 ──
@@ -126,6 +141,18 @@ M11_REPL = '          GOMODCACHE="${GOMODCACHE:-$HOME/go/pkg/mod}"\n'
 # M12：★ 把 GOMODCACHE 指向 `.build-local/` 下。
 M12_NEEDLE = 'GOMODCACHE="${GOMODCACHE:-$HOME/go/pkg/mod}"'
 M12_REPL = 'GOMODCACHE="${GOMODCACHE:-$HOME/.build-local/gomodcache}"'
+
+# ★★ M14（★ r1049 审计轮加的臂）：★★ 在一个**已合格**的 Python 脚本里，
+# ★★ **额外**插一处【只算路径】的 GOCACHE 赋值 ⇒ ⇒ ★★ ⇒
+# ★★ ⇒ ★★ **判据①（文件级）照样绿**（★ 因为那个文件本来就有合格的
+# ★★ `gocache.apply_to_environ(`）⇒ ⇒ ★★ ⇒ **判据⑥ 是唯一能抓住它的判据**
+# ★★ ⇒ ⇒ ★★ ⇒ 这一臂就是判据⑥「不可省」的**证据**。
+M14_NEEDLE = 'gocache.apply_to_environ("mutate")\n'
+M14_REPL = (
+    'gocache.apply_to_environ("mutate")\n'
+    'os.environ["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")'
+    '  # MUTATION M14: 只算路径 ⇒ 不建目录不查可写 ⇒ 不失败安全\n'
+)
 
 # M13：★ 掏空新门自己的断言。
 M13_NEEDLE = "t.Fatalf("
@@ -307,7 +334,16 @@ def main() -> int:
     arm("M12 把 GOMODCACHE 指向 .build-local/ 下（★ ⇒ git clean 会删掉模块缓存）", M12_REL,
         ["TestGomodcacheMustNotLiveUnderBuildLocal"], m12)
 
-    # ── M13：★ 掏空新门自己的断言 ⇒ ★ 全部转绿 ⇒ ⇒ 证明五条断言合起来才是必需的 ──
+    # ── M14：★ 在【已合格】的脚本里**额外**插一处【只算路径】的赋值 ──
+    # ★★ ⇒ ⇒ ★★ **判据①（文件级）照样绿** ⇒ ⇒ ★★ ⇒ **只有判据⑥ 能抓住它**
+    # ★★ ⇒ ⇒ ★★ ⇒ 这一臂就是判据⑥「不可省」的**证据**。
+    def m14(text):
+        return text.replace(M14_NEEDLE, M14_REPL, 1)
+
+    arm("M14 在合格脚本里额外插 dir_for 赋值（★ ⇒ 只有判据⑥ 红）", M14_REL,
+        ["TestScriptFamilyNeverSetsGoCacheFromDirFor"], m14)
+
+    # ── M13：★ 掏空新门自己的断言 ⇒ ★ 全部转绿 ⇒ ⇒ 证明几条断言合起来才是必需的 ──
     def m13(text):
         return text.replace(M13_NEEDLE, M13_REPL)
 

@@ -81,7 +81,9 @@ func (h *Handler) handleSanitizeRules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		snap := h.sanitizeRuleManager.Current()
-		writeJSON(w, 200, map[string]any{"version": snap.Version, "config": snap.Config(), "config_digest": snap.ConfigDigest, "status": h.sanitizeRuleManager.Status()})
+		// ★ 2026-10-29 输出合规误报轮：★ 补上规则**说明**（★ 事实源 = YAML +
+		// 内建目录；★ 历史规则快照里没有说明 ⇒ 不补的话管理面只能显示规则 ID）。
+		writeJSON(w, 200, map[string]any{"version": snap.Version, "config": sanitizerules.ApplyRuleDescriptions(snap.Config()), "config_digest": snap.ConfigDigest, "status": h.sanitizeRuleManager.Status()})
 	case "/validate":
 		if !sanitizeRuleMethod(w, r, http.MethodPost) {
 			return

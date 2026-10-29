@@ -49,7 +49,7 @@ func (c *Checker) RuleConfig() sanitizerules.Config {
 	}
 	// Other secret shapes already exist in the YAML baseline. Keep internal IP
 	// telemetry as an explicit log rule rather than silently redacting addresses.
-	cfg.Rules = append(cfg.Rules, sanitizerules.Rule{ID: "compliance.internal_ip", Name: "Internal IP telemetry", Type: "internal_ip", Kind: "pattern", Pattern: `\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b`, Scopes: []string{"output"}, Action: "log", Enabled: true})
+	cfg.Rules = append(cfg.Rules, sanitizerules.Rule{ID: "compliance.internal_ip", Name: "Internal IP telemetry", Type: "internal_ip", Kind: "pattern", Pattern: `\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b`, Scopes: []string{"output"}, Action: "log", Enabled: true, Description: "记录响应里出现的内网地址形态（10.x / 172.16-31.x / 192.168.x）。只记录、不遮蔽、不阻断：内网地址本身不是机密，遮蔽它会破坏运维排查。"})
 	return cfg
 }
 

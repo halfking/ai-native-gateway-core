@@ -119,7 +119,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
 	"github.com/kaixuan/llm-gateway-go/internal/providers/mock"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
-	"github.com/kaixuan/llm-gateway-go/internal/registration"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
@@ -5218,6 +5217,18 @@ func main() {
 				}
 				mqConfig.EnablePerNodeTesting = mqEnablePerNode
 
+				// 2026-10-30 (24h 审计第 7 轮)：per-node 范围与去重窗口。
+				// featured 默认 —— 与 model_credibility.scope 的 featured 同口径；
+				// min-interval 默认 24h —— 防止每次部署重启把同一批节点重打一遍。
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.per_node_scope", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelQuality/per_node_scope", raw, &mqConfig.PerNodeScope)
+				}
+				var mqPerNodeMinHours float64
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.per_node_min_interval_hours", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelQuality/per_node_min_interval_hours", raw, &mqPerNodeMinHours)
+				}
+				mqConfig.PerNodeMinIntervalHours = int(mqPerNodeMinHours)
+
 				modelQualityWorker = bg.NewModelQualityWorker(mqDataDir, mqAPIKey, mqBaseURL, time.Duration(mqTimeoutSec)*time.Second)
 				// ★ nodeSource 常驻注入（db + 解密 key 可用即设）。
 				// enable_per_node 只控制**定时** per-node 循环（loop 里的
@@ -8142,15 +8153,19 @@ func main() {
 		}
 	}()
 
-	// goacos 服务发现注册（方案 54 / CO-20）。
+	// goacos 服务发现注册（方案 54 / CO-20）：**设计在案、实现未落地**。
 	//
-	// ⚠ **必须在端口真的 listen 之后**：上面的 net.Listen 已经成功 ⇒ 通告的端口
-	//   （从 cfg.Listen 派生）一定是本进程正在听的端口 ⇒ 蓝绿切流当天也不会
-	//   通告一个已经不再监听的端口（llm-gateway 的活跃端口在 8781/8782 之间
-	//   来回换，见 AGENTS.md §「端口：必须现场确认，不要假设」）。
+	// 2026-10-29 24h 审计轮：Mavis 合并 bot 曾在此注入
+	// `registryClient := registration.Start(...)`，但 internal/registration 包
+	// 在任何提交里都不存在（bot 的 "go build ✓" 是其工作区里未入库的包）⇒
+	// main 从该提交起编译必红 ⇒ 本轮移除引用。**重落此功能必须连同包一起提交**。
 	//
-	// ⚠ 注册失败**不挡服务**：注册中心不可达时照常对外服务。
-	registryClient := registration.Start(context.Background(), cfg.Listen, slog.Default())
+	// 落地时的两条硬约束（从 bot 注释里抢救下来的设计事实）：
+	//   1. ⚠ **必须在端口真的 listen 之后**：通告的端口（从 cfg.Listen 派生）
+	//      一定是本进程正在听的端口 ⇒ 蓝绿切流当天也不会通告一个已经不再
+	//      监听的端口（活跃端口在 8781/8782 之间来回换，见 AGENTS.md
+	//      §「端口：必须现场确认，不要假设」）。
+	//   2. ⚠ 注册失败**不挡服务**：注册中心不可达时照常对外服务。
 
 	<-ctx.Done()
 	slog.Info("gateway shutting down")
@@ -8177,20 +8192,20 @@ func main() {
 		slog.Info("mock probe runner stopped")
 	}
 
-	// goacos 注销（方案 54 / CO-20）：**在停端口之前发起**。
-	// 注册面还留着这个实例的那几秒里，peer 会继续往一个已经不再接请求的进程上打。
+	// goacos 注销（方案 54 / CO-20）：**设计在案、实现未落地**（见上方 Start 处
+	// 2026-10-29 说明）——重落时注销必须**在停端口之前发起**：注册面还留着这个
+	// 实例的那几秒里，peer 会继续往一个已经不再接请求的进程上打。
 	//
-	// ⚠ 为什么是并发发起而不是同步等待：systemd TimeoutStopSec=35s 的预算**已经占满**
+	// ⚠ 为什么注销要**并发发起**而不是同步等待：systemd TimeoutStopSec=35s 的预算**已经占满**
 	//   （下方 srv.Shutdown 23s drain + 12s worker 余量，见 2026-08-19 的注释）。
 	//   同步注销会挤掉 worker 的那份 ⇒ 进程可能在 35s 被 SIGKILL ⇒ 租约与 DB 连接留脏。
 	//   那比 peer 多拨一次已经关掉的端口更糟。DELETE **先发出**，通常在毫秒级内落地。
 	//
 	// ⚠ 停机预算有**两面**，只有一面在仓内：deploy/llm-gateway-go.service 与
 	//   deploy/llmgo-245.service 写的是 TimeoutStopSec=25s（tracked）；活体主机靠一个
-	//   systemd drop-in 提到 35s（下面 2026-08-19 的注释引用的就是它），而那个 drop-in
+	//   systemd drop-in 提到 35s（上面 2026-08-19 的注释引用的就是它），而那个 drop-in
 	//   **不在仓内** ⇒ 活体预算属于「仓内不可核对」的主机侧状态。
 	//   按**较小**的那一面（25s）算，同步注销也放不下 ⇒ 并发发起是稳的那一边。
-	registration.StopAsync(registryClient)
 
 	// 1. Stop accepting new connections — in-flight requests drain naturally
 	// 2026-08-19: 30s→23s. systemd TimeoutStopSec=35s (drop-in), srv.Shutdown 必须 ≤ 23s

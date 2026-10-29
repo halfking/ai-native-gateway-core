@@ -89,8 +89,8 @@ type BlockReview struct {
 	LabeledAt    time.Time `json:"labeled_at,omitempty"`
 	// Evidence 是被拦内容的**有界摘录**（原始会话内容），由证据表按需装配
 	// （不在本表落原文——迁移 917 的契约）。EvidenceKind 说明摘录代表什么。
-	Evidence         string `json:"evidence,omitempty"`
-	EvidenceKind     string `json:"evidence_kind,omitempty"`
+	Evidence          string `json:"evidence,omitempty"`
+	EvidenceKind      string `json:"evidence_kind,omitempty"`
 	EvidenceTruncated bool   `json:"evidence_truncated,omitempty"`
 }
 
@@ -248,6 +248,43 @@ func ListBlockReviews(status, tenantID string, limit int) []BlockReview {
 			"error", err, "root_cause", storeErrorDetail(err))
 	}
 	return listBlockReviewsMemory(status, tenantID, limit)
+}
+
+// CountBlockReviews 数符合条件的审核单（★ 列表端点的「待处理数」用）。
+//
+// ★ 2026-10-29：★ 旧实现是「再列一次（limit=1000）然后取 len」⇒ ★★ 那是一次
+//
+//	**全表读**，而列表端点本来就已经列过一次 ⇒ ★★ 每次打开审核面都读两遍
+//	全表 ⇒ ★★ 改成一个 count(*)（★ DB 路径）/ 内存计数（★ 降级路径）★★。
+func CountBlockReviews(status, tenantID string) int {
+	if p := reviewPersistenceInstalled(); p != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if n, err := p.CountBlockReviewsDB(ctx, status, tenantID); err == nil {
+			return n
+		} else {
+			slog.Warn("sanitize block review count from db failed; falling back to in-process count",
+				"error", err, "root_cause", storeErrorDetail(err))
+		}
+	}
+	return countBlockReviewsMemory(status, tenantID)
+}
+
+// countBlockReviewsMemory 在进程内队列里数（降级路径）。
+func countBlockReviewsMemory(status, tenantID string) int {
+	blockReviews.mu.Lock()
+	defer blockReviews.mu.Unlock()
+	count := 0
+	for _, e := range blockReviews.entries {
+		if status != "" && e.Status != status {
+			continue
+		}
+		if tenantID != "" && e.TenantID != tenantID {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 // attachBlockReviewEvidence 把证据摘录装进审核单（原始会话内容）。

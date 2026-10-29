@@ -21,7 +21,7 @@ for _gc_lib in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"),
         sys.path.insert(0, _gc_lib)
         break
 import gocache  # noqa: E402
-os.environ["GOCACHE"] = gocache.dir_for(gocache.repo_root(), "mutate")
+gocache.apply_to_environ("mutate")
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(REPO, "scripts/252-monitor/ursm-snapshot-payload-bloat.sh")
