@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,11 +34,28 @@ import (
 // supplier node switches" guarantee — the system must not waste an
 // upstream call on a path that cannot possibly succeed.
 
-// hangingBody yields data once, then blocks indefinitely on the next
-// Read so the streamChunkTimeout path can fire.
+// hangingBody yields data once, then blocks on the next Read so the
+// streamChunkTimeout path can fire.
+//
+// ★ 2026-10-30（耗时治理轮）：阻塞用 channel 而不是 time.Sleep —— 因为
+// sse.LineReader.ReadLineWithContext（internal/sse/line_reader.go:122-129）
+// 在超时后走的是「closer.Close() → 再 `<-results` 等读协程退出」这条路径。
+// ⇒ 若 Close() 不解除 Read 的阻塞，那个读协程就要睡满整个 sleep 才退出
+// ⇒ **超时设成 1s 也救不了**：测试仍会等满 sleep 时长。
+// ★ 实测（修复前）：两个 gate-aware 测试各耗 10.00s ⇒ 全包 163.6s 里
+// 它们的占比来自这个 sleep，而不是来自被测的超时门。
+// ★ 现在 Close() 关掉 channel ⇒ 读协程立刻返回 ⇒ 测试耗时由「sleep 时长」
+// 降到「chunk timeout 时长」（测试里是 1s）。
 type hangingBody struct {
 	data []byte
 	done bool
+	// unblock is closed by Close to release a blocked Read.
+	//
+	// ★ nil 是**合法取值**：本类型被 domains/streaming 的多个测试文件复用
+	//   （r59_audit_regressions_test.go 等），那些构造点只填 data、不填本字段
+	//   ⇒ nil channel 上 close 会 panic（"close of nil channel"）。
+	//   ⇒ Read/Close 两处都必须按 nil 走「不阻塞」分支。
+	unblock chan struct{}
 }
 
 func (h *hangingBody) Read(p []byte) (int, error) {
@@ -47,11 +63,27 @@ func (h *hangingBody) Read(p []byte) (int, error) {
 		h.done = true
 		return copy(p, h.data), nil
 	}
-	time.Sleep(10 * time.Second) // exceed chunk timeout in tests
+	if h.unblock != nil {
+		<-h.unblock // released by Close, so the timeout path is not blocked
+	}
 	return 0, errors.New("upstream hang")
 }
 
-func (h *hangingBody) Close() error { return nil }
+// Close releases a blocked Read. A no-op Close would make the reader
+// goroutine outlive the timeout by the full sleep duration.
+//
+// ★ nil-safe + 幂等：unblock 为 nil 时直接返回；已关闭时不再重复 close。
+func (h *hangingBody) Close() error {
+	if h.unblock == nil {
+		return nil
+	}
+	select {
+	case <-h.unblock:
+	default:
+		close(h.unblock)
+	}
+	return nil
+}
 
 // TestStreamChat_StreamTimeoutGateAware covers the chat-path stream_timeout
 // branch (stream.go:900). After one committed content chunk the upstream
@@ -62,7 +94,8 @@ func TestStreamChat_StreamTimeoutGateAware(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_STREAM_CHUNK_TIMEOUT", "1")
 
 	body := &hangingBody{
-		data: []byte("data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n"),
+		data:    []byte("data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n"),
+		unblock: make(chan struct{}),
 	}
 	resp := &http.Response{
 		Body:    body,
@@ -91,7 +124,8 @@ func TestStreamAnthropicPassthrough_StreamChunkTimeoutGateAware(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_STREAM_CHUNK_TIMEOUT", "1")
 
 	body := &hangingBody{
-		data: []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"),
+		data:    []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"),
+		unblock: make(chan struct{}),
 	}
 	resp := &http.Response{
 		Body:    body,

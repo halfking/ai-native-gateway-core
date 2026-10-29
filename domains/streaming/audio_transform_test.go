@@ -24,7 +24,7 @@ import (
 func newTransformTestServer(t *testing.T, chatStub http.HandlerFunc) (*httptest.Server, *[]map[string]any) {
 	t.Helper()
 	var got []map[string]any
-	svc := NewAudioService(&fakeAudioResolver{}, upstream.New())
+	svc := NewAudioService(&fakeAudioResolver{}, upstream.NewWithRetries(0))
 	ts := NewAudioTransformService(svc)
 	h := NewAudioTransformHandler(ts)
 	mux := http.NewServeMux()
@@ -220,7 +220,7 @@ func TestRefineRequiresModelAndText(t *testing.T) {
 func TestMCPTransformToolCalls(t *testing.T) {
 	var mux *http.ServeMux
 	var srv *httptest.Server
-	svc := NewAudioService(&fakeAudioResolver{}, upstream.New())
+	svc := NewAudioService(&fakeAudioResolver{}, upstream.NewWithRetries(0))
 	tsvc := NewAudioTransformService(svc)
 	h := NewAudioMCPHandler(svc)
 	h.SetTransformService(tsvc)

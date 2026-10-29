@@ -50,6 +50,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 func main() {
@@ -147,6 +148,54 @@ type Variant struct {
 	//   视图体**不投影 partition_date** ⇒ 外层看不到它 ⇒ 外层过滤**完全无效**。
 	//   ⇒ ⇒ 下界必须**推进两臂内部**才能真的裁掉分区。
 	RewriteCanonical string `json:"rewrite_canonical"`
+	// ★★ NativeSource（R184 轮新增）—— **原生两臂源**形态。
+	//
+	// ★ 为什么要有它：★ R182 起，生产读点大量改读
+	//   `db.SessionFamilyTurnsSourceSQL()`（原生两臂 hot ∪ 父表 + details 腿），
+	//   它的 SQL **不是字面量**（是 Go 函数拼出来的 115 列投影 × 2 臂）
+	//   ⇒ ⇒ **没法手抄进 spec** ⇒ ⇒ 手抄就等于「测的不是生产那条路径」。
+	//
+	// ★ 做法：★ spec 的 SQL 里写占位符 `{{NATIVE}}`，工具在运行时
+	//   **从 db 包取生产同款文本**填进去 ⇒ ⇒ A/B 两臂都必然是生产那条路径。
+	//   · "two_arm"            ⇒ db.SessionFamilyTurnsSourceSQL()
+	//   · "two_arm_lower_bound" ⇒ db.SessionFamilyTurnsSourceLowerBoundSQL(BoundExpr)
+	//
+	// ★★ 「一次只变一个变量」仍然成立：★ A/B 两臂**只有分区下界**这一处不同
+	//   （投影、JOIN、谓词全部逐字相同）⇒ ⇒ 读数差只能归因于下界。
+	NativeSource string `json:"native_source"`
+	// BoundExpr 是 native_source="two_arm_lower_bound" 时的下界 **SQL 表达式**。
+	// ★ 允许传表达式（而不只是常量）：★ 相对窗口的下界必须与 ts 谓词**同源**
+	//   （NOW() 派生）⇒ ⇒ 才是 ts 谓词的蕴含条件 ⇒ ⇒ 不丢行。
+	BoundExpr string `json:"bound_expr"`
+}
+
+// ★ NativeSourceMarker 是 spec 里代表「生产同款原生两臂源」的占位符。
+const NativeSourceMarker = "{{NATIVE}}"
+
+// resolveNativeSource 把 {{NATIVE}} 占位符换成生产同款的两臂源文本。
+//
+// ★ 为什么由工具来填（而不是把 SQL 手抄进 spec）：
+//
+//	⇒ 手抄 = 测的不是生产那条路径（★ 与本文件顶部「改写由人显式给出」的
+//	初衷不冲突：这里改写的是**源的取法**，SQL 的其余部分仍逐字写在 spec 里）。
+func resolveNativeSource(sqlText, nativeSource, boundExpr string) (string, error) {
+	if !strings.Contains(sqlText, NativeSourceMarker) {
+		return sqlText, nil
+	}
+	switch nativeSource {
+	case "two_arm":
+		return strings.ReplaceAll(sqlText, NativeSourceMarker, db.SessionFamilyTurnsSourceSQL()), nil
+	case "two_arm_lower_bound":
+		if strings.TrimSpace(boundExpr) == "" {
+			return "", fmt.Errorf("native_source=two_arm_lower_bound 但没给 bound_expr")
+		}
+		return strings.ReplaceAll(sqlText, NativeSourceMarker,
+			db.SessionFamilyTurnsSourceLowerBoundSQL(boundExpr)), nil
+	case "":
+		return "", fmt.Errorf("SQL 里有 %s 占位符，但没给 native_source", NativeSourceMarker)
+	default:
+		return "", fmt.Errorf("未知 native_source=%q", nativeSource)
+	}
 }
 
 // VariantReading 是一次 EXPLAIN 的读数。
@@ -200,13 +249,8 @@ func runMeasure(argv []string) {
 	sshContainer := fs.String("ssh-container", "pg-252-pg17", "252 模式：远端 PG 容器名")
 	sshDBUser := fs.String("ssh-db-user", "llm_gateway", "252 模式：DB 角色")
 	sshDBName := fs.String("ssh-db-name", "llm_gateway", "252 模式：DB 名")
-	view := fs.String("canonical-view", os.Getenv("CANONICAL_VIEW"), "★ canonical 视图名（必填；不硬编码在源码里）")
+	view := fs.String("canonical-view", os.Getenv("CANONICAL_VIEW"), "★ canonical 视图名（★ 只有【读视图形态】的变体才需要；原生两臂形态不需要）")
 	_ = fs.Parse(argv)
-	if *view == "" {
-		fmt.Fprintln(os.Stderr, "--canonical-view 必填（★ 视图名不硬编码在源码里 ⇒ 工具对任何视图都适用）")
-		os.Exit(2)
-	}
-	bindCanonicalView(*view)
 
 	if *specPath == "" {
 		fmt.Fprintln(os.Stderr, "--spec 必填")
@@ -221,6 +265,16 @@ func runMeasure(argv []string) {
 	if err := json.Unmarshal(raw, &spec); err != nil {
 		fmt.Fprintf(os.Stderr, "解析 spec 失败: %v\n", err)
 		os.Exit(1)
+	}
+	// ★ 视图名**按需**要求（★ R184）：★ 原生两臂形态（native_source）的 spec
+	//   根本不碰 canonical 视图 ⇒ ⇒ 硬要一个视图名只是噪声（而且会让人以为
+	//   量的是视图那条路径）⇒ ⇒ 只有真的有变体要读视图时才要求它。
+	if *view == "" && specNeedsCanonicalView(spec) {
+		fmt.Fprintln(os.Stderr, "--canonical-view 必填（★ 视图名不硬编码在源码里 ⇒ 工具对任何视图都适用）")
+		os.Exit(2)
+	}
+	if *view != "" {
+		bindCanonicalView(*view)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancel()
@@ -350,8 +404,29 @@ func canonicalViewDefSQL(viewName string) string {
 	return "SELECT pg_get_viewdef('public." + viewName + "'::regclass, true)"
 }
 
+// specNeedsCanonicalView 判这个 spec 里有没有【读视图形态】的变体。
+func specNeedsCanonicalView(spec Spec) bool {
+	for _, rp := range spec.ReadPoints {
+		for _, v := range rp.Variants {
+			if v.RewriteCanonical != "" || v.Source == "canonical_view" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // buildVariantSQL 按 variant 的描述构造最终要跑的 SQL。
 func buildVariantSQL(ctx context.Context, tr transport, v Variant, viewName string) (string, error) {
+	// ★ R184：★ 先把 {{NATIVE}} 占位符换成**生产同款**的两臂原生源。
+	//   ⇒ 之后的两条分支（rewrite_canonical / source）都基于**填好的** SQL 继续。
+	if strings.Contains(v.SQL, NativeSourceMarker) {
+		filled, err := resolveNativeSource(v.SQL, v.NativeSource, v.BoundExpr)
+		if err != nil {
+			return "", err
+		}
+		v.SQL = filled
+	}
 	if v.RewriteCanonical != "" {
 		// 读点 SQL 形态：视图引用在 FROM/JOIN 里 ⇒ 把「视图名」换掉即可。
 		body, err := fetchCanonicalBody(ctx, tr, viewName)

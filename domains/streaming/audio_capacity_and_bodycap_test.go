@@ -24,7 +24,7 @@ import (
 // TestAudioCapacityErrorIsTypedAndMapped：闸满 + ctx 取消 → typed
 // audioCapacityError；writeAudioError 面上映射 503/audio_capacity。
 func TestAudioCapacityErrorIsTypedAndMapped(t *testing.T) {
-	svc := NewAudioService(&fakeAudioResolver{candidates: nil}, upstream.New())
+	svc := NewAudioService(&fakeAudioResolver{candidates: nil}, upstream.NewWithRetries(0))
 	// 占满全部 8 个并发槽。
 	for i := 0; i < maxConcurrentAudioOps; i++ {
 		svc.sem <- struct{}{}
@@ -56,7 +56,7 @@ func TestAudioCapacityErrorIsTypedAndMapped(t *testing.T) {
 // + 1MiB 开销余量）的 multipart 请求 → 413 request_too_large，而不是
 // 被完整读入内存/落盘后再判定。
 func TestTranscriptionsBodyCapRejectsOversize(t *testing.T) {
-	h := NewAudioTranscriptionsHandler(NewAudioService(&fakeAudioResolver{}, upstream.New()))
+	h := NewAudioTranscriptionsHandler(NewAudioService(&fakeAudioResolver{}, upstream.NewWithRetries(0)))
 
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
@@ -99,7 +99,7 @@ func TestTranscriptionsBodyCapAllowsNormalFile(t *testing.T) {
 		RawModel: "mimo-v2.5-asr", Routable: true, APIKey: "sk-test",
 	}
 	cand.AvailabilityState = "ready"
-	h := NewAudioTranscriptionsHandler(NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.New()))
+	h := NewAudioTranscriptionsHandler(NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.NewWithRetries(0)))
 
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)

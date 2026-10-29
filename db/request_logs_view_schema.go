@@ -929,6 +929,70 @@ func SessionFamilyTurnsSourceWindowedSQL(pdFrom, pdTo string) string {
 		win + ")"
 }
 
+// SessionFamilyTurnsSourceLowerBoundSQL 是 SessionFamilyTurnsSourceSQL 的
+// **仅带分区键下界**变体（R184 轮新增）。
+//
+// ★★ 为什么需要「只有下界」这一支（R181 的 Windowed 变体不够用）：★★
+//
+//	SessionFamilyTurnsSourceWindowedSQL(pdFrom, pdTo) **强制带上界**，
+//	而**相对窗口**（`ts >= NOW() - ($n || ' hours')::interval`）的语义是
+//	「最近 N 小时」⇒ ⇒ 它**没有** ts 上界 ⇒ ⇒ 硬造一个 partition_date 上界
+//	就是**给读点加了一个原本没有的筛选** ⇒ ⇒ 语义漂移（未来 ts 的行会被丢掉）。
+//
+//	⇒ ⇒ 相对窗口只能加**下界** ⇒ ⇒ 本函数只推下界，**不推上界**。
+//
+// ★★ 为什么下界必须是「**与 ts 谓词同源**」的表达式（而不是应用侧算好的常量）：
+//
+//	应用侧常量（像 R181 的 turns 列表那样算 $1/$2）要求**应用时钟 ≤ 数据库时钟**，
+//	否则 `NOW() - Nh`（DB 时钟）可能比应用算出的下界更早 ⇒ ⇒ 会**丢行**。
+//	⇒ ⇒ 本函数允许调用方传**任意 SQL 表达式**作为下界 ⇒ ⇒ 调用方可以传
+//
+//	    (NOW() - ($2 || ' hours')::interval) AT TIME ZONE 'UTC'
+//
+//	★ 它与 ts 谓词**逐字同源** ⇒ ⇒ 由不变式
+//	「partition_date == (ts AT TIME ZONE 'UTC')::date」可**证明**：
+//	凡满足 ts 谓词的行，其 partition_date 必然 >= 该表达式的日期值
+//	⇒ ⇒ **下界是 ts 谓词的蕴含条件 ⇒ ⇒ 不丢任何一行** ★
+//	★ 且 `now()` 是 STABLE ⇒ 语句内取值恒一 ⇒ ⇒ 与 ts 谓词里的 NOW() **同一时刻** ★
+//
+// ★★ PG 的裁剪时机（★ 实测，别猜）：
+//
+//	· 参数值在**规划期**已知（custom plan / 常量）⇒ **计划期**裁剪
+//	  ⇒ Append 里**根本不含**被裁的分区；
+//	· 参数值**规划期未知**（generic plan，pgx 语句缓存走的就是这条路）
+//	  ⇒ **运行期**裁剪 ⇒ Append 里仍列着被裁的子计划，但报 `Subplans Removed: N`
+//	  ⇒ ⇒ **两种模式下都真的不扫那些分区** ★
+//
+// ★ 详情侧（session_turn_details）也要带下界，否则它仍然全扫：
+//   JOIN 条件里已经有 `d.partition_date = t.partition_date`，而 t 侧被限在
+//   partition_date >= pdFrom ⇒ ⇒ d.partition_date 也必然 >= pdFrom
+//   ⇒ ⇒ 在 ON 子句里再加一条是**逐行等价的冗余谓词**（不是新筛选）⇒ ⇒ 零风险。
+//   ★ 放在 ON 而不是 WHERE：★ LEFT JOIN 的 ON 子句里加条件**不改变**结果集
+//   （左行照样保留）⇒ ⇒ 语义与「不加」完全一致 ⇒ ⇒ 零风险。
+//
+// ★ 参数：★ pdFrom 是要拼进两臂的**SQL 片段**（可以是常量，也可以是表达式）
+//   ★ 由调用方决定 ⇒ ⇒ 本包不感知参数位置。
+//
+// ★ 返回值不带外层别名（调用方自己加，如 ` rl`）。
+func SessionFamilyTurnsSourceLowerBoundSQL(pdFrom string) string {
+	if strings.TrimSpace(pdFrom) == "" {
+		// ★ 空下界 ⇒ 退化成原形态（不加谓词）⇒ 宁可「没裁剪」也不要「拼出坏 SQL」。
+		return SessionFamilyTurnsSourceSQL()
+	}
+	win := " WHERE t.partition_date >= " + pdFrom
+	joinWin := " AND d.partition_date >= " + pdFrom
+	return "(SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns_hot t" +
+		" LEFT JOIN public.session_turn_details_hot d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" + joinWin +
+		win +
+		" UNION ALL SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns t" +
+		" LEFT JOIN public.session_turn_details d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" + joinWin +
+		win + ")"
+}
+
 // SessionFamilyTurnsSessionExistsSQL 返回「**外层会话 s** 是否含有满足 colPred 的轮次」
 // 的**两腿 EXISTS**（hot 腿 ∪ 父表腿），供会话级过滤（`?api_key_id=` / `?model=` /
 // `?provider=` / `?status_code=`）使用。
