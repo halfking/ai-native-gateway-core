@@ -26860,3 +26860,5 @@ nativepair 厂商感知后，anthropic 腿 IRStamp 测试的老正臂（minimax-
 ★★ **通式六：★ 「全量跑才红」不进具名基线**。★ `sanitizerules` 的 `TestReviewedEventsAreLinkedInPublicationTransaction` 在 count=2 时偶发、count=1 稳定绿 ⇒ 不进基线（进了就会把 flaky 洗成常态）⇒ 如实记在审计档，属另一条工作线（flaky 定性）。
 
 ★★ **通式七：★ 跨架构跑同一门会整片假红 ⇒ CI 上只跑静态自证腿，实测比对腿留在对应平台**。★ Windows 基线门在 Linux CI runner 上裸跑 = Windows 专属失败集不在 Linux 复现 ⇒ 整片假红 ⇒ CI 只做 `bash -n` + JSON 可解析断言 ⇒ ⇒ **门拆「判据自证」与「事实比对」两腿，是跨平台接线的默认形态**。
+
+★★（§550 续 · 审计轮补记）**通式七（★★ 「清洗类」错误处理要与既有机制逐字对齐，且判据要断言「脏东西不出现」而不是「长度合格」）** —— 新写的 DB 错误处理没对齐 postgres.go 的 storeError：① no-rows 判 `pgx.ErrNoRows` 而 database/sql 通道实际返回 `sql.ErrNoRows` ⇒ 判据恒不命中（首插误报 WARN、缺单 503 而非 404）；② 「清洗」只按分隔符截断驱动消息，没有分隔符时**参数原文照传** ⇒ 而配套判据只断言长度 ≤120 ⇒ **恒绿**（长度合格 ≠ 没泄密）⇒ ⇒ ★★ 同包里已有成熟机制时，新代码应当**复用它**而不是平行实现；★★ 泄密类判据的断言必须是「秘密词不出现」这种**阴性断言**，不是形状断言。★ 附带：复用 storeError 时注意它**无 nil 守卫**（成功路径直传 nil 才安全——本轮就写反了一处，被自己的判据当场抓红）。

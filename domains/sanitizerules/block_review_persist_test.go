@@ -18,12 +18,12 @@ import (
 
 // fakeReviewPersistence 是可注入失败的最小持久化实现。
 type fakeReviewPersistence struct {
-	mu       sync.Mutex
-	rows     map[int64]BlockReview
-	nextID   int64
-	releases []EgressRelease
+	mu        sync.Mutex
+	rows      map[int64]BlockReview
+	nextID    int64
+	releases  []EgressRelease
 	hardblock []HardBlockAllow
-	hbFound  bool
+	hbFound   bool
 
 	errDedupe, errInsert, errList, errGet, errDecide, errUpsert, errDelete, errLoadReleases, errLoadHB, errSaveHB error
 }

@@ -16,24 +16,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 )
-
-func sanitizeDBErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
-	}
-	msg := err.Error()
-	// 驱动错误可能携带参数原文（含被拦载荷）；只留错误类型描述。
-	if idx := strings.Index(msg, " - "); idx > 0 {
-		return errors.New(msg[:idx])
-	}
-	return errors.New(msg)
-}
 
 func (s *PostgresStore) FindPendingBlockReview(ctx context.Context, tenantID, scope, rule, digest, requestID string) (BlockReview, bool, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, client_type, scope, rule_id, rule_name, reason, field_path, payload_digest, request_id, match_detail, status, created_at, decided_by, decided_at
@@ -41,11 +24,11 @@ FROM sanitize_block_reviews
 WHERE status='pending' AND tenant_id=$1 AND scope=$2 AND rule_id=$3 AND payload_digest=$4 AND request_id=$5
 ORDER BY id DESC LIMIT 1`, tenantID, scope, rule, digest, requestID)
 	r, err := scanBlockReview(row)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNotFound) {
 		return BlockReview{}, false, nil
 	}
 	if err != nil {
-		return BlockReview{}, false, sanitizeDBErr(err)
+		return BlockReview{}, false, storeError("block review dedupe read", err)
 	}
 	return r, true, nil
 }
@@ -59,7 +42,7 @@ func (s *PostgresStore) InsertBlockReview(ctx context.Context, r BlockReview) (B
 		r.Digest, r.RequestID, r.MatchDetail, BlockReviewPending, r.CreatedAt)
 	out, err := scanBlockReview(row)
 	if err != nil {
-		return BlockReview{}, sanitizeDBErr(err)
+		return BlockReview{}, storeError("block review insert", err)
 	}
 	return out, nil
 }
@@ -80,26 +63,29 @@ FROM sanitize_block_reviews WHERE TRUE`
 	q += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", len(args))
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, sanitizeDBErr(err)
+		return nil, storeError("block review list read", err)
 	}
 	defer rows.Close()
 	out := make([]BlockReview, 0, limit)
 	for rows.Next() {
 		r, err := scanBlockReview(rows)
 		if err != nil {
-			return nil, sanitizeDBErr(err)
+			return nil, storeError("block review list read", err)
 		}
 		out = append(out, r)
 	}
-	return out, sanitizeDBErr(rows.Err())
+	return out, storeError("block review list read", rows.Err())
 }
 
 func (s *PostgresStore) GetBlockReviewDB(ctx context.Context, id int64) (BlockReview, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, client_type, scope, rule_id, rule_name, reason, field_path, payload_digest, request_id, match_detail, status, created_at, decided_by, decided_at
 FROM sanitize_block_reviews WHERE id=$1`, id)
 	r, err := scanBlockReview(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return BlockReview{}, ErrNotFound
+	}
 	if err != nil {
-		return BlockReview{}, sanitizeDBErr(err)
+		return BlockReview{}, storeError("block review get", err)
 	}
 	return r, nil
 }
@@ -109,7 +95,7 @@ func (s *PostgresStore) DecideBlockReviewDB(ctx context.Context, id int64, statu
 SET status=$2, decided_by=$3, decided_at=$4
 WHERE id=$1 AND status='pending'`, id, status, decidedBy, decidedAt)
 	if err != nil {
-		return BlockReview{}, sanitizeDBErr(err)
+		return BlockReview{}, storeError("block review decide", err)
 	}
 	if affectedRows, _ := tag.RowsAffected(); affectedRows == 0 {
 		// 不存在，或已被决定（幂等语义：重复决定不再改写）。
@@ -131,7 +117,10 @@ func (s *PostgresStore) UpsertEgressReleaseDB(ctx context.Context, r EgressRelea
    source=EXCLUDED.source, created_at=EXCLUDED.created_at, expires_at=EXCLUDED.expires_at`,
 		r.TenantID, r.Scope, r.Rule, r.PayloadDigest, r.ClientType, r.ApprovedBy,
 		releaseSourceOrManual(r.Source), time.Now().UTC(), r.ExpiresAt.UTC())
-	return sanitizeDBErr(err)
+	if err != nil {
+		return storeError("egress release upsert", err)
+	}
+	return nil
 }
 
 func releaseSourceOrManual(source string) string {
@@ -161,7 +150,7 @@ WHERE tenant_id=$1 AND scope=$2 AND rule_id=$3 AND payload_digest=$4`, tenantID,
 		err = execErr
 	}
 	if err != nil {
-		return false, sanitizeDBErr(err)
+		return false, storeError("egress release delete", err)
 	}
 	return deleted > 0, nil
 }
@@ -170,7 +159,7 @@ func (s *PostgresStore) LoadEgressReleasesDB(ctx context.Context) ([]EgressRelea
 	rows, err := s.db.QueryContext(ctx, `SELECT tenant_id, scope, rule_id, payload_digest, client_type, approved_by, source, created_at, expires_at
 FROM sanitize_egress_releases`)
 	if err != nil {
-		return nil, sanitizeDBErr(err)
+		return nil, storeError("egress release boot load", err)
 	}
 	defer rows.Close()
 	out := []EgressRelease{}
@@ -179,7 +168,7 @@ FROM sanitize_egress_releases`)
 		var r EgressRelease
 		var createdAt, expiresAt sql.NullTime
 		if err := rows.Scan(&r.TenantID, &r.Scope, &r.Rule, &r.PayloadDigest, &r.ClientType, &r.ApprovedBy, &r.Source, &createdAt, &expiresAt); err != nil {
-			return nil, sanitizeDBErr(err)
+			return nil, storeError("egress release boot load", err)
 		}
 		r.ExpiresAt = expiresAt.Time
 		// 已过期行不进内存表（写侧也不再保留）。
@@ -188,18 +177,18 @@ FROM sanitize_egress_releases`)
 		}
 		out = append(out, r)
 	}
-	return out, sanitizeDBErr(rows.Err())
+	return out, storeError("egress release boot load", rows.Err())
 }
 
 func (s *PostgresStore) LoadHardBlockState(ctx context.Context) ([]HardBlockAllow, bool, error) {
 	var raw []byte
 	var updatedBy string
 	err := s.db.QueryRowContext(ctx, `SELECT rules, updated_by FROM sanitize_hardblock_state WHERE singleton=TRUE`).Scan(&raw, &updatedBy)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
-		return nil, false, sanitizeDBErr(err)
+		return nil, false, storeError("hardblock state read", err)
 	}
 	// ★ 迁移 917 会种下一行默认记录（rules='[]'、updated_by=''）——那不是
 	// 「管理员保存了空清单」，是「从未被管理面保存过」。判据用 updated_by：
@@ -212,7 +201,7 @@ func (s *PostgresStore) LoadHardBlockState(ctx context.Context) ([]HardBlockAllo
 	}
 	var items []string
 	if err := json.Unmarshal(raw, &items); err != nil {
-		return nil, false, sanitizeDBErr(err)
+		return nil, false, storeError("hardblock state parse", err)
 	}
 	allows, err := ParseHardBlockAllows(strings.Join(items, ","))
 	if err != nil {
@@ -234,7 +223,10 @@ func (s *PostgresStore) SaveHardBlockState(ctx context.Context, allows []HardBlo
 VALUES (TRUE, $1::jsonb, $2, now())
 ON CONFLICT (singleton) DO UPDATE SET rules=EXCLUDED.rules, updated_by=EXCLUDED.updated_by, updated_at=now()`,
 		string(raw), updatedBy)
-	return sanitizeDBErr(err)
+	if err != nil {
+		return storeError("hardblock state save", err)
+	}
+	return nil
 }
 
 // scanBlockReview 是列序的唯一真值源：查询列序与这里逐字对应。
