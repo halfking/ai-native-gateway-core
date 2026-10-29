@@ -15704,3 +15704,48 @@ guards-win-baseline` + CI 载体静态自证腿（Linux 裸跑实测腿=整片�
 > 不动作；PG ERROR 均为运维 ad-hoc 诊断 SQL。
 > ⇒ 审计档 `docs/audit/2026-10-29-24h审计第7轮-合并收口与211生产三修.md`；
 > 通用式见 `LESSONS.md` **§568**。
+
+> **2026-10-29 第 46 增量：会话闸与列表塌陷轮—— ★★★「自家派生的 ID 会撞上自家的守卫」；★★「压缩命中 0」的第一问不是「没有压缩需求」；★★ 同一根因的两份实现必须**退役一份**而不是并存；★★ 附图落点在**客户端渲染层**（不在本网关仓）**（goal 会话）**：
+> ★ 用户报「网关会在**某些时刻**输出如附图的结果」（★ 深色 agent 聊天界面里 markdown 列表被压成
+> **一列单字符**、★ 且每个 bullet **逐级右移**，★ 而上方 `PROJECT:` / `GOAL:` 段落正常）⇒ ★★ 本轮把
+> **两件事分开归因**（★ 混在一起会把「已修的」说成「已修附图」）★★。
+> ⇒ ★ **缺陷 A（网关真实缺陷 · 已修已部署）**：客户端发 `session_<32hex>` ⇒ `internal/sessionid.DeriveGatewayID`
+> 派成 `gw_session_*` ⇒ `domains/hooks/compression/session_id_validator.go` 的 forbidden **子串**闸把
+> **网关自有命名空间**判死 ⇒ Prepare 降级为「无会话模式」+ CommitFinal 直接报错 ⇒ 缓存永不落地 ⇒
+> ★★ 读数：`gw_session_*` 命名空间 **7124 轮压缩命中 0**（★ 同期其它 `gw_*` 131283 轮正常）、★
+> 出站消息数 **≈76 倍膨胀**（★ avg 531 / max 1598 vs avg 7 / max 167）、★ 相邻轮次 1↔548 震荡、★
+> `invalid session_id` **57 次/小时**。★★ ⇒ ★ 修法：**per-keyword 窄豁免**（★ 上游并行会话 `02845e210`
+> 的 `keywordPrefixWithEntropy`：★ 仅 `session` 关键字享有「前缀段 + 分隔符 + ≥8 位非占位尾」豁免）★★
+> ⇒ ★★ ★ 本会话独立产出的**形态闸**（★ 结尾 ≥16 位连续 hex 即放行）经对拍后**主动退役**（★ 理由三条：
+> ★ ① 功能重复＝两条真相源；★ ② 更宽 ⇒ `test_`/`demo_` 也被放行 ⇒ **守卫被削弱**，★ 与 `LESSONS.md §568`
+> 「豁免必须窄到『有真实熵的前缀惯例』且**每种关键字单独裁决**」冲突；★ ③ 更严 ⇒ 会误杀生产里真实存在的
+> `session_<uuid-with-dashes>` 形态 ⇒ **修好 A 的同时打死 B**）★★ ⇒ ★★ 保留**非重复**的两项贡献：
+> ★ ① **e2e 整路径覆盖**（★ 上游补的是校验器单测 7 用例；★ 本会话补 `Prepare`→`CommitFinal`→**缓存里
+> 真查得到条目** ＋ **反向自证**真占位符 `test-session-123` 仍走降级路径）；★ ② **生产真实 ID 全集复核**
+> （★ 211 库 47 个 distinct / 7448 轮，★ 逐个喂**真实实现**而非复制判据 ⇒ **47/47 放行**，★ 含 2 个
+> uuid-with-dashes 形态）。
+> ⇒ ★ **211 生产读数（当前构建 `008546aa`）**：`invalid session_id` **57/h → 0**；★
+> `final cache commit failed` **57/h → 0**；★ `gw_session_*` 压缩命中 **0 → 9 条/2h**，★
+> token 节省 **76.4% / 81.5% / 87.5%**（★ 313606→57934 / 511321→64165 / 280588→66104），★
+> semantic_fidelity 0.73~1.00。
+> ⇒ ★ **附图（客户端落点 · 非本网关仓）**：★ 三条**互相独立**的证据证「网关返回字节干净」（★ ① 211 库
+> **21958** 条 `response_preview` 全量正则：★ 「连续 ≥10 行 ≤2 字符」与「连续 ≥10 行单字符」形态**各 0 条**；
+> ★ ② IR 层解析→序列化**字节级**（★ markdown 列表与换行原样保留）；★ ③ 具体会话 turn 129644 回读）★★
+> ⇒ ★ 成因在 MCode 客户端 CSS：★ `.message-content`（★ `flex-1` ＋ `overflow-hidden` ⇒ **flex 自动最小尺寸
+> 被置 0**）★ 被 `flex:none` ＋ **736px 固定宽兄弟**挤到 0 宽 ＋ `li` 的 `word-break:break-word` ⇒
+> **逐字断行** ＋ 嵌套 `ul` 的 `margin-left:1.2em` ⇒ **bullet 逐级右移** ★★ ⇒ ★ **量化阈值**（★ 浏览器
+> 7 档实测）：★ `.message-content` 实宽 ≲ **164px**（★ 视口 ≲ **900px**）⇒ 列表项逐字断行；≲ **700px**
+> ⇒ 宽 0 完全塌陷 ⇒ ★★ ⇒ 「**某些时刻**」= **当时视口宽度 / 兄弟占位布局**决定，★ 与网关逻辑分支无关 ★★
+> ⇒ ★ 落点：★ 本仓 `web/`、`web-mobile/`、`llm-gateway-client/`、`ai-session-manager` **均无该 markdown
+> 渲染器**（★ `ConversationMessagesPanel.vue` 是 `<pre>` 纯文本）⇒ ★★ **本仓无法提交该修复**，★
+> 审计档交付**定位 + 复现 + 5 条客户端 CSS 修复建议**（★ 兄弟改可收缩 / 正文容器给宽度下限 /
+> grid item 补 `min-width:0` / `li` 断行属性改 `word-break:normal` / 缩进改 padding 叠加上限）。
+> ⇒ ★ **全仓回归的红的归属（★ 别重复排查）**：`go test ./...` 全仓 **5 个包红**（★ `admin` 10 /
+> `address_family_decision_audit` 1 / `jsonbguard` 1 / `nodestatecache` 1（★ 性能门）/ `ursmcheck` 9）★
+> ⇒ ★★ **逐条在 `origin/main` 干净 worktree 上复现** ⇒ ★★ **与本轮改动无关**（★ 本轮只加 1 个测试
+> 文件 + 3 个文档）★★ ⇒ ★ 典型形态是**台账 md5 / 快照 / 清单与磁盘脱节**，★ 属并行会话在途改动，
+> ★ **共享台账本轮一律不碰**。
+> ⇒ ★ **本轮明确没做**：★ 客户端 CSS 修复本身；★ 211 PG 连接打满（★ `max_connections=100`、★ 网关日志
+> 未出现该错 ⇒ **未定性**）；★ `normalizeOpenAIStreamContent` 的无分隔符拼接（★ 既有语义、★ 非成因）；
+> ★ `outputcompliance` 帧重建路径（★ 未证实与附图相关）。
+> ⇒ ★ **通用式见 `LESSONS.md` **§570**（6 条；★ 让号记录：★ 初拟 §569 ⇒ ★ push 前 fetch 实测上游已占 §569 ⇒ ★★ 改取 §570）；★★ 审计档 `docs/audit/2026-10-29-会话闸与列表塌陷轮.md`。
