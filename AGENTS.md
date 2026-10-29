@@ -16237,3 +16237,38 @@ symlink×2/路径断言×2 + discovery 组播）/ vue-tsc 0 错 / vitest 2949 �
 > 门的位置也是语义——排在存在性裁决之前的门把 404/500 整族遮蔽成自己的状态码）。
 
 **2026-10-30 第51 增量：r1049 B级缓存隔离合并后补闭环**（会话 `mvs_fa34e3337b364fbeb9bc961fac211729`）：★ 合并上游新增 `scripts/deploy-test-gate.sh`（直接 `go test`）后，在管编译型脚本按不同快照 **164 →165**；历史164 不删不改。★ 初版“登记簿改165 +复制前导块”静态两把尺已一致165，却被运行期验证器抓到 **164/165**、洞即该脚本。★ 根因：脚本前导块漏掉 `PRELUDE_MARK` 中 `r1048` 与 `轮`之间的 ASCII 空格，故落在 `other` 而非 `prelude-shell`；不放宽探针猜相似文本，只修脚本接入既有受验证形态。★ 修后：门作用域165、两把尺逐个一致165、运行期 **165/165**、洞0、失败安全3/3、排除目录 docs8/8 / web0/0 / web-mobile0/0；r1048变异台 **9/9**（M14 精准红判据⑥，B99还原绿）。★ 通式：精确计数是集合读数不是豁免开关；静态门、独立尺、运行期探针必须同时闭环。
+ **2026-10-30 24h 审计第 7 轮·续：品牌红收口 + model-quality 三层断链根修 + backfill keyset + per-node IQ 两道闸**（goal 会话，与第 8 轮并行推进）：
+ ★ 承接第 5 轮移交的 `theme.logoAssets` 2 红（品牌轮 14h 无动作 ⇒ 按用户固定预期代收）⇒
+ `6cc313eee` 按 rule 70 有意替换为 SSOT 紫金**全画布徽章**（不透明覆盖 95.4%、亮 luma 139.5 /
+ 暗 64.1），同提交的测试合同仍断言旧经典资产的透明底字形语义 ⇒ **断言重铸为设计无关不变量**
+ （不透明覆盖率 ≥85% + 四角圆角透明防满铺方块 + 亮暗 luma 分带差距 ≥30），10/10 绿（a03ca0395）。
+ ⇒ ★★ **model-quality「8787 死端口」三层断链（本轮最值钱的发现）**：① worker/invoker 硬编码
+ `http://localhost:8787`（从未存在的端口）⇒ 改 `loopback.GatewayBase()`（3be5986ef）；
+ ② **部署后实测日志仍是 8787** ⇒ `settings` spec Default 经 `EffectiveValue` 走 default 链
+ 把旧值顶回，main.go 的空判分支永不触发 ⇒ **worker 侧修法是死代码** ⇒ 改 spec Default 为空 +
+ main.go 不再落 8787（6680908aa）—— ★★★ **「修了默认值」≠「默认值生效」：settings 链
+ （DB→env→spec default）是第三层入口，断一层其余两层照常供数**；③ 修好后 211 首跑
+ per-node IQ 仍 365/365 全 fail ⇒ `providers.base_url` 注册时自带版本段（/v1、/v4），
+ 直连调用器硬拼 `/v1/chat/completions` ⇒ `/v1/v1/...` ⇒ 两处 URL 全改走
+ `upstreamurl.Build` SSoT（a91f87ba5，apigpt/gpt-5.6-luna 当场 50/50 满分）。
+ ⇒ ★★ **session_summaries backfill chunk 窗口聚合 = 245 部署 blocker 根因**：
+ 252 实测 909k 行表 395k 待回填，`max(session_key) OVER ()` 迫使 planner 从 pkey
+ 顺序扫全 NULL 集（16 万 Buffer / 12s > 5s statement_timeout）⇒ chunk 永远烧穿 ⇒
+ ApplyMigrations 两次重试各烧穿 10min 预算 ⇒ "postgres disabled" ⇒ 候选槽数活 600s 超时
+ （journal 33 次重试全 57014 实锤）⇒ **修为 keyset 分页子查询**（有序 LIMIT、watermark 取
+ 返回末位；EXPLAIN 实测 1.3s 内收敛），契约测试钉住窗口列消亡（448495e0f）⇒ 245 部署
+ 切换 599s 通过、252 backfill 跨 boot 收敛（548k/910k）。
+ ⇒ ★ **per-node IQ 两道闸（用户指令「参考其它模型确认提高可信度」的落地前提）**：
+ 能力维/同伴对比/校准全从 `model_iq_runs` 取数，唯一写入方是 per-node IQ，但它无范围无去重
+ （全量 ~3500 绑定 × 每次重跑）⇒ `DiscoverPerNodeTargets` 加 **featured 收窄**
+ （routing_policy.featured_models，211 实测 460 目标）+ **24h 成功实测去重窗**
+ （ef9b45ca2）；首版把 WHERE 塞进 featured 片段 ⇒ 双 WHERE 42601（211 重启实锤）⇒
+ JOIN 片段与条件片段分离装配（ab991d615）；211 `enable_per_node=true` 已开，
+ IQ 数据流入（19 success / node_iq_latest 7 节点，失败=真实 model_not_found 如实留痕）。
+ ⇒ ★ **部署**：211 五轮（466f118f/a91f87ba 两线并行会话交错）+ 245（a91f87ba，
+ CGO=0 预编译二进制走 `LLM_GATEWAY_PREBUILT_BINARY`——base 镜像四源皆不可达时的既有逃生舱）
+ + 154（ede0c5f7 含全部修复）；三台 readyz/公网全绿；154 两次被并行部署锁阻塞（等锁重试）。
+ ⇒ ★★ **本轮没做 / 留给下一轮**：score.Error 未从 report.Results 提取（失败行 error 列空，
+ 排障要翻 report 文件）；featured 清单含 EOL 模型（运维清理）；`-dirty` 后缀对
+ menu-config.json 这类「构建即再生」产物未豁免（VERSION 三件套已豁免）；245/154 的
+ enable_per_node 未开（先在 211 观察一轮 token 成本）。
