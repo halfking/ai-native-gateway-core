@@ -70,7 +70,22 @@ gocache_use() {
   fi
   local dir="$root/.build-local/.gocache-$purpose"
 
-  mkdir -p "$dir" 2>/dev/null || true
+  # ★★★★ **失败安全**（★ r1047 轮加的 · ★ r1048 轮补齐）：★★★★ 专用目录
+  # ★★★★ **建不出来**或**不可写**时 ⇒ ⇒ ★★★★ **不许 export GOCACHE** ⇒ ⇒ ★★★★
+  # ★★★★ 因为 go 拿到一个**不可用**的 GOCACHE 会直接报
+  # ★★★★ `failed to initialize build cache` ⇒ ⇒ ★★★★ ⇒ **脚本直接坏掉**
+  # ★★★★ ⇒ ⇒ ★★★★ 而「脚本坏掉」比「这次没隔离」**严重得多** ⇒ ⇒ ★★★★ ⇒
+  # ★★★★ ⇒ **宁可漏隔离，也不许把脚本弄坏**（★ 与仓内「★ 清理是卫生问题，
+  # ★★★★ ★★ 不该让它变成判据问题」那条纪律**同款**）。
+  # ★ ★★ **为什么「不可写」也要查**（★ r1048 轮运行期实测逼出来的）：★★ ★★ 只查
+  # ★ ★★ 「目录在不在」是**不够的** ⇒ ⇒ ★★ 因为目录**早就建好了**（★ 上一次跑过）
+  # ★ ★★ ⇒ ⇒ ★★ `mkdir -p` 会**成功**（★ 幂等）⇒ ⇒ ★★ ⇒ 「在不在」这一条**判绿**
+  # ★ ★★ ⇒ ⇒ ★★ ⇒ 而那个目录**其实不可写** ⇒ ⇒ ★★ ⇒ go 照样会报错 ⇒ ⇒ ★★ ⇒
+  # ★ ★★ ⇒ **脚本照样坏掉** ⇒ ⇒ ★★ ⇒ 所以必须查**可写性**（★ `-w`）。
+  if ! mkdir -p "$dir" 2>/dev/null || [ ! -d "$dir" ] || [ ! -w "$dir" ]; then
+    echo "★ 专用构建缓存 $dir 建不出来或不可写 ⇒ ⇒ 本次**不设** GOCACHE（★ 回落用环境里的那个 ⇒ ⇒ 脚本照常跑）" >&2
+    return 0
+  fi
 
   # ★ 把住尺寸（★ 每个脚本跑一次 ⇒ 代价可接受）。
   local kb
@@ -90,6 +105,14 @@ gocache_use() {
 
 # ★★ **直接执行**（★ `gocache.sh <purpose>`）⇒ ⇒ 剪枝并**打印** GOCACHE 路径。
 # ★★ 供调用方 `export GOCACHE="$(…/gocache.sh mutate)"` 使用 ⇒ ⇒ **深度无关**。
+# ★★
+# ★★ **为什么这个形态【不】做「失败就不打印」**：★★ ★★ 因为 r1047 轮已经用这个形态
+# ★★ 接了 **15 个 shell 文件** ⇒ ⇒ ★★ 而「不打印」⇒ ⇒ 调用方拿到
+# ★★ `GOCACHE=""` ⇒ ⇒ ★★ go 会报 `GOCACHE is not an absolute path` ⇒ ⇒ ★★ **脚本坏掉**
+# ★★ ⇒ ⇒ ★★ ⇒ **静默地把已接好的脚本弄坏，比「没隔离」严重得多** ⇒ ⇒ ★★ ⇒
+# ★★ ⇒ 所以这里【照旧打印】⇒ ⇒ ★★ 而「失败安全」交给**函数形态**
+# ★★ （★ `gocache_use` ⇒ ⇒ 建不出来就**不 export** ⇒ ⇒ 调用方的 go 子进程
+# ★★ ⇒ ⇒ 照常用环境里那个 ⇒ ⇒ **脚本照常跑**）。
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   _gocache_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -z "$_gocache_root" ]; then
@@ -97,7 +120,9 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   fi
   _gocache_purpose="${1:-default}"
   _gocache_dir="$_gocache_root/.build-local/.gocache-$_gocache_purpose"
-  mkdir -p "$_gocache_dir" 2>/dev/null || true
+  if ! mkdir -p "$_gocache_dir" 2>/dev/null || [ ! -d "$_gocache_dir" ]; then
+    echo "★ 专用构建缓存 $_gocache_dir 建不出来 ⇒ ⇒ 本次隔离**可能不生效**（★ 不影响脚本继续跑）" >&2
+  fi
   _gocache_kb=$(du -sk "$_gocache_dir" 2>/dev/null | awk '{print $1}')
   if [ -n "$_gocache_kb" ] && [ "$_gocache_kb" -gt $((GOCACHE_MAX_BYTES / 1024)) ]; then
     echo "★ 专用构建缓存 $_gocache_dir 超上限 ⇒ 整个删掉重建（★ 这轮是冷编译）" >&2

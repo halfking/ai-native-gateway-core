@@ -1,4 +1,22 @@
 #!/usr/bin/env python3
+# ★★ r1048 轮（★ 2026-10-29）：★ 本脚本在【宿主】上编译 Go ⇒ ⇒ 子进程会往 Go 的
+# ★★ 构建缓存里写产物 ⇒ ⇒ 而那个缓存默认是【用户那个全局的】⇒ ⇒ 必须指向【专用缓存】
+# ★★ （★ 目录约定与 6 GB 上限见 `scripts/lib/gocache.py`；★ 理由与实测读数见
+# ★★ `internal/gocache` 的包注释 ⇒ ⇒ ★★ 实测：★ **单包** `go test ./admin/` 就要
+# ★★ **846 MB** ⇒ ⇒ ★★ 体积由【传递依赖闭包】决定 ⇒ ⇒ ★★ 按「编译范围」分层不成立）。
+# ★★ 【失败安全】：★ 找不到共享入口 ⇒ ⇒ **不设 GOCACHE**（★ 宁可漏隔离 ⇒ ⇒ 也不要把
+# ★★ GOCACHE 设成垃圾值 ⇒ ⇒ 那会让 go 直接报错 ⇒ ⇒ 把脚本弄坏）。
+import os as _gocache_os
+import sys as _gocache_sys
+_gocache_dir = _gocache_os.path.dirname(_gocache_os.path.abspath(__file__))
+while _gocache_dir != "/" and not _gocache_os.path.isfile(
+        _gocache_os.path.join(_gocache_dir, "scripts", "lib", "gocache.py")):
+    _gocache_dir = _gocache_os.path.dirname(_gocache_dir)
+_gocache_lib = _gocache_os.path.join(_gocache_dir, "scripts", "lib")
+if _gocache_os.path.isfile(_gocache_os.path.join(_gocache_lib, "gocache.py")):
+    _gocache_sys.path.insert(0, _gocache_lib)
+    import gocache
+    gocache.apply_to_environ("script")
 # -*- coding: utf-8 -*-
 """r1039 混拼形态的【端到端 A/B】—— 真二进制、真 HTTP、真模型。
 
@@ -75,8 +93,13 @@ SECRET = "MIXEDWIDTH-PROBE-9F3A2B7C"
 
 GOENV = dict(os.environ)
 GOENV["PATH"] = os.path.expanduser("~/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.2.darwin-arm64/bin") + ":" + GOENV.get("PATH", "")
+# ★★ r1048 轮（★ 2026-10-29）：★★ 原来的 `GOCACHE=os.path.expanduser("~/sdk/gocache")`
+# ★★ 是**仓外的用户目录** ⇒ ⇒ ★★ ⇒ 它会**覆盖掉**前导块刚设好的【专用缓存】
+# ★★ ⇒ ⇒ ★★ ⇒ 「文件里有没有专用证据」这个判据**照样绿** ⇒ ⇒ ★★ ⇒ **假绿**
+# ★★ ⇒ ⇒ ★★ ⇒ 所以这里删掉那一项（★ 前导块已经**无条件**把 GOCACHE 指向专用目录了）
+# ★★ ⇒ ⇒ ★★ ⇒ ⇒ `dict(os.environ)` 天然带上了那个专用目录。
 GOENV.update(GOPROXY="https://goproxy.cn,direct", GOMODCACHE=os.path.expanduser("~/sdk/gomodcache"),
-             GOCACHE=os.path.expanduser("~/sdk/gocache"), GOTOOLCHAIN="local", CGO_ENABLED="0")
+             GOTOOLCHAIN="local", CGO_ENABLED="0")
 
 
 def build(tree: pathlib.Path, out: pathlib.Path) -> None:
