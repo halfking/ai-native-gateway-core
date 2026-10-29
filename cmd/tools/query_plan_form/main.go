@@ -223,6 +223,8 @@ type armScan struct {
 // ★ ★ ★   Index Scan using session_turns_2026_10_ts_idx (Index Cond: ts …)  ← ★ 装数据的分区
 // ★ ★ ★         Filter: (CASE WHEN api_key_id ~ '^[0-9]+$' THEN api_key_id::bigint END = 113)
 // ★ ★ ★   Seq Scan on session_turns_2026_07 / _08                            ← ★ 窗口裁不掉的旧月分区
+// ★ ★ ★   ★★★ R180 轮实测更正：★ 被扫的分区【全是 0 行】（★ 2026_07 / _08 / _11 / default）
+// ★ ★ ★   ⇒ ⇒ ★★ 「出现了 Seq Scan」**不等于**「慢」★★ ⇒ ⇒ 代价取决于【被扫分区的行数】。
 // ★ ★ ★ ⇒ ★ 旧判据把整条记成 `seq-scan` ⇒ ★★ 而**承载数据的那次扫描明明是索引扫描**。★★
 //
 // ★ ② ★★ **`Rows Removed by Filter` 是【执行期】统计** ⇒ ★ 我们用 `EXPLAIN`（★ 不带 ANALYZE）
@@ -237,8 +239,13 @@ type armScan struct {
 //	④ 主体是索引扫描、但**节点上还有残留 Filter** ⇒ `filter`（★ 索引没接住谓词）
 //	⑤ 主体是索引扫描、且**没有残留 Filter** ⇒ `seek`（★ 谓词全在 Index Cond 里）
 //
-// ★ 另记：★ 主体之外**还有几个会话族关系被顺序扫描**（★ 通常是「时间窗裁不掉的旧月分区」）
+// ★ 另记：★ 主体之外**还有几个会话族关系被顺序扫描**
 // ★ ⇒ ⇒ 这一项单独记进 TSV ⇒ ⇒ 「旧分区没被裁掉」这个事实不会因为分类修正而丢失。
+// ★★ R180 轮实测更正（★ 见 docs/audit/2026-10-29-R180-生产代价轴.md §7）：★★
+// ★★ 252 上被顺序扫描的那几个分区（★ 2026_07 / _08 / _11 / default）**全是 0 行**
+// ★★ ⇒ ⇒ ★★ **空分区上的 Seq Scan 代价 ≈ 0** ⇒ ⇒ ★★ 「出现了 Seq Scan」**不等于**「慢」
+// ★★ ⇒ ⇒ ★★ 真正的代价取决于【被扫分区的【行数】】，★ 而不是「扫没扫」
+// ★★ ⇒ ⇒ ★★ 所以【慢不慢】只能由【代价轴】判（★ 形态轴没有行数 ⇒ 判不了慢）。
 func classify(root planNode) (string, []armScan, string, string, int) {
 	var scans []armScan
 	var walk func(n planNode)
@@ -551,7 +558,7 @@ func main() {
 	out.WriteString("# ★ 列：shape_id\tenv\tplan_form\tindex_names\tarm_scans\tindex_cond_cols\tfilter_cols\trows_removed_by_filter\tplan_rows\tplanning_ms\tsource\tparams\tnote\tdominant_rel\tdominant_filter\tother_seq_rels\n")
 	out.WriteString("# ★ plan_form 判据：★ 主体 = 承载行数的那次会话族扫描（★ Plan Rows 最大）★ ⇒ 主体是顺序扫描 ⇒ seq-scan；★ 主体是索引扫描且**节点上还有残留 Filter** ⇒ filter；★ 主体是索引扫描且无残留 Filter ⇒ seek\n")
 	out.WriteString("# ★ ★ rows_removed_by_filter 在 EXPLAIN（★ 不带 ANALYZE）下恒为 0（★ 执行期统计）⇒ ⇒ 【不可测】⇒ ⇒ 不参与 plan_form 判定\n")
-	out.WriteString("# ★ dominant_rel = 决定 plan_form 的那次【基表】扫描所在的关系；★ dominant_filter = 该节点上的残留 Filter（★ 判决证据）；★ other_seq_rels = 主体之外**还被顺序扫描**的基表关系数（★ 通常是「时间窗裁不掉的旧月分区」）\n")
+	out.WriteString("# ★ dominant_rel = 决定 plan_form 的那次【基表】扫描所在的关系；★ dominant_filter = 该节点上的残留 Filter（★ 判决证据）；★ other_seq_rels = 主体之外**还被顺序扫描**的基表关系数（★ ★ R180 轮实测：★ 252 上这些分区【全是 0 行】⇒ ★★ Seq Scan 代价 ≈ 0 ⇒ ★★ 「出现了 Seq Scan」≠「慢」★★ ⇒ ★ 慢不慢只能由【代价轴】判）\n")
 
 	for _, sh := range sp.Shapes {
 		if sh.Dynamic {
