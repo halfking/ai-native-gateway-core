@@ -123,6 +123,252 @@ def statement_fingerprint(sql: str) -> frozenset:
     return frozenset(shapes_mod.extract_filter_cols(sql))
 
 
+# ── 排序列抽取（★ 只认【查询级】排序）──────────────────────────────────
+
+# ★★ 口径（★ 写在这里，也写进审计档）：
+#   · 只取【查询级】ORDER BY ⇒ ★ 聚合函数里的 ORDER BY（★ `WITHIN GROUP (ORDER BY x)` /
+#     `OVER (ORDER BY x)` / 函数实参里的 ORDER BY）**不是**查询排序 ⇒ ⇒ 一律不算；
+#   · 只保留**裸列名** ⇒ ★ 剥掉表名/别名限定（★ `rl.ts` ⇒ `ts`）
+#     ⇒ ★ 与同文件 `sql_filter_cols` 同口径（★ 那边也只留列名、也小写）
+#     ⇒ ★ **同一份输出里口径一致**；
+#   · ASC / DESC / NULLS FIRST / NULLS LAST 一律去掉（★ 只留列名，方向不入判据）；
+#   · 序号（★ `ORDER BY 1, 2`）跳过；表达式（★ `ORDER BY count(*)` / `lower(x)` /
+#     `CASE … END`）跳过 ⇒ ★ **不瞎猜**；
+#   · 抽不到 ⇒ 返回**空列表** ⇒ ★ 空 = 「没抽到」，**不是**「没有排序」。
+#
+# ★★ 关于【注释】的口径（★ R180 轮实测踩出来的 ⇒ 别改成「一律按注释切分」）：
+#   生产语句台账由 `regexp_replace(query, '\s+', ' ', 'g')` 生成（★ 见
+#   scripts/audit/collect-canonical-statements.sh）⇒ ⇒ **换行被压成空格**
+#   ⇒ ⇒ `--` 注释的边界在事实源里**已经不可复原**
+#   ⇒ ⇒ 若一律按注释切分（★ 把 `--` 之后整段抹掉）⇒ ⇒ **注释之后的真 SQL 会被一起吞掉**
+#   ⇒ ⇒ 实测 6 条语句的真实排序列（★ `ts` / `day` / `latest_at` …）会变成「没有排序」
+#   ⇒ ⇒ 而「空排序列」在下游（★ 索引覆盖门）会被读成「不需要排序索引」⇒ ⇒ **假绿**
+#   ⇒ ⇒ 所以按**有没有换行**分两种口径（★ 见 _lex）：
+#     · 换行还在 ⇒ `--` 的边界可复原 ⇒ ⇒ **抹掉注释**（★ 注释里的 ORDER BY 不算数）；
+#     · 换行被压掉（★ 本仓生产语句台账就是这种）⇒ ⇒ **不抹注释**
+#       ⇒ ⇒ 代价：注释里若提到 `ORDER BY <列>` 会造成假阳性
+#       ⇒ ⇒ 实测：当前事实源 104 条里**零**处注释提及 ORDER BY（★ 见审计档读数）
+#       ⇒ ⇒ 假阳性的后果是【多要一条索引】（★ 门判 gap ⇒ 偏保守 ⇒ 不会假绿）。
+
+# ★ ORDER BY 子句体的终止关键字（★ 只在**同层**认 ⇒ 嵌套括号里的不算）
+_ORDER_STOP_KWS = ("limit", "offset", "fetch", "for", "window", "union", "except", "intersect")
+
+# ★ ORDER BY 关键字（★ 用它判断「子句体到下一个 ORDER BY 为止」）
+_ORDER_BY_AT = re.compile(r"order\s+by\b", re.I)
+
+# ★ 裸列名（★ 可带一层表/别名限定；★ 序号与表达式都匹配不上 ⇒ 自动被跳过）
+_ORDER_BARE_COL_RE = re.compile(
+    r'^(?:(?:"[^"]+"|[A-Za-z_][\w$]*)\s*\.\s*)?("[^"]+"|[A-Za-z_][\w$]*)$')
+
+# ★ 「左括号前是这些词 ⇒ 它开的是【子查询/派生表】⇒ 其中的 ORDER BY 算查询排序」
+#   ⇒ ★ 不在这张表里的 ⇒ 一律当【函数实参表】处理 ⇒ **跳过**（★ 保守：不瞎猜）
+_ORDER_SUBQUERY_CTX = frozenset({
+    "from", "in", "as", "exists", "lateral", "values", "select", "all", "any",
+    "some", "on", "where", "and", "or", "not", "join", "using", "union",
+    "except", "intersect", "with", "returning", "case", "when", "then",
+    "else", "between", "by", "table", "only",
+})
+
+
+def _closing_quote(sql: str, start: int) -> int:
+    """找 start 处引号的**配对结束位置**（★ 找不到 ⇒ 返回 -1 ⇒ ★ 视为普通字符）。
+
+    ★ 「配对才当字面量」是必需的（★ R180 轮实测踩过）：
+      生产语句台账把换行压成空格（★ 见上方口径）⇒ ⇒ 注释里的撇号会变成**未闭合**的引号
+      ⇒ ⇒ 若照样当字面量 ⇒ ⇒ 抹字面量会一路吞到句尾
+      ⇒ ⇒ 真 SQL（包括 ORDER BY）会整段消失（★ 实测 2 条语句受害）。
+    """
+    quote = sql[start]
+    j = start + 1
+    n = len(sql)
+    while j < n:
+        if sql[j] == quote:
+            if j + 1 < n and sql[j + 1] == quote:
+                j += 2
+                continue
+            return j + 1
+        j += 1
+    return -1
+
+
+def _lex(sql: str) -> tuple[str, list[int], list[int]]:
+    """单遍词法扫描 ⇒ (抹掉字面量的文本, 每个位置的括号深度, 每个位置的最内层左括号位置)。
+
+    ★ 单引号字面量（★ `'…'`）抹成同长度空格（★ 保留偏移）；**没配上的引号不当字面量**。
+    ★ 双引号标识符（★ `"…"`)**保留原文**（★ 它是列名本体 ⇒ 抹掉就认不出列了）
+      ⇒ ★ 但扫描时整体跳过（★ 里面的 `--` 不是注释、里面的括号不计入深度）。
+    ★ 括号深度只统计【代码区】⇒ ⇒ 字面量里的括号**不算**。
+    ★ 注释：★ **换行还在** ⇒ 按注释切分并抹掉（★ 注释里的 ORDER BY 不算数）；
+      ★ **换行被压掉**（★ 本仓生产语句台账就是这种）⇒ ⇒ 注释边界不可复原
+      ⇒ ⇒ 注释当普通文本（★ 但括号照算 ⇒ ⇒ 注释之后的真 SQL 仍能算准深度）。
+    """
+    n = len(sql)
+    out = list(sql)
+    depth_of = [0] * n
+    inner_open = [-1] * n
+    stack: list[int] = []
+    mask_comments = "\n" in sql
+    i = 0
+    while i < n:
+        ch = sql[i]
+        if ch == "'" or ch == '"':
+            j = _closing_quote(sql, i)
+            if j < 0:
+                # ★ 没配上 ⇒ ★ 当普通字符（★ 不吞后面）
+                depth_of[i] = len(stack)
+                inner_open[i] = stack[-1] if stack else -1
+                i += 1
+                continue
+            for k in range(i, j):
+                if ch == "'":
+                    out[k] = " "
+                depth_of[k] = len(stack)
+                inner_open[k] = stack[-1] if stack else -1
+            i = j
+            continue
+        if mask_comments and ch == "-" and sql[i + 1:i + 2] == "-":
+            j = i + 2
+            while j < n and sql[j] != "\n":
+                out[j] = " "
+                depth_of[j] = len(stack)
+                inner_open[j] = stack[-1] if stack else -1
+                j += 1
+            i = j
+            continue
+        if mask_comments and ch == "/" and sql[i + 1:i + 2] == "*":
+            j = sql.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            for k in range(i, j):
+                out[k] = " "
+                depth_of[k] = len(stack)
+                inner_open[k] = stack[-1] if stack else -1
+            i = j
+            continue
+        # ★ 代码区
+        depth_of[i] = len(stack)
+        inner_open[i] = stack[-1] if stack else -1
+        if ch == "(":
+            stack.append(i)
+        elif ch == ")" and stack:
+            stack.pop()
+        i += 1
+    return "".join(out), depth_of, inner_open
+
+
+def _word_before(text: str, end: int) -> str:
+    """取 text[0:end] 末尾那个「词」（★ 小写；★ 没有就是空串）。"""
+    k = end - 1
+    while k >= 0 and text[k].isspace():
+        k -= 1
+    j = k
+    while k >= 0 and (text[k].isalnum() or text[k] in "_$"):
+        k -= 1
+    return text[k + 1:j + 1].lower()
+
+
+def _is_word_boundary(text: str, i: int, length: int) -> bool:
+    before = text[i - 1] if i > 0 else " "
+    after = text[i + length] if i + length < len(text) else " "
+    return not (before.isalnum() or before in "_$") and not (after.isalnum() or after in "_$")
+
+
+def _bare_order_col(seg: str) -> str:
+    """把一个 ORDER BY 段解析成【裸列名】（★ 抽不出就返回空串 ⇒ 不瞎猜）。"""
+    s = seg.strip()
+    if not s:
+        return ""
+    s = re.sub(r"\s+nulls\s+(?:first|last)\s*$", "", s, flags=re.I)
+    s = re.sub(r"\s+(?:asc|desc)\s*$", "", s, flags=re.I)
+    s = s.strip()
+    m = _ORDER_BARE_COL_RE.match(s)
+    if not m:
+        return ""
+    name = m.group(1)
+    if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
+        name = name[1:-1]
+    return name.lower()
+
+
+def extract_order_cols(sql: str) -> list[str]:
+    """抽出【查询级】ORDER BY 的排序列（★ 裸列名；★ 去重；★ 保持出现顺序）。
+
+    ★ 与 `shapes_mod.extract_order_cols` **同名但不同物**：
+       那边是【源码侧形态册】用的（★ 返回带方向的串 "ts DESC"）；
+       这边是【生产语句 spec】用的（★ 返回裸列名列表 ["ts"]）。
+    """
+    masked, depth_of, inner_open = _lex(sql)
+    n = len(masked)
+    if not n:
+        return []
+
+    out: list[str] = []
+    for m in re.finditer(r"\border\s+by\b", masked, re.I):
+        pos = m.start()
+        d0 = depth_of[pos]
+        inner = inner_open[pos]
+
+        # ★★ 不是【查询级】排序 ⇒ 跳过（★ 宁可空着，也不把聚合排序当查询排序）
+        if inner >= 0:
+            ctx = masked[max(0, inner - 40):inner]
+            if re.search(r"within\s+group\s*$", ctx, re.I):
+                continue          # ★ 聚合函数的有序集（★ percentile_cont 等）
+            if re.search(r"\bover\s*$", ctx, re.I):
+                continue          # ★ 窗口函数的帧
+            if _word_before(masked, inner) not in _ORDER_SUBQUERY_CTX:
+                continue          # ★ 函数实参表 ⇒ 不是查询排序
+
+        # ── 取 ORDER BY 子句体（★ 到同层终止关键字 / 作用域结束为止）──
+        body_start = m.end()
+        i = body_start
+        seg_start = body_start
+        segs: list[str] = []
+        while i < n:
+            ch = masked[i]
+            dep = depth_of[i]
+            if dep < d0:
+                break
+            if dep == d0 and ch == ")":
+                break            # ★ 作用域在这一层闭合了
+            if dep == d0:
+                stop = False
+                for kw in _ORDER_STOP_KWS:
+                    if masked[i:i + len(kw)].lower() == kw and _is_word_boundary(masked, i, len(kw)):
+                        stop = True
+                        break
+                if stop:
+                    break
+                # ★ 同层的下一个 ORDER BY ⇒ ★ 本子句到此为止
+                #   （★ 否则一个子句会把后面几段排序一起吞掉 ⇒ ⇒ 抽出来的列是错的）
+                if _ORDER_BY_AT.match(masked, i):
+                    break
+                if ch == ",":
+                    segs.append(masked[seg_start:i])
+                    seg_start = i + 1
+            if ch == "-" and masked[i + 1:i + 2] == "-":
+                # ★ 注释起点 ⇒ ★ 本段到此为止（★ 注释里的字不是列名）
+                segs.append(masked[seg_start:i])
+                seg_start = i
+                j = i + 2
+                while j < n and masked[j] != "\n":
+                    j += 1
+                i = j
+                seg_start = i
+                continue
+            if ch == "/" and masked[i + 1:i + 2] == "*":
+                segs.append(masked[seg_start:i])
+                j = masked.find("*/", i + 2)
+                i = n if j < 0 else j + 2
+                seg_start = i
+                continue
+            i += 1
+        segs.append(masked[seg_start:i])
+
+        for seg in segs:
+            col = _bare_order_col(seg)
+            if col and col not in out:
+                out.append(col)
+    return out
+
 
 # ── 抽出「读视图的那段 SELECT」 ─────────────────────────────────────────
 
@@ -338,7 +584,11 @@ def main() -> int:
             # ★★ 只取「读视图的那段 SELECT」去 EXPLAIN（★ 理由见 extract_view_select）
             probe_sql, how = extract_view_select(sql)
             roles = infer_param_roles(probe_sql)
-            fp = statement_fingerprint(sql)
+            # ★★ 指纹必须取【真正送进 EXPLAIN 的那段】（★ probe_sql）
+            #   ⇒ ★ 送 EXPLAIN 的是 probe_sql（★ extract_view_select 抽出的那段 SELECT）
+            #   ⇒ ★ 若拿整条 sql（含 JOIN）算指纹 ⇒ ⇒ JOIN 条件会被当成【过滤谓词】
+            #   ⇒ ⇒ 判据错（★ R180 轮审计取证出的真实缺陷①）。
+            fp = statement_fingerprint(probe_sql)
             sid, source, reason, cands = map_to_source(sql, source_shapes)
             shapes.append({
                 "shape_id": shape_id,
@@ -351,7 +601,10 @@ def main() -> int:
                 "full_sql": sql,
                 "extract": how,
                 "sql_filter_cols": sorted(fp),
-                "sql_order_cols": "",
+                # ★ 排序列（★ 从 probe_sql 抽「查询级」ORDER BY ⇒ ★ 裸列名、逗号分隔）
+                #   ⇒ ★ 类型保持**字符串**（★ Go 侧 `SQLOrderCols string` ⇒ 改成数组会让
+                #     EXPLAIN 工具 json.Unmarshal 直接失败 ⇒ 那是另一条线的事，★ 不在本轮）。
+                "sql_order_cols": ",".join(extract_order_cols(probe_sql)),
                 "param_roles": roles,
             })
             seen[shape_id] = shapes[-1]

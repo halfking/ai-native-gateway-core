@@ -145,7 +145,12 @@ const probeMaxTS = `SELECT max(ts)::text FROM session_turns`
 // ─────────────────────────── EXPLAIN plan ───────────────────────────
 
 type planNode struct {
-	NodeType           string     `json:"Node Type"`
+	NodeType string `json:"Node Type"`
+	// ★★ SortKey = Sort 节点的排序列（★ PostgreSQL 的 EXPLAIN JSON 里，
+	// ★ Sort / Incremental Sort 节点带 "Sort Key": ["ts DESC", …]）。
+	// ★ ★ R181 轮新增：★ 此前「seek」会掩盖「排序没被索引接住」——
+	// ★ 走索引拿到行，但 ORDER BY 的列不在索引里 ⇒ 规划器仍要额外 Sort。
+	SortKey            []string   `json:"Sort Key"`
 	RelationName       string     `json:"Relation Name"`
 	Alias              string     `json:"Alias"`
 	IndexName          string     `json:"Index Name"`
@@ -322,6 +327,44 @@ func isSeqScanType(nodeType string) bool {
 		return true
 	}
 	return false
+}
+
+// collectSortKeys 收集计划里【所有 Sort 节点】的排序列。
+//
+// ★★ R181 轮新增（★ 修 R179/R180 轮共同暴露的第三处量具缺陷）：★★
+//
+//	★ 此前形态轴只判「谓词有没有被索引接住」（★ seek / filter / seq-scan），
+//	★ ★ **完全看不见排序** ⇒ ⇒ 「seek」会掩盖「排序没被索引接住」★★
+//	★ ⇒ ⇒ 一条语句可以【谓词走索引、排序却要额外 Sort】⇒ ⇒ 那正是慢读点的典型形态
+//	★ ⇒ ⇒ ⇒ **「形态」与「代价」必须同时看**（★ 承 R180 轮结论）★★
+//
+// ★ 口径：★ 递归走整棵树，★ 取每个 Sort / Incremental Sort 节点的 "Sort Key"
+//
+//	★ ★ 保留原样（★ 含 DESC / ASC 方向修饰）★★ ★ 空 = 计划里没有 Sort 节点。
+//
+// ★ ★ 为什么**单独一个函数**而不是改 classify 的返回值：★ classify 的签名被
+//
+//	★ main_test.go 用了 5 处 ⇒ ★ ★ 改签名会连带改测试 ⇒ ⇒ ★ 本轮只加不改，★ 最小侵入 ★★
+func collectSortKeys(root planNode) []string {
+	var out []string
+	var walk func(n planNode)
+	walk = func(n planNode) {
+		switch n.NodeType {
+		case "Sort", "Incremental Sort":
+			for _, k := range n.SortKey {
+				k = strings.TrimSpace(k)
+				if k == "" {
+					continue
+				}
+				out = append(out, k)
+			}
+		}
+		for _, c := range n.Plans {
+			walk(c)
+		}
+	}
+	walk(root)
+	return out
 }
 
 // ─────────────────────────── 参数内联 ───────────────────────────
@@ -555,14 +598,16 @@ func main() {
 	var out strings.Builder
 	out.WriteString("# query-plan-observations.tsv —— R179 轮：**读点的实测计划形态**观测台账\n")
 	out.WriteString("# ★ 生成器：cmd/tools/query_plan_form（★ EXPLAIN，★ 不带 ANALYZE ⇒ 只读库安全）\n")
-	out.WriteString("# ★ 列：shape_id\tenv\tplan_form\tindex_names\tarm_scans\tindex_cond_cols\tfilter_cols\trows_removed_by_filter\tplan_rows\tplanning_ms\tsource\tparams\tnote\tdominant_rel\tdominant_filter\tother_seq_rels\n")
+	out.WriteString("# ★ 列：shape_id\tenv\tplan_form\tindex_names\tarm_scans\tindex_cond_cols\tfilter_cols\trows_removed_by_filter\tplan_rows\tplanning_ms\tsource\tparams\tnote\tdominant_rel\tdominant_filter\tother_seq_rels\tsort_keys\n")
 	out.WriteString("# ★ plan_form 判据：★ 主体 = 承载行数的那次会话族扫描（★ Plan Rows 最大）★ ⇒ 主体是顺序扫描 ⇒ seq-scan；★ 主体是索引扫描且**节点上还有残留 Filter** ⇒ filter；★ 主体是索引扫描且无残留 Filter ⇒ seek\n")
 	out.WriteString("# ★ ★ rows_removed_by_filter 在 EXPLAIN（★ 不带 ANALYZE）下恒为 0（★ 执行期统计）⇒ ⇒ 【不可测】⇒ ⇒ 不参与 plan_form 判定\n")
 	out.WriteString("# ★ dominant_rel = 决定 plan_form 的那次【基表】扫描所在的关系；★ dominant_filter = 该节点上的残留 Filter（★ 判决证据）；★ other_seq_rels = 主体之外**还被顺序扫描**的基表关系数（★ ★ R180 轮实测：★ 252 上这些分区【全是 0 行】⇒ ★★ Seq Scan 代价 ≈ 0 ⇒ ★★ 「出现了 Seq Scan」≠「慢」★★ ⇒ ★ 慢不慢只能由【代价轴】判）\n")
+	out.WriteString("# ★★ sort_keys = 计划里【Sort / Incremental Sort 节点】的排序列（★ R181 轮新增的末尾列；★ 用 ; 分隔；★ 保留原样含 DESC）★★\n")
+	out.WriteString("# ★ ★ 为什么要有它：★ 此前形态轴只判「谓词有没有被索引接住」⇒ ★★ 「seek」会掩盖「排序没被索引接住」★★ ⇒ ★ 一条语句可以【谓词走索引、排序却要额外 Sort】⇒ ⇒ ★★ **排序这一维必须单独观测** ★★ ⇒ ★ 空 = 计划里没有 Sort 节点（★ ≠ 「排序一定被接住」⇒ ★ 也可能是这条语句本来就不排序）\n")
 
 	for _, sh := range sp.Shapes {
 		if sh.Dynamic {
-			writeRow(&out, sh, env, "dynamic", "", "", "", "", 0, 0, 0, "", "", "★ SQL 含 fmt 占位 ⇒ 静态不可知", "", "", 0)
+			writeRow(&out, sh, env, "dynamic", "", "", "", "", 0, 0, 0, "", "", "★ SQL 含 fmt 占位 ⇒ 静态不可知", "", "", 0, "")
 			continue
 		}
 		params, faithful := resolveParams(sh, reps,
@@ -570,7 +615,7 @@ func main() {
 		if !faithful {
 			writeRow(&out, sh, env, "error", "", "", "", "", 0, 0, 0, "", "",
 				"★ 有【列角色】的参数拿不到有效代表值 ⇒ ⇒ 只能填 NULL ⇒ ⇒ **谓词语义失真**"+
-					"（★ 例：success = NULL ⇒ ⇒ 规划器把谓词优化掉 ⇒ ⇒ 读出来会是假的 no-scan）⇒ ⇒ 本条读数作废", "", "", 0)
+					"（★ 例：success = NULL ⇒ ⇒ 规划器把谓词优化掉 ⇒ ⇒ 读出来会是假的 no-scan）⇒ ⇒ 本条读数作废", "", "", 0, "")
 			continue
 		}
 		sql := inlineParams(sh.SQL, params)
@@ -596,13 +641,13 @@ func main() {
 		}
 		if qerr != nil {
 			writeRow(&out, sh, env, "error", "", "", "", "", 0, 0, 0, "", "",
-				"★ EXPLAIN 失败: "+strings.ReplaceAll(qerr.Error(), "\t", " "), "", "", 0)
+				"★ EXPLAIN 失败: "+strings.ReplaceAll(qerr.Error(), "\t", " "), "", "", 0, "")
 			continue
 		}
 		var ps []explainPayload
 		if err := json.Unmarshal([]byte(strings.TrimSpace(outRaw)), &ps); err != nil || len(ps) == 0 {
 			writeRow(&out, sh, env, "error", "", "", "", "", 0, 0, 0, "", "",
-				"★ EXPLAIN 输出解析失败: "+strings.ReplaceAll(errText(err), "\t", " "), "", "", 0)
+				"★ EXPLAIN 输出解析失败: "+strings.ReplaceAll(errText(err), "\t", " "), "", "", 0, "")
 			continue
 		}
 		p := ps[0]
@@ -642,7 +687,10 @@ func main() {
 			rowsRm, planRows, int64(p.PlanningMs),
 			fmt.Sprintf("%s:%d", sh.File, sh.Line),
 			describeParams(params),
-			"", dominantRel, dominantFilter, otherSeq)
+			"", dominantRel, dominantFilter, otherSeq,
+			// ★★ R181 轮新增：★ 计划里 Sort 节点的排序列（★ 空 = 没有 Sort 节点）。
+			// ★ ★ 这正是「seek 掩盖了排序没被索引接住」的那个观测点 ★★
+			strings.Join(collectSortKeys(p.Plan), ";"))
 	}
 
 	if err := os.WriteFile(outPath, []byte(out.String()), 0o644); err != nil {
@@ -767,7 +815,8 @@ func truncate(s string, n int) string {
 }
 
 func writeRow(out *strings.Builder, sh Shape, env, form, idxNames, armScans, idxCondCols, filterCols string,
-	rowsRm, planRows, planningMs int64, source, params, note, dominantRel, dominantFilter string, otherSeq int) {
+	rowsRm, planRows, planningMs int64, source, params, note, dominantRel, dominantFilter string, otherSeq int,
+	sortKeys string) {
 	note = strings.ReplaceAll(note, "\t", " ")
 	note = strings.ReplaceAll(note, "\n", " ")
 	out.WriteString(strings.Join([]string{
@@ -775,6 +824,9 @@ func writeRow(out *strings.Builder, sh Shape, env, form, idxNames, armScans, idx
 		strconv.FormatInt(rowsRm, 10), strconv.FormatInt(planRows, 10),
 		strconv.FormatInt(planningMs, 10), source, params, note,
 		dominantRel, truncateForCell(dominantFilter), strconv.Itoa(otherSeq),
+		// ★★ R181 轮新增的末尾列：★ 计划里 Sort 节点的排序列（★ 空 = 没有 Sort 节点）。
+		// ★ ★ 必须加在【末尾】⇒ ★ 既有消费方按列序读 parts[0..15] 不受影响 ★★
+		sortKeys,
 	}, "\t") + "\n")
 }
 

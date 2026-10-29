@@ -2919,8 +2919,19 @@ ledger_artifact_probe "910_routing_analytics_source_hashjoin.sql" \
 # 911 种子行：三条本地音频 catalog 记录在位（ON CONFLICT DO NOTHING，任一缺席即假）。
 ledger_artifact_probe "911_local_audio_catalog.sql" \
   "(SELECT count(*) FROM public.provider_catalog WHERE code IN ('whisper-cpp','whisper-cpp-large','macos-say') AND kind = 'local') >= 3"
+# ★★★ R181 轮修正（★★ 这是【会永久挡住部署】的判据缺陷，★ 不是漂零）：★★
+#   ★ 原判据：★ 按【约束名】数条数 ⇒ ⇒ `= 2` ⇒ ⇒ **在分区表上恒假** ⇒ ⇒ 每次部署都卡在这一处。
+#   ★ ★★ 真因：★ `session_turns` 是【分区表】⇒ ★ PG 会把父表上的 CHECK 约束
+#   ★   **自动克隆到每一个分区** ⇒ ⇒ 本地实测 `conname IN (两个名字) AND convalidated`
+#   ★   的条数是 **7**（★ 父表 1 + hot 1 + 5 个分区各 1）⇒ ⇒ **产物其实全都在，★ 但判据说缺**。
+#   ★ ★★ ⇒ ⇒ ★★ 211 / 252 同为分区表 ⇒ ★★ 那个 `= 2` 在那两库上**同样恒假**
+#   ★★   ⇒ ⇒ ★★ 这也是「914 / 916 在 211 与 252 上一直执行不了」的**隐藏原因之一** ★★
+#   ★ ★★ 修法（★ 语义不变：★ 两个约束必须【在父表与 hot 上】且【已校验】）：
+#   ★   改成按【约束挂在哪个关系上】判断 ⇒ ⇒ 分区上的克隆**不计入** ⇒ ⇒ 恰好 2 ✓
+#   ★ ★★ 通用式：★ 判「产物在不在」要判【它挂在哪】，★ 不要只判【它叫什么】——
+#   ★   ★★ 分区表上【同名约束会有 N 份克隆】⇒ ★★ 按名字计数 = 恒假的死闸 ★★
 ledger_artifact_probe "914_session_turns_origin_stage_check.sql" \
-  "(SELECT count(*) FROM pg_constraint WHERE conname IN ('session_turns_origin_stage_check','session_turns_hot_origin_stage_check') AND convalidated) = 2"
+  "(SELECT count(*) FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE n.nspname = 'public' AND t.relname IN ('session_turns','session_turns_hot') AND c.conname IN ('session_turns_origin_stage_check','session_turns_hot_origin_stage_check') AND c.convalidated) = 2"
 ledger_artifact_probe "915_recent_cache_hit_rate.sql" \
   "to_regprocedure('public.recent_cache_hit_rate(integer,integer,timestamp with time zone,integer)') IS NOT NULL OR EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'recent_cache_hit_rate')"
 ledger_artifact_probe "916_session_turns_api_key_ts_index.sql" \
