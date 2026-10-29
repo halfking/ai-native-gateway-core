@@ -271,6 +271,11 @@ const (
 	AnomalyProbeFailed = "identity_probe_failed"
 	// AnomalyProbeEmpty 身份探测没有得到任何内容。
 	AnomalyProbeEmpty = "identity_probe_empty_response"
+	// AnomalyIdentityPassiveMismatch 真实流量里出现过未解决的模型不一致
+	// （domains/streaming/integrity 的 model_mismatch 事件）——被动证据。
+	AnomalyIdentityPassiveMismatch = "identity_passive_mismatch"
+	// AnomalyConsistencyPassiveDrift 真实流量里出现过未解决的指纹漂移。
+	AnomalyConsistencyPassiveDrift = "consistency_passive_drift"
 )
 
 // modelFamilyOf 用厂商前缀表把模型名归到「族」。
