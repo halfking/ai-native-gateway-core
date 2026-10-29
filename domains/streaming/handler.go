@@ -1663,6 +1663,23 @@ func (h *ChatHandler) SetStaticDataPlaneKey(key string) {
 	h.staticDataPlaneKey = key
 }
 
+// staticDataPlaneKeyMatches reports whether rawKey is exactly the deployed
+// static data-plane key.
+//
+// ★ 常量时间比较（subtle.ConstantTimeCompare）：静态键是**部署级共享凭据**，
+// 时序侧信道会泄露它 ⇒ 不比较长度捷径（ConstantTimeCompare 自身在长度不等时
+// 立即返回，但空串在**比较之前**就被拒 ⇒ 不泄露任何关于正确密钥的信息）。
+//
+// ★ 抽成函数是为了**一份实现**：ChatHandler 的静态键回退与 Gemini 原生
+// :countTokens 的静态键回退必须判得一模一样，否则同一个部署里两条入向
+// 面对「lite 模式 + 配了静态键」给出不同的放行结论。
+func staticDataPlaneKeyMatches(rawKey, staticKey string) bool {
+	if rawKey == "" || staticKey == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(staticKey), []byte(rawKey)) == 1
+}
+
 // SetAdminAPIKey configures the operator token used to gate the
 // X-LLMGW-Preferred-Credential routing override.
 func (h *ChatHandler) SetAdminAPIKey(key string) {
@@ -2527,7 +2544,7 @@ func (h *ChatHandler) serveWithExecutor(
 		// deployed static key instead; downstream already handles the
 		// keyInfo==nil shape (it is today's path for this state).
 		rawKey := extractBearerToken(r)
-		if rawKey == "" || subtle.ConstantTimeCompare([]byte(h.staticDataPlaneKey), []byte(rawKey)) != 1 {
+		if !staticDataPlaneKeyMatches(rawKey, h.staticDataPlaneKey) {
 			captureAndEmitFailure("invalid_key", "invalid api key (static-key fallback auth)", nil, nil, http.StatusUnauthorized)
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgInvalidKey, nil)

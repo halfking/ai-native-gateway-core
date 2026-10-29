@@ -148,7 +148,6 @@ func TestExtractClientKey_QueryKeyIsScopedToGeminiNativePaths(t *testing.T) {
 		"/v1/models?key=AIza-query",
 		"/v1beta/modelsXYZ?key=AIza-query",
 		"/v1beta/models/gemini-2.5-pro?key=AIza-query",
-		"/v1beta/models/gemini-2.5-pro:countTokens?key=AIza-query",
 		"/v1beta/models/a/b:generateContent?key=AIza-query",
 		"/prefix/v1beta/models/gemini:generateContent?key=AIza-query",
 	}
@@ -168,6 +167,10 @@ func TestExtractClientKey_QueryKeyIsScopedToGeminiNativePaths(t *testing.T) {
 		"/v1beta/models/gemini-2.5-pro:streamGenerateContent?key=AIza-query",
 		"/v1/models/gemini-2.5-pro:generateContent?key=AIza-query",
 		"/v1beta/models/gemini-2.5-pro:generateContent/extra?key=AIza-query",
+		// The countTokens action is a served Gemini route too (2026-10-29
+		// countTokens round) => the credential form must apply there.
+		"/v1beta/models/gemini-2.5-pro:countTokens?key=AIza-query",
+		"/v1/models/gemini-2.5-pro:countTokens?key=AIza-query",
 		// The Gemini-native model list (its own mux entry) is a served
 		// Gemini route => the credential form must apply there too.
 		"/v1beta/models?key=AIza-query",
@@ -208,7 +211,9 @@ func TestIsGeminiNativePath(t *testing.T) {
 		"/v1/models":           false,
 		"/v1/chat/completions": false,
 		"/v1/messages":         false,
-		"/v1beta/models/gemini-2.5-pro:countTokens":    false,
+		// The countTokens action is served (2026-10-29 countTokens round).
+		"/v1beta/models/gemini-2.5-pro:countTokens":    true,
+		"/v1/models/gemini-2.5-pro:countTokens":        true,
 		"/prefix/v1beta/models/gemini:generateContent": false,
 		"/v1beta/models/a/b:generateContent":           false,
 		// The model-list alternative is EXACTLY anchored: a longer path

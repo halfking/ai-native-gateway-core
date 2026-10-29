@@ -88,7 +88,13 @@ _dl_container_psql() {
   local pw="${DL_DSN_PG_PASS:-${LLM_GATEWAY_PG_PASSWORD:-}}"
   local u="${DL_DSN_PG_USER:-${LLM_GATEWAY_PG_USER:-llm_gateway}}"
   local d="${DL_DSN_PG_DB:-${LLM_GATEWAY_PG_DATABASE:-llm_gateway}}"
-  docker exec -e PGPASSWORD="$pw" "$LLM_GATEWAY_PG_CONTAINER" \
+  # ★ -i 不可省（2026-10-29 审计第 5 轮实锤）：psql_stream 走 `-f -`（stdin 流），
+  #   docker exec 不带 -i ⇒ stdin 不接通 ⇒ psql 读到立即 EOF ⇒ **一条语句都不执行
+  #   却 exit 0** ⇒ 下面的台账 INSERT 照写 ⇒ 「台账有行、产物缺席」——912/913
+  #   （10-28 08:49）与 919/920（10-29 09:58）两次整批失踪的同一个根。
+  #   有宿主 psql shim 的机器走宿主通道不受影响 ⇒ 缺陷只在「无宿主 psql 的机器
+  #   部署」时显形（211 宿主无任何 psql，ssh 直跑必中）。
+  docker exec -i -e PGPASSWORD="$pw" "$LLM_GATEWAY_PG_CONTAINER" \
     psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U "$u" -d "$d" "$@"
 }
 
@@ -2484,6 +2490,14 @@ legacy_content_replays=(
 # SQL line/block comments and dollar-quoted bodies, so prose or dynamic SQL
 # that merely mentions CREATE OR REPLACE cannot trigger it.
 intentional_function_chains=(
+  # 919（2026-10-29，R176 252 SQL 日志审计轮）重定义
+  # refresh_ursm_snapshot_slot_daily：在 892 的体上增加 active_minutes 列
+  # （hour 粒度 = count(DISTINCT date_trunc('minute', snapshot_ts))，minute 恒 1）
+  # 并让 ON CONFLICT DO UPDATE 同步该列。签名不变、调用方零改动。
+  # 链序 = 投递序 892 → 919，**919 必须是最后一项**——它是活库里应有的最终体。
+  # 少这一行，部署会在应用任何文件之前 abort（exit 5）。登记由 24h 审计第 5 轮
+  # 之后的 /live 点选联动轮补录（部署被本守卫拦下时按错误消息逐字补登）。
+  'refresh_ursm_snapshot_slot_daily|892_ursm_snapshot_slot_daily.sql|919_ursm_slot_daily_active_minutes.sql|'
   # 857 (2026-10-13) 重定义 analyze_llm_gateway_table_stats：给「当月列存分区」
   # 分支加陈旧度闸门。链序必须是 838 → 839 → 857，且 **857 必须是最后一项**——
   # 它是活库里应有的最终体。少这一行，部署会在应用任何文件之前 abort（exit 5），

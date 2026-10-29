@@ -23,5 +23,34 @@ func ModelsSpecs() []*Spec {
 			DangerLevel:     Safe,
 			HotReload:       true,
 		},
+		{
+			// 2026-10-29：/v1/models 与 /v1beta/models 默认只输出
+			// 「特色模型」（routing_policy.featured_models），全量清单改为
+			// 显式参数（?scope=all 或 ?all=true）才输出。
+			//
+			// 理由：精选清单才是「网关推荐什么」的答案——路由侧的
+			// FeaturedBonus 加权（autoroute）、featured 优先选凭据
+			// （bg/shared_pick.go）、候选建议的 tier-2
+			// （domains/streaming）、管理侧的精选过滤（admin/routing.go）
+			// 全都以它为准。此前发现端点无条件输出全量（600+ 条），
+			// 客户端拿到的是一份没有优先级、没有上下文长度、名字还带
+			// 供应商后缀的清单。
+			//
+			// 本项是**运维默认口径**，不是上限：请求参数
+			// （?scope=… / ?all=…）优先于它。需要全量的客户端不必等
+			// 运维改配置；把本项设为 all 则让「默认」回到全量，无需发版。
+			Key:             "models.list_scope",
+			Type:            TypeEnum,
+			Scope:           ScopePlatform,
+			Category:        CategoryModels,
+			Default:         "featured",
+			Options:         []string{"featured", "all"},
+			Unit:            "枚举",
+			Description:     "模型列表默认口径：featured（只列特色模型）| all（全量）",
+			DescriptionLong: "模型发现端点（/v1/models 与 /v1beta/models）默认输出的清单口径。featured=只列 routing_policy.featured_models 里的特色模型（与路由侧的精选优先级、管理侧精选过滤同源）；all=列出当前全部可路由模型。客户端可用 ?scope=all 或 ?all=true 显式要全量（请求参数优先于本项）。注意：featured 口径筛不出任何模型时（精选清单为空、或精选模型当前都不可路由），网关会退回全量并在日志里 WARN——发现端点返回空清单会打断所有读它的客户端。",
+			DangerLevel:     Warning,
+			HotReload:       true,
+			Observability:   "/v1/models",
+		},
 	}
 }
