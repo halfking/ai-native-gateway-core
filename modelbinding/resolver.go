@@ -106,25 +106,47 @@ func rawBindingCandidates(ctx context.Context, db DBQuerier, credentialID int, m
 			ORDER BY pm.raw_model_name
 		), E'\x1f'), '')`
 	if !exact {
+		// 2026-10-30 24h 审计轮（211 生产日志实锤）：requested=glm-5.3-flash 的
+		// 归一化变体是 [glm-5.3-flash, glm-5-3-flash, glm-5.3, glm-5-3]，
+		// 既有 ORDER BY pm.raw_model_name 让 `z-ai/glm-5.3`（经宽泛变体 glm-5.3
+		// 命中）排在 `z-ai/glm-5.3-flash`（经最特异变体 glm-5.3-flash 命中）前面
+		// ⇒ 字典序把**非 flash** 模型发给了要 flash 的用户（24h 48 次告警）。
+		// 修法：候选按「命中的最特异变体下标」排序——变体表按特异性降序排列，
+		// 下标越小越特异；同分再按名字稳定排序（不重排完全同名的既有形态）。
 		query = `
 			SELECT COALESCE(array_to_string(ARRAY(
-				SELECT DISTINCT pm.raw_model_name
-				FROM credential_model_bindings cmb
-				JOIN provider_models pm ON pm.id = cmb.provider_model_id
-				LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
-				WHERE cmb.credential_id = $1
-				  AND (
-					pm.canonical_raw_name = ANY($2)
-					OR pm.standardized_name = ANY($2)
-					OR mc.canonical_name = ANY($2)
-					OR EXISTS (
-						SELECT 1 FROM model_aliases ma
-						WHERE ma.canonical_id = pm.canonical_id
-						  AND ma.raw_name = ANY($2)
-						  AND ma.status = 'active'
-					)
-				  )
-				ORDER BY pm.raw_model_name
+				SELECT ranked.name FROM (
+					SELECT DISTINCT ON (pm.raw_model_name)
+						pm.raw_model_name AS name,
+						(SELECT min(t.i) FROM unnest($2::text[]) WITH ORDINALITY AS t(v, i)
+						  WHERE t.v = pm.raw_model_name
+						     OR t.v = pm.standardized_name
+						     OR t.v = pm.canonical_raw_name
+						     OR t.v = mc.canonical_name
+						     OR EXISTS (
+						        SELECT 1 FROM model_aliases ma
+						        WHERE ma.canonical_id = pm.canonical_id
+						          AND ma.raw_name = t.v
+						          AND ma.status = 'active'
+						     )) AS best_rank
+					FROM credential_model_bindings cmb
+					JOIN provider_models pm ON pm.id = cmb.provider_model_id
+					LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
+					WHERE cmb.credential_id = $1
+					  AND (
+						pm.canonical_raw_name = ANY($2)
+						OR pm.standardized_name = ANY($2)
+						OR mc.canonical_name = ANY($2)
+						OR EXISTS (
+							SELECT 1 FROM model_aliases ma
+							WHERE ma.canonical_id = pm.canonical_id
+							  AND ma.raw_name = ANY($2)
+							  AND ma.status = 'active'
+						)
+					  )
+					ORDER BY pm.raw_model_name, best_rank
+				) ranked
+				ORDER BY ranked.best_rank NULLS LAST, ranked.name
 			), E'\x1f'), '')`
 	}
 	if err := db.QueryRow(ctx, query, credentialID, model).Scan(&encoded); err != nil {
