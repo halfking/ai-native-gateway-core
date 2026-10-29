@@ -34,6 +34,7 @@ import {
   type RuleInstance,
   type ReviewStatus,
   type BlockReview,
+  type BlockReviewContext,
   type BlockReviewLabel,
   type BlockReviewRuleInsight,
   type EgressReleaseRecord,
@@ -826,6 +827,30 @@ const date = (value: string) =>
   !value || value.startsWith("0001-")
     ? t("sanitizeRules.never")
     : fmtDateTime24h(value);
+
+// ★ 归因类别的展示（★ 与服务端 attribution_kind 一一对应）。
+// ★ 规则详情展开状态（★ 每行一个「查看规则详情」）。
+const expandedRuleDetail = ref<string | null>(null);
+const toggleRuleDetail = (ruleId: string) => {
+  expandedRuleDetail.value = expandedRuleDetail.value === ruleId ? null : ruleId;
+};
+
+const attributionKindLabel = (kind?: string) => {
+  if (kind === "rule") return t("sanitizeRules.attributionRule");
+  if (kind === "guard") return t("sanitizeRules.attributionGuard");
+  return t("sanitizeRules.attributionUnknown");
+};
+
+// ★ 「有没有原始上下文可看」——★ 没有就别渲染空壳（★ 空壳比没有更让人困惑）。
+const hasOriginalContext = (ctx?: BlockReviewContext) =>
+  !!ctx &&
+  !!(
+    ctx.request_preview ||
+    ctx.response_preview ||
+    ctx.model ||
+    ctx.session_id ||
+    ctx.error_kind
+  );
 const stale = (instance: RuleInstance) =>
   !instance.last_seen ||
   Date.now() - Date.parse(instance.last_seen) >
@@ -966,6 +991,94 @@ onBeforeUnmount(() => {
                       ><small>{{
                         rule.tenant_id || t("sanitizeRules.all")
                       }}</small>
+                      <!-- ★ 规则说明（2026-10-29 输出合规误报轮）：★ 说明的事实源
+                           是 YAML + 内建目录 ⇒ ★★ 服务端读规则时补齐 ⇒ ★★ 运维
+                           在这一行就能看懂「这条规则判什么」★★ -->
+                      <small
+                        v-if="rule.description"
+                        class="muted rule-description"
+                        data-test="rule-description"
+                        >{{ rule.description }}</small
+                      >
+                      <small
+                        v-else
+                        class="muted rule-description"
+                        data-test="rule-description-empty"
+                        >{{ t("sanitizeRules.ruleNoDescription") }}</small
+                      >
+                      <button
+                        class="btn btn-link"
+                        type="button"
+                        :data-test="'rule-detail-' + rule.id"
+                        @click="toggleRuleDetail(rule.id)"
+                      >
+                        {{
+                          expandedRuleDetail === rule.id
+                            ? t("sanitizeRules.ruleDetailHide")
+                            : t("sanitizeRules.ruleDetailShow")
+                        }}
+                      </button>
+                      <div
+                        v-if="expandedRuleDetail === rule.id"
+                        class="matched-rule__body"
+                        :data-test="'rule-detail-body-' + rule.id"
+                      >
+                        <p>
+                          <strong>{{ t("sanitizeRules.ruleKindLabel") }}</strong
+                          >: <code>{{ rule.kind }}</code>
+ · <strong>{{ t("sanitizeRules.ruleActionLabel") }}</strong
+                          >: <code>{{ rule.action }}</code>
+                          · <strong>{{
+                            t("sanitizeRules.rulePriorityLabel")
+                          }}</strong
+                          >: <code>{{ rule.priority }}</code>
+                          · <strong>{{ t("sanitizeRules.scopes") }}</strong
+                          >: <code>{{ rule.scopes.join(", ") || "—" }}</code>
+                        </p>
+                        <p>
+                          <strong>{{
+                            t("sanitizeRules.rulePatternLabel")
+                          }}</strong>
+</p>
+                        <pre class="match-detail">{{
+                          rule.pattern || "—"
+                        }}</pre>
+                        <p v-if="rule.exemptions?.length">
+                          <strong>{{
+                            t("sanitizeRules.ruleExemptionsLabel")
+                          }}</strong
+                          >: <code>{{ rule.exemptions.join(", ") }}</code>
+                        </p>
+                        <p v-if="rule.tools?.length || rule.fields?.length">
+                          <strong>{{ t("sanitizeRules.ruleScopeFieldsLabel") }}</strong
+                          >:
+                          <code v-if="rule.tools?.length"
+                            >{{ t("sanitizeRules.tools") }}:
+                            {{ rule.tools.join(", ") }}</code
+                          >
+                          <code v-if="rule.fields?.length"
+                            >{{ t("sanitizeRules.fields") }}:
+                            {{ rule.fields.join(", ") }}</code
+                          >
+                        </p>
+                        <div v-if="rule.samples?.length">
+                          <strong>{{
+                            t("sanitizeRules.ruleSamplesLabel")
+                          }}</strong>
+                          <pre
+                            v-for="(sample, sampleIndex) in rule.samples"
+                            :key="sampleIndex"
+                            class="match-detail"
+                            >{{
+                              (sample.match
+                                ? t("sanitizeRules.ruleSampleHit")
+                                : t("sanitizeRules.ruleSampleMiss")) +
+                              ": " +
+                              (sample.text || "—")
+                            }}</pre
+                          >
+                        </div>
+                      </div>
                     </td>
                     <td>
                       <!--
@@ -1466,10 +1579,95 @@ onBeforeUnmount(() => {
           :data-test="'blocked-review-' + review.id"
         >
           <div class="toolbar">
-            <strong>rv-{{ review.id }} · {{ review.rule || "—" }}</strong
+            <strong
+              >rv-{{ review.id }} ·
+              {{
+                review.rule || t("sanitizeRules.reviewUnattributedRule")
+              }}</strong
             ><span>{{ labels['review_' + review.status] }}</span
             ><span>{{ review.tenant_id || "—" }}</span>
             <span>{{ date(review.created_at) }}</span>
+          </div>
+          <!-- ★ 拦截归因：★ 「为什么被拦」的一句话结论 + 候选规则。
+审核单自带的规则/理由在历史记录里全空（拦截点没说话）⇒
+               没有这一块，审核员只能看到一串 ID ⇒ 无法审批。 -->
+          <div
+            v-if="review.context"
+            class="matched-rule"
+            data-test="review-attribution"
+          >
+            <strong class="muted">{{
+              t("sanitizeRules.reviewAttributionLabel")
+            }}</strong>
+            <p class="event-meta">
+              <span
+                class="tag"
+                :data-test="'review-attribution-kind-' + review.context.attribution_kind"
+ >{{ attributionKindLabel(review.context.attribution_kind) }}</span
+              >
+              <span>{{ review.context.attribution }}</span>
+            </p>
+            <p
+              v-if="review.context.candidate_rules?.length"
+              class="event-meta"
+              data-test="review-candidates"
+            >
+              {{ t("sanitizeRules.reviewCandidateRulesLabel") }}:
+              <code
+                v-for="cand in review.context.candidate_rules"
+                :key="cand.rule_id"
+                >{{ cand.rule_id }}({{ cand.action || "—" }})</code
+              >
+            </p>
+          </div>
+          <!-- ★ 原始上下文：★ 这次请求长什么样、走的哪个模型、失败在哪个阶段。
+               ★ 服务端读时从请求日志联表取回（不落库）★★ -->
+          <div
+            v-if="review.context && hasOriginalContext(review.context)"
+            class="matched-rule"
+            data-test="review-original-context"
+          >
+            <strong class="muted">{{
+              t("sanitizeRules.reviewOriginalContextLabel")
+            }}</strong>
+            <p class="event-meta">
+              <span
+                >{{ t("sanitizeRules.reviewModelLabel") }}:
+                <code>{{ review.context.model || "—" }}</code></span
+              >
+              <span v-if="review.context.session_id"
+                >· {{ t("sanitizeRules.reviewSessionLabel") }}:
+                <code>{{ review.context.session_id }}</code></span
+              >
+              <span v-if="review.context.error_kind"
+                >· {{ t("sanitizeRules.reviewErrorKindLabel") }}:
+                <code>{{ review.context.error_kind }}</code></span
+              >
+              <span v-if="review.context.failure_stage"
+                >· {{ t("sanitizeRules.reviewFailureStageLabel") }}:
+                <code>{{ review.context.failure_stage }}</code></span
+              >
+              <span v-if="review.context.prompt_tokens"
+                >· {{ t("sanitizeRules.reviewTokensLabel") }}:
+<code>{{ review.context.prompt_tokens }}</code></span
+              >
+              <span v-if="review.context.latency_ms"
+                >· {{ t("sanitizeRules.reviewLatencyLabel") }}:
+                <code>{{ Math.round(review.context.latency_ms / 1000) }}s</code></span
+              >
+            </p>
+            <pre
+              v-if="review.context.request_preview"
+              class="match-detail"
+              data-test="review-request-preview"
+              >{{ review.context.request_preview }}</pre
+            >
+            <pre
+              v-if="review.context.response_preview"
+              class="match-detail"
+              data-test="review-response-preview"
+              >{{ review.context.response_preview }}</pre
+            >
           </div>
           <p class="event-meta">
             <span>{{ t("sanitizeRules.reviewReasonLabel") }}: {{ review.reason || "—" }}</span>

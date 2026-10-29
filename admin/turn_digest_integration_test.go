@@ -31,6 +31,7 @@ import (
 	"github.com/pashagolub/pgxmock/v4"
 
 	"github.com/kaixuan/llm-gateway-go/domains/sessiondigest"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -157,6 +158,14 @@ type digestDetailBody struct {
 // callTurnDetail 以 mock db 调用 serveSessionTurnDetailDB 并解析响应。
 func callTurnDetail(t *testing.T, mock pgxmock.PgxPoolIface, req *http.Request) (int, digestDetailBody) {
 	t.Helper()
+	// W1.3 读门要求 consent=on 才放行 turn detail 读面；本文件的用例测的是
+	// digest 行为，不是 consent 门 ⇒ 在这个唯一入口显式开启
+	// （否则 409 recording_unavailable 先行短路，全家假红）。
+	prevConsent := settings.TestingConsentOverride
+	consentOn := true
+	settings.TestingConsentOverride = &consentOn
+	t.Cleanup(func() { settings.TestingConsentOverride = prevConsent })
+
 	rr := httptest.NewRecorder()
 	serveSessionTurnDetailDB(mock, rr, req, "gw_abc", "1")
 	var body digestDetailBody

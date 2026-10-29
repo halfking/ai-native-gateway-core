@@ -8,7 +8,7 @@
 
 | 发现 | 实际证据 | 本轮状态 |
 |---|---|---|
-| SSE 终态正文绕过 1 MiB 累计 wire cap | 超限 1 字节、pending + 终态超限、生产 writer 的两个小于 1 MiB 帧合计超限均在旧源码下未阻断 | 已修复：heartbeat 后、JSON 解析/终态释放前检查 pending + 当前完整帧；等于上限接受，超过阻断 |
+| SSE 终态正文绕过 1 MiB 累计 wire cap | 超限 1 字节、pending + 终态超限、生产 writer 的两个小于 1 MiB 帧合计超限均在旧源码下未阻断 | 已修复：heartbeat 后、JSON 解析/终态释放前检查 pending + 当前完整帧；等于上限接受，超过阻断（★ **2026-10-29 审计轮更正**：★ 「超过 ⇒ 阻断」那一半被改成「**超过 ⇒ 降级放行 + 留痕**」（★ 输出合规守卫路径，★ 因为「越界即杀请求」在 211 生产是一台误报机器）★★ **缓冲有界那一半不变**（★ 1 MiB wire cap 仍是出厂值，★ 超限即释放 pending ⇒ 记忆体上界不变）★★ 详见 [2026-10-29-输出合规误报轮](2026-10-29-输出合规误报轮.md)） |
 | Redis 旧审计/审批字段复活 | 新 state 写入 false/0/空值，冷实例仍读到旧 `SensitiveDetected`；负对照也保留旧批准状态与 ID | 已修复：显式写入全部 v6 audit/approval 零值；真实 Redis + PG 冷读及默认回归通过 |
 | 热实例 L1 不随另一实例写入失效 | B warm generation=old；C cold generation=new | 未修复，分布式一致性方案 #3 |
 | 实例内 Update 互斥无法保护跨实例读改写 | 两次计数增加，最终 Redis 只得到 1 | 未修复，方案 #2；不是 Go data race |

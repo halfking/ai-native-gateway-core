@@ -53,7 +53,8 @@ func TestOutputCheckSwitchRequiresSuperAdmin(t *testing.T) {
 // TestOutputCheckSwitchReadReportsSourceAndSemantics 钉住读数的可解释性。
 //
 // ★ 「来源」必须给出来：运维要知道这个值是默认、库里存的、还是刚被改过的
-//   —— 三者的可动性不同（默认的要写库才持久）。
+//
+//	—— 三者的可动性不同（默认的要写库才持久）。
 func TestOutputCheckSwitchReadReportsSourceAndSemantics(t *testing.T) {
 	registerOutputCheckSpec(t)
 	h := &Handler{}

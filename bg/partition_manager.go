@@ -1314,7 +1314,7 @@ func (pm *PartitionManager) cleanupOldModelProbeRuns(ctx context.Context) {
 	defer cancel()
 
 	tag, err := pm.db.Exec(timeoutCtx,
-		"DELETE FROM model_probe_runs_hot WHERE created_at < now() - ($1 || ' days')::interval",
+		"DELETE FROM model_probe_runs_hot WHERE created_at < now() - make_interval(days => $1::int)",
 		retentionDays)
 	if err != nil {
 		slog.Error("partition_manager: model_probe_runs hot cleanup failed",
@@ -1345,7 +1345,7 @@ func (pm *PartitionManager) cleanupOldNodeProbeRuns(ctx context.Context) {
 	defer cancel()
 
 	tag, err := pm.db.Exec(timeoutCtx,
-		"DELETE FROM node_probe_runs WHERE started_at < now() - ($1 || ' days')::interval",
+		"DELETE FROM node_probe_runs WHERE started_at < now() - make_interval(days => $1::int)",
 		retentionDays)
 	if err != nil {
 		slog.Error("partition_manager: node_probe_runs cleanup failed",
@@ -1375,7 +1375,7 @@ func (pm *PartitionManager) cleanupOldRequestContextAttrs(ctx context.Context) {
 	defer cancel()
 
 	tag, err := pm.db.Exec(timeoutCtx,
-		"DELETE FROM request_context_attrs WHERE ts < now() - ($1 || ' days')::interval",
+		"DELETE FROM request_context_attrs WHERE ts < now() - make_interval(days => $1::int)",
 		retentionDays)
 	if err != nil {
 		slog.Error("partition_manager: request_context_attrs cleanup failed",
@@ -1412,7 +1412,7 @@ func (pm *PartitionManager) cleanupOldRequestStatsMinute(ctx context.Context) {
 		"request_stats_error_drill_minute",
 	} {
 		tag, err := pm.db.Exec(timeoutCtx,
-			"DELETE FROM "+table+" WHERE bucket < now() - ($1 || ' days')::interval",
+			"DELETE FROM "+table+" WHERE bucket < now() - make_interval(days => $1::int)",
 			retentionDays)
 		if err != nil {
 			slog.Error("partition_manager: request_stats cleanup failed",
@@ -1441,7 +1441,7 @@ func (pm *PartitionManager) cleanupOldRuntimeMetrics(ctx context.Context) {
 	defer cancel()
 
 	tag, err := pm.db.Exec(timeoutCtx,
-		"DELETE FROM runtime_metrics WHERE timestamp < now() - ($1 || ' days')::interval",
+		"DELETE FROM runtime_metrics WHERE timestamp < now() - make_interval(days => $1::int)",
 		retentionDays)
 	if err != nil {
 		slog.Error("partition_manager: runtime_metrics cleanup failed",
@@ -1469,7 +1469,7 @@ func (pm *PartitionManager) cleanupOldRuntimeAlertEvents(ctx context.Context) {
 	defer cancel()
 
 	tag, err := pm.db.Exec(timeoutCtx,
-		"DELETE FROM runtime_alert_events WHERE detected_at < now() - ($1 || ' days')::interval",
+		"DELETE FROM runtime_alert_events WHERE detected_at < now() - make_interval(days => $1::int)",
 		retentionDays)
 	if err != nil {
 		slog.Error("partition_manager: runtime_alert_events cleanup failed",
@@ -2397,7 +2397,7 @@ func (pm *PartitionManager) cleanupOldProviderErrorDetails(ctx context.Context) 
 		return tx.Exec(timeoutCtx,
 			`DELETE FROM provider_error_details
 			 WHERE resolved = true
-			 AND updated_at < now() - ($1 || ' days')::interval`,
+			 AND updated_at < now() - make_interval(days => $1::int)`,
 			retentionDays)
 	})
 	if err != nil {
@@ -2441,7 +2441,7 @@ func (pm *PartitionManager) cleanupOldSupplierErrorStats(ctx context.Context) {
 	tag, err := pm.db.Exec(timeoutCtx,
 		`DELETE FROM supplier_error_stats
 		 WHERE granularity = 'minute'
-		   AND stat_time < now() - ($1 || ' days')::interval`,
+		   AND stat_time < now() - make_interval(days => $1::int)`,
 		retentionDays)
 	if err != nil {
 		slog.Error("partition_manager: supplier_error_stats cleanup failed",
@@ -2478,7 +2478,7 @@ func (pm *PartitionManager) cleanupOldRoutingFeedbackLog(ctx context.Context) {
 
 	tag, err := pm.db.Exec(timeoutCtx,
 		`DELETE FROM routing_feedback_log
-		 WHERE created_at < now() - ($1 || ' days')::interval`,
+		 WHERE created_at < now() - make_interval(days => $1::int)`,
 		retentionDays)
 	if err != nil {
 		// 42P01 (table missing, e.g. migration 670 not applied yet) is the
@@ -2514,7 +2514,7 @@ func (pm *PartitionManager) cleanupOldRoutingOptimizationMetrics(ctx context.Con
 
 	tag, err := pm.db.Exec(timeoutCtx,
 		`DELETE FROM routing_optimization_metrics
-		 WHERE time_bucket < now() - ($1 || ' days')::interval`,
+		 WHERE time_bucket < now() - make_interval(days => $1::int)`,
 		retentionDays)
 	if err != nil {
 		slog.Debug("partition_manager: routing_optimization_metrics cleanup skipped",
@@ -2595,7 +2595,7 @@ func (pm *PartitionManager) cleanupOldAnalysisEvents(ctx context.Context) {
 	total := int64(0)
 	for round := 0; round < 10; round++ {
 		n := pm.deleteTerminalRowsBatched(ctx, "analysis_events",
-			"processed_at IS NOT NULL AND occurred_at < now() - ($1 || ' days')::interval",
+			"processed_at IS NOT NULL AND occurred_at < now() - make_interval(days => $1::int)",
 			retentionDays, batchLimit)
 		total += n
 		if n < batchLimit {
@@ -2626,7 +2626,7 @@ func (pm *PartitionManager) cleanupOldStatsEventInboxTerminal(ctx context.Contex
 	total := int64(0)
 	for round := 0; round < 10; round++ {
 		n := pm.deleteTerminalRowsBatched(ctx, "stats_event_inbox",
-			"processing_status IN ('processed','dead_letter') AND occurred_at < now() - ($1 || ' days')::interval",
+			"processing_status IN ('processed','dead_letter') AND occurred_at < now() - make_interval(days => $1::int)",
 			retentionDays, batchLimit)
 		total += n
 		if n < batchLimit {
