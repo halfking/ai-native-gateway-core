@@ -2471,6 +2471,15 @@ files=(
   #      internal/quality/profile_updater.go 的 INSERT 会 42703）。
   #   纯新增两表 + 幂等补列，全部 IF NOT EXISTS ⇒ 走事务通道。
   "$ROOT_DIR/sql/migrations/startup/922_model_credibility.sql"
+  # ★ 923（2026-10-29 记账补齐轮）：把 900~920 这 20 条迁移补登记进
+  #   public.schema_migrations（人读台账）—— ★ **只补记账，不改 schema**。
+  #   缺口本体：两个台账记的不是同一段 —— 部署通道的权威台账
+  #   gateway_db_revision_sequences 里 900~920 全在（本地真库实测 287 行），
+  #   而给人读的 schema_migrations 只到 899（74 行）⇒ 运维读它会把
+  #   「已应用」误判成「待应用」。
+  #   ★ 本文件不含任何 DDL / CONCURRENTLY ⇒ 不需要 --preflight 之类的特殊处理，
+  #     也不带 dbinit:no-transaction 标记（纯 DML ⇒ 走事务通道）。
+  "$ROOT_DIR/sql/migrations/startup/923_schema_migrations_ledger_backfill.sql"
 )
 
 
@@ -2963,6 +2972,13 @@ ledger_artifact_probe "921_sanitize_block_workbench.sql" \
   "to_regclass('public.sanitize_block_evidence') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='sanitize_block_reviews' AND column_name='label') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='sanitize_block_reviews' AND column_name='session_id')"
 ledger_artifact_probe "922_model_credibility.sql" \
   "to_regclass('public.provider_model_credibility') IS NOT NULL AND to_regclass('public.provider_model_credibility_runs') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_quality_profiles' AND column_name='reliability_score') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_quality_profiles' AND column_name='calculated_at')"
+# ★ 923（记账补齐轮）：产物 = **人读台账里的那 20 行**。判据 = 900~920
+#   （去掉 918 —— 该号不存在）这 20 个版本行都在 schema_migrations 里。
+#   ★ 与其它探针不同：923 的产物是「记账行」而不是「schema 对象」，
+#     正是它要修的那个差额的另一面 ⇒ 探针在这里是**闭环**：若哪天有人把
+#     补登记删了、或版本列表写漏了一条，这里立刻响。
+ledger_artifact_probe "923_schema_migrations_ledger_backfill.sql" \
+  "(SELECT count(*) FROM public.schema_migrations WHERE version IN ('900','901','902','903','904','905','906','907','908','909','910','911','912','913','914','915','916','917','919','920')) = 20"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

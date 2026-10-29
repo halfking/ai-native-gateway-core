@@ -22,6 +22,9 @@ export default {
     source: {
       memory: 'في الذاكرة',
       file: 'ملف محلي',
+      requestLogs: 'سجل الطلبات',
+      sessionTurns: 'دورات الجلسة',
+      liveStream: 'بث مباشر',
     },
     labels: {
       requestId: 'معرّف الطلب',

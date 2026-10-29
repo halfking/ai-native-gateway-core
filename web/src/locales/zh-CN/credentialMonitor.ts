@@ -28,6 +28,7 @@ export default {
     autoControlledTooltip: '由自动探测控制（broken_confirmed 等）。可手工禁用（强制下线）',
     rowSelectsMonitor: '选中行可联动查看右侧监控',
     selectModelRow: '选中左侧模型行可查看',
+    sourceSessionTurns: '会话记录',
   },
   chart: {
     allHealthy: '全部健康',

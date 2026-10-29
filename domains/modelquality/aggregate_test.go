@@ -3,6 +3,7 @@ package modelquality
 import (
 	"context"
 	"encoding/json"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -140,8 +141,8 @@ func TestDirectNodeInvoker_BuildsRequest(t *testing.T) {
 	if gotModel != "gpt-4o" {
 		t.Errorf("model = %s, want gpt-4o", gotModel)
 	}
-	if gotMaxTok != 50 {
-		t.Errorf("max_tokens = %d, want 50", gotMaxTok)
+	if gotMaxTok != providercap.ProbePingMaxTokens {
+		t.Errorf("max_tokens = %d, want %d (providercap.ProbePingMaxTokens: 推理模型 50 必不足，211 实测)", gotMaxTok, providercap.ProbePingMaxTokens)
 	}
 	if resp != "B" {
 		t.Errorf("response = %q, want B", resp)

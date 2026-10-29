@@ -1313,6 +1313,15 @@ var modelCredibility922 []byte
 
 //go:embed embeddata/startup/922_model_credibility.down.sql
 var modelCredibility922Down []byte
+
+// ★ 923（2026-10-29 记账补齐轮）：把 900~920 这 20 条迁移补登记进
+//   public.schema_migrations（人读台账）—— 只补记账，不改任何 schema 对象。
+//   ★ 幂等：ON CONFLICT (version) DO NOTHING ⇒ 重复执行不写重行。
+//go:embed embeddata/startup/923_schema_migrations_ledger_backfill.sql
+var schemaMigrationsLedgerBackfill923 []byte
+
+//go:embed embeddata/startup/923_schema_migrations_ledger_backfill.down.sql
+var schemaMigrationsLedgerBackfill923Down []byte
 //go:embed embeddata/startup/915_recent_cache_hit_rate.sql
 var recentCacheHitRate915 []byte
 
@@ -1705,6 +1714,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/921_sanitize_block_workbench.down.sql":                               sanitizeBlockWorkbench921Down,
 	"startup/922_model_credibility.sql":                                           modelCredibility922,
 	"startup/922_model_credibility.down.sql":                                      modelCredibility922Down,
+	"startup/923_schema_migrations_ledger_backfill.sql":                           schemaMigrationsLedgerBackfill923,
+	"startup/923_schema_migrations_ledger_backfill.down.sql":                      schemaMigrationsLedgerBackfill923Down,
 	"startup/915_recent_cache_hit_rate.sql":                                       recentCacheHitRate915,
 	"startup/915_recent_cache_hit_rate.down.sql":                                  recentCacheHitRate915Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,

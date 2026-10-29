@@ -22,6 +22,9 @@ export default {
     source: {
       memory: '本机内存',
       file: '本机文件',
+      requestLogs: '请求账本',
+      sessionTurns: '会话轮次',
+      liveStream: '实时流',
     },
     labels: {
       requestId: '请求ID',

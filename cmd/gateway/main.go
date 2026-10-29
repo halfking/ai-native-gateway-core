@@ -5218,9 +5218,16 @@ func main() {
 				mqConfig.EnablePerNodeTesting = mqEnablePerNode
 
 				modelQualityWorker = bg.NewModelQualityWorker(mqDataDir, mqAPIKey, mqBaseURL, time.Duration(mqTimeoutSec)*time.Second)
-				if mqEnablePerNode && dbConn != nil && (keyring != nil || len(fernetKey) == 32) {
+				// ★ nodeSource 常驻注入（db + 解密 key 可用即设）。
+				// enable_per_node 只控制**定时** per-node 循环（loop 里的
+				// EnablePerNodeTesting 门）。2026-10-30 211 实测：把 SetNodeSource
+				// 绑在 enable_per_node 上，手动「立即测试 IQ」按钮 503
+				// （node source not configured）—— 与 credibility trigger 同族缺陷。
+				if dbConn != nil && (keyring != nil || len(fernetKey) == 32) {
 					modelQualityWorker.SetNodeSource(bg.NewCredentialNodeSource(dbConn.Pool(), keyring, fernetKey))
-					slog.Info("model_quality_worker: per-node direct testing enabled")
+					if mqEnablePerNode {
+						slog.Info("model_quality_worker: per-node direct testing enabled")
+					}
 				} else if mqEnablePerNode {
 					slog.Warn("model_quality_worker: enable_per_node=true but DB/keyring unavailable, falling back to gateway-only")
 					mqConfig.EnablePerNodeTesting = false
@@ -5283,24 +5290,30 @@ func main() {
 				if mcProbeTimeoutSec < 10 {
 					mcProbeTimeoutSec = 60
 				}
-				if mcEnabled {
-					if keyring != nil || len(fernetKey) == 32 {
-						mcCfg := bg.DefaultModelCredibilityWorkerConfig()
-						mcCfg.Enabled = true
-						mcCfg.Interval = time.Duration(mcIntervalHours) * time.Hour
-						mcCfg.ProbeTimeout = time.Duration(mcProbeTimeoutSec) * time.Second
-						mcCfg.Scope = mcScope
-						modelCredibilityWorker = bg.NewModelCredibilityWorker(dbConn.Pool(), keyring, fernetKey, mcCfg)
-						modelCredibilityWorker.Start(context.Background())
+				// ★ worker 常驻创建（只要 db + 解密 key 可用），`enabled` 只控制
+				// **定时循环**是否启动。手动单点检测（POST /trigger）不依赖
+				// enabled —— 2026-10-30 211 实测教训：把 worker 创建绑在
+				// enabled 上，运维点「立即检测」会 503（worker not configured），
+				// 而 admin API 是实时验证扫描链路的唯一通道。
+				if keyring != nil || len(fernetKey) == 32 {
+					mcCfg := bg.DefaultModelCredibilityWorkerConfig()
+					mcCfg.Enabled = mcEnabled
+					mcCfg.Interval = time.Duration(mcIntervalHours) * time.Hour
+					mcCfg.ProbeTimeout = time.Duration(mcProbeTimeoutSec) * time.Second
+					mcCfg.Scope = mcScope
+					modelCredibilityWorker = bg.NewModelCredibilityWorker(dbConn.Pool(), keyring, fernetKey, mcCfg)
+					modelCredibilityWorker.Start(context.Background())
+					if mcEnabled {
 						slog.Info("CHECKPOINT: model_credibility_worker started",
 							"interval_hours", mcIntervalHours,
 							"probe_timeout_seconds", mcProbeTimeoutSec,
 							"scope", mcScope)
 					} else {
-						slog.Warn("model_credibility_worker: keyring/fernet key unavailable, not started")
+						// 定时关，但手动 trigger/scan 仍可用（admin backend 已注入）。
+						slog.Info("model_credibility_worker: scheduled scan disabled by settings; manual trigger still available")
 					}
 				} else {
-					slog.Info("model_credibility_worker: disabled by settings")
+					slog.Warn("model_credibility_worker: keyring/fernet key unavailable, not created")
 				}
 			}
 		}

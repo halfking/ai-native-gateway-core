@@ -2,7 +2,18 @@
 // GET /api/admin/request-detail/{id} — memory/file → request_logs → session_turns
 import { req } from './_core'
 
-export type DetailSource = 'memory' | 'file' | 'request_logs' | 'session_turns'
+// DetailSource 是统一详情接口的 `source` 字段取值集合。
+//
+// ★ R182 轮修正：★ 旧联合漏了 **`live_stream`** ⇒ ★
+//   后端 `domains/requestdetail/types.go` 有 **5** 个取值（memory / file /
+//   live_stream / request_logs / session_turns），而前端只列了 4 个
+//   ⇒ ⇒ `live_stream` 落进渲染侧的兜底分支 ⇒ ⇒ **裸串 `live_stream` 上屏**。
+// ★ 移动端 `web-mobile/src/api/requestDetail.ts` 的 REQUEST_DETAIL_SOURCES
+//   早已是 5 个 ⇒ ★ 桌面端这次是**向移动端对齐**。
+// ★ 由 web/src/api/__tests__ 之外的
+//   `web/src/api/credential-monitor.source-contract.test.ts` 里的
+//   「request_detail 域」判据钉住（后端字面量集合 ↔ 前端联合逐字相等）。
+export type DetailSource = 'memory' | 'file' | 'live_stream' | 'request_logs' | 'session_turns'
 export type DetailPersistence = 'in_flight' | 'persisted'
 
 export interface UnifiedDetailMeta {

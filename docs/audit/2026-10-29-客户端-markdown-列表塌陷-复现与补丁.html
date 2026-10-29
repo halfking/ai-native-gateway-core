@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>MCode 客户端 · markdown 列表塌陷 —— 复现与补丁（真实 CSS / 真实类名）</title>
+<style>
+/* ======================================================================
+   ★ 本页【自包含】：★ 内嵌了从 /Applications/MiniMax Code.app 的 app.asar
+   ★ 提取的【真实】 matrix-markdown.css（★ 419 条规则）★
+   ★ ⇒ ★ 离线直接打开即出读数，★ 不依赖任何外部文件。
+   ====================================================================== */
+
+.matrix-markdown")),r=0;for(let e of o){if(e===t||e.contains(t)){let o=(0,u.c4)(e,t,n);return o<0?-1:r+o}r+=(0,u.ti)(e).length+1}
+.matrix-markdown")).map(u.ti).join("\n"),r=t.replace(/\s+/gu,"");if(!r)return;let i="",a=0;for(let e=0;e<o.length;e+=1){let t=o[e]??"";/\s/u.test(t)||(e<n&&(a+=1),i+=t)}
+.matrix-markdown{--md-spacing-xs:4px;--md-spacing-sm:8px;--md-spacing-md:12px;--md-spacing-lg:16px;--md-spacing-xl:20px;--md-spacing-2xl:24px;--md-block-gap:var(--md-spacing-lg);--md-font-family-body:var( --mcode-font-family-ui,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol" );--md-font-size-body:16px;--md-line-height-body:26px;--md-letter-spacing-body:0;--md-font-size-h1:var(--text-prose-h1,1.75rem);--md-line-height-h1:1.143;--md-letter-spacing-h1:0;--md-font-size-h2:var(--text-prose-h2,1.375rem);--md-line-height-h2:1.273;--md-letter-spacing-h2:0;--md-font-size-h3:var(--text-prose-h3,1.125rem);--md-line-height-h3:1.444;--md-letter-spacing-h3:0;--md-font-size-small:var(--text-body-small-size,var(--text-body-size,14px));--md-line-height-small:var(--text-body-small-line-height,var(--text-body-line-height,22px));--md-letter-spacing-small:0;--md-font-size-caption:var(--text-caption-size,12px);--md-line-height-caption:16px;--md-letter-spacing-caption:0;--md-font-size-code:var(--mavis-code-font-size,var(--text-code-size,13px));--md-line-height-code:var(--text-code-line-height,20px);--md-letter-spacing-code:0;--md-font-weight-heading:500;--md-font-weight-strong:500;--md-radius-sm:4px;--md-radius-md:8px;--md-radius-lg:12px;--md-radius-xl:16px;--md-padding-list:0 0 0 1em;--md-list-marker-width:1.5em;--md-list-marker-gap:0.5em;--md-padding-list-item-bottom:var(--md-spacing-sm);--md-padding-inline-code:0.18em 0.55em;--md-margin-inline-code:0 var(--md-spacing-xs);--md-padding-table-cell:var(--md-spacing-sm) var(--md-spacing-md);--md-table-cell-max-width:min(420px,72vw);--md-padding-pre-table-cell:2px 0;display:grid;grid-template-columns:1fr;gap:var(--md-block-gap);max-width:100%;width:100%;color:inherit;font-family:var(--md-font-family-body);font-size:var(--md-font-size-body);line-height:var(--md-line-height-body);letter-spacing:var(--md-letter-spacing-body);overflow-wrap:break-word;word-break:break-word}
+.matrix-markdown>*{min-width:0}
+.matrix-markdown.markdown-view-wrap{min-width:0;overflow-wrap:anywhere;word-break:break-word}
+.matrix-markdown.markdown-view-wrap .table-out-box{width:100%;min-width:0;overflow-x:hidden}
+.matrix-markdown.markdown-view-wrap table{width:100%;min-width:0;table-layout:fixed}
+.matrix-markdown.markdown-view-wrap table td,.matrix-markdown.markdown-view-wrap table th{min-width:0!important;max-width:none;overflow-wrap:anywhere;word-break:break-word}
+.matrix-markdown.markdown-view-wrap table th{min-width:0!important;max-width:none;overflow-wrap:anywhere;word-break:break-word}
+.matrix-markdown.markdown-view-wrap .code-block-wrapper .code-block-box .code-block,.matrix-markdown.markdown-view-wrap .codeblock-shell .codeblock-code{overflow-x:hidden}
+.matrix-markdown.markdown-view-wrap .codeblock-shell .codeblock-code{overflow-x:hidden}
+.matrix-markdown.markdown-view-wrap .codeblock-shell .codeblock-code .shiki,.matrix-markdown.markdown-view-wrap .codeblock-shell .codeblock-code .shiki .line,.matrix-markdown.markdown-view-wrap .codeblock-shell .codeblock-code .shiki code:not(:has(>.line)),.matrix-markdown.markdown-view-wrap .codeblock-shell .codeblock-code .shiki span{white-space:pre-wrap!important;overflow-wrap:anywhere;word-break:break-word}
+.matrix-markdown.markdown-view-wrap .codeblock-shell .codeblock-code .shiki .line,.matrix-markdown.markdown-view-wrap .codeblock-shell .codeblock-code .shiki code:not(:has(>.line)),.matrix-markdown.markdown-view-wrap .codeblock-shell .codeblock-code .shiki span{white-space:pre-wrap!important;overflow-wrap:anywhere;word-break:break-word}
+.matrix-markdown.markdown-view-wrap .codeblock-shell .codeblock-code .shiki code:not(:has(>.line)),.matrix-markdown.markdown-view-wrap .codeblock-shell .codeblock-code .shiki span{white-space:pre-wrap!important;overflow-wrap:anywhere;word-break:break-word}
+.matrix-markdown.markdown-view-wrap .codeblock-shell .codeblock-code .shiki span{white-space:pre-wrap!important;overflow-wrap:anywhere;word-break:break-word}
+.matrix-markdown.markdown-view-wrap .inline-code{white-space:break-spaces;overflow-wrap:anywhere;word-break:break-word;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+.matrix-markdown.markdown-view-nowrap,.matrix-markdown.markdown-view-nowrap code,.matrix-markdown.markdown-view-nowrap div,.matrix-markdown.markdown-view-nowrap li,.matrix-markdown.markdown-view-nowrap p,.matrix-markdown.markdown-view-nowrap pre,.matrix-markdown.markdown-view-nowrap span,.matrix-markdown.markdown-view-nowrap table td,.matrix-markdown.markdown-view-nowrap table th{overflow-wrap:normal!important;word-break:normal!important}
+.matrix-markdown.markdown-view-nowrap code,.matrix-markdown.markdown-view-nowrap div,.matrix-markdown.markdown-view-nowrap li,.matrix-markdown.markdown-view-nowrap p,.matrix-markdown.markdown-view-nowrap pre,.matrix-markdown.markdown-view-nowrap span,.matrix-markdown.markdown-view-nowrap table td,.matrix-markdown.markdown-view-nowrap table th{overflow-wrap:normal!important;word-break:normal!important}
+.matrix-markdown.markdown-view-nowrap div,.matrix-markdown.markdown-view-nowrap li,.matrix-markdown.markdown-view-nowrap p,.matrix-markdown.markdown-view-nowrap pre,.matrix-markdown.markdown-view-nowrap span,.matrix-markdown.markdown-view-nowrap table td,.matrix-markdown.markdown-view-nowrap table th{overflow-wrap:normal!important;word-break:normal!important}
+.matrix-markdown.markdown-view-nowrap li,.matrix-markdown.markdown-view-nowrap p,.matrix-markdown.markdown-view-nowrap pre,.matrix-markdown.markdown-view-nowrap span,.matrix-markdown.markdown-view-nowrap table td,.matrix-markdown.markdown-view-nowrap table th{overflow-wrap:normal!important;word-break:normal!important}
+.matrix-markdown.markdown-view-nowrap p,.matrix-markdown.markdown-view-nowrap pre,.matrix-markdown.markdown-view-nowrap span,.matrix-markdown.markdown-view-nowrap table td,.matrix-markdown.markdown-view-nowrap table th{overflow-wrap:normal!important;word-break:normal!important}
+.matrix-markdown.markdown-view-nowrap pre,.matrix-markdown.markdown-view-nowrap span,.matrix-markdown.markdown-view-nowrap table td,.matrix-markdown.markdown-view-nowrap table th{overflow-wrap:normal!important;word-break:normal!important}
+.matrix-markdown.markdown-view-nowrap span,.matrix-markdown.markdown-view-nowrap table td,.matrix-markdown.markdown-view-nowrap table th{overflow-wrap:normal!important;word-break:normal!important}
+.matrix-markdown.markdown-view-nowrap table td,.matrix-markdown.markdown-view-nowrap table th{overflow-wrap:normal!important;word-break:normal!important}
+.matrix-markdown.markdown-view-nowrap table th{overflow-wrap:normal!important;word-break:normal!important}
+.matrix-markdown.markdown-view-nowrap .inline-code{white-space:nowrap}
+.matrix-markdown.matrix-markdown--compact{--md-font-size-body:13px;--md-line-height-body:20px;--md-letter-spacing-body:0;--md-font-weight-strong:500;--md-font-size-h1:13px;--md-line-height-h1:20px;--md-font-size-h2:13px;--md-line-height-h2:20px;--md-font-size-h3:13px;--md-line-height-h3:20px;--md-font-size-small:12px;--md-line-height-small:18px;--md-letter-spacing-small:0}
+.matrix-markdown--compact{--md-font-size-body:13px;--md-line-height-body:20px;--md-letter-spacing-body:0;--md-font-weight-strong:500;--md-font-size-h1:13px;--md-line-height-h1:20px;--md-font-size-h2:13px;--md-line-height-h2:20px;--md-font-size-h3:13px;--md-line-height-h3:20px;--md-font-size-small:12px;--md-line-height-small:18px;--md-letter-spacing-small:0}
+.matrix-markdown.matrix-markdown--thinking{--md-block-gap:var(--md-spacing-md);--md-font-size-body:14px;--md-line-height-body:20px;--md-letter-spacing-body:0;--md-font-weight-strong:400;--md-font-weight-heading:400;--md-font-size-h1:14px;--md-line-height-h1:20px;--md-font-size-h2:14px;--md-line-height-h2:20px;--md-font-size-h3:14px;--md-line-height-h3:20px;--md-font-size-small:13px;--md-line-height-small:18px;--md-letter-spacing-small:0;font-size:var(--mavis-font-size-14,14px)!important;line-height:var(--mavis-line-height-20,20px)!important;letter-spacing:0!important;gap:var(--md-block-gap)}
+.matrix-markdown--thinking{--md-block-gap:var(--md-spacing-md);--md-font-size-body:14px;--md-line-height-body:20px;--md-letter-spacing-body:0;--md-font-weight-strong:400;--md-font-weight-heading:400;--md-font-size-h1:14px;--md-line-height-h1:20px;--md-font-size-h2:14px;--md-line-height-h2:20px;--md-font-size-h3:14px;--md-line-height-h3:20px;--md-font-size-small:13px;--md-line-height-small:18px;--md-letter-spacing-small:0;font-size:var(--mavis-font-size-14,14px)!important;line-height:var(--mavis-line-height-20,20px)!important;letter-spacing:0!important;gap:var(--md-block-gap)}
+.matrix-markdown.matrix-markdown--thinking b,.matrix-markdown.matrix-markdown--thinking strong{font-weight:var(--mavis-body-font-weight,400)}
+.matrix-markdown--thinking b,.matrix-markdown.matrix-markdown--thinking strong{font-weight:var(--mavis-body-font-weight,400)}
+.matrix-markdown.matrix-markdown--thinking strong{font-weight:var(--mavis-body-font-weight,400)}
+.matrix-markdown--thinking strong{font-weight:var(--mavis-body-font-weight,400)}
+.matrix-markdown.matrix-markdown--thinking h1,.matrix-markdown.matrix-markdown--thinking h2,.matrix-markdown.matrix-markdown--thinking h3,.matrix-markdown.matrix-markdown--thinking h4,.matrix-markdown.matrix-markdown--thinking h5,.matrix-markdown.matrix-markdown--thinking h6{font-size:var(--mavis-font-size-14,14px)!important;line-height:var(--mavis-line-height-20,20px);font-weight:400;border-top:none;padding-top:0;margin:0}
+.matrix-markdown--thinking h1,.matrix-markdown.matrix-markdown--thinking h2,.matrix-markdown.matrix-markdown--thinking h3,.matrix-markdown.matrix-markdown--thinking h4,.matrix-markdown.matrix-markdown--thinking h5,.matrix-markdown.matrix-markdown--thinking h6{font-size:var(--mavis-font-size-14,14px)!important;line-height:var(--mavis-line-height-20,20px);font-weight:400;border-top:none;padding-top:0;margin:0}
+.matrix-markdown.matrix-markdown--thinking h2,.matrix-markdown.matrix-markdown--thinking h3,.matrix-markdown.matrix-markdown--thinking h4,.matrix-markdown.matrix-markdown--thinking h5,.matrix-markdown.matrix-markdown--thinking h6{font-size:var(--mavis-font-size-14,14px)!important;line-height:var(--mavis-line-height-20,20px);font-weight:400;border-top:none;padding-top:0;margin:0}
+.matrix-markdown--thinking h2,.matrix-markdown.matrix-markdown--thinking h3,.matrix-markdown.matrix-markdown--thinking h4,.matrix-markdown.matrix-markdown--thinking h5,.matrix-markdown.matrix-markdown--thinking h6{font-size:var(--mavis-font-size-14,14px)!important;line-height:var(--mavis-line-height-20,20px);font-weight:400;border-top:none;padding-top:0;margin:0}
+.matrix-markdown.matrix-markdown--thinking h3,.matrix-markdown.matrix-markdown--thinking h4,.matrix-markdown.matrix-markdown--thinking h5,.matrix-markdown.matrix-markdown--thinking h6{font-size:var(--mavis-font-size-14,14px)!important;line-height:var(--mavis-line-height-20,20px);font-weight:400;border-top:none;padding-top:0;margin:0}
+.matrix-markdown--thinking h3,.matrix-markdown.matrix-markdown--thinking h4,.matrix-markdown.matrix-markdown--thinking h5,.matrix-markdown.matrix-markdown--thinking h6{font-size:var(--mavis-font-size-14,14px)!important;line-height:var(--mavis-line-height-20,20px);font-weight:400;border-top:none;padding-top:0;margin:0}
+.matrix-markdown.matrix-markdown--thinking h4,.matrix-markdown.matrix-markdown--thinking h5,.matrix-markdown.matrix-markdown--thinking h6{font-size:var(--mavis-font-size-14,14px)!important;line-height:var(--mavis-line-height-20,20px);font-weight:400;border-top:none;padding-top:0;margin:0}
+.matrix-markdown--thinking h4,.matrix-markdown.matrix-markdown--thinking h5,.matrix-markdown.matrix-markdown--thinking h6{font-size:var(--mavis-font-size-14,14px)!important;line-height:var(--mavis-line-height-20,20px);font-weight:400;border-top:none;padding-top:0;margin:0}
+.matrix-markdown.matrix-markdown--thinking h5,.matrix-markdown.matrix-markdown--thinking h6{font-size:var(--mavis-font-size-14,14px)!important;line-height:var(--mavis-line-height-20,20px);font-weight:400;border-top:none;padding-top:0;margin:0}
+.matrix-markdown--thinking h5,.matrix-markdown.matrix-markdown--thinking h6{font-size:var(--mavis-font-size-14,14px)!important;line-height:var(--mavis-line-height-20,20px);font-weight:400;border-top:none;padding-top:0;margin:0}
+.matrix-markdown.matrix-markdown--thinking h6{font-size:var(--mavis-font-size-14,14px)!important;line-height:var(--mavis-line-height-20,20px);font-weight:400;border-top:none;padding-top:0;margin:0}
+.matrix-markdown--thinking h6{font-size:var(--mavis-font-size-14,14px)!important;line-height:var(--mavis-line-height-20,20px);font-weight:400;border-top:none;padding-top:0;margin:0}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking){--md-chat-gap-short-paragraph:11px;--md-chat-gap-related:10px;--md-chat-gap-code:14px;--md-chat-blockquote-indent:24px}
+.matrix-markdown--compact):not(.matrix-markdown--thinking){--md-chat-gap-short-paragraph:11px;--md-chat-gap-related:10px;--md-chat-gap-code:14px;--md-chat-blockquote-indent:24px}
+.matrix-markdown--thinking){--md-chat-gap-short-paragraph:11px;--md-chat-gap-related:10px;--md-chat-gap-code:14px;--md-chat-blockquote-indent:24px}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow{display:flow-root}
+.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow{display:flow-root}
+.matrix-markdown--thinking) .mavis-chat-markdown-flow,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow{display:flow-root}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow{display:flow-root}
+.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow{display:flow-root}
+.matrix-markdown--thinking).mavis-chat-markdown-flow{display:flow-root}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow>*,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*{min-width:0;margin-block-start:0!important;margin-block-end:0!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow>*,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*{min-width:0;margin-block-start:0!important;margin-block-end:0!important}
+.matrix-markdown--thinking) .mavis-chat-markdown-flow>*,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*{min-width:0;margin-block-start:0!important;margin-block-end:0!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*{min-width:0;margin-block-start:0!important;margin-block-end:0!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*{min-width:0;margin-block-start:0!important;margin-block-end:0!important}
+.matrix-markdown--thinking).mavis-chat-markdown-flow>*{min-width:0;margin-block-start:0!important;margin-block-end:0!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6),:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6){padding-block-start:0!important;border-top:none!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6),:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6){padding-block-start:0!important;border-top:none!important}
+.matrix-markdown--thinking) .mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6),:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6){padding-block-start:0!important;border-top:none!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6){padding-block-start:0!important;border-top:none!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6){padding-block-start:0!important;border-top:none!important}
+.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6){padding-block-start:0!important;border-top:none!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow>*+*,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*+*{margin-block-start:var(--md-spacing-md)!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow>*+*,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*+*{margin-block-start:var(--md-spacing-md)!important}
+.matrix-markdown--thinking) .mavis-chat-markdown-flow>*+*,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*+*{margin-block-start:var(--md-spacing-md)!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*+*{margin-block-start:var(--md-spacing-md)!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*+*{margin-block-start:var(--md-spacing-md)!important}
+.matrix-markdown--thinking).mavis-chat-markdown-flow>*+*{margin-block-start:var(--md-spacing-md)!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*+.mermaid-block-wrapper,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>.mermaid-block-wrapper+*{margin-block-start:var(--md-spacing-sm)!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*+.mermaid-block-wrapper,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>.mermaid-block-wrapper+*{margin-block-start:var(--md-spacing-sm)!important}
+.matrix-markdown--thinking).mavis-chat-markdown-flow>*+.mermaid-block-wrapper,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>.mermaid-block-wrapper+*{margin-block-start:var(--md-spacing-sm)!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>.mermaid-block-wrapper+*{margin-block-start:var(--md-spacing-sm)!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>.mermaid-block-wrapper+*{margin-block-start:var(--md-spacing-sm)!important}
+.matrix-markdown--thinking).mavis-chat-markdown-flow>.mermaid-block-wrapper+*{margin-block-start:var(--md-spacing-sm)!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(ul,ol)+:is(p,ul,ol),:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>p+:is(ul,ol){margin-block-start:var(--md-chat-gap-related)!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(ul,ol)+:is(p,ul,ol),:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>p+:is(ul,ol){margin-block-start:var(--md-chat-gap-related)!important}
+.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(ul,ol)+:is(p,ul,ol),:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>p+:is(ul,ol){margin-block-start:var(--md-chat-gap-related)!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>p+:is(ul,ol){margin-block-start:var(--md-chat-gap-related)!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>p+:is(ul,ol){margin-block-start:var(--md-chat-gap-related)!important}
+.matrix-markdown--thinking).mavis-chat-markdown-flow>p+:is(ul,ol){margin-block-start:var(--md-chat-gap-related)!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow>p[data-markdown-han-text]+p[data-markdown-han-text],:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>p[data-markdown-han-text]+p[data-markdown-han-text]{margin-block-start:var(--md-chat-gap-short-paragraph)!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow>p[data-markdown-han-text]+p[data-markdown-han-text],:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>p[data-markdown-han-text]+p[data-markdown-han-text]{margin-block-start:var(--md-chat-gap-short-paragraph)!important}
+.matrix-markdown--thinking) .mavis-chat-markdown-flow>p[data-markdown-han-text]+p[data-markdown-han-text],:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>p[data-markdown-han-text]+p[data-markdown-han-text]{margin-block-start:var(--md-chat-gap-short-paragraph)!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>p[data-markdown-han-text]+p[data-markdown-han-text]{margin-block-start:var(--md-chat-gap-short-paragraph)!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>p[data-markdown-han-text]+p[data-markdown-han-text]{margin-block-start:var(--md-chat-gap-short-paragraph)!important}
+.matrix-markdown--thinking).mavis-chat-markdown-flow>p[data-markdown-han-text]+p[data-markdown-han-text]{margin-block-start:var(--md-chat-gap-short-paragraph)!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow>*+:is(h1,h2,h3,h4,h5,h6),:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*+:is(h1,h2,h3,h4,h5,h6){margin-block-start:var(--md-spacing-lg)!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow>*+:is(h1,h2,h3,h4,h5,h6),:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*+:is(h1,h2,h3,h4,h5,h6){margin-block-start:var(--md-spacing-lg)!important}
+.matrix-markdown--thinking) .mavis-chat-markdown-flow>*+:is(h1,h2,h3,h4,h5,h6),:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*+:is(h1,h2,h3,h4,h5,h6){margin-block-start:var(--md-spacing-lg)!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*+:is(h1,h2,h3,h4,h5,h6){margin-block-start:var(--md-spacing-lg)!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>*+:is(h1,h2,h3,h4,h5,h6){margin-block-start:var(--md-spacing-lg)!important}
+.matrix-markdown--thinking).mavis-chat-markdown-flow>*+:is(h1,h2,h3,h4,h5,h6){margin-block-start:var(--md-spacing-lg)!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6)+*,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6)+*{margin-block-start:var(--md-spacing-sm)!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6)+*,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6)+*{margin-block-start:var(--md-spacing-sm)!important}
+.matrix-markdown--thinking) .mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6)+*,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6)+*{margin-block-start:var(--md-spacing-sm)!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6)+*{margin-block-start:var(--md-spacing-sm)!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6)+*{margin-block-start:var(--md-spacing-sm)!important}
+.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6)+*{margin-block-start:var(--md-spacing-sm)!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(.codeblock-shell,.code-block-wrapper)+p,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>p+:is(.codeblock-shell,.code-block-wrapper){margin-block-start:var(--md-chat-gap-code)!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(.codeblock-shell,.code-block-wrapper)+p,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>p+:is(.codeblock-shell,.code-block-wrapper){margin-block-start:var(--md-chat-gap-code)!important}
+.matrix-markdown--thinking).mavis-chat-markdown-flow>:is(.codeblock-shell,.code-block-wrapper)+p,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>p+:is(.codeblock-shell,.code-block-wrapper){margin-block-start:var(--md-chat-gap-code)!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>p+:is(.codeblock-shell,.code-block-wrapper){margin-block-start:var(--md-chat-gap-code)!important}
+.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>p+:is(.codeblock-shell,.code-block-wrapper){margin-block-start:var(--md-chat-gap-code)!important}
+.matrix-markdown--thinking).mavis-chat-markdown-flow>p+:is(.codeblock-shell,.code-block-wrapper){margin-block-start:var(--md-chat-gap-code)!important}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow>blockquote,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>blockquote{gap:var(--md-spacing-sm);padding-inline-start:var(--md-chat-blockquote-indent)}
+.matrix-markdown--compact):not(.matrix-markdown--thinking) .mavis-chat-markdown-flow>blockquote,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>blockquote{gap:var(--md-spacing-sm);padding-inline-start:var(--md-chat-blockquote-indent)}
+.matrix-markdown--thinking) .mavis-chat-markdown-flow>blockquote,:where(:root[data-mavis-surface=web]) .message-container-chat-content .matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>blockquote{gap:var(--md-spacing-sm);padding-inline-start:var(--md-chat-blockquote-indent)}
+.matrix-markdown:not(.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>blockquote{gap:var(--md-spacing-sm);padding-inline-start:var(--md-chat-blockquote-indent)}
+.matrix-markdown--compact):not(.matrix-markdown--thinking).mavis-chat-markdown-flow>blockquote{gap:var(--md-spacing-sm);padding-inline-start:var(--md-chat-blockquote-indent)}
+.matrix-markdown--thinking).mavis-chat-markdown-flow>blockquote{gap:var(--md-spacing-sm);padding-inline-start:var(--md-chat-blockquote-indent)}
+.matrix-markdown{--md-font-size-body:var(--mavis-markdown-body-size,14px);--md-line-height-body:var(--mavis-markdown-body-line-height,22.75px);--md-letter-spacing-body:0;--md-font-size-h1:var(--mavis-markdown-h1-size,21px);--md-line-height-h1:var(--mavis-markdown-h1-line-height,28px);--md-letter-spacing-h1:0;--md-font-size-h2:var(--mavis-markdown-h2-size,17.5px);--md-line-height-h2:var(--mavis-markdown-h2-line-height,24.5px);--md-letter-spacing-h2:0;--md-font-size-h3:var(--mavis-markdown-h3-size,15.75px);--md-line-height-h3:var(--mavis-markdown-h3-line-height,24.5px);--md-letter-spacing-h3:0;--md-font-size-small:var(--mavis-markdown-table-cell-size,13px);--md-line-height-small:var(--mavis-markdown-table-cell-line-height,22.75px);--md-font-weight-heading:var(--mavis-font-weight-semibold,600);--md-font-weight-strong:var(--mavis-font-weight-semibold,600);--md-font-size-code:var(--mavis-code-block-font-size,12px);--md-line-height-code:var(--mavis-code-line-height,20px);--md-chat-blockquote-indent:var(--mavis-markdown-space-6,21px);--md-padding-list-item-bottom:0px;font-size:var(--md-font-size-body)!important;font-weight:var(--mavis-font-weight-default,430)!important;line-height:var(--md-line-height-body)!important;letter-spacing:0!important}
+.matrix-markdown summary{font-weight:var(--mavis-font-weight-default,430)}
+.matrix-markdown>:is(ul,ol)+p{margin-block-start:calc(var(--mavis-markdown-space-2, 7px) - var(--md-block-gap))!important}
+.matrix-markdown .mavis-markdown-blocks>:is(ul,ol)+p{margin-block-start:var(--mavis-markdown-space-2,7px)!important}
+.matrix-markdown .mavis-chat-markdown-flow,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow{display:grid;grid-template-columns:minmax(0,1fr);row-gap:0}
+.matrix-markdown.mavis-chat-markdown-flow{display:grid;grid-template-columns:minmax(0,1fr);row-gap:0}
+.matrix-markdown .mavis-chat-markdown-flow>*,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>*{min-width:0;margin-block-start:0!important;margin-block-end:0!important}
+.matrix-markdown.mavis-chat-markdown-flow>*{min-width:0;margin-block-start:0!important;margin-block-end:0!important}
+.matrix-markdown .mavis-chat-markdown-flow>*+*,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>*+*{margin-block-start:var(--mavis-markdown-space-4,14px)!important}
+.matrix-markdown.mavis-chat-markdown-flow>*+*{margin-block-start:var(--mavis-markdown-space-4,14px)!important}
+.matrix-markdown .mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6),:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6){padding-block-start:0!important;border-top:none!important}
+.matrix-markdown.mavis-chat-markdown-flow>:is(h1,h2,h3,h4,h5,h6){padding-block-start:0!important;border-top:none!important}
+.matrix-markdown .mavis-chat-markdown-flow>p+:is(ul,ol),:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>:is(ul,ol)+:is(ul,ol),:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>p+:is(ul,ol){margin-block-start:var(--mavis-markdown-space-1,3.5px)!important}
+.matrix-markdown.mavis-chat-markdown-flow>:is(ul,ol)+:is(ul,ol),:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>p+:is(ul,ol){margin-block-start:var(--mavis-markdown-space-1,3.5px)!important}
+.matrix-markdown.mavis-chat-markdown-flow>p+:is(ul,ol){margin-block-start:var(--mavis-markdown-space-1,3.5px)!important}
+.matrix-markdown .mavis-chat-markdown-flow>:is(ul,ol)+*,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>:is(ul,ol)+*{margin-block-start:var(--mavis-markdown-space-4,14px)!important}
+.matrix-markdown.mavis-chat-markdown-flow>:is(ul,ol)+*{margin-block-start:var(--mavis-markdown-space-4,14px)!important}
+.matrix-markdown .mavis-chat-markdown-flow>blockquote+*,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>:is(ul,ol)+p,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>blockquote+*{margin-block-start:var(--mavis-markdown-space-2,7px)!important}
+.matrix-markdown.mavis-chat-markdown-flow>:is(ul,ol)+p,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>blockquote+*{margin-block-start:var(--mavis-markdown-space-2,7px)!important}
+.matrix-markdown.mavis-chat-markdown-flow>blockquote+*{margin-block-start:var(--mavis-markdown-space-2,7px)!important}
+.matrix-markdown .mavis-chat-markdown-flow>:is(.markdown-table-shell,.table-out-box,table)+*,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>:is(.markdown-table-shell,.table-out-box,table)+*{margin-block-start:var(--mavis-markdown-space-6,21px)!important}
+.matrix-markdown.mavis-chat-markdown-flow>:is(.markdown-table-shell,.table-out-box,table)+*{margin-block-start:var(--mavis-markdown-space-6,21px)!important}
+.matrix-markdown .mavis-chat-markdown-flow>hr,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>hr{margin-block:var(--mavis-markdown-space-7,24.5px)!important}
+.matrix-markdown.mavis-chat-markdown-flow>hr{margin-block:var(--mavis-markdown-space-7,24.5px)!important}
+.matrix-markdown .mavis-chat-markdown-flow>hr+*,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown.mavis-chat-markdown-flow>hr+*{margin-block-start:0!important}
+.matrix-markdown.mavis-chat-markdown-flow>hr+*{margin-block-start:0!important}
+.matrix-markdown h1{font-size:var(--mavis-markdown-h1-size)!important;line-height:var(--mavis-markdown-h1-line-height)!important;font-weight:var(--mavis-font-weight-semibold)!important;letter-spacing:0!important}
+.matrix-markdown h2{font-size:var(--mavis-markdown-h2-size)!important;line-height:var(--mavis-markdown-h2-line-height)!important;font-weight:var(--mavis-font-weight-semibold)!important;letter-spacing:0!important}
+.matrix-markdown.matrix-markdown--shifted h2{font-size:var(--mavis-markdown-h1-size)!important;line-height:var(--mavis-markdown-h1-line-height)!important}
+.matrix-markdown--shifted h2{font-size:var(--mavis-markdown-h1-size)!important;line-height:var(--mavis-markdown-h1-line-height)!important}
+.matrix-markdown h3{font-size:var(--mavis-markdown-h3-size)!important;line-height:var(--mavis-markdown-h3-line-height)!important;font-weight:var(--mavis-font-weight-semibold)!important;letter-spacing:0!important}
+.matrix-markdown.matrix-markdown--shifted h3{font-size:var(--mavis-markdown-h2-size)!important;line-height:var(--mavis-markdown-h2-line-height)!important}
+.matrix-markdown--shifted h3{font-size:var(--mavis-markdown-h2-size)!important;line-height:var(--mavis-markdown-h2-line-height)!important}
+.matrix-markdown h4{font-size:var(--mavis-markdown-h4-size)!important;line-height:var(--mavis-markdown-h4-line-height)!important;font-weight:var(--mavis-font-weight-semibold)!important;letter-spacing:0!important}
+.matrix-markdown.matrix-markdown--shifted h4{font-size:var(--mavis-markdown-h3-size)!important;line-height:var(--mavis-markdown-h3-line-height)!important}
+.matrix-markdown--shifted h4{font-size:var(--mavis-markdown-h3-size)!important;line-height:var(--mavis-markdown-h3-line-height)!important}
+.matrix-markdown h5{font-size:var(--mavis-markdown-h5-size)!important;line-height:var(--mavis-markdown-h5-line-height)!important;font-weight:var(--mavis-font-weight-semibold)!important;letter-spacing:0!important}
+.matrix-markdown.matrix-markdown--shifted h5{font-size:var(--mavis-markdown-h4-size)!important;line-height:var(--mavis-markdown-h4-line-height)!important}
+.matrix-markdown--shifted h5{font-size:var(--mavis-markdown-h4-size)!important;line-height:var(--mavis-markdown-h4-line-height)!important}
+.matrix-markdown h6{font-size:var(--mavis-markdown-h6-size)!important;line-height:var(--mavis-markdown-h6-line-height)!important;font-weight:var(--mavis-font-weight-semibold)!important;letter-spacing:0!important}
+.matrix-markdown.matrix-markdown--shifted h6{font-size:var(--mavis-markdown-h5-size)!important;line-height:var(--mavis-markdown-h5-line-height)!important}
+.matrix-markdown--shifted h6{font-size:var(--mavis-markdown-h5-size)!important;line-height:var(--mavis-markdown-h5-line-height)!important}
+.matrix-markdown :is(h1,h2,h3,h4,h5,h6) :is(strong,b){font-weight:var(--mavis-font-weight-semibold,600)!important}
+.matrix-markdown b,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown strong{font-weight:var(--mavis-font-weight-semibold)!important}
+.matrix-markdown strong{font-weight:var(--mavis-font-weight-semibold)!important}
+.matrix-markdown ol ol,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ol ul,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ul ol,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ul ul{font-size:var(--md-font-size-body)}
+.matrix-markdown ol ul,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ul ol,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ul ul{font-size:var(--md-font-size-body)}
+.matrix-markdown ul ol,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ul ul{font-size:var(--md-font-size-body)}
+.matrix-markdown ul ul{font-size:var(--md-font-size-body)}
+.matrix-markdown ol li,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown ul li{line-height:var(--md-line-height-body)}
+.matrix-markdown ul li{line-height:var(--md-line-height-body)}
+.matrix-markdown li>p{margin-block:0}
+.matrix-markdown li>p+p{margin-block-start:var(--mavis-markdown-space-4,14px)}
+.matrix-markdown :is(ol,ul){margin-inline:0;padding:0;padding-inline-start:var(--md-line-height-body);list-style-position:outside}
+.matrix-markdown ol{list-style-type:decimal;padding-inline-start:max(var(--md-line-height-body),2ch + 1em)}
+.matrix-markdown ul{list-style-type:disc}
+.matrix-markdown :is(ol,ul) ul{list-style-type:circle}
+.matrix-markdown :is(ol,ul) :is(ol,ul) ul{list-style-type:square}
+.matrix-markdown li{display:list-item;margin:0;padding:0;padding-inline-start:calc(var(--mavis-markdown-space-1, 3.5px)*1.5)}
+.matrix-markdown li>:is(ol,ul){margin-block:0}
+.matrix-markdown ul>li:before{content:none}
+.matrix-markdown :is(ol,ul)>li::marker{color:currentColor;font-weight:var(--mavis-font-weight-semibold,600);font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+.matrix-markdown .task-list-item,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown :is(ol,ul).contains-task-list{padding-inline-start:0;list-style-type:none}
+.matrix-markdown :is(ol,ul).contains-task-list{padding-inline-start:0;list-style-type:none}
+.matrix-markdown .contains-task-list li:not(.task-list-item){padding-inline-start:calc(var(--mavis-markdown-space-1, 3.5px)*1.5)!important}
+.matrix-markdown .contains-task-list li input[type=checkbox]:checked:before{background-color:var(--icon_default_secondary);background-image:url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0nMTInIGhlaWdodD0nMTInIHZpZXdCb3g9JzAgMCAxMiAxMicgZmlsbD0nbm9uZScgeG1sbnM9J2h0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnJz48cmVjdCB4PSczLjk2ODc1JyB5PSc1LjI2NDY1JyB3aWR0aD0nMy4yOTQ2NScgaGVpZ2h0PScxLjInIHRyYW5zZm9ybT0ncm90YXRlKDQ1IDMuOTY4NzUgNS4yNjQ2NSknIGZpbGw9J3doaXRlJy8+PHJlY3QgeD0nNC42MDE1NicgeT0nNy41OTQyNCcgd2lkdGg9JzQuOCcgaGVpZ2h0PScxLjInIHRyYW5zZm9ybT0ncm90YXRlKC00NSA0LjYwMTU2IDcuNTk0MjQpJyBmaWxsPSd3aGl0ZScvPjwvc3ZnPgo=")}
+.matrix-markdown blockquote{gap:var(--mavis-markdown-space-2,7px);padding:var(--mavis-markdown-space-2,7px) 0 var(--mavis-markdown-space-2,7px) var(--md-chat-blockquote-indent)}
+.matrix-markdown blockquote:before{top:var(--mavis-markdown-space-2,7px);bottom:var(--mavis-markdown-space-2,7px)}
+.matrix-markdown .code-block-wrapper .code-block-box .code-block>pre,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown .codeblock-shell .codeblock-pre{padding-block:var(--mavis-markdown-space-5,17.5px)!important}
+.matrix-markdown .codeblock-shell .codeblock-pre{padding-block:var(--mavis-markdown-space-5,17.5px)!important}
+.matrix-markdown table{font-size:var(--mavis-markdown-table-cell-size,13px);font-weight:var(--mavis-font-weight-default,430);line-height:var(--mavis-markdown-table-cell-line-height,22.75px)}
+.matrix-markdown table th,:root.mavis-platform-electron.mavis-desktop-typography-enabled .matrix-markdown table thead{font-size:var(--mavis-markdown-table-header-size,13px);font-weight:var(--mavis-font-weight-semibold,600);line-height:var(--mavis-markdown-table-header-line-height,14px)}
+.matrix-markdown table thead{font-size:var(--mavis-markdown-table-header-size,13px);font-weight:var(--mavis-font-weight-semibold,600);line-height:var(--mavis-markdown-table-header-line-height,14px)}
+.matrix-markdown table th{padding-block:var(--mavis-markdown-space-2,7px)}
+.matrix-markdown table td{padding-block:calc(var(--mavis-markdown-spacing-unit, 3.5px)*2.5)}
+.matrix-markdown .resource-reference{font-size:inherit;font-weight:inherit;line-height:inherit;letter-spacing:inherit}
+.matrix-markdown *{border-style:none}
+.matrix-markdown .katex,.matrix-markdown .katex *{border-style:solid;overflow-wrap:normal;word-break:normal}
+.matrix-markdown .katex *{border-style:solid;overflow-wrap:normal;word-break:normal}
+.matrix-markdown :not(.katex-display)>.katex{display:inline-flex;max-width:100%;overflow-x:auto;overflow-y:hidden;vertical-align:initial}
+.matrix-markdown :not(.katex-display)>.katex>.katex-html{flex:none}
+.matrix-markdown .katex-display{max-width:100%;overflow-x:auto;overflow-y:hidden;padding-bottom:2px}
+.matrix-markdown .katex-error{color:unset!important}
+.matrix-markdown .code-block .token.table{display:initial!important}
+.matrix-markdown code,.matrix-markdown div,.matrix-markdown li,.matrix-markdown p,.matrix-markdown pre,.matrix-markdown span{overflow-wrap:break-word;word-break:break-word}
+.matrix-markdown div,.matrix-markdown li,.matrix-markdown p,.matrix-markdown pre,.matrix-markdown span{overflow-wrap:break-word;word-break:break-word}
+.matrix-markdown li,.matrix-markdown p,.matrix-markdown pre,.matrix-markdown span{overflow-wrap:break-word;word-break:break-word}
+.matrix-markdown p,.matrix-markdown pre,.matrix-markdown span{overflow-wrap:break-word;word-break:break-word}
+.matrix-markdown pre,.matrix-markdown span{overflow-wrap:break-word;word-break:break-word}
+.matrix-markdown span{overflow-wrap:break-word;word-break:break-word}
+.matrix-markdown .left-container>:first-child,.matrix-markdown>:first-child{margin-top:0!important}
+.matrix-markdown>:first-child{margin-top:0!important}
+.matrix-markdown h1{font-size:var(--md-font-size-h1)!important;line-height:var(--md-line-height-h1);letter-spacing:var(--md-letter-spacing-h1);margin:var(--md-spacing-md) 0 -4px 0}
+.matrix-markdown h1,.matrix-markdown h2{font-weight:var(--md-font-weight-heading)}
+.matrix-markdown h2{font-weight:var(--md-font-weight-heading)}
+.matrix-markdown h2{font-size:var(--md-font-size-h2)!important;line-height:var(--md-line-height-h2);letter-spacing:var(--md-letter-spacing-h2);margin:24px 0 -4px;padding-top:40px;border-top:.5px solid var(--border_default,#0a0a0a14)}
+.matrix-markdown h2:first-of-type{border-top:none;padding-top:0;margin-top:var(--md-spacing-md)}
+.matrix-markdown:not(:first-child):not(.matrix-markdown--shifted)>h2:first-of-type{border-top:.5px solid var(--border_default,#0a0a0a14);padding-top:40px;margin-top:24px}
+.matrix-markdown--shifted)>h2:first-of-type{border-top:.5px solid var(--border_default,#0a0a0a14);padding-top:40px;margin-top:24px}
+.matrix-markdown h3{font-size:var(--md-font-size-h3)!important;font-weight:var(--md-font-weight-heading);line-height:var(--md-line-height-h3);letter-spacing:var(--md-letter-spacing-h3);margin:var(--md-spacing-md) 0 -4px 0}
+.matrix-markdown.matrix-markdown--shifted h2{margin:var(--md-spacing-md) 0 -4px 0;padding-top:0;border-top:none}
+.matrix-markdown--shifted h2{margin:var(--md-spacing-md) 0 -4px 0;padding-top:0;border-top:none}
+.matrix-markdown.matrix-markdown--shifted *+h2{margin-top:var(--md-spacing-lg);padding-top:30px;border-top:.5px solid var(--border_default,#0a0a0a14)}
+.matrix-markdown--shifted *+h2{margin-top:var(--md-spacing-lg);padding-top:30px;border-top:.5px solid var(--border_default,#0a0a0a14)}
+.matrix-markdown.matrix-markdown--shifted h3{margin:var(--md-spacing-lg) 0 -4px 0;padding-top:30px;border-top:.5px solid var(--border_default,#0a0a0a14)}
+.matrix-markdown--shifted h3{margin:var(--md-spacing-lg) 0 -4px 0;padding-top:30px;border-top:.5px solid var(--border_default,#0a0a0a14)}
+.matrix-markdown.matrix-markdown--shifted h2+h3{border-top:none;padding-top:0;margin-top:var(--md-spacing-md)}
+.matrix-markdown--shifted h2+h3{border-top:none;padding-top:0;margin-top:var(--md-spacing-md)}
+.matrix-markdown.matrix-markdown--shifted h3{border-top:none;padding-top:0}
+.matrix-markdown--shifted h3{border-top:none;padding-top:0}
+.matrix-markdown h4{font-size:var(--md-font-size-body)!important;font-weight:var(--md-font-weight-heading);line-height:var(--md-line-height-body);letter-spacing:var(--md-letter-spacing-body);margin:var(--md-spacing-sm) 0 -4px 0}
+.matrix-markdown h4 b,.matrix-markdown h4 strong{font-weight:500}
+.matrix-markdown h4 strong{font-weight:500}
+.matrix-markdown h5{font-size:var(--md-font-size-body)!important;font-weight:var(--md-font-weight-heading);line-height:var(--md-line-height-body);letter-spacing:var(--md-letter-spacing-body);margin:var(--md-spacing-sm) 0 -4px 0}
+.matrix-markdown h5 b,.matrix-markdown h5 strong{font-weight:500}
+.matrix-markdown h5 strong{font-weight:500}
+.matrix-markdown h6{font-size:var(--md-font-size-body)!important;font-weight:var(--md-font-weight-heading);line-height:var(--md-line-height-body);letter-spacing:var(--md-letter-spacing-body);margin:var(--md-spacing-sm) 0 -4px 0}
+.matrix-markdown h6 b,.matrix-markdown h6 strong{font-weight:500}
+.matrix-markdown h6 strong{font-weight:500}
+.matrix-markdown{--md-font-size-h1:26px;--md-line-height-h1:32px;--md-letter-spacing-h1:0;--md-font-size-h2:22px;--md-line-height-h2:28px;--md-letter-spacing-h2:0;--md-font-size-h3:18px;--md-line-height-h3:26px;--md-letter-spacing-h3:0;--md-font-size-body:17px;--md-line-height-body:24px;--md-letter-spacing-body:0;--md-font-size-small:14px;--md-line-height-small:20px;--md-letter-spacing-small:0;--md-font-size-caption:13px;--md-line-height-caption:18px;--md-letter-spacing-caption:0;--md-font-size-code:15px;--md-line-height-code:22px;--md-letter-spacing-code:0;--md-table-cell-max-width:min(320px,78vw)}
+.matrix-markdown strong{font-weight:var(--md-font-weight-strong);line-height:inherit;display:inline}
+.matrix-markdown p{margin:0}
+.matrix-markdown hr{border:none;border-top:.5px solid var(--border_default);margin:16px 0}
+.matrix-markdown a{color:var(--text_default_primary)!important}
+.matrix-markdown a:hover{color:var(--text_default_accent)!important;-webkit-text-decoration:underline;text-decoration:underline}
+.matrix-markdown a.normal{text-decoration-line:underline;text-underline-offset:3px}
+.matrix-markdown .resource-reference,.tool-resource-reference{display:inline-flex;align-items:center;column-gap:4px;max-width:100%;font-family:inherit;font-size:var(--mavis-font-size-16,16px);font-weight:400;line-height:var(--mavis-line-height-26,26px);letter-spacing:0;background:#0000;padding:0;margin:0;-webkit-text-decoration:none!important;text-decoration:none!important;vertical-align:middle}
+.matrix-markdown a.resource-reference,.matrix-markdown:not(.matrix-markdown--thinking) .resource-reference{color:var(--text_default_accent,#0094fc)!important}
+.matrix-markdown:not(.matrix-markdown--thinking) .resource-reference{color:var(--text_default_accent,#0094fc)!important}
+.matrix-markdown--thinking) .resource-reference{color:var(--text_default_accent,#0094fc)!important}
+.matrix-markdown:not(.matrix-markdown--thinking) .resource-reference{column-gap:4px;margin-inline:4px;font-size:var(--mavis-font-size-15,15px);line-height:var(--mavis-line-height-24,24px);transform:translateY(-1px)}
+.matrix-markdown--thinking) .resource-reference{column-gap:4px;margin-inline:4px;font-size:var(--mavis-font-size-15,15px);line-height:var(--mavis-line-height-24,24px);transform:translateY(-1px)}
+.matrix-markdown:not(.matrix-markdown--thinking) .resource-reference-icon{width:16px!important;height:16px!important;margin:0}
+.matrix-markdown--thinking) .resource-reference-icon{width:16px!important;height:16px!important;margin:0}
+.matrix-markdown .resource-reference-icon,.tool-resource-reference .resource-reference-icon{color:inherit!important}
+.matrix-markdown--thinking .resource-reference{column-gap:4px;margin-inline:4px;line-height:var(--mavis-line-height-20,20px);transform:translateY(-1px)}
+.matrix-markdown--thinking .resource-reference-icon{width:13px!important;height:13px!important;margin:0;color:var(--icon_default_secondary)!important}
+.matrix-markdown .resource-reference[data-resource-reference=file]{max-width:calc(100% - var(--md-spacing-xs)*2)}
+.matrix-markdown .resource-reference-label,.tool-resource-reference .resource-reference-label{min-width:0;overflow-wrap:anywhere;word-break:break-word}
+.matrix-markdown .resource-reference .resource-reference-label,.matrix-markdown .resource-reference .resource-reference-label *{color:inherit!important}
+.matrix-markdown .resource-reference .resource-reference-label *{color:inherit!important}
+.matrix-markdown .resource-reference:focus,.matrix-markdown .resource-reference:hover{color:var(--text_default_accent,#0094fc)!important;-webkit-text-decoration:none!important;text-decoration:none!important}
+.matrix-markdown .resource-reference:hover{color:var(--text_default_accent,#0094fc)!important;-webkit-text-decoration:none!important;text-decoration:none!important}
+.matrix-markdown .resource-reference:focus .resource-reference-label,.matrix-markdown .resource-reference:hover .resource-reference-label,.tool-resource-reference:is(a,button,[role=button]):focus .resource-reference-label,.tool-resource-reference:is(a,button,[role=button]):hover .resource-reference-label{-webkit-text-decoration:underline;text-decoration:underline;text-decoration-style:dashed;text-decoration-thickness:1px;-webkit-text-decoration-skip-ink:none;text-decoration-skip-ink:none;text-underline-offset:3px}
+.matrix-markdown .resource-reference:hover .resource-reference-label,.tool-resource-reference:is(a,button,[role=button]):focus .resource-reference-label,.tool-resource-reference:is(a,button,[role=button]):hover .resource-reference-label{-webkit-text-decoration:underline;text-decoration:underline;text-decoration-style:dashed;text-decoration-thickness:1px;-webkit-text-decoration-skip-ink:none;text-decoration-skip-ink:none;text-underline-offset:3px}
+.matrix-markdown .resource-reference:is(:hover,:focus) .resource-reference-label-middle,.tool-resource-reference:is(a,button,[role=button]):is(:hover,:focus) .resource-reference-label-middle{-webkit-text-decoration:none;text-decoration:none}
+.matrix-markdown .resource-reference:is(:hover,:focus) .resource-reference-label-middle:after,.tool-resource-reference:is(a,button,[role=button]):is(:hover,:focus) .resource-reference-label-middle:after{content:"";position:absolute;inset-inline:0;bottom:.1em;border-bottom:1px dashed;pointer-events:none}
+.matrix-markdown blockquote{position:relative;padding:var(--md-spacing-sm) 0 var(--md-spacing-sm) 16px;margin:0;background:none;border-radius:0;border-style:none;display:flex;flex-direction:column;gap:var(--md-spacing-md)}
+.matrix-markdown blockquote:before{content:"";position:absolute;left:0;top:var(--md-spacing-sm);bottom:var(--md-spacing-sm);width:4px;border-radius:999px;background:var(--border_tertiary_inactive,#0a0a0a14)}
+.matrix-markdown blockquote *{color:var(--text_default_primary)}
+.matrix-markdown blockquote p{padding:0;margin:0}
+.matrix-markdown blockquote ol,.matrix-markdown blockquote ul{margin:0}
+.matrix-markdown blockquote ul{margin:0}
+.matrix-markdown ol{margin:0 0 0 1.8em;padding:var(--md-padding-list);counter-reset:item;list-style-type:decimal}
+.matrix-markdown ol.markdown-custom-ol{margin:0;padding:0;list-style:none}
+.matrix-markdown ol ol,.matrix-markdown ol ul{font-size:var(--md-font-size-body);padding-left:2px}
+.matrix-markdown ol ul{font-size:var(--md-font-size-body);padding-left:2px}
+.matrix-markdown ol li>p,.matrix-markdown ol li>p+li,.matrix-markdown ol li>p+ul{margin-bottom:0}
+.matrix-markdown ol li>p+li,.matrix-markdown ol li>p+ul{margin-bottom:0}
+.matrix-markdown ol li>p+ul{margin-bottom:0}
+.matrix-markdown ol.markdown-custom-ol>.markdown-custom-ol-item{display:grid;grid-template-columns:var(--md-list-marker-width) minmax(0,1fr);column-gap:var(--md-list-marker-gap)}
+.matrix-markdown ol li{margin:0;padding:0 0 var(--md-padding-list-item-bottom) 0;padding-left:0;line-height:var(--md-line-height-body)}
+.matrix-markdown ol li:last-of-type{padding-bottom:0}
+.matrix-markdown ul{margin:0;padding:0;list-style:none}
+.matrix-markdown ul>li:not(.task-list-item){position:relative;padding-left:calc(var(--md-list-marker-width) + var(--md-list-marker-gap))}
+.matrix-markdown ul>li:not(.task-list-item):before{position:absolute;top:0;left:0;width:var(--md-list-marker-width);content:"•";color:var(--text_default_primary);text-align:right}
+.matrix-markdown ul ul>li:not(.task-list-item):before{content:"○"}
+.matrix-markdown ul ul ul>li:not(.task-list-item):before{content:"▪"}
+.matrix-markdown ul ol,.matrix-markdown ul ul{padding-left:2px}
+.matrix-markdown ul ul{padding-left:2px}
+.matrix-markdown ul li::marker{unicode-bidi:-webkit-isolate;unicode-bidi:isolate;font-feature-settings:"tnum";font-variant-numeric:tabular-nums;text-transform:none;text-indent:0!important;text-align:start!important;text-align-last:start!important}
+.matrix-markdown ul li{margin:0;padding:0 0 var(--md-padding-list-item-bottom) 0;padding-left:0;line-height:var(--md-line-height-body)}
+.matrix-markdown ul li:last-of-type{padding-bottom:0}
+.matrix-markdown ul li>p{margin-bottom:0;margin-top:0}
+.matrix-markdown ul li>p+li,.matrix-markdown ul li>p+ul{margin-bottom:0}
+.matrix-markdown ul li>p+ul{margin-bottom:0}
+.matrix-markdown li ol,.matrix-markdown li ul{margin:0 0 0 1.2em;padding-left:0}
+.matrix-markdown li ul{margin:0 0 0 1.2em;padding-left:0}
+.matrix-markdown ul ul{margin-block-start:0;margin-block-end:0}
+.matrix-markdown .contains-task-list{padding-left:0!important;list-style-type:none!important}
+.matrix-markdown .task-list-item{margin:0!important;padding-bottom:var(--md-padding-list-item-bottom)!important;padding-left:0!important}
+.matrix-markdown .task-list-item:last-child{padding-bottom:0!important}
+.matrix-markdown .task-list-item input[type=checkbox]{appearance:none;display:inline-block;width:12px;height:12px;margin-right:6px;padding:0;border:none;border-radius:2px;opacity:1;background:url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0nMTInIGhlaWdodD0nMTInIHZpZXdCb3g9JzAgMCAxMiAxMicgZmlsbD0nbm9uZScgeG1sbnM9J2h0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnPjxyZWN0IHg9JzAuNScgeT0nMC41JyB3aWR0aD0nMTEnIGhlaWdodD0nMTEnIHJ4PScxLjUnIHN0cm9rZT0nI0RERERERCcvPjwvc3ZnPgo=")}
+.matrix-markdown .task-list-item input[type=checkbox]:checked{background:url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0nMTInIGhlaWdodD0nMTInIHZpZXdCb3g9JzAgMCAxMiAxMicgZmlsbD0nbm9uZScgeG1sbnM9J2h0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnJz48cmVjdCB4PScwLjUnIHk9JzAuNScgd2lkdGg9JzExJyBoZWlnaHQ9JzExJyByeD0nMS41JyBmaWxsPScjMTk0MTMyJyBzdHJva2U9JyMxOTQxMzInLz48cmVjdCB4PSczLjk2ODc1JyB5PSc1LjI2NDY1JyB3aWR0aD0nMy4yOTQ2NScgaGVpZ2h0PScxLjInIHRyYW5zZm9ybT0ncm90YXRlKDQ1IDMuOTY4NzUgNS4yNjQ2NSknIGZpbGw9J3doaXRlJy8+PHJlY3QgeD0nNC42MDE1NicgeT0nNy41OTQyNCcgd2lkdGg9JzQuOCcgaGVpZ2h0PScxLjInIHRyYW5zZm9ybT0ncm90YXRlKC00NSA0LjYwMTU2IDcuNTk0MjQpJyBmaWxsPSd3aGl0ZScvPjwvc3ZnPgo=")}
+.matrix-markdown .net-search{display:inline-block}
+.matrix-markdown .net-search+.net-search+.net-search+.net-search{display:none}
+.matrix-markdown .inline-code,.matrix-markdown code{font-size:var(--md-font-size-code);line-height:var(--md-line-height-code);letter-spacing:var(--md-letter-spacing-code)}
+.matrix-markdown code{font-size:var(--md-font-size-code);line-height:var(--md-line-height-code);letter-spacing:var(--md-letter-spacing-code)}
+.matrix-markdown .inline-code{font-family:var(--mcode-font-family-code,ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace);font-weight:400;padding:.18em .5em;margin:0;border-radius:6px;background-color:var(--bg_grouped_tertiary);color:var(--text_default_primary);vertical-align:bottom;white-space:break-spaces;overflow-wrap:anywhere}
+.matrix-markdown .markdown-color-preview{display:inline-flex;align-items:center;gap:var(--md-spacing-xs);margin:var(--md-margin-inline-code);vertical-align:initial;white-space:nowrap}
+.matrix-markdown .markdown-color-preview>.inline-code{margin:0;line-height:normal}
+.matrix-markdown .markdown-color-preview-plain{margin:0}
+.matrix-markdown .markdown-color-swatch{display:inline-block;flex:0 0 auto;width:1em;height:1em;box-sizing:border-box;border:1px solid var(--border_default);border-radius:var(--md-radius-sm)}
+.matrix-markdown table .inline-code{box-decoration-break:clone;-webkit-box-decoration-break:clone}
+.matrix-markdown .inline-code{font-size:var(--mavis-inline-code-font-size);line-height:inherit;font-weight:var(--mavis-font-weight-normal);letter-spacing:inherit}
+.matrix-markdown .markdown-color-preview>.inline-code{line-height:normal}
+.matrix-markdown .red{background-color:var(--bg_status_error);color:var(--text_status_error)}
+.matrix-markdown .gray,.matrix-markdown .red{border-radius:var(--md-radius-sm);font-weight:var(--md-font-weight-heading);padding:2px 8px}
+.matrix-markdown .red{border-radius:var(--md-radius-sm);font-weight:var(--md-font-weight-heading);padding:2px 8px}
+.matrix-markdown .gray{background-color:var(--bg_default_secondary_elevated);margin:0 2px;color:var(--text_default_secondary)}
+.matrix-markdown .code-block-wrapper{margin:0;background-color:var(--bg_grouped_tertiary);border-radius:16px}
+.matrix-markdown .code-block-wrapper:first-child{margin-top:0}
+.matrix-markdown .code-block-wrapper .code-block-box{position:relative}
+.matrix-markdown .code-block-wrapper .code-block-box .code-block{max-height:400px;overflow:auto}
+.matrix-markdown .code-block-wrapper .code-block-box .code-block>pre{padding:12px 16px!important;overflow:visible!important;margin:0!important;background-color:unset!important}
+.matrix-markdown .code-block-wrapper .code-block-box .code-block::-webkit-scrollbar-thumb{background-color:var(--bg_default_primary);margin-bottom:4px;height:3px;border-radius:2px}
+.matrix-markdown .code-block-wrapper .code-block-box .code-block::-webkit-scrollbar{height:4px!important;border-radius:4px}
+.matrix-markdown .code-block-wrapper .code-block-box .code-block::-webkit-scrollbar{height:0!important}
+.matrix-markdown .code-block-wrapper .code-block-box .code-block.line-break-enable code,.matrix-markdown .code-block-wrapper .code-block-box .code-block.line-break-enable code span{white-space:pre-wrap!important}
+.matrix-markdown .code-block-wrapper .code-block-box .code-block.line-break-enable code span{white-space:pre-wrap!important}
+.matrix-markdown .markdown-table-shell{margin:0;max-width:100%;min-width:0}
+.matrix-markdown .table-out-box{margin:0;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain;padding:4px 0;scrollbar-width:none!important;scrollbar-color:#0000 #0000!important}
+.matrix-markdown .table-out-box::-webkit-scrollbar{display:none!important;width:0!important;height:0!important}
+.matrix-markdown .markdown-table-scrollbar{position:relative;height:6px;margin-top:2px;touch-action:none;-webkit-user-select:none;user-select:none}
+.matrix-markdown .markdown-table-scrollbar-track{position:absolute;top:0;right:0;left:0;height:6px;border-radius:3px;background:#0000}
+.matrix-markdown .markdown-table-scrollbar-thumb{position:absolute;top:0;left:0;height:6px;border-radius:3px;background:#0000;cursor:-webkit-grab;cursor:grab;transition:background .2s;will-change:transform}
+.matrix-markdown .markdown-table-scrollbar.is-dragging .markdown-table-scrollbar-thumb,.matrix-markdown .markdown-table-shell:hover .markdown-table-scrollbar-thumb{background:var(--utility_scrollbar)}
+.matrix-markdown .markdown-table-shell:hover .markdown-table-scrollbar-thumb{background:var(--utility_scrollbar)}
+.matrix-markdown .markdown-table-scrollbar.is-dragging .markdown-table-scrollbar-thumb{cursor:-webkit-grabbing;cursor:grabbing}
+.matrix-markdown table{width:-webkit-max-content;width:-moz-max-content;width:max-content;min-width:100%;font-size:var(--md-font-size-small);line-height:var(--md-line-height-small);letter-spacing:var(--md-letter-spacing-small);margin:0;border-collapse:initial;border-spacing:0}
+.matrix-markdown table tr{border-bottom:1px var(--border_light)!important;border-style:solid!important}
+.matrix-markdown table thead{overflow:hidden;border:none;font-size:var(--md-font-size-small);line-height:var(--md-line-height-small);font-weight:var(--md-font-weight-strong);color:var(--text_default_primary)}
+.matrix-markdown table thead tr{border-bottom:1px solid var(--border_tertiary_press)!important}
+.matrix-markdown table td,.matrix-markdown table th{padding:10px 16px 10px 0;border:none;max-width:var(--md-table-cell-max-width);white-space:normal;overflow-wrap:break-word;word-break:normal;text-wrap:wrap}
+.matrix-markdown table th{padding:10px 16px 10px 0;border:none;max-width:var(--md-table-cell-max-width);white-space:normal;overflow-wrap:break-word;word-break:normal;text-wrap:wrap}
+.matrix-markdown table th{min-width:60px!important;text-align:left;font-weight:var(--md-font-weight-strong);font-size:var(--md-font-size-small);line-height:var(--md-line-height-small);color:var(--text_default_primary);border-bottom:1px solid var(--border_tertiary_press)}
+.matrix-markdown table td{border-width:0 0 1px}
+.matrix-markdown table td,.matrix-markdown table td:last-child{border-style:solid;border-color:var(--border_default)}
+.matrix-markdown table td:last-child{border-style:solid;border-color:var(--border_default)}
+.matrix-markdown .code-block table,.matrix-markdown pre table{width:auto;min-width:0}
+.matrix-markdown pre table{width:auto;min-width:0}
+.matrix-markdown .code-block table td,.matrix-markdown .code-block table th,.matrix-markdown pre table td,.matrix-markdown pre table th{padding:var(--md-padding-pre-table-cell);border:none;text-align:left;box-shadow:none}
+.matrix-markdown .code-block table th,.matrix-markdown pre table td,.matrix-markdown pre table th{padding:var(--md-padding-pre-table-cell);border:none;text-align:left;box-shadow:none}
+.matrix-markdown pre table td,.matrix-markdown pre table th{padding:var(--md-padding-pre-table-cell);border:none;text-align:left;box-shadow:none}
+.matrix-markdown pre table th{padding:var(--md-padding-pre-table-cell);border:none;text-align:left;box-shadow:none}
+.matrix-markdown .markdown-image-block{max-width:300px;margin:0;overflow:hidden}
+.matrix-markdown img{max-width:100%;width:auto;height:auto;margin:0;vertical-align:middle;border-radius:var(--md-radius-lg)}
+.matrix-markdown td>img{max-width:300px;margin:0;height:auto;border-radius:var(--md-radius-md)}
+.matrix-markdown:not(.matrix-markdown--thinking) img.resource-reference-icon{width:16px!important;height:16px!important}
+.matrix-markdown--thinking) img.resource-reference-icon{width:16px!important;height:16px!important}
+.matrix-markdown .video-container{display:block;max-width:300px;margin:0;overflow:hidden}
+.matrix-markdown .video-container video{width:100%;border-radius:var(--md-radius-lg)}
+.matrix-markdown svg:not(.katex svg){max-width:100%;height:auto;vertical-align:middle;display:block}
+.matrix-markdown [data-component-type=svg]{display:block;text-align:center;margin:0 auto}
+.matrix-markdown li svg:not(.katex svg):not(.resource-reference-icon),.matrix-markdown p svg:not(.katex svg):not(.resource-reference-icon){display:inline-block;vertical-align:middle;margin:0 var(--md-spacing-xs)}
+.matrix-markdown p svg:not(.katex svg):not(.resource-reference-icon){display:inline-block;vertical-align:middle;margin:0 var(--md-spacing-xs)}
+.matrix-markdown td svg:not(.katex svg){max-width:200px;max-height:200px}
+.matrix-markdown summary{font-weight:400;opacity:.85;cursor:pointer;display:inline-flex;justify-content:space-between;align-items:center;-webkit-user-select:none;user-select:none}
+.matrix-markdown .dropdown-arrow{height:var(--md-line-height-caption);width:var(--md-line-height-caption);display:flex;align-items:center;justify-content:center;transform:rotate(180deg);font-size:var(--md-font-size-caption);line-height:var(--md-line-height-caption);letter-spacing:var(--md-letter-spacing-caption);margin-left:var(--md-spacing-sm);color:var(--text_default_secondary);transition:transform .2s ease-in-out,color .2s ease-in-out}
+.matrix-markdown details[open]>summary .dropdown-arrow{transform:rotate(0);color:var(--text_default_primary)}
+.matrix-markdown .details{margin:0;overflow:hidden}
+.matrix-markdown .details .summary-text{font-size:var(--md-font-size-small);line-height:var(--md-line-height-small);letter-spacing:var(--md-letter-spacing-small)}
+.matrix-markdown .card{border:1px solid #4479f31f;border-radius:var(--md-radius-xl);padding:var(--md-spacing-lg);margin:0}
+.matrix-markdown a[class*=card],.matrix-markdown a[class*=card]:active,.matrix-markdown a[class*=card]:focus,.matrix-markdown a[class*=card]:hover,.matrix-markdown a[class*=card]:visited{-webkit-text-decoration:none!important;text-decoration:none!important;color:inherit!important}
+.matrix-markdown a[class*=card]:active,.matrix-markdown a[class*=card]:focus,.matrix-markdown a[class*=card]:hover,.matrix-markdown a[class*=card]:visited{-webkit-text-decoration:none!important;text-decoration:none!important;color:inherit!important}
+.matrix-markdown a[class*=card]:focus,.matrix-markdown a[class*=card]:hover,.matrix-markdown a[class*=card]:visited{-webkit-text-decoration:none!important;text-decoration:none!important;color:inherit!important}
+.matrix-markdown a[class*=card]:hover,.matrix-markdown a[class*=card]:visited{-webkit-text-decoration:none!important;text-decoration:none!important;color:inherit!important}
+.matrix-markdown a[class*=card]:visited{-webkit-text-decoration:none!important;text-decoration:none!important;color:inherit!important}
+.matrix-markdown a[class*=card] h3,.matrix-markdown a[class*=card] h4,.matrix-markdown a[class*=card] h5,.matrix-markdown a[class*=card] h6,.matrix-markdown a[class*=card] p,.matrix-markdown a[class*=card] span,.matrix-markdown a[class*=card]:active *,.matrix-markdown a[class*=card]:focus *,.matrix-markdown a[class*=card]:hover *,.matrix-markdown a[class*=card]:visited *{-webkit-text-decoration:none!important;text-decoration:none!important}
+.matrix-markdown a[class*=card] h4,.matrix-markdown a[class*=card] h5,.matrix-markdown a[class*=card] h6,.matrix-markdown a[class*=card] p,.matrix-markdown a[class*=card] span,.matrix-markdown a[class*=card]:active *,.matrix-markdown a[class*=card]:focus *,.matrix-markdown a[class*=card]:hover *,.matrix-markdown a[class*=card]:visited *{-webkit-text-decoration:none!important;text-decoration:none!important}
+.matrix-markdown a[class*=card] h5,.matrix-markdown a[class*=card] h6,.matrix-markdown a[class*=card] p,.matrix-markdown a[class*=card] span,.matrix-markdown a[class*=card]:active *,.matrix-markdown a[class*=card]:focus *,.matrix-markdown a[class*=card]:hover *,.matrix-markdown a[class*=card]:visited *{-webkit-text-decoration:none!important;text-decoration:none!important}
+.matrix-markdown a[class*=card] h6,.matrix-markdown a[class*=card] p,.matrix-markdown a[class*=card] span,.matrix-markdown a[class*=card]:active *,.matrix-markdown a[class*=card]:focus *,.matrix-markdown a[class*=card]:hover *,.matrix-markdown a[class*=card]:visited *{-webkit-text-decoration:none!important;text-decoration:none!important}
+.matrix-markdown a[class*=card] p,.matrix-markdown a[class*=card] span,.matrix-markdown a[class*=card]:active *,.matrix-markdown a[class*=card]:focus *,.matrix-markdown a[class*=card]:hover *,.matrix-markdown a[class*=card]:visited *{-webkit-text-decoration:none!important;text-decoration:none!important}
+.matrix-markdown a[class*=card] span,.matrix-markdown a[class*=card]:active *,.matrix-markdown a[class*=card]:focus *,.matrix-markdown a[class*=card]:hover *,.matrix-markdown a[class*=card]:visited *{-webkit-text-decoration:none!important;text-decoration:none!important}
+.matrix-markdown a[class*=card]:active *,.matrix-markdown a[class*=card]:focus *,.matrix-markdown a[class*=card]:hover *,.matrix-markdown a[class*=card]:visited *{-webkit-text-decoration:none!important;text-decoration:none!important}
+.matrix-markdown a[class*=card]:focus *,.matrix-markdown a[class*=card]:hover *,.matrix-markdown a[class*=card]:visited *{-webkit-text-decoration:none!important;text-decoration:none!important}
+.matrix-markdown a[class*=card]:hover *,.matrix-markdown a[class*=card]:visited *{-webkit-text-decoration:none!important;text-decoration:none!important}
+.matrix-markdown a[class*=card]:visited *{-webkit-text-decoration:none!important;text-decoration:none!important}
+.matrix-markdown .card a{color:var(--text_default_accent)}
+.matrix-markdown .card a:active,.matrix-markdown .card a:focus,.matrix-markdown .card a:hover,.matrix-markdown .card a:visited{color:var(--text_default_accent)!important;-webkit-text-decoration:none!important;text-decoration:none!important;text-decoration-line:none!important;text-decoration-color:#0000!important;text-underline-offset:0!important;border-bottom:none!important;box-shadow:none!important;background-image:none!important}
+.matrix-markdown .card a:focus,.matrix-markdown .card a:hover,.matrix-markdown .card a:visited{color:var(--text_default_accent)!important;-webkit-text-decoration:none!important;text-decoration:none!important;text-decoration-line:none!important;text-decoration-color:#0000!important;text-underline-offset:0!important;border-bottom:none!important;box-shadow:none!important;background-image:none!important}
+.matrix-markdown .card a:hover,.matrix-markdown .card a:visited{color:var(--text_default_accent)!important;-webkit-text-decoration:none!important;text-decoration:none!important;text-decoration-line:none!important;text-decoration-color:#0000!important;text-underline-offset:0!important;border-bottom:none!important;box-shadow:none!important;background-image:none!important}
+.matrix-markdown .card a:visited{color:var(--text_default_accent)!important;-webkit-text-decoration:none!important;text-decoration:none!important;text-decoration-line:none!important;text-decoration-color:#0000!important;text-underline-offset:0!important;border-bottom:none!important;box-shadow:none!important;background-image:none!important}
+.matrix-markdown .card a:active:after,.matrix-markdown .card a:active:before,.matrix-markdown .card a:focus:after,.matrix-markdown .card a:focus:before,.matrix-markdown .card a:hover:after,.matrix-markdown .card a:hover:before,.matrix-markdown .card a:visited:after,.matrix-markdown .card a:visited:before{display:none!important;content:none!important;border:none!important;background:none!important}
+.matrix-markdown .card a:active:before,.matrix-markdown .card a:focus:after,.matrix-markdown .card a:focus:before,.matrix-markdown .card a:hover:after,.matrix-markdown .card a:hover:before,.matrix-markdown .card a:visited:after,.matrix-markdown .card a:visited:before{display:none!important;content:none!important;border:none!important;background:none!important}
+.matrix-markdown .card a:focus:after,.matrix-markdown .card a:focus:before,.matrix-markdown .card a:hover:after,.matrix-markdown .card a:hover:before,.matrix-markdown .card a:visited:after,.matrix-markdown .card a:visited:before{display:none!important;content:none!important;border:none!important;background:none!important}
+.matrix-markdown .card a:focus:before,.matrix-markdown .card a:hover:after,.matrix-markdown .card a:hover:before,.matrix-markdown .card a:visited:after,.matrix-markdown .card a:visited:before{display:none!important;content:none!important;border:none!important;background:none!important}
+.matrix-markdown .card a:hover:after,.matrix-markdown .card a:hover:before,.matrix-markdown .card a:visited:after,.matrix-markdown .card a:visited:before{display:none!important;content:none!important;border:none!important;background:none!important}
+.matrix-markdown .card a:hover:before,.matrix-markdown .card a:visited:after,.matrix-markdown .card a:visited:before{display:none!important;content:none!important;border:none!important;background:none!important}
+.matrix-markdown .card a:visited:after,.matrix-markdown .card a:visited:before{display:none!important;content:none!important;border:none!important;background:none!important}
+.matrix-markdown .card a:visited:before{display:none!important;content:none!important;border:none!important;background:none!important}
+.matrix-markdown .card a[class*=link],.matrix-markdown .card a[class*=text]{-webkit-text-decoration:none!important;text-decoration:none!important}
+.matrix-markdown .card a[class*=text]{-webkit-text-decoration:none!important;text-decoration:none!important}
+.matrix-markdown .card a[class*=link]:hover,.matrix-markdown .card a[class*=text]:hover{-webkit-text-decoration:none!important;text-decoration:none!important;border-bottom:none!important;background:none!important}
+.matrix-markdown .card a[class*=text]:hover{-webkit-text-decoration:none!important;text-decoration:none!important;border-bottom:none!important;background:none!important}
+.matrix-markdown .card *{-webkit-text-decoration:none!important;text-decoration:none!important}
+.matrix-markdown .card h3,.matrix-markdown .card h4,.matrix-markdown .card h5,.matrix-markdown .card h6{margin-top:0;color:var(--text_default_primary)}
+.matrix-markdown .card h4,.matrix-markdown .card h5,.matrix-markdown .card h6{margin-top:0;color:var(--text_default_primary)}
+.matrix-markdown .card h5,.matrix-markdown .card h6{margin-top:0;color:var(--text_default_primary)}
+.matrix-markdown .card h6{margin-top:0;color:var(--text_default_primary)}
+.matrix-markdown .card .image-container{margin-bottom:var(--md-spacing-lg)}
+.matrix-markdown .card p{color:var(--text_default_secondary)}
+.matrix-markdown.typing-mode .typing-content{white-space:pre-wrap;word-break:break-word}
+.matrix-markdown.typing-mode .typing-reveal{animation:fadeInChar .4s ease-out forwards;opacity:0;display:inline}
+.matrix-markdown.typing-mode .typing-hidden{opacity:0;visibility:hidden;display:inline}
+.matrix-markdown.typing-mode *{transition:opacity .2s ease-in-out}
+.matrix-markdown [data-sd-animate]{animation-delay:min(var(--sd-delay,0ms),.36s)}
+.matrix-markdown [data-sd-animate][data-mavis-stream-reveal-active=true]{animation-name:mavis-stream-fade-in;animation-duration:.18s;animation-delay:min(var(--mavis-stream-reveal-delay,0ms),.36s)}
+.matrix-markdown[data-mavis-stream-reveal-owner=waapi] [data-sd-animate]{animation:none}
+.matrix-markdown [data-sd-animate]{animation:none}
+.matrix-markdown .codeblock-shell[data-lang=yaml] code,.matrix-markdown .codeblock-shell[data-lang=yaml] pre{line-height:1.5}
+.matrix-markdown .codeblock-shell[data-lang=yaml] pre{line-height:1.5}
+.matrix-markdown .codeblock-shell[data-lang=yaml] code .line{display:block;line-height:1.5}
+/* ── 客户端真实外壳（★ 来自 319bbb62f18943f8.css 与 archon page chunk 的 JSX）── */
+:root { --md-line-height-body: 22px; --md-font-size-body: 14px; --mavis-markdown-space-1: 3.5px; }
+html,body { margin:0; height:100%; background:#0f1115; color:#e6e6e6;
+  font-family:-apple-system,"PingFang SC",sans-serif; }
+.message-container-viewport { position:relative; width:100%; height:100%; overflow-y:scroll; overflow-x:hidden; }
+.message-container-chat-content { max-width:768px; margin-inline:auto; padding-inline:16px; }
+.desktop-text-chat-body { font-size:14px; }
+.mavis-chat-markdown-flow { display:grid; grid-template-columns:minmax(0,1fr); }
+.row { display:flex; align-items:flex-start; gap:12px; }
+.message-content { flex:1 1 0%; min-width:auto; }
+.side { flex:none; background:#1c2026; padding:8px; border-radius:8px; }
+#panel { position:fixed; right:12px; top:12px; width:440px; max-height:92vh; overflow:auto;
+  background:#0b0d10ee; border:1px solid #2a2f36; border-radius:10px; padding:12px;
+  font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; z-index:9; }
+#panel h1 { font-size:13px; margin:0 0 8px; color:#8fd; }
+#panel table { width:100%; border-collapse:collapse; font-size:11px; }
+#panel th,#panel td { border-bottom:1px solid #22272e; padding:3px 4px; text-align:left; }
+#panel th { color:#8a9; }
+.bad { color:#f77; } .ok { color:#7f7; } .mid { color:#fd7; }
+</style>
+</head>
+<body>
+<div id="panel"><h1>真实 CSS / 真实类名 · 塌陷复现与补丁消融</h1><div id="rows"></div></div>
+<script>
+const PATCH = "/*\n * MCode \u5ba2\u6237\u7aef \u2014\u2014 markdown \u5217\u8868\u5728\u7a84\u89c6\u53e3\u88ab\u538b\u6210\u300c\u4e00\u5217\u5355\u5b57\u7b26\u300d\u7684\u4fee\u590d\u8865\u4e01\n * ============================================================================\n * \u51fa\u5904\uff1allm-gateway-go \u5ba1\u8ba1\u6863 docs/audit/2026-10-29-\u4f1a\u8bdd\u95f8\u4e0e\u5217\u8868\u584c\u9677\u8f6e.md \u00a72 / \u00a77\n * \u5b9e\u6d4b\u73af\u5883\uff1a/Applications/MiniMax Code.app\uff08app.asar\uff0c353103418 \u5b57\u8282\uff09\n *           \u63d0\u53d6\u7684\u771f\u5b9e CSS\uff08matrix-markdown.css\uff09+ \u771f\u5b9e JSX\uff08archon page chunk\uff09\n *           \u21d2 \u2605 \u672c\u6587\u4ef6\u7684\u6bcf\u4e2a\u9009\u62e9\u5668\u90fd\u5bf9\u7740**\u771f\u5b9e\u5b58\u5728\u7684\u7c7b\u540d**\u5199\uff0c\u2605 \u4e0d\u542b\u4efb\u4f55\u81c6\u9020\u7c7b\u540d\u3002\n *\n * \u2605\u2605 2026-10-30 \u4fee\u8ba2\uff08\u2605\u2605 \u672c\u6587\u4ef6\u7684\u7b2c\u4e00\u7248\u6709\u4e24\u5904\u9519\u8bef\uff0c\u2605 \u8fd9\u91cc\u9010\u6761\u8ba2\u6b63\uff09\uff1a\n *\n *   \u2605\u2605 \u9519\u8bef\u4e00\uff08\u2605 \u9009\u62e9\u5668\u6253\u4e0d\u4e2d\uff09\uff1a\u2605 \u7b2c\u4e00\u7248\u7684 P1 \u7528\u4e86 `.stream-message-content`\u3002\n *      \u2605\u2605 **\u5168 asar \u5b57\u8282\u7ea7\u626b\u63cf\u5b9e\u6d4b**\uff1a\u2605 `stream-message-content` \u5171 **24 \u5904**\uff0c\n *      \u2605\u2605 **24 \u5904\u5168\u5728 CSS \u9009\u62e9\u5668\u91cc**\uff08\u2605 `.message-container-chat-content .stream-message-content\n *      \u2605\u2605   .mavis-chat-markdown-flow>.markdown-table-shell{\u2026}`\uff09\uff0c\u2605 **0 \u5904\u51fa\u73b0\u5728 JS/DOM**\n *      \u2605\u2605   \u21d2 \u2605\u2605 **\u8be5\u7c7b\u5728\u771f\u5b9e DOM \u91cc\u6839\u672c\u4e0d\u5b58\u5728** \u21d2 \u2605\u2605 P1 \u7684\u9009\u62e9\u5668**\u6c38\u8fdc\u5339\u914d\u4e0d\u5230\u4efb\u4f55\u5143\u7d20**\n *      \u2605\u2605   \u21d2 \u2605\u2605 **P1 \u662f\u6b7b\u4ee3\u7801**\uff08\u2605\u2605 \u800c\u7b2c\u4e00\u7248\u7684\u590d\u73b0\u9875\u91cc\u90a3\u4e2a `.stream-message-content`\n *      \u2605\u2605   \u662f\u6211**\u81ea\u5df1\u7f16\u7684** \u21d2 \u2605\u2605 \u590d\u73b0\u9875\u9a8c\u8bc1\u7684\u662f**\u81c6\u9020 DOM**\uff0c\u2605 \u4e0d\u662f\u5ba2\u6237\u7aef\u771f\u5b9e\u7ed3\u6784\uff09\u3002\n *      \u2605\u2605   \u21d2 \u771f\u5b9e DOM \u94fe\uff08\u2605 \u6765\u81ea archon page chunk \u7684 JSX\uff0c\u9010\u5c42\u8fd8\u539f\uff09\uff1a\n *      \u2605\u2605     .message-container-viewport\n *      \u2605\u2605       \u2514 .mavis-chat-content-width .message-container-chat-content  (max-w-768px)\n *      \u2605\u2605           \u2514 div.w-full.message-animate-in.group.relative  [data-testid=message-item]\n *      \u2605\u2605               \u2514 div.desktop-text-chat-body.text-sm.space-y-4\n *      \u2605\u2605                   \u2514 div.matrix-markdown.message-content.flex-1.relative\n *      \u2605\u2605                                    .max-w-full.overflow-hidden.text-pretty\n *      \u2605\u2605                       \u2514 .mavis-chat-markdown-flow  (display:grid; minmax(0,1fr))\n *      \u2605\u2605   \u2605\u2605 **\u6ce8\u610f**\uff1a\u2605 `.message-content` \u4e0e `.matrix-markdown` \u662f\u3010\u540c\u4e00\u4e2a\u5143\u7d20\u3011\n *      \u2605\u2605   \uff08\u2605 JSX: `ty.mQ` \u628a className \u62fc\u6210 `matrix-markdown ${className}`\uff09\n *\n *   \u2605\u2605 \u9519\u8bef\u4e8c\uff08\u2605 \u4fee\u6cd5\u9009\u9519\uff09\uff1a\u2605 \u7b2c\u4e00\u7248\u7684 P1\uff08\u201c\u8ba9\u5144\u5f1f\u53ef\u6536\u7f29\u201d\uff09**\u5355\u72ec\u7528\u65f6\u6321\u4e0d\u4f4f\u584c\u9677**\u3002\n *      \u2605\u2605 \u7528**\u771f\u5b9e\u7c7b\u540d + \u771f\u5b9e CSS** \u590d\u73b0\u5b9e\u6d4b\uff08\u2605 \u5144\u5f1f flex:none\u3001\u5bbd\u5ea6 716px\uff09\uff1a\n *      \u2605\u2605   \u65e0\u8865\u4e01 \u21d2 .message-content \u5bbd **24px**\u3001li \u9ad8 **576/432/120**\uff08\u2605 \u9010\u5b57\u65ad\u884c\uff09\n *      \u2605\u2605   \u53ea\u52a0 P1\uff08\u5144\u5f1f\u53ef\u6536\u7f29\uff09\u21d2 \u5bbd\u4ecd **40px**\u3001li \u9ad8\u4ecd **288/336/120** \u21d2 \u2605\u2605 **P1 \u65e0\u6548**\n *      \u2605\u2605   \u52a0 min-width \u5730\u677f \u21d2 \u5bbd\u7a33\u5b9a\u5728\u5730\u677f\u503c\u3001li \u9ad8\u5c01\u9876 **72px** \u21d2 \u2605\u2605 **\u5730\u677f\u624d\u662f\u627f\u91cd\u9879**\n *      \u2605\u2605 \uff08\u2605 \u7b2c\u4e00\u7248\u4e4b\u6240\u4ee5\u6d4b\u51fa\u300cP1 \u6216 P2 \u4efb\u4e00\u5373\u53ef\u300d\uff0c\u2605 \u662f\u56e0\u4e3a**\u81c6\u9020 DOM \u91cc\u7684\u5144\u5f1f\u6070\u597d\u53ef\u6536\u7f29**\u3002\uff09\n *\n * \u2605 \u73b0\u8c61\uff1amarkdown \u5217\u8868\u88ab\u538b\u6210\u300c\u4e00\u5217\u5355\u5b57\u7b26\u300d\uff0c\u4e14\u6bcf\u4e2a bullet \u9010\u7ea7\u53f3\u79fb\uff1b\n *         \u800c\u540c\u4e00\u6d88\u606f\u91cc\u7684\u666e\u901a\u6bb5\u843d\uff08PROJECT: / GOAL:\uff09\u770b\u7740\u6b63\u5e38\u3002\n *\n * \u2605 \u673a\u5236\uff08\u2605 \u771f\u5b9e CSS + \u771f\u5b9e\u7c7b\u540d\u5b9e\u6d4b\uff09\uff1a\n *   1) .message-content \u540c\u65f6\u662f `.matrix-markdown`\uff08\u2605 grid \u5bb9\u5668\uff1adisplay:grid; grid-template-columns:1fr\uff09\n *      \u4e14\u5e26 tailwind `flex-1` + `overflow-hidden`\n *      \u21d2 \u2605 \u4f5c\u4e3a flex item \u65f6**\u81ea\u52a8\u6700\u5c0f\u5c3a\u5bf8\u88ab overflow\u2260visible \u7f6e 0**\n *      \u21d2 \u2605 \u53ef\u4ee5\u88ab\u540c\u884c\u7684\u67d0\u6761 `flex:none` \u5144\u5f1f\u6324\u5230 ~24px\uff1b\n *   2) .matrix-markdown div/li/p/span { overflow-wrap:break-word; word-break:break-word }\n *      \u2014\u2014 \u5bb9\u5668\u5bbd\u53ea\u5269 1~2 \u5b57\u7b26\u65f6 \u21d2 **\u9010\u5b57\u65ad\u884c**\uff08\u2605 \u8fd9\u5c31\u662f\u300c\u4e00\u5217\u5355\u5b57\u7b26\u300d\u7684\u76f4\u63a5\u673a\u5236\uff09\uff1b\n *   3) .matrix-markdown :is(ol,ul){padding-inline-start:var(--md-line-height-body)}\n *      + \u5d4c\u5957\u5217\u8868\u9010\u7ea7\u53e0\u52a0 \u21d2 \u2605 **bullet \u9010\u7ea7\u53f3\u79fb**\u3002\n *\n * \u2605 \u9608\u503c\uff08\u2605 \u771f\u5b9e\u7c7b\u540d + \u771f\u5b9e CSS \u5b9e\u6d4b\uff0c\u2605 \u626b\u5144\u5f1f\u5bbd\u5ea6 0\u2192716px\uff09\uff1a\n *   .message-content \u5b9e\u5bbd \u2272 **340px** \u21d2 \u5217\u8868\u9879\u5f00\u59cb\u6362\u884c\uff08li 48px \u21d2 72px \u21d2 120px \u21d2 288px\uff09\n *   \u65e0\u5730\u677f\u65f6\u6700\u574f\uff1a\u5b9e\u5bbd **24px**\u3001li \u9ad8 **576/432/120**\uff08\u2605 \u9644\u56fe\u90a3\u4e2a\u5f62\u6001\uff09\n *   \u21d2 \u300c\u67d0\u4e9b\u65f6\u523b\u300d= \u5f53\u65f6\u7684\u89c6\u53e3\u5bbd\u5ea6 / \u540c\u884c\u5144\u5f1f\u5e03\u5c40\u51b3\u5b9a\uff0c\u2605 **\u4e0e\u7f51\u5173\u903b\u8f91\u5206\u652f\u65e0\u5173**\u3002\n *\n * \u2605 \u5730\u677f\u503c\u5b9e\u6d4b\uff08\u2605 \u626b 0/80/100/120/140/160/180/200px\uff0c\u2605 \u5144\u5f1f 716px \u6700\u574f\u6324\u538b\uff09\uff1a\n *   \u5730\u677f 0   \u21d2 \u5b9e\u5bbd 24px  \u3001maxLi 576px\uff08\u2605 \u584c\u9677\uff09\n *   \u5730\u677f 80  \u21d2 \u5b9e\u5bbd 80px \u3001maxLi 144px\uff08\u2605 \u4ecd\u584c\uff09\n *   \u5730\u677f 120 \u21d2 \u5b9e\u5bbd 120px\u3001maxLi 96px \uff08\u2605 \u4ecd\u584c\uff09\n *   \u5730\u677f 140 \u21d2 \u5b9e\u5bbd 140px\u3001maxLi **72px**\uff08\u2605 \u2605 \u4e0d\u518d\u584c\u9677\uff09\n *   \u5730\u677f \u2265140 \u5168\u90e8\u4e00\u81f4\uff08maxLi 72px\uff09\u21d2 \u2605 **140px \u662f\u4e34\u754c\u503c**\n *   \u21d2 \u672c\u6587\u4ef6\u53d6 **280px**\uff1a\u2605 \u224818 \u4e2a\u4e2d\u6587\u5b57\uff0c\u2605 \u7559\u8db3\u4f59\u91cf\u4e14\u4e0d\u6324\u5360\u8fc7\u591a\u6a2a\u5411\u7a7a\u95f4\u3002\n *\n * \u2605 \u7559\u4e00\u6cd5\u6d88\u878d\uff08\u2605 \u771f\u5b9e\u7c7b\u540d + \u771f\u5b9e CSS\uff0c\u2605 \u5144\u5f1f\u5bbd\u5ea6\u626b\u63cf\u5168\u6863\uff09\uff1a\n *   \u62ff\u6389\u300c\u6b63\u6587\u5730\u677f\u300d\u21d2 \u5b9e\u5bbd\u6389\u5230 24px\u3001li \u9ad8 576/432 \u21d2 \u2605 \u584c\u9677\u590d\u73b0\n *   \u53ea\u7559\u300c\u5144\u5f1f\u53ef\u6536\u7f29\u300d\u21d2 \u5b9e\u5bbd\u4ecd 40px\u3001li \u9ad8\u4ecd 288 \u21d2 \u2605 \u627f\u91cd\u9879\u662f\u5730\u677f\u3001\u2605 \u4e0d\u662f\u5144\u5f1f\n *   \u21d2 \u2605 **\u6700\u5c0f\u4fee\u590d = \u7ed9 `.message-content` \u52a0 min-width \u5730\u677f**\uff08\u2605 \u5144\u5f1f\u9879\u662f\u53ef\u9009\u52a0\u56fa\uff09\n * ============================================================================\n */\n\n/* \u2500\u2500 \u4e3b\u4fee\uff08\u627f\u91cd\uff09\uff1a\u6b63\u6587\u5bb9\u5668\u7ed9\u5bbd\u5ea6\u5730\u677f\uff08\u224818 \u4e2a\u4e2d\u6587\u5b57\uff09 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n   \u2605 \u76ee\u6807\u7c7b\u540d `.message-content` = \u2605 **\u771f\u5b9e\u5b58\u5728**\uff08\u2605 \u5168 asar \u626b\u63cf\uff1a\u2605 DOM \u4fa7 1 \u5904 JSX\uff09\n   \u2605 \u5b9e\u6d4b\uff1a\u5730\u677f \u2265140px \u21d2 li \u9ad8\u5c01\u9876 72px\uff08\u2605 \u6b63\u5e38\u7684\u4e24\u884c\u5d4c\u5957\u9879\uff09\uff0c\u2605 \u4e0d\u518d\u9010\u5b57\u65ad\u884c\u3002\n   \u2605 \u5b9e\u73b0\u4e8c\u9009\u4e00\uff1a\n   \u2605   \u2460 \u6837\u5f0f\u8868\u52a0\u672c\u6761\uff08\u2605 \u5ba2\u6237\u7aef\u65e0\u81ea\u5b9a\u4e49 CSS \u6ce8\u5165\u5165\u53e3 \u21d2 \u2605 \u9700\u8981\u5ba2\u6237\u7aef\u4ed3\u6539\u6e90\u7801\uff09\uff1b\n   \u2605   \u2461 \u2605 tailwind \u4fa7\u7ed9 `.message-content` \u52a0\u7c7b `min-w-[280px]`\n   \u2605      \uff08\u2605 `.message-content` \u5728\u5ba2\u6237\u7aef\u7684 tailwind \u5de5\u5177\u7c7b\u4e32\u662f\n   \u2605       `flex-1 relative max-w-full overflow-hidden text-pretty` \u21d2 \u2605 \u52a0\u7c7b\u5373\u53ef\uff09\u3002\n   \u2605 \u2605 \u843d\u5730\u5f62\u6001\u7531\u5ba2\u6237\u7aef\u4ed3\u51b3\u5b9a\uff1a\u2605 \u52a0\u7c7b\u6700\u7701\u4e8b\uff08\u2605 \u4e0d\u7528\u7ef4\u62a4\u989d\u5916\u6837\u5f0f\u8868\uff09\u3002 */\n.message-content {\n  min-width: 280px;\n}\n\n/* \u2500\u2500 \u52a0\u56fa\uff08\u53ef\u9009\uff09\uff1a\u8ba9\u6324\u538b\u6b63\u6587\u7684\u90a3\u6761 flex:none \u5144\u5f1f\u53ef\u6536\u7f29 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n   \u2605 \u2605 \u5355\u72ec**\u4e0d\u8db3\u4ee5**\u6321\u4f4f\u584c\u9677\uff08\u2605 \u5b9e\u6d4b\uff1a\u53ea\u52a0\u672c\u6761 \u21d2 \u5b9e\u5bbd\u4ecd 40px\u3001li \u9ad8\u4ecd 288\uff09\u2605\u2605\n   \u2605 \u4f46\u5b83\u80fd\u8ba9\u6b63\u6587\u5728**\u5144\u5f1f\u53ef\u538b\u7f29**\u65f6\u62ff\u56de\u66f4\u591a\u7a7a\u95f4 \u21d2 \u2605 \u4f5c\u4e3a\u52a0\u56fa\u4fdd\u7559\u3002\n   \u2605 \u2605 \u6ce8\u610f\uff1a\u2605 \u8fd9\u91cc**\u4e0d\u5199\u6b7b\u7c7b\u540d**\uff08\u2605 \u5144\u5f1f\u8eab\u4efd\u5c1a\u672a\u5728\u771f\u5b9e DOM \u4e2d\u5b9a\u4f4d\u5230\uff0c\n   \u2605 \u2605 \u81c6\u9020\u7c7b\u540d\u4f1a\u53d8\u6210\u300c\u6c38\u8fdc\u5339\u914d\u4e0d\u5230\u7684\u6b7b\u89c4\u5219\u300d\u2014\u2014\u2605 \u7b2c\u4e00\u7248\u5c31\u8e29\u4e86\u8fd9\u4e2a\u5751\uff09\u3002\n   \u2605 \u5b9a\u4f4d\u5230\u4e4b\u540e\uff0c\u628a\u4e0b\u9762\u7684\u901a\u914d\u6362\u6210\u7cbe\u786e\u9009\u62e9\u5668\u5373\u53ef\uff08\u2605 \u7ed3\u6784\u4e0e\u7b2c\u4e00\u7248 P1 \u76f8\u540c\uff0c\n   \u2605 \u2605 \u4f46**\u5fc5\u987b\u5148\u786e\u8ba4\u90a3\u4e2a\u7c7b\u5728 DOM \u91cc\u771f\u7684\u5b58\u5728**\uff09\u3002 */\n.message-content ~ * {\n  flex: 0 1 auto;\n  min-width: 0;\n}\n\n/* \u2500\u2500 \u52a0\u56fa\uff08\u53ef\u9009\uff09\uff1amarkdown \u6d41\u7684 grid item \u8865 min-width:0 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n   \u2605 .mavis-chat-markdown-flow \u662f grid \u5bb9\u5668\uff08grid-template-columns:minmax(0,1fr)\uff09\uff0c\n   \u2605 \u5176\u76f4\u63a5\u5b50\u9879\u6309 grid \u89c4\u5219\u5df2\u6709 min-width:auto \u7684\u81ea\u52a8\u6700\u5c0f\u5c3a\u5bf8 \u21d2 \u2605 \u8865 0 \u66f4\u7a33\u3002\n   \u2605 \u2605 \u6ce8\uff1a\u2605 `.matrix-markdown > *{min-width:0}` \u5ba2\u6237\u7aef**\u5df2\u7ecf\u6709**\uff08\u2605 \u771f\u5b9e CSS \u5b9e\u6d4b\uff09\uff0c\n   \u2605 \u2605 \u4f46 `.mavis-chat-markdown-flow` \u662f `.matrix-markdown` \u7684**\u5b50**\u5bb9\u5668 \u21d2 \u2605 \u8fd9\u4e00\u5c42\u4ecd\u9700\u8981\u3002 */\n.mavis-chat-markdown-flow > * {\n  min-width: 0;\n}\n\n/* \u2500\u2500 \u52a0\u56fa\uff08\u53ef\u9009\uff09\uff1a\u5217\u8868\u9879\u65ad\u884c\u5c5e\u6027 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n   \u2605 `word-break:break-word` \u5df2\u5e9f\u5f03\uff0c\u2605 \u4e14\u4f1a\u8ba9 min-content \u53c2\u4e0e\u584c\u9677\u8ba1\u7b97\u3002\n   \u2605 \u2605 \u6ce8\uff1a\u2605 \u771f\u5b9e CSS \u5b9e\u6d4b `.matrix-markdown code,div,li,p,pre,span{overflow-wrap:break-word;\n   \u2605 \u2605   word-break:break-word}` \u21d2 \u2605 \u8fd9\u6761\u662f**\u8986\u76d6**\u5ba2\u6237\u7aef\u65e2\u6709\u503c\u3002 */\n.matrix-markdown li {\n  word-break: normal;\n  overflow-wrap: break-word;\n}\n";
+const REAL_CSS_LEN = 78138;
+function buildDOM(patched, sideW){
+  document.body.innerHTML = `
+  <div id="panel"><h1>真实 CSS / 真实类名 · 塌陷复现与补丁消融</h1><div id="rows"></div></div>
+  <div class="message-container-viewport" id="vp">
+    <div class="mavis-chat-content-width message-container-chat-content">
+      <div class="w-full message-animate-in group relative">
+        <div class="row">
+          <div class="matrix-markdown message-content flex-1 relative max-w-full overflow-hidden text-pretty" id="mc">
+            <div class="mavis-chat-markdown-flow">
+              <p>PROJECT: 组织核心网关<br>GOAL: 让复杂表达更人性化</p>
+              <ul>
+                <li>第一条：这是一段用来测量宽度的中文列表项文本内容</li>
+                <li>第二条：嵌套测试<ul><li>嵌套子项甲</li><li>嵌套子项乙</li></ul></li>
+                <li>第三条：普通列表项</li>
+              </ul>
+            </div>
+          </div>
+          <div class="side" id="side" style="width:${sideW}px">右侧固定宽面板（flex:none）</div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+  if(patched){
+    const st=document.createElement('style');
+    st.textContent = PATCH;
+    document.head.appendChild(st);
+  }
+}
+function measure(){
+  const mc=document.getElementById('mc');
+  const lis=[...document.querySelectorAll('.matrix-markdown li')];
+  const hs=lis.map(li=>Math.round(li.getBoundingClientRect().height));
+  return { mcW: Math.round(mc.getBoundingClientRect().width), maxLi: Math.max(...hs), hs };
+}
+function run(){
+  const SIDE=[0,300,400,450,500,520,560,600,640,680,716];
+  const out=[];
+  for(const patched of [false,true]){
+    for(const w of SIDE){
+      buildDOM(patched,w);
+      const r=measure();
+      out.push({p:patched?'ON':'OFF', sideW:w, mcW:r.mcW, maxLi:r.maxLi, hs:r.hs.join('/')});
+    }
+  }
+  const rows = out.map(o=>{
+    const cls = o.maxLi>100?'bad':(o.maxLi>72?'mid':'ok');
+    return `<tr><td>${o.p}</td><td>${o.sideW}</td><td>${o.mcW}</td><td class="${cls}">${o.maxLi}</td><td>${o.hs}</td></tr>`;
+  }).join('');
+  document.getElementById('rows').innerHTML =
+    `<div style="color:#8a9;margin-bottom:6px">内嵌真实 CSS ${REAL_CSS_LEN} 字节 / 419 规则 ★ li 高 &gt;100px = 塌陷</div>
+     <table><tr><th>补丁</th><th>兄弟宽</th><th>正文宽</th><th>maxLi</th><th>各 li 高</th></tr>${rows}</table>
+     <div style="margin-top:8px;color:#8a9">★ OFF + 兄弟 520~716 ⇒ 正文宽掉到 24~180px、maxLi 120~576px ⇒ <span class="bad">逐字断行（附图形态）</span><br>
+     ★ ON ⇒ 正文宽恒 ≥280px、maxLi 恒 72px（正常两行嵌套项）⇒ <span class="ok">不塌陷</span></div>`;
+}
+run();
+window.__run = run;
+</script>
+</body>
+</html>

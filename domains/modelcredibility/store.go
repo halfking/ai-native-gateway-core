@@ -202,12 +202,16 @@ func (s *Store) StandardIQ(ctx context.Context, canonicalID int64) (float64, err
 }
 
 // LoadPrevious 取该节点上一次判定的签名基线（nil = 首次测量）。
+//
+// ★ 顺带带出上一次的 verdict 与 verified 连击数 —— verified 的连续共识
+// 需要它们（bg/model_probe RequiredConsensus 同思路）。
 func (s *Store) LoadPrevious(ctx context.Context, credentialID int64, rawModelName string) (*Previous, error) {
 	if s.db == nil {
 		return nil, fmt.Errorf("store: db pool is nil")
 	}
 	const q = `
-		SELECT prompt_token_signature, system_fingerprint, reported_model, measured_at
+		SELECT prompt_token_signature, system_fingerprint, reported_model, measured_at,
+		       COALESCE(verdict,''), COALESCE((evidence->>'consensus_streak')::int, 0)
 		FROM provider_model_credibility
 		WHERE tenant_id = 'default'
 		  AND credential_id = $1
@@ -215,14 +219,17 @@ func (s *Store) LoadPrevious(ctx context.Context, credentialID int64, rawModelNa
 	var sig *int
 	var fp, model *string
 	var measuredAt *time.Time
-	err := s.db.QueryRow(ctx, q, credentialID, rawModelName).Scan(&sig, &fp, &model, &measuredAt)
+	var prevVerdict string
+	var streak int
+	err := s.db.QueryRow(ctx, q, credentialID, rawModelName).
+		Scan(&sig, &fp, &model, &measuredAt, &prevVerdict, &streak)
 	if err != nil {
 		if isNoRows(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("query previous verdict: %w", err)
 	}
-	prev := &Previous{}
+	prev := &Previous{Verdict: Verdict(prevVerdict), VerifiedStreak: streak}
 	if sig != nil {
 		prev.PromptTokens = *sig
 		prev.HasPromptTokens = true
@@ -237,6 +244,59 @@ func (s *Store) LoadPrevious(ctx context.Context, credentialID int64, rawModelNa
 		prev.MeasuredAt = *measuredAt
 	}
 	return prev, nil
+}
+
+// LoadPassiveSignals 读该节点的被动完整性信号（真实流量侧证据）。
+//
+// 数据来源：model_integrity_events（domains/streaming/integrity 落），
+// 未解决 + 近 7 天 + severity high/critical，按 (credential_id, 模型名) 匹配。
+// 取 model_mismatch 与 fingerprint_drift 各自最新一条。
+//
+// ★ 查询失败（表权限不足 / 表不存在）**降级为 nil** 并返回 err —— 调用方
+// 决定是否致命。211 实测网关连库角色对该表无读权限 ⇒ 生产上这条通道
+// 可能整段降级，主动探测照常工作（scanner 打 WARN）。
+// ★ 找不到事件返回 (&PassiveSignals{}, nil)：空结构 = 「读了，没有信号」，
+// 与「没读到」区分（evidence 里可如实标注）。
+func (s *Store) LoadPassiveSignals(ctx context.Context, credentialID int64, rawModelName string) (*PassiveSignals, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("store: db pool is nil")
+	}
+	const q = `
+		SELECT DISTINCT ON (anomaly_type)
+		       anomaly_type, COALESCE(expected_value,''), COALESCE(actual_value,'')
+		FROM model_integrity_events
+		WHERE resolved = FALSE
+		  AND severity IN ('high','critical')
+		  AND ts > now() - interval '7 days'
+		  AND anomaly_type IN ('model_mismatch','fingerprint_drift')
+		  AND credential_id = $1
+		  AND (lower(COALESCE(raw_model_name,'')) = lower($2)
+		       OR lower(COALESCE(client_model,'')) = lower($2))
+		ORDER BY anomaly_type, ts DESC`
+	rows, err := s.db.Query(ctx, q, credentialID, rawModelName)
+	if err != nil {
+		return nil, fmt.Errorf("query passive signals: %w", err)
+	}
+	defer rows.Close()
+	out := &PassiveSignals{}
+	for rows.Next() {
+		var atype, expected, actual string
+		if err := rows.Scan(&atype, &expected, &actual); err != nil {
+			return nil, fmt.Errorf("scan passive signals: %w", err)
+		}
+		switch atype {
+		case "model_mismatch":
+			out.HasMismatch = true
+			out.MismatchExpected = expected
+			out.MismatchActual = actual
+		case "fingerprint_drift":
+			out.HasFingerprintDrift = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate passive signals: %w", err)
+	}
+	return out, nil
 }
 
 // SaveResult 落盘一次判定：更新当前态 + 追加一条历史。
@@ -272,7 +332,7 @@ func (s *Store) SaveResult(ctx context.Context, res Result) error {
 		    credibility_score, identity_score, capability_score, consistency_score, reference_score,
 		    verdict, status, reported_model, prompt_token_signature, system_fingerprint,
 		    evidence, anomalies, measured_dimensions, measured_at, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::text::jsonb,$18::text::jsonb,$19,$20,now(),now())
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,now(),now())
 		ON CONFLICT (tenant_id, credential_id, raw_model_name) DO UPDATE SET
 		    provider_id           = EXCLUDED.provider_id,
 		    canonical_id          = EXCLUDED.canonical_id,
@@ -307,23 +367,19 @@ func (s *Store) SaveResult(ctx context.Context, res Result) error {
 	if res.Observed.ReportedModel != "" {
 		reported = res.Observed.ReportedModel
 	}
-		if _, err := tx.Exec(ctx, insertCurrent,
-			tenant, res.CredentialID, res.ProviderID, res.RawModelName,
-			nullableID(res.CanonicalID), nullableStr(res.CanonicalName),
-			scoreOrNull(res.Scores, 0, res.Overall),
-			scoreOrNull(res.Scores, DimIdentity, res.Scores.Identity),
-			scoreOrNull(res.Scores, DimCapability, res.Scores.Capability),
-			scoreOrNull(res.Scores, DimConsistency, res.Scores.Consistency),
-			scoreOrNull(res.Scores, DimReference, res.Scores.Reference),
-			string(res.Verdict), res.Status,
-			reported, sig, fp,
-			// evidence/anomalies 是 json.Marshal 的 []byte：SimpleProtocol 下
-			// 裸传会被内联成 bytea hex 字面量，jsonb 列解析必炸（门
-			// TestNoBareMarshalBytesIntoDBWriteParams 抓到的）⇒ 包 string +
-			// SQL 位点 ::text::jsonb（先例：bg/integrity_harvester.go）。
-			string(evidence), string(anomalies),
-			res.Scores.Measured.DimensionCount(), res.MeasuredAt,
-		); err != nil {
+	if _, err := tx.Exec(ctx, insertCurrent,
+		tenant, res.CredentialID, res.ProviderID, res.RawModelName,
+		nullableID(res.CanonicalID), nullableStr(res.CanonicalName),
+		scoreOrNull(res.Scores, 0, res.Overall),
+		scoreOrNull(res.Scores, DimIdentity, res.Scores.Identity),
+		scoreOrNull(res.Scores, DimCapability, res.Scores.Capability),
+		scoreOrNull(res.Scores, DimConsistency, res.Scores.Consistency),
+		scoreOrNull(res.Scores, DimReference, res.Scores.Reference),
+		string(res.Verdict), res.Status,
+		reported, sig, fp,
+		jsonTextParam(evidence), jsonTextParam(anomalies),
+		res.Scores.Measured.DimensionCount(), res.MeasuredAt,
+	); err != nil {
 		return fmt.Errorf("upsert provider_model_credibility: %w", err)
 	}
 
@@ -333,24 +389,24 @@ func (s *Store) SaveResult(ctx context.Context, res Result) error {
 		    credibility_score, identity_score, capability_score, consistency_score, reference_score,
 		    verdict, status, measured_dimensions, reported_model, prompt_token_signature,
 		    system_fingerprint, http_status, latency_ms, evidence, anomalies, error, measured_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::text::jsonb,$21::text::jsonb,$22,$23)`
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`
 	var runErr any
 	if res.Status == StatusFailed {
 		runErr = "probe_failed"
 	}
-		if _, err := tx.Exec(ctx, insertRun,
-			tenant, res.CredentialID, res.ProviderID, res.RawModelName,
-			nullableID(res.CanonicalID), nullableStr(res.CanonicalName),
-			scoreOrNull(res.Scores, 0, res.Overall),
-			scoreOrNull(res.Scores, DimIdentity, res.Scores.Identity),
-			scoreOrNull(res.Scores, DimCapability, res.Scores.Capability),
-			scoreOrNull(res.Scores, DimConsistency, res.Scores.Consistency),
-			scoreOrNull(res.Scores, DimReference, res.Scores.Reference),
-			string(res.Verdict), res.Status,
+	if _, err := tx.Exec(ctx, insertRun,
+		tenant, res.CredentialID, res.ProviderID, res.RawModelName,
+		nullableID(res.CanonicalID), nullableStr(res.CanonicalName),
+		scoreOrNull(res.Scores, 0, res.Overall),
+		scoreOrNull(res.Scores, DimIdentity, res.Scores.Identity),
+		scoreOrNull(res.Scores, DimCapability, res.Scores.Capability),
+		scoreOrNull(res.Scores, DimConsistency, res.Scores.Consistency),
+		scoreOrNull(res.Scores, DimReference, res.Scores.Reference),
+		string(res.Verdict), res.Status,
 		res.Scores.Measured.DimensionCount(),
 		reported, sig, fp,
 		res.Observed.HTTPStatus, res.Observed.LatencyMs,
-		string(evidence), string(anomalies), runErr, res.MeasuredAt,
+		jsonTextParam(evidence), jsonTextParam(anomalies), runErr, res.MeasuredAt,
 	); err != nil {
 		return fmt.Errorf("insert provider_model_credibility_runs: %w", err)
 	}
@@ -475,17 +531,17 @@ func (s *Store) ListVerdicts(ctx context.Context, f VerdictFilter) ([]VerdictRow
 
 // RunRow 是一次判定历史。
 type RunRow struct {
-	MeasuredAt        string   `json:"measured_at"`
-	CredibilityScore  float64  `json:"credibility_score"`
-	IdentityScore     float64  `json:"identity_score"`
-	CapabilityScore   float64  `json:"capability_score"`
-	ConsistencyScore  float64  `json:"consistency_score"`
-	ReferenceScore    float64  `json:"reference_score"`
-	Verdict           string   `json:"verdict"`
-	Status            string   `json:"status"`
-	ReportedModel     string   `json:"reported_model"`
-	Anomalies         []string `json:"anomalies"`
-	MeasuredDims      int      `json:"measured_dimensions"`
+	MeasuredAt       string   `json:"measured_at"`
+	CredibilityScore float64  `json:"credibility_score"`
+	IdentityScore    float64  `json:"identity_score"`
+	CapabilityScore  float64  `json:"capability_score"`
+	ConsistencyScore float64  `json:"consistency_score"`
+	ReferenceScore   float64  `json:"reference_score"`
+	Verdict          string   `json:"verdict"`
+	Status           string   `json:"status"`
+	ReportedModel    string   `json:"reported_model"`
+	Anomalies        []string `json:"anomalies"`
+	MeasuredDims     int      `json:"measured_dimensions"`
 }
 
 // ListRuns 列出某节点的判定历史。
@@ -666,31 +722,32 @@ func (s *Store) RollupProviderModelFiltered(ctx context.Context, targets []NodeT
 	if err != nil {
 		return nil, err
 	}
-	want := make(map[struct {
-		p int64
-		m string
-	}]struct{}, len(targets))
+	want := make(map[rollupKey]struct{}, len(targets))
 	for _, t := range targets {
 		if t.RawModelName == "" {
 			continue
 		}
-		key := struct {
-			p int64
-			m string
-		}{t.ProviderID, strings.ToLower(t.RawModelName)}
-		want[key] = struct{}{}
+		want[rollupKey{t.ProviderID, strings.ToLower(t.RawModelName)}] = struct{}{}
 	}
+	return filterRollup(all, want), nil
+}
+
+// rollupKey 是 (provider_id, 归一化模型名) 的过滤键。
+type rollupKey struct {
+	p int64
+	m string
+}
+
+// filterRollup 是纯过滤函数：只保留 want 里的 (provider, model)。
+// 抽出来是为了直接单测（不碰 DB）。
+func filterRollup(all []ProviderModelScore, want map[rollupKey]struct{}) []ProviderModelScore {
 	out := make([]ProviderModelScore, 0, len(want))
 	for _, r := range all {
-		key := struct {
-			p int64
-			m string
-		}{r.ProviderID, strings.ToLower(r.RawModelName)}
-		if _, ok := want[key]; ok {
+		if _, ok := want[rollupKey{r.ProviderID, strings.ToLower(r.RawModelName)}]; ok {
 			out = append(out, r)
 		}
 	}
-	return out, nil
+	return out
 }
 
 // scoreOrNull 把「没测到的维度」写成 SQL NULL，而不是 0。
@@ -725,4 +782,17 @@ func nullableStr(v string) any {
 		return nil
 	}
 	return v
+}
+
+// jsonTextParam 把 JSON 字节转成 string 再交给 pgx。
+//
+// ★ 裸 []byte 在 SimpleProtocol 下被内联为 bytea hex 字面量 ⇒ jsonb 解析
+// 必炸（SQLSTATE 22P02）。211 实测 2026-10-30：trigger 落库即炸
+// （"invalid input syntax for type json"）。与 bg/capability_backfill.go
+// 的 capabilityEvidenceParam 同坑同修（仓内 R24 记录过 6 次真库失败）。
+func jsonTextParam(b []byte) interface{} {
+	if len(b) == 0 {
+		return nil
+	}
+	return string(b)
 }

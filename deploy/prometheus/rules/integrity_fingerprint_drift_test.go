@@ -2,6 +2,7 @@ package rules_test
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -170,13 +171,68 @@ func TestIntegrityFingerprintDriftAlertNamesTheRealCause(t *testing.T) {
 	require.True(t, strings.Contains(text, "停写之前探针就已经是空的"),
 		"the alert must state the measured fact that the probe was ALREADY empty before stop-write; "+
 			"§9.51 retracted the \"stop-write is the likely cause\" version")
-	require.True(t, strings.Contains(text, "FROM _request_logs_hot"),
+	require.True(t, strings.Contains(text,
+		"SELECT count(*), count(system_fingerprint) FROM request_logs_with_current_month"),
 		"the alert must ship the query that reproduces the diagnosis — a conclusion with no "+
-			"measuring stick leaves the next reader guessing")
+			"measuring stick leaves the next reader guessing — AND that query must read a "+
+			"relation that still exists: migration 890 (2026-10-20) physically dropped the "+
+			"v1 _request_logs* family, so the detector's read surface is now the canonical "+
+			"view request_logs_with_current_month (session-family two arms). A query against "+
+			"a dropped relation fails with 42P01 and sends the reader down the wrong path")
 
 	for _, banned := range []string{"最可能的原因就是 S4 停写", "若确为停写导致"} {
 		require.True(t, !strings.Contains(text, banned),
 			"%q is the §9.51 retracted claim: the real cause is that upstream never returns the "+
 				"header, which is independent of stop-write", banned)
+	}
+}
+
+// TestPrometheusRunbooksDoNotReferenceRetiredRequestLogsRelations 钉住
+// 「runbook 里不许再指向已删除的关系」。
+//
+// 2026-10-20 的迁移 890 把 v1 `_request_logs*` 族**物理 DROP** 掉了。runbook 里的
+// 示例查询如果还按旧关系写，运维照着跑会拿到 42P01（relation does not exist）——
+// 整条语句失败，排查步骤反而把方向带偏。这不是文档瑕疵，是**可执行性缺陷**：
+// runbook 里的 SQL 必须能在真库上跑通。
+//
+// 这道门是**反向**的：正向断言（"新查询在不在"）在
+// TestIntegrityFingerprintDriftAlertNamesTheRealCause 里；这里只管一件事——
+// **旧关系回没回来**。只做正向断言的话，把查询改回坏形状会让正向断言变红，
+// 但没人拦得住「新查询 + 旧查询并存」这种半修状态。
+//
+// ⚠ glob 空结果时必须报红而不是静默通过（LESSONS §423：「守门报绿前先问
+// 「守门跑了吗」」）。
+func TestPrometheusRunbooksDoNotReferenceRetiredRequestLogsRelations(t *testing.T) {
+	retired := []struct {
+		rel    string
+		reason string
+	}{
+		{
+			rel:    "FROM _request_logs_hot",
+			reason: "v1 hot 表已随迁移 890 物理 DROP；照抄会 42P01",
+		},
+		{
+			rel:    "inhparent = 'request_logs'",
+			reason: "v1 母表已随迁移 890 物理 DROP；分区继承查询会 42P01",
+		},
+		{
+			rel:    "request_logs_with_current_month_without_customer_id",
+			reason: "v1 时代的中间视图已随迁移 890 物理 DROP；照抄会 42P01",
+		},
+	}
+
+	files, err := filepath.Glob("*.yml")
+	require.NoError(t, err)
+	require.NotEmpty(t, files,
+		"no rule files matched *.yml — the guard would pass vacuously without reading a single runbook")
+
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		require.NoError(t, err)
+		text := string(data)
+		for _, r := range retired {
+			require.False(t, strings.Contains(text, r.rel),
+				"%s still references the retired relation %q — %s", f, r.rel, r.reason)
+		}
 	}
 }

@@ -28,6 +28,7 @@ export default {
     autoControlledTooltip: 'Controlled by auto-probe (such as broken_confirmed). You can disable it manually (force offline).',
     rowSelectsMonitor: 'Select a row to view the linked monitoring on the right.',
     selectModelRow: 'Select a model row on the left to view it.',
+    sourceSessionTurns: 'Session turns',
   },
   chart: {
     allHealthy: 'All healthy',

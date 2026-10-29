@@ -1699,6 +1699,18 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		//   calculated_at（435 遗漏 ⇒ 全新安装缺列 ⇒ internal/quality INSERT 42703）。
 		//   纯新增两表 + 幂等补列，全部 IF NOT EXISTS ⇒ 无 CONCURRENTLY，走事务通道。
 		"922_model_credibility.sql",
+	// ★ 923（2026-10-29 记账补齐轮）：把 900~920 这 20 条迁移补登记进
+	//   public.schema_migrations（人读台账）—— ★ **只补记账，不改 schema**。
+	//   缺口本体：两个台账记的不是同一段 —— 部署通道的权威台账
+	//   public.gateway_db_revision_sequences 里 900~920 全在（本地真库实测
+	//   287 行），而给人读的 public.schema_migrations 只到 899（74 行）
+	//   ⇒ 运维读它会把「已应用」误判成「待应用」。
+	//   ★ 为什么排在这里：它是**记账**动作，必须排在 900~920 全部投递之后
+	//   （排在前面会给还没投递的库写上「已应用」的假账）；
+	//   ★ 幂等：ON CONFLICT (version) DO NOTHING（version 上有主键），
+	//     重复执行不写重行、也不覆盖运维手改过的 description；
+	//   ★ 纯 DML ⇒ 不拿强锁、无 CONCURRENTLY ⇒ 走事务通道。
+	"923_schema_migrations_ledger_backfill.sql",
 	},
 	}
 }

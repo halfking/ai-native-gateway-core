@@ -47,6 +47,13 @@
 生产 Go 代码里**全部** SQL 写目标（去注释、跨行容错）共 **389 个关系**，
 其中 v1 关系**只有一个**：`request_logs`，且它的两处站点**都是 SQLite 平面**：
 
+> ★★★ R182 轮订正（★★ **数字口径**缺失，★ 不可复现 ★★★）：★★
+> ★ 原文的「389 个关系」**没有记录提取口径** ⇒ ⇒ 独立复刻得不到同一个数
+> ★ （本轮复刻得 **376**；差异来自是否含 `_test.go` / 嵌入副本 / 审计残留目录
+> ★ / 是否按「关系」去重还是按「站点」计）。★★ **两条定性结论完全复现**
+> ★ （v1 关系只有 `request_logs`、且它的两处站点都在 SQLite 平面）⇒ ⇒ **定性可靠，
+> ★ 数字待补口径** ★ ⇒ 见 R183 审计档 §二.4。
+
 | 站点 | 代际 | 运行时可达 | 判定 |
 |---|---|---|---|
 | `storage/sqlite/request_log_store.go:23` | 裸名 · SQLite DDL | 仅 lite 模式（`cmd/gateway/main.go:2643-2644`） | **OK-豁免** |
@@ -63,7 +70,15 @@
 ### 2.3 PL/pgSQL 与触发器
 
 ★ 解析全仓 **905** 个 `CREATE FUNCTION/PROCEDURE` 体 ⇒ **9 个**函数写 v1，
-**全部**在 890 的 DROP 名单里（`890_drop_request_logs_v1_family.sql:549-560`）：
+**全部**在 890 的 DROP 名单里（`890_drop_request_logs_v1_family.sql:549-564`）：
+
+> ★★★ R182 轮订正（★★ 两处 ★★★）：★★
+> ★ ① **行号区间**：★ 原文写 `549-560` ⇒ ★★ 但 9 个函数里有 **2 个落在区间外**
+> ★ ★（`cleanup_stale_in_progress_requests` 在 **:561**、`get_last_successful_request`
+> ★ ★ 在 **:564**）⇒ ⇒ 区间应为 **549-564**。
+> ★ ② **「905 个」缺口径**：★ 按 `sql/**`=816 / 全仓 `*.sql`=1225 /
+> ★ `sql/migrations/startup`=541 三种口径都得不到 905 ⇒ ⇒ 数字**不可复现**
+> ★ ⇒ **9 个 v1 写函数这个定性结论完全复现**（逐个命中 890 的 DROP 名单）★。
 
 `cleanup_stale_in_progress_requests` · `ensure_request_logs_partition` ·
 `promote_request_logs_hot_to_partition` · `promote_request_logs_bodies_hot_to_partition` ·
@@ -165,7 +180,7 @@ FROM session_turns t
 | 台账 | 行数 | 写入方 | 记 900–920 吗 |
 |---|---|---|---|
 | `public.schema_migrations` | 74 | 自注册迁移 + 安装器 | **否**（max=899） |
-| `public.gateway_db_revision_sequences` | 287 | 部署通道 `scripts/apply-db-revision-sequence.sh:2840` | **是**（20 行，900–920 全在） |
+| `public.gateway_db_revision_sequences` | 287 | 部署通道 `scripts/apply-db-revision-sequence.sh:2840` | **是**（20 行，**900–917 + 919 + 920**；★ R182 轮订正：★ 原文「900–920 全在」不成立 ⇒ ★ **迁移 918 根本不存在**（`sql/migrations/startup/` 无 `918_*.sql`）⇒ ⇒ 编号本身跳过） |
 
 ★ ★ **「schema_migrations 里没有 900–920」是个记账缺陷，不是「没上」的证据** ——
 逐条核对每条迁移的**特征产物**（索引/约束/函数/种子行）⇒ **900–920 全部已应用**。
@@ -204,6 +219,18 @@ FROM session_turns t
 ★ ★ 而且它是**结构性的**：两者的 FROM/JOIN **逐字相同**，唯一差别是视图那版带
 `::text` 冗余转型（varchar→text 是恒等）⇒ ⇒ 行集必然相同，**与数据量无关**
 ⇒ ⇒ **不是「小库看不出来」**。
+
+> ★★★ R182 轮订正（★★ 陈述的**差别位置指错** ★★★）：★★
+> ★ 原文说「唯一差别是**视图那版**带 `::text`」⇒ ★★ 但仓内三处正典
+> ★ （`sql/objects/views/request_logs_with_current_month.sql:147`、
+> ★ `db/request_logs_view_schema.go:699/704`、`sql/migrations/startup/890:235/242`）
+> ★ 的 **JOIN 一律是 `d.tenant_id = t.tenant_id`（无 `::text`）**，native 侧
+> ★ （`:869/873` / `:921/928`）**同样无 `::text`**；★ `::text` 只出现在**投影**里
+> ★ （`t.tenant_id::text AS tenant_id`），且**两侧都有** ⇒ ⇒ 「唯一差别」在仓内
+> ★ **不存在**。★★ **结论比原文更强**：两者的 JOIN 条件与 118 列投影
+> ★ （名字与顺序）**逐字相同** ⇒ ⇒ 行集相同是**恒等**命题 ★ ⇒ **定性不变，
+> ★ 只是论据的位置要改对**。
+
 ★ ★ 仓内守卫 `admin/session_view_dependency_risk_test.go` 在 **2026-10-20（890 那轮）**
 就已经把不变式从「必须留在视图上」换成「**读的源必须覆盖会话族的两条腿**（hot ∪ 母表）」
 ⇒ ⇒ 本轮**不是推翻守卫，是把守卫早已更新的结论落到列表路径上**。
@@ -262,10 +289,21 @@ Seq Scan on session_turns_2026_10                  ← ★ 只剩 1 个分区 �
 
 ### 5.3 生产侧同形态（仓内台账，非本轮推断）
 
-`scripts/audit/asset/query-plan-observations.tsv:67`（252 的 pg_stat_statements 观测）：
+`scripts/audit/asset/query-plan-observations.tsv:67`（252 的 **EXPLAIN 计划形态**观测）
+> ★★★ R182 轮订正（★★ 事实性错误 ★★★）：★★ 原文把这份台账标成
+> ★ `pg_stat_statements` 观测 ⇒ ★★ **错**：★ 它的头注释写明「生成器：
+> ★ `cmd/tools/query_plan_form`（★ EXPLAIN，★ **不带 ANALYZE** ⇒ 只读库安全）」
+> ★ ⇒ 全文件 `pg_stat_statements` 出现 **0 次** ⇒ ⇒ 它记的是**计划形态**
+> ★ （扫了哪些关系、用的什么索引），**不是**执行期统计。★ 同一错标也已进入
+> ★ `admin/session_partition_bounds.go` 与 `admin/logs_turns_source.go` 的注释
+> ★ ⇒ ⇒ **本轮三处一并订正**（否则下一轮会去查 pg_stat_statements 找错东西）。：
 `/api/logs` 的**列表**语句 `stmt-1d7be58136` 在**1 秒窗口**上
 **Seq Scan 了 4 个整月分区**（`session_turns_2026_07 / _08 / _11 / default`）。
-⇒ 全表 104 条实测形态里，**21 条（20%）** 的 `other_seq_rels ≥ 4`。
+⇒ 全表 104 条实测形态里，**20 条（19.2%）** 的 `other_seq_rels ≥ 4`。
+> ★★★ R182 轮订正（★★ 数字错 ★★★）：★★ 原文写 **21 条（20%）** ⇒ ★★ 实测末列
+> ★ 分布为 `0`×84、**`4`×17、`5`×3** ⇒ ⇒ `≥4` 共 **20** 条 / 104 = **19.2%**
+> ★ ⇒ 用「`arm_scans` 含 `:Seq Scan`」「`other_seq_rels > 0`」两种独立口径交叉验算，
+> ★ **均为 20** ⇒ ⇒ 原文的 21 **多算了一条**。
 
 ### 5.4 本轮的修法（真实 SQL 实测）
 
@@ -287,14 +325,30 @@ Seq Scan on session_turns_2026_10                  ← ★ 只剩 1 个分区 �
 |---|---|---|
 | `/api/logs` 列表 · turns 父表臂 | 5 个分区 | **1 个**（`session_turns_2026_10`） |
 | `/api/logs` 列表 · details 父表臂 | 3 个分区 Seq Scan | **1 个** |
-| `/api/admin/turns` · 父表臂 | 5 个分区 | **1 个** |
+| `/api/admin/turns` · 父表臂 | 5 个分区 | **1 个**（★ R182 轮订正见下 ★） |
 
 ★ ★ **不丢行的可证伪等式**：`partition_date` 的**列值** = `calendarDate(ts)` =
 **UTC 日历日**（`domains/session/v2/partition_date.go`），**所有**写入方都用它
 （`turn_writer.go:485` · `details_writer.go:159` · `bodies_writer.go:318,390` ·
-`family_writers.go:127` · `session_aggregator.go:114` · `session_writer_v2.go:857`）
+`family_writers.go:127` · `session_aggregator.go:114` · `session_writer_v2.go:858`）
+> ★★★ R182 轮订正：★ `session_writer_v2.go:857` 是 `}`；★ 实际调用在 **:858**
+> ★ （`calendarDate(req.Timestamp)`）。★ 其余 6 处写入方行号逐字命中。
 ⇒ ⇒ 对任意 ts ∈ [start,end] 的行，它**必然**满足 partition_date ∈ 折算出的区间
 ⇒ ⇒ 该谓词是 ts 谓词的**蕴含条件** ⇒ ⇒ **不丢行**（精确过滤仍由 ts 谓词做）。
+
+> ★★★ R182 轮订正（★★ 这一行的「5→1」**只覆盖父表臂** ★★★）：★★
+> ★ `/api/admin/turns` 在 R181 的 HEAD 里**仍走视图形态**
+> ★ （`admin/turns_list.go:126` = `FROM public.session_turns_with_current_month t`）
+> ★ ⇒ ⇒ 它的 `partition_date` 谓词在**外层 WHERE** ⇒ ⇒ PG 把它推进视图臂后
+> ★ **父表臂确实裁到 1 个分区** ✔ ★★ 但**同一张视图的 hot 臂带反连接** ⇒ ⇒
+> ★ 反连接的**内侧**是 `Append`（父表全月分区）⇒ ⇒ **内侧没有任何
+> ★ `partition_date` 谓词** ⇒ ⇒ ★★ **内侧仍会扫全部 5 个月分区** ★★
+> ★ ⇒ ⇒ 所以「5→1」这句话**只对父表臂成立**，**不是整条语句的关系数**。
+> ★ ★ 本轮**实测复现**（本地真库 EXPLAIN，视图形态 + 外层谓词）：
+> ★ 父表臂 = `Index Scan on session_turns_2026_10`（1 个），
+> ★ ★ 而反连接内侧 = `Append` 覆盖 `session_turns_2026_07/_08/_10/_11/default`（**5 个**）。
+> ★ ⇒ ⇒ 下一轮要把这条路径也改成**原生两臂 + 谓词推进两臂**
+> ★ （R182 工作区已把 `/api/admin/turns` 改成原生两臂形态 ⇒ 正是承认这条欠账）。
 
 ### 5.4.1 ★ 真实生成 SQL 的 A/B 实测（不是手写等价物）
 
@@ -340,6 +394,29 @@ Seq Scan on session_turns_2026_10                  ← ★ 只剩 1 个分区 �
 `TestSessionPartitionDateBounds_SupersetOfTSWindow` 逐小时扫 +08 全天钉住。
 
 ### 5.5 ★ 没有改的两处（说清楚为什么）
+
+> ★★★ R182 轮**推翻本节的穷举式表述**（★★ 这是一个**范围性错误** ★★★）：★★
+> ★ 本节标题「没有改的**两处**」⇒ ★★ 读起来像【只差这两处】⇒ ★★ **不成立**：
+> ★ ★ `db.SessionFamilyTurnsSourceSQL()`（原生两臂源）在生产上有 **~40 处**调用点，
+> ★ ★ 其中**带 ts 窗口且零 `partition_date` 谓词**的**至少 17 处**本轮**没有**改。
+> ★ ★ 最刺眼的一条是 **`admin/session_list.go:138/162`（`/api/admin/sessions` 列表）**
+> ★ ★ —— 它与本轮修的两条（`/api/logs` 列表、`/api/admin/turns`）是**同形态兄弟**。
+> ★ ★ 清单（★ R183 审计档 §二.6 有完整版）：
+> ★ `admin/session_list.go:138/162` · `admin/logs.go:1297` · `admin/usage_enhanced.go:715` ·
+> ★ `admin/turns_filter_options.go:534` · `admin/session_crosstalk_check.go:106/111` ·
+> ★ `bg/routing_health_checks.go:899/903` · `admin/credential_monitor.go:1007/1018` ·
+> ★ `admin/tenant_stats_logs_table.go:41/51` · `admin/provider_diagnose.go:248/534` ·
+> ★ `admin/quality_correlations.go:255` · `admin/compression_stats.go:242` ·
+> ★ `autoroute/recommend_v2.go:551` · `admin/data_lifecycle_attachments.go:418` ·
+> ★ `admin/routing.go:2734` · `bg/credential_recovery.go:1755` ·
+> ★ `domains/analysis/projectattr/store.go:308` · `discovery/discovery.go:1365` ·
+> ★ `admin/data_lifecycle_metrics.go:111`。
+> ★ ★ 加重项：★ 这个欠账**仓内早已挂号** —— `admin/session_crosstalk_check.go:88-93`
+> ★ ★ 明写「⚠ D4：`ts` 不是 `session_turns` 的分区键 ⇒ `ts >= …` **不触发分区裁剪**」
+> ★ ★ ⇒ ⇒ 本节把一条**已挂号**的欠账写成了「只剩两处」。
+> ★ ⇒ ⇒ **正确表述**是：本轮改了**两条**读点，**不是**只差**两处**；
+> ★ ⇒ ⇒ 其余 ts-only 读点已登记为下一轮项（★ R183 审计档 §二.6）。
+
 
 ★ **写路径的幂等探针没改**（`internal/sessionfamily/exists_by_key.go`）：
 ★ 探针问的是「这个 (tenant_id, request_id) 写过没有」⇒ 若加上 partition_date 界，
