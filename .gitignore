@@ -463,3 +463,6 @@ docs/audit/**/ctr_snapshot_*.log
 /web/.color-audit-stale-tmp.json
 # ★ R87 轮收尾：★ 【整仓掏空锁】的锁文件（★ 掏空门会变异共享工作树 ⇒ ⇒ 并发跑必须互斥）
 /.ursmcheck-hollowout.lock
+
+# ★ R179 轮：★ cmd/tools/query_plan_form 的【构建产物】（★ go build 从仓根执行时产物落在仓根 ⇒ ⇒ 子目录里的 .gitignore 管不到）
+/query_plan_form

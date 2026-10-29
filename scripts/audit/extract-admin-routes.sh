@@ -354,6 +354,16 @@ if [ "$UPDATE_SNAPSHOT" -eq 1 ]; then
 	SNAP_NEW="$(mktemp "${TMPDIR:-/tmp}/extract-admin-routes-snap.XXXXXX")"
 	# ★ 先复制再读头：★ 目标文件全程不被打开为写 ⇒ 没有「截断在前、读在后」的竞态。
 	head -1 "$SNAP" >"$SNAP_HDR"
+	# ★★ 2026-10-29 审计轮补：**原子替换会顺手改掉权限位**。
+	# ★★ `mktemp` 建出来的临时文件是 0600（仅属主可读写）⇒ 而第 ③ 步是
+	# ★★ `mv` 覆盖 ⇒ ⇒ 刷新后的快照变成 0600 ⇒ 与同目录其它产物（0644）不一致
+	# ★★ ⇒ CI/其它用户/其它账号跑同一个仓时读不到这个快照。
+	# ★★ （git 只跟踪「可执行位」，所以 `git status` 看不出来 ⇒ 静默漂移。）
+	# ★★ ⇒ 在替换**之前**记下原权限位，替换**之后**原样还回去。
+	SNAP_MODE="$(stat -f '%Lp' "$SNAP" 2>/dev/null || stat -c '%a' "$SNAP" 2>/dev/null || true)"
+	case "$SNAP_MODE" in
+	'' | *[!0-7]*) SNAP_MODE="" ;;
+	esac
 	if ! grep -q '数据行数=[0-9]' "$SNAP_HDR"; then
 		echo "快照头里没有「数据行数=N」⇒ 不敢替你重铸头（先人工确认口径说明行）" >&2
 		rm -f "$SNAP_HDR" "$SNAP_NEW"
@@ -363,6 +373,8 @@ if [ "$UPDATE_SNAPSHOT" -eq 1 ]; then
 	sed "s/数据行数=[0-9][0-9]*/数据行数=$REG_COUNT/" "$SNAP_HDR" >"$SNAP_NEW"
 	cat "$TMP_OUT" >>"$SNAP_NEW"
 	mv "$SNAP_NEW" "$SNAP"
+	# ★ 把替换前记下的权限位还回去（★ `mv` 自 mktemp 会落成 0600）。
+	[ -n "$SNAP_MODE" ] && chmod "$SNAP_MODE" "$SNAP"
 	rm -f "$SNAP_HDR"
 	echo "已刷新仓内快照：${SNAP_REL}（${REG_COUNT} 条登记 / ${UNIQ_COUNT} 条唯一 path）" >&2
 	exit 0

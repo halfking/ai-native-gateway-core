@@ -30,6 +30,7 @@ import {
   type RuleInstance,
   type ReviewStatus,
   type BlockReview,
+  type EgressReleaseRecord,
 } from "../api/sanitize-rules";
 import PageHeader from "../components/ui/PageHeader.vue";
 import { fmtDateTime24h } from "../i18n/useFormat";
@@ -85,11 +86,14 @@ const hardblockText = ref(""),
   hardblockLoading = ref(false),
   hardblockBusy = ref(false);
 const blockedReviews = ref<BlockReview[]>([]),
+  activeReleases = ref<EgressReleaseRecord[]>([]),
   reviewStatusFilter = ref("pending"),
   blockedReviewError = ref(""),
   blockedReviewLoading = ref(false),
   blockedReviewBusy = ref<number | null>(null),
-  reviewDecideComments = ref<Record<number, string>>({});
+  reviewDecideComments = ref<Record<number, string>>({}),
+  expandedReview = ref<number | null>(null),
+  hardblockBusyEntry = ref("");
 const eventLoading = ref(false),
   versionLoading = ref(false),
   instanceLoading = ref(false);
@@ -315,7 +319,10 @@ async function loadBlockedReviews() {
       { status: reviewStatusFilter.value },
       { signal: controller.signal },
     );
-    if (!disposed) blockedReviews.value = value.reviews ?? [];
+    if (!disposed) {
+      blockedReviews.value = value.reviews ?? [];
+      activeReleases.value = value.releases ?? [];
+    }
   } catch (e) {
     if (!disposed) blockedReviewError.value = message(e);
   } finally {
@@ -337,6 +344,71 @@ async function decideReview(review: BlockReview, decision: "approve" | "reject")
     if (!disposed) blockedReviewError.value = message(e);
   } finally {
     if (!disposed) blockedReviewBusy.value = null;
+  }
+}
+/** 放行有效期（同租户同规则的最新一条 review 来源放行）。 */
+function releaseExpiryFor(review: BlockReview): string {
+  let best = "";
+  for (const rel of activeReleases.value) {
+    if (
+      rel.tenant_id === review.tenant_id &&
+      rel.rule === review.rule &&
+      rel.expires_at &&
+      rel.expires_at > best
+    )
+      best = rel.expires_at;
+  }
+  return best;
+}
+/** 单条规则的同步开/关：当前清单做集合手术，整表 PUT（单一写路径）。 */
+async function toggleHardBlockEntry(entry: HardBlockLine, enabled: boolean) {
+  if (!superAdmin.value || hardblockBusy.value || hardblockBusyEntry.value) return;
+  hardblockBusyEntry.value = entry.scope + ":" + entry.rule;
+  hardblockError.value = "";
+  hardblockNotice.value = "";
+  const rules = hardblockText.value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const key = entry.scope + ":" + entry.rule;
+  const next = enabled
+    ? rules.includes(key)
+      ? rules
+      : [...rules, key]
+    : rules.filter((line) => line !== key);
+  try {
+    await updateHardBlockRules({
+      rules: next,
+      comment: (enabled ? "enable " : "disable ") + key,
+    });
+    if (disposed) return;
+    hardblockNotice.value = t("sanitizeRules.hardblockSaved");
+    await loadHardBlock();
+  } catch (e) {
+    if (!disposed) hardblockError.value = message(e);
+  } finally {
+    if (!disposed) hardblockBusyEntry.value = "";
+  }
+}
+/** 整批同步开/关：preset all/none（none 需显式确认）。 */
+async function applyHardBlockPreset(preset: "all" | "none") {
+  if (!superAdmin.value || hardblockBusy.value) return;
+  hardblockBusy.value = true;
+  hardblockError.value = "";
+  hardblockNotice.value = "";
+  try {
+    await updateHardBlockRules({
+      preset,
+      comment: "preset " + preset,
+      confirm_disable_all: preset === "none",
+    });
+    if (disposed) return;
+    hardblockNotice.value = t("sanitizeRules.hardblockSaved");
+    await loadHardBlock();
+  } catch (e) {
+    if (!disposed) hardblockError.value = message(e);
+  } finally {
+    if (!disposed) hardblockBusy.value = false;
   }
 }
 function chooseTab(value: string) {
@@ -604,6 +676,31 @@ async function saveParams() {
   else notice.value = t("sanitizeRules.parametersSaved");
   paramsBusy.value = false;
 }
+interface HardBlockLine {
+  scope: string;
+  rule: string;
+}
+const hardblockEntries = computed<HardBlockLine[]>(() =>
+  hardblockText.value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [scope, ...rest] = line.split(":");
+      return { scope, rule: rest.join(":") };
+    })
+    .filter((entry) => entry.scope && entry.rule),
+);
+const entryInfo = (entry: HardBlockLine) => {
+  if (entry.scope !== "egress" || !entry.rule.startsWith("builtin."))
+    return "";
+  const known: Record<string, string> = {
+    "builtin.egress_sink": t("sanitizeRules.ruleSinkInfo"),
+    "builtin.network_destination": t("sanitizeRules.ruleShapeInfo"),
+    "builtin.secret_field.egress": t("sanitizeRules.ruleSecretFieldInfo"),
+  };
+  return known[entry.rule] ?? "";
+};
 const date = (value: string) =>
   !value || value.startsWith("0001-")
     ? t("sanitizeRules.never")
@@ -1056,7 +1153,56 @@ onBeforeUnmount(() => {
           {{ hardblockNotice }}
         </p>
         <p v-if="hardblockLoading">{{ t("sanitizeRules.loading") }}</p>
-        <form v-else class="card" @submit.prevent="saveHardBlock">
+        <template v-else>
+          <div class="toolbar">
+            <button
+              class="btn"
+              type="button"
+              data-test="hardblock-preset-all"
+              :disabled="hardblockBusy"
+              @click="applyHardBlockPreset('all')"
+            >
+              {{ t("sanitizeRules.hardblockPresetAll") }}
+            </button>
+            <button
+              class="btn"
+              type="button"
+              data-test="hardblock-preset-none"
+              :disabled="hardblockBusy"
+              @click="applyHardBlockPreset('none')"
+            >
+              {{ t("sanitizeRules.hardblockPresetNone") }}
+            </button>
+          </div>
+          <div
+            v-if="hardblockEntries.length"
+            class="card"
+            data-test="hardblock-entries"
+          >
+            <div
+              v-for="entry in hardblockEntries"
+              :key="entry.scope + ':' + entry.rule"
+              class="toolbar hardblock-entry"
+            >
+              <code>{{ entry.scope }}:{{ entry.rule }}</code>
+              <small v-if="entryInfo(entry)" class="muted">{{
+                entryInfo(entry)
+              }}</small>
+              <button
+                class="btn"
+                type="button"
+                :data-test="
+                  'hardblock-off-' + entry.scope + '-' + entry.rule
+                "
+                :disabled="hardblockBusy || hardblockBusyEntry !== ''"
+                @click="toggleHardBlockEntry(entry, false)"
+              >
+                {{ t("sanitizeRules.hardblockEntryOff") }}
+              </button>
+            </div>
+          </div>
+        </template>
+        <form v-if="!hardblockLoading" class="card" @submit.prevent="saveHardBlock">
           <label
             >{{ t("sanitizeRules.hardblockListLabel")
             }}<textarea
@@ -1154,6 +1300,11 @@ onBeforeUnmount(() => {
           </p>
           <p class="event-meta">
             <span
+              >{{ t("sanitizeRules.reviewClientLabel") }}:
+              <code>{{ review.client_type || "—" }}</code></span
+            >
+            ·
+            <span
               >{{ t("sanitizeRules.reviewRequestLabel") }}:
               <code>{{ review.request_id || "—" }}</code></span
             >
@@ -1163,6 +1314,36 @@ onBeforeUnmount(() => {
               <code>{{ (review.digest || "—").slice(0, 16) }}</code></span
             >
           </p>
+          <p v-if="releaseExpiryFor(review)" class="event-meta">
+            {{ t("sanitizeRules.reviewReleasedUntil") }}:
+            {{ date(releaseExpiryFor(review)) }}
+          </p>
+          <div class="matched-rule">
+            <button
+              class="btn"
+              type="button"
+              :data-test="'review-detail-' + review.id"
+              @click="
+                expandedReview = expandedReview === review.id ? null : review.id
+              "
+            >
+              {{
+                expandedReview === review.id
+                  ? t("sanitizeRules.reviewDetailHide")
+                  : t("sanitizeRules.reviewDetailShow")
+              }}
+            </button>
+            <div
+              v-if="expandedReview === review.id"
+              class="matched-rule__body"
+              :data-test="'review-detail-body-' + review.id"
+            >
+              <p v-if="review.rule_name">
+                <strong>{{ review.rule_name }}</strong>
+              </p>
+              <pre class="match-detail">{{ review.match_detail || "—" }}</pre>
+            </div>
+          </div>
           <template v-if="review.status === 'pending' && superAdmin">
             <label
               >{{ t("sanitizeRules.reviewComment")
@@ -1863,6 +2044,15 @@ summary {
   align-items: center;
   gap: 8px;
   color: var(--warning);
+}
+.match-detail {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  font-size: 12px;
+  color: var(--text-secondary, var(--muted));
+}
+.hardblock-entry {
+  margin-bottom: 4px;
 }
 .event-meta {
   margin: 0 0 8px;

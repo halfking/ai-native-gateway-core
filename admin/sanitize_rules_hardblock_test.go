@@ -160,10 +160,10 @@ func TestBlockedReviewsAdminListAndDecide(t *testing.T) {
 	sanitizerules.SetEgressReleases(nil)
 	defer sanitizerules.SetEgressReleases(nil)
 
-	entry := sanitizerules.AddBlockReview("acme", "egress", "builtin.egress_sink",
-		"sink destination", "$.command", "digest-1", "req-100")
-	sanitizerules.AddBlockReview("other", "egress", "builtin.secret_field.egress",
-		"credential", "$.password", "digest-2", "req-101")
+	entry := sanitizerules.AddBlockReview("acme", "zcode", "egress", "builtin.egress_sink",
+		"", "sink destination", "$.command", "digest-1", "req-100", "")
+	sanitizerules.AddBlockReview("other", "claude-code", "egress", "builtin.secret_field.egress",
+		"", "credential", "$.password", "digest-2", "req-101", "")
 
 	h := &Handler{}
 	superAuth := authCtxFor("super_admin", "", "root")
@@ -226,8 +226,8 @@ func TestBlockedReviewsAdminRejectsBadInput(t *testing.T) {
 	sanitizerules.SetEgressReleases(nil)
 	defer sanitizerules.SetEgressReleases(nil)
 
-	entry := sanitizerules.AddBlockReview("acme", "egress", "builtin.egress_sink",
-		"sink destination", "", "", "req-1")
+	entry := sanitizerules.AddBlockReview("acme", "zcode", "egress", "builtin.egress_sink",
+		"", "sink destination", "", "", "req-1", "")
 
 	h := &Handler{}
 	superAuth := authCtxFor("super_admin", "", "root")

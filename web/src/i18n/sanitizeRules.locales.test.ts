@@ -26,8 +26,10 @@ describe("sanitize rules in actual bundled and lazy locale exports", () => {
     // 2026-10-20：+2（perMode / perModeHint）—— 按模式启停矩阵的表头与说明。
     // 2026-10-28：+22（hardblock* / blockedReviews* / review*）—— 硬阻断
     // 开关与拦截审核队列两个新页签的文案。
+    // 2026-10-29：+10（preset / 单条开关 / 匹配说明 / 客户端 / 放行有效期）。
+    //  ↑ 让号记录：硬阻断文案总 +32，key 集合 119 → 151。
     // 计数只许增：每加一个键都要同步 8 个语种 + 这里。
-    expect(expectedKeys).toHaveLength(141));
+    expect(expectedKeys).toHaveLength(151));
   for (const [locale, bundle] of Object.entries(bundles)) {
     it(`${locale} exports and resolves every rule-management message`, () => {
       const namespace = bundle.sanitizeRules as
