@@ -16008,3 +16008,59 @@ symlink×2/路径断言×2 + discovery 组播）/ vue-tsc 0 错 / vitest 2949 �
 ⇒ 审计档 `docs/audit/2026-10-30-24h审计第8轮-main编译修复与生产日志审计.md`；
 通用式见 `LESSONS.md` **§569**（七条：bot 读数必须重测 / 路径口径归一 / Windows exec
 两层转换 + home 语义 / python3 验真 / 真库 A-B / 唯一入口修夹具 / 棘轮删行对应 fix）。
+> **2026-10-30 24h 审计第 9 轮：recording_consent 前端消费 / 914 迁移预算门 /
+> glm-5.3 双映射数据面处置 / DNS flake 加固**（goal 承接会话，接第 7 轮四项遗留）：
+> ★ **① 前端三路消费 consent 信号**——后端三路早已透出 `recording_consent`
+> （第 7 轮），前端 **0 消费**：`/detail` 的 409（code=recording_unavailable）
+> 被 `catch {}` 静默吞、TurnDigestDrawer 把英文后端 detail 进红色错误+重试
+> （重试必然再红）、SyncPane 的 v2Error 是从未渲染的死状态。修法=两条信号源
+> 取先到者（turns 列表字段常态第一信号 + 409 结构码兜底；`undefined` 不当
+> false），`isRecordingUnavailable()` 一份口径五消费点共用；「功能未开启」
+> 渲染中性态（专属横幅/空态、无重试、不与「部分轮次缺正文」并显）；
+> 3 键 ×8 语种；**consent 默认关闭 ⇒ 这是 consent-off 租户的日常视图**
+> （SessionDetailPage/TurnDigestDrawer 测试 +5；三个存量测试文件补挂真实
+> zh-CN 语言包——新增 useI18n 后裸挂必炸）。
+> ⇒ ★ **② 914 迁移预算**——四环境复核**已全应用**（252 侧 convalidated=t
+> 实核；154 走 252 共库）⇒ 字节冻结不动（改字节连锁 break checksum 门且
+> 迁移永不再跑）；预算纪律落成守门 `TestHeavyDDLModernMigrationsDeclareMeasuredBudget`
+> （挂在作者推送前必跑的 migration guard 文件里）：全表扫描类 DDL
+> （VALIDATE CONSTRAINT / 非 CONCURRENTLY CREATE INDEX）必须显式 SET ≥ 10min
+> + 「实测」注释（哪台哪表多少）；存量 900/914 显式豁免（同撞门豁免表形态）；
+> **变异臂 3/3**（120s 红 / 10min+实测 绿 / 10min 无实测红——★ C 臂第一版
+> 金丝雀注释里自己带「实测」二字被门放行 ⇒ 靶点也要过一遍判据）。
+> ⇒ ★★ **③ glm-5.3 双映射数据面处置（9-19 挂账）**——211 实锤裸名双映射仍在
+> （818875/818876 挂 flash canonical 2716170；48h 15 条歧义 WARN，候选混进
+> 非 flash 的 z-ai/glm-5.3）；处置=**置 disabled 不是 DELETE**——
+> `alias_sync.go` 明文「disabled pair is an explicit operator kill and stays
+> disabled」（DO UPDATE 的 `WHERE status <> 'disabled'` 守卫）⇒ 防复活是
+> 结构性的；**双库 UPDATE 各 2 行覆盖全部生产面**（211 acc-pg17 + 252
+> pg-252-pg17——245/154/252-dev 全指 252，245 DSN 实查）；删前全行 JSON 备份；
+> 处置后 2422803 侧裸名仍 active、两 canonical offers 17/18 与 18/17
+> ⇒ 路由面完好。遗留：minimax 同族歧义（另案）/ WARN 归零下轮复核 /
+> discovery 三个 INSERT 面的结构性治理（裸名唯一归属部分索引，独立迁移工程）。
+> ⇒ ★ **④ DNS flake 加固**——根因是 `ClassifyError` 先判 DeadlineExceeded
+> 再判 DNSError（生产语义有意如此）⇒ 旧预算 5s/10s 被全量并发拖穿；修法=
+> 30s/60s + KindTimeout 显式 skip（不改分类顺序；本机是 sinkhole 形态，
+> KindNetwork 主断言本机不可证——如实记）。
+> ⇒ ★ **顺带收口并行线四红**（HEAD 复测同样红 ⇒ 非本轮引入，按门自有口径处置）：
+> shared-dead 棘轮 +1（`modelCredibilityView.error.historyFailed` 8 语种 0 引用，
+> R183 档已定性「那条线的欠账」⇒ 三口径对拍 + prune 工具删 8 处，基线 0 未动）；
+> AI 痕迹门 V3（同文件 `≠` 字形 ⇒ 换 `<Warning />` + 显式尺寸）；copy-quality
+> 5 处破折号（en-US/de-DE modelCredibilityView ×4 + web-mobile ×1 ⇒ 逐处最小改写）；
+> **`tests/session_identity_contract` 7 用例红**——W1.3 consent 门挂在
+> resolveSessionID **之前** ⇒ consent=off（默认态）下 404（不存在/跨租户）/500/歧义
+> 整族被遮蔽成 409 + consent 探针（第 8 轮只修 admin 包夹具、契约包漏网；首轮
+> 「4 红」是后台日志**截头**假象，隔离 -v 复跑实数 7）⇒ 门移到 resolve 成功之后
+> （生产语义修复）+ 契约包 3 个 200/500 用例显式开 consent（第 8 轮先例补遗；
+> 404/歧义用例不开——持续断言「门不遮蔽存在性」）+ ConsentOffUnavailable 的
+> panic 桩（钉的正是旧语义）改 pgxmock 钉新契约 ⇒ 契约包 16/16、admin 全包 ✓；
+> 同族三处门位（turns detail/bodies/instant-summary）登记遗留。
+> ⇒ 读数：`vue-tsc` 0 错 / `vitest` **2963 通过 / 2 跳过** / `build` ✓ 12.36s /
+> i18n 全门 PASS（CJK 4483=基线、shared-dead 0、ai-smell 0、copy-quality 5→0）/
+> `go test ./upstream/ ./sql/migrations/startup/` ✓；部署=211 蓝绿（干净
+> worktree + LLM_GATEWAY_ROOT 钉根，读数见第 9 轮审计档 §10）；consent-off
+> 页面浏览器人工浏览未做（无凭据，由 2963 用例兜底）。
+> ⇒ 审计档 `docs/audit/2026-10-30-24h审计第9轮-recording_consent前端消费与迁移预算门.md`；
+> 通用式见 `LESSONS.md` **§577**（四条：数据面关断用同步机制自己的档位而非 DELETE /
+> 没量过的预算就是拍脑袋（迁移 statement_timeout 按目标环境最大表实测 + 落成门）/
+> 静默吞掉的 409 里藏着用户每天的视图 / 变异臂靶点自己别带判据词）。
