@@ -67,30 +67,35 @@ func (s *CredentialNodeSource) discoverNodes(ctx context.Context, opt discoverOp
 	// 211 全量活跃绑定 ~3500，每次 boot 立即跑一遍 = token 爆炸。
 	// ⇒ 两道闸：featured 范围（对齐 model_credibility.scope 口径）+
 	//   min-interval 跳过（成功实测在窗口内的节点跳过）。
-	featuredFilter := ""
+	// ★ 装配纪律：JOIN 片段与条件片段分离，全程只有**一个** WHERE——
+	//   首版把 WHERE 塞进 featured 片段 ⇒ 双 WHERE ⇒ 42601（211 重启实测）。
+	joinFrag := ""
+	condFrags := []string{}
 	if opt.scope == "featured" {
 		// ★ CROSS JOIN 只在 featured 收窄时加入：routing_policy 每租户一行，
 		//   无条件 CROSS JOIN 会让非 featured 模式下的行数按租户数放大。
-		featuredFilter = `
-		CROSS JOIN routing_policy pol
-		WHERE pol.tenant_id = 'default'
-		  AND (
-		    pm.standardized_name = ANY(COALESCE(pol.featured_models, ARRAY[]::text[]))
-		    OR pm.raw_model_name = ANY(COALESCE(pol.featured_models, ARRAY[]::text[]))
-		  )`
+		joinFrag = `
+		CROSS JOIN routing_policy pol`
+		condFrags = append(condFrags, `pol.tenant_id = 'default'`,
+			`(pm.standardized_name = ANY(COALESCE(pol.featured_models, ARRAY[]::text[]))
+		    OR pm.raw_model_name = ANY(COALESCE(pol.featured_models, ARRAY[]::text[])))`)
 	}
-	recentFilter := ""
-	args := []any{}
 	if opt.minInterval > 0 {
-		recentFilter = `
-		  AND NOT EXISTS (
+		condFrags = append(condFrags, `NOT EXISTS (
 		    SELECT 1 FROM model_iq_runs r
 		    WHERE r.credential_id = cmb.credential_id
 		      AND lower(r.raw_model_name) = lower(pm.raw_model_name)
 		      AND r.status = 'success'
 		      AND r.tested_at > now() - $1::interval
-		  )`
+		  )`)
+	}
+	args := []any{}
+	if opt.minInterval > 0 {
 		args = append(args, opt.minInterval)
+	}
+	extraConds := ""
+	for _, c := range condFrags {
+		extraConds += "\n\t  AND " + c
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT c.id, COALESCE(p.display_name, p.code, ''), COALESCE(c.label, ''),
@@ -103,13 +108,13 @@ func (s *CredentialNodeSource) discoverNodes(ctx context.Context, opt discoverOp
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
 		JOIN credentials c ON c.id = cmb.credential_id
-		JOIN providers p ON p.id = c.provider_id`+featuredFilter+recentFilter+`
+		JOIN providers p ON p.id = c.provider_id`+joinFrag+`
 		WHERE COALESCE(c.status, 'active') = 'active'
 		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
 		  AND COALESCE(c.availability_state, 'ready') NOT IN ('suspended')
 		  AND COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
 		  AND COALESCE(p.enabled, FALSE) = TRUE
-		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE`+extraConds+`
 		ORDER BY c.id, pm.raw_model_name
 	`, args...)
 	if err != nil {
