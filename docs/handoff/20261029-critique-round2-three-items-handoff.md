@@ -42,12 +42,12 @@
 2. **`ModalityAccepts` 域外语义与闭世界的对齐**：请求值 embedding 的分歧仍在
    登记状态（诊断入口不产该值 ⇒ 不可达）。若诊断入口扩到产 "embedding"，
    必须先统一三份表达再扩域。
-3. **ursmcheck 剩余 3 条红**：等上游两线（台账快照刷新 / P1-D probe_service）
-   落地后再评估；当前代修会与上游冲突。
-4. **`design-spacing-scale-decisions.json` 读方在基线就红**（live-topology 8 处
-   离阶间距）：上游登记为「别人在飞的 UI 决策」，等上游落定。
-5. **`scripts/ursmcheck` hollowout 的 icon-size 子测试 flaky**：5 次运行红过 1 次
-   （失败详情未存档）⇒ 只能归类 flaky，原因未取证。
+3. **ursmcheck 的 5 条红在合并上游后只剩 1 条**：post-surface 台账 / probe mirror
+   留痕 / design-spacing 棘轮三条**已被上游自己修好**（⇒ 印证「不接手」正确）；
+   icon-size 仍是环境型 flaky（根因已取证 = 浏览器驱动 fetch failed）。
+4. **icon-size 读方把「环境失败」与「判据失败」折叠在一起**（上游既有门缺陷）：
+   掏空门在负载环境下会随机误判「没牙」。修法：读方把 Chrome/CDP 连不上归一到
+   独立信号，或掏空门把 wrong-red 与「读方环境失败」分成两类。归上游。
 
 ## 4. 纪律提醒（本轮踩过的坑，别重复）
 
