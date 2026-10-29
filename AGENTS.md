@@ -14850,6 +14850,45 @@ upstream_request 完整在场。
 ⇒ 提交 `51cb63a80`（已推 origin）；审计档
 `docs/audit/2026-10-29-客户端识别轮-原厂规范对照与线材实态.md`；
 通用式见 `LESSONS.md` **§551**。
+ **2026-10-29 24h 审计第 5 轮：opened 缺口复扫 + asm audit sink 根因轮**（goal 会话）：
+ ★ 承接第 4 轮遗留四项（①origin/main HEAD 部署确认+§3.5 复扫 ②asm audit sink 根因
+ ③6 家 proxy 供应商复查 ④零基线复核）⇒ 全部收口。
+ ⇒ ★ **①缺口再生 = 0**（§3.5 判据原样重扫：total/6h 窗/1h 窗全 0；对照上轮 ~11/h ⇒
+ 期望 ~66）⇒ 行为上 `2c7dcf48c` 的根修已在活跃槽生效；活跃槽镜像仍 sha 不可验祖
+ （`5fbba4ef-dirty`，02:00 上线）⇒ 本轮以 origin/main HEAD 正式部署收掉不确定性。
+ **④零基线全保持**：outbox dlq 0/failed 0/pending 1；asm inbox retryable 0；
+ 三方对拍 97,100 逐位一致（sent==inbox==projection==checkpoint）；session_projection
+ 45,655 == opened sent 45,655。
+ ⇒ ★★ **②asm audit sink 最初根因 = acc-pg17 连接耗尽**：1,572 条 WARN 聚 7 个突发，
+ 每个突发分钟 PG 日志都有 `too many clients already`（全窗 724 次，最后 10-28 21:30，
+ 此后 26h+ 零复发）；asm 二进制把 pgx 底因整体丢弃 ⇒ asm 仓 `internal/audit/mapping.go`
+ 改双 `%w`（sentinel + 底因可 As）⇒ 提交 `61aa202` 已推 asm origin（容器下次构建生效）。
+ 数据零丢失：97,100 三方一致；失败窗 audit_events 仍有 10,259 行 ⇒ 部分失败非断供。
+ ⇒ ★ **③6 家 proxy 供应商（azure/gemini/mistral/openai/perplexity/xai）= 结构性休眠**：
+ 0 凭据 / 0 订阅（`proxy_subscriptions` 空表）/ 7 天 0 流量 ⇒ 无候选不进路由无故障面，
+ 处置=保持不动。第 4 轮 7 家 proxy→direct 切换 211 已生效（updated_at 10-29）。
+ ⇒ ★★ **同轮修掉的既有红（全 origin/main 实测红）**：合并三股（origin/main 含 sanitize
+ 917 族+客户端识别轮、本地第 4 轮终态文档、**r98 R179 分支 15 提交**——唯一未合并
+ 不活跃子分支，逐文件 merge 一次落位）；design-spacing 门 9 处离阶归零（平局取下界：
+ 6→4/10→8/14→12）；db-object 台账三件套按仓内工具原路再生（917 三索引，diff 先行
+ 确认只有新增）；request-surface 文档证据行号重锚（179→185）；**917 族连带四件套补齐**
+ （manifest 行 / lock guard 999d1c9e6 同款 / embed 字节副本 / 台账最后再生一遍——
+ manifest 变化会让 reachability 翻转，台账必须收尾再生）。
+ ⇒ ★ **runner 台账↔产物对账门**（`apply-db-revision-sequence.sh`）：912「台账 sha 一致
+ 而产物缺席」挂了两天才被发现 ⇒ 对本轮按指纹跳过/重放的 912/913 逐表 to_regclass 探针，
+ 产物不在 ⇒ exit 5 响亮失败。★ 第一版被 runtime fixture 抓回（夹具故意造「记账行在
+ 产物不在」测 legacy-skip）⇒ 探针范围收窄到 `sha_matched_markers`（本轮认过账的文件），
+ 不是「库里所有记账行」。
+ ⇒ ★ **如实记**：vitest 2 红（`theme.logoAssets.test.ts`）= pure origin/main 既有红 ——
+ a83698efc 换入的经典 logo 资产（ratio=1.000/luma 139.5）不满足同提交自己的测试合同
+ （48%/<110），换资产还是改阈值属品牌设计判断 ⇒ 移交品牌轮当事会话，本轮不代拍板。
+ 慢 SQL：6h 慢日志全部为有界维护作业（REFRESH 1.7s / promote ~1s / URSM health 4.3s/h
+ ——5.3M 行 7d 全窗扫是设计固有，不为 4.3s 冒语义险）；`pg_stat_statements` 未进
+ shared_preload_libraries（需重启 acc-pg17，留用户决断）。
+ ⇒ 审计档 `docs/audit/2026-10-29-24h审计第5轮-opened缺口复扫与asm审计根因.md`；
+ 通用式见 `LESSONS.md` **§552**（6 条：Retryable 别丢底因 / 突发分钟按分钟对拍 /
+ 指纹证明执行不证明在场+探针范围=本轮认账 / 结构休眠≠故障 / 资产换代同轮过测试 /
+ 上游红条按依赖序收口且台账最后再生）。
 **2026-10-29 第 38 增量：252 SQL 日志审计 R176 轮（ursm 巡检三族降本 + INV-4 探针资格门索引化）**（goal 会话）：
 ★ 承接例行 252 审计节奏（R175 同日为 routing REFRESH 深潜、未做日志窗）⇒ 本轮 26.4h 全窗
 （10-28 03:37 → 10-29 06:03，真实内容 178MB，**copytruncate NUL 洞 1.12GB 第四次复发**）
@@ -14904,10 +14943,12 @@ sequence.sh、concurrency gate 计数（920: 1）、db-changelog 三行（917 sa
 > `mvs_42f116b20f694164b00900d451db1ca0`）：★ ★★ **取号说明：★ 本轮开工时
 > 取的是「第 38 增量」，⇒ ⇒ 合并 `origin/main`（`05a490d93`）时发现并行会话
 > 已占用「第 38 增量」（252 SQL 日志审计 R176 轮）⇒ ⇒ ⇒ **本块让号，改为
-> 「第 39 增量」** ⇒ ⇒ ★★ 而 `LESSONS.md` 的 **§552 仍空闲**（并行会话明文
-> 「留 §552~554 缓冲」）⇒ ⇒ ⇒ **两个文件一个让号、一个不让 ⇒ ⇒ 让号必须
-> 【逐文件】核，不能整仓一起让** ⇒ ⇒ ★★ （承第 36 增量那条：「核号必须放进
-> 【push 前的那一次】」）。
+> 「第 39 增量」** ⇒ ⇒ ★★ 而 **`LESSONS.md` 侧也发生了让号**：★ 第一次合并时
+> `LESSONS.md` 的 §552 尚空闲 ⇒ ⇒ ★★★ **第二次合并（`2d66c3ac3`）时并行会话的
+> 「24h 审计第 5 轮」把它占了** ⇒ ⇒ ⇒ ★★ ⇒ **本轮 `LESSONS.md` 侧让号 ⇒ §553**
+> ⇒ ⇒ ⇒ ★★★ ⇒ **⇒ 通式：★★ 让号不是「一次核对」而是【每次合并都要重核】，
+> ⇒ ⇒ ⇒ ★★ 且【两个文件分别核】⇒ ⇒ ⇒ ★★ ⇒ **核号必须放进【push 前的最后一次】**
+> ⇒ ⇒ ⇒ ★★ ⇒ ⇒ （承第 36 增量那条纪律）。
 > ⇒ ★ 承接上一轮审计档 §17 登记的
 > `:countTokens` 项（Gemini 原生入向尚未提供 token 计数面）⇒ ★★ 但**先复核
 > 登记前提，再动手实现** ⇒ ★★★ **复核结论：上一轮写进登记册的「实现要点」
@@ -14983,4 +15024,4 @@ sequence.sh、concurrency gate 计数（920: 1）、db-changelog 三行（917 sa
 > 的无 RPM 缺口**（仓内 P2 登记项）；**`scripts/ursmcheck` 既有红灯**；
 > **包测试时长余量**（`domains/streaming` 需要拆分或提额）。
 > ⇒ 审计档 `docs/audit/2026-10-29-Gemini-countTokens诚实实现轮.md`（§1~§10）；
-> 通用式见 `LESSONS.md` **§552**（通用式一~八）。
+> 通用式见 `LESSONS.md` **§553**（通用式一~八）。
