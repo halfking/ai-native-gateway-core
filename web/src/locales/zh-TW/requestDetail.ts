@@ -22,6 +22,9 @@ export default {
     source: {
       memory: '本機記憶體',
       file: '本機檔案',
+      requestLogs: '請求帳本',
+      sessionTurns: '會話輪次',
+      liveStream: '即時串流',
     },
     labels: {
       requestId: '請求 ID',

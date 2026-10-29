@@ -43,10 +43,14 @@ type DB struct {
 	stdlibDB     *sql.DB
 }
 
-func Open(ctx context.Context, databaseURL string) (*DB, error) {
-	if databaseURL == "" {
-		return nil, nil
-	}
+// newPoolConfig 构造网关的 pgxpool 配置（★ 生产与真库门共用同一份 ⇒ 门测的就是生产形态）。
+//
+// ★★ 为什么要抽成函数（★ 2026-10-29 第 ⑧ 项）：★★
+//
+//	★ 语句缓存的接线在 `Open()` 里 ⇒ ★ 如果真库门自己起池并**硬编码**执行模式，
+//	★ 那么「把生产配置改回 SimpleProtocol」这个变异**不会让门变红** ⇒ ⇒
+//	★ 门会变成恒绿的摆设。⇒ ⇒ 生产配置与门必须走**同一条构造路径**。
+func newPoolConfig(databaseURL string) (*pgxpool.Config, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, err
@@ -64,13 +68,42 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
 
-	// 2026-07-15 P0 fix: disable pgx statement cache to prevent stale prepared
-	// statements after schema changes (provider_model_bindings → credential_model_bindings).
-	// When a table is renamed but old prepared statements remain cached in long-lived
-	// connections, queries fail with "relation does not exist". Disabling the cache
-	// forces re-preparation on every query, trading ~5% perf for correctness.
-	// See docs/changelogs/2026-07-15-provider-model-bindings-fix.md for details.
+	// ★★ 2026-10-29（第 ⑧ 项）：★ 重新开启 pgx 语句缓存（= 服务端预编译 = 计划缓存）。
+	//
+	// ★ 为什么现在可以开（★ 2026-07-15 关掉它的那个理由已不成立）：★
+	//
+	//	★ 2026-07-15 的事故形态是：provider_model_bindings → credential_model_bindings
+	//	★ 改名之后，长连接里缓存的旧预编译语句继续引用旧名 ⇒ 「relation does not exist」。
+	//	★ 那时选的解法是「关掉缓存，每次重新准备」⇒ 代价是**每请求重新规划**。
+	//	★ 实测本轮本地真库（写路径的幂等探针 ExistsByKeySQL，字面量谓词）：
+	//
+	//		规划 38.0 ms / 执行 0.104 ms　　　← 规划是执行的 365 倍
+	//		（预编译后：第 1 次规划 39.1 ms → 第 6 次起 0.004~0.015 ms）
+	//
+	//	★ ⇒ 写路径的真实成本在**规划期**，不在扫描 ⇒ 计划缓存是数量级收益。
+	//
+	// ★★ 四条安全依据（★ 逐条实测/查证，不是推断）：★★
+	//
+	//	① **pgx 会在任何错误上失效该语句的缓存**（vendor/.../pgx/v5/conn.go:519-528
+	//	   的 defer：err != nil ⇒ sc.Invalidate(sql)）⇒ 陈旧语句**自愈**：
+	//	   失败一次之后下一次重新准备 ⇒ 2026-07-15 的「一条坏语句毒死整条连接」
+	//	   变成「一次请求失败」。★ 这条把「前提被破」的代价从**永久**降成**一次**。
+	//	② **迁移期的 DDL 不会毒化缓存**：网关进程内的迁移链（applyMigrationsOnce）
+	//	   全部是**无参** SQL ⇒ pgx 对无参语句强制走 simple protocol
+	//	   （conn.go:513-515）⇒ 迁移期**从不产生预编译语句**；而 SQL 文件迁移
+	//	   由安装器/部署序列执行，不在本进程内。
+	//	③ **迁移结束 pool.Reset()** 丢弃全部连接（连同它们的缓存）⇒ boot 期的
+	//	   任何 DDL 都不会残留到 serving 期。
+	//	④ **运行期的 DDL 只动分区**（CREATE/DROP TABLE ... PARTITION OF）⇒
+	//	   父表的缓存语句由 PG **自动重规划**（plan invalidation），不是报错。
+	//
+	// ★ 保留一个**杀开关**：LLM_GATEWAY_DB_STATEMENT_CACHE=false ⇒ 回到旧行为
+	// ★ （每次重新准备）。理由：这是一处「全局行为」的改动，运维需要一条
+	// ★ 不改代码就能退回去的路。
 	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	if statementCacheEnabledFromEnv() {
+		cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
+	}
 
 	// 2026-09-23 252 SQL 日志审计轮：迁移期 statement_timeout 钉住（D1 残余
 	// 根修）。ApplyMigrations 期间置位 migrationsPinned，BeforeAcquire 给每条
@@ -81,6 +114,17 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	// 07:23-08:16）。迁移结束 pool.Reset() 丢弃被抬连接，serving 期每条连接
 	// 回到角色默认 30s（catalog 守卫族 + 本钉双保险，守卫管"能不能不跑"，
 	// 钉管"跑的时候别被杀"）。
+	return cfg, nil
+}
+
+func Open(ctx context.Context, databaseURL string) (*DB, error) {
+	if databaseURL == "" {
+		return nil, nil
+	}
+	cfg, err := newPoolConfig(databaseURL)
+	if err != nil {
+		return nil, err
+	}
 	var migrationsPinned atomic.Bool
 	cfg.BeforeAcquire = func(ctx context.Context, conn *pgx.Conn) bool {
 		if migrationsPinned.Load() {
@@ -114,6 +158,33 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	}
 	success = true // Mark success to prevent defer from closing pool
 	return db, nil
+}
+
+// statementCacheEnabledFromEnv 解析 LLM_GATEWAY_DB_STATEMENT_CACHE（★ 默认 **开**）。
+//
+// ★ 为什么要有这个开关：★ 语句缓存是**全局行为**的改动（影响每一条语句的
+// ★ 执行路径），而它的收益（写路径规划 38 ms → ~0.01 ms）是数量级的，
+// ★ 它的风险面（陈旧预编译语句）也是全局的 ⇒ ⇒ 运维必须有一条**不改代码**
+// ★ 就能退回去的路。
+//
+// ★ 语义：
+//   - 未设置 ⇒ **开**（★ 这是本轮的目标形态；默认关等于本轮没做）。
+//   - false / 0 / no / off ⇒ **关**（回到 2026-07-15 的行为：每次重新准备）。
+//   - 其它值 ⇒ **开** + 一条 Warn（★ 与 poolMaxConnsFromEnv 同款容错：
+//     坏值不阻断启动，但必须留痕）。
+func statementCacheEnabledFromEnv() bool {
+	raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_DB_STATEMENT_CACHE"))
+	if raw == "" {
+		return true
+	}
+	switch strings.ToLower(raw) {
+	case "false", "0", "no", "off":
+		return false
+	default:
+		slog.Warn("postgres: invalid LLM_GATEWAY_DB_STATEMENT_CACHE, keeping default (enabled)",
+			"value", raw, "default", true)
+		return true
+	}
 }
 
 // poolMaxConnsFromEnv 解析 LLM_GATEWAY_DB_MAX_CONNS 为 pgxpool 池上限：

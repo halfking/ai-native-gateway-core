@@ -22,6 +22,9 @@ export default {
     source: {
       memory: 'メモリ内',
       file: 'ローカルファイル',
+      requestLogs: 'リクエスト台帳',
+      sessionTurns: 'セッションターン',
+      liveStream: 'ライブストリーム',
     },
     labels: {
       requestId: 'リクエスト ID',

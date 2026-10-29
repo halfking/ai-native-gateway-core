@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
-	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // session_summary_dim.go — S4 停写交接（2026-10-13）。
@@ -42,12 +41,42 @@ import (
 //     internal_loopback 815/12306）；
 //  3. 探针合成会话不进（IsProbeSyntheticSession，与 turns 同口径）。
 //
-// # 双喂防护
+// # 为什么这里没有「双喂防护」门（2026-10-29）
 //
-// v1 停写**之前**触发器还在计数，本写入器若同时跑会双计数。因此它在
-// v1 写入开启时整体 no-op：翻转即交接，回切即交还。翻转瞬间在飞的
-// 极少数请求可能被两侧各计一次（count 误差 ±1/会话），如实接受，
-// 不为此引入分布式协调。
+// 原先这里有一道门：v1 写入开启时整体 no-op。理由是「v1 停写**之前**
+// _request_logs_hot 上的 trg_update_session_summary 还在计数，本写入器
+// 若同时跑会双计数」。那道门要成立，需要**两个事实同时为真**：
+//
+//	① 有一个 v1 写入方在往 _request_logs_hot 落行（触发器才有输入）；
+//	② 该触发器（含 trg_sync_session_task_id 与 update_session_summary()）还存在。
+//
+// 两个前提都已随 v1 族退役消失（逐条实测见
+// TestSessionSummaryDimWriter_NoV1TriggerPremise 与
+// TestSessionSummaryDimWriter_IgnoresRetiredV1Switch）：
+//
+//	① PG 侧 v1 写入分支已从 domains/hooks/observability/telemetry/client.go
+//	   整段删除 ⇒ 本二进制**不写** _request_logs_hot。即使库还停在 890
+//	   之前（灰度窗口），触发器也**无输入可触发**。
+//	② 890 物理删除了整个 v1 族：_request_logs_hot / _request_logs_bodies_hot
+//	   连同两个触发器与 update_session_summary() 函数一并消失。
+//
+// 于是那道门不再是「双喂防护」，而是**纯粹的停摆开关**：把退役开关
+// storage.request_logs_write_enabled 拨到 true，会让 session_summaries
+// 的聚合**静默停写**——而本写入器是这些聚合列（request_count /
+// success_count / error_count / total_cost_usd / tokens / latency /
+// models_used …）的**唯一写方**（其余写方只碰 title / summary /
+// key_topics / user_intent / handoff_* / archived_at 等旁列）。
+// 后果是用户面（admin 会话列表/详情、会话分析、usage_enhanced 意图列）
+// 在新会话上**永远不出现**，且**无日志、无错误**。
+//
+// 这就是「退役语义仍在支配活行为」：一个控制「v1 写不写」的开关，
+// 决定了「v2 聚合写不写」。
+//
+// 现在：门删除，聚合**无条件**写入。双喂前提若将来复活（某个迁移重新
+// 建出 v1 族 + 触发器），真库门会当场报红，由迁移作者重新决定要不要
+// 加门——而不是让一道早该退休的开关一直悄悄支配聚合。
+//
+// （确需停写聚合是另一个显式开关的问题；用 v1 退役开关来停是语义串台。）
 type SessionSummaryDimWriter struct {
 	pool *pgxpool.Pool
 }
@@ -58,8 +87,13 @@ func NewSessionSummaryDimWriter(pool *pgxpool.Pool) *SessionSummaryDimWriter {
 	return &SessionSummaryDimWriter{pool: pool}
 }
 
-// v1WritesEnabled 是 S4 停写门的 seam（测试可替换；生产读热加载设置）。
-var v1WritesEnabled = settings.RequestLogsWriteEnabled
+// v1WritesEnabled 曾是 S4 停写门的 seam（测试可替换；生产读热加载设置）。
+//
+// 2026-10-29：该 seam 随门一并删除 —— 门的前提（v1 写入方 + 触发器）已随
+// v1 族退役消失，留着它就等于留着一个「看起来还能调」的退役开关。
+// 取而代之的守卫在 TestSessionSummaryDimWriter_IgnoresRetiredV1Switch
+// （静态：本文件不得再读 v1 退役开关）与真库门
+// TestSessionSummaryDimWriter_NoV1TriggerPremise（动态：前提不存在）。
 
 // sessionSummaryUpsertSQL 对齐 trg_update_session_summary 的 upsert 语义，
 // 并并入 trg_sync_session_task_id 的 gw_task_id 首值同步。
@@ -113,12 +147,13 @@ INSERT INTO session_summaries (
     updated_at = NOW()`
 
 // UpsertSessionDim 以终态 entry 维护 session_summaries 聚合（DimWriter 接口，
-// 由 PersistHook 的 dims 循环调用）。v1 写入开启时 no-op（双喂防护，见文件头）。
+// 由 PersistHook 的 dims 循环调用）。
+//
+// 无条件写入：v1 退役开关**不再**支配本写入器（理由见文件头「为什么这里没有
+// 双喂防护门」）。本写入器是聚合列的唯一写方，让一个退役开关能静默停掉它，
+// 就是在用退役语义支配活行为。
 func (w *SessionSummaryDimWriter) UpsertSessionDim(ctx context.Context, entry *telemetry.RequestLogEntry) error {
 	if entry == nil || entry.GwSessionID == nil || *entry.GwSessionID == "" {
-		return nil
-	}
-	if v1WritesEnabled() {
 		return nil
 	}
 	if w == nil || w.pool == nil {

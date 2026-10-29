@@ -129,9 +129,13 @@ func logsSourceFromSQL() string {
 //	只按 ts            ⇒ Append → 5 个分区全扫（2026_10 走 Seq Scan）
 //	ts + partition_date ⇒ 只剩 session_turns_2026_10
 //
-// ★★ 生产侧同形态已被台账记下：252 的 pg_stat_statements 观测台账
+// ★★ 生产侧同形态已被台账记下：252 的 **EXPLAIN 计划形态**观测台账
 // （scripts/audit/asset/query-plan-observations.tsv）里，/api/logs 的列表语句
 // （stmt-1d7be58136）在**1 秒窗口**上 Seq Scan 了 **4 个整月分区**。
+//
+// ★★★ R182 轮订正（★★ 事实性错误 ★★★）：★★ 这份台账**不是**
+// ★ `pg_stat_statements` 的统计快照（★ 生成器是 cmd/tools/query_plan_form，
+// ★ 走 EXPLAIN、不带 ANALYZE）⇒ ⇒ 它记的是**计划形态**，不是执行期统计。
 //
 // ★ 为什么不走视图形态：★ 视图的 118 列投影被冻结（R37）⇒ ⇒ 视图无法暴露
 //

@@ -29,6 +29,7 @@ export default {
     autoControlledTooltip: 'Contrôlé par l’auto-probe (broken_confirmed, etc.). Vous pouvez le désactiver manuellement (mise hors ligne forcée).',
     rowSelectsMonitor: 'Sélectionnez une ligne pour afficher la supervision à droite.',
     selectModelRow: 'Sélectionnez une ligne de modèle à gauche pour l’afficher.',
+    sourceSessionTurns: 'Journal de session',
   },
   chart: {
     allHealthy: 'Tous en bonne santé',

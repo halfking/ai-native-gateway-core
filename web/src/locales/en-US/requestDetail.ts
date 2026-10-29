@@ -22,6 +22,9 @@ export default {
     source: {
       memory: 'In-memory',
       file: 'On-disk file',
+      requestLogs: 'Request ledger',
+      sessionTurns: 'Session turns',
+      liveStream: 'Live stream',
     },
     labels: {
       requestId: 'Request ID',
