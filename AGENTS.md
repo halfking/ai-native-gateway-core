@@ -15022,3 +15022,93 @@ sequence.sh、concurrency gate 计数（920: 1）、db-changelog 三行（917 sa
 > ⇒ ⇒ **§552**（★ 24h 审计第 5 轮）与 **§555**（★ R176 轮，★ 且上游**故意留了
 > ⇒ ⇒ §552~554 作缓冲**）⇒ ⇒ ★★ ⇒ ⇒ 本轮最终取 **§556** ✓（★ 逐项复核：★ §550 /
 > ⇒ ⇒ §551 / §552 / §555 / §556 各 1 个标题 ⇒ ⇒ ★★ ⇒ **无重复**）。
+> **2026-10-29 第 39 增量：Gemini `countTokens` 诚实实现轮**（会话
+> `mvs_42f116b20f694164b00900d451db1ca0`）：★ ★★ **取号说明：★ 本轮开工时
+> 取的是「第 38 增量」，⇒ ⇒ 合并 `origin/main`（`05a490d93`）时发现并行会话
+> 已占用「第 38 增量」（252 SQL 日志审计 R176 轮）⇒ ⇒ ⇒ **本块让号，改为
+> 「第 39 增量」** ⇒ ⇒ ★★ 而 **`LESSONS.md` 侧也发生了让号**：★ 第一次合并时
+> `LESSONS.md` 的 §552 尚空闲 ⇒ ⇒ ★★★ **第二次合并（`2d66c3ac3`）时并行会话的
+> 「24h 审计第 5 轮」把它占了** ⇒ ⇒ ⇒ ★★ ⇒ **本轮 `LESSONS.md` 侧让号 ⇒ §553**
+> ⇒ ⇒ ⇒ ★★★ ⇒ **⇒ 通式：★★ 让号不是「一次核对」而是【每次合并都要重核】，
+> ⇒ ⇒ ⇒ ★★ 且【两个文件分别核】⇒ ⇒ ⇒ ★★ ⇒ **核号必须放进【push 前的最后一次】**
+> ⇒ ⇒ ⇒ ★★ ⇒ ⇒ （承第 36 增量那条纪律）★★ 而**第三次合并（`6b660599c`）**
+> ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ 并行会话的新块用 `㊼` 记法（不是「第 N 增量」）⇒ ⇒ ⇒
+> ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ **未撞「第 39 增量」** ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ 且
+> ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ `LESSONS.md` 的 §553 仍空闲 ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ **不再让号**
+> ⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ ⇒ ★★ ⇒ ★★ ⇒ **⇒ 但这仍是「实测后才敢说」的结论，不是推断。**
+> ⇒ ★ 承接上一轮审计档 §17 登记的
+> `:countTokens` 项（Gemini 原生入向尚未提供 token 计数面）⇒ ★★ 但**先复核
+> 登记前提，再动手实现** ⇒ ★★★ **复核结论：上一轮写进登记册的「实现要点」
+> 同时错在三处** ⇒ ⇒ **①转发上游算的是【另一份请求】**（Gemini 的
+> `:countTokens` 对**客户端原文**计数，而网关发出去的是**IR 归一后**那份
+> ⇒ ⇒ 转发回来的数字描述的是一个「不会发生的请求」⇒ ⇒ 不是更诚实，是另一种
+> 不诚实）⇒ ⇒ **②转发并非普遍可用**（只有 `gemini-generate` 协议的上游才有
+> 那个端点，而本仓 Gemini 入向可由任意上游服务）⇒ ⇒ **③误用了仓内先例的
+> 理由**（Anthropic `/v1/messages/count_tokens` 之所以转发，是因为 **SSE 响应
+> 无法回填 `message_start`**；而 Gemini 响应本就带精确
+> `usageMetadata.promptTokenCount` ⇒ 该前提**不迁移** ⇒ 抄结论抄出了错方案）
+> ⇒ ⇒ ★★★★ **⇒ 方案改为【本地估算】，口径 = 网关真正会发出的那份**：
+> `ir.ParseGemini` → `ir.SerializeOpenAI` → 复用既有
+> `domains/streaming/usage_estimator.go` 的 `estimatePromptTokens`（**不新写
+> 第四个估算器**）⇒ ⇒ 出站 `{"totalTokens": N}` ⇒ ⇒ **两个 Gemini 面对同一
+> 提示词口径一致**（同一把尺）⇒ ⇒ ⇒ ★★ **转发上游那一支登记为下一轮**
+> （需第三条出站动作、且必须先定「以哪个为准」才能与本轮口径共存）。
+> ⇒ ★★ **三侧齐改**（新路由必须同时落在三面，缺一面就是假支持）：
+> ① **凭据收口面** `internal/auth/clientkey.go` 的 `geminiNativePathRe`
+> 动作集加 `countTokens`（`IsGeminiNativePath` / `ExtractClientKey` 随之生效）
+> ⇒ ② **解析面** `domains/streaming/handler_gemini.go` 的 `geminiModelPathRe`
+> 加 `countTokens` ⇒ ③ **能力清单** `domains/streaming/models.go` 的
+> `supportedGenerationMethods` 加 `countTokens` ⇒ ⇒ ⇒ ★★★ **模型清单这一侧
+> 顺带翻转了上一轮的反向钉**：上一轮专门写了「模型列表**不得**承诺
+> `countTokens`」，本轮实现了 ⇒ ⇒ **门的方向跟着实现一起翻**
+> ⇒ ⇒ 判据从「集合包含」升级为**「集合相等」** ⇒ ⇒ ★★ **「实现了不列」=
+> 对外说做不到；「列了不做」= 承诺不兑现 ⇒ ⇒ 两个方向都在骗人。**
+> ⇒ ★★★ **挂载面刻意不改**：Go 1.22 `ServeMux` **不允许**「通配符段 +
+> 字面量」混在同一段（实测 `bad wildcard segment (must end with '}'）`）
+> ⇒ ⇒ `POST /v1beta/models/{model}:countTokens` **挂不上去** ⇒ ⇒ 只能在
+> `GeminiHandler` 内部按动作分派 ⇒ ⇒ 而登记册「同一路由不能登两次、
+> **一源文件只能登记一次**」又**反向约束**了实现落点 ⇒ ⇒ **实现必须落在
+> `handler_gemini.go` 内** ⇒ ⇒ ⇒ ★★ **⇒ 于是有了两处共享 helper 抽取**：
+> `domains/streaming/summarize.go` 拆出 `authenticateNoRPMWith`（可注入错误
+> 信封；Gemini 侧只注入信封形状，不另写鉴权逻辑 ⇒ 且同文件 ⇒ `.CheckBudget(`
+> 锚点计数不变 ⇒ summarize 的登记项不受影响）、
+> `domains/streaming/handler.go` 抽出 `staticDataPlaneKeyMatches`（lite 模式
+> 静态键回退 ⇒ 与 ChatHandler **一份实现**）。
+> ⇒ ★★★ **限流口径**：`:countTokens` **消耗 RPM**（与同路由生成动作同一把尺）
+> ⇒ ⇒ 理由：summarize / transform 之所以「刻意不计」，是因为它们**经环回
+> chat 面**携带同一把 key（不计则双计）；而 `:countTokens` **完全不产生上游
+> 调用**、没有别处替它计过 ⇒ ⇒ ⇒ ★★ **⇒ 不计 RPM = 一把 key 可以无限刷这个
+> 端点** ⇒ ⇒ ⇒ ⇒ ★★ ⇒ 而仓内早已把 Anthropic 的「无 RPM 的
+> `count_tokens`」登记成 P2 缺口 ⇒ ⇒ ⇒ ⇒ ⇒ **⇒ 新端点不应再制造同一个缺口
+> 的第二个实例。** ⇒ ⇒ ⇒ 登记册 Gemini 条目相应改为 **RateLimit=own**
+> （`checkGatewayRateLimit(` 在 `handler_gemini.go` 内恰好 1 次）、
+> **Budget=delegated**（委派 `authenticateNoRPMWith` 的 `kv.CheckBudget`），
+> 理由文字写清三个动作各自的闸。
+> ⇒ ★★ **门**（`domains/streaming/gemini_count_tokens_test.go`，11 个测试函数）：
+> 厂商形状 / **口径门**（估的是归一后的出站体、不是客户端原文）/ 随提示词增长 /
+> 两个 Gemini 厂商前缀都能服务 / 必须凭据 / 三种 Gemini 凭据形态都收 /
+> 错凭据拒 / 非 POST 拒 / 非法体返**厂商形状**的 400 / lite 模式静态键回退 /
+> **不碰 chat 管线**；另扩面既有门：`internal/auth/clientkey_test.go`、
+> `domains/streaming/handler_gemini_auth_test.go`（漂移门显式登记两条
+> `:countTokens` 为已服务）、`domains/streaming/handler_gemini_test.go`
+> （解析面认 countTokens、反向钉仍不认 `:embedContent`）。
+> ⇒ ★★ **四臂变异全检出**（还原后 md5 逐字一致）：A 收窄凭据收口面 ✓、
+> B 解析面不认 ✓、C ★ **口径改成「估原文」**（**第一次注入编译不过 ⇒ 该臂
+> 根本没跑到门 ⇒ 重做到可编译后**才由门检出，检出信息是读数差
+> `totalTokens = 0, want 10`）✓、D 能力清单不列 ✓。
+> ⇒ ★★ **读数**：`go build ./...` ✓、`go vet` ✓、gofmt clean（仅本轮文件）、
+> 全量扫描 ✓（`internal/auth`、`internal/ingressguard`、`internal/ir`、
+> `internal/upstreamurl`、`domains/streaming/…`、`cmd/gateway/…`、
+> `provider/catalog`、`internal/requestfact`、`domains/transformation`）。
+> ⇒ ★★ **既有红灯归属判定**：`scripts/ursmcheck` 的
+> `TestRequestSurfaceDocEvidenceStillHolds`（`domains/hooks/response/types.go`
+> 区间漂移）**非本轮引入**（该文件未被本轮改动）⇒ 已写入审计档 §10；
+> 另记录 `domains/streaming` 全包 ~160s 逼近 `make guards` 的 `-timeout=120s`
+> 余量（本轮又加 12 条门）。
+> ⇒ ★★ **本轮明确没做（留给下一轮，别重复排查）**：**转发上游那一支**
+> （仅 `gemini-generate` 协议上游成立、需第三条出站动作、且与本轮本地口径
+> 不同 ⇒ **两者共存前必须先定「以哪个为准」**）；**Anthropic `count_tokens`
+> 的无 RPM 缺口**（仓内 P2 登记项）；**`scripts/ursmcheck` 既有红灯**；
+> **包测试时长余量**（`domains/streaming` 需要拆分或提额）。
+> ⇒ 审计档 `docs/audit/2026-10-29-Gemini-countTokens诚实实现轮.md`（§1~§10）；
+> 通用式见 `LESSONS.md` **§553**（通用式一~八）。
