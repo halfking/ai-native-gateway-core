@@ -158,7 +158,9 @@ var requestSurfaceDocEvidence = []docEvidence{
 		why: "执行器生命周期钩子的类型定义",
 	},
 	{
-		file: "domains/hooks/response/types.go", from: 179, to: 179,
+		// ★ 2026-10-29（R180 轮）：★ 上游把这段代码挪了位（★ 179 ⇒ 185）⇒ ⇒ 对拍表的行号区间跟着更新
+		// ★ （★ 区间指向的【内容】没变 ⇒ ⇒ 这是【位置漂移】，★ 不是「证据没了」）。
+		file: "domains/hooks/response/types.go", from: 185, to: 185,
 		mustContain: "type ResponseInterceptor interface", kind: evidenceCode,
 		why: "响应拦截链的接口（挂在 phase 上的那套机制）",
 	},
