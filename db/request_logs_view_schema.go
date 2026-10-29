@@ -873,6 +873,62 @@ func SessionFamilyTurnsSourceSQL() string {
 		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date)"
 }
 
+// SessionFamilyTurnsSourceWindowedSQL 是 SessionFamilyTurnsSourceSQL 的
+// **带分区键下界**变体（R181 轮新增）。
+//
+// ★ 为什么需要它（★ 实测坐实，不是推断）：★★
+// `public.session_turns` / `session_bodies` / `session_turn_details` 都按
+// **partition_date**（RANGE 分区）划分，而读方几乎都只按 **ts** 过滤
+// ⇒ ⇒ PG 的分区裁剪**只认分区键谓词** ⇒ ⇒ 一个 ts 窗口会命中【全部】月分区。
+// ★★ 本地真库 A/B 对照（session_turns 有 5 个月分区 + default）：
+//
+//	WHERE ts >= '2026-10-01' AND ts <= '2026-10-29'
+//	  ⇒ Append → 5 个分区全被扫（2026_07 / 2026_08 / 2026_10 / 2026_11 / default）
+//	WHERE ts >= ... AND partition_date >= '2026-10-01' AND partition_date <= '2026-10-29'
+//	  ⇒ Seq Scan on session_turns_2026_10   ← ★ 只剩 1 个分区 ★
+//
+// ★★ 生产侧同一形态已被台账记下（252 的 pg_stat_statements 观测台账
+// `scripts/audit/asset/query-plan-observations.tsv`）：/api/logs 的列表语句
+// （stmt-1d7be58136）在**1 秒窗口**上 Seq Scan 了 **4 个整月分区**。
+//
+// ★ 与 canonical 视图的**口径等价性**：★ 本函数与
+//   `request_logs_with_current_month` 读的是同一对关系（hot ∪ 父表）、
+//   投影走**同一个** sessionFamilyProjection(true)、JOIN 条件逐字相同
+//   （★ 视图那版带 `::text` 冗余转型，本版不带 ⇒ ★ 索引可用性反而更好，
+//     ★ 取值逐行相同 ⇒ 语义不变）★★
+//   ⇒ ⇒ 唯一差别 = 本版多了 partition_date 谓词 ⇒ ⇒ 行集是 ts 谓词的**子集**，
+//     ★ 而 partition_date == calendarDate(ts)（★ 所有写入方都用它）⇒
+//     ★ ⇒ 子集 == 原行集 ⇒ ⇒ **不丢行** ★
+//
+// ★ 参数：★ pdFrom / pdTo 是**两臂各自**要用的 SQL 片段（形如 "$1" / "$2"），
+//   ★ 由调用方决定参数编号 ⇒ ⇒ 本包不感知参数位置。
+//
+// ★ 返回值不带外层别名（调用方自己加，如 ` rl`）。
+func SessionFamilyTurnsSourceWindowedSQL(pdFrom, pdTo string) string {
+	win := " WHERE t.partition_date >= " + pdFrom + " AND t.partition_date <= " + pdTo
+	// ★★ 详情侧（session_turn_details）**也要**带分区键下界，否则它仍然全扫：
+	//   JOIN 条件里已经有 `d.partition_date = t.partition_date`，而 t 侧被限在
+	//   [pdFrom, pdTo] ⇒ ⇒ d.partition_date 也必然落在同一区间 ⇒ ⇒ 在 ON 子句里
+	//   **再加一条冗余谓词**是**逐行等价**的（不是新筛选）⇒ ⇒ 但它让 PG 能在
+	//   **规划期**把 details 的月分区裁掉。
+	// ★★ 实测（本地真库，R181 轮）：只给 turns 侧加下界时，details 侧仍是
+	//   `Seq Scan on session_turn_details_2026_10 / _2026_11 / _default`（3 个分区）；
+	//   两侧都加 ⇒ ⇒ details 只剩窗口内分区。
+	// ★★ 放在 ON 而不是 WHERE：★ LEFT JOIN 的 ON 子句里加条件**不改变**结果集
+	//   （左行照样保留）⇒ ⇒ 语义与「不加」完全一致 ⇒ ⇒ 零风险。
+	joinWin := " AND d.partition_date >= " + pdFrom + " AND d.partition_date <= " + pdTo
+	return "(SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns_hot t" +
+		" LEFT JOIN public.session_turn_details_hot d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" + joinWin +
+		win +
+		" UNION ALL SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns t" +
+		" LEFT JOIN public.session_turn_details d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" + joinWin +
+		win + ")"
+}
+
 // SessionFamilyTurnsSessionExistsSQL 返回「**外层会话 s** 是否含有满足 colPred 的轮次」
 // 的**两腿 EXISTS**（hot 腿 ∪ 父表腿），供会话级过滤（`?api_key_id=` / `?model=` /
 // `?provider=` / `?status_code=`）使用。

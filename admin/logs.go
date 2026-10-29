@@ -490,9 +490,18 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		pageSize = 500
 	}
 
-	clauses := []string{"rl.ts >= $1", "rl.ts <= $2"}
-	args := []any{start, end}
-	argIdx := 3
+	// ★★ R181 轮：★ 列表路径改走**带分区键下界的原生形态** ⇒ ⇒ PG 能做
+	// 月分区裁剪（详见 logsSourceFromSQLWindowed 的头注：canonical 视图的
+	// 118 列投影被冻结 ⇒ 视图形态下裁剪不可达）。
+	// ★★ 参数编号因此整体后移两位：★ $1/$2 = partition_date 上下界（在 FROM
+	// 子查询里用），★ $3/$4 = ts 窗口，★ $5… = 过滤条件。
+	// ★★ 口径不变：★ partition_date = calendarDate(ts)（所有写入方都用它）⇒ ⇒
+	// partition_date 谓词是 ts 谓词的**蕴含条件**⇒ ⇒ **不丢行**；
+	// ★ 真正的精确过滤仍由 ts 谓词做（partition_date 只是裁剪用的下界）。
+	pdFrom, pdTo := sessionPartitionDateBounds(start, end)
+	clauses := []string{"rl.ts >= $3", "rl.ts <= $4"}
+	args := []any{pdFrom, pdTo, start, end}
+	argIdx := 5
 
 	addFilter := func(clause string, val any) {
 		clauses = append(clauses, fmt.Sprintf(clause, argIdx))
@@ -639,7 +648,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// Tenant-admin path retains the LEFT JOIN against api_keys so the WHERE
 	// clause on rl.tenant_id is matched by the same row set used for COUNT
 	// and the SUM aggregate below.
-	logsFrom := logsSourceFromSQL()
+	logsFrom := logsSourceFromSQLWindowed("$1", "$2")
 
 	// 2026-10-20（复核轮 §5.12）：COUNT 与 SUM 合并为**一次**聚合。
 	//
