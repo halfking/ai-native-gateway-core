@@ -15753,6 +15753,15 @@ guards-win-baseline` + CI 载体静态自证腿（Linux 裸跑实测腿=整片�
 > ⇒ ★★ **逐条在 `origin/main` 干净 worktree 上复现** ⇒ ★★ **与本轮改动无关**（★ 本轮只加 1 个测试
 > 文件 + 3 个文档）★★ ⇒ ★ 典型形态是**台账 md5 / 快照 / 清单与磁盘脱节**，★ 属并行会话在途改动，
 > ★ **共享台账本轮一律不碰**。
+> ⇒ ★ **客户端侧已实测的补丁（★ 交接给客户端仓）**：★ **P1** = 让挤压正文的那条 `flex:none` 兄弟可收缩
+> （`flex:0 1 auto; min-width:0`）；★ **P2** = `.message-content` 给宽度下限（`min-width:280px`）；
+> ★ P3 = markdown 流 grid item 补 `min-width:0`；★ P4 = `li` 的 `word-break:break-word` 改
+> `word-break:normal; overflow-wrap:break-word`（★ 防御项）。★★ **浏览器 7 档实测**：★ 修复前 900px 起
+> 塌陷（★ 实宽 164px / `li` 96px）、★ 修复后 7 档全部 `li`=24px（★ 单行）；★★ **留一法消融**：★ 拿掉 P1
+> ⇒ 仍 280px 宽（★ 被 P2 兜底）、★ 拿掉 P2 ⇒ 仍整宽（★ 被 P1 兜住）、★ 拿掉 P3/P4 ⇒ 不变 ⇒
+> ★★ **最小修复 = P1 或 P2 任一**，★★ 推荐两条都上。★★ **仍需客户端仓一条 datum**：★ 塌陷现场
+> `.message-content` 在 `.stream-message-content` 行内的**兄弟元素**是谁、实测多宽（★ 桌面端布局由 JSX
+> 的 tailwind 类决定，★ CSS 里没有 electron 专属规则）⇒ ★★ 拿到即可把 P1 的通配换成精确选择器。
 > ⇒ ★ **本轮明确没做**：★ 客户端 CSS 修复本身；★ 211 PG 连接打满（★ `max_connections=100`、★ 网关日志
 > 未出现该错 ⇒ **未定性**）；★ `normalizeOpenAIStreamContent` 的无分隔符拼接（★ 既有语义、★ 非成因）；
 > ★ `outputcompliance` 帧重建路径（★ 未证实与附图相关）。
