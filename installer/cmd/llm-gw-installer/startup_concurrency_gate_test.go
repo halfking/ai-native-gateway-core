@@ -228,6 +228,16 @@ var knownStartupChainConcurrencyViolations = map[string]int{
 	// 藏在 format() 的字符串字面量里）+ 一条 hot 表的 CREATE INDEX CONCURRENTLY
 	// （注释里的提法已被剥注释器排除）。
 	"916_session_turns_api_key_ts_index.sql": 2,
+	// 918（2026-10-29 R176 轮）与 877/887/888/902/909/916 同类：携带
+	// dbinit:no-transaction 标记 ⇒ 非事务通道。给 node_probe_runs 建覆盖索引
+	// (credential_id, completed_at) INCLUDE (raw_model_name, started_at, success)
+	// —— 承接 INV-4「双模型探测成功门」的 24h 关联子查询（五个调度读点逐行
+	// 求值；completed_at 此前不在任何索引里 ⇒ 每次评估扫该凭据全史 run）。
+	// ★ CONCURRENTLY 必需：探针写入与 TTL DELETE（partition_manager）都在跑。
+	//
+	// 计数 1：一条 CREATE INDEX CONCURRENTLY IF NOT EXISTS（注释里的提法
+	// 已被剥注释器排除）。
+	"920_node_probe_runs_cred_completed_idx.sql": 1,
 }
 
 // countConcurrentlyIn counts CONCURRENTLY occurrences in the given file content.

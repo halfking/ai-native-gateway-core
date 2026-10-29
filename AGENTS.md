@@ -14850,6 +14850,95 @@ upstream_request 完整在场。
 ⇒ 提交 `51cb63a80`（已推 origin）；审计档
 `docs/audit/2026-10-29-客户端识别轮-原厂规范对照与线材实态.md`；
 通用式见 `LESSONS.md` **§551**。
+ **2026-10-29 24h 审计第 5 轮：opened 缺口复扫 + asm audit sink 根因轮**（goal 会话）：
+ ★ 承接第 4 轮遗留四项（①origin/main HEAD 部署确认+§3.5 复扫 ②asm audit sink 根因
+ ③6 家 proxy 供应商复查 ④零基线复核）⇒ 全部收口。
+ ⇒ ★ **①缺口再生 = 0**（§3.5 判据原样重扫：total/6h 窗/1h 窗全 0；对照上轮 ~11/h ⇒
+ 期望 ~66）⇒ 行为上 `2c7dcf48c` 的根修已在活跃槽生效；活跃槽镜像仍 sha 不可验祖
+ （`5fbba4ef-dirty`，02:00 上线）⇒ 本轮以 origin/main HEAD 正式部署收掉不确定性。
+ **④零基线全保持**：outbox dlq 0/failed 0/pending 1；asm inbox retryable 0；
+ 三方对拍 97,100 逐位一致（sent==inbox==projection==checkpoint）；session_projection
+ 45,655 == opened sent 45,655。
+ ⇒ ★★ **②asm audit sink 最初根因 = acc-pg17 连接耗尽**：1,572 条 WARN 聚 7 个突发，
+ 每个突发分钟 PG 日志都有 `too many clients already`（全窗 724 次，最后 10-28 21:30，
+ 此后 26h+ 零复发）；asm 二进制把 pgx 底因整体丢弃 ⇒ asm 仓 `internal/audit/mapping.go`
+ 改双 `%w`（sentinel + 底因可 As）⇒ 提交 `61aa202` 已推 asm origin（容器下次构建生效）。
+ 数据零丢失：97,100 三方一致；失败窗 audit_events 仍有 10,259 行 ⇒ 部分失败非断供。
+ ⇒ ★ **③6 家 proxy 供应商（azure/gemini/mistral/openai/perplexity/xai）= 结构性休眠**：
+ 0 凭据 / 0 订阅（`proxy_subscriptions` 空表）/ 7 天 0 流量 ⇒ 无候选不进路由无故障面，
+ 处置=保持不动。第 4 轮 7 家 proxy→direct 切换 211 已生效（updated_at 10-29）。
+ ⇒ ★★ **同轮修掉的既有红（全 origin/main 实测红）**：合并三股（origin/main 含 sanitize
+ 917 族+客户端识别轮、本地第 4 轮终态文档、**r98 R179 分支 15 提交**——唯一未合并
+ 不活跃子分支，逐文件 merge 一次落位）；design-spacing 门 9 处离阶归零（平局取下界：
+ 6→4/10→8/14→12）；db-object 台账三件套按仓内工具原路再生（917 三索引，diff 先行
+ 确认只有新增）；request-surface 文档证据行号重锚（179→185）；**917 族连带四件套补齐**
+ （manifest 行 / lock guard 999d1c9e6 同款 / embed 字节副本 / 台账最后再生一遍——
+ manifest 变化会让 reachability 翻转，台账必须收尾再生）。
+ ⇒ ★ **runner 台账↔产物对账门**（`apply-db-revision-sequence.sh`）：912「台账 sha 一致
+ 而产物缺席」挂了两天才被发现 ⇒ 对本轮按指纹跳过/重放的 912/913 逐表 to_regclass 探针，
+ 产物不在 ⇒ exit 5 响亮失败。★ 第一版被 runtime fixture 抓回（夹具故意造「记账行在
+ 产物不在」测 legacy-skip）⇒ 探针范围收窄到 `sha_matched_markers`（本轮认过账的文件），
+ 不是「库里所有记账行」。
+ ⇒ ★ **如实记**：vitest 2 红（`theme.logoAssets.test.ts`）= pure origin/main 既有红 ——
+ a83698efc 换入的经典 logo 资产（ratio=1.000/luma 139.5）不满足同提交自己的测试合同
+ （48%/<110），换资产还是改阈值属品牌设计判断 ⇒ 移交品牌轮当事会话，本轮不代拍板。
+ 慢 SQL：6h 慢日志全部为有界维护作业（REFRESH 1.7s / promote ~1s / URSM health 4.3s/h
+ ——5.3M 行 7d 全窗扫是设计固有，不为 4.3s 冒语义险）；`pg_stat_statements` 未进
+ shared_preload_libraries（需重启 acc-pg17，留用户决断）。
+ ⇒ 审计档 `docs/audit/2026-10-29-24h审计第5轮-opened缺口复扫与asm审计根因.md`；
+ 通用式见 `LESSONS.md` **§552**（6 条：Retryable 别丢底因 / 突发分钟按分钟对拍 /
+ 指纹证明执行不证明在场+探针范围=本轮认账 / 结构休眠≠故障 / 资产换代同轮过测试 /
+ 上游红条按依赖序收口且台账最后再生）。
+**2026-10-29 第 38 增量：252 SQL 日志审计 R176 轮（ursm 巡检三族降本 + INV-4 探针资格门索引化）**（goal 会话）：
+★ 承接例行 252 审计节奏（R175 同日为 routing REFRESH 深潜、未做日志窗）⇒ 本轮 26.4h 全窗
+（10-28 03:37 → 10-29 06:03，真实内容 178MB，**copytruncate NUL 洞 1.12GB 第四次复发**）
+⇒ 慢查 6,043 条/49,180s、错误 2,731 条、无事件级爆发、无新错误签名。
+⇒ ★ **主修复一 = 迁移 919（P11 第二期）**：巡检 `ursm-snapshot-health.sh` 的 base_active
+基线（ACTIVE_DAYS=3 的 count+DISTINCT 分钟）也走 892 汇总表 —— ★★ 892 当年只搬了
+base_buckets，base_active 因「3 天才 9.7s」没搬 ⇒ **行量自 R97 涨 3.4×（日分区 290 万行）
+⇒ 同一段实测 158.1s** ⇒ 主判据（WITH win 族）22 次/5,339.5s/每小时 1 次 = 全窗第一大
+慢查族（10.9%）。修法：`ursm_snapshot_slot_daily` 加 `active_minutes` 列（hour:
+count(DISTINCT minute)；minute: 恒 1）+ 填充函数升级（**签名不变**；ON CONFLICT DO UPDATE
+同步更新）+ 巡检脚本 `BUCKETS_SQL_DAILY_V2` 变体 + active 探针（列缺/NULL/无行三形态
+⇒ 回退 892 老路，慢但不失明）+ 三态选择。★ **同刻 A/B：V1 100.9s → V2 2.7s（36×），
+判据输出逐字相同**。★ 部署次序契约：列加后 NULL ⇒ 探针回退 ⇒ 落地后手工全量回填
+（252 已做，hour 臂 216/216）。
+⇒ ★ **主修复二 = 迁移 920**：`node_probe_runs` 补 `(credential_id, completed_at) INCLUDE
+(raw_model_name, started_at, success)` 覆盖索引 —— INV-4 双模型探测成功门
+（`bg/probe_policy.go credentialTwoProbeSuccessGateSQL`，五个调度读点逐行求值）的
+completed_at **不在任何索引里** ⇒ 每次评估扫凭据全史 3.8 万条只留 4% ⇒ 慢查 325 次
+/1,395s + 被取消 224 次/26.4h。★ **A/B：18,885 → 321 buffers（58×）**（UPDATE pg_index
+失活臂 + ROLLBACK，indisvalid 复查 t）。
+⇒ ★ **252 预应用 + 双台账**（736/882/892 先例通道）：917 号事务通道、918 号（=现 919/920）
+CONCURRENTLY（indisvalid=t）、schema_migrations + checksums 双行（advisory lock 契约）；
+全量回填触发。★ **252 台账水位 911**：912~916 是并行会话部署列车的欠账，本轮不代应用；
+919/920 不受影响（文件级 marker 收敛；252 台账里的 917/918 行=本轮 ursm/探针内容，
+**不是** sanitize 轮的 917 —— deploy 按文件名 marker 以 919/920 重登记收敛）。
+⇒ ★ **让号记录（两次）**：① 迁移号初拟 917/918 ⇒ push 前 fetch 实测 origin 已被并行会话
+「拦截审核与放行落库」（ddd762e7a，917_sanitize_block_reviews）占用 ⇒ **重取 919/920**
+（全登记面同步改号：双目录文件名/文件头/runner/main.go/apply 脚本/concurrency gate/
+db-changelog sha256/契约门标识符——★ 契约门还撞了 sanitize 轮测试的 `mig917File`
+同包常量名 ⇒ 加 R176 后缀）；② LESSONS 取号 fetch 实测 origin 最高 §551 ⇒ 跨号取
+**§555**（留 §552~554 缓冲）；AGENTS 取 **第 38 增量**。
+⇒ ★ **登记面**：双目录（sql/migrations/startup + embeddata）逐字一致、installer main.go
+embeds、runner.go StartupFiles（917 sanitize 在前 → 919 → 920）、apply-db-revision-
+sequence.sh、concurrency gate 计数（920: 1）、db-changelog 三行（917 sanitize 轮的行
+保留 + 919/920 双行含 sha256）；契约门 `migration_919_920_r176_ursm_probe_gate_test.go`
+9 例。
+⇒ ★ **读数**：契约门 9/9 绿；installer 门绿；ursmcheck 相关门绿；startup 全包测试绿；
+**8 条 ursmcheck 既有红在干净 HEAD worktree 复现** = 全部上游带入（零新增）。
+⇒ ★★ **本轮最值钱的通用式**（LESSONS §555）：**注释里的性能实测值有时点与行量半衰期
+—— 892「base_active 不值得物化」的前提（3 天 9.7s）在行量 ×3.4 后翻转，但没有任何机制
+提醒 ⇒ 跨轮复用「不修它」的结论前必须重测**；配套：基线物化是分期的，「第一期没搬的
+那半边」会在第二期变成主成本；物化列与 ON CONFLICT DO UPDATE 同生共死（半截基线无报错）。
+⇒ ★ **本轮明确没做（留给下一轮，别重复排查）**：919/920 随部署列车到 211/154/245；
+**R175 的 refresher 三轴分族（jit=off）仍未部署**（session 族 2.7h/天在烧）；
+**V2 后对账**（WITH win 族与 INV-4 族应从慢查榜消失，下轮首查）；latest_bucket
+479×2,763s 未展开；外部杀查询 192/天 基线重测；pocket $4（317 次/26.4h，openpocket
+容器仍修复前代码 N+5）；8 条 ursmcheck 既有红的修复（属上游引入轮）。
+⇒ 审计档 `docs/audit/2026-10-29-R176-252SQL日志审计-ursm三族降本与探针资格索引化.md`；
+通用式见 `LESSONS.md` **§555**（8 条形态）。
+
 **2026-10-29 ㊼ r1048 轮：B 级脚本族 ⇒ 专用构建缓存 + 普查结论 + 三处收口决策**（会话 `mvs_fa34e3337b364fbeb9bc961fac211729`）：
 > ★ 承接 r1047 轮 —— 那一轮**诚实地**把【B 级脚本族】（审计 / 部署 / 压测）写成
 > 【**明确的漏判面**】⇒ ⇒ ★★ ⇒ **本轮是那个缺口的兑现**（★ 不是「假装覆盖了」）。
@@ -14925,5 +15014,11 @@ upstream_request 完整在场。
 > ⇒ ★ Makefile / 其它语言；★ ★★ **修那 4 条上游的红**（★ 那是上游的裁决面 ⇒ ⇒ 不擅动）。
 > ⇒ ★★★ 「设了」≠「用上了」★★ 行级判据看不见四类假阳性 ★★★ 门是静态的 ⇒ 运行期验证不能省
 > ⇒ ★★★ 白名单不要退化成点名制 ★★★ 「一半隔离」比「不隔离」更危险）。
-> **取号说明**：★ 本轮开工时取 **㊼**（★ ㊻ = 上游 2026-10-29 客户端识别轮）；
-> ⇒ LESSONS 同步：★ §551 = 上游同轮 ⇒ ⇒ 本轮取 **§552**。
+> **取号说明**：★ 本轮开工时取 AGENTS **㊼**（★ ㊻ = 上游 2026-10-29 客户端识别轮）
+> ⇒ ⇒ ★★ **合并上游后复核**：★ 上游 AGENTS 已占到 **㐀**（★ U+3400）⇒ ⇒ ★★ ⇒
+> ⇒ ⇒ **㊼（★ U+32BC）在上游仍然空着** ⇒ ⇒ ★★ ⇒ ⇒ **本轮 ㊼ 不冲突 ✓**
+> ⇒ ⇒ ★★ （★ ★★ 这是**让号落在【推送前再查】**而不是开工时的回报 ★★）。
+> ⇒ LESSONS 同步：★ 开工时取 **§552** ⇒ ⇒ ★★ ⇒ **合并上游后让号** ⇒ ⇒ 上游已占
+> ⇒ ⇒ **§552**（★ 24h 审计第 5 轮）与 **§555**（★ R176 轮，★ 且上游**故意留了
+> ⇒ ⇒ §552~554 作缓冲**）⇒ ⇒ ★★ ⇒ ⇒ 本轮最终取 **§556** ✓（★ 逐项复核：★ §550 /
+> ⇒ ⇒ §551 / §552 / §555 / §556 各 1 个标题 ⇒ ⇒ ★★ ⇒ **无重复**）。

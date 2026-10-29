@@ -2428,6 +2428,26 @@ files=(
   #   （拦截持久化轮，2026-10-29）。纯新增三表 + 索引，全部 IF NOT EXISTS
   #   ⇒ 幂等、零锁面风险；进程内的审核队列与放行表从此重启可恢复。
   "$ROOT_DIR/sql/migrations/startup/917_sanitize_block_reviews.sql"
+  # ★ 919（2026-10-29 R176 轮；★ 让号记录：初拟 917，push 前 fetch 实测 origin 已被
+  #   并行会话「拦截审核与放行落库」占用（ddd762e7a）⇒ 重取 919/920）：P11 第二期
+  #   —— ursm_snapshot_slot_daily 补 active_minutes 列（hour: count(DISTINCT minute)；
+  #   minute: 恒 1），填充函数 refresh_ursm_snapshot_slot_daily 升级为同步产出它
+  #   （签名不变）。落点 = 巡检 ursm-snapshot-health.sh 的 base_active 基线改走
+  #   汇总表（252 实测：主判据 WITH win 族 22 次/5,339s 每 26.4h，独立臂 EXPLAIN
+  #   ANALYZE 158s ⇒ 行量自 R97 起涨 3.4×，892 只搬了 base_buckets）。
+  #   ★ 部署次序契约：列加上后存量行 active_minutes=NULL，巡检探测失败自动回退
+  #   源表路（慢但不失明）⇒ 落地后尽快手工触发全量回填
+  #   SELECT public.refresh_ursm_snapshot_slot_daily(8, 'hour');
+  #   （不放迁移文件：全量刷新按 2026-10-29 行量需 10min+，迁移通道预算承不住。）
+  "$ROOT_DIR/sql/migrations/startup/919_ursm_slot_daily_active_minutes.sql"
+  # ★ 920（2026-10-29 R176 轮）：node_probe_runs (credential_id, completed_at)
+  #   INCLUDE (raw_model_name, started_at, success) 覆盖索引。缺口本体 =
+  #   INV-4 门（bg/probe_policy.go credentialTwoProbeSuccessGateSQL，五个调度
+  #   读点逐行求值）：completed_at 不在任何索引里 ⇒ 每次评估扫该凭据全史
+  #   （顶层凭据 ≈3.5 万索引项）只为留 24h 的 ~1,300 条 ⇒ 252 实测慢查 325 次
+  #   /1,395s + 被取消 224 次/26.4h。★ 含 CREATE INDEX CONCURRENTLY ⇒
+  #   文件首行带 dbinit:no-transaction 标记。
+  "$ROOT_DIR/sql/migrations/startup/920_node_probe_runs_cred_completed_idx.sql"
 )
 
 
@@ -2746,6 +2766,11 @@ END
 \$repair\$;"
 }
 
+# 本轮按指纹命中跳过 / 按内容重放的文件（⇒ 终态探针只对这些文件做：
+# fixture 树与合成的 legacy 记账行不在其中 —— 探针判的是「本轮认过账的文件，
+# 产物必须真实在场」，不是「库里所有记账行」）。
+declare -a sha_matched_markers=()
+
 for file in "${files[@]}"; do
   [[ -f "$file" ]] || { printf 'error: missing migration %s\n' "$file" >&2; exit 4; }
   base="$(basename "$file")"
@@ -2763,12 +2788,14 @@ for file in "${files[@]}"; do
   stored_sha="$(psql_query "SELECT content_sha256 FROM public.gateway_db_revision_sequences WHERE sequence_name='${marker}' LIMIT 1")"
   if [[ -n "$stored_sha" ]]; then
     if [[ "$stored_sha" == "$file_sha" ]]; then
+      sha_matched_markers+=("${base}")
       printf 'already applied: %s\n' "${file#"$ROOT_DIR/"}"
       continue
     fi
     # 台账已记指纹且与当前文件不同：文件在应用后被内容加固过。通道契约
     # （每个迁移幂等）兜底重放安全性，重放使库状态收敛到当前文件内容。
     printf 'content replay (ledger %.12s -> file %.12s): applying %s\n' "$stored_sha" "$file_sha" "${file#"$ROOT_DIR/"}"
+    sha_matched_markers+=("${base}")
     psql_file "$file"
     psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}', execution_sha256='${execution_sha}', runtime_adaptation='${runtime_adaptation}' WHERE sequence_name='${marker}'"
     continue
@@ -2778,6 +2805,7 @@ for file in "${files[@]}"; do
       # 遗留记账（指纹通道上线前应用）且登记在重放清单：按当前内容重放
       # 一次，之后进入常规指纹管理。
       printf 'content replay (legacy, registered): applying %s\n' "${file#"$ROOT_DIR/"}"
+      sha_matched_markers+=("${base}")
       psql_file "$file"
       psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}', execution_sha256='${execution_sha}', runtime_adaptation='${runtime_adaptation}' WHERE sequence_name='${marker}'"
     else
@@ -2791,6 +2819,41 @@ for file in "${files[@]}"; do
 done
 # Fingerprints cannot detect physical drift after delivery. Fail before cutover.
 psql_query "SELECT public.assert_session_bodies_kind_contract()"
+
+# ── 台账 ↔ 产物对账门（2026-10-29 审计轮，211 实测教训）───────────────────
+# ★ 912/913 在 211 上「台账有行、内容指纹一致、产物缺席」—— 回收站清理 worker
+#   每小时 42P01，挂了两天才被发现
+#   （docs/audit/2026-10-29-24h审计轮-背压熔断与迁移账本补齐.md §实测）。
+#   指纹通道只能证明「文件执行过」，证明不了「对象还在」⇒ 对**本轮按指纹命中
+#   跳过 / 内容重放**的关键迁移逐一探测其头产物；产物不在 ⇒ 响亮失败（此时旧槽
+#   仍在服务，损失为零），处置 = 删除对应 ledger 行让重放通道再应用（迁移幂等）。
+# ★ 探针范围 = sha_matched_markers（本轮 files 里真的走过 skip/replay 分支的）——
+#   不是「库里所有记账行」：fixture 树（runtime_test 的合成 shim 台账）与
+#   legacy 无指纹记账行不在此列（后者的产物缺失仍靠 census drift verifier 与
+#   worker 42P01 兜底 —— 如实记，不是装作覆盖了）。
+# 局限（如实记）：头产物清单是**策展**的（与 assert_session_bodies_kind_contract
+# 同一模式），只覆盖真正咬过人的迁移；通用 runner 化仍是下一轮工作。
+ledger_artifact_probe() {
+  local marker_suffix="$1" probe_sql="$2" artifact
+  local known=0
+  for seen in "${sha_matched_markers[@]:-}"; do
+    [[ "$seen" == "$marker_suffix" ]] && { known=1; break; }
+  done
+  [[ "$known" == "0" ]] && return 0
+  artifact="$(psql_query "SELECT ${probe_sql}")"
+  if [[ "$artifact" != "t" ]]; then
+    printf 'error: 台账 ↔ 产物对账失败：%s 本轮按指纹认账但其产物缺失（%s ⇒ %s）\n' \
+      "$marker_suffix" "$probe_sql" "$artifact" >&2
+    printf 'error: 处置：删除 gateway_db_revision_sequences 里 sequence_name=%s:%s 的行，再重放本序列（迁移幂等）\n' \
+      "$sequence_name" "$marker_suffix" >&2
+    exit 5
+  fi
+  printf 'ledger/artifact probe ok: %s\n' "$marker_suffix"
+}
+ledger_artifact_probe "912_session_recording_trash.sql" \
+  "to_regclass('public.session_bodies_trash') IS NOT NULL AND to_regclass('public.session_hidden') IS NOT NULL"
+ledger_artifact_probe "913_maas_monthly_bills_coupons.sql" \
+  "to_regclass('public.maas_monthly_bills') IS NOT NULL AND to_regclass('public.maas_coupons') IS NOT NULL AND to_regclass('public.maas_coupon_redemptions') IS NOT NULL AND to_regclass('public.maas_invoice_requests') IS NOT NULL"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"
