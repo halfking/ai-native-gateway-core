@@ -58,8 +58,12 @@ func TestExtractGeminiPath(t *testing.T) {
 		{"/v1beta/models/gemini-2.5-pro:generateContent", "gemini-2.5-pro", "generateContent", true},
 		{"/v1beta/models/gemini-2.0-flash:streamGenerateContent", "gemini-2.0-flash", "streamGenerateContent", true},
 		{"/v1/models/gemini-pro:generateContent", "gemini-pro", "generateContent", true},
+		// The countTokens action is served (2026-10-29 countTokens round):
+		// a native Gemini client probes the prompt size before generating.
+		{"/v1beta/models/gemini-pro:countTokens", "gemini-pro", "countTokens", true},
+		{"/v1/models/gemini-pro:countTokens", "gemini-pro", "countTokens", true},
 		// Wrong action
-		{"/v1beta/models/gemini-pro:countTokens", "", "", false},
+		{"/v1beta/models/gemini-pro:embedContent", "", "", false},
 		// Missing action
 		{"/v1beta/models/gemini-pro", "", "", false},
 		// Wrong path
