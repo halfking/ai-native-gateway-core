@@ -25,8 +25,10 @@
 //   - model_quality_worker：跑 MMLU 题库 ⇒ 「这个模型答对多少题」（质量）。
 //   - model_credibility_worker：发一次标定请求 + 复用上面的实测 ⇒
 //     「这个模型是不是它声称的那个」（身份）。
+//
 // ⇒ 后者依赖前者的产出（model_iq_runs 的准确率）⇒ 前者没跑过时，
-//   能力维度记为「未测量」，判定只靠身份与指纹两把尺。
+//
+//	能力维度记为「未测量」，判定只靠身份与指纹两把尺。
 package bg
 
 import (
@@ -218,11 +220,16 @@ func (w *ModelCredibilityWorker) ScanAll(ctx context.Context) (int, error) {
 	// 把供应商×模型粒度的汇总写回 provider_quality_profiles。
 	// ★ 传 targets：只写本轮扫到的 (provider, model)，防止历史残留行
 	// （已下线/已移出特色清单的模型）被误写。
-	if n, err := scanner.Store.WriteProviderQualityProfiles(ctx, targets); err != nil {
+	// ★ 独立 ctx：探测可能耗尽 HTTP 客户端的超时（scan 一轮 20+ 分钟），
+	// 请求 ctx 取消不应连带取消汇总落库 —— 211 实测 2026-10-30：
+	// 全量 scan 跑满客户端超时后 6 组判定只写回 1 组。
+	rollupCtx, rollupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	if n, err := scanner.Store.WriteProviderQualityProfiles(rollupCtx, targets); err != nil {
 		slog.Warn("model credibility: write provider quality profiles failed", "error", err)
 	} else if n > 0 {
 		slog.Info("model credibility: provider quality profiles updated", "rows", n)
 	}
+	rollupCancel()
 	return len(results), nil
 }
 
@@ -240,9 +247,12 @@ func (w *ModelCredibilityWorker) ScanNode(ctx context.Context, credentialID int6
 	if err != nil {
 		return nil, err
 	}
-	if _, err := scanner.Store.WriteProviderQualityProfiles(ctx, nil); err != nil {
+	// ★ 同 ScanAll：汇总用独立 ctx（单点 trigger 的请求 ctx 取消不应连带取消落库）。
+	rollupCtx, rollupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	if _, err := scanner.Store.WriteProviderQualityProfiles(rollupCtx, nil); err != nil {
 		slog.Warn("model credibility: write provider quality profiles failed", "error", err)
 	}
+	rollupCancel()
 	return &res, nil
 }
 
