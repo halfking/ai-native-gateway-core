@@ -62,7 +62,11 @@
 
 ## 5. 合并与推送记录
 
-- 合并前 fetch：origin/main = 2d66c3ac3（远端 LESSONS 已到 §555 ⇒ 我方新号取
-  §557；§531 远端空闲 ⇒ 复原段留在 §531，与并行会话 §535 取号记录相容）。
-- 合并方式：`git merge origin/main`（禁 stash/rebase）；LESSONS.md 冲突按
-  「两侧都保留、远端在前 + 我方段落在尾」解决。
+- 合并前 fetch：origin/main = 2d66c3ac3（远端 LESSONS 已到 §555 ⇒ 我方新号**初取
+  §556**；§531 远端空闲 ⇒ 复原段留在 §531，与并行会话 §535 取号记录相容）。
+- ★ **合并后再次 fetch 实测远端已被 r1048 轮占用 §556** ⇒ 按让号纪律改取
+  **§557**（★ 这是「让号必须复核到 push 前那一次」的又一次实例：★ 合并前核过号，
+  合并后远端又前进了一格；★ 若不复核就会撞号）。
+- 合并方式：`git merge origin/main`（禁 stash/rebase）；本次合并**无冲突**
+  （远端新增 `scripts/audit/post-surface-ledger-refresh.py` ⇒ 实证上游确实在刷
+  post-surface 台账 ⇒ 印证「不接手」判断正确）。
