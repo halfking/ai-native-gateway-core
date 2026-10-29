@@ -118,42 +118,9 @@ func (c *Client) ModelModalityMismatch(ctx context.Context, model, profile, tena
 	}, nil
 }
 
-// ModalityAccepts reports whether a model registered as registeredModality can
-// serve a request carrying requestedModality.
-//
-// This is the same rule the candidate query applies: media requests are
-// served by rows registered for that media modality or as "multimodal"; a
-// "multimodal" request is served only by "multimodal" rows.
-//
-// ★ Keeping this in one place matters: the diagnosis and the gate must use
-// the same acceptance set, otherwise the error message can name a cause that
-// the router never had. The candidate query's own copy lives in
-// candidateQuerySQLBase; provider/candidate_query_sql_shape_test.go holds the
-// two in lockstep.
-func ModalityAccepts(registeredModality, requestedModality string) bool {
-	registeredModality = strings.TrimSpace(strings.ToLower(registeredModality))
-	if registeredModality == "" {
-		registeredModality = "text"
-	}
-	requestedModality = strings.TrimSpace(strings.ToLower(requestedModality))
-	switch requestedModality {
-	case "":
-		// An empty request modality means "no modality filter" — the router
-		// admits everything in that case ($3 = '' in candidateQuerySQLBase).
-		// Treating it as an unknown media modality would report a mismatch
-		// for a request the router never filtered.
-		return true
-	case "text":
-		return true
-	case "multimodal":
-		return registeredModality == "multimodal"
-	case "image":
-		return registeredModality == "image" || registeredModality == "vision" || registeredModality == "multimodal"
-	default:
-		// vision / audio / video
-		return registeredModality == requestedModality || registeredModality == "multimodal"
-	}
-}
+// ★模态接受判据的实现**不在本文件**：它与判据的 SQL 形态同源，住在
+// provider/modality_accept.go（ModalityAccepts + ModalityAcceptArmsSQL）。
+// 本文件只负责「诊断」——用那条判据回答「这次零候选是不是模态造成的」。
 
 // modalityMismatchSQL answers, in one round trip:
 //

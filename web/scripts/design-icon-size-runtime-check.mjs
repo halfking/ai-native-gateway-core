@@ -537,13 +537,50 @@ if (!CHROME_CANDIDATES.length || !existsSync(CHROME_CANDIDATES[0])) {
   process.exit(3)
 }
 
+// ★★ 2026-10-29：基线不可用 ⇒ **在测量之前**就判红（★ 与两个兄弟读方同款：
+//   design-metric-skeleton / design-nested-card 早有这条，icon-size 此前没有）。
+//   理由：这条判定**不依赖测量** —— 「棘轮的尺没了」这件事本身就已经是红的，
+//   再去跑一遍浏览器只是白花 87s。
+//   ★★ 顺带**修掉一个真缺陷**：仓内 Go 侧「掏空登记册 ⇒ 读方必须红」那道门
+//   会**两次**调读方（基线态一次 + 掏空态一次）⇒ 掏空态此前也要跑全量
+//   浏览器 ⇒ ★★ 在负载下浏览器连不上（fetch failed）⇒ 读方以「环境失败」
+//   退出 ⇒ 门把它判成「红了但红因不对」⇒ **随机误判「门没牙」**。
+//   ⇒ 现在掏空态**秒级**返回（不碰浏览器）⇒ 那条随机误判从根上消失。
+// ★★ `--update-baseline` 是**显式重建基线**的动作 ⇒ 它必须能跑（否则新门
+//   第一次建基线时会被自己的早退挡住 ⇒ 死锁）⇒ 与 nested-card 同款守卫。
+const wantUpdate = argv.includes('--update-baseline')
+const baselineEarly = readBaseline()
+if (!wantUpdate && !baselineUsable(baselineEarly)) {
+  console.log(
+    '\n✘ [ICON-SIZE-BASELINE-UNUSABLE] 基线**不可用**：' +
+      (baselineEarly === null
+        ? '基线文件缺失或解析失败'
+        : '基线里没有可用的 zeroSized 数值') +
+      ' ⇒ ⇒ 棘轮**整个空转** ⇒ ⇒ 判红（★ 不许「没量到基线」等于「通过」）',
+  )
+  console.log('   ★ 判定不依赖测量 ⇒ 本次**没有**跑浏览器（基线没了，测了也无处判）。')
+  console.log('   ★ 要重建基线：加 --update-baseline（★ 它写回的值只许降不许升）。')
+  process.exit(1)
+}
+
 const port = 9200 + Math.floor(Math.random() * 300)
 let report
 try {
   report = await runChrome(port, pages)
 } catch (e) {
-  console.error('✘ 浏览器驱动失败：' + (e?.message || e))
-  process.exit(2)
+  // ★★ 2026-10-29：**环境失败 ≠ 判据失败**。
+  //   旧写法：exit 2 —— 而 exit 2 在本工具里是「自证失败」的码 ⇒
+  //   仓内 Go 侧「掏空登记册 ⇒ 读方必须红且红因正确」那道门把「浏览器连不上」
+  //   判成「红了但红因不对」⇒ **在负载下随机误判「门没牙」**。
+  //   ⇒ 现在环境失败走 exit 3（= 本工具既有的「未测量」约定）＋ 一个专属
+  //   探针 token ⇒ 门可以把它与「判据红」分开。
+  //   ★ 「未测量」不等于「通过」：门那边会跳过本条并把原因记进输出。
+  console.error(
+    '✘ [ICON-SIZE-NOT-MEASURED] 浏览器驱动失败：' +
+      (e?.message || e) +
+      '\n   ★ 这是**环境失败**（不是判据失败）⇒ 本次**未测量**（不是通过）',
+  )
+  process.exit(3)
 }
 
 const readings = {
@@ -589,10 +626,20 @@ if (jsonArg) writeFileSync(jsonArg.slice(7), JSON.stringify({ ...report, reading
 
 if (argv.includes('--update-baseline')) {
   const prev = baseline ?? { zeroSized: {} }
+  // ★★ 2026-10-29：写回值**只许降不许升**（★ 与两个兄弟读方同款）。
+  //   本基线是**上限型**（zeroSized = 该页零尺寸图标数，不得上升）⇒
+  //   已有的页取「旧值与实测值里的较小者」⇒ **重建基线这条路也放松不了棘轮**。
+  //   ⇒ ★ 此前这里直接写实测值 ⇒ 一次误操作就能把棘轮放松 ⇒ 修掉。
+  const zeroSized = {}
+  for (const p of report.pages) {
+    const old = prev.zeroSized?.[p.page]
+    const fresh = p.zeroSized
+    zeroSized[p.page] = typeof old === 'number' && Number.isFinite(old) ? Math.min(old, fresh) : fresh
+  }
   const next = {
     metric:
       'zeroSized = 该页渲染尺寸为 0 的图标数（不得上升；0 = 看不见 ⇒ 必须为 0）；minSide = 该页图标的最小边长（px，附记）',
-    zeroSized: Object.fromEntries(report.pages.map((p) => [p.page, p.zeroSized])),
+    zeroSized,
     updated: '2026-10-27',
     history: [
       ...(prev.history ?? []),
