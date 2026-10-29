@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1125,11 +1126,15 @@ func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
 					content := normalizeItemContent(item["content"])
 					if content == nil {
 						// 2026-10-29 24h 审计轮：211 实测 13,448 条 / 2h —— 同一批
-						// item_keys 形态（键序不同共 5 种）每请求重复告警，属客户端
-						// 数据卫生（status-only assistant item）而非网关故障。
-						// 首次出现保留 Warn（守住 2026-07-23「no instruction」审计
-						// 家族的取证信号），同形态重复降为 Debug。
-						if _, loaded := droppedItemShapeOnce.LoadOrStore(strings.Join(mapKeys(item), ","), true); !loaded {
+						// item_keys 形态每请求重复告警，属客户端数据卫生（status-only
+						// assistant item）而非网关故障。首次出现保留 Warn（守住
+						// 2026-07-23「no instruction」审计家族的取证信号），同形态重复
+						// 降为 Debug。★ 去重键必须**排序后**拼接：mapKeys 按 map
+						// 迭代序返回（Go 迭代随机）⇒ 不排序则同一形态被键序打散成
+						// 多个键（211 首验实测同形态同秒 3 条「first occurrence」）。
+						sortedKeys := mapKeys(item)
+						sort.Strings(sortedKeys)
+						if _, loaded := droppedItemShapeOnce.LoadOrStore(strings.Join(sortedKeys, ","), true); !loaded {
 							slog.Warn("responses input item dropped: no usable content after conversion",
 								"item_keys", mapKeys(item), "role", role,
 								"note", "first occurrence for this item shape; repeats logged at debug")
