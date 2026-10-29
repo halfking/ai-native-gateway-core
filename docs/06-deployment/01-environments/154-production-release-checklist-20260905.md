@@ -40,7 +40,7 @@ bash scripts/deploy-154.sh               # 委托 deploy-seamless.sh deploy 154
 | 5 | 凭据解密门（step 9.2） | `creds=N failed=0`；key_mask_error 全失败即自动回滚，partial 仅 WARN |
 | 6 | **部署后身份核验** | `grep -a 'vcs.revision=' current/gateway` == 该 release `version.json` git_sha == 本次部署 HEAD；`run|releases` 下无 mtime 早于部署时间的 gateway.build 复用 |
 | 7 | 鉴权证据 | `GET /v1/models` 无凭据 → 401；带数据面 key → 200 |
-| 8 | 模型证据 | `/v1/models` 模型数与 245 同级（245 实测 685）；admin 登录 → background-tasks 200 |
+| 8 | 模型证据 | ★ **口径分开看**（2026-10-29 起 `/v1/models` 默认只列特色模型）：<br>· 默认口径（`GET /v1/models`）⇒ 模型数 == `routing_policy.featured_models` 里**当前可路由**的条数（比 245 实测的 685 少很多是**预期的**，不是掉模型）；<br>· 全量口径（`GET /v1/models?scope=all`）⇒ 模型数与 245 同级（245 实测 685）；<br>· 两处都要有：`?scope=all` 的数**不小于**默认口径的数；admin 登录 → background-tasks 200 |
 | 9 | 日志留证 | 部署日志含 `VERIFY_PASS=1` 语义（seamless 目标=154），路径登记到本文档 §6 |
 
 ## 4. 回滚预案
@@ -74,7 +74,9 @@ bash scripts/deploy-154.sh               # 委托 deploy-seamless.sh deploy 154
   二进制内嵌 `vcs.revision=f6ea47da6a886e17a96ff3f8e51026a8afcde1a8`（与推送 HEAD 一致）。
 - 健康：`/healthz` ok、`/readyz` 200、DB 就绪 1s、authenticated background-tasks 200。
 - 凭据解密门：`providers creds=15 failed=0`。
-- 模型/鉴权：`/v1/models` 带 key 200（685 模型）、无凭据 401。
+- 模型/鉴权：`/v1/models` 带 key 200、无凭据 401。★ 口径注记（2026-10-29）：该记录里的
+  「685 模型」是**全量口径**的读数；默认口径（不带参数）现在只列特色模型，条数**必然更少**
+  —— 要复现当时的读数用 `GET /v1/models?scope=all`。
 - 迁移：658（可重放修复后）在共享 PG 成功应用 `1 新应用 / 1 检查`。
 - 事故留证：首次晋升尝试因 658 迁移缺陷 fail-closed（未切符号链接，245 全程服务旧
   release），修复提交 `f6ea47da6` 后重试成功——「构建/迁移失败不得静默」合同双实证。

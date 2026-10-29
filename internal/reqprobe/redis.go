@@ -264,7 +264,7 @@ func (s *RedisStore) LearnedParams(ctx context.Context, key LearnedKey) []string
 	if err != nil {
 		return nil
 	}
-	cutoff := s.nowFn().Add(-learnedTTL)
+	cutoff := s.nowFn().Add(-learnedTTL())
 	set := map[string]bool{}
 	for _, rec := range all {
 		if rec.Trigger != TriggerParamRejected || rec.Resolved || rec.Param == "" {

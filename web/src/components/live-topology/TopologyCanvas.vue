@@ -60,6 +60,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
+  /** node=null = 点了空白区（画布背景）：上层清除点选态与点选带来的过滤。 */
   (e: 'select-node', node: TopoNode | null): void
   (e: 'select-module', key: GatewayModuleKey): void
 }>()
@@ -535,13 +536,25 @@ function onNodeEnter(id: string) {
   hoveredId.value = null
 }
 
-function onNodeClick(node: TopoNode) {
+function onNodeClick(node: TopoNode, event: { stopPropagation(): void }) {
+  // 节点点击不许冒泡成「空白区点击」—— 根容器的空白处理器会把上层
+  // 刚按这个节点设好的过滤立刻清掉（点选与清空必须在源头分开）。
+  // 参数放宽成结构类型：click 与键盘 Enter（KeyboardEvent）两条路都要拦。
+  event.stopPropagation()
   emit('select-node', node)
+}
+
+/** 空白区（画布背景 / 没有节点的链路区域）= 取消点选：emit null，
+ *  上层（LiveTopologyView）据此清除点选态与点选带来的过滤。
+ *  网关大方块与协议 chip 各自拦在自己那层（.stop / pointer-events:none），
+ *  点到它们不算「空白」。 */
+function onBlankClick() {
+  emit('select-node', null)
 }
 </script>
 
 <template>
-  <div ref="wrapRef" class="topo-canvas" :class="{ 'is-degraded': !active }">
+  <div ref="wrapRef" class="topo-canvas" :class="{ 'is-degraded': !active }" @click="onBlankClick">
     <canvas ref="canvasRef" class="topo-canvas__layer" aria-hidden="true" />
     <div class="topo-canvas__layers" aria-hidden="true">
       <span
@@ -561,6 +574,7 @@ function onNodeClick(node: TopoNode) {
         :style="{ left: `${chip.x}px`, top: `${chip.y}px`, borderColor: chip.color, color: chip.color }"
       >{{ chip.name }} ×{{ chip.count }}</span>
     </div>
+    <!-- 网关大方块不是空白：点它 = 模块聚焦（上层 .stop 拦住，不许冒泡成清空点选）。 -->
     <GatewayCoreBoxView
       :box="gatewayBox"
       :stats="gatewayStats"
@@ -569,6 +583,7 @@ function onNodeClick(node: TopoNode) {
       :queue-depth="queueDepth"
       :selection="selection"
       :direct-measured="directMeasured"
+      @click.stop
       @select-module="emit('select-module', $event)"
     />
     <ul class="topo-canvas__nodes">
@@ -588,8 +603,8 @@ function onNodeClick(node: TopoNode) {
         @mouseleave="onNodeLeave"
         @focus="onNodeEnter(node.id)"
         @blur="onNodeLeave"
-        @click="onNodeClick(node)"
-        @keydown.enter.prevent="onNodeClick(node)"
+        @click="onNodeClick(node, $event)"
+        @keydown.enter.prevent="onNodeClick(node, $event)"
       >
         <span class="topo-node__label">{{ node.column === 'client' ? displayLabel(node) : node.label }}</span>
         <span v-if="node.column === 'client' ? clientSubLine(node) : node.sub" class="topo-node__sub">
@@ -669,9 +684,15 @@ function onNodeClick(node: TopoNode) {
   margin: 0;
   padding: 0;
   list-style: none;
+  /* 容器必须对点击透明（2026-10-29 空白清空轮真机实测）：inset:0 的覆盖层
+     会把整个画布的点击都拦在自己身上 —— 网关大方块与模块格子的鼠标点击
+     从此全部失效（elementFromPoint 实测大方块中心落在本层）。容器放行，
+     只有节点卡自己接收指针事件；空白点击则落到画布根（清除点选）。 */
+  pointer-events: none;
 }
 
 .topo-node {
+  pointer-events: auto;
   position: absolute;
   display: flex;
   flex-direction: column;
