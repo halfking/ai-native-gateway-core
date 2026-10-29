@@ -202,12 +202,16 @@ func (s *Store) StandardIQ(ctx context.Context, canonicalID int64) (float64, err
 }
 
 // LoadPrevious 取该节点上一次判定的签名基线（nil = 首次测量）。
+//
+// ★ 顺带带出上一次的 verdict 与 verified 连击数 —— verified 的连续共识
+// 需要它们（bg/model_probe RequiredConsensus 同思路）。
 func (s *Store) LoadPrevious(ctx context.Context, credentialID int64, rawModelName string) (*Previous, error) {
 	if s.db == nil {
 		return nil, fmt.Errorf("store: db pool is nil")
 	}
 	const q = `
-		SELECT prompt_token_signature, system_fingerprint, reported_model, measured_at
+		SELECT prompt_token_signature, system_fingerprint, reported_model, measured_at,
+		       COALESCE(verdict,''), COALESCE((evidence->>'consensus_streak')::int, 0)
 		FROM provider_model_credibility
 		WHERE tenant_id = 'default'
 		  AND credential_id = $1
@@ -215,14 +219,17 @@ func (s *Store) LoadPrevious(ctx context.Context, credentialID int64, rawModelNa
 	var sig *int
 	var fp, model *string
 	var measuredAt *time.Time
-	err := s.db.QueryRow(ctx, q, credentialID, rawModelName).Scan(&sig, &fp, &model, &measuredAt)
+	var prevVerdict string
+	var streak int
+	err := s.db.QueryRow(ctx, q, credentialID, rawModelName).
+		Scan(&sig, &fp, &model, &measuredAt, &prevVerdict, &streak)
 	if err != nil {
 		if isNoRows(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("query previous verdict: %w", err)
 	}
-	prev := &Previous{}
+	prev := &Previous{Verdict: Verdict(prevVerdict), VerifiedStreak: streak}
 	if sig != nil {
 		prev.PromptTokens = *sig
 		prev.HasPromptTokens = true
@@ -237,6 +244,59 @@ func (s *Store) LoadPrevious(ctx context.Context, credentialID int64, rawModelNa
 		prev.MeasuredAt = *measuredAt
 	}
 	return prev, nil
+}
+
+// LoadPassiveSignals 读该节点的被动完整性信号（真实流量侧证据）。
+//
+// 数据来源：model_integrity_events（domains/streaming/integrity 落），
+// 未解决 + 近 7 天 + severity high/critical，按 (credential_id, 模型名) 匹配。
+// 取 model_mismatch 与 fingerprint_drift 各自最新一条。
+//
+// ★ 查询失败（表权限不足 / 表不存在）**降级为 nil** 并返回 err —— 调用方
+// 决定是否致命。211 实测网关连库角色对该表无读权限 ⇒ 生产上这条通道
+// 可能整段降级，主动探测照常工作（scanner 打 WARN）。
+// ★ 找不到事件返回 (&PassiveSignals{}, nil)：空结构 = 「读了，没有信号」，
+// 与「没读到」区分（evidence 里可如实标注）。
+func (s *Store) LoadPassiveSignals(ctx context.Context, credentialID int64, rawModelName string) (*PassiveSignals, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("store: db pool is nil")
+	}
+	const q = `
+		SELECT DISTINCT ON (anomaly_type)
+		       anomaly_type, COALESCE(expected_value,''), COALESCE(actual_value,'')
+		FROM model_integrity_events
+		WHERE resolved = FALSE
+		  AND severity IN ('high','critical')
+		  AND ts > now() - interval '7 days'
+		  AND anomaly_type IN ('model_mismatch','fingerprint_drift')
+		  AND credential_id = $1
+		  AND (lower(COALESCE(raw_model_name,'')) = lower($2)
+		       OR lower(COALESCE(client_model,'')) = lower($2))
+		ORDER BY anomaly_type, ts DESC`
+	rows, err := s.db.Query(ctx, q, credentialID, rawModelName)
+	if err != nil {
+		return nil, fmt.Errorf("query passive signals: %w", err)
+	}
+	defer rows.Close()
+	out := &PassiveSignals{}
+	for rows.Next() {
+		var atype, expected, actual string
+		if err := rows.Scan(&atype, &expected, &actual); err != nil {
+			return nil, fmt.Errorf("scan passive signals: %w", err)
+		}
+		switch atype {
+		case "model_mismatch":
+			out.HasMismatch = true
+			out.MismatchExpected = expected
+			out.MismatchActual = actual
+		case "fingerprint_drift":
+			out.HasFingerprintDrift = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate passive signals: %w", err)
+	}
+	return out, nil
 }
 
 // SaveResult 落盘一次判定：更新当前态 + 追加一条历史。

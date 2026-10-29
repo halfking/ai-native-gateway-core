@@ -125,6 +125,8 @@ func TestSameFamily(t *testing.T) {
 
 func TestScoreCapability(t *testing.T) {
 	cfg := DefaultConfig()
+	// ★ 单测检验的是「判定线」本身，共识门另测（TestVerifiedConsensus）。
+	cfg.VerifiedConsecutiveRuns = 1
 	// 同伴：两家供应商，最好成绩 80。
 	peer := PeerReference{
 		Samples: []PeerSample{
@@ -328,6 +330,8 @@ func TestComputeOverallExcludesMissingDimensions(t *testing.T) {
 
 func TestDecideVerdict(t *testing.T) {
 	cfg := DefaultConfig()
+	// ★ 单测检验「判定线」，共识门另测。
+	cfg.VerifiedConsecutiveRuns = 1
 	cases := []struct {
 		name   string
 		scores SubScores
@@ -474,6 +478,130 @@ func TestEvaluateProbeFailureKeepsOtherDimensions(t *testing.T) {
 	if !found {
 		t.Errorf("expected probe failure anomaly, got %v", res.Anomalies)
 	}
+}
+
+// ── 被动信号融合（真实流量侧证据）────────────────────────────────────────
+
+func TestPassiveFusion(t *testing.T) {
+	cfg := DefaultConfig()
+	crossFamily := &PassiveSignals{
+		HasMismatch:      true,
+		MismatchExpected: "claude-sonnet-4-5",
+		MismatchActual:   "gpt-4o",
+	}
+	sameFamily := &PassiveSignals{
+		HasMismatch:      true,
+		MismatchExpected: "claude-sonnet-4-5",
+		MismatchActual:   "claude-3-5-haiku",
+	}
+	t.Run("passive cross-family mismatch alone → diluted", func(t *testing.T) {
+		res := Evaluate(Input{
+			Target:  NodeTarget{RawModelName: "claude-sonnet-4-5"},
+			Passive: crossFamily,
+		}, cfg)
+		if !res.Scores.Measured.Has(DimIdentity) {
+			t.Fatal("passive mismatch must make identity measured without an active probe")
+		}
+		if res.Scores.Identity != 10 {
+			t.Errorf("identity = %v, want 10 (cross-family)", res.Scores.Identity)
+		}
+		if res.Verdict != VerdictDiluted {
+			t.Errorf("verdict = %s, want diluted", res.Verdict)
+		}
+		if res.Evidence["passive_read_failed"] != false {
+			t.Error("passive_read_failed must be false when signals were read")
+		}
+	})
+	t.Run("passive same-family mismatch → suspected (needs capability to confirm)", func(t *testing.T) {
+		res := Evaluate(Input{
+			Target:  NodeTarget{RawModelName: "claude-sonnet-4-5"},
+			Passive: sameFamily,
+		}, cfg)
+		if res.Scores.Identity != 50 {
+			t.Errorf("identity = %v, want 50 (same family)", res.Scores.Identity)
+		}
+		if res.Verdict != VerdictSuspected {
+			t.Errorf("verdict = %s, want suspected", res.Verdict)
+		}
+	})
+	t.Run("passive caps active identity (min fusion)", func(t *testing.T) {
+		// 主动自报全对（100），被动曾抓到同族 mismatch（50）⇒ 取 50。
+		res := Evaluate(Input{
+			Target:   NodeTarget{RawModelName: "m", OutboundModel: "m"},
+			Observed: Observed{HTTPStatus: 200, ReportedModel: "m", Content: "ready"},
+			Passive:  sameFamily,
+		}, cfg)
+		if res.Scores.Identity != 50 {
+			t.Errorf("identity = %v, want 50 (min of active 100 and passive 50)", res.Scores.Identity)
+		}
+	})
+	t.Run("passive drift makes consistency measured", func(t *testing.T) {
+		res := Evaluate(Input{
+			Target:  NodeTarget{RawModelName: "m"},
+			Passive: &PassiveSignals{HasFingerprintDrift: true},
+		}, cfg)
+		if !res.Scores.Measured.Has(DimConsistency) || res.Scores.Consistency != 50 {
+			t.Errorf("consistency = %v measured=%v, want 50/measured",
+				res.Scores.Consistency, res.Scores.Measured.Has(DimConsistency))
+		}
+	})
+	t.Run("passive read failure must not fake a verdict", func(t *testing.T) {
+		res := Evaluate(Input{
+			Target:            NodeTarget{RawModelName: "m"},
+			PassiveReadFailed: true,
+		}, cfg)
+		if res.Verdict != VerdictUnknown {
+			t.Errorf("verdict = %s, want unknown (no evidence at all)", res.Verdict)
+		}
+		if res.Evidence["passive_read_failed"] != true {
+			t.Error("evidence must record the degraded passive read")
+		}
+	})
+}
+
+// ── verified 连续共识 ────────────────────────────────────────────────────
+
+func TestVerifiedConsensus(t *testing.T) {
+	cfg := DefaultConfig() // VerifiedConsecutiveRuns = 2
+	clean := func(prev *Previous) Input {
+		return Input{
+			Target:   NodeTarget{RawModelName: "m", OutboundModel: "m"},
+			Observed: Observed{HTTPStatus: 200, ReportedModel: "m", Content: "ready"},
+			Peer: PeerReference{Samples: []PeerSample{
+				{CredentialID: 1, ProviderID: 10, Accuracy: 80},
+				{CredentialID: 2, ProviderID: 20, Accuracy: 79},
+			}},
+			Accuracy: 80, HasAccuracy: true,
+			Previous: prev,
+		}
+	}
+	t.Run("first clean run → unknown with consensus_pending", func(t *testing.T) {
+		res := Evaluate(clean(nil), cfg)
+		if res.Verdict != VerdictUnknown {
+			t.Fatalf("verdict = %s, want unknown (single clean run is not enough)", res.Verdict)
+		}
+		if res.Evidence["consensus_pending"] != true || res.Evidence["consensus_streak"] != 1 {
+			t.Fatalf("evidence = %v, want pending with streak 1", res.Evidence)
+		}
+	})
+	t.Run("second consecutive clean run → verified", func(t *testing.T) {
+		res := Evaluate(clean(&Previous{Verdict: VerdictVerified, VerifiedStreak: 1}), cfg)
+		if res.Verdict != VerdictVerified {
+			t.Fatalf("verdict = %s, want verified (streak 2/2)", res.Verdict)
+		}
+		if res.Evidence["consensus_streak"] != 2 {
+			t.Errorf("streak = %v, want 2", res.Evidence["consensus_streak"])
+		}
+	})
+	t.Run("streak resets after a bad run", func(t *testing.T) {
+		// 上一轮 verified 但上一轮 streak 只有 1（它自己也是 pending 出来的
+		// unknown —— 不可能；verified 落盘必然 streak>=K。这里验证 streak>1
+		// 的延续：连续第 3 轮仍 verified。
+		res := Evaluate(clean(&Previous{Verdict: VerdictVerified, VerifiedStreak: 2}), cfg)
+		if res.Verdict != VerdictVerified || res.Evidence["consensus_streak"] != 3 {
+			t.Fatalf("verdict=%s streak=%v, want verified/3", res.Verdict, res.Evidence["consensus_streak"])
+		}
+	})
 }
 
 type probeErr string

@@ -35,6 +35,15 @@ type Config struct {
 	VerifiedMinScore float64
 	// VerifiedMinDimensions 是判 verified 所需的最少已测量维度数。
 	VerifiedMinDimensions int
+	// VerifiedConsecutiveRuns 是判 verified 所需的**连续达标轮数**（共识门）。
+	//
+	// ★ 借 bg/model_probe.go 的 RequiredConsensus=3 思路（ccfingerprint 的
+	// 确定性重复评分同理）：单轮全绿不能下「已验证」——上游可能恰好在
+	// 探测窗口内换了回来，或者中转按探测特征放行。需要连续 K 轮同一结论
+	// 才落 verified；未满 K 轮时落 unknown 并在 evidence 里记
+	// consensus_pending（「证据不足」语义成立：单轮证据不足以下已验证）。
+	// =1 时退化为单轮判定。
+	VerifiedConsecutiveRuns int
 	// DilutedCapabilityScore 是能力维度判「渗水」的分数上限。
 	DilutedCapabilityScore float64
 	// SuspectCapabilityScore 是能力维度判「存疑」的分数上限。
@@ -74,6 +83,7 @@ func DefaultConfig() Config {
 		DilutedConsistencyScore:  30,
 		SuspectConsistencyScore:  70,
 		SuspectReferenceScore:    70,
+		VerifiedConsecutiveRuns:  2,
 	}
 }
 
@@ -83,7 +93,11 @@ type Previous struct {
 	HasPromptTokens   bool
 	SystemFingerprint string
 	ReportedModel     string
-	MeasuredAt        time.Time
+	// Verdict 是上一次判定的结论（用于 verified 的连续共识）。
+	Verdict Verdict
+	// VerifiedStreak 是截至上一次为止「连续 verified 建议」的轮数。
+	VerifiedStreak int
+	MeasuredAt     time.Time
 }
 
 // Input 是判定的全部输入。
@@ -113,8 +127,64 @@ type Input struct {
 	// Previous 是上一次的本节点签名基线（nil = 首次测量）。
 	Previous *Previous
 
+	// Passive 是真实流量侧的被动完整性信号（domains/streaming/integrity
+	// 落的 model_integrity_events，未解决 + 近 7 天 + high/critical）。
+	// nil = 没读到（没有事件，或读取失败降级）。★ 主动探测与被动信号
+	// 是同一维度的两条证据通道，融合规则见 Evaluate 内注释。
+	Passive *PassiveSignals
+
+	// PassiveReadFailed=true 表示被动信号**读取失败**（权限/表缺失等降级），
+	// 与「读了但无信号」是两件事 —— evidence 里分别留痕，不让降级伪装成干净。
+	PassiveReadFailed bool
+
 	// Now 是判定时刻（零值取当前时间）。
 	Now time.Time
+}
+
+// PassiveSignals 是一个节点的被动完整性信号摘要。
+//
+// 数据来源：model_integrity_events（211 实测 14 天内 model_mismatch high 469 条，
+// 未解决集中在少数凭据）⇒ 这是**真实用户流量**里已经撞上的偷换证据，
+// 信息量高于主动探测的自报（上游可以骗自报，骗不过真实流量的响应体）。
+type PassiveSignals struct {
+	// HasMismatch=true 表示存在未解决的 model_mismatch。
+	HasMismatch bool
+	// MismatchExpected / MismatchActual 是最近一条事件的期望/实际模型名
+	// （用于判同族降级还是跨族换模型；任一为空 ⇒ 取中性分）。
+	MismatchExpected string
+	MismatchActual   string
+	// HasFingerprintDrift=true 表示存在未解决的 fingerprint_drift。
+	HasFingerprintDrift bool
+}
+
+// passiveIdentityScore 由被动 mismatch 事件推出身份维分数。
+//
+//   - expected/actual 都可判族：跨族 ⇒ 10（与主动跨族同级：换模型）；
+//     同族 ⇒ 50（与主动同族不同名同级：疑似同族降级，需能力维合看）。
+//   - 任一名字缺失（事件里 expected/actual 为空）⇒ 35：确有 mismatch 但
+//     定不了性 ⇒ suspected 级，不越权判 diluted。
+//
+// ★ 主动与被动取 **min** 融合：两条通道任一报警，该维分数就以更差的为准。
+func (p *PassiveSignals) passiveIdentityScore() float64 {
+	if p == nil || !p.HasMismatch {
+		return 100
+	}
+	if p.MismatchExpected != "" && p.MismatchActual != "" {
+		if SameFamily(p.MismatchExpected, p.MismatchActual) {
+			return 50
+		}
+		return 10
+	}
+	return 35
+}
+
+// passiveConsistencyScore 由被动指纹漂移推出一致性维分数。
+// 漂移是弱信号（上游发版也会变）⇒ 50，与主动 fingerprint 漂移同级。
+func (p *PassiveSignals) passiveConsistencyScore() float64 {
+	if p == nil || !p.HasFingerprintDrift {
+		return 100
+	}
+	return 50
 }
 
 // Evaluate 执行判定。
@@ -162,6 +232,38 @@ func Evaluate(in Input, cfg Config) Result {
 		res.Scores.Measured = res.Scores.Measured.Mark(DimIdentity)
 	}
 
+	// ── 被动信号融合（真实流量侧的证据，与主动探测取 min）──────────────
+	//
+	// ★ 为什么不是第五个维度：被动 mismatch 与主动身份自洽测的是**同一件事**
+	// （上游给的是不是声称的模型），分开计维会重复计罪；正确做法是作为
+	// 同一维度的**第二条证据通道**取 min —— 任一通道报警，该维就以更差为准。
+	// ★ 被动信号可以让「未测」的维度变为「已测」：真实流量里已经撞上
+	// model_mismatch，这就是身份证据，不需要等主动探测。
+	if in.Passive != nil && in.Passive.HasMismatch {
+		ps := in.Passive.passiveIdentityScore()
+		if res.Scores.Measured.Has(DimIdentity) {
+			if ps < res.Scores.Identity {
+				res.Scores.Identity = ps
+			}
+		} else {
+			res.Scores.Identity = ps
+			res.Scores.Measured = res.Scores.Measured.Mark(DimIdentity)
+		}
+		addAnomaly(AnomalyIdentityPassiveMismatch)
+	}
+	if in.Passive != nil && in.Passive.HasFingerprintDrift {
+		ps := in.Passive.passiveConsistencyScore()
+		if res.Scores.Measured.Has(DimConsistency) {
+			if ps < res.Scores.Consistency {
+				res.Scores.Consistency = ps
+			}
+		} else {
+			res.Scores.Consistency = ps
+			res.Scores.Measured = res.Scores.Measured.Mark(DimConsistency)
+		}
+		addAnomaly(AnomalyConsistencyPassiveDrift)
+	}
+
 	// ── 维度 2：能力水位 ───────────────────────────────────────────────
 	capability, capabilityMeasured := scoreCapability(in, cfg, addAnomaly)
 	if capabilityMeasured {
@@ -186,6 +288,34 @@ func Evaluate(in Input, cfg Config) Result {
 	res.Overall = ComputeOverall(res.Scores)
 	res.Verdict = decideVerdict(res.Scores, res.Overall, cfg)
 
+	// verified 连续共识（见 Config.VerifiedConsecutiveRuns）。
+	//
+	// ★ streak 的口径：上一轮**最终落盘**的 verdict 是 verified ⇒ streak+1；
+	// 否则 streak 重置为 1（本轮是 streak 的第一轮）。注意上一轮落盘的
+	// verified 本身可能已经是「共识满」的结果——streak 只增不减地延续，
+	// 不需要回溯历史（runs 表有全史，但 streak 一个数就够，不用查表）。
+	if res.Verdict == VerdictVerified {
+		streak := 1
+		if in.Previous != nil && in.Previous.Verdict == VerdictVerified {
+			streak = in.Previous.VerifiedStreak + 1
+			if streak <= 0 {
+				streak = 2
+			}
+		}
+		need := cfg.VerifiedConsecutiveRuns
+		if need < 1 {
+			need = 1
+		}
+		res.Evidence["consensus_streak"] = streak
+		res.Evidence["consensus_required"] = need
+		if streak < need {
+			// 共识未满：单轮良好不足以「已验证」。落 unknown（证据不足），
+			// 不落 suspected——没有异常信号，只是证据还不够多。
+			res.Verdict = VerdictUnknown
+			res.Evidence["consensus_pending"] = true
+		}
+	}
+
 	for a := range anomalies {
 		res.Anomalies = append(res.Anomalies, a)
 	}
@@ -197,6 +327,12 @@ func Evaluate(in Input, cfg Config) Result {
 		"capability":  res.Scores.Capability,
 		"consistency": res.Scores.Consistency,
 		"reference":   res.Scores.Reference,
+	}
+	// 被动通道的读取状态：false=读了（有无信号都已看），true=降级没读到。
+	res.Evidence["passive_read_failed"] = in.PassiveReadFailed
+	if in.Passive != nil {
+		res.Evidence["passive_mismatch"] = in.Passive.HasMismatch
+		res.Evidence["passive_fingerprint_drift"] = in.Passive.HasFingerprintDrift
 	}
 	return res
 }
