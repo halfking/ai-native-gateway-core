@@ -5219,9 +5219,16 @@ func main() {
 				mqConfig.EnablePerNodeTesting = mqEnablePerNode
 
 				modelQualityWorker = bg.NewModelQualityWorker(mqDataDir, mqAPIKey, mqBaseURL, time.Duration(mqTimeoutSec)*time.Second)
-				if mqEnablePerNode && dbConn != nil && (keyring != nil || len(fernetKey) == 32) {
+				// ★ nodeSource 常驻注入（db + 解密 key 可用即设）。
+				// enable_per_node 只控制**定时** per-node 循环（loop 里的
+				// EnablePerNodeTesting 门）。2026-10-30 211 实测：把 SetNodeSource
+				// 绑在 enable_per_node 上，手动「立即测试 IQ」按钮 503
+				// （node source not configured）—— 与 credibility trigger 同族缺陷。
+				if dbConn != nil && (keyring != nil || len(fernetKey) == 32) {
 					modelQualityWorker.SetNodeSource(bg.NewCredentialNodeSource(dbConn.Pool(), keyring, fernetKey))
-					slog.Info("model_quality_worker: per-node direct testing enabled")
+					if mqEnablePerNode {
+						slog.Info("model_quality_worker: per-node direct testing enabled")
+					}
 				} else if mqEnablePerNode {
 					slog.Warn("model_quality_worker: enable_per_node=true but DB/keyring unavailable, falling back to gateway-only")
 					mqConfig.EnablePerNodeTesting = false
