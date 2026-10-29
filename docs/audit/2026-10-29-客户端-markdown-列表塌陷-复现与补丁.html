@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>MCode 客户端 markdown 列表塌陷 —— 复现 / 补丁 / 消融（自包含）</title>
+<!--
+  ============================================================================
+  出处：llm-gateway-go 审计档 docs/audit/2026-10-29-会话闸与列表塌陷轮.md §2
+  用法：浏览器直接打开本文件即可（★ 自包含：★ 不依赖任何外部 CSS/JS）。
+  本页里的 CSS 规则全部逐字取自 /Applications/MiniMax Code.app 的 app.asar。
+
+  ★ 目的：让客户端仓「不用相信网关仓的判断」，★ 只需复现下面这几个数：
+      基线（不装补丁）：900px 起塌陷，正文实宽 164px、li 高度 96px ⇒ 逐字一列
+      全补丁：         7 档宽度全部 li = 24px（单行）
+      留一法：         拿掉 P1 ⇒ 仍 280px 宽；拿掉 P2 ⇒ 仍整宽；拿掉 P3/P4 ⇒ 不变
+                       ⇒ ★ 最小修复 = P1 或 P2 任一
+  ============================================================================
+-->
+<style>
+  body { background:#111; color:#eee; font-family: ui-sans-serif, system-ui, sans-serif; margin:0; padding:12px; }
+
+  /* ══ 客户端真实规则（逐字取自 app.asar） ══ */
+  .message-content { flex:1 1 0%; position:relative; max-width:100%; overflow:hidden; text-wrap:pretty; }
+  .stream-message-content { display:flex; }
+  .mavis-chat-markdown-flow { display:grid; grid-template-columns:minmax(0,1fr); row-gap:0; }
+  .matrix-markdown{
+    --md-font-size-body:16px; --md-line-height-body:26px;
+    --md-list-marker-width:1.2em; --md-list-marker-gap:.4em;
+    --md-padding-list-item-bottom:2px; --md-block-gap:16px; --text_default_primary:#eee;
+  }
+  .matrix-markdown ul { margin:0; padding:0; list-style:none; list-style-type:disc; }
+  .matrix-markdown ul>li:not(.task-list-item) { position:relative; padding-left:calc(var(--md-list-marker-width) + var(--md-list-marker-gap)); }
+  .matrix-markdown ul>li:not(.task-list-item):before { position:absolute; top:0; left:0; width:var(--md-list-marker-width); content:"•"; color:var(--text_default_primary); text-align:right; }
+  .matrix-markdown ul ul>li:not(.task-list-item):before { content:"○"; }
+  .matrix-markdown ul ul ul>li:not(.task-list-item):before { content:"▪"; }
+  .matrix-markdown ul li { margin:0; padding:0 0 var(--md-padding-list-item-bottom) 0; padding-left:0; line-height:var(--md-line-height-body); }
+  .matrix-markdown li ol, .matrix-markdown li ul { margin:0 0 0 1.2em; padding-left:0; }
+  .matrix-markdown code,.matrix-markdown div,.matrix-markdown li,.matrix-markdown p,.matrix-markdown pre,.matrix-markdown span { overflow-wrap:break-word; word-break:break-word; }
+  .matrix-markdown p { margin:0 0 var(--md-block-gap); }
+
+  /* ══ 补丁（与 docs/audit/2026-10-29-客户端-markdown-列表塌陷-修复补丁.css 一致） ══ */
+  .v:not(.no-p1) .stream-message-content > *:not(.message-content) { flex:0 1 auto; min-width:0; }  /* P1 */
+  .v:not(.no-p2) .message-content { min-width:280px; }                                            /* P2 */
+  .v:not(.no-p3) .mavis-chat-markdown-flow > * { min-width:0; }                                   /* P3 */
+  .v:not(.no-p4) .matrix-markdown li { word-break:normal; overflow-wrap:break-word; }              /* P4 */
+
+  /* ══ 测量脚手架 ══ */
+  .case { margin-bottom:8px; border:1px solid #333; padding:6px; }
+  .case h3 { font:10px/1.5 monospace; color:#7fd; margin:0 0 4px; }
+  .row { display:flex; }
+  .sib { flex:none; min-width:736px; background:#2a2a2a; }   /* ★ 模拟「挤正文的 flex:none 兄弟」
+        ★（★ 真实是哪个元素 = 待客户端仓一条 datum；★ ★ 本页的 P1 选择器就是按「同行兄弟」写的） */
+  .variant h2 { font:12px/1.6 monospace; color:#fc6; margin:14px 0 4px; }
+  .ok { color:#8f8; } .bad { color:#f66; }
+</style>
+</head>
+<body>
+<div id="host"></div>
+<script>
+const widths = [1280, 900, 800, 768, 740, 700, 600];
+const variants = [
+  {cls:'',                        label:'基线（不装补丁）'},
+  {cls:'v',                       label:'全补丁'},
+  {cls:'v no-p1',                 label:'拿掉 P1（兄弟仍不可收缩）'},
+  {cls:'v no-p2',                 label:'拿掉 P2（正文无宽度下限）'},
+  {cls:'v no-p3',                 label:'拿掉 P3（grid item 无 min-width）'},
+  {cls:'v no-p4',                 label:'拿掉 P4（li 仍 break-word）'},
+];
+const md = () => `
+  <div class="matrix-markdown mavis-chat-markdown-flow">
+    <p>PROJECT: llm-gateway-go</p>
+    <ul><li>Pulled, merged, fixed compile, redeployed / updated pg 17.</li>
+        <li>Verified the deployed service on port 8781.</li></ul>
+  </div>`;
+document.getElementById('host').innerHTML = variants.map(v => `
+  <div class="variant">
+    <h2>${v.label}</h2>
+    ${widths.map(w => `
+      <div class="case ${v.cls}">
+        <h3>视口 ${w}px &nbsp;|&nbsp; <span class="measured">测量中…</span></h3>
+        <div class="row" style="width:${w}px">
+          <div class="stream-message-content">
+            <div class="message-content">${md()}</div>
+            <div class="sib"></div>
+          </div>
+        </div>
+      </div>`).join('')}
+  </div>`).join('');
+
+requestAnimationFrame(() => {
+  document.querySelectorAll('.case').forEach(c => {
+    const msg = c.querySelector('.message-content');
+    const w = Math.round(msg.getBoundingClientRect().width);
+    const li = c.querySelector('li');
+    const liH = li ? Math.round(li.getBoundingClientRect().height) : 0;
+    const m = c.querySelector('.measured');
+    m.innerHTML = `正文实宽 = <b>${w}px</b>；li 高度 = <b>${liH}px</b> ` +
+      (liH > 60 ? '<span class="bad">← 塌陷成逐字一列</span>' : '<span class="ok">← 正常</span>');
+  });
+});
+</script>
+</body>
+</html>

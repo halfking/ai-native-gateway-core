@@ -1,0 +1,67 @@
+/*
+ * MCode 客户端 —— markdown 列表在窄视口被压成「一列单字符」的修复补丁
+ * ============================================================================
+ * 出处：llm-gateway-go 审计档 docs/audit/2026-10-29-会话闸与列表塌陷轮.md §2
+ * 实测环境：/Applications/MiniMax Code.app（app.asar）里提取的真实 CSS + 浏览器量测
+ *
+ * ★ 现象：markdown 列表被压成「一列单字符」，且每个 bullet 逐级右移；
+ *         而同一消息里的普通段落（PROJECT: / GOAL:）看着正常。
+ *
+ * ★ 机制（已证）：
+ *   1) .message-content = tailwind `flex-1 relative max-w-full overflow-hidden text-pretty`
+ *      —— 它是 flex item 且 overflow≠visible ⇒ **flex 的自动最小尺寸被置 0**
+ *      ⇒ 可以被同行的某条 `flex:none` 兄弟挤到 ~0 宽；
+ *   2) .matrix-markdown li { overflow-wrap:break-word; word-break:break-word }
+ *      —— 容器宽只剩 1~2 字符时 ⇒ **逐字断行**（这就是「一列单字符」的直接机制）；
+ *   3) .matrix-markdown li ul { margin:0 0 0 1.2em } + 嵌套 ::before 的 ○ / ▪
+ *      —— 每级叠加缩进 ⇒ **bullet 逐级右移**。
+ *
+ * ★ 阈值（浏览器 7 档实测）：正文容器实宽 ≲ 164px（视口 ≲ 900px）开始逐字断行；
+ *   ≲ 700px 时正文容器宽 = 0 ⇒ 完全塌陷。⇒ 「某些时刻」= 当时的视口宽度/同行兄弟布局决定。
+ *
+ * ★ 实测读数（同一页面内前后对照 + 留一法消融）：
+ *   修复前 1280px 544/24 · 900px 164/96(塌陷) · 800px 64/360 · 768px 32/1200
+ *          740px 4/1200 · 700px 0/1200 · 600px 0/1200      （数对 = 正文宽/li 高度）
+ *   修复后 1280/900/800/768/740/700/600 全部 li = 24px（单行）
+ *   留一法：拿掉 P1 ⇒ 仍 280px 宽（被 P2 兜住）· 拿掉 P2 ⇒ 仍整宽（被 P1 兜住）
+ *           拿掉 P3 / P4 ⇒ 不变 ⇒ ★ 最小修复 = P1 或 P2 任一
+ *
+ * ★ 待一条 datum（客户端仓）：塌陷现场 `.message-content` 在 `.stream-message-content`
+ *   行内的**兄弟元素**是谁、实测多宽 ⇒ 拿到后把 P1 的通配换成精确选择器。
+ * ============================================================================
+ */
+
+/* ── P1（承重·拿回空间）：让挤压正文的那条 flex:none 兄弟可收缩 ────────────────
+   ★ 塌陷的根是「兄弟不可收缩」；改可收缩后正文拿回整宽（实测 900px⇒900px）。
+   ★ 换成精确选择器后请把通配去掉（见文件头「待一条 datum」）。 */
+.stream-message-content > *:not(.message-content) {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* ── P2（承重·保底不塌陷）：正文容器给宽度下限（≈18 个中文字） ─────────────────
+   ★ 与 P1 互为兜底：即便兄弟仍不可收缩，正文也不会被压到 0 宽
+   （实测：拿掉 P1 时正文仍 280px 宽、li 两行，不塌陷）。
+   ★ 实现二选一：① 样式表加本条；② ★ tailwind 侧加类 `min-w-[280px]`
+   （★ `.message-content` 在客户端是 tailwind 工具类串：
+   `flex-1 relative max-w-full overflow-hidden text-pretty` ⇒ ★ 加类即可）。 */
+.message-content {
+  min-width: 280px;
+}
+
+/* ── P3（防御）：markdown 流的 grid item 补 min-width:0 ──────────────────────
+   ★ grid item 默认 min-width:auto ⇒ 会被内容的 min-content 顶开。 */
+.mavis-chat-markdown-flow > * {
+  min-width: 0;
+}
+
+/* ── P4（防御）：列表项断行属性 ────────────────────────────────────────────────
+   ★ `word-break:break-word` 已废弃，且会让 min-content 参与塌陷计算。 */
+.matrix-markdown li {
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+
+/* ── 可选（P5·未在本轮模型验证）：嵌套列表缩进改用内容盒内缩进，限制总缩进宽度 ──
+.matrix-markdown li ul { margin-left: 0; padding-left: 1.2em; }
+*/
