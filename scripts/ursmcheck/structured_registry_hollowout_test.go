@@ -267,13 +267,14 @@ func structuredDecodeJSON(data []byte) (any, error) {
 // structuredReaderKinds 是【读方形态】的封闭词表。
 //
 // ★★★ r1039 第三轮新增 `shell`（★ 2026-10-28 实测）：
-//   ★ 本词表原本**比共享 harness 窄**：★ `runHollowReaderOverlay`（★
-//     tsv_hollowout_gate_test.go）**早就支持 `shell`**（★ `bash -c <spec>` ⇒
-//     cwd = 仓根）⇒ ⇒ TSV 侧一直在用 shell 读方 ⇒ ★ 而本表（结构化侧）把
-//     shell 排除在外 ⇒ ⇒ **同一套 harness、两套词表** ⇒ ⇒ 一条「读方是 shell
-//     脚本」的结构化登记册**没法在本表里登记**（★ 只能被普查门当成「没归属」）。
-//   ★ ⇒ 那不是「读方没有牙」，而是**本表没有那条腿** ⇒ ⇒ 把词表补齐到
-//     harness 的真实能力（★ 只**加**不**改**：★ 既有 54 条的行为不变）。
+//
+//	★ 本词表原本**比共享 harness 窄**：★ `runHollowReaderOverlay`（★
+//	  tsv_hollowout_gate_test.go）**早就支持 `shell`**（★ `bash -c <spec>` ⇒
+//	  cwd = 仓根）⇒ ⇒ TSV 侧一直在用 shell 读方 ⇒ ★ 而本表（结构化侧）把
+//	  shell 排除在外 ⇒ ⇒ **同一套 harness、两套词表** ⇒ ⇒ 一条「读方是 shell
+//	  脚本」的结构化登记册**没法在本表里登记**（★ 只能被普查门当成「没归属」）。
+//	★ ⇒ 那不是「读方没有牙」，而是**本表没有那条腿** ⇒ ⇒ 把词表补齐到
+//	  harness 的真实能力（★ 只**加**不**改**：★ 既有 54 条的行为不变）。
 var structuredReaderKinds = map[string]bool{
 	"node":   true,
 	"vitest": true,
@@ -285,12 +286,45 @@ var structuredReaderKinds = map[string]bool{
 type structuredOutcome string
 
 const (
-	structuredRedCaught    structuredOutcome = "red-caught"   // ★ 掏空 ⇒ 读方红（且红因正确）
-	structuredStillGreen   structuredOutcome = "still-green"  // ★ 掏空 ⇒ 读方仍绿 ⇒ 门有洞
-	structuredInconclusive structuredOutcome = "inconclusive" // ★ 变换是空操作 / 探针无效
-	structuredBaselineRed  structuredOutcome = "baseline-red" // ★ 读方在基线就红 ⇒ 不可判定
-	structuredWrongRed     structuredOutcome = "wrong-red"    // ★ 红了，但红因不对（★ 崩溃 / 不是那条信号）
+	structuredRedCaught      structuredOutcome = "red-caught"      // ★ 掏空 ⇒ 读方红（且红因正确）
+	structuredStillGreen     structuredOutcome = "still-green"     // ★ 掏空 ⇒ 读方仍绿 ⇒ 门有洞
+	structuredInconclusive   structuredOutcome = "inconclusive"    // ★ 变换是空操作 / 探针无效
+	structuredBaselineRed    structuredOutcome = "baseline-red"    // ★ 读方在基线就红 ⇒ 不可判定
+	structuredWrongRed       structuredOutcome = "wrong-red"       // ★ 红了，但红因不对（★ 崩溃 / 不是那条信号）
+	structuredEnvUnavailable structuredOutcome = "env-unavailable" // ★ 读方**没量到**（环境失败）⇒ 不可判定
 )
+
+// structuredEnvUnavailableToken 是「读方没量到」的**稳定探针 token**。
+//
+// ★★ 2026-10-29 新增。为什么需要它：
+//
+//	本门判的是「读方红了 **且** 红因是那条信号」（红信号 = 普查表登记的
+//	`red_signal`）。而**浏览器运行时尺**在「Chrome/CDP 连不上」时会以
+//	**另一个**失败形态退出 ⇒ ⇒ 门把它判成「红了，但红因不对」⇒
+//	★★ **随机误判「门没牙」**（实测：它在 7 次运行里红过 2 次，根因是
+//	负载下浏览器驱动 fetch failed）。
+//	⇒ ⇒ 必须把「环境失败」与「判据失败」**分成两类**。
+//
+// ★ 约定（读方侧）：任何读方在【环境不可用】（浏览器连不上、依赖缺失、
+//
+//	服务没起）时，必须：① 退出码用 **3**（=「未测量」的既有约定；★ 普查表
+//	里的其它读方都不用 3 ⇒ 3 在本门语境里是空闲的）；② 输出里打印含
+//	`-ENV-UNAVAILABLE` 的探针 token ⇒ ⇒ 改文案不会把门打瞎（与 `red_signal`
+//	同一套思路：判据落在「输出里有没有探针」）。
+//
+// ★ 门侧的行为：基线态遇到「没量到」⇒ **跳过本条**（不是判它没牙，也不是
+//
+//	判它坏了）⇒ ★ 「不可判定」是一等状态（§531 通用式六：覆盖边界要声明）。
+const structuredEnvUnavailableToken = "NOT-MEASURED"
+
+// structuredIsEnvUnavailable 报告读方的这次运行是不是「没量到」。
+//
+// ★ 两个判据取或：退出码 3（读方侧的约定）**或** 输出里有探针 token
+//
+//	（读方换了退出码也不怕）。
+func structuredIsEnvUnavailable(code int, out string) bool {
+	return code == 3 || strings.Contains(out, structuredEnvUnavailableToken)
+}
 
 // structuredVerifyEntry 是【行为判据】的**单条目**实现。
 //
@@ -358,6 +392,14 @@ func structuredVerifyEntryWithReader(t *testing.T, root string, e structuredCens
 		t.Fatalf("跑基线读方失败（%s %s）：%v", e.ReaderKind, e.ReaderSpec, err)
 	}
 	if code != 0 {
+		// ★★ 环境失败（没量到）⇒ **不是**「读方坏了」⇒ 不可判定 ⇒ 跳过本条。
+		//   （旧写法把它算成 baseline-red ⇒ 门会判「先把读方修绿」⇒
+		//   ★ 在负载下这是**假指责** ⇒ ★ 本轮修掉。）
+		if structuredIsEnvUnavailable(code, out) {
+			return structuredEnvUnavailable, fmt.Sprintf(
+				"★ 读方在【基线】**没量到**（exit=%d）⇒ ⇒ 环境不可用 ⇒ ⇒ 本条**不可判定**（★ 不是「门没牙」，也不是「读方坏了」）\n%s",
+				code, tailLines(out, 25))
+		}
 		return structuredBaselineRed, fmt.Sprintf("读方在【基线】就红（exit=%d）\n%s", code, tailLines(out, 25))
 	}
 
@@ -396,6 +438,12 @@ func structuredVerifyEntryWithReader(t *testing.T, root string, e structuredCens
 	if code == 0 {
 		return structuredStillGreen, fmt.Sprintf("掏空后读方**仍然绿**（exit=0）\n%s", tailLines(out, 25))
 	}
+	// ★★ 掏空态「没量到」⇒ 同样不可判定（★ 环境失败 ≠ 判据失败）。
+	if structuredIsEnvUnavailable(code, out) {
+		return structuredEnvUnavailable, fmt.Sprintf(
+			"★ 掏空后读方**没量到**（exit=%d）⇒ ⇒ 环境不可用 ⇒ ⇒ 本条**不可判定**\n%s",
+			code, tailLines(out, 25))
+	}
 	if e.RedSignal == "" {
 		return structuredWrongRed, fmt.Sprintf("掏空后读方红了（exit=%d）★★ 但普查表没写 red_signal ⇒ ⇒ 无法判定红因\n%s",
 			code, tailLines(out, 25))
@@ -406,6 +454,41 @@ func structuredVerifyEntryWithReader(t *testing.T, root string, e structuredCens
 			code, e.RedSignal, tailLines(out, 25))
 	}
 	return structuredRedCaught, fmt.Sprintf("掏空后读方红了（exit=%d）且含红信号 %q", code, e.RedSignal)
+}
+
+// TestStructuredIsEnvUnavailable 是【分类器自证】：把「环境失败」与
+// 「判据失败」分开的那一刀，必须**只**切该切的那一刀。
+//
+// ★ 为什么必须自证（§531 通用式三：恒真断言要主动做负控）：
+//
+//	这条分类决定了「掏空门在负载下会不会误判『门没牙』」⇒
+//	切宽了 ⇒ 真违规被判成「环境问题」⇒ 门变瞎；
+//	切窄了 ⇒ 环境问题被判成「红了但红因不对」⇒ ★ 回到本轮修的那个缺陷。
+//
+// ★ 判据是两条**取或**：退出码 3（读方侧的「未测量」约定）或输出里的探针
+//
+//	token（`-NOT-MEASURED`）⇒ ⇒ 读方换了退出码也不怕。
+func TestStructuredIsEnvUnavailable(t *testing.T) {
+	cases := []struct {
+		name string
+		code int
+		out  string
+		want bool
+	}{
+		{"退出码 3（读方侧的未测量约定）", 3, "", true},
+		{"输出里有探针 token（退出码仍是 1）", 1, "✘ [ICON-SIZE-NOT-MEASURED] 浏览器驱动失败", true},
+		{"★ 负控：正常判据红", 1, "✘ [ICON-SIZE-BASELINE-UNUSABLE] 基线不可用", false},
+		{"★ 负控：自证失败（退出码 2）", 2, "自证 3/5", false},
+		{"★ 负控：绿", 0, "✅ 87 页量完", false},
+		{"★ 负控：崩溃但退出码 1", 1, "TypeError: x is not a function", false},
+	}
+	for _, tc := range cases {
+		got := structuredIsEnvUnavailable(tc.code, tc.out)
+		if got != tc.want {
+			t.Errorf("%s：structuredIsEnvUnavailable(code=%d, out=%q) = %v, want %v",
+				tc.name, tc.code, tc.out, got, tc.want)
+		}
+	}
 }
 
 // ── 门 ────────────────────────────────────────────────────────────────────
@@ -444,6 +527,12 @@ func TestStructuredRegistryHollowoutReadersRejectEmptyRegistry(t *testing.T) {
 				t.Fatalf("%s：读方在【基线】就红 ⇒ ⇒ 不可判定 ⇒ ★ 先把读方修绿。\n%s", e.Path, detail)
 			case structuredWrongRed:
 				t.Fatalf("%s：★ 红了，但红因不对 ⇒ ⇒ 探针或读方都不对 ⇒ ⇒ 不能算「有牙」。\n%s", e.Path, detail)
+			case structuredEnvUnavailable:
+				// ★★ 「没量到」是一等状态：跳过并说清原因，**不**指责门没牙、
+				//   **不**指责读方坏了。
+				//   ★ 这条登记仍然是 behaviorally_verified=true ⇒ ⇒ 下一轮
+				//   环境正常时它必须被验到 ⇒ ⇒ 这里跳过不会让它永久失监。
+				t.Skipf("%s：★ 读方**没量到**（环境不可用）⇒ ⇒ 本条本轮**不可判定** ⇒ ⇒ 跳过（★ 不是「门没牙」，也不是「读方坏了」）\n%s", e.Path, detail)
 			default:
 				t.Fatalf("%s：不可判定 ⇒ %s\n★ 请改 hollow_mode（★ 可用：%s），或把该条登记成「本轮验不了」并写明理由",
 					e.Path, detail, strings.Join(structuredHollowModeList(), " / "))
