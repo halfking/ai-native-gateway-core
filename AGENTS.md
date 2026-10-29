@@ -15229,3 +15229,53 @@ sequence.sh、concurrency gate 计数（920: 1）、db-changelog 三行（917 sa
 >   （★ 实测当时上游最大节号 §555、最大增量号「第 38 增量」）—— ★★ **再次让号**：合入前上游
 >   又推进（§556 = r1048 轮 / 第 39 增量 = Gemini `countTokens` 诚实实现轮）⇒ 再让 ⇒
 >   **§557 / 第 40 增量**（★ 实测当时上游最大节号 §556、最大增量号「第 39 增量」）。
+ **2026-10-29 24h 审计第 6 轮：迁移对账门通用化 + 919 链登记补缺 + Windows 测试基线接门**（goal 会话）：
+★ 承接 24h 审计轮三项遗留（①部署管线补迁移步骤+对账门 ②背压熔断器部署观测
+③Windows 全量测试基线落档）⇒ 入场实态核查推翻其一、收窄其一、落地其一。
+⇒ ★ **②熔断器已上线且零基线保持（并行会话 09:27 部署 `7e9168af-dirty`）**：
+outbox failed **0**（24h 审计轮时 4,191）/ ASM inbox retryable **0**（曾 14,447 ⇒
+消费端已恢复）/ 活跃槽 `dispatch failed` WARN **0**；镜像 sha 在 origin 历史内、
+二进制含 `destination backpressure` ⇒ 无树漂移。★ 如实记：观测到的是「零基线保持」，
+熔断器动作样本（`dispatch paused` ≤1 条/64s）待下一次 ASM 故障窗。
+⇒ ★★ **①的「补步骤」是伪需求、实质收窄为对账门通用化**：引擎迁移腿（r1030，
+2026-10-14）早已存在且在生效（211 ledger 已有 900~917 全行）⇒ 本轮把第 5 轮的
+912/913 两条策展探针**通用化为 900~920 逐迁移 15 条头产物探针**
+（表/索引/视图 to_regclass · 函数 to_regprocedure · 902 认 pkey 终态名 +
+`indnkeyatts<indnatts` 判 INCLUDE（PG17 无 includedattrs 列，211 实测 42703 当场改）·
+908 反向断言 IS NULL · 911 `provider_catalog.code`（第一版写 catalog_code 当场改）·
+914 convalidated 计数=2 · 919 列存在+函数在）⇒ **全部在 211 生产逐条实测 = t**。
+⇒ ★★★ **本轮最值钱的一处：merge 把 919 的函数链登记洗掉了**（R176 部署树带着
+`refresh_ursm_snapshot_slot_daily` 的 892→919 链序登记，merge 回 main 只留
+files 条目 ⇒ 下一次 211 部署会在 clobber 预检 **exit 5 整体 abort**）⇒ 补登记 +
+**假 psql 自证**（修复前报违规、修复后进 allowlist）+ **契约测试静态钉**
+（报错直接指向要补的行）⇒ ★★ 通用式（LESSONS §561 通式一）：**「文件进了序列、
+登记没进链」是 merge 的静默洗掉形态；部署机上的守卫要降级成本地也跑的守卫，
+缺口才从被动等待变成当场红**。
+⇒ ★ **契约测试两族新判据**：①覆盖面（900~920 每个非 down 迁移必须有探针
+——首跑当场抓到 909/910 漏配）②产物名保真（探针里的标识符必须出现在迁移
+文件里）。**变异臂第一臂全绿 ⇒ 门没牙**：`awk '/^ledger_artifact_probe /'`
+只抓调用行（以 `\` 结尾）、SQL 在下一行 ⇒ 保真判据对整族空转 ⇒ 改 python
+按「调用行+续行」完整提取 ⇒ 同一 TYPO 注入立刻 rc=1、还原 md5 一致；
+第二臂（整行删探针）rc=1 报漏配 ⇒ **2/2**。★ 承 §419/§418：提取器的区间是
+一等公民；靶点真红（手动复算同 FAIL）才敢把矛头指向提取器。
+⇒ ★ **③Windows 全量测试基线落档接门**：`go test ./...` 两次实测（首次默认
+并行度 VirtualAlloc OOM ⇒ `GOFLAGS=-p=2`）；13 包失败经逐包复跑核对——
+**admin/bg 全量跑包级 FAIL、单包复跑 ok ⇒ 归 package_level（并行干扰类）**，
+其余 **11 包 28 条具名失败**全部稳定再现 ⇒ `scripts/guards/win-test-baseline.json`
+（环境类/结构类分族注释；**结构类 5 条是全平台真红等着修的真缺口**：
+attachments cleanup_wiring 2 + sanitizerules/routeincident FIXME 失效 2 +
+address_family 未登记面 1）。门 `scripts/guards/check-win-test-baseline.sh`
+（实测−基线⇒红逐条报；基线−实测⇒STALE 提示棘轮只降不升）+ `make
+guards-win-baseline` + CI 载体静态自证腿（Linux 裸跑实测腿=整片假红源）。
+**变异臂 4/4**（新增失败⇒rc=1 / 单条消失⇒STALE+rc=0 / 包级化⇒rc=1 /
+负控无害行⇒rc=0；★ 第 3 臂第一版注入未断言落盘 ⇒ 假绿——**变异臂的注入
+动作本身必须断言落盘**）。★ flaky 不进基线（`TestReviewedEvents…` count=2
+偶发 count=1 绿，如实记）。
+⇒ ★ **本轮没做 / 留下一轮**：结构类 5 条真缺口（§7.1 清单）；admin/bg 并行
+干扰根因未定性；412~899 探针覆盖仍只 912/913（通用 runner 化开放）；
+熔断器动作样本待故障窗。
+⇒ 审计档 `docs/audit/2026-10-29-24h审计第6轮-迁移对账门通用化与Win基线接门.md`；
+通用式见 `LESSONS.md` **§561**（7 条：merge 洗掉伴随登记 ⇒ 守卫要本地化 /
+对账判据写错方向比不写更坏 ⇒ 逐条真库实测 / ★★★ 提取器只抓调用行判据空转 /
+★★★ 变异臂注入必须断言落盘 / 基线分具名与包级、环境与结构 /
+全量跑才红的 flaky 不进基线 / 跨平台门拆自证腿与比对腿）。
