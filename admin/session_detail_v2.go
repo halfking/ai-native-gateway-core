@@ -212,6 +212,11 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		writeExportJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
+	// W1.3: detail JOIN session_bodies → consent=off must be structured unavailable
+	// (never silent empty request_delta/response_delta).
+	if !requireRecordingConsent(w, tenantID) {
+		return
+	}
 
 	// Optional: turn_no for highlighting/scrolling
 	var focusTurnNo *int

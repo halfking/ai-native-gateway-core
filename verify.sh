@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# 本机 go 验证口径：macOS 钉 cgo=0（完整理由见下方「本机 go 验证口径」一节；判据
+# tests/verify_cgo_convention_test.sh 钉「export 必须在前 60 行内」⇒ 本块必须在
+# r1048 的 gocache 头块**之前**，勿下移——2026-10-29 24h 审计轮曾因头块挤压而红）。
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  export CGO_ENABLED="${VERIFY_CGO_ENABLED:-0}"
+fi
+echo "[verify] CGO_ENABLED=${CGO_ENABLED:-<unset: 宿主默认 cgo>}"
 # ★★ r1048 轮（★ 2026-10-29）：★ 本脚本在【宿主】上编译 Go ⇒ ⇒ 子进程会往 Go 的
 # ★★ 构建缓存里写产物 ⇒ ⇒ 而那个缓存默认是【用户那个全局的】⇒ ⇒ 必须指向【专用缓存】
 # ★★ （★ 目录约定与 6 GB 上限见 `scripts/lib/gocache.sh`；★ 理由与实测读数见
@@ -58,11 +65,7 @@ done
 # 需要在 macOS 上强制 cgo 时用 VERIFY_CGO_ENABLED=1。
 #
 # 判据：tests/verify_cgo_convention_test.sh（已接入本文件下方）
-if [[ "$(uname -s)" == "Darwin" ]]; then
-  export CGO_ENABLED="${VERIFY_CGO_ENABLED:-0}"
-fi
-echo "[verify] CGO_ENABLED=${CGO_ENABLED:-<unset: 宿主默认 cgo>}"
-
+# （export 本体已上移至文件头——r1048 头块把它挤出 head -60 契约区，见上。）
 echo "[verify] cgo convention contracts"
 bash tests/verify_cgo_convention_test.sh
 
