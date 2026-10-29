@@ -232,6 +232,11 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		} else {
 			keyInfo = ki
 			attemptKeyInfo = ki
+			// 2026-10-29 identification round: the main flow never called
+			// SetKey (only the rate-limit branch did) ⇒ the client-perception
+			// block on request_context_attrs was persisted empty for this
+			// path. Same wiring order as the chat path.
+			logCtx.SetKey(ki)
 			bindRequestJourney(r, ki.TenantID, attemptClientModel)
 			// SP-02: state machine — auth succeeded.
 			rt.Emit(state.EventAuthed)
@@ -261,6 +266,14 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	if len(bodyBytes) > 0 {
 		attemptRequestBody = bodyBytes
 	}
+	// 2026-10-29 identification round: mirror the chat path's
+	// EnsureCaptured — extract the system prompt and run the shared
+	// identification chain (UA tokens → body marker → system-prompt
+	// self-identification). MiniMax Code self-identifies only in its
+	// system prompt ("You are Mavis… You run inside MiniMax Code"); on
+	// this path the fallback never saw the body ⇒ empty agent_name.
+	logCtx.Body = bodyBytes
+	logCtx.EnsureCaptured()
 	if prov := buildOutboundProvenance(r, nil); len(prov) > 0 {
 		logCtx.OutboundProvenance = prov
 	}

@@ -246,6 +246,16 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		}
 		keyInfo = ki
 		attemptKeyInfo = ki
+		// 2026-10-29 identification round: the main flow never called SetKey
+		// (only the rate-limit branch did) ⇒ refreshMeta/fillAttemptMeta never
+		// ran ⇒ the whole client-perception block (agent_name / client_ip /
+		// client_protocol / fingerprint_raw) was persisted empty on
+		// request_context_attrs — 211 measured: the /v1/responses family
+		// (ZCode CLI, key huangxt-coding) carried the user-visible ZCode
+		// self-identification in its system prompt yet landed with an empty
+		// agent_name on every row. Same wiring order as the chat path
+		// (SetKey after auth → Body → EnsureCaptured after body read).
+		logCtx.SetKey(ki)
 		bindRequestJourney(r, ki.TenantID, attemptClientModel)
 		// SP-02: state machine — auth succeeded.
 		rt.Emit(state.EventAuthed)
@@ -274,6 +284,16 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	if len(bodyBytes) > 0 {
 		attemptRequestBody = bodyBytes
 	}
+	// 2026-10-29 identification round: mirror the chat path's
+	// EnsureCaptured — extract the system prompt from the buffered body
+	// and run the shared identification chain (UA tokens → body marker →
+	// system-prompt self-identification). readRequestBody above already
+	// restored r.Body, and pre-setting logCtx.Body keeps EnsureCaptured
+	// from re-reading it; without this the agent fallback never saw the
+	// body, so clients that only self-identify in the prompt (ZCode /
+	// MiniMax Code "You are Mavis…") landed as empty agent_name.
+	logCtx.Body = bodyBytes
+	logCtx.EnsureCaptured()
 	if prov := buildOutboundProvenance(r, nil); len(prov) > 0 {
 		logCtx.OutboundProvenance = prov
 	}
