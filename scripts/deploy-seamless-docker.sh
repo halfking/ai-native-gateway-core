@@ -454,7 +454,9 @@ if [[ -n "$VIA" ]]; then
             DD_BASE_REGISTRY DD_GO_BASE_IMAGE DD_RUNTIME_BASE_IMAGE \
             DD_ALLOW_STALE_WEB DD_PUBLIC_PROBE_IP DD_ADMIN_USER DD_ADMIN_PASSWORD \
             DD_SKIP_LOGIN_SMOKE LLM_GATEWAY_HARD_BLOCK_RULES \
-            LLM_GATEWAY_AUTO_TITLE_ENABLED LLM_GATEWAY_AUTO_SUMMARY_ENABLED; do
+            LLM_GATEWAY_AUTO_TITLE_ENABLED LLM_GATEWAY_AUTO_SUMMARY_ENABLED \
+            LLMGatewayAutoLLMEndpoint LLMGatewayAutoLLMApiKey LLMGatewayAutoLLMModel \
+            LLMGatewayAutoLLMTimeout LLMGatewayAutoLLMMaxTokens LLM_GW_TEST_MODE_TOKEN; do
     if [[ -n "${!_v+x}" ]]; then _dd_fwd+=" ${_v}='${!_v}'"; fi
   done
   _dd_args="${DD_ARGS[@]+"${DD_ARGS[@]}"}"
@@ -1928,8 +1930,51 @@ dd_asm_event_env() {
   fi
 }
 # ── ASM-ENV-BLOCK:END ──
+
+# ── AUTOLLM-ENV-BLOCK:BEGIN ──
+# 2026-10-29 auto-route audit：低置信度任务识别走局域网 Ollama（host-30）。
+# 取值优先级同 ASM：部署机环境变量 > env 文件上次落下的值 > 不设（DisabledCaller）。
+# ⚠ env 文件每次部署重写 ⇒ 只靠 export 一次会丢；长期开必须写进 gateway.env。
+dd_autollm_env() {
+  local env_file="${1:-$ENV_FILE}"
+  LLMGatewayAutoLLMEndpoint="${LLMGatewayAutoLLMEndpoint:-}"
+  LLMGatewayAutoLLMApiKey="${LLMGatewayAutoLLMApiKey:-}"
+  LLMGatewayAutoLLMModel="${LLMGatewayAutoLLMModel:-}"
+  LLMGatewayAutoLLMTimeout="${LLMGatewayAutoLLMTimeout:-}"
+  LLMGatewayAutoLLMMaxTokens="${LLMGatewayAutoLLMMaxTokens:-}"
+  LLM_GW_TEST_MODE_TOKEN="${LLM_GW_TEST_MODE_TOKEN:-}"
+  if [[ -f "$env_file" ]]; then
+    if [[ -z "$LLMGatewayAutoLLMEndpoint" ]]; then
+      LLMGatewayAutoLLMEndpoint="$(sed -nE 's/^(export )?LLMGatewayAutoLLMEndpoint=(.*)$/\2/p' "$env_file" | tail -1)"
+    fi
+    if [[ -z "$LLMGatewayAutoLLMApiKey" ]]; then
+      LLMGatewayAutoLLMApiKey="$(sed -nE 's/^(export )?LLMGatewayAutoLLMApiKey=(.*)$/\2/p' "$env_file" | tail -1)"
+    fi
+    if [[ -z "$LLMGatewayAutoLLMModel" ]]; then
+      LLMGatewayAutoLLMModel="$(sed -nE 's/^(export )?LLMGatewayAutoLLMModel=(.*)$/\2/p' "$env_file" | tail -1)"
+    fi
+    if [[ -z "$LLMGatewayAutoLLMTimeout" ]]; then
+      LLMGatewayAutoLLMTimeout="$(sed -nE 's/^(export )?LLMGatewayAutoLLMTimeout=(.*)$/\2/p' "$env_file" | tail -1)"
+    fi
+    if [[ -z "$LLMGatewayAutoLLMMaxTokens" ]]; then
+      LLMGatewayAutoLLMMaxTokens="$(sed -nE 's/^(export )?LLMGatewayAutoLLMMaxTokens=(.*)$/\2/p' "$env_file" | tail -1)"
+    fi
+    if [[ -z "$LLM_GW_TEST_MODE_TOKEN" ]]; then
+      LLM_GW_TEST_MODE_TOKEN="$(sed -nE 's/^(export )?LLM_GW_TEST_MODE_TOKEN=(.*)$/\2/p' "$env_file" | tail -1)"
+    fi
+    for _v in LLMGatewayAutoLLMEndpoint LLMGatewayAutoLLMApiKey LLMGatewayAutoLLMModel \
+              LLMGatewayAutoLLMTimeout LLMGatewayAutoLLMMaxTokens LLM_GW_TEST_MODE_TOKEN; do
+      local _val="${!_v}"
+      _val="${_val%\'}"; _val="${_val#\'}"
+      _val="${_val%\"}"; _val="${_val#\"}"
+      printf -v "$_v" '%s' "$_val"
+    done
+  fi
+}
+# ── AUTOLLM-ENV-BLOCK:END ──
 dd_asm_event_env "$ENV_FILE"
 dd_auto_generator_env "$ENV_FILE"
+dd_autollm_env "$ENV_FILE"
 
 # ── GATEWAY-ENV-WRITE:BEGIN ──
 {
@@ -1983,6 +2028,15 @@ dd_auto_generator_env "$ENV_FILE"
   if [[ -n "$LLM_GATEWAY_ASM_PLUGIN_ID" ]]; then
     printf 'export LLM_GATEWAY_ASM_PLUGIN_ID=%q\n' "$LLM_GATEWAY_ASM_PLUGIN_ID"
   fi
+  # 2026-10-29：auto 低置信度分类 → 局域网 Ollama（跨部署保留）
+  if [[ -n "${LLMGatewayAutoLLMEndpoint:-}" ]]; then
+    printf 'export LLMGatewayAutoLLMEndpoint=%q\n' "$LLMGatewayAutoLLMEndpoint"
+    [[ -n "${LLMGatewayAutoLLMApiKey:-}" ]] && printf 'export LLMGatewayAutoLLMApiKey=%q\n' "$LLMGatewayAutoLLMApiKey"
+    [[ -n "${LLMGatewayAutoLLMModel:-}" ]] && printf 'export LLMGatewayAutoLLMModel=%q\n' "$LLMGatewayAutoLLMModel"
+    [[ -n "${LLMGatewayAutoLLMTimeout:-}" ]] && printf 'export LLMGatewayAutoLLMTimeout=%q\n' "$LLMGatewayAutoLLMTimeout"
+    [[ -n "${LLMGatewayAutoLLMMaxTokens:-}" ]] && printf 'export LLMGatewayAutoLLMMaxTokens=%q\n' "$LLMGatewayAutoLLMMaxTokens"
+  fi
+  [[ -n "${LLM_GW_TEST_MODE_TOKEN:-}" ]] && printf 'export LLM_GW_TEST_MODE_TOKEN=%q\n' "$LLM_GW_TEST_MODE_TOKEN"
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 # ── GATEWAY-ENV-WRITE:END ──
@@ -2043,6 +2097,24 @@ for setting in "${AUTO_GENERATOR_ENV[@]+"${AUTO_GENERATOR_ENV[@]}"}"; do
   GW_ENV+=(-e "$setting")
 done
 # ── AUTO-GENERATOR-INJECT:END ──
+
+# ── AUTOLLM-ENV-INJECT:BEGIN ──
+# Endpoint 非空才注入（与 buildAutoLLMCaller 契约一致：无 Endpoint = DisabledCaller）。
+if [[ -n "${LLMGatewayAutoLLMEndpoint:-}" ]]; then
+  GW_ENV+=( -e "LLMGatewayAutoLLMEndpoint=${LLMGatewayAutoLLMEndpoint}" )
+  [[ -n "${LLMGatewayAutoLLMApiKey:-}" ]] && GW_ENV+=( -e "LLMGatewayAutoLLMApiKey=${LLMGatewayAutoLLMApiKey}" )
+  [[ -n "${LLMGatewayAutoLLMModel:-}" ]] && GW_ENV+=( -e "LLMGatewayAutoLLMModel=${LLMGatewayAutoLLMModel}" )
+  [[ -n "${LLMGatewayAutoLLMTimeout:-}" ]] && GW_ENV+=( -e "LLMGatewayAutoLLMTimeout=${LLMGatewayAutoLLMTimeout}" )
+  [[ -n "${LLMGatewayAutoLLMMaxTokens:-}" ]] && GW_ENV+=( -e "LLMGatewayAutoLLMMaxTokens=${LLMGatewayAutoLLMMaxTokens}" )
+  log "AutoLLM 分类兜底已启用：endpoint=${LLMGatewayAutoLLMEndpoint} model=${LLMGatewayAutoLLMModel:-} timeout=${LLMGatewayAutoLLMTimeout:-default}"
+else
+  log "AutoLLM 分类兜底未配置（LLMGatewayAutoLLMEndpoint 为空）—— 低置信度停留启发式"
+fi
+if [[ -n "${LLM_GW_TEST_MODE_TOKEN:-}" ]]; then
+  GW_ENV+=( -e "LLM_GW_TEST_MODE_TOKEN=${LLM_GW_TEST_MODE_TOKEN}" )
+  log "X-Gw-Test-Mode mock/auto-only 已启用（token 已配，值不打印）"
+fi
+# ── AUTOLLM-ENV-INJECT:END ──
 
 # ── 状态目录出容器（2026-10-13，对齐 211 机 DEPLOY-STANDARDS 总纲）──────
 # /app/data（keystore/hotzone/attachments/backups/model-quality）与 /app/logs
