@@ -199,7 +199,11 @@ func startsWithAgent(s string) bool { return strings.HasPrefix(strings.TrimSpace
 func agentRole(name string) string {
 	switch name {
 	// R52：minimax-code/deepseek-code 注册补齐——缺这里 role 落 other_agent。
-	case "zcode", "opencode", "codex", "claude-code", "roocode", "cline", "aider", "continue", "cursor", "windsurf", "zed", "copilot", "kiro", "minimax-code", "deepseek-code":
+	// 2026-10-29 domestic-vendor round：其余 CN 厂商编码工具同题——
+	// 规范名已进 clienttype.Normalize 白名单，缺这里 role 会落
+	// other_agent，会话侧的编码智能体统计就少了这几家。
+	case "zcode", "opencode", "codex", "claude-code", "roocode", "cline", "aider", "continue", "cursor", "windsurf", "zed", "copilot", "kiro", "minimax-code", "deepseek-code",
+		"codebuddy", "trae", "comate", "qwen-code", "kimi-cli", "iflow", "raccoon", "iflycode", "lingma":
 		return "coding_agent"
 	case "vscode", "jetbrains":
 		return "ide_client"

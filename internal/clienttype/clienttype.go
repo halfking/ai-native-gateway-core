@@ -59,8 +59,33 @@ func Normalize(value string) string {
 		"vscode", "copilot", "windsurf", "zed", "jetbrains", "pi",
 		// 2026-09-21: domestic coding-agent clients
 		"minimax-code", "deepseek-code",
+		// 2026-10-29 domestic-vendor round: the remaining CN-vendor
+		// coding tools. Names are the canonical kind spellings shared
+		// with agent-companion's catalog (codebuddy/trae-agent→trae/
+		// comate/qwen-code/kimi-cli/iflow; raccoon, iflycode, lingma are
+		// identification-only there — no verified local CLI yet).
+		"codebuddy", "trae", "comate", "qwen-code", "kimi-cli", "iflow",
+		"raccoon", "iflycode", "lingma",
 		Unknown:
 		return value
+	// 2026-10-29: alias spellings fold onto their canonical name, so a
+	// header path (X-Agent-Name / X-Gw-Client-Type) that spells the
+	// vendor's product alias keeps ONE label per tool instead of
+	// expanding Prometheus cardinality. The UA tables already route the
+	// same aliases; this is the header-supplied path.
+	case "zulu":
+		// Baidu Comate's CLI name.
+		return "comate"
+	case "code-buddy":
+		return "codebuddy"
+	case "trae-cli", "trae-agent":
+		return "trae"
+	case "kimi":
+		return "kimi-cli"
+	case "iflow-cli":
+		return "iflow"
+	case "qwen-cli":
+		return "qwen-code"
 	default:
 		return Unknown
 	}
@@ -155,6 +180,30 @@ func DetectFromRequest(r *http.Request) string {
 	// alnum, so only a slash/space/string-end delimiter fires.
 	case HasToken(ua, "pi"):
 		return "pi"
+	// 2026-10-29 domestic-vendor round: the remaining CN-vendor coding
+	// tools, wire forms first where they are known. HasToken's dual
+	// boundary keeps the lookalikes out ("Trajectory/1.0" contains
+	// "trae"-only as a substring of a longer word — alnum continuation
+	// refuses it; "KimiK2/1.0" contains "kimi" followed by a digit and
+	// is refused the same way).
+	case HasToken(ua, "codebuddy"), HasToken(ua, "code-buddy"):
+		return "codebuddy"
+	case HasToken(ua, "trae-cli"), HasToken(ua, "trae-agent"), HasToken(ua, "trae"):
+		return "trae"
+	case HasToken(ua, "zulu"), HasToken(ua, "comate"):
+		return "comate"
+	case HasToken(ua, "qwen-code"), HasToken(ua, "qwen-cli"):
+		return "qwen-code"
+	case HasToken(ua, "kimi-cli"), HasToken(ua, "kimi"):
+		return "kimi-cli"
+	case HasToken(ua, "iflow-cli"), HasToken(ua, "iflow"):
+		return "iflow"
+	case HasToken(ua, "raccoon"):
+		return "raccoon"
+	case HasToken(ua, "iflycode"):
+		return "iflycode"
+	case HasToken(ua, "lingma"):
+		return "lingma"
 	}
 	// 3. Vendor beta-flag header. Claude Code always carries
 	//    "anthropic-beta: claude-code-20250219,…" — a match is deliberate

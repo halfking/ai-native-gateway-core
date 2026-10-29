@@ -95,6 +95,90 @@ func defaultAgentPatterns() []agentPatternEntry {
 			"deepseek-coder cli",
 			"you are deepseek-v3 coding",
 		}},
+		// 2026-10-29 domestic-vendor round (CN coding-agent coverage): the
+		// remaining CN-vendor coding tools, each anchored on its
+		// self-description shape (the same lesson as the minimax/deepseek
+		// entries — bare product words misfire on any prompt that merely
+		// mentions them, so every pattern below is either a "you are …"
+		// self-identification, a hyphenated CLI token, or the CJK product
+		// name). Names are the canonical clienttype values, aligned 1:1 with
+		// agent-companion's catalog kinds so the gateway label and the
+		// runtime inventory name the same tool the same way. All entries sit
+		// BEFORE the bare claude fallback: several of these forks mention
+		// Claude in their prompts.
+		{"codebuddy", []string{
+			// Tencent CodeBuddy Code (npm @tencent-ai/codebuddy-code,
+			// codebuddy.ai); ACP-capable since CodeBuddy Code 2.0 (2026-01).
+			"you are codebuddy",
+			"codebuddy code",
+			"codebuddy cli",
+			"tencent codebuddy",
+		}},
+		{"trae", []string{
+			// ByteDance trae-agent (github.com/bytedance/trae-agent, binary
+			// trae-cli) — distinct from the closed TRAE IDE, whose prompts
+			// self-describe as Trae too; the shared "trae" name is honest:
+			// both are ByteDance Trae surfaces.
+			"you are trae",
+			"trae agent",
+			"trae-cli",
+			"trae cli",
+		}},
+		{"comate", []string{
+			// Baidu Comate's CLI is named Zulu (npm @comate/zulu); both
+			// spellings land on the vendor name.
+			"you are zulu",
+			"zulu cli",
+			"you are comate",
+			"comate cli",
+			"baidu comate",
+		}},
+		{"qwen-code", []string{
+			// Alibaba Qwen Code (github.com/QwenLM/qwen-code), a gemini-cli
+			// fork that rebrands its self-description.
+			"you are qwen code",
+			"qwen-code cli",
+			"qwen code cli",
+		}},
+		{"kimi-cli", []string{
+			// Moonshot Kimi CLI (github.com/MoonshotAI/kimi-cli).
+			"you are kimi",
+			"kimi cli",
+			"kimi-cli",
+			"moonshot kimi",
+		}},
+		{"iflow", []string{
+			// iFlow CLI (github.com/iflow-ai/iflow-cli), a Qwen-Code fork;
+			// hosted service shut down 2026-04-17 but installed clients
+			// still generate traffic worth labelling.
+			"you are iflow",
+			"iflow cli",
+			"iflow-cli",
+		}},
+		{"raccoon", []string{
+			// SenseTime 代码小浣熊 Raccoon — the CJK product name is the
+			// strongest 特征词; the latin forms stay anchored (bare
+			// "raccoon" would fire on any prompt about the animal).
+			"you are raccoon",
+			"raccoon cli",
+			"raccoon code",
+			"代码小浣熊",
+		}},
+		{"iflycode", []string{
+			// iFlytek 星火飞码 (xfyun.cn/solutions/iflycode) — the bare
+			// token is rare enough to anchor itself.
+			"you are iflycode",
+			"iflycode cli",
+			"iflycode",
+		}},
+		{"lingma", []string{
+			// Alibaba Cloud 通义灵码 TONGYI Lingma (lingma.aliyun.com, now
+			// folding into Qoder CN).
+			"you are lingma",
+			"lingma cli",
+			"tongyi lingma",
+			"通义灵码",
+		}},
 		// Bare Claude / Anthropic fallback — only fires when no more-specific
 		// agent above matched. Useful for custom Claude-API clients that embed
 		// Claude as the model and self-identify as plain Claude.
@@ -462,6 +546,29 @@ func ExtractAgentNameFromRequest(r *http.Request, body []byte) string {
 		// boundary rule as the clienttype table; must stay in sync.
 		case clienttype.HasToken(uaLower, "pi"):
 			return "pi"
+		// 2026-10-29 domestic-vendor round: the remaining CN-vendor
+		// coding tools — same tokens and same canonical names as the
+		// clienttype.DetectFromRequest table (one vocabulary, two
+		// call sites; both must move together).
+		case clienttype.HasToken(uaLower, "codebuddy"), clienttype.HasToken(uaLower, "code-buddy"):
+			return "codebuddy"
+		case clienttype.HasToken(uaLower, "trae-cli"), clienttype.HasToken(uaLower, "trae-agent"),
+			clienttype.HasToken(uaLower, "trae"):
+			return "trae"
+		case clienttype.HasToken(uaLower, "zulu"), clienttype.HasToken(uaLower, "comate"):
+			return "comate"
+		case clienttype.HasToken(uaLower, "qwen-code"), clienttype.HasToken(uaLower, "qwen-cli"):
+			return "qwen-code"
+		case clienttype.HasToken(uaLower, "kimi-cli"), clienttype.HasToken(uaLower, "kimi"):
+			return "kimi-cli"
+		case clienttype.HasToken(uaLower, "iflow-cli"), clienttype.HasToken(uaLower, "iflow"):
+			return "iflow"
+		case clienttype.HasToken(uaLower, "raccoon"):
+			return "raccoon"
+		case clienttype.HasToken(uaLower, "iflycode"):
+			return "iflycode"
+		case clienttype.HasToken(uaLower, "lingma"):
+			return "lingma"
 		case clienttype.HasToken(uaLower, "postman"):
 			uaDerived = "postman"
 		case clienttype.HasToken(uaLower, "insomnia"):
