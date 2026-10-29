@@ -71,7 +71,8 @@ import (
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/hostedtask"
 	"github.com/kaixuan/llm-gateway-go/domains/integration"     //nolint:depguard // clientprofile worker wiring
-	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    //nolint:depguard // 模型质量监控
+	"github.com/kaixuan/llm-gateway-go/domains/modelcredibility" // 模型可信度（防掺水）worker 扫描面
+	"github.com/kaixuan/llm-gateway-go/domains/modelquality"      //nolint:depguard // 模型质量监控
 	"github.com/kaixuan/llm-gateway-go/domains/notification"    //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/providerprofile" //nolint:depguard // 供应商画像告警 handler (AlertType)
 	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"    //nolint:depguard // P1 proactive upstream quota prefetch
@@ -118,6 +119,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
 	"github.com/kaixuan/llm-gateway-go/internal/providers/mock"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
+	"github.com/kaixuan/llm-gateway-go/internal/registration"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
@@ -5154,9 +5156,8 @@ func main() {
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.base_url", ""); len(raw) > 0 {
 					jsoncol.Decode("gateway.modelQuality/base_url", raw, &mqBaseURL)
 				}
-				if mqBaseURL == "" {
-					mqBaseURL = "http://localhost:8787"
-				}
+				// 2026-10-29 (24h 审计第 7 轮): 空值留给 worker/invoker 侧的
+				// loopback.GatewayBase() 解析（不再落 8787 死端口）。
 
 				// 读取api_key
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.api_key", ""); len(raw) > 0 {
@@ -5258,12 +5259,17 @@ func main() {
 				//
 				// ★ 需要解密 key（直连上游发标定请求）⇒ keyring / fernetKey 至少
 				//   有一个可用，否则 worker 不启动（admin API 仍可读已落库的判定）。
-					// ★ 默认关。worker 启动后会对每个活跃节点直连上游发真实请求，
-					// 消耗 token、打到供应商限流。必须显式打开，不能靠零值当「开」。
-					mcEnabled := false
-					if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_credibility.enabled", ""); len(raw) > 0 {
-						jsoncol.Decode("gateway.modelCredibility/enabled", raw, &mcEnabled)
-					}
+				// ★ 默认关。worker 启动后会对每个活跃节点直连上游发真实请求，
+				// 消耗 token、打到供应商限流。必须显式打开，不能靠零值当「开」。
+				mcEnabled := false
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_credibility.enabled", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelCredibility/enabled", raw, &mcEnabled)
+				}
+				// 扫描面：featured（默认，routing_policy.featured_models）| all。
+				mcScope := modelcredibility.ScopeFeatured
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_credibility.scope", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelCredibility/scope", raw, &mcScope)
+				}
 				mcIntervalHours := 6
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_credibility.interval_hours", ""); len(raw) > 0 {
 					jsoncol.Decode("gateway.modelCredibility/interval_hours", raw, &mcIntervalHours)
@@ -5284,11 +5290,13 @@ func main() {
 						mcCfg.Enabled = true
 						mcCfg.Interval = time.Duration(mcIntervalHours) * time.Hour
 						mcCfg.ProbeTimeout = time.Duration(mcProbeTimeoutSec) * time.Second
+						mcCfg.Scope = mcScope
 						modelCredibilityWorker = bg.NewModelCredibilityWorker(dbConn.Pool(), keyring, fernetKey, mcCfg)
 						modelCredibilityWorker.Start(context.Background())
 						slog.Info("CHECKPOINT: model_credibility_worker started",
 							"interval_hours", mcIntervalHours,
-							"probe_timeout_seconds", mcProbeTimeoutSec)
+							"probe_timeout_seconds", mcProbeTimeoutSec,
+							"scope", mcScope)
 					} else {
 						slog.Warn("model_credibility_worker: keyring/fernet key unavailable, not started")
 					}
@@ -8121,6 +8129,16 @@ func main() {
 		}
 	}()
 
+	// goacos 服务发现注册（方案 54 / CO-20）。
+	//
+	// ⚠ **必须在端口真的 listen 之后**：上面的 net.Listen 已经成功 ⇒ 通告的端口
+	//   （从 cfg.Listen 派生）一定是本进程正在听的端口 ⇒ 蓝绿切流当天也不会
+	//   通告一个已经不再监听的端口（llm-gateway 的活跃端口在 8781/8782 之间
+	//   来回换，见 AGENTS.md §「端口：必须现场确认，不要假设」）。
+	//
+	// ⚠ 注册失败**不挡服务**：注册中心不可达时照常对外服务。
+	registryClient := registration.Start(context.Background(), cfg.Listen, slog.Default())
+
 	<-ctx.Done()
 	slog.Info("gateway shutting down")
 	if persistentLogger != nil {
@@ -8145,6 +8163,21 @@ func main() {
 		probeDrainCancel()
 		slog.Info("mock probe runner stopped")
 	}
+
+	// goacos 注销（方案 54 / CO-20）：**在停端口之前发起**。
+	// 注册面还留着这个实例的那几秒里，peer 会继续往一个已经不再接请求的进程上打。
+	//
+	// ⚠ 为什么是并发发起而不是同步等待：systemd TimeoutStopSec=35s 的预算**已经占满**
+	//   （下方 srv.Shutdown 23s drain + 12s worker 余量，见 2026-08-19 的注释）。
+	//   同步注销会挤掉 worker 的那份 ⇒ 进程可能在 35s 被 SIGKILL ⇒ 租约与 DB 连接留脏。
+	//   那比 peer 多拨一次已经关掉的端口更糟。DELETE **先发出**，通常在毫秒级内落地。
+	//
+	// ⚠ 停机预算有**两面**，只有一面在仓内：deploy/llm-gateway-go.service 与
+	//   deploy/llmgo-245.service 写的是 TimeoutStopSec=25s（tracked）；活体主机靠一个
+	//   systemd drop-in 提到 35s（下面 2026-08-19 的注释引用的就是它），而那个 drop-in
+	//   **不在仓内** ⇒ 活体预算属于「仓内不可核对」的主机侧状态。
+	//   按**较小**的那一面（25s）算，同步注销也放不下 ⇒ 并发发起是稳的那一边。
+	registration.StopAsync(registryClient)
 
 	// 1. Stop accepting new connections — in-flight requests drain naturally
 	// 2026-08-19: 30s→23s. systemd TimeoutStopSec=35s (drop-in), srv.Shutdown 必须 ≤ 23s

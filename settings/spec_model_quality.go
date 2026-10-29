@@ -83,12 +83,19 @@ func ModelQualitySpecs() []*Spec {
 			Type:        TypeString,
 			Scope:       ScopePlatform,
 			Category:    CategoryModelQuality,
-			Default:     "http://localhost:8787",
-			Description: "网关基础URL（用于质量测试调用）",
+			// 2026-10-29 (24h 审计第 7 轮): 默认改为**空** ⇒ 调用方
+			// (bg.NewModelQualityWorker / NewGatewayModelInvoker) 落
+			// loopback.GatewayBase()（读 LLM_GATEWAY_LISTEN，蓝绿感知）。
+			// 原默认 http://localhost:8787 是一个从未存在的监听端口——
+			// 211 生产实测每次 24h 定时检查 12 模型全部 dial refused
+			// （error_count=50/50, grade=F），且经 EffectiveValue 的
+			// spec-default 链路把旧值顶回 main.go 的空判 ⇒ 修 worker 默认
+			// 是死代码，必须改这里（单一事实源）。
+			Default:     "",
+			Description: "网关基础URL（用于质量测试调用；留空 = 跟随本实例监听端口）",
 			DescriptionLong: "模型质量测试时调用的网关地址。" +
-				"本地开发: http://localhost:8787\n" +
-				"测试环境245: http://10.177.48.245:8787\n" +
-				"生产环境154: http://10.177.48.154:8787",
+				"留空（推荐）= 自动跟随本实例监听端口（loopback.GatewayBase）；\n" +
+				"跨机测试时可显式指定，如 http://10.177.48.245:8781。",
 			DangerLevel: Safe,
 			HotReload:   true,
 		},
