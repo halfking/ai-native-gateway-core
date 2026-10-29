@@ -510,7 +510,7 @@ export const enUS = {
       day: 'Today',
     },
     windowEcho: 'Actual window: {w}',
-    degraded: 'Stats rollup not ready — stats on this page are unavailable (live requests unaffected).',
+    degraded: 'Stats rollup not ready: stats on this page are unavailable (live requests unaffected).',
     watermark: 'Stats watermark (daily rollup may lag up to 1 hour)',
     totalRequests: 'Requests',
     successRate: 'Success rate',

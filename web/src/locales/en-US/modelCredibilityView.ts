@@ -6,7 +6,7 @@ export default {
     '(downgrade / swap / dilution). The verdict rests on four independent measurements: the model ' +
     'the upstream self-reports, capability compared against other nodes serving the same model, ' +
     'whether the request signature stays stable, and an external baseline. When nothing can be ' +
-    'concluded the result reads "insufficient evidence" — never "no problem".',
+    'concluded the result reads "insufficient evidence", never "no problem".',
 
   stats: {
     total: 'Judged nodes',
@@ -72,7 +72,7 @@ export default {
     capability_below_peer_best: 'Capability is below the best node serving the same model',
     capability_severely_below_peer_best: 'Capability is far below the best node serving the same model',
     capability_above_peer_best: 'Capability is above the best node serving the same model',
-    consistency_prompt_token_drift: 'Request signature drifted — the backend may have been swapped',
+    consistency_prompt_token_drift: 'Request signature drifted; the backend may have been swapped',
     consistency_system_fingerprint_drift: 'The upstream fingerprint changed',
     reference_below_expected_accuracy: 'Below the level the external baseline expects',
     capability_no_measurement: 'No usable capability measurement available',
@@ -104,6 +104,5 @@ export default {
     loadFailed: 'The model credibility data could not be loaded. Please retry.',
     scanFailed: 'The model credibility scan could not be completed. Please retry.',
     detailFailed: 'The model credibility verdict detail could not be loaded. Please retry.',
-    historyFailed: 'The model credibility verdict history could not be loaded. Please retry.',
   },
 }

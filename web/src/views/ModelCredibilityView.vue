@@ -11,6 +11,7 @@
 // 后端判定逻辑在 domains/modelcredibility。
 import { useI18n } from 'vue-i18n'
 import { computed, onMounted, ref } from 'vue'
+import { Warning } from '@element-plus/icons-vue'
 import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime } from '../utils/datetime'
 import {
@@ -343,7 +344,11 @@ onMounted(load)
             <td>{{ row.raw_model_name }}</td>
             <td>
               {{ row.reported_model || '—' }}
-              <span v-if="row.reported_model && row.reported_model !== row.raw_model_name" class="mismatch-mark">≠</span>
+              <!-- craft-floor ban-glyph-icons：≠ 字形换 SVG（R183 批判式审计档
+                   在案的同族存量；icon 默认 1em，尺寸走 .mismatch-mark 的 font-size） -->
+              <span v-if="row.reported_model && row.reported_model !== row.raw_model_name" class="mismatch-mark">
+                <Warning />
+              </span>
             </td>
             <td>
               <span class="score">{{ fmtScore(row.credibility_score, 1) }}</span>
@@ -582,6 +587,10 @@ onMounted(load)
   margin-left: 6px;
   color: var(--kx-danger, #dc2626);
   font-weight: 700;
+  /* SVG 图标显式定尺寸（裸 svg 不带 width/height 会按包含块宽度渲染） */
+  font-size: 12px;
+  display: inline-flex;
+  vertical-align: -1px;
 }
 
 .verdict-badge {

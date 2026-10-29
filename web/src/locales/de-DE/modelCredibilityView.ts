@@ -6,7 +6,7 @@ export default {
     '(Austausch, Downgrade, Verwässerung). Das Urteil stützt sich auf vier unabhängige Messungen: ' +
     'die Selbstauskunft des Anbieters, den Fähigkeitsvergleich mit anderen Knoten desselben Modells, ' +
     'die Stabilität der Anfrage-Signatur und eine externe Referenz. Lässt sich nichts ableiten, ' +
-    'steht „nicht genug Belege" — niemals „kein Problem".',
+    'steht „nicht genug Belege", niemals „kein Problem".',
 
   stats: {
     total: 'Bewertete Knoten',
@@ -72,7 +72,7 @@ export default {
     capability_below_peer_best: 'Fähigkeit unter dem besten Knoten desselben Modells',
     capability_severely_below_peer_best: 'Fähigkeit deutlich unter dem besten Knoten desselben Modells',
     capability_above_peer_best: 'Fähigkeit über dem besten Knoten desselben Modells',
-    consistency_prompt_token_drift: 'Anfrage-Signatur driftet — das Backend wurde möglicherweise getauscht',
+    consistency_prompt_token_drift: 'Anfrage-Signatur driftet; das Backend wurde möglicherweise getauscht',
     consistency_system_fingerprint_drift: 'Der Fingerabdruck des Anbieters hat sich geändert',
     reference_below_expected_accuracy: 'Unter dem Niveau, das die externe Referenz erwartet',
     capability_no_measurement: 'Keine verwertbare Fähigkeitsmessung vorhanden',
@@ -104,6 +104,5 @@ export default {
     loadFailed: 'Die Glaubwürdigkeitsdaten der Modelle konnten nicht geladen werden. Bitte erneut versuchen.',
     scanFailed: 'Die Glaubwürdigkeitsprüfung konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
     detailFailed: 'Die Details zum Glaubwürdigkeitsurteil konnten nicht geladen werden. Bitte erneut versuchen.',
-    historyFailed: 'Der Verlauf der Glaubwürdigkeitsurteile konnte nicht geladen werden. Bitte erneut versuchen.',
   },
 }
