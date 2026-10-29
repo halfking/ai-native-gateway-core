@@ -26,7 +26,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElOption, ElSelect } from 'element-plus'
 import { useLiveStream } from '../composables/useLiveStream'
-import { redisHealthyRef as redisHealthy, redisErrorRef as redisError } from '../composables/liveStreamStore'
+import { redisHealthyRef as redisHealthy, redisErrorRef as redisError, liveDataRevision } from '../composables/liveStreamStore'
 import { useLiveTopology, type PanelEntry } from '../composables/useLiveTopology'
 import { clientKeyOf, modelKeyOf, providerNodeKeyOf } from '../lib/liveTopologyGraph'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
@@ -388,6 +388,7 @@ function onSelectModel(model: string) {
       :active-model="activeModel"
       :in-flight="topo.coreMetric.value?.inFlight ?? null"
       :queue-depth="queueDepth"
+      :data-revision="liveDataRevision"
       @select-client="onSelectClient"
       @select-provider="onSelectProvider"
       @select-model="onSelectModel"

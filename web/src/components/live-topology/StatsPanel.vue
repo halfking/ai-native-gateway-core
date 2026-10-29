@@ -20,6 +20,11 @@
 //   · 口径行以**响应自己的 window 字段**为准（数据说自己是什么口径），
 //     不以当前选中的区间为准 —— 切换瞬间数据未到时不会把旧数据标成新口径。
 //   · 明细两组与图、左右面板收敛到同一过滤子集（点行联动过滤）。
+//
+// 刷新节奏（2026-10-29 统计同步轮）：轮询是兜底（短窗口 30s / 日桶 60s，
+// 且后台标签页跳过 tick），「新请求落地 ⇒ 统计同步」由 dataRevision
+// （liveStreamStore.liveDataRevision）驱动：尾沿防抖 4s 合流突发，后台
+// 标签页只记账、回前台补拉 —— 秒级同步且不给端点加突发压力。
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -45,6 +50,11 @@ const props = defineProps<{
   inFlight?: number | null
   /** 转发队列深度（未接线时 null —— 隐藏，不冒充 0）。 */
   queueDepth?: number | null
+  /** 实时流数据修订号（liveStreamStore.liveDataRevision）：请求集合每变动
+   *  一次 +1。2026-10-29 统计同步轮：统计是 DB 直查口径，此前只靠轮询 ⇒
+   *  新请求进来图和面板立刻动、统计最多滞后一个轮询周期。现在 watch 本号
+   *  触发**尾沿防抖**刷新 —— 突发合流成一次拉取，新数据落地后秒级同步。 */
+  dataRevision?: number
 }>()
 
 const emit = defineEmits<{
@@ -69,10 +79,13 @@ const providersFailed = ref(false)
 const modelsFailed = ref(false)
 let timer: number | null = null
 let controller: AbortController | null = null
+/** 上一次 load 的发起时刻（回前台补拉用「数据多旧」判断，不用时间戳对表）。 */
+let lastLoadAt = 0
 
 async function load() {
   controller?.abort()
   controller = new AbortController()
+  lastLoadAt = Date.now()
   const win = interval.value === 'day' ? undefined : interval.value
   // 三组独立加载：一组失败/降级不拖垮另一组（allSettled 语义）。
   // ★ 客户端组恒走 request_logs 直查（clients-today）：stats 事件链不带客户端
@@ -106,9 +119,54 @@ async function load() {
 /** 短窗口 30s、日桶 60s（日桶本身每小时才重建，更快轮询是假动作）。 */
 const pollMs = computed(() => (interval.value === 'day' ? 60_000 : 30_000))
 
+// ── 新数据到达 → 统计同步刷新（2026-10-29 统计同步轮）────────────────
+// 轮询只是兜底（水位/日桶推进不依赖新流量）；「新请求落地」这条路径由
+// dataRevision 驱动：尾沿防抖把一次突发（几十条生命周期帧）合流成一次
+// 拉取；后台标签页只记账不拉取，回前台再补 —— 看不见的页面不打端点。
+const SYNC_DEBOUNCE_MS = 4_000
+let syncTimer: number | null = null
+let syncPendingWhileHidden = false
+
+function scheduleSyncLoad() {
+  if (document.hidden) {
+    syncPendingWhileHidden = true
+    return
+  }
+  if (syncTimer) window.clearTimeout(syncTimer)
+  syncTimer = window.setTimeout(() => {
+    syncTimer = null
+    void load()
+  }, SYNC_DEBOUNCE_MS)
+}
+
+function onVisibilityChange() {
+  if (document.hidden) return
+  if (syncPendingWhileHidden) {
+    syncPendingWhileHidden = false
+    scheduleSyncLoad()
+    return
+  }
+  // 回前台时数据若已旧过本区间的轮询周期，立即补一轮（隐藏期间的
+  // 轮询 tick 被跳过，靠这里补齐）。
+  if (Date.now() - lastLoadAt >= pollMs.value) void load()
+}
+
+watch(
+  () => props.dataRevision,
+  (after, before) => {
+    // 挂载时的初值落地不算「新数据」——那是初始加载自己要干的事。
+    if (before === undefined) return
+    scheduleSyncLoad()
+  },
+)
+
 function startTimer() {
   if (timer) window.clearInterval(timer)
-  timer = window.setInterval(() => void load(), pollMs.value)
+  // 后台标签页跳过轮询 tick：看不见的页面不消耗端点与电量；
+  // 回前台由 onVisibilityChange 按数据新旧补拉。
+  timer = window.setInterval(() => {
+    if (!document.hidden) void load()
+  }, pollMs.value)
 }
 
 watch(interval, () => {
@@ -119,11 +177,15 @@ watch(interval, () => {
 onMounted(() => {
   void load()
   startTimer()
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
+  if (syncTimer) window.clearTimeout(syncTimer)
+  syncTimer = null
   controller?.abort()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
 // ── 口径行：以响应自己的 window 字段为准（数据说自己是什么口径）────────
