@@ -2,7 +2,7 @@
 
 > 交接对象：下一轮接手 llm-gateway-go-3 的会话。
 > 输入：docs/audit/2026-10-29-批判式审计第二轮遗留三项收口轮.md
-> 通用式：LESSONS.md §531（复原）+ §556（本轮新增）
+> 通用式：LESSONS.md §531（复原）+ §557（本轮新增）
 
 ## 0. 本轮做了什么（一句话）
 
@@ -20,7 +20,7 @@
 | `tests/testutil/modality_value_domain.go` | 登记模态值域的**唯一**派生实现（读迁移 451 的 CHECK 约束） |
 | `tests/deploy_via_identity_gates_iso_test.sh` | 三道身份闸的隔离 --via 集成门（21 断言 + 2 变异臂 + 4 还原/隔离臂） |
 | `domains/streaming/model_alternatives.go`（改） | $5 注释块加「第二份 SQL 抄本」指针 + 闭世界结构差异登记 |
-| `LESSONS.md` | §531 复原（合并时丢失）+ §556 新增（四条通用式） |
+| `LESSONS.md` | §531 复原（合并时丢失）+ §557 新增（四条通用式） |
 | `docs/audit/2026-10-29-批判式审计第二轮遗留三项收口轮.md` | 本轮审计档（含自伤记录） |
 
 ## 2. 三条判据的口径（下一轮要改判据时必读）
@@ -63,6 +63,6 @@
 ## 5. 合并与推送记录
 
 - 合并前 fetch：origin/main = 2d66c3ac3（远端 LESSONS 已到 §555 ⇒ 我方新号取
-  §556；§531 远端空闲 ⇒ 复原段留在 §531，与并行会话 §535 取号记录相容）。
+  §557；§531 远端空闲 ⇒ 复原段留在 §531，与并行会话 §535 取号记录相容）。
 - 合并方式：`git merge origin/main`（禁 stash/rebase）；LESSONS.md 冲突按
   「两侧都保留、远端在前 + 我方段落在尾」解决。
