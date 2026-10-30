@@ -124,6 +124,39 @@ fi
 
 log "要跑的包：${packages[*]}"
 
+# ── 嵌套 Go 模块分箱（★ 2026-10-30 部署实测缺陷）────────────────────────
+# installer/ 自带 go.mod ⇒ 是嵌套模块，从主模块根 `go test ./installer/...`
+# 必然 setup failed（"main module does not contain package"）⇒ ① 触及
+# installer 的提交会让干净树部署卡死在闸门；② assert_full_coverage 的
+# go list 也在主模块根跑 ⇒ 同样拿不到 installer 的包清单 ⇒ 走「读数不全」
+# 红报。修法 = 按模块根分箱：嵌套模块的包**在其模块根**下跑（GOFLAGS 按
+# 树内有无 vendor 决定：installer 无 vendor ⇒ -mod=mod 走模块缓存），覆盖
+# 断言同源同根。响亮记录分箱结果，不许静默跳过（那会把闸门降级成摆设）。
+main_packages=()
+nested_modules=()   # 去重后的嵌套模块根列表，如 installer
+declare -A nested_seen=()
+declare -A nested_pkgs=()
+for p in "${packages[@]}"; do
+  dir="${p#./}"; dir="${dir%/}"
+  modroot="$dir"
+  while [[ -n "$modroot" && "$modroot" != "." && ! -f "$REPO_ROOT/$modroot/go.mod" ]]; do
+    modroot="$(dirname "$modroot")"
+  done
+  if [[ -z "$modroot" || "$modroot" == "." || ! -f "$REPO_ROOT/$modroot/go.mod" ]]; then
+    main_packages+=("$p")
+  else
+    if [[ -z "${nested_seen[$modroot]+x}" ]]; then
+      nested_seen[$modroot]=1
+      nested_modules+=("$modroot")
+    fi
+    nested_pkgs[$modroot]+=" ./${dir#"$modroot"/}"
+  fi
+done
+packages=("${main_packages[@]}")
+if [[ ${#nested_modules[@]} -gt 0 ]]; then
+  log "★ 嵌套模块分箱：${nested_modules[*]} ⇒ 各自模块根下跑（不从主模块根）★"
+fi
+
 # ── 工作目录与清理 ────────────────────────────────────────────────────
 workdir="$(mktemp -d)"
 base_tree=""
@@ -152,26 +185,34 @@ native_ok() {
   return 1
 }
 
+# modflag_for <tree> <subdir>：树内该子目录有 vendor ⇒ -mod=vendor（主模块
+# 惯例）；没有 ⇒ -mod=mod（嵌套模块如 installer 无 vendor，走本机模块缓存）。
+modflag_for() {
+  if [[ -d "$1/${2:-}/vendor" ]]; then echo "-mod=vendor"; else echo "-mod=mod"; fi
+}
+
 # ── 跑法一：原生 go（热缓存 ⇒ 分钟级；GOTOOLCHAIN=local ⇒ 绝不在线拉工具链）──
 run_native() {
-  local tree="$1" outfile="$2"; shift 2
-  log "跑法：原生 go（$(GOTOOLCHAIN=local "$NATIVE_GO" version 2>/dev/null | awk '{print $3}')，复用本机构建缓存；超时 ${TEST_TIMEOUT}）"
+  local tree="$1" outfile="$2" subdir="$3"; shift 3
+  local modflag; modflag="$(modflag_for "$tree" "$subdir")"
+  log "跑法：原生 go（$(GOTOOLCHAIN=local "$NATIVE_GO" version 2>/dev/null | awk '{print $3}')，复用本机构建缓存；超时 ${TEST_TIMEOUT}；${subdir:-主模块根} ${modflag}）"
   log "首个包出结果前有 1~2 分钟编译静默，属 go test 正常形态（不是卡死）…"
   (
-    cd "$tree" &&
-    GOFLAGS=-mod=vendor GOTOOLCHAIN=local "$NATIVE_GO" test -count=1 -timeout "$TEST_TIMEOUT" "$@"
+    cd "$tree${subdir:+/$subdir}" &&
+    GOFLAGS="$modflag" GOTOOLCHAIN=local "$NATIVE_GO" test -count=1 -timeout "$TEST_TIMEOUT" "$@"
   ) 2>&1 | tee "$outfile"
   # 红绿由结果行判定，不按退出码（红退出码非 0 是**预期**，不能让 set -e 杀掉解析）。
 }
 
 # ── 跑法二：docker 兜底（GOCACHE 持久命名卷 ⇒ 只有第一次冷） ────────────
 run_docker() {
-  local tree="$1" outfile="$2"; shift 2
-  log "跑法：docker（${GO_IMAGE}；GOCACHE 用持久卷 ${CACHE_VOLUME} ⇒ 仅首次冷编译；容器内超时 ${DOCKER_TIMEOUT_SECS}s）"
+  local tree="$1" outfile="$2" subdir="$3"; shift 3
+  local modflag; modflag="$(modflag_for "$tree" "$subdir")"
+  log "跑法：docker（${GO_IMAGE}；GOCACHE 用持久卷 ${CACHE_VOLUME} ⇒ 仅首次冷编译；容器内超时 ${DOCKER_TIMEOUT_SECS}s；${subdir:-主模块根} ${modflag}）"
   docker run --rm \
-    -v "$tree":/w -w /w \
+    -v "$tree":/w -w "/w${subdir:+/$subdir}" \
     -v "$CACHE_VOLUME":/tmp/gocache \
-    -e GOFLAGS=-mod=vendor -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath \
+    -e GOFLAGS="$modflag" -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath \
     "$GO_IMAGE" \
     sh -c "timeout $DOCKER_TIMEOUT_SECS go test -count=1 $*" 2>&1 | tee "$outfile"
 }
@@ -190,20 +231,24 @@ red_names() {
   } | sort -u
 }
 
-# assert_full_coverage：每个被选中的包都必须有结果行，缺任何一行 ⇒ 失败。
+# assert_full_coverage <outfile> <native|docker> <tree> <subdir> [packages...]
+# 每个被选中的包都必须有结果行，缺任何一行 ⇒ 失败。
 # ★ 这是伪绿的主闸：runner 半途夭折（OOM/超时/断连）时「已有行」都是绿的 ⇒
 #   只看红行会把「没跑完」读成「全绿」。
+# ★ go list 与 go test 必须同根同 mod 标志（嵌套模块在它自己的模块根 list，
+#   -mod=mod）⇒ 要不然主模块根拿不到嵌套模块的包清单 ⇒ 误报「读数不全」。
 assert_full_coverage() {
-  local outfile="$1" mode="$2" tree="$3"; shift 3
+  local outfile="$1" mode="$2" tree="$3" subdir="$4"; shift 4
   local import_paths
   if [[ "$mode" == "native" ]]; then
-    import_paths="$(GOTOOLCHAIN=local GOFLAGS=-mod=vendor "$NATIVE_GO" list "$@" 2>/dev/null || true)"
+    import_paths="$( cd "$tree${subdir:+/$subdir}" && \
+      GOTOOLCHAIN=local GOFLAGS="$(modflag_for "$tree" "$subdir")" "$NATIVE_GO" list "$@" 2>/dev/null || true )"
   else
-    import_paths="$(docker run --rm -v "$tree":/w -w /w \
-      -e GOFLAGS=-mod=vendor "$GO_IMAGE" go list "$@" 2>/dev/null || true)"
+    import_paths="$(docker run --rm -v "$tree":/w -w "/w${subdir:+/$subdir}" \
+      -e GOFLAGS="$(modflag_for "$tree" "$subdir")" "$GO_IMAGE" go list "$@" 2>/dev/null || true)"
   fi
   if [[ -z "$import_paths" ]]; then
-    die "go list 拿不到被测包清单 ⇒ 覆盖断言做不成 ⇒ 按失败处理"
+    die "go list 拿不到被测包清单（根=${tree}${subdir:+/$subdir}）⇒ 覆盖断言做不成 ⇒ 按失败处理"
   fi
   local p missing=0
   while IFS= read -r p; do
@@ -220,13 +265,41 @@ assert_full_coverage() {
   fi
 }
 
+# ── 跑一棵树：主模块 + 每个嵌套模块各跑一次，输出合并、逐箱覆盖断言 ──
+# 用法：run_tree <tree> <outfile> <native|docker>   （native|docker 由调用方
+# 已定的跑法决定；当前树与基线树共用。）
+run_tree() {
+  local tree="$1" outfile="$2" mode="$3" box sub
+  : > "$outfile"
+  for box in "" "${nested_modules[@]}"; do
+    sub="$box"
+    local -a pkgs=()
+    if [[ -z "$box" ]]; then
+      pkgs=("${packages[@]}")
+      [[ ${#pkgs[@]} -eq 0 ]] && continue
+    else
+      read -r -a pkgs <<< "${nested_pkgs[$box]}"
+    fi
+    if [[ "$mode" == native ]]; then
+      run_native "$tree" "$outfile.part" "$sub" "${pkgs[@]}" || true
+    else
+      run_docker "$tree" "$outfile.part" "$sub" "${pkgs[@]}" || true
+    fi
+    if ! readable_results "$outfile.part"; then
+      log "★ ${box:-主模块}：该箱没有产出可判读的结果 ⇒ ${mode} 跑法不可用"
+      return 1
+    fi
+    assert_full_coverage "$outfile.part" "$mode" "$tree" "$sub" "${pkgs[@]}"
+    cat "$outfile.part" >> "$outfile"
+  done
+}
+
 # ── 主跑：当前树 ──────────────────────────────────────────────────────
 out_current="$workdir/current.txt"
 use_native=0
 
 if native_ok; then
-  run_native "$REPO_ROOT" "$out_current" "${packages[@]}" || true
-  if readable_results "$out_current"; then
+  if run_tree "$REPO_ROOT" "$out_current" native; then
     use_native=1
   else
     log "★ 原生 go 没有产出可判读的结果 ⇒ 落 docker 兜底（原生输出尾部：$(tail -2 "$out_current" | tr '\n' ' ')）"
@@ -235,20 +308,16 @@ else
   log "★ 本机没有可用的 go ⇒ docker 兜底 ★"
 fi
 
-if [[ $use_native -eq 1 ]]; then
-  assert_full_coverage "$out_current" native "" "${packages[@]}"
-else
+if [[ $use_native -ne 1 ]]; then
   if ! docker image inspect "$GO_IMAGE" >/dev/null 2>&1; then
     log "拉取测试镜像 $GO_IMAGE ..."
     docker pull "$GO_IMAGE" || die "测试镜像不可用（${GO_IMAGE}）⇒ 闸门做不成。★ 要跳过请显式给 DD_SKIP_TEST_GATE=1（★ 那次上线将没有测试证据）★"
   fi
-  run_docker "$REPO_ROOT" "$out_current" "${packages[@]}" || true
-  if ! readable_results "$out_current"; then
+  if ! run_tree "$REPO_ROOT" "$out_current" docker; then
     printf '%s\n' '—— 测试输出尾部 ——' >&2
     tail -15 "$out_current" >&2
     die "docker 测试没有产出可判读的结果 ⇒ 宁可红报，不许伪绿（★ v1 缺陷④a）"
   fi
-  assert_full_coverage "$out_current" docker "$REPO_ROOT" "${packages[@]}"
 fi
 
 current_reds="$(red_names "$out_current")"
@@ -275,23 +344,18 @@ git worktree add --detach "$base_tree" "$base_commit" >/dev/null 2>&1 || {
 out_base="$workdir/base.txt"
 base_use_native=0
 if [[ $use_native -eq 1 ]]; then
-  run_native "$base_tree" "$out_base" "${packages[@]}" || true
-  if readable_results "$out_base"; then
+  if run_tree "$base_tree" "$out_base" native; then
     base_use_native=1
   else
     log "★ 基线树原生跑法没有产出可判读结果 ⇒ docker 兜底"
   fi
 fi
-if [[ $base_use_native -eq 1 ]]; then
-  assert_full_coverage "$out_base" native "" "${packages[@]}"
-else
-  run_docker "$base_tree" "$out_base" "${packages[@]}" || true
-  if ! readable_results "$out_base"; then
+if [[ $base_use_native -ne 1 ]]; then
+  if ! run_tree "$base_tree" "$out_base" docker; then
     printf '%s\n' '—— 基线输出尾部 ——' >&2
     tail -15 "$out_base" >&2
     die "基线树测试没有产出可判读的结果 ⇒ 无法区分新旧红灯 ⇒ 拒绝上线"
   fi
-  assert_full_coverage "$out_base" docker "$base_tree" "${packages[@]}"
 fi
 
 base_reds="$(red_names "$out_base")"
