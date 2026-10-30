@@ -376,7 +376,7 @@ function onDividerKeydown(e: KeyboardEvent) {
         <div v-if="hasMoreTurns" class="warn">{{ t('requestDetail.turns.truncatedHint') }}</div>
         <!-- W1.3：录制未开启时 V2 bodies 恒缺，列表只剩 V1 派生轮次。注记常显；
              列表也真为空时它取代 generic empty（「录制没开」≠「没有轮次」）。 -->
-        <div v-if="v2ConsentOff" class="muted" data-testid="sync-pane-consent-off">
+        <div v-if="v2ConsentOff" class="muted" role="status" data-testid="sync-pane-consent-off">
           {{ t('requestDetail.bodyStatus.consentOffInline') }}
         </div>
         <div v-else-if="!displayTurns.length" class="muted">{{ t('requestDetail.turns.empty') }}</div>
