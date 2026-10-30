@@ -1332,7 +1332,7 @@ onMounted(async () => {
         同一会话的多轮请求不再重复发送完整历史，只发送新增部分。缓存分三级：
         L1 进程内存 / L2 Redis / L3 数据库兜底。</p>
         <p style="margin:0 0 4px"><strong>压缩策略说明</strong>：</p>
-        <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <table class="guide-table" style="width:100%;border-collapse:collapse;font-size:11px">
           <thead>
           <tr>
             <th style="text-align:left;padding:3px 4px;border:1px solid var(--border);background:var(--surface-primary);white-space:nowrap">策略</th>
@@ -1716,6 +1716,20 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+/* 2026-10-30 r1050 轮：「会话缓存机制」说明表的排版锁定。
+   ★ 背景：★ 本轮给该表补上了 <thead>/<tbody>（修 `<tr>` 直挂 `<table>` 的 HTML 语义缺陷）
+   ★ ⇒ ★★ 全局 style.css 的 `thead th` / `tbody td` **元素选择器**从此对该表生效
+   ★ ⇒ ★ 其中 `tbody td { font-size: 13px }` 会把该表从 11px 密排撑成 13px 松排
+   ★ ⇒ ★★ 而该表本就是「说明性小字表」（表级 font-size:11px）⇒ 13px 不是改善，是**排版劣化**。
+   ★ ⇒ 修法：★ 用 scoped 规则把字号钉回 11px（★ 与仓内同族 `.dense-table` 做法一致），
+   ★ 而不是给 12 个单元格各加一份行内 style（★ 那会把意图埋进噪声里）。
+   ★★ 顺带把「补了语义标签 ⇒ 全局表格样式开始生效」这件事记在文件里：
+   ★★ **补语义标签不是纯语法修复，它会让此前被绕过的样式规则开始管这张表。** */
+.guide-table th,
+.guide-table td {
+  font-size: 11px;
+}
+
 /* 2026-08-17: 详情 body 缓存可观测条（super admin）。轻量单行 chip，不抢
    列表空间；数值用 tabular-nums 防刷新时跳动。 */
 .body-cache-strip {
