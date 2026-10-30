@@ -16375,3 +16375,31 @@ pocket $4（N+6）。
 通用式见 `LESSONS.md` **§583**（十条：迁移预应用≠脚本部署 / 坏 join 造假缺陷 /
 活锁=成本-预算差 / 错误族二次分桶 / 拼接解析去重 / 协议形态归因 / 相位从日志读 /
 KV 直写生效条件 / CONCURRENTLY 锁预算 / 自噪音按客户端签名入账）。
+> **2026-10-31 24h 审计第 9 轮·批判式审计：声明订正两条 + 第 11 轮立项卡落地**（用户指令
+> 「对本任务批判式审计并修正」，承接第 9 轮四项遗留）：
+> ⇒ ★★★ **声明订正一（最值钱）**：第 9 轮「glm 处置后 WARN 归零」被第 10/11 轮实锤为
+> **cred 19 流量退出的相关性**（候选仍 2、条件原封未动，743 条/5.7h 在 10 轮复现）
+> ⇒ 归因撤回；判据改为**候选集合对拍**。⇒ **声明订正二**：「211 上线实证」04:47 成立、
+> **05:04 被并行会话以更老树 478182c3 重部署没收**（共享机最后写入者获胜）⇒
+> 上线=当前活跃槽+版本+bundle 三件事同刻，跨会话时「我部署过」≠「线上是它」。
+> ⇒ ★ **落地第 11 轮立项卡（owner=本会话）**：`modelbinding/resolver.go` 归一化路径
+> wire 升级 name\x1frank 对（\x1e 分隔），首位 best_rank 严格小于次位 ⇒ 特异性确定性
+> 胜出**静默选择**（Debug 留痕），仅同分/缺失维持 WARN+取首；SQL 已按 best_rank 排序
+> ⇒ 选择语义零变化、只降噪（200+ 条/天噪声源头）；exact 路径不动；特异性胜出/真同分/
+> rank 缺失三态各有测试 + SQL 契约补 rank 对投影钉子。
+> ⇒ ★ **consent 横幅 stale-409 竞态**：loadBodyStatus 的 catch 缺会话一致性守卫
+> （成功路径有）⇒ 补守卫 + 在途切换测试；recording_consent wire→emit 接线补
+> Timeline 三态测试（后端删字段从此有人红）+ SyncPane 提示补 role="status"。
+> ⇒ ★ **迁移预算门混合索引盲区**：912/913/917/921 头注释里的「非 CONCURRENTLY」
+> 否定词让旧【整文件】判据整族假绿 ⇒ 改逐行判定（fail-closed）+ 四条豁免显式登记
+>（两个空表索引/两个新功能表）+ 变异臂 A绿/B红/C红（注释词洞当场堵上）。
+> ⇒ ★ **DNS 分类链补确定性证据**：errorsx 结构化 DNSError→Network + Deadline 优先级
+> 两道钉子；upstream stub 传输层测试（transport→Do→classify 不碰 resolver，
+> sinkhole 主机可证）；goroutine-leak 的 .invalid 臂换 stub。
+> ⇒ 读数：modelbinding/errorsx/upstream/sql.migrations.startup 四包绿；
+> vitest 31 过（SessionDetailPage 15 + SyncPane 3 + Drawer 13）；914 口径不变
+>（§11.3 重复声明）。遗留：resolver 降噪部署判据=候选集合对拍；同族 minimax 随
+> 分层自动受益。
+> ⇒ 审计档第 9 轮 §11；通用式见 `LESSONS.md` **§590**（四条：WARN 归零先问负荷在不在 /
+> 上线是持续状态会被并行部署没收 / 注释里的否定词让整文件判据假绿 /
+> 判死判活的测试要能在没有该环境特征的主机上跑）。
