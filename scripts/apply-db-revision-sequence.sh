@@ -2498,6 +2498,13 @@ files=(
   #   全是 builtin.guard.capacity_exceeded 灌爆审核面，且批准按钮写出的放行行
   #   没有任何消费方。纯幂等 DDL + 一次有界 UPDATE ⇒ 走事务通道。
   "$ROOT_DIR/sql/migrations/startup/926_sanitize_block_review_degraded.sql"
+  # ★ 927（2026-10-31 12h 审计轮）：routing_policy 单例化 —— 去重 +
+  #   UNIQUE (tenant_id) 约束。★ 根因：该表**无任何唯一约束**（只有
+  #   CHECK (id = 1)）⇒ 02-seed.sql 的 `ON CONFLICT DO NOTHING` 无冲突目标
+  #   ⇒ 每次安装插一行 id=1 ⇒ 211 生产已堆到 4 行 ⇒ bg 的 CROSS JOIN
+  #   把 targets 放大 4 倍。★ 本迁移让那个 ON CONFLICT 第一次真正生效。
+  #   ★ 含 DELETE 回填 ⇒ 自带 lock_timeout / statement_timeout ⇒ 走事务通道。
+  "$ROOT_DIR/sql/migrations/startup/927_routing_policy_singleton_unique.sql"
 )
 
 
@@ -3008,6 +3015,12 @@ ledger_artifact_probe "924_credential_probe_queue_command_key_idx.sql" \
 #   不存在 ⇒ 用 pg_catalog 系统表形态（裸标识符不进抽取集，与 924 的 to_regclass 同理）。
 ledger_artifact_probe "926_sanitize_block_review_degraded.sql" \
   "to_regclass('public.sanitize_block_reviews') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid WHERE c.relname = 'sanitize_block_reviews' AND a.attname = 'degraded' AND NOT a.attisdropped)"
+# ★ 927（12h 审计轮 P2-1）：产物 = routing_policy 的 UNIQUE (tenant_id) 约束
+#   （★ 去重不另建对象 ⇒ 探针只看约束是否存在）。
+#   ★ 联动契约：探针行里所有 public.x / 'x' 字面量必须在迁移文件文本中出现
+#   ⇒ 'routing_policy_tenant_id_key' 与 public.routing_policy 都在 927 文件里。
+ledger_artifact_probe "927_routing_policy_singleton_unique.sql" \
+  "EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'routing_policy_tenant_id_key' AND conrelid = 'public.routing_policy'::regclass)"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

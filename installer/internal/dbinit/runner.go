@@ -1726,6 +1726,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   拦截单 ⇒ 211 实测 24h 内 226/226 条全是降级单灌爆审核面），
 			//   并回填 builtin.guard.% 存量行。
 			"926_sanitize_block_review_degraded.sql",
+			// ★ 927（2026-10-31 12h 审计轮）：routing_policy 单例化 ——
+			//   去重（每 tenant_id 只留一行；内容不一致 ⇒ 报错不猜）
+			//   + UNIQUE (tenant_id) 约束 ⇒ ★ 02-seed.sql 的 ON CONFLICT
+			//   DO NOTHING 第一次真正生效 ⇒ 后续安装不再堆重复行
+			//   （★ 根因：表无任何唯一约束 ⇒ 每次安装插一行 id=1
+			//   ⇒ 211 生产已堆到 4 行 ⇒ CROSS JOIN 把 targets 放大 4 倍）。
+			//   ★ 含 DELETE + ADD CONSTRAINT ⇒ 自带 lock_timeout / statement_timeout。
+			"927_routing_policy_singleton_unique.sql",
 		},
 	}
 }

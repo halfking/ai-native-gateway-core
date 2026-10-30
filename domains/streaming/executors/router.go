@@ -643,6 +643,12 @@ func (r *Router) planCandidates(
 		// 池太浅（合格样本 <3）时 ComputeSuccessRatePoolStats 返回 nil ⇒
 		// calculateLoadScore 的离群惩罚恒 0，行为与未接线逐字节一致。
 		SuccessRatePoolStats: ComputeSuccessRatePoolStats(available),
+		// ★ 2026-10-31 12h 审计轮 P2-2：候选总数上限在**请求边界**读一次
+		//   （settings 读 settings_kv ⇒ 一次无缓存 SELECT）⇒ 下发给 planByTier。
+		//   ★ 此前它在 planByTier 内部读 ⇒ 一请求读 1~2 次，且让 planByTier
+		//   ★ 变成会做 I/O 的函数。★ 形状与 SuccessRatePoolStats 完全一致。
+		//   ★ 0 = 未配置 ⇒ planByTier 回退到自带读数 ⇒ 行为与接线前一致。
+		MaxCandidates: settings.RoutingMaxCandidates(),
 	}
 	// P1-C-② shadow (audit 2026-10-28 §4): count what the proposed
 	// unknown-price→pool-median policy WOULD do, per request, without
@@ -1169,7 +1175,15 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 	// 候选总数上限走 routing.max_candidates 热加载（默认仍 12，clamp [4,48]）。
 	// 大凭据池场景可调大铺开、坏凭据场景调小收紧费用放大面；未配置时与
 	// 旧硬编码逐字节同值。
-	maxTotal := settings.RoutingMaxCandidates()
+	//
+	// ★ 2026-10-31 12h 审计轮 P2-2：★ 优先用**请求边界读好的**值
+	//   （stratIn.MaxCandidates，planCandidates 读一次）⇒ ★ 本函数保持纯函数
+	//   （不再自己做 settings DB 往返）⇒ ★ 每请求少 1~2 次无缓存 SELECT。
+	//   ★ 0 = 调用方没接线 ⇒ 回退到自带的热加载读数（既有测试调用面不变）。
+	maxTotal := stratIn.MaxCandidates
+	if maxTotal <= 0 {
+		maxTotal = settings.RoutingMaxCandidates()
+	}
 	if maxTotal <= 0 {
 		maxTotal = 12
 	}

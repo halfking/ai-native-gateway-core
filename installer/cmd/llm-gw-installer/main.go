@@ -1302,6 +1302,36 @@ var credentialProbeQueueCommandKeyIdx924 []byte
 //go:embed embeddata/startup/924_credential_probe_queue_command_key_idx.down.sql
 var credentialProbeQueueCommandKeyIdx924Down []byte
 
+// ★ 926（2026-10-30 输出合规审计轮）：拦截审核单区分「降级放行」与「硬阻断」。
+//   - sanitize_block_reviews 末尾追加 degraded BOOLEAN NOT NULL DEFAULT false
+//     （★ 末尾追加 ⇒ 既有列序不变 ⇒ blockReviewColumns 的 scan 对应关系不破）；
+//   - 回填 builtin.guard.% 存量行（守卫合成哨兵 ⇒ 降级放行，不是硬阻断）。
+//   ★ 幂等：ADD COLUMN IF NOT EXISTS + NOT degraded 守卫 ⇒ 重复执行不写重行。
+//   ★ 本条是「五点同步」的第 2 点（go:embed 变量 + embeddedSQLFiles 映射）——
+//     ★★ 2026-10-31 12h 审计轮 P0-1：926 此前只做了 embeddata 副本 + StartupFiles
+//     ★★ + 通道腿，**漏了本点** ⇒ setupSQLDir() 物化不出该文件 ⇒
+//     ★★ dbinit.Runner.applySQL 在 926 处「file not found」⇒ **全新安装/升级在 926 中断**
+//     ★★ ⇒ degraded 列不存在 ⇒ 新代码的 INSERT ... degraded / WHERE NOT degraded
+//     ★★ 全部 42703（列不存在）⇒ 硬阻断留痕丢失 + insights 503 + 待审徽标静默变 0。
+//     ★★ 与 AGENTS.md 记载的 #851（851：只做 installer 漏 main.go）**同型复发**。
+//go:embed embeddata/startup/926_sanitize_block_review_degraded.sql
+var sanitizeBlockReviewDegraded926 []byte
+
+//go:embed embeddata/startup/926_sanitize_block_review_degraded.down.sql
+var sanitizeBlockReviewDegraded926Down []byte
+
+// ★ 927（2026-10-31 12h 审计轮）：routing_policy 单例化。
+//   - 去重：每个 tenant_id 只留一行（内容不一致 ⇒ 报错不猜）；
+//   - 加 UNIQUE (tenant_id) 约束 ⇒ ★ 02-seed.sql 的 ON CONFLICT DO NOTHING
+//     **第一次真正生效** ⇒ 后续安装不再堆重复行（★ 根因闭环，
+//     ★ 而不是消费侧那两条 SELECT DISTINCT 的自保）。
+//   ★ 含 DELETE 回填 + ADD CONSTRAINT ⇒ 自带 lock_timeout / statement_timeout。
+//go:embed embeddata/startup/927_routing_policy_singleton_unique.sql
+var routingPolicySingletonUnique927 []byte
+
+//go:embed embeddata/startup/927_routing_policy_singleton_unique.down.sql
+var routingPolicySingletonUnique927Down []byte
+
 // ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
 //   - sanitize_block_reviews 追加 session_id / label / label_comment /
 //     labeled_by / labeled_at（末尾追加，既有列序不变）；
@@ -1729,6 +1759,14 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/923_schema_migrations_ledger_backfill.down.sql":                      schemaMigrationsLedgerBackfill923Down,
 	"startup/924_credential_probe_queue_command_key_idx.sql":                      credentialProbeQueueCommandKeyIdx924,
 	"startup/924_credential_probe_queue_command_key_idx.down.sql":                 credentialProbeQueueCommandKeyIdx924Down,
+	// ★ 926（2026-10-30 输出合规审计轮）：补登记 —— 此前漏了本映射项，
+	//   ⇒ setupSQLDir() 物化不出 926 ⇒ 安装器在 926 处 file not found。
+	//   ★ 见上方 go:embed 处的 P0-1 说明（五点同步的第 2 点）。
+	"startup/926_sanitize_block_review_degraded.sql":                               sanitizeBlockReviewDegraded926,
+	"startup/926_sanitize_block_review_degraded.down.sql":                          sanitizeBlockReviewDegraded926Down,
+	// ★ 927（2026-10-31 12h 审计轮）：routing_policy 单例化（去重 + UNIQUE (tenant_id)）。
+	"startup/927_routing_policy_singleton_unique.sql":                              routingPolicySingletonUnique927,
+	"startup/927_routing_policy_singleton_unique.down.sql":                         routingPolicySingletonUnique927Down,
 	"startup/915_recent_cache_hit_rate.sql":                                       recentCacheHitRate915,
 	"startup/915_recent_cache_hit_rate.down.sql":                                  recentCacheHitRate915Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
