@@ -3,7 +3,6 @@ package v2
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -158,11 +157,12 @@ func TestReaper_ClaimAndReplay_Success_PinsLeaseAndGuards(t *testing.T) {
 
 	// 2. Claim SELECT — note the regex `status = 'pending'` AND
 	//    `status = 'claimed'` clauses must both be present in the SQL.
-	//    The claim also carries one arg (lease seconds as TEXT, since
-	//    the SQL uses `($1 || ' seconds')::interval` and PostgreSQL
-	//    requires text for the concat).
+	//    The claim also carries one arg (lease seconds as INT — the SQL
+	//    builds the interval with make_interval(secs => $1::int); the old
+	//    `($1 || ' seconds')::interval` concat forced the binding to text
+	//    and broke under the statement cache).
 	mock.ExpectQuery("status = 'pending'").
-		WithArgs(fmt.Sprintf("%d", int(sessionOutboxClaimLease.Seconds()))).
+		WithArgs(int(sessionOutboxClaimLease.Seconds())).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "tenant_id", "session_id", "partition_date", "request_id",
 			"update_payload", "attempts",
@@ -280,8 +280,8 @@ func TestReaper_ScheduleRetryGuardSkipsWhenRowAlreadyTerminal(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectExec("SELECT set_config\\('app.bypass_rls', 'true', true\\)").
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectExec("UPDATE session_aggregate_outbox[\\s\\S]*\\(\\$4 \\|\\| ' seconds'\\)::interval").
-		WithArgs(int64(99), 2, "transient", "4").
+	mock.ExpectExec("UPDATE session_aggregate_outbox[\\s\\S]*make_interval\\(secs => \\$4::int\\)").
+		WithArgs(int64(99), 2, "transient", 4).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mock.ExpectCommit()
 	r := newSessionAggregateOutboxReaperForTest(mock, nil, 0, 0, 0)

@@ -32,7 +32,13 @@ type EgressRuleEventInWindow struct {
 //
 // ★ 只取 phase='egress'（★ 出站侧 = 拦截发生的那一侧）★★
 // ★ limit 有界（★ 默认 50 ⇒候选不会刷屏）★★
-func ListEgressRuleEventsInWindow(ctx context.Context, from, to time.Time, limit int) ([]EgressRuleEventInWindow, error) {
+//
+// ★★ tenantIDs（2026-10-30 12h 审计轮）★★：★★ 租户是**必填**门 ★★
+// ⇒ ★★ 原先这个读面**没有任何租户条件** ⇒ ★★ 候选来自**全租户** ⇒ ★★
+// 租户 A 的审核员看到 B 的规则 ID / action / count ⇒ ★★ 且 A 的归因结论
+// 被 B 的命中记录左右 ⇒ ★★ ⇒ ★★ 这里必须 fail-closed：★★
+// tenantIDs 为空 ⇒ ★★ 直接返回空（★ 不允许「空 = 不限」★★）。
+func ListEgressRuleEventsInWindow(ctx context.Context, tenantIDs []string, from, to time.Time, limit int) ([]EgressRuleEventInWindow, error) {
 	p := reviewPersistenceInstalled()
 	if p == nil {
 		return nil, nil
@@ -43,5 +49,8 @@ func ListEgressRuleEventsInWindow(ctx context.Context, from, to time.Time, limit
 	if from.IsZero() || to.IsZero() || !to.After(from) {
 		return nil, nil
 	}
-	return p.ListEgressRuleEventsInWindowDB(ctx, from, to, limit)
+	if len(tenantIDs) == 0 {
+		return nil, nil
+	}
+	return p.ListEgressRuleEventsInWindowDB(ctx, tenantIDs, from, to, limit)
 }

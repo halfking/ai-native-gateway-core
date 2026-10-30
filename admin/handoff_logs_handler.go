@@ -285,10 +285,10 @@ func (h *HandoffLogsHandler) handleStats(w http.ResponseWriter, r *http.Request)
 		reasonRows, err := tx.Query(ctx, `
 			SELECT trigger_reason, COUNT(*) AS n
 			  FROM handoff_logs_with_current_month
-			 WHERE created_at > NOW() - ($1 || ' days')::interval
+			 WHERE created_at > NOW() - make_interval(days => $1::int)
 			 GROUP BY trigger_reason
 			 ORDER BY n DESC
-		`, strconv.Itoa(days))
+		`, days)
 		if err != nil {
 			return err
 		}
@@ -310,10 +310,10 @@ func (h *HandoffLogsHandler) handleStats(w http.ResponseWriter, r *http.Request)
 		dayRows, err := tx.Query(ctx, `
 			SELECT TO_CHAR(DATE_TRUNC('day', created_at), 'YYYY-MM-DD') AS d, COUNT(*)
 			  FROM handoff_logs_with_current_month
-			 WHERE created_at > NOW() - ($1 || ' days')::interval
+			 WHERE created_at > NOW() - make_interval(days => $1::int)
 			 GROUP BY 1
 			 ORDER BY 1
-		`, strconv.Itoa(days))
+		`, days)
 		if err != nil {
 			return err
 		}
@@ -335,11 +335,11 @@ func (h *HandoffLogsHandler) handleStats(w http.ResponseWriter, r *http.Request)
 		topRows, err := tx.Query(ctx, `
 			SELECT session_id, COUNT(*) AS n
 			  FROM handoff_logs_with_current_month
-			 WHERE created_at > NOW() - ($1 || ' days')::interval
+			 WHERE created_at > NOW() - make_interval(days => $1::int)
 			 GROUP BY session_id
 			 ORDER BY n DESC
 			 LIMIT 10
-		`, strconv.Itoa(days))
+		`, days)
 		if err != nil {
 			return err
 		}
@@ -361,9 +361,9 @@ func (h *HandoffLogsHandler) handleStats(w http.ResponseWriter, r *http.Request)
 		engineRows, err := tx.Query(ctx, `
 			SELECT COALESCE(summary_engine, 'unknown') AS engine, COUNT(*)
 			  FROM handoff_logs_with_current_month
-			 WHERE created_at > NOW() - ($1 || ' days')::interval
+			 WHERE created_at > NOW() - make_interval(days => $1::int)
 			 GROUP BY 1
-		`, strconv.Itoa(days))
+		`, days)
 		if err != nil {
 			return err
 		}

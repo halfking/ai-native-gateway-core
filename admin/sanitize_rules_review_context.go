@@ -68,6 +68,9 @@ type blockReviewContext struct {
 	Attribution string `json:"attribution,omitempty"`
 	// CandidateRules 是邻近时段的出站规则命中（★ **候选**，不是事实）。
 	CandidateRules []blockReviewCandidateRule `json:"candidate_rules,omitempty"`
+	// CandidateRulesTruncated 表示候选规则**可能被读取上限截断** ⇒ ★★
+	// 「候选为空」不能被当成「邻近时段确实没有内容规则阻断」★★。
+	CandidateRulesTruncated bool `json:"candidate_rules_truncated,omitempty"`
 }
 
 // blockReviewCandidateRule 是一条候选规则（时间窗匹配 ⇒ 候选，不是事实）。
@@ -100,6 +103,13 @@ const blockReviewCandidateWindow = 15 * time.Minute
 //	计数（★ 但**不隐藏**：★ 「还有 N 条」这句本身就是信息）★★。
 const blockReviewCandidateMax = 8
 
+// blockReviewCandidateQueryLimit 是**候选规则的读取上限**（★ 一次查询的条数上限）★。
+//
+// ★★ 这个上限是「候选可能不完整」的来源（★ 2026-10-30 12h 审计轮 A9）★★
+// ⇒ ★★ 因此撞到上限时**必须**把 truncated 标出来 ⇒ ★★ 归因不许把
+// 「候选为空」当成「邻近时段确实没有内容规则阻断」★★。
+const blockReviewCandidateQueryLimit = 50
+
 // attachBlockReviewContexts 给审核单补齐原始上下文与归因。
 //
 // ★ 失败语义：★★ **补上下文失败不阻断列表**（★ 审核单列表是主功能，★ 上下文
@@ -130,7 +140,7 @@ func (h *Handler) attachBlockReviewContexts(ctx context.Context, reviews []sanit
 			"error", err.Error(), "request_ids", len(ids))
 		return out
 	}
-	candidates := h.loadBlockReviewCandidateRules(ctx, reviews)
+	candidates, candidatesTruncated := h.loadBlockReviewCandidateRules(ctx, reviews)
 	for i := range reviews {
 		r := reviews[i]
 		row, ok := rows[strings.TrimSpace(r.RequestID)]
@@ -139,7 +149,8 @@ func (h *Handler) attachBlockReviewContexts(ctx context.Context, reviews []sanit
 		}
 		ctxObj := row.context(r)
 		ctxObj.CandidateRules = candidates[r.ID]
-		ctxObj.AttributionKind, ctxObj.Attribution = deriveBlockReviewAttribution(r, ctxObj, candidates[r.ID])
+		ctxObj.CandidateRulesTruncated = candidatesTruncated
+		ctxObj.AttributionKind, ctxObj.Attribution = deriveBlockReviewAttribution(r, ctxObj, candidates[r.ID], candidatesTruncated)
 		out[r.ID] = &ctxObj
 	}
 	return out
@@ -207,6 +218,16 @@ func (h *Handler) loadBlockReviewContextRows(ctx context.Context, db blockReview
 	//   （db/request_logs_view_schema.go 记着这个坑）★★ ⇒ 用「审核单里的
 	//   最早/最晚时刻」推月份边界（★ 多留一个月，★ 覆盖跨月与分区归属偏移）。
 	pdFrom, pdTo := blockReviewPartitionBounds(reviews)
+	// ★★ 租户门（2026-10-30 12h 审计轮）★★：★★ request_id 不是全局唯一 ★★
+	//   —— UNIQUE (tenant_id, request_id, partition_date) —— 且**由客户端决定**
+	//   （X-Request-Id）★★ ⇒ ★★ 只按 request_id 查 ⇒ ★★ 别的租户用同一个
+	//   request_id 就会被一起查出来 ⇒ ★★ 审核员看到别家的请求预览 / 会话 ID ★★
+	//   ⇒ ★★ 且结果 map 以 request_id 为键 ⇒ ★★ 后写覆盖先写 ⇒ ★★ 归因被带偏 ★★
+	// ⇒ ★★ 必须同时按租户收窄；★★ 租户集合为空 ⇒ ★★ fail-closed（返回空）★★
+	tenantIDs := blockReviewTenantIDs(reviews)
+	if len(tenantIDs) == 0 {
+		return out, nil
+	}
 	q := `SELECT request_id,
 	COALESCE(request_preview, ''), COALESCE(response_preview, ''),
 	COALESCE(client_model, ''), COALESCE(outbound_model, ''),
@@ -215,8 +236,8 @@ func (h *Handler) loadBlockReviewContextRows(ctx context.Context, db blockReview
 	COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0),
 	COALESCE(latency_ms, 0), COALESCE(client_profile, '')
 FROM ` + dbpkg.SessionFamilyTurnsSourceWindowedSQL(pdFrom, pdTo) + `
-WHERE request_id = ANY($1)`
-	rows, err := db.Query(ctx, q, requestIDs)
+WHERE request_id = ANY($1) AND tenant_id = ANY($2)`
+	rows, err := db.Query(ctx, q, requestIDs, tenantIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -263,14 +284,53 @@ func blockReviewPartitionBounds(reviews []sanitizerules.BlockReview) (string, st
 	}
 	from = from.AddDate(0, -1, 0)
 	to = to.AddDate(0, 1, 0)
-	return from.Format("'2006-01-01'"), to.Format("'2006-01-01'")
+	// ★★ 日期布局必须是 "2006-01-02"（★ 年-月-**日**）★★。
+	//
+	// ★★ Go 的 layout 里 "01" 是**月**、"02" 才是日 ⇒ ★★ 写成 "2006-01-01"
+	//   会把「日」渲染成「月」⇒ ★★ 2026-11-05 渲染成 '2026-11-11' ⇒ ★★
+	//   分区下界被抬高、上界被推后 ⇒ ★★ 落在被跳过那几天的请求行**查不到**
+	//   ⇒ ★★ 审核单变成「上下文暂不可用」—— ★★ 正是本功能要消灭的现象 ★★。
+	//
+	// ★ 本仓其它日期一律用 "2006-01-02"（★ 例：storage/file/request_mirror.go）★★
+	return from.Format("'2006-01-02'"), to.Format("'2006-01-02'")
+}
+
+// blockReviewTenantIDs 取这批审核单涉及的租户集合（★ 去重、保序）★。
+//
+// ★★ 为什么必须有它（2026-10-30 12h 审计轮）★★：
+//
+//	① request_id **不是全局唯一** —— session_turns 的唯一键是
+//	   UNIQUE (tenant_id, request_id, partition_date) ⇒ ★★ 只按 request_id 查
+//	   ⇒ ★★ 别的租户用同一个 request_id 就会被一起查出来 ⇒ ★★ 审核员会看到
+//	   别家的请求预览 / 会话 ID / 模型 / token 数 ★★
+//	② request_id **由客户端决定**（X-Request-Id 头，客户端自选值）★
+//	③ 候选规则事件表 sanitize_rule_events 的读面**原先没有租户条件** ⇒ ★★
+//	   候选来自全租户 ⇒ ★★ 本租户的归因结论被别家的命中记录左右 ★★
+//
+// ★⇒ ⇒ 两个读面都按这个集合收窄；★ 集合为空 ⇒ ★ fail-closed（返回空）★
+func blockReviewTenantIDs(reviews []sanitizerules.BlockReview) []string {
+	out := make([]string, 0, len(reviews))
+	seen := make(map[string]bool, len(reviews))
+	for _, r := range reviews {
+		tid := strings.TrimSpace(r.TenantID)
+		if tid == "" || seen[tid] {
+			continue
+		}
+		seen[tid] = true
+		out = append(out, tid)
+	}
+	return out
 }
 
 // loadBlockReviewCandidateRules 取邻近时段命中的出站规则（★ 候选，不是事实）。
-func (h *Handler) loadBlockReviewCandidateRules(ctx context.Context, reviews []sanitizerules.BlockReview) map[int64][]blockReviewCandidateRule {
+//
+// ★★ 返回第二个值 truncated：★★ 候选查询是**有上限**的一次性读取
+// ⇒ ★★ 「查回来的条数撞到上限」⇒ ★★ 候选集**可能不完整** ⇒ ★★ 调用方不许把
+// 「没查到候选」当成「邻近时段确实没有内容规则阻断」（★ 见 A9）★★。
+func (h *Handler) loadBlockReviewCandidateRules(ctx context.Context, reviews []sanitizerules.BlockReview) (map[int64][]blockReviewCandidateRule, bool) {
 	out := map[int64][]blockReviewCandidateRule{}
 	if len(reviews) == 0 {
-		return out
+		return out, false
 	}
 	// ★ 时间窗取所有审核单的并集（★ 一次查询，★ 免得每条审核单查一次）。
 	from, to := time.Time{}, time.Time{}
@@ -286,16 +346,27 @@ func (h *Handler) loadBlockReviewCandidateRules(ctx context.Context, reviews []s
 		}
 	}
 	if from.IsZero() {
-		return out
+		return out, false
 	}
 	from = from.Add(-blockReviewCandidateWindow)
 	to = to.Add(blockReviewCandidateWindow)
-	events, err := sanitizerules.ListEgressRuleEventsInWindow(ctx, from, to, 50)
+	// ★★ 租户门（2026-10-30 12h 审计轮）★★：★★ 候选读面**原先没有租户条件**
+	//   ⇒ ★★ 候选来自**全租户** ⇒ ★★ 租户 A 的审核员看到 B 的规则 ID / action /
+	//   count ⇒ ★★ 且 A 的归因结论被 B 的命中记录左右 ★★ ⇒ ★★ 且 B 的流量挤占
+	//   同一条 50 条预算 ⇒ ★★ A 的审核单更容易被误判成「守卫侧拦截」★★
+	// ⇒ ★★ 必须按这批审核单自己的租户集合收窄 ★★
+	tenantIDs := blockReviewTenantIDs(reviews)
+	if len(tenantIDs) == 0 {
+		return out, false
+	}
+	events, err := sanitizerules.ListEgressRuleEventsInWindow(ctx, tenantIDs, from, to, blockReviewCandidateQueryLimit)
 	if err != nil {
 		slog.Warn("sanitize block review candidate rules read failed",
 			"error", err.Error())
-		return out
+		return out, false
 	}
+	// ★★ 撞到上限 ⇒ 候选集**可能不完整** ⇒ ★★ 必须如实标出 ★★
+	truncated := len(events) >= blockReviewCandidateQueryLimit
 	for _, r := range reviews {
 		if r.CreatedAt.IsZero() {
 			continue
@@ -322,7 +393,7 @@ func (h *Handler) loadBlockReviewCandidateRules(ctx context.Context, reviews []s
 			out[r.ID] = hits
 		}
 	}
-	return out
+	return out, truncated
 }
 
 // deriveBlockReviewAttribution 判定「这次拦截为什么发生」。
@@ -335,7 +406,13 @@ func (h *Handler) loadBlockReviewCandidateRules(ctx context.Context, reviews []s
 //	           被当成违规 ⇒ 这就是误报轮的形态）★★
 //	unknown —— 出站侧拦截，★ 但邻近时段**有**内容规则命中 ⇒ ★★ 只给候选，
 //	结论留给人工。
-func deriveBlockReviewAttribution(review sanitizerules.BlockReview, c blockReviewContext, candidates []blockReviewCandidateRule) (string, string) {
+//
+// ★★ truncated（2026-10-30 12h 审计轮 A9）★★：★★ 候选查询有上限 ⇒ ★★
+// 「候选为空」有两种成因：**真的没有** / ★★ **被上限截断了**★★ ⇒ ★★
+// 后者**不能**被升格成「邻近时段没有任何内容规则阻断 ⇒ 判定为守卫侧拦截」
+// ⇒ ★★ 那句话会直接引导审核员标「误报」⇒ ★★ 标到阈值后会自动放行该租户
+// 该规则 7 天 ⇒ ★★ 真实的内容规则被悄悄放过去 ★★。
+func deriveBlockReviewAttribution(review sanitizerules.BlockReview, c blockReviewContext, candidates []blockReviewCandidateRule, truncated bool) (string, string) {
 	rule := strings.TrimSpace(review.Rule)
 	if rule != "" {
 		name := strings.TrimSpace(review.RuleName)
@@ -351,6 +428,15 @@ func deriveBlockReviewAttribution(review sanitizerules.BlockReview, c blockRevie
 		return "unknown", "拦截点未记录命中规则；请求失败口径：" + c.ErrorKind
 	}
 	if len(candidates) == 0 {
+		// ★★ 候选集**被上限截断** ⇒ ★★ 「没查到」≠「不存在」⇒ ★★ 不许在这里
+		//   断言「不是内容规则命中」⇒ ★★ 降级为 unknown（★ 结论留给人工）★★
+		if truncated {
+			return "unknown", "出站侧策略拦截；**拦截点没有记录命中的规则**（历史记录）。" +
+				"邻近时段**未查到**出站规则候选，但候选查询已撞到读取上限" +
+				"（可能被截断）⇒ **无法据此断言「不是内容规则命中」** ⇒ 请人工判断。" +
+				"若响应体很大（本次请求 " + formatBlockReviewTokens(c) + "），" +
+				"可能是守卫待检缓冲放不下（误报形态），但请先确认不是候选被截断。"
+		}
 		return "guard", "出站侧策略拦截；**拦截点没有记录命中的规则**（历史记录），且邻近时段没有任何内容规则阻断 ⇒ 判定为**守卫侧拦截**（不是内容规则命中）。" +
 			"若响应体很大（本次请求 " + formatBlockReviewTokens(c) + "），多半是守卫待检缓冲放不下 ⇒属于误报形态，可直接标「误报」。"
 	}

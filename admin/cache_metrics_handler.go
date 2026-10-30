@@ -191,7 +191,7 @@ func (h *CacheMetricsHandler) handleTimeline(w http.ResponseWriter, r *http.Requ
 	query := `
 		SELECT
 			date_trunc('hour', recorded_at) + 
-			(EXTRACT(minute FROM recorded_at)::int / $1) * ($1 || ' minutes')::interval AS bucket,
+			make_interval(mins => (EXTRACT(minute FROM recorded_at)::int / $1) * $1) AS bucket,
 			COALESCE(SUM(CASE WHEN event_type = 'hit' THEN 1 ELSE 0 END), 0) AS hits,
 			COALESCE(SUM(CASE WHEN event_type = 'miss' THEN 1 ELSE 0 END), 0) AS misses,
 			COALESCE(SUM(tokens_saved), 0) AS tokens_saved

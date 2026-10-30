@@ -39,13 +39,15 @@ func TestLoadBlockReviewContextRowsReadsRequestLog(t *testing.T) {
 		"minimax-m3.1", "gw_session_abc", "output_policy_blocked", "upstream",
 		"output_policy_blocked", 221552, 0, 110887, "default",
 	)
+	// ★★ 租户门（2026-10-30 12h 审计轮）：★★ 读面现在**必须**同时按租户收窄
+	//   ⇒ ★★ 期望里带上租户集合 ⇒ ★★ 少一个参数就不是这条 SQL 了 ★★
 	mock.ExpectQuery(regexp.QuoteMeta("COALESCE(request_preview, '')")).
-		WithArgs([]string{"req-1"}).
+		WithArgs([]string{"req-1"}, []string{"t1"}).
 		WillReturnRows(rows)
 
 	h := &Handler{}
 	got, err := h.loadBlockReviewContextRows(context.Background(), mock, []string{"req-1"}, []sanitizerules.BlockReview{
-		{ID: 1, RequestID: "req-1", CreatedAt: time.Now()},
+		{ID: 1, RequestID: "req-1", TenantID: "t1", CreatedAt: time.Now()},
 	})
 	if err != nil {
 		t.Fatalf("loadBlockReviewContextRows: %v", err)
@@ -80,7 +82,7 @@ func TestDeriveBlockReviewAttribution(t *testing.T) {
 	t.Run("有规则 ⇒ 直接说规则", func(t *testing.T) {
 		kind, text := deriveBlockReviewAttribution(
 			sanitizerules.BlockReview{Rule: "pii.email", RuleName: "电子邮箱地址"},
-			blockReviewContext{}, nil)
+			blockReviewContext{}, nil, false)
 		if kind != "rule" {
 			t.Fatalf("kind = %q，期望 rule", kind)
 		}
@@ -93,7 +95,7 @@ func TestDeriveBlockReviewAttribution(t *testing.T) {
 		kind, text := deriveBlockReviewAttribution(
 			sanitizerules.BlockReview{},
 			blockReviewContext{ErrorKind: "output_policy_blocked", PromptTokens: 221552, LatencyMS: 110887},
-			nil)
+			nil, false)
 		if kind != "guard" {
 			t.Fatalf("kind = %q，期望 guard", kind)
 		}
@@ -109,7 +111,7 @@ func TestDeriveBlockReviewAttribution(t *testing.T) {
 		kind, text := deriveBlockReviewAttribution(
 			sanitizerules.BlockReview{},
 			blockReviewContext{ErrorKind: "output_policy_blocked"},
-			[]blockReviewCandidateRule{{RuleID: "pii.email.egress", Action: "log"}})
+			[]blockReviewCandidateRule{{RuleID: "pii.email.egress", Action: "log"}}, false)
 		if kind != "unknown" {
 			t.Fatalf("kind = %q，期望 unknown", kind)
 		}
@@ -125,7 +127,7 @@ func TestDeriveBlockReviewAttribution(t *testing.T) {
 		kind, _ := deriveBlockReviewAttribution(
 			sanitizerules.BlockReview{},
 			blockReviewContext{ErrorKind: "upstream_timeout"},
-			nil)
+			nil, false)
 		if kind == "guard" {
 			t.Fatal("非出站策略拦截不许判成守卫侧拦截")
 		}
@@ -182,7 +184,7 @@ func TestDeriveBlockReviewAttributionCapsCandidates(t *testing.T) {
 	kind, text := deriveBlockReviewAttribution(
 		sanitizerules.BlockReview{},
 		blockReviewContext{ErrorKind: "output_policy_blocked"},
-		candidates)
+		candidates, false)
 	if kind != "unknown" {
 		t.Fatalf("kind = %q，期望 unknown", kind)
 	}
@@ -191,5 +193,121 @@ func TestDeriveBlockReviewAttributionCapsCandidates(t *testing.T) {
 	}
 	if !strings.Contains(text, "另有 12 条未列") {
 		t.Fatalf("其余候选必须给计数（不许隐藏）: %q", text)
+	}
+}
+
+// ── 2026-10-30 12h 审计轮新增三道契约 ──────────────────────────────────
+//
+// ★ 三道门分别钉住本轮修掉的三个真缺陷：
+//   ① A7 分区边界的日期布局（★ "01" 是月、"02" 才是日）★★
+//   ② A3 上下文读面**必须**按租户收窄（★ request_id 客户端自选、可跨租户重复）★★
+//   ③ A9 候选被读取上限截断时，★ 不许把「候选为空」升格成「不是内容规则命中」★★
+
+// TestBlockReviewPartitionBoundsRendersRealDate 钉住 A7：★ 分区下/上界必须
+// 渲染成**真实的年月日** ★。
+//
+// ★★ 旧写法是 `Format("'2006-01-01'")` ⇒ ★★ Go 的 layout 里 "01" 是**月**
+// ⇒ ★★ 2026-11-05 被渲染成 '2026-11-11' ⇒ ★★ 11 月 5~10 日的请求行查不到
+// ⇒ ★★ 审核单变成「上下文暂不可用」—— ★★ 正是本功能要消灭的现象 ★★。
+func TestBlockReviewPartitionBoundsRendersRealDate(t *testing.T) {
+	created := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	from, to := blockReviewPartitionBounds([]sanitizerules.BlockReview{
+		{ID: 1, CreatedAt: created},
+	})
+	// 期望：created 前后各留一个月，且**日**必须是 5（不是 11）。
+	if from != "'2026-10-05'" {
+		t.Fatalf("分区下界 = %s，期望 '2026-10-05'（★ 日必须是 5）", from)
+	}
+	if to != "'2026-12-05'" {
+		t.Fatalf("分区上界 = %s，期望 '2026-12-05'（★ 日必须是 5）", to)
+	}
+}
+
+// TestBlockReviewContextRowsAreTenantScoped 钉住 A3：★★ 上下文读面必须
+// 按租户收窄 ⇒ ★★ 别的租户用同一个 request_id 不会被一起查出来 ★★。
+//
+// ★ 两个腿：★★ ① SQL 里必须有租户谓词 + 必须传租户集合 ★★
+// ★★ ② 审核单没有租户时 ⇒ ★★ fail-closed（一条都不查）★★。
+func TestBlockReviewContextRowsAreTenantScoped(t *testing.T) {
+	t.Run("SQL 带租户谓词并传租户集合", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatalf("pgxmock.NewPool: %v", err)
+		}
+		defer mock.Close()
+		rows := mock.NewRows([]string{
+			"request_id", "request_preview", "response_preview", "client_model",
+			"outbound_model", "gw_session_id", "error_kind", "failure_stage",
+			"failure_detail_code", "prompt_tokens", "completion_tokens",
+			"latency_ms", "client_profile",
+		}).AddRow(
+			"req-1", "预览", "", "m", "m", "s", "", "", "", 0, 0, 0, "",
+		)
+		mock.ExpectQuery(regexp.QuoteMeta("tenant_id = ANY($2)")).
+			WithArgs([]string{"req-1"}, []string{"t1", "t2"}).
+			WillReturnRows(rows)
+
+		h := &Handler{}
+		got, err := h.loadBlockReviewContextRows(context.Background(), mock,
+			[]string{"req-1"},
+			[]sanitizerules.BlockReview{
+				{ID: 1, RequestID: "req-1", TenantID: "t1", CreatedAt: time.Now()},
+				{ID: 2, RequestID: "req-1", TenantID: "t2", CreatedAt: time.Now()},
+			})
+		if err != nil {
+			t.Fatalf("loadBlockReviewContextRows: %v", err)
+		}
+		if _, ok := got["req-1"]; !ok {
+			t.Fatal("同租户的 req-1 应当取得到")
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("没有租户 ⇒ fail-closed（不查库）", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatalf("pgxmock.NewPool: %v", err)
+		}
+		defer mock.Close()
+		// ★ 没有 ExpectQuery ⇒ 一旦真的去查库，pgxmock 会报错 ★
+		h := &Handler{}
+		got, err := h.loadBlockReviewContextRows(context.Background(), mock,
+			[]string{"req-1"},
+			[]sanitizerules.BlockReview{
+				{ID: 1, RequestID: "req-1", CreatedAt: time.Now()},
+			})
+		if err != nil {
+			t.Fatalf("loadBlockReviewContextRows: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("没有租户时必须 fail-closed（返回空），实际返回 %d 行", len(got))
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// TestDeriveBlockReviewAttributionTruncatedIsNotGuard 钉住 A9：★★ 候选被
+// 读取上限截断时，★ 归因**不许**判成「守卫侧拦截」★★。
+//
+// ★★ 为什么：★★ 旧文案写着「邻近时段没有任何内容规则阻断 ⇒ 判定为守卫侧
+// 拦截」并直接引导「可直接标误报」⇒ ★★ 标到阈值后自动放行该租户该规则 7 天
+// ⇒ ★★ 真实的内容规则被悄悄放过去 ★★。
+func TestDeriveBlockReviewAttributionTruncatedIsNotGuard(t *testing.T) {
+	kind, text := deriveBlockReviewAttribution(
+		sanitizerules.BlockReview{},
+		blockReviewContext{ErrorKind: "output_policy_blocked"},
+		nil, true)
+	if kind == "guard" {
+		t.Fatalf("候选被截断时**不许**判成守卫侧拦截（会把真实内容规则放过去）: %q", text)
+	}
+	if kind != "unknown" {
+		t.Fatalf("kind = %q，期望 unknown（结论留给人工）", kind)
+	}
+	if !strings.Contains(text, "截断") {
+		t.Fatalf("归因文本必须说明候选可能被截断: %q", text)
 	}
 }

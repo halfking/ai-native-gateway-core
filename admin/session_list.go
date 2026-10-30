@@ -139,9 +139,9 @@ func buildSessionListCountSQL(tenantID, searchQ string, hours int) (string, []in
 		WHERE rl.gw_session_id IS NOT NULL
 		  AND rl.gw_session_id != ''
 		  AND rl.tenant_id = $1
-		  AND rl.ts >= NOW() - ($2 || ' hours')::interval
+		  AND rl.ts >= NOW() - make_interval(hours => $2::int)
 	`
-	args := []interface{}{tenantID, fmt.Sprintf("%d", hours)}
+	args := []interface{}{tenantID, hours}
 	if searchQ != "" {
 		q += ` AND rl.gw_session_id ILIKE '%' || $3 || '%'`
 		args = append(args, searchQ)
@@ -163,9 +163,9 @@ func buildSessionListRowsSQL(tenantID, searchQ string, hours int) (string, []int
 		WHERE rl.gw_session_id IS NOT NULL
 		  AND rl.gw_session_id != ''
 		  AND rl.tenant_id = $1
-		  AND rl.ts >= NOW() - ($2 || ' hours')::interval
+		  AND rl.ts >= NOW() - make_interval(hours => $2::int)
 	`
-	args := []interface{}{tenantID, fmt.Sprintf("%d", hours)}
+	args := []interface{}{tenantID, hours}
 	if searchQ != "" {
 		q += ` AND rl.gw_session_id ILIKE '%' || $3 || '%'`
 		args = append(args, searchQ)

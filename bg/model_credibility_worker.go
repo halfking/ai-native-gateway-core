@@ -213,16 +213,22 @@ func (w *ModelCredibilityWorker) ScanAll(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	scanner := w.scanner()
-	results, err := scanner.ScanTargets(ctx, targets)
-	if err != nil {
-		return len(results), err
-	}
+	results, scanErr := scanner.ScanTargets(ctx, targets)
 	// 把供应商×模型粒度的汇总写回 provider_quality_profiles。
 	// ★ 传 targets：只写本轮扫到的 (provider, model)，防止历史残留行
 	// （已下线/已移出特色清单的模型）被误写。
 	// ★ 独立 ctx：探测可能耗尽 HTTP 客户端的超时（scan 一轮 20+ 分钟），
 	// 请求 ctx 取消不应连带取消汇总落库 —— 211 实测 2026-10-30：
 	// 全量 scan 跑满客户端超时后 6 组判定只写回 1 组。
+	//
+	// ★★ 2026-10-30 12h 审计轮 A5 订正：★★ 汇总写入**必须**排在扫描错误的
+	//   早退**之前** ⇒ ★★ 原实现把 `if err != nil { return }` 放在 rollupCtx
+	//   创建**之前** ⇒ ★★ 而 ScanTargets 唯一的 error 出口就是 ctx 取消/超时
+	//   ⇒ ★★ 请求 ctx 一断就早退 ⇒ ★★ 用独立 ctx 的汇总写入**永远执行不到**
+	//   ⇒ ★★ 「解耦」这条修复在它要修的场景里**根本走不到** ⇒ ★★ 211 那个
+	//   「6 组判定只写回 1 组」的现象**没有被修掉** ★★。
+	// ⇒ ★★ 现在：扫描出错也**先写汇总**（汇总读的是已落库的当前态），
+	//   写完再把扫描错误如实返回给调用方 ★★。
 	rollupCtx, rollupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	if n, err := scanner.Store.WriteProviderQualityProfiles(rollupCtx, targets); err != nil {
 		slog.Warn("model credibility: write provider quality profiles failed", "error", err)
@@ -230,6 +236,9 @@ func (w *ModelCredibilityWorker) ScanAll(ctx context.Context) (int, error) {
 		slog.Info("model credibility: provider quality profiles updated", "rows", n)
 	}
 	rollupCancel()
+	if scanErr != nil {
+		return len(results), scanErr
+	}
 	return len(results), nil
 }
 

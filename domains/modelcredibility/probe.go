@@ -225,9 +225,24 @@ func parseProbeResponse(endpoint upstreamurl.Endpoint, raw []byte, obs *Observed
 			Text string `json:"text"`
 		} `json:"content"`
 		// OpenAI responses：output 是数组，output_text 是聚合文本。
+		//
+		// ★★ 2026-10-30 12h 审计轮订正：★★ 真实 Responses 响应的正文在
+		//   **output[].content[].text** ⇒ ★★ 而 output[].text 这个字段在真实
+		//   响应里**不存在** ⇒ ★★ 原实现两处都取不到 ⇒ ★★ 每个 openai-responses
+		//   节点恒为 obs.Content == "" ⇒ ★★ 落库恒为 status='partial' + 假异常
+		//   identity_probe_empty_response ⇒ ★★ 「该供应商可信度」这一维整列恒残。
+		//
+		// ★ 权威形状（本仓自有事实源）：★ cmd/gateway-v2/main.go 的
+		//   「OpenAI Responses API 格式」注释 + cmd/gateway-v2/e2e_test.go 的
+		//   `resp.Output[0].Content[0].Type == "output_text"` ★
 		Output []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
+			// Content 是真实 Responses 形态的正文载体。
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
 		} `json:"output"`
 		OutputText string `json:"output_text"`
 	}
@@ -262,7 +277,18 @@ func parseProbeResponse(endpoint upstreamurl.Endpoint, raw []byte, obs *Observed
 		}
 	}
 	if obs.Content == "" {
+		// ★★ Responses 真实形态：★ 正文在 output[].content[].text ★★
 		for _, o := range common.Output {
+			for _, ct := range o.Content {
+				if ct.Text != "" {
+					obs.Content = ct.Text
+					break
+				}
+			}
+			if obs.Content != "" {
+				break
+			}
+			// 兼容非标准形态（output[].text）：真实协议没有它，但保留兜底。
 			if o.Text != "" {
 				obs.Content = o.Text
 				break

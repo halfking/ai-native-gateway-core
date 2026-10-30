@@ -319,11 +319,11 @@ func (r *sessionAggregateOutboxReaper) claimAndReplay(ctx context.Context) (bool
 			   OR (status = 'claimed'
 
 		       AND claimed_at IS NOT NULL
-		       AND claimed_at < NOW() - ($1 || ' seconds')::interval)
+		       AND claimed_at < NOW() - make_interval(secs => $1::int))
 		ORDER BY next_retry_at ASC
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1`,
-		fmt.Sprintf("%d", int(sessionOutboxClaimLease.Seconds())))
+		int(sessionOutboxClaimLease.Seconds()))
 
 	var (
 		id            int64
@@ -448,10 +448,10 @@ func (r *sessionAggregateOutboxReaper) scheduleRetry(ctx context.Context, id int
 	tag, err := r.execWithBypassTx(ctx,
 		`UPDATE session_aggregate_outbox
 		 SET status='pending', attempts=$2, last_error=$3,
-		     next_retry_at=NOW() + ($4 || ' seconds')::interval,
+		     next_retry_at=NOW() + make_interval(secs => $4::int),
 		     updated_at=NOW()
 		 WHERE id=$1 AND status='claimed'`,
-		id, attempts, cause.Error(), fmt.Sprintf("%d", int(backoff.Seconds())))
+		id, attempts, cause.Error(), int(backoff.Seconds()))
 	if err != nil {
 		slog.Error("session_aggregate_outbox: schedule retry failed",
 			"id", id, "attempts", attempts, "error", err)
