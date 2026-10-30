@@ -16428,3 +16428,59 @@ nim-case-cron）登记不擅动；154 6h 窗 26×502 全是探针打 nvidia 上�
 （ORDER BY 列必须在 select list）——形状断言门必须钉联动契约，不是钉关键字**；
 且**部署后第一动作是读目标进程自己的日志**（42P10 在容器日志第 3 分钟就报了）。
 ⇒ 211 终验 **targets=36**（DISTINCT 生效：103 唯一对 − 窗口内已测），discover 无错。
+
+**2026-10-30 r1050 轮：四候选复核 + ursmcheck 完整重跑**（会话 `mvs_5474b5ad596c4b7ab0805176028d09f3`）：
+★ 起点 HEAD 用户所述 `14593283c`（工作树干净）⇒ 本轮实际收口 HEAD **`5a4150440`**
+（期间上游推进 10 个提交，本轮已 `fetch` + `pull --ff-only` 同步）。
+⇒ ★★★★ **候选 A（bash4 可移植性门）无需实现 —— 门早就在**：`sql/schema/shell_bash_compat_gate_test.go`
+（2026-10-21 落地，A 档扫 `deploy/sql`+`scripts/audit`+`scripts/checks`+`scripts/tests`，
+B 档须显式 `# requires-bash: 4`）；实测基线绿（**540 脚本 / 违规 0**）+ **真仓变异臂**
+（往 `scripts/audit/` 注入 `declare -A` ⇒ **rc=1 且精确报行号与违规特性**）+ 还原 md5
+`723d1373` 逐字一致 + 回绿 ⇒ ★★ **「用户提的候选」≠「仓里缺的东西」**；★ 教训：★ 我按
+「门在 `scripts/ursmcheck/`」去找 ⇒ **找错目录会伪装成「缺口存在」**。
+⇒ ★★★★ **候选 B（fr-FR 棘轮）由上游 `111c2c1be` 自行裁决闭合**：该 commit 抬 fr-FR baseline
+1116→1118，并在 `baselineRaiseReason` 写明「`ruleActionLabel='Action'` / `ruleExemptionsLabel='Exemptions'`
+与 en-US 逐字同形（**这两词在法语里就是同一拼写**）⇒ 合法英文同形 ⇒ 保留不改写」⇒ ★★ 正是用户
+允许的第二条路径（「证明同形值合理」）⇒ ★★★ **逐词核对 8 语种后：上游是对的、我的本地改法是错的**
+（★ `Exemptions` 是法语 `exemption` 的正确复数，我改成 `Exceptions` 反而变成「例外/偏差」）⇒
+**本地改法已丢弃**（diff 留证于证据目录）、**`localeValueBaseline.json` 未动**；新 HEAD 上质量门
+**PASS（fr-FR 1118 = limit 1118）**；★★ **「同形值是否合理」不能靠直觉，必须逐词核对全部语种**。
+⇒ ★★★★ **候选 C（`<tr>` 直挂 `<table>`）坐实并修复**：★ 前一轮「当前 HEAD 复现不出 ⇒ 上游已消失」
+的结论**是错的** —— ★★ 根因是**量具失明**（用 `compileTemplate` 量 `element-permitted-content` 警告 ⇒
+**连人工构造的确定缺陷都抓不到** ⇒ 「零错误」≠「没缺陷」；★ 且那条警告**压根不在 Vue 的通道里**
+（Vue 运行时走 `innerHTML` 挂载，不走 HTML 解析器的 permitted-content 校验）⇒ ★★★
+**反向验证（喂已知坏样例）是量具自证的最低门槛**）；★ 改用栈式配对量具（**先自证正例 0/负例 1**）
+⇒ **299 个 `.vue` 命中 5 处**，全在 `RequestLogsView.vue` 的「会话缓存机制」说明表（源码 1335–1361 行，
+★ **同文件另一张表是合法的 ⇒ grep 行号会张冠李戴**）⇒ ★★ 危害不是 lint 报警而是**浏览器会隐式插入
+`<tbody>` 改写语义**（实测 jsdom：`table.children = [TBODY]`）⇒ **已修**（补 `<thead>`/`<tbody>`，+4 行）
+⇒ ★★★ **并把检查器固化成仓内门** `web/scripts/html-table-semantics-audit.mjs`（**自证 5/5**、
+真仓变异臂 rc=1 + 报 `RequestLogsView.vue:181`、还原 md5 `e51e2143` 逐字一致），**三段注册进
+`package.json` 并接入 `build` 链**；★ 门设计两条要点：**只取 `<template>` 块**（script 字面量天然不在
+扫描面）＋ **只判 `<tr>` 直挂 `<table>` 一族、不自造 permitted-content 表**（那是「第二份真值」）。
+⇒ ★★★★ **候选 D（完整重跑 ursmcheck）**：★ 首跑（HEAD `798d62c74`）**EXIT=2 / 14 条 FAIL**，
+payload 全部逐条落盘（253 行 stdout，未用 tail 截断）；⇒ ★★★ **归因不是产品回归而是「我落后了
+10 个提交」** —— 14 条形态全是「台账/快照/文档引用 与 代码漂移」，而漂移源（`admin-routes.txt` /
+`installer-reachability.tsv` / `pipefail_race_ledger.tsv` / `deploy-test-gate.sh` / `db-object-census.tsv` /
+`dbinit/runner.go`）**恰好全在上游新提交里被更新过** ⇒ ⇒ **跑整包门之前必须 `fetch`+`pull --ff-only`**；
+★ 同步后 **run2 EXIT=0 全绿**（`scripts/ursmcheck` **1122.817s** + `admin` **162.700s**、stderr 0 字节、
+起止负载 6.32/5.12/3.47 → 4.24/6.43/6.73、HEAD 记录在案）⇒ ★★★ **一次自我订正**：★ 我曾把 run1
+误判为「被 kill 的残局」⇒ 按时间线（752.581s 对得上、摘要已写出）查明是**自然跑完**，★★ 原记录与
+**纠正记录并存**于证据目录（抹掉等于把一次误判从历史里删掉）；★ 另：★ 当初怀疑的「外来进程」查实
+属 **sibling 仓 `../llm-gateway-go`（独立 git 仓、独立文件系统）** ⇒ **无写入冲突** ⇒ ★★ **「有没有
+并行写入」要查 cwd + git 归属，不能看进程名**。
+⇒ ★ **整包门复核（最终工作树）**：`make guards-ursmcheck` ✅EXIT=0；`make guards-fast` ✅EXIT=0
+（43 包全 ok）；`make guards-shell` ✅；`make guards-deploy` ✅（`ALL PASS deploy lock parity`）；
+web `vitest` ✅**2963 通过 / 2 跳过**（286 文件）；`npm run build` ✅14.69s（含新门）；
+i18n 四门全绿（CJK 4483=4483、locale-value PASS、key-parity PASS、strict 套件 EXIT=0）；
+候选 A 门基线绿+变异臂、候选 C 新门自证 5/5 + 变异臂。
+⇒ ★ **改动清单**：`web/src/views/RequestLogsView.vue`（+4）、`web/scripts/html-table-semantics-audit.mjs`
+（新增）、`web/package.json`（+5）、`docs/audit/evidence/2026-10-30-r1050-ursmcheck-fullrun/`（证据）；
+⇒ ★ **未动**：`fr-FR/sanitizeRules.ts`（改法已丢弃）、`localeValueBaseline.json`（**不抬不降**）。
+⇒ ★★ **本轮留项**：★ `Makefile` 预算注释的实测数该回填（注释记 840.111s / 1011.711s，**本轮实测
+1122.817s** ⇒ 余量从「~1.8x」收窄到「~1.6x」⇒ ★ 又一次：**注释里的读数会自己过期**）；
+候选 C 判据面（`<td>`/`<th>` 直挂 `<table>` 等形态本仓未出现，未纳入，避免自造第二份真值）；
+i18n 死键 / `BIG5_TRAPS` 正名单 / 页面级硬编码中文 4483 段（沿袭）。
+⇒ 审计档 `docs/audit/2026-10-30-r1050-四候选复核与ursmcheck完整重跑.md`；
+通用式见 `LESSONS.md` **§587**（七条：工具与事实不同通道时「没报错」= 量具失明 /
+候选初始判断本身要复核 / 「重跑红了」第一嫌疑是「我落后了」 / 并行写入要查 cwd+git 归属 /
+订正留痕不抹掉 / grep 行号会张冠李戴 / 判据窄而全胜判据宽而漏）。

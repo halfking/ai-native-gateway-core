@@ -1333,11 +1333,14 @@ onMounted(async () => {
         L1 进程内存 / L2 Redis / L3 数据库兜底。</p>
         <p style="margin:0 0 4px"><strong>压缩策略说明</strong>：</p>
         <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead>
           <tr>
             <th style="text-align:left;padding:3px 4px;border:1px solid var(--border);background:var(--surface-primary);white-space:nowrap">策略</th>
             <th style="text-align:left;padding:3px 4px;border:1px solid var(--border);background:var(--surface-primary)">触发条件</th>
             <th style="text-align:left;padding:3px 4px;border:1px solid var(--border);background:var(--surface-primary)">效果</th>
           </tr>
+          </thead>
+          <tbody>
           <tr>
             <td style="padding:3px 4px;border:1px solid var(--border);white-space:nowrap;color:var(--success)">增量拼接 (delta_append)</td>
             <td style="padding:3px 4px;border:1px solid var(--border)">同会话有新增消息</td>
@@ -1358,6 +1361,7 @@ onMounted(async () => {
             <td style="padding:3px 4px;border:1px solid var(--border)">上下文超限时检索 Memora L1 事实</td>
             <td style="padding:3px 4px;border:1px solid var(--border)">将历史事实作为"动态上下文"注入请求</td>
           </tr>
+          </tbody>
         </table>
     </div>
 

@@ -1,0 +1,9 @@
+note: the four captured stdout/stderr files are stored with a .txt suffix
+reason: .gitignore:127 ignores '*.log' globally, and the repo's evidence convention stores captured output as .txt/.tsv/.json (git ls-files docs/audit/evidence/ shows 0 tracked .log files).
+original on-disk names were run1/stdout.log, run1/stderr.log, run2/stdout.log, run2/stderr.log (byte-identical content, only renamed).
+
+== md5 对照（证明改名未改内容）==
+77addb9530d8fcbe48d9d09dc4010440
+e1b4cb8d994e37e160ef1b74f548e297
+d2a120a69eb8aa45883ee4cc50b92bfa
+d41d8cd98f00b204e9800998ecf8427e
