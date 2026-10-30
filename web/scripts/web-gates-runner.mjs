@@ -138,6 +138,10 @@ const SELFTESTS = [
   'design-hero-metric:runtime-check:selftest',
   'design-motion:selftest',
   'design-glyph-icon-locale:selftest',
+  // ★★ **本入口自己的自证**（★ 2026-10-31 12h 审计轮加）★★ ★ 它证明「本入口
+  // ★★ 认得所有门族脚本 ⇒ ⇒ 不会有门掉出清单」⇒ ⇒ ★★ 而这正是本轮实测到的
+  // ★★ P1 的口径 ⇒ ⇒ ⇒ ★★ 没有它，本入口自己就会是那种「自己有病却照常跑」的门。
+  'web-gates:selftest',
 ]
 
 /**
@@ -158,6 +162,65 @@ const EXCLUDED = [
       '`i18n:check` 跑文本审计 + CJK 计数；`i18n:check:json` 只把同一份审计结果写成 ' +
       'reports/i18n-audit.json 报告文件 ⇒ **判据无新增**、只多一份产物 ⇒ 不重复跑',
   },
+  {
+    // ★★★ **2026-10-31 12h 审计轮补登记**：★★★ ★ 本入口的口径放宽到「段名以
+    // ★★★ 'check' 结尾」之后，★ `typecheck`（★ 段名 'typecheck'）**也**落进门族 ⇒ ⇒
+    // ★★★ ⇒ 它必须被登记（★ 否则反向覆盖检查会红 ⇒ ⇒ ⇒ ★ 而它**确实是个检查**）。
+    // ★★★ ⇒ 它由 **verify.sh 的前端 typecheck 步骤**单独执行（★ verify.sh:259
+    // ★★★ `pm_run typecheck web` ⇒ ★ 在 web-gates 步骤之前）⇒ ⇒ ⇒ ★ 所以不进本入口
+    // ★★★ ⇒ ★ **登记在 EXCLUDED 里并写明理由** ⇒ ⇒ ⇒ ★ 而不是让它「看起来被漏掉」。
+    name: 'typecheck',
+    reason:
+      '★ 由 verify.sh 的前端步骤单独执行（★ `pm_run typecheck web` ⇒ ★ 在 web-gates ' +
+      '步骤之前）⇒ ⇒ ⇒ ★ 已在 CI 上执行 ⇒ ⇒ ⇒ 不在本入口重复跑 ⇒ ⇒ ⇒ ★ 登记在这里' +
+      '是**为了「不静默」**（★ 口径放宽后它落进门族 ⇒ ⇒ 必须有地方收它）',
+  },
+  // ★★★ **2026-10-31 12h 审计轮补登记（P1）**：★★★ ★ 这 6 道是**真门**
+  // ★★★ （★ 各自 `process.exit(1)` 表示违例 ⇒ ★ 退出码 = 判决）⇒ ⇒ ★★ 而它们此前
+  // ★★★ **既不在 GATES、也不在 EXCLUDED** ⇒ ⇒ ⇒ ★★ ⇒ **反向覆盖检查看不见它们**
+  // ★★★ ⇒ ⇒ ⇒ ★★ ⇒ 「在 CI 上一次都没被执行过」这个病**对它们依然成立** ⇒ ⇒ ⇒
+  // ★★★ ⇒ 登记在这里（★ 带理由 ⇒ 不静默）⇒ ⇒ ★ 它们要跑需要：
+  // ★★★   ① **chromium 二进制**（★ 脚本硬编码找 /usr/bin/chromium 等路径）⇒ ⇒
+  // ★★★      ② **一个跑起来的 dev server**（★ 默认 http://localhost:5200）⇒ ⇒
+  // ★★★ ⇒ ⇒ ★ 两者都是**环境缺件**（★ 同 `ui:sweep:selftest`）⇒ ⇒ ⇒ ★ 不进 CI。
+  {
+    name: 'design-spacing-scale:runtime-check',
+    reason:
+      '运行时尺：★ 需要 chromium 二进制 + 跑起来的 dev server（默认 http://localhost:5200）' +
+      '⇒ ⇒ 两者都是环境缺件（同 `ui:sweep:selftest`）⇒ ⇒ CI 不装浏览器、不起服务 ⇒ 不进 CI；' +
+      '★ 源码尺 `design-spacing-scale:check` 已进 CI ⇒ 两把尺互为对拍的关系保留',
+  },
+  {
+    name: 'design-action-density:runtime-check',
+    reason:
+      '运行时尺：★ 需要 chromium 二进制 + 跑起来的 dev server ⇒ ⇒ 环境缺件 ⇒ 不进 CI；' +
+      '★ 源码尺 `design-action-density:check` 已进 CI',
+  },
+  {
+    name: 'design-icon-size:runtime-check',
+    reason:
+      '运行时尺：★ 需要 chromium 二进制 + 跑起来的 dev server ⇒ ⇒ 环境缺件 ⇒ 不进 CI；' +
+      '★ 自证 `design-icon-size:runtime-check:selftest` 已进 CI ⇒ ⇒ ★ **判据自身有牙这件事**' +
+      '在 CI 上仍被证明（★ 只有「量浏览器」那一步在 CI 上做不了）',
+  },
+  {
+    name: 'design-metric-skeleton:runtime-check',
+    reason:
+      '运行时尺：★ 需要 chromium 二进制 + 跑起来的 dev server ⇒ ⇒ 环境缺件 ⇒ 不进 CI；' +
+      '★ 自证 `design-metric-skeleton:runtime-check:selftest` 已进 CI',
+  },
+  {
+    name: 'design-nested-card:runtime-check',
+    reason:
+      '运行时尺：★ 需要 chromium 二进制 + 跑起来的 dev server ⇒ ⇒ 环境缺件 ⇒ 不进 CI；' +
+      '★ 自证 `design-nested-card:runtime-check:selftest` 已进 CI',
+  },
+  {
+    name: 'design-hero-metric:runtime-check',
+    reason:
+      '运行时尺：★ 需要 chromium 二进制 + 跑起来的 dev server ⇒ ⇒ 环境缺件 ⇒ 不进 CI；' +
+      '★ 自证 `design-hero-metric:runtime-check:selftest` 已进 CI',
+  },
 ]
 
 // ─────────────────────────────────────────────────────────────
@@ -170,10 +233,20 @@ const EXCLUDED = [
  * ★ 口径：脚本名里含 `:check` 段（判据类）或 `:selftest` 段（自证类）。
  * ★ 用段匹配而不是 `endsWith(':check')` ⇒ `i18n:check:strict`、
  * ★ `html-table:check:strict` 这类「变体名」也算门族成员。
+ *
+ * ★★★ **2026-10-31 12h 审计轮修口径（P1）**：★★★ ★ 原口径是「段里**恰好**等于
+ * ★★★ 'check'」⇒ ⇒ ★★ 而 `design-*:runtime-check` 的段名是 **'runtime-check'**
+ * ★★★ ⇒ ⇒ ≠ 'check' ⇒ ⇒ ★★ ⇒ `familyOf` 返回 **null** ⇒ ⇒ ★★ ⇒ 那 6 道真门
+ * ★★★ **既不在 GATES、也不在 EXCLUDED** ⇒ ⇒ ⇒ ★★ ⇒ **反向覆盖检查根本看不见它们**
+ * ★★★ ⇒ ⇒ ⇒ ★★ ⇒ 「在 CI 上一次都没被执行过」这个病**对它们依然成立** ⇒ ⇒ ⇒
+ * ★★★ ⇒ ⇒ **修法**：★ 段名以 **'check' 结尾**即算门族成员（★ 'check' / 'runtime-check'
+ * ★★★ / 未来任何 'xxx-check'）⇒ ⇒ ⇒ ★ 而 'selftest' 仍然**优先**判定
+ * ★★★ （★ `:runtime-check:selftest` 仍算自证，不是门）。
  */
 function familyOf(name) {
-  if (name.split(':').includes('selftest')) return 'selftest'
-  if (name.split(':').includes('check')) return 'gate'
+  const segs = name.split(':')
+  if (segs.includes('selftest')) return 'selftest'
+  if (segs.some((seg) => seg.endsWith('check'))) return 'gate'
   return null
 }
 
@@ -210,6 +283,19 @@ function checkManifest() {
   for (const e of EXCLUDED) {
     if (GATES.includes(e.name) || SELFTESTS.includes(e.name)) {
       missing.push(`excluded(但它同时在执行清单里 ⇒ 排除声明是假的): ${e.name}`)
+    }
+    // ★★★ **2026-10-31 12h 审计轮补（P2）**：★★★ ★ 排除项必须**写理由**，★
+    // ★★★ 而原实现只把 reason **打印**出来、从**不校验** ⇒ ⇒ ★★ ⇒ 一条空理由的
+    // ★★★ 排除 = 「悄悄把一道门踢出 CI」⇒ ⇒ ★★ ⇒ 标题还写着「不静默」⇒ ⇒ ⇒ ★
+    // ★★★ ⇒ 所以这里查：**理由不许为空**。
+    if (!e.reason || !e.reason.trim()) {
+      missing.push(`excluded(但它没写理由 ⇒ 排除就是静默的): ${e.name}`)
+    }
+    // ★ 排除项的名字必须**真的存在于 package.json** ⇒ ⇒ 否则一次拼写错误 =
+    // ★ 「以为排除了某道门，其实那道门还在清单外」（★ 而清单外的门本就不跑 ⇒
+    // ★ ⇒ 等于「排除声明指向了一个不存在的东西」⇒ ⇒ 查出来）。
+    if (!PKG.scripts[e.name]) {
+      missing.push(`excluded(但 package.json 里没有这个脚本 ⇒ 排除声明指向了不存在的东西): ${e.name}`)
     }
   }
   return missing
@@ -251,19 +337,123 @@ function checkCoverage() {
 // 执行
 // ─────────────────────────────────────────────────────────────
 
-function runOne(name) {
-  const pm = process.env.WEB_PM === 'npm' ? 'npm' : 'pnpm'
+/**
+ * 选定包管理器（★ 与 scripts/lib/node-pm.sh **同一契约**）。
+ *
+ * ★★★ **2026-10-31 12h 审计轮修（P2）**：★★★ ★ 原实现是
+ * ★★★ `process.env.WEB_PM === 'npm' ? 'npm' : 'pnpm'` ⇒ ⇒ ★★ ⇒ **它与
+ * ★★★ scripts/lib/node-pm.sh 的契约不一致**：★ 那边的契约是「WEB_PM 显式指定；
+ * ★★★ 否则**有 pnpm 用 pnpm，没有就退 npm**」⇒ ⇒ ★★ ⇒ 而本入口**硬编码 pnpm**
+ * ★★★ ⇒ ⇒ ⇒ ★★ ⇒ **机器上没装 pnpm 时 ⇒ 60 项全部 rc=1，而输出尾部是空的**
+ * ★★★ ⇒ ⇒ ⇒ ★★ ⇒ 失败原因（ENOENT）被吞掉 ⇒ ⇒ ⇒ ★★ ⇒ 人只看到「全红」，
+ * ★★★ 却看不出「是包管理器不在」。
+ *
+ * ★★★ **所以改成与 node-pm.sh 同一套判定**：★★★ ★ WEB_PM 显式指定（只接受
+ * ★★★ pnpm / npm）⇒ ⇒ ★ 否则**先探测 pnpm 在不在**⇒ ⇒ ★ 都不在 ⇒ ★ npm。
+ * ★★★ ★★ 那边的契约原文：「选定一个，跑它，原样透传退出码；不做跨包管理器回退」。
+ */
+function resolvePm() {
+  const want = (process.env.WEB_PM || '').trim()
+  if (want) {
+    if (want !== 'pnpm' && want !== 'npm') {
+      throw new Error(`WEB_PM 只能是 pnpm 或 npm，收到 '${want}'（★ 契约见 scripts/lib/node-pm.sh）`)
+    }
+    return want
+  }
+  const probe = spawnSync('pnpm', ['--version'], { stdio: 'ignore', encoding: 'utf8' })
+  if (!probe.error && probe.status === 0) return 'pnpm'
+  return 'npm'
+}
+
+function runOne(name, pm) {
   const r = spawnSync(pm, ['run', name], {
     cwd: WEB,
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
     env: process.env,
   })
+  // ★★ **spawn 本身失败**（★ ENOENT：包管理器不在 PATH）★ 与 **门跑出非零退出码**
+  // ★★ 是两件事 ⇒ ⇒ ★★ 原实现把两者都压成 `rc = r.status ?? 1` ⇒ ⇒ ★★ ⇒
+  // ★★ ⇒ 输出尾部为空 ⇒ ⇒ ⇒ ★★ ⇒ 「为什么红」被吞掉 ⇒ ⇒ ★★ ⇒ 现在把 error 原样带出来。
+  if (r.error) {
+    return { name, rc: 1, out: `★ 启动失败：${r.error.message}` }
+  }
   return { name, rc: r.status ?? 1, out: (r.stdout || '') + (r.stderr || '') }
+}
+
+/**
+ * ★★ 本入口的**自证**（★ 证明「本入口自己有牙」）★★
+ *
+ * ★★★ **2026-10-31 12h 审计轮新增**：★★★ ★ 本入口此前**没有任何自证** ⇒ ⇒ ★★ ⇒
+ * ★★★ ⇒ 「familyOf 的口径悄悄变窄 ⇒ ⇒ 某道门掉出清单」这类退化**没有任何东西会红**
+ * ★★★ ⇒ ⇒ ⇒ ★★ ⇒ 而那正是本轮实测到的 P1（★ 6 道 `*:runtime-check` 真门**既不在
+ * ★★★ 清单、也不在 EXCLUDED** ⇒ ⇒ 它们**在 CI 上一次都没跑过**⇒ ⇒ ⇒ ★★ ⇒
+ * ★★★ ⇒ 而本入口恰恰是治这个病的那个入口 ⇒ ⇒ ⇒ ★★ ⇒ **它自己必须有牙**。
+ *
+ * ★★ 断言清单（★ 每一条都要能指到具体行为）：★★
+ *   ① `familyOf` 认得 `runtime-check`（★ 回归本轮那个 P1 的口径）
+ *   ② `*:runtime-check:selftest` 仍然算**自证**（★ 优先级没被改坏）
+ *   ③ 非门脚本（`web-gates:run`）不算门族
+ *   ④ 每个 EXCLUDED 都写了理由（★ 排除不许静默）
+ *   ⑤ 清单自身与反向覆盖检查此刻都为空（★ 门清单是自洽的）
+ *   ⑥ **反向覆盖检查有牙**：★ 造一个「像门但不在清单里」的名字 ⇒ ⇒ 它必须被
+ *      判为未覆盖 ⇒ ⇒ ⇒ ★ **这一条是本自证的关键** ⇒ ⇒ 若 familyOf 口径再变窄
+ *      （★ 某道门掉出识别范围）⇒ ⇒ 本条就会红 ⇒ ⇒ ⇒ ★ ⇒ 退化会被当场抓住。
+ */
+function selftest() {
+  const cases = []
+  const expect = (name, got, want) => {
+    const ok = got === want
+    cases.push({ name, ok, got, want })
+    return ok
+  }
+
+  // ① 口径：'runtime-check' 也算门族（本轮 P1 的回归护栏）。
+  expect("familyOf('design-icon-size:runtime-check') === 'gate'",
+    familyOf('design-icon-size:runtime-check'), 'gate')
+  expect("familyOf('design-spacing-scale:runtime-check') === 'gate'",
+    familyOf('design-spacing-scale:runtime-check'), 'gate')
+  // ② 自证优先。
+  expect("familyOf('design-icon-size:runtime-check:selftest') === 'selftest'",
+    familyOf('design-icon-size:runtime-check:selftest'), 'selftest')
+  // ③ 非门脚本不算门族。
+  expect("familyOf('web-gates:run') === null", familyOf('web-gates:run'), null)
+  // ③' ★ `typecheck` 的段名以 'check' 结尾 ⇒ ⇒ 落进门族 ⇒ ⇒ **必须被登记**
+  //      （★ 登记在 EXCLUDED 里也算数 ⇒ ⇒ ★ 判据是「被收住」而不是「在 GATES 里」）。
+  expect("familyOf('typecheck') === 'gate'", familyOf('typecheck'), 'gate')
+  expect("'typecheck' 已被登记（GATES 或 EXCLUDED）",
+    isCovered('typecheck', GATES) || EXCLUDED.some((e) => e.name === 'typecheck'), true)
+  // ④ 排除项都写了理由。
+  const noReason = EXCLUDED.filter((e) => !e.reason || !e.reason.trim()).map((e) => e.name)
+  expect('EXCLUDED 每条都写了理由', noReason.length === 0, true)
+  // ⑤ 清单自洽。
+  expect('checkManifest() 为空', checkManifest().length, 0)
+  expect('checkCoverage() 为空', checkCoverage().length, 0)
+  // ⑥ ★★ 反向覆盖检查有牙（★ 这一条决定本自证本身有没有牙）★★
+  const fakeGate = 'synthetic-family:runtime-check'
+  const excludedNames = new Set(EXCLUDED.map((e) => e.name))
+  const fakeFam = familyOf(fakeGate)
+  const fakeCovered = excludedNames.has(fakeGate) || isCovered(fakeGate, GATES)
+  expect('未登记的 runtime-check 门必须被判为未覆盖（★ 反向检查有牙）', fakeCovered, false)
+
+  let failed = 0
+  for (const c of cases) {
+    if (!c.ok) failed++
+    console.log(`  ${c.ok ? '✔' : '✘'} ${c.name}` + (c.ok ? '' : ` （实测 ${JSON.stringify(c.got)} ≠ 期望 ${JSON.stringify(c.want)}）`))
+  }
+  console.log(`\n自证：${cases.length - failed}/${cases.length} 通过`)
+  if (failed > 0) process.exit(1)
 }
 
 function main() {
   const argv = process.argv.slice(2)
+
+  // ★ 自证入口（★ 先于清单检查：★ 本入口的判据坏了，也得能跑出自证）。
+  if (argv.includes('--selftest')) {
+    console.log('[web-gates:selftest] 本入口的自证：')
+    selftest()
+    return
+  }
 
   const missing = checkManifest()
   if (missing.length > 0) {
@@ -307,9 +497,20 @@ function main() {
 
   console.log(`[web-gates] 开始执行 ${plan.length} 项（门 ${GATES.length} + 自证 ${SELFTESTS.length}）`)
 
+  // ★ 包管理器**只选一次**（★ 与 scripts/lib/node-pm.sh 同一契约 ⇒ ★ 显式 WEB_PM，
+  // ★ 否则有 pnpm 用 pnpm、没有就退 npm）⇒ ⇒ ★ 挑一次、跑它、原样透传退出码。
+  let pm
+  try {
+    pm = resolvePm()
+  } catch (e) {
+    console.error(`✘ ${e.message}`)
+    process.exit(2)
+  }
+  console.log(`[web-gates] 包管理器 = ${pm}（★ 契约见 scripts/lib/node-pm.sh）`)
+
   const failed = []
   for (const [name, kind] of plan) {
-    const r = runOne(name)
+    const r = runOne(name, pm)
     const tag = r.rc === 0 ? '✔' : '✘'
     console.log(`  ${tag} ${kind.padEnd(8)} ${name.padEnd(42)} rc=${r.rc}`)
     if (r.rc !== 0) {

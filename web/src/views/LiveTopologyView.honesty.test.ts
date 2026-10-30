@@ -271,6 +271,44 @@ describe('LiveTopologyView 展示诚实性（本轮审计修复）', () => {
     expect(canvasSource).toMatch(/position:\s*absolute/)
   })
 
+  it('★ 栅格行下限与项的 min-height 必须同口径（★ 项硬钉会抵消行下限）', () => {
+    // ★★★ **2026-10-31 12h 审计轮补的回归钉**：★★★
+    //
+    // ★ 缺陷形态：★ 栅格行下限写的是 `minmax(min(320px, 50vh), 1fr)`（★ 矮窗时
+    // ★ 行下限 = 50vh），★ 而**同一个项**上又硬钉 `min-height: 320px` ⇒ ⇒ ★★
+    // ★★ **项比行高** ⇒ ⇒ ⇒ 溢出 ⇒ ⇒ ⇒ 压到第 2 行（右栏）⇒ ⇒ ⇒ ★★ ⇒ 而那
+    // ★★ 正是「右栏摘要浮层被压成 16px 一条缝」的**同一种形态** ⇒ ⇒ ⇒ ★★ ⇒
+    // ★★ **行下限被项自己的硬钉抵消了** ⇒ ⇒ ⇒ ★★ ⇒ 上一轮的修复在矮窗下无效。
+    //
+    // ★ 为什么读源码而不是 computed style：★ vitest 默认 css:false ⇒ ★ SFC 的
+    // ★ <style scoped> 不进 jsdom ⇒ ★ computed style 恒为空串 ⇒ ⇒ ★★ 那是恒假绿。
+    // ★★ 定位基准是写在样式契约里的事实（★ 同本文件既有做法）。
+    const source = readSrc('src/views/LiveTopologyView.vue')
+
+    // ① 行下限必须带 vh 封顶（★ 否则矮窗下无上限可退）。
+    expect(source, '栅格行下限必须含 min(320px, 50vh)').toMatch(/grid-template-rows:\s*minmax\(min\(320px,\s*50vh\)/)
+
+    // ② 桌面段里 .live-topology__clients 的 min-height 必须是 min(...) 口径，
+    //    ★ 不许再是写死的 px（★ 写死的 px 会大于 50vh 的行下限 ⇒ ⇒ 抵消它）。
+    const desktopBlock = source.slice(source.indexOf('@media (min-width: 1024px)'))
+    const clientsRule = desktopBlock.match(/\.live-topology__clients\s*\{[^}]*\}/)
+    expect(clientsRule, '桌面段里找不到 .live-topology__clients 规则').toBeTruthy()
+    // ★★★ **判据要扫【声明】不扫【散文】**：★★★ ★ 本仓的注释里会写「原值
+    // ★★★ `min-height: 320px` 是硬钉」这类**历史说明** ⇒ ⇒ ★ 若直接对整段文本
+    // ★★★ 做正则 ⇒ ⇒ ⇒ **注释里的字面量也会命中** ⇒ ⇒ ⇒ ★★ ⇒ 判据会恒红
+    // ★★★ （★ 这就是「扫的是代码还是散文」那道题）⇒ ⇒ ⇒ ★ 所以先把 CSS 注释涂白。
+    const ruleText = clientsRule![0].replace(/\/\*[\s\S]*?\*\//g, '')
+    expect(
+      ruleText,
+      '★ .live-topology__clients 的 min-height 必须与行下限同口径（min(320px, 50vh)）⇒ ⇒ ' +
+        '写死的 px 会在矮窗下大于行下限 ⇒ ⇒ 抵消行下限 ⇒ ⇒ 又把右栏压扁',
+    ).toMatch(/min-height:\s*min\(320px,\s*50vh\)/)
+    expect(
+      ruleText,
+      '★ .live-topology__clients 不许再硬钉 min-height: 320px（★ 它大于 50vh 的行下限）',
+    ).not.toMatch(/min-height:\s*320px/)
+  })
+
   it('★ 两步交互：点行弹摘要浮层且不开新窗；浮层里「查看全景」才开新窗', async () => {
     // owner 2026-10-27 口径：点行 → 内联摘要浮层（本页不跳转、不开新窗）；
     // 浮层里的「查看全景」→ 全页详情开新窗。2026-10-23 曾把点行直接开新窗，
