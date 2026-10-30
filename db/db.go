@@ -1357,6 +1357,18 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 		}
 		watermarks, err := pgx.CollectRows(rows, pgx.RowTo[string])
 		if err != nil {
+			// 2026-10-30 24h 审计第 8 轮：行流中途被 statement_timeout 杀
+			// （Query() 成功但 57014 在迭代期才冒出）⇒ 与上面 Query 分支同语义：
+			// 「竞争即快失败、下个 boot 续跑」。此前只有 Query 分支拦 57014，
+			// CollectRows 分支直接 fatal ⇒ 245 boot 10min 预算烧穿 ⇒
+			// "postgres disabled" ⇒ 蓝绿候选 8781 拒启（部署 blocker 实锤：
+			// journal 30 次 retry 全 57014）。两条错误出口同拦。
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && (pgErr.Code == "55P03" || pgErr.Code == "57014") {
+				slog.Warn("session_summaries backfill chunk contended mid-rows; resumes next boot",
+					"pgcode", pgErr.Code, "rows_backfilled", backfilled, "watermark", watermark)
+				break
+			}
 			return fmt.Errorf("session_summaries archival backfill chunk: %w", err)
 		}
 		if len(watermarks) == 0 {
