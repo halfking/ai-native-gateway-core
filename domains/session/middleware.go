@@ -2,8 +2,6 @@ package session
 
 import (
 	"context"
-	"log/slog"
-	"net/http"
 )
 
 type contextKey string
@@ -24,84 +22,6 @@ func SessionFromContextWith(ctx context.Context, s *Session) context.Context {
 		return ctx
 	}
 	return context.WithValue(ctx, sessionContextKey, s)
-}
-
-func WithSession(next http.Handler, manager *Manager) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sessionID := r.Header.Get("X-Gw-Session-Id")
-		legacyHeader := false
-		if sessionID == "" {
-			sessionID = r.Header.Get("X-Session-Id")
-			legacyHeader = sessionID != ""
-		}
-		if sessionID == "" {
-			next.ServeHTTP(w, r)
-			return
-		}
-		w.Header().Set("X-Gw-Session-Id", sessionID)
-
-		session, err := manager.Get(r.Context(), sessionID)
-		if err == nil {
-			// 2026-07-28 (request-flow audit §10 Step 2): surface the
-			// resolved session id on X-Gw-Session-Id-Resume whenever the
-			// gateway successfully resumed an existing session — both
-			// for the canonical X-Gw-Session-Id path AND the legacy
-			// X-Session-Id fallback path below. This makes the resume
-			// hint observable to operators / clients even when no new
-			// session was created (i.e. the original id was already
-			// valid).
-			w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
-			ctx := context.WithValue(r.Context(), sessionContextKey, session)
-			//nolint:errcheck // best-effort touch, non-critical
-			go manager.Touch(context.Background(), sessionID)
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
-		}
-
-		if err != ErrSessionNotFound {
-			slog.Warn("legacy session lookup failed", "error", err, "session_id", sessionID)
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		if !legacyHeader {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		apiKeyID := GetAPIKeyIDFromContext(r.Context())
-		tenantID := getTenantIDFromContext(r.Context())
-		if apiKeyID == 0 {
-			slog.Warn("legacy session fallback: no api key in context", "session_id", sessionID)
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		deviceSeed := r.Header.Get("X-Device-Seed")
-		if deviceSeed == "" {
-			deviceSeed = r.Header.Get("X-Machine-Id")
-		}
-		if deviceSeed == "" {
-			deviceSeed = "default"
-		}
-
-		newSession, createErr := manager.CreateV2(r.Context(), apiKeyID, tenantID, deviceSeed, "default")
-		if createErr != nil {
-			slog.Error("legacy session fallback create failed", "error", createErr, "session_id", sessionID)
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		slog.Warn("legacy X-Session-Id used, fallback created; migrate to X-Gw-Session-Id",
-			"original_session_id", sessionID,
-			"new_session_id", newSession.SessionID,
-		)
-		w.Header().Set("X-Gw-Session-Id-Resume", newSession.SessionID)
-		w.Header().Set("Deprecation", "true")
-
-		ctx := context.WithValue(r.Context(), sessionContextKey, newSession)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
 }
 
 func SetAPIKeyID(ctx context.Context, apiKeyID int) context.Context {

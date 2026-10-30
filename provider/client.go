@@ -493,6 +493,9 @@ type Client struct {
 	// candCircuit（2026-10-28 routing_schema_error 轮）候选查询组件熔断器：
 	// 连续失败 open + 请求 park 延迟到冷却点半开探测。见 candidates_circuit.go。
 	candCircuit candidatesCircuit
+	// cacheSignal 记录可选 prompt-cache 信号是否处于降级态（缺函数 ⇒ 中性，见
+	// candidate_optional_signal.go）。零值即未降级。
+	cacheSignal cacheSignalDegrade
 
 	// keyRotator holds per-credential multi-key rotation state (per-key health +
 	// round-robin). nil when the DB/keyring isn't configured (single-key mode).
@@ -2038,13 +2041,31 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		}
 	}
 
+	sqlText := candidateQuerySQL()
+	cacheSignalDegraded := c.cacheSignal.degradedAt(time.Now())
+	if cacheSignalDegraded {
+		sqlText = candidateQuerySQLWithoutCacheSignal()
+	}
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		rows, err = c.dbPool.Query(ctx, candidateQuerySQL(),
+		rows, err = c.dbPool.Query(ctx, sqlText,
 			clientModelLower, tenantID, modality)
 
 		if err == nil {
 			c.candCircuit.RecordSuccess()
 			break
+		}
+
+		// 可选信号 fail-open（2026-10-31）：chr 函数缺失不是候选查询故障——降级 SQL
+		// 重试一次，且不计入熔断、不消耗瞬态重试预算。
+		if !cacheSignalDegraded && isCacheSignalAbsent(err) {
+			c.cacheSignal.markDegraded(time.Now())
+			cacheSignalDegraded = true
+			sqlText = candidateQuerySQLWithoutCacheSignal()
+			recordCandidateDiagnostic("optional_signal_degraded")
+			slog.Warn("[candidate_diag] optional signal recent_cache_hit_rate missing — cache dimension degraded to neutral",
+				"model", clientModel, "tenant_id", tenantID, "recheck_seconds", candidateCacheSignalRecheck.Seconds())
+			attempt--
+			continue
 		}
 
 		if !isRetryableDBError(err) {
