@@ -737,8 +737,13 @@ function onSelectModel(model: string) {
     /* 行收进视口：第一行（左栏+拓扑）吃满剩余高度，第二行（右栏横排）
       由内容自定（max-height 240px 封顶）。
       ★ 下限 min(320px, 50vh) 见上方「行下限」注释：统计面板挤占空间时
-      第 1 行不许塌 0（塌 0 ⇒ 拓扑不可见 + 摘要浮层缩成一条缝）。 */
-    grid-template-rows: minmax(min(320px, 50vh), 1fr) auto;
+      第 1 行不许塌 0（塌 0 ⇒ 拓扑不可见 + 摘要浮层缩成一条缝）。
+      ★★ 第 2 行同样要下限（2026-10-31 部署后原生复测补的）：面板本体是
+      flex 列 + flex:1/min-height:0 的子面板 ⇒ 其 max-content 贡献 ≈ 0，
+      auto 行在空间不足时整行塌 0 ⇒ 右栏摘要浮层照样缩成 16px 一条缝
+      （1280×713 部署后实测：左 296px / 右 16px）。下限取 min(240px,40vh)
+      与该行 max-height: 240px 封顶对齐。 */
+    grid-template-rows: minmax(min(320px, 50vh), 1fr) minmax(min(240px, 40vh), auto);
   }
 
   .live-topology__right {
