@@ -106,6 +106,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -784,28 +785,21 @@ func gocacheScriptHasCompile(rel string, code []string) bool {
 
 // gocacheScriptScan 扫出仓内全部 `.sh` / `.py`，并按登记簿标注排除路径。
 func gocacheScriptScan(root string, excluded map[string]bool) ([]gocacheScriptFile, error) {
-	var out []gocacheScriptFile
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			base := d.Name()
-			if path != root && gocacheScriptInfraSkipDirs[base] {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		name := d.Name()
-		if !strings.HasSuffix(name, ".sh") && !strings.HasSuffix(name, ".py") {
-			return nil
-		}
-		raw, rerr := os.ReadFile(path)
+	rels, err := gocacheScriptRepoFiles(root)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]gocacheScriptFile, 0, len(rels))
+	for _, rel := range rels {
+		raw, rerr := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
 		if rerr != nil {
-			return rerr
+			// ★ 文件在索引里、工作树里没有（★ `git rm --cached` / staged 删除）⇒ ⇒
+			// ★ 它**不在工作树里**⇒ ⇒ 不进本门的扫描面 ⇒ ⇒ ★ **不是错误**。
+			if os.IsNotExist(rerr) {
+				continue
+			}
+			return nil, rerr
 		}
-		rel, _ := filepath.Rel(root, path)
-		rel = filepath.ToSlash(rel)
 		isExcluded := false
 		for prefix := range excluded {
 			if rel == prefix || strings.HasPrefix(rel, prefix+"/") {
@@ -818,13 +812,75 @@ func gocacheScriptScan(root string, excluded map[string]bool) ([]gocacheScriptFi
 			Code:     gocacheRawLines(string(raw)),
 			Excluded: isExcluded,
 		})
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Rel < out[j].Rel })
 	return out, nil
+}
+
+// gocacheScriptRepoFiles 列出【git 认的】脚本候选（★ 相对仓根、斜杠分隔）。
+//
+// ★★★ **为什么扫描面是「git 认的」而不是「文件系统上走得到的」（★ 2026-10-31 审计轮）**：★★★
+//
+//	★ 原口径 = `filepath.WalkDir(仓根)` ⇒ ⇒ **扫的是【工作树文件系统】** ⇒ ⇒
+//	★ ⇒ ⇒ **本地任何未跟踪文件都会进作用域** ⇒ ⇒ ⇒ 而这些文件：
+//	★   ① **不属于本仓**（★ `.gitignore` 已经声明「它们不是仓的一部分」）⇒ ⇒
+//	★   ② **逐机不同**（★ 同一个 commit，在 A 机绿、在 B 机红）⇒ ⇒ ⇒
+//	★   ③ ⇒ ⇒ **让「实测计数逐字对拍」这条判据失去意义**（★ 登记的是 165，
+//	★      实测却随本地残留漂到 166 / 168）⇒ ⇒ ⇒ ★★ **同一类事故已经咬过两次**：
+//	★      ① 源仓的 `scripts/build/`（★ 未跟踪目录、★ 7/23 遗留）⇒ ⇒ 165 → 166；
+//	★      ② syncfield-2 的 `.scratch/timer/`（★ 2026-07-17 的死定时器残留）⇒ ⇒ 165 → 168。
+//	★ ⇒ ⇒ ⇒ 两次的处置都是【把本地残留搬走】⇒ ⇒ ★★ **而那只是止血**：
+//	★ ⇒ ⇒ ⇒ **下一个会话再放一个残留进仓，红灯会再来一次** ⇒ ⇒ ⇒
+//	★ ⇒ ⇒ ⇒ ★★ **⇒ 所以本轮改【口径】而不是再清一次**：★ 扫描面改成
+//	★ ⇒ **【git 认的】**（★ `git ls-files --cached --others --exclude-standard`）⇒ ⇒
+//	★ ⇒ ★★ 语义是：「**凡是被本仓的 `.gitignore` 声明为『不属于本仓』的文件，
+//	★ ⇒ 就不进本门的计数**」⇒ ⇒ ⇒ ★★ 而这条政策**本来就是仓内写着的**
+//	★ ⇒ ⇒ （★ `.gitignore`）⇒ ⇒ ⇒ ★ **不是本门新造的** ⇒ ⇒ ⇒ ★
+//	★ ⇒ ★★ **同时**保留了「未跟踪但没被忽略」的文件（★ ⇒ 即将提交的新脚本仍看得见）⇒ ⇒
+//	★ ⇒ ⇒ ⇒ ★ **「提前发现」的能力没丢** ⇒ ⇒ ⇒ ⇒ 只丢掉了【本就不属于仓内的】那些。
+//
+// ★★ **为什么不是「只扫被跟踪的」（`--cached`）**：★ 那会让「新增一个还没提交的编译型脚本」
+// ★ 在提交前**完全不被看见**（★ 本地绿灯 ⇒ 提交后 CI 红灯）⇒ ⇒ ★★ 体验上是
+// ★★ **「我本地是绿的，CI 是红的」** ⇒ ⇒ ⇒ ★ 所以保留 `--others --exclude-standard`
+// ★ ⇒ ★★ （★ 未跟踪 **且** 未被忽略 ⇒ ⇒ 正是「我打算提交它」的语义）⇒ ⇒ ⇒ ★
+// ★ ★★ **同时**保留了原口径的严格性（★ 未提交的新脚本仍进作用域）⇒ ⇒ ⇒ ★
+func gocacheScriptRepoFiles(root string) ([]string, error) {
+	cmd := exec.Command("git", "-C", root, "ls-files", "-z", "--full-name",
+		"--cached", "--others", "--exclude-standard")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("★ 列 git 认的文件失败（★ 需要 git 在 PATH 且 %s 是仓根）：%w", root, err)
+	}
+	var rels []string
+	for _, p := range strings.Split(string(out), "\x00") {
+		if p == "" {
+			continue
+		}
+		if !strings.HasSuffix(p, ".sh") && !strings.HasSuffix(p, ".py") {
+			continue
+		}
+		if gocacheScriptHasInfraSkipDir(p) {
+			continue
+		}
+		rels = append(rels, p)
+	}
+	return rels, nil
+}
+
+// gocacheScriptHasInfraSkipDir 判断路径里是否含【基础设施跳过目录】（★ 任意一层都算）。
+//
+// ★★★ **为什么必须逐层判**：★★★ ★ `filepath.WalkDir` 口径下，任何深度下叫
+// ★ `vendor` / `node_modules` / `maestro` / `.build-local` / `.git` 的目录都被跳过
+// ★ ⇒ ⇒ ★ 换成 git 枚举后**这些目录里的文件是会被列出来的**（★ 它们多数被跟踪）
+// ★ ⇒ ⇒ ★★ **不逐层判 ⇒ 作用域会突然变大** ⇒ ⇒ ⇒ ★ ⇒ 实测：源仓的 `vendor/` 下有
+// ★ ★ 数百个 `.sh` ⇒ ⇒ ★★ 不判 ⇒ 计数会从 165 跳到 500+ ⇒ ⇒ ⇒ ★★ 所以逐层判。
+func gocacheScriptHasInfraSkipDir(rel string) bool {
+	for _, seg := range strings.Split(rel, "/") {
+		if gocacheScriptInfraSkipDirs[seg] {
+			return true
+		}
+	}
+	return false
 }
 
 // gocacheScriptDedicatedLines 返回【指向专用目录】的代码行。
