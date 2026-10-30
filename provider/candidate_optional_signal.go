@@ -15,7 +15,6 @@ package provider
 import (
 	"errors"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -40,24 +39,29 @@ const (
 	cacheSignalFuncName = "recent_cache_hit_rate"
 )
 
-var (
-	candidateQueryDegradedOnce sync.Once
-	candidateQueryDegradedSQL  string
-)
-
 // candidateQuerySQLWithoutCacheSignal 返回去掉 chr 函数调用后的候选查询。
 // 若模板中找不到唯一的调用形态（模板被改写），返回完整 SQL：此时降级不生效，行为与
 // 修复前一致——宁可退化为旧行为，也不生成一条语义未知的 SQL。
+//
+// ★★★ **2026-10-31 审计轮修正：★ 降级 SQL 【不许】缓存成「进程级一次性」★★★
+//
+//	★ 旧实现用 `sync.Once` **算一次就永久缓存** ⇒ ⇒ ★★ **而 `candidateQuerySQL()`
+//	★ 不是常量** —— 它按**运行时环境变量** `ModalityRoutingStrictEnv`
+//	★ （`LLM_GATEWAY_MODALITY_ROUTING_STRICT`）在两套「模态判词闸门」之间切换
+//	★ （★ 缺省档 / 严格档）⇒ ⇒ ★★ **闸门一旦在降级期间被切换 ⇒ ⇒ 降级路径会一直
+//	★ ★ 用旧闸门** ⇒ ⇒ ⇒ ★★ ⇒ **路由策略与当前配置不一致** ⇒ ⇒ ★★ ⇒ **而且它完全
+//	★ ★ 静默**（★ 没有报错、指标也看不出来）⇒ ⇒ ⇒ ★★ ⇒ 判据「降级 SQL 与完整 SQL
+//	★ ★ 的差异不止 chr 一处」在切换后就会**反转为假**。
+//
+//	★★ **所以改成：★ 每次按【当前】SQL 现算** ⇒ ⇒ ★★ 口径永远跟着当前配置走。
+//	★★ 代价：★ 模板 13.8 KB ⇒ ★ 一次 `strings.Count` + 一次 `strings.Replace`
+//	★★ ⇒ ★ µs 级 ⇒ ⇒ ★★ 而降级窗口只有 60 s ⇒ ⇒ ⇒ ★ **代价可忽略，收益是口径不漂**。
 func candidateQuerySQLWithoutCacheSignal() string {
-	candidateQueryDegradedOnce.Do(func() {
-		full := candidateQuerySQL()
-		if strings.Count(full, candidateCacheSignalCallSQL) != 1 {
-			candidateQueryDegradedSQL = full
-			return
-		}
-		candidateQueryDegradedSQL = strings.Replace(full, candidateCacheSignalCallSQL, candidateCacheSignalAbsentSQL, 1)
-	})
-	return candidateQueryDegradedSQL
+	full := candidateQuerySQL()
+	if strings.Count(full, candidateCacheSignalCallSQL) != 1 {
+		return full
+	}
+	return strings.Replace(full, candidateCacheSignalCallSQL, candidateCacheSignalAbsentSQL, 1)
 }
 
 // isCacheSignalAbsent 判定错误是否为"chr 函数不存在"。只匹配 42883 且消息点名该函数，

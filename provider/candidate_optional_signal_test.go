@@ -41,6 +41,60 @@ func TestCandidateQuerySQLWithoutCacheSignal_RemovesOnlyTheChrCall(t *testing.T)
 	}
 }
 
+func TestCandidateQuerySQLWithoutCacheSignal_FollowsCurrentModalityGate(t *testing.T) {
+	// ★★★ **2026-10-31 审计轮补的判据**：★ 降级 SQL **必须跟着当前口径走**。
+	//
+	// ★ 背景：★ 候选 SQL 不是常量 —— 它按运行时环境变量 `ModalityRoutingStrictEnv`
+	// ★ 在【缺省档 / 严格档】两套模态判词闸门之间切换 ⇒ ⇒ ★ 而降级 SQL 曾被
+	// ★ `sync.Once` **算一次就永久缓存** ⇒ ⇒ ⇒ ★★ **闸门在降级期间被切换 ⇒ ⇒
+	// ★★ 降级路径会一直用旧闸门** ⇒ ⇒ ★★ ⇒ **路由策略与当前配置不一致，且完全静默**。
+	//
+	// ★ 判据形态：★ 严格档比缺省档多一段 `mmv3` 判词 ⇒ ⇒ ★ 用它当两档的区分标记。
+	// ★ ★★ **为什么要两档各算一次**：★★ 只算一次的话，★ **缓存版与现算版会给出
+	// ★ ★ 同一个结果**（★ 第一次算的就是当前档）⇒ ⇒ ⇒ ★ **判据会恒绿** ⇒ ⇒
+	// ★ ⇒ ★★ 所以必须**换档再算** ⇒ ⇒ ⇒ ★ 换档后仍相等 ⇒ ⇒ 就是没跟上 ⇒ ⇒ ⇒ ★ 红。
+
+	t.Setenv(ModalityRoutingStrictEnv, "")
+	defaultDegraded := candidateQuerySQLWithoutCacheSignal()
+	defaultFull := candidateQuerySQL()
+
+	t.Setenv(ModalityRoutingStrictEnv, "1")
+	strictDegraded := candidateQuerySQLWithoutCacheSignal()
+	strictFull := candidateQuerySQL()
+
+	// ① 两档的完整 SQL 必须真的不同（★ 否则下面的判据没有分辨力 ⇒ ⇒ 假绿）。
+	if defaultFull == strictFull {
+		t.Fatalf("★ 缺省档与严格档的候选 SQL 相同 ⇒ ⇒ 判据无分辨力（★ 闸门形态变了？）")
+	}
+	// ② 降级 SQL 必须跟着当前档走（★ **这条就是本次修的那个缺陷**）。
+	if defaultDegraded == strictDegraded {
+		t.Fatalf("★★ 降级 SQL 不随模态闸门档位变化 ⇒ ⇒ 【降级路径会一直用旧闸门】⇒ ⇒ " +
+			"★★ ⇒ **路由策略与当前配置不一致，且完全静默** ⇒ ⇒ ★★ 降级 SQL 必须是【按当前 SQL 现算】的")
+	}
+	// ③ 两档各自的降级 SQL 都必须与【同档】的完整 SQL 只差 chr 一处（★ 逐字对拍）。
+	for _, tc := range []struct {
+		name           string
+		degraded, full string
+	}{
+		{"缺省档", defaultDegraded, defaultFull},
+		{"严格档", strictDegraded, strictFull},
+	} {
+		if restored := strings.Replace(tc.degraded, candidateCacheSignalAbsentSQL, candidateCacheSignalCallSQL, 1); restored != tc.full {
+			t.Errorf("★ %s 的降级 SQL 与同档完整 SQL 的差异不止 chr 一处", tc.name)
+		}
+		if strings.Contains(tc.degraded, "recent_cache_hit_rate(") {
+			t.Errorf("★ %s 的降级 SQL 仍然调用 recent_cache_hit_rate", tc.name)
+		}
+	}
+	// ④ 严格档的降级 SQL 必须带严格档的判词（★ 反向证明它不是缺省档的残留）。
+	if !strings.Contains(strictDegraded, "mmv3") {
+		t.Errorf("★ 严格档的降级 SQL 里没有 `mmv3` 判词 ⇒ ⇒ 它不是当前档的 SQL")
+	}
+	if strings.Contains(defaultDegraded, "mmv3") {
+		t.Errorf("★ 缺省档的降级 SQL 里出现了 `mmv3` 判词 ⇒ ⇒ 它混进了严格档的片段")
+	}
+}
+
 func TestIsCacheSignalAbsent(t *testing.T) {
 	undefinedChr := &pgconn.PgError{
 		Code:    "42883",
