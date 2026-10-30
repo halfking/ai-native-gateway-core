@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -67,6 +68,37 @@ func TestClassifyError_DNSFailure(t *testing.T) {
 	kind := ClassifyError(err, nil)
 	if kind != KindNetwork {
 		t.Errorf("expected KindNetwork for DNS failure, got %q", kind)
+	}
+}
+
+// 2026-10-31 批判式审计补：结构化分支此前只有消息文本臂（"no such host"），
+// R32-U1 加的 `*net.DNSError` 结构化分支（生产对解析器措辞差异的真正兜底）
+// 没有直接钉子——本地 resolver 是 sinkhole 形态时，upstream 集成测试
+// （TestDo_DNSFailureReservedTLD）会走 EOF skip，主断言在该类主机上不可证
+// ⇒ 结构化分支必须在这里确定性钉住，不依赖环境。
+func TestClassifyError_StructuralDNSErrorIsNetwork(t *testing.T) {
+	dnsErr := &net.DNSError{Err: "no such host", Name: "llm-gateway-fault-test.invalid", IsNotFound: true}
+	wrapped := fmt.Errorf("dial tcp: lookup llm-gateway-fault-test.invalid: %w", dnsErr)
+	if kind := ClassifyError(wrapped, nil); kind != KindNetwork {
+		t.Errorf("wrapped *net.DNSError must classify KindNetwork, got %q", kind)
+	}
+	// 深层包装（multi-hop fmt.Errorf 链）同样必须被 errors.As 打穿。
+	deep := fmt.Errorf("outer: %w", fmt.Errorf("middle: %w", dnsErr))
+	if kind := ClassifyError(deep, nil); kind != KindNetwork {
+		t.Errorf("deeply wrapped *net.DNSError must classify KindNetwork, got %q", kind)
+	}
+}
+
+// 分类优先级钉子：DeadlineExceeded（超时）必须先于 DNSError（network）——
+// 这是生产故障转移语义（解析超时走 timeout 通道，不是 network 通道），
+// 措辞差异不许把它抢走；与 TestDo_DNSFailureReservedTLD 的 KindTimeout
+// skip 分支同一契约的两端（那边测集成行为，这里钉分类器本身）。
+func TestClassifyError_DeadlineExceededBeatsDNSErrorWording(t *testing.T) {
+	dnsErr := &net.DNSError{Err: "no such host", Name: "slow.invalid", IsNotFound: true}
+	err := fmt.Errorf("lookup slow.invalid on 127.0.0.1:53: %w (message mentions: %v)",
+		context.DeadlineExceeded, dnsErr)
+	if kind := ClassifyError(err, nil); kind != KindTimeout {
+		t.Errorf("context.DeadlineExceeded must classify KindTimeout even with DNS wording, got %q", kind)
 	}
 }
 
