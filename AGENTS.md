@@ -16272,3 +16272,47 @@ symlink×2/路径断言×2 + discovery 组播）/ vue-tsc 0 错 / vitest 2949 �
  排障要翻 report 文件）；featured 清单含 EOL 模型（运维清理）；`-dirty` 后缀对
  menu-config.json 这类「构建即再生」产物未豁免（VERSION 三件套已豁免）；245/154 的
  enable_per_node 未开（先在 211 观察一轮 token 成本）。
+ **2026-10-30 第 52 增量：R184 252 SQL 日志审计轮（bodies promote 活锁根修 + 探针队列索引化 + ursm V2 真正落地）**（goal 会话）：
+★ 24h 全窗（10-29 06:03→10-30 06:00，去重后 slow=5,600/46,586s、err=2,411；
+**plain-copy 快照与 live 文件有 ~1.9h 重叠 ⇒ 多文件解析必须 (ts,pid,语句头) 去重**，
+首版 6,474 双计）。三组落地：
+⇒ ★ **①迁移 924**：`credential_probe_queue (probe_command, tenant_id,
+credential_id, raw_model, created_at)` 复合索引——integrity planner（10min tick）
+反连接 7 条既有索引无一可服务 ⇒ 全量过队 15,455 buffers、132 次/1,349s 恒定在榜、
+产出恒 0 行 ⇒ 924 后同刻 EXPLAIN **15,455→1,285 buffers（12×）**；252/211 预应用
++ 双台账 + **fresh 用安装器真实路径重建（326 条 failed=0）端到端验证**；登记面七点
+全齐（正本/embeddata×2/main.go/runner.go/**manifest tsv**/序列脚本+产物探针/changelog）。
+⇒ ★★ **②bodies promote 活锁根修**：`session_bodies_hot` 积压 **33h/10,765 行**
+（retention 8h）、24h 被杀+取消 56 次。**根因=单批物理成本>双侧预算**：5000×34KB
+TOAST≈169MB + 7 索引写放大 + 慢宿主页写 ~8ms ⇒ 必死回滚活锁。修=批 5000→500
+（专用热载键 `lifecycle.session_bodies_hot_promote_batch_size`，R72f 对齐）+
+单批预算 60s→**150s**（promoteBatchBudget，cycle 5→10min）+ **KV 即时缓解**
+（settings_kv 直写全局键 500——GetPlatformInt 每次直读 DB，热载生效）⇒ 手动排水
+22 批（每批 18~24s）**积压清零**。★ 500 是 v1 链 890 退役时丢的知识（R16 fact 85）。
+⇒ ★★ **③ursm 巡检 V2 真正部署上 252**：R176 修了迁移 919 但 `/opt/scripts` 上
+还是 10-24 旧版 ⇒ WITH win 族照烧 19 次/5,394s ⇒ 部署仓内版（md5 对齐）⇒ cron
+首跳 47s / `active_source=daily_v2`（07:17 旧版最后一跳被 10min ABORT 恰成对照）
+⇒ ★★★ **「迁移预应用 ≠ 脚本部署」，且「下轮首查」必须真的被查。**
+⇒ ★★★★ **本轮最贵的一课（925 整条撤销）**：用 `pg_inherits(inhparent=叶子表)`
+数索引 → 恒空 ⇒ 误判「六叶零实体索引」（三环境"一致"= 同一错误三次复现）⇒
+立 925 heal ⇒ 在 9GB 热叶建出**与 canonical 唯一索引重复**的冗余索引
+（ATTACH 报「another index already attached」才暴露——**数据库替量具纠错，听到就停**）
+⇒ 撤销：文件+五处登记+manifest 回滚+changelog 注记，误建索引全 DROP。
+**数「表的索引」必须走 pg_indexes / pg_index.indrelid。**
+⇒ ★ **归因订正**：R176「count 探针被杀 411 次/天」是 msg 分桶后未按语句形状
+二次分桶的归因事故（本窗该探针仅 3 次=上轮自己的收尾）；回填击杀 175 次=
+211 轨 psycopg3 harness 自噪音（asm 自己的库在 211 本机，排除）；15 时退役
+验证对拍 6,742s=并行会话自噪音。
+⇒ ★ **读数**：9 道相关门全 PASS（installer 双包 / ursmcheck census+freshness+
+ratchet / sqlguard 连续性 / ursmcheck 部署门）；bg+settings 全包测试绿；
+census 四环境重采（expect 855 / columns 905+ / gap-ledger 855 行），
+R161/R164 审计档引用行同步刷新。
+⇒ ★ **本轮没做 / 留给下一轮**：matrix REFRESH 的 R175 jit 分族部署对账
+（列车 23:56 后仍 68~284s，需抓 154/245 身位）；`latest_bucket` 439×/2,488s
+（属主项）；`credential_probe_queue` 终态行 TTL（26.8 万行只增）；全局
+promote_batch_size 回 5000（专用键生效后）；924 随列车到 154/245 的收敛对账；
+pocket $4（N+6）。
+⇒ 审计档 `docs/audit/2026-10-30-R184-252SQL日志审计-promote活锁根修与巡检V2落地.md`；
+通用式见 `LESSONS.md` **§583**（十条：迁移预应用≠脚本部署 / 坏 join 造假缺陷 /
+活锁=成本-预算差 / 错误族二次分桶 / 拼接解析去重 / 协议形态归因 / 相位从日志读 /
+KV 直写生效条件 / CONCURRENTLY 锁预算 / 自噪音按客户端签名入账）。

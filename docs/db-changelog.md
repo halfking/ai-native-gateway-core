@@ -10564,3 +10564,9 @@ Recording-consent body retention is independent of request_logs TTL.
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 923 | `923_schema_migrations_ledger_backfill.sql` | `2d4103410770b008d55114c628f2572dde2c0bded4d8afa7df162bea8f2f7a22` | applied+verified |
+
+## 2026-10-30 — 探针队列反连接索引 (migration 924)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 924 | `924_credential_probe_queue_command_key_idx.sql` | `24c850a6daffe65c4d28f49212f649dfdb5bb7a302038e5ea25115e58097f6b6` | prepared（2026-10-30 R184 252 SQL 日志审计轮；**待部署**：211/154/245/252 列车；252 已按 736/862/919/920 先例**预应用** + 双台账）—— ★ **credential_probe_queue (probe_command, tenant_id, credential_id, raw_model, created_at) 复合索引**。缺口本体——integrity_probe_planner（bg/integrity_probe_planner.go cycle，10min tick）的 NOT EXISTS 反连接在 queue 上没有任何可服务索引（7 条既有索引要么 pkey(id)、要么 partial 于 status）⇒ Merge Anti Join 全量过队：252 实测单次 **15,455 buffers**（queue 267,805 行自 08-13 只增不清：expired 111k + success 98k + failed 57k）、生产 132 次/24h **1,369.7s** 恒定在榜（每小时 6 次=tick 全数上榜，无峰谷=内在成本）且产出恒 **0 行**（792 个可 pick 事件全部已有 24h 内队列任务=去重正常，成本纯浪费）。索引形态：四个等值键+一个范围键按序入键 ⇒ 逐行 Index seek；queue 是普通表但 DML 持续 ⇒ CONCURRENTLY + dbinit:no-transaction 标记。★ queue 终态行无 TTL 是独立属主决策项（本索引把成本从「全量过队」降到「按对象 seek」，但表的无界增长未在本轮立项）。★ 同轮还立过一条 925（session_bodies 叶子 TRP 索引 heal）——**已撤销**：其缺口本体（「六叶零实体索引」）是审计会话自己的量具 join 错误造出的假缺陷（用 pg_inherits 对表查索引继承；索引附着记在父索引下），叶子一直有全套 7 条 canonical 索引；撤销前误建的冗余索引已全部 DROP（252 六叶 + 本地四叶）。 |

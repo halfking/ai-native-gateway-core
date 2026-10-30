@@ -340,3 +340,4 @@
 322	921_sanitize_block_workbench.sql
 323	922_model_credibility.sql
 324	923_schema_migrations_ledger_backfill.sql
+325	924_credential_probe_queue_command_key_idx.sql

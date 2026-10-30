@@ -216,6 +216,31 @@ func TestResolvePromoteConfigHandoffRetention(t *testing.T) {
 	}
 }
 
+// TestResolvePromoteConfigSessionBodiesHotBatch pins the 2026-10-30 R184
+// fix: session_bodies_hot carries TOAST-heavy rows (~34KB avg on 252
+// production), so the generic 5000-row default makes one batch ≈169MB of
+// copy+TOAST rewrite — the 60s budget (Go timeoutCtx and SET LOCAL
+// statement_timeout share the value) cannot finish it, the whole batch
+// rolls back, and the next tick retries the same head batch forever
+// (livelock: 252 measured a 33h / 10,374-row backlog against a nominal
+// 8h retention). The branch must keep retention semantics identical to
+// the default branch and ONLY swap the batch to the dedicated key whose
+// fallback is 500 (the value the retired v1 bodies chain used for the
+// same reason; 890 dropped that chain and the knowledge with it).
+func TestResolvePromoteConfigSessionBodiesHotBatch(t *testing.T) {
+	retention, batch := resolvePromoteConfig("session_bodies_hot")
+	if retention != 8*time.Hour {
+		t.Fatalf("session_bodies_hot retention = %v, want 8h default (must match the default branch)", retention)
+	}
+	if batch != 500 {
+		t.Fatalf("session_bodies_hot batch = %d, want the 500 fallback (TOAST-safe default)", batch)
+	}
+	// The generic tables must NOT be affected by the dedicated branch.
+	if _, generic := resolvePromoteConfig("handoff_logs_hot"); generic < 1000 {
+		t.Fatalf("handoff_logs_hot batch = %d, the session_bodies_hot branch leaked into the generic path", generic)
+	}
+}
+
 // TestPromoteSpecsCoverAdminHotPromoteTableMap guards the 2026-09-05
 // D-2#1 drift: admin/data_lifecycle_hot_partition.go registers hot tables
 // for the manual promote endpoint while bg.promoteSpecs() drives the hourly

@@ -1291,6 +1291,17 @@ var nodeProbeRunsCredCompletedIdx920 []byte
 //go:embed embeddata/startup/920_node_probe_runs_cred_completed_idx.down.sql
 var nodeProbeRunsCredCompletedIdx920Down []byte
 
+// ★ 924（2026-10-30 R184 轮）：credential_probe_queue 的
+//   (probe_command, tenant_id, credential_id, raw_model, created_at) 复合索引，
+//   承接 integrity_probe_planner「未决完整性事件 → 入队去重」反连接
+//   （252 实测 132 次/1,370s 恒定在榜、单次 15,455 buffers 全量过队、产出 0 行）。
+//   ★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带 dbinit:no-transaction 标记 ⇒ applySQL 不加 --single-transaction。
+//go:embed embeddata/startup/924_credential_probe_queue_command_key_idx.sql
+var credentialProbeQueueCommandKeyIdx924 []byte
+
+//go:embed embeddata/startup/924_credential_probe_queue_command_key_idx.down.sql
+var credentialProbeQueueCommandKeyIdx924Down []byte
+
 // ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
 //   - sanitize_block_reviews 追加 session_id / label / label_comment /
 //     labeled_by / labeled_at（末尾追加，既有列序不变）；
@@ -1716,6 +1727,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/922_model_credibility.down.sql":                                      modelCredibility922Down,
 	"startup/923_schema_migrations_ledger_backfill.sql":                           schemaMigrationsLedgerBackfill923,
 	"startup/923_schema_migrations_ledger_backfill.down.sql":                      schemaMigrationsLedgerBackfill923Down,
+	"startup/924_credential_probe_queue_command_key_idx.sql":                      credentialProbeQueueCommandKeyIdx924,
+	"startup/924_credential_probe_queue_command_key_idx.down.sql":                 credentialProbeQueueCommandKeyIdx924Down,
 	"startup/915_recent_cache_hit_rate.sql":                                       recentCacheHitRate915,
 	"startup/915_recent_cache_hit_rate.down.sql":                                  recentCacheHitRate915Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,

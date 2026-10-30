@@ -2480,6 +2480,15 @@ files=(
   #   ★ 本文件不含任何 DDL / CONCURRENTLY ⇒ 不需要 --preflight 之类的特殊处理，
   #     也不带 dbinit:no-transaction 标记（纯 DML ⇒ 走事务通道）。
   "$ROOT_DIR/sql/migrations/startup/923_schema_migrations_ledger_backfill.sql"
+  # ★ 924（2026-10-30 R184 轮）：credential_probe_queue (probe_command,
+  #   tenant_id, credential_id, raw_model, created_at) 复合索引。缺口本体 =
+  #   integrity_probe_planner（bg/integrity_probe_planner.go cycle，10min tick）
+  #   的 NOT EXISTS 反连接在 queue 上无任何可服务索引（7 条既有索引要么
+  #   pkey(id) 要么 partial 于 status）⇒ Merge Anti Join 全量过队：252 实测
+  #   单次 15,455 buffers（queue 26.8 万行只增不清）、生产 132 次/24h
+  #   1,369.7s 恒定在榜且产出恒 0 行。★ 含 CREATE INDEX CONCURRENTLY ⇒
+  #   文件首行带 dbinit:no-transaction 标记。
+  "$ROOT_DIR/sql/migrations/startup/924_credential_probe_queue_command_key_idx.sql"
 )
 
 
@@ -2979,6 +2988,8 @@ ledger_artifact_probe "922_model_credibility.sql" \
 #     补登记删了、或版本列表写漏了一条，这里立刻响。
 ledger_artifact_probe "923_schema_migrations_ledger_backfill.sql" \
   "(SELECT count(*) FROM public.schema_migrations WHERE version IN ('900','901','902','903','904','905','906','907','908','909','910','911','912','913','914','915','916','917','919','920')) = 20"
+ledger_artifact_probe "924_credential_probe_queue_command_key_idx.sql" \
+  "to_regclass('public.idx_credential_probe_queue_command_key_created') IS NOT NULL"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

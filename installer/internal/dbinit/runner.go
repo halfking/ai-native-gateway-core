@@ -1711,6 +1711,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 	//     重复执行不写重行、也不覆盖运维手改过的 description；
 	//   ★ 纯 DML ⇒ 不拿强锁、无 CONCURRENTLY ⇒ 走事务通道。
 	"923_schema_migrations_ledger_backfill.sql",
+	// ★ 924（2026-10-30 R184 轮）：credential_probe_queue
+	//   (probe_command, tenant_id, credential_id, raw_model, created_at)
+	//   复合索引，承接 integrity_probe_planner 的 NOT EXISTS 反连接
+	//   （252 实测 132 次/24h 1,369.7s 恒定在榜、单次 15,455 buffers 全量
+	//   过队、产出恒 0 行）。★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带
+	//   dbinit:no-transaction 标记 ⇒ applySQL 走非事务通道。
+	"924_credential_probe_queue_command_key_idx.sql",
 	},
 	}
 }
