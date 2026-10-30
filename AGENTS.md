@@ -16417,3 +16417,14 @@ nim-case-cron）登记不擅动；154 6h 窗 26×502 全是探针打 nvidia 上�
 ⇒ 审计档 `docs/audit/2026-10-30-24h审计第10轮-CROSSJOIN放大与歧义根因.md`；
 通用式见 `LESSONS.md` **§586**（五条：发现面唯一性是第四道闸 / disabled 前提要
 枚举命中路径 / 告警频度跟随什么决定修法 / 多时区读数先校准时钟源 / 门正则锚定整行）。
+
+**2026-10-30 24h 审计第 10 轮·续（部署 + 42P10 事故自愈）**：
+★ 三台部署完成：211 槽 b=37004018/2910 读数、245=2916（traffic-only）、154=2917（active）。
+⇒ ★★★ **第一轮部署（c11681a4）踩出 42P10**：`SELECT DISTINCT` + `ORDER BY pm.raw_model_name`
+——ORDER BY 列必须以**裸列**出现在 select list（COALESCE 别名不算）⇒ per-node discover
+全废（tested=0）。根修 **370040181**：两处发现 SQL 末位补裸列（同时是 DISTINCT 去重键
++ Scan 的发现键来源），契约测试钉裸列形态 + 变异臂（删⇒红/还原⇒绿）。
+⇒ ★★★★ 通用式（补 §586）：**「SELECT DISTINCT」不是一行补丁，它带一条 SQL 语义约束
+（ORDER BY 列必须在 select list）——形状断言门必须钉联动契约，不是钉关键字**；
+且**部署后第一动作是读目标进程自己的日志**（42P10 在容器日志第 3 分钟就报了）。
+⇒ 211 终验 **targets=36**（DISTINCT 生效：103 唯一对 − 窗口内已测），discover 无错。
