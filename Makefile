@@ -38,8 +38,8 @@ test: ## 全量单元测试（CI 默认入口）
 	$(GO) test ./... -count=1 -timeout=300s
 
 .PHONY: test-short
-test-short: ## 短模式，跳过 -short=false 的测试
-	$(GO) test ./... -count=1 -short -timeout=120s
+test-short: ## 短模式，跳过 -short=false 的测试（scripts/ursmcheck 静态门包已超出本通道预算，走 guards-ursmcheck / verify.sh）
+	$(GO) test $$( $(GO) list ./... | grep -v '^github.com/kaixuan/llm-gateway-go/scripts/ursmcheck$$' ) -count=1 -short -timeout=120s
 
 # ── 审计守卫（R69）────────────────────────────────────────────────────
 #

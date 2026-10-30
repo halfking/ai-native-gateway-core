@@ -16429,6 +16429,54 @@ nim-case-cron）登记不擅动；154 6h 窗 26×502 全是探针打 nvidia 上�
 且**部署后第一动作是读目标进程自己的日志**（42P10 在容器日志第 3 分钟就报了）。
 ⇒ 211 终验 **targets=36**（DISTINCT 生效：103 唯一对 − 窗口内已测），discover 无错。
 
+**2026-10-31 24h 审计第 11 轮：DISTINCT 后曲线复测 / 歧义 WARN 归因修正与降噪立项 /
+sanitize 审计队列刷屏新噪声**（goal 会话，接第 10 轮 §8 遗留）：
+⇒ ★ **① 曲线复测（新窗口 2.9h，完整 24h 留下一轮）**：targets=36 一轮跑完
+（failed 17 / success 16 / partial 3），**同对重复 = 0**（修复前同对 3 秒连跑 4 次）⇒
+**failed 17 < 100 ✓**；17/17 全部 error 已分类；node_iq_latest 30 → 51 行/26 模型。
+五项判据：token 成本 ✓（放大消解）/ error 分类 ✓ / success 44% 量级改善 ✓，
+**同伴对比结构性未达标**（24h canonical 平均 1.45 家、新窗口 1.00、0 个 ≥2 ——
+单供应商 canonical 的 IQ 数据没有同伴锚点）⇒ **245/154 维持不开，理由从
+「成本不健康」更新为「同伴对比不足」**（成本已收敛，卡点是凭据池结构属性）。
+⇒ ★★★★ **② 歧义 WARN 归零的真因是凭据构成变化，不是修复**：第 10 轮机制预测
+21~23 时 501 条成功 glm-5.3-flash 请求应发 ~500 条 WARN ⇒ 实测 0 条；排除法三步
+（手工复跑 resolver SQL 候选仍=2 / RestoreOnSuccess failed=0 / b 槽 20:39 起 modelbinding
+WARN 已=0）⇒ 真因：**20:58 后 cred 19（绑定 z-ai/ 前缀，exact 不命中）承接 glm 流量
+= 0 条**（部署前 6.4h 有 1702 条），流量全走 cred 62/22（裸名绑定，exact 直接命中）。
+**第 10 轮「每次成功请求都发一条」修正为「每次经『绑定名 ≠ 客户端名』凭据的成功请求发一条」**
+—— 歧义条件仍在数据里，cred 19 再承接流量 WARN 就按请求量回来。
+⇒ ★ **立项卡（resolver 降噪，留独立工程）**：5 调用方（writer 131/535/616 + checker 417 +
+nodehealth 232）全部传客户端名、共用 `modelbinding.ResolveRawBinding` ⇒ 落点单一；
+方案 = **归一化候选按 best_rank 分层消歧**（仅最小 rank 组内多候选才 WARN；宽泛变体命中
+在存在特异命中时降级为排序偏好——selected 语义不变，排序兜底 869/869 已证明安全）；
+实现时须用 211 真数据验证 minimax 案例两候选是否同 rank（同 rank 真歧义应保留 WARN）。
+⇒ ★★★ **③ 新噪声族 `sanitize rule audit queue full`**：211 a 槽 **44250 条 WARN/3h**、
+b 槽 5920 条/19min（第 10 轮分桶无此族 ⇒ 新出现于 20:39 前后）；机制 = `Record` 有界队列
+（256）满即丢事件 + 单 auditWorker 逐条 writeEvent 消费不及 ⇒ **不只是日志噪声：
+每个 WARN 对应一次审计事件丢弃（dropped ≥ 44250/3h），sanitize 审计完整性受损**；
+修复方向 = 批写/加大队列/dropped 上告警面（独立工程，本轮登记）。
+⇒ ★ 常规：合并 origin/main 2 提交（c9289289f 表格语义门 + df7aedffb 慢门预算回填）；
+build/vet ✓；**stash@{0} 已删**（抽查核心签名已在 HEAD + 第 10 轮登记 +
+goal 明示授权，三重依据）；窗口内无未合并分支；三台 37004018 版本验证 ✓（无新提交无需部署）；
+慢 SQL 第四轮不可查（shared_preload=citus）；154 流量涨一个量级（INFO 22860 条/6h）
++ **「all 0 candidates failed」241 条/6h**（路由空转，登记观察）+ live stream lock 1266 条 WARN；
+245 systemd 2 单元既有 failed 维持登记。
+⇒ ★★ **四步①两处真修复**：① **926 迁移缺 `ledger_artifact_probe` 部署契约登记**
+（输出合规轮让号 925→926 时漏配；被掏空门 `TestTsvHollowoutReadersRejectEmptyRegistry`
+实测抓到「读者在基线就红」）；补探针时又抓到**联动契约第二层**——探针行内 `public.x`/`'x'`
+字面量必须在迁移文件文本中出现（probe drifted from file）⇒ 用 pg_catalog 形态（裸标识符
+不进抽取集）⇒ 掏空门复跑 PASS（129s）；② **`make test-short` 被 scripts/ursmcheck 包打红**
+（120s 预算 vs 包总量 350s+：DiskWatch 3×20s + Coverage 17s + 掏空门 130s+，台账条目增长
+后线性变重）⇒ test-short 排除该包（静态门非单元测试；完整通道 guards-ursmcheck 1800s +
+verify.sh 全量 1800s 都仍在跑它）。★★ 通用式：**「门变重」与「通道预算」是两条必须联动
+维护的线**——r1047 起多轮往包里加重测试却没调通道预算，与 42P10 的「DISTINCT 与 ORDER BY
+联动契约」同构。
+⇒ ★★ **量具陷阱一枚**：`go build ... | head && echo OK` 在 go 不在 PATH 时照样打 OK
+（exit code 被 head 掩盖）⇒ 本机 go 在 `~/sdk/go/bin`、判本地能力须 `GOTOOLCHAIN=local`。
+⇒ 审计档 `docs/audit/2026-10-31-24h审计第11轮-DISTINCT复测与歧义归因修正.md`；
+通用式见 LESSONS **§588**（「告警消失 ≠ 条件消失」等 5 条；§587 被 r1050 轮占用，让号）。
+
+
 **2026-10-30 r1050 轮：四候选复核 + ursmcheck 完整重跑**（会话 `mvs_5474b5ad596c4b7ab0805176028d09f3`）：
 ★ 起点 HEAD 用户所述 `14593283c`（工作树干净）⇒ 本轮实际收口 HEAD **`5a4150440`**
 （期间上游推进 10 个提交，本轮已 `fetch` + `pull --ff-only` 同步）。

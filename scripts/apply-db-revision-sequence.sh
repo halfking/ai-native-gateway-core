@@ -2999,6 +2999,15 @@ ledger_artifact_probe "923_schema_migrations_ledger_backfill.sql" \
   "(SELECT count(*) FROM public.schema_migrations WHERE version IN ('900','901','902','903','904','905','906','907','908','909','910','911','912','913','914','915','916','917','919','920')) = 20"
 ledger_artifact_probe "924_credential_probe_queue_command_key_idx.sql" \
   "to_regclass('public.idx_credential_probe_queue_command_key_created') IS NOT NULL"
+# ★ 926（输出合规审计轮迁移，2026-10-31 24h 审计第 11 轮补登记）：产物 =
+#   sanitize_block_reviews 的 degraded 列（降级放行遥测语义；回填不另建对象）。
+#   ★ 掏空门（TestTsvHollowoutReadersRejectEmptyRegistry）实测抓到缺登记：
+#   读者在基线就红（contract FAILED: no ledger_artifact_probe）⇒ 不可判定。
+#   ★★ 联动契约（apply-db-revision-sequence_test.sh）：探针行里所有 public.x / 'x'
+#   字面量必须在迁移文件文本中出现 ⇒ information_schema / 裸 'public' 在 926 文件里
+#   不存在 ⇒ 用 pg_catalog 系统表形态（裸标识符不进抽取集，与 924 的 to_regclass 同理）。
+ledger_artifact_probe "926_sanitize_block_review_degraded.sql" \
+  "to_regclass('public.sanitize_block_reviews') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid WHERE c.relname = 'sanitize_block_reviews' AND a.attname = 'degraded' AND NOT a.attisdropped)"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"
