@@ -62,7 +62,8 @@ func buildCredibilityTargetsSQL(scope string) string {
 		       COALESCE(pm.outbound_model_name, ''),
 		       COALESCE(pm.canonical_id, 0),
 		       COALESCE(mc.canonical_name, ''),
-		       c.secret_ciphertext
+		       c.secret_ciphertext,
+		       pm.raw_model_name
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
@@ -117,10 +118,11 @@ func (s *CredibilityNodeSource) DiscoverTargets(ctx context.Context, scope strin
 			protocol, catalogCode, baseURL, rawModel, outModel   string
 			canonicalID                                           int64
 			ciphertext                                            []byte
+			rawModelKey                                           string // 与 ORDER BY 同源的裸列（DISTINCT 去重键之一）
 		)
 		if err := rows.Scan(&t.CredentialID, &providerID, &t.ProviderName, &protocol,
 			&catalogCode, &baseURL, &rawModel, &outModel, &canonicalID,
-			&t.CanonicalName, &ciphertext); err != nil {
+			&t.CanonicalName, &ciphertext, &rawModelKey); err != nil {
 			slog.Warn("credibility node source: scan row failed", "error", err)
 			continue
 		}
@@ -135,7 +137,7 @@ func (s *CredibilityNodeSource) DiscoverTargets(ctx context.Context, scope strin
 		t.Protocol = protocol
 		t.CatalogCode = catalogCode
 		t.APIKey = apiKey
-		t.RawModelName = rawModel
+		t.RawModelName = rawModelKey
 		t.OutboundModel = outModel
 		t.CanonicalID = canonicalID
 		if t.BaseURL == "" || t.RawModelName == "" {

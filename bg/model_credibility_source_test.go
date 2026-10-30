@@ -70,6 +70,11 @@ func TestDiscoverTargetsSQLShapeByScope(t *testing.T) {
 		if !strings.Contains(sql, "SELECT DISTINCT c.id") {
 			t.Errorf("%s 口径的发现 SQL 必须 SELECT DISTINCT（routing_policy 重复行放大）", name)
 		}
+		// ★ DISTINCT+ORDER BY 契约（部署后 42P10 实锤）：ORDER BY 列必须以
+		//   裸列形态出现在 select list（COALESCE 别名不算）。
+		if !strings.Contains(sql, "c.secret_ciphertext,\n\t\t       pm.raw_model_name") {
+			t.Errorf("%s 口径的发现 SQL 必须在 select list 末位带裸列 pm.raw_model_name（DISTINCT+ORDER BY 契约）", name)
+		}
 	}
 }
 

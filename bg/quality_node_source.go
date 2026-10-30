@@ -128,7 +128,8 @@ func (s *CredentialNodeSource) discoverNodes(ctx context.Context, opt discoverOp
 		       COALESCE(pm.outbound_model_name, ''),
 		       COALESCE(mc.canonical_name, pm.raw_model_name),
 		       COALESCE(p.base_url, ''),
-		       c.secret_ciphertext
+		       c.secret_ciphertext,
+		       pm.raw_model_name
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
@@ -155,8 +156,9 @@ func (s *CredentialNodeSource) discoverNodes(ctx context.Context, opt discoverOp
 			rawModel, outModel  string
 			canonical, baseURL  string
 			ciphertext          []byte
+			rawModelKey         string // 与 ORDER BY 同源的裸列（DISTINCT 去重键之一）
 		)
-		if err := rows.Scan(&credID, &providerName, &label, &rawModel, &outModel, &canonical, &baseURL, &ciphertext); err != nil {
+		if err := rows.Scan(&credID, &providerName, &label, &rawModel, &outModel, &canonical, &baseURL, &ciphertext, &rawModelKey); err != nil {
 			slog.Warn("node source: scan row failed", "error", err)
 			continue
 		}
@@ -166,8 +168,10 @@ func (s *CredentialNodeSource) discoverNodes(ctx context.Context, opt discoverOp
 				"credential_id", credID, "error", decErr)
 			continue
 		}
-		// outbound_model_name 优先（该节点请求体实际用的模型名）
-		useModel := rawModel
+		// outbound_model_name 优先（该节点请求体实际用的模型名）；
+		// RawModelName 保持发现键口径（裸 raw_model_name 列，与 NOT EXISTS
+		// 窗口去重的 lower(r.raw_model_name)=lower(pm.raw_model_name) 同源）。
+		useModel := rawModelKey
 		if outModel != "" {
 			useModel = outModel
 		}
@@ -178,7 +182,7 @@ func (s *CredentialNodeSource) discoverNodes(ctx context.Context, opt discoverOp
 			BaseURL:      baseURL,
 			APIKey:       apiKey,
 			RawModel:     useModel,
-			RawModelName: rawModel,
+			RawModelName: rawModelKey,
 		})
 	}
 	return nodes, rows.Err()
