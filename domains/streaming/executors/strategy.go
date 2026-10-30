@@ -30,6 +30,18 @@ type StrategyInput struct {
 	// 候选的 calculateLoadScore 里各算一遍。nil = 未接线（维度关闭，行为与
 	// 接线前逐字节一致）。
 	SuccessRatePoolStats *SuccessRatePoolStats
+	// MaxCandidates 是本次请求的候选总数上限（routing.max_candidates 热加载）。
+	//
+	// ★ 2026-10-31 12h 审计轮 P2-2：★ 此前该上限是在 planByTier **内部**读的
+	//   ⇒ ★ planByTier 变成一个**会做 I/O** 的函数（settings 读 settings_kv
+	//   ⇒ 一次 SELECT）⇒ ★ 它既不再是纯函数，★ 又在一次请求里被读 1~2 次
+	//   （round1 / round2 各一次）⇒ ★ 每请求多 1~2 次无缓存 DB 往返。
+	//   ⇒ ★ 修法与 SuccessRatePoolStats 同一形状：★★ 在**请求边界**
+	//   （planCandidates）读一次，再随上下文下发 ⇒ ★ planByTier 回到纯函数，
+	//   ★ 每请求只读一次。
+	//   ★ 0 = 未提供（调用方没接线）⇒ planByTier 回退到自带的热加载读数，
+	//   ★ 保证既有测试调用面（8 处直接构造 StrategyInput）行为不变。
+	MaxCandidates int
 }
 
 // SuccessRatePoolStats 是 P1-A 离群判定的池级统计（Envoy success-rate

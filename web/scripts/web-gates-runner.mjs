@@ -151,11 +151,50 @@ const EXCLUDED = [
       '需要 playwright + chromium 浏览器；缺件时该脚本显式 throw 并提示 ' +
       '`npx playwright install chromium` ⇒ 那是**环境缺件**不是代码缺陷 ⇒ CI 不装浏览器 ⇒ 不进 CI',
   },
+  {
+    name: 'i18n:check:json',
+    reason:
+      '与已入清单的 `i18n:check` 是**同一个判据**（scripts/i18n-audit.mjs）的两种输出形态：' +
+      '`i18n:check` 跑文本审计 + CJK 计数；`i18n:check:json` 只把同一份审计结果写成 ' +
+      'reports/i18n-audit.json 报告文件 ⇒ **判据无新增**、只多一份产物 ⇒ 不重复跑',
+  },
 ]
 
 // ─────────────────────────────────────────────────────────────
 // 清单自身的可执行性（★ 本入口自己有牙 ★）
 // ─────────────────────────────────────────────────────────────
+
+/**
+ * 判断 package.json 里一个脚本是否属于「门/自证」族。
+ *
+ * ★ 口径：脚本名里含 `:check` 段（判据类）或 `:selftest` 段（自证类）。
+ * ★ 用段匹配而不是 `endsWith(':check')` ⇒ `i18n:check:strict`、
+ * ★ `html-table:check:strict` 这类「变体名」也算门族成员。
+ */
+function familyOf(name) {
+  if (name.split(':').includes('selftest')) return 'selftest'
+  if (name.split(':').includes('check')) return 'gate'
+  return null
+}
+
+/**
+ * 某个 package.json 脚本是否已被清单覆盖。
+ *
+ * ★ 两种覆盖方式：
+ *   ① **精确命中** —— 它自己就在清单里；
+ *   ② **被严格变体覆盖** —— 清单里有 `X:strict` 这类更严的变体，而它是 `X` 本身
+ *      （★ 如 `ui:check` 被 `ui:check:strict` 覆盖、`html-table:check` 被
+ *      ★ `html-table:check:strict` 覆盖 ⇒ 跑更严的那个即已覆盖更松的那个）。
+ *
+ * ★ 方向很重要：★ 只认「更严覆盖更松」（`X` 被 `X:...` 覆盖），
+ * ★ **不认**「更松覆盖更严」（★ `i18n:check` 在清单里 **不能** 让
+ * ★ `i18n:check:strict` 视为已覆盖 ⇒ 否则 `i18n:check:strict` 这个
+ * ★ 「让 keys_referenced 从 warn-only 变 fail」的严格变体会被悄悄放过）。
+ */
+function isCovered(name, list) {
+  if (list.includes(name)) return true
+  return list.some((g) => g.startsWith(name + ':'))
+}
 
 function checkManifest() {
   const missing = []
@@ -171,6 +210,38 @@ function checkManifest() {
   for (const e of EXCLUDED) {
     if (GATES.includes(e.name) || SELFTESTS.includes(e.name)) {
       missing.push(`excluded(但它同时在执行清单里 ⇒ 排除声明是假的): ${e.name}`)
+    }
+  }
+  return missing
+}
+
+/**
+ * ★★ **反向覆盖检查**（2026-10-31 12h 审计轮 P1-1 补上）：
+ * ★★ package.json 里**每一个**门族/自证族脚本，要么在清单里，要么在 EXCLUDED
+ * ★★ 里带理由 ⇒ **否则本入口自己红**。
+ *
+ * ★★★ 为什么必须有这一条（★ 这正是本入口存在理由的**反面**）：
+ * ★ 本入口是为了治「19 个门在 CI 上一次都没被执行过」⇒ 若它**只**校验
+ * ★ 「清单里的脚本都存在」（checkManifest 的方向），那么 ★★ **将来新增一道门
+ * ★★ 而忘了登记进清单 ⇒ 没有任何东西会红 ⇒ 那道门重蹈本轮那 19 道的覆辙**。
+ * ★★ 换句话说：★ 只做单向校验的清单门，★ **恰好保不住它自己存在的理由**。
+ *
+ * ★ 覆盖判定见 isCovered（精确命中 / 被更严的变体覆盖）。
+ * ★ EXCLUDED 里列出的名字视为**显式裁决**（要求写了理由）⇒ 不判红。
+ */
+function checkCoverage() {
+  const missing = []
+  const excludedNames = new Set(EXCLUDED.map((e) => e.name))
+  for (const name of Object.keys(PKG.scripts)) {
+    const fam = familyOf(name)
+    if (fam === null) continue
+    if (excludedNames.has(name)) continue
+    const list = fam === 'gate' ? GATES : SELFTESTS
+    if (!isCovered(name, list)) {
+      missing.push(
+        `${fam}: ${name}（package.json 里有，但不在本入口的${fam === 'gate' ? '门' : '自证'}清单里，` +
+          `也没在 EXCLUDED 里声明理由 ⇒ 它会像本轮那 19 道门一样「在 CI 上一次都没被执行过」）`,
+      )
     }
   }
   return missing
@@ -201,6 +272,16 @@ function main() {
     process.exit(2)
   }
 
+  // ★★ 反向覆盖检查（P1-1）：★ package.json 里每个门族脚本都必须在清单里
+  // ★★ 或在 EXCLUDED 里带理由 ⇒ 否则它就是「CI 上一次都没跑过」的那道门。
+  const uncovered = checkCoverage()
+  if (uncovered.length > 0) {
+    console.error('✘ 有门/自证脚本没进本入口的清单（★ 它们在 CI 上不会被执行）：')
+    for (const m of uncovered) console.error(`  ${m}`)
+    console.error('  ⇒ 修法：把它加进 GATES/SELFTESTS，或在 EXCLUDED 里写明排除理由。')
+    process.exit(2)
+  }
+
   if (argv.includes('--list')) {
     console.log(`门（${GATES.length}）：`)
     for (const g of GATES) console.log(`  ${g}`)
@@ -211,7 +292,15 @@ function main() {
     return
   }
 
-  const only = argv.includes('--only') ? argv[argv.indexOf('--only') + 1] : null
+  const onlyIdx = argv.indexOf('--only')
+  const only = onlyIdx >= 0 ? argv[onlyIdx + 1] : null
+  // ★★ P1-2：--only 的值必须是 gates / selftests 之一。
+  // ★★ 此前拼错（`--only gate` / `--only self`）⇒ plan 为空 ⇒ 打印
+  // ★★ 「✔ 全部 0 项通过」并 exit 0 ⇒ **一次都没跑却报通过**（恒绿）。
+  if (onlyIdx >= 0 && only !== 'gates' && only !== 'selftests') {
+    console.error(`✘ --only 的取值只能是 gates 或 selftests（收到 ${JSON.stringify(only ?? null)}）`)
+    process.exit(2)
+  }
   const plan = []
   if (!only || only === 'gates') plan.push(...GATES.map((n) => [n, 'gate']))
   if (!only || only === 'selftests') plan.push(...SELFTESTS.map((n) => [n, 'selftest']))
