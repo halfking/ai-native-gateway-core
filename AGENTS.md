@@ -16282,7 +16282,15 @@ llm-gateway-pg 重采后生成器重算，412 行差全为 complete/gap 内部�
 ⇒ ★★ **registration 接线补全**：并行会话把 `registration.Start` 重新接进 main.go
 （包已在 ede0c5f7a 入仓）但漏 Stop ⇒ registryClient 编译红；本轮补
 `registration.Stop(registryClient)` 于 shutdown 序列最前（listener 关闭前注销契约）
-+ 注释订正。⇒ 部署：211 验证本轮修复；245/154 **不开 enable_per_node**（①结论）。
++ 注释订正。⇒ **部署读数（三台全绿）**：211=111c2c1b（槽 a；`failed_interval=4h targets=228`
+   生效、score.Error 分类落库 429/404/410、42P18=0）；245 三次部署——前两次失败
+   挖出**新 blocker**：backfill chunk 的 57014 有两条错误出口（conn.Query 返回处 /
+   pgx.CollectRows 行流迭代期），第 7 轮只拦了前者 ⇒ 后者 fatal ⇒ 10min boot 预算
+   烧穿（journal 30 次 retry 全 57014）⇒ 候选 8781 拒启 ⇒ 根修 ad7038063（两条出口
+   同拦）⇒ 第三次成功=2914-ad703806（切换 32s）；154=2915-ad703806（切换 39s）。
+   ★ 通用式（补进 LESSONS §585）：**「竞争即快失败」的拦截面必须覆盖同一条语句的
+   【两条】错误出口（同步返回 + 行流迭代）——只拦返回处等于拦了一半**。
+   245/154 **不开 enable_per_node**（①结论）。
 ⇒ 分支清退：r184/ts-only-read-points、r98/mv-refresh-load-attribution 已合入 origin
 ⇒ worktree prune 后删除（仓内只剩 main）。
 ⇒ 审计档 `docs/audit/2026-10-30-24h审计第8轮续-pernode失败冷却与基线分诊.md`；
