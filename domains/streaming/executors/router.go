@@ -212,6 +212,12 @@ type Router struct {
 	// 通过环境变量 LLM_GATEWAY_ROUTING_SHADOW_STRATEGY 选择策略构造。
 	ShadowStrategy Strategy
 
+	// RateSink (2026-10-31 B2, magpie 四域对比刷新轮 §五 B2「429 沉底排序」):
+	// 近期 429 信号的写入/读取面。写入在 executor 的 429 失败路径
+	//（MarkRateLimited），读取在 planByTier 尾段（近期被 429 的候选沉到
+	// 未被限流者之后）。nil = 未接线（排序零变化——旧行为）。
+	RateSink *RateSink
+
 	// outageFallbackActive (2026-09-04 availability gear) tracks whether the
 	// URSM v2 outage fallback is currently serving so engage/disengage are
 	// logged once per transition instead of once per request.
@@ -1127,6 +1133,27 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 			sorted, lottoLen = partitionBySelectionLayer(sorted, r)
 		}
 
+		// 2026-10-31 B1（magpie 四域对比刷新轮 §五 B1 满槽候选预跳）：
+		// LiveLoad 已满的候选沉到列表尾部（不丢弃——还是合法的 failover 候选），
+		// 省掉「派发给满槽凭据 → governor 等 5s 超时 → 烧一个 attempt」的
+		// 注定失败。信号实时（Router.LiveLoad），两层优先级分区之后跑：分区
+		// 是「层间」语义，本步是「层内」微调，相对顺序逐元素保持（stable）。
+		// 无 LiveLoad / 无满槽信号时零变化（fail-open，与既有评分同款）。
+		// lottoLen 随沉底收缩（首跳抽签不许抽到满槽者）。
+		if r.LiveLoad != nil {
+			sorted, lottoLen = sinkSaturatedCandidates(sorted, lottoLen, r)
+		}
+
+		// 2026-10-31 B2（magpie 四域对比刷新轮 §五 B2「429 沉底排序」）：
+		// 近期被 429（SinkTTL 窗内）的候选沉到未被限流者之后，先沉者在前。
+		// 与 A2 的分工：冷却升级管「摘出一段时间」，sink 管「回来时的顺序」
+		// ——没有它，冷却一过凭据带着与从未失败者相同的分数回队首又撞 429。
+		// nil = 未接线 ⇒ 逐元素零变化。排在 B1 之后（先按实时满槽沉底，
+		// 再按近期 429 沉底——两个信号独立，读数都 fail-open）。
+		if r.RateSink != nil {
+			sorted = r.applyRateSinkOrder(ctx, sorted)
+		}
+
 		// GW-03: shadow strategy diff（仅观测，不改顺序）。
 		// 在 weighted selection 之前对比 ShadowStrategy 首选 vs 实际首选。
 		if r.ShadowStrategy != nil {
@@ -1809,6 +1836,77 @@ func partitionBySelectionLayer(cands []provider.Candidate, r *Router) (ordered [
 		lottoLen = len(ordered)
 	}
 	return ordered, lottoLen
+}
+
+// sinkSaturatedCandidates (2026-10-31 B1, magpie 四域对比刷新轮 §五 B1
+// 「满槽候选预跳」) moves candidates whose live concurrency is already at
+// capacity to the tail of the slice — without dropping them. A saturated
+// candidate is still a legitimate failover resort (the governor will admit
+// it once a slot frees), but sending the first attempt to one burns a
+// guaranteed-busy attempt (governor wait → timeout → next candidate), which
+// is exactly the "满槽凭据烧 attempt" cost the laneMate contract avoids at
+// planning time.
+//
+// Signal: Router.LiveLoad (real-time in-flight counts). Capacity comes from
+// the same two sources priorityNodeSaturated uses (candidate snapshot when
+// LiveLoad is wired, else the Limiter). Capacity-unknown candidates fail
+// open (never sunk): without a limit there is no headroom to measure.
+// Zero-change guarantee: no LiveLoad / no saturated candidates ⇒ the returned
+// slice is element-identical to the input (same order, same lottoLen).
+//
+// lottoLen shrinks with the sink so the first-hop weighted lottery cannot
+// draw a saturated candidate into index 0; when everything is saturated
+// lottoLen stays at len (somebody has to go first — the tail is the list).
+func sinkSaturatedCandidates(cands []provider.Candidate, lottoLen int, r *Router) ([]provider.Candidate, int) {
+	if len(cands) <= 1 || r == nil || r.LiveLoad == nil {
+		return cands, lottoLen
+	}
+	open := make([]provider.Candidate, 0, len(cands))
+	sunk := make([]provider.Candidate, 0, len(cands))
+	for _, c := range cands {
+		if candidateSaturatedLive(c, r) {
+			sunk = append(sunk, c)
+		} else {
+			open = append(open, c)
+		}
+	}
+	if len(sunk) == 0 {
+		return cands, lottoLen
+	}
+	ordered := append(open, sunk...)
+	// Contract: the lottery may only draw from the open segment. Everything
+	// saturated ⇒ keep the original lottoLen (the tail is the whole list).
+	newLotto := len(open)
+	if newLotto == 0 {
+		newLotto = lottoLen
+		if newLotto <= 0 {
+			newLotto = len(ordered)
+		}
+	}
+	if lottoLen > newLotto {
+		lottoLen = newLotto
+	}
+	return ordered, lottoLen
+}
+
+// candidateSaturatedLive reports whether this candidate's live in-flight
+// count has reached its concurrency capacity at planning time. Same signal
+// pair as priorityNodeSaturated (LiveLoad first, Limiter fallback), applied
+// to every candidate rather than only priority-flagged ones. Capacity-unknown
+// ⇒ false (fail open).
+func candidateSaturatedLive(c provider.Candidate, r *Router) bool {
+	if r == nil {
+		return false
+	}
+	capacity := concurrencyCapacity(c, r)
+	if capacity <= 0 {
+		return false
+	}
+	used := liveInFlight(c, r)
+	if used <= 0 && r.Limiter != nil {
+		used = int64(r.Limiter.Credential(c.ProviderID, c.CredentialID).Used())
+	}
+	return used >= int64(capacity)
 }
 
 // CompareCandidatePriority returns true when a should sort before b.

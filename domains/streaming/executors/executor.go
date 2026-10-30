@@ -3306,6 +3306,28 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int, dct
 
 	// 2026-07-07: Use multi-level recording when SessionID and Model are available
 	if params.SessionID != "" && params.Model != "" {
+		// 2026-10-31 C1（magpie 四域对比刷新轮 §五 C1 sticky 缓存经济学）：
+		// cacheWorth/cacheCold 量化续期——大 cache（≥cacheWorthThresh tokens）
+		// 正常续期；小 cache 且 TTL 已过半 ⇒ 不续期（让下次自然换号）。
+		// 无 usage 上报（Capture nil / 无 cache 字段）⇒ fail-open 正常续期
+		// （判据③：行为零变化）。量具见 sticky_cache_economics_test.go。
+		if !stickyCacheWorthRenewal(params, e.Router.Sticky, credentialID) {
+			slog.Info("sticky: small-cache session dropped (cacheCold — letting next request re-select)",
+				"credential_id", credentialID,
+				"session_id", params.SessionID,
+				"request_id", params.RequestID,
+			)
+			if e.Router.StickyLoad != nil {
+				if l1, _, _ := buildStickyKeys(
+					params.TenantID, params.AppID, params.ApiKeyID,
+					params.ClientID.Fingerprint.ClientProfile,
+					params.SessionID, params.Model,
+				); l1 != "" {
+					e.Router.StickyLoad.ObserveSession(credentialID, l1)
+				}
+			}
+			return
+		}
 		e.Router.Sticky.RecordSuccessMultiLevel(
 			params.TenantID,
 			params.AppID,

@@ -322,6 +322,30 @@ func (s *StickyCache) GetEntry(key string) (int, int, bool) {
 	return e.credentialID, e.failures, true
 }
 
+// GetL1BindingAge (2026-10-31 C1 sticky 缓存经济学) 返回 L1 绑定的
+// (credentialID, 已粘时长, found)。年龄从 expiresAt 反推：
+// entry 写入时 expiresAt = now + calculateSessionStickyTTL(model)，
+// 故 elapsed = ttl(model) − (expiresAt − now)。entry 属别的凭据 / 不在
+// L1 / 已过期 ⇒ found=false（调用方 fail-open）。只读内存面——
+// Redis 镜像没有 setAt（SetLevel 只存 credID），跨实例下年龄不可得，
+// 与 C1 的 fail-open 矩阵一致（查不到 ⇒ 续期）。
+func (s *StickyCache) GetL1BindingAge(l1Key, model string, credID int) (time.Duration, bool) {
+	if s == nil || l1Key == "" {
+		return 0, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.items[l1Key]
+	if !ok || time.Now().After(e.expiresAt) || e.credentialID != credID {
+		return 0, false
+	}
+	elapsed := calculateSessionStickyTTL(model) - time.Until(e.expiresAt)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	return elapsed, true
+}
+
 // GetMultiLevel looks up a sticky credential for the request identity.
 //
 // A complete session identity (sessionID + model) is intentionally scoped to
