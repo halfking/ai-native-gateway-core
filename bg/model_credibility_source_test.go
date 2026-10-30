@@ -63,6 +63,14 @@ func TestDiscoverTargetsSQLShapeByScope(t *testing.T) {
 	if !strings.Contains(featured, "COALESCE(pol.featured_models, ARRAY[]::text[])") {
 		t.Error("featured_models 为 NULL 时必须按空数组处理（否则 NULL = ANY 会全表命中）")
 	}
+	// ★ SELECT DISTINCT（2026-10-30 第 10 轮）：routing_policy 4 行物理重复
+	//   （id 无唯一约束，211 生产实测）⇒ 裸 SELECT 会把 targets 放大 4 倍。
+	//   两种口径都必须在 SQL 侧去重。
+	for name, sql := range map[string]string{"featured": featured, "all": all} {
+		if !strings.Contains(sql, "SELECT DISTINCT c.id") {
+			t.Errorf("%s 口径的发现 SQL 必须 SELECT DISTINCT（routing_policy 重复行放大）", name)
+		}
+	}
 }
 
 // TestFeaturedMembershipCrossCheck 用 Go 侧独立实现对拍 SQL 命中规则。
