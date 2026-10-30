@@ -204,7 +204,7 @@ export default {
   ruleDetailShow: "ルールの詳細を表示",
   ruleDetailHide: "ルールの詳細を隠す",
   ruleKindLabel: "判定方式",
-  ruleActionLabel: "处置",
+  ruleActionLabel: "動作",
   rulePriorityLabel: "優先度",
   rulePatternLabel: "マッチ式",
   ruleExemptionsLabel: "除外",

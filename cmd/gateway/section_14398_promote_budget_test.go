@@ -14,11 +14,14 @@ package main
 //         ① 154 日志的「首批批次：行数 vs 耗时」过原点回归 = 29.9 ms/行；
 //         ② 生产 pg_stat_statements 的 `INSERT INTO session_bodies_hot`
 //            = 28.2 ms/行（77,886 行））
-//     批次截止 = 60 s（★ Go ctx + `SET LOCAL statement_timeout = '60s'`）
-//     ⇒ ⇒ **60 s 内最大可行 batch ≈ 2,064 行**
-//     ⇒ ⇒ 而 `lifecycle.promote_batch_size` 在生产 **没有 settings_kv 行**
-//     ⇒ ⇒ 走代码默认 **5,000** ⇒ ⇒ **需要 ≈ 145 s = 2.4× 预算**
-//     ⇒ ⇒ **每个满批必然超时 ⇒ 整批回滚 ⇒ 搬 0 行**
+//     批次预算 = 150 s（★ 2026-10-30 R184 由 60s 上调：252 实测批 500 行
+//         TOAST 拷贝在慢宿主上 35~90s，60s 装不下 ⇒ 每批必死回滚 = 活锁
+//         的另一半根因；Go ctx 用 promoteBatchBudget 常量 +
+//         `SET LOCAL statement_timeout = '150s'` 同值配对）
+//     ⇒ ⇒ **150 s 内最大可行 batch ≈ 5,154 行**
+//     ⇒ ⇒ R184 给 session_bodies_hot 配了专用键 500 行/批
+//         （lifecycle.session_bodies_hot_promote_batch_size）
+//         ⇒ ⇒ 每批 ≈ 14.6 s（实测 35~90s 仍在预算内）⇒ 10min 周期容 4 批
 //
 //   ⇒ ⇒ **「排水搬 0 行」不是一个神秘故障，而是一条可判定的算术**。
 //   ⇒ ⇒ 这道门把那条算术**钉成可执行判据**：谁把批大小调到不可提交的量级，
@@ -48,8 +51,9 @@ const (
 	//   ⇒ 取 29.1 作判据常量（★ 三个读数都落在 28~30 区间内）。
 	section14398MeasuredMsPerRow = 29.1
 
-	// ★ 批次预算：Go ctx 60s + PG `SET LOCAL statement_timeout = '60s'`。
-	section14398BudgetMs = 60_000
+	// ★ 批次预算：Go ctx promoteBatchBudget(150s) +
+	//   PG `SET LOCAL statement_timeout = '150s'`（同值配对，R184 起）。
+	section14398BudgetMs = 150_000
 
 	// ★ 推荐批大小：60,000 / 29.1 ≈ 2,064 ⇒ 取 1,000（★ 约 2× 余量，
 	// ★ 且每批 ≈ 29 s ⇒ 300 s 周期可容 10 批 ⇒ 单 tick 上限 10,000 行
@@ -158,11 +162,13 @@ func TestSection14398_BudgetInvariant(t *testing.T) {
 func TestSection14398_CodeFactsPinned(t *testing.T) {
 	raw := readRepoFile14398(t, section14398PartitionM)
 
-	// ★ ① 批次截止的两道闸：Go ctx 与 PG statement_timeout。
-	// ★    ★ 少任何一道 ⇒ 预算算术就不成立 ⇒ ⇒ 必须钉住。
+	// ★ ① 批次截止的两道闸：Go ctx 与 PG statement_timeout（R184 起同值
+	// ★    150s，且 Go ctx 用 promoteBatchBudget 常量而非字面量——常量
+	// ★    改值时这里不需要跟着改，但两道闸必须保持同值配对）。
 	for _, needle := range []string{
-		"context.WithTimeout(cycleCtx, 60*time.Second)",
-		"SET LOCAL statement_timeout = '60s'",
+		"context.WithTimeout(cycleCtx, promoteBatchBudget)",
+		"SET LOCAL statement_timeout = '150s'",
+		"const promoteBatchBudget = 150 * time.Second",
 	} {
 		if !strings.Contains(raw, needle) {
 			t.Errorf("★ %s 缺 `%s` —— ★ 批次预算的两道闸变了 ⇒ §143.98 的算术要重算",
@@ -170,9 +176,10 @@ func TestSection14398_CodeFactsPinned(t *testing.T) {
 		}
 	}
 
-	// ★ ② 周期预算是 5 分钟且**全族共享**（⇒ 一个族吃光预算 ⇒ 后面的族被跳过）。
-	if !strings.Contains(raw, "const promoteCycleTimeout = 5 * time.Minute") {
-		t.Errorf("★ %s 的 promoteCycleTimeout 不再是 5 分钟 —— ★ §143.98 的「共享周期预算」结论要重算",
+	// ★ ② 周期预算是 10 分钟（R184 由 5min 上调）且**全族共享**
+	//    （⇒ 一个族吃光预算 ⇒ 后面的族被跳过）。
+	if !strings.Contains(raw, "const promoteCycleTimeout = 10 * time.Minute") {
+		t.Errorf("★ %s 的 promoteCycleTimeout 不再是 10 分钟 —— ★ §143.98 的「共享周期预算」结论要重算",
 			section14398PartitionM)
 	}
 

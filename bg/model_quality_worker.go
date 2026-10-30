@@ -287,16 +287,21 @@ func (w *ModelQualityWorker) RunPerNodeCheck(ctx context.Context, storage modelq
 	if w.config.PerNodeMinIntervalHours <= 0 {
 		minInterval = 24 * time.Hour
 	}
+	failedInterval := time.Duration(w.config.PerNodeFailedIntervalHours) * time.Hour
+	if w.config.PerNodeFailedIntervalHours <= 0 {
+		failedInterval = 4 * time.Hour
+	}
 	var nodes []modelquality.CredentialNode
 	// nodeSource 是具体类型（*CredentialNodeSource）而非接口；scope/min-interval
 	// 收窄只在 per-node 路径生效，FindNode 单点直连不走这里（手动「立即测试」
 	// 不受 scope 限制，与 model_credibility.FindTarget 同语义）。
-	nodes, err := src.DiscoverPerNodeTargets(ctx, scope, minInterval)
+	nodes, err := src.DiscoverPerNodeTargets(ctx, scope, minInterval, failedInterval)
 	if err != nil {
 		return 0, fmt.Errorf("discover nodes: %w", err)
 	}
 	slog.Info("per-node check targets resolved",
-		"scope", scope, "min_interval", minInterval.String(), "targets", len(nodes))
+		"scope", scope, "min_interval", minInterval.String(),
+		"failed_interval", failedInterval.String(), "targets", len(nodes))
 	suite := modelquality.GetMMLULiteSuite()
 	calculator := &modelquality.ScoreCalculator{}
 	tested := 0

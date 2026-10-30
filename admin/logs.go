@@ -967,7 +967,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 			SELECT rl.request_id
 			  FROM %s
 			 WHERE %s
-			   AND ($2 OR rl.tenant_id = $3)
+			   AND ($2::boolean OR rl.tenant_id = $3)
 			 ORDER BY rl.ts DESC
 			 LIMIT 1
 			`, logsSourceFromSQL(), whereLeg), requestID, IsSuperAdminOrLegacy(r), GetTenantID(r)).Scan(&pickedRequestID); err != nil {
@@ -978,7 +978,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 			  FROM %s
 			%s
 			 WHERE rl.request_id = $4
-			   AND ($2 OR rl.tenant_id = $3)
+			   AND ($2::boolean OR rl.tenant_id = $3)
 			 ORDER BY rl.ts DESC
 			 LIMIT 1
 			`, requestLogsDetailCols, logsSourceFromSQL(), requestLogsJoins), requestID, IsSuperAdminOrLegacy(r), GetTenantID(r), pickedRequestID).Scan(

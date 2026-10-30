@@ -30,12 +30,11 @@ import (
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
 // 2026-10-21 / R65 轮更新）：
 //
-//	全仓拼接点 156 处（v1 0 文件/0 处、canonical 62/130、unresolved 14/26、v1arm 0/0）
+//	全仓拼接点 157 处（v1 0 文件/0 处、canonical 63/131、unresolved 14/26、v1arm 0/0）
 //
-//	（2026-10-28 r1040「事实源漂移」线刷新：147 → 156。★ 不是只改数字 ——
-//	  两个时点各跑一次本工具做逐文件逐桶对拍：**没有任何一个桶变小**（v1 与 v1 臂
-//	  两个桶逐字未动）⇒ 方向 = 变大 ⇒ 可改数字；五处新拼接点读的都是会话族
-//	  （成因逐条与上游提交记在 documentedSnapshot 的注释里）。
+//	（2026-10-30 24h 审计第 8 轮刷新：156 → 157。★ 不是只改数字 ——
+//	  ff029a7fc（输出合规审计轮）新增 admin/sanitize_rules_review_context.go 1 处
+//	  会话族窗口拼接 ⇒ 已补登记判定；无任何桶变小。
 //	  ★★ 附带查出：这组旧数字（147/125/22）**既不等于**快照所在提交 a2ac50e37 的
 //	  实测（142/122/20），**也不等于**今天的实测 ⇒ 它在一次合并之后就没再被对拍过，
 //	  而「合并后没人重测」这件事没有任何东西会报警 ⇒ **事实源漂移家族的最纯形态**。）
@@ -369,6 +368,16 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"★ 890 之后该视图已是会话两臂体 ⇒ 只看得到会话族行。",
 		Consequence: "维度归因报表（用量趋势的成本拆分）只覆盖**会话族行**；v1 那部分历史随 890 一起没了。" +
 			"与 logs.go 同属切换清单项。",
+	},
+	// ── 2026-10-29 输出合规审计轮（ff029a7fc）新增的间接读点 ──────────────
+	"admin/sanitize_rules_review_context.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "1 处：`FROM ` + dbpkg.SessionFamilyTurnsSourceWindowedSQL(pdFrom, pdTo)" +
+			"（sanitize_rules_review_context.go:218）——按审核单时刻推月份窗口的会话族 turns 读法" +
+			"（跨包调用，工具只能判 canonical-only）。",
+		Consequence: "审核单的原始上下文（请求/响应预览、模型、错误与 token 计数）只覆盖**会话族行**；" +
+			"无会话头流量（探针/自检按设计排除等）在原生源查不到 ⇒ 该类审核单上下文列为空是**预期行为**。" +
+			"v1 历史随 890 一起没了，与 logs.go 同属切换清单项。",
 	},
 	// ── §9.232：bodies 腿改走切换层的消费点（7 文件 / 10 处）──────────────
 	// ⚠ §9.233 起这些调用**全部变成跨包**（切换层下沉到 db），原先「同包函数调用」
@@ -1565,7 +1574,13 @@ var documentedSnapshot = bucketSnapshot{
 	//      只是**不再描述任何一棵存在的树**。
 	//      ⇒ 本轮把它改成**今天的实测值**，并把上面的成因写进注释 ——
 	//      下一次漂移时，**下一个读这段注释的人能知道上一次是怎么判的**。
-	TotalSites: 156,
+	// ★ 2026-10-30（24h 审计第 8 轮）：156 → 157（canonical 62 → 63 文件 /
+	//   130 → 131 处；unresolved 14/26 逐字未动，两个 v1 桶仍为 0）。
+	//   成因：ff029a7fc（输出合规审计轮）新增 admin/sanitize_rules_review_context.go
+	//   的 1 处会话族窗口拼接（SessionFamilyTurnsSourceWindowedSQL，按审核单
+	//   时刻推月份边界）⇒ 方向 = 变大 =「把看不见变成看得见」⇒ 已补登记
+	//   indirectSiteAssessments 判定（Via 机制 + 退役后果）。
+	TotalSites: 157,
 	V1Files:    0,
 	V1Sites:    0,
 	// ★ v1 臂桶**归零**：不是「推导器坏了」，是**没有任何视图还有 v1 臂**。
@@ -1583,8 +1598,8 @@ var documentedSnapshot = bucketSnapshot{
 	// 且豁免要过三道可证伪的腿：切换迁移存在 / 在启动链里 / 排在 v1 退役之前）。
 	V1ArmFiles: 0,
 	V1ArmSites: 0,
-	CanonFiles: 62,
-	CanonSites: 130,
+	CanonFiles: 63,
+	CanonSites: 131,
 	UnresFiles: 14,
 	UnresSites: 26,
 }

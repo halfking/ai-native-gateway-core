@@ -2,6 +2,7 @@ package modelquality
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -380,4 +381,100 @@ func TestMonitorConfig_Validation(t *testing.T) {
 	if len(config.TargetModels) == 0 {
 		t.Error("Expected at least one target model")
 	}
+}
+
+// 2026-10-30 24h 审计第 8 轮：failed/partial 行的 score.Error 此前恒空
+// （211 实测 24h 1493 行 failed 全部 error=''），排障要翻 report 文件。
+// 契约：CalculateScore 必须从 report.Results 提取【稳定错误分类】。
+func TestCalculateScore_DerivesStableErrorCategory(t *testing.T) {
+	calculator := &ScoreCalculator{}
+
+	t.Run("failed 行带主要错误的稳定分类", func(t *testing.T) {
+		report := &BenchmarkReport{
+			ModelName:      "m1",
+			TotalQuestions: 4,
+			CorrectCount:   0,
+			ErrorCount:     4,
+			Status:         "failed",
+			Results: []TestResult{
+				{Error: "upstream returned HTTP 410: {\"error\":{\"message\":\"model retired\"}}"},
+				{Error: "upstream returned HTTP 410: {\"error\":{\"message\":\"different body\"}}"},
+				{Error: "upstream returned HTTP 429: rate limited"},
+				{Error: "http request failed: context deadline exceeded"},
+			},
+		}
+		score := calculator.CalculateScore(report)
+		if score.Error != "upstream_http_410" {
+			t.Errorf("期望主要错误分类 upstream_http_410，得到 %q", score.Error)
+		}
+		// 分类必须已脱敏：不回显响应体/URL
+		if strings.Contains(score.Error, "retired") || strings.Contains(score.Error, "{") {
+			t.Errorf("分类泄漏了原始错误细节：%q", score.Error)
+		}
+	})
+
+	t.Run("partial 行取众数分类且并列时取字典序", func(t *testing.T) {
+		report := &BenchmarkReport{
+			ModelName:      "m2",
+			TotalQuestions: 4,
+			CorrectCount:   1,
+			ErrorCount:     3,
+			Status:         "partial",
+			Results: []TestResult{
+				{Error: "decode response: unexpected EOF"},
+				{Error: "no choices in response"},
+				{Error: "no choices in response"},
+				{},
+			},
+		}
+		score := calculator.CalculateScore(report)
+		if score.Error != "no_choices" {
+			t.Errorf("期望众数分类 no_choices，得到 %q", score.Error)
+		}
+	})
+
+	t.Run("timeout 形态归 timeout 而非 other", func(t *testing.T) {
+		report := &BenchmarkReport{
+			ModelName:      "m3",
+			TotalQuestions: 2,
+			ErrorCount:     2,
+			Status:         "failed",
+			Results: []TestResult{
+				{Error: "http request failed: context deadline exceeded"},
+				{Error: "http request failed: context deadline exceeded"},
+			},
+		}
+		score := calculator.CalculateScore(report)
+		if score.Error != "timeout" {
+			t.Errorf("期望 timeout，得到 %q", score.Error)
+		}
+	})
+
+	t.Run("success 行 Error 恒空（不许编造）", func(t *testing.T) {
+		report := &BenchmarkReport{
+			ModelName:      "m4",
+			TotalQuestions: 2,
+			CorrectCount:   2,
+			Status:         "success",
+			Results:        []TestResult{{Latency: 100}, {Latency: 200}},
+		}
+		score := calculator.CalculateScore(report)
+		if score.Error != "" {
+			t.Errorf("success 行不该有 error，得到 %q", score.Error)
+		}
+	})
+
+	t.Run("status=partial 但全部错误串都空 ⇒ 不编造", func(t *testing.T) {
+		report := &BenchmarkReport{
+			ModelName:      "m5",
+			TotalQuestions: 2,
+			ErrorCount:     1,
+			Status:         "partial",
+			Results:        []TestResult{{}, {Latency: 100}},
+		}
+		score := calculator.CalculateScore(report)
+		if score.Error != "" {
+			t.Errorf("没有错误证据时不该造分类，得到 %q", score.Error)
+		}
+	})
 }

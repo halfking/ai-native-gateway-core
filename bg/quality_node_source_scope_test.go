@@ -42,9 +42,22 @@ func TestPerNodeTargetsScopedAndDeduped(t *testing.T) {
 	}
 
 	// DiscoverActiveNodes 必须不带 opts（单点 node-test 不收窄），
-	// DiscoverPerNodeTargets 必须透传 scope + interval。
-	if !strings.Contains(text, "func (s *CredentialNodeSource) DiscoverPerNodeTargets(ctx context.Context, scope string, minInterval time.Duration)") {
-		t.Error("quality_node_source.go missing DiscoverPerNodeTargets(scope, minInterval) signature")
+	// DiscoverPerNodeTargets 必须透传 scope + 成功窗 + 失败窗（2026-10-30
+	// 第 8 轮：失败冷却窗——dedup 只认 success ⇒ EOL/坏节点每周期重烧）。
+	if !strings.Contains(text, "func (s *CredentialNodeSource) DiscoverPerNodeTargets(ctx context.Context, scope string, minInterval, failedInterval time.Duration)") {
+		t.Error("quality_node_source.go missing DiscoverPerNodeTargets(scope, minInterval, failedInterval) signature")
+	}
+	for _, want := range []string{
+		// 失败冷却的 SQL 片段与默认 4h 的 worker 侧守卫
+		"failedInterval time.Duration",
+		"r.status IN ('failed', 'partial')",
+		`if w.config.PerNodeFailedIntervalHours <= 0 {
+		failedInterval = 4 * time.Hour
+	}`,
+	} {
+		if !strings.Contains(text, want) && !strings.Contains(wtext0(t), want) {
+			t.Errorf("missing per-node failed-cooldown guard %q", want)
+		}
 	}
 
 	worker, err := os.ReadFile("model_quality_worker.go")
@@ -57,7 +70,7 @@ func TestPerNodeTargetsScopedAndDeduped(t *testing.T) {
 		`if scope == "" {
 		scope = "featured"
 	}`,
-		"DiscoverPerNodeTargets(ctx, scope, minInterval)",
+		"DiscoverPerNodeTargets(ctx, scope, minInterval, failedInterval)",
 	} {
 		if !strings.Contains(wtext, want) {
 			t.Errorf("model_quality_worker.go missing per-node guard %q", want)
@@ -83,4 +96,14 @@ func TestPerNodeTargetsScopedAndDeduped(t *testing.T) {
 	if 24*time.Hour <= 0 {
 		t.Error("sanity: 24h duration must be positive")
 	}
+}
+
+// wtext0 读 worker 源码（供上面的失败冷却守卫断言复用）。
+func wtext0(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("model_quality_worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

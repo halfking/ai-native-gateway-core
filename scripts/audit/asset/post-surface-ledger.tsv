@@ -6,6 +6,7 @@
 #gen_exclude_asset	unsafe-post-routes.txt
 # ── 2026-10-28 分支审计轮补登：wip/07 合入新增的 9 条路由（静态分级 + handler 源码复核；列：route/method/file/class/bucket-empty/code-empty/probe-empty/verdict/note）────
 #gen_append	2026-10-29 审计轮 —— 补 3 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 589 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 6 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 592 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7019	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7019	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /_gateway/plugin/v1/analytics/{type}	GET	cmd/gateway/plugin_canon_init.go:204	unknown				not-probed-unresolved	★ 静态分级：解析不出
@@ -175,6 +176,12 @@
 /api/admin/maas/tenants/	ANY	admin/maas_handlers.go:22	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/maas/topup-packages	ANY	admin/maas_handlers.go:21	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/mobile-node/descriptor	ANY	admin/handler.go:998	write				not-probed-writes	★ 静态分级：写库
+/api/admin/model-credibility/catalog	ANY	admin/handler.go:1604	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/model-credibility/detail	ANY	admin/handler.go:1605	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/model-credibility/history	ANY	admin/handler.go:1606	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/model-credibility/list	ANY	admin/handler.go:1603	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/model-credibility/scan	ANY	admin/handler.go:1608	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/model-credibility/trigger	ANY	admin/handler.go:1607	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/model-integrity	ANY	admin/handler.go:994	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/model-integrity/	ANY	admin/handler.go:995	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/model-iq/catalog	ANY	admin/handler.go:1557	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）

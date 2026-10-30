@@ -119,6 +119,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
 	"github.com/kaixuan/llm-gateway-go/internal/providers/mock"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
+	"github.com/kaixuan/llm-gateway-go/internal/registration"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
@@ -5228,6 +5229,12 @@ func main() {
 					jsoncol.Decode("gateway.modelQuality/per_node_min_interval_hours", raw, &mqPerNodeMinHours)
 				}
 				mqConfig.PerNodeMinIntervalHours = int(mqPerNodeMinHours)
+				// 2026-10-30 (24h 审计第 8 轮)：失败冷却窗（spec 默认 4h）。
+				var mqPerNodeFailedHours float64
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.per_node_failed_interval_hours", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelQuality/per_node_failed_interval_hours", raw, &mqPerNodeFailedHours)
+				}
+				mqConfig.PerNodeFailedIntervalHours = int(mqPerNodeFailedHours)
 
 				modelQualityWorker = bg.NewModelQualityWorker(mqDataDir, mqAPIKey, mqBaseURL, time.Duration(mqTimeoutSec)*time.Second)
 				// ★ nodeSource 常驻注入（db + 解密 key 可用即设）。
@@ -8157,8 +8164,10 @@ func main() {
 	//
 	// 2026-10-29 24h 审计轮：Mavis 合并 bot 曾在此注入
 	// `registryClient := registration.Start(...)`，但 internal/registration 包
-	// 在任何提交里都不存在（bot 的 "go build ✓" 是其工作区里未入库的包）⇒
+	// 在当时任何提交里都不存在（bot 的 "go build ✓" 是其工作区里未入库的包）⇒
 	// main 从该提交起编译必红 ⇒ 本轮移除引用。**重落此功能必须连同包一起提交**。
+	// 2026-10-30（ede0c5f7a）：包已随 count_tokens 收口提交入仓 ⇒ 并行会话补接线，
+	// 第 8 轮补上 shutdown 侧的 Stop（Start/Stop 成对）。
 	//
 	// 落地时的两条硬约束（从 bot 注释里抢救下来的设计事实）：
 	//   1. ⚠ **必须在端口真的 listen 之后**：通告的端口（从 cfg.Listen 派生）
@@ -8167,8 +8176,12 @@ func main() {
 	//      §「端口：必须现场确认，不要假设」）。
 	//   2. ⚠ 注册失败**不挡服务**：注册中心不可达时照常对外服务。
 
+	registryClient := registration.Start(ctx, cfg.Listen, slog.Default())
 	<-ctx.Done()
 	slog.Info("gateway shutting down")
+	// goacos 注销（方案 54 / CO-20）：必须在 listener 关闭前——实例行还在注册表里
+	// 时，对端会继续拨一个即将死掉的进程。Stop(nil) 安全（未启用时 Start 返回 nil）。
+	registration.Stop(registryClient)
 	if persistentLogger != nil {
 		persistentLogger.LogShutdown("termination_signal", true, "signal", "SIGINT/SIGTERM")
 	}

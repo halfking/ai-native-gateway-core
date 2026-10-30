@@ -4,11 +4,8 @@
 # ★ 这层事实此前**不存在** ⇒ ⇒ 「列没了 ⇒ 索引被 PG 级联删掉」在仓内不可见
 # ★   ⇒ ⇒ 假缺口的第三种来源一直躺着（★ idx_sessions_last_full_at 实测命中）
 # ★ scope=expected-index-key-columns
-# ★ bundled_at=2026-10-29T23:33:36+00:00
-# ★ 211 rows=942 sha256=122cceeaa2212c0658d9a328248b285d809fc9d0d93d06ed9fcfddab95216d0b collected_at=2026-10-29T23:33:32+00:00 | 252 rows=949 sha256=c1d3359ecfa4919015aee54477b21e12c5ee60851aa86715ff9f86f7b303376d collected_at=2026-10-29T23:33:23+00:00 | fresh rows=928 sha256=64030c5ab30d4243d517ed0eb0fe7ea27800ef2c359e23e41ce33c5470342db2 collected_at=2026-10-29T23:33:23+00:00 | local rows=908 sha256=f8af908a59fc59ba64e22528b25e0e7089f62749f199984b1d725bd6a6047530 collected_at=2026-10-29T23:33:11+00:00
-local	public	_request_logs	credential_id
-local	public	_request_logs	outbound_model
-local	public	_request_logs	ts
+# ★ bundled_at=2026-10-30T03:43:58+00:00
+# ★ 211 rows=942 sha256=122cceeaa2212c0658d9a328248b285d809fc9d0d93d06ed9fcfddab95216d0b collected_at=2026-10-29T23:33:32+00:00 | 252 rows=949 sha256=c1d3359ecfa4919015aee54477b21e12c5ee60851aa86715ff9f86f7b303376d collected_at=2026-10-29T23:33:23+00:00 | fresh rows=928 sha256=64030c5ab30d4243d517ed0eb0fe7ea27800ef2c359e23e41ce33c5470342db2 collected_at=2026-10-29T23:33:23+00:00 | local rows=905 sha256=cb77c1b1fa9fa8154e40723faa0b1dd86d7ab55e9ff78bcc9378ae2ba05f718b collected_at=2026-10-30T03:42:44+00:00
 local	public	agent_relationships	dst_agent_id
 local	public	agent_relationships	src_agent_id
 local	public	agents	kind
@@ -159,6 +156,13 @@ local	public	diagnostic_runs	kind
 local	public	diagnostic_runs	started_at
 local	public	diagnostic_runs	state
 local	public	diagnostic_runs	tenant_id
+local	public	discovery_results	import_status
+local	public	discovery_results	task_id
+local	public	discovery_results	tenant_id
+local	public	discovery_tasks	created_at
+local	public	discovery_tasks	status
+local	public	discovery_tasks	template_id
+local	public	discovery_tasks	tenant_id
 local	public	donations	created_at
 local	public	donations	status
 local	public	download_events	created_at
@@ -178,9 +182,6 @@ local	public	durable_llm_tasks	tenant_id
 local	public	durable_llm_tasks	updated_at
 local	public	durable_pending_outbox	created_at
 local	public	durable_pending_outbox	next_attempt_at
-local	public	durable_task_settlement_intents	claim_until
-local	public	durable_task_settlement_intents	created_at
-local	public	durable_task_settlement_intents	next_attempt_at
 local	public	fault_action_logs	event_id
 local	public	fault_action_logs	triggered_at
 local	public	fault_events	detected_at
@@ -200,26 +201,6 @@ local	public	feishu_bot_send_log	created_at
 local	public	feishu_bot_send_log	event_id
 local	public	feishu_bot_send_log	tenant_id
 local	public	free_resource_catalog	source_type
-local	public	goal_run_action_outbox	claim_until
-local	public	goal_run_action_outbox	next_retry_at
-local	public	goal_run_action_outbox	status
-local	public	goal_run_action_outbox	tenant_id
-local	public	goal_run_actions	action_id
-local	public	goal_run_actions	created_at
-local	public	goal_run_actions	goal_run_id
-local	public	goal_run_actions	lease_until
-local	public	goal_run_actions	retry_at
-local	public	goal_run_actions	status
-local	public	goal_run_steps	created_at
-local	public	goal_run_steps	request_id
-local	public	goal_run_steps	tenant_id
-local	public	goal_runs	current_session_id
-local	public	goal_runs	deadline_at
-local	public	goal_runs	last_request_id
-local	public	goal_runs	lease_until
-local	public	goal_runs	status
-local	public	goal_runs	tenant_id
-local	public	goal_runs	updated_at
 local	public	handoff_logs_hot	created_at
 local	public	handoff_logs_hot	id
 local	public	handoff_logs_hot	new_session_id
@@ -280,7 +261,15 @@ local	public	license_trial_consents	accepted_at
 local	public	licenses	expires_at
 local	public	licenses	holder_id
 local	public	llm_hourly_stats	hour
+local	public	maas_coupon_redemptions	created_at
+local	public	maas_coupon_redemptions	tenant_id
+local	public	maas_coupons	expires_at
+local	public	maas_coupons	status
 local	public	maas_credit_consumption_buckets	bucket_start
+local	public	maas_invoice_requests	created_at
+local	public	maas_invoice_requests	tenant_id
+local	public	maas_monthly_bills	period_ym
+local	public	maas_monthly_bills	tenant_id
 local	public	maas_reconciliation_findings	run_at
 local	public	mock_probe_history	channel
 local	public	mock_probe_history	probe_time
@@ -413,6 +402,9 @@ local	public	provider_reputation_timeseries	model
 local	public	provider_reputation_timeseries	provider_id
 local	public	provider_settings	provider_id
 local	public	provider_settings	setting_key
+local	public	provider_templates	consecutive_scan_failures
+local	public	provider_templates	provider_code
+local	public	provider_templates	tenant_id
 local	public	providers	egress_profile
 local	public	providers	id
 local	public	providers	proxy_subscription_id
@@ -425,8 +417,6 @@ local	public	report_snapshots	api_key_id
 local	public	report_snapshots	credential_id
 local	public	report_snapshots	report_date
 local	public	report_snapshots	scope
-local	public	request_abandoned	started_at
-local	public	request_abandoned	tenant_id
 local	public	request_attachments	created_at
 local	public	request_attachments	hash
 local	public	request_attachments	request_id
@@ -541,6 +531,14 @@ local	public	runtime_metrics	timestamp
 local	public	runtime_telemetry_consent_events	hardware_hash
 local	public	runtime_telemetry_consent_events	occurred_at
 local	public	runtime_telemetry_preferences	license_id
+local	public	sanitize_block_reviews	created_at
+local	public	sanitize_block_reviews	rule_id
+local	public	sanitize_block_reviews	status
+local	public	sanitize_block_reviews	tenant_id
+local	public	sanitize_egress_releases	payload_digest
+local	public	sanitize_egress_releases	rule_id
+local	public	sanitize_egress_releases	scope
+local	public	sanitize_egress_releases	tenant_id
 local	public	sanitize_rule_events	id
 local	public	sanitize_rule_events	last_seen
 local	public	sanitize_rule_events	tenant_id
@@ -569,6 +567,9 @@ local	public	session_bodies_hot	request_id
 local	public	session_bodies_hot	session_id
 local	public	session_bodies_hot	tenant_id
 local	public	session_bodies_hot	ts
+local	public	session_bodies_trash	session_id
+local	public	session_bodies_trash	tenant_id
+local	public	session_bodies_trash	trashed_at
 local	public	session_censors	partition_date
 local	public	session_censors	request_id
 local	public	session_censors	session_id
@@ -758,7 +759,6 @@ local	public	session_turns_hot	ts
 local	public	session_turns_hot	turn_no
 local	public	sessions	agent_role
 local	public	sessions	created_at
-local	public	sessions	last_full_payload_at
 local	public	sessions	parent_session_id
 local	public	sessions	partition_date
 local	public	sessions	primary_request_id
@@ -774,7 +774,6 @@ local	public	settings_audit	tenant_id
 local	public	settings_kv	category
 local	public	settings_kv	scope
 local	public	settings_kv	updated_at
-local	public	stats_adjustments	adjustment_type
 local	public	stats_adjustments	month_start
 local	public	stats_adjustments	tenant_id
 local	public	stats_event_inbox	created_at
@@ -825,8 +824,6 @@ local	public	task_model_affinity	last_sampled_at
 local	public	task_model_affinity	profile
 local	public	task_model_affinity	task_type
 local	public	task_model_affinity	tenant_id
-local	public	task_type_centroids	embedding_model
-local	public	task_type_centroids	task_type
 local	public	task_type_corrections	auto_task_type
 local	public	task_type_corrections	created_at
 local	public	tenant_model_policies	canonical_name

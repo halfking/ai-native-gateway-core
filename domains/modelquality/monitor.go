@@ -37,6 +37,10 @@ type MonitorConfig struct {
 	// PerNodeMinIntervalHours: 成功 IQ 实测在此窗口内的节点跳过（防部署
 	// 重启反复打同一批节点；0 = 默认 24h）。
 	PerNodeMinIntervalHours int `json:"per_node_min_interval_hours,omitempty"`
+	// PerNodeFailedIntervalHours: 失败 IQ 实测的冷却窗（独立于成功窗；
+	// 0 = 默认 4h）。2026-10-30 24h 审计第 8 轮：dedup 只认 success ⇒
+	// EOL/坏节点每个 scheduled 周期全量重烧（211 24h scheduled failed 763 次）。
+	PerNodeFailedIntervalHours int `json:"per_node_failed_interval_hours,omitempty"`
 }
 
 // ModelTarget 监控目标模型

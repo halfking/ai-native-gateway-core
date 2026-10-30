@@ -63,8 +63,8 @@ func TestGetLogORMustNotComeBack(t *testing.T) {
 
 func TestGetLogKeepsTenantGateAndTsOrder(t *testing.T) {
 	src := getLogFileText(t)
-	if !strings.Contains(src, "($2 OR rl.tenant_id = $3)") {
-		t.Fatal("getLog 拆分后必须保留租户门 ($2 OR rl.tenant_id = $3)——漏掉即跨租户泄露")
+	if !strings.Contains(src, "($2::boolean OR rl.tenant_id = $3)") {
+		t.Fatal("getLog 拆分后必须保留租户门 ($2::boolean OR rl.tenant_id = $3)——漏掉即跨租户泄露")
 	}
 	if !strings.Contains(src, "ORDER BY rl.ts DESC") {
 		t.Fatal("getLog 拆分后段内必须保持 ORDER BY rl.ts DESC（原 CASE 优先序由两段顺序等价保持）")

@@ -453,7 +453,7 @@ onMounted(load)
 
 <style scoped>
 .page {
-  padding: 20px;
+  padding: 24px;
 }
 
 .page-header {
@@ -461,11 +461,11 @@ onMounted(load)
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 .page-header h1 {
-  margin: 0 0 6px;
+  margin: 0 0 8px;
   font-size: 20px;
 }
 
@@ -486,31 +486,31 @@ onMounted(load)
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 .stat-card {
-  border: 1px solid var(--kx-border, var(--border-color, #e5e7eb));
+  border: 1px solid var(--kx-border);
   border-radius: 8px;
-  padding: 14px 16px;
+  padding: 16px;
 }
 
 .stat-card.ok {
-  border-color: var(--kx-success, #16a34a);
+  border-color: var(--kx-success);
 }
 
 .stat-card.warning {
-  border-color: var(--kx-warning, #d97706);
+  border-color: var(--kx-warning);
 }
 
 .stat-card.danger {
-  border-color: var(--kx-danger, #dc2626);
+  border-color: var(--kx-danger);
 }
 
 .stat-label {
   font-size: 12px;
   opacity: 0.7;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 .stat-value {
@@ -543,14 +543,14 @@ onMounted(load)
 }
 
 .error-banner {
-  border: 1px solid var(--kx-danger, #dc2626);
+  border: 1px solid var(--kx-danger);
   border-radius: 6px;
-  padding: 10px 14px;
+  padding: 12px 16px;
   margin-bottom: 16px;
 }
 
 .empty-state {
-  padding: 40px 20px;
+  padding: 40px 24px;
   text-align: center;
   opacity: 0.8;
 }
@@ -572,8 +572,8 @@ onMounted(load)
 
 .table th,
 .table td {
-  border-bottom: 1px solid var(--kx-border, var(--border-color, #e5e7eb));
-  padding: 8px 10px;
+  border-bottom: 1px solid var(--kx-border);
+  padding: 8px 12px;
   text-align: left;
   white-space: nowrap;
 }
@@ -584,8 +584,8 @@ onMounted(load)
 }
 
 .mismatch-mark {
-  margin-left: 6px;
-  color: var(--kx-danger, #dc2626);
+  margin-left: 8px;
+  color: var(--kx-danger);
   font-weight: 700;
   /* SVG 图标显式定尺寸（裸 svg 不带 width/height 会按包含块宽度渲染） */
   font-size: 12px;
@@ -602,40 +602,40 @@ onMounted(load)
 }
 
 .verdict-verified {
-  color: var(--kx-success, #16a34a);
-  border-color: var(--kx-success, #16a34a);
+  color: var(--kx-success);
+  border-color: var(--kx-success);
 }
 
 .verdict-suspected {
-  color: var(--kx-warning, #d97706);
-  border-color: var(--kx-warning, #d97706);
+  color: var(--kx-warning);
+  border-color: var(--kx-warning);
 }
 
 .verdict-diluted {
-  color: var(--kx-danger, #dc2626);
-  border-color: var(--kx-danger, #dc2626);
+  color: var(--kx-danger);
+  border-color: var(--kx-danger);
 }
 
 .verdict-unknown {
   opacity: 0.7;
-  border-color: var(--kx-border, var(--border-color, #e5e7eb));
+  border-color: var(--kx-border);
 }
 
 .dims {
-  margin-left: 6px;
+  margin-left: 8px;
   font-size: 11px;
   opacity: 0.6;
 }
 
 .row-actions {
   display: flex;
-  gap: 6px;
+  gap: 8px;
 }
 
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: var(--overlay-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -643,7 +643,7 @@ onMounted(load)
 }
 
 .modal {
-  background: var(--kx-bg, var(--bg-color, #fff));
+  background: var(--kx-bg);
   border-radius: 8px;
   width: min(880px, 92vw);
   max-height: 86vh;
@@ -655,8 +655,8 @@ onMounted(load)
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--kx-border, var(--border-color, #e5e7eb));
+  padding: 16px;
+  border-bottom: 1px solid var(--kx-border);
 }
 
 .modal-header h2 {
@@ -665,7 +665,7 @@ onMounted(load)
 }
 
 .modal-body {
-  padding: 16px 18px;
+  padding: 16px;
   overflow-y: auto;
 }
 
@@ -673,7 +673,7 @@ onMounted(load)
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
-  margin-bottom: 18px;
+  margin-bottom: 16px;
 }
 
 .detail-item {
@@ -692,20 +692,20 @@ onMounted(load)
 }
 
 .section-title {
-  margin: 18px 0 8px;
+  margin: 16px 0 8px;
   font-size: 14px;
 }
 
 .anomaly-list {
   margin: 0;
-  padding-left: 20px;
+  padding-left: 24px;
   font-size: 13px;
 }
 
 .evidence-block {
-  background: rgba(127, 127, 127, 0.08);
+  background: var(--bg-subtle);
   border-radius: 6px;
-  padding: 10px 12px;
+  padding: 12px;
   font-size: 12px;
   overflow-x: auto;
   white-space: pre-wrap;

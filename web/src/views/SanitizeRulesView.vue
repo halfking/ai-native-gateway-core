@@ -2604,7 +2604,7 @@ summary {
 }
 .insights-table th,
 .insights-table td {
-  padding: 6px 8px;
+  padding: 8px;
   border-bottom: 1px solid var(--border, var(--surface-secondary));
   text-align: left;
 }

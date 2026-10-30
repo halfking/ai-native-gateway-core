@@ -16236,6 +16236,57 @@ symlink×2/路径断言×2 + discovery 组播）/ vue-tsc 0 错 / vitest 2949 �
 > 静默吞掉的 409 里藏着用户每天的视图 / 变异臂靶点自己别带判据词 /
 > 门的位置也是语义——排在存在性裁决之前的门把 404/500 整族遮蔽成自己的状态码）。
 
+**2026-10-30 24h 审计第 8 轮·续（goal 会话，接第 7 轮遗留五项）**：
+★ **① per-node IQ 24h 数据质量结论：245/154 不开**（goal 判据逐项对不上）：
+24h 1568 跑里 success 仅 42（2.7%）/ failed 1493（**error 全空**）/ partial 28；
+同伴对比池虽 3 供应商但按 canonical 平均 ~1.1 家 ⇒ 多数 canonical 的 LoadPeerReference
+返回空；FitCalibration 校准点不足（node_iq_latest 21 行、跨 canonical 分散）；
+token 成本 ~15.7M tokens/12h 且大头是**无效重试**。
+⇒ ★★★ **根因：「dedup 只认 success」=「失败没有记忆」** —— 失败节点每个
+scheduled 周期全量重烧 50 题（单模型最多 92 次/24h）⇒ 根修=新增
+`model_quality.per_node_failed_interval_hours`（spec 默认 4h，与成功窗 24h 独立判断、
+两个 NOT EXISTS 语义天然并集）⇒ failed/partial 在冷却窗内也跳过；
+签名扩为 `DiscoverPerNodeTargets(ctx, scope, minInterval, failedInterval)`
+（钉住测试同步改）。⇒ ★★ 通用式（LESSONS §585）：门/冷却/缓存的条件里凡是排除
+某个状态，都要问「被排除的状态下一步会走到哪」。
+★ **② score.Error 空**（第 7 轮遗留①）：CalculateScore 从不填 Error ⇒ failed 行
+排障要翻 report 文件。修=`deriveStableErrorCategory(report.Results)`：只认已固定的
+错误前缀形态（marshal/create/http/decode/no choices + upstream HTTP 状态码）+ timeout
+形态优先于 http_request_failed（契约测试 5 例钉死），取众数、并列取字典序；
+**绝不回显原始错误串**（可能带 URL/响应体）。
+★ **③ featured EOL**：实测 `deepseek-ai/deepseek-v4-flash` 等 410 族**不在**
+featured_models（31 项清单无它们）⇒ featured 收窄本身已生效；它们的持续失败走
+anomaly 通道（TriggerNodeIQTest 不受 scope 限制，by design）——重试风暴由 ②的
+failed 冷却窗根修（anomaly 有 10min triggerCooldown + inFlight 去重）。
+★ **④ -dirty 豁免 menu-config.json**：deploy-seamless-docker.sh 的 dirty 判定
+排除清单补 `web/public/menu-config.json`（它是脚本自己后续步骤重新生成的构建
+再生产物，exported_at 时间戳每次都变）⇒ 与 VERSION 家族同性质；门
+`TestDeployDirtyStampExcludesVersionArtifacts` 同步收编。
+★ **⑤ 常规审计顺带的三个真收口**：
+a) **getLog 42P18 真缺陷**（211 生产实测 /api/logs/<id> 500，24h 多次）——
+`($2 OR rl.tenant_id = $3)` 裸 bool 参数 pgx v5 报
+"could not determine data type of parameter" ⇒ 两处显式 `$2::boolean`
+（租户门钉住测试同步改）；b) **掏空门「读方在基线就红」一次暴露 6 个登记册**
+（上游 f7446c911 ModelCredibilityView + ff029a7fc sanitizeRules 引入）：逐个按门内
+注释分诊——fr-FR `ruleActionLabel='Action'/'Exemptions'` 与 en-US 逐字同形（法语同拼写，
+合法同形 ⇒ 人工调基线 1116→1118 + 理由落 baselineRaiseReason）；ja-JP
+`ruleActionLabel='处置'` 真简体残留 ⇒ 改 `動作`（与同文件 action 值一致）；
+ModelCredibilityView 18 处字面色 ⇒ 令牌化（var() 兜底剥字面 + overlay/bg-subtle
+语义 token）+ 间距收阶 19 处 + compact-card 存量降级登记（50 条）；
+c) **并行线红收口**：admin-routes 快照 / post-surface 台账（592→598，refresh 工具
+--apply）/ 14398 预算门（R184 改 150s/10min ⇒ 钉住事实重算）/ runner.go gofmt
+（43c4a3814 把收括号从 2 tab 降到 1 tab）/ drift 台账（252 线上已新版但漏更 ⇒
+b6d868b9 补记）/ request-surface 三面重钉 ×2（并行会话两次推 main.go：+30 再 +7）
+/ reachability 台账 7 格（R184 重采 local 段来自**另一台旧库** ⇒ 本机
+llm-gateway-pg 重采后生成器重算，412 行差全为 complete/gap 内部重分类）。
+⇒ ★★ **registration 接线补全**：并行会话把 `registration.Start` 重新接进 main.go
+（包已在 ede0c5f7a 入仓）但漏 Stop ⇒ registryClient 编译红；本轮补
+`registration.Stop(registryClient)` 于 shutdown 序列最前（listener 关闭前注销契约）
++ 注释订正。⇒ 部署：211 验证本轮修复；245/154 **不开 enable_per_node**（①结论）。
+⇒ 分支清退：r184/ts-only-read-points、r98/mv-refresh-load-attribution 已合入 origin
+⇒ worktree prune 后删除（仓内只剩 main）。
+⇒ 审计档 `docs/audit/2026-10-30-24h审计第8轮续-pernode失败冷却与基线分诊.md`；
+通用式见 `LESSONS.md` **§585**。
 **2026-10-30 第51 增量：r1049 B级缓存隔离合并后补闭环**（会话 `mvs_fa34e3337b364fbeb9bc961fac211729`）：★ 合并上游新增 `scripts/deploy-test-gate.sh`（直接 `go test`）后，在管编译型脚本按不同快照 **164 →165**；历史164 不删不改。★ 初版“登记簿改165 +复制前导块”静态两把尺已一致165，却被运行期验证器抓到 **164/165**、洞即该脚本。★ 根因：脚本前导块漏掉 `PRELUDE_MARK` 中 `r1048` 与 `轮`之间的 ASCII 空格，故落在 `other` 而非 `prelude-shell`；不放宽探针猜相似文本，只修脚本接入既有受验证形态。★ 修后：门作用域165、两把尺逐个一致165、运行期 **165/165**、洞0、失败安全3/3、排除目录 docs8/8 / web0/0 / web-mobile0/0；r1048变异台 **9/9**（M14 精准红判据⑥，B99还原绿）。★ 通式：精确计数是集合读数不是豁免开关；静态门、独立尺、运行期探针必须同时闭环。
  **2026-10-30 24h 审计第 7 轮·续：品牌红收口 + model-quality 三层断链根修 + backfill keyset + per-node IQ 两道闸**（goal 会话，与第 8 轮并行推进）：
  ★ 承接第 5 轮移交的 `theme.logoAssets` 2 红（品牌轮 14h 无动作 ⇒ 按用户固定预期代收）⇒

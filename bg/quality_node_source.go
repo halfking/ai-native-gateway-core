@@ -48,12 +48,18 @@ type discoverOpts struct {
 	// 重启的「启动立即跑一次」把同一批节点反复打满——211 实测 2026-10-29
 	// 商汤凭据被连打 200 题触发 TPM 429 的教训）。
 	minInterval time.Duration
+	// failedInterval > 0 时【另外】跳过窗口内已有失败 IQ 实测的节点。
+	// 2026-10-30 24h 审计第 8 轮：dedup 只认 success ⇒ EOL/坏节点每个
+	// scheduled 周期全量重烧（211 24h scheduled failed 763 次、每跑 50 题
+	// 都是真实 token）。失败窗独立且更短（默认 4h vs 成功窗 24h）：失败可能
+	// 是瞬时的，窗太长会让上游恢复后迟迟不被重测。
+	failedInterval time.Duration
 }
 
 // DiscoverPerNodeTargets 列出 per-node IQ 测试的目标节点：
 // 活跃规则同 DiscoverActiveNodes，外加 scope 收窄与最近已测跳过。
-func (s *CredentialNodeSource) DiscoverPerNodeTargets(ctx context.Context, scope string, minInterval time.Duration) ([]modelquality.CredentialNode, error) {
-	return s.discoverNodes(ctx, discoverOpts{scope: scope, minInterval: minInterval})
+func (s *CredentialNodeSource) DiscoverPerNodeTargets(ctx context.Context, scope string, minInterval, failedInterval time.Duration) ([]modelquality.CredentialNode, error) {
+	return s.discoverNodes(ctx, discoverOpts{scope: scope, minInterval: minInterval, failedInterval: failedInterval})
 }
 
 func (s *CredentialNodeSource) discoverNodes(ctx context.Context, opt discoverOpts) ([]modelquality.CredentialNode, error) {
@@ -92,6 +98,18 @@ func (s *CredentialNodeSource) discoverNodes(ctx context.Context, opt discoverOp
 	args := []any{}
 	if opt.minInterval > 0 {
 		args = append(args, opt.minInterval)
+	}
+	if opt.failedInterval > 0 {
+		// ★ 失败冷却窗：与成功窗独立判断（两个 NOT EXISTS 语义天然是
+		// 「success 在窗内 或 failed 在窗内 ⇒ 都跳过」——比「取更近的一扇」
+		// 更保守 ⇒ 不会把刚失败的节点提前放进来）。
+		condFrags = append(condFrags, fmt.Sprintf(`NOT EXISTS (
+		    SELECT 1 FROM model_iq_runs r
+		    WHERE r.credential_id = cmb.credential_id
+		      AND lower(r.raw_model_name) = lower(pm.raw_model_name)
+		      AND r.status IN ('failed', 'partial')
+		      AND r.tested_at > now() - '%d hours'::interval
+		  )`, int(opt.failedInterval.Hours())))
 	}
 	extraConds := ""
 	for _, c := range condFrags {

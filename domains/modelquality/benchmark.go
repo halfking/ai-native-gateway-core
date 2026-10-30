@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -163,8 +165,72 @@ func (sc *ScoreCalculator) CalculateScore(report *BenchmarkReport) *QualityScore
 	// 评级
 	score.Grade = sc.scoreToGrade(score.OverallScore)
 
+	// 2026-10-30 24h 审计第 8 轮：failed/partial 行的 error 此前恒空 ——
+	// 排障要翻 report 文件才能知道死因（211 实测 24h 1493 行 failed 全部 error=''）。
+	// ★ 稳定错误分类：取【出现最多的错误形态】并脱敏（原始 err.Error() 可能带
+	//   URL/模型名/响应体片段，不适合进长期历史表）。形态 = "类别: 细节"，
+	//   细节只保留 HTTP 状态码或已固定的前缀短语 ⇒ 同族失败归一成同一串，可聚合。
+	if report.Status != "success" {
+		score.Error = deriveStableErrorCategory(report.Results)
+	}
+
 	return score
 }
+
+// deriveStableErrorCategory 从单题结果里提取【稳定错误分类】。
+//
+// 判据：
+//   - 只看 Error 非空的题；全空 ⇒ 返回 ""（没有任何错误证据 ⇒ 不编造）。
+//   - 类别取自已固定的错误前缀短语（invoker.go 的四种：marshal/create/
+//     http request failed/decode response/no choices + "upstream returned HTTP"），
+//     不认识的形态归 "other"，绝不回显原始错误串（可能带 URL / 响应体）。
+//   - "upstream returned HTTP <code>" 保留状态码（410/429/5xx 是排障的关键信号），
+//     但截掉响应体（那里有模型名与 upstream 原文）。
+//   - 取出现次数最多的分类（⇒ 死因聚焦主要矛盾）；并列取字典序，保证确定性。
+func deriveStableErrorCategory(results []TestResult) string {
+	counts := map[string]int{}
+	for _, r := range results {
+		if r.Error == "" {
+			continue
+		}
+		counts[classifyTestError(r.Error)]++
+	}
+	if len(counts) == 0 {
+		return ""
+	}
+	best, bestN := "", 0
+	for k, n := range counts {
+		if n > bestN || (n == bestN && k < best) {
+			best, bestN = k, n
+		}
+	}
+	return best
+}
+
+// classifyTestError 把一条原始错误串归一成稳定分类。
+func classifyTestError(raw string) string {
+	if m := upstreamHTTPRe.FindStringSubmatch(raw); m != nil {
+		return "upstream_http_" + m[1]
+	}
+	switch {
+	case strings.Contains(raw, "context deadline exceeded") || strings.Contains(raw, "context canceled"):
+		return "timeout"
+	case strings.HasPrefix(raw, "marshal request:"):
+		return "marshal_request"
+	case strings.HasPrefix(raw, "create request:"):
+		return "create_request"
+	case strings.HasPrefix(raw, "http request failed:"):
+		return "http_request_failed"
+	case strings.HasPrefix(raw, "decode response:"):
+		return "decode_response"
+	case strings.HasPrefix(raw, "no choices"):
+		return "no_choices"
+	default:
+		return "other"
+	}
+}
+
+var upstreamHTTPRe = regexp.MustCompile(`upstream returned HTTP (\d{3})`)
 
 // calculateP95Latency 计算P95延迟
 func (sc *ScoreCalculator) calculateP95Latency(results []TestResult) float64 {

@@ -13,6 +13,7 @@
     "src/views/KeyApplicationsView.vue",
     "src/views/KeyDetailView.vue",
     "src/views/KeysView.vue",
+    "src/views/ModelCredibilityView.vue",
     "src/views/ModelsView.vue",
     "src/views/OpsOverviewView.vue",
     "src/views/OutputComplianceView.vue",

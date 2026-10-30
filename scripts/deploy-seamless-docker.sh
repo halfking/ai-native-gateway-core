@@ -552,8 +552,12 @@ if [[ -n "$VIA" ]]; then
     #   ⇒ ⇒ 若把它们算进 dirty 判定 ⇒ ⇒ 2026-10-22 那次「版本戳不再恒带 -dirty」
     #   ⇒ ⇒ 的修复会**从另一扇门被原样顶回来**（告警永久失效）。
     #   ⇒ 版本产物的漂移 ≠ 源码漂移 ⇒ ⇒ 故排除。
+    #   ★ 2026-10-30（24h 审计第 8 轮）：menu-config.json 加入豁免——它本来就是
+    #     【本脚本自己】在后续步骤里重新生成的构建再生产物（exported_at 时间戳
+    #     每次都变 ⇒ 只要有人跑过一次构建，共享 checkout 就长期脏），
+    #     与 VERSION 家族同性质 ⇒ 排除（源码真漂时仍会带 -dirty，告警有效）。
     #   ⇒ 门：scripts/ursmcheck/deploy_shared_build_lock_guard_test.go 判据④。
-    if [[ -n "$DD_BUILD_SHA" && -n "$(git -C "$DD_REPO_ROOT" status --porcelain --untracked-files=no -- . ':(exclude)VERSION' ':(exclude)version.json' ':(exclude)web/public/version.json' 2>/dev/null)" ]]; then
+    if [[ -n "$DD_BUILD_SHA" && -n "$(git -C "$DD_REPO_ROOT" status --porcelain --untracked-files=no -- . ':(exclude)VERSION' ':(exclude)version.json' ':(exclude)web/public/version.json' ':(exclude)web/public/menu-config.json' 2>/dev/null)" ]]; then
       DD_BUILD_SHA="${DD_BUILD_SHA}-dirty"
     fi
   else

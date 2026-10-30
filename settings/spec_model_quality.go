@@ -162,5 +162,25 @@ func ModelQualitySpecs() []*Spec {
 			DangerLevel: Safe,
 			HotReload:   false,
 		},
+		{
+			// 2026-10-30 (24h 审计第 8 轮)：失败实测的去重窗。211 实测：
+			// dedup 只认 success ⇒ EOL/坏节点每个 scheduled 周期都全量重烧
+			// （24h 1568 跑里 scheduled failed 763 次、同模型最多 92 次），
+			// 每跑 50 题都是真实 token。失败节点按独立（更短）的窗口冷却：
+			// 失败可能是瞬时的（上游抖动），窗太长会让故障恢复后迟迟不被重测。
+			Key:         "model_quality.per_node_failed_interval_hours",
+			Type:        TypeInt,
+			Scope:       ScopePlatform,
+			Category:    CategoryModelQuality,
+			Default:     4,
+			Min:         floatPtr(0),
+			Max:         floatPtr(72),
+			Description: "per-node 失败实测的冷却间隔（小时；窗口内刚失败的节点跳过）",
+			DescriptionLong: "窗口内已有失败 IQ 实测的节点跳过本轮（与成功窗独立判断，取更近的一扇）；" +
+				"0 = 失败不冷却（每个周期都重试，token 成本高，慎用）。默认 4 小时：" +
+				"既拦住每周期的重试风暴，又保证上游恢复后当日内能被重测。",
+			DangerLevel: Safe,
+			HotReload:   false,
+		},
 	}
 }

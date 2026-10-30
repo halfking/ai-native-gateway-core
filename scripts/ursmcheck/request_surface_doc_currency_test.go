@@ -124,20 +124,27 @@ type docEvidence struct {
 //   （sessionid/taskbus/billing 装配）⇒ 链整体 +30：Recovery 7800 / Logging 注释
 //   7802-7809 / maintain 注释 7791-7796 / SecurityHeaders 7818；main_pipeline.go
 //   启动日志 1112 → 1123、v2pipe- 合成块 749-758 → 755-768。三面已同钉。
+// ★★ **第五次重钉（2026-10-30 24h 审计第 8 轮）**：origin 又有并行会话改 main.go
+//   ⇒ 链整体再漂：Recovery 7893 / Logging 注释 7895-7902 / maintain 注释 7884-7889 /
+//   SecurityHeaders 7911。三面（本表 · 设计页 · 认证表 A1）同钉。
+// ★★ **第六次重钉（2026-10-30 同轮晚些）**：并行会话（model-credibility catalog 端点
+//   handler.go:1603-1608 的 6 条路由）又把 main.go 推了 7 行 ⇒ Recovery 7900 /
+//   Logging 注释 7902-7909 / maintain 注释 7891-7896 / SecurityHeaders 7918。
+//   三面同钉（本表 · request-surface.md · 认证表 A1）。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 7800, to: 7818,
+		file: "cmd/gateway/main.go", from: 7891, to: 7918,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 7802, to: 7809,
+		file: "cmd/gateway/main.go", from: 7902, to: 7909,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 7791, to: 7796,
+		file: "cmd/gateway/main.go", from: 7891, to: 7896,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},
