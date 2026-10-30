@@ -398,17 +398,26 @@ func scanBlockReview(row rowScanner) (BlockReview, error) {
 //	候选清单会被**全量历史**淹没（★ 实测 26 条）★★ ⇒ ★★ 真正有意义的问题是
 //	「**这条规则在拦截前后还在命中吗**」⇒ ★★ 那就是 **last_seen**（★ 每次命中
 //	都会刷新 last_seen ⇒ ★★ 它就是「最近一次命中时间」）★★。
-func (s *PostgresStore) ListEgressRuleEventsInWindowDB(ctx context.Context, from, to time.Time, limit int) ([]EgressRuleEventInWindow, error) {
+func (s *PostgresStore) ListEgressRuleEventsInWindowDB(ctx context.Context, tenantIDs []string, from, to time.Time, limit int) ([]EgressRuleEventInWindow, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
 	if from.IsZero() || to.IsZero() || !to.After(from) {
 		return nil, nil
 	}
+	// ★★ 租户门（2026-10-30 12h 审计轮）★★：★★ 原先这个读面没有任何租户
+	//   条件 ⇒ ★★ sanitize_rule_events 是全租户表 ⇒ ★★ 候选跨租户泄漏 ⇒ ★★
+	//   tenant_id 列有 NOT NULL DEFAULT '' 且带 (tenant_id,last_seen DESC)
+	//   索引 ⇒ ★★ 加上这条谓词是**索引可用**的（★ 不是全表扫）★★。
+	//   空集合 ⇒ ★★ fail-closed（返回空）★★：★ 「空 = 不限」是本仓最贵的
+	//   一种误读（★ 见 [A1]）★★。
+	if len(tenantIDs) == 0 {
+		return nil, nil
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT rule_id, COALESCE(action,''), COALESCE(status,''), COALESCE(count,0), first_seen, last_seen
 FROM sanitize_rule_events
-WHERE phase='egress' AND last_seen >= $2 AND last_seen <= $1
-ORDER BY last_seen DESC, id DESC LIMIT $3`, to, from, limit)
+WHERE phase='egress' AND last_seen >= $2 AND last_seen <= $1 AND tenant_id = ANY($4)
+ORDER BY last_seen DESC, id DESC LIMIT $3`, to, from, limit, tenantIDs)
 	if err != nil {
 		return nil, storeError("egress rule events window read", err)
 	}

@@ -458,7 +458,7 @@ func (s *PgxStore) GetRuntimeMetricsSummary(ctx context.Context, hours int) ([]R
 					jsonb_object_keys(rm.model_usage) as model_key,
 					(rm.model_usage->>jsonb_object_keys(rm.model_usage))::bigint as model_count
 			) models ON true
-			WHERE rm.timestamp >= NOW() - ($1 || ' hours')::interval
+			WHERE rm.timestamp >= NOW() - make_interval(hours => $1::int)
 			GROUP BY rm.instance_id
 		)
 		SELECT 

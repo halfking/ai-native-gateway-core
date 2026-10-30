@@ -118,13 +118,13 @@
       "param_roles": []
     },
     {
-      "shape_id": "credential_monitor-b2491e7275",
+      "shape_id": "credential_monitor-3a939c015f",
       "file": "admin/credential_monitor.go",
       "line": 1040,
       "occurrence_count": 1,
       "file_count": 1,
       "dynamic": false,
-      "sql": "SELECT COALESCE(request_id, ''), EXTRACT(EPOCH FROM ts)::bigint * 1000,\n\t\t       success, COALESCE(latency_ms, 0), COALESCE(error_kind, '')\n\t\tFROM request_logs_with_current_month\n\t\tWHERE credential_id = $1\n\t\t  -- case-insensitive: 会话腿的 outbound_model can differ in case\n\t\t  -- from model_offers.raw_model_name (e.g. \"MiniMax-M3\" vs \"minimax-m3\"),\n\t\t  -- so a plain = misses most rows.\n\t\t  AND lower(COALESCE(outbound_model, client_model)) = lower($2)\n\t\tAND ts > NOW() - ($3 || ' minutes')::interval\n\t\t  -- 2026-10-16 audit #153: tenant isolation. Empty $5 (super_admin /\n\t\t  -- admin_key / unauth probe) means \"see all tenants\"; otherwise the\n\t\t  -- view's tenant_id must match. Without this any caller holding a\n\t\t  -- valid credential_id would read every other tenant's call timeline.\n\t\t  AND ($5 = '' OR tenant_id = $5)\n\t\tORDER BY ts DESC\n\t\tLIMIT $4",
+      "sql": "SELECT COALESCE(request_id, ''), EXTRACT(EPOCH FROM ts)::bigint * 1000,\n\t\t       success, COALESCE(latency_ms, 0), COALESCE(error_kind, '')\n\t\tFROM request_logs_with_current_month\n\t\tWHERE credential_id = $1\n\t\t  -- case-insensitive: 会话腿的 outbound_model can differ in case\n\t\t  -- from model_offers.raw_model_name (e.g. \"MiniMax-M3\" vs \"minimax-m3\"),\n\t\t  -- so a plain = misses most rows.\n\t\t  AND lower(COALESCE(outbound_model, client_model)) = lower($2)\n\t\tAND ts > NOW() - make_interval(mins => $3::int)\n\t\t  -- 2026-10-16 audit #153: tenant isolation. Empty $5 (super_admin /\n\t\t  -- admin_key / unauth probe) means \"see all tenants\"; otherwise the\n\t\t  -- view's tenant_id must match. Without this any caller holding a\n\t\t  -- valid credential_id would read every other tenant's call timeline.\n\t\t  AND ($5 = '' OR tenant_id = $5)\n\t\tORDER BY ts DESC\n\t\tLIMIT $4",
       "sql_filter_cols": [
         "credential_id"
       ],
@@ -215,13 +215,13 @@
       "param_roles": []
     },
     {
-      "shape_id": "diagnostics_credential-1f614a9d95",
+      "shape_id": "diagnostics_credential-f18d358987",
       "file": "admin/diagnostics_credential.go",
       "line": 150,
       "occurrence_count": 1,
       "file_count": 1,
       "dynamic": false,
-      "sql": "SELECT request_id, client_model, ts, error_kind, COALESCE(request_status::text,''), provider_id\n\t\tFROM request_logs_with_current_month\n\t\tWHERE credential_id = $1 AND lower(COALESCE(request_status, '')) = 'failure'\n\t\t  AND ts > now() - ($2 || ' minutes')::interval\n\t\tORDER BY ts DESC LIMIT 20",
+      "sql": "SELECT request_id, client_model, ts, error_kind, COALESCE(request_status::text,''), provider_id\n\t\tFROM request_logs_with_current_month\n\t\tWHERE credential_id = $1 AND lower(COALESCE(request_status, '')) = 'failure'\n\t\t  AND ts > now() - make_interval(mins => $2::int)\n\t\tORDER BY ts DESC LIMIT 20",
       "sql_filter_cols": [
         "credential_id",
         "ts"
@@ -1370,7 +1370,7 @@
     {
       "file": "admin/credential_monitor.go",
       "line": 1040,
-      "shape_id": "credential_monitor-b2491e7275",
+      "shape_id": "credential_monitor-3a939c015f",
       "sql_digest": "SELECT COALESCE(request_id, ''), EXTRACT(EPOCH FROM ts)::bigint * 1000, success, COALESCE(latency_ms, 0), COALESCE(error_kind, '') FROM request_logs_with_current_month WHERE credential_id = $1 -- case-insensitive: 会话腿的 outbound_model can differ in case -- from model_offers.raw_model_name (e.g. \"MiniMax-M3\" vs \"minimax-m3\"), -- so a plain = misses most rows. AND lower(COALESCE(outbound_model, clien"
     },
     {
@@ -1406,8 +1406,8 @@
     {
       "file": "admin/diagnostics_credential.go",
       "line": 150,
-      "shape_id": "diagnostics_credential-1f614a9d95",
-      "sql_digest": "SELECT request_id, client_model, ts, error_kind, COALESCE(request_status::text,''), provider_id FROM request_logs_with_current_month WHERE credential_id = $1 AND lower(COALESCE(request_status, '')) = 'failure' AND ts > now() - ($2 || ' minutes')::interval ORDER BY ts DESC LIMIT 20"
+      "shape_id": "diagnostics_credential-f18d358987",
+      "sql_digest": "SELECT request_id, client_model, ts, error_kind, COALESCE(request_status::text,''), provider_id FROM request_logs_with_current_month WHERE credential_id = $1 AND lower(COALESCE(request_status, '')) = 'failure' AND ts > now() - make_interval(mins => $2::int) ORDER BY ts DESC LIMIT 20"
     },
     {
       "file": "admin/live_stream_sse.go",

@@ -81,7 +81,7 @@ func (f *fakeReviewPersistence) CountBlockReviewsDB(_ context.Context, status, t
 	return count, nil
 }
 
-func (f *fakeReviewPersistence) ListEgressRuleEventsInWindowDB(_ context.Context, from, to time.Time, limit int) ([]EgressRuleEventInWindow, error) {
+func (f *fakeReviewPersistence) ListEgressRuleEventsInWindowDB(_ context.Context, _ []string, from, to time.Time, limit int) ([]EgressRuleEventInWindow, error) {
 	return nil, nil
 }
 
