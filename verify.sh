@@ -285,6 +285,17 @@ if [[ "$RUN_WEB" == true ]]; then
   pm_run copy-clarity:check web
   pm_run copy-clarity-locale:check web
   pm_run i18n:empty-state:check web
+  # ★★ 2026-10-30 r1050 轮接入：「前端门总清单」单一入口（web-gates-runner.mjs）
+  #   ★★ 本轮实测：`web/package.json` 里有 32 个 `:check` 类门，而 verify.sh 只登记了 9 个
+  #   ★★ ⇒ ★★★ **19 个门在 CI 上一次都没被执行过**
+  #   ★★★ （★ 其中就有 `i18n:locale-value:check` —— ★★ 语言包值棘轮门）
+  #   ★★★ 同样地，**web 侧 31 个 `:selftest` 一个都没进强制路径**（★ 只有 web-mobile 的
+  #   ★★★ `gate:selftest` 在）⇒ ★★ **一道门自己的判据坏了（恒绿/恒红）没人知道**。
+  #   ⇒ ⇒ 接入「清单 + 一个入口」而非把 50 条命令塞进本文件（★ 清单是单一真值）。
+  #   ⇒ ★★ 入口**自己**校验清单里的每个脚本都存在于 package.json ⇒ ★ 清单写错 ⇒ 入口自己红。
+  #   ⇒ ★★ 刻意排除项（★ 不静默 ⇒ 每次运行都列出 + 理由）：`ui:sweep:selftest`
+  #   ★★ （需 playwright + chromium ⇒ 环境缺件 ⇒ CI 不装浏览器）。
+  pm_run web-gates:run web
   echo "[verify] frontend build"
   pm_run build web
   echo "[verify] web-mobile install"

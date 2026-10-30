@@ -908,7 +908,11 @@ function successRate(item: { success?: number; requests: number }): string {
   background: var(--kx-primary);
   opacity: 0.65;
   /* 轮询刷新时占比条平滑移动（width 是数据编码 ⇒ 已在
-     design-motion-decisions.json 的 layoutDriven 登记）。 */
+     design-motion-decisions.json 的 layoutDriven 登记，key =
+     components/live-topology/StatsPanel.vue|.stats__share|width）。
+     ★ 2026-10-30 r1050 轮订正：★ 这条注释此前**声称已登记但裁决簿里没有** ⇒
+     ★ ★ 注释里的「已登记」也是会过期的断言 ⇒ 本轮补登记并把 key 写进注释，
+     ★ ★ 让「注释声称」与「裁决簿实有」逐字对应（★ 便于下一个人核对）。 */
   transition: width 0.4s var(--kx-motion-ease-out);
 }
 

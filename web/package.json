@@ -15,6 +15,8 @@
     "html-table:check": "node scripts/html-table-semantics-audit.mjs",
     "html-table:check:strict": "node scripts/html-table-semantics-audit.mjs --strict",
     "html-table:selftest": "node scripts/html-table-semantics-audit.mjs --selftest",
+    "web-gates:run": "node scripts/web-gates-runner.mjs",
+    "web-gates:list": "node scripts/web-gates-runner.mjs --list",
     "i18n:check": "node scripts/i18n-audit.mjs && node scripts/i18n-cjk-count.mjs",
     "i18n:check:strict": "I18N_STRICT=1 vitest run src/i18n/keys_referenced.test.ts && vitest run src/i18n/hardcoded_cjk.baseline.test.ts && vitest run src/i18n/localeValueQuality.test.ts && vitest run src/i18n/localePlaceholderParity.test.ts && vitest run src/i18n/callSitePlaceholderCoverage.test.ts && vitest run src/i18n/localeKeyParity.test.ts && vitest run src/i18n/plainAttrBinding.test.ts",
     "i18n:cjk:check": "node scripts/i18n-cjk-count.mjs",
