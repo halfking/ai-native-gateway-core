@@ -1015,7 +1015,7 @@ func slidingWindowQuery() string {
 		  -- from model_offers.raw_model_name (e.g. "MiniMax-M3" vs "minimax-m3"),
 		  -- so a plain = misses most rows.
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
-		  AND ts > NOW() - ($3 || ' minutes')::interval
+		  AND ts > NOW() - make_interval(mins => $3::int)
 		  -- 2026-10-16 audit #153: tenant isolation. Empty $5 (super_admin /
 		  -- admin_key / unauth probe) means "see all tenants"; otherwise the
 		  -- view's tenant_id must match. Without this any caller holding a
@@ -1046,7 +1046,7 @@ func slidingWindowCanonicalQuery() string {
 		  -- from model_offers.raw_model_name (e.g. "MiniMax-M3" vs "minimax-m3"),
 		  -- so a plain = misses most rows.
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
-		AND ts > NOW() - ($3 || ' minutes')::interval
+		AND ts > NOW() - make_interval(mins => $3::int)
 		  -- 2026-10-16 audit #153: tenant isolation. Empty $5 (super_admin /
 		  -- admin_key / unauth probe) means "see all tenants"; otherwise the
 		  -- view's tenant_id must match. Without this any caller holding a
@@ -1091,7 +1091,7 @@ func slidingWindowHotQuery() string {
 		  -- 与视图路径同款大小写折叠：outbound_model 与 model_offers 大小写
 		  -- 可能不一致（"MiniMax-M3" vs "minimax-m3"）。
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
-		  AND ts > NOW() - ($3 || ' minutes')::interval
+		  AND ts > NOW() - make_interval(mins => $3::int)
 		  -- 2026-10-16 audit #153: tenant isolation. Empty $5 (super_admin /
 		  -- admin_key) means "see all tenants"; otherwise the hot 表的
 		  -- tenant_id 必须匹配。两臂 SELECT 必须显式投影 tenant_id（hot
@@ -1131,7 +1131,7 @@ func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Con
 	if minutes <= slidingWindowHotMaxMinutes {
 		q = slidingWindowHotQuery()
 	}
-	rows, err := m.h.db.Query(ctx, q, credentialID, model, fmt.Sprintf("%d", minutes), limit, tenantID)
+	rows, err := m.h.db.Query(ctx, q, credentialID, model, minutes, limit, tenantID)
 	if err != nil {
 		return nil, err
 	}

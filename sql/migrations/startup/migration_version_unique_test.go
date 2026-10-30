@@ -106,12 +106,25 @@ func TestHeavyDDLModernMigrationsDeclareMeasuredBudget(t *testing.T) {
 	grandfathered := map[string]string{
 		"900": "applied；字节冻结；表小靠角色级 30s 侥幸通过",
 		"914": "applied(211/245/252/154)；字节冻结；245 实测 VALIDATE 2m25s > 120s 已按改副本+stamp 收场",
+		// 2026-10-31 逐行判据上线时抓到的旧判据假绿：912/913 头注释里的
+		// 「非 CONCURRENTLY」字样让旧【整文件】CONCURRENTLY 匹配误判豁免。
+		// 实质不重：两者的 CREATE INDEX 全部建在【同文件刚新建的空表】上
+		// （912: session_bodies_trash/session_hidden；913: maas_* 四表，
+		// 无存量可扫），30s 合理。
+		"912": "applied；字节冻结；索引建在同文件新建的空表上（无存量扫描），30s 合理",
+		"913": "applied；字节冻结；索引建在同文件新建的空表上（无存量扫描），30s 合理",
+		// 917/921：sanitize 审核工作台新功能表（2026-10-30 上线、表龄以天计、
+		// 无大存量回填），索引构建 30s 内量级充分；风险在锁等待（已配
+		// lock_timeout=2s 快速失败）而非扫描时长。表若长期增长到 VALIDATE/
+		// 索引重建量级，应按 761 先例抬预算——豁免不是永久许可。
+		"917": "applied；字节冻结；新功能表无大存量（sanitize_block_reviews 等 3 表 + 索引）",
+		"921": "applied；字节冻结；新功能表无大存量（evidence 表 + reviews 补索引）",
 	}
-	// 全表扫描类 DDL 的形态。
-	validateRe := regexp.MustCompile(`(?i)VALIDATE\s+CONSTRAINT`)
-	indexRe := regexp.MustCompile(`(?i)CREATE\s+(UNIQUE\s+)?INDEX`)
-	concurrentlyRe := regexp.MustCompile(`(?i)CONCURRENTLY`)
-	timeoutRe := regexp.MustCompile(`(?i)SET\s+(?:LOCAL\s+)?statement_timeout\s*=\s*'([^']+)'`)
+		// 全表扫描类 DDL 的形态。
+		validateRe := regexp.MustCompile(`(?i)VALIDATE\s+CONSTRAINT`)
+		indexRe := regexp.MustCompile(`(?i)CREATE\s+(UNIQUE\s+)?INDEX`)
+		concurrentlyRe := regexp.MustCompile(`(?i)CONCURRENTLY`)
+		timeoutRe := regexp.MustCompile(`(?i)SET\s+(?:LOCAL\s+)?statement_timeout\s*=\s*'([^']+)'`)
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -132,8 +145,21 @@ func TestHeavyDDLModernMigrationsDeclareMeasuredBudget(t *testing.T) {
 		}
 		sqlText := string(body)
 
-		heavy := validateRe.MatchString(sqlText) ||
-			(indexRe.MatchString(sqlText) && !concurrentlyRe.MatchString(sqlText))
+		// 2026-10-31 批判式审计订正：混合文件盲区——旧判据是
+		// 「文件里有 CREATE INDEX ∧ 文件里没有 CONCURRENTLY」，一条
+		// CREATE INDEX CONCURRENTLY 会把**同文件里另一条非并发** CREATE INDEX
+		// 一起放走（后者仍全表扫）。改为逐行判定：每条建索引行自己带
+		// CONCURRENTLY 才豁免（仓内惯例建索引单行书写；跨行语句由该门
+		// 的 fail-closed 方向兜住——宁可误红也不放走真全表扫）。
+		heavy := validateRe.MatchString(sqlText)
+		if !heavy {
+			for _, line := range strings.Split(sqlText, "\n") {
+				if indexRe.MatchString(line) && !concurrentlyRe.MatchString(line) {
+					heavy = true
+					break
+				}
+			}
+		}
 		if !heavy {
 			continue
 		}

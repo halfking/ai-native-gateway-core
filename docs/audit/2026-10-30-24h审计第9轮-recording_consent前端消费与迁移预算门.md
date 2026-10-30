@@ -281,3 +281,67 @@ main 上自 W1.3 落地起持续红——第 8 轮只修了 admin 包的 9 个�
 - **245/154 未部署**（本轮无后端行为变更需部署；consent 门位订正属 admin 端点，
   随下次自然部署携带——§4 的数据面修复已覆盖其 DB，UI 侧 consent-off 租户
   在 245/154 的会话详情页仍旧行为，已在本节如实登记）。
+
+## 11. 批判式审计（2026-10-31，用户指令：对本任务批判式审计并修正）
+
+按「别吹牛、逐条核查」口径对本档 §1~§10 的声明逐条对拍，**两处声明被实锤失实**，
+全部订正如下；修复已落地（提交清单见 §12）。
+
+### 11.1 声明订正（§4/§8/§10）
+
+| 第 9 轮声明 | 实况（第 10/11 轮 + 本轮复核） | 订正 |
+|---|---|---|
+| 「③ 处置后 glm 歧义 WARN 0（重启后 10min 窗口）」 | 第 10 轮复测：候选仍 2（869/869 次选中 flash 但 WARN 743 条/5.7h）；第 11 轮实锤**归零真因 = cred 19 流量退出**（裸名绑定 cred 62/22 接手），歧义条件原封未动 | **撤回归因**：WARN 窗口读数不构成处置生效证据；条件仍在 |
+| 「① 211 上线 bundle 实证（consentOff 三键 + 判码）」 | 04:47 部署 14593283 实证为真；**05:04 并行会话以 478182c3（不含修复）重部署槽 b** ⇒ 该实证 17 分钟后失效。后续第 8 续/10/11 轮部署（111c2c1b → 37004018）均含修复（修复已在 origin/main 祖先链），线上以**当前活跃槽为准**重新取证 | 「上线」必须锚定当前活跃槽+版本+bundle 三件事同刻；本轮复核读数见 §11.4 |
+| 「② 914 四环境已全应用 ⇒ 字节冻结不动」 | 维持：改已应用迁移字节会破 checksum 链；预算纪律由守门测试承接 | 不变；守门在本轮补牙（§11.3） |
+| 「④ DNS 加固完成」 | 集成测试在本机（sinkhole resolver）恒走 skip ⇒ KindNetwork 主断言本机不可证；分类器结构化分支此前零直接钉子 | 补确定性证据链（§11.2-③） |
+
+### 11.2 发现并修正的缺陷（本轮提交）
+
+1. **GLM resolver 歧义降噪缺失（第 11 轮立项卡的实施，owner：本审计会话）**
+   `modelbinding/resolver.go`：归一化路径 SQL 已按 best_rank 排序 ⇒ 首位恒为
+   特异性胜出者，选择从来是对的，但 len>1 一律 WARN ⇒ 200+ 条/天噪声。
+   修法（语义不变）：wire 从纯名字升级为 `name\x1frank` 对（\x1e 分隔），
+   首位 best_rank 严格小于次位 ⇒ **静默选择**（Debug 留痕）；仅**同分/缺失**
+   才维持 WARN+取首。exact 路径不动。判据 = 候选集合对拍（rank 层裁决），
+   不再用 WARN 计数。变异面：特异性胜出/真同分/rank 缺失三态各有测试；
+   SQL 契约测试补 rank 对投影钉子。
+2. **consent 横幅 stale-409 竞态**：`SessionDetailPage.loadBodyStatus` 的 catch
+   分支缺 `id !== sessionId.value` 守卫（成功路径有）⇒ 切会话后旧 409 点亮
+   新会话横幅。补守卫 + 在途切换测试。
+3. **recording_consent wire→emit 接线零覆盖**：后端删字段无人红。补
+   SessionTurnsTimeline 测试（false/true/undefined 三态 emit）+ SyncPane
+   提示补 `role="status"`（与页面横幅 a11y 口径一致）。
+4. **迁移预算门混合索引盲区**：旧判据整文件匹配「有无 CONCURRENTLY」，
+   912/913/917/921 头注释里的「非 CONCURRENTLY」**否定词**让门整族放行
+   （逐行判据上线当场抓出 4 个假绿）。改逐行判定（每条建索引行自带
+   CONCURRENTLY 才豁免，fail-closed）；912/913（索引建在同文件新建空表）
+   与 917/921（新功能表无大存量）按豁免表显式登记并写明风险。变异臂
+   A（纯并发→绿）/B（混合→红）/C（注释词放行→红，即 912 钻过的洞）。
+5. **DNS 分类链的环境依赖**：errorsx 补结构化 `*net.DNSError`→KindNetwork
+   与 DeadlineExceeded 优先级两道钉子；upstream 补 stub 传输层测试
+   （transport→Do→classify 全链不碰 resolver，sinkhole 主机也可证）；
+   goroutine-leak 测试的 .invalid 臂换 stub（消灭不受控 DNS 负载源，
+   泄漏判据不变）。
+
+### 11.3 914 的最终口径（不变，重复声明以防再误读）
+
+914 源文件保持 120s **不改**（已应用四环境、checksum 冻结、改动会触发
+content-replay）；245 的 2m25s 事实记录在案（改副本 + stamp 收场）。
+「按目标环境最大表实测预算」的纪律由 `TestHeavyDDLModernMigrationsDeclareMeasuredBudget`
+对 ≥900 现行线执行（本轮逐行化 + 三变异臂）；914/900/912/913/917/921
+是显式豁免，不是「预算已修正」。
+
+### 11.4 211 线上复核（只读，2026-10-31）
+
+（合并推送后回填：当前活跃槽 git_sha、bundle 是否含 recording_unavailable
+判码与 consentOff 键、glm 别名 disabled 行状态。）
+
+### 11.5 遗留
+
+- resolver 降噪的**部署判据**：部署后以「候选集合对拍」（WARN 消失且
+  selected=最特异变体）复核，不预设 WARN=0。
+- minimax-m3.1-flash-preview 同族歧义（第 9 轮登记）随同款 rank 分层自动受益，
+  无需单独处置。
+- 第 10/11 轮的新遗留（sanitize audit queue full 噪声、同伴对比 1.00 家）
+  不在本轮范围。

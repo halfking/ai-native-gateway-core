@@ -248,4 +248,21 @@ describe('SessionDetailPage', { timeout: 20_000 }, () => {
     await wrapper.get('[data-testid="tl-consent-on"]').trigger('click')
     expect(wrapper.find('[data-testid="consent-off-banner"]').exists()).toBe(false)
   })
+
+  // 2026-10-31 批判式审计补：/detail 的 409 在途时切走会话 ⇒ 旧会话的
+  // consent 状态不许点亮新会话的横幅（成功路径有 id 守卫，catch 曾漏）。
+  it('drops a stale 409 when the user navigated to another session mid-flight', async () => {
+    const { ApiError } = await import('../../api/_core')
+    let rejectFirst!: (cause: unknown) => void
+    getSessionDetailV2Mock.mockImplementationOnce(
+      () => new Promise((_, reject) => { rejectFirst = reject }),
+    )
+    const wrapper = mountPage()
+    // 409 还在途 ⇒ 切到下一个会话（新会话的 detail 正常返回）。
+    routeState.params = { id: 'session-b' }
+    await flushPromises()
+    rejectFirst(new ApiError(409, 'session body recording is off', 'recording_unavailable'))
+    await flushPromises()
+    expect(wrapper.find('[data-testid="consent-off-banner"]').exists()).toBe(false)
+  })
 })

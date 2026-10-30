@@ -46,9 +46,15 @@ func TestParseProbeResponseAnthropic(t *testing.T) {
 }
 
 func TestParseProbeResponseOpenAIResponses(t *testing.T) {
+	// ★★ 2026-10-30 12h 审计轮订正：★★ 夹具原先写成
+	//   {"output":[{"type":"message","text":"ready"}]} —— ★★ 这个形状在真实
+	//   Responses 响应里**不存在** ⇒ ★★ 单测绿而生产恒取不到正文 ⇒ ★★ 假绿。
+	//   ★ 现在用本仓权威形状（cmd/gateway-v2/main.go 的格式注释 + e2e_test.go
+	//   的 Output[0].Content[0].Type == "output_text"）★。
 	body := []byte(`{
 	  "model": "gpt-4o",
-	  "output": [{"type": "message", "text": "ready"}],
+	  "output": [{"type": "message", "role": "assistant",
+	              "content": [{"type": "output_text", "text": "ready"}]}],
 	  "usage": {"input_tokens": 17, "output_tokens": 1, "total_tokens": 18}
 	}`)
 	var obs Observed

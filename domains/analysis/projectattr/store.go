@@ -258,7 +258,7 @@ func (s *PGStore) LoadSignals(ctx context.Context, tenantID, gwSessionID string)
 		-- ⚠ 占位符顺序因此调整：$1 = 会话 id（内推），$2 = 租户，$3 = 回溯天数。
 		FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
 		WHERE rl.tenant_id = $2
-		  AND rl.ts > NOW() - ($3 || ' days')::interval
+		  AND rl.ts > NOW() - make_interval(days => $3::int)
 		ORDER BY rl.ts ASC
 		LIMIT 1`
 	sig := Signals{GwSessionID: gwSessionID, TenantID: tenantID}
@@ -298,7 +298,7 @@ func InheritFromHistory(q Querier, window time.Duration) InheritLookup {
 			WHERE spa.tenant_id = $1
 			  AND spa.status = 'confirmed'
 			  AND spa.project_ref IS NOT NULL
-			  AND spa.updated_at > NOW() - ($3 || ' seconds')::interval
+			  AND spa.updated_at > NOW() - make_interval(secs => $3::int)
 			  -- ★ 890（v1 族退役）：源换成**会话族原生源**（hot ∪ parent）。
 			  -- 会话 id 在这里是**变量**（spa.gw_session_id）而不是绑定参数，
 			  -- 所以用 ForSession 那条（它把会话谓词钉成 $1）不合适 ⇒ 用全族源。
@@ -309,7 +309,7 @@ func InheritFromHistory(q Querier, window time.Duration) InheritLookup {
 			      WHERE rl.gw_session_id = spa.gw_session_id
 			        AND rl.tenant_id = spa.tenant_id
 			        AND rl.identity_hash = $2
-			        AND rl.ts > NOW() - ($4 || ' days')::interval
+			        AND rl.ts > NOW() - make_interval(days => $4::int)
 			  )
 			ORDER BY spa.updated_at DESC
 			LIMIT 1`

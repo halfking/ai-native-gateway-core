@@ -76,7 +76,10 @@ type ReviewPersistence interface {
 	// ListEgressRuleEventsInWindowDB 取与时间窗有重叠的出站规则命中事件
 	//（★ 候选规则的来源：★ 审核单没记规则时，靠它判断「邻近时段有没有内容
 	// 规则命中」★★）。
-	ListEgressRuleEventsInWindowDB(ctx context.Context, from, to time.Time, limit int) ([]EgressRuleEventInWindow, error)
+	// ★★ tenantIDs 是**必填**租户门（★ 2026-10-30 12h 审计轮：★★ 原先这个
+	// 读面没有租户条件 ⇒ ★★ 候选跨租户泄漏 ⇒ ★★ 归因被别家数据带偏）★★
+	// ⇒ ★★ 空集合必须 fail-closed（返回空）★★。
+	ListEgressRuleEventsInWindowDB(ctx context.Context, tenantIDs []string, from, to time.Time, limit int) ([]EgressRuleEventInWindow, error)
 	// InsertBlockReviewEvidence 落一条证据摘录（有界、带 TTL）。
 	InsertBlockReviewEvidence(ctx context.Context, e BlockReviewEvidence) error
 	// ListBlockReviewEvidenceDB 按审核单 ID 批量取证据摘录。

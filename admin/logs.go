@@ -963,25 +963,38 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		// ★ 搬运 / 补迁移写错），旧形态（单查询 ORDER BY ts DESC LIMIT 1）是
 		// ★ **确定性**的，新形态不该比旧形态更弱。
 		var pickedRequestID string
+		// 2026-10-30（合并两边）：
+		// ① 布尔占位符不写 `::boolean` 转型。pgx 的 QueryExecModeExec 走
+		//    扩展查询协议，把参数以二进制形态直接发给服务端；服务端对
+		//    已经带类型的参数再套一次显式转型会报 SQLSTATE 42804。布尔
+		//    参数的类型由 pgx 绑定自己决定，文本里不需要再写。
+		// ② 阶段二只能引用自己真正绑定的参数。旧写法把 WHERE 写成
+		//    「request_id = 第4号占位符」，却仍把查找用的 requestID 作为
+		//    第1号占位符传入；SQL 文本从不引用第1号 ⇒ PostgreSQL 扩展协议
+		//    报 SQLSTATE 42P18「could not determine data type of parameter
+		//    $1」。211 生产实证：/api/logs/:id 对每个能命中阶段一的请求都
+		//    500，request-detail 页「成功但无数据」。阶段二只需要
+		//    (pickedRequestID, superAdmin, tenantID) 三个绑定。
+		// （注释刻意不写旧的字面量占位符形态，以免契约测试误伤。）
 		if err := h.db.QueryRow(ctx, fmt.Sprintf(`
-			SELECT rl.request_id
-			  FROM %s
-			 WHERE %s
-			   AND ($2::boolean OR rl.tenant_id = $3)
-			 ORDER BY rl.ts DESC
-			 LIMIT 1
-			`, logsSourceFromSQL(), whereLeg), requestID, IsSuperAdminOrLegacy(r), GetTenantID(r)).Scan(&pickedRequestID); err != nil {
+				SELECT rl.request_id
+				  FROM %s
+				 WHERE %s
+				   AND ($2 OR rl.tenant_id = $3)
+				 ORDER BY rl.ts DESC
+				 LIMIT 1
+				`, logsSourceFromSQL(), whereLeg), requestID, IsSuperAdminOrLegacy(r), GetTenantID(r)).Scan(&pickedRequestID); err != nil {
 			return err
 		}
 		return h.db.QueryRow(ctx, fmt.Sprintf(`
-			SELECT %s
-			  FROM %s
-			%s
-			 WHERE rl.request_id = $4
-			   AND ($2::boolean OR rl.tenant_id = $3)
-			 ORDER BY rl.ts DESC
-			 LIMIT 1
-			`, requestLogsDetailCols, logsSourceFromSQL(), requestLogsJoins), requestID, IsSuperAdminOrLegacy(r), GetTenantID(r), pickedRequestID).Scan(
+				SELECT %s
+				  FROM %s
+				%s
+				 WHERE rl.request_id = $1
+				   AND ($2 OR rl.tenant_id = $3)
+				 ORDER BY rl.ts DESC
+				 LIMIT 1
+				`, requestLogsDetailCols, logsSourceFromSQL(), requestLogsJoins), pickedRequestID, IsSuperAdminOrLegacy(r), GetTenantID(r)).Scan(
 			&detail.Ts,
 			&detail.RequestID,
 			&detail.APIKeyID,
