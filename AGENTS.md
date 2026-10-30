@@ -16566,3 +16566,57 @@ i18n 四门全绿（CJK 4483=4483、locale-value PASS、key-parity PASS、strict
 **更轻负载下更慢 = 包变重了不是上界** / **补语义标签会让此前被绕过的样式规则开始生效** /
 **门抓出的存量红先分诊再决定修不修** / **「这门在强制执行路径上吗」必须被核对** /
 **一道门红了要问「红多久了」与「读数混了几种语义」** / **注释里的「已登记」也会过期**）。
+**2026-10-31 第 53 增量：输出合规审计轮（六项交付全量验证 + 降级单语义修正 + insights 缺 WHERE 修复）**（会话
+`mvs_bebea3efc1bd4fee824da9780c6ddce2` 承接输出合规任务链）：★ owner 原任务（全局开关 /
+拦截列表 / 通过·拒绝 / 匹配规则+原始会话内容 / 人工标注 / 自动优化）经两轮（10-29 误报轮
+43c4a3814~d32559500、10-30 审计轮 ff029a7fc）已落地 ⇒ 本轮做**审计**：六项交付在代码、
+测试、211 生产三个层面逐项对证据核验 —— **全部达成**（211 槽 a 跑 37004018 包含全链；
+开关键生产实测 true；247 条拦截单可见；新单 225/226 自带规则归因；证据 224 行；
+标注 1 条 false_positive；自动优化阈值 3 已接线、合成哨兵豁免；守卫启动日志
+`pending_max_mib=1 cap_mode=release`）。
+⇒ ★★★★ **生产读数抓出 F2（本轮最值钱）：降级放行单灌爆审核面** —— 921 把守卫缓冲越界的
+「降级放行」（release 模式：放行+留痕）也登记成 **pending 拦截单**，而 917 对这张表的
+契约是「每次**硬阻断**一条」⇒ 211 实测 **24h 内 226/226 条全是
+`builtin.guard.capacity_exceeded`（~230 条/天）**、7 天窗口 **0 条真实内容规则拦截**；
+联 session_turns 佐证：降级单的请求 `error_kind` 无一 `output_policy_blocked`
+（业务确实没被打断——原 complaint 已修掉，但审核面被遥测淹没）。
+⇒ ★★★ **死操作的识别法：追「按钮写下的数据被谁读」** —— 对降级单点「批准」会为
+合成哨兵规则写 7 天放行，而放行表只被内容规则读面（egressReleaseAllowed）消费
+⇒ **该放行行没有任何消费方** ＝ 看起来能操作、实际什么都不做；标注同样喂不到
+自动优化（maybeAutoRelax 显式豁免 `builtin.guard.*`）。
+⇒ ★ **修法（迁移 926）＝ 给事件分类、每个消费面按类取数，不回退留痕**：
+`degraded BOOLEAN` 末尾追加 + 回填 `rule_id LIKE 'builtin.guard.%'`（★ 回填边界写进
+迁移注释：block 模式部署的容量终断是硬阻断，会被本回填标成 degraded——当前在跑
+部署全为 release ⇒ 精确）；登记链 `PolicyBlockReviewInput.Degraded` → 两条 Add 路径；
+消费口径三处：待审数 `CountPendingBlockDecisions`（pending 且非降级）/ insights
+`WHERE NOT degraded`（DB+内存同口径）/ 前端只读遥测行（降级徽标+说明行，隐藏
+批准/拒绝/标注，证据/上下文/归因照常）。★ 让号：925 被撤销迁移占用过 ⇒ 取 **926**；
+登记面七点全齐 + 静态契约门（含防回退断言「只加列不接消费面等于没修」）。
+⇒ ★★★★ **顺带修掉 F3（既有缺陷）：insights 带租户过滤恒 503** ——
+`BlockReviewInsightsDB` 拼接 `FROM sanitize_block_reviews` + ` AND tenant_id=$N`
+**缺 WHERE 前缀** ⇒ 无过滤时合法、带过滤时非法 SQL ⇒ 租户管理员读数恒 503、
+super_admin 的 `?tenant_id=` 恒 503；★ **两轮终验都是 super_admin 无过滤口径，
+这正是它一直没暴露的原因** ⇒ ★★ **端点验证必须覆盖每个可选参数组合**
+（缺省路径绿 ≠ 参数路径绿）；修法与 F2 的排除口径合并落地
+（`WHERE NOT degraded` 起头）+ sqlmock 形状回归门（WHERE 必须先于 AND）。
+⇒ ★★ **量具夹具是列集的影子**：加列后两个既有 sqlmock 夹具先红（NewRows 列清单
+与 scanBlockReview 逐字对应）⇒ 同步补 degraded 列后全绿——这不是回归，是列序
+真值源在起作用；installer 启动清单（startup manifest）与 `installed_startup_migrations.tsv`
+是**生成物**，改 StartupFiles 后用 `-update` 通道重生成、不手工抄。
+⇒ ★ **读数**：Go 侧 sanitizerules / streaming / hooks·outputcompliance /
+outputcompliance / sql/migrations/startup / installer(dbinit) 全绿（新增 12 个测试：
+契约门 4 + sqlmock 4 + 内存口径 3 + 登记链 1）；web **2963 过 / 2 跳过**（钉总数
+201 → **203**：+reviewDegraded / reviewDegradedHint × 8 语种）；i18n 三门 PASS
+（硬编码中文 **4483 = 基线**）；`vue-tsc` 0 错；`build` ✓ 18.55s；`go build ./...` ✓；
+`go vet` ✓。211 生产终态由下一轮部署读数（迁移 926 待部署）。
+⇒ ★★ **本轮明确没做（留给下一轮）**：① 降级单保留期（表无 TTL，release 模式
+~230 行/天持续累积，年 ~8.4 万行——可复用证据表 TTL 模式）；② 降级率看板
+（排除后降级可见性只剩列表与指标 `OutputGateFailClosedErrorsTotal{source=capacity}`）；
+③ 审核单按规则/租户过滤与分页（§8② 遗留——降级单被排除后首页噪声已消失，优先级下降）；
+④ 22 条历史空白单只能靠标注消化；⑤ 候选窗口 ±15 分钟按真实命中率再调；
+⑥ **审计队列容量**（同窗第 11 轮抓到的另一半：256 满即丢、44250 WARN/3h 的背后是
+同量级审计事件真实丢弃——属他们的降噪立项，两线不重复）。
+⇒ 审计档 `docs/audit/2026-10-31-输出合规审计轮-六项交付验证与降级单语义修复.md`；
+通用式见 `LESSONS.md` **§589**（六条：表的契约由 DDL 注释说了算 /
+可选参数组合必须逐个验证 / 死操作=追不到消费方 /
+回填前缀要枚举全部语义 / mock 夹具是列集的影子 / 生成物登记面用重生成通道）。
