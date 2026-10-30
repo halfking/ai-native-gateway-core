@@ -141,6 +141,10 @@ async function loadBodyStatus() {
     if (id !== sessionId.value) return
     collectBodyStatus(detail)
   } catch (e) {
+    // 用户在请求返回前已经切走会话：丢弃这次结果——409 也不许点亮
+    // 新会话的横幅（旧会话 consent=off ≠ 新会话 consent=off；2026-10-31
+    // 批判式审计补：成功路径有这道守卫，catch 分支漏了）。
+    if (id !== sessionId.value) return
     // consent=off 时 /detail 整体 409（code=recording_unavailable）：这是
     // 显式状态，点亮「录制未开启」横幅。其余错误横幅是增强信息，取不到
     // 就不显示；不能让它把整个详情页带崩。
