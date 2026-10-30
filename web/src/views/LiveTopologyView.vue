@@ -493,7 +493,8 @@ function onSelectModel(model: string) {
   gap: 8px;
   /* 窄屏（<1024）：高度自然增长、由 .main-body 整页滚动 —— 钉死 100% 会把
      内容压进视口（栅格行塌成等分三段、列表 0 高，2026-10-28 实测）。
-     桌面（≥1024）：100% 铺满主区，配合栅格行 minmax(0,1fr) 收进视口。 */
+     桌面（≥1024）：100% 铺满主区，配合栅格行 minmax(min(320px,50vh),1fr)
+     收进视口（下限的由来见 .live-topology__body 的「行下限」注释）。 */
   height: auto;
   min-height: 0;
   padding: 8px 12px 12px;
@@ -675,7 +676,16 @@ function onSelectModel(model: string) {
    否则行高被 50 行/页的明细内容撑到两三千像素 —— 浮层锚在「整列底部」
    ⇒ 点行后摘要弹在视口外一千多像素处，用户根本看不见（本轮实测抓到）。
    窄屏两个请求列表各自限高 + 列表内滚动：不限高时整页 4623px（390 宽实测），
-   拓扑与右栏被推到「永远划不到」的地方，手机上没法观察请求。 */
+   拓扑与右栏被推到「永远划不到」的地方，手机上没法观察请求。
+   ★★ 行下限（2026-10-31 浮层塌缩轮）：纯 minmax(0,1fr) 有另一个失败模式 ——
+   当头部统计面板足够高（1280×713 实测吃掉 ~450px）而 .live-topology 高度
+   钉死 100% 时，body 只剩 90px，第 1 行被压到 **0px**：拓扑画布整块不可见、
+   摘要浮层的 max-height: calc(100% - 24px) 以 0 高列为基准 ⇒ 塌成 16px 一条缝
+   ⇒ 点行「看不见摘要」（线上实测读数，详见本轮审计档）。
+   ⇒ 第 1 行加下限 min(320px, 50vh)（与 .live-topology__clients 的既有
+   min-height: 320px 对齐）：空间充足时行为与旧版完全一致（1fr 吃满剩余），
+   空间不足时行保住 320px、栅格内容溢出由 .main-body 滚动兜底 ——
+   宁可滚，不可塌。 */
 .live-topology__body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -725,8 +735,10 @@ function onSelectModel(model: string) {
   .live-topology__body {
     grid-template-columns: 260px minmax(0, 1fr);
     /* 行收进视口：第一行（左栏+拓扑）吃满剩余高度，第二行（右栏横排）
-      由内容自定（max-height 240px 封顶）。 */
-    grid-template-rows: minmax(0, 1fr) auto;
+      由内容自定（max-height 240px 封顶）。
+      ★ 下限 min(320px, 50vh) 见上方「行下限」注释：统计面板挤占空间时
+      第 1 行不许塌 0（塌 0 ⇒ 拓扑不可见 + 摘要浮层缩成一条缝）。 */
+    grid-template-rows: minmax(min(320px, 50vh), 1fr) auto;
   }
 
   .live-topology__right {
@@ -744,8 +756,10 @@ function onSelectModel(model: string) {
 @media (min-width: 1440px) {
   .live-topology__body {
     grid-template-columns: 280px minmax(0, 1fr) 300px;
-    /* 三列单行：行高 = 本体高度 ⇒ 三列都在视口内，浮层锚列底必然可见。 */
-    grid-template-rows: minmax(0, 1fr);
+    /* 三列单行：行高 = 本体高度 ⇒ 三列都在视口内，浮层锚列底必然可见。
+       ★ 同样带 320px 下限：矮窗（如 1440×768）下统计面板挤占后剩余空间
+       若小于下限，行保住 320px、交给 .main-body 滚动兜底。 */
+    grid-template-rows: minmax(min(320px, 50vh), 1fr);
   }
 
   .live-topology__right {

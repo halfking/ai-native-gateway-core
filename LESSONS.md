@@ -27973,3 +27973,7 @@ nativepair 厂商感知后，anthropic 腿 IRStamp 测试的老正臂（minimax-
 > （与真实 dial 失败在分类器眼里同构）+ errorsx 结构化分支钉子 ⇒
 > 分类链（transport→Do→classify）在任何主机都可证，集成测试降级为
 > 「有真解析环境的补充证据」。
+
+---
+
+## §593 · /live 点行摘要浮层塌缩修复轮（2026-10-31，第 5 轮上报的真因）—— ★★★★★ 「门绿/部署绿」与「用户看到的行为」之间隔着【用户的视口】：同一份 bundle 在 1680×1050 全绿（点击套件 ALL PASS），在 1280×713 摘要浮层塌成 16px 一条缝——用户连报 5 轮「点行直接开新窗、没有摘要」，前 4 轮全部用「部署正确」作答，第 5 轮才把量具对准用户视口；★★★★★ absolute 浮层的百分比尺寸（max-height: calc(100% - 24px)）以 containing block 为基准，containing block 被栅格压塌到 0 ⇒ 浮层塌 0，而 overflow 溢出让列表「看起来还在」⇒ 骗过所有「页面看起来正常」的肉眼检查——几何塌缩必须读 getBoundingClientRect，不能看截图定性；★★★★ 同一处栅格的两种失败模式要分开测：10-28 修的是「行被 50 行明细撑爆」（⇒ minmax(0,1fr) 收进视口），本轮塌的是「头部统计面板吃掉空间后行整行塌 0」（1280×713 实测 body 只剩 90px、第 1 行 0px、拓扑画布整块不可见）——修掉一头不等于另一头不存在；修法 = 行下限 minmax(min(320px,50vh),1fr)（与既有 clients min-height:320px 对齐，宁可滚不可塌，.main-body 滚动兜底）；★★★ window.open 的弹窗拦截只挡非受信点击：CDP synthetic el.click() 会把「开新窗」断言 4 项全打成假红，验证开新窗必须 Input.dispatchMouseEvent（受信输入）+ 点击后轮询 /json/list（新 target 刚建时 url 为空串）；★★★ 无 admin 密码的生产机走查通道 = 铸 JWT（HS256 + LLM_GATEWAY_SECRET_KEY fallback、iss/aud 与 admin/jwt.go 同构）→ /api/auth/me 验签 → 种 cookie + localStorage 两道闸门（§586 的复用与扩展）；★★ 修完先在「生产 DOM + 注入修复 CSS」上验证再等部署——真实数据、真实 DOM、只换样式规则，是量具先行的最短回路（本轮 1280 浮层 16px→296px、行 0px→320px、1440 健康基线不回退）
