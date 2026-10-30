@@ -2154,7 +2154,9 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		}
 	}()
 	if params.UpstreamAttempts == nil {
-		params.UpstreamAttempts = NewUpstreamAttemptBudget(DefaultUpstreamAttemptLimit)
+		// 2026-10-30: 兜底构造走 survival.attempt_budget 热加载（默认仍 100）；
+		// 主构造点（streaming/handler.go）已显式传入。
+		params.UpstreamAttempts = NewUpstreamAttemptBudget(RequestAttemptLimit())
 	}
 	if !params.clientTokenMetricsOwner {
 		params.clientTokenMetricsOwner = true

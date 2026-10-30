@@ -79,6 +79,9 @@ func PlatformSpecs() []*Spec {
 	// 2026-10-14: P0-3 断流原地续问——上游 EOF 无终态标记时同候选
 	// assistant-prefill 续问一次并无缝拼接（survival.stream_continuation_enabled）。
 	out = append(out, StreamContinuationSpecs()...)
+	// 2026-10-30 magpie 对比轮: 候选计划面热加载旋钮
+	//（routing.max_candidates / survival.attempt_budget）。
+	out = append(out, RoutingPlanSpecs()...)
 	// 2026-10-21 R72f: URSM v2 平台级设置（键此前只存在于读方 ⇒ 写不进去）。
 	out = append(out, UrsmSpecs()...)
 	return out

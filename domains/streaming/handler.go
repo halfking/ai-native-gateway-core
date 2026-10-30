@@ -4667,7 +4667,8 @@ func (h *ChatHandler) serveWithExecutor(
 	// buildExecParams assembles the per-attempt ExecParams shared by the
 	// legacy goal-retry loop and the SR-W2 survival branch (doc 18 §5.1):
 	// one construction site, zero drift between the two paths.
-	upstreamAttempts := executors.NewUpstreamAttemptBudget(executors.DefaultUpstreamAttemptLimit)
+	// 2026-10-30: 预算大小走 survival.attempt_budget 热加载（默认仍 100）。
+	upstreamAttempts := executors.NewUpstreamAttemptBudget(executors.RequestAttemptLimit())
 	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
 	// v6 G-Ⅱ: X-Gw-Due-At 定时请求（到期前停在 dispatch 的到期堆）。
 	dispatchDueAt := parseDispatchDueAt(r)
