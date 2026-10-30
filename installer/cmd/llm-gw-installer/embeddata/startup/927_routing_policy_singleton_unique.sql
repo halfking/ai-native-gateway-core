@@ -46,6 +46,24 @@
 --
 -- 锁守卫（startup_ddl_lock_guard_gate_test.go）：含 DELETE 回填 + ADD CONSTRAINT
 -- ⇒ 必须自带 lock_timeout 与 statement_timeout（917/921/926 同款纪律）。
+--
+-- ★★★ **2026-10-31 12h 审计轮修：★ 本文件必须【自带事务】★★★ ★ 原因：
+-- ★ `SET LOCAL` **只在事务块内生效** ⇒ ⇒ ★★ 而本文件原先**没有** BEGIN/COMMIT
+-- ★★ ⇒ ⇒ ★★ ⇒ 部署通道 `scripts/apply-db-revision-sequence.sh` 的 `psql_stream`
+-- ★★ （★ **不**加 --single-transaction）⇒ ⇒ ★★ ⇒ 整份文件按「每条语句一个隐式
+-- ★★ 事务」执行 ⇒ ⇒ ★★ ⇒ **顶部的 SET LOCAL 落在事务块外 ⇒ ⇒ PG 只发一条
+-- ★★ WARNING ⇒ ⇒ ★★ ⇒ ★★ ★★ **lock_timeout / statement_timeout 两个守卫实际
+-- ★★ ★★ 都没生效** ⇒ ⇒ ★★ ⇒ ★★ ⇒ 而 ADD CONSTRAINT UNIQUE 要拿 ACCESS
+-- ★★ ★★ EXCLUSIVE 锁 ⇒ ⇒ ★★ ⇒ 可以无限期等锁 ⇒ ⇒ ★★ ⇒ 部署卡死。
+-- ★★ ⇒ ★★ 同理，步骤 1/2/3 各自独立提交 ⇒ ⇒ ★★ ⇒ 「行已删、约束未建」的
+-- ★★ 半应用状态是可能的。
+-- ★★★ ⇒ ⇒ ★★ 修法（★ 与 856/855 等既有迁移同款约定）：★ 文件自带
+-- ★★★ BEGIN; … COMMIT; ⇒ ⇒ ★★ 于是 ① SET LOCAL 生效（★ 任何通道都生效）、
+-- ★★★ ② 三步原子（★ 任一步失败 ⇒ 整份回滚）⇒ ⇒ ⇒ ★★ installer 通道那边
+-- ★★★ （★ --single-transaction）⇒ ⇒ BEGIN 会给一条「已有事务」的 WARNING、
+-- ★★★ COMMIT 会提交外层事务 ⇒ ⇒ ★★ 效果与本意一致（★ 仓内已有 70+ 个同款文件）。
+BEGIN;
+
 SET LOCAL lock_timeout = '2s';
 SET LOCAL statement_timeout = '30s';
 
@@ -94,3 +112,5 @@ BEGIN
       ADD CONSTRAINT routing_policy_tenant_id_key UNIQUE (tenant_id);
   END IF;
 END $$;
+
+COMMIT;
