@@ -16375,3 +16375,45 @@ pocket $4（N+6）。
 通用式见 `LESSONS.md` **§583**（十条：迁移预应用≠脚本部署 / 坏 join 造假缺陷 /
 活锁=成本-预算差 / 错误族二次分桶 / 拼接解析去重 / 协议形态归因 / 相位从日志读 /
 KV 直写生效条件 / CONCURRENTLY 锁预算 / 自噪音按客户端签名入账）。
+
+**2026-10-30 24h 审计第 10 轮（goal 会话，接第 8 轮·续遗留 + 第 9 轮归零复核）**：
+★ **① per-node failed 冷却窗复测：窗口本身收敛 ✓ 但挖出第二层成本放大**——
+★★★★★ `routing_policy` 的 `id` **无唯一约束**（CHECK≠PK），211 生产 **4 行物理重复**
+（2026-09-17 审计 §7.6 已登记、运营裁决维持现状）⇒ 两处发现查询
+（`bg/quality_node_source.go` per-node IQ / `bg/model_credibility_source.go` 可信度）
+**裸 CROSS JOIN 无去重** ⇒ 每个唯一 (credential, model) 对在 targets 里出现 4 次
+（211 实测 targets 228 / 唯一对 103；可信度 24h 190 runs / 49 唯一对；其它消费方
+shared_pick/client_configs/streaming 全有 LIMIT 1/GROUP BY 保护，唯独这两处没有）
+⇒ `NodeInFlightGate` 只防**并发**不防同批重复行 ⇒ 同对同一轮串行重烧 4 次 50 题。
+根修 **`bd5c85af2`**（两处 `SELECT DISTINCT` + 形状断言测试收编；SQL 侧根治不依赖
+DB 行清理——那是涉生产 DELETE 的运营裁决）。顺带修 `deploy-test-gate.sh` 的
+bash4 声明红门（`# requires-bash: 4`，main 上 TestBash4 一直红）⇒ 全量短测试复绿。
+★★★ 时间线陷阱：211 容器日志 UTC / DB +08 / `StartedAt` UTC——第 8 轮「06:38 部署」
+实为北京 14:38；稳定段复测 failed 12/success 13/同对≤4 次（=4x 放大，非窗口失效），
+error 分类已落库（429/timeout/410）。**五项判据仍不达标 ⇒ 245/154 维持不开**；
+「scheduled failed < 100」的有效读数要等 DISTINCT 部署后的下一轮（targets 应落 ~103）。
+⇒ ★★ **② glm-5.3 歧义 WARN 未归零（743 条/5.7h）但两条根因都实锤**——
+a) 处置后候选仍混入 `z-ai/glm-5.3`：命中路径是 resolver SQL 的
+`standardized_name`/`canonical_name` **直接相等**（归一化变体第 3 位就是裸名），
+**不经别名表** ⇒ 第 9 轮「disabled 即时收敛」的前提对这条路径不成立；
+b) **排序兜底 100% 有效**（869/869 selected=z-ai/glm-5.3-flash，零错发）；
+c) WARN 频度根因：`PostExecutionHook.RecordOutcome` 每次成功请求都调
+`RestoreOnSuccess(cred, 客户端名)` ⇒ **每次成功 glm-5.3-flash 请求发一条歧义
+WARN**（告警噪声非路由错误；同族调用方 5 个）。minimax 同族 3 条同机制
+（裸名在 canonical 69/122226 双 active）。修法（resolver 归一化路径降噪）涉
+P0.3 兜底语义与 5 调用方口径 ⇒ **登记独立工程，本轮不动**。
+⇒ ★ **③ 42P18 归零确认**：修复后两个完整 boot 生产日志 0 条（修复前 6h 414 条
+ERROR 里唯一非流量态），租户门测试绿。
+⇒ ★ **常规**：窗口内无未合并分支；`stash@{0}`（10-29 第 7 轮 WIP）内容已被正式提交
+覆盖，保守登记不删；245 两个既有 failed systemd 单元（collector-service 自 10-15 /
+nim-case-cron）登记不擅动；154 6h 窗 26×502 全是探针打 nvidia 上游（上游 nginx 502
+直穿）+ 561×「direct healthy/gateway 腿 503」（/live 选路层遗留面，继续登记）；
+慢 SQL 依旧不可查（pg_stat_statements 未 shared_preload，连续第三轮如实记）。
+⇒ ★★ **共享 checkout 打包实证**：本轮工作树修改在 19:22 被并行打包以 `bd5c85af2`
+推上 origin/main（内容与我的 Edit 逐字一致，5 文件已核对）——发现「修改不见了」
+先 `git log --all`+`git show` 核对内容再决定补提交还是接受。
+⇒ 部署：211 现跑 b48992f5（19:57 切换，**不含** bd5c85af2 的 DISTINCT）；245=2914/
+154=2915 未动；**DISTINCT 修复的三台部署 + targets≈103 判据验证统一留下一轮**。
+⇒ 审计档 `docs/audit/2026-10-30-24h审计第10轮-CROSSJOIN放大与歧义根因.md`；
+通用式见 `LESSONS.md` **§586**（五条：发现面唯一性是第四道闸 / disabled 前提要
+枚举命中路径 / 告警频度跟随什么决定修法 / 多时区读数先校准时钟源 / 门正则锚定整行）。

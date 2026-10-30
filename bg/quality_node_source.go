@@ -115,8 +115,15 @@ func (s *CredentialNodeSource) discoverNodes(ctx context.Context, opt discoverOp
 	for _, c := range condFrags {
 		extraConds += "\n\t  AND " + c
 	}
+	// ★ DISTINCT（2026-10-30 第 10 轮）：routing_policy 的 id 无唯一约束，
+	//   211 生产实测 4 行物理重复（2026-09-17 审计已登记的卫生项）⇒ 裸
+	//   CROSS JOIN 把每个唯一 (credential, model) 对放大成 4 行 targets
+	//   （228 targets 实际只有 103 唯一对）⇒ 同一对在同一轮里被串行重烧
+	//   4 次 50 题（inFlight gate 只防并发、不防同批重复行）。其它消费方
+	//   都有 LIMIT 1 / GROUP BY 保护，只有两处发现查询没有 ⇒ 在 SQL 侧
+	//   去重（比依赖 DB 侧行清教训根本：任何库状态都安全）。
 	rows, err := s.db.Query(ctx, `
-		SELECT c.id, COALESCE(p.display_name, p.code, ''), COALESCE(c.label, ''),
+		SELECT DISTINCT c.id, COALESCE(p.display_name, p.code, ''), COALESCE(c.label, ''),
 		       COALESCE(pm.raw_model_name, ''),
 		       COALESCE(pm.outbound_model_name, ''),
 		       COALESCE(mc.canonical_name, pm.raw_model_name),

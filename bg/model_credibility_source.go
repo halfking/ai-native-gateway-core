@@ -52,7 +52,7 @@ func buildCredibilityTargetsSQL(scope string) string {
 		  )`
 	}
 	return `
-		SELECT c.id,
+		SELECT DISTINCT c.id,
 		       c.provider_id,
 		       COALESCE(p.display_name, p.code, ''),
 		       COALESCE(p.protocol, 'openai-completions'),
@@ -82,6 +82,9 @@ func buildCredibilityTargetsSQL(scope string) string {
 		  AND COALESCE(pm.unavailable_reason, '') NOT LIKE 'manual%'
 		ORDER BY c.id, pm.raw_model_name
 	`
+	// ★ DISTINCT 的理由见 bg/quality_node_source.go 同轮注释：routing_policy
+	//   4 行物理重复（id 无唯一约束）⇒ 裸 CROSS JOIN 把 targets 放大 4 倍
+	//   （211 实测 24h 190 runs / 49 唯一对），每对同轮串行重探 4 次。
 }
 
 // DiscoverTargets 列出所有活跃的 (凭据, 模型) 节点，带上探测所需字段。
