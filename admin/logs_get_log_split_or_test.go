@@ -103,7 +103,7 @@ func TestGetLogTwoPhaseStage2ParamsNoUnusedDollar1(t *testing.T) {
 			"若仍先传 requestID 再传 pickedRequestID，未引用的 $1 会再次触发 42P18")
 	}
 	// 阶段二 WHERE 必须用 $1 承接 pickedRequestID（与上面三个绑定对齐）。
-	if !strings.Contains(src, "WHERE rl.request_id = $1\n\t\t\t   AND ($2 OR rl.tenant_id = $3)") {
+		if !strings.Contains(src, "WHERE rl.request_id = $1\n\t\t\t\t   AND ($2 OR rl.tenant_id = $3)") {
 		t.Fatal("getLog 阶段二 WHERE 必须是 rl.request_id = $1 + 租户门 $2/$3（与三参数绑定对齐）")
 	}
 }
