@@ -49,13 +49,40 @@ func TestResolveRawBinding(t *testing.T) {
 		},
 		{
 			name:    "unique alias resolves one raw binding",
-			results: []string{"", "deepseek-v4-flash-260425"},
+			results: []string{"", "deepseek-v4-flash-260425\x1f2"},
 			request: "deepseek-flash",
 			want:    "deepseek-v4-flash-260425",
 		},
 		{
+			// 2026-10-31 批判式审计轮（第 11 轮立项卡实施）：特异性胜出 ⇒ 静默
+			// 选择（不再 WARN），选择结果与 2026-09-06 P0.3 行为一致。
+			name:    "specificity winner resolves silently (rank 1 beats rank 3)",
+			results: []string{"", "z-ai/glm-5.3-flash\x1f1\x1ez-ai/glm-5.3\x1f3"},
+			request: "glm-5.3-flash",
+			want:    "z-ai/glm-5.3-flash",
+			wantErr: nil,
+		},
+		{
+			// 真同分（两绑定经同一变体命中）⇒ 维持 WARN+取首（2026-09-06 行为）。
+			name:    "rank tie keeps first-candidate fallback",
+			results: []string{"", "m-a\x1f2\x1em-b\x1f2"},
+			request: "some-model",
+			want:    "m-a",
+			wantErr: nil,
+		},
+		{
+			// rank 段缺失（异常 wire）⇒ 按「不比任何人特异」处理 ⇒ 交 WARN 路径。
+			name:    "missing rank degrades to ambiguity path",
+			results: []string{"", "m-a\x1em-b"},
+			request: "some-model",
+			want:    "m-a",
+			wantErr: nil,
+		},
+		{
+			// 旧测试名保留的歧义场景在新 wire 下即「exact 同名多绑定」⇒ 走
+			// exact 路径的 WARN+取首（行为与 2026-09-06 P0.3 一致）。
 			name:    "ambiguous alias selects first candidate (2026-09-06 P0.3 fix)",
-			results: []string{"", "deepseek-v4-flash\x1fdeepseek-v4-flash-260425"},
+			results: []string{"", "deepseek-v4-flash\x1f2\x1edeepseek-v4-flash-260425\x1f2"},
 			request: "deepseek-flash",
 			want:    "deepseek-v4-flash",
 			wantErr: nil,
@@ -74,7 +101,11 @@ func TestResolveRawBinding(t *testing.T) {
 			}
 			wantCandidates := []string(nil)
 			if errors.Is(err, ErrAmbiguousModelBinding) {
-				wantCandidates = strings.Split(tt.results[len(tt.results)-1], "\x1f")
+				// 新 wire：name\x1frank 对、\x1e 分隔 ⇒ 期望候选取名字段。
+				for _, pair := range strings.Split(tt.results[len(tt.results)-1], "\x1e") {
+					name, _, _ := strings.Cut(pair, "\x1f")
+					wantCandidates = append(wantCandidates, name)
+				}
 			}
 			if errors.Is(err, ErrAmbiguousModelBinding) && !reflect.DeepEqual(AmbiguousCandidates(err), wantCandidates) {
 				t.Fatalf("ambiguous candidates = %v, want %v", AmbiguousCandidates(err), wantCandidates)
@@ -132,6 +163,10 @@ func TestResolveRawBinding_NonExactQueryRanksBySpecificity(t *testing.T) {
 		"best_rank",                          // 排序因子
 		"ORDER BY ranked.best_rank NULLS LAST, ranked.name", // 特异性优先 + 名字稳定兜底
 		"DISTINCT ON (pm.raw_model_name)",    // 每个候选名只留最特异的那一行
+		// 2026-10-31：wire 必须带 rank 对（name\x1frank、\x1e 分隔）——Go 侧
+		// 要区分「特异性胜出（静默）」与「真同分（WARN）」，纯名字序列给不出判据。
+		`ranked.name || E'\x1f' || ranked.best_rank`,
+		`E'\x1e'`,
 	} {
 		if !strings.Contains(nonExact, needle) {
 			t.Fatalf("non-exact query missing %q — 候选特异性排序被改动，211 生产「要 flash 给非 flash」的回归会复发\nSQL: %s", needle, nonExact)
