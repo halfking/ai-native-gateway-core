@@ -17,7 +17,7 @@
 AI Native Gateway ist ein **Open-Source-, self-hosted-, AI-nativer LLM-Gateway**, gebaut für das Zeitalter von KI-Agenten und „Vibe Coding“. Es tut weit mehr, als Anfragen weiterzuleiten: Es **klassifiziert, routet, steuert, auditiert und abrechnet** jedes Token, das durch Ihre Organisation fließt.
 
 - **Protokoll-Normalisierung**: OpenAI-, Anthropic-, Gemini- und Responses-API-Kompatibilität — ein Endpunkt für jedes Modell
-- **Intelligentes Zwei-Schichten-Routing**: L1 wählt das Modell (Task-Klassifikation → 6-Dimensionen-Scoring), L2 wählt das Credential (Tier-Fallback → Billing-Runde → P2C-Scoring → Execute / Circuit-Break)
+- **Intelligentes Zwei-Schichten-Routing**: L1 wählt das Modell (Task-Klassifikation → 8-Dimensionen-Scoring), L2 wählt das Credential (Tier-Fallback → Billing-Runde → P2C-Scoring → Execute / Circuit-Break)
 - **Session-Governance**: Sticky Sessions, vollständiges Session-Replay, automatische Prompt-Kompression und 4-stufiger Datenlebenszyklus — das Gespräch, nicht nur der Request, ist ein First-Class-Objekt
 - **Multi-Tenancy**: Durch PostgreSQL-RLS erzwungene Tenant-Isolation auf 90+ Tabellen, mit Tenant-spezifischen Quotas, Metering und MaaS-Billing
 - **Credential-Management**: Multi-Credential-Pools mit Fingerprint-Tarnung, adaptivem Probing und automatischem Circuit-Breaking
@@ -104,17 +104,17 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | Pfad | Rolle |
 |------|------|
 | `cmd/gateway/` | Composition-Root — Produktions-Einstiegspunkt als Single-Binary (Data + Control Plane) |
-| `domains/` | 68 DDD-Domains — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, Hooks, Security … |
+| `domains/` | 69 DDD-Domains — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, Hooks, Security … |
 | `admin/` + `web/` | Admin-REST-API + Vue 3 + TypeScript SPA (Element Plus, ECharts) |
 | `web-mobile/` | Mobiles Frontend (Vue 3 + TypeScript) — zweites Produktions-UI; das Deployment verweigert den Start ohne den `dist/`-Build |
 | `bg/` | Background-Worker — Probing, Lifecycle-Cleanup, Stats-Aggregation, Partition-Wartung |
 | `storage/` | Dual-Mode-Storage-Factory (`full`: PG+Redis / `lite`: SQLite+Dateien+In-Proc-KV) |
 | `internal/` | Querschnitts-Infrastruktur — IR, Vendor-Strip, Session-Mirror, Outbox, Telemetry … |
-| `sql/migrations/` + `db/migrations/` | Idempotente Migrationen (Startup-Serie aktuell bei 907) |
+| `sql/migrations/` + `db/migrations/` | Idempotente Migrationen (Startup-Serie aktuell bei 927) |
 | `installer/` | Eigenständiges plattformübergreifendes Installer-/Upgrader-Modul |
 | `scripts/`, `deploy/` | Build-, Deploy-, Mirror- und Verifikations-Werkzeuge |
 
-Skalierungs-Snapshot (Code-Scan vom 2026-10-22 @31466a01d): **~5,680 Go-Dateien · 3,333 Testdateien · 1,119 Migrations-SQLs · 68 Domain-Packages · 44 Binaries** unter `cmd/` (Dateizahlen ohne `vendor/` und `installer/`; Migrations-SQLs = vollständiger `sql/migrations/`-Baum; Binaries = main-Pakete laut `go list`).
+Skalierungs-Snapshot (Code-Scan vom 2026-10-31 @495a1c758): **~6,138 Go-Dateien · 3,661 Testdateien · 1,180 Migrations-SQLs · 69 Domain-Packages · 49 Binaries** unter `cmd/` (Dateizahlen ohne `vendor/` und `installer/`; Migrations-SQLs = vollständiger `sql/migrations/`-Baum; Binaries = main-Pakete laut `go list`).
 
 **Vertiefende Lektüre**
 
@@ -162,7 +162,7 @@ Alle unten gezeigten Module sind ausgeliefert und laufen im k3s-Produktionsdeplo
 ### Routing-Panorama — Zwei-Schichten-Routing, voll beobachtbar
 
 ![Routing Panorama](docs/assets/screenshots/routing-panorama.png)
-*L1-Modellwahl (Task-Klassifikation → 6-Dimensionen-Scoring → Profil-Lock) + L2-Credential-Wahl (Modell-Auflösung → Tier-Fallback → Billing-Runde → P2C-Scoring → Execute / Circuit-Break). Die Task×Modell-Heatmap beantwortet „welches Modell für welchen Task“; der Sankey-Flow zeigt das endgültige Ziel von 14.000+ Live-Requests (Task → Modell → Provider)*
+*L1-Modellwahl (Task-Klassifikation → 8-Dimensionen-Scoring → Profil-Lock) + L2-Credential-Wahl (Modell-Auflösung → Tier-Fallback → Billing-Runde → P2C-Scoring → Execute / Circuit-Break). Die Task×Modell-Heatmap beantwortet „welches Modell für welchen Task“; der Sankey-Flow zeigt das endgültige Ziel von 14.000+ Live-Requests (Task → Modell → Provider)*
 
 ### Credential-Monitor — Multi-Source × Multi-Credential-Health
 
@@ -298,7 +298,7 @@ In non-TTY (CI / `--skip-prompt`) ohne `--config` ist der Default `full`.
 | 5. Verzeichnislayout | voll | voll (db/data und redis/data werden angelegt, aber nicht genutzt) |
 | 6. `compose.yml` | 3 Services | **`kx-citus` + `kx-redis` entfernt**; Gateway verliert `depends_on` und PG/Redis-env |
 | 7. Container starten | 3 Container | **nur `kx-llm-gateway-go`** |
-| 8. DB-Initialisierung | Auf PG-ready warten + `InitSchema` (450+ Startup-Migrationen) | **Übersprungen** (SQLite legt automatisch an) |
+| 8. DB-Initialisierung | Auf PG-ready warten + `InitSchema` (590+ Startup-Migrationen) | **Übersprungen** (SQLite legt automatisch an) |
 | 9. Healthcheck | 5-Punkt-Vollcheck | nur Container + `/healthz`; PG/Redis/Schema im Report erzwungen ✅ |
 
 **Neue Install-Flags**

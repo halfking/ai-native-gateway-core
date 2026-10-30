@@ -250,7 +250,7 @@ guards-fast: guards-installer guards-shell ## 运行**CI 预算内**的审计守
 guards-shell: ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描面含未跟踪文件，比 Go 门宽）
 	@bash scripts/guards/check-shell-fullwidth-var.sh
 
-# scripts/ursmcheck 的 165 个门文件（比主门慢一个量级 ⇒ 独立 timeout）
+# scripts/ursmcheck 的 166 个门文件（比主门慢一个量级 ⇒ 独立 timeout）
 # ★★ 2026-10-28 r1044 轮：慢门预算由 900s 提到 **1800s**（★ 与 verify.sh 的
 #   ★ 全量测试腿**同一档** ⇒ ★★ 两处必须同步改）。
 #   依据：★ 仓内自记该包实测 **840.111s / timeout 900s**（⇒ 当时余量只剩 ~60s，
@@ -269,7 +269,7 @@ guards-shell: ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描�
 #   ⇒ ★★ 余量由「~1.8x」收窄到 **1800/1122.817 ≈ 1.60x** ⇒ ★★ **仍然够用**
 #   （⇒ 预算不必再提；★ 但余量已非「宽松」，下一轮若继续变重需重新评估）。
 .PHONY: guards-ursmcheck
-guards-ursmcheck: ## scripts/ursmcheck 全量门（165 个门文件；CI 上此前从未执行过）
+guards-ursmcheck: ## scripts/ursmcheck 全量门（166 个门文件；CI 上此前从未执行过）
 	$(GO) test $(GUARD_PACKAGES_SLOW) -count=1 -timeout=1800s
 
 # R48-B1 后续（R48 报告 §五-3）：installer 是独立 go.mod，根目录

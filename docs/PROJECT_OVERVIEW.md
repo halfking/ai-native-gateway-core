@@ -40,12 +40,12 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
-| Go源文件总数 | 5,680 个 | `find . -name "*.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
-| Admin API文件 | 737 个 | `find ./admin -name "*.go" -type f \| wc -l` |
-| 后台Worker文件 | 426 个 | `find ./bg -name "*.go" -type f \| wc -l` |
-| 领域模块数量 | 68 个 | `ls ./domains/ \| wc -l` (一级目录) |
-| 数据库迁移 | 1,119 个 SQL | `sql/migrations/` 全量；startup 数字序列活跃至 **894**（work_type 路由来源） |
-| 单元测试文件 | 3,333 个 | `find . -name "*_test.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
+| Go源文件总数 | 6,138 个 | `find . -name "*.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
+| Admin API文件 | 790 个 | `find ./admin -name "*.go" -type f \| wc -l` |
+| 后台Worker文件 | 434 个 | `find ./bg -name "*.go" -type f \| wc -l` |
+| 领域模块数量 | 69 个 | `ls ./domains/ \| wc -l` (一级目录) |
+| 数据库迁移 | 1,180 个 SQL | `sql/migrations/` 全量；startup 数字序列活跃至 **927**（work_type 路由来源为 831） |
+| 单元测试文件 | 3,661 个 | `find . -name "*_test.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
 | 可执行程序 | 34 个 | `ls ./cmd/ \| wc -l` |
 
 ---
@@ -71,7 +71,7 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 │                                                                   │
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │            控制面 (Control Plane)                         │   │
-│  │  Admin API (737文件) + Vue SPA + 后台Worker (426文件)    │   │
+│  │  Admin API (790文件) + Vue SPA + 后台Worker (434文件)    │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                   │
 │  ┌─────────────────────────────────────────────────────────┐   │
@@ -267,7 +267,7 @@ Client Request
 
 ### 3.7 后台Worker系统
 
-**位置**: `bg/` (426个Go文件)
+**位置**: `bg/` (434个Go文件)
 
 核心Worker（部分列举）:
 
@@ -286,7 +286,7 @@ Client Request
 
 ### 3.8 Admin API与管理面板
 
-**位置**: `admin/` (737个Go文件), `web/` (Vue 3 + TS)
+**位置**: `admin/` (790个Go文件), `web/` (Vue 3 + TS)
 
 #### Admin API模块
 
@@ -407,12 +407,12 @@ Client Request
 ## 5. 代码统计
 
 ```
-Go源文件总数:     5,680 个 (不含 vendor/installer；快照 @31466a01d)
-Admin API文件:      737 个
-后台Worker文件:     426 个
-领域模块:            68 个 (domains/ 一级目录)
-数据库迁移:         1,119 个 SQL (sql/migrations/; startup 活跃序列最新 894)
-测试文件:         3,333 个 (*_test.go, 不含 vendor/installer)
+Go源文件总数:     6,138 个 (不含 vendor/installer；快照 @495a1c758)
+Admin API文件:      790 个
+后台Worker文件:     434 个
+领域模块:            69 个 (domains/ 一级目录)
+数据库迁移:         1,180 个 SQL (sql/migrations/; startup 活跃序列最新 927)
+测试文件:         3,661 个 (*_test.go, 不含 vendor/installer)
 可执行程序:           34 个 (cmd/)
 ```
 

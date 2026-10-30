@@ -17,7 +17,7 @@
 AI Native Gateway 是一个**开源、可私有部署的 AI 原生 LLM 网关**，为 AI Agent 与 Vibe Coding 时代而生。它远不止转发请求：它对流经企业的每一个 Token 进行**分类、路由、治理、审计与计费**。
 
 - **协议归一化**：OpenAI、Anthropic、Gemini、Responses API 兼容 —— 一个端点接入所有模型
-- **双层智能路由**：L1 选模型（任务分类 → 6 维评分），L2 选凭据（Tier 回退 → 计费轮次 → P2C 评分 → 执行 / 熔断）
+- **双层智能路由**：L1 选模型（任务分类 → 8 维评分），L2 选凭据（Tier 回退 → 计费轮次 → P2C 评分 → 执行 / 熔断）
 - **会话治理**：粘性会话、全量内容会话回放、自动提示词压缩、4 档数据生命周期 —— 会话（而非单次请求）是一等治理对象
 - **多租户**：PostgreSQL RLS 强制租户隔离（90+ 表），配套每租户配额、用量计量与 MaaS 计费
 - **凭据管理**：多凭据池，配指纹伪装、自适应探测与自动熔断
@@ -104,17 +104,17 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | 路径 | 职责 |
 |------|------|
 | `cmd/gateway/` | 组合根 —— 单二进制生产入口（数据面 + 控制面） |
-| `domains/` | 68 个 DDD 领域 —— `streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
+| `domains/` | 69 个 DDD 领域 —— `streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
 | `admin/` + `web/` | 管理 REST API + Vue 3 + TypeScript SPA（Element Plus、ECharts） |
 | `web-mobile/` | 移动端前端（Vue 3 + TypeScript）——第二生产前端；部署要求先构建 `dist/` |
 | `bg/` | 后台 worker —— 探测、生命周期清理、统计聚合、分区维护 |
 | `storage/` | 双模式存储工厂（`full`：PG+Redis / `lite`：SQLite+文件+进程内 KV） |
 | `internal/` | 横切基础设施 —— IR、vendor 字段剥离、会话镜像、outbox、遥测… |
-| `sql/migrations/` + `db/migrations/` | 幂等迁移（startup 系列当前到 907） |
+| `sql/migrations/` + `db/migrations/` | 幂等迁移（startup 系列当前到 927） |
 | `installer/` | 独立跨平台安装器 / 升级器模块 |
 | `scripts/`、`deploy/` | 构建、部署、镜像与校验工具 |
 
-规模快照（2026-10-22 代码扫描 @31466a01d）：`cmd/` 下共 **~5,680 Go files · 3,333 test files · 1,119 migration SQLs · 68 domain packages · 44 binaries**（文件数不含 `vendor/` 与 `installer/`；迁移 SQL 为 `sql/migrations/` 全量；二进制按 `go list` 的 main 包计）。
+规模快照（2026-10-31 代码扫描 @495a1c758）：`cmd/` 下共 **~6,138 Go files · 3,661 test files · 1,180 migration SQLs · 69 domain packages · 49 binaries**（文件数不含 `vendor/` 与 `installer/`；迁移 SQL 为 `sql/migrations/` 全量；二进制按 `go list` 的 main 包计）。
 
 **延伸阅读**
 
@@ -162,7 +162,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 ### 路由全景 — 双层路由全程可观测
 
 ![路由全景](docs/assets/screenshots/routing-panorama.png)
-*L1 选模型（任务分类 → 6 维评分 → Profile 锁定）+ L2 选凭据（模型解析 → Tier 回退 → 计费轮次 → P2C 评分 → 执行 / 熔断）。任务×模型热力图回答"什么任务该用什么模型"；Sankey 流向图展示 14,000+ 实时请求的最终去向（任务 → 模型 → 供应商）*
+*L1 选模型（任务分类 → 8 维评分 → Profile 锁定）+ L2 选凭据（模型解析 → Tier 回退 → 计费轮次 → P2C 评分 → 执行 / 熔断）。任务×模型热力图回答"什么任务该用什么模型"；Sankey 流向图展示 14,000+ 实时请求的最终去向（任务 → 模型 → 供应商）*
 
 ### 凭据监控 — 多源 × 多凭据健康
 
@@ -353,7 +353,7 @@ GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe .
 | 5. 目录结构 | full | full（db/data 与 redis/data 目录仍创建但不使用） |
 | 6. `compose.yml` | 3 服务 | **剥离 `kx-citus` + `kx-redis`**；gateway 移除 `depends_on` 与 PG/Redis env |
 | 7. 启动容器 | 3 容器 | **仅 `kx-llm-gateway-go`** |
-| 8. 数据库初始化 | 等待 PG ready + `InitSchema`（450+ startup 迁移） | **跳过**（SQLite 自动建表） |
+| 8. 数据库初始化 | 等待 PG ready + `InitSchema`（590+ startup 迁移） | **跳过**（SQLite 自动建表） |
 | 9. 健康检查 | 5 项全检 | 仅容器 + `/healthz`；PG/Redis/Schema 在报告中强制显示 ✅ |
 
 **新增 install flags**

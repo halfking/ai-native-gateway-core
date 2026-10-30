@@ -92,7 +92,7 @@ Requests flow through **two routing layers**, both observable in the Routing Pan
 
 **L1 — Model Selection** (which model should serve this request?):
 1. Prompt auto-classification into **work types** (code generation, conversation, summarization, translation, CRM follow-up, …) — 27 built-in types, configurable per type in the admin UI
-2. **6-dimension scoring** of candidate models against the classified task
+2. **8-dimension scoring** of candidate models against the classified task
 3. Model profile locking (explicit `model` parameters bypass L1)
 
 **L2 — Credential Selection** (which upstream credential executes it?):
