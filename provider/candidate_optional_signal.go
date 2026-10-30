@@ -39,9 +39,14 @@ const (
 	cacheSignalFuncName = "recent_cache_hit_rate"
 )
 
-// candidateQuerySQLWithoutCacheSignal 返回去掉 chr 函数调用后的候选查询。
-// 若模板中找不到唯一的调用形态（模板被改写），返回完整 SQL：此时降级不生效，行为与
-// 修复前一致——宁可退化为旧行为，也不生成一条语义未知的 SQL。
+// candidateQuerySQLWithoutCacheSignal 返回去掉 chr 函数调用后的候选查询，
+// 以及「降级是否真的生效」。
+//
+// ★ 若模板中找不到唯一的调用形态（模板被改写），返回完整 SQL 与 false：此时降级不生效，
+// ★ 行为与修复前一致——宁可退化为旧行为，也不生成一条语义未知的 SQL。
+// ★ ★★ **第二个返回值是 2026-10-31 12h 审计轮加的**：★★ ★ 旧调用点无论降级是否
+// ★ ★ 真的生效都打点「已降级」⇒ ⇒ ⇒ **指标会谎报** ⇒ ⇒ ⇒ ★ 所以把「是否生效」
+// ★ ★ **显式交回调用点**⇒ ⇒ ⇒ ★ 门自己也能直接钉这条。
 //
 // ★★★ **2026-10-31 审计轮修正：★ 降级 SQL 【不许】缓存成「进程级一次性」★★★
 //
@@ -56,12 +61,12 @@ const (
 //	★★ **所以改成：★ 每次按【当前】SQL 现算** ⇒ ⇒ ★★ 口径永远跟着当前配置走。
 //	★★ 代价：★ 模板 13.8 KB ⇒ ★ 一次 `strings.Count` + 一次 `strings.Replace`
 //	★★ ⇒ ★ µs 级 ⇒ ⇒ ★★ 而降级窗口只有 60 s ⇒ ⇒ ⇒ ★ **代价可忽略，收益是口径不漂**。
-func candidateQuerySQLWithoutCacheSignal() string {
+func candidateQuerySQLWithoutCacheSignal() (string, bool) {
 	full := candidateQuerySQL()
 	if strings.Count(full, candidateCacheSignalCallSQL) != 1 {
-		return full
+		return full, false
 	}
-	return strings.Replace(full, candidateCacheSignalCallSQL, candidateCacheSignalAbsentSQL, 1)
+	return strings.Replace(full, candidateCacheSignalCallSQL, candidateCacheSignalAbsentSQL, 1), true
 }
 
 // isCacheSignalAbsent 判定错误是否为"chr 函数不存在"。只匹配 42883 且消息点名该函数，
@@ -90,6 +95,26 @@ func (d *cacheSignalDegrade) degradedAt(now time.Time) bool {
 }
 
 // markDegraded 进入降级态，持续到 now+candidateCacheSignalRecheck。
-func (d *cacheSignalDegrade) markDegraded(now time.Time) {
-	d.untilUnixNano.Store(now.Add(candidateCacheSignalRecheck).UnixNano())
+//
+// ★★★ **2026-10-31 12h 审计轮改成 CAS**：★★★ ★ 旧实现是无条件 Store ⇒ ⇒ ★★ 而
+// ★★★ **并发同窗的每个请求**都会各打一次点、各告一次警 ⇒ ⇒ ⇒ ★★ ⇒ 「降级次数」
+// ★★★ 这个口径被**并发放大**（★ 而它本该是【状态切换的次数】）⇒ ⇒ ⇒ ★
+// ★★★ 所以改成 CAS：★ 只有**赢得状态切换**的那一个调用返回 true ⇒ ⇒ ⇒ ★
+// ★★★ ⇒ 指标与告警只发生一次 ⇒ ⇒ ⇒ ★ 口径回到「次数」。
+//
+// ★★★ **窗口边界（★ 为什么过期后要重新抢）**：★★★ ★ 窗口过期 ⇒ ⇒ 重新探测全量
+// ★★★ SQL ⇒ ⇒ **若函数仍未补齐**，★ 这一次的调用者就是新一轮的「首个撞上者」⇒ ⇒
+// ★★★ ⇒ 它必须能**重新抢到** ⇒ ⇒ ⇒ ★ 所以「已过期」不算「已经在降级」。
+func (d *cacheSignalDegrade) markDegraded(now time.Time) bool {
+	want := now.Add(candidateCacheSignalRecheck).UnixNano()
+	for {
+		cur := d.untilUnixNano.Load()
+		if cur != 0 && now.UnixNano() < cur {
+			// 窗口内 ⇒ ⇒ 已经有别的请求完成了状态切换 ⇒ ⇒ 本次不是赢家。
+			return false
+		}
+		if d.untilUnixNano.CompareAndSwap(cur, want) {
+			return true
+		}
+	}
 }

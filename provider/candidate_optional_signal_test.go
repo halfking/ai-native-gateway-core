@@ -23,8 +23,13 @@ func TestCandidateCacheSignalCallShapeIsUnique(t *testing.T) {
 
 func TestCandidateQuerySQLWithoutCacheSignal_RemovesOnlyTheChrCall(t *testing.T) {
 	full := candidateQuerySQL()
-	degraded := candidateQuerySQLWithoutCacheSignal()
+	degraded, applied := candidateQuerySQLWithoutCacheSignal()
 
+	// ★ 降级必须**真的生效**（★ 否则调用点会拿一条语义未知的 SQL 去查 ⇒ ⇒
+	// ★ 而旧实现在这里不会红 ⇒ ⇒ ⇒ ★ 这条是「降级是否可用」的唯一出口）。
+	if !applied {
+		t.Fatalf("★ 降级未生效（模板调用形态不唯一）⇒ ⇒ 降级路径不可用")
+	}
 	if strings.Contains(degraded, "recent_cache_hit_rate(") {
 		t.Fatal("降级 SQL 仍然调用 recent_cache_hit_rate")
 	}
@@ -55,12 +60,16 @@ func TestCandidateQuerySQLWithoutCacheSignal_FollowsCurrentModalityGate(t *testi
 	// ★ ⇒ ★★ 所以必须**换档再算** ⇒ ⇒ ⇒ ★ 换档后仍相等 ⇒ ⇒ 就是没跟上 ⇒ ⇒ ⇒ ★ 红。
 
 	t.Setenv(ModalityRoutingStrictEnv, "")
-	defaultDegraded := candidateQuerySQLWithoutCacheSignal()
+	defaultDegraded, defaultApplied := candidateQuerySQLWithoutCacheSignal()
 	defaultFull := candidateQuerySQL()
 
 	t.Setenv(ModalityRoutingStrictEnv, "1")
-	strictDegraded := candidateQuerySQLWithoutCacheSignal()
+	strictDegraded, strictApplied := candidateQuerySQLWithoutCacheSignal()
 	strictFull := candidateQuerySQL()
+
+	if !defaultApplied || !strictApplied {
+		t.Fatalf("★ 降级未生效（default=%v strict=%v）⇒ ⇒ 本判据无法执行", defaultApplied, strictApplied)
+	}
 
 	// ① 两档的完整 SQL 必须真的不同（★ 否则下面的判据没有分辨力 ⇒ ⇒ 假绿）。
 	if defaultFull == strictFull {
@@ -129,11 +138,34 @@ func TestCacheSignalDegrade_WindowBoundary(t *testing.T) {
 	if d.degradedAt(now) {
 		t.Fatal("零值不得处于降级态")
 	}
-	d.markDegraded(now)
+	if !d.markDegraded(now) {
+		t.Fatal("★ 首次 markDegraded 必须赢得状态切换（★ 它是「降级次数」的那个 1）")
+	}
 	if !d.degradedAt(now.Add(candidateCacheSignalRecheck - time.Second)) {
 		t.Fatal("窗口内应处于降级态")
 	}
 	if d.degradedAt(now.Add(candidateCacheSignalRecheck + time.Second)) {
 		t.Fatal("窗口到期后必须重新探测全量 SQL（函数补齐后自愈）")
+	}
+	// ★★★ **CAS 语义（★ 2026-10-31 12h 审计轮加）**：★★ ★ 窗口内重复调用**不得**
+	// ★★★ 再次赢得切换（★ 否则并发同窗的每个请求都会各打一次点 ⇒ ⇒ 「降级次数」
+	// ★★★ 这个口径被并发放大 ⇒ ⇒ ⇒ ★ 指标就读错了）。
+	if d.markDegraded(now.Add(time.Second)) {
+		t.Fatal("★ 窗口内重复 markDegraded 必须返回 false（★ 否则指标随并发放大）")
+	}
+	// ★ 窗口过期后必须能**重新抢到**（★ 它是下一轮的「首个撞上者」）。
+	if !d.markDegraded(now.Add(candidateCacheSignalRecheck + time.Second)) {
+		t.Fatal("★ 窗口过期后必须能重新取得状态切换权（★ 否则永不重新探测全量 SQL）")
+	}
+	// ★ 并发下**只有一个**赢家（★ 用 -race 跑才有意义 ⇒ ⇒ 这里是逻辑层的确定性断言）。
+	var d2 cacheSignalDegrade
+	winners := 0
+	for i := 0; i < 64; i++ {
+		if d2.markDegraded(now) {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("★ 64 次 markDegraded 里赢家数 = %d ⇒ ⇒ 必须恰为 1（★ CAS）", winners)
 	}
 }

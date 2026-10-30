@@ -2044,7 +2044,9 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 	sqlText := candidateQuerySQL()
 	cacheSignalDegraded := c.cacheSignal.degradedAt(time.Now())
 	if cacheSignalDegraded {
-		sqlText = candidateQuerySQLWithoutCacheSignal()
+		// ★ 已在降级态 ⇒ ⇒ 用降级 SQL（★ 降级态由 CAS 保证只有一次进入 ⇒ ⇒
+		// ★ 这里拿到的降级 SQL 与当前口径一致）。
+		sqlText, _ = candidateQuerySQLWithoutCacheSignal()
 	}
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		rows, err = c.dbPool.Query(ctx, sqlText,
@@ -2057,13 +2059,35 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 
 		// 可选信号 fail-open（2026-10-31）：chr 函数缺失不是候选查询故障——降级 SQL
 		// 重试一次，且不计入熔断、不消耗瞬态重试预算。
+		//
+		// ★★★ **2026-10-31 12h 审计轮修正两处**：★★★ ★ ① 降级【不可用】时
+		// ★★★ **不许打点说「已中性化」**（★ 旧实现无论降级是否真的生效都打点 ⇒ ⇒
+		// ★★★ ⇒ **指标会谎报「已降级」，而查询其实仍在失败** ⇒ ⇒ ⇒ ★★ ⇒ 而那次
+		// ★★★ 事故（2026-10-28）形态在指标上就【不可见】了）⇒ ⇒ ★★★ ② 打点与告警
+		// ★★★ **只发生一次**（★ CAS ⇒ ⇒ 并发同窗的请求各打一次 ⇒ ⇒ 指标随并发放大
+		// ★★★ ⇒ ⇒ 「降级次数」这个口径会被读错）。
 		if !cacheSignalDegraded && isCacheSignalAbsent(err) {
-			c.cacheSignal.markDegraded(time.Now())
+			degradedSQL, applied := candidateQuerySQLWithoutCacheSignal()
+			if !applied {
+				// ★ 模板形态不匹配 ⇒ ⇒ 降级【不可用】⇒ ⇒ ⇒ 不许进入降级态
+				// ★（★ 进入降级态但用的还是全量 SQL ⇒ 状态是假的）⇒ ⇒ ⇒
+				// ★ 直接按硬失败处理（★ 与修复前行为一致 ⇒ fail-closed）。
+				slog.Error("[candidate_diag] optional signal degrade UNAVAILABLE — candidate SQL template shape changed; degrade not applied",
+					"model", clientModel, "tenant_id", tenantID,
+					"expected_call_shape", candidateCacheSignalCallSQL)
+				c.candCircuit.RecordFailure(time.Now())
+				return nil, fmt.Errorf("query candidates failed: %w (context: model=%s, tenant_id=%s)", err, clientModel, tenantID)
+			}
+			first := c.cacheSignal.markDegraded(time.Now())
 			cacheSignalDegraded = true
-			sqlText = candidateQuerySQLWithoutCacheSignal()
-			recordCandidateDiagnostic("optional_signal_degraded")
-			slog.Warn("[candidate_diag] optional signal recent_cache_hit_rate missing — cache dimension degraded to neutral",
-				"model", clientModel, "tenant_id", tenantID, "recheck_seconds", candidateCacheSignalRecheck.Seconds())
+			sqlText = degradedSQL
+			if first {
+				// ★ 只有【赢得状态切换的那一个请求】才打点/告警 ⇒ ⇒ 指标口径 = 降级
+				// ★ 【次数】，而不是【请求数】⇒ ⇒ ⇒ ★ 并发不再放大它。
+				recordCandidateDiagnostic("optional_signal_degraded")
+				slog.Warn("[candidate_diag] optional signal recent_cache_hit_rate missing — cache dimension degraded to neutral",
+					"model", clientModel, "tenant_id", tenantID, "recheck_seconds", candidateCacheSignalRecheck.Seconds())
+			}
 			attempt--
 			continue
 		}
