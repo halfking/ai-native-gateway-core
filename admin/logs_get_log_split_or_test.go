@@ -63,8 +63,14 @@ func TestGetLogORMustNotComeBack(t *testing.T) {
 
 func TestGetLogKeepsTenantGateAndTsOrder(t *testing.T) {
 	src := getLogFileText(t)
-	if !strings.Contains(src, "($2::boolean OR rl.tenant_id = $3)") {
-		t.Fatal("getLog 拆分后必须保留租户门 ($2::boolean OR rl.tenant_id = $3)——漏掉即跨租户泄露")
+	// 2026-10-30：布尔占位符不再写 `::boolean`。pgx QueryExecModeExec 走扩展
+	// 查询协议，参数已带类型；服务端再套一次显式转型报 SQLSTATE 42804。
+	// 租户门本身必须还在——漏掉即跨租户泄露。
+	if !strings.Contains(src, "($2 OR rl.tenant_id = $3)") {
+		t.Fatal("getLog 拆分后必须保留租户门 ($2 OR rl.tenant_id = $3)——漏掉即跨租户泄露")
+	}
+	if strings.Contains(src, "$2::boolean") {
+		t.Fatal("getLog 布尔占位符禁止再写 ::boolean：pgx 扩展协议下会报 SQLSTATE 42804")
 	}
 	if !strings.Contains(src, "ORDER BY rl.ts DESC") {
 		t.Fatal("getLog 拆分后段内必须保持 ORDER BY rl.ts DESC（原 CASE 优先序由两段顺序等价保持）")
