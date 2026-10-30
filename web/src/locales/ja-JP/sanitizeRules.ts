@@ -189,6 +189,8 @@ export default {
   reviewInsightsNone: "集計できるレビュー指標はまだありません",
   reviewInsightsRule: "ルール",
   reviewUnattributedRule: "（ルール未特定）",
+  reviewDegraded: "縮退解放（遮断ではない）",
+  reviewDegradedHint: "これは遮断ではありません：ガードバッファの上限超過で応答を解放済み（クライアントは内容を受領済み）。承認は不要で、保留数にも数えません。",
   reviewAttributionLabel: "ブロックされた理由",
   reviewCandidateRulesLabel: "近傍で命中した出站ルール（候補・断定ではない）",
   reviewOriginalContextLabel: "元のコンテキスト（このリクエスト）",

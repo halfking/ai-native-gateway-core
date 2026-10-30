@@ -22,6 +22,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability (2026-08-23 hzx-2 audit)
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 var tierOrder = [4]int{1, 2, 3, 9}
@@ -1164,7 +1165,14 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 		}
 	}
 
-	maxTotal := 12
+	// 2026-10-30 magpie 对比轮（docs/research/2026-10-30-*.md §四 P0-1）：
+	// 候选总数上限走 routing.max_candidates 热加载（默认仍 12，clamp [4,48]）。
+	// 大凭据池场景可调大铺开、坏凭据场景调小收紧费用放大面；未配置时与
+	// 旧硬编码逐字节同值。
+	maxTotal := settings.RoutingMaxCandidates()
+	if maxTotal <= 0 {
+		maxTotal = 12
+	}
 	if len(ordered) > maxTotal {
 		ordered = ordered[:maxTotal]
 	}

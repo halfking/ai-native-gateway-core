@@ -1,0 +1,11 @@
+== meta start (run2) ==
+2026-10-30 23:51:09 +0800
+23:51  up 14:01, 1 user, load averages: 6.32 5.12 3.47
+HEAD: 5a41504408e44ba9699c4e4d34e45b83e8d72a34
+subject: docs(audit): 第 10 轮·续部署读数 —— 三台全绿(211=37004018 targets=36 / 245=2916 / 154=2917)；42P10 事故归档(DISTINCT 的 ORDER BY 联动契约)
+branch: main
+-- worktree (porcelain) --
+?? docs/audit/evidence/2026-10-30-r1050-ursmcheck-fullrun/
+cmd: make guards-ursmcheck (=> go test ./scripts/ursmcheck ./admin -count=1 -timeout=1800s)
+go: go version go1.27.2 darwin/arm64
+note: run1 was executed at the STALE HEAD 798d62c74 (10 commits behind origin/main) => its 14 FAILs were upstream-drift artifacts, not product regressions; run2 re-runs at 5a4150440.

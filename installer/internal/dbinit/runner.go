@@ -1718,6 +1718,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   过队、产出恒 0 行）。★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带
 			//   dbinit:no-transaction 标记 ⇒ applySQL 走非事务通道。
 			"924_credential_probe_queue_command_key_idx.sql",
+			// ★ 926（2026-10-30 输出合规审计轮；★ 让号记录：925 曾被
+			//   session_bodies 叶 TRP 索引 heal 占用后撤销，db-changelog 留有
+			//   记录 ⇒ 按「后到者取下一个空闲号」取 926）：拦截审核单区分
+			//   「降级放行」与「硬阻断」—— sanitize_block_reviews 末尾追加
+			//   degraded BOOLEAN（921 把守卫缓冲越界的降级放行也登记成 pending
+			//   拦截单 ⇒ 211 实测 24h 内 226/226 条全是降级单灌爆审核面），
+			//   并回填 builtin.guard.% 存量行。
+			"926_sanitize_block_review_degraded.sql",
 		},
 	}
 }

@@ -29,6 +29,14 @@ func TestPerNodeTargetsScopedAndDeduped(t *testing.T) {
 		`joinFrag := ""`,
 		`condFrags := []string{}`,
 		"extraConds",
+		// ★ SELECT DISTINCT（2026-10-30 第 10 轮）：routing_policy 4 行物理
+		//   重复（id 无唯一约束）⇒ 裸 CROSS JOIN 把每个唯一对放大成 4 行
+		//   targets ⇒ 同对同轮重烧 4 次。发现查询必须在 SQL 侧去重。
+		"SELECT DISTINCT c.id,",
+		// ★ DISTINCT+ORDER BY 契约（部署后 42P10 实锤：ORDER BY 列必须出现在
+		//   select list，且必须以**裸列**形态——COALESCE 别名不算）。
+		//   末位裸列 pm.raw_model_name 同时是发现键（RawModelName）的扫描源。
+		"c.secret_ciphertext,\n\t\t       pm.raw_model_name",
 		// 去重：成功实测在窗口内的节点跳过
 		"FROM model_iq_runs r",
 		"AND r.status = 'success'",

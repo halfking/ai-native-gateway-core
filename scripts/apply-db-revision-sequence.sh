@@ -2489,6 +2489,15 @@ files=(
   #   1,369.7s 恒定在榜且产出恒 0 行。★ 含 CREATE INDEX CONCURRENTLY ⇒
   #   文件首行带 dbinit:no-transaction 标记。
   "$ROOT_DIR/sql/migrations/startup/924_credential_probe_queue_command_key_idx.sql"
+  # ★ 926（2026-10-30 输出合规审计轮；★ 让号记录：925 曾被 session_bodies 叶
+  #   TRP 索引 heal 占用后撤销，db-changelog 留有记录 ⇒ 按「后到者取下一个
+  #   空闲号」取 926）：拦截审核单区分「降级放行」与「硬阻断」。
+  #   sanitize_block_reviews 末尾追加 degraded BOOLEAN NOT NULL DEFAULT false，
+  #   并回填 rule_id LIKE 'builtin.guard.%' 的存量行。缺口本体 = 921 把守卫
+  #   缓冲越界的降级放行也登记成 pending 拦截单 ⇒ 211 实测 24h 内 226/226 条
+  #   全是 builtin.guard.capacity_exceeded 灌爆审核面，且批准按钮写出的放行行
+  #   没有任何消费方。纯幂等 DDL + 一次有界 UPDATE ⇒ 走事务通道。
+  "$ROOT_DIR/sql/migrations/startup/926_sanitize_block_review_degraded.sql"
 )
 
 
@@ -2990,6 +2999,15 @@ ledger_artifact_probe "923_schema_migrations_ledger_backfill.sql" \
   "(SELECT count(*) FROM public.schema_migrations WHERE version IN ('900','901','902','903','904','905','906','907','908','909','910','911','912','913','914','915','916','917','919','920')) = 20"
 ledger_artifact_probe "924_credential_probe_queue_command_key_idx.sql" \
   "to_regclass('public.idx_credential_probe_queue_command_key_created') IS NOT NULL"
+# ★ 926（输出合规审计轮迁移，2026-10-31 24h 审计第 11 轮补登记）：产物 =
+#   sanitize_block_reviews 的 degraded 列（降级放行遥测语义；回填不另建对象）。
+#   ★ 掏空门（TestTsvHollowoutReadersRejectEmptyRegistry）实测抓到缺登记：
+#   读者在基线就红（contract FAILED: no ledger_artifact_probe）⇒ 不可判定。
+#   ★★ 联动契约（apply-db-revision-sequence_test.sh）：探针行里所有 public.x / 'x'
+#   字面量必须在迁移文件文本中出现 ⇒ information_schema / 裸 'public' 在 926 文件里
+#   不存在 ⇒ 用 pg_catalog 系统表形态（裸标识符不进抽取集，与 924 的 to_regclass 同理）。
+ledger_artifact_probe "926_sanitize_block_review_degraded.sql" \
+  "to_regclass('public.sanitize_block_reviews') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid WHERE c.relname = 'sanitize_block_reviews' AND a.attname = 'degraded' AND NOT a.attisdropped)"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

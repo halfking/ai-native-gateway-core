@@ -1,0 +1,3 @@
+go test ./scripts/ursmcheck ./admin -count=1 -timeout=1800s
+ok  	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	1122.817s
+ok  	github.com/kaixuan/llm-gateway-go/admin	162.700s

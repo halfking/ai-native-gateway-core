@@ -60,6 +60,9 @@ type ReviewPersistence interface {
 	// CountBlockReviewsDB 数符合条件的审核单（★ 列表端点的「待处理数」用它，
 	// ★ 不再用「再列一次 1000 条」来数 —— ★★ 那是一次全表读★★）。
 	CountBlockReviewsDB(ctx context.Context, status, tenantID string) (int, error)
+	// CountPendingBlockDecisionsDB 数「待人工决断」的拦截单
+	//（pending 且非降级，迁移 926）——管理面徽标的口径。
+	CountPendingBlockDecisionsDB(ctx context.Context, tenantID string) (int, error)
 	// GetBlockReviewDB 按 ID 取一条。
 	GetBlockReviewDB(ctx context.Context, id int64) (BlockReview, error)
 	// DecideBlockReviewDB 置状态与审核人；返回更新后的行。

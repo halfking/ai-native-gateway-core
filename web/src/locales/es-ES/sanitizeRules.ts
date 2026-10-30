@@ -190,6 +190,8 @@ export default {
   reviewInsightsNone: "Aún no hay métricas de revisión agregables",
   reviewInsightsRule: "Regla",
   reviewUnattributedRule: "(sin atribución)",
+  reviewDegraded: "Liberación degradada (no bloqueado)",
+  reviewDegradedHint: "No es una intercepción: el búfer del guardia se desbordó y la respuesta se liberó (el cliente ya la recibió). No requiere decisión y no cuenta como pendiente.",
   reviewAttributionLabel: "Por qué se bloqueó",
   reviewCandidateRulesLabel: "Reglas egress cercanas (candidatas, no hechos)",
   reviewOriginalContextLabel: "Contexto original (esta petición)",

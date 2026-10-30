@@ -341,3 +341,4 @@
 323	922_model_credibility.sql
 324	923_schema_migrations_ledger_backfill.sql
 325	924_credential_probe_queue_command_key_idx.sql
+326	926_sanitize_block_review_degraded.sql

@@ -1,0 +1,9 @@
+== run1 DISCARDED ==
+2026-10-30 17:19:01 +0800
+reason: a foreign ursmcheck.test (build cache dir go-build164077942, started ~16:57, unknown owner workspace, cwd unrecorded) was still running 17:06-17:07 and overlapped this run; parallel-write-free precondition unproven; discarded per discipline
+stdout so far (first bytes):
+go test ./scripts/ursmcheck ./admin -count=1 -timeout=1800s
+stderr so far:
+== run1 SIGTERM artifact appended ==
+2026-10-30 17:23:26 +0800
+note: run1 was stopped (SIGTERM) after 752.6s; FAIL below is the kill artifact, NOT a product regression; run kept as evidence only

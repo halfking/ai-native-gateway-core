@@ -81,6 +81,22 @@ func (f *fakeReviewPersistence) CountBlockReviewsDB(_ context.Context, status, t
 	return count, nil
 }
 
+func (f *fakeReviewPersistence) CountPendingBlockDecisionsDB(_ context.Context, tenantID string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	count := 0
+	for _, r := range f.rows {
+		if r.Status != BlockReviewPending || r.Degraded {
+			continue
+		}
+		if tenantID != "" && r.TenantID != tenantID {
+			continue
+		}
+		count++
+	}
+	return count, nil
+}
+
 func (f *fakeReviewPersistence) ListEgressRuleEventsInWindowDB(_ context.Context, _ []string, from, to time.Time, limit int) ([]EgressRuleEventInWindow, error) {
 	return nil, nil
 }

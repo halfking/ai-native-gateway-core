@@ -858,12 +858,12 @@
         "witness": "该元素的 width 由数据绑定（.pct-fill 是进度条 / 占比条）"
       },
       {
-        "key": "components/live-topology/ProviderTodayRail.vue|.rail__bar|width",
-        "file": "components/live-topology/ProviderTodayRail.vue",
-        "selector": ".rail__bar",
+        "key": "components/live-topology/StatsPanel.vue|.stats__share|width",
+        "file": "components/live-topology/StatsPanel.vue",
+        "selector": ".stats__share",
         "property": "width",
-        "reason": "数据条：宽度**就是数据的编码**（与 QueuePerspectivePanel .qp-node-card-wrap 同款先例 —— 供应商当日占比条，宽度 = share*100%）；60s 轮询刷新时平滑移动让「占比变了」可感知",
-        "witness": "该元素的 width 由数据绑定（:style width = share*100%）"
+        "reason": "数据条：宽度**就是数据的编码**（与 ProviderTodayRail .rail__bar 同款先例 —— 客户端/供应商/模型占比条，width = share*100%）；轮询刷新时平滑移动让「占比变了」可感知",
+        "witness": "该元素的 width 由数据绑定（:style width = Math.round((item.share||0)*100)% ）"
       }
     ]
   },

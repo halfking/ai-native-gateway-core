@@ -181,6 +181,8 @@ export default {
   reviewInsightsNone: "还没有可聚合的复核读数",
   reviewInsightsRule: "规则",
   reviewUnattributedRule: "（无规则归因）",
+  reviewDegraded: "降级放行（非拦截）",
+  reviewDegradedHint: "这条不是拦截：守卫缓冲越界后已放行响应（客户端已拿到内容），无需批准，也不计入待审数。",
   reviewAttributionLabel: "拦截归因",
   reviewCandidateRulesLabel: "邻近时段命中的出站规则（候选，非事实）",
   reviewOriginalContextLabel: "原始上下文（这次请求）",

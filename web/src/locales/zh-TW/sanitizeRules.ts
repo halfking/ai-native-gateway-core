@@ -181,6 +181,8 @@ export default {
   reviewInsightsNone: "尚無可聚合的複核讀數",
   reviewInsightsRule: "規則",
   reviewUnattributedRule: "（無規則歸因）",
+  reviewDegraded: "降級放行（非攔截）",
+  reviewDegradedHint: "這不是攔截：守衛緩衝越界後已放行回應（客戶端已取得內容），無需批准，也不計入待審數。",
   reviewAttributionLabel: "攔截歸因",
   reviewCandidateRulesLabel: "鄰近時段命中的出站規則（候選，非事實）",
   reviewOriginalContextLabel: "原始上下文（這次請求）",

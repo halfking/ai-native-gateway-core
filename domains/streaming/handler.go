@@ -337,6 +337,9 @@ func (w *interceptingStreamWriter) finish() {
 	// ★ 2026-10-29 输出合规误报轮：降级放行（缓冲越界、无规则命中）也要
 	// **留痕** —— 登记一条审核单，让运维看得到「守卫在什么规模上让过步」。
 	// 降级**不是**拦截 ⇒ 不渲染失败终帧（响应已经成功返回）。
+	// ★ 2026-10-30 审计轮：登记时带 Degraded 标记（迁移 926）——降级单是
+	// 遥测不是待决拦截：211 实测 24h 内 226/226 条全是降级单却全挂着
+	// 「待审」状态与批准按钮（批准写出的放行行没有任何消费方）。
 	if w.degraded && !w.terminalRendered {
 		registerPolicyBlockReview(PolicyBlockReviewInput{
 			TenantID:     w.meta.TenantID,
@@ -347,6 +350,7 @@ func (w *interceptingStreamWriter) finish() {
 			Reason:       w.degradedReason,
 			Evidence:     w.degradedEvidence,
 			EvidenceKind: policyBlockEvidenceKind(w.degradedRule),
+			Degraded:     true,
 		})
 	}
 }
@@ -4667,7 +4671,8 @@ func (h *ChatHandler) serveWithExecutor(
 	// buildExecParams assembles the per-attempt ExecParams shared by the
 	// legacy goal-retry loop and the SR-W2 survival branch (doc 18 §5.1):
 	// one construction site, zero drift between the two paths.
-	upstreamAttempts := executors.NewUpstreamAttemptBudget(executors.DefaultUpstreamAttemptLimit)
+	// 2026-10-30: 预算大小走 survival.attempt_budget 热加载（默认仍 100）。
+	upstreamAttempts := executors.NewUpstreamAttemptBudget(executors.RequestAttemptLimit())
 	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
 	// v6 G-Ⅱ: X-Gw-Due-At 定时请求（到期前停在 dispatch 的到期堆）。
 	dispatchDueAt := parseDispatchDueAt(r)

@@ -35,10 +35,10 @@ func TestPgInsertBlockReviewRoundTrip(t *testing.T) {
 		sqlmock.NewRows([]string{"id", "tenant_id", "client_type", "scope", "rule_id", "rule_name",
 			"reason", "field_path", "payload_digest", "request_id", "match_detail", "status",
 			"created_at", "decided_by", "decided_at", "session_id", "label", "label_comment",
-			"labeled_by", "labeled_at"}).
+			"labeled_by", "labeled_at", "degraded"}).
 			AddRow(7, "acme", "zcode", "egress", "builtin.egress_sink", "外传方向",
 				"sink destination", "$.command", "digest", "req-1", "说明",
-				"pending", now, "", nil, "sess-1", "", "", "", nil))
+				"pending", now, "", nil, "sess-1", "", "", "", nil, false))
 	got, err := s.InsertBlockReview(context.Background(), BlockReview{
 		TenantID: "acme", ClientType: "zcode", Scope: "egress", Rule: "builtin.egress_sink",
 		RuleName: "外传方向", Reason: "sink destination", Field: "$.command",
@@ -67,9 +67,9 @@ func TestPgDecideBlockReviewZeroRowsMeansConflict(t *testing.T) {
 		sqlmock.NewRows([]string{"id", "tenant_id", "client_type", "scope", "rule_id", "rule_name",
 			"reason", "field_path", "payload_digest", "request_id", "match_detail", "status",
 			"created_at", "decided_by", "decided_at", "session_id", "label", "label_comment",
-			"labeled_by", "labeled_at"}).
+			"labeled_by", "labeled_at", "degraded"}).
 			AddRow(3, "acme", "", "egress", "builtin.egress_sink", "", "", "", "", "", "",
-				"approved", time.Now(), "", nil, "", "", "", "", nil))
+				"approved", time.Now(), "", nil, "", "", "", "", nil, false))
 	_, err := s.DecideBlockReviewDB(context.Background(), 3, "rejected", "boss", time.Now())
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("已决记录应报 Conflict，got %v", err)
@@ -239,5 +239,95 @@ func TestStoreErrorDetailCarriesPGFields(t *testing.T) {
 	}
 	if !strings.Contains(detail, "does not exist") {
 		t.Fatalf("根因切片必须带 PG message，got %q", detail)
+	}
+}
+
+// TestPgInsightsTenantFilterIsLegalSQL：带租户过滤的读数必须是**合法** SQL。
+//
+// ★ 回归门（2026-10-30 审计轮）：旧拼接在租户过滤时生成
+// `FROM sanitize_block_reviews AND tenant_id=$1`（缺 WHERE 前缀）⇒
+// 租户管理员的读数恒 503、super_admin 的 ?tenant_id= 过滤恒 503。
+// sqlmock 断言两件事：① 收到的 SQL 里 WHERE 出现在 AND 之前（形状）；
+// ② 降级放行单不进读数（WHERE NOT degraded）。
+func TestPgInsightsTenantFilterIsLegalSQL(t *testing.T) {
+	s, mock := newMockStore(t)
+	now := time.Now().UTC()
+	rows := sqlmock.NewRows([]string{"tenant_id", "rule_id", "rule_name", "total",
+		"pending", "approved", "rejected", "false_positive", "true_positive",
+		"rule_too_broad", "needs_rule", "labeled"}).
+		AddRow("acme", "builtin.egress_sink", "外传方向", 3, 1, 2, 0, 1, 0, 0, 0, 1)
+	mock.ExpectQuery(`FROM sanitize_block_reviews WHERE NOT degraded AND tenant_id=\$1`).
+		WillReturnRows(rows)
+	insights, err := s.BlockReviewInsightsDB(context.Background(), "acme", 50)
+	if err != nil {
+		t.Fatalf("带租户过滤的读数不得报错（回归：曾生成非法 SQL）: %v", err)
+	}
+	if len(insights) != 1 || insights[0].Rule != "builtin.egress_sink" {
+		t.Fatalf("读数结果不对: %+v", insights)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet: %v", err)
+	}
+	_ = now
+}
+
+// TestPgInsightsExcludeDegraded：无租户过滤的读数同样必须带 NOT degraded
+// （211 实测 24h 内 226/226 条全是降级单 ⇒ 不排除的话规则优化输入面只剩噪音）。
+func TestPgInsightsExcludeDegraded(t *testing.T) {
+	s, mock := newMockStore(t)
+	rows := sqlmock.NewRows([]string{"tenant_id", "rule_id", "rule_name", "total",
+		"pending", "approved", "rejected", "false_positive", "true_positive",
+		"rule_too_broad", "needs_rule", "labeled"})
+	mock.ExpectQuery(`WHERE NOT degraded`).WillReturnRows(rows)
+	if _, err := s.BlockReviewInsightsDB(context.Background(), "", 50); err != nil {
+		t.Fatalf("insights read: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet: %v", err)
+	}
+}
+
+// TestPgCountPendingBlockDecisionsExcludesDegraded：待决断数的 SQL 必须是
+// `pending 且非降级`（管理面徽标口径，迁移 926）。
+func TestPgCountPendingBlockDecisionsExcludesDegraded(t *testing.T) {
+	s, mock := newMockStore(t)
+	mock.ExpectQuery(`status='pending' AND NOT degraded`).WillReturnRows(
+		sqlmock.NewRows([]string{"count"}).AddRow(2))
+	n, err := s.CountPendingBlockDecisionsDB(context.Background(), "")
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("count = %d, want 2", n)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet: %v", err)
+	}
+}
+
+// TestPgInsertBlockReviewPersistsDegraded：降级标记要真正落列
+// （列序真值源含 degraded ⇒ RETURNING 扫回来仍是 true）。
+func TestPgInsertBlockReviewPersistsDegraded(t *testing.T) {
+	s, mock := newMockStore(t)
+	now := time.Now().UTC()
+	mock.ExpectQuery(`INSERT INTO sanitize_block_reviews`).WillReturnRows(
+		sqlmock.NewRows([]string{"id", "tenant_id", "client_type", "scope", "rule_id", "rule_name",
+			"reason", "field_path", "payload_digest", "request_id", "match_detail", "status",
+			"created_at", "decided_by", "decided_at", "session_id", "label", "label_comment",
+			"labeled_by", "labeled_at", "degraded"}).
+			AddRow(9, "acme", "zcode", "egress", "builtin.guard.capacity_exceeded", "",
+				"capacity", "", "", "req-9", "", "pending", now, "", nil, "", "", "", "", nil, true))
+	got, err := s.InsertBlockReview(context.Background(), BlockReview{
+		TenantID: "acme", Scope: "egress", Rule: "builtin.guard.capacity_exceeded",
+		Reason: "capacity", CreatedAt: now, Degraded: true,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if !got.Degraded {
+		t.Fatal("degraded 标记必须在 RETURNING 扫描后仍然为 true")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet: %v", err)
 	}
 }

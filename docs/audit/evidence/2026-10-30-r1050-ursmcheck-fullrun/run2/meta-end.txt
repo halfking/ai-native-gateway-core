@@ -1,0 +1,15 @@
+== meta end (run2) ==
+2026-10-31 00:10:42 +0800
+ 0:10  up 14:21, 1 user, load averages: 3.28 5.94 6.54
+HEAD (run2): 5a41504408e44ba9699c4e4d34e45b83e8d72a34
+exit code: 0 (make guards-ursmcheck)
+package durations: scripts/ursmcheck 1122.817s / admin 162.700s
+stderr: empty (0 bytes)
+
+== start vs end load ==
+start: 23:51:09 +0800 | load averages: 6.32 5.12 3.47
+end:   00:10:08 +0800 | load averages: 4.24 6.43 6.73
+
+== no parallel writer during run2 ==
+checked at 23:50 (before): no go test process in either repo; sibling repo ../llm-gateway-go idle (no file writes in prior 15m); our worktree clean except untracked evidence dir
+sibling repo DID run 'go test ./domains/... ./admin/...' 23:54-23:56 in ITS OWN checkout (cwd=/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go) => separate filesystem, separate git repo (HEAD 5a4150440) => NOT a writer into this repo

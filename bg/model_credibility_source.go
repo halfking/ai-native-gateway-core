@@ -52,7 +52,7 @@ func buildCredibilityTargetsSQL(scope string) string {
 		  )`
 	}
 	return `
-		SELECT c.id,
+		SELECT DISTINCT c.id,
 		       c.provider_id,
 		       COALESCE(p.display_name, p.code, ''),
 		       COALESCE(p.protocol, 'openai-completions'),
@@ -62,7 +62,8 @@ func buildCredibilityTargetsSQL(scope string) string {
 		       COALESCE(pm.outbound_model_name, ''),
 		       COALESCE(pm.canonical_id, 0),
 		       COALESCE(mc.canonical_name, ''),
-		       c.secret_ciphertext
+		       c.secret_ciphertext,
+		       pm.raw_model_name
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
@@ -82,6 +83,9 @@ func buildCredibilityTargetsSQL(scope string) string {
 		  AND COALESCE(pm.unavailable_reason, '') NOT LIKE 'manual%'
 		ORDER BY c.id, pm.raw_model_name
 	`
+	// ★ DISTINCT 的理由见 bg/quality_node_source.go 同轮注释：routing_policy
+	//   4 行物理重复（id 无唯一约束）⇒ 裸 CROSS JOIN 把 targets 放大 4 倍
+	//   （211 实测 24h 190 runs / 49 唯一对），每对同轮串行重探 4 次。
 }
 
 // DiscoverTargets 列出所有活跃的 (凭据, 模型) 节点，带上探测所需字段。
@@ -114,10 +118,11 @@ func (s *CredibilityNodeSource) DiscoverTargets(ctx context.Context, scope strin
 			protocol, catalogCode, baseURL, rawModel, outModel   string
 			canonicalID                                           int64
 			ciphertext                                            []byte
+			rawModelKey                                           string // 与 ORDER BY 同源的裸列（DISTINCT 去重键之一）
 		)
 		if err := rows.Scan(&t.CredentialID, &providerID, &t.ProviderName, &protocol,
 			&catalogCode, &baseURL, &rawModel, &outModel, &canonicalID,
-			&t.CanonicalName, &ciphertext); err != nil {
+			&t.CanonicalName, &ciphertext, &rawModelKey); err != nil {
 			slog.Warn("credibility node source: scan row failed", "error", err)
 			continue
 		}
@@ -132,7 +137,7 @@ func (s *CredibilityNodeSource) DiscoverTargets(ctx context.Context, scope strin
 		t.Protocol = protocol
 		t.CatalogCode = catalogCode
 		t.APIKey = apiKey
-		t.RawModelName = rawModel
+		t.RawModelName = rawModelKey
 		t.OutboundModel = outModel
 		t.CanonicalID = canonicalID
 		if t.BaseURL == "" || t.RawModelName == "" {

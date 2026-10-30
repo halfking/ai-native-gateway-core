@@ -16375,6 +16375,299 @@ pocket $4（N+6）。
 通用式见 `LESSONS.md` **§583**（十条：迁移预应用≠脚本部署 / 坏 join 造假缺陷 /
 活锁=成本-预算差 / 错误族二次分桶 / 拼接解析去重 / 协议形态归因 / 相位从日志读 /
 KV 直写生效条件 / CONCURRENTLY 锁预算 / 自噪音按客户端签名入账）。
+
+**2026-10-30 24h 审计第 10 轮（goal 会话，接第 8 轮·续遗留 + 第 9 轮归零复核）**：
+★ **① per-node failed 冷却窗复测：窗口本身收敛 ✓ 但挖出第二层成本放大**——
+★★★★★ `routing_policy` 的 `id` **无唯一约束**（CHECK≠PK），211 生产 **4 行物理重复**
+（2026-09-17 审计 §7.6 已登记、运营裁决维持现状）⇒ 两处发现查询
+（`bg/quality_node_source.go` per-node IQ / `bg/model_credibility_source.go` 可信度）
+**裸 CROSS JOIN 无去重** ⇒ 每个唯一 (credential, model) 对在 targets 里出现 4 次
+（211 实测 targets 228 / 唯一对 103；可信度 24h 190 runs / 49 唯一对；其它消费方
+shared_pick/client_configs/streaming 全有 LIMIT 1/GROUP BY 保护，唯独这两处没有）
+⇒ `NodeInFlightGate` 只防**并发**不防同批重复行 ⇒ 同对同一轮串行重烧 4 次 50 题。
+根修 **`bd5c85af2`**（两处 `SELECT DISTINCT` + 形状断言测试收编；SQL 侧根治不依赖
+DB 行清理——那是涉生产 DELETE 的运营裁决）。顺带修 `deploy-test-gate.sh` 的
+bash4 声明红门（`# requires-bash: 4`，main 上 TestBash4 一直红）⇒ 全量短测试复绿。
+★★★ 时间线陷阱：211 容器日志 UTC / DB +08 / `StartedAt` UTC——第 8 轮「06:38 部署」
+实为北京 14:38；稳定段复测 failed 12/success 13/同对≤4 次（=4x 放大，非窗口失效），
+error 分类已落库（429/timeout/410）。**五项判据仍不达标 ⇒ 245/154 维持不开**；
+「scheduled failed < 100」的有效读数要等 DISTINCT 部署后的下一轮（targets 应落 ~103）。
+⇒ ★★ **② glm-5.3 歧义 WARN 未归零（743 条/5.7h）但两条根因都实锤**——
+a) 处置后候选仍混入 `z-ai/glm-5.3`：命中路径是 resolver SQL 的
+`standardized_name`/`canonical_name` **直接相等**（归一化变体第 3 位就是裸名），
+**不经别名表** ⇒ 第 9 轮「disabled 即时收敛」的前提对这条路径不成立；
+b) **排序兜底 100% 有效**（869/869 selected=z-ai/glm-5.3-flash，零错发）；
+c) WARN 频度根因：`PostExecutionHook.RecordOutcome` 每次成功请求都调
+`RestoreOnSuccess(cred, 客户端名)` ⇒ **每次成功 glm-5.3-flash 请求发一条歧义
+WARN**（告警噪声非路由错误；同族调用方 5 个）。minimax 同族 3 条同机制
+（裸名在 canonical 69/122226 双 active）。修法（resolver 归一化路径降噪）涉
+P0.3 兜底语义与 5 调用方口径 ⇒ **登记独立工程，本轮不动**。
+⇒ ★ **③ 42P18 归零确认**：修复后两个完整 boot 生产日志 0 条（修复前 6h 414 条
+ERROR 里唯一非流量态），租户门测试绿。
+⇒ ★ **常规**：窗口内无未合并分支；`stash@{0}`（10-29 第 7 轮 WIP）内容已被正式提交
+覆盖，保守登记不删；245 两个既有 failed systemd 单元（collector-service 自 10-15 /
+nim-case-cron）登记不擅动；154 6h 窗 26×502 全是探针打 nvidia 上游（上游 nginx 502
+直穿）+ 561×「direct healthy/gateway 腿 503」（/live 选路层遗留面，继续登记）；
+慢 SQL 依旧不可查（pg_stat_statements 未 shared_preload，连续第三轮如实记）。
+⇒ ★★ **共享 checkout 打包实证**：本轮工作树修改在 19:22 被并行打包以 `bd5c85af2`
+推上 origin/main（内容与我的 Edit 逐字一致，5 文件已核对）——发现「修改不见了」
+先 `git log --all`+`git show` 核对内容再决定补提交还是接受。
+⇒ 部署：211 现跑 b48992f5（19:57 切换，**不含** bd5c85af2 的 DISTINCT）；245=2914/
+154=2915 未动；**DISTINCT 修复的三台部署 + targets≈103 判据验证统一留下一轮**。
+⇒ 审计档 `docs/audit/2026-10-30-24h审计第10轮-CROSSJOIN放大与歧义根因.md`；
+通用式见 `LESSONS.md` **§586**（五条：发现面唯一性是第四道闸 / disabled 前提要
+枚举命中路径 / 告警频度跟随什么决定修法 / 多时区读数先校准时钟源 / 门正则锚定整行）。
+
+**2026-10-30 24h 审计第 10 轮·续（部署 + 42P10 事故自愈）**：
+★ 三台部署完成：211 槽 b=37004018/2910 读数、245=2916（traffic-only）、154=2917（active）。
+⇒ ★★★ **第一轮部署（c11681a4）踩出 42P10**：`SELECT DISTINCT` + `ORDER BY pm.raw_model_name`
+——ORDER BY 列必须以**裸列**出现在 select list（COALESCE 别名不算）⇒ per-node discover
+全废（tested=0）。根修 **370040181**：两处发现 SQL 末位补裸列（同时是 DISTINCT 去重键
++ Scan 的发现键来源），契约测试钉裸列形态 + 变异臂（删⇒红/还原⇒绿）。
+⇒ ★★★★ 通用式（补 §586）：**「SELECT DISTINCT」不是一行补丁，它带一条 SQL 语义约束
+（ORDER BY 列必须在 select list）——形状断言门必须钉联动契约，不是钉关键字**；
+且**部署后第一动作是读目标进程自己的日志**（42P10 在容器日志第 3 分钟就报了）。
+⇒ 211 终验 **targets=36**（DISTINCT 生效：103 唯一对 − 窗口内已测），discover 无错。
+
+**2026-10-31 24h 审计第 11 轮：DISTINCT 后曲线复测 / 歧义 WARN 归因修正与降噪立项 /
+sanitize 审计队列刷屏新噪声**（goal 会话，接第 10 轮 §8 遗留）：
+⇒ ★ **① 曲线复测（新窗口 2.9h，完整 24h 留下一轮）**：targets=36 一轮跑完
+（failed 17 / success 16 / partial 3），**同对重复 = 0**（修复前同对 3 秒连跑 4 次）⇒
+**failed 17 < 100 ✓**；17/17 全部 error 已分类；node_iq_latest 30 → 51 行/26 模型。
+五项判据：token 成本 ✓（放大消解）/ error 分类 ✓ / success 44% 量级改善 ✓，
+**同伴对比结构性未达标**（24h canonical 平均 1.45 家、新窗口 1.00、0 个 ≥2 ——
+单供应商 canonical 的 IQ 数据没有同伴锚点）⇒ **245/154 维持不开，理由从
+「成本不健康」更新为「同伴对比不足」**（成本已收敛，卡点是凭据池结构属性）。
+⇒ ★★★★ **② 歧义 WARN 归零的真因是凭据构成变化，不是修复**：第 10 轮机制预测
+21~23 时 501 条成功 glm-5.3-flash 请求应发 ~500 条 WARN ⇒ 实测 0 条；排除法三步
+（手工复跑 resolver SQL 候选仍=2 / RestoreOnSuccess failed=0 / b 槽 20:39 起 modelbinding
+WARN 已=0）⇒ 真因：**20:58 后 cred 19（绑定 z-ai/ 前缀，exact 不命中）承接 glm 流量
+= 0 条**（部署前 6.4h 有 1702 条），流量全走 cred 62/22（裸名绑定，exact 直接命中）。
+**第 10 轮「每次成功请求都发一条」修正为「每次经『绑定名 ≠ 客户端名』凭据的成功请求发一条」**
+—— 歧义条件仍在数据里，cred 19 再承接流量 WARN 就按请求量回来。
+⇒ ★ **立项卡（resolver 降噪，留独立工程）**：5 调用方（writer 131/535/616 + checker 417 +
+nodehealth 232）全部传客户端名、共用 `modelbinding.ResolveRawBinding` ⇒ 落点单一；
+方案 = **归一化候选按 best_rank 分层消歧**（仅最小 rank 组内多候选才 WARN；宽泛变体命中
+在存在特异命中时降级为排序偏好——selected 语义不变，排序兜底 869/869 已证明安全）；
+实现时须用 211 真数据验证 minimax 案例两候选是否同 rank（同 rank 真歧义应保留 WARN）。
+⇒ ★★★ **③ 新噪声族 `sanitize rule audit queue full`**：211 a 槽 **44250 条 WARN/3h**、
+b 槽 5920 条/19min（第 10 轮分桶无此族 ⇒ 新出现于 20:39 前后）；机制 = `Record` 有界队列
+（256）满即丢事件 + 单 auditWorker 逐条 writeEvent 消费不及 ⇒ **不只是日志噪声：
+每个 WARN 对应一次审计事件丢弃（dropped ≥ 44250/3h），sanitize 审计完整性受损**；
+修复方向 = 批写/加大队列/dropped 上告警面（独立工程，本轮登记）。
+⇒ ★ 常规：合并 origin/main 2 提交（c9289289f 表格语义门 + df7aedffb 慢门预算回填）；
+build/vet ✓；**stash@{0} 已删**（抽查核心签名已在 HEAD + 第 10 轮登记 +
+goal 明示授权，三重依据）；窗口内无未合并分支；三台 37004018 版本验证 ✓（无新提交无需部署）；
+慢 SQL 第四轮不可查（shared_preload=citus）；154 流量涨一个量级（INFO 22860 条/6h）
++ **「all 0 candidates failed」241 条/6h**（路由空转，登记观察）+ live stream lock 1266 条 WARN；
+245 systemd 2 单元既有 failed 维持登记。
+⇒ ★★ **四步①两处真修复**：① **926 迁移缺 `ledger_artifact_probe` 部署契约登记**
+（输出合规轮让号 925→926 时漏配；被掏空门 `TestTsvHollowoutReadersRejectEmptyRegistry`
+实测抓到「读者在基线就红」）；补探针时又抓到**联动契约第二层**——探针行内 `public.x`/`'x'`
+字面量必须在迁移文件文本中出现（probe drifted from file）⇒ 用 pg_catalog 形态（裸标识符
+不进抽取集）⇒ 掏空门复跑 PASS（129s）；② **`make test-short` 被 scripts/ursmcheck 包打红**
+（120s 预算 vs 包总量 350s+：DiskWatch 3×20s + Coverage 17s + 掏空门 130s+，台账条目增长
+后线性变重）⇒ test-short 排除该包（静态门非单元测试；完整通道 guards-ursmcheck 1800s +
+verify.sh 全量 1800s 都仍在跑它）。★★ 通用式：**「门变重」与「通道预算」是两条必须联动
+维护的线**——r1047 起多轮往包里加重测试却没调通道预算，与 42P10 的「DISTINCT 与 ORDER BY
+联动契约」同构。
+⇒ ★★ **量具陷阱一枚**：`go build ... | head && echo OK` 在 go 不在 PATH 时照样打 OK
+（exit code 被 head 掩盖）⇒ 本机 go 在 `~/sdk/go/bin`、判本地能力须 `GOTOOLCHAIN=local`。
+⇒ 审计档 `docs/audit/2026-10-31-24h审计第11轮-DISTINCT复测与歧义归因修正.md`；
+通用式见 LESSONS **§588**（「告警消失 ≠ 条件消失」等 5 条；§587 被 r1050 轮占用，让号）。
+
+
+**2026-10-30 r1050 轮：四候选复核 + ursmcheck 完整重跑**（会话 `mvs_5474b5ad596c4b7ab0805176028d09f3`）：
+★ 起点 HEAD 用户所述 `14593283c`（工作树干净）⇒ 本轮实际收口 HEAD **`5a4150440`**
+（期间上游推进 10 个提交，本轮已 `fetch` + `pull --ff-only` 同步）。
+⇒ ★★★★ **候选 A（bash4 可移植性门）无需实现 —— 门早就在**：`sql/schema/shell_bash_compat_gate_test.go`
+（2026-10-21 落地，A 档扫 `deploy/sql`+`scripts/audit`+`scripts/checks`+`scripts/tests`，
+B 档须显式 `# requires-bash: 4`）；实测基线绿（**540 脚本 / 违规 0**）+ **真仓变异臂**
+（往 `scripts/audit/` 注入 `declare -A` ⇒ **rc=1 且精确报行号与违规特性**）+ 还原 md5
+`723d1373` 逐字一致 + 回绿 ⇒ ★★ **「用户提的候选」≠「仓里缺的东西」**；★ 教训：★ 我按
+「门在 `scripts/ursmcheck/`」去找 ⇒ **找错目录会伪装成「缺口存在」**。
+⇒ ★★★★ **候选 B（fr-FR 棘轮）由上游 `111c2c1be` 自行裁决闭合**：该 commit 抬 fr-FR baseline
+1116→1118，并在 `baselineRaiseReason` 写明「`ruleActionLabel='Action'` / `ruleExemptionsLabel='Exemptions'`
+与 en-US 逐字同形（**这两词在法语里就是同一拼写**）⇒ 合法英文同形 ⇒ 保留不改写」⇒ ★★ 正是用户
+允许的第二条路径（「证明同形值合理」）⇒ ★★★ **逐词核对 8 语种后：上游是对的、我的本地改法是错的**
+（★ `Exemptions` 是法语 `exemption` 的正确复数，我改成 `Exceptions` 反而变成「例外/偏差」）⇒
+**本地改法已丢弃**（diff 留证于证据目录）、**`localeValueBaseline.json` 未动**；新 HEAD 上质量门
+**PASS（fr-FR 1118 = limit 1118）**；★★ **「同形值是否合理」不能靠直觉，必须逐词核对全部语种**。
+⇒ ★★★★ **候选 C（`<tr>` 直挂 `<table>`）坐实并修复**：★ 前一轮「当前 HEAD 复现不出 ⇒ 上游已消失」
+的结论**是错的** —— ★★ 根因是**量具失明**（用 `compileTemplate` 量 `element-permitted-content` 警告 ⇒
+**连人工构造的确定缺陷都抓不到** ⇒ 「零错误」≠「没缺陷」；★ 且那条警告**压根不在 Vue 的通道里**
+（Vue 运行时走 `innerHTML` 挂载，不走 HTML 解析器的 permitted-content 校验）⇒ ★★★
+**反向验证（喂已知坏样例）是量具自证的最低门槛**）；★ 改用栈式配对量具（**先自证正例 0/负例 1**）
+⇒ **299 个 `.vue` 命中 5 处**，全在 `RequestLogsView.vue` 的「会话缓存机制」说明表（源码 1335–1361 行，
+★ **同文件另一张表是合法的 ⇒ grep 行号会张冠李戴**）⇒ ★★ 危害不是 lint 报警而是**浏览器会隐式插入
+`<tbody>` 改写语义**（实测 jsdom：`table.children = [TBODY]`）⇒ **已修**（补 `<thead>`/`<tbody>`，+4 行）
+⇒ ★★★ **并把检查器固化成仓内门** `web/scripts/html-table-semantics-audit.mjs`（**自证 5/5**、
+真仓变异臂 rc=1 + 报 `RequestLogsView.vue:181`、还原 md5 `e51e2143` 逐字一致），**三段注册进
+`package.json` 并接入 `build` 链**；★ 门设计两条要点：**只取 `<template>` 块**（script 字面量天然不在
+扫描面）＋ **只判 `<tr>` 直挂 `<table>` 一族、不自造 permitted-content 表**（那是「第二份真值」）。
+⇒ ★★★★ **候选 D（完整重跑 ursmcheck）**：★ 首跑（HEAD `798d62c74`）**EXIT=2 / 14 条 FAIL**，
+payload 全部逐条落盘（253 行 stdout，未用 tail 截断）；⇒ ★★★ **归因不是产品回归而是「我落后了
+10 个提交」** —— 14 条形态全是「台账/快照/文档引用 与 代码漂移」，而漂移源（`admin-routes.txt` /
+`installer-reachability.tsv` / `pipefail_race_ledger.tsv` / `deploy-test-gate.sh` / `db-object-census.tsv` /
+`dbinit/runner.go`）**恰好全在上游新提交里被更新过** ⇒ ⇒ **跑整包门之前必须 `fetch`+`pull --ff-only`**；
+★ 同步后 **run2 EXIT=0 全绿**（`scripts/ursmcheck` **1122.817s** + `admin` **162.700s**、stderr 0 字节、
+起止负载 6.32/5.12/3.47 → 4.24/6.43/6.73、HEAD 记录在案）⇒ ★★★ **一次自我订正**：★ 我曾把 run1
+误判为「被 kill 的残局」⇒ 按时间线（752.581s 对得上、摘要已写出）查明是**自然跑完**，★★ 原记录与
+**纠正记录并存**于证据目录（抹掉等于把一次误判从历史里删掉）；★ 另：★ 当初怀疑的「外来进程」查实
+属 **sibling 仓 `../llm-gateway-go`（独立 git 仓、独立文件系统）** ⇒ **无写入冲突** ⇒ ★★ **「有没有
+并行写入」要查 cwd + git 归属，不能看进程名**。
+⇒ ★ **整包门复核（最终工作树）**：`make guards-ursmcheck` ✅EXIT=0；`make guards-fast` ✅EXIT=0
+（43 包全 ok）；`make guards-shell` ✅；`make guards-deploy` ✅（`ALL PASS deploy lock parity`）；
+web `vitest` ✅**2963 通过 / 2 跳过**（286 文件）；`npm run build` ✅14.69s（含新门）；
+i18n 四门全绿（CJK 4483=4483、locale-value PASS、key-parity PASS、strict 套件 EXIT=0）；
+候选 A 门基线绿+变异臂、候选 C 新门自证 5/5 + 变异臂。
+⇒ ★ **改动清单**：`web/src/views/RequestLogsView.vue`（+4）、`web/scripts/html-table-semantics-audit.mjs`
+（新增）、`web/package.json`（+5）、`docs/audit/evidence/2026-10-30-r1050-ursmcheck-fullrun/`（证据）；
+⇒ ★ **未动**：`fr-FR/sanitizeRules.ts`（改法已丢弃）、`localeValueBaseline.json`（**不抬不降**）。
+⇒ ★★ **本轮追加子项（r1044 轮 §六-⑤ 登记项，本轮到期）——「过期读数回填」**：
+★ 起因：★ r1044 轮 §六-⑤ 登记「每轮结束前重新量一次慢门包的耗时并更新预算注释里的实测数」
+⇒ 本轮已量得 **1122.817s** ⇒ 该项到期。
+⇒ ★★★★ **但真正的问题不是「预算那一条」而是「过期读数没有任何门能发现」**：★ 查遍全仓读
+`Makefile`/`verify.sh` 的门（`audit_guard_registration_test.go:110` 只解析 `GUARD_PACKAGES(_SLOW) :=`
+的**非注释**包名；`shell_fullwidth_var_gate_test.go:373` 只 `Contains` 查目标还在不在；
+`ci_carrier_truth_test.go:244` 只查 verify.sh 有跑全量 Go 测试的**非注释行**）⇒ ★★★ **没有一个校验
+注释/输出里的数字** ⇒ ★★ **「读数漂移」在结构上无法被自动发现** ⇒ ★★ 「回填」**永远靠人记得**。
+⇒ ★★★ **「94 个门文件」已漂移成 165**（★ 磁盘与 `git ls-files` 逐项一致 ⇒ 口径确定；★ 2026-10-22
+那轮确实是 94）；★ 其中 **`scripts/checks/guards-sync.sh:50` 那句 `echo` 是运行期面向人的输出**
+（★ **活的假话比注释假话更贵**——人会照着它判断「这个包有多重」），★ 而 `Makefile:256` 的 `##`
+帮助文本（`make help` 可见）同样不是普通注释。
+⇒ ★★★★ **正解不是「定期回填」而是「让数字不可能过期」**：★ 把 `guards-sync.sh` 那句改成
+`find` **实时数** ⇒ ★★ 删一个门文件它就少一个 ⇒ ★★ **取消回填义务**（★ 变异臂：把
+`./scripts/ursmcheck` 从 `GUARD_PACKAGES_SLOW` 摘掉 ⇒ 那句 echo **打出真实的 165** ⇒ rc=1；
+★ 还原后 Makefile md5 `4018f6a9b1d8f79fd6b9c418a0e15cf7` 逐字一致 ⇒ 归绿）；★ 三处**注释**里的
+预算读数**回填**（保留 r1044 历史依据不动，只补当前读数 + 时点标注）：`Makefile` / `verify.sh` /
+`shell_fullwidth_var_gate_test.go`（★ 后者把「余量只剩 ~60s」明确标成**历史读数**）。
+⇒ ★★★ **本轮实测 1122.817s @ load 6.32/5.12/3.47，而旧读数 1011.711s @ load 26.8/30.2/36.4
+⇒ 「更轻的负载下反而更慢」⇒ 不是负载上界，是【包真的变重了】**（★ 上游 10 个提交里
+`installer/internal/dbinit/runner.go` 改 194 行、多个台账 TSV 大改）⇒ 余量由「~1.8x」收窄到
+**1800/1122.817 ≈ 1.60x** ⇒ ★ **仍然够用，预算不必再提**，但 ★ **已非「宽松」**。
+⇒ ★★ **两个 165 不是同一个 165**：★ r1049 的 165 = 「调用编译型 go 子命令的 `.sh`/`.py` 脚本数」，
+★ 本轮的 165 = 「门文件数」⇒ ★★★ **纯撞号、集合无关** ⇒ ★★ 引用数字必须写清口径。
+⇒ ★★ **本轮追加子项②（候选 C 修复的副作用自查 + 门扩充）**：★ 提交前自查「加 `<thead>`/`<tbody>`
+会不会改变渲染」时发现：★★★ 全局 `src/style.css` 的 `thead th` / `tbody td` 是**元素选择器** ⇒ ★★ 那张表
+**因缺语义标签而从未命中过它们** ⇒ ★★ **补上标签的那一刻，全局规则开始管这张表** ⇒ ★★ 实测
+`tbody td { font-size: 13px }` 会把那张 **11px 密排**表撑成 13px（★ 量测：jsdom + 真实 style.css ⇒
+无锁定规则时 `<td>` = **13px**，加锁定后 = **11px**）⇒ ⇒ **补语义标签不是纯语法修复**。
+⇒ ★★ 修法：给该表加类名 `.guide-table` + 一条 scoped 规则钉回 11px（★ 与仓内 `.dense-table` 同族做法一致；
+★ **不是**给 12 个单元格各加行内 style——那会把意图埋进噪声里）。
+⇒ ★★★★ **门因此扩充第二条判据**（`html-table-semantics-audit.mjs`）：「自带字号 ≠ 全局 `tbody td` 字号、
+已补语义标签、却未锁定字号 ⇒ 判红」；★ 设计要点：**全局字号真值从 `style.css` 现读**（写死 = 第二份真值
+⇒ 读不到即弃权不判红）、**只判「劣化」不判「改善」**（font-weight/color/hover 是改善）、**每文件要读它
+自己的 `<style>` 块**（★ 只看 template 会漏掉「锁定规则在哪」）。
+⇒ ★★★★ **门首次运行即报 3 处存量**（`AgentRegistryView.vue` / `RequestLogsView.vue` / `DiagTab.vue`，
+各「自身 12px vs 全局 13px」）⇒ ★★★ 核实（`git show HEAD~2:<file>`）发现它们**自始**就带语义标签
+⇒ 12px 声明**自始失效** ⇒ ★★ **界面现状一直是 13px** ⇒ ★★ **改成 12px 是未经裁决的视觉变更**
+⇒ ⇒ 按仓内纪律「**存量→登记降级**」保留现状 + **显式豁免清单（带 since + why）**，且 ★★ **豁免不静默**
+（★ 静默豁免 = 免死金牌没人看得见 ⇒ 每次运行都列出来）⇒ ★★ **清单条目可被「消解」**。
+⇒ ★ **自证 5/5 → 15/15**（新增 10 条，含「**存量豁免确实被命中**（否则清单是死代码 ⇒ 门失去『新增劣化』拦截）」
+与「豁免分流有效（登记⇒不判红 / 未登记⇒判红）」）；★ **真仓变异臂**：去掉 `.guide-table` 锁定规则 ⇒ rc=1 且
+**精确命中** `RequestLogsView.vue:180 — 自身 11px vs 全局 13px` ⇒ 还原后 md5 `d0d0d9bdd376241b6d063b8ffd06faab`
+逐字一致 ⇒ 归绿；★ `vue-tsc` 0 错 / 该文件 vitest 3 通过 / `npm run build` 15.01s ✅。
+⇒ ★★ **本轮追加子项③（前端门「在不在强制执行路径上」——本轮撞到本仓自己的判词）**：
+★ 起因：★ 我本轮新增的门（`html-table-semantics-audit.mjs`）**只接进了 `build` 链** ⇒ 自查时撞到
+★ `Makefile` 的判词「**一门没人跑的守卫是文档，不是门**」与 `verify.sh` 的自记（「只登记在
+★ package.json ⇒ 一处都没引用 ⇒ 从未被执行过 ⇒ 一门没人跑的守卫是文档，不是门」）⇒ ★★ 差点亲手造出一门「文档」。
+⇒ ★★★★ **实测缺口比预想大一个量级**：★ `web/package.json` 里有 **32** 个 `:check` 类门，
+★★ 而 `verify.sh`（官方门 / CI 主路径）只登记了 **9** 个 ⇒ ★★★ **19 个门在 CI 上从未被执行过**
+★★★ （★★ 其中就有 `i18n:locale-value:check` —— ★★ r1050 候选 B 那一轮反复跑过它，★★ 而它在 CI 上**从未跑过**）
+⇒ ★★★ 同样地，**web 侧 31 个 `:selftest` 一个都没进强制路径**（★ 只有 web-mobile 的 `gate:selftest` 在）
+⇒ ★★★ **门自己的判据坏了（恒绿/恒红）没人知道** ⇒ ★★ 「自证没被执行」= **门的存在性没有保障**。
+⇒ ★★ **接入前先测那 19 个门的现状**：★ **18 绿 / 1 红**（`design-motion:check`）⇒ ★★ 那道红**不是噪声**，
+★ 拆出**两个独立成因**：① **裁决簿漂移**（★ `ProviderTodayRail.vue` 的 `.rail__bar` 豁免已失效 ——
+★ 该文件在 `48e6eb236` 被删除 ⇒ 登记 22 条 / 命中 21 条 ⇒ 已删该条登记）；② **登记漏项**
+★ （★ `StatsPanel.vue:912` 的 `.stats__share` 是数据条，width 由数据绑定，★ 与被删那条同款
+★ ⇒ 已补登记）⇒ ★★ 修后「布局驱动未登记 0」、门转绿。
+⇒ ★★★ **顺带发现门自身的两条缺陷（登记留项）**：① `src/design/motion.ts` 的 `facts.M3 = byRule('M3')`
+★ **把「代码命中」与「裁决簿漂移」两类 findings 一起计入** ⇒ ★★ 棘轮读数被污染（M3 报 2 而真实代码命中 1）；
+★★ ② 门**只打印 1 处位置**（计数说 2）⇒ ★★ 失败报告不完整 ⇒ ★★ 修它们要动**事实源**与棘轮口径
+★ ⇒ 属独立工程，★ 本轮只把门接进强制路径、让它不再「没人跑」。
+⇒ ★★★ **又一处「注释里的断言与事实不符」**：★ `StatsPanel.vue` 的注释写着「已在
+★★ `design-motion-decisions.json` 的 layoutDriven 登记」，而裁决簿里**并没有** ⇒ ★★ 已补登记，
+★★ 并把 **key 逐字写进注释** ⇒ 让「注释声称」与「台账实有」可逐字核对。
+⇒ ★★★★ **修法：清单 + 一个入口**（★ 不是把 50 条命令塞进 verify.sh）：★ 新增
+★★ `web/scripts/web-gates-runner.mjs`（单一真值）+ `package.json` 两段注册 + `verify.sh` 调
+★★ `pm_run web-gates:run web`；★ **30 门 + 30 自证 = 60 项**（★★ 门与自证两类都要进 ——
+★★ 只跑门不跑自证 ⇒ 门坏了没人知道；只跑自证不跑门 ⇒ 门不在任何路径上执行）；
+★★ **入口自己有牙**（★ 它校验清单里每个脚本都存在于 package.json ⇒ ★★ 清单写错 ⇒ 入口自己红）；
+★★ **失败指名道姓**（★ 打印哪个门红了 + rc + 输出尾部）；★★ **刻意排除项不静默**
+★★ （★ `ui:sweep:selftest` 需 playwright + chromium ⇒ 环境缺件 ⇒ CI 不装浏览器 ⇒ 每次运行都列出 + 理由）。
+⇒ ★★★ **变异臂两层都有牙**：★ 臂一（去掉 `.guide-table` 锁定）⇒ **门 rc=1 与自证 rc=2 都被总入口捕获**
+★★ `✘ 2 项失败：html-table:check:strict (rc=1) / html-table:selftest (rc=2)` ⇒ RUNNER_EXIT=1；
+★★ 臂二（清单里脚本名打错）⇒ `✘ 门清单自身有问题：gate: html-table:check:strictTYPO` ⇒ RUNNER_EXIT=2。
+⇒ ★★ 还原后：入口 EXIT=0、`pm_run web-gates:run web` EXIT=0（**60 项全过**）、`bash -n verify.sh` OK；
+★★ **pnpm / npm 两条路径都实测过**（★ `vue` 在 `dependencies` ⇒ pnpm 严格布局下 `vue/compiler-sfc` 可解析）。
+⇒ ★★ **本轮仍留项**：i18n 死键 / `BIG5_TRAPS` 正名单 / 页面级硬编码中文 4483 段（沿袭）；
+★★ `design-motion` 门自身的两条缺陷（见上）；★★ 3 张存量表的失效 `12px` 声明（★ 界面一直不生效；
+★★ 清理 = 一次视觉语义整理 ⇒ ★ 需产品裁决 ⇒ 已登记在门的豁免清单里，★ 可被「消解」）；
+★★ **CI 该段耗时上升**（★ 60 项约 3~4 分钟）⇒ ★★ 若将来嫌慢，★ 正确做法是**按变更面裁剪执行范围**，
+★★ **而不是把门从清单里删掉**（★ 那等于「门失联」）。
+⇒ 审计档 `docs/audit/2026-10-30-r1050-四候选复核与ursmcheck完整重跑.md`（含 §三-8/§三-9 与 §七·补/§七·补二）；
+通用式见 `LESSONS.md` **§587**（十五条：工具与事实不同通道时「没报错」= 量具失明 /
+候选初始判断本身要复核 / 「重跑红了」第一嫌疑是「我落后了」 / 并行写入要查 cwd+git 归属 /
+订正留痕不抹掉 / grep 行号会张冠李戴 / 判据窄而全胜判据宽而漏 /
+**「让数字不可能过期」优于「定期回填」** / **活的假话比注释假话更贵** /
+**更轻负载下更慢 = 包变重了不是上界** / **补语义标签会让此前被绕过的样式规则开始生效** /
+**门抓出的存量红先分诊再决定修不修** / **「这门在强制执行路径上吗」必须被核对** /
+**一道门红了要问「红多久了」与「读数混了几种语义」** / **注释里的「已登记」也会过期**）。
+**2026-10-31 第 53 增量：输出合规审计轮（六项交付全量验证 + 降级单语义修正 + insights 缺 WHERE 修复）**（会话
+`mvs_bebea3efc1bd4fee824da9780c6ddce2` 承接输出合规任务链）：★ owner 原任务（全局开关 /
+拦截列表 / 通过·拒绝 / 匹配规则+原始会话内容 / 人工标注 / 自动优化）经两轮（10-29 误报轮
+43c4a3814~d32559500、10-30 审计轮 ff029a7fc）已落地 ⇒ 本轮做**审计**：六项交付在代码、
+测试、211 生产三个层面逐项对证据核验 —— **全部达成**（211 槽 a 跑 37004018 包含全链；
+开关键生产实测 true；247 条拦截单可见；新单 225/226 自带规则归因；证据 224 行；
+标注 1 条 false_positive；自动优化阈值 3 已接线、合成哨兵豁免；守卫启动日志
+`pending_max_mib=1 cap_mode=release`）。
+⇒ ★★★★ **生产读数抓出 F2（本轮最值钱）：降级放行单灌爆审核面** —— 921 把守卫缓冲越界的
+「降级放行」（release 模式：放行+留痕）也登记成 **pending 拦截单**，而 917 对这张表的
+契约是「每次**硬阻断**一条」⇒ 211 实测 **24h 内 226/226 条全是
+`builtin.guard.capacity_exceeded`（~230 条/天）**、7 天窗口 **0 条真实内容规则拦截**；
+联 session_turns 佐证：降级单的请求 `error_kind` 无一 `output_policy_blocked`
+（业务确实没被打断——原 complaint 已修掉，但审核面被遥测淹没）。
+⇒ ★★★ **死操作的识别法：追「按钮写下的数据被谁读」** —— 对降级单点「批准」会为
+合成哨兵规则写 7 天放行，而放行表只被内容规则读面（egressReleaseAllowed）消费
+⇒ **该放行行没有任何消费方** ＝ 看起来能操作、实际什么都不做；标注同样喂不到
+自动优化（maybeAutoRelax 显式豁免 `builtin.guard.*`）。
+⇒ ★ **修法（迁移 926）＝ 给事件分类、每个消费面按类取数，不回退留痕**：
+`degraded BOOLEAN` 末尾追加 + 回填 `rule_id LIKE 'builtin.guard.%'`（★ 回填边界写进
+迁移注释：block 模式部署的容量终断是硬阻断，会被本回填标成 degraded——当前在跑
+部署全为 release ⇒ 精确）；登记链 `PolicyBlockReviewInput.Degraded` → 两条 Add 路径；
+消费口径三处：待审数 `CountPendingBlockDecisions`（pending 且非降级）/ insights
+`WHERE NOT degraded`（DB+内存同口径）/ 前端只读遥测行（降级徽标+说明行，隐藏
+批准/拒绝/标注，证据/上下文/归因照常）。★ 让号：925 被撤销迁移占用过 ⇒ 取 **926**；
+登记面七点全齐 + 静态契约门（含防回退断言「只加列不接消费面等于没修」）。
+⇒ ★★★★ **顺带修掉 F3（既有缺陷）：insights 带租户过滤恒 503** ——
+`BlockReviewInsightsDB` 拼接 `FROM sanitize_block_reviews` + ` AND tenant_id=$N`
+**缺 WHERE 前缀** ⇒ 无过滤时合法、带过滤时非法 SQL ⇒ 租户管理员读数恒 503、
+super_admin 的 `?tenant_id=` 恒 503；★ **两轮终验都是 super_admin 无过滤口径，
+这正是它一直没暴露的原因** ⇒ ★★ **端点验证必须覆盖每个可选参数组合**
+（缺省路径绿 ≠ 参数路径绿）；修法与 F2 的排除口径合并落地
+（`WHERE NOT degraded` 起头）+ sqlmock 形状回归门（WHERE 必须先于 AND）。
+⇒ ★★ **量具夹具是列集的影子**：加列后两个既有 sqlmock 夹具先红（NewRows 列清单
+与 scanBlockReview 逐字对应）⇒ 同步补 degraded 列后全绿——这不是回归，是列序
+真值源在起作用；installer 启动清单（startup manifest）与 `installed_startup_migrations.tsv`
+是**生成物**，改 StartupFiles 后用 `-update` 通道重生成、不手工抄。
+⇒ ★ **读数**：Go 侧 sanitizerules / streaming / hooks·outputcompliance /
+outputcompliance / sql/migrations/startup / installer(dbinit) 全绿（新增 12 个测试：
+契约门 4 + sqlmock 4 + 内存口径 3 + 登记链 1）；web **2963 过 / 2 跳过**（钉总数
+201 → **203**：+reviewDegraded / reviewDegradedHint × 8 语种）；i18n 三门 PASS
+（硬编码中文 **4483 = 基线**）；`vue-tsc` 0 错；`build` ✓ 18.55s；`go build ./...` ✓；
+`go vet` ✓。211 生产终态由下一轮部署读数（迁移 926 待部署）。
+⇒ ★★ **本轮明确没做（留给下一轮）**：① 降级单保留期（表无 TTL，release 模式
+~230 行/天持续累积，年 ~8.4 万行——可复用证据表 TTL 模式）；② 降级率看板
+（排除后降级可见性只剩列表与指标 `OutputGateFailClosedErrorsTotal{source=capacity}`）；
+③ 审核单按规则/租户过滤与分页（§8② 遗留——降级单被排除后首页噪声已消失，优先级下降）；
+④ 22 条历史空白单只能靠标注消化；⑤ 候选窗口 ±15 分钟按真实命中率再调；
+⑥ **审计队列容量**（同窗第 11 轮抓到的另一半：256 满即丢、44250 WARN/3h 的背后是
+同量级审计事件真实丢弃——属他们的降噪立项，两线不重复）。
+⇒ 审计档 `docs/audit/2026-10-31-输出合规审计轮-六项交付验证与降级单语义修复.md`；
+通用式见 `LESSONS.md` **§589**（六条：表的契约由 DDL 注释说了算 /
+可选参数组合必须逐个验证 / 死操作=追不到消费方 /
+回填前缀要枚举全部语义 / mock 夹具是列集的影子 / 生成物登记面用重生成通道）。
 > **2026-10-31 24h 审计第 9 轮·批判式审计：声明订正两条 + 第 11 轮立项卡落地**（用户指令
 > 「对本任务批判式审计并修正」，承接第 9 轮四项遗留）：
 > ⇒ ★★★ **声明订正一（最值钱）**：第 9 轮「glm 处置后 WARN 归零」被第 10/11 轮实锤为

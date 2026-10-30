@@ -1,0 +1,253 @@
+go test ./scripts/ursmcheck ./admin -count=1 -timeout=1800s
+--- FAIL: TestMigration895TSVOrderIndexMatchesItsLinePosition (0.00s)
+    section_14360_domain_chain_startup_images_test.go:443: ../../installer/internal/dbinit/runner.go 里找不到 StartupFiles 块 ⇒ 判据失效（结构变了？）
+--- FAIL: TestAdminRoutesSnapshotMatchesGenerator (11.60s)
+    admin_routes_snapshot_gate_test.go:265: ★ 行数不一致：生成器 598 行 vs 快照 592 行 ⇒ 快照已漂移（或生成器口径变了）
+    admin_routes_snapshot_gate_test.go:270: ★ 第 1 行不一致 ⇒ 快照已漂移（或生成器口径变了）
+        生成器："/\tANY\tcmd/gateway/main.go:7136"
+        快照　："/\tANY\tcmd/gateway/main.go:7048"
+--- FAIL: TestAdminRoutesSnapshotRowCount (6.44s)
+    admin_routes_snapshot_gate_test.go:285: ★ 生成器 598 行 vs 快照 592 行 ⇒ 不相等
+[guard-test] FATAL: 部署未走到完成标记却将以 0 退出（bash set -eu 的隐式失败会丢退出码）—— 按失败处理
+/bin/bash: line 12: __nonexistent_var_for_guard_test__: unbound variable
+[guard-test] FATAL: 部署未走到完成标记却将以 0 退出（bash set -eu 的隐式失败会丢退出码）—— 按失败处理
+--- FAIL: TestDeployDriftManifestRepoChecksumMatchesDisk (0.00s)
+    deployed_script_drift_test.go:197: ursm-snapshot-health.sh 的仓内内容已变（台账记 3ba9840515887e053b055e44fcd5167c，实际 b6d868b9e69a54e55ef13d753e0bdbfc）
+        ★ 这正是本门要拦的事：改了脚本却没部署、也没更新台账 ⇒ 线上继续跑旧版而**无人察觉**（2026-10-19 实测 12 个里 6 个如此）。
+        ⇒ 请同时做两件事：部署到 252，并把台账的「仓内 md5」与「线上 md5」一起更新。
+--- FAIL: TestInstallerReachabilityLedgerIsRecomputable (0.24s)
+    installer_reachability_gate_test.go:209: index "idx_sessions_last_full_at": missing_envs="fresh,252" recomputed=""
+    installer_reachability_gate_test.go:216: index "idx_sessions_last_full_at": verdict=reachable-but-missing-in-fresh recomputed=reachable-and-legitimately-retired (★ reachable=true fresh=retired-by-column-drop)
+    installer_reachability_gate_test.go:222: index "idx_sessions_last_full_at": severity=installer-bug recomputed=none
+    installer_reachability_gate_test.go:209: index "idx_goal_run_steps_tenant_request": missing_envs="fresh,252,211" recomputed=""
+    installer_reachability_gate_test.go:216: index "idx_goal_run_steps_tenant_request": verdict=unreachable-and-missing recomputed=reachable-and-legitimately-retired (★ reachable=false fresh=retired-by-column-drop)
+    installer_reachability_gate_test.go:222: index "idx_goal_run_steps_tenant_request": severity=prod-gap recomputed=none
+    installer_reachability_gate_test.go:209: index "idx_goal_runs_tenant_id": missing_envs="local" recomputed=""
+    installer_reachability_gate_test.go:227: 7 reachability ledger cells disagree with the independent recomputation
+--- FAIL: TestInstallerReachabilityAgreesWithGapLedger (0.00s)
+    installer_reachability_gate_test.go:268: index "idx_goal_runs_tenant_id": reachability missing_envs="local" but gap ledger says []
+    installer_reachability_gate_test.go:268: index "idx_sessions_last_full_at": reachability missing_envs="fresh,252" but gap ledger says []
+    installer_reachability_gate_test.go:268: index "idx_goal_run_steps_tenant_request": reachability missing_envs="fresh,252,211" but gap ledger says []
+--- FAIL: TestInstallerReachabilityRatchet (0.00s)
+    installer_reachability_gate_test.go:286: ★ reachability ratchet broken: installer-bug has 1, baseline 0 (★ 只许下降)
+    installer_reachability_gate_test.go:300: ★ 1 indexes are reachable but missing from a fresh install ⇒ the installer itself is broken
+    installer_reachability_gate_test.go:303: reachability counts: map[baseline-dependent:342 installer-bug:1 new-install-gap:13 none:462 prod-gap:37] (baseline map[installer-bug:0 new-install-gap:13])
+--- FAIL: TestInstallerReachabilityAuditDocQuotesTheLedger (0.00s)
+    installer_reachability_gate_test.go:377: audit doc does not quote "prod-gap=37" (★ numbers must match the ledger)
+    installer_reachability_gate_test.go:377: audit doc does not quote "installer-bug=1" (★ numbers must match the ledger)
+2026/10/30 17:11:43 WARN interceptor_chain: interceptor failed index=0 error=magpie-p2-ledger-probe session_id=""
+量具自证：扫描器对事故形态报出 3 处
+--- FAIL: TestPipefailRaceLedgerCoversCandidateSet (25.27s)
+    pipefail_race_ledger_test.go:342: ★ 台账缺少 1 个候选点（静态判据给了候选集，但没被逐条裁决）：
+        scripts/deploy-test-gate.sh	c0d018c24a35	1
+    pipefail_race_ledger_test.go:349: 候选物理行 = 367 / 台账行 = 366
+--- FAIL: TestQueryIndexCoverageRequirements (0.02s)
+    query_index_coverage_gate_test.go:712: ★ [local] 未覆盖却登记成 covered：query_id="sessions.detail.point" table="sessions" filter_cols=[tenant_id,session_id] order_cols=[] （★ 来源 admin/session_detail_v2.go:539）
+           filter_ok=false order_ok=true   该表的父级索引：
+              - idx_sessions_agent_role cols=[tenant_id,agent_role,created_at] ★部分索引（谓词非空）⇒ 保守排除
+              - idx_sessions_last_full_at cols=[tenant_id,last_full_payload_at] ★部分索引（谓词非空）⇒ 保守排除
+              - idx_sessions_parent_session cols=[tenant_id,parent_session_id] ★部分索引（谓词非空）⇒ 保守排除
+              - idx_sessions_primary_request cols=[primary_request_id] ★部分索引（谓词非空）⇒ 保守排除
+              - idx_sessions_session_id cols=[session_id]
+              - idx_sessions_status cols=[status,updated_at]
+              - idx_sessions_summary_at cols=[tenant_id,summary_generated_at] ★部分索引（谓词非空）⇒ 保守排除
+              - idx_sessions_tenant cols=[tenant_id,created_at]
+              - sessions_pkey cols=[id,partition_date]
+              - sessions_session_id_partition_date_key cols=[session_id,partition_date]
+    query_index_coverage_gate_test.go:712: ★ [local] 未覆盖却登记成 covered：query_id="sessions.detail.main" table="sessions" filter_cols=[tenant_id,session_id] order_cols=[partition_date] （★ 来源 admin/session_detail_v2.go:358）
+           filter_ok=false order_ok=false   该表的父级索引：
+              - idx_sessions_agent_role cols=[tenant_id,agent_role,created_at] ★部分索引（谓词非空）⇒ 保守排除
+              - idx_sessions_last_full_at cols=[tenant_id,last_full_payload_at] ★部分索引（谓词非空）⇒ 保守排除
+              - idx_sessions_parent_session cols=[tenant_id,parent_session_id] ★部分索引（谓词非空）⇒ 保守排除
+              - idx_sessions_primary_request cols=[primary_request_id] ★部分索引（谓词非空）⇒ 保守排除
+              - idx_sessions_session_id cols=[session_id]
+              - idx_sessions_status cols=[status,updated_at]
+              - idx_sessions_summary_at cols=[tenant_id,summary_generated_at] ★部分索引（谓词非空）⇒ 保守排除
+              - idx_sessions_tenant cols=[tenant_id,created_at]
+              - sessions_pkey cols=[id,partition_date]
+              - sessions_session_id_partition_date_key cols=[session_id,partition_date]
+    query_index_coverage_gate_test.go:828: 需求清单 ../../scripts/audit/asset/query-index-requirements.tsv：共 74 条 ⇒ local（covered 17 / 未覆盖 57）｜ fresh 新装环境（covered 19 / 未覆盖 55）｜ ★ 其中「local 覆盖但新装不覆盖」= 0 条 ⇒ 读底账 ../../scripts/audit/asset/db-object-census.tsv
+    query_index_coverage_gate_test.go:831: ★ 实测轴（★ 读 ../../scripts/audit/asset/query-plan-observations.tsv，★ 104 条观测）：seek 0 / filter 2 / seq-scan 3 ⇒ ★ 读 ../../scripts/audit/asset/query-plan-exemptions.tsv
+--- FAIL: TestRequestSurfaceDocEvidenceStillHolds (0.00s)
+    --- FAIL: TestRequestSurfaceDocEvidenceStillHolds/HTTP_中间件链本体（Recovery_起、SecurityHeaders_止）★_与认证表_A1_同一语义对象 (0.00s)
+        request_surface_doc_currency_test.go:323: ★ cmd/gateway/main.go 的区间 [7800,7818] 里**没有**在代码行上出现 "middleware.NewRecoveryMiddleware()"
+            ★ ⇒ 代码挪了位/那个构造没了 ⇒ ★ **设计页已与代码漂移**
+            ★ 修法：按现状改对拍表（并同步页面上的引用）
+    --- FAIL: TestRequestSurfaceDocEvidenceStillHolds/「Logging_必须在_Auth_之外」的**自陈注释** (0.00s)
+        request_surface_doc_currency_test.go:323: ★ cmd/gateway/main.go 的区间 [7802,7809] 里**没有**在注释行上出现 "Logging 必须排在 Auth"
+            ★ ⇒ 代码挪了位/那个构造没了 ⇒ ★ **设计页已与代码漂移**
+            ★ 修法：按现状改对拍表（并同步页面上的引用）
+    --- FAIL: TestRequestSurfaceDocEvidenceStillHolds/「maintain/mobile_必须组合在链内」的**自陈注释** (0.00s)
+        request_surface_doc_currency_test.go:323: ★ cmd/gateway/main.go 的区间 [7791,7796] 里**没有**在注释行上出现 "maintain 与 mobile 两个挂载必须组合在链"
+            ★ ⇒ 代码挪了位/那个构造没了 ⇒ ★ **设计页已与代码漂移**
+            ★ 修法：按现状改对拍表（并同步页面上的引用）
+--- FAIL: TestSection14335LedgerIsUpdated (0.00s)
+    section_14335_test.go:381: ★ 台账里的仓内 md5 (3ba9840515887e053b055e44fcd5167c) 与脚本实际 md5 (b6d868b9e69a54e55ef13d753e0bdbfc) 不一致 ⇒ 必须更新台账
+scq 台账 21 行；候选集 20 个
+--- FAIL: TestStructuredRegistryHollowoutReadersRejectEmptyRegistry (134.81s)
+    --- FAIL: TestStructuredRegistryHollowoutReadersRejectEmptyRegistry/web/scripts/cjk-native-simplified-chars.json (1.03s)
+        structured_registry_hollowout_test.go:527: web/scripts/cjk-native-simplified-chars.json：读方在【基线】就红 ⇒ ⇒ 不可判定 ⇒ ★ 先把读方修绿。
+            读方在【基线】就红（exit=1）
+            CJK 原生语种（ja-JP / zh-TW）简体残留
+            口径：全量键；引用集 = 字面量 + 属性承载键 + 运行时拼键前缀；简体专用字 = Big5 转不出的汉字（字表 2026-10-27）；ja-JP 豁免合法日文新字体
+              ja-JP: 用户可见残留=1 (硬闸 0, baseline 0)｜未引用残留=7 (baseline 294)
+                ❌ 用户可见的简体残留（界面上会出现简体原文）：
+                   sanitizeRules.ruleActionLabel = "处置"  [处]
+              zh-TW: 用户可见残留=0 (硬闸 0, baseline 0)｜未引用残留=9 (baseline 288)
+            
+            ❌ 简体残留门未通过
+    --- FAIL: TestStructuredRegistryHollowoutReadersRejectEmptyRegistry/web/scripts/color-audit-baseline.json (0.28s)
+        structured_registry_hollowout_test.go:527: web/scripts/color-audit-baseline.json：读方在【基线】就红 ⇒ ⇒ 不可判定 ⇒ ★ 先把读方修绿。
+            读方在【基线】就红（exit=1）
+            [stale] 量具自证未通过：
+              - baseline(39) 比现存违规(46) 还少 ⇒ 键格式或粒度变了，先核对再信本脚本
+    --- FAIL: TestStructuredRegistryHollowoutReadersRejectEmptyRegistry/web/scripts/compact-card-coverage-baseline.json (0.04s)
+        structured_registry_hollowout_test.go:527: web/scripts/compact-card-coverage-baseline.json：读方在【基线】就红 ⇒ ⇒ 不可判定 ⇒ ★ 先把读方修绿。
+            读方在【基线】就红（exit=1）
+            compact 卡片形态覆盖率（UI规范 03 §3.4）
+            ================================================================
+              含 <table> 的视图        67
+              · 已覆盖（compact 切卡片）17
+              · 存量降级（横滚宽表）    50
+              · 覆盖率                  25.4%
+            ================================================================
+            
+            ❌ 新增 1 个 compact 下仍是「横滚宽表」的视图：
+                 src/views/ModelCredibilityView.vue
+               03 §3.4：新列表页不得只交横滚 ⇒ 请改用 `ResponsiveDataView`（compact 切卡片），
+               或确认它确属存量降级后再 `node scripts/compact-card-coverage.mjs --update-baseline`。
+    --- FAIL: TestStructuredRegistryHollowoutReadersRejectEmptyRegistry/web/scripts/design-spacing-scale-decisions.json (0.21s)
+        structured_registry_hollowout_test.go:527: web/scripts/design-spacing-scale-decisions.json：读方在【基线】就红 ⇒ ⇒ 不可判定 ⇒ ★ 先把读方修绿。
+            读方在【基线】就红（exit=1）
+            views/ModelCredibilityView.vue:548  .error-banner  padding: 10px 14px
+            views/ModelCredibilityView.vue:553  .empty-state  padding: 40px 20px
+            views/ModelCredibilityView.vue:576  .table th,
+            .table td  padding: 8px 10px
+            views/ModelCredibilityView.vue:587  .mismatch-mark  margin-left: 6px
+            views/ModelCredibilityView.vue:625  .dims  margin-left: 6px
+            views/ModelCredibilityView.vue:632  .row-actions  gap: 6px
+            views/ModelCredibilityView.vue:658  .modal-header  padding: 14px 18px
+            views/ModelCredibilityView.vue:668  .modal-body  padding: 16px 18px
+            views/ModelCredibilityView.vue:676  .detail-grid  margin-bottom: 18px
+            views/ModelCredibilityView.vue:695  .section-title  margin: 18px 0 8px
+            views/ModelCredibilityView.vue:701  .anomaly-list  padding-left: 20px
+            views/ModelCredibilityView.vue:708  .evidence-block  padding: 10px 12px
+            views/SanitizeRulesView.vue:2607  .insights-table th,
+            .insights-table td  padding: 6px 8px
+            
+            读数：间距声明 5681 处（在阶 5704 · 令牌写法 180 · 静态不可定值 94 · 0 1311 · 发丝/微调 538 · 抵消 17 · 人工豁免 1）· 离阶 19（2 个文件）· rem 写法 0
+            间距阶：4/8/12/16/24/32/40/48/64
+            基线：离阶间距 ≤ 0 · rem 写法 ≤ 0
+            
+            FAIL: 19 处间距落在角色阶之外。
+            修法：收到就近的间距阶值（平局取下界 —— 运维台要密度，不要均匀的松）。
+            FAIL: 棘轮指标升高。
+              offScaleSpacing 0 → 19（升高了）
+            ✅ 每个间距都落在角色阶上 —— PASS
+    --- FAIL: TestStructuredRegistryHollowoutReadersRejectEmptyRegistry/web/scripts/i18n-cjk-native-simplified-baseline.json (0.84s)
+        structured_registry_hollowout_test.go:527: web/scripts/i18n-cjk-native-simplified-baseline.json：读方在【基线】就红 ⇒ ⇒ 不可判定 ⇒ ★ 先把读方修绿。
+            读方在【基线】就红（exit=1）
+            CJK 原生语种（ja-JP / zh-TW）简体残留
+            口径：全量键；引用集 = 字面量 + 属性承载键 + 运行时拼键前缀；简体专用字 = Big5 转不出的汉字（字表 2026-10-27）；ja-JP 豁免合法日文新字体
+              ja-JP: 用户可见残留=1 (硬闸 0, baseline 0)｜未引用残留=7 (baseline 294)
+                ❌ 用户可见的简体残留（界面上会出现简体原文）：
+                   sanitizeRules.ruleActionLabel = "处置"  [处]
+              zh-TW: 用户可见残留=0 (硬闸 0, baseline 0)｜未引用残留=9 (baseline 288)
+            
+            ❌ 简体残留门未通过
+--- FAIL: TestTsvHollowoutReadersRejectEmptyRegistry (163.53s)
+    --- FAIL: TestTsvHollowoutReadersRejectEmptyRegistry/scripts/audit/asset/installer-reachability.tsv (0.28s)
+        tsv_hollowout_gate_test.go:830: scripts/audit/asset/installer-reachability.tsv：读方在【基线】就红 ⇒ ⇒ 不可判定 ⇒ ★ 先把读方修绿，或把该条目改成 expect=exception 并写理由。
+            读方在【基线】就红（exit=1）
+            --- FAIL: TestInstallerReachabilityLedgerIsRecomputable (0.19s)
+                installer_reachability_gate_test.go:209: index "idx_sessions_last_full_at": missing_envs="fresh,252" recomputed=""
+                installer_reachability_gate_test.go:216: index "idx_sessions_last_full_at": verdict=reachable-but-missing-in-fresh recomputed=reachable-and-legitimately-retired (★ reachable=true fresh=retired-by-column-drop)
+                installer_reachability_gate_test.go:222: index "idx_sessions_last_full_at": severity=installer-bug recomputed=none
+                installer_reachability_gate_test.go:209: index "idx_goal_run_steps_tenant_request": missing_envs="fresh,252,211" recomputed=""
+                installer_reachability_gate_test.go:216: index "idx_goal_run_steps_tenant_request": verdict=unreachable-and-missing recomputed=reachable-and-legitimately-retired (★ reachable=false fresh=retired-by-column-drop)
+                installer_reachability_gate_test.go:222: index "idx_goal_run_steps_tenant_request": severity=prod-gap recomputed=none
+                installer_reachability_gate_test.go:209: index "idx_goal_runs_tenant_id": missing_envs="local" recomputed=""
+                installer_reachability_gate_test.go:227: 7 reachability ledger cells disagree with the independent recomputation
+            FAIL
+    --- FAIL: TestTsvHollowoutReadersRejectEmptyRegistry/scripts/audit/asset/query-index-requirements.tsv (0.11s)
+        tsv_hollowout_gate_test.go:830: scripts/audit/asset/query-index-requirements.tsv：读方在【基线】就红 ⇒ ⇒ 不可判定 ⇒ ★ 先把读方修绿，或把该条目改成 expect=exception 并写理由。
+            读方在【基线】就红（exit=1）
+                          - idx_sessions_status cols=[status,updated_at]
+                          - idx_sessions_summary_at cols=[tenant_id,summary_generated_at] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_tenant cols=[tenant_id,created_at]
+                          - sessions_pkey cols=[id,partition_date]
+                          - sessions_session_id_partition_date_key cols=[session_id,partition_date]
+                query_index_coverage_gate_test.go:712: ★ [local] 未覆盖却登记成 covered：query_id="sessions.detail.main" table="sessions" filter_cols=[tenant_id,session_id] order_cols=[partition_date] （★ 来源 admin/session_detail_v2.go:358）
+                       filter_ok=false order_ok=false   该表的父级索引：
+                          - idx_sessions_agent_role cols=[tenant_id,agent_role,created_at] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_last_full_at cols=[tenant_id,last_full_payload_at] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_parent_session cols=[tenant_id,parent_session_id] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_primary_request cols=[primary_request_id] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_session_id cols=[session_id]
+                          - idx_sessions_status cols=[status,updated_at]
+                          - idx_sessions_summary_at cols=[tenant_id,summary_generated_at] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_tenant cols=[tenant_id,created_at]
+                          - sessions_pkey cols=[id,partition_date]
+                          - sessions_session_id_partition_date_key cols=[session_id,partition_date]
+                query_index_coverage_gate_test.go:828: 需求清单 ../../scripts/audit/asset/query-index-requirements.tsv：共 74 条 ⇒ local（covered 17 / 未覆盖 57）｜ fresh 新装环境（covered 19 / 未覆盖 55）｜ ★ 其中「local 覆盖但新装不覆盖」= 0 条 ⇒ 读底账 ../../scripts/audit/asset/db-object-census.tsv
+                query_index_coverage_gate_test.go:831: ★ 实测轴（★ 读 ../../scripts/audit/asset/query-plan-observations.tsv，★ 104 条观测）：seek 0 / filter 2 / seq-scan 3 ⇒ ★ 读 ../../scripts/audit/asset/query-plan-exemptions.tsv
+            FAIL
+    --- FAIL: TestTsvHollowoutReadersRejectEmptyRegistry/scripts/ursmcheck/pipefail_race_ledger.tsv (26.10s)
+        tsv_hollowout_gate_test.go:830: scripts/ursmcheck/pipefail_race_ledger.tsv：读方在【基线】就红 ⇒ ⇒ 不可判定 ⇒ ★ 先把读方修绿，或把该条目改成 expect=exception 并写理由。
+            读方在【基线】就红（exit=1）
+            --- FAIL: TestPipefailRaceLedgerCoversCandidateSet (25.91s)
+                pipefail_race_ledger_test.go:342: ★ 台账缺少 1 个候选点（静态判据给了候选集，但没被逐条裁决）：
+                    scripts/deploy-test-gate.sh	c0d018c24a35	1
+                pipefail_race_ledger_test.go:349: 候选物理行 = 367 / 台账行 = 366
+            FAIL
+    --- FAIL: TestTsvHollowoutReadersRejectEmptyRegistry/scripts/audit/asset/query-plan-observations.tsv (0.11s)
+        tsv_hollowout_gate_test.go:830: scripts/audit/asset/query-plan-observations.tsv：读方在【基线】就红 ⇒ ⇒ 不可判定 ⇒ ★ 先把读方修绿，或把该条目改成 expect=exception 并写理由。
+            读方在【基线】就红（exit=1）
+                          - idx_sessions_status cols=[status,updated_at]
+                          - idx_sessions_summary_at cols=[tenant_id,summary_generated_at] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_tenant cols=[tenant_id,created_at]
+                          - sessions_pkey cols=[id,partition_date]
+                          - sessions_session_id_partition_date_key cols=[session_id,partition_date]
+                query_index_coverage_gate_test.go:712: ★ [local] 未覆盖却登记成 covered：query_id="sessions.detail.main" table="sessions" filter_cols=[tenant_id,session_id] order_cols=[partition_date] （★ 来源 admin/session_detail_v2.go:358）
+                       filter_ok=false order_ok=false   该表的父级索引：
+                          - idx_sessions_agent_role cols=[tenant_id,agent_role,created_at] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_last_full_at cols=[tenant_id,last_full_payload_at] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_parent_session cols=[tenant_id,parent_session_id] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_primary_request cols=[primary_request_id] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_session_id cols=[session_id]
+                          - idx_sessions_status cols=[status,updated_at]
+                          - idx_sessions_summary_at cols=[tenant_id,summary_generated_at] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_tenant cols=[tenant_id,created_at]
+                          - sessions_pkey cols=[id,partition_date]
+                          - sessions_session_id_partition_date_key cols=[session_id,partition_date]
+                query_index_coverage_gate_test.go:828: 需求清单 ../../scripts/audit/asset/query-index-requirements.tsv：共 74 条 ⇒ local（covered 17 / 未覆盖 57）｜ fresh 新装环境（covered 19 / 未覆盖 55）｜ ★ 其中「local 覆盖但新装不覆盖」= 0 条 ⇒ 读底账 ../../scripts/audit/asset/db-object-census.tsv
+                query_index_coverage_gate_test.go:831: ★ 实测轴（★ 读 ../../scripts/audit/asset/query-plan-observations.tsv，★ 104 条观测）：seek 0 / filter 2 / seq-scan 3 ⇒ ★ 读 ../../scripts/audit/asset/query-plan-exemptions.tsv
+            FAIL
+    --- FAIL: TestTsvHollowoutReadersRejectEmptyRegistry/scripts/audit/asset/query-plan-exemptions.tsv (0.11s)
+        tsv_hollowout_gate_test.go:830: scripts/audit/asset/query-plan-exemptions.tsv：读方在【基线】就红 ⇒ ⇒ 不可判定 ⇒ ★ 先把读方修绿，或把该条目改成 expect=exception 并写理由。
+            读方在【基线】就红（exit=1）
+                          - idx_sessions_status cols=[status,updated_at]
+                          - idx_sessions_summary_at cols=[tenant_id,summary_generated_at] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_tenant cols=[tenant_id,created_at]
+                          - sessions_pkey cols=[id,partition_date]
+                          - sessions_session_id_partition_date_key cols=[session_id,partition_date]
+                query_index_coverage_gate_test.go:712: ★ [local] 未覆盖却登记成 covered：query_id="sessions.detail.main" table="sessions" filter_cols=[tenant_id,session_id] order_cols=[partition_date] （★ 来源 admin/session_detail_v2.go:358）
+                       filter_ok=false order_ok=false   该表的父级索引：
+                          - idx_sessions_agent_role cols=[tenant_id,agent_role,created_at] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_last_full_at cols=[tenant_id,last_full_payload_at] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_parent_session cols=[tenant_id,parent_session_id] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_primary_request cols=[primary_request_id] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_session_id cols=[session_id]
+                          - idx_sessions_status cols=[status,updated_at]
+                          - idx_sessions_summary_at cols=[tenant_id,summary_generated_at] ★部分索引（谓词非空）⇒ 保守排除
+                          - idx_sessions_tenant cols=[tenant_id,created_at]
+                          - sessions_pkey cols=[id,partition_date]
+                          - sessions_session_id_partition_date_key cols=[session_id,partition_date]
+                query_index_coverage_gate_test.go:828: 需求清单 ../../scripts/audit/asset/query-index-requirements.tsv：共 74 条 ⇒ local（covered 17 / 未覆盖 57）｜ fresh 新装环境（covered 19 / 未覆盖 55）｜ ★ 其中「local 覆盖但新装不覆盖」= 0 条 ⇒ 读底账 ../../scripts/audit/asset/db-object-census.tsv
+                query_index_coverage_gate_test.go:831: ★ 实测轴（★ 读 ../../scripts/audit/asset/query-plan-observations.tsv，★ 104 条观测）：seek 0 / filter 2 / seq-scan 3 ⇒ ★ 读 ../../scripts/audit/asset/query-plan-exemptions.tsv
+            FAIL
+FAIL
+掏空门清理：删掉 7 个测试二进制临时目录
+FAIL	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	752.581s
+ok  	github.com/kaixuan/llm-gateway-go/admin	122.308s
+FAIL

@@ -204,6 +204,13 @@ echo "[verify] full Go tests"
 #   ⇒ 选 1800s 的依据：★ 覆盖本轮实测上界 1011.711s 并留 ~1.8x 余量；★ 与
 #   ★ ★ `make guards-ursmcheck`（Makefile 的 GUARD_PACKAGES_SLOW 腿）**同一档**——
 #   ★ ★ 两处必须同步改（★ 一处改一处不改 ⇒ 慢门与官方门会给出不同的结论）。
+# ★★ 2026-10-30 r1050 轮：**回填当前实测数**（★ r1044 轮 §六-⑤ 登记的「每轮结束前
+#   重新量一次慢门包的耗时并更新预算注释里的实测数」⇒ ★★ 注释里的读数会自己过期）。
+#   本轮实测（`make guards-ursmcheck`，HEAD 5a4150440）：★ **1122.817s**
+#   （load 6.32/5.12/3.47 ⇒ ★ 负载远低于 1011.711s 那次的 26.8/30.2/36.4）
+#   ⇒ ★★★ **在更轻的负载下反而更慢** ⇒ ⇒ **不是负载抬高的上界，是包真的变重了**
+#   ⇒ ★★ 余量由「~1.8x」收窄到 **1800/1122.817 ≈ 1.60x** ⇒ ★★ **仍然够用**
+#   （★ 预算不必再提；但 ★ 余量已非「宽松」⇒ 下一轮若继续变重需重新评估）。
 #   ⚠ 提高的仍只是**每包**预算，不是总时长：各包并行执行，总墙钟由最慢的包决定。
 #   ⚠ 这**不是**「把阈值调大以让检测变松」：★ 超时是 harness 的**杀开关**，
 #   ★ ★ 调大它不会让任何一道门从红变绿 ⇒ ★★ 它只会让一个**健康但慢**的包不被腰斩。
@@ -278,6 +285,17 @@ if [[ "$RUN_WEB" == true ]]; then
   pm_run copy-clarity:check web
   pm_run copy-clarity-locale:check web
   pm_run i18n:empty-state:check web
+  # ★★ 2026-10-30 r1050 轮接入：「前端门总清单」单一入口（web-gates-runner.mjs）
+  #   ★★ 本轮实测：`web/package.json` 里有 32 个 `:check` 类门，而 verify.sh 只登记了 9 个
+  #   ★★ ⇒ ★★★ **19 个门在 CI 上一次都没被执行过**
+  #   ★★★ （★ 其中就有 `i18n:locale-value:check` —— ★★ 语言包值棘轮门）
+  #   ★★★ 同样地，**web 侧 31 个 `:selftest` 一个都没进强制路径**（★ 只有 web-mobile 的
+  #   ★★★ `gate:selftest` 在）⇒ ★★ **一道门自己的判据坏了（恒绿/恒红）没人知道**。
+  #   ⇒ ⇒ 接入「清单 + 一个入口」而非把 50 条命令塞进本文件（★ 清单是单一真值）。
+  #   ⇒ ★★ 入口**自己**校验清单里的每个脚本都存在于 package.json ⇒ ★ 清单写错 ⇒ 入口自己红。
+  #   ⇒ ★★ 刻意排除项（★ 不静默 ⇒ 每次运行都列出 + 理由）：`ui:sweep:selftest`
+  #   ★★ （需 playwright + chromium ⇒ 环境缺件 ⇒ CI 不装浏览器）。
+  pm_run web-gates:run web
   echo "[verify] frontend build"
   pm_run build web
   echo "[verify] web-mobile install"

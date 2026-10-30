@@ -201,9 +201,10 @@ func (h *Handler) handleBlockedReviews(w http.ResponseWriter, r *http.Request, a
 			// ★ 放行表口径不变（★ 租户过滤同 reviews）。
 			"releases":     releases,
 			"process_only": false,
-			// ★ 用 count(*) 而不是「再列一次 1000 条」（★那是全表读，★
-			//   而列表已经读过一次 ⇒ ★★ 每次打开审核面读两遍全表★★）。
-			"pending_count": sanitizerules.CountBlockReviews(sanitizerules.BlockReviewPending, tenant),
+			// ★ 2026-10-30 审计轮（迁移 926）：待审数改用「待决断」口径 ——
+			//   降级放行单（响应已成功送达、无决断可做）不计入，否则
+			//   211 实测 24h 内 226/226 条全是降级单 ⇒ 徽标整天闪假警报。
+			"pending_count": sanitizerules.CountPendingBlockDecisions(tenant),
 		})
 	case strings.HasPrefix(path, "/") && strings.HasSuffix(path, "/review"):
 		if r.Method != http.MethodPost {

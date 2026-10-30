@@ -38,8 +38,8 @@ test: ## 全量单元测试（CI 默认入口）
 	$(GO) test ./... -count=1 -timeout=300s
 
 .PHONY: test-short
-test-short: ## 短模式，跳过 -short=false 的测试
-	$(GO) test ./... -count=1 -short -timeout=120s
+test-short: ## 短模式，跳过 -short=false 的测试（scripts/ursmcheck 静态门包已超出本通道预算，走 guards-ursmcheck / verify.sh）
+	$(GO) test $$( $(GO) list ./... | grep -v '^github.com/kaixuan/llm-gateway-go/scripts/ursmcheck$$' ) -count=1 -short -timeout=120s
 
 # ── 审计守卫（R69）────────────────────────────────────────────────────
 #
@@ -146,6 +146,12 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 #     不需要改 workflow。
 #   ⇒ 登记进 GUARD_PACKAGES_SLOW ⇒ scripts/checks/guards-sync.sh 的双向检查
 #     同样覆盖它（漏登记/登记错了会红）。
+# ★★ 2026-10-30 r1050 轮：**「94 个」是 2026-10-22 那轮的历史读数**（★ 当时确实
+#   是 94 个）⇒ ★★ **它早已不是当前值**：★ 实测当前 `scripts/ursmcheck/*.go`
+#   = **165** 个（★ 磁盘与 `git ls-files` 逐项一致 ⇒ 口径确定）。
+#   ⇒ ★★ **同一个 165 与 r1049 轮的「165」是不同集合**：★ 那 165 指
+#   ★ 「调用编译型 go 子命令的 `.sh`/`.py` 脚本数」，★ 这 165 指「门文件数」
+#   ⇒ ★★ **撞号不是同一件事** ⇒ ★★ 引用时必须写清口径，否则会互串。
 # ★★★ 2026-10-24 magpie 对齐轮 §3.17：**补登记 `./admin`**（P2-2 薄壳门所在包）。
 #
 #   为什么此前不登记：★ 原判断是「admin 套件 65.8s ⇒ 逼近快门 120s 上限 ⇒
@@ -244,16 +250,26 @@ guards-fast: guards-installer guards-shell ## 运行**CI 预算内**的审计守
 guards-shell: ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描面含未跟踪文件，比 Go 门宽）
 	@bash scripts/guards/check-shell-fullwidth-var.sh
 
-# scripts/ursmcheck 的 94 个门文件（≈5~6 分钟，比主门慢一个量级 ⇒ 独立 timeout）
+# scripts/ursmcheck 的 165 个门文件（比主门慢一个量级 ⇒ 独立 timeout）
 # ★★ 2026-10-28 r1044 轮：慢门预算由 900s 提到 **1800s**（★ 与 verify.sh 的
 #   ★ 全量测试腿**同一档** ⇒ ★★ 两处必须同步改）。
 #   依据：★ 仓内自记该包实测 **840.111s / timeout 900s**（⇒ 当时余量只剩 ~60s，
-#   ★ 见 scripts/ursmcheck/shell_fullwidth_var_gate_test.go）；★ 本轮隔离实测
+#   ★ 见 scripts/ursmcheck/shell_fullwidth_var_gate_test.go）；★ 该轮隔离实测
 #   ★ **1011.711s**（★ load 26.8/30.2/36.4 ⇒ 上界）⇒ ★★ **越过了 900s** ⇒ ⇒
 #   ★★ 超时被 SIGKILL ⇒ ★★ `testing` 的 panic 在 alarm goroutine 里 ⇒ 其它 goroutine
 #   ★★ 的 `defer` 不执行 ⇒ ★★ **被跟踪的台账静默留空** ⇒ ⇒ 预算必须给足。
+# ★★ 2026-10-30 r1050 轮：**回填当前实测数**（★ r1044 轮 §六-⑤ 登记的
+#   「每轮结束前重新量一次慢门包的耗时并更新预算注释里的实测数」⇒ ★★ 预算与实测
+#   的差就是余量 ⇒ ★★ **注释里的读数会自己过期** ⇒ 必须有人回填）。
+#   本轮实测（`make guards-ursmcheck`，HEAD 5a4150440）：★ **1122.817s**
+#   （load 6.32/5.12/3.47 ⇒ ★ 负载远低于 1011.711s 那次的 26.8/30.2/36.4）
+#   ⇒ ★★★ **在更轻的负载下反而更慢** ⇒ ⇒ **不是负载抬高的上界，是包真的变重了**
+#   （★ 上游 10 个提交里 `installer/internal/dbinit/runner.go` 改 194 行、
+#   ★ 多个台账 TSV 大改 ⇒ 门要重算的比值更大）。
+#   ⇒ ★★ 余量由「~1.8x」收窄到 **1800/1122.817 ≈ 1.60x** ⇒ ★★ **仍然够用**
+#   （⇒ 预算不必再提；★ 但余量已非「宽松」，下一轮若继续变重需重新评估）。
 .PHONY: guards-ursmcheck
-guards-ursmcheck: ## scripts/ursmcheck 全量门（94 个门文件；CI 上此前从未执行过）
+guards-ursmcheck: ## scripts/ursmcheck 全量门（165 个门文件；CI 上此前从未执行过）
 	$(GO) test $(GUARD_PACKAGES_SLOW) -count=1 -timeout=1800s
 
 # R48-B1 后续（R48 报告 §五-3）：installer 是独立 go.mod，根目录

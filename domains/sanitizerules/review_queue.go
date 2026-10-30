@@ -92,6 +92,16 @@ type BlockReview struct {
 	Evidence          string `json:"evidence,omitempty"`
 	EvidenceKind      string `json:"evidence_kind,omitempty"`
 	EvidenceTruncated bool   `json:"evidence_truncated,omitempty"`
+	// Degraded 标记「这条记录对应的是一次**降级放行**，不是硬阻断」
+	// （迁移 926；2026-10-30 输出合规审计轮）。
+	//
+	// ★ 为什么必须有这一位：守卫缓冲越界在 release 模式下**放行**了响应
+	// （客户端已拿到内容），921 却让它与硬阻断共用 pending 状态与同一张表
+	// ⇒ 211 生产以 ~230 条/天把审核面灌成降级遥测，且它挂着的批准按钮
+	// 写出的放行行没有任何消费方（死操作）。⇒ 降级单保留**可见性**
+	// （921 的留痕设计不回退），但语义回到遥测：pending_count 不计它、
+	// 读数分母不含它、前端渲染成只读行。
+	Degraded bool `json:"degraded,omitempty"`
 }
 
 // 审核状态。
@@ -136,6 +146,9 @@ type BlockReviewInput struct {
 	// 证据单独落证据表（带 TTL），本表只落摘要与说明。
 	EvidenceKind string
 	Evidence     string
+	// Degraded 是「降级放行」标记（迁移 926）：登记方（streaming finish 的
+	// 降级路径）必须置位，硬阻断路径保持 false。
+	Degraded bool
 }
 
 // AddBlockReview 登记一次硬阻断，返回审核单。
@@ -164,6 +177,7 @@ func AddBlockReview(in BlockReviewInput) BlockReview {
 			RuleName: in.RuleName, Reason: in.Reason, Field: in.Field, Digest: in.Digest,
 			RequestID: in.RequestID, MatchDetail: in.MatchDetail, SessionID: in.SessionID,
 			Status: BlockReviewPending, CreatedAt: time.Now().UTC(),
+			Degraded: in.Degraded,
 		}
 		inserted, err := p.InsertBlockReview(ctx, entry)
 		if err != nil {
@@ -209,6 +223,7 @@ func addBlockReviewMemory(in BlockReviewInput, scope, evidence string, evidenceT
 		MatchDetail: in.MatchDetail, SessionID: in.SessionID,
 		Evidence: evidence, EvidenceKind: in.EvidenceKind, EvidenceTruncated: evidenceTruncated,
 		Status: BlockReviewPending, CreatedAt: time.Now().UTC(),
+		Degraded: in.Degraded,
 	}
 	blockReviews.entries = append(blockReviews.entries, entry)
 	if len(blockReviews.entries) > blockReviewCapacity {
@@ -277,6 +292,39 @@ func countBlockReviewsMemory(status, tenantID string) int {
 	count := 0
 	for _, e := range blockReviews.entries {
 		if status != "" && e.Status != status {
+			continue
+		}
+		if tenantID != "" && e.TenantID != tenantID {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+// CountPendingBlockDecisions 数「待人工决断」的拦截单：pending 且**非降级**。
+//
+// ★ 管理面的「待审数」必须用这个口径而不是 CountBlockReviews(pending)：
+// 降级放行单（Degraded，迁移 926）虽然 status=pending，但它对应的响应
+// **已经成功送达客户端**，没有任何决断可做（批准写出的放行行没有消费方）
+// ⇒ 把它计进待审数，徽标数字就不再是「有多少拦截等人看」
+// （211 实测：24h 内 226/226 条全是降级单，徽标整天闪着假警报）。
+func CountPendingBlockDecisions(tenantID string) int {
+	if p := reviewPersistenceInstalled(); p != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if n, err := p.CountPendingBlockDecisionsDB(ctx, tenantID); err == nil {
+			return n
+		} else {
+			slog.Warn("sanitize block review pending-decision count failed; falling back to in-process count",
+				"error", err, "root_cause", storeErrorDetail(err))
+		}
+	}
+	blockReviews.mu.Lock()
+	defer blockReviews.mu.Unlock()
+	count := 0
+	for _, e := range blockReviews.entries {
+		if e.Status != BlockReviewPending || e.Degraded {
 			continue
 		}
 		if tenantID != "" && e.TenantID != tenantID {
