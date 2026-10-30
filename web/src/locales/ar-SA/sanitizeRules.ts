@@ -187,6 +187,8 @@ export default {
   reviewInsightsNone: "لا توجد قراءات مراجعة للتجميع بعد",
   reviewInsightsRule: "القاعدة",
   reviewUnattributedRule: "(غير منسوب)",
+  reviewDegraded: "إطلاق متدرّج (ليس حجبًا)",
+  reviewDegradedHint: "هذا ليس اعتراضًا: تجاوزت سعة مخزن الحارس فطُلِقت الاستجابة (العميل استلمها بالفعل). لا قرار مطلوب ولا تُحتسب ضمن المعلّق.",
   reviewAttributionLabel: "سبب الحظر",
   reviewCandidateRulesLabel: "قواعد egress القريبة (مرشحة، ليست حقائق)",
   reviewOriginalContextLabel: "السياق الأصلي (هذا الطلب)",

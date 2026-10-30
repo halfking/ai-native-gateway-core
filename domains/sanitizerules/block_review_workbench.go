@@ -363,6 +363,11 @@ func blockReviewInsightsMemory(tenantID string, limit int) []BlockReviewRuleInsi
 	byRule := map[string]*BlockReviewRuleInsight{}
 	order := []string{}
 	for _, e := range blockReviews.entries {
+		// ★ 降级放行单不进读数（与 DB 路径 WHERE NOT degraded 同口径）：
+		// 它是「守卫让步」的遥测，不是规则反馈。
+		if e.Degraded {
+			continue
+		}
 		if tenantID != "" && e.TenantID != tenantID {
 			continue
 		}

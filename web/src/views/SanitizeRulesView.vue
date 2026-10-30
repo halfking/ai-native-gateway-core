@@ -1584,10 +1584,20 @@ onBeforeUnmount(() => {
               {{
                 review.rule || t("sanitizeRules.reviewUnattributedRule")
               }}</strong
+            ><!-- ★ 降级放行徽标（迁移 926）：这条不是拦截 —— 守卫缓冲越界后
+                 放行了响应（客户端已拿到内容），没有批准/拒绝/标注可做，
+                 也不计入待审数。渲染成只读遥测行。 --><span
+              v-if="review.degraded"
+              class="tag"
+              data-test="review-degraded-badge"
+              >{{ t("sanitizeRules.reviewDegraded") }}</span
             ><span>{{ labels['review_' + review.status] }}</span
             ><span>{{ review.tenant_id || "—" }}</span>
             <span>{{ date(review.created_at) }}</span>
           </div>
+          <p v-if="review.degraded" class="event-meta muted" data-test="review-degraded-hint">
+            {{ t("sanitizeRules.reviewDegradedHint") }}
+          </p>
           <!-- ★ 拦截归因：★ 「为什么被拦」的一句话结论 + 候选规则。
 审核单自带的规则/理由在历史记录里全空（拦截点没说话）⇒
                没有这一块，审核员只能看到一串 ID ⇒ 无法审批。 -->
@@ -1750,7 +1760,11 @@ onBeforeUnmount(() => {
               <pre class="match-detail">{{ review.match_detail || "—" }}</pre>
             </div>
           </div>
-          <template v-if="review.status === 'pending' && superAdmin">
+          <!-- ★ 批准/拒绝只对「真拦截」开放：降级放行单没有决断可做
+               （响应已送达；批准写出的放行行没有任何消费方＝死操作）。 -->
+          <template
+            v-if="review.status === 'pending' && superAdmin && !review.degraded"
+          >
             <label
               >{{ t("sanitizeRules.reviewComment")
               }}<input
@@ -1779,8 +1793,9 @@ onBeforeUnmount(() => {
             </div>
           </template>
           <!-- ★ 人工标注：与「通过/拒绝」正交的一维 —— 状态回答「现在放不放行」，
-               标注回答「这次拦得对不对」。标注是规则优化的唯一输入。 -->
-          <template v-if="superAdmin">
+               标注回答「这次拦得对不对」。标注是规则优化的唯一输入。
+               降级单没有「拦得对不对」可回答（没拦任何东西）⇒ 不开放。 -->
+          <template v-if="superAdmin && !review.degraded">
             <label
               >{{ t("sanitizeRules.reviewLabelComment")
               }}<input

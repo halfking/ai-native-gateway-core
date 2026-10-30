@@ -289,3 +289,41 @@ func TestBlockReviewRejectKeepsBlock(t *testing.T) {
 		t.Fatalf("rejected 列表应包含该单: %+v", rejected)
 	}
 }
+
+// TestDegradedReviewRegistrationCarriesFlag（2026-10-30 审计轮，迁移 926）：
+// finish() 的降级路径登记审核单时必须带 Degraded 标记 —— 降级单是遥测，
+// 不是待决拦截：211 实测 24h 内 226/226 条全是降级单却全挂着「待审」状态
+// 与批准按钮（批准写出的放行行没有任何消费方）。
+func TestDegradedReviewRegistrationCarriesFlag(t *testing.T) {
+	sanitizerules.ResetBlockReviews()
+	t.Cleanup(func() { sanitizerules.ResetBlockReviews() })
+
+	registerPolicyBlockReview(PolicyBlockReviewInput{
+		TenantID: "tenant-deg", ClientType: "zcode", RequestID: "req-deg-1",
+		Rule: "builtin.guard.capacity_exceeded",
+		Reason: "output policy guard pending capacity exceeded (1048576 bytes held, cap 1048576)",
+		Degraded: true,
+	})
+	pending := sanitizerules.ListBlockReviews(sanitizerules.BlockReviewPending, "tenant-deg", 10)
+	if len(pending) != 1 {
+		t.Fatalf("pending 记录数 = %d，期望 1", len(pending))
+	}
+	if !pending[0].Degraded {
+		t.Fatal("降级路径登记的审核单必须带 Degraded=true")
+	}
+	// 对照组：硬阻断路径（Degraded 缺省 false）不带标记。
+	registerPolicyBlockReview(PolicyBlockReviewInput{
+		TenantID: "tenant-deg", ClientType: "zcode", RequestID: "req-block-1",
+		Rule: "builtin.egress_sink", Reason: "sink destination",
+	})
+	blocked := sanitizerules.ListBlockReviews(sanitizerules.BlockReviewPending, "tenant-deg", 10)
+	for _, rv := range blocked {
+		if rv.Rule == "builtin.egress_sink" && rv.Degraded {
+			t.Fatal("硬阻断记录不得带降级标记")
+		}
+	}
+	// 待决断数只数硬阻断那一条（降级单不计）。
+	if got := sanitizerules.CountPendingBlockDecisions("tenant-deg"); got != 1 {
+		t.Fatalf("待决断数必须排除降级单（=1），实际 %d", got)
+	}
+}

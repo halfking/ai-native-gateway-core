@@ -247,3 +247,70 @@ func TestBlockReviewInsightsIncludesUnattributed(t *testing.T) {
 		t.Fatalf("无归因桶的拦截次数 = %d，期望 1", unattributed.Total)
 	}
 }
+
+// TestBlockReviewInsightsExcludeDegraded 钉住读数口径（迁移 926）：降级放行单
+// 是「守卫让步」的遥测，不是规则反馈 ⇒ 不进按规则聚合的读数
+//（211 实测 24h 内 226/226 条全是降级单 ⇒ 不排除的话输入面只剩噪音）。
+func TestBlockReviewInsightsExcludeDegraded(t *testing.T) {
+	resetWorkbenchState(t)
+	AddBlockReview(BlockReviewInput{
+		TenantID: "tenant-deg", ClientType: "zcode", Scope: "egress",
+		Rule: "builtin.egress_sink", RequestID: "req-real-block",
+	})
+	AddBlockReview(BlockReviewInput{
+		TenantID: "tenant-deg", ClientType: "zcode", Scope: "egress",
+		Rule: "builtin.guard.capacity_exceeded", RequestID: "req-degraded-1",
+		Degraded: true,
+	})
+	insights, err := BlockReviewInsights("tenant-deg", 10)
+	if err != nil {
+		t.Fatalf("读数失败: %v", err)
+	}
+	if len(insights) != 1 || insights[0].Rule != "builtin.egress_sink" {
+		t.Fatalf("降级单必须被读数排除，实际: %+v", insights)
+	}
+}
+
+// TestCountPendingBlockDecisionsExcludesDegraded 钉住待审数口径（迁移 926）：
+// 「待人工决断」= pending 且**非降级**。降级单对应的响应已成功送达客户端，
+// 没有任何决断可做 —— 把它计进待审数，徽标整天闪假警报
+//（211 实测：24h 内 226/226 条全是降级单）。
+func TestCountPendingBlockDecisionsExcludesDegraded(t *testing.T) {
+	resetWorkbenchState(t)
+	AddBlockReview(BlockReviewInput{
+		TenantID: "tenant-cnt", ClientType: "zcode", Scope: "egress",
+		Rule: "builtin.egress_sink", RequestID: "req-real",
+	})
+	AddBlockReview(BlockReviewInput{
+		TenantID: "tenant-cnt", ClientType: "zcode", Scope: "egress",
+		Rule: "builtin.guard.capacity_exceeded", RequestID: "req-deg",
+		Degraded: true,
+	})
+	if got := CountBlockReviews(BlockReviewPending, "tenant-cnt"); got != 2 {
+		t.Fatalf("CountBlockReviews 的旧口径应仍数到 2（全部 pending），实际 %d", got)
+	}
+	if got := CountPendingBlockDecisions("tenant-cnt"); got != 1 {
+		t.Fatalf("待决断数必须排除降级单（=1），实际 %d", got)
+	}
+}
+
+// TestAddBlockReviewCarriesDegradedFlag 钉住登记链：Degraded 从入参进记录
+//（DB 路径与内存回退路径都必须携带 —— 登记方只写一次，两边不许分叉）。
+func TestAddBlockReviewCarriesDegradedFlag(t *testing.T) {
+	resetWorkbenchState(t)
+	blocked := AddBlockReview(BlockReviewInput{
+		TenantID: "tenant-flag", ClientType: "zcode", Scope: "egress",
+		Rule: "builtin.egress_sink", RequestID: "req-a",
+	})
+	degraded := AddBlockReview(BlockReviewInput{
+		TenantID: "tenant-flag", ClientType: "zcode", Scope: "egress",
+		Rule: "builtin.guard.capacity_exceeded", RequestID: "req-b",
+		Degraded: true,
+	})
+	if blocked.Degraded {
+		t.Fatal("硬阻断路径不得带降级标记")
+	}
+	if !degraded.Degraded {
+		t.Fatal("降级路径登记的记录必须带 Degraded=true")
+	}
+}

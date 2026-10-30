@@ -35,11 +35,11 @@ ORDER BY id DESC LIMIT 1`, tenantID, scope, rule, digest, requestID)
 
 func (s *PostgresStore) InsertBlockReview(ctx context.Context, r BlockReview) (BlockReview, error) {
 	row := s.db.QueryRowContext(ctx, `INSERT INTO sanitize_block_reviews
- (tenant_id, client_type, scope, rule_id, rule_name, reason, field_path, payload_digest, request_id, match_detail, session_id, status, created_at)
- VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+ (tenant_id, client_type, scope, rule_id, rule_name, reason, field_path, payload_digest, request_id, match_detail, session_id, status, created_at, degraded)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
  RETURNING `+blockReviewColumns,
 		r.TenantID, r.ClientType, r.Scope, r.Rule, r.RuleName, r.Reason, r.Field,
-		r.Digest, r.RequestID, r.MatchDetail, r.SessionID, BlockReviewPending, r.CreatedAt)
+		r.Digest, r.RequestID, r.MatchDetail, r.SessionID, BlockReviewPending, r.CreatedAt, r.Degraded)
 	out, err := scanBlockReview(row)
 	if err != nil {
 		return BlockReview{}, storeError("block review insert", err)
@@ -151,6 +151,14 @@ func (s *PostgresStore) BlockReviewInsightsDB(ctx context.Context, tenantID stri
 	// ⇒ 空 rule_id 归到哨兵桶 `unattributed`（★ 哨兵**不是**真实规则 ⇒
 	// 自动放行不会碰它：自动放行走标注事件里的 entry.Rule，空规则在
 	// maybeAutoRelax 里已被显式跳过）。
+	// ★ 2026-10-30（审计轮两处）：
+	// ① 补上缺失的 WHERE —— 旧拼接在带租户过滤时生成
+	//    `FROM sanitize_block_reviews AND tenant_id=$1`（非法 SQL）⇒
+	//    租户管理员的读数恒 503、super_admin 的 ?tenant_id= 过滤恒 503
+	//    （无过滤路径不受影响，这正是它一直没被发现的原因）。
+	// ② 降级放行单（degraded，迁移 926）不进读数：它是「守卫让步」的遥测，
+	//    不是规则反馈 —— 211 实测 24h 内 226/226 条全是降级单，留着它们，
+	//    规则优化的输入面就只剩噪音。
 	q := `SELECT tenant_id, CASE WHEN rule_id='' THEN '` + unattributedRuleBucket + `' ELSE rule_id END AS rule_id, max(rule_name) AS rule_name,
  count(*) AS total,
  count(*) FILTER (WHERE status='pending')  AS pending,
@@ -161,7 +169,7 @@ func (s *PostgresStore) BlockReviewInsightsDB(ctx context.Context, tenantID stri
  count(*) FILTER (WHERE label='rule_too_broad') AS rule_too_broad,
  count(*) FILTER (WHERE label='needs_rule')     AS needs_rule,
  count(*) FILTER (WHERE label <> '')           AS labeled
-FROM sanitize_block_reviews`
+FROM sanitize_block_reviews WHERE NOT degraded`
 	args := []any{}
 	if tenantID != "" {
 		args = append(args, tenantID)
@@ -368,7 +376,8 @@ ON CONFLICT (singleton) DO UPDATE SET rules=EXCLUDED.rules, updated_by=EXCLUDED.
 //
 // ★ 迁移 921 追加了 session_id / label / label_comment / labeled_by / labeled_at
 // —— 追加在**末尾**，这样既有列序不变（列序变更会静默改错 scan 的对应关系）。
-const blockReviewColumns = `id, tenant_id, client_type, scope, rule_id, rule_name, reason, field_path, payload_digest, request_id, match_detail, status, created_at, decided_by, decided_at, session_id, label, label_comment, labeled_by, labeled_at`
+// ★ 迁移 926 同样在末尾追加 degraded（降级放行标记）。
+const blockReviewColumns = `id, tenant_id, client_type, scope, rule_id, rule_name, reason, field_path, payload_digest, request_id, match_detail, status, created_at, decided_by, decided_at, session_id, label, label_comment, labeled_by, labeled_at, degraded`
 
 // scanBlockReview 是列序的唯一真值源：查询列序与这里逐字对应。
 // （rowScanner 由 postgres.go 声明，这里复用同一份。）
@@ -378,7 +387,7 @@ func scanBlockReview(row rowScanner) (BlockReview, error) {
 	err := row.Scan(&r.ID, &r.TenantID, &r.ClientType, &r.Scope, &r.Rule, &r.RuleName,
 		&r.Reason, &r.Field, &r.Digest, &r.RequestID, &r.MatchDetail, &r.Status,
 		&r.CreatedAt, &r.DecidedBy, &decidedAt, &r.SessionID, &r.Label,
-		&r.LabelComment, &r.LabeledBy, &labeledAt)
+		&r.LabelComment, &r.LabeledBy, &labeledAt, &r.Degraded)
 	if err != nil {
 		return BlockReview{}, err
 	}
@@ -433,6 +442,18 @@ func (s *PostgresStore) CountBlockReviewsDB(ctx context.Context, status, tenantI
 	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sanitize_block_reviews WHERE ($1='' OR status=$1) AND ($2='' OR tenant_id=$2)`, status, tenantID).Scan(&n)
 	if err != nil {
 		return 0, storeError("block review count read", err)
+	}
+	return n, nil
+}
+
+// CountPendingBlockDecisionsDB 数「待人工决断」的拦截单：pending 且非降级
+// （迁移 926）。管理面徽标口径 —— 降级放行单没有决断可做，不计。
+func (s *PostgresStore) CountPendingBlockDecisionsDB(ctx context.Context, tenantID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sanitize_block_reviews
+WHERE status='pending' AND NOT degraded AND ($1='' OR tenant_id=$1)`, tenantID).Scan(&n)
+	if err != nil {
+		return 0, storeError("block review pending-decision count read", err)
 	}
 	return n, nil
 }

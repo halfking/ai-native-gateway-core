@@ -190,6 +190,8 @@ export default {
   reviewInsightsNone: "Aucun indicateur de revue à agréger pour l'instant",
   reviewInsightsRule: "Règle",
   reviewUnattributedRule: "(non attribué)",
+  reviewDegraded: "Publication dégradée (non bloqué)",
+  reviewDegradedHint: "Ce n’est pas une interception : le tampon de garde a débordé et la réponse a été publiée (le client l’a déjà reçue). Aucune décision requise, non comptée comme en attente.",
   reviewAttributionLabel: "Pourquoi le blocage",
   reviewCandidateRulesLabel: "Règles egress proches (candidats, pas des faits)",
   reviewOriginalContextLabel: "Contexte d'origine (cette requête)",

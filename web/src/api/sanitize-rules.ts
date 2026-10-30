@@ -268,6 +268,12 @@ export interface BlockReview {
   evidence?: string;
   evidence_kind?: string;
   evidence_truncated?: boolean;
+  /**
+   * ★ 降级放行标记（迁移 926，2026-10-30 审计轮）：这条记录对应的是
+   * 「守卫缓冲越界 ⇒ 放行并留痕」，不是硬阻断 —— 响应已成功送达客户端，
+   * 没有批准/拒绝/标注可做，渲染成只读遥测行；也不计入待审数。
+   */
+  degraded?: boolean;
   /** ★ 原始上下文与归因（★ 读时补齐；★ 补不齐时整块缺失）。 */
   context?: BlockReviewContext;
 }

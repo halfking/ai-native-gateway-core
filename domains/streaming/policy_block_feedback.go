@@ -56,6 +56,13 @@ type PolicyBlockReviewInput struct {
 	// （带 TTL），不进审核记录表本体。
 	Evidence     string
 	EvidenceKind string
+	// Degraded 标记「这是降级放行，不是硬阻断」（迁移 926）。
+	//
+	// ★ 只有守卫缓冲越界的 release 路径（finish() 的 w.degraded 分支）置位。
+	// 降级单留在列表里可见（921 的留痕设计），但它是遥测：pending_count
+	// 不计、读数分母不含、前端渲染成只读行 —— 它挂着一个「批准」按钮的话，
+	// 批准写出的放行行（规则=合成哨兵）没有任何消费方，是个死操作。
+	Degraded bool
 }
 
 // policyBlockEvidenceKind 按规则名推断证据种类（审核员据此判断摘录代表什么）。
@@ -114,6 +121,7 @@ func registerPolicyBlockReview(in PolicyBlockReviewInput) string {
 		SessionID:    in.SessionID,
 		Evidence:     in.Evidence,
 		EvidenceKind: in.EvidenceKind,
+		Degraded:     in.Degraded,
 	})
 	return fmt.Sprintf("rv-%d", entry.ID)
 }

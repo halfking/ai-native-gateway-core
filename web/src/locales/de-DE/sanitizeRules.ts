@@ -192,6 +192,8 @@ export default {
   reviewInsightsNone: "Noch keine aggregierbaren Prüfkennzahlen",
   reviewInsightsRule: "Regel",
   reviewUnattributedRule: "(nicht zugeordnet)",
+  reviewDegraded: "Degradierte Freigabe (keine Blockierung)",
+  reviewDegradedHint: "Keine Blockierung: Der Guard-Puffer lief über und die Antwort wurde freigegeben (der Client hat sie bereits erhalten). Keine Entscheidung nötig und nicht als offen gezählt.",
   reviewAttributionLabel: "Warum blockiert",
   reviewCandidateRulesLabel: "Nahe Treffer (Kandidaten, keine Fakten)",
   reviewOriginalContextLabel: "Originalkontext (diese Anfrage)",

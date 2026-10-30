@@ -190,6 +190,8 @@ export default {
   reviewInsightsNone: "No review insights to aggregate yet",
   reviewInsightsRule: "Rule",
   reviewUnattributedRule: "(unattributed)",
+  reviewDegraded: "Degraded release (not blocked)",
+  reviewDegradedHint: "Not an interception: the guard buffer overflowed and the response was released (the client already received it). No decision needed; not counted as pending.",
   reviewAttributionLabel: "Why it was blocked",
   reviewCandidateRulesLabel: "Egress rules hit nearby (candidates, not facts)",
   reviewOriginalContextLabel: "Original context (this request)",
