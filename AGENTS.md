@@ -4,6 +4,84 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-10-31 48h 审计轮：集成门 maas DSN 注册修复 + 满窗复测 + 日志慢SQL审计**
+> （goal 会话）：★ 承接第 12 轮 §5 遗留。⇒ ★★★★ **① 共享 checkout 上「全量测试绿」必须先
+> 回答「测的是哪棵树」**：合并 5 提交后 make test-short 首跑 2 红（sql/schema 集成门真红 +
+> cmd/gateway build failed），全量复跑**换了失败位置**（admin 120s 超时）⇒ 当场 git status
+> 实证**并行会话 21 项 WIP**（其拦截归因轮，后已成 426393659）⇒ 两次全量跑测的都是别人
+> 中间态 ⇒ **worktree 方法**（钉在已推送提交上：**test-short 351 包全绿 TS_RC=0**；
+> ursmcheck 需先在 worktree 的 web/ 装依赖，错误信息自己会指路）——git status 干净是全量
+> 读数有效性的前置判据（LESSONS §600 通用式一）。⇒ ★★★★ **② 真红修复 = dsn_exclusive
+> 双台账第三次反向报红**：58dbfc3a5 新增 TEST_MAAS_BILLS_DATABASE_URL 只在 ursmcheck
+> 豁免表登记，sql/schema 集成门不认识 ⇒ **反向要求 $GATE_URL 注入**（恰是豁免禁止的事；
+> R86 REPORT_E2E 第二次、本次第三次）⇒ 修法两层：destructiveGuardedDB 升级「路径+各自
+> 守卫牙齿」注册表（reportrollup 与 maas 各自断言不共用一把尺）+ 新增两台账机械对账门；
+> **变异臂 2/2 检出**（M2 破坏 maas 守卫断言 / M3 摘 ursmcheck 条目，还原 md5 一致）；
+> 反方向对账需共享数据文件 ⇒ 结构项留档（提交 498c46b9b）。⇒ ★★ **③ 满窗复测**（21:00
+> 实测，窗口 20:58 满 24h）：**lt10min dup 99/33 与第 12 轮逐字相同、零新增**；07:07 后
+> （含 16:12 tick 与 19 时 45 行 4h 重开轮）始终 0；313 行 / failed 254 全分类零空 error /
+> 按轮全 <100 ⇒ 满窗判据达成；闭案最后一环=**重部署后新槽的 24h tick**（动态锚点自动化）。
+> ⇒ ★★★★ **④ canceling statement ≠ 慢查询**：postgres 日志 12 次取消 ⇒ 假设「UNION ALL
+> 大视图 + ts≠partition_date ⇒ 参数化计划裁剪失效」⇒ EXPLAIN 成本上成立（33.6k vs 8.3k）
+> **ANALYZE 实测反转（28.5ms）** ⇒ 取消=客户端上下文/部署竞态 ⇒ 不带证据链就会做一次
+> 无收益的视图 DDL；真慢风险（10 月分区 1.97GB、details 全扫线性增长）因 pg_stat_statements
+> 未开启**不可观测**（维持待决）。⇒ ★ **⑤ 日志审计收获**：42P10（23 条）**全部 ≤ 部署前
+> 3 分钟 = 闭案实证**；今日 42P18=他产品（f.pe/pb/roe 股票表）；relation request_logs 不存在
+> =非本仓 PG 代码（仓内仅 sqlite store 用该名；共享实例日志无 %d/%u 前缀不可精确归属）；
+> **kb-importer 外部工具**坏转义+盲插撞主键（用户侧动作）；211 **首现 all-0-candidates 34 条**
+> （deepseek-v4.1-flash，08:37–11:18 探针 429/403 池可用性窗自愈；**调查卡：库内另有 ~8 条
+> available=t 绑定为何 resolve 只出 4 候选**）；fp_slot 降级 22 条=按设计工作（8h 零复发）；
+> **queue full=0**（攒批+4096+节流生效实证）；modelbinding WARN=3=minimax@cred21 真歧义
+> 设计保留（3 请求=3 WARN，与第 12 轮同源探针一致）。⇒ ★ **⑥ 21:12 收口自动化已删除**
+> （与本轮部署并发冲突）⇒ 本轮接管其全部工作 + 明日动态锚点改排；245 systemd 两单元已定性
+> （collector-service=禁用单元 10-15 陈旧失败态、reset-failed 可清 / nim-case-cron=每日
+> 04:30 对已 EOL 的 NIM 必红，处置属运维）。⇒ 审计档
+> `docs/audit/2026-10-31-48h审计轮-合并修复与日志慢SQL审计.md`；通用式见 `LESSONS.md`
+> **§600**（6 条）。
+> **2026-10-31 拦截归因轮：守卫失败可归因 + 读时归因逐单窗口**（goal 会话，
+> 承接同日「211 拦截审核合理性分析」轮）：★ **本轮先做批判式审计，订正上一轮三处判读**
+> ⇒ ★①「审核面是空白清单」**半错**：审核单**表**空白（24/24 条 `rule_id/reason/证据` 全空），
+>   但**读时归因机制已存在且已接线**（`admin/sanitize_rules_review_context.go`，按 `request_id`
+>   联表 ⇒ 211 实测 24/24 命中上下文）；★②「10-28~29 波次全是容量越界」**过度归因**：
+>   10-29 12:38 的部署已把容量越界改成 release ⇒ **12:38 之后**的空 rule 拦截**不可能**是它
+>   ⇒ 波次成因有**截止点**；★③「唯一人工判例 rv-22」**是 921 终验的功能验证标注**
+>   （文案自带「921 终验：」）⇒ 不是运营判读。
+> ⇒ ★★★ **根因两层**：① 守卫侧 fail-closed 分支返回**裸 error**（检查器报错 / lane 不可安全
+>   改写 / 脱敏结果非合法 JSON / 无请求态 / 帧无法重编码）⇒ 审核单空；② **读时归因被一个
+>   全局 `LIMIT 50` 整体打败**（24 条待审单横跨 **40 小时**、窗内 **56 行** egress 事件 ⇒
+>   预算被**最新**吃光 ⇒ 早期单**零候选** + 整批标记截断 ⇒ 归因一律 unknown ⇒ ★★ 读时归因
+>   对真正需要它的历史空白单**等于没生效** ★★）。
+> ⇒ ★★ **本轮修法**：① 三条 fail-closed 路径改 `PolicyBlockError`（自带规则名/原因/证据），
+>   两条「误挂 capacity」路径各自归因（`no_request_state` / `frame_encode_failed`）；
+>   ② 6 条 `builtin.guard.*` 逐条登记**内建展示说明**（★ 不登记 ⇒ 审核面显示「（托管规则…）」
+>   ⇒ ★★ 指向错误事实源 ★★）；③ **flush 路径补证据传播**（★ lane 级拦截的错误自带 Evidence，
+>   写者此前只取 rule/reason/field/digest ⇒ 证据被丢 ★）+ 非流式四个登记点补证据；
+>   ④ 读时归因改**逐单窗口 + 逐单预算**（一次 `LATERAL + unnest` 往返；截断粒度降到单条）；
+>   ⑤ `grantReviewRelease` 跳过 `builtin.guard.*`（不写死行）；⑥ `goal_control` 的
+>   `output_compliance_enabled` 恒 false（`len(interceptors) > 3` 恒假 ⇒ 与同一份日志里的
+>   「output compliance guard configured」**互相矛盾**）⇒ 按「装上即真」修。
+> ⇒ ★★ **守卫档归因措辞订正**：守卫侧失败**不等于**误报（命中敏感内容却不能安全改写时，
+>   阻断是**正确**行为）⇒ ★★ 不许说「可直接标误报」★★；处置方向是**容量/形态/上游可用性**，
+>   不是规则表达式。
+> ⇒ ★ **211 数据修正 1 条**（可逆、窄谓词）：`rv-22` 的 `label='false_positive'` 是终验产物
+>   ⇒ 误报率分母（「有判断的记录数」）被污染 ⇒ `unattributed` 桶读成 **100% 误报**
+>   ⇒ 会把运营引向「去放宽规则」（★ 正好伤到精准度 ★）⇒ 清 `label` 留注记
+>   （桶读数 labeled 1→0 / fp 1→0）。
+> ⇒ ★★ **本轮踩到的静默坑（新 LESSONS §599）**：新真库测试文件初名
+>   `postgres_block_review_windows_test.go` ⇒ ★★ `_windows` 被 Go 当 **GOOS 约束** ⇒ ★★ 该文件
+>   在 macOS/Linux 上**被静默排除**、`go test` 报「no tests to run」而不报错 ⇒ ★★ 一条真库
+>   判据可以整轮**从未运行** ★★ ⇒ 改名 `..._perwindow_test.go`；查法 `go list -e -json |
+>   .IgnoredGoFiles`。
+> ⇒ ★ **读数**：受影响包测试全绿（outputcompliance 0.084s / sanitizerules 1.767s /
+>   admin 95.735s / streaming 75.432s / cmd-gateway 19.324s）+ build + vet ✅；
+>   ★ **真库腿**（一次性本地 PG17，simple + extended 两种协议各 PASS）+ 211 只读 SQL 复跑
+>   同形状（窗0=0 条 / 窗1=3 条）；★ **变异臂 2/2 检出**（删证据传播 ⇒ 红；退回整批窗口 ⇒ 红；
+>   还原后 md5 逐字一致）。
+> ⇒ ★ **本轮未部署 211**（部署属下一轮，须钉 `LLM_GATEWAY_ROOT`）；★ **未代标历史空白单**
+>   （无证据 ⇒ 不做未经证实的判读）；★ **未改生产规则快照**（`pii.address.egress` 结构上无法
+>   硬阻断 ⇒ 无行为影响；`compliance.internal_ip` 是 log-only ⇒ 改了只削弱覆盖）。
+> ⇒ 审计档 `docs/audit/2026-10-31-拦截归因轮-守卫失败可归因与逐单窗口.md`；
+> 通用式见 `LESSONS.md` **§599**（7 条）。
 > **2026-10-31 24h 审计第 12 轮：完整窗口复测与 4x 复发定性 + resolver 验证闭环 + sanitize 队列批写根修**
 > （goal 会话）：★ 承接第 11 轮 §5 遗留前三项。⇒ ★★ **窗口校准：goal 写「新窗口已满 24h」，
 > 实测 17.3h**（37004018 起于 10-30 20:58，读数时刻 14:14）⇒ **goal 的前提也要按时钟算**。

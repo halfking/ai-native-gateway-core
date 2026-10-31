@@ -68,6 +68,34 @@ const (
 	// GuardCapacityRuleID 是「缓冲越界」这条**基础设施性**阻断的合成规则名。
 	// 它不是一条内容规则——审核员看到它就该知道「不是规则命中，是守卫装不下」。
 	GuardCapacityRuleID = "builtin.guard.capacity_exceeded"
+
+	// ★★ 2026-10-31 拦截归因轮：守卫侧**其余**失败形态各自的合成规则名 ★★
+	//
+	// ★ 为什么必须有它们（★ 211 生产实测：24 条真实拦截的 rule_id **全空**）★★：
+	//
+	//	守卫侧的失败**不止**「缓冲越界」一种形态，而每一种都会**终止回合**
+	//	（fail-closed）⇒ ⇒ 它们**必须**像内容规则命中一样**能说出是哪一种**
+	//	⇒ ⇒ 否则审核单是空白的 ⇒ 审核员判不了「拦得对不对」⇒ 规则优化没有输入。
+	//
+	// ★ 纪律：**每条守卫侧失败形态一个规则 ID** ★（★ 不许都挂
+	//   builtin.guard.capacity_exceeded ★ ⇒那是**假归因**：审核员看到「容量越界」
+	//   会去调上限，而真因是「这条 lane 不许改写」⇒ ★★ 调不对地方 ★★）。
+	//
+	// ★ 这些 ID 都带 builtin.guard. 前缀 ⇒ ① 放行表不消费它们（不是内容规则）；
+	//   ② 自动放行不拿它们当键（maybeAutoRelax显式跳过该前缀）★★。
+	//
+	// GuardNoStateRuleID：请求态缺失 ⇒ 无法做跨帧检查 ⇒ 无法证明安全 ⇒ 阻断。
+	GuardNoStateRuleID = "builtin.guard.no_request_state"
+	// GuardRewriteRefusedRuleID：命中了需脱敏规则，但这条 lane **不允许安全改写**
+	//（已签名 / 敏感字段）⇒ 不能既漏检又放行 ⇒ 阻断。
+	GuardRewriteRefusedRuleID = "builtin.guard.rewrite_refused"
+	// GuardRedactInvalidRuleID：脱敏后的工具参数**不再是合法 JSON** ⇒ 不能把坏参数
+	// 交给客户端 ⇒ 阻断。
+	GuardRedactInvalidRuleID = "builtin.guard.redact_invalid"
+	// GuardCheckFailedRuleID：检查器本身报错 / 返回空结果 ⇒ 判不出合规性 ⇒ 阻断。
+	GuardCheckFailedRuleID = "builtin.guard.check_failed"
+	// GuardFrameEncodeRuleID：帧在改写后**无法重新编码**（JSON 序列化失败）⇒ 阻断。
+	GuardFrameEncodeRuleID = "builtin.guard.frame_encode_failed"
 )
 
 // defaultMaxCompliancePendingBytes 是待检缓冲上限的出厂值（1 MiB）。
@@ -342,14 +370,17 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 		slog.Warn("output_compliance: blocked stream chunk (no request state)",
 			"request_id", meta.RequestID,
 			"session_id", meta.SessionID,
-			"rule_id", GuardCapacityRuleID,
+			"rule_id", GuardNoStateRuleID,
 		)
 		metrics.OutputGateFailClosedErrorsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateSourceTransformError).Inc()
 		return &response.ChunkResult{
 			ShouldBlock: true,
 			Metadata: map[string]interface{}{
-				"policy_rule":   GuardCapacityRuleID,
-				"policy_reason": policyBlockErrorReason("output policy blocked stream chunk", GuardCapacityRuleID, ""),
+				// ★ 2026-10-31 拦截归因轮：此前这里挂的是 capacity_exceeded ⇒
+				// ★★ **假归因**（真因是「没有请求态」，不是「缓冲越界」）★★ ⇒
+				// ★★ 审核员照着「容量」去调上限 ⇒ 调不对地方 ★★。
+				"policy_rule":   GuardNoStateRuleID,
+				"policy_reason": policyBlockErrorReason("output policy blocked stream chunk (no request state)", GuardNoStateRuleID, ""),
 			},
 		}, nil
 	}
@@ -375,8 +406,10 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 			return &response.ChunkResult{
 				ShouldBlock: true,
 				Metadata: map[string]interface{}{
-					"policy_rule":   GuardCapacityRuleID,
-					"policy_reason": policyBlockErrorReason("output policy blocked stream chunk", GuardCapacityRuleID, ""),
+					// ★ 2026-10-31 拦截归因轮：帧**编码失败**不是「缓冲越界」⇒
+					// ★★ 此前挂 capacity_exceeded 是假归因 ★★。
+					"policy_rule":   GuardFrameEncodeRuleID,
+					"policy_reason": policyBlockErrorReason("output policy blocked stream chunk (frame encode failed)", GuardFrameEncodeRuleID, ""),
 				},
 			}, nil
 		}
@@ -408,8 +441,9 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 			return &response.ChunkResult{
 				ShouldBlock: true,
 				Metadata: map[string]interface{}{
-					"policy_rule":   GuardCapacityRuleID,
-					"policy_reason": policyBlockErrorReason("output policy blocked stream terminal", GuardCapacityRuleID, ""),
+					// ★ 2026-10-31 拦截归因轮：同上（帧编码失败 ≠ 缓冲越界）。
+					"policy_rule":   GuardFrameEncodeRuleID,
+					"policy_reason": policyBlockErrorReason("output policy blocked stream terminal (frame encode failed)", GuardFrameEncodeRuleID, ""),
 				},
 			}, nil
 		}
@@ -424,8 +458,10 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 			return &response.ChunkResult{
 				ShouldBlock: true,
 				Metadata: map[string]interface{}{
-					"policy_rule":   GuardCapacityRuleID,
-					"policy_reason": policyBlockErrorReason("output policy blocked stream chunk", GuardCapacityRuleID, ""),
+					// ★ 2026-10-31 拦截归因轮：帧**编码失败**不是「缓冲越界」⇒
+					// ★★ 此前挂 capacity_exceeded 是假归因 ★★。
+					"policy_rule":   GuardFrameEncodeRuleID,
+					"policy_reason": policyBlockErrorReason("output policy blocked stream chunk (frame encode failed)", GuardFrameEncodeRuleID, ""),
 				},
 			}, nil
 		}
@@ -603,7 +639,16 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 		}
 		result, err := it.checkText(ctx, meta.TenantID, label, original)
 		if err != nil || result == nil {
-			return nil, fmt.Errorf("check stream lane %q: %w", lane, errOrMissingResult(err))
+			// ★ 2026-10-31 拦截归因轮：检查器失败也是**一次拦截** ⇒ 必须能
+			// 说出是哪一种失败（★ 此前是一个裸 error ⇒ 审核单 rule/reason 全空
+			// ⇒ 审核员判不了「拦得对不对」★）。
+			return nil, &errorsx.PolicyBlockError{
+				RuleID: GuardCheckFailedRuleID,
+				Reason: policyBlockErrorReason("output policy check failed on stream lane", GuardCheckFailedRuleID, lane),
+				Path:   lane,
+				// ★ 摘录：审核员要看「当时判的是哪段内容」⇒ 有界摘录随错误上送。
+				Evidence: boundedPolicyEvidence(original),
+			}
 		}
 		if result.Blocked || state.redact && result.ToolShapeRedactionRequired {
 			metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathStreamLane).Inc()
@@ -653,14 +698,28 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 					"immutable_field", part.field.immutable,
 					"lane_bytes", len(original),
 				)
-				return nil, errors.New("cannot safely rewrite signed or sensitive tool stream lane")
+				return nil, &errorsx.PolicyBlockError{
+					RuleID: GuardRewriteRefusedRuleID,
+					Reason: policyBlockErrorReason("output policy refused to rewrite a signed or sensitive tool stream lane", GuardRewriteRefusedRuleID, lane),
+					Path:   lane,
+					// ★ 摘录：这条 lane 需要脱敏却不能安全改写 ⇒ 审核员要看
+					// 「到底拦了哪段参数」⇒ 有界摘录随错误上送（★ 此前是裸 error
+					// ⇒ 审核单全空 ★）。
+					Evidence: boundedPolicyEvidence(original),
+				}
 			}
 		}
 		// Tool-call argument deltas form one JSON document. Moving a rewrite
 		// to the first delta is valid only when the reconstructed arguments
 		// remain JSON; otherwise fail closed rather than break the client tool.
 		if isToolJSONLabel(parts[0].field.label) && json.Valid([]byte(original)) && !json.Valid([]byte(result.RedactedOutput)) {
-			return nil, errors.New("redacted tool arguments are invalid JSON")
+			// ★ 2026-10-31 拦截归因轮：同上 ⇒ 自带规则名/原因/摘录。
+			return nil, &errorsx.PolicyBlockError{
+				RuleID:   GuardRedactInvalidRuleID,
+				Reason:   policyBlockErrorReason("output policy produced invalid JSON for redacted tool arguments", GuardRedactInvalidRuleID, lane),
+				Path:     lane,
+				Evidence: boundedPolicyEvidence(original),
+			}
 		}
 		parts[0].field.set(result.RedactedOutput)
 		parts[0].frame.changed = true

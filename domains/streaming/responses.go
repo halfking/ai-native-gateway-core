@@ -967,6 +967,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			Reason:       reason,
 			Field:        field,
 			Digest:       digest,
+			Evidence:     policyBlockEvidenceFromError(execErr),
 			EvidenceKind: policyBlockEvidenceKind(rule),
 		})
 		message := policyBlockClientMessage(rule, reason, field, requestID, reviewID)
@@ -1554,6 +1555,7 @@ func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, body []
 				Reason:       reason,
 				Field:        field,
 				Digest:       digest,
+				Evidence:     policyBlockEvidenceFromMetadata(interceptResult),
 				EvidenceKind: policyBlockEvidenceKind(rule),
 			})
 			message := policyBlockClientMessage(rule, reason, field, requestID, reviewID)

@@ -445,6 +445,75 @@ ORDER BY last_seen DESC, id DESC LIMIT $3`, to, from, limit, tenantIDs)
 	return out, nil
 }
 
+// ListEgressRuleEventsForWindowsDB **逐单**取候选规则（2026-10-31 拦截归因轮）。
+//
+// ★★ 为什么是逐单而不是「整批一个窗口 + 一个 LIMIT」★★：
+//
+//	★ 211 生产实测：★ 一批 24 条待审单横跨 **40 小时**，而 egress 事件在该
+//	时间跨度内有 **56 行** ⇒ ★★ 旧的 `LIMIT 50` 读法（按 last_seen DESC 取
+//	**最近**的 50 条）⇒ ★★ 早期的审核单**一条候选都拿不到**，且「撞上限」被
+//	记成**整批**截断 ⇒ ★★ 归因档位全部降级成「unknown」★★ ⇒ ★★ 读时归因
+//	对真正需要它的那批历史空白单**完全没生效** ★★。
+//
+// ⇒ ★ 修法：**每个审核单一个时间窗**，用 LATERAL 一次往返取回，**逐单预算**
+//	（★ 撞上限只影响那一条审核单 ★）★★。
+//
+// ★ 判据与旧读面**逐字一致**（★ 不许顺手改口径 ★）：phase='egress'、
+// last_seen 落在窗内、tenant_id = ANY(租户集合)（★ 租户门 fail-closed ★）、
+// 同窗内按 last_seen DESC, id DESC 取前 perWindowLimit 条 ★。
+func (s *PostgresStore) ListEgressRuleEventsForWindowsDB(ctx context.Context, tenantIDs []string, windows []EgressRuleEventWindow, perWindowLimit int) (map[int][]EgressRuleEventInWindow, error) {
+	out := map[int][]EgressRuleEventInWindow{}
+	if len(windows) == 0 || len(tenantIDs) == 0 {
+		// ★ 租户门 fail-closed：★ 「空 = 不限」是本仓最贵的一种误读 ★。
+		return out, nil
+	}
+	if perWindowLimit <= 0 || perWindowLimit > 200 {
+		perWindowLimit = 50
+	}
+	los := make([]time.Time, 0, len(windows))
+	his := make([]time.Time, 0, len(windows))
+	for _, w := range windows {
+		los = append(los, w.From)
+		his = append(his, w.To)
+	}
+	// ★ LATERAL + unnest：★ 一次往返、**逐窗预算** ★。
+	// ★ 为什么不用 `unnest(...) WITH ORDINALITY` 的序号做键：★ 序号是窗口
+	//   序号（★ 调用方给的 Index ★）⇒ ★ 直接把 Index 一起展开 ★。
+	rows, err := s.db.QueryContext(ctx, `SELECT w.idx, e.rule_id, COALESCE(e.action,''), COALESCE(e.status,''), COALESCE(e.count,0), e.first_seen, e.last_seen
+FROM unnest($1::bigint[], $2::timestamptz[], $3::timestamptz[]) AS w(idx, lo, hi)
+CROSS JOIN LATERAL (
+  SELECT rule_id, action, status, count, first_seen, last_seen
+  FROM sanitize_rule_events
+  WHERE phase='egress' AND last_seen >= w.lo AND last_seen <= w.hi AND tenant_id = ANY($4)
+  ORDER BY last_seen DESC, id DESC LIMIT $5
+) AS e`, windowIndexes(windows), los, his, tenantIDs, perWindowLimit)
+	if err != nil {
+		return nil, storeError("egress rule events per-window read", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var idx int64
+		var ev EgressRuleEventInWindow
+		if err := rows.Scan(&idx, &ev.RuleID, &ev.Action, &ev.Status, &ev.Count, &ev.FirstSeen, &ev.LastSeen); err != nil {
+			return nil, storeError("egress rule events per-window read", err)
+		}
+		out[int(idx)] = append(out[int(idx)], ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, storeError("egress rule events per-window read", err)
+	}
+	return out, nil
+}
+
+// windowIndexes 取窗口的序号列（★ 与 los/his 同序 ★）。
+func windowIndexes(windows []EgressRuleEventWindow) []int64 {
+	out := make([]int64, 0, len(windows))
+	for _, w := range windows {
+		out = append(out, int64(w.Index))
+	}
+	return out
+}
+
 // CountBlockReviewsDB 数符合条件的审核单。
 func (s *PostgresStore) CountBlockReviewsDB(ctx context.Context, status, tenantID string) (int, error) {
 	var n int

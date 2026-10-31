@@ -54,3 +54,55 @@ func ListEgressRuleEventsInWindow(ctx context.Context, tenantIDs []string, from,
 	}
 	return p.ListEgressRuleEventsInWindowDB(ctx, tenantIDs, from, to, limit)
 }
+
+// EgressRuleEventWindow 是**一条审核单**的候选查询窗口。
+//
+// ★ Index 是调用方给的序号（回填时靠它对上审核单；★ 不是数据库主键 ★）。
+type EgressRuleEventWindow struct {
+	Index int
+	From  time.Time
+	To    time.Time
+}
+
+// ListEgressRuleEventsForWindows **逐单**取候选规则（★ 2026-10-31 拦截归因轮 ★）。
+//
+// ★★ 为什么不能继续用「整批一个窗口 + 一个全局 LIMIT」★★：
+//
+//	★ 旧读面（ListEgressRuleEventsInWindow）把**整批审核单**的时间并成一个
+//	窗口，再按 `ORDER BY last_seen DESC LIMIT 50` 取**最近**的 50 条 ⇒ ★★
+//	批次一旦跨时段（★ 211 生产实测：★ 24 条待审单横跨 **40 小时** ★）⇒
+//	★★ 50 条预算被**最新**的事件吃光 ⇒ ★★ 早的那些审核单**一条候选都没有**★★
+//	⇒ ★★ 而且「撞到上限」被当成**整批**截断 ⇒ ★★ 归因档位一律降级成
+//	「unknown（请人工判断）」★★ ⇒ ★★ 读时归因——★ 整个「让历史空白单可判读」
+//	的机制——**在这批数据上等于没生效** ★★。
+//
+// ⇒ ★ 修法：**每个审核单一个窗口**，一次往返（★ LATERAL + unnest ★），
+//	**逐单预算**（★ 撞到上限只影响那一条 ★）★。
+//
+// ★ 返回值按窗口 Index 归组；★ 一个窗口都没有候选时**不**出现在 map 里
+// （★ 调用方据此区分「没查到」与「查了但空」——★ 后者由 truncated 表达 ★）。
+func ListEgressRuleEventsForWindows(ctx context.Context, tenantIDs []string, windows []EgressRuleEventWindow, perWindowLimit int) (map[int][]EgressRuleEventInWindow, error) {
+	out := map[int][]EgressRuleEventInWindow{}
+	p := reviewPersistenceInstalled()
+	if p == nil {
+		return out, nil
+	}
+	if len(windows) == 0 || len(tenantIDs) == 0 {
+		// ★ 租户门 fail-closed（★ 同 ListEgressRuleEventsInWindow ★）。
+		return out, nil
+	}
+	if perWindowLimit <= 0 || perWindowLimit > 200 {
+		perWindowLimit = 50
+	}
+	usable := make([]EgressRuleEventWindow, 0, len(windows))
+	for _, w := range windows {
+		if w.From.IsZero() || w.To.IsZero() || !w.To.After(w.From) {
+			continue
+		}
+		usable = append(usable, w)
+	}
+	if len(usable) == 0 {
+		return out, nil
+	}
+	return p.ListEgressRuleEventsForWindowsDB(ctx, tenantIDs, usable, perWindowLimit)
+}

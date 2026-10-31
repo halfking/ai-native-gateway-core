@@ -71,6 +71,11 @@ type topologyStatsDB interface {
 type Handler struct {
 	db                   *pgxpool.Pool
 	bodyDB               controlledBodyDB
+	// blockReviewCandidateReader 是「审核单候选规则」的读面（★ 2026-10-31
+	// 拦截归因轮 ★）。★ nil ⇒ 用默认实现（sanitizerules 的逐单窗口读面）★
+	// ⇒ ★ 单测可注入（★ 这个读面的**口径**是本轮的关键：逐单窗口 vs
+	// ★ 整批一个窗口 ★ ⇒ 必须能被测到 ★）。
+	blockReviewCandidateReader blockReviewCandidateReader
 	topologyStatsDB      topologyStatsDB
 	// topologyProviderKindsDB（2026-10-28 选路层轮）：provider-kinds 端点的
 	// 注入口，理由与 topologyStatsDB 相同 —— 单测要能注入 pgxmock。

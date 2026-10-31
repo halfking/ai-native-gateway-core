@@ -140,7 +140,7 @@ func (h *Handler) attachBlockReviewContexts(ctx context.Context, reviews []sanit
 			"error", err.Error(), "request_ids", len(ids))
 		return out
 	}
-	candidates, candidatesTruncated := h.loadBlockReviewCandidateRules(ctx, reviews)
+	candidates := h.loadBlockReviewCandidateRules(ctx, reviews)
 	for i := range reviews {
 		r := reviews[i]
 		row, ok := rows[strings.TrimSpace(r.RequestID)]
@@ -148,12 +148,28 @@ func (h *Handler) attachBlockReviewContexts(ctx context.Context, reviews []sanit
 			continue
 		}
 		ctxObj := row.context(r)
-		ctxObj.CandidateRules = candidates[r.ID]
-		ctxObj.CandidateRulesTruncated = candidatesTruncated
-		ctxObj.AttributionKind, ctxObj.Attribution = deriveBlockReviewAttribution(r, ctxObj, candidates[r.ID], candidatesTruncated)
+		set := candidates[r.ID]
+		ctxObj.CandidateRules = set.Items
+		ctxObj.CandidateRulesTruncated = set.Truncated
+		ctxObj.AttributionKind, ctxObj.Attribution = deriveBlockReviewAttribution(r, ctxObj, set.Items, set.Truncated)
 		out[r.ID] = &ctxObj
 	}
 	return out
+}
+
+// blockReviewCandidateReader 是候选规则读面的依赖（★ 可注入 ⇒ 可测 ★）。
+//
+// ★ 抽成函数值的理由与 blockReviewContextDB 同款：★ 这个读面的**口径**
+// （★ 逐单窗口、逐单预算 ★）是本轮的关键行为 ⇒ ★ 必须能写断言钉住它 ★
+// ⇒ ★ 而它默认走包级函数（依赖已安装的持久化通道）⇒ 单测无法断言 ★。
+type blockReviewCandidateReader func(ctx context.Context, tenantIDs []string, windows []sanitizerules.EgressRuleEventWindow, perWindowLimit int) (map[int][]sanitizerules.EgressRuleEventInWindow, error)
+
+// blockReviewCandidateSet 是一条审核单的候选规则集合（★ 2026-10-31 逐单窗口 ★）。
+type blockReviewCandidateSet struct {
+	// Items 是候选规则（★ 时间窗匹配 ⇒ 候选，不是事实 ★）。
+	Items []blockReviewCandidateRule
+	// Truncated 报告这一单的候选**可能不完整**（★ 撞到了逐单预算 ★）。
+	Truncated bool
 }
 
 // blockReviewContextDB 是审核单上下文读面需要的 DB 能力。
@@ -324,63 +340,67 @@ func blockReviewTenantIDs(reviews []sanitizerules.BlockReview) []string {
 
 // loadBlockReviewCandidateRules 取邻近时段命中的出站规则（★ 候选，不是事实）。
 //
-// ★★ 返回第二个值 truncated：★★ 候选查询是**有上限**的一次性读取
-// ⇒ ★★ 「查回来的条数撞到上限」⇒ ★★ 候选集**可能不完整** ⇒ ★★ 调用方不许把
-// 「没查到候选」当成「邻近时段确实没有内容规则阻断」（★ 见 A9）★★。
-func (h *Handler) loadBlockReviewCandidateRules(ctx context.Context, reviews []sanitizerules.BlockReview) (map[int64][]blockReviewCandidateRule, bool) {
-	out := map[int64][]blockReviewCandidateRule{}
+// ★★ 2026-10-31 拦截归因轮：**逐单窗口** ★★
+//
+// ★旧读法（★ 整批一个窗口 + 一个全局 LIMIT 50 ★）在 211 生产上**整体失效**：
+// ★★ 一批 24 条待审单横跨 40 小时、窗口内 56 行 egress 事件 ⇒ 50 条预算被
+// ★★ **最近**的事件吃光 ⇒ ★★ 早期的审核单一条候选都没有，且「撞上限」被记成
+// ★★ **整批**截断 ⇒ ★★ 归因档位一律降级成「unknown」★★ ⇒ ★★ 读时归因对
+// ★★ 真正需要它的那批历史空白单**等于没生效** ★★。
+//
+// ⇒ ★ 现在**每个审核单一个窗口**，逐单预算（★ 截断只影响那一条 ★）★。
+//
+// ★ 返回：按审核单 ID 归组的候选 + **逐单**的截断标记。
+func (h *Handler) loadBlockReviewCandidateRules(ctx context.Context, reviews []sanitizerules.BlockReview) map[int64]blockReviewCandidateSet {
+	out := map[int64]blockReviewCandidateSet{}
 	if len(reviews) == 0 {
-		return out, false
+		return out
 	}
-	// ★ 时间窗取所有审核单的并集（★ 一次查询，★ 免得每条审核单查一次）。
-	from, to := time.Time{}, time.Time{}
-	for _, r := range reviews {
+	// ★ 租户门（2026-10-30 12h 审计轮）：候选读面必须按这批审核单自己的租户
+	//   集合收窄 ⇒ 空集合 ⇒ fail-closed（返回空）。
+	tenantIDs := blockReviewTenantIDs(reviews)
+	if len(tenantIDs) == 0 {
+		return out
+	}
+	// ★ 逐单窗口（★ Index = 审核单在切片里的下标，★ 回填时靠它对上 ★）。
+	windows := make([]sanitizerules.EgressRuleEventWindow, 0, len(reviews))
+	indexOf := make(map[int64]int, len(reviews))
+	for i, r := range reviews {
 		if r.CreatedAt.IsZero() {
 			continue
 		}
-		if from.IsZero() || r.CreatedAt.Before(from) {
-			from = r.CreatedAt
-		}
-		if to.IsZero() || r.CreatedAt.After(to) {
-			to = r.CreatedAt
-		}
+		windows = append(windows, sanitizerules.EgressRuleEventWindow{
+			Index: i,
+			From:  r.CreatedAt.Add(-blockReviewCandidateWindow),
+			To:    r.CreatedAt.Add(blockReviewCandidateWindow),
+		})
+		indexOf[r.ID] = i
 	}
-	if from.IsZero() {
-		return out, false
+	if len(windows) == 0 {
+		return out
 	}
-	from = from.Add(-blockReviewCandidateWindow)
-	to = to.Add(blockReviewCandidateWindow)
-	// ★★ 租户门（2026-10-30 12h 审计轮）★★：★★ 候选读面**原先没有租户条件**
-	//   ⇒ ★★ 候选来自**全租户** ⇒ ★★ 租户 A 的审核员看到 B 的规则 ID / action /
-	//   count ⇒ ★★ 且 A 的归因结论被 B 的命中记录左右 ★★ ⇒ ★★ 且 B 的流量挤占
-	//   同一条 50 条预算 ⇒ ★★ A 的审核单更容易被误判成「守卫侧拦截」★★
-	// ⇒ ★★ 必须按这批审核单自己的租户集合收窄 ★★
-	tenantIDs := blockReviewTenantIDs(reviews)
-	if len(tenantIDs) == 0 {
-		return out, false
+	reader := h.blockReviewCandidateReader
+	if reader == nil {
+		reader = sanitizerules.ListEgressRuleEventsForWindows
 	}
-	events, err := sanitizerules.ListEgressRuleEventsInWindow(ctx, tenantIDs, from, to, blockReviewCandidateQueryLimit)
+	events, err := reader(ctx, tenantIDs, windows, blockReviewCandidateQueryLimit)
 	if err != nil {
 		slog.Warn("sanitize block review candidate rules read failed",
 			"error", err.Error())
-		return out, false
+		return out
 	}
-	// ★★ 撞到上限 ⇒ 候选集**可能不完整** ⇒ ★★ 必须如实标出 ★★
-	truncated := len(events) >= blockReviewCandidateQueryLimit
 	for _, r := range reviews {
-		if r.CreatedAt.IsZero() {
+		idx, ok := indexOf[r.ID]
+		if !ok {
 			continue
 		}
-		var hits []blockReviewCandidateRule
-		for _, ev := range events {
-			// ★ 判据：「**最近一次命中**（last_seen）落在拦截前后 ±窗口内」★★
-			//   ⇒ ★★ 不用「区间重叠」（★ 指纹聚合事件的区间能横跨数周 ⇒ ★★ 那个
-			//   判据几乎恒真 ⇒ ★★ 候选会被全量历史淹没）★★
-			if ev.LastSeen.Before(r.CreatedAt.Add(-blockReviewCandidateWindow)) ||
-				ev.LastSeen.After(r.CreatedAt.Add(blockReviewCandidateWindow)) {
-				continue
-			}
-			hits = append(hits, blockReviewCandidateRule{
+		hits := events[idx]
+		if len(hits) == 0 {
+			continue
+		}
+		items := make([]blockReviewCandidateRule, 0, len(hits))
+		for _, ev := range hits {
+			items = append(items, blockReviewCandidateRule{
 				RuleID:    ev.RuleID,
 				Action:    ev.Action,
 				Status:    ev.Status,
@@ -389,11 +409,16 @@ func (h *Handler) loadBlockReviewCandidateRules(ctx context.Context, reviews []s
 				LastSeen:  ev.LastSeen,
 			})
 		}
-		if len(hits) > 0 {
-			out[r.ID] = hits
+		set := blockReviewCandidateSet{Items: items}
+		// ★★ 逐单截断：★ 该单的候选数撞到了逐单预算 ⇒ ★ 这单的候选集**可能
+		// 不完整** ⇒ ★ 不许把它当成「邻近时段确实没有内容规则阻断」★★
+		// （★ 与旧读法的批次级截断同义，★ 但粒度细到单条 ★）。
+		if len(hits) >= blockReviewCandidateQueryLimit {
+			set.Truncated = true
 		}
+		out[r.ID] = set
 	}
-	return out, truncated
+	return out
 }
 
 // deriveBlockReviewAttribution 判定「这次拦截为什么发生」。
@@ -437,8 +462,21 @@ func deriveBlockReviewAttribution(review sanitizerules.BlockReview, c blockRevie
 				"若响应体很大（本次请求 " + formatBlockReviewTokens(c) + "），" +
 				"可能是守卫待检缓冲放不下（误报形态），但请先确认不是候选被截断。"
 		}
+		// ★★ 2026-10-31 拦截归因轮：措辞订正 ★★
+		//
+		// ★ 此前这句只说「多半是守卫待检缓冲放不下 ⇒ 可直接标误报」★★ ⇒ ★★ 但
+		// ★ 守卫侧失败**不止**缓冲越界一种（★ 2026-10-31 起它们各有自己的规则
+		// ★ 名：rewrite_refused / redact_invalid / check_failed / frame_encode_failed
+		// ★ / no_request_state ★）⇒ ★★ 只说「缓冲越界」会把审核员引向**错误的
+		// ★★ 处置方向**（去调上限，而真因是「这条 lane 不许改写」）★★。
+		//
+		// ⇒ ★ 措辞改成**枚举守卫侧失败形态** + 明确「不是内容规则命中」★★
+		// ⇒ ★★ 并且**不**说「可直接标误报」★★：★ 守卫侧失败**不等于**误报
+		// ★★ （★ 命中了敏感内容却不能安全改写时，阻断是**正确**行为 ★★）★★。
 		return "guard", "出站侧策略拦截；**拦截点没有记录命中的规则**（历史记录），且邻近时段没有任何内容规则阻断 ⇒ 判定为**守卫侧拦截**（不是内容规则命中）。" +
-			"若响应体很大（本次请求 " + formatBlockReviewTokens(c) + "），多半是守卫待检缓冲放不下 ⇒属于误报形态，可直接标「误报」。"
+			"守卫侧失败的形态有：待检缓冲放不下、工具参数 lane 不许安全改写（已签名/敏感）、脱敏结果不是合法 JSON、检查器报错、帧无法重新编码。" +
+			"它们都是**基础设施/形态**问题，不是规则表达式太宽 ⇒ 该改容量、形态或上游可用性，不是改规则。" +
+			"（本次请求 " + formatBlockReviewTokens(c) + "；响应体很大时更可能是缓冲放不下 ⇒ 那一类属误报形态，其余未必。）"
 	}
 	names := make([]string, 0, len(candidates))
 	shown := candidates

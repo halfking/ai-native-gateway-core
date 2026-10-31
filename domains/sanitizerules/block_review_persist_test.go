@@ -101,6 +101,11 @@ func (f *fakeReviewPersistence) ListEgressRuleEventsInWindowDB(_ context.Context
 	return nil, nil
 }
 
+// ★ 2026-10-31 拦截归因轮：逐单窗口读面（★ 假实现不造候选 ★）。
+func (f *fakeReviewPersistence) ListEgressRuleEventsForWindowsDB(_ context.Context, _ []string, windows []EgressRuleEventWindow, _ int) (map[int][]EgressRuleEventInWindow, error) {
+	return map[int][]EgressRuleEventInWindow{}, nil
+}
+
 func (f *fakeReviewPersistence) ListBlockReviewsDB(_ context.Context, status, tenantID string, limit int) ([]BlockReview, error) {
 	if f.errList != nil {
 		return nil, f.errList

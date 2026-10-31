@@ -289,6 +289,10 @@ func (w *interceptingStreamWriter) finish() {
 				w.blockReason = policyBlockReasonFromError(err)
 				w.blockField = policyBlockPathFromError(err)
 				w.blockDigest = policyBlockDigestFromError(err)
+				// ★ 2026-10-31 拦截归因轮：flush 路径此前**丢证据** ⇒
+				// ★★ lane 级拦截（PolicyBlockError 自带 Evidence）在审核面上
+				// ★★ 看不到「当时拦的是哪段内容」★★ ⇒ 审核员判不了「拦得对不对」。
+				w.blockEvidence = policyBlockEvidenceFromError(err)
 			}
 			if w.blocked {
 				_ = pending
