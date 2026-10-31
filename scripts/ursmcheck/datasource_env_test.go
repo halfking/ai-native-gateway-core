@@ -68,6 +68,11 @@ var datasourceEnvExemptions = map[string]string{
 	//   产品守卫会正确地拒绝它 ⇒ ⇒ 门禁得到 4 条**假红**（红的原因不是产品缺陷）。
 	//   ⇒ 不进事实源 ⇒ 那条腿改走它本来就设计好的 t.Skip 分支。
 	"TRACE_RETIREMENT_TEST_DSN": "破坏性 trace-retirement 腿的专用 DSN：必须指向名为 trace_retirement* 的隔离库（或显式授权的本地 54318 schema）⇒ 不能与通用 DSN 同值",
+	// 2026-10-31 实施包审计 §8：07 月账单真库 e2e 的专用 DSN（maas/bills_realdb_test.go）。
+	// 与 TRACE_RETIREMENT_TEST_DSN 同族（dsn_exclusive）：会写 maas_monthly_bills 并建删测试租户，
+	// 测试本身要求库名以 _test 结尾（否则 Fatal）⇒ 不能与通用 DSN 同值 ⇒ 不进事实源。
+	// 未设置时该腿 t.Skip（设计如此，不是静默死腿）；设置了但库名不合规则显式 Fatal。
+	"TEST_MAAS_BILLS_DATABASE_URL": "maas 月账单真库 e2e 的专用 DSN：会写 maas_* 并删测试租户 ⇒ 必须指向 _test 结尾的一次性库 ⇒ 不能与通用 DSN 同值",
 	// ★★ R85 轮新增：与 TRACE_RETIREMENT_TEST_DSN **同族**（dsn_exclusive）。
 	//
 	// ★ 它为什么必须豁免（而不进事实源）：canonical fixture 除主库外**还要连第二个库**
