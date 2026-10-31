@@ -108,9 +108,9 @@ func TestGateInjectsEveryDBCredentialName(t *testing.T) {
 		}
 		// dsn_exclusive that guards itself: injecting the populated gate
 		// database is forbidden, and the fixture has to keep guarding.
-		if fixture, ok := destructiveGuardedDB[name]; ok {
+		if spec, ok := destructiveGuardedDB[name]; ok {
 			src := sessionStorageGateSources(t, sessionDBContract{}, act)
-			for _, problem := range destructiveGuardedDBProblems(name, fixture, src) {
+			for _, problem := range destructiveGuardedDBProblems(name, spec, src) {
 				t.Errorf("%s 事实源注入检查：%s", name, problem)
 			}
 			continue

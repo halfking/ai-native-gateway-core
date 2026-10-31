@@ -44,15 +44,41 @@ type sessionGateSources struct{ generic, runner, gate, verify, fixture string }
 // usage_facts rows deleted because a developer library was passed as a
 // scratch library) is why it stays opt-in and guard-enforced rather than
 // being wired into a populated gate run.
-var destructiveGuardedDB = map[string]string{
-	"REPORT_E2E_TEST_DATABASE_URL": "domains/reportrollup/realdb_e2e_test.go",
+// destructiveGuardSpec 描述一个「自带守卫的破坏性专用 DSN」的证人面：
+// fixture 是消费方；guardMarker 是守卫判据存在的标记；callSite（正则）证明
+// 守卫作用在「已解析的连接」上而不只是定义未调用（M3 变异的教训）；
+// allowEnv 是显式放行开关的名字（存在才断言；maas 无放行开关，未设即 Fatal，更严）。
+type destructiveGuardSpec struct {
+	fixture     string
+	guardMarker string
+	callSite    string
+	allowEnv    string
+}
+
+var destructiveGuardedDB = map[string]destructiveGuardSpec{
+	"REPORT_E2E_TEST_DATABASE_URL": {
+		fixture:     "domains/reportrollup/realdb_e2e_test.go",
+		guardMarker: "func guardDestructiveE2E(",
+		allowEnv:    "REPORT_E2E_ALLOW_DESTRUCTIVE",
+		callSite:    `guardDestructiveE2E\(\s*t\s*,\s*dsn\s*\)`,
+	},
+	// 2026-10-31 07 月账单真库 e2e：写 maas_* 并删测试租户 ⇒ 已在
+	// scripts/ursmcheck 登记 dsn_exclusive（与 REPORT_E2E 同族）；本门此前只认
+	// REPORT 一家的守卫形状 ⇒ 误要求 harness 注入 $GATE_URL（与 ursmcheck 豁免
+	// 正面相撞）。maas 的守卫形状不同：无放行开关，库名不以 _test 结尾直接 Fatal，
+	// 且判据消费的是 live 连接解析出的 current_database()。
+	"TEST_MAAS_BILLS_DATABASE_URL": {
+		fixture:     "maas/bills_realdb_test.go",
+		guardMarker: "refusing to write maas tables",
+		callSite:    `strings\.HasSuffix\(database, "_test"\)`,
+	},
 }
 
 // destructiveGuardedDBProblems asserts the "must stay out of the fact source"
 // property. Registration is only half the claim; the guard has to keep
 // rejecting real databases, otherwise dropping it would silently re-open the
 // destructive path while the gate stayed green.
-func destructiveGuardedDBProblems(name, fixture string, src sessionGateSources) []string {
+func destructiveGuardedDBProblems(name string, spec destructiveGuardSpec, src sessionGateSources) []string {
 	var problems []string
 	require := func(ok bool, property string) {
 		if !ok {
@@ -69,7 +95,7 @@ func destructiveGuardedDBProblems(name, fixture string, src sessionGateSources) 
 		}
 		return string(data)
 	}
-	body := read(fixture)
+	body := read(spec.fixture)
 	if body == "" {
 		return problems
 	}
@@ -84,10 +110,14 @@ func destructiveGuardedDBProblems(name, fixture string, src sessionGateSources) 
 	// is satisfied by an uncalled helper — mutation M3 removed the single call
 	// site and the gate stayed green, which is precisely the regression this
 	// registration exists to catch.
-	require(strings.Contains(body, "func guardDestructiveE2E(") &&
-		strings.Contains(body, `REPORT_E2E_ALLOW_DESTRUCTIVE`), "destructive scratch guard")
-	require(regexp.MustCompile(`guardDestructiveE2E\(\s*t\s*,\s*dsn\s*\)`).MatchString(body),
-		"destructive guard call site")
+	require(strings.Contains(body, spec.guardMarker), "destructive scratch guard")
+	if spec.allowEnv != "" {
+		require(strings.Contains(body, spec.allowEnv), "destructive allow-env witness")
+	}
+	if spec.callSite != "" {
+		require(regexp.MustCompile(spec.callSite).MatchString(body),
+			"destructive guard call site")
+	}
 	return problems
 }
 
