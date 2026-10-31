@@ -148,7 +148,7 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 			rec.LatencyMs, rec.StatusCode, rec.Success, rec.ErrorKind,
 			rec.SourceKind, rec.Quality,
 			rec.AttachmentCount, rec.AttachmentTotalBytes, multimodalArg,
-			rec.Title, rec.Summary, string(rec.DigestJSON),
+			rec.Title, rec.Summary, nilIfEmptyDigest(rec.DigestJSON), // 2026-10-31：空 digest 写 NULL（同生产 helper）
 			rec.T0ArrivedAt, rec.T1TotalEnqueuedAt, rec.T2TotalDequeuedAt,
 			rec.T3ModelEnqueuedAt, rec.T4ModelDequeuedAt, rec.T5CredEnqueuedAt,
 			rec.T6CredDequeuedAt, rec.T7ForwardStartAt, rec.T8ResponseStartAt,
@@ -193,7 +193,7 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 		enrichmentArgs := []any{
 			rec.SessionID, rec.TenantID, rec.RequestID, partitionDate,
 			rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr,
-			rec.TokensSaved, rec.SubmitMode, rec.Title, rec.Summary, string(rec.DigestJSON),
+			rec.TokensSaved, rec.SubmitMode, rec.Title, rec.Summary, nilIfEmptyDigest(rec.DigestJSON),
 			rec.ProjectID, rec.Namespace, rec.ParentRequestID, rec.TaskType,
 			rec.T0ArrivedAt, rec.T1TotalEnqueuedAt, rec.T2TotalDequeuedAt,
 			rec.T3ModelEnqueuedAt, rec.T4ModelDequeuedAt, rec.T5CredEnqueuedAt,

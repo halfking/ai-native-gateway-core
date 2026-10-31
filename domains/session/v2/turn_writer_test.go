@@ -390,3 +390,16 @@ func TestExtractRequestDelta_NewMessagesStillExtracted(t *testing.T) {
 		t.Fatalf("expected only the new message, got %+v", delta)
 	}
 }
+
+// 2026-10-31 实施包审计 §7.5：digest 为空必须写成 SQL NULL，而不是 jsonb 空串转换（22P02）。
+func TestNilIfEmptyDigest(t *testing.T) {
+	if nilIfEmptyDigest(nil) != nil || nilIfEmptyDigest([]byte{}) != nil {
+		t.Fatal("empty digest must map to SQL NULL")
+	}
+	if got := nilIfEmptyDigest([]byte(`{"v":1}`)); got != `{"v":1}` {
+		t.Fatalf("non-empty digest must pass through unchanged, got %v", got)
+	}
+	if got := nilIfEmptyDigest([]byte("null")); got != "null" {
+		t.Fatalf("literal null must keep its previous stored form, got %v", got)
+	}
+}

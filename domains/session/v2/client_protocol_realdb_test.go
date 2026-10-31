@@ -113,9 +113,7 @@ func TestTurnWriterWritesClientProtocol_RealDB(t *testing.T) {
 		RequestID:      ids[0],
 		Ts:             time.Now().UTC().Truncate(time.Microsecond),
 		ClientProtocol: "anthropic-messages",
-		// ⚠ DigestJSON 必须自带合法 JSON：`AppendTurn` 把它按
-		// `string(rec.DigestJSON)` 传给 jsonb 列，零值 → `''::jsonb` → 22P02。
-		// 生产侧不踩是因为 digestJSON 总来自 sessiondigest.Marshal（出错即 return）。
+		// 注：DigestJSON 此处显式给出；零值（nil）现在写 SQL NULL，不再 22P02（见 nilIfEmptyDigest）。
 		DigestJSON: []byte(`{}`),
 	}); err != nil {
 		// 参数个数错就是在这里炸 —— 这正是这道门要抓的。

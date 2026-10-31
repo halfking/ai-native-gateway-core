@@ -156,8 +156,7 @@ func TestTurnWriterDoubleFireEnrichmentIsMonotonic_RealDB(t *testing.T) {
 		TenantID:  tenant,
 		RequestID: reqID,
 		Ts:        ts,
-		// ⚠ DigestJSON 必须自带合法 JSON：AppendTurn 按 `string(rec.DigestJSON)`
-		// 传给 jsonb 列，零值 → `''::jsonb` → 22P02。
+		// 注：DigestJSON 此处显式给出；零值（nil）现在写 SQL NULL（见 nilIfEmptyDigest）。
 		DigestJSON: []byte(`{}`),
 	}
 

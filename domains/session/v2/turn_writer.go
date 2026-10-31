@@ -131,12 +131,10 @@ type TurnRecord struct {
 	//
 	// ⚠ 2026-10-05 修正一句**会误导人的**旧注释（审计 §9.208）：原文写
 	// 「It is nil for rows that cannot produce a useful digest」——**不对**。
-	// `AppendTurn` 把它按 `string(rec.DigestJSON)` 传给 `digest`（jsonb），
-	// 所以 nil 会变成 `''`，`''::jsonb` 直接 **22P02**。
-	// 生产侧不会踩到：唯一赋值点 `session_writer_v2.go` 的 digestJSON 来自
-	// `sessiondigest.Marshal`，出错即 return，永不为 nil。
-	// ⇒ **零值 TurnRecord 直接调 AppendTurn 会失败**，必须自带合法 JSON。
-	// （本轮就是照旧注释构造零值记录、被 22P02 打回来的。）
+	// `AppendTurn` 经 nilIfEmptyDigest 传给 `digest`（nullable jsonb）：nil 写 SQL NULL。
+	// 2026-10-31 修正：此前 nil 会变成 `''`，`''::jsonb` 报 **22P02**，零值 TurnRecord
+	// 无法写入（TestTurnWriter_AppendTurn 等真库测试即被它打回）。现在零值可写，
+	// 生产侧赋值点 session_writer_v2.go 仍总是传入 sessiondigest.Marshal 的结果。
 	DigestJSON []byte
 
 	// V3.1 dispatch 9-stage (10 timestamps) queue timestamps (migration 513).
@@ -612,7 +610,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 		rec.LatencyMs, rec.StatusCode, rec.Success, rec.ErrorKind,
 		rec.SourceKind, rec.Quality,
 		rec.AttachmentCount, rec.AttachmentTotalBytes, rec.MultimodalTypes,
-		rec.Title, rec.Summary, string(rec.DigestJSON),
+		rec.Title, rec.Summary, nilIfEmptyDigest(rec.DigestJSON),
 		rec.T0ArrivedAt, rec.T1TotalEnqueuedAt, rec.T2TotalDequeuedAt,
 		rec.T3ModelEnqueuedAt, rec.T4ModelDequeuedAt, rec.T5CredEnqueuedAt,
 		rec.T6CredDequeuedAt, rec.T7ForwardStartAt, rec.T8ResponseStartAt,
@@ -721,7 +719,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				`,
 				rec.SessionID, rec.TenantID, rec.RequestID, partitionDate,
 				rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr,
-				rec.TokensSaved, rec.SubmitMode, rec.Title, rec.Summary, string(rec.DigestJSON),
+				rec.TokensSaved, rec.SubmitMode, rec.Title, rec.Summary, nilIfEmptyDigest(rec.DigestJSON),
 				rec.ProjectID, rec.Namespace, rec.ParentRequestID, rec.TaskType,
 				rec.T0ArrivedAt, rec.T1TotalEnqueuedAt, rec.T2TotalDequeuedAt,
 				rec.T3ModelEnqueuedAt, rec.T4ModelDequeuedAt, rec.T5CredEnqueuedAt,
@@ -793,6 +791,17 @@ func boolOrNil(v bool) any {
 // nilIfEmptyJSON passes JSON payloads as strings for ::text::jsonb casts
 // (the same 22P02 avoidance as compression_meta), mapping empty payloads to
 // SQL NULL rather than jsonb 'null'.
+// nilIfEmptyDigest maps an absent digest to SQL NULL. digest is a nullable jsonb
+// column; passing the empty string instead makes the jsonb cast fail with 22P02, so
+// a zero-valued TurnRecord (DigestJSON == nil) could never be written. Only the
+// empty case is mapped: a literal "null" is still stored exactly as before.
+func nilIfEmptyDigest(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return string(b)
+}
+
 func nilIfEmptyJSON(b []byte) any {
 	if len(b) == 0 || string(b) == "null" {
 		return nil
