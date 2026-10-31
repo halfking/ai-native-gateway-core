@@ -249,16 +249,28 @@ async function runViewport({ w, h, label }, session) {
     };
 
     // 探针流量可见（?probe=1）：窗口内可见流量多为 probe，不靠点开关（与首帧竞态）。
+    /** 轮询等左栏条目出现（初始帧很大，t+29s 才到是正常的 —— 固定 sleep 只会
+     *  看到空面板，那是量具问题；L3/R3 新载页面后也用它）。 */
+    const waitRows = async () => {
+      const t = Date.now();
+      let n = 0;
+      while (Date.now() - t < ROW_WAIT_MS) {
+        n = await evalJs(`document.querySelectorAll('.cp__item').length`);
+        if (n > 0) break;
+        await sleep(2000);
+      }
+      return n;
+    };
+    /** 新载 /live（探针流量可见）并等条目就绪 —— 用于脱离深滚动态。 */
+    const openFreshLive = async () => {
+      await cdp.send('Page.navigate', { url: `${BASE}/live?probe=1` });
+      await sleep(2000);
+      return waitRows();
+    };
     await cdp.send('Page.navigate', { url: `${BASE}/live?probe=1` });
     await sleep(4000);
-    let rows = 0;
-    const t0 = Date.now();
-    while (Date.now() - t0 < ROW_WAIT_MS) {
-      rows = await evalJs(`document.querySelectorAll('.cp__item').length`);
-      if (rows > 0) break;
-      await sleep(2000);
-    }
-    check(`L0 [${label}] 左栏出现请求条目`, rows > 0, `rows=${rows} waited=${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    const rows = await waitRows();
+    check(`L0 [${label}] 左栏出现请求条目`, rows > 0, `rows=${rows}`);
     if (!rows) { cdp.close(); return 1; }
     const rightRows = await evalJs(`document.querySelectorAll('.pp__main').length`);
 
@@ -288,18 +300,34 @@ async function runViewport({ w, h, label }, session) {
       }
       await sleep(400);
     };
-    /** 受信点击（Input.dispatchMouseEvent ⇒ isTrusted=true ⇒ window.open 不被拦）。 */
+    /** 受信点击（Input.dispatchMouseEvent ⇒ isTrusted=true ⇒ window.open 不被拦）。
+     *  ★ 2026-11-01 L3 盲区轮两条实测纪律：
+     *  a) 滚动用 block:'nearest' —— 'center' 会把【页面级滚动器】也卷进
+     *     「多滚动容器连环滚动」状态，该状态下合成器侧输入命中与 DOM 侧
+     *     elementFromPoint 持续错位（实测点击脱靶、L3 假红，跨帧不复原）；
+     *  b) 派发前用 elementFromPoint 复核命中目标子树，不命中则等 300ms
+     *     重试（最多 3 次）—— DOM 侧复核虽拦不住合成器侧错位，但能拦住
+     *     「实时 prepend 把行推走」这类时序竞态。 */
     const trustedClick = async (selector) => {
-      const box = await evalJs(`(() => {
-        const el = document.querySelector(${JSON.stringify(selector)});
-        if (!el) return null;
-        el.scrollIntoView({ block: 'center' });
-        const r = el.getBoundingClientRect();
-        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-      })()`);
-      if (!box) throw new Error(`no element for ${selector}`);
+      let lastBox = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const box = await evalJs(`(() => {
+          const el = document.querySelector(${JSON.stringify(selector)});
+          if (!el) return null;
+          el.scrollIntoView({ block: 'nearest' });
+          const r = el.getBoundingClientRect();
+          const x = r.x + r.width / 2, y = r.y + r.height / 2;
+          const hit = document.elementFromPoint(x, y);
+          return { x, y, ok: !!hit && (hit === el || el.contains(hit) || hit.contains(el)) };
+        })()`);
+        if (!box) throw new Error(`no element for ${selector}`);
+        lastBox = box;
+        if (box.ok) break;
+        await sleep(300);
+      }
+      if (!lastBox.ok) throw new Error(`hit-test never lands on ${selector} (compositor/layout mismatch?)`);
       for (const type of ['mousePressed', 'mouseReleased']) {
-        await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
+        await cdp.send('Input.dispatchMouseEvent', { type, x: lastBox.x, y: lastBox.y, button: 'left', clickCount: 1 });
       }
     };
     /** 浮层几何（★ 不做任何滚动补偿 —— 2026-11-01 盲区轮）。
@@ -318,6 +346,30 @@ async function runViewport({ w, h, label }, session) {
                headVisible: !!hr && hr.width > 0 && hr.bottom > 0 && hr.top < innerHeight,
                rows: z.querySelectorAll('.zoom__row').length };
     })()`);
+    /** 按「定位表达式」点击（L1b/R1b 用：目标不是唯一 selector 而是第 N 行）。
+     *  滚动与复核纪律同 trustedClick（block:'nearest' + 命中复核重试）。 */
+    const trustedClickLoc = async (locateExpr, label) => {
+      let lastBox = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const box = await evalJs(`(() => {
+          const el = (${locateExpr});
+          if (!el) return null;
+          el.scrollIntoView({ block: 'nearest' });
+          const r = el.getBoundingClientRect();
+          const x = r.x + r.width / 2, y = r.y + r.height / 2;
+          const hit = document.elementFromPoint(x, y);
+          return { x, y, ok: !!hit && (hit === el || el.contains(hit) || hit.contains(el)) };
+        })()`);
+        if (!box) throw new Error(`no element for ${label}`);
+        lastBox = box;
+        if (box.ok) break;
+        await sleep(300);
+      }
+      if (!lastBox.ok) throw new Error(`hit-test never lands on ${label}`);
+      for (const type of ['mousePressed', 'mouseReleased']) {
+        await cdp.send('Input.dispatchMouseEvent', { type, x: lastBox.x, y: lastBox.y, button: 'left', clickCount: 1 });
+      }
+    };
     const shot = async (name) => {
       if (!SHOT_DIR) return;
       const data = await cdp.send('Page.captureScreenshot', { format: 'png' });
@@ -342,19 +394,25 @@ async function runViewport({ w, h, label }, session) {
         g ? JSON.stringify(g) : 'no zoom');
       await shot('zoom-left');
     }
-    // L1b（2026-11-01 盲区轮）：用户是先滚列表再点行的 —— 点【中部行】后
-    // 浮层必须仍在视野内（App 侧 scrollIntoView 保底，nearest=可见时 no-op）。
+    // L1b（2026-11-01 盲区轮）：用户是先滚列表再点行的 —— 先关掉 L1 的浮层，
+    // 点【中部行】，断言（a）浮层重新出现且不滚动即在视野内（App 侧
+    // scrollIntoView 保底）；（b）浮层内容 = 该行的请求 ID（点击真换绑了目标，
+    // 不是旧浮层假绿）。
     {
-      await evalJs(`(() => { const items=[...document.querySelectorAll('.cp__item')]; items[Math.min(24, items.length-1)]?.scrollIntoView({block:'center'}); })()`);
+      await evalJs(`document.querySelector('.zoom .zoom__close')?.click()`);
+      await sleep(400);
+      const midExpr = `(() => { const items=[...document.querySelectorAll('.cp__item')]; return items[Math.min(24, items.length-1)]; })()`;
+      const midId = await evalJs(`(() => { const el=(${midExpr}); const row=el.closest('.cp__row'); const btn=row?.querySelector('[data-testid^="client-open-page-"]'); return btn ? btn.dataset.testid.slice('client-open-page-'.length) : ''; })()`);
+      await evalJs(`(${midExpr})?.scrollIntoView({block:'center'})`);
       await sleep(300);
-      const mid = await evalJs(`(() => { const items=[...document.querySelectorAll('.cp__item')]; const el=items[Math.min(24, items.length-1)]; const r=el.getBoundingClientRect(); return { x: r.x + r.width/2, y: r.y + r.height/2, n: items.length }; })()`);
-      for (const type of ['mousePressed', 'mouseReleased']) {
-        await cdp.send('Input.dispatchMouseEvent', { type, x: mid.x, y: mid.y, button: 'left', clickCount: 1 });
-      }
+      await trustedClickLoc(midExpr, 'cp item #24');
       await sleep(1200);
       const g = await zoomGeometry();
-      check(`L1b [${label}] 滚动后点中部行(#24/${mid.n}) → 浮层不滚动即在视野内`, !!g && g.h >= GEOM_MIN_PX && g.visibleRatio >= 0.5 && g.rows > 0,
+      const zoomText = await evalJs(`document.querySelector('.zoom')?.textContent ?? ''`);
+      check(`L1b [${label}] 滚动后点中部行(#24) → 浮层不滚动即在视野内`, !!g && g.h >= GEOM_MIN_PX && g.visibleRatio >= 0.5 && g.rows > 0,
         g ? JSON.stringify(g) : 'no zoom');
+      check(`L1b [${label}] 浮层内容 = 被点行（id=${midId.slice(0, 8)}…）`, !!midId && zoomText.includes(midId),
+        `zoomText ${zoomText.includes(midId) ? 'contains' : 'MISSES'} mid id`);
       await shot('zoom-left-mid');
     }
     await trustedClick('.zoom [data-testid="zoom-open-page"]');
@@ -364,9 +422,17 @@ async function runViewport({ w, h, label }, session) {
     await evalJs(`document.querySelector('.zoom .zoom__close')?.click()`);
     await sleep(400);
 
-    await trustedClick('[data-testid^="client-open-page-"]');
-    check(`L3 [${label}] 行尾 ↗ → 新窗 /request-detail/:id（有意直达入口）`,
-      (await openedTargetsAfter()).some((u) => u.includes('/request-detail/')));
+    // L3（2026-11-01 盲区轮改版）：L1b 的深滚动态会触发 headless 命中测试
+    // 与布局矩形的持续错位（DOM elementFromPoint 与 gBCR 同帧互斥、滚动复位
+    // 不复原，实测稳定复现）⇒ ↗ 直达入口改为**新载页面**后点第 1 行行尾 ↗
+    // （fresh 态命中正常，v2 探针实证），验的是同一个产品行为。
+    if (!(await openFreshLive())) {
+      check(`L3 [${label}] 行尾 ↗ → 新窗 /request-detail/:id（有意直达入口）`, false, 'reload 后无条目');
+    } else {
+      await trustedClick('[data-testid^="client-open-page-"]');
+      check(`L3 [${label}] 行尾 ↗ → 新窗 /request-detail/:id（有意直达入口）`,
+        (await openedTargetsAfter()).some((u) => u.includes('/request-detail/')));
+    }
     await closeDetailTabs();
 
     // ════ 右栏 ════
@@ -387,18 +453,22 @@ async function runViewport({ w, h, label }, session) {
           g ? JSON.stringify(g) : 'no zoom');
         await shot('zoom-right');
       }
-      // R1b：与 L1b 同口径（右栏中部行）。
+      // R1b：与 L1b 同口径（先关浮层 → 点右栏中部行 → 内容换绑断言）。
       {
-        await evalJs(`(() => { const items=[...document.querySelectorAll('.pp__main')]; items[Math.min(24, items.length-1)]?.scrollIntoView({block:'center'}); })()`);
+        await evalJs(`document.querySelector('.zoom .zoom__close')?.click()`);
+        await sleep(400);
+        const midExpr = `(() => { const items=[...document.querySelectorAll('.pp__main')]; return items[Math.min(24, items.length-1)]; })()`;
+        const midId = await evalJs(`(() => { const el=(${midExpr}); const row=el.closest('.pp__row'); const btn=row?.querySelector('[data-testid^="provider-open-page-"]'); return btn ? btn.dataset.testid.slice('provider-open-page-'.length) : ''; })()`);
+        await evalJs(`(${midExpr})?.scrollIntoView({block:'center'})`);
         await sleep(300);
-        const mid = await evalJs(`(() => { const items=[...document.querySelectorAll('.pp__main')]; const el=items[Math.min(24, items.length-1)]; const r=el.getBoundingClientRect(); return { x: r.x + r.width/2, y: r.y + r.height/2, n: items.length }; })()`);
-        for (const type of ['mousePressed', 'mouseReleased']) {
-          await cdp.send('Input.dispatchMouseEvent', { type, x: mid.x, y: mid.y, button: 'left', clickCount: 1 });
-        }
+        await trustedClickLoc(midExpr, 'pp main #24');
         await sleep(1200);
         const g = await zoomGeometry();
-        check(`R1b [${label}] 滚动后点中部行(#24/${mid.n}) → 浮层不滚动即在视野内`, !!g && g.h >= GEOM_MIN_PX && g.visibleRatio >= 0.5 && g.rows > 0,
+        const zoomText = await evalJs(`document.querySelector('.zoom')?.textContent ?? ''`);
+        check(`R1b [${label}] 滚动后点中部行(#24) → 浮层不滚动即在视野内`, !!g && g.h >= GEOM_MIN_PX && g.visibleRatio >= 0.5 && g.rows > 0,
           g ? JSON.stringify(g) : 'no zoom');
+        check(`R1b [${label}] 浮层内容 = 被点行（id=${midId.slice(0, 8)}…）`, !!midId && zoomText.includes(midId),
+          `zoomText ${zoomText.includes(midId) ? 'contains' : 'MISSES'} mid id`);
         await shot('zoom-right-mid');
       }
       await trustedClick('.zoom [data-testid="zoom-open-page"]');
@@ -408,9 +478,21 @@ async function runViewport({ w, h, label }, session) {
       await evalJs(`document.querySelector('.zoom .zoom__close')?.click()`);
       await sleep(400);
 
-      await trustedClick('[data-testid^="provider-open-page-"]');
-      check(`R3 [${label}] 行尾 ↗ → 新窗 /request-detail/:id（有意直达入口）`,
-        (await openedTargetsAfter()).some((u) => u.includes('/request-detail/')));
+      // R3：与 L3 同口径（新载页面脱离深滚动态后点行尾 ↗）。
+      if (!(await openFreshLive())) {
+        check(`R3 [${label}] 行尾 ↗ → 新窗 /request-detail/:id（有意直达入口）`, false, 'reload 后无条目');
+      } else {
+        // 右栏条目独立轮询（waitRows 只等左栏；新载页面右栏到达可能稍晚）。
+        let rr = await evalJs(`document.querySelectorAll('.pp__main').length`);
+        for (let i = 0; i < 20 && !rr; i++) { await sleep(2000); rr = await evalJs(`document.querySelectorAll('.pp__main').length`); }
+        if (!rr) {
+          check(`R3 [${label}] 行尾 ↗ → 新窗 /request-detail/:id（有意直达入口）`, false, 'reload 后右栏无条目');
+        } else {
+          await trustedClick('[data-testid^="provider-open-page-"]');
+          check(`R3 [${label}] 行尾 ↗ → 新窗 /request-detail/:id（有意直达入口）`,
+            (await openedTargetsAfter()).some((u) => u.includes('/request-detail/')));
+        }
+      }
       await closeDetailTabs();
     } else {
       check(`R1-R3 [${label}] 右栏无条目（该窗口无供应商响应流量，跳过）`, false, 'skipped');
