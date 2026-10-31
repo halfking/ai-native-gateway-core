@@ -24,7 +24,9 @@
 > 本轮补**验证闭环**：211 真数据 rank 实测（glm: flash rank=1 vs 非 flash rank=3 ⇒ 静默 ✓）、
 > **exact 双候选全库=0**（minimax 数据线已被处置）、两新槽 modelbinding WARN=0；
 > **补行为单测（log spy 4 分支）+ 两臂变异全检出**——此前门槛只有 SQL 形状契约与选择结果断言，
-> **改坏时测试全绿**（「日志行为本身就是交付物」）。
+> **改坏时测试全绿**（「日志行为本身就是交付物」）；**minimax 判读订正**：本轮一度据
+> 「同名绑定=0」误判「minimax 数据线已处置」，实际 minimax 走**归一化路径**且两候选同 rank ⇒
+> 收口轮同源探针实测 **WARN=1（真歧义保留）**——量对不同的歧义类不能互相作证。
 > ⇒ ★★★ **③ sanitize audit queue full**：触发面=**输出合规把规则命中面扩到每个响应**
 >（sanitize_rule_events 的 output/egress 指纹首现 10-30 实证），生产 ~4-5 条/秒 > 单 worker
 > 逐条事务（BEGIN+advisory lock+upsert+retention DELETE+COMMIT 五次往返/事件）⇒ 256 深队列持续满。
