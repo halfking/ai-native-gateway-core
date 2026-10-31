@@ -28030,3 +28030,21 @@ transaction block）+ `&&` 短路让后续 `$D` 未赋值打空路径——**每
 ★ **同族**：★ [[「登记齐了」≠「登记对了」]] · ★ [[「清单」也是清单 ⇒ 清单也要有门]] · ★ [[扫的是代码还是散文]] · ★ [[「写在哪」比「有没有」贵但值钱]]
 
 ★ **证据**：2026-10-31 llm-gateway-go（★ 双仓同步 cron 轮 · **只修登记面，零生产写入**）—— 台账补一行 `| 927 | \`927_routing_policy_singleton_unique.sql\` | \`fdf7f635…\` |`（★ sha 为**文件实测值**、★ 与 embeddata 副本逐字节一致）；新增927 契约门（★ 3 组断言）；★ **四臂变异台全检出**（★ 删台账行 ⇒契约门 + sqlguard 双双红 ★ ★ TSV 位 327→328 ⇒ 登记门红 ★ ★ 守卫挪出事务块 ⇒ 语义门红「落在事务块外」★ ★ 删守卫 ⇒ 语义门红「缺锁守卫」）⇒ ⇒ ★★还原后**三个被臂改过的文件 sha256 逐字一致**；★ 读数：`internal/sqlguard` 由红转绿（★ 登记 272 条 / 校验 272 条 / 失配 0）★ `sql/migrations/startup` 绿 ★ 读台账的 7 个包（★ sql/migrations/startup / internal/sqlguard / bg / provider / deploy/prometheus/rules / cmd/gateway / admin）全绿；⚠ **诚实边界**：★ ① 本轮**未改迁移文件本身**（★ 只补登记面 ⇒ 文件 sha 不变 ⇒ 台账承诺仍然成立）★ ② **未在生产应用**（★ 927 仍是 prepared / 待部署列车）★ ③ `make test` 全量口径下 `scripts/ursmcheck` 仍会**超时 panic**（★ 该包是 `GUARD_PACKAGES_SLOW`，★ Makefile 记录的实测需 **1122.8s** 而 `make test` 给300s ⇒ ⇒ ★ **既有结构性预算错配**、★ CI 走的是 `make test-short` + `make guards` ⇒ ⇒ ★ **不在本轮改动范围**，★ 且审计轮已把「CI 有无否决权」登记为**属主待决**项（★ P3-4）⇒ ⇒ ★★ 本轮**只如实报告、不擅自改口径**。
+
+## §596 · 第 11 轮遗留收口轮：sanitize 审计攒批 + resolver best_rank 部署判据（2026-10-31）—— ★★★★★ **「队列满的丢弃」根因常在排水侧的单条写路径**（每条事件付一次事务+跨实例锁+保留期清理 ⇒ 生产速率结构性高于排水速率）；★★★★ **批量 upsert 的聚合列必须进 INSERT 列表**（表默认值会把聚合值吃掉）；★★★ **断言终态计数分不清「聚合一次」与「逐条累加」**；★★★ **可选接口的类型断言，测试桩不能两头实现**；★★ **观测面计数要显式 0（去 omitempty）**；★★ **测试命令接管道（`| tail`）会把退出码和失败细节一起吞掉**
+
+★ **场景**：第 11 轮登记的 `sanitize rule audit queue full`（211 实测 44250 条 WARN/3h = 等量审计事件真实丢弃）——排水侧 `RecordEvent` 每条付 `BEGIN` + **跨实例 advisory 锁** + upsert + **O(保留水位) 的保留期 DELETE** + `COMMIT`，`observeRule` 每命中 1~2 条 ⇒ 队列（默认 256）持续满 ⇒ 非阻塞丢弃。⇒ ★ 修法 = **攒批**（drainBatch 非阻塞取 ≤128 条/轮；洪峰整批、稀疏零延迟增量）+ 可选接口 `BatchEventWriter`（无接口回落逐条，第三方 Store 零破坏）+ 每批一次事务/锁/保留期清理。⇒ ★★ 部署后 `queue full` 12m 窗口 0、审计事件持续落库。
+
+★ **通用式一（★★★★）——聚合列必须进 INSERT 列表**：首版批 INSERT 不带 `count`，表定义 `count BIGINT NOT NULL DEFAULT 1` ⇒ 批内同 fingerprint 聚合出的 k 在 fresh-INSERT 分支被默认值 1 吃掉、conflict 分支 `+EXCLUDED.count` 也只加到默认 1 ⇒ **k−1 次命中无声丢失**。触发链本身值钱：M3 变异臂（memory 聚合退化 `+=`→`++`）首轮 **rc=0 假绿** ⇒ 逼出「聚合语义必须落 store 直测（一次调用传 k 条 → 一次到位）」⇒ 写直测时顺藤发现 Postgres 缺 count 列 ⇒ 补列 + sqlmock 断言聚合参数（5+1）后 M3 转红。⇒ ★★★ **「断言终态计数」的测试分不清聚合与逐条累加（两者终态相同）——语义差异必须落到能分辨它的层（store 直测），不能只经异步路径看终值**。
+
+★ **通用式二（★★★）——可选接口的桩不能两头实现**：`writeBatch` 用 `m.store.(BatchEventWriter)` 探测可选能力；回落路径的测试桩如果**同时**实现了 RecordEvents（⇒ 包装具体类型 `*MemoryStore` 会提升其全部方法）⇒ 断言必然走批路径 ⇒ 桩以 **Store 接口**为字段（接口方法集之外的实现不会提升）＋ 只覆写 `RecordEvent`。⇒ 同族：**探测「是否实现 X」的测试，桩实现面必须与被测形态一一对应**。
+
+★ **通用式三（★★）——观测面计数显式 0**：`dropped_events` 带 `omitempty` ⇒ 0 值在 status API 上缺席 ⇒ **「旧二进制」与「已接线且为零」不可分辨** ⇒ 去 omitempty，让 0 自己证明计数活着。
+
+★ **通用式四（★★）——部署判据用同源量具**：resolver best_rank 分层的部署验收不是「看版本号」，而是**用部署树里的实现（`modelbinding.ResolveRawBinding`）对生产库跑候选集合对拍**：glm-5.3-flash@cred19 → selected=`z-ai/glm-5.3-flash` + WARN=0 + 特异性 Debug=1；minimax-m2.7@cred21 → **WARN=1（真歧义保留，不预设 WARN=0）**；minimax-m2.7-highspeed@cred21 → 静默。⇒ ★★ **真库数据层 SQL 探针（19 凭据 rank 形态）+ 行为层同源探针两层对拍**：数据层证「条件分化了」，行为层证「代码按分化行事」。
+
+★ **通用式五（★★）——管道吞 rc**：`go test … | tail -1` 把退出码**和失败细节**一起吞掉（`&&` 链继续跑、一次真 FAIL 只剩一个词）⇒ 测试命令要么不接管道、要么 `set -o pipefail`；本轮靠 3×全包 + 10×压力 + `-race` 复跑补救，FAIL 细节已不可复原（如实登记）。
+
+★ **同族**：★ [[量具口径比事实源窄 ⇒ 伪绿]] · ★ [[变异臂的「红」也有两种读法]] · ★ [[「0 丢弃」是判据分化的输出不是机器静默]] · ★ [[部署判据=候选集合对拍，不预设 WARN=0]]
+
+★ **证据**：2026-10-31 llm-gateway-go——`d953b55e3`（攒批本体：manager drainBatch + BatchEventWriter + Postgres/Memory RecordEvents + count 进 INSERT + Status 露 dropped）+ `7eb19712d`（去 omitempty）推 origin/main；测试 9 例新增；**变异臂 6/6 检出、还原 md5 逐字一致**；sanitizerules/security/sanitize/admin/outputcompliance 四包绿 + `-race` 绿；211 部署 d953b55e3 槽 b 接管（干净 worktree + LLM_GATEWAY_ROOT 钉根），`queue full` 0、事件落库实证、候选集合对拍四臂全 PASS；AGENTS 归档拆分字节级三重核对无丢失。审计档 `docs/audit/2026-10-31-第11轮遗留收口轮-sanitize审计攒批与resolver部署判据.md`。

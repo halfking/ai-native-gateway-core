@@ -4,6 +4,21 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-10-31 第 11 轮遗留收口轮：sanitize 审计攒批 + resolver best_rank 部署判据**
+> （211 线上 = `2.5.8-d953b55e-20261031-211`，槽 b/8783）：★ **sanitize audit queue full
+> 已收口**——根因=排水侧单条写路径（每条事件付 事务+跨实例 advisory 锁+O(水位) 保留期 DELETE）
+> ⇒ 修法=攒批（`BatchEventWriter` 可选接口，128 条/批、每批一事务一锁一清理；
+> ★ **聚合列必须进 INSERT 列表**：`count DEFAULT 1` 会吃掉批内聚合值 ⇒ 新 fingerprint 的
+> k−1 次命中无声丢失，变异臂 M6 抓到）；`dropped_events` 已上 status API
+> （`7eb19712d` 去 omitempty，**211 线上暂为缺席=0 形态，下次部署显式 0 上屏**）。
+> ⇒ ★ **resolver best_rank 分层已在 211 线上并按部署判据验收**：同源探针
+> `ResolveRawBinding` 对真库四臂全 PASS——glm-5.3-flash@cred19 selected=`z-ai/glm-5.3-flash`
+> 且 WARN=0（特异性 Debug 留痕）；**minimax-m2.7@cred21 WARN=1（真歧义保留，不预设 WARN=0）**；
+> minimax-m2.7-highspeed 随分层静默。★ **AGENTS 归档拆分（dfcb1bc36）字节级三重核对无丢失**
+> （移出段==归档正文 12758 行 / 保留段零改动 / 拆分后归档未被触碰）。
+> ⇒ 审计档 `docs/audit/2026-10-31-第11轮遗留收口轮-sanitize审计攒批与resolver部署判据.md`；
+> 通用式见 `LESSONS.md` **§596**（六条：排水侧单条写路径 / 聚合列必须进 INSERT /
+> 终态计数分不清聚合与累加 / 可选接口的桩不能两头实现 / 观测面显式零 / 管道吞 rc）。
 > **2026-10-31 维护轮：双仓同步 + 927 台账漏登修复**（会话
 > `mvs_0a20a52276a24605b7ea29823d70169b`）：★ 承接 12h 审计第 1 轮（`fd3d243d5`）
 > 新增的迁移 **927**（routing_policy 单例化）⇒ ★ **它从未进 `docs/db-changelog.md`**
