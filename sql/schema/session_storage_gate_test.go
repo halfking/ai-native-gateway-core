@@ -44,15 +44,70 @@ type sessionGateSources struct{ generic, runner, gate, verify, fixture string }
 // usage_facts rows deleted because a developer library was passed as a
 // scratch library) is why it stays opt-in and guard-enforced rather than
 // being wired into a populated gate run.
-var destructiveGuardedDB = map[string]string{
-	"REPORT_E2E_TEST_DATABASE_URL": "domains/reportrollup/realdb_e2e_test.go",
+// destructiveFixture 携带各自的守卫牙齿：注册即申报「这个 fixture 用哪种
+// 自守卫形态拒绝错误 DSN」，牙齿断言按形态分别落在 guard 里，不共用一把尺。
+type destructiveFixture struct {
+	path  string
+	guard func(body string) []string
+}
+
+var destructiveGuardedDB = map[string]destructiveFixture{
+	"REPORT_E2E_TEST_DATABASE_URL": {
+		path:  "domains/reportrollup/realdb_e2e_test.go",
+		guard: reportRollupGuardProblems,
+	},
+	// 2026-10-31（48h 轮）：maas 月账单真库 e2e（maas/bills_realdb_test.go）。
+	// ursmcheck 侧已按 dsn_exclusive 豁免登记（datasource_env_test.go），但本门
+	// 的仓内扫描器同样扫到这个变量名，若不在此注册就会**反向**要求
+	// `TEST_MAAS_BILLS_DATABASE_URL="$GATE_URL"` —— 恰是 R86 那次「门对形状
+	// 判得对、台账记错边」的第三次重演。它的自守卫形态与 reportrollup 不同：
+	// 守卫是 current_database() 的 `_test` 后缀检查，配置了不合觓名 ⇒ Fatal。
+	"TEST_MAAS_BILLS_DATABASE_URL": {
+		path:  "maas/bills_realdb_test.go",
+		guard: maasBillsGuardProblems,
+	},
+}
+
+// reportRollupGuardProblems 断言 reportrollup fixture 的自守卫仍然有牙。
+func reportRollupGuardProblems(body string) []string {
+	var problems []string
+	require := func(ok bool, property string) {
+		if !ok {
+			problems = append(problems, property)
+		}
+	}
+	// ★ Must assert the guard is **called** on the resolved DSN, not merely
+	// that its definition still sits in the file. Checking for the name alone
+	// is satisfied by an uncalled helper — mutation M3 removed the single call
+	// site and the gate stayed green, which is precisely the regression this
+	// registration exists to catch.
+	require(strings.Contains(body, "func guardDestructiveE2E(") &&
+		strings.Contains(body, `REPORT_E2E_ALLOW_DESTRUCTIVE`), "destructive scratch guard")
+	require(regexp.MustCompile(`guardDestructiveE2E\(\s*t\s*,\s*dsn\s*\)`).MatchString(body),
+		"destructive guard call site")
+	return problems
+}
+
+// maasBillsGuardProblems 断言 maas fixture 的自守卫仍然有牙：守卫落在
+// current_database() 的后缀检查上，且不合规是 Fatal（响亮失败）而不是静默。
+func maasBillsGuardProblems(body string) []string {
+	var problems []string
+	require := func(ok bool, property string) {
+		if !ok {
+			problems = append(problems, property)
+		}
+	}
+	require(strings.Contains(body, `HasSuffix(database, "_test")`), "destructive _test-suffix guard")
+	require(strings.Contains(body, `t.Fatalf("refusing to write maas tables`), "guard fails loudly instead of skipping")
+	return problems
 }
 
 // destructiveGuardedDBProblems asserts the "must stay out of the fact source"
 // property. Registration is only half the claim; the guard has to keep
 // rejecting real databases, otherwise dropping it would silently re-open the
-// destructive path while the gate stayed green.
-func destructiveGuardedDBProblems(name, fixture string, src sessionGateSources) []string {
+// destructive path while the gate stayed green. The per-fixture teeth live in
+// destructiveFixture.guard; the base below is shared by every registration.
+func destructiveGuardedDBProblems(name string, fixture destructiveFixture, src sessionGateSources) []string {
 	var problems []string
 	require := func(ok bool, property string) {
 		if !ok {
@@ -69,7 +124,7 @@ func destructiveGuardedDBProblems(name, fixture string, src sessionGateSources) 
 		}
 		return string(data)
 	}
-	body := read(fixture)
+	body := read(fixture.path)
 	if body == "" {
 		return problems
 	}
@@ -77,18 +132,7 @@ func destructiveGuardedDBProblems(name, fixture string, src sessionGateSources) 
 	// The skip arm is what makes "unset" the safe state.
 	require(regexp.MustCompile(`(?s)os\.Getenv\("`+regexp.QuoteMeta(name)+`"\)\s*\n\s*if [^{]*\{\s*\n?\s*t\.Skip\(`).MatchString(body),
 		"unset skips instead of failing open")
-	// The scratch-library guard is what makes "wrong DSN" fail loudly.
-	//
-	// ★ Must assert the guard is **called** on the resolved DSN, not merely
-	// that its definition still sits in the file. Checking for the name alone
-	// is satisfied by an uncalled helper — mutation M3 removed the single call
-	// site and the gate stayed green, which is precisely the regression this
-	// registration exists to catch.
-	require(strings.Contains(body, "func guardDestructiveE2E(") &&
-		strings.Contains(body, `REPORT_E2E_ALLOW_DESTRUCTIVE`), "destructive scratch guard")
-	require(regexp.MustCompile(`guardDestructiveE2E\(\s*t\s*,\s*dsn\s*\)`).MatchString(body),
-		"destructive guard call site")
-	return problems
+	return append(problems, fixture.guard(body)...)
 }
 
 func sessionStorageGateSources(t *testing.T, contract sessionDBContract, generic string) sessionGateSources {
