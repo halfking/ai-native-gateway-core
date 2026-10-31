@@ -4,6 +4,23 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-01 输出合规总开关启用轮：管理面 PUT 热加载 + 验收④漏网路径登记**
+> （goal 会话）：★ 生产 `sanitize.output_check_enabled` 已由 false 经**管理面 PUT**
+> 置 **true**（02:43:52；`PUT /api/admin/sanitize-rules/output-check`，super_admin）——
+> 三面核验全过（读回 enabled=true source=db / settings_kv prev_value=false /
+> 211-b 容器审计日志 `output_check_switch_changed`），零重启；
+> **被动生效证明**：hook.go:68 在开关 false 时结构性不可能写 output/egress ⇒
+> `sanitize_rule_events` 的 output/egress 两相 last_seen/count 开启后前进
+> （A/B 60s：egress +6 / output +12，input 对照 +1659）。⇒ **语义面**：活了 =
+> mandatory 支路（强制外传守卫 + 容量守卫，interceptor.go:106 只闸总开关）；
+> **仍闸着** = 可选输出合规 + 写出前脱敏（二级键 `output_compliance.enabled=false`
+> 10-17 既有态，属 owner 另行决断，本轮不动）。⇒ **验收④两个漏网路径已登记不修**
+> （现行树行号：`stream_compliance.go:984/:987` 裸 error（验收④记的 :995 系行号漂移）
+> + `output_sensitive.go:209-210` 工具 JSON 非法 Blocked 无 Issues ⇒ 空 RuleID；
+> 运行树 5269313a2 是 HEAD 祖先且两文件 426393659 后零改动 ⇒ 行号对线上成立；
+> 修法方向=归因轮同款 PolicyBlockError / 带 RuleID 的 Issue；**先补形态表再改代码**）。
+> ⇒ 审计档 `docs/audit/2026-11-01-输出合规总开关启用轮-管理面PUT与漏网路径登记.md`；
+> 通用式见 `LESSONS.md` **§605**。
 > **2026-11-01 24h 审计轮：放大类闭案推进（tick 未到）+ dsn_exclusive 共享台账 + all-0-candidates 闭卡**
 > （goal 会话，2026-10-31 23:22 起）：★ 承接 48h 轮全部遗留。⇒ ★★ **② 优先收口：闭案判据
 > 物理 未到**——`automation-43481e79`（明晚 23:30）runCount=0 未执行；自己跑同款 lag 分桶
