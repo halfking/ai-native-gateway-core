@@ -4,6 +4,40 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-10-31 48h 审计轮：集成门 maas DSN 注册修复 + 满窗复测 + 日志慢SQL审计**
+> （goal 会话）：★ 承接第 12 轮 §5 遗留。⇒ ★★★★ **① 共享 checkout 上「全量测试绿」必须先
+> 回答「测的是哪棵树」**：合并 5 提交后 make test-short 首跑 2 红（sql/schema 集成门真红 +
+> cmd/gateway build failed），全量复跑**换了失败位置**（admin 120s 超时）⇒ 当场 git status
+> 实证**并行会话 21 项 WIP**（其拦截归因轮，后已成 426393659）⇒ 两次全量跑测的都是别人
+> 中间态 ⇒ **worktree 方法**（钉在已推送提交上：**test-short 351 包全绿 TS_RC=0**；
+> ursmcheck 需先在 worktree 的 web/ 装依赖，错误信息自己会指路）——git status 干净是全量
+> 读数有效性的前置判据（LESSONS §600 通用式一）。⇒ ★★★★ **② 真红修复 = dsn_exclusive
+> 双台账第三次反向报红**：58dbfc3a5 新增 TEST_MAAS_BILLS_DATABASE_URL 只在 ursmcheck
+> 豁免表登记，sql/schema 集成门不认识 ⇒ **反向要求 $GATE_URL 注入**（恰是豁免禁止的事；
+> R86 REPORT_E2E 第二次、本次第三次）⇒ 修法两层：destructiveGuardedDB 升级「路径+各自
+> 守卫牙齿」注册表（reportrollup 与 maas 各自断言不共用一把尺）+ 新增两台账机械对账门；
+> **变异臂 2/2 检出**（M2 破坏 maas 守卫断言 / M3 摘 ursmcheck 条目，还原 md5 一致）；
+> 反方向对账需共享数据文件 ⇒ 结构项留档（提交 498c46b9b）。⇒ ★★ **③ 满窗复测**（21:00
+> 实测，窗口 20:58 满 24h）：**lt10min dup 99/33 与第 12 轮逐字相同、零新增**；07:07 后
+> （含 16:12 tick 与 19 时 45 行 4h 重开轮）始终 0；313 行 / failed 254 全分类零空 error /
+> 按轮全 <100 ⇒ 满窗判据达成；闭案最后一环=**重部署后新槽的 24h tick**（动态锚点自动化）。
+> ⇒ ★★★★ **④ canceling statement ≠ 慢查询**：postgres 日志 12 次取消 ⇒ 假设「UNION ALL
+> 大视图 + ts≠partition_date ⇒ 参数化计划裁剪失效」⇒ EXPLAIN 成本上成立（33.6k vs 8.3k）
+> **ANALYZE 实测反转（28.5ms）** ⇒ 取消=客户端上下文/部署竞态 ⇒ 不带证据链就会做一次
+> 无收益的视图 DDL；真慢风险（10 月分区 1.97GB、details 全扫线性增长）因 pg_stat_statements
+> 未开启**不可观测**（维持待决）。⇒ ★ **⑤ 日志审计收获**：42P10（23 条）**全部 ≤ 部署前
+> 3 分钟 = 闭案实证**；今日 42P18=他产品（f.pe/pb/roe 股票表）；relation request_logs 不存在
+> =非本仓 PG 代码（仓内仅 sqlite store 用该名；共享实例日志无 %d/%u 前缀不可精确归属）；
+> **kb-importer 外部工具**坏转义+盲插撞主键（用户侧动作）；211 **首现 all-0-candidates 34 条**
+> （deepseek-v4.1-flash，08:37–11:18 探针 429/403 池可用性窗自愈；**调查卡：库内另有 ~8 条
+> available=t 绑定为何 resolve 只出 4 候选**）；fp_slot 降级 22 条=按设计工作（8h 零复发）；
+> **queue full=0**（攒批+4096+节流生效实证）；modelbinding WARN=3=minimax@cred21 真歧义
+> 设计保留（3 请求=3 WARN，与第 12 轮同源探针一致）。⇒ ★ **⑥ 21:12 收口自动化已删除**
+> （与本轮部署并发冲突）⇒ 本轮接管其全部工作 + 明日动态锚点改排；245 systemd 两单元已定性
+> （collector-service=禁用单元 10-15 陈旧失败态、reset-failed 可清 / nim-case-cron=每日
+> 04:30 对已 EOL 的 NIM 必红，处置属运维）。⇒ 审计档
+> `docs/audit/2026-10-31-48h审计轮-合并修复与日志慢SQL审计.md`；通用式见 `LESSONS.md`
+> **§600**（6 条）。
 > **2026-10-31 拦截归因轮：守卫失败可归因 + 读时归因逐单窗口**（goal 会话，
 > 承接同日「211 拦截审核合理性分析」轮）：★ **本轮先做批判式审计，订正上一轮三处判读**
 > ⇒ ★①「审核面是空白清单」**半错**：审核单**表**空白（24/24 条 `rule_id/reason/证据` 全空），
