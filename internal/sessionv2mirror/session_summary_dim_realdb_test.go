@@ -57,6 +57,11 @@ func TestSessionSummaryDimWriter_S4HandoffSemantics(t *testing.T) {
 	}
 	cleanup()
 	t.Cleanup(cleanup)
+	// session_summaries.tenant_id 外键指向 tenants(code)。系统租户 default 在
+	// 新装库里不保证存在（2026-10-31 新装库实测）；幂等补齐，避免依赖某台开发机的库内容。
+	if _, err := pool.Exec(ctx, `INSERT INTO tenants (code, name) VALUES ('default', 'default') ON CONFLICT (code) DO NOTHING`); err != nil {
+		t.Fatalf("ensure system tenant default: %v", err)
+	}
 
 	w := NewSessionSummaryDimWriter(pool)
 	ts1 := time.Date(2026, 10, 13, 7, 0, 0, 0, time.Local)

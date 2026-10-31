@@ -30,7 +30,7 @@ func TestSessionMetadata_SetAndGet(t *testing.T) {
 
 	defer func() {
 		pool.Exec(ctx, "DELETE FROM public.sessions WHERE session_id = $1", sessionID)
-		pool.Exec(ctx, "DELETE FROM gateway.session_tags WHERE session_id = $1", sessionID)
+		pool.Exec(ctx, "DELETE FROM public.session_tags WHERE gw_session_id = $1", sessionID)
 	}()
 
 	// M2: Set metadata (title + user_tags)
@@ -54,7 +54,7 @@ func TestSessionMetadata_SetAndGet(t *testing.T) {
 
 	// M3: Insert auto tags (simulating SessionTagger)
 	_, err = pool.Exec(ctx, `
-		INSERT INTO gateway.session_tags (tenant_id, session_id, tag_key, tag_value, tag_source, created_at)
+		INSERT INTO public.session_tags (tenant_id, gw_session_id, tag_key, tag_value, tag_source, created_at)
 		VALUES 
 			($1, $2, 'language', 'go', 'auto', NOW()),
 			($1, $2, 'category', 'backend', 'auto', NOW())
