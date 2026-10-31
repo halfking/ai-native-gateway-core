@@ -475,6 +475,24 @@ func defaultAnthropicPassthrough(ctx context.Context, w http.ResponseWriter, res
 // trim here so proxy clients (OpenCode/Cursor/RooCode) behave like direct API
 // users.
 func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
+	// RISK-6（2026-10-29）：Claude Code↔Claude 原厂对在本腿的直通闸门。
+	// 生效点按「谁做序列化」盘点（与 65d24d0df 同纪律）：
+	//   S1 IR 序列化站点（Q3 转换 ParseOpenAI→SerializeAnthropic）—— 盖
+	//      NativePassthrough（漏盖 = 厂商 Extensions 在 anthropic 目标被
+	//      paramreg 方言裁剪，原厂对首发参数不保真）；
+	//   S2 SanitizeAnthropicTools（IR 分支 + legacy 分支各一次）—— 原生对
+	//      跳过（工具形重写族，与 chat 腿 SimplifyTools 同款豁免）；
+	//   S3 finalizeAnthropicRequestBody 的 paramguard(DialectAnthropic) +
+	//      reqprobeApplyLearned —— 原生对跳过（chat 腿同款：首发全参，
+	//      学习式预剥离会让一次瞬态 400 把原生参数静默剥离 24h）；
+	//   S4/S5 FixAnthropicMessages / Validate / 模型替换 / 压缩 /
+	//      repairOutboundToolHistory —— 结构性合规，保留（chat 腿
+	//      MergeConsecutiveMessages 同款保留）。
+	//   S6 响应侧（ParseAnthropicResponse→SerializeOpenAI）无请求盖章语义。
+	// 注意：anthropic 腿 anthropicSameCandidateStripRetry=false ⇒ 无剥参
+	// 重试回退 ⇒ 原生对首发参数被上游硬拒时是诚实失败（修法是能力表，
+	// 不是恢复钳制 —— 与 RISK-1 同语义）。
+	nativePair := nativePairFor(params, cand, sourceBody)
 	// Phase B (2026-06-22): When e.IR is set, use Parse→IR→Serialize for Q3
 	// (openai → anthropic) conversion instead of the legacy ChatToAnthropic callback.
 	//
@@ -533,7 +551,7 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 					"client_model", params.ClientModel,
 					"stage", "parse_openai",
 				)
-				return e.legacyAnthropicBody(params, cand, sourceBody)
+				return e.legacyAnthropicBody(params, cand, sourceBody, nativePair)
 			}
 			// 2026-08-12 P0 fix: preserve Kind=KindToolCallIdMismatch so the
 			// outer RecordFailure() in executor_common.go:104 can see it
@@ -560,6 +578,11 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 		// instead of the Anthropic-standard tool_use_id for tool_result blocks).
 		// Fixes MiniMax-M3 tool_call_id not found (2013) bug.
 		irReq.TargetProvider = cand.CatalogCode
+		// RISK-6（2026-10-29）：本腿唯一的请求侧 IR 序列化站点（S1）。
+		// 漏盖 = 原生对的厂商 Extensions 在 anthropic 目标被 paramreg
+		// 方言裁剪（65d24d0df 在 chat 腿修的同族缺陷）。生效点按
+		// 「谁做 SerializeAnthropic」数，本腿恰好一处。
+		irReq.NativePassthrough = nativePair
 		// R45（Gemini thinking 专项补面，D01+D02 复核发现）：Gemini 入向的
 		// budget 形 intent 在 handler step-6 已丢出合成 body；本 Q3 分支
 		// （openai 形 → anthropic 上游）此前无恢复点，serialize_anthropic
@@ -594,7 +617,7 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 					"client_model", params.ClientModel,
 					"stage", "serialize_anthropic",
 				)
-				return e.legacyAnthropicBody(params, cand, sourceBody)
+				return e.legacyAnthropicBody(params, cand, sourceBody, nativePair)
 			}
 			// 2026-08-12 P0 fix: preserve Kind=KindToolCallIdMismatch so
 			// circuit-breaker RecordFailure() recognises this as a client
@@ -611,7 +634,8 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 			}
 		}
 		// Apply remaining Anthropic-path transforms (sanitize, fix, validate)
-		if e.SanitizeAnthropicTools != nil {
+		// S2（RISK-6）：原生对跳过工具形重写（SimplifyTools 同族豁免）。
+		if !nativePair && e.SanitizeAnthropicTools != nil {
 			bodyBytes = e.SanitizeAnthropicTools(bodyBytes)
 		}
 		fixedBytes, fixErr := transformation.FixAnthropicMessages(bodyBytes)
@@ -625,19 +649,21 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 				"tenant_id", params.TenantID,
 			)
 		}
-		bodyBytes = e.finalizeAnthropicRequestBody(params, cand, bodyBytes)
+		bodyBytes = e.finalizeAnthropicRequestBody(params, cand, bodyBytes, nativePair)
 		return repairOutboundToolHistory(params, cand, bodyBytes, "messages")
 	}
 
 	// Legacy path (no IR converter set): use existing callbacks
-	return e.legacyAnthropicBody(params, cand, sourceBody)
+	return e.legacyAnthropicBody(params, cand, sourceBody, nativePair)
 
 }
 
 // legacyAnthropicBody performs the legacy ChatToAnthropic conversion path.
 // Extracted so the IR-converter circuit-open fallback above can reuse the
 // same logic instead of duplicating it.
-func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
+// nativePair（RISK-6，2026-10-29）：由唯一调用方 prepareAnthropicRequestBody
+// 判定后传入（判定点不在此重复 —— 同一请求两分支必须同判）。
+func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candidate, sourceBody []byte, nativePair bool) ([]byte, error) {
 	bodyBytes := append([]byte(nil), sourceBody...)
 
 	// Q3 conversion: OpenAI /v1/chat/completions → Anthropic /v1/messages.
@@ -672,7 +698,9 @@ func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candida
 	if cand.Protocol == providercatalog.ProtocolAnthropicMessages {
 		// MiniMax anthropic-messages rejects tools carrying OpenAI/custom type
 		// wrappers (error 2013: invalid tool type). Always emit name/input_schema.
-		if e.SanitizeAnthropicTools != nil {
+		// S2（RISK-6）：原生对跳过工具形重写（工具顶层自定义键保真；
+		// SimplifyTools 同族豁免）。
+		if !nativePair && e.SanitizeAnthropicTools != nil {
 			bodyBytes = e.SanitizeAnthropicTools(bodyBytes)
 		}
 
@@ -694,11 +722,11 @@ func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candida
 		}
 	}
 
-	bodyBytes = e.finalizeAnthropicRequestBody(params, cand, bodyBytes)
+	bodyBytes = e.finalizeAnthropicRequestBody(params, cand, bodyBytes, nativePair)
 	return repairOutboundToolHistory(params, cand, bodyBytes, "messages")
 }
 
-func (e *Executor) finalizeAnthropicRequestBody(params *ExecParams, cand provider.Candidate, bodyBytes []byte) []byte {
+func (e *Executor) finalizeAnthropicRequestBody(params *ExecParams, cand provider.Candidate, bodyBytes []byte, nativePair bool) []byte {
 	// Candidate-aware enforcement must run for both the IR and legacy paths.
 	// The gateway's 2M admission ceiling is not the provider context window;
 	// trim the serialized Anthropic body at the shared 80% provider threshold.
@@ -718,16 +746,26 @@ func (e *Executor) finalizeAnthropicRequestBody(params *ExecParams, cand provide
 	} else if params != nil && len(runnerMeta) > 0 {
 		params.CompressionRunnerMeta = runnerMeta
 	}
-	bodyBytes = e.applyParamguardLedger(params, bodyBytes, paramreg.DialectAnthropic)
+	// S3（RISK-6，2026-10-29）：paramguard 语义级改写与 reqprobe 学习式
+	// 预剥离对原生对关闭 —— chat 腿同款门控（首发全参；学习式预剥离会让
+	// 一次瞬态 400 把原生参数静默剥离 24h）。本腿无同候选剥参重试
+	// （anthropicSameCandidateStripRetry=false）⇒ 原生对被上游硬拒时是
+	// 诚实失败，修法是能力表，不是恢复钳制。
+	if !nativePair {
+		bodyBytes = e.applyParamguardLedger(params, bodyBytes, paramreg.DialectAnthropic)
+	}
 	// P0-B：Anthropic 出站腿接入同一 reqprobe 学后剔除 choke point。
 	// 同候选剥参重试刻意关闭（见 anthropicSameCandidateStripRetry）——但
 	// 「已学字段」必须在首发前剥掉，否则 chat 腿学到的可选字段在 anthropic
 	// 腿仍每请求吃一次 400。
-	requestID := ""
-	if params != nil {
-		requestID = params.RequestID
+	if !nativePair {
+		requestID := ""
+		if params != nil {
+			requestID = params.RequestID
+		}
+		bodyBytes = e.reqprobeApplyLearned(bodyBytes, cand, providercatalog.ProtocolAnthropicMessages, requestID)
 	}
-	return e.reqprobeApplyLearned(bodyBytes, cand, providercatalog.ProtocolAnthropicMessages, requestID)
+	return bodyBytes
 }
 
 // anthropicSameCandidateStripRetry 是 P0-B 写死契约：Anthropic 执行器

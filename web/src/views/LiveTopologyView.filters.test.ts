@@ -43,6 +43,7 @@ vi.mock('../composables/liveStreamStore', async () => {
   const initialDataReceivedRef = ref(true)
   const redisHealthyRef = ref(true)
   const redisErrorRef = ref('')
+  const liveDataRevision = ref(0)
   return {
     requestsRef,
     nodesRef,
@@ -52,6 +53,7 @@ vi.mock('../composables/liveStreamStore', async () => {
     initialDataReceivedRef,
     redisHealthyRef,
     redisErrorRef,
+    liveDataRevision,
     // 测试侧注入口
     __test: {
       setRequests: (v: Frame[]) => (requestsRef.value = v),
@@ -82,20 +84,22 @@ vi.mock('../composables/useLiveStream', async () => {
 
 vi.mock('../api/topology', () => ({
   getProvidersToday: vi.fn().mockResolvedValue({ day_utc: '2026-10-17', totals: {}, items: [] }),
+  getTopologyModelsToday: vi.fn().mockResolvedValue({ day_utc: '2026-10-17', items: [] }),
+  getTopologyProviderKinds: vi.fn().mockResolvedValue({ items: [] }),
   getTopologyPlugins: vi.fn().mockResolvedValue({
     builtin: [{ name: 'prompt_injection', direction: 'input' }],
     external: [{ plugin_id: 'ai-session-manager', plugin_version: '1.0.0', status: 'ready' }],
   }),
 }))
 
-// 左下统计栏在这个判据里只验「是否收到同一个过滤值」，统计口径由
-// ProviderTodayRail.test.ts 单独钉，避免两头都浅。
-vi.mock('../components/live-topology/ProviderTodayRail.vue', () => ({
+// 头部统计面板在这个判据里只验「是否收到同一个过滤值」，统计口径由
+// StatsPanel.test.ts 单独钉，避免两头都浅。
+vi.mock('../components/live-topology/StatsPanel.vue', () => ({
   default: {
-    name: 'ProviderTodayRailStub',
-    props: ['activeProvider'],
-    emits: ['select-provider'],
-    template: '<div class="rail-stub" :data-provider="activeProvider"></div>',
+    name: 'StatsPanelStub',
+    props: ['activeClient', 'activeProvider', 'activeModel', 'inFlight', 'queueDepth'],
+    emits: ['select-provider', 'select-model'],
+    template: '<div class="rail-stub" :data-provider="activeProvider" :data-model="activeModel"></div>',
   },
 }))
 
@@ -344,6 +348,22 @@ describe('LiveTopologyView filter convergence', () => {
     expect(wrapper.find('.cp__row.is-active').exists()).toBe(true)
   })
 
+  it('★★ the summary overlay lives in the column whose row was clicked (left click → left, right click → right)', async () => {
+    // 2026-10-28 owner 口径：点左栏请求摘要浮层必须出现在左栏，点右栏在右栏。
+    // 旧行为是浮层固定挂在右栏 —— 点左侧请求时摘要跨屏跑到右边，本轮修掉。
+    const { wrapper } = await mountView()
+    await wrapper.get('.cp__item').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.live-topology__left .zoom').exists()).toBe(true)
+    expect(wrapper.find('.live-topology__right .zoom').exists()).toBe(false)
+
+    // 换点右栏：浮层搬到右栏（同一时刻只有一个 —— 左栏那个必须消失）
+    await wrapper.get('.pp__zoom').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.live-topology__right .zoom').exists()).toBe(true)
+    expect(wrapper.find('.live-topology__left .zoom').exists()).toBe(false)
+  })
+
   it('★ the right panel row pops the summary overlay too; 「查看全景」inside opens the NEW page', async () => {
     const { wrapper } = await mountView()
     const rows = wrapper.findAll('.pp__row')
@@ -359,9 +379,11 @@ describe('LiveTopologyView filter convergence', () => {
     expect(openSpy.mock.calls[0]?.[1]).toBe('_blank')
   })
 
-  it('renders the gateway core as one box holding all nine modules', async () => {
+  it('renders the gateway core as one box holding all eleven modules', async () => {
+    // 2026-10-28 选路层轮：九格 → 十一格（主线加 压缩/模型选择；路由/节点状态
+    // 挪进基础服务侧条，仍是大方块的一部分）。
     const { wrapper } = await mountView()
-    expect(wrapper.findAll('.gw__cell')).toHaveLength(9)
+    expect(wrapper.findAll('.gw__cell')).toHaveLength(11)
     // 主链路模块与旁路模块的视觉语义必须分开（旁路不能画成串行流水线的一步）
     expect(wrapper.findAll('.gw__cell.is-branch')).toHaveLength(3)
     // 大方块里能看到会话存储的命中（r-ds-1 带 gw_session_id）
@@ -574,5 +596,166 @@ describe('LiveTopologyView 版面契约（owner 2026-10-18：筛选一行 + 字�
     }
     // el-select 走 element 变量注入统一字号
     expect(source).toContain('--el-font-size-base: 11px')
+  })
+
+  it('★ topology nodes overlay is click-transparent; only node cards take the pointer', () => {
+    // 2026-10-29 空白清空轮真机实测：inset:0 的节点覆盖层会把整个画布的
+    // 点击拦在自己身上 —— 网关大方块与模块格子的鼠标点击全部失效
+    // （elementFromPoint 实测大方块中心落在 .topo-canvas__nodes 上）。
+    // jsdom 没有命中测试，按本文件 honesty 先例直接钉源码。
+    const canvasSrc = readFileSync(resolve(process.cwd(), 'src/components/live-topology/TopologyCanvas.vue'), 'utf8')
+    const nodesBlock = canvasSrc.split('.topo-canvas__nodes {')[1]?.split('\n}')[0] ?? ''
+    expect(nodesBlock, '节点覆盖层容器必须对点击透明').toContain('pointer-events: none')
+    const nodeBlock = canvasSrc.split('.topo-node {')[1]?.split('\n}')[0] ?? ''
+    expect(nodeBlock, '节点卡自己必须接收指针事件').toContain('pointer-events: auto')
+    // 网关大方块表面同理：表面若对点击透明，点它会落到画布根被当成
+    // 「空白」误清点选（大方块占画面正中，没人认为那是空白）。
+    const gwSrc = readFileSync(resolve(process.cwd(), 'src/components/live-topology/GatewayCoreBox.vue'), 'utf8')
+    const gwBlock = gwSrc.split('.gw {')[1]?.split('\n}')[0] ?? ''
+    expect(gwBlock, '大方块表面必须接住点击（不是空白）').toContain('pointer-events: auto')
+  })
+})
+
+describe('LiveTopologyView 点选联动过滤（owner 2026-10-29）', () => {
+  // 点中间图的客户端/供应端/模型节点 ⇒ 左右两栏与图收敛到该节点（同一份
+  // filters，URL 双向同步）；再点同一个 = 取消该维；点空白区 = 三维全部
+  // 失效恢复完整数据。判据驱动真实 TopologyCanvas（不 stub）：冒泡拦截
+  // （节点/大方块的点击不许被当成空白）本身就是契约的一部分。
+
+  beforeEach(() => {
+    testApi.setRequests(REQUESTS.map((r) => ({ ...r })))
+    testApi.setNodes([
+      { credential_id: 7, provider_code: 'deepseek', health_status: 'healthy', in_flight: 1 },
+      { credential_id: 8, provider_code: 'moonshot', health_status: 'warning', in_flight: 0 },
+    ])
+    testApi.clearActions()
+    testApi.setConnection('open')
+    testApi.setInitialData(true)
+    testApi.setRedis(true)
+  })
+
+  function topoNode(
+    wrapper: Awaited<ReturnType<typeof mountView>>['wrapper'],
+    labelPart: string,
+  ) {
+    const el = wrapper.findAll('.topo-node').find((n) => (n.attributes('aria-label') ?? '').includes(labelPart))
+    if (!el) throw new Error(`topo node not found: ${labelPart}`)
+    return el
+  }
+
+  it('★ clicking a client node narrows both panels to that client (and writes the URL)', async () => {
+    const { wrapper, router } = await mountView()
+    await topoNode(wrapper, 'Claude Code').trigger('click')
+    await flushPromises()
+    await flushPromises()
+    expect(router.currentRoute.value.query.client).toBe('claude-code')
+    // 左栏：claude-code 三条（含从未派发那条）；codex 的 kimi 条目必须消失
+    expect(wrapper.findAll('.cp__item')).toHaveLength(3)
+    expect(wrapper.findAll('.cp__item').map((i) => i.text()).join('|')).not.toContain('kimi-k2')
+    // 右栏：只剩 deepseek 凭据的两条
+    expect(wrapper.findAll('.pp__row')).toHaveLength(2)
+  })
+
+  it('★ clicking a provider node narrows both panels to that credential node (cred:id is a legal providers value)', async () => {
+    const { wrapper, router } = await mountView()
+    await topoNode(wrapper, '#7').trigger('click')
+    await flushPromises()
+    await flushPromises()
+    expect(router.currentRoute.value.query.provider).toBe('cred:7')
+    expect(wrapper.findAll('.cp__item')).toHaveLength(2)
+    expect(wrapper.findAll('.pp__row')).toHaveLength(2)
+  })
+
+  it('★ clicking a model node narrows both panels to that model', async () => {
+    const { wrapper, router } = await mountView()
+    await topoNode(wrapper, 'glm-4.5').trigger('click')
+    await flushPromises()
+    await flushPromises()
+    expect(router.currentRoute.value.query.model).toBe('glm-4.5')
+    // glm-4.5 三条（含从未派发那条）；右栏只有派发出去的两条
+    expect(wrapper.findAll('.cp__item')).toHaveLength(3)
+    expect(wrapper.findAll('.pp__row')).toHaveLength(2)
+  })
+
+  it('★ clicking the same node again clears that dimension (back to full data)', async () => {
+    const { wrapper, router } = await mountView()
+    await topoNode(wrapper, 'Claude Code').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.cp__item')).toHaveLength(3)
+    // 再点同一个节点（重新查找：过滤后 DOM 被 patch，引用可能已换）
+    await topoNode(wrapper, 'Claude Code').trigger('click')
+    await flushPromises()
+    await flushPromises()
+    expect(router.currentRoute.value.query.client).toBeUndefined()
+    expect(wrapper.findAll('.cp__item')).toHaveLength(4)
+  })
+
+  it('★ blank click also clears a URL-carried node filter (nodes 维同属内容维)', async () => {
+    // 审计轮补的口径：「重新显示完整的数据」必须把 nodes 维一并清掉 ——
+    // 顶栏/URL 带进来的 node 过滤与点选写入的三个内容维同族，点空白
+    // 后数据仍被节点维过滤的话，「完整数据」不成立。
+    const { wrapper, router } = await mountView('/live?node=cred:7')
+    expect(wrapper.findAll('.cp__item')).toHaveLength(2)
+    await wrapper.get('.topo-canvas').trigger('click')
+    await flushPromises()
+    await flushPromises()
+    expect(String(router.currentRoute.value.query.node ?? '')).toBe('')
+    expect(wrapper.findAll('.cp__item')).toHaveLength(4)
+  })
+
+  it('★ clicking the blank canvas clears the node-driven filters (full data back)', async () => {
+    const { wrapper, router } = await mountView()
+    await topoNode(wrapper, 'Claude Code').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.cp__item')).toHaveLength(3)
+    await wrapper.get('.topo-canvas').trigger('click')
+    await flushPromises()
+    await flushPromises()
+    expect(String(router.currentRoute.value.query.client ?? '')).toBe('')
+    expect(wrapper.findAll('.cp__item')).toHaveLength(4)
+    expect(wrapper.findAll('.pp__row')).toHaveLength(3)
+  })
+
+  it('★ clicking the gateway box is NOT a blank click (node filter survives)', async () => {
+    // 大方块铺在画布中央：它的点击若冒泡到画布根，刚设好的过滤会被
+    // 立刻清掉 —— @click.stop 这道拦截本身必须被钉住。
+    const { wrapper, router } = await mountView()
+    await topoNode(wrapper, 'Claude Code').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.cp__item')).toHaveLength(3)
+    await wrapper.get('[data-testid="gateway-core-box"]').trigger('click')
+    await flushPromises()
+    await flushPromises()
+    expect(router.currentRoute.value.query.client).toBe('claude-code')
+    expect(wrapper.findAll('.cp__item')).toHaveLength(3)
+  })
+
+  it('★ clicking an aggregate (+N) node highlights but never filters (it is not a real key)', async () => {
+    // 供应端列上限 8：10 把凭据 ⇒ 折出「+2」聚合节点。守卫真正咬合的是
+    // provider 列（column==='provider' 分支与 id 形状无关，聚合 id
+    // 「providerothers」会被整段塞进 providers 维度 ⇒ 空集）；
+    // client/model 聚合 id（clientothers/modelothers）因无冒号天然不进
+    // 分支 —— 本靶选 provider 聚合，守卫拆掉这条必须红。
+    testApi.setRequests(
+      Array.from({ length: 10 }, (_, i) => ({
+        ts: new Date().toISOString(),
+        request_id: `agg-${i}`,
+        status: 'success',
+        provider_code: 'deepseek',
+        credential_id: 100 + i,
+        canonical_name: 'glm-4.5',
+        agent_name: 'claude-code',
+        total_tokens: 10,
+      })),
+    )
+    const { wrapper, router } = await mountView()
+    const agg = wrapper.findAll('.topo-node').find((n) => (n.text() || '').includes('+'))
+    expect(agg, '聚合节点必须在场').toBeTruthy()
+    await agg!.trigger('click')
+    await flushPromises()
+    await flushPromises()
+    expect(router.currentRoute.value.query.provider).toBeUndefined()
+    expect(router.currentRoute.value.query.model).toBeUndefined()
+    expect(wrapper.findAll('.cp__item')).toHaveLength(10)
   })
 })

@@ -71,10 +71,11 @@ func TestHandleGetProviderQuality_Success(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"model_name", "quality_score", "quality_grade",
 			"availability_score", "performance_score", "stability_score", "cost_efficiency_score",
+			"credibility_score",
 			"updated_at",
 		}).
-			AddRow("claude-3-opus", 95.5, "S", 98.0, 92.0, 94.0, 85.0, now).
-			AddRow("claude-3-sonnet", 88.5, "A", 95.0, 88.0, 90.0, 80.0, now))
+			AddRow("claude-3-opus", 95.5, "S", 98.0, 92.0, 94.0, 85.0, 91.0, now).
+			AddRow("claude-3-sonnet", 88.5, "A", 95.0, 88.0, 90.0, 80.0, 87.0, now))
 
 	// Mock 请求统计查询（usage_ledger_with_current_month，近 30 天窗口）
 	mock.ExpectQuery(`SELECT.*FROM usage_ledger_with_current_month.*WHERE provider_id = \$1.*INTERVAL '30 days'`).
@@ -235,9 +236,10 @@ func TestHandleGetProviderQuality_WithModelFilter(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"model_name", "quality_score", "quality_grade",
 			"availability_score", "performance_score", "stability_score", "cost_efficiency_score",
+			"credibility_score",
 			"updated_at",
 		}).
-			AddRow("claude-3-opus", 95.5, "S", 98.0, 92.0, 94.0, 85.0, now))
+			AddRow("claude-3-opus", 95.5, "S", 98.0, 92.0, 94.0, 85.0, 91.0, now))
 
 	// Mock 请求统计查询（usage_ledger_with_current_month，近 30 天窗口）
 	mock.ExpectQuery(`SELECT.*FROM usage_ledger_with_current_month.*WHERE provider_id = \$1.*INTERVAL '30 days'`).
@@ -293,6 +295,7 @@ func TestHandleGetProviderQuality_NoQualityData(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"model_name", "quality_score", "quality_grade",
 			"availability_score", "performance_score", "stability_score", "cost_efficiency_score",
+			"credibility_score",
 			"updated_at",
 		}))
 

@@ -1,40 +1,78 @@
 # query-index-requirements.tsv —— ★★「活查询 ⇒ 过滤/排序列 ⇒ 索引可用性」需求台账
-# ★ 生成器：手工登记（★ 事实源 = 活代码的 SQL 构造器，★ 每行都带源码定位）
+# ★ 生成器：scripts/audit/build-query-index-requirements.py（★ R179 轮扩列）
 # ★ 消费方：scripts/ursmcheck/query_index_coverage_gate_test.go（★ Go 门）
-# ★ 列：query_id	source	table	filter_cols	order_cols	status	note
-# ★ filter_cols：逗号分隔的【过滤列集合】（★ 无序，★ 只要都被索引最左前缀覆盖即可）
-# ★ order_cols ：逗号分隔的【排序列序列】（★ 有序，★ 带 DESC/ASC）
-# ★ status     ：covered（★ 已证有索引同时覆盖过滤与排序）| known-gap（★ 已登记的缺口）
-# ★              ★ ★★ 「已知缺口」必须显式登记 ⇒ ★★ 新增的未覆盖查询会让门变红
-# ★              ★ ★★ 登记 = 承认「这条会付 Sort 成本」，★ 不是豁免 ⇒ ★★ 门会盯着它
-# ★ generated_by=hand（★ R162 轮）
-#
-# ── 1. 会话列表（★ ORDER BY updated_at DESC, session_id DESC）────────────────
-#   源码：admin/turns_sessions.go:286（query := fmt.Sprintf(`%s\n WHERE %s\n ORDER BY s.updated_at DESC, s.session_id DESC …）
-#   过滤：admin/turns_sessions.go:402 buildTurnsSessionWhere ⇒ s.tenant_id / s.updated_at 区间
-#   跨月去重：admin/turns_sessions.go:197 turnsSessionsLatestPartitionSQL ⇒ s.partition_date = (SELECT MAX …)
-#   ★★ R162 本地 EXPLAIN 实测：基线 = Index Scan + 【Sort】（★ 排序未被索引覆盖）
-#   ★★ 候选索引 (tenant_id, updated_at DESC, session_id DESC) ⇒ Merge Append + Index Only Scan（★ Sort 消失）
-sessions.list	admin/turns_sessions.go:286	sessions	tenant_id	updated_at DESC,session_id DESC	known-gap	known-gap	★★ R162 本地 EXPLAIN 实测：★ 现有索引族【没有一条】能同时满足「tenant_id 过滤」与「这个排序」⇒ ★★ 缺一条复合索引是【结构事实】；★ 反事实对照（enable_seqscan=off）实测 Sort 仍在 ⇒ ★★ 候选复合索引【值得提】，★ 但「它一定消除 Sort」在生产数据量下仍需另测 ⇒ ★★ 属主未放行前不改生产
-# ── 2. 会话详情点查（★ session_id + tenant_id）──────────────────────────────
-#   源码：admin/session_detail_v2.go:539（SELECT session_id FROM public.sessions WHERE session_id = $1 AND tenant_id = $2 LIMIT 1）
-#   ★ 覆盖索引：idx_sessions_tenant_session_partition_date (tenant_id, session_id, partition_date DESC)
-#   ★ ★ 前缀覆盖 session_id ⇒ ★ 不全表扫描（★ R162 本地 EXPLAIN 实测 Index Only Scan）
-sessions.detail.point	admin/session_detail_v2.go:539	sessions	tenant_id,session_id		covered	covered	★ idx_sessions_tenant_session_partition_date 前缀覆盖
-# ── 3. 会话详情主查询（★ 同上 + 跨月去重 + ORDER BY partition_date DESC）──────
-#   源码：admin/session_detail_v2.go:358
-sessions.detail.main	admin/session_detail_v2.go:358	sessions	tenant_id,session_id	partition_date DESC	covered	covered	★ 排序列是分区键 ⇒ 分区裁剪承担排序
-# ── 4. 轮次列表（★ 视图 session_turns_with_current_month）────────────────────
-#   源码：admin/turns_list.go:201 buildTurnsListWhere + :124 投影
-#   过滤：t.ts 区间 + t.tenant_id + 可选 t.model/t.provider/t.status_code/t.project_id/t.namespace/t.parent_request_id/t.task_type
-#   排序：ORDER BY t.ts DESC, t.session_id DESC, t.turn_no DESC
-#   ★ 现状 idx_session_turns_tenant (tenant_id, ts DESC) 只覆盖【过滤 + 排序首列】⇒ 后续列仍要 Sort
-turns.list	admin/turns_list.go:201	session_turns	tenant_id,ts	ts DESC,session_id DESC,turn_no DESC	known-gap	known-gap	★ 排序三元组未被单条索引覆盖
-# ── 5. data-lifecycle 附件列表（★ 活过滤谓词 + 本地真缺口）──────────────────
-#   源码：admin/data_lifecycle_attachments.go:93
-#   谓词：const attachmentsPresencePredicate = "rl.attachment_count > 0"
-#   ★★ 同文件 :82-83 的注释逐字记着生产实测：★ 17,582 ms → 1,317 ms（13.4×）
-#   ★★ 靠的就是谓词逐字相同的分区部分索引 session_turns_YYYY_MM_attachment_count_idx
-#   ★★★ R162 实测：★ 252 有父索引 + 6 个分区子索引；★ 211 有父索引 + 5 个；★★ local 有 0 个
-#   ⇒ ⇒ ★★ 本地跑这个列表时谓词【无索引可用】⇒ 全表扫描 ⇒ ★★ 本地与生产不可比
-attachments.presence	admin/data_lifecycle_attachments.go:93	session_turns	attachment_count		known-gap	known-gap	★★ 靠 mig 474 的 idx_session_turns_attachment_count_gw（★ 谓词 attachment_count > 0）；★★ ★ local 缺该索引（★ 252/211 有）⇒ 本地无索引可用 ⇒ ★★ 这是「多环境同一标准」的真实缺口面
+# ★ 列：query_id	source	table	filter_cols	order_cols	status	fresh_status	plan_shape	plan_form	plan_env	note
+sessions.list	admin/turns_sessions.go:286	sessions	tenant_id	updated_at DESC,session_id DESC	known-gap	known-gap		unmeasured		★★ R162 本地 EXPLAIN 实测：★ 现有索引族【没有一条】能同时满足「tenant_id 过滤」与「这个排序」⇒ ★★ 缺一条复合索引是【结构事实】；★ 反事实对照（enable_seqscan=off）实测 Sort 仍在 ⇒ ★★ 候选复合索引【值得提】，★ 但「它一定消除 Sort」在生产数据量下仍需另测 ⇒ ★★ 属主未放行前不改生产
+sessions.detail.point	admin/session_detail_v2.go:539	sessions	tenant_id,session_id		covered	covered		unmeasured		★ idx_sessions_tenant_session_partition_date 前缀覆盖
+sessions.detail.main	admin/session_detail_v2.go:358	sessions	tenant_id,session_id	partition_date DESC	covered	covered		unmeasured		★ 排序列是分区键 ⇒ 分区裁剪承担排序
+turns.list	admin/turns_list.go:201	session_turns	tenant_id,ts	ts DESC,session_id DESC,turn_no DESC	known-gap	known-gap		unmeasured		★ 排序三元组未被单条索引覆盖
+attachments.presence	admin/data_lifecycle_attachments.go:93	session_turns	attachment_count		known-gap	known-gap		unmeasured		★★ 靠 mig 474 的 idx_session_turns_attachment_count_gw（★ 谓词 attachment_count > 0）；★★ ★ local 缺该索引（★ 252/211 有）⇒ 本地无索引可用 ⇒ ★★ 这是「多环境同一标准」的真实缺口面
+compression_stats-dd0e70a936	admin/compression_stats.go:285	request_logs_with_current_month	ts		measured-only	measured-only	stmt-b0046676a0	filter	252	★ 生产语句 2 条匹配（★ 调用最多的 14 次，★ 平均 122.716 ms）；★ 实测形态=filter
+credential_monitor-7bc855af6c	admin/credential_monitor.go:422	request_logs_with_current_month	raw_model_name,provider_id,credential_id,raw_model,ts,latency_ms,window_start	bucket DESC raw_model window_start total_calls success_calls avg_latency_ms p95_latency_ms p99_latency_ms error_quota_count error_concurrent_count error_auth_count error_other_count raw_model_name	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+credential_monitor-a94e69a17b	admin/credential_monitor.go:546	request_logs_with_current_month	credential_id		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+credential_monitor-5a8b44c6ae	admin/credential_monitor.go:947	request_logs_with_current_month			measured-only	measured-only	stmt-73358a4cb7	no-scan	252	★ 生产语句 4 条匹配（★ 调用最多的 2902 次，★ 平均 5.986 ms）；★ 实测形态=no-scan；★ 各匹配语句形态不一致=['no-scan', 'seq-scan']
+credential_monitor-3a939c015f	admin/credential_monitor.go:1040	request_logs_with_current_month	credential_id	ts DESC	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+credential_monitor_heatmap-d84c300ddd	admin/credential_monitor_heatmap.go:366	request_logs_with_current_month	error_kind,credential_id,raw_model_name,time_bucket	raw_model_name time_bucket error_kind ts DESC id	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+credential_success_rate-371d3731fb	admin/credential_success_rate.go:37	request_logs_with_current_month	credential_id,ts,tenant_id	id raw_model_name	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+data_lifecycle-5a8b44c6ae	admin/data_lifecycle.go:103	request_logs_with_current_month			measured-only	measured-only	stmt-73358a4cb7	no-scan	252	★ 生产语句 4 条匹配（★ 调用最多的 2902 次，★ 平均 5.986 ms）；★ 实测形态=no-scan；★ 各匹配语句形态不一致=['no-scan', 'seq-scan']
+data_lifecycle-cf5df662cc	admin/data_lifecycle.go:241	request_logs_with_current_month	ts		measured-only	measured-only	stmt-20dc099515	seq-scan	252	★ 生产语句 2 条匹配（★ 调用最多的 69 次，★ 平均 547.121 ms）；★ 实测形态=seq-scan
+data_lifecycle-13d7a685b5	admin/data_lifecycle.go:477	request_logs_with_current_month			measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+diagnostics_credential-f18d358987	admin/diagnostics_credential.go:150	request_logs_with_current_month	credential_id,ts	ts DESC	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+live_stream_sse-9ef0a7b25d	admin/live_stream_sse.go:2691	request_logs_with_current_month	ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+live_stream_sse-f43ed3036f	admin/live_stream_sse.go:2831	request_logs_with_current_month	request_id		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+memora_handlers-db0bb123cd	admin/memora_handlers.go:511	request_logs_with_current_month	request_status,task_id,api_key_id,api_key_prefix	ts DESC first_activity DESC	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+memora_handlers-903b3d60a2	admin/memora_handlers.go:628	request_logs_with_current_month			measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+memora_handlers-14399babb9	admin/memora_handlers.go:631	request_logs_with_current_month		ts DESC	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+memora_handlers-888f0f643d	admin/memora_handlers.go:792	request_logs_with_current_month			measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+model_routing_diagnostic-ec18620a42	admin/model_routing_diagnostic.go:54	request_logs_with_current_month	canonical_id,id,error_kind,ts,credential_id	credential_id provider_id provider_name credential_label raw_model_name is_routable unavailable_reason manual_priority recent_samples recent_success_rate success_rate_24h p95_latency_ms p95_first_chunk_ms direct_ok gateway_ok direct_err_code gateway_err_code started_at DESC	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+model_status-483d612c7b	admin/model_status.go:260	request_logs_with_current_month	success,latency_ms,ts,client_model		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+model_status-99a585edd9	admin/model_status.go:289	request_logs_with_current_month	success,ts,client_model		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+no_topic_session-888f0f643d	admin/no_topic_session.go:137	request_logs_with_current_month			measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+no_topic_session-0eb02164dc	admin/no_topic_session.go:319	request_logs_with_current_month			measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+no_topic_session-5a8b44c6ae	admin/no_topic_session.go:535	request_logs_with_current_month			measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+probe_history-3ea8d800fe	admin/probe_history.go:451	request_logs_with_current_month	direct_ok,started_at,error_kind,last_seen_at,ts,credential_id,outbound_model,raw_model_name,in_reviewing,raw_name	total_failures DESC last_failed_at DESC	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+provider_models-1b642bdc46	admin/provider_models.go:446	request_logs_with_current_month			measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+provider_models-664fa44960	admin/provider_models.go:453	request_logs_with_current_month		ts DESC	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+route_incidents-95175a5162	admin/route_incidents.go:586	request_logs_with_current_month	tenant_id,request_status,ts	ts DESC	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+session_analytics_breakdown-cb4aba5ac8	admin/session_analytics_breakdown.go:256	request_logs_with_current_month	request_status		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+session_analytics_breakdown-790d98b986	admin/session_analytics_breakdown.go:305	request_logs_with_current_month	request_status		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+session_analytics_timeseries-2e1da4bbf5	admin/session_analytics_timeseries.go:183	request_logs_with_current_month	ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+session_analytics_timeseries-840ec4f5c0	admin/session_analytics_timeseries.go:331	request_logs_with_current_month	ts,latency_ms		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+swim_lane_init-b32f4f5f13	admin/swim_lane_init.go:111	request_logs_with_current_month	ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+tenants-f741c6818f	admin/tenants.go:311	request_logs_with_current_month	tenant_id,ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+tenants-643eda89d5	admin/tenants.go:503	request_logs_with_current_month	tenant_id,ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+top_problems-3461470f2b	admin/top_problems.go:37	request_logs_with_current_month			measured-only	measured-only	stmt-72e5900c3e	no-scan	252	★ 生产语句 99 条匹配（★ 调用最多的 32708 次，★ 平均 16.906 ms）；★ 实测形态=no-scan；★ 各匹配语句形态不一致=['error', 'filter', 'no-scan', 'seek', 'seq-scan']
+top_problems-895618708c	admin/top_problems.go:182	request_logs_with_current_month	ts,credential_id	failure_count DESC	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+top_problems-f13a678ffe	admin/top_problems.go:227	request_logs_with_current_month	ts,client_model	failure_count DESC	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+topology_clients_today-3330a325de	admin/topology_clients_today.go:97	request_logs_with_current_month	ts,status	requests DESC client_key	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+topology_window_stats-a5549d01e5	admin/topology_window_stats.go:71	request_logs_with_current_month	ts,status	requests DESC provider_id	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+topology_window_stats-63de1235bc	admin/topology_window_stats.go:113	request_logs_with_current_month	ts,status	requests DESC canonical_id raw_model_name	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+usage-fac0c8ab96	admin/usage.go:841	request_logs_with_current_month	api_key_id,ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+usage-ecc57218c4	admin/usage.go:1135	request_logs_with_current_month	request_status,api_key_id,ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+usage_credits-e1251bbcfa	admin/usage_credits.go:143	request_logs_with_current_month			measured-only	measured-only	stmt-ea85dcbaf9	error	252	★ 生产语句 23 条匹配（★ 调用最多的 7547 次，★ 平均 1.486 ms）；★ 实测形态=error
+usage_enhanced-7fb7e08985	admin/usage_enhanced.go:123	request_logs_with_current_month			measured-only	measured-only	stmt-2bc804a643	filter	252	★ 生产语句 18 条匹配（★ 调用最多的 1556 次，★ 平均 468.517 ms）；★ 实测形态=filter；★ 各匹配语句形态不一致=['error', 'filter', 'no-scan', 'seek', 'seq-scan']
+usage_trend_series-3461470f2b	admin/usage_trend_series.go:161	request_logs_with_current_month			measured-only	measured-only	stmt-72e5900c3e	no-scan	252	★ 生产语句 99 条匹配（★ 调用最多的 32708 次，★ 平均 16.906 ms）；★ 实测形态=no-scan；★ 各匹配语句形态不一致=['error', 'filter', 'no-scan', 'seek', 'seq-scan']
+work_types-7d8c37999c	admin/work_types.go:293	request_logs_with_current_month	ts,work_type		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+work_types-d5d1df46c9	admin/work_types.go:340	request_logs_with_current_month	ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+work_types-5d062e8be6	admin/work_types.go:381	request_logs_with_current_month	ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+work_types-6865e73b11	admin/work_types.go:443	request_logs_with_current_month	ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+daily_probe_audit-4090e07bdd	bg/daily_probe_audit.go:118	request_logs_with_current_month	ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+integrity_fingerprint_drift-e5571295ab	bg/integrity_fingerprint_drift.go:259	request_logs_with_current_month	ts,system_fingerprint,credential_id,raw_model_name,total	raw_model_name baseline_fp current_fp baseline_top baseline_total current_top	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+passive_probe_listener-c6fa80f347	bg/passive_probe_listener.go:112	request_logs_with_current_month			measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+passive_probe_listener-e1426e9b42	bg/passive_probe_listener.go:170	request_logs_with_current_month			measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+passive_probe_listener-0c29ad76fd	bg/passive_probe_listener.go:218	request_logs_with_current_month	ts		measured-only	measured-only	stmt-20dc099515	seq-scan	252	★ 生产语句 2 条匹配（★ 调用最多的 69 次，★ 平均 547.121 ms）；★ 实测形态=seq-scan
+passive_probe_listener-fb32b8c78c	bg/passive_probe_listener.go:405	request_logs_with_current_month	credential_id,success,ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+stats_minute_rollup-edadeb821d	bg/stats_minute_rollup.go:271	request_logs_with_current_month	request_status,ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+stats_minute_rollup-f35858c498	bg/stats_minute_rollup.go:320	request_logs_with_current_month	request_status,ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+stats_minute_rollup-cb02789a9e	bg/stats_minute_rollup.go:340	request_logs_with_current_month	request_status,ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+stats_minute_rollup_retire-6ef9841aac	bg/stats_minute_rollup_retire.go:21	request_logs_with_current_month	bucket,request_status,ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+stats_minute_rollup_retire-82a8714af1	bg/stats_minute_rollup_retire.go:78	request_logs_with_current_month	bucket,dim_type,request_status,ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+stats_minute_rollup_retire-fad6268b82	bg/stats_minute_rollup_retire.go:102	request_logs_with_current_month	bucket,request_status,ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+probe_views_unified-48de602ab8	db/probe_views_unified.go:88	request_logs_with_current_month	ts,state,next_retry_at,paused,consecutive_failures,started_at,raw_model_name	total_credentials DESC state next_retry_at consecutive_successes consecutive_failures total_attempts raw_model_name	measured-only	measured-only	stmt-20dc099515	seq-scan	252	★ 生产语句 1 条匹配（★ 调用最多的 69 次，★ 平均 547.121 ms）；★ 实测形态=seq-scan
+store-8d1c49941d	domains/routeincident/store.go:700	request_logs_with_current_month	tenant_id,ts	bucket ASC	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+summarizer-888f0f643d	domains/sessionsummary/summarizer.go:644	request_logs_with_current_month			measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+summarizer-380d5598e3	domains/sessionsummary/summarizer.go:772	request_logs_with_current_month	gw_session_id,tenant_id,success	ts DESC request_id DESC	measured-only	measured-only	stmt-72e5900c3e	no-scan	252	★ 生产语句 1 条匹配（★ 调用最多的 32708 次，★ 平均 16.906 ms）；★ 实测形态=no-scan
+gateway_adapters-42196c3b74	internal/collector/gateway_adapters.go:46	request_logs_with_current_month	ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+gateway_adapters-1c3c8e2713	internal/collector/gateway_adapters.go:60	request_logs_with_current_month	ts		measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+minute_aggregator-cc45110db6	internal/quality/minute_aggregator.go:17	request_logs_with_current_month	upstream_status_code,error_kind,stream_first_chunk_ms,ts,provider_id	model_name endpoint	measured-only	measured-only		no-traffic	252	★ 在 252 的 pg_stat_statements 窗口里【没有匹配到生产语句】⇒ ⇒ 计划形态未知
+usage-e1251bbcfa	maas/usage.go:66	request_logs_with_current_month			measured-only	measured-only	stmt-ea85dcbaf9	error	252	★ 生产语句 23 条匹配（★ 调用最多的 7547 次，★ 平均 1.486 ms）；★ 实测形态=error

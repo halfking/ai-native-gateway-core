@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
@@ -1287,19 +1287,12 @@ func survivalRouteLogAttrs(requestID string, attempt int, decision TaskDecision)
 //
 // randFloat nil → math/rand.Float64. Pure and deterministic under a fixed
 // seam so tests pin the exact boundaries.
+//
+// P0-C (audit 2026-10-28 §4): the formula is owned by
+// dispatch.ApplyRetryJitter (同一把尺子一份实现); the survival layer
+// always jitters (independent of the dispatch hotconfig gate).
 func applyBackoffJitter(d time.Duration, randFloat func() float64) time.Duration {
-	if d <= 0 {
-		return d
-	}
-	if randFloat == nil {
-		randFloat = rand.Float64
-	}
-	factor := 1 + 0.2*(2*randFloat()-1) // ∈ [0.8, 1.2)
-	jittered := time.Duration(float64(d) * factor)
-	if jittered < 0 {
-		return 0
-	}
-	return jittered
+	return dispatch.ApplyRetryJitterAlways(d, randFloat)
 }
 
 // finishGateWriter flushes any trailing partial frame at attempt end

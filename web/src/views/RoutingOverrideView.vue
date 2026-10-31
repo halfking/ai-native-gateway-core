@@ -381,7 +381,7 @@ h1 {
 }
 h2 {
   margin: 0 0 12px;
-  font-size: 18px;
+  font-size: 20px;
   border-bottom: 1px solid var(--border);
   padding-bottom: 8px;
 }
@@ -423,7 +423,7 @@ h2 {
   background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 20px;
+  padding: 16px;
   margin-bottom: 16px;
 }
 .filter-bar {
@@ -435,7 +435,7 @@ h2 {
 .filter-bar label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 13px;
   color: var(--muted);
 }
@@ -451,7 +451,7 @@ h2 {
   min-width: 140px;
 }
 .filter-bar button {
-  padding: 6px 14px;
+  padding: 4px 12px;
   background: var(--accent);
   color: var(--on-primary);
   border: none;
@@ -496,7 +496,7 @@ h2 {
 }
 .create-form .form-grid input,
 .create-form .form-grid select {
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--bg);
   color: inherit;
@@ -508,7 +508,7 @@ h2 {
   gap: 8px;
 }
 .create-form .form-actions .btn-create {
-  padding: 8px 18px;
+  padding: 8px 16px;
   background: var(--success);
   color: var(--on-primary);
   border: none;
@@ -517,7 +517,7 @@ h2 {
   font-size: 13px;
 }
 .create-form .form-actions button:not(.btn-create) {
-  padding: 8px 18px;
+  padding: 8px 16px;
   background: var(--bg);
   color: var(--on-primary);
   border: none;
@@ -538,7 +538,7 @@ h2 {
   background: var(--kx-text);
   border: 1px solid var(--bg);
   border-radius: 8px;
-  padding: 20px 24px;
+  padding: 16px 24px;
   min-width: 360px;
   max-width: 500px;
 }
@@ -555,7 +555,7 @@ h2 {
   margin-bottom: 8px;
 }
 .modal input {
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--bg);
   color: inherit;
@@ -569,14 +569,14 @@ h2 {
 }
 .overrides-table th {
   text-align: left;
-  padding: 8px 10px;
+  padding: 8px 8px;
   background: var(--bg);
   border-bottom: 1px solid var(--bg);
   color: var(--muted);
   font-weight: 500;
 }
 .overrides-table td {
-  padding: 8px 10px;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--bg);
   vertical-align: top;
 }
@@ -606,7 +606,7 @@ h2 {
 .tag {
   font-family: 'SF Mono', Menlo, monospace;
   font-size: 11px;
-  padding: 2px 6px;
+  padding: 2px 4px;
   border-radius: 3px;
   display: inline-block;
 }
@@ -634,12 +634,12 @@ h2 {
 }
 .actions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   white-space: nowrap;
 }
 .btn-extend,
 .btn-delete {
-  padding: 4px 10px;
+  padding: 4px 8px;
   border: none;
   border-radius: 3px;
   cursor: pointer;

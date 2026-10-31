@@ -27,9 +27,9 @@ type nativeResponseInterception struct {
 	failureEmit func()
 }
 
-func interceptNativeResponseBody(chain ResponseInterceptor, options *nativeResponseInterception, body []byte) ([]byte, bool, error) {
+func interceptNativeResponseBody(chain ResponseInterceptor, options *nativeResponseInterception, body []byte) ([]byte, bool, *response.InterceptResult, error) {
 	if chain == nil || options == nil {
-		return body, false, nil
+		return body, false, nil, nil
 	}
 	request := options.request
 	request.ResponseBody = body
@@ -39,26 +39,29 @@ func interceptNativeResponseBody(chain ResponseInterceptor, options *nativeRespo
 	}
 	result, err := chain.InterceptNonStream(ctx, &request)
 	if err != nil {
-		return nil, false, fmt.Errorf("intercept native response: %w", err)
+		return nil, false, nil, fmt.Errorf("intercept native response: %w", err)
 	}
 	if result == nil {
-		return body, false, nil
+		return body, false, nil, nil
 	}
 	if result.ShouldBlock {
-		return nil, true, nil
+		// 2026-10-28 拦截审核轮：把 result（含 policy_rule/policy_reason/
+		// policy_field/policy_digest 元数据）一并带出——被拦的现场要据此
+		// 登记审核单并渲染带原因的错误信封，不能只给一个 blocked 布尔。
+		return nil, true, result, nil
 	}
 	if len(result.ModifiedBody) == 0 {
-		return body, false, nil
+		return body, false, nil, nil
 	}
 	if !json.Valid(result.ModifiedBody) {
-		return nil, false, fmt.Errorf("interceptor returned invalid JSON")
+		return nil, false, nil, fmt.Errorf("interceptor returned invalid JSON")
 	}
 	format, empty := classifyNonStreamUpstreamResponse(result.ModifiedBody)
 	if empty || options.request.ClientProtocol == "anthropic-messages" && format != nonStreamResponseAnthropic ||
 		options.request.ClientProtocol == "openai-responses" && format != nonStreamResponseResponses {
-		return nil, false, fmt.Errorf("interceptor returned invalid client protocol body")
+		return nil, false, nil, fmt.Errorf("interceptor returned invalid client protocol body")
 	}
-	return result.ModifiedBody, false, nil
+	return result.ModifiedBody, false, nil, nil
 }
 
 // candidateAttribution returns non-nil pointers for the attempt's

@@ -227,31 +227,31 @@ function handleCancel() {
 .annotation-form {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 24px;
 }
 
 .form-header {
   border-bottom: 1px solid var(--border);
-  padding-bottom: 1rem;
+  padding-bottom: 16px;
 }
 
 .form-header h3 {
-  margin: 0 0 1rem 0;
-  font-size: 1.25rem;
+  margin: 0 0 16px 0;
+  font-size: 20px;
   font-weight: 600;
 }
 
 .sample-info {
   display: flex;
   flex-wrap: wrap;
-  gap: 1rem;
-  font-size: 0.875rem;
+  gap: 16px;
+  font-size: 14px;
 }
 
 .info-item {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 8px;
 }
 
 .info-item .label {
@@ -260,24 +260,24 @@ function handleCancel() {
 
 .text-mono {
   font-family: var(--font-mono);
-  font-size: 0.8125rem;
+  font-size: 13px;
   word-break: break-all;
 }
 
 .form-body {
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: 16px;
 }
 
 .form-field {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 8px;
 }
 
 .form-label {
-  font-size: 0.875rem;
+  font-size: 14px;
   font-weight: 500;
   color: var(--text);
 }
@@ -288,13 +288,13 @@ function handleCancel() {
 
 .form-select,
 .form-input {
-  padding: 0.5rem 0.75rem;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  font-size: 0.875rem;
+  font-size: 14px;
   background: var(--bg);
   color: var(--text);
-  transition: border-color 0.2s;
+  transition: border-color 0.2s var(--kx-motion-ease-out);
 }
 
 .form-select:focus,
@@ -314,21 +314,21 @@ function handleCancel() {
 }
 
 .error-message {
-  font-size: 0.8125rem;
+  font-size: 13px;
   color: var(--danger);
 }
 
 .radio-group {
   display: flex;
-  gap: 1.5rem;
+  gap: 24px;
 }
 
 .radio-label {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 8px;
   cursor: pointer;
-  font-size: 0.875rem;
+  font-size: 14px;
 }
 
 .radio-label input[type="radio"] {
@@ -338,8 +338,8 @@ function handleCancel() {
 .form-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 0.75rem;
-  padding-top: 1rem;
+  gap: 12px;
+  padding-top: 16px;
   border-top: 1px solid var(--border);
 }
 
@@ -352,9 +352,9 @@ function handleCancel() {
 }
 
 .badge {
-  padding: 0.125rem 0.5rem;
+  padding: 2px 8px;
   border-radius: 3px;
-  font-size: 0.75rem;
+  font-size: 12px;
   font-weight: 500;
 }
 

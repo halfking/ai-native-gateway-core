@@ -266,21 +266,77 @@ function existsDir(p) {
  *
  * 字符串/模板串里的 `//` 不是注释（如 "https://…"），所以要先判引号状态。
  */
-export function stripComments(src) {
-  const out = []
-  let i = 0
+/**
+ * ★★★ 一次扫描，产出两样东西（2026-10-27 重写）：
+ *   ① clean   —— 与 `src` **等长**、逐字符对齐的文本（注释被空格替换，换行保留）
+ *   ② strings —— 每个字符串字面量的**运行时值** + 它在 `src` 里的起始偏移
+ *
+ * ★ 为什么必须是**一次扫描**，而不是「先剥注释、再用正则找引号」：
+ *   正则字面量里可以出现引号（`/[^;}"']+/`）⇒ 任何「靠引号配对」的扫描都会在
+ *   那一格错位 ⇒ 错位有**两个方向**的后果：
+ *     · **假红**：后面的行注释不再被剥 ⇒ 注释里的中文被当作文案判红；
+ *     · **假绿**：真实字符串的边界被吞掉 ⇒ 真字符串整段漏判。
+ *   实测（2026-10-27）：`web/src/design/typeScale.ts` 同时踩中这两条。
+ *   ⇒ 所以「什么是注释」与「什么是字符串」必须在**同一遍**里判定 ——
+ *   两套口径必然对不齐（这正是「同一口径只能有一份实现」要防的事）。
+ *
+ * ★ 判定「`/` 是不是正则开头」看**前一个有效字符**：
+ *   · 标识符 / 数字 / `)` / `]` / `.` 之后 ⇒ 是除号，不是正则；
+ *   · `return` / `typeof` / `case` / `in` … 等关键字之后 ⇒ 是正则；
+ *   · 标点之后 ⇒ 是正则；
+ *   · ★ `<` / `>` / `}` 之后**一律不算** —— `</div>` 这类模板闭合标记、以及
+ *     `{{ x }} / {{ y }}` 这种模板里的除号，会被误判成正则开头
+ *     （实测会把模板后半段整段吞掉 ⇒ 真实字符串漏抽）⇒ 宁可漏判，不可误判。
+ */
+const REGEX_PREV = new Set(['(', ',', '=', ':', '[', '&', '|', '?', ';', '+', '-', '*', '%', '^', '~', '{', '!'])
+const REGEX_KEYWORD = /\b(return|typeof|case|in|of|new|delete|void|instanceof|do|else|yield|await)$/
+
+function isRegexStart(src, from) {
+  let j = from - 1
+  while (j >= 0 && /\s/.test(src[j])) j--
+  if (j < 0) return true
+  const c = src[j]
+  if (/[A-Za-z0-9_$]/.test(c)) {
+    let k = j
+    while (k >= 0 && /[A-Za-z0-9_$]/.test(src[k])) k--
+    return REGEX_KEYWORD.test(src.slice(k + 1, j + 1))
+  }
+  // ★ `.` `)` `]` 后面是除号；`<` `>` `}` 后面可能是模板闭合标记或模板里的除号
+  //   ⇒ 一律不认成正则。
+  if (c === '.' || c === ')' || c === ']' || c === '<' || c === '>' || c === '}') return false
+  return REGEX_PREV.has(c)
+}
+
+export function scanSource(src) {
   const n = src.length
+  const out = []
+  const strings = []
+  let i = 0
   let quote = null
+  let strStart = -1
+  let strRaw = ''
+
+  const closeString = () => {
+    if (strStart >= 0) strings.push({ value: decodeLiteral(strRaw), index: strStart })
+    strStart = -1
+    strRaw = ''
+  }
+
   while (i < n) {
     const c = src[i]
+    // ── 字符串体内 ──────────────────────────────────────────────
     if (quote) {
       out.push(c)
-      if (c === '\\' && i + 1 < n) { out.push(src[i + 1]); i += 2; continue }
-      if (c === quote) quote = null
+      if (c === '\\' && i + 1 < n) {
+        out.push(src[i + 1]); strRaw += src[i] + src[i + 1]; i += 2; continue
+      }
+      if (c === quote) { closeString(); quote = null }
+      else strRaw += c
       i++
       continue
     }
-    if (c === '"' || c === "'" || c === '`') { quote = c; out.push(c); i++; continue }
+    // ── 代码态 ─────────────────────────────────────────────────
+    if (c === '"' || c === "'" || c === '`') { quote = c; strStart = i; strRaw = ''; out.push(c); i++; continue }
     if (c === '/' && src[i + 1] === '/') {
       while (i < n && src[i] !== '\n') { out.push(' '); i++ }
       continue
@@ -294,10 +350,38 @@ export function stripComments(src) {
       if (i < n) { out.push('  '); i += 2 }
       continue
     }
+    // ★ 正则字面量：整段吃掉（含字符类）⇒ 里面的引号不会带偏状态机，
+    //   也不会被误当成字符串的起止。
+    if (c === '/' && isRegexStart(src, i)) {
+      out.push(c); i++
+      let inClass = false
+      while (i < n) {
+        const rc = src[i]
+        out.push(rc)
+        if (rc === '\\' && i + 1 < n) { out.push(src[i + 1]); i += 2; continue }
+        if (rc === '[') inClass = true
+        else if (rc === ']') inClass = false
+        else if (rc === '/' && !inClass) { i++; break }
+        i++
+      }
+      while (i < n && /[a-z]/.test(src[i])) { out.push(src[i]); i++ }
+      continue
+    }
     out.push(c)
     i++
   }
-  return out.join('')
+  closeString()
+  return { clean: out.join(''), strings }
+}
+
+/**
+ * 去掉注释（行注释 + 块注释），**逐字符对齐**（换行保留，其余填空格）。
+ *
+ * ★ 口径说明：这是 `scanSource` 的**薄壳** —— 注释与字符串由**同一遍**判定，
+ *   否则「先剥注释再找引号」会在正则字面量上错位（见 `scanSource` 的注释）。
+ */
+export function stripComments(src) {
+  return scanSource(src).clean
 }
 
 /**
@@ -336,17 +420,14 @@ export function decodeLiteral(raw) {
   })
 }
 
-/** 取出文件里的所有字符串字面量（单引号 / 双引号 / 反引号，不含插值）。 */
+/**
+ * 取出文件里的所有字符串字面量（单引号 / 双引号 / 反引号，不含插值）。
+ *
+ * ★ 与 `scanSource` 同源 —— **不是**「先剥注释再正则找引号」：
+ *   正则字面量里的引号会让那两步各自错位（假红 + 假绿）。
+ */
 export function extractStrings(src) {
-  const out = []
-  // ★ 先剥注释：注释里的引号内容不是文案。
-  const clean = stripComments(src)
-  const re = /(['"`])((?:\\.|(?!\1)[^\\])*)\1/g
-  for (const m of clean.matchAll(re)) {
-    // ★ 再还原转义：判据要看**运行时的值**，不是源码文本。
-    out.push({ value: decodeLiteral(m[2]), index: m.index })
-  }
-  return out
+  return scanSource(src).strings
 }
 
 const lineOf = (src, idx) => src.slice(0, idx).split('\n').length
@@ -812,6 +893,26 @@ const FIXTURES = [
     kind: 'source',
     src: "// 原稿是 `内核开源 · 企业级 · 私有部署` 这种三段式。\nexport const kicker = 'Apache 2.0 开源内核'\n",
   },
+  // ── 以下两条是**正则感知提取器**的鉴别力（2026-10-27 新增）──────────────
+  // 正反成对：一条锁「注释里的违规串不算文案」，一条锁「真字符串里的违规串仍然算」
+  // —— 只写前者会漏掉「修法把判据一并废掉」；只写后者会漏掉「假红复发」。
+  {
+    name: '★★ 正则字面量里的引号不得让注释错位 → 注释里的违规串必须判绿（提取器）',
+    expect: 'green',
+    kind: 'source',
+    src:
+      'const declRe = /font-size\\s*:\\s*([^;}"\']+)/gi\n' +
+      '// 这不是用来控制文字的，而是用来控制图标尺寸的。\n' +
+      "export const kicker = 'Apache 2.0 开源内核'\n",
+  },
+  {
+    name: '★★ 同一条正则之后的**真字符串**里的违规串 → 必须判红（修法没把判据废掉）',
+    expect: 'red',
+    kind: 'source',
+    src:
+      'const declRe = /font-size\\s*:\\s*([^;}"\']+)/gi\n' +
+      "export const tip = '它不只是一个代理，而是面向 Agent 的网关。'\n",
+  },
 ]
 
 function selftest() {
@@ -886,6 +987,21 @@ function main() {
   }
 
   const baseline = readQualityBaseline()
+  // ★★ R87 轮（★ 掏空验证查出来的真洞）：★ 基线缺失/非法 ⇒ 必须红。
+  //
+  // ★ 为什么必须有：★ 下面的棘轮是 `cur > limit ⇒ 违规`，而 `limit` 来自基线
+  // ⇒ ⇒ 基线一没，`limit` 就是 `undefined` ⇒ ⇒ `cur > undefined` 恒假
+  // ⇒ ⇒ **棘轮静默失效** ⇒ ⇒ 而门照样报「✅ 未发现违规」⇒ ⇒ **假绿**。
+  // ★★ 「删掉基线文件」是最省事的绕过方式（★ 改一个文件 vs 改 8 个语言包）⇒ ⇒ 不是理论风险。
+  // ★ ⇒ ⇒ 基线不可用 ⇒ 必须红（★ 红的理由要说清「棘轮没有上限」）。
+  //
+  // ★ `--update-baseline` 分支在上面就 return 了 ⇒ ⇒ 这里红**不会**挡住「重建基线」。
+  if (!baseline) {
+    console.error('❌ 基线缺失或非法：scripts/copy-quality-baseline.json')
+    console.error('   ⇒ 棘轮没有上限 ⇒ ⇒ 这道门此刻等于没设门槛 ⇒ ⇒ 必须红。')
+    console.error('   修法：node scripts/copy-quality-audit.mjs --update-baseline')
+    process.exit(1)
+  }
   const over = []
   const under = []
   for (const g of groups) {

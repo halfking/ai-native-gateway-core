@@ -257,8 +257,8 @@ const hasNodes = computed(() => nodes.value.length > 0)
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
+  gap: 8px;
+  padding: 8px 12px;
   border: 1px solid var(--kx-border);
   border-radius: var(--kx-radius-sm, 6px);
   background: var(--kx-surface);
@@ -289,7 +289,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
   background: var(--kx-surface);
   color: var(--kx-text);
   box-shadow: var(--kx-shadow-md-left);
-  padding: 18px 20px 28px;
+  padding: 16px 16px 24px;
   box-sizing: border-box;
 }
 .nm-modal-header {
@@ -299,7 +299,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
   gap: 12px;
   margin-bottom: 12px;
 }
-.nm-modal-header h3 { margin: 0; font-size: 15px; }
+.nm-modal-header h3 { margin: 0; font-size: 16px; }
 .nm-modal-sub { margin: 4px 0 0; color: var(--kx-text-secondary); font-size: 11px; }
 .nm-modal-close {
   background: none;
@@ -328,13 +328,13 @@ const hasNodes = computed(() => nodes.value.length > 0)
   width: 100%;
   justify-content: space-between;
   align-items: center;
-  padding: 10px 12px;
+  padding: 8px 12px;
   background: var(--bg-subtle);
   cursor: pointer;
   user-select: none;
   text-align: left;
   border: none;
-  transition: background 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out);
 }
 .nm-group-header:hover {
   background: var(--kx-border);
@@ -350,25 +350,25 @@ const hasNodes = computed(() => nodes.value.length > 0)
 .nm-collapse-icon {
   font-size: 11px;
   color: var(--kx-text-secondary);
-  transition: transform 0.2s ease;
+  transition: transform 0.2s var(--kx-motion-ease-out);
 }
 
 .nm-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 10px;
+  gap: 8px;
   padding: 12px;
 }
 .nm-card {
   border: 1px solid var(--kx-border);
   border-radius: var(--kx-radius-sm, 6px);
-  padding: 10px;
+  padding: 8px;
   cursor: pointer;
   text-align: left;
   background: var(--kx-surface);
   font: inherit;
   color: inherit;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: transform 0.15s var(--kx-motion-ease-out), box-shadow 0.15s var(--kx-motion-ease-out);
 }
 .nm-card:hover { transform: translateY(-2px); box-shadow: var(--kx-shadow-sm); }
 .nm-card--ok { border: 1px solid var(--kx-success); }
@@ -378,15 +378,15 @@ const hasNodes = computed(() => nodes.value.length > 0)
 .nm-card-header {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .nm-card-id { font-weight: 600; font-size: 13px; color: var(--kx-text); }
 .nm-card-provider { font-size: 12px; color: var(--kx-text-secondary); }
 .nm-card-states {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 6px;
+  gap: 4px;
+  margin-bottom: 4px;
 }
 .nm-state {
   display: inline-flex;
@@ -424,4 +424,14 @@ const hasNodes = computed(() => nodes.value.length > 0)
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .nm-collapse-icon > svg { width: 10px; height: 10px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .nm-collapse-icon { transition: none; }
+  .nm-card {
+    transition-property: box-shadow;
+  }
+  .nm-card:hover { transform: none; }
+}
 </style>

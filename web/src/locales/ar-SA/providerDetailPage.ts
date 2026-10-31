@@ -43,6 +43,7 @@ export default {
     performance: 'Performance',
     stability: 'Stability',
     costEfficiency: 'Cost efficiency',
+    credibility: 'موثوقية النموذج',
     updatedAt: 'Updated at',
     requestStats: 'Request stats',
     totalRequests: 'Total requests',

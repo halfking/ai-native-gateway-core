@@ -1209,24 +1209,24 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .route-incident-drawer__chip {
   display: inline-block;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 3px;
   background: var(--bg);
   border: 1px solid var(--border);
-  font-size: 10px;
+  font-size: 11px;
   font-family: ui-monospace, monospace;
 }
 
 .route-incident-drawer__actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
 }
 
 .route-incident-drawer__btn {
   font-size: 12px;
-  padding: 5px 10px;
+  padding: 4px 8px;
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--bg);
@@ -1260,14 +1260,14 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
   scrollbar-gutter: stable;
 }
 
 .route-incident-drawer__section {
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 12px 14px;
+  padding: 12px 12px;
   background: var(--bg-subtle);
 }
 
@@ -1315,7 +1315,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .diagnostic-run-row {
-  padding: 10px;
+  padding: 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -1324,7 +1324,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 .diagnostic-run-row__summary {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 10px;
+  gap: 4px 8px;
   align-items: center;
   font-size: 12px;
 }
@@ -1332,7 +1332,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 .diagnostic-run-row__kind { font-weight: 600; }
 
 .diagnostic-run-row__state {
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 999px;
   background: var(--bg-subtle);
   color: var(--text-secondary);
@@ -1372,7 +1372,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--accent);
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 3px;
   cursor: pointer;
 }
@@ -1383,7 +1383,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .route-incident-drawer__footnote {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
   margin: 0;
   text-align: right;
@@ -1399,11 +1399,11 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 6px 8px;
+  padding: 4px 8px;
 }
 
 .status-grid__label {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
   letter-spacing: 0.01em;
 }
@@ -1477,7 +1477,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .finding__samples {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
 }
 
@@ -1577,8 +1577,8 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .event-row__type {
-  font-size: 10px;
-  padding: 1px 6px;
+  font-size: 11px;
+  padding: 1px 4px;
   border-radius: 3px;
   letter-spacing: 0.01em;
   background: var(--bg);
@@ -1615,12 +1615,12 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 4px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   text-align: left;
-  transition: all 0.15s ease;
+  transition: border-color 0.15s var(--kx-motion-ease-out), opacity 0.15s var(--kx-motion-ease-out);
 }
 
 .action-grid__btn:hover:not(:disabled) {
@@ -1653,15 +1653,15 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   gap: 8px;
   margin-top: 8px;
   font-size: 11px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--bg);
   border-radius: 4px;
   border: 1px solid var(--border);
 }
 
 .action-result__pill {
-  font-size: 10px;
-  padding: 1px 6px;
+  font-size: 11px;
+  padding: 1px 4px;
   border-radius: 999px;
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -1717,8 +1717,8 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .audit-row__pill {
-  font-size: 10px;
-  padding: 1px 6px;
+  font-size: 11px;
+  padding: 1px 4px;
   border-radius: 999px;
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -1747,7 +1747,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .audit-row__actor {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
 }
 
@@ -1791,7 +1791,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-subtle);
 }
@@ -1803,10 +1803,10 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-modal__body {
-  padding: 14px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .action-modal__hint {
@@ -1816,7 +1816,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-modal__hint-small {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
   display: block;
   margin-top: 2px;
@@ -1827,7 +1827,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   background: var(--danger-bg);
   border: 1px solid var(--danger-bd);
   color: var(--danger);
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-radius: 4px;
   margin: 0;
 }
@@ -1851,7 +1851,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 6px 8px;
+  padding: 4px 8px;
   font-size: 12px;
   font-family: inherit;
   resize: vertical;
@@ -1863,7 +1863,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-modal__counter {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
   text-align: right;
 }
@@ -1882,7 +1882,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding: 10px 14px;
+  padding: 8px 12px;
   border-top: 1px solid var(--border);
   background: var(--bg-subtle);
 }
@@ -1928,7 +1928,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .export-banner__panel h4 {
-  margin: 0 0 6px 0;
+  margin: 0 0 4px 0;
   font-size: 13px;
   color: var(--success);
 }
@@ -1977,7 +1977,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .route-incident-drawer-enter-active .route-incident-drawer__backdrop,
 .route-incident-drawer-leave-active .route-incident-drawer__backdrop {
-  transition: opacity 0.28s ease;
+  transition: opacity 0.28s var(--kx-motion-ease-out);
 }
 
 .route-incident-drawer-enter-from .route-incident-drawer__backdrop,
@@ -1998,4 +1998,11 @@ function hasRunValues(values: Record<string, unknown>): boolean {
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
    尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
 .route-incident-drawer__btn--close > svg { width: 10px; height: 10px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .route-incident-drawer-enter-active .route-incident-drawer__panel { transition: none; }
+  .route-incident-drawer-leave-active .route-incident-drawer__panel { transition: none; }
+}
 </style>

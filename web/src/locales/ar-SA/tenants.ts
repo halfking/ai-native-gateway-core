@@ -241,5 +241,23 @@ export default {
     typeTopup: "باقة شحن"
   },
 
-
+  bills: {
+    title: 'الفواتير الشهرية والقسائم',
+    refresh: 'تحديث',
+    exportCsv: 'تصدير CSV',
+    listTitle: 'الفواتير الشهرية',
+    emptyNoResult: 'لا توجد فواتير شهرية صادرة بعد',
+    colPeriod: 'الفترة',
+    colCredits: 'الأرصدة',
+    colRequests: 'الطلبات',
+    colAmount: 'المبلغ',
+    colStatus: 'الحالة',
+    couponTitle: 'تفعيل قسيمة',
+    couponPlaceholder: 'رمز القسيمة',
+    couponActivate: 'تفعيل',
+    couponOk: 'تم إضافة {n} رصيد ({code})',
+    couponFailed: 'تعذر تفعيل القسيمة. تحقق من الرمز وحاول مرة أخرى',
+    loadFailed: 'تعذر تحميل الفواتير الشهرية. يرجى المحاولة مرة أخرى',
+    exportFailed: 'تعذر تصدير CSV. يرجى المحاولة مرة أخرى',
+  },
 }

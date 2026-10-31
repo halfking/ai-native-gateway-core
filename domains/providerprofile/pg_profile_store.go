@@ -56,12 +56,19 @@ func (s *PGProfileStore) SaveDailyProfile(ctx context.Context, profile *DailyPro
 			raw_stats = EXCLUDED.raw_stats
 	`
 
-	_, err = s.db.Exec(ctx, query,
-		profile.CredentialID,
-		profile.ProviderID,
-		profile.ProfileDate,
-		profile.NetworkScore,
-		profile.CredibilityScore,
+		// 2026-10-29: credibility_score 为 0 且 CredibilityMeasured=false
+		// 表示「没测过」，必须写成 NULL。写成 0 会让 /api/quality 的
+		// COALESCE(...,0) 把「没测」显示成「可信度 0 分」。
+		var credibility any
+		if profile.CredibilityMeasured {
+			credibility = profile.CredibilityScore
+		}
+		_, err = s.db.Exec(ctx, query,
+			profile.CredentialID,
+			profile.ProviderID,
+			profile.ProfileDate,
+			profile.NetworkScore,
+			credibility,
 		profile.AvailabilityScore,
 		profile.StabilityScore,
 		profile.ScaleScore,

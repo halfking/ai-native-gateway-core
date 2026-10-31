@@ -35,7 +35,7 @@ withDefaults(defineProps<{
   margin-bottom: 4px;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 .bar-cell__track {
@@ -47,7 +47,7 @@ withDefaults(defineProps<{
 .bar-cell__fill {
   height: 100%;
   border-radius: 2px;
-  transition: width 0.3s ease;
+  transition: width 0.3s var(--kx-motion-ease-out);
 }
 .bar-cell__fill--primary { background: var(--accent); }
 .bar-cell__fill--success { background: var(--success); }

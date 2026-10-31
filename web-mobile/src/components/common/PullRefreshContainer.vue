@@ -7,13 +7,23 @@ import { usePullToRefreshGesture } from '@/composables/usePullToRefreshGesture'
 
 const props = defineProps<{
   onRefresh: () => Promise<void>
+  /**
+   * **真实滚动宿主**（默认：本容器自身）。
+   *
+   * ⚠️ 下拉刷新的「到顶」判据读的就是这个元素（`scroller.scrollTop <= 2`）。
+   * 当插槽内容自带滚动宿主（内层 `.page` / `HyperList`）时**必须**显式传
+   * 真正的那个，否则判据读的是一个**永远不滚**的容器：它的 scrollTop 恒为 0
+   * ⇒ 页面滚到任何位置之后，**任何向下拖动**都会被下拉刷新抢走并
+   * `preventDefault()` ⇒ 页面能滑下去、却**滑不回来**（2026-10-28 总览页缺陷）。
+   */
+  scroller?: () => HTMLElement | null
 }>()
 
 const rootRef = ref<HTMLElement | null>(null)
 
 const gesture = usePullToRefreshGesture({
   onRefresh: props.onRefresh,
-  getScroller: () => rootRef.value,
+  getScroller: () => props.scroller?.() ?? rootRef.value,
 })
 
 defineExpose({ rootRef })

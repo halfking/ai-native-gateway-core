@@ -20,7 +20,7 @@
     ],
     "why_not_scan_referrers": "★ 候选集必须【机械可算且快】⇒ ⇒ 门不能扫「谁引用了它」（★ 实测慢 30 倍）⇒ ⇒ 候选靠【文件名】定 ⇒ ⇒ 排除项由本表逐条写理由。"
   },
-  "_honest_boundary": "★ 本表实现的是【覆盖判据】（★ 每个候选都必须有归属）⇒ ⇒ ★★ 本轮**没有**为这些登记册做【行为化掏空验证】（★ 读方是 node 脚本 / vitest ⇒ ⇒ 需要另一套【格式感知的掏空变换】）⇒ ⇒ 「behaviorally_verified」一律 false ⇒ ⇒ 如实登记，不假装覆盖。",
+  "_honest_boundary": "★ R87 轮起，本表**已经**为这些登记册做了【行为化掏空验证】（★ scripts/ursmcheck/structured_registry_hollowout_test.go）⇒ ⇒ 每条 `behaviorally_verified: true` 的条目都有：★ 读方形态 ＋ 读方规格 ＋ 掏空模式 ＋ **红信号** ⇒ ⇒ ⇒ 门会**真的**把登记册掏空、跑读方、核对「红了而且红的是该红的那件事」⇒ ⇒ ★ 若实测是「仍绿」或「不可判定」⇒ ⇒ 一律标 false ⇒ ⇒ **不假装覆盖**。",
   "_kind_values": [
     "registry",
     "excluded"
@@ -29,9 +29,15 @@
     {
       "path": "bg/data/model_baseline_prices.json",
       "kind": "registry",
-      "reader": "bg/pricing_baseline_reconcile.go",
-      "behaviorally_verified": false,
-      "note": "★ 另有 bg/observation_health_empty_catalog_test.go 与 cmd/tools/propose-baseline-prices/*_test.go 读它"
+      "reader": "bg/pricing_baseline_sync_test.go",
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `models` 条目映射清零 ⇒ ⇒ 内嵌 SSOT（★ `//go:embed` ⇒ ★ 读方在**编译期**拿到内容 ⇒ ⇒ 掏空后必须**重新编译**）⇒ ⇒ 读方红且红因为「embedded catalog is empty」⇒ ⇒ 有牙。★ 另有 bg/pricing_baseline_reconcile.go（★ 生产读方）与 bg/observation_health_empty_catalog_test.go、cmd/tools/propose-baseline-prices/*_test.go 读它。",
+      "reader_kind": "gotest",
+      "reader_spec": "./bg/|TestEmbeddedCatalogIsAuditableAndNotEmpty",
+      "hollow_mode": "entries",
+      "red_signal": "embedded catalog is empty",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "cmd/auto-testbench/testdata/baseline.json",
@@ -134,95 +140,353 @@
       "reason": "★ 测试夹具（★ 会话回放输入）"
     },
     {
+      "path": "web/scripts/cjk-native-simplified-chars.json",
+      "kind": "registry",
+      "reader": "web/scripts/i18n-cjk-native-simplified-guard.mjs",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/i18n-cjk-native-simplified-guard.mjs",
+      "hollow_mode": "unusable",
+      "red_signal": "字表为空",
+      "behaviorally_verified": true,
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow",
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ **这条正是「文件名候选集漏收」的活证据**（★ 文件名里没有 registry/baseline/inventory/ledger/manifest 任何关键词 ⇒ ⇒ 只靠文件名的候选集收不到它 ⇒ ⇒ 靠「**被已登记的读方按路径读取**」这条判据才收进来）。★ ★ 字表把字存成**字符串**（★ `notBig5` 是 458 字的串 ⇒ ⇒ 逐字成集）⇒ ⇒ 「同形掏空（字符串保留）」对它**是空操作**⇒ ⇒ 必须用 `unusable` 模式（★ 真值被取走）。★ 掏空 ⇒ 读方读到空字表 ⇒ ⇒ ★★ **真洞**：★ 此前这道门一个简体字都量不出来（★ `referenced` 恒 0）却报「✅ 通过」⇒ ⇒ 假绿；★ 且 `new Set([...undefined])` 会**崩**⇒ ⇒ 已把 loader 改成「读出空表」＋ 主流程显式判红「字表为空」⇒ ⇒ 现在红因为「字表为空」⇒ ⇒ 有牙。"
+    },
+    {
       "path": "web/scripts/color-audit-baseline.json",
       "kind": "registry",
       "reader": "web/scripts/color-baseline-stale.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 颜色审计的基线（★ 门读它）"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `violations` 清零 ⇒ ⇒ 读方红且红因为「baseline 为空 —— 是不是路径写错了？」⇒ ⇒ 有牙。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/color-baseline-stale.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "baseline 为空",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/scripts/compact-card-coverage-baseline.json",
       "kind": "registry",
       "reader": "web/scripts/compact-card-coverage.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 紧凑卡片覆盖基线"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `fallback` 清零 ⇒ ⇒ 读方红且红因为「基线里有 N 条已不成立」⇒ ⇒ 有牙。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/compact-card-coverage.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "compact 下仍是「横滚宽表」",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/scripts/copy-quality-baseline.json",
       "kind": "registry",
       "reader": "web/scripts/copy-quality-audit.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 文案质量基线"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ **上限型**登记册（★ 棘轮：记的是「允许的最大值」）⇒ ⇒ 它的实测值**已经触底**（★ 每个桶都是 0）⇒ ⇒ 归零是**空操作**⇒ ⇒ 必须用 `unusable` 模式（★ 真值被取走）⇒ ⇒ 读方红且红因为「基线缺失或非法」⇒ ⇒ 有牙。★★ R87 轮**顺手补上了这个真洞**：★ 此前基线一没，`limit` 就是 undefined ⇒ ⇒ `cur > undefined` 恒假 ⇒ ⇒ 棘轮静默失效而门照样报「✅ 未发现违规」⇒ ⇒ 假绿 ⇒ ⇒ 已加红分支。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/copy-quality-audit.mjs",
+      "hollow_mode": "unusable",
+      "red_signal": "基线缺失或非法",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
+    },
+    {
+      "path": "web/scripts/design-action-density-baseline.json",
+      "kind": "excluded",
+      "reason": "★ **上限型基线**（★ 棘轮：记的是「允许的最大值」），★ 但**掏空它不会让读方变瞎** ⇒ ⇒ 不属于「掏空 ⇒ 必红」这一族。★ 实测（2026-10-27 第 27 增量，★ 改动树实测，★ 每次都还原 + md5 逐字校验）：★ ① 基线态 `rc=0`；★ ② 整册掏空成 `{}` ⇒ **`rc=0`**；★ ③ 基线文件**删除** ⇒ **`rc=0`** ⇒ ⇒ ★★ **三档都绿，但棘轮一直生效** —— ★ 根因：★ 读方的兜底写法是 `(baseline.overloadedZones ?? 0)` ⇒ ⇒ ★★ 基线一空 ⇒ ⇒ **上限变成 0** ⇒ ⇒ **比原来还严**（★ 当前读数「超阈值动作区 0」⇒ 掏空是空操作）⇒ ⇒ **不会**静默失效（★ 与 `copy-quality-baseline.json` / `design-elevation-baseline.json` / `i18n-internal-jargon-baseline.json` 那三份不同：★ 那三份的兜底是 `?? Infinity` ⇒ ⇒ 上限直接消失 ⇒ ⇒ 假绿）。★ 附注：★ 门自己的输出**出卖**了掏空态（★ 打印的是 `baseline.overloadedZones` 原值 ⇒ 掏空态显示「基线：超阈值动作区 ≤ undefined」）⇒ ⇒ ★★ **量的判定是安全的，但显示层会露出破绽** ⇒ ⇒ ★★ 这正是「★ 先问【那条命令的语义是什么】」的又一个实例。★ 本条是**上游第 25 增量**新增的登记册（★ 合并上游之后 ★ 由覆盖判据自动收进来；★ 第 27 增量实测并归类）。"
+    },
+    {
+      "path": "web/scripts/design-action-density-runtime-baseline.json",
+      "kind": "excluded",
+      "reason": "★ ★★ **本轮验不了（★ 环境限制）⇒ ⇒ 属「例外」表的语义 ⇒ ⇒ 不是「结构上不成立」** —— ★ 本条是**上游第 25 增量**新增的登记册。★ 它的读方是 `web/scripts/design-action-density-runtime-check.mjs` ⇒ ⇒ 那是**浏览器运行时尺**（★ 需要 chromium ＋ 起本地服务）⇒ ⇒ ★ 本轮**跑不起来** ⇒ ⇒ ⇒ **「跑不起来」与「跑了并且绿」在退出码上不可区分** ⇒ ⇒ ⇒ ★★ 所以**不能**因为「跑不起来」就断言「掏空不会让它红」。★ ★★ 与 `design-spacing-scale-runtime-baseline.json` **同族**（★ 同为运行时尺基线 ⇒ 同为「环境限制」而非「结构上不成立」）⇒ ⇒ ★★ **这两个理由必须分清**：★ 前者是【环境限制】（★ 下轮补实测即可升级为 registry），★ 后者是【结构上不成立】（★ 永远不用再试）。★ 登记为 excluded，★ 理由是「★ 本轮验不了（★ 读方要浏览器）★★」。"
+    },
+    {
+      "path": "web/scripts/design-icon-size-runtime-baseline.json",
+      "kind": "registry",
+      "reader": "web/scripts/design-icon-size-runtime-check.mjs",
+      "behaviorally_verified": true,
+      "note": "★ **行为化验证（第 28 增量，★ 2026-10-27 实测）**：★ 本条是**第 28 增量**新增的登记册（★ 与它的两个兄弟 `design-action-density-runtime-baseline.json` / `design-spacing-scale-runtime-baseline.json` **同族** ⇒ 同为浏览器运行时尺的基线）。★ ★★ **与那两个兄弟的关键差别**：★ 那两条登记为 excluded 的理由是「**本轮验不了（★ 环境限制）**——读方要浏览器」⇒ ★★ **本轮有 Chrome ＋ 本地服务 ⇒ 那笔欠账实测掉了** ⇒ ★ 本条**不登记 excluded**，而是**实测归类**。★ 实测三档：① 基线态 ⇒ `rc=0`；② 整册掏空 ⇒ **`rc=1`**；③ **基线文件删除** ⇒ **`rc=1`**（★ 后两档输出均含探针）⇒ ⇒ **掏空/删除都让读方红 ⇒ 有牙** ⇒ 归 `registry`。★ ★★ **hollow_mode 为什么是 `unusable`**：★ 本基线是**上限型**（★ 每页一个「零尺寸图标数」的上限）⇒ ★ `entries` 模式（容器清空 ＋ 数值归零）**不适用** ⇒ ★ 按 Go 侧口径，**上限型必须用 `unusable`**（★ 整册替换成 `{}`）⇒ ⇒ ★★ **`unusable` 恰好命中本工具的「基线不可用」分支**（★ `baselineUsable({})` ⇒ false ⇒ ⇒ 门判红 ⇒ ★ 这不是巧合，是本工具**故意**把「基线没了」判成红的 ⇒ ★ 否则「**把基线删掉**」就是让门变绿的**后门**（★ 仓内 `design-spacing-scale-runtime-baseline.json` 的登记条目记过这个坑）。★ ★★ **red_signal 为什么是一个探针 token 而不是散文**：★ 门在「基线不可用」时打印 `✘ [ICON-SIZE-BASELINE-UNUSABLE] …` ⇒ ★ ★★ **用稳定的 token 当红信号** ⇒ 改文案不会把 Go 门打瞎（★ 第 27 增量的纪律：★ 判据落在「门输出里有没有探针」）。\n★ ★★ 【2026-10-29 第 42 增量增补：读方把「环境失败」与「判据失败」分开 + 早退】（★ 审计轮实测三项）：① **读方新增「基线不可用 ⇒ 在测量之前就判红」的早退**（★ 与两个兄弟读方design-metric-skeleton / design-nested-card 同款）⇒ ★★ 掏空态**从 87s 变成 0.03s**（★ 不再跑浏览器）⇒ ★★ 顺带**修掉一个随机误判**：掏空态此前要跑全量浏览器 ⇒ 负载下浏览器驱动 fetch failed ⇒ 读方以「环境失败」退出 ⇒ 仓内 Go 侧掏空门把它判成「红了但红因不对」⇒ ★ **随机误判「门没牙」**。② **环境失败现在与判据失败分开**：浏览器驱动失败 ⇒ 退出码 **3**（= 本工具既有的「未测量」约定）＋ 探针 token `[ICON-SIZE-NOT-MEASURED]` ⇒ ★ 仓内 Go 侧掏空门（scripts/ursmcheck/structured_registry_hollowout_test.go）据此把它分类成**「环境不可用 ⇒ 本条不可判定 ⇒ 跳过」**，而**不是**「读方坏了 ⇒ 先把读方修绿」（★ 端到端实测：旧形态 ⇒ 门 FAIL 且假指责；新形态 ⇒ 门 SKIP 且说清原因）。③ **--update-baseline 的写回值改为「只许降不许升」**（★ 与两个兄弟读方同款）⇒ ★ 此前它直接写实测值 ⇒ 一次误操作就能把上限型棘轮放松 ⇒ 已堵。★ ★★ 三项都**不动 red_signal**（★ 判据落在「输出里有没有探针」⇒ 改文案不会把门打瞎）。",
+      "reader_kind": "node",
+      "reader_spec": "./web/scripts/design-icon-size-runtime-check.mjs",
+      "hollow_mode": "unusable",
+      "red_signal": "ICON-SIZE-BASELINE-UNUSABLE",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
+    },
+    {
+      "path": "web/scripts/design-metric-skeleton-runtime-baseline.json",
+      "kind": "excluded",
+      "reader": "web/scripts/design-metric-skeleton-runtime-check.mjs",
+      "note": "★ **行为化验证（第 30 增量，★ 2026-10-28 实测）**：★ 本条是**第 30 增量**新增的登记册（★ 与它的兄弟 `design-icon-size-runtime-baseline.json` / `design-action-density-runtime-baseline.json` 同族 ⇒ 同为浏览器运行时尺的基线）。★ ★★ **与那两个兄弟的关键差别**：★ `design-action-density-runtime-baseline.json` 当年登记为 excluded 的理由是「**本轮验不了（★ 环境限制）**——读方要浏览器」⇒ ★ 本轮有 Chrome ＋ 本地服务 ⇒ 那笔欠账实测掉了 ⇒ ★ 本条**不登记 excluded**，而是**实测归类**。★ 实测三档：① 基线态 ⇒ `rc=0`；② 整册掏空成 `{}` ⇒ **`rc=1`**；③ **基线文件删除** ⇒ **`rc=1`**（★ 后两档输出均含探针 `METRIC-SKELETON-BASELINE-UNUSABLE`）⇒ ⇒ **掏空/删除都让读方红 ⇒ 有牙** ⇒ 归 `registry`。★ ★★ **hollow_mode 为什么是 `unusable`**：★ 本基线是**上限型**（★ 逐页「落在裸指标卡网格里的卡片数」的上限）⇒ ★ `entries` 模式（容器清空 ＋ 数值归零）**不适用** ⇒ ★ 按 Go 侧口径，**上限型必须用 `unusable`**（★ 整册替换成 `{}`）⇒ ⇒ ★★ **`unusable` 恰好命中本工具的「基线不可用」分支**（★ `baselineUsable({})` ⇒ false ⇒ ⇒ 门判红）⇒ ★ 这不是巧合，是本工具**故意**把「基线没了」判成红的 ⇒ ★ 否则「**把基线删掉**」就是让门变绿的**后门**（★ 仓内 `design-spacing-scale-runtime-baseline.json` 的登记条目记过这个坑）。★ ★★ **red_signal 为什么是一个探针 token 而不是散文**：★ 门在「基线不可用」时打印 `✘ [METRIC-SKELETON-BASELINE-UNUSABLE] …` ⇒ ★ ★★ **用稳定的 token 当红信号** ⇒ 改文案不会把 Go 门打瞎（★ 第 27 增量的纪律：★ 判据落在「门输出里有没有探针」）。★ ★★ **本条与 `design-icon-size-runtime-baseline.json` 的另一个差别**：★ 本工具在「基线不可用」时**在测量之前就判红**（★ 判定不依赖测量）⇒ ⇒ 掏空态**秒级**返回 ⇒ ⇒ 不会把这个 Go 套件的时长拖长一倍（★ 88 页静态路由的浏览器尺一次 ≈ 5 分钟）。",
+      "reason": "★ **掏空实测照做且有效，但行为化验证不能进 go census 的循环**（★ 2026-10-28 分支审计轮改判，★ 全量 go test 实锤）：★ 本条的读方是**浏览器运行时尺**（与 design-action-density-runtime 同族）——★ census 行为化验证的第 ④ 步要求「基线态读方必须绿」⇒ ⇒ 那一步对运行时尺意味着 **88 页全量 Chrome 扫描 ≈ 5 分钟**（掏空态本身 0.03s 秒级判红，探针 METRIC-SKELETON-BASELINE-UNUSABLE 正确），★ 实测全量 go test 并行跑到本条时整个测试 10 分钟超时 panic（★ icon-size 兄弟条目排在字母序前面先跑完，已把预算烧掉大半 ⇒ 结构性不适配，不是单条慢）。★ ⇒ 按 **第 25 增量 design-action-density-runtime-baseline 的同族先例**登记 excluded（★ 那条的理由同样是「读方要浏览器」）。★ ★★ 三档实测**照做且录得**（第 30 增量）：① 基线态 rc=0（定向 --pages 模式）；② 整册掏空成 {} ⇒ rc=1 且秒级返回；③ 基线文件删除 ⇒ rc=1 —— 后两档输出均含探针 token ⇒ 掏空/删除都让读方红 ⇒ 有牙。★ 行为化验证的日常载体是 npm 自证（design-metric-skeleton:runtime-check:selftest 43/43）与浏览器运行时尺本身。"
     },
     {
       "path": "web/scripts/design-ai-smell-registry.json",
       "kind": "registry",
       "reader": "web/scripts/design-ai-smell-guard.mjs",
-      "behaviorally_verified": false,
-      "note": "★ AI 味登记册（★ R164 轮新增）"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ 豁免清单清零 ⇒ ⇒ 被豁免的违规重新出现 ⇒ ⇒ 读方红且红因为「FAIL: N 处 AI 化视觉痕迹」⇒ ⇒ 有牙。★ ★★ 第 27 增量复核（★ 路径口径改成仓根相对之后）：★ 登记簿 5 条**仍然承重** —— 实测「带登记簿 = 0 条 / 空登记簿 = 6 条」⇒ ⇒ 掏空 ⇒ 读方红 ⇒ ⇒ 反向自证（Go 侧 `TestStructuredRegistryHollowoutReadersRejectEmptyRegistry`）仍然成立。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/design-ai-smell-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "AI 化视觉痕迹",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
+    },
+    {
+      "path": "web/scripts/design-motion-baseline.json",
+      "kind": "excluded",
+      "reason": "★ **上限型基线**（★ 棘轮：M1~M7 七个上限），★ 但**掏空它不会让读方变瞎** ⇒ ⇒ 不属于「掏空 ⇒ 必红」这一族。★ 实测（2026-10-27 第 27 增量，★ 改动树实测，★ 每次都还原 + md5 逐字校验）：★ ① 基线态 `rc=0`；★ ② 整册掏空成 `{}` ⇒ **`rc=0`**；★ ③ 基线文件**删除** ⇒ **`rc=0`** ⇒ ⇒ ★★ **三档都绿，但棘轮一直生效** —— ★ 根因：★ 读方的兜底写法是 `baseCounts[r] ?? 0`（★ 每个指标各自兜底）⇒ ⇒ ★★ 基线一空 ⇒ ⇒ **七个上限全部变成 0** ⇒ ⇒ **比原来还严**（★ 当前读数 M1~M7 **全 0** ⇒ 掏空是空操作）⇒ ⇒ **不会**静默失效（★ 与 `?? Infinity` 那三份不同：★ 那三份掏空后上限直接消失 ⇒ ⇒ 假绿）。★ 本条是**上游第 26 增量**新增的登记册（★ 合并上游之后 ★ 由覆盖判据自动收进来；★ 第 27 增量实测并归类）。"
     },
     {
       "path": "web/scripts/design-elevation-baseline.json",
       "kind": "registry",
       "reader": "web/scripts/design-elevation-guard.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 浮起（阴影/elevation）基线（★ 门读它：design-elevation-guard.mjs 用它判定「抬升层是否走词表」）。★ 2026-10-27 合并轮补登：★ 上游 7742505f5（阴影四支词表轮）新增本文件 ⇒ 但未登记进本普查表 ⇒ ⇒ 覆盖判据门判红（★ 「像登记册」的结构化文件必须二选一归属）⇒ ⇒ 本条按同族口径登记为 kind=registry（★ 掏空它 ⇒ 门瞎 ⇒ ⇒ 属真登记册，不是排除项）"
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/design-elevation-guard.mjs",
+      "hollow_mode": "unusable",
+      "red_signal": "基线缺失或非法",
+      "behaviorally_verified": true,
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow",
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ **上限型**登记册（★ 棘轮：记的是「允许的最大值」）⇒ ⇒ 实测值已触底（★ 非规范配方 0 / 不同取值 4）⇒ ⇒ 归零是**空操作**⇒ ⇒ 改用 `unusable` 模式（★ 真值被取走）⇒ ⇒ 读方红且红因为「基线缺失或非法」⇒ ⇒ 有牙。★★ R87 轮**顺手补上了这个真洞**：★ 此前基线字段一缺，`0 > undefined` 恒假 ⇒ ⇒ 棘轮静默失效而门照样报「✅ PASS」⇒ ⇒ 假绿 ⇒ ⇒ 已加红分支。★ 本条是**并行会话 R166 轮**新增的登记册（★ 合并后由本轮的覆盖判据自动收进来）。"
+    },
+    {
+      "path": "web/scripts/design-primary-clarity-baseline.json",
+      "kind": "excluded",
+      "reason": "★ **上限型基线**，★ 但**掏空它不会让读方变瞎** ⇒ ⇒ 不属于「掏空 ⇒ 必红」这一族。★ 实测（R87 轮续，★ 2026-10-28，★ 合并上游之后）：★ ① 基线态 `rc=0`；★ ② 整册掏空成 `{}` ⇒ **`rc=0`**；★ ③ 基线文件**删除** ⇒ **`rc=0`**⇒ ⇒ ★★ **三档都绿，但棘轮一直生效** —— ★ 根因：★ 读方的兜底写法是 `(baseline.competingZones ?? 0)` ⇒ ⇒ ★★ 基线一空 ⇒ ⇒ **上限变成 0** ⇒ ⇒ **比原来还严**⇒ ⇒ **不会**像 `copy-quality-baseline.json` / `design-elevation-baseline.json` / `i18n-internal-jargon-baseline.json` 那三份那样静默失效（★ 那三份的兜底是 `?? Infinity`⇒ ⇒ 上限直接消失 ⇒ ⇒ 假绿 ⇒ ⇒ 已在本轮逐个补红分支）。★ 附注：★ 门自己的输出**出卖**了掏空态（★ 「基线：竞争动作区 ≤ undefined」）⇒ ⇒ ★★ **量的判定是安全的，但显示层会露出破绽** ⇒ ⇒ ★★ 这正是「★ 先问【那条命令的语义是什么】」的又一个实例。★ 本条是**上游第 23 增量**（★ `d7424f11a`）新增的登记册（★ 合并 `origin/main` 之后★ 由本轮的覆盖判据**自动收进来**）。"
+    },
+    {
+      "path": "web/scripts/design-primary-focus-baseline.json",
+      "kind": "excluded",
+      "reason": "★ **上限型基线**，★ 但**与本轮修过的那三份基线不同** ⇒ ⇒ **掏空它不会让读方变瞎** ⇒ ⇒ 不属于「掏空 ⇒ 必红」这一族。★ 实测（R87 轮，★ 2026-10-28）：★ ① 基线态 `rc=0`；★ ② 整册掏空成 `{}` ⇒ **`rc=0`**；★ ③ 基线文件**删除** ⇒ **`rc=0`** ⇒ ⇒ ★★ **三档都绿，但棘轮一直生效** —— ★ 根因：★ 读方的兜底写法是 `(baseline.rowLevelSolidPrimary ?? 0)` ⇒ ⇒ ★★ 基线一空 ⇒ ⇒ **上限变成 0** ⇒ ⇒ **比原来还严** ⇒ ⇒ ★★ **不会像 `copy-quality-baseline.json` / `design-elevation-baseline.json` / `i18n-internal-jargon-baseline.json` 那三份那样静默失效**（★ 那三份的兜底是 `?? Infinity` ⇒ ⇒ 上限直接消失 ⇒ ⇒ 假绿 ⇒ ⇒ 已在本轮逐个补红分支）。★ ★★ 附注：★ 门自己的输出**出卖**了掏空态（★ 「基线：数据行内实心主色 ≤ undefined」）⇒ ⇒ ★★ **量的判定是安全的，但显示层会露出破绽** ⇒ ⇒ ★★ 这正是「★ 先问【那条命令的语义是什么】」的又一个实例。★ 本条是**上游第 20 增量**新增的登记册（★ 合并 `origin/main` 之后由本轮的覆盖判据**自动收进来**）。"
+    },
+    {
+      "path": "web/scripts/design-semantic-color-baseline.json",
+      "kind": "excluded",
+      "reason": "★ **上限型基线**，★ 但**掏空它不会让读方变瞎** ⇒ ⇒ 不属于「掏空 ⇒ 必红」这一族。★ 实测（R87 轮续，★ 2026-10-28，★ 合并上游之后）：★ ① 基线态 `rc=0`；★ ② 整册掏空成 `{}` ⇒ **`rc=0`**；★ ③ 基线文件**删除** ⇒ **`rc=0`**⇒ ⇒ ★★ **三档都绿，但棘轮一直生效** —— ★ 根因：★ 读方的兜底写法是 `(baseline.tintedGroupContainers ?? 0)` ⇒ ⇒ ★★ 基线一空 ⇒ ⇒ **上限变成 0** ⇒ ⇒ **比原来还严**⇒ ⇒ **不会**像 `copy-quality-baseline.json` / `design-elevation-baseline.json` / `i18n-internal-jargon-baseline.json` 那三份那样静默失效（★ 那三份的兜底是 `?? Infinity`⇒ ⇒ 上限直接消失 ⇒ ⇒ 假绿 ⇒ ⇒ 已在本轮逐个补红分支）。★ 本条是**上游第 21 增量**（★ `9a8458e8a`）新增的登记册（★ 合并 `origin/main` 之后★ 由本轮的覆盖判据**自动收进来**）。"
+    },
+    {
+      "path": "web/scripts/design-semantic-color-exemptions.json",
+      "kind": "registry",
+      "reader": "web/scripts/design-semantic-color-guard.mjs",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/design-semantic-color-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "分组容器被着色",
+      "behaviorally_verified": true,
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow",
+      "note": "★ 行为化验证（R87 轮续，★ 2026-10-28 实测）：★ **人工登记豁免表**（★ `exemptions` 数组，★ 2 条，★ 每条带 `snippet` ＋ `witness`）⇒ ⇒ 读方按 `e.file === finding.file && normalizeSnippet(e.snippet) === sn` **精确匹配** ⇒ ⇒ ★★ **豁免一被取走 ⇒ ⇒ 原先被豁免的容器就重新变成违规** ⇒ ⇒ 门必红。★ 掏空 ⇒ 读数「登记豁免 2 → 0 · 控件组容器被着色 0 → 2」⇒ ⇒ 红因为「分组容器被着色」⇒ ⇒ 有牙。★ ★ 它是**上游第 21 增量**（★ `9a8458e8a`）新增的登记册 ⇒ ★ 它的文件名**不含** registry/baseline/inventory/ledger/manifest 任何关键词 ⇒ ⇒ ★ **只靠文件名的候选集收不到它** ⇒ ⇒ ★ 靠「**被已登记的读方按路径读取**」那条判据才收进来 ⇒ ⇒ ⇒ **这条判据本轮第二次救场**。★ ★★ **量具自带的坑（★ 本轮实测踩到 ⇒ ⇒ 记在这里以免再踩）**：★ 搭 overlay 时若把 `web/src` 做成**符号链接** ⇒ ⇒ 读方按**相对路径**匹配豁免（★ `relative(rootDir, abs)`）⇒ ⇒ 符号链接让 `abs` 落到真实路径 ⇒ ⇒ 相对路径变成 `../../..` ⇒ ⇒ **豁免失效 ⇒ ⇒ 假红** ⇒ ⇒ ★ ⇒ overlay 必须**实体复制** `web/src` （★ 只 `node_modules` 可符号链接，★ 包解析按包名不走相对路径）⇒ ⇒ ★★ 且**每套 overlay 的第一档必须是「真·基线态」** （★ 第一版探针把 `asis` 落进了掏空分支 ⇒ ⇒ 读数全错 ⇒ ⇒ 又一次「量具自己会带 bug」）⇒ ⇒ ⇒ ★ **两处都是「量具坏了」而不是「门有洞」** ⇒ ⇒ ★★ 阴性结论必须先问「基线是不是绿的」。"
+    },
+    {
+      "path": "web/scripts/design-spacing-scale-baseline.json",
+      "kind": "excluded",
+      "reason": "★ **上限型基线**，★ 但**掏空它不会让读方变瞎** ⇒ ⇒ 不属于「掏空 ⇒ 必红」这一族。★ 实测（R87 轮续，★ 2026-10-28，★ 合并上游第 24 增量之后）：★ ① 基线态 `rc=0`；★ ② 整册掏空成 `{}` ⇒ **`rc=0`**；★ ③ 基线文件**删除** ⇒ **`rc=0`**⇒ ⇒ ★★ **三档都绿，但棘轮一直生效** —— ★ 根因：★ 读方的兜底写法是 `(baseline.offScaleSpacing ?? 0)` ⇒ ⇒ ★★ 基线一空 ⇒ ⇒ **上限变成 0** ⇒ ⇒ **比原来还严**⇒ ⇒ **不会**像 `copy-quality-baseline.json` / `design-elevation-baseline.json` / `i18n-internal-jargon-baseline.json` / `design-spacing-scale-runtime-baseline.json` 那四份那样静默失效（★ 那四份的兜底是 `?? Infinity` ⇒ ⇒ 上限直接消失 ⇒ ⇒ 假绿⇒ ⇒ 前三份已在本轮逐个补红分支，★ 第四份本轮也补了）。★ 附注：★ 本份基线**有两个**上限（★ `offScaleSpacing` ＋ `remSpacing`）⇒ ⇒ ★ 两者**都是** `?? 0` 兜底 ⇒ ⇒ ★★ 同一条结论覆盖两个指标。★ 本条是**上游第 24 增量**（★ `4dfd4696b`）新增的登记册（★ 合并 `origin/main` 之后★ 由本轮的覆盖判据**自动收进来**）。"
+    },
+    {
+      "path": "web/scripts/design-spacing-scale-decisions.json",
+      "kind": "registry",
+      "reader": "web/scripts/design-spacing-scale-guard.mjs",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/design-spacing-scale-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "间距落在角色阶之外",
+      "behaviorally_verified": true,
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow",
+      "note": "★ 行为化验证（R87 轮续，★ 2026-10-28 实测）：★ **间距阶的裁决簿**（★ `manualExemptions.entries` 2 条 ＋ `decisions` ＋ `tiePolicy` ＋ `notDone`）⇒ ⇒ 读方拿 `manualExemptions.entries` 的 `key` 当**人工豁免**⇒ ⇒ ★★ **豁免一被取走 ⇒ ⇒ 原先被豁免的间距就重新变成离阶** ⇒ ⇒ 门必红。★ 掏空 ⇒ 读数「离阶 0 → 1」⇒ ⇒ 红因为「间距落在角色阶之外」⇒ ⇒ 有牙。★ ★ 它是**上游第 24 增量**（★ `4dfd4696b`）新增的登记册 ⇒ ★ 文件名**不含**任何候选集关键词 ⇒ ⇒ ★ 靠「**被已登记的读方按路径读取**」那条判据收进来（★ 该判据本轮**第三次**救场）。★ ★★ **注意一个差点踩空的细节**：★ 本文件的 `decisions` 字段**本来就是空的**（★ `dict len=0`）⇒ ⇒ 若按「整个映射清空」来掏 ⇒ ⇒ 那是**空操作**⇒ ⇒ 什么都测不到 ⇒ ⇒ **inconclusive**⇒ ⇒ ★★ 所以要掏的是**真正被读方使用的那个字段**（★ `manualExemptions`）⇒ ⇒ ★★ **「掏空哪个字段」必须由【读方实际读了什么】决定，★ 不能由【文件长什么样】决定。**"
+    },
+    {
+      "path": "web/scripts/design-spacing-scale-runtime-baseline.json",
+      "kind": "excluded",
+      "reason": "★ ★★ **本轮验不了（★ 环境限制）⇒ ⇒ 属「例外」表的语义 ⇒ ⇒ 不是「结构上不成立」** —— ★ ★ ★★ 本条是**上游第 24 增量**（★ `4dfd4696b`）新增的登记册。★ 它的读方是 `web/scripts/design-spacing-scale-runtime-check.mjs` ⇒ ⇒ 那是**浏览器运行时尺**（★ 需要 chromium ＋ 起本地服务）⇒ ⇒ ★ 本轮**跑不起来** ⇒ ⇒ ⇒ **「跑不起来」与「跑了并且绿」在退出码上不可区分**⇒ ⇒ ⇒ ★★ 所以**不能**因为「跑不起来」就断言「掏空不会让它红」。★ ★★ **但本轮正是靠读它的源码查出了第 6 个真洞**：★ 读方的兜底写法是 `baseline.offScaleGapsMax ?? Infinity`（★ 三个上限都是）⇒ ⇒ ★★ 基线一空（★ 缺失或被掏空成 `{}`）⇒ ⇒ **上限直接消失** ⇒ ⇒ 任何读数都「不超」⇒ ⇒ **假绿**；★ 且「没有基线 ⇒ 只测量、不判定」那条**消息是诚实的**，★ **但退出码是 0** ⇒ ⇒ ★★ 门只读退出码 ⇒ ⇒ **消息说「不是通过」而退出码说「通过」**⇒ ⇒ ⇒ ★★★ **本轮已补**：★ ① 加 `baselineUsable` 门禁（★ 三个上限必须都是**有限数**）⇒ ⇒ ② 比对只在基线可用时才做 ⇒ ⇒ ③ 「不判定」（★ 基线缺失或页面集不一致）**必须红**⇒ ⇒ ④ 退出码改成 `regressions.length || !baselineUsable || !pagesMatch ? 1 : 0`⇒ ⇒ ★★ 修完之后，★ 在**浏览器就绪**的前提下，★ 掏空它**会**让读方红⇒ ⇒ ★★ **但本轮无法实测**（★ 无浏览器/服务环境）⇒ ⇒ ⇒ ★★ **仍登记为 excluded**，★ 理由是「★ 本轮验不了（★ 读方要浏览器）★★」⇒ ⇒ ★★ 而**不是**「掏空不会让它红」⇒ ⇒ ★★ **这两个理由必须分清**：★ 前者是【环境限制】（★ 下轮补实测即可升级为 registry），★ 后者是【结构上不成立】（★ 永远不用再试）。"
+    },
+    {
+      "path": "web/scripts/design-type-scale-baseline.json",
+      "kind": "excluded",
+      "reason": "★ **上限型基线**，★ 但**掏空它不会让读方变瞎** ⇒ ⇒ 不属于「掏空 ⇒ 必红」这一族。★ 实测（R87 轮续，★ 2026-10-28，★ 合并上游之后）：★ ① 基线态 `rc=0`；★ ② 整册掏空成 `{}` ⇒ **`rc=0`**；★ ③ 基线文件**删除** ⇒ **`rc=0`**⇒ ⇒ ★★ **三档都绿，但棘轮一直生效** —— ★ 根因：★ 读方的兜底写法是 `(baseline.offScaleFontSizes ?? 0)` ⇒ ⇒ ★★ 基线一空 ⇒ ⇒ **上限变成 0** ⇒ ⇒ **比原来还严**⇒ ⇒ **不会**像 `copy-quality-baseline.json` / `design-elevation-baseline.json` / `i18n-internal-jargon-baseline.json` 那三份那样静默失效（★ 那三份的兜底是 `?? Infinity`⇒ ⇒ 上限直接消失 ⇒ ⇒ 假绿 ⇒ ⇒ 已在本轮逐个补红分支）。★ 附注：★ 本份基线**有两个**上限（★ `offScaleFontSizes` ＋ `remFontSizes`）⇒ ⇒ ★ 两者**都是** `?? 0` 兜底 ⇒ ⇒ ★★ 同一条结论覆盖两个指标。★ 本条是**上游第 23 增量**（★ `02cdcafec`）新增的登记册（★ 合并 `origin/main` 之后★ 由本轮的覆盖判据**自动收进来**）。"
+    },
+    {
+      "path": "web/scripts/design-type-scale-decisions.json",
+      "kind": "registry",
+      "reader": "web/scripts/design-type-scale-guard.mjs",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/design-type-scale-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "字号落在角色阶之外",
+      "behaviorally_verified": true,
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow",
+      "note": "★ 行为化验证（R87 轮续，★ 2026-10-28 实测）：★ **语义平局档的裁决表**（★ `decisions` ＋ `manualIconExemptions` ＋ `deadCss` ＋ `remToPx`）⇒ ⇒ 读方拿它给「离阶字号」开人工豁免 ⇒ ⇒ ★★ **裁决一被取走 ⇒ ⇒ 原先被豁免的字号就重新变成离阶** ⇒ ⇒ 门必红（★ 且棘轮同时升高：★ 「offScaleFontSizes 0 → 5」⇒ ⇒ **两处同时红** ⇒ ⇒ 红因归属更硬）。★ 掏空 ⇒ 读数「离阶 0（0 个文件）→ 5（4 个文件）」⇒ ⇒ 红因为「字号落在角色阶之外」⇒ ⇒ 有牙。★ ★ 它是**上游第 23 增量**（★ `02cdcafec`）新增的登记册 ⇒ ★ 文件名**不含**任何候选集关键词 ⇒ ⇒ ★ 靠「**被已登记的读方按路径读取**」那条判据收进来。★ ★★ **读方形态的一个前置事实**：★ 这个门导入 `.ts`（★ `web/src/design/typeScale.ts`）⇒ ⇒ ★★ 本机 node 是 **v22.23.3**，★ **类型剥离已默认开启** ⇒ ⇒ ★ 不带 `--experimental-strip-types` 也能跑 ⇒ ⇒ ★★ 否则 harness 的 node 读方只会看到【崩溃红】⇒ ⇒ ★★ 那就不是「红因正确」而是「wrong-red」。"
     },
     {
       "path": "web/scripts/i18n-cjk-baseline.json",
       "kind": "registry",
       "reader": "web/src/i18n/hardcoded_cjk.baseline.test.ts",
-      "behaviorally_verified": false,
-      "note": "★ 硬编码中文基线"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `count` 归零 ⇒ ⇒ 读方红且红因为「Hardcoded CJK count increased: 4484 > baseline 0」⇒ ⇒ 有牙。",
+      "reader_kind": "vitest",
+      "reader_spec": "web/src/i18n/hardcoded_cjk.baseline.test.ts",
+      "hollow_mode": "entries",
+      "red_signal": "Hardcoded CJK count increased",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/scripts/i18n-cjk-native-simplified-baseline.json",
       "kind": "registry",
       "reader": "web/scripts/i18n-cjk-native-simplified-guard.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 简体残留基线"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `unreferenced` 逐语种归零 ⇒ ⇒ 读方红且红因为「未引用残留上升 0 → N（棘轮被打破）」⇒ ⇒ 有牙。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/i18n-cjk-native-simplified-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "棘轮被打破",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/scripts/i18n-empty-state-registry.json",
       "kind": "registry",
       "reader": "web/scripts/i18n-empty-state-guard.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 空状态登记册（★ 第 14 增量新增）"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `keys` 清零 ⇒ ⇒ ★★ **真洞**：★ 此前读方报「登记键: 0 个」却照样「✅ PASS」（★ 所有判据都无事可做 ⇒ ⇒ 假绿）⇒ ⇒ 已给读方补红分支「登记册为空 ⇒ 红」⇒ ⇒ 现在红因为 `empty-registry` ⇒ ⇒ 有牙。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/i18n-empty-state-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "empty-registry",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/scripts/i18n-error-clarity-registry.json",
       "kind": "registry",
       "reader": "web/scripts/i18n-error-clarity-guard.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 错误清晰度登记册"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `slots` / `exemptions` **条目映射**整体清零（★ 不是「字段变空」⇒ ⇒ 读方不会撞上「字段缺失」那种假红）⇒ ⇒ 读方红且红因为 `L1a-unregistered-bare`（★ 「该键没有登记」）⇒ ⇒ 有牙。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/i18n-error-clarity-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "该键没有登记",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/scripts/i18n-error-outlet-registry.json",
       "kind": "registry",
       "reader": "web/scripts/i18n-error-outlet-guard.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 错误出口登记册（★ R163 轮新增）"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ 掏空 ⇒ `exemptions` / `fileExemptions` 清单清零 ⇒ ⇒ 读方红且红因为 `O1-raw-message`（★ 原始 error.message 直接上屏）⇒ ⇒ 有牙。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/i18n-error-outlet-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "O1-raw-message",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
+    },
+    {
+      "path": "web/scripts/i18n-internal-jargon-baseline.json",
+      "kind": "registry",
+      "reader": "web/scripts/i18n-internal-jargon-guard.mjs",
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮**合并上游后**新增，★ 2026-10-28 实测）：★ **上限型**登记册（★ 棘轮：记的是「允许的最大命中数」）⇒ ⇒ 它的实测值**已经触底**（★ `count: 0` / `distinctIdentifiers: 0`）⇒ ⇒ 归零是**空操作**⇒ ⇒ 必须用 `unusable` 模式（★ 真值被取走 ⇒ ⇒ 整册变成 `{}`）⇒ ⇒ 读方红且红因为「基线缺失或非法」⇒ ⇒ 有牙。★★ **本轮顺手补上了这个真洞**（★ 与本轮另两处基线洞**同族**：★ `copy-quality-baseline.json` / `design-elevation-baseline.json`）：★ 此前基线一空（★ 文件缺失或整册 `{}`），`baseline.count` 就是 undefined ⇒ ⇒ `(undefined ?? Infinity)` ⇒ ⇒ **棘轮判定整个静默失效**，而门照样打「✅ PASS」（★ 实测：★ 掏空后 `rc=0`，★ 且输出里赫然写着「基线：条目 ≤ undefined」）⇒ ⇒ ⇒ 假绿 ⇒ ⇒ 已加红分支「基线缺失或非法 ⇒ 红」⇒ ⇒ 现在掏空 ⇒ `rc=1` ⇒ ⇒ 有牙。★★ ★ 这条比另两处**更要紧**：★ 本门的基线是**唯一**的棘轮（★ `if (findings.length)` 那条红线只兜「命中数」，★ 兜不住「基线上限被谁调高」）⇒ ⇒ ★★ 另两处至少还有一条独立红线兜底。★ 本条是**上游第 19 增量**新增的登记册（★ 合并 `origin/main` 后由本轮的覆盖判据**自动收进来**）。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/i18n-internal-jargon-guard.mjs",
+      "hollow_mode": "unusable",
+      "red_signal": "基线缺失或非法",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
+    },
+    {
+      "path": "web/scripts/i18n-internal-jargon-registry.json",
+      "kind": "registry",
+      "reader": "web/scripts/i18n-internal-jargon-guard.mjs",
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮**合并上游后**新增，★ 2026-10-28 实测）：★ **清单型**登记册（★ 记的是「哪些内部标识被豁免」）⇒ ⇒ 掏空 ⇒ `exemptions` 归零 ⇒ ⇒ 读方把所有检测到的标识都当成未登记命中 ⇒ ⇒ 读方红且红因为「用户可见文案里出现未登记的内部标识」（★ 实测：★ 命中标识符 **50** 个 / 命中条目 **477** 条 ⇒ ⇒ `rc=1`）⇒ ⇒ 有牙。★★ 与「上限型基线」正好相反：★ 这本簿是**清单型**（★ 它的每一项都是一条**豁免**）⇒ ⇒ 掏空它**不会**让门瞎（★ 门只会更严）⇒ ⇒ ★★ **但真洞在反方向**：★ 谁往里塞一条**无证人的豁免**，那道标识符就再也不会被检出 ⇒ ⇒ ★★ 本门对此有独立防线（★ `checkWitnesses` ⇒ 类别 `payload-field` / `ui-visible-term` 缺 witness 即红）⇒ ⇒ ★★ 但**全局豁免**（★ 不给 `keyPath`）**不要求** witness ⇒ ⇒ ⇒ 留给下一轮。★ 本条是**上游第 19 增量**新增的登记册（★ 合并 `origin/main` 后由本轮的覆盖判据**自动收进来**）。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/i18n-internal-jargon-guard.mjs",
+      "hollow_mode": "entries",
+      "red_signal": "用户可见文案里出现未登记的内部标识",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/scripts/i18n-shared-dead-baseline.json",
       "kind": "registry",
       "reader": "web/scripts/i18n-shared-dead-count.mjs",
-      "behaviorally_verified": false,
-      "note": "★ 共有死键计数基线（★ 第 13 增量新增）"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ **上限型**登记册（★ 棘轮计数）⇒ ⇒ 它的记录值**本来就是 0**（★ 第 13 增量已清到底）⇒ ⇒ 归零是**空操作**⇒ ⇒ 改用 `unusable` 模式（★ 真值被取走 ⇒ ⇒ 读方的「基线缺失或非法」分支命中）⇒ ⇒ 有牙。",
+      "reader_kind": "node",
+      "reader_spec": "web/scripts/i18n-shared-dead-count.mjs",
+      "hollow_mode": "unusable",
+      "red_signal": "missing or invalid",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/src/i18n/localeKeyParityBaseline.json",
       "kind": "registry",
       "reader": "web/src/i18n/localeKeyParity.test.ts",
-      "behaviorally_verified": false,
-      "note": "★ 键集合一致性基线"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ **上限型**登记册（★ 棘轮：记的是「允许的最大值」）⇒ ⇒ 它的实测值**已经触底**（★ 各语种缺失数与不对称键数全是 0）⇒ ⇒ 归零是**空操作**⇒ ⇒ 改用 `unusable` 模式 ⇒ ⇒ 读方红且红因为「ar-SA 不在 baseline 里」⇒ ⇒ 有牙。",
+      "reader_kind": "vitest",
+      "reader_spec": "web/src/i18n/localeKeyParity.test.ts",
+      "hollow_mode": "unusable",
+      "red_signal": "不在 baseline 里",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
     },
     {
       "path": "web/src/i18n/localeValueBaseline.json",
       "kind": "registry",
       "reader": "web/src/i18n/localeValueQuality.test.ts",
-      "behaviorally_verified": false,
-      "note": "★ 语言包值质量基线"
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（R87 轮，★ 2026-10-28 实测）：★ **上限型**登记册（★ 棘轮）⇒ ⇒ 改用 `unusable` 模式 ⇒ ⇒ 读方红且红因为「baseline 里没有这一项（新增语种必须先登记基线）」⇒ ⇒ 有牙。",
+      "reader_kind": "vitest",
+      "reader_spec": "web/src/i18n/localeValueQuality.test.ts",
+      "hollow_mode": "unusable",
+      "red_signal": "baseline 里没有这一项",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
+    },
+    {
+      "path": "plugin-runtime/testdata/hello-plugin/plugin-manifest.json",
+      "kind": "excluded",
+      "reason": "★ 测试夹具（★ plugin-runtime 的 hello-plugin 测试输入，★ 是一份样例插件清单，★ 不是任何门读的登记册 ⇒ 掏空它没有读者会瞎）"
+    },
+    {
+      "path": "web/scripts/design-nested-card-runtime-baseline.json",
+      "kind": "excluded",
+      "reader": "web/scripts/design-nested-card-runtime-check.mjs",
+      "note": "★ **行为化验证（第 31 增量，★ 2026-10-28 实测）**：★ 本条是**第 31 增量**新增的登记册（★ 与它的兄弟 `design-metric-skeleton-runtime-baseline.json` / `design-icon-size-runtime-baseline.json` 同族 ⇒ 同为浏览器运行时尺的基线）。★ 实测三档：① 基线态 ⇒ `rc=0`；② 整册掏空成 `{}` ⇒ **`rc=1`**（★ 秒级返回，★ 因为本工具在「基线不可用」时**在测量之前**就判红）；③ **基线文件删除** ⇒ **`rc=1`**（★ 后两档输出均含探针 `NESTED-CARD-BASELINE-UNUSABLE`）⇒ ⇒ **掏空/删除都让读方红 ⇒ 有牙**。★ ★★ **hollow_mode 语义**：★ 本基线是**上限型**（★ 逐页「卡 ⊂ 盒」嵌套对数的上限）⇒ ★ `entries` 模式不适用 ⇒ ★ 整册替换成 `{}` 才是正确的掏空形态 ⇒ ★★ **`unusable` 恰好命中本工具的「基线不可用」分支**（★ `baselineUsable({})` ⇒ false ⇒ 门判红）⇒ ★ ★★ **「把基线删掉」不是让门变绿的后门**。★ ★★ **red_signal 是一个探针 token 而不是散文**（★ 判据落在「门输出里有没有探针」⇒ 改文案不会把 Go 门打瞎）。★ ★★ **本工具比第 30 轮的兄弟多一道闸**：★ `--update-baseline` 写回的值**只许降不许升**（★ 已有页取「旧值与新值里的较小者」）⇒ ★★ **重建基线这条路也放松不了棘轮** ⇒ ★ 「基线被调高」在工具层面就被堵死。",
+      "reason": "★ **掏空实测照做且有效，但行为化验证不能进 go census 的循环**（★ 与第 30 增量的 design-metric-skeleton-runtime-baseline.json 同族先例）：★ 本条的读方是**浏览器运行时尺** —— ★ census 行为化验证的第 ④ 步要求「基线态读方必须绿」⇒ ⇒ 那一步对运行时尺意味着 **89 页全量 Chrome 扫描 ≈ 5~13 分钟**（★ 掏空态本身秒级判红，★ 探针 NESTED-CARD-BASELINE-UNUSABLE 正确），★ 实测全量 go test 并行跑到本条时整个测试会超时 panic ⇒ ★ 结构性不适配，不是单条慢。★ ⇒ 按**第 25 增量 design-action-density-runtime-baseline / 第 30 增量 design-metric-skeleton-runtime-baseline 的同族先例**登记 excluded。★ ★★ 三档实测**照做且录得**（第 31 增量，★ 2026-10-28）：① 基线态 rc=0；② 整册掏空成 {} ⇒ rc=1 且秒级返回；③ 基线文件删除 ⇒ rc=1 —— 后两档输出均含探针 token ⇒ 掏空/删除都让读方红 ⇒ 有牙。★ 行为化验证的日常载体是 npm 自证（design-nested-card:runtime-check:selftest 48/48）与浏览器运行时尺本身。"
+    },
+    {
+      "path": "web/scripts/design-hero-metric-runtime-baseline.json",
+      "kind": "excluded",
+      "reader": "web/scripts/design-hero-metric-runtime-check.mjs",
+      "note": "★ **行为化验证（第 32 增量，★ 2026-10-28 实测）**：★ 本条是**第 32 增量**新增的登记册（★ 与 `design-metric-skeleton-runtime-baseline.json` / `design-nested-card-runtime-baseline.json` / `design-icon-size-runtime-baseline.json` 同族 ⇒ 同为浏览器运行时尺的基线）。★ 实测三档：① 基线态 ⇒ `rc=0`；② 整册掏空成 `{}` ⇒ **`rc=1`**（★ 秒级返回，★ 因为本工具在「基线不可用」时**在测量之前**就判红）；③ **基线文件删除** ⇒ **`rc=1`**（★ 后两档输出均含探针 `HERO-METRIC-BASELINE-UNUSABLE`）⇒ ⇒ **掏空/删除都让读方红 ⇒ 有牙**。★★ **hollow_mode 语义**：★ 本基线是**上限型**（★ 逐页「装饰性指标墙」数的上限）⇒ ★ `entries` 模式（容器清空 ＋ 数值归零）**不适用** ⇒ ★ 整册替换成 `{}` 才是正确的掏空形态 ⇒ ★★ **`unusable` 恰好命中本工具的「基线不可用」分支**（★ `baselineUsable({})` ⇒ false ⇒ 门判红）⇒ ★★ **「把基线删掉」不是让门变绿的后门**。★★ **red_signal 是一个探针 token 而不是散文**（★ 判据落在「门输出里有没有探针」⇒ 改文案不会把 Go 门打瞎）。★★ **本轮把「基线没了 ⇒ 必红」这条【接线】也纳入了 npm 自证**（★ 新增 S-HM51~S-HM54，★ 自证 **55/55**（★ 第 32 增量当时值）⇒ ★★ **第 36 增量实测自证已到 119/119**）：★ 抽纯函数 `baselineGateDecision(baseline)` ⇒ ★ CLI 与自证走**同一份**判定 ⇒ ★★ 此前自证只喂谓词 `baselineUsable` ⇒ **测不到 CLI 到底判没判红**（★ 与本轮 §8.3(a)「产出方与消费方不同形 ⇒ 门绿其实是门没走到那段代码」同源）。★★ **本工具比两个兄弟多两道闸**：① `--update-baseline` 写回的值**只许降不许升**（★ 已有页取「旧值与新值里的较小者」）⇒ ★ **重建基线这条路也放松不了棘轮**；② **强调色集合解析不出来 ⇒ 不许判绿**（★ 打印 `HERO-METRIC-ACCENT-UNRESOLVED`）⇒ ★ 「量具自己坏了」不会伪装成「没有违规」。★★ **字段名是 `wallCount` 而不是 `walls`**（★ 读数对象里的 `walls` 是**数组**、基线里的 `wallCount` 是**数字**）⇒ ★ 「同名不同形」是本轮真 bug 的同源 ⇒ ★ 产出与消费都走同一个纯函数 `buildPageReading` ⇒ 形状不一致就再也发生不了。★★ **第 36 增量（★ 2026-10-28，★ hero-metric 禁令的覆盖面轮）**：★ 本条的读方在本轮被大幅扩面 —— ① **基线页数 108 → 137**（★ 108 条静态路由 ＋ **29 条 tab 变体**，★ tab 变体**从视图源码里各自声明 tab id 的那一行派生** ⇒ 视图加 tab ⇒ 清单自动跟着长）；② **判据扩面**：★ accent 的落点从「数字的计算色」扩到「数字 / 卡底主色淡染 / 卡底描边 / 阴影」（★ 淡染用 **token 精确匹配**，★ `--bg-subtle` **不进**淡染族，★ 它靠**色值同值**命中）；③ **探针补面**：★ 收「所有后代自身的直接文本」（★ 旧口径只收叶子元素的 innerText ⇒ 值为「文本 + `<small>`」的容器**值整个消失**）；④ ★★ **五道新的「没量到不许读成通过」**：★ 页面被重定向到非业务页（`HERO-METRIC-REDIRECTED`）· 探针报错页（`HERO-METRIC-PAGE-ERRORS`）· tab 清单派生失败（`HERO-METRIC-TAB-PAGES-UNRESOLVED`，★ **子集运行同样判红**）· **空页面**（`HERO-METRIC-EMPTY-PAGE`，★ 判据 = `totalCells === 0` **且** `bodyTextLen === 0` ⇒ ★★ **只看 `totalCells` 会把「真的空状态页」判成假红** ⇒ ★ 本轮实测 `/admin/data-lifecycle/migration-state` 就是空状态页：内容「暂无迁移记录」文本在、但没有任何卡片状盒子）；⑤ ★★ **导航失败必须判红**（★ `Page.navigate` 失败**不抛异常**、只带 `errorText` ⇒ 旧版会让探针在**上一页的 DOM** 上跑 ⇒ 读数是别页的而门照样绿 ⇒ ★ 本轮实测 dev server 崩过一次）。★★★ **本轮还加了四处「读数可靠性」**：★ 读数带 **`metricCellCount`**（这一页量到几个指标格）⇒ 门输出多一行「指标格分母：本次量到 N 个」⇒ ★★ **「0 处墙」从此有分母可读**（★ 这是本轮实测踩到的假绿形态：★ 修法把格子从分母里抹掉 ⇒ 读数 0 ⇒ 判绿）；★ 探针**版本号已 bump**（`hero-metric-probe/2026-10-28-36-2`，★ 探针回报口径变了：加了 `bodyTextLen` / `elementCount`）；★ ★ **「本页 0 个指标格 ⇒ 等 1.5s 重探一次」**（★ 起因：全量曾读到 `/admin/data-lifecycle` 的 `metricCellCount=0` 而手动复现读到 4 ⇒ **数据晚到** ⇒ 「0 个指标格」≠「这一页没有指标格」⇒ ★★ 判据与接线都抽进**可注入**的 `probeWithReprobe` ⇒ ★★ 否则「判据写错」与「压根没接上」在读数上**长得一样** ⇒ 假绿 ⇒ ⇒ 读数另带 **`reprobeCount`** ⇒ ★★ 实测全量 **137 页里 111 页 `reprobeCount>0`**（= 137 − 26 有格页）⇒ ★★ 「0 格却没重探」的页 **0** ⇒ ★★ 这段是活的）；★ ★ **分母提示按分母分支**（★ 本轮当场抓到门的**输出**在说假事：★ 原实现无条件挂了一句「（分母为 0 ⇒ …）」而那次分母明明是 4 ⇒ ★★ **假输出比假红更坏** ⇒ 假红只是吵、假输出是骗 ⇒ 抽成纯函数 `metricDenomNote`）。★★ **本轮的门自证 101 → 119/119**（新增 S-HM101~118：★ 含一条**假红防护**断言 —— `totalCells=0` 但**文本在** ⇒ 不判红；★ 含**接线**断言 —— ★ 重探的判据与调用次数、★ 读数的 `reprobeCount`、★ 分母提示的分支，★ 逐条断言）。★★ **修法只有一行实质差异**（★ `web/src/views/data-lifecycle/StorageOverview.vue`）：`background: var(--bg-subtle)`（★ 浅色模式 = 主色淡染）⇒ `background: var(--card)`（★ 中性表面色）⇒ ★★ **盒子形态 / 24px 数值 / 口径说明一律不动** ⇒ ★★ 前后读数严格可归因（★ 第一版把盒子整个拆掉 ⇒ 那 4 格从**两道**浏览器尺的分母里消失 ⇒ 前后不可归因 + 该页失监 ⇒ ★★ 被自己的变异臂推翻）。★★ **本条的基线口径随之更新**：★ 写回值仍是 **min(旧值, 实测值)**（★ 只许降不许升）；★ 本轮**新增 29 页**（每页实测 0）且 **已有 108 页的计数一个都没动** ⇒ ★ **不是调高任何指标**。",
+      "reason": "★ **掏空实测照做且有效，但行为化验证不进 go census 的循环**（★ 与第 30/31 增量的两个兄弟基线同族先例）：★ 本条的读方是**浏览器运行时尺** —— ★ census 行为化验证的第 ④ 步要求「基线态读方必须绿」⇒ ⇒ 那一步对运行时尺意味着**一次 108 页全量 Chrome 扫描**。★ ★★ **本轮实测的计时**（★ 合并 origin/main 之后、★ 机器负载 ~6）：★ `design-icon-size` **87s** · `design-metric-skeleton` **364s** · `design-nested-card` **403s** · **本门 `design-hero-metric` 420s** ⇒ ⇒ ★★ **★ 算术（★ 合并后实测：272.8s → **299.98s**，★ 因为合并进来的 58 个文件多了编译量）**：★ ★ 合并 origin/main **之后**重跑实测 `go test ./scripts/ursmcheck/ -run Hollowout` 整体 **299.98s（5m09s）**，★ 而那条链路里**已经包含一条浏览器运行时尺的基线态绿检查**（★ `design-icon-size-runtime-baseline.json` 是 census 里唯一的 `kind=registry` 运行时尺条目，★ 它在本次运行里**通过了** ⇒ ⇒ 浏览器扫描**确实在整体耗时里**）⇒ ⇒ 再加上本门的 420s ⇒ **≈720s** vs go test 的 **900s 上限** ⇒ ⇒ ★★ **低负载下【塞得下】**（★ 余量约 180s）。★★ **但本仓机器负载常态在 23+**（★ 本轮早前实测同一扇门 8~13 分钟 ⇒ 420s 会变成 720s+）⇒ ⇒ 合计 **≈1020s ⇒ 超过 900s 上限** ⇒ ⇒ ⇒ **⇒ 结构性不适配，不是单条慢** ⇒ ★ **保守判 excluded**（★ 代价写明：★ 本条的行为化验证的日常载体是 **npm 自证（55/55，含 S-HM51~54 盖住「基线没了 ⇒ 必红」这条接线）** ＋ 真仓变异臂 M4/M5（★ 整册掏空 / 文件删除 ⇒ rc=1 + 探针），★ 两者都**不依赖** go 循环）。★★ 三档实测**照做且录得**（第 32 增量）：① 基线态 rc=0；② 整册掏空成 {} ⇒ rc=1 且秒级返回；③ 基线文件删除 ⇒ rc=1 —— 后两档输出均含探针 token ⇒ 掏空/删除都让读方红 ⇒ 有牙。"
+    },
+    {
+      "path": "tests/deploy_lock_parity_baseline.json",
+      "kind": "registry",
+      "reader": "tests/deploy_switch_lock_parity_test.sh",
+      "behaviorally_verified": true,
+      "note": "★ 行为化验证（r1039 后续轮第三轮，★ 2026-10-28 实测）：★ 本条是本轮**新增**的跨仓漂移账（★ `pendingMergeCriteria` = 共享部署库与本仓仍然不同的判据，★ 只降不升的棘轮；★ 另有 `probeExemptions` = P3 结构性判据的豁免登记）。★★ **读方是 shell** ⇒ ★ 本表的读方形态词表原本**比共享 harness 窄**（★ `runHollowReaderOverlay` 早就支持 shell，★ 只有本表没有）⇒ ★ 本轮把词表补齐（★ 只**加**不**改**：★ 既有 54 条的行为不变）⇒ ⇒ ★★ **掏空实测**：① 基线态 ⇒ 读方绿（ALL PASS deploy lock parity）；② 整册掏空成 `{}` ⇒ **读方红**，★ 且红因为「漂移账的键不在了」（★ `baseline shape broken`）⇒ ⇒ **红因与共享库在不在无关**（★ 缺 SSOT 时本门整段是 SKIP ⇒ 若红因依赖 SSOT，★ 掏空态就会「仍绿」⇒ ⇒ 假的有牙）⇒ ⇒ 有牙。★★ `hollow_mode` 用 `unusable`（★ 整册替换成 `{}`）而不是 `entries`：★ 本基线是【清单型】（★ 两个数组）⇒ `entries` 只清空数组而**保留键**⇒ ⇒ 「键还在」这条判据就抓不到 ⇒ ⇒ 而 `unusable` 让**键也消失**⇒ ⇒ 判据在任何环境下都成立。★★ **诚实边界**：★ 本条的行为化验证只覆盖「掏空 ⇒ 读方红且红因正确」这一条；★ 漂移账**内容**的正确性由它自己的门承担（★ P3 结构性判据 + P4 棘轮 + 15 条变异臂）。",
+      "reader_kind": "shell",
+      "reader_spec": "bash tests/deploy_switch_lock_parity_test.sh",
+      "hollow_mode": "unusable",
+      "red_signal": "baseline shape broken",
+      "hollow_result": "red",
+      "mech_check": "reader-red-on-hollow"
+    },
+    {
+      "path": "scripts/guards/win-test-baseline.json",
+      "kind": "excluded",
+      "reason": "★ 规则文件（★ Windows 全量测试基线：记的是「实测失败集」的名单位棘轮，只降不升）⇒ 读方 scripts/guards/check-win-test-baseline.sh。★★ 归 excluded 而不是 registry 的**实质理由**：★ 该读方**无参运行会跑整仓 `go test ./...`**（★ 读方用法：`bash check-win-test-baseline.sh <go-test 输出日志>`）⇒ ⇒ 把它登记成 registry 会让掏空门**跑两遍整仓测试**（★ 实测量级：小时级）⇒ ⇒ 掏空态**不可承受** ⇒ ⇒ 因此不进行为化掏空覆盖。★ ★★ **登记于 2026-10-29（第 42 增量）**：★ 该文件由上游 24h 审计第 6 轮（e37fce837）新增 ⇒ 合并 origin/main 时**漏了登记** ⇒ 门红 ⇒ 本轮补登记（★ 只补归属，不改上游的门）。"
     }
   ]
 }

@@ -137,6 +137,18 @@
      这里补上真定义，等宽才真的生效。 */
   --mono: var(--kx-font-mono);
 
+  /* 图标边长（2026-10-27 第 28 增量 · 图标必须有尺寸）：**唯一的默认图标尺寸**。
+   * ★ 为什么需要一个令牌：`@element-plus/icons-vue` 渲染的是**裸 `<svg>`**，
+   *   **没有 width/height 属性** ⇒ 没有内在尺寸 ⇒ 尺寸完全靠 CSS 兜。
+   * ★★ 而兜底此前是**逐处**写的（每个父元素各写各的 `.xxx-glyph svg { width: 16px }`）
+   *   ⇒ **漏写一处，那个图标就塌成 0×0 ⇒ 用户看到的是一个空方块**。
+   *   ★ 实测（第 28 增量 CDP 实测，8 个页面）：**2 处 0×0**，都在仪表盘首页 ——
+ *     「刷新数据」按钮（★ 刷新数据的**唯一**入口）与「图例」开关 ⇒ 控件因此渲染成**空方块**。
+   * ★ 值 = `1em`：跟着所在文字的大小走 ⇒ 图标与它的标签同一视觉重量
+   *   （★ element-plus 自己的口径也是 `.el-icon svg { width: 1em; height: 1em }`）。
+   * ★ 主题无关 ⇒ 落在主题无关的令牌区。 */
+  --kx-icon-size: 1em;
+
   /* ── 字号阶跃（2026-10-24 排版轮）──
      此前只有 --kx-font-sm/md/lg（12/14/16）三级，撑不起「一眼看出层级」。
      这里补到 9 级：10px 的元信息到 38px 的落地页 H1，每级行高与字重步进
@@ -174,13 +186,17 @@
      ★ 这里全部桥接到 --kx-* 真值源，**不新增任何颜色**。
        放在基础 :root 而非明暗两块：每个别名都指向主题内的 --kx-*，
        计算值随主题走，不需要复制两份。 */
-  /* 间距阶 —— 对应 --kx-space-1..6（4/8/12/16/24/32px） */
+  /* 间距阶 —— 对应 --kx-space-1..9（4/8/12/16/24/32/40/48/64px）
+   * ★ 2026-10-27 第 24 增量：从 6 档补到 9 档（40/48/64 是实测用量，不是拍脑袋）。 */
   --space-1: var(--kx-space-1);
   --space-2: var(--kx-space-2);
   --space-3: var(--kx-space-3);
   --space-4: var(--kx-space-4);
   --space-5: var(--kx-space-5);
   --space-6: var(--kx-space-6);
+  --space-7: var(--kx-space-7);
+  --space-8: var(--kx-space-8);
+  --space-9: var(--kx-space-9);
   /* 字号阶 —— 对应 --kx-text-2xs..4xl（11/12/13/14/16/20/24/30/38px） */
   --text-2xs: var(--kx-text-2xs);
   --text-xs:  var(--kx-text-xs);
@@ -232,7 +248,7 @@
   --fg:          var(--text);
   --status-color: var(--muted);
   --bar-color:   var(--muted);
-  --model-font-size: 10px;
+  --model-font-size: 11px;
   /* 追踪状态色（RequestTracePanel 用它们当行内色值） */
   --trace-status-ok:   var(--success);
   --trace-status-fail: var(--danger);
@@ -308,15 +324,32 @@ html[data-theme='light'] {
   --kx-shadow-md-left: -12px 0 32px rgba(30, 50, 90, 0.1);
   /* 2026-09-13 响应式改造 P0：间距/字号令牌（方案 §4.2）。
    * 新组件（components/ui/ 等）一律消费令牌，禁止再手写散落的间距/字号魔法数。 */
+  /* 2026-10-27 第 24 增量（间距必须落在角色阶上）：阶从 6 档补到 **9 档**。
+   * ★ 为什么要补：原来 6 档（4/8/12/16/24/32）的**阶顶 32px 表达不了本仓自己的页面级节奏**
+   *   —— 实测 40px 用了 23 处、48px 5 处、64px 3 处（页面容器内边距 / 空态内边距 / 落地页列间距）
+   *   ⇒ ★★ **一个表达不了现状的阶，必然被普遍违反** ⇒ 先把阶补全，再谈合规。
+   * ★ 补的 3 档是**实测用量**（40/48/64），不是拍脑袋；4-unit base 的中间步（12/16/24）保留。
+   * ★ 档数与字号阶同为 9 档 ⇒ 两套刻度的「粒度哲学」一致。 */
   --kx-space-1: 4px;
   --kx-space-2: 8px;
   --kx-space-3: 12px;
   --kx-space-4: 16px;
   --kx-space-5: 24px;
   --kx-space-6: 32px;
+  --kx-space-7: 40px;
+  --kx-space-8: 48px;
+  --kx-space-9: 64px;
   --kx-font-sm: 12px;
   --kx-font-md: 14px;
   --kx-font-lg: 16px;
+  /* 2026-10-27 第 26 增量（状态过渡必须以指数减速到达）：**动效曲线的唯一定义处**。
+   * ★ 值 = impeccable `animate.md`「Timing and easing」点名的
+   *   `cubic-bezier(0.16, 1, 0.3, 1)` —— 起步即快、末尾指数减速 ⇒ 「一把按到位」的手感。
+   * ★ 为什么不是 CSS 的 `ease`：它是 cubic-bezier(0.25, 0.1, 0.25, 1)，y1=0.1 ⇒ **慢起手**
+   *   ⇒ 看起来像机器在「启动」。为什么不是 `ease-out`：它是 cubic-bezier(0, 0, 0.58, 1)，
+   *   y1=0 ⇒ 起步速度为零，同样不是「快起步 + 指数减速」。
+   * ★ 门：`web/scripts/design-motion-guard.mjs`（`design-motion:check`）。 */
+  --kx-motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   /* Gateway alias bridge — 旧组件仍引用 --bg/--card/--border 等 */
   --bg:        var(--kx-bg);
   --sidebar:   var(--kx-sidebar);
@@ -568,6 +601,31 @@ body {
   caret-color: var(--kx-primary);
 }
 
+/* ── 排版层级：交给设计，不交给浏览器默认值 ──
+ * ★ 2026-10-27 第 23 增量（字号必须落在角色阶上）：
+ *   此前仓内**没有** h1~h6 与 button 的排版重置 ⇒ 两处真实缺陷：
+ *   ① 标题字号全靠 **UA 默认**（h1=2em=28px、h3=1.17em=16.38px）⇒
+ *      **层级由浏览器决定**，而且 16.38px 这类值**根本不在角色阶上** ——
+ *      源码里没有声明 ⇒ **源码门看不见**，只有运行时尺能看见；
+ *   ② `<button>` 既不继承 font-size 也不继承 font-family ⇒ 落到 UA 的
+ *      13.33px **和 UA 字体** ⇒ 按钮与全站**不是同一个字体**
+ *      （与 craft-floor「引用的字体必须真的被加载」同族）。
+ *   ⇒ 这里把两者钉到角色阶：标题走「页面标题 / 区块标题 / 小节标题」三档，
+ *     控件继承全站字体与字号。
+ *   ★ 元素选择器优先级最低 ⇒ 各页面自己的 `.xxx h1 { … }` 仍然照常覆盖。
+ */
+h1 { font-size: var(--kx-text-2xl); }
+h2 { font-size: var(--kx-text-xl); }
+h3,
+h4 { font-size: var(--kx-text-lg); }
+h5,
+h6 { font-size: var(--kx-text-md); }
+button,
+input,
+select,
+textarea { font-family: inherit; }
+button { font-size: inherit; }
+
 /* ═══════════════════════════════════════════════════════════════════
    浏览器表面（2026-10-24 排版轮）
    ═══════════════════════════════════════════════════════════════════
@@ -589,6 +647,20 @@ body {
 :focus-visible {
   outline: 2px solid color-mix(in srgb, var(--kx-primary) 72%, transparent);
   outline-offset: 2px;
+}
+
+/* 图标尺寸兜底（2026-10-27 第 28 增量 · 图标必须有尺寸）
+ * ★ 判据：一个 `<svg>` 若既**没有 width/height 属性**（无内在尺寸），
+ *   又**没有任何更具体的 CSS 规则**给它尺寸 ⇒ 它会塌成 0×0 ⇒ **等于不存在**。
+ *   ★ 实测（本轮 CDP 实测，8 页）：**2 处 0×0**，都在仪表盘首页 ——
+ *     「刷新数据」按钮与「图例」开关 ⇒ 那两个控件渲染成**空方块**。
+ * ★ 为什么用 `:where()`：它的特异性**恒为 0** ⇒ 这是**兜底**语义 ⇒
+ *   任何既有规则（`.journey-trigger svg { width: 15px}` 之类）都压得住它
+ *   ⇒ ★★ 本条**只影响当前是 0×0 的那些**，不改动任何已经正常的图标。
+ * ★ 门：`web/scripts/design-icon-size-runtime-check.mjs`（`design-icon-size:runtime-check`）。 */
+:where(svg:not([width]):not([height])) {
+  width: var(--kx-icon-size);
+  height: var(--kx-icon-size);
 }
 
 /* 滚动条：Firefox 用 scrollbar-color，WebKit 用伪元素。 */
@@ -626,10 +698,10 @@ input, select, textarea {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
-  padding: 6px 10px;
+  padding: 4px 8px;
   font-size: 13px;
   outline: none;
-  transition: border-color .15s;
+  transition: border-color .15s var(--kx-motion-ease-out);
   width: 100%;
 }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
@@ -647,11 +719,11 @@ input[type="radio"], input[type="checkbox"] {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 9px 18px;
+  padding: 8px 16px;
   min-height: 36px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 500;
   line-height: 1.2;
   letter-spacing: 0.01em;
@@ -663,11 +735,11 @@ input[type="radio"], input[type="checkbox"] {
      —— 1px 描边下面压一层零模糊高光，是「有描边又要抬一层」的幽灵卡片写法
      （craft-floor 明禁）。描边已经说明了边界，阴影就不再重复声明一次。 */
   transition:
-    background-color .18s ease,
-    border-color .18s ease,
-    color .18s ease,
-    box-shadow .18s ease,
-    transform .12s ease;
+    background-color .18s var(--kx-motion-ease-out),
+    border-color .18s var(--kx-motion-ease-out),
+    color .18s var(--kx-motion-ease-out),
+    box-shadow .18s var(--kx-motion-ease-out),
+    transform .12s var(--kx-motion-ease-out);
 }
 /* 主色按钮：accent 填充 + 白字 + 强调细边框 */
 .btn-primary {
@@ -738,7 +810,7 @@ input[type="radio"], input[type="checkbox"] {
 }
 /* 小尺寸：用于表格行内 / 工具栏；保留细边框与箭头 */
 .btn-sm {
-  padding: 5px 12px;
+  padding: 4px 12px;
   min-height: 28px;
   font-size: 12px;
   border-radius: calc(var(--radius) - 2px);
@@ -749,7 +821,7 @@ input[type="radio"], input[type="checkbox"] {
   background: transparent;
   border-color: transparent;
   color: var(--accent-h);
-  padding: 4px 6px;
+  padding: 4px 4px;
   min-height: auto;
   box-shadow: none;
 }
@@ -826,7 +898,7 @@ thead th {
   border-bottom: 1px solid var(--border);
 }
 tbody td {
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   color: var(--text);
   font-size: 13px;
@@ -883,8 +955,8 @@ tbody tr:hover { background: var(--row-hover); }
   border-radius: 0;
   display: flex;
   flex-direction: column;
-  padding: 20px;
-  animation: drawer-slide-in .2s ease-out;
+  padding: 16px;
+  animation: drawer-slide-in .2s var(--kx-motion-ease-out);
   background: var(--card);
   border-left: 1px solid var(--border);
   box-shadow: var(--kx-shadow-md-left);
@@ -931,7 +1003,7 @@ tbody tr:hover { background: var(--row-hover); }
 /* 2026-08-09: 紧凑版 stat-card，用于请求日志页 stats-grid 的 token 拆分条。
    与上方突出显示的 stats-overview 形成视觉对比: 大字号 + 强调边框 vs 紧凑灰底。 */
 .stat-card--compact {
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--surface-secondary);
   font-size: 11px;
 }
@@ -951,7 +1023,7 @@ tbody tr:hover { background: var(--row-hover); }
   flex-direction: column;
   gap: 4px;
   min-height: 76px;
-  transition: background 0.12s ease;
+  transition: background 0.12s var(--kx-motion-ease-out);
 }
 .stat-overview-card:hover { background: var(--surface-secondary, var(--card)); }
 .stat-overview-label {
@@ -961,7 +1033,7 @@ tbody tr:hover { background: var(--row-hover); }
   font-weight: 600;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 /* 「这笔是 credits」的标记：一个小圆点，不是色条。 */
 .stat-overview-card[data-stat="total-credits"] .stat-overview-label::before {
@@ -981,7 +1053,7 @@ tbody tr:hover { background: var(--row-hover); }
   font-variant-numeric: tabular-nums;
 }
 .stat-overview-sub {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   letter-spacing: 0.01em;
 }
@@ -993,19 +1065,19 @@ tbody tr:hover { background: var(--row-hover); }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
-.page-header h2 { font-size: 18px; font-weight: 600; }
+.page-header h2 { font-size: 20px; font-weight: 600; }
 
 .empty {
   text-align: center;
-  padding: 40px 20px;
+  padding: 40px 16px;
   color: var(--muted);
 }
 
 .tag {
   display: inline-block;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
   font-size: 11px;
   background: color-mix(in srgb, var(--accent) 15%, transparent);
@@ -1014,7 +1086,7 @@ tbody tr:hover { background: var(--row-hover); }
 }
 
 .alert {
-  padding: 10px 14px;
+  padding: 8px 12px;
   border-radius: var(--radius);
   margin-bottom: 16px;
   font-size: 13px;
@@ -1029,7 +1101,7 @@ tbody tr:hover { background: var(--row-hover); }
   flex-wrap: wrap;
   align-items: center;
   gap: 12px 16px;
-  padding: 10px 14px;
+  padding: 8px 12px;
   margin-bottom: 16px;
   border-radius: var(--radius);
   font-size: 13px;
@@ -1059,7 +1131,7 @@ tbody tr:hover { background: var(--row-hover); }
   cursor: pointer;
   font-size: 13px;
   color: var(--muted);
-  transition: color 0.15s, border-color 0.15s;
+  transition: color 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
 }
 .tabs .tab-btn:hover {
   color: var(--text);
@@ -1073,10 +1145,10 @@ tbody tr:hover { background: var(--row-hover); }
 /* Tab badge — small red count next to a tab label (e.g. probe failures) */
 .tab-badge {
   display: inline-block;
-  margin-left: 6px;
+  margin-left: 4px;
   min-width: 18px;
   height: 18px;
-  padding: 0 5px;
+  padding: 0 4px;
   line-height: 18px;
   text-align: center;
   font-size: 11px;
@@ -1159,7 +1231,7 @@ tbody tr:hover { background: var(--row-hover); }
 .compact-filter-bar--stacked {
   flex-direction: column;
   align-items: stretch;
-  gap: 10px;
+  gap: 8px;
 }
 
 .compact-filter-bar .cf-row {
@@ -1221,7 +1293,7 @@ tbody tr:hover { background: var(--row-hover); }
  * ════════════════════════════════════════════════════════════════ */
 
 /* Compact card — replaces big .card for content-heavy views */
-.compact-card { padding: 8px 10px; }
+.compact-card { padding: 8px 8px; }
 .flat-card    { box-shadow: none; }
 
 /* Card toolbar (filter chips row at top of a card) */
@@ -1229,29 +1301,32 @@ tbody tr:hover { background: var(--row-hover); }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
-  margin-bottom: 6px;
-  padding-bottom: 6px;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
 }
-.toolbar-left   { display: flex; align-items: center; gap: 6px; }
+.toolbar-left   { display: flex; align-items: center; gap: 4px; }
 .toolbar-title  { font-size: 12px; font-weight: 600; }
-.toolbar-filters{ display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
-.toolbar-divider{ width: 1px; height: 14px; background: var(--border); margin: 0 3px; }
+.toolbar-filters{ display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+/* ★ 第 24 增量：分隔线的 margin 与容器 gap **会相加** —— 原来 gap:3px + margin:0 3px
+   ⇒ 渲染出的兄弟间隙是 6px（离阶）。★ 源码层逐值看两个 3px 都是「发丝豁免」，
+   ⇒ 结构上发现不了「合起来才离阶」⇒ 由运行时尺（rect 实测）抓出并修掉。 */
+.toolbar-divider{ width: 1px; height: 14px; background: var(--border); margin: 0; }
 
 /* Section heading */
-.section-head       { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.section-head       { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
 .section-head.tight { margin-bottom: 4px; }
 .section-head h3    { margin: 0; font-size: 12px; font-weight: 600; }
 .section-head.sm    { margin-bottom: 4px; font-size: 11px; }
-.section-hint       { font-size: 9px; color: var(--muted); font-weight: 400; margin-left: auto; }
+.section-hint       { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: auto; }
 
 /* Dense table — half the padding of global table */
 .table-wrap  { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .dense-table { font-size: 11px; width: 100%; }
-.dense-table thead th { padding: 3px 6px; font-size: 9px; white-space: nowrap; }
-.dense-table tbody td { padding: 4px 6px; }
+.dense-table thead th { padding: 3px 4px; font-size: 11px; white-space: nowrap; }
+.dense-table tbody td { padding: 4px 4px; }
 
 /* Chip (inline stat / pill) */
 .chip {
@@ -1262,7 +1337,7 @@ tbody tr:hover { background: var(--row-hover); }
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 99px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
 .chip strong { color: var(--text); font-weight: 600; }
@@ -1272,14 +1347,14 @@ tbody tr:hover { background: var(--row-hover); }
 
 /* Profile / task pill (filter toggle) */
 .profile-pill {
-  padding: 1px 7px;
+  padding: 1px 8px;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 99px;
-  font-size: 10px;
+  font-size: 11px;
   cursor: pointer;
   color: var(--muted);
-  transition: color .12s, border-color .12s, background .12s;
+  transition: color .12s var(--kx-motion-ease-out), border-color .12s var(--kx-motion-ease-out), background .12s var(--kx-motion-ease-out);
 }
 .profile-pill:hover { color: var(--text); }
 .profile-pill.active {
@@ -1293,7 +1368,7 @@ tbody tr:hover { background: var(--row-hover); }
 /* Top bar — slim page header bar */
 .top-bar {
   margin-bottom: 8px;
-  padding: 8px 10px;
+  padding: 8px 8px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1301,11 +1376,11 @@ tbody tr:hover { background: var(--row-hover); }
 .top-bar-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
-.top-bar-head h2 { font-size: 15px; margin: 0; flex-shrink: 0; font-weight: 600; }
+.top-bar-head h2 { font-size: 16px; margin: 0; flex-shrink: 0; font-weight: 600; }
 .top-bar-head .refresh-btn { margin-left: auto; }
 .hero-stats { display: flex; flex-wrap: wrap; gap: 4px; }
 
@@ -1326,15 +1401,15 @@ tbody tr:hover { background: var(--row-hover); }
   overflow-y: auto;
   background: var(--card);
   border-radius: var(--radius);
-  padding: 20px;
+  padding: 16px;
   box-shadow: var(--kx-shadow-md);
 }
 .modal-panel-wide { width: min(560px, 100%); }
-.modal-panel h3   { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.modal-panel h3   { margin: 0 0 12px; font-size: 16px; font-weight: 600; }
 .modal-actions    { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 .modal-form-row   { margin-bottom: 12px; }
 .modal-alert {
-  padding: 10px 12px;
+  padding: 8px 12px;
   margin-bottom: 12px;
   border-radius: 6px;
   font-size: 12px;
@@ -1345,7 +1420,7 @@ tbody tr:hover { background: var(--row-hover); }
 .modal-target {
   font-size: 12px;
   color: var(--muted);
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .modal-target code { font-size: 11px; }
 
@@ -1355,7 +1430,7 @@ tbody tr:hover { background: var(--row-hover); }
   font-size: 12px;
   font-weight: 600;
   color: var(--text);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
 }
@@ -1380,4 +1455,13 @@ tbody tr:hover { background: var(--row-hover); }
 .el-form-item__error {
   max-height: 20px !important;
   overflow: hidden !important;
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition-property: background-color, border-color, color, box-shadow;
+  }
+  .btn-success:hover:not(:disabled) { transform: none; }
 }

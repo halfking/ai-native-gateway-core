@@ -1,0 +1,436 @@
+{
+  "metric": "wallCount = 该页落在「装饰性指标墙」（同一父容器下 >= 3 个指标格，且其中 >= 2 个带装饰性强调色）里的墙数。★ 第 36 增量：accent 的落点从「数字的计算色」扩到「数字 / 卡底主色淡染 / 卡底描边 / 阴影」；页面清单 = 108 条静态路由 + 29 条 tab 变体（★ 从视图源码里各自声明 tab id 的那一行派生 ⇒ 视图加 tab ⇒ 清单自动跟着长）。棘轮：不得上升。★ 硬闸另算：只要有 1 面墙 ⇒ 判红；★ 页面被重定向到非业务页（激活向导 / 登录页）⇒ 判红（★「没量到」不许读成「通过」）。",
+  "pages": {
+    "/login": {
+      "wallCount": 0
+    },
+    "/forbidden": {
+      "wallCount": 0
+    },
+    "/dashboard": {
+      "wallCount": 0
+    },
+    "/": {
+      "wallCount": 0
+    },
+    "/live": {
+      "wallCount": 0
+    },
+    "/live/request/:requestId": {
+      "wallCount": 0
+    },
+    "/providers": {
+      "wallCount": 0
+    },
+    "/providers/:id": {
+      "wallCount": 0
+    },
+    "/key-applications": {
+      "wallCount": 0
+    },
+    "/catalog": {
+      "wallCount": 0
+    },
+    "/models": {
+      "wallCount": 0
+    },
+    "/routing-v2": {
+      "wallCount": 0
+    },
+    "/routing-v2/credentials": {
+      "wallCount": 0
+    },
+    "/probe-health": {
+      "wallCount": 0
+    },
+    "/probe-health/detail": {
+      "wallCount": 0
+    },
+    "/system-monitor": {
+      "wallCount": 0
+    },
+    "/routing-v2/work-types": {
+      "wallCount": 0
+    },
+    "/routing-v2/work-types/settings": {
+      "wallCount": 0
+    },
+    "/routing-v2/work-types/:key": {
+      "wallCount": 0
+    },
+    "/routing-v2/auto-ops": {
+      "wallCount": 0
+    },
+    "/routing-v2/annotations": {
+      "wallCount": 0
+    },
+    "/routing-v2/annotations/stats": {
+      "wallCount": 0
+    },
+    "/routing-v2/task-profile": {
+      "wallCount": 0
+    },
+    "/routing-v2/auto-tuning": {
+      "wallCount": 0
+    },
+    "/routing-policy": {
+      "wallCount": 0
+    },
+    "/free-pool": {
+      "wallCount": 0
+    },
+    "/free-discovery": {
+      "wallCount": 0
+    },
+    "/tenants": {
+      "wallCount": 0
+    },
+    "/tenants/:tenantId": {
+      "wallCount": 0
+    },
+    "/audit-logs": {
+      "wallCount": 0
+    },
+    "/format-anomalies": {
+      "wallCount": 0
+    },
+    "/model-integrity": {
+      "wallCount": 0
+    },
+    "/users": {
+      "wallCount": 0
+    },
+    "/pricing": {
+      "wallCount": 0
+    },
+    "/model-pricing": {
+      "wallCount": 0
+    },
+    "/tenant/models": {
+      "wallCount": 0
+    },
+    "/tenant/account": {
+      "wallCount": 0
+    },
+    "/tenant/bills": {
+      "wallCount": 0
+    },
+    "/tenant/pricing": {
+      "wallCount": 0
+    },
+    "/tenant/orders/:id": {
+      "wallCount": 0
+    },
+    "/tenant/usage": {
+      "wallCount": 0
+    },
+    "/maas/models": {
+      "wallCount": 0
+    },
+    "/maas/account": {
+      "wallCount": 0
+    },
+    "/maas/pricing": {
+      "wallCount": 0
+    },
+    "/maas/orders/:id": {
+      "wallCount": 0
+    },
+    "/maas/usage": {
+      "wallCount": 0
+    },
+    "/keys": {
+      "wallCount": 0
+    },
+    "/keys/:id": {
+      "wallCount": 0
+    },
+    "/routing": {
+      "wallCount": 0
+    },
+    "/routing-overview": {
+      "wallCount": 0
+    },
+    "/routing-decisions": {
+      "wallCount": 0
+    },
+    "/correlations": {
+      "wallCount": 0
+    },
+    "/routing/overrides": {
+      "wallCount": 0
+    },
+    "/routing/overrides/audit": {
+      "wallCount": 0
+    },
+    "/quality-correlations": {
+      "wallCount": 0
+    },
+    "/request-logs": {
+      "wallCount": 0
+    },
+    "/request-detail/:requestId": {
+      "wallCount": 0
+    },
+    "/dispatch/waterfall": {
+      "wallCount": 0
+    },
+    "/admin/session-analytics/users": {
+      "wallCount": 0
+    },
+    "/admin/session-analytics/users/:owner": {
+      "wallCount": 0
+    },
+    "/admin/session-analytics/clients/:id": {
+      "wallCount": 0
+    },
+    "/admin/session-analytics/tasks/:id": {
+      "wallCount": 0
+    },
+    "/admin/session-analytics/filter-options": {
+      "wallCount": 0
+    },
+    "/admin/compression": {
+      "wallCount": 0
+    },
+    "/admin/data-lifecycle": {
+      "wallCount": 0
+    },
+    "/admin/settings": {
+      "wallCount": 0
+    },
+    "/admin/agents": {
+      "wallCount": 0
+    },
+    "/admin/modules": {
+      "wallCount": 0
+    },
+    "/admin/prompt-injection": {
+      "wallCount": 0
+    },
+    "/admin/approval-config": {
+      "wallCount": 0
+    },
+    "/admin/approvals": {
+      "wallCount": 0
+    },
+    "/admin/approvals/:id": {
+      "wallCount": 0
+    },
+    "/admin/sanitize-rules": {
+      "wallCount": 0
+    },
+    "/admin/output-compliance": {
+      "wallCount": 0
+    },
+    "/admin/usage": {
+      "wallCount": 0
+    },
+    "/admin/usage-trends": {
+      "wallCount": 0
+    },
+    "/admin/usage-enhanced": {
+      "wallCount": 0
+    },
+    "/admin/board-operational": {
+      "wallCount": 0
+    },
+    "/admin/ops-overview": {
+      "wallCount": 0
+    },
+    "/admin/subscription-tiers": {
+      "wallCount": 0
+    },
+    "/admin/turns/filter-options": {
+      "wallCount": 0
+    },
+    "/admin/data-lifecycle/migration-state": {
+      "wallCount": 0
+    },
+    "/admin/request-actions/:id": {
+      "wallCount": 0
+    },
+    "/admin/storage-and-log-config": {
+      "wallCount": 0
+    },
+    "/admin/reconciliation": {
+      "wallCount": 0
+    },
+    "/admin/sessions/:id": {
+      "wallCount": 0
+    },
+    "/admin/turns": {
+      "wallCount": 0
+    },
+    "/admin/proxy": {
+      "wallCount": 0
+    },
+    "/admin/request-registry": {
+      "wallCount": 0
+    },
+    "/admin/request-registry/journey/:requestId": {
+      "wallCount": 0
+    },
+    "/admin/connection-registry": {
+      "wallCount": 0
+    },
+    "/admin/connection-registry/:credentialId/recovery": {
+      "wallCount": 0
+    },
+    "/examples": {
+      "wallCount": 0
+    },
+    "/chat": {
+      "wallCount": 0
+    },
+    "/bootstrap": {
+      "wallCount": 0
+    },
+    "/customer/update-activate": {
+      "wallCount": 0
+    },
+    "/customer/site": {
+      "wallCount": 0
+    },
+    "/customer/activate": {
+      "wallCount": 0
+    },
+    "/customer/license": {
+      "wallCount": 0
+    },
+    "/customer/agreement": {
+      "wallCount": 0
+    },
+    "/customer/offline-activation": {
+      "wallCount": 0
+    },
+    "/maintain": {
+      "wallCount": 0
+    },
+    "/maintain/:pathMatch(.*)*": {
+      "wallCount": 0
+    },
+    "/ops/vibecoding": {
+      "wallCount": 0
+    },
+    "/dev/waterfall-preview": {
+      "wallCount": 0
+    },
+    "/dev/live-topology-preview": {
+      "wallCount": 0
+    },
+    "/dev/live-request-preview/:requestId": {
+      "wallCount": 0
+    },
+    "/:pathMatch(.*)*": {
+      "wallCount": 0
+    },
+    "/dashboard?tab=board": {
+      "wallCount": 0
+    },
+    "/dashboard?tab=stream": {
+      "wallCount": 0
+    },
+    "/dashboard?tab=stats": {
+      "wallCount": 0
+    },
+    "/dashboard?tab=selfcheck": {
+      "wallCount": 0
+    },
+    "/models?tab=canonical": {
+      "wallCount": 0
+    },
+    "/models?tab=catalog": {
+      "wallCount": 0
+    },
+    "/models?tab=name-mapping": {
+      "wallCount": 0
+    },
+    "/routing-v2/auto-ops?tab=annotate": {
+      "wallCount": 0
+    },
+    "/routing-v2/auto-ops?tab=stats": {
+      "wallCount": 0
+    },
+    "/routing-v2/auto-ops?tab=profiles": {
+      "wallCount": 0
+    },
+    "/routing-v2/auto-ops?tab=tuning": {
+      "wallCount": 0
+    },
+    "/routing-v2/credentials?tab=list": {
+      "wallCount": 0
+    },
+    "/routing-v2/credentials?tab=heatmap": {
+      "wallCount": 0
+    },
+    "/routing-v2/credentials?tab=routing-log": {
+      "wallCount": 0
+    },
+    "/routing-v2/credentials?tab=error-trend": {
+      "wallCount": 0
+    },
+    "/routing-v2/credentials?tab=probe-health": {
+      "wallCount": 0
+    },
+    "/routing-v2?tab=analytics": {
+      "wallCount": 0
+    },
+    "/routing-v2?tab=overview": {
+      "wallCount": 0
+    },
+    "/routing-v2?tab=policy": {
+      "wallCount": 0
+    },
+    "/routing-v2?tab=live": {
+      "wallCount": 0
+    },
+    "/routing-v2?tab=resolve": {
+      "wallCount": 0
+    },
+    "/routing-v2?tab=smart": {
+      "wallCount": 0
+    },
+    "/admin/prompt-injection?tab=policy": {
+      "wallCount": 0
+    },
+    "/admin/prompt-injection?tab=engines": {
+      "wallCount": 0
+    },
+    "/admin/prompt-injection?tab=severity": {
+      "wallCount": 0
+    },
+    "/admin/prompt-injection?tab=rules": {
+      "wallCount": 0
+    },
+    "/admin/prompt-injection?tab=canary": {
+      "wallCount": 0
+    },
+    "/admin/prompt-injection?tab=approvals": {
+      "wallCount": 0
+    },
+    "/admin/prompt-injection?tab=stats": {
+      "wallCount": 0
+    }
+  },
+  "updated": "2026-10-28",
+  "history": [
+    {
+      "updated": "2026-10-28",
+      "note": "★ 第 32 增量【引导基线】：全量 108 条静态路由先一律钉 0。★ 引导基线**不是结论**，它只是让棘轮有尺可用；结论以同一把尺的实测为准（见下一条）。",
+      "pages": 108
+    },
+    {
+      "updated": "2026-10-28",
+      "note": "★ 第 32 增量【实测回填】：★ 同一把尺（design-hero-metric-runtime-check.mjs）先在**修法前**全量实测 108 页 ⇒ **1 处装饰性指标墙**（`/pricing`：7/7 格的主色巨数字盒子，退出码 1，硬闸与棘轮同时命中）⇒ ★ 修法落地（7 个盒子改成「标签 → 值」的行）后再全量实测 108 页 ⇒ **0 处**，退出码 0 ⇒ ⇒ 逐页上限全部回填为 **0**。★ ★★ 本条**只降不升**：写回值 = min(旧值, 实测值) ⇒ 重建基线这条路也放松不了棘轮。★ ★★ **两处读数是两条独立证据**：★ ① 运行时门（全量 108 页，浏览器实测计算色）；★ ② 源码级扫查（「24px 数值 + 主色染色」全仓 4 处命中 ⇒ 3 处是合法的价格卡/单个金额、1 处就是 `/pricing`）⇒ ★ 两边指向同一处。★ ★★ 「修法后 = 0」是**读数**，不是**推断**：★ 修法前的读数是 1、棘轮在那次读数里确实红了（`/pricing 由 0 升到 1`）。",
+      "pages": 108
+    },
+    {
+      "at": "2026-10-28",
+      "change": "基线更新（只许降）",
+      "pages": 137,
+      "measuredPages": 135,
+      "note": "写回值 = min(旧值, 实测值)；★ 本次只实测了 135 页（子集运行）⇒ 其余 2 页**未参与写回**（它们的值原样保留）。"
+    }
+  ]
+}

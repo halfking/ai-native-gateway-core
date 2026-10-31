@@ -87,7 +87,7 @@ function close() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 18px 8px;
+  padding: 16px 16px 8px;
 }
 
 .user-info-dialog__title {
@@ -115,7 +115,7 @@ function close() {
 
 .user-info-dialog__body {
   margin: 0;
-  padding: 8px 18px 16px;
+  padding: 8px 16px 16px;
 }
 
 .user-info-row {
@@ -146,7 +146,7 @@ function close() {
 .user-info-dialog__footer {
   display: flex;
   justify-content: flex-end;
-  padding: 8px 18px 16px;
+  padding: 8px 16px 16px;
 }
 
 /* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──

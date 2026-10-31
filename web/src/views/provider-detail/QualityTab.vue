@@ -65,6 +65,8 @@ const radarData = computed(() => {
     { name: qp('performance'), value: scores.performance },
     { name: qp('stability'), value: scores.stability },
     { name: qp('costEfficiency'), value: scores.cost_efficiency },
+    // 2026-10-29: 模型可信度。null = 没测过，显示「—」而不是 0 分。
+    { name: qp('credibility'), value: scores.credibility ?? 0, optional: scores.credibility == null },
   ]
 })
 
@@ -154,10 +156,15 @@ function modelLabel(name: string | null | undefined): string {
         <div class="stat-card" v-for="item in radarData" :key="item.name">
           <div class="stat-label">{{ item.name }}</div>
           <div class="stat-value" :style="{ color: scoreColor(item.value) }">
-            {{ formatQualityScore(item.value) }}
+            <!-- 可选维度（可信度）未启用时没有数据 ⇒ 显示「—」而不是 0 分：
+                 0 分在质量语境里读作「极差」，而这里其实是「没测」。 -->
+            {{ item.optional && !item.value ? '—' : formatQualityScore(item.value) }}
           </div>
           <div class="bar-track">
-            <div class="bar-fill" :style="{ width: barWidth(item.value), background: scoreColor(item.value) }" />
+            <div
+              class="bar-fill"
+              :style="{ width: item.optional && !item.value ? '0%' : barWidth(item.value), background: scoreColor(item.value) }"
+            />
           </div>
         </div>
       </div>
@@ -214,16 +221,16 @@ function modelLabel(name: string | null | undefined): string {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 14px 16px;
+  padding: 12px 16px;
 }
-.stat-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-.stat-value { font-size: 22px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
-.stat-desc { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.stat-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.stat-value { font-size: 24px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.stat-desc { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .grade-badge {
   display: inline-block;
   font-size: 11px;
   font-weight: 700;
-  padding: 2px 7px;
+  padding: 2px 8px;
   border-radius: 4px;
   line-height: 1.4;
 }
@@ -245,7 +252,7 @@ function modelLabel(name: string | null | undefined): string {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 12px 14px;
+  padding: 12px 12px;
 }
 .stat-cell .stat-value { font-size: 20px; }
 .stat-value.success { color: var(--success); }
@@ -256,7 +263,7 @@ function modelLabel(name: string | null | undefined): string {
 .quality-table th,
 .quality-table td {
   text-align: left;
-  padding: 8px 10px;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--border);
 }
 .quality-table th { color: var(--muted); font-weight: 600; font-size: 12px; }

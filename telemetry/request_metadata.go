@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/kaixuan/llm-gateway-go/internal/clienttype"
 )
 
 // ─── Agent system prompt pattern registry ───
@@ -71,6 +73,14 @@ func defaultAgentPatterns() []agentPatternEntry {
 			"minimax code by anthropic",
 			"minimax-code interactive",
 			"minimax's official cli",
+			// 2026-10-29 identification round (211 24h UA 分布实测): the
+			// shipping MiniMax Code client self-describes as "You are Mavis
+			// … You run inside MiniMax Code" — the archived "you are minimax
+			// code" form never fires on it, which left 2,300+ requests/day
+			// with an empty agent_name despite a clean self-identification
+			// sitting in the system prompt.
+			"you run inside minimax code",
+			"you are mavis",
 		}},
 		{"deepseek-code", []string{
 			"you are deepseek code",
@@ -84,6 +94,90 @@ func defaultAgentPatterns() []agentPatternEntry {
 			"you are deepseek-coder",
 			"deepseek-coder cli",
 			"you are deepseek-v3 coding",
+		}},
+		// 2026-10-29 domestic-vendor round (CN coding-agent coverage): the
+		// remaining CN-vendor coding tools, each anchored on its
+		// self-description shape (the same lesson as the minimax/deepseek
+		// entries — bare product words misfire on any prompt that merely
+		// mentions them, so every pattern below is either a "you are …"
+		// self-identification, a hyphenated CLI token, or the CJK product
+		// name). Names are the canonical clienttype values, aligned 1:1 with
+		// agent-companion's catalog kinds so the gateway label and the
+		// runtime inventory name the same tool the same way. All entries sit
+		// BEFORE the bare claude fallback: several of these forks mention
+		// Claude in their prompts.
+		{"codebuddy", []string{
+			// Tencent CodeBuddy Code (npm @tencent-ai/codebuddy-code,
+			// codebuddy.ai); ACP-capable since CodeBuddy Code 2.0 (2026-01).
+			"you are codebuddy",
+			"codebuddy code",
+			"codebuddy cli",
+			"tencent codebuddy",
+		}},
+		{"trae", []string{
+			// ByteDance trae-agent (github.com/bytedance/trae-agent, binary
+			// trae-cli) — distinct from the closed TRAE IDE, whose prompts
+			// self-describe as Trae too; the shared "trae" name is honest:
+			// both are ByteDance Trae surfaces.
+			"you are trae",
+			"trae agent",
+			"trae-cli",
+			"trae cli",
+		}},
+		{"comate", []string{
+			// Baidu Comate's CLI is named Zulu (npm @comate/zulu); both
+			// spellings land on the vendor name.
+			"you are zulu",
+			"zulu cli",
+			"you are comate",
+			"comate cli",
+			"baidu comate",
+		}},
+		{"qwen-code", []string{
+			// Alibaba Qwen Code (github.com/QwenLM/qwen-code), a gemini-cli
+			// fork that rebrands its self-description.
+			"you are qwen code",
+			"qwen-code cli",
+			"qwen code cli",
+		}},
+		{"kimi-cli", []string{
+			// Moonshot Kimi CLI (github.com/MoonshotAI/kimi-cli).
+			"you are kimi",
+			"kimi cli",
+			"kimi-cli",
+			"moonshot kimi",
+		}},
+		{"iflow", []string{
+			// iFlow CLI (github.com/iflow-ai/iflow-cli), a Qwen-Code fork;
+			// hosted service shut down 2026-04-17 but installed clients
+			// still generate traffic worth labelling.
+			"you are iflow",
+			"iflow cli",
+			"iflow-cli",
+		}},
+		{"raccoon", []string{
+			// SenseTime 代码小浣熊 Raccoon — the CJK product name is the
+			// strongest 特征词; the latin forms stay anchored (bare
+			// "raccoon" would fire on any prompt about the animal).
+			"you are raccoon",
+			"raccoon cli",
+			"raccoon code",
+			"代码小浣熊",
+		}},
+		{"iflycode", []string{
+			// iFlytek 星火飞码 (xfyun.cn/solutions/iflycode) — the bare
+			// token is rare enough to anchor itself.
+			"you are iflycode",
+			"iflycode cli",
+			"iflycode",
+		}},
+		{"lingma", []string{
+			// Alibaba Cloud 通义灵码 TONGYI Lingma (lingma.aliyun.com, now
+			// folding into Qoder CN).
+			"you are lingma",
+			"lingma cli",
+			"tongyi lingma",
+			"通义灵码",
 		}},
 		// Bare Claude / Anthropic fallback — only fires when no more-specific
 		// agent above matched. Useful for custom Claude-API clients that embed
@@ -401,44 +495,89 @@ func ExtractAgentNameFromRequest(r *http.Request, body []byte) string {
 	uaDerived := ""
 	if ua != "" {
 		uaLower := strings.ToLower(ua)
+		// 2026-10-29 identification round: every token match goes through
+		// clienttype.HasToken (dual token boundary) — plain Contains
+		// over-matches lookalikes ("ZCodex/2.0" would hit zcode before the
+		// codex branch, "MiniMaxCoder/1.0" would hit minimaxcode,
+		// "visualized/2.0" contains "zed"). Same matcher as the streaming
+		// table (client_fingerprint.go) — one implementation, two tables.
 		switch {
-		case strings.Contains(uaLower, "claude-code"):
+		case clienttype.HasToken(uaLower, "claude-code"):
 			return "claude-code"
-		case strings.Contains(uaLower, "opencode"):
+		// 2026-10-29 identification round: Claude Code's real wire UA is
+		// "claude-cli/{ver}" — add it so client stats don't misattribute
+		// real Claude Code traffic as unknown (RISK-7).
+		case clienttype.HasToken(uaLower, "claude-cli"):
+			return "claude-code"
+		case clienttype.HasToken(uaLower, "opencode"):
 			return "opencode"
-		case strings.Contains(uaLower, "zcode"):
+		case clienttype.HasToken(uaLower, "zcode"):
 			return "zcode"
-		case strings.Contains(uaLower, "codex"):
+		case clienttype.HasToken(uaLower, "codex"):
 			return "codex"
-		case strings.Contains(uaLower, "cursor"):
+		case clienttype.HasToken(uaLower, "cursor"):
 			return "cursor"
-		case strings.Contains(uaLower, "vscode"):
+		case clienttype.HasToken(uaLower, "vscode"):
 			return "vscode"
-		case strings.Contains(uaLower, "roocode"), strings.Contains(uaLower, "roo-code"):
+		case clienttype.HasToken(uaLower, "roocode"), clienttype.HasToken(uaLower, "roo-code"):
 			return "roocode"
-		case strings.Contains(uaLower, "windsurf"):
+		case clienttype.HasToken(uaLower, "windsurf"):
 			return "windsurf"
-		case strings.Contains(uaLower, "zed"):
+		case clienttype.HasToken(uaLower, "zed"):
 			return "zed"
-		case strings.Contains(uaLower, "jetbrains"):
+		case clienttype.HasToken(uaLower, "jetbrains"):
 			return "jetbrains"
-		case strings.Contains(uaLower, "github-copilot"), strings.Contains(uaLower, "copilot"):
+		case clienttype.HasToken(uaLower, "github-copilot"), clienttype.HasToken(uaLower, "copilot"):
 			return "copilot"
 		// 2026-09-21 audit: domestic coding-agent clients.
-		case strings.Contains(uaLower, "minimax-code"):
+		case clienttype.HasToken(uaLower, "minimax-code"):
 			return "minimax-code"
-		case strings.Contains(uaLower, "deepseek-code"), strings.Contains(uaLower, "deepseek-ide"),
-			strings.Contains(uaLower, "deepseek-cli"):
+		// 2026-10-29 production verification (211): the client on the wire
+		// sends bare "MiniMaxCode" — matched here so client stats don't
+		// misattribute real MiniMax Code traffic as unknown. Same reasoning
+		// as the streaming-side table (client_fingerprint.go).
+		case clienttype.HasToken(uaLower, "minimaxcode"):
+			return "minimax-code"
+		case clienttype.HasToken(uaLower, "deepseek-code"), clienttype.HasToken(uaLower, "deepseek-ide"),
+			clienttype.HasToken(uaLower, "deepseek-cli"):
 			return "deepseek-code"
-		case strings.Contains(uaLower, "postman"):
+		// 2026-10-29 identification round: pi coding agent (pi.dev) —
+		// official UA "pi/{ver} ({platform}; node/{v}; {arch})". Same
+		// boundary rule as the clienttype table; must stay in sync.
+		case clienttype.HasToken(uaLower, "pi"):
+			return "pi"
+		// 2026-10-29 domestic-vendor round: the remaining CN-vendor
+		// coding tools — same tokens and same canonical names as the
+		// clienttype.DetectFromRequest table (one vocabulary, two
+		// call sites; both must move together).
+		case clienttype.HasToken(uaLower, "codebuddy"), clienttype.HasToken(uaLower, "code-buddy"):
+			return "codebuddy"
+		case clienttype.HasToken(uaLower, "trae-cli"), clienttype.HasToken(uaLower, "trae-agent"),
+			clienttype.HasToken(uaLower, "trae"):
+			return "trae"
+		case clienttype.HasToken(uaLower, "zulu"), clienttype.HasToken(uaLower, "comate"):
+			return "comate"
+		case clienttype.HasToken(uaLower, "qwen-code"), clienttype.HasToken(uaLower, "qwen-cli"):
+			return "qwen-code"
+		case clienttype.HasToken(uaLower, "kimi-cli"), clienttype.HasToken(uaLower, "kimi"):
+			return "kimi-cli"
+		case clienttype.HasToken(uaLower, "iflow-cli"), clienttype.HasToken(uaLower, "iflow"):
+			return "iflow"
+		case clienttype.HasToken(uaLower, "raccoon"):
+			return "raccoon"
+		case clienttype.HasToken(uaLower, "iflycode"):
+			return "iflycode"
+		case clienttype.HasToken(uaLower, "lingma"):
+			return "lingma"
+		case clienttype.HasToken(uaLower, "postman"):
 			uaDerived = "postman"
-		case strings.Contains(uaLower, "insomnia"):
+		case clienttype.HasToken(uaLower, "insomnia"):
 			uaDerived = "insomnia"
-		case strings.Contains(uaLower, "python"):
+		case clienttype.HasToken(uaLower, "python"):
 			uaDerived = "python-client"
-		case strings.Contains(uaLower, "go-http-client"):
+		case clienttype.HasToken(uaLower, "go-http-client"):
 			uaDerived = "go-client"
-		case strings.Contains(uaLower, "curl"):
+		case clienttype.HasToken(uaLower, "curl"):
 			uaDerived = "curl"
 		default:
 			uaDerived = "unknown"
@@ -493,6 +632,7 @@ func ExtractAgentType(r *http.Request) string {
 		strings.Contains(ua, "zcode") ||
 		// R52：国内编程客户端注册补齐——缺这里会使 source_channel 落空。
 		strings.Contains(ua, "minimax-code") ||
+		strings.Contains(ua, "minimaxcode") ||
 		strings.Contains(ua, "deepseek-code") ||
 		strings.Contains(ua, "deepseek-ide") ||
 		strings.Contains(ua, "deepseek-cli") ||
@@ -504,7 +644,12 @@ func ExtractAgentType(r *http.Request) string {
 		strings.Contains(ua, "zed") ||
 		strings.Contains(ua, "github-copilot") ||
 		strings.Contains(ua, "copilot") ||
-		strings.Contains(ua, "jetbrains") {
+		strings.Contains(ua, "jetbrains") ||
+		// 2026-10-29 identification round: pi coding agent is a CLI
+		// harness — without this its source_channel falls through to ""
+		// exactly like the R52 domestic clients did.
+		strings.Contains(ua, " pi/") ||
+		strings.HasPrefix(ua, "pi/") {
 		return "cli"
 	}
 

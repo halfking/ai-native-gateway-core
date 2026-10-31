@@ -6,10 +6,12 @@
 // summary_generated_at timestamp.
 
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { surfaceError } from '../i18n/errorSurface'
 import {
   triggerInstantSummary,
   getSessionSnapshot,
+  isRecordingUnavailable,
 } from '../api/sessions_v2'
 
 
@@ -31,6 +33,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: 'summary-updated', snapshot: Record<string, unknown>): void
 }>()
+
+const { t } = useI18n()
 
 const status = ref<'idle' | 'pending' | 'done' | 'failed'>('idle')
 
@@ -111,7 +115,11 @@ async function trigger() {
   } catch (e) {
     if (generation !== pollGeneration || sessionId !== props.sessionId) return
     status.value = 'failed'
-    errMsg.value = surfaceError(e)
+    // W1.3：consent=off ⇒ 即时总结 409 recording_unavailable。说清原因是
+    // 功能未开启（去租户设置开），不是「生成失败，请重试」。
+    errMsg.value = isRecordingUnavailable(e)
+      ? t('requestDetail.bodyStatus.consentOffInline')
+      : surfaceError(e)
   }
 }
 
@@ -182,11 +190,11 @@ onBeforeUnmount(() => {
 .left { min-width: 0; flex: 1; }
 h2 {
   margin: 0 0 4px;
-  font-size: 18px;
+  font-size: 20px;
   color: var(--kx-text);
 }
-p { margin: 0 0 6px; color: var(--muted); font-size: 13px; }
-.metrics { color: var(--muted); font-size: 13px; display: flex; gap: 6px; }
+p { margin: 0 0 4px; color: var(--muted); font-size: 13px; }
+.metrics { color: var(--muted); font-size: 13px; display: flex; gap: 4px; }
 .dot { color: var(--border); }
 .right { display: flex; gap: 8px; align-items: center; }
 .err { color: var(--danger); font-size: 12px; }

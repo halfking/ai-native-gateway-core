@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -921,9 +922,92 @@ func (w *NodeProbeWorker) notifyAutoRouteRefresh(ctx context.Context, credID int
 	}
 }
 
+// nodeProbeMirrorWriteRetryDelay is the pause before the one immediate
+// mirror-write retry (P1-D, audit 2026-10-28 §4). Same shape — and same
+// reasoning — as probeNecessityMirrorDeleteRetryDelay: transient DB faults
+// (lock wait, pooled-connection blip) dominate the failure mass, so one
+// bounded in-cycle retry absorbs them; a still-failing write escalates to
+// llmgw_node_probe_mirror_write_failed_total + an ERROR log rather than
+// being retried forever. A var (not const) so tests can shrink it.
+var nodeProbeMirrorWriteRetryDelay = 200 * time.Millisecond
+
+// nodeProbeMirrorWriteSustainedStreak = from which consecutive-failure count
+// the log wording switches to "sustained outage" (ursm_persist_alert.go
+// parity: one failure may be a blip; a streak means the backoff ladder is
+// being bypassed for every pair on every probe).
+const nodeProbeMirrorWriteSustainedStreak = 3
+
+// nodeProbeMirrorWriteStreak counts consecutive mirror-write failures across
+// both branches; reset to 0 on the first success. Guarded by the worker's
+// own usage pattern (mirror writes are serialized per worker round).
+var nodeProbeMirrorWriteStreak atomic.Int64
+
+// nodeProbeMirrorWriteEscalation decides how one mirror-write failure is
+// logged (extracted so tests can pin the wording ladder without a DB —
+// same "测函数不测接线" lesson as ursm_persist_alert.go). streak is the
+// inclusive consecutive count; sustained outages must read differently
+// from single blips so alert rules can grade them.
+func nodeProbeMirrorWriteEscalation(streak int64, branch string) (slog.Level, string) {
+	if streak >= nodeProbeMirrorWriteSustainedStreak {
+		return slog.LevelError,
+			"node_probe_worker: mirror write FAILED CONTINUOUSLY (backoff ladder unadvanced — pairs re-fire every pump tick until writes recover)"
+	}
+	return slog.LevelError, "node_probe_worker: mirror " + branch + " write failed after immediate retry (ladder for this pair is unadvanced; next probe rewrites it)"
+}
+
+// execMirrorWrite runs one mirror UPDATE with the P1-D bounded-retry
+// wrapper: metrics + streak + graded ERROR logs, no silent Warn.
+func (w *NodeProbeWorker) execMirrorWrite(ctx context.Context, branch, summary string, exec func() error) {
+	err := exec()
+	if err == nil {
+		if nodeProbeMirrorWriteStreak.Swap(0) > 0 {
+			slog.InfoContext(ctx, "node_probe_worker: mirror write recovered",
+				"branch", branch)
+		}
+		return
+	}
+	// One bounded immediate retry absorbs transient faults in-cycle.
+	select {
+	case <-time.After(nodeProbeMirrorWriteRetryDelay):
+	case <-ctx.Done():
+		nodeProbeMirrorWriteRetriesTotal.Inc()
+		nodeProbeMirrorWriteFailuresTotal.WithLabelValues(branch).Inc()
+		streak := nodeProbeMirrorWriteStreak.Add(1)
+		nodeProbeMirrorWriteFailureStreak.Set(float64(streak))
+		slog.ErrorContext(ctx, "node_probe_worker: mirror write retry abandoned — context done",
+			"branch", branch, "credential_model", summary, "streak", streak,
+			"write_error", err.Error(), "ctx_error", ctx.Err())
+		return
+	}
+	nodeProbeMirrorWriteRetriesTotal.Inc()
+	if err = exec(); err == nil {
+		if nodeProbeMirrorWriteStreak.Swap(0) > 0 {
+			slog.InfoContext(ctx, "node_probe_worker: mirror write recovered after retry",
+				"branch", branch)
+		}
+		return
+	}
+	nodeProbeMirrorWriteFailuresTotal.WithLabelValues(branch).Inc()
+	streak := nodeProbeMirrorWriteStreak.Add(1)
+	nodeProbeMirrorWriteFailureStreak.Set(float64(streak))
+	lvl, msg := nodeProbeMirrorWriteEscalation(streak, branch)
+	slog.Log(ctx, lvl, msg,
+		"branch", branch, "credential_model", summary, "streak", streak, "error", err)
+}
+
 // mirrorNodeProbeState writes the success-reset / failure-backoff UPDATE to
 // node_probe_state so legacy dashboard + recovery readers stay consistent
 // during the transition (queue row remains the primary state).
+//
+// ★ R149 轮：写失败**不再静默吞掉**。实测证明这条路径会「看起来跑了、
+// 却没落地」：探针失败的结果若没写进 node_probe_state，路由闸门那一列
+// （next_retry_at）就只剩 pump 的 45 秒投递 holdoff 在推进 ⇒ 5 分钟/6 小时
+// 的退避阶梯被架空 ⇒ 上游长期不可用时该 (凭据×模型) 每 45~60 秒就被重新
+// 放回候选池。
+// ★ P1-D 轮（audit 2026-10-28 §4）：R149 只把 Warn 留在了日志里 ——
+// 「WARN 不是告警」（ursm_persist_alert.go 的 701 次/62 小时教训）。本轮把
+// 写失败升级为：指标（retry/failed/streak）+ 有限重试（1 次 in-cycle）+
+// 分级 ERROR（连续 3 次起改用「持续停摆」措辞）。路由行为仍不改变。
 func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, model string, attempt int, success bool,
 	direct, gw nodeProbeRoundResult, now time.Time, backoff time.Duration) {
 	if direct.observationOnly {
@@ -941,29 +1025,24 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 		// out of the healthy-parked shape and feed the stale-state
 		// reconciler / pump an endless "error" that is not the node's. The
 		// gateway outcome stays visible via last_gateway_ok = gw.ok.
-		// ★ R149 轮：写失败**不再静默吞掉**。实测（本轮）证明这条路径会「看起来跑了、
-		// 却没落地」：探针失败的结果若没写进 node_probe_state，路由闸门那一列
-		// （next_retry_at）就只剩 pump 的 45 秒投递 holdoff 在推进 ⇒ 5 分钟/6 小时
-		// 的退避阶梯被架空 ⇒ 上游长期不可用时该 (凭据×模型) 每 45~60 秒就被重新
-		// 放回候选池。本改动**不改变任何路由行为**，只把写失败变成可见。
-		if _, err := w.db.Exec(ctx, `
-			UPDATE node_probe_state SET
-				consecutive_failures = 0,
-				consecutive_successes = consecutive_successes + 1,
-				last_attempt_at = now(),
-				next_retry_at = now() + interval '30 days',
-				next_retry_seconds = 2592000,
-				paused = FALSE,
-				last_direct_ok = TRUE,
-				last_gateway_ok = $3,
-				last_err_code = NULL,
-				last_err_detail = NULL,
-				in_flight_until = NULL,
-				updated_at = now()
-			WHERE credential_id = $1 AND raw_model_name = $2`, credID, model, gw.ok); err != nil {
-			slog.WarnContext(ctx, "node_probe_worker: mirror success write failed",
-				"credential_id", credID, "model", model, "error", err)
-		}
+		w.execMirrorWrite(ctx, "success", fmt.Sprintf("%d|%s", credID, model), func() error {
+			_, err := w.db.Exec(ctx, `
+				UPDATE node_probe_state SET
+					consecutive_failures = 0,
+					consecutive_successes = consecutive_successes + 1,
+					last_attempt_at = now(),
+					next_retry_at = now() + interval '30 days',
+					next_retry_seconds = 2592000,
+					paused = FALSE,
+					last_direct_ok = TRUE,
+					last_gateway_ok = $3,
+					last_err_code = NULL,
+					last_err_detail = NULL,
+					in_flight_until = NULL,
+					updated_at = now()
+				WHERE credential_id = $1 AND raw_model_name = $2`, credID, model, gw.ok)
+			return err
+		})
 		return
 	}
 	// 2026-09-17 (R39): mirror the legacy runOne ladder's gateway-side guard —
@@ -979,28 +1058,25 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 	}
 	nextRetryAt := now.Add(backoff)
 	nextSec := int(backoff.Seconds())
-	// ★ R149 轮：同上，写失败必须留痕（这是「退避阶梯被架空」这条链上唯一的可观测点）。
-	if _, err := w.db.Exec(ctx, `
-		UPDATE node_probe_state SET
-			consecutive_failures = CASE WHEN $10::boolean THEN node_probe_state.consecutive_failures ELSE $3 END,
-			consecutive_successes = 0,
-			last_attempt_at = now(),
-			next_retry_at = $4,
-			next_retry_seconds = $5,
-			last_direct_ok = $6,
-			last_gateway_ok = $7,
-			last_err_code = $8,
-			last_err_detail = $9,
-			in_flight_until = NULL,
-			updated_at = now()
-		WHERE credential_id = $1 AND raw_model_name = $2`,
-		credID, model, attempt, nextRetryAt, nextSec,
-		direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw), gatewaySide); err != nil {
-		slog.WarnContext(ctx, "node_probe_worker: mirror failure write failed",
-			"credential_id", credID, "model", model, "attempt", attempt,
-			"backoff", backoff.String(), "next_retry_at", nextRetryAt.UTC().Format(time.RFC3339Nano),
-			"error", err)
-	}
+	w.execMirrorWrite(ctx, "failure", fmt.Sprintf("%d|%s", credID, model), func() error {
+		_, err := w.db.Exec(ctx, `
+			UPDATE node_probe_state SET
+				consecutive_failures = CASE WHEN $10::boolean THEN node_probe_state.consecutive_failures ELSE $3 END,
+				consecutive_successes = 0,
+				last_attempt_at = now(),
+				next_retry_at = $4,
+				next_retry_seconds = $5,
+				last_direct_ok = $6,
+				last_gateway_ok = $7,
+				last_err_code = $8,
+				last_err_detail = $9,
+				in_flight_until = NULL,
+				updated_at = now()
+			WHERE credential_id = $1 AND raw_model_name = $2`,
+			credID, model, attempt, nextRetryAt, nextSec,
+			direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw), gatewaySide)
+		return err
+	})
 }
 
 // insertNodeProbeRun writes the forensic audit row (mirrors runOne's INSERT).

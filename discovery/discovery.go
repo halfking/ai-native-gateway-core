@@ -1179,12 +1179,16 @@ func staleExpiryMayRun(evidenceHasRecentSuccess bool) (bool, string) {
 func (s *Service) sessionFamilyHasRecentSuccess(ctx context.Context) bool {
 	window := s.staleExpiryGraceHours()
 
+	// ★ make_interval 而非 ($1 || ' hours')::interval：|| 是字符串拼接 ⇒ PG 把
+	// $1 定型为 text，Go 侧传 int ⇒ pgx「cannot find encode plan」（int→text），
+	// 探针每轮必炸 ⇒ 永远「无证据」⇒ 陈旧模型永不过期（211 生产 24h 实证；
+	// 与 bg/partition_manager.go 12 处同族，e2223d9a6ac6 先修）。
 	const q = `SELECT EXISTS (
 	  SELECT 1 FROM public.session_turns_hot
-	  WHERE success = TRUE AND ts > now() - ($1 || ' hours')::interval
+	  WHERE success = TRUE AND ts > now() - make_interval(hours => $1::int)
 	  UNION ALL
 	  SELECT 1 FROM public.session_turns
-	  WHERE success = TRUE AND ts > now() - ($1 || ' hours')::interval
+	  WHERE success = TRUE AND ts > now() - make_interval(hours => $1::int)
 	)`
 	var ok bool
 	if err := s.db.QueryRow(ctx, q, window).Scan(&ok); err != nil {

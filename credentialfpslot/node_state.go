@@ -101,7 +101,16 @@ type NodeState struct {
 
 	// P0 新增字段（2026-07-19）：支持实际流量优先恢复
 	LastDisabledAt int64 `json:"last_disabled_at,omitempty"` // 最后一次被禁用的时间
-	DisableCount   int   `json:"disable_count,omitempty"`    // 累计禁用次数（用于动态调整冷却时间）
+	DisableCount   int   `json:"disable_count,omitempty"`    // 累计禁用次数（P0-B 起被消费：第 N 次禁用时长 = cooldown×2^(N−1) 封顶 backoff cap）
+
+	// RecoveredAt (P0-A, 2026-10-28 两层路由审计 G1) 冷却到期后第一个成功
+	// 请求的时刻（unix seconds），由 recordNodeOutcomeScript 的
+	// cooldown_expired+success 分支写入——「实际流量验证恢复」的时刻。
+	// 恢复期渐进回流量（recovery ramp）从这一刻起算：评分侧对
+	// now−RecoveredAt < ramp 窗口的候选降权 + 首跳份额收缩，防止
+	// 「恢复即全量 → 二次打挂 → 再翻红」的 re-flapping。0 = 无恢复证据
+	//（从未禁用，或禁用后还没有成功请求），不参与 ramp。
+	RecoveredAt int64 `json:"recovered_at,omitempty"`
 
 	// F04 (V3 持久化协议能力, 2026-09-30): 协议能力位 —— 与上面的 cooldown
 	// 健康状态是**两件事**：cooldown 是临时降级（TTL 内自然过期），协议能力
@@ -666,6 +675,10 @@ func (m *Manager) recordNodeOutcome(ctx context.Context, credentialID int, model
 		nodeWindowSeconds,
 		settings.NodeFailStreakLimit(),
 		settings.NodeDisabledCooldownSeconds(),
+		// P0-B (2026-10-28 两层路由审计 G2): 反复禁用的指数退避封顶。
+		// 第 N 次禁用时长 = cooldown × 2^(N−1) 封顶本值，与 URSM v2
+		// record_request.lua 的 cool×2^disable_count 同公式同封顶。
+		settings.NodeDisabledBackoffCapSeconds(),
 	).Result()
 	if err != nil {
 		return fmt.Errorf("record node outcome: %w", err)
@@ -715,6 +728,12 @@ func (n *NodeState) recoverIfCooldownExpired(nowUnix int64) {
 		// to provide. The next Lua write would fix it, but in between the
 		// in-memory copy read by callers diverges from Redis.
 		n.DisableCount = 0
+		// P0-A (2026-10-28): recovered_at 保留不动——冷却到期（本函数，本地
+		// 视图翻转）≠ 恢复被验证。真实的 recovered_at 只由 Lua 的
+		// cooldown_expired+success 分支写入 Redis；到期的节点要先接一个真实
+		// 请求（失败→P0-B 指数再禁用 / 成功→recovered_at 落地、ramp 起算）。
+		// 这里若伪造本地 recovered_at，评分侧会把「未验证到期」当成
+		// 「已验证恢复」，ramp 的语义就漂了。
 	}
 }
 
@@ -796,6 +815,13 @@ var setNodeCapabilityScript = redis.NewScript(`
 // resetNodeHealthStateScript resets health/circuit fields without discarding
 // the independent capability sub-tree. It runs atomically with the outcome
 // and capability scripts because all three mutate the same Redis JSON key.
+//
+// P0-A (2026-10-28): 与 breaker.Reset 的语义对称——admin 手动恢复是
+// 「未经流量验证的恢复」，恰恰是 re-flapping 风险最高、最需要 recovery
+// ramp 渐进回流量的场景（HAProxy slow-start 对手动 up 的节点同样生效）。
+// 因此这里**写** recovered_at=now（而非清零），让评分侧对该节点从 reset
+// 时刻起做 5min 渐进回流量。批判审计轮发现首版误写成清零——同一场景
+// 在 breaker 面（进 ramp）与 NodeState 面（不进 ramp）语义相反。
 var resetNodeHealthStateScript = redis.NewScript(`
 	local key = KEYS[1]
 	local raw = redis.call('GET', key)
@@ -804,6 +830,8 @@ var resetNodeHealthStateScript = redis.NewScript(`
 		local ok, decoded = pcall(cjson.decode, raw)
 		if ok and type(decoded) == 'table' then state = decoded end
 	end
+
+	local now = tonumber(redis.call('TIME')[1])
 
 	state.credential_id = tonumber(ARGV[1])
 	state.model = ARGV[2]
@@ -817,6 +845,7 @@ var resetNodeHealthStateScript = redis.NewScript(`
 	state.disabled_reason = nil
 	state.last_disabled_at = nil
 	state.disable_count = nil
+	state.recovered_at = now
 
 	if type(state.capabilities) ~= 'table' or type(state.capabilities.supports_responses) ~= 'boolean' then
 		state.capabilities = nil
@@ -839,7 +868,19 @@ var resetNodeHealthStateScript = redis.NewScript(`
 // ARGV[4] = now (unix seconds, as string)
 // ARGV[5] = window_seconds
 // ARGV[6] = fail_streak_limit
-// ARGV[7] = disabled_cooldown_seconds
+// ARGV[7] = disabled_cooldown_seconds (base cool; Nth disable cools base×2^(N−1))
+// ARGV[8] = backoff_cap_seconds (P0-B: caps base×2^(N−1); URSM-aligned 1800)
+//
+// P0-B (2026-10-28 两层路由审计 G2): 反复禁用的冷却时长从固定值改为
+// cooldown × min(2^disable_count, cap/base)——幂取**递增前**的 disable_count，
+// 与 URSM v2 record_request.lua 的 new_cool = cool×2^disable_count → min(cap)
+// → disable_count+1 完全同形（两套 Redis 状态面的判死退避对齐）。首次禁用
+// （disable_count=0）时长与旧实现逐秒相等，行为漂移只发生在第 2 次及以后
+// 的禁用上——这正是防抖想要的：反复翻红的节点冷却指数拉长，可用容量
+// 下降是可接受的代价（防抖优先于容量），cap 保证不失控。
+//
+// P0-A (G1): cooldown_expired+success 分支额外写 recovered_at——「实际流量
+// 验证恢复」的时刻，供路由评分侧的恢复期渐进回流量（recovery ramp）起算。
 var recordNodeOutcomeScript = redis.NewScript(`
 	local key = KEYS[1]
 	local kind = ARGV[1]
@@ -849,6 +890,17 @@ var recordNodeOutcomeScript = redis.NewScript(`
 	local window_sec = tonumber(ARGV[5])
 	local streak_limit = tonumber(ARGV[6])
 	local cooldown = tonumber(ARGV[7])
+	local backoff_cap = tonumber(ARGV[8] or '1800')
+
+	-- P0-B: 第 (disable_count+1) 次禁用的冷却时长。幂取递增前的
+	-- disable_count（首次禁用 = base，与旧固定值逐秒相等）。纯 min 封顶，
+	-- 与 URSM record_request.lua 逐操作对齐（不加 base 下限——base 被调到
+	-- 超过 cap 时 URSM 同样以 cap 为准，两套状态面不产生第三种语义）。
+	local function disable_cool_seconds(dc)
+		local cool = cooldown * math.pow(2, dc)
+		if cool > backoff_cap then cool = backoff_cap end
+		return cool
+	end
 
 	local raw = redis.call('GET', key)
 	local state = {}
@@ -873,6 +925,7 @@ var recordNodeOutcomeScript = redis.NewScript(`
 	if type(state.disabled_reason) ~= 'string' then state.disabled_reason = nil end
 	if type(state.disable_count) ~= 'number' then state.disable_count = 0 end
 	if type(state.disabled_until) ~= 'number' then state.disabled_until = nil end
+	if type(state.recovered_at) ~= 'number' then state.recovered_at = nil end
 	if type(state.last_success_at) ~= 'number' then state.last_success_at = nil end
 	if type(state.last_failure_at) ~= 'number' then state.last_failure_at = nil end
 	if type(state.last_disabled_at) ~= 'number' then state.last_disabled_at = nil end
@@ -918,6 +971,8 @@ var recordNodeOutcomeScript = redis.NewScript(`
 				state.disable_count = 0
 			end
 			state.disable_count = 0
+			-- P0-A: 实际流量验证恢复的时刻——recovery ramp 的起算点。
+			state.recovered_at = now
 			-- 添加本次成功记录
 			local record = {
 				request_id = request_id,
@@ -932,9 +987,15 @@ var recordNodeOutcomeScript = redis.NewScript(`
 			return 1
 		else
 			-- 冷却期到期 + 失败请求 → 延长冷却期
+			-- P0-B: 「到期后的第一个真实请求失败」= 恢复试探失败，属同一
+			-- 振荡循环的下一次禁用——按 disable_cool_seconds(disable_count)
+			-- 指数递增（首次到期失败 = 第 2 次禁用 = 600s），再自增计数。
+			-- 旧行为（固定 cooldown、不动计数）会让振荡节点以恒定周期
+			-- 无限翻红，这正是审计 G2 要治的形态。
 			state.slide_window = {}  -- 清空历史记录
 			state.failure_count = 0
-			state.disabled_until = now + cooldown
+			state.disabled_until = now + disable_cool_seconds(state.disable_count or 0)
+			state.disable_count = (state.disable_count or 0) + 1
 			state.disabled_reason = 'cooldown_extended_due_to_failure'
 			-- 添加本次失败记录
 			local record = {
@@ -948,6 +1009,7 @@ var recordNodeOutcomeScript = redis.NewScript(`
 			table.insert(state.slide_window, record)
 			state.failure_count = state.failure_count + 1
 			state.last_failure_at = now
+			state.last_disabled_at = now
 			-- 直接保存并返回
 			redis.call('SET', key, cjson.encode(state), 'EX', 3600)
 			return 1
@@ -986,15 +1048,21 @@ var recordNodeOutcomeScript = redis.NewScript(`
 	-- P0 Fix: 连续失败达到阈值时禁用节点
 	if not state.disabled and streak >= streak_limit then
 		local recovered_before_disable = state.disabled_reason == 'recovered_with_actual_success'
+		-- 覆盖前先取旧值：下面的 after_recovery 判定要用「上一次禁用」时刻，
+		-- 本轮 last_disabled_at 即将写成 now——若直接比较会把条件变成
+		-- 「上次成功 > 现在」恒 false（既有缺陷，本轮顺手修正）。
+		local prev_disabled_at = state.last_disabled_at or 0
 		state.disabled = true
-		state.disabled_until = now + cooldown
-		state.last_disabled_at = now
 		if not state.disable_count then
 			state.disable_count = 0
 		end
+		-- P0-B: 第 (disable_count+1) 次禁用，时长 = cooldown×2^disable_count
+		-- 封顶 backoff_cap（幂取递增前值；首次禁用与旧固定值逐秒相等）。
+		state.disabled_until = now + disable_cool_seconds(state.disable_count)
+		state.last_disabled_at = now
 		state.disable_count = state.disable_count + 1
 		-- 区分是否是恢复后再次失败
-		if recovered_before_disable or (state.last_success_at and state.last_success_at > (state.last_disabled_at or 0)) then
+		if recovered_before_disable or (state.last_success_at and state.last_success_at > prev_disabled_at) then
 			state.disabled_reason = 'consecutive_' .. streak_limit .. '_failures_after_recovery'
 		else
 			state.disabled_reason = 'consecutive_' .. streak_limit .. '_failures'

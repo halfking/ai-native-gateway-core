@@ -1,6 +1,7 @@
 # SI-LLM-Gateway 双仓库策略 (REPO-MIRROR-POLICY)
 
-> 版本：v1.0 · 2026-06-25 · 作者：halfking
+> 版本：v2.0 · 2026-10-27 · 作者：halfking（v2.0 契约决断见 §10；§1~§9 为 v1.x 存档，
+> 与 §10 冲突处以 §10 为准）
 
 本文档说明 SI-LLM-Gateway 仓库同时维护 `codeup` (主) + `github` (公开镜像)
 两个远端时，如何保证**敏感信息不泄露**到公开仓库。
@@ -12,10 +13,16 @@
 | Remote | URL | 角色 | 推送方式 | 扫描器 |
 |--------|-----|------|----------|--------|
 | `codeup` (origin) | `__REPO_URL_1__.git` | 主仓库（日常开发） | `git push` | 无 |
-| `github` | `git@github.com:halfking/SI-LLM-Gateway.git` | 公开镜像（阶段发布） | `git push github` | **严格模式** |
+| `github` | `git@github.com:halfking/ai-native-gateway-core.git` | 公开镜像（**保留原始历史**，v2.0） | **树移植**（§10） | **严格模式** |
 
-**默认 push 永远走 codeup**。github 推送必须显式调用 `git push github`，
-此时 `.githooks/pre-push` 自动运行严格扫描，命中即 `exit 1` 阻断。
+> ★ v2.0 更正：镜像仓库已从 v1.x 的 `SI-LLM-Gateway.git` 变更为
+> `ai-native-gateway-core`；其历史是 **2026-05~10 的原始历史**（未经过
+> filter-repo 改写），与 codeup 互相独立（merge-base 停在 2026-10-07）。
+
+**默认 push 永远走 codeup**。github 推送必须显式走 §10 的树移植流程；
+推送前严格扫描（`scan-secrets.sh --mode=strict --tracked-only`，
+**BLOCK 必须 0**）仍然成立——树移植新提交的 tree 就是 codeup 当前树，
+工作树扫描即发布内容扫描。
 
 ---
 
@@ -266,3 +273,53 @@ git config core.hooksPath  # 应输出 .githooks
 - 已知残留：GitHub 对 force-push 后的不可达对象会保留一段时间（旧 SHA 的
   raw URL 在 GC 前可能仍可访问）；如需立即清除请联系 GitHub Support。
 - 口令轮换建议不变：历史改写只解决"可发现性"，已泄露口令仍应轮换。
+
+---
+
+## 10. 2026-10-27 契约决断：树移植是唯一实推通道（v2.0）
+
+**决断内容**：codeup → github 的实推通道**只有树移植**（commit-tree）；
+`sync-to-github.sh`（filter-repo 全量改写）**退役为 `--dry-run` 专用诊断工具**，
+两者互斥，不得同用。
+
+### 10.1 为什么树移植赢
+
+- 镜像侧 `ai-native-gateway-core` 的价值主张是**保留 2026-05~10 的原始历史**
+  （13000+ 笔）；树移植的父提交 = 镜像原 tip ⇒ 原始历史一条不丢。
+- filter-repo 实推 = force-push 重写历史 ⇒ **毁掉上述主张**，且两仓从此
+  再次分叉（v1.1 §9 的状态），回滚成本不可逆。
+- 树移植验收可证伪：`git rev-parse origin/main^{tree}` == `github/main^{tree}`
+  且 `git diff --stat origin/main github/main` 为空；`git ls-remote` 对拍远端真值。
+  （2026-10-27 已执行到 992d2f6ee，tree SHA 两仓一致。）
+
+### 10.2 为什么 filter-repo 只许 --dry-run
+
+- 工具本身保留：它是**全库改写完整性的唯一验证器**（blob/message/filename/
+  commit 四类机制 + 镜像检出复扫），dry-run 5 步能证明「如果哪天要再全量
+  改写，管线是通的」。
+- 但**当前不满足全量改写的完整性前提**：`scan-secrets.private.replacements`
+  里**退役 252 DB/SSH 口令缺失**——原文只存在于 sops 加密的 `.env.252.enc` /
+  `.env.kaixuan-1.enc`，**本机与 252 主机均无 sops/age 私钥**（2026-10-27
+  实测 `which sops` 双双为空）⇒ 不可恢复 ⇒ 表头已如实注明。补齐前提：
+  **用户侧提供 sops/age 密钥**，从加密文件恢复口令补表后，才重新具备
+  「确定性重导出脱敏镜像」的能力。
+- 若哪天实推 filter-repo：先 `rm -rf` 掉镜像仓重建（不可与保留历史共存），
+  并把本节 §10.1 的镜像价值主张作废——那是另一个决断，需显式重开。
+
+### 10.3 推 github 前的三段门（沿用 AGENTS.md 既有纪律）
+
+1. `scripts/scan-secrets.sh --mode=normal --paths=. --tracked-only
+   --baseline=scripts/scan-secrets.baseline` —— **BLOCK 必须 0**；
+   （★ 2026-10-27 起 scan-secrets.sh 带 bash≥4 运行时守卫：bash 3.2 下
+   `declare -A` 曾静默失败并打印 findings 0 **假绿**，守卫后响亮 exit 64；
+   sync-to-github.sh 用 `"$BASH"` 把父解释器传给子进程。）
+2. 审计守卫七包 + `bash scripts/checks/guards-sync.sh`；
+3. `tests/*.sh` 全量。
+
+### 10.4 版本
+
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| v2.0 | 2026-10-27 | 契约决断：树移植为唯一实推通道；filter-repo 退役为 dry-run 诊断；镜像仓更名 ai-native-gateway-core；scan-secrets.sh 解释器守卫；sops 口令缺口登记 |
+| v1.1 | 2026-10-08 | 首次全量历史改写落地；镜像同步契约改为 sync-to-github.sh（**已被 v2.0 取代**） |
+| v1.0 | 2026-06-25 | 初版 |

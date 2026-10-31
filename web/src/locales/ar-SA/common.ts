@@ -20,6 +20,7 @@ export default {
     yes: 'نعم',
     no: 'لا',
     retry: 'إعادة المحاولة',
+    more: 'المزيد',
   },
   status: {
     enabled: 'مفعّل',

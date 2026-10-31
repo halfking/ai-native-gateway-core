@@ -157,7 +157,7 @@ onUnmounted(() => {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 20px;
+  padding: 16px;
   max-width: 480px;
 }
 .order-header {
@@ -167,17 +167,17 @@ onUnmounted(() => {
   margin-bottom: 16px;
 }
 .order-no { font-size: 14px; color: var(--muted); }
-.order-product { font-size: 18px; font-weight: 600; margin-top: 4px; }
+.order-product { font-size: 14px; font-weight: 600; margin-top: 4px; }
 .order-meta { border-top: 1px solid var(--border); padding-top: 12px; }
 .meta-row {
   display: flex;
   justify-content: space-between;
-  padding: 6px 0;
+  padding: 4px 0;
   font-size: 13px;
 }
 .meta-row span:first-child { color: var(--muted); }
-.amount { font-size: 18px; font-weight: 700; color: var(--accent-h); }
-.pay-section { margin-top: 20px; text-align: center; }
+.amount { font-size: 24px; font-weight: 700; color: var(--accent-h); }
+.pay-section { margin-top: 16px; text-align: center; }
 .qr-box {
   display: flex;
   justify-content: center;
@@ -202,10 +202,10 @@ onUnmounted(() => {
 .stub-note { font-size: 12px; color: var(--muted); }
 .paid-note { margin-top: 16px; font-size: 14px; color: var(--success); }
 .mono { font-family: 'SF Mono', 'Fira Code', monospace; }
-.badge-yellow { background: var(--warning-bg); color: var(--warning); padding: 4px 10px; border-radius: 8px; font-size: 12px; }
-.badge-green { background: var(--success-bg); color: var(--success); padding: 4px 10px; border-radius: 8px; font-size: 12px; }
-.badge-red { background: var(--danger-bg); color: var(--danger); padding: 4px 10px; border-radius: 8px; font-size: 12px; }
-.badge-gray { background: var(--neutral-bg); color: var(--muted); padding: 4px 10px; border-radius: 8px; font-size: 12px; }
+.badge-yellow { background: var(--warning-bg); color: var(--warning); padding: 4px 8px; border-radius: 8px; font-size: 12px; }
+.badge-green { background: var(--success-bg); color: var(--success); padding: 4px 8px; border-radius: 8px; font-size: 12px; }
+.badge-red { background: var(--danger-bg); color: var(--danger); padding: 4px 8px; border-radius: 8px; font-size: 12px; }
+.badge-gray { background: var(--neutral-bg); color: var(--muted); padding: 4px 8px; border-radius: 8px; font-size: 12px; }
 .empty { text-align: center; padding: 40px; color: var(--muted); }
 .alert-danger { padding: 8px 12px; border-radius: 4px; background: var(--danger-bg); color: var(--danger); margin-bottom: 12px; }
 </style>

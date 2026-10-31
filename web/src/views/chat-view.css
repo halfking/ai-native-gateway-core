@@ -18,7 +18,7 @@
 .chat-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .model-label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .model-select {
-  min-width: 180px; padding: 6px 10px; border-radius: 6px;
+  min-width: 180px; padding: 4px 8px; border-radius: 6px;
   border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px;
 }
 .key-label--primary .key-label__text { font-weight: 600; color: var(--text); }
@@ -37,18 +37,18 @@
 }
 .session-sidebar__head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 12px; border-bottom: 1px solid var(--border);
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
 }
 .session-sidebar__title { font-size: 13px; font-weight: 600; color: var(--muted); }
-.session-list { list-style: none; margin: 0; padding: 6px; overflow-y: auto; flex: 1; }
+.session-list { list-style: none; margin: 0; padding: 4px; overflow-y: auto; flex: 1; }
 .session-item { margin-bottom: 2px; }
 .session-item.active { background: var(--kx-primary-soft, var(--bg-subtle)); border-radius: 8px; }
 .session-item__btn {
   width: 100%; text-align: left; border: none; background: transparent;
-  padding: 8px 10px; cursor: pointer; color: var(--text); border-radius: 8px;
+  padding: 8px 8px; cursor: pointer; color: var(--text); border-radius: 8px;
 }
 .session-item__btn:hover { background: var(--row-hover); }
-.session-item__row { display: flex; justify-content: space-between; gap: 6px; }
+.session-item__row { display: flex; justify-content: space-between; gap: 4px; }
 .session-item__title {
   font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -62,7 +62,7 @@
 }
 .chat-session-bar {
   display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
-  padding: 10px 14px; border-bottom: 1px solid var(--border); align-items: center;
+  padding: 8px 12px; border-bottom: 1px solid var(--border); align-items: center;
 }
 .chat-session-bar__info { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
 .chat-session-bar__title { font-weight: 600; font-size: 14px; }

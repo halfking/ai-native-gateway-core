@@ -129,6 +129,6 @@ const hasData = computed(() => (props.data?.length ?? 0) > 0)
 .trend-card__empty {
   color: var(--text-muted);
   text-align: center;
-  padding: 80px 12px;
+  padding: 64px 12px;
 }
 </style>

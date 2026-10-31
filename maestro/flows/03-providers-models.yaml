@@ -3,7 +3,7 @@
 # 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
 # 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
 #       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
-appId: ${BASE_URL}
+url: ${BASE_URL}
 ---
 - launchApp
 - runFlow:
@@ -28,7 +28,10 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/providers/${PROVIDER_ID}"
 - extendedWaitUntil:
-    visible: '供应商名称（Name）'
+    # ★ 默认页签渲染的是「基础信息」区块（locale providerDetail.basicInfo）；
+    #   「供应商名称（Name）」是**设置页签**里的表单标签（provider-detail/SettingsTab.vue:304）
+    #   ⇒ 默认页签下永远看不到它。
+    visible: '基础信息'
     timeout: 20000
 - evalScript: "${output.ms__providers_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
@@ -88,7 +91,9 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/free-pool"
 - extendedWaitUntil:
-    visible: '写入免费池凭据（加密存 DB）'
+    # ★ 实测（R176 CDP 探针）：按钮原文就是「写入 DB 凭据」——
+    #   「写入免费池凭据（加密存 DB）」是**旧文案**，页面早就不这么写了。
+    visible: '写入 DB 凭据'
     timeout: 20000
 - evalScript: "${output.ms__free_pool = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
@@ -112,7 +117,10 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/key-applications"
 - extendedWaitUntil:
-    visible: '密钥申请'
+    # ★ 实测（R176 CDP 探针）：H2 原文 = 「密钥申请 1 待审」——徽标数字跟着数据变
+    #   ⇒ 不能写死整串，也不能只写「密钥申请」（Maestro 的 visible 是**全匹配**）。
+    #   ⇒ 用两侧 .* 的正则，只锚住稳定的那部分。
+    visible: '.*密钥申请.*'
     timeout: 20000
 - evalScript: "${output.ms__key_applications = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:

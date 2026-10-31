@@ -20,6 +20,7 @@ import { useAuthStore } from '@/stores/auth'
 import { t } from '@/i18n'
 import AppSheet from '@/components/common/AppSheet.vue'
 import AppStateView from '@/components/common/AppStateView.vue'
+import AppIcon from '@/components/common/AppIcon.vue'
 
 useHyperPage({ title: () => t('models.title') })
 const auth = useAuthStore()
@@ -251,7 +252,7 @@ onMounted(() => { void load() })
     <AppStateView v-if="loading" :loading="true" />
     <template v-else>
       <section v-if="tab === 'featured'" class="model-catalog__featured">
-        <div><strong>★ {{ t('models.featured') }}</strong><p>{{ t('models.featuredDescription') }}</p></div>
+        <div><strong class="model-catalog__featured-title"><AppIcon name="star" :size="14" filled />{{ t('models.featured') }}</strong><p>{{ t('models.featuredDescription') }}</p></div>
         <button v-if="canManage" type="button" class="btn btn--primary" :disabled="savingFeatured || featuredDraft.length === featured.length && featuredDraft.every((x) => featured.includes(x))" @click="saveFeatured">{{ savingFeatured ? t('common.loading') : t('models.saveFeatured') }}</button>
       </section>
       <p v-if="!filtered.length" class="model-catalog__empty">{{ tab === 'featured' ? t('models.noFeatured') : t('common.empty') }}</p>
@@ -259,10 +260,10 @@ onMounted(() => { void load() })
         <li v-for="model in filtered" :key="model.id" class="model-catalog__card">
           <button type="button" class="model-catalog__open" @click="openModel(model)">
             <span class="model-catalog__identity"><strong>{{ model.display_name || model.canonical_name }}</strong><code>{{ model.canonical_name }}</code></span>
-            <span class="model-catalog__meta"><span class="badge badge--muted">{{ model.vendor || model.family || t('common.unknown') }}</span><span class="badge" :class="model.status === 'active' ? 'badge--success' : 'badge--muted'">{{ model.status }}</span><span v-if="featured.includes(model.canonical_name)" class="badge badge--info">★ {{ t('models.featured') }}</span></span>
+            <span class="model-catalog__meta"><span class="badge badge--muted">{{ model.vendor || model.family || t('common.unknown') }}</span><span class="badge" :class="model.status === 'active' ? 'badge--success' : 'badge--muted'">{{ model.status }}</span><span v-if="featured.includes(model.canonical_name)" class="badge badge--info"><AppIcon name="star" :size="11" filled />{{ t('models.featured') }}</span></span>
             <span class="model-catalog__stats">{{ model.modality }} · {{ model.context_window == null ? '—' : `${model.context_window.toLocaleString()} ${t('models.tokenUnit')}` }} · {{ model.offer_count ?? 0 }} {{ t('models.providers') }}</span>
           </button>
-          <button v-if="canManage" type="button" class="model-catalog__star" :aria-pressed="featuredDraft.includes(model.canonical_name)" :aria-label="t(featuredDraft.includes(model.canonical_name) ? 'models.removeFeatured' : 'models.addFeatured')" @click="toggleFeatured(model.canonical_name)">{{ featuredDraft.includes(model.canonical_name) ? '★' : '☆' }}</button>
+          <button v-if="canManage" type="button" class="model-catalog__star" :class="{ 'is-on': featuredDraft.includes(model.canonical_name) }" :aria-pressed="featuredDraft.includes(model.canonical_name)" :aria-label="t(featuredDraft.includes(model.canonical_name) ? 'models.removeFeatured' : 'models.addFeatured')" @click="toggleFeatured(model.canonical_name)"><AppIcon name="star" :size="24" :filled="featuredDraft.includes(model.canonical_name)" /></button>
         </li>
       </ul>
       <p v-if="canManage && tab === 'all'" class="model-catalog__hint">{{ t('models.featuredChangesHint') }}</p>
@@ -328,7 +329,14 @@ onMounted(() => { void load() })
    本页左 1.0pt / 右 1.0pt，而正常页是 15.5~16pt。
    ⚠️ 同一批测量里其余页面全是 15.5~16pt ⇒ 影响面**不是全站**，逐页量、逐页改。
    ⚠️ 别改成 `.page` 类 —— 本视图不是滚动宿主（滚动宿主是 HyperList）。
-   ⚠️ 只补横向；`padding-bottom` 原来就有。 */
+   ⚠️ 只补横向；`padding-bottom` 原来就有。
+   ⚠️ 2026-10-28 订正：上面「滚动宿主是 HyperList」对本页**从未成立** —— 目录是
+   一次性全量加载（无分页 API），从未接 HyperList，根容器也不带 overflow ⇒ 壳层
+   `.hyper-app__main`（纯布局容器，overflow:hidden，07 §1 一个轴一个主宿主）把首屏
+   以下全部剪裁。真机实测（vivo V2436A / llm.itestu.cn /m/models）CDP 读数：内容
+   scrollHeight 421,636px、链上**零滚动宿主** ⇒「模型目录无法滑动」。修法已上移到
+   全局兜底：shared.css 的 `.hyper-app__main > *`（2026-10-28 审计 88 个视图同病，
+   逐页补不现实）；本页根类因此不再自带 overflow，避免同一元素两处声明。 */
 .model-catalog {
   display: grid;
   gap: 12px;
@@ -352,7 +360,13 @@ onMounted(() => { void load() })
 .model-catalog code { overflow-wrap: anywhere; font-size: 12px; }
 .model-catalog__meta { justify-content: flex-start; flex-wrap: wrap; }
 .model-catalog__stats, .model-catalog__readonly { color: var(--app-text-muted); font-size: 12px; }
-.model-catalog__star { width: 48px; min-width: 48px; height: 48px; border: 0; background: transparent; color: var(--app-primary); font-size: 28px; }
+/* ★ 2026-10-27 第 27 增量：★ 精选标记原来用 Unicode 字形 `★` / `☆`
+ *   ⇒ craft-floor 硬禁「Unicode 字形顶替图标系统」⇒ ⇒ 换成画出来的星标。
+ *   ★ 实心/空心两态由 `filled` 属性切 `fill`（★ 一枚路径 ⇒ 一个概念一份画法）；
+ *     桌面端同概念用 element-plus `<StarFilled />`（ModelPicker / RoutingOverviewView）
+ *     ⇒ ★ 两端画法一致。 */
+.model-catalog__star { width: 48px; min-width: 48px; height: 48px; border: 0; background: transparent; color: var(--app-primary); display: inline-flex; align-items: center; justify-content: center; }
+.model-catalog__featured-title { display: inline-flex; align-items: center; gap: 6px; }
 .model-catalog__form { display: grid; gap: 12px; margin: 16px 0; padding: 0; border: 0; }
 .model-catalog__form:disabled { opacity: .7; }
 .model-catalog__save { width: 100%; min-height: 48px; }

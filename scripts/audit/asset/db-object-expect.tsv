@@ -4,8 +4,8 @@
 # ★ 口径：建了 ∧ 没被后来的迁移删掉 ∧ 不是中间产物（USING INDEX 消费）
 # ★ declared_columns = ★ 建索引时的【直接键列】（★ 表达式索引保守取空）
 # ★   ⇒ ★★ 「列被 DROP ⇒ PG 级联删索引」的判据要用它
-# ★ generated_at=2026-10-26T05:45:37+00:00
-# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 834, "indexes_created": 886, "indexes_dropped_somewhere": 93, "migration_files": 581, "non_numeric_prefix_files": 13, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
+# ★ generated_at=2026-10-29T23:11:15+00:00
+# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 855, "indexes_created": 907, "indexes_dropped_somewhere": 93, "migration_files": 595, "non_numeric_prefix_files": 13, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
 -1	idx_provider_models_canonical_raw_name	provider_models	395b_dedup_provider_models_and_aliases.sql	canonical_raw_name	
 -1	idx_request_logs_hot_auto_task_ts	request_logs_hot	478p2_affinity_indexes.sql	task_type,ts	
 -1	idx_request_logs_hot_gw_session_id	request_logs_hot	478p2_affinity_indexes.sql	gw_session_id,ts	
@@ -840,3 +840,24 @@
 909	idx_session_summaries_primary_model_trgm	session_summaries	909_session_summaries_search_trgm_indexes.sql		
 909	idx_session_summaries_session_key_trgm	session_summaries	909_session_summaries_search_trgm_indexes.sql		
 909	idx_session_summaries_title_trgm	session_summaries	909_session_summaries_search_trgm_indexes.sql		
+912	idx_session_bodies_trash_session	session_bodies_trash	912_session_recording_trash.sql	tenant_id,session_id	
+912	idx_session_bodies_trash_trashed_at	session_bodies_trash	912_session_recording_trash.sql	trashed_at	
+913	idx_maas_coupon_redemptions_tenant	maas_coupon_redemptions	913_maas_monthly_bills_coupons.sql	tenant_id,created_at	
+913	idx_maas_coupons_status	maas_coupons	913_maas_monthly_bills_coupons.sql	status,expires_at	
+913	idx_maas_invoice_requests_tenant	maas_invoice_requests	913_maas_monthly_bills_coupons.sql	tenant_id,created_at	
+913	idx_maas_monthly_bills_tenant_issued	maas_monthly_bills	913_maas_monthly_bills_coupons.sql	tenant_id,period_ym	
+916	idx_session_turns_api_key_ts	session_turns	916_session_turns_api_key_ts_index.sql	ts	
+916	idx_session_turns_hot_api_key_ts	session_turns_hot	916_session_turns_api_key_ts_index.sql	ts	
+917	sanitize_block_reviews_status_created_idx	sanitize_block_reviews	917_sanitize_block_reviews.sql	status,created_at	
+917	sanitize_block_reviews_tenant_created_idx	sanitize_block_reviews	917_sanitize_block_reviews.sql	tenant_id,created_at	
+917	sanitize_egress_releases_key_idx	sanitize_egress_releases	917_sanitize_block_reviews.sql	tenant_id,scope,rule_id,payload_digest	
+920	idx_node_probe_runs_cred_completed	node_probe_runs	920_node_probe_runs_cred_completed_idx.sql	credential_id,completed_at	
+921	sanitize_block_evidence_expires_idx	sanitize_block_evidence	921_sanitize_block_workbench.sql	expires_at	
+921	sanitize_block_reviews_rule_label_idx	sanitize_block_reviews	921_sanitize_block_workbench.sql	tenant_id,rule_id,label	
+922	idx_provider_model_credibility_canonical	provider_model_credibility	922_model_credibility.sql	tenant_id,canonical_id	
+922	idx_provider_model_credibility_measured_at	provider_model_credibility	922_model_credibility.sql	tenant_id,measured_at	
+922	idx_provider_model_credibility_provider	provider_model_credibility	922_model_credibility.sql	tenant_id,provider_id,raw_model_name	
+922	idx_provider_model_credibility_runs_measured_at	provider_model_credibility_runs	922_model_credibility.sql	tenant_id,measured_at	
+922	idx_provider_model_credibility_runs_node	provider_model_credibility_runs	922_model_credibility.sql	tenant_id,credential_id,raw_model_name,measured_at	
+922	idx_provider_model_credibility_verdict	provider_model_credibility	922_model_credibility.sql	tenant_id,verdict,measured_at	
+924	idx_credential_probe_queue_command_key_created	credential_probe_queue	924_credential_probe_queue_command_key_idx.sql	probe_command,tenant_id,credential_id,raw_model,created_at	

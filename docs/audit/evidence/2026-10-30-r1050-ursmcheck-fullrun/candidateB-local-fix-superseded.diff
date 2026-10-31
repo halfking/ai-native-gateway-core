@@ -1,0 +1,17 @@
+diff --git a/web/src/locales/fr-FR/sanitizeRules.ts b/web/src/locales/fr-FR/sanitizeRules.ts
+index 2f6f74c0c..9c2d14b0a 100644
+--- a/web/src/locales/fr-FR/sanitizeRules.ts
++++ b/web/src/locales/fr-FR/sanitizeRules.ts
+@@ -205,10 +205,10 @@ export default {
+   ruleDetailShow: "Afficher le détail de la règle",
+   ruleDetailHide: "Masquer le détail de la règle",
+   ruleKindLabel: "Type de détection",
+-  ruleActionLabel: "Action",
++  ruleActionLabel: "Action appliquée",
+   rulePriorityLabel: "Priorité",
+   rulePatternLabel: "Expression de correspondance",
+-  ruleExemptionsLabel: "Exemptions",
++  ruleExemptionsLabel: "Exceptions",
+   ruleScopeFieldsLabel: "Portée",
+   ruleSamplesLabel: "Exemples",
+   ruleSampleHit: "devrait correspondre",

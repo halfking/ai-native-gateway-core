@@ -1,0 +1,6 @@
+== CORRECTION ==
+2026-10-30 23:48:10 +0800
+correction: run1 was NOT killed by SIGTERM. timeline: make start 17:06:31 -> ursmcheck pkg 752.581s -> summary lines printed (FAIL ... 752.581s / ok admin 122.308s / FAIL) at ~17:19:08; task_stop arrived after the summary was already written.
+=> run1 IS a complete natural run with a real non-zero exit; the FAIL payloads below are real gate output, NOT kill artifacts.
+=> the earlier "run1 DISCARDED" note was itself an over-read (SIGTERM intent vs actual state). Retained here rather than deleted, per discipline.
+=> residual concern that was real: a foreign ursmcheck.test from the sibling repo llm-gateway-go (a SEPARATE git repo / submodule worktree at ../llm-gateway-go, HEAD 5a415044) overlapped 16:57-17:07; it does not share this repo filesystem, so payload provenance is unaffected; only wall-clock timing is.

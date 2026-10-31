@@ -475,6 +475,15 @@ func buildResponsesInputFile(doc *DocumentBlock) map[string]any {
 	return block
 }
 
+// docSourceTypeForLoss renders a document's source type for loss-report
+// details without dereferencing a nil Source.
+func docSourceTypeForLoss(doc *DocumentBlock) string {
+	if doc == nil || doc.Source == nil {
+		return ""
+	}
+	return doc.Source.Type
+}
+
 // hasToolResultBlock reports whether any content block is a tool_result.
 func hasToolResultBlock(blocks []ContentBlock) bool {
 	for _, b := range blocks {
@@ -543,6 +552,8 @@ func buildResponsesTools(tools []ToolDefinition) []map[string]any {
 		if tool.Parameters != nil {
 			entry["parameters"] = tool.Parameters
 		}
+		// RISK-2（2026-10-29）：工具顶层非标准键并回（不覆盖已写入键）。
+		mergeToolExtras(entry, tool.Extra)
 		result = append(result, entry)
 	}
 	return result
@@ -801,6 +812,40 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 					"loss",
 					"Anthropic redacted_thinking cannot be expressed on Responses API",
 					nil,
+				)
+			}
+			// 2026-10-29（Gemini 批判审计三轮遗留③）：URI-only 音频在
+			// Responses 线上无处安放 —— input_audio 只收 base64 data+format，
+			// buildResponsesContent 对 buildResponsesInputAudio 返回 nil 的
+			// 块整块跳过。跳过必须留痕（OpenAI Chat 侧对同族跳过全部上报）。
+			// 判据直接复用序列化器自己的谓词：上报的恰好就是会被丢的。
+			// 同协议守卫由函数顶部的早退负责（parse_responses 产不出
+			// 无 data 的音频；URI 载体只会来自跨协议源或退化 IR）。
+			if block.Type == "audio" && block.Audio != nil && buildResponsesInputAudio(block.Audio) == nil {
+				ReportProtocolLoss(
+					"unknown",
+					fieldPathMessageContent(i, j, "audio"),
+					ifaceNonEmpty(src, ProtocolGeminiGenerate),
+					ProtocolOpenAIResponses,
+					"loss",
+					"audio without base64 data cannot be expressed on the Responses API (input_audio takes data+format only); block dropped",
+					map[string]any{"message_index": i, "content_index": j, "carrier": block.Audio.Type},
+				)
+			}
+			// 同轮：document 块在 Responses 线上构不成 input_file 时同样整块
+			// 跳过（source 为 nil / url 与 data 双空 / 非 base64 载体但 data
+			// 为空）。上面的 file_id 双空分支管不到这些 —— 那个分支的块仍会
+			// 以 filename-only 形态发出，而这里判的是整块消失。判据同样
+			// 复用序列化器谓词，不与之双报。
+			if block.Type == "document" && block.Document != nil && buildResponsesInputFile(block.Document) == nil {
+				ReportProtocolLoss(
+					"unknown",
+					fieldPathMessageContent(i, j, "document.source"),
+					ifaceNonEmpty(src, ProtocolGeminiGenerate),
+					ProtocolOpenAIResponses,
+					"loss",
+					"document block has no expressible source on the Responses wire (nil source, or empty url/data); block dropped",
+					map[string]any{"message_index": i, "content_index": j, "source_type": docSourceTypeForLoss(block.Document)},
 				)
 			}
 		}

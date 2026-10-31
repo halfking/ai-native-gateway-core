@@ -64,17 +64,17 @@ const waitingFirstFrame = computed(() => !entry.value && !initialDataReceived.va
 .rdp {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   height: 100%;
   min-height: 0;
-  padding: 14px 16px;
+  padding: 12px 16px;
   overflow-y: auto;
 }
 
 .rdp__head {
   display: flex;
   align-items: baseline;
-  gap: 14px;
+  gap: 12px;
   flex: none;
 }
 
@@ -91,13 +91,13 @@ const waitingFirstFrame = computed(() => !entry.value && !initialDataReceived.va
 
 .rdp__title {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
   color: var(--kx-text);
 }
 
 .rdp__body {
   max-width: 860px;
-  padding: 12px 14px;
+  padding: 12px 12px;
   border: 1px solid var(--kx-border);
   border-radius: 12px;
   background: var(--kx-surface);
@@ -105,14 +105,14 @@ const waitingFirstFrame = computed(() => !entry.value && !initialDataReceived.va
 
 .rdp__missing {
   max-width: 560px;
-  padding: 18px 20px;
+  padding: 16px 16px;
   border: 1px dashed var(--kx-border);
   border-radius: 12px;
   background: var(--kx-surface);
 }
 
 .rdp__missing-title {
-  margin: 0 0 6px;
+  margin: 0 0 4px;
   font-size: var(--kx-font-md, 14px);
   color: var(--kx-text);
 }

@@ -1,0 +1,12 @@
+{
+  "note": "跨仓漂移账（只降不升）：pendingMergeCriteria = 共享部署库与本仓仍然不同的判据。改动 = 先改共享库，再改本仓，最后更新本基线。",
+  "pendingMergeCriteria": [
+
+  ],
+  "probeExemptions": [
+    {
+      "site": "scripts/deploy-local-lib.sh:_dl_timeout",
+      "reason": "后台等待【自己 fork 出来的子进程】退出：判断的是「子进程是否已经死了」，不是「持有者是否还活着」；只对自己启动的子进程用 ⇒ 不存在跨用户 EPERM 歧义 ⇒ 与共享部署库的存活判据无关，不构成第二份实现。"
+    }
+  ]
+}

@@ -123,14 +123,14 @@ function isLongHeld(d: SlotDetail | null): boolean {
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 14px;
+  padding: 12px;
 }
 
 .fp-header {
   display: flex;
-  gap: 18px;
+  gap: 16px;
   margin-bottom: 12px;
-  padding-bottom: 10px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
 }
 .fp-stat {
@@ -140,7 +140,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
   flex: 1;
 }
 .fp-stat-num {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text);
   line-height: 1.1;
@@ -166,9 +166,9 @@ function isLongHeld(d: SlotDetail | null): boolean {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 6px;
+  padding: 4px;
   cursor: default;
-  transition: transform 0.1s, box-shadow 0.1s;
+  transition: transform 0.1s var(--kx-motion-ease-out), box-shadow 0.1s var(--kx-motion-ease-out);
 }
 .fp-cell:hover {
   transform: translateY(-2px);
@@ -204,7 +204,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
 
 .fp-cell-num {
   font-family: ui-monospace, monospace;
-  font-size: 10px;
+  font-size: 11px;
   opacity: 0.8;
 }
 .fp-cell-icon {
@@ -214,7 +214,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
 }
 .fp-cell-ttl {
   font-family: ui-monospace, monospace;
-  font-size: 10px;
+  font-size: 11px;
   opacity: 0.85;
 }
 .fp-cell-close {
@@ -232,7 +232,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
   text-align: center;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: opacity 0.15s var(--kx-motion-ease-out);
   padding: 0;
   z-index: 10;
 }
@@ -251,14 +251,14 @@ function isLongHeld(d: SlotDetail | null): boolean {
   background: var(--probe-dark-bg);
   border: 1px solid var(--purple);
   border-radius: 6px;
-  padding: 8px 10px;
+  padding: 8px 8px;
   min-width: 180px;
   max-width: 280px;
   font-size: 12px;
   color: var(--text);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.15s;
+  transition: opacity 0.15s var(--kx-motion-ease-out);
   z-index: 100;
   box-shadow: var(--kx-shadow-sm);
   white-space: normal;
@@ -289,9 +289,9 @@ function isLongHeld(d: SlotDetail | null): boolean {
 
 .fp-legend {
   display: flex;
-  gap: 14px;
+  gap: 12px;
   margin-top: 12px;
-  padding-top: 10px;
+  padding-top: 8px;
   border-top: 1px solid var(--border);
   font-size: 11px;
   color: var(--muted);
@@ -319,4 +319,13 @@ function isLongHeld(d: SlotDetail | null): boolean {
    尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
 .fp-cell-icon { width: 8px; height: 8px; border-radius: 50%; background: currentColor; margin: 3px auto; }
 .fp-cell-close > svg { width: 10px; height: 10px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .fp-cell {
+    transition-property: box-shadow;
+  }
+  .fp-cell:hover { transform: none; }
+}
 </style>

@@ -34,6 +34,18 @@ import re
 import subprocess
 import sys
 
+# ★★ r1047 轮（★ 2026-10-28）：★ 子进程走【专用 GOCACHE】⇒ ⇒ 不再往用户的全局缓存里
+# ★★ 写「随树变化而失效」的一次性产物（★ 理由与实测读数见 `scripts/lib/gocache.py`
+# ★★ 与 `internal/gocache` 的包注释）。
+# ★★ **两条路径都试**（★ ★★ 深度无关：★ 本文件在 scripts/ 或 scripts/audit/ 下）★★
+for _gc_lib in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")):
+    if os.path.isfile(os.path.join(_gc_lib, "gocache.py")):
+        sys.path.insert(0, _gc_lib)
+        break
+import gocache  # noqa: E402
+gocache.apply_to_environ("mutate")
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 GATE = os.path.join(ROOT, "cmd/gateway/section_14398_promote_budget_test.go")
@@ -193,11 +205,21 @@ def probe_body_changed(path):
 # 变异臂
 # ═══════════════════════════════════════════════════════════════════════
 
-def m01_recommended_batch_to_5000():
-    """★ 把推荐批大小改成 5,000 ⇒ 它本身就超预算 ⇒ 门应红。"""
+def m01_recommended_batch_over_budget():
+    """★ 把推荐批大小改成 10,000 ⇒ 它本身就超预算 ⇒ 门应红。
+
+    ★★★ **2026-10-31 订正（★ 臂的前提随预算过期了）**：★★★ ★ 本臂原先改成
+    ★ **5,000**，★ 那是在 **60 s 预算**下的「超预算」值（5,000 × 29.1 ms = 145.5 s
+    ★ > 60 s）⇒ ⇒ ★★ 而 R184 轮把批次预算提到 **150 s** 之后，★ **5,000 已经
+    ★ 【装得下】（145.5 s ≤ 150 s，只是贴线）** ⇒ ⇒ ★★ **原臂的前提已过期**
+    ★ ⇒ ⇒ ★★ 「期望红」却拿到「绿」⇒ ⇒ ★★★ **这不是「门没牙」，是【臂的前提
+    ★ 没跟着预算走】** ⇒ ⇒ ⇒ ★ 所以本臂改成 **10,000**
+    ★ （10,000 × 29.1 ms = 291 s > 150 s ⇒ 【仍】是超预算）⇒ ⇒ ★★ **臂的意图不变**
+    ★ （「推荐值超预算 ⇒ 门必须红」），★ 只是把输入换成【现时预算下的真超预算值】。
+    """
     n = replace_in_files([GATE],
                          "section14398RecommendedBatch = 1000",
-                         "section14398RecommendedBatch = 5000")
+                         "section14398RecommendedBatch = 10000")
     return "（改了 %d 处）" % n
 
 
@@ -246,13 +268,29 @@ def m07_drop_agents_marker():
     return "（改了 %d 处）" % n
 
 
+def m08_drop_current_budget_registration():
+    """★ 抹掉 runbook 里的【现时口径登记数字】⇒ 门应红。
+
+    ★★★ 这条臂覆盖的是**新口径特有**的那条判据：★★★ ★ 门对 runbook 的数字要求
+    ★ **从常量算出**（`section14398MaxFeasibleBatch()` ⇒ 150,000 ÷ 29.1 ⇒ 5154）
+    ★ ⇒ ⇒ ★ 而不是抄一个写死的字面量 ⇒ ⇒ ⇒ ★ 所以「现时登记被抹掉」必须让门变红
+    ★ ⇒ ⇒ ⇒ ★★ **⇒ 这条臂守的不是「门有牙」，而是「门的量具是【算出来的】不是
+    ★ 【抄出来的】」** ⇒ ⇒ ★ 证伪方式：★ 若有人把门改回抄 "2,064"，★ ⇒ ★ 本臂
+    ★ 抹掉 5154 后那道抄数版门**仍认 2,064**（历史段还在 runbook 里）⇒ ⇒ ⇒
+    ★ **⇒ 本臂会当场失败** ⇒ ⇒ ⇒ ★ 这就是它存在的意义。
+    """
+    n = replace_in_files([RUNBOOK], "max_feasible_batch=5154",
+                         "max_feasible_batch=9999", expect_count=2)
+    return "（改了 %d 处）" % n
+
+
 def main():
     print("=" * 78)
     print("§143.98 变异台：验证「门绿 ≠ 门有牙」")
     print("=" * 78)
 
-    arm("M01 推荐批大小改成 5,000（超预算）", False, m01_recommended_batch_to_5000,
-        probe_needle_present(GATE, "section14398RecommendedBatch = 5000"))
+    arm("M01 推荐批大小改成 10,000（150s 预算下仍超预算）", False, m01_recommended_batch_over_budget,
+        probe_needle_present(GATE, "section14398RecommendedBatch = 10000"))
     arm("M02 删掉审计脚本的 Q9 自检", False, m02_drop_q9_selfcheck,
         probe_needle_gone(AUDIT, "will_time_out"))
     arm("M03 审计脚本混入写语句（不再只读）", False, m03_audit_script_gets_write,
@@ -265,6 +303,9 @@ def main():
         probe_needle_gone(PARTM, "if cycleCtx.Err() != nil || (batches >= promoteCycleMaxBatches"))
     arm("M07 删掉 AGENTS 的 R143 标记", False, m07_drop_agents_marker,
         probe_needle_gone(AGENTS, "R143"))
+    arm("M08 抹掉 runbook 的现时口径登记（max_feasible_batch=5154）", False,
+        m08_drop_current_budget_registration,
+        probe_needle_gone(RUNBOOK, "max_feasible_batch=5154"))
 
     print("-" * 78)
     ok = 0

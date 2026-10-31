@@ -700,7 +700,7 @@ onMounted(async () => {
 
 <style scoped>
 .page {
-  padding: 16px 18px 18px;
+  padding: 16px 16px 16px;
   color: var(--text);
 }
 .page-header {
@@ -724,14 +724,14 @@ onMounted(async () => {
 .tabs {
   display: flex;
   gap: 4px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   border-bottom: 1px solid var(--border);
 }
 .tab {
   border: none;
   background: transparent;
   color: var(--muted);
-  padding: 8px 14px;
+  padding: 8px 12px;
   cursor: pointer;
   border-bottom: 2px solid transparent;
   font: inherit;
@@ -743,14 +743,14 @@ onMounted(async () => {
 .stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 12px;
 }
 .stat-card {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--card);
-  padding: 12px 14px;
+  padding: 12px 12px;
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--kx-text) 4%, transparent);
 }
 .stat-card.warning {
@@ -762,7 +762,7 @@ onMounted(async () => {
 .stat-label {
   color: var(--muted);
   font-size: 12px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .stat-value {
   font-size: 24px;
@@ -773,10 +773,10 @@ onMounted(async () => {
 .filters {
   display: grid;
   grid-template-columns: minmax(150px, 1fr) minmax(170px, 1fr) minmax(200px, 1.2fr) minmax(130px, 1fr) auto auto;
-  gap: 10px;
+  gap: 8px;
   align-items: end;
   margin-bottom: 12px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--card);
@@ -784,7 +784,7 @@ onMounted(async () => {
 .filter-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
 }
 .filter-field label {
@@ -797,7 +797,7 @@ onMounted(async () => {
 textarea {
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 7px 10px;
+  padding: 8px 8px;
   font: inherit;
   color: var(--text);
   background: var(--bg-subtle);
@@ -814,7 +814,7 @@ textarea {
 }
 .checkbox-inline {
   align-self: center;
-  margin-top: 18px;
+  margin-top: 16px;
   white-space: nowrap;
 }
 .filter-actions {
@@ -822,14 +822,14 @@ textarea {
   gap: 8px;
   justify-content: flex-end;
   align-self: center;
-  margin-top: 18px;
+  margin-top: 16px;
 }
 .drift-controls {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 12px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--card);
@@ -842,9 +842,9 @@ textarea {
   background: var(--bg-subtle);
   color: var(--text);
   border-radius: 6px;
-  padding: 7px 12px;
+  padding: 8px 12px;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
 }
 .btn:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
@@ -871,7 +871,7 @@ textarea {
 }
 .error-banner {
   margin-bottom: 12px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-radius: 8px;
   background: var(--danger-bg);
   color: var(--danger-bd);
@@ -897,7 +897,7 @@ textarea {
 }
 .table th,
 .table td {
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   text-align: left;
   vertical-align: top;
@@ -964,7 +964,7 @@ textarea {
 }
 code {
   display: inline-block;
-  padding: 2px 6px;
+  padding: 2px 4px;
   border-radius: 6px;
   background: var(--bg-subtle);
   color: var(--text);
@@ -993,7 +993,7 @@ code {
   overflow: auto;
   background: var(--card);
   border-radius: 12px;
-  padding: 18px;
+  padding: 16px;
   color: var(--text);
   box-shadow: var(--kx-shadow-md);
 }
@@ -1001,7 +1001,7 @@ code {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 .modal-header h2 {
   margin: 0;
@@ -1012,10 +1012,10 @@ code {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 .detail-block {
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 .detail-block pre {
   margin: 8px 0 0;
@@ -1046,7 +1046,7 @@ textarea {
 }
 @media (max-width: 1024px) {
   .page {
-    padding: 14px;
+    padding: 12px;
   }
   .stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1064,7 +1064,7 @@ textarea {
   }
   .pager {
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
   }
 }
 </style>

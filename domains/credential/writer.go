@@ -252,7 +252,13 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 	detail := trimDetail(failure.Detail)
 	switch failure.Kind {
 	case errorsx.KindQuotaPeriodic:
-		recoverAt := inferQuotaRecoverAt(failure.Detail)
+		// 2026-10-31 A1（magpie 四域对比刷新轮 §五 A1）：恢复点来源链
+		// 「body 词表 reset 时间 → Retry-After（8d 信任上限，本轮新增消费）
+		// → 窗口启发式」，来源写进 state_reason_detail（运维可读「这次冷却
+		// 信了谁」）。既有窗口启发式（5h/周/月/零点）行为逐字节不变——
+		// 它整体退为来源 3。
+		recovery := inferQuotaRecoveryAtNow(failure.Detail, failure.RetryAfter, time.Now())
+		detail := quotaRecoverySuffix(failure.Detail, recovery)
 		_, err := w.dbPool.Exec(ctx, `
 			UPDATE credentials
 			SET quota_state             = 'periodic_exhausted',
@@ -265,7 +271,7 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 			WHERE id = $4
 			  AND lifecycle_status = 'active'
 			  AND quota_state NOT IN ('balance_exhausted', 'permanently_exhausted')
-		`, recoverAt, string(failure.Kind), detail, credentialID)
+		`, recovery.at, string(failure.Kind), detail, credentialID)
 		return err
 	case errorsx.KindQuotaPermanent:
 		_, err := w.dbPool.Exec(ctx, `
@@ -379,6 +385,20 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		// 2026-06-23 fix: Use writeModelLevelFailureOnly to avoid polluting
 		// credentials.availability_state, which would incorrectly mark ALL
 		// models on this credential as unavailable (cross-model pollution bug).
+		//
+		// 2026-10-31 A2（magpie 四域对比刷新轮 §五 A2）: KindRateLimit 从
+		// 固定 3min 改为「Retry-After 优先（信任上限 1h）→ 累计升级
+		// （3min→6min→12min→24min→30min 封顶，遗忘窗 30min）」。
+		// 红线不动：429 仍不进断路器（breaker.go Wave 1 A4 裁决），升级
+		// 只作用于绑定级冷却时长；计数在 ratebackoff.go（进程内，与
+		// slowrest 同款已知局限：多实例下退避起点偏保守）。Concurrency/
+		// StreamTimeout/NoAvailableChannel 三个同臂 kind 走原 coolingDuration
+		// 路径，零行为变化。
+		if failure.Kind == errorsx.KindRateLimit {
+			recoverAt := time.Now().UTC().Add(rateLimitedCoolingDuration(failure.RetryAfter, DefaultRateBackoff(), RateBackoffKey(credentialID, rawModel)))
+			reason := "auto_rate_limit"
+			return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, reason, recoverAt, detail)
+		}
 		recoverAt := time.Now().UTC().Add(coolingDuration(failure.Kind, failure.RetryAfter))
 		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_"+string(failure.Kind), recoverAt, detail)
 	case errorsx.KindNetwork, errorsx.KindTimeout, errorsx.KindUpstreamDown:
@@ -747,6 +767,65 @@ func nextFiveHourBoundary(now time.Time) time.Time {
 
 func inferQuotaRecoverAt(detail string) time.Time {
 	return inferQuotaRecoverAtNow(detail, time.Now())
+}
+
+// quotaRecoverySource 标记一次 quota 恢复点的推断来源（A1，2026-10-31
+// magpie 四域对比刷新轮 §五 A1）——写进 state_reason_detail 让运维可读
+// 「这次冷却信了谁」，并作为验收量具的断言面（变异：删某级来源 ⇒ 该级
+// 标记从恢复点断言里消失 ⇒ 红）。
+type quotaRecoverySource string
+
+const (
+	// quotaSourceBodyReset —— body 词表解析出的上游 reset 时间戳/相对时长
+	//（errorsx.ParseQuotaResetAt；信任上限 = 解析器自己的 maxQuotaResetLead 40d）。
+	quotaSourceBodyReset quotaRecoverySource = "body_reset"
+	// quotaSourceRetryAfter —— 上游 Retry-After 头（信任上限 8d：A1 实施要点
+	// 「词表 8d」同值；coolingDuration 的 24h 全局帽只覆盖 cooling 类 kind，
+	// quota 类此前根本不消费 Retry-After，这是本轮补上的第二级来源）。
+	quotaSourceRetryAfter quotaRecoverySource = "retry_after"
+	// quotaSourceWindowHeuristic —— 词表无 reset 时间时的窗口启发式
+	//（5h 窗 / 周 / 月 / 次 UTC 零点；既有的 inferQuotaRecoverAtNow 逻辑）。
+	quotaSourceWindowHeuristic quotaRecoverySource = "window_heuristic"
+)
+
+// quotaRecovery 是恢复点 + 来源的二元组。
+type quotaRecovery struct {
+	at     time.Time
+	source quotaRecoverySource
+}
+
+// maxQuotaRetryAfterTrust 是 quota 类对 Retry-After 的信任上限（8d）。
+// A1 实施要点的「词表 8d」同值——ParseQuotaResetAt 自己的上限
+// maxQuotaResetLead=40d 管的是 body 词表级；header 级此前在 quota 路径
+// 无上限（无消费），本轮接入后按 8d 收口，防单个畸形 header 把凭据
+// 挂出月度窗口。
+const maxQuotaRetryAfterTrust = 8 * 24 * time.Hour
+
+func inferQuotaRecoveryAtNow(detail string, retryAfter time.Duration, nowArg time.Time) quotaRecovery {
+	// 来源 1：body 词表的 reset 时间（最精确的证据，优先）。
+	if t, ok := parseQuotaResetTimestamp(detail); ok {
+		return quotaRecovery{at: t.UTC(), source: quotaSourceBodyReset}
+	}
+	// 来源 2：Retry-After 头（quota 类此前不消费；8d 信任上限）。
+	if retryAfter > 0 {
+		d := retryAfter
+		if d > maxQuotaRetryAfterTrust {
+			d = maxQuotaRetryAfterTrust
+		}
+		return quotaRecovery{at: nowArg.UTC().Add(d), source: quotaSourceRetryAfter}
+	}
+	// 来源 3：窗口启发式（5h 窗 / 周 / 月 / 次日零点）。
+	return quotaRecovery{at: inferQuotaRecoverAtNow(detail, nowArg), source: quotaSourceWindowHeuristic}
+}
+
+// quotaRecoverySuffix 把来源拼进 state_reason_detail 的尾部段。
+// 返回 ("", nil) 当 detail 本身为空——保持既有 trimDetail 的 nil 语义。
+func quotaRecoverySuffix(detail string, r quotaRecovery) *string {
+	if detail == "" {
+		return nil
+	}
+	tagged := detail + " [recover_source=" + string(r.source) + "]"
+	return trimDetail(tagged)
 }
 
 func inferQuotaRecoverAtNow(detail string, nowArg time.Time) time.Time {

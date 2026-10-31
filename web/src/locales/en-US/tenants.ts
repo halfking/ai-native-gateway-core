@@ -249,5 +249,25 @@ export default {
     ledgerTotalHint: 'Latest {limit} consumption records: {count} items',
   },
 
-  // 扁平键（供 Vue 组件直接使用）
+  // 扁平键（供 Vue 组件直接使用）,
+
+  bills: {
+    title: 'Monthly bills & coupons',
+    refresh: 'Refresh',
+    exportCsv: 'Export CSV',
+    listTitle: 'Monthly bills',
+    emptyNoResult: 'No issued monthly bills yet',
+    colPeriod: 'Period',
+    colCredits: 'Credits',
+    colRequests: 'Requests',
+    colAmount: 'Amount',
+    colStatus: 'Status',
+    couponTitle: 'Activate coupon',
+    couponPlaceholder: 'Coupon code',
+    couponActivate: 'Activate',
+    couponOk: 'Credited {n} credits ({code})',
+    couponFailed: 'The coupon could not be activated. Check the code and try again',
+    loadFailed: 'Monthly bills could not be loaded. Please try again',
+    exportFailed: 'The bills CSV could not be exported. Please try again',
+  },
 }

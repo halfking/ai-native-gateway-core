@@ -222,12 +222,17 @@ export function detectHelpersInFile(src: string): HelperMap {
   return map
 }
 
+// Windows 的 join 产生反斜杠 ⇒ '/locales/' 这类正斜杠过滤在 Windows 上永不命中
+// ⇒ locale 文件被当源码扫，注释里的幽灵 t() 引用混进引用集（keys_referenced 假红）。
+// 统一归一到正斜杠再判（与 Go 侧 filepath.ToSlash 同一课）。
+const toSlash = (p: string) => p.replace(/\\/g, '/')
+
 /** 全局 helper 映射（向后兼容；同名的 helper 取首次出现，新代码用 detectHelpersInFile） */
 export function detectHelpers(srcDir: string, srcRoot?: string): HelperMap {
   const files = walkFiles(srcDir, /\.(vue|ts|tsx|js|mjs)$/)
   const map: HelperMap = new Map()
   for (const f of files) {
-    if (f.includes('/locales/') || f.includes('/node_modules/')) continue
+    if (toSlash(f).includes('/locales/') || toSlash(f).includes('/node_modules/')) continue
     const src = readFileSync(f, 'utf8')
     const fileHelpers = detectHelpersInFile(src)
     for (const [name, prefix] of fileHelpers) {
@@ -358,7 +363,7 @@ export function scanAll(srcDir: string, helpers?: HelperMap): {
   filesScanned: number
 } {
   const files = walkFiles(srcDir, /\.(vue|ts|tsx|js|mjs)$/).filter(
-    (f) => !f.includes('/locales/') && !f.includes('/node_modules/'),
+    (f) => !toSlash(f).includes('/locales/') && !toSlash(f).includes('/node_modules/'),
   )
   const references: KeyReference[] = []
   for (const f of files) {

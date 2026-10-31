@@ -236,6 +236,15 @@ type Candidate struct {
 	// hits the hard-exclude threshold. Added 2026-06-22 (defect ③ soft layer).
 	RecentSuccessRate *float64 `json:"recent_success_rate,omitempty"`
 	RecentSamples     int      `json:"recent_samples,omitempty"`
+	// RecentCacheRate / RecentCacheSamples (P1-B-③, audit 2026-10-28 §4) are
+	// the token-weighted cached-input share over the same last-N business
+	// rows (migration 915 recent_cache_hit_rate). Consumed by the router's
+	// prompt-cache-aware score dimension: a credential whose upstream honors
+	// prompt caching for this model is worth more than its raw price suggests
+	// (discounted cached input + lower TTFT). nil/low samples = no signal →
+	// the dimension is neutral for that candidate (fail-open).
+	RecentCacheRate    *float64 `json:"recent_cache_rate,omitempty"`
+	RecentCacheSamples int      `json:"recent_cache_samples,omitempty"`
 	// NativeEndpoints is the supplier's full set of protocol endpoints
 	// (provider_endpoint_protocols rows for this candidate's provider).
 	// It feeds the endpointselect.Select() decision that drives the
@@ -481,6 +490,12 @@ type Client struct {
 	fernetKey           []byte
 	keyring             *secret.Keyring
 	asyncExitSuspicious func(credentialID int, rawModel string)
+	// candCircuit（2026-10-28 routing_schema_error 轮）候选查询组件熔断器：
+	// 连续失败 open + 请求 park 延迟到冷却点半开探测。见 candidates_circuit.go。
+	candCircuit candidatesCircuit
+	// cacheSignal 记录可选 prompt-cache 信号是否处于降级态（缺函数 ⇒ 中性，见
+	// candidate_optional_signal.go）。零值即未降级。
+	cacheSignal cacheSignalDegrade
 
 	// keyRotator holds per-credential multi-key rotation state (per-key health +
 	// round-robin). nil when the DB/keyring isn't configured (single-key mode).
@@ -1675,7 +1690,23 @@ func candidateQuerySQL() string {
 }
 
 func candidateQuerySQLBase() string {
-	return `
+	// ★ 模态接受臂**不在本文件里抄写**——它由 provider/modality_accept.go 的
+	// 唯一片段渲染（$MODALITY → "$3"）。理由见该文件的注释：要防止
+	// 「改一份忘另一份」（零候选建议列表那份 SQL 抄本曾经就在 domains/streaming
+	// 里各写一遍）。
+	// ★ 替换（而不是把片段拼进 raw string 中间）：拼接会把 raw string 拆成
+	// 半个 ⇒ sql_comment_syntax_test.go 的扫描器在拆分点失明 ⇒ 那一段里的
+	// `//` 注释对门完全隐形（实测见该测试的 TestSQLCommentScanner_SeesPastConcatenation）。
+	//   占位符 + strings.Replace 保持主 SQL 是**一个**完整 raw string。
+	return strings.Replace(candidateQuerySQLBaseTemplate, "/*MODALITY_ACCEPT_ARMS*/", ModalityAcceptArmsSQL("$3"), 1)
+}
+
+// candidateQuerySQLBaseTemplate 是候选集查询的正文；模态接受臂以
+// /*MODALITY_ACCEPT_ARMS*/ 占位（见 candidateQuerySQLBase 的替换）。
+// ★ 是 var 不是 const：正文里有 `+ brokenPairExcludeSQL(...) +` 的拼接
+//
+//	⇒ 不是常量表达式。
+var candidateQuerySQLBaseTemplate = `
 		WITH matched AS MATERIALIZED (
 		SELECT mo.*, mc.id AS _mc_id, mc.context_window_override AS _mc_cw_override, mc.context_window AS _mc_cw
 		FROM model_offers mo
@@ -1710,20 +1741,7 @@ func candidateQuerySQLBase() string {
 			)
 		  AND COALESCE(mc.status, 'active') != 'disabled'
 		  			  AND (
-			      $3 = ''
-			      OR $3 = 'text'
-			      -- 2026-10-26：vision/audio/video 三种媒体请求都放行
-			      -- multimodal 登记的模型。video 此前缺席（只有精确
-			      -- mc.modality = 'video' 一条臂）⇒ 任何带视频块的
-			      -- Gemini/Qwen-VL 请求对全部 multimodal 模型 503，
-			      -- 而判定门（modalityVerdictGateSQL）早已把 video 与
-			      -- vision/audio 同列 —— 迁移 451 把 video 加进枚举的
-			      -- 理由正是「modality_detect 能返回 video」。
-			      OR ($3 IN ('vision', 'audio', 'video') AND COALESCE(mc.modality, 'text') IN ($3, 'multimodal'))
-			      -- 2026-10-08 Phase C: dedicated /v1/images/* uses modality=image
-			      -- and accepts vision|image|multimodal catalog rows.
-			      OR ($3 = 'image' AND COALESCE(mc.modality, 'text') IN ('image', 'vision', 'multimodal'))
-			      OR COALESCE(mc.modality, 'text') = $3
+			      /*MODALITY_ACCEPT_ARMS*/
 			  )
 			  /*MODALITY_VERDICT_GATE*/
 		)
@@ -1805,6 +1823,11 @@ SELECT
 			-- RecentSuccessRate field) for soft de-prioritization in the router.
 			rsr.rate   AS recent_success_rate,
 			rsr.samples AS recent_samples,
+			-- P1-B-③ (audit 2026-10-28 §4): prompt-cache affinity — see the
+			-- chr LATERAL above. Feeds the router's cache dimension
+			-- (RecentCacheRate); NULL = no signal → neutral.
+			chr.rate   AS recent_cache_rate,
+			chr.samples AS recent_cache_samples,
 			-- r0924 supplier-protocol-optimization §3.4: per-candidate
 			-- JSONB projection of the provider_endpoint_protocols rows
 			-- (see pep_lateral LATERAL below). Empty array preserves the
@@ -1896,6 +1919,12 @@ SELECT
 		-- LIMIT 50 is a 50-row index descent per candidate — not a window
 		-- aggregate over the whole partitioned table.
 		CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
+		-- P1-B-③ (audit 2026-10-28 §4): prompt-cache affinity signal — same
+		-- last-N business rows, token-weighted cached-input share (migration
+		-- 915). Same index-descent cost shape as rsr. NULL/0 samples = no
+		-- signal; the router's cache dimension fail-opens to neutral exactly
+		-- like rsr at cold start.
+		CROSS JOIN LATERAL recent_cache_hit_rate(c.id, mo.raw_model_name, 50) AS chr
 			WHERE (p.tenant_id = $2 OR p.tenant_id = 'default')
 
 
@@ -1957,7 +1986,6 @@ SELECT
 			-- above soft-degraded ones even when the static column is equal.
 			COALESCE(rsr.rate, mo.success_rate, 0.9) DESC
 	` // closing backtick shares the line (lone trailing backtick confuses the sql_comment_syntax_test scanner)
-}
 
 func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, tenantID, modality string) ([]Candidate, error) {
 	if c.dbPool == nil {
@@ -1980,19 +2008,97 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 	var err error
 	const maxAttempts = 3
 
+	// 候选查询熔断（2026-10-28 routing_schema_error 轮）：open 期不碰库，
+	// 把本请求 park 到冷却到期点（半开探测由醒来的第一个请求承担）。
+	// parkCap 内循环等待/重试；预算耗尽快速失败（ErrCandidatesCircuitOpen），
+	// handler 走既有 no-candidates 路径返回 503 —— 坏路径在断路期每个冷却窗
+	// 只被真实查询一次，而不是每个请求一撞。
+	allow, retryAt := c.candCircuit.AllowProbe(time.Now())
+	if !allow {
+		parkCap := candidatesCircuitParkCap()
+		parked := false
+		for !allow {
+			remaining := parkCap
+			if wait := time.Until(retryAt); wait < remaining {
+				remaining = wait
+			}
+			if remaining <= 0 {
+				return nil, fmt.Errorf("%w (retry after %s)", ErrCandidatesCircuitOpen, retryAt.Format(time.RFC3339))
+			}
+			if !parked {
+				candidatesCircuitParkedTotal.Inc()
+				parked = true
+			}
+			slog.Warn("[candidate_diag] circuit open — parking request until cooldown probe",
+				"model", clientModel, "tenant_id", tenantID, "modality", modality,
+				"park_seconds", remaining.Seconds())
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(remaining):
+			}
+			allow, retryAt = c.candCircuit.AllowProbe(time.Now())
+		}
+	}
+
+	sqlText := candidateQuerySQL()
+	cacheSignalDegraded := c.cacheSignal.degradedAt(time.Now())
+	if cacheSignalDegraded {
+		// ★ 已在降级态 ⇒ ⇒ 用降级 SQL（★ 降级态由 CAS 保证只有一次进入 ⇒ ⇒
+		// ★ 这里拿到的降级 SQL 与当前口径一致）。
+		sqlText, _ = candidateQuerySQLWithoutCacheSignal()
+	}
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		rows, err = c.dbPool.Query(ctx, candidateQuerySQL(),
+		rows, err = c.dbPool.Query(ctx, sqlText,
 			clientModelLower, tenantID, modality)
 
 		if err == nil {
+			c.candCircuit.RecordSuccess()
 			break
 		}
 
+		// 可选信号 fail-open（2026-10-31）：chr 函数缺失不是候选查询故障——降级 SQL
+		// 重试一次，且不计入熔断、不消耗瞬态重试预算。
+		//
+		// ★★★ **2026-10-31 12h 审计轮修正两处**：★★★ ★ ① 降级【不可用】时
+		// ★★★ **不许打点说「已中性化」**（★ 旧实现无论降级是否真的生效都打点 ⇒ ⇒
+		// ★★★ ⇒ **指标会谎报「已降级」，而查询其实仍在失败** ⇒ ⇒ ⇒ ★★ ⇒ 而那次
+		// ★★★ 事故（2026-10-28）形态在指标上就【不可见】了）⇒ ⇒ ★★★ ② 打点与告警
+		// ★★★ **只发生一次**（★ CAS ⇒ ⇒ 并发同窗的请求各打一次 ⇒ ⇒ 指标随并发放大
+		// ★★★ ⇒ ⇒ 「降级次数」这个口径会被读错）。
+		if !cacheSignalDegraded && isCacheSignalAbsent(err) {
+			degradedSQL, applied := candidateQuerySQLWithoutCacheSignal()
+			if !applied {
+				// ★ 模板形态不匹配 ⇒ ⇒ 降级【不可用】⇒ ⇒ ⇒ 不许进入降级态
+				// ★（★ 进入降级态但用的还是全量 SQL ⇒ 状态是假的）⇒ ⇒ ⇒
+				// ★ 直接按硬失败处理（★ 与修复前行为一致 ⇒ fail-closed）。
+				slog.Error("[candidate_diag] optional signal degrade UNAVAILABLE — candidate SQL template shape changed; degrade not applied",
+					"model", clientModel, "tenant_id", tenantID,
+					"expected_call_shape", candidateCacheSignalCallSQL)
+				c.candCircuit.RecordFailure(time.Now())
+				return nil, fmt.Errorf("query candidates failed: %w (context: model=%s, tenant_id=%s)", err, clientModel, tenantID)
+			}
+			first := c.cacheSignal.markDegraded(time.Now())
+			cacheSignalDegraded = true
+			sqlText = degradedSQL
+			if first {
+				// ★ 只有【赢得状态切换的那一个请求】才打点/告警 ⇒ ⇒ 指标口径 = 降级
+				// ★ 【次数】，而不是【请求数】⇒ ⇒ ⇒ ★ 并发不再放大它。
+				recordCandidateDiagnostic("optional_signal_degraded")
+				slog.Warn("[candidate_diag] optional signal recent_cache_hit_rate missing — cache dimension degraded to neutral",
+					"model", clientModel, "tenant_id", tenantID, "recheck_seconds", candidateCacheSignalRecheck.Seconds())
+			}
+			attempt--
+			continue
+		}
+
 		if !isRetryableDBError(err) {
+			c.candCircuit.RecordFailure(time.Now())
 			return nil, fmt.Errorf("query candidates failed: %w (context: model=%s, tenant_id=%s)", err, clientModel, tenantID)
 		}
 
 		if attempt == maxAttempts-1 {
+			c.candCircuit.RecordFailure(time.Now())
 			return nil, fmt.Errorf("query candidates failed after %d attempts: %w (context: model=%s, tenant_id=%s)", maxAttempts, err, clientModel, tenantID)
 		}
 
@@ -2081,6 +2187,8 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.QualityFixMode,
 			&cand.RecentSuccessRate,
 			&cand.RecentSamples,
+			&cand.RecentCacheRate,
+			&cand.RecentCacheSamples,
 			&nativeEndpointsJSON,
 		); err != nil {
 			return nil, err

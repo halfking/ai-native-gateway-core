@@ -591,3 +591,245 @@ func TestClassifyError(t *testing.T) {
 		})
 	}
 }
+
+// TestDispatcher_DispatchOne_BackpressureNeverDLQs —— 2026-10-28 生产审计轮：
+// asm 就绪门抖动（503 ingress_unavailable / event_retryable）以分钟计，而
+// maxAttempts=5 × 指数退避（≈31s 窗口）曾把 34,793 条**完全合法**的事件永久打进
+// DLQ。⇒ 背压类失败改为「不计数转 DLQ、64s 封顶退避无限重试」：
+// 本用例钉「在 maxAttempts 处背压 503 仍走 failed 退避而不是 dlq」。
+func TestDispatcher_DispatchOne_BackpressureNeverDLQs(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// 真 503 + asm 背压错误码（连接拒绝对 DeliveryError 形态不可达 ⇒ 用 httptest）。
+	var delivererTarget string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"code":"ingress_unavailable","message":"event consumer is unavailable"}`))
+	}))
+	t.Cleanup(srv.Close)
+	delivererTarget = srv.URL + "/events"
+
+	d := NewDispatcher(DispatcherConfig{
+		DB:           db,
+		ASMEndpoint:  delivererTarget,
+		HMACSecret:   "test-secret",
+		PollInterval: time.Hour,
+		MaxAttempts:  3,
+		HTTPTimeout:  500 * time.Millisecond,
+		Logger:       slog.Default(),
+	})
+
+	// attempts=2 → attempts+1=3 == maxAttempts=3：旧行为会走 markDLQ，
+	// 新行为（背压）必须走 failed 退避 —— 期待的是 failed UPDATE 且 **不是** dlq UPDATE。
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id, event_id, event_type, schema_version, tenant_id,\n\t\t       aggregate_id, aggregate_version, occurred_at, payload,\n\t\t       status, attempts, last_error, next_retry_at\n\t\tFROM outbox_events\n\t\tWHERE (status = 'pending' OR (status = 'failed' AND next_retry_at <= NOW()))\n\t\tORDER BY occurred_at ASC\n\t\tLIMIT 1\n\t\tFOR UPDATE SKIP LOCKED").WillReturnRows(outboxRow(7, "evt-bp", 2))
+	mock.ExpectExec("UPDATE outbox_events\n\t\tSET status = 'failed', attempts = $1, last_error = $2,\n\t\t    last_attempt_at = NOW(), next_retry_at = $3, updated_at = NOW()\n\t\tWHERE id = $4").WithArgs(3, sqlmock.AnyArg(), sqlmock.AnyArg(), int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	outcome, err := d.dispatchOne(context.Background())
+	if err != nil {
+		t.Fatalf("dispatchOne: %v", err)
+	}
+	if outcome != dispatchOutcomeBackpressure {
+		t.Errorf("outcome = %v, want dispatchOutcomeBackpressure", outcome)
+	}
+	if !d.backpressurePaused(time.Now()) {
+		t.Error("backpressure failure must trip the dispatcher-level pause")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations（背压在 maxAttempts 处必须走 failed 退避，绝不落 dlq）: %v", err)
+	}
+}
+
+// TestDispatcher_BackpressureStopsBatch —— 熔断的核心契约：批内**第一条**背压
+// 必须停批，积压里剩下的可 claim 事件**一次都不许被碰**（2026-10-28 生产实测：
+// 4191 条积压 × 各自 64s 退避 = ~65 req/s 敲一个关门的入口，asm inbox 排空 0）。
+// sqlmock 按序断言：恰好一次 claim + 一次背压落账，第二条事件绝不出现。
+func TestDispatcher_BackpressureStopsBatch(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"code":"event_retryable","message":"event consumption will be retried"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	d := NewDispatcher(DispatcherConfig{
+		DB:           db,
+		ASMEndpoint:  srv.URL + "/events",
+		HMACSecret:   "test-secret",
+		PollInterval: time.Hour,
+		MaxAttempts:  5,
+		HTTPTimeout:  500 * time.Millisecond,
+		Logger:       slog.Default(),
+	})
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id, event_id, event_type, schema_version, tenant_id,\n\t\t       aggregate_id, aggregate_version, occurred_at, payload,\n\t\t       status, attempts, last_error, next_retry_at\n\t\tFROM outbox_events\n\t\tWHERE (status = 'pending' OR (status = 'failed' AND next_retry_at <= NOW()))\n\t\tORDER BY occurred_at ASC\n\t\tLIMIT 1\n\t\tFOR UPDATE SKIP LOCKED").WillReturnRows(outboxRow(7, "evt-bp-1", 0))
+	mock.ExpectExec("UPDATE outbox_events\n\t\tSET status = 'failed', attempts = $1, last_error = $2,\n\t\t    last_attempt_at = NOW(), next_retry_at = $3, updated_at = NOW()\n\t\tWHERE id = $4").WithArgs(1, sqlmock.AnyArg(), sqlmock.AnyArg(), int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	// 注意：这里**故意不**再给第二条 claim 的期望 —— 停批契约下它不该被
+	// 触碰；若实现回退成逐条重试，sqlmock 会以「unexpected call」报红。
+
+	if err := d.dispatchBatch(context.Background()); err != nil {
+		t.Fatalf("dispatchBatch: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations（第一条背压后必须停批，不得 claim 第二条）: %v", err)
+	}
+	if !d.backpressurePaused(time.Now()) {
+		t.Error("batch abort on backpressure must leave the loop paused")
+	}
+}
+
+// TestDispatcher_BackpressurePauseWindow —— 暂停窗口语义：未触发 ⇒ 不暂停；
+// 触发 ⇒ 窗口内暂停、窗口外恢复；窗口内重复触发 ⇒ 延长窗口（不重启计时）。
+func TestDispatcher_BackpressurePauseWindow(t *testing.T) {
+	db, _, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	d := NewDispatcher(DispatcherConfig{
+		DB:                   db,
+		ASMEndpoint:          "http://asm/events",
+		HMACSecret:           "test-secret",
+		PollInterval:         time.Hour,
+		BackpressureCooldown: time.Minute,
+		Logger:               slog.Default(),
+	})
+
+	base := time.Unix(1_800_000_000, 0)
+	if d.backpressurePaused(base) {
+		t.Error("fresh dispatcher must not be paused")
+	}
+
+	d.tripBackpressurePause(base)
+	if !d.backpressurePaused(base.Add(59 * time.Second)) {
+		t.Error("must stay paused just before cooldown expiry")
+	}
+	if d.backpressurePaused(base.Add(61 * time.Second)) {
+		t.Error("must resume after cooldown expiry")
+	}
+
+	// 窗口内的第二次触发：窗口从**触发时刻**起重新计算（延长），不是从
+	// 原窗口末尾叠倍 —— 否则长抖动会把暂停拖成分钟级盲区。
+	// 判别点选在 90s~120s 之间：延长 ⇒ 90s 结束（100s 已恢复）；
+	// 叠倍 ⇒ 120s 结束（100s 仍在暂停）。
+	d.tripBackpressurePause(base.Add(30 * time.Second))
+	if !d.backpressurePaused(base.Add(89 * time.Second)) {
+		t.Error("second trip window (until 30s+60s=90s) must still be active at 89s")
+	}
+	if d.backpressurePaused(base.Add(100 * time.Second)) {
+		t.Error("second trip must extend from the trip moment (ends at 90s), not stack on the old window (120s)")
+	}
+}
+
+// TestDispatcher_Start_PauseProbesOncePerCooldown —— Start 级别的风暴抑制：
+// 暂停窗口内，Start 的 tick 循环不许发出任何 HTTP 探测（旧行为每 tick 一次
+// ⇒ 4191 条积压时 ~65 req/s）。此处不测「cooldown 到期后重新探测」的恢复
+// 路径 —— 那是时间驱动的正常轮询，由 TestDispatcher_BackpressurePauseWindow
+// 的窗口断言与既有 dispatchOne 覆盖。
+func TestDispatcher_Start_PauseProbesOncePerCooldown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("timing-sensitive in short mode")
+	}
+
+	var attempts atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"code":"event_retryable","message":"event consumption will be retried"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	// 真 DB 不参与断言：暂停判据在 HTTP 之前，claim 根本不会发生。
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	// 暂停期内每个 tick 仍会刷新仪表（30s 节流 ⇒ 全程恰好一对 COUNT）。
+	mock.ExpectQuery("SELECT COUNT(*) FROM outbox_events WHERE status = 'pending'").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(4191))
+	mock.ExpectQuery("SELECT COUNT(*) FROM outbox_events WHERE status = 'dlq'").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(34183))
+
+	d := NewDispatcher(DispatcherConfig{
+		DB:                   db,
+		ASMEndpoint:          srv.URL + "/events",
+		HMACSecret:           "test-secret",
+		PollInterval:         20 * time.Millisecond,
+		BackpressureCooldown: 300 * time.Millisecond,
+		HTTPTimeout:          500 * time.Millisecond,
+		Logger:               slog.Default(),
+	})
+	d.tripBackpressurePause(time.Now())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	_ = d.Start(ctx) // ends with context.DeadlineExceeded
+
+	if got := attempts.Load(); got != 0 {
+		t.Errorf("HTTP attempts during pause = %d, want 0（暂停期内一次请求都不该发出）", got)
+	}
+}
+
+// TestIsBackpressure_ClassifiesASMCodes —— 判据自身：503 + asm 两个背压码才
+// 算背压；其它 5xx、其它码、连接错误都不算。
+func TestIsBackpressure_ClassifiesASMCodes(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"503 ingress_unavailable", &DeliveryError{StatusCode: 503, Body: `{"code":"ingress_unavailable","message":"event consumer is unavailable"}`}, true},
+		{"503 event_retryable", &DeliveryError{StatusCode: 503, Body: `{"code":"event_retryable","message":"event consumption will be retried"}`}, true},
+		{"503 other code", &DeliveryError{StatusCode: 503, Body: `{"code":"rate_limited"}`}, false},
+		{"500 ingress_unavailable（非 503）", &DeliveryError{StatusCode: 500, Body: `{"code":"ingress_unavailable"}`}, false},
+		{"502 bad gateway", &DeliveryError{StatusCode: 502, Body: "bad gateway"}, false},
+		{"连接错误（非 DeliveryError）", fmt.Errorf("post delivery request: dial tcp: connect refused"), false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		if got := IsBackpressure(tc.err); got != tc.want {
+			t.Errorf("%s: IsBackpressure = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestBackpressureBackoff_Exponential —— 2026-10-28 生产审计轮：固定 64s 在
+// 长窗口背压下退化为「61 req/s 永久锤击」（asm 连续 503 十小时、积压 3.9k 条、
+// 8 分钟 2.9 万次失败尝试）。退避改为 8s × 2^(attempts-1)、封顶 10min：
+// 本表钉「首拍 8s / 每次翻倍 / 大 attempts 与溢出都落 cap」三个承重点。
+func TestBackpressureBackoff_Exponential(t *testing.T) {
+	cases := []struct {
+		name     string
+		attempts int
+		want     time.Duration
+	}{
+		{"首次背压 attempts=1 → 8s", 1, 8 * time.Second},
+		{"attempts=2 → 16s", 2, 16 * time.Second},
+		{"attempts=3 → 32s", 3, 32 * time.Second},
+		{"attempts=4 → 64s（旧封顶值只是一档）", 4, 64 * time.Second},
+		{"attempts=6 → 256s", 6, 256 * time.Second},
+		{"attempts=8 越过 cap → 10min", 8, 10 * time.Minute},
+		{"老积压 attempts=665 → 10min（不溢出）", 665, 10 * time.Minute},
+		{"防御 attempts=0 → 地板 8s", 0, 8 * time.Second},
+	}
+	for _, tc := range cases {
+		if got := backpressureBackoff(tc.attempts); got != tc.want {
+			t.Errorf("%s: backpressureBackoff(%d) = %v, want %v", tc.name, tc.attempts, got, tc.want)
+		}
+	}
+}

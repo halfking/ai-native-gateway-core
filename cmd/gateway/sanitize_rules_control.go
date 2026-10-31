@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
-	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -64,11 +63,16 @@ func installSanitizeRuleManager(h *streaming.ChatHandler, d *sanitize.PatternDet
 	if rc != nil {
 		opts.Notifications = sanitizerules.NewRedisNotifications(rc, "llm-gateway:sanitize-rules:published")
 	}
-	m, err := newSanitizeRuleManager(d, db, sanitizerules.NewPostgresStore(db), opts)
+	store := sanitizerules.NewPostgresStore(db)
+	m, err := newSanitizeRuleManager(d, db, store, opts)
 	if err != nil {
 		slog.Error("sanitize rules baseline invalid; version manager unavailable", "error", err)
 		return
 	}
+	// 2026-10-29 拦截持久化轮：审核记录 / 放行表 / 硬阻断清单管理面状态落库
+	// （迁移 917）。启动即装载放行与管理面清单；装载失败只告警（放行缺失的
+	// 后果是误报复发，比网关起不来轻）。
+	sanitizerules.InstallReviewPersistence(store)
 	// Install the local protective snapshot before any DB I/O. Run keeps trying
 	// after a transient import/read failure; existing heads bypass legacy import.
 	d.SetRuleManager(m)
@@ -118,7 +122,7 @@ func loadSanitizeRulesBaseline(ctx context.Context, db *sql.DB, local sanitizeru
 		if err := rows.Scan(&id, &name, &typ, &pattern, &enabled); err != nil {
 			return sanitizerules.Config{}, errors.New("sanitize rules legacy baseline unavailable")
 		}
-		cfg.Rules = append(cfg.Rules, legacyPIIRule(id, name, typ, pattern, enabled))
+		cfg.Rules = append(cfg.Rules, sanitizerules.LegacyPIIRule(id, name, typ, pattern, enabled))
 	}
 	if rows.Err() != nil {
 		return sanitizerules.Config{}, errors.New("sanitize rules legacy baseline unavailable")
@@ -131,43 +135,11 @@ func loadSanitizeRulesBaseline(ctx context.Context, db *sql.DB, local sanitizeru
 	return cfg, nil
 }
 
-// legacyPIIRule 把 legacy `pii_patterns` 的一行造造成托管规则。
+// legacyPIIRule 已下沉到 domains/sanitizerules.LegacyPIIRule（r1038b，2026-10-27）。
 //
-// r1038（2026-10-20）：地址族（server_ip / internal_ip）**只记录、不遮蔽**。
-//
-// 之前所有 legacy 行一律 action=mask，于是 316 播种的 `ip_address` 行
-// （正则 `\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}`，连版本号与环回地址一并命中）
-// 会把**每个** IPv4 在脱敏面遮成 `***.***.***.***`，
-// 「export https_proxy=http://127.0.0.1:7890」这类可复制执行的命令变成坏命令。
-//
-// 851 迁移把那一行停用了，但那是**数据**修复：基线快照不可变，851 之前发布的
-// 部署拿到的快照里那行仍然是 enabled —— 遮蔽会一直存在直到有人手工重发一版
-// 规则。改在这里之后，新发布的基线形状本身就正确；security/sanitize 的
-// DetectionScope 另有一道代码级保证（地址族在脱敏面一律放行），两层都不依赖
-// 运维记得停用哪一行。
-//
-// 抽成独立函数是为了让它**可测**：这个形状是「数据修复失效时唯一的兜底」，
-// 必须有一道门钉住它，否则没人会注意到它被改回 mask。
-func legacyPIIRule(id int, name, typ, pattern string, enabled bool) sanitizerules.Rule {
-	// Keep the same canonical type mapping as Checker.RuleConfig.
-	switch typ {
-	case "bank_card":
-		typ = "credit_card"
-	case "ip", "ip_address", "ipv6":
-		typ = "server_ip"
-	case "phone", "id_card", "email", "credit_card", "secret", "account", "name", "internal_ip", "server_ip", "custom":
-	default:
-		typ = "custom"
-	}
-	action := "mask"
-	if typ == "server_ip" || typ == "internal_ip" {
-		action = "log"
-	}
-	return sanitizerules.Rule{
-		ID: "compliance.pii." + strconv.Itoa(id), Name: name, Type: typ,
-		Kind: "pattern", Pattern: pattern, Scopes: []string{"output"}, Action: action, Enabled: enabled,
-	}
-}
+// 下沉理由：这段映射原先住在 package main 里，**测试无法直接调用** ⇒ 任何
+// 「验证生产真实规则集」的判据都只能手抄一份映射，抄件会与生产漂移。
+// 下沉后生产侧与判据侧调用**同一个函数**，判据锚在事实源上。
 func stopSanitizeRules() {
 	if sanitizeRulesStop != nil {
 		sanitizeRulesStop()

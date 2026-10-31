@@ -11,6 +11,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/goalrun"
 	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
+	"github.com/kaixuan/llm-gateway-go/internal/sessionid"
 )
 
 // goalrunKeyVerifier 与 domains/session 的鉴权抽象同形；真实现由 main.go
@@ -119,7 +120,10 @@ func (h *GoalRunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	tenantID := ki.TenantID
 
-	sessionID := r.Header.Get("X-Session-ID")
+	// Align with sessionid header priority/case (X-Gw > legacy/native).
+	// Do NOT DeriveGatewayID here: goal_runs stores the client-facing id
+	// as provided (tests use "session_root"); ownership compare is exact.
+	sessionID, _ := sessionid.FromHeaders(r.Header)
 
 	ctx := r.Context()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)

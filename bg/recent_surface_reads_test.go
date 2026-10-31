@@ -3,7 +3,10 @@ package bg
 import (
 	"os"
 	"regexp"
+	"strings"
 	"testing"
+
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 // TestRecentWindowReadsUseCurrentMonthSurface extends the
@@ -18,6 +21,16 @@ import (
 //     attempt window (staleness never fired / auto-cool never fired)
 //   - shared_pick.go: 7-day most-used probe-model pick (stale pick)
 //   - daily_probe_audit.go: 3-day lookback for daily submissions (under-scan)
+//
+// ★ R170 更新：shared_pick.go 已改读**会话族窄投影**（db.
+//
+//	SessionFamilyMostUsedClientModelSourceSQL）⇒ 它不再命中本门下面那条
+//	`FROM _?request_logs(\w*)` 正则（**零命中**）⇒ 本门对它**恒绿**。
+//	★ 那不是「读面已合规」，而是「读面换了对象」⇒ 所以下面补了一条
+//	**同形状**的钉子：近窗读必须落在**热腿 ∪ 母表**这个两臂形态上
+//	（★ 那正是 canonical 视图的 FROM 结构 —— 生产的 pg_get_viewdef 就是
+//	`session_turns_hot ⋈ details_hot UNION ALL session_turns ⋈ details`，
+//	**无反连接、无 WHERE** ⇒ 母表腿是视图自己的组成部分，不是「偷读冷父表」）。
 //
 // Previously NOT covered: integrity_fingerprint_drift.go stayed on the bare
 // parent while system_fingerprint was absent from the view (hot column added
@@ -77,6 +90,27 @@ func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 			t.Fatalf("%s 仍读已退役的 v1 族 %q —— 迁移 890 把它整族 DROP 了，"+
 				"提及即整条语句 42P01（近窗读改读会话族热腿或 canonical 视图）",
 				file, m[0])
+		}
+	}
+
+	// ★ R170：shared_pick.go 在上面那条正则里**零命中**（它已改读会话族
+	//   窄投影，不再有任何 `FROM request_logs*`）⇒ ⇒ 本门对它**恒绿**
+	//   ⇒ 它**不再提供任何保护** ⇒ 它的近窗纪律改由下面这条**形状钉**
+	//   + shared_pick_most_used_model_test.go 的产物形状判据接管。
+	//
+	// ★ 这条钉子守的是「近窗读不得只落在冷父表上」：canonical 视图的 FROM
+	//   结构是「热腿 ∪ 母表」（生产的 pg_get_viewdef 实测：无反连接、无
+	//   WHERE）⇒ 母表腿是视图自己的组成部分 ⇒ 窄投影照抄它就是合规的；
+	//   ★ 而「只剩母表」才是本门原意要禁的「偷读冷父表」。
+	{
+		narrow := dbpkg.SessionFamilyMostUsedClientModelSourceSQL()
+		if !strings.Contains(narrow, "FROM public.session_turns_hot t") {
+			t.Errorf("探针选型的近窗读丢了**热腿**（%s）—— 近窗纪律要求「热腿 ∪ 母表」两臂", narrow)
+		}
+		if !strings.Contains(narrow, "FROM public.session_turns t") {
+			t.Errorf("探针选型的近窗读丢了**母表腿**（%s）—— 少了它就等于把\n"+
+				"「promote 之前那一段窗口」排除在外（这正是 2026-09-11 那次\n"+
+				"「挑到陈旧模型」的根因）", narrow)
 		}
 	}
 

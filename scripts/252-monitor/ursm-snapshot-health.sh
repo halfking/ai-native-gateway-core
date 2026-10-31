@@ -477,6 +477,121 @@ base_active AS (
     AND $G_SLOT_TS IN (SELECT slot FROM joined)
   GROUP BY 1, $G_TRUNC snapshot_ts))
 "
+
+# ==== P11 第二期变体（R176 / 迁移 919）：base_active 的过去天也走汇总表 ==========
+# ★ 与 BUCKETS_SQL_DAILY 唯一的差别就是 base_active 这一段（其余逐字相同）：
+#   两个变体并存是【有意的】—— active 探测失败时（917 未落 / 回填未跑 / 列缺），
+#   巡检必须能整体回退到上一代的 DAILY 变体（源表路）。
+# ★★ 为什么整条复制而不是「在一条 SQL 里 CASE」：见上面「为什么必须是
+#   【两段独立的 SQL】」—— 规划期解析表名，同段里出现不存在的列/表会整条炸。
+BUCKETS_SQL_DAILY_V2="
+WITH win AS (
+  SELECT $G_TRUNC $NOW_EXPR - make_interval(hours => $WINDOW_HOURS)) AS lo,
+         $G_TRUNC $NOW_EXPR)                                          AS hi_excl
+),
+series AS (SELECT generate_series(lo, hi_excl - $G_IV, '$G_STEP') AS m FROM win),
+cur AS (
+  SELECT $G_TRUNC snapshot_ts) AS m, count(*) AS c, $G_ACTIVE AS a
+  FROM ursm_node_snapshot_min, win
+  WHERE snapshot_ts >= win.lo AND snapshot_ts < win.hi_excl
+  GROUP BY 1
+),
+joined AS (
+  SELECT s.m, coalesce(c.c, 0) AS c, coalesce(c.a, 0) AS a, $G_SLOT_M AS slot
+  FROM series s LEFT JOIN cur c ON c.m = s.m
+),
+-- 基线：同一批小时位在更早的 N 天里的**每个桶**各自计数，
+-- 然后对每个小时位取中位数。
+-- ★ 这里必须先按 (日期, 桶) 分组再取分位数。踩过的坑：
+--   漏掉日期维度、直接对原始行 GROUP BY 小时位，得到的是
+--   「该小时位 7 天的总行数」（~700,000），比真实单桶高 5 倍，
+--   于是 10-01/10-02 这些正常日会被整片判成 DEGRADED（实测 25/25 全红）。
+-- ★★ 基线走【每日 slot 汇总表】（P11，迁移 892）：过去的完整天读汇总表，
+--   今天仍实时读源表（今天的数据还在写，汇总表按设计不含今天）。
+--   ★ 为什么今天必须走源表（★ 本地真库 A/B 实测逼出来的，不是设计时就想到的）：
+--     汇总表的填充范围是 [today - N, today)，【不含今天】
+--     ⇒ 若新路覆盖整个窗口，今天上午到 win.lo 的那些桶会【整个消失】
+--     ⇒ ⇒ 实测：16 行 OLD_ONLY（全是今天的桶）⇒ 判定输入变了。
+--   ★ 汇总表每行 = (天, 粒度, 小时位, 桶起点) → 行数
+--     ⇒ 与源表路的「按 (天, 桶) 分组 count(*)」是【同一个量】⇒ 逐字相同。
+--   ⚠ 窗口：两路都用【桶对齐】的下界（date_trunc）⇒ 窗内的桶在两边都完整。
+--     ⇒⇒ ★★ 【这是判定输入的一处真实改动】⇒ 必须由属主知情并拍板。
+base_buckets AS (
+  SELECT d.slot AS slot, d.rows AS c
+    FROM public.ursm_snapshot_slot_daily d
+   WHERE d.granularity = '$G_UNIT'
+     AND d.bucket_ts >= date_trunc('$G_UNIT', $NOW_EXPR - make_interval(days => $BASELINE_DAYS))
+     AND d.bucket_ts <  (SELECT lo FROM win)
+     AND d.day <  (now() AT TIME ZONE current_setting('TimeZone'))::date
+  UNION ALL
+  -- 今天：实时读源表
+  SELECT $G_SLOT_TS AS slot, count(*) AS c
+    FROM ursm_node_snapshot_min
+   WHERE snapshot_ts >= date_trunc('$G_UNIT', $NOW_EXPR - make_interval(days => $BASELINE_DAYS))
+     AND snapshot_ts <  (SELECT lo FROM win)
+     -- ★★ 2026-10-24（R97 轮）改写：【把「今天」写成可下推的范围谓词】。
+     --   原来的形态：$G_TRUNC snapshot_ts) >= (今天零点)
+     --     ⇒ 它是**列上的函数表达式** ⇒ PG 的规划器**不能**把它换成
+     --       snapshot_ts 的范围条件 ⇒ 只能当 **Filter** 挂在
+     --       「snapshot_ts >= 7 天前」那个 Index Cond **之上**
+     --       ⇒ ★★ 实测（252，EXPLAIN）：
+     --         Index Cond: snapshot_ts >= now()-7 days   ← 仍然是 7 天！
+     --         Filter:    date_trunc('hour', snapshot_ts) >= 今天零点
+     --       ⇒ 8 个分区全被扫（20261017~20261024），
+     --         其中 7 个分区的行**扫完即丢**（Filter 全部为假）。
+     --   现在的形态：snapshot_ts >= (今天零点)
+     --     ⇒ 直接成为 **Index Cond** ⇒ ★ 只扫今天那一个分区，
+     --       其余分区「Subplans Removed」/「never executed」。
+     --   ★★ 【等价性证明】（必须成立，否则这就是口径改动）：
+     --     对 ts ∈ timestamptz，令 T = 今天零点（本地时区，恰好落在
+     --     hour / minute 的边界上）：
+     --       (a) ts >= T ⇒ date_trunc(unit, ts) >= date_trunc(unit, T) = T
+     --           （date_trunc 单调不减；T 本就在 unit 边界上 ⇒ 截断后不变）
+     --       (b) ts < T ⇒ date_trunc(unit, ts) < T
+     --           （否则 ts 与 date_trunc(unit, ts) 会落在同一个 unit 桶里，
+     --             而该桶的下界 >= T ⇒ ts >= T，矛盾）
+     --     ⇒ 两式合起来 ⇒ date_trunc(unit, ts) >= T ⟺ ts >= T。
+     --   ★ 边界：T 取的是【本地日期的零点】；夏令时「午夜不存在」的时区里
+     --     PG 会把该零点规范化到 01:00，而 01:00 仍在 hour/minute 边界上
+     --     ⇒ 等价性照旧成立（Asia/Shanghai 自 1991 年起无夏令时）。
+     --   ★ 这个改写**只动「今天」这一条腿**的读集范围，
+     --     **不改任何判据口径**（分组、桶对齐、基线天数、中位数算法全部原样）。
+     --     ★ 实证：改写前后 10 个判据字段逐字相同（生产 A/B + 本地真库门）。
+     AND snapshot_ts >= (now() AT TIME ZONE current_setting('TimeZone'))::date::timestamptz
+   GROUP BY 1, $G_TRUNC snapshot_ts)),
+-- 活跃子单位的基线（★ P11 第二期，2026-10-29 R176 轮 / 迁移 919）：
+-- ★★ 过去天走【汇总表】—— 919 给 ursm_snapshot_slot_daily 补了 active_minutes 列
+--   （hour: count(DISTINCT minute)，minute: 恒 1），与本段旧路（源表 3 天实时扫）
+--   产出**同一批 (slot, 桶) 行**：count、DISTINCT 分钟两个量逐字相同。
+--   ★ 为什么必须搬：252 实测（R176，EXPLAIN ANALYZE 独立臂）源表路 3 天 =
+--     800 万索引项 + 83 万堆取数 = **158.1s**；且行量自 R97 时代的「7 天 600 万」
+--     涨到 290 万/天（×3.4）⇒ 主判据均值 242s × 每小时一次 = 每天 ~1h 纯扫描。
+--     过去天的 (count, DISTINCT 分钟) 与 892 给 base_buckets 物化的 (count) 是
+--     同一类不变量（跨天即定、只有迟到行）⇒ 物化它是「换实现」不是「改判据」。
+--   ⚠★ 与 base_buckets 同款的【判定输入真实改动】（属主知情项）：下界从
+--     「行时间 now()-ACTIVE_DAYS」改成「桶对齐 date_trunc(unit, now()-ACTIVE_DAYS)」
+--     ⇒ 边界桶从「半截」变「完整」。与 892 当年拍板的桶对齐改口径同族、同方向。
+--   ⚠ 探测失败（active_minutes 列不存在 / 窗口内有 NULL / 窗口内无行）⇒
+--     本变体整条不用，回退 BUCKETS_SQL_DAILY（源表路）⇒ 慢，但不失明。
+--   ★ 旧路按 slot 收窄（IN joined）只是为了给源表扫描省分组数；汇总表路只有
+--     几百行 ⇒ 不再需要；ref_act 多出的 slot 行在 slot_ref JOIN judged 时本来
+--     就不被引用（判据只用 joined 里的 3~4 个 slot）⇒ 语义不变。
+base_active AS (
+  SELECT d.slot AS slot, d.rows AS c, d.active_minutes AS a
+    FROM public.ursm_snapshot_slot_daily d
+   WHERE d.granularity = '$G_UNIT'
+     AND d.bucket_ts >= date_trunc('$G_UNIT', $NOW_EXPR - make_interval(days => $ACTIVE_DAYS))
+     AND d.bucket_ts <  (SELECT lo FROM win)
+     AND d.day <  (now() AT TIME ZONE current_setting('TimeZone'))::date
+  UNION ALL
+  -- 今天：实时读源表（R97 的范围谓词下推同款：snapshot_ts >= 今天零点 直接成为
+  -- Index Cond ⇒ 只扫今天那一个分区；等价性证明见上面 base_buckets 今天腿）。
+  SELECT $G_SLOT_TS AS slot, count(*) AS c, $G_ACTIVE AS a
+    FROM ursm_node_snapshot_min
+   WHERE snapshot_ts >= (now() AT TIME ZONE current_setting('TimeZone'))::date::timestamptz
+     AND snapshot_ts <  (SELECT lo FROM win)
+   GROUP BY 1, $G_TRUNC snapshot_ts))
+"
 # === 基线来源选择（P11，迁移 892 / §143.35）================================
 #
 # ★ 为什么要两条路：
@@ -548,9 +663,48 @@ if ! sql_failed "$base_probe"; then
     fi
   fi
 fi
-log "base_source=${BASE_SRC} granularity=${G_UNIT} baseline_days=${BASELINE_DAYS} slot_daily_cov_days=${base_cov:-?} slot_daily_min=${base_min:-?} slot_daily_max=${base_max:-?} slot_daily_need_from=${need_min:-?}"
+# === active_minutes 覆盖探针（P11 第二期，迁移 919 / R176 轮）=================
+#
+# ★ 与上面的 base_probe 同一哲学：探测失败 ⇒ 回退源表路 ⇒ 慢，但不失明。
+# ★ 三个失败形态都要接得住：
+#   ① 列不存在（917 未落）⇒ SQL 42703 ⇒ sql_failed ⇒ 回退；
+#   ② 列在、但窗口内有 NULL（917 已落、全量回填未跑）⇒ null_count > 0 ⇒ 回退；
+#   ③ 窗口内没有行（汇总表被清 / 粒度不匹配）⇒ win_count = 0 ⇒ 回退。
+# ★ 窗口与 V2 变体的 rollup 臂同窗（ACTIVE_DAYS、桶对齐下界、day < 今天）；
+#   上界放到 now() 只是超集（今天的行被 day < 今天 排除）⇒ 探测判「整窗无 NULL」
+#   比变体真正读的窗口更严 ⇒ 不会漏判。
+# ★ BASE_SRC=daily 是前置条件：base_buckets 的覆盖探针不过 ⇒ 直接回退 SOURCE，
+#   active 探针再绿也没有用（V2 变体里 base_buckets 那半段同样要读汇总表）。
+ACTIVE_SRC="source"
 if [ "$BASE_SRC" = "daily" ]; then
-  BUCKETS_SQL="$BUCKETS_SQL_DAILY"
+  active_probe=$(de "SELECT coalesce((SELECT count(*)::text FROM public.ursm_snapshot_slot_daily
+                                                WHERE granularity = '$G_UNIT'
+                                                  AND bucket_ts >= date_trunc('$G_UNIT', $NOW_EXPR - make_interval(days => $ACTIVE_DAYS))
+                                                  AND bucket_ts <  date_trunc('$G_UNIT', $NOW_EXPR)
+                                                  AND day <  (now() AT TIME ZONE current_setting('TimeZone'))::date), '')
+                           || '|' || coalesce((SELECT count(*)::text FROM public.ursm_snapshot_slot_daily
+                                                WHERE granularity = '$G_UNIT'
+                                                  AND bucket_ts >= date_trunc('$G_UNIT', $NOW_EXPR - make_interval(days => $ACTIVE_DAYS))
+                                                  AND bucket_ts <  date_trunc('$G_UNIT', $NOW_EXPR)
+                                                  AND day <  (now() AT TIME ZONE current_setting('TimeZone'))::date
+                                                  AND active_minutes IS NULL), '')")
+  if ! sql_failed "$active_probe"; then
+    act_win=$(printf '%s' "$active_probe" | cut -d'|' -f1)
+    act_null=$(printf '%s' "$active_probe" | cut -d'|' -f2)
+    if [ -n "$act_win" ] && [ "$act_win" -gt 0 ] 2>/dev/null \
+       && [ -n "$act_null" ] && [ "$act_null" -eq 0 ] 2>/dev/null; then
+      ACTIVE_SRC="daily_v2"
+    fi
+  fi
+fi
+
+log "base_source=${BASE_SRC} granularity=${G_UNIT} baseline_days=${BASELINE_DAYS} slot_daily_cov_days=${base_cov:-?} slot_daily_min=${base_min:-?} slot_daily_max=${base_max:-?} slot_daily_need_from=${need_min:-?}" active_source=${ACTIVE_SRC:-source}
+if [ "$BASE_SRC" = "daily" ]; then
+  if [ "$ACTIVE_SRC" = "daily_v2" ]; then
+    BUCKETS_SQL="$BUCKETS_SQL_DAILY_V2"
+  else
+    BUCKETS_SQL="$BUCKETS_SQL_DAILY"
+  fi
 else
   BUCKETS_SQL="$BUCKETS_SQL_SOURCE"
 fi

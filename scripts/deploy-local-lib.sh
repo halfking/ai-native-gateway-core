@@ -1418,3 +1418,512 @@ dl_record_verify() {
   local root="$1" db="$2" redis="$3" version="$4" port="$5"
   printf 'VERIFY_TOOL=deploy-local.sh\nVERIFY_DEVICE=local\nVERIFY_PASS=1\nVERIFY_ROOT=%s\nVERIFY_RELEASE=%s\nVERIFY_PORT=%s\nVERIFY_DATABASE=%s\nVERIFY_REDIS=%s\n' "$root" "$version" "$port" "$db" "$redis"
 }
+
+# ─────────────────────────────────────────────────────────────────────────
+# 跨 checkout 切流互斥（机器级 switch 锁）
+#
+# 2026-10-27（r1039 后续轮；审计档 docs/audit/2026-10-20-r1039-脱敏阻断与设置界面审计轮.md
+# §8 第 18 条）。
+#
+# ## 缺陷（本机实测复现过两次，不是理论风险）
+#
+# 本机有多份 checkout（llm-gateway-go / -3 / -5 / -cursor），它们**共用同一个宿主
+# 端口对**（8781/8782），而部署脚本的蓝绿切换是**固定 8781/8782 一对**的
+# ⇒ 两份 checkout 同时部署时，**切流步会互相踩**：
+#
+#   · 候选在 8781 起好、验证全绿，切流步要抢占 8782 ⇒ 那里跑着**另一个部署根**
+#     的进程（两个根各有自己的 pid/run 目录 ⇒ `stop_instance` 管不到它）
+#     ⇒ 新实例绑不上 8782 ⇒ 老进程继续应答 ⇒ 「/version body did not match
+#     bundle metadata」⇒ 重试 3 次全红 ⇒ **整轮部署回滚**。
+#   · 兄弟 checkout 还会把本轮自己的提交从 origin/main 上挤掉（推送被拒）。
+#
+# ⇒ 根因：**端口是机器级资源，锁却只覆盖「同一部署根」**。
+#
+# ## 为什么「已有的构建锁」不够
+#
+# 机器级构建锁（`kx-llm-gateway-build.lock`，LOCK_TMP_ROOT=/tmp）确实**跨 checkout
+# 共享** —— 但它在**候选实例起停之前**就被释放了（deploy-local.sh 的
+# `release_build_lock`）⇒ **切流窗口根本不受保护**。
+#
+# ## 本锁的语义
+#
+#   · **机器级**：路径在 LOCK_TMP_ROOT 下，**不含任何 checkout 路径**
+#     ⇒ 这正是「跨 checkout 互斥」能成立的前提（路径若含 checkout，两个 checkout
+#     各拿各的锁，互斥就名存实亡 —— 这类「看起来有锁」的假互斥本仓吃过亏）。
+#   · **覆盖窗口** = 候选实例起停 → 切流完成（deploy-local.sh：acquire 在
+#     `start_instance` 之前，release 在 `dl_atomic_switch` 之后）。
+#   · **争用快速失败**：rc 75（EX_TEMPFAIL），并打印持有者元数据
+#     ⇒ 第二个部署**不去抢端口**，而是明确告诉运维「有人在切流，稍后重试」。
+#   · **失败路径也释放**：deploy-local.sh 的 EXIT/INT/TERM trap 里调
+#     `release_switch_lock` ⇒ 夭折的部署不会把锁留成「永久占用」。
+#   · **硬杀留下的残锁**：持有者 pid 已死 ⇒ **自动接管**（否则机器会被永久卡死）；
+#     持有者还活着 ⇒ 拒绝。★ 判据只看 pid 存活，**不按年龄**（部署可能正在长时间跑，
+#     按年龄删锁会打断别人）。
+#
+# ## 2026-10-28（第二轮批判性审计）：★ 本节的四条语义此前与共享部署库**分叉**了
+#
+# ★ 审计对象不是「锁在不在」，而是「**锁到底互斥吗**」—— 逐条查了
+#   「持有者还活着」这个判据本身，结论是：**本节在四个维度上与共享部署库 lock.sh
+#   不一致，且其中三条会让互斥【失效】**：
+#
+#   ★ F-A（高）：**活着的持有者会被当成残锁接管**（EPERM ≠ ESRCH）。
+#     本仓旧实现用 `kill -0` 判存活 —— 它对「进程存在但不属于我」返回 EPERM，
+#     **退出码与「进程真没了」的 ESRCH 完全一样** ⇒ ⇒ 持有者是**别的用户**的进程时
+#     （root cron vs 操作员 shell），它被判成「死了」⇒ **接管掉一把活锁**
+#     ⇒ ⇒ 互斥被拆，两份 checkout 同时切流 ⇒ 正是这把锁要防的那个故障。
+#     ★ 共享部署库 2026-09-18 就为此把口径换成 `ps -p`（lock_pid_alive 的注释
+#     原文：「EPERM can no longer masquerade as death」）—— ★ **本仓把那个已修的
+#     bug 又抄了回来**，且注释还写着「EPERM 也算活着」（与实现相反 ⇒ 声名与实现不符）。
+#   ★ F-B（中）：**元数据读不出来时，两个函数的结论相反**。
+#     「残锁判定」读不出 pid ⇒ 保守地判**不是**残锁（拒绝接管）；
+#     「恢复命令」读不出 pid ⇒ 却**直接清掉** ⇒ ⇒ 一把【元数据损坏】的锁：
+#     恢复命令能清，但**每一次部署都仍然被它挡住** ⇒ 文档承诺的「运维可以自己恢复」
+#     与「恢复之后部署能过」是两回事；且清掉的可能正是**别人的活锁**。
+#   ★ F-C（中）：**锁的形态由「本机有没有 flock」决定，而不是由「路径是什么形态」决定**
+#     ⇒ 一旦某台机器后来装了 flock（brew install util-linux），而老的 mkdir 目录锁
+#     还在 ⇒ flock 分支的 `exec <> "$path"` 会因 EISDIR 失败，而 **POSIX 规定
+#     exec 的重定向失败是致命的** ⇒ 整个部署脚本带着一句 "Is a directory" 死掉，
+#     而不是像设计意图那样 rc=75 快速失败。
+#   ★ F-D（低）：**flock 分支在解锁后 unlink 锁文件** ⇒ 关闭 fd 与 rm 之间存在
+#     窗口：别的进程可能刚好在旧 inode 上 flock 成功，随后第三个进程在同名新文件上
+#     再 flock 一次 ⇒ **两个持有者**。⇒ flock 锁的正确做法是**不删文件**
+#     （进程退出/OS 关闭 fd 即自动释放）。
+#
+# ★ 本节现在的口径：**「持有者是否还活着」只由一个判据回答 —— pid 存在与否**
+#   （`ps -p`，跨用户安全），★ 两侧（共享部署库 lock.sh / 本仓）必须给出同一个答案
+#   ⇒ 由 tests/deploy_switch_lock_parity_test.sh 逐 pid 对拍。
+#
+# ★★ 2026-10-28（第三轮 · 合并就绪轮）：★ **F-A 已收口** ——
+#   本仓**不再自带**存活探针 ⇒ `dl_pid_alive` 改为**委托**共享部署库的
+#   `lock_pid_alive` ⇒ **同一套机制不再有两份实现** ⇒ 第二轮的结论
+#   「★ 同一套机制有两份实现 ⇒ 必然漂移」这一缺陷类别，在【存活判据】
+#   这一格上**归零**（⇒ 本轮是「把切流锁并进仓外共享部署库 SSOT」的
+#   **第一片**：不需要跨仓写入就能收掉的那一格）。
+#   ★ 委托带来的**新前提**：「共享部署库没被 source」从「实现细节」变成
+#     「可用性前提」⇒ ⇒ 本节新增 `dl_switch_lock_require_ssot`：
+#     **缺判据 ⇒ 显式失败**，绝不猜（★ 猜「死」= 把活锁当残锁接管
+#     ⇒ **F1 的新变体**）。缺判据时 `dl_pid_alive` 返回 **2（不知道）**，
+#     「残锁判定」与「恢复命令」都把「不知道」当**不是**残锁 ⇒ fail-closed。
+#   ★ 仍未收口（**待合并项**，见 tests/deploy_lock_parity_baseline.json）：
+#     C3 形态判定（SSOT 按「有没有 flock」定形态 ⇒ 本仓已改为按路径形态）；
+#     C4 释放语义（SSOT 的 flock 释放会 unlink ⇒ unlink-after-unlock 竞态）；
+#     C5 pid 正则（SSOT `^[0-9]+$` 接受 0 与前导零 ⇒ 本仓 `^[1-9][0-9]*$`）。
+#     ⇒ 这三条要在**共享部署库**那一侧修（跨仓写入）⇒ 本轮只登记 + 建棘轮门。
+# ─────────────────────────────────────────────────────────────────────────
+
+# dl_switch_lock_path 返回切流锁的**机器级**路径。
+#
+# LOCK_TMP_ROOT 只是测试隔离用的缝（与共享部署库 lock.sh 的同名变量语义一致）：
+# 生产默认 /tmp ⇒ 所有 checkout、所有部署根共用同一个路径。
+dl_switch_lock_path() {
+  printf '%s\n' "${LOCK_TMP_ROOT:-/tmp}/kx-llm-gateway-switch.lock"
+}
+
+# dl_switch_lock_write_metadata 写持有者元数据（与共享部署库 lock.sh 同字段集）。
+dl_switch_lock_write_metadata() {
+  printf 'target=local-switch\n'
+  printf 'source_user=%s\n' "${SOURCE_USER:-$(id -un 2>/dev/null || echo unknown)}"
+  printf 'source_host=%s\n' "${SOURCE_HOST:-$(hostname 2>/dev/null || echo unknown)}"
+  printf 'pid=%s\n' "$$"
+  printf 'started_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'commit=%s\n' "${SOURCE_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
+  printf 'version=%s\n' "${SOURCE_VERSION:-$(cat version.json 2>/dev/null | sed -n 's/.*\"version\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p' || echo unknown)}"
+}
+
+# dl_switch_lock_flock_bin 探测 flock 可执行文件（macOS 默认没有 ⇒ 走 mkdir 回退）。
+dl_switch_lock_flock_bin() {
+  if [[ -n "${DL_SWITCH_LOCK_FLOCK_BIN:-}" ]]; then
+    printf '%s\n' "$DL_SWITCH_LOCK_FLOCK_BIN"
+    return 0
+  fi
+  command -v flock 2>/dev/null || true
+}
+
+# dl_bash_ge 判断 bash 版本 ≥ major.minor。
+dl_bash_ge() {
+  [[ -n "${BASH_VERSINFO[0]:-}" ]] || return 1
+  (( BASH_VERSINFO[0] > $1 )) && return 0
+  (( BASH_VERSINFO[0] == $1 && BASH_VERSINFO[1] >= $2 ))
+}
+
+# dl_open_lock_fd 打开锁文件，把 fd 号写进 DL_SWITCH_LOCK_FD。
+#
+# ★★ 2026-10-28（第二轮批判性审计 · F-G）：**去掉 bash 版本门**。
+#   旧实现把「本机有没有 flock」**和**「bash 是不是 ≥ 4.1」绑在一起判断
+#   （`exec {var}<>` 语法 4.1+ 才有）⇒ **macOS 的 /bin/bash（3.2）永远走不到
+#   flock 分支** ⇒ ★★ 那条分支在本机**从未被执行过一次** ⇒ ★★ 它的缺陷
+#   （目录形态 ⇒ exec 重定向失败 ⇒ 整个脚本带 "Is a directory" 死掉）
+#   对本机完全不可见 ⇒ **门抓不到 ⇒ 等于没有门**。
+#   ⇒ 现在 fd 的分配在 bash 3.2 上也可用（固定 fd 200，避开 0~9 的常用区），
+#     ⇒ 「有没有 flock」成为**唯一**的形态判据 ⇒ ★ 两种形态在所有 bash 上
+#     都可执行 ⇒ ⇒ **判据覆盖到了生产链上的那一段**（★ 仓内纪律：
+#     判据必须覆盖生产链，而不是调用形状）。
+#
+# ★ 固定 fd 不会与「重复获取」冲突：重复获取在 dl_acquire_switch_lock 入口
+#   就被 DL_SWITCH_LOCK_HELD 挡住（返回 75），**绝不会**二次打开同一个 fd。
+dl_open_lock_fd() {
+  local path="$1"
+  if dl_bash_ge 4 1; then
+    exec {DL_SWITCH_LOCK_FD}<>"$path"
+    return $?
+  fi
+  DL_SWITCH_LOCK_FD=200
+  eval "exec ${DL_SWITCH_LOCK_FD}<>\"\$path\""
+}
+
+# dl_switch_lock_metadata_file 返回锁的元数据文件路径（读不到 ⇒ 空串）。
+#
+# ★ 两种锁形态都要认：flock 分支是**文件**（元数据写在文件里），
+#   mkdir 分支是**目录**（元数据在目录下的 metadata 文件里）。
+dl_switch_lock_metadata_file() {
+  local path meta
+  path="$(dl_switch_lock_path)"
+  meta="$path/metadata"
+  [[ -f "$meta" ]] || meta="$path"
+  [[ -f "$meta" ]] || return 1
+  printf '%s\n' "$meta"
+}
+
+# dl_switch_lock_holder_pid 从锁的元数据里读出持有者 pid（读不到 ⇒ 空串）。
+#
+# ★★ 2026-10-28（第二轮批判性审计 · F-B）：**元数据必须【完整】才配作存活证据**。
+#   旧实现只要求「能解析出一个数字 pid」⇒ 一份被 SIGKILL 打断的元数据
+#   （写到一半 ⇒ "pid=12" 而真实 pid 是 12345）会被当成**另一个进程**的证据
+#   ⇒ 那个 pid 大概率不存在 ⇒ 判成残锁 ⇒ **接管掉一把可能还活着的锁**
+#   ⇒ 而且「读不出 pid」与「持有者已死」在旧实现里被混为一谈。
+#   ⇒ 现在要求：`pid` 行存在 **且** 它**之后**的 `started_at` 行也在
+#     （写入顺序 target → source_user → source_host → pid → started_at → …）
+#     ⇒ 写入被打断的元数据一律判为「读不出来」⇒ **不接管**（保守：宁可拒绝）
+#     ⇒ 由运维用 `recover-switch-lock --force` 显式接管。
+dl_switch_lock_holder_pid() {
+  local meta pid
+  meta="$(dl_switch_lock_metadata_file 2>/dev/null || true)"
+  [[ -n "$meta" ]] || return 1
+  grep -q '^pid=' "$meta" 2>/dev/null || return 1
+  grep -q '^started_at=' "$meta" 2>/dev/null || return 1
+  pid="$(awk -F= '$1=="pid"{print $2; exit}' "$meta" 2>/dev/null || true)"
+  dl_pid_valid "$pid" || return 1
+  printf '%s\n' "$pid"
+}
+
+# dl_pid_valid 判 pid 形态是否可用作「持有者」证据。
+#
+# ★ pid 0 不是真进程：`kill -0 0` 探的是**进程组**、恒成功 ⇒ 一份 pid=0 的坏元数据
+#   会被当成「持有者还活着」⇒ 锁永远不可接管 ⇒ 机器被**永久卡死**。
+# ★ 前导零（0123）同样拒收：`ps -p 0123` 的进制语义依赖实现 ⇒ 判据必须无歧义。
+# ⇒ 只接受「首位非 0 的十进制数字串」。
+dl_pid_valid() {
+  local pid="${1:-}"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]]
+}
+
+# dl_pid_alive 判 pid 是否还活着。
+#
+# ★★ 2026-10-28（第二轮批判性审计 · F-A）：本函数此前只判 `kill -0`，
+#   而 `kill -0` 的失败有**两种**含义、**退出码完全一样**：
+#     · ESRCH —— 进程真没了          ⇒ 判「死」正确
+#     · EPERM —— 进程**还活着**、只是不属于我 ⇒ 判「死」**错误**
+#   ⇒ 持有者是**别的用户**的进程时（root cron vs 操作员 shell），本函数会把
+#     **一把活锁**说成残锁 ⇒ 接管掉它 ⇒ **互斥被拆** ⇒ 两份 checkout 同时切流
+#     ⇒ 正是这把锁要防的那个故障。
+#   ⇒ 共享部署库 lock.sh 的 lock_pid_alive 早在 2026-09-18 就为此把口径换成
+#     `ps -p`（原文：「EPERM can no longer masquerade as death」）—— ★ **本仓把那个
+#     已经修掉的 bug 又抄了回来**，而且注释还写着「EPERM 也算活着」
+#     ⇒ 注释与实现相反 ⇒ **声名与实现不符**。
+#
+# ★ 现在的口径（与共享部署库逐 pid 对拍，见 tests/deploy_switch_lock_parity_test.sh）：
+#   **pid 存在就算活着**。
+#     · kill -0 成功 ⇒ 活着（同用户快通道，不依赖 ps 的可用性）。
+#     · kill -0 失败 ⇒ 再问 ps（跨用户安全：ps 看得见别人的进程）。
+#     · ps 说没有 ⇒ 才判死。
+#   ⇒ 取值顺序让「证据不足」偏向**活着** ⇒ 宁可拒绝接管，不可误杀活锁。
+#
+# ★★ 2026-10-28（第三轮 · 合并就绪轮）：**本仓不再自带存活探针**。
+#
+#   ★ 缺陷类别（第二轮的结论）：**同一套机制存在两份实现 ⇒ 必然漂移**
+#     —— 共享部署库 2026-09-18 就把口径从 `kill -0` 换成 `ps -p`，
+#     本仓 2026-10-27 新写的 `dl_pid_alive` 却把那个**旧版本**抄了回来（F1）。
+#   ★ 本轮把这一格**收口**：判据改为**委托共享部署库**的 `lock_pid_alive`
+#     ⇒ 本仓与 SSOT 不再是两份实现 ⇒ 这条缺陷类别在【存活判据】上**归零**。
+#   ★ 本仓保留 `dl_pid_valid`（pid 形态校验）—— 那**不是**第二份实现，
+#     而是更严的调用侧校验：SSOT 的 `^[0-9]+$` 接受 `0` 与前导零
+#     ⇒ 收紧到 SSOT 属待合并项 C5（见 tests/deploy_lock_parity_baseline.json）。
+#
+# ★ **判据「不知道」时必须显式说不知道（rc=2），绝不能猜**：
+#   猜「死」= 把一把可能还活着的锁当残锁接管 ⇒ **F1 的新变体**。
+dl_pid_alive() {
+  local pid="$1"
+  dl_pid_valid "$pid" || return 1
+  if ! command -v lock_pid_alive >/dev/null 2>&1; then
+    printf 'ERROR: shared deploy library liveness oracle (lock_pid_alive) is not loaded\n' >&2
+    return 2
+  fi
+  lock_pid_alive "$pid"
+}
+
+# dl_switch_lock_require_ssot —— 切流锁入口的**前置检查**。
+#
+# ★ 为什么要有它：委托之后，「SSOT 没被 source」从「实现细节」变成了
+#   **可用性前提** ⇒ 若悄悄退化（猜一个答案 / 当成持有者已死），
+#   F1 就以新形态复活 ⇒ ⇒ 所以这里**显式失败**（fail-fast），
+#   而不是让调用方拿到一个假的「活着 / 死了」。
+dl_switch_lock_require_ssot() {
+  if command -v lock_pid_alive >/dev/null 2>&1; then
+    return 0
+  fi
+  printf 'ERROR: shared deploy library is not loaded (lock_pid_alive missing) — refusing to run the deployment switch lock without its liveness oracle\n' >&2
+  printf 'HINT: run via scripts/deploy-local.sh (it sources %s/lock.sh), or export AIAN_DEPLOY_LIB to a deploy-lib checkout\n' "${AIAN_DEPLOY_LIB:-<unset>}" >&2
+  return 1
+}
+
+# dl_switch_lock_is_stale 判当前锁是不是**残锁**（持有者进程已死）。
+#
+# ★ 口径与共享部署库 lock.sh 一致：**只看「持有者 pid 是否还活着」，不按年龄判**
+#   —— 部署可能正在长时间跑，按年龄清锁会打断别人。
+# ★ pid 读不出来（元数据缺失/损坏）⇒ **不算残锁**（保守：宁可拒绝也不误杀）。
+dl_switch_lock_is_stale() {
+  local holder_pid rc
+  holder_pid="$(dl_switch_lock_holder_pid 2>/dev/null || true)"
+  [[ -n "$holder_pid" ]] || return 1
+  if dl_pid_alive "$holder_pid"; then
+    return 1        # 活着 ⇒ 不是残锁
+  else
+    rc=$?
+  fi
+  # ★ rc=1 = 确实死了（残锁）；rc=2 = **判据不知道**（共享部署库没加载）
+  #   ⇒ 「不知道」**不等于**「死了」⇒ fail-closed ⇒ 不接管。
+  [[ "$rc" -eq 1 ]]
+}
+
+# dl_acquire_switch_lock 获取机器级切流锁。
+#
+# 成功返回 0；被别的部署持有时返回 **75（EX_TEMPFAIL）**并打印持有者元数据。
+# 已经是持有者时重复获取也返回 75（同一进程重复获取视为争用 ⇒ 宁可失败，
+# 也不要让调用方以为自己持有两把锁）。
+#
+# ★★ **残锁接管**（2026-10-28 批判性审计轮补）：mkdir 回退路径下，进程被
+#   SIGKILL / 机器重启 ⇒ 锁目录**留在原地** ⇒ 若不处理，**每一次后续部署都会
+#   rc=75 永久失败**（把「偶发互踩」换成「必然卡死」，比原缺陷更糟）。
+#   ⇒ 争用时先判持有者 pid 是否还活着：**已死 ⇒ 判定残锁 ⇒ 接管**；
+#     **还活着 ⇒ 拒绝**（那是真的有人在切流）。
+#   ⇒ flock 分支不需要这条：flock 随进程退出**自动释放**。
+#
+# ★★ 2026-10-28（第二轮批判性审计 · F-C）：**形态由「路径是什么形态」决定，
+#   而不是由「本机有没有 flock」决定**。
+#   旧实现先看 flock 能不能用、再 `exec <> "$path"` ⇒ 一旦路径上留着
+#   【另一种形态】的锁（老版本 mkdir 建的目录锁、或装上 flock 之前建的目录锁），
+#   `exec <> 目录` 会因 EISDIR 失败，而 **POSIX 规定 exec 的重定向失败是致命的**
+#   ⇒ 整个部署脚本带着一句 "Is a directory" 死掉，**而不是**设计意图里的
+#   rc=75 快速失败 ⇒ 运维看到的是「脚本崩了」，不是「有人在切流」。
+#   ⇒ 现在：**目录形态 ⇒ 一律走目录语义**（残锁接管 / 拒绝），绝不碰 exec。
+dl_acquire_switch_lock() {
+  local path flock_bin
+  # ★ 前置检查：判据（共享部署库）必须已加载 ⇒ 否则**显式失败**（rc 75），
+  #   绝不靠「猜持有者已死」来继续（★ 那会把一把活锁当残锁接管 = F1 的新变体）。
+  dl_switch_lock_require_ssot || return 75
+  path="$(dl_switch_lock_path)"
+  flock_bin="$(dl_switch_lock_flock_bin)"
+  # ★ 已经是持有者时重复获取 ⇒ 75（同一进程重复获取视为争用 ⇒ 宁可失败，
+  #   也不要让调用方以为自己持有两把锁）。
+  #   ★ 这条必须**在碰 fd 之前**判：固定 fd 的实现里，二次 `exec` 会把上一把锁的
+  #   fd 覆盖掉 ⇒ 上一把锁被**静默释放** ⇒ 互斥被拆（★ 见 dl_open_lock_fd 的 F-G）。
+  if [[ -n "${DL_SWITCH_LOCK_HELD:-}" ]]; then
+    printf 'ERROR: deployment switch lock held at %s (another checkout is switching the active port)\n' "$path" >&2
+    if [[ -f "$path/metadata" ]]; then
+      cat "$path/metadata" >&2
+    elif [[ -f "$path" ]]; then
+      cat "$path" >&2
+    fi
+    printf 'HINT: if the holder is gone but the lock remains, run: bash scripts/deploy-local.sh recover-switch-lock\n' >&2
+    return 75
+  fi
+  if [[ -d "$path" ]]; then
+    dl_acquire_switch_lock_dir
+    return $?
+  fi
+  if [[ -n "$flock_bin" ]]; then
+    # ★ 既不是文件也不是目录（FIFO / 设备 …）⇒ 绝不对它 exec（exec 重定向失败是致命的）
+    if [[ -e "$path" && ! -f "$path" ]]; then
+      printf 'ERROR: deployment switch lock path %s exists but is not a regular file (refusing)\n' "$path" >&2
+      return 75
+    fi
+    dl_acquire_switch_lock_flock "$flock_bin"
+    return $?
+  fi
+  dl_acquire_switch_lock_dir
+}
+
+# dl_acquire_switch_lock_flock：flock 形态（锁 = 一个普通文件）。
+#
+# ★ 释放时**不删这个文件**（见 dl_release_switch_lock 的 F-D 说明）⇒
+#   所以这里必须能接管「上一次正常释放后留下的空壳文件」：flock 无人持有 ⇒ 立刻拿到。
+dl_acquire_switch_lock_flock() {
+  local flock_bin="$1" path dir
+  path="$(dl_switch_lock_path)"
+  dir="$(dirname "$path")"
+  mkdir -p "$dir" 2>/dev/null || true
+  # ★ exec 的重定向失败是**致命**的（POSIX）⇒ 先把「打不开」的情形变成干净的 rc=75，
+  #   而不是让整个部署脚本带着一句重定向错误死掉。
+  if [[ -e "$path" ]]; then
+    if [[ ! -f "$path" || ! -w "$path" ]]; then
+      printf 'ERROR: deployment switch lock file %s is not a writable regular file (refusing)\n' "$path" >&2
+      return 75
+    fi
+  elif [[ ! -d "$dir" || ! -w "$dir" ]]; then
+    printf 'ERROR: deployment switch lock directory %s is not writable (refusing)\n' "$dir" >&2
+    return 75
+  fi
+  dl_open_lock_fd "$path" || return 75
+  if ! "$flock_bin" -n "$DL_SWITCH_LOCK_FD"; then
+    eval "exec ${DL_SWITCH_LOCK_FD}<&-"
+    DL_SWITCH_LOCK_FD=
+    printf 'ERROR: deployment switch lock held at %s (another checkout is switching the active port)\n' "$path" >&2
+    if [[ -f "$path" ]]; then
+      cat "$path" >&2
+    fi
+    printf 'HINT: if the holder is gone but the lock remains, run: bash scripts/deploy-local.sh recover-switch-lock\n' >&2
+    return 75
+  fi
+  : >"$path"
+  dl_switch_lock_write_metadata >&"$DL_SWITCH_LOCK_FD"
+  DL_SWITCH_LOCK_HELD=1
+  return 0
+}
+
+# dl_acquire_switch_lock_dir：mkdir 形态（锁 = 一个目录）。
+#
+# ★ 目录形态也能面对「另一种形态留下的文件」⇒ `mkdir` 会失败 ⇒ 走同一条
+#   「残锁判定 ⇒ 接管 / 拒绝」的路（读元数据时认文件形态，见
+#   dl_switch_lock_metadata_file）⇒ 形态迁移不需要人工清理。
+dl_acquire_switch_lock_dir() {
+  local path dir
+  path="$(dl_switch_lock_path)"
+  dir="$(dirname "$path")"
+  # ★ 父目录要**先建**（flock 形态那一支一直这么做 ⇒ ★ 两种形态不该有差别）。
+  #   缺了它 ⇒ 父目录不存在时 `mkdir "$path"` 直接失败 ⇒ 报出来的是
+  #   「锁被占用」，而真相是「路径不存在」⇒ ★ 报错理由不对，运维会照着
+  #   错误结论去 unlock 一把并不存在的锁。
+  mkdir -p "$dir" 2>/dev/null || true
+  if ! mkdir "$path" 2>/dev/null; then
+    # ★ 残锁判定：持有者进程已死 ⇒ 接管（否则本机会被永久卡死）。
+    if dl_switch_lock_is_stale; then
+      local stale_pid
+      stale_pid="$(dl_switch_lock_holder_pid 2>/dev/null || true)"
+      printf 'WARNING: taking over stale deployment switch lock at %s (holder pid %s is gone)\n' "$path" "$stale_pid" >&2
+      rm -rf "$path"
+      if mkdir "$path" 2>/dev/null; then
+        dl_switch_lock_write_metadata >"$path/metadata"
+        DL_SWITCH_LOCK_HELD=1
+        return 0
+      fi
+      printf 'ERROR: failed to take over the stale deployment switch lock at %s\n' "$path" >&2
+      return 75
+    fi
+    printf 'ERROR: deployment switch lock held at %s (another checkout is switching the active port)\n' "$path" >&2
+    if [[ -f "$path/metadata" ]]; then
+      cat "$path/metadata" >&2
+    elif [[ -f "$path" ]]; then
+      cat "$path" >&2
+    fi
+    printf 'HINT: if the holder is gone but the lock remains, run: bash scripts/deploy-local.sh recover-switch-lock\n' >&2
+    return 75
+  fi
+  dl_switch_lock_write_metadata >"$path/metadata"
+  DL_SWITCH_LOCK_HELD=1
+}
+
+# dl_recover_switch_lock 清掉切流锁（**运维显式动作**，不是自动行为）。
+#
+# ★★ 2026-10-28（第二轮批判性审计 · F-B）：**两档**，且**默认档是 fail-closed**。
+#   默认档（无 --force）：
+#     · 持有者还活着          ⇒ **拒绝**（那是真的有人在切流）
+#     · 持有者已死            ⇒ 清掉（残锁回收）
+#     · ★ 持有者**读不出来**  ⇒ **拒绝**（元数据缺失 / 损坏 / 半截）
+#       —— 读不出来 ≠「持有者已死」；共享部署库 lock.sh 的 lock_recover_local 在
+#       「元数据缺失」时同样拒绝（fail-closed）。旧实现在这里直接清掉 ⇒
+#       ⇒ 同一把锁在「残锁判定」与「恢复命令」两个函数里给出**相反**的结论；
+#       ⇒ 且清掉的可能是**别人的活锁** ⇒ 互斥被拆。
+#   强制档（--force）：**运维的显式授权** ⇒ 无论元数据能否读出来都清掉，
+#       并把读到的元数据原样打印出来（读不到就明说读不到）。
+#       ★ 与共享部署库 unlock-local.sh 的 --force 档同构；
+#       ★ 差别：本仓**不杀进程** —— 杀掉另一个用户的部署是比「清一把锁」重得多的
+#         动作，不在自动路径上做（★ 需要 owner 裁决的语义变更，本轮只登记）。
+#
+# ★ 口径与共享部署库 unlock-local.sh 对齐：**持有者还活着 ⇒ 拒绝**；
+#   **持有者已死 ⇒ 才允许清**；★ 而「持有者是谁」读不出来时 ⇒ **也拒绝**。
+dl_recover_switch_lock() {
+  local force=0 path holder_pid meta pid_rc=0
+  if [[ "${1:-}" == "--force" ]]; then force=1; fi
+  path="$(dl_switch_lock_path)"
+  if [[ ! -e "$path" ]]; then
+    printf 'no deployment switch lock at %s — nothing to recover\n' "$path"
+    return 0
+  fi
+  # ★ 恢复路径**不**做入口前置检查（否则下面的「判据不知道 ⇒ 拒绝」那支
+  #   永远到不了 ⇒ 变成一段**从未被执行**的分支 ⇒ 它的缺陷对门不可见
+  #   ⇒ ★ 这正是第二轮 F2 的教训：★ 守卫之间不能互相遮蔽 ⇒
+  #   ⇒ 这里的 fail-closed 由下面那处「判据不知道 ⇒ 拒绝」独立承担。
+  #   ⇒ 强制档（--force）不依赖判据（运维的显式授权 ⇒ 清锁，但不杀进程）。
+  meta="$(dl_switch_lock_metadata_file 2>/dev/null || true)"
+  holder_pid="$(dl_switch_lock_holder_pid 2>/dev/null || true)"
+  if (( force )); then
+    if [[ -n "$meta" ]]; then
+      printf 'WARNING: force-recovering the deployment switch lock at %s — holder metadata:\n' "$path" >&2
+      cat "$meta" >&2
+    else
+      printf 'WARNING: force-recovering the deployment switch lock at %s — holder metadata is missing or unreadable\n' "$path" >&2
+    fi
+    rm -rf "$path"
+    printf 'deployment switch lock removed (forced): %s\n' "$path"
+    return 0
+  fi
+  if [[ -z "$holder_pid" ]]; then
+    printf 'ERROR: refusing to remove the deployment switch lock: holder pid cannot be determined (metadata missing or incomplete)\n' >&2
+    if [[ -n "$meta" ]]; then
+      printf 'holder metadata:\n' >&2
+      cat "$meta" >&2
+    fi
+    printf 'HINT: if you are sure no deploy is running, run: bash scripts/deploy-local.sh recover-switch-lock --force\n' >&2
+    return 1
+  fi
+  if dl_pid_alive "$holder_pid"; then
+    printf 'ERROR: refusing to remove the deployment switch lock: holder pid %s is still alive\n' "$holder_pid" >&2
+    printf 'HINT: wait for that deploy to finish; only recover a lock whose holder is gone\n' >&2
+    return 1
+  else
+    pid_rc=$?
+  fi
+  # ★ 「判据不知道」（rc=2）⇒ **不等于「持有者已死」** ⇒ 拒绝（fail-closed）。
+  if [[ "$pid_rc" -ne 1 ]]; then
+    printf 'ERROR: refusing to remove the deployment switch lock: liveness of holder pid %s could not be determined (the shared deploy library oracle is not loaded)\n' "$holder_pid" >&2
+    return 1
+  fi
+  rm -rf "$path"
+  printf 'deployment switch lock removed: %s\n' "$path"
+}
+
+# dl_release_switch_lock 释放切流锁（**未持有时是 no-op**）。
+#
+# ★★ 2026-10-28（第二轮批判性审计 · F-D / F-E）：
+#   ★ F-E：旧实现的注释写着「未持有时是 no-op」，而代码在 mkdir 形态下
+#     **无条件 rm -rf 锁路径** ⇒ 任何误调用都会**删掉别人的锁** ⇒ 注释是假的。
+#     ⇒ 现在用 DL_SWITCH_LOCK_HELD 明确持有关系（acquire 成功才置位）。
+#   ★ F-D：flock 形态下**不删锁文件**。旧实现在关闭 fd 之后 `rm -f "$path"`
+#     ⇒ 关闭与删除之间存在窗口：别的进程可能刚好在旧 inode 上 flock 成功，
+#     随后第三个进程在同名新文件上再 flock 一次 ⇒ **两个持有者** ⇒ 互斥失效。
+#     ⇒ flock 锁的正确释放方式就是**关 fd**（内核自动释放），文件留在原地即可
+#       （下一次 acquire 会截断重写元数据）。
+dl_release_switch_lock() {
+  local path
+  path="$(dl_switch_lock_path)"
+  if [[ -z "${DL_SWITCH_LOCK_HELD:-}" ]]; then
+    return 0
+  fi
+  DL_SWITCH_LOCK_HELD=
+  if [[ -n "${DL_SWITCH_LOCK_FD:-}" ]]; then
+    eval "exec ${DL_SWITCH_LOCK_FD}<&-"
+    DL_SWITCH_LOCK_FD=
+    return 0
+  fi
+  rm -rf "$path"
+}

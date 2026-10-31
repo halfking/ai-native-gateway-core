@@ -27,6 +27,7 @@ import {
 } from '../lib/liveTopologyLayout'
 import {
   GATEWAY_IN_MODULES,
+  GATEWAY_INFRA_MODULES,
   GATEWAY_OUT_MODULES,
   GATEWAY_STORE_MODULES,
   type TopoNode,
@@ -85,8 +86,9 @@ describe('computeLayout', () => {
     expect(layout.nodes.map((n) => n.id)).not.toContain('gateway:core')
     expect(layout.gateway.w).toBeGreaterThan(SIZE.width / 2)
     expect(layout.gateway.h).toBeGreaterThan(SIZE.height / 4)
-    // 三条流程带全部落在大方块内部（越界 = 画到框外了）
-    expect(layout.gateway.lanes.map((l) => l.lane)).toEqual(['in', 'store', 'out'])
+    // 四条流程带全部落在大方块内部（2026-10-28 选路层轮：in 与 store 之间
+    // 加入 select 扇出带；越界 = 画到框外了）
+    expect(layout.gateway.lanes.map((l) => l.lane)).toEqual(['in', 'select', 'store', 'out'])
     for (const lane of layout.gateway.lanes) {
       expect(lane.x).toBeGreaterThanOrEqual(layout.gateway.x)
       expect(lane.y).toBeGreaterThanOrEqual(layout.gateway.y)
@@ -444,26 +446,36 @@ describe('isEdgeHighlighted', () => {
 })
 
 describe('computeGatewayBox', () => {
-  it('stacks three flow lanes in order: in → store → out', () => {
+  it('stacks four flow lanes in order: in → select → store → out', () => {
     // owner 2026-10-18：模块要按处理流程的位置排布 —— 请求链在上、
-    // 存储转发居中、响应链在下；三带 y 严格递增且带间留隙。
+    // 存储转发居中、响应链在下；2026-10-28 选路层轮在 in 与 store 之间
+    // 插入 select 扇出带（模型选择三出口）。四带 y 严格递增且带间留隙。
     const box = computeGatewayBox(1200, 700)
-    expect(box.lanes.map((l) => l.lane)).toEqual(['in', 'store', 'out'])
-    const [inLane, storeLane, outLane] = box.lanes
-    expect(inLane.y).toBeLessThan(storeLane.y)
+    expect(box.lanes.map((l) => l.lane)).toEqual(['in', 'select', 'store', 'out'])
+    const [inLane, selectLane, storeLane, outLane] = box.lanes
+    expect(inLane.y).toBeLessThan(selectLane.y)
+    expect(selectLane.y).toBeLessThan(storeLane.y)
     expect(storeLane.y).toBeLessThan(outLane.y)
-    expect(storeLane.y).toBeGreaterThanOrEqual(inLane.y + inLane.h)
+    expect(selectLane.y).toBeGreaterThanOrEqual(inLane.y + inLane.h)
+    expect(storeLane.y).toBeGreaterThanOrEqual(selectLane.y + selectLane.h)
     expect(outLane.y).toBeGreaterThanOrEqual(storeLane.y + storeLane.h)
-    // 进站带最宽（4 格 + 插件 chip），存储带最矮 —— 比例即内容密度
+    // 进站带最宽（4 格 + 插件 chip），选路扇出带最矮（3 张单行出口卡）
     expect(inLane.h).toBeGreaterThan(storeLane.h)
     expect(outLane.h).toBeGreaterThan(storeLane.h)
+    expect(inLane.h).toBeGreaterThan(selectLane.h)
   })
 
-  it('★ module→lane membership matches the flow position (请求侧/存储/响应侧)', () => {
+  it('★ module→lane membership matches the flow position (请求侧/扇出/存储/响应侧 + 基础服务)', () => {
     // 模块落在哪条带 = 它在真实处理流程中的位置。任何模块挪带都会被这里抓住。
-    expect(GATEWAY_IN_MODULES.map((m) => m.key)).toEqual(['cache', 'sanitize', 'route', 'nodeState'])
+    // 2026-10-28 选路层轮：route/nodeState 移出主链进基础服务侧条；
+    // ★ 批判式审计修正：压缩排在模型选择**之后**（候选解析先定目标模型，
+    // SessionCompressor 才按其上下文窗口做滑窗压缩）。
+    expect(GATEWAY_IN_MODULES.map((m) => m.key)).toEqual(['cache', 'sanitize', 'modelSelect', 'compress'])
+    expect(GATEWAY_INFRA_MODULES.map((m) => m.key)).toEqual(['route', 'nodeState'])
     expect(GATEWAY_STORE_MODULES.map((m) => m.key)).toEqual(['sessionWrite', 'sessionFile'])
     expect(GATEWAY_OUT_MODULES.map((m) => m.key)).toEqual(['taskDetect', 'errorRecord', 'probeTask'])
+    // 基础服务侧条不属于任何流程带（lane 标记为 infra）
+    for (const m of GATEWAY_INFRA_MODULES) expect(m.lane).toBe('infra')
   })
 
   it('is deterministic', () => {

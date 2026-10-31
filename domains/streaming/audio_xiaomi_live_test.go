@@ -58,7 +58,7 @@ func liveXiaomiService(t *testing.T, rawModel string) *AudioService {
 		APIKey: strings.TrimSpace(os.Getenv("LLM_GATEWAY_LIVE_XIAOMI_KEY")),
 	}
 	cand.AvailabilityState = "ready"
-	return NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.New())
+	return NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.NewWithRetries(0))
 }
 
 // liveSilenceWAV 造 1s 24kHz16bit 单声道静音 WAV（不发外部文件依赖）。
@@ -200,7 +200,7 @@ func TestLiveXiaomiUnsupportedFormatIsRejectedLocally(t *testing.T) {
 		RawModel: "mimo-v2.5-asr", Routable: true, APIKey: "sk-unused",
 	}
 	cand.AvailabilityState = "ready"
-	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.New())
+	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.NewWithRetries(0))
 	h := NewAudioTranscriptionsHandler(svc)
 	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", nil)
 	buildTranscriptionsMultipartBody(t, req, liveSilenceWAV(), "a.m4a", "mimo-v2.5-asr", "")

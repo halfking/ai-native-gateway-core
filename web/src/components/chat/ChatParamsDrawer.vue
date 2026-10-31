@@ -175,13 +175,13 @@ function resetDefaults() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--kx-border, var(--border));
 }
 
 .drawer__head h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
   color: var(--kx-text, var(--text));
 }
 
@@ -207,13 +207,13 @@ function resetDefaults() {
   padding: 12px 16px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   font-size: 12px;
   color: var(--kx-muted, var(--muted));
 }
@@ -221,7 +221,7 @@ function resetDefaults() {
 .field textarea,
 .field input[type='number'],
 .field input[type='text'] {
-  padding: 8px 10px;
+  padding: 8px 8px;
   border-radius: 6px;
   border: 1px solid var(--kx-border, var(--border));
   background: var(--kx-bg, var(--bg));

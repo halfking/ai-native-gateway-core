@@ -38,12 +38,33 @@ SCAN="$REPO_ROOT/scripts/scan-secrets.sh"
 BASELINE="$REPO_ROOT/scripts/scan-secrets.baseline"
 PRIVATE_REPLACEMENTS="$REPO_ROOT/scripts/scan-secrets.private.replacements"
 SYNC_SCRIPT="$REPO_ROOT/scripts/sync-to-github.sh"
+# ★ scan-secrets.sh / sync-to-github.sh 自 2026-10-27 起带 bash>=4 运行时守卫
+#   （bash 3.2 下扫描器曾假绿 findings 0）⇒ 测试必须用 bash≥4 调它们，
+#   否则测的是守卫而不是被测行为（deploy_local_reap_test.sh 同款解析）。
+BASH4="$HOME/sdk/bash5/bin/bash"
+[[ -x "$BASH4" ]] || BASH4="$(command -v bash)"
+if [[ "${BASH_VERSINFO[0]}" -lt 4 && "$BASH4" == "$(command -v bash)" ]]; then
+  echo "FATAL: 需要 bash>=4 来调被测脚本（macOS 自带 3.2 会被脚本守卫拒绝）" >&2
+  exit 64
+fi
 ENV_252="$REPO_ROOT/.env.252.enc"
 ENV_KAIXUAN_1="$REPO_ROOT/.env.kaixuan-1.enc"
 
 TESTS_PASSED=0
 TESTS_FAILED=0
 FAILED_NAMES=()
+
+# GNU timeout 在 macOS 不存在 ⇒ `timeout 30 cmd` 直接 rc=127 + 空输出，
+# 「filename-only bypass」用例因此在本机恒红（2026-10-27 stash A/B 实证
+# pristine HEAD 同样红）。无 timeout 时直接执行：本文件的被扫对象是单个
+# 临时夹具，秒级返回；Linux 上保持 30s 有界语义不变。
+run_bounded() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 30 "$@"
+  else
+    "$@"
+  fi
+}
 
 log_pass()  { printf '  \033[0;32mPASS\033[0m %s\n' "$1"; TESTS_PASSED=$((TESTS_PASSED+1)); }
 log_fail()  { printf '  \033[0;31mFAIL\033[0m %s\n' "$1"; TESTS_FAILED=$((TESTS_FAILED+1)); FAILED_NAMES+=("$1"); }
@@ -187,7 +208,7 @@ test_scan_secrets_skips_enc() {
 
   local out rc
   # Use --paths to limit the scan to just the two fixtures.
-  timeout 30 bash "$SCAN" --tracked-only --baseline="$BASELINE" \
+  run_bounded "$BASH4" "$SCAN" --tracked-only --baseline="$BASELINE" \
     --paths .env.252.enc --paths .env.kaixuan-1.enc 2>/tmp/scan_out.$$ >/dev/null
   rc=$?
   rm -f /tmp/scan_out.$$
@@ -262,7 +283,7 @@ SECRET_VALUE=fake-plaintext-credential
 POSTGRES_PASSWORD=postgres-plaintext-fake
 EOF
 
-  out=$(timeout 30 bash "$SCAN" --mode=normal \
+  out=$(run_bounded "$BASH4" "$SCAN" --mode=normal \
         --baseline="$BASELINE" \
         --paths "$tmpdir/.env.252.enc" 2>/dev/null)
   # The scanner's SECRET_FILE filename-rule fires on `.env.<target>`
@@ -303,7 +324,7 @@ test_private_replacements_guard() {
 test_sync_refuses_history_bypass() {
   echo "── sync_refuses_history_bypass ──"
   local out rc
-  out=$(bash "$SYNC_SCRIPT" --skip-history-rewrite 2>&1)
+  out=$("$BASH4" "$SYNC_SCRIPT" --skip-history-rewrite 2>&1)
   rc=$?
   if [[ $rc -ne 0 ]] && [[ "$out" == *"not permitted"* ]]; then
     log_pass "sync script rejects --skip-history-rewrite"

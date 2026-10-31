@@ -9,7 +9,9 @@ package main
 
 import (
 	"net/http"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 
 	"github.com/kaixuan/llm-gateway-go/admin"
@@ -26,10 +28,24 @@ func resolveJWTSecret(envValue, fallback string) string {
 	return fallback
 }
 
+// jwtRevocationProbe is the test seam; production uses
+// admin.RevokedByPasswordChange — the very same probe the ServeMux-side
+// admin middlewares use (admin/auth.go). One implementation, one ruler.
+//
+// ★ 2026-10-27（r1039 后续轮，审计档 §8 第 9 条）：Echo 侧此前**完全没有**这个
+// 探测 ⇒ 改密之后，旧 cookie 会话在 Echo 注册的 `/api/admin/*` 端点上继续全权可用
+// （ServeMux 侧同一时刻已经 401）。本轮只做**对齐**：Echo 侧按 ServeMux 侧**既有**
+// 策略执行，**不新增也不放宽任何撤销条件**。
+var jwtRevocationProbe = admin.RevokedByPasswordChange
+
 // newJWTMiddleware returns an echo middleware that enforces a bearer-token
 // JWT signed with secret. On success it injects user_id / tenant_id /
 // username / role into the Echo context. On failure it short-circuits with
 // 401 (or 503 if secret is unconfigured, signalling a misconfig to operators).
+//
+// db may be nil (no database configured / closed pool): the password-change
+// revocation probe then fails open, exactly like the ServeMux side does when
+// settings_kv cannot be read.
 //
 // Behaviour is identical to the inline closure that previously lived in main();
 // only the dependency on a closure-captured `jwtSecret` was replaced by an
@@ -58,10 +74,13 @@ func resolveJWTSecret(envValue, fallback string) string {
 //     **校验器、issuer、audience 全部不变**（仍是 admin.VerifyToken）；
 //   - ⇒ 不是新增一类凭据，只是让**同一串凭据**多一种传输方式；
 //   - cookie 是 HttpOnly + SameSite=Strict ⇒ 跨站请求不会带上它，不构成 CSRF 面；
-//   - 本中间件过去对 Bearer 也**没有**「改密码后撤销会话」的探测
-//     （那是 ServeMux 侧 AdminMiddleware 才有的），本轮**不扩大**这一既有差异，
-//     只把传输方式对齐（详见审计文档 §10 的遗留项）。
-func newJWTMiddleware(secret string) echo.MiddlewareFunc {
+//   - ★ 2026-10-27：补上**改密吊销探测**（见上）⇒ Echo 侧与 ServeMux 侧
+//     对「改密即踢出」这一既有策略**口径一致**。
+//
+// ★ 仍未对齐的**既有差异**（本轮**刻意不扩大**改动面，属安全策略变更，需单独裁决）：
+// ServeMux 侧的 AdminMiddleware 还带 `MustChangePassword` 闸
+// （必须改密的账号只能访问改密路径），Echo 侧**没有**这道闸。
+func newJWTMiddleware(secret string, db *pgxpool.Pool) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			if secret == "" {
@@ -76,6 +95,18 @@ func newJWTMiddleware(secret string) echo.MiddlewareFunc {
 			claims, err := admin.VerifyToken(tokenStr, secret)
 			if err != nil || claims.UserID <= 0 {
 				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
+			}
+			// ★ 改密吊销（与 ServeMux 侧 admin/auth.go 同一把尺子）：
+			// token 的签发时间早于该用户的改密纪元 ⇒ 这串会话已被改密作废。
+			// 本中间件用的是**本地签发器**（admin.VerifyToken）⇒ 没有跨项目
+			// principal 的 user_id 语义问题 ⇒ 与 ServeMux 侧对 legacy principal
+			// 的处理一致（那边对 multi_issuer principal 跳过本探测）。
+			issuedAt := time.Time{}
+			if claims.IssuedAt != nil {
+				issuedAt = claims.IssuedAt.Time
+			}
+			if jwtRevocationProbe(c.Request().Context(), db, claims.UserID, issuedAt) {
+				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "session revoked: password changed"})
 			}
 			// 将用户信息注入 Echo context
 			c.Set("user_id", claims.UserID)

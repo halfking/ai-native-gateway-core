@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-10-26T23:32:55.665Z",
+  "exported_at": "2026-10-29T19:36:45.482Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -65,6 +65,14 @@
           "path": "/tenant/usage",
           "labelKey": "nav.item.tenantUsage",
           "icon": "📉",
+          "tenantOnly": true,
+          "tenantScope": "tenant",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/tenant/bills",
+          "labelKey": "nav.item.tenantBills",
+          "icon": "🧾",
           "tenantOnly": true,
           "tenantScope": "tenant",
           "pluginScope": "*"
@@ -343,6 +351,15 @@
           "path": "/model-integrity",
           "labelKey": "nav.item.modelIntegrity",
           "icon": "🛰️",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/model-credibility",
+          "labelKey": "nav.item.modelCredibility",
+          "icon": "🔎",
           "super": true,
           "hideForTenant": true,
           "tenantScope": "default",

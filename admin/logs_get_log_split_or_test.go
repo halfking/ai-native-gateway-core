@@ -63,10 +63,47 @@ func TestGetLogORMustNotComeBack(t *testing.T) {
 
 func TestGetLogKeepsTenantGateAndTsOrder(t *testing.T) {
 	src := getLogFileText(t)
+	// 2026-10-30：布尔占位符不再写 `::boolean`。pgx QueryExecModeExec 走扩展
+	// 查询协议，参数已带类型；服务端再套一次显式转型报 SQLSTATE 42804。
+	// 租户门本身必须还在——漏掉即跨租户泄露。
 	if !strings.Contains(src, "($2 OR rl.tenant_id = $3)") {
 		t.Fatal("getLog 拆分后必须保留租户门 ($2 OR rl.tenant_id = $3)——漏掉即跨租户泄露")
 	}
+	if strings.Contains(src, "$2::boolean") {
+		t.Fatal("getLog 布尔占位符禁止再写 ::boolean：pgx 扩展协议下会报 SQLSTATE 42804")
+	}
 	if !strings.Contains(src, "ORDER BY rl.ts DESC") {
 		t.Fatal("getLog 拆分后段内必须保持 ORDER BY rl.ts DESC（原 CASE 优先序由两段顺序等价保持）")
+	}
+}
+
+// TestGetLogTwoPhaseStage2ParamsNoUnusedDollar1 —— 2026-10-30 211 生产实证。
+//
+// R181 两阶段化后，阶段二曾写成 `WHERE rl.request_id = $4`，却仍把查找用的
+// requestID 作为 $1 传入。SQL 文本从不引用 $1 ⇒ pgx 扩展协议下 PostgreSQL
+// 报 SQLSTATE 42P18「could not determine data type of parameter $1」。
+// 结果：阶段一能命中的请求，/api/logs/:id 一律 500，request-detail 页
+// 「列表显示成功、点开无数据」。
+//
+// 正确形态：阶段二只绑定 (pickedRequestID, superAdmin, tenantID)，
+// WHERE 用 `$1` 承接 pickedRequestID。
+func TestGetLogTwoPhaseStage2ParamsNoUnusedDollar1(t *testing.T) {
+	src := getLogFileText(t)
+
+	// 禁止「阶段二 WHERE 用第4号占位符」——拼成字面量再 Contains，避免本文件
+	// 注释自己踩雷。
+	forbiddenStage2Where := "rl.request_id = $" + "4"
+	if strings.Contains(src, forbiddenStage2Where) {
+		t.Fatal("getLog 阶段二禁止 WHERE 用第4号占位符承接 request_id：会留下未引用的 $1，" +
+			"触发 SQLSTATE 42P18（211 生产：/api/logs/:id 对能命中的请求 100% 500）")
+	}
+	// 阶段二 QueryRow 必须以 pickedRequestID 作为第一个绑定参数（对应 $1）。
+	if !strings.Contains(src, "), pickedRequestID, IsSuperAdminOrLegacy(r), GetTenantID(r)).Scan(") {
+		t.Fatal("getLog 阶段二必须 `), pickedRequestID, IsSuperAdminOrLegacy(r), GetTenantID(r)).Scan(`；" +
+			"若仍先传 requestID 再传 pickedRequestID，未引用的 $1 会再次触发 42P18")
+	}
+	// 阶段二 WHERE 必须用 $1 承接 pickedRequestID（与上面三个绑定对齐）。
+		if !strings.Contains(src, "WHERE rl.request_id = $1\n\t\t\t\t   AND ($2 OR rl.tenant_id = $3)") {
+		t.Fatal("getLog 阶段二 WHERE 必须是 rl.request_id = $1 + 租户门 $2/$3（与三参数绑定对齐）")
 	}
 }

@@ -24,14 +24,59 @@ func ValidateSessionID(gwSessionID string) error {
 	}
 
 	// Reject common placeholders that indicate the client didn't generate
-	// a proper unique ID.
+	// proper unique ID. Only "session" gets the prefix+entropy exemption:
+	// session_<random> / session-<uuid> are legitimate stable client
+	// conventions (211 实测：客户端发 session_<22hex>，经 DeriveGatewayID 映成
+	// gw_session_*，此前每轮压缩都被误拒 ⇒ 压缩历史断链)；test/demo/default/
+	// temp/placeholder 从不作为真实生成前缀出现，任何位置命中即拒。
 	forbidden := []string{"test", "demo", "default", "session", "temp", "placeholder"}
 	lower := strings.ToLower(gwSessionID)
 	for _, f := range forbidden {
-		if strings.Contains(lower, f) {
-			return fmt.Errorf("session_id contains forbidden keyword '%s': %s", f, gwSessionID)
+		if !strings.Contains(lower, f) {
+			continue
 		}
+		if f == "session" && keywordPrefixWithEntropy(lower, f) {
+			continue
+		}
+		return fmt.Errorf("session_id contains forbidden keyword '%s': %s", f, gwSessionID)
 	}
 
 	return nil
+}
+
+// keywordPrefixWithEntropy reports whether the ONLY occurrence shape of the
+// "session" keyword is "session + separator + >=8 chars of non-placeholder
+// tail" at the very start of the id (after the gw_/gt_/gs_ derivation
+// prefixes). Such ids carry real client entropy and cannot collide across
+// tenants; mid-string occurrences ("user-session-789") and short tails
+// ("session_ab12") stay rejected.
+func keywordPrefixWithEntropy(lower, keyword string) bool {
+	s := lower
+	for _, p := range []string{"gw_", "gt_", "gs_"} {
+		if strings.HasPrefix(s, p) {
+			s = s[len(p):]
+			break
+		}
+	}
+	if !strings.HasPrefix(s, keyword) {
+		return false
+	}
+	tail := s[len(keyword):]
+	if tail == "" {
+		return false // bare keyword, e.g. "session"
+	}
+	sep := tail[0]
+	if sep != '-' && sep != '_' && sep != '.' {
+		return false // "session1234"-style suffix without separator
+	}
+	tail = tail[1:]
+	if len(tail) < 8 {
+		return false // not enough entropy to rule out placeholders
+	}
+	for _, f := range []string{"test", "demo", "default", "session", "temp", "placeholder"} {
+		if strings.Contains(tail, f) {
+			return false // tail itself is placeholder-ish
+		}
+	}
+	return true
 }

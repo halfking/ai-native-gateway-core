@@ -7,6 +7,12 @@
 #   2. 每次变异后 md5 比对，确认改的确实是目标文件
 #   3. 全部变异跑完恢复，并用 md5 证明恢复成功
 #   4. 「包编译失败」不算「门有牙」，单独分流
+# ★★ r1047 轮（★ 2026-10-28）：★ 本脚本【改树 ⇒ 跑 go test ⇒ 还原】⇒ ⇒ 树每变一次
+# ★★ ⇒ ⇒ 编译产物的 action ID 就变 ⇒ ⇒ 旧的【永远不会再被命中】⇒ ⇒ 纯垃圾 ⇒ ⇒
+# ★★ ⇒ ⇒ 绝不能落在用户的全局缓存里 ⇒ ⇒ 指向【专用缓存】（★ 目录约定与 6 GB 上限见
+# ★★ `scripts/lib/gocache.sh`；★ 理由与实测读数见 `internal/gocache` 的包注释）。
+export GOCACHE="$("$(git rev-parse --show-toplevel)/scripts/lib/gocache.sh" mutate)"
+
 set -uo pipefail
 cd "$(dirname "$0")/.."
 

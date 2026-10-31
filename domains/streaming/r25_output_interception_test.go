@@ -90,7 +90,7 @@ func TestChatNonStreamBlockDecisionHoldsBodyOffWire(t *testing.T) {
 			ClientModel:    "m",
 		},
 	}
-	modified, blocked, err := interceptNativeResponseBody(chain, &opt, dw.body)
+	modified, blocked, _, err := interceptNativeResponseBody(chain, &opt, dw.body)
 	if err != nil || !blocked || modified != nil {
 		t.Fatalf("intercept = modified=%v blocked=%v err=%v", modified, blocked, err)
 	}

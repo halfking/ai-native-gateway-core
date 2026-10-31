@@ -10,65 +10,93 @@ import (
 )
 
 // TestMonitorSummaryCoreModeSQLShape pins the lightweight query contract
-// used by the dashboard settings preload. The assertions read every SQL
-// fragment the handler may concatenate, so they stay robust across harmless
-// refactors of indentation, comments, or surrounding branches.
+// used by the dashboard settings preload.
+//
+// ★ 2026-10-27（R168 轮）改判据口径：★ 从「扫源文件的反引号字面量片段」
+// ⇒ 改为「判【产物 SQL】」（★ buildMonitorSummarySQL 的返回值）。
+//
+// # 为什么必须改（★ 旧判据的失效形态，★ 一并留档）
+//
+// 旧判据在源文件里找**反引号片段**，★ 要求其中某个片段同时
+// ① 含 "from credentials c" 且 ② 命中 heavy 集合
+// （request_logs_with_current_month / recent_success_rate / percentile_cont /
+// credential_model_index_with_current_month / credential_model_call_history）。
+//
+// ★★ **但 detail 模式的 heavy 聚合根本不在任何「顶层片段」里** —— ★ `modelsSelect`
+// （live p95 LATERAL：percentile_cont + request_logs_with_current_month）与
+// `aggregatedSuccessJoin`（recent_success_rate）都是**被拼进去**的局部变量，
+// 而它们的文本**不含 "from credentials c"** ⇒ ★★ **旧判据从未真正看见过 heavy**
+// ⇒ ★★ 它一直是被顶层那处**字面量视图名**「顺带」满足的。
+//
+// ⇒ ★★ R168 把顶层那处 `total_requests` 从「字面量读视图」改成「底表两臂 helper」
+// ⇒ ★★ 那个**巧合**消失 ⇒ ★★ 门红 ⇒ ⇒ ⇒ **⇒ 真因不是「门坏了」，★ 是「判据落在【源文件片段】上」**
+// ⇒ ⇒ ⇒ ★★ **拼接进来的内容不在片段里** ⇒ ★★ 任何「扫源码片段」的判据都会在
+// ★★ 「有人把字面量换成 helper」时**假红**（★ 本轮就撞上了）。
+//
+// # 新判据（★ 判据落在产物上，★ 与 R167/R168 的通用式同族）
+//
+// ★ 直接调用 buildMonitorSummarySQL，取 core / detail 两个模式的**最终 SQL**
+// ⇒ ★ 拼接进来的内容**在产物里** ⇒ ★ 判据不再受「字面量 vs helper」影响。
+//
+// ★★ 并且顺手【加强】了一条：★ **core 产物不得命中任何 heavy 聚合**
+// ⇒ ★ 与源码注释「Core mode deliberately avoids request-log and per-model
+// ★ rate/latency aggregates」对齐 ⇒ ★★ 旧判据**根本没有这条**
+// （★ 旧门只要求「coreFound 且 detailFound」，★ 两个都能在【同一种模式】里被满足）。
+//
+// ★★ heavy 判据盯的是【聚合/物化】这个语义（COUNT / percentile / rollup 表），
+// ★ 而不是「视图名」 ⇒ ★ 将来把 heavy 聚合改走底表两臂时，★ 判据**仍然成立**
+// （★ percentile_cont 与两个 rollup 表必然还在）⇒ ★ 门不会因为「优化」而红。
 func TestMonitorSummaryCoreModeSQLShape(t *testing.T) {
-	src, err := os.ReadFile("credential_monitor.go")
-	if err != nil {
-		t.Fatalf("read source: %v", err)
-	}
-	body := string(src)
+	// ★ 产物：core 模式（Mode=core）与 detail 模式（CredentialID>0 且非 core）。
+	coreSQL := buildMonitorSummarySQL(monitorSummarySQLParams{Mode: "core"})
+	detailSQL := buildMonitorSummarySQL(monitorSummarySQLParams{Mode: "detail", CredentialID: 1})
 
-	var fragments []string
-	for i := 0; i < len(body); i++ {
-		if body[i] != '`' {
-			continue
+	// ★ heavy = 「重聚合 / 物化」语义，★ 不是「视图名」。
+	heavyMarkers := []string{
+		"request_logs_with_current_month",
+		"recent_success_rate",
+		"credential_model_index_with_current_month",
+		"credential_model_call_history",
+		"percentile_cont",
+	}
+	hitHeavy := func(sql string) []string {
+		var hits []string
+		for _, m := range heavyMarkers {
+			if strings.Contains(sql, m) {
+				hits = append(hits, m)
+			}
 		}
-		j := i + 1
-		for j < len(body) && body[j] != '`' {
-			j++
-		}
-		if j >= len(body) {
-			break
-		}
-		fragments = append(fragments, body[i+1:j])
-		i = j
+		return hits
 	}
 
-	coreFound := false
-	detailFound := false
-	for _, frag := range fragments {
-		if !strings.Contains(strings.ToLower(frag), "from credentials c") {
-			continue
-		}
-		hasHeavy := strings.Contains(frag, "request_logs_with_current_month") ||
-			strings.Contains(frag, "recent_success_rate") ||
-			strings.Contains(frag, "credential_model_index_with_current_month") ||
-			strings.Contains(frag, "credential_model_call_history") ||
-			strings.Contains(frag, "percentile_cont")
-		hasCoreOffer := strings.Contains(frag, "model_offers") &&
-			// 2026-09-17 数据源统一: probe_state 列改读 v_node_probe_state_compat
-			// (node_probe_state 投影);旧 model_probe_state 仍被手动上下线写入。
-			(strings.Contains(frag, "model_probe_state") ||
-				strings.Contains(frag, "v_node_probe_state_compat"))
-		hasTenantGuard := strings.Contains(frag, "tenant_id")
-		switch {
-		case hasHeavy:
-			// detail mode is allowed (and expected) to also join
-			// model_offers + model_probe_state for the per-model availability
-			// breakdown. The audit guarantee is only that detail touches
-			// the heavy aggregates; do not flag the lightweight join.
-			detailFound = true
-		case hasCoreOffer && hasTenantGuard:
-			coreFound = true
-		}
+	// ── ① core 模式：必须是「轻」的 ─────────────────────────────────
+	coreLower := strings.ToLower(coreSQL)
+	if !strings.Contains(coreLower, "from credentials c") {
+		t.Error("core 产物必须从 credentials c 起查（找不到 \"from credentials c\"）")
 	}
-	if !coreFound {
-		t.Fatal("could not locate a lightweight (core) SELECT fragment that joins model_offers/model_probe_state and gates on tenant_id")
+	if !strings.Contains(coreSQL, "model_offers") {
+		t.Error("core 产物必须带 per-model 的 model_offers 连接")
 	}
-	if !detailFound {
-		t.Fatal("could not locate a detail SELECT fragment that touches the heavy aggregates (_request_logs / recent_success_rate / percentile_cont)")
+	if !strings.Contains(coreSQL, "model_probe_state") &&
+		!strings.Contains(coreSQL, "v_node_probe_state_compat") {
+		t.Error("core 产物必须读探针状态（model_probe_state / v_node_probe_state_compat）")
+	}
+	if !strings.Contains(coreSQL, "tenant_id") {
+		t.Error("core 产物必须按 tenant_id 做归属守卫")
+	}
+	// ★★ 加强项（R168 轮新增）：★ core 不得触碰重聚合。
+	if hits := hitHeavy(coreSQL); len(hits) > 0 {
+		t.Errorf("core 产物命中重聚合 %v —— core 的契约是「不碰 request-log / "+
+			"per-model rate+latency 聚合」（★ core 是 dashboard settings 预热的轻路径，"+
+			"★ 重聚合会让它变成慢端点）", hits)
+	}
+
+	// ── ② detail 模式：必须真的触及 heavy 聚合 ───────────────────────
+	if hits := hitHeavy(detailSQL); len(hits) == 0 {
+		t.Error("detail 产物没有命中任何重聚合标记（request_logs_with_current_month / " +
+			"recent_success_rate / percentile_cont / credential_model_index_with_current_month / " +
+			"credential_model_call_history）—— detail 模式的存在意义就是 per-model 的" +
+			"成功率与延迟聚合")
 	}
 }
 

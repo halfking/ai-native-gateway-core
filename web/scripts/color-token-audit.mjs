@@ -51,6 +51,14 @@ function walk(dir) {
   const out = []
   for (const entry of readdirSync(dir)) {
     if (entry === 'node_modules' || entry === '.git' || entry === 'dist') continue
+    // ★★ R87 轮：★ `src/design/` 是【探测器】目录（★ `aiSmells.ts` / `elevation.ts`）
+    // ⇒ ⇒ 里面的 CSS 字符串是探测器的**自证样本**（★ `check('E1k', …, scan(\`…\`))` 这类），
+    // ⇒ ⇒ **不是 UI 里的硬编码颜色**。
+    // ⇒ ⇒ ★★ 不排除它 ⇒ ⇒ 每加一个探测器就要往基线里再塞几条「样本串」
+    // ⇒ ⇒ ⇒ **基线每轮都会再烂一次**（★ R164 轮加 aiSmells 烂 3 条、R166 轮加 elevation 烂 3 条
+    // ⇒ ⇒ ⇒ ⇒ 实测两轮都是这个形状）⇒ ⇒ ⇒ 那是一条**不可持续**的修法。
+    // ⇒ ⇒ ⇒ ⇒ 结构性修法 = 探测器自己不该被 UI 风格审计扫。
+    if (entry === 'design' && dir === ROOT) continue
     const full = join(dir, entry)
     const st = statSync(full)
     if (st.isDirectory()) out.push(...walk(full))

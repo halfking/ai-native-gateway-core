@@ -21,7 +21,7 @@
 //     否则门会给「用另一种写法绕过去」留后门。
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
-import { join, relative, extname } from 'node:path'
+import { join, relative, extname, sep } from 'node:path'
 
 export interface AiSmellFinding {
   rule: string
@@ -33,9 +33,23 @@ export interface AiSmellFinding {
 }
 
 export interface AiSmellOptions {
-  /** 扫描根（默认 `src`） */
-  rootDir: string
-  /** 仓库根（用于算相对路径） */
+  /**
+   * 扫描根目录（绝对路径，可多个）。
+   *
+   * ★ 第 27 增量：从「只扫 `web/src`」扩到「`web/src` + `web-mobile/src`」。
+   *   移动端此前**没有任何品味门看守** ⇒ 同一个 craft-floor 硬禁在两个应用里
+   *   口径不同（桌面判红、移动端没人判）⇒ ⇒ 「同一口径只能有一份实现」
+   *   的第一层含义是**同一套判据要覆盖全部应用**。
+   */
+  rootDirs: string[]
+  /**
+   * 仓根（用于算相对路径）。
+   *
+   * ★ 第 27 增量：**路径口径统一到仓根**（`web/src/…` / `web-mobile/src/…`）。
+   *   原因：两个应用的文件路径若都以 `src/` 开头 ⇒ 登记簿里两个应用的
+   *   同名文件**无法区分**（`src/views/ModelsView.vue` 在两边都存在）
+   *   ⇒ ⇒ 豁免会张冠李戴。
+   */
   repoDir: string
   /** 豁免登记簿：{ file, rule, selector? } */
   registry?: Array<{ file: string; rule: string; selector?: string; reason: string }>
@@ -89,13 +103,18 @@ export function extractCssBlocks(src: string, file: string): CssBlock[] {
   const pushBuffer = (buf: string[], startLine: number) => {
     let depth = 0
     let cur: string[] = []
-    for (let j = 0; j < buf.length; j++) {
-      cur.push(buf[j])
-      for (const ch of buf[j]) {
+    // ★ 第 27 增量：**先掩注释再切块**（★ 注释里的声明不算声明；
+    //   注释不再被逐行切碎 ⇒ 见 maskCssComments 的说明）。
+    const masked = maskCssComments(buf.join('\n')).split('\n')
+    for (let j = 0; j < masked.length; j++) {
+      cur.push(masked[j])
+      for (const ch of masked[j]) {
         if (ch === '{') depth++
         else if (ch === '}') depth--
       }
-      if (depth === 0 && cur.length) {
+      // ★ 只有**含 `{` 的块**才是规则 ⇒ 注释 / 空行不单独成块
+      //   （★ 旧版会把注释的每一行都当成一个块）。
+      if (depth === 0 && cur.length && cur.join('').includes('{')) {
         const text = cur.join('\n')
         blocks.push({
           selector: text.split('{')[0].trim().split('\n').pop()!.trim(),
@@ -127,6 +146,23 @@ export function extractCssBlocks(src: string, file: string): CssBlock[] {
   }
   if (file.endsWith('.css')) pushBuffer(lines, 1)
   return blocks
+}
+
+/**
+ * ★★★ 把 CSS 注释**掩成等长空格**（★ 保留换行 ⇒ 行号与偏移都不变）。
+ *
+ * ★★★ 为什么必须掩而不是删（第 27 增量，★ 真仓实测抓到的既有缺陷）：
+ *   `extractCssBlocks` 旧版按「括号深度归零」**逐行**切块 ⇒ ★ 多行 CSS 注释
+ *   会被切成**碎片**（每行一个块）⇒ 碎片里没有完整的 `/* … *\/` ⇒
+ *   事后 `stripCssComments` **剥不掉** ⇒ ⇒ 注释里写的声明被当成真声明。
+ *   ★ 实测形态（`live-topology/ClientRequestPanel.vue`）：
+ *     `/* … 原来左沿是 3px 粗边（`border-left-width: 3px`）… *\/`
+ *     ⇒ 注释里明明在说「这条已经改掉了」，判据却把它当成一条真色条。
+ *   ⇒ ⇒ **掩在切块之前**（注释不再参与深度计算 ⇒ 不会被切碎）
+ *   ⇒ ⇒ 抬升门 `elevation.ts` 共用本提取器 ⇒ **一并受益**。
+ */
+export function maskCssComments(s: string): string {
+  return s.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
 }
 
 /** 去掉 CSS 注释（避免注释里的声明被当成真声明）。 */
@@ -372,14 +408,210 @@ function hasElevationShadow(body: string): { value: string } | null {
   return { value: v }
 }
 
+// ───────────────────────── V2 侧边条辅助 ─────────────────────────
+
+/**
+ * 规则选择器的「同族键」。
+ *
+ * ★ 用途：★ 「颜色写在 modifier 规则里」是彩色侧边条最常见的漏标形态 ——
+ *   `.row { border: 1px solid transparent; border-left-width: 3px; }`
+ *   `.row.is-ok { border-color: var(--kx-success); }`
+ *   ⇒ 逐条读时第一条因为 `transparent` 放过去了 ⇒ ⇒ 必须按**同族**归并。
+ */
+function stripeFamilyKey(selector: string): string {
+  const last = selector.split(/[\s>+~,]+/).filter(Boolean).pop() || selector
+  const noPseudo = last.replace(/::?[a-zA-Z-]+(\([^)]*\))?/g, '')
+  const cls = noPseudo.match(/\.[A-Za-z0-9_-]+/g)
+  if (cls) return '.' + cls[0].slice(1).replace(/--.*$/, '')
+  return noPseudo.replace(/[.#].*$/, '') || last
+}
+
+/** 一个规则块声明过的「带颜色的边框声明」（★ 宽度声明不算颜色）。 */
+function declaredBorderColors(body: string): string[] {
+  const out: string[] = []
+  for (const m of body.matchAll(/(?:^|[;{])\s*border(?:-[a-z]+)*\s*:\s*([^;]+)/g)) {
+    const v = m[1].trim()
+    // ★ `border-left-width: 3px` 是宽度，不是颜色 ⇒ 不算「声明过颜色」
+    //   （★ 否则「读不出 ⇒ 按有色算」这条失败安全侧就不会触发）。
+    if (/^\d+(\.\d+)?px$/.test(v)) continue
+    out.push(v)
+  }
+  return out
+}
+
+/**
+ * 同族规则 → 「这个族会不会被染色」。
+ *
+ * ★ 失败安全侧：★ 一个颜色都没声明 ⇒ **读不出** ⇒ 按有色算（判红）。
+ *   （★ 与孤儿门那份实现同口径：判红是失败安全侧。）
+ */
+function buildColoredBorderIndex(blocks: CssBlock[]): Map<string, boolean> {
+  const groups = new Map<string, string[]>()
+  for (const b of blocks) {
+    if (/::(before|after)\b/.test(b.selector)) continue
+    const key = stripeFamilyKey(b.selector)
+    const list = groups.get(key) ?? []
+    list.push(...declaredBorderColors(b.body))
+    groups.set(key, list)
+  }
+  const out = new Map<string, boolean>()
+  for (const [k, colors] of groups) {
+    out.set(k, colors.length === 0 ? true : colors.some((c) => isColoredValue(c)))
+  }
+  return out
+}
+
+interface SideEdge {
+  side: 'left' | 'right'
+  width: number
+  text: string
+}
+
+/** 取规则块里的左右边（★ 简写与长写都认 ⇒ 同形状的所有实现写法）。 */
+function sideEdges(body: string): SideEdge[] {
+  const out: SideEdge[] = []
+  for (const m of body.matchAll(/border-(left|right)\s*:\s*([^;]+)/g)) {
+    const w = m[2].match(/(\d+(?:\.\d+)?)px/)
+    if (!w) continue
+    out.push({ side: m[1] as 'left' | 'right', width: Number(w[1]), text: m[0].trim() })
+  }
+  for (const m of body.matchAll(/border-(left|right)-width\s*:\s*(\d+(?:\.\d+)?)px/g)) {
+    out.push({ side: m[1] as 'left' | 'right', width: Number(m[2]), text: m[0].trim() })
+  }
+  // ★ 同一条边被写了两次（简写 + 长写）⇒ 取**更宽**的那次（判红是失败安全侧）
+  const bySide = new Map<'left' | 'right', SideEdge>()
+  for (const e of out) {
+    const prev = bySide.get(e.side)
+    if (!prev || e.width > prev.width) bySide.set(e.side, e)
+  }
+  return [...bySide.values()]
+}
+
+/** 取声明值里的第一个 px 数值（★ 仿孤儿门那份实现的 `firstPx`）。 */
+function firstPx(value: string): number | null {
+  const m = value.match(/(\d+(?:\.\d+)?)px/)
+  return m ? Number(m[1]) : null
+}
+
+/**
+ * 伪元素是不是「画出来的一条侧边条」。
+ *
+ * ★ 形状：绝对定位 + 通高 + 窄（≤4px）+ 有背景色 ⇒ ★ 那就是一条画出来的色条
+ *   （★ 与 `border-left` 是**同一个视觉形状** ⇒ 同一判据）。
+ */
+function isStripePseudo(body: string): boolean {
+  if (!/position\s*:\s*(absolute|fixed)/.test(body)) return false
+  const tall =
+    /height\s*:\s*100%/.test(body) ||
+    (/top\s*:\s*0\s*;/.test(body) && /bottom\s*:\s*0\s*;/.test(body))
+  if (!tall) return false
+  const w = firstPx(body.match(/width\s*:\s*([^;]+)/)?.[1] ?? '')
+  if (w === null || w > 4) return false
+  const bg = body.match(/background(?:-color)?\s*:\s*([^;]+)/)?.[1] ?? ''
+  if (!bg || /none|transparent/i.test(bg)) return false
+  return true
+}
+
+/**
+ * 取某条边的**颜色**（★ 找不到 ⇒ null ⇒ 交由同族规则决定）。
+ *
+ * ★ 优先级：① 该边自己的简写 ② 该边自己的 `*-color` ③ 通用 `border:` 简写。
+ */
+function sideColor(body: string, side: 'left' | 'right'): string | null {
+  const strip = (v: string) =>
+    v
+      .trim()
+      .replace(/^\s*\d+(\.\d+)?px\s*/, '')
+      .replace(/\b(solid|dashed|dotted|double|groove|ridge|inset|outset|none|hidden)\b/gi, '')
+      .trim()
+  const own = body.match(new RegExp(`border-${side}\\s*:\\s*([^;]+)`))
+  if (own) {
+    const c = strip(own[1])
+    if (c) return c
+  }
+  const lc = body.match(new RegExp(`border-${side}-color\\s*:\\s*([^;]+)`))
+  if (lc) {
+    const c = lc[1].trim()
+    if (c) return c
+  }
+  const b = body.match(/(?:^|[;{])\s*border\s*:\s*([^;]+)/)
+  if (b) {
+    const c = strip(b[1])
+    if (c) return c
+  }
+  return null
+}
+
+/**
+ * V2：≥2px 的彩色侧边条（craft-floor：ban-side-stripe-borders）。
+ *
+ * ★★★ 第 27 增量：**补齐了已退役的孤儿门那份实现的写法覆盖**。
+ *   孤儿门那份能认 5 种写法，本实现第 1 版只认 1 种（简写）⇒ ★ 退役它
+ *   若不移植 ⇒ ★ **门会变弱**（三种写法直接绕过）⇒ ⇒ **退役 = 覆盖不许缩水**。
+ *
+ * ★ 写法（★ 同一个视觉形状的所有实现写法）：
+ *   ① `border-left/right: 3px solid <色>`（简写）
+ *   ② `border-left/right-width: 3px` + 颜色在 `border:` / `border-*-color:`（长写）
+ *   ③ 颜色由**同基类的 modifier 规则**给出（最常见的漏标形态）
+ *   ④ 伪元素画的窄色条（`::before` + 绝对定位 + ≤4px 宽 + 通高 + 有背景）
+ *   ⑤ `box-shadow: inset 3px 0 0 <色>`（inset 阴影伪装）
+ *
+ * ★ 边的范围：**只判 left / right**（★ craft-floor 原话就是 border-left/right）
+ *   ⇒ ★ 顶边/底边**不判**（孤儿门那份判 4 条边 ⇒ 比 craft-floor 更宽 ⇒ 不移植）。
+ * ★ 颜色口径：沿用仓内的中性令牌表（`isColoredValue`）⇒ 中性描边不算色条。
+ * ★ 一个规则块只报一条（★ 计数口径 = 元素数，与 V3 同一口径）。
+ */
+function detectSideStripe(
+  body: string,
+  sel: string,
+  familyColored: boolean,
+): { text: string; reason: string } | null {
+  // ① / ② / ③：左右边（简写 + 长写）
+  for (const e of sideEdges(body)) {
+    if (e.width < 2) continue
+    const own = sideColor(body, e.side)
+    // ★ 本块的颜色若是**明确有色** ⇒ 有色；否则看同族（modifier 规则里染色）。
+    const colored = (own !== null && isColoredValue(own)) || familyColored
+    if (!colored) continue
+    return {
+      text: e.text.slice(0, 90),
+      reason: '≥2px 彩色侧边条表达状态 ⇒ AI 痕迹（craft-floor：ban-side-stripe-borders）',
+    }
+  }
+  // ④ 伪元素画的窄色条
+  if (/::(before|after)\b/.test(sel) && isStripePseudo(body)) {
+    const bg = body.match(/background(?:-color)?\s*:\s*([^;]+)/)?.[1]?.trim() ?? ''
+    if (isColoredValue(bg)) {
+      return {
+        text: `${sel} 画的窄色条（${bg}）`,
+        reason: '用伪元素画出来的彩色侧边条（形状与 border-left 相同 ⇒ 同一判据）',
+      }
+    }
+  }
+  // ⑤ inset 阴影伪装
+  const ins = body.match(/box-shadow\s*:\s*inset\s+(\d+(?:\.\d+)?)px\s+0\s+0\s+(.+?)(?:;|$)/)
+  if (ins && Number(ins[1]) >= 2 && isColoredValue(ins[2])) {
+    return {
+      text: `inset ${ins[1]}px 0 0 ${ins[2].trim()}`,
+      reason: '用内阴影伪装的彩色侧边条（形状与 border-left 相同 ⇒ 同一判据）',
+    }
+  }
+  return null
+}
+
 // ───────────────────────── 主判定 ─────────────────────────
 
 export function detectAiSmells(opts: AiSmellOptions): AiSmellFinding[] {
-  const { rootDir, repoDir, registry = [] } = opts
+  const { rootDirs, repoDir, registry = [] } = opts
   const findings: AiSmellFinding[] = []
-  const files = listScannableFiles(rootDir)
-  for (const file of files) {
-    findings.push(...scanSource(readFileSync(file, 'utf8'), relative(repoDir, file), file))
+  for (const rootDir of rootDirs) {
+    const files = listScannableFiles(rootDir)
+    for (const file of files) {
+      // ★ 路径统一成仓根相对 + 正斜杠（★ Windows 上 `path.relative` 给的是反斜杠
+      //   ⇒ 登记簿里的路径与扫描出来的路径对不上 ⇒ 豁免会静默失效）。
+      const rel = relative(repoDir, file).split(sep).join('/')
+      findings.push(...scanSource(readFileSync(file, 'utf8'), rel, file))
+    }
   }
   return findings.filter((f) => !isExempt(f, registry))
 }
@@ -396,6 +628,8 @@ export function scanSource(src: string, rel: string, file: string = rel): AiSmel
   const findings: AiSmellFinding[] = []
   {
     const blocks = extractCssBlocks(src, file)
+    // ★ V2 需要「同族规则的边框颜色」跨规则索引（★ 形态 ③：颜色写在 modifier 规则里）
+    const coloredByFamily = buildColoredBorderIndex(blocks)
     for (const b of blocks) {
       const body = stripCssComments(b.body)
       const sel = b.selector
@@ -413,30 +647,16 @@ export function scanSource(src: string, rel: string, file: string = rel): AiSmel
         })
       }
 
-      // ── V2 彩色侧边条（两种写法都算：border-* 与 inset 阴影伪装）──
-      const bs = body.match(/border-(left|right)\s*:\s*([^;]+)/)
-      if (bs && !/none|transparent|currentcolor/i.test(bs[2])) {
-        const w = bs[2].match(/(\d+(?:\.\d+)?)px/)
-        if (w && Number(w[1]) >= 2 && isColoredValue(bs[2])) {
-          findings.push({
-            rule: 'V2-colored-side-stripe',
-            file: rel,
-            line: b.line,
-            selector: sel,
-            text: bs[0].slice(0, 90),
-            reason: '≥2px 彩色侧边条表达状态 ⇒ AI 痕迹（craft-floor：ban-side-stripe-borders）',
-          })
-        }
-      }
-      const ins = body.match(/box-shadow\s*:\s*inset\s+(\d+(?:\.\d+)?)px\s+0\s+0\s+(.+?)(?:;|$)/)
-      if (ins && Number(ins[1]) >= 2 && isColoredValue(ins[2])) {
+      // ── V2 彩色侧边条（★ 五种写法都算：见 detectSideStripe 的说明）──
+      const v2 = detectSideStripe(body, sel, coloredByFamily.get(stripeFamilyKey(sel)) === true)
+      if (v2) {
         findings.push({
           rule: 'V2-colored-side-stripe',
           file: rel,
           line: b.line,
           selector: sel,
-          text: `inset ${ins[1]}px 0 0 ${ins[2].trim()}`,
-          reason: '用内阴影伪装的彩色侧边条（形状与 border-left 相同 ⇒ 同一判据）',
+          text: v2.text,
+          reason: v2.reason,
         })
       }
 
@@ -547,6 +767,13 @@ export function scanSource(src: string, rel: string, file: string = rel): AiSmel
       }
     }
     findings.push(...detectGlyphIcons(src, rel))
+    // ★ 第 29 增量：V3b —— 数据驱动的字形图标（`icon: '📋'` 这类）
+    findings.push(...detectGlyphDataDriven(src, rel))
+    // ★ 第 27 增量：从已退役的孤儿门移植进来的两条判据（判据唯一实现 = 本文件）
+    findings.push(...detectKickers(src, rel))
+    findings.push(...detectDecorativeNumbers(src, rel))
+    // ★ 第 36 增量：V11b —— **手写字面量**的装饰序号（V11 只认 `padStart` 生成的那种）
+    findings.push(...detectDecorativeNumberLiterals(src, rel))
   }
   return findings
 }
@@ -587,10 +814,214 @@ export function isExempt(
  *   - 纯排印字符（— – · … ▍）⇒ 正文占位符 / 分隔符，**不是图标位**；
  *   - 流程箭头（→ ↔ ↕ ⇄ …）在**非按钮位** ⇒ 是流程连线示意，不是图标系统。
  */
+/**
+ * 剥掉源码里的注释（JS 块注释 / HTML 注释 / JS 行注释）。
+ *
+ * ★ 移植自已退役的 `scripts/craft-floor-audit.mjs`（第 27 增量收口）：
+ *   那道孤儿门守着同样的两条判据（kicker / 装饰序号）⇒ 孤儿门退役后，
+ *   这段实现必须**搬进判据唯一实现**，不能留在孤儿门里（★ 同一口径只能有一份实现）。
+ * ★ 替换成等长空格 ⇒ **行号与偏移不变**（报告不会指错位置）。
+ */
+export function stripSourceComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '))
+    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1) => p1 + ' '.repeat(Math.max(0, m.length - p1.length)))
+}
+
+/**
+ * V10：标题上方的 kicker / eyebrow。
+ *
+ * ★ craft-floor 原话（Refuse 段）：
+ *   "A kicker or eyebrow above a heading. **This one is a ban, not a default:
+ *    no brief earns it back.** The heading carries its own weight; delete the
+ *    label and let the heading speak."
+ *   ⇒ 这是**硬禁**（不是「默认不好」而是「brief 也不能赎回它」）。
+ *
+ * ★ 位置判据（★ 按【形状】判，不按【写法】判）：
+ *   只认**紧邻标题上方**的那个小标签 ⇒ class 名里带 kicker/eyebrow 但不在标题上方的
+ *   （比如一个普通徽标）**不判** ⇒ 判据宁可窄，不可宽。
+ * ★ 与已退役的孤儿门相比**更窄**：孤儿门是「class 含 kicker/eyebrow 就判红」。
+ */
+export function detectKickers(src: string, rel: string): AiSmellFinding[] {
+  const out: AiSmellFinding[] = []
+  const els = scanElements(src)
+  const HEADINGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+  const KICKER_WORDS = new Set(['kicker', 'eyebrow', 'overline', 'pretitle', 'supertitle'])
+  for (let i = 0; i < els.length; i++) {
+    const e = els[i]
+    const words = classWords(e.attrs)
+    const hit = words.find((w) => KICKER_WORDS.has(w))
+    if (!hit) continue
+    // ★ 必须在**紧邻的下一个元素是标题**时才算「标题上方的小标签」
+    const next = els[i + 1]
+    if (!next || !HEADINGS.has(next.tag)) continue
+    const rawFirst = rawClassFirst(e.attrs)
+    out.push({
+      rule: 'V10-kicker-above-heading',
+      file: rel,
+      line: lineOf(src, e.offset),
+      selector: rawFirst ? `.${rawFirst}` : `<${e.tag}>`,
+      text: e.content.trim().slice(0, 60),
+      reason:
+        `标题上方的 kicker/eyebrow（class 含 "${hit}"）—— craft-floor 硬禁：` +
+        '「This one is a ban, not a default: no brief earns it back」；标题自己扛重量',
+    })
+  }
+  return out
+}
+
+/**
+ * V11：用代码把序号补零成两位（01 / 02 / 03）。
+ *
+ * ★ craft-floor 原话（Refuse 段）：
+ *   "Section numbers (01 / 02 / 03) **unless the sequence itself carries
+ *    information the reader needs**."
+ *   ⇒ 判据只抓「**把一个序号补零**」这个动作 ⇒ 页面上写着 01 但那串序号
+ *     本身就在传递信息（步骤 1/2/3）时**不判**（那是「序列携带信息」的合法形态）。
+ *
+ * ★ 与已退役的孤儿门同一口径（移植）：`padStart(2, '0')` + 序号语境
+ *   （index/idx/i/count/step/no/num/order/seq）+ 排除日期取值语境
+ *   （`getHours()` 之类补零是**时间**，不是装饰序号）。
+ */
+export function detectDecorativeNumbers(src: string, rel: string): AiSmellFinding[] {
+  const out: AiSmellFinding[] = []
+  const masked = stripSourceComments(src)
+  const re = /padStart\s*\(\s*2\s*,\s*['"]0['"]\s*\)/g
+  const ORDINAL =
+    /String\s*\(\s*(?:[A-Za-z_$][\w$]*\s*\+\s*1|(?:index|idx|i|count|step|no|num|order|seq)\b[^)]*)\s*\)/
+  const DATETIME = /get(Hours|Minutes|Seconds|Month|Date|Day|FullYear|Year)\s*\(/
+  for (const m of masked.matchAll(re)) {
+    const lineStart = src.lastIndexOf('\n', m.index) + 1
+    const line = src.slice(lineStart, src.indexOf('\n', m.index))
+    if (DATETIME.test(line)) continue
+    const ctx = masked.slice(Math.max(0, m.index - 120), m.index)
+    if (!ORDINAL.test(ctx)) continue
+    out.push({
+      rule: 'V11-section-number',
+      file: rel,
+      line: lineOf(src, m.index),
+      selector: '',
+      text: m[0],
+      reason:
+        "padStart(2, '0') 生成的 01/02 序号 —— craft-floor：序号只在序列本身携带信息时才用",
+    })
+  }
+  return out
+}
+
+/**
+ * ★★ V11b：**手写字面量**的装饰序号（第 36 增量）。
+ *
+ * ★★ 这条判据补的是 V11 的**盲区**：V11 只认 `padStart(2, '0')` **生成**的序号
+ *   ⇒ 而数据数组里**手写**的 `'01'` / `'02'` 它完全看不见
+ *   ⇒ ★ 与 V3b（第 29 增量补的「emoji 藏在数据数组里」）**完全同型**：
+ *   「检测器只认一种形态 ⇒ 另一种形态整族漏网」。
+ * ★ 真仓实证：`web/src/views/LandingView.vue` 的 8 个特性卡写死了
+ *   `icon: '01'` … `icon: '08'` ⇒ ★ 模板压根不渲染 `item.icon`
+ *   （`LandingFeature` 类型里也没有这个字段）⇒ 是**死数据**，但它是颗地雷：
+ *   哪天有人把它接回模板，界面上就会冒出 01/02 装饰序号（craft-floor 明禁）。
+ *
+ * ★ 位置信号 = **属性名**（与 V3b 同款思路）：属性名含序号/图标位语义
+ *   （icon / glyph / emoji / num / seq / idx / index / order / step / badge / marker / ordinal）
+ *   ⇒ ★ 判据宁可窄，不可宽：普通文本里的 '01'（比如限额 '50'）**不判**。
+ * ★ 值只认**零填充两位数**（`'01'` … `'09'`）—— 这正是 craft-floor 写的
+ *   「Section numbers (01 / 02 / 03)」那个形状 ⇒ ⇒ 实测全仓假阳性 0 处
+ *   （`step="60"` 那种属性值不是零填充 ⇒ 不命中）。
+ */
+export function detectDecorativeNumberLiterals(src: string, rel: string): AiSmellFinding[] {
+  const out: AiSmellFinding[] = []
+  const masked = stripSourceComments(src)
+  // ★ 属性名先捕获（与 V3b 同构），值只认 '01'..'09'。
+  const re = /\b([A-Za-z_$][\w$]*)\s*[:=]\s*(['"])(0[1-9])\2/g
+  const NAME = /icon|glyph|emoji|num|seq|idx|index|order|step|badge|marker|ordinal/i
+  let m: RegExpExecArray | null
+  while ((m = re.exec(masked))) {
+    const attr = m[1]
+    if (!NAME.test(attr)) continue
+    out.push({
+      rule: 'V11b-section-number-literal',
+      file: rel,
+      line: lineOf(src, m.index),
+      selector: attr,
+      text: m[3],
+      reason:
+        "手写的 '01' 装饰序号 —— craft-floor：序号只在序列本身携带信息时才用（V11 只认 padStart 生成的那种）",
+    })
+  }
+  return out
+}
+
+/**
+ * V3：Unicode 字形 / emoji 冒充图标。
+ *
+ * ★★★ 第 27 增量：**一个元素只报一条**（★ 口径修正）。
+ *   第一版是「一个字形一条」⇒ ★ 一个元素里有两个候选字形（`{{ a ? '▴' : '▾' }}`）
+ *   就报两条 ⇒ ★ 计数口径与「要改几个地方」**对不上**（★ 计数类结论：
+ *   口径必须和数字一起发布）⇒ ⇒ 现在按**元素**聚合，字形合并进 `text`。
+ *   ★ 自证里钉住这一点（S-CF3 期望 1 条，不是 2 条）。
+ */
+/**
+ * ★★ V3b：**数据驱动**的字形图标（第 29 增量）。
+ *
+ * ★★ 这条判据补的是 V3 的**盲区**：V3 扫的是「元素里的字面量」，
+ *   而 emoji 藏在一个**数据数组**里时（`{ key: 'x', icon: '📋' }`），
+ *   源码里的元素写的是 `{{ c.icon }}` ⇒ **V3 完全看不见它**。
+ *   ★ 真仓实证：`web/src/views/SettingsView.vue` 的 11 个设置分类图标
+ *     就是这么藏的（`icon: '📋'` / `'🗜'` / `'🚦'` …）⇒ 渲染成 16px 字形 ⇒
+ *     **用户在界面上看到的是 emoji 冒充图标**（DESIGN.md §6 明令禁止）。
+ *
+ * ★ 位置信号：**属性名含 icon / glyph / emoji** ⇒ 值**恰好是一个字形**。
+ *   ⇒ 判据宁可窄，不可宽：普通文本里的字形（文字标记）**不判**
+ *   （★ 与仓库既有口径一致：`glyphCandidates` 只认「元素里只有这个字形」）。
+ *
+ * ★ 注释免疫：`stripSourceComments` 把注释内容掩成等长空格（行号/偏移不变）
+ *   ⇒ 注释里写 `icon: '📋'` 不会造成假红（★ 本轮自己就写了这种注释 ⇒ 实测需要）。
+ */
+export function detectGlyphDataDriven(src: string, rel: string): AiSmellFinding[] {
+  const out: AiSmellFinding[] = []
+  const masked = stripSourceComments(src)
+  // ★ 属性名先捕获，再在代码里判「是否含 icon / glyph / emoji」
+  //   （★ 第一版把它写进正则 `(?:icon|glyph|emoji)` 且要求前缀至少一个字符
+  //     ⇒ **单独的 `icon:` 匹配不上** ⇒ 判据没牙 ⇒ ★ 是自证 S21a 抓出来的）
+  const re = /\b([A-Za-z_$][\w$]*)\s*[:=]\s*(['"])((?:\\.|(?!\2).)*)\2/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(masked))) {
+    const attr = m[1]
+    if (!/icon|glyph|emoji/i.test(attr)) continue
+    const value = m[3]
+    const chars = [...value]
+    if (!chars.length) continue
+    // ★ 值必须**恰好是一个字形**（⇒ 整块就是一个图标位）
+    //   ★ 修饰符（U+FE0F 变体选择符 / U+20E3 组合键帽）不单独算字形，
+    //     但它们紧跟字形时要**一起放行**（★ '⚠️' = U+26A0 + U+FE0F）
+    const core = chars.filter((c) => c !== '\uFE0F' && c !== '\u20E3')
+    if (!core.length) continue
+    if (!core.every((c) => isGlyphIconChar(c))) continue
+    out.push({
+      rule: 'V3b-glyph-data-driven',
+      file: rel,
+      line: lineOf(src, m.index),
+      selector: m[1],
+      text: value,
+      reason:
+        '数据驱动的字形图标（DESIGN.md §6：图标是画出来的，不许用 emoji / Unicode 字形冒充图标系统）',
+    })
+  }
+  return out
+}
+
 export function detectGlyphIcons(src: string, rel: string): AiSmellFinding[] {
   const out: AiSmellFinding[] = []
 
   for (const el of scanElements(src)) {
+    // 位置信号：按钮/链接位，或 class 名含图标语义词
+    const isButtonLike = el.tag === 'button' || el.tag === 'a'
+    const roleHit = classWords(el.attrs).some((w) => ICON_ROLE_WORDS.has(w))
+    if (!isButtonLike && !roleHit) continue
+
+    // ★ 收集这个元素上的所有字形候选（★ 聚合口径：一个元素一条）。
+    const hits: string[] = []
     for (const ch of glyphCandidates(el.content)) {
       // 文本而非图标：ASCII / CJK / 全角标点
       if (/[\x00-\x7F]/.test(ch)) continue
@@ -598,28 +1029,26 @@ export function detectGlyphIcons(src: string, rel: string): AiSmellFinding[] {
       // 纯排印字符 ⇒ 正文占位符 / 分隔符，不是图标位
       const chars = [...ch]
       if (chars.every((c) => TYPOGRAPHIC_GLYPHS.has(c))) continue
-      // 位置信号：按钮/链接位，或 class 名含图标语义词
-      const isButtonLike = el.tag === 'button' || el.tag === 'a'
-      const words = classWords(el.attrs)
-      const roleHit = words.some((w) => ICON_ROLE_WORDS.has(w))
-      if (!isButtonLike && !roleHit) continue
       // 流程箭头在非按钮位 ⇒ 流程连线示意，不是图标系统
       if (!isButtonLike && chars.every((c) => FLOW_ARROWS.has(c))) continue
-      // ★ selector 用**原始 class 的第一个类名**（如 `mp-chip-x`）——
-      //   切词后的第一词（`mp`）定位不到 CSS 规则，报告里等于没用。
-      const rawFirst = rawClassFirst(el.attrs)
-      out.push({
-        rule: 'V3-glyph-as-icon',
-        file: rel,
-        // ★ 行号指向**字形本身**，不是开标签行
-        //   （开标签常跨多行：`…>×</button>` 的 `×` 在闭合行）⇒
-        //   报告行号若指向开标签，按行号定位会找不到字形（真仓实测 20/78 条如此）。
-        line: lineOf(src, el.contentStart + (el.content.length - el.content.trimStart().length)),
-        selector: rawFirst ? `.${rawFirst}` : `<${el.tag}>`,
-        text: ch,
-        reason: 'Unicode 字形 / emoji 冒充图标（craft-floor：ban-glyph-icons）',
-      })
+      hits.push(ch)
     }
+    if (!hits.length) continue
+
+    // ★ selector 用**原始 class 的第一个类名**（如 `mp-chip-x`）——
+    //   切词后的第一词（`mp`）定位不到 CSS 规则，报告里等于没用。
+    const rawFirst = rawClassFirst(el.attrs)
+    out.push({
+      rule: 'V3-glyph-as-icon',
+      file: rel,
+      // ★ 行号指向**字形本身**，不是开标签行
+      //   （开标签常跨多行：`…>×</button>` 的 `×` 在闭合行）⇒
+      //   报告行号若指向开标签，按行号定位会找不到字形（真仓实测 20/78 条如此）。
+      line: lineOf(src, el.contentStart + (el.content.length - el.content.trimStart().length)),
+      selector: rawFirst ? `.${rawFirst}` : `<${el.tag}>`,
+      text: hits.join(' '),
+      reason: 'Unicode 字形 / emoji 冒充图标（craft-floor：ban-glyph-icons）',
+    })
   }
   return out
 }
@@ -649,6 +1078,21 @@ export function glyphCandidates(inner: string): string[] {
       if (lit && lit.length <= 4) out.push(lit)
     }
   }
+  // ★★ 第 27 增量**刻意不采集「插值之外的裸文本」**（★ 试过 ⇒ 回退，记录理由）：
+  //   ★ 形态 ③ 存在：按钮标签**后面挂一个字形**（形如 `{标签} ✕`）⇒ 采集它会让门多报 44 处。
+  //   ★★ ★★ ⚠ **注释里不许写「取键调用 + 引号键名」的样例**（★ 本轮踩过 ⇒ ★ i18n 扫描器
+  //   **不剥注释** ⇒ ⇒ 注释里那种样例会被当成**真键引用** ⇒ ⇒ 键名进可达集
+  //   ⇒ ⇒ 8 个语种全缺 ⇒ ⇒ `i18n:key-parity:check` 变红（★ 第 11 增量记的
+  //   「扫描器剥注释（幽灵引用 11 处 / 8 文件）」那笔的又一例）⇒ ⇒ 这里一律用 `{标签}` 代替。
+  //   ★ 但**仓内自己的口径**是「字形 + 文本 = 文字标记，不是图标位」⇒ ★ **判绿**：
+  //     · 孤儿门那条绿样本「dingbat 在带文字的按钮上做前后缀 ⇒ 必须判绿」；
+  //     · 同族绿样本「dingbat 是句子的一部分 ⇒ 必须判绿」；
+  //     · 实测全仓 **172 处**「文本以字形开头」（★ 多为 `★` 作危险标记前缀）
+  //       ⇒ ★ 这是本仓的**既有惯例**，不是待清的存量。
+  //   ⇒ ⇒ 判据只认「**图标位**（元素里只有这个字形）」⇒ ★ 口径窄、与仓内惯例一致。
+  //   ★★ 代价（★ 如实记为局限）：★ 「标签旁边挂一个字形」这类冗余（★ 如关闭按钮上的 `✕`）
+  //     **判据看不见** ⇒ ★ 量测 = **80 处 / 34 文件**（★ 多数是 `✕` `←` `↻` `→` `⚠️`）
+  //     ⇒ ★ 列进下一轮工作线（★ 属「冗余装饰」，不是 craft-floor 硬禁）。
   return out
 }
 
@@ -673,13 +1117,53 @@ const ICON_ROLE_WORDS = new Set([
   'calendar', 'tag', 'filter', 'branch', 'merge', 'split', 'swap', 'loop',
   'chip', 'plus', 'minus', 'edit', 'bell', 'user', 'home', 'file', 'image',
   'video', 'audio', 'x',
+  // ★ 第 27 增量补 'ico'：★ 已退役的孤儿门 `craft-floor-audit.mjs` 的
+  //   `ICON_SLOT_CLASS_RE` 含 `ico`，而本表**没有** ⇒ ★ `<span class="ico">📖</span>`
+  //   这一族（真仓实测形态）在 ai-smells 门下是**漏判** ⇒ ★ 孤儿门退役前
+  //   必须把它那份覆盖补进来（★ 退役 = 覆盖不许缩水）。
+  'ico',
 ])
 
 /** 纯排印字符：正文占位符 / 分隔符，不是图标位 */
-const TYPOGRAPHIC_GLYPHS = new Set(['—', '–', '·', '…', '▍', '⋯'])
+/**
+ * ★★ 字形字符判定的**唯一实现**（第 29 增量）。
+ *
+ * ★ 一个字符是不是「emoji / 图标位字形」：
+ *  - `Extended_Pictographic` ⇒ ✅❌🔍🧹🚫⏭ 等**具象图形**；
+ *  - `Emoji_Presentation` ⇒ ⏳🟡 等**默认以 emoji 呈现**的符号；
+ *  - U+FE0F（变体选择符）/ U+20E3（组合键帽）⇒ 是 emoji 的**修饰符**，
+ *    本身不可见、单独出现不算图标（紧跟 emoji 时随那个 emoji 一起算）。
+ *
+ * ★ 排除项（与「排印符号」「流程箭头」共用同一份集合）：
+ *  `TYPOGRAPHIC_GLYPHS`（— – · … ▍ ⋯）是标点；`FLOW_ARROWS`（→ ← ↔ …）是连线示意。
+ *  ★ 真仓实证：`providerDetail.formatHint` 里的 `↔`（协议互转）**必须**不算图标。
+ *
+ * ★ 为什么放这里（而不是放 i18n 侧）：源码侧与语言包侧**共用同一份字符判定**
+ *   ⇒ 「同一口径只能有一份实现」；依赖方向是 i18n → design（单向）。
+ */
+export const GLYPH_ICON_TEST_RE =
+  /[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0F\u20E3]/u
+
+export function isGlyphIconChar(ch: string): boolean {
+  if (!GLYPH_ICON_TEST_RE.test(ch)) return false
+  if (TYPOGRAPHIC_GLYPHS.has(ch)) return false
+  if (FLOW_ARROWS.has(ch)) return false
+  // ★ 变体选择符 / 组合键帽单独出现时不可见、也不是图标
+  if (ch === '\uFE0F') return false
+  if (ch === '\u20E3') return false
+  return true
+}
+
+export const TYPOGRAPHIC_GLYPHS = new Set(['—', '–', '·', '…', '▍', '⋯'])
 
 /** 流程 / 连接箭头：在流程示意位置是连线，不是图标系统 */
-const FLOW_ARROWS = new Set(['→', '←', '↔', '↕', '⇄', '⇅', '⇆', '↖', '↗', '↘', '↙'])
+export const FLOW_ARROWS = new Set([
+  '→', '←', '↔', '↕', '⇄', '⇅', '⇆', '↖', '↗', '↘', '↙',
+  // ★ 第 27 增量补 `↑` `↓`：移动端 `RouteFunnelView` 的比率箭头 `↓` 是**流程连线示意**
+  //   （class 叫 fn__rate-arrow ⇒ 位置信号命中 'arrow'）⇒ 补进流程箭头集合后，
+  //   「非按钮位的流程箭头」不再被当成图标系统（按钮位仍然判红）。
+  '↑', '↓',
+])
 
 interface ScannedElement {
   tag: string
@@ -713,6 +1197,14 @@ export function scanElements(src: string): ScannedElement[] {
       continue
     }
     const tag = m[1]
+    // ★ 第 27 增量：★ `<script>` / `<style>` 块**不是模板文本** ⇒ 跳过整块。
+    //   （★ 它们的正文里可能含字形（★ 例如 CSS 注释里写了 `▴` / `▾`）⇒
+    //   ★ 不跳过的话，字形清点这类**量测**会把注释里的字形算进来。）
+    if (tag === 'script' || tag === 'style') {
+      const closeTag = src.indexOf(`</${tag}`, lt + m[0].length)
+      i = closeTag < 0 ? src.length : closeTag + tag.length + 3
+      continue
+    }
     let j = lt + m[0].length
     let quote: string | null = null
     while (j < src.length) {
@@ -871,6 +1363,29 @@ export function runSelftest(): { passed: number; total: number; failed: string[]
   check('S20h', '插值内容 ⇒ 不判 V3（不是字形）', 0, rules(`
 <span class="stat-icon">{{ icon }}</span>`).filter((r) => r === 'V3-glyph-as-icon').length)
 
+  // ★ S21：V3b —— 数据驱动的字形图标（第 29 增量）
+  //   ★ 真仓形态：`{ key: 'x', icon: '📋' }` ⇒ 元素里写的是 `{{ c.icon }}`
+  //   ⇒ V3（只扫元素字面量）**完全看不见** ⇒ 必须有独立判据。
+  check('S21a', "icon 属性 = 一个 emoji ⇒ 判 V3b", 1, rules(`
+const categories = [
+  { key: '', label: t('settings.category.all'), icon: '📋' },
+]`).filter((r) => r === 'V3b-glyph-data-driven').length)
+  check('S21b', "icon 属性 = 一个几何/字形（⚠️ 带变体选择符）⇒ 判 V3b", 1, rules(`
+const c = { key: 'compression', label: '压缩', icon: '⚠️' }`).filter((r) => r === 'V3b-glyph-data-driven').length)
+  check('S21c', 'icon 属性 = 图标组件名 ⇒ 不判 V3b（那是真图标）', 0, rules(`
+const categories = [
+  { key: '', label: t('settings.category.all'), icon: Files },
+]`).filter((r) => r === 'V3b-glyph-data-driven').length)
+  check('S21d', '字形 + 文本（文字标记，仓内既有惯例）⇒ 不判 V3b', 0, rules(`
+const badge = { label: '✅ 可达', tone: 'ok' }`).filter((r) => r === 'V3b-glyph-data-driven').length)
+  check('S21e', '★ 注释里的 icon: 字形 ⇒ 不判 V3b（注释免疫）', 0, rules(`
+// 旧写法：{ icon: '📋' } ⇒ 已改成图标组件
+const categories = [
+  { key: '', label: t('settings.category.all'), icon: Files },
+]`).filter((r) => r === 'V3b-glyph-data-driven').length)
+  check('S21f', '属性名不含 icon/glyph/emoji ⇒ 不判 V3b', 0, rules(`
+const mark = { badge: '📋' }`).filter((r) => r === 'V3b-glyph-data-driven').length)
+
   // S8：字重 / uppercase / 渐变文字 / 硬偏移阴影 / 字距
   check('S8a', 'font-weight:800 ⇒ V4', 1, rules(`
 <style scoped>
@@ -1004,6 +1519,154 @@ h2 { font-weight: 700; }
     const reg = [{ file: 'src/a.vue', rule: 'V2-colored-side-stripe', reason: '测试' }]
     check('S10', '登记豁免生效', 1, isExempt(f, reg) ? 1 : 0)
   }
+
+  // ── 第 27 增量：从已退役的孤儿门移植进来的两条判据 ──
+  // S-V10 kicker：只在**紧邻标题上方**时判红（比孤儿门更窄）
+  check('S-V10a', '标题上方的 kicker ⇒ V10', 1, rules(`
+<template><p class="eyebrow">Section</p><h2>Title</h2></template>`).filter((r) => r === 'V10-kicker-above-heading').length)
+  check('S-V10b', 'kicker 不在标题上方 ⇒ 不判 V10（判据宁可窄）', 0, rules(`
+<template><p class="kicker">Badge</p><div>gap</div><h2>Title</h2></template>`).filter((r) => r === 'V10-kicker-above-heading').length)
+  check('S-V10c', '只有标题 ⇒ 不判 V10', 0, rules(`
+<template><h2>Title</h2></template>`).filter((r) => r === 'V10-kicker-above-heading').length)
+
+  // S-V11 装饰序号：只抓「把序号补零」这个动作
+  check('S-V11a', "padStart(2,'0') 生成序号 ⇒ V11", 1, rules(`
+<template><span>{{ String(index + 1).padStart(2, '0') }}</span></template>`).filter((r) => r === 'V11-section-number').length)
+  check('S-V11b', '不补零 ⇒ 不判 V11', 0, rules(`
+<template><span>{{ String(index + 1) }}</span></template>`).filter((r) => r === 'V11-section-number').length)
+  check('S-V11c', "时间补零 ⇒ 不判 V11（那是时间不是装饰序号）", 0, rules(`
+<template><span>{{ getHours().padStart(2, '0') }}</span></template>`).filter((r) => r === 'V11-section-number').length)
+  check('S-V11d', "注释里的 padStart ⇒ 不判 V11", 0, rules(`
+<template><span>x</span></template>
+<!-- 以前这里写过 String(index + 1).padStart(2, '0') -->`).filter((r) => r === 'V11-section-number').length)
+
+  // S-V3b 流程箭头 `↓`：非按钮位是流程连线示意 ⇒ 不判；按钮位仍是图标位 ⇒ 判
+  check('S-V3b1', '非按钮位的流程箭头 `↓` ⇒ 不判 V3（移动端漏斗比率箭头）', 0, rules(`
+<template><span class="fn__rate-arrow">↓</span></template>`).filter((r) => r === 'V3-glyph-as-icon').length)
+  check('S-V3b2', '按钮位的 `↓` ⇒ 仍判 V3（图标位）', 1, rules(`
+<template><button class="icon-btn">↓</button></template>`).filter((r) => r === 'V3-glyph-as-icon').length)
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ★ 第 27 增量：**孤儿门的样本并入**（`scripts/craft-floor-audit.mjs` 退役）
+  //
+  // ★ 为什么要搬：★ 那道孤儿门守着 27 条自证样本，其中 8 条是「emoji / 字形」
+  //   这一族的边界样本（红与绿各半）⇒ ★ 门退役 = **覆盖不许缩水**
+  //   ⇒ ⇒ 样本必须搬进唯一实现的自证，否则「退役」就变成了「丢覆盖」。
+  //
+  // ★★ 本轮对拍抓到孤儿门**两处「实现 < 它自己的文档」**（★ 这是它不能当
+  //   唯一实现的硬证据，不只是「更准」）：
+  //   ① `checkEyebrow` 的文档写「紧跟在 <h1>/<h2>/<h3> 之前的，就是标题上方
+  //      的小标签」，**代码却只有一条 class 正则** ⇒ ★ 从没查过相邻关系
+  //      ⇒ ★ 本实现的 V10 实现了它声明的意图（更准，也更窄）。
+  //   ② `isIconSlot` 的文档写「字形是唯一内容」，**代码用字面量字符串相等**
+  //      ⇒ ★ 插值形态永远不成立 ⇒ `<button>{{ ok ? '✓' : '✗' }}</button>`
+  //      被它判绿 ⇒ ★ 而那渲染出来就是一枚对勾 ⇒ **就是图标位**。
+  // ─────────────────────────────────────────────────────────────────────────
+  check('S-CF1', "孤儿门样本：class='ico' 的 emoji ⇒ V3（★ 孤儿门有、本实现原为漏判）", 1, rules(`
+<span class="ico">📖</span>`).filter((r) => r === 'V3-glyph-as-icon').length)
+  check('S-CF2', '孤儿门样本：拖拽手柄字形 ☰ ⇒ V3', 1, rules(`
+<div class="rule-drag-handle">☰</div>`).filter((r) => r === 'V3-glyph-as-icon').length)
+  check('S-CF3', "孤儿门样本：按钮位插值里的 ✓/✗ ⇒ V3（★ 裁决：孤儿门判绿是「字面量相等」的偶然）", 1, rules(`
+<button>{{ ok ? '✓' : '✗' }}</button>`).filter((r) => r === 'V3-glyph-as-icon').length)
+  check('S-CF4', '孤儿门样本：非图标位的插值 emoji ⇒ 不判 V3', 0, rules(`
+<span>{{ ok ? '✅' : '❌' }}</span>`).filter((r) => r === 'V3-glyph-as-icon').length)
+  check('S-CF5', '孤儿门样本：属性值里的 emoji ⇒ 不判 V3（脚本区与属性构成数据协议）', 0, rules(`
+<div :class="{ error: msg.startsWith('❌') }">x</div>`).filter((r) => r === 'V3-glyph-as-icon').length)
+  check('S-CF6', '孤儿门样本：class 含 icon 的 dingbat ⇒ V3', 1, rules(`
+<span class="alert-icon">⚠</span>`).filter((r) => r === 'V3-glyph-as-icon').length)
+  check('S-CF7', '孤儿门样本：关闭按钮的 ✕ ⇒ V3', 1, rules(`
+<button class="btn btn-ghost" @click="close">✕</button>`).filter((r) => r === 'V3-glyph-as-icon').length)
+  check('S-CF8', '孤儿门样本：dingbat 是句子的一部分 ⇒ 不判 V3', 0, rules(`
+<p class="error">⚠️ 数据聚合视图未就绪（…），本列表不可作为结论。</p>`).filter((r) => r === 'V3-glyph-as-icon').length)
+  check('S-CF9', '孤儿门样本：dingbat 在带文字的按钮上做前后缀 ⇒ 不判 V3', 0, rules(`
+<button class="btn btn-ghost">✕ 关闭</button>`).filter((r) => r === 'V3-glyph-as-icon').length)
+  check('S-CF10', '孤儿门样本：没有紧邻标题的 eyebrow ⇒ 不判 V10（★ V10 比孤儿门窄：它只查 class 名）', 0, rules(`
+<p class="eyebrow">CAPABILITIES</p>`).filter((r) => r === 'V10-kicker-above-heading').length)
+  check('S-CF11', '孤儿门样本：章节序号 padStart(2,\'0\') ⇒ V11', 1, rules(`
+<template><span>{{ String(index + 1).padStart(2, '0') }}</span></template>`).filter((r) => r === 'V11-section-number').length)
+  check('S-CF12', "孤儿门样本：时间补零 ⇒ 不判 V11", 0, rules(`
+<template><span>{{ String(d.getHours()).padStart(2, '0') }}</span></template>`).filter((r) => r === 'V11-section-number').length)
+  // ★ 计数口径钉死：★ 一个元素 = 一条（★ 不是「一个字形一条」）。
+  //   移动端真仓形态：`{{ open ? '▴' : '▾' }}` 两个字形在**同一个元素**里
+  //   ⇒ 第一版报 2 条 ⇒ 「违规 2 处」会让人以为要改两个地方。
+  check('S-CF13', '一个元素里两个字形 ⇒ 只报一条（★ 计数口径 = 元素数）', 1, scan(`
+<template><span class="login__site-caret">{{ open ? '▴' : '▾' }}</span></template>`)
+    .filter((f) => f.rule === 'V3-glyph-as-icon').length)
+  // ★ 聚合后的 text 字段要把两个字形都列出来（★ 报告要能指出「哪两个字形」）。
+  check('S-CF14', '聚合后 text 列出全部字形', 1, scan(`
+<template><span class="login__site-caret">{{ open ? '▴' : '▾' }}</span></template>`)
+    .filter((f) => f.rule === 'V3-glyph-as-icon' && f.text === '▴ ▾').length)
+
+  // ── 第 27 增量：V2 写法覆盖（★ 孤儿门那份能认 5 种，第 1 版只认 1 种）──
+  check('S-CF15', '注释里的 border-left-width ⇒ 不判 V2（★ 注释不是声明）', 0, rules(`
+<template></template>
+<style scoped>
+/* 行容器 —— 原来左沿是 3px 粗边（border-left-width: 3px），那是 craft-floor 硬禁的 */
+.cp__row { border: 1px solid transparent; border-radius: 7px; }
+</style>`).filter((r) => r === 'V2-colored-side-stripe').length)
+  check('S-CF16', "长写 border-left-width + 颜色在 border: ⇒ V2（★ 同形状的第 2 种写法）", 1, rules(`
+<template></template>
+<style scoped>
+.card { border: 1px solid var(--kx-danger); border-left-width: 3px; border-radius: 8px; }
+</style>`).filter((r) => r === 'V2-colored-side-stripe').length)
+  check('S-CF17', '颜色写在 modifier 规则里 ⇒ V2（★ 同形状的第 3 种写法）', 1, rules(`
+<template></template>
+<style scoped>
+.row { border: 1px solid transparent; border-left-width: 3px; border-radius: 7px; }
+.row.is-ok { border-color: var(--kx-success); }
+</style>`).filter((r) => r === 'V2-colored-side-stripe').length)
+  check('S-CF18', '伪元素画的窄色条 ⇒ V2（★ 同形状的第 4 种写法）', 1, rules(`
+<template></template>
+<style scoped>
+.card::before { content: ""; position: absolute; top: 0; left: 0; width: 3px; height: 100%; background: var(--kx-danger); }
+</style>`).filter((r) => r === 'V2-colored-side-stripe').length)
+  check('S-CF19', '透明占位的粗左边 ⇒ 不判 V2（★ 那是布局占位，不是状态色条）', 0, rules(`
+<template></template>
+<style scoped>
+.x { border: 1px solid transparent; border-left-width: 3px; border-radius: 8px; }
+</style>`).filter((r) => r === 'V2-colored-side-stripe').length)
+  check('S-CF20', '顶边粗边 ⇒ 不判 V2（★ craft-floor 原话只说 border-left / border-right）', 0, rules(`
+<template></template>
+<style scoped>
+.node { border: 1px solid var(--border); border-top: 3px solid var(--kx-danger); border-radius: 7px; }
+</style>`).filter((r) => r === 'V2-colored-side-stripe').length)
+  // ★ 第 27 增量回归：`scanElements` 必须跳过 `<style>` / `<script>` 整块
+  //   （★ 它们的正文不是模板文本 ⇒ 里面的字形（★ 例如 CSS 注释里写的 `▴`）
+  //   不该被 V3 / V10 当成模板里的字形）。
+  check('S-CF21', '<style> 块里的字形 ⇒ 不判 V3（★ 扫描作用域是模板文本）', 0, rules(`
+<template><span class="ok-text">ok</span></template>
+<style scoped>
+/* 这里原来写的是 ▴ */
+.probe { color: red; }
+</style>`).filter((r) => r === 'V3-glyph-as-icon').length)
+
+  // ── 第 36 增量：V11b —— **手写字面量**的装饰序号（★ V11 只认 padStart 生成的那种）──
+  check('S-CF22', "数据数组里手写的 icon: '01' / '02' ⇒ V11b 两条（★ 按出现次数计，与 V3b 同款口径）", 2, rules(`
+<script setup>
+const features = computed(() => [
+  { icon: '01', title: 'a' },
+  { icon: '02', title: 'b' },
+])
+</script>`).filter((r) => r === 'V11b-section-number-literal').length)
+  check('S-CF23', "非序号语义属性名（limit: '01'）⇒ 不判 V11b（★ 判据宁可窄不可宽）", 0, rules(`
+<script setup>
+const cfg = { limit: '01' }
+</script>`).filter((r) => r === 'V11b-section-number-literal').length)
+  check('S-CF24', "非零填充的 '60' ⇒ 不判 V11b（★ 只认 01..09 这个 craft-floor 形状）", 0, rules(`
+<script setup>
+const cfg = { icon: '60' }
+</script>`).filter((r) => r === 'V11b-section-number-literal').length)
+  check('S-CF25', "注释里的 icon: '01' ⇒ 不判 V11b（★ 注释不是声明）", 0, rules(`
+<script setup>
+// icon: '01' —— 这是注释
+const cfg = { name: 'x' }
+</script>`).filter((r) => r === 'V11b-section-number-literal').length)
+  check('S-CF26', "padStart 生成的那种仍归 V11（★ V11b 不重复报）", 0, rules(`
+<template><span>{{ String(index + 1).padStart(2, '0') }}</span></template>`).filter((r) => r === 'V11b-section-number-literal').length)
+  check('S-CF27', 'V11b 的 selector 报的是属性名（★ 报告要能指出「哪个属性」）', 1, scan(`
+<script setup>
+const features = [{ icon: '01' }]
+</script>`).filter((f) => f.rule === 'V11b-section-number-literal' && f.selector === 'icon').length)
 
   const failed: string[] = []
   let passed = 0

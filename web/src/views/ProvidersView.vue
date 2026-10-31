@@ -1028,7 +1028,7 @@ onUnmounted(() => {
             @keydown.enter="router.push('/providers/' + p.id)"
           >
             <td>
-              <div style="font-weight:500;display:flex;align-items:center;gap:6px;flex-wrap:wrap;word-break:break-word;white-space:normal">
+              <div style="font-weight:500;display:flex;align-items:center;gap:4px;flex-wrap:wrap;word-break:break-word;white-space:normal">
                 <span>{{ p.display_name }}</span>
                 <!-- 2026-07-03 v738: surface manual_disabled at a glance so
                      the operator cannot mistake a disabled vendor for an
@@ -1081,7 +1081,7 @@ onUnmounted(() => {
             </td>
             <td>
               <template v-if="p.quality">
-                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
                   <span style="font-weight:600">{{ fmtQuality(p.quality.quality_score) }}</span>
                   <span
                     class="badge"
@@ -1147,7 +1147,7 @@ onUnmounted(() => {
         <div v-if="addErr" class="alert alert-danger">{{ addErr }}</div>
 
         <!-- Toggle custom mode -->
-        <div class="form-group" style="display:flex;align-items:center;gap:10px">
+        <div class="form-group" style="display:flex;align-items:center;gap:8px">
           <input id="customToggle" type="checkbox" v-model="isCustom" style="width:auto" />
           <label for="customToggle" style="margin:0;cursor:pointer">{{ pm('create.customToggle') }}</label>
         </div>
@@ -1210,7 +1210,7 @@ onUnmounted(() => {
           <div v-if="isCustom && selectedCat" style="font-size:11px;color:var(--muted);margin-top:4px">
             {{ pm('create.probeHintCatalogMatch') }}{{ selectedCat.base_url_template }}
           </div>
-          <div v-if="addProbeResult" style="margin-top:6px;font-size:12px">
+          <div v-if="addProbeResult" style="margin-top:4px;font-size:12px">
             <template v-if="addProbeResult.reachable">
               <span style="color:var(--success)">{{ pm('create.probeOk') }}</span>
               <span v-if="addProbeResult.protocol" class="probe-detail probe-muted">
@@ -1284,7 +1284,7 @@ onUnmounted(() => {
               :title="pm('edit.probeTooltip')"
             >{{ editProbing ? pm('edit.probeBtnProbing') : pm('edit.probeBtn') }}</button>
           </div>
-          <div v-if="editProbeResult" style="margin-top:6px;font-size:12px">
+          <div v-if="editProbeResult" style="margin-top:4px;font-size:12px">
             <template v-if="editProbeResult.reachable">
               <span style="color:var(--success)">{{ pm('edit.probeOk') }}</span>
               <span v-if="editProbeResult.protocol" class="probe-detail probe-muted">
@@ -1420,12 +1420,12 @@ onUnmounted(() => {
                   <div class="muted" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
                     <span>{{ pm('credential.row.balanceLabel') }}</span>
                     <span style="position:relative;display:inline-flex;align-items:center">
-                      <span v-if="balanceCurrencySymbol(c) !== '$'" style="position:absolute;left:4px;font-size:10px;color:var(--muted);pointer-events:none">{{ balanceCurrencySymbol(c) }}</span>
+                      <span v-if="balanceCurrencySymbol(c) !== '$'" style="position:absolute;left:4px;font-size:11px;color:var(--muted);pointer-events:none">{{ balanceCurrencySymbol(c) }}</span>
                       <input v-model.number="c.balance_usd" type="number" min="0" step="100" class="compact-input number" style="width:80px;display:inline-block" placeholder="—" />
                     </span>
                     <button
                       class="btn btn-ghost btn-sm"
-                      style="padding:2px 6px"
+                      style="padding:2px 4px"
                       :disabled="refreshingBalance[c.id]"
                       :title="pm('credential.row.balanceRefreshTooltip')"
                       @click.stop="refreshBalance(manageProvider, c)"
@@ -1681,14 +1681,14 @@ table th {
 }
 .filter-input {
   width: 100%;
-  padding: 6px 10px 6px 30px;
+  padding: 4px 8px 4px 32px;
   font-size: 12px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s var(--kx-motion-ease-out);
 }
 .filter-input:focus {
   border-color: var(--accent);
@@ -1713,14 +1713,14 @@ table th {
   flex-wrap: wrap;
 }
 .filter-tab {
-  padding: 6px 14px;
+  padding: 4px 12px;
   font-size: 13px;
   border: none;
   border-radius: 4px;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 .filter-tab:hover {
@@ -1741,7 +1741,7 @@ table th {
 .filter-tab-label {
   font-size: 12px;
   color: var(--muted);
-  padding: 6px 8px 6px 4px;
+  padding: 4px 8px 4px 4px;
   white-space: nowrap;
 }
 .filter-sort {
@@ -1753,7 +1753,7 @@ table th {
   /* width:auto 覆盖全局 select width:100%，避免下拉占满整行 */
   width: auto;
   font-size: 12px;
-  padding: 5px 8px;
+  padding: 4px 8px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--card);
@@ -1799,7 +1799,7 @@ table th {
   width: 100%;
   min-width: 0;
   margin-bottom: 4px;
-  padding: 4px 6px;
+  padding: 4px 4px;
   font-size: 12px;
   background: var(--card);
   border: 1px solid var(--border);
@@ -1833,7 +1833,7 @@ table th {
   color: var(--warning);
 }
 .diag-section h4 {
-  margin: 0 0 6px 0;
+  margin: 0 0 4px 0;
   font-size: 13px;
   color: var(--muted);
   font-weight: 600;
@@ -1866,7 +1866,7 @@ table th {
   display: flex;
   gap: 16px;
   flex-wrap: wrap;
-  padding: 10px 16px;
+  padding: 8px 16px;
   margin-bottom: 16px;
   background: var(--card);
   border: 1px solid var(--border);
@@ -1877,7 +1877,7 @@ table th {
 .bg-status-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 .bg-dot {
   width: 8px;
@@ -1937,7 +1937,7 @@ table th {
 .diag-model-chip {
   margin-inline-end: 6px;
   display: inline-block;
-  padding: 2px 6px;
+  padding: 2px 4px;
   background: rgba(0, 255, 128, 0.1);
   border-radius: 3px;
 }

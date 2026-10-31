@@ -42,6 +42,7 @@ func TestModelsRoutableQueryIsUsedAndShaped(t *testing.T) {
 	rows := pgxmock.NewRows([]string{"canonical_name", "family", "modality", "context_window"}).
 		AddRow("grok-4.6", "grok", "text", nil)
 	mock.ExpectQuery(`credential_model_bindings cmb`).
+		WithArgs(true).
 		WillReturnRows(rows)
 
 	h := NewModelsHandler()

@@ -194,16 +194,16 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
 .session-header { padding: 12px 16px; cursor: pointer; outline: none; }
 .session-header:hover, .turn-row:hover { background: var(--bg-hover); }
 .session-header:focus-visible, .turn-row:focus-visible, .link:focus-visible, .btn-mini:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.session-head-line, .session-context, .session-meta, .badges, .meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.session-head-line, .session-context, .session-meta, .badges, .meta { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .sel { margin: 0; }
-.caret { display: inline-block; transition: transform .15s; color: var(--text-muted); }
+.caret { display: inline-block; transition: transform .15s var(--kx-motion-ease-out); color: var(--text-muted); }
 .caret.open { transform: rotate(90deg); }
-.status-badge, .verdict, .badge, .ctx-badge, .mini-badge, .ops-chip { padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+.status-badge, .verdict, .badge, .ctx-badge, .mini-badge, .ops-chip { padding: 2px 4px; border-radius: 4px; font-size: 11px; }
 .status-badge { font-weight: 600; }
 .status-badge[data-state="active"] { background: var(--success-soft); color: var(--success); }
 .status-badge[data-state="closed"] { background: var(--primary-soft); color: var(--accent); }
 .status-badge[data-state="deleted"] { background: var(--danger-soft); color: var(--danger); }
-.session-title { font-size: 15px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 42%; }
+.session-title { font-size: 16px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 42%; }
 .session-topic { color: var(--accent); background: var(--primary-soft); }
 .session-summary { margin: 8px 0; color: var(--text-secondary); line-height: 1.5; }
 .session-summary.clamped { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -218,19 +218,19 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
 .session-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
 .link { color: var(--accent); background: transparent; border: 0; padding: 0; }
 .link.tiny { font-size: 12px; margin-left: 8px; }
-.ops-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: var(--surface-secondary); }
+.ops-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; padding: 8px 8px; border-radius: 6px; background: var(--surface-secondary); }
 .ops-label { font-size: 12px; color: var(--text-muted); font-weight: 600; }
 .ops-item { font-size: 12px; color: var(--text-muted); }
 .ops-item.on { color: var(--success); }
 .ops-msg { font-size: 12px; color: var(--accent); }
-.btn-mini { height: 26px; padding: 0 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface-primary); color: var(--text-primary); cursor: pointer; font-size: 12px; }
+.btn-mini { height: 26px; padding: 0 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface-primary); color: var(--text-primary); cursor: pointer; font-size: 12px; }
 .btn-mini.accent { background: var(--accent); border-color: var(--accent); color: white; }
 .btn-mini:disabled { opacity: .55; cursor: not-allowed; }
 .turns-block { border-top: 1px solid var(--border); background: var(--surface-secondary); }
-.turn-row { display: grid; grid-template-columns: 1fr 1fr; padding: 10px 16px; cursor: pointer; background: var(--surface-primary); border-bottom: 1px solid var(--border); }
+.turn-row { display: grid; grid-template-columns: 1fr 1fr; padding: 8px 16px; cursor: pointer; background: var(--surface-primary); border-bottom: 1px solid var(--border); }
 .col { padding: 0 8px; }
 .col + .col { border-left: 1px dashed var(--border); }
-.preview { margin-bottom: 6px; color: var(--text-secondary); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; line-height: 1.4; }
+.preview { margin-bottom: 4px; color: var(--text-secondary); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; line-height: 1.4; }
 .badge { background: var(--surface-secondary); color: var(--text-secondary); }
 .badge.warn, .mini-badge.warn { background: var(--warning-soft); color: var(--warning); }
 .badge.error { background: var(--danger-soft); color: var(--danger); }
@@ -241,7 +241,7 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
 .tag-warn { background: var(--warning-soft); color: var(--warning); }
 .tag-block { background: var(--danger-soft); color: var(--danger); }
 .tag-skip { background: var(--surface-secondary); color: var(--text-muted); }
-.child-ops { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.child-ops { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .ops-chip { background: var(--primary-soft); color: var(--accent); }
 .ops-hint, .empty { text-align: center; color: var(--text-secondary); padding: 12px 16px; font-size: 13px; }
 .child-ops-error {
@@ -250,9 +250,15 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
   background: color-mix(in srgb, var(--warning) 8%, transparent);
 }
 @media (max-width: 768px) {
-  .turn-row { grid-template-columns: 1fr; gap: 10px; }
-  .col + .col { padding-top: 10px; border-left: 0; border-top: 1px dashed var(--border); }
+  .turn-row { grid-template-columns: 1fr; gap: 8px; }
+  .col + .col { padding-top: 8px; border-left: 0; border-top: 1px dashed var(--border); }
   .session-title { max-width: 100%; }
-  .session-foot { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .session-foot { flex-direction: column; align-items: flex-start; gap: 4px; }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .caret { transition: none; }
 }
 </style>

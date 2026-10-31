@@ -117,8 +117,17 @@ func TestRefreshCallSites_PassTheRightFamilyTimeout(t *testing.T) {
 	}
 
 	sessionBody := mvFuncBodyForSession(t, src, "func (r *MaterializedViewRefresher) refreshSessionViews(")
-	if !strings.Contains(sessionBody, "r.refreshView(ctx, view, true, sessionViewsStatementTimeout)") {
+	// ★ 2026-10-29（R175）：refreshView 的会话画像扩成三轴（statement_timeout /
+	//   work_mem / jit）⇒ 调用点的实参个数变了 ⇒ 判据从「整串带右括号」
+	//   放宽为「实参序列以 sessionViewsStatementTimeout 开头」。
+	//   意图不变（意图是「session 族传自己的超时」），且仍然排除了
+	//   `r.refreshView(ctx, view, true)` 这种不带任何分族值的裸调用。
+	if !strings.Contains(sessionBody, "r.refreshView(ctx, view, true, sessionViewsStatementTimeout,") {
 		t.Fatal("refreshSessionViews 没有给 session 族传 sessionViewsStatementTimeout")
+	}
+	// 反向判据：不能把 routing 族的超时传给 session 族。
+	if strings.Contains(sessionBody, "mvRefreshStatementTimeout") {
+		t.Fatal("refreshSessionViews 把 routing 族的语句上限传给了 session 族")
 	}
 }
 

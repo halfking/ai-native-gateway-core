@@ -95,7 +95,7 @@ function onSizeChange(e: Event) {
 .pagination-info {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   color: var(--muted);
   font-size: 12px;
   flex-wrap: nowrap;
@@ -113,7 +113,7 @@ function onSizeChange(e: Event) {
   width: auto;
   min-width: 0;
   max-width: 96px;
-  padding: 2px 6px;
+  padding: 2px 4px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;

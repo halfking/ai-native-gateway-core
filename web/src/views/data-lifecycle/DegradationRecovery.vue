@@ -111,30 +111,30 @@ defineExpose({ load })
 </script>
 
 <style scoped>
-.degradation-recovery { padding: 20px; }
+.degradation-recovery { padding: 16px; }
 .card {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 18px;
+  padding: 16px;
   margin-bottom: 16px;
   color: var(--text);
 }
 .warning-card { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
-h3 { margin: 0 0 8px; font-size: 15px; }
+h3 { margin: 0 0 8px; font-size: 16px; }
 p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
-.status { padding: 5px 10px; border-radius: 6px; font-size: 12px; white-space: nowrap; }
+.status { padding: 4px 8px; border-radius: 6px; font-size: 12px; white-space: nowrap; }
 .status.available { color: var(--success); background: var(--success-soft); }
 .status.degraded { color: var(--warning); background: var(--warning-soft); }
 .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-.grid div { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
+.grid div { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
 .grid strong { color: var(--text); font-size: 16px; }
 .actions, .file-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.btn { border: 1px solid var(--border); border-radius: 6px; padding: 7px 12px; color: var(--text); background: var(--bg-subtle); cursor: pointer; }
+.btn { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; color: var(--text); background: var(--bg-subtle); cursor: pointer; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-primary); }
 .btn-danger { background: var(--danger); border-color: var(--danger); color: var(--on-primary); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
-.btn-sm { padding: 5px 9px; font-size: 12px; }
+.btn-sm { padding: 4px 8px; font-size: 12px; }
 .hint, .empty { color: var(--muted); margin-bottom: 12px; }
 .file-row {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -143,7 +143,7 @@ p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .file-row code { display: block; color: var(--accent-h); }
 .file-row small { display: block; color: var(--muted); margin-top: 4px; }
 .progress { height: 8px; background: var(--bg-subtle); border-radius: 4px; overflow: hidden; margin: 12px 0; }
-.progress div { height: 100%; background: var(--accent); transition: width .2s; }
+.progress div { height: 100%; background: var(--accent); transition: width .2s var(--kx-motion-ease-out); }
 .error { color: var(--danger); }
 @media (max-width: 768px) { .grid { grid-template-columns: repeat(2, 1fr); } .file-row { align-items: flex-start; flex-direction: column; } }
 </style>

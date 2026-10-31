@@ -58,8 +58,12 @@ func TestExtractGeminiPath(t *testing.T) {
 		{"/v1beta/models/gemini-2.5-pro:generateContent", "gemini-2.5-pro", "generateContent", true},
 		{"/v1beta/models/gemini-2.0-flash:streamGenerateContent", "gemini-2.0-flash", "streamGenerateContent", true},
 		{"/v1/models/gemini-pro:generateContent", "gemini-pro", "generateContent", true},
+		// The countTokens action is served (2026-10-29 countTokens round):
+		// a native Gemini client probes the prompt size before generating.
+		{"/v1beta/models/gemini-pro:countTokens", "gemini-pro", "countTokens", true},
+		{"/v1/models/gemini-pro:countTokens", "gemini-pro", "countTokens", true},
 		// Wrong action
-		{"/v1beta/models/gemini-pro:countTokens", "", "", false},
+		{"/v1beta/models/gemini-pro:embedContent", "", "", false},
 		// Missing action
 		{"/v1beta/models/gemini-pro", "", "", false},
 		// Wrong path
@@ -569,5 +573,178 @@ func TestGeminiStreamWriter_ReemitsOpenAIErrorFrameAsGeminiTerminal(t *testing.T
 	}
 	if strings.Contains(w.body.String(), "[DONE]") {
 		t.Fatalf("OpenAI DONE sentinel leaked after terminal: %s", w.body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 2026-10-29：厂方缺省流式形态（alt=sse 缺省 ⇒ 分块 JSON 数组）
+//
+// 官方 google-genai SDK（Python 2.33.0 / JS 1.7.0）的流式路径**无条件**拼
+// "?alt=sse"，所以数组形态只服务「按厂方文档缺省行为写」的手写原生客户端。
+// 此前网关对这类请求回 SSE（data: 帧），JSON 数组解析器必炸。
+// ---------------------------------------------------------------------------
+
+func TestGeminiWantsSSE_AltParameterSelectsFraming(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse", true},
+		{"/v1beta/models/gemini-2.5-flash:streamGenerateContent", false},
+		{"/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=json", false},
+		{"/v1beta/models/gemini-2.5-flash:streamGenerateContent?key=k", false},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodPost, tc.url, nil)
+		if got := geminiWantsSSE(req); got != tc.want {
+			t.Errorf("geminiWantsSSE(%q) = %v, want %v", tc.url, got, tc.want)
+		}
+	}
+	if geminiWantsSSE(nil) {
+		t.Error("geminiWantsSSE(nil) = true, want false")
+	}
+}
+
+// parseGeminiArrayBody asserts the body is exactly a JSON array of objects
+// and returns the decoded elements.
+func parseGeminiArrayBody(t *testing.T, body string) []map[string]any {
+	t.Helper()
+	if strings.Contains(body, "data: ") {
+		t.Fatalf("array-mode body leaked SSE framing: %s", body)
+	}
+	var arr []map[string]any
+	if err := json.Unmarshal([]byte(body), &arr); err != nil {
+		t.Fatalf("body is not a JSON array: %v\n%s", err, body)
+	}
+	return arr
+}
+
+func TestGeminiJSONArrayStreamWriter_ConvertsChunksAndClosesArray(t *testing.T) {
+	w := &geminiFlushWriter{header: make(http.Header)}
+	gw := newGeminiJSONArrayStreamWriter(w)
+
+	first := `data: {"id":"chunk-1","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"Hi"}}]}` + "\n\n"
+	second := `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n"
+	if _, err := gw.Write([]byte(first[:len(first)/2])); err != nil {
+		t.Fatalf("partial write: %v", err)
+	}
+	if w.body.Len() != 0 {
+		t.Fatal("partial SSE line was written before its newline")
+	}
+	if _, err := gw.Write([]byte(first[len(first)/2:])); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if _, err := gw.Write([]byte(second)); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	// Heartbeat comments and OpenAI [DONE] sentinels must not reach the array.
+	if _, err := gw.Write([]byte(": keep-alive\n\ndata: [DONE]\n\n")); err != nil {
+		t.Fatalf("transport write: %v", err)
+	}
+	if err := gw.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	body := w.body.String()
+	if !strings.HasPrefix(body, "[") || !strings.HasSuffix(body, "]") {
+		t.Fatalf("array body not bracketed: %q", body)
+	}
+	if got := strings.Count(body, ": keep-alive"); got != 0 {
+		t.Fatalf("array body leaked %d SSE comments", got)
+	}
+	elements := parseGeminiArrayBody(t, body)
+	if len(elements) != 2 {
+		t.Fatalf("expected 2 array elements, got %d: %s", len(elements), body)
+	}
+	cand0, _ := elements[0]["candidates"].([]any)
+	if len(cand0) == 0 {
+		t.Fatalf("element 0 lost its candidate: %s", body)
+	}
+	if _, ok := elements[1]["candidates"].([]any); !ok {
+		t.Fatalf("element 1 lost its candidate: %s", body)
+	}
+	if !gw.done {
+		t.Fatal("array writer did not observe the [DONE] sentinel")
+	}
+}
+
+func TestGeminiJSONArrayStreamWriter_ErrorFrameFailsClosedInsideArray(t *testing.T) {
+	w := &geminiFlushWriter{header: make(http.Header)}
+	gw := newGeminiJSONArrayStreamWriter(w)
+	gw.WriteHeader(http.StatusOK)
+
+	if _, err := gw.Write([]byte("data: {\"error\":{\"type\":\"api_error\",\"message\":\"blocked\"}}\n\n")); err != nil {
+		t.Fatalf("error frame write: %v", err)
+	}
+	// Terminal: everything after the error is swallowed.
+	if _, err := gw.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n")); err != nil {
+		t.Fatalf("post-error write: %v", err)
+	}
+	if err := gw.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	body := w.body.String()
+	if !strings.HasPrefix(body, "[") || !strings.HasSuffix(body, "]") {
+		t.Fatalf("error array not bracketed: %q", body)
+	}
+	elements := parseGeminiArrayBody(t, body)
+	if len(elements) != 1 {
+		t.Fatalf("expected exactly the error element, got %d: %s", len(elements), body)
+	}
+	errObj, ok := elements[0]["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("element 0 is not an error object: %s", body)
+	}
+	if errObj["message"] != "blocked" {
+		t.Fatalf("error message lost: %v", errObj)
+	}
+	if strings.Contains(body, "late") {
+		t.Fatalf("post-error chunk leaked into the array: %s", body)
+	}
+}
+
+func TestGeminiJSONArrayStreamWriter_ZeroChunksWritesEmptyArray(t *testing.T) {
+	w := &geminiFlushWriter{header: make(http.Header)}
+	gw := newGeminiJSONArrayStreamWriter(w)
+	if err := gw.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if got := w.body.String(); got != "[]" {
+		t.Fatalf("zero-chunk array body = %q, want []", got)
+	}
+}
+
+func TestGeminiJSONArrayStreamWriter_NonSSEJSONDiagnosticBecomesElement(t *testing.T) {
+	w := &geminiFlushWriter{header: make(http.Header)}
+	gw := newGeminiJSONArrayStreamWriter(w)
+	// ChatHandler non-SSE error after stream setup (no "data: " prefix).
+	if _, err := gw.Write([]byte("{\"error\":{\"message\":\"upstream exploded\",\"code\":502}}\n")); err != nil {
+		t.Fatalf("diagnostic write: %v", err)
+	}
+	if err := gw.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	elements := parseGeminiArrayBody(t, w.body.String())
+	if len(elements) != 1 {
+		t.Fatalf("expected the diagnostic as the only element, got %d: %s", len(elements), w.body.String())
+	}
+}
+
+func TestGeminiJSONArrayStreamWriter_UnparseableDiagnosticFailsClosed(t *testing.T) {
+	w := &geminiFlushWriter{header: make(http.Header)}
+	gw := newGeminiJSONArrayStreamWriter(w)
+	if _, err := gw.Write([]byte("upstream exploded: not json at all\n")); err != nil {
+		t.Fatalf("diagnostic write: %v", err)
+	}
+	if err := gw.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	elements := parseGeminiArrayBody(t, w.body.String())
+	if len(elements) != 1 {
+		t.Fatalf("expected a single fail-closed error element, got %d: %s", len(elements), w.body.String())
+	}
+	if _, ok := elements[0]["error"]; !ok {
+		t.Fatalf("fail-closed element is not an error object: %s", w.body.String())
 	}
 }

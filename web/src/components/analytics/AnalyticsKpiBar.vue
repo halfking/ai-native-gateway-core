@@ -55,13 +55,13 @@ function topEntry(d: Record<string, number>): string {
 .kpi-bar {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 6px;
+  gap: 4px;
 }
 .kpi-chip {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 6px 8px;
+  padding: 4px 8px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -74,7 +74,7 @@ function topEntry(d: Record<string, number>): string {
   font-style: italic;
 }
 .kpi-label {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--muted);
   letter-spacing: 0.01em;
 }

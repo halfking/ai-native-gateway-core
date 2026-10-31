@@ -202,13 +202,13 @@ function errorText(e: SessionObsApiError | null): string {
   border: 1px solid var(--kx-border);
   border-radius: 8px;
   padding: 12px 16px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .osp-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 .osp-title {
   font-weight: 600;
@@ -221,7 +221,7 @@ function errorText(e: SessionObsApiError | null): string {
 .osp-refresh {
   margin-left: auto;
   font-size: 12px;
-  padding: 3px 10px;
+  padding: 3px 8px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   background: var(--kx-surface);
@@ -259,7 +259,7 @@ function errorText(e: SessionObsApiError | null): string {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border: 1px solid var(--kx-danger);
   border-radius: 6px;
   background: var(--kx-danger-soft);
@@ -271,7 +271,7 @@ function errorText(e: SessionObsApiError | null): string {
 }
 .osp-retry {
   font-size: 12px;
-  padding: 3px 10px;
+  padding: 3px 8px;
   border: 1px solid var(--kx-danger);
   border-radius: 6px;
   background: var(--kx-surface);
@@ -298,7 +298,7 @@ function errorText(e: SessionObsApiError | null): string {
   gap: 8px;
   align-items: center;
   width: 100%;
-  padding: 8px 6px;
+  padding: 8px 4px;
   border: 0;
   border-bottom: 1px solid var(--kx-border);
   background: var(--kx-surface);
@@ -349,9 +349,9 @@ button.osp-row:hover {
   color: var(--kx-muted);
 }
 .osp-stale-badge {
-  margin-left: 6px;
+  margin-left: 4px;
   font-size: 11px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 10px;
   background: var(--kx-warning-soft);
   color: var(--kx-warning);
@@ -359,7 +359,7 @@ button.osp-row:hover {
 .osp-more {
   display: flex;
   justify-content: center;
-  padding: 10px 0 2px;
+  padding: 8px 0 2px;
 }
 .osp-more-btn {
   font-size: 13px;

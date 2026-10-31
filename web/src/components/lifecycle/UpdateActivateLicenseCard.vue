@@ -125,9 +125,9 @@ const heartbeatDisplay = computed(() => {
 .status-line {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 .status-dot {
   width: 10px;
@@ -139,12 +139,12 @@ const heartbeatDisplay = computed(() => {
 .status-dot--success { background: var(--kx-success); }
 .status-dot--warning { background: var(--kx-warning); }
 .status-dot--idle { background: var(--muted); }
-.status-label { font-size: 15px; }
+.status-label { font-size: 12px; }
 
 /* .chip / .chip--tier 从全局 styles/pill-chip.css 继承（P1-8）。
  * 注意：全局 .chip 默认带 border: 1px solid var(--kx-border)，本组件原风格
  * 是 "纯背景无边框"，补一条 scoped 覆盖保证视觉一致。 */
-.chip { border: 0; padding: 2px 10px; }
+.chip { border: 0; padding: 2px 8px; }
 
 .ml { margin-left: 4px; }
 
@@ -152,14 +152,14 @@ const heartbeatDisplay = computed(() => {
   margin: 0;
   display: grid;
   grid-template-columns: 1fr;
-  gap: 10px;
+  gap: 8px;
 }
 .meta-row {
   display: grid;
   grid-template-columns: 110px 1fr;
   gap: 12px;
   align-items: baseline;
-  padding: 6px 0;
+  padding: 4px 0;
   border-bottom: 1px dashed color-mix(in srgb, var(--kx-border) 60%, transparent);
 }
 .meta-row:last-child { border-bottom: none; }
@@ -176,15 +176,15 @@ const heartbeatDisplay = computed(() => {
 }
 .meta-row code {
   font-size: 12px;
-  padding: 2px 6px;
+  padding: 2px 4px;
   background: var(--kx-surface-soft);
   border-radius: 4px;
 }
 .muted { color: var(--muted); }
 
 .hint {
-  margin: 14px 0 0;
-  padding: 10px 12px;
+  margin: 12px 0 0;
+  padding: 8px 12px;
   background: var(--kx-warning-soft);
   border: 1px solid var(--kx-warning);
   border-radius: 4px;

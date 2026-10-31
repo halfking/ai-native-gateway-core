@@ -207,15 +207,15 @@ onUnmounted(() => {
 .memora-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 10px;
+  gap: 4px;
+  padding: 4px 8px;
   border-radius: 99px;
   border: 1px solid var(--border);
   background: var(--bg);
   font-size: 12px;
   color: var(--muted);
   cursor: pointer;
-  transition: border-color .15s, color .15s;
+  transition: border-color .15s var(--kx-motion-ease-out), color .15s var(--kx-motion-ease-out);
 }
 .memora-btn:hover {
   border-color: var(--accent);
@@ -261,7 +261,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .panel-title {
   font-size: 12px;
@@ -269,8 +269,8 @@ onUnmounted(() => {
   color: var(--text);
 }
 .panel-badge {
-  font-size: 10px;
-  padding: 1px 6px;
+  font-size: 11px;
+  padding: 1px 4px;
   border-radius: 99px;
   border: 1px solid var(--border);
   color: var(--muted);
@@ -293,20 +293,20 @@ onUnmounted(() => {
 .panel-meta {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   margin: 0 0 12px;
   font-size: 11px;
 }
 .meta-row {
   display: grid;
   grid-template-columns: 72px 1fr;
-  gap: 6px;
+  gap: 4px;
   align-items: start;
 }
 .meta-row dt { margin: 0; color: var(--muted); }
 .meta-row dd { margin: 0; color: var(--text); word-break: break-all; }
 .meta-row code {
-  font-size: 10px;
+  font-size: 11px;
   background: var(--bg);
   padding: 1px 4px;
   border-radius: 4px;
@@ -316,14 +316,14 @@ onUnmounted(() => {
 .meta-time {
   display: block;
   margin-top: 2px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
 
 .panel-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
 }
 
 /* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──

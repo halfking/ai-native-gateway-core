@@ -26,6 +26,7 @@ export default {
     autoControlledTooltip: 'Controlada por la sonda automática (broken_confirmed, etc.). Puede desactivarla manualmente (forzarla a offline).',
     rowSelectsMonitor: 'Seleccione una fila para ver el monitor de la derecha.',
     selectModelRow: 'Seleccione una fila de modelo de la izquierda para ver los detalles.',
+    sourceSessionTurns: 'Registro de sesión',
   },
   chart: {
     allHealthy: 'Todas sanas',

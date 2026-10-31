@@ -63,7 +63,7 @@ function val(k: string): number {
   font-size: 11px;
 }
 .compact .dim-row {
-  font-size: 9px;
+  font-size: 11px;
   grid-template-columns: 40px 1fr 20px;
   gap: 3px;
 }
@@ -84,13 +84,13 @@ function val(k: string): number {
 .dim-bar-fill {
   height: 100%;
   border-radius: 3px;
-  transition: width 0.3s ease;
+  transition: width 0.3s var(--kx-motion-ease-out);
   min-width: 2px;
 }
 .dim-value {
   color: var(--text);
   font-variant-numeric: tabular-nums;
   text-align: right;
-  font-size: 10px;
+  font-size: 11px;
 }
 </style>

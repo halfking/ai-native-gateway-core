@@ -360,7 +360,7 @@ watch(() => props.visible, (visible) => {
   align-items: center;
   justify-content: center;
   z-index: 9999;
-  padding: 20px;
+  padding: 16px;
 }
 
 .modal-content {
@@ -378,13 +378,13 @@ watch(() => props.visible, (visible) => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px;
+  padding: 16px 16px;
   border-bottom: 1px solid var(--border);
 }
 
 .modal-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text);
 }
@@ -402,7 +402,7 @@ watch(() => props.visible, (visible) => {
   align-items: center;
   justify-content: center;
   border-radius: 4px;
-  transition: all 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out), color 0.2s var(--kx-motion-ease-out);
 }
 
 .modal-close:hover {
@@ -413,14 +413,14 @@ watch(() => props.visible, (visible) => {
 .modal-body {
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
+  padding: 16px;
 }
 
 .modal-footer {
   display: flex;
   gap: 12px;
   justify-content: flex-end;
-  padding: 16px 20px;
+  padding: 16px 16px;
   border-top: 1px solid var(--border);
 }
 
@@ -428,7 +428,7 @@ watch(() => props.visible, (visible) => {
 .diag-context {
   display: flex;
   gap: 16px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   padding: 12px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
@@ -437,7 +437,7 @@ watch(() => props.visible, (visible) => {
 
 .diag-context-item {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   font-size: 13px;
 }
 
@@ -480,7 +480,7 @@ watch(() => props.visible, (visible) => {
 .diag-data {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
 }
 
 .diag-section {
@@ -569,7 +569,7 @@ watch(() => props.visible, (visible) => {
 }
 
 .diag-failure-item {
-  padding: 10px;
+  padding: 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -579,7 +579,7 @@ watch(() => props.visible, (visible) => {
 .diag-failure-header {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .diag-failure-model {
@@ -636,7 +636,7 @@ watch(() => props.visible, (visible) => {
   border: none;
   border-radius: 6px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: opacity 0.2s var(--kx-motion-ease-out), background 0.2s var(--kx-motion-ease-out), color 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out), box-shadow 0.2s var(--kx-motion-ease-out), transform 0.2s var(--kx-motion-ease-out), outline-offset 0.2s var(--kx-motion-ease-out);
 }
 
 .btn-primary {
@@ -668,4 +668,12 @@ watch(() => props.visible, (visible) => {
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .status-ok > svg, .status-error > svg { width: 12px; height: 12px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition-property: opacity, background, color, border-color, box-shadow, outline-offset;
+  }
+}
 </style>

@@ -20,20 +20,28 @@
 # ★ 后端有自适应验证码闸门（admin/auth_captcha.go:474）：连续登录失败达阈值后
 #   强制要求 captcha，而登录弹窗当前没有渲染验证码输入框 ⇒ 那种状态下
 #   本 flow 必然失败。先把失败计数清掉（或改用 README 里的 cookie 注入方案）。
-appId: ${BASE_URL}
+url: ${BASE_URL}
 ---
 - openLink: ${BASE_URL}/login
 - extendedWaitUntil:
     visible:
       id: "login-modal-title"
     timeout: 20000
+# ★ 必须先 eraseText：登录框的**用户名默认预填 "admin"**
+#   （web/src/components/LoginModal.vue:42 `const username = ref('admin')`），
+#   而 Maestro 的 inputText 是**追加**而不是替换 ⇒ 不清空就会得到
+#   "adminadmin" ⇒ 后端回 Invalid credentials ⇒ 弹窗不关 ⇒ flow 失败。
+#   ★ 实测证据（2026-10-28 R176）：不清空时页面里的用户名框内容是
+#   "adminadmin"，后端回 401 "Invalid credentials"。
 - tapOn:
     id: "login-username"
+- eraseText: 20
 - inputText:
     id: "login-username"
     text: "${ADMIN_USER}"
 - tapOn:
     id: "login-password"
+- eraseText: 40
 - inputText:
     id: "login-password"
     text: "${ADMIN_PASSWORD}"

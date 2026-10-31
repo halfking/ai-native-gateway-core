@@ -101,7 +101,30 @@ func TestR75LedgerDriftToolSelfTest(t *testing.T) {
 	if _, err := os.Stat(script); err != nil {
 		t.Fatalf("漂移报告器不存在：%s", r75DriftTool)
 	}
-	cmd := exec.Command("python3", script, "--self-test")
+	// python3 在 Linux 是唯一名；Windows 上有两层坑：
+	// ① python3 多为 Git Bash shim 脚本，CreateProcess 执行不了；
+	// ② Microsoft Store 的 0 字节 stub 别名（%LOCALAPPDATA%/Microsoft/WindowsApps/python3.exe）
+	//    会被 LookPath 命中但一执行就 exit 9009 ⇒ LookPath 探测不可信，
+	//    必须**真的跑一次 --version 验明正身**再定解释器。
+	r75PythonInterpreter := func() string {
+		for _, name := range []string{"python3", "python"} {
+			path, err := exec.LookPath(name)
+			if err != nil {
+				continue
+			}
+			probe := exec.Command(path, "--version")
+			if out, probeErr := probe.CombinedOutput(); probeErr == nil &&
+				strings.Contains(string(out), "Python 3") {
+				return path
+			}
+		}
+		return ""
+	}
+	interpreter := r75PythonInterpreter()
+	if interpreter == "" {
+		t.Skip("未找到可用的 Python 3 解释器（python3/python 都缺位或是 Store stub）——本机未测量，不是通过")
+	}
+	cmd := exec.Command(interpreter, script, "--self-test")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("漂移报告器自检未过：err=%v\n%s", err, out)

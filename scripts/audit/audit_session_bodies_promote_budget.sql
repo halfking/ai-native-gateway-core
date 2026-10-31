@@ -23,6 +23,25 @@
 --     ⇒ ⇒ 走代码默认 **5,000** ⇒ ⇒ **需要 ≈ 150 s = 2.5× 预算**
 --     ⇒ ⇒ **每个满批必然超时 ⇒ 整批回滚 ⇒ 搬 0 行**。
 --
+-- ★★ 2026-10-30（R184 轮）**改了两个数** ⇒ ⇒ ⇒ **本脚本的口径必须跟着改**，
+--   ★★ 否则它会用【旧预算】现场算出一个【已经过期】的结论（★ 量具说谎）：
+--
+--   ① **批次预算 60 s → 150 s**（`bg/partition_manager.go` 的 `promoteBatchBudget`；
+--      Go ctx 与 `SET LOCAL statement_timeout` 同值）⇒ ⇒ 150 s 内最大可行
+--      batch ≈ **5,154 行**（按 29.1 ms/行）；
+--   ② **周期预算 5 min → 10 min**（`promoteCycleTimeout`）；
+--   ③ ★ **`session_bodies_hot` 改走专用旋钮**
+--      `lifecycle.session_bodies_hot_promote_batch_size`（代码 fallback **500**）
+--      ⇒ ⇒ **不再读 `lifecycle.promote_batch_size`** ⇒ ⇒ Q3/Q9 必须读新键。
+--
+--   ★★ **但 ① 并没有让这个族变得可提交** ⇒ ⇒ ⇒ ⇒ 因为它的每行成本不是 29.1 ms：
+--   ★★ R184 的 252 实测显示正文表是 **TOAST 重行**（均值 ≈34 KB/行），
+--   ★★ 单批 500 行要 **35~90 s** ⇒ ⇒ **折算 70~180 ms/行**（比通用族贵 2.4~6.2×）
+--   ★★ ⇒ ⇒ 5,000 行在 150 s 预算下仍需 350~900 s ⇒ ⇒ **仍然必超时**
+--   ★★ ⇒ ⇒ ⇒ ★ **⇒ 这才是这条不变式的现形形态：「批大小 vs 预算」要按【族】估行宽，
+--   ★★ 不能用一个全局 29.1 ms/行** ⇒ ⇒ ⇒ 修法 = 给该族一个专用键（500 行）。
+--   ★★ ⇒ ⇒ （§143.98 原文按 60 s 预算的算术全部保留在 runbook，那段是**当时**的实测。）
+--
 --   本脚本把这套算术的**每一个输入**都现场量一遍（窗口/速率/成本/积压），
 --   ⇒ 任何一项漂移都能被立刻看到 ⇒ ⇒ 而不必重新翻日志。
 -- ═══════════════════════════════════════════════════════════════════════
@@ -36,14 +55,16 @@ SELECT stats_reset,
 FROM pg_stat_statements_info;
 
 \echo '=== Q2 批次预算的三个常量（代码侧）===';
-\echo '--- ① 批次截止：Go ctx = min(60s, 周期剩余) + SET LOCAL statement_timeout = 60s';
-\echo '--- ② 周期预算：promoteCycleTimeout = 5min（18 个族共享）';
-\echo '--- ③ 每批上限：lifecycle.promote_batch_size（settings_kv 热重载，缺省走代码默认 5000）';
+\echo '--- ① 批次截止：Go ctx = min(150s, 周期剩余) + SET LOCAL statement_timeout = 150s（★ 2026-10-30 R184：60s → 150s）';
+\echo '--- ② 周期预算：promoteCycleTimeout = 10min（18 个族共享）（★ R184：5min → 10min）';
+\echo '--- ③ 每批上限：★ 本族走【专用键】lifecycle.session_bodies_hot_promote_batch_size（缺省 500）';
+\echo '--- （全局键 lifecycle.promote_batch_size 默认 5000，★ 对本族不生效 —— R184 起 resolvePromoteConfig 分族取键）';
 
-\echo '=== Q3 生产现值：lifecycle.promote_batch_size（★ 空 = 走代码默认 5000 ⇒ 满批必超时）===';
+\echo '=== Q3 生产现值：promote 批大小两个键（★ 本族读专用键；空 = 走代码 fallback）===';
 SELECT key, value, value_type, scope, category, updated_at, updated_by
 FROM public.settings_kv
 WHERE key IN ('lifecycle.promote_batch_size',
+              'lifecycle.session_bodies_hot_promote_batch_size',
               'lifecycle.hot_retention_hours',
               'lifecycle.promote_interval_hours')
 ORDER BY key;
@@ -148,13 +169,26 @@ cost AS (
       AND s.rows > 0
 ),
 cur AS (
+    -- ★ 2026-10-30（R184 轮）：本族改走【专用键】
+    --   lifecycle.session_bodies_hot_promote_batch_size（代码 fallback = 500），
+    --   ★ 不再读全局键 lifecycle.promote_batch_size（★ resolvePromoteConfig
+    --   分族取键 ⇒ 读全局键会量错旋钮 ⇒ ⇒ 量具指错对象）。
     SELECT COALESCE((SELECT (value::text)::int FROM public.settings_kv
-                      WHERE key = 'lifecycle.promote_batch_size'), 5000) AS batch_size
+                      WHERE key = 'lifecycle.session_bodies_hot_promote_batch_size'), 500) AS batch_size
 )
+-- ★★ 诚实边界（★ 2026-10-30 R184 订正）：本列的 ms_per_row 量的是
+--   **写热表**（INSERT INTO session_bodies_hot，每次一行 ⇒ mean/rows 即每行成本），
+--   ★★ **不是** promote 拷贝（把 TOAST 重行搬进月度分区）的每行成本。
+--   ★★ R184 的 252 实测：promote 拷贝 500 行要 35~90 s ⇒ 折算 **70~180 ms/行**
+--   ★★ （TOAST 重行，均值 ≈34 KB/行 ⇒ 比本列贵 2.4~6.2×）⇒ ★★ **⇒ 本行的
+--   ★★ need_seconds / max_feasible_batch 是【乐观口径】** ⇒ ★★ 真正的余量要看
+--   ★★ R184 的 EXPLAIN ANALYZE 读数（§143.98 的 29.1 ms/行也是同一类乐观口径）。
+--   ★★ 要现场量 promote 拷贝轴需要按【每次调用的批行数】换算（★ 不能用
+--   ★★ pg_stat_statements 的 rows ——那个是函数**返回行数**，不是拷贝行数）。
 SELECT cur.batch_size                                          AS current_batch_size,
        round(cost.ms_per_row::numeric, 1)                     AS measured_ms_per_row,
        round(cur.batch_size * cost.ms_per_row::numeric / 1000, 1) AS need_seconds,
-       60                                                       AS budget_seconds,
-       (cur.batch_size * cost.ms_per_row::numeric / 1000) > 60 AS will_time_out,
-       round((60000 / cost.ms_per_row)::numeric, 0)            AS max_feasible_batch
+       150                                                     AS budget_seconds,
+       (cur.batch_size * cost.ms_per_row::numeric / 1000) > 150 AS will_time_out,
+       round((150000 / cost.ms_per_row)::numeric, 0)            AS max_feasible_batch
 FROM cur, cost, win;

@@ -125,6 +125,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/tenant/account', labelKey: 'nav.item.tenantAccount', icon: '💰', tenantOnly: true },
       { path: '/tenant/pricing', labelKey: 'nav.item.tenantPricing', icon: '💳', tenantOnly: true },
       { path: '/tenant/usage', labelKey: 'nav.item.tenantUsage', icon: '📉', tenantOnly: true },
+      { path: '/tenant/bills', labelKey: 'nav.item.tenantBills', icon: '🧾', tenantOnly: true },
     ],
   },
   {
@@ -207,6 +208,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/admin/data-lifecycle', labelKey: 'nav.item.dataLifecycle', icon: '💾', platformOps: true, hideForTenant: true },
       { path: '/format-anomalies', labelKey: 'nav.item.formatAnomalies', icon: '⚠️', super: true, hideForTenant: true },
       { path: '/model-integrity', labelKey: 'nav.item.modelIntegrity', icon: '🛰️', super: true, hideForTenant: true },
+      { path: '/model-credibility', labelKey: 'nav.item.modelCredibility', icon: '🔎', super: true, hideForTenant: true },
       { path: '/admin/modules', labelKey: 'nav.item.modules', icon: '🧩', super: true, hideForTenant: true },
       { path: '/admin/prompt-injection', labelKey: 'nav.item.promptInjection', icon: '🛡️', super: true, hideForTenant: true },
       { path: '/admin/compression', labelKey: 'nav.item.compression', icon: '📦', platformOps: true, hideForTenant: true },

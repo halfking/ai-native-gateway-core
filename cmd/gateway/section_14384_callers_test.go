@@ -117,6 +117,9 @@ func scanGoFiles14384(t *testing.T) map[string][]string {
 		if relErr != nil {
 			rel = path
 		}
+		// Windows 上 Rel 返回反斜杠 ⇒ 与下方正斜杠常量永不相等 ⇒
+		// 判据全判 0（假红）。归一到正斜杠（仓内先例：internal/clockguard/scan.go）。
+		rel = filepath.ToSlash(rel)
 		var lines []string
 		for _, line := range strings.Split(string(raw), "\n") {
 			trimmed := strings.TrimSpace(line)

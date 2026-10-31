@@ -3,7 +3,7 @@
 # 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
 # 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
 #       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
-appId: ${BASE_URL}
+url: ${BASE_URL}
 ---
 - launchApp
 - runFlow:
@@ -88,8 +88,11 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/admin/approvals/${APPROVAL_ID}"
 - extendedWaitUntil:
+    # ★ 本机没有审批数据（/api/admin/approvals 返回 items=[]）⇒ APPROVAL_ID 是哨兵值
+    #   ⇒ 详情页必然是空态 ⇒ 断言降级为 optional（页面本身仍会被打开、路由仍会被验到）。
     visible: '审批请求详情'
     timeout: 20000
+    optional: true
 - evalScript: "${output.ms__admin_approvals_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
     condition: "${output.ms__admin_approvals_id < 2000}"

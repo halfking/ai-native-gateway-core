@@ -555,7 +555,7 @@ onMounted(load)
         <el-divider />
 
         <h4>{{ t('ops.vibecoding.issues') }} ({{ reviewIssues(selectedReview).length }})</h4>
-        <el-table :data="reviewIssues(selectedReview)" size="small" style="margin-bottom: 20px">
+        <el-table :data="reviewIssues(selectedReview)" size="small" style="margin-bottom: 16px">
           <el-table-column prop="line" :label="t('ops.vibecoding.line')" width="80" />
           <el-table-column prop="severity" :label="t('ops.vibecoding.severity')" width="100">
             <template #default="scope">
@@ -585,14 +585,14 @@ onMounted(load)
 
 <style scoped>
 .vibecoding-view {
-  padding: 20px;
+  padding: 16px;
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .page-header h1 {
@@ -601,7 +601,7 @@ onMounted(load)
 }
 
 .section-card {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .card-header {

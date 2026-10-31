@@ -356,11 +356,13 @@ func TestDeployDirtyStampExcludesVersionArtifacts(t *testing.T) {
 	}
 	t.Logf("dirty 判定行: %s", strings.TrimSpace(dirtyLine))
 
-	for _, f := range []string{"VERSION", "version.json", "web/public/version.json"} {
+	// ★ 2026-10-30（24h 审计第 8 轮）：menu-config.json 也在豁免表里 ——
+	//   它是本脚本自己后续步骤重新生成的构建再生产物（exported_at 时间戳），
+	//   与 VERSION 家族同性质。
+	for _, f := range []string{"VERSION", "version.json", "web/public/version.json", "web/public/menu-config.json"} {
 		if !strings.Contains(dirtyLine, "(exclude)"+f) {
-			t.Errorf("★ dirty 判定没有排除 %s ⇒ ⇒ bump-version.sh 留下的未提交改动"+
-				"（systemd 路径 245/154 的 1/9 步会改它且从不提交）⇒ ⇒ 下一次 211 部署"+
-				"⇒ 又会带上 -dirty ⇒ ⇒ 2026-10-22 那次「版本戳不再恒带 -dirty」的修复"+
+			t.Errorf("★ dirty 判定没有排除 %s ⇒ ⇒ 构建产物留下的未提交改动"+
+				"⇒ ⇒ 下一次部署又会带上 -dirty ⇒ ⇒ 「版本戳不再恒带 -dirty」的修复"+
 				"⇒ ⇒ 从另一扇门被原样顶回来。dirty 判定行: %s", f, strings.TrimSpace(dirtyLine))
 		}
 	}

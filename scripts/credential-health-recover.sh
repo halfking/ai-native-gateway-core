@@ -34,6 +34,7 @@
 #   credential-health-recover.sh --credential 99005    # 指定凭据
 #   credential-health-recover.sh --all --api-key sk-.. # 全量 + 深预热
 #   credential-health-recover.sh --skip-warmup --wait 60
+#   credential-health-recover.sh --include-protocol-red   # 强推含协议红对（默认排除）
 #   credential-health-recover.sh --self-test           # 无副作用自检
 #
 # 环境变量（均可被同名 flag 覆盖）：
@@ -62,6 +63,14 @@ WAIT_SEC=120
 INTERVAL_SEC=10
 SKIP_WARMUP=0
 DRY_RUN=0
+# ★ 协议红默认排除（2026-10-27 24h 审计轮）：last_err_code ∈ (http_404, http_410)
+#   且连败 ≥2 的对是「上游没有这个模型 / 模型已永久下线」的**协议级事实**，
+#   重探不会变绿；reset-state 对它们是 force-enable ⇒ 探针再确认 ⇒ 再翻红
+#   ⇒ 下一轮再 reset ——「反复 reset」的病理循环本身（上一轮 366 对存量
+#   即由此而来）。默认把它们从恢复对象中剔除；确要强推用
+#   --include-protocol-red 显式接受副作用。处置协议红的正确动作是**下线绑定**
+#   （credential_model_bindings.available=FALSE + manual: 前缀 reason）。
+INCLUDE_PROTOCOL_RED=0
 
 TMPDIR_RECOVER="${TMPDIR:-/tmp}/gw-cred-recover.$$"
 mkdir -p "$TMPDIR_RECOVER"
@@ -78,6 +87,7 @@ while [ $# -gt 0 ]; do
     --interval) INTERVAL_SEC="$2"; shift 2 ;;
     --skip-warmup) SKIP_WARMUP=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --include-protocol-red) INCLUDE_PROTOCOL_RED=1; shift ;;
     --base) GW_BASE="$2"; shift 2 ;;
     --host) GW_HOST="$2"; shift 2 ;;
     --token) GW_TOKEN="$2"; shift 2 ;;
@@ -205,11 +215,27 @@ sed 's/^/   /' "$TMPDIR_RECOVER/targets.txt"
 # 不是「该凭据目录下全部模型」——聚合型供应商一个目录上百模型，按凭据展开
 # 会把恢复动作变成对全目录的 ping 风暴（首轮 dry-run 实测 17 凭据 ⇒ 668 对）。
 if [ "$SCOPE" = "unhealthy" ] && [ -z "$CRED_IDS" ]; then
-  db_query "SELECT s.credential_id || '|' || s.raw_model_name
+  if [ "$INCLUDE_PROTOCOL_RED" = "1" ]; then
+    db_query "SELECT s.credential_id || '|' || s.raw_model_name
 FROM node_probe_state s
 JOIN credentials c ON c.id = s.credential_id AND c.lifecycle_status = 'active'
 WHERE s.consecutive_failures > 0 OR s.paused
 ORDER BY s.credential_id, s.raw_model_name" > "$TMPDIR_RECOVER/pairs.txt"
+  else
+    # ★ 协议红对不进恢复对象（见头部 INCLUDE_PROTOCOL_RED 注释）。
+    db_query "SELECT s.credential_id || '|' || s.raw_model_name
+FROM node_probe_state s
+JOIN credentials c ON c.id = s.credential_id AND c.lifecycle_status = 'active'
+WHERE (s.consecutive_failures > 0 OR s.paused)
+  AND NOT (s.last_err_code IN ('http_404','http_410') AND s.consecutive_failures >= 2)
+ORDER BY s.credential_id, s.raw_model_name" > "$TMPDIR_RECOVER/pairs.txt"
+    EXCLUDED=$(db_query "SELECT count(*) FROM node_probe_state s
+JOIN credentials c ON c.id = s.credential_id AND c.lifecycle_status = 'active'
+WHERE (s.consecutive_failures > 0 OR s.paused)
+  AND s.last_err_code IN ('http_404','http_410') AND s.consecutive_failures >= 2")
+    [ "${EXCLUDED:-0}" -gt 0 ] 2>/dev/null && \
+      say "   ⓘ 已排除 $EXCLUDED 个协议红对（http_404/410 连败≥2：上游没有该模型，reset 只会再翻红；处置=下线绑定）"
+  fi
 else
   awk -F'|' '$3 != "" { n = split($3, ms, ","); for (i=1;i<=n;i++) if (ms[i] != "") print $1 "|" ms[i] }' \
     "$TMPDIR_RECOVER/targets.txt" > "$TMPDIR_RECOVER/pairs.txt"
@@ -262,18 +288,21 @@ if [ -n "$API_KEY" ]; then
 fi
 
 # ── Step 3: reset（force-enable + 立即探测）────────────────────────────────
-say "── Step 3: reset-state（trigger_probe=true）"
-awk -F'|' '{print $1}' "$TMPDIR_RECOVER/pairs.txt" | sort -u > "$TMPDIR_RECOVER/creds.txt"
-while read -r cid; do
+# ★ 必须带 raw_model（2026-10-27 二次实测教训）：reset-state 的 raw_model 为空
+#   = **整凭据** force-enable（admin/routing_reset.go:34）⇒ 会把同凭据下
+#   「manual: 前缀下线的协议红绑定」一并拉回路由 ⇒ 本轮 291 个下线被
+#   13 次凭据级 reset 全部清空的真因。带 raw_model ⇒ 只 force-enable 该对。
+say "── Step 3: reset-state（对级 raw_model，trigger_probe=true）"
+while IFS='|' read -r cid model; do
   [ -n "$cid" ] || continue
   code=$(api POST "/api/routing/credentials/$cid/reset-state" \
-    '{"reason":"credential-health-recover.sh post-deploy auto recovery","trigger_probe":true}')
+    "$(printf '{"reason":"credential-health-recover.sh post-deploy auto recovery","raw_model":"%s","trigger_probe":true}' "$model")")
   if [ "$code" = "200" ]; then
-    say "   ✓ cred=$cid reset-state OK"
+    say "   ✓ cred=$cid model=$model reset-state OK"
   else
-    say "   ⚠ cred=$cid reset-state HTTP $code: $(head -c 140 "$TMPDIR_RECOVER/last.json" 2>/dev/null)"
+    say "   ⚠ cred=$cid model=$model reset-state HTTP $code: $(head -c 140 "$TMPDIR_RECOVER/last.json" 2>/dev/null)"
   fi
-done < "$TMPDIR_RECOVER/creds.txt"
+done < "$TMPDIR_RECOVER/pairs.txt"
 
 # ── Step 4: check（轮询，全部恢复或超时为止）────────────────────────────────
 # 判据来源自动降级：优先 GET /api/credentials/{id}/models/{model}/state

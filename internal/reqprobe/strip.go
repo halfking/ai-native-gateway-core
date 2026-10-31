@@ -121,6 +121,11 @@ var wireKeyAliases = map[string][]string{
 	"output_config.effort": {"reasoning_effort", "reasoning"},
 	"reasoning.effort":     {"reasoning_effort", "reasoning"},
 	"effort":               {"reasoning_effort", "reasoning"},
+	// 2026-10-29（211 原厂直通生产验证轮实测）：MiniMax 点名 "thinking.type"
+	//（其 400 文案的唯一参数形态），我方 chat 线体顶层键是 "thinking"。
+	// 不映射则 Diagnose.extractNamedParam 的出站体成员判定空手而归，
+	// 剥参重试不触发。
+	"thinking.type": {"thinking"},
 }
 
 // resolveWireKeys 返回 named 参数名在出站体上可能的线体键

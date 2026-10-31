@@ -22,6 +22,9 @@ export default {
     source: {
       memory: 'Im Speicher',
       file: 'Lokale Datei',
+      requestLogs: 'Anfrage-Ledger',
+      sessionTurns: 'Sitzungs-Instanzen',
+      liveStream: 'Live-Stream',
     },
     labels: {
       requestId: 'Anfrage-ID',
@@ -203,6 +206,9 @@ export default {
     unavailableBody: 'Für diese Turns wurde kein Text erfasst (die Funktion ist dort deaktiviert, oder der Turn hatte schlicht keinen Inhalt). Zusammenfassungen, Kennzahlen und Token-Verbrauch sind nicht betroffen.',
     affectedTurns: 'Betroffene Turns: {list}',
     dismiss: 'Verstanden',
+    consentOffTitle: 'Aufzeichnung des Sitzungstexts ist aus',
+    consentOffBody: 'Für diesen Mandanten ist die Aufzeichnung von Sitzungstexten deaktiviert: Turn-Texte, Zusammenfassungen und Forensik-Inhalte sind nicht verfügbar; Token-Verbrauch und Abrechnung sind nicht betroffen. Wird der Text benötigt, bitten Sie einen Administrator, die Aufzeichnung für diesen Mandanten zu aktivieren.',
+    consentOffInline: 'Aufzeichnung ist aus; Texte und Zusammenfassungen sind nicht verfügbar',
 
   },
 }

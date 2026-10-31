@@ -227,6 +227,13 @@ type InternalRequest struct {
 	// 常见值: "minimax"、"anthropic"、"openai"。
 	TargetProvider string `json:"target_provider,omitempty"`
 
+	// NativePassthrough（2026-10-28 原厂直通轮）：客户端是目标厂商自己的
+	// 编码智能体（internal/nativepair 命中，如 zcode→glm）时由执行器按候选
+	// 盖章。restoreExtensions 对 Extensions 不再做方言裁剪与 thinking 翻译
+	// —— 原厂工具对自己模型的参数集最权威；上游拒绝时的回退由执行器
+	// reqprobe 的 4xx 剥参重试承担。json:"-"：不进会话恢复快照。
+	NativePassthrough bool `json:"-"`
+
 	// ─── Gateway-internal metadata (V6-W1.6 R8, 定时请求) ───
 
 	// Class is the request type: immediate | scheduled. Stamped by
@@ -459,6 +466,12 @@ type ToolDefinition struct {
 	// Raw is the verbatim original JSON for a provider-specific tool. Only
 	// populated when Type is neither "" nor "function".
 	Raw json.RawMessage `json:"raw,omitempty"`
+	// Extra（RISK-2，2026-10-29）：工具**顶层**非标准键的无损载体。
+	// parse 时把本 parser 消费集之外的键按原始字节收进来（internal/ir/
+	// tool_extra.go），serialize 时并回输出顶层（不覆盖已消费键）。
+	// 修法对所有客户端一致；跨协议时并回后由目标侧既有语义接管
+	// （anthropic 目标非规范键由 sanitize 裁 / 原生对直通）。
+	Extra json.RawMessage `json:"tool_extra,omitempty"`
 }
 
 // IsFunction reports whether this tool is a standard function-shaped tool

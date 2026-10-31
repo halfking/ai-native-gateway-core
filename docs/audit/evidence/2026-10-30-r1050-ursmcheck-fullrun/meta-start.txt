@@ -1,0 +1,10 @@
+== meta start ==
+2026-10-30 17:02:17 +0800
+17:02  up  7:12, 1 user, load averages: 2.28 3.18 3.26
+HEAD: 798d62c74940035b974cc8be7be1536f709716a4
+branch: main
+-- worktree (porcelain) --
+ M web/src/locales/fr-FR/sanitizeRules.ts
+?? docs/audit/evidence/2026-10-30-r1050-ursmcheck-fullrun/
+cmd: make guards-ursmcheck (=> go test ./scripts/ursmcheck ./admin -count=1 -timeout=1800s)
+go: go version go1.27.2 darwin/arm64 (PATH lacked go; used /Users/niuer/sdk/go/bin/go)

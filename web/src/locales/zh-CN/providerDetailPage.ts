@@ -25,6 +25,7 @@ export default {
     performance: '性能',
     stability: '稳定性',
     costEfficiency: '成本效益',
+    credibility: '模型可信度',
     updatedAt: '更新时间',
     requestStats: '请求统计',
     totalRequests: '总请求次数',

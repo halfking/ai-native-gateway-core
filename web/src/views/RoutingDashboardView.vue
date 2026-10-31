@@ -1690,7 +1690,7 @@ onUnmounted(() => stopPoll())
 /* Unified top bar */
 .top-bar {
   margin-bottom: 8px;
-  padding: 8px 10px;
+  padding: 8px 8px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1698,13 +1698,13 @@ onUnmounted(() => stopPoll())
 .top-bar-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
-.top-bar-head h2 { font-size: 15px; margin: 0; flex-shrink: 0; }
+.top-bar-head h2 { font-size: 16px; margin: 0; flex-shrink: 0; }
 .refresh-btn { margin-left: auto; }
-.nav-chips { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.nav-chips { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .nav-link-wt {
   font-size: 11px;
   color: var(--accent-h);
@@ -1717,7 +1717,7 @@ onUnmounted(() => stopPoll())
 .nav-link-wt:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .chip-link { display: inline-flex; align-items: center; gap: 4px; }
 .chip-inline {
-  font-size: 9px;
+  font-size: 11px;
   padding: 0 4px;
   border-radius: 3px;
   background: var(--bg-subtle);
@@ -1726,11 +1726,11 @@ onUnmounted(() => stopPoll())
 }
 
 /* Pipeline */
-.pipeline { margin-bottom: 6px; }
+.pipeline { margin-bottom: 4px; }
 .pipe-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
   padding: 3px 0;
 }
@@ -1739,16 +1739,16 @@ onUnmounted(() => stopPoll())
 .pipe-title { font-size: 11px; font-weight: 600; min-width: 42px; }
 .pipe-steps { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; }
 .pipe-step {
-  font-size: 10px;
-  padding: 1px 6px;
+  font-size: 11px;
+  padding: 1px 4px;
   border-radius: 3px;
   background: color-mix(in srgb, currentColor 8%, transparent);
   color: var(--text);
 }
-.pipe-dot { font-size: 10px; color: var(--muted); padding: 0 1px; }
+.pipe-dot { font-size: 11px; color: var(--muted); padding: 0 1px; }
 .pipe-bridge {
   text-align: center;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   line-height: 1;
   margin: -2px 0;
@@ -1767,14 +1767,14 @@ onUnmounted(() => stopPoll())
   border-radius: 6px;
 }
 .seg-tab {
-  padding: 3px 10px;
+  padding: 3px 8px;
   border: none;
   border-radius: 4px;
   background: transparent;
   font-size: 11px;
   color: var(--muted);
   cursor: pointer;
-  transition: all .12s;
+  transition: color .12s var(--kx-motion-ease-out), background .12s var(--kx-motion-ease-out), box-shadow .12s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 .seg-tab:hover { color: var(--text); }
@@ -1807,7 +1807,7 @@ onUnmounted(() => stopPoll())
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 6px 0;
+  padding: 4px 0;
 }
 
 .chip {
@@ -1816,65 +1816,67 @@ onUnmounted(() => stopPoll())
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 99px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
 .chip strong { color: var(--text); font-weight: 600; }
 
 /* Cards */
-.compact-card { padding: 8px 10px; }
+.compact-card { padding: 8px 8px; }
 .flat-card { box-shadow: none; }
 .card-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
-  margin-bottom: 6px;
-  padding-bottom: 6px;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
 }
-.toolbar-left { display: flex; align-items: center; gap: 6px; }
+.toolbar-left { display: flex; align-items: center; gap: 4px; }
 .smart-config-btn {
   margin-left: 4px;
   font-size: 11px;
   padding: 2px 8px;
 }
 .toolbar-title { font-size: 12px; font-weight: 600; }
-.toolbar-filters { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
-.toolbar-divider { width: 1px; height: 14px; background: var(--border); margin: 0 3px; }
+.toolbar-filters { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+/* ★ 第 24 增量：分隔线的 margin 与容器 gap **会相加** ⇒ 原来 gap:3px + margin:0 3px
+   渲染出 6px（离阶）；源码层逐值看两个 3px 都是「发丝豁免」⇒ 结构上发现不了 ⇒ 运行时尺抓出。 */
+.toolbar-divider { width: 1px; height: 14px; background: var(--border); margin: 0; }
 .loading-hint { padding: 12px; text-align: center; color: var(--muted); font-size: 11px; }
 
 .section-head {
-  display: flex; align-items: center; gap: 6px;
-  margin-bottom: 6px;
+  display: flex; align-items: center; gap: 4px;
+  margin-bottom: 4px;
 }
 .section-head.tight { margin-bottom: 4px; }
 .section-head h3 { margin: 0; font-size: 12px; font-weight: 600; }
 .section-head.sm { margin-bottom: 4px; font-size: 11px; }
-.section-hint { font-size: 9px; color: var(--muted); font-weight: 400; margin-left: auto; }
+.section-hint { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: auto; }
 .layer-tag {
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 14px;
   border-radius: 3px;
-  font-size: 8px; font-weight: 700;
+  font-size: 11px; font-weight: 700;
   flex-shrink: 0;
 }
 .layer-tag.l1 { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent-h); }
 .layer-tag.l2 { background: var(--success-bd); color: var(--success); }
-.task-hint { font-weight: 400; color: var(--muted); font-size: 10px; }
+.task-hint { font-weight: 400; color: var(--muted); font-size: 11px; }
 
 .task-pill {
-  padding: 2px 7px;
+  padding: 2px 8px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 99px;
   font-size: 11px;
   cursor: pointer;
-  transition: all .12s;
+  transition: border-color .12s var(--kx-motion-ease-out), background .12s var(--kx-motion-ease-out);
   color: var(--text);
 }
-.task-pill.sm { padding: 1px 5px; font-size: 11px; }
+.task-pill.sm { padding: 1px 4px; font-size: 11px; }
 .task-pill:hover { border-color: var(--accent); }
 .task-pill.active {
   border-color: var(--accent);
@@ -1882,11 +1884,11 @@ onUnmounted(() => stopPoll())
 }
 
 .profile-pill {
-  padding: 1px 7px;
+  padding: 1px 8px;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 99px;
-  font-size: 10px;
+  font-size: 11px;
   cursor: pointer;
   color: var(--muted);
 }
@@ -1898,25 +1900,25 @@ onUnmounted(() => stopPoll())
 
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .dense-table { font-size: 11px; width: 100%; }
-.dense-table thead th { padding: 3px 6px; font-size: 9px; white-space: nowrap; }
-.dense-table tbody td { padding: 4px 6px; }
+.dense-table thead th { padding: 3px 4px; font-size: 11px; white-space: nowrap; }
+.dense-table tbody td { padding: 4px 4px; }
 .dense-table .num { color: var(--muted); width: 20px; }
 .model-name { font-weight: 500; font-size: 11px; }
-.model-sub { font-size: 9px; color: var(--muted); }
-.price-cell { font-variant-numeric: tabular-nums; font-size: 10px; }
+.model-sub { font-size: 11px; color: var(--muted); }
+.price-cell { font-variant-numeric: tabular-nums; font-size: 11px; }
 .expand-icon { color: var(--muted); width: 16px; text-align: center; font-size: 9px; }
 
 .score-pill {
   display: inline-block;
-  padding: 0 5px;
+  padding: 0 4px;
   border-radius: 99px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   background: var(--neutral-bg);
   color: var(--muted);
 }
 .score-pill.good { background: var(--success-bg); color: var(--success); }
-.score-pill.sm { font-size: 9px; padding: 0 4px; }
+.score-pill.sm { font-size: 11px; padding: 0 4px; }
 
 /* 2026-07-24: routing-v2 resolve 页候选行（默认全量展示）
  * 不可用行不用 opacity 叠加（半透叠半透在双主题下都糊成一团），
@@ -1937,7 +1939,7 @@ onUnmounted(() => stopPoll())
   white-space: nowrap;
 }
 .resolve-row .block-reason {
-  font-size: 10px;
+  font-size: 11px;
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
 }
@@ -1945,7 +1947,7 @@ onUnmounted(() => stopPoll())
 .model-row { cursor: pointer; }
 .model-row:hover { background: color-mix(in srgb, var(--kx-text) 4%, transparent); }
 .model-row.expanded { background: color-mix(in srgb, var(--accent) 5%, transparent); }
-.detail-row td { padding: 6px; background: var(--bg-subtle); border-top: none; }
+.detail-row td { padding: 4px; background: var(--bg-subtle); border-top: none; }
 
 .expand-grid {
   display: grid;
@@ -1954,25 +1956,25 @@ onUnmounted(() => stopPoll())
   align-items: start;
 }
 .layer-panel {
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-radius: 4px;
   background: var(--bg);
 }
 .layer-panel.l1-accent { border: 1px solid var(--accent); }
 .layer-panel.l2-accent { border: 1px solid var(--success); }
-.l2-meta { font-size: 10px; color: var(--muted); margin-bottom: 4px; word-break: break-all; }
-.l2-meta.mono { font-family: ui-monospace, monospace; font-size: 9px; }
+.l2-meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; word-break: break-all; }
+.l2-meta.mono { font-family: ui-monospace, monospace; font-size: 11px; }
 .l2-creds { display: flex; flex-wrap: wrap; gap: 4px; }
 .l2-cred {
   display: flex; align-items: center; gap: 4px;
-  padding: 2px 6px;
+  padding: 2px 4px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 3px;
-  font-size: 10px;
+  font-size: 11px;
 }
 .l2-cred.top { border-color: var(--success); background: color-mix(in srgb, var(--success) 14%, transparent); }
-.l2-rank { font-weight: 700; color: var(--muted); font-size: 9px; }
+.l2-rank { font-weight: 700; color: var(--muted); font-size: 11px; }
 .l2-prov { font-weight: 500; }
 
 /* Policy inline */
@@ -1984,12 +1986,12 @@ onUnmounted(() => stopPoll())
 }
 .policy-block { flex: 1; min-width: 220px; }
 .policy-divider { width: 1px; background: var(--border); align-self: stretch; min-height: 60px; }
-.block-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; font-weight: 600;letter-spacing: 0.01em; }
+.block-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; font-weight: 600;letter-spacing: 0.01em; }
 .inline-fields {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 10px;
-  margin-bottom: 6px;
+  gap: 4px 8px;
+  margin-bottom: 4px;
 }
 .inline-field {
   display: flex;
@@ -1997,13 +1999,13 @@ onUnmounted(() => stopPoll())
   gap: 2px;
   min-width: 72px;
 }
-.inline-field span { font-size: 9px; color: var(--muted); }
+.inline-field span { font-size: 11px; color: var(--muted); }
 .inline-field input {
   width: 64px;
-  padding: 2px 5px;
+  padding: 2px 4px;
   font-size: 11px;
 }
-.policy-msg { font-size: 11px; color: var(--accent-h); margin-top: 6px; }
+.policy-msg { font-size: 11px; color: var(--accent-h); margin-top: 4px; }
 
 .profile-grid {
   display: grid;
@@ -2011,14 +2013,14 @@ onUnmounted(() => stopPoll())
   gap: 8px;
 }
 .profile-grid.flat .profile-col {
-  padding: 4px 6px;
+  padding: 4px 4px;
   border-right: 1px solid var(--border);
   background: transparent;
   border-radius: 0;
 }
 .profile-grid.flat .profile-col:last-child { border-right: none; }
 .profile-col-head {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   margin-bottom: 4px;
   text-align: center;
@@ -2054,8 +2056,8 @@ onUnmounted(() => stopPoll())
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  font-size: 10px;
+  gap: 4px;
+  font-size: 11px;
   padding: 4px 0;
   border-bottom: 1px solid var(--border);
 }
@@ -2088,61 +2090,55 @@ onUnmounted(() => stopPoll())
   align-items: start;
 }
 .sim-row { display: flex; gap: 4px; }
-.sim-input { flex: 1; font-size: 11px; padding: 3px 6px; min-width: 0; }
+.sim-input { flex: 1; font-size: 11px; padding: 3px 4px; min-width: 0; }
 .sim-select { width: 72px; font-size: 11px; padding: 3px 4px; flex-shrink: 0; }
-.sim-out { margin-top: 6px; }
+.sim-out { margin-top: 4px; }
 .sim-pipeline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11px; }
 .sim-step {
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 3px;
-  font-size: 10px;
+  font-size: 11px;
   background: var(--bg-subtle);
 }
 .sim-step.l1 { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent-h); }
 .sim-step.l2.win { background: var(--success-bg); color: var(--success); font-weight: 600; }
 
-.dist-mini { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.dist-col h4 { font-size: 9px;color: var(--muted); margin: 0 0 4px; letter-spacing: 0.01em; }
+.dist-mini { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.dist-col h4 { font-size: 11px;color: var(--muted); margin: 0 0 4px; letter-spacing: 0.01em; }
 .dist-row {
   display: grid;
   grid-template-columns: 56px 1fr 24px;
   align-items: center;
   gap: 4px;
   margin-bottom: 2px;
-  font-size: 10px;
+  font-size: 11px;
 }
 .dist-label { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dist-bar-bg { height: 6px; background: color-mix(in srgb, var(--border) 30%, transparent); border-radius: 2px; overflow: hidden; }
 .dist-bar-fill { height: 100%; background: var(--success); border-radius: 2px; }
 .dist-bar-fill.accent { background: var(--accent); }
-.dist-count { text-align: right; font-variant-numeric: tabular-nums; font-size: 9px; }
+.dist-count { text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; }
 
-.auto-toggle { font-size: 10px; color: var(--muted); display: flex; align-items: center; gap: 3px; cursor: pointer; }
+.auto-toggle { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 3px; cursor: pointer; }
 .decision-detail { display: flex; flex-direction: column; gap: 4px; }
 .candidates-compact { display: flex; flex-wrap: wrap; gap: 3px; }
-.cand-chip {
-  padding: 1px 6px;
-  background: var(--bg);
-  border-radius: 3px;
-  font-size: 10px;
-}
 
-.text-muted { color: var(--muted); font-size: 10px; }
-.text-danger { color: var(--danger); font-size: 10px; }
+.text-muted { color: var(--muted); font-size: 11px; }
+.text-danger { color: var(--danger); font-size: 11px; }
 
 .resolve-controls {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: nowrap;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .resolve-controls .resolve-picker { flex: 1; min-width: 200px; }
 .resolve-controls .resolve-profile {
   width: 140px;
   flex-shrink: 0;
   font-size: 11px;
-  padding: 3px 6px;
+  padding: 3px 4px;
 }
 .resolve-controls .btn { flex-shrink: 0; }
 
@@ -2187,9 +2183,9 @@ onUnmounted(() => stopPoll())
   accent-color: var(--warning);
 }
 .resolve-row .priority-cell.is-saving { opacity: .55; }
-.reorder-error { color: var(--kx-danger); font-size: 10px; }
+.reorder-error { color: var(--kx-danger); font-size: 11px; }
 .resolve-picker { min-width: 200px; }
-.resolve-profile { font-size: 11px; padding: 3px 6px; }
+.resolve-profile { font-size: 11px; padding: 3px 4px; }
 
 .resolve-table { table-layout: fixed; }
 .resolve-table thead th { white-space: nowrap; }
@@ -2199,19 +2195,19 @@ onUnmounted(() => stopPoll())
 .resolve-table .col-upstream { word-break: break-all; }
 .resolve-table .col-upstream code { word-break: break-all; display: inline-block; max-width: 100%; }
 .resolve-table .row-actions { white-space: nowrap; text-align: right; }
-.resolve-table .block-reason { font-size: 10px; margin-top: 2px; }
+.resolve-table .block-reason { font-size: 11px; margin-top: 2px; }
 .resolve-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 11px; }
-.resolve-meta code { font-size: 10px; }
-.plan-order { margin-top: 6px; font-size: 10px; color: var(--muted); word-break: break-all; }
-.mono-sm { font-family: ui-monospace, monospace; font-size: 9px; }
+.resolve-meta code { font-size: 11px; }
+.plan-order { margin-top: 4px; font-size: 11px; color: var(--muted); word-break: break-all; }
+.mono-sm { font-family: ui-monospace, monospace; font-size: 11px; }
 
 @media (max-width: 768px) {
-  .top-bar-head { gap: 6px; }
+  .top-bar-head { gap: 4px; }
   .seg-tabs { order: 3; width: 100%; justify-content: stretch; }
-  .seg-tab { flex: 1; text-align: center; padding: 4px 6px; }
+  .seg-tab { flex: 1; text-align: center; padding: 4px 4px; }
   .refresh-btn { order: 2; margin-left: auto; }
   .pipe-steps { display: none; }
-  .pipe-title::after { content: ' · Prompt→Profile→模型 / 解析→Tier→P2C'; font-weight: 400; color: var(--muted); font-size: 9px; }
+  .pipe-title::after { content: ' · Prompt→Profile→模型 / 解析→Tier→P2C'; font-weight: 400; color: var(--muted); font-size: 11px; }
   .expand-grid { grid-template-columns: 1fr; }
   .profile-grid { grid-template-columns: 1fr; }
   .profile-grid.flat .profile-col { border-right: none; border-bottom: 1px solid var(--border); padding-bottom: 8px; }

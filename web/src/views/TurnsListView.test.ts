@@ -1,5 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createI18n } from 'vue-i18n'
+import zhCN from '../locales/zh-CN'
 import TurnsListView from './TurnsListView.vue'
 
 const listTurnsSessionsMock = vi.fn()
@@ -13,6 +15,14 @@ vi.mock('../api/turns', () => ({
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: pushMock }),
 }))
+
+// 挂真实 zh-CN 语言包（LoginModal.test.ts 先例）：组件 setup 调 useI18n，
+// 键缺了直接让测试失败，而不是静默渲染键路径。
+const i18n = createI18n({
+  legacy: false,
+  locale: 'zh-CN',
+  messages: { 'zh-CN': zhCN as any },
+})
 
 const session = {
   session_id: 'session-a',
@@ -36,6 +46,7 @@ const session = {
 function mountView() {
   return mount(TurnsListView, {
     global: {
+      plugins: [i18n],
       stubs: {
         'el-select': { template: '<select><slot /></select>' },
         'el-option': { template: '<option><slot /></option>' },

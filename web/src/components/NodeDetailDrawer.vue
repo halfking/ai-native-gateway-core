@@ -214,19 +214,19 @@ const manualStateDetail = computed(() => {
 <style scoped>
 .nd-mask { position: fixed; inset: 0; z-index: 3000; background: color-mix(in srgb, var(--kx-text) 38%, transparent); }
 .nd-drawer { position: fixed; z-index: 3001; top: 0; right: 0; width: min(940px, 94vw); height: 100vh; height: 100dvh; display: flex; flex-direction: column; background: var(--kx-surface); box-shadow: var(--kx-shadow-md-left); color: var(--kx-text); }
-.nd-header { padding: 18px 22px 14px; border-bottom: 1px solid var(--kx-border); display:flex; justify-content:space-between; gap:16px; }
+.nd-header { padding: 16px 24px 12px; border-bottom: 1px solid var(--kx-border); display:flex; justify-content:space-between; gap:16px; }
 .nd-subtitle,.nd-muted,small { color: var(--kx-muted); font-size:12px; }
-.nd-header h2 { margin:0 0 4px; font-size:18px; overflow-wrap:anywhere; }
+.nd-header h2 { margin:0 0 4px; font-size:20px; overflow-wrap:anywhere; }
 .nd-header-actions,.nd-state-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-.nd-tabs { display:flex; gap:4px; padding:10px 22px 0; border-bottom:1px solid var(--kx-border); flex-wrap:wrap; }
+.nd-tabs { display:flex; gap:4px; padding:8px 24px 0; border-bottom:1px solid var(--kx-border); flex-wrap:wrap; }
 .nd-tabs button { border:0; background:transparent; color:var(--kx-muted); padding:8px 12px; cursor:pointer; border-bottom:2px solid transparent; }
 .nd-tabs button.active { color:var(--kx-primary); border-bottom-color:var(--kx-primary); font-weight:600; }
-.nd-body { overflow:auto; padding:16px 22px 34px; }
-.nd-seg-loading { padding:28px; text-align:center; color:var(--kx-muted); font-size:12px; }
-.nd-notice { padding:8px 10px; border-radius:6px; margin:0 0 12px; font-size:12px; }
+.nd-body { overflow:auto; padding:16px 24px 32px; }
+.nd-seg-loading { padding:24px; text-align:center; color:var(--kx-muted); font-size:12px; }
+.nd-notice { padding:8px 8px; border-radius:6px; margin:0 0 12px; font-size:12px; }
 .nd-notice--warn { background:color-mix(in srgb, var(--kx-warning) 12%, transparent); color:var(--kx-warning); }
 .nd-notice--ok { background:color-mix(in srgb, var(--kx-success) 12%, transparent); color:var(--kx-success); }
 .nd-notice--error { background:color-mix(in srgb, var(--kx-danger) 12%, transparent); color:var(--kx-danger); }
-@media (max-width:768px) { .nd-drawer { width:100vw; }.nd-header { padding:14px; flex-direction:column; }.nd-body { padding:12px; }.nd-header-actions { justify-content:flex-end; } }
+@media (max-width:768px) { .nd-drawer { width:100vw; }.nd-header { padding:12px; flex-direction:column; }.nd-body { padding:12px; }.nd-header-actions { justify-content:flex-end; } }
 </style>
 <style src="../styles/node-detail-drawer.css"></style>

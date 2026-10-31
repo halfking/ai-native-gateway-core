@@ -65,3 +65,19 @@ func CanonicalSessionOnlyProjectionForTest() string {
 func RecentSuccessRateEnsureSQLForTest() string {
 	return recentSuccessRateEnsureSQL
 }
+
+// RecentCacheHitRateEnsureSQLForTest returns the exact SQL the gateway runs at
+// boot to (re)define `recent_cache_hit_rate` (P1-B-③, migration 915).
+//
+// Same contract-gate rationale as RecentSuccessRateEnsureSQLForTest: the
+// function is called from the provider candidate query via
+// `CROSS JOIN LATERAL`, so an absent function (deploy-sequence gap) or a body
+// referencing a retired relation is a **100% traffic failure** whose symptom
+// reads like "all upstreams down". The 2026-10-28 211 incident was exactly the
+// absent-function arm (binary shipped the LATERAL, the DB never got migration
+// 915). Contract gate:
+// sql/migrations/startup/migration_915_recent_cache_hit_rate_test.go —
+// the migration's function body and this SSOT must be the same text.
+func RecentCacheHitRateEnsureSQLForTest() string {
+	return recentCacheHitRateEnsureSQL
+}

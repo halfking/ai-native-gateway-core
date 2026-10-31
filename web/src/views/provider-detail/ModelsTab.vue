@@ -20,6 +20,7 @@ import {
   type RoutingBlockedDiagnostic,
 } from '../../api'
 import ModelOfferDetailDrawer from '../../components/model/ModelOfferDetailDrawer.vue'
+import ActionOverflowMenu from '../../components/ui/ActionOverflowMenu.vue'
 import { confirmDialog } from '../../composables/useConfirmDialog'
 import { sortByName } from '../../utils/sortByName'
 import { CircleCheck } from '@element-plus/icons-vue'
@@ -325,6 +326,41 @@ async function resetFailedNodeProbes() {
   }
 }
 
+// ★ 2026-10-27 第 25 增量（动作区必须可扫读）：模型页工具条从 5 个并列按钮
+//   收到 2 个明面 + 1 个「更多」。
+//   · 明面留「刷新」（从上游拉）与「全面探测」（批量探测）—— 这两个是这个页的主动作；
+//   · 「清空模型」是**破坏性**动作、「刷新本地」与「重置探针」是低频修复动作
+//     ⇒ 三者收进「更多」，其中「清空模型」标记为 danger（菜单项走危险色）。
+//   ★ 每个菜单项**保留了原来的 tooltip**（`pm('…Title')`）：折叠之后 tooltip
+//     是唯一还能说明白「这个动作会做什么」的渠道。
+const modelToolbarTools = computed(() => [
+  {
+    key: 'clear',
+    label: clearing.value ? pm('clearLoading') : pm('clearBtn'),
+    title: pm('clearTitle'),
+    disabled: loading.value || refreshing.value || clearing.value || offers.value.length === 0,
+    danger: true,
+  },
+  {
+    key: 'refreshLocal',
+    label: loading.value ? pm('refreshLocalLoading') : pm('refreshLocalBtn'),
+    title: pm('refreshLocalTitle'),
+    disabled: loading.value || refreshing.value || clearing.value,
+  },
+  {
+    key: 'resetProbe',
+    label: resetNodeProbeLoading.value ? pm('resetNodeProbeLoading') : pm('resetNodeProbeBtn'),
+    title: pm('resetNodeProbeTitle'),
+    disabled: resetNodeProbeLoading.value,
+  },
+])
+
+function onModelToolbarTool(key: string) {
+  if (key === 'clear') void clearModels()
+  else if (key === 'refreshLocal') void load()
+  else if (key === 'resetProbe') void resetFailedNodeProbes()
+}
+
 function probeResultBadge(category: string) {
   if (category === 'ok') return 'badge-green'
   if (category === 'model_unavailable') return 'badge-red'
@@ -400,7 +436,7 @@ load()
 <template>
   <div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-      <h4 style="margin:0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <h4 style="margin:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <span>{{ pm('title', { n: offers.length }) }}</span>
         <span v-if="refreshing" class="refresh-hint refresh-hint--loading" role="status" aria-live="polite">
           <span class="refresh-spinner" aria-hidden="true"></span>
@@ -420,7 +456,7 @@ load()
           aria-live="polite"
         >{{ refreshSummary }}</span>
       </h4>
-      <div style="display:flex;gap:6px">
+      <div style="display:flex;gap:4px">
         <button
           class="btn btn-sm"
           :disabled="refreshing || clearing"
@@ -430,34 +466,16 @@ load()
           {{ refreshing ? pm('refreshLoading') : pm('refreshBtn') }}
         </button>
         <button
-          class="btn btn-sm btn-ghost"
-          :disabled="loading || refreshing || clearing || offers.length === 0"
-          :title="pm('clearTitle')"
-          @click="clearModels"
-        >{{ clearing ? pm('clearLoading') : pm('clearBtn') }}</button>
-        <button
-          class="btn btn-sm btn-ghost"
-          :disabled="loading || refreshing || clearing"
-          :title="pm('refreshLocalTitle')"
-          @click="load"
-        >{{ loading ? pm('refreshLocalLoading') : pm('refreshLocalBtn') }}</button>
-        <button
           class="btn btn-sm"
           :disabled="probeAllLoading || offers.length === 0"
           :title="pm('probeAllTitle')"
           @click="triggerAllProbes"
         >{{ probeAllLoading ? pm('probeAllLoading') : pm('probeAllBtn') }}</button>
-        <!-- 2026-07-21 P0: companion to "全面探测". When a stale
-             node_probe_state row is blocking a binding's routing
-             (NodeProbeWorker backoff 5s..24h), the operator can
-             force-clear it here without waiting for the ladder to
-             naturally roll over. -->
-        <button
-          class="btn btn-sm btn-ghost"
-          :disabled="resetNodeProbeLoading"
-          :title="pm('resetNodeProbeTitle')"
-          @click="resetFailedNodeProbes"
-        >{{ resetNodeProbeLoading ? pm('resetNodeProbeLoading') : pm('resetNodeProbeBtn') }}</button>
+        <!-- ★ 第 25 增量：清空模型（破坏性）/ 刷新本地 / 重置探针 收进「更多」。
+             2026-07-21 P0: "重置探针" 是 "全面探测" 的伴生动作 —— 当一条陈旧的
+             node_probe_state 行卡住路由绑定时，运维可以在这里强制清掉它，
+             而不必等 NodeProbeWorker 的 5s/30s/.../24h 退避阶梯自然翻过去。 -->
+        <ActionOverflowMenu :items="modelToolbarTools" @select="onModelToolbarTool" />
       </div>
       <div v-if="probeAllLoading" class="probe-all-loading">
         <span class="refresh-spinner" aria-hidden="true"></span>
@@ -569,11 +587,11 @@ load()
         </div>
 
         <!-- Per-credential breakdown -->
-        <div v-for="cred in routingDiag.credentials" :key="cred.credential_id" style="margin-bottom:6px;padding:6px 8px;border:1px solid var(--border);border-radius:4px">
+        <div v-for="cred in routingDiag.credentials" :key="cred.credential_id" style="margin-bottom:4px;padding:4px 8px;border:1px solid var(--border);border-radius:4px">
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">
             <div>
               <strong>{{ credentialDisplayName(cred.credential_id) }} {{ cred.credential_label }}</strong>
-              <span class="badge" :class="statusBadge(cred.status)" style="margin-left:6px">{{ cred.status }}</span>
+              <span class="badge" :class="statusBadge(cred.status)" style="margin-left:4px">{{ cred.status }}</span>
             </div>
             <div style="font-size:12px">
               {{ cred.bindings_routable }}/{{ cred.bindings_total }} 可路由 ·

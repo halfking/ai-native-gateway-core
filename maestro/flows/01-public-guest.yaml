@@ -3,7 +3,7 @@
 # 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
 # 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
 #       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
-appId: ${BASE_URL}
+url: ${BASE_URL}
 ---
 - launchApp
 - launchApp:
@@ -121,7 +121,7 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/maintain"
 - extendedWaitUntil:
-    visible: '503 · 运维平台不可用'
+    visible: '运维平台暂时不可用|503 · 运维平台不可用'
     timeout: 20000
 - evalScript: "${output.ms__maintain = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
@@ -133,7 +133,7 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/maintain/ops/anything"
 - extendedWaitUntil:
-    visible: '503 · 运维平台不可用'
+    visible: '运维平台暂时不可用|503 · 运维平台不可用'
     timeout: 20000
 - evalScript: "${output.ms__maintain_pathMatch__any_any = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:

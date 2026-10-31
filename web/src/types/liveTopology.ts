@@ -58,10 +58,14 @@ export interface TopoEdge {
   protocolCounts?: Record<string, number>
 }
 
-/** 网关核心内部的处理模块（2026-10-18 三带布局：进站链 / 存储转发带 / 出站链）。 */
+/** 网关核心内部的处理模块（2026-10-18 三带布局：进站链 / 存储转发带 / 出站链；
+ *  2026-10-28 选路层轮：进站链加入 压缩 + 模型选择，路由/节点状态移入
+ *  基础服务侧条 —— 它们是支撑主线的服务，不是主链的数据处理步骤）。 */
 export type GatewayModuleKey =
   | 'cache'
   | 'sanitize'
+  | 'compress'
+  | 'modelSelect'
   | 'route'
   | 'nodeState'
   | 'sessionFile'
@@ -71,17 +75,23 @@ export type GatewayModuleKey =
   | 'taskDetect'
 
 /**
- * 网关大方块内的**流程带**（2026-10-18 owner 要求：不同模块应处在其在
- * 处理流程里的真实位置，且有进/出两条链路 + 存储转发效果）：
+ * 网关大方块内的**流程带**：
  *
- *   进·请求链（in，上带，L→R）：缓存 → 脱敏 →（插件带）→ 路由 → 节点状态 → 派发
- *   存储转发带（store，中带）：转发队列（真实 pipeline depth）+ 数据会话写入 ⇄ 会话文件存储
- *   出·响应链（out，下带，R→L）：任务识别 / 错误记录 / 探测任务（旁路族，虚线）
- *
- * 模块落在哪条带 = 它在真实处理流程中的位置：请求侧检查在前带，响应落库
- * 在存储带，观测/旁路在后带。`order` 是带内顺序（渲染与判据共用）。
+ *   进·请求链（in，主线，L→R）：缓存 → 脱敏 →（插件带）→ 模型选择 → 压缩 → ⬇派发
+ *     ★ 顺序与真实管线一致（批判式审计修正 2026-10-28）：会话压缩在
+ *     **候选解析之后**才跑（handler.go SessionCompressor.Prepare 注释
+ *     "Runs AFTER candidate resolution so we know the target model's context
+ *     window"）——早先版本把压缩排在模型选择之前，违反本组件「模块按
+ *     处理流程的真实位置排布」的立身原则（owner 2026-10-18）。
+ *   选路扇出带（select）：模型选择这一步的三个**出口分解**（auto 按任务 /
+ *     内部直连 / 指定模型）——它是模型选择格的明细注解带，不是主链的
+ *     串行步骤，所以不带派发箭头、卡间不画箭头。
+ *   存储转发带（store）：转发队列（真实 pipeline depth）+ 数据会话写入 ⇄ 会话文件存储
+ *   出·响应链（out，R→L）：任务识别 / 错误记录 / 探测任务（旁路族，虚线）
+ *   基础服务侧条（不在 lane 里，box 右侧竖条）：路由管理 / 节点状态管理 ——
+ *     2026-10-28 owner 口径「路由与节点状态属于基础服务，放一侧，突出核心逻辑」。
  */
-export type GatewayLane = 'in' | 'store' | 'out'
+export type GatewayLane = 'in' | 'select' | 'store' | 'out' | 'infra'
 
 export interface GatewayModuleDef {
   key: GatewayModuleKey
@@ -92,8 +102,14 @@ export interface GatewayModuleDef {
 export const GATEWAY_IN_MODULES: readonly GatewayModuleDef[] = [
   { key: 'cache', lane: 'in', order: 0 },
   { key: 'sanitize', lane: 'in', order: 1 },
-  { key: 'route', lane: 'in', order: 2 },
-  { key: 'nodeState', lane: 'in', order: 3 },
+  { key: 'modelSelect', lane: 'in', order: 2 },
+  { key: 'compress', lane: 'in', order: 3 },
+] as const
+
+/** 基础服务侧条（box 右侧竖条，不在主链上）：选路与节点治理。 */
+export const GATEWAY_INFRA_MODULES: readonly GatewayModuleDef[] = [
+  { key: 'route', lane: 'infra', order: 0 },
+  { key: 'nodeState', lane: 'infra', order: 1 },
 ] as const
 
 export const GATEWAY_STORE_MODULES: readonly GatewayModuleDef[] = [
@@ -107,9 +123,10 @@ export const GATEWAY_OUT_MODULES: readonly GatewayModuleDef[] = [
   { key: 'probeTask', lane: 'out', order: 2 },
 ] as const
 
-/** 全部模块（判据/统计遍历用）：三带并集，顺序稳定。 */
+/** 全部模块（判据/统计遍历用）：各带并集，顺序稳定。 */
 export const GATEWAY_MODULES: readonly GatewayModuleDef[] = [
   ...GATEWAY_IN_MODULES,
+  ...GATEWAY_INFRA_MODULES,
   ...GATEWAY_STORE_MODULES,
   ...GATEWAY_OUT_MODULES,
 ] as const
@@ -149,6 +166,31 @@ export interface GatewayModuleStat {
   count: number
   /** 失败/异常数（仅旁路与终态模块有意义）。 */
   errors: number
+}
+
+/**
+ * 选路扇出带（select lane）的统计 —— 模型选择这一步的三个出口
+ * （2026-10-28 owner 口径：「内部直连模型」与「auto 按任务选最终模型」
+ * 这一层此前的图上没有表达）。
+ *
+ * 口径（能算的算，算不出的如实缺省）：
+ *  - auto：is_auto_request 的请求；autoTasks 是它们的任务类型分布（top N，
+ *    任务类型是后端 auto 分类的原始词，如 chat/reasoning/code —— 拉丁词
+ *    不进语言包，跨语种一致）；
+ *  - direct（内部直连）：provider_code ∈ 本地供应商集合（providers.kind
+ *    === 'local'：ollama/mlx/llamacpp/lmstudio/vllm/local-*，内网直连、
+ *    无真实 API key）。供应商清单取不到（接口失败）时该桶如实为 0 并由
+ *    调用方标注「未测量」，而不是把直连请求误记成「指定模型」；
+ *  - explicit：其余（客户端点名模型 / 别名 → canonical）；
+ *  - total：窗口内总请求数，恒等 auto + direct + explicit（判据钉死，
+ *    三桶分拣漏一条都会被抓到）。
+ */
+export interface ModelSelectionStats {
+  auto: number
+  autoTasks: ReadonlyArray<{ type: string; count: number }>
+  direct: number
+  explicit: number
+  total: number
 }
 
 export interface TopoLayoutNode extends TopoNode {

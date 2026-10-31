@@ -22,6 +22,9 @@ export default {
     source: {
       memory: 'En memoria',
       file: 'Archivo local',
+      requestLogs: 'Libro de solicitudes',
+      sessionTurns: 'Turnos de sesión',
+      liveStream: 'Transmisión en vivo',
     },
     labels: {
       requestId: 'ID de solicitud',
@@ -202,6 +205,9 @@ export default {
     unavailableBody: 'No se capturó cuerpo para estos turnos (la función está desactivada para ellos o el turno no tenía contenido). Los resúmenes, las métricas y el consumo de tokens no se ven afectados.',
     affectedTurns: 'Turnos afectados: {list}',
     dismiss: 'Entendido',
+    consentOffTitle: 'La grabación del cuerpo de sesiones está desactivada',
+    consentOffBody: 'La grabación de cuerpos está desactivada para este inquilino: los cuerpos de los turnos, los resúmenes y el contenido forense no están disponibles; el uso de tokens y la facturación no se ven afectados. Si necesita los cuerpos, pida a un administrador que la active para este inquilino.',
+    consentOffInline: 'La grabación está desactivada; cuerpos y resúmenes no disponibles',
 
   },
 }

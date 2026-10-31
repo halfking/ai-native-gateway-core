@@ -71,7 +71,8 @@ import (
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/hostedtask"
 	"github.com/kaixuan/llm-gateway-go/domains/integration"     //nolint:depguard // clientprofile worker wiring
-	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    //nolint:depguard // 模型质量监控
+	"github.com/kaixuan/llm-gateway-go/domains/modelcredibility" // 模型可信度（防掺水）worker 扫描面
+	"github.com/kaixuan/llm-gateway-go/domains/modelquality"      //nolint:depguard // 模型质量监控
 	"github.com/kaixuan/llm-gateway-go/domains/notification"    //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/providerprofile" //nolint:depguard // 供应商画像告警 handler (AlertType)
 	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"    //nolint:depguard // P1 proactive upstream quota prefetch
@@ -118,6 +119,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
 	"github.com/kaixuan/llm-gateway-go/internal/providers/mock"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
+	"github.com/kaixuan/llm-gateway-go/internal/registration"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
@@ -973,6 +975,8 @@ func main() {
 	// Started after dbConn is ready; stopped before pools.CloseAll so its
 	// final tick can still reach the DB.
 	var sessionAggregateOutboxReaperForShutdown any
+	// sessionBodiesCleanupForShutdown — W1.4 hourly body retention cleaner.
+	var sessionBodiesCleanupForShutdown any
 	// sessionDigestBackfillForShutdown — turn-digest 第二阶段 (2026-09-04):
 	// 后台回填 session_turns.digest jsonb envelope（存量 NULL 行）。与 reaper
 	// 同一生命周期：dbConn 就绪后启动，pools.CloseAll 前排空 in-flight 批。
@@ -1652,6 +1656,11 @@ func main() {
 		// 导致 routing 永远按 weight 而不是实时并发分摊。把 PeakCollector
 		// 注入 Router.LiveLoad，使 P2C 拿到真正的 in-flight 计数。
 		router.LiveLoad = peakCollector
+		// P0-A (2026-10-28 两层路由审计 G1): 内存熔断面的恢复时刻接入
+		// 路由评分——恢复期渐进回流量（recovery ramp）的信号源之一。
+		// cm 与 Executor.Circuit 是同一个 Manager（executor.go:1035），
+		// 读写同一份内存状态。
+		router.CircuitRecovery = cm
 		routingRouter = router
 
 		// 2026-09-19 sticky-session load balancing：每凭据 5 分钟 sticky
@@ -2924,6 +2933,7 @@ func main() {
 		if sessionAggregateOutboxReaperForShutdown != nil {
 			slog.Info("session aggregate outbox reaper started (FOR UPDATE SKIP LOCKED, 30s tick, batch=100, max_attempts=10)")
 		}
+		sessionBodiesCleanupForShutdown = startSessionBodiesCleanupWorker(dbConn.Pool())
 
 		// Spec §12 GAP 2 closure (2026-09-15, migration 712): durable replay
 		// queue for the sessionv2mirror shadow write. Failed mirror writes
@@ -4023,6 +4033,7 @@ func main() {
 		return em
 	}
 	var modelQualityWorker *bg.ModelQualityWorker
+	var modelCredibilityWorker *bg.ModelCredibilityWorker
 	var modelIQCleaner *bg.ModelIQCleaner
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
@@ -5145,9 +5156,8 @@ func main() {
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.base_url", ""); len(raw) > 0 {
 					jsoncol.Decode("gateway.modelQuality/base_url", raw, &mqBaseURL)
 				}
-				if mqBaseURL == "" {
-					mqBaseURL = "http://localhost:8787"
-				}
+				// 2026-10-29 (24h 审计第 7 轮): 空值留给 worker/invoker 侧的
+				// loopback.GatewayBase() 解析（不再落 8787 死端口）。
 
 				// 读取api_key
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.api_key", ""); len(raw) > 0 {
@@ -5208,10 +5218,35 @@ func main() {
 				}
 				mqConfig.EnablePerNodeTesting = mqEnablePerNode
 
+				// 2026-10-30 (24h 审计第 7 轮)：per-node 范围与去重窗口。
+				// featured 默认 —— 与 model_credibility.scope 的 featured 同口径；
+				// min-interval 默认 24h —— 防止每次部署重启把同一批节点重打一遍。
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.per_node_scope", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelQuality/per_node_scope", raw, &mqConfig.PerNodeScope)
+				}
+				var mqPerNodeMinHours float64
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.per_node_min_interval_hours", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelQuality/per_node_min_interval_hours", raw, &mqPerNodeMinHours)
+				}
+				mqConfig.PerNodeMinIntervalHours = int(mqPerNodeMinHours)
+				// 2026-10-30 (24h 审计第 8 轮)：失败冷却窗（spec 默认 4h）。
+				var mqPerNodeFailedHours float64
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.per_node_failed_interval_hours", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelQuality/per_node_failed_interval_hours", raw, &mqPerNodeFailedHours)
+				}
+				mqConfig.PerNodeFailedIntervalHours = int(mqPerNodeFailedHours)
+
 				modelQualityWorker = bg.NewModelQualityWorker(mqDataDir, mqAPIKey, mqBaseURL, time.Duration(mqTimeoutSec)*time.Second)
-				if mqEnablePerNode && dbConn != nil && (keyring != nil || len(fernetKey) == 32) {
+				// ★ nodeSource 常驻注入（db + 解密 key 可用即设）。
+				// enable_per_node 只控制**定时** per-node 循环（loop 里的
+				// EnablePerNodeTesting 门）。2026-10-30 211 实测：把 SetNodeSource
+				// 绑在 enable_per_node 上，手动「立即测试 IQ」按钮 503
+				// （node source not configured）—— 与 credibility trigger 同族缺陷。
+				if dbConn != nil && (keyring != nil || len(fernetKey) == 32) {
 					modelQualityWorker.SetNodeSource(bg.NewCredentialNodeSource(dbConn.Pool(), keyring, fernetKey))
-					slog.Info("model_quality_worker: per-node direct testing enabled")
+					if mqEnablePerNode {
+						slog.Info("model_quality_worker: per-node direct testing enabled")
+					}
 				} else if mqEnablePerNode {
 					slog.Warn("model_quality_worker: enable_per_node=true but DB/keyring unavailable, falling back to gateway-only")
 					mqConfig.EnablePerNodeTesting = false
@@ -5237,6 +5272,68 @@ func main() {
 					"timeout_seconds", mqTimeoutSec,
 					"use_lite", mqUseLite,
 					"per_node", mqEnablePerNode)
+
+				// 2026-10-29: 模型可信度（防掺水）扫描 worker。
+				//
+				// ★ 与 model_quality_worker 的关系：两者互补不重叠 ——
+				//   model_quality_worker 跑 MMLU 题库 ⇒「这个模型答对多少题」（质量）；
+				//   model_credibility_worker 发一次标定请求 + 复用上面的实测 ⇒
+				//   「这个供应商给的是不是它声称的那个模型」（身份）。
+				// ⇒ 后者依赖前者的产出（model_iq_runs 的准确率）：前者没跑过时，
+				//   能力维度记为「未测量」，判定只靠身份与指纹两把尺。
+				//
+				// ★ 需要解密 key（直连上游发标定请求）⇒ keyring / fernetKey 至少
+				//   有一个可用，否则 worker 不启动（admin API 仍可读已落库的判定）。
+				// ★ 默认关。worker 启动后会对每个活跃节点直连上游发真实请求，
+				// 消耗 token、打到供应商限流。必须显式打开，不能靠零值当「开」。
+				mcEnabled := false
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_credibility.enabled", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelCredibility/enabled", raw, &mcEnabled)
+				}
+				// 扫描面：featured（默认，routing_policy.featured_models）| all。
+				mcScope := modelcredibility.ScopeFeatured
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_credibility.scope", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelCredibility/scope", raw, &mcScope)
+				}
+				mcIntervalHours := 6
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_credibility.interval_hours", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelCredibility/interval_hours", raw, &mcIntervalHours)
+				}
+				if mcIntervalHours < 1 {
+					mcIntervalHours = 6
+				}
+				mcProbeTimeoutSec := 60
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_credibility.probe_timeout_seconds", ""); len(raw) > 0 {
+					jsoncol.Decode("gateway.modelCredibility/probe_timeout_seconds", raw, &mcProbeTimeoutSec)
+				}
+				if mcProbeTimeoutSec < 10 {
+					mcProbeTimeoutSec = 60
+				}
+				// ★ worker 常驻创建（只要 db + 解密 key 可用），`enabled` 只控制
+				// **定时循环**是否启动。手动单点检测（POST /trigger）不依赖
+				// enabled —— 2026-10-30 211 实测教训：把 worker 创建绑在
+				// enabled 上，运维点「立即检测」会 503（worker not configured），
+				// 而 admin API 是实时验证扫描链路的唯一通道。
+				if keyring != nil || len(fernetKey) == 32 {
+					mcCfg := bg.DefaultModelCredibilityWorkerConfig()
+					mcCfg.Enabled = mcEnabled
+					mcCfg.Interval = time.Duration(mcIntervalHours) * time.Hour
+					mcCfg.ProbeTimeout = time.Duration(mcProbeTimeoutSec) * time.Second
+					mcCfg.Scope = mcScope
+					modelCredibilityWorker = bg.NewModelCredibilityWorker(dbConn.Pool(), keyring, fernetKey, mcCfg)
+					modelCredibilityWorker.Start(context.Background())
+					if mcEnabled {
+						slog.Info("CHECKPOINT: model_credibility_worker started",
+							"interval_hours", mcIntervalHours,
+							"probe_timeout_seconds", mcProbeTimeoutSec,
+							"scope", mcScope)
+					} else {
+						// 定时关，但手动 trigger/scan 仍可用（admin backend 已注入）。
+						slog.Info("model_credibility_worker: scheduled scan disabled by settings; manual trigger still available")
+					}
+				} else {
+					slog.Warn("model_credibility_worker: keyring/fernet key unavailable, not created")
+				}
 			}
 		}
 
@@ -5932,6 +6029,12 @@ func main() {
 				auditTrimmer.Stop()
 			}()
 
+			// Package 07: postpaid monthly bill issuer (previous calendar month).
+			monthlyBillWorker := bg.NewMonthlyBillWorker(maas.NewService(dbConn.Pool()), 24*time.Hour).
+				WithSharedThrottleDB(dbConn.Pool())
+			monthlyBillWorker.Start(context.Background())
+			defer monthlyBillWorker.Stop()
+
 			handoffPendingTrimmer := bg.NewHandoffPendingTrimmer(dbConn.Pool())
 			handoffPendingTrimmer.Start(context.Background())
 			defer handoffPendingTrimmer.Stop()
@@ -6051,6 +6154,12 @@ func main() {
 			// read-only catalog/history/node-latest endpoints still work.
 			if modelQualityWorker != nil {
 				adminHandler.SetModelQualityBackend(modelQualityWorker)
+			}
+			// 2026-10-29: 模型可信度（防掺水）admin 后端。
+			// 读端点（list/catalog/detail/history）直接查 DB ⇒ worker 未启动
+			// 也能读已落库的判定；只有 trigger/scan 端点需要 worker。
+			if modelCredibilityWorker != nil {
+				adminHandler.SetModelCredibilityBackend(modelCredibilityWorker)
 			}
 			// Wire redis for credential monitor endpoints (2026-06-22).
 			if fpSlotRedis != nil {
@@ -6547,7 +6656,7 @@ func main() {
 			ContextSecret: []byte(cfg.SecretKey),
 			SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
 		})
-		pluginBases := ScanAndStartPluginsWithRegistry(sup, pluginRegistry, pluginManifests)
+		pluginBases := ScanAndStartPluginsWithRegistryDir(sup, pluginRegistry, pluginManifests, pluginsDir)
 		for _, manifest := range pluginManifests {
 			// ★ 2026-10-24 P0-2：manifest 声明**未实现**的插件能力 ⇒ 声明即拒
 			//   （该能力永远不被授予 ⇒ 走那条路由必然 403 capability_denied）。
@@ -6605,6 +6714,24 @@ func main() {
 		}()
 	}
 	wirePluginAuthExtractor()
+	manifestByID := func(id string) *pluginruntime.Manifest {
+		for _, m := range pluginManifests {
+			if m != nil && m.PluginID == id {
+				return m
+			}
+		}
+		return nil
+	}
+	mux.Handle("/api/v1/plugins/", admin.AdminMiddleware(
+		func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/settings") {
+				pluginruntime.SettingsHandler(manifestByID).ServeHTTP(w, r)
+				return
+			}
+			http.NotFound(w, r)
+		},
+		dbConn.Pool(), cfg.SecretKey,
+	))
 	mux.Handle("/api/v1/plugin-nav", admin.AdminMiddleware(
 		func(w http.ResponseWriter, r *http.Request) {
 			pluginruntime.NavHandler(pluginRegistry, pluginruntime.ViewerFromRequest).ServeHTTP(w, r)
@@ -7158,7 +7285,10 @@ func main() {
 		customerEcho.HidePort = true
 
 		jwtSecret := resolveJWTSecret(os.Getenv("LLM_GATEWAY_JWT_SECRET"), cfg.SecretKey)
-		jwtMiddleware := newJWTMiddleware(jwtSecret)
+		// ★ 2026-10-27（r1039 后续轮，§8 第 9 条）：把连接池交给中间件，
+		// 让 Echo 侧也能做「改密即吊销」探测（此前只有 ServeMux 侧有）。
+		// pool 为 nil 时探测 fail-open（放行），不会把管理面锁死。
+		jwtMiddleware := newJWTMiddleware(jwtSecret, dbConn.Pool())
 		e.Use(jwtMiddleware)
 
 		// 2026-07-21: 受限模式中间件必须在 jwtMiddleware 之前注册，
@@ -8030,8 +8160,28 @@ func main() {
 		}
 	}()
 
+	// goacos 服务发现注册（方案 54 / CO-20）：**设计在案、实现未落地**。
+	//
+	// 2026-10-29 24h 审计轮：Mavis 合并 bot 曾在此注入
+	// `registryClient := registration.Start(...)`，但 internal/registration 包
+	// 在当时任何提交里都不存在（bot 的 "go build ✓" 是其工作区里未入库的包）⇒
+	// main 从该提交起编译必红 ⇒ 本轮移除引用。**重落此功能必须连同包一起提交**。
+	// 2026-10-30（ede0c5f7a）：包已随 count_tokens 收口提交入仓 ⇒ 并行会话补接线，
+	// 第 8 轮补上 shutdown 侧的 Stop（Start/Stop 成对）。
+	//
+	// 落地时的两条硬约束（从 bot 注释里抢救下来的设计事实）：
+	//   1. ⚠ **必须在端口真的 listen 之后**：通告的端口（从 cfg.Listen 派生）
+	//      一定是本进程正在听的端口 ⇒ 蓝绿切流当天也不会通告一个已经不再
+	//      监听的端口（活跃端口在 8781/8782 之间来回换，见 AGENTS.md
+	//      §「端口：必须现场确认，不要假设」）。
+	//   2. ⚠ 注册失败**不挡服务**：注册中心不可达时照常对外服务。
+
+	registryClient := registration.Start(ctx, cfg.Listen, slog.Default())
 	<-ctx.Done()
 	slog.Info("gateway shutting down")
+	// goacos 注销（方案 54 / CO-20）：必须在 listener 关闭前——实例行还在注册表里
+	// 时，对端会继续拨一个即将死掉的进程。Stop(nil) 安全（未启用时 Start 返回 nil）。
+	registration.Stop(registryClient)
 	if persistentLogger != nil {
 		persistentLogger.LogShutdown("termination_signal", true, "signal", "SIGINT/SIGTERM")
 	}
@@ -8054,6 +8204,21 @@ func main() {
 		probeDrainCancel()
 		slog.Info("mock probe runner stopped")
 	}
+
+	// goacos 注销（方案 54 / CO-20）：**设计在案、实现未落地**（见上方 Start 处
+	// 2026-10-29 说明）——重落时注销必须**在停端口之前发起**：注册面还留着这个
+	// 实例的那几秒里，peer 会继续往一个已经不再接请求的进程上打。
+	//
+	// ⚠ 为什么注销要**并发发起**而不是同步等待：systemd TimeoutStopSec=35s 的预算**已经占满**
+	//   （下方 srv.Shutdown 23s drain + 12s worker 余量，见 2026-08-19 的注释）。
+	//   同步注销会挤掉 worker 的那份 ⇒ 进程可能在 35s 被 SIGKILL ⇒ 租约与 DB 连接留脏。
+	//   那比 peer 多拨一次已经关掉的端口更糟。DELETE **先发出**，通常在毫秒级内落地。
+	//
+	// ⚠ 停机预算有**两面**，只有一面在仓内：deploy/llm-gateway-go.service 与
+	//   deploy/llmgo-245.service 写的是 TimeoutStopSec=25s（tracked）；活体主机靠一个
+	//   systemd drop-in 提到 35s（上面 2026-08-19 的注释引用的就是它），而那个 drop-in
+	//   **不在仓内** ⇒ 活体预算属于「仓内不可核对」的主机侧状态。
+	//   按**较小**的那一面（25s）算，同步注销也放不下 ⇒ 并发发起是稳的那一边。
 
 	// 1. Stop accepting new connections — in-flight requests drain naturally
 	// 2026-08-19: 30s→23s. systemd TimeoutStopSec=35s (drop-in), srv.Shutdown 必须 ≤ 23s
@@ -8196,6 +8361,9 @@ func main() {
 		if modelQualityWorker != nil {
 			modelQualityWorker.Stop()
 		}
+		if modelCredibilityWorker != nil {
+			modelCredibilityWorker.Stop()
+		}
 		if modelIQCleaner != nil {
 			modelIQCleaner.Stop()
 		}
@@ -8287,6 +8455,7 @@ func main() {
 		// outbox rows are enqueued) and BEFORE pools.CloseAll (so the final
 		// tick's DB transaction can still reach the server).
 		stopSessionAggregateOutboxReaper(sessionAggregateOutboxReaperForShutdown)
+		stopSessionBodiesCleanupWorker(sessionBodiesCleanupForShutdown)
 		// GAP-2 closure (migration 712): drain the mirror outbox reaper.
 		// Same ordering contract as the aggregate reaper above.
 		stopSessionMirrorOutboxReaper(sessionMirrorOutboxReaperForShutdown)

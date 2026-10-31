@@ -36,13 +36,36 @@ func (h *Handler) handleSanitizeRules(w http.ResponseWriter, r *http.Request) {
 	// r1039（D4）：租户管理员要能**看**自己租户的放行情况（「为什么我被拦了」），
 	// 但**写**（授予/撤销放行）只给超管 —— 判定在 handleEgressReleases 内部。
 	egressReleaseRead := path == "/egress-releases"
-	if !super && !(auth.Role == "tenant_admin" && auth.TenantID != "" && (eventRead || eventReview || egressReleaseRead)) {
+	// 2026-10-28 拦截审核轮：租户管理员可读自己租户的拦截审核队列；批准/拒绝
+	// 与硬阻断清单读写仍只给超管（判定在各 handler 内部）。
+	//
+	// ★ 2026-10-29 输出合规误报轮：读面扩到「规则级复核读数」
+	//（/blocked-reviews/insights）—— 租户管理员同样能看自己租户的误报分布
+	//（那是「我为什么老被拦」的答案）。
+	blockedReviewRead := path == "/blocked-reviews" || path == "/blocked-reviews/" ||
+		path == "/blocked-reviews/insights"
+	if !super && !(auth.Role == "tenant_admin" && auth.TenantID != "" && (eventRead || eventReview || egressReleaseRead || blockedReviewRead)) {
 		writeError(w, 403, "insufficient permission for rule management")
 		return
 	}
 	if path == "/egress-releases" {
 		// 放行表不依赖规则管理器 ⇒ 放在这个 503 之前。
 		h.handleEgressReleases(w, r, auth)
+		return
+	}
+	if path == "/hardblock" {
+		// 硬阻断清单同样不依赖规则管理器（进程内清单）。
+		h.handleHardBlockRules(w, r)
+		return
+	}
+	if path == "/output-check" {
+		// ★ 2026-10-29 输出合规误报轮：输出合规**全局开关**的专属入口
+		//（写的是同一个设置键 sanitize.output_check_enabled，不另立真值）。
+		h.handleOutputCheckSwitch(w, r)
+		return
+	}
+	if strings.HasPrefix(path, "/blocked-reviews") {
+		h.handleBlockedReviews(w, r, auth)
 		return
 	}
 	if h.sanitizeRuleManager == nil {
@@ -58,7 +81,9 @@ func (h *Handler) handleSanitizeRules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		snap := h.sanitizeRuleManager.Current()
-		writeJSON(w, 200, map[string]any{"version": snap.Version, "config": snap.Config(), "config_digest": snap.ConfigDigest, "status": h.sanitizeRuleManager.Status()})
+		// ★ 2026-10-29 输出合规误报轮：★ 补上规则**说明**（★ 事实源 = YAML +
+		// 内建目录；★ 历史规则快照里没有说明 ⇒ 不补的话管理面只能显示规则 ID）。
+		writeJSON(w, 200, map[string]any{"version": snap.Version, "config": sanitizerules.ApplyRuleDescriptions(snap.Config()), "config_digest": snap.ConfigDigest, "status": h.sanitizeRuleManager.Status()})
 	case "/validate":
 		if !sanitizeRuleMethod(w, r, http.MethodPost) {
 			return

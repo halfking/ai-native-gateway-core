@@ -148,17 +148,17 @@ function statusClass(status: string): string {
 <style scoped>
 .flow-summary {
   display: flex; flex-wrap: wrap; gap: 12px;
-  font-size: 12px; margin-bottom: 10px; color: var(--text-secondary);
+  font-size: 12px; margin-bottom: 8px; color: var(--text-secondary);
 }
 .journal-actions { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-.journal-chip { border: 1px solid var(--border); border-radius: 999px; padding: 1px 6px; font-size: 10px; color: var(--text-secondary); }
+.journal-chip { border: 1px solid var(--border); border-radius: 999px; padding: 1px 4px; font-size: 11px; color: var(--text-secondary); }
 .degraded { color: var(--warning); }
 .flow-list { list-style: none; margin: 0; padding: 0; }
 .flow-row {
   display: grid;
   grid-template-columns: minmax(120px, 1.4fr) 72px 72px 1fr;
   gap: 8px; align-items: baseline;
-  padding: 6px 8px; border-bottom: 1px solid var(--border);
+  padding: 4px 8px; border-bottom: 1px solid var(--border);
   font-size: 12px;
 }
 .flow-row.bad .stage, .flow-row.bad .dur { color: var(--danger); }

@@ -1207,13 +1207,22 @@ func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candida
 		mnfKind := mnf.resolvedKind()
 		e.recordModelNotFound(sideEffectCtx, mnf.credentialID, mnf.rawModel, mnf.body, mnf.status, mnfKind)
 		e.recordMnfStreak(params, cand.CredentialID)
-	} else if code, ok := transientSuppressErrorCode(kind); ok {
-		// 2026-09-14 audit O2: arm the 5-minute (credential, model) routing
-		// suppression on transient dispatch failures so the 48h fallback
-		// pool stops re-selecting a pair that just failed (its composite is
-		// a constant 50 and sees no Reliability feedback). Free-tier pairs
-		// arm a 60s window instead (2026-09-15 free-capacity plan).
-		e.recordTransientDispatchFailure(sideEffectCtx, cand.CredentialID, cand.RawModel, code, cand.BillingMode)
+	} else {
+		if code, ok := transientSuppressErrorCode(kind); ok {
+			// 2026-09-14 audit O2: arm the 5-minute (credential, model) routing
+			// suppression on transient dispatch failures so the 48h fallback
+			// pool stops re-selecting a pair that just failed (its composite is
+			// a constant 50 and sees no Reliability feedback). Free-tier pairs
+			// arm a 60s window instead (2026-09-15 free-capacity plan).
+			e.recordTransientDispatchFailure(sideEffectCtx, cand.CredentialID, cand.RawModel, code, cand.BillingMode)
+		}
+		// 2026-10-31 B2（magpie 四域对比刷新轮 §五 B2）：429 沉底信号写入。
+		// 只有 KindRateLimit 进 sink（容量/短窗限流——配额未满的形态）；
+		// quota 类不写键（那是 rest 不是 sink——判据④）。信号在
+		// planByTier 尾段把该候选沉到未被限流者之后（RateSinkTTL=5min）。
+		if kind == errorsx.KindRateLimit {
+			e.Router.MarkRateLimited(sideEffectCtx, cand.CredentialID, cand.RawModel)
+		}
 	}
 	return kind
 }

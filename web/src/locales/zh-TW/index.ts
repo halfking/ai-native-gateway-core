@@ -1,5 +1,6 @@
 // zh-TW/index.ts — 聚合繁體中文各模組。新增模組在此 import + 合併。
 import common from './common'
+import plugin from './plugin'
 import customer from './customer'
 import annotation from './annotation'
 import nav from './nav'
@@ -57,6 +58,7 @@ import modelPicker from './modelPicker'
 import modulesView from './modulesView'
 import formatAnomaliesView from './formatAnomaliesView'
 import modelIntegrityView from './modelIntegrityView'
+import modelCredibilityView from './modelCredibilityView'
 import outputCompliance from './outputCompliance'
 import sanitizeRules from './sanitizeRules'
 import agentRegistryView from './agentRegistryView'
@@ -87,6 +89,7 @@ export default {
   hyper,
   usageTrend,
   common,
+  plugin,
   customer,
   annotation,
   nav,
@@ -143,6 +146,7 @@ export default {
   modulesView,
   formatAnomaliesView,
   modelIntegrityView,
+  modelCredibilityView,
   agentRegistryView,
   ops,
   qualityCorrelations,

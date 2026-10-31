@@ -44,10 +44,19 @@ const sourceLabel = computed(() => {
   const map: Record<string, string> = {
     memory: t('requestDetail.overview.source.memory'),
     file: t('requestDetail.overview.source.file'),
-    request_logs: 'request_logs',
-    session_turns: 'session_turns',
+    // ★ R182 轮修正：★ 原来这两个分支直接渲染**裸表名**（"request_logs" /
+    //   "session_turns"）⇒ ★ 与旁边两个已本地化的兄弟标签并列时，
+    //   ★ 【退役表的旧名 + 内部表名】就那样上屏 ⇒ ★ 现在走 i18n。
+    request_logs: t('requestDetail.overview.source.requestLogs'),
+    session_turns: t('requestDetail.overview.source.sessionTurns'),
+    // ★ R182 轮补齐：★ 后端还有第 5 个取值 `live_stream`
+    //   （domains/requestdetail/types.go:14，locator.go:146 产出）
+    //   ⇒ ★ 旧联合漏了它 ⇒ ★ 它落进兜底分支 ⇒ ★ 裸串上屏。
+    live_stream: t('requestDetail.overview.source.liveStream'),
   }
-  return map[s] || s
+  // ★ 兜底**不许把未知值当文案上屏**：★ 未知 source 一律显示「—」
+  //   （★ 宁可空着，也不要把一个内部标识符摆到用户面前）。
+  return map[s] ?? '—'
 })
 
 const persistenceLabel = computed(() =>
@@ -279,7 +288,7 @@ function clip(text: string, max = 480): string {
 
 <style scoped>
 .qa-card {
-  margin-bottom: 14px; padding: 12px; border: 1px solid var(--border);
+  margin-bottom: 12px; padding: 12px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--bg-subtle, var(--surface-secondary));
 }
 .qa-head {
@@ -320,10 +329,10 @@ function clip(text: string, max = 480): string {
 /* .pill / .pill--* 全部从全局 styles/pill-chip.css 继承（P1-8）。 */
 .lbl { color: var(--muted); font-size: 11px; }
 code { font-size: 11px; word-break: break-all; }
-.flow-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.flow-links { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 12px; }
 .warn { color: var(--warning); font-size: 12px; margin-top: 8px; }
 .linkish { margin-top: 4px; }
-.chip-row { display:flex; flex-wrap:wrap; gap:6px; }
+.chip-row { display:flex; flex-wrap:wrap; gap:4px; }
 .sec-chip {
   font-size: 11px;
   padding: 2px 8px;

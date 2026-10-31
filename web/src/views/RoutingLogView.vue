@@ -463,7 +463,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 60px;
+  padding: 64px;
   color: var(--muted);
 }
 
@@ -487,7 +487,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 }
 
 .log-table th, .log-table td {
-  padding: 7px 10px;
+  padding: 8px 8px;
   text-align: left;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
@@ -524,7 +524,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 
 .kind-badge {
   display: inline-block;
-  padding: 2px 6px;
+  padding: 2px 4px;
   border-radius: 4px;
   font-size: 11px;
   font-weight: 600;
@@ -557,15 +557,15 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 8px 20px;
-  padding: 6px 2px;
+  gap: 8px 16px;
+  padding: 4px 2px;
 }
 
 .detail-item { display: flex; flex-direction: column; gap: 2px; }
 .detail-full { grid-column: 1 / -1; }
 
 .detail-label {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   font-weight: 600;
 }

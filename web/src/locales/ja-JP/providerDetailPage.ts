@@ -43,6 +43,7 @@ export default {
     performance: 'パフォーマンス',
     stability: '安定性',
     costEfficiency: 'コスト効率',
+    credibility: 'モデルの信頼性',
     updatedAt: '更新時刻',
     requestStats: 'リクエスト統計',
     totalRequests: '総リクエスト数',

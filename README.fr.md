@@ -17,7 +17,7 @@
 AI Native Gateway est une **passerelle LLM open source, auto-hébergée et nativement IA**, conçue pour l’ère des agents IA et du « vibe coding ». Elle fait bien plus que relayer des requêtes : elle **classe, route, gouverne, audite et facture** chaque token qui traverse votre organisation.
 
 - **Normalisation des protocoles** : compatibilité OpenAI, Anthropic, Gemini et Responses API — un seul endpoint pour tous les modèles
-- **Routage intelligent à deux couches** : L1 choisit le modèle (classification de tâche → scoring à 6 dimensions), L2 choisit le credential (repli de palier → tour de facturation → scoring P2C → exécuter / couper)
+- **Routage intelligent à deux couches** : L1 choisit le modèle (classification de tâche → scoring à 8 dimensions), L2 choisit le credential (repli de palier → tour de facturation → scoring P2C → exécuter / couper)
 - **Gouvernance de session** : sessions collantes, replay de session au contenu complet, compression automatique de prompt et cycle de vie des données en 4 niveaux — la conversation, et pas seulement la requête, est un objet managé de premier rang
 - **Multi-tenant** : isolation des tenants imposée par RLS PostgreSQL sur 90+ tables, avec quotas, metering et facturation MaaS par tenant
 - **Gestion des credentials** : pools multi-credentials avec déguisement d’empreinte, sonde adaptive et coupure automatique (disjoncteur)
@@ -104,17 +104,17 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | Chemin | Rôle |
 |------|------|
 | `cmd/gateway/` | Racine de composition — point d’entrée de production en binaire unique (plans données + contrôle) |
-| `domains/` | 68 domaines DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, sécurité… |
+| `domains/` | 69 domaines DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, sécurité… |
 | `admin/` + `web/` | API REST d’admin + SPA Vue 3 + TypeScript (Element Plus, ECharts) |
 | `web-mobile/` | Frontend mobile (Vue 3 + TypeScript) — seconde UI de production ; le déploiement refuse de démarrer sans son build `dist/` |
 | `bg/` | Workers en arrière-plan — probing, nettoyage du cycle de vie, agrégation de stats, maintenance des partitions |
 | `storage/` | Factory de stockage double mode (`full` : PG+Redis / `lite` : SQLite+fichiers+KV en processus) |
 | `internal/` | Infra transverse — IR, strip des champs fournisseurs, miroir de session, outbox, télémétrie… |
-| `sql/migrations/` + `db/migrations/` | Migrations idempotentes (série de démarrage actuellement à 907) |
+| `sql/migrations/` + `db/migrations/` | Migrations idempotentes (série de démarrage actuellement à 927) |
 | `installer/` | Module autonome d’installation / mise à niveau multiplateforme |
 | `scripts/`, `deploy/` | Outillage de build, déploiement, miroir et vérification |
 
-Instantané d’échelle (scan du code au 2026-10-22 @31466a01d) : **~5,680 fichiers Go · 3,333 fichiers de test · 1,119 SQL de migration · 68 packages de domaine · 44 binaires** sous `cmd/` (comptages hors `vendor/` et `installer/`; SQL de migration = arbre complet `sql/migrations/`; binaires = paquets main selon `go list`).
+Instantané d’échelle (scan du code au 2026-10-31 @495a1c758) : **~6,138 fichiers Go · 3,661 fichiers de test · 1,180 SQL de migration · 69 packages de domaine · 49 binaires** sous `cmd/` (comptages hors `vendor/` et `installer/`; SQL de migration = arbre complet `sql/migrations/`; binaires = paquets main selon `go list`).
 
 **Pour aller plus loin**
 
@@ -162,7 +162,7 @@ Tous les modules ci-dessous sont livrés et tournent dans le déploiement de pro
 ### Panorama de routage — routage à deux couches, entièrement observable
 
 ![Routing Panorama](docs/assets/screenshots/routing-panorama.png)
-*Sélection du modèle L1 (classification de tâche → scoring à 6 dimensions → verrou de profil) + sélection du credential L2 (résolution du modèle → repli de palier → tour de facturation → scoring P2C → exécuter / couper). La heatmap tâche × modèle répond à « quel modèle pour quelle tâche » ; le flux Sankey montre la destination finale de 14 000+ requêtes live (tâche → modèle → fournisseur)*
+*Sélection du modèle L1 (classification de tâche → scoring à 8 dimensions → verrou de profil) + sélection du credential L2 (résolution du modèle → repli de palier → tour de facturation → scoring P2C → exécuter / couper). La heatmap tâche × modèle répond à « quel modèle pour quelle tâche » ; le flux Sankey montre la destination finale de 14 000+ requêtes live (tâche → modèle → fournisseur)*
 
 ### Moniteur de credentials — santé multi-sources × multi-credentials
 
@@ -298,7 +298,7 @@ En non-TTY (CI / `--skip-prompt`) sans `--config`, la valeur par défaut est `fu
 | 5. Arborescence | complète | complète (db/data et redis/data créés mais inutilisés) |
 | 6. `compose.yml` | 3 services | **`kx-citus` + `kx-redis` retirés** ; la gateway perd `depends_on` et l’env PG/Redis |
 | 7. Démarrage des conteneurs | 3 conteneurs | **`kx-llm-gateway-go` uniquement** |
-| 8. Initialisation de la base | attendre PG ready + `InitSchema` (450+ migrations de démarrage) | **sauté** (SQLite auto-crée) |
+| 8. Initialisation de la base | attendre PG ready + `InitSchema` (590+ migrations de démarrage) | **sauté** (SQLite auto-crée) |
 | 9. Vérification de santé | contrôle complet en 5 points | conteneur + `/healthz` uniquement ; PG/Redis/Schema forcés ✅ dans le rapport |
 
 **Nouveaux flags d’install**

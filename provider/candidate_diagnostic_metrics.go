@@ -18,6 +18,7 @@ var (
 		"stale_cache_empty",
 		"enrich_empty",
 		"db_query_retry",
+		"optional_signal_degraded",
 		"other",
 	}
 )

@@ -120,20 +120,31 @@ type docEvidence struct {
 //   ⇒ ★★ **漂移史**：`7724-7740` → `7725-7743` → `7758-7776`（★ 三次里有
 //   ★★ 两次是**别的会话**改 `main.go` 带的 ⇒ ⇒ 「行号会漂」不是偶发，
 //   ★★ 是**常态** ⇒ ⇒ 每次动 `main.go` 的中间件链，**必须回头重钉这三处**）。
+// ★★ **第四次重钉（2026-10-28 分支审计轮）**：wip/01~07 合并往 main.go 插了 30 行
+//   （sessionid/taskbus/billing 装配）⇒ 链整体 +30：Recovery 7800 / Logging 注释
+//   7802-7809 / maintain 注释 7791-7796 / SecurityHeaders 7818；main_pipeline.go
+//   启动日志 1112 → 1123、v2pipe- 合成块 749-758 → 755-768。三面已同钉。
+// ★★ **第五次重钉（2026-10-30 24h 审计第 8 轮）**：origin 又有并行会话改 main.go
+//   ⇒ 链整体再漂：Recovery 7893 / Logging 注释 7895-7902 / maintain 注释 7884-7889 /
+//   SecurityHeaders 7911。三面（本表 · 设计页 · 认证表 A1）同钉。
+// ★★ **第六次重钉（2026-10-30 同轮晚些）**：并行会话（model-credibility catalog 端点
+//   handler.go:1603-1608 的 6 条路由）又把 main.go 推了 7 行 ⇒ Recovery 7900 /
+//   Logging 注释 7902-7909 / maintain 注释 7891-7896 / SecurityHeaders 7918。
+//   三面同钉（本表 · request-surface.md · 认证表 A1）。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 7758, to: 7776,
+		file: "cmd/gateway/main.go", from: 7891, to: 7918,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 7760, to: 7767,
+		file: "cmd/gateway/main.go", from: 7902, to: 7909,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 7749, to: 7754,
+		file: "cmd/gateway/main.go", from: 7891, to: 7896,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},
@@ -149,12 +160,16 @@ var requestSurfaceDocEvidence = []docEvidence{
 		why: "Hook 的 5 个旧阶段名（别名视图的词表）",
 	},
 	{
-		file: "domains/streaming/executors/executor_chat.go", from: 60, to: 67,
+		file: "domains/streaming/executors/executor_chat.go", from: 95, to: 102,
 		mustContain: "type ExecuteHooks struct", kind: evidenceCode,
 		why: "执行器生命周期钩子的类型定义",
 	},
 	{
-		file: "domains/hooks/response/types.go", from: 179, to: 179,
+		// ★ 2026-10-29（R180 轮）：★ 上游把这段代码挪了位（★ 179 ⇒ 185）⇒ ⇒ 对拍表的行号区间跟着更新
+		// ★ （★ 区间指向的【内容】没变 ⇒ ⇒ 这是【位置漂移】，★ 不是「证据没了」）。
+		// ★★ R180 轮实测：★ 上游也独立把区间改到了 185 ⇒ ⇒ ★★ 双方改法【逐字一致】★
+		// ★★ ⇒ ⇒ 合并时只冲突在【注释】上（★ 上游没写注释）⇒ ⇒ 这里两边都留。
+		file: "domains/hooks/response/types.go", from: 185, to: 185,
 		mustContain: "type ResponseInterceptor interface", kind: evidenceCode,
 		why: "响应拦截链的接口（挂在 phase 上的那套机制）",
 	},
@@ -175,12 +190,12 @@ var requestSurfaceDocEvidence = []docEvidence{
 		why: "v2 开关的读取（默认关、启动时读一次）",
 	},
 	{
-		file: "cmd/gateway/main_pipeline.go", from: 1112, to: 1112,
+		file: "cmd/gateway/main_pipeline.go", from: 1123, to: 1123,
 		mustContain: "LLM_GATEWAY_USE_V2_PIPELINE=true", kind: evidenceCode,
 		why: "v2 打开时的那条启动日志",
 	},
 	{
-		file: "cmd/gateway/main_pipeline.go", from: 749, to: 758,
+		file: "cmd/gateway/main_pipeline.go", from: 755, to: 768,
 		mustContain: "v2pipe-", kind: evidenceCode,
 		why: "D09 的 v2 request-id 合成与写回（★ 存在 ⇒ 那条差异不是「没实现」）",
 	},

@@ -505,7 +505,12 @@ func outerColumnRefs(outer string) []string {
 		"from": true, "as": true, "on": true, "join": true, "left": true, "inner": true,
 		"outer": true, "group": true, "having": true, "null": true, "is": true,
 		"true": true, "false": true, "now": true, "interval": true, "minutes": true,
-		"lower": true, "coalesce": true, "extract": true, "epoch": true, "bigint": true,
+			// 2026-10-30（252SQL 审计轮）：窗口谓词从 `created_at > NOW() - ($4 * INTERVAL '1 minute')`
+			// 改成 `created_at > NOW() - make_interval(mins => $4::int)`。make_interval 是
+			// 函数名、mins 是它的命名参数 —— 都不是列引用。漏进 skip 表 ⇒ 外层列引用
+			// 扫描把它们当成「内层投影缺失的列」⇒ 假红。
+			"make_interval": true, "mins": true,
+			"lower": true, "coalesce": true, "extract": true, "epoch": true, "bigint": true,
 		"text": true, "int": true, "integer": true, "case": true, "when": true,
 		"then": true, "else": true, "end": true, "cast": true, "cand": true,
 	}

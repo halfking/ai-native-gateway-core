@@ -332,7 +332,7 @@ function toggleGuide(id: ClientGuideId) {
       </div>
     </div>
 
-    <h3 class="section-heading" style="margin-top:28px">API 请求示例</h3>
+    <h3 class="section-heading" style="margin-top:24px">API 请求示例</h3>
     <p v-if="realApiKey" class="key-hint">
       示例代码中的 API Key 已脱敏显示；点击「测试」将使用当前登录密钥。复制示例后请自行替换为真实 Key。
       <button type="button" class="btn btn-ghost btn-sm" @click="copyCode('realkey', realApiKey)">
@@ -340,7 +340,7 @@ function toggleGuide(id: ClientGuideId) {
       </button>
     </p>
 
-    <div class="card" style="margin-bottom:20px">
+    <div class="card" style="margin-bottom:16px">
       <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
         <div style="font-weight:500;white-space:nowrap">选择示例模型：</div>
         <div style="max-width:360px;flex:1;min-width:240px">
@@ -359,7 +359,7 @@ function toggleGuide(id: ClientGuideId) {
       </div>
     </div>
 
-    <div class="card" style="margin-bottom:20px">
+    <div class="card" style="margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h4 style="margin:0">cURL — Chat Completions</h4>
         <div style="display:flex;gap:8px">
@@ -374,7 +374,7 @@ function toggleGuide(id: ClientGuideId) {
       <pre class="code-block">{{ curlExample }}</pre>
     </div>
 
-    <div class="card" style="margin-bottom:20px">
+    <div class="card" style="margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h4 style="margin:0">Python (openai SDK)</h4>
         <div style="display:flex;gap:8px">
@@ -389,7 +389,7 @@ function toggleGuide(id: ClientGuideId) {
       <pre class="code-block">{{ pythonExample }}</pre>
     </div>
 
-    <div class="card" style="margin-bottom:20px">
+    <div class="card" style="margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h4 style="margin:0">Python — 流式输出 (Streaming)</h4>
         <div style="display:flex;gap:8px">
@@ -404,7 +404,7 @@ function toggleGuide(id: ClientGuideId) {
       <pre class="code-block">{{ streamExample }}</pre>
     </div>
 
-    <div class="card" style="margin-bottom:20px">
+    <div class="card" style="margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h4 style="margin:0">JavaScript / TypeScript (openai SDK)</h4>
         <div style="display:flex;gap:8px">
@@ -419,7 +419,7 @@ function toggleGuide(id: ClientGuideId) {
       <pre class="code-block">{{ jsExample }}</pre>
     </div>
 
-    <div class="card" style="margin-bottom:20px">
+    <div class="card" style="margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h4 style="margin:0">cURL — 列出可用模型</h4>
         <div style="display:flex;gap:8px">
@@ -544,7 +544,7 @@ function toggleGuide(id: ClientGuideId) {
 
 .drawer-meta {
   display: flex;
-  gap: 20px;
+  gap: 16px;
   margin-bottom: 16px;
   font-size: 13px;
   flex-wrap: wrap;
@@ -553,7 +553,7 @@ function toggleGuide(id: ClientGuideId) {
 .meta-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .meta-label {
@@ -571,7 +571,7 @@ function toggleGuide(id: ClientGuideId) {
 }
 
 .section-heading {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   margin: 0 0 12px;
 }
@@ -579,7 +579,7 @@ function toggleGuide(id: ClientGuideId) {
 .guide-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 8px;
 }
 
@@ -593,7 +593,7 @@ function toggleGuide(id: ClientGuideId) {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 16px;
+  padding: 12px 16px;
   background: none;
   border: none;
   color: var(--text);
@@ -629,7 +629,7 @@ function toggleGuide(id: ClientGuideId) {
 
 .guide-steps {
   margin: 12px 0 0;
-  padding-left: 20px;
+  padding-left: 16px;
   font-size: 13px;
   line-height: 1.7;
   color: var(--text);
@@ -637,7 +637,7 @@ function toggleGuide(id: ClientGuideId) {
 
 .guide-mcp {
   margin: 12px 0 0;
-  padding: 10px 12px;
+  padding: 8px 12px;
   font-size: 12px;
   line-height: 1.6;
   color: var(--muted);

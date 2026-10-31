@@ -48,18 +48,36 @@ type ExtendedWeights struct {
 // 模型智商反映供应商所托管模型的实际能力（通过 MCQ 基准测试得到），是路由
 // 应当考量的关键信号。未测量到智商数据（冷启动）时该维度自动跳过，不影响总分。
 func DefaultExtendedWeights() ExtendedWeights {
+	// 2026-10-29（模型可信度轮）：可信度维度从「暂未实现 / 0 权重」变成
+	// **有真实权重**（0.08）。其余已实现维度**按比例**下调到 0.92
+	// ⇒ 相对比例完全不变（不偏袒任何一个既有维度），总和仍为 1.0。
+	//
+	// ★ 为什么用「按比例下调」而不是「从某一个维度里扣」：
+	//   按比例下调 = 既有维度之间的相对权重**逐字不变** ⇒ 任何依赖
+	//   既有维度相对关系的判定（告警规则、对比看板）行为不变；
+	//   从单一维度扣会悄悄改变那个维度的相对重要性。
+	//
+	// ★ 权重取 0.08 而不是更高的理由：可信度信号是**模型内容**维度的信号，
+	//   而这一整套评分的告警引擎（ProfileAlertWorker）会真的翻转凭据
+	//   生命周期（把命中告警的凭据置为 disabled）⇒ 内容维度的权重必须
+	//   显著低于「服务是否可用」类维度（可用性 0.13 / 不可用窗口 0.17）。
+	//   0.08 让掺水能拉低总分、但不足以单独把一个健康的供应商打下线。
+	//
+	// ★ 缺失即跳过（不按 0 分算）⇒ 没有跑过可信度扫描的凭据，
+	//   总分与本轮之前**逐字相同**（分母只含有数据的维度）。
 	return ExtendedWeights{
-		Network:            0.07,
-		Availability:       0.14,
-		Stability:          0.14,
-		Scale:              0.04,
-		RateLimit:          0.09,
-		Concurrency:        0.09,
-		AvailabilityWindow: 0.18,
-		QualityStability:   0.13,
-		ModelIQ:            0.12,
+		Network:            0.07 * 0.92,
+		Availability:       0.14 * 0.92,
+		Stability:          0.14 * 0.92,
+		Scale:              0.04 * 0.92,
+		RateLimit:          0.09 * 0.92,
+		Concurrency:        0.09 * 0.92,
+		AvailabilityWindow: 0.18 * 0.92,
+		QualityStability:   0.13 * 0.92,
+		ModelIQ:            0.12 * 0.92,
+		// 2026-10-29: 模型可信度维度（provider_model_credibility）。
+		Credibility: 0.08,
 		// 暂未实现维度，给 0 权重（如果未来填充值，权重需重新分配）
-		Credibility:  0,
 		CostAccuracy: 0,
 		Price:        0,
 	}
@@ -357,7 +375,11 @@ func extendedWeightsFor(weights ProfileWeights, scores *DimensionScores) Extende
 			(scores.MeasuredDimensions&dimensionConcurrency) != 0 ||
 			(scores.MeasuredDimensions&dimensionAvailabilityWindow) != 0 ||
 			(scores.MeasuredDimensions&dimensionQualityStability) != 0 ||
-			(scores.MeasuredDimensions&dimensionModelIQ) != 0
+			(scores.MeasuredDimensions&dimensionModelIQ) != 0 ||
+			// 2026-10-29: 可信度维度有自己的非零权重（0.08）⇒ 必须进
+			// hasNewDim 判定，否则「只有可信度有数据」时会回退到
+			// BackwardCompatWeights（Credibility 权重为 0）⇒ 该维度被静默丢弃。
+			(scores.MeasuredDimensions&dimensionCredibility) != 0
 		if hasNewDim {
 			return DefaultExtendedWeights()
 		}
@@ -369,7 +391,8 @@ func extendedWeightsFor(weights ProfileWeights, scores *DimensionScores) Extende
 		scores.ConcurrencyScore > 0 ||
 		scores.AvailabilityWindowScore > 0 ||
 		scores.QualityStabilityScore > 0 ||
-		scores.ModelIQScore > 0
+		scores.ModelIQScore > 0 ||
+		scores.CredibilityScore > 0
 	if hasNewDim {
 		return DefaultExtendedWeights()
 	}

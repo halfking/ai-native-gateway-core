@@ -21,6 +21,7 @@ import { useModelCatalogFilters } from '../composables/useModelCatalogFilters'
 import { sortByName } from '../utils/sortByName'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useActionMessage } from '../composables/useActionMessage'
+import ActionOverflowMenu from '../components/ui/ActionOverflowMenu.vue'
 
 const { t } = useI18n()
 
@@ -241,6 +242,23 @@ function openEdit(row: AdminMaasModelRate) {
 
 function closeEdit() {
   editRow.value = null
+}
+
+// ★ 2026-10-27 第 25 增量（动作区必须可扫读）：编辑弹窗底栏从 5 个并列按钮
+//   收到 3 个可见动作 —— ① 明面保留「保存 / 取消」（弹窗的收尾动作）
+//   ② 3 个**整表范围**的工具动作（复制价格 / 粘贴 / 填充全局）收进「更多」。
+//   ★ 这三个动作的共同点是「一次改动全部 7 个费率字段」⇒ 它们是**表单级**工具，
+//   不是某个字段的动作 ⇒ 归到一处比平铺在底栏更贴切。
+const editModalTools = computed(() => [
+  { key: 'copy', label: '复制价格' },
+  { key: 'paste', label: '粘贴', disabled: !clipboard.value },
+  { key: 'fillGlobal', label: t('standardModelPricing.editModal.fillGlobal') },
+])
+
+function onEditModalTool(key: string) {
+  if (key === 'copy') copyEditForm()
+  else if (key === 'paste') pasteEditForm()
+  else if (key === 'fillGlobal') fillGlobalToEdit()
 }
 
 async function saveEdit() {
@@ -726,10 +744,9 @@ onMounted(load)
           <button class="btn btn-primary btn-sm" :disabled="savingRow" @click="saveEdit">
             {{ savingRow ? t('standardModelPricing.editModal.saving') : t('standardModelPricing.editModal.save') }}
           </button>
-          <button class="btn btn-ghost btn-sm" type="button" @click="copyEditForm">复制价格</button>
-          <button class="btn btn-ghost btn-sm" type="button" :disabled="!clipboard" @click="pasteEditForm">粘贴</button>
-          <button class="btn btn-ghost btn-sm" type="button" @click="fillGlobalToEdit">{{ t('standardModelPricing.editModal.fillGlobal') }}</button>
           <button class="btn btn-ghost btn-sm" type="button" @click="closeEdit">{{ t('standardModelPricing.editModal.cancel') }}</button>
+          <!-- ★ 第 25 增量：3 个表单级工具收进「更多」（复制价格 / 粘贴 / 填充全局） -->
+          <ActionOverflowMenu :items="editModalTools" @select="onEditModalTool" />
         </div>
       </div>
     </div>
@@ -743,7 +760,7 @@ onMounted(load)
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
+  gap: 12px;
 }
 @media (max-width: 1024px) { .settings-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 640px) { .settings-grid { grid-template-columns: 1fr; } }
@@ -751,7 +768,7 @@ onMounted(load)
 .field-label { font-size: 12px; color: var(--muted); }
 .field-hint { font-size: 11px; color: var(--muted); }
 .input.compact { width: 100%; max-width: 100%; }
-.discount-row { display: flex; align-items: center; gap: 10px; }
+.discount-row { display: flex; align-items: center; gap: 8px; }
 .discount-slider { flex: 1; }
 .discount-val { font-size: 13px; font-weight: 600; min-width: 42px; }
 .settings-actions {
@@ -767,12 +784,12 @@ onMounted(load)
 .rate-cell { white-space: nowrap; }
 .manual-tag {
   display: inline-block; margin-left: 4px; padding: 0 4px;
-  font-size: 10px; border-radius: 4px;
+  font-size: 11px; border-radius: 4px;
   background: var(--info-bg); color: var(--accent);
 }
 .modality-badge {
   display: inline-block; padding: 2px 8px; border-radius: 8px;
-  font-size: 11px; font-weight: 500; margin-right: 6px;
+  font-size: 11px; font-weight: 500; margin-right: 4px;
   background: rgba(148, 163, 184, 0.18); color: var(--muted);
 }
 .modality-badge.modality-multimodal { background: color-mix(in srgb, var(--magenta) 18%, transparent); color: var(--purple); }
@@ -781,14 +798,14 @@ onMounted(load)
 .modality-badge.modality-video { background: rgba(244, 63, 94, 0.18); color: var(--danger); }
 .modality-badge.modality-embedding { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-h); }
 .multimodal-tag {
-  display: inline-block; padding: 1px 6px; border-radius: 6px;
-  font-size: 10px; font-weight: 600;
+  display: inline-block; padding: 1px 4px; border-radius: 6px;
+  font-size: 11px; font-weight: 600;
   background: color-mix(in srgb, var(--magenta) 18%, transparent); color: var(--purple);
   margin-left: 2px;
 }
 .section-sub { font-size: 12px; font-weight: 600; margin: 12px 0 8px; color: var(--muted); }
-.section-hint { font-weight: 400; color: var(--muted); margin-left: 6px; }
-.actions { white-space: nowrap; display: flex; gap: 6px; justify-content: flex-end; }
+.section-hint { font-weight: 400; color: var(--muted); margin-left: 4px; }
+.actions { white-space: nowrap; display: flex; gap: 4px; justify-content: flex-end; }
 .empty-cell { text-align: center; color: var(--muted); padding: 24px; }
 .badge { padding: 2px 8px; border-radius: 8px; font-size: 11px; }
 .badge-gray { background: var(--neutral-bg); color: var(--muted); }
@@ -796,20 +813,20 @@ onMounted(load)
 .badge-yellow { background: var(--warning-bg); color: var(--warning); }
 .modal-backdrop {
   position: fixed; inset: 0; z-index: 100;
-  background: var(--overlay-medium); display: flex; align-items: center; justify-content: center; padding: 20px;
+  background: var(--overlay-medium); display: flex; align-items: center; justify-content: center; padding: 16px;
 }
-.modal { width: min(560px, 100%); padding: 20px; max-height: 90vh; overflow-y: auto; }
+.modal { width: min(560px, 100%); padding: 16px; max-height: 90vh; overflow-y: auto; }
 .modal-code { display: block; margin-bottom: 8px; }
 .modal-hint { font-size: 12px; color: var(--muted); margin: 0 0 16px; }
-.edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media (max-width: 480px) { .edit-grid { grid-template-columns: 1fr; } }
-.edit-field { display: flex; flex-direction: column; gap: 6px; }
+.edit-field { display: flex; flex-direction: column; gap: 4px; }
 .edit-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .link-sm { font-size: 11px; margin-left: auto; background: none; border: none; color: var(--accent-h); cursor: pointer; }
-.modal-actions { display: flex; gap: 8px; margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border); }
+.modal-actions { display: flex; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .bulk-bar {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 14px; background: var(--bg-subtle); border-radius: 8px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; background: var(--bg-subtle); border-radius: 8px;
   margin-top: 12px; font-size: 13px;
   color: var(--text);
 }

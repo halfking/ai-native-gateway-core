@@ -54,7 +54,7 @@ func (v *fakeTransformVerifier) CheckBudget(_ context.Context, _ int) error {
 
 func newRpmTestTransform(t *testing.T) (*AudioTransformHandler, *countingLimiter, *fakeTransformVerifier, *httptest.Server) {
 	t.Helper()
-	svc := NewAudioService(&fakeAudioResolver{}, upstream.New())
+	svc := NewAudioService(&fakeAudioResolver{}, upstream.NewWithRetries(0))
 	lim := ratelimit.NewSlidingWindowLimiter()
 	t.Cleanup(lim.Stop)
 	cl := &countingLimiter{inner: lim}
@@ -91,7 +91,7 @@ func TestTransformEndpointDoesNotConsumeRPM(t *testing.T) {
 }
 
 func TestTransformLoopback503MapsToNoProviderWithAlternatives(t *testing.T) {
-	svc := NewAudioService(&fakeAudioResolver{}, upstream.New())
+	svc := NewAudioService(&fakeAudioResolver{}, upstream.NewWithRetries(0))
 	ts := NewAudioTransformService(svc)
 	h := NewAudioTransformHandler(ts)
 	mux := http.NewServeMux()

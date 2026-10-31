@@ -35,6 +35,7 @@ import {
   type FpSlotStats,
   type CredentialRoutingDecision,
   type CredentialMonitorMeta,
+  type SlidingWindowSource,
 } from '../../api'
 import AppDrawer from '../ui/AppDrawer.vue'
 import AppModal from '../ui/AppModal.vue'
@@ -87,7 +88,7 @@ const lastDetailRefreshAt = ref<Date | null>(null)
 const detailMeta = ref<CredentialMonitorMeta | null>(null)
 const selectedModel = ref('')
 const windowEntries = ref<CallEntry[]>([])
-const windowSource = ref<'redis' | 'request_logs'>('redis')
+const windowSource = ref<SlidingWindowSource>('redis')
 const windowLoading = ref(false)
 
 type DetailTab = 'overview' | 'models' | 'history'
@@ -437,7 +438,8 @@ const manualControlState = computed<ManualControlState | null>(() => {
 
 interface ManualControlMeta {
   label: string
-  emoji: string
+  /** ★ 状态点 class（不是 emoji）——DESIGN.md §6：状态点用真实 SVG 圆点 */
+  dot: string
   bg: string
   border: string
   color: string
@@ -447,7 +449,7 @@ function manualControlMeta(state: ManualControlState): ManualControlMeta {
   if (state === 'manual_disabled') {
     return {
       label: '手工禁用',
-      emoji: '🔴',
+      dot: 'status-dot--danger',
       bg: 'rgba(239, 68, 68, 0.12)',
       border: 'rgba(239, 68, 68, 0.4)',
       color: '#ef4444',
@@ -457,7 +459,7 @@ function manualControlMeta(state: ManualControlState): ManualControlMeta {
   if (state === 'manual_enabled') {
     return {
       label: '手工启动',
-      emoji: '🟢',
+      dot: 'status-dot--success',
       bg: 'rgba(16, 185, 129, 0.12)',
       border: 'rgba(16, 185, 129, 0.4)',
       color: '#10b981',
@@ -466,7 +468,7 @@ function manualControlMeta(state: ManualControlState): ManualControlMeta {
   }
   return {
     label: '自动',
-    emoji: '⚙️',
+    dot: 'status-dot--neutral',
     bg: 'rgba(139, 148, 158, 0.12)',
     border: 'rgba(139, 148, 158, 0.4)',
     color: '#8b949e',
@@ -720,7 +722,7 @@ onUnmounted(() => {
             <input type="checkbox" :checked="detailAutoRefresh" @change="toggleDetailAutoRefresh" />
             {{ $t('common.terms.autoRefresh') }}
           </label>
-          <select v-model.number="detailRefreshInterval" class="field-input" style="width:auto;font-size:13px;padding:2px 6px">
+          <select v-model.number="detailRefreshInterval" class="field-input" style="width:auto;font-size:13px;padding:2px 4px">
             <option :value="5">5{{ $t('common.seconds') }}</option>
             <option :value="10">10{{ $t('common.seconds') }}</option>
             <option :value="30">30{{ $t('common.seconds') }}</option>
@@ -933,7 +935,7 @@ onUnmounted(() => {
                       </td>
                       <td>
                         <span class="source-chip" :class="`source-${m.data_source}`">{{ m.data_source }}</span>
-                        <span v-if="m.last_used_at" class="cell-sub" style="margin-left:4px;font-size:10px">
+                        <span v-if="m.last_used_at" class="cell-sub" style="margin-left:4px;font-size:11px">
                           {{ m.total_calls }}次
                         </span>
                       </td>
@@ -941,7 +943,7 @@ onUnmounted(() => {
                         <span v-if="m.p95_latency_ms == null" class="cell-muted">N/A</span>
                         <span v-else class="mono-sm" :class="p95Class(m.p95_latency_ms)">
                           {{ m.p95_latency_ms }}ms
-                          <span class="cell-sub" style="font-size:9px;margin-left:2px">({{ m.p95_source === 'bg_rollup' ? 'bg' : 'live' }})</span>
+                          <span class="cell-sub" style="font-size:11px;margin-left:2px">({{ m.p95_source === 'bg_rollup' ? 'bg' : 'live' }})</span>
                         </span>
                       </td>
                       <td><span class="rate-cell" :class="rateClass(m.recent_success_rate)">{{ rateText(m.recent_success_rate) }}</span></td>
@@ -990,8 +992,13 @@ onUnmounted(() => {
               <div class="drawer-section">
                 <div class="drawer-section-title">
                   滑动窗口 (最近 1 小时)
+                  <!-- ★ R182 轮修正：★ 原来写死 `windowSource === 'redis' ? 'Redis' : 'request_logs'`
+                       ⇒ ★ 后端回退腿（source="session_turns"）被**错标成 "request_logs"**
+                       ⇒ ★ 【退役表的旧名直接上屏】。★ 现在按真实取值渲染标签。
+                       ★ ★ 'Redis' 是**产品名**（★ 8 个语种逐字相同）⇒ ★ 刻意**不进** i18n
+                       ★ ★（★ 进了会被 locale-value 门判成「与 en-US 逐字相同 = 没翻」★）。 -->
                   <span class="source-tag" :class="windowSource === 'redis' ? 'src-redis' : 'src-rl'">
-                    {{ windowSource === 'redis' ? 'Redis' : 'request_logs' }}
+                    {{ windowSource === 'redis' ? 'Redis' : $t('credentialMonitor.drawer.sourceSessionTurns') }}
                   </span>
                 </div>
                 <div v-if="!selectedModel" class="cell-muted">{{ $t('credentialMonitor.drawer.selectModelRow') }}</div>
@@ -1019,7 +1026,7 @@ onUnmounted(() => {
                         :disabled="!canManageMonitor || toggleBusy[selectedCred.id + '|' + selectedModel]"
                         @click="onClickManualControl"
                       >
-                        <span class="status-icon-emoji">{{ manualControlMeta(manualControlState).emoji }}</span>
+                        <span class="status-dot" :class="manualControlMeta(manualControlState).dot" />
                         <span class="status-icon-label">{{ manualControlMeta(manualControlState).label }}</span>
                       </button>
                       <!-- 总状态只读 badge (其他原因: probe / offer / binding) -->
@@ -1175,10 +1182,10 @@ onUnmounted(() => {
                 <tbody>
                   <tr v-for="(d, i) in credentialDecisions" :key="i" :class="d.success ? 'decision-success' : 'decision-fail'">
                     <td class="mono-sm">{{ formatTs(d.ts) }}</td>
-                    <td class="mono-sm" style="font-size:10px">{{ d.request_id.substring(0, 8) }}</td>
+                    <td class="mono-sm" style="font-size:11px">{{ d.request_id.substring(0, 8) }}</td>
                     <td>
                       <div class="mono-sm" style="font-size:11px">{{ d.client_model || d.model }}</div>
-                      <div v-if="d.outbound_model && d.outbound_model !== d.client_model" class="cell-sub" style="font-size:10px">
+                      <div v-if="d.outbound_model && d.outbound_model !== d.client_model" class="cell-sub" style="font-size:11px">
                         → {{ d.outbound_model }}
                       </div>
                     </td>
@@ -1186,10 +1193,10 @@ onUnmounted(() => {
                     <td>
                       <span v-if="d.success" class="badge badge-green"><CircleCheck /></span>
                       <span v-else class="badge badge-red"><CircleClose /></span>
-                      <span v-if="d.sticky_hit" class="badge badge-blue" style="margin-left:4px;font-size:9px">sticky</span>
+                      <span v-if="d.sticky_hit" class="badge badge-blue" style="margin-left:4px;font-size:11px">sticky</span>
                     </td>
                     <td class="mono-sm">{{ d.latency_ms != null ? d.latency_ms + 'ms' : '—' }}</td>
-                    <td class="cell-sub" style="font-size:10px">{{ d.error_class || '—' }}</td>
+                    <td class="cell-sub" style="font-size:11px">{{ d.error_class || '—' }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -1367,7 +1374,7 @@ onUnmounted(() => {
 }
 
 .detail-loading-state {
-  padding: 20px 16px 8px;
+  padding: 16px 16px 8px;
 }
 
 .detail-skeleton-grid {
@@ -1377,7 +1384,7 @@ onUnmounted(() => {
 }
 
 .detail-skeleton-card {
-  padding: 14px;
+  padding: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--card);
@@ -1393,13 +1400,13 @@ onUnmounted(() => {
 .skeleton-title {
   width: 36%;
   height: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .skeleton-line {
   width: 100%;
   height: 10px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .skeleton-line.short {
@@ -1408,7 +1415,7 @@ onUnmounted(() => {
 }
 
 .detail-loading-hint {
-  margin-top: 14px;
+  margin-top: 12px;
   font-size: 12px;
   color: var(--muted);
 }
@@ -1422,7 +1429,7 @@ onUnmounted(() => {
 }
 
 .detail-refresh-pill {
-  padding: 5px 10px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: color-mix(in srgb, var(--card) 92%, var(--accent) 8%);
@@ -1450,7 +1457,7 @@ onUnmounted(() => {
   font-weight: 600;
   color: var(--text);
   margin-bottom: 8px;
-  padding-bottom: 6px;
+  padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -1473,11 +1480,11 @@ onUnmounted(() => {
   font-size: 11px;
   font-weight: 600;
   color: var(--muted);
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
 }
 .model-table td {
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
 }
 .model-table tbody tr {
@@ -1506,9 +1513,9 @@ onUnmounted(() => {
 /* 🆕 2026-06-23: 数据来源 chip (live / declared) */
 .source-chip {
   display: inline-block;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: lowercase;
   letter-spacing: 0.02em;
@@ -1534,7 +1541,7 @@ onUnmounted(() => {
 .model-status-icons {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
   margin-left: 4px;
 }
@@ -1549,7 +1556,7 @@ onUnmounted(() => {
   line-height: 16px;
   border: 1px solid;
   cursor: pointer;
-  transition: filter 0.15s ease, transform 0.05s ease;
+  transition: filter 0.15s var(--kx-motion-ease-out), transform 0.05s var(--kx-motion-ease-out);
   background: transparent;
   user-select: none;
 }
@@ -1562,10 +1569,6 @@ onUnmounted(() => {
 .status-icon-btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
-}
-.status-icon-emoji {
-  font-size: 11px;
-  line-height: 1;
 }
 .status-icon-label {
   font-size: 11px;
@@ -1580,9 +1583,9 @@ onUnmounted(() => {
 .source-tag {
   display: inline-block;
   margin-left: 8px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   vertical-align: middle;
 }
@@ -1602,11 +1605,11 @@ onUnmounted(() => {
   text-align: left;
   font-size: 11px;
   color: var(--muted);
-  padding: 4px 6px;
+  padding: 4px 4px;
   border-bottom: 1px solid var(--border);
 }
 .history-table td {
-  padding: 4px 6px;
+  padding: 4px 4px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
@@ -1621,7 +1624,7 @@ onUnmounted(() => {
   font-weight: 600;
 }
 .btn-xs {
-  padding: 2px 6px;
+  padding: 2px 4px;
   font-size: 11px;
 }
 
@@ -1636,12 +1639,12 @@ onUnmounted(() => {
   text-align: left;
   font-size: 11px;
   color: var(--muted);
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   font-weight: 600;
 }
 .decision-table td {
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
@@ -1667,7 +1670,7 @@ onUnmounted(() => {
 /* models tab 外层 */
 .models-tab {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   /* 默认 split 模板,具体模板由 modifier class 覆盖 */
   grid-template-columns: minmax(280px, 320px) 1fr;
   grid-template-areas:
@@ -1682,14 +1685,14 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
 .models-toolbar-left {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
   flex: 1;
 }
@@ -1717,12 +1720,12 @@ onUnmounted(() => {
 .layout-btn {
   background: transparent;
   border: 0;
-  padding: 4px 10px;
+  padding: 4px 8px;
   font-size: 12px;
   color: var(--muted);
   cursor: pointer;
   border-right: 1px solid var(--border);
-  transition: background 120ms ease-out, color 120ms ease-out;
+  transition: background 120ms var(--kx-motion-ease-out), color 120ms var(--kx-motion-ease-out);
   font-family: inherit;
   line-height: 1.4;
 }
@@ -1780,7 +1783,7 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 8px;
   padding: 16px 8px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
@@ -1789,7 +1792,7 @@ onUnmounted(() => {
   text-align: center;
 }
 .pane-collapsed-label {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.01em;
   color: var(--muted);
 }
@@ -1804,12 +1807,14 @@ onUnmounted(() => {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  margin-right: 5px;
+  margin-right: 4px;
   vertical-align: middle;
   flex: none;
 }
 .status-dot--danger { background: var(--kx-danger); }
 .status-dot--success { background: var(--kx-success); }
+/* ★ 中性态（自动托管）：灰点——「第三信号」是形状 + 亮度，不是颜色 */
+.status-dot--neutral { background: var(--kx-muted); }
 .pane-collapsed-value {
   word-break: break-all;
   font-size: 11px;
@@ -1820,7 +1825,7 @@ onUnmounted(() => {
 .monitor-stack {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 /* 滑动窗口条带 (从原 inline 样式抽出) */
@@ -1835,7 +1840,7 @@ onUnmounted(() => {
   height: 40px;
   border-radius: 1px;
   flex-shrink: 0;
-  transition: opacity 120ms ease-out;
+  transition: opacity 120ms var(--kx-motion-ease-out);
 }
 .window-cell:hover { opacity: 1; }
 .window-stats {
@@ -1859,7 +1864,7 @@ onUnmounted(() => {
 /* ═══ 切换动画 (200ms 渐入) ═══ */
 .pane-anim .pane-left,
 .pane-anim .pane-right {
-  animation: pane-fade-in 200ms ease-out;
+  animation: pane-fade-in 200ms var(--kx-motion-ease-out);
 }
 @keyframes pane-fade-in {
   0%   { opacity: 0.65; }
@@ -1903,4 +1908,13 @@ onUnmounted(() => {
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .drawer-section-title .btn > svg { width: 12px; height: 12px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .status-icon-btn {
+    transition-property: filter;
+  }
+  .status-icon-btn:active:not(:disabled) { transform: none; }
+}
 </style>

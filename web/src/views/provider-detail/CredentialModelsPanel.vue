@@ -305,9 +305,9 @@ function thinkingLabel(o: ModelOffer) {
 </template>
 
 <style scoped>
-.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
 .protect-opt { font-size: 12px; color: var(--muted); display: inline-flex; gap: 4px; align-items: center; }
-.banner { margin-bottom: 8px; font-size: 12px; padding: 6px 10px; border-radius: 6px; }
+.banner { margin-bottom: 8px; font-size: 12px; padding: 4px 8px; border-radius: 6px; }
 .banner.ok { background: color-mix(in srgb, var(--success) 12%, transparent); }
 .banner.err { background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .empty { padding: 24px 8px; text-align: center; color: var(--muted); }
@@ -315,5 +315,5 @@ function thinkingLabel(o: ModelOffer) {
 .row-click { cursor: pointer; }
 .row-click:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 .pricing-summary { display: block; max-width: 19rem; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tag { margin-left: 6px; font-size: 10px; padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, var(--warning-dark) 18%, transparent); }
+.tag { margin-left: 4px; font-size: 11px; padding: 1px 4px; border-radius: 4px; background: color-mix(in srgb, var(--warning-dark) 18%, transparent); }
 </style>

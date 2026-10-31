@@ -61,7 +61,7 @@ function timeText(v?: string | null) {
 
 <style scoped>
 .overview-grid {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .overview-grid dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; margin: 8px 0; }
 .overview-grid dt { color: var(--muted); white-space: nowrap; }

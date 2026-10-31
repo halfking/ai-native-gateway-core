@@ -44,6 +44,27 @@
   "unsupported_feature": {
     "other": "النموذج المحدد لا يدعم هذا التنسيق أو هذا النمط من الطلب."
   },
+  "modality_mismatch": {
+    "other": "لا يقبل النموذج «{{.Model}}» إدخال {{.Modality}}. يحتوي هذا الطلب على محتوى {{.Modality}}، لكن النموذج مسجَّل كـ {{.RegisteredModality}} فقط. أرسل طلبًا نصيًا فقط إلى هذا النموذج، أو وجّه الطلب إلى نموذج يدعم {{.Modality}}."
+  },
+  "modality_vision": {
+    "other": "صورة"
+  },
+  "modality_audio": {
+    "other": "صوت"
+  },
+  "modality_video": {
+    "other": "فيديو"
+  },
+  "modality_image": {
+    "other": "توليد الصور"
+  },
+  "modality_multimodal": {
+    "other": "متعدد الوسائط"
+  },
+  "modality_text": {
+    "other": "نص"
+  },
   "model_deprecated": {
     "other": "تمت إزالة النموذج المطلوب نهائياً (انتهاء صلاحية الخدمة) بواسطة المزوّد الأعلى."
   },

@@ -84,3 +84,10 @@ stages:
               script: |
                 export PATH=$PATH:/usr/local/go/bin
                 make guards-fast
+                # Windows 全量测试基线门（2026-10-29 审计轮）：CI runner 是 Linux ⇒
+                # 全量 go test 的失败集与 Windows 基线不同族 ⇒ 这里只跑**静态自证腿**
+                # （门脚本语法 + baseline JSON 可解析），实测比对腿在 Windows 开发机
+                # `make guards-win-baseline`（无参自跑全量，约 10 分钟）。
+                # Linux 上裸跑实测腿 = 整片假红源（Windows 专属失败集不在 Linux 复现）。
+                bash -n scripts/guards/check-win-test-baseline.sh
+                python3 -c "import json; d=json.load(open('scripts/guards/win-test-baseline.json', encoding='utf-8')); assert d['packages'] and isinstance(d.get('package_level'), list); print('win-test-baseline.json OK:', len(d['packages']), 'packages')"

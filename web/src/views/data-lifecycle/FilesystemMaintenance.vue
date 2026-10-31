@@ -292,14 +292,14 @@ defineExpose({ load })
 
 <style scoped>
 .filesystem-maintenance {
-  padding: 20px;
+  padding: 16px;
 }
 
 .header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .header h2 {
@@ -316,7 +316,7 @@ defineExpose({ load })
   border: none;
   border-radius: var(--radius, 8px);
   cursor: pointer;
-  transition: opacity .15s;
+  transition: opacity .15s var(--kx-motion-ease-out);
 }
 
 .btn-refresh:hover:not(:disabled) {
@@ -336,14 +336,14 @@ defineExpose({ load })
   border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   border-radius: var(--radius, 8px);
   color: var(--danger);
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
   gap: 16px;
-  margin-bottom: 30px;
+  margin-bottom: 32px;
 }
 
 .stat-card {
@@ -396,7 +396,7 @@ defineExpose({ load })
 
 .disk-bar-fill {
   height: 100%;
-  transition: width 0.3s, background-color 0.3s;
+  transition: width 0.3s var(--kx-motion-ease-out), background-color 0.3s var(--kx-motion-ease-out);
 }
 
 .disk-percent {
@@ -408,7 +408,7 @@ defineExpose({ load })
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius, 8px);
-  padding: 20px;
+  padding: 16px;
 }
 
 .cleanup-section h3 {
@@ -444,7 +444,7 @@ defineExpose({ load })
   border-radius: 4px;
   font-size: 14px;
   color: var(--text);
-  transition: border-color .15s;
+  transition: border-color .15s var(--kx-motion-ease-out);
 }
 
 .form-row input[type="number"]:focus,
@@ -472,13 +472,13 @@ defineExpose({ load })
 .btn-execute,
 .btn-cancel,
 .btn-danger {
-  padding: 8px 20px;
+  padding: 8px 16px;
   border: none;
   border-radius: 4px;
   cursor: pointer;
   font-size: 14px;
   font-weight: 500;
-  transition: opacity .15s;
+  transition: opacity .15s var(--kx-motion-ease-out);
 }
 
 .btn-preview {
@@ -560,7 +560,7 @@ defineExpose({ load })
 
 .modal-content h3 {
   margin: 0 0 16px 0;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text);
 }
@@ -579,7 +579,7 @@ defineExpose({ load })
 }
 
 .preview-stats {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .preview-item {
@@ -631,6 +631,6 @@ defineExpose({ load })
   display: flex;
   justify-content: flex-end;
   gap: 12px;
-  margin-top: 20px;
+  margin-top: 16px;
 }
 </style>

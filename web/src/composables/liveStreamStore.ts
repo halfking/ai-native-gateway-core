@@ -31,6 +31,17 @@ export interface LiveRequest {
   canonical_name?: string
   credential_id?: number
   credential_label?: string
+  // 2026-10-28（live 拓扑·模型选择层表达轮）: 选路与压缩可观测字段
+  // （后端 admin.LiveRequest additive 投影，缺省 = 未上报）。
+  client_model?: string
+  is_auto_request?: boolean
+  task_type?: string
+  token_band?: string
+  // 2026-10-28 环回口径轮：压缩层实际改写出站体（strategy 非空且非
+  // delta_append）。★ token_band ≠ 压缩发生：档位只按绝对 token 量分类，
+  // COUNT/相对窗口/IDLE 触发的压缩 band 可以是 below（211 实测 4665 条
+  // 实际压缩里 1069 条 band='below'）——压缩格计数只认本字段。
+  compressed?: boolean
   model_category?: LiveModelCategory
   provider_code?: string
   status?: LiveStatus
@@ -397,6 +408,22 @@ function removeVisibilityListener() {
 // need to know whether the underlying state is a ref or a
 // reactive object property.
 export const requestsRef: ComputedRef<LiveRequest[]> = computed(() => liveStreamState.requests)
+/**
+ * 数据修订号：实时流里**请求集合每变动一次**（新请求落库 / 生命周期补丁 /
+ * 快照重灌 / 清空）就 +1 的单调计数。
+ *
+ * 2026-10-29 统计同步轮：头部 StatsPanel 的统计是 DB 直查口径（不走 SSE），
+ * 此前只靠 30s/60s 轮询 ⇒ 新请求进来图和面板立刻动、统计最多滞后一个
+ * 轮询周期。消费方（StatsPanel）watch 本号 + 尾沿防抖 ⇒ 突发合流成一次
+ * 刷新，新数据落地后秒级同步，且不会每个 SSE 帧都打一次端点。
+ * ★ 只在「真正应用到可见缓冲」时 bump —— 暂停态进 pending 队列不算
+ * （flushPending 重放时才算）。
+ */
+export const liveDataRevision = ref(0)
+
+function bumpDataRevision(): void {
+  liveDataRevision.value += 1
+}
 export const snapshotRef: ComputedRef<LiveStreamSnapshot | null> = computed(() => liveStreamState.snapshot)
 export const connectionRef: ComputedRef<ConnectionState> = computed(() => liveStreamState.connection)
 export const pausedRef: ComputedRef<boolean> = computed(() => liveStreamState.paused)
@@ -827,6 +854,7 @@ function applyChildRequest(parentRequestId: string, child: LiveRequest) {
     const cardIndex = liveStreamState.requests.findIndex((r) => r.request_id === enriched.request_id)
     if (cardIndex >= 0) {
       liveStreamState.requests[cardIndex] = { ...liveStreamState.requests[cardIndex], ...enriched }
+      bumpDataRevision()
     }
   }
 }
@@ -885,6 +913,9 @@ function pushOrQueue(item: LiveRequest) {
     }
     return
   }
+  // 暂停态走了 pending 分支（未应用，不 bump）；以下每条路径都是
+  // 「真正应用到可见缓冲」。
+  let applied = false
   if (item.type === 'idle_marker' && item.request_id) {
     const existingIndex = liveStreamState.requests.findIndex(
       (r) => r.request_id === item.request_id,
@@ -893,10 +924,10 @@ function pushOrQueue(item: LiveRequest) {
       // Idle markers keep a stable request_id; update payload in place so
       // the tile stays in chronological order (pushed left by newer requests).
       liveStreamState.requests[existingIndex] = item
-      return
+      applied = true
     }
   }
-  if (item.type !== 'idle_marker' && item.request_id) {
+  if (!applied && item.type !== 'idle_marker' && item.request_id) {
     if (idIndex.has(item.request_id)) {
       const existingIndex = liveStreamState.requests.findIndex(
         r => r.request_id === item.request_id
@@ -912,14 +943,18 @@ function pushOrQueue(item: LiveRequest) {
         // inserting the request instead of silently dropping the update.
         liveStreamState.requests.push(item)
       }
-      return
+      applied = true
+    } else {
+      idIndex.add(item.request_id)
     }
-    idIndex.add(item.request_id)
   }
-  liveStreamState.requests.push(item)
+  if (!applied) {
+    liveStreamState.requests.push(item)
+  }
   while (liveStreamState.requests.length > MAX_VISIBLE) {
     trimOldest()
   }
+  bumpDataRevision()
 }
 
 function flushPending() {
@@ -955,6 +990,7 @@ function applyInitialData(items: LiveRequest[]) {
   for (const r of kept) {
     if (r.parentRequestId) applyChildRequest(r.parentRequestId, r)
   }
+  bumpDataRevision()
 }
 
 function handleEnvelope(env: LiveStreamEnvelope) {
@@ -1716,6 +1752,7 @@ export function resetStream() {
   liveStreamState.children.clear()
   liveStreamState.lastEventAt = 0
   liveStreamState.initialDataReceived = false
+  bumpDataRevision()
   liveStreamState.redisHealthy = true
   liveStreamState.redisError = ''
   liveStreamState.paused = false
@@ -1781,6 +1818,7 @@ export const __testing = {
   idIndex,
   pending,
   pushOrQueue,
+  flushPending,
   handleEnvelope,
   applyInitialData,
   mergeDelta,

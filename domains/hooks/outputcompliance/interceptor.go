@@ -90,6 +90,15 @@ func NewMandatoryOutputComplianceInterceptor(checker interface {
 	if stateKey == "" {
 		stateKey = "mandatory_output.pending"
 	}
+	// ★ 启动即把【生效值】说清楚（2026-10-29 输出合规误报轮）：
+	// 运维要能在日志里直接确认「缓冲上限抬到多少、越界是放行还是阻断」——
+	// 否则只能读代码才知道线上跑的是哪套。
+	slog.Info("output compliance guard configured",
+		"pending_max_bytes", compliancePendingCap(),
+		"pending_max_mib", compliancePendingCap()>>20,
+		"cap_mode", complianceCapMode(),
+		"capacity_rule", GuardCapacityRuleID,
+	)
 	return &OutputComplianceInterceptor{checker: checker, mandatory: true, stateKey: stateKey}
 }
 
@@ -201,6 +210,32 @@ func (it *OutputComplianceInterceptor) InterceptStreamEnd(ctx context.Context, m
 	return &response.EndResult{}, nil
 }
 
+// PolicyEvidenceMetadataKey 是「被拦内容的有界摘录」在拦截元数据里的键名。
+//
+// ★ 这条摘录只走**审核面**（管理面审核单 + 证据表），**不进客户端信封**：
+// 客户端拿到的仍然是 rule/reason/field/request_id。摘录让审核员能判断
+// 「这次拦得对不对」——211 生产实测：审核单此前是**空白**的（规则名/原因全空），
+// 审核员既说不出拦的是哪条规则，也看不到拦的是什么内容。
+const PolicyEvidenceMetadataKey = "policy_evidence"
+
+// maxPolicyEvidenceBytes 是拦截器侧摘录的字节上限（4 KiB）。
+//
+// 与 domains/sanitizerules.BlockReviewEvidenceMaxBytes 同值 —— 两处都裁是
+// **纵深防御**：任何一侧的裁剪失效都不会让载荷原文无界进管理面。
+const maxPolicyEvidenceBytes = 4 << 10
+
+// boundedPolicyEvidence 把被拦内容裁成有界摘录（按字节，回退到 rune 边界）。
+func boundedPolicyEvidence(text string) string {
+	if len(text) <= maxPolicyEvidenceBytes {
+		return text
+	}
+	cut := maxPolicyEvidenceBytes
+	for cut > 0 && text[cut]&0xC0 == 0x80 {
+		cut--
+	}
+	return text[:cut]
+}
+
 // policyIssueDetail 取第一条带原因码/位置的问题。
 //
 // r1039（D3）：拦截要让客户端知道「哪条规则、哪个参数」——只有规则名不够：
@@ -245,13 +280,22 @@ func policyBlockReason(ruleID, subtype, field string) string {
 //
 // 键名与流式侧一致（policy_rule，见 policyRuleFromChunkResult），写者据此
 // 渲染协议终帧；非流式侧据此渲染 403 响应体。
-func policyBlockMetadata(rule, subtype, field string) map[string]interface{} {
+//
+// 2026-10-28 拦截审核轮：digest（policy_digest）一并带出——审核队列据此对
+// 这一次载荷精确放行。原值永不进元数据。
+//
+// 2026-10-29 输出合规误报轮：evidence（policy_evidence）是**有界摘录**，
+// 只走审核面（不进客户端信封）——审核员据此判断「这次拦得对不对」。
+func policyBlockMetadata(rule, subtype, field, digest string) map[string]interface{} {
 	meta := map[string]interface{}{}
 	if rule != "" {
 		meta["policy_rule"] = rule
 	}
 	if field != "" {
 		meta["policy_field"] = field
+	}
+	if digest != "" {
+		meta["policy_digest"] = digest
 	}
 	if reason := policyBlockReason(rule, subtype, field); reason != "" {
 		meta["policy_reason"] = reason
@@ -275,7 +319,10 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 	// r1039（D3）：拦截原因（规则名 / 原因码 / 出问题的位置）在**拦截那一刻**
 	// 记下来。原来的非流式 403 只有一句 message，客户端既说不出因为什么规则
 	// 被拦，也没法据此提示用户。
-	var blockRule, blockSubtype, blockField string
+	var blockRule, blockSubtype, blockField, blockDigest string
+	// ★ 2026-10-29 输出合规误报轮：被拦的那段内容（**有界摘录**）一并记下，
+	// 只走审核面（管理面证据表）——审核员据此判断「这次拦得对不对」。
+	var blockEvidence string
 
 	transform := func(label, original string) (string, int, bool, error) {
 		result, err := it.checkText(ctx, req.TenantID, label, original)
@@ -294,6 +341,10 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 			if subtype, field := policyIssueDetail(result.Issues); subtype != "" || field != "" {
 				blockSubtype, blockField = subtype, field
 			}
+			if digest := policyIssueDigest(result.Issues); digest != "" {
+				blockDigest = digest
+			}
+			blockEvidence = boundedPolicyEvidence(original)
 			return "", 0, true, nil
 		}
 		if !shouldRedact || result.RedactedOutput == "" || result.RedactedOutput == original {
@@ -314,10 +365,14 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 	}
 	if blocked {
 		metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathBody).Inc()
+		meta := policyBlockMetadata(blockRule, blockSubtype, blockField, blockDigest)
+		if blockEvidence != "" {
+			meta[PolicyEvidenceMetadataKey] = blockEvidence
+		}
 		return &response.InterceptResult{
 			ShouldBlock: true,
 			Action:      "output_compliance_block",
-			Metadata:    policyBlockMetadata(blockRule, blockSubtype, blockField),
+			Metadata:    meta,
 		}, nil
 	}
 

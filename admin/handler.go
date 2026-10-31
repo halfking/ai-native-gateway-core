@@ -28,6 +28,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
+	"github.com/kaixuan/llm-gateway-go/domains/modelcredibility" // model-credibility backend interface (modelCredibilityBackend)
 	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"    // 对账报表读面/导出（2026-09-25）
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
 	"github.com/kaixuan/llm-gateway-go/domains/sanitizerules"
@@ -62,12 +63,18 @@ type controlledBodyDB interface {
 // 单测钉住，所以按 controlledBodyDB 的同款范式开一个窄口。
 type topologyStatsDB interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	// QueryRow 供 clients-today 的 rollup 水位封顶查询（单值行）；pgxmock 与
+	// 真实连接池都实现它。2026-10-29 头部统计轮扩展。
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 type Handler struct {
 	db                   *pgxpool.Pool
 	bodyDB               controlledBodyDB
 	topologyStatsDB      topologyStatsDB
+	// topologyProviderKindsDB（2026-10-28 选路层轮）：provider-kinds 端点的
+	// 注入口，理由与 topologyStatsDB 相同 —— 单测要能注入 pgxmock。
+	topologyProviderKindsDB topologyStatsDB
 	bodyServiceJWTSecret string
 	secret               string
 	encKey               []byte
@@ -260,6 +267,16 @@ type Handler struct {
 	// by reading the DB directly). Wired from cmd/gateway/main.go.
 	modelQualityBackend interface {
 		TestSingleNode(ctx context.Context, credentialID int, rawModel string) (*modelquality.QualityScore, error)
+	}
+	// modelCredibilityBackend (2026-10-29) backs the model-credibility admin
+	// endpoints:
+	//   POST /api/admin/model-credibility/trigger — scan one node on demand
+	//   POST /api/admin/model-credibility/scan    — scan all active nodes
+	// nil disables those two endpoints; list/catalog/detail/history read the
+	// DB directly and keep working. Wired from cmd/gateway/main.go.
+	modelCredibilityBackend interface {
+		ScanNode(ctx context.Context, credentialID int64, rawModelName string) (*modelcredibility.Result, error)
+		ScanAll(ctx context.Context) (int, error)
 	}
 	// providerSettingsResolver (2026-06-20) provides provider-level setting
 	// overrides for compression, cache, etc. Wired from cmd/gateway/main.go.
@@ -787,6 +804,16 @@ func (h *Handler) SetModelQualityBackend(b interface {
 	h.modelQualityBackend = b
 }
 
+// SetModelCredibilityBackend wires the model-credibility worker for the
+// on-demand scan endpoints. Pass nil to disable only those endpoints;
+// list/catalog/detail/history read the DB directly.
+func (h *Handler) SetModelCredibilityBackend(b interface {
+	ScanNode(ctx context.Context, credentialID int64, rawModelName string) (*modelcredibility.Result, error)
+	ScanAll(ctx context.Context) (int, error)
+}) {
+	h.modelCredibilityBackend = b
+}
+
 // SetStateManager wires the credential-state manager for /api/credentials/*/state
 // and /api/credentials/*/test endpoints. Pass nil to disable.
 func (h *Handler) SetStateManager(sm credentialstate.StateProvider) { h.stateManager = sm }
@@ -1140,6 +1167,18 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-10-18: 实时拓扑网关大方块「在用插件」清单（builtin 治理插件 +
 	// external 插件进程状态）。装配缺失返回 200 + degraded 而不是零清单。
 	mux.HandleFunc("/api/admin/topology/plugins", admin(h.handleTopologyPlugins))
+	// 2026-10-28（live 拓扑·选路层轮）：供应商 kind 两列投影（判定内部直连
+	// kind='local'）。走 admin 权限而非 /api/providers 的 providerConsole ——
+	// /live 任意租户管理员可进，辅助信息不该要求更高权限。DB 不可用 →
+	// 200 + degraded（与 plugins 同契约，前端渲染「未测量」）。
+	mux.HandleFunc("/api/admin/topology/provider-kinds", admin(h.handleTopologyProviderKinds))
+	// 2026-10-28（live 页当天汇总轮）：模型当天聚合（stats_usage_daily 的
+	// provider_model 维度在 canonical_id 上再聚合）。同表同口径，不引入第二套真值。
+	mux.HandleFunc("/api/admin/topology/models-today", admin(h.handleTopologyModelsToday))
+	// 2026-10-29（live 页单一统计轮）：客户端区间聚合 —— 客户端维度没有日桶
+	// （usage_facts 不携带客户端身份列），恒直查 request_logs；day 模式以 rollup
+	// 水位封顶对齐 providers/models 组的日桶滞后（同面板三组对得上账）。
+	mux.HandleFunc("/api/admin/topology/clients-today", admin(h.handleTopologyClientsToday))
 	// 2026-09-25: 对账报表（供应商/内部双视角区间汇总 + xlsx 双 sheet 导出
 	// + 单日手动重跑）。superAdmin——数据含全租户内部计费。
 	mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(h.handleReportRollup))
@@ -1558,6 +1597,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/api/admin/model-iq/node-latest", h.superAdmin(h.handleModelIQNodeLatest))
 		mux.HandleFunc("/api/admin/model-iq/history", h.superAdmin(h.handleModelIQHistory))
 		mux.HandleFunc("/api/admin/model-iq/trigger", h.superAdmin(h.handleModelIQTrigger))
+
+		// 2026-10-29: 模型可信度（防掺水）— 身份判定 / 判定历史 / 立即检测。
+		// list/catalog/detail/history 只读 DB；trigger/scan 调用 modelCredibilityBackend。
+		mux.HandleFunc("/api/admin/model-credibility/list", h.superAdmin(h.handleModelCredibilityList))
+		mux.HandleFunc("/api/admin/model-credibility/catalog", h.superAdmin(h.handleModelCredibilityCatalog))
+		mux.HandleFunc("/api/admin/model-credibility/detail", h.superAdmin(h.handleModelCredibilityDetail))
+		mux.HandleFunc("/api/admin/model-credibility/history", h.superAdmin(h.handleModelCredibilityHistory))
+		mux.HandleFunc("/api/admin/model-credibility/trigger", h.superAdmin(h.handleModelCredibilityTrigger))
+		mux.HandleFunc("/api/admin/model-credibility/scan", h.superAdmin(h.handleModelCredibilityScan))
 
 		h.registerMaasRoutes(mux)
 	}

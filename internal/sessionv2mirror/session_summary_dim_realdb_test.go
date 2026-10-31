@@ -25,9 +25,10 @@ import (
 //   - B 第二条（成功+失败混合、不同模型/provider/task）：增量语义 ——
 //     count 2/1/1、avg=(a*n+b)/(n+1)、min/max、数组去重追加、
 //     primary_model 与 gw_task_id 首值不被第二条覆盖；
-//   - C ★双喂防护门（本门重点）：v1 写入开启（S4 未翻转）时必须整体
-//     no-op —— 否则生产翻转前与触发器双计数，request_count 翻倍。
-//     判据是行为侧：同一条 entry，门开时行数不变、门关时 +1。
+//   - C ★退役开关不再支配聚合（2026-10-29）：第三条必须照写（count 3）。
+//     原断言是「v1 写入开启时 no-op」（双喂防护门），门的前提随 v1 族退役
+//     消失 ⇒ 断言翻向。见下方 NoV1TriggerPremise 用例：那是删门的**前提**，
+//     前提消失必须**当场可见**，否则删门等于把双喂风险转成静默停摆。
 const summaryTestSession = "sess-r1013-summary-selftest"
 
 func summaryTestPool(t *testing.T) *pgxpool.Pool {
@@ -56,10 +57,6 @@ func TestSessionSummaryDimWriter_S4HandoffSemantics(t *testing.T) {
 	}
 	cleanup()
 	t.Cleanup(cleanup)
-
-	orig := v1WritesEnabled
-	v1WritesEnabled = func() bool { return false }
-	t.Cleanup(func() { v1WritesEnabled = orig })
 
 	w := NewSessionSummaryDimWriter(pool)
 	ts1 := time.Date(2026, 10, 13, 7, 0, 0, 0, time.Local)
@@ -142,19 +139,89 @@ func TestSessionSummaryDimWriter_S4HandoffSemantics(t *testing.T) {
 		t.Fatalf("B: models_used = %v, want 2 distinct", models)
 	}
 
-	// C ★双喂防护门：v1 写入开启时 no-op（行数与聚合都不得变化）。
-	v1WritesEnabled = func() bool { return true }
+	// C ★退役开关不再支配聚合（2026-10-29）：第三次写入**必须落库**。
+	//
+	// 原实现在这里断言「v1 写入开启时整体 no-op」（双喂防护门）。该门的前提
+	// 是「v1 写入方 + trg_update_session_summary 触发器同时存在」——两者都已
+	// 随 v1 族退役消失 ⇒ 门剩下的唯一效果就是「退役开关一开，聚合静默停摆」。
+	// 本写入器是聚合列的唯一写方 ⇒ 停摆 = 用户面会话列表/分析对新会话永远
+	// 不出现，且无日志无错误。
+	//
+	// 断言因此从「不写」翻成「照写」：退役语义**不得**支配活行为。
+	// 这里的「v1 开关为 true」由静态门
+	// TestSessionSummaryDimWriter_IgnoresRetiredV1Switch 兜住（源文件不得
+	// 再读该开关 ⇒ 该开关在物理上无法支配本写入器），动态侧由本段与
+	// TestSessionSummaryDimWriter_NoV1TriggerPremise 兜住。
 	if err := w.UpsertSessionDim(ctx, &telemetry.RequestLogEntry{
 		RequestID: "r1013-sum-c", GwSessionID: sess, TenantID: "default",
 		EventAt: &ts2, Success: true, CostUSD: floatPtr(9.9), LatencyMs: intPtr(9999),
 	}); err != nil {
-		t.Fatalf("gated upsert: %v", err)
+		t.Fatalf("third upsert: %v", err)
 	}
 	row = pool.QueryRow(ctx, `SELECT request_count FROM session_summaries WHERE session_key = $1`, summaryTestSession)
 	if err := row.Scan(&count); err != nil {
-		t.Fatalf("gate row scan: %v", err)
+		t.Fatalf("third row scan: %v", err)
 	}
-	if count != 2 {
-		t.Fatalf("C: v1 写入开启时必须整体 no-op，request_count = %d, want 2（双喂即翻倍）", count)
+	if count != 3 {
+		t.Fatalf("C: 退役开关不得支配聚合写入，request_count = %d, want 3（停摆=用户面新会话永不出现）", count)
+	}
+}
+
+// TestSessionSummaryDimWriter_NoV1TriggerPremise 钉住「删门的安全前提」：
+// session_summaries 上**不得**存在任何触发器，且 v1 族关系与
+// update_session_summary() 函数必须已不存在。
+//
+// 为什么这是本轮的**核心守卫**而不是顺带检查：删掉「v1 写入开启 ⇒ no-op」
+// 这道门之所以安全，前提是「没有第二个写方在喂同一批聚合列」。本测试把
+// 这个前提变成**持续可见的事实**：任何将来重建 v1 族 + 触发器的迁移都会让
+// 本测试当场报红，逼迁移作者重新决定要不要加回双喂门——而不是让一道早该
+// 退休的开关一直悄悄支配聚合。
+//
+// 反向自证：若有人在 session_summaries 上挂一个触发器（例如为别的目的），
+// 本测试必须报红 ⇒ 断言不是恒真。
+func TestSessionSummaryDimWriter_NoV1TriggerPremise(t *testing.T) {
+	pool := summaryTestPool(t)
+	ctx := context.Background()
+
+	// ① session_summaries 上不得有任何非内部触发器。
+	var triggerCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)::int
+		FROM pg_trigger t
+		JOIN pg_class c ON c.oid = t.tgrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'public' AND c.relname = 'session_summaries' AND NOT t.tgisinternal`,
+	).Scan(&triggerCount); err != nil {
+		t.Fatalf("probe session_summaries triggers: %v", err)
+	}
+	if triggerCount != 0 {
+		t.Fatalf("session_summaries 上存在 %d 个触发器：聚合列有了第二个写方，"+
+			"删掉双喂防护门会双计数 —— 必须先决定双喂仲裁再继续", triggerCount)
+	}
+
+	// ② v1 族关系必须已不存在（触发器的宿主表）。
+	var v1Relations int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)::int
+		FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'public'
+		  AND c.relname IN ('_request_logs_hot', '_request_logs', '_request_logs_bodies_hot')`,
+	).Scan(&v1Relations); err != nil {
+		t.Fatalf("probe v1 relations: %v", err)
+	}
+	if v1Relations != 0 {
+		t.Fatalf("v1 族关系仍存在 %d 个：v1 写入方若复活会与本写入器双喂", v1Relations)
+	}
+
+	// ③ 触发器调用的函数必须已不存在（即便有人重建了函数体）。
+	var fnCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)::int FROM pg_proc WHERE proname = 'update_session_summary'`,
+	).Scan(&fnCount); err != nil {
+		t.Fatalf("probe update_session_summary(): %v", err)
+	}
+	if fnCount != 0 {
+		t.Fatalf("update_session_summary() 仍存在：触发器函数被重建，双喂前提可能复活")
 	}
 }

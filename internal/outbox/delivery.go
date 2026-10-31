@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -39,6 +40,34 @@ func Retryable(err error) bool {
 		return deliveryErr.StatusCode >= 500 && deliveryErr.StatusCode <= 599
 	}
 	return true
+}
+
+// backpressureCodes 是 asm 事件入口在「就绪门未过 / 消费端背压」时返回的
+// 错误码（asm 侧 internal/consumer/http_ingress.go 与 cmd/session-manager
+// main.go 的 unavailableHandler）。这两个码的含义是「**目的地暂时关门**」，
+// 不是「这条事件有问题」。
+const (
+	asmCodeIngressUnavailable = "ingress_unavailable"
+	asmCodeEventRetryable     = "event_retryable"
+)
+
+// IsBackpressure reports whether the delivery failure is a **destination
+// backpressure** signal (503 + asm 的两个背压错误码) —— 这类失败不该消耗
+// maxAttempts 预算，更不该把合法事件永久打进 DLQ（2026-10-28 生产审计：
+// acc-pg17 dlq=34,793 且 ~170/小时增长，26,079 条 ingress_unavailable）。
+func IsBackpressure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var deliveryErr *DeliveryError
+	if !AsDeliveryError(err, &deliveryErr) {
+		return false
+	}
+	if deliveryErr.StatusCode != http.StatusServiceUnavailable {
+		return false
+	}
+	return strings.Contains(deliveryErr.Body, asmCodeIngressUnavailable) ||
+		strings.Contains(deliveryErr.Body, asmCodeEventRetryable)
 }
 
 // AsDeliveryError unwraps an error without exposing errors.As at call sites.

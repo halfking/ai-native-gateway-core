@@ -1125,7 +1125,7 @@ onMounted(loadAll)
 .freediscovery-view {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 .page-header {
   display: flex;
@@ -1161,11 +1161,11 @@ onMounted(loadAll)
 }
 .tab-bar {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   border-bottom: 1px solid var(--border);
 }
 .tab-btn {
-  padding: 7px 14px;
+  padding: 8px 12px;
   font-size: 13px;
   border: none;
   background: transparent;
@@ -1179,7 +1179,7 @@ onMounted(loadAll)
   font-weight: 600;
 }
 .tab-btn.small {
-  padding: 4px 10px;
+  padding: 4px 8px;
   font-size: 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1191,7 +1191,7 @@ onMounted(loadAll)
 .tab-panel {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 .card {
   background: var(--bg-card);
@@ -1212,7 +1212,7 @@ onMounted(loadAll)
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .head-actions {
@@ -1233,13 +1233,13 @@ onMounted(loadAll)
   padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 .preset-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 4px;
 }
 .preset-name {
   font-weight: 600;
@@ -1312,9 +1312,9 @@ onMounted(loadAll)
 .inline-form {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
   align-items: flex-end;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   padding: 12px;
   border: 1px dashed var(--border);
   border-radius: 8px;
@@ -1332,7 +1332,7 @@ onMounted(loadAll)
 }
 .inline-form input,
 .inline-form select {
-  padding: 6px 8px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 13px;
@@ -1348,7 +1348,7 @@ onMounted(loadAll)
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   padding: 12px;
   border: 1px dashed var(--border);
   border-radius: 8px;
@@ -1376,14 +1376,14 @@ onMounted(loadAll)
 }
 .data-table th {
   text-align: left;
-  padding: 8px 10px;
+  padding: 8px 8px;
   color: var(--text-secondary);
   font-weight: 500;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 .data-table td {
-  padding: 8px 10px;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
@@ -1393,7 +1393,7 @@ onMounted(loadAll)
 .empty-cell {
   text-align: center;
   color: var(--text-secondary);
-  padding: 20px 0;
+  padding: 16px 0;
 }
 .tpl-name {
   font-weight: 500;
@@ -1436,7 +1436,7 @@ onMounted(loadAll)
   color: var(--text-secondary);
   border-radius: 10px;
   font-size: 11px;
-  padding: 2px 10px;
+  padding: 2px 8px;
   cursor: pointer;
 }
 .toggle.on {
@@ -1451,12 +1451,12 @@ onMounted(loadAll)
 /* Scan bar */
 .scan-bar {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
 }
 .scan-select {
   min-width: 260px;
-  padding: 6px 8px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 13px;
@@ -1475,7 +1475,7 @@ onMounted(loadAll)
 .policy-label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 12px;
   color: var(--text-secondary);
 }
@@ -1495,6 +1495,6 @@ onMounted(loadAll)
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 </style>

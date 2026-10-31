@@ -34,6 +34,15 @@ func (h *Handler) SetLiveRoutingSource(src *LiveRoutingSource) {
 // livePlanOrder 用真实选路链产出 plan_order。返回 (entries, source)：
 // source ∈ {"live-router","no-candidates","unavailable"}。
 func (h *Handler) livePlanOrder(ctx context.Context, canonicalModel, tenantID string) ([]map[string]any, string) {
+	// URSM v2 authoritative 模式要求每个 seed 带具体租户（domains/ursm/v2/manager.go
+	// 对空 TenantID 直接拒绝）。调用方 handleRoutingResolve 传入的是
+	// EffectiveTenantIDAll —— 其「空 = 全租户」是 SQL 查询语义，对路由预览没有
+	// 对应物（生产选路恒在具体租户内进行）。空租户回落 default，与真实请求的
+	// 默认租户选路一致（211 实测：每次打开 resolve 面板 22 条/2h
+	// "rejecting authoritative route" WARN 即此路径）。
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	entries := []map[string]any{}
 	src := h.liveRouting
 	if src == nil || src.Router == nil || src.Resolver == nil {

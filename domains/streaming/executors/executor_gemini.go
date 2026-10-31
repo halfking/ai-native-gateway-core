@@ -193,18 +193,44 @@ type GeminiExecutor struct {
 	OpenAIToResponsesStream OpenAIToResponsesSSEFunc
 }
 
+// canonicalInboundWire maps IR-detected inbound protocol names onto the
+// catalog constants the executors' client-wire gates compare against.
+//
+// ir.DetectProtocol reports ProtocolOpenAIChat ("openai-chat") for the
+// OpenAI Chat wire — and BOTH the OpenAI ingress and the Gemini-native
+// ingress (whose handler synthesizes an OpenAI Chat body at step 6) produce
+// exactly that value into ExecParams.ClientProtocol (domains/streaming/
+// handler.go: clientProtocol := ir.DetectProtocol(bodyBytes)). The catalog
+// layer already treats "openai-chat" as an alias of "openai-completions"
+// (provider/catalog/protocol_normalize.go), and connection_registry_wiring
+// accepts the same trio of spellings. Without this mapping every
+// OpenAI-Chat-shaped ingress was rejected by the gemini/ollama client-wire
+// gates with 501 "not yet wired" even though the wire IS wired
+// (live-verified 2026-10-28: Gemini ingress → gemini-generate upstream
+// returned `client protocol "openai-chat" not yet wired`). The legacy
+// fallback "openai-completions" only appears when the IR converter is nil
+// (pre-IR mode), which is why the executor tests — written against the
+// legacy name — never caught the vocabulary drift.
+func canonicalInboundWire(p string) string {
+	if p == "openai-chat" {
+		return "openai-completions"
+	}
+	return p
+}
+
 // clientWire returns the normalized client wire this executor answers in.
 //
 // "gemini-generate" never appears here: the Gemini ingress normalizes a
 // native Gemini request into OpenAI shape before dispatch, so the
-// dispatcher sees an OpenAI-shaped body and detects "openai-completions"
-// (domains/streaming/handler.go: ir.DetectProtocol). The Gemini-native
-// answer is re-shaped by the Gemini handler's own writer.
+// dispatcher sees an OpenAI-shaped body and detects "openai-chat"
+// (domains/streaming/handler.go: ir.DetectProtocol; normalized here onto
+// the catalog constant). The Gemini-native answer is re-shaped by the
+// Gemini handler's own writer.
 func (g *GeminiExecutor) clientWire() string {
-	if g == nil || g.ClientProtocol == "" {
+	if g == nil || canonicalInboundWire(g.ClientProtocol) == "" {
 		return providercatalog.ProtocolOpenAICompletions
 	}
-	return g.ClientProtocol
+	return canonicalInboundWire(g.ClientProtocol)
 }
 
 // scopedIR returns the provider-scoped IR converter, or nil when no
@@ -1320,9 +1346,12 @@ func (e *Executor) finalizeGeminiUpstreamBody(params *ExecParams, cand provider.
 			Message: "gemini executor: empty upstream body",
 		}
 	}
-	switch params.ClientProtocol {
+	switch canonicalInboundWire(params.ClientProtocol) {
 	case "", providercatalog.ProtocolOpenAICompletions:
-		// supported
+		// supported — "openai-chat" (what ir.DetectProtocol actually
+		// reports for the OpenAI Chat wire, including the Gemini ingress's
+		// synthetic body) is normalized onto the same arm by
+		// canonicalInboundWire.
 	case providercatalog.ProtocolAnthropicMessages:
 		// supported — the Anthropic request wire is parsed into IR and
 		// re-serialized into the Gemini native wire below.

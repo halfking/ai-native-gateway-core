@@ -122,6 +122,10 @@ func (api *SessionSummaryV2API) ServeHTTP(w http.ResponseWriter, r *http.Request
 	if !isSuper {
 		// tenant_admin: tenant MUST be their own. Ignore any caller-supplied tenant.
 		tenantID := authTenant
+		// W1.3: summary reads bodies → consent=off must be structured unavailable.
+		if !requireRecordingConsent(w, tenantID) {
+			return
+		}
 		summary, err := api.generateSummary(ctx, &SessionSummaryRequest{
 			SessionID: req.SessionID,
 			Tenant:    tenantID,
@@ -139,6 +143,10 @@ func (api *SessionSummaryV2API) ServeHTTP(w http.ResponseWriter, r *http.Request
 	tenantID := req.Tenant
 	if tenantID == "" {
 		tenantID = "default"
+	}
+	// W1.3: summary reads bodies → consent=off must be structured unavailable.
+	if !requireRecordingConsent(w, tenantID) {
+		return
 	}
 	// Pass an empty authTenant for unrestricted callers so the explicit
 	// super-admin tenant selector is not overwritten by GetTenantID's

@@ -43,10 +43,14 @@ type DB struct {
 	stdlibDB     *sql.DB
 }
 
-func Open(ctx context.Context, databaseURL string) (*DB, error) {
-	if databaseURL == "" {
-		return nil, nil
-	}
+// newPoolConfig 构造网关的 pgxpool 配置（★ 生产与真库门共用同一份 ⇒ 门测的就是生产形态）。
+//
+// ★★ 为什么要抽成函数（★ 2026-10-29 第 ⑧ 项）：★★
+//
+//	★ 语句缓存的接线在 `Open()` 里 ⇒ ★ 如果真库门自己起池并**硬编码**执行模式，
+//	★ 那么「把生产配置改回 SimpleProtocol」这个变异**不会让门变红** ⇒ ⇒
+//	★ 门会变成恒绿的摆设。⇒ ⇒ 生产配置与门必须走**同一条构造路径**。
+func newPoolConfig(databaseURL string) (*pgxpool.Config, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, err
@@ -64,13 +68,42 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
 
-	// 2026-07-15 P0 fix: disable pgx statement cache to prevent stale prepared
-	// statements after schema changes (provider_model_bindings → credential_model_bindings).
-	// When a table is renamed but old prepared statements remain cached in long-lived
-	// connections, queries fail with "relation does not exist". Disabling the cache
-	// forces re-preparation on every query, trading ~5% perf for correctness.
-	// See docs/changelogs/2026-07-15-provider-model-bindings-fix.md for details.
+	// ★★ 2026-10-29（第 ⑧ 项）：★ 重新开启 pgx 语句缓存（= 服务端预编译 = 计划缓存）。
+	//
+	// ★ 为什么现在可以开（★ 2026-07-15 关掉它的那个理由已不成立）：★
+	//
+	//	★ 2026-07-15 的事故形态是：provider_model_bindings → credential_model_bindings
+	//	★ 改名之后，长连接里缓存的旧预编译语句继续引用旧名 ⇒ 「relation does not exist」。
+	//	★ 那时选的解法是「关掉缓存，每次重新准备」⇒ 代价是**每请求重新规划**。
+	//	★ 实测本轮本地真库（写路径的幂等探针 ExistsByKeySQL，字面量谓词）：
+	//
+	//		规划 38.0 ms / 执行 0.104 ms　　　← 规划是执行的 365 倍
+	//		（预编译后：第 1 次规划 39.1 ms → 第 6 次起 0.004~0.015 ms）
+	//
+	//	★ ⇒ 写路径的真实成本在**规划期**，不在扫描 ⇒ 计划缓存是数量级收益。
+	//
+	// ★★ 四条安全依据（★ 逐条实测/查证，不是推断）：★★
+	//
+	//	① **pgx 会在任何错误上失效该语句的缓存**（vendor/.../pgx/v5/conn.go:519-528
+	//	   的 defer：err != nil ⇒ sc.Invalidate(sql)）⇒ 陈旧语句**自愈**：
+	//	   失败一次之后下一次重新准备 ⇒ 2026-07-15 的「一条坏语句毒死整条连接」
+	//	   变成「一次请求失败」。★ 这条把「前提被破」的代价从**永久**降成**一次**。
+	//	② **迁移期的 DDL 不会毒化缓存**：网关进程内的迁移链（applyMigrationsOnce）
+	//	   全部是**无参** SQL ⇒ pgx 对无参语句强制走 simple protocol
+	//	   （conn.go:513-515）⇒ 迁移期**从不产生预编译语句**；而 SQL 文件迁移
+	//	   由安装器/部署序列执行，不在本进程内。
+	//	③ **迁移结束 pool.Reset()** 丢弃全部连接（连同它们的缓存）⇒ boot 期的
+	//	   任何 DDL 都不会残留到 serving 期。
+	//	④ **运行期的 DDL 只动分区**（CREATE/DROP TABLE ... PARTITION OF）⇒
+	//	   父表的缓存语句由 PG **自动重规划**（plan invalidation），不是报错。
+	//
+	// ★ 保留一个**杀开关**：LLM_GATEWAY_DB_STATEMENT_CACHE=false ⇒ 回到旧行为
+	// ★ （每次重新准备）。理由：这是一处「全局行为」的改动，运维需要一条
+	// ★ 不改代码就能退回去的路。
 	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	if statementCacheEnabledFromEnv() {
+		cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
+	}
 
 	// 2026-09-23 252 SQL 日志审计轮：迁移期 statement_timeout 钉住（D1 残余
 	// 根修）。ApplyMigrations 期间置位 migrationsPinned，BeforeAcquire 给每条
@@ -81,6 +114,44 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	// 07:23-08:16）。迁移结束 pool.Reset() 丢弃被抬连接，serving 期每条连接
 	// 回到角色默认 30s（catalog 守卫族 + 本钉双保险，守卫管"能不能不跑"，
 	// 钉管"跑的时候别被杀"）。
+	return cfg, nil
+}
+
+func Open(ctx context.Context, databaseURL string) (*DB, error) {
+	if databaseURL == "" {
+		return nil, nil
+	}
+	cfg, err := newPoolConfig(databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	// ★★ 2026-10-30：★★ 池子上限随【实例容量】自适应（★ 211 共享实例读数 ⇒ 32 槽对 100 槽实例太肥）。
+	//
+	// ★ 背景：★ newPoolConfig 的 32 是按【1000 槽集群 × 31 消费方 Pod】预算的；★ 而 211 的
+	// ★ PG 是多服务共用的 100 槽实例 ⇒ 网关一家 idle 就占 19~30 槽（★ 并发实测 0~1）。
+	//
+	// ★ 规则：★ 运维**显式**设了 LLM_GATEWAY_DB_MAX_CONNS ⇒ 原样尊重（★ 运维意图优先）；
+	// ★ 否则 ⇒ cap = clamp(instanceMax/8, 4, 32)（★ 100 槽 ⇒ 12；★ 1000 槽 ⇒ 32 ⇒ **行为不变**）。
+	// ★ 探针失败 ⇒ **保持既有上限**（★ fail-open）。
+	if !poolMaxConnsEnvExplicit() {
+		if instanceMax, ok := probeInstanceMaxConnections(ctx, databaseURL); ok {
+			capped := poolCapForInstance(instanceMax)
+			if capped < cfg.MaxConns {
+				slog.Info("postgres: pool cap reduced to fit instance capacity",
+					"instance_max_connections", instanceMax,
+					"pool_max_conns_before", cfg.MaxConns,
+					"pool_max_conns", capped)
+				cfg.MaxConns = capped
+			} else {
+				slog.Info("postgres: pool cap kept (instance has headroom)",
+					"instance_max_connections", instanceMax,
+					"pool_max_conns", cfg.MaxConns)
+			}
+		} else {
+			slog.Warn("postgres: instance max_connections probe failed, keeping pool cap",
+				"pool_max_conns", cfg.MaxConns)
+		}
+	}
 	var migrationsPinned atomic.Bool
 	cfg.BeforeAcquire = func(ctx context.Context, conn *pgx.Conn) bool {
 		if migrationsPinned.Load() {
@@ -116,6 +187,33 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	return db, nil
 }
 
+// statementCacheEnabledFromEnv 解析 LLM_GATEWAY_DB_STATEMENT_CACHE（★ 默认 **开**）。
+//
+// ★ 为什么要有这个开关：★ 语句缓存是**全局行为**的改动（影响每一条语句的
+// ★ 执行路径），而它的收益（写路径规划 38 ms → ~0.01 ms）是数量级的，
+// ★ 它的风险面（陈旧预编译语句）也是全局的 ⇒ ⇒ 运维必须有一条**不改代码**
+// ★ 就能退回去的路。
+//
+// ★ 语义：
+//   - 未设置 ⇒ **开**（★ 这是本轮的目标形态；默认关等于本轮没做）。
+//   - false / 0 / no / off ⇒ **关**（回到 2026-07-15 的行为：每次重新准备）。
+//   - 其它值 ⇒ **开** + 一条 Warn（★ 与 poolMaxConnsFromEnv 同款容错：
+//     坏值不阻断启动，但必须留痕）。
+func statementCacheEnabledFromEnv() bool {
+	raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_DB_STATEMENT_CACHE"))
+	if raw == "" {
+		return true
+	}
+	switch strings.ToLower(raw) {
+	case "false", "0", "no", "off":
+		return false
+	default:
+		slog.Warn("postgres: invalid LLM_GATEWAY_DB_STATEMENT_CACHE, keeping default (enabled)",
+			"value", raw, "default", true)
+		return true
+	}
+}
+
 // poolMaxConnsFromEnv 解析 LLM_GATEWAY_DB_MAX_CONNS 为 pgxpool 池上限：
 // 未设置返回 def；非法值（非正整数/溢出）记 Warn 并保持 def——与
 // config.applyPositiveIntEnv 同样的容错语义，坏值不阻断启动。
@@ -131,6 +229,106 @@ func poolMaxConnsFromEnv(def int32) int32 {
 		return def
 	}
 	return int32(n)
+}
+
+// poolCapForInstance 把池子上限收敛到【实例容量的 1/8】以内（★ 且不超过 32）。
+//
+// ★ 为什么（★ 211 生产读数，★ 2026-10-30）：
+//
+//	★ 211 的 PG 是**多服务共用**实例：max_connections=**100**，★ 实测全实例 81 条
+//	★ （memora 14 / kaixuan 8 / acc_db 7 / smm 4 / shiyi 3 / redclaw 栈 / …）；
+//	★ 网关一家占 **19~30 条**，★ 而**并发实测 0~1**（★ 连续 10 次采样 active ≤ 1）。
+//	★ ⇒ 池子上限 32 是按【1000 槽集群 × 31 个消费方 Pod】预算的（★ 见 newPoolConfig 注释），
+//	★ 落到 100 槽共享实例上 ⇒ **单家就占 19~32%**，★ 槽位被 idle 连接占着
+//	★ （MaxConnIdleTime=5min ⇒ 流量一有就长到上限再慢慢回收）。
+//
+// ★ 规则：cap = clamp(instanceMax/8, 4, 32)
+//	★ 100 槽 ⇒ **12**（★ 比实测并发高一个数量级 ⇒ 吞吐无虞，★ 且给其它服务让出 ~8~18 槽）
+//	★ 1000 槽 ⇒ 125 ⇒ 仍被 32 封顶 ⇒ ★ **大集群行为完全不变**（★ 零回归面）。
+//
+// ★ 未知（探针失败）⇒ 返回 32 ⇒ **保持既有行为**（★ fail-open，★ 不因探测失败改变任何现状）。
+func poolCapForInstance(instanceMax int32) int32 {
+	const (
+		absCap     int32 = 32
+		minCap     int32 = 4
+		shareShift       = 3 // /8
+	)
+	if instanceMax <= 0 {
+		return absCap
+	}
+	cap := instanceMax >> shareShift
+	if cap > absCap {
+		cap = absCap
+	}
+	if cap < minCap {
+		cap = minCap
+	}
+	return cap
+}
+
+// poolMaxConnsEnvExplicit 报告运维是否【显式】设了 LLM_GATEWAY_DB_MAX_CONNS。
+//
+// ★ 显式值优先于实例自适应（★ 运维意图高于自动推导）：★ 显式设了就**原样尊重**，
+// ★ 不再按实例容量收敛（★ 运维知道自己在干什么）。
+func poolMaxConnsEnvExplicit() bool {
+	v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_DB_MAX_CONNS"))
+	if v == "" {
+		return false
+	}
+	n, err := strconv.ParseInt(v, 10, 32)
+	return err == nil && n > 0
+}
+
+// probeInstanceMaxConnections 读实例的 max_connections。
+//
+// ★ 单连接、★ 有界超时（3s）、★ 失败即放弃（★ 调用方保持原池上限）。
+//
+// ★★ 2026-10-30 生产读数修正（★ **第一次实现是坏的**，★ 211 实测证伪）：
+//
+//	★ 第一版用 `Scan(&n)`（n 为 int32）⇒ ★ **探针在 211 生产上恒失败**
+//	★   ⇒ 日志「probe failed, keeping pool cap pool_max_conns=32」⇒ ★ 修复**没有生效**
+//	★   （★ 而 fail-open 让行为保持原样 ⇒ ★ **假绿**：★ 门绿、行为旧、且**无人发现**）。
+//	★ 真因（★ 211 容器内用**同一个 DSN** 跑探针二进制实测）：
+//	★   `pgx.Connect err=<nil>`（★ 连接**成功**）★ 但
+//	★   `can't scan into dest[0] (col: max_connections): cannot scan text (OID 25) in text format into *int32`
+//	★   ⇒ ★ **`SHOW max_connections` 返回的是 text 类型（OID 25）**，★ 不是 int4
+//	★   ⇒ ★ 扫进 *int32 直接失败 ⇒ ★ 探针永远返回 false。
+//	★ ⇒ 修法：★ **按 text 扫 + 自行 ParseInt**（★ 不依赖驱动对 SHOW 的类型推断）。
+//
+// ★★ 第二个缺陷（★ 同一轮修）：★ 第一版把探针**错误吞掉**（★ 只回 false、★ 不记 err）
+//	★ ⇒ ★ 正是这个吞错让「探针失败」**看起来像网络问题**（★ 实际 PG 侧连一条拒绝日志都没有）
+//	★ ⇒ ★ 我先怀疑了 DNS、★ 又怀疑了槽位耗尽、★ 又怀疑了 URL 里未编码的 `@`
+//	★ ⇒ ★ **全是错的假设** ⇒ ★ 教训：★ **探针必须把失败原因记出来**，
+//	★ 否则「探针失败」是一个**不可诊断**的读数。
+func probeInstanceMaxConnections(ctx context.Context, databaseURL string) (int32, bool) {
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(probeCtx, databaseURL)
+	if err != nil {
+		slog.Warn("postgres: instance max_connections probe: connect failed",
+			"error", err)
+		return 0, false
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+	// ★ SHOW 的返回类型是 text（OID 25）⇒ 必须扫进 string 再自己解析。
+	var raw string
+	if err := conn.QueryRow(probeCtx, "SHOW max_connections").Scan(&raw); err != nil {
+		slog.Warn("postgres: instance max_connections probe: query failed",
+			"error", err)
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 32)
+	if err != nil {
+		slog.Warn("postgres: instance max_connections probe: unparsable value",
+			"raw", raw, "error", err)
+		return 0, false
+	}
+	if n <= 0 {
+		slog.Warn("postgres: instance max_connections probe: non-positive value",
+			"raw", raw)
+		return 0, false
+	}
+	return int32(n), true
 }
 
 // ApplyMigrations runs all idempotent schema migrations.
@@ -446,6 +644,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 		return err
 	}
 	if err := db.ensureRoutingRecentSuccessRate(migCtx); err != nil {
+		return err
+	}
+	// P1-B-③（迁移 915）：紧跟 rsr——同读 session_turns_hot、同一失败语义
+	//（响亮失败），且必须排在会话族就位之后。缺这条 boot 自愈时，「二进制
+	// 已带 chr LATERAL、库未建函数」的窗口只能靠部署序列兜（2026-10-28
+	// 211 事故形态）。
+	if err := db.ensureRecentCacheHitRate(migCtx); err != nil {
 		return err
 	}
 	if err := db.ensureUnavailableRecoverAtSchema(migCtx); err != nil {
@@ -1128,8 +1333,10 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 			break
 		}
 		rows, err := conn.Query(ctx, `
-			WITH chunk AS (
-				SELECT session_key, max(session_key) OVER () AS chunk_max
+			UPDATE public.session_summaries ss
+			SET last_accessed_at = ss.last_request_at
+			WHERE ss.session_key IN (
+				SELECT session_key
 				FROM public.session_summaries
 				WHERE session_key > $1
 				  AND last_accessed_at IS NULL
@@ -1137,11 +1344,7 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 				ORDER BY session_key
 				LIMIT $2
 			)
-			UPDATE public.session_summaries ss
-			SET last_accessed_at = ss.last_request_at
-			FROM chunk c
-			WHERE ss.session_key = c.session_key
-			RETURNING c.chunk_max
+			RETURNING ss.session_key
 		`, watermark, sessionSummariesBackfillBatch)
 		if err != nil {
 			var pgErr *pgconn.PgError
@@ -1154,12 +1357,31 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 		}
 		watermarks, err := pgx.CollectRows(rows, pgx.RowTo[string])
 		if err != nil {
+			// 2026-10-30 24h 审计第 8 轮：行流中途被 statement_timeout 杀
+			// （Query() 成功但 57014 在迭代期才冒出）⇒ 与上面 Query 分支同语义：
+			// 「竞争即快失败、下个 boot 续跑」。此前只有 Query 分支拦 57014，
+			// CollectRows 分支直接 fatal ⇒ 245 boot 10min 预算烧穿 ⇒
+			// "postgres disabled" ⇒ 蓝绿候选 8781 拒启（部署 blocker 实锤：
+			// journal 30 次 retry 全 57014）。两条错误出口同拦。
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && (pgErr.Code == "55P03" || pgErr.Code == "57014") {
+				slog.Warn("session_summaries backfill chunk contended mid-rows; resumes next boot",
+					"pgcode", pgErr.Code, "rows_backfilled", backfilled, "watermark", watermark)
+				break
+			}
 			return fmt.Errorf("session_summaries archival backfill chunk: %w", err)
 		}
 		if len(watermarks) == 0 {
 			break
 		}
-		watermark = watermarks[0]
+		// 2026-10-30 24h 审计第 7 轮：子查询按 session_key 有序 LIMIT ⇒ 返回的
+		// 最大值即新水位。不再用 max(session_key) OVER () 窗口列——
+		// 252 生产实测（909k 行表，395k 待回填）：窗口聚合迫使 planner 从
+		// pkey 顺序扫全 NULL 集（Buffer 16 万/12s > 5s statement_timeout）⇒
+		// chunk 永远烧穿 ⇒ boot 预算耗尽 ⇒ "postgres disabled" ⇒ 245 蓝绿
+		// 候选槽数活 600s 超时（部署 blocker 实锤）。keyset 分页 LIMIT 的
+		// 子查询在扫满 500 行即停，与回填批大小同阶。
+		watermark = watermarks[len(watermarks)-1]
 		backfilled += len(watermarks)
 	}
 

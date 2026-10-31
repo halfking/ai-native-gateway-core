@@ -26,6 +26,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/internal/gocache"
 )
 
 const gateScript = "../../scripts/audit/run-integration-gate.sh"
@@ -818,6 +820,10 @@ func TestIntegrationTaggedTreeCompiles(t *testing.T) {
 	// Count the packages first so a silently-empty run cannot go green.
 	listCmd := exec.Command(goBin, "list", "./...")
 	listCmd.Dir = root
+	// ★★ r1047 轮（★ 2026-10-28）：★ 子进程一律走【专用 GOCACHE】。
+	// ★★ ⇒ ⇒ 理由与读数见 `internal/gocache` 的包注释（★ 本机全局缓存一度到
+	// ★★ 72 GB ⇒ ⇒ 磁盘 100% 满 ⇒ ⇒ 全量 `go test ./...` 编译阶段就红）。
+	listCmd.Env = gocache.Env(root, "integration-vet")
 	listOut, listErr := listCmd.Output()
 	if listErr != nil || len(bytes.TrimSpace(listOut)) == 0 {
 		t.Skipf("cannot enumerate packages from %s (err=%v); nothing to verify", root, listErr)
@@ -831,6 +837,11 @@ func TestIntegrationTaggedTreeCompiles(t *testing.T) {
 
 	cmd := exec.Command(goBin, "vet", "-tags=integration", "./...")
 	cmd.Dir = root
+	// ★★ r1047 轮（★ 2026-10-28）：★ 这一条是【本仓最重的编译子进程】——
+	// ★★ `go vet -tags=integration ./...` 会把**整棵树**（★ 带 integration tag）
+	// ★★ 重新编译一遍 ⇒ ⇒ ★★ 树每变一次 ⇒ ⇒ 这条命令就要为**每个包**重新产出
+	// ★★ 一整套**永远不会再被命中**的缓存条目 ⇒ ⇒ ★★ ⇒ 纯垃圾。
+	cmd.Env = gocache.Env(root, "integration-vet")
 	var stderr, stdout bytes.Buffer
 	cmd.Stderr = &stderr
 	cmd.Stdout = &stdout

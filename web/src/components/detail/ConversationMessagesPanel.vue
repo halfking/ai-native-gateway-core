@@ -153,11 +153,11 @@ function roleTone(role: unknown): string {
 </template>
 
 <style scoped>
-.conv-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; align-items: center; }
+.conv-filters { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; align-items: center; }
 .media-hint { font-size: 11px; color: var(--muted); margin-left: 4px; }
 .msg-block {
   margin-bottom: 12px;
-  padding: 8px 10px;
+  padding: 8px 8px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg-subtle, var(--surface-secondary));
@@ -168,7 +168,7 @@ function roleTone(role: unknown): string {
 .msg-block--tool { border-color: var(--muted); }
 .msg-role { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
 .inline-media {
-  display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px;
+  display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px;
 }
 .inline-media img, .inline-media video {
   max-width: 180px; max-height: 140px; object-fit: contain;
@@ -188,10 +188,10 @@ function roleTone(role: unknown): string {
   max-height: none;
   overflow: visible;
 }
-.tool-label { font-size: 11px; color: var(--muted); margin: 6px 0 2px; }
+.tool-label { font-size: 11px; color: var(--muted); margin: 4px 0 2px; }
 .linkish { margin-top: 4px; }
 .reply-block {
-  margin-top: 16px; padding: 8px 10px; border-radius: 6px;
+  margin-top: 16px; padding: 8px 8px; border-radius: 6px;
   border: 1px solid var(--kx-success);
   background: color-mix(in srgb, var(--kx-success) 7%, transparent);
 }

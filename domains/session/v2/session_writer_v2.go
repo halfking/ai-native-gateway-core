@@ -247,6 +247,15 @@ type ProcessedRequest struct {
 	// Submit mode detection
 	SubmitModeHeader string // X-Gw-Submit-Mode header value from client
 
+	// ★ r1041 轮（2026-10-28）：ConsentGeneration = 请求**开始时**捕获的
+	// 录制同意世代号。
+	// ★ 背景：分支 02 承诺「disable/clear 后在途请求不能回填正文」，
+	// ★ 但生产写点恒传 0 ⇒ RecordingConsentAllowsWrite 的
+	// ★ 「capturedGeneration <= 0 ⇒ 直接放行」分支让它**从未生效**
+	// ★ ⇒ 文档声称有、实际没有。修法：把世代号从请求入口一路带到写点。
+	// ★ 0 = 未捕获（保持旧语义：只看当前开关）。
+	ConsentGeneration int
+
 	// Governance verdicts
 	InjectionVerdict string
 	OutputVerdict    string
@@ -703,6 +712,8 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		TenantID:  req.TenantID,
 		RequestID: req.RequestID,
 		Ts:        req.Timestamp,
+		// ★ r1041：把捕获的世代号带到写点（★ 0 = 未捕获 ⇒ 旧语义）。
+		ConsentGeneration: req.ConsentGeneration,
 
 		RequestDelta:  requestDelta,
 		ResponseDelta: req.ResponseBody,
@@ -792,10 +803,11 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	finalFullWritten := false
 	if settings.GetPlatformBool("storage.session_final_full_enabled", false) && len(req.OutboundBody) > 0 {
 		if err := w.bodiesWriter.WriteFinalFullInTx(lockCtx, tx, FinalFullRecord{
-			SessionID:    req.SessionID,
-			TenantID:     req.TenantID,
-			Ts:           req.Timestamp,
-			OutboundBody: req.OutboundBody,
+			SessionID:         req.SessionID,
+			TenantID:          req.TenantID,
+			Ts:                req.Timestamp,
+			OutboundBody:      req.OutboundBody,
+			ConsentGeneration: req.ConsentGeneration,
 		}); err != nil {
 			return fmt.Errorf("write final_full: %w", err)
 		}

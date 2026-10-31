@@ -131,7 +131,7 @@ const kindLabel = computed<Record<MediaKind, string>>(() => ({
 <style scoped>
 .mm-panel { font-size: 13px; }
 .toolbar {
-  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
   margin-bottom: 12px; justify-content: space-between;
 }
 .summary { font-size: 12px; color: var(--muted); }
@@ -141,16 +141,16 @@ const kindLabel = computed<Record<MediaKind, string>>(() => ({
   display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px;
 }
 .card {
-  border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px;
   background: var(--bg-card, var(--card));
 }
-.meta { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; margin-bottom: 8px; }
+.meta { display: flex; flex-wrap: wrap; gap: 4px; font-size: 11px; margin-bottom: 8px; }
 .kind {
   /* ★ 徽标内容已本地化（kindLabel）⇒ 去掉 uppercase：
      中文界面里 uppercase 无意义（DESIGN.md §4 规则 5），
      而这枚徽标原本显示的是裸英文枚举值（image/audio/video/file）。 */
   font-weight: 600;
-  padding: 1px 6px; border-radius: 4px; background: var(--bg-subtle);
+  padding: 1px 4px; border-radius: 4px; background: var(--bg-subtle);
 }
 .src, .idx, .lbl { color: var(--muted); }
 .preview {

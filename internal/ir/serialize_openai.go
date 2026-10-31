@@ -720,14 +720,17 @@ func serializeOpenAITools(tools []ToolDefinition) []map[string]any {
 			}
 			// Fall through to function shape if Raw is unparseable (defensive).
 		}
-		result = append(result, map[string]any{
+		entry := map[string]any{
 			"type": "function",
 			"function": map[string]any{
 				"name":        tool.Name,
 				"description": tool.Description,
 				"parameters":  tool.Parameters,
 			},
-		})
+		}
+		// RISK-2（2026-10-29）：工具顶层非标准键并回（不覆盖已写入键）。
+		mergeToolExtras(entry, tool.Extra)
+		result = append(result, entry)
 	}
 	return result
 }

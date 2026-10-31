@@ -22,6 +22,9 @@ export default {
     source: {
       memory: 'En mémoire',
       file: 'Fichier local',
+      requestLogs: 'Journal des requêtes',
+      sessionTurns: 'Tours de session',
+      liveStream: 'Flux en direct',
     },
     labels: {
       requestId: 'ID de requête',
@@ -202,6 +205,9 @@ export default {
     unavailableBody: "Aucun corps n'a été capturé pour ces tours (fonction désactivée pour eux, ou tour sans contenu). Les résumés, les métriques et la consommation de jetons ne sont pas affectés.",
     affectedTurns: 'Tours concernés : {list}',
     dismiss: 'Compris',
+    consentOffTitle: 'L\'enregistrement des corps de session est désactivé',
+    consentOffBody: 'L\'enregistrement des corps est désactivé pour ce locataire : les corps des tours, les résumés et le contenu forensic ne sont pas disponibles ; l\'utilisation des tokens et la facturation ne sont pas affectées. Pour obtenir les corps, demandez à un administrateur de l\'activer pour ce locataire.',
+    consentOffInline: 'Enregistrement désactivé ; corps et résumés indisponibles',
 
   },
 }

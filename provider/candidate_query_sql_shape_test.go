@@ -76,6 +76,11 @@ func TestCandidateQuerySQL_Shape(t *testing.T) {
 		"LEFT JOIN v_routable_credential_models v",
 		"broken_confirmed",
 		"recent_success_rate(c.id, mo.raw_model_name, 50)",
+		// P1-B-③ (2026-10-28): the chr LATERAL must survive rewrites. It is a
+		// hard DB dependency of the candidate scan — dropping it (or shipping a
+		// binary whose DB lacks the function, see the 211 routing_schema_error
+		// incident) turns every candidate resolution into 42883/500.
+		"recent_cache_hit_rate(c.id, mo.raw_model_name, 50)",
 		"v.is_routable = TRUE",
 		// 845/848: media/chat routing_scope hard isolation (image joins audio/video)
 		"COALESCE(c.routing_scope, 'all') IN ('all', 'chat_only')",

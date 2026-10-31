@@ -17,7 +17,19 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/gocache"
 )
+
+// gocacheRoot 返回仓根（★ 用于定位本包的【专用 GOCACHE】目录）。
+func gocacheRoot(t *testing.T) string {
+	t.Helper()
+	root, err := gocache.RepoRoot()
+	if err != nil {
+		t.Fatalf("解析仓根失败：%v", err)
+	}
+	return root
+}
 
 // proposalEntry 是提案里 ready_to_review 的最小形状 —— 只取本判据要断言的字段。
 type proposalEntry struct {
@@ -70,7 +82,10 @@ func TestTheFreshnessGateIsActuallyWiredIntoTheRun(t *testing.T) {
 	cmd.Dir = "."
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
-	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	// ★★ r1047 轮（★ 2026-10-28）：★ `go run .` 会编译并运行本包 ⇒ ⇒ 子进程走
+	// ★★ 【专用 GOCACHE】⇒ ⇒ 不再往用户的全局缓存里写产物
+	// ★★ （★ 理由与读数见 `internal/gocache` 的包注释）。
+	cmd.Env = append(gocache.Env(gocacheRoot(t), "propose-baseline-prices"), "GOFLAGS=")
 
 	done := make(chan error, 1)
 	if err := cmd.Start(); err != nil {

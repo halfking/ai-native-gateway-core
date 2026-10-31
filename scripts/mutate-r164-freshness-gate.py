@@ -39,6 +39,18 @@ import pathlib
 import subprocess
 import sys
 
+# ★★ r1047 轮（★ 2026-10-28）：★ 子进程走【专用 GOCACHE】⇒ ⇒ 不再往用户的全局缓存里
+# ★★ 写「随树变化而失效」的一次性产物（★ 理由与实测读数见 `scripts/lib/gocache.py`
+# ★★ 与 `internal/gocache` 的包注释）。
+# ★★ **两条路径都试**（★ ★★ 深度无关：★ 本文件在 scripts/ 或 scripts/audit/ 下）★★
+for _gc_lib in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")):
+    if os.path.isfile(os.path.join(_gc_lib, "gocache.py")):
+        sys.path.insert(0, _gc_lib)
+        break
+import gocache  # noqa: E402
+gocache.apply_to_environ("mutate")
+
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
 # ★ 残留门按这几个声明收集「本脚本会写的文件」

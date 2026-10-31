@@ -40,7 +40,7 @@ const defaultTooltip = computed(() => META[props.state as ModelEffectiveState]?.
 .status-badge {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   padding: 2px 8px;
   border-radius: 99px;
   font-size: 11px;

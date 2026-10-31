@@ -75,56 +75,86 @@ func TestGetProbeCandidates(t *testing.T) {
 		{"default", &defProviderID, &defCredID},
 		{"other-tenant", &otherProviderID, &otherCredID},
 	} {
-		err = tx.QueryRow(ctx, `
-			INSERT INTO providers (tenant_id, name, base_url, protocol, enabled)
-			VALUES ($1, $2, 'https://api.example.com', 'openai', TRUE)
-			RETURNING id
-		`, tt.tenant, "probe-test-"+tt.tenant).Scan(tt.providerID)
+	// ★ 2026-10-28 夹具对齐现网 schema：providers 表没有 name 列（只有
+	// code + display_name，01-schema.sql / 211 现网实测一致）。此前夹具写
+	// `INSERT INTO providers (…, name, …)` ⇒ 列不存在 ⇒ 整个测试在真库上
+	// 恒红——这就是批判式审计 §2 记的两条「与本轮无关的既有失败」。
+	// 本轮按仓内其它真库夹具的形态（admin/*_integration_test.go）改列。
+	err = tx.QueryRow(ctx, `
+		INSERT INTO providers (tenant_id, code, display_name, base_url, protocol, enabled)
+		VALUES ($1, $2, $2, 'https://api.example.com', 'openai', TRUE)
+		RETURNING id
+	`, tt.tenant, "probe-test-"+tt.tenant).Scan(tt.providerID)
 		if err != nil {
 			t.Fatalf("failed to create provider for %s: %v", tt.tenant, err)
 		}
+		// credentials.label NOT NULL（本仓与 211 现网一致）——夹具必须给值。
 		err = tx.QueryRow(ctx, `
-			INSERT INTO credentials (provider_id, lifecycle_status, availability_state, status)
-			VALUES ($1, 'active', 'ready', 'active')
+			INSERT INTO credentials (provider_id, label, lifecycle_status, availability_state, status)
+			VALUES ($1, $2, 'active', 'ready', 'active')
 			RETURNING id
-		`, *tt.providerID).Scan(tt.credID)
+		`, *tt.providerID, "probe-test-"+tt.tenant).Scan(tt.credID)
 		if err != nil {
 			t.Fatalf("failed to create credential for %s: %v", tt.tenant, err)
 		}
-		// Offer keyed by canonical_raw_name; canonical_id wired so the alias
-		// EXISTS path (ma.canonical_id = mo.canonical_id) can match.
-		_, err = tx.Exec(ctx, `
-			INSERT INTO model_offers (credential_id, raw_model_name, canonical_raw_name, canonical_id, billing_mode)
-			VALUES ($1, 'probe-test-alias', 'probe-test-alias', $2, 'per_token')
-		`, *tt.credID, canonicalID)
+		// ★ 2026-10-28：model_offers 是视图（credential_model_bindings ⋈
+		// provider_models），不可 INSERT——夹具此前写视图必然 55000。改写
+		// 两张底表（与 modality_mismatch_realdb_test.go 的真库夹具同形态）：
+		// provider_models 挂 canonical_id（alias EXISTS 臂靠它匹配），binding
+		// 挂 billing_mode。
+		// ★ modality 不显式给：本地 llm_gateway_test 的 provider_models
+		// 尚无该列（落后于 01-schema/211），列存在处 DEFAULT 'text' 兜住；
+		// 显式写列会在旧库上 42703。
+		var pmID int
+		err = tx.QueryRow(ctx, `
+			INSERT INTO provider_models (provider_id, raw_model_name, canonical_raw_name, standardized_name, canonical_id, available)
+			VALUES ($1, 'probe-test-alias', 'probe-test-alias', 'probe-test-alias', $2, TRUE)
+			RETURNING id
+		`, *tt.providerID, canonicalID).Scan(&pmID)
 		if err != nil {
-			t.Fatalf("failed to create offer for %s: %v", tt.tenant, err)
+			t.Fatalf("failed to create provider_model for %s: %v", tt.tenant, err)
+		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO credential_model_bindings (credential_id, provider_model_id, billing_mode)
+			VALUES ($1, $2, 'per_token')
+		`, *tt.credID, pmID)
+		if err != nil {
+			t.Fatalf("failed to create binding for %s: %v", tt.tenant, err)
 		}
 	}
 
 	// Keep one otherwise-routable credential in a periodic quota state.
 	// Probe candidates must not revive it while the reset window is open.
 	var periodicProviderID, periodicCredID int
+	// 同上：name → code + display_name（夹具对齐现网 schema）。
 	if err = tx.QueryRow(ctx, `
-		INSERT INTO providers (tenant_id, name, base_url, protocol, enabled)
-		VALUES ('default', 'probe-test-periodic', 'https://api.example.com', 'openai', TRUE)
+		INSERT INTO providers (tenant_id, code, display_name, base_url, protocol, enabled)
+		VALUES ('default', 'probe-test-periodic', 'probe-test-periodic', 'https://api.example.com', 'openai', TRUE)
 		RETURNING id
 	`).Scan(&periodicProviderID); err != nil {
 		t.Fatalf("failed to create periodic provider: %v", err)
 	}
 	if err = tx.QueryRow(ctx, `
-		INSERT INTO credentials (provider_id, lifecycle_status, availability_state, status, quota_state)
-		VALUES ($1, 'active', 'ready', 'active', 'periodic_exhausted')
+		INSERT INTO credentials (provider_id, label, lifecycle_status, availability_state, status, quota_state)
+		VALUES ($1, 'probe-test-periodic', 'active', 'ready', 'active', 'periodic_exhausted')
 		RETURNING id
 	`, periodicProviderID).Scan(&periodicCredID); err != nil {
 		t.Fatalf("failed to create periodic credential: %v", err)
 	}
+	var periodicPMID int
+	if err = tx.QueryRow(ctx, `
+		INSERT INTO provider_models (provider_id, raw_model_name, canonical_raw_name, standardized_name, canonical_id, available)
+		VALUES ($1, 'probe-test-alias', 'probe-test-alias', 'probe-test-alias', $2, TRUE)
+		RETURNING id
+	`, periodicProviderID, canonicalID).Scan(&periodicPMID); err != nil {
+		t.Fatalf("failed to create periodic provider_model: %v", err)
+	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO model_offers (credential_id, raw_model_name, canonical_raw_name, canonical_id, billing_mode)
-		VALUES ($1, 'probe-test-alias', 'probe-test-alias', $2, 'per_token')
-	`, periodicCredID, canonicalID)
+		INSERT INTO credential_model_bindings (credential_id, provider_model_id, billing_mode)
+		VALUES ($1, $2, 'per_token')
+	`, periodicCredID, periodicPMID)
 	if err != nil {
-		t.Fatalf("failed to create periodic offer: %v", err)
+		t.Fatalf("failed to create periodic binding: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("failed to commit test data: %v", err)
@@ -132,7 +162,10 @@ func TestGetProbeCandidates(t *testing.T) {
 	cleanup := func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_, _ = pool.Exec(cctx, `DELETE FROM model_offers WHERE raw_model_name = 'probe-test-alias'`)
+		// 清理按底表（model_offers 是视图）：先 binding 后 provider_models，
+		// 再凭据/供应商/别名/canonical。
+		_, _ = pool.Exec(cctx, `DELETE FROM credential_model_bindings WHERE provider_model_id IN (SELECT id FROM provider_models WHERE raw_model_name = 'probe-test-alias')`)
+		_, _ = pool.Exec(cctx, `DELETE FROM provider_models WHERE raw_model_name = 'probe-test-alias'`)
 		_, _ = pool.Exec(cctx, `DELETE FROM credentials WHERE id IN ($1, $2, $3)`, defCredID, otherCredID, periodicCredID)
 		_, _ = pool.Exec(cctx, `DELETE FROM providers WHERE id IN ($1, $2, $3)`, defProviderID, otherProviderID, periodicProviderID)
 		_, _ = pool.Exec(cctx, `DELETE FROM model_aliases WHERE canonical_id = $1`, canonicalID)

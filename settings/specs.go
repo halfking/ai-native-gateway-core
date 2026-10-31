@@ -36,6 +36,8 @@ func PlatformSpecs() []*Spec {
 	out = append(out, AutoSummarySpecs()...)
 	// 2026-08-06: Model Quality Monitoring (模型质量监控) - MMLU benchmark testing for featured models
 	out = append(out, ModelQualitySpecs()...)
+	// 2026-10-29: 模型可信度检测（防掺水/防偷换模型）—— 身份维度的主动探测与判定。
+	out = append(out, ModelCredibilitySpecs()...)
 	// 2026-08-07: V2 session read-path master switch (docs/omni-ref3 A1).
 	// Platform-scoped, default on, kill-switch via admin/platform settings.
 	out = append(out, SessionsV2CompressionPlatformSpecs()...)
@@ -77,6 +79,9 @@ func PlatformSpecs() []*Spec {
 	// 2026-10-14: P0-3 断流原地续问——上游 EOF 无终态标记时同候选
 	// assistant-prefill 续问一次并无缝拼接（survival.stream_continuation_enabled）。
 	out = append(out, StreamContinuationSpecs()...)
+	// 2026-10-30 magpie 对比轮: 候选计划面热加载旋钮
+	//（routing.max_candidates / survival.attempt_budget）。
+	out = append(out, RoutingPlanSpecs()...)
 	// 2026-10-21 R72f: URSM v2 平台级设置（键此前只存在于读方 ⇒ 写不进去）。
 	out = append(out, UrsmSpecs()...)
 	return out
@@ -87,5 +92,7 @@ func TenantSpecs() []*Spec {
 	out := RateLimitTenantSpecs()
 	// 会话全景分析模块的租户级调优配置（model/strategy/cluster 等）。
 	out = append(out, SessionAnalyticsTenantSpecs()...)
+	// 2026-10-28 W1.3: 录制同意（默认 off）+ 正文保留/容量（与 request_logs 解耦）。
+	out = append(out, RecordingConsentSpecs()...)
 	return out
 }

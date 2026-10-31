@@ -35,6 +35,15 @@ MiniMax-Code/0.9.5 (linux; x86_64)
 MiniMax-Code/2.1.0-beta (windows; amd64)
 ```
 
+> **⚠ 2026-10-29 线材实测订正（211 llm.itestu.cn）**：生产日志（docker logs
+> `http_request`，12h 窗口 23 条请求）显示当前在网客户端实际发送的是
+> **裸复合词 `MiniMaxCode`**（无连字符、无版本号、无平台后缀）。上述
+> `MiniMax-Code/{version}` 形态来自 2026-09-21 的档案记录，未在线上复现。
+> 网关两张 UA 识别表（`domains/streaming/client_fingerprint.go` 的
+> `extractClientType` 与 `telemetry/request_metadata.go` 的
+> `ExtractAgentNameFromRequest`）已同时补认 `minimaxcode` 裸形态；
+> 档案例子保留作历史参考，识别判据以两张代码表为准。
+
 ### MiniMax Code 特有 Header
 
 | Header | 说明 |
@@ -138,7 +147,7 @@ MiniMax Code 默认发送 `thinking: {type: "enabled"}`。网关：
 
 ## 网关审计点
 
-1. **User-Agent 必须含 `MiniMax-Code/` 或 `MiniMax-code/`**：兜底识别路径
+1. **User-Agent 必须含 `MiniMax-Code/`、`MiniMax-code/` 或裸 `MiniMaxCode`**（2026-10-29 线材实测形态）：兜底识别路径
 2. **系统提示词含 "minimax code" 或 "MiniMax Code"**：语义识别路径
 3. **`metadata.client_type == "minimax_code"`**：参数识别路径
 4. **`X-Code-Session-Id` header 存在**：参数识别路径

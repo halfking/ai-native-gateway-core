@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kaixuan/llm-gateway-go/credentialhealth"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/redis/go-redis/v9"
@@ -380,7 +381,7 @@ func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
 			c.state_reason_code,
 			c.state_reason_detail,
 			c.health_checked_at,
-				COALESCE((SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE rl.credential_id = c.id), 0) AS total_requests,
+				COALESCE((SELECT COUNT(*) FROM ` + dbpkg.SessionFamilyCredentialCountSourceSQL("c.id") + ` q), 0) AS total_requests,
 			COALESCE(ms.model_total, 0) AS model_total,
 			COALESCE(ms.model_available, 0) AS model_available,
 				COALESCE(ms.broken_model_count, 0) AS broken_model_count,
@@ -500,6 +501,49 @@ func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
 		return query
 	}
 	return fmt.Sprintf(query, modelsSelect, aggregatedSuccessSelect, aggregatedSuccessJoin)
+}
+
+// monitorSummaryTotalRequestsCanonicalArmSQL 是**参考臂**：total_requests 的
+// **canonical 视图形态**（R168 轮之前的生产写法）。
+//
+// ★ **生产路径不得引用它**（AST 静态门盯着，见
+// admin/credential_monitor_sliding_window_canonical_test.go 的同类断言）。
+// ★ 它存在的唯一理由是**对拍**：真实库测试用它与生产形态逐值比对，
+// ★ 从而证明「改走底表两臂」没有改口径。
+//
+// # 口径等价性的四条前提（★ 缺一条就不能换）
+//
+//  1. 视图的 credential_id 列 = `db.SessionFamilyCredentialIDExpr`（逐字相同）
+//     ⇒ 谓词逐字相同；
+//  2. 视图的 details 腿是 LEFT JOIN，details 唯一键是
+//     (tenant_id, request_id, partition_date) ⇒ 同一键最多 1 行
+//     ⇒ **LEFT JOIN 不改变行数** ⇒ 计数等价；
+//  3. 两臂不重叠（promote 是**移动**不是复制）⇒ UNION ALL 不重复计数；
+//  4. 视图 = hot ∪ 母表两臂体（迁移 890 之后无 v1 冻结分支）
+//     ⇒ 视图与原生 source 的**行集**相同（★ 2026-10-27 252 生产实测：
+//     全列双向 EXCEPT ALL 差集 0）。
+//
+// # 为什么原写法在生产上不可用（★ 252 实测，2026-10-27）
+//
+//	SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE rl.credential_id = 21
+//	⇒ Execution Time 14,728.010 ms（★ 单个凭据！）
+//	⇒ ★ × 74 个凭据 ⇒ ★★ 整个端点 ≈ 18 分钟 ⇒ ★★ 触发角色级 statement_timeout
+//
+// ★★ 而两版的 plan **cost 逐字相同**（cost=41.94..441.93 rows=391）
+// ⇒ ⇒ **plan cost 里没有「物化宽度」** ⇒ ⇒ 视图形态把 118 列（3083 B/行）
+// ⇒ ⇒ 扛到了 heap scan 上 ⇒ ⇒ 「EXPLAIN 一样」不蕴含「代价一样」。
+// # ★★ 毒丸标记：★ 参考臂的产物带一个唯一注释标记，
+// ★ 而生产 SQL 里**不得出现**它。
+// ★★ 为什么需要它（★ 真仓变异臂 M5 抓出来的洞）：
+// ★★ AST 静态门只看 **Go 表达式**（CallExpr）⇒ ★★ 而参考臂被拼进
+// ★★ **SQL 字符串字面量**时，AST 根本看不见那个调用
+// ★★ ⇒ ⇒ 「AST 门 + 视图文本门」都可能被绕过
+// ★★ ⇒ ⇒ **必须有第三个判据：产物标记**（★ 与「哨兵字符串」同族）。
+const monitorSummaryTotalRequestsCanonicalArmMarker = "/*r168-canonical-arm*/"
+
+func monitorSummaryTotalRequestsCanonicalArmSQL() string {
+	return monitorSummaryTotalRequestsCanonicalArmMarker +
+		`COALESCE((SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE rl.credential_id = c.id), 0)`
 }
 
 // runMonitorSummary executes buildMonitorSummarySQL on db and returns the
@@ -971,7 +1015,7 @@ func slidingWindowQuery() string {
 		  -- from model_offers.raw_model_name (e.g. "MiniMax-M3" vs "minimax-m3"),
 		  -- so a plain = misses most rows.
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
-		  AND ts > NOW() - ($3 || ' minutes')::interval
+		  AND ts > NOW() - make_interval(mins => $3::int)
 		  -- 2026-10-16 audit #153: tenant isolation. Empty $5 (super_admin /
 		  -- admin_key / unauth probe) means "see all tenants"; otherwise the
 		  -- view's tenant_id must match. Without this any caller holding a
@@ -1002,7 +1046,7 @@ func slidingWindowCanonicalQuery() string {
 		  -- from model_offers.raw_model_name (e.g. "MiniMax-M3" vs "minimax-m3"),
 		  -- so a plain = misses most rows.
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
-		AND ts > NOW() - ($3 || ' minutes')::interval
+		AND ts > NOW() - make_interval(mins => $3::int)
 		  -- 2026-10-16 audit #153: tenant isolation. Empty $5 (super_admin /
 		  -- admin_key / unauth probe) means "see all tenants"; otherwise the
 		  -- view's tenant_id must match. Without this any caller holding a
@@ -1047,7 +1091,7 @@ func slidingWindowHotQuery() string {
 		  -- 与视图路径同款大小写折叠：outbound_model 与 model_offers 大小写
 		  -- 可能不一致（"MiniMax-M3" vs "minimax-m3"）。
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
-		  AND ts > NOW() - ($3 || ' minutes')::interval
+		  AND ts > NOW() - make_interval(mins => $3::int)
 		  -- 2026-10-16 audit #153: tenant isolation. Empty $5 (super_admin /
 		  -- admin_key) means "see all tenants"; otherwise the hot 表的
 		  -- tenant_id 必须匹配。两臂 SELECT 必须显式投影 tenant_id（hot
@@ -1087,7 +1131,7 @@ func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Con
 	if minutes <= slidingWindowHotMaxMinutes {
 		q = slidingWindowHotQuery()
 	}
-	rows, err := m.h.db.Query(ctx, q, credentialID, model, fmt.Sprintf("%d", minutes), limit, tenantID)
+	rows, err := m.h.db.Query(ctx, q, credentialID, model, minutes, limit, tenantID)
 	if err != nil {
 		return nil, err
 	}

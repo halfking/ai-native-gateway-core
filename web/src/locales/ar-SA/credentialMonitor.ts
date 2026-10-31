@@ -29,6 +29,7 @@ export default {
     autoControlledTooltip: 'يتحكم فيه الفحص التلقائي (broken_confirmed وغيرها). يمكن تعطيله يدويًا (إجبار عدم الاتصال).',
     rowSelectsMonitor: 'تحديد الصف يُظهر المراقبة المرتبطة على اليمين.',
     selectModelRow: 'تحديد صف النموذج على اليسار لعرضه.',
+    sourceSessionTurns: 'سجل الجلسة',
   },
   chart: {
     allHealthy: 'الكل صحي',

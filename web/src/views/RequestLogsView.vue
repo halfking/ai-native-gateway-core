@@ -1205,9 +1205,9 @@ onMounted(async () => {
           :aria-expanded="showOverviewStats"
           @click="showOverviewStats = !showOverviewStats"
         >
-          <span style="font-weight:600;display:flex;align-items:center;gap:6px;white-space:nowrap">
+          <span style="font-weight:600;display:flex;align-items:center;gap:4px;white-space:nowrap">
             <span>📊 统计概览</span>
-            <span class="badge badge-blue" style="font-size:10px;padding:2px 6px;white-space:nowrap">
+            <span class="badge badge-blue" style="font-size:11px;padding:2px 4px;white-space:nowrap">
               {{ formatStatNumber(aggregate.total_requests) }} 请求
             </span>
           </span>
@@ -1223,9 +1223,9 @@ onMounted(async () => {
           :aria-expanded="showByModelStats"
           @click="showByModelStats = !showByModelStats"
         >
-          <span style="font-weight:600;display:flex;align-items:center;gap:6px;white-space:nowrap">
+          <span style="font-weight:600;display:flex;align-items:center;gap:4px;white-space:nowrap">
             <span>📈 按模型统计</span>
-            <span v-if="aggregate.by_model && aggregate.by_model.length" class="badge badge-blue" style="font-size:10px;padding:2px 6px;white-space:nowrap">
+            <span v-if="aggregate.by_model && aggregate.by_model.length" class="badge badge-blue" style="font-size:11px;padding:2px 4px;white-space:nowrap">
               {{ aggregate.by_model.length }} 个模型
             </span>
           </span>
@@ -1236,7 +1236,7 @@ onMounted(async () => {
       <!-- 概览详情：三联指标 + token 拆分/成本 -->
       <div v-if="showOverviewStats" style="padding:12px;border-top:1px solid var(--border)">
         <div
-          style="display:grid;gap:10px"
+          style="display:grid;gap:8px"
           :style="{ gridTemplateColumns: isDefaultTenant() ? 'repeat(3, 1fr)' : 'repeat(2, 1fr)' }"
         >
           <div class="stat-overview-card" data-stat="total-requests">
@@ -1260,7 +1260,7 @@ onMounted(async () => {
             <div class="stat-overview-sub">{{ t('requests.list.stats.scopeAll') }}</div>
           </div>
         </div>
-        <div class="stats-grid stats-grid--compact" style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">
+        <div class="stats-grid stats-grid--compact" style="margin-top:8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">
           <StatCard compact :label="t('requests.list.filter.inputTokenLabel')" :value="formatStatNumber(aggregate.prompt_tokens)" />
           <StatCard compact :label="t('requests.list.filter.outputTokenLabel')" :value="formatStatNumber(aggregate.completion_tokens)" />
           <StatCard compact :label="t('requests.list.filter.cacheReadLabel')" :value="formatStatNumber(aggregate.cache_read_tokens)" />
@@ -1274,17 +1274,17 @@ onMounted(async () => {
         <div v-if="!aggregate.by_model || !aggregate.by_model.length" style="color:var(--text-secondary);font-size:12px;text-align:center;padding:8px">
           当前条件无按模型统计数据
         </div>
-        <div v-else style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
+        <div v-else style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px">
           <div
             v-for="m in aggregate.by_model"
             :key="m.model"
             class="model-stat-card"
-            style="border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--surface-primary)"
+            style="border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--surface-primary)"
           >
-            <div style="font-weight:600;margin-bottom:6px;color:var(--accent);font-size:13px" :title="m.model">
+            <div style="font-weight:600;margin-bottom:4px;color:var(--accent);font-size:13px" :title="m.model">
               {{ m.model.length > 24 ? m.model.slice(0, 24) + '…' : m.model }}
             </div>
-            <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;font-size:11px">
+            <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px;font-size:11px">
               <div>
                 <div style="color:var(--text-secondary)">请求次数</div>
                 <div style="font-weight:600;margin-top:2px">{{ m.requests.toLocaleString() }}</div>
@@ -1302,7 +1302,7 @@ onMounted(async () => {
                 <div style="font-weight:600;margin-top:2px">{{ formatStatNumber(m.completion_tokens) }}</div>
               </div>
             </div>
-            <div v-if="m.cost_usd > 0" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);font-size:11px">
+            <div v-if="m.cost_usd > 0" style="margin-top:4px;padding-top:4px;border-top:1px solid var(--border);font-size:11px">
               <div style="color:var(--text-secondary)">成本 (USD)</div>
               <div style="font-weight:600;margin-top:2px">${{ m.cost_usd.toFixed(4) }}</div>
             </div>
@@ -1317,9 +1317,9 @@ onMounted(async () => {
         style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;cursor:pointer;background:var(--surface-secondary)"
         @click="showCompressionGuide = !showCompressionGuide"
       >
-        <span style="font-weight:600;display:flex;align-items:center;gap:6px">
+        <span style="font-weight:600;display:flex;align-items:center;gap:4px">
           <span>🤖 压缩与会话缓存说明</span>
-          <span v-if="compressionStats.totalCompressed > 0" class="badge" style="font-size:10px;padding:2px 6px">
+          <span v-if="compressionStats.totalCompressed > 0" class="badge" style="font-size:11px;padding:2px 4px">
             本页 {{ compressionStats.totalCompressed }} 条已压缩
             <template v-if="compressionStats.deltaCount"> · 增量拼接 {{ compressionStats.deltaCount }}</template>
             <template v-if="compressionStats.slidingCount"> · 滑动窗口 {{ compressionStats.slidingCount }}</template>
@@ -1328,36 +1328,40 @@ onMounted(async () => {
         <span style="color:var(--text-secondary);font-size:11px">{{ showCompressionGuide ? t('requests.collapse') : t('requests.expand') }}</span>
       </div>
       <div v-if="showCompressionGuide" style="padding:8px 12px 12px;border-top:1px solid var(--border);line-height:1.7">
-        <p style="margin:0 0 6px"><strong>会话缓存机制</strong>：网关按 <code>X-Gw-Session-Id</code> 维度缓存会话历史。
+        <p style="margin:0 0 4px"><strong>会话缓存机制</strong>：网关按 <code>X-Gw-Session-Id</code> 维度缓存会话历史。
         同一会话的多轮请求不再重复发送完整历史，只发送新增部分。缓存分三级：
         L1 进程内存 / L2 Redis / L3 数据库兜底。</p>
-        <p style="margin:0 0 6px"><strong>压缩策略说明</strong>：</p>
-        <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <p style="margin:0 0 4px"><strong>压缩策略说明</strong>：</p>
+        <table class="guide-table" style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead>
           <tr>
-            <th style="text-align:left;padding:3px 6px;border:1px solid var(--border);background:var(--surface-primary);white-space:nowrap">策略</th>
-            <th style="text-align:left;padding:3px 6px;border:1px solid var(--border);background:var(--surface-primary)">触发条件</th>
-            <th style="text-align:left;padding:3px 6px;border:1px solid var(--border);background:var(--surface-primary)">效果</th>
+            <th style="text-align:left;padding:3px 4px;border:1px solid var(--border);background:var(--surface-primary);white-space:nowrap">策略</th>
+            <th style="text-align:left;padding:3px 4px;border:1px solid var(--border);background:var(--surface-primary)">触发条件</th>
+            <th style="text-align:left;padding:3px 4px;border:1px solid var(--border);background:var(--surface-primary)">效果</th>
+          </tr>
+          </thead>
+          <tbody>
+          <tr>
+            <td style="padding:3px 4px;border:1px solid var(--border);white-space:nowrap;color:var(--success)">增量拼接 (delta_append)</td>
+            <td style="padding:3px 4px;border:1px solid var(--border)">同会话有新增消息</td>
+            <td style="padding:3px 4px;border:1px solid var(--border)">只转发新增的消息（已压缩历史保留在缓存中）</td>
           </tr>
           <tr>
-            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:var(--success)">增量拼接 (delta_append)</td>
-            <td style="padding:3px 6px;border:1px solid var(--border)">同会话有新增消息</td>
-            <td style="padding:3px 6px;border:1px solid var(--border)">只转发新增的消息（已压缩历史保留在缓存中）</td>
+            <td style="padding:3px 4px;border:1px solid var(--border);white-space:nowrap;color:var(--warning)">滑动窗口 (sliding_window)</td>
+            <td style="padding:3px 4px;border:1px solid var(--border)">消息数 ≥ 50 / Token超阈值 / 空闲 ≥ 5 分钟</td>
+            <td style="padding:3px 4px;border:1px solid var(--border)">触发 LLM 无损摘要（保留关键事实、路径、ID、错误等）→ 摘要失败时降级为机械裁剪</td>
           </tr>
           <tr>
-            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:var(--warning)">滑动窗口 (sliding_window)</td>
-            <td style="padding:3px 6px;border:1px solid var(--border)">消息数 ≥ 50 / Token超阈值 / 空闲 ≥ 5 分钟</td>
-            <td style="padding:3px 6px;border:1px solid var(--border)">触发 LLM 无损摘要（保留关键事实、路径、ID、错误等）→ 摘要失败时降级为机械裁剪</td>
+            <td style="padding:3px 4px;border:1px solid var(--border);white-space:nowrap;color:var(--warning-dark)">机械裁剪 (mechanical_trim)</td>
+            <td style="padding:3px 4px;border:1px solid var(--border)">上游 4xx context_length / 滑动窗口摘要失败</td>
+            <td style="padding:3px 4px;border:1px solid var(--border)">从最早消息开始逐对裁剪，保留 system + 首条 user + 最近 N 对</td>
           </tr>
           <tr>
-            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:var(--warning-dark)">机械裁剪 (mechanical_trim)</td>
-            <td style="padding:3px 6px;border:1px solid var(--border)">上游 4xx context_length / 滑动窗口摘要失败</td>
-            <td style="padding:3px 6px;border:1px solid var(--border)">从最早消息开始逐对裁剪，保留 system + 首条 user + 最近 N 对</td>
+            <td style="padding:3px 4px;border:1px solid var(--border);white-space:nowrap;color:var(--purple)">Memora 注入</td>
+            <td style="padding:3px 4px;border:1px solid var(--border)">上下文超限时检索 Memora L1 事实</td>
+            <td style="padding:3px 4px;border:1px solid var(--border)">将历史事实作为"动态上下文"注入请求</td>
           </tr>
-          <tr>
-            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:var(--purple)">Memora 注入</td>
-            <td style="padding:3px 6px;border:1px solid var(--border)">上下文超限时检索 Memora L1 事实</td>
-            <td style="padding:3px 6px;border:1px solid var(--border)">将历史事实作为"动态上下文"注入请求</td>
-          </tr>
+          </tbody>
         </table>
     </div>
 
@@ -1371,9 +1375,9 @@ onMounted(async () => {
         style="display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;background:var(--surface-secondary)"
         @click="showFilters = !showFilters"
       >
-        <span style="font-weight:600;display:flex;align-items:center;gap:6px;white-space:nowrap">
+        <span style="font-weight:600;display:flex;align-items:center;gap:4px;white-space:nowrap">
           <span>⚙️ 筛选条件</span>
-          <span v-if="activeFilterCount > 0" class="badge badge-blue" style="font-size:10px;padding:2px 6px;white-space:nowrap">{{ activeFilterCount }} 项生效</span>
+          <span v-if="activeFilterCount > 0" class="badge badge-blue" style="font-size:11px;padding:2px 4px;white-space:nowrap">{{ activeFilterCount }} 项生效</span>
         </span>
         <span style="flex:1"></span>
         <span style="color:var(--text-secondary);font-size:12px;white-space:nowrap">共 {{ total }} 条</span>
@@ -1384,7 +1388,7 @@ onMounted(async () => {
 
       <div v-show="showFilters" style="padding:12px;border-top:1px solid var(--border)">
         <!-- 时间范围独立行：预设 chips + custom 日期选择器 -->
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+        <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
           <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap">时间范围</span>
           <template v-for="opt in timePresetOptions" :key="opt.value">
             <span v-if="opt.separator" aria-hidden="true" style="width:1px;height:22px;background:var(--border);margin:0 4px"></span>
@@ -1511,7 +1515,7 @@ onMounted(async () => {
     <div
       v-if="traceMode && taskSummary"
       class="card trace-summary"
-      style="margin-bottom:12px;padding:10px 14px;font-size:12px;display:flex;gap:16px;align-items:center;flex-wrap:wrap"
+      style="margin-bottom:12px;padding:8px 12px;font-size:12px;display:flex;gap:16px;align-items:center;flex-wrap:wrap"
     >
       <span style="font-weight:600">任务脉络</span>
       <span>共 {{ total }} 步（本页 {{ taskSummary.total }}）</span>
@@ -1524,7 +1528,7 @@ onMounted(async () => {
     </div>
 
     <div v-if="canSummarizeSession" class="card session-summary-entry" style="margin-bottom:12px;padding:12px">
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <strong>会话总结</strong>
         <span style="color:var(--muted);font-size:12px">{{ t('requests.list.trace.sessionSummaryHint') }}</span>
         <span style="color:var(--muted);font-size:12px">会话: {{ shortHash(gwSessionFilter) }}</span>
@@ -1712,15 +1716,29 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+/* 2026-10-30 r1050 轮：「会话缓存机制」说明表的排版锁定。
+   ★ 背景：★ 本轮给该表补上了 <thead>/<tbody>（修 `<tr>` 直挂 `<table>` 的 HTML 语义缺陷）
+   ★ ⇒ ★★ 全局 style.css 的 `thead th` / `tbody td` **元素选择器**从此对该表生效
+   ★ ⇒ ★ 其中 `tbody td { font-size: 13px }` 会把该表从 11px 密排撑成 13px 松排
+   ★ ⇒ ★★ 而该表本就是「说明性小字表」（表级 font-size:11px）⇒ 13px 不是改善，是**排版劣化**。
+   ★ ⇒ 修法：★ 用 scoped 规则把字号钉回 11px（★ 与仓内同族 `.dense-table` 做法一致），
+   ★ 而不是给 12 个单元格各加一份行内 style（★ 那会把意图埋进噪声里）。
+   ★★ 顺带把「补了语义标签 ⇒ 全局表格样式开始生效」这件事记在文件里：
+   ★★ **补语义标签不是纯语法修复，它会让此前被绕过的样式规则开始管这张表。** */
+.guide-table th,
+.guide-table td {
+  font-size: 11px;
+}
+
 /* 2026-08-17: 详情 body 缓存可观测条（super admin）。轻量单行 chip，不抢
    列表空间；数值用 tabular-nums 防刷新时跳动。 */
 .body-cache-strip {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 14px;
+  gap: 4px 12px;
   margin-bottom: 12px;
-  padding: 5px 12px;
+  padding: 4px 12px;
   background: color-mix(in srgb, var(--accent) 4%, transparent);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1746,7 +1764,7 @@ onMounted(async () => {
 }
 .request-log-table th,
 .request-log-table td {
-  padding: 5px 7px;
+  padding: 4px 8px;
   vertical-align: top;
 }
 .col-seq {
@@ -1808,7 +1826,7 @@ onMounted(async () => {
 }
 .cell-line2 {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.35;
   margin-top: 2px;
 }
@@ -1829,7 +1847,7 @@ onMounted(async () => {
 .trace-sub {
   color: var(--muted);
   margin-top: 2px;
-  font-size: 10px;
+  font-size: 11px;
   cursor: pointer;
 }
 .trace-sub:hover {
@@ -1865,7 +1883,7 @@ onMounted(async () => {
 .tenant-badge {
   display: inline-flex;
   align-items: center;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
@@ -1939,16 +1957,16 @@ onMounted(async () => {
 }
 .attach-badge {
   display: inline-block;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 8px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   background: color-mix(in srgb, var(--magenta) 12%, transparent);
   color: var(--purple);
 }
 .parent-id {
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: 11px;
   margin-top: 2px;
   font-family: var(--mono-font, ui-monospace, monospace);
 }
@@ -1967,7 +1985,7 @@ onMounted(async () => {
 
 /* v3 compression savings text in the table compression column */
 .cell-line2.saving-text {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--success);
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
@@ -1979,7 +1997,7 @@ onMounted(async () => {
 
 /* Compression guide card in-page styling */
 .compression-guide-card code {
-  font-size: 10px;
+  font-size: 11px;
   padding: 1px 4px;
   border-radius: 3px;
   background: var(--surface-primary, var(--bg-card));
@@ -2030,7 +2048,7 @@ onMounted(async () => {
   padding: 8px 12px;
   cursor: pointer;
   background: var(--surface-primary);
-  transition: background 0.12s ease;
+  transition: background 0.12s var(--kx-motion-ease-out);
 }
 .stats-card .stats-segment:hover { background: var(--surface-secondary); }
 .stats-card .stats-segment--active {
@@ -2048,7 +2066,7 @@ onMounted(async () => {
   font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
-  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+  transition: border-color 0.12s var(--kx-motion-ease-out), color 0.12s var(--kx-motion-ease-out), background 0.12s var(--kx-motion-ease-out);
 }
 .preset-chip:hover { border-color: var(--accent); color: var(--accent-h); }
 .preset-chip--active {

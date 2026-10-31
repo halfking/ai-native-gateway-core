@@ -15,9 +15,15 @@ package settings
 const (
 	KeyNodeFailStreakLimit         = "routing.node_fail_streak_limit"
 	KeyNodeDisabledCooldownSeconds = "routing.node_disabled_cooldown_seconds"
-	KeyStickyFailureThreshold      = "routing.sticky_failure_threshold"
-	KeyFpSlotTTLSeconds            = "disguise.fp_slot_ttl_seconds"
-	KeyErrorProbeWorkers           = "error_probe.workers"
+	// KeyNodeDisabledBackoffCapSeconds 反复禁用的指数退避封顶（P0-B，
+	// 2026-10-28 两层路由审计）：第 N 次禁用时长 = cooldown × 2^(N−1)，
+	// 封顶本值。与 URSM v2 BackoffCapSeconds（config.go，默认 1800）同公式
+	// 同封顶——两套 Redis 状态面在"判死退避"上对齐，NodeState 的
+	// disable_count 字段从"只写不读"变为被消费。
+	KeyNodeDisabledBackoffCapSeconds = "routing.node_disabled_backoff_cap_seconds"
+	KeyStickyFailureThreshold        = "routing.sticky_failure_threshold"
+	KeyFpSlotTTLSeconds              = "disguise.fp_slot_ttl_seconds"
+	KeyErrorProbeWorkers             = "error_probe.workers"
 
 	// KeyProbeStateAgingHours 健康证据老化窗（Wave 3 B2①，2026-09-22）：
 	// healthy_confirmed 绑定在该窗内既无成功请求也无 ok 探测即视为证据
@@ -31,6 +37,11 @@ const (
 	DefaultNodeFailStreakLimit = 3
 	// DefaultNodeDisabledCooldownSeconds 节点 Disabled 冷却秒数（原 nodeDisabledCooldownSec=300）。
 	DefaultNodeDisabledCooldownSeconds = 300
+	// DefaultNodeDisabledBackoffCapSeconds 反复禁用指数退避封顶（秒）。
+	// 默认 1800 与 URSM v2 BackoffCapSeconds（domains/ursm/v2/config.go:241）
+	// 同值——P0-B 的对齐要求是"同一公式、同一封顶"，两套状态面在
+	// cool×2^(N−1) 的行为上不可分叉。
+	DefaultNodeDisabledBackoffCapSeconds = 1800
 	// DefaultStickyFailureThreshold sticky 连续失败踢出阈值（原 executors/sticky.go AUDIT-1 用户语义=2）。
 	DefaultStickyFailureThreshold = 2
 	// DefaultFpSlotTTLSeconds 指纹槽无请求自动归还 TTL（原 slotTTLSeconds=1800）。
@@ -91,6 +102,21 @@ func ThresholdSpecs() []*Spec {
 			Default:         DefaultNodeDisabledCooldownSeconds,
 			Description:     "节点 Disabled 冷却时长（秒）",
 			DescriptionLong: "节点被置 Disabled 后的冷却秒数，冷却到期由 IsUsable 自动恢复进路由池。原为 credentialfpslot 包内常量 300（5 分钟），Wave 2 集中化后可热更。",
+			Unit:            "秒",
+			DangerLevel:     Warning,
+			HotReload:       true,
+		},
+		{
+			Key:             KeyNodeDisabledBackoffCapSeconds,
+			EnvName:         "LLM_GATEWAY_ROUTING_NODE_DISABLED_BACKOFF_CAP_SECONDS",
+			Type:            TypeInt,
+			Scope:           ScopePlatform,
+			Category:        CategoryRouting,
+			Min:             floatPtr(60),
+			Max:             floatPtr(7200),
+			Default:         DefaultNodeDisabledBackoffCapSeconds,
+			Description:     "节点反复禁用指数退避封顶（秒）",
+			DescriptionLong: "P0-B（2026-10-28 两层路由审计 G2）：同一节点第 N 次被禁用的冷却时长 = node_disabled_cooldown_seconds × 2^(N−1)，封顶本值。冷却到期后首个真实请求失败立即再禁用时同样按此公式递增（disable_count 先消费再自增）。与 URSM v2 record_request.lua 的 cool×2^disable_count 封顶 1800 同公式同封顶，两套 Redis 状态面的判死退避对齐。防抖语义：反复翻红的节点冷却指数拉长、可用容量下降——这正是目的（防抖优先于容量），封顶保证不失控。成功恢复（冷却到期后首个请求成功）时 disable_count 归零、退避从第一档重新开始。",
 			Unit:            "秒",
 			DangerLevel:     Warning,
 			HotReload:       true,
@@ -220,6 +246,13 @@ func ProbeStateAgingHours() int {
 // Cached read: ≤5s reload window on the routing hot path.
 func NodeDisabledCooldownSeconds() int {
 	return clampThresholdInt(CachedPlatformInt(KeyNodeDisabledCooldownSeconds, DefaultNodeDisabledCooldownSeconds), 30, 7200)
+}
+
+// NodeDisabledBackoffCapSeconds returns the cap for the exponential
+// disable-backoff (P0-B): Nth disable cools cooldown×2^(N−1), capped here.
+// Cached read: consumed once per RecordNodeFailure write path.
+func NodeDisabledBackoffCapSeconds() int {
+	return clampThresholdInt(CachedPlatformInt(KeyNodeDisabledBackoffCapSeconds, DefaultNodeDisabledBackoffCapSeconds), 60, 7200)
 }
 
 // StickyFailureThreshold returns the sticky consecutive-failure eviction

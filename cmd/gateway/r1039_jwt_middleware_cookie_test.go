@@ -43,7 +43,7 @@ const r1039JWTSecret = "r1039-test-secret-value"
 func r1039Echo(t *testing.T, secret string) *echo.Echo {
 	t.Helper()
 	e := echo.New()
-	e.Use(newJWTMiddleware(secret))
+	e.Use(newJWTMiddleware(secret, nil))
 	e.GET("/probe", func(c echo.Context) error {
 		role, _ := c.Get("role").(string)
 		uid, _ := c.Get("user_id").(int)
@@ -159,7 +159,7 @@ func TestR1039JWTMiddlewareSecretUnconfigured(t *testing.T) {
 // ⇒ cookie 通道不能变成「绕过角色门」的后门。
 func TestR1039RequireSuperAdminRejectsTenantViaCookie(t *testing.T) {
 	e := echo.New()
-	e.Use(newJWTMiddleware(r1039JWTSecret))
+	e.Use(newJWTMiddleware(r1039JWTSecret, nil))
 	e.Use(newRequireSuperAdminMiddleware())
 	e.GET("/probe", func(c echo.Context) error { return c.String(http.StatusOK, "ok") })
 

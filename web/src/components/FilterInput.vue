@@ -114,7 +114,7 @@ if (typeof window !== 'undefined') {
   z-index: 50;
 }
 .filter-suggest li {
-  padding: 6px 12px;
+  padding: 4px 12px;
   font-size: 13px;
   cursor: pointer;
   white-space: nowrap;

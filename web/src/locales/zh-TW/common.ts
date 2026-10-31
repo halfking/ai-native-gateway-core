@@ -21,6 +21,7 @@ export default {
     yes: '是',
     no: '否',
     retry: '重試',
+    more: '更多',
   },
   status: {
     enabled: '啟用',

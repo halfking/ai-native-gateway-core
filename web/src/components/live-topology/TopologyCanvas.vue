@@ -29,6 +29,7 @@ import {
   GATEWAY_CORE_ID,
   type GatewayCoreBox,
   type GatewayModuleKey,
+  type ModelSelectionStats,
   type TopoLayoutEdge,
   type TopoLayoutNode,
   type TopoNode,
@@ -50,9 +51,16 @@ const props = defineProps<{
   plugins?: TopoPluginChip[]
   /** 转发队列深度（存储转发带徽标；null = 未上报）。 */
   queueDepth?: number | null
+  /** 选路扇出统计（大方块选路扇出带）。 */
+  selection?: ModelSelectionStats | null
+  /** 内部直连分桶是否完成测量（false = 大方块标注「未测量」）。 */
+  directMeasured?: boolean
+  /** 内部直连供应商 code 集合（providers.kind='local'）；供应端节点卡据此挂直连徽标。 */
+  localProviderCodes?: ReadonlySet<string>
 }>()
 
 const emit = defineEmits<{
+  /** node=null = 点了空白区（画布背景）：上层清除点选态与点选带来的过滤。 */
   (e: 'select-node', node: TopoNode | null): void
   (e: 'select-module', key: GatewayModuleKey): void
 }>()
@@ -173,7 +181,7 @@ function context2d(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
   }
 }
 
-function drawEdge(ctx: CanvasRenderingContext2D, edgeKey: string, dimmed: boolean, flowPhase: number) {
+function drawEdge(ctx: CanvasRenderingContext2D, edgeKey: string, dimmed: boolean, nowMs: number) {
   const edge = edgeByKey.value.get(edgeKey)
   if (!edge) return
   const [p0, p1, p2, p3] = edge.path
@@ -202,12 +210,17 @@ function drawEdge(ctx: CanvasRenderingContext2D, edgeKey: string, dimmed: boolea
   ctx.restore()
 
   if (edge.requests > 0 && !prefersReducedMotion.value) {
+    // 流光按流量分级：流量越大流得越快、线越亮 —— 「主干道 vs 小路」
+    // 一眼可辨（SigNoz service map 同款语义：密度/速度编码流量）。
+    const speed = Math.max(12, 34 - Math.log2(edge.requests + 1) * 5)
     ctx.save()
-    ctx.globalAlpha = dimmed ? 0.06 : 0.35
+    ctx.globalAlpha = dimmed ? 0.06 : 0.35 + Math.min(0.3, Math.log10(edge.requests + 1) * 0.12)
     ctx.strokeStyle = statusColor(edge.lastStatus)
-    ctx.lineWidth = 1.2
+    ctx.lineWidth = 1.2 + Math.min(1.1, Math.log10(edge.requests + 1) * 0.34)
     ctx.setLineDash([6, 10])
-    ctx.lineDashOffset = flowPhase
+    // ★ 负 offset = 虚线图案沿路径**正方向**移动，与粒子流向一致
+    //   （原先正值 offset 流光逆着数据流走，方向感是反的）。
+    ctx.lineDashOffset = -((nowMs / speed) % 16)
     ctx.beginPath()
     ctx.moveTo(p0.x, p0.y)
     ctx.bezierCurveTo(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y)
@@ -247,6 +260,46 @@ function drawNodeGlow(ctx: CanvasRenderingContext2D, node: TopoLayoutNode, time:
   ctx.restore()
 }
 
+// ── 到达闪光（2026-10-28 live 页动效轮）──────────────────────────
+// ParticlePool.step() 一直返回「本轮到达终点的粒子」，但此前从未被接线 ——
+// 粒子飞到终点就无声消失，「请求落地」这个事件在图上没有任何表达。
+// 到达环 = 一次按状态着色的扩散涟漪（成功绿 / 失败红 / 限流黄），
+// 挂在边的**终点**上：模型边到达 = token 已交付，供应边到达 = 上游已回包。
+interface ArrivalRing {
+  edgeKey: string
+  status: string
+  ageMs: number
+}
+const RING_LIFE_MS = 460
+const RING_CAP = 24
+const rings: ArrivalRing[] = []
+
+function drawArrivalRings(ctx: CanvasRenderingContext2D) {
+  if (prefersReducedMotion.value) return
+  for (const ring of rings) {
+    const edge = edgeByKey.value.get(ring.edgeKey)
+    if (!edge) continue
+    const end = edge.path[3]
+    const k = ring.ageMs / RING_LIFE_MS
+    const color = statusColor(ring.status)
+    ctx.save()
+    ctx.globalAlpha = (1 - k) * 0.75
+    ctx.strokeStyle = color
+    ctx.lineWidth = 2 - k * 1.2
+    ctx.beginPath()
+    ctx.arc(end.x, end.y, 3 + k * 13, 0, Math.PI * 2)
+    ctx.stroke()
+    if (k < 0.4) {
+      ctx.globalAlpha = (1 - k / 0.4) * 0.55
+      ctx.fillStyle = color
+      ctx.beginPath()
+      ctx.arc(end.x, end.y, 2.2, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.restore()
+  }
+}
+
 function render(nowMs: number) {
   const canvas = canvasRef.value
   if (!canvas) return
@@ -264,7 +317,6 @@ function render(nowMs: number) {
   ctx.clearRect(0, 0, width, height)
 
   const highlight = new Set(props.highlightEdges ?? [])
-  const phase = prefersReducedMotion.value ? 0 : nowMs / 26
 
   // 高亮按**原始 edge id** 匹配（见 isEdgeHighlighted 的注释）：窄屏折叠后
   // 布局边 id 变了，只比 id 的话折叠一发生高亮就静默失效。
@@ -272,7 +324,7 @@ function render(nowMs: number) {
     isEdgeHighlighted(highlight, edgeId, sourceIds)
 
   for (const edge of layout.value.edges) {
-    drawEdge(ctx, edge.id, highlight.size > 0 && !isHighlighted(edge.id, edge.sourceIds), phase)
+    drawEdge(ctx, edge.id, highlight.size > 0 && !isHighlighted(edge.id, edge.sourceIds), nowMs)
   }
 
   // reduced-motion 替代表达：每条有流量的链路一个静态密度点
@@ -292,15 +344,30 @@ function render(nowMs: number) {
     for (const particle of pool.list()) {
       const edge = edgeByKey.value.get(particle.edgeKey)
       if (!edge) continue
-      const p = bezierOn(edge.path, particle.t, particle.lateral)
       const color = statusColor(particle.status)
+      const radius = particleRadius(particle.tokens)
+      // 拖尾：沿路径反向取 3 个采样点，渐小渐淡 —— 流动的方向感
+      //（「数据正在从 A 流向 B」这件事，拖尾比一颗孤点直观得多）。
+      for (let k = 3; k >= 1; k--) {
+        const tt = particle.t - k * 0.045
+        if (tt <= 0) continue
+        const tp = bezierOn(edge.path, tt, particle.lateral * (1 - k * 0.12))
+        ctx.save()
+        ctx.globalAlpha = Math.max(0, 1 - particle.t * 0.35) * (0.4 / k)
+        ctx.fillStyle = color
+        ctx.beginPath()
+        ctx.arc(tp.x, tp.y, Math.max(0.8, radius * (1 - k * 0.18)), 0, Math.PI * 2)
+        ctx.fill()
+        ctx.restore()
+      }
+      const p = bezierOn(edge.path, particle.t, particle.lateral)
       ctx.save()
       ctx.globalAlpha = Math.max(0.25, 1 - particle.t * 0.35)
       ctx.shadowBlur = 10
       ctx.shadowColor = color
       ctx.fillStyle = color
       ctx.beginPath()
-      ctx.arc(p.x, p.y, particleRadius(particle.tokens), 0, Math.PI * 2)
+      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2)
       ctx.fill()
       if (particle.isProbe) {
         ctx.shadowBlur = 0
@@ -310,6 +377,7 @@ function render(nowMs: number) {
       }
       ctx.restore()
     }
+    drawArrivalRings(ctx)
   }
 
   for (const node of layout.value.nodes) {
@@ -338,7 +406,16 @@ function frame(nowMs: number) {
   const last = lastFrameAt.value || nowMs
   const dt = Math.min(120, nowMs - last)
   lastFrameAt.value = nowMs
-  pool.step(dt)
+  // ★ 接住 step() 的返回值（此前一直被丢弃）：到达终点 = 「请求落地」
+  //   这个事件，用一次扩散环表达（见 drawArrivalRings）。
+  for (const arrived of pool.step(dt)) {
+    if (rings.length >= RING_CAP) rings.shift()
+    rings.push({ edgeKey: arrived.edgeKey, status: arrived.status, ageMs: 0 })
+  }
+  if (rings.length) {
+    for (const ring of rings) ring.ageMs += dt
+    while (rings.length && rings[0].ageMs >= RING_LIFE_MS) rings.shift()
+  }
   render(nowMs)
 }
 
@@ -399,6 +476,7 @@ onMounted(() => {
     document.removeEventListener('visibilitychange', onVisibility)
     cancelAnimationFrame(raf)
     pool.clear()
+    rings.length = 0
   })
 })
 
@@ -445,19 +523,38 @@ function clientSubLine(node: TopoNode): string {
   return parts.join(' · ')
 }
 
+/** 供应端节点是否内部直连（providers.kind='local'：本地托管推理服务，
+ *  网关直连内网端点）。图上与云端供应商区分表达（2026-10-28 选路层轮）。 */
+function isDirectProvider(node: TopoNode): boolean {
+  if (node.column !== 'provider' || !node.providerCode) return false
+  return props.localProviderCodes?.has(node.providerCode) ?? false
+}
+
 function onNodeEnter(id: string) {
   hoveredId.value = id
 }function onNodeLeave() {
   hoveredId.value = null
 }
 
-function onNodeClick(node: TopoNode) {
+function onNodeClick(node: TopoNode, event: { stopPropagation(): void }) {
+  // 节点点击不许冒泡成「空白区点击」—— 根容器的空白处理器会把上层
+  // 刚按这个节点设好的过滤立刻清掉（点选与清空必须在源头分开）。
+  // 参数放宽成结构类型：click 与键盘 Enter（KeyboardEvent）两条路都要拦。
+  event.stopPropagation()
   emit('select-node', node)
+}
+
+/** 空白区（画布背景 / 没有节点的链路区域）= 取消点选：emit null，
+ *  上层（LiveTopologyView）据此清除点选态与点选带来的过滤。
+ *  网关大方块与协议 chip 各自拦在自己那层（.stop / pointer-events:none），
+ *  点到它们不算「空白」。 */
+function onBlankClick() {
+  emit('select-node', null)
 }
 </script>
 
 <template>
-  <div ref="wrapRef" class="topo-canvas" :class="{ 'is-degraded': !active }">
+  <div ref="wrapRef" class="topo-canvas" :class="{ 'is-degraded': !active }" @click="onBlankClick">
     <canvas ref="canvasRef" class="topo-canvas__layer" aria-hidden="true" />
     <div class="topo-canvas__layers" aria-hidden="true">
       <span
@@ -477,12 +574,16 @@ function onNodeClick(node: TopoNode) {
         :style="{ left: `${chip.x}px`, top: `${chip.y}px`, borderColor: chip.color, color: chip.color }"
       >{{ chip.name }} ×{{ chip.count }}</span>
     </div>
+    <!-- 网关大方块不是空白：点它 = 模块聚焦（上层 .stop 拦住，不许冒泡成清空点选）。 -->
     <GatewayCoreBoxView
       :box="gatewayBox"
       :stats="gatewayStats"
       :selected="selectedModule"
       :plugins="plugins"
       :queue-depth="queueDepth"
+      :selection="selection"
+      :direct-measured="directMeasured"
+      @click.stop
       @select-module="emit('select-module', $event)"
     />
     <ul class="topo-canvas__nodes">
@@ -502,12 +603,15 @@ function onNodeClick(node: TopoNode) {
         @mouseleave="onNodeLeave"
         @focus="onNodeEnter(node.id)"
         @blur="onNodeLeave"
-        @click="onNodeClick(node)"
-        @keydown.enter.prevent="onNodeClick(node)"
+        @click="onNodeClick(node, $event)"
+        @keydown.enter.prevent="onNodeClick(node, $event)"
       >
         <span class="topo-node__label">{{ node.column === 'client' ? displayLabel(node) : node.label }}</span>
         <span v-if="node.column === 'client' ? clientSubLine(node) : node.sub" class="topo-node__sub">
           {{ node.column === 'client' ? clientSubLine(node) : node.sub }}
+        </span>
+        <span v-if="isDirectProvider(node)" class="topo-node__direct" :data-testid="`topo-direct-${node.providerCode}`">
+          {{ t('liveTopology.provider.direct') }}
         </span>
         <span class="topo-node__metric">{{ node.metric.requests }}<i v-if="node.metric.inFlight">·{{ node.metric.inFlight }}↻</i></span>
       </li>
@@ -519,7 +623,11 @@ function onNodeClick(node: TopoNode) {
 .topo-canvas {
   position: relative;
   width: 100%;
-  height: 100%;
+  /* stage 列（flex column：画布 + 路由决策时间线）里的一员：用 flex 占满
+     剩余高度，而不是 height:100%（百分比会把时间线挤到容器外 —— 2026-10-28
+     桌面栅格行收进视口后 stage 高度变为有限值，两种写法从此分道）。
+     窄屏 stage 高度未受限时退化为内容高度，min-height 480 兜底不变。 */
+  flex: 1 1 auto;
   min-height: 480px;
   overflow: hidden;
   background:
@@ -560,10 +668,10 @@ function onNodeClick(node: TopoNode) {
 .topo-canvas__chip {
   position: absolute;
   transform: translate(-50%, -50%);
-  padding: 0 6px;
+  padding: 0 4px;
   border: 1px solid;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 16px;
   white-space: nowrap;
   background: color-mix(in srgb, var(--kx-surface) 82%, transparent);
@@ -576,20 +684,26 @@ function onNodeClick(node: TopoNode) {
   margin: 0;
   padding: 0;
   list-style: none;
+  /* 容器必须对点击透明（2026-10-29 空白清空轮真机实测）：inset:0 的覆盖层
+     会把整个画布的点击都拦在自己身上 —— 网关大方块与模块格子的鼠标点击
+     从此全部失效（elementFromPoint 实测大方块中心落在本层）。容器放行，
+     只有节点卡自己接收指针事件；空白点击则落到画布根（清除点选）。 */
+  pointer-events: none;
 }
 
 .topo-node {
+  pointer-events: auto;
   position: absolute;
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 1px;
-  padding: 4px 8px 4px 20px;
+  padding: 4px 8px 4px 16px;
   border: 1px solid var(--kx-border);
   border-radius: 10px;
   background: color-mix(in srgb, var(--kx-surface) 88%, transparent);
   cursor: pointer;
-  transition: opacity 160ms ease, transform 160ms ease;
+  transition: opacity 160ms var(--kx-motion-ease-out), transform 160ms var(--kx-motion-ease-out);
   overflow: hidden;
 }
 
@@ -625,6 +739,22 @@ function onNodeClick(node: TopoNode) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 内部直连徽标（2026-10-28 选路层轮）：本地托管供应商（kind='local'）
+   的供应端节点卡右上角小徽标 —— 与云端供应商的区分不靠猜。 */
+.topo-node__direct {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--kx-primary);
+  border: 1px solid color-mix(in srgb, var(--kx-primary) 45%, var(--kx-border));
+  background: color-mix(in srgb, var(--kx-surface) 82%, transparent);
+  white-space: nowrap;
 }
 
 .topo-node__metric {

@@ -47,7 +47,7 @@ const { t } = useI18n()
   /* 2026-09-13 P1c: dvh fallback（移动端地址栏收起时不留缝） */
   min-height: calc(100vh - 69px);
   min-height: calc(100dvh - 69px);
-  padding: 1.25rem 1rem 2rem;
+  padding: 16px 16px 32px;
   background:
     radial-gradient(ellipse 80% 50% at 50% -10%, color-mix(in srgb, var(--accent) 14%, transparent), transparent),
     var(--pub-bg);
@@ -56,12 +56,12 @@ const { t } = useI18n()
 
 .pub-page__hero {
   max-width: var(--pub-max);
-  margin: 0 auto 1.5rem;
+  margin: 0 auto 24px;
   text-align: center;
 }
 
 .pub-page__title {
-  margin: 0 0 10px;
+  margin: 0 0 8px;
   font-size: clamp(1.5rem, 3vw, 2rem);
   font-weight: 700;
   line-height: 1.2;
@@ -70,7 +70,7 @@ const { t } = useI18n()
 .pub-page__sub {
   margin: 0 auto;
   max-width: 52ch;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.6;
   color: var(--pub-muted);
 }
@@ -82,8 +82,8 @@ const { t } = useI18n()
 
 .pub-page__foot {
   max-width: var(--pub-max);
-  margin: 2rem auto 0;
-  padding-top: 1rem;
+  margin: 32px auto 0;
+  padding-top: 16px;
   border-top: 1px solid var(--pub-border);
   display: flex;
   justify-content: space-between;
@@ -96,7 +96,7 @@ const { t } = useI18n()
 
 .pub-page__foot-links {
   display: flex;
-  gap: 14px;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
@@ -111,7 +111,7 @@ const { t } = useI18n()
 }
 
 :deep(.pub-card) {
-  margin-bottom: 1rem;
+  margin-bottom: 16px;
   border: 1px solid var(--pub-border);
   border-radius: 12px;
   background: var(--pub-panel);
@@ -122,8 +122,8 @@ const { t } = useI18n()
 }
 
 :deep(.pub-steps) {
-  margin: 0 0 1rem;
-  padding-left: 1.25rem;
+  margin: 0 0 16px;
+  padding-left: 16px;
   color: var(--pub-muted);
   font-size: 14px;
   line-height: 1.65;
@@ -131,16 +131,16 @@ const { t } = useI18n()
 
 :deep(.pub-actions) {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
   align-items: center;
-  margin-top: 1rem;
+  margin-top: 16px;
 }
 
 :deep(.pub-code) {
   display: block;
   margin-top: 8px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-radius: 8px;
   font-size: 12px;
   font-family: ui-monospace, monospace;
@@ -158,8 +158,8 @@ const { t } = useI18n()
 }
 
 :deep(.pub-git-box) {
-  margin: 1rem 0;
-  padding: 14px 16px;
+  margin: 16px 0;
+  padding: 12px 16px;
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-radius: 10px;
   background: color-mix(in srgb, var(--accent) 8%, transparent);
@@ -186,7 +186,7 @@ const { t } = useI18n()
 @media (max-width: 768px) {
   .pub-page {
     --pub-max: 100%;
-    padding: 1rem 12px 1.5rem;
+    padding: 16px 12px 24px;
   }
 }
 </style>

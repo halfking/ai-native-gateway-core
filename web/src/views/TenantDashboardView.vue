@@ -805,7 +805,7 @@ onUnmounted(() => {
 .page-header-left {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-shrink: 0;
 }
 .page-header-left h2 {
@@ -832,7 +832,7 @@ onUnmounted(() => {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out), border-bottom 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), outline 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 .tab-btn:hover {
@@ -854,7 +854,7 @@ onUnmounted(() => {
 .tenant-badge {
   display: inline-flex;
   align-items: center;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
@@ -864,7 +864,7 @@ onUnmounted(() => {
 }
 .days-select {
   width: auto;
-  padding: 6px 12px;
+  padding: 4px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -876,14 +876,14 @@ onUnmounted(() => {
   min-width: 80px;
 }
 .btn-refresh {
-  padding: 6px 12px;
+  padding: 4px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
   color: var(--text);
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), opacity 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -899,7 +899,7 @@ onUnmounted(() => {
 .alert {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .alert-icon {
@@ -918,7 +918,7 @@ onUnmounted(() => {
 /* 订阅卡 */
 .subscription-card {
   margin-bottom: 16px;
-  padding: 14px 16px;
+  padding: 12px 16px;
 }
 .subscription-head {
   display: flex;
@@ -933,7 +933,7 @@ onUnmounted(() => {
 .subscription-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 12px 20px;
+  gap: 12px 16px;
 }
 .sub-item {
   display: flex;
@@ -958,7 +958,7 @@ onUnmounted(() => {
 }
 /* 紧凑统计 */
 .stats-section {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .stats-row {
   display: flex;
@@ -974,7 +974,7 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--card);
-  transition: all 0.15s ease;
+  transition: border-color 0.15s var(--kx-motion-ease-out), box-shadow 0.15s var(--kx-motion-ease-out);
 }
 .stat-mini:hover {
   border-color: var(--accent);
@@ -992,13 +992,13 @@ onUnmounted(() => {
   font-weight: 500;
 }
 .stat-mini__value {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 .stat-mini__sub {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   margin-top: 4px;
 }
@@ -1023,7 +1023,7 @@ onUnmounted(() => {
 .card-title {
   font-size: 14px;
   font-weight: 600;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 .card-title .hint {
   font-weight: 400;
@@ -1039,12 +1039,12 @@ onUnmounted(() => {
 .bar-row {
   display: grid;
   grid-template-columns: 140px 1fr 88px;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
   background: none;
   border: 1px solid transparent;
   border-radius: 6px;
-  padding: 6px 8px;
+  padding: 4px 8px;
   cursor: pointer;
   color: inherit;
   text-align: left;
@@ -1085,7 +1085,7 @@ onUnmounted(() => {
 }
 .model-table th,
 .model-table td {
-  padding: 8px 10px;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--border);
   font-size: 13px;
 }
@@ -1106,7 +1106,7 @@ onUnmounted(() => {
 .trend-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 20px;
+  gap: 16px;
 }
 @media (max-width: 768px) {
   .trend-grid { grid-template-columns: 1fr; }
@@ -1119,9 +1119,9 @@ onUnmounted(() => {
 .trend-bars {
   display: flex;
   align-items: flex-end;
-  gap: 6px;
+  gap: 4px;
   height: 120px;
-  padding-bottom: 22px;
+  padding-bottom: 24px;
   position: relative;
 }
 .trend-col {
@@ -1158,7 +1158,7 @@ onUnmounted(() => {
 .trend-date {
   position: absolute;
   bottom: 0;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
 }

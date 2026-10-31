@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	outputhook "github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 )
@@ -80,6 +81,14 @@ func TestStorageAuditSSEVisibleTextLatency(t *testing.T) {
 }
 
 func TestStorageAuditWriterBlocksCombinedTerminalCapacity(t *testing.T) {
+	// ★ 2026-10-29 输出合规误报轮：待检缓冲上限从 1 MiB 抬到 8 MiB（出厂值
+	// 可配）⇒ 本用例必须**显式**把上限调到帧的大小之下，否则它测的是
+	// 「1 MiB 在 8 MiB 上限下放过去了」——那不是它要断言的东西。
+	// 严格模式（block）保留原始意图：越界 ⇒ 阻断。
+	// 上限取 768 KiB：**第一帧**（512 KiB）放得下，**第一帧 + 终帧**（1 MiB）
+	// 放不下 ⇒ 测的正是「跨帧累计后越界」这条路径。
+	t.Setenv(outputhook.OutputGuardPendingMaxBytesEnv, "786432")
+	t.Setenv(outputhook.OutputGuardCapModeEnv, "block")
 	writer := newInterceptingStreamWriter(httptest.NewRecorder(), auditOutputChain(t), context.Background(), response.StreamMeta{})
 	frame := append([]byte(`data: {"choices":[{"index":0,"delta":{"content":"`), bytes.Repeat([]byte("a"), 512<<10)...)
 	frame = append(frame, []byte("\"}}]}\n\n")...)

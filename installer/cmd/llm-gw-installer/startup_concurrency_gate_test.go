@@ -212,6 +212,32 @@ var knownStartupChainConcurrencyViolations = map[string]int{
 	// 计数 4：4 条 CREATE INDEX CONCURRENTLY IF NOT EXISTS（注释里的提法
 	// 已被剥注释器排除）。
 	"909_session_summaries_search_trgm_indexes.sql": 4,
+	// 916（2026-10-28 R178 轮）与 877/887/888/898/902/909 **同类**：携带
+	// dbinit:no-transaction 标记 ⇒ 非事务通道，能正常应用。
+	//
+	// 它给会话族建 api_key_id **归一表达式**的索引
+	// （(CASE WHEN api_key_id ~ '^[0-9]+$' THEN api_key_id::bigint END), ts DESC）——
+	// ★ 缺口本体：252 生产只读实测，「按 api_key 过滤会话」的读点
+	//   （admin/usage.go:841-859，7 天窗）把窗口内 75,449 行全读出来、
+	//   丢掉 37,825 行 ⇒ 一次读点 220,401 块 ⇒ **一半的行是白读的**。
+	// ★ 为什么必须 CONCURRENTLY：session_turns 是活写表 ⇒ 普通 CREATE INDEX
+	//   的 SHARE 锁会阻塞会话写入；★ 且 PG17 不支持在分区父表上 CONCURRENTLY
+	//   ⇒ 走 729 同款三段式（逐分区 CONCURRENTLY → 父表 ON ONLY 壳 → ATTACH）。
+	//
+	// 计数 2：一条生成器形态的 CREATE INDEX CONCURRENTLY（逐分区那条，
+	// 藏在 format() 的字符串字面量里）+ 一条 hot 表的 CREATE INDEX CONCURRENTLY
+	// （注释里的提法已被剥注释器排除）。
+	"916_session_turns_api_key_ts_index.sql": 2,
+	// 918（2026-10-29 R176 轮）与 877/887/888/902/909/916 同类：携带
+	// dbinit:no-transaction 标记 ⇒ 非事务通道。给 node_probe_runs 建覆盖索引
+	// (credential_id, completed_at) INCLUDE (raw_model_name, started_at, success)
+	// —— 承接 INV-4「双模型探测成功门」的 24h 关联子查询（五个调度读点逐行
+	// 求值；completed_at 此前不在任何索引里 ⇒ 每次评估扫该凭据全史 run）。
+	// ★ CONCURRENTLY 必需：探针写入与 TTL DELETE（partition_manager）都在跑。
+	//
+	// 计数 1：一条 CREATE INDEX CONCURRENTLY IF NOT EXISTS（注释里的提法
+	// 已被剥注释器排除）。
+	"920_node_probe_runs_cred_completed_idx.sql": 1,
 }
 
 // countConcurrentlyIn counts CONCURRENTLY occurrences in the given file content.

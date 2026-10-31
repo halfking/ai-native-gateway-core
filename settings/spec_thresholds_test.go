@@ -14,9 +14,13 @@ func TestThresholdSpecs_RegisteredInPlatformSpecs(t *testing.T) {
 	want := map[string]bool{
 		KeyNodeFailStreakLimit:         false,
 		KeyNodeDisabledCooldownSeconds: false,
-		KeyStickyFailureThreshold:      false,
-		KeyFpSlotTTLSeconds:            false,
-		KeyErrorProbeWorkers:           false,
+		// P0-B（2026-10-28 恢复侧防抖轮）：反复禁用指数退避封顶。
+		// 缺了它 ⇒ recordNodeOutcome 的 ARGV[8] 永远拿到 fallback 1800，
+		// 热更面静默失效（默认值碰巧同值，更难察觉）。
+		KeyNodeDisabledBackoffCapSeconds: false,
+		KeyStickyFailureThreshold:        false,
+		KeyFpSlotTTLSeconds:              false,
+		KeyErrorProbeWorkers:             false,
 		// Wave 2 任务二③ 三级 MNF 冷却档。
 		KeyModelNotFoundInitialCooldownSeconds:   false,
 		KeyModelNotFoundSustainedCooldownSeconds: false,
@@ -45,6 +49,9 @@ func TestThresholdSpecs_DefaultsMatchLegacyConstants(t *testing.T) {
 	}{
 		{KeyNodeFailStreakLimit, DefaultNodeFailStreakLimit, true, 1, 10},
 		{KeyNodeDisabledCooldownSeconds, DefaultNodeDisabledCooldownSeconds, true, 30, 7200},
+		// P0-B：默认 1800 = URSM v2 BackoffCapSeconds（config.go）——两套
+		// 状态面判死退避同公式同封顶的对齐锚点，改值须两边一起改。
+		{KeyNodeDisabledBackoffCapSeconds, DefaultNodeDisabledBackoffCapSeconds, true, 60, 7200},
 		{KeyStickyFailureThreshold, DefaultStickyFailureThreshold, true, 1, 10},
 		{KeyFpSlotTTLSeconds, DefaultFpSlotTTLSeconds, true, 300, 86400},
 		{KeyErrorProbeWorkers, DefaultErrorProbeWorkers, false, 1, float64(MaxErrorProbeWorkers)},

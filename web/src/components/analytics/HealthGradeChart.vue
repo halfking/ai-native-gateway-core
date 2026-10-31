@@ -228,7 +228,7 @@ watch(() => props.avgScore, () => {
 
 .chart-title {
   font-weight: 600;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .chart-container {
@@ -255,7 +255,7 @@ watch(() => props.avgScore, () => {
 }
 
 :deep(.el-card__header) {
-  padding: 12px 20px;
+  padding: 12px 16px;
   border-bottom-color: var(--border);
 }
 </style>

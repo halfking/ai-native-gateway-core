@@ -18,7 +18,19 @@ import (
 	"github.com/pashagolub/pgxmock/v4"
 
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
+
+// enableConsentForTest 打开 body 录制同意（W1.3 读门要求 consent=on 才放行
+// detail/summary/turns 读面；本文件的用例测的是租户钉取与 SQL 契约，不是
+// consent 门本身 ⇒ 显式开启，否则 409 recording_unavailable 先行短路）。
+func enableConsentForTest(t *testing.T) {
+	t.Helper()
+	prev := settings.TestingConsentOverride
+	on := true
+	settings.TestingConsentOverride = &on
+	t.Cleanup(func() { settings.TestingConsentOverride = prev })
+}
 
 // makeSessionDetailMockRow 构造 querySession 期望的 pgxmock 行。
 // 列顺序必须与 admin/session_detail_v2.go:querySession 的 Scan 一一对应。
@@ -109,6 +121,7 @@ func newSessionDetailAuthRequest(t *testing.T, target, role, tenant string) *htt
 // 三次 SELECT 的次序由 ServeHTTP 锁住：resolve 在前，querySession 在后。
 // 反转就破契约 —— 这是 §3 P0 任务要求的"session_id 强制作为主键"。
 func TestSessionDetailServeHTTPPinsTenantAdminToAuthTenant(t *testing.T) {
+	enableConsentForTest(t)
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -139,6 +152,7 @@ func TestSessionDetailServeHTTPPinsTenantAdminToAuthTenant(t *testing.T) {
 }
 
 func TestSessionDetailServeHTTPAllowsSuperAdminTenantSelection(t *testing.T) {
+	enableConsentForTest(t)
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)

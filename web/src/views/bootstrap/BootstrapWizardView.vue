@@ -655,7 +655,7 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 16px;
   align-items: flex-start;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .lifecycle-page__header h1 { margin: 0 0 8px; font-size: 24px; letter-spacing: -0.03em; }
 .lifecycle-page__header p { margin: 0; color: var(--kx-muted); font-size: 14px; line-height: 1.6; max-width: 60ch; }
@@ -665,13 +665,13 @@ onMounted(async () => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 18px;
+  margin-bottom: 16px;
 }
 .wizard-steps__item {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   border-radius: 8px;
   border: 1px solid var(--border);
   color: var(--kx-muted);
@@ -712,7 +712,7 @@ onMounted(async () => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 18px;
+  margin-top: 16px;
 }
 .agree-list {
   margin: 8px 0 16px;
@@ -722,12 +722,12 @@ onMounted(async () => {
   font-size: 14px;
 }
 .muted { color: var(--kx-muted); font-size: 14px; line-height: 1.6; }
-.hint { margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.hint { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
 .mono-input :deep(.el-input__inner),
 .mono-input input { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .instance-id-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.mb { margin-bottom: 14px; }
+.mb { margin-bottom: 12px; }
 .ml { margin-left: 8px; }
 .mt { margin-top: 12px; }
 

@@ -3,18 +3,29 @@
 # 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
 # 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
 #       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
-appId: ${BASE_URL}
+url: ${BASE_URL}
 ---
 - launchApp
 - launchApp:
     clearState: true
+# ★ 这三条路由在**生产构建下不注册**（router.ts 里 import.meta.env.DEV 包裹）
+#   ⇒ 生产网关上会落到 catch-all ⇒ 断言必须降级为 optional。
+#   它们也需要登录态（requiresSuper）⇒ 补登录步骤，否则守卫会把人弹回 /?login=1
+#   （实测 2026-10-28 R176：没登录时 URL 变成 /?login=1，页面停在登录弹窗）。
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
 
 # ── /dev/waterfall-preview ─────────────────────────────────────────────
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/dev/waterfall-preview"
 - extendedWaitUntil:
+    # ★ 生产构建下这条 dev 路由不存在 ⇒ 断言降级为 optional（见文件头说明）。
     visible: '队列瀑布图 · 本地预览'
     timeout: 20000
+    optional: true
 - evalScript: "${output.ms__dev_waterfall_preview = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
     condition: "${output.ms__dev_waterfall_preview < 2000}"
@@ -25,8 +36,10 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/dev/live-topology-preview"
 - extendedWaitUntil:
+    # ★ 生产构建下这条 dev 路由不存在 ⇒ 断言降级为 optional（见文件头说明）。
     visible: '实时拓扑'
     timeout: 20000
+    optional: true
 - evalScript: "${output.ms__dev_live_topology_preview = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
     condition: "${output.ms__dev_live_topology_preview < 2000}"
@@ -37,8 +50,10 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/dev/live-request-preview/${REQUEST_ID}"
 - extendedWaitUntil:
+    # ★ 生产构建下这条 dev 路由不存在 ⇒ 断言降级为 optional（见文件头说明）。
     visible: '请求详情'
     timeout: 20000
+    optional: true
 - evalScript: "${output.ms__dev_live_request_preview_requestId = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
     condition: "${output.ms__dev_live_request_preview_requestId < 2000}"

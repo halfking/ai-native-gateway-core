@@ -4,8 +4,11 @@
 #gen_target	127.0.0.1:8782
 #gen_verdict_rule	verdict=derive(class,bucket,excluded)
 #gen_exclude_asset	unsafe-post-routes.txt
-/	ANY	cmd/gateway/main.go:6974	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/	ANY	cmd/gateway/main.go:6974	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+# ── 2026-10-28 分支审计轮补登：wip/07 合入新增的 9 条路由（静态分级 + handler 源码复核；列：route/method/file/class/bucket-empty/code-empty/probe-empty/verdict/note）────
+#gen_append	2026-10-29 审计轮 —— 补 3 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 589 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 6 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 592 行逐字保留，含人工改判）
+/	ANY	cmd/gateway/main.go:7019	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/	ANY	cmd/gateway/main.go:7019	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /_gateway/plugin/v1/analytics/{type}	GET	cmd/gateway/plugin_canon_init.go:204	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /_gateway/plugin/v1/sessions	GET	cmd/gateway/plugin_canon_init.go:201	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /_gateway/plugin/v1/sessions/{gw_session_id}	GET	cmd/gateway/plugin_canon_init.go:202	unknown				not-probed-unresolved	★ 静态分级：解析不出
@@ -13,27 +16,27 @@
 /admin/api/v1/health-checks	GET	admin/health_check_handlers.go:207	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /admin/api/v1/health-checks/dismiss	POST	admin/health_check_handlers.go:208	write				not-probed-writes	★ 静态分级：写库
 /admin/api/v1/health-checks/fix	POST	admin/health_check_handlers.go:209	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/admin/config/reload	ANY	cmd/gateway/main.go:6964	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/	ANY	cmd/gateway/main.go:7274	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/annotations	ANY	admin/handler.go:1468	write	r.Body			not-probed-writes	★ 静态分级：写库
-/api/admin/annotations/	ANY	admin/handler.go:1467	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/admin/annotations/batch	ANY	admin/handler.go:1466	write	r.Body			not-probed-writes	★ 静态分级：写库
-/api/admin/annotations/first-turn-samples	ANY	admin/handler.go:1464	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/annotations/samples	ANY	admin/handler.go:1461	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/annotations/stats	ANY	admin/handler.go:1465	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/anomaly-reporter/stats	ANY	cmd/gateway/main.go:7302	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/approvals	ANY	cmd/gateway/main.go:7628	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/approvals/stats	ANY	cmd/gateway/main.go:7629	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/attachments	ANY	admin/handler.go:1061	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/attachments/	ANY	admin/handler.go:1066	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/attachments/cleanup/execute	ANY	admin/handler.go:1065	write	r.Body			not-probed-writes	★ 静态分级：写库
-/api/admin/attachments/cleanup/preview	ANY	admin/handler.go:1064	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/attachments/filesystem/cleanup	ANY	admin/handler.go:1058	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/admin/attachments/filesystem/stats	ANY	admin/handler.go:1057	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/attachments/policy	ANY	admin/handler.go:1063	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/attachments/stats	ANY	admin/handler.go:1062	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/audit-logs	ANY	admin/handler.go:967	read	decode	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/audit/node-operations	ANY	admin/handler.go:1255	read	json-decode	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/admin/config/reload	ANY	cmd/gateway/main.go:7009	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/	ANY	cmd/gateway/main.go:7319	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/annotations	ANY	admin/handler.go:1480	write	r.Body			not-probed-writes	★ 静态分级：写库
+/api/admin/annotations/	ANY	admin/handler.go:1479	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/admin/annotations/batch	ANY	admin/handler.go:1478	write	r.Body			not-probed-writes	★ 静态分级：写库
+/api/admin/annotations/first-turn-samples	ANY	admin/handler.go:1476	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/annotations/samples	ANY	admin/handler.go:1473	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/annotations/stats	ANY	admin/handler.go:1477	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/anomaly-reporter/stats	ANY	cmd/gateway/main.go:7347	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/approvals	ANY	cmd/gateway/main.go:7673	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/approvals/stats	ANY	cmd/gateway/main.go:7674	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/attachments	ANY	admin/handler.go:1073	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/attachments/	ANY	admin/handler.go:1078	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/attachments/cleanup/execute	ANY	admin/handler.go:1077	write	r.Body			not-probed-writes	★ 静态分级：写库
+/api/admin/attachments/cleanup/preview	ANY	admin/handler.go:1076	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/attachments/filesystem/cleanup	ANY	admin/handler.go:1070	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/admin/attachments/filesystem/stats	ANY	admin/handler.go:1069	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/attachments/policy	ANY	admin/handler.go:1075	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/attachments/stats	ANY	admin/handler.go:1074	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/audit-logs	ANY	admin/handler.go:979	read	decode	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/audit/node-operations	ANY	admin/handler.go:1267	read	json-decode	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/auto-route/affinity	ANY	admin/auto_route.go:126	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/auto-route/affinity/selections	ANY	admin/auto_route.go:127	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/auto-route/analytics/decision/	ANY	admin/analytics.go:59	read	json-decode	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
@@ -59,105 +62,108 @@
 /api/admin/auto-route/tuning/proposals/generate	POST	admin/auto_route_tuning.go:86	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/auto-tune/audit	ANY	admin/peak_handlers.go:30	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/auto-tune/stats	ANY	admin/peak_handlers.go:31	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/backups	ANY	admin/handler.go:1217	read		500	error	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/backups/recover-all	ANY	admin/handler.go:1223	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/backups/{filename}	ANY	admin/handler.go:1218	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/backups/{filename}/recover	ANY	admin/handler.go:1222	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/backups/{filename}/validate	ANY	admin/handler.go:1219	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/bodies/{body_ref...}	ANY	admin/handler.go:1012	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/backups	ANY	admin/handler.go:1229	read		500	error	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/backups/recover-all	ANY	admin/handler.go:1235	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/backups/{filename}	ANY	admin/handler.go:1230	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/backups/{filename}/recover	ANY	admin/handler.go:1234	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/backups/{filename}/validate	ANY	admin/handler.go:1231	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/bodies/{body_ref...}	ANY	admin/handler.go:1024	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/cache-metrics/summary	ANY	admin/cache_metrics_handler.go:24	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/cache-metrics/timeline	ANY	admin/cache_metrics_handler.go:25	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/capabilities	GET	admin/capabilities.go:76	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/compression/preview	ANY	admin/compression_preview_handler.go:55	read	r.Body	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/compression/sessions	ANY	admin/handler.go:1014	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/compression/stats	ANY	admin/handler.go:1013	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/compression/sessions	ANY	admin/handler.go:1026	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/compression/stats	ANY	admin/handler.go:1025	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/concurrency-limit/apply	ANY	admin/peak_handlers.go:29	write	400-guard			not-probed-writes	★ 静态分级：写库
 /api/admin/concurrency-limit/preview	ANY	admin/peak_handlers.go:28	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/connection-registry	ANY	admin/handler.go:1083	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/connection-registry/{request_id}	ANY	admin/handler.go:1084	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/connection-registry	ANY	admin/handler.go:1095	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/connection-registry/{request_id}	ANY	admin/handler.go:1096	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/credential-model-peaks	ANY	admin/peak_handlers.go:27	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/credential-success-rates	ANY	cmd/gateway/main.go:7509	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/credential-success-rates/reset	ANY	cmd/gateway/main.go:7510	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/credentials/{id}/session-ping	ANY	admin/handler.go:1309	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dashboard/board	ANY	admin/handler.go:1121	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dashboard/board/error-drill	ANY	admin/handler.go:1135	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dashboard/errors	ANY	admin/handler.go:1119	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dashboard/module-stats	ANY	admin/handler.go:1118	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dashboard/operational	ANY	admin/handler.go:1134	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dashboard/performance	ANY	admin/handler.go:1120	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dashboard/rollup/rebuild	ANY	admin/handler.go:1137	read	400-guard	202	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/dashboard/session-active	ANY	admin/handler.go:1117	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dashboard/session-health	ANY	admin/handler.go:1116	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dashboard/session-overview	ANY	admin/handler.go:1112	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dashboard/session-trend	ANY	admin/handler.go:1115	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dashboard/swim-lane-init	ANY	admin/handler.go:1109	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-horizon	ANY	admin/handler.go:1162	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/data-lifecycle/blobs/cleanup/execute	ANY	admin/handler.go:1055	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/blobs/cleanup/preview	ANY	admin/handler.go:1054	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/blobs/top	ANY	admin/handler.go:1053	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/cleanup/preview	ANY	admin/handler.go:1020	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/degradation/control	ANY	admin/handler.go:1227	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/degradation/recover	ANY	admin/handler.go:1229	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/degradation/status	ANY	admin/handler.go:1228	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/data-lifecycle/degradation/tasks/{task_id}	ANY	admin/handler.go:1230	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/hot/cron/stats	ANY	admin/handler.go:1033	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/hot/job	ANY	admin/handler.go:1032	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/hot/job/	ANY	admin/handler.go:1031	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/hot/jobs	ANY	admin/handler.go:1030	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/hot/promote	ANY	admin/handler.go:1028	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/hot/promote-async	ANY	admin/handler.go:1029	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/jobs	ANY	admin/handler.go:1038	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/jobs/	ANY	admin/handler.go:1039	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/metrics	ANY	admin/handler.go:1021	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/partitions	ANY	admin/handler.go:1023	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/partitions/archive	ANY	admin/handler.go:1024	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/partitions/archive-batch	ANY	admin/handler.go:1025	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/data-lifecycle/partitions/drop	ANY	admin/handler.go:1035	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/partitions/drop-async	ANY	admin/handler.go:1036	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/stats	ANY	admin/handler.go:1019	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/storage	ANY	admin/handler.go:1041	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/storage/tables	ANY	admin/handler.go:1042	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/storage/tables/reindex	ANY	admin/handler.go:1047	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/storage/tables/reindex-async	ANY	admin/handler.go:1051	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/storage/tables/vacuum	ANY	admin/handler.go:1045	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/storage/tables/vacuum-async	ANY	admin/handler.go:1049	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/storage/tables/vacuum-full	ANY	admin/handler.go:1046	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/data-lifecycle/storage/tables/vacuum-full-async	ANY	admin/handler.go:1050	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/db-status	ANY	admin/handler.go:1214	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/diagnostics/credential	ANY	admin/handler.go:1535	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/diagnostics/credential/force-recover	ANY	admin/handler.go:1536	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/admin/diagnostics/model-routing	ANY	admin/handler.go:1541	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/diagnostics/routing-blocked	ANY	admin/handler.go:1539	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/diagnostics/routing-blocked/fix	ANY	admin/handler.go:1540	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/admin/dispatch/dimensions	ANY	cmd/gateway/main.go:7524	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dispatch/queues	ANY	cmd/gateway/main.go:7520	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dispatch/request-dimensions/	ANY	cmd/gateway/main.go:7527	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dispatch/waterfall	ANY	cmd/gateway/main.go:7521	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dispatch/waterfall/request/	ANY	cmd/gateway/main.go:7522	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/extension-points	ANY	admin/handler.go:971	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/credential-success-rates	ANY	cmd/gateway/main.go:7554	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/credential-success-rates/reset	ANY	cmd/gateway/main.go:7555	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/credentials/{id}/session-ping	ANY	admin/handler.go:1321	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/dashboard/board	ANY	admin/handler.go:1133	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/dashboard/board/error-drill	ANY	admin/handler.go:1147	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/dashboard/errors	ANY	admin/handler.go:1131	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/dashboard/module-stats	ANY	admin/handler.go:1130	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/dashboard/operational	ANY	admin/handler.go:1146	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/dashboard/performance	ANY	admin/handler.go:1132	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/dashboard/rollup/rebuild	ANY	admin/handler.go:1149	read	400-guard	202	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/dashboard/session-active	ANY	admin/handler.go:1129	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/dashboard/session-health	ANY	admin/handler.go:1128	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/dashboard/session-overview	ANY	admin/handler.go:1124	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/dashboard/session-trend	ANY	admin/handler.go:1127	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/dashboard/swim-lane-init	ANY	admin/handler.go:1121	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-horizon	ANY	admin/handler.go:1174	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/data-lifecycle/blobs/cleanup/execute	ANY	admin/handler.go:1067	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/blobs/cleanup/preview	ANY	admin/handler.go:1066	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/blobs/top	ANY	admin/handler.go:1065	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/cleanup/preview	ANY	admin/handler.go:1032	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/degradation/control	ANY	admin/handler.go:1239	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/degradation/recover	ANY	admin/handler.go:1241	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/degradation/status	ANY	admin/handler.go:1240	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/data-lifecycle/degradation/tasks/{task_id}	ANY	admin/handler.go:1242	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/hot/cron/stats	ANY	admin/handler.go:1045	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/hot/job	ANY	admin/handler.go:1044	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/hot/job/	ANY	admin/handler.go:1043	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/hot/jobs	ANY	admin/handler.go:1042	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/hot/promote	ANY	admin/handler.go:1040	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/hot/promote-async	ANY	admin/handler.go:1041	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/jobs	ANY	admin/handler.go:1050	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/jobs/	ANY	admin/handler.go:1051	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/metrics	ANY	admin/handler.go:1033	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/partitions	ANY	admin/handler.go:1035	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/partitions/archive	ANY	admin/handler.go:1036	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/partitions/archive-batch	ANY	admin/handler.go:1037	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/data-lifecycle/partitions/drop	ANY	admin/handler.go:1047	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/partitions/drop-async	ANY	admin/handler.go:1048	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/stats	ANY	admin/handler.go:1031	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/storage	ANY	admin/handler.go:1053	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/storage/tables	ANY	admin/handler.go:1054	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/storage/tables/reindex	ANY	admin/handler.go:1059	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/storage/tables/reindex-async	ANY	admin/handler.go:1063	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/storage/tables/vacuum	ANY	admin/handler.go:1057	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/storage/tables/vacuum-async	ANY	admin/handler.go:1061	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/storage/tables/vacuum-full	ANY	admin/handler.go:1058	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/storage/tables/vacuum-full-async	ANY	admin/handler.go:1062	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/db-status	ANY	admin/handler.go:1226	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/diagnostics/credential	ANY	admin/handler.go:1547	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/diagnostics/credential/force-recover	ANY	admin/handler.go:1548	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/admin/diagnostics/model-routing	ANY	admin/handler.go:1553	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/diagnostics/routing-blocked	ANY	admin/handler.go:1551	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/diagnostics/routing-blocked/fix	ANY	admin/handler.go:1552	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/admin/dispatch/dimensions	ANY	cmd/gateway/main.go:7569	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/dispatch/queues	ANY	cmd/gateway/main.go:7565	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/dispatch/request-dimensions/	ANY	cmd/gateway/main.go:7572	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/dispatch/waterfall	ANY	cmd/gateway/main.go:7566	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/dispatch/waterfall/request/	ANY	cmd/gateway/main.go:7567	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/extension-points	ANY	admin/handler.go:983	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/feishubot/routing-rules	ANY	admin/modules.go:1394	external	decode			not-probed-external	★ 静态分级：出网调用
 /api/admin/feishubot/routing-rules/	ANY	admin/modules.go:1395	external				not-probed-external	★ 静态分级：出网调用
 /api/admin/feishubot/send-log	ANY	admin/modules.go:1396	external				not-probed-external	★ 静态分级：出网调用
-/api/admin/format-anomalies	ANY	admin/handler.go:972	read	decode	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/format-anomalies/	ANY	admin/handler.go:973	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/admin/format-anomaly-summary	ANY	admin/handler.go:968	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/format-anomalies	ANY	admin/handler.go:984	read	decode	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/format-anomalies/	ANY	admin/handler.go:985	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/admin/format-anomaly-summary	ANY	admin/handler.go:980	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/fp-slot-policy	ANY	admin/settings.go:31	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/fp-slot-policy/	ANY	admin/settings.go:32	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/handoff/logs	ANY	admin/handoff_logs_handler.go:53	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/handoff/logs/	ANY	admin/handoff_logs_handler.go:54	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/handoff/stats	ANY	admin/handoff_logs_handler.go:55	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/identity-pool/max	ANY	admin/handler.go:1272	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/admin/identity-pool/stats	ANY	admin/handler.go:1271	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/live-stream	ANY	admin/handler.go:1073	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/live-stream/stats	ANY	admin/handler.go:1074	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/live-stream/trigger-snapshot	ANY	admin/handler.go:1076	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/logs/archive	ANY	admin/handler.go:1191	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/admin/logs/archive/list	ANY	admin/handler.go:1193	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/logs/body-cache-stats	ANY	admin/handler.go:1018	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/logs/cleanup	ANY	admin/handler.go:1192	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/admin/logs/config	ANY	admin/handler.go:1188	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/logs/files	ANY	admin/handler.go:1189	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/logs/stats	ANY	admin/handler.go:1190	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/identity-pool/max	ANY	admin/handler.go:1284	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/admin/identity-pool/stats	ANY	admin/handler.go:1283	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/live-stream	ANY	admin/handler.go:1085	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/live-stream/stats	ANY	admin/handler.go:1086	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/live-stream/trigger-snapshot	ANY	admin/handler.go:1088	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/logs/archive	ANY	admin/handler.go:1203	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/admin/logs/archive/list	ANY	admin/handler.go:1205	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/logs/body-cache-stats	ANY	admin/handler.go:1030	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/logs/cleanup	ANY	admin/handler.go:1204	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/admin/logs/config	ANY	admin/handler.go:1200	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/logs/files	ANY	admin/handler.go:1201	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/logs/stats	ANY	admin/handler.go:1202	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/maas/bills/issue	ANY	admin/maas_bills_handlers.go:64	write				not-probed-writes	★ 源码确证 write：POST-only（:64 method guard）出账 ⇒ 静态分级器判 read 是调用链盲区（R159 §10.2 同族反例）⇒ 按 handler 源码改判；真探测待 cookie+护栏条件
+/api/admin/maas/bills/reconcile	ANY	admin/maas_bills_handlers.go:108	read				not-probed-not-reached	★ GET-only（:108）对账读点；静态分级 read 与源码一致；未真探测
+/api/admin/maas/coupons	ANY	admin/maas_bills_handlers.go:23	write				not-probed-writes	★ 源码确证 mixed：GET 列表（:29）+ POST CreateCoupon（:43 落库写）⇒ 按 write 记（保守）；静态分级器判 read 是盲区
 /api/admin/maas/model-rates	ANY	admin/maas_handlers.go:18	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/maas/model-rates/	ANY	admin/maas_handlers.go:19	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/maas/model-rates/batch	ANY	admin/maas_handlers.go:15	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
@@ -169,19 +175,25 @@
 /api/admin/maas/settings	ANY	admin/maas_handlers.go:14	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/maas/tenants/	ANY	admin/maas_handlers.go:22	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/maas/topup-packages	ANY	admin/maas_handlers.go:21	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/mobile-node/descriptor	ANY	admin/handler.go:986	write				not-probed-writes	★ 静态分级：写库
-/api/admin/model-integrity	ANY	admin/handler.go:982	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/model-integrity/	ANY	admin/handler.go:983	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/model-iq/catalog	ANY	admin/handler.go:1545	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/model-iq/history	ANY	admin/handler.go:1547	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/model-iq/node-latest	ANY	admin/handler.go:1546	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/model-iq/trigger	ANY	admin/handler.go:1548	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/mobile-node/descriptor	ANY	admin/handler.go:998	write				not-probed-writes	★ 静态分级：写库
+/api/admin/model-credibility/catalog	ANY	admin/handler.go:1604	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/model-credibility/detail	ANY	admin/handler.go:1605	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/model-credibility/history	ANY	admin/handler.go:1606	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/model-credibility/list	ANY	admin/handler.go:1603	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/model-credibility/scan	ANY	admin/handler.go:1608	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/model-credibility/trigger	ANY	admin/handler.go:1607	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/model-integrity	ANY	admin/handler.go:994	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/model-integrity/	ANY	admin/handler.go:995	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/model-iq/catalog	ANY	admin/handler.go:1557	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/model-iq/history	ANY	admin/handler.go:1559	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/model-iq/node-latest	ANY	admin/handler.go:1558	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/model-iq/trigger	ANY	admin/handler.go:1560	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/model-status	ANY	admin/model_status.go:323	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/models/context-window/	ANY	admin/context_window_calibration.go:27	write	400-guard			not-probed-writes	★ 静态分级：写库
 /api/admin/modules	ANY	admin/modules.go:1133	external				not-probed-external	★ 静态分级：出网调用
 /api/admin/modules/	ANY	admin/modules.go:1134	external				not-probed-external	★ 静态分级：出网调用
-/api/admin/node-health/{credential_id}/timeline	ANY	admin/handler.go:1087	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/ops/overview	ANY	admin/handler.go:1144	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/node-health/{credential_id}/timeline	ANY	admin/handler.go:1099	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/ops/overview	ANY	admin/handler.go:1156	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/output-compliance/feedback	ANY	admin/output_compliance_handler.go:52	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/output-compliance/keywords	ANY	admin/output_compliance_handler.go:46	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/output-compliance/keywords/	ANY	admin/output_compliance_handler.go:47	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
@@ -191,13 +203,13 @@
 /api/admin/output-compliance/review-queue	ANY	admin/output_compliance_handler.go:49	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/output-compliance/review-queue/	ANY	admin/output_compliance_handler.go:50	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/output-compliance/stats	ANY	admin/output_compliance_handler.go:54	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/pending-responses	ANY	admin/handler.go:1440	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/pending-responses/	ANY	admin/handler.go:1441	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/pending-responses/stats	ANY	admin/handler.go:1439	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/policies	ANY	cmd/gateway/main.go:7364	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/admin/policies/check	ANY	cmd/gateway/main.go:7367	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/policies/delete	ANY	cmd/gateway/main.go:7366	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/admin/policies/list	ANY	cmd/gateway/main.go:7365	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/pending-responses	ANY	admin/handler.go:1452	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/pending-responses/	ANY	admin/handler.go:1453	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/pending-responses/stats	ANY	admin/handler.go:1451	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/policies	ANY	cmd/gateway/main.go:7409	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/admin/policies/check	ANY	cmd/gateway/main.go:7412	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/policies/delete	ANY	cmd/gateway/main.go:7411	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/admin/policies/list	ANY	cmd/gateway/main.go:7410	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/probe/availability-timeline	ANY	admin/probe_dashboard.go:1910	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/probe/cache-keys	ANY	admin/probe_dashboard.go:1913	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/probe/cache-rebuild	ANY	admin/probe_dashboard.go:1912	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
@@ -227,80 +239,80 @@
 /api/admin/prompt-injection/stats	ANY	admin/prompt_injection_handler.go:124	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/provider-cost-reconciliation	ANY	admin/provider_cost_reconciliation.go:51	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/provider-cost-reconciliation/bill	ANY	admin/provider_cost_reconciliation.go:52	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/providers/{id}/enable	ANY	admin/handler.go:1308	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/admin/providers/{id}/test-now	ANY	admin/handler.go:1307	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/quality/attempts	ANY	cmd/gateway/main.go:7310	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/recovery-tasks/{task_id}	ANY	admin/handler.go:1224	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/report-rollup/	ANY	admin/handler.go:1133	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/request-anomalies	ANY	admin/handler.go:976	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/request-anomalies/	ANY	admin/handler.go:977	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/request-detail/	ANY	admin/handler.go:1346	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/request-journeys/	ANY	cmd/gateway/main.go:7297	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/request-journeys/queues	ANY	cmd/gateway/main.go:7296	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/providers/{id}/enable	ANY	admin/handler.go:1320	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/admin/providers/{id}/test-now	ANY	admin/handler.go:1319	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/quality/attempts	ANY	cmd/gateway/main.go:7355	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/recovery-tasks/{task_id}	ANY	admin/handler.go:1236	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/report-rollup/	ANY	admin/handler.go:1145	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/request-anomalies	ANY	admin/handler.go:988	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/request-anomalies/	ANY	admin/handler.go:989	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/request-detail/	ANY	admin/handler.go:1358	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/request-journeys/	ANY	cmd/gateway/main.go:7342	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/request-journeys/queues	ANY	cmd/gateway/main.go:7341	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/requests/	ANY	admin/request_trace.go:71	unknown		400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/requests/	ANY	admin/request_trace.go:71	unknown		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/requests/{id}/actions	ANY	admin/handler.go:1085	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/requests/{id}/actions	ANY	admin/handler.go:1097	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/route-incidents	ANY	admin/route_incidents.go:63	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/route-incidents/	ANY	admin/route_incidents.go:65	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/route-incidents/stats	ANY	admin/route_incidents.go:64	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/routing-opt/accuracy	ANY	admin/handler.go:1497	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/routing-opt/metrics	ANY	admin/handler.go:1499	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/routing-opt/parameters	ANY	admin/handler.go:1498	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/routing-opt/stats	ANY	admin/handler.go:1496	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/routing-opt/accuracy	ANY	admin/handler.go:1509	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/routing-opt/metrics	ANY	admin/handler.go:1511	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/routing-opt/parameters	ANY	admin/handler.go:1510	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/routing-opt/stats	ANY	admin/handler.go:1508	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/routing/overrides	ANY	admin/auto_route.go:111	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/routing/overrides/	ANY	admin/auto_route.go:112	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/security/ip-blocklist	ANY	admin/handler.go:1145	read		500	error	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/security/ip-blocklist/	ANY	admin/handler.go:1147	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/security/ip-blocklist/reload	ANY	admin/handler.go:1146	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/security/ip-blocklist	ANY	admin/handler.go:1157	read		500	error	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/security/ip-blocklist/	ANY	admin/handler.go:1159	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/security/ip-blocklist/reload	ANY	admin/handler.go:1158	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/sensitive-words/match	ANY	admin/sensitive_words_handler.go:37	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/sensitive-words/reload	ANY	admin/sensitive_words_handler.go:35	read		409	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/sensitive-words/status	ANY	admin/sensitive_words_handler.go:36	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-analytics	ANY	cmd/gateway/main.go:7415	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-analytics/	ANY	cmd/gateway/main.go:7416	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-analytics/activity	ANY	cmd/gateway/main.go:7420	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-analytics/clients	ANY	admin/handler.go:1165	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-analytics/clients/	ANY	admin/handler.go:1166	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-analytics/cost-trend	ANY	cmd/gateway/main.go:7421	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-analytics/health-trend	ANY	cmd/gateway/main.go:7423	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-analytics/latency-trend	ANY	cmd/gateway/main.go:7422	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-analytics/tasks	ANY	admin/handler.go:1167	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-analytics/tasks/	ANY	admin/handler.go:1168	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-analytics/users	ANY	admin/handler.go:1171	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-analytics/users/	ANY	admin/handler.go:1172	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-approvals	ANY	admin/handler.go:1244	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-approvals/	ANY	admin/handler.go:1245	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-analytics	ANY	cmd/gateway/main.go:7460	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-analytics/	ANY	cmd/gateway/main.go:7461	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-analytics/activity	ANY	cmd/gateway/main.go:7465	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-analytics/clients	ANY	admin/handler.go:1177	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-analytics/clients/	ANY	admin/handler.go:1178	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-analytics/cost-trend	ANY	cmd/gateway/main.go:7466	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-analytics/health-trend	ANY	cmd/gateway/main.go:7468	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-analytics/latency-trend	ANY	cmd/gateway/main.go:7467	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-analytics/tasks	ANY	admin/handler.go:1179	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-analytics/tasks/	ANY	admin/handler.go:1180	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-analytics/users	ANY	admin/handler.go:1183	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-analytics/users/	ANY	admin/handler.go:1184	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-approvals	ANY	admin/handler.go:1256	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-approvals/	ANY	admin/handler.go:1257	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/session-archive/stats	ANY	admin/session_archive_handler.go:22	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/session-archive/trigger	ANY	admin/session_archive_handler.go:21	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/session-audit	ANY	admin/handler.go:1240	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-audit/	ANY	admin/handler.go:1241	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-audit/export	ANY	admin/handler.go:1243	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-audit/stats	ANY	admin/handler.go:1242	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-clusters	ANY	cmd/gateway/main.go:7417	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-clusters/	ANY	cmd/gateway/main.go:7418	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-compare	ANY	cmd/gateway/main.go:7384	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-crosstalk	ANY	admin/handler.go:1373	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/session-export	ANY	cmd/gateway/main.go:7401	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/session-export/import	ANY	cmd/gateway/main.go:7402	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/session-export/pack	ANY	cmd/gateway/main.go:7403	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/session-handoff	ANY	cmd/gateway/main.go:7386	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/sessions	ANY	admin/handler.go:1200	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/sessions/	ANY	admin/handler.go:1201	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/sessions/detail	ANY	cmd/gateway/main.go:7560	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/session-audit	ANY	admin/handler.go:1252	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-audit/	ANY	admin/handler.go:1253	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-audit/export	ANY	admin/handler.go:1255	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-audit/stats	ANY	admin/handler.go:1254	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-clusters	ANY	cmd/gateway/main.go:7462	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-clusters/	ANY	cmd/gateway/main.go:7463	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-compare	ANY	cmd/gateway/main.go:7429	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-crosstalk	ANY	admin/handler.go:1385	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-export	ANY	cmd/gateway/main.go:7446	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/session-export/import	ANY	cmd/gateway/main.go:7447	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/session-export/pack	ANY	cmd/gateway/main.go:7448	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/session-handoff	ANY	cmd/gateway/main.go:7431	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/sessions	ANY	admin/handler.go:1212	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/sessions/	ANY	admin/handler.go:1213	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/sessions/detail	ANY	cmd/gateway/main.go:7605	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/sessions/dual-read-drift	ANY	cmd/gateway/dual_read_validator.go:194	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/sessions/inspector-stats	ANY	admin/handler.go:1249	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/sessions/list	ANY	cmd/gateway/main.go:7567	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/sessions/online	ANY	admin/handler.go:1256	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/sessions/summary	ANY	cmd/gateway/main.go:7561	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/sessions/inspector-stats	ANY	admin/handler.go:1261	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/sessions/list	ANY	cmd/gateway/main.go:7612	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/sessions/online	ANY	admin/handler.go:1268	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/sessions/summary	ANY	cmd/gateway/main.go:7606	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/sessions/{id}/dual-read	ANY	cmd/gateway/dual_read_validator.go:193	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/sessions/{id}/timeline	ANY	admin/handler.go:1257	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/sessions/{id}/turns	ANY	admin/handler.go:1261	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/sessions/{id}/timeline	ANY	admin/handler.go:1269	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/sessions/{id}/turns	ANY	admin/handler.go:1273	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/settings	ANY	admin/settings.go:24	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/settings/	ANY	admin/settings.go:25	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/stats	ANY	admin/handler.go:1122	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/stats/	ANY	admin/handler.go:1123	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/storage/config	ANY	admin/handler.go:1182	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/storage/config/test-path	ANY	admin/handler.go:1183	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/admin/storage/migration-state	ANY	admin/handler.go:1185	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/stats	ANY	admin/handler.go:1134	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/stats/	ANY	admin/handler.go:1135	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/storage/config	ANY	admin/handler.go:1194	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/storage/config/test-path	ANY	admin/handler.go:1195	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/admin/storage/migration-state	ANY	admin/handler.go:1197	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/system-monitor/by-credential/	ANY	admin/systemmonitor_handlers.go:669	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/system-monitor/by-model/	ANY	admin/systemmonitor_handlers.go:671	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/system-monitor/by-provider/	ANY	admin/systemmonitor_handlers.go:670	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
@@ -320,47 +332,50 @@
 /api/admin/task-profile/corrections/import	POST	taskprofile/handler.go:133	read	r.Body	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/task-profile/corrections/stats	GET	taskprofile/handler.go:131	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/task-profile/reload	POST	taskprofile/handler.go:135	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/tenant-approval-config/	ANY	cmd/gateway/main.go:7677	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/tenant-approval-config/	ANY	cmd/gateway/main.go:7722	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/tenant-settings/	ANY	admin/settings.go:26	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/tenants	ANY	admin/handler.go:984	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/tenants/	ANY	admin/handler.go:985	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/tools/get	ANY	cmd/gateway/main.go:7345	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/tools/list	ANY	cmd/gateway/main.go:7344	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/tools/reload	ANY	cmd/gateway/main.go:7343	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/admin/tools/stats	ANY	cmd/gateway/main.go:7372	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/tools/top	ANY	cmd/gateway/main.go:7373	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/topology/plugins	ANY	admin/handler.go:1130	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/topology/providers-today	ANY	admin/handler.go:1127	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/turns	ANY	admin/handler.go:1348	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/turns/sessions	ANY	admin/handler.go:1350	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/turns/sessions/filter-options	ANY	admin/handler.go:1352	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/usage/	ANY	admin/handler.go:1342	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/users/	ANY	admin/handler.go:1179	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/users/usage-summary	ANY	admin/handler.go:1178	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/tenants	ANY	admin/handler.go:996	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/tenants/	ANY	admin/handler.go:997	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/tools/get	ANY	cmd/gateway/main.go:7390	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/tools/list	ANY	cmd/gateway/main.go:7389	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/tools/reload	ANY	cmd/gateway/main.go:7388	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/tools/stats	ANY	cmd/gateway/main.go:7417	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/tools/top	ANY	cmd/gateway/main.go:7418	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/topology/clients-today	ANY	admin/handler.go:1160	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/topology/models-today	ANY	admin/handler.go:1156	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/topology/plugins	ANY	admin/handler.go:1142	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/topology/provider-kinds	ANY	admin/handler.go:1153	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/topology/providers-today	ANY	admin/handler.go:1139	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/turns	ANY	admin/handler.go:1360	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/turns/sessions	ANY	admin/handler.go:1362	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/turns/sessions/filter-options	ANY	admin/handler.go:1364	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/usage/	ANY	admin/handler.go:1354	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/users/	ANY	admin/handler.go:1191	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/users/usage-summary	ANY	admin/handler.go:1190	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/work-types	ANY	admin/work_types.go:51	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/work-types/	ANY	admin/work_types.go:54	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/work-types/stats	ANY	admin/work_types.go:52	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/work-types/sync-from-acc	ANY	admin/work_types.go:53	read		502	error	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/agents	ANY	cmd/gateway/main.go:7572	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/agents/	ANY	cmd/gateway/main.go:7575	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/agents/health	ANY	cmd/gateway/main.go:7574	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/agents/stats	ANY	cmd/gateway/main.go:7573	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/attachments/	ANY	admin/handler.go:1358	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/auth/captcha	ANY	admin/handler.go:956	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/auth/change-password	ANY	admin/handler.go:965	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/auth/logout	ANY	admin/handler.go:952	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/auth/me	ANY	admin/handler.go:964	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/auth/token	ANY	admin/handler.go:951	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/candidate-failures	ANY	admin/handler.go:1324	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/candidate-failures/alerts	ANY	admin/handler.go:1327	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/candidate-failures/credential/{id}	ANY	admin/handler.go:1326	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/candidate-failures/stats	ANY	admin/handler.go:1325	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/catalog	ANY	admin/handler.go:1359	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/catalog/	ANY	admin/handler.go:1360	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/client-configs/audit	ANY	admin/handler.go:1337	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/client-configs/featured	ANY	admin/handler.go:1338	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/config/default-limits	ANY	admin/handler.go:1432	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/credentials/	ANY	admin/handler.go:1297	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/agents	ANY	cmd/gateway/main.go:7617	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/agents/	ANY	cmd/gateway/main.go:7620	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/agents/health	ANY	cmd/gateway/main.go:7619	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/agents/stats	ANY	cmd/gateway/main.go:7618	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/attachments/	ANY	admin/handler.go:1370	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/auth/captcha	ANY	admin/handler.go:968	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/auth/change-password	ANY	admin/handler.go:977	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/auth/logout	ANY	admin/handler.go:964	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/auth/me	ANY	admin/handler.go:976	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/auth/token	ANY	admin/handler.go:963	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/candidate-failures	ANY	admin/handler.go:1336	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/candidate-failures/alerts	ANY	admin/handler.go:1339	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/candidate-failures/credential/{id}	ANY	admin/handler.go:1338	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/candidate-failures/stats	ANY	admin/handler.go:1337	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/catalog	ANY	admin/handler.go:1371	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/catalog/	ANY	admin/handler.go:1372	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/client-configs/audit	ANY	admin/handler.go:1349	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/client-configs/featured	ANY	admin/handler.go:1350	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/config/default-limits	ANY	admin/handler.go:1444	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/credentials/	ANY	admin/handler.go:1309	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/credentials/clear-manual-disabled	ANY	admin/credential_monitor.go:170	write	400-guard			not-probed-writes	★ 静态分级：写库
 /api/credentials/decisions	ANY	admin/credential_monitor.go:169	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/credentials/demote	ANY	admin/credential_monitor.go:163	write	400-guard			not-probed-writes	★ 静态分级：写库
@@ -378,51 +393,56 @@
 /api/credentials/{id}/models/{model}/state	GET	admin/credential_state_handlers.go:179	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/credentials/{id}/models/{model}/test	POST	admin/credential_state_handlers.go:178	read	400-guard	202	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/credentials/{id}/test	POST	admin/credential_state_handlers.go:176	read		202	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/errors/trend	ANY	admin/handler.go:1323	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/free-discovery/import	POST	admin/handler.go:1392	read	r.Body	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-discovery/scan	POST	admin/handler.go:1385	read	r.Body	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-discovery/scan-scheduler/status	GET	admin/handler.go:1391	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-discovery/tasks	GET	admin/handler.go:1386	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-discovery/tasks/{id}	GET	admin/handler.go:1387	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-discovery/tasks/{id}/results	GET	admin/handler.go:1388	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-discovery/templates	POST	admin/handler.go:1378	write	r.Body			not-probed-writes	★ 静态分级：写库
-/api/free-discovery/templates	POST	admin/handler.go:1378	write	r.Body			not-probed-writes	★ 静态分级：写库
-/api/free-discovery/templates/import-orbi	POST	admin/handler.go:1380	write	r.Body			not-probed-writes	★ 静态分级：写库
-/api/free-discovery/templates/presets	GET	admin/handler.go:1379	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-discovery/templates/{id}	PUT	admin/handler.go:1382	write	r.Body			not-probed-writes	★ 静态分级：写库
-/api/free-discovery/templates/{id}	PUT	admin/handler.go:1382	write	r.Body			not-probed-writes	★ 静态分级：写库
-/api/free-discovery/templates/{id}	PUT	admin/handler.go:1382	write	r.Body			not-probed-writes	★ 静态分级：写库
-/api/free-discovery/templates/{id}	PUT	admin/handler.go:1382	write	r.Body			not-probed-writes	★ 静态分级：写库
-/api/free-pool/available	ANY	admin/handler.go:1396	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-pool/bootstrap	ANY	admin/handler.go:1399	write				not-probed-writes	★ 静态分级：写库
-/api/free-pool/bridge-oauth	ANY	admin/handler.go:1400	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/free-pool/bulk-register	ANY	admin/handler.go:1402	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/free-pool/catalog	ANY	admin/handler.go:1395	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-pool/discover	ANY	admin/handler.go:1401	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/free-pool/discovery-status	ANY	admin/handler.go:1404	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-pool/import-env	ANY	admin/handler.go:1398	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/free-pool/keys	ANY	admin/handler.go:1410	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-pool/keys/	ANY	admin/handler.go:1411	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-pool/methods	ANY	admin/handler.go:1403	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-pool/models	ANY	admin/handler.go:1394	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-pool/probe	ANY	admin/handler.go:1408	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/free-pool/quick-entry	ANY	admin/handler.go:1409	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/free-pool/register	ANY	admin/handler.go:1393	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-pool/register-all	ANY	admin/handler.go:1397	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/free-pool/signup-hub	ANY	admin/handler.go:1405	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-pool/status	ANY	admin/handler.go:1375	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/free-pool/stream	ANY	admin/handler.go:1429	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/free-pool/temp-email	ANY	admin/handler.go:1406	external	json-decode			not-probed-external	★ 静态分级：出网调用
-/api/free-pool/temp-email/poll	ANY	admin/handler.go:1407	external	json-decode			not-probed-external	★ 静态分级：出网调用
-/api/health/system	ANY	cmd/gateway/main.go:6432	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/key-applications	ANY	admin/handler.go:1331	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/key-applications/	ANY	admin/handler.go:1332	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/keys	ANY	admin/handler.go:1329	read		409	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/keys/	ANY	admin/handler.go:1330	read	400-guard	409	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/lite/sessions	ANY	admin/handler.go:1415	read		503	error	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/logs	ANY	admin/handler.go:1343	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/logs/	ANY	admin/handler.go:1344	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/errors/trend	ANY	admin/handler.go:1335	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/free-discovery/import	POST	admin/handler.go:1404	read	r.Body	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-discovery/scan	POST	admin/handler.go:1397	read	r.Body	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-discovery/scan-scheduler/status	GET	admin/handler.go:1403	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-discovery/tasks	GET	admin/handler.go:1398	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-discovery/tasks/{id}	GET	admin/handler.go:1399	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-discovery/tasks/{id}/results	GET	admin/handler.go:1400	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-discovery/templates	POST	admin/handler.go:1390	write	r.Body			not-probed-writes	★ 静态分级：写库
+/api/free-discovery/templates	POST	admin/handler.go:1390	write	r.Body			not-probed-writes	★ 静态分级：写库
+/api/free-discovery/templates/import-orbi	POST	admin/handler.go:1392	write	r.Body			not-probed-writes	★ 静态分级：写库
+/api/free-discovery/templates/presets	GET	admin/handler.go:1391	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-discovery/templates/{id}	PUT	admin/handler.go:1394	write	r.Body			not-probed-writes	★ 静态分级：写库
+/api/free-discovery/templates/{id}	PUT	admin/handler.go:1394	write	r.Body			not-probed-writes	★ 静态分级：写库
+/api/free-discovery/templates/{id}	PUT	admin/handler.go:1394	write	r.Body			not-probed-writes	★ 静态分级：写库
+/api/free-discovery/templates/{id}	PUT	admin/handler.go:1394	write	r.Body			not-probed-writes	★ 静态分级：写库
+/api/free-pool/available	ANY	admin/handler.go:1408	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-pool/bootstrap	ANY	admin/handler.go:1411	write				not-probed-writes	★ 静态分级：写库
+/api/free-pool/bridge-oauth	ANY	admin/handler.go:1412	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/free-pool/bulk-register	ANY	admin/handler.go:1414	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/free-pool/catalog	ANY	admin/handler.go:1407	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-pool/discover	ANY	admin/handler.go:1413	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/free-pool/discovery-status	ANY	admin/handler.go:1416	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-pool/import-env	ANY	admin/handler.go:1410	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/free-pool/keys	ANY	admin/handler.go:1422	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-pool/keys/	ANY	admin/handler.go:1423	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-pool/methods	ANY	admin/handler.go:1415	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-pool/models	ANY	admin/handler.go:1406	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-pool/probe	ANY	admin/handler.go:1420	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/free-pool/quick-entry	ANY	admin/handler.go:1421	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/free-pool/register	ANY	admin/handler.go:1405	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-pool/register-all	ANY	admin/handler.go:1409	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/free-pool/signup-hub	ANY	admin/handler.go:1417	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-pool/status	ANY	admin/handler.go:1387	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/free-pool/stream	ANY	admin/handler.go:1441	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/free-pool/temp-email	ANY	admin/handler.go:1418	external	json-decode			not-probed-external	★ 静态分级：出网调用
+/api/free-pool/temp-email/poll	ANY	admin/handler.go:1419	external	json-decode			not-probed-external	★ 静态分级：出网调用
+/api/health/system	ANY	cmd/gateway/main.go:6455	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/key-applications	ANY	admin/handler.go:1343	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/key-applications/	ANY	admin/handler.go:1344	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/keys	ANY	admin/handler.go:1341	read		409	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/keys/	ANY	admin/handler.go:1342	read	400-guard	409	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/lite/sessions	ANY	admin/handler.go:1427	read		503	error	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/logs	ANY	admin/handler.go:1355	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/logs/	ANY	admin/handler.go:1356	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/maas/account	ANY	admin/maas_handlers.go:31	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/maas/bills	ANY	admin/maas_bills_handlers.go:132	read				not-probed-not-reached	★ GET-only（:132）租户月账单列表；未真探测
+/api/maas/bills/export	ANY	admin/maas_bills_handlers.go:161	read				not-probed-not-reached	★ GET-only（:161）CSV 导出；未真探测
+/api/maas/coupons/activate	ANY	admin/maas_bills_handlers.go:188	write				not-probed-writes	★ 源码确证 write：POST-only（:188）ActivateCoupon 落积分 ⇒ 静态分级器判 read 是盲区（空 body POST 会 400 但语义是写）
+/api/maas/coupons/redemptions	ANY	admin/maas_bills_handlers.go:218	read				not-probed-not-reached	★ GET-only（:218）兑换记录列表；未真探测
+/api/maas/invoices	ANY	admin/maas_bills_handlers.go:247	write				not-probed-writes	★ 源码确证 write：POST-only（:247）CreateInvoicePlaceholder 落占位行（202 Accepted）
 /api/maas/ledger	ANY	admin/maas_handlers.go:32	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/maas/models	ANY	admin/maas_handlers.go:27	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/maas/orders	ANY	admin/maas_handlers.go:33	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
@@ -432,49 +452,49 @@
 /api/maas/topup-packages	ANY	admin/maas_handlers.go:29	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/maas/usage/summary	ANY	admin/maas_handlers.go:35	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/maas/wallet	ANY	admin/maas_handlers.go:30	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/meta-tools/categories	ANY	cmd/gateway/main.go:7336	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/meta-tools/definitions	ANY	cmd/gateway/main.go:7335	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/meta-tools/load	ANY	cmd/gateway/main.go:7337	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/models	ANY	admin/handler.go:1333	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/models/	ANY	admin/handler.go:1334	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/models/name-mapping	ANY	admin/handler.go:1335	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/models/name-mapping/	ANY	admin/handler.go:1336	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/pricing/	ANY	admin/handler.go:1431	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/providers	ANY	admin/handler.go:1298	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/providers/	ANY	admin/handler.go:1299	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/providers/credentials/	ANY	admin/handler.go:1301	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/providers/seed-from-catalog	ANY	admin/handler.go:1300	write				not-probed-writes	★ 静态分级：写库
-/api/proxy/health-check-all	ANY	admin/handler.go:1421	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/proxy/nodes	ANY	admin/handler.go:1419	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/proxy/nodes/	ANY	admin/handler.go:1420	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/proxy/policy	ANY	admin/handler.go:1423	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/proxy/policy/	ANY	admin/handler.go:1426	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/proxy/regions	ANY	admin/handler.go:1427	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/proxy/status	ANY	admin/handler.go:1416	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/proxy/subscriptions	ANY	admin/handler.go:1417	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/proxy/subscriptions/	ANY	admin/handler.go:1418	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/proxy/swap	ANY	admin/handler.go:1422	read		502	error	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/quality/	ANY	cmd/gateway/main.go:7352	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/routing/audit	ANY	admin/handler.go:1280	read	decode	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/routing/available-models	ANY	admin/handler.go:1276	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/routing/available-models/raw	ANY	admin/handler.go:1277	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/routing/candidate-binding/	ANY	admin/handler.go:994	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/routing/candidate-bindings/reorder	ANY	admin/handler.go:995	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/routing/credentials/{id}/reset-state	POST	admin/handler.go:1005	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/routing/decisions	ANY	admin/handler.go:1278	read	decode	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/routing/emergency-repair	ANY	admin/handler.go:999	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/routing/featured	ANY	admin/handler.go:1275	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/routing/featured-models	ANY	admin/handler.go:1290	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/routing/health	ANY	admin/handler.go:1279	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/routing/manual-priority	ANY	admin/handler.go:1282	write	400-guard			not-probed-writes	★ 静态分级：写库
-/api/routing/model-tree	ANY	admin/handler.go:1273	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/routing/overview	ANY	admin/handler.go:989	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/routing/policy	ANY	admin/handler.go:1274	write	json-decode			not-probed-writes	★ 静态分级：写库
-/api/routing/probe	ANY	admin/handler.go:1281	external	400-guard			not-probed-external	★ 静态分级：出网调用
-/api/routing/recent-model-failures	ANY	admin/handler.go:990	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/routing/resolve	ANY	admin/handler.go:988	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/routing/score-details	ANY	admin/handler.go:1283	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/routing/scoring-weights	ANY	admin/handler.go:1289	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/meta-tools/categories	ANY	cmd/gateway/main.go:7381	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/meta-tools/definitions	ANY	cmd/gateway/main.go:7380	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/meta-tools/load	ANY	cmd/gateway/main.go:7382	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/models	ANY	admin/handler.go:1345	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/models/	ANY	admin/handler.go:1346	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/models/name-mapping	ANY	admin/handler.go:1347	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/models/name-mapping/	ANY	admin/handler.go:1348	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/pricing/	ANY	admin/handler.go:1443	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/providers	ANY	admin/handler.go:1310	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/providers/	ANY	admin/handler.go:1311	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/providers/credentials/	ANY	admin/handler.go:1313	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/providers/seed-from-catalog	ANY	admin/handler.go:1312	write				not-probed-writes	★ 静态分级：写库
+/api/proxy/health-check-all	ANY	admin/handler.go:1433	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/proxy/nodes	ANY	admin/handler.go:1431	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/proxy/nodes/	ANY	admin/handler.go:1432	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/proxy/policy	ANY	admin/handler.go:1435	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/proxy/policy/	ANY	admin/handler.go:1438	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/proxy/regions	ANY	admin/handler.go:1439	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/proxy/status	ANY	admin/handler.go:1428	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/proxy/subscriptions	ANY	admin/handler.go:1429	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/proxy/subscriptions/	ANY	admin/handler.go:1430	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/proxy/swap	ANY	admin/handler.go:1434	read		502	error	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/quality/	ANY	cmd/gateway/main.go:7397	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/routing/audit	ANY	admin/handler.go:1292	read	decode	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/routing/available-models	ANY	admin/handler.go:1288	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/routing/available-models/raw	ANY	admin/handler.go:1289	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/routing/candidate-binding/	ANY	admin/handler.go:1006	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/routing/candidate-bindings/reorder	ANY	admin/handler.go:1007	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/routing/credentials/{id}/reset-state	POST	admin/handler.go:1017	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/routing/decisions	ANY	admin/handler.go:1290	read	decode	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/routing/emergency-repair	ANY	admin/handler.go:1011	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/routing/featured	ANY	admin/handler.go:1287	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/routing/featured-models	ANY	admin/handler.go:1302	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/routing/health	ANY	admin/handler.go:1291	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/routing/manual-priority	ANY	admin/handler.go:1294	write	400-guard			not-probed-writes	★ 静态分级：写库
+/api/routing/model-tree	ANY	admin/handler.go:1285	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/routing/overview	ANY	admin/handler.go:1001	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/routing/policy	ANY	admin/handler.go:1286	write	json-decode			not-probed-writes	★ 静态分级：写库
+/api/routing/probe	ANY	admin/handler.go:1293	external	400-guard			not-probed-external	★ 静态分级：出网调用
+/api/routing/recent-model-failures	ANY	admin/handler.go:1002	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/routing/resolve	ANY	admin/handler.go:1000	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/routing/score-details	ANY	admin/handler.go:1295	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/routing/scoring-weights	ANY	admin/handler.go:1301	write	400-guard			not-probed-writes	★ 静态分级：写库
 /api/self-check/models	ANY	admin/self_check_handlers.go:68	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/self-check/runs	ANY	admin/self_check_handlers.go:61	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/self-check/runs/	ANY	admin/self_check_handlers.go:62	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
@@ -483,100 +503,105 @@
 /api/self-check/stats	ANY	admin/self_check_handlers.go:67	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/self-check/trigger	ANY	admin/self_check_handlers.go:66	read	json-decode	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/self-check/trigger/availability	ANY	admin/self_check_handlers.go:65	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/sessions/detail/	ANY	admin/handler.go:1207	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/sessions/list	ANY	admin/handler.go:1206	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/sessions/project-costs/	ANY	admin/handler.go:1210	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/sessions/task-flow/	ANY	admin/handler.go:1209	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/sessions/update/	ANY	admin/handler.go:1208	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/system/background-tasks	ANY	admin/handler.go:1362	read	json-decode	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/system/bootstrap/	ANY	cmd/gateway/main.go:7281	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/system/client-error	ANY	admin/handler.go:958	write	r.Body			not-probed-writes	★ 静态分级：写库
-/api/system/license/	ANY	cmd/gateway/main.go:7279	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/system/memora-context/	ANY	admin/handler.go:1369	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/system/memora-ping	ANY	admin/handler.go:1365	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/system/memora-query/	ANY	admin/handler.go:1367	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/system/memora-sessions	ANY	admin/handler.go:1368	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/system/memora-sink	ANY	admin/handler.go:1366	read	400-guard	503	error	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/system/memora-status	ANY	admin/handler.go:1364	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/system/no-topic-session/	ANY	admin/handler.go:1372	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/system/session-context/	ANY	admin/handler.go:1371	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/system/session-messages/	ANY	admin/handler.go:1370	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/system/upgrade/	ANY	cmd/gateway/main.go:7280	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/system/version	ANY	admin/handler.go:957	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/tags	ANY	admin/handler.go:1361	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/tasks/	ANY	admin/handler.go:1374	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/telemetry/batch	ANY	admin/handler.go:1293	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/telemetry/decision-log	ANY	admin/handler.go:1291	write	400-guard			excluded-observed-writer	★ 实测：空 body 会写库
-/api/telemetry/request-log	ANY	admin/handler.go:1292	read	400-guard			excluded-observed-writer	★ 实测：空 body 会写库
-/api/tenant/	ANY	cmd/gateway/main.go:7275	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/usage	ANY	admin/handler.go:1339	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/usage/	ANY	admin/handler.go:1340	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/users	ANY	admin/handler.go:966	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/users/	ANY	admin/handler.go:987	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/v1/approvals/	ANY	cmd/gateway/main.go:7612	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/v1/plugin-nav	ANY	cmd/gateway/main.go:6585	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/v1/plugins/install	POST	cmd/gateway/main.go:6613	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/v1/plugins/{id}/activate	POST	cmd/gateway/main.go:6624	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/v1/plugins/{id}/deactivate	POST	cmd/gateway/main.go:6628	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/v1/plugins/{id}/uninstall	POST	cmd/gateway/main.go:6632	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/v2/capabilities	ANY	cmd/gateway/main.go:6451	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/vendors/credentials/{id}/error-detail	ANY	admin/handler.go:1328	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/sessions/detail/	ANY	admin/handler.go:1219	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/sessions/list	ANY	admin/handler.go:1218	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/sessions/project-costs/	ANY	admin/handler.go:1222	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/sessions/task-flow/	ANY	admin/handler.go:1221	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/sessions/update/	ANY	admin/handler.go:1220	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/system/background-tasks	ANY	admin/handler.go:1374	read	json-decode	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/system/bootstrap/	ANY	cmd/gateway/main.go:7326	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/system/client-error	ANY	admin/handler.go:970	write	r.Body			not-probed-writes	★ 静态分级：写库
+/api/system/license/	ANY	cmd/gateway/main.go:7324	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/system/memora-context/	ANY	admin/handler.go:1381	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/system/memora-ping	ANY	admin/handler.go:1377	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/system/memora-query/	ANY	admin/handler.go:1379	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/system/memora-sessions	ANY	admin/handler.go:1380	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/system/memora-sink	ANY	admin/handler.go:1378	read	400-guard	503	error	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/system/memora-status	ANY	admin/handler.go:1376	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/system/no-topic-session/	ANY	admin/handler.go:1384	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/system/session-context/	ANY	admin/handler.go:1383	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/system/session-messages/	ANY	admin/handler.go:1382	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/system/upgrade/	ANY	cmd/gateway/main.go:7325	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/system/version	ANY	admin/handler.go:969	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/tags	ANY	admin/handler.go:1373	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/tasks/	ANY	admin/handler.go:1386	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/telemetry/batch	ANY	admin/handler.go:1305	read	400-guard	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/telemetry/decision-log	ANY	admin/handler.go:1303	write	400-guard			excluded-observed-writer	★ 实测：空 body 会写库
+/api/telemetry/request-log	ANY	admin/handler.go:1304	read	400-guard			excluded-observed-writer	★ 实测：空 body 会写库
+/api/tenant/	ANY	cmd/gateway/main.go:7320	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/usage	ANY	admin/handler.go:1351	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/usage/	ANY	admin/handler.go:1352	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/users	ANY	admin/handler.go:978	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/users/	ANY	admin/handler.go:999	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/v1/approvals/	ANY	cmd/gateway/main.go:7657	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/v1/plugin-nav	ANY	cmd/gateway/main.go:6608	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/v1/plugins/	ANY	cmd/gateway/main.go:6625	unknown				not-probed-unresolved	★ 前缀路由 + 闭包内部分派（/settings ⇒ SettingsHandler）⇒ 静态分级解析不出（func-not-indexed），与 /api/v1/plugins/install 同族待真探测
+/api/v1/plugins/install	POST	cmd/gateway/main.go:6636	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/v1/plugins/{id}/activate	POST	cmd/gateway/main.go:6647	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/v1/plugins/{id}/deactivate	POST	cmd/gateway/main.go:6651	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/v1/plugins/{id}/uninstall	POST	cmd/gateway/main.go:6655	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/v2/capabilities	ANY	cmd/gateway/main.go:6474	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/vendors/credentials/{id}/error-detail	ANY	admin/handler.go:1340	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/webhooks/dingtalk/approval-callback	POST	api/dingtalk_callback.go:307	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/webhooks/feishu/callback	ANY	cmd/gateway/feishubot_init.go:106	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/webhooks/quota/recharged	POST	cmd/gateway/main.go:6408	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/webhooks/quota/recharged	POST	cmd/gateway/main.go:6431	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /debug/pprof/	ANY	cmd/gateway/pprof_server.go:25	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /debug/pprof/	ANY	cmd/gateway/pprof_server.go:25	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /debug/pprof/cmdline	ANY	cmd/gateway/pprof_server.go:20	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /debug/pprof/profile	ANY	cmd/gateway/pprof_server.go:21	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /debug/pprof/symbol	ANY	cmd/gateway/pprof_server.go:22	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /debug/pprof/trace	ANY	cmd/gateway/pprof_server.go:23	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/healthz	ANY	cmd/gateway/main.go:6420	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/healthz/full	ANY	cmd/gateway/main.go:6421	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/internal/telemetry/fallback-buffer/	ANY	cmd/gateway/main.go:6486	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/internal/v1-write-liveness	ANY	cmd/gateway/main.go:6495	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/metrics	ANY	cmd/gateway/main.go:6456	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/healthz	ANY	cmd/gateway/main.go:6443	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/healthz/full	ANY	cmd/gateway/main.go:6444	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/internal/telemetry/fallback-buffer/	ANY	cmd/gateway/main.go:6509	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/internal/v1-write-liveness	ANY	cmd/gateway/main.go:6518	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/metrics	ANY	cmd/gateway/main.go:6479	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /metrics/storage	GET	cmd/gateway/storage_metrics_endpoint.go:45	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/mock/v1/chat/completions/fast	ANY	cmd/gateway/main.go:6469	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
-/mock/v1/chat/completions/slow	ANY	cmd/gateway/main.go:6470	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
-/mock/v1/messages/fast	ANY	cmd/gateway/main.go:6471	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
-/mock/v1/messages/slow	ANY	cmd/gateway/main.go:6472	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
+/mock/v1/chat/completions/fast	ANY	cmd/gateway/main.go:6492	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
+/mock/v1/chat/completions/slow	ANY	cmd/gateway/main.go:6493	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
+/mock/v1/messages/fast	ANY	cmd/gateway/main.go:6494	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
+/mock/v1/messages/slow	ANY	cmd/gateway/main.go:6495	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
 /plugins/{pluginId}/{rest...}	GET	cmd/gateway/plugin_proxy_init.go:12	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/readyz	ANY	cmd/gateway/main.go:6426	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/approvals/	ANY	admin/handler.go:1266	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/v1/audio/analyze	ANY	cmd/gateway/main.go:6775	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/audio/refine	ANY	cmd/gateway/main.go:6774	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/audio/speech	ANY	cmd/gateway/main.go:6767	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/audio/transcriptions	ANY	cmd/gateway/main.go:6764	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/readyz	ANY	cmd/gateway/main.go:6449	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/approvals/	ANY	admin/handler.go:1278	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/v1/audio/analyze	ANY	cmd/gateway/main.go:6798	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/audio/refine	ANY	cmd/gateway/main.go:6797	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/audio/speech	ANY	cmd/gateway/main.go:6790	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/audio/transcriptions	ANY	cmd/gateway/main.go:6787	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/chat/completions	ANY	cmd/gateway/main_pipeline.go:1099	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/chat/completions	ANY	cmd/gateway/main_pipeline.go:1099	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/chat/completions	ANY	cmd/gateway/main_pipeline.go:1099	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/classify	ANY	cmd/gateway/main.go:6804	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/completions	ANY	cmd/gateway/main_pipeline.go:1100	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/completions	ANY	cmd/gateway/main_pipeline.go:1100	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/completions	ANY	cmd/gateway/main_pipeline.go:1100	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/embeddings	ANY	cmd/gateway/main.go:6759	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/goal-runs	ANY	cmd/gateway/main.go:6873	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/goal-runs/	ANY	cmd/gateway/main.go:6874	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/gw/sessions	ANY	cmd/gateway/main.go:6862	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/gw/sessions/	ANY	cmd/gateway/main.go:6863	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/handoffs/confirm	ANY	cmd/gateway/main.go:6757	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/v1/hosted-tasks	ANY	cmd/gateway/main.go:6927	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/hosted-tasks/	ANY	cmd/gateway/main.go:6928	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/images/generations	ANY	cmd/gateway/main.go:6779	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/keys/apply	ANY	admin/handler.go:960	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/v1/mcp	ANY	cmd/gateway/main.go:6770	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/embeddings	ANY	cmd/gateway/main.go:6782	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/goal-runs	ANY	cmd/gateway/main.go:6918	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/goal-runs/	ANY	cmd/gateway/main.go:6919	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/gw/sessions	ANY	cmd/gateway/main.go:6907	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/gw/sessions/	ANY	cmd/gateway/main.go:6908	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/handoffs/confirm	ANY	cmd/gateway/main.go:6780	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/v1/hosted-tasks	ANY	cmd/gateway/main.go:6972	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/hosted-tasks/	ANY	cmd/gateway/main.go:6973	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/images/generations	ANY	cmd/gateway/main.go:6808	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/keys/apply	ANY	admin/handler.go:972	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/v1/mcp	ANY	cmd/gateway/main.go:6793	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/messages	ANY	cmd/gateway/main_pipeline.go:1102	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/messages	ANY	cmd/gateway/main_pipeline.go:1102	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/messages	ANY	cmd/gateway/main_pipeline.go:1102	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/messages/count_tokens	ANY	cmd/gateway/main.go:6755	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/models	ANY	cmd/gateway/main.go:6784	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/models/	ANY	cmd/gateway/main.go:6796	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/messages/count_tokens	ANY	cmd/gateway/main.go:6778	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/models	ANY	cmd/gateway/main.go:6813	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/models/	ANY	cmd/gateway/main.go:6825	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/responses	ANY	cmd/gateway/main_pipeline.go:1105	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/responses	ANY	cmd/gateway/main_pipeline.go:1105	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/responses	ANY	cmd/gateway/main_pipeline.go:1105	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/sessions	ANY	cmd/gateway/main.go:6860	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/sessions/	ANY	cmd/gateway/main.go:6861	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1/videos/generations	ANY	cmd/gateway/main.go:6782	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/v1beta/models/	ANY	cmd/gateway/main.go:6795	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/sessions	ANY	cmd/gateway/main.go:6905	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/sessions/	ANY	cmd/gateway/main.go:6906	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/summarize	ANY	cmd/gateway/main.go:6802	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/summarize/title	ANY	cmd/gateway/main.go:6803	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/videos/generations	ANY	cmd/gateway/main.go:6811	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1beta/models	ANY	cmd/gateway/main.go:6841	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/v1beta/models/	ANY	cmd/gateway/main.go:6824	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v2/chat/completions	ANY	cmd/gateway/main_v2_pipeline.go:369	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /v2/healthz	ANY	cmd/gateway/main_v2_pipeline.go:412	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/version	ANY	cmd/gateway/main.go:6427	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/version	ANY	cmd/gateway/main.go:6450	unknown				not-probed-unresolved	★ 静态分级：解析不出

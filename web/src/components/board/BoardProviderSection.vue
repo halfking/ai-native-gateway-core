@@ -334,11 +334,11 @@ watch(usageRows, () => void loadBalances())
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .pv-sec__title {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 700;
   display: flex;
   align-items: center;
@@ -346,7 +346,7 @@ watch(usageRows, () => void loadBalances())
   margin: 0;
 }
 .pv-count {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-muted);
   background: color-mix(in srgb, var(--text-muted) 12%, transparent);
   border-radius: 999px;
@@ -356,13 +356,13 @@ watch(usageRows, () => void loadBalances())
 .pv-more {
   border: 1px solid var(--accent);
   border-radius: 8px;
-  padding: 5px 12px;
-  font-size: 12.5px;
+  padding: 4px 12px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s var(--kx-motion-ease-out);
 }
 .pv-more:hover {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
@@ -370,15 +370,15 @@ watch(usageRows, () => void loadBalances())
 .pv-grid {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 10px;
+  gap: 8px;
 }
 .pv-card {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 11px 13px;
+  padding: 12px 12px;
   min-width: 0;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s var(--kx-motion-ease-out), box-shadow 0.15s var(--kx-motion-ease-out);
 }
 .pv-card--clickable {
   cursor: pointer;
@@ -400,8 +400,8 @@ watch(usageRows, () => void loadBalances())
 .pv-card__name {
   display: flex;
   align-items: center;
-  gap: 7px;
-  font-size: 12.5px;
+  gap: 8px;
+  font-size: 12px;
   font-weight: 700;
   min-width: 0;
 }
@@ -417,7 +417,7 @@ watch(usageRows, () => void loadBalances())
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   color: var(--on-primary);
   flex-shrink: 0;
@@ -432,22 +432,22 @@ watch(usageRows, () => void loadBalances())
 .pv-card__cost {
   font-size: 16px;
   font-weight: 700;
-  margin-top: 6px;
+  margin-top: 4px;
   font-variant-numeric: tabular-nums;
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 .pv-card__cost small {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-muted);
   font-weight: 500;
 }
 .pv-score {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 700;
-  padding: 1.5px 7px;
+  padding: 1.5px 8px;
   border-radius: 999px;
   margin-left: auto;
   align-self: center;
@@ -471,7 +471,7 @@ watch(usageRows, () => void loadBalances())
 .pv-card__nums {
   display: flex;
   gap: 12px;
-  margin-top: 5px;
+  margin-top: 4px;
   font-size: 11px;
   color: var(--text-muted);
   flex-wrap: wrap;
@@ -485,7 +485,7 @@ watch(usageRows, () => void loadBalances())
   height: 4px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--text-muted) 18%, transparent);
-  margin-top: 9px;
+  margin-top: 8px;
   overflow: hidden;
 }
 .pv-bar i {
@@ -494,9 +494,9 @@ watch(usageRows, () => void loadBalances())
   border-radius: 999px;
 }
 .pv-empty {
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text-muted);
-  padding: 18px 0;
+  padding: 16px 0;
   text-align: center;
   border: 1px dashed var(--border);
   border-radius: 12px;
@@ -505,7 +505,7 @@ watch(usageRows, () => void loadBalances())
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 13px 15px;
+  padding: 12px 16px;
 }
 .pv-table-wrap {
   overflow-x: auto;
@@ -513,7 +513,7 @@ watch(usageRows, () => void loadBalances())
 .pv-list {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12.5px;
+  font-size: 12px;
   min-width: 640px;
 }
 .pv-list th {
@@ -521,7 +521,7 @@ watch(usageRows, () => void loadBalances())
   font-size: 11px;
   color: var(--text-muted);
   font-weight: 700;
-  padding: 7px 10px;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
@@ -531,7 +531,7 @@ watch(usageRows, () => void loadBalances())
   font-variant-numeric: tabular-nums;
 }
 .pv-list td {
-  padding: 8px 10px;
+  padding: 8px 8px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
 }
 .pv-list tbody tr:last-child td {

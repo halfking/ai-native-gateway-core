@@ -32,6 +32,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
+	"github.com/kaixuan/llm-gateway-go/internal/sessionid"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/redis/go-redis/v9"
 )
@@ -127,7 +128,7 @@ func NewSanitizeInputMiddleware(s *Sanitizer, redis *redis.Client, ttl time.Dura
 		// Header priority mirrors ChatHandler; a top-level body session_id
 		// overrides it after envelope parsing. Message text is never an ID source.
 		getSessionID: func(r *http.Request) string {
-			for _, header := range sessionIDHeaderPriority {
+			for _, header := range sessionid.Headers() {
 				if v := strings.TrimSpace(r.Header.Get(header)); v != "" {
 					return v
 				}
@@ -180,16 +181,8 @@ func (l *sanitizeSessionLocks) lock(key string) func() {
 	}
 }
 
-// sessionIDHeaderPriority 与 chatHandler 一致的会话 ID header 候选。
-// 顺序与重要性递减对齐：X-Gw-Session-Id > X-Session-Id >
-// X-Conversation-Id > X-Chat-Session-Id > X-Thread-Id。
-var sessionIDHeaderPriority = []string{
-	"X-Gw-Session-Id",
-	"X-Session-Id",
-	"X-Conversation-Id",
-	"X-Chat-Session-Id",
-	"X-Thread-Id",
-}
+// 会话头优先级表的真值源是 internal/sessionid.Headers()（包 01）。
+// 本处禁止再维护第二份字面量表。
 
 // envelopeSessionID reads only the top-level session_id field. It never scans
 // message content, so a user mentioning "session_id" cannot change ownership.

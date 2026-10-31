@@ -837,12 +837,12 @@ function formatNumber(num: number): string {
 
 <style scoped>
 .hot-partition-manager {
-  padding: 20px;
+  padding: 16px;
 }
 
 .alert {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: flex-start;
   padding: 12px 16px;
   border-radius: 8px;
@@ -864,7 +864,7 @@ function formatNumber(num: number): string {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 20px;
+  padding: 16px;
   margin-bottom: 24px;
 }
 
@@ -893,7 +893,7 @@ function formatNumber(num: number): string {
   font-size: 12px;
   color: var(--muted);
   background: var(--bg-subtle);
-  padding: 5px 10px;
+  padding: 4px 8px;
   border-radius: 6px;
   border: 1px solid var(--border);
 }
@@ -906,7 +906,7 @@ function formatNumber(num: number): string {
 .reload-icon {
   display: inline-block;
   font-size: 14px;
-  transition: transform 0.2s;
+  transition: transform 0.2s var(--kx-motion-ease-out);
 }
 
 .reload-icon.spinning {
@@ -920,7 +920,7 @@ function formatNumber(num: number): string {
 .card-title {
   font-size: 16px;
   font-weight: 600;
-  margin: 0 0 6px 0;
+  margin: 0 0 4px 0;
   color: var(--text);
 }
 
@@ -946,7 +946,7 @@ function formatNumber(num: number): string {
   border-radius: 8px;
   padding: 16px;
   background: var(--bg-subtle);
-  transition: all 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out), box-shadow 0.2s var(--kx-motion-ease-out);
 }
 
 .hot-table-card.migrating {
@@ -963,7 +963,7 @@ function formatNumber(num: number): string {
 }
 
 .table-name {
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
   margin: 0;
   color: var(--text);
@@ -972,7 +972,7 @@ function formatNumber(num: number): string {
 .table-size {
   font-size: 13px;
   font-weight: 600;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 4px;
   background: var(--bg-subtle);
   color: var(--muted);
@@ -1019,7 +1019,7 @@ function formatNumber(num: number): string {
 .migration-controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 12px;
   align-items: center;
 }
@@ -1037,7 +1037,7 @@ function formatNumber(num: number): string {
 }
 
 :global(.retention-radio .el-radio-button__inner) {
-  padding: 6px 12px;
+  padding: 4px 12px;
   font-size: 12px;
   border-radius: 0;
   background: transparent;
@@ -1073,7 +1073,7 @@ function formatNumber(num: number): string {
 
 .migration-progress {
   margin-top: 12px;
-  padding: 10px;
+  padding: 8px;
   background: var(--bg-subtle);
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -1084,13 +1084,13 @@ function formatNumber(num: number): string {
   background: var(--bg-subtle);
   border-radius: 3px;
   overflow: hidden;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .progress-fill {
   height: 100%;
   background: linear-gradient(90deg, var(--accent), var(--accent-h));
-  transition: width 0.3s ease;
+  transition: width 0.3s var(--kx-motion-ease-out);
 }
 
 .progress-text {
@@ -1123,7 +1123,7 @@ function formatNumber(num: number): string {
   margin-top: 4px;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .live-tag {
@@ -1132,10 +1132,10 @@ function formatNumber(num: number): string {
   gap: 4px;
   background: var(--success-soft);
   color: var(--success);
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 8px;
   font-weight: 500;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .dot-pulse {
@@ -1154,7 +1154,7 @@ function formatNumber(num: number): string {
 
 .migration-result {
   margin-top: 12px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-radius: 6px;
   display: flex;
   gap: 8px;
@@ -1200,9 +1200,9 @@ function formatNumber(num: number): string {
   font-size: 12px;
   color: var(--warning);
   background: var(--warning-soft);
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-radius: 4px;
-  margin-top: 6px;
+  margin-top: 4px;
   border: 1px solid color-mix(in srgb, var(--warning) 25%, transparent);
 }
 
@@ -1226,12 +1226,12 @@ function formatNumber(num: number): string {
 }
 
 .section-title {
-  margin: 16px 0 10px 0;
+  margin: 16px 0 8px 0;
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
   border: 1px solid var(--accent);
-  padding-left: 10px;
+  padding-left: 8px;
 }
 
 .partitioned-tables-wrap,
@@ -1247,7 +1247,7 @@ function formatNumber(num: number): string {
 
 .data-table th {
   text-align: left;
-  padding: 10px 12px;
+  padding: 8px 12px;
   background: var(--bg-subtle);
   border-bottom: 1px solid var(--border);
   font-weight: 500;
@@ -1256,7 +1256,7 @@ function formatNumber(num: number): string {
 }
 
 .data-table td {
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   color: var(--text);
   font-variant-numeric: tabular-nums;
@@ -1287,7 +1287,7 @@ function formatNumber(num: number): string {
 .tbl-code {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
-  padding: 2px 6px;
+  padding: 2px 4px;
   background: var(--bg-subtle);
   border-radius: 4px;
   color: var(--accent-h);
@@ -1373,7 +1373,7 @@ function formatNumber(num: number): string {
 .mini-progress-fill {
   height: 100%;
   background: linear-gradient(90deg, var(--accent), var(--accent-h));
-  transition: width 0.3s ease;
+  transition: width 0.3s var(--kx-motion-ease-out);
 }
 
 .storage-badge {
@@ -1428,22 +1428,22 @@ function formatNumber(num: number): string {
 }
 
 .btn {
-  padding: 6px 14px;
+  padding: 4px 12px;
   border: 1px solid transparent;
   border-radius: 6px;
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: opacity 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), box-shadow 0.15s var(--kx-motion-ease-out), transform 0.15s var(--kx-motion-ease-out), outline-offset 0.15s var(--kx-motion-ease-out);
   background: transparent;
   color: var(--text);
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .btn-sm {
-  padding: 5px 12px;
+  padding: 4px 12px;
   font-size: 12px;
 }
 
@@ -1494,7 +1494,7 @@ function formatNumber(num: number): string {
   align-items: center;
   justify-content: center;
   z-index: 1000;
-  padding: 20px;
+  padding: 16px;
 }
 
 .modal-dialog {
@@ -1506,7 +1506,7 @@ function formatNumber(num: number): string {
 }
 
 .modal-header {
-  padding: 18px 24px;
+  padding: 16px 24px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -1518,11 +1518,11 @@ function formatNumber(num: number): string {
 }
 
 .modal-body {
-  padding: 20px 24px;
+  padding: 16px 24px;
 }
 
 .modal-footer {
-  padding: 14px 24px;
+  padding: 12px 24px;
   border-top: 1px solid var(--border);
   display: flex;
   justify-content: flex-end;
@@ -1531,7 +1531,7 @@ function formatNumber(num: number): string {
 
 .warning-box {
   display: flex;
-  gap: 14px;
+  gap: 12px;
   background: var(--warning-soft);
   border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
   border-radius: 8px;
@@ -1548,7 +1548,7 @@ function formatNumber(num: number): string {
 }
 
 .warning-content p {
-  margin: 0 0 10px 0;
+  margin: 0 0 8px 0;
   color: var(--text);
   font-size: 13px;
   line-height: 1.6;
@@ -1562,7 +1562,7 @@ function formatNumber(num: number): string {
   display: block;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
-  padding: 8px 10px;
+  padding: 8px 8px;
   border-radius: 4px;
   margin: 8px 0;
   font-family: ui-monospace, SFMono-Regular, monospace;
@@ -1571,8 +1571,8 @@ function formatNumber(num: number): string {
 }
 
 .warning-content ul {
-  margin: 10px 0;
-  padding-left: 20px;
+  margin: 8px 0;
+  padding-left: 16px;
   color: var(--text);
   font-size: 13px;
 }
@@ -1615,4 +1615,13 @@ function formatNumber(num: number): string {
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .result-icon > svg { width: 14px; height: 14px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .reload-icon { transition: none; }
+  .btn {
+    transition-property: opacity, background, color, border-color, box-shadow, outline-offset;
+  }
+}
 </style>

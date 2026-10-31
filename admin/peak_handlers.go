@@ -55,9 +55,9 @@ func (h *PeakHandlers) handleGetPeaks(w http.ResponseWriter, r *http.Request) {
 			total_requests, sample_days, current_limit,
 			suggested_limit, suggestion_reason, updated_at
 		FROM credential_model_weekly_peak
-		WHERE week_start >= NOW() - ($1 || ' weeks')::interval
+		WHERE week_start >= NOW() - make_interval(weeks => $1::int)
 	`
-	args := []interface{}{strconv.Itoa(weeksInt)}
+	args := []interface{}{weeksInt}
 	if credID != "" {
 		args = append(args, credID)
 		query += " AND credential_id = $" + strconv.Itoa(len(args))

@@ -215,7 +215,7 @@ async function checkAcross() {
       </li>
     </ul>
 
-    <div class="extras-head" style="margin-top:14px">
+    <div class="extras-head" style="margin-top:12px">
       <h4>{{ pm('drawerSectionCheck') }}</h4>
       <button type="button" class="btn btn-sm" :disabled="!canEdit || checking" @click="checkAcross">
         {{ checking ? pm('drawCheckAllLoading') : pm('drawCheckAllBtn') }}
@@ -237,7 +237,7 @@ async function checkAcross() {
 .extras h4 { margin: 0; }
 .iq-canvas { width: 100%; height: 140px; }
 .iq-list, .check-list { margin: 8px 0 0; padding-left: 16px; font-size: 12px; }
-.st-ok { color: var(--success); margin: 0 6px; }
-.st-error, .st-unavailable { color: var(--danger); margin: 0 6px; }
-.st-warning { color: var(--warning-dark); margin: 0 6px; }
+.st-ok { color: var(--success); margin: 0 4px; }
+.st-error, .st-unavailable { color: var(--danger); margin: 0 4px; }
+.st-warning { color: var(--warning-dark); margin: 0 4px; }
 </style>

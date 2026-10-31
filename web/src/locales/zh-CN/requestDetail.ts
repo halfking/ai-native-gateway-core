@@ -22,6 +22,9 @@ export default {
     source: {
       memory: '本机内存',
       file: '本机文件',
+      requestLogs: '请求账本',
+      sessionTurns: '会话轮次',
+      liveStream: '实时流',
     },
     labels: {
       requestId: '请求ID',
@@ -200,6 +203,9 @@ export default {
     unavailableBody: '这些轮次没有采集到正文（该功能未开启、或该轮本就没有内容）。摘要、指标与 token 用量不受影响。',
     affectedTurns: '涉及轮次：{list}',
     dismiss: '知道了',
+    consentOffTitle: '会话正文录制未开启',
+    consentOffBody: '该租户未开启会话正文录制：轮次正文、摘要与取证内容不可用；token 用量与计费不受影响。如需记录正文，请由管理员为该租户开启。',
+    consentOffInline: '会话正文录制未开启，正文与摘要不可用',
 
   },
 }

@@ -75,6 +75,39 @@ func TestValidateSessionID(t *testing.T) {
 			sessionID: "abcd1234",
 			wantErr:   false,
 		},
+		{
+			// 211 生产实测形态：客户端发 session_<22hex>，DeriveGatewayID
+			// 映成 gw_session_*。此前被 'session' 子串规则误拒 ⇒ 每轮压缩
+			// 都当新会话、压缩历史断链。前缀段 + ≥8 位熵必须放行。
+			name:      "production: gw_session_ + hex entropy",
+			sessionID: "gw_session_d0d6aa0caac6ff2bfbe5cac",
+			wantErr:   false,
+		},
+		{
+			name:      "production: bare session_ + hex entropy",
+			sessionID: "session_d0d6aa0caac6ff2bfbe5cac",
+			wantErr:   false,
+		},
+		{
+			name:      "session-<uuid> client convention",
+			sessionID: "session-3f2a9c1e-8b7d-4e55-9a2b-6c1d2e3f4a5b",
+			wantErr:   false,
+		},
+		{
+			name:      "session_ + short tail stays rejected",
+			sessionID: "session_ab12",
+			wantErr:   true,
+		},
+		{
+			name:      "bare 'session' stays rejected",
+			sessionID: "session",
+			wantErr:   true,
+		},
+		{
+			name:      "session + digits without separator stays rejected",
+			sessionID: "session12345678",
+			wantErr:   true,
+		},
 	}
 
 	for _, tt := range tests {

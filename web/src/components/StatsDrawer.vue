@@ -174,7 +174,7 @@ defineExpose({ open, close })
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px;
+  padding: 16px 16px;
   border-bottom: 1px solid var(--border);
   gap: 12px;
 }
@@ -193,7 +193,7 @@ defineExpose({ open, close })
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
 }
 
 .drawer-tab:hover {
@@ -219,7 +219,7 @@ defineExpose({ open, close })
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
   flex-shrink: 0;
 }
 
@@ -232,11 +232,11 @@ defineExpose({ open, close })
 .drawer-body {
   flex: 1 1 auto;
   overflow-y: auto;
-  padding: 20px;
+  padding: 16px;
 }
 
 .drawer-content {
-  animation: fade-in 0.2s ease;
+  animation: fade-in 0.2s var(--kx-motion-ease-out);
 }
 
 @keyframes fade-in {
@@ -245,14 +245,14 @@ defineExpose({ open, close })
 }
 
 .drawer-loading {
-  padding: 40px 20px;
+  padding: 40px 16px;
   text-align: center;
   color: var(--muted);
 }
 
 /* 降级用 warning 而非 danger：不是故障，是「这个列表别当结论看」。 */
 .drawer-degraded {
-  padding: 24px 20px;
+  padding: 24px 16px;
   text-align: center;
   color: color-mix(in srgb, var(--warning) 80%, var(--text));
   background: color-mix(in srgb, var(--warning) 8%, transparent);
@@ -262,7 +262,7 @@ defineExpose({ open, close })
 }
 
 .drawer-empty {
-  padding: 40px 20px;
+  padding: 40px 16px;
   text-align: center;
   color: var(--muted);
   font-size: 13px;
@@ -282,7 +282,7 @@ defineExpose({ open, close })
 }
 
 .stats-table th {
-  padding: 10px 12px;
+  padding: 8px 12px;
   text-align: left;
   font-weight: 600;
   color: var(--text-secondary);
@@ -290,7 +290,7 @@ defineExpose({ open, close })
 }
 
 .stats-table td {
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   color: var(--text);
 }
@@ -303,7 +303,7 @@ defineExpose({ open, close })
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   background: var(--bg-subtle);
-  padding: 2px 6px;
+  padding: 2px 4px;
   border-radius: 3px;
 }
 
@@ -323,7 +323,7 @@ defineExpose({ open, close })
 /* 动画 */
 .drawer-fade-enter-active,
 .drawer-fade-leave-active {
-  transition: opacity 0.25s ease;
+  transition: opacity 0.25s var(--kx-motion-ease-out);
 }
 
 .drawer-fade-enter-from,
@@ -332,11 +332,11 @@ defineExpose({ open, close })
 }
 
 .drawer-slide-enter-active {
-  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform 0.3s var(--kx-motion-ease-out);
 }
 
 .drawer-slide-leave-active {
-  transition: transform 0.25s cubic-bezier(0.64, 0, 0.78, 0);
+  transition: transform 0.25s var(--kx-motion-ease-out);
 }
 
 .drawer-slide-enter-from {
@@ -358,7 +358,14 @@ defineExpose({ open, close })
 
   .stats-table th,
   .stats-table td {
-    padding: 8px 6px;
+    padding: 8px 4px;
   }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .drawer-slide-enter-active { transition: none; }
+  .drawer-slide-leave-active { transition: none; }
 }
 </style>

@@ -111,7 +111,7 @@ async function handleSubmit() {
 .form-group label { display: block; font-size: 13px; margin-bottom: 4px; }
 .form-group input, .form-group select, .form-group textarea {
   width: 100%;
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;

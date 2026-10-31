@@ -154,3 +154,152 @@ func a() string {
 		t.Error("多行 SQL 中的 UPDATE 父表未被检出——扫描器只匹配首行，判据已退化为代理量")
 	}
 }
+
+// ── 动态表名（R169 新增）───────────────────────────────────────────────────
+//
+// 下面每个 case 都配一条**反向对照**。理由见 scan_self_test.go 头部纪律：
+// 「门对任何东西都绿」和「门只对正确的东西绿」在缺对照时长得一模一样。
+func TestSelfTest_DynamicDMLDetected(t *testing.T) {
+	dir := t.TempDir()
+	// 正控 1：Go 字符串拼接 + 同文件邻近字面量指向父表 ⇒ 必须被检出。
+	writeFile(t, dir, "dyn_concat.go", `package x
+
+func a(tbl string) {
+	for _, table := range []string{"public.session_turns_hot", "public.session_turns"} {
+		_ = "UPDATE " + table + " SET x = 1 WHERE id = $1"
+	}
+}
+`)
+	// 正控 2：fmt.Sprintf 占位符 + 调用点实参指向父表 ⇒ 必须被检出。
+	writeFile(t, dir, "dyn_sprintf.go", `package x
+
+func b(tx Tx, tbl string) {
+	_ = fmt.Sprintf("UPDATE %s SET x = 1 WHERE id = $1", tbl)
+}
+
+func c(tx Tx) {
+	b(tx, "public.session_turns")
+}
+`)
+	// 正控 3：函数形参当表名，调用点传的是父表 ⇒ 必须被检出。
+	writeFile(t, dir, "dyn_param.go", `package x
+
+func d(tx Tx, tbl string) {
+	_ = fmt.Sprintf("DELETE FROM %s WHERE id = $1", tbl)
+}
+
+func e(tx Tx) {
+	d(tx, "public.session_bodies")
+}
+`)
+	// 反向对照 A：动态目标只遍历 hot 表 ⇒ 不得报父表违规。
+	writeFile(t, dir, "dyn_hot.go", `package x
+
+func f(tbl string) {
+	for _, table := range []string{"public.session_turns_hot"} {
+		_ = "UPDATE " + table + " SET x = 1"
+	}
+}
+`)
+	// 反向对照 B：动态目标与任何父表都无关 ⇒ 不得报父表违规。
+	writeFile(t, dir, "dyn_plain.go", `package x
+
+func g(tbl string) {
+	_ = "DELETE FROM " + tbl + " WHERE id = $1"
+}
+`)
+	// 反向对照 C：字面量写 hot 表 ⇒ 不得报父表违规。
+	writeFile(t, dir, "lit_hot.go", `package x
+
+func h() {
+	_ = "UPDATE public.session_turns_hot SET x = 1"
+}
+`)
+
+	vs := scanDir(t, dir)
+	for _, want := range []struct{ file, table string }{
+		{"dyn_concat.go", "session_turns"},
+		{"dyn_sprintf.go", "session_turns"},
+		{"dyn_param.go", "session_bodies"},
+	} {
+		if !hasV(vs, want.file, want.table) {
+			t.Errorf("正控失败：%s 的动态表名父表写未被检出（表名在变量里 ⇒ 字面量扫描器看不见）",
+				want.file)
+		}
+	}
+	for _, bad := range []struct{ file, table string }{
+		{"dyn_hot.go", "session_turns"},
+		{"dyn_hot.go", "session_turns_hot"},
+		{"dyn_plain.go", "session_bodies"},
+		{"lit_hot.go", "session_turns"},
+		{"lit_hot.go", "session_turns_hot"},
+	} {
+		if hasV(vs, bad.file, bad.table) {
+			t.Errorf("反向对照失败：%s 不应对 %s 报父表违规", bad.file, bad.table)
+		}
+	}
+}
+
+// 动态站点**本身**必须可见：即使归属不到任何父表，也要出现在站点清单里。
+//
+// 这条是 TestNoUnregisteredDynamicDML 的地基：如果「解析不出目标」的站点
+// 直接从清单里消失，那道门就退化成「只登记能解析的」⇒ 下一个父表写会藏在
+// 一个**根本没被记录**的位置。
+func TestSelfTest_UnresolvedDynamicSiteIsStillVisible(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "dyn_unknown.go", `package x
+
+func a(tbl string) {
+	_ = "DELETE FROM " + tbl + " WHERE id = $1"
+}
+`)
+	sites, err := CollectDynamicSites(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sites) != 1 {
+		t.Fatalf("期望 1 处动态站点，实得 %d 处（%+v）", len(sites), sites)
+	}
+	if sites[0].File != "dyn_unknown.go" || sites[0].Stmt != "DELETE" {
+		t.Errorf("动态站点识别错误：%+v", sites[0])
+	}
+	if len(sites[0].Tables) != 0 {
+		t.Errorf("该站点不应归属到任何父表，却归属到 %v", sites[0].Tables)
+	}
+	if sites[0].Tier != tierWindow {
+		t.Logf("归属层级 = %q（窗口兜底），不影响断言", sites[0].Tier)
+	}
+}
+
+// 「同一处站点改成字面量」必须**不改变**父表违规的条数 ——
+// 否则一条 DML 会先被动态扫描认一次、再被字面量扫描认一次 ⇒ 计数翻倍。
+func TestSelfTest_DynamicAndLiteralDoNotDoubleCount(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "both.go", `package x
+
+func a(tbl string) {
+	for _, table := range []string{"public.session_turns"} {
+		_ = "UPDATE " + table + " SET x = 1"
+	}
+}
+`)
+	writeFile(t, dir, "lit.go", `package x
+
+func b() {
+	_ = "UPDATE public.session_turns SET x = 1"
+}
+`)
+	vs := scanDir(t, dir)
+	n := 0
+	for _, v := range vs {
+		if v.File == "both.go" && v.Table == "session_turns" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("拼接形态的父表写被计了 %d 次（应为 1 次）：字面量扫描与动态扫描重复计数", n)
+	}
+	if !hasV(vs, "lit.go", "session_turns") {
+		t.Error("字面量形态的父表写未被检出")
+	}
+}

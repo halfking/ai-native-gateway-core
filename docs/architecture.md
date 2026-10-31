@@ -65,8 +65,9 @@ Handles all user-facing LLM requests with OpenAI/Anthropic/Responses/Gemini comp
 - `/v1/messages/count_tokens` - Anthropic Message token counting
 - `/v1/responses` - Responses API
 - `/v1/embeddings` - Embeddings (OpenAI-compatible)
-- `/v1/models` - Available models
+- `/v1/models` - Available models. **默认只列特色模型**（`routing_policy.featured_models`，与路由侧的精选优先级、管理侧精选过滤同源）；要全量清单请显式加 `?scope=all`（或 `?all=true`）。运维默认口径可用热加载设置 `models.list_scope`（`featured` | `all`）改回。
 - Gemini endpoints (`/v1/models/{model}:generateContent`, etc.)
+- `/v1beta/models` - Gemini 原生形状的模型列表（与 `/v1/models` 同一数据源、同一口径）
 - `/v1/hosted-tasks` - Hosted task delegation facade: `POST` create, `GET /{id}` status, `GET /{id}/result`, `POST /{id}/cancel`, `POST /{id}/recall`
 
 ### Control Plane
@@ -91,7 +92,7 @@ Requests flow through **two routing layers**, both observable in the Routing Pan
 
 **L1 — Model Selection** (which model should serve this request?):
 1. Prompt auto-classification into **work types** (code generation, conversation, summarization, translation, CRM follow-up, …) — 27 built-in types, configurable per type in the admin UI
-2. **6-dimension scoring** of candidate models against the classified task
+2. **8-dimension scoring** of candidate models against the classified task
 3. Model profile locking (explicit `model` parameters bypass L1)
 
 **L2 — Credential Selection** (which upstream credential executes it?):

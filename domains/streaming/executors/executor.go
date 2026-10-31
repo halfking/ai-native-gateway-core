@@ -1075,48 +1075,13 @@ func diagnosticProtocol(protocol, fallback string) string {
 // （避免循环依赖，保持包边界单向）。两份实现必须保持行为一致：未识别时返回空串，
 // 由调用方 clientTokenOf 兜底为 "unknown"。
 func extractClientType(r *http.Request) string {
-	if r == nil {
-		return ""
-	}
-	if ct := r.Header.Get("X-Gw-Client-Type"); ct != "" {
-		return clienttype.Normalize(ct)
-	}
-	ua := strings.ToLower(r.Header.Get("User-Agent"))
-	switch {
-	case strings.Contains(ua, "cursor/"), strings.Contains(ua, "cursor-"):
-		return "cursor"
-	case strings.Contains(ua, "claude-code/"), strings.Contains(ua, "claude-code-"):
-		return "claude-code"
-	case strings.Contains(ua, "opencode/"), strings.Contains(ua, "opencode-"):
-		return "opencode"
-	case strings.Contains(ua, "zcode/"), strings.Contains(ua, "zcode-"):
-		return "zcode"
-	case strings.Contains(ua, "codex/"), strings.Contains(ua, "codex-"):
-		return "codex"
-	case strings.Contains(ua, "roocode/"), strings.Contains(ua, "roo-code/"):
-		return "roocode"
-	case strings.Contains(ua, "vscode/"), strings.Contains(ua, "visual-studio-code/"):
-		return "vscode"
-	case strings.Contains(ua, "github-copilot/"), strings.Contains(ua, "copilot/"):
-		return "copilot"
-	case strings.Contains(ua, "windsurf/"):
-		return "windsurf"
-	case strings.Contains(ua, "zed/"):
-		return "zed"
-	case strings.Contains(ua, "jetbrains/"), strings.Contains(ua, "intellij/"),
-		strings.Contains(ua, "pycharm/"), strings.Contains(ua, "webstorm/"):
-		return "jetbrains"
-	// 2026-09-21 audit: domestic coding-agent clients. Must mirror
-	// domains/streaming/client_fingerprint.go:extractClientType — two copies
-	// exist because of the executors-package zero-deps contract.
-	case strings.Contains(ua, "minimax-code/"), strings.Contains(ua, "minimax-code-"):
-		return "minimax-code"
-	case strings.Contains(ua, "deepseek-code/"), strings.Contains(ua, "deepseek-code-"),
-		strings.Contains(ua, "deepseek-ide/"), strings.Contains(ua, "deepseek-ide-"),
-		strings.Contains(ua, "deepseek-cli/"), strings.Contains(ua, "deepseek-cli-"):
-		return "deepseek-code"
-	}
-	return ""
+	// 2026-10-29 identification round: the local "behaviour-consistent
+	// mirror" of streaming's table is gone — both call sites delegate to
+	// clienttype.DetectFromRequest. The mirror had already drifted in
+	// practice (it lacked the wire-real "MiniMaxCode" bare form and the
+	// "claude-cli" UA that un-blocks the claude-code↔claude native pair
+	// on this package's fallback path). One table, one place to extend.
+	return clienttype.DetectFromRequest(r)
 }
 
 // clientTokenOf (2026-07-27 Token 资源管理)
@@ -2189,7 +2154,9 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		}
 	}()
 	if params.UpstreamAttempts == nil {
-		params.UpstreamAttempts = NewUpstreamAttemptBudget(DefaultUpstreamAttemptLimit)
+		// 2026-10-30: 兜底构造走 survival.attempt_budget 热加载（默认仍 100）；
+		// 主构造点（streaming/handler.go）已显式传入。
+		params.UpstreamAttempts = NewUpstreamAttemptBudget(RequestAttemptLimit())
 	}
 	if !params.clientTokenMetricsOwner {
 		params.clientTokenMetricsOwner = true
@@ -3339,6 +3306,28 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int, dct
 
 	// 2026-07-07: Use multi-level recording when SessionID and Model are available
 	if params.SessionID != "" && params.Model != "" {
+		// 2026-10-31 C1（magpie 四域对比刷新轮 §五 C1 sticky 缓存经济学）：
+		// cacheWorth/cacheCold 量化续期——大 cache（≥cacheWorthThresh tokens）
+		// 正常续期；小 cache 且 TTL 已过半 ⇒ 不续期（让下次自然换号）。
+		// 无 usage 上报（Capture nil / 无 cache 字段）⇒ fail-open 正常续期
+		// （判据③：行为零变化）。量具见 sticky_cache_economics_test.go。
+		if !stickyCacheWorthRenewal(params, e.Router.Sticky, credentialID) {
+			slog.Info("sticky: small-cache session dropped (cacheCold — letting next request re-select)",
+				"credential_id", credentialID,
+				"session_id", params.SessionID,
+				"request_id", params.RequestID,
+			)
+			if e.Router.StickyLoad != nil {
+				if l1, _, _ := buildStickyKeys(
+					params.TenantID, params.AppID, params.ApiKeyID,
+					params.ClientID.Fingerprint.ClientProfile,
+					params.SessionID, params.Model,
+				); l1 != "" {
+					e.Router.StickyLoad.ObserveSession(credentialID, l1)
+				}
+			}
+			return
+		}
 		e.Router.Sticky.RecordSuccessMultiLevel(
 			params.TenantID,
 			params.AppID,

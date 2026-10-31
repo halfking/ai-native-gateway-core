@@ -243,23 +243,23 @@ defineExpose({ reload: loadFpStats })
 </template>
 
 <style scoped>
-.nd-section { border: 1px solid var(--kx-border); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+.nd-section { border: 1px solid var(--kx-border); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
 .nd-section h3 { margin: 0 0 12px; font-size: 14px; }
-.nd-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 0 10px; }
+.nd-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 0 8px; }
 .nd-grid dt { color: var(--kx-muted); font-size: 11px; margin-bottom: 3px; }
 .nd-grid dd { margin: 0; font-size: 12px; }
 .nd-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .nd-muted { color: var(--kx-muted); font-size: 12px; }
 .nd-seg-loading { padding: 12px; text-align: center; color: var(--kx-muted); font-size: 12px; }
-.nd-fp-block { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--kx-border); }
+.nd-fp-block { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--kx-border); }
 .nd-fp-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.nd-notice { padding: 8px 10px; border-radius: 6px; margin: 0 0 12px; font-size: 12px; }
+.nd-notice { padding: 8px 8px; border-radius: 6px; margin: 0 0 12px; font-size: 12px; }
 .nd-notice--warn { background: color-mix(in srgb, var(--kx-warning) 12%, transparent); color: var(--kx-warning); }
-.nd-dialog-mask { position: fixed; inset: 0; z-index: 3050; background: color-mix(in srgb, var(--kx-text) 38%, transparent); display: flex; align-items: flex-start; justify-content: center; padding-top: 80px; }
-.nd-dialog { width: min(420px, 92vw); background: var(--kx-surface); color: var(--kx-text); border-radius: 8px; padding: 18px; box-shadow: var(--kx-shadow-md); display: grid; gap: 10px; }
-.nd-dialog h4 { margin: 0; font-size: 15px; }
-.nd-dialog label { display: grid; gap: 5px; font-size: 12px; }
-.nd-dialog input { box-sizing: border-box; width: 100%; padding: 7px; border: 1px solid var(--kx-border); border-radius: 5px; background: var(--kx-bg); color: inherit; }
+.nd-dialog-mask { position: fixed; inset: 0; z-index: 3050; background: color-mix(in srgb, var(--kx-text) 38%, transparent); display: flex; align-items: flex-start; justify-content: center; padding-top: 64px; }
+.nd-dialog { width: min(420px, 92vw); background: var(--kx-surface); color: var(--kx-text); border-radius: 8px; padding: 16px; box-shadow: var(--kx-shadow-md); display: grid; gap: 8px; }
+.nd-dialog h4 { margin: 0; font-size: 16px; }
+.nd-dialog label { display: grid; gap: 4px; font-size: 12px; }
+.nd-dialog input { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid var(--kx-border); border-radius: 5px; background: var(--kx-bg); color: inherit; }
 @media (max-width: 768px) { .nd-grid { grid-template-columns: 1fr; } }
 
 /* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──

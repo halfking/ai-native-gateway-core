@@ -149,12 +149,12 @@ function apply() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px;
+  padding: 12px 12px;
   border-bottom: 1px solid var(--border, var(--kx-text));
 }
 .lsfd-title {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
 }
 .lsfd-close {
@@ -170,12 +170,12 @@ function apply() {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px;
+  padding: 8px 12px;
   flex-wrap: wrap;
 }
 .lsfd-all {
   font-size: 12px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 4px;
   border: 1px solid var(--border, var(--muted));
   background: var(--bg, var(--kx-text));
@@ -195,7 +195,7 @@ function apply() {
   flex: 1;
   min-width: 120px;
   font-size: 12px;
-  padding: 5px 8px;
+  padding: 4px 8px;
   border-radius: 4px;
   border: 1px solid var(--border, var(--muted));
   background: var(--bg, var(--kx-text));
@@ -204,7 +204,7 @@ function apply() {
 .lsfd-list {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 10px 10px;
+  padding: 4px 8px 8px;
   min-height: 120px;
 }
 .lsfd-option {
@@ -234,12 +234,12 @@ function apply() {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding: 10px 14px;
+  padding: 8px 12px;
   border-top: 1px solid var(--border, var(--kx-text));
 }
 .lsfd-btn {
   font-size: 13px;
-  padding: 6px 14px;
+  padding: 4px 12px;
   border-radius: 6px;
   border: 1px solid var(--border, var(--muted));
   cursor: pointer;

@@ -118,6 +118,13 @@ func TestNonChatHandlers_RecordQueueBudgetRejection(t *testing.T) {
 		wantStatus     int
 		wrap           func(*ChatHandler) http.Handler
 		enableExecutor bool
+		// wantRequestLog 断言被限流时是否**要**写一条请求日志。
+		//
+		// ★ 2026-10-30：count_tokens 的 RPM 闸不写请求日志 —— 它不是推理面
+		//   （不产生上游调用、不计费），仓内既有的 count_tokens 面本来就没有
+		//   请求日志路径 ⇒ 这里显式区分，而不是把断言整体放宽。
+		//   ⇒ 默认零值 false 会让既有三面失效，故用指针显式声明。
+		wantRequestLog *bool
 	}{
 		{
 			name:       "chat completions",
@@ -128,20 +135,34 @@ func TestNonChatHandlers_RecordQueueBudgetRejection(t *testing.T) {
 			// chat 路径的限流检查在 serveWithExecutor 内，executor/provider
 			// 为 nil 时 serveHTTPInner 会在限流前以 503 提前返回。
 			enableExecutor: true,
+			wantRequestLog:  boolPtr(true),
 		},
 		{
-			name:       "responses",
-			path:       "/v1/responses",
-			body:       `{"model":"kimi-k3","input":"hi"}`,
-			wantStatus: http.StatusTooManyRequests,
-			wrap:       func(h *ChatHandler) http.Handler { return NewResponsesHandler(h) },
+			name:           "responses",
+			path:           "/v1/responses",
+			body:           `{"model":"kimi-k3","input":"hi"}`,
+			wantStatus:     http.StatusTooManyRequests,
+			wrap:           func(h *ChatHandler) http.Handler { return NewResponsesHandler(h) },
+			wantRequestLog: boolPtr(true),
 		},
 		{
-			name:       "messages",
-			path:       "/v1/messages",
+			name:           "messages",
+			path:           "/v1/messages",
+			body:           `{"model":"kimi-k3","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+			wantStatus:     529,
+			wrap:           func(h *ChatHandler) http.Handler { return NewMessagesHandler(h) },
+			wantRequestLog: boolPtr(true),
+		},
+		{
+			// ★ 2026-10-30（ingressguard P2 缺口收口轮）：count_tokens 补上了
+			//   RPM 闸 ⇒ 它也在这张表里。
+			//   ★ 状态码 529 ⇒ 与同路由族 /v1/messages 同口径（不是 429）。
+			//   ★ 不写请求日志 ⇒ 它不是推理面（不产生上游调用、不计费）。
+			name:       "messages count_tokens",
+			path:       "/v1/messages/count_tokens",
 			body:       `{"model":"kimi-k3","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
 			wantStatus: 529,
-			wrap:       func(h *ChatHandler) http.Handler { return NewMessagesHandler(h) },
+			wrap:       func(h *ChatHandler) http.Handler { return NewCountTokensHandler(h) },
 		},
 	}
 
@@ -171,11 +192,20 @@ func TestNonChatHandlers_RecordQueueBudgetRejection(t *testing.T) {
 			if res.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d; body=%s", res.Code, tc.wantStatus, res.Body.String())
 			}
-			if len(entries) != 1 {
-				t.Fatalf("request log entries = %d, want 1", len(entries))
-			}
 			if got := res.Header().Get(ratelimit.GatewayRateLimitScopeHeader); got != ratelimit.GatewayRateLimitScopeSharedKey {
 				t.Errorf("gateway scope header = %q, want %q", got, ratelimit.GatewayRateLimitScopeSharedKey)
+			}
+			// ★ 请求日志：期望写则必须恰好 1 条且状态为 rate_limited；
+			//   不期望写则必须恰好 0 条（count_tokens 不是推理面）。
+			wantLog := tc.wantRequestLog != nil && *tc.wantRequestLog
+			if !wantLog {
+				if len(entries) != 0 {
+					t.Fatalf("request log entries = %d, want 0 (non-inference plane)", len(entries))
+				}
+				return
+			}
+			if len(entries) != 1 {
+				t.Fatalf("request log entries = %d, want 1", len(entries))
 			}
 			entry := entries[0]
 			if entry.RequestStatus == nil || *entry.RequestStatus != telemetry.RequestStatusRateLimited {

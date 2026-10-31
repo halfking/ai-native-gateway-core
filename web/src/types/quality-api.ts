@@ -50,6 +50,11 @@ export interface QualityScores {
   stability: number;
   /** 成本效益评分（0-100） */
   cost_efficiency: number;
+  /**
+   * 模型可信度评分（0-100）：供应商给的是不是它声称的那个模型。
+   * null = 没测过。不能用 0 表示没测 —— 0 分读作「极差」。
+   */
+  credibility: number | null;
 }
 
 /**

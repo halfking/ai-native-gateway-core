@@ -36,6 +36,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/gocache"
 )
 
 type spec struct {
@@ -468,6 +470,18 @@ func main() {
 	bin := tmp.Name() + ".bin"
 	build := exec.Command("go", "build", "-o", bin, tmp.Name())
 	build.Stderr = os.Stderr
+	// ★★ r1047 轮（★ 2026-10-28）：★ 子构建走【专用 GOCACHE】。
+	// ★★ ⇒ ⇒ **为什么这里特别要紧**：★ 上面那个临时文件是 `os.CreateTemp` 建的
+	// ★★ ⇒ ⇒ **每次跑路径都不同** ⇒ ⇒ ★★ 而 Go 的构建缓存 **action ID 含源文件
+	// ★★ 路径** ⇒ ⇒ ★★ ⇒ 实测（★ 同一份内容、换个路径再编一次）⇒ ⇒ **多出 6 个
+	// ★★ 缓存条目** ⇒ ⇒ ★★ ⇒ 每次跑这个工具都往用户的全局缓存里塞一批
+	// ★★ **永远不会再被命中**的条目 ⇒ ⇒ ★★ ⇒ 纯垃圾。
+	// ★★ 解析仓根失败**不致命**（★ 回落用环境里的 GOCACHE ⇒ ⇒ 工具照常跑）。
+	if root, rerr := gocache.RepoRoot(); rerr == nil {
+		build.Env = gocache.Env(root, "stress-memprofile")
+	} else {
+		log.Printf("mem competitor build: 解析仓根失败（★ 回落用环境里的 GOCACHE）：%v", rerr)
+	}
 	if err := build.Run(); err != nil {
 		log.Printf("mem competitor build failed (skip): %v", err)
 		return &exec.Cmd{}

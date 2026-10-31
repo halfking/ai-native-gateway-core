@@ -24,8 +24,20 @@ const expectedKeys = Object.keys(en.sanitizeRules).sort();
 describe("sanitize rules in actual bundled and lazy locale exports", () => {
   it("pins the complete source namespace", () =>
     // 2026-10-20：+2（perMode / perModeHint）—— 按模式启停矩阵的表头与说明。
+    // 2026-10-28：+22（hardblock* / blockedReviews* / review*）—— 硬阻断
+    // 开关与拦截审核队列两个新页签的文案。
+    // 2026-10-29：+10（preset / 单条开关 / 匹配说明 / 客户端 / 放行有效期）。
+    //  ↑ 让号记录：硬阻断文案总 +32，key 集合 119 → 151。
+    //
+    // 2026-10-29（输出合规误报轮）：+26 —— 输出合规**总开关**
+    // （outputCheck*）、人工标注与标注闭集（reviewLabel*/label_*）、
+    // 被拦内容的摘录（reviewEvidence*）、规则级复核读数（reviewInsights*）。
+    //  ↑ 让号记录：key 集合 151 → 201（2026-10-29 输出合规误报轮：reviewUnattributedRule + 审核归因/原始上下文 8键 + 规则详情 14 键）。
+    //
+    // 2026-10-30（输出合规审计轮）：+2（reviewDegraded / reviewDegradedHint）
+    // —— 降级放行单的徽标与说明（迁移 926：降级单是遥测不是待决拦截）。
     // 计数只许增：每加一个键都要同步 8 个语种 + 这里。
-    expect(expectedKeys).toHaveLength(119));
+    expect(expectedKeys).toHaveLength(203));
   for (const [locale, bundle] of Object.entries(bundles)) {
     it(`${locale} exports and resolves every rule-management message`, () => {
       const namespace = bundle.sanitizeRules as

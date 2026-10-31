@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -26,8 +28,94 @@ import (
 // pass immediately. This can delay visible model text until the
 // request ends; bounded-width rules or a streaming-safe parser are required
 // before early text release can be proven safe. A per-request cap bounds
-// memory; crossing it fails closed, including when no terminal arrives.
-const maxCompliancePendingBytes = 1 << 20
+// memory.
+//
+// ★★ 2026-10-29（211 生产实测 · 输出合规误报轮）：这条「越界即 fail-closed」
+// 的策略在生产里是一台**误报机器**——
+//
+//	实测：6 个请求/24h 被拦（ZCode / Codex 的多分钟长回合），每个已经流出
+//	3806~10529 个 chunk，客户端最终只拿到 801 字节（keepalive + 一个空错误帧）；
+//	21 条审核记录（sanitize_block_reviews）的 rule_id / reason / field_path /
+//	payload_digest **全部为空** —— 因为越界这条路径返回的 ShouldBlock
+//	**不带任何元数据、也不打任何日志**。
+//
+// ⇒ 「越界 = 没有任何规则命中，只是缓冲装不下」被当成「策略拦截」上屏，
+// 用户看到的是「被某条规则拦了」，管理员看到的是一条**空白**审核单。
+// ⇒ 本轮把三件事拆开：
+//
+//	① **上限可配置**（LLM_GATEWAY_OUTPUT_GUARD_PENDING_MAX_BYTES）★
+//	   **出厂值仍是 1 MiB**（★ 见 defaultMaxCompliancePendingBytes 的理由）★
+//	② **越界不再悄悄杀请求**：默认 **release**（把已逐帧检查过的帧放行、
+//	   后续帧改为逐帧放行，不再合并检查），并**大声记录**（WARN + 指标 +
+//	   审核单，规则名 builtin.guard.capacity_exceeded）。
+//	   需要 fail-closed 的部署可用 LLM_GATEWAY_OUTPUT_GUARD_CAP_MODE=block 恢复，
+//	   但那条路径从此**也带元数据**（不再静默）。
+//	③ **任何阻断都必须能说出规则**：所有阻断分支都带 policy_rule/policy_reason。
+//
+// ★★ 2026-10-29 审计轮更正（同日第二轮）：★ 误报的修复**不依赖**把上限抬大
+//
+//	—— **降级放行**（②）才是修复点 ⇒ ★★ 把出厂上限从 1 MiB 抬到 8 MiB
+//	**既无必要、又把存储侧的记忆体预算放大了 8 倍**（★ 每并发流）★★
+//	⇒ ★★ 出厂值**恢复 1 MiB**（★ 那是 2026-10-02 存储审计定下的 wire cap
+//	契约：★ docs/audit/2026-10-02-conversation-storage-stream-audit.md）★★
+//	⇒ ★★ 上限**仍可配**（env），且启动即打生效值（★ 运维要更大缓冲可以自己抬，
+//	但那是** knowingly 的记忆体决定**，不是本轮顺手带上的）★★。
+const (
+	// OutputGuardPendingMaxBytesEnv 是待检缓冲上限的环境变量名。
+	OutputGuardPendingMaxBytesEnv = "LLM_GATEWAY_OUTPUT_GUARD_PENDING_MAX_BYTES"
+	// OutputGuardCapModeEnv 是越界行为的开关：release（默认）/ block。
+	OutputGuardCapModeEnv = "LLM_GATEWAY_OUTPUT_GUARD_CAP_MODE"
+	// GuardCapacityRuleID 是「缓冲越界」这条**基础设施性**阻断的合成规则名。
+	// 它不是一条内容规则——审核员看到它就该知道「不是规则命中，是守卫装不下」。
+	GuardCapacityRuleID = "builtin.guard.capacity_exceeded"
+)
+
+// defaultMaxCompliancePendingBytes 是待检缓冲上限的出厂值（1 MiB）。
+//
+// ★ 出厂值**就是 1 MiB**，而且**必须是 1 MiB**（★ 2026-10-29 审计轮更正）★★
+//
+// ★ 为什么不能顺手抬到 8 MiB（★ 这条曾经被抬过，同日被审计轮改回来）★★：
+//
+//	① **它是存储侧的 wire cap 契约**：★ docs/audit/2026-10-02-conversation-
+//	   storage-stream-audit.md 定的就是「pending + 当前完整帧 ≤ 1 MiB，超出
+//	   阻断」⇒ ★★ 抬到 8 MiB = 每并发流 8 MiB ⇒ ★★ 那是一个**存储审计轮**该做
+//	   的记忆体决定（★ 要连带复核分区/并发/峰值）★★ 不是误报轮能顺手带的 ★★
+//	② **抬它对误报修复没有必要**：★ 误报（业务被拦）的修复点是**降级放行**
+//	   （release 模式 + 留痕）★ ⇒ ★★ 上限是多少都不再杀请求 ★★ ⇒ ⇒抬上限是
+//	   **纯风险、无收益** ★★。
+//
+// ★ 真实的长回合会在1 MiB 处触发降级（可见、可审核），★ 代价是降级段不再做
+//
+//	lane 合并检查（★ 一个被拆成多帧的凭据可能漏检）★ ⇒ ★★ 需要更严的部署可以
+//	自己抬上限（LLM_GATEWAY_OUTPUT_GUARD_PENDING_MAX_BYTES）★★ ⇒ ★★ **代价写
+//	在明处**，而不是由出厂值悄悄替运维做决定 ★★。
+const defaultMaxCompliancePendingBytes = 1 << 20
+
+// compliancePendingCap 返回当前生效的待检缓冲上限（字节）。
+//
+// 读一次 env（进程生命周期内不变）⇒ 用包级变量缓存，避免每个 chunk 都做
+// env 查找。非法值退回出厂值（**不**因为一个拼错的 env 就把守卫变成无界的）。
+func compliancePendingCap() int {
+	if v := os.Getenv(OutputGuardPendingMaxBytesEnv); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			return n
+		}
+		slog.Warn("output_compliance: invalid pending cap env; using default",
+			"env", OutputGuardPendingMaxBytesEnv, "value", v, "default", defaultMaxCompliancePendingBytes)
+	}
+	return defaultMaxCompliancePendingBytes
+}
+
+// complianceCapMode 返回越界行为：release（默认，放行并记录）/ block
+// （fail-closed，带元数据）。
+func complianceCapMode() string {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(OutputGuardCapModeEnv))) {
+	case "block":
+		return "block"
+	default:
+		return "release"
+	}
+}
 
 type checkedStreamFrame struct {
 	original    []byte
@@ -78,6 +166,19 @@ func policyRuleFromIssues(issues []outputcompliance.ComplianceIssue) string {
 
 // policyIssueLocation 取第一条带位置的问题（tool 参数是 JSON 路径，纯文本是
 // 字符区间）。
+// policyIssueDigest 取拦截结果里第一条带摘要的 issue 的载荷摘要（无则空串）。
+//
+// 2026-10-28 拦截审核轮：摘要由 sanitize 侧在拦截那一刻计算
+// （sha256(ruleID+path+value)，见 setToolIssueRule），审核批准后管理面用同
+// 一个键放行这一次载荷。
+func policyIssueDigest(issues []outputcompliance.ComplianceIssue) string {
+	for _, issue := range issues {
+		if issue.Digest != "" {
+			return issue.Digest
+		}
+	}
+	return ""
+}
 func policyIssueLocation(issues []outputcompliance.ComplianceIssue) string {
 	for _, issue := range issues {
 		if issue.Location != "" {
@@ -103,7 +204,39 @@ func blockedChunkResult(err error) *response.ChunkResult {
 	if reason := policyBlockReasonFromError(err); reason != "" {
 		meta["policy_reason"] = reason
 	}
+	// 2026-10-28 拦截审核轮：把载荷摘要与位置一并带给出帧方——审核队列据此
+	// 对这一次载荷精确放行（重试即放行），不需要整条规则开/关。
+	var pbe *errorsx.PolicyBlockError
+	if errors.As(err, &pbe) && pbe != nil {
+		if pbe.Path != "" {
+			meta["policy_field"] = pbe.Path
+		}
+		if pbe.Digest != "" {
+			meta["policy_digest"] = pbe.Digest
+		}
+		if pbe.Evidence != "" {
+			meta[PolicyEvidenceMetadataKey] = pbe.Evidence
+		}
+	}
 	return &response.ChunkResult{ShouldBlock: true, Metadata: meta}
+}
+
+// policyBlockDigestFromError 从策略拦截错误里取被拦载荷的摘要（可为空）。
+func policyBlockDigestFromError(err error) string {
+	var pbe *errorsx.PolicyBlockError
+	if errors.As(err, &pbe) && pbe != nil {
+		return pbe.Digest
+	}
+	return ""
+}
+
+// policyBlockPathFromError 从策略拦截错误里取被拦载荷的位置（可为空）。
+func policyBlockPathFromError(err error) string {
+	var pbe *errorsx.PolicyBlockError
+	if errors.As(err, &pbe) && pbe != nil {
+		return pbe.Path
+	}
+	return ""
 }
 
 // policyBlockReasonFromError 从策略拦截错误里取人类可读原因短语。
@@ -138,12 +271,33 @@ type complianceStreamState struct {
 	frames   []*checkedStreamFrame
 	lanes    map[string][]*streamTextPart
 	bytes    int
+	// degraded 表示待检缓冲曾经越界 ⇒ 本流已经降级为「逐帧检查、逐帧放行」。
+	// 降级后不再合并 lane（跨帧拼接形态可能漏检），这是「不杀业务」的代价。
+	degraded bool
+	// capBytes 是本流的待检缓冲上限（建状态时读一次 env ⇒ 每帧不必查 env）。
+	//
+	// ★ 零值表示「未设置」⇒ 取当前 env 默认（有些调用方手工构造状态，
+	//   见测试与降级重建路径）——**不能**把零值当成「上限 0」，
+	//   否则每一帧都会被判越界（这是本轮第一版踩的坑）。
+	capBytes int
 	// toolNames 是参数 lane → 工具名的声明记录（r1020）。Responses/Anthropic
 	// 流式的参数增量帧本身不带工具名，名字在 output_item.added /
 	// content_block_start 这类声明帧里；终态合并检查时按 lane 取回，用于
 	// sanitize 侧的惰性内容工具豁免。chat 形态首增量自带名字（直接进标签），
 	// 不依赖这张表。
 	toolNames map[string]string
+}
+
+// pendingCap 返回本流的待检缓冲上限（零值 ⇒ 取当前 env 默认）。
+//
+// ★ 零值必须回落，不能当成「上限 0」——手工构造状态的调用方（测试、降级
+//
+//	重建路径）会把每一帧都判成越界（本轮第一版就踩了这个坑）。
+func (s *complianceStreamState) pendingCap() int {
+	if s != nil && s.capBytes > 0 {
+		return s.capBytes
+	}
+	return compliancePendingCap()
 }
 
 func (it *OutputComplianceInterceptor) streamState(ctx context.Context, meta *response.StreamMeta) *complianceStreamState {
@@ -160,7 +314,7 @@ func (it *OutputComplianceInterceptor) streamState(ctx context.Context, meta *re
 		// 每响应一次（一次 Redis 读），绝不能按 chunk 解析。
 		checkCtx := it.withRestoredValues(
 			outputcompliance.WithRequestPolicyCache(ctx), meta.SessionID, meta.TenantID)
-		state := &complianceStreamState{enabled: active, checkCtx: checkCtx}
+		state := &complianceStreamState{enabled: active, checkCtx: checkCtx, capBytes: compliancePendingCap()}
 		if active {
 			state.redact = it.shouldRedact(ctx, meta.CallerOwner, meta.SessionID, meta.TenantID)
 		}
@@ -180,7 +334,24 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 		}
 		// No request-local state means adjacent deltas cannot be inspected.
 		// Production response writers always populate StreamMeta.State.
-		return &response.ChunkResult{ShouldBlock: true}, nil
+		//
+		// ★ 2026-10-29：这条路径此前**静默阻断**（无元数据、无日志）⇒ 审核单
+		// 是空白的、客户端只看到「被拦了但说不出哪条规则」。现在它带元数据、
+		// 记日志、计指标 ⇒ 「阻断必须能说出规则」这条纪律对**所有**阻断分支
+		// 成立，不再只有「有规则命中」的那几条。
+		slog.Warn("output_compliance: blocked stream chunk (no request state)",
+			"request_id", meta.RequestID,
+			"session_id", meta.SessionID,
+			"rule_id", GuardCapacityRuleID,
+		)
+		metrics.OutputGateFailClosedErrorsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateSourceTransformError).Inc()
+		return &response.ChunkResult{
+			ShouldBlock: true,
+			Metadata: map[string]interface{}{
+				"policy_rule":   GuardCapacityRuleID,
+				"policy_reason": policyBlockErrorReason("output policy blocked stream chunk", GuardCapacityRuleID, ""),
+			},
+		}, nil
 	}
 	if !state.enabled {
 		return nil, nil
@@ -192,12 +363,35 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 		// Gateway-owned fixed transport bytes contain no provider output.
 		return nil, nil
 	}
+	// ★ 2026-10-29：已降级的流（缓冲曾越界）不再合并 lane —— 逐帧检查后
+	// 直接放行。降级发生在 overCapacityResult 里，那一次已把扣下的帧放行。
+	if state.degraded {
+		checked, err := it.inspectSSEFrame(state.checkCtx, frame, meta, state.redact, &state.toolNames)
+		if err != nil {
+			return blockedChunkResult(err), nil
+		}
+		modified, err := checked.wireBytes()
+		if err != nil {
+			return &response.ChunkResult{
+				ShouldBlock: true,
+				Metadata: map[string]interface{}{
+					"policy_rule":   GuardCapacityRuleID,
+					"policy_reason": policyBlockErrorReason("output policy blocked stream chunk", GuardCapacityRuleID, ""),
+				},
+			}, nil
+		}
+		if !bytes.Equal(modified, frame) {
+			return &response.ChunkResult{ModifiedChunk: modified}, nil
+		}
+		return nil, nil
+	}
 	// Terminal events can contain a complete model output snapshot. Bound
 	// them together with held frames, before JSON parsing allocates copies or
 	// the terminal path releases the pending output.
-	if len(frame) > maxCompliancePendingBytes-state.bytes {
-		state.clear()
-		return &response.ChunkResult{ShouldBlock: true}, nil
+	//
+	// ★ 2026-10-29：越界不再**静默杀请求**——见 overCapacityResult 的注释。
+	if len(frame) > state.pendingCap()-state.bytes {
+		return it.overCapacityResult(state, frame, meta)
 	}
 	checked, err := it.inspectSSEFrame(state.checkCtx, frame, meta, state.redact, &state.toolNames)
 	if err != nil {
@@ -211,7 +405,13 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 		}
 		terminal, err := checked.wireBytes()
 		if err != nil {
-			return &response.ChunkResult{ShouldBlock: true}, nil
+			return &response.ChunkResult{
+				ShouldBlock: true,
+				Metadata: map[string]interface{}{
+					"policy_rule":   GuardCapacityRuleID,
+					"policy_reason": policyBlockErrorReason("output policy blocked stream terminal", GuardCapacityRuleID, ""),
+				},
+			}, nil
 		}
 		if len(prior) == 0 && bytes.Equal(terminal, frame) {
 			return nil, nil
@@ -221,7 +421,13 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 	if len(state.frames) == 0 && len(checked.parts) == 0 {
 		modified, err := checked.wireBytes()
 		if err != nil {
-			return &response.ChunkResult{ShouldBlock: true}, nil
+			return &response.ChunkResult{
+				ShouldBlock: true,
+				Metadata: map[string]interface{}{
+					"policy_rule":   GuardCapacityRuleID,
+					"policy_reason": policyBlockErrorReason("output policy blocked stream chunk", GuardCapacityRuleID, ""),
+				},
+			}, nil
 		}
 		if !bytes.Equal(modified, frame) {
 			return &response.ChunkResult{ModifiedChunk: modified}, nil
@@ -237,11 +443,125 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 	for _, part := range checked.parts {
 		state.lanes[part.field.lane] = append(state.lanes[part.field.lane], part)
 	}
-	if state.bytes > maxCompliancePendingBytes {
-		state.clear()
-		return &response.ChunkResult{ShouldBlock: true}, nil
+	if state.bytes > state.pendingCap() {
+		return it.overCapacityResult(state, nil, meta)
 	}
 	return &response.ChunkResult{SuppressChunk: true}, nil
+}
+
+// overCapacityResult 处理「待检缓冲越界」。
+//
+// ## 为什么不再直接杀请求
+//
+// 211 生产实测（2026-10-29，24h 内 6 例）：越界不是「内容违规」，而是
+// **这条响应太长，缓冲装不下**。此前它返回 ShouldBlock（无元数据、无日志）
+// ⇒ ① 客户端整条响应丢失（已流出的 3806~10529 个 chunk 全部作废）；
+// ② 审核单是**空白**的（rule_id/reason 全空）⇒ 管理员既看不出是哪条规则，
+// 也无法批准（放行键按规则，空规则放行不了）⇒ 同一个误报**无限复发**。
+//
+// ⇒ 现在：
+//
+//	默认（release）：把已逐帧检查过的帧**放行**，后续帧改为逐帧放行
+//	（不再合并检查）⇒ 请求**成功**返回；同时 WARN + 指标 + 审核单
+//	（规则名 builtin.guard.capacity_exceeded）⇒ 这条降级**可见、可审核**。
+//	block 模式（LLM_GATEWAY_OUTPUT_GUARD_CAP_MODE=block）：保持 fail-closed，
+//	但**带元数据**（不再静默）⇒ 审核单能说出「是缓冲越界，不是规则命中」。
+//
+// ## 降级的代价（必须写明）
+//
+// 越界之后**不再做 lane 合并检查** ⇒ 跨帧拼接才看得出的形态（一个被拆成
+// 多帧的凭据）在降级段可能漏检。这是「不杀业务」的代价，不是「更安全」。
+// 需要严格保证的部署：调大上限（LLM_GATEWAY_OUTPUT_GUARD_PENDING_MAX_BYTES）
+// 或用 block 模式 + 上面的全局开关做取舍。
+func (it *OutputComplianceInterceptor) overCapacityResult(state *complianceStreamState, frame []byte, meta *response.StreamMeta) (*response.ChunkResult, error) {
+	cap := state.pendingCap()
+	held := state.bytes
+	reason := policyBlockErrorReason(
+		fmt.Sprintf("output policy guard pending capacity exceeded (%d bytes held, cap %d)", held, cap),
+		GuardCapacityRuleID, "")
+	slog.Warn("output_compliance: guard pending capacity exceeded",
+		"request_id", meta.RequestID,
+		"session_id", meta.SessionID,
+		"tenant_id", meta.TenantID,
+		"held_bytes", held,
+		"cap_bytes", cap,
+		"mode", complianceCapMode(),
+		"rule_id", GuardCapacityRuleID,
+	)
+	metrics.OutputGateFailClosedErrorsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateSourceCapacity).Inc()
+
+	// 已扣下的帧的线路字节（release 时原样上屏；block 模式下作为摘录）。
+	var released []byte
+	for _, heldFrame := range state.frames {
+		wire, err := heldFrame.wireBytes()
+		if err != nil {
+			state.clear()
+			return &response.ChunkResult{
+				ShouldBlock: true,
+				Metadata: map[string]interface{}{
+					"policy_rule":   GuardCapacityRuleID,
+					"policy_reason": reason,
+				},
+			}, nil
+		}
+		released = append(released, wire...)
+	}
+
+	if complianceCapMode() == "block" {
+		state.clear()
+		return &response.ChunkResult{
+			ShouldBlock: true,
+			Metadata: map[string]interface{}{
+				"policy_rule":   GuardCapacityRuleID,
+				"policy_reason": reason,
+				// 摘录：当时扣下不放的那批帧的头部（让审核员看到「模型在写
+				// 什么才把缓冲撑爆」）。
+				PolicyEvidenceMetadataKey: boundedPolicyEvidence(string(released)),
+			},
+		}, nil
+	}
+
+	// release：把已逐帧检查过的帧放行。当前帧（frame 非空）尚未检查——
+	// 逐帧检查它之后再一起放行。
+	state.clear()
+	// 降级：后续帧不再合并检查（逐帧检查后直接放行）。
+	state.degraded = true
+	if len(frame) > 0 {
+		checked, err := it.inspectSSEFrame(state.checkCtx, frame, meta, state.redact, &state.toolNames)
+		if err != nil {
+			return blockedChunkResult(err), nil
+		}
+		wire, err := checked.wireBytes()
+		if err != nil {
+			return &response.ChunkResult{
+				ShouldBlock: true,
+				Metadata: map[string]interface{}{
+					"policy_rule":   GuardCapacityRuleID,
+					"policy_reason": reason,
+				},
+			}, nil
+		}
+		released = append(released, wire...)
+	}
+	if len(released) == 0 {
+		return nil, nil
+	}
+	// SuppressChunk + ModifiedChunk 是「holder 释放此前扣下的帧」的既有形状
+	//（chain.go 的 holder 分支会把这批帧再过一遍后续拦截器）。
+	//
+	// ★ 元数据仍然带规则名/原因/摘录：**降级也要留痕**（管理面据此登记一条
+	// 审核单，运维看得到「守卫在什么规模上让过步」）。policy_degraded 标记
+	// 让写者知道这是「降级放行」而不是「拦截」——不渲染失败终帧。
+	return &response.ChunkResult{
+		SuppressChunk: true,
+		ModifiedChunk: released,
+		Metadata: map[string]interface{}{
+			"policy_rule":             GuardCapacityRuleID,
+			"policy_reason":           reason,
+			"policy_degraded":         true,
+			PolicyEvidenceMetadataKey: boundedPolicyEvidence(string(released)),
+		},
+	}, nil
 }
 
 // FlushStreamPending handles upstream streams without a recognized terminal.
@@ -312,6 +632,11 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 			return nil, &errorsx.PolicyBlockError{
 				RuleID: ruleID,
 				Reason: policyBlockErrorReason("output policy blocked stream lane", ruleID, policyIssueLocation(result.Issues)),
+				Path:   policyIssueLocation(result.Issues),
+				Digest: policyIssueDigest(result.Issues),
+				// ★ 2026-10-29 输出合规误报轮：被拦的那段 lane 内容（有界
+				// 摘录）随错误一起上送 ⇒ 审核面能看到「当时拦的是什么」。
+				Evidence: boundedPolicyEvidence(original),
 			}
 		}
 		if !state.redact || result.RedactedOutput == "" || result.RedactedOutput == original {
@@ -584,6 +909,10 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 			return nil, &errorsx.PolicyBlockError{
 				RuleID: ruleID,
 				Reason: policyBlockErrorReason("output policy blocked stream event", ruleID, policyIssueLocation(result.Issues)),
+				Path:   policyIssueLocation(result.Issues),
+				Digest: policyIssueDigest(result.Issues),
+				// ★ 2026-10-29：同上（事件级被拦内容的摘录）。
+				Evidence: boundedPolicyEvidence(original),
 			}
 		}
 		if incremental {

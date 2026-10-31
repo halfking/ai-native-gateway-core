@@ -163,7 +163,7 @@ function modelLabel(name: string | undefined, map: Map<string, string>) {
 }
 
 .bubble-content {
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-radius: 10px;
   font-size: 14px;
   line-height: 1.55;
@@ -192,7 +192,7 @@ function modelLabel(name: string | undefined, map: Map<string, string>) {
 
 .resumed-badge {
   margin-left: 4px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-success, var(--success));
 }
 

@@ -41,6 +41,18 @@ const (
 	MsgNoCandidate        = "no_candidate"        // "No available provider for model '{{.Model}}'"
 	MsgInvalidModel       = "invalid_model"       // "Model '{{.Model}}' is not supported by this gateway"
 	MsgUnsupportedFeature = "unsupported_feature" // "The selected model does not support this request format or modality."
+	// MsgModalityMismatch: the requested model IS routable, but it is
+	// registered as a modality that cannot serve this request — e.g. the
+	// request carries screenshots and the model is registered as text-only.
+	//
+	// ★ Why this needs its own message instead of reusing MsgNoCandidate:
+	// "No available provider" describes the gateway's state ("nothing to
+	// route to right now"), so the client's rational reaction is to retry.
+	// But here the model is perfectly available and it is the REQUEST that
+	// cannot be served — retrying the identical request fails forever. The
+	// two need different remediation (wait / switch model vs. drop the
+	// attachments / switch model), so they must not share a sentence.
+	MsgModalityMismatch = "modality_mismatch" // "Model '{{.Model}}' does not accept {{.Modality}} input. This request contains {{.Modality}} content, but the model is registered as {{.RegisteredModality}}-only. Send a text-only request to this model, or route the request to a model that supports {{.Modality}}."
 	// MsgModelDeprecated: upstream provider has permanently end-of-lifed the
 	// requested model (HTTP 410 Gone). The handler appends the upstream's own
 	// EOL reason so the client knows which model was removed.

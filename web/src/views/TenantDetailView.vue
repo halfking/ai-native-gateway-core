@@ -935,7 +935,7 @@ watch(() => route.params.tenantId, loadTenant)
   border-radius: 8px;
 }
 .btn-back {
-  padding: 6px 12px;
+  padding: 4px 12px;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -946,7 +946,7 @@ watch(() => route.params.tenantId, loadTenant)
 .btn-back:hover { background: color-mix(in srgb, var(--on-primary) 5%, transparent); }
 .header-main { flex: 1; }
 .header-main h1 {
-  font-size: 22px;
+  font-size: 24px;
   margin: 0 0 8px;
   display: flex;
   align-items: center;
@@ -1010,8 +1010,8 @@ watch(() => route.params.tenantId, loadTenant)
   padding: 16px;
   text-align: center;
 }
-.stat-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-.stat-value { font-size: 22px; font-weight: 600; color: var(--text); }
+.stat-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.stat-value { font-size: 24px; font-weight: 600; color: var(--text); }
 .stat-value--fee :deep(.fee-main) {
   font-size: inherit;
   font-weight: inherit;
@@ -1047,7 +1047,7 @@ watch(() => route.params.tenantId, loadTenant)
 .billing-toolbar { flex-wrap: wrap; }
 .billing-user-input {
   min-width: 220px;
-  padding: 5px 9px;
+  padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -1061,7 +1061,7 @@ watch(() => route.params.tenantId, loadTenant)
 .negative-value { color: var(--danger); }
 .stats-tables h3 { font-size: 14px; margin: 16px 0 8px; color: var(--muted); }
 .adjust-form {
-  margin-top: 20px;
+  margin-top: 16px;
   padding-top: 16px;
   border-top: 1px solid var(--border);
 }
@@ -1070,7 +1070,7 @@ watch(() => route.params.tenantId, loadTenant)
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .adjust-row label {
   width: 80px;
@@ -1080,7 +1080,7 @@ watch(() => route.params.tenantId, loadTenant)
 }
 .adjust-row input {
   flex: 1;
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -1092,13 +1092,13 @@ watch(() => route.params.tenantId, loadTenant)
 .alert-danger { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-bd); }
 
 .maas-shortcuts {
-  margin-top: 20px;
+  margin-top: 16px;
   padding-top: 16px;
   border-top: 1px solid var(--border);
 }
 .maas-shortcuts h3 {
-  margin: 0 0 6px;
-  font-size: 15px;
+  margin: 0 0 4px;
+  font-size: 16px;
 }
 .maas-shortcuts-desc {
   margin: 0 0 12px;
@@ -1108,14 +1108,14 @@ watch(() => route.params.tenantId, loadTenant)
 .maas-shortcut-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 .maas-shortcut-card {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 14px 10px;
+  gap: 4px;
+  padding: 12px 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1123,7 +1123,7 @@ watch(() => route.params.tenantId, loadTenant)
   color: var(--text);
   cursor: pointer;
   font: inherit;
-  transition: border-color .15s, background .15s;
+  transition: border-color .15s var(--kx-motion-ease-out), background .15s var(--kx-motion-ease-out);
 }
 .maas-shortcut-card:hover {
   border-color: var(--accent-h);
@@ -1149,7 +1149,7 @@ watch(() => route.params.tenantId, loadTenant)
 }
 .window-chips {
   display: inline-flex;
-  gap: 6px;
+  gap: 4px;
 }
 .chip {
   border: 1px solid var(--border);
@@ -1157,7 +1157,7 @@ watch(() => route.params.tenantId, loadTenant)
   color: var(--muted);
   border-radius: 999px;
   padding: 3px 12px;
-  font-size: 12.5px;
+  font-size: 12px;
   cursor: pointer;
 }
 .chip:hover {
@@ -1178,8 +1178,8 @@ watch(() => route.params.tenantId, loadTenant)
 .stats-trend-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
-  margin: 14px 0 4px;
+  gap: 12px;
+  margin: 12px 0 4px;
 }
 @media (max-width: 1024px) {
   .stats-trend-grid { grid-template-columns: 1fr; }
@@ -1206,13 +1206,13 @@ watch(() => route.params.tenantId, loadTenant)
 .stats-tables-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 18px 0 8px;
+  gap: 8px;
+  margin: 16px 0 8px;
   flex-wrap: wrap;
 }
 .stats-tables-header .spacer { flex: 1; }
 .cell-sub {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--muted);
 }
 

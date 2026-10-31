@@ -99,7 +99,7 @@ onMounted(() => {
 
 <style scoped>
 .mti-panel { width: 100%; }
-.mti-meta { font-size: 10px; margin-bottom: 6px; }
+.mti-meta { font-size: 11px; margin-bottom: 4px; }
 .empty-hint {
   padding: 12px;
   text-align: center;
@@ -110,16 +110,16 @@ onMounted(() => {
 .dense-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 10px;
+  font-size: 11px;
 }
 .dense-table th,
 .dense-table td {
   border-bottom: 1px solid var(--border);
-  padding: 4px 6px;
+  padding: 4px 4px;
   text-align: left;
 }
 .dense-table th { color: var(--muted); font-weight: 500; }
 .num { text-align: center; color: var(--muted); }
 .model-name { font-weight: 500; }
-.mono-sm { font-size: 9px; font-family: var(--mono, monospace); }
+.mono-sm { font-size: 11px; font-family: var(--mono, monospace); }
 </style>

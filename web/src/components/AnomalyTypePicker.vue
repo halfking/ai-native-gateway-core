@@ -122,7 +122,7 @@ function clearValue() {
   gap: 8px;
   width: 100%;
   min-height: 36px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-subtle);
@@ -170,7 +170,7 @@ function clearValue() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
 .tp-title {
@@ -195,7 +195,7 @@ function clearValue() {
   border-radius: var(--radius);
   background: var(--bg);
   color: var(--text);
-  padding: 8px 10px;
+  padding: 8px 8px;
 }
 .tp-body {
   flex: 1;
@@ -221,7 +221,7 @@ function clearValue() {
   border-radius: 10px;
   background: var(--bg);
   color: var(--text);
-  padding: 10px 12px;
+  padding: 8px 12px;
   text-align: left;
   cursor: pointer;
 }

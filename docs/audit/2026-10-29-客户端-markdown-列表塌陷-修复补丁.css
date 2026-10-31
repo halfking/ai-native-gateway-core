@@ -1,0 +1,110 @@
+/*
+ * MCode 客户端 —— markdown 列表在窄视口被压成「一列单字符」的修复补丁
+ * ============================================================================
+ * 出处：llm-gateway-go 审计档 docs/audit/2026-10-29-会话闸与列表塌陷轮.md §2 / §7
+ * 实测环境：/Applications/MiniMax Code.app（app.asar，353103418 字节）
+ *           提取的真实 CSS（matrix-markdown.css）+ 真实 JSX（archon page chunk）
+ *           ⇒ ★ 本文件的每个选择器都对着**真实存在的类名**写，★ 不含任何臆造类名。
+ *
+ * ★★ 2026-10-30 修订（★★ 本文件的第一版有两处错误，★ 这里逐条订正）：
+ *
+ *   ★★ 错误一（★ 选择器打不中）：★ 第一版的 P1 用了 `.stream-message-content`。
+ *      ★★ **全 asar 字节级扫描实测**：★ `stream-message-content` 共 **24 处**，
+ *      ★★ **24 处全在 CSS 选择器里**（★ `.message-container-chat-content .stream-message-content
+ *      ★★   .mavis-chat-markdown-flow>.markdown-table-shell{…}`），★ **0 处出现在 JS/DOM**
+ *      ★★   ⇒ ★★ **该类在真实 DOM 里根本不存在** ⇒ ★★ P1 的选择器**永远匹配不到任何元素**
+ *      ★★   ⇒ ★★ **P1 是死代码**（★★ 而第一版的复现页里那个 `.stream-message-content`
+ *      ★★   是我**自己编的** ⇒ ★★ 复现页验证的是**臆造 DOM**，★ 不是客户端真实结构）。
+ *      ★★   ⇒ 真实 DOM 链（★ 来自 archon page chunk 的 JSX，逐层还原）：
+ *      ★★     .message-container-viewport
+ *      ★★       └ .mavis-chat-content-width .message-container-chat-content  (max-w-768px)
+ *      ★★           └ div.w-full.message-animate-in.group.relative  [data-testid=message-item]
+ *      ★★               └ div.desktop-text-chat-body.text-sm.space-y-4
+ *      ★★                   └ div.matrix-markdown.message-content.flex-1.relative
+ *      ★★                                    .max-w-full.overflow-hidden.text-pretty
+ *      ★★                       └ .mavis-chat-markdown-flow  (display:grid; minmax(0,1fr))
+ *      ★★   ★★ **注意**：★ `.message-content` 与 `.matrix-markdown` 是【同一个元素】
+ *      ★★   （★ JSX: `ty.mQ` 把 className 拼成 `matrix-markdown ${className}`）
+ *
+ *   ★★ 错误二（★ 修法选错）：★ 第一版的 P1（“让兄弟可收缩”）**单独用时挡不住塌陷**。
+ *      ★★ 用**真实类名 + 真实 CSS** 复现实测（★ 兄弟 flex:none、宽度 716px）：
+ *      ★★   无补丁 ⇒ .message-content 宽 **24px**、li 高 **576/432/120**（★ 逐字断行）
+ *      ★★   只加 P1（兄弟可收缩）⇒ 宽仍 **40px**、li 高仍 **288/336/120** ⇒ ★★ **P1 无效**
+ *      ★★   加 min-width 地板 ⇒ 宽稳定在地板值、li 高封顶 **72px** ⇒ ★★ **地板才是承重项**
+ *      ★★ （★ 第一版之所以测出「P1 或 P2 任一即可」，★ 是因为**臆造 DOM 里的兄弟恰好可收缩**。）
+ *
+ * ★ 现象：markdown 列表被压成「一列单字符」，且每个 bullet 逐级右移；
+ *         而同一消息里的普通段落（PROJECT: / GOAL:）看着正常。
+ *
+ * ★ 机制（★ 真实 CSS + 真实类名实测）：
+ *   1) .message-content 同时是 `.matrix-markdown`（★ grid 容器：display:grid; grid-template-columns:1fr）
+ *      且带 tailwind `flex-1` + `overflow-hidden`
+ *      ⇒ ★ 作为 flex item 时**自动最小尺寸被 overflow≠visible 置 0**
+ *      ⇒ ★ 可以被同行的某条 `flex:none` 兄弟挤到 ~24px；
+ *   2) .matrix-markdown div/li/p/span { overflow-wrap:break-word; word-break:break-word }
+ *      —— 容器宽只剩 1~2 字符时 ⇒ **逐字断行**（★ 这就是「一列单字符」的直接机制）；
+ *   3) .matrix-markdown :is(ol,ul){padding-inline-start:var(--md-line-height-body)}
+ *      + 嵌套列表逐级叠加 ⇒ ★ **bullet 逐级右移**。
+ *
+ * ★ 阈值（★ 真实类名 + 真实 CSS 实测，★ 扫兄弟宽度 0→716px）：
+ *   .message-content 实宽 ≲ **340px** ⇒ 列表项开始换行（li 48px ⇒ 72px ⇒ 120px ⇒ 288px）
+ *   无地板时最坏：实宽 **24px**、li 高 **576/432/120**（★ 附图那个形态）
+ *   ⇒ 「某些时刻」= 当时的视口宽度 / 同行兄弟布局决定，★ **与网关逻辑分支无关**。
+ *
+ * ★ 地板值实测（★ 扫 0/80/100/120/140/160/180/200px，★ 兄弟 716px 最坏挤压）：
+ *   地板 0   ⇒ 实宽 24px  、maxLi 576px（★ 塌陷）
+ *   地板 80  ⇒ 实宽 80px 、maxLi 144px（★ 仍塌）
+ *   地板 120 ⇒ 实宽 120px、maxLi 96px （★ 仍塌）
+ *   地板 140 ⇒ 实宽 140px、maxLi **72px**（★ ★ 不再塌陷）
+ *   地板 ≥140 全部一致（maxLi 72px）⇒ ★ **140px 是临界值**
+ *   ⇒ 本文件取 **280px**：★ ≈18 个中文字，★ 留足余量且不挤占过多横向空间。
+ *
+ * ★ 留一法消融（★ 真实类名 + 真实 CSS，★ 兄弟宽度扫描全档）：
+ *   拿掉「正文地板」⇒ 实宽掉到 24px、li 高 576/432 ⇒ ★ 塌陷复现
+ *   只留「兄弟可收缩」⇒ 实宽仍 40px、li 高仍 288 ⇒ ★ 承重项是地板、★ 不是兄弟
+ *   ⇒ ★ **最小修复 = 给 `.message-content` 加 min-width 地板**（★ 兄弟项是可选加固）
+ * ============================================================================
+ */
+
+/* ── 主修（承重）：正文容器给宽度地板（≈18 个中文字） ───────────────────────
+   ★ 目标类名 `.message-content` = ★ **真实存在**（★ 全 asar 扫描：★ DOM 侧 1 处 JSX）
+   ★ 实测：地板 ≥140px ⇒ li 高封顶 72px（★ 正常的两行嵌套项），★ 不再逐字断行。
+   ★ 实现二选一：
+   ★   ① 样式表加本条（★ 客户端无自定义 CSS 注入入口 ⇒ ★ 需要客户端仓改源码）；
+   ★   ② ★ tailwind 侧给 `.message-content` 加类 `min-w-[280px]`
+   ★      （★ `.message-content` 在客户端的 tailwind 工具类串是
+   ★       `flex-1 relative max-w-full overflow-hidden text-pretty` ⇒ ★ 加类即可）。
+   ★ ★ 落地形态由客户端仓决定：★ 加类最省事（★ 不用维护额外样式表）。 */
+.message-content {
+  min-width: 280px;
+}
+
+/* ── 加固（可选）：让挤压正文的那条 flex:none 兄弟可收缩 ───────────────────
+   ★ ★ 单独**不足以**挡住塌陷（★ 实测：只加本条 ⇒ 实宽仍 40px、li 高仍 288）★★
+   ★ 但它能让正文在**兄弟可压缩**时拿回更多空间 ⇒ ★ 作为加固保留。
+   ★ ★ 注意：★ 这里**不写死类名**（★ 兄弟身份尚未在真实 DOM 中定位到，
+   ★ ★ 臆造类名会变成「永远匹配不到的死规则」——★ 第一版就踩了这个坑）。
+   ★ 定位到之后，把下面的通配换成精确选择器即可（★ 结构与第一版 P1 相同，
+   ★ ★ 但**必须先确认那个类在 DOM 里真的存在**）。 */
+.message-content ~ * {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* ── 加固（可选）：markdown 流的 grid item 补 min-width:0 ───────────────────
+   ★ .mavis-chat-markdown-flow 是 grid 容器（grid-template-columns:minmax(0,1fr)），
+   ★ 其直接子项按 grid 规则已有 min-width:auto 的自动最小尺寸 ⇒ ★ 补 0 更稳。
+   ★ ★ 注：★ `.matrix-markdown > *{min-width:0}` 客户端**已经有**（★ 真实 CSS 实测），
+   ★ ★ 但 `.mavis-chat-markdown-flow` 是 `.matrix-markdown` 的**子**容器 ⇒ ★ 这一层仍需要。 */
+.mavis-chat-markdown-flow > * {
+  min-width: 0;
+}
+
+/* ── 加固（可选）：列表项断行属性 ────────────────────────────────────────────
+   ★ `word-break:break-word` 已废弃，★ 且会让 min-content 参与塌陷计算。
+   ★ ★ 注：★ 真实 CSS 实测 `.matrix-markdown code,div,li,p,pre,span{overflow-wrap:break-word;
+   ★ ★   word-break:break-word}` ⇒ ★ 这条是**覆盖**客户端既有值。 */
+.matrix-markdown li {
+  word-break: normal;
+  overflow-wrap: break-word;
+}

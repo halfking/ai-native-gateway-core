@@ -191,7 +191,6 @@ export default {
   bridgeOAuth: 'OAuth 桥接',
   importEnv: '导入环境变量 Key',
   discover: '自动学习并注册',
-  quickEntry: '快速录入',
   notLoaded: '未加载',
   loading: '加载中…',
   p95Latency: 'P95 延迟',

@@ -452,7 +452,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .approval-detail-view {
-  padding: 20px;
+  padding: 16px;
   color: var(--text-primary);
 }
 
@@ -462,7 +462,7 @@ onBeforeUnmount(() => {
 
 .page-header h1 {
   margin: 8px 0;
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 600;
 }
 
@@ -526,14 +526,14 @@ onBeforeUnmount(() => {
 .content {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
 }
 
 .section {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 20px;
+  padding: 16px;
 }
 
 .section-header {
@@ -545,7 +545,7 @@ onBeforeUnmount(() => {
 
 .section-header h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
   display: flex;
   align-items: center;
@@ -579,7 +579,7 @@ onBeforeUnmount(() => {
 .info-item {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .info-item-full {
@@ -611,14 +611,14 @@ onBeforeUnmount(() => {
 
 .badge {
   display: inline-block;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
 }
 
 .badge-large {
-  padding: 6px 14px;
+  padding: 4px 12px;
   font-size: 13px;
 }
 
@@ -730,7 +730,7 @@ onBeforeUnmount(() => {
 .message-redacted {
   font-size: 11px;
   color: var(--warning);
-  padding: 2px 6px;
+  padding: 2px 4px;
   background: var(--warning-bg);
   border-radius: 3px;
 }
@@ -767,7 +767,7 @@ onBeforeUnmount(() => {
 .action-form {
   background: var(--bg);
   border-radius: 6px;
-  padding: 20px;
+  padding: 16px;
 }
 
 .action-form h3 {
@@ -794,7 +794,7 @@ onBeforeUnmount(() => {
 
 .form-textarea {
   width: 100%;
-  padding: 10px 12px;
+  padding: 8px 12px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -870,7 +870,7 @@ onBeforeUnmount(() => {
 }
 
 .timeline-title {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
   margin-bottom: 4px;
@@ -894,7 +894,7 @@ onBeforeUnmount(() => {
   font-size: 14px;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: all 0.2s;
+  transition: opacity 0.2s var(--kx-motion-ease-out), background 0.2s var(--kx-motion-ease-out), color 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out), box-shadow 0.2s var(--kx-motion-ease-out), transform 0.2s var(--kx-motion-ease-out), outline-offset 0.2s var(--kx-motion-ease-out);
   font-weight: 500;
 }
 
@@ -961,4 +961,12 @@ onBeforeUnmount(() => {
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
    尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
 .message-close > svg { width: 12px; height: 12px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition-property: opacity, background, color, border-color, box-shadow, outline-offset;
+  }
+}
 </style>

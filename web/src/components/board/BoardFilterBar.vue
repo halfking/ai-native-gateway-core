@@ -85,9 +85,9 @@ const sourceKey = computed(() => {
 .bfb {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   flex-wrap: wrap;
-  padding: 9px 14px;
+  padding: 8px 12px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -109,33 +109,33 @@ const sourceKey = computed(() => {
   gap: 8px;
   border: 1px solid var(--border);
   border-radius: 9px;
-  padding: 4px 10px;
+  padding: 4px 8px;
 }
 .bfb__gran-auto {
   background: color-mix(in srgb, var(--accent) 16%, var(--card));
   color: var(--accent);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
-  padding: 2px 9px;
+  padding: 2px 8px;
   border-radius: 7px;
 }
 .bfb__gran-value {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text-muted);
 }
 .bfb__refresh {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 600;
   border-radius: 9px;
-  padding: 6px 12px;
+  padding: 4px 12px;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  transition: color 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
 }
 .bfb__refresh:hover:not(:disabled) {
   color: var(--text);
@@ -155,9 +155,9 @@ const sourceKey = computed(() => {
   font-size: 12px;
   font-weight: 600;
   border-radius: 9px;
-  padding: 6px 12px;
+  padding: 4px 12px;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  transition: color 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
 }
 .bfb__more:hover {
   color: var(--accent);
@@ -167,12 +167,12 @@ const sourceKey = computed(() => {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 10.5px;
+  gap: 4px;
+  font-size: 11px;
   color: var(--text-muted);
   border: 1px dashed var(--border);
   border-radius: 8px;
-  padding: 3px 9px;
+  padding: 3px 8px;
 }
 .bfb__src b {
   color: var(--text);
@@ -188,7 +188,7 @@ const sourceKey = computed(() => {
   .bfb {
     align-items: stretch;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
   }
   .bfb__item {
     justify-content: space-between;

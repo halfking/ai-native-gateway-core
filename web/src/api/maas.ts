@@ -482,3 +482,63 @@ export const MAAS_ORDER_STATUS_LABELS: Record<string, string> = {
   cancelled: '已取消',
   expired: '已过期',
 }
+
+
+export interface MaasMonthlyBill {
+  id: number
+  tenant_id: string
+  period_ym: string
+  period_start: string
+  period_end: string
+  total_credits: number
+  total_requests: number
+  amount_cents: number
+  currency: string
+  status: string
+  issued_at?: string
+  note: string
+  created_at: string
+  updated_at: string
+}
+
+export interface MaasCouponRedemption {
+  id: number
+  coupon_id: number
+  tenant_id: string
+  credits_granted: number
+  created_at: string
+  code?: string
+}
+
+export function getMaasBills(limit = 24) {
+  return req<{ items: MaasMonthlyBill[] }>('GET', `/api/maas/bills?limit=${limit}`)
+}
+
+export function exportMaasBillsCSV() {
+  return req<string>('GET', '/api/maas/bills/export')
+}
+
+export function activateMaasCoupon(code: string) {
+  return req<MaasCouponRedemption>('POST', '/api/maas/coupons/activate', { code })
+}
+
+export function getMaasCouponRedemptions(limit = 20) {
+  return req<{ items: MaasCouponRedemption[] }>('GET', `/api/maas/coupons/redemptions?limit=${limit}`)
+}
+
+export function createMaasInvoicePlaceholder(billId?: number) {
+  return req<{ id: number; status: string; note: string }>(
+    'POST',
+    '/api/maas/invoices',
+    billId ? { bill_id: billId } : {},
+  )
+}
+
+export function createAdminMaasCoupon(body: {
+  code?: string
+  credits_amount: number
+  max_redemptions?: number
+  note?: string
+}) {
+  return req<Record<string, unknown>>('POST', '/api/admin/maas/coupons', body)
+}

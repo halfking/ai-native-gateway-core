@@ -29,6 +29,7 @@ export default {
     autoControlledTooltip: '自動プローブで制御されています（broken_confirmed など）。手動で無効化（強制オフライン化）できます',
     rowSelectsMonitor: '行を選択すると右側の監視表示に連動します',
     selectModelRow: '左側のモデル行を選択すると表示できます',
+    sourceSessionTurns: 'セッション記録',
   },
   chart: {
     allHealthy: 'すべて健全',

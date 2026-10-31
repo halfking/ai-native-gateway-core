@@ -87,8 +87,8 @@ function credentialLabel(id: number): string {
 .attempts-only li {
   display: grid;
   grid-template-columns: 40px minmax(0, 1fr) 90px 100px auto;
-  gap: 10px;
-  padding: 4px 6px;
+  gap: 8px;
+  padding: 4px 4px;
   border: 1px solid transparent;
   border-radius: 4px;
   background: var(--bg-subtle, var(--kx-bg));

@@ -171,7 +171,86 @@ const (
 	//（Redis 令牌桶 + advisory lock 兜底，见文件头），所以这是**单会话上界**，
 	// 不是 ×实例数。调更大之前请先确认 PG 宿主（172.16.2.210）的内存余量 ——
 	// 本轮**没有**核到该宿主内存（只读通道拿不到），故这里取保守值而不取"实测够用"。
+	//
+	// ★★ 2026-10-29（R175）：本常量自此是 **routing 族专用值**。
+	//   分族的理由不是"routing 需要更多/更少内存"，而是**每个族的下界要用
+	//   它自己那份实测来钉**（routing 族的实测峰值 ~13MB，session 族的实测
+	//   峰值 ~120MB + 历史溢写 136MB）——共用一个值时，下界只能取全族最大值，
+	//   小族的下界就永远没有被钉住。分族之后两族各自的下界都能写成不等式，
+	//   由 bg/materialized_view_refresher_workmem_test.go 逐族断言。
+	//   ⚠ 两族当前**取值相同**（都 256MB）——这是实测结论，不是偷懒：
+	//   ① session 族在 8MB 下单次溢写 151MB（Sort external merge 13~15MB
+	//      ×3 进程 + HashAggregate Batches 4），256MB 下 temp = 0、Batches = 1；
+	//   ② routing 族在 8MB / 64MB / 256MB 三档下**逐字相同**（temp 恒 0，
+	//      峰值 Hash 9.5MB + Sort 3.5MB）⇒ work_mem 对 routing 族**不是杠杆**。
+	//   ⇒ 既然没有一族能从更小的值受益，就没有理由调低 routing 族
+	//   （work_mem 是**上限**不是配额，调低只会给未来数据增长埋溢写的雷）。
 	mvRefreshWorkMem = "256MB"
+
+	// sessionViewsWorkMem 是 **session 族专用**的 work_mem（2026-10-29 R175）。
+	//
+	// ★ 取值依据（252 生产，同一 session 内交错 A/B，各两轮）：
+	//   8MB  ：Sort Method = external merge，Disk 13,240~15,336kB（主）
+	//           + Worker 0 11,512~20,104kB + Worker 1 6,688~14,968kB
+	//           ⇒ temp read/write ≈ 19,363/19,394块 ≈ **151MB 单次溢写**
+	//           HashAggregate：Buckets 131072 / **Batches 4** /16,512kB
+	//           执行时间 28,814ms / 7,929ms（两轮差 3.6× ⇒ 落盘代价随负载放大）
+	//   256MB：Sort Method = quicksort，Memory 56,034kB（内存内，无外排）
+	//           HashAggregate：Buckets 524288 / **Batches 1** / 63,704kB
+	//           temp read/write = **0**
+	//           执行时间 5,560ms / 4,957ms
+	// ⇒ 256MB 让 session 族的溢写归零（HashAgg 从 4 批降到 1 批）。
+	//
+	// ★★ 生产侧闭环（2026-10-29 01:12 的 pgss 逐周期差分，五个 REFRESH 条目
+	//   全部 Δtemp_blks_written = 0）：**部署态确实不再溢写** ⇒
+	//   §109「收益未验证」的诚实边界在本轮被实测关闭。
+	//
+	// ⚠ 上界同 mvRefreshWorkMem：单会话上界（令牌桶保证全网同时只有一个
+	//   刷新在跑），调大之前仍须先核 PG 宿主内存余量（本轮无该读数）。
+	sessionViewsWorkMem = "256MB"
+
+	// mvRefreshJIT / sessionViewsJIT 控制刷新路径上 **JIT 编译**的开关
+	//（2026-10-29 R175 新增）。
+	//
+	// ★★ 为什么值得单独一个轴（252 生产实测，同 session 内交错 8 轮）：
+	//   252 的 PG 配置是 jit=on / jit_above_cost=100000（库级默认）。
+	//   而 routing_analytics_7d 的**定义查询**计划代价是 193,601
+	//   ⇒ **超过阈值 1.93×** ⇒ 每次刷新都要付 JIT 编译代价
+	//   （EXPLAIN 实测：JIT Functions:91）。
+	//   实测两臂（同 session 交错 8 轮，两批次合并）：
+	//     jit=on  11,338 / 2,390 / 2,836 / 2,718 / 2,598 / 2,376 / 2,275 / 1,927 ms
+	//     jit=off  1,015 /   812 / 1,302 / 1,298 / 1,216 / 1,967 / 2,183 /   723 ms
+	//   ⇒ 8/8 轮更快，中位 2,494 → 1,257ms（1.98×），最坏一轮 5.2×。
+	//   ★关键判据：**关掉 JIT 不改变 buffer 足迹**
+	//     （两臂 root Buffers: shared hit 逐项相等，47,301/47,302）
+	//     ⇒ JIT 是**纯 CPU/编译时间**的轴，不影响「成本问 shared_blks_read」口径。
+	//   ⇒ 关掉它是零 buffer 代价的墙钟优化。
+	//
+	// ★ 语义边界（必须写明，别当成"完全零语义"）：
+	//   PG文档载明 JIT 编译的浮点运算**可能与解释器差最后一位**。
+	//   本仓的 matview 里有 percentile_cont（double precision）⇒
+	//   理论上 p50/p95/p99 的最后一位可能在两种编译模式下不同。
+	//   ⇒ 但漂移核查（CheckMVConsistency）比较的是**计数**，不是分位数；
+	//   且固定成一种模式后值是**稳定**的（而不是随编译与否抖动）。
+	//   ⇒ 取舍：用一个 ULP 级的理论差异，换掉每次刷新 91 个函数的编译代价。
+	mvRefreshJIT = "off"
+
+	// sessionViewsJIT 是 session 族的 JIT 开关（2026-10-29 R175）。
+	//
+	// ★ 取值依据与 routing 族**不同**：session 族的计划代价高一个量级
+	//   （session_client_task_matrix 单次 318,4xx buffers），
+	//   JIT 在这种计划上**有可能**是正收益 ⇒ 不能照抄 routing 族的结论。
+	//   实测（同 session 交错 5 轮，两批次合并）：
+	//     session_client_task_matrix  jit=on  75,471 / 35,158 / 7,185 / 6,330 / 5,324 ms
+	//                             jit=off   6,401 /  4,355 / 5,791 / 5,694 / 5,797 ms
+	//   ⚠⚠ **诚实边界**：同一臂两轮相差 14×（75,471 vs 5,324）⇒
+	//   **宿主负载的抖动大于臂间差异** ⇒ 这组读数**不能**用来承诺倍率。
+	//   能承诺的只有两件事：
+	//     ① buffer 足迹不变（两臂 root buffers 逐项相等 ⇒ 不是 I/O 差异）；
+	//     ② off 的**最坏轮**（6,401ms）显著低于 on 的最坏轮（75,471ms），
+	//        中位也更低（5,791 vs 7,185）⇒ **关掉削的是长尾**。
+	//   ⇒ 取"关掉"是**削尾决策**，不是提速承诺（证据强度低于 routing 族的 8/8）。
+	sessionViewsJIT = "off"
 
 	// ── 357 会话分析物化视图族（2026-10-07）─────────────────────────────
 	// 迁移 357 建了 session_client_stats / session_task_stats /
@@ -577,7 +656,7 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	var failedView string
 
 	start := time.Now()
-	if reason, err := r.refreshView(ctx, "routing_analytics_7d", useAdvisoryLock, mvRefreshStatementTimeout); err != nil {
+	if reason, err := r.refreshView(ctx, "routing_analytics_7d", useAdvisoryLock, mvRefreshStatementTimeout, mvRefreshWorkMem, mvRefreshJIT); err != nil {
 		hasError = true
 		lastErr = err
 		failedView = "routing_analytics_7d"
@@ -593,7 +672,7 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	}
 
 	auditStart := time.Now()
-	if reason, err := r.refreshView(ctx, "routing_audit_summary_7d", useAdvisoryLock, mvRefreshStatementTimeout); err != nil {
+	if reason, err := r.refreshView(ctx, "routing_audit_summary_7d", useAdvisoryLock, mvRefreshStatementTimeout, mvRefreshWorkMem, mvRefreshJIT); err != nil {
 		hasError = true
 		lastErr = err
 		failedView = "routing_audit_summary_7d"
@@ -682,7 +761,7 @@ func (r *MaterializedViewRefresher) refreshSessionViews(parentCtx context.Contex
 	for _, view := range SessionAnalyticsViews {
 		start := time.Now()
 		reason, err := retryOnLockHeld(ctx, view, retryDeadline, func() (mvSkipReason, error) {
-			return r.refreshView(ctx, view, true, sessionViewsStatementTimeout)
+			return r.refreshView(ctx, view, true, sessionViewsStatementTimeout, sessionViewsWorkMem, sessionViewsJIT)
 		})
 		switch {
 		case err != nil:
@@ -845,7 +924,17 @@ func (s mvSkipReason) skipped() bool { return s != mvRefreshed }
 // ★ 签名里的 refreshView( 前缀是既有静态门（bg/materialized_view_refresher_workmem_test.go）
 //   的抽取锚点 —— 那个门断言 work_mem 的 SET/RESET 就在**本函数体内**，
 //   所以这些语句不能被挪进别的函数。
-func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName string, useAdvisoryLock bool, statementTimeout string) (mvSkipReason, error) {
+//
+// ★★ workMem / jitMode 参数（2026-10-29 R175）：会话画像**按族**传入，
+//   与 statementTimeout同一套分族接线方式。理由：
+//   · work_mem：每个族的下界要用它自己那份实测来钉（见 mvRefreshWorkMem
+//     与 sessionViewsWorkMem 的注释）；共用一个值时小族的下界永远没被钉住。
+//   · jit：routing 族的定义查询计划代价 193,601 > jit_above_cost 100000
+//     ⇒ 每次刷新都付91 个函数的编译代价；关掉它**不改变 buffer 足迹**
+//     （A/B 逐项相等）⇒ 纯 CPU 轴的零代价墙钟优化。
+//   ⇒ 三个轴（statement_timeout / work_mem / jit）共用同一处分族接线，
+//   调用点各传自己那份常量，避免「加了参数却仍写死常量」的假修复。
+func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName string, useAdvisoryLock bool, statementTimeout string, workMem string, jitMode string) (mvSkipReason, error) {
 	var exists bool
 	err := r.db.QueryRow(ctx, `
 		SELECT EXISTS (
@@ -890,13 +979,32 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 
 	// Same shape, different axis: the REFRESH rewrite spills to temp files
 	// because work_mem (8MB on 252) is two orders of magnitude below the
-	// largest measured sort. See mvRefreshWorkMem for the full measurement.
-	// RESET keeps the pool clean for whatever statement runs next.
-	if _, err := conn.Exec(ctx, "SET work_mem = '"+mvRefreshWorkMem+"'"); err != nil {
+	// largest measured sort. See mvRefreshWorkMem / sessionViewsWorkMem for
+	// the full measurement. RESET keeps the pool clean for whatever
+	// statement runs next.
+	//
+	// ★ 用参数 workMem 而不是直接用常量：按族不同（见 refreshView 的注释）。
+	if _, err := conn.Exec(ctx, "SET work_mem = '"+workMem+"'"); err != nil {
 		return mvRefreshed, err
 	}
 	defer func() {
 		_, _ = conn.Exec(context.WithoutCancel(ctx), "RESET work_mem")
+	}()
+
+	// Third axis: JIT compilation. The refresh path's queries are re-planned
+	// and re-compiled on every cycle; with jit_above_cost=100000 on 252 the
+	// routing family's defining query (plan cost 193,601) pays for 91
+	// compiled functions per refresh while its whole run is ~2.4s.
+	// Turning JIT off does not change the buffer footprint (measured
+	// equal), so this is a pure CPU-axis knob. See mvRefreshJIT.
+	//
+	// ★ 用参数 jitMode 而不是直接用常量：按族不同（session 族的计划代价
+	//   高一个量级 ⇒ 不能照抄 routing 族的结论）。
+	if _, err := conn.Exec(ctx, "SET jit = '"+jitMode+"'"); err != nil {
+		return mvRefreshed, err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), "RESET jit")
 	}()
 
 	if !useAdvisoryLock {

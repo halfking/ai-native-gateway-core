@@ -62,7 +62,7 @@ const emit = defineEmits<{
 
 <style scoped>
 .top-bar {
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -86,7 +86,7 @@ const emit = defineEmits<{
   width: auto;
   max-width: 120px;
   font-size: 11px;
-  padding: 2px 6px;
+  padding: 2px 4px;
 }
 .top-bar .spacer { flex: 1; }
 .top-bar .btn-sm { font-size: 11px; padding: 2px 8px; }

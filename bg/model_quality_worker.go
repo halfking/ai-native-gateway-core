@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"
+	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 )
 
 // ModelQualityWorker 模型质量监控后台任务
@@ -75,7 +76,15 @@ type ModelQualityWorker struct {
 // timeout: 单次测试超时，0则使用默认30秒
 func NewModelQualityWorker(dataDir string, apiKey string, baseURL string, timeout time.Duration) *ModelQualityWorker {
 	if baseURL == "" {
-		baseURL = "http://localhost:8787" // 默认本地网关
+		// 2026-10-29 (24h 审计第 7 轮): 历史默认 http://localhost:8787 是一个
+		// 从未存在的监听端口——本实例实际监听 LLM_GATEWAY_LISTEN（蓝绿下
+		// 8781/8782 轮换）。211 生产实测（2026-10-29）：每次 24h 定时检查
+		// 12 个模型全部 "dial tcp [::1]:8787: connect: connection refused"
+		// （error_count=50/50，accuracy=0, overall_score=10, grade=F），
+		// 且误差被 report.ErrorCount 静默吞掉、db 侧 model_iq_runs 0 行。
+		// 与 self_check / node_probe / credential_selfcheck 同源走
+		// loopback.GatewayBase()（读 LLM_GATEWAY_LISTEN）。
+		baseURL = loopback.GatewayBase() + "/v1"
 	}
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -266,10 +275,33 @@ func (w *ModelQualityWorker) RunPerNodeCheck(ctx context.Context, storage modelq
 	if src == nil || invoker == nil {
 		return 0, fmt.Errorf("node source not configured (call SetNodeSource first)")
 	}
-	nodes, err := src.DiscoverActiveNodes(ctx)
+	// 2026-10-30 (24h 审计第 7 轮)：scope 收窄 + 最近已测跳过。无这两道闸时
+	// 每次 boot 立即跑一遍全量活跃节点（211 ~3500 绑定），token 成本与上游
+	// 限流都不可接受（商汤 200 题触发 429 的实测教训）；同时 per-node IQ 是
+	// 可信度同伴对比/校准的数据源，featured 面已覆盖判定所需。
+	scope := w.config.PerNodeScope
+	if scope == "" {
+		scope = "featured"
+	}
+	minInterval := time.Duration(w.config.PerNodeMinIntervalHours) * time.Hour
+	if w.config.PerNodeMinIntervalHours <= 0 {
+		minInterval = 24 * time.Hour
+	}
+	failedInterval := time.Duration(w.config.PerNodeFailedIntervalHours) * time.Hour
+	if w.config.PerNodeFailedIntervalHours <= 0 {
+		failedInterval = 4 * time.Hour
+	}
+	var nodes []modelquality.CredentialNode
+	// nodeSource 是具体类型（*CredentialNodeSource）而非接口；scope/min-interval
+	// 收窄只在 per-node 路径生效，FindNode 单点直连不走这里（手动「立即测试」
+	// 不受 scope 限制，与 model_credibility.FindTarget 同语义）。
+	nodes, err := src.DiscoverPerNodeTargets(ctx, scope, minInterval, failedInterval)
 	if err != nil {
 		return 0, fmt.Errorf("discover nodes: %w", err)
 	}
+	slog.Info("per-node check targets resolved",
+		"scope", scope, "min_interval", minInterval.String(),
+		"failed_interval", failedInterval.String(), "targets", len(nodes))
 	suite := modelquality.GetMMLULiteSuite()
 	calculator := &modelquality.ScoreCalculator{}
 	tested := 0

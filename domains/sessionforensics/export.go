@@ -46,7 +46,7 @@ import (
 // 在守）：两份的 bodies 腿现在都调用同一个函数 ⇒ 仍然不可能分叉。
 var forensicsExportMessagesSQL = `
 		SELECT
-			rl.id::text,
+			rl.request_id,
 			(CASE
 				WHEN rl.work_type IN ('agent', 'memora') THEN 'assistant'
 				WHEN lower(COALESCE(rl.request_mode, '')) IN ('completion', 'embedding') THEN 'assistant'
@@ -61,12 +61,12 @@ var forensicsExportMessagesSQL = `
 		FROM request_logs_with_current_month rl
 		LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
-		ORDER BY rl.ts ASC, rl.id ASC
+		ORDER BY rl.ts ASC, rl.request_id ASC
 	`
 
 var forensicsExportMessagesSQLAlt = `
 		SELECT
-			rl.id::text,
+			rl.request_id,
 			(CASE
 				WHEN rl.work_type IN ('agent', 'memora') THEN 'assistant'
 				WHEN lower(COALESCE(rl.request_mode, '')) IN ('completion', 'embedding') THEN 'assistant'
@@ -81,7 +81,7 @@ var forensicsExportMessagesSQLAlt = `
  		FROM request_logs_with_current_month rl
 		LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
-		ORDER BY rl.ts ASC, rl.id ASC
+		ORDER BY rl.ts ASC, rl.request_id ASC
 	`
 
 // ErrorDBUnavailable 当 DB 连接不可用时返回。
@@ -201,13 +201,13 @@ func (e *Exporter) ExportFromTx(ctx context.Context, tx pgx.Tx, sessionID, tenan
 
 	for rows.Next() {
 		var (
-			id, role, parentID, reason, strategy string
+			requestID, role, parentID, reason, strategy string
 			compMeta, attachments                []byte
 			createdAt                            time.Time
 			reqBody, respBody                    *string
 			clientModel, outboundModel           *string
 		)
-		if err := rows.Scan(&id, &role, &parentID, &reason, &strategy,
+		if err := rows.Scan(&requestID, &role, &parentID, &reason, &strategy,
 			&compMeta, &attachments, &createdAt, &reqBody, &respBody,
 			&clientModel, &outboundModel); err != nil {
 			// R66（category 4）：取证包必须是**完整**的会话转录。跳行会
@@ -219,6 +219,7 @@ func (e *Exporter) ExportFromTx(ctx context.Context, tx pgx.Tx, sessionID, tenan
 		msg := ExportMessage{
 			Turn:                turn,
 			Role:                role,
+			RequestID:           requestID,
 			ParentRequestID:     parentID,
 			CompressionReason:   reason,
 			CompressionStrategy: strategy,
@@ -317,13 +318,13 @@ func (e *Exporter) ExportSession(ctx context.Context, sessionID, tenantID string
 	seenAtt := map[string]struct{}{}
 	for rows.Next() {
 		var (
-			id, role, parentID, reason, strategy string
+			requestID, role, parentID, reason, strategy string
 			compMeta, attachments                []byte
 			createdAt                            time.Time
 			reqBody, respBody                    *string
 			clientModel, outboundModel           *string
 		)
-		if err := rows.Scan(&id, &role, &parentID, &reason, &strategy,
+		if err := rows.Scan(&requestID, &role, &parentID, &reason, &strategy,
 			&compMeta, &attachments, &createdAt, &reqBody, &respBody,
 			&clientModel, &outboundModel); err != nil {
 			// R66（category 4）：取证包必须是**完整**的会话转录。跳行会
@@ -335,6 +336,7 @@ func (e *Exporter) ExportSession(ctx context.Context, sessionID, tenantID string
 		msg := ExportMessage{
 			Turn:                turn,
 			Role:                role,
+			RequestID:           requestID,
 			ParentRequestID:     parentID,
 			CompressionReason:   reason,
 			CompressionStrategy: strategy,

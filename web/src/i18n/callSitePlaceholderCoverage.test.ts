@@ -20,6 +20,10 @@ import {
   measureRepoCoverage,
 } from './callSitePlaceholderCoverage'
 
+// Windows 的 relative() 产生反斜杠 ⇒ 与登记册的正斜杠路径永不相等 ⇒ 假红。
+// 统一归一到正斜杠（登记册与实测两侧同一口径）。
+const relPosix = (p: string) => relative(WEB_ROOT, p).replace(/\\/g, '/')
+
 // ⚠️ 超时给到 120s：门要加载 8 个语种的 locale 模块（vm 求值），
 //   实测单次 20~40s（高负载机器上更久）。
 describe('i18n 调用点参数 → 占位符覆盖（所有语种都不显示 = 死参数）', { timeout: 120_000 }, () => {
@@ -35,7 +39,7 @@ describe('i18n 调用点参数 → 占位符覆盖（所有语种都不显示 = 
     const detail = report.deadParams
       .map(
         (d) =>
-          `  ${d.callSite.key}  @ ${relative(WEB_ROOT, d.callSite.file)}:${d.callSite.line}\n` +
+          `  ${d.callSite.key}  @ ${relPosix(d.callSite.file)}:${d.callSite.line}\n` +
           `      死参数: ${d.deadParams.join(', ')}\n` +
           `      候选消息: ${d.candidateKeys.slice(0, 5).join(', ')}${d.candidateKeys.length > 5 ? ' …' : ''}\n` +
           `      候选里出现过的占位符: ${d.availableParams.join(', ') || '(无)'}`,
@@ -70,7 +74,7 @@ describe('i18n 调用点参数 → 占位符覆盖（所有语种都不显示 = 
   it('★ 未决登记册与实测未决集合双向严格相等（新增未决 / 过期登记都要红）', () => {
     const report = measureRepoCoverage()
     const measured = new Set(
-      report.unresolved.map((u) => `${relative(WEB_ROOT, u.callSite.file)}:${u.callSite.line}`),
+      report.unresolved.map((u) => `${relPosix(u.callSite.file)}:${u.callSite.line}`),
     )
     const registered = new Set(UNRESOLVED_REGISTRY.map((r) => `${r.file}:${r.line}`))
 

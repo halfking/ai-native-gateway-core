@@ -40,6 +40,17 @@ import subprocess
 import sys
 import tempfile
 
+# ★★ r1047 轮（★ 2026-10-28）：★ 子进程走【专用 GOCACHE】⇒ ⇒ 不再往用户的全局缓存里
+# ★★ 写「随树变化而失效」的一次性产物（★ 理由与实测读数见 `scripts/lib/gocache.py`
+# ★★ 与 `internal/gocache` 的包注释）。
+# ★★ **两条路径都试**（★ ★★ 深度无关：★ 本文件在 scripts/ 或 scripts/audit/ 下）★★
+for _gc_lib in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")):
+    if os.path.isfile(os.path.join(_gc_lib, "gocache.py")):
+        sys.path.insert(0, _gc_lib)
+        break
+import gocache  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ★★ 下面这两个路径字面量【会被 scripts/audit/mutation_residue_guard.py 扫到】
@@ -57,8 +68,7 @@ def md5(path):
 
 
 def run_gate():
-    env = dict(os.environ)
-    env.setdefault("GOCACHE", os.path.expanduser("~/sdk/gocache-llm-gateway-go"))
+    env = gocache.env("mutate")
     r = subprocess.run(
         ["go", "test", "./scripts/ursmcheck/", "-run", GATE_TEST, "-count=1"],
         cwd=ROOT, capture_output=True, text=True, env=env,

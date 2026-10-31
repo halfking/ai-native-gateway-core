@@ -340,7 +340,7 @@ function goCanonical() {
             :disabled="!canEdit"
             placeholder="dialect: openai / anthropic / glm …"
           />
-          <div class="btn-row" style="margin-top:10px">
+          <div class="btn-row" style="margin-top:8px">
             <button class="btn btn-sm btn-primary" :disabled="!canEdit || saving || !offer.canonical_id" @click="saveCanonical">
               保存标准能力
             </button>
@@ -433,7 +433,7 @@ function goCanonical() {
               <option v-for="mode in BILLING_MODE_OPTIONS" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
             </select>
           <div class="cell-sub">价格留空表示保持现值；显式 0 表示免费。</div>
-          <div class="btn-row" style="margin-top:10px">
+          <div class="btn-row" style="margin-top:8px">
             <button class="btn btn-sm btn-primary" :disabled="!canEdit || saving" @click="saveNode">保存节点</button>
           </div>
         </section>
@@ -456,8 +456,8 @@ function goCanonical() {
 <style scoped>
 .dual { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 1024px) { .dual { grid-template-columns: 1fr; } }
-.pane h4 { margin: 0 0 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.pane h4 { margin: 0 0 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.badge { font-size: 11px; padding: 2px 4px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 15%, transparent); }
 .badge.protect { background: color-mix(in srgb, var(--warning-dark) 20%, transparent); }
 .badge.override { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 .avail-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
@@ -467,9 +467,9 @@ function goCanonical() {
 .field-label { display: block; margin-top: 8px; font-size: 12px; color: var(--muted); }
 .field-input { width: 100%; margin-top: 4px; }
 .match-list { margin-top: 2px; }
-.match-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.match-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .match-chip {
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; gap: 4px;
   padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px;
   background: transparent; cursor: pointer; font-size: 12px;
 }

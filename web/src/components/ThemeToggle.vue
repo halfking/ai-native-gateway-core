@@ -50,7 +50,7 @@ function toggle() {
   background: var(--kx-surface, var(--card));
   color: var(--kx-muted, var(--muted));
   cursor: pointer;
-  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+  transition: background 0.18s var(--kx-motion-ease-out), color 0.18s var(--kx-motion-ease-out), border-color 0.18s var(--kx-motion-ease-out);
 }
 .theme-toggle:hover {
   background: var(--kx-primary-soft, var(--bg-subtle));

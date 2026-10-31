@@ -100,7 +100,7 @@ onMounted(() => {
 .st-card-modules { margin-top: auto; padding-top: var(--space-2); border-top: 1px solid var(--border-muted); }
 .st-modules-title { font-size: var(--text-sm); color: var(--text-muted); margin-bottom: var(--space-1); }
 .st-modules-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-1); }
-.st-modules-list li code { font-size: 12px; padding: 2px 6px; background: var(--bg-subtle); border: 1px solid var(--border-muted); border-radius: 4px; }
+.st-modules-list li code { font-size: 12px; padding: 2px 4px; background: var(--bg-subtle); border: 1px solid var(--border-muted); border-radius: 4px; }
 .st-modules-empty { color: var(--text-muted); font-style: italic; font-size: var(--text-sm); }
 @media (max-width: 768px) { .st-grid { grid-template-columns: 1fr; } }
 </style>

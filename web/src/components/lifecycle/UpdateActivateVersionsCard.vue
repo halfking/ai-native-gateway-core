@@ -323,7 +323,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 16px;
-  padding: 14px 16px;
+  padding: 12px 16px;
   background: var(--kx-surface-soft);
   border: 1px solid var(--kx-border, var(--overlay-faint));
   border-radius: 10px;
@@ -336,7 +336,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   letter-spacing: 0.01em;
 }
 .banner-value {
-  font-size: 18px;
+  font-size: 16px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 .banner-arrow {
@@ -344,12 +344,12 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   color: var(--muted, var(--muted));
   align-self: center;
 }
-.ml { margin-left: 6px; }
+.ml { margin-left: 4px; }
 
 .mandatory-banner {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 8px 12px;
   margin-bottom: 12px;
   background: color-mix(in srgb, var(--warning) 12%, transparent);
@@ -363,18 +363,18 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .version-row {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 12px;
   align-items: center;
-  padding: 10px 14px;
+  padding: 8px 12px;
   border: 1px solid var(--kx-border, var(--overlay-faint));
   border-radius: 8px;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
+  transition: border-color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out);
 }
 .version-row:hover { border-color: var(--kx-primary, var(--accent)); }
 .version-row.is-selected {
@@ -396,14 +396,14 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
 }
 .version-row__meta {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   font-size: 12px;
   color: var(--muted, var(--muted));
   flex-wrap: wrap;
 }
 .version-row__artifacts {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -436,15 +436,15 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
 .flow-steps {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 10px;
-  margin-bottom: 14px;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 .flow-step {
   display: grid;
   grid-template-columns: 28px 1fr auto;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 8px 12px;
   border: 1px solid var(--kx-border, var(--overlay-faint));
   border-radius: 8px;
   background: var(--kx-surface, var(--on-primary));

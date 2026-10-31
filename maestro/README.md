@@ -4,12 +4,23 @@
 
 > ★ **执行状态声明（重要，先读这段）**
 >
-> - **本轮只生成了资产，没有实跑。** 本机此刻没有可用的 JDK 17+（`/Users/niuer/.maestro/bin/maestro` 启动即报 `Unable to locate a Java Runtime`），
->   且本地网关 `http://127.0.0.1:8782` 未在运行。
-> - 因此：**下面所有 flow 的语法结构已用 YAML 解析器逐个校验通过；所有断言文案已逐条回源码核对通过（112/112）；但没有任何一条 flow 被真实执行过。**
-> - Maestro 的 CLI 能力（命令名、YAML 键名、`evalScript` / `assertTrue` 的 `${...}` 语义）是从本机 `~/.maestro/lib/*.jar` 的字节码常量池里**读出来的实测事实**，
->   不是凭记忆写的；但「跑起来会怎样」没有实测。
-> - 所以：**README 里不会写「已实跑通过」。** 第一次跑之前请按「跑法」一节自检。
+> - **2026-10-28（R176）起：本目录的 flow 已经真实跑过。** 10 个 flow（112 条运行时路由）全部在
+>   本机 Chrome 156 + Maestro 2.11.0 上实跑，读数见 `docs/audit/2026-10-28-R176-Maestro逐页实跑.md`。
+> - **但「跑过」不等于「全绿」**：实跑暴露了 **9 处资产自身的错** 与 **2 处产品缺陷**，
+>   本轮已逐条修正（详见审计档「失败清单」一节）。资产里写的「跑法」在实跑前**三处是错的**
+>   （见下面「★ 跑法一节的三个坑」）。
+> - **Maestro CLI 的能力是实测出来的，不是读文档读出来的**：
+>   `url:` 头判定 web flow、`evalScript` 跑在 Maestro 侧 JS 沙箱（**页面里没有 `location`/`performance`**）、
+>   `--env-file` **不存在**、`-e KEY=VALUE` 是唯一的变量通道 —— 这四条都只有实跑才能发现。
+> - 因此：**下面所有 flow 的语法结构已用 YAML 解析器逐个校验通过；所有断言文案已逐条回源码核对并按实跑结果订正。**
+>
+> ★ **跑法一节的三个坑（第一次实跑时踩到的）**
+>
+> | # | 坑 | 正确做法 |
+> |---|---|---|
+> | 1 | YAML 头写 `appId: ${BASE_URL}` ⇒ 被判成**移动端** flow，去「安装」http://127.0.0.1:8782 | 头必须写 **`url: ${BASE_URL}`**（`YamlConfig.getUrl` ⇒ `FileUtils.isWebFlow`） |
+> | 2 | `--env-file maestro/env.local.yaml` ⇒ **CLI 里没有这个选项**；且 shell 环境变量**不参与** flow 的 `${}` 解析 | 用 **`-e KEY=VALUE`** 逐个传；仓库提供了 `maestro/run-local.sh` 代劳 |
+> | 3 | 加 `-p web` ⇒ 「0 devices connected」 | **不要加 `-p`**：让 Maestro 从 flow 内容自动判定 web；用 `--driver-host-port <port>` 连一个已开的 CDP Chrome |
 
 ---
 
@@ -325,41 +336,45 @@ router.ts 里 `import.meta.env.DEV` 包裹的三条路由，生产构建不注�
 ### 4.1 Maestro CLI
 
 ```bash
-/Users/niuer/.maestro/bin/maestro --version   # 需要 JDK 17+
+export JAVA_HOME="$HOME/kaixuan/jdk17/Contents/Home"   # Temurin 17.0.21
+export PATH="$JAVA_HOME/bin:$HOME/kaixuan/bin:$PATH"
+maestro --version                                      # 2.11.0
 ```
 
-★ 本机现状：`maestro` 已装在 `~/.maestro/bin/maestro`（CLI 版本 **2.11.0**，见 `~/.maestro/lib/maestro-cli-2.11.0.jar`），
-**但机器上没有 JDK 17+** —— `/usr/bin/java` 只是 macOS 的占位 stub，`java_home -V` 报 `Unable to locate a Java Runtime`，
-所以 `maestro --help` 直接失败。跑之前先装 JDK 17 或更高，例如：
-
-```bash
-brew install openjdk@17   # 或 temurin / zulu
-export JAVA_HOME=$(/usr/libexec/java_home -v 17)
-```
+★ 本机现状：`maestro` 装在 `~/.maestro/bin/maestro`（CLI **2.11.0**）。
+**JDK 是 2026-10-28（R176）为这次实跑现装的**：brew 的 `openjdk@17` 在本机拉不动，
+改用清华 Adoptium 镜像装了 **Temurin 17.0.21** 到 `~/kaixuan/jdk17`
+（`JAVA_HOME` 指向 `~/kaixuan/jdk17/Contents/Home`）。
+★ `/usr/bin/java` 只是 macOS 的占位 stub，`java_home -V` 报 `Unable to locate a Java Runtime` ⇒
+不设 `JAVA_HOME` 时 `maestro` 直接起不来。
 
 ### 4.2 本地网关
 
-管理后台跑在 `http://127.0.0.1:8782`（OpenAI 兼容 API 在同源 `/v1`）。flow 用 `BASE_URL` 指向它，默认值见 `maestro/env.yaml`。
+管理后台跑在 `http://127.0.0.1:8782`（OpenAI 兼容 API 在同源 `/v1`）。flow 用 `BASE_URL` 指向它。
 
-### 4.3 环境变量文件
+### 4.3 ★ 变量通道：**只有 `-e KEY=VALUE`**
 
-```bash
-# 1) 复制模板（模板里没有任何口令）
-cp maestro/env.yaml maestro/env.local.yaml
+★★ **Maestro CLI 2.11.0 没有 `--env-file` 选项**（实跑：`Unknown option '--env-file'`），
+而且 **shell 环境变量不参与 flow 的 `${}` 解析** ⇒ 把变量 export 到 shell 里是**无效**的。
+⇒ **唯一通道是 `-e KEY=VALUE`，且要逐个传。**
 
-# 2) 填入本机实际值；或者干脆不落盘，直接从 shell 变量生成：
-printf 'BASE_URL: %s\nADMIN_USER: %s\nADMIN_PASSWORD: %s\n' \
-  "$BASE_URL" "$ADMIN_USER" "$ADMIN_PASSWORD" > maestro/env.local.yaml
-```
+仓库提供了 `maestro/run-local.sh` 代劳：它从**仓根 `.env.local`** 读
+`LLM_GATEWAY_ADMIN_USER` / `LLM_GATEWAY_ADMIN_PASSWORD`，再拼成 `-e` 传给 Maestro。
+⇒ **口令不落在仓内任何文件里**（`.env.local` 已被 `.gitignore` 覆盖；
+`maestro/env.local.yaml` 只留样例，口令是空串占位）。
 
-`maestro/env.local.yaml` 已被 `maestro/.gitignore` 忽略。**仓内任何文件都不含口令**；
-`maestro/env.yaml` 里 `ADMIN_PASSWORD` 是空串占位。
+★ 代价要说清楚：`-e` 的值会出现在**进程 argv** 里 ⇒ 同机其它用户可用 `ps` 看到。
+这是「用 CLI 提供的唯一通道」与「口令不进仓内文件」之间的取舍，本仓选了后者。
+
 
 ---
 
 ## 5. 动态路由 → 占位值对照表
 
-flow 里的 URL 用 `${ENV_VAR}` 引用 `maestro/env.local.yaml` 里的值。默认值（样例 id）见下表：
+flow 里的 URL 用 `${ENV_VAR}` 引用**运行时传入的变量**（通道 = `-e KEY=VALUE`，见 §4.3）。
+★ **实跑取真值**：`maestro/tools/resolve-ids.mjs` 从**活着的网关**解析下列变量的真实值
+（`run-local.sh` 会自动调用并逐个 `-e` 传给 Maestro）⇒ 下表里的「默认样例值」只是
+「变量名 + 形态」说明，**不是**本机可用的值。
 
 | 路由 | 动态段 | 环境变量 | 默认样例值 | 说明 |
 |---|---|---|---|---|
@@ -490,6 +505,12 @@ output.ms__admin_settings = Math.max(
      （`~/.maestro/lib/maestro-client.jar` 的 `maestro/js/GraalJsEngine` 里有 `outputBinding`），
      所以跨导航**不会丢**，`Date.now()` 差值一定可用；
      而宿主沙箱里没有 `performance`（浏览器 API），此时该项退化为 0，不影响结果。
+     ★★ **这一点在 2026-10-28 实测坐实**：在 web flow 的 `runScript` 里写
+     `console.log(location.pathname)` 会得到
+     `TypeError: Cannot read property 'pathname' of undefined`
+     ⇒ ⇒ **web 模式下 Maestro 的 JS 沙箱里没有 `location` / `performance`**，
+     ⇒ ⇒ **实测值完全来自 `Date.now() - output.t0` 这一路**（纯墙钟）。
+     ⇒ ⇒ **这条计时通道是真实可信的**（不是假红）。
    - 万一 `output.t0` 因任何原因不可用，`performance.now()` 仍然能给出正确的「页面打开耗时」。
 2. **`|| -1` 是哨兵**：两项都拿不到时记 -1（= 没测到），不会伪装成 0ms。
 3. **阈值断言是 `optional: true`** ⇒ 慢页**只标记、不让 flow 失败**。
@@ -510,73 +531,81 @@ output.ms__admin_settings = Math.max(
 
 ### 7.3 事后筛选
 
-跑的时候把 Maestro 的输出和报告都留档：
+★ **2026-10-28（R176）实跑改写了这一节**：旧的「从 CLI 日志里正则抠 `ms__`」是**假通道** ——
+Maestro 只把 evalScript 打成 `Run ${...}... COMPLETED`，**从不回显赋值结果** ⇒ 旧脚本永远读不到数。
+真正可用的机器可读通道是 Maestro 的调试产物里的 **`commands.json`**：每条命令都带
+`metadata.duration`（毫秒）⇒
+
+> **页面打开耗时 = `openLink` 的 duration + 其后 `extendedWaitUntil` 的 duration**
+
+（后者就是「等该页关键文案出现」花掉的墙钟）。
+
+实测对拍（2026-10-28，修复前的那台网关）：`/forbidden` 的
+`openLink=813ms` + `extendedWaitUntil=9275ms` = `10088ms`，
+与 flow 里 `output.ms__forbidden` 实测的 `10463ms` 同量级 ⇒ **通道可信**。
 
 ```bash
-mkdir -p maestro/reports
-maestro test \
-  --env-file maestro/env.local.yaml \
-  --format junit --output maestro/reports/junit.xml \
-  --debug-output maestro/reports/debug \
-  maestro/flows/01-public-guest.yaml maestro/flows/02-overview-live.yaml \
-  2>&1 | tee maestro/reports/run.log
-```
-
-然后：
-
-```bash
-# 从 CLI 日志里抠出所有计时值
-node maestro/tools/slow-pages.mjs --log maestro/reports/run.log
-
-# 或者从 JUnit 报告里读失败的 slow-check 断言
-node maestro/tools/slow-pages.mjs --junit maestro/reports/junit.xml
-
-# 改阈值
-node maestro/tools/slow-pages.mjs --log maestro/reports/run.log --threshold 3000
+# 推荐入口：跑法见 §8（run-local.sh 会把产物落到 maestro/reports/<时间戳>/）
+node maestro/tools/slow-pages.mjs --artifacts maestro/reports/<时间戳> --threshold 2000
 ```
 
 `maestro/tools/slow-pages.mjs` 会打印一张按耗时倒序的表，并单独列出超过阈值的路由；
 **退出码 1 = 有页面超阈值**（可以直接当 CI 卡口用），0 = 全部达标，2 = 用法错。
 
-> ★ 两条读取路径的可靠性说明：
-> - `--log` 路径靠正则匹配 `ms__<slug> = <毫秒>`，**只要 Maestro 把 evalScript 的结果打进 CLI 输出就能命中**；
-> - `--junit` 路径靠每个页面那条 `label: "slow-check:<route>"` 的软断言，失败的 testcase 里能读出路由。
-> - 两条路径**本轮都没能实跑验证**（没有 JDK、没有网关）。第一次跑完请顺手确认一下哪条能出数；
->   如果两条都不出数，就把 `output.ms__*` 的值直接贴进 `maestro/reports/` 下一个人工整理的表里，
->   流程（打点 → 记录 → 筛）本身不变。
+> ★ 备用路径 `--junit` 仍在（读 slow-check 软断言的失败 testcase），
+> 但**主路径是 `--artifacts`**：JUnit 只在断言失败时才有信息，
+> 而 `--artifacts` 读的是**每条命令的 duration** ⇒ 能给出**全部**页面的耗时分布，
+> 不只是「慢的那几个」。
+
 
 ---
 
 ## 8. 跑法
 
+### 8.1 推荐入口：`maestro/run-local.sh`
+
 ```bash
-# 单个 flow
-maestro test --env-file maestro/env.local.yaml maestro/flows/02-overview-live.yaml
+# 全部功能 flow（不含 dev-only）；自动解析动态路由 ID、自动起/复用 CDP Chrome
+bash maestro/run-local.sh
 
-# 全部功能 flow（不含 dev-only）
-maestro test --env-file maestro/env.local.yaml \
-  maestro/flows/01-public-guest.yaml \
-  maestro/flows/02-overview-live.yaml \
-  maestro/flows/03-providers-models.yaml \
-  maestro/flows/04-tenants-portal.yaml \
-  maestro/flows/05-routing.yaml \
-  maestro/flows/06-keys-requests.yaml \
-  maestro/flows/07-admin-config.yaml \
-  maestro/flows/08-admin-data-ops.yaml \
-  maestro/flows/09-ops-maintain.yaml
+# 连 90-dev-only.yaml 一起跑
+bash maestro/run-local.sh --with-dev
 
-# dev 构建专用（生产构建下这三条路由不存在 ⇒ 会 404 → 落到 catch-all）
-maestro test --env-file maestro/env.local.yaml maestro/flows/90-dev-only.yaml
-
-# 只看慢页
-maestro test --env-file maestro/env.local.yaml --format junit \
-  --output maestro/reports/junit.xml maestro/flows/05-routing.yaml \
-  2>&1 | tee maestro/reports/run.log
-node maestro/tools/slow-pages.mjs --log maestro/reports/run.log
+# 产物：maestro/reports/<时间戳>/{01..09,90}.log + summary.txt
+# 慢页筛选（读产物里的 commands.json）
+node maestro/tools/slow-pages.mjs --artifacts maestro/reports/<时间戳> --threshold 2000
 ```
 
+脚本做四件事：① 探测 JDK → ② 起/复用 headless Chrome（CDP） → ③ 从**活着的网关**解析
+动态路由的真实 ID → ④ 逐 flow 实跑并留档。
+
+### 8.2 手工跑单个 flow
+
+```bash
+export JAVA_HOME="$HOME/kaixuan/jdk17/Contents/Home"
+export PATH="$JAVA_HOME/bin:$HOME/kaixuan/bin:$PATH"
+
+maestro test \
+  --driver-host-port 9222 --headless --no-ansi \
+  --test-output-dir maestro/reports/manual \
+  -e BASE_URL=http://127.0.0.1:8782 \
+  -e "ADMIN_USER=<本机管理员>" \
+  -e "ADMIN_PASSWORD=<本机口令>" \
+  -e PROVIDER_ID=2 -e REQUEST_ID=... \
+  maestro/flows/02-overview-live.yaml
+```
+
+### 8.3 ★ 四个实测踩过的坑（2026-10-28）
+
+| # | 坑 | 现象 | 正解 |
+|---|---|---|---|
+| 1 | **YAML 头必须是 `url:`** | 写了 `appId:` ⇒ Maestro 判成**移动端 flow** ⇒ 报「Web support is in Beta」且一条命令都不跑 | 头部写 `url: ${BASE_URL}`（`YamlConfig.getUrl` ⇒ `FileUtils.isWebFlow`） |
+| 2 | **CLI 没有 `--env-file`** | `--env-file` 直接被拒；而且 **shell 环境变量不参与 `${}` 解析** | 只能用 `-e KEY=VALUE` 逐个传；口令从仓根 `.env.local` 读、由 `run-local.sh` 代传（**口令不落仓内任何文件**） |
+| 3 | **不要加 `-p web`** | `-p web` 会把 flow 筛成 0 个设备 ⇒ 「no flows to run」 | 不加 `-p`；改用 `--driver-host-port 9222` 连自起的 CDP Chrome（该选项 help 里没列，但确实被接受） |
+| 4 | **`evalScript` 跑在 Maestro 侧沙箱** | web flow 的 `runScript` 里 `location` / `performance` 都是 `undefined` | 计时只用 `Date.now() - output.t0`（跨导航不丢）；**页面内部时间线要另用 CDP 探针** |
+
 ★ `maestro test` **没有 `--dry-run`**（本机 CLI 2.11.0 的 `TestCommand` 里没有这个选项；
-只有一个独立的 `check-syntax` 子命令）。本轮的语法校验是**用 YAML 解析器逐个文件解析 + 结构断言**做的，不是 Maestro 自己做的：
+只有一个独立的 `check-syntax` 子命令）。语法校验是**用 YAML 解析器逐个文件解析 + 结构断言**做的：
 
 ```bash
 python3 - <<'PY'
@@ -587,6 +616,25 @@ for f in sorted(glob.glob('maestro/flows/**/*.yaml', recursive=True)):
     print(f, len(docs[1]))
 PY
 ```
+
+### 8.4 ★ 断言文案的匹配语义（2026-10-28 实测）
+
+Maestro 的 `visible:` 是**全匹配**，且**不 trim**、取的是元素的 `textContent`（**不是** `innerText`）。
+⇒ 页面上真实渲染的文本只要带**前后空白 / 上下文前缀 / 徽标数字**，写「干净的短文案」就会红。
+
+实测到的三种污染形态（全部已用 CDP 探针取到原文）：
+
+| 形态 | 页面 | 元素原文 | 写法 |
+|---|---|---|---|
+| 前后空白 | `/routing-v2/annotations` 的页签按钮 | `" 标注工作台 "` | `visible: '.*标注工作台.*'` |
+| 上下文前缀 | `/tenant/pricing` 的标题 | `"默认租户 · 套餐与充值"` | `visible: '.*套餐与充值.*'` |
+| 徽标数字 | `/key-applications` 的 H2 | `"密钥申请 1 待审"` | `visible: '.*密钥申请.*'` |
+
+⇒ **规则：能用正则就用两侧 `.*` 的正则，只锚住稳定的那一段。**
+★ 正则可用性有**阳性 + 阴性对照**的实测（2026-10-28）：`.*标注工作台.*` 与
+`.*套餐与充值.*` 均 COMPLETED，而 `.*绝不存在的文案ZZZQQQ.*` **FAILED**
+⇒ 不是「什么都能过」。
+
 
 ---
 
@@ -623,7 +671,7 @@ PY
    生产构建下访问它们会落到 catch-all ⇒ 断言的是落地页而不是 dev 页。已单独拆到 `90-dev-only.yaml`。
 11. **动态段路由的样例 id 很可能不存在**。这些页面（`/providers/:id`、`/keys/:id`、`/admin/sessions/:id` 等）在 id 不存在时渲染的是**空态/错误态**；
     所以断言一律挑「页面骨架上恒定存在」的文案（页标题、列头、切换按钮），**不挑数据相关的文案**。
-    要验数据态就把 `maestro/env.local.yaml` 里的样例 id 换成真实 id。
+    要验数据态就跑 `maestro/run-local.sh` —— 它会用 `resolve-ids.mjs` 解析出的**真 id** 覆盖样例值。
 12. **`/routing-v2/work-types/settings` 和 `/routing-v2/work-types/:key` 与 `/routing-v2/work-types` 是同一个组件**
     （`router.ts:231-233`，都是 `WorkTypesView`）⇒ 三条断言点相同，这是事实，不是漏写。
 13. **`/routing-v2/annotations`（含 `/stats`）、`/routing-v2/task-profile`、`/routing-v2/auto-tuning` 四个旧路由**

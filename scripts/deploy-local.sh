@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
+# ★★ r1048 轮（★ 2026-10-29）：★ 本脚本在【宿主】上编译 Go ⇒ ⇒ 子进程会往 Go 的
+# ★★ 构建缓存里写产物 ⇒ ⇒ 而那个缓存默认是【用户那个全局的】⇒ ⇒ 必须指向【专用缓存】
+# ★★ （★ 目录约定与 6 GB 上限见 `scripts/lib/gocache.sh`；★ 理由与实测读数见
+# ★★ `internal/gocache` 的包注释 ⇒ ⇒ ★★ 实测：★ **单包** `go test ./admin/` 就要
+# ★★ **846 MB** ⇒ ⇒ ★★ 体积由【传递依赖闭包】决定 ⇒ ⇒ ★★ 按「编译范围」分层不成立）。
+# ★★ 【失败安全】：★ 找不到共享入口 ⇒ ⇒ **不设 GOCACHE**（★ 宁可漏隔离 ⇒ ⇒ 也不要把
+# ★★ GOCACHE 设成垃圾值 ⇒ ⇒ 那会让 go 直接报错 ⇒ ⇒ 把脚本弄坏）。
+__gocache_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || __gocache_dir=""
+while [ -n "$__gocache_dir" ] && [ ! -f "$__gocache_dir/scripts/lib/gocache.sh" ] && [ "$__gocache_dir" != "/" ]; do
+  __gocache_dir="$(dirname "$__gocache_dir")"
+done
+if [ -n "$__gocache_dir" ] && [ -f "$__gocache_dir/scripts/lib/gocache.sh" ]; then
+  . "$__gocache_dir/scripts/lib/gocache.sh"
+  gocache_use script
+fi
 # Local deployment entry point. See .agents/skills/llm-gateway-deploy/SKILL.md.
 set -euo pipefail
 
@@ -71,9 +86,16 @@ ROOT_OVERRIDE=
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 KEEP_RELEASES="${KEEP_RELEASES:-3}"
 CLEANUP_DOWNLOADS=0
+# ★ 2026-10-28（第二轮批判性审计 · F-B）：recover-switch-lock 的强制档开关。
+#   在【顶层】初始化（不是只在参数解析块里）⇒ 脚本被 source 时也不会触发
+#   `set -u` 的 unbound variable。
+RECOVER_FORCE=0
 DEPLOY_BUILD_LOCK_HELD=0
 # 本次部署已拉起、尚未晋升的候选实例端口（cleanup_deploy 兜底清理用）
 DEPLOY_CANDIDATE_PORT=
+# ★ 2026-10-27（r1039 后续轮，§8 第 18 条）：切流互斥锁（机器级，跨 checkout 共享）。
+# 覆盖窗口 = 候选起停 → 切流完成；构建锁在候选起停**之前**就释放了，覆盖不到这里。
+DEPLOY_SWITCH_LOCK_HELD=0
 LOCK_LOCAL_BUILD_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-build.lock"
 LOCK_BUILD_TARGET=local
 
@@ -89,7 +111,7 @@ fi
 
 usage() {
   cat <<'EOF'
-Usage: deploy-local.sh [deploy|status|verify|rollback|start|stop|logs] [options]
+Usage: deploy-local.sh [deploy|status|verify|rollback|start|stop|logs|recover-switch-lock] [options]
 
 Options:
   --root PATH             install root (otherwise OS default)
@@ -99,6 +121,8 @@ Options:
   --timeout SECS          health probe timeout (default: 60)
   --cleanup-downloads     remove the obsolete ~/Downloads/llm-gateway-files copies
                           (only after PG migration is verified). Off by default.
+  --force                 with recover-switch-lock only: remove the lock even when
+                          its holder cannot be identified (explicit operator force)
   --help
 
 Project layout:
@@ -127,19 +151,32 @@ EOF
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  # ★ RECOVER_FORCE 在【顶层】初始化（见上）⇒ 环境里预置的同名变量不会变成隐式授权。
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      deploy|status|verify|rollback|start|stop|logs) ACTION=$1; shift ;;
+      deploy|status|verify|rollback|start|stop|logs|recover-switch-lock) ACTION=$1; shift ;;
       --root) ROOT_OVERRIDE=${2:?--root requires a path}; shift 2 ;;
       --dry-run) DRY_RUN=1; shift ;;
       --no-frontend) SKIP_FRONTEND=1; shift ;;
       --minimal) MINIMAL_DEPLOY=1; shift ;;
       --timeout) HEALTH_TIMEOUT=${2:?--timeout requires seconds}; shift 2 ;;
       --cleanup-downloads) CLEANUP_DOWNLOADS=1; shift ;;
+      # ★ 2026-10-28（第二轮批判性审计 · F-B）：recover-switch-lock 的**强制档**。
+      #   默认档在「持有者读不出来」（元数据缺失/损坏/半截）时**拒绝**⇒ 与「残锁判定」
+      #   口径一致 ⇒ 但那样一来「元数据坏掉的锁」就没有任何恢复路径 ⇒ 机器被永久卡死
+      #   ⇒ 所以必须给一条**显式授权**的强制档（与共享部署库 unlock-local.sh --force 同构）。
+      #   ★ 只允许与 recover-switch-lock 同用（下面统一校验）⇒ 不会变成「到处都能 --force」。
+      --force) RECOVER_FORCE=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) printf 'error: unknown argument: %s\n' "$1" >&2; usage >&2; exit 64 ;;
     esac
   done
+  # ★ --force 只对 recover-switch-lock 有意义 ⇒ 与别的动作同用 ⇒ 直接拒绝（fail-closed）：
+  #   静默忽略一个「强制」标记，比报错危险得多。
+  if (( RECOVER_FORCE )) && [[ "${ACTION:-}" != "recover-switch-lock" ]]; then
+    printf 'error: --force is only valid with recover-switch-lock (got action: %s)\n' "${ACTION:-<none>}" >&2
+    exit 64
+  fi
 fi
 
 if [[ -n "$ROOT_OVERRIDE" ]]; then export LLM_GATEWAY_ROOT="$ROOT_OVERRIDE"; fi
@@ -161,11 +198,28 @@ VERSION_FILE="$PROJECT_ROOT/VERSION"
 log() { printf '[deploy-local] %s\n' "$*" >&2; }
 warn() { printf '[deploy-local] warning: %s\n' "$*" >&2; }
 die() { printf '[deploy-local] error: %s\n' "$*" >&2; exit 1; }
+# die75 —— 「**稍后重试**」这一类失败的专用退出码（EX_TEMPFAIL / 75）。
+#
+# ★ 2026-10-28（第三轮 · 合并就绪轮）：★ **声名与实现不符** ——
+#   切流锁争用的注释与设计都说「rc 75（EX_TEMPFAIL）」，但生产入口用的是
+#   `|| die …` ⇒ `die` 退 **1** ⇒ ⇒ **CLI 层的 rc 75 契约从来没兑现过**
+#   ⇒ ⇒ 监督方（CI / 脚本 / 运维手册）按 75 判断「这是争用、稍后重试」，
+#     而实际拿到的是 1 ⇒ **「稍后重试」与「硬失败」不可区分**。
+#   ⇒ ⇒ 争用这一处改用 die75 ⇒ 契约在**函数层与 CLI 层同时**成立。
+die75() { printf '[deploy-local] temporarily unavailable: %s\n' "$*" >&2; exit 75; }
 
 release_build_lock() {
   if (( DEPLOY_BUILD_LOCK_HELD )); then
     lock_release_build || true
     DEPLOY_BUILD_LOCK_HELD=0
+  fi
+}
+
+# ★ 2026-10-27（r1039 后续轮，§8 第 18 条）：释放机器级切流锁。
+release_switch_lock() {
+  if (( DEPLOY_SWITCH_LOCK_HELD )); then
+    dl_release_switch_lock || true
+    DEPLOY_SWITCH_LOCK_HELD=0
   fi
 }
 
@@ -181,6 +235,9 @@ cleanup_deploy() {
     DEPLOY_CANDIDATE_PORT=
   fi
   release_build_lock
+  # ★ 2026-10-27（r1039 后续轮，§8 第 18 条）：切流锁也必须在夭折路径上释放
+  # ⇒ 否则一次 Ctrl-C 会把机器级锁留成「永久占用」，后面的部署全部快速失败。
+  release_switch_lock
   exit "$status"
 }
 trap cleanup_deploy EXIT INT TERM
@@ -1776,6 +1833,18 @@ deploy() {
   gate_credential_encryption_key
   bundle=$(stage_release "$binary")
   release_build_lock
+  # ★ 2026-10-27（r1039 后续轮，§8 第 18 条）：从**候选实例起跑**到**切流完成**，
+  # 持有一把**机器级**切流锁。
+  #
+  # ⇒ 构建锁在上一行就释放了（它只保护 checkout 的版本号/web/dist 变更），
+  #   **覆盖不到切流窗口** ⇒ 本机多份 checkout 同时部署时，切流步会互相抢
+  #   8781/8782（实测：候选验证全绿、抢占 8782 失败 ⇒ 「/version body did not
+  #   match bundle metadata」⇒ 重试 3 次全红 ⇒ 整轮回滚）。
+  # ⇒ 持锁期间另一个 checkout 会**快速失败**（rc 75）而不是去抢端口。
+  #   ★ rc 75 = EX_TEMPFAIL = 「稍后重试」⇒ ⇒ 必须用 die75（退 75）而不是
+  #   普通 die（退 1）⇒ 否则监督方无法区分「有人正在切流」与「真出错了」。
+  dl_acquire_switch_lock || die75 'another deployment is switching the active port; retry after it finishes'
+  DEPLOY_SWITCH_LOCK_HELD=1
   # 2026-09-20（端口漂移修复）：active 端口以文件/env 链为准（dl_resolve_active_port
   # 只用实测做诊断告警，不再改写结果）——本地无代理拓扑里 active 端口就是客户端
   # 直连的对外契约端口，绝不因"另一侧有残留监听"而漂移。候选 = 8781/8782 契约对
@@ -1854,6 +1923,9 @@ deploy() {
   # 收尾兜底：此刻 active 已稳定，pidfile 记录的就是唯一合法进程
   reap_stray_gateways "$(cat "$(pid_file "$candidate_port")" 2>/dev/null || true)"
   record_success
+  # ★ 2026-10-27（r1039 后续轮，§8 第 18 条）：切流完成 ⇒ 交还机器级切流锁。
+  # 失败路径由 cleanup_deploy 的 trap 释放（见 release_switch_lock）。
+  release_switch_lock
 }
 
 verify() {
@@ -1893,6 +1965,22 @@ rollback() {
 }
 
 start() { ensure_resources; local b="$BIN_DIR/current"; [[ -d "$b" ]] || die 'no active release'; start_instance "$b" "$(dl_active_port)"; verify; }
+# ★ 2026-10-28（批判性审计轮）：切流锁的**仓内恢复入口**。
+#   上一轮只在审计档里写了「运维核对后手工删除」——★ 那是【声名】：仓内没有任何
+#   命令能做这件事 ⇒ 机器重启 / SIGKILL 留下的残锁会把**每一次后续部署**永久卡死。
+#   ⇒ 这里给一条**真命令**：持有者还活着 ⇒ 拒绝；持有者已死 ⇒ 清掉。
+# ★ 2026-10-28（第二轮批判性审计 · F-B）：加**强制档** --force
+#   —— 默认档在「持有者读不出来」时拒绝（与残锁判定同口径），
+#   而 --force 是运维的显式授权（清掉并打印读到的元数据）。
+recover_switch_lock() {
+  # ★ bash 3.2（本机 /bin/bash）+ `set -u` 下 `"${arr[@]}"` 对空数组会报 unbound variable
+  #   ⇒ 不用数组，直接两分支。
+  if (( RECOVER_FORCE )); then
+    dl_recover_switch_lock --force || die 'switch lock recovery refused'
+  else
+    dl_recover_switch_lock || die 'switch lock recovery refused'
+  fi
+}
 stop() { dl_detect_resources; stop_instance 8782; stop_instance 8781; stop_instance 8783; }
 logs() { exec tail -f "$LOG_DIR/gateway-$(dl_active_port).log"; }
 
@@ -1904,4 +1992,5 @@ case "$ACTION" in
   start) start ;;
   stop) stop ;;
   logs) logs ;;
+  recover-switch-lock) recover_switch_lock ;;
 esac

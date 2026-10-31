@@ -619,6 +619,10 @@ func parseResponsesTools(raw json.RawMessage) ([]ToolDefinition, error) {
 			td.Description = desc
 		}
 		td.Parameters = marshalAnyToRaw(sanitizeInputSchema(tool["parameters"]))
+		// RISK-2（2026-10-29）：Responses flat 形同样收集顶层非标准键。
+		if _, leftovers, ok2 := splitToolRaw(item); ok2 {
+			td.Extra = toolExtrasFrom(leftovers, irToolKnownKeysOpenAI)
+		}
 		result = append(result, td)
 	}
 	return result, nil

@@ -3,7 +3,9 @@ package dispatch
 import (
 	"container/heap"
 	"context"
+	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -69,9 +71,9 @@ func RealRetrySleeper(ctx context.Context, d time.Duration, wake <-chan struct{}
 // to the same [2s, 120s] window (survival parity: the 2s→120s hard clamp of
 // survival_coordinator.go).
 //
-// Jitter is intentionally NOT applied here: the v4 spec assigns ±20% jitter
-// to the survival coordinator (T3), and keeping dispatch deterministic keeps
-// the retry timeline testable.
+// Jitter is intentionally NOT applied here: NextRetryDelay stays a pure
+// ladder (the timeline contract TestNextRetryDelayLadder pins); callers
+// spread the result with ApplyRetryJitter at the scheduling site.
 func NextRetryDelay(retrySeq int, retryAfter time.Duration) time.Duration {
 	if retryAfter > 0 {
 		return clampDuration(retryAfter, retryBaseDelay, retryMaxDelay)
@@ -87,6 +89,63 @@ func NextRetryDelay(retrySeq int, retryAfter time.Duration) time.Duration {
 		}
 	}
 	return clampDuration(delay, retryBaseDelay, retryMaxDelay)
+}
+
+// RetryJitterRand is the ±20% retry-backoff jitter seam (P0-C, audit
+// 2026-10-28 §4): nil → math/rand.Float64. Overridable in tests so jitter
+// boundaries are pinned deterministically. Mirrors the survival
+// coordinator's JitterRand field (survival_coordinator.go:165).
+var RetryJitterRand func() float64
+
+// retryJitterEnabled gates ApplyRetryJitter from hotconfig
+// (llmgw_dispatch_retry_jitter_enabled, default ON — anti retry-storm is
+// the P0-C goal; flipping it off restores the exact pre-P0-C timeline).
+var retryJitterEnabled atomic.Bool
+
+// SetRetryJitterEnabled flips the dispatch-layer ±20% backoff jitter
+// (hotconfig reload path). The survival layer keeps its own always-on
+// jitter; this only governs the dispatch retry ladder.
+func SetRetryJitterEnabled(on bool) { retryJitterEnabled.Store(on) }
+
+// RetryJitterEnabled reports whether dispatch-layer jitter is active.
+func RetryJitterEnabled() bool { return retryJitterEnabled.Load() }
+
+// ApplyRetryJitter spreads one backoff step by ±20%, the SAME formula as
+// the survival layer's applyBackoffJitter:
+//
+//	jitter = d × 0.2 × (2·r − 1)   // r ∈ [0,1) → −20%..+20%
+//	final  = d + jitter            // never < 0
+//
+// Single implementation for both layers: streaming.applyBackoffJitter
+// delegates here (同一把尺子一份实现). Honors the llmgw_dispatch_retry_
+// jitter_enabled hotconfig gate; when disabled (or d ≤ 0) the input passes
+// through unchanged.
+func ApplyRetryJitter(d time.Duration, randFloat func() float64) time.Duration {
+	if !retryJitterEnabled.Load() {
+		return d
+	}
+	return ApplyRetryJitterAlways(d, randFloat)
+}
+
+// ApplyRetryJitterAlways is the ungated core of ApplyRetryJitter: the
+// survival layer delegates here unconditionally (its jitter is not subject
+// to the dispatch hotconfig gate).
+func ApplyRetryJitterAlways(d time.Duration, randFloat func() float64) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	if randFloat == nil {
+		randFloat = RetryJitterRand
+	}
+	if randFloat == nil {
+		randFloat = rand.Float64
+	}
+	factor := 1 + 0.2*(2*randFloat()-1) // ∈ [0.8, 1.2)
+	jittered := time.Duration(float64(d) * factor)
+	if jittered < 0 {
+		return 0
+	}
+	return jittered
 }
 
 func clampDuration(d, lo, hi time.Duration) time.Duration {

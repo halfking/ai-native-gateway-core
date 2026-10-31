@@ -14,6 +14,12 @@
 #    后续测试红在一个没被本次改动影响的地方。
 #  - 每次跑前先跑 control（未变异必须全绿），否则无法区分"门红"和"变异残留"。
 #  - 跑完核对无残留 .mutbak。
+# ★★ r1047 轮（★ 2026-10-28）：★ 本脚本【改树 ⇒ 跑 go test ⇒ 还原】⇒ ⇒ 树每变一次
+# ★★ ⇒ ⇒ 编译产物的 action ID 就变 ⇒ ⇒ 旧的【永远不会再被命中】⇒ ⇒ 纯垃圾 ⇒ ⇒
+# ★★ ⇒ ⇒ 绝不能落在用户的全局缓存里 ⇒ ⇒ 指向【专用缓存】（★ 目录约定与 6 GB 上限见
+# ★★ `scripts/lib/gocache.sh`；★ 理由与实测读数见 `internal/gocache` 的包注释）。
+export GOCACHE="$("$(git rev-parse --show-toplevel)/scripts/lib/gocache.sh" mutate)"
+
 
 set -uo pipefail
 cd "$(dirname "$0")/.."

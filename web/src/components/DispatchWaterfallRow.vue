@@ -55,7 +55,7 @@ function resultClass(result: string): string {
   background: transparent;
   color: var(--kx-text);
   text-align: left;
-  padding: 6px 8px;
+  padding: 4px 8px;
   cursor: pointer;
   font: inherit;
 }
@@ -79,14 +79,14 @@ code {
   color: var(--kx-muted);
 }
 .metrics {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-muted);
   font-variant-numeric: tabular-nums;
 }
 .result {
   font-size: 11px;
   text-transform: lowercase;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 999px;
   border: 1px solid var(--kx-border);
   justify-self: start;

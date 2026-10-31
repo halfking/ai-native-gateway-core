@@ -237,27 +237,27 @@ onMounted(load)
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 0.75rem;
+  gap: 12px;
   flex-wrap: wrap;
-  margin-bottom: 0.75rem;
+  margin-bottom: 12px;
 }
 
 .info-chips {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
 .info-chip {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  padding: 0.2rem 0.6rem;
+  gap: 4px;
+  padding: 4px 8px;
   border-radius: 999px;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
-  font-size: 0.78rem;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -278,20 +278,20 @@ onMounted(load)
 .toolbar-actions {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
 .inline-label {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  font-size: 0.85rem;
+  gap: 8px;
+  font-size: 14px;
   color: var(--text-muted);
 }
 
 .select-sm {
-  padding: 0.2rem 0.4rem;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--card);
@@ -301,12 +301,12 @@ onMounted(load)
 .data-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.85rem;
+  font-size: 14px;
 }
 
 .data-table th,
 .data-table td {
-  padding: 0.5rem 0.6rem;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--border);
   text-align: left;
   vertical-align: top;
@@ -342,9 +342,9 @@ onMounted(load)
 
 .tier-badge {
   display: inline-block;
-  padding: 0.1rem 0.5rem;
+  padding: 1.6px 8px;
   border-radius: 999px;
-  font-size: 0.75rem;
+  font-size: 12px;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   border: 1px solid var(--border);
 }

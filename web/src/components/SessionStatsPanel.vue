@@ -242,7 +242,7 @@ function onDaysClick(next: number) {
 </template>
 
 <style scoped>
-.session-stats-panel { padding: 0 0 20px; width: 100%; }
+.session-stats-panel { padding: 0 0 16px; width: 100%; }
 .session-stats-panel--has-error { opacity: 0.6; pointer-events: none; }
 .session-stats-panel--loading { opacity: 0.85; }
 .panel-toolbar { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
@@ -250,7 +250,7 @@ function onDaysClick(next: number) {
 .meta-text, .period-banner { font-size: 12px; color: var(--muted, var(--text-secondary)); }
 .period-banner { color: var(--text, var(--text)); }
 .days-switch { display: inline-flex; border: 1px solid var(--border, var(--border)); border-radius: 6px; overflow: hidden; }
-.days-btn { border: 0; background: transparent; padding: 6px 14px; font-size: 13px; cursor: pointer; color: var(--muted, var(--muted)); }
+.days-btn { border: 0; background: transparent; padding: 4px 12px; font-size: 13px; cursor: pointer; color: var(--muted, var(--muted)); }
 .days-btn--active { background: var(--accent, var(--accent)); color: var(--on-primary); }
 .alert { display: flex; align-items: center; gap: 12px; padding: 12px 16px; margin-bottom: 16px; border-radius: 6px; background: var(--danger-bg); border: 1px solid var(--danger-bd); color: var(--danger); }
 .alert-retry { padding: 4px 12px; border: 1px solid var(--danger-bd); border-radius: 4px; background: white; cursor: pointer; }
@@ -259,7 +259,7 @@ function onDaysClick(next: number) {
   gap: 16px; margin-bottom: 16px; width: 100%;
 }
 .mini-kpi {
-  display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: 10px;
+  display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 10px;
   border: 1px solid var(--border, var(--surface-secondary)); background: var(--card, var(--on-primary));
 }
 .mini-kpi__icon { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: white; flex-shrink: 0; }
@@ -268,7 +268,7 @@ function onDaysClick(next: number) {
 .mini-kpi__icon--cost { background: linear-gradient(135deg, var(--success), var(--probe-cyan-light)); }
 .mini-kpi__icon--compliance { background: linear-gradient(135deg, var(--pink), var(--warning)); }
 .mini-kpi__label { font-size: 13px; color: var(--muted, var(--text-secondary)); }
-.mini-kpi__value { font-size: 22px; font-weight: 600; }
+.mini-kpi__value { font-size: 24px; font-weight: 600; }
 .charts-row {
   display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: 16px; margin-bottom: 16px; width: 100%;
@@ -281,7 +281,7 @@ function onDaysClick(next: number) {
 @media (max-width: 1024px) { .detail-grid { grid-template-columns: 1fr; } }
 .detail-card {
   border: 1px solid var(--border, var(--surface-secondary)); border-radius: 10px;
-  background: var(--card, var(--on-primary)); padding: 14px 16px; min-width: 0;
+  background: var(--card, var(--on-primary)); padding: 12px 16px; min-width: 0;
 }
 .detail-card__header { font-weight: 600; font-size: 14px; margin-bottom: 12px; }
 .kv-list { margin: 0; }

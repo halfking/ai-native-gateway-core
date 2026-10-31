@@ -30,6 +30,17 @@ type MonitorConfig struct {
 
 	// 2026-08-10: 按凭据节点测试（直连节点，绕过网关）。默认 false，向后兼容。
 	EnablePerNodeTesting bool `json:"enable_per_node_testing,omitempty"`
+	// PerNodeScope 限定 per-node IQ 的节点范围："featured"（默认）只测
+	// routing_policy.featured_models 命中的绑定；"all" 不收窄。
+	// 2026-10-30: 无收窄时每次 boot 对全量活跃绑定打真实请求（token 爆炸）。
+	PerNodeScope string `json:"per_node_scope,omitempty"`
+	// PerNodeMinIntervalHours: 成功 IQ 实测在此窗口内的节点跳过（防部署
+	// 重启反复打同一批节点；0 = 默认 24h）。
+	PerNodeMinIntervalHours int `json:"per_node_min_interval_hours,omitempty"`
+	// PerNodeFailedIntervalHours: 失败 IQ 实测的冷却窗（独立于成功窗；
+	// 0 = 默认 4h）。2026-10-30 24h 审计第 8 轮：dedup 只认 success ⇒
+	// EOL/坏节点每个 scheduled 周期全量重烧（211 24h scheduled failed 763 次）。
+	PerNodeFailedIntervalHours int `json:"per_node_failed_interval_hours,omitempty"`
 }
 
 // ModelTarget 监控目标模型

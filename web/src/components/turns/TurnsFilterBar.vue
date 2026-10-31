@@ -200,8 +200,8 @@ function onPresetChange(value: string) {
 
 <style scoped>
 .filter-section { margin-bottom: 16px; }
-.view-toggle { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
-.toggle-btn { height: 30px; padding: 0 14px; border: 1px solid var(--border); border-radius: 15px; background: var(--surface-primary); color: var(--text-secondary); cursor: pointer; font-size: 13px; }
+.view-toggle { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.toggle-btn { height: 30px; padding: 0 12px; border: 1px solid var(--border); border-radius: 15px; background: var(--surface-primary); color: var(--text-secondary); cursor: pointer; font-size: 13px; }
 .toggle-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
 .filter-row-topic-time { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
 .filter-bar { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
@@ -242,14 +242,20 @@ function onPresetChange(value: string) {
 .btn-primary { background: var(--accent); color: white; border: 0; }
 .btn-secondary { background: var(--surface-primary); color: var(--text-primary); border: 1px solid var(--border); }
 .adv-count { display: inline-block; min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: white; font-size: 11px; line-height: 16px; }
-.filter-caret { display: inline-block; transition: transform .15s; font-size: 12px; }
+.filter-caret { display: inline-block; transition: transform .15s var(--kx-motion-ease-out); font-size: 12px; }
 .filter-caret.open { transform: rotate(90deg); }
-.chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 /* .chip / .chip:hover / .chip--button 从全局 styles/pill-chip.css 继承（P1-8）。
  * 本组件原 padding 2px 10px 与全局 --chip-padding-y/x = 3px 9px 略有差异，
  * scoped 内仅覆盖 padding。 */
-.chip { padding: 2px 10px; }
+.chip { padding: 2px 8px; }
 @media (max-width: 768px) {
   .filter-topic, .filter-preset, .filter-date-range, .filter-select, .filter-select-short, .filter-select-tags { width: 100%; max-width: none; min-width: 0; flex-basis: 100%; }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .filter-caret { transition: none; }
 }
 </style>

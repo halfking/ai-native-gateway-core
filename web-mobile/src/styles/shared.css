@@ -353,6 +353,34 @@ select,
   }
 }
 
+/* ---- 页面根兜底滚动宿主（2026-10-28 全量审计补丁） ----
+   架构契约是「main 只做布局容器不滚动（07 §1 一个轴一个主宿主），页面自带
+   滚动根（HyperList / PullRefreshContainer / .page）」。但 2026-10-28 真机审计
+   （vivo V2436A / llm.itestu.cn 部署版）发现：103 个路由视图里 **88 个**从未
+   接入任何滚动宿主 —— 根容器要么缺 overflow（view-root 系，有定高不滚），
+   要么连 flex 定高都没有（acfg/tn/miq 等私有根类），内容一超高就被 main 的
+   overflow:hidden 剪裁 ⇒「页面无法滑动」。首报两例：模型目录（内容 42 万 px）
+   与路由检查页（加载全量可路由性后）。逐页补宿主不可持续，改为统一兜底：
+   main 的直接子元素（= 每个路由视图的根元素；RouterView/Transition 都不产生
+   包装 DOM，mode="out-in" 下新旧根也不同时存在）默认自任滚动宿主。
+   与既有宿主共存的安全性：
+   · .page / .ptr-container / .hyper-list / LoginView 根：属性全等或被 scoped
+     规则以更高优先级覆盖 ⇒ 行为零变化；
+   · 嵌套宿主（.view-root 根包 .hyper-list / .ptr-container）：内层受
+     flex:1 + min-height:0 恒有界，外层 scrollHeight 恒等于 clientHeight 恒不滚
+     ⇒ 不产生第二个可用滚动轴，「一个轴一个主宿主」在可滚动性上仍成立；
+   · 全库扫描确认没有任何视图根类带 scoped overflow:hidden 顶掉本规则；
+     sticky 定位从「贴着永不滚的 main」变为正确工作。
+   新页面要下拉刷新 / 分页虚拟列表时，仍应显式用 PullRefreshContainer /
+   HyperList，而不是依赖本兜底。 */
+.hyper-app__main > * {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
 .page__section-title {
   font-size: var(--app-section-title-size);
   font-weight: 600;

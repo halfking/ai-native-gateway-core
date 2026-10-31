@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/sessiondigest"
+	"github.com/kaixuan/llm-gateway-go/internal/sessionfamily"
 )
 
 // TurnInList 是跨会话轮次列表的单行记录，继承 TurnListItem 的所有字段，
@@ -101,7 +102,17 @@ func (h *Handler) handleTurnsList(w http.ResponseWriter, r *http.Request) {
 	tsTo := parseQueryTime(r, "ts_to", now)
 
 	// 构造 WHERE 条件
-	where, args, argIdx := buildTurnsListWhere(r, tenantID, tsFrom, tsTo, beforeTS, beforeSessionID, beforeNo)
+	// 构造两腿 FROM 源（★ R181 轮：列表读点从「视图形态」换成【两腿形态】）。
+	//
+	// ★ 视图（public.session_turns_with_current_month）的 hot 臂带一个相关反连接，
+	// ★ 而相关子查询的**内侧拿不到外层谓词** ⇒ ⇒ 内侧 Append 遍历**全部**月分区、
+	// ★ 每个分区按租户索引定位后扫该租户的全部索引项 ⇒「每 hot 行扫该租户全部索引项」。
+	// ★ 两腿形态把分区窗口推进【反连接的内侧】⇒ 内侧裁到 1 个分区、反连接从
+	// ★「每 hot 行一次嵌套循环」变成「一次性扫描」⇒ 本地真库实测 buffers 360 → 128。
+	// ★ 等价性与前提（跨分区同键不可能由正常路径产生）见
+	// ★ internal/sessionfamily/turns_reads.go 的 TurnsListArmsSQL 头注；
+	// ★ 前提由真库门 TestTurnsListTwoLegs_NoCrossPartitionDuplicateKeys 持续检验。
+	arms, args, argIdx := buildTurnsListArms(r, tenantID, tsFrom, tsTo, beforeTS, beforeSessionID, beforeNo)
 
 	// 查询
 	query := fmt.Sprintf(`
@@ -123,11 +134,10 @@ func (h *Handler) handleTurnsList(w http.ResponseWriter, r *http.Request) {
 			COALESCE(t.output_verdict, '') AS output_verdict,
 			COALESCE(t.attachment_count, 0) AS attachment_count,
 			t.digest
-		FROM public.session_turns_with_current_month t
-		WHERE %s
+		FROM %s t
 		ORDER BY t.ts DESC, t.session_id DESC, t.turn_no DESC
 		LIMIT $%d
-	`, where, argIdx)
+	`, arms, argIdx)
 	args = append(args, limit+1)
 
 	rows, err := h.db.Query(ctx, query, args...)
@@ -198,38 +208,71 @@ func (h *Handler) handleTurnsList(w http.ResponseWriter, r *http.Request) {
 // query parameters. It is extracted so unit tests can pin the exact SQL
 // contract (column names, parameter positions) without spinning up the
 // handler and a live database.
+// buildTurnsListWhere constructs the WHERE clause for /api/admin/turns from
+// query parameters. It is extracted so unit tests can pin the exact SQL
+// contract (column names, parameter positions) without spinning up the
+// handler and a live database.
+//
+// ★ 2026-10-29：★ 本函数现在是「两腿形态」的**谓词渲染器**——★ 同一段谓词要
+// ★ 分别渲染成 hot 腿（别名 hot）与父表腿（别名 p）⇒ ★ 别名由
+// ★ buildTurnsListWhereFor 显式传入（★ 不是对成品 SQL 做字符串替换 ⇒ ★ 替换
+// ★ 会踩到 "hot." 里也含 "t." 的坑）。
 func buildTurnsListWhere(r *http.Request, tenantID string, tsFrom, tsTo, beforeTS time.Time, beforeSessionID string, beforeTurnNo int) (string, []any, int) {
+	return buildTurnsListWhereFor(r, tenantID, tsFrom, tsTo, beforeTS, beforeSessionID, beforeTurnNo, "t")
+}
+
+// buildTurnsListWhereFor 是 buildTurnsListWhere 的**别名参数化**版本。
+//
+// ★★ 为什么要别名化（★ R181 轮两腿形态）：★★
+//
+//	★ 两腿形态把谓词**推进两臂内部**⇒ ★ hot 腿与父表腿的列引用前缀不同
+//	★ （hot. / p.）⇒ ★ 同一段谓词要渲染两遍 ⇒ ★ 参数编号必须**逐字一致**
+//	★ （两臂共用同一批 $N）⇒ ★ 因此渲染器只换别名、不换编号。
+//
+// ★★ 参数编号（★ 不许重排：★ 既有测试钉死了这个契约）：★★
+//
+//	★ $1/$2 = partition_date 上下界　★ $3/$4 = ts 窗口　★ $5… = 过滤条件
+func buildTurnsListWhereFor(r *http.Request, tenantID string, tsFrom, tsTo, beforeTS time.Time, beforeSessionID string, beforeTurnNo int, alias string) (string, []any, int) {
 	q := r.URL.Query()
-	clauses := []string{"t.ts >= $1", "t.ts <= $2"}
-	args := []any{tsFrom, tsTo}
-	argIdx := 3
+	c := alias + "."
+	// ★★ R181 轮：★ 带上【分区键下界】⇒ ⇒ PG 能对按 partition_date 分区的
+	// session_turns 做月分区裁剪（只按 ts 过滤 ⇒ 一个都裁不掉 ⇒ 窗口内
+	// 每个月分区都要探一遍）。
+	// ★★ 口径不变：★ partition_date = calendarDate(ts)（所有写入方都用它）
+	// ⇒ ⇒ 该谓词是 ts 谓词的蕴含条件 ⇒ ⇒ **不丢行**；精确过滤仍由 ts 做。
+	// ★★ 参数编号后移两位：★ $1/$2 = partition_date 上下界，★ $3/$4 = ts 窗口，
+	// ★ $5… = 过滤条件。
+	pdFrom, pdTo := sessionPartitionDateBounds(tsFrom, tsTo)
+	clauses := []string{c + "ts >= $3", c + "ts <= $4", c + "partition_date >= $1", c + "partition_date <= $2"}
+	args := []any{pdFrom, pdTo, tsFrom, tsTo}
+	argIdx := 5
 
 	if tenantID != "" {
-		clauses = append(clauses, fmt.Sprintf("t.tenant_id = $%d", argIdx))
+		clauses = append(clauses, fmt.Sprintf(c+"tenant_id = $%d", argIdx))
 		args = append(args, tenantID)
 		argIdx++
 	}
 
 	if !beforeTS.IsZero() {
 		clauses = append(clauses, fmt.Sprintf(
-			"(t.ts, t.session_id, t.turn_no) < ($%d, $%d, $%d)", argIdx, argIdx+1, argIdx+2))
+			"("+c+"ts, "+c+"session_id, "+c+"turn_no) < ($%d, $%d, $%d)", argIdx, argIdx+1, argIdx+2))
 		args = append(args, beforeTS, beforeSessionID, beforeTurnNo)
 		argIdx += 3
 	}
 
 	if v := strings.TrimSpace(q.Get("model")); v != "" {
-		clauses = append(clauses, fmt.Sprintf("t.model = $%d", argIdx))
+		clauses = append(clauses, fmt.Sprintf(c+"model = $%d", argIdx))
 		args = append(args, v)
 		argIdx++
 	}
 	if v := strings.TrimSpace(q.Get("provider")); v != "" {
-		clauses = append(clauses, fmt.Sprintf("t.provider = $%d", argIdx))
+		clauses = append(clauses, fmt.Sprintf(c+"provider = $%d", argIdx))
 		args = append(args, v)
 		argIdx++
 	}
 	if v := q.Get("status_code"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			clauses = append(clauses, fmt.Sprintf("t.status_code = $%d", argIdx))
+			clauses = append(clauses, fmt.Sprintf(c+"status_code = $%d", argIdx))
 			args = append(args, n)
 			argIdx++
 		}
@@ -244,11 +287,41 @@ func buildTurnsListWhere(r *http.Request, tenantID string, tsFrom, tsTo, beforeT
 		{queryKey: "task_type", column: "task_type"},
 	} {
 		if v := strings.TrimSpace(q.Get(filter.queryKey)); v != "" {
-			clauses = append(clauses, fmt.Sprintf("t.%s = $%d", filter.column, argIdx))
+			clauses = append(clauses, fmt.Sprintf(c+"%s = $%d", filter.column, argIdx))
 			args = append(args, v)
 			argIdx++
 		}
 	}
 
 	return strings.Join(clauses, " AND "), args, argIdx
+}
+
+// turnsListArmColumns 是两臂投影的列清单（23 列）。
+//
+// ★★ 投影必须**自带过滤列与排序键**（★ R172 实测踩到：★ WHERE 引用了投影里
+// ★ 没有的列 ⇒ PG 报 42703）：★ tenant_id / request_id（反连接用）、
+// ★ partition_date（分区界用）、session_id / turn_no / ts（游标与排序用）
+// ★ 一并列出。
+//
+// ★ 其余 20 列 = 列表端点要读的值（★ 与改前的 SELECT 列表逐字同序 ⇒
+// ★ 读到的值逐字相同）。
+var turnsListArmColumns = strings.Join([]string{
+	"session_id", "turn_no", "ts",
+	"project_id", "namespace", "parent_request_id", "task_type",
+	"title", "summary",
+	"prompt_tokens", "completion_tokens", "cost_usd",
+	"model", "provider", "status_code", "submit_mode",
+	"injection_verdict", "output_verdict", "attachment_count", "digest",
+	"tenant_id", "request_id", "partition_date",
+}, ", ")
+
+// buildTurnsListArms 返回列表读点的两臂 FROM 源（★ R181 轮）。
+//
+// ★ 两臂的谓词**逐字同构、只有别名不同**（★ 参数编号完全一致 ⇒ 共用同一批 $N）。
+// ★ 反连接的内侧带 partition_date 界（★ 等价性论证与前提见
+// ★ internal/sessionfamily/turns_reads.go 的 TurnsListArmsSQL 头注）。
+func buildTurnsListArms(r *http.Request, tenantID string, tsFrom, tsTo, beforeTS time.Time, beforeSessionID string, beforeTurnNo int) (string, []any, int) {
+	hotPred, args, argIdx := buildTurnsListWhereFor(r, tenantID, tsFrom, tsTo, beforeTS, beforeSessionID, beforeTurnNo, "hot")
+	parentPred, _, _ := buildTurnsListWhereFor(r, tenantID, tsFrom, tsTo, beforeTS, beforeSessionID, beforeTurnNo, "p")
+	return sessionfamily.TurnsListArmsSQL(turnsListArmColumns, hotPred, parentPred, "$1", "$2"), args, argIdx
 }

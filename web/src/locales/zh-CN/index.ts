@@ -1,5 +1,6 @@
 // zh-CN/index.ts — 聚合简体中文各模块。新增模块在此 import + 合并。
 import common from './common'
+import plugin from './plugin'
 import nav from './nav'
 import taskProfile from './taskProfile'
 import autoTuning from './autoTuning'
@@ -58,6 +59,7 @@ import modelPicker from './modelPicker'
 import modulesView from './modulesView'
 import formatAnomaliesView from './formatAnomaliesView'
 import modelIntegrityView from './modelIntegrityView'
+import modelCredibilityView from './modelCredibilityView'
 import agentRegistryView from './agentRegistryView'
 import outputCompliance from './outputCompliance'
 import sanitizeRules from './sanitizeRules'
@@ -86,6 +88,7 @@ export default {
   hyper,
   usageTrend,
   common,
+  plugin,
   nav,
   taskProfile,
   autoTuning,
@@ -142,6 +145,7 @@ export default {
   modulesView,
   formatAnomaliesView,
   modelIntegrityView,
+  modelCredibilityView,
   agentRegistryView,
   outputCompliance,
   sanitizeRules,

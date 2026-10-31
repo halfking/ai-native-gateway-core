@@ -27,15 +27,34 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // learnedTTL 是学习规则的存活窗口：参数剔除规则自最后一次"剔除后成功"
-// 起 24h 内继续前置应用，过期重新探测确认。防止把一次巧合成功固化成
-// 永久行为。
-const learnedTTL = 24 * time.Hour
+// 起在窗口内继续前置应用，过期重新探测确认。防止把一次巧合成功固化成
+// 永久行为，也保证上游后来支持某参数后网关会自动重新试探。
+//
+// 2026-10-29（nvidia 直通事故轮）：默认从 24h 收到 1h（用户要求「时效
+// 1 小时……每隔一段时间就失效，有利于不停探测」），并可用
+// LLM_GATEWAY_REQPROBE_LEARNED_TTL 覆盖（Go duration，如 30m / 2h；非法
+// 值回退默认）。过期的代价是每个 (provider, model, wire) 每窗口多吃一跳
+// 400 剥参重试——换取参数兼容状态的持续再确认。
+const defaultLearnedTTL = time.Hour
+
+var learnedTTL = sync.OnceValue(func() time.Duration {
+	v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REQPROBE_LEARNED_TTL"))
+	if v == "" {
+		return defaultLearnedTTL
+	}
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return d
+	}
+	return defaultLearnedTTL
+})
 
 // MemoryMaxRecords 是内存实现的最大指纹数（lite 模式防膨胀上限）。
 const MemoryMaxRecords = 5000

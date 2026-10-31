@@ -20,7 +20,7 @@
 
 ### 2.1 HTTP 中间件链（外向内）
 
-`cmd/gateway/main.go:7758-7776`：
+`cmd/gateway/main.go:7891-7918`：
 
 ```
 Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → Tracing
@@ -30,23 +30,23 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 两处顺序是踩坑后改的，有注释自陈：
 
 - **Logging 必须在 Auth 之外** —— 否则 401 不落日志，客户端拿 `X-Request-Id` 去查命中 0 次
-  （`cmd/gateway/main.go:7760-7767`）。
+  （`cmd/gateway/main.go:7902-7909`）。
 - **maintain/mobile 必须组合在链内**（`publicSurface`）—— 否则运维面不带安全响应头
-  （`cmd/gateway/main.go:7749-7754`）。
+  （`cmd/gateway/main.go:7891-7896`）。
 
 ### 2.2 数据面：v1（生产默认）与 v2（默认关）
 
 | 路径 | 开关 | 说明 |
 |---|---|---|
 | **v1**（生产默认） | 无 | 4 个入口 `/v1/chat/completions`、`/v1/messages`、`/v1/responses` 直派 `relay.{ChatHandler,MessagesHandler,ResponsesHandler}`；前飞（auth/key/model policy）与后飞（telemetry/WAL/audit）**全部 inline**（`cmd/gateway/main_pipeline.go:1-80`） |
-| **v2 Hook Pipeline** | `LLM_GATEWAY_USE_V2_PIPELINE`（或 legacy `LLM_GATEWAY_V2_ENABLED`），**默认关** | 同样 4 个入口被 `v2DispatchHandler` 包一层：preflight Pipeline → v1 handler → postflight。**开关启动时读一次，改要重启**（`cmd/gateway/main_pipeline.go:160-169`、`:1112`） |
+| **v2 Hook Pipeline** | `LLM_GATEWAY_USE_V2_PIPELINE`（或 legacy `LLM_GATEWAY_V2_ENABLED`），**默认关** | 同样 4 个入口被 `v2DispatchHandler` 包一层：preflight Pipeline → v1 handler → postflight。**开关启动时读一次，改要重启**（`cmd/gateway/main_pipeline.go:160-169`、`:1123`） |
 
 ★ **P2-1 已落地**（计划书 §6-P2-1）：v2 的切换判据（8 条）与「两套路径并存」期间的
 行为差异清单（17 条）都在 `internal/pipelinev2`，由 `scripts/ursmcheck/magpie_p2_v2_criteria_test.go` 守护。
 ⇒ 当前**两套路径并存**仍是**未完成**状态，不是"已决定关掉 v2"。
 ⇒ ★ 差异 D09（v2 的 request-id 合成/写回）曾被登记为「无测试覆盖」——
 ★ **2026-10-24 订正**：该说明**失实**（称"`v2pipe` 字面量零命中"，实则
-`cmd/gateway/main_pipeline.go:749-758` **有**该合成逻辑）⇒ 现已**补上对拍测试**，
+`cmd/gateway/main_pipeline.go:755-768` **有**该合成逻辑）⇒ 现已**补上对拍测试**，
 见 `cmd/gateway/main_pipeline_requestid_test.go`。
 
 ---
@@ -55,12 +55,12 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 
 | 机制 | 位置 | 裁决 | 生产 | 阶段 |
 |---|---|---|---|---|
-| HTTP 中间件链 | `middleware/` + `cmd/gateway/main.go:7758-7776` | **主链** | ✅ | — |
+| HTTP 中间件链 | `middleware/` + `cmd/gateway/main.go:7891-7918` | **主链** | ✅ | — |
 | Request Pipeline | `domains/pipeline/` | **骨架**（阶段词表的唯一事实源，16 个 phase） | ❌（v2 默认关） | — |
 | `HookRegistry` | `domains/hooks/registry.go:36` | **判死** | ❌（生产零调用方） | — |
 | Hook 阶段词表（5 个旧名） | `domains/hooks/types.go:13-23` | **别名视图** | ❌ | 映射到骨架的同名 phase |
-| ★ 执行器生命周期钩子 | `domains/streaming/executors/executor_chat.go:60-67` | ★ **判死**（2026-10-24 订正：类型在、读取方在，但**零生产安装方** ⇒ 钩子从不触发） | ❌ | — |
-| 响应拦截链 | `domains/hooks/response/types.go:179` | **挂在 phase** | ✅ | `response` |
+| ★ 执行器生命周期钩子 | `domains/streaming/executors/executor_chat.go:95-102` | ★ **判死**（2026-10-24 订正：类型在、读取方在，但**零生产安装方** ⇒ 钩子从不触发） | ❌ | — |
+| 响应拦截链 | `domains/hooks/response/types.go:185` | **挂在 phase** | ✅ | `response` |
 
 > ★ **2026-10-24 订正**（审计档 §3.14）：本页原写「执行器生命周期钩子 = 挂在 phase（upstream）、✅ 在生产」。
 > ⇒ **不成立**：`WithExecuteHooks(` 在**生产代码里零调用**（只有测试在调）

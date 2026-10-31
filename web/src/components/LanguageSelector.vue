@@ -83,8 +83,8 @@ onBeforeUnmount(() => {
 .language-btn {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+  gap: 4px;
+  padding: 4px 12px;
   font-size: 14px;
   cursor: pointer;
 }
@@ -115,15 +115,15 @@ onBeforeUnmount(() => {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
+  gap: 8px;
+  padding: 8px 12px;
   border: none;
   background: transparent;
   color: var(--text);
   font-size: 14px;
   text-align: left;
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out);
 }
 
 .language-option:hover {

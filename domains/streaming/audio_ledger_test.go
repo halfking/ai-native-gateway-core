@@ -66,7 +66,7 @@ func TestAudioCandidateFailureLedger(t *testing.T) {
 	cand2.CredentialID = 22
 
 	fakeDB := &fakeCandidateFailureDB{}
-	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand1, cand2}}, upstream.New())
+	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand1, cand2}}, upstream.NewWithRetries(0))
 	svc.SetFailureLogger(executors.NewCandidateFailureWriter(fakeDB))
 
 	_, err := svc.Transcribe(t.Context(), TranscribeRequest{
@@ -117,7 +117,7 @@ func TestAudioCandidateFailureLedgerNotWiredByDefault(t *testing.T) {
 		RawModel: "mimo-v2.5-asr", Routable: true, APIKey: "sk-test",
 	}
 	cand.AvailabilityState = "ready"
-	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.New())
+	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.NewWithRetries(0))
 
 	_, err := svc.Transcribe(t.Context(), TranscribeRequest{
 		Model: "mimo-v2.5-asr", File: tinyWAVForTest(),

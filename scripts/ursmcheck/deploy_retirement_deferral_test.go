@@ -326,6 +326,7 @@ sha256_file() { printf '%s' "$FILE_SHA"; }
 marker="session-summary-and-integrity-2026-09:890_drop_request_logs_v1_family.sql"
 file_sha="$FILE_SHA"
 for file in "$TARGET"; do
+  base="$(basename "$file")"
 ` + block + `
 done
 `

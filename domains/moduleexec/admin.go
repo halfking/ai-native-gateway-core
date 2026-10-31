@@ -69,7 +69,7 @@ func (s *AdminService) GetModuleStats(ctx context.Context, hours int) ([]ModuleE
 			PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms)::FLOAT as p99_duration_ms,
 			COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') as executions_last_hour
 		FROM session_module_executions_hot
-		WHERE created_at > NOW() - ($1 || ' hours')::INTERVAL
+		WHERE created_at > NOW() - make_interval(hours => $1::int)
 		GROUP BY module_name, status
 		ORDER BY module_name, status
 	`
@@ -123,7 +123,7 @@ func (s *AdminService) GetCacheHitRate(ctx context.Context, hours int) ([]Module
 				NULLIF(COUNT(*), 0), 2
 			)::FLOAT as skip_rate_pct
 		FROM session_module_executions_hot
-		WHERE created_at > NOW() - ($1 || ' hours')::INTERVAL
+		WHERE created_at > NOW() - make_interval(hours => $1::int)
 		GROUP BY module_name
 		ORDER BY module_name
 	`

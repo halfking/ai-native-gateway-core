@@ -2,7 +2,6 @@ package streaming
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/internal/clienttype"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
@@ -21,62 +20,13 @@ import (
 // 返回值统一小写化，便于后续 switch case 匹配。
 // 空字符串表示未识别或非 IDE 客户端。
 func extractClientType(r *http.Request) string {
-	// 1. 明确的客户端类型头（优先级最高）
-	if ct := r.Header.Get("X-Gw-Client-Type"); ct != "" {
-		return clienttype.Normalize(ct)
-	}
-
-	// 2. User-Agent 解析（IDE/Agent 特征字符串）
-	ua := strings.ToLower(r.Header.Get("User-Agent"))
-	switch {
-	case strings.Contains(ua, "cursor/"), strings.Contains(ua, "cursor-"):
-		return "cursor"
-	case strings.Contains(ua, "claude-code/"), strings.Contains(ua, "claude-code-"):
-		return "claude-code"
-	case strings.Contains(ua, "opencode/"), strings.Contains(ua, "opencode-"):
-		return "opencode"
-	case strings.Contains(ua, "zcode/"), strings.Contains(ua, "zcode-"):
-		return "zcode"
-	case strings.Contains(ua, "codex/"), strings.Contains(ua, "codex-"):
-		return "codex"
-	case strings.Contains(ua, "roocode/"), strings.Contains(ua, "roo-code/"):
-		return "roocode"
-	case strings.Contains(ua, "vscode/"), strings.Contains(ua, "visual-studio-code/"):
-		return "vscode"
-	case strings.Contains(ua, "github-copilot/"), strings.Contains(ua, "copilot/"):
-		return "copilot"
-	case strings.Contains(ua, "windsurf/"):
-		return "windsurf"
-	case strings.Contains(ua, "zed/"):
-		return "zed"
-	case strings.Contains(ua, "jetbrains/"), strings.Contains(ua, "intellij/"),
-		strings.Contains(ua, "pycharm/"), strings.Contains(ua, "webstorm/"):
-		return "jetbrains"
-	// 2026-09-21 audit: domestic coding-agent clients.
-	//   MiniMax Code ships User-Agent "MiniMax-Code/{ver}"; we test the
-	//   hyphenated form so we don't false-positive on the literal substring
-	//   "minimax" appearing in other Anthropic forks.
-	case strings.Contains(ua, "minimax-code/"), strings.Contains(ua, "minimax-code-"):
-		return "minimax-code"
-	//   DeepSeek Code ships User-Agent "DeepSeek-Code/{ver}" /
-	//   "DeepSeek-IDE/{ver}" / "deepseek-cli/{ver}". Match on "deepseek-"
-	//   which is a stable prefix across all of them. Note: this only
-	//   matches the *Client* side — when the gateway calls DeepSeek as
-	//   an upstream, the gateway's outbound User-Agent is governed by the
-	//   upstream-dialect path, not by this header-based detection.
-	case strings.Contains(ua, "deepseek-code/"), strings.Contains(ua, "deepseek-code-"),
-		strings.Contains(ua, "deepseek-ide/"), strings.Contains(ua, "deepseek-ide-"),
-		strings.Contains(ua, "deepseek-cli/"), strings.Contains(ua, "deepseek-cli-"):
-		return "deepseek-code"
-	}
-
-	// 3. SDK 指纹辅助判断（Stainless 生成的 SDK，语言特征间接暗示场景）
-	// 目前仅记录，不直接返回 clientType，因为语言不等同于 IDE
-	// 保留此逻辑供未来扩展（如 X-Stainless-Lang=python + 其他信号 → vscode）
-	_ = r.Header.Get("X-Stainless-Lang")
-
-	// 未识别
-	return ""
+	// 2026-10-29 identification round: the full detection chain (X-Gw-Client-Type
+	// → UA tokens → Anthropic-Beta claude-code flag) moved into
+	// clienttype.DetectFromRequest — the executors package had a second
+	// "behaviour-consistent mirror" copy that had already drifted once
+	// (wire-real "MiniMaxCode" landed here but not there). One table now,
+	// drift structurally impossible.
+	return clienttype.DetectFromRequest(r)
 }
 
 // extractClientTypeWithPrompt 是 extractClientType 的增强版：先尝试

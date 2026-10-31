@@ -66,6 +66,20 @@ You are an agent for ZCode CLI.
 
 ## 特征参数
 
+> **⚠ 2026-10-29 线材实态订正（211 llm.itestu.cn，ZCode/3.16.3）**：
+> 当前在网 ZCode 3.x 是 **Claude Code 分支版** —— firehose 实测（2MB 级
+> request）body **完全没有 `metadata`**，工具名是 **Claude Code 2.x 原名**
+> （`Agent` / `AskUserQuestion` / `Bash` / `CronCreate` / `CronDelete` /
+> `CronList` …），**没有 `zcode_*` 命名空间工具**。下表的
+> `metadata.session_id` / `zcode_version` / `workspace_root` 与
+> `zcode_*` 工具命名是 **2026-09-21 档案记录的老一代 ZCode 形态，3.x 未复现**
+> ⇒ body 标记兜底层（`ExtractClientTypeFromBody` 的 zcode 规则）对现役
+> 客户端**永不命中**，**UA 是唯一活信号**（两张 UA 表的 `zcode` token 均
+> 命中 `ZCode/3.16.3 ai-sdk/…` ✓）。
+> ⇒ 两个直接推论：① **不得按工具名识别 ZCode**（Claude Code 分支共享同一
+> 工具集，按工具识别会把 ZCode 误报成 claude-code 或反之）；② body 侧
+> `metadata.*` 规则保留作向后兼容（老版本仍在时有效），不以 3.x 缺席为由删除。
+
 ZCode 在请求 body 中携带以下特征参数（用于参数级识别）：
 
 | 参数 | 说明 | 唯一性 |

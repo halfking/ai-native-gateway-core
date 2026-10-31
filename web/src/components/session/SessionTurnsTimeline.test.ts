@@ -219,4 +219,29 @@ describe('SessionTurnsTimeline', () => {
     await flushPromises()
     expect(w2.text()).toContain('该会话暂无轮次记录')
   })
+
+  // 2026-10-31 批判式审计补：recording_consent 的 wire→emit 接线此前零覆盖
+  //（Page 测试桩掉了 Timeline 手动 emit，后端删字段时无人红）。钉三点：
+  // 字段透出 ⇒ emit(false/true)；字段缺失（旧后端）⇒ emit(undefined)，
+  // 由 Page 侧「undefined 不当 false」契约兜住。
+  it('emits recordingConsent from the list response (false / true / undefined)', async () => {
+    fetchSessionTurnsTreeMock.mockResolvedValue(page({ recording_consent: false }))
+    const w = mountTimeline()
+    await flushPromises()
+    expect(w.emitted('recordingConsent')?.at(-1)).toEqual([false])
+    w.unmount()
+
+    fetchSessionTurnsTreeMock.mockResolvedValue(page({ recording_consent: true }))
+    const w2 = mountTimeline()
+    await flushPromises()
+    expect(w2.emitted('recordingConsent')?.at(-1)).toEqual([true])
+    w2.unmount()
+
+    const { recording_consent: _omitted, ...withoutConsent } = page()
+    fetchSessionTurnsTreeMock.mockResolvedValue(withoutConsent as SessionTurnsTreeResponse)
+    const w3 = mountTimeline()
+    await flushPromises()
+    expect(w3.emitted('recordingConsent')?.at(-1)).toEqual([undefined])
+    w3.unmount()
+  })
 })

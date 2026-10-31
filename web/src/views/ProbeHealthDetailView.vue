@@ -810,7 +810,7 @@ onMounted(() => {
 
 <style scoped>
 .detail-container {
-  padding: 20px;
+  padding: 16px;
 }
 
 .detail-header {
@@ -834,7 +834,7 @@ onMounted(() => {
 }
 
 .state-badge {
-  padding: 2px 10px;
+  padding: 2px 8px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 600;
@@ -883,7 +883,7 @@ onMounted(() => {
 }
 
 .tab-content {
-  padding: 20px;
+  padding: 16px;
   min-height: 200px;
 }
 
@@ -919,7 +919,7 @@ onMounted(() => {
 
 .node-badges {
   display: flex;
-  gap: 6px;
+  gap: 4px;
 }
 
 .node-stats {
@@ -950,7 +950,7 @@ onMounted(() => {
 .info-grid {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   padding: 12px;
   background: var(--bg-subtle);
   border-radius: var(--radius);
@@ -1111,7 +1111,7 @@ onMounted(() => {
 }
 .no-model-hint__title {
   margin: 0 0 8px;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   /* --text / --text-muted 在 style.css 的浅色与深色两块里都有定义（:52/:55 与
      :180/:183），所以原写法 var(--text, #1f2937) / var(--text-muted, #6b7280) 的

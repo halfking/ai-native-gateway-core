@@ -88,7 +88,7 @@ function fmtCompact(n: number | undefined) {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 13px 15px;
+  padding: 12px 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -98,11 +98,11 @@ function fmtCompact(n: number | undefined) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .mdist__title {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 700;
   margin: 0;
   display: flex;
@@ -126,8 +126,8 @@ function fmtCompact(n: number | undefined) {
   border: 0;
   background: transparent;
   color: var(--text-muted);
-  font-size: 11.5px;
-  padding: 3px 9px;
+  font-size: 11px;
+  padding: 3px 8px;
   border-radius: 5px;
   cursor: pointer;
   font-weight: 600;
@@ -145,7 +145,7 @@ function fmtCompact(n: number | undefined) {
   grid-template-columns: minmax(150px, 1.5fr) 62px 74px 74px;
   gap: 8px;
   align-items: center;
-  padding: 6px 4px;
+  padding: 4px 4px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   font-size: 12px;
 }

@@ -17,6 +17,12 @@
 # ⇒ **停写之前探针就已经是空的**；这个检测器自 2026-09-25（D11 短路上线）起
 # 一直关着，与 S4 无关。
 #
+# ⚠ 2026-10-20（迁移 890）：v1 `_request_logs*` 族已被**物理 DROP**。上面那句
+# 「v1 全表 216 万行」是 **890 之前**的历史实测值，那张表**现在已不存在**。
+# canonical 视图 `request_logs_with_current_month` 已随 890 去掉 v1 第三臂，
+# 现在只剩会话族两臂（`session_turns_hot` ∪ `session_turns` + details 特征层）。
+# ⇒ 检测器与本文件的排查查询读的是**同一张视图**（同源口径）。
+#
 # S4 停写对它的影响曾经是**前瞻性**的：短路的第二条腿（`inProcSeen` 的进程内
 # arm）原先只在 `persistSystemFingerprint()` 内 arm，而后者的调用点都在
 # `insertRequestLog` / `updateRequestLog` 的 `if logsWrite` 块内 ⇒ 停写后 arm 一次
@@ -66,13 +72,20 @@ groups:
 
             | 面 | 行数 | `system_fingerprint` 非空 |
             |---|---|---|
-            | `_request_logs`（v1 全表，迁移 860 改名前 216 万行冻结） | 2,164,650 | **0** |
+            | `_request_logs`（v1 全表；2026-10-02 实测时仍在，**已随迁移 890 物理删除**） | 2,164,650 | **0** |
             | `session_turns`（会话族全表） | 1,683,739 | **0** |
             | `model_integrity_events.context` JSONB | 7,081（2026-09-05 起） | **0** |
 
             JSONB 那一行是独立证据：它不走专用列、同样直取那个响应头。
             ⇒ **停写之前探针就已经是空的**。这个检测器自 2026-09-25（D11 短路
             上线）起就一直关着，与 S4 无关。
+
+            ⚠ **读面已变**（迁移 890，2026-10-20）：v1 族被物理删除后，
+            `bg/integrity_fingerprint_drift.go` 的 scanDrift 读的
+            `request_logs_with_current_month` **不再含任何 v1 关系**，
+            它现在就是会话族两臂（`session_turns_hot` ∪ `session_turns` +
+            `session_turn_details` 特征层）；探针读的是同一族的 hot 表与母表。
+            ⇒ 上表「会话族全表 0 非空」那一行**就是检测器现在的口径**。
 
             **S4 停写的影响是前瞻性的，但已在 §9.52 修掉**。短路有两条腿：
             腿 1 是上面那个探针；腿 2 是 `inProcSeen` 的进程内 arm —— 进程内
@@ -92,11 +105,12 @@ groups:
             ⇒ **但当前仍然不扫描，主因没有变**：上游不发 `X-System-Fingerprint`，
             arm 也就无从触发。这条告警现在守的是「**上游一旦开始发指纹，检测器要
             能自己醒过来**」——修复前它醒不过来。
-            ⚠ 醒来有一个前提别漏掉（R33 补记，2026-10-02）：停写期间 arm 可以
-            触发（它只记「本进程见过带指纹的请求」），但 scanDrift 读的是 v1
-            当前月视图——停写期间它没有新行，醒来也是空扫；指纹行落在**不被
-            停写门控的会话族**上，不在本检测器的视野里（不改读会话族的理由
-            见下面 4b）。检测能力要等停写解除才真正恢复。
+            ⚠ 醒来有一个前提别漏掉（R33 补记，2026-10-02；2026-10-20 按迁移 890 订正）：
+            停写期间 arm 可以触发（它只记「本进程见过带指纹的请求」），但 scanDrift
+            读的是 canonical 视图 `request_logs_with_current_month`——停写期间它没有
+            新行，醒来也是空扫。★ 890 之后该视图**已无 v1 臂**、只剩会话族两臂
+            ⇒ 指纹行（若上游开始发）**在检测器视野之内**，读面不再是限制，
+            只剩停写门控这一个约束。检测能力要等停写解除才真正恢复。
 
             ⚠ 本条经过三次订正，都记在审计里：
             §9.50.4 撤回了「逃生口那条链与宽表无关、会自行恢复」；
@@ -109,21 +123,32 @@ groups:
                （涨 = 被短路；不涨 = worker 本身没在跑，是另一个问题）
             2. 查上游是否开始返回 `X-System-Fingerprint`（这才是主因）：
 
-                   SELECT count(*), count(system_fingerprint) FROM _request_logs_hot
+                   SELECT count(*), count(system_fingerprint) FROM request_logs_with_current_month
                     WHERE ts > NOW() - INTERVAL '1 hour';
+
+               ★ 这条查询读的是 canonical 视图 `request_logs_with_current_month`
+               ——**与检测器同一读面**（`bg/integrity_fingerprint_drift.go` 的
+               scanDrift 读它；探针读同一族的 hot 表与母表），所以运维跑出来的
+               数字就是检测器看到的那一份，不会出现两个口径。
+               ⚠ v1 `_request_logs*` 族已随迁移 890 **物理删除** ⇒ 旧版本 runbook
+               里那条查 v1 hot 表的语句现在会直接 42P01（关系不存在），**不要照抄**。
 
                读法要分两种：`N > 0` 且 fingerprint 全空 ⇒ 与停写无关，就是
                没有指纹流量（**当前的常态**）；`N = 0` ⇒ 先做步骤 3——停写
-               期间热表没有新行，这个查询读不出「上游是否发指纹」，直接下
+               期间这张视图没有新行，这个查询读不出「上游是否发指纹」，直接下
                「上游不发」的结论会把方向搞反。
             3. 确认 `storage.request_logs_write_enabled` 的当前值与切换时刻。
                停写**不是**当前不扫的原因，但它决定了**将来**能不能恢复。
             4. 修法（a 已于 §9.52 完成，剩下的是产品决策）：
                a. ~~把 `inProcSeen` 的 arm 移出 `if logsWrite`~~ —— **已做**。
                   今后若再看到本告警，**不要**重复这一步；
-               b. **不要**为了让探针「有数据」而去改读会话族：实测会话族的
-                  `system_fingerprint` 同样是全空（同一上游原因，168 万行 0 非空），
-                  改过去只是把「因为缺数据而空」伪装成「已修好」；
+               b. ★ **读面已变**（迁移 890，2026-10-20）：检测器现在**已经**读会话族
+                  ——探针读 `session_turns_hot` / `session_turns`，scanDrift 读
+                  canonical 视图 `request_logs_with_current_month`（890 去掉 v1 臂
+                  之后它 = 会话族两臂）。这条曾经写着「不要改读会话族」的告诫
+                  因此**已经失效**；但结论不变：会话族的 `system_fingerprint`
+                  同样是全空（同一上游原因），探针仍为空 ⇒ **原因不是读面，
+                  是上游不发**；别把「因为缺数据而空」当成「已修好」。
                c. 剩下的长期问题需要产品决策：这个检测器在没有任何指纹数据时
                   本来就无对象可检。要么让上游发指纹，要么承认这项检测能力当前
                   是空的并如实记录 —— 而不是靠调大间隔把告警压下去。

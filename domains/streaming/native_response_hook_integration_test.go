@@ -65,6 +65,14 @@ func TestRealComplianceStreamCapAndFlushFailureRenderOneProtocolTerminal(t *test
 	} {
 		for _, failure := range []string{"pending cap", "flush check"} {
 			t.Run(tc.protocol+"/"+failure, func(t *testing.T) {
+				// ★ 2026-10-29 输出合规误报轮：待检缓冲上限从 1 MiB 抬到
+				// 8 MiB（出厂值可配）⇒ 这条用例不能再依赖「1 MiB 这个数」，
+				// 必须**显式**把上限调小，否则它测的是「1.26 MB 的帧在 8 MiB
+				// 上限下放过去了」——那不是它要断言的东西。
+				// 严格模式（block）保留本用例的原始意图：越界 ⇒ 阻断 ⇒
+				// 只渲染一个协议终帧。
+				t.Setenv(outputhook.OutputGuardPendingMaxBytesEnv, "65536")
+				t.Setenv(outputhook.OutputGuardCapModeEnv, "block")
 				var checker interface {
 					Check(context.Context, string, string) (*outputcompliance.ComplianceResult, error)
 				} = nativePassingChecker{}
@@ -231,6 +239,12 @@ type nativeTerminalResolver struct{ candidate provider.Candidate }
 
 func (r nativeTerminalResolver) Enabled() bool                           { return true }
 func (r nativeTerminalResolver) ModelKnown(context.Context, string) bool { return true }
+
+func (r nativeTerminalResolver) ModelModalityMismatch(context.Context, string, string, string, string) (*provider.ModalityMismatch, error) {
+	// 默认：不是模态不匹配。既有测试的语义是「零候选」，不应被新的
+	// 模态诊断分支改变行为；需要覆盖模态分支的测试单独提供自己的替身。
+	return nil, nil
+}
 func (r nativeTerminalResolver) GetCandidates(ctx context.Context, model, profile, tenant string) ([]provider.Candidate, *provider.Policy, error) {
 	return r.GetCandidatesByModality(ctx, model, profile, tenant, "text")
 }

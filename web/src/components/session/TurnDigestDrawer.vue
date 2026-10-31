@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { ApiError } from '../../api/_core'
 import {
   getSessionTurn,
+  isRecordingUnavailable,
   type TurnAttachment,
   type TurnDetail,
 } from '../../api/sessions_v2'
@@ -34,6 +35,10 @@ const { t } = useI18n()
 const detail = ref<TurnDetail | null>(null)
 const loading = ref(false)
 const error = ref('')
+// W1.3（24h 审计第 7 轮遗留收口）：consent=off 时 turn detail 回
+// 409 + recording_unavailable。这是「录制未开启」的中性状态，不是故障
+// ——单独点亮，不走红色错误态（重试也修不了功能开关）。
+const consentOff = ref(false)
 // 2026-09-05 audit F2-#10: attachment-level failures must not clobber the
 // global error ref (that swap replaced the whole tabs area with an error
 // state and never recovered until reload). Attachment problems render as an
@@ -128,6 +133,7 @@ function reload() {
   // The watcher resets state and refetches when the props tuple changes.
   error.value = ''
   attachmentError.value = ''
+  consentOff.value = false
   if (props.modelValue && props.sessionId && props.turnNo != null) {
     // Force re-execution by resetting detail + bumping the seq, then
     // delegating to the same async fetch path used by the watch.
@@ -142,6 +148,10 @@ function reload() {
       })
       .catch((cause) => {
         if (seq !== requestSeq || (cause instanceof DOMException && cause.name === 'AbortError')) return
+        if (isRecordingUnavailable(cause)) {
+          consentOff.value = true
+          return
+        }
         error.value = cause instanceof ApiError ? cause.detail : surfaceError(cause)
       })
       .finally(() => {
@@ -159,6 +169,7 @@ watch(
     detail.value = null
     error.value = ''
     attachmentError.value = ''
+    consentOff.value = false
     openingAttachment.value = null
     activeTab.value = 'summary'
     if (!open || !sessionId || turnNo == null) {
@@ -174,6 +185,10 @@ watch(
       })
       .catch((cause) => {
         if (seq !== requestSeq || (cause instanceof DOMException && cause.name === 'AbortError')) return
+        if (isRecordingUnavailable(cause)) {
+          consentOff.value = true
+          return
+        }
         error.value = cause instanceof ApiError ? cause.detail : surfaceError(cause)
       })
       .finally(() => {
@@ -203,6 +218,10 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="loading" class="tdd-state">{{ t('turnDigest.loading') }}</div>
+    <!-- W1.3：录制未开启是中性状态，给专属空态（不给重试——开关不在本页）。 -->
+    <div v-else-if="consentOff" class="tdd-state" data-testid="tdd-consent-off">
+      <el-empty :description="t('requestDetail.bodyStatus.consentOffInline')" />
+    </div>
     <div v-else-if="error" class="tdd-error" role="alert" data-testid="tdd-error">
       <el-empty :description="error" />
       <el-button size="small" @click="reload">{{ t('turnDigest.retry') }}</el-button>
@@ -257,16 +276,16 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .tdd-headsub { margin-bottom: 8px; }
-.tdd-waterfall { display: grid; gap: 6px; }
-.tdd-waterfall-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--kx-border); border-radius: 6px; }
+.tdd-waterfall { display: grid; gap: 4px; }
+.tdd-waterfall-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 8px; border: 1px solid var(--kx-border); border-radius: 6px; }
 .tdd-waterfall-row code { color: var(--kx-muted); font-size: 12px; }
 .tdd-sub { color: var(--kx-muted); font-size: 12px; }
 .tdd-state { padding: 24px; text-align: center; color: var(--kx-muted); }
-.tdd-error { padding: 10px 12px; color: var(--kx-danger); background: var(--kx-danger-soft); border: 1px solid var(--kx-danger); border-radius: 6px; }
+.tdd-error { padding: 8px 12px; color: var(--kx-danger); background: var(--kx-danger-soft); border: 1px solid var(--kx-danger); border-radius: 6px; }
 .tdd-tabs :deep(pre) { margin: 0; max-height: 70vh; overflow: auto; padding: 12px; background: var(--kx-bg-accent); color: var(--kx-text); border-radius: 6px; font-size: 12px; }
 .tdd-attachments { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.tdd-attachment-error { margin: 0 0 8px; padding: 6px 10px; border: 1px solid var(--kx-warning); border-radius: 6px; color: var(--kx-warning); font-size: 12px; }
-.tdd-attachments li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--kx-border); border-radius: 6px; }
+.tdd-attachment-error { margin: 0 0 8px; padding: 4px 8px; border: 1px solid var(--kx-warning); border-radius: 6px; color: var(--kx-warning); font-size: 12px; }
+.tdd-attachments li { display: flex; align-items: center; gap: 8px; padding: 8px 8px; border: 1px solid var(--kx-border); border-radius: 6px; }
 .tdd-attachment-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tdd-attachment-meta { color: var(--kx-muted); font-size: 12px; white-space: nowrap; }
 </style>

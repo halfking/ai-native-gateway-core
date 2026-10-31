@@ -72,7 +72,7 @@ const hasL2 = computed(() => props.l2 && Object.keys(props.l2).length > 0)
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 6px 0;
+  padding: 4px 0;
 }
 .timeline.compact { gap: 2px; padding: 4px 0; }
 .tl-layer {
@@ -102,16 +102,16 @@ const hasL2 = computed(() => props.l2 && Object.keys(props.l2).length > 0)
   border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
   background: color-mix(in srgb, var(--accent) 6%, var(--bg-subtle));
 }
-.tl-label { font-size: 9px; color: var(--muted); }
+.tl-label { font-size: 11px; color: var(--muted); }
 .tl-value { font-size: 11px; font-weight: 600; }
-.tl-detail { font-size: 9px; color: var(--muted); }
-.tl-arrow { font-size: 10px; color: var(--muted); }
-.tl-bridge { text-align: center; font-size: 10px; color: var(--muted); line-height: 1; }
-.tl-empty { font-size: 10px; padding: 4px 0; }
+.tl-detail { font-size: 11px; color: var(--muted); }
+.tl-arrow { font-size: 11px; color: var(--muted); }
+.tl-bridge { text-align: center; font-size: 11px; color: var(--muted); line-height: 1; }
+.tl-empty { font-size: 11px; padding: 4px 0; }
 .layer-tag {
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
-  padding: 2px 5px;
+  padding: 2px 4px;
   border-radius: 3px;
   flex-shrink: 0;
 }

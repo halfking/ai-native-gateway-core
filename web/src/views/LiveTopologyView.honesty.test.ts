@@ -11,7 +11,7 @@
 //
 // mock 工厂会被提升到文件顶部，refs 必须在工厂内部创建（hoist 报错经典形态）。
 
-import { describe, expect, it, vi, beforeAll, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { createRouter, createMemoryHistory } from 'vue-router'
@@ -37,6 +37,7 @@ vi.mock('../composables/liveStreamStore', async () => {
   const initialDataReceivedRef = ref(true)
   const redisHealthyRef = ref(true)
   const redisErrorRef = ref('')
+  const liveDataRevision = ref(0)
   return {
     requestsRef,
     nodesRef,
@@ -46,6 +47,7 @@ vi.mock('../composables/liveStreamStore', async () => {
     initialDataReceivedRef,
     redisHealthyRef,
     redisErrorRef,
+    liveDataRevision,
     __test: {
       setRequests: (v: Frame[]) => (requestsRef.value = v),
       setNodes: (v: Frame[]) => (nodesRef.value = v),
@@ -68,15 +70,18 @@ vi.mock('../composables/useLiveStream', async () => {
 
 vi.mock('../api/topology', () => ({
   getProvidersToday: vi.fn().mockResolvedValue({ day_utc: '2026-10-17', totals: {}, items: [] }),
+  getTopologyModelsToday: vi.fn().mockResolvedValue({ day_utc: '2026-10-17', items: [] }),
+  getTopologyProviderKinds: vi.fn().mockResolvedValue({ items: [] }),
+  getTopologyPlugins: vi.fn().mockResolvedValue({ builtin: [], external: [] }),
 }))
 
-// 统计栏的统计口径由 ProviderTodayRail.test.ts 单独钉，这里只验它收到的过滤值。
-vi.mock('../components/live-topology/ProviderTodayRail.vue', () => ({
+// 统计面板的统计口径由 StatsPanel.test.ts 单独钉，这里只验它收到的过滤值。
+vi.mock('../components/live-topology/StatsPanel.vue', () => ({
   default: {
-    name: 'ProviderTodayRailStub',
-    props: ['activeProvider'],
-    emits: ['select-provider'],
-    template: '<div class="rail-stub" :data-provider="activeProvider"></div>',
+    name: 'StatsPanelStub',
+    props: ['activeClient', 'activeProvider', 'activeModel', 'inFlight', 'queueDepth'],
+    emits: ['select-provider', 'select-model'],
+    template: '<div class="rail-stub" :data-provider="activeProvider" :data-model="activeModel"></div>',
   },
 }))
 
@@ -105,6 +110,25 @@ const nowIso = () => new Date().toISOString()
 /** 一小时前 —— 会被 5 分钟默认窗口丢掉。 */
 const oldIso = () => new Date(Date.now() - 60 * 60_000).toISOString()
 
+/** 已挂载的组件（★ 每个用例后统一 unmount ⇒ 见下面的 `afterEach`）。 */
+const mounted: Array<{ unmount: () => void }> = []
+
+afterEach(() => {
+  // ★★ **必须 unmount**：★ 被测组件里有一个 `setInterval`（★ `LiveTopologyView.vue` 的 `spawnTimer`）
+  //   ⇒ ⇒ 组件**只在 `onUnmounted` 里**清它 ⇒ ⇒ 测试不 unmount ⇒ ⇒ 定时器活过本文件
+  //   ⇒ ⇒ ⇒ jsdom 环境销毁后再触发 ⇒ ⇒ `document is not defined` ⇒ ⇒ vitest 记【未捕获异常】
+  //   ⇒ ⇒ ⇒ **用例本身全绿，但整包退出码 = 1**（★ 负载越高越容易撞上 ⇒ ⇒ **看起来像 flaky**）
+  //   ⇒ ⇒ ⇒ 仓内先例：★ `src/composables/useLiveStreamUrl.test.ts` 逐个 `wrapper.unmount()`。
+  while (mounted.length) {
+    const w = mounted.pop()
+    try {
+      w?.unmount()
+    } catch {
+      // ★ 已经卸载过 ⇒ ⇒ 忽略（★ 清理是【卫生问题】，不该变成【判据问题】）
+    }
+  }
+})
+
 async function mountView(initialPath = '/live') {
   const router = createRouter({
     history: createMemoryHistory(),
@@ -113,6 +137,7 @@ async function mountView(initialPath = '/live') {
   await router.push(initialPath)
   await router.isReady()
   const wrapper = mount(LiveTopologyView, { global: { plugins: [i18n, router] } })
+  mounted.push(wrapper)
   await flushPromises()
   return { wrapper, router }
 }
@@ -244,6 +269,44 @@ describe('LiveTopologyView 展示诚实性（本轮审计修复）', () => {
     // 反向钉：TopologyCanvas 是 stage 列里另一组 position:absolute 覆盖层。
     const canvasSource = readSrc('src/components/live-topology/TopologyCanvas.vue')
     expect(canvasSource).toMatch(/position:\s*absolute/)
+  })
+
+  it('★ 栅格行下限与项的 min-height 必须同口径（★ 项硬钉会抵消行下限）', () => {
+    // ★★★ **2026-10-31 12h 审计轮补的回归钉**：★★★
+    //
+    // ★ 缺陷形态：★ 栅格行下限写的是 `minmax(min(320px, 50vh), 1fr)`（★ 矮窗时
+    // ★ 行下限 = 50vh），★ 而**同一个项**上又硬钉 `min-height: 320px` ⇒ ⇒ ★★
+    // ★★ **项比行高** ⇒ ⇒ ⇒ 溢出 ⇒ ⇒ ⇒ 压到第 2 行（右栏）⇒ ⇒ ⇒ ★★ ⇒ 而那
+    // ★★ 正是「右栏摘要浮层被压成 16px 一条缝」的**同一种形态** ⇒ ⇒ ⇒ ★★ ⇒
+    // ★★ **行下限被项自己的硬钉抵消了** ⇒ ⇒ ⇒ ★★ ⇒ 上一轮的修复在矮窗下无效。
+    //
+    // ★ 为什么读源码而不是 computed style：★ vitest 默认 css:false ⇒ ★ SFC 的
+    // ★ <style scoped> 不进 jsdom ⇒ ★ computed style 恒为空串 ⇒ ⇒ ★★ 那是恒假绿。
+    // ★★ 定位基准是写在样式契约里的事实（★ 同本文件既有做法）。
+    const source = readSrc('src/views/LiveTopologyView.vue')
+
+    // ① 行下限必须带 vh 封顶（★ 否则矮窗下无上限可退）。
+    expect(source, '栅格行下限必须含 min(320px, 50vh)').toMatch(/grid-template-rows:\s*minmax\(min\(320px,\s*50vh\)/)
+
+    // ② 桌面段里 .live-topology__clients 的 min-height 必须是 min(...) 口径，
+    //    ★ 不许再是写死的 px（★ 写死的 px 会大于 50vh 的行下限 ⇒ ⇒ 抵消它）。
+    const desktopBlock = source.slice(source.indexOf('@media (min-width: 1024px)'))
+    const clientsRule = desktopBlock.match(/\.live-topology__clients\s*\{[^}]*\}/)
+    expect(clientsRule, '桌面段里找不到 .live-topology__clients 规则').toBeTruthy()
+    // ★★★ **判据要扫【声明】不扫【散文】**：★★★ ★ 本仓的注释里会写「原值
+    // ★★★ `min-height: 320px` 是硬钉」这类**历史说明** ⇒ ⇒ ★ 若直接对整段文本
+    // ★★★ 做正则 ⇒ ⇒ ⇒ **注释里的字面量也会命中** ⇒ ⇒ ⇒ ★★ ⇒ 判据会恒红
+    // ★★★ （★ 这就是「扫的是代码还是散文」那道题）⇒ ⇒ ⇒ ★ 所以先把 CSS 注释涂白。
+    const ruleText = clientsRule![0].replace(/\/\*[\s\S]*?\*\//g, '')
+    expect(
+      ruleText,
+      '★ .live-topology__clients 的 min-height 必须与行下限同口径（min(320px, 50vh)）⇒ ⇒ ' +
+        '写死的 px 会在矮窗下大于行下限 ⇒ ⇒ 抵消行下限 ⇒ ⇒ 又把右栏压扁',
+    ).toMatch(/min-height:\s*min\(320px,\s*50vh\)/)
+    expect(
+      ruleText,
+      '★ .live-topology__clients 不许再硬钉 min-height: 320px（★ 它大于 50vh 的行下限）',
+    ).not.toMatch(/min-height:\s*320px/)
   })
 
   it('★ 两步交互：点行弹摘要浮层且不开新窗；浮层里「查看全景」才开新窗', async () => {

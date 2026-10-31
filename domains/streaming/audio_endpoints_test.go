@@ -33,7 +33,7 @@ func (f *fakeAudioResolver) GetCandidatesByModality(ctx context.Context, model, 
 }
 
 // newTestAudioService 挂一个 httptest 上游并返回 service。
-// upstream.New() 的代理解析器对 127.0.0.1 直连，httptest 上游可达。
+// upstream.NewWithRetries(0) 的代理解析器对 127.0.0.1 直连，httptest 上游可达。
 func newTestAudioService(t *testing.T, catalogCode string, upstreamHandler http.HandlerFunc) *AudioService {
 	t.Helper()
 	srv := httptest.NewServer(upstreamHandler)
@@ -49,7 +49,7 @@ func newTestAudioService(t *testing.T, catalogCode string, upstreamHandler http.
 		APIKey:       "sk-test",
 	}
 	cand.AvailabilityState = "ready"
-	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.New())
+	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.NewWithRetries(0))
 	return svc
 }
 

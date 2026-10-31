@@ -29,6 +29,7 @@ export default {
     autoControlledTooltip: '由自動偵測控制（broken_confirmed 等）。可手動停用（強制下線）',
     rowSelectsMonitor: '選擇資料列可聯動查看右側監控',
     selectModelRow: '選擇左側模型列可查看',
+    sourceSessionTurns: '會話記錄',
   },
   chart: {
     allHealthy: '全部健康',

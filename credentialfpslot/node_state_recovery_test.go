@@ -211,13 +211,20 @@ func TestNodeState_DisableCountTracking(t *testing.T) {
 	assert.Equal(t, 1, state.DisableCount, "第一次禁用，计数应为 1")
 
 	// 冷却期到期，失败恢复（延长冷却期）
+	// P0-B (2026-10-28 两层路由审计 G2)：到期后的失败 = 恢复试探失败，
+	// 属同一振荡循环的下一次禁用——计数 +1、时长按 cooldown×2^dc 指数递增
+	//（dc 递增前 =1 ⇒ 300×2 = 600s），与 URSM record_request.lua 同公式。
+	// 旧断言（"延长冷却期不增加计数"）钉的正是 P0-B 要改掉的恒定周期翻红。
 	state.DisabledUntil = time.Now().Add(-time.Second).Unix()
 	require.NoError(t, mgr.SetNodeState(ctx, state))
 	require.NoError(t, mgr.RecordNodeFailure(ctx, credID, model, "fail-after-cooldown", "timeout"))
 
 	state, err := mgr.GetNodeState(ctx, credID, model)
 	require.NoError(t, err)
-	assert.Equal(t, 1, state.DisableCount, "延长冷却期不增加计数")
+	assert.Equal(t, 2, state.DisableCount, "P0-B：到期失败=恢复试探失败，计数 +1")
+	assert.True(t, state.Disabled, "到期失败应再次禁用")
+	assert.InDelta(t, state.DisabledUntil-state.LastFailureAt, int64(600), 2,
+		"P0-B：第 2 次禁用时长 = 300×2^1 = 600s")
 
 	// 再次冷却期到期，成功恢复
 	state.DisabledUntil = time.Now().Add(-time.Second).Unix()
@@ -237,4 +244,145 @@ func TestNodeState_DisableCountTracking(t *testing.T) {
 	state, err = mgr.GetNodeState(ctx, credID, model)
 	require.NoError(t, err)
 	assert.Equal(t, 1, state.DisableCount, "第二次禁用，计数应为 1（已重置过）")
+}
+
+// TestNodeState_DisableBackoffExponential_URSMAligned 钉 P0-B
+//（2026-10-28 两层路由审计 G2）的指数退避公式：第 N 次禁用时长 =
+// base_cooldown × 2^(N−1) 封顶 1800——与 URSM v2 record_request.lua 的
+// new_cool = cool × 2^disable_count → min(backoff_cap, 1800) 同公式同封顶。
+// 反复「冷却到期 → 试探失败」的振荡节点冷却 300 → 600 → 1200 → 1800(cap)，
+// 而非旧的恒定 300 无限翻红。成功恢复（到期 → 试探成功）计数归零、从
+// 第一档重新开始，且 recovered_at（P0-A）落地。
+func TestNodeState_DisableBackoffExponential_URSMAligned(t *testing.T) {
+	s := miniredis.RunT(t)
+	defer s.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: s.Addr()})
+	defer client.Close()
+
+	mgr := &Manager{client: client, cfg: Config{Enabled: true}}
+	ctx := context.Background()
+	credID := 19
+	model := "p0b-backoff-model"
+
+	// base cooldown 默认 300（settings.NodeDisabledCooldownSeconds），
+	// cap 默认 1800（settings.NodeDisabledBackoffCapSeconds）。
+	assertCoolingSeconds := func(t *testing.T, want int64, label string) {
+		t.Helper()
+		state, err := mgr.GetNodeState(ctx, credID, model)
+		require.NoError(t, err)
+		require.True(t, state.Disabled, label+": 节点应处于禁用态")
+		require.NotZero(t, state.LastFailureAt, label+": 需有失败时间戳")
+		assert.InDelta(t, want, state.DisabledUntil-state.LastFailureAt, 2,
+			label+": 冷却时长应为 %ds（±2s 容错，Redis TIME 与本机钟差）", want)
+	}
+
+	// 第 1 次禁用（3 连败）：300 × 2^0 = 300s——与 P0-B 之前的固定值逐秒相等。
+	for i := 0; i < 3; i++ {
+		require.NoError(t, mgr.RecordNodeFailure(ctx, credID, model, "p0b-f1-"+string(rune('1'+i)), "timeout"))
+	}
+	assertCoolingSeconds(t, 300, "第 1 次禁用")
+
+	// 振荡循环：冷却到期 → 恢复试探失败 → 再禁用。幂取递增前的计数。
+	expireAndFail := func(label string) {
+		t.Helper()
+		state, err := mgr.GetNodeState(ctx, credID, model)
+		require.NoError(t, err)
+		state.DisabledUntil = time.Now().Add(-time.Second).Unix()
+		require.NoError(t, mgr.SetNodeState(ctx, state))
+		require.NoError(t, mgr.RecordNodeFailure(ctx, credID, model, "p0b-"+label, "timeout"))
+	}
+
+	expireAndFail("f2") // 第 2 次禁用：300 × 2^1 = 600s
+	assertCoolingSeconds(t, 600, "第 2 次禁用（到期试探失败）")
+	expireAndFail("f3") // 第 3 次禁用：300 × 2^2 = 1200s
+	assertCoolingSeconds(t, 1200, "第 3 次禁用")
+	expireAndFail("f4") // 第 4 次禁用：300 × 2^3 = 2400s → cap 1800
+	assertCoolingSeconds(t, 1800, "第 4 次禁用（封顶）")
+	expireAndFail("f5") // 第 5 次禁用：仍封顶 1800
+	assertCoolingSeconds(t, 1800, "第 5 次禁用（封顶后不再增长）")
+
+	// 计数对拍：5 次禁用后 disable_count = 5。
+	state, err := mgr.GetNodeState(ctx, credID, model)
+	require.NoError(t, err)
+	assert.Equal(t, 5, state.DisableCount, "5 次禁用后计数应为 5")
+
+	// 成功恢复：计数归零 + recovered_at 落地（P0-A：实际流量验证恢复的时刻）。
+	state.DisabledUntil = time.Now().Add(-time.Second).Unix()
+	require.NoError(t, mgr.SetNodeState(ctx, state))
+	before := time.Now().Unix()
+	require.NoError(t, mgr.RecordNodeSuccess(ctx, credID, model, "p0b-success"))
+	state, err = mgr.GetNodeState(ctx, credID, model)
+	require.NoError(t, err)
+	assert.False(t, state.Disabled, "成功恢复后应回池")
+	assert.Equal(t, 0, state.DisableCount, "成功恢复后计数归零")
+	assert.GreaterOrEqual(t, state.RecoveredAt, before, "P0-A：recovered_at 应写入恢复时刻")
+	assert.LessOrEqual(t, state.RecoveredAt, time.Now().Unix(), "recovered_at 不应来自未来")
+
+	// 恢复后再 3 连败：从第一档 300s 重新开始（清零生效，不是接着 2^5）。
+	for i := 0; i < 3; i++ {
+		require.NoError(t, mgr.RecordNodeFailure(ctx, credID, model, "p0b-r1-"+string(rune('1'+i)), "timeout"))
+	}
+	assertCoolingSeconds(t, 300, "成功恢复后的再次禁用从第一档重新开始")
+	state, err = mgr.GetNodeState(ctx, credID, model)
+	require.NoError(t, err)
+	assert.Equal(t, 1, state.DisableCount, "恢复后再次禁用计数从 1 重新计")
+}
+
+// TestNodeState_RecoveredAtNotWrittenOnNormalSuccess 钉 P0-A 的 recovered_at
+// 语义：只有「冷却到期后的第一个成功」（恢复被验证）才写 recovered_at；
+// 常规成功（节点本就健康）不产生恢复证据。
+func TestNodeState_RecoveredAtNotWrittenOnNormalSuccess(t *testing.T) {
+	s := miniredis.RunT(t)
+	defer s.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: s.Addr()})
+	defer client.Close()
+
+	mgr := &Manager{client: client, cfg: Config{Enabled: true}}
+	ctx := context.Background()
+	credID := 20
+	model := "p0a-recovered-at-model"
+
+	// 从未禁用过的节点：成功不写 recovered_at。
+	require.NoError(t, mgr.RecordNodeSuccess(ctx, credID, model, "normal-ok"))
+	state, err := mgr.GetNodeState(ctx, credID, model)
+	require.NoError(t, err)
+	assert.Zero(t, state.RecoveredAt, "常规成功不产生恢复证据")
+}
+
+// TestNodeState_ResetWritesRecoveredAt 钉 P0-A 批判审计轮修正：admin 手动
+// reset 节点健康（ResetNodeHealthState，admin/routing.go 的手动恢复路径）
+// 是「未经流量验证的恢复」——恰是 re-flapping 风险最高、最需要 ramp 的
+// 场景，必须**写** recovered_at=now（与 breaker.Reset 对称），而不是清零。
+// 首版误写清零 ⇒ 同一场景两面语义相反（breaker 进 ramp / NodeState 不进）。
+func TestNodeState_ResetWritesRecoveredAt(t *testing.T) {
+	s := miniredis.RunT(t)
+	defer s.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: s.Addr()})
+	defer client.Close()
+
+	mgr := &Manager{client: client, cfg: Config{Enabled: true}}
+	ctx := context.Background()
+	credID := 21
+	model := "p0a-reset-ramp-model"
+
+	// 先制造一次禁用（保证 key 存在且处于健康字段非零态）。
+	for i := 0; i < 3; i++ {
+		require.NoError(t, mgr.RecordNodeFailure(ctx, credID, model, "rst-"+string(rune('1'+i)), "timeout"))
+	}
+	state, err := mgr.GetNodeState(ctx, credID, model)
+	require.NoError(t, err)
+	require.True(t, state.Disabled)
+	require.Zero(t, state.RecoveredAt, "禁用中不应有恢复证据")
+
+	// admin reset：健康字段清零 + recovered_at 写当前时刻（进 ramp）。
+	before := time.Now().Unix()
+	require.NoError(t, mgr.ResetNodeHealthState(ctx, credID, model))
+	state, err = mgr.GetNodeState(ctx, credID, model)
+	require.NoError(t, err)
+	assert.False(t, state.Disabled, "reset 后应回池")
+	assert.GreaterOrEqual(t, state.RecoveredAt, before, "reset 应写 recovered_at（手动恢复进 ramp）")
+	assert.LessOrEqual(t, state.RecoveredAt, time.Now().Unix(), "recovered_at 不应来自未来")
 }

@@ -414,6 +414,39 @@ func (p *GatewayScaleProvider) GetModelScale(ctx context.Context, credentialID i
 	}
 	// 查询失败（表不存在/临时不可用）非致命：留 nil，scorer 跳过该维度。
 
+	// 2026-10-29: 模型可信度维度。聚合该凭据下所有节点的最新可信度判定
+	// （provider_model_credibility）。
+	//
+	// ★ 取「最差节点」而不只是平均：掺水是「这家供应商在卖这个模型时
+	// 至少有一条线是假的」——平均会把掺水的那条线稀释掉
+	// （3 条好线 + 1 条掺水线 ⇒ 平均分仍很高 ⇒ 看不出来）。
+	// ⇒ 分数取 min，另把 avg 与 suspect_count 一并带出供展示。
+	//
+	// ★ 只统计有 verdict 的行；credibility_score 为 NULL = 该节点
+	// 一个维度都没测到（不是 0 分）⇒ 不参与聚合。
+	var credAvg, credMin float64
+	var credN, credSuspect int
+	err = p.db.QueryRow(ctx, `
+		SELECT COALESCE(avg(credibility_score), 0),
+		       COALESCE(min(credibility_score), 0),
+		       count(*),
+		       count(*) FILTER (WHERE verdict IN ('suspected','diluted'))
+		FROM provider_model_credibility
+		WHERE credential_id = $1
+		  AND tenant_id = 'default'
+		  AND credibility_score IS NOT NULL
+		  AND measured_dimensions > 0`, credentialID).
+		Scan(&credAvg, &credMin, &credN, &credSuspect)
+	if err == nil && credN > 0 {
+		data.CredibilitySignal = &CredibilitySignal{
+			AvgCredibility: credAvg,
+			MinCredibility: credMin,
+			SampleN:        credN,
+			SuspectCount:   credSuspect,
+		}
+	}
+	// 查询失败（迁移 922 尚未应用 / 表不存在）非致命：留 nil，scorer 跳过。
+
 	return &data, nil
 }
 

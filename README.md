@@ -17,7 +17,7 @@
 AI Native Gateway is an **open-source, self-hosted, AI-native LLM gateway** built for the era of AI agents and "vibe coding". It does far more than forward requests: it **classifies, routes, governs, audits, and bills** every token that flows through your organization.
 
 - **Protocol Normalization**: OpenAI, Anthropic, Gemini, and Responses API compatibility — one endpoint for every model
-- **Intelligent Two-Layer Routing**: L1 picks the model (task classification → 6-dimension scoring), L2 picks the credential (tier fallback → billing round → P2C scoring → execute / circuit-break)
+- **Intelligent Two-Layer Routing**: L1 picks the model (task classification → 8-dimension scoring), L2 picks the credential (tier fallback → billing round → P2C scoring → execute / circuit-break)
 - **Session Governance**: sticky sessions, full-content session replay, automatic prompt compression, and 4-tier data lifecycle — the conversation, not just the request, is a first-class managed object
 - **Multi-Tenancy**: PostgreSQL RLS-enforced tenant isolation on 90+ tables, with per-tenant quotas, metering, and MaaS billing
 - **Credential Management**: multi-credential pools with fingerprint disguise, adaptive probing, and automatic circuit-breaking
@@ -104,17 +104,17 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | Path | Role |
 |------|------|
 | `cmd/gateway/` | Composition root — single-binary production entry (data + control plane) |
-| `domains/` | 68 DDD domains — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, security… |
+| `domains/` | 69 DDD domains — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, security… |
 | `admin/` + `web/` | Admin REST API + Vue 3 + TypeScript SPA (Element Plus, ECharts) |
 | `web-mobile/` | Mobile frontend (Vue 3 + TypeScript) — second production UI; deploy refuses to run without its `dist/` build |
 | `bg/` | Background workers — probing, lifecycle cleanup, stats aggregation, partition maintenance |
 | `storage/` | Dual-mode storage factory (`full`: PG+Redis / `lite`: SQLite+files+in-proc KV) |
 | `internal/` | Cross-cutting infra — IR, vendor strip, session mirror, outbox, telemetry… |
-| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 907) |
+| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 927) |
 | `installer/` | Standalone cross-platform installer / upgrader module |
 | `scripts/`, `deploy/` | Build, deploy, mirror, and verification tooling |
 
-Scale snapshot (2026-10-22 code scan @31466a01d): **~5,680 Go files · 3,333 test files · 1,119 migration SQLs · 68 domain packages · 44 binaries** under `cmd/` (file counts exclude `vendor/` and `installer/`; migration SQLs = full `sql/migrations/` tree; binaries = main packages per `go list`; the stale "34" was R48-B4, and `go list ./cmd/...`'s 46 includes 2 non-`main` helper packages — define the criterion before comparing numbers).
+Scale snapshot (2026-10-31 code scan @495a1c758): **~6,138 Go files · 3,661 test files · 1,180 migration SQLs · 69 domain packages · 49 binaries** under `cmd/` (file counts exclude `vendor/` and `installer/`; migration SQLs = full `sql/migrations/` tree; binaries = main packages per `go list`; the stale "34" was R48-B4, and `go list ./cmd/...`'s 51 includes 2 non-`main` helper packages — define the criterion before comparing numbers).
 
 **Deeper reading**
 
@@ -162,7 +162,7 @@ All modules below are shipped and running in the k3s production deployment. Scre
 ### Routing Panorama — Two-Layer Routing, Fully Observable
 
 ![Routing Panorama](docs/assets/screenshots/routing-panorama.png)
-*L1 model selection (task classification → 6-dimension scoring → profile lock) + L2 credential selection (model resolution → tier fallback → billing round → P2C scoring → execute / circuit-break). Task×model heatmap answers "which model for which task"; Sankey flow shows the final destination of 14,000+ live requests (task → model → provider)*
+*L1 model selection (task classification → 8-dimension scoring → profile lock) + L2 credential selection (model resolution → tier fallback → billing round → P2C scoring → execute / circuit-break). Task×model heatmap answers "which model for which task"; Sankey flow shows the final destination of 14,000+ live requests (task → model → provider)*
 
 ### Credential Monitor — Multi-Source × Multi-Credential Health
 
@@ -420,7 +420,7 @@ In non-TTY (CI / `--skip-prompt`) without `--config`, the default is `full`.
 | 5. Directory layout | full | full (db/data and redis/data dirs created but unused) |
 | 6. `compose.yml` | 3 services | **`kx-citus` + `kx-redis` stripped**; gateway loses `depends_on` + PG/Redis env |
 | 7. Start containers | 3 containers | **`kx-llm-gateway-go` only** |
-| 8. DB initialization | Wait for PG ready + `InitSchema` (450+ startup migrations) | **Skipped** (SQLite auto-creates) |
+| 8. DB initialization | Wait for PG ready + `InitSchema` (590+ startup migrations) | **Skipped** (SQLite auto-creates) |
 | 9. Health check | 5-item full check | container + `/healthz` only; PG/Redis/Schema forced ✅ in report |
 
 **New install flags**

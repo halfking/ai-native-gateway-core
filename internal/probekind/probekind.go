@@ -60,9 +60,24 @@ import (
 // ⚠ 2026-10-23 审计订正：本集**不等于**"当前有写入者的 stage 集合"。
 // `system_health` / `probe_direct` / `probe_v2` / `model_probe` /
 // `passive_probe` / `manual` 在本仓**没有写入点**（system_health 的
-// bg/system_health.go 是只读扫描器，不发网关请求），但它们是 migration 341
+// bg/system_health.go 是只读扫描器，不发网关请求），但它们是 **domain 链的
+// migration 341**（sql/migrations/domain/341_probe_origin_and_node_probe.sql）
 // 已落库的 CHECK 合法值、侧表已承认的值 ⇒ 必须保留，否则历史行的
 // is_probe 语义会被改写。
+//
+// ★ 2026-10-28（R175 轮）订正：上面那句「migration 341」**指错了文件** ——
+// 今天的 startup 链里 `341_` 这个号被
+// `sql/migrations/startup/341_hot_table_independence.sql` 占着 ⇒
+// 「migration 341」会让人以为说的是它。⇒ 改为写全「domain 链的 341」+ 路径。
+//
+// ★★ 另一处更硬的订正：v1 族的 CHECK 随 890 的 v1 族退役**真删除**，而
+// **会话族当时并未重建** ⇒ 从 890 到迁移 914 之间，origin_stage 在 DB 层
+// **完全不被拒**，本集只是 Go 侧闸门的唯一依据。
+// 迁移 914（sql/migrations/startup/914_session_turns_origin_stage_check.sql）
+// 把同一份集合补回到 session_turns / session_turns_hot 的 DB CHECK 上
+// ⇒ 两道闸门重新一致，且由
+// sql/migrations/startup/migration_914_session_turns_origin_stage_check_test.go
+// 逐项对拍（改本集必须同步改那条迁移，否则门会红）。
 //
 // 反过来，dashboard 旧实现里多出的 `direct` / `gateway` / `scheduled` /
 // `probe_gateway` / `probe_scheduled` 五个**裸值/别名**不在本集里 ——
@@ -105,6 +120,7 @@ var Writers = map[string]Writer{
 	"self-check-worker":           {Stage: "self_check", ViaHTTP: true}, // bg/self_check_worker.go
 	"credential-selfcheck-worker": {Stage: "self_check", ViaHTTP: true}, // bg/credential_selfcheck.go
 	"model-quality-worker":        {Stage: "self_check", ViaHTTP: true}, // domains/modelquality/invoker.go
+	"model-credibility-worker":    {Stage: "self_check", ViaHTTP: true}, // domains/modelcredibility/probe.go
 	"mock-probe-client":           {Stage: "self_check", ViaHTTP: true}, // internal/mockprobe/client.go
 	"node-probe-worker":           {Stage: "node_probe", ViaHTTP: true}, // bg/node_probe.go
 	"probe-service":               {Stage: "node_probe", ViaHTTP: true}, // bg/active_probe_executor.go
@@ -253,10 +269,22 @@ func ValidStages() []string {
 	return out
 }
 
-// IsValidStage 判定一个 origin_stage 是否能落进 _request_logs.origin_stage。
+// IsValidStage 判定一个 origin_stage 是否能落进 session_turns.origin_stage。
 //
-// DB CHECK（migration 341）用的就是这份集合 —— 落库前的闸门与落库后的
-// 约束必须一致，否则会出现"中间件认、DB 拒"的行。
+// DB CHECK 用的就是这份集合 —— 落库前的闸门与落库后的约束必须一致，
+// 否则会出现"中间件认、DB 拒"的行。
+//
+// ★ 2026-10-28（R175 轮）订正：本注释此前写的是「能落进
+// `_request_logs.origin_stage`」且「DB CHECK（migration 341）用的就是这份集合」
+// ——**两处都指错了**：
+//   ① `_request_logs` 已随 890 的 v1 族退役**真删除** ⇒ 该表不存在；
+//   ② v1 族的 `request_logs_origin_stage_check` 随那次 DROP 一起消失，
+//      会话族**从未重建** ⇒ 那段时间 DB 侧**根本没有 CHECK**。
+// ⇒ 现在的 DB CHECK 是**迁移 914** 建的：
+//   sql/migrations/startup/914_session_turns_origin_stage_check.sql
+//   （父表 session_turns + hot 表 session_turns_hot 两侧，允许集 = ValidStages()）。
+// ⇒ 两边由 sql/migrations/startup/migration_914_session_turns_origin_stage_check_test.go
+//   逐项对拍：改 ValidStages() 必须同步改那条迁移，否则门会红。
 func IsValidStage(stage string) bool {
 	return contains(ValidStages(), stage)
 }

@@ -7,7 +7,7 @@
 // dashboard does not animate a routine state update as a remove/reinsert.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { __testing } from './liveStreamStore'
+import { __testing, liveDataRevision } from './liveStreamStore'
 import type {
   LiveRequest,
   LiveStreamDelta,
@@ -797,4 +797,45 @@ describe('liveStreamStore missed-while-hidden recovery intent', () => {
     release()
   })
 
+})
+
+// ---------------------------------------------------------------------------
+// 数据修订号（2026-10-29 统计同步轮）：请求集合每「真正应用到可见缓冲」
+// 一次 +1；暂停态进 pending 不算（flushPending 重放才算）。消费方
+// （StatsPanel）watch 它做尾沿防抖刷新 —— 新请求落地统计秒级同步。
+// ---------------------------------------------------------------------------
+describe('liveStreamStore data revision', () => {
+  beforeEach(() => {
+    __testing.resetStream()
+  })
+
+  it('新请求落库 / 原位替换 / 快照重灌 / 清空都各 bump 一次', () => {
+    const before = liveDataRevision.value
+    __testing.pushOrQueue(makeRequest('rev-1', 'in_progress'))
+    expect(liveDataRevision.value).toBe(before + 1)
+    // 生命周期更新 = 原位替换，同样是一次数据变动
+    __testing.pushOrQueue(makeRequest('rev-1', 'success'))
+    expect(liveDataRevision.value).toBe(before + 2)
+    __testing.applyInitialData([makeRequest('rev-2', 'success')])
+    expect(liveDataRevision.value).toBe(before + 3)
+    __testing.resetStream()
+    expect(liveDataRevision.value).toBe(before + 4)
+  })
+
+  it('暂停态只进 pending 不 bump；恢复重放时才 bump（不可见的数据不算变）', () => {
+    __testing.state.paused = true
+    try {
+      const before = liveDataRevision.value
+      __testing.pushOrQueue(makeRequest('rev-paused', 'in_progress'))
+      expect(liveDataRevision.value).toBe(before)
+      expect(__testing.pending.length).toBe(1)
+      __testing.state.paused = false
+      __testing.flushPending()
+      expect(liveDataRevision.value).toBe(before + 1)
+    } finally {
+      __testing.state.paused = false
+      __testing.pending.splice(0, __testing.pending.length)
+      __testing.resetStream()
+    }
+  })
 })

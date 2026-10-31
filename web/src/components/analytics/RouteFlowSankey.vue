@@ -224,14 +224,14 @@ const TASK_LABELS: Record<string, string> = {
   display: flex;
   gap: 12px;
   justify-content: center;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   flex-wrap: wrap;
 }
 .legend-chip {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 9px;
+  font-size: 11px;
   color: var(--muted);
 }
 .legend-swatch {
@@ -244,7 +244,10 @@ const TASK_LABELS: Record<string, string> = {
   width: 1px;
   height: 12px;
   background: var(--border);
-  margin: 0 2px;
+  /* ★ 第 24 增量：容器 gap 是 12px，分隔线再带 2px margin ⇒ 渲染出的兄弟间隙 14px（离阶）。
+     ★ 源码层逐值看 12px 与 2px 都合规（后者 ≤3px 是发丝豁免）⇒ 结构上发现不了「合起来才离阶」
+     ⇒ 由运行时尺（rect 实测）抓出。margin 归零 ⇒ 渲染间隙回到 12px（阶上）。 */
+  margin: 0;
 }
 .sankey-svg {
   width: 100%;

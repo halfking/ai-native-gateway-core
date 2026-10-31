@@ -99,7 +99,7 @@ func TestBudgetExceededStillReturns402Chat(t *testing.T) {
 
 // embeddings 面同款语义：未知错误 503 fail-closed。
 func TestBudgetCheckUnknownErrorFailsClosedEmbeddings(t *testing.T) {
-	h := NewEmbeddingsHandler(&embeddingResolverStub{}, upstream.New())
+	h := NewEmbeddingsHandler(&embeddingResolverStub{}, upstream.NewWithRetries(0))
 	h.keyVerifier = budgetFailClosedVerifier{
 		key:       &authentication.KeyInfo{ID: 42, TenantID: "tenant-1"},
 		budgetErr: errors.New("db connection refused"),
@@ -121,7 +121,7 @@ func TestBudgetCheckUnknownErrorFailsClosedEmbeddings(t *testing.T) {
 
 // 对照组：embeddings 面真正超预算仍 402。
 func TestBudgetExceededStillReturns402Embeddings(t *testing.T) {
-	h := NewEmbeddingsHandler(&embeddingResolverStub{}, upstream.New())
+	h := NewEmbeddingsHandler(&embeddingResolverStub{}, upstream.NewWithRetries(0))
 	h.keyVerifier = budgetFailClosedVerifier{
 		key:       &authentication.KeyInfo{ID: 42, TenantID: "tenant-1"},
 		budgetErr: &authentication.BudgetExceededError{KeyID: 42, Budget: 1, Spent: 2},

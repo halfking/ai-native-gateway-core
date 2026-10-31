@@ -10,7 +10,23 @@ import {
   type SettingSpec,
 } from '../api'
 import { confirmDialog } from '../composables/useConfirmDialog'
-import { Warning } from '@element-plus/icons-vue'
+// ★★ 图标一律用图标库的组件（DESIGN.md §6「图标是画出来的」——不许用 emoji /
+//   Unicode 字形冒充图标系统）。第 29 增量：这一组原本是 11 个 emoji 字形
+//   （📋 🗜 🚦 ⏱ 🔁 🔀 💬 🔐 🔒 ⚡ ⚙️）⇒ **emoji 藏在一个数据数组里** ⇒
+//   源码侧的 V3 字形判据（只看元素字面量）**看不见它** ⇒ 只能靠人改 + 补判据。
+import {
+  AlarmClock,
+  ChatDotRound,
+  CircleCheck,
+  Coin,
+  Files,
+  Lock,
+  RefreshRight,
+  Setting,
+  Share,
+  Timer,
+  Warning,
+} from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -28,17 +44,17 @@ const filterCategory = ref<string>('')
 const tagInput = ref('')
 
 const categories = computed(() => [
-  { key: '',                   label: t('settings.category.all'),  icon: '📋' },
-  { key: 'compression',        label: t('settings.category.compression'),  icon: '🗜'  },
-  { key: 'rate_limit',         label: t('settings.category.rateLimit'),  icon: '🚦'  },
-  { key: 'timeout',            label: t('settings.category.timeout'),  icon: '⏱'  },
-  { key: 'retry',              label: t('settings.category.retry'),  icon: '🔁'  },
-  { key: 'routing',            label: t('settings.category.routing'),  icon: '🔀'  },
-  { key: 'session',            label: t('settings.category.session'),  icon: '💬'  },
-  { key: 'security',           label: t('settings.category.security'),  icon: '🔐'  },
-  { key: 'output_compliance',  label: t('settings.category.outputCompliance'),  icon: '🔒'  },
-  { key: 'circuit_breaker',    label: t('settings.category.circuitBreaker'),  icon: '⚡'  },
-  { key: 'general',            label: t('settings.category.general'),  icon: '⚙️' },
+  { key: '',                   label: t('settings.category.all'),  icon: Files },
+  { key: 'compression',        label: t('settings.category.compression'),  icon: Coin },
+  { key: 'rate_limit',         label: t('settings.category.rateLimit'),  icon: Timer },
+  { key: 'timeout',            label: t('settings.category.timeout'),  icon: AlarmClock },
+  { key: 'retry',              label: t('settings.category.retry'),  icon: RefreshRight },
+  { key: 'routing',            label: t('settings.category.routing'),  icon: Share },
+  { key: 'session',            label: t('settings.category.session'),  icon: ChatDotRound },
+  { key: 'security',           label: t('settings.category.security'),  icon: Lock },
+  { key: 'output_compliance',  label: t('settings.category.outputCompliance'),  icon: CircleCheck },
+  { key: 'circuit_breaker',    label: t('settings.category.circuitBreaker'),  icon: Warning },
+  { key: 'general',            label: t('settings.category.general'),  icon: Setting },
 ])
 
 function dangerLabel(level: number): string {
@@ -261,7 +277,7 @@ onMounted(() => {
           class="cat-btn" :class="{ active: filterCategory === c.key }"
           @click="switchCategory(c.key)"
         >
-          <span class="cat-icon">{{ c.icon }}</span>
+          <span class="cat-icon"><component :is="c.icon" /></span>
           <span class="cat-label">{{ c.label }}</span>
         </button>
       </aside>
@@ -467,7 +483,7 @@ onMounted(() => {
   font-size: 13px;
 }
 .error-banner {
-  padding: 10px;
+  padding: 8px;
   background: color-mix(in srgb, var(--danger) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   color: var(--danger);
@@ -536,7 +552,7 @@ onMounted(() => {
 }
 .settings-table th,
 .settings-table td {
-  padding: 10px 12px;
+  padding: 8px 12px;
   text-align: left;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
@@ -567,7 +583,7 @@ onMounted(() => {
   color: var(--text-secondary);
 }
 .cell-value code {
-  padding: 1px 6px;
+  padding: 1px 4px;
   background: var(--bg);
   border-radius: 3px;
   font-size: 11px;
@@ -583,9 +599,9 @@ onMounted(() => {
 /* === Source badges === */
 .src-badge {
   display: inline-block;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   margin-left: 4px;
 }
@@ -618,7 +634,7 @@ onMounted(() => {
   font-size: 14px;
 }
 .detail-title {
-  margin: 0 0 6px;
+  margin: 0 0 4px;
   font-size: 14px;
 }
 .detail-title code {
@@ -633,7 +649,7 @@ onMounted(() => {
 .meta {
   display: grid;
   grid-template-columns: 80px 1fr;
-  gap: 6px 12px;
+  gap: 4px 12px;
   font-size: 12px;
   margin: 0 0 16px;
 }
@@ -649,7 +665,7 @@ onMounted(() => {
   gap: 4px;
 }
 .meta code {
-  padding: 1px 6px;
+  padding: 1px 4px;
   background: var(--bg);
   border-radius: 3px;
   font-size: 11px;
@@ -680,7 +696,7 @@ onMounted(() => {
   display: block;
   font-size: 12px;
   color: var(--text-secondary);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .editor-textarea {
   width: 100%;
@@ -705,7 +721,7 @@ onMounted(() => {
 
 /* === Buttons === */
 .btn {
-  padding: 6px 14px;
+  padding: 4px 12px;
   border-radius: 6px;
   font-size: 13px;
   cursor: pointer;
@@ -753,7 +769,7 @@ onMounted(() => {
   height: 24px;
   background: var(--border);
   border-radius: 12px;
-  transition: background 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out);
 }
 
 .switch-track::after {
@@ -765,7 +781,7 @@ onMounted(() => {
   height: 20px;
   background: white;
   border-radius: 50%;
-  transition: transform 0.2s;
+  transition: transform 0.2s var(--kx-motion-ease-out);
 }
 
 .switch-input:checked + .switch-track {
@@ -807,7 +823,7 @@ onMounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 10px;
+  padding: 8px;
   min-height: 44px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -817,8 +833,8 @@ onMounted(() => {
 .tag-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
+  gap: 4px;
+  padding: 4px 8px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent-h);
@@ -859,7 +875,7 @@ onMounted(() => {
 }
 
 .json-hint {
-  margin-top: 6px;
+  margin-top: 4px;
   font-size: 12px;
   color: var(--muted);
 }
@@ -876,25 +892,25 @@ onMounted(() => {
   font-size: 12px;
   font-weight: 600;
   color: var(--text);
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .alias-preview-list {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .alias-preview-card {
   border: 1px solid color-mix(in srgb, var(--accent) 14%, transparent);
   border-radius: 8px;
   background: var(--bg);
-  padding: 10px;
+  padding: 8px;
 }
 
 .alias-preview-label {
   font-size: 12px;
   color: var(--accent-h);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .alias-preview-mapping {
@@ -939,7 +955,7 @@ onMounted(() => {
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .warning-content p {
@@ -976,7 +992,7 @@ onMounted(() => {
 
 .docs-content ul {
   margin: 8px 0;
-  padding-left: 20px;
+  padding-left: 16px;
 }
 
 .docs-content li {
@@ -984,7 +1000,7 @@ onMounted(() => {
 }
 
 .docs-content code {
-  padding: 2px 6px;
+  padding: 2px 4px;
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   border-radius: 3px;
   font-size: 12px;
@@ -1009,5 +1025,11 @@ onMounted(() => {
     flex-direction: row;
     overflow-x: auto;
   }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .switch-track::after { transition: none; }
 }
 </style>

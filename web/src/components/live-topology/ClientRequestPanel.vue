@@ -1,24 +1,24 @@
 <script setup lang="ts">
-// ClientRequestPanel.vue —— 左侧「客户端请求摘要」面板（2026-10-18 分页版）
+// ClientRequestPanel.vue —— 左侧「客户端请求」面板（2026-10-18 分页版）
 //
-// 两段结构（先看聚合、再看明细）：
-//   · 顶部按客户端聚合的摘要（请求数 / 成功率 / 在途 / 主要模型）
-//   · 下面逐条请求（最新在前）——**分页输出**，单页 ≤50 条（owner 拍板），
-//     点条目 = 选中高亮 + 弹出摘要浮层（RequestZoomPanel，两步交互第一步）；
-//     浮层里的「查看全景」/行尾 ↗ 才开新页（owner 2026-10-27 口径）
+// 单段结构：逐条请求明细（最新在前）——**分页输出**，单页 ≤50 条（owner 拍板），
+// 点条目 = 选中高亮 + 弹出摘要浮层（RequestZoomPanel，两步交互第一步）；
+// 浮层里的「查看全景」/行尾 ↗ 才开新页（owner 2026-10-27 口径）。
+// 按客户端聚合的摘要 2026-10-28 上移到头部三块汇总（SummaryHeader），
+// 本面板从此只做明细这一件事。
 //
 // 滚动语义：列表本体可滚动；翻页后回到列表顶部。第 1 页是最新数据，
 // 实时新请求到达时第 1 页自然滚动输出（prepend 最新在前）。
 
 import { computed, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { ClientSummary, PanelEntry } from '../../composables/useLiveTopology'
+import type { PanelEntry } from '../../composables/useLiveTopology'
 import { clientDisplayName } from '../../lib/liveTopologyGraph'
 import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
-import { CaretLeft, CaretRight, TopRight } from '@element-plus/icons-vue'
+import { useNewArrivals } from '../../composables/useNewArrivals'
+import { CaretLeft, CaretRight, TopRight, ArrowRight } from '@element-plus/icons-vue'
 
 const props = defineProps<{
-  summaries: ClientSummary[]
   requests: PanelEntry[]
   activeRequestId?: string
 }>()
@@ -30,8 +30,6 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-
-const visibleSummaries = computed(() => props.summaries.slice(0, 8))
 
 const page = ref(1)
 const pageCount = computed(() => Math.max(1, Math.ceil(props.requests.length / PANEL_PAGE_SIZE)))
@@ -68,22 +66,8 @@ function displayName(client: string): string {
   return clientDisplayName(client)
 }
 
-/**
- * 表头的客户端数。
- * **必须与下面实际渲染的行数一致**：只显示 `summaries.length`（上限 60）
- * 而正文只画 8 行的话，表头就在宣传不存在的行，同时把真实总数藏起来。
- * 超出时补成「8 / N」，两边对得上账。
- */
-const headerCount = computed(() =>
-  props.summaries.length > visibleSummaries.value.length
-    ? `${visibleSummaries.value.length} / ${props.summaries.length}`
-    : String(visibleSummaries.value.length),
-)
-
-function rate(summary: ClientSummary): string {
-  if (!summary.requests) return '—'
-  return `${((summary.success / summary.requests) * 100).toFixed(0)}%`
-}
+/** 表头计数 = 请求明细总数（与分页器的「共 N 条」同源；聚合摘要已上移头部）。 */
+const headerCount = computed(() => String(props.requests.length))
 
 function statusClass(status: string): string {
   switch (status) {
@@ -106,32 +90,23 @@ function latency(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
   return value >= 1000 ? `${(value / 1000).toFixed(2)}s` : `${Math.round(value)}ms`
 }
+
+/** 新到达的请求行做入场动画（只有新行动，见 useNewArrivals 注释）。 */
+const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.requestId))
 </script>
 
 <template>
-  <aside class="cp" aria-label="client request summary">
+  <aside class="cp" aria-label="client requests">
     <header class="cp__head">
       <span class="cp__title">{{ t('liveTopology.panel.clients') }}</span>
-      <span class="cp__count">{{ headerCount }}</span>
+      <span class="cp__count" data-testid="client-request-count">{{ headerCount }}</span>
     </header>
-
-    <ul class="cp__summary">
-      <li v-for="s in visibleSummaries" :key="s.client" class="cp__summary-row">
-        <span class="cp__summary-name">{{ displayName(s.client) }}</span>
-        <span class="cp__summary-stats">
-          <b>{{ s.requests }}</b>
-          <i>{{ rate(s) }}</i>
-          <em v-if="s.inFlight">{{ s.inFlight }}↻</em>
-        </span>
-        <span class="cp__summary-model">{{ s.topModel || '—' }}</span>
-      </li>
-    </ul>
 
     <ul ref="listRef" class="cp__list" data-testid="client-request-list">
       <li v-for="entry in pagedRequests" :key="entry.requestId">
         <div
           class="cp__row"
-          :class="[statusClass(entry.status), { 'is-active': entry.requestId === activeRequestId, 'is-probe': entry.isProbe }]"
+          :class="[statusClass(entry.status), { 'is-active': entry.requestId === activeRequestId, 'is-probe': entry.isProbe, 'is-new': freshIds.has(entry.requestId) }]"
         >
           <button type="button" class="cp__item" @click="onItem(entry)">
             <span class="cp__line">
@@ -140,7 +115,20 @@ function latency(value: number | null | undefined): string {
               <span class="cp__latency">{{ latency(entry.latencyMs) }}</span>
             </span>
             <span class="cp__line cp__line--sub">
-              <span class="cp__model">{{ entry.model }}</span>
+              <!-- auto 请求：点名的是 auto，最终模型由网关按任务选出 —— 面板上
+                   用「auto → 最终模型」把这一步表达出来（箭头用 SVG 图标：
+                   行是 button，V3 门禁按钮位的 → 字形）。 -->
+              <span class="cp__model">
+                <template v-if="entry.isAuto">
+                  <span
+                    class="cp__auto-chip"
+                    :data-testid="`auto-chip-${entry.requestId}`"
+                    :title="entry.taskType ? `${t('liveTopology.panel.autoChip')} · ${entry.taskType}` : t('liveTopology.panel.autoChip')"
+                  >auto</span>
+                  <ArrowRight class="cp__auto-arrow" aria-hidden="true" />
+                </template>
+                <span class="cp__model-name">{{ entry.model }}</span>
+              </span>
               <span class="cp__provider">{{ entry.provider }}</span>
             </span>
             <span v-if="entry.errorKind" class="cp__error">{{ entry.errorKind }}</span>
@@ -184,7 +172,7 @@ function latency(value: number | null | undefined): string {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  padding: 8px 6px;
+  padding: 8px 4px;
   border: 1px solid var(--kx-border);
   border-radius: 12px;
   background: var(--kx-surface);
@@ -195,7 +183,7 @@ function latency(value: number | null | undefined): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 4px 6px;
+  padding: 0 4px 4px;
   border-bottom: 1px solid var(--kx-border);
 }
 
@@ -207,55 +195,6 @@ function latency(value: number | null | undefined): string {
 .cp__count {
   font-size: 11px;
   color: var(--kx-muted);
-}
-
-.cp__summary {
-  margin: 0 0 6px;
-  padding: 0;
-  list-style: none;
-}
-
-.cp__summary-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 1px 6px;
-  padding: 4px;
-  border-bottom: 1px dashed color-mix(in srgb, var(--kx-border) 60%, transparent);
-}
-
-.cp__summary-name {
-  font-size: var(--kx-font-sm, 12px);
-  color: var(--kx-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.cp__summary-stats {
-  display: flex;
-  gap: 5px;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--kx-text);
-}
-
-.cp__summary-stats i {
-  color: var(--kx-muted);
-  font-style: normal;
-}
-
-.cp__summary-stats em {
-  color: var(--kx-primary);
-  font-style: normal;
-}
-
-.cp__summary-model {
-  grid-column: 1 / -1;
-  font-size: 10px;
-  color: var(--kx-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .cp__list {
@@ -311,7 +250,7 @@ function latency(value: number | null | undefined): string {
   min-width: 0;
   flex-direction: column;
   gap: 1px;
-  padding: 5px 6px;
+  padding: 4px 4px;
   border: 0;
   border-radius: 7px;
   background: transparent;
@@ -322,7 +261,7 @@ function latency(value: number | null | undefined): string {
 
 .cp__open {
   flex: none;
-  padding: 0 6px;
+  padding: 0 4px;
   border: 0;
   background: transparent;
   color: var(--kx-muted);
@@ -368,8 +307,46 @@ function latency(value: number | null | undefined): string {
   flex: 1;
 }
 
+/* auto 请求的「auto → 最终模型」前缀（2026-10-28 选路层轮）。
+   chip 是产品术语（model=auto 的字面值，不进语言包）；箭头是 SVG 图标 ——
+   按钮位禁用 → 字形（V3），且裸 <svg viewBox> 必须显式定尺寸。 */
+.cp__model {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.cp__auto-chip {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--kx-primary);
+  border: 1px solid color-mix(in srgb, var(--kx-primary) 45%, var(--kx-border));
+  background: color-mix(in srgb, var(--kx-surface) 82%, transparent);
+}
+
+.cp__auto-arrow {
+  flex: none;
+  color: var(--kx-muted);
+}
+
+.cp__auto-arrow > svg {
+  width: 10px;
+  height: 10px;
+}
+
+.cp__model-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cp__error {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-danger);
 }
 
@@ -385,14 +362,14 @@ function latency(value: number | null | undefined): string {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 5px 4px 0;
+  padding: 4px 4px 0;
   border-top: 1px solid var(--kx-border);
 }
 
 .cp__page-btn {
   min-width: 22px;
   height: 20px;
-  padding: 0 6px;
+  padding: 0 4px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   background: transparent;
@@ -408,10 +385,28 @@ function latency(value: number | null | undefined): string {
 }
 
 .cp__page-info {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* 新请求到达：只有新出现的行做入场（useNewArrivals 保证旧行不动）。
+   300ms 一次性入场（≤800ms 上限），指数减速；起始帧 opacity:0
+   ⇒ 入场类 ⇒ 已在 design-motion-decisions.json 登记。 */
+.cp__row.is-new {
+  animation: cp-row-in 0.3s var(--kx-motion-ease-out);
+}
+
+@keyframes cp-row-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cp__row.is-new {
+    animation: none;
+  }
 }
 
 /* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
@@ -420,4 +415,13 @@ function latency(value: number | null | undefined): string {
    尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
 .cp__open > svg { width: 11px; height: 11px; }
 .cp__page-btn > svg { width: 10px; height: 10px; }
+
+/* ── 手机（≤768，2026-10-28 手机观察轮）：行是触控目标 ──
+   抬高行高到 44px、加宽 ↗ 按钮的命中区（padding 0 4px → 0 10px），
+   手指才点得中；桌面鼠标不受影响。 */
+@media (max-width: 768px) {
+  .cp__row { min-height: 44px; }
+
+  .cp__open { padding: 0 8px; }
+}
 </style>

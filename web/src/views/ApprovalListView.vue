@@ -579,7 +579,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 <style scoped>
 .approval-list-view {
-  padding: 20px;
+  padding: 16px;
   color: var(--text-primary);
 }
 
@@ -592,7 +592,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .page-header h1 {
   margin: 0 0 8px;
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 600;
 }
 
@@ -671,7 +671,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .stat-value {
-  font-size: 32px;
+  font-size: 24px;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -709,7 +709,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 .filter-group {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   min-width: 150px;
 }
 
@@ -832,7 +832,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .badge {
   display: inline-block;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
@@ -873,7 +873,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .action-buttons {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   justify-content: center;
 }
 
@@ -896,7 +896,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
   font-size: 14px;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: all 0.2s;
+  transition: opacity 0.2s var(--kx-motion-ease-out), background 0.2s var(--kx-motion-ease-out), color 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out), box-shadow 0.2s var(--kx-motion-ease-out), transform 0.2s var(--kx-motion-ease-out), outline-offset 0.2s var(--kx-motion-ease-out);
   font-weight: 500;
   background: var(--bg-card);
   color: var(--text-primary);
@@ -949,7 +949,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .btn-sm {
-  padding: 6px 12px;
+  padding: 4px 12px;
   font-size: 13px;
 }
 
@@ -1000,4 +1000,12 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
    尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
 .message-close > svg { width: 12px; height: 12px; }
 .btn-success.btn-xs > svg { width: 12px; height: 12px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition-property: opacity, background, color, border-color, box-shadow, outline-offset;
+  }
+}
 </style>

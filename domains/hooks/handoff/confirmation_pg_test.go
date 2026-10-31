@@ -31,9 +31,9 @@ func TestPGStoreCooldownSchemaMismatchDegradesSafely(t *testing.T) {
 				SELECT 1 FROM session_summaries
 				 WHERE session_key = $1
 				   AND last_handoff_at IS NOT NULL
-				   AND NOW() - last_handoff_at < ($2 || ' seconds')::interval
+				   AND NOW() - last_handoff_at < make_interval(secs => $2::int)
 			)`)).
-		WithArgs("gw_schema_mismatch", "60").
+		WithArgs("gw_schema_mismatch", 60).
 		WillReturnError(&pgconn.PgError{Code: "42703", Message: `column "session_key" does not exist`})
 
 	active, err := store.IsHandoffCooldownActive(context.Background(), "gw_schema_mismatch", 60)

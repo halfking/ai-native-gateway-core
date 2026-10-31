@@ -54,7 +54,7 @@ defineProps<{
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .app-page-header__main {
   display: flex;
@@ -71,7 +71,7 @@ defineProps<{
   min-width: 0;
 }
 .app-page-header__title {
-  font-size: 18px;
+  font-size: 24px;
   font-weight: 600;
   margin: 0;
   overflow-wrap: break-word;
@@ -98,7 +98,7 @@ defineProps<{
   justify-content: flex-end;
 }
 .app-page-header__below {
-  margin: -12px 0 20px; /* 收窄与标题的间距，保持与原紧凑页头一致 */
+  margin: -12px 0 16px; /* 收窄与标题的间距，保持与原紧凑页头一致 */
 }
 
 /* 移动端：标题与操作区堆叠，操作按钮可换行铺满（方案 §4.4） */
@@ -106,7 +106,7 @@ defineProps<{
   .app-page-header {
     flex-direction: column;
     align-items: stretch;
-    gap: 10px;
+    gap: 8px;
   }
   /* ★ 堆叠后标题独占一行 ⇒ 解除「最多占一半」的限制（否则窄屏标题被压成半宽） */
   .app-page-header__main {

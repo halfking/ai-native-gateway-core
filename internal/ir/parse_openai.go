@@ -657,17 +657,20 @@ func parseOpenAIToolCall(tc map[string]any) ToolCall {
 
 // parseOpenAITools parses OpenAI tool definitions into IR ToolDefinition.
 func parseOpenAITools(raw json.RawMessage) ([]ToolDefinition, error) {
-	var tools []any
+	var tools []json.RawMessage
 	if err := json.Unmarshal(raw, &tools); err != nil {
 		return nil, fmt.Errorf("unmarshal tools: %w", err)
 	}
 
 	result := make([]ToolDefinition, 0, len(tools))
-	for _, t := range tools {
-		tool, ok := t.(map[string]any)
+	for _, tr := range tools {
+		// RISK-2（2026-10-29）：按原始字节拆「消费视图 + 剩余键视图」，
+		// 剩余键收进 Extra（工具顶层非标准键无损往返）。
+		tool, leftovers, ok := splitToolRaw(tr)
 		if !ok {
 			continue
 		}
+		td := ToolDefinition{}
 
 		// 2026-07-27 (F-1): provider-specific tool types (OpenAI web_search,
 		// code_interpreter, file_search; anything with type != "function"
@@ -684,8 +687,6 @@ func parseOpenAITools(raw json.RawMessage) ([]ToolDefinition, error) {
 			})
 			continue
 		}
-
-		td := ToolDefinition{}
 
 		// Handle nested function object (OpenAI standard format).
 		// P0 fix (2026-06-24): marshalAnyToRaw is required here, not a
@@ -713,6 +714,7 @@ func parseOpenAITools(raw json.RawMessage) ([]ToolDefinition, error) {
 				td.Parameters = marshalAnyToRaw(sanitizeInputSchema(tool["parameters"]))
 			}
 		}
+		td.Extra = toolExtrasFrom(leftovers, irToolKnownKeysOpenAI)
 
 		result = append(result, td)
 	}

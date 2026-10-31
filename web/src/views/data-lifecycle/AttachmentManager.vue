@@ -319,7 +319,7 @@ onMounted(load)
   padding: 12px;
 }
 .stat-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
-.stat-value { font-size: 22px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.stat-value { font-size: 24px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
 .stat-meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
 
 .breakdown h4 { font-size: 12px; color: var(--muted); margin: 8px 0; font-weight: 500; }
@@ -329,7 +329,7 @@ onMounted(load)
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 6px 0;
+  padding: 4px 0;
   font-size: 13px;
   border-bottom: 1px solid var(--border);
 }
@@ -344,7 +344,7 @@ onMounted(load)
 .hint { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
 .hint code {
   background: var(--bg-subtle);
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
   color: var(--accent-h);
   font-family: ui-monospace, SFMono-Regular, monospace;
@@ -354,7 +354,7 @@ onMounted(load)
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 200px; }
 .field label { font-size: 12px; color: var(--muted); }
 .field input {
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -363,7 +363,7 @@ onMounted(load)
 }
 .field input:focus { outline: none; border-color: var(--accent); }
 
-.result-box { padding: 10px 14px; border-radius: 6px; font-size: 13px; }
+.result-box { padding: 8px 12px; border-radius: 6px; font-size: 13px; }
 .result-box.preview { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent-h); }
 .result-box.executed { background: var(--success-soft); color: var(--success); }
 .action-note { font-size: 12px; color: var(--text); margin-top: 4px; opacity: 0.85; }
@@ -374,7 +374,7 @@ onMounted(load)
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .data-table.small { font-size: 12px; }
 .data-table th, .data-table td {
-  padding: 8px 10px;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--border);
   text-align: left;
 }
@@ -386,7 +386,7 @@ onMounted(load)
 .code {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   background: var(--bg-subtle);
   border-radius: 4px;
   color: var(--accent-h);
@@ -402,7 +402,7 @@ onMounted(load)
 
 .filter-row { display: flex; gap: 8px; align-items: center; }
 .filter-row input {
-  padding: 4px 10px;
+  padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -410,8 +410,8 @@ onMounted(load)
   font-size: 13px;
 }
 
-.btn { padding: 6px 14px; border-radius: 6px; border: 1px solid transparent; font-size: 13px; cursor: pointer; }
-.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn { padding: 4px 12px; border-radius: 6px; border: 1px solid transparent; font-size: 13px; cursor: pointer; }
+.btn-sm { padding: 4px 8px; font-size: 12px; }
 .btn-primary { background: var(--accent); color: var(--on-primary); }
 .btn-primary:hover:not(:disabled) { background: var(--accent-h); }
 .btn-danger { background: var(--danger); color: var(--on-primary); }

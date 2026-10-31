@@ -327,7 +327,7 @@ onMounted(load)
 .page-header-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 .card {
   background: var(--card);
@@ -338,7 +338,7 @@ onMounted(load)
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .wallet-card {
   padding: 16px;
@@ -363,7 +363,7 @@ onMounted(load)
 .sub-info {
   font-size: 11px;
   color: var(--accent-h);
-  margin-top: 6px;
+  margin-top: 4px;
 }
 .section {
   padding: 16px;
@@ -377,7 +377,7 @@ onMounted(load)
 }
 .section-header h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
 }
 .empty {
   text-align: center;
@@ -392,7 +392,7 @@ onMounted(load)
 .badge-gray { background: var(--neutral-bg); color: var(--muted); padding: 2px 8px; border-radius: 8px; font-size: 11px; }
 .tenant-badge {
   display: inline-flex;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 12px;
   font-size: 12px;
   background: var(--surface-secondary);

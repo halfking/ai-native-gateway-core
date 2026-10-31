@@ -169,7 +169,7 @@ onMounted(() => {
 .nht-chip.is-warning { color: var(--kx-warning); background: var(--kx-warning-soft); }
 
 .nht-state {
-  padding: 18px 8px;
+  padding: 16px 8px;
   color: var(--kx-muted);
   font-size: 12px;
   text-align: center;
@@ -192,8 +192,8 @@ onMounted(() => {
   position: relative;
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr);
-  gap: 10px;
-  padding: 12px 14px;
+  gap: 8px;
+  padding: 12px 12px;
   border-bottom: 1px solid var(--kx-border);
 }
 
@@ -212,7 +212,7 @@ onMounted(() => {
 .nht-marker {
   width: 12px;
   height: 12px;
-  margin-top: 6px;
+  margin-top: 4px;
   border-radius: 50%;
   background: var(--kx-muted);
   border: 2px solid var(--kx-surface);

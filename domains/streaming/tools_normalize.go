@@ -1,6 +1,9 @@
 package streaming
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 func NormalizeOpenAIToolDefinitions(tools []any) []any {
 	if len(tools) == 0 {
@@ -15,10 +18,14 @@ func NormalizeOpenAIToolDefinitions(tools []any) []any {
 		}
 		if fn, ok := tool["function"].(map[string]any); ok {
 			if name, _ := fn["name"].(string); name != "" {
-				out = append(out, map[string]any{
+				// RISK-2（2026-10-29）：重建时保留顶层非标准键（不覆盖
+				// type/function）—— 对所有客户端一致，网关不做静默裁剪。
+				rebuilt := map[string]any{
 					"type":     "function",
 					"function": fn,
-				})
+				}
+				copyToolExtras(rebuilt, tool, "type", "function")
+				out = append(out, rebuilt)
 				continue
 			}
 		}
@@ -31,7 +38,9 @@ func NormalizeOpenAIToolDefinitions(tools []any) []any {
 				if schema != nil {
 					fn["parameters"] = schema
 				}
-				out = append(out, map[string]any{"type": "function", "function": fn})
+				rebuilt := map[string]any{"type": "function", "function": fn}
+				copyToolExtras(rebuilt, tool, "type", "function", "name", "description", "input_schema", "parameters")
+				out = append(out, rebuilt)
 				continue
 			}
 			if _, hasParams := tool["parameters"]; hasParams || tool["type"] == "function" {
@@ -44,7 +53,9 @@ func NormalizeOpenAIToolDefinitions(tools []any) []any {
 				} else {
 					fn["parameters"] = map[string]any{}
 				}
-				out = append(out, map[string]any{"type": "function", "function": fn})
+				rebuilt := map[string]any{"type": "function", "function": fn}
+				copyToolExtras(rebuilt, tool, "type", "function", "name", "description", "input_schema", "parameters")
+				out = append(out, rebuilt)
 				continue
 			}
 		}
@@ -94,6 +105,9 @@ func SanitizeAnthropicToolDefinitions(tools []any) []any {
 			continue
 		}
 		if anth, ok := OpenAIToolToAnthropic(tool); ok {
+			// RISK-2（2026-10-29）：包裹形工具的顶层非标准键原样保留
+			//（type/function 已被消费展开）。
+			copyToolExtras(anth, tool, "type", "function")
 			out = append(out, anth)
 			continue
 		}
@@ -107,10 +121,32 @@ func SanitizeAnthropicToolDefinitions(tools []any) []any {
 			} else if p, ok := tool["parameters"]; ok {
 				anth["input_schema"] = p
 			}
+			// RISK-2（2026-10-29）：平铺形工具的顶层非标准键原样保留
+			//（name/description/input_schema/parameters 已被消费翻译）。
+			copyToolExtras(anth, tool, "name", "description", "input_schema", "parameters")
 			out = append(out, anth)
 		}
 	}
 	return out
+}
+
+// copyToolExtras RISK-2（2026-10-29）：把消费集之外的顶层键原样拷进
+// 重建后的工具对象（不覆盖已写入键）。与 paramreg「未知字段 fail-open」
+// 同一哲学：网关不做静默裁剪。
+func copyToolExtras(dst, tool map[string]any, consumed ...string) {
+	skip := make(map[string]bool, len(consumed))
+	for _, k := range consumed {
+		skip[k] = true
+	}
+	for k, v := range tool {
+		if skip[k] {
+			continue
+		}
+		if _, exists := dst[k]; exists {
+			continue
+		}
+		dst[k] = v
+	}
 }
 
 func normalizeToolsInBody(body []byte, normalize func([]any) []any) []byte {
@@ -122,8 +158,12 @@ func normalizeToolsInBody(body []byte, normalize func([]any) []any) []byte {
 	if !ok || len(raw) == 0 || string(raw) == "null" {
 		return body
 	}
+	// UseNumber：工具定义里的数字（参数约束、extra 键的值）按原始字面量
+	// 保真（anthropic_message_fix.go 同款纪律 —— 工具输入不过 float64）。
 	var tools []any
-	if json.Unmarshal(raw, &tools) != nil || len(tools) == 0 {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if dec.Decode(&tools) != nil || len(tools) == 0 {
 		return body
 	}
 	normalized := normalize(tools)

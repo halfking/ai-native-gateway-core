@@ -1505,7 +1505,7 @@ function requestTitleTooltip(request: LiveRequest): string {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .qp-title {
   font-weight: 600;
@@ -1564,14 +1564,14 @@ function requestTitleTooltip(request: LiveRequest): string {
   align-items: center;
   flex-wrap: wrap;
   gap: 4px 16px;
-  padding: 7px 12px;
+  padding: 8px 12px;
   background: var(--bg-subtle);
   border-radius: var(--kx-radius-sm, 6px);
 }
 .qp-stat {
   display: inline-flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
 }
 .qp-stat-label {
@@ -1589,7 +1589,7 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-stat-degraded {
   font-style: normal;
   font-size: 11px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 10px;
   background: color-mix(in srgb, var(--kx-warning) 14%, var(--kx-surface));
   color: var(--kx-warning);
@@ -1671,7 +1671,7 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-bar-fill {
   height: 100%;
   transform-origin: left;
-  transition: transform 0.3s ease;
+  transition: transform 0.3s var(--kx-motion-ease-out);
 }
 .qp-bar-fill--total { background: var(--kx-primary); }
 .qp-bar-fill--model { background: var(--kx-success); }
@@ -1704,11 +1704,11 @@ function requestTitleTooltip(request: LiveRequest): string {
      退到 --kx-bg 让区块与上层 --kx-surface 形成微弱对比。 */
   background: var(--surface-soft, var(--kx-bg, var(--kx-surface)));
   border-radius: var(--kx-radius-sm, 6px);
-  padding: 8px 10px;
+  padding: 8px 8px;
 }
 .qp-model-group {
   border-top: 1px solid var(--kx-border);
-  padding: 6px 0;
+  padding: 4px 0;
 }
 /* 2026-10-03：筛选的模型有节点但被「特色/近 3 天热门」范围挡掉时的解释行。
    用弱提示而非报错——这不是故障，是显示范围，如实说明即可。 */
@@ -1730,15 +1730,15 @@ function requestTitleTooltip(request: LiveRequest): string {
   padding: 4px 0;
   color: var(--kx-text);
 }
-.qp-model-compact { display:flex; align-items:center; gap:7px; flex-wrap:nowrap; padding:7px 9px; min-width:0; }
+.qp-model-compact { display:flex; align-items:center; gap:8px; flex-wrap:nowrap; padding:8px 8px; min-width:0; }
 .qp-model-compact > .model-io-strips { flex: 1 1 auto; }
-.qp-model-tag { font-size:10px; padding:2px 6px; border-radius:999px; color:var(--kx-accent); background:color-mix(in srgb, var(--kx-accent) 12%, transparent); }
+.qp-model-tag { font-size:11px; padding:2px 4px; border-radius:999px; color:var(--kx-accent); background:color-mix(in srgb, var(--kx-accent) 12%, transparent); }
 .qp-model-tag--hot { color:var(--kx-warning); background:color-mix(in srgb, var(--kx-warning) 12%, transparent); }
-.qp-model-nodes { display:flex; gap:6px; flex-wrap:wrap; flex:1 1 100%; padding-left:18px; }
-.qp-node-card-wrap { border-radius:6px; transition: background 120ms ease, outline-color 120ms ease, width 160ms ease; outline: 2px dashed transparent; outline-offset: 1px; flex: 0 0 auto; }
+.qp-model-nodes { display:flex; gap:4px; flex-wrap:wrap; flex:1 1 100%; padding-left:16px; }
+.qp-node-card-wrap { border-radius:6px; transition: background 120ms var(--kx-motion-ease-out), outline-color 120ms var(--kx-motion-ease-out), width 160ms var(--kx-motion-ease-out); outline: 2px dashed transparent; outline-offset: 1px; flex: 0 0 auto; }
 .qp-node-card-wrap.is-drag-over { background: color-mix(in srgb, var(--kx-accent) 14%, transparent); outline-color: var(--kx-accent); }
-.qp-node-card { display:grid; gap:4px; text-align:left; width:100%; box-sizing:border-box; padding:7px 9px; border:1px solid var(--kx-border); border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); position:relative; }
-.qp-node-rank { margin-left:6px; font-size:10px; color:var(--kx-muted); font-variant-numeric: tabular-nums; }
+.qp-node-card { display:grid; gap:4px; text-align:left; width:100%; box-sizing:border-box; padding:8px 8px; border:1px solid var(--kx-border); border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); position:relative; }
+.qp-node-rank { margin-left:4px; font-size:11px; color:var(--kx-muted); font-variant-numeric: tabular-nums; }
 .qp-node-card-meta { display:flex; flex-wrap:wrap; gap:4px; align-items:baseline; font-size:11px; color:var(--kx-muted); overflow:hidden; }
 .qp-stat-ok { color: var(--kx-success); font-variant-numeric: tabular-nums; }
 .qp-stat-fail { color: var(--kx-danger); font-variant-numeric: tabular-nums; }
@@ -1751,7 +1751,7 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-node-window-cell { flex:0 0 3px; width:3px; min-width:2px; border-radius:1px; background:var(--kx-danger); }
 .qp-node-window-cell.ok { background:var(--kx-success); }
 .qp-node-window-cell.bad { background:var(--kx-danger); }
-.qp-node-card-title { font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:14px; display:inline-flex; align-items:center; gap:4px; max-width:100%; }
+.qp-node-card-title { font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:12px; display:inline-flex; align-items:center; gap:4px; max-width:100%; }
 .qp-node-priority-flag { color:var(--kx-warning); font-size:11px; line-height:1; flex:0 0 auto; }
 .qp-node-card-dots { display:inline-flex; gap:4px; align-items:center; }
 .qp-dot { width:7px; height:7px; border-radius:50%; background:var(--kx-text-secondary); opacity:.5; }
@@ -1763,7 +1763,7 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-node-card--danger { border-color: var(--kx-danger); }
 .qp-node-card--disabled { border-color: var(--kx-text-secondary); opacity:.72; }
 .qp-retry { margin-left:auto; border:0; background:transparent; color:var(--kx-text-secondary); cursor:pointer; font-size:11px; }
-.qp-model-scope-state,.qp-model-detail-hint { color:var(--kx-text-secondary); font-size:11px; padding:8px 10px; margin:0; }
+.qp-model-scope-state,.qp-model-detail-hint { color:var(--kx-text-secondary); font-size:11px; padding:8px 8px; margin:0; }
 .qp-model-scope-state--error { color:var(--kx-danger); }
 .qp-model-group-toggle:focus-visible {
   outline: 2px solid var(--kx-primary);
@@ -1774,7 +1774,7 @@ function requestTitleTooltip(request: LiveRequest): string {
   width: 12px;
   font-size: 12px;
   color: var(--kx-muted, var(--kx-text));
-  transition: transform 120ms ease;
+  transition: transform 120ms var(--kx-motion-ease-out);
 }
 .qp-model-group-caret--open {
   transform: rotate(90deg);
@@ -1786,7 +1786,7 @@ function requestTitleTooltip(request: LiveRequest): string {
 }
 .qp-model-group-counts {
   display: inline-flex;
-  gap: 6px;
+  gap: 4px;
   margin-left: auto;
 }
 .qp-pill {
@@ -1805,7 +1805,7 @@ function requestTitleTooltip(request: LiveRequest): string {
   border-color: var(--kx-primary);
 }
 .qp-model-group-body {
-  padding: 6px 0 4px 20px;
+  padding: 4px 0 4px 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1813,7 +1813,7 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-model-group-node {
   border: 1px solid var(--kx-border);
   border-radius: var(--kx-radius-sm, 6px);
-  padding: 6px 8px;
+  padding: 4px 8px;
   background: var(--kx-surface);
   display: flex;
   flex-direction: column;
@@ -1868,7 +1868,7 @@ function requestTitleTooltip(request: LiveRequest): string {
   background: var(--kx-bg, var(--kx-surface));
   border: 1px solid var(--kx-border);
   border-radius: 4px;
-  padding: 0 5px;
+  padding: 0 4px;
   white-space: nowrap;
   max-width: 150px;
   overflow: hidden;
@@ -1883,7 +1883,7 @@ function requestTitleTooltip(request: LiveRequest): string {
 }
 .qp-rq-status {
   font-size: 11px;
-  padding: 0 6px;
+  padding: 0 4px;
   border-radius: 6px;
   background: var(--kx-bg, var(--kx-surface));
   color: var(--kx-muted, var(--kx-text));
@@ -1922,24 +1922,24 @@ function requestTitleTooltip(request: LiveRequest): string {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px 10px;
-  padding: 6px 4px 8px;
+  gap: 8px 8px;
+  padding: 4px 4px 8px;
   border-bottom: 1px dashed var(--kx-border);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .qp-status-filter {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 12px;
-  padding: 3px 9px;
+  padding: 3px 8px;
   border-radius: 999px;
   border: 1px solid var(--kx-border);
   background: var(--kx-surface);
   color: var(--kx-text-secondary);
   cursor: pointer;
   user-select: none;
-  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+  transition: border-color 120ms var(--kx-motion-ease-out), color 120ms var(--kx-motion-ease-out), background 120ms var(--kx-motion-ease-out);
 }
 .qp-status-filter:hover { border-color: var(--kx-accent); color: var(--kx-text); }
 .qp-status-filter.is-active { color: var(--kx-text); border-color: color-mix(in srgb, var(--kx-accent) 50%, var(--kx-border)); background: color-mix(in srgb, var(--kx-accent) 8%, var(--kx-surface)); }
@@ -1956,7 +1956,7 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-status-filter-dot.qp-dot--bad { background: var(--kx-danger); opacity: 1; }
 .qp-status-filter-dot--muted { background: var(--kx-text-secondary); opacity: .8; }
 .qp-status-filter-error {
-  margin-left: 6px;
+  margin-left: 4px;
   font-size: 11px;
   color: var(--kx-danger);
 }
@@ -1972,7 +1972,7 @@ function requestTitleTooltip(request: LiveRequest): string {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 999px;
   font-size: 10px;
   color: var(--kx-muted, var(--kx-text-secondary));
@@ -1993,7 +1993,15 @@ function requestTitleTooltip(request: LiveRequest): string {
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
    尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
-.qp-model-group-caret > svg { width: 11px; height: 11px; transition: transform 120ms ease; }
+.qp-model-group-caret > svg { width: 11px; height: 11px; transition: transform 120ms var(--kx-motion-ease-out); }
 .qp-node-card-drag-handle > svg { width: 10px; height: 10px; }
 .qp-node-priority-flag > svg { width: 10px; height: 10px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .qp-bar-fill { transition: none; }
+  .qp-model-group-caret { transition: none; }
+  .qp-model-group-caret > svg { transition: none; }
+}
 </style>

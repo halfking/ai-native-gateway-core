@@ -263,6 +263,20 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// W1.3: detail JOIN session_bodies → consent=off must be structured unavailable
+	// (never silent empty request_delta/response_delta).
+	//
+	// ★ 24h 审计第 9 轮订正：**门的位置在「会话存在性裁决」之后**，不在最前面。
+	//   原位置（auth/tenant 之后、resolve 之前）让 consent=off 的 409 遮蔽
+	//   404（会话不存在/跨租户）与 500（resolve/query 内部故障）——
+	//   session_identity_contract 四个用例实抓；且「不存在 ⇒ 409」还给了
+	//   调用方一个 consent 探针（不存在的会话本该与其它租户的会话同样不可区分）。
+	//   门移到 resolveSessionID 成功之后 ⇒ 只对「真实存在且本租户可读」的
+	//   会话拦 409，语义与 W1.3 的本意（别把空正文伪装成没数据）一致。
+	if !requireRecordingConsent(w, tenantID) {
+		return
+	}
+
 	detail, err := api.querySessionDetail(ctx, resolvedSessionID, tenantID, limit, offset)
 	if err != nil {
 		// R71 审计：0aa86d8bd 只收口了 resolve 臂；query 臂此前把 pgx 原始

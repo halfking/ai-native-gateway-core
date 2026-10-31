@@ -17,7 +17,7 @@
 AI Native Gateway es una **pasarela LLM nativa de IA, de código abierto y autoalojada**, construida para la era de los agentes de IA y el «vibe coding». Hace mucho más que reenviar peticiones: **clasifica, enruta, gobierna, audita y factura** cada token que fluye por su organización.
 
 - **Normalización de protocolos**: compatibilidad con OpenAI, Anthropic, Gemini y Responses API — un único punto de acceso para todos los modelos
-- **Enrutado inteligente de dos capas**: L1 elige el modelo (clasificación de tareas → scoring de 6 dimensiones), L2 elige la credencial (fallback de tier → ronda de facturación → scoring P2C → ejecutar / abrir circuito)
+- **Enrutado inteligente de dos capas**: L1 elige el modelo (clasificación de tareas → scoring de 8 dimensiones), L2 elige la credencial (fallback de tier → ronda de facturación → scoring P2C → ejecutar / abrir circuito)
 - **Gobernanza de sesión**: sesiones sticky (persistentes), replay de sesión con contenido completo, compresión automática de prompts y ciclo de vida de datos de 4 niveles — la conversación, y no solo la petición, es un objeto gestionado de primer nivel
 - **Multi-tenancy**: aislamiento de tenants mediante RLS de PostgreSQL en 90+ tablas, con cuotas, medición y facturación MaaS por tenant
 - **Gestión de credenciales**: pools multi-credencial con disfraz de huella digital, sondeo adaptativo y apertura automática del circuito
@@ -104,17 +104,17 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | Ruta | Rol |
 |------|-----|
 | `cmd/gateway/` | Raíz de composición — entrada de producción de binario único (plano de datos + control) |
-| `domains/` | 68 dominios DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, seguridad… |
+| `domains/` | 69 dominios DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, seguridad… |
 | `admin/` + `web/` | API REST de administración + SPA Vue 3 + TypeScript (Element Plus, ECharts) |
 | `web-mobile/` | Frontend móvil (Vue 3 + TypeScript): segunda UI de producción; el despliegue se niega a arrancar sin su build `dist/` |
 | `bg/` | Workers en segundo plano — sondeo, limpieza del ciclo de vida, agregación de estadísticas, mantenimiento de particiones |
 | `storage/` | Fábrica de almacenamiento de doble modo (`full`: PG+Redis / `lite`: SQLite+ficheros+KV en proceso) |
 | `internal/` | Infraestructura transversal — IR, strip de campos del proveedor, espejo de sesión, outbox, telemetría… |
-| `sql/migrations/` + `db/migrations/` | Migraciones idempotentes (serie de arranque actualmente en 907) |
+| `sql/migrations/` + `db/migrations/` | Migraciones idempotentes (serie de arranque actualmente en 927) |
 | `installer/` | Módulo instalador/actualizador autónomo multiplataforma |
 | `scripts/`, `deploy/` | Herramientas de build, despliegue, espejo y verificación |
 
-Instantánea de escala (escaneo de código del 2026-10-22 @31466a01d): **~5,680 ficheros Go · 3,333 ficheros de test · 1,119 SQLs de migración · 68 paquetes de dominio · 44 binarios** bajo `cmd/` (recuentos sin `vendor/` ni `installer/`; SQLs de migración = árbol completo de `sql/migrations/`; binarios = paquetes main según `go list`).
+Instantánea de escala (escaneo de código del 2026-10-31 @495a1c758): **~6,138 ficheros Go · 3,661 ficheros de test · 1,180 SQLs de migración · 69 paquetes de dominio · 49 binarios** bajo `cmd/` (recuentos sin `vendor/` ni `installer/`; SQLs de migración = árbol completo de `sql/migrations/`; binarios = paquetes main según `go list`).
 
 **Lecturas adicionales**
 
@@ -162,7 +162,7 @@ Todos los módulos siguientes están entregados y funcionando en el despliegue d
 ### Panorama de enrutado — enrutado de dos capas, totalmente observable
 
 ![Routing Panorama](docs/assets/screenshots/routing-panorama.png)
-*Selección de modelo L1 (clasificación de tareas → scoring de 6 dimensiones → bloqueo de perfil) + selección de credencial L2 (resolución de modelo → fallback de tier → ronda de facturación → scoring P2C → ejecutar / abrir circuito). El mapa de calor tarea×modelo responde «qué modelo para qué tarea»; el flujo Sankey muestra el destino final de 14,000+ peticiones en vivo (tarea → modelo → proveedor)*
+*Selección de modelo L1 (clasificación de tareas → scoring de 8 dimensiones → bloqueo de perfil) + selección de credencial L2 (resolución de modelo → fallback de tier → ronda de facturación → scoring P2C → ejecutar / abrir circuito). El mapa de calor tarea×modelo responde «qué modelo para qué tarea»; el flujo Sankey muestra el destino final de 14,000+ peticiones en vivo (tarea → modelo → proveedor)*
 
 ### Monitor de credenciales — salud multi-fuente × multi-credencial
 
@@ -298,7 +298,7 @@ En no-TTY (CI / `--skip-prompt`) sin `--config`, el valor por defecto es `full`.
 | 5. Estructura de directorios | completa | completa (db/data y redis/data se crean pero no se usan) |
 | 6. `compose.yml` | 3 servicios | **`kx-citus` + `kx-redis` eliminados**; el gateway pierde `depends_on` y el env de PG/Redis |
 | 7. Arranque de contenedores | 3 contenedores | **solo `kx-llm-gateway-go`** |
-| 8. Inicialización de la BD | esperar PG ready + `InitSchema` (450+ migraciones de arranque) | **saltada** (SQLite autocrea) |
+| 8. Inicialización de la BD | esperar PG ready + `InitSchema` (590+ migraciones de arranque) | **saltada** (SQLite autocrea) |
 | 9. Comprobación de salud | control completo de 5 puntos | solo contenedor + `/healthz`; PG/Redis/Schema forzados a ✅ en el informe |
 
 **Nuevos flags de install**

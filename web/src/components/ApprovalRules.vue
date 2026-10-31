@@ -377,11 +377,11 @@ function getRiskLevelLabel(level: string): string {
 
 .rule-card {
   padding: 12px;
-  background: var(--bg);
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: 6px;
   cursor: move;
-  transition: all 0.2s;
+  transition: opacity 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out);
 }
 
 .rule-card.disabled {
@@ -422,7 +422,7 @@ function getRiskLevelLabel(level: string): string {
 
 .rule-meta {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 
@@ -443,12 +443,12 @@ function getRiskLevelLabel(level: string): string {
   margin-top: 8px;
   font-size: 12px;
   color: var(--text-secondary);
-  padding-left: 28px;
+  padding-left: 24px;
 }
 
 .rule-conditions {
   margin-top: 8px;
-  padding-left: 28px;
+  padding-left: 24px;
   font-size: 12px;
 }
 
@@ -466,11 +466,11 @@ function getRiskLevelLabel(level: string): string {
 .condition-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .condition-item code {
-  padding: 2px 6px;
+  padding: 2px 4px;
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   border-radius: 3px;
   font-size: 11px;
@@ -494,14 +494,14 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .btn-icon {
-  padding: 6px 10px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-secondary);
   border-radius: 4px;
   cursor: pointer;
   font-size: 14px;
-  transition: all 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out), color 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out), opacity 0.2s var(--kx-motion-ease-out);
 }
 
 .btn-icon:hover:not(:disabled) {
@@ -559,7 +559,7 @@ function getRiskLevelLabel(level: string): string {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 20px;
+  padding: 16px 16px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -583,7 +583,7 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .dialog-body {
-  padding: 20px;
+  padding: 16px;
   overflow-y: auto;
 }
 
@@ -599,7 +599,7 @@ function getRiskLevelLabel(level: string): string {
 
 .form-group label {
   display: block;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   font-size: 13px;
   color: var(--text-secondary);
 }
@@ -622,7 +622,7 @@ function getRiskLevelLabel(level: string): string {
 
 .form-input-sm,
 .form-select-sm {
-  padding: 6px 10px;
+  padding: 4px 8px;
   font-size: 13px;
 }
 
@@ -668,7 +668,7 @@ function getRiskLevelLabel(level: string): string {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding: 16px 20px;
+  padding: 16px 16px;
   border-top: 1px solid var(--border);
 }
 
@@ -678,11 +678,11 @@ function getRiskLevelLabel(level: string): string {
   font-size: 13px;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: all 0.2s;
+  transition: opacity 0.2s var(--kx-motion-ease-out), background 0.2s var(--kx-motion-ease-out), color 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out), box-shadow 0.2s var(--kx-motion-ease-out), transform 0.2s var(--kx-motion-ease-out), outline-offset 0.2s var(--kx-motion-ease-out);
 }
 
 .btn-sm {
-  padding: 6px 12px;
+  padding: 4px 12px;
   font-size: 12px;
 }
 
@@ -709,4 +709,12 @@ function getRiskLevelLabel(level: string): string {
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .btn-icon > svg { width: 11px; height: 11px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition-property: opacity, background, color, border-color, box-shadow, outline-offset;
+  }
+}
 </style>

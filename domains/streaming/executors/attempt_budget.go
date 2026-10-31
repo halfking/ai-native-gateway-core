@@ -3,6 +3,8 @@ package executors
 import (
 	"errors"
 	"sync/atomic"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 const (
@@ -27,6 +29,18 @@ func NewUpstreamAttemptBudget(limit int) *UpstreamAttemptBudget {
 		limit = DefaultUpstreamAttemptLimit
 	}
 	return &UpstreamAttemptBudget{limit: int64(limit)}
+}
+
+// RequestAttemptLimit 是一次客户端请求的尝试预算读数：settings_kv 的
+// survival.attempt_budget 覆盖值优先，0（未设置）回落内置默认。
+// 2026-10-30 magpie 对比轮（docs/research/2026-10-30-*.md §四 P0-2）：
+// 从两处构造点各自硬编码 DefaultUpstreamAttemptLimit 收敛到这一个读数点，
+// 预算大小可经热加载调整而无需改部署。
+func RequestAttemptLimit() int {
+	if v := settings.SurvivalAttemptBudget(); v > 0 {
+		return v
+	}
+	return DefaultUpstreamAttemptLimit
 }
 
 func (b *UpstreamAttemptBudget) TryConsume() bool {

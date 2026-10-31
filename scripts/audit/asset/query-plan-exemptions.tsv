@@ -1,0 +1,67 @@
+# query-plan-exemptions.tsv —— R179 轮：**没有实测计划形态**的读点登记
+# ★ 生成器：scripts/audit/build-query-index-requirements.py
+# ★ 列：query_id	reason
+credential_monitor-7bc855af6c	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+credential_monitor-a94e69a17b	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+credential_monitor-3a939c015f	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+credential_monitor_heatmap-d84c300ddd	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+credential_success_rate-371d3731fb	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+data_lifecycle-13d7a685b5	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+diagnostics_credential-f18d358987	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+live_stream_sse-9ef0a7b25d	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+live_stream_sse-f43ed3036f	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+memora_handlers-db0bb123cd	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+memora_handlers-903b3d60a2	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+memora_handlers-14399babb9	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+memora_handlers-888f0f643d	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+model_routing_diagnostic-ec18620a42	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+model_status-483d612c7b	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+model_status-99a585edd9	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+no_topic_session-888f0f643d	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+no_topic_session-0eb02164dc	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+no_topic_session-5a8b44c6ae	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+probe_history-3ea8d800fe	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+provider_models-1b642bdc46	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+provider_models-664fa44960	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+route_incidents-95175a5162	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+session_analytics_breakdown-cb4aba5ac8	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+session_analytics_breakdown-790d98b986	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+session_analytics_timeseries-2e1da4bbf5	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+session_analytics_timeseries-840ec4f5c0	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+swim_lane_init-b32f4f5f13	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+tenants-f741c6818f	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+tenants-643eda89d5	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+top_problems-895618708c	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+top_problems-f13a678ffe	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+topology_clients_today-3330a325de	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+topology_window_stats-a5549d01e5	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+topology_window_stats-63de1235bc	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+usage-fac0c8ab96	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+usage-ecc57218c4	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+usage_credits-e1251bbcfa	★ 实测失败：★ EXPLAIN 失败: ssh/psql 失败: exit status 3（stderr: psql:<stdin>:1: ERROR:  missing FROM-clause entry for table "m" LINE 1: ...day', r.ts AT TIME ZONE NULL) AT TIME ZONE NULL = m.bucket A...                                                              ^）
+work_types-7d8c37999c	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+work_types-d5d1df46c9	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+work_types-5d062e8be6	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+work_types-6865e73b11	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+daily_probe_audit-4090e07bdd	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+integrity_fingerprint_drift-e5571295ab	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+passive_probe_listener-c6fa80f347	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+passive_probe_listener-e1426e9b42	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+passive_probe_listener-fb32b8c78c	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+stats_minute_rollup-edadeb821d	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+stats_minute_rollup-f35858c498	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+stats_minute_rollup-cb02789a9e	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+stats_minute_rollup_retire-6ef9841aac	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+stats_minute_rollup_retire-82a8714af1	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+stats_minute_rollup_retire-fad6268b82	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+store-8d1c49941d	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+summarizer-888f0f643d	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+gateway_adapters-42196c3b74	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+gateway_adapters-1c3c8e2713	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+minute_aggregator-cc45110db6	★ 生产上无匹配流量（★ pg_stat_statements 窗口内没有该形态的语句）
+usage-e1251bbcfa	★ 实测失败：★ EXPLAIN 失败: ssh/psql 失败: exit status 3（stderr: psql:<stdin>:1: ERROR:  missing FROM-clause entry for table "m" LINE 1: ...day', r.ts AT TIME ZONE NULL) AT TIME ZONE NULL = m.bucket A...                                                              ^）
+sessions.list	★ R162 轮的【静态轴】登记（★ 本轮未对这条做实测）⇒ ⇒ 实测形态未知
+sessions.detail.point	★ R162 轮的【静态轴】登记（★ 本轮未对这条做实测）⇒ ⇒ 实测形态未知
+sessions.detail.main	★ R162 轮的【静态轴】登记（★ 本轮未对这条做实测）⇒ ⇒ 实测形态未知
+turns.list	★ R162 轮的【静态轴】登记（★ 本轮未对这条做实测）⇒ ⇒ 实测形态未知
+attachments.presence	★ R162 轮的【静态轴】登记（★ 本轮未对这条做实测）⇒ ⇒ 实测形态未知

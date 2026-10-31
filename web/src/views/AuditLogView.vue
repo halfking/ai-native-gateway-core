@@ -485,7 +485,7 @@ onMounted(reload)
 <style scoped>
 .page-header h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
 }
 
@@ -504,7 +504,7 @@ onMounted(reload)
 .count-chip {
   display: inline-flex;
   align-items: center;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
@@ -559,7 +559,7 @@ onMounted(reload)
 
 .cell-line2 {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.35;
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
@@ -608,7 +608,7 @@ onMounted(reload)
 
 .state-cell {
   text-align: center;
-  padding: 36px 16px !important;
+  padding: 32px 16px !important;
   color: var(--muted);
 }
 
@@ -624,7 +624,7 @@ onMounted(reload)
 .detail-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px 20px;
+  gap: 12px 16px;
   font-size: 12px;
 }
 

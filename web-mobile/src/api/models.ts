@@ -12,6 +12,9 @@ export interface AvailableVersion {
   provider_count: number
   featured?: boolean
   aliases?: string[]
+  /** 后端也会下发这两个字段（admin/routing.go 的 availableVersionEntry）。 */
+  raw_names?: string[]
+  tags?: string[]
 }
 
 export interface ModelFamily {
@@ -21,10 +24,24 @@ export interface ModelFamily {
   versions: AvailableVersion[]
 }
 
+/** popular 条目：Go 端 popularModelEntry（admin/routing.go）—— 对象数组,
+ * 与桌面端 web/src/api/models.ts 的 PopularModel 同一契约。 */
+export interface PopularModel {
+  canonical_name: string
+  display_name: string
+  source: 'policy' | 'usage' | string
+  count?: number | null
+}
+
 export interface AvailableModelsResponse {
   families: ModelFamily[]
-  popular?: string[]
-  unmapped?: number
+  popular?: PopularModel[]
+  /**
+   * ★ 后端返回的是**未映射模型名数组**（`[]string`，admin/routing.go 的
+   * `unmapped` 收集的是原始模型名字符串），不是数量。此前这里声明成
+   * `number` 是一处类型谎言 —— 契约与实现对不上，谁按数量用就会踩空。
+   */
+  unmapped?: string[]
   total_raw?: number
 }
 

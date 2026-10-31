@@ -753,7 +753,7 @@ onBeforeUnmount(() => {
         <div class="drawer-panel card" @click.stop>
           <div class="drawer-header">
             <div>
-              <div style="font-size:15px;font-weight:600">密钥 #{{ selectedKey.id }}</div>
+              <div style="font-size:14px;font-weight:600">密钥 #{{ selectedKey.id }}</div>
               <div class="drawer-sub"><code>{{ selectedKey.key_prefix }}***</code> · {{ selectedKey.application_code }}</div>
             </div>
             <button class="btn btn-ghost btn-sm" @click="closeKeyDrawer">✕ 关闭</button>
@@ -998,7 +998,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .filter-bar {
@@ -1013,7 +1013,7 @@ onBeforeUnmount(() => {
   /* width:auto 覆盖全局 input/select width:100%，避免筛选控件占满整行 */
   width: auto;
   min-width: 180px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   font-size: 13px;
 }
 
@@ -1027,7 +1027,7 @@ onBeforeUnmount(() => {
   background: var(--bg);
   color: var(--text);
   cursor: pointer;
-  transition: all 0.16s ease;
+  transition: border-color 0.16s var(--kx-motion-ease-out), transform 0.16s var(--kx-motion-ease-out), background 0.16s var(--kx-motion-ease-out), color 0.16s var(--kx-motion-ease-out);
 }
 
 .status-tab:hover {
@@ -1043,7 +1043,7 @@ onBeforeUnmount(() => {
 
 .status-tab .count {
   min-width: 20px;
-  padding: 0 6px;
+  padding: 0 4px;
   border-radius: 999px;
   background: var(--bg-subtle, var(--bg));
   color: var(--muted);
@@ -1054,7 +1054,7 @@ onBeforeUnmount(() => {
 
 .key-row {
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: background 0.12s var(--kx-motion-ease-out);
 }
 
 .key-row:hover {
@@ -1131,7 +1131,7 @@ onBeforeUnmount(() => {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 10px 12px;
+  padding: 8px 12px;
   margin-bottom: 8px;
   word-break: break-all;
 }
@@ -1174,7 +1174,7 @@ onBeforeUnmount(() => {
 .conflict-meta {
   display: flex;
   gap: 16px;
-  margin-top: 6px;
+  margin-top: 4px;
   font-size: 12px;
   color: var(--muted);
   flex-wrap: wrap;
@@ -1191,4 +1191,13 @@ onBeforeUnmount(() => {
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .btn.btn-ghost.btn-xs > svg { width: 10px; height: 10px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .status-tab {
+    transition-property: border-color, background, color;
+  }
+  .status-tab:hover { transform: none; }
+}
 </style>

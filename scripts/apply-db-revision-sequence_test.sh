@@ -1019,6 +1019,72 @@ for entry in "${legacy_content_replays[@]}"; do
   fi
 done
 
+# ── 台账↔产物对账门（ledger_artifact_probe）契约（2026-10-29 第二轮通用化）────
+# 两条自清洁判据，都对着部署脚本本体执行（不重实现）：
+#   ① 覆盖面：900~920 的每个非 down 迁移都必须有一条 ledger_artifact_probe ——
+#     211 实测的静默缺失是**整族**（900/902/904/912/913/914/916 七个迁移对象
+#     全部缺席才被发现），新增 9xx 迁移而忘配探针 = 下一次静默缺失复发点。
+#   ② 产物名保真：探针 SQL 里引用的 to_regclass('public.X') / conname /
+#     relname 等产物名必须真实出现在对应迁移文件里（反解 `ledger_artifact_probe
+#     "<file>"` 行并抽取单引号里的标识符；文件改名/改名产物而探针没跟 ⇒ 红）。
+#     ⚠ 902 的探针认终态名 stats_event_dedup_pkey（tmp 名会被 ADD CONSTRAINT
+#       ... USING INDEX 改掉），908 是 drop 语义（反向断言 IS NULL）——两者
+#       与文件内名字仍逐字对应，判据天然成立。
+#     ★ 提取器必须抓**完整调用**（调用行以 `\` 结尾 ⇒ SQL 在下一行）：
+#       第一版用 awk '/^ledger_artifact_probe /' 只抓到调用行、SQL 行从未进过
+#       判据 ⇒ 产物名保真判据整个空转（变异臂注入 TYPO 名照旧全绿才暴露）。
+probe_block="$(python3 - "$SCRIPT" <<'PYEOF'
+import re, sys
+text = open(sys.argv[1], encoding='utf-8').read()
+for m in re.finditer(r'^ledger_artifact_probe "[^"]+"\s*\\\n\s*".*"$', text, re.M):
+    print(m.group(0).replace('\n', ' '))
+PYEOF
+)"
+[[ -n "$probe_block" ]] || { printf 'could not extract ledger_artifact_probe calls\n' >&2; exit 1; }
+# ★ bash 3.2 没有 declare -A（关联数组是 bash 4+）⇒ macOS 自带 bash 在这里
+#   直接死（rc=2）⇒ 掏空门的「读方」在这台机器上**永远起不来** ⇒ 门判「不可判定」。
+#   ⇒ 改用「probed 列表 + 精确匹配」：语义等价（键集合的成员判定），
+#     但不依赖 bash 4。键是受限字符集（迁移文件名 [0-9]{3}_*.sql）⇒
+#     用换行拼接 + grep -Fx 精确整行匹配即可，无歧义。
+probed_list=""
+while IFS= read -r line; do
+  target="$(sed -E 's/^ledger_artifact_probe "([^"]+)".*/\1/' <<<"$line")"
+  probed_list+="${target}"$'\n'
+done <<<"$probe_block"
+probed_has() { grep -qFx -- "$1" <<<"$probed_list"; }
+for f in "$ROOT_DIR"/sql/migrations/startup/*.sql; do
+  base="$(basename "$f")"
+  case "$base" in *.down.sql|*.skip|*.bak.skip) continue;; esac
+  case "$base" in 9[0-2][0-9]_*) ;; *) continue;; esac
+  probed_has "$base" || \
+    gate_fail "startup migration ${base} has no ledger_artifact_probe (artifact drift would be silent again)"
+done
+while IFS= read -r line; do
+  target="$(sed -E 's/^ledger_artifact_probe "([^"]+)".*/\1/' <<<"$line")"
+  mig="$ROOT_DIR/sql/migrations/startup/$target"
+  if [[ ! -f "$mig" ]]; then
+    gate_fail "ledger_artifact_probe target missing: ${target}"
+    continue
+  fi
+  # 抽取探针行里所有 public.<name> / '<name>' 形态的候选产物名，逐个对迁移体核实。
+  while IFS= read -r art; do
+    [[ -z "$art" ]] && continue
+    if ! grep -qF "$art" "$mig"; then
+      gate_fail "probe artifact '${art}' (${target}) not found in migration file — probe drifted from file"
+    fi
+  done < <(grep -oE "public\.[a-z_][a-z0-9_]*|'[a-z_][a-z0-9_]{4,}'" <<<"$line" \
+             | sed -E "s/^public\.//; s/^'//; s/'$//" \
+             | sort -u)
+done <<<"$probe_block"
+
+# 919 函数链登记（2026-10-29 审计轮实测缺口）：R176 的部署树带着
+# refresh_ursm_snapshot_slot_daily 的链序登记，merge 回 main 时只留了文件、
+# 丢了登记 ⇒ 下一次 211 部署会在应用任何文件之前 exit 5 整体 abort。
+# 上面「execute the REAL clobber guard」已把这一缺口当运行时违规报出；此处再
+# 把登记本身钉成静态要求，报错信息直接指向要补的行。
+grep -qF -- "'refresh_ursm_snapshot_slot_daily|892_ursm_snapshot_slot_daily.sql|919_ursm_slot_daily_active_minutes.sql|'" "$SCRIPT" || \
+  gate_fail "missing intentional function chain registration: refresh_ursm_snapshot_slot_daily (892 → 919)"
+
 # 656 has no db.go ensure compensation; the sequence is its only存量 deployment
 # path besides the installer fresh-install runner.
 if ! grep -q '656_auto_route_selections_hot' "$ROOT_DIR/installer/internal/dbinit/runner.go"; then

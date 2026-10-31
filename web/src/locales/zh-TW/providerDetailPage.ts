@@ -43,6 +43,7 @@ export default {
     performance: '效能',
     stability: '穩定性',
     costEfficiency: '成本效益',
+    credibility: '模型真實性',
     updatedAt: '更新時間',
     requestStats: '請求統計',
     totalRequests: '總請求次數',

@@ -563,7 +563,7 @@ function openSearchJourney() {
 .registry-filter-input {
   flex: 1;
   min-width: 180px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   font-size: 12px;
@@ -572,7 +572,7 @@ function openSearchJourney() {
 }
 
 .registry-search-btn {
-  padding: 6px 12px;
+  padding: 4px 12px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   background: var(--kx-primary);
@@ -595,7 +595,7 @@ function openSearchJourney() {
 .reg-chip {
   display: inline-flex;
   align-items: center;
-  padding: 2px 10px;
+  padding: 2px 8px;
   border-radius: 999px;
   font-size: 12px;
   border: 1px solid transparent;
@@ -606,11 +606,12 @@ function openSearchJourney() {
 .reg-chip.is-danger { color: var(--kx-danger); background: var(--kx-danger-soft); }
 .reg-chip.is-muted { color: var(--kx-muted); background: var(--kx-bg-accent); }
 
+/* 2026-10-28 第 31 增量（DESIGN.md §6「卡片套卡片永远不对」）：
+   原来这是一个白盒（描边 + 底色 + 圆角 + 内边距），里面装着 reg-card。
+   ⇒ 降级为「标题 + 内容区」：去表面，间距改用 margin。
+   ★ 16px = --space-4（★ 落在仓内间距阶上：4/8/12/16/24/32/40/48/64）。 */
 .reg-section {
-  border: 1px solid var(--kx-border);
-  border-radius: 8px;
-  background: var(--kx-surface);
-  padding: 10px 12px;
+  margin-bottom: 16px;
 }
 
 .reg-section-head {
@@ -647,7 +648,7 @@ function openSearchJourney() {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 8px 8px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   background: var(--kx-surface);
@@ -710,7 +711,7 @@ function openSearchJourney() {
 
 .reg-card__detail {
   border-top: 1px solid var(--kx-border);
-  padding-top: 6px;
+  padding-top: 4px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 4px 16px;
@@ -739,7 +740,7 @@ function openSearchJourney() {
 .registry-skeleton {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .registry-skeleton-card {
@@ -754,9 +755,21 @@ function openSearchJourney() {
   50% { opacity: 0.55; }
 }
 
-.reg-in-enter-active { transition: transform 0.3s ease, opacity 0.3s ease; }
+.reg-in-enter-active { transition: transform 0.3s var(--kx-motion-ease-out), opacity 0.3s var(--kx-motion-ease-out); }
 .reg-in-enter-from { transform: translateX(32px); opacity: 0; }
-.reg-in-leave-active { transition: transform 0.2s ease, opacity 0.2s ease; position: absolute; }
+.reg-in-leave-active { transition: transform 0.2s var(--kx-motion-ease-out), opacity 0.2s var(--kx-motion-ease-out); position: absolute; }
 .reg-in-leave-to { transform: translateX(-16px); opacity: 0; }
-.reg-in-move { transition: transform 0.3s ease; }
+.reg-in-move { transition: transform 0.3s var(--kx-motion-ease-out); }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .reg-in-enter-active {
+    transition-property: opacity;
+  }
+  .reg-in-leave-active {
+    transition-property: opacity;
+  }
+  .reg-in-move { transition: none; }
+}
 </style>

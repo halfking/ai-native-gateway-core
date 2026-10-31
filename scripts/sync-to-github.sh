@@ -7,6 +7,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+# ⇒ ★ bash>=4 运行时守卫（2026-10-27 审计）：声明（第 2 行）只对「会读注释的人」生效；
+#   bash 3.2 真跑进来会在 filter-repo/关联数组处留下半成品状态。
+if [[ -z "${BASH_VERSINFO[0]:-}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+  printf '%s\n' "FATAL: sync-to-github.sh requires bash >= 4; got: ${BASH_VERSION:-unknown}." >&2
+  exit 64
+fi
+
 repo_root="$(git rev-parse --show-toplevel)"
 scanner="$repo_root/scripts/scan-secrets.sh"
 replacements="$repo_root/scripts/scan-secrets.replacements"
@@ -129,7 +136,11 @@ echo "━━━ Step 1/5: Working tree scan (strict, tracked-only) ━━━"
 baseline="$repo_root/scripts/scan-secrets.baseline"
 baseline_arg=()
 [[ -f "$baseline" ]] && baseline_arg=("--baseline=$baseline")
-"$scanner" --mode=strict --paths=. --tracked-only "${baseline_arg[@]}" --format=text || {
+# ⇒ ★ 用父进程自己的 bash 调扫描器（2026-10-27 审计）：`"$scanner"` 直接 exec
+#   会走 `#!/usr/bin/env bash` ⇒ 落回 PATH 上第一个 bash（macOS = /bin/bash 3.2）
+#   ⇒ declare -A 报错后继续跑完、打印 findings 0（假绿）。传 "$BASH" 保证
+#   子进程与父进程同一把 bash≥4。scan-secrets.sh 侧另有版本守卫兜底（fail closed）。
+"$BASH" "$scanner" --mode=strict --paths=. --tracked-only "${baseline_arg[@]}" --format=text || {
   echo "❌ Working tree has sensitive findings. Clean them first." >&2
   exit 1
 }
@@ -220,7 +231,7 @@ echo "   ✓ history rewritten"
 echo "━━━ Step 4/5: Verify all mirror refs and reachable history ━━━"
 verify_dir=$(mktemp -d "${TMPDIR:-/tmp}/llmgw-public-check.XXXXXX")
 git clone --no-hardlinks "$mirror_dir" "$verify_dir"
-"$scanner" --mode=strict --repo-root="$verify_dir" --paths="$verify_dir" --tracked-only --baseline="$verify_dir/scripts/scan-secrets.baseline" --format=text || {
+"$BASH" "$scanner" --mode=strict --repo-root="$verify_dir" --paths="$verify_dir" --tracked-only --baseline="$verify_dir/scripts/scan-secrets.baseline" --format=text || {
   echo "❌ Mirror checkout has sensitive findings. Aborting." >&2
   exit 1
 }

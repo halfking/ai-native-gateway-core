@@ -496,29 +496,29 @@ export default { name: 'UsageTrendExplorer' }
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 14px;
+  gap: 12px;
   flex-wrap: wrap;
   flex-shrink: 0;
 }
 .ute__title {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
   margin: 0 0 4px;
 }
 .ute__sub {
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text-muted);
   margin: 0;
 }
 .ute__src {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 10.5px;
+  gap: 4px;
+  font-size: 11px;
   color: var(--text-muted);
   border: 1px dashed var(--border);
   border-radius: 8px;
-  padding: 3px 9px;
+  padding: 3px 8px;
 }
 .ute__src b {
   color: var(--text);
@@ -526,10 +526,10 @@ export default { name: 'UsageTrendExplorer' }
 .ute__filters {
   display: flex;
   align-items: flex-end;
-  gap: 14px;
+  gap: 12px;
   flex-wrap: wrap;
   flex-shrink: 0;
-  padding: 12px 14px;
+  padding: 12px 12px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -537,10 +537,10 @@ export default { name: 'UsageTrendExplorer' }
 .ute__filter {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 .ute__label {
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);
 }
@@ -574,7 +574,7 @@ export default { name: 'UsageTrendExplorer' }
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 14px 16px;
+  padding: 12px 16px;
 }
 .ute__chart {
   flex: 1 1 auto;
@@ -592,10 +592,10 @@ export default { name: 'UsageTrendExplorer' }
 .ute__err {
   font-size: 12px;
   color: var(--danger);
-  padding-top: 6px;
+  padding-top: 4px;
 }
 .ute__err-hint {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text-muted);
   padding-top: 2px;
 }

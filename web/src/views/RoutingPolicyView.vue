@@ -172,7 +172,7 @@ onMounted(load)
         </thead>
         <tbody>
           <tr v-for="f in FIELDS" :key="String(f.key)">
-            <td>{{ f.label }} <code style="font-size:10px;color:var(--muted)">{{ String(f.key) }}</code></td>
+            <td>{{ f.label }} <code style="font-size:11px;color:var(--muted)">{{ String(f.key) }}</code></td>
             <td><code>{{ (policy as any)[f.key] }}</code></td>
             <td>
               <input
@@ -267,7 +267,7 @@ onMounted(load)
 .page-header-left {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .back-link {
@@ -292,7 +292,7 @@ onMounted(load)
 }
 .weight-item input {
   width: 100%;
-  padding: 6px 10px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 14px;
@@ -307,8 +307,8 @@ onMounted(load)
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
-  padding: 8px 10px;
+  margin-bottom: 8px;
+  padding: 8px 8px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 6px;

@@ -183,14 +183,14 @@ function credentialLabel(attempt: RoutingAttempt): string {
 <style scoped>
 .routing-attempts-timeline { min-width: 0; padding: 12px 0; }
 .routing-summary, .routing-empty {
-  padding: 10px 12px;
+  padding: 8px 12px;
   color: var(--text-muted, var(--kx-text-secondary));
   background: var(--bg-surface);
   border: 1px solid var(--border, var(--kx-border-light));
   border-radius: 6px;
 }
 .attempt-list { display: grid; gap: 12px; }
-.attempt-item { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; position: relative; }
+.attempt-item { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 8px; position: relative; }
 .attempt-item:not(:last-child)::after,
 .journey-event:not(:last-child)::after {
   content: ''; position: absolute; left: 13px; top: 28px; bottom: -12px;
@@ -208,15 +208,15 @@ function credentialLabel(attempt: RoutingAttempt): string {
 .attempt-marker.danger,
 .journey-marker.danger { background: var(--danger, var(--kx-color-error)); }
 .journey-marker.active { background: var(--kx-primary); }
-.attempt-card { min-width: 0; padding: 10px 12px; background: var(--bg-container, var(--kx-bg-container)); border: 1px solid var(--border, var(--kx-border-light)); border-radius: 6px; }
+.attempt-card { min-width: 0; padding: 8px 12px; background: var(--bg-container, var(--kx-bg-container)); border: 1px solid var(--border, var(--kx-border-light)); border-radius: 6px; }
 .attempt-header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; color: var(--text, var(--kx-text-primary)); }
 .attempt-result { flex: none; font-size: 12px; }
 .attempt-result.success { color: var(--success, var(--kx-color-success)); }
 .attempt-result.warning { color: var(--warning, var(--kx-color-warning)); }
 .attempt-result.danger, .attempt-error { color: var(--danger, var(--kx-color-error)); }
-.attempt-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 6px; color: var(--text-muted, var(--kx-text-secondary)); font-size: 12px; }
+.attempt-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; color: var(--text-muted, var(--kx-text-secondary)); font-size: 12px; }
 .attempt-badge {
-  padding: 1px 6px; border-radius: 4px; font-size: 11px;
+  padding: 1px 4px; border-radius: 4px; font-size: 11px;
   background: var(--bg-surface);
   border: 1px solid var(--border, var(--kx-border-light));
 }
@@ -225,11 +225,11 @@ function credentialLabel(attempt: RoutingAttempt): string {
 /* 审计 F2-#2：与 ErrorDetailTab 共享同一套词表徽标 tone（utils/errorVocab.ts）。 */
 .attempt-badge.badge-orange { color: var(--warning, var(--kx-color-warning)); border-color: var(--warning, var(--kx-color-warning)); }
 .attempt-badge.badge-red { color: var(--danger, var(--kx-color-error)); border-color: var(--danger, var(--kx-color-error)); }
-.attempt-error { margin-top: 6px; font-size: 12px; word-break: break-word; }
+.attempt-error { margin-top: 4px; font-size: 12px; word-break: break-word; }
 .attempt-url { display: block; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border, var(--kx-border-light)); color: var(--text-muted, var(--kx-text-secondary)); font-size: 11px; overflow-wrap: anywhere; }
 .journey-event-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
-.journey-event { position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; }
-.journey-event-content { min-width: 0; padding: 3px 0 9px; border-bottom: 1px solid var(--kx-border); }
+.journey-event { position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 8px; }
+.journey-event-content { min-width: 0; padding: 3px 0 8px; border-bottom: 1px solid var(--kx-border); }
 .journey-event-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--kx-text); font-size: 12px; }
 .journey-event-header time { flex: 0 0 auto; color: var(--kx-text-secondary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .journey-event-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; color: var(--kx-text-secondary); font-size: 11px; overflow-wrap: anywhere; }

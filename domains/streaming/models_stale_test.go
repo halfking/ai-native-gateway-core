@@ -26,7 +26,7 @@ func TestModelsHandler_ServesLastGoodOnDeadDB(t *testing.T) {
 
 	h := NewModelsHandler()
 	h.SetDB(pool)
-	h.rememberGoodEntries([]modelEntry{{ID: "gpt-x", Object: "model"}})
+	h.rememberGoodEntries(modelsScopeFeatured, []modelEntry{{ID: "gpt-x", Object: "model"}})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
@@ -62,12 +62,51 @@ func TestModelsHandler_NilPoolWithoutCacheStill503(t *testing.T) {
 // modelsStaleGrace must not be served.
 func TestModelsHandler_StaleGraceExpiry(t *testing.T) {
 	h := NewModelsHandler()
-	h.rememberGoodEntries([]modelEntry{{ID: "gpt-x", Object: "model"}})
+	h.rememberGoodEntries(modelsScopeFeatured, []modelEntry{{ID: "gpt-x", Object: "model"}})
 	h.staleMu.Lock()
-	h.staleAt = time.Now().Add(-(modelsStaleGrace + time.Minute))
+	h.stale[modelsScopeFeatured] = modelsStaleEntry{
+		entries: []modelEntry{{ID: "gpt-x", Object: "model"}},
+		at:      time.Now().Add(-(modelsStaleGrace + time.Minute)),
+	}
 	h.staleMu.Unlock()
 
-	if _, ok := h.lastGoodEntries(); ok {
+	if _, ok := h.lastGoodEntries(modelsScopeFeatured); ok {
 		t.Fatal("entry past modelsStaleGrace must not serve")
+	}
+}
+
+// ★ TestModelsHandler_StaleCacheIsPerScope pins that the last-good cache is
+// keyed BY SCOPE.
+//
+// 2026-10-29：精选过滤在 SQL 里，所以查询结果本身随口径变化。此前缓存只有一格
+// ⇒ 一次「精选」请求填进去的快照，会在数据库故障期间被「全量」请求当成
+// 「这就是全部」端出去（= 静默少报模型）。两个口径必须各存各的快照；某个口径
+// 没有快照时，行为与「从未缓存过」一致（显式 500），而不是拿另一个口径的
+// 快照冒充。
+func TestModelsHandler_StaleCacheIsPerScope(t *testing.T) {
+	h := NewModelsHandler()
+	h.rememberGoodEntries(modelsScopeFeatured, []modelEntry{{ID: "featured-x", Object: "model"}})
+
+	// The featured snapshot exists…
+	if entries, ok := h.lastGoodEntries(modelsScopeFeatured); !ok || len(entries) != 1 {
+		t.Fatalf("featured scope must have its own snapshot, got ok=%v entries=%d", ok, len(entries))
+	}
+	// …and the all scope must NOT inherit it.
+	if entries, ok := h.lastGoodEntries(modelsScopeAll); ok {
+		t.Fatalf("all scope must not serve the featured snapshot, got %d entries", len(entries))
+	}
+}
+
+// ★ TestModelsHandler_StaleCacheAllScopeIsSeparate is the mirror arm: a
+// snapshot taken under "all" must be reachable only under "all".
+func TestModelsHandler_StaleCacheAllScopeIsSeparate(t *testing.T) {
+	h := NewModelsHandler()
+	h.rememberGoodEntries(modelsScopeAll, []modelEntry{{ID: "all-x", Object: "model"}})
+
+	if entries, ok := h.lastGoodEntries(modelsScopeAll); !ok || len(entries) != 1 || entries[0].ID != "all-x" {
+		t.Fatalf("all scope must serve its own snapshot, got ok=%v entries=%+v", ok, entries)
+	}
+	if _, ok := h.lastGoodEntries(modelsScopeFeatured); ok {
+		t.Fatal("featured scope must not serve the all-scope snapshot")
 	}
 }

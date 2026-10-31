@@ -29,6 +29,7 @@ export default {
     autoControlledTooltip: 'Von der Auto-Probe gesteuert (broken_confirmed usw.). Kann manuell deaktiviert werden (erzwungene Offline-Schaltung)',
     rowSelectsMonitor: 'Zeile auswählen, um die Überwachung rechts anzuzeigen',
     selectModelRow: 'Modellzeile links auswählen, um Details anzuzeigen',
+    sourceSessionTurns: 'Sitzungsprotokoll',
   },
   chart: {
     allHealthy: 'Alle gesund',

@@ -6,9 +6,9 @@
 # ★ ★ baseline-dependent = ★ 创建迁移【不在安装器清单】⇒ 新装能拥有它只因为基线是 dump
 # ★ ★ new-install-gap    = ★ 创建迁移不可达 ⇒ ★★ 任何新装环境【必然缺】
 # ★ ★ installer-bug      = ★ 创建迁移【可达】、新装却没有 ⇒ ★★ 安装器自己有 bug
-# ★ generated_at=2026-10-26T10:23:55+00:00
-# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=312 package_up=312 rows=834
-# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 74, "reachable-and-present": 369, "unreachable-and-missing": 49}
+# ★ generated_at=2026-10-30T03:44:05+00:00
+# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=326 package_up=326 rows=855
+# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 74, "reachable-and-present": 390, "unreachable-and-missing": 49}
 idx_provider_models_canonical_raw_name	provider_models	-1	395b_dedup_provider_models_and_aliases.sql	no	local,fresh,252,211		baseline-dependent	baseline-dependent	
 idx_request_logs_hot_auto_task_ts	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
 idx_request_logs_hot_gw_session_id	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
@@ -515,7 +515,7 @@ idx_usage_facts_model_time	usage_facts	537	537_usage_facts.sql	yes	local,fresh,2
 idx_usage_facts_provider_time	usage_facts	537	537_usage_facts.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_usage_facts_request	usage_facts	537	537_usage_facts.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_usage_facts_tenant_time	usage_facts	537	537_usage_facts.sql	yes	local,fresh,252,211		reachable-and-present	none	
-idx_stats_reconciliation_diffs_tenant	stats_reconciliation_diffs	539	539_stats_reconciliation_tenant.sql	yes	fresh,252,211		reachable-and-present	none	
+idx_stats_reconciliation_diffs_tenant	stats_reconciliation_diffs	539	539_stats_reconciliation_tenant.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_stats_event_inbox_claimable	stats_event_inbox	540	540_stats_event_inbox_consumer.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_stats_event_inbox_dead_letter	stats_event_inbox	540	540_stats_event_inbox_consumer.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_request_logs_hot_token_band_ts	request_logs_hot	542	542_request_logs_token_band.sql	yes			reachable-and-legitimately-retired	none	
@@ -529,7 +529,7 @@ idx_spa_pending_confidence	session_project_attribution	547	547_session_project_a
 idx_spa_project	session_project_attribution	547	547_session_project_attribution.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_spa_tenant_confirmed_updated	session_project_attribution	547	547_session_project_attribution.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_spa_tenant_status	session_project_attribution	547	547_session_project_attribution.sql	yes	local,fresh,252,211		reachable-and-present	none	
-idx_stats_reconciliation_diffs_run_tenant_dim_metric	stats_reconciliation_diffs	548	548_stats_reconciliation_diffs_identity.sql	yes	fresh,252,211		reachable-and-present	none	
+idx_stats_reconciliation_diffs_run_tenant_dim_metric	stats_reconciliation_diffs	548	548_stats_reconciliation_diffs_identity.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_goal_run_actions_lease	goal_run_actions	549	549_goal_run_ledger.sql	no		fresh,252,211	unreachable-and-missing	prod-gap	
 idx_goal_run_outbox_lease	goal_run_action_outbox	549	549_goal_run_ledger.sql	no			reachable-and-legitimately-retired	none	
 idx_goal_run_outbox_retry	goal_run_action_outbox	549	549_goal_run_ledger.sql	no			reachable-and-legitimately-retired	none	
@@ -559,7 +559,7 @@ idx_request_logs_hot_request_class	request_logs_hot	610	610_request_class_due_at
 idx_credential_model_capabilities_binding	credential_model_capabilities	612	612_native_responses_capability.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_session_bodies_hot_partition_date	session_bodies_hot	614	614_session_bodies_hot.sql	yes	fresh	local,252,211	reachable-and-present	none	
 idx_session_bodies_hot_request	session_bodies_hot	614	614_session_bodies_hot.sql	yes	fresh,252,211	local	reachable-and-present	none	
-idx_session_bodies_hot_ts	session_bodies_hot	614	614_session_bodies_hot.sql	yes	local,fresh,252	211	reachable-and-present	none	
+idx_session_bodies_hot_ts	session_bodies_hot	614	614_session_bodies_hot.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_journal_snapshot_receipts_claim	journal_snapshot_receipts	618	618_request_journey_snapshot_receipts.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_journal_snapshot_receipts_tenant	journal_snapshot_receipts	618	618_request_journey_snapshot_receipts.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_ped_resolved_updated_at	provider_error_details	621	621_provider_error_details_cleanup_index.sql	yes	fresh,252	local,211	reachable-and-present	none	
@@ -718,7 +718,7 @@ idx_model_modality_verification_due	model_modality_verification	825	825_modality
 idx_model_baseline_price_reconciliation_drift	model_baseline_price_reconciliation	826	826_model_baseline_price.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_model_baseline_price_reconciliation_model	model_baseline_price_reconciliation	826	826_model_baseline_price.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_wtmr_key_source	work_type_model_route	831	831_work_type_route_source.sql	yes	local,fresh,252,211		reachable-and-present	none	
-idx_model_baseline_price_observation_health_stale	model_baseline_price_observation_health	832	832_model_baseline_observation_health.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_model_baseline_price_observation_health_stale	model_baseline_price_observation_health	832	832_model_baseline_observation_health.sql	yes	fresh,252,211		reachable-and-present	none	
 idx_supplier_error_stats_credential	supplier_error_stats	834	834_supplier_errors_base_tables.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_supplier_error_stats_error_type	supplier_error_stats	834	834_supplier_errors_base_tables.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_supplier_error_stats_supplier	supplier_error_stats	834	834_supplier_errors_base_tables.sql	yes	local,fresh,252,211		reachable-and-present	none	
@@ -822,24 +822,45 @@ idx_tool_exec_tenant	tool_executions	895	895_domain_chain_startup_images.sql	yes
 idx_tool_exec_tool_name	tool_executions	895	895_domain_chain_startup_images.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_oar_activation_code	offline_activation_requests	896	896_offline_activation_requests_columns_reassert.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_oar_status	offline_activation_requests	896	896_offline_activation_requests_columns_reassert.sql	yes	local,fresh,252,211		reachable-and-present	none	
-idx_discovery_results_import_status	discovery_results	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252		reachable-and-present	none	
-idx_discovery_results_task	discovery_results	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252		reachable-and-present	none	
-idx_discovery_results_tenant	discovery_results	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252		reachable-and-present	none	
-idx_discovery_tasks_status	discovery_tasks	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252		reachable-and-present	none	
-idx_discovery_tasks_template	discovery_tasks	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252		reachable-and-present	none	
-idx_discovery_tasks_tenant	discovery_tasks	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252		reachable-and-present	none	
-idx_free_resource_catalog_source	free_resource_catalog	900	900_freediscovery_schema_reassert.sql	yes	local,252	211	reachable-and-legitimately-retired	none	
-idx_provider_templates_enabled	provider_templates	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252		reachable-and-present	none	
-idx_provider_templates_health	provider_templates	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252		reachable-and-present	none	
-idx_provider_templates_tenant	provider_templates	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252		reachable-and-present	none	
-idx_usage_ledger_api_key_id_ts	usage_ledger	901	901_usage_ledger_api_key_id_ts_idx.sql	yes	local,fresh,252	211	reachable-and-present	none	
-idx_sessions_updated_at_session_id	sessions	903	903_sessions_updated_at_session_id_index.sql	yes	local,fresh,252	211	reachable-and-present	none	
-idx_session_dim_closed_at_closed	session_dim	904	904_inspector_stats_partial_indexes.sql	yes	local,fresh,252	211	reachable-and-present	none	
-idx_session_summaries_health_score_notnull	session_summaries	904	904_inspector_stats_partial_indexes.sql	yes	local,fresh,252	211	reachable-and-present	none	
-idx_session_turns_hot_model_session	session_turns_hot	905	905_turns_session_model_index.sql	yes	local,fresh,252	211	reachable-and-present	none	
-idx_session_turns_model_session	session_turns	905	905_turns_session_model_index.sql	yes	local,fresh,252	211	reachable-and-present	none	
-idx_session_turns_api_key_numeric	session_turns	906	906_turns_api_key_numeric_partial_index.sql	yes	local,fresh,252	211	reachable-and-present	none	
-idx_session_turns_hot_api_key_numeric	session_turns_hot	906	906_turns_api_key_numeric_partial_index.sql	yes	local,fresh,252	211	reachable-and-present	none	
-idx_session_summaries_primary_model_trgm	session_summaries	909	909_session_summaries_search_trgm_indexes.sql	yes	local,fresh,252	211	reachable-and-present	none	
-idx_session_summaries_session_key_trgm	session_summaries	909	909_session_summaries_search_trgm_indexes.sql	yes	local,fresh,252	211	reachable-and-present	none	
-idx_session_summaries_title_trgm	session_summaries	909	909_session_summaries_search_trgm_indexes.sql	yes	local,fresh,252	211	reachable-and-present	none	
+idx_discovery_results_import_status	discovery_results	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_discovery_results_task	discovery_results	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_discovery_results_tenant	discovery_results	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_discovery_tasks_status	discovery_tasks	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_discovery_tasks_template	discovery_tasks	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_discovery_tasks_tenant	discovery_tasks	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_free_resource_catalog_source	free_resource_catalog	900	900_freediscovery_schema_reassert.sql	yes	local,252,211		reachable-and-legitimately-retired	none	
+idx_provider_templates_enabled	provider_templates	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_provider_templates_health	provider_templates	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_provider_templates_tenant	provider_templates	900	900_freediscovery_schema_reassert.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_usage_ledger_api_key_id_ts	usage_ledger	901	901_usage_ledger_api_key_id_ts_idx.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_sessions_updated_at_session_id	sessions	903	903_sessions_updated_at_session_id_index.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_session_dim_closed_at_closed	session_dim	904	904_inspector_stats_partial_indexes.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_session_summaries_health_score_notnull	session_summaries	904	904_inspector_stats_partial_indexes.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_session_turns_hot_model_session	session_turns_hot	905	905_turns_session_model_index.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_session_turns_model_session	session_turns	905	905_turns_session_model_index.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_session_turns_api_key_numeric	session_turns	906	906_turns_api_key_numeric_partial_index.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_session_turns_hot_api_key_numeric	session_turns_hot	906	906_turns_api_key_numeric_partial_index.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_session_summaries_primary_model_trgm	session_summaries	909	909_session_summaries_search_trgm_indexes.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_session_summaries_session_key_trgm	session_summaries	909	909_session_summaries_search_trgm_indexes.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_session_summaries_title_trgm	session_summaries	909	909_session_summaries_search_trgm_indexes.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_session_bodies_trash_session	session_bodies_trash	912	912_session_recording_trash.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_session_bodies_trash_trashed_at	session_bodies_trash	912	912_session_recording_trash.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_maas_coupon_redemptions_tenant	maas_coupon_redemptions	913	913_maas_monthly_bills_coupons.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_maas_coupons_status	maas_coupons	913	913_maas_monthly_bills_coupons.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_maas_invoice_requests_tenant	maas_invoice_requests	913	913_maas_monthly_bills_coupons.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_maas_monthly_bills_tenant_issued	maas_monthly_bills	913	913_maas_monthly_bills_coupons.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_session_turns_api_key_ts	session_turns	916	916_session_turns_api_key_ts_index.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_session_turns_hot_api_key_ts	session_turns_hot	916	916_session_turns_api_key_ts_index.sql	yes	local,fresh,252,211		reachable-and-present	none	
+sanitize_block_reviews_status_created_idx	sanitize_block_reviews	917	917_sanitize_block_reviews.sql	yes	local,fresh,252,211		reachable-and-present	none	
+sanitize_block_reviews_tenant_created_idx	sanitize_block_reviews	917	917_sanitize_block_reviews.sql	yes	local,fresh,252,211		reachable-and-present	none	
+sanitize_egress_releases_key_idx	sanitize_egress_releases	917	917_sanitize_block_reviews.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_node_probe_runs_cred_completed	node_probe_runs	920	920_node_probe_runs_cred_completed_idx.sql	yes	local,fresh,252,211		reachable-and-present	none	
+sanitize_block_evidence_expires_idx	sanitize_block_evidence	921	921_sanitize_block_workbench.sql	yes	fresh,252,211		reachable-and-present	none	
+sanitize_block_reviews_rule_label_idx	sanitize_block_reviews	921	921_sanitize_block_workbench.sql	yes	fresh,252,211		reachable-and-present	none	
+idx_provider_model_credibility_canonical	provider_model_credibility	922	922_model_credibility.sql	yes	fresh,252,211		reachable-and-present	none	
+idx_provider_model_credibility_measured_at	provider_model_credibility	922	922_model_credibility.sql	yes	fresh,252,211		reachable-and-present	none	
+idx_provider_model_credibility_provider	provider_model_credibility	922	922_model_credibility.sql	yes	fresh,252,211		reachable-and-present	none	
+idx_provider_model_credibility_runs_measured_at	provider_model_credibility_runs	922	922_model_credibility.sql	yes	fresh,252,211		reachable-and-present	none	
+idx_provider_model_credibility_runs_node	provider_model_credibility_runs	922	922_model_credibility.sql	yes	fresh,252,211		reachable-and-present	none	
+idx_provider_model_credibility_verdict	provider_model_credibility	922	922_model_credibility.sql	yes	fresh,252,211		reachable-and-present	none	
+idx_credential_probe_queue_command_key_created	credential_probe_queue	924	924_credential_probe_queue_command_key_idx.sql	yes	fresh,252,211	local	reachable-and-present	none	

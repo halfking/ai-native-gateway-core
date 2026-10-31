@@ -280,7 +280,7 @@ watch(laneMode, async () => {
 .swim-lane {
   display: flex;
   align-items: stretch;
-  gap: 10px;
+  gap: 8px;
   min-height: 72px;
   padding: 4px 0;
   min-width: 0;
@@ -296,11 +296,11 @@ watch(laneMode, async () => {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 8px 10px;
+  padding: 8px 8px;
   background: var(--surface-secondary);
   border: 1px solid var(--border);
   border-radius: 8px;
-  gap: 5px;
+  gap: 4px;
   overflow-wrap: break-word;
 }
 
@@ -319,8 +319,8 @@ watch(laneMode, async () => {
 
 .swim-lane__stats {
   display: flex;
-  gap: 6px;
-  font-size: 10px;
+  gap: 4px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   flex-wrap: wrap;
 }
@@ -347,11 +347,11 @@ watch(laneMode, async () => {
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   font-variant-numeric: tabular-nums;
-  transition: all 0.15s ease;
+  transition: border-color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out), opacity 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 
@@ -406,19 +406,6 @@ watch(laneMode, async () => {
   }
 }
 
-.swim-lane__emergency-btn {
-  margin-top: 6px;
-  padding: 2px 6px;
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--danger);
-  background: transparent;
-  border: 1px solid var(--danger);
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  align-self: flex-start;
-}
 
 .swim-lane__emergency-btn:hover {
   background: color-mix(in srgb, var(--danger) 15%, transparent);
@@ -448,7 +435,7 @@ watch(laneMode, async () => {
     var(--bg-tertiary);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   overflow: hidden;
   overflow-x: hidden;
   overflow-y: hidden;

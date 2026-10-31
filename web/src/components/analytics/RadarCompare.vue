@@ -109,7 +109,7 @@ const gridLevels = [0.25, 0.5, 0.75, 1]
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 .radar-svg { display: block; }
 .grid-poly {
@@ -126,7 +126,7 @@ const gridLevels = [0.25, 0.5, 0.75, 1]
   stroke-width: 1.5;
 }
 .axis-label {
-  font-size: 8px;
+  font-size: 11px;
   fill: var(--muted);
 }
 .radar-legend {
@@ -134,7 +134,7 @@ const gridLevels = [0.25, 0.5, 0.75, 1]
   flex-wrap: wrap;
   gap: 8px;
   justify-content: center;
-  font-size: 10px;
+  font-size: 11px;
 }
 .legend-item { display: flex; align-items: center; gap: 4px; }
 .legend-dot {

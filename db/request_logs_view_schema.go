@@ -716,6 +716,135 @@ func canonicalSessionOnlyDDL(hasDetails bool) string {
 		proj, parentJoin)
 }
 
+// SessionFamilyCredentialIDExpr 是 credential_id 的**唯一**规范表达式。
+//
+// 它与 canonical 视图投影里的那一项**逐字相同**
+// （projectionExprsV2 的第 9 项，见本文件上方），★ 因此：
+//
+//   - 查询侧写这个表达式 ⇒ 与视图侧的 rl.credential_id 语义相同；
+//   - 与迁移 729 的表达式索引
+//     `((CASE WHEN credential_id ~ '^[0-9]+$' THEN credential_id::bigint END), ts DESC)`
+//     **同形** ⇒ 规划器能认出来（★ PG 用 equal() 比较表达式 ⇒ 别名 t 不影响匹配）。
+const SessionFamilyCredentialIDExpr = "(CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END)"
+
+// SessionFamilyCredentialCountSourceSQL 返回「**按凭据统计行数**」的
+// **窄投影两臂** source（hot ∪ 母表，★ **不带 details 腿**）。
+//
+// # 为什么是「窄投影」而不是 SessionFamilyTurnsSourceSQL()
+//
+// canonical 视图 / 原生 118 列 source 都会让每一行**物化 118 列**
+// （252 实测 plan 里的 `width=3083` 字节/行）。★ 而「统计行数」只需要
+// credential_id 一列 ⇒ ⇒ 窄投影把 heap scan 的每行物化宽度压到 32 字节。
+//
+// # 252 生产实测（2026-10-27，只读，单凭据 count）
+//
+//	形态                                    Execution Time
+//	视图（118 列，现状）                    14,728.010 ms
+//	原生 118 列 source                        389.618 ms
+//	★ 本 helper（窄投影 UNION ALL）             247.063 ms
+//	拆成两条独立 count（各自子查询）           statement_timeout（★ 最差）
+//
+// ★★ 两版的 plan **cost 逐字相同**（cost=41.94..441.93 rows=391）
+// ⇒ ⇒ **plan cost 里没有「物化宽度」** ⇒ ★★ 「EXPLAIN 一样」不蕴含「代价一样」。
+//
+// # 口径等价性
+//
+//   - 视图的 credential_id 列 = 本表达式 ⇒ 谓词**逐字相同**；
+//   - ★ 视图的 details 腿是 LEFT JOIN 且 details 唯一键是
+//     (tenant_id, request_id, partition_date) ⇒ **同一键最多 1 行**
+//     ⇒ ⇒ LEFT JOIN **不改变行数** ⇒ ⇒ 「带 details 的视图」与
+//     「不带 details 的两臂」**行数相同** ⇒ ⇒ 计数等价。
+//
+// # 参数
+//
+//   - credExpr：凭据 id 的 SQL 表达式（如 `c.id`）。★ 它会被拼进两处谓词。
+func SessionFamilyCredentialCountSourceSQL(credExpr string) string {
+	leg := func(src string) string {
+		return "(SELECT t.credential_id FROM " + src + " t WHERE " + SessionFamilyCredentialIDExpr + " = " + credExpr + ")"
+	}
+	return "(" + leg("public.session_turns_hot") + " UNION ALL " + leg("public.session_turns") + ")"
+}
+
+// SessionFamilyMostUsedClientModelSourceSQL 返回「**most-used client_model**」
+// 查询用的**窄投影** source（7 列；两臂 hot ∪ 母表，各带 details LEFT JOIN 腿）。
+//
+// # 用途
+//
+// bg/shared_pick.go 的探针选型（PickProbeModelForCredential 的 Priority 1）
+// 要回答「这个凭据近 7 天用得最多的 client_model 是哪个」。现状读 canonical
+// 视图 request_logs_with_current_month。
+//
+// # ★★ 它**不是**提速手段（2026-10-27 252 生产实测推翻了一个错误前提）
+//
+// ★ **错误前提**：「视图有 118 列 ⇒ 每行物化 118 列 ⇒ 改窄投影能省十几秒」。
+//   —— **不成立**：PostgreSQL 会**内联**视图并**裁剪**未被引用的列
+//   （remove_unused_subquery_outputs）⇒ 只取 1 列时，视图并不物化 118 列。
+//
+// ★ **实测（三形态同快照、同一会话、同一凭据 7 天窗）**：
+//
+//	形态                plan cost                Planning Time
+//	canonical 视图      2026.88..2027.14         25 ~ 91 ms
+//	★ 本 helper          2025.29..2025.55         8 ~ 13 ms
+//
+//   ⇒ ★★ **计划代价几乎相同**（2026.88 vs 2025.29）⇒ **执行阶段没有可省的量**；
+//   ⇒ ★★ 真正的差别在**规划**：视图读面每次都要展开 118 列的定义，
+//     规划成本是窄投影的 **3~11 倍**（CPU 成本，与 IO 噪声无关，每次调用都付）。
+//
+// ★ **为什么不能拿单次执行耗时当证据**：252 上**九个**执行（3 形态 × 3 轮交错）
+//   的**计划形状逐项相同**（同一访问路径、同一行数、同一 buffer 计数
+//   521,376 hit / 0 read），但 Execution Time 在 **368 ms ~ 16,194 ms** 之间
+//   波动（**44×**）⇒ ⇒ 单次采样分不出形态差异，只能比**计划代价 / 形状 /
+//   buffer 计数**这类确定性量。
+//
+// # 口径等价性（252 生产规模，同快照逐值对拍）
+//
+//	view_groups=9 / narrow_groups=9 / only_in_view=0 / only_in_narrow=0
+//	view_total=14317 = narrow_total
+//	top1_view=minimax-m3|6862 = top1_narrow
+//
+//   ⇒ 分组**多重集**逐值相同。（★ 比全部分组而不是只比 top-1 ——
+//     `ORDER BY count(*) DESC LIMIT 1` 在并列时**本身不确定**。）
+//
+// # 为什么保留 `::text` 转型（免费，但更稳）
+//
+//   PostgreSQL 里 `text` 相等是**字节相等**，而 `varchar` 相等走**排序规则**
+//   （确定性 ICU 排序规则下可能把规范等价的两种写法判相等）。
+//   ⇒ `d.tenant_id::text = t.tenant_id::text` 是**字节精确**的，
+//     与 canonical 视图的 join 谓词**逐字相同** ⇒ 不引入任何新的相等语义。
+//   ⇒ 而去掉转型**不省任何量**：实测两形态计划代价相同（2025.29 vs 2025.29）、
+//     buffer 计数相同 ⇒ ★ 转型是**免费的**，保守优先。
+//
+//   ★★ 订正本轮早先的一个**错误前提**：「PG 里 varchar 比较忽略尾空格、text 不忽略」
+//     —— **不成立**：252 实测 `'a'::varchar(255) = 'a '::varchar(255)` 是 **false**
+//     ⇒ varchar 也**不**忽略尾空格（只有 `char(n)` 忽略）⇒
+//     ⇒ 保留转型**不是**为了「补 varchar 的漏」，而是为了「字节精确 + 与视图逐字相同」。
+//
+// # 投影的 7 列与「视图里那几列的来源」逐字对齐：
+//
+//	client_model  ← d.client_model    （details 腿）
+//	quality_flags ← d.quality_flags   （details 腿）
+//	ts / success / task_type / origin_actor ← t.*（turns 臂）
+//	credential_id ← SessionFamilyCredentialIDExpr（与视图投影逐字相同）
+//
+// ★ join 键与视图逐字相同：`d.tenant_id::text = t.tenant_id::text` +
+//   request_id + partition_date。
+//
+// ★ 探针排除谓词需要的三列（quality_flags / task_type / origin_actor）
+//   **必须**在本投影里 —— 少一列就是 42703（仓内 R50 记录过同族事故）。
+//
+// ★ 返回值**不带别名**（调用方自己加），与 SessionFamilyTurnsSourceSQL 同约定。
+func SessionFamilyMostUsedClientModelSourceSQL() string {
+	leg := func(turns, details string) string {
+		return "(SELECT d.client_model, d.quality_flags, t.success, t.ts, t.task_type, t.origin_actor, " +
+			SessionFamilyCredentialIDExpr + " AS credential_id" +
+			" FROM " + turns + " t" +
+			" LEFT JOIN " + details + " d" +
+			" ON d.tenant_id::text = t.tenant_id::text AND d.request_id = t.request_id AND d.partition_date = t.partition_date)"
+	}
+	return "(" + leg("public.session_turns_hot", "public.session_turn_details_hot") +
+		" UNION ALL " + leg("public.session_turns", "public.session_turn_details") + ")"
+}
+
 // SessionFamilyTurnsSourceSQL returns a parenthesized FROM-source emitting the
 // frozen 113-column request-logs shape straight from the session-turn family
 // (hot ∪ parent, details-joined per 734), for S3 wave-1 native readers
@@ -742,6 +871,126 @@ func SessionFamilyTurnsSourceSQL() string {
 		" FROM public.session_turns t" +
 		" LEFT JOIN public.session_turn_details d" +
 		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date)"
+}
+
+// SessionFamilyTurnsSourceWindowedSQL 是 SessionFamilyTurnsSourceSQL 的
+// **带分区键下界**变体（R181 轮新增）。
+//
+// ★ 为什么需要它（★ 实测坐实，不是推断）：★★
+// `public.session_turns` / `session_bodies` / `session_turn_details` 都按
+// **partition_date**（RANGE 分区）划分，而读方几乎都只按 **ts** 过滤
+// ⇒ ⇒ PG 的分区裁剪**只认分区键谓词** ⇒ ⇒ 一个 ts 窗口会命中【全部】月分区。
+// ★★ 本地真库 A/B 对照（session_turns 有 5 个月分区 + default）：
+//
+//	WHERE ts >= '2026-10-01' AND ts <= '2026-10-29'
+//	  ⇒ Append → 5 个分区全被扫（2026_07 / 2026_08 / 2026_10 / 2026_11 / default）
+//	WHERE ts >= ... AND partition_date >= '2026-10-01' AND partition_date <= '2026-10-29'
+//	  ⇒ Seq Scan on session_turns_2026_10   ← ★ 只剩 1 个分区 ★
+//
+// ★★ 生产侧同一形态已被台账记下（252 的 pg_stat_statements 观测台账
+// `scripts/audit/asset/query-plan-observations.tsv`）：/api/logs 的列表语句
+// （stmt-1d7be58136）在**1 秒窗口**上 Seq Scan 了 **4 个整月分区**。
+//
+// ★ 与 canonical 视图的**口径等价性**：★ 本函数与
+//   `request_logs_with_current_month` 读的是同一对关系（hot ∪ 父表）、
+//   投影走**同一个** sessionFamilyProjection(true)、JOIN 条件逐字相同
+//   （★ 视图那版带 `::text` 冗余转型，本版不带 ⇒ ★ 索引可用性反而更好，
+//     ★ 取值逐行相同 ⇒ 语义不变）★★
+//   ⇒ ⇒ 唯一差别 = 本版多了 partition_date 谓词 ⇒ ⇒ 行集是 ts 谓词的**子集**，
+//     ★ 而 partition_date == calendarDate(ts)（★ 所有写入方都用它）⇒
+//     ★ ⇒ 子集 == 原行集 ⇒ ⇒ **不丢行** ★
+//
+// ★ 参数：★ pdFrom / pdTo 是**两臂各自**要用的 SQL 片段（形如 "$1" / "$2"），
+//   ★ 由调用方决定参数编号 ⇒ ⇒ 本包不感知参数位置。
+//
+// ★ 返回值不带外层别名（调用方自己加，如 ` rl`）。
+func SessionFamilyTurnsSourceWindowedSQL(pdFrom, pdTo string) string {
+	win := " WHERE t.partition_date >= " + pdFrom + " AND t.partition_date <= " + pdTo
+	// ★★ 详情侧（session_turn_details）**也要**带分区键下界，否则它仍然全扫：
+	//   JOIN 条件里已经有 `d.partition_date = t.partition_date`，而 t 侧被限在
+	//   [pdFrom, pdTo] ⇒ ⇒ d.partition_date 也必然落在同一区间 ⇒ ⇒ 在 ON 子句里
+	//   **再加一条冗余谓词**是**逐行等价**的（不是新筛选）⇒ ⇒ 但它让 PG 能在
+	//   **规划期**把 details 的月分区裁掉。
+	// ★★ 实测（本地真库，R181 轮）：只给 turns 侧加下界时，details 侧仍是
+	//   `Seq Scan on session_turn_details_2026_10 / _2026_11 / _default`（3 个分区）；
+	//   两侧都加 ⇒ ⇒ details 只剩窗口内分区。
+	// ★★ 放在 ON 而不是 WHERE：★ LEFT JOIN 的 ON 子句里加条件**不改变**结果集
+	//   （左行照样保留）⇒ ⇒ 语义与「不加」完全一致 ⇒ ⇒ 零风险。
+	joinWin := " AND d.partition_date >= " + pdFrom + " AND d.partition_date <= " + pdTo
+	return "(SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns_hot t" +
+		" LEFT JOIN public.session_turn_details_hot d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" + joinWin +
+		win +
+		" UNION ALL SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns t" +
+		" LEFT JOIN public.session_turn_details d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" + joinWin +
+		win + ")"
+}
+
+// SessionFamilyTurnsSourceLowerBoundSQL 是 SessionFamilyTurnsSourceSQL 的
+// **仅带分区键下界**变体（R184 轮新增）。
+//
+// ★★ 为什么需要「只有下界」这一支（R181 的 Windowed 变体不够用）：★★
+//
+//	SessionFamilyTurnsSourceWindowedSQL(pdFrom, pdTo) **强制带上界**，
+//	而**相对窗口**（`ts >= NOW() - ($n || ' hours')::interval`）的语义是
+//	「最近 N 小时」⇒ ⇒ 它**没有** ts 上界 ⇒ ⇒ 硬造一个 partition_date 上界
+//	就是**给读点加了一个原本没有的筛选** ⇒ ⇒ 语义漂移（未来 ts 的行会被丢掉）。
+//
+//	⇒ ⇒ 相对窗口只能加**下界** ⇒ ⇒ 本函数只推下界，**不推上界**。
+//
+// ★★ 为什么下界必须是「**与 ts 谓词同源**」的表达式（而不是应用侧算好的常量）：
+//
+//	应用侧常量（像 R181 的 turns 列表那样算 $1/$2）要求**应用时钟 ≤ 数据库时钟**，
+//	否则 `NOW() - Nh`（DB 时钟）可能比应用算出的下界更早 ⇒ ⇒ 会**丢行**。
+//	⇒ ⇒ 本函数允许调用方传**任意 SQL 表达式**作为下界 ⇒ ⇒ 调用方可以传
+//
+//	    (NOW() - ($2 || ' hours')::interval) AT TIME ZONE 'UTC'
+//
+//	★ 它与 ts 谓词**逐字同源** ⇒ ⇒ 由不变式
+//	「partition_date == (ts AT TIME ZONE 'UTC')::date」可**证明**：
+//	凡满足 ts 谓词的行，其 partition_date 必然 >= 该表达式的日期值
+//	⇒ ⇒ **下界是 ts 谓词的蕴含条件 ⇒ ⇒ 不丢任何一行** ★
+//	★ 且 `now()` 是 STABLE ⇒ 语句内取值恒一 ⇒ ⇒ 与 ts 谓词里的 NOW() **同一时刻** ★
+//
+// ★★ PG 的裁剪时机（★ 实测，别猜）：
+//
+//	· 参数值在**规划期**已知（custom plan / 常量）⇒ **计划期**裁剪
+//	  ⇒ Append 里**根本不含**被裁的分区；
+//	· 参数值**规划期未知**（generic plan，pgx 语句缓存走的就是这条路）
+//	  ⇒ **运行期**裁剪 ⇒ Append 里仍列着被裁的子计划，但报 `Subplans Removed: N`
+//	  ⇒ ⇒ **两种模式下都真的不扫那些分区** ★
+//
+// ★ 详情侧（session_turn_details）也要带下界，否则它仍然全扫：
+//   JOIN 条件里已经有 `d.partition_date = t.partition_date`，而 t 侧被限在
+//   partition_date >= pdFrom ⇒ ⇒ d.partition_date 也必然 >= pdFrom
+//   ⇒ ⇒ 在 ON 子句里再加一条是**逐行等价的冗余谓词**（不是新筛选）⇒ ⇒ 零风险。
+//   ★ 放在 ON 而不是 WHERE：★ LEFT JOIN 的 ON 子句里加条件**不改变**结果集
+//   （左行照样保留）⇒ ⇒ 语义与「不加」完全一致 ⇒ ⇒ 零风险。
+//
+// ★ 参数：★ pdFrom 是要拼进两臂的**SQL 片段**（可以是常量，也可以是表达式）
+//   ★ 由调用方决定 ⇒ ⇒ 本包不感知参数位置。
+//
+// ★ 返回值不带外层别名（调用方自己加，如 ` rl`）。
+func SessionFamilyTurnsSourceLowerBoundSQL(pdFrom string) string {
+	if strings.TrimSpace(pdFrom) == "" {
+		// ★ 空下界 ⇒ 退化成原形态（不加谓词）⇒ 宁可「没裁剪」也不要「拼出坏 SQL」。
+		return SessionFamilyTurnsSourceSQL()
+	}
+	win := " WHERE t.partition_date >= " + pdFrom
+	joinWin := " AND d.partition_date >= " + pdFrom
+	return "(SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns_hot t" +
+		" LEFT JOIN public.session_turn_details_hot d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" + joinWin +
+		win +
+		" UNION ALL SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns t" +
+		" LEFT JOIN public.session_turn_details d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" + joinWin +
+		win + ")"
 }
 
 // SessionFamilyTurnsSessionExistsSQL 返回「**外层会话 s** 是否含有满足 colPred 的轮次」

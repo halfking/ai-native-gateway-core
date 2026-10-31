@@ -47,6 +47,12 @@ type nativeOutputAuditResolver struct{ candidate provider.Candidate }
 
 func (r nativeOutputAuditResolver) Enabled() bool                           { return true }
 func (r nativeOutputAuditResolver) ModelKnown(context.Context, string) bool { return true }
+
+func (r nativeOutputAuditResolver) ModelModalityMismatch(context.Context, string, string, string, string) (*provider.ModalityMismatch, error) {
+	// 默认：不是模态不匹配。既有测试的语义是「零候选」，不应被新的
+	// 模态诊断分支改变行为；需要覆盖模态分支的测试单独提供自己的替身。
+	return nil, nil
+}
 func (r nativeOutputAuditResolver) GetCandidates(ctx context.Context, model, profile, tenant string) ([]provider.Candidate, *provider.Policy, error) {
 	return r.GetCandidatesByModality(ctx, model, profile, tenant, "text")
 }

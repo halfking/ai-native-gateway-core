@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/settings"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSessionWriteSafetyRejectsMissingCanonicalSource(t *testing.T) {
@@ -65,6 +66,18 @@ func TestSessionWriteSafetyStartupWiring(t *testing.T) {
 //     sessions_v2.shadow_write, i.e. it advertised a configuration that
 //     ValidateSessionWriteState **rejects**.
 //
+// 2026-10-29（本轮）：第三种错法是**形态错** —— 一份形态盲的列表在两种
+// 部署形态里各错一半：
+//
+//   - PG 模式里「V1-only (no V2, no PG required)」宣传的是一个**不存在的
+//     写面**（PG 的 v1 宽表已随 890 物理删除），照做之后仍然没有会话事实；
+//   - Lite 模式里「PG enabled + …」是**做不到**的修法（没有 PG）。
+//
+// ⇒ 本门因此按**形态**逐条执行：每一行广告出来的配置，都必须在**它所属
+//
+//	的形态**里被校验器接受；且形态专属的不变量（PG 模式不得把 v1 当修法
+//	广告出去）单独钉住。
+//
 // A string-equality assertion would have pinned both lies forever. This gate
 // instead *executes* every advertised configuration and requires the
 // validator to accept it, so the message can only contain shapes that work.
@@ -78,25 +91,57 @@ func TestValidSessionWriteConfigExamplesAreActuallyAccepted(t *testing.T) {
 	}
 
 	assignment := regexp.MustCompile(`([A-Z][A-Z0-9_]*)=(true|false)`)
-	lines := strings.Split(validSessionWriteConfigExamples(), "\n")
-	checked := 0
-	for _, line := range lines {
-		matches := assignment.FindAllStringSubmatch(line, -1)
-		if len(matches) == 0 {
-			continue
-		}
-		checked++
-		t.Run(strings.TrimSpace(strings.SplitN(line, ":", 2)[0]), func(t *testing.T) {
-			for _, m := range matches {
-				t.Setenv(m[1], m[2])
+	v1Env := settings.EnvNameAuto(settings.KeyRequestLogsWriteEnabled)
+
+	for _, shape := range []struct {
+		name string
+		pg   bool
+	}{
+		{"PG", true},
+		{"Lite", false},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			// 校验器第一件事就是记录形态 —— 提示读的是同一份形态事实。
+			_ = validateSessionWriteSafety(shape.pg)
+
+			lines := strings.Split(validSessionWriteConfigExamples(), "\n")
+			checked := 0
+			for _, line := range lines {
+				matches := assignment.FindAllStringSubmatch(line, -1)
+				if len(matches) == 0 {
+					continue
+				}
+				checked++
+				t.Run(strings.TrimSpace(strings.SplitN(line, ":", 2)[0]), func(t *testing.T) {
+					for _, m := range matches {
+						t.Setenv(m[1], m[2])
+					}
+					// 形态由广告行自己的标记决定（[PG] / [Lite]），不是猜的。
+					linePG := strings.Contains(line, "[PG]")
+					require.Equal(t, shape.pg, linePG,
+						"广告行的形态标记必须与本次形态一致：%s", strings.TrimSpace(line))
+					if err := validateSessionWriteSafety(linePG); err != nil {
+						t.Fatalf("消息里宣传的配置被启动期校验拒绝：%s\n  错误：%v", strings.TrimSpace(line), err)
+					}
+				})
 			}
-			pg := strings.Contains(line, "PG enabled")
-			if err := validateSessionWriteSafety(pg); err != nil {
-				t.Fatalf("消息里宣传的配置被启动期校验拒绝：%s\n  错误：%v", strings.TrimSpace(line), err)
+			if checked == 0 {
+				t.Fatalf("%s 形态下 validSessionWriteConfigExamples() 没有解析出任何配置——门会因格式变化而恒绿", shape.name)
+			}
+
+			// ★ 形态专属不变量：PG 模式不得把 v1 开关当修法广告出去。
+			//   依据：PG 的 v1 宽表已随 890 物理删除 ⇒ 该开关在 PG 侧只剩
+			//   admin ingest 的正文**文件**镜像一个副作用，不是请求日志写面。
+			//   广告它 = 让运维以为开它就能落库。
+			if shape.pg {
+				require.NotContains(t, validSessionWriteConfigExamples(), v1Env+"=true",
+					"PG 模式没有 v1 写面（族表已随 890 物理删除），不得把它当修法广告出去")
+			} else {
+				require.NotContains(t, validSessionWriteConfigExamples(), "PG enabled",
+					"Lite 模式没有 PG，「PG enabled」是做不到的修法")
+				require.Contains(t, validSessionWriteConfigExamples(), v1Env+"=true",
+					"Lite 模式的真修法是写 SQLite request_logs 表的 v1 开关")
 			}
 		})
-	}
-	if checked == 0 {
-		t.Fatal("validSessionWriteConfigExamples() 没有解析出任何配置——门会因格式变化而恒绿")
 	}
 }

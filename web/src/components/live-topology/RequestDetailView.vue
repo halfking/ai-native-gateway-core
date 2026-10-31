@@ -33,7 +33,7 @@ const rows = computed(() => {
     { key: 'protocol', label: t('liveTopology.zoom.protocol'), value: e.clientProtocol || '—' },
     { key: 'provider', label: t('liveTopology.zoom.provider'), value: e.provider },
     { key: 'node', label: t('liveTopology.zoom.node'), value: e.nodeId || '—' },
-    { key: 'model', label: t('liveTopology.zoom.model'), value: e.model || '—' },
+    { key: 'model', label: t('liveTopology.zoom.model'), value: modelValue(e) },
     { key: 'status', label: t('liveTopology.zoom.status'), value: statusLabel(e.status || 'in_progress') },
     { key: 'latency', label: t('liveTopology.zoom.latency'), value: typeof e.latencyMs === 'number' ? `${e.latencyMs} ms` : '—' },
     { key: 'tokens', label: t('liveTopology.zoom.tokens'), value: `${fmt(e.promptTokens)} / ${fmt(e.completionTokens)} / ${fmt(e.tokens)}` },
@@ -48,6 +48,21 @@ const rows = computed(() => {
 function fmt(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
   return String(value)
+}
+
+/** 模型行的值（2026-10-28 选路层轮）：
+ *  - auto 请求：`auto → 最终模型`（点名的是 auto，网关按任务选出 —— 面板
+ *    行内同款表达，这里补全浮层/详情侧）；
+ *  - 别名请求（requestedModel ≠ 最终 canonical 名）：`别名 → 标准名`；
+ *  - 其余：只显示最终模型名，不编映射。
+ *  语义注意：auto 请求的 client_model 在后端已被改写为选中的模型
+ *  （preAutoModel 只进 requestjourney），所以「要的是 auto」由 isAuto
+ *  表达，不能靠 requestedModel === 'auto' 反推。 */
+function modelValue(e: PanelEntry): string {
+  const final = e.model || '—'
+  if (e.isAuto) return `auto → ${final}`
+  if (e.requestedModel && e.requestedModel !== e.model) return `${e.requestedModel} → ${final}`
+  return final
 }
 
 /** 客户端易读名：identity 兜底键/unknown 不做 Title 化（哈希前缀被大写
@@ -118,7 +133,7 @@ function actionLabel(action?: string): string {
 .zoom__grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 4px 10px;
+  gap: 4px 8px;
   margin: 0;
 }
 
@@ -128,7 +143,7 @@ function actionLabel(action?: string): string {
 }
 
 .zoom__label {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-muted);
 }
 
@@ -142,7 +157,7 @@ function actionLabel(action?: string): string {
 
 .zoom__decisions {
   border-top: 1px dashed var(--kx-border);
-  padding-top: 6px;
+  padding-top: 4px;
 }
 
 .zoom__section {
@@ -152,14 +167,14 @@ function actionLabel(action?: string): string {
 
 .zoom__timeline {
   margin: 4px 0 0;
-  padding-left: 14px;
+  padding-left: 12px;
   font-size: 11px;
   color: var(--kx-text);
 }
 
 .zoom__step {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   align-items: baseline;
   padding: 2px 0;
 }

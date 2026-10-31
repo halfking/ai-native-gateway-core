@@ -121,6 +121,17 @@ var (
 		Help: "Failover transitions by kind.",
 	}, []string{"kind"}) // kind: cred_retry|cred_switch|model_change
 
+	// metricRetryBudgetExceeded (P0-C, audit 2026-10-28 §4) counts same-
+	// credential retry admissions seen above the Envoy-form budget
+	// (active×percent+floor). mode=shadow (default) counts without acting;
+	// mode=enforce counts refusals that fell through to the sibling switch
+	// ladder. Shadow-vs-enforce rate comparison decides when to flip
+	// llmgw_dispatch_retry_budget_enforce.
+	metricRetryBudgetExceeded = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dispatch_retry_budget_exceeded_total",
+		Help: "Same-credential retries above the in-flight retry budget (active×N%+floor), by mode.",
+	}, []string{"mode"}) // mode: shadow|enforce
+
 	metricStatsDrop = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "dispatch_stats_drop_total",
 		Help: "Tier-3 stats events dropped because the event bus was full.",

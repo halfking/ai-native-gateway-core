@@ -23,8 +23,10 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/clienttype"
 	"github.com/kaixuan/llm-gateway-go/internal/emptyoutcome"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/nativepair"
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
 	"github.com/kaixuan/llm-gateway-go/internal/paramrefusal"
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
@@ -39,8 +41,43 @@ import (
 	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	"github.com/kaixuan/llm-gateway-go/telemetry"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
+
+// nativePairFor 判定「本请求的客户端 × 本候选」是否构成原厂直连对
+// （internal/nativepair；2026-10-29 起含厂商感知：候选的 CatalogCode 必须
+// 是该模型族的原厂码——nvidia 托管的 z-ai/glm-5.3-flash 不再直通）。
+// 客户端身份优先取请求边界的归一化类型（ExecParams.ClientType →
+// X-Gw-Client-Type/UA）；仅当其为弱名（空或 unknown）时才采信 body 标记
+// （metadata.zcode_version 等，R52 语义：body marker 只覆盖弱名，强名冲突
+// 时保守不直通）。
+func nativePairFor(params *ExecParams, cand provider.Candidate, sourceBody []byte) bool {
+	if !nativepair.Enabled() {
+		return false
+	}
+	ct := ""
+	if params != nil {
+		ct = params.ClientType
+	}
+	if ct == "" && params != nil {
+		ct = extractClientType(params.R)
+	}
+	ct = clienttype.Normalize(ct)
+	if ct == "" || ct == clienttype.Unknown {
+		sessionID := ""
+		if params != nil && params.R != nil {
+			sessionID = params.R.Header.Get("X-Code-Session-Id")
+		}
+		if marker := telemetry.ExtractClientTypeFromBody(sourceBody, sessionID); marker != "" {
+			ct = clienttype.Normalize(marker)
+		}
+	}
+	if cand.RawModel == "" {
+		return false
+	}
+	return nativepair.Match(ct, cand.CatalogCode, cand.RawModel)
+}
 
 // ExecuteHooks (SP-03, 2026-08-19) lets the streaming state machine observe
 // the lifecycle of an upstream execution without taking a hard dependency on
@@ -858,6 +895,12 @@ func (e *Executor) executeOpenAI(
 	// native responses 分支下面会覆写 sourceBody 为 ResponsesBodyBytes；
 	// 模式回退时需要从这里恢复。
 	clientSourceBody := sourceBody
+	// 原厂直通（2026-10-28，internal/nativepair）：客户端是该候选厂商自己的
+	// 编码智能体 ⇒ 本候选首发全参数。主动的参数改写与预剥离（paramguard、
+	// 能力清洗器、白名单 strip、学习式/拒识记忆预剥离、IR 方言裁剪）全部
+	// 跳过；只有上游 4xx 时走下方 reqprobe 剥参重试回退到骨架参数。
+	// 按候选判定：zcode 失败转移到 deepseek 候选时，该候选不享受直通。
+	nativePair := nativePairFor(params, cand, sourceBody)
 	// upgradedFromChat (2026-10-02, chat→responses bridge) marks that WE, not
 	// the client, turned a chat-shaped request into a Responses one because the
 	// upstream refused the chat leg. The success path must then convert the
@@ -942,22 +985,29 @@ func (e *Executor) executeOpenAI(
 		// 归一/能力降档）在此显式执行并记账。
 		bodyBytes = e.applyParamguardLedger(params, bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol))
 	} else {
-		bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
+		bodyBytes, err = e.finalizeOpenAIUpstreamBodyNative(params, cand, sourceBody, nativePair)
 		if err != nil {
 			return nil, err
 		}
 	}
 	// reqprobe: 前置应用已学习的参数剔除规则（此前已被"剔除后重试成功"
-	// 验证过的参数，24h 滑窗；LLM_GATEWAY_REQPROBE_LEARN=off 关闭）。实际
-	// 出站 wire 在 native 闸门已决定后才可确定，不能使用候选声明协议。
-	bodyBytes = e.reqprobeApplyLearned(bodyBytes, cand,
-		actualOutboundWire(cand, nativeNonStream || nativeStream), params.RequestID)
-	// P0-1 paramrefusal 主动剔除（choke point #2，finalize 后统一出站体）：
-	// chat 腿首发同样应用已记忆字段（否则记忆对 chat 腿只有「先吃一次
-	// 400」的反应价值，没有先发价值）；native 腿在上面 choke point #1 已
-	// 对 sourceBody 处理过，此处对派生 bodyBytes 是幂等 no-op。
-	bodyBytes = e.paramRefusalApply(bodyBytes, cand.ProviderID, cand.RawModel,
-		paramRefusalWireKey(cand, nativeNonStream || nativeStream))
+	// 验证过的参数，learnedTTL 滑窗（默认 1h，LLM_GATEWAY_REQPROBE_LEARNED_TTL
+	// 可配）；LLM_GATEWAY_REQPROBE_LEARN=off 关闭）。实际出站 wire 在 native
+	// 闸门已决定后才可确定，不能使用候选声明协议。
+	// 原厂直通对不预剥离（首发永远全参数；上游拒绝由本请求内的 4xx 剥参
+	// 重试回退）。2026-10-29 厂商感知修正后这里只剩【原厂端点】候选会跳过
+	// （第三方宿主如 nvidia 托管的 glm 走正常路径，学习预剥离生效——否则
+	// 第三方宿主每请求吃 N 轮 400 且学习永不回应用）。
+	if !nativePair {
+		bodyBytes = e.reqprobeApplyLearned(bodyBytes, cand,
+			actualOutboundWire(cand, nativeNonStream || nativeStream), params.RequestID)
+		// P0-1 paramrefusal 主动剔除（choke point #2，finalize 后统一出站体）：
+		// chat 腿首发同样应用已记忆字段（否则记忆对 chat 腿只有「先吃一次
+		// 400」的反应价值，没有先发价值）；native 腿在上面 choke point #1 已
+		// 对 sourceBody 处理过，此处对派生 bodyBytes 是幂等 no-op。
+		bodyBytes = e.paramRefusalApply(bodyBytes, cand.ProviderID, cand.RawModel,
+			paramRefusalWireKey(cand, nativeNonStream || nativeStream))
+	}
 
 	// 2026-07-16: Pre-request validation
 	if e.PreRequestValidator != nil {
@@ -1039,7 +1089,7 @@ func (e *Executor) executeOpenAI(
 			!(params.IsStream || params.ClientProtocol != providercatalog.ProtocolOpenAIResponses || params.SuppressSuccessWrite) {
 			return false, nil
 		}
-		fallbackBody, fbErr := e.finalizeOpenAIUpstreamBody(params, cand, clientSourceBody)
+		fallbackBody, fbErr := e.finalizeOpenAIUpstreamBodyNative(params, cand, clientSourceBody, nativePair)
 		if fbErr != nil {
 			slog.Warn("responses unsupported: could not prepare chat fallback", "request_id", params.RequestID, "error", fbErr)
 			return false, nil
@@ -1732,7 +1782,7 @@ func (e *Executor) executeOpenAI(
 							diag.SuggestMode == "chat" &&
 							(nativeNonStream || nativeStream) && !probe.modeTried &&
 							(params.IsStream || params.ClientProtocol != "openai-responses" || params.SuppressSuccessWrite) {
-							if fallbackBody, fbErr := e.finalizeOpenAIUpstreamBody(params, cand, clientSourceBody); fbErr == nil {
+							if fallbackBody, fbErr := e.finalizeOpenAIUpstreamBodyNative(params, cand, clientSourceBody, nativePair); fbErr == nil {
 								slog.Warn("reqprobe: native responses transport rejected, falling back to chat/completions",
 									"request_id", params.RequestID,
 									"provider_id", cand.ProviderID,
@@ -2024,7 +2074,7 @@ func (e *Executor) executeOpenAI(
 								recordResponsesInputTrimMeta(&responsesProvenance, preRecoveryBody, sourceBody, recoveryTrimMeta)
 								bodyBytes = transformation.RewriteResponsesModel(sourceBody, cand.RawModel)
 							} else {
-								bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
+								bodyBytes, err = e.finalizeOpenAIUpstreamBodyNative(params, cand, sourceBody, nativePair)
 							}
 							if err != nil {
 								return nil, err
@@ -2808,7 +2858,16 @@ func effectiveOpenAIRetryBudget(maxRetries int, dispatchAttempt bool) int {
 
 // finalizeOpenAIUpstreamBody applies prepareRequestBody plus OpenAI-path-only
 // transforms (Q2 anthropic→openai conversion, disguise, prompt-cache injection).
+// finalizeOpenAIUpstreamBody 是历史三参签名（nativePair=false），保留给
+// 既有测试与直调调用点；运行时路径一律走 finalizeOpenAIUpstreamBodyNative。
 func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
+	return e.finalizeOpenAIUpstreamBodyNative(params, cand, sourceBody, false)
+}
+
+// finalizeOpenAIUpstreamBodyNative 在 finalize 基础上多带 nativePair：
+// 原厂直通对（internal/nativepair 命中）时 IR Extensions 不做方言裁剪、
+// paramguard 与能力清洗器整族跳过 —— 首发全参数，出错回退在 reqprobe。
+func (e *Executor) finalizeOpenAIUpstreamBodyNative(params *ExecParams, cand provider.Candidate, sourceBody []byte, nativePair bool) ([]byte, error) {
 	// Step 4 audit fix (2026-07-28): bind a per-request IR scope so anomaly
 	// dedup is bounded to THIS request instead of the process-global map.
 	// Both SerializeOpenAI call sites below (the IR path and the legacy IR
@@ -2866,7 +2925,7 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 					"client_model", params.ClientModel,
 					"stage", "parse_anthropic",
 				)
-				return e.legacyChatToOpenAIBody(params, cand, sourceBody)
+				return e.legacyChatToOpenAIBody(params, cand, sourceBody, nativePair)
 			}
 			return nil, fmt.Errorf("ir parse anthropic: %w", err)
 		}
@@ -2907,6 +2966,9 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		} else {
 			irReq.TargetProvider = paramreg.CatalogCodeUnknownRelay
 		}
+		// 原厂直通（2026-10-28）： Extensions 还原按 nativePair 走全量
+		// 原样分支（internal/ir/restoreExtensions），序列化器只读此标志。
+		irReq.NativePassthrough = nativePair
 		if lf := len(irReq.Messages); lf != msgCountBefore {
 			slog.Debug("finalizeOpenAIUpstreamBody: IR validate+fix applied",
 				"request_id", params.RequestID,
@@ -2941,11 +3003,11 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 					"client_model", params.ClientModel,
 					"stage", "serialize_openai",
 				)
-				return e.legacyChatToOpenAIBody(params, cand, sourceBody)
+				return e.legacyChatToOpenAIBody(params, cand, sourceBody, nativePair)
 			}
 			return nil, fmt.Errorf("ir serialize openai: %w", err)
 		}
-		bodyBytes, err = e.applyOpenAITailTransforms(params, cand, bodyBytes)
+		bodyBytes, err = e.applyOpenAITailTransformsNative(params, cand, bodyBytes, nativePair)
 		if err != nil {
 			return nil, err
 		}
@@ -2955,7 +3017,7 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 	// Legacy path (no IR converter set): use existing callbacks
 	p := *params
 	p.BodyBytes = sourceBody
-	bodyBytes := prepareRequestBody(&p, cand, e.ParamLedger)
+	bodyBytes := prepareRequestBodyWithNative(&p, cand, nativePair, e.ParamLedger)
 
 	// 2026-07-12: Apply format validation even in legacy path.
 	// Parse → Validate → Serialize to clean up malformed requests.
@@ -2992,6 +3054,12 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			} else {
 				irReq.TargetProvider = paramreg.CatalogCodeUnknownRelay
 			}
+			// 原厂直通（2026-10-28 生产验证轮补盖）：本路径（legacy_with_ir，
+			// OpenAI 入向主路径）此前漏盖 NativePassthrough —— GLM 原厂上游
+			// 靠方言恰好认 GLM 键而「看起来」保真，zcode→glm 路由到第三方
+			// 宿主（nvidia / 空 catalog 中继）时 enable_thinking/thinking 被
+			// paramreg RejectedByUnknown 裁掉（211 实测 87 中 1）。
+			irReq.NativePassthrough = nativePair
 			// R45 (2026-09-19, Gemini thinking 专项): Gemini 入向在 handler
 			// step-6 路由前序列化，thinkingConfig 的 budget 形 intent 已在
 			// 合成 body 中丢失。从请求 context 恢复（见 ir.SourceReasoning），
@@ -3053,6 +3121,10 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 				} else {
 					irReq2.TargetProvider = paramreg.CatalogCodeUnknownRelay
 				}
+				// 原厂直通（2026-10-28 生产验证轮补盖）：断路器兜底分支与
+				// legacy_with_ir 主分支同族，同样必须盖章（漏一处生效点 =
+				// 没跳，本轮生产验证教训）。
+				irReq2.NativePassthrough = nativePair
 				// R45: 断路器兜底路径同样恢复 context 携带的入向推理意图。
 				irReq2 = ir.RestoreSourceReasoning(irReq2, params.R.Context())
 				// R61 S2-F3 续：断路器兜底路径同样 stamp。
@@ -3113,7 +3185,7 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		// tool messages reach upstream unmangled; MiniMax 4xx-cascades;
 		// gateway loops 90s; client gets 503.
 		preBodyBytes := len(bodyBytes)
-		bodyBytes = applyInlineValidation(bodyBytes, params.RequestID, cand.CatalogCode, params.R.Context())
+		bodyBytes = applyInlineValidation(bodyBytes, params.RequestID, cand.CatalogCode, params.R.Context(), nativePair)
 		postBodyBytes := len(bodyBytes)
 		slog.Info("finalizeOpenAIUpstreamBody: legacy path (no IR) + inline validation",
 			"request_id", params.RequestID,
@@ -3146,7 +3218,7 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			bodyBytes = converted
 		}
 	}
-	bodyBytes, err := e.applyOpenAITailTransforms(params, cand, bodyBytes)
+	bodyBytes, err := e.applyOpenAITailTransformsNative(params, cand, bodyBytes, nativePair)
 	if err != nil {
 		return nil, err
 	}
@@ -3157,12 +3229,12 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 // without using the IR converter. Extracted so the IR-circuit-open fallback
 // path can reuse it without duplicating the format_conversion / disguise /
 // prompt-cache tail logic.
-func (e *Executor) legacyChatToOpenAIBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
+func (e *Executor) legacyChatToOpenAIBody(params *ExecParams, cand provider.Candidate, sourceBody []byte, nativePair bool) ([]byte, error) {
 	// 2026-08-08 P0 Fix: extracted from finalizeOpenAIUpstreamBody so the
 	// IR-circuit-open fallback has a single, audited implementation.
 	p := *params
 	p.BodyBytes = sourceBody
-	bodyBytes := prepareRequestBody(&p, cand, e.ParamLedger)
+	bodyBytes := prepareRequestBodyWithNative(&p, cand, nativePair, e.ParamLedger)
 	if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages {
 		if e.ProviderSettings != nil {
 			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
@@ -3177,7 +3249,7 @@ func (e *Executor) legacyChatToOpenAIBody(params *ExecParams, cand provider.Cand
 			bodyBytes = converted
 		}
 	}
-	bodyBytes, err := e.applyOpenAITailTransforms(params, cand, bodyBytes)
+	bodyBytes, err := e.applyOpenAITailTransformsNative(params, cand, bodyBytes, nativePair)
 	if err != nil {
 		return nil, err
 	}
@@ -3203,10 +3275,19 @@ func (e *Executor) applyOptionalOpenAIStrategies(params *ExecParams, cand provid
 	return bodyBytes
 }
 
-// applyOpenAITailTransforms runs the format-agnostic tail steps of the OpenAI
+// applyOpenAITailTransforms 是历史三参签名（nativePair=false），保留给
+// 既有调用点；运行时路径走 applyOpenAITailTransformsNative。
+func (e *Executor) applyOpenAITailTransforms(params *ExecParams, cand provider.Candidate, bodyBytes []byte) ([]byte, error) {
+	return e.applyOpenAITailTransformsNative(params, cand, bodyBytes, false)
+}
+
+// applyOpenAITailTransformsNative runs the format-agnostic tail steps of the OpenAI
 // upstream body pipeline: tool normalization, disguise, prompt-cache injection.
 // Lives in its own helper so the IR path and the legacy path share it.
-func (e *Executor) applyOpenAITailTransforms(params *ExecParams, cand provider.Candidate, bodyBytes []byte) ([]byte, error) {
+// nativePair（原厂直通对）为真时跳过 paramguard —— GLM tool_choice 归一 /
+// MiniMax n=1 / reasoning_effort 钳制整族不适用：原厂工具对自己模型的
+// 参数表达即事实源，上游拒绝由 reqprobe 4xx 剥参重试回退。
+func (e *Executor) applyOpenAITailTransformsNative(params *ExecParams, cand provider.Candidate, bodyBytes []byte, nativePair bool) ([]byte, error) {
 	if e.NormalizeOpenAITools != nil {
 		bodyBytes = e.NormalizeOpenAITools(bodyBytes)
 	}
@@ -3225,10 +3306,15 @@ func (e *Executor) applyOpenAITailTransforms(params *ExecParams, cand provider.C
 	if params.SessionKey != "" && cand.SupportsPromptCache {
 		bodyBytes, _ = injectCacheParams(bodyBytes, cand.CacheMode, params.SessionKey)
 	}
+	if nativePair {
+		return bodyBytes, nil
+	}
 	return e.applyParamguardLedger(params, bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol)), nil
 }
 
 // prepareRequestBody builds the upstream request body from params and cand.
+// 历史签名（nativePair=false），保留给既有测试与直调调用点；运行时路径
+// 走 prepareRequestBodyWithNative。
 //
 // It performs the protocol-aware transformations that happen BEFORE the
 // request is sent: model-name substitution, OpenAI stream_options injection
@@ -3238,6 +3324,76 @@ func (e *Executor) applyOpenAITailTransforms(params *ExecParams, cand provider.C
 //
 // Extracted as a free function so unit tests can verify each protocol
 // branch without spinning up the full HTTP retry loop.
+func prepareRequestBody(params *ExecParams, cand provider.Candidate, ledgerOpt ...*paramledger.Ledger) []byte {
+	return prepareRequestBodyWithNative(params, cand, false, ledgerOpt...)
+}
+
+// prepareRequestBodyWithNative 在 prepareRequestBody 基础上多带 nativePair
+// （原厂直通对，internal/nativepair）：跳过白名单 strip、能力清洗器
+// （minimax SimplifyTools / deepseek max_tokens 钳制）与 paramguard 语义级
+// 改写 —— 首发全参数；结构性与上下文类变换（模型名替换、stream_options
+// 注入、消息合并、压缩）保留。上游拒绝由 reqprobe 4xx 剥参重试回退。
+func prepareRequestBodyWithNative(params *ExecParams, cand provider.Candidate, nativePair bool, ledgerOpt ...*paramledger.Ledger) []byte {
+	var prepareBodyLedger *paramledger.Ledger
+	if len(ledgerOpt) > 0 {
+		prepareBodyLedger = ledgerOpt[0]
+	}
+	outboundModel := resolveOutboundModel(params, cand)
+
+	bodyBytes := params.BodyBytes
+	if outboundModel != "" && outboundModel != params.ClientModel {
+		bodyBytes = replaceModelInRequestBody(bodyBytes, outboundModel)
+	}
+	// injectStreamOptions adds OpenAI-specific `"stream_options":{"include_usage":true}`
+	// to streaming requests so upstream returns a final usage chunk we can
+	// attribute for billing. Anthropic streams usage via message_start +
+	// message_delta events and has no stream_options field; injecting it would
+	// either be silently ignored or, worse, rejected by strict providers.
+	// Guard on protocol. 客户端自带 stream_options 时不覆盖（原样保留）。
+	if params.IsStream && cand.Protocol != providercatalog.ProtocolAnthropicMessages {
+		bodyBytes = injectStreamOptions(bodyBytes)
+	}
+	if params.Transform != nil && !nativePair {
+		bodyBytes = transformation.ApplyRequestWhitelist(
+			bodyBytes,
+			params.Transform.PassthroughFields,
+			params.Transform.StripRequestFields,
+			cand.Protocol,
+		)
+	} else if params.Transform != nil && nativePair && len(params.Transform.StripRequestFields) > 0 {
+		// 原厂直通有意绕过 admin 配置的 strip 列表（用户要求「所有参数保留，
+		// 出错才回退」）。当前仓内 matrix 默认无 strip（data/
+		// request_transform_matrix.yaml 不存在 ⇒ 默认规则）；若运营为某客户端
+		// 配了 strip，这里是它对原生对失效的唯一痕迹。
+		// RISK-3（2026-10-29）：Debug 在生产 Info 级不可见 ⇒ 留痕机制默认
+		// 不可观测（原厂直通生产验证轮 §7），升 Info —— 该行出现即意味着
+		// 运营配置与直通语义冲突，属于需要运营侧知晓的运行事实而非调试细节。
+		slog.Info("native pair bypasses transform strip_request_fields",
+			"request_id", params.RequestID,
+			"catalog_code", cand.CatalogCode,
+			"raw_model", cand.RawModel,
+			"stripped_fields", strings.Join(params.Transform.StripRequestFields, ","),
+		)
+	}
+	if !transformation.IsToolUseCapable(cand.CatalogCode, cand.Protocol) && transformation.NeedsToolCollapse(bodyBytes) {
+		bodyBytes = transformation.CollapseToolHistory(bodyBytes)
+	}
+	if !nativePair {
+		bodyBytes = transformation.ApplyCapabilitySanitizer(bodyBytes, cand.CatalogCode)
+		bodyBytes = applyGuardToLedger(prepareBodyLedger, params.RequestID, bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol))
+	}
+	bodyBytes = transformation.MergeConsecutiveMessages(bodyBytes)
+	// Client-side context window enforcement for Q1/Q2/Q3 openai protocol.
+	// Q4 (anthropic-messages) is handled in prepareAnthropicRequestBody
+	// (executor_anthropic.go). See transform/ctx_compress.go for rationale:
+	// upstreams like minimax trim server-side on direct calls, but proxy
+	// clients must trim at the gateway.
+	if cand.Protocol != providercatalog.ProtocolAnthropicMessages && cand.ContextWindow != nil {
+		reserve := transformation.OutputTokenReserve(bodyBytes, params.ClientProtocol)
+		bodyBytes = transformation.CompressMessagesIfNeededWithReserve(bodyBytes, *cand.ContextWindow, reserve)
+	}
+	return bodyBytes
+}
 
 // resolveOutboundModel picks the upstream model field for the CURRENT candidate.
 //
@@ -3281,54 +3437,6 @@ func resolveOutboundModel(params *ExecParams, cand provider.Candidate) string {
 		}
 	}
 	return cand.RawModel
-}
-
-// prepareBodyLedger（可 nil）承接 paramguard 的语义级调整记账
-// （2026-09-22，paramledger）。变参以兼容历史两参调用点。
-func prepareRequestBody(params *ExecParams, cand provider.Candidate, ledgerOpt ...*paramledger.Ledger) []byte {
-	var prepareBodyLedger *paramledger.Ledger
-	if len(ledgerOpt) > 0 {
-		prepareBodyLedger = ledgerOpt[0]
-	}
-	outboundModel := resolveOutboundModel(params, cand)
-
-	bodyBytes := params.BodyBytes
-	if outboundModel != "" && outboundModel != params.ClientModel {
-		bodyBytes = replaceModelInRequestBody(bodyBytes, outboundModel)
-	}
-	// injectStreamOptions adds OpenAI-specific `"stream_options":{"include_usage":true}`
-	// to streaming requests so upstream returns a final usage chunk we can
-	// attribute for billing. Anthropic streams usage via message_start +
-	// message_delta events and has no stream_options field; injecting it would
-	// either be silently ignored or, worse, rejected by strict providers.
-	// Guard on protocol.
-	if params.IsStream && cand.Protocol != providercatalog.ProtocolAnthropicMessages {
-		bodyBytes = injectStreamOptions(bodyBytes)
-	}
-	if params.Transform != nil {
-		bodyBytes = transformation.ApplyRequestWhitelist(
-			bodyBytes,
-			params.Transform.PassthroughFields,
-			params.Transform.StripRequestFields,
-			cand.Protocol,
-		)
-	}
-	if !transformation.IsToolUseCapable(cand.CatalogCode, cand.Protocol) && transformation.NeedsToolCollapse(bodyBytes) {
-		bodyBytes = transformation.CollapseToolHistory(bodyBytes)
-	}
-	bodyBytes = transformation.ApplyCapabilitySanitizer(bodyBytes, cand.CatalogCode)
-	bodyBytes = applyGuardToLedger(prepareBodyLedger, params.RequestID, bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol))
-	bodyBytes = transformation.MergeConsecutiveMessages(bodyBytes)
-	// Client-side context window enforcement for Q1/Q2/Q3 openai protocol.
-	// Q4 (anthropic-messages) is handled in prepareAnthropicRequestBody
-	// (executor_anthropic.go). See transform/ctx_compress.go for rationale:
-	// upstreams like minimax trim server-side on direct calls, but proxy
-	// clients must trim at the gateway.
-	if cand.Protocol != providercatalog.ProtocolAnthropicMessages && cand.ContextWindow != nil {
-		reserve := transformation.OutputTokenReserve(bodyBytes, params.ClientProtocol)
-		bodyBytes = transformation.CompressMessagesIfNeededWithReserve(bodyBytes, *cand.ContextWindow, reserve)
-	}
-	return bodyBytes
 }
 
 // executeAnthropic is the Q3/Q4 (anthropic-messages upstream) path.

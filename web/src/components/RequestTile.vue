@@ -612,7 +612,7 @@ function closeTimelinePanel() {
   cursor: pointer;
   position: relative;
   overflow: hidden;
-  transition: transform 0.15s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.15s ease;
+  transition: transform 0.15s var(--kx-motion-ease-out), box-shadow 0.15s var(--kx-motion-ease-out);
 }
 
 .request-bar:hover {
@@ -733,9 +733,9 @@ function closeTimelinePanel() {
   padding: 0;
   cursor: pointer;
   transition:
-    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 0.18s ease,
-    border-color 0.18s ease;
+    transform 0.18s var(--kx-motion-ease-out),
+    box-shadow 0.18s var(--kx-motion-ease-out),
+    border-color 0.18s var(--kx-motion-ease-out);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI',
                'PingFang SC', 'Microsoft YaHei', sans-serif;
   display: flex;
@@ -919,11 +919,11 @@ function closeTimelinePanel() {
   justify-content: space-between;
   flex: 1;
   min-width: 0;
-  padding: 5px 6px 4px 9px;
+  padding: 4px 4px 4px 8px;
 }
 
 .request-tile__time {
-  font-size: 9px;
+  font-size: 11px;
   text-align: center;
   line-height: 1.1;
   color: var(--kx-muted);
@@ -958,7 +958,7 @@ function closeTimelinePanel() {
 }
 
 .request-tile__provider {
-  font-size: 8px;
+  font-size: 11px;
   line-height: 1.2;
   color: var(--kx-muted);
   white-space: nowrap;
@@ -969,7 +969,7 @@ function closeTimelinePanel() {
 }
 
 .request-tile__latency {
-  font-size: 8px;
+  font-size: 11px;
   line-height: 1.2;
   font-variant-numeric: tabular-nums;
   color: var(--kx-text);
@@ -985,7 +985,7 @@ function closeTimelinePanel() {
    - .request-tile__reason--idle:  idle lane ("空闲 X 分钟")
    - .request-tile__reason--probe: probe row, mirrors the cyan accent */
 .request-tile__reason {
-  font-size: 8px;
+  font-size: 11px;
   line-height: 1.1;
   text-align: center;
   font-weight: 600;
@@ -1033,7 +1033,7 @@ function closeTimelinePanel() {
   max-width: 46px;
   padding: 1px 3px;
   border-radius: 3px;
-  font-size: 7px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1.2;
   letter-spacing: 0.02em;
@@ -1090,7 +1090,7 @@ function closeTimelinePanel() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 8px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1;
   font-variant-numeric: tabular-nums;
@@ -1098,7 +1098,7 @@ function closeTimelinePanel() {
   background: var(--kx-primary);
   border: 1px solid var(--kx-primary);
   cursor: pointer;
-  transition: transform 0.12s ease, opacity 0.12s ease;
+  transition: transform 0.12s var(--kx-motion-ease-out), opacity 0.12s var(--kx-motion-ease-out);
 }
 
 .request-tile__children-badge:hover {
@@ -1126,7 +1126,7 @@ function closeTimelinePanel() {
   border-radius: 6px;
   box-shadow: var(--kx-shadow-md);
   z-index: 2000;
-  animation: request-tile-panel-in 0.15s ease-out;
+  animation: request-tile-panel-in 0.15s var(--kx-motion-ease-out);
 }
 
 @keyframes request-tile-panel-in {
@@ -1139,7 +1139,7 @@ function closeTimelinePanel() {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--kx-border);
   background: var(--kx-bg-accent);
 }
@@ -1159,7 +1159,7 @@ function closeTimelinePanel() {
   cursor: pointer;
   padding: 2px 4px;
   border-radius: 3px;
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  transition: opacity 0.12s var(--kx-motion-ease-out), transform 0.12s var(--kx-motion-ease-out);
 }
 
 .request-tile__children-panel-close:hover {
@@ -1179,8 +1179,8 @@ function closeTimelinePanel() {
 .request-tile__child-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 5px;
+  gap: 4px;
+  padding: 4px 4px;
   border-radius: 4px;
   font-size: 11px;
 }
@@ -1196,7 +1196,7 @@ function closeTimelinePanel() {
   text-align: center;
   padding: 1px 3px;
   border-radius: 3px;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.02em;
   color: var(--kx-primary);
@@ -1215,7 +1215,7 @@ function closeTimelinePanel() {
 
 .request-tile__child-status {
   flex: 0 0 auto;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--kx-muted);
 }
@@ -1227,7 +1227,7 @@ function closeTimelinePanel() {
 
 .request-tile__children-empty {
   margin: 0;
-  padding: 10px 12px;
+  padding: 8px 12px;
   font-size: 11px;
   line-height: 1.5;
   color: var(--kx-muted);
@@ -1246,7 +1246,7 @@ function closeTimelinePanel() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 8px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1;
   font-variant-numeric: tabular-nums;
@@ -1254,7 +1254,7 @@ function closeTimelinePanel() {
   background: var(--kx-success);
   border: 1px solid var(--kx-success);
   cursor: pointer;
-  transition: transform 0.12s ease, opacity 0.12s ease;
+  transition: transform 0.12s var(--kx-motion-ease-out), opacity 0.12s var(--kx-motion-ease-out);
 }
 
 .request-tile__timeline-badge:hover {
@@ -1282,7 +1282,7 @@ function closeTimelinePanel() {
   border-radius: 6px;
   box-shadow: var(--kx-shadow-md);
   z-index: 2000;
-  animation: request-tile-panel-in 0.15s ease-out;
+  animation: request-tile-panel-in 0.15s var(--kx-motion-ease-out);
 }
 
 .request-tile__timeline-panel-header {
@@ -1290,7 +1290,7 @@ function closeTimelinePanel() {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--kx-border);
   background: var(--kx-bg-accent);
 }

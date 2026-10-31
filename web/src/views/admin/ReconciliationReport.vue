@@ -141,13 +141,13 @@ const {
 .section-head h2, .panel h3 { margin: 0 0 8px; font-size: 16px; }
 .hint { color: var(--text-muted, var(--el-text-color-secondary)); font-size: 12px; }
 .spacer { flex: 1; }
-.chips { display: flex; gap: 6px; }
+.chips { display: flex; gap: 4px; }
 .chip {
   border: 1px solid var(--border);
   background: transparent;
   color: inherit;
   border-radius: 999px;
-  padding: 2px 10px;
+  padding: 2px 8px;
   cursor: pointer;
   font: inherit;
 }

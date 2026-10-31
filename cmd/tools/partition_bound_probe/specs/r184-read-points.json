@@ -1,0 +1,605 @@
+{
+  "_comment": [
+    "★★ R184 轮「剩余 ts-only 读点」的读点登记册（2026-10-30）。",
+    "",
+    "★★ 这份册子回答的问题：**剩下这些「只按 ts 过滤、零 partition_date 谓词」的读点，",
+    "   到底该不该加分区下界？** ★★",
+    "",
+    "★★★ 口径（★ 三条，必须写清楚，否则这份册子会被读成「一刀切清单」）：★★★",
+    "  ① **「ts-only 读点」= 读【分区父表 public.session_turns】+ 有 ts 下界 + 同一条 SQL 里零 partition_date 谓词**。",
+    "     ★ 本地枚举脚本（独立复刻，不抄文档清单）得 30 处生产读点；",
+    "     ★ R181 审计档写的是「至少 17 处」⇒ ⇒ 「17」是**下界**，不是全集。",
+    "  ② **可加性判据**：★ 只有当「partition_date 下界」是 **ts 谓词的蕴含条件**时才可加。",
+    "     ★ 不变式：partition_date == (ts AT TIME ZONE 'UTC')::date（★ 所有写入方同口径，★ 实测 0 反例）",
+    "     ⇒ ⇒ 下界 = (ts 下界 的 UTC 日期) ⇒ ⇒ **不丢行**。",
+    "     ★ **反例**：意图是「全史」的读点（如 admin/data_lifecycle_metrics.go:111 的年龄分布）",
+    "       ⇒ ⇒ 加下界会**整桶删掉 expired** ⇒ ⇒ **语义改变** ⇒ ⇒ 登记但不测、不改。",
+    "  ③ **收益不是无条件的**（★ R174/R177 已证，本轮又测出**新机制**）：",
+    "     ★★ 加 partition_date 谓词 ⇒ ⇒ 该列**不在 ts 索引里** ⇒ ⇒ PG 的 **Index Only Scan 会退化成 Index Scan**",
+    "        ⇒ ⇒ **buffers 反而涨**（252 实测 4,477 → 12,037）⇒ ⇒ 对「本来就能靠 ts 索引 seek」的读点，",
+    "        ★★ **加下界是净亏损** ⇒ ⇒ ⇒ **逐条实测，不许一刀切** ★★",
+    "",
+    "★★ A/B 两形的构造（★ 只变一个变量）：",
+    "  · A = **生产原样**（原生两臂读点用 `{{NATIVE}}` 占位 ⇒ 工具在运行时从 db 包取**生产同款**文本 ⇒ 不会手抄走样）；",
+    "  · B = **同一条 SQL**，只把 partition_date 下界推进两臂内部（`native_source=two_arm_lower_bound` + `bound_expr`）。",
+    "  ★★ bound_expr **必须与 ts 谓词同源**（NOW() 派生）⇒ ⇒ 才是蕴含条件 ⇒ ⇒ 不丢行。",
+    "  ★★ 对**相对窗口**尤其重要：★ 应用侧算好的常量下界要求「应用时钟 ≤ 数据库时钟」⇒ ⇒ 时钟偏斜就会丢行；",
+    "     ★★ NOW() 派生则与 ts 谓词**同一时刻**⇒ ⇒ 零偏斜暴露。",
+    "",
+    "★★ 参数是**内联字面量**跑的（工具的既有约定）⇒ ⇒ 每次测量的参数固定可复核；",
+    "   ★★ 副作用：**测的是 custom plan**（参数规划期已知 ⇒ 计划期裁剪）；",
+    "   ★★ generic plan（pgx 语句缓存走的那条路）下 ⇒ **运行期裁剪**（`Subplans Removed: N`）⇒ ⇒ 同样真的不扫。",
+    "   ★ 这一点在 2026-10-30 用 `PREPARE` + `plan_cache_mode=force_generic_plan` **实测**过（见审计档 §四）。",
+    "",
+    "★★ 读数去向：★ 每个读点的「实测计划形态 + 耗时/buffers」写进",
+    "   scripts/audit/asset/query-plan-observations.tsv（★ 不是 pg_stat_statements 快照，是 EXPLAIN 计划形态快照）。"
+  ],
+  "read_points": [
+    {
+      "id": "admin/session_list.go:138|/api/admin/sessions 计数|72h",
+      "file": "admin/session_list.go",
+      "note": "★ 本轮**要修的那一条**（R183 §六.1 指定）。窗口形态 = 相对窗口 `NOW() - ($2||' hours')::interval`；★ 下界必须与 ts 谓词**同源**（NOW() 派生）⇒ 才是 ts 谓词的蕴含条件 ⇒ 不丢行。★ 2026-10-30 实测：252 上 A/B 的**计划形态 + buffers + 耗时**（见 query-plan-observations.tsv）。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t\tSELECT COUNT(DISTINCT rl.gw_session_id)\n\t\tFROM {{NATIVE}} rl\n\t\tWHERE rl.gw_session_id IS NOT NULL\n\t\t  AND rl.gw_session_id != ''\n\t\t  AND rl.tenant_id = $1\n\t\t  AND rl.ts >= NOW() - ($2 || ' hours')::interval\n\t",
+          "params": [
+            "default",
+            "72"
+          ],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\t\tSELECT COUNT(DISTINCT rl.gw_session_id)\n\t\tFROM {{NATIVE}} rl\n\t\tWHERE rl.gw_session_id IS NOT NULL\n\t\t  AND rl.gw_session_id != ''\n\t\t  AND rl.tenant_id = $1\n\t\t  AND rl.ts >= NOW() - ($2 || ' hours')::interval\n\t",
+          "params": [
+            "default",
+            "72"
+          ],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "((NOW() - ($2 || ' hours')::interval) AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "admin/session_list.go:162|/api/admin/sessions 列表行|72h",
+      "file": "admin/session_list.go",
+      "note": "★ 与上一条**同一条请求**的另一半（count 与 rows 必须同口径，否则分页对不上）。★ 窗口形态同上（相对窗口 72h）。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t\tSELECT\n\t\t\trl.gw_session_id,\n\t\t\tCOUNT(*) as request_count,\n\t\t\tCOUNT(*) FILTER (WHERE rl.request_status = 'failure') as error_count,\n\t\t\tCOUNT(*) FILTER (WHERE rl.compression_strategy IS NOT NULL AND rl.compression_strategy != '') > 0 as is_compressed,\n\t\t\tMIN(rl.ts) as time_start,\n\t\t\tMAX(rl.ts) as time_end,\n\t\t\tMIN(rl.client_model) as model_used\n\t\tFROM {{NATIVE}} rl\n\t\tWHERE rl.gw_session_id IS NOT NULL\n\t\t  AND rl.gw_session_id != ''\n\t\t  AND rl.tenant_id = $1\n\t\t  AND rl.ts >= NOW() - ($2 || ' hours')::interval\n\t\tGROUP BY rl.gw_session_id ORDER BY MAX(rl.ts) DESC\n\t",
+          "params": [
+            "default",
+            "72"
+          ],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\t\tSELECT\n\t\t\trl.gw_session_id,\n\t\t\tCOUNT(*) as request_count,\n\t\t\tCOUNT(*) FILTER (WHERE rl.request_status = 'failure') as error_count,\n\t\t\tCOUNT(*) FILTER (WHERE rl.compression_strategy IS NOT NULL AND rl.compression_strategy != '') > 0 as is_compressed,\n\t\t\tMIN(rl.ts) as time_start,\n\t\t\tMAX(rl.ts) as time_end,\n\t\t\tMIN(rl.client_model) as model_used\n\t\tFROM {{NATIVE}} rl\n\t\tWHERE rl.gw_session_id IS NOT NULL\n\t\t  AND rl.gw_session_id != ''\n\t\t  AND rl.tenant_id = $1\n\t\t  AND rl.ts >= NOW() - ($2 || ' hours')::interval\n\t\tGROUP BY rl.gw_session_id ORDER BY MAX(rl.ts) DESC\n\t",
+          "params": [
+            "default",
+            "72"
+          ],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "((NOW() - ($2 || ' hours')::interval) AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "admin/provider_diagnose.go:253|/api/admin/providers/{id}/diagnose 错误分类|24h",
+      "file": "admin/provider_diagnose.go",
+      "note": "窗口形态 = 相对窗口 `now() - interval '24 hours'`；provider_id 来自 details 特征层。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t\tSELECT COALESCE(error_kind,'other'), COUNT(*)\n\t\tFROM {{NATIVE}} rl\n\t\tWHERE rl.provider_id = $1 AND rl.ts >= now() - interval '24 hours'\n\t\tGROUP BY rl.error_kind\n\t",
+          "params": [
+            1
+          ],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\t\tSELECT COALESCE(error_kind,'other'), COUNT(*)\n\t\tFROM {{NATIVE}} rl\n\t\tWHERE rl.provider_id = $1 AND rl.ts >= now() - interval '24 hours'\n\t\tGROUP BY rl.error_kind\n\t",
+          "params": [
+            1
+          ],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "((now() - interval '24 hours') AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "admin/provider_diagnose.go:534|/api/admin/providers/{id}/diagnose(bg) 错误分类|24h",
+      "file": "admin/provider_diagnose.go",
+      "note": "★ 与上一条**同一条 SQL**（bg 变体）⇒ 两者必须一起改，否则同一次诊断里两个面板的数字分叉。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "SELECT COALESCE(error_kind,'other'), COUNT(*) FROM {{NATIVE}} rl WHERE rl.provider_id = $1 AND rl.ts >= now() - interval '24 hours' GROUP BY rl.error_kind",
+          "params": [
+            1
+          ],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "SELECT COALESCE(error_kind,'other'), COUNT(*) FROM {{NATIVE}} rl WHERE rl.provider_id = $1 AND rl.ts >= now() - interval '24 hours' GROUP BY rl.error_kind",
+          "params": [
+            1
+          ],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "((now() - interval '24 hours') AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "admin/logs.go:1342|/api/logs/top-models|30d",
+      "file": "admin/logs.go",
+      "note": "★ 窗口形态 = 绝对窗口 `ts >= $1 AND ts <= $2`。★ 注意生产上**窗口 ≤ 7d 时改走 hot 单腿**（SessionFamilyTurnsHotSourceSQL）⇒ ⇒ 本条只测**两臂原生源**那条分支 ⇒ 这里用 30d 窗口。★ 30d **必然跨月**（2026-09 + 2026-10）⇒ ⇒ 这是 R177 的**负例形态**（下界裁不掉有数据的分区）。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t\tSELECT\n\t\t\tCOALESCE(mc.id, mc2.id) AS canonical_id,\n\t\t\tCOALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model) AS canonical_name,\n\t\t\tCOALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model) AS display_name,\n\t\t\tCOUNT(*) AS request_count\n\t\tFROM {{NATIVE}} rl\n\t\tLEFT JOIN models_canonical mc ON mc.id = rl.canonical_id\n\t\tLEFT JOIN LATERAL (\n\t\t\tSELECT canonical_id\n\t\t\tFROM model_aliases\n\t\t\tWHERE (raw_name = lower(rl.client_model)\n\t\t\t    OR raw_name = lower(rl.outbound_model)\n\t\t\t    OR raw_name = lower(rl.canonical_model))\n\t\t\t  AND status = 'active'\n\t\t\tLIMIT 1\n\t\t) ma ON TRUE\n\t\tLEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id\n\t\tWHERE rl.ts >= $1 AND rl.ts <= $2\n\t\t  AND COALESCE(NULLIF(rl.client_model, ''), NULLIF(rl.outbound_model, ''), NULLIF(rl.canonical_model, '')) IS NOT NULL\n\t\tGROUP BY COALESCE(mc.id, mc2.id),\n\t\t         COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model),\n\t\t         COALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model)\n\t\tORDER BY request_count DESC\n\t\tLIMIT $3\n\t",
+          "params": [
+            "2026-09-29T00:00:00Z",
+            "2026-10-29T23:59:59Z",
+            10
+          ],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\t\tSELECT\n\t\t\tCOALESCE(mc.id, mc2.id) AS canonical_id,\n\t\t\tCOALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model) AS canonical_name,\n\t\t\tCOALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model) AS display_name,\n\t\t\tCOUNT(*) AS request_count\n\t\tFROM {{NATIVE}} rl\n\t\tLEFT JOIN models_canonical mc ON mc.id = rl.canonical_id\n\t\tLEFT JOIN LATERAL (\n\t\t\tSELECT canonical_id\n\t\t\tFROM model_aliases\n\t\t\tWHERE (raw_name = lower(rl.client_model)\n\t\t\t    OR raw_name = lower(rl.outbound_model)\n\t\t\t    OR raw_name = lower(rl.canonical_model))\n\t\t\t  AND status = 'active'\n\t\t\tLIMIT 1\n\t\t) ma ON TRUE\n\t\tLEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id\n\t\tWHERE rl.ts >= $1 AND rl.ts <= $2\n\t\t  AND COALESCE(NULLIF(rl.client_model, ''), NULLIF(rl.outbound_model, ''), NULLIF(rl.canonical_model, '')) IS NOT NULL\n\t\tGROUP BY COALESCE(mc.id, mc2.id),\n\t\t         COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model),\n\t\t         COALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model)\n\t\tORDER BY request_count DESC\n\t\tLIMIT $3\n\t",
+          "params": [
+            "2026-09-29T00:00:00Z",
+            "2026-10-29T23:59:59Z",
+            10
+          ],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "(($1) AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "admin/routing.go:2734|/api/admin/routing/featured popularModels|ts>=$1",
+      "file": "admin/routing.go",
+      "note": "窗口形态 = 绝对下界 `ts >= $1`（**无上界**）⇒ ⇒ 只能加**下界**（加���界就是给读点加了一个原本没有的筛选）。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\nSELECT model_key, cnt FROM (\n    SELECT\n        COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model) AS model_key,\n        COUNT(*) AS cnt\n    FROM {{NATIVE}} rl\n    LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id\n    LEFT JOIN LATERAL (\n        SELECT canonical_id\n        FROM model_aliases\n        WHERE (raw_name = lower(rl.client_model)\n            OR raw_name = lower(rl.outbound_model)\n            OR raw_name = lower(rl.canonical_model))\n          AND status = 'active'\n        LIMIT 1\n    ) ma ON TRUE\n    LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id\n    WHERE rl.ts >= $1\n      AND rl.success = TRUE\n      AND NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)\n      AND COALESCE(rl.origin_stage, 'business') = 'business'\n      AND ($2 = '' OR rl.tenant_id = $2)\n      AND COALESCE(NULLIF(rl.client_model, ''), NULLIF(rl.outbound_model, ''), NULLIF(rl.canonical_model, '')) IS NOT NULL\n    GROUP BY model_key\n) u\nORDER BY cnt DESC\nLIMIT 10\n",
+          "params": [
+            "2026-10-22T00:00:00Z",
+            "default"
+          ],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\nSELECT model_key, cnt FROM (\n    SELECT\n        COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model) AS model_key,\n        COUNT(*) AS cnt\n    FROM {{NATIVE}} rl\n    LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id\n    LEFT JOIN LATERAL (\n        SELECT canonical_id\n        FROM model_aliases\n        WHERE (raw_name = lower(rl.client_model)\n            OR raw_name = lower(rl.outbound_model)\n            OR raw_name = lower(rl.canonical_model))\n          AND status = 'active'\n        LIMIT 1\n    ) ma ON TRUE\n    LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id\n    WHERE rl.ts >= $1\n      AND rl.success = TRUE\n      AND NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)\n      AND COALESCE(rl.origin_stage, 'business') = 'business'\n      AND ($2 = '' OR rl.tenant_id = $2)\n      AND COALESCE(NULLIF(rl.client_model, ''), NULLIF(rl.outbound_model, ''), NULLIF(rl.canonical_model, '')) IS NOT NULL\n    GROUP BY model_key\n) u\nORDER BY cnt DESC\nLIMIT 10\n",
+          "params": [
+            "2026-10-22T00:00:00Z",
+            "default"
+          ],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "(($1) AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "admin/attempt_quality_api.go:150|/api/admin/attempt-quality 终轮指标|绝对窗口",
+      "file": "admin/attempt_quality_api.go",
+      "note": "窗口形态 = 绝对窗口 `ts >= $2 AND ts < $3` ⇒ ⇒ 下界可由 $2 直接折算。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "SELECT COUNT(*)::bigint, COUNT(*) FILTER (WHERE success)::bigint, COUNT(*) FILTER (WHERE NOT success)::bigint, COALESCE(SUM(total_tokens), 0)::bigint FROM {{NATIVE}} rl WHERE tenant_id = $1 AND ts >= $2 AND ts < $3",
+          "params": [
+            "default",
+            "2026-10-22T00:00:00Z",
+            "2026-10-29T23:59:59Z"
+          ],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "SELECT COUNT(*)::bigint, COUNT(*) FILTER (WHERE success)::bigint, COUNT(*) FILTER (WHERE NOT success)::bigint, COALESCE(SUM(total_tokens), 0)::bigint FROM {{NATIVE}} rl WHERE tenant_id = $1 AND ts >= $2 AND ts < $3",
+          "params": [
+            "default",
+            "2026-10-22T00:00:00Z",
+            "2026-10-29T23:59:59Z"
+          ],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "(($2) AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "admin/auto_route.go:160|/api/admin/auto-route/decisions|7d",
+      "file": "admin/auto_route.go",
+      "note": "窗口形态 = 相对窗口 `NOW() - INTERVAL '7 days'`。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t\tSELECT ts, request_id, api_key_id, task_type, auto_profile,\n\t\t       auto_confidence, client_model, outbound_model,\n\t\t       credential_id, auto_decision, success, latency_ms, work_type\n\t\tFROM {{NATIVE}} r\n\t\tWHERE is_auto_request = TRUE\n\t\t  AND ts >= NOW() - INTERVAL '7 days'\n\t",
+          "params": [],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\t\tSELECT ts, request_id, api_key_id, task_type, auto_profile,\n\t\t       auto_confidence, client_model, outbound_model,\n\t\t       credential_id, auto_decision, success, latency_ms, work_type\n\t\tFROM {{NATIVE}} r\n\t\tWHERE is_auto_request = TRUE\n\t\t  AND ts >= NOW() - INTERVAL '7 days'\n\t",
+          "params": [],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "((NOW() - INTERVAL '7 days') AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "admin/auto_route_correlations.go:121|/api/admin/auto-route/correlations 模型分布|1d x $1",
+      "file": "admin/auto_route_correlations.go",
+      "note": "★ 同文件里有 **5 条同形态**的查询（model / strategy / task_type / model+task_type / 成功样本）⇒ ⇒ 测这一条即可代表那 5 条（它们只有 GROUP BY 维度不同）。窗口形态 = 相对窗口 `NOW() - INTERVAL '1 day' * $1`。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t\tSELECT\n\t\t\tmodel_chosen AS k, COUNT(*) AS cnt\n\t\tFROM {{NATIVE}} rl\n\t\tWHERE is_auto_request = TRUE\n\t\t  AND ts >= NOW() - INTERVAL '1 day' * $1\n\t\tGROUP BY model_chosen\n\t\tHAVING COUNT(*) >= $2\n\t",
+          "params": [
+            7,
+            1
+          ],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\t\tSELECT\n\t\t\tmodel_chosen AS k, COUNT(*) AS cnt\n\t\tFROM {{NATIVE}} rl\n\t\tWHERE is_auto_request = TRUE\n\t\t  AND ts >= NOW() - INTERVAL '1 day' * $1\n\t\tGROUP BY model_chosen\n\t\tHAVING COUNT(*) >= $2\n\t",
+          "params": [
+            7,
+            1
+          ],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "((NOW() - INTERVAL '1 day' * $1) AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "admin/compression_stats.go:242|/api/admin/compression/stats 分档聚合|绝对窗口",
+      "file": "admin/compression_stats.go",
+      "note": "★ 生产上这条**还有一条 bodies EXISTS 半连接**（`SessionFamilyBodiesSourceSQL()`）⇒ ★ 本条按**去掉 bodies 腿**的形态测 ⇒ ⇒ 结论只覆盖「turns 臂的裁剪收益」，★ 不覆盖 bodies 腿 ⇒ ★ 文档里必须写明这个边界（★ 不能拿它当整条语句的结论）。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t\tSELECT\n\t\t\tCOALESCE(NULLIF(rl.compression_strategy,''), 'none') AS strategy,\n\t\t\tCOUNT(*) AS cnt\n\t\tFROM (\n\t\t\tSELECT t.ts, t.compression_strategy\n\t\t\tFROM {{NATIVE}} t\n\t\t\tWHERE t.ts >= $1 AND t.ts <= $2 AND ($3 OR t.success)\n\t\t) rl\n\t\tGROUP BY strategy\n\t\tORDER BY cnt DESC\n\t",
+          "params": [
+            "2026-10-28T00:00:00Z",
+            "2026-10-29T00:00:00Z",
+            true
+          ],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\t\tSELECT\n\t\t\tCOALESCE(NULLIF(rl.compression_strategy,''), 'none') AS strategy,\n\t\t\tCOUNT(*) AS cnt\n\t\tFROM (\n\t\t\tSELECT t.ts, t.compression_strategy\n\t\t\tFROM {{NATIVE}} t\n\t\t\tWHERE t.ts >= $1 AND t.ts <= $2 AND ($3 OR t.success)\n\t\t) rl\n\t\tGROUP BY strategy\n\t\tORDER BY cnt DESC\n\t",
+          "params": [
+            "2026-10-28T00:00:00Z",
+            "2026-10-29T00:00:00Z",
+            true
+          ],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "(($1) AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "admin/quality_correlations.go:255|/api/admin/quality-correlations 分桶|1d x $1",
+      "file": "admin/quality_correlations.go",
+      "note": "★ 生产形态还 LEFT JOIN `SessionBodiesSourceSQL()`（载荷腿）⇒ ★ 同上：本条测的是**去掉载荷腿**的形态⇒ ⇒ 结论只覆盖 turns 臂。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t\tSELECT 'bucket' AS bucket,\n\t\t       COUNT(*) AS samples,\n\t\t       AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END) AS success_rate\n\t\tFROM {{NATIVE}} rl\n\t\tWHERE rl.is_auto_request = TRUE\n\t\t  AND rl.ts >= NOW() - INTERVAL '1 day' * $1\n\t\tGROUP BY 1\n\t\tORDER BY 1\n\t",
+          "params": [
+            7
+          ],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\t\tSELECT 'bucket' AS bucket,\n\t\t       COUNT(*) AS samples,\n\t\t       AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END) AS success_rate\n\t\tFROM {{NATIVE}} rl\n\t\tWHERE rl.is_auto_request = TRUE\n\t\t  AND rl.ts >= NOW() - INTERVAL '1 day' * $1\n\t\tGROUP BY 1\n\t\tORDER BY 1\n\t",
+          "params": [
+            7
+          ],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "((NOW() - INTERVAL '1 day' * $1) AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "admin/data_lifecycle_attachments.go:236|/api/admin/data-lifecycle/attachments 清单|ts 窗口",
+      "file": "admin/data_lifecycle_attachments.go",
+      "note": "★ 窗口由 `where` 片段拼出（生产默认含 `rl.ts >= $n` 形式）⇒ ★ 本条按**默认 72h 相对窗口**测。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t\tSELECT rl.request_id, rl.ts, rl.tenant_id,\n\t\t       COALESCE(rl.client_model, ''), COALESCE(rl.success, false), rl.attachments::text\n\t\tFROM {{NATIVE}} rl\n\t\tWHERE rl.ts >= NOW() - ($1 || ' hours')::interval\n\t\tORDER BY rl.ts DESC\n\t\tLIMIT $2 OFFSET $3\n\t",
+          "params": [
+            "72",
+            20,
+            0
+          ],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\t\tSELECT rl.request_id, rl.ts, rl.tenant_id,\n\t\t       COALESCE(rl.client_model, ''), COALESCE(rl.success, false), rl.attachments::text\n\t\tFROM {{NATIVE}} rl\n\t\tWHERE rl.ts >= NOW() - ($1 || ' hours')::interval\n\t\tORDER BY rl.ts DESC\n\t\tLIMIT $2 OFFSET $3\n\t",
+          "params": [
+            "72",
+            20,
+            0
+          ],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "((NOW() - ($1 || ' hours')::interval) AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "admin/session_crosstalk_check.go:106|/api/admin/session-crosstalk-check|1h x $1",
+      "file": "admin/session_crosstalk_check.go",
+      "note": "★★★ 这条**直读** `session_turns_hot UNION ALL public.session_turns`（不是两臂原生源）⇒ ⇒ 下界必须**推进那条 UNION 的父表臂内部**（外层过滤对 UNION ALL 的派生表无效）。★ 该文件 79-93 行**自己写着**「⚠ D4：`ts` 不是 `session_turns` 的分区键 ⇒ `ts >= …` 不触发分区裁剪」⇒ ★ ⇒ 这是一条**仓内早已挂号**的欠账。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t\tSELECT session_id,\n\t\t       array_agg(DISTINCT tenant_id ORDER BY tenant_id) AS tenant_ids,\n\t\t       min(ts) AS first_seen_at,\n\t\t       max(ts) AS last_seen_at,\n\t\t       count(*) AS request_count\n\t\tFROM (\n\t\t\tSELECT session_id, tenant_id, ts FROM public.session_turns_hot\n\t\t\tUNION ALL\n\t\t\tSELECT session_id, tenant_id, ts FROM public.session_turns\n\t\t) t\n\t\tWHERE ts >= NOW() - INTERVAL '1 hour' * $1\n\t\tGROUP BY session_id\n\t\tHAVING count(DISTINCT tenant_id) > 1\n\t\tORDER BY last_seen_at DESC\n\t\tLIMIT 100\n\t",
+          "params": [
+            1
+          ]
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\t\tSELECT session_id,\n\t\t       array_agg(DISTINCT tenant_id ORDER BY tenant_id) AS tenant_ids,\n\t\t       min(ts) AS first_seen_at,\n\t\t       max(ts) AS last_seen_at,\n\t\t       count(*) AS request_count\n\t\tFROM (\n\t\t\tSELECT session_id, tenant_id, ts FROM public.session_turns_hot\n\t\t\tUNION ALL\n\t\t\tSELECT session_id, tenant_id, ts FROM public.session_turns\n\t\t\t  WHERE partition_date >= ((NOW() - INTERVAL '1 hour' * $1) AT TIME ZONE 'UTC')::date\n\t\t) t\n\t\tWHERE ts >= NOW() - INTERVAL '1 hour' * $1\n\t\tGROUP BY session_id\n\t\tHAVING count(DISTINCT tenant_id) > 1\n\t\tORDER BY last_seen_at DESC\n\t\tLIMIT 100\n\t",
+          "params": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "id": "admin/turns_filter_options.go:534|/api/admin/turns/filter-options 合并源|ts 窗口",
+      "file": "admin/turns_filter_options.go",
+      "note": "★ 生产形态是 `public.session_turns` ∪ `public.session_turns_hot` 的**窄投影**（3 列）⇒ ★ 下界推进父表臂内部。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\nSELECT s.c1, s.c2, s.c3, s.last_at FROM (\n\tSELECT model AS c1, provider AS c2, status_code::text AS c3, ts\n\t FROM public.session_turns WHERE ts >= NOW() - INTERVAL '24 hours'\n\tUNION ALL\n\t SELECT model, provider, status_code::text, ts\n\t FROM public.session_turns_hot WHERE ts >= NOW() - INTERVAL '24 hours'\n\t) u GROUP BY GROUPING SETS ((1),(2),(3))) s\n",
+          "params": []
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\nSELECT s.c1, s.c2, s.c3, s.last_at FROM (\n\tSELECT model AS c1, provider AS c2, status_code::text AS c3, ts\n\t FROM public.session_turns WHERE ts >= NOW() - INTERVAL '24 hours'\n\t   AND partition_date >= ((NOW() - INTERVAL '24 hours') AT TIME ZONE 'UTC')::date\n\tUNION ALL\n\t SELECT model, provider, status_code::text, ts\n\t FROM public.session_turns_hot WHERE ts >= NOW() - INTERVAL '24 hours'\n\t) u GROUP BY GROUPING SETS ((1),(2),(3))) s\n",
+          "params": []
+        }
+      ]
+    },
+    {
+      "id": "admin/usage_enhanced.go:715|/api/admin/usage-enhanced 压缩统计|绝对窗口",
+      "file": "admin/usage_enhanced.go",
+      "note": "★ 直读**单腿母表** `session_turns`（刻意单腿：换源是独立的一件事）⇒ ⇒ 下界推进父表臂内部。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t\tSELECT COUNT(*)\n\t\tFROM session_turns rl\n\t\tWHERE rl.ts >= $1 AND rl.ts < $2\n\t\t  AND rl.compression_strategy IS NOT NULL\n\t\t  AND rl.compression_strategy <> ''\n\t",
+          "params": [
+            "2026-10-22T00:00:00Z",
+            "2026-10-29T23:59:59Z"
+          ]
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\t\tSELECT COUNT(*)\n\t\tFROM session_turns rl\n\t\tWHERE rl.ts >= $1 AND rl.ts < $2\n\t\t  AND rl.partition_date >= (($1) AT TIME ZONE 'UTC')::date\n\t\t  AND rl.compression_strategy IS NOT NULL\n\t\t  AND rl.compression_strategy <> ''\n\t",
+          "params": [
+            "2026-10-22T00:00:00Z",
+            "2026-10-29T23:59:59Z"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "admin/data_lifecycle_metrics.go:111|/api/admin/data-lifecycle/metrics 年龄分布|全史语义",
+      "file": "admin/data_lifecycle_metrics.go",
+      "note": "★★★ **不可加下界**（这一条是「不得一刀切」的反例登记）：★ 这条 SQL 的意图就是「按年龄分桶统计**全史**」（hot 7d / warm 30d / cold 90d / expired >90d）⇒ ⇒ 加 partition_date 下界会把 expired 桶**整桶删掉** ⇒ ⇒ **语义改变** ⇒ ⇒ 不测、不改。★ 登记在册是为了说明「为什么这 30 条里有的不测」——★ 否则下一个人会以为漏了。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only（★ 语义就是全史 ⇒ 不加下界）",
+          "sql": "\n\t\tSELECT\n\t\t\tCOUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '7 days') AS hot_rows,\n\t\t\tCOUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days') AS warm_rows,\n\t\t\tCOUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days') AS cold_rows,\n\t\t\tCOUNT(*) FILTER (WHERE ts < NOW() - INTERVAL '90 days') AS expired_rows\n\t\tFROM session_turns\n\t",
+          "params": []
+        }
+      ]
+    },
+    {
+      "id": "bg/routing_health_checks.go:899|健康检查 负成本|30d",
+      "file": "bg/routing_health_checks.go",
+      "note": "★ 该检查在 R184 之前已被改成**窄源**（hot ∪ parent 各 6 列）⇒ ⇒ 这里只测 turns 臂的裁剪。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\nSELECT credential_id, raw_model_name, count(*)::int AS neg_rows, sum(cost_usd) AS neg_usd\nFROM (\n            SELECT credential_id, raw_model_name, cost_usd,\n                   cache_read_tokens, prompt_tokens, ts\n              FROM public.session_turns_hot\n            UNION ALL\n            SELECT credential_id, raw_model_name, cost_usd,\n                   cache_read_tokens, prompt_tokens, ts\n              FROM public.session_turns\n           ) r\n     WHERE r.cost_usd < 0\n       AND r.ts > now() - interval '30 days'\n     GROUP BY r.credential_id, r.raw_model_name\n",
+          "params": []
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\nSELECT credential_id, raw_model_name, count(*)::int AS neg_rows, sum(cost_usd) AS neg_usd\nFROM (\n            SELECT credential_id, raw_model_name, cost_usd,\n                   cache_read_tokens, prompt_tokens, ts\n              FROM public.session_turns_hot\n            UNION ALL\n            SELECT credential_id, raw_model_name, cost_usd,\n                   cache_read_tokens, prompt_tokens, ts\n              FROM public.session_turns\n             WHERE partition_date >= ((now() - interval '30 days') AT TIME ZONE 'UTC')::date\n           ) r\n     WHERE r.cost_usd < 0\n       AND r.ts > now() - interval '30 days'\n     GROUP BY r.credential_id, r.raw_model_name\n",
+          "params": []
+        }
+      ]
+    },
+    {
+      "id": "domains/streaming/model_alternatives.go:557|streaming 备选模型 7 天用量|7d",
+      "file": "domains/streaming/model_alternatives.go",
+      "note": "窗口形态 = 相对窗口 `ts > now() - interval '7 days'`。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n    SELECT canonical_model, COUNT(*) AS cnt\n    FROM {{NATIVE}}\n    WHERE ts > now() - interval '7 days'\n    GROUP BY canonical_model\n",
+          "params": [],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n    SELECT canonical_model, COUNT(*) AS cnt\n    FROM {{NATIVE}}\n    WHERE ts > now() - interval '7 days'\n    GROUP BY canonical_model\n",
+          "params": [],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "((now() - interval '7 days') AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "domains/analysis/projectattr/store.go:308|projectattr 历史继承|$4 天",
+      "file": "domains/analysis/projectattr/store.go",
+      "note": "★ 这是 **EXISTS 半连接**里的读点（外层是别的表）⇒ ⇒ 谓词推进两臂内部才有意义。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t\t      SELECT 1 FROM {{NATIVE}} rl\n\t\t      WHERE rl.gw_session_id = 'x'\n\t\t        AND rl.tenant_id = 'default'\n\t\t        AND rl.identity_hash = 'h'\n\t\t        AND rl.ts > NOW() - ($1 || ' days')::interval\n",
+          "params": [
+            "30"
+          ],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\t\t      SELECT 1 FROM {{NATIVE}} rl\n\t\t      WHERE rl.gw_session_id = 'x'\n\t\t        AND rl.tenant_id = 'default'\n\t\t        AND rl.identity_hash = 'h'\n\t\t        AND rl.ts > NOW() - ($1 || ' days')::interval\n",
+          "params": [
+            "30"
+          ],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "((NOW() - ($1 || ' days')::interval) AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "bg/credential_recovery.go:1755|/bg 凭据回看候选|$1 小时",
+      "file": "bg/credential_recovery.go",
+      "note": "★ 这也是 **EXISTS 半连接**里的读点。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t\tAND EXISTS (\n\t\t    SELECT 1 FROM {{NATIVE}} rl\n\t\t    WHERE rl.credential_id = cmb.credential_id\n\t\t      AND rl.raw_model_name = pm.raw_model_name\n\t\t      AND rl.success = TRUE\n\t\t      AND rl.ts > now() - make_interval(hours => $1)\n\t\t  )\n",
+          "params": [
+            24
+          ],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\t\tAND EXISTS (\n\t\t    SELECT 1 FROM {{NATIVE}} rl\n\t\t    WHERE rl.credential_id = cmb.credential_id\n\t\t      AND rl.raw_model_name = pm.raw_model_name\n\t\t      AND rl.success = TRUE\n\t\t      AND rl.ts > now() - make_interval(hours => $1)\n\t\t  )\n",
+          "params": [
+            24
+          ],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "((now() - make_interval(hours => $1)) AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "bg/integrity_fingerprint_probe.go:53|/bg 指纹漂移探针|$1 天",
+      "file": "bg/integrity_fingerprint_probe.go",
+      "note": "★ 这条是 **EXISTS + LIMIT 1** 探针（早停型）⇒ ⇒ 加下界的收益形态与聚合型**不同**。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t\tSELECT EXISTS (\n\t\t    SELECT 1\n\t\t      FROM {{NATIVE}}\n\t\t     WHERE ts > NOW() - ($1::int * INTERVAL '1 day')\n\t\t       AND system_fingerprint IS NOT NULL\n\t\t     LIMIT 1\n\t\t)\n",
+          "params": [
+            30
+          ],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\t\tSELECT EXISTS (\n\t\t    SELECT 1\n\t\t      FROM {{NATIVE}}\n\t\t     WHERE ts > NOW() - ($1::int * INTERVAL '1 day')\n\t\t       AND system_fingerprint IS NOT NULL\n\t\t     LIMIT 1\n\t\t)\n",
+          "params": [
+            30
+          ],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "((NOW() - ($1::int * INTERVAL '1 day')) AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "discovery/discovery.go:1183|discovery 会话族近期成功|$1 小时",
+      "file": "discovery/discovery.go",
+      "note": "★ 直读 hot 与父表**两条腿**（不是两臂原生源）⇒ ⇒ 下界推进父表臂内部。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\tSELECT EXISTS (\n\t  SELECT 1 FROM public.session_turns_hot\n\t  WHERE success = TRUE AND ts > now() - ($1 || ' hours')::interval\n\t  UNION ALL\n\t  SELECT 1 FROM public.session_turns\n\t  WHERE success = TRUE AND ts > now() - ($1 || ' hours')::interval\n\t)\n",
+          "params": [
+            "24"
+          ]
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\tSELECT EXISTS (\n\t  SELECT 1 FROM public.session_turns_hot\n\t  WHERE success = TRUE AND ts > now() - ($1 || ' hours')::interval\n\t  UNION ALL\n\t  SELECT 1 FROM public.session_turns\n\t  WHERE success = TRUE AND ts > now() - ($1 || ' hours')::interval\n\t    AND partition_date >= ((now() - ($1 || ' hours')::interval) AT TIME ZONE 'UTC')::date\n\t)\n",
+          "params": [
+            "24"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "autoroute/recommend_v2.go:551|autoroute 热模型 top3|7d",
+      "file": "autoroute/recommend_v2.go",
+      "note": "窗口形态 = 相对窗口 `ts > now() - interval '7 days'`。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n    SELECT canonical_model, COUNT(*) AS cnt\n    FROM {{NATIVE}}\n    WHERE ts > now() - interval '7 days'\n    GROUP BY canonical_model\n    ORDER BY cnt DESC\n    LIMIT 3\n",
+          "params": [],
+          "native_source": "two_arm"
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n    SELECT canonical_model, COUNT(*) AS cnt\n    FROM {{NATIVE}}\n    WHERE ts > now() - interval '7 days'\n    GROUP BY canonical_model\n    ORDER BY cnt DESC\n    LIMIT 3\n",
+          "params": [],
+          "native_source": "two_arm_lower_bound",
+          "bound_expr": "((now() - interval '7 days') AT TIME ZONE 'UTC')::date"
+        }
+      ]
+    },
+    {
+      "id": "admin/tenant_stats_logs_table.go:51|租户统计日志表|全史+V1 冻结线",
+      "file": "admin/tenant_stats_logs_table.go",
+      "note": "★ 该表**刻意是全量日志表**（窗口是 `t.ts > V1FreezeCutoffSQL`，一条**常量**冻结线）⇒ ★ 可加**常量**下界（`partition_date >= 该冻结线的 UTC 日期`）⇒ ★ 但**跨月时收益有限**（见 note）。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t               SELECT t.tenant_id::text, t.ts,\n\t                      (CASE WHEN t.application_id ~ '^[0-9]+$' THEN t.application_id::bigint END),\n\t                      t.model, NULL::text, t.success,\n\t                      NULLIF(COALESCE(t.prompt_tokens, 0) + COALESCE(t.completion_tokens, 0), 0),\n\t                      t.prompt_tokens, t.completion_tokens,\n\t                      t.credits_charged, t.cost_usd::numeric(14,8) AS cost_usd, t.latency_ms,\n\t                      t.cache_read_tokens, t.cache_write_tokens\n\t               FROM session_turns t\n\t",
+          "params": []
+        }
+      ]
+    },
+    {
+      "id": "admin/data_lifecycle.go:483|/api/admin/data-lifecycle 清理预览|$n::date 绝对日",
+      "file": "admin/data_lifecycle.go",
+      "note": "★ 该读点走 **canonical 视图**（`request_logs_with_current_month`）⇒ ⇒ 视图体**不投影 partition_date** ⇒ ★ ⇒ 外层加 partition_date **完全无效** ⇒ ⇒ 要裁剪必须**推进视图两臂内部**（= 走原生形态）。★ 本条按「直读父表 + 下界推进内部」测（★ 视图形态的裁剪不可达，已由 R174 实测坐实）。",
+      "variants": [
+        {
+          "name": "A_现状_ts_only",
+          "sql": "\n\t\t\tSELECT COUNT(*) FROM public.session_turns\n\t\t\tWHERE tenant_id = $1\n\t\t\t  AND ts >= $2::date\n\t\t\t  AND ts < $2::date + INTERVAL '1 day'\n\t",
+          "params": [
+            "default",
+            "2026-10-20"
+          ]
+        },
+        {
+          "name": "B_加分区下界",
+          "sql": "\n\t\t\tSELECT COUNT(*) FROM public.session_turns\n\t\t\tWHERE tenant_id = $1\n\t\t\t  AND ts >= $2::date\n\t\t\t  AND ts < $2::date + INTERVAL '1 day'\n\t\t\t  AND partition_date >= ($2::date - 1)\n\t",
+          "params": [
+            "default",
+            "2026-10-20"
+          ]
+        }
+      ]
+    }
+  ]
+}

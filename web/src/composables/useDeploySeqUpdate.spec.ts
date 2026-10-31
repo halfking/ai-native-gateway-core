@@ -33,6 +33,8 @@ function boot(opts?: {
   remoteSeq?: string
   reject?: boolean
   activeEl?: Element | null
+  /** 页面已经「活了」多久（毫秒）。默认 0 = 刚打开。 */
+  elapsedMs?: number
 }) {
   const calls: Array<{ url: string; init?: RequestInit }> = []
   const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
@@ -45,14 +47,20 @@ function boot(opts?: {
     return htmlResponse(String(body))
   }
   const reload = vi.fn()
+  // 可推进的假时钟：start() 记录 loadedAt = 此刻；advance() 模拟页面又活了 N 毫秒。
+  let clock = 1_700_000_000_000
+  const advance = (ms: number) => {
+    clock += ms
+  }
   start({
     fetchImpl,
     doc: pageDoc(opts?.local ?? '2450'),
     reloadImpl: reload,
-    now: () => 1_700_000_000_000,
+    now: () => clock,
     ...(opts?.activeEl !== undefined ? { activeElementProvider: () => opts.activeEl as Element | null } : {}),
   })
-  return { calls, reload }
+  advance(opts?.elapsedMs ?? 0)
+  return { calls, reload, advance }
 }
 
 afterEach(() => {
@@ -126,16 +134,34 @@ describe('检查链', () => {
 })
 
 describe('序号变化 → 自动重载三条件', () => {
-  it('静置 ⇒ 直接 reload', async () => {
-    const { reload } = boot({ remoteSeq: '2451' })
+  it('静置（距上次交互 ≥ 阈值）⇒ 直接 reload', async () => {
+    const { reload } = boot({ remoteSeq: '2451', elapsedMs: UPDATE_IDLE_THRESHOLD_MS + 1 })
     await checkNow()
     expect(reload).toHaveBeenCalledTimes(1)
     expect(bannerVisible.value).toBe(false)
   })
 
+  it('★ 页面刚打开、从未交互 ⇒ 出提示条不 reload（2026-10-28 R176 回归）', async () => {
+    // 旧实现把「从未交互」当成「静置 ∞」⇒ 首查（5s）就整页 reload，
+    // 违反 docs/UI规范/18 §4「距上次交互超过阈值」。
+    // 实测症状：页面打开 5.09s 后自己 fetch('/index.html') + 整页导航。
+    const { reload } = boot({ remoteSeq: '2451', elapsedMs: UPDATE_FIRST_CHECK_DELAY_MS })
+    await checkNow()
+    expect(reload).not.toHaveBeenCalled()
+    expect(bannerVisible.value).toBe(true)
+  })
+
   it('刚交互 ⇒ 出提示条不 reload', async () => {
-    const { reload } = boot({ remoteSeq: '2451' })
+    const { reload } = boot({ remoteSeq: '2451', elapsedMs: UPDATE_IDLE_THRESHOLD_MS + 1 })
     document.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    await checkNow()
+    expect(reload).not.toHaveBeenCalled()
+    expect(bannerVisible.value).toBe(true)
+  })
+
+  it('滚动也算交互 ⇒ 正在读页面的人不会被自动重载（2026-10-28 R176 回归）', async () => {
+    const { reload } = boot({ remoteSeq: '2451', elapsedMs: UPDATE_IDLE_THRESHOLD_MS + 1 })
+    document.dispatchEvent(new Event('scroll', { bubbles: true }))
     await checkNow()
     expect(reload).not.toHaveBeenCalled()
     expect(bannerVisible.value).toBe(true)
@@ -143,7 +169,7 @@ describe('序号变化 → 自动重载三条件', () => {
 
   it('焦点在输入控件 ⇒ 出提示条不 reload', async () => {
     const input = document.createElement('input')
-    const { reload } = boot({ remoteSeq: '2451', activeEl: input })
+    const { reload } = boot({ remoteSeq: '2451', elapsedMs: UPDATE_IDLE_THRESHOLD_MS + 1, activeEl: input })
     await checkNow()
     expect(reload).not.toHaveBeenCalled()
     expect(bannerVisible.value).toBe(true)

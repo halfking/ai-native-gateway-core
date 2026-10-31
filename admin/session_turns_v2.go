@@ -16,6 +16,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/sessiondigest"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // session_turns_v2.go — V2 会话详情端点实现（2026-08-07）。
@@ -201,8 +202,14 @@ func serveSessionTurnsListDB(db sessionTurnsDB, secret string, w http.ResponseWr
 			TurnNo: items[len(items)-1].TurnNo, TS: time.Now(),
 		}, []byte(secret))
 	}
+	// W1.3: list is metadata-primary, but body_status collapses "never captured"
+	// with "consent off". Surface consent explicitly so UI is not silently empty.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"session_id": sessionID, "turns": items, "has_more": hasMore, "next_cursor": nextCursor,
+		"session_id":        sessionID,
+		"turns":             items,
+		"has_more":          hasMore,
+		"next_cursor":       nextCursor,
+		"recording_consent": settings.RecordingConsentEnabled(tenantID),
 	})
 }
 
@@ -284,6 +291,10 @@ func serveSessionTurnDetailDB(db sessionTurnsDB, w http.ResponseWriter, r *http.
 		return
 	}
 	tenantID := tenantFromQueryOrContext(r)
+	// W1.3: turn detail returns request/response bodies → consent=off ⇒ unavailable.
+	if !requireRecordingConsent(w, tenantID) {
+		return
+	}
 
 	query := `
 		SELECT
@@ -608,6 +619,10 @@ func (h *Handler) serveSessionTurnsBodies(w http.ResponseWriter, r *http.Request
 		return
 	}
 	tenantID := tenantFromQueryOrContext(r)
+	// W1.3: consent=off → structured unavailable (never silent empty).
+	if !requireRecordingConsent(w, tenantID) {
+		return
+	}
 	limit := defaultTurnsListLimit
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= maxTurnsListLimit {
@@ -839,6 +854,10 @@ func (h *Handler) serveSessionInstantSummary(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	tenantID := tenantFromQueryOrContext(r)
+	// W1.3: instant summary reads bodies → consent=off ⇒ structured unavailable.
+	if !requireRecordingConsent(w, tenantID) {
+		return
+	}
 	// 2026-09-29 (审计二十一轮): 注入真实 LLM 摘要链路 + r 透传（此前端点
 	// 内是写死 localhost 的占位桩，生产必败静默落入伪摘要）。
 	api := &SessionSummaryV2API{pool: h.db, llmCall: h.SessionSummaryLLMCaller()}

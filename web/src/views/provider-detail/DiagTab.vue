@@ -96,7 +96,7 @@ function scoreColor(score: number): string {
 
     <template v-if="cachedResult">
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px">
-        <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:14px">
+        <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:12px">
           <div style="font-size:12px;color:var(--muted)">{{ pdg('summaryTotalCreds') }}</div>
           <div style="font-size:20px;font-weight:600">{{ cachedResult.summary?.total_credentials ?? 0 }}</div>
           <div style="font-size:11px;color:var(--muted)">
@@ -105,11 +105,11 @@ function scoreColor(score: number): string {
             <span style="color:var(--danger)">{{ pdg('summaryUnreachableSuffix', { n: cachedResult.summary?.unreachable ?? 0 }) }}</span>
           </div>
         </div>
-        <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:14px">
+        <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:12px">
           <div style="font-size:12px;color:var(--muted)">{{ pdg('summaryModelCoverage') }}</div>
           <div style="font-size:20px;font-weight:600">{{ (cachedResult.summary?.models_coverage_pct ?? 0).toFixed(1) }}%</div>
         </div>
-        <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:14px">
+        <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:12px">
           <div style="font-size:12px;color:var(--muted)">{{ pdg('summaryAvgLatency') }}</div>
           <div style="font-size:20px;font-weight:600">{{ (cachedResult.summary?.avg_latency_ms ?? 0).toFixed(0) }} ms</div>
         </div>
@@ -130,7 +130,7 @@ function scoreColor(score: number): string {
       <div v-if="cachedResult.health_scores?.length" style="margin-bottom:16px">
         <h4 style="margin:0 0 8px;font-size:14px">{{ pdg('healthScoresTitle') }}</h4>
         <div style="display:flex;gap:12px;flex-wrap:wrap">
-          <div v-for="s in cachedResult.health_scores" :key="s.credential_id" style="display:flex;align-items:center;gap:6px;min-width:120px">
+          <div v-for="s in cachedResult.health_scores" :key="s.credential_id" style="display:flex;align-items:center;gap:4px;min-width:120px">
             <span style="color:var(--muted);font-size:11px">{{ credentialDisplayName(s.credential_id) }}</span>
             <div style="flex:1;height:6px;background:var(--bg-subtle);border-radius:3px;overflow:hidden">
               <div :style="{ width: s.score + '%', background: scoreColor(s.score), height: '100%', borderRadius: '3px' }"></div>
@@ -147,19 +147,19 @@ function scoreColor(score: number): string {
 
             <thead>
               <tr class="diag-cred-header">
-                <th style="padding:6px">{{ pdg('credCol') }}</th>
-                <th style="padding:6px">{{ pdg('credColStatus') }}</th>
-                <th style="padding:6px">{{ pdg('credColCircuit') }}</th>
-                <th style="padding:6px">{{ pdg('credColModels') }}</th>
-                <th style="padding:6px">{{ pdg('credColChat') }}</th>
+                <th style="padding:4px">{{ pdg('credCol') }}</th>
+                <th style="padding:4px">{{ pdg('credColStatus') }}</th>
+                <th style="padding:4px">{{ pdg('credColCircuit') }}</th>
+                <th style="padding:4px">{{ pdg('credColModels') }}</th>
+                <th style="padding:4px">{{ pdg('credColChat') }}</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="cd in cachedResult.credentials" :key="cd.credential_id" style="border-bottom:1px solid var(--border)">
-                <td style="padding:6px">{{ credentialDisplayName(cd.credential_id) }} {{ cd.label }}</td>
-                <td style="padding:6px"><span class="badge" :class="cd.status === 'active' ? 'badge-green' : 'badge-red'">{{ cd.status }}</span></td>
-                <td style="padding:6px"><span class="badge" :class="cd.circuit_state === 'closed' ? 'badge-green' : 'badge-amber'">{{ cd.circuit_state }}</span></td>
-                <td style="padding:6px">
+                <td style="padding:4px">{{ credentialDisplayName(cd.credential_id) }} {{ cd.label }}</td>
+                <td style="padding:4px"><span class="badge" :class="cd.status === 'active' ? 'badge-green' : 'badge-red'">{{ cd.status }}</span></td>
+                <td style="padding:4px"><span class="badge" :class="cd.circuit_state === 'closed' ? 'badge-green' : 'badge-amber'">{{ cd.circuit_state }}</span></td>
+                <td style="padding:4px">
                   <span v-if="cd.models_probe?.error" class="badge badge-red">{{ pdg('probeFailed') }}</span>
                   <!-- 2026-09-03 audit fix: the diagnose backend already returns
                        models_probe.error_kind / error_preview (added with the
@@ -186,7 +186,7 @@ function scoreColor(score: number): string {
                     {{ pdg('probeMetaModels', { status: cd.models_probe?.status_code || '—', count: cd.models_probe?.models_count ?? 0, latency: cd.models_probe?.latency_ms ?? 0 }) }}
                   </span>
                 </td>
-                <td style="padding:6px">
+                <td style="padding:4px">
                   <span v-if="cd.chat_probe?.error" class="badge badge-red">{{ pdg('probeFailed') }}</span>
                   <span v-else class="badge" :class="cd.chat_probe?.status_code === 200 ? 'badge-green' : 'badge-red'">
                     {{ pdg('probeMetaChat', { status: cd.chat_probe?.status_code || '—', latency: cd.chat_probe?.latency_ms ?? 0 }) }}

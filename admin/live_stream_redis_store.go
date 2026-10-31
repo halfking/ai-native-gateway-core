@@ -200,6 +200,18 @@ type liveRequestRedisPayload struct {
 	// 否则 replay/snapshot 重建后凭据泳道退化为 "凭据 #ID" 或整条消失。
 	CredentialID    int    `json:"credential_id,omitempty"`
 	CredentialLabel string `json:"credential_label,omitempty"`
+	// 2026-10-28 (审计轮): 模型选择层五字段随 payload 持久化。实时帧直接广播
+	// LiveRequest 结构体不受此影响，但 initial_data 回放 / snapshot_refresh /
+	// tile delta 全部从本 payload 重建请求——缺字段时重建值静默归零：压缩格
+	// 计数恒 0（compressed）、模型选择 tooltip 全「未知」（其余四字段）。
+	// §507 通式四的同族复发：上一轮四字段只接了 LiveRequest 与前端，漏了
+	// 这条持久化路径；本轮 compressed 照抄同型也漏，审计轮补齐并加往返
+	// 漂移测试（TestLiveRequestRedisPayloadRoundTripsSelectionFields）钉住。
+	ClientModel   string `json:"client_model,omitempty"`
+	IsAutoRequest bool   `json:"is_auto_request,omitempty"`
+	TaskType      string `json:"task_type,omitempty"`
+	TokenBand     string `json:"token_band,omitempty"`
+	Compressed    bool   `json:"compressed,omitempty"`
 }
 
 // 2026-07-23: 精细化分层 TTL
@@ -905,6 +917,11 @@ func marshalLiveRequestRedisPayload(req LiveRequest) (string, error) {
 		RequestType:      req.RequestType,
 		CredentialID:     req.CredentialID,
 		CredentialLabel:  req.CredentialLabel,
+		ClientModel:      req.ClientModel,
+		IsAutoRequest:    req.IsAutoRequest,
+		TaskType:         req.TaskType,
+		TokenBand:        req.TokenBand,
+		Compressed:       req.Compressed,
 	}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -948,6 +965,11 @@ func unmarshalLiveRequestRedisPayload(data string) (LiveRequest, error) {
 		RequestType:      normalizeLiveRequestType(p.RequestType),
 		CredentialID:     p.CredentialID,
 		CredentialLabel:  p.CredentialLabel,
+		ClientModel:      p.ClientModel,
+		IsAutoRequest:    p.IsAutoRequest,
+		TaskType:         p.TaskType,
+		TokenBand:        p.TokenBand,
+		Compressed:       p.Compressed,
 	}, nil
 }
 

@@ -53,6 +53,10 @@ function* walk(dir: string): Generator<string> {
 
 const isTest = (rel: string) => /\.(spec|test)\.ts$/.test(rel) || rel.includes('__tests__')
 
+// Windows 的 join 产生反斜杠 ⇒ 豁免清单的正斜杠路径永不命中 ⇒ 假红。
+// 相对路径统一归一成正斜杠（与豁免清单同口径）。
+const relPosix = (file: string) => file.slice(SRC.length + 1).replace(/\\/g, '/')
+
 /** 剥掉注释，避免「注释里提到 blob() / 50MB」被判红。 */
 function stripComments(text: string): string {
   return text
@@ -73,7 +77,7 @@ function stripComments(text: string): string {
 function allMaxByteDefinitions(): string[] {
   const out: string[] = []
   for (const file of walk(SRC)) {
-    const rel = file.slice(SRC.length + 1)
+    const rel = relPosix(file)
     if (isTest(rel)) continue
     const text = stripComments(readFileSync(file, 'utf8'))
     if (/export\s+const\s+DEFAULT_MAX_FILE_BYTES\b/.test(text)) out.push(rel)
@@ -85,7 +89,7 @@ describe('C3 源码门禁：生产代码不得整体读入导出体', () => {
   it('裸 await xxx.blob() 只许出现在测试桩里', () => {
     const offenders: string[] = []
     for (const file of walk(SRC)) {
-      const rel = file.slice(SRC.length + 1)
+      const rel = relPosix(file)
       if (RAW_BLOB_ALLOWLIST.has(rel)) continue
       if (isTest(rel)) continue
       stripComments(readFileSync(file, 'utf8')).split('\n').forEach((line, i) => {

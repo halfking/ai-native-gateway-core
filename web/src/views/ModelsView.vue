@@ -1261,10 +1261,10 @@ watch(activeTab, async (tab) => {
             </div>
 
             <div style="margin:12px 0">
-              <div style="font-size:12px;color:var(--muted);margin-bottom:6px">批量导入（每行一个供应商模型名）</div>
+              <div style="font-size:12px;color:var(--muted);margin-bottom:4px">批量导入（每行一个供应商模型名）</div>
               <textarea v-model="bulkAliasText" class="input" rows="4" placeholder="gpt-4o&#10;claude-sonnet-4&#10;gemini-pro" />
-              <input v-model="bulkAliasProfiles" class="input" style="margin-top:6px" placeholder="client profiles 逗号分隔，如 cursor,roocode" />
-              <button class="btn btn-ghost btn-sm" style="margin-top:6px" @click="bulkImportAliases">批量导入 alias</button>
+              <input v-model="bulkAliasProfiles" class="input" style="margin-top:4px" placeholder="client profiles 逗号分隔，如 cursor,roocode" />
+              <button class="btn btn-ghost btn-sm" style="margin-top:4px" @click="bulkImportAliases">批量导入 alias</button>
             </div>
 
             <table class="table alias-table">
@@ -1463,7 +1463,7 @@ watch(activeTab, async (tab) => {
   border: 1px solid var(--border);
   background: var(--row-hover);
   border-radius: 999px;
-  padding: 6px 14px;
+  padding: 4px 12px;
   font-size: 13px;
   cursor: pointer;
   color: var(--muted);
@@ -1483,13 +1483,13 @@ watch(activeTab, async (tab) => {
 
 .filter-row {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
   align-items: center;
 }
 
 .filter-card {
-  padding: 12px 14px;
+  padding: 12px 12px;
 }
 
 .filter-card .card-header {
@@ -1502,7 +1502,7 @@ watch(activeTab, async (tab) => {
 
 .filter-card .card-header h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .filter-heading {
@@ -1534,7 +1534,7 @@ watch(activeTab, async (tab) => {
 
 .family-quick-row {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
   align-items: center;
   padding-top: 4px;
@@ -1544,12 +1544,12 @@ watch(activeTab, async (tab) => {
   border: 1px solid var(--border);
   background: var(--neutral-bg);
   border-radius: 999px;
-  padding: 4px 9px;
+  padding: 4px 8px;
   font-size: 12px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   color: var(--text);
 }
 .family-chip code {
@@ -1567,14 +1567,14 @@ watch(activeTab, async (tab) => {
 
 .family-chip .cnt {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .namespace-panel {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 10px;
-  padding-top: 10px;
+  gap: 8px;
+  padding-top: 8px;
   border-top: 1px solid var(--border);
   max-height: 320px;
   overflow: auto;
@@ -1585,7 +1585,7 @@ watch(activeTab, async (tab) => {
   margin-bottom: 0;
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 10px;
+  padding: 8px;
   background: var(--row-hover);
 }
 
@@ -1594,7 +1594,7 @@ watch(activeTab, async (tab) => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .ns-label { font-size: 11px; font-weight: 600; color: var(--text-muted);}
@@ -1607,12 +1607,12 @@ watch(activeTab, async (tab) => {
 .tag-chip.active { outline: 2px solid var(--primary); }
 .tag-chip.disabled { opacity: .38; cursor: not-allowed; }
 .tag-chip:disabled { opacity: .38; cursor: not-allowed; }
-.tag-chip .cnt { color: var(--text-muted); font-size: 10px; }
+.tag-chip .cnt { color: var(--text-muted); font-size: 11px; }
 .muted { color: var(--text-muted); }
 .small { font-size: 11px; margin-top: 3px; }
 .mutedRow { opacity: .62; }
 .discovery-card { margin-bottom: 12px; }
-.summary-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.summary-row { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
 
 .drawer-actions {
   display: flex;
@@ -1634,7 +1634,7 @@ watch(activeTab, async (tab) => {
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  padding: 40px 20px;
+  padding: 40px 16px;
   z-index: 1000;
   overflow-y: auto;
 }
@@ -1651,13 +1651,13 @@ watch(activeTab, async (tab) => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 20px 24px;
+  padding: 16px 24px;
   border-bottom: 1px solid var(--border);
 }
 
 .modal-header h3 {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
 }
 
 .modal-body {
@@ -1683,7 +1683,7 @@ watch(activeTab, async (tab) => {
 .form-group {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .form-group label {
@@ -1720,7 +1720,7 @@ watch(activeTab, async (tab) => {
 
 .section h4 {
   margin: 0 0 12px 0;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
 }
 
@@ -1807,7 +1807,7 @@ watch(activeTab, async (tab) => {
 @media (max-width: 768px) {
   .form-grid, .alias-add { grid-template-columns: 1fr; }
   .span-2 { grid-column: span 1; }
-  .create-modal { margin: 20px; }
+  .create-modal { margin: 16px; }
   .filter-card .card-header { align-items: flex-start; }
   .filter-heading { width: 100%; }
   .filter-header-actions { width: 100%; justify-content: flex-start; }

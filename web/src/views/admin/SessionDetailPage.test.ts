@@ -11,7 +11,10 @@ const routeState = reactive<{ params: Record<string, string>; query: Record<stri
   query: {},
 })
 
-vi.mock('../../api/sessions_v2', () => ({
+vi.mock('../../api/sessions_v2', async (importOriginal) => ({
+  // isRecordingUnavailable 走真实现：consent 409 的判定必须与生产同一份
+  // 口径（instanceof ApiError + status/code），桩了它等于自己测自己。
+  ...(await importOriginal<typeof import('../../api/sessions_v2')>()),
   getSessionSnapshot: (...args: unknown[]) => getSessionSnapshotMock(...args),
   getSessionDetailV2: (...args: unknown[]) => getSessionDetailV2Mock(...args),
 }))
@@ -19,10 +22,12 @@ vi.mock('../../api/_core', () => ({
   ApiError: class ApiError extends Error {
     status: number
     detail: string
-    constructor(status: number, detail: string) {
+    code: string
+    constructor(status: number, detail: string, code = '') {
       super(detail)
       this.status = status
       this.detail = detail
+      this.code = code
     }
   },
 }))
@@ -36,7 +41,7 @@ const i18n = createI18n({
   globalInjection: true,
   locale: 'zh-CN',
   fallbackLocale: 'en',
-  messages: {
+      messages: {
     'zh-CN': {
       turnDigest: { view: '查看摘要' },
       requestDetail: {
@@ -45,6 +50,9 @@ const i18n = createI18n({
           unavailableBody: '这些轮次没有采集到正文。',
           affectedTurns: '涉及轮次：{list}',
           dismiss: '知道了',
+          consentOffTitle: '会话正文录制未开启',
+          consentOffBody: '该租户未开启会话正文录制：轮次正文、摘要与取证内容不可用。',
+          consentOffInline: '会话正文录制未开启，正文与摘要不可用',
         },
       },
     },
@@ -57,7 +65,10 @@ function mountPage() {
       plugins: [i18n],
       stubs: {
         SessionSummaryBar: { template: '<div data-testid="summary-bar" />' },
-        SessionTurnsTimeline: { props: ['sessionId'], template: '<div data-testid="turns-timeline">{{ sessionId }}</div>' },
+        SessionTurnsTimeline: {
+          props: ['sessionId'],
+          template: '<div data-testid="turns-timeline">{{ sessionId }}<button data-testid="tl-consent-off" @click="$emit(\'recordingConsent\', false)" /><button data-testid="tl-consent-on" @click="$emit(\'recordingConsent\', true)" /></div>',
+        },
         TurnDigestDrawer: { props: ['modelValue', 'sessionId', 'turnNo'], template: '<div data-testid="digest-drawer" />' },
       },
     },
@@ -200,5 +211,58 @@ describe('SessionDetailPage', { timeout: 20_000 }, () => {
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.find('.body-status-banner').exists()).toBe(false)
+  })
+
+  // ── W1.3（24h 审计第 7 轮遗留）：consent=off 是中性状态，不是错误 ──────
+  // 信号源①：detail 端点 409 + recording_unavailable（列表没回来时的兜底，
+  // 或旧后端列表没带字段时的唯一信号）。
+  it('shows the consent-off banner when detail answers 409 recording_unavailable', async () => {
+    const { ApiError } = await import('../../api/_core')
+    getSessionDetailV2Mock.mockRejectedValue(
+      new ApiError(409, 'session body recording is off', 'recording_unavailable'),
+    )
+    const wrapper = mountPage()
+    await flushPromises()
+    const banner = wrapper.get('[data-testid="consent-off-banner"]')
+    expect(banner.text()).toContain('会话正文录制未开启')
+    // 「部分轮次没有正文」在 consent=off 下是误导（全部轮次都没正文），
+    // 两条横幅不许同屏。
+    expect(wrapper.find('.body-status-unavailable').exists()).toBe(false)
+  })
+
+  // 信号源②：turns 列表显式透出的 recording_consent 字段（元数据主路不打
+  // 409 门，这是常态下的第一信号）。
+  it('shows the consent-off banner when the turns list reports consent=false', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get('[data-testid="tl-consent-off"]').trigger('click')
+    expect(wrapper.find('[data-testid="consent-off-banner"]').exists()).toBe(true)
+    expect(wrapper.find('.body-status-unavailable').exists()).toBe(false)
+  })
+
+  it('hides the consent-off banner again when the list reports consent=true', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get('[data-testid="tl-consent-off"]').trigger('click')
+    expect(wrapper.find('[data-testid="consent-off-banner"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="tl-consent-on"]').trigger('click')
+    expect(wrapper.find('[data-testid="consent-off-banner"]').exists()).toBe(false)
+  })
+
+  // 2026-10-31 批判式审计补：/detail 的 409 在途时切走会话 ⇒ 旧会话的
+  // consent 状态不许点亮新会话的横幅（成功路径有 id 守卫，catch 曾漏）。
+  it('drops a stale 409 when the user navigated to another session mid-flight', async () => {
+    const { ApiError } = await import('../../api/_core')
+    let rejectFirst!: (cause: unknown) => void
+    getSessionDetailV2Mock.mockImplementationOnce(
+      () => new Promise((_, reject) => { rejectFirst = reject }),
+    )
+    const wrapper = mountPage()
+    // 409 还在途 ⇒ 切到下一个会话（新会话的 detail 正常返回）。
+    routeState.params = { id: 'session-b' }
+    await flushPromises()
+    rejectFirst(new ApiError(409, 'session body recording is off', 'recording_unavailable'))
+    await flushPromises()
+    expect(wrapper.find('[data-testid="consent-off-banner"]').exists()).toBe(false)
   })
 })

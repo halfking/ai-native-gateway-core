@@ -73,14 +73,14 @@ function widthPct(v: number): string {
 .funnel-title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 11px;
   font-weight: 600;
   margin-bottom: 4px;
 }
 .funnel-hint {
-  font-size: 9px;
-  margin-bottom: 6px;
+  font-size: 11px;
+  margin-bottom: 4px;
 }
 .funnel-stages {
   display: flex;
@@ -105,7 +105,7 @@ function widthPct(v: number): string {
   background: color-mix(in srgb, var(--accent) 22%, var(--bg-subtle));
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
   clip-path: polygon(4% 0%, 96% 0%, 100% 100%, 0% 100%);
-  transition: width 0.25s ease;
+  transition: width 0.25s var(--kx-motion-ease-out);
 }
 .funnel-stage:nth-child(2) .funnel-bar {
   background: color-mix(in srgb, var(--success) 18%, var(--bg-subtle));
@@ -116,7 +116,7 @@ function widthPct(v: number): string {
   border-color: color-mix(in srgb, var(--success) 35%, var(--border));
 }
 .funnel-label {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   text-align: right;
   white-space: nowrap;
@@ -127,8 +127,8 @@ function widthPct(v: number): string {
   text-align: left;
 }
 .badge-muted {
-  font-size: 9px;
-  padding: 1px 5px;
+  font-size: 11px;
+  padding: 1px 4px;
   border-radius: 3px;
   background: var(--bg-subtle);
   color: var(--muted);

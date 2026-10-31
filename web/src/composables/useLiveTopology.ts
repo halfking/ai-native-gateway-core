@@ -2,8 +2,11 @@
 //
 // 职责：把 live-stream SSE 的请求/节点帧 + 本地过滤态，编排成
 // 「图（纵向四层）+ 左右两个请求面板 + 网关核心模块统计」共用的同一份数据。
-// **关键约束**：图、左面板、右面板、左栏当天统计必须收敛到同一个过滤子集，
+// **关键约束**：图、左面板、右面板、头部统计面板必须收敛到同一个过滤子集，
 // 否则用户会看到「图里没有、右面板却有」的矛盾画面。
+// （2026-10-29 单一统计轮：原 clientSummaries/providerSummaries/modelSummaries
+// 三块 SSE 聚合随 SummaryHeader 退役 —— 头部统计由 StatsPanel 的 DB 口径供数，
+// 面板组件不读这里的聚合层。）
 //
 // 这里不碰 DOM、不碰 Canvas —— 渲染在组件里，纯函数在 lib/。
 
@@ -31,15 +34,16 @@ import {
   type GraphNodeInput,
   type TopoGraph,
 } from '../lib/liveTopologyGraph'
-import { applyFilters, filterOptions, gatewayModuleStats } from '../lib/liveTopologyFilter'
+import { applyFilters, filterOptions, gatewayModuleStats, localProviderCodesOf, modelSelectionStats } from '../lib/liveTopologyFilter'
 import {
   DEFAULT_TOPO_FILTERS,
   GATEWAY_CORE_ID,
   type GatewayModuleKey,
+  type ModelSelectionStats,
   type TopoFilters,
   type TopoPluginChip,
 } from '../types/liveTopology'
-import { getTopologyPlugins } from '../api/topology'
+import { getTopologyPlugins, getTopologyProviderKinds } from '../api/topology'
 
 export interface PanelEntry {
   requestId: string
@@ -49,6 +53,13 @@ export interface PanelEntry {
   provider: string
   nodeId: string
   model: string
+  /** 客户端原始请求模型名（auto 请求在后端已被改写为选中模型 —— 这里存的是
+   *  改写后的名字；「要的是 auto」由 isAuto 表达）。 */
+  requestedModel?: string
+  /** model=auto 的请求（2026-10-28 选路层轮：面板上显示 auto → 最终模型）。 */
+  isAuto?: boolean
+  /** auto 分类的任务类型（后端原始词：chat/reasoning/code/…）。 */
+  taskType?: string
   status: string
   latencyMs?: number | null
   tokens?: number | null
@@ -62,17 +73,6 @@ export interface PanelEntry {
   requestType?: string
   /** 客户端协议（openai / anthropic / …）—— 详情面板与协议 chip 共用。 */
   clientProtocol?: string
-}
-
-export interface ClientSummary {
-  client: string
-  requests: number
-  success: number
-  failure: number
-  inFlight: number
-  tokens: number
-  lastTs?: string
-  topModel: string
 }
 
 export function useLiveTopology(opts?: { now?: () => number }) {
@@ -108,38 +108,6 @@ export function useLiveTopology(opts?: { now?: () => number }) {
   const options = computed(() =>
     filterOptions(filteredRequests.value as never, now(), filters.value.windowMs),
   )
-
-  /** 左面板：客户端请求摘要（按客户端聚合，最新在前）。 */
-  const clientSummaries = computed<ClientSummary[]>(() => {
-    const map = new Map<string, ClientSummary & { last: number; modelCount: Map<string, number> }>()
-    for (const req of filteredRequests.value) {
-      const key = clientKeyOf(req as never)
-      let entry = map.get(key)
-      if (!entry) {
-        entry = { client: key, requests: 0, success: 0, failure: 0, inFlight: 0, tokens: 0, topModel: '', last: 0, modelCount: new Map() }
-        map.set(key, entry)
-      }
-      entry.requests += 1
-      if (req.status === 'success') entry.success += 1
-      if (req.status === 'failure' || req.status === 'rate_limited') entry.failure += 1
-      if (req.status === 'in_progress') entry.inFlight += 1
-      entry.tokens += req.total_tokens ?? 0
-      const ts = req.ts ? Date.parse(req.ts) : 0
-      if (Number.isFinite(ts) && ts > entry.last) {
-        entry.last = ts
-        entry.lastTs = req.ts
-      }
-      const model = modelKeyOf(req as never)
-      entry.modelCount.set(model, (entry.modelCount.get(model) ?? 0) + 1)
-    }
-    return [...map.values()]
-      .map(({ last, modelCount, ...rest }) => ({
-        ...rest,
-        topModel: [...modelCount.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? '',
-      }))
-      .sort((a, b) => b.requests - a.requests || a.client.localeCompare(b.client))
-      .slice(0, 8)
-  })
 
   /** 左面板的逐条请求（最新在前；面板内部按 50/页翻页，这里不再预截断）。 */
   const clientRequests = computed<PanelEntry[]>(() =>
@@ -184,6 +152,45 @@ export function useLiveTopology(opts?: { now?: () => number }) {
   )
 
   const queue = computed<LiveQueueSnapshot | null>(() => queueRef.value)
+
+  /**
+   * 选路扇出统计（模型选择三出口：auto 按任务 / 内部直连 / 指定模型）。
+   * 与 gatewayStats 一样收敛到同一个过滤子集 —— 扇出带的三个数加起来
+   * 必须等于主线「模型选择」格的数，否则大方块自己就矛盾了。
+   */
+  const selectionStats = computed<ModelSelectionStats>(() =>
+    modelSelectionStats(
+      filteredRequests.value as never,
+      now(),
+      filters.value.windowMs,
+      localProviderCodes.value,
+    ),
+  )
+
+  /**
+   * 内部直连供应商 code 集合（providers.kind === 'local'：本地托管推理服务，
+   * 网关直连内网端点、无真实 API key）。挂载时拉一次 —— kind 只在供应商
+   * 增删时变化，不值得轮询；undefined = 未测量（接口未返回/失败/degraded），
+   * 直连分桶按「未测量」如实标注，不冒充 0 完成分拣。
+   *
+   * ★ 数据源是 /api/admin/topology/provider-kinds（admin 权限）而不是
+   * /api/providers（providerConsole 权限）：/live 任意租户管理员可进，
+   * 辅助信息不该要求更高权限（批判式审计修正 2026-10-28）。
+   */
+  const localProviderCodes = ref<ReadonlySet<string> | undefined>(undefined)
+
+  async function loadLocalProviders(): Promise<void> {
+    try {
+      const resp = await getTopologyProviderKinds()
+      if (resp.degraded) {
+        localProviderCodes.value = undefined
+        return
+      }
+      localProviderCodes.value = localProviderCodesOf(resp.items ?? [])
+    } catch {
+      localProviderCodes.value = undefined
+    }
+  }
 
   const coreMetric = computed(() => graph.value.nodes.find((n) => n.id === GATEWAY_CORE_ID)?.metric)
 
@@ -332,7 +339,6 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     filteredRequests,
     graph,
     options,
-    clientSummaries,
     clientRequests,
     providerResponses,
     gatewayStats,
@@ -352,6 +358,9 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     plugins,
     pluginsDegraded,
     loadPlugins,
+    selectionStats,
+    localProviderCodes,
+    loadLocalProviders,
     connection: connectionRef,
     initialDataReceived: initialDataReceivedRef,
     redisHealthy: redisHealthyRef,
@@ -367,6 +376,9 @@ function toPanelEntry(req: LiveRequest): PanelEntry {
     provider: (req.provider_code ?? '').trim() || '—',
     nodeId: providerNodeKeyOf(req as never),
     model: modelKeyOf(req as never),
+    requestedModel: (req.client_model ?? '').trim() || undefined,
+    isAuto: !!req.is_auto_request,
+    taskType: (req.task_type ?? '').trim() || undefined,
     status: req.status ?? 'in_progress',
     latencyMs: req.latency_ms ?? null,
     tokens: req.total_tokens ?? null,

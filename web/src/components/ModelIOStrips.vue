@@ -149,7 +149,7 @@ const inputRowTitle = computed(() =>
 }
 .model-io-strips__label {
   flex: 0 0 auto;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1;
   padding: 2px 4px;
   border-radius: 4px;
@@ -167,7 +167,7 @@ const inputRowTitle = computed(() =>
 }
 .model-io-strips__meta {
   flex: 0 0 auto;
-  font-size: 10px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--kx-text);
   white-space: nowrap;

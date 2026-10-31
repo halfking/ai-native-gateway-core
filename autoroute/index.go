@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // Index is the in-memory cache of the credential_model_index 5-min rolled-up
@@ -315,15 +317,25 @@ func (idx *Index) Recommend(task TaskType, sigs ClassificationSignals, profile P
 //   - We use a hand-rolled percentile since the cohort is tiny (<= 50)
 //   - Zero-cost candidates are excluded from the percentile so free
 //     models don't drag the baseline to 0.
+//   - P1-C (audit 2026-10-28 §4): CNY offers are folded to USD via
+//     settings.CNYScoreFX() BEFORE the percentile — previously a mixed
+//     cohort read CNY numerals as USD and the true price gap was amplified
+//     ~7.2× (a ¥20/1M CNY offer out-ranked a $200/1M USD offer while
+//     actually being cheaper). HasMixedPrices flips when the fold applied.
 //
 // SpeedP95: maximum P95 latency across the cohort (worst case)
 //   - Used as the "ceiling" so faster candidates score higher.
 func computeCostContext(cands []Candidate) CostContext {
 	prices := make([]float64, 0, len(cands))
 	speeds := make([]int, 0, len(cands))
+	mixed := false
 	for _, c := range cands {
 		blended := c.UnitPriceInPer1M + c.UnitPriceOutPer1M
 		if blended > 0 {
+			if strings.EqualFold(strings.TrimSpace(c.Currency), "CNY") {
+				blended /= settings.CNYScoreFX()
+				mixed = true
+			}
 			prices = append(prices, blended)
 		}
 		if c.P95LatencyMs > 0 {
@@ -335,6 +347,7 @@ func computeCostContext(cands []Candidate) CostContext {
 		sort.Float64s(prices)
 		ctx.PriceP75 = percentile(prices, 0.75)
 	}
+	ctx.HasMixedPrices = mixed
 	if len(speeds) > 0 {
 		sort.Ints(speeds)
 		ctx.SpeedP95 = float64(speeds[len(speeds)-1]) // max
@@ -515,8 +528,10 @@ func (idx *Index) Refresh(ctx context.Context) (err error) {
 //   - Skip disabled credentials / suspended lifecycle
 //   - Skip zero-context models (likely misconfigured)
 //
-// TODO(billing_currency): convert CNY to USD before scoring when the
-// cohort contains both currencies. See HasMixedPrices for the placeholder.
+// P1-C (audit 2026-10-28 §4): the query now projects COALESCE(cmb.currency,
+// 'USD') as price_currency (the TODO's "placeholder" is done) —
+// computeCostContext folds CNY to USD via settings.CNYScoreFX() before the
+// P75, so mixed cohorts normalize on one ruler.
 const refreshIndexSQL = `
 WITH latest_bucket AS (
     SELECT credential_id, raw_model, MAX(bucket) AS bucket
@@ -533,6 +548,10 @@ SELECT
     cmi.billing_mode,
     cmi.unit_price_in_per_1m,
     cmi.unit_price_out_per_1m,
+    -- P1-C (audit 2026-10-28 §4): currency needed so computeCostContext can
+    -- fold CNY offers to USD before the P75 — otherwise a mixed cohort reads
+    -- CNY prices as USD and the CNY/USD price gap is amplified ~7.2×.
+    COALESCE(cmb.currency, 'USD') AS price_currency,
     cmi.success_rate,
     cmi.p95_latency_ms,
     cmi.active_sessions,
@@ -624,6 +643,7 @@ func scanIndexRow(rows interface {
 	var canonicalName *string
 	var billingMode *string
 	var priceIn, priceOut, successRate *float64
+	var priceCurrency *string
 	var routingTier *int16
 	var unavailableReason *string
 	// 2026-09-10 fix: credentials with no concurrency_limit roll up as NULL
@@ -645,6 +665,7 @@ func scanIndexRow(rows interface {
 		&canonicalName, &tags, &ctxWindow,
 		&billingMode,
 		&priceIn, &priceOut,
+		&priceCurrency,
 		&successRate, &c.P95LatencyMs,
 		&c.ActiveSessions, &concurrencyLimit,
 		&routingTier, &unavailableReason,
@@ -672,6 +693,12 @@ func scanIndexRow(rows interface {
 	}
 	if priceOut != nil {
 		c.UnitPriceOutPer1M = *priceOut
+	}
+	// P1-C: carry the offer currency so scoring can normalize before P75.
+	if priceCurrency != nil && *priceCurrency != "" {
+		c.Currency = *priceCurrency
+	} else {
+		c.Currency = "USD"
 	}
 	if successRate != nil {
 		c.SuccessRate = *successRate

@@ -711,7 +711,7 @@ watch(activeTab, () => { void reload() })
 
 .page-header h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -733,7 +733,7 @@ watch(activeTab, () => { void reload() })
   color: var(--text-secondary);
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out), border-bottom 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), outline 0.15s var(--kx-motion-ease-out);
 }
 .tab-btn.active {
   background: var(--accent);
@@ -746,7 +746,7 @@ watch(activeTab, () => { void reload() })
 .custom-range {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .refresh-btn {
@@ -773,10 +773,10 @@ watch(activeTab, () => { void reload() })
 .stat-label {
   font-size: 12px;
   color: var(--text-secondary);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .stat-value {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
@@ -801,11 +801,11 @@ watch(activeTab, () => { void reload() })
   font-weight: 600;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 .card-title .badge {
-  font-size: 10px;
-  padding: 1px 6px;
+  font-size: 11px;
+  padding: 1px 4px;
   border-radius: 4px;
   background: var(--bg-hover);
   color: var(--text-secondary);
@@ -826,7 +826,7 @@ watch(activeTab, () => { void reload() })
 .strategy-bars {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 .strategy-bar-row {
   display: flex;
@@ -853,7 +853,7 @@ watch(activeTab, () => { void reload() })
 .bar-fill {
   height: 100%;
   border-radius: 4px;
-  transition: width 0.3s;
+  transition: width 0.3s var(--kx-motion-ease-out);
   min-width: 2px;
 }
 .strategy-count {
@@ -876,7 +876,7 @@ watch(activeTab, () => { void reload() })
   flex-direction: column;
   justify-content: space-between;
   padding-right: 4px;
-  font-size: 9px;
+  font-size: 11px;
   color: var(--text-secondary);
   width: 32px;
   flex-shrink: 0;
@@ -900,7 +900,7 @@ watch(activeTab, () => { void reload() })
   background: var(--primary);
   border-radius: 2px 2px 0 0;
   opacity: 0.8;
-  transition: height 0.3s;
+  transition: height 0.3s var(--kx-motion-ease-out);
 }
 
 /* Table */
@@ -911,20 +911,20 @@ watch(activeTab, () => { void reload() })
 }
 .data-table th {
   text-align: left;
-  padding: 8px 10px;
+  padding: 8px 8px;
   color: var(--text-secondary);
   font-weight: 500;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 .data-table td {
-  padding: 8px 10px;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--border);
   color: var(--text-primary);
 }
 .session-row {
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s var(--kx-motion-ease-out);
 }
 .session-row:hover {
   background: var(--bg-hover);
@@ -935,7 +935,7 @@ watch(activeTab, () => { void reload() })
 }
 .strategy-badge {
   display: inline-block;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
   font-size: 11px;
   color: var(--on-primary);
@@ -962,7 +962,7 @@ watch(activeTab, () => { void reload() })
 .config-toggle {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   background: none;
   border: none;
   cursor: pointer;
@@ -976,7 +976,7 @@ watch(activeTab, () => { void reload() })
 .config-toggle-label { font-weight: 600; color: var(--text-primary); }
 .caret {
   font-size: 9px;
-  transition: transform 0.2s;
+  transition: transform 0.2s var(--kx-motion-ease-out);
   display: inline-block;
 }
 .caret.open { transform: rotate(90deg); }
@@ -984,12 +984,12 @@ watch(activeTab, () => { void reload() })
   display: flex;
   align-items: center;
   gap: 16px;
-  margin-top: 10px;
+  margin-top: 8px;
   flex-wrap: wrap;
 }
 .chip {
   display: inline-block;
-  padding: 2px 10px;
+  padding: 2px 8px;
   border-radius: 999px;
   font-size: 11px;
   background: var(--bg-hover);
@@ -998,7 +998,7 @@ watch(activeTab, () => { void reload() })
 }
 .chip-on { background: var(--success-bg); color: var(--success); border-color: var(--success-bd); }
 .chip-off { background: var(--neutral-bg); color: var(--muted); border-color: var(--neutral-bd); }
-.chip-item { display: flex; align-items: center; gap: 6px; }
+.chip-item { display: flex; align-items: center; gap: 4px; }
 .chip-lbl { font-size: 11px; color: var(--text-secondary); }
 .code-chip { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -1029,5 +1029,11 @@ watch(activeTab, () => { void reload() })
   .charts-row {
     grid-template-columns: 1fr;
   }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .caret { transition: none; }
 }
 </style>

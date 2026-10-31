@@ -18,6 +18,12 @@ package settings
 // 0 = 未设置（回落 config 值——config 默认 240s）；生效区间 [10, 18000]。
 const KeySurvivalInteractiveDeadlineSeconds = "survival.interactive_deadline_seconds"
 
+// KeySurvivalAttemptBudget 覆盖请求级上游尝试预算（UpstreamAttemptBudget）。
+// 0 = 未设置（回落 executors.DefaultUpstreamAttemptLimit=100）；生效区间 [10, 601]。
+// 上限 601 与 executors.MaxUpstreamAttemptLimit 同值（settings 不能 import
+// domains，靠两侧测试钉住一致）。
+const KeySurvivalAttemptBudget = "survival.attempt_budget"
+
 // SurvivalSpecs returns the request-survival hot-reload controls.
 func SurvivalSpecs() []*Spec {
 	return []*Spec{
@@ -39,6 +45,24 @@ func SurvivalSpecs() []*Spec {
 			DangerLevel:     Dangerous, // 改动立即影响所有流式请求的最大等待
 			HotReload:       true,
 		},
+		// 2026-10-30 magpie 对比轮（docs/research/2026-10-30-*.md §四 P0-2）：
+		// 请求级上游尝试预算从硬编码 100 提升为热加载旋钮。大凭据池 + 坏凭据
+		// 场景 100 次尝试的费用放大不可调；小池场景想收紧也没有入口。
+		{
+			Key:             KeySurvivalAttemptBudget,
+			EnvName:         EnvNameAuto(KeySurvivalAttemptBudget),
+			Type:            TypeInt,
+			Scope:           ScopePlatform,
+			Category:        CategoryRetry,
+			Default:         0,
+			Min:             floatPtr(10),
+			Max:             floatPtr(601),
+			Description:     "请求级上游尝试预算（次），0=用内置默认（100）",
+			DescriptionLong: "一次客户端请求最多发起的真实上游 HTTP 调用数（Survival/dispatch/协议内重试共享同一预算）。0 表示未设置、回落内置默认 100；生效区间 [10, 601]，上限与 executors.MaxUpstreamAttemptLimit 同值。每请求构造预算时热读取。",
+			Unit:            "次",
+			DangerLevel:     Dangerous, // 调大直接放大单请求的上游费用与并发占用
+			HotReload:       true,
+		},
 	}
 }
 
@@ -51,4 +75,17 @@ func SurvivalInteractiveDeadlineSeconds() int {
 		return 0
 	}
 	return clampThresholdInt(v, 10, 18000)
+}
+
+// SurvivalAttemptBudget 读取请求级上游尝试预算覆盖值。
+// 返回 0 表示未设置（调用方回落内置默认 100）；正值已被 clamp 到 [10, 601]。
+// 上限 601 与 executors.MaxUpstreamAttemptLimit 同值——settings 不能 import
+// domains，两个数靠双侧测试钉住（settings/spec_survival_test.go 与
+// domains/streaming/executors/attempt_budget_settings_test.go 各钉一头）。
+func SurvivalAttemptBudget() int {
+	v := GetPlatformInt(KeySurvivalAttemptBudget, 0)
+	if v <= 0 {
+		return 0
+	}
+	return clampThresholdInt(v, 10, 601)
 }

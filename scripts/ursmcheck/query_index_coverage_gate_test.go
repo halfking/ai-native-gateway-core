@@ -84,7 +84,38 @@ const (
 	qicReqRel    = "scripts/audit/asset/query-index-requirements.tsv"
 
 	qicCensusCols = 17 // env + 16
-	qicReqCols    = 8  // query_id source table filter_cols order_cols status fresh_status note
+	// ★★ R179 轮：台账扩到 11 列（★ 新增「实测计划形态」三列）。
+	qicReqCols = 11 // query_id source table filter_cols order_cols status fresh_status plan_shape plan_form plan_env note
+
+	// ★★ R179 轮新增的两个事实源：
+	//
+	// ★ qicObsRel：**实测计划形态观测台账**（★ 由 cmd/tools/query_plan_form 产出）
+	//   ⇒ 它记录「每条活查询在目标环境里，★ 规划器实际走了哪条路」。
+	// ★ qicExemptRel：**没有实测形态**的登记簿（★ 防止「没测」变成默认放行）。
+	qicObsRel    = "scripts/audit/asset/query-plan-observations.tsv"
+	qicExemptRel = "scripts/audit/asset/query-plan-exemptions.tsv"
+
+	// ★★ plan_form 的取值域（★ 门会校验；★ 域外即红）。
+	//
+	//	seek      —— 每一处会话族扫描都是索引扫描，且没有行被扫描后过滤掉
+	//	filter    —— 是索引扫描，但**有行被过滤掉**（★ 索引没接住那个谓词）
+	//	seq-scan  —— 有一处会话族扫描是顺序扫描（★ 规划器没打算用索引）
+	//	no-scan   —— 计划里没有会话族扫描（★ 答案来自别的关系，★ 例如 rollup 表）
+	//	no-traffic—— ★ 生产上没跑到这条语句（★ ⇒ 必须有豁免登记）
+	//	dynamic   —— SQL 含 fmt 占位（★ 静态不可知 ⇒ 必须先解析 helper）
+	//	unmeasured—— ★ 没测（★ ⇒ 必须有豁免登记）
+	//	error     —— ★ 实测本身失败了（★ ⇒ 必须有豁免登记）
+	qicPlanFormSeek   = "seek"
+	qicPlanFormFilter = "filter"
+	qicPlanFormSeq    = "seq-scan"
+	qicPlanFormNone   = "no-scan"
+	qicPlanFormNoTrf  = "no-traffic"
+	qicPlanFormDyn    = "dynamic"
+	qicPlanFormUnmeas = "unmeasured"
+	qicPlanFormError  = "error"
+
+	// ★★ 「没有实测形态」的形态（★ 这几个必须挂豁免登记，★ 不许默认放行）。
+	qicPlanFormNeedExempt = qicPlanFormNoTrf + "," + qicPlanFormUnmeas + "," + qicPlanFormError
 
 	qicEnvLocal = "local"
 	// ★★ qicEnvFresh = 「新装环境」：★ R163 轮用【安装器真实路径】（00/01/02 + 312 条 StartupFiles）
@@ -95,6 +126,11 @@ const (
 	// ★ 清单很小（4 个元素以内）⇒ 全排列可枚举；★ 但一旦有人登记 9 个过滤列
 	// ⇒ 9! = 362880 次比较 ⇒ 必须有上限 ⇒ 超限判 order 不成立并 log 出来。
 	qicMaxPermFilter = 8
+
+	// ★★ R179 轮：观测台账与豁免登记也各给一个「指向仓外副本」的开关
+	//   ⇒ ★ 变异验证时**只改副本**（★ 不改编内文件 ⇒ ★ 门运行期零污染）。
+	qicObsEnvOverride    = "URSM_QUERY_PLAN_OBSERVATIONS_TSV"
+	qicExemptEnvOverride = "URSM_QUERY_PLAN_EXEMPTIONS_TSV"
 
 	// qicReqEnvOverride 允许把**需求清单**指向仓外副本。
 	// ★ 用途：**变异验证**（★ 证明门有牙齿时不能改仓内文件 ⇒ 改副本即可）。
@@ -212,8 +248,16 @@ type qicRequirement struct {
 	// ★★ ⇒ ★★ 新装环境【必然】全表扫描 ⇒ ★★ 这是「多环境同一标准」的真实缺口
 	// ★★ ⇒ ★★ 强制它被【显式登记】，★ 不许靠 local 侧的 covered 蒙混过去。
 	freshStatus string
-	note        string
-	line        int
+	// ★★ R179 轮：实测计划形态三列。
+	//
+	// ★ planShape：★ 实测形态的**键**（★ 与观测台账的 shape_id 对应）。
+	// ★ planForm ：★ 实测出来的形态（★ 取值域见 qicPlanForm* 常量）。
+	// ★ planEnv  ：★ 在哪个环境实测的（★ local / 252 / …）。
+	planShape string
+	planForm  string
+	planEnv   string
+	note      string
+	line      int
 }
 
 // qicParseColList 解析逗号分隔的列清单（★ 可为空串 ⇒ 空切片）。
@@ -253,7 +297,10 @@ func qicLoadRequirements(t *testing.T, path string) []qicRequirement {
 			orderCols:   qicParseColList(parts[4]),
 			status:      strings.TrimSpace(parts[5]),
 			freshStatus: strings.TrimSpace(parts[6]),
-			note:        strings.TrimSpace(parts[7]),
+			planShape:   strings.TrimSpace(parts[7]),
+			planForm:    strings.TrimSpace(parts[8]),
+			planEnv:     strings.TrimSpace(parts[9]),
+			note:        strings.TrimSpace(parts[10]),
 			line:        lineno,
 		})
 	}
@@ -434,6 +481,112 @@ func qicItoa(n int) string {
 	return string(buf[i:])
 }
 
+// ─────────────────────── ★★ R179 轮：实测形态观测台账 ───────────────────────
+
+// qicObservation 是一条**实测**记录（★ 某个读点形态在某个环境里的计划形态）。
+type qicObservation struct {
+	shapeID string
+	env     string
+	form    string
+	idxName string
+	line    int
+}
+
+// qicLoadObservations 读实测台账（★ 键 = (shape_id, env)）。
+func qicLoadObservations(t *testing.T, path string) map[string]qicObservation {
+	t.Helper()
+	out := map[string]qicObservation{}
+	lineno := 0
+	for _, line := range strings.Split(qicReadFile(t, path), "\n") {
+		lineno++
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) < 3 {
+			t.Fatalf("%s:%d: observation row has %d fields, expected >= 3: %q", path, lineno, len(parts), line)
+		}
+		o := qicObservation{
+			shapeID: strings.TrimSpace(parts[0]),
+			env:     strings.TrimSpace(parts[1]),
+			form:    strings.TrimSpace(parts[2]),
+			line:    lineno,
+		}
+		if len(parts) > 3 {
+			o.idxName = strings.TrimSpace(parts[3])
+		}
+		out[o.shapeID+"@"+o.env] = o
+	}
+	return out
+}
+
+// qicLoadExemptions 读豁免登记（★ 键 = query_id ⇒ 理由）。
+func qicLoadExemptions(t *testing.T, path string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	lineno := 0
+	for _, line := range strings.Split(qicReadFile(t, path), "\n") {
+		lineno++
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 {
+			t.Fatalf("%s:%d: exemption row has %d fields, expected >= 2: %q", path, lineno, len(parts), line)
+		}
+		qid := strings.TrimSpace(parts[0])
+		reason := strings.TrimSpace(parts[1])
+		if reason == "" {
+			t.Fatalf("%s:%d: 豁免登记 %q 的理由是空的 ⇒ ⇒ 空理由的登记等于没有登记", path, lineno, qid)
+		}
+		out[qid] = reason
+	}
+	return out
+}
+
+// qicLoadViewNames 从底账里取出**视图名集合**（★ env=local）。
+//
+// ★★ 为什么需要它：★「静态覆盖轴」对**视图**结构性不适用
+//
+//	（★ 视图自己没有索引 ⇒ ⇒ 索引在底表上 ⇒ ⇒ 静态轴答不了「覆盖没覆盖」）
+//	⇒ ⇒ 所以 status 才引入了第三态 `measured-only`
+//	⇒ ⇒ ★ 而这一态**只**允许用于视图行 ⇒ ⇒ 否则它就是个万能逃生舱 ⇒ ⇒ 必须守住。
+func qicLoadViewNames(t *testing.T, path string, env string) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	for _, line := range strings.Split(qicReadFile(t, path), "\n") {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) != qicCensusCols {
+			t.Fatalf("%s: census row has %d fields, expected %d", path, len(parts), qicCensusCols)
+		}
+		// ★★ census 里**视图的 kind 是 rel**（★ kind 列是「对象类别」：idx/rel/ext/srv）
+		//   ★★ 而 relkind 列（parts[3]）才是 'r'/'p'/'v'/'m'/'S'/'f'
+		//   ⇒ ⇒ 判视图要判 **relkind == "v"**（★ 实测踩过：★ 判 kind=="view" ⇒ 一条都读不到）
+		if parts[0] == env && parts[1] == "rel" && parts[3] == "v" {
+			out[parts[4]] = true
+		}
+	}
+	return out
+}
+
+// qicPlanFormKnown 判断 plan_form 是否在取值域内。
+func qicPlanFormKnown(form string) bool {
+	switch form {
+	case qicPlanFormSeek, qicPlanFormFilter, qicPlanFormSeq, qicPlanFormNone,
+		qicPlanFormNoTrf, qicPlanFormDyn, qicPlanFormUnmeas, qicPlanFormError:
+		return true
+	}
+	return false
+}
+
+// qicPlanFormNeedsExempt 判断该形态是否**必须**挂豁免登记。
+func qicPlanFormNeedsExempt(form string) bool {
+	return form == qicPlanFormNoTrf || form == qicPlanFormUnmeas || form == qicPlanFormError
+}
+
 // ─────────────────────────── 门 ───────────────────────────
 
 // TestQueryIndexCoverageRequirements 是本门的主体。
@@ -459,6 +612,27 @@ func TestQueryIndexCoverageRequirements(t *testing.T) {
 	localIdx := qicLoadEnvIndexes(t, censusPath, qicEnvLocal)
 	freshIdx := qicLoadEnvIndexes(t, censusPath, qicEnvFresh)
 	reqs := qicLoadRequirements(t, reqPath)
+
+	// ★★ R179 轮：实测形态观测台账 + 豁免登记 + 视图名集合。
+	obsPath := qicRepoPath(t, qicObsRel)
+	if override := strings.TrimSpace(os.Getenv(qicObsEnvOverride)); override != "" {
+		obsPath = override
+		t.Logf("★ 实测形态台账被环境变量 %s 指向 %s（★ 变异验证用法）", qicObsEnvOverride, obsPath)
+	}
+	obs := qicLoadObservations(t, obsPath)
+	exemptPath := qicRepoPath(t, qicExemptRel)
+	if override := strings.TrimSpace(os.Getenv(qicExemptEnvOverride)); override != "" {
+		exemptPath = override
+		t.Logf("★ 豁免登记被环境变量 %s 指向 %s（★ 变异验证用法）", qicExemptEnvOverride, exemptPath)
+	}
+	exempt := qicLoadExemptions(t, exemptPath)
+	viewNames := qicLoadViewNames(t, censusPath, qicEnvLocal)
+
+	// ★★ 观测台账被掏空 ⇒ 「实测轴」整条失效 ⇒ ⇒ 门红（★ 与「清单为空 ⇒ 门恒绿」同源）。
+	if len(obs) == 0 {
+		t.Fatalf("★ 实测形态台账 %s 没有数据行 ⇒ ⇒ 本门读到的「实测轴」全是空的 ⇒ ⇒ "+
+			"★ 门会恒绿 ⇒ ⇒ 判据失效 ⇒ ⇒ 门红", obsPath)
+	}
 
 	// ① 底账里必须真的有这两个环境的父级索引行（★ 否则「没有索引 ⇒ 没覆盖」会变成恒真）。
 	localTotal := 0
@@ -491,16 +665,28 @@ func TestQueryIndexCoverageRequirements(t *testing.T) {
 	newInstallGaps := 0
 
 	for _, req := range reqs {
-		// ② status 取值域（★ 两个环境各一列）。
-		if req.status != "covered" && req.status != "known-gap" {
-			t.Errorf("%s:%d: query_id=%q 的 status=%q 非法（★ 只能是 covered 或 known-gap）",
+		// ② status 取值域（★ 两个环境各一列；★ R179 轮引入第三态 measured-only）。
+		if req.status != "covered" && req.status != "known-gap" && req.status != "measured-only" {
+			t.Errorf("%s:%d: query_id=%q 的 status=%q 非法（★ 只能是 covered / known-gap / measured-only）",
 				reqPath, req.line, req.queryID, req.status)
 			continue
 		}
-		if req.freshStatus != "covered" && req.freshStatus != "known-gap" {
-			t.Errorf("%s:%d: query_id=%q 的 fresh_status=%q 非法（★ 只能是 covered 或 known-gap）",
+		if req.freshStatus != "covered" && req.freshStatus != "known-gap" && req.freshStatus != "measured-only" {
+			t.Errorf("%s:%d: query_id=%q 的 fresh_status=%q 非法（★ 只能是 covered / known-gap / measured-only）",
 				reqPath, req.line, req.queryID, req.freshStatus)
 			continue
+		}
+		// ★★★ ②′ 第三态的**准入闸**（★ 不守住它，measured-only 就是万能逃生舱）：
+		//   「静态覆盖轴」对**视图**结构性不适用（★ 视图自己没有索引）
+		//   ⇒ ⇒ measured-only **只**允许用于「底账里确实是视图」的那张表。
+		if req.status == "measured-only" && !viewNames[req.table] {
+			t.Errorf("%s:%d: query_id=%q 的 status=measured-only，★ 但表 %q 在 %s 的底账里【不是视图】"+
+				"⇒ ⇒ 「静态轴结构性不适用」这个理由【不成立】⇒ ⇒ 门红（★ 底表读点必须老老实实登记 covered / known-gap）",
+				reqPath, req.line, req.queryID, req.table, qicCensusRel)
+		}
+		if req.freshStatus == "measured-only" && !viewNames[req.table] {
+			t.Errorf("%s:%d: query_id=%q 的 fresh_status=measured-only，★ 但表 %q 在 %s 的底账里【不是视图】"+
+				"⇒ ⇒ 门红（★ 同上）", reqPath, req.line, req.queryID, req.table, qicCensusRel)
 		}
 
 		// ── local 侧 ──
@@ -566,7 +752,82 @@ func TestQueryIndexCoverageRequirements(t *testing.T) {
 		}
 	}
 
+	// ★★★ R179 轮：**动态轴**（★ 实测计划形态）的牙齿 ★★★
+	//
+	// ★★ 这一段要抓的是**静态轴抓不到**的那一类：
+	//   「静态说【有索引能覆盖】，★ 而规划器实际【没走索引】」
+	//   ⇒ ★★ 也就是「**索引在，却静默退回 Filter / Seq Scan**」（★ R178 的 CASE 表达式正是这一类）。
+	seekCount, filterCount, seqCount := 0, 0, 0
+	for _, req := range reqs {
+		// ⑤ plan_form 取值域
+		if !qicPlanFormKnown(req.planForm) {
+			t.Errorf("%s:%d: query_id=%q 的 plan_form=%q 不在取值域内（★ 合法值：%s）",
+				reqPath, req.line, req.queryID, req.planForm,
+				"seek / filter / seq-scan / no-scan / no-traffic / dynamic / unmeasured / error")
+			continue
+		}
+		// ⑥ ★★★ **登记 covered 者必须实测走索引** ★★★（★ 本轮要的那颗牙）
+		//    ★ 反过来说：★ 静态轴说「有索引覆盖」，★ 实测却是 filter / seq-scan
+		//    ⇒ ⇒ 门红 ⇒ ⇒ **「索引在却静默退回」被抓出来**。
+		//
+		// ★★ 口径（★ R179 轮自纠）：★ **「没测」与「测了但不是 seek」必须分开判** ——
+		//   ★ 「没测」（unmeasured / no-traffic / error）⇒ ⇒ 走【豁免机制】（★ 判据⑧）
+		//     ⇒ ⇒ 那里必须写清「为什么测不出来」；
+		//   ★ 「测了」⇒ ⇒ 才是这里的硬判据。
+		//   ★ ⇒ 否则「一条从没被实测过的旧登记」会把门直接顶红，★ 而它并没有违反任何承诺。
+		measured := req.planForm != qicPlanFormUnmeas && req.planForm != qicPlanFormNoTrf && req.planForm != qicPlanFormError
+		switch req.status {
+		case "covered":
+			if measured && req.planForm != qicPlanFormSeek {
+				t.Errorf("★ [实测轴] query_id=%q（★ 来源 %s）登记成 covered（★ 静态轴说【有索引覆盖】），"+
+					"★ 但实测形态是 %q（★ 在 %s 环境实测）⇒ ⇒ **索引在却没被用上** ⇒ ⇒ 门红"+
+					"（★ 要么改成 known-gap，★ 要么把索引修到真能用）",
+					req.queryID, req.source, req.planForm, req.planEnv)
+			}
+		case "known-gap":
+			if measured && req.planForm == qicPlanFormSeek {
+				t.Errorf("★ [实测轴] query_id=%q（★ 来源 %s）登记成 known-gap，★ 但实测形态是 seek"+
+					"（★ 在 %s 环境实测）⇒ ⇒ **登记已经过期**（★ 索引补上了）⇒ ⇒ 门红（★ 请把登记改成 covered）",
+					req.queryID, req.source, req.planEnv)
+			}
+		}
+
+		// ⑦ ★ 台账与观测台账**必须对得上**（★ 台账写的形态 = 观测台账记的形态）
+		if req.planShape != "" {
+			o, ok := obs[req.planShape+"@"+req.planEnv]
+			if !ok {
+				t.Errorf("★ [实测轴] query_id=%q 的 plan_shape=%q + plan_env=%q 在 %s 里【没有对应记录】"+
+					"⇒ ⇒ 台账声称「实测过」但观测台账里没有 ⇒ ⇒ 门红（★ 登记与事实不符）",
+					req.queryID, req.planShape, req.planEnv, qicObsRel)
+			} else if o.form != req.planForm {
+				t.Errorf("★ [实测轴] query_id=%q 登记的 plan_form=%q，★ 但观测台账记的是 %q"+
+					"（★ %s:%d）⇒ ⇒ 两者必须一致 ⇒ ⇒ 门红",
+					req.queryID, req.planForm, o.form, qicObsRel, o.line)
+			}
+		}
+
+		// ⑧ ★ 「没有实测形态」必须挂豁免登记（★ 不许默认放行）
+		if qicPlanFormNeedsExempt(req.planForm) {
+			if _, ok := exempt[req.queryID]; !ok {
+				t.Errorf("★ [实测轴] query_id=%q（★ 来源 %s）的 plan_form=%q（★ 没有实测形态）"+
+					"⇒ ⇒ 但 %s 里【没有它的豁免登记】⇒ ⇒ 门红（★ 测不出来就要写清为什么）",
+					req.queryID, req.source, req.planForm, qicExemptRel)
+			}
+		}
+
+		switch req.planForm {
+		case qicPlanFormSeek:
+			seekCount++
+		case qicPlanFormFilter:
+			filterCount++
+		case qicPlanFormSeq:
+			seqCount++
+		}
+	}
+
 	t.Logf("需求清单 %s：共 %d 条 ⇒ local（covered %d / 未覆盖 %d）｜ fresh 新装环境（covered %d / 未覆盖 %d）｜ "+
 		"★ 其中「local 覆盖但新装不覆盖」= %d 条 ⇒ 读底账 %s",
 		reqPath, len(reqs), localCovered, localGap, freshCovered, freshGap, newInstallGaps, censusPath)
+	t.Logf("★ 实测轴（★ 读 %s，★ %d 条观测）：seek %d / filter %d / seq-scan %d ⇒ ★ 读 %s",
+		obsPath, len(obs), seekCount, filterCount, seqCount, exemptPath)
 }

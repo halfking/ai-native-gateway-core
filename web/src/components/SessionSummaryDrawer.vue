@@ -299,7 +299,7 @@ async function writeMemora() {
   height: 100dvh;
   overflow-y: auto;
   border-radius: 0;
-  padding: 16px 20px 24px;
+  padding: 16px 16px 24px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -309,15 +309,15 @@ async function writeMemora() {
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
-  padding-bottom: 10px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
 }
-.ssd-title { margin: 0; font-size: 18px; font-weight: 600; }
-.ssd-sub { margin: 4px 0 0; font-size: 12px; color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; }
+.ssd-title { margin: 0; font-size: 16px; font-weight: 600; }
+.ssd-sub { margin: 4px 0 0; font-size: 12px; color: var(--muted); display: flex; gap: 4px; flex-wrap: wrap; }
 .ssd-dot { opacity: 0.5; }
-.ssd-process { padding: 8px 10px; background: var(--bg-subtle); border-radius: 8px; border: 1px solid var(--border); }
-.ssd-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 10px 16px; font-size: 12px; }
-.ssd-step { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.ssd-process { padding: 8px 8px; background: var(--bg-subtle); border-radius: 8px; border: 1px solid var(--border); }
+.ssd-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 12px; }
+.ssd-step { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
 .ssd-step--active { color: var(--accent); font-weight: 600; }
 .ssd-step--done { color: var(--success); }
 .ssd-step--error { color: var(--danger); font-weight: 600; }
@@ -330,20 +330,20 @@ async function writeMemora() {
 .ssd-result, .ssd-timeline {
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 12px 14px;
+  padding: 12px 12px;
   background: var(--surface-primary, var(--card));
 }
 .ssd-section-title { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
-.ssd-meta-line { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+.ssd-meta-line { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
 .ssd-model { font-family: ui-monospace, monospace; }
 .ssd-body { white-space: pre-wrap; line-height: 1.6; font-size: 13px; }
-.ssd-points { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.5; }
+.ssd-points { margin: 0; padding-left: 16px; font-size: 13px; line-height: 1.5; }
 .ssd-timeline-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px; }
 .ssd-log-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 280px; overflow-y: auto; }
 .ssd-log-item { margin: 0; }
 .ssd-log-btn {
   width: 100%; text-align: left; border: 1px solid var(--border); border-radius: 6px;
-  background: var(--bg); padding: 6px 8px; font-size: 11px; cursor: pointer;
+  background: var(--bg); padding: 4px 8px; font-size: 11px; cursor: pointer;
   display: grid; grid-template-columns: auto auto auto 1fr; gap: 8px; align-items: center;
 }
 .ssd-log-btn:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }

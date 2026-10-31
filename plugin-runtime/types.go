@@ -2,7 +2,10 @@
 // 健康检查、菜单注册与 HTTP 反向代理。P0 只实现内存态骨架。
 package pluginruntime
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 const (
 	SupportedAPIContract   = "gateway-plugin-v1"
@@ -97,6 +100,24 @@ type PluginBinding struct {
 	Enabled          bool          `json:"enabled"`
 }
 
+// Manifest is the plugin wire contract (gateway-plugin-v1/v2).
+//
+// W2 / magpie pluginrt alignment — extend, do not replace. Mapping that avoids
+// dual truth (A8):
+//
+//	PluginID          ↔ magpie Manifest.ID
+//	API               ↔ caret host range ("^1"); empty → EffectiveAPI() defaults "^1"
+//	GatewayCompatibility.APIContract remains the existing wire contract
+//	  (gateway-plugin-v1|v2); it is NOT the caret host API
+//	Requires/Provides ↔ service dependency edges for Reconcile
+//	Essential         ↔ essentials preset membership (plugins.yml)
+//	Defaults          ↔ baseline config before plugins.yml overlay
+//	SettingsSchema    ↔ typed JSON Schema for admin forms (preferred)
+//	ConfigSchema      ↔ legacy/ASM opaque schema; kept for wire compatibility;
+//	  EffectiveSettingsSchema() prefers SettingsSchema, else adapts ConfigSchema
+//	ClientAssets      ↔ extra static files under the plugin web root;
+//	  Web remains the mount/entry contract (single mount SSOT)
+//	InUse             ↔ not a JSON field; register via SetInUseProbe at runtime
 type Manifest struct {
 	SchemaVersion        int                  `json:"schema_version"`
 	PluginID             string               `json:"plugin_id"`
@@ -114,8 +135,27 @@ type Manifest struct {
 	Pages                []Page               `json:"pages"`
 	Web                  Web                  `json:"web"`
 	Activation           Activation           `json:"activation"`
+
+	// W2 lifecycle / settings extensions (optional; omitempty keeps v1/v2 manifests valid).
+	API            string          `json:"api,omitempty"`
+	Requires       []string        `json:"requires,omitempty"`
+	Provides       []string        `json:"provides,omitempty"`
+	Essential      bool            `json:"essential,omitempty"`
+	Defaults       map[string]any  `json:"defaults,omitempty"`
+	SettingsSchema *SettingsSchema `json:"settings_schema,omitempty"`
+	ClientAssets   []string        `json:"client_assets,omitempty"`
+
 	// ManifestPath 是 manifest 文件的绝对路径，由 LoadManifest 填充；不参与 JSON 序列化。
 	ManifestPath string `json:"-"`
+}
+
+// EffectiveAPI returns the caret host API range the plugin is written for.
+// Empty API defaults to "^1" (magpie Compatible semantics).
+func (m Manifest) EffectiveAPI() string {
+	if strings.TrimSpace(m.API) == "" {
+		return "^1"
+	}
+	return strings.TrimSpace(m.API)
 }
 
 type GatewayCompatibility struct {

@@ -62,7 +62,10 @@ const modelsListOnlyRoutableKey = "models.list_only_routable"
 // available=TRUE——grok-4.7 的五个死凭据 67/68/69/70/72 全是这个形态）。
 // availability_state='ready' 门与 UrsmlHealthyKeyReconciler 的
 // healthyCandidateSQL 同款。
-const modelsRoutableSQL = `
+//
+// ★ 2026-10-29：查询前面接 modelsFeaturedCTE（精选清单），WHERE 后面接
+// modelsFeaturedPredicate（$1=true ⇒ 只出精选模型）。见 models_scope.go。
+const modelsRoutableSQL = modelsFeaturedCTE + `
 		SELECT DISTINCT
 			mc.canonical_name,
 			COALESCE(mc.family, 'unknown') AS family,
@@ -98,13 +101,17 @@ const modelsRoutableSQL = `
 		  AND COALESCE(p.enabled, TRUE) = TRUE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND (nps.credential_id IS NULL
-		       OR COALESCE(nps.consecutive_failures, 0) = 0)
+		       OR COALESCE(nps.consecutive_failures, 0) = 0)` + modelsFeaturedPredicate + `
 		ORDER BY family, mc.canonical_name
 	`
 
 // modelsLegacySQL is the pre-r1027 query (model_offers liveness), kept as
 // the models.list_only_routable=false escape hatch.
-const modelsLegacySQL = `
+//
+// ★ It carries the SAME featured filter as modelsRoutableSQL: the scope is
+// an orthogonal concern from the liveness source, so flipping the
+// liveness switch must not silently change which models are advertised.
+const modelsLegacySQL = modelsFeaturedCTE + `
 		SELECT DISTINCT
 			mc.canonical_name,
 			COALESCE(mc.family, 'unknown') AS family,
@@ -117,7 +124,7 @@ const modelsLegacySQL = `
 		WHERE mo.available = TRUE
 		  AND c.status = 'active'
 		  AND c.trust_level NOT IN ('quarantine')
-		  AND p.enabled = TRUE
+		  AND p.enabled = TRUE` + modelsFeaturedPredicate + `
 		ORDER BY family, mc.canonical_name
 	`
 
@@ -147,9 +154,23 @@ type ModelsHandler struct {
 	// 校验责任落在各 handler 自己身上，漏掉就是无鉴权端点。
 	keyVerifier requestKeyVerifier
 
-	staleMu      sync.Mutex
-	staleEntries []modelEntry
-	staleAt      time.Time
+	// staleMu guards stale.
+	//
+	// ★ The cache is keyed BY SCOPE (2026-10-29): the query result itself
+	// depends on the scope (the featured filter lives in SQL), so a single
+	// slot would let a "scope=all" request serve the "scope=featured"
+	// snapshot during a DB outage — i.e. answer "here is everything" with
+	// a list that is silently missing models. Each scope keeps its own
+	// last-good snapshot; a scope with no snapshot gets the same explicit
+	// 500 a DB-less boot gets.
+	staleMu sync.Mutex
+	stale   map[string]modelsStaleEntry
+}
+
+// modelsStaleEntry is one scope's last-good snapshot.
+type modelsStaleEntry struct {
+	entries []modelEntry
+	at      time.Time
 }
 
 func NewModelsHandler() *ModelsHandler {
@@ -169,11 +190,10 @@ func (h *ModelsHandler) SetModelsDB(q ModelsDB) {
 // SetAuth wires the data-plane key verifier.
 //
 // 2026-10-11 生产实测的鉴权缺口（154 与 245 均复现）：
-//
-//	不带 Authorization                        → 401
-//	Bearer sk-totally-bogus（凭空伪造）        → 200，返回全量 615 个模型
-//	已吊销的 key                               → 200
-//	同一 token 打 /v1/chat/completions          → 401
+// 不带 Authorization                        → 401
+// Bearer sk-totally-bogus（凭空伪造）        → 200，返回全量 615 个模型
+// 已吊销的 key                               → 200
+// 同一 token 打 /v1/chat/completions          → 401
 //
 // 成因不是「鉴权没开」，是**委托链断了一节**：middleware/auth_mw.go 明确规定
 // sk-* 由各 handler 自行调用 KeyVerifier（Rule 20 §2），本 handler 从未接上，
@@ -226,9 +246,14 @@ func (h *ModelsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.authenticate(w, r) {
 		return
 	}
+	scope, err := resolveModelsScope(r)
+	if err != nil {
+		writeModelsScopeError(w, err)
+		return
+	}
 	if h.db == nil {
-		if entries, ok := h.lastGoodEntries(); ok {
-			slog.Warn("models: no database connection, serving last-good list")
+		if entries, ok := h.lastGoodEntries(scope); ok {
+			slog.Warn("models: no database connection, serving last-good list", "scope", scope)
 			h.writeEntries(w, entries)
 			return
 		}
@@ -241,7 +266,20 @@ func (h *ModelsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	h.serveFromDB(w, r)
+	h.serveFromDB(w, r, scope)
+}
+
+// writeModelsScopeError reports a malformed scope parameter in the same
+// OpenAI-shaped error every other failure on this endpoint uses, so a client
+// does not need a second error parser.
+func writeModelsScopeError(w http.ResponseWriter, err error) {
+	writeJSON(w, http.StatusBadRequest, map[string]any{
+		"error": map[string]string{
+			"message": err.Error(),
+			"type":    "invalid_request_error",
+			"code":    "invalid_scope",
+		},
+	})
 }
 
 // geminiModelEntry is one entry of the Gemini native model list
@@ -275,17 +313,28 @@ type geminiModelEntry struct {
 // this gateway serve".
 //
 // ★ The supported generation methods are the ones this gateway ACTUALLY
-// serves for a Gemini upstream: generateContent and streamGenerateContent.
-// "countTokens" is deliberately NOT listed — the gateway does not
-// implement it (see the audit doc), and listing a method the gateway
-// cannot serve would be a promise it does not keep.
+// serves for a Gemini upstream: generateContent, streamGenerateContent and
+// countTokens.
+//
+// ★★ 2026-10-29（Gemini countTokens 轮）：countTokens **从「不列」变成「列」**
+// —— 上一轮刻意不列它，理由是「网关没实现 ⇒ 列一个自己做不到的方法 =
+// 给客户端一个它会当真、然后失败的承诺」。⇒ 本轮**把它实现了**
+// （domains/streaming/handler_gemini.go: serveCountTokens）⇒ ⇒ 承诺兑现了
+// ⇒ ⇒ **现在必须列**：仍然不列 = 网关明明做得到却对外说做不到 ⇒ 客户端
+// 会去问厂商要（而厂商那边要另一次凭证/网络往返）⇒ ⇒ **能力清单必须与
+// 实现逐项对账，两个方向都对**。
 func (h *ModelsHandler) ServeGeminiModels(w http.ResponseWriter, r *http.Request) {
 	if !h.authenticate(w, r) {
 		return
 	}
+	scope, err := resolveModelsScope(r)
+	if err != nil {
+		writeModelsScopeError(w, err)
+		return
+	}
 	if h.db == nil {
-		if entries, ok := h.lastGoodEntries(); ok {
-			slog.Warn("models: no database connection, serving last-good list (gemini shape)")
+		if entries, ok := h.lastGoodEntries(scope); ok {
+			slog.Warn("models: no database connection, serving last-good list (gemini shape)", "scope", scope)
 			h.writeGeminiEntries(w, entries)
 			return
 		}
@@ -301,12 +350,13 @@ func (h *ModelsHandler) ServeGeminiModels(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	entries, err := h.loadEntries(ctx)
+	entries, err := h.loadScopedEntries(ctx, scope)
 	if err != nil {
-		slog.Error("models: db query failed (gemini shape)", "error", err)
-		if lastGood, ok := h.lastGoodEntries(); ok {
+		slog.Error("models: db query failed (gemini shape)", "error", err, "scope", scope)
+		if lastGood, ok := h.lastGoodEntries(scope); ok {
 			slog.Warn("models: serving last-good list during db outage (gemini shape)",
-				"models", len(lastGood), "stale_for", time.Since(h.staleSnapshotAt()).Round(time.Second).String())
+				"scope", scope, "models", len(lastGood),
+				"stale_for", time.Since(h.staleSnapshotAt(scope)).Round(time.Second).String())
 			h.writeGeminiEntries(w, lastGood)
 			return
 		}
@@ -319,7 +369,7 @@ func (h *ModelsHandler) ServeGeminiModels(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
-	h.rememberGoodEntries(entries)
+	h.rememberGoodEntries(scope, entries)
 	h.writeGeminiEntries(w, entries)
 }
 
@@ -340,32 +390,35 @@ func (h *ModelsHandler) writeGeminiEntries(w http.ResponseWriter, entries []mode
 		out = append(out, geminiModelEntry{
 			Name:                       name,
 			DisplayName:                e.ID,
-			SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
+			SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent", "countTokens"},
 			InputTokenLimit:            e.ContextWindow,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": out})
 }
 
-// lastGoodEntries returns the cached successful result while it is inside
-// the stale grace window.
-func (h *ModelsHandler) lastGoodEntries() ([]modelEntry, bool) {
+// lastGoodEntries returns the cached successful result for the given scope
+// while it is inside the stale grace window.
+func (h *ModelsHandler) lastGoodEntries(scope string) ([]modelEntry, bool) {
 	h.staleMu.Lock()
 	defer h.staleMu.Unlock()
-	if len(h.staleEntries) == 0 || h.staleAt.IsZero() {
+	e, ok := h.stale[scope]
+	if !ok || len(e.entries) == 0 || e.at.IsZero() {
 		return nil, false
 	}
-	if time.Since(h.staleAt) > modelsStaleGrace {
+	if time.Since(e.at) > modelsStaleGrace {
 		return nil, false
 	}
-	return h.staleEntries, true
+	return e.entries, true
 }
 
-func (h *ModelsHandler) rememberGoodEntries(entries []modelEntry) {
+func (h *ModelsHandler) rememberGoodEntries(scope string, entries []modelEntry) {
 	h.staleMu.Lock()
 	defer h.staleMu.Unlock()
-	h.staleEntries = entries
-	h.staleAt = time.Now()
+	if h.stale == nil {
+		h.stale = make(map[string]modelsStaleEntry, 2)
+	}
+	h.stale[scope] = modelsStaleEntry{entries: entries, at: time.Now()}
 }
 
 func (h *ModelsHandler) writeEntries(w http.ResponseWriter, entries []modelEntry) {
@@ -379,16 +432,17 @@ func (h *ModelsHandler) writeEntries(w http.ResponseWriter, entries []modelEntry
 	})
 }
 
-func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
+func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request, scope string) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	models, err := h.loadEntries(ctx)
+	models, err := h.loadScopedEntries(ctx, scope)
 	if err != nil {
-		slog.Error("models: db query failed", "error", err)
-		if entries, ok := h.lastGoodEntries(); ok {
+		slog.Error("models: db query failed", "error", err, "scope", scope)
+		if entries, ok := h.lastGoodEntries(scope); ok {
 			slog.Warn("models: serving last-good list during db outage",
-				"models", len(entries), "stale_for", time.Since(h.staleSnapshotAt()).Round(time.Second).String())
+				"scope", scope, "models", len(entries),
+				"stale_for", time.Since(h.staleSnapshotAt(scope)).Round(time.Second).String())
 			h.writeEntries(w, entries)
 			return
 		}
@@ -401,20 +455,65 @@ func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	h.rememberGoodEntries(models)
+	h.rememberGoodEntries(scope, models)
 	h.writeEntries(w, models)
+}
+
+// loadScopedEntries loads the model list for the requested scope.
+//
+// ★ The featured scope falls back to the FULL list when the curated set
+// yields nothing. Two very different situations produce that emptiness:
+// the operator's featured list is empty (or the routing_policy row is
+// missing), which is a configuration gap; or the featured models are all
+// currently unroutable.
+//
+// In both cases the answer "here is everything we can route" is the right
+// one, NOT an empty catalog: a discovery endpoint that answers "no models"
+// breaks every client that reads it (model pickers, SDK health checks,
+// tooling that picks a default model). The fallback is logged at WARN so the
+// configuration gap stays VISIBLE instead of silent — the same discipline
+// the repo applies to a silent scope downgrade anywhere else.
+//
+// ★ The fallback is not a silent scope change: it is a WARN + a second
+// query, and the snapshot is cached under the REQUESTED scope so an outage
+// later serves the same answer the live path would have served.
+func (h *ModelsHandler) loadScopedEntries(ctx context.Context, scope string) ([]modelEntry, error) {
+	featuredOnly := modelsScopeFeaturedOnly(scope)
+	entries, err := h.loadEntries(ctx, featuredOnly)
+	if err != nil {
+		return nil, err
+	}
+	if featuredOnly && len(entries) == 0 {
+		slog.Warn("models: featured scope produced no models; serving the full routable list",
+			"scope", scope,
+			"reason", "featured set is empty, or none of the featured models are currently routable")
+		full, err := h.loadEntries(ctx, false)
+		if err != nil {
+			return nil, err
+		}
+		return full, nil
+	}
+	return entries, nil
 }
 
 // loadEntries runs the routable-model query and materializes the rows.
 //
+// ★ featuredOnly is passed as the query's $1 parameter (the featured filter
+// lives in SQL, see models_scope.go) rather than being applied here: the
+// canonical name alone cannot express the match, because the curated list may
+// name a model by its PROVIDER-side name (raw_model_name /
+// standardized_name) — and the router resolves featured models exactly that
+// way (bg/shared_pick.go). Filtering on the canonical name only would hide a
+// model the router treats as featured.
+//
 // ★ Extracted so the OpenAI-shaped list and the Gemini-native list share
 // ONE data source: "which models can this gateway serve" must have a
 // single answer, and only the wire shape may differ.
-func (h *ModelsHandler) loadEntries(ctx context.Context) ([]modelEntry, error) {
+func (h *ModelsHandler) loadEntries(ctx context.Context, featuredOnly bool) ([]modelEntry, error) {
 	// r1027: liveness source follows the router (bindings + probe state),
 	// not model_offers. models.list_only_routable=false restores the legacy
 	// query without a deploy.
-	rows, err := h.db.Query(ctx, modelsQueryFor(settings.GetPlatformBool(modelsListOnlyRoutableKey, true)))
+	rows, err := h.db.Query(ctx, modelsQueryFor(settings.GetPlatformBool(modelsListOnlyRoutableKey, true)), featuredOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -441,23 +540,8 @@ func (h *ModelsHandler) loadEntries(ctx context.Context) ([]modelEntry, error) {
 	return models, nil
 }
 
-func (h *ModelsHandler) writeDBFailure(w http.ResponseWriter, err error) {
-	slog.Error("models: db rows failed", "error", err)
-	if entries, ok := h.lastGoodEntries(); ok {
-		h.writeEntries(w, entries)
-		return
-	}
-	writeJSON(w, http.StatusInternalServerError, map[string]any{
-		"error": map[string]string{
-			"message": "Failed to query models from database",
-			"type":    "server_error",
-			"code":    "database_query_error",
-		},
-	})
-}
-
-func (h *ModelsHandler) staleSnapshotAt() time.Time {
+func (h *ModelsHandler) staleSnapshotAt(scope string) time.Time {
 	h.staleMu.Lock()
 	defer h.staleMu.Unlock()
-	return h.staleAt
+	return h.stale[scope].at
 }

@@ -376,7 +376,7 @@ const recentSessionFields = computed<CardField[]>(() => [
 </template>
 
 <style scoped>
-.user-profile-detail { padding: 20px; }
+.user-profile-detail { padding: 16px; }
 .page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .stat-row { margin-bottom: 16px; }
 .stat-card { text-align: center; }

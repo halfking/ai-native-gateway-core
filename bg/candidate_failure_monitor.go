@@ -605,7 +605,7 @@ func (m *CandidateFailureMonitor) applyAutoCool(ctx context.Context, credID int)
 	tag, err := m.db.Exec(ctx, `
 		UPDATE credentials
 		SET availability_state = 'cooling',
-		    availability_recover_at = now() + ($1 || ' minutes')::interval,
+		    availability_recover_at = now() + make_interval(mins => $1::int),
 		    state_reason_code = 'auto_cool_high_failure_rate',
 		    state_reason_detail = 'candidate_failure_monitor: high failure rate detected',
 		    state_updated_at = now()

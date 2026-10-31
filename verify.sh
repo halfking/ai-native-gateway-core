@@ -1,4 +1,26 @@
 #!/usr/bin/env bash
+# 本机 go 验证口径：macOS 钉 cgo=0（完整理由见下方「本机 go 验证口径」一节；判据
+# tests/verify_cgo_convention_test.sh 钉「export 必须在前 60 行内」⇒ 本块必须在
+# r1048 的 gocache 头块**之前**，勿下移——2026-10-29 24h 审计轮曾因头块挤压而红）。
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  export CGO_ENABLED="${VERIFY_CGO_ENABLED:-0}"
+fi
+echo "[verify] CGO_ENABLED=${CGO_ENABLED:-<unset: 宿主默认 cgo>}"
+# ★★ r1048 轮（★ 2026-10-29）：★ 本脚本在【宿主】上编译 Go ⇒ ⇒ 子进程会往 Go 的
+# ★★ 构建缓存里写产物 ⇒ ⇒ 而那个缓存默认是【用户那个全局的】⇒ ⇒ 必须指向【专用缓存】
+# ★★ （★ 目录约定与 6 GB 上限见 `scripts/lib/gocache.sh`；★ 理由与实测读数见
+# ★★ `internal/gocache` 的包注释 ⇒ ⇒ ★★ 实测：★ **单包** `go test ./admin/` 就要
+# ★★ **846 MB** ⇒ ⇒ ★★ 体积由【传递依赖闭包】决定 ⇒ ⇒ ★★ 按「编译范围」分层不成立）。
+# ★★ 【失败安全】：★ 找不到共享入口 ⇒ ⇒ **不设 GOCACHE**（★ 宁可漏隔离 ⇒ ⇒ 也不要把
+# ★★ GOCACHE 设成垃圾值 ⇒ ⇒ 那会让 go 直接报错 ⇒ ⇒ 把脚本弄坏）。
+__gocache_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || __gocache_dir=""
+while [ -n "$__gocache_dir" ] && [ ! -f "$__gocache_dir/scripts/lib/gocache.sh" ] && [ "$__gocache_dir" != "/" ]; do
+  __gocache_dir="$(dirname "$__gocache_dir")"
+done
+if [ -n "$__gocache_dir" ] && [ -f "$__gocache_dir/scripts/lib/gocache.sh" ]; then
+  . "$__gocache_dir/scripts/lib/gocache.sh"
+  gocache_use script
+fi
 # verify.sh — unified local/CI verification gate for llm-gateway-go.
 #
 # Usage:
@@ -43,11 +65,7 @@ done
 # 需要在 macOS 上强制 cgo 时用 VERIFY_CGO_ENABLED=1。
 #
 # 判据：tests/verify_cgo_convention_test.sh（已接入本文件下方）
-if [[ "$(uname -s)" == "Darwin" ]]; then
-  export CGO_ENABLED="${VERIFY_CGO_ENABLED:-0}"
-fi
-echo "[verify] CGO_ENABLED=${CGO_ENABLED:-<unset: 宿主默认 cgo>}"
-
+# （export 本体已上移至文件头——r1048 头块把它挤出 head -60 契约区，见上。）
 echo "[verify] cgo convention contracts"
 bash tests/verify_cgo_convention_test.sh
 
@@ -106,6 +124,15 @@ bash tests/deploy_local_reap_test.sh
 echo "[verify] deploy-211 docker contracts"
 bash tests/deploy_211_contract_test.sh
 
+# 2026-10-28：/version 身份链（版本戳谎报家族）的**行为门**。
+# 上一轮只加了实现（fail-closed die）没加测试 ⇒ 有功能没牙齿；且当时的实现
+# 有两处真缺陷（显式给的号被 git 覆盖、--via 路径的门根本不执行）。这道门
+# 把引擎里那段身份闸的真代码抠出来驱动，断言它**真的拒绝**（三个变异臂：
+# 显式号被覆盖 / 第一道门降级为 log / --via 侧的门被删，逐个被抓红）。
+# ★ 零外部依赖：纯 bash，不碰 docker、不碰目标机。
+echo "[verify] deploy seamless version identity (behavior)"
+bash tests/deploy_seamless_version_identity_test.sh
+
 # 2026-10-23：211 的 nginx X-Real-IP 修补此前**从来没生效过**（引擎只在自己的
 # conf 里找「按域 443 块」，而 211 的 443 腿在通用 TLS 终结器里 ⇒ 每次部署
 # 打一条**假**告警「块形态变了?」）。判定逻辑已挪到
@@ -163,7 +190,31 @@ echo "[verify] full Go tests"
 #     即使仍被杀，下一次跑会自动把留空的台账还原回去。
 #   ⇒ 两道防线一起上：**给足预算**（不让它被杀）＋ **被杀也能自愈**。
 #   ⚠ 提高的是**每包**预算，不是总时长：各包并行执行，总墙钟由最慢的包决定。
-go test ./... -count=1 -timeout=900s
+# ★★ 2026-10-28 r1044 轮：超时预算由 900s 提到 **1800s**。
+#   起因：★ 2026-10-24 那次把预算提到 900s 时，**同一条**包已经实测占到 **840.111s**
+#   （★ scripts/ursmcheck/shell_fullwidth_var_gate_test.go 里记着这个数，★ 且当时
+#   ★ 就写明「余量只剩 ~60s」）⇒ ★★ 也就是说 **900s 的余量当时就已经没了**。
+#   ★ 本轮实测：★ 隔离跑 `go test ./scripts/ursmcheck/ -count=1 -timeout=1800s`
+#   ★ = **1011.711s**（★ 读数窗口 load average 26.8/30.2/36.4 ⇒ ★ 同一时刻机器上
+#   ★ 还有第二个 ursmcheck 套件在跑 ⇒ ★★ 该数是**上界**）⇒ ★★ **越过了 900s**
+#   ★★ ⇒ ⇒ `go test ./...`（★ 默认单包超时 10m）会 `panic: test timed out after 10m0s`
+#   ★★ ⇒ ⇒ 而 `testing` 的超时是 **alarm goroutine 里的 panic** ⇒ 其它 goroutine 的
+#   ★★ `defer` **不执行** ⇒ ★★ **被跟踪的台账静默留空**（★ 2026-10-24 那段注释写的
+#   ★★ 正是这个后果）⇒ ⇒ ★★ 预算必须重新给足。
+#   ⇒ 选 1800s 的依据：★ 覆盖本轮实测上界 1011.711s 并留 ~1.8x 余量；★ 与
+#   ★ ★ `make guards-ursmcheck`（Makefile 的 GUARD_PACKAGES_SLOW 腿）**同一档**——
+#   ★ ★ 两处必须同步改（★ 一处改一处不改 ⇒ 慢门与官方门会给出不同的结论）。
+# ★★ 2026-10-30 r1050 轮：**回填当前实测数**（★ r1044 轮 §六-⑤ 登记的「每轮结束前
+#   重新量一次慢门包的耗时并更新预算注释里的实测数」⇒ ★★ 注释里的读数会自己过期）。
+#   本轮实测（`make guards-ursmcheck`，HEAD 5a4150440）：★ **1122.817s**
+#   （load 6.32/5.12/3.47 ⇒ ★ 负载远低于 1011.711s 那次的 26.8/30.2/36.4）
+#   ⇒ ★★★ **在更轻的负载下反而更慢** ⇒ ⇒ **不是负载抬高的上界，是包真的变重了**
+#   ⇒ ★★ 余量由「~1.8x」收窄到 **1800/1122.817 ≈ 1.60x** ⇒ ★★ **仍然够用**
+#   （★ 预算不必再提；但 ★ 余量已非「宽松」⇒ 下一轮若继续变重需重新评估）。
+#   ⚠ 提高的仍只是**每包**预算，不是总时长：各包并行执行，总墙钟由最慢的包决定。
+#   ⚠ 这**不是**「把阈值调大以让检测变松」：★ 超时是 harness 的**杀开关**，
+#   ★ ★ 调大它不会让任何一道门从红变绿 ⇒ ★★ 它只会让一个**健康但慢**的包不被腰斩。
+go test ./... -count=1 -timeout=1800s
 
 # 2026-10-14（r1031 §五-3 / 判据纪律 #11）：TestStorageAudit* 集成审计是三域存储
 # 契约（冷读一致性/跨实例一致性/V2 元数据配对）的唯一观测器，带 -tags=integration
@@ -234,6 +285,17 @@ if [[ "$RUN_WEB" == true ]]; then
   pm_run copy-clarity:check web
   pm_run copy-clarity-locale:check web
   pm_run i18n:empty-state:check web
+  # ★★ 2026-10-30 r1050 轮接入：「前端门总清单」单一入口（web-gates-runner.mjs）
+  #   ★★ 本轮实测：`web/package.json` 里有 32 个 `:check` 类门，而 verify.sh 只登记了 9 个
+  #   ★★ ⇒ ★★★ **19 个门在 CI 上一次都没被执行过**
+  #   ★★★ （★ 其中就有 `i18n:locale-value:check` —— ★★ 语言包值棘轮门）
+  #   ★★★ 同样地，**web 侧 31 个 `:selftest` 一个都没进强制路径**（★ 只有 web-mobile 的
+  #   ★★★ `gate:selftest` 在）⇒ ★★ **一道门自己的判据坏了（恒绿/恒红）没人知道**。
+  #   ⇒ ⇒ 接入「清单 + 一个入口」而非把 50 条命令塞进本文件（★ 清单是单一真值）。
+  #   ⇒ ★★ 入口**自己**校验清单里的每个脚本都存在于 package.json ⇒ ★ 清单写错 ⇒ 入口自己红。
+  #   ⇒ ★★ 刻意排除项（★ 不静默 ⇒ 每次运行都列出 + 理由）：`ui:sweep:selftest`
+  #   ★★ （需 playwright + chromium ⇒ 环境缺件 ⇒ CI 不装浏览器）。
+  pm_run web-gates:run web
   echo "[verify] frontend build"
   pm_run build web
   echo "[verify] web-mobile install"

@@ -51,6 +51,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
+	"github.com/kaixuan/llm-gateway-go/internal/sessionid"
 	sseparser "github.com/kaixuan/llm-gateway-go/internal/sse"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/maas"
@@ -120,6 +121,19 @@ type interceptingStreamWriter struct {
 	// blockReason 是同一次拦截的**人类可读**原因短语（r1039/D4）。客户端拿
 	// 它去提示用户「这次调用被拦了，要不要继续执行」。
 	blockReason string
+	// blockField / blockDigest 是同一次拦截的位置与载荷摘要（2026-10-28
+	// 拦截审核轮）——审核队列据此对这一次载荷精确放行。
+	blockField  string
+	blockDigest string
+	// blockEvidence 是被拦内容的**有界摘录**（原始会话内容），2026-10-29
+	// 输出合规误报轮补——审核员据此判断「这次拦得对不对」。
+	blockEvidence string
+	// degraded 记录「守卫降级放行」（待检缓冲越界但没有规则命中）。
+	// ★ 降级**不是**拦截 ⇒ 不渲染失败终帧，但**要留痕**（登记审核单）。
+	degraded     bool
+	degradedRule string
+	degradedReason string
+	degradedEvidence string
 }
 
 func newInterceptingStreamWriter(w http.ResponseWriter, chain ResponseInterceptor, ctx context.Context, meta response.StreamMeta) *interceptingStreamWriter {
@@ -273,6 +287,8 @@ func (w *interceptingStreamWriter) finish() {
 					w.blockRule = rule
 				}
 				w.blockReason = policyBlockReasonFromError(err)
+				w.blockField = policyBlockPathFromError(err)
+				w.blockDigest = policyBlockDigestFromError(err)
 			}
 			if w.blocked {
 				_ = pending
@@ -299,7 +315,43 @@ func (w *interceptingStreamWriter) finish() {
 	// protocol-shaped failure envelope so the client sees a recognisable
 	// terminal instead of a truncated connection.
 	if w.blocked && !w.terminalRendered {
-		w.writeTrustedTerminal(nativeStreamPolicyFailureFrame(w.meta.ClientProtocol, w.blockRule, w.blockReason))
+		// 2026-10-28 拦截审核轮：终帧落线前登记审核单。message 文本与旁键
+		// 都带审核单号——客户端（含只显示 message 的那类）能看到
+		// 「等待审核，含敏感内容」，管理员在后台批准后重试即放行。
+		reviewID := registerPolicyBlockReview(PolicyBlockReviewInput{
+			TenantID:   w.meta.TenantID,
+			ClientType: w.meta.ClientType,
+			SessionID:  w.meta.SessionID,
+			RequestID:  w.meta.RequestID,
+			Rule:       w.blockRule,
+			Reason:     w.blockReason,
+			Field:      w.blockField,
+			Digest:     w.blockDigest,
+			Evidence:   w.blockEvidence,
+			EvidenceKind: policyBlockEvidenceKind(w.blockRule),
+		})
+		w.writeTrustedTerminal(nativeStreamPolicyFailureFrame(w.meta.ClientProtocol,
+			w.blockRule, w.meta.RequestID, reviewID, w.blockReason, w.blockField))
+		return
+	}
+	// ★ 2026-10-29 输出合规误报轮：降级放行（缓冲越界、无规则命中）也要
+	// **留痕** —— 登记一条审核单，让运维看得到「守卫在什么规模上让过步」。
+	// 降级**不是**拦截 ⇒ 不渲染失败终帧（响应已经成功返回）。
+	// ★ 2026-10-30 审计轮：登记时带 Degraded 标记（迁移 926）——降级单是
+	// 遥测不是待决拦截：211 实测 24h 内 226/226 条全是降级单却全挂着
+	// 「待审」状态与批准按钮（批准写出的放行行没有任何消费方）。
+	if w.degraded && !w.terminalRendered {
+		registerPolicyBlockReview(PolicyBlockReviewInput{
+			TenantID:     w.meta.TenantID,
+			ClientType:   w.meta.ClientType,
+			SessionID:    w.meta.SessionID,
+			RequestID:    w.meta.RequestID,
+			Rule:         w.degradedRule,
+			Reason:       w.degradedReason,
+			Evidence:     w.degradedEvidence,
+			EvidenceKind: policyBlockEvidenceKind(w.degradedRule),
+			Degraded:     true,
+		})
 	}
 }
 
@@ -316,7 +368,7 @@ func (w *interceptingStreamWriter) finish() {
 // r1039（D4）：extra[0] 是人类可读的原因短语（可选）——客户端要拿它提示用户
 // 「这次调用被拦了，要不要继续执行」。变参而不是新参数：既有调用点（与
 // domains/streaming/r1037_policy_rule_terminal_test.go 的判据）保持原样。
-func nativeStreamPolicyFailureFrame(protocol, ruleID string, extra ...string) []byte {
+func nativeStreamPolicyFailureFrame(protocol, ruleID, requestID, reviewID string, extra ...string) []byte {
 	rule := ""
 	if ruleID != "" {
 		rule = `,"rule":"` + ruleID + `"`
@@ -325,21 +377,40 @@ func nativeStreamPolicyFailureFrame(protocol, ruleID string, extra ...string) []
 	if len(extra) > 0 && extra[0] != "" {
 		reason = `,"reason":"` + jsonEscapeSSEField(extra[0]) + `"`
 	}
+	// 2026-10-28 拦截审核轮：帧里补 request_id 与 review 单号；message 文本
+	// 本身携带全部可行动信息（按最弱客户端设计——ZCode 的报错卡只显示
+	// message，旁键一个都不会上屏）。「TraceID: hydrate-trace」那种客户端
+	// 自造标签对不了账，网关必须给出自己的请求 ID。
+	requestKey := ""
+	if requestID != "" {
+		requestKey = `,"request_id":"` + jsonEscapeSSEField(requestID) + `"`
+	}
+	reviewKey := ""
+	if reviewID != "" {
+		reviewKey = `,"review":"` + jsonEscapeSSEField(reviewID) + `"`
+	}
+	field := ""
+	if len(extra) > 1 && extra[1] != "" {
+		field = `,"field":"` + jsonEscapeSSEField(extra[1]) + `"`
+	}
+	message := policyBlockClientMessage(ruleID, firstNonEmpty(extra...), "", requestID, reviewID)
+	msg := `"message":` + mustJSONString(message)
 	switch protocol {
 	case "anthropic-messages":
-		return []byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"" + rule + reason + "}}\n\n")
+		return []byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\"," + msg + rule + reason + field + requestKey + reviewKey + "}}\n\n")
 	case "openai-responses":
 		// response 里的 id/status 是 Responses 协议形状的一部分：客户端的
 		// 解析器按 response 对象校验，缺字段会让整帧被丢掉——那正是
 		// 「客户端只看到空响应」的成因之一。
-		return []byte("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_output_policy_blocked\",\"object\":\"response\",\"status\":\"failed\",\"error\":{\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"" + rule + reason + "}}}\n\n")
+		return []byte("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_output_policy_blocked\",\"object\":\"response\",\"status\":\"failed\",\"error\":{\"code\":\"output_policy_blocked\"," + msg + rule + reason + field + requestKey + reviewKey + "}}}\n\n")
 	default:
 		// r1028: carry a machine-classifiable code — agent clients (ZCode)
 		// map unknown api_error shapes to "reason=unknown retryable=false";
 		// the code lets them distinguish policy blocks from provider faults.
-		return []byte("data: {\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"" + rule + reason + "}}\n\ndata: [DONE]\n\n")
+		return []byte("data: {\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\"," + msg + rule + reason + field + requestKey + reviewKey + "}}\n\ndata: [DONE]\n\n")
 	}
 }
+
 
 // jsonEscapeSSEField 转义放进 SSE JSON 字符串里的文本。
 //
@@ -371,11 +442,70 @@ func policyReasonFromChunkResult(result *response.ChunkResult) string {
 	return reason
 }
 
+// policyFieldFromChunkResult 取拦截结果里被拦载荷的位置（2026-10-28 审核轮）。
+func policyFieldFromChunkResult(result *response.ChunkResult) string {
+	if result == nil || result.Metadata == nil {
+		return ""
+	}
+	field, _ := result.Metadata["policy_field"].(string)
+	return field
+}
+
+// policyDigestFromChunkResult 取拦截结果里被拦载荷的摘要（2026-10-28 审核轮）。
+func policyDigestFromChunkResult(result *response.ChunkResult) string {
+	if result == nil || result.Metadata == nil {
+		return ""
+	}
+	digest, _ := result.Metadata["policy_digest"].(string)
+	return digest
+}
+
+// policyEvidenceFromChunkResult 取拦截/降级结果里的**有界摘录**（原始会话
+// 内容，2026-10-29 输出合规误报轮）。
+//
+// ★ 只走审核面：它进审核单的证据表，**不进**客户端信封与失败审计行。
+func policyEvidenceFromChunkResult(result *response.ChunkResult) string {
+	if result == nil || result.Metadata == nil {
+		return ""
+	}
+	evidence, _ := result.Metadata["policy_evidence"].(string)
+	return evidence
+}
+
+// policyDegradedFromChunkResult 报告这次结果是不是「守卫降级放行」。
+//
+// 降级 ≠ 拦截：待检缓冲越界但没有规则命中时，守卫放行并留痕。
+func policyDegradedFromChunkResult(result *response.ChunkResult) bool {
+	if result == nil || result.Metadata == nil {
+		return false
+	}
+	degraded, _ := result.Metadata["policy_degraded"].(bool)
+	return degraded
+}
+
 // policyBlockReasonFromError 从策略拦截错误里取人类可读原因短语。
 func policyBlockReasonFromError(err error) string {
 	var pbe *errorsx.PolicyBlockError
 	if errors.As(err, &pbe) && pbe != nil {
 		return pbe.Reason
+	}
+	return ""
+}
+
+// policyBlockPathFromError 从策略拦截错误里取被拦载荷的位置（2026-10-28 审核轮）。
+func policyBlockPathFromError(err error) string {
+	var pbe *errorsx.PolicyBlockError
+	if errors.As(err, &pbe) && pbe != nil {
+		return pbe.Path
+	}
+	return ""
+}
+
+// policyBlockDigestFromError 从策略拦截错误里取被拦载荷的摘要（2026-10-28 审核轮）。
+func policyBlockDigestFromError(err error) string {
+	var pbe *errorsx.PolicyBlockError
+	if errors.As(err, &pbe) && pbe != nil {
+		return pbe.Digest
 	}
 	return ""
 }
@@ -419,11 +549,24 @@ func (w *interceptingStreamWriter) writeFrame(frame []byte) {
 				w.blocked = true
 				w.blockRule = policyRuleFromChunkResult(result)
 				w.blockReason = policyReasonFromChunkResult(result)
+				w.blockField = policyFieldFromChunkResult(result)
+				w.blockDigest = policyDigestFromChunkResult(result)
+				w.blockEvidence = policyEvidenceFromChunkResult(result)
 				// R25-F: wrap the protocol-terminal sentinel so the handler's
 				// execErr fallback recognizes the policy terminal frame we
 				// already rendered and does not emit a second terminal.
 				w.writeErr = fmt.Errorf("output stream blocked by response interceptor: %w", errorsx.ErrProtocolTerminalRendered)
 				return
+			}
+			// ★ 2026-10-29 输出合规误报轮：「守卫降级放行」（待检缓冲越界、
+			// 但**没有规则命中**）⇒ 不阻断、但要留痕。这里把降级事实记到
+			// 写者上，finish() 据此登记一条审核单 ⇒ 运维看得到
+			// 「守卫在什么规模上让过步」，而不是「什么都不知道」。
+			if !result.ShouldBlock && policyDegradedFromChunkResult(result) {
+				w.degraded = true
+				w.degradedRule = policyRuleFromChunkResult(result)
+				w.degradedReason = policyReasonFromChunkResult(result)
+				w.degradedEvidence = policyEvidenceFromChunkResult(result)
 			}
 			// Suppression withholds the current frame from the wire. A
 			// same-result ModifiedChunk may carry an earlier frame
@@ -1001,6 +1144,16 @@ type providerResolver interface {
 	GetCandidates(ctx context.Context, model, profile, tenantID string) ([]provider.Candidate, *provider.Policy, error)
 	GetCandidatesByModality(ctx context.Context, model, profile, tenantID, modality string) ([]provider.Candidate, *provider.Policy, error)
 	ModelKnown(ctx context.Context, model string) bool
+	// ModelModalityMismatch reports whether the request's modality — not a
+	// lack of routable providers — is what excluded the model from the
+	// candidate set. A zero-candidate exit caused by this is a client-side
+	// problem (the request carries media the model cannot read) and must be
+	// reported as such, not as a retryable "no provider available".
+	//
+	// Returning a nil mismatch means "not a modality problem" — either the
+	// model has no live binding at all, or it could serve this modality and
+	// was excluded for some other reason.
+	ModelModalityMismatch(ctx context.Context, model, profile, tenantID, requestModality string) (*provider.ModalityMismatch, error)
 }
 
 // requestKeyVerifier is the authorization surface used by request handlers.
@@ -1581,6 +1734,23 @@ func (h *ChatHandler) SetAuth(kv *authentication.KeyVerifier, rl ratelimit.RPMLi
 // unauthenticated (2026-09-14 audit H-P0-1).
 func (h *ChatHandler) SetStaticDataPlaneKey(key string) {
 	h.staticDataPlaneKey = key
+}
+
+// staticDataPlaneKeyMatches reports whether rawKey is exactly the deployed
+// static data-plane key.
+//
+// ★ 常量时间比较（subtle.ConstantTimeCompare）：静态键是**部署级共享凭据**，
+// 时序侧信道会泄露它 ⇒ 不比较长度捷径（ConstantTimeCompare 自身在长度不等时
+// 立即返回，但空串在**比较之前**就被拒 ⇒ 不泄露任何关于正确密钥的信息）。
+//
+// ★ 抽成函数是为了**一份实现**：ChatHandler 的静态键回退与 Gemini 原生
+// :countTokens 的静态键回退必须判得一模一样，否则同一个部署里两条入向
+// 面对「lite 模式 + 配了静态键」给出不同的放行结论。
+func staticDataPlaneKeyMatches(rawKey, staticKey string) bool {
+	if rawKey == "" || staticKey == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(staticKey), []byte(rawKey)) == 1
 }
 
 // SetAdminAPIKey configures the operator token used to gate the
@@ -2447,7 +2617,7 @@ func (h *ChatHandler) serveWithExecutor(
 		// deployed static key instead; downstream already handles the
 		// keyInfo==nil shape (it is today's path for this state).
 		rawKey := extractBearerToken(r)
-		if rawKey == "" || subtle.ConstantTimeCompare([]byte(h.staticDataPlaneKey), []byte(rawKey)) != 1 {
+		if !staticDataPlaneKeyMatches(rawKey, h.staticDataPlaneKey) {
 			captureAndEmitFailure("invalid_key", "invalid api key (static-key fallback auth)", nil, nil, http.StatusUnauthorized)
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgInvalidKey, nil)
@@ -2777,23 +2947,14 @@ func (h *ChatHandler) serveWithExecutor(
 	// where the provisional id (generated for early-failure logging)
 	// shadowed a body-supplied session on the first request of a new
 	// client conversation.
-	// Precedence:
+	// Precedence (locked; single source = internal/sessionid.Resolve):
 	//   1. body session_id (highest — most explicit)
-	//   2. client header X-Gw-Session-Id / legacy X-Session-Id
-	//   3. assignment (auto-create / recent-session reuse)
-	//   4. provisional id (used only as a last-resort fallback for early
-	//      failure logging; the safety net re-applies it via
-	//      applyProvisionalGatewaySessionHeader).
-	sessionID = extractSessionIDFromBody(bodyBytes)
-	if sessionID == "" {
-		sessionID = extractSessionIDFromHeaders(r)
-	}
+	//   2. client header X-Gw-Session-Id
+	//   3. legacy / native header table
+	//   4. assignment (auto-create / recent-session reuse) — caller below
+	//   5. provisional id (last-resort; applyProvisionalGatewaySessionHeader)
+	sessionID, _ = sessionid.ResolveRequest(r, bodyBytes)
 	if sessionID != "" {
-		// 2026-09-08: a stable non-gateway client identity (e.g. ZCode's
-		// bare-UUID x-session-id) maps deterministically onto gw_<id>;
-		// letting it fall through to the CreateV2 fallback minted a fresh
-		// gw_<uuid> per request and turn aggregation never left 1.
-		sessionID = deriveGatewaySessionID(sessionID)
 		// Only inherit the request header for the lookup; the final
 		// resolved value is written back via applyResolvedGatewaySession
 		// once assignment finishes.
@@ -3770,6 +3931,35 @@ func (h *ChatHandler) serveWithExecutor(
 			writeErrorJSONCtx(r.Context(), w, http.StatusBadRequest, requestID, "invalid_request_error", i18n.MsgInvalidModel, map[string]any{"Model": clientModel})
 			return
 		}
+		// ── 2026-10-28: 模态不匹配（modality_mismatch）───────────────────────
+		//
+		// 零候选有两种成因，客户端要采取的动作**完全相反**：
+		//
+		//	(a) 模型本身没有可路由的凭据（配额/探针/租户范围）⇒ 「等一会儿」
+		//	    → 503 no_candidate，客户端重试是对的；
+		//	(b) 模型可路由，但登记模态服务不了本次请求（文本模型收到带图请求）
+		//	    ⇒ 「等一会儿」永远没用，重试同一请求会永远失败 ⇒ 必须说清楚。
+		//
+		// ★ 为什么以前要说清楚：旧文案统一是「没有可用于模型 X 的供应商」，
+		// 客户端读到的是**网关的状态**（暂时没东西可路由）⇒ 于是重试。
+		// 真实案例（211 生产）：ZCode IDE 智能体的会话历史里带着 8 张桌面
+		// 截图（computer-use 拍的），于是每一轮请求都被判为 vision，而
+		// glm-5.3-flash 登记为 text-only ⇒ 每轮 503 ⇒ 表现为「这个模型永远
+		// 调不通」。而纯文本请求同一个模型一直正常（24h 内 77 笔成功）。
+		//
+		// 判据交给 provider 层（provider.ModalityMismatch）：它要求
+		// 「去掉模态门后模型确实可路由」且「登记模态服务不了本次模态」
+		// **两条同时成立**——只有第一条成立时零候选与模态无关，仍是 503。
+		if mismatch := h.diagnoseModalityMismatch(r.Context(), clientModel,
+			clientID.Fingerprint.ClientProfile, tenantID, requestModality); !mismatch.IsZero() {
+			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "modality_mismatch", nil, int(time.Since(startTime).Milliseconds()))
+			logCtx.failAndMark("modality_mismatch",
+				fmt.Sprintf("Model '%s' does not accept %s input", clientModel, requestModality), nil, nil,
+				http.StatusBadRequest)
+			markLogged()
+			h.writeModalityMismatchError(r, w, requestID, clientModel, mismatch, &reqBody, bodyBytes, keyInfo)
+			return
+		}
 		// 2026-07-20: Record routing attempts for the no_candidate exit so
 		// /api/logs/<id> 详情页 surfaces the full decision chain instead of
 		// an empty routing_attempts JSONB. The tracker is stored on logCtx
@@ -3815,7 +4005,7 @@ func (h *ChatHandler) serveWithExecutor(
 			// ordered featured-then-popular. Availability is judged by
 			// v_routable_credential_models.is_routable — the same gate the router
 			// uses — so a suggested model is genuinely reachable right now.
-			alts := h.findModelAlternatives(r, &reqBody, bodyBytes, clientModel, keyInfo)
+			alts := h.findModelAlternatives(r, &reqBody, bodyBytes, clientModel, keyInfo, requestModality)
 			writeNoCandidateWithAlternatives(r.Context(), w, r, requestID, clientModel, alts)
 			return
 		}
@@ -4481,7 +4671,8 @@ func (h *ChatHandler) serveWithExecutor(
 	// buildExecParams assembles the per-attempt ExecParams shared by the
 	// legacy goal-retry loop and the SR-W2 survival branch (doc 18 §5.1):
 	// one construction site, zero drift between the two paths.
-	upstreamAttempts := executors.NewUpstreamAttemptBudget(executors.DefaultUpstreamAttemptLimit)
+	// 2026-10-30: 预算大小走 survival.attempt_budget 热加载（默认仍 100）。
+	upstreamAttempts := executors.NewUpstreamAttemptBudget(executors.RequestAttemptLimit())
 	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
 	// v6 G-Ⅱ: X-Gw-Due-At 定时请求（到期前停在 dispatch 的到期堆）。
 	dispatchDueAt := parseDispatchDueAt(r)
@@ -4588,6 +4779,10 @@ func (h *ChatHandler) serveWithExecutor(
 			},
 			ClientProtocol: clientProtocol,
 			ClientModel:    clientModel,
+			// 原厂直通（2026-10-28 三巡）：请求边界一次确定客户端类型，
+			// executor 的 nativePairFor 以此为首选（此前该字段只在连接
+			// 注册表用，ExecParams 从未填过）。
+			ClientType: extractClientType(r),
 			// OutboundModel is intentionally set to clientModel here so the
 			// upstream body builder (executor_chat.prepareRequestBody /
 			// executor_anthropic.prepareAnthropicRequestBody) does NOT echo
@@ -4732,6 +4927,7 @@ func (h *ChatHandler) serveWithExecutor(
 		var survivalIntercepted *interceptingStreamWriter
 		if h.responseInterceptor != nil {
 			survivalIntercepted = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
+				ClientType:  extractClientType(r),
 				SessionID:      gwSessionID,
 				RequestID:      requestID,
 				TenantID:       tenantID,
@@ -4814,6 +5010,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		if isStream && h.responseInterceptor != nil {
 			interceptedWriter = newInterceptingStreamWriter(streamWriter, h.responseInterceptor, r.Context(), response.StreamMeta{
+				ClientType:  extractClientType(r),
 				SessionID:      gwSessionID,
 				RequestID:      requestID,
 				TenantID:       tenantID,
@@ -4932,8 +5129,25 @@ goalRetryLoopDone:
 		// nativeStreamPolicyFailureFrame），非流式原来不带，客户端因此无法
 		// 告诉用户「因为什么规则被拦、要不要继续执行」。
 		rule, reason := policyBlockErrorDetail(execErr)
+		field, digest := policyBlockPathFromError(execErr), policyBlockDigestFromError(execErr)
+		blockTenant := ""
+		if keyInfo != nil {
+			blockTenant = keyInfo.TenantID
+		}
+		reviewID := registerPolicyBlockReview(PolicyBlockReviewInput{
+			TenantID:     blockTenant,
+			ClientType:   extractClientType(r),
+			SessionID:    gwSessionID,
+			RequestID:    requestID,
+			Rule:         rule,
+			Reason:       reason,
+			Field:        field,
+			Digest:       digest,
+			Evidence:     policyBlockEvidenceFromError(execErr),
+			EvidenceKind: policyBlockEvidenceKind(rule),
+		})
 		writeOutputPolicyBlockedJSON(protocolOfRequest(r), w, http.StatusForbidden, requestID,
-			"Response blocked by output policy", "policy_violation", "output_policy_blocked", rule, reason, "")
+			"Response blocked by output policy", "policy_violation", "output_policy_blocked", rule, reason, field, digest, reviewID)
 		return
 	}
 	// A held tool lane may be rejected while survival reports its write error
@@ -5805,6 +6019,7 @@ goalRetryLoopDone:
 			CallerOwner:    callerOwner,
 			ClientProtocol: clientProtocolLane,
 			ClientModel:    clientModel,
+			ClientType:     extractClientType(r),
 			ResponseBody:   result.ResponseBody,
 			TokensUsed:     extractTotalTokens(result.ResponseBody, streamCapture),
 			ContextWindow: func() int {
@@ -5912,9 +6127,21 @@ goalRetryLoopDone:
 					// r1039（D3）：响应体带上规则名 + 人类可读原因 + 出问题的参数
 					// （拦截器在拦截那一刻记下的，见 outputcompliance 的
 					// policyBlockMetadata）——客户端据此提示用户「要不要继续」。
-					rule, reason, field := policyBlockMetadataFrom(interceptResult)
+					rule, reason, field, digest := policyBlockMetadataFrom(interceptResult)
+					reviewID := registerPolicyBlockReview(PolicyBlockReviewInput{
+						TenantID:     tenantID,
+						ClientType:   extractClientType(r),
+						SessionID:    gwSessionID,
+						RequestID:    requestID,
+						Rule:         rule,
+						Reason:       reason,
+						Field:        field,
+						Digest:       digest,
+						Evidence:     policyBlockEvidenceFromMetadata(interceptResult),
+						EvidenceKind: policyBlockEvidenceKind(rule),
+					})
 					writeOutputPolicyBlockedJSON(protocolOfRequest(r), w, http.StatusForbidden, requestID,
-						"Response blocked by output policy", "api_error", "output_policy_blocked", rule, reason, field)
+						"Response blocked by output policy", "api_error", "output_policy_blocked", rule, reason, field, digest, reviewID)
 					return
 				}
 				if interceptResult.ClientSignalKind != "" && !clientSignalKindAllowed(r, interceptResult.ClientSignalKind) {
@@ -8952,14 +9179,15 @@ func writeErrorJSON(w http.ResponseWriter, status int, requestID, msg, errType, 
 // r1039（D3）：拦截器在拦截那一刻把三样东西记进 Metadata（见
 // domains/hooks/outputcompliance 的 policyBlockMetadata），写者据此渲染
 // 客户端可见的失败信封。缺项返回空串 ⇒ 响应里不出现该键。
-func policyBlockMetadataFrom(result *response.InterceptResult) (rule, reason, field string) {
+func policyBlockMetadataFrom(result *response.InterceptResult) (rule, reason, field, digest string) {
 	if result == nil || result.Metadata == nil {
-		return "", "", ""
+		return "", "", "", ""
 	}
 	rule, _ = result.Metadata["policy_rule"].(string)
 	reason, _ = result.Metadata["policy_reason"].(string)
 	field, _ = result.Metadata["policy_field"].(string)
-	return rule, reason, field
+	digest, _ = result.Metadata["policy_digest"].(string)
+	return rule, reason, field, digest
 }
 
 // policyBlockErrorDetail 从策略拦截错误里取规则名与原因。
@@ -8984,7 +9212,15 @@ func policyBlockErrorDetail(err error) (rule, reason string) {
 // 既有键（message / type / code / request_id）原样保留 ⇒ 向后兼容；新增
 // rule / reason / field 三个键，缺省时不出现。Anthropic 形状沿用既有约定
 // （顶层 type=error，error 对象里只放 type/message + 本次新增项）。
-func writeOutputPolicyBlockedJSON(proto string, w http.ResponseWriter, status int, requestID, msg, errType, code, rule, reason, field string) {
+func writeOutputPolicyBlockedJSON(proto string, w http.ResponseWriter, status int, requestID, msg, errType, code, rule, reason, field, digest, reviewID string) {
+	// 2026-10-28 拦截审核轮：message 文本本身携带规则/原因/请求 ID/审核状态。
+	// 调用方传入的 msg 是常量前缀（"Response blocked by output policy"），
+	// 这里统一重组成完整 message——只显示 message 的客户端（ZCode 报错卡）
+	// 也能看到全部可行动信息。digest/reviewID 为空时相应段落缺省。
+	enriched := policyBlockClientMessage(rule, reason, field, requestID, reviewID)
+	if enriched != "" {
+		msg = enriched
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if requestID != "" {
 		w.Header().Set("X-Request-Id", requestID)
@@ -9008,6 +9244,12 @@ func writeOutputPolicyBlockedJSON(proto string, w http.ResponseWriter, status in
 	}
 	if field != "" {
 		errObj["field"] = field
+	}
+	if digest != "" {
+		errObj["digest"] = digest
+	}
+	if reviewID != "" {
+		errObj["review"] = reviewID
 	}
 	if proto == "anthropic" {
 		//nolint:errcheck // HTTP write error non-recoverable
@@ -9158,6 +9400,261 @@ func writeNoCandidateWithAlternatives(
 	})
 }
 
+// diagnoseModalityMismatch decides whether the request's modality — rather
+// than a lack of routable providers — is what emptied the candidate set.
+//
+// ★ It is a separate function, not an inline block, for one concrete reason:
+//
+//	the wiring is what regresses. The body of this function (the rule, the
+//	provider query, the message) is easy to test in isolation; the CALL —
+//	"does the handler reach this diagnosis before it gives up with 503?" —
+//	is not, unless the call site is a named thing a test can invoke.
+//
+//	The mutation arm made that concrete: replacing the guard at the call
+//	site with `if false` left the entire suite green while production
+//	silently reverted to the unhelpful 503. A named function the tests call
+//	is what makes that mutation fail.
+//
+// Returns a nil (IsZero) mismatch when the zero candidates have nothing to
+// do with modality — the caller must then keep reporting the retryable 503.
+//
+// A resolver error is deliberately swallowed here: the diagnosis is an
+// improvement over the plain 503, never a new way to fail a request.
+func (h *ChatHandler) diagnoseModalityMismatch(
+	ctx context.Context,
+	clientModel, clientProfile, tenantID, requestModality string,
+) *provider.ModalityMismatch {
+	if h == nil || h.provider == nil {
+		return nil
+	}
+	// A text request is never excluded by the modality gate, so there is
+	// nothing to diagnose — and the resolver must not be consulted for it.
+	//
+	// ★ Normalise before comparing: the modality string reaches here from
+	// request-body detection and from caller-supplied values, and "TEXT" or
+	// " text " must not slip past the guard into a diagnosis that says
+	// "this model cannot read your images" for a request that carried none.
+	normalized := strings.ToLower(strings.TrimSpace(requestModality))
+	if normalized == "" || normalized == modalityText {
+		return nil
+	}
+	mismatch, err := h.provider.ModelModalityMismatch(ctx, clientModel, clientProfile, tenantID, requestModality)
+	if err != nil {
+		slog.WarnContext(ctx, "modality diagnosis failed; falling back to plain no_candidate",
+			"error", err, "requested_model", clientModel, "request_modality", requestModality)
+		return nil
+	}
+	if mismatch.IsZero() {
+		return nil
+	}
+	return mismatch
+}
+
+// writeModalityMismatchError writes the 400 response for a request whose
+// media content the requested model cannot read.
+//
+// ★ Why this is a distinct response shape rather than another no_candidate:
+//
+//	The no_candidate 503 says "nothing is routable right now", which reads as
+//	the gateway's state and invites a retry. But in the modality-mismatch
+//	case the model is perfectly routable — it is the REQUEST that cannot be
+//	served. A client that retries the identical request fails forever, and
+//	(measured on 211, 2026-10-28) a UI agent does exactly that: ZCode re-sent
+//	the same 2.1 MB body — screenshots included — every few seconds, each time
+//	drawing a fresh 503.
+//
+//	So the response has to say three things a bare503 cannot:
+//	  1. WHAT is wrong — the request carries media, the model cannot read it;
+//	  2. WHICH modalities are involved — machine-readable, so a client can
+//	     strip the images itself instead of guessing;
+//	  3. WHAT to do instead — models that can read that media, right now.
+//
+//	Alternatives on this path are filtered by modality, so every suggestion
+//	really can serve the request; the generic no_candidate list is not,
+//	because it is ordered by task type and popularity, not by capability.
+//
+// Shape (OpenAI envelope):
+//
+//	{"error": {
+//	   "message": "Model 'glm-5.3-flash' does not accept vision input. ...",
+//	   "type": "invalid_request_error", "code": "modality_mismatch",
+//	   "kind": "modality_mismatch", "request_id": "...",
+//	   "modality_mismatch": {
+//	     "requested_modality": "vision",
+//	     "registered_modality": "text",
+//	     "supported_modalities": ["vision", "multimodal"]
+//	   },
+//	   "alternatives": { ... }
+//	 }}
+//
+// The dedicated "modality_mismatch" object is additive; clients that only
+// read "code" still get the actionable distinction from the status code and
+// the message.
+func (h *ChatHandler) writeModalityMismatchError(
+	r *http.Request,
+	w http.ResponseWriter,
+	requestID, clientModel string,
+	mismatch *provider.ModalityMismatch,
+	reqBody *chatRequestBody,
+	bodyBytes []byte,
+	keyInfo *authentication.KeyInfo,
+) {
+	ctx := r.Context()
+
+	// ★ A nil mismatch means "this is not a modality problem" — the caller
+	// must not claim otherwise. Guarding here rather than relying on the
+	// caller's check keeps the writer total: a nil mismatch would otherwise
+	// panic on the first field access, turning a diagnosis mistake into a
+	// crashed request instead of a wrong-but-readable response.
+	if mismatch.IsZero() {
+		writeErrorJSONWithKindProto(protocolOfRequest(r), w, http.StatusServiceUnavailable,
+			requestID, i18n.T(ctx, i18n.MsgNoCandidate, map[string]any{"Model": clientModel}),
+			"server_error", "no_candidate", "no_candidate", nil)
+		return
+	}
+
+	// Localise the modality names: they are shown to a human in the message.
+	modalityLabel := localiseModality(ctx, mismatch.RequestedModality)
+	registeredModality := mismatch.RegisteredModality
+	if registeredModality == "" {
+		registeredModality = modalityText
+	}
+	// The message shows the localised word ("文本" / "text"), while the
+	// machine-readable field keeps the raw token ("text") — a client keys off
+	// the token, a human reads the word. Mixing them up would make one of the
+	// two wrong for somebody.
+	registeredLabel := localiseModality(ctx, registeredModality)
+
+	msg := i18n.T(ctx, i18n.MsgModalityMismatch, map[string]any{
+		"Model":              clientModel,
+		"Modality":           modalityLabel,
+		"RegisteredModality": registeredLabel,
+	})
+
+	// Suggestions restricted to models that can serve this modality.
+	alts := h.findModelAlternatives(r, reqBody, bodyBytes, clientModel, keyInfo, mismatch.RequestedModality)
+
+	detail := map[string]any{
+		"requested_modality":  mismatch.RequestedModality,
+		"registered_modality": registeredModality,
+		// The modalities this model WOULD accept, so a client can check
+		// before retrying. Derived from the same acceptance rule the router
+		// uses, so it cannot drift from the gate that rejected the request.
+		"supported_modalities": supportedModalitiesFor(registeredModality),
+	}
+
+	if protocolOfRequest(r) == "anthropic" {
+		// ★ The Anthropic envelope gets the same machine-readable detail as
+		// the OpenAI one. An SDK that only reads error.type learns "invalid
+		// request" from the type; an SDK that reads the detail learns WHICH
+		// modality was rejected and what the model does accept — without
+		// that, an Anthropic client has to parse the English prose.
+		w.Header().Set("Content-Type", "application/json")
+		if requestID != "" {
+			w.Header().Set("X-Request-Id", requestID)
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		//nolint:errcheck // HTTP write error non-recoverable
+		json.NewEncoder(w).Encode(map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type": anthropicErrorType("server_error", "modality_mismatch"),
+				// The Anthropic SDK's error object officially carries
+				// type + message only, but "code" is additive and is what
+				// every OpenAI-shaped client in this repo already keys off
+				// (the diagnostics UI reads error.code). Leaving it out on
+				// this one path would make the same condition look
+				// different depending on which endpoint the client used.
+				"code":              "modality_mismatch",
+				"message":           msg,
+				"request_id":        requestID,
+				"modality_mismatch": detail,
+				"alternatives":      alts,
+			},
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if requestID != "" {
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	w.WriteHeader(http.StatusBadRequest)
+	//nolint:errcheck // HTTP write error non-recoverable
+	json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"message":           msg,
+			"type":              "invalid_request_error",
+			"code":              "modality_mismatch",
+			"kind":              "modality_mismatch",
+			"request_id":        requestID,
+			"modality_mismatch": detail,
+			"alternatives":      alts,
+		},
+	})
+}
+
+// localiseModality renders a modality token for human consumption.
+//
+// Falls back to the raw token when the catalogue has no entry for it, so an
+// unrecognised modality still produces a readable message instead of an
+// unresolved message key on the screen.
+func localiseModality(ctx context.Context, modality string) string {
+	modality = strings.TrimSpace(strings.ToLower(modality))
+	if modality == "" {
+		return modality
+	}
+	label := i18n.T(ctx, "modality_"+modality)
+	if label == "modality_"+modality {
+		return modality
+	}
+	return label
+}
+
+// supportedModalitiesFor lists the request modalities a model registered as
+// registeredModality would be accepted for.
+//
+// ★2026-10-29：这张表**不再手写**——它由 provider.ModalityAccepts（判据的
+// 唯一 Go 实现）逐个请求模态过滤出来。理由与「同一句话不许两份」同族：
+// 手写的表与判据是两份真值 ⇒ 改判据时忘了改表 ⇒ 客户端会被告知「这个模型
+// 接音频」，而网关实际上拒掉每一个音频请求。
+// ⇒ 词表 = provider.ModalityRequestModalities（请求模态词表，双向锚在
+//
+//	事实源上，见 domains/streaming/modality_single_source_test.go）。
+//
+// The list is published so a client can decide on its own whether to strip
+// the attachments or switch model, without having to hard-code the
+// acceptance table.
+//
+// ★ 派生出来的形状（登记 → 发布清单）：
+//
+//	text       → [text]
+//	vision     → [text, vision, image]
+//	audio      → [text, audio]
+//	video      → [text, video]
+//	image      → [text, image]
+//	multimodal → [text, vision, audio, video, image, multimodal]
+//	embedding  → [text, embedding]
+//
+// ★ 'multimodal' 那行**不含** 'embedding'：登记为 multimodal 的模型不接
+// 嵌入请求（兜底精确臂：只接同名登记的行）—— 判据说什么，这里就说什么。
+func supportedModalitiesFor(registeredModality string) []string {
+	return filterSupportedModalities(registeredModality, provider.ModalityRequestModalities)
+}
+
+// filterSupportedModalities 是 supportedModalitiesFor 的可注入版本：把请求
+// 模态词表作为参数传进来 ⇒ 测试可以换掉词表来证明「这张表真的是过滤出来的」
+// （而不是又一份手写的表）。
+func filterSupportedModalities(registeredModality string, requestModalities []string) []string {
+	out := make([]string, 0, len(requestModalities))
+	for _, req := range requestModalities {
+		if provider.ModalityAccepts(registeredModality, req) {
+			out = append(out, req)
+		}
+	}
+	return out
+}
+
 // writeErrorAnthropicWithAlternatives mirrors writeErrorAnthropic and adds the
 // alternatives payload. Anthropic SDKs type-check error.type against a closed
 // set, so the type is mapped through anthropicErrorType; the extra key sits
@@ -9212,6 +9709,14 @@ func anthropicErrorType(errType, code string) string {
 	case "content_filter":
 		return "invalid_request_error"
 	case "unsupported_feature":
+		return "invalid_request_error"
+	case "modality_mismatch":
+		// A modality mismatch is a client-side problem: the request carries
+		// media the requested model cannot read. Anthropic SDKs type-check
+		// error.type against a closed set, so it must be one of the SDK's own
+		// types — "invalid_request_error" is the one that means "change the
+		// request", as opposed to "overloaded_error", which would tell the
+		// client to retry the identical request and fail forever.
 		return "invalid_request_error"
 	case "insufficient_quota", "budget_exhausted", "insufficient_credits":
 		return "invalid_request_error"

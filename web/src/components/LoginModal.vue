@@ -7,7 +7,7 @@ import { login, getAuthMe } from '../api'
 import { setApiKey, setJwtToken, setUserInfo, userInfoFromAuthMe } from '../store'
 import { useLoginModal } from '../composables/useLoginModal'
 import { locationFromInternalPath } from '../utils/safeRedirect'
-import { detectTheme, logoSrc } from '../theme'
+import { currentTheme, detectTheme, logoSrc } from '../theme'
 import { SITE_LOGO_SIZE } from '../config/brand'
 import AppModal from './ui/AppModal.vue'
 import { Close } from '@element-plus/icons-vue'
@@ -18,7 +18,7 @@ const brandLogo = ref(logoSrc())
 let logoObserver: MutationObserver | null = null
 onMounted(() => {
   brandLogo.value = logoSrc(detectTheme())
-  logoObserver = new MutationObserver(() => { brandLogo.value = logoSrc(detectTheme()) })
+  logoObserver = new MutationObserver(() => { brandLogo.value = logoSrc(currentTheme()) })
   logoObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 })
 onUnmounted(() => logoObserver?.disconnect())
@@ -184,7 +184,7 @@ function onModelUpdate(v: boolean) {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .login-modal__brand {
@@ -200,7 +200,7 @@ function onModelUpdate(v: boolean) {
 
 .login-modal__brand h2 {
   margin: 0;
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 600;
 }
 

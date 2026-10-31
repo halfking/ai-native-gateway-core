@@ -24,7 +24,7 @@ func (f *fakeImageResolver) GetCandidatesByModality(ctx context.Context, model, 
 }
 
 func TestImagesGenerations_missingModel(t *testing.T) {
-	h := NewImagesGenerationsHandler(&fakeImageResolver{}, upstream.New())
+	h := NewImagesGenerationsHandler(&fakeImageResolver{}, upstream.NewWithRetries(0))
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"hi"}`))
 	h.ServeHTTP(rec, req)
@@ -35,7 +35,7 @@ func TestImagesGenerations_missingModel(t *testing.T) {
 
 func TestImagesGenerations_noCandidates(t *testing.T) {
 	resolver := &fakeImageResolver{candidates: nil}
-	h := NewImagesGenerationsHandler(resolver, upstream.New())
+	h := NewImagesGenerationsHandler(resolver, upstream.NewWithRetries(0))
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"dall-e-3","prompt":"cat"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -71,7 +71,7 @@ func TestImagesGenerations_proxySuccess(t *testing.T) {
 		RawModel:     "dall-e-3",
 		Routable:     true,
 	}}}
-	h := NewImagesGenerationsHandler(resolver, upstream.New())
+	h := NewImagesGenerationsHandler(resolver, upstream.NewWithRetries(0))
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"dall-e-3","prompt":"cat"}`))
 	h.ServeHTTP(rec, req)

@@ -88,7 +88,13 @@ _dl_container_psql() {
   local pw="${DL_DSN_PG_PASS:-${LLM_GATEWAY_PG_PASSWORD:-}}"
   local u="${DL_DSN_PG_USER:-${LLM_GATEWAY_PG_USER:-llm_gateway}}"
   local d="${DL_DSN_PG_DB:-${LLM_GATEWAY_PG_DATABASE:-llm_gateway}}"
-  docker exec -e PGPASSWORD="$pw" "$LLM_GATEWAY_PG_CONTAINER" \
+  # ★ -i 不可省（2026-10-29 审计第 5 轮实锤）：psql_stream 走 `-f -`（stdin 流），
+  #   docker exec 不带 -i ⇒ stdin 不接通 ⇒ psql 读到立即 EOF ⇒ **一条语句都不执行
+  #   却 exit 0** ⇒ 下面的台账 INSERT 照写 ⇒ 「台账有行、产物缺席」——912/913
+  #   （10-28 08:49）与 919/920（10-29 09:58）两次整批失踪的同一个根。
+  #   有宿主 psql shim 的机器走宿主通道不受影响 ⇒ 缺陷只在「无宿主 psql 的机器
+  #   部署」时显形（211 宿主无任何 psql，ssh 直跑必中）。
+  docker exec -i -e PGPASSWORD="$pw" "$LLM_GATEWAY_PG_CONTAINER" \
     psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U "$u" -d "$d" "$@"
 }
 
@@ -2393,6 +2399,112 @@ files=(
   #   配套代码：whisper /inference 传输
   #   （domains/streaming/audio_whisper_stt.go 按 catalog_code 钉死）。
   "$ROOT_DIR/sql/migrations/startup/911_local_audio_catalog.sql"
+  "$ROOT_DIR/sql/migrations/startup/912_session_recording_trash.sql"
+
+  # 913: monthly bills + coupons + invoice placeholder (pkg 07)
+  "$ROOT_DIR/sql/migrations/startup/913_maas_monthly_bills_coupons.sql"
+
+  # ★ 914: 补回会话族 origin_stage 的 DB 级 CHECK（R175 轮）。
+  #   缺口本体：v1 族的 request_logs_origin_stage_check 随 890 的 v1 族 DROP
+  #   一起消失，会话族从未重建 ⇒ session_turns / session_turns_hot 上
+  #   **无任何 CHECK** ⇒ 探针流量排除只剩 Go 侧闸门，DB 级兜底消失。
+  #   允许集 = internal/probekind.ValidStages()（8 个探针 stage + 'business'）。
+  #   幂等：定义感知守卫（已是规范形态就跳过重建），可重复执行。
+  "$ROOT_DIR/sql/migrations/startup/914_session_turns_origin_stage_check.sql"
+
+  # ★ 915: recent_cache_hit_rate（P1-B-③，audit 2026-10-28 §4）路由侧
+  #   prompt-cache 亲和信号。CREATE OR REPLACE FUNCTION，幂等、零 DDL 锁面；
+  #   候选扫描（provider/client.go 的 chr LATERAL）依赖它存在 —— 缺函数时
+  #   候选查询整条 42803，所以它必须进部署序列而不是只进 installer。
+  "$ROOT_DIR/sql/migrations/startup/915_recent_cache_hit_rate.sql"
+  # ★ 916: 会话族 api_key_id **归一表达式**的 (CASE, ts DESC) 索引（R178 轮）。
+  #   缺口本体（252 生产只读实测）：按 api_key 过滤会话的读点
+  #   （admin/usage.go:841-859，7 天窗）实测「窗口内 75,449 行全读、丢掉
+  #   37,825 行」，一次读点 220,401 块 ⇒ **一半的行是白读的**。
+  #   ⇒ 906 那条部分索引承不住（它的键是 (session_id, turn_no DESC)，
+  #     api_key_id 只在谓词里）；⇒ canonical 视图把 api_key_id 投影成
+  #     CASE WHEN api_key_id ~ '^[0-9]+$' THEN api_key_id::bigint END
+  #     （db/request_logs_view_schema.go 的 SessionFamilyAPIKeyIDExpr）
+  #     ⇒ 普通 btree 与部分索引都承不住（PG 的谓词蕴含是语法的）
+  #     ⇒ ⇒ 只能建**与投影逐字一致的表达式索引**。
+  #   ★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带 dbinit:no-transaction 标记。
+  "$ROOT_DIR/sql/migrations/startup/916_session_turns_api_key_ts_index.sql"
+
+  # ★ 917: 输出策略拦截审核记录 / 放行表 / 硬阻断清单管理面状态的持久化表
+  #   （拦截持久化轮，2026-10-29）。纯新增三表 + 索引，全部 IF NOT EXISTS
+  #   ⇒ 幂等、零锁面风险；进程内的审核队列与放行表从此重启可恢复。
+  "$ROOT_DIR/sql/migrations/startup/917_sanitize_block_reviews.sql"
+  # ★ 919（2026-10-29 R176 轮；★ 让号记录：初拟 917，push 前 fetch 实测 origin 已被
+  #   并行会话「拦截审核与放行落库」占用（ddd762e7a）⇒ 重取 919/920）：P11 第二期
+  #   —— ursm_snapshot_slot_daily 补 active_minutes 列（hour: count(DISTINCT minute)；
+  #   minute: 恒 1），填充函数 refresh_ursm_snapshot_slot_daily 升级为同步产出它
+  #   （签名不变）。落点 = 巡检 ursm-snapshot-health.sh 的 base_active 基线改走
+  #   汇总表（252 实测：主判据 WITH win 族 22 次/5,339s 每 26.4h，独立臂 EXPLAIN
+  #   ANALYZE 158s ⇒ 行量自 R97 起涨 3.4×，892 只搬了 base_buckets）。
+  #   ★ 部署次序契约：列加上后存量行 active_minutes=NULL，巡检探测失败自动回退
+  #   源表路（慢但不失明）⇒ 落地后尽快手工触发全量回填
+  #   SELECT public.refresh_ursm_snapshot_slot_daily(8, 'hour');
+  #   （不放迁移文件：全量刷新按 2026-10-29 行量需 10min+，迁移通道预算承不住。）
+  "$ROOT_DIR/sql/migrations/startup/919_ursm_slot_daily_active_minutes.sql"
+  # ★ 920（2026-10-29 R176 轮）：node_probe_runs (credential_id, completed_at)
+  #   INCLUDE (raw_model_name, started_at, success) 覆盖索引。缺口本体 =
+  #   INV-4 门（bg/probe_policy.go credentialTwoProbeSuccessGateSQL，五个调度
+  #   读点逐行求值）：completed_at 不在任何索引里 ⇒ 每次评估扫该凭据全史
+  #   （顶层凭据 ≈3.5 万索引项）只为留 24h 的 ~1,300 条 ⇒ 252 实测慢查 325 次
+  #   /1,395s + 被取消 224 次/26.4h。★ 含 CREATE INDEX CONCURRENTLY ⇒
+  #   文件首行带 dbinit:no-transaction 标记。
+  "$ROOT_DIR/sql/migrations/startup/920_node_probe_runs_cred_completed_idx.sql"
+  # ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
+  #   - sanitize_block_reviews 追加 session_id / label / label_comment /
+  #     labeled_by / labeled_at（末尾追加，既有列序不变）；
+  #   - 新表 sanitize_block_evidence：被拦内容的**有界摘录**（原始会话内容），
+  #     带 7 天 TTL（★ 单独一张表 ⇒ 917 的「审核记录表不含载荷原文」契约不破）；
+  #   - sanitize_egress_releases.source 的 CHECK 扩一个取值 'auto_label'
+  #     （误报标注累计到阈值后的自动放行；与人工批准同键同语义）。
+  "$ROOT_DIR/sql/migrations/startup/921_sanitize_block_workbench.sql"
+  # ★ 922（2026-10-29 模型可信度轮）：模型可信度（防掺水）体系。
+  #   - 新表 provider_model_credibility：每个 (凭据,模型) 节点的当前判定
+  #     （四维度分数 + verdict + 指纹基线 + 证据 JSONB）；
+  #   - 新表 provider_model_credibility_runs：判定历史（append-only）；
+  #   - 补齐 provider_quality_profiles 的 reliability_score / calculated_at
+  #     （migration 435 遗漏、pg_dump 基线里有 ⇒ 只跑迁移的全新安装会缺列 ⇒
+  #      internal/quality/profile_updater.go 的 INSERT 会 42703）。
+  #   纯新增两表 + 幂等补列，全部 IF NOT EXISTS ⇒ 走事务通道。
+  "$ROOT_DIR/sql/migrations/startup/922_model_credibility.sql"
+  # ★ 923（2026-10-29 记账补齐轮）：把 900~920 这 20 条迁移补登记进
+  #   public.schema_migrations（人读台账）—— ★ **只补记账，不改 schema**。
+  #   缺口本体：两个台账记的不是同一段 —— 部署通道的权威台账
+  #   gateway_db_revision_sequences 里 900~920 全在（本地真库实测 287 行），
+  #   而给人读的 schema_migrations 只到 899（74 行）⇒ 运维读它会把
+  #   「已应用」误判成「待应用」。
+  #   ★ 本文件不含任何 DDL / CONCURRENTLY ⇒ 不需要 --preflight 之类的特殊处理，
+  #     也不带 dbinit:no-transaction 标记（纯 DML ⇒ 走事务通道）。
+  "$ROOT_DIR/sql/migrations/startup/923_schema_migrations_ledger_backfill.sql"
+  # ★ 924（2026-10-30 R184 轮）：credential_probe_queue (probe_command,
+  #   tenant_id, credential_id, raw_model, created_at) 复合索引。缺口本体 =
+  #   integrity_probe_planner（bg/integrity_probe_planner.go cycle，10min tick）
+  #   的 NOT EXISTS 反连接在 queue 上无任何可服务索引（7 条既有索引要么
+  #   pkey(id) 要么 partial 于 status）⇒ Merge Anti Join 全量过队：252 实测
+  #   单次 15,455 buffers（queue 26.8 万行只增不清）、生产 132 次/24h
+  #   1,369.7s 恒定在榜且产出恒 0 行。★ 含 CREATE INDEX CONCURRENTLY ⇒
+  #   文件首行带 dbinit:no-transaction 标记。
+  "$ROOT_DIR/sql/migrations/startup/924_credential_probe_queue_command_key_idx.sql"
+  # ★ 926（2026-10-30 输出合规审计轮；★ 让号记录：925 曾被 session_bodies 叶
+  #   TRP 索引 heal 占用后撤销，db-changelog 留有记录 ⇒ 按「后到者取下一个
+  #   空闲号」取 926）：拦截审核单区分「降级放行」与「硬阻断」。
+  #   sanitize_block_reviews 末尾追加 degraded BOOLEAN NOT NULL DEFAULT false，
+  #   并回填 rule_id LIKE 'builtin.guard.%' 的存量行。缺口本体 = 921 把守卫
+  #   缓冲越界的降级放行也登记成 pending 拦截单 ⇒ 211 实测 24h 内 226/226 条
+  #   全是 builtin.guard.capacity_exceeded 灌爆审核面，且批准按钮写出的放行行
+  #   没有任何消费方。纯幂等 DDL + 一次有界 UPDATE ⇒ 走事务通道。
+  "$ROOT_DIR/sql/migrations/startup/926_sanitize_block_review_degraded.sql"
+  # ★ 927（2026-10-31 12h 审计轮）：routing_policy 单例化 —— 去重 +
+  #   UNIQUE (tenant_id) 约束。★ 根因：该表**无任何唯一约束**（只有
+  #   CHECK (id = 1)）⇒ 02-seed.sql 的 `ON CONFLICT DO NOTHING` 无冲突目标
+  #   ⇒ 每次安装插一行 id=1 ⇒ 211 生产已堆到 4 行 ⇒ bg 的 CROSS JOIN
+  #   把 targets 放大 4 倍。★ 本迁移让那个 ON CONFLICT 第一次真正生效。
+  #   ★ 含 DELETE 回填 ⇒ 自带 lock_timeout / statement_timeout ⇒ 走事务通道。
+  "$ROOT_DIR/sql/migrations/startup/927_routing_policy_singleton_unique.sql"
 )
 
 
@@ -2429,6 +2541,14 @@ legacy_content_replays=(
 # SQL line/block comments and dollar-quoted bodies, so prose or dynamic SQL
 # that merely mentions CREATE OR REPLACE cannot trigger it.
 intentional_function_chains=(
+  # 919（2026-10-29，R176 252 SQL 日志审计轮）重定义
+  # refresh_ursm_snapshot_slot_daily：在 892 的体上增加 active_minutes 列
+  # （hour 粒度 = count(DISTINCT date_trunc('minute', snapshot_ts))，minute 恒 1）
+  # 并让 ON CONFLICT DO UPDATE 同步该列。签名不变、调用方零改动。
+  # 链序 = 投递序 892 → 919，**919 必须是最后一项**——它是活库里应有的最终体。
+  # 少这一行，部署会在应用任何文件之前 abort（exit 5）。登记由 24h 审计第 5 轮
+  # 之后的 /live 点选联动轮补录（部署被本守卫拦下时按错误消息逐字补登）。
+  'refresh_ursm_snapshot_slot_daily|892_ursm_snapshot_slot_daily.sql|919_ursm_slot_daily_active_minutes.sql|'
   # 857 (2026-10-13) 重定义 analyze_llm_gateway_table_stats：给「当月列存分区」
   # 分支加陈旧度闸门。链序必须是 838 → 839 → 857，且 **857 必须是最后一项**——
   # 它是活库里应有的最终体。少这一行，部署会在应用任何文件之前 abort（exit 5），
@@ -2597,6 +2717,14 @@ intentional_function_chains=(
   'promote_request_wal_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
   'promote_credential_model_index_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
   'promote_routing_decision_log_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
+  # 919 (R176, 2026-10-29) redefines refresh_ursm_snapshot_slot_daily on top of
+  # 892's body to also produce the active_minutes column. Chain order = delivery
+  # order 892 → 919, and **919 must stay the later entry** — it is the final body
+  # production should have. Without this line the pre-flight guard aborts every
+  # deploy at exit 5. (Registered 2026-10-29 audit round: the parallel R176 deploy
+  # tree carried it, but the merge back to main dropped the chain entry while
+  # keeping both files — first caught by the fake-psql selftest below.)
+  'refresh_ursm_snapshot_slot_daily|892_ursm_snapshot_slot_daily.sql|919_ursm_slot_daily_active_minutes.sql|'
 )
 redefined_functions="$(
   for file in "${files[@]}"; do
@@ -2711,6 +2839,11 @@ END
 \$repair\$;"
 }
 
+# 本轮按指纹命中跳过 / 按内容重放的文件（⇒ 终态探针只对这些文件做：
+# fixture 树与合成的 legacy 记账行不在其中 —— 探针判的是「本轮认过账的文件，
+# 产物必须真实在场」，不是「库里所有记账行」）。
+declare -a sha_matched_markers=()
+
 for file in "${files[@]}"; do
   [[ -f "$file" ]] || { printf 'error: missing migration %s\n' "$file" >&2; exit 4; }
   base="$(basename "$file")"
@@ -2728,12 +2861,14 @@ for file in "${files[@]}"; do
   stored_sha="$(psql_query "SELECT content_sha256 FROM public.gateway_db_revision_sequences WHERE sequence_name='${marker}' LIMIT 1")"
   if [[ -n "$stored_sha" ]]; then
     if [[ "$stored_sha" == "$file_sha" ]]; then
+      sha_matched_markers+=("${base}")
       printf 'already applied: %s\n' "${file#"$ROOT_DIR/"}"
       continue
     fi
     # 台账已记指纹且与当前文件不同：文件在应用后被内容加固过。通道契约
     # （每个迁移幂等）兜底重放安全性，重放使库状态收敛到当前文件内容。
     printf 'content replay (ledger %.12s -> file %.12s): applying %s\n' "$stored_sha" "$file_sha" "${file#"$ROOT_DIR/"}"
+    sha_matched_markers+=("${base}")
     psql_file "$file"
     psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}', execution_sha256='${execution_sha}', runtime_adaptation='${runtime_adaptation}' WHERE sequence_name='${marker}'"
     continue
@@ -2743,6 +2878,7 @@ for file in "${files[@]}"; do
       # 遗留记账（指纹通道上线前应用）且登记在重放清单：按当前内容重放
       # 一次，之后进入常规指纹管理。
       printf 'content replay (legacy, registered): applying %s\n' "${file#"$ROOT_DIR/"}"
+      sha_matched_markers+=("${base}")
       psql_file "$file"
       psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}', execution_sha256='${execution_sha}', runtime_adaptation='${runtime_adaptation}' WHERE sequence_name='${marker}'"
     else
@@ -2756,6 +2892,135 @@ for file in "${files[@]}"; do
 done
 # Fingerprints cannot detect physical drift after delivery. Fail before cutover.
 psql_query "SELECT public.assert_session_bodies_kind_contract()"
+
+# ── 台账 ↔ 产物对账门（2026-10-29 审计轮，211 实测教训）───────────────────
+# ★ 912/913 在 211 上「台账有行、内容指纹一致、产物缺席」—— 回收站清理 worker
+#   每小时 42P01，挂了两天才被发现
+#   （docs/audit/2026-10-29-24h审计轮-背压熔断与迁移账本补齐.md §实测）。
+#   指纹通道只能证明「文件执行过」，证明不了「对象还在」⇒ 对**本轮按指纹命中
+#   跳过 / 内容重放**的关键迁移逐一探测其头产物；产物不在 ⇒ 响亮失败（此时旧槽
+#   仍在服务，损失为零），处置 = 删除对应 ledger 行让重放通道再应用（迁移幂等）。
+# ★ 探针范围 = sha_matched_markers（本轮 files 里真的走过 skip/replay 分支的）——
+#   不是「库里所有记账行」：fixture 树（runtime_test 的合成 shim 台账）与
+#   legacy 无指纹记账行不在此列（后者的产物缺失仍靠 census drift verifier 与
+#   worker 42P01 兜底 —— 如实记，不是装作覆盖了）。
+# 局限（如实记）：头产物清单仍带策展成分——900~920 已逐迁移核对（上表），但
+# 412~899 只覆盖 912/913 两个「咬过人」的；通用 runner 化（从迁移体自动推导
+# 头产物）仍是下一轮工作。契约测试 apply_db_sequence_artifact_probe_test.sh
+# 把「清单里每个探针的产物名必须真实出现在对应迁移文件里」钉成硬门——
+# 文件改了而探针没跟 ⇒ 红。
+ledger_artifact_probe() {
+  local marker_suffix="$1" probe_sql="$2" artifact
+  local known=0
+  for seen in "${sha_matched_markers[@]:-}"; do
+    [[ "$seen" == "$marker_suffix" ]] && { known=1; break; }
+  done
+  [[ "$known" == "0" ]] && return 0
+  artifact="$(psql_query "SELECT ${probe_sql}")"
+  if [[ "$artifact" != "t" ]]; then
+    printf 'error: 台账 ↔ 产物对账失败：%s 本轮按指纹认账但其产物缺失（%s ⇒ %s）\n' \
+      "$marker_suffix" "$probe_sql" "$artifact" >&2
+    printf 'error: 处置：删除 gateway_db_revision_sequences 里 sequence_name=%s:%s 的行，再重放本序列（迁移幂等）\n' \
+      "$sequence_name" "$marker_suffix" >&2
+    exit 5
+  fi
+  printf 'ledger/artifact probe ok: %s\n' "$marker_suffix"
+}
+ledger_artifact_probe "912_session_recording_trash.sql" \
+  "to_regclass('public.session_bodies_trash') IS NOT NULL AND to_regclass('public.session_hidden') IS NOT NULL"
+ledger_artifact_probe "913_maas_monthly_bills_coupons.sql" \
+  "to_regclass('public.maas_monthly_bills') IS NOT NULL AND to_regclass('public.maas_coupons') IS NOT NULL AND to_regclass('public.maas_coupon_redemptions') IS NOT NULL AND to_regclass('public.maas_invoice_requests') IS NOT NULL"
+# ── 900+ 全覆盖（2026-10-29 第二轮通用化）：上一版只有 912/913 两条「咬过人」的，
+# 但 211 实测的静默缺失是**整族**（900/902/904/912/913/914/916 七个迁移的对象全部
+# 缺席，见 docs/audit/2026-10-29-24h审计轮-背压熔断与迁移账本补齐.md §5）⇒
+# 头产物清单补齐 900~920 每个迁移。判据逐文件核对过迁移体：
+#   · 表/索引/函数 → to_regclass / to_regprocedure；
+#   · 902（pkey 换体）→ pg_index.indisprimary + INCLUDE 列（includedattrs 列在
+#     PG17 不存在 ⇒ 用 indnkeyatts < indnatts + indkey 尾段判定，211 实测 t）；
+#     tmp 名会被 ADD CONSTRAINT ... USING INDEX 改掉，探针必须认终态名；
+#   · 908（drop 语义）→ 产物是「索引不在场」，反向断言；
+#   · 911（catalog 种子）→ provider_catalog 按 catalog_code 计数；
+#   · 914（CHECK 约束）→ pg_constraint.convalidated（约束在且已验证）。
+# 917/919/920 同时列内 ⇒ 新库首跑（无 sha_matched 命中）与重放路径都覆盖。
+ledger_artifact_probe "900_freediscovery_schema_reassert.sql" \
+  "to_regclass('public.provider_templates') IS NOT NULL AND to_regclass('public.discovery_tasks') IS NOT NULL AND to_regclass('public.discovery_results') IS NOT NULL"
+ledger_artifact_probe "901_usage_ledger_api_key_id_ts_idx.sql" \
+  "to_regclass('public.idx_usage_ledger_api_key_id_ts') IS NOT NULL"
+ledger_artifact_probe "902_stats_event_dedup_pkey_include.sql" \
+  "EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'stats_event_dedup_pkey' AND i.indisprimary AND i.indnkeyatts < i.indnatts AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = i.indrelid AND a.attname = 'occurred_at' AND a.attnum > i.indnkeyatts AND a.attnum <= i.indnatts AND a.attnum = ANY(i.indkey::int2[])))"
+ledger_artifact_probe "903_sessions_updated_at_session_id_index.sql" \
+  "to_regclass('public.idx_sessions_updated_at_session_id') IS NOT NULL"
+ledger_artifact_probe "904_inspector_stats_partial_indexes.sql" \
+  "to_regclass('public.idx_session_dim_closed_at_closed') IS NOT NULL AND to_regclass('public.idx_session_summaries_health_score_notnull') IS NOT NULL"
+ledger_artifact_probe "905_turns_session_model_index.sql" \
+  "to_regclass('public.idx_session_turns_model_session') IS NOT NULL AND to_regclass('public.idx_session_turns_hot_model_session') IS NOT NULL"
+ledger_artifact_probe "906_turns_api_key_numeric_partial_index.sql" \
+  "to_regclass('public.idx_session_turns_api_key_numeric') IS NOT NULL AND to_regclass('public.idx_session_turns_hot_api_key_numeric') IS NOT NULL"
+ledger_artifact_probe "907_routing_analytics_source_lateral.sql" \
+  "to_regclass('public.routing_analytics_source') IS NOT NULL"
+# 908 是 drop 语义：产物 = 索引不在场（反向断言）。
+ledger_artifact_probe "908_route_incident_events_type_created_drop.sql" \
+  "to_regclass('public.idx_route_incident_events_type_created') IS NULL"
+ledger_artifact_probe "909_session_summaries_search_trgm_indexes.sql" \
+  "to_regclass('public.idx_session_summaries_session_key_trgm') IS NOT NULL AND to_regclass('public.idx_session_summaries_title_trgm') IS NOT NULL AND to_regclass('public.idx_session_summaries_primary_model_trgm') IS NOT NULL"
+# 910 与 907 是同一视图（CREATE OR REPLACE 保留 OID）⇒ 探针同一个头产物；
+# 换体只改 plan 形态，视图在位即对账成立。
+ledger_artifact_probe "910_routing_analytics_source_hashjoin.sql" \
+  "to_regclass('public.routing_analytics_source') IS NOT NULL"
+# 911 种子行：三条本地音频 catalog 记录在位（ON CONFLICT DO NOTHING，任一缺席即假）。
+ledger_artifact_probe "911_local_audio_catalog.sql" \
+  "(SELECT count(*) FROM public.provider_catalog WHERE code IN ('whisper-cpp','whisper-cpp-large','macos-say') AND kind = 'local') >= 3"
+# ★★★ R181 轮修正（★★ 这是【会永久挡住部署】的判据缺陷，★ 不是漂零）：★★
+#   ★ 原判据：★ 按【约束名】数条数 ⇒ ⇒ `= 2` ⇒ ⇒ **在分区表上恒假** ⇒ ⇒ 每次部署都卡在这一处。
+#   ★ ★★ 真因：★ `session_turns` 是【分区表】⇒ ★ PG 会把父表上的 CHECK 约束
+#   ★   **自动克隆到每一个分区** ⇒ ⇒ 本地实测 `conname IN (两个名字) AND convalidated`
+#   ★   的条数是 **7**（★ 父表 1 + hot 1 + 5 个分区各 1）⇒ ⇒ **产物其实全都在，★ 但判据说缺**。
+#   ★ ★★ ⇒ ⇒ ★★ 211 / 252 同为分区表 ⇒ ★★ 那个 `= 2` 在那两库上**同样恒假**
+#   ★★   ⇒ ⇒ ★★ 这也是「914 / 916 在 211 与 252 上一直执行不了」的**隐藏原因之一** ★★
+#   ★ ★★ 修法（★ 语义不变：★ 两个约束必须【在父表与 hot 上】且【已校验】）：
+#   ★   改成按【约束挂在哪个关系上】判断 ⇒ ⇒ 分区上的克隆**不计入** ⇒ ⇒ 恰好 2 ✓
+#   ★ ★★ 通用式：★ 判「产物在不在」要判【它挂在哪】，★ 不要只判【它叫什么】——
+#   ★   ★★ 分区表上【同名约束会有 N 份克隆】⇒ ★★ 按名字计数 = 恒假的死闸 ★★
+ledger_artifact_probe "914_session_turns_origin_stage_check.sql" \
+  "(SELECT count(*) FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE n.nspname = 'public' AND t.relname IN ('session_turns','session_turns_hot') AND c.conname IN ('session_turns_origin_stage_check','session_turns_hot_origin_stage_check') AND c.convalidated) = 2"
+ledger_artifact_probe "915_recent_cache_hit_rate.sql" \
+  "to_regprocedure('public.recent_cache_hit_rate(integer,integer,timestamp with time zone,integer)') IS NOT NULL OR EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'recent_cache_hit_rate')"
+ledger_artifact_probe "916_session_turns_api_key_ts_index.sql" \
+  "to_regclass('public.idx_session_turns_api_key_ts') IS NOT NULL AND to_regclass('public.idx_session_turns_hot_api_key_ts') IS NOT NULL"
+ledger_artifact_probe "917_sanitize_block_reviews.sql" \
+  "to_regclass('public.sanitize_block_reviews') IS NOT NULL AND to_regclass('public.sanitize_egress_releases') IS NOT NULL AND to_regclass('public.sanitize_hardblock_state') IS NOT NULL"
+ledger_artifact_probe "919_ursm_slot_daily_active_minutes.sql" \
+  "EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='ursm_snapshot_slot_daily' AND column_name='active_minutes') AND EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'refresh_ursm_snapshot_slot_daily')"
+ledger_artifact_probe "920_node_probe_runs_cred_completed_idx.sql" \
+  "to_regclass('public.idx_node_probe_runs_cred_completed') IS NOT NULL"
+ledger_artifact_probe "921_sanitize_block_workbench.sql" \
+  "to_regclass('public.sanitize_block_evidence') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='sanitize_block_reviews' AND column_name='label') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='sanitize_block_reviews' AND column_name='session_id')"
+ledger_artifact_probe "922_model_credibility.sql" \
+  "to_regclass('public.provider_model_credibility') IS NOT NULL AND to_regclass('public.provider_model_credibility_runs') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_quality_profiles' AND column_name='reliability_score') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_quality_profiles' AND column_name='calculated_at')"
+# ★ 923（记账补齐轮）：产物 = **人读台账里的那 20 行**。判据 = 900~920
+#   （去掉 918 —— 该号不存在）这 20 个版本行都在 schema_migrations 里。
+#   ★ 与其它探针不同：923 的产物是「记账行」而不是「schema 对象」，
+#     正是它要修的那个差额的另一面 ⇒ 探针在这里是**闭环**：若哪天有人把
+#     补登记删了、或版本列表写漏了一条，这里立刻响。
+ledger_artifact_probe "923_schema_migrations_ledger_backfill.sql" \
+  "(SELECT count(*) FROM public.schema_migrations WHERE version IN ('900','901','902','903','904','905','906','907','908','909','910','911','912','913','914','915','916','917','919','920')) = 20"
+ledger_artifact_probe "924_credential_probe_queue_command_key_idx.sql" \
+  "to_regclass('public.idx_credential_probe_queue_command_key_created') IS NOT NULL"
+# ★ 926（输出合规审计轮迁移，2026-10-31 24h 审计第 11 轮补登记）：产物 =
+#   sanitize_block_reviews 的 degraded 列（降级放行遥测语义；回填不另建对象）。
+#   ★ 掏空门（TestTsvHollowoutReadersRejectEmptyRegistry）实测抓到缺登记：
+#   读者在基线就红（contract FAILED: no ledger_artifact_probe）⇒ 不可判定。
+#   ★★ 联动契约（apply-db-revision-sequence_test.sh）：探针行里所有 public.x / 'x'
+#   字面量必须在迁移文件文本中出现 ⇒ information_schema / 裸 'public' 在 926 文件里
+#   不存在 ⇒ 用 pg_catalog 系统表形态（裸标识符不进抽取集，与 924 的 to_regclass 同理）。
+ledger_artifact_probe "926_sanitize_block_review_degraded.sql" \
+  "to_regclass('public.sanitize_block_reviews') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid WHERE c.relname = 'sanitize_block_reviews' AND a.attname = 'degraded' AND NOT a.attisdropped)"
+# ★ 927（12h 审计轮 P2-1）：产物 = routing_policy 的 UNIQUE (tenant_id) 约束
+#   （★ 去重不另建对象 ⇒ 探针只看约束是否存在）。
+#   ★ 联动契约：探针行里所有 public.x / 'x' 字面量必须在迁移文件文本中出现
+#   ⇒ 'routing_policy_tenant_id_key' 与 public.routing_policy 都在 927 文件里。
+ledger_artifact_probe "927_routing_policy_singleton_unique.sql" \
+  "EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'routing_policy_tenant_id_key' AND conrelid = 'public.routing_policy'::regclass)"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

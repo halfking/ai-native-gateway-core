@@ -170,6 +170,17 @@ if [[ " ${ARGS[*]+${ARGS[*]}} " == *' --doctor '* ]]; then
     --data-root "$DD_GW_DATA_ROOT"
 fi
 
+# =====================================================================
+# ★ 部署前的**测试闸门**（2026-10-29 审计轮补）★★
+#
+# ★ 为什么必须有：★ 部署**只编译、不跑测试** ⇒ ★★ **红灯也能上线** ★★
+#   （★ 实证：★ 2026-10-29 那一轮的容量契约测试一直是红的，★ 而它守的正是
+#   「越界不再杀请求」这条误报修复的另一半 ⇒ ★★ 闸门 = 上线前把「改动触及
+#   的包」的测试跑一遍 ★★）★★
+# ★ 逃生舱：★ `DD_SKIP_TEST_GATE=1`（★ 显式给，★ 不允许默默跳过）★★
+# ★ 闸门在**本机**跑（★ docker + vendor ⇒ 离线可用；★ 不依赖目标机环境）★★
+bash "$SCRIPT_DIR/deploy-test-gate.sh"
+
 # bash 3.2 + set -u: the `${ARGS[@]+${ARGS[@]}}` guard keeps the no-arg path
 # (empty ARGS) from dying as an unbound variable, same reason as the guard above.
 exec bash "$SCRIPT_DIR/deploy-seamless-docker.sh" --via "$DD_SSH_TARGET" "${ARGS[@]+"${ARGS[@]}"}"

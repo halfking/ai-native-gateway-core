@@ -178,7 +178,7 @@ func (m *MemoryStore) LearnedParams(_ context.Context, key LearnedKey) []string 
 	if !key.valid() {
 		return nil
 	}
-	cutoff := m.nowFn().Add(-learnedTTL)
+	cutoff := m.nowFn().Add(-learnedTTL())
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	set := map[string]bool{}

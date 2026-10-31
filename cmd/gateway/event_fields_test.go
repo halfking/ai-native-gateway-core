@@ -5,9 +5,19 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domain"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
+func enableRecordingConsentForEventTest(t *testing.T) {
+	t.Helper()
+	on := true
+	prev := settings.TestingConsentOverride
+	settings.TestingConsentOverride = &on
+	t.Cleanup(func() { settings.TestingConsentOverride = prev })
+}
+
 func TestExtractRequestCompletedPayload(t *testing.T) {
+	enableRecordingConsentForEventTest(t)
 	startTime := time.Now().Add(-100 * time.Millisecond)
 
 	env := &domain.PipelineRequest{
@@ -230,6 +240,7 @@ func TestExtractModel_Priority(t *testing.T) {
 // TestExtractRequestCompletedPayload_BodyRefsFormat verifies body_refs uses
 // the internal:// scheme and the request_id.
 func TestExtractRequestCompletedPayload_BodyRefsFormat(t *testing.T) {
+	enableRecordingConsentForEventTest(t)
 	env := &domain.PipelineRequest{
 		SessionID:  "session-test",
 		StatusCode: 200,

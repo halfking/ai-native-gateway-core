@@ -50,7 +50,11 @@ vi.mock('../api/memora', () => ({
   extractSessionToMemora: vi.fn(),
 }))
 vi.mock('../api/sessionTurnsTree', () => ({ fetchSessionTurnsTree: fetchSessionTurnsTreeMock }))
-vi.mock('../api/sessions_v2', () => ({ triggerInstantSummary: (...a: unknown[]) => triggerInstantSummaryMock(...a) }))
+vi.mock('../api/sessions_v2', async (importOriginal) => ({
+  // isRecordingUnavailable 必须是真实现：consent 409 分支的判定与生产同口径。
+  ...(await importOriginal<typeof import('../api/sessions_v2')>()),
+  triggerInstantSummary: (...a: unknown[]) => triggerInstantSummaryMock(...a),
+}))
 vi.mock('../api/turns', () => ({
   listTurnsSessions: (...a: unknown[]) => listTurnsSessionsMock(...a),
   listTurnsFilterOptions: (...a: unknown[]) => listTurnsFilterOptionsMock(...a),

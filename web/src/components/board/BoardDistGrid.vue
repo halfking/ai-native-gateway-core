@@ -221,17 +221,17 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
 .dist {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 .dist__bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .dist__title {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 700;
   margin: 0;
 }
@@ -247,8 +247,8 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
   border: 0;
   background: transparent;
   color: var(--text-muted);
-  font-size: 11.5px;
-  padding: 3px 9px;
+  font-size: 11px;
+  padding: 3px 8px;
   border-radius: 5px;
   cursor: pointer;
   font-weight: 600;
@@ -260,25 +260,25 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
 .dist__grid {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 10px;
+  gap: 8px;
 }
 .dist-card {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 11px 13px;
+  padding: 12px 12px;
   min-width: 0;
 }
 .dist-card--danger .rank-row__bar i {
   background: var(--danger);
 }
 .dist-card__title {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 700;
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  gap: 6px;
+  gap: 4px;
   margin: 0 0 8px;
   overflow: hidden;
   white-space: nowrap;
@@ -286,15 +286,15 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
 .dist-card__cs {
   color: var(--text-muted);
   font-weight: 500;
-  font-size: 10.5px;
+  font-size: 11px;
   flex-shrink: 0;
 }
 .rank-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 7px 0;
-  font-size: 11.5px;
+  margin: 8px 0;
+  font-size: 11px;
 }
 .rank-row--click {
   cursor: pointer;
@@ -332,21 +332,21 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
   color: var(--text-muted);
 }
 .dist-card__hint {
-  margin-top: 6px;
-  font-size: 10.5px;
+  margin-top: 4px;
+  font-size: 11px;
   color: var(--accent);
 }
 .dist-card__empty {
   font-size: 12px;
   color: var(--text-muted);
-  padding: 10px 0;
+  padding: 8px 0;
 }
 /* 降级态刻意用 warning 色而非 muted：空态是「确实没有」，降级是「不知道」。
    两者的视觉权重必须不同，否则用户读到的是同一个结论。 */
 .dist-card__degraded {
   font-size: 12px;
   color: var(--warning);
-  padding: 10px 0;
+  padding: 8px 0;
   line-height: 1.5;
 }
 .dist-card__skeleton {
@@ -363,7 +363,7 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
 .drill-panel {
   border: 1px dashed var(--accent);
   border-radius: 10px;
-  padding: 10px 12px;
+  padding: 8px 12px;
 }
 .drill-panel__header {
   display: flex;
@@ -377,7 +377,7 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
 }
 .drill-tabs button {
   font-size: 12px;
-  margin-right: 6px;
+  margin-right: 4px;
   padding: 4px 8px;
   border-radius: 5px;
   border: 1px solid var(--border);
@@ -415,7 +415,7 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
   align-items: center;
   gap: 8px;
   margin: 4px 0;
-  font-size: 11.5px;
+  font-size: 11px;
 }
 .drill-row__name {
   flex: 0 0 44%;

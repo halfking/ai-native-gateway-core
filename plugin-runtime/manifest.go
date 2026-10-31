@@ -95,6 +95,47 @@ func (m *Manifest) validate() error {
 			return fmt.Errorf("gateway compatibility version %q must be strict SemVer", version)
 		}
 	}
+	if err := validateServiceNames("requires", m.Requires); err != nil {
+		return err
+	}
+	if err := validateServiceNames("provides", m.Provides); err != nil {
+		return err
+	}
+	if m.API != "" && !Compatible(m.API) && !strings.HasPrefix(strings.TrimSpace(m.API), "^") {
+		return fmt.Errorf("api %q must be a caret range like ^1", m.API)
+	}
+	if m.SettingsSchema != nil {
+		if m.SettingsSchema.Type != "" && m.SettingsSchema.Type != "object" {
+			return fmt.Errorf("settings_schema.type must be object")
+		}
+		if len(m.SettingsSchema.Properties) > 64 {
+			return fmt.Errorf("settings_schema has too many properties")
+		}
+	}
+	for _, a := range m.ClientAssets {
+		if a == "" || filepath.IsAbs(a) || strings.Contains(filepath.Clean(a), ".."+string(filepath.Separator)) {
+			return fmt.Errorf("client_assets entry %q must be a relative path inside the plugin", a)
+		}
+	}
+	return nil
+}
+
+func validateServiceNames(label string, names []string) error {
+	seen := map[string]struct{}{}
+	re := regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			return fmt.Errorf("%s must not contain empty values", label)
+		}
+		if !re.MatchString(n) {
+			return fmt.Errorf("invalid %s service name %q", label, n)
+		}
+		if _, ok := seen[n]; ok {
+			return fmt.Errorf("%s contains duplicate %q", label, n)
+		}
+		seen[n] = struct{}{}
+	}
 	return nil
 }
 

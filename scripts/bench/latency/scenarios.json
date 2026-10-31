@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "updated": "2026-10-28",
+  "gates": {
+    "G1": {
+      "name": "附加延迟 P95 ≤ 50ms",
+      "caliber": "AL",
+      "formula": "via_gateway - direct_upstream (prefer TTFB for stream)",
+      "load": "UAT_peak × 10 concurrent streaming"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "DP-models-ladder",
+      "caliber": "DP",
+      "method": "GET",
+      "path": "/v1/models",
+      "notes": "Historical 2026-09-07 P95=89.73ms; NOT comparable to G1",
+      "tool": "k6/data_plane_baseline.js",
+      "g1_eligible": false
+    },
+    {
+      "id": "AL-chat-stream-compare",
+      "caliber": "AL",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "stream": true,
+      "notes": "Paired direct vs via-gateway; G1 formal metric",
+      "tool": "measure_added_latency.py | k6/chat_stream_g1.js",
+      "g1_eligible": true
+    },
+    {
+      "id": "AL-chat-sync-compare",
+      "caliber": "AL",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "stream": false,
+      "notes": "E2E latency delta; secondary to stream TTFB",
+      "tool": "measure_added_latency.py --no-stream",
+      "g1_eligible": true
+    },
+    {
+      "id": "SMOKE-mock-pair",
+      "caliber": "AL",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "notes": "Local Python mock+fake-gw only; no production hosts",
+      "tool": "run_smoke.sh",
+      "g1_eligible": false
+    }
+  ],
+  "historical_89_73ms": {
+    "value_ms": 89.73,
+    "date": "2026-09-07",
+    "evidence": "/Users/xutaohuang/workspace/ai-native-tools/docs/2026-09-06-multi-agent-platform-integration/evidence/phase4/gateway-result.txt",
+    "caliber": "DP",
+    "endpoint": "/v1/models (+ /health in soak)",
+    "includes_upstream_inference": false,
+    "threshold_then": "p(95)<500ms",
+    "is_added_latency": false,
+    "is_ttft": false,
+    "is_e2e_chat": false
+  }
+}

@@ -19,34 +19,33 @@ import (
 //	video block present     → "video"
 //	multiple modalities     → highest-priority wins (video > audio > vision)
 //
-// SQL filter semantics (loadCandidatesByModalityDB):
-//   - '' or 'text'  → no modality filter
-//   - 'vision'      → modality IN ('vision', 'multimodal')
-//   - 'audio'       → modality IN ('audio',  'multimodal')
-//   - 'video'       → modality IN ('video',  'multimodal')
-//   - 'multimodal'  → modality = 'multimodal'
-//   - 'embedding'   → modality = 'embedding'
+// ★判据的【唯一实现】不在本文件，也不在本注释里：
 //
-// ★ 2026-10-27（R148 审计轮）订正：'video' 这一行此前写的是
-// `modality = 'video'` —— **在 2026-10-26 那轮修好之前它是对的**，
-// 那轮把 video 补进了分级模态门的接受臂
-// （provider/client.go 的 candidateQuerySQLBase：
-// `$3 IN ('vision','audio','video') AND COALESCE(mc.modality,'text') IN ($3,'multimodal')`），
-// 于是本文件的这份「事实源注释」变成了**过期的一副本**。
+//	· Go 判据 = provider.ModalityAccepts
+//	· SQL 形态 = provider.ModalityAcceptArmsSQL（唯一片段；路由器的候选集
+//	  查询与零候选建议列表都从它渲染）
 //
-// 为什么 2026-10-26 那一轮必须改这一行：`multimodal` 在本仓的登记语义是
-// 「text+image+audio+video」—— 见 modelname/modality_defaults.go
-// （gemini-1.5/2.0/2.5 全家 → multimodal，qwen-omni → 「text+image+audio+video
-// (全模态)」，kimi-k3 → 「text+image+video」）。也就是说：**登记为
-// multimodal 的模型本来就该接 video 请求**，此前只有精确 `modality='video'`
-// 一条臂 ⇒ 任何带视频块的请求对全部 multimodal 模型 503（真机复现）。
+// ⇒ 本文件此前抄了一份「SQL filter semantics」表（”/text→全放行、
 //
-// ★ 这条注释是「同一句话不许两份」的又一例：判据在 SQL 里，抄本在注释里，
-// 改判据时忘了改抄本 ⇒ 下一个读注释的人会照着过期语义做判断。
-// 本文件的抄本与 provider/client.go 的判据由
-// provider/candidate_query_sql_shape_test.go 的
-// TestCandidateQuerySQL_VideoAcceptsMultimodal 词表锁步判据共同守住。
-
+//	vision→IN(vision,multimodal)、…）⇒ ★那是**第六份表达**，而且**已经
+//	过期过一次**（2026-10-27 那轮把 video 补进接受臂时，这张表没跟着改，
+//	直到 10-28 的审计轮才发现）⇒ ★ 「注释是事实源」的反面：**注释里抄一份
+//	判据 = 判据多一个会漂的副本** ⇒ 现在删掉抄写，改为指认唯一实现。
+//
+// ★ 需要知道「某个请求模态会被路由到哪里」时，去读 provider/modality_accept.go
+//
+//	的 ModalityAccepts（它上面有完整的形态表与每一条的理由）。
+//
+// ★ 2026-10-26 补记（保留历史）：当时 'video' 这一行写的是 `modality = 'video'`
+//
+//	—— 在2026-10-26 那轮修好之前它是对的，那轮把 video 补进了分级模态门的
+//	接受臂，于是这份抄本变成了过期副本。**根因就是「抄一份」**。
+//
+// ★ multimodal 的登记语义（text+image+audio+video）见
+//
+//	modelname/modality_defaults.go —— 也就是说：**登记为 multimodal 的模型
+//	本来就该接 video 请求**，此前只有精确 `modality='video'` 一条臂 ⇒
+//	任何带视频块的请求对全部 multimodal 模型 503（真机复现）。
 const (
 	modalityText       = "text"
 	modalityVision     = "vision"
@@ -75,6 +74,19 @@ func detectRequestModality(bodyBytes []byte) string {
 	var body struct {
 		Messages []json.RawMessage `json:"messages"`
 		Contents []json.RawMessage `json:"contents"` // Gemini native
+		// ★2026-10-28: OpenAI Responses API 的 input[]。
+		//
+		// 此前检测器只认 messages[] 与 Gemini 的 contents[]，于是
+		// /v1/responses 的带图请求被判为 **text** ⇒ 模态门对这条路径
+		// 从不生效 ⇒ 带图请求原样发给上游，由上游回 400
+		// （生产实测：glm-5.3-flash 收到 image 块，上游智谱回 400，
+		//   网关把它记成 provider_unavailable 503「All providers unavailable」
+		//   —— 把「上游不收这个模态」说成了「所有供应商都不可用」，
+		//   同样是误导，而且比模态不匹配更难排查）。
+		//
+		// input[] 的条目结构与 messages[] 相同（role + content），
+		// 所以复用同一条遍历路径。
+		Input []json.RawMessage `json:"input"`
 	}
 	if err := json.Unmarshal(bodyBytes, &body); err != nil {
 		return modalityText
@@ -84,6 +96,23 @@ func detectRequestModality(bodyBytes []byte) string {
 
 	// Walk each top-level message (OpenAI / Anthropic shape).
 	for _, raw := range body.Messages {
+		var msg struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			continue
+		}
+		if len(msg.Content) == 0 {
+			continue
+		}
+		walkContent(msg.Content, &hasVision, &hasAudio, &hasVideo)
+	}
+
+	// Walk each Responses API input[] entry. Same shape as messages[]:
+	// {role, content}. A bare string entry (the "input": "hello" shorthand)
+	// carries no media and is skipped by the content check.
+	for _, raw := range body.Input {
 		var msg struct {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`

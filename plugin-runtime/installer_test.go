@@ -1,7 +1,6 @@
 package pluginruntime
 
 import (
-	"runtime"
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
@@ -12,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 )

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // RequestDetailFullscreenView — fullscreen shell for request/session detail.
 import { computed, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { surfaceError } from '../i18n/errorSurface'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -16,6 +17,11 @@ import { ArrowLeft } from '@element-plus/icons-vue'
 import './request-detail-fullscreen.css'
 
 type ViewMode = 'request' | 'session-turns'
+
+// ★ 2026-10-27 第 25 增量：页头的「←」是**纯图标按钮**，此前**没有可访问名**
+//   （无 aria-label / title）⇒ 读屏用户不知道它是什么。
+//   ⇒ 复用已有的 8 语种共享键 `common.button.back`，不新造文案、不硬编码中文。
+const { t } = useI18n()
 
 const SECTIONS: [DetailSection, string][] = [
   ['overview', '概览'],
@@ -184,7 +190,14 @@ const snapDurationMs = computed(() => {
 <template>
   <div class="rdf" data-testid="request-detail-fullscreen">
     <header class="top">
-      <button type="button" class="btn btn-sm" @click="goBack"><ArrowLeft /></button>
+      <!-- ★ 第 25 增量：纯图标按钮补可访问名（复用 common.button.back） -->
+      <button
+        type="button"
+        class="btn btn-sm"
+        :aria-label="t('common.button.back')"
+        :title="t('common.button.back')"
+        @click="goBack"
+      ><ArrowLeft /></button>
       <div class="id-block">
         <code>{{ requestId || '—' }}</code>
         <span class="status-pill" :class="statusToneClass(statusLabel, 'pill')">{{ statusLabel }}</span>
@@ -205,7 +218,8 @@ const snapDurationMs = computed(() => {
         @click="exportSessionMd"
       >{{ exporting ? '导出中…' : '导出 MD' }}</button>
       <button v-if="sessionId" type="button" class="btn btn-sm" @click="openSession">打开会话</button>
-      <button type="button" class="btn btn-sm" @click="goBack">关闭</button>
+      <!-- ★ 第 25 增量：**删掉「关闭」** —— 它与左上角的「←」调的是同一个
+           `goBack`（两个入口做同一件事）⇒ 页头可见动作 5 → 4。 -->
     </header>
 
     <div v-if="exportError" class="banner err">导出失败：{{ exportError }}</div>

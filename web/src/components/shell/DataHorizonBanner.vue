@@ -126,7 +126,7 @@ function onDismissRefresh() {
   background: transparent;
   color: inherit;
   border-radius: 4px;
-  padding: 2px 10px;
+  padding: 2px 8px;
   font-size: 12px;
   cursor: pointer;
 }

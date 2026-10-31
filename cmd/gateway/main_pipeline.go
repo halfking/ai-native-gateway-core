@@ -123,9 +123,11 @@ import (
 	securityplugins "github.com/kaixuan/llm-gateway-go/domains/security/plugins"             //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/sessionsummary"                               //nolint:depguard // session summary worker wiring
-	"github.com/kaixuan/llm-gateway-go/domains/streaming"                                    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
-	"github.com/kaixuan/llm-gateway-go/security/sensitive" //nolint:depguard // AC敏感词引擎
+	"github.com/kaixuan/llm-gateway-go/internal/sessionid"                                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/taskbus"                                     //nolint:depguard // 03: Hook 双模 taskbus 内核
+	"github.com/kaixuan/llm-gateway-go/security/sensitive"                                   //nolint:depguard // AC敏感词引擎
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
 )
@@ -312,6 +314,14 @@ type v2DispatchDeps struct {
 // metrics duplicate-registration panic).
 func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	p := pipeline.NewRequestPipeline()
+
+	// 03 taskbus: 注册期 V2 对拍 + cache_save 示范迁（memora 生产零挂载，本波不迁）。
+	tbus := taskbus.NewDemoBus()
+	if deps != nil && deps.CacheStore != nil {
+		cache.RegisterCacheSaveHandler(tbus.Registry, deps.CacheStore)
+	}
+	p.SetHandlerLookup(tbus)
+	go func() { _ = tbus.Dispatcher.Start(context.Background()) }()
 
 	// === Phase: Authentication (priority 10) ===
 	// 2026-06-29: Enable when LLM_GATEWAY_V2_AUTH=true
@@ -523,9 +533,10 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	}
 
 	if deps.Config.EnableCache && deps.CacheStore != nil {
+		// 示范迁：cache_save → TaskBus（Execute 只入队；业务在 cache.save.v1 handler）。
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "cache_save", Phase: pipeline.PhasePostResponse, Mode: pipeline.ModeSequential,
-			Hooks: []pipeline.Hook{cache.NewCacheSaveHook(deps.CacheStore, 5*time.Minute)},
+			Hooks: []pipeline.Hook{cache.NewCacheSaveTaskHook(tbus, 5*time.Minute)},
 		})
 	}
 
@@ -776,10 +787,10 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		// but never the canonical "X-Gw-Session-Id". As a result env.SessionID
 		// — and the analysis_events row published below — lost the gateway
 		// session id whenever the v2 pipeline was enabled. Mirror the priority
-		// used by streaming.extractSessionIDFromHeaders.
-		env.SessionID = r.Header.Get("X-Gw-Session-Id")
-		if env.SessionID == "" {
-			env.SessionID = r.Header.Get("X-Session-Id")
+		// used by internal/sessionid.FromHeaders (single source).
+		// Single source: internal/sessionid (header table + case fold).
+		if sid, _ := sessionid.FromHeaders(r.Header); sid != "" {
+			env.SessionID = sessionid.DeriveGatewayID(sid)
 		}
 
 		// 2026-08-26 (P1-20 fix): the dispatch sniff used to silently

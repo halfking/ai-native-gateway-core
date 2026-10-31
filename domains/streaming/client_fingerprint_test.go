@@ -22,6 +22,13 @@ func TestExtractClientType_UserAgent(t *testing.T) {
 		{"windsurf with slash", "Windsurf/1.0", "windsurf"},
 		{"zed with slash", "Zed/2.0", "zed"},
 		{"jetbrains", "JetBrains/2024.1", "jetbrains"},
+		// 2026-09-21 audit: domestic coding-agent clients.
+		{"minimax-code with slash", "MiniMax-Code/1.0.0 (macos; arm64)", "minimax-code"},
+		// 2026-10-29 production verification: wire-real bare form (211 logs).
+		{"minimax-code bare compound", "MiniMaxCode", "minimax-code"},
+		{"minimax-code bare compound with version", "MiniMaxCode/1.2.0", "minimax-code"},
+		{"deepseek-code with slash", "DeepSeek-Code/1.0.0 (darwin; arm64)", "deepseek-code"},
+		{"deepseek-cli", "deepseek-cli/0.3.1", "deepseek-code"},
 		{"unknown agent", "SomeRandomClient/1.0", ""},
 		{"empty user-agent", "", ""},
 	}
@@ -176,6 +183,73 @@ func TestExtractClientTypeWithPrompt_SemanticFallback(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("extractClientTypeWithPrompt(UA=%q, prompt=%q) = %q, want %q",
 					tt.ua, tt.prompt, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestExtractClientType_ClaudeCodeWireForms（2026-10-29 identification round）：
+// Claude Code 真实线材 UA 是 claude-cli/{ver}（官方规范 + 线材核实），此前
+// 两表只认 claude-code 字样 ⇒ RISK-6 加的 claude-code↔claude 原生对在
+// header/UA 首选路径上永不命中（RISK-7）。
+func TestExtractClientType_ClaudeCodeWireForms(t *testing.T) {
+	tests := []struct {
+		name string
+		ua   string
+		beta string
+		want string
+	}{
+		{"real claude-cli UA", "claude-cli/2.1.75 (external, cli)", "", "claude-code"},
+		{"claude-cli newer form", "claude-cli/2.1.300 (external, sdk-cli)", "", "claude-code"},
+		{"archive claude-code UA", "Claude-Code/1.0.0", "", "claude-code"},
+		// anthropic-beta 旗标（vendor 自家命名空间）：UA 缺失时仍可识别
+		{"beta flag only", "", "claude-code-20250219,oauth-2025-04-20", "claude-code"},
+		// 负臂：普通 Anthropic SDK 不带 claude-code 旗标 ⇒ 不得识别
+		{"plain anthropic sdk", "anthropic-sdk-python/0.39.0", "interleaved-thinking-2025-05-14", ""},
+		// 负臂：形近词不得命中
+		{"claude-clix lookalike", "claude-clix/1.0", "", ""},
+		{"claude-coder lookalike", "claude-coder/1.0", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/v1/messages", nil)
+			if tt.ua != "" {
+				req.Header.Set("User-Agent", tt.ua)
+			}
+			if tt.beta != "" {
+				req.Header.Set("Anthropic-Beta", tt.beta)
+			}
+			if got := extractClientType(req); got != tt.want {
+				t.Errorf("extractClientType(ua=%q beta=%q) = %q, want %q", tt.ua, tt.beta, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestExtractClientType_BoundaryLookalikes（2026-10-29）：裸 token 的形近
+// 词防线 —— HasToken 双边界后，字母数字延续不得命中（此前 ZCodex 会先命中
+// zcode、MiniMaxCoder 会命中 minimaxcode）。
+func TestExtractClientType_BoundaryLookalikes(t *testing.T) {
+	tests := []struct {
+		ua   string
+		want string
+	}{
+		{"MiniMaxCoder/1.0", ""},
+		{"ZCodex/2.0", ""}, // 既不是 zcode 也不是 codex
+		{"visualized/2.0", ""},
+		// 真实形态回归
+		{"MiniMaxCode", "minimax-code"},
+		{"ZCode/3.16.3 ai-sdk/provider-utils/4.0.39 runtime/node.js/24", "zcode"},
+		{"MiniMax-Code/1.0.0 (macos; arm64)", "minimax-code"},
+		{"DeepSeek-Code/1.0.0 (darwin; arm64)", "deepseek-code"},
+		{"deepseek-cli/0.3.1", "deepseek-code"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.ua, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+			req.Header.Set("User-Agent", tt.ua)
+			if got := extractClientType(req); got != tt.want {
+				t.Errorf("extractClientType(%q) = %q, want %q", tt.ua, got, tt.want)
 			}
 		})
 	}

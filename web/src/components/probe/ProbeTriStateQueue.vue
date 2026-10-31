@@ -640,7 +640,7 @@ function credentialTitle(c: ProbeCard): string {
 .tri-chip {
   display: inline-flex;
   align-items: center;
-  padding: 2px 10px;
+  padding: 2px 8px;
   border-radius: 999px;
   font-size: 12px;
   border: 1px solid transparent;
@@ -661,11 +661,10 @@ function credentialTitle(c: ProbeCard): string {
   background: var(--kx-danger-soft);
 }
 
+/* 2026-10-28 第 31 增量（DESIGN.md §6「卡片套卡片永远不对」）：
+   原来这是一个白盒，里面装着 probe-card ⇒ 降级为「标题 + 内容区」。 */
 .tri-section {
-  border: 1px solid var(--kx-border);
-  border-radius: 8px;
-  background: var(--kx-surface);
-  padding: 10px 12px;
+  margin-bottom: 16px;
 }
 
 .tri-section-head {
@@ -723,19 +722,19 @@ function credentialTitle(c: ProbeCard): string {
   background: var(--kx-surface);
   color: var(--kx-text);
   font-size: 12px;
-  padding: 4px 6px;
+  padding: 4px 4px;
 }
 
 .probe-card {
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   background: var(--kx-surface);
-  padding: 8px 10px;
+  padding: 8px 8px;
   font-size: 12px;
   color: var(--kx-text);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .probe-card--inflight {
@@ -757,7 +756,7 @@ function credentialTitle(c: ProbeCard): string {
 .probe-card__target {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -812,7 +811,7 @@ function credentialTitle(c: ProbeCard): string {
 
 .probe-card__detail {
   border-top: 1px solid var(--kx-border);
-  padding-top: 6px;
+  padding-top: 4px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 4px 16px;
@@ -832,7 +831,7 @@ function credentialTitle(c: ProbeCard): string {
 .probe-card__backoff {
   border-top: 1px dashed var(--kx-danger);
   color: var(--kx-danger);
-  padding-top: 6px;
+  padding-top: 4px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -880,7 +879,7 @@ function credentialTitle(c: ProbeCard): string {
 .tri-skeleton {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .tri-skeleton-card {
@@ -897,7 +896,7 @@ function credentialTitle(c: ProbeCard): string {
 
 /* 新数据从右侧进入（只用 transform/opacity）。 */
 .probe-in-enter-active {
-  transition: transform 0.3s ease, opacity 0.3s ease;
+  transition: transform 0.3s var(--kx-motion-ease-out), opacity 0.3s var(--kx-motion-ease-out);
 }
 
 .probe-in-enter-from {
@@ -915,6 +914,15 @@ function credentialTitle(c: ProbeCard): string {
 }
 
 .probe-in-move {
-  transition: transform 0.3s ease;
+  transition: transform 0.3s var(--kx-motion-ease-out);
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .probe-in-enter-active {
+    transition-property: opacity;
+  }
+  .probe-in-move { transition: none; }
 }
 </style>

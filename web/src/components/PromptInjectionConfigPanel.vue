@@ -604,32 +604,36 @@ const thresholdInvalid = computed(() => {
 .action-bar strong { font-size: 14px; }
 .meta { color: var(--muted); font-size: 11px; margin-left: 8px; }
 .panel-subtitle { color: var(--muted); font-size: 12px; margin: 0; line-height: 1.5; }
-.config-section { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+/* 2026-10-28 第 31 增量（DESIGN.md §6「卡片套卡片永远不对」）：
+   原来这里是一张**白卡**（底色 + 描边 + 圆角 + 内边距），里面又装着 rule-card。
+   ⇒ 外层盒子降级为「标题 + 内容区」：去表面，间距改用 margin；
+     里面的 rule-card 自己成为这一屏唯一的卡面。 */
+.config-section { margin-bottom: 24px; }
 .section-head { margin-bottom: 8px; }
 .section-head h2 { font-size: 13px; margin: 0; color: var(--text); }
 .section-head p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
-.subsection-title { font-size: 11px;letter-spacing: 0.01em; color: var(--muted); margin: 14px 0 6px; }
-.hint-row { color: var(--muted); font-size: 11px; margin: 0 0 6px; }
+.subsection-title { font-size: 11px;letter-spacing: 0.01em; color: var(--muted); margin: 12px 0 4px; }
+.hint-row { color: var(--muted); font-size: 11px; margin: 0 0 4px; }
 
-.field-row { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(180px, 360px); align-items: center; gap: 18px; padding: 9px 0; border-bottom: 1px solid var(--border); }
+.field-row { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(180px, 360px); align-items: center; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--border); }
 .field-row:last-child { border-bottom: 0; }
 .field-label { min-width: 0; display: grid; gap: 2px; }
 .field-label label { color: var(--text); font-size: 12px; font-weight: 600; }
 .field-label span { color: var(--muted); font-size: 11px; line-height: 1.35; }
 
-.compact-number { box-sizing: border-box; width: 100%; min-width: 0; height: 32px; padding: 5px 8px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 12px; }
+.compact-number { box-sizing: border-box; width: 100%; min-width: 0; height: 32px; padding: 4px 8px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 12px; }
 .compact-number:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); border-color: var(--accent); }
 
 .switch { justify-self: end; cursor: pointer; position: relative; display: inline-block; }
 .switch input { position: absolute; opacity: 0; pointer-events: none; }
-.track { display: block; width: 34px; height: 19px; background: var(--border); border-radius: 10px; padding: 2px; transition: background 0.15s; }
-.knob { display: block; width: 15px; height: 15px; border-radius: 50%; background: white; transition: transform 0.15s; }
+.track { display: block; width: 34px; height: 19px; background: var(--border); border-radius: 10px; padding: 2px; transition: background 0.15s var(--kx-motion-ease-out); }
+.knob { display: block; width: 15px; height: 15px; border-radius: 50%; background: white; transition: transform 0.15s var(--kx-motion-ease-out); }
 .switch input:checked + .track { background: var(--accent); }
 .switch input:checked + .track .knob { transform: translateX(15px); }
 .switch input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
 
 .radio-group { display: flex; gap: 8px; justify-self: end; }
-.radio-pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; cursor: pointer; font-size: 12px; color: var(--text); background: var(--bg); }
+.radio-pill { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 999px; cursor: pointer; font-size: 12px; color: var(--text); background: var(--bg); }
 .radio-pill input { accent-color: var(--accent); }
 .radio-pill:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--bg)); }
 
@@ -638,57 +642,57 @@ const thresholdInvalid = computed(() => {
 .threshold-row label { color: var(--muted); font-size: 11px; }
 
 /* Rule toolbar */
-.rule-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
-.search-input { flex: 1 1 220px; min-width: 200px; height: 30px; padding: 5px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font: inherit; font-size: 12px; }
+.rule-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+.search-input { flex: 1 1 220px; min-width: 200px; height: 30px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font: inherit; font-size: 12px; }
 .search-input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); border-color: var(--accent); }
 .filter-chips { display: flex; gap: 4px; flex-wrap: wrap; }
-.chip-btn { appearance: none; border: 1px solid var(--border); background: var(--bg); color: var(--muted); font: inherit; font-size: 11px; padding: 4px 9px; border-radius: 999px; cursor: pointer; }
+.chip-btn { appearance: none; border: 1px solid var(--border); background: var(--bg); color: var(--muted); font: inherit; font-size: 11px; padding: 4px 8px; border-radius: 999px; cursor: pointer; }
 .chip-btn:hover { color: var(--text); }
 .chip-btn.active { background: color-mix(in srgb, var(--accent) 14%, var(--bg)); color: var(--text); border-color: var(--accent); }
 
 /* Rule list */
 .rules-list { display: grid; gap: 8px; }
-.rule-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--bg); transition: opacity 0.15s; }
+.rule-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--card); transition: opacity 0.15s var(--kx-motion-ease-out); }
 .rule-card.disabled { opacity: 0.55; }
-.rule-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.rule-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.rule-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rule-title { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; }
 .rule-name { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; color: var(--text); }
 .rule-desc { color: var(--muted); font-size: 12px; margin: 4px 0 8px; line-height: 1.5; }
 .rule-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .severity-control { display: flex; align-items: center; gap: 8px; flex: 1 1 240px; }
 .severity-control input[type=range] { flex: 1; accent-color: var(--accent); }
 .control-label { color: var(--muted); font-size: 11px; white-space: nowrap; }
-.expand-btn { appearance: none; background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font: inherit; font-size: 11px; padding: 4px 9px; cursor: pointer; }
+.expand-btn { appearance: none; background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font: inherit; font-size: 11px; padding: 4px 8px; cursor: pointer; }
 .expand-btn:hover { color: var(--text); border-color: var(--accent); }
-.rule-details { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); display: grid; gap: 6px; }
-.detail-row { display: grid; grid-template-columns: 80px 1fr; gap: 10px; align-items: start; }
+.rule-details { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); display: grid; gap: 4px; }
+.detail-row { display: grid; grid-template-columns: 80px 1fr; gap: 8px; align-items: start; }
 .detail-label { color: var(--muted); font-size: 11px; }
 .detail-value { font-size: 12px; color: var(--text); word-break: break-all; }
-.detail-value.regex { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; background: var(--card); padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); }
+.detail-value.regex { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; background: var(--card); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border); }
 .example-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 .example-tag { font-family: ui-monospace, SFMono-Regular, monospace; }
 .empty { color: var(--muted); font-size: 11px; font-style: italic; }
 
 /* Links */
 .link-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
-.link-card { appearance: none; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; text-align: left; cursor: pointer; display: grid; gap: 4px; color: var(--text); }
+.link-card { appearance: none; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; text-align: left; cursor: pointer; display: grid; gap: 4px; color: var(--text); }
 .link-card:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
 .link-title { font-size: 13px; font-weight: 600; }
 .link-hint { color: var(--muted); font-size: 11px; }
 
 /* Misc */
 .btn { border-radius: 6px; border: 1px solid var(--border); cursor: pointer; font: inherit; }
-.btn-sm { padding: 5px 9px; font-size: 11px; }
+.btn-sm { padding: 4px 8px; font-size: 11px; }
 .btn-primary { color: white; background: var(--accent); border-color: var(--accent); }
-.banner { padding: 8px 10px; border-radius: 6px; font-size: 12px; }
+.banner { padding: 8px 8px; border-radius: 6px; font-size: 12px; }
 .banner-error { color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border)); background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .banner-success { color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 35%, var(--border)); background: color-mix(in srgb, var(--success) 8%, transparent); }
 .banner-warn { color: var(--warning-dark); border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border)); background: color-mix(in srgb, var(--warning) 8%, transparent); }
-.threshold-error { color: var(--danger); font-size: 11px; margin: 6px 0 0; }
-.state { color: var(--muted); font-size: 12px; padding: 10px 0; }
+.threshold-error { color: var(--danger); font-size: 11px; margin: 4px 0 0; }
+.state { color: var(--muted); font-size: 12px; padding: 8px 0; }
 
 @media (max-width: 768px) {
-  .field-row { grid-template-columns: 1fr; gap: 7px; }
+  .field-row { grid-template-columns: 1fr; gap: 4px; }
   .switch { justify-self: start; }
   .radio-group { justify-self: start; }
   .detail-row { grid-template-columns: 1fr; }
@@ -698,4 +702,10 @@ const thresholdInvalid = computed(() => {
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .expand-btn > svg { width: 10px; height: 10px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .knob { transition: none; }
+}
 </style>

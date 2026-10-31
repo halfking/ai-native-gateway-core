@@ -271,7 +271,7 @@ function vendorOptionLabel(v: string) {
         tabindex="0"
       >
         <!-- 分组切换 -->
-        <div class="control-group control-group--dimension">
+        <div class="control-group">
           <button
             type="button"
             class="control-btn"
@@ -307,7 +307,7 @@ function vendorOptionLabel(v: string) {
         </div>
 
         <!-- 2026-07-23: 大/小 模式切换（小=竖条默认，大=卡片） -->
-        <div class="control-group control-group--mode">
+        <div class="control-group">
           <button
             type="button"
             class="control-btn"
@@ -328,7 +328,7 @@ function vendorOptionLabel(v: string) {
           </button>
         </div>
 
-        <div class="control-group control-group--request-type request-type-filter">
+        <div class="control-group">
           <button
             type="button"
             class="control-btn"
@@ -612,7 +612,7 @@ function vendorOptionLabel(v: string) {
   border-radius: var(--radius, 8px);
   background: var(--card);
   padding: 12px 16px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   /* min-width:0 让组件在 flex/grid 父容器中能正确收缩 */
   min-width: 0;
   max-width: 100%;
@@ -638,13 +638,15 @@ function vendorOptionLabel(v: string) {
 .stream-controls {
   display: flex;
   align-items: center;
-  gap: 10px;
+  /* ★ 2026-10-27 第 21 增量：分组容器不再各涂一种色调 ⇒ 组与组之间改由**间距**区分。
+     组内按钮间距 4px，组间 14px ⇒ 比例 3.5:1，肉眼一眼分得开「组内」与「组间」。 */
+  gap: 12px;
   width: 100%;
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
   flex-wrap: nowrap;
-  padding: 2px 2px 6px;
+  padding: 2px 2px 4px;
   overscroll-behavior-inline: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
@@ -670,6 +672,16 @@ function vendorOptionLabel(v: string) {
   background: transparent;
 }
 
+/* ★ 2026-10-27 第 21 增量（颜色只承载语义，不承载分组）：
+   分组容器一律中性底色 —— 旧实现给「维度 / 模式 / 请求类型」各涂一种色调
+   （accent / success / accent），选色理由是「跟旁边不一样」，
+   那是**装饰**不是状态；其中「小 / 大」被涂成 success（「它不是成功」）、
+   「筛选」被涂成 warning（「它不是警告」）⇒ 颜色在撒谎。
+   仓内明文：DESIGN.md §视觉世界「状态用最小的颜色量表达、每个元素都承担信息职责」；
+   impeccable colorize.md「Decoration without a relationship to hierarchy,
+   state, content… is not a color strategy」。
+   现在：颜色预算只留给组内「被选中的那一个」（.control-btn--active）；
+   组与组之间靠 .stream-controls 的间距区分。 */
 .control-group {
   display: flex;
   align-items: center;
@@ -680,34 +692,17 @@ function vendorOptionLabel(v: string) {
   border-radius: 6px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
-  /* 2026-07-24: 视觉分组 - 让相邻的功能簇有清晰的区隔 */
-}
-
-/* 2026-07-24: 不同功能簇使用不同色调做软区分 */
-.control-group.control-group--dimension {
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-subtle));
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
-}
-
-.control-group.control-group--mode {
-  background: color-mix(in srgb, var(--success) 14%, var(--bg-subtle));
-  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
-}
-
-.control-group.control-group--request-type {
-  background: color-mix(in srgb, var(--accent) 16%, var(--bg-subtle));
-  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
 }
 
 .control-btn {
   font-size: 12px;
-  padding: 5px 12px;
+  padding: 4px 12px;
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
   font-weight: 500;
 }
@@ -733,24 +728,27 @@ function vendorOptionLabel(v: string) {
   color: var(--accent);
 }
 
-/* 2026-07-24: 多维过滤器使用警告色，与维度/模式/请求类型组区分。 */
+/* ★ 2026-10-27 第 21 增量：筛选组不再用告警色。
+   旧注释写得很直白：「多维过滤器使用警告色，与维度/模式/请求类型组区分」
+   —— 选色理由是「跟旁边不一样」，不是「这里有告警」。
+   筛选区没有告警状态 ⇒ 涂橙是撒谎；组内的「筛选」标签已经承担了区隔职责。 */
 .filter-group {
   display: flex;
   align-items: center;
   flex: 0 0 auto;
   gap: 8px;
   flex-wrap: nowrap;
-  padding: 5px 10px;
+  padding: 4px 8px;
   border-radius: 6px;
-  background: color-mix(in srgb, var(--warning) 18%, var(--bg-subtle));
-  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
 }
 
 /* 2026-07-24: "筛选"前缀标签，让用户一眼看到这是筛选项区 */
 .filter-group__label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--warning);
+  color: var(--text-secondary);
   letter-spacing: 0.5px;
   user-select: none;
   padding-right: 2px;
@@ -762,17 +760,17 @@ function vendorOptionLabel(v: string) {
 
 .filter-btn {
   font-size: 12px;
-  padding: 5px 12px;
+  padding: 4px 12px;
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .filter-btn:hover {
@@ -795,7 +793,7 @@ function vendorOptionLabel(v: string) {
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--bg);
-  transition: all 0.15s ease;
+  transition: border-color 0.15s var(--kx-motion-ease-out);
 }
 
 .filter-model-picker:hover {
@@ -812,7 +810,7 @@ function vendorOptionLabel(v: string) {
   border: 0;
   background: transparent;
   min-height: 26px;
-  padding: 2px 6px;
+  padding: 2px 4px;
 }
 
 .filter-badge {
@@ -821,7 +819,7 @@ function vendorOptionLabel(v: string) {
   justify-content: center;
   min-width: 18px;
   height: 18px;
-  padding: 0 5px;
+  padding: 0 4px;
   border-radius: 9px;
   background: var(--accent);
   color: var(--bg);
@@ -848,10 +846,10 @@ function vendorOptionLabel(v: string) {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   cursor: pointer;
   border-radius: 4px;
-  transition: background 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out);
   font-size: 13px;
   user-select: none;
 }
@@ -871,7 +869,7 @@ function vendorOptionLabel(v: string) {
 
 .filter-empty {
   display: block;
-  padding: 8px 10px;
+  padding: 8px 8px;
   color: var(--text-tertiary);
   font-size: 12px;
 }
@@ -886,13 +884,13 @@ function vendorOptionLabel(v: string) {
 
 .clear-filters-btn {
   font-size: 12px;
-  padding: 5px 12px;
+  padding: 4px 12px;
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--warning);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 
@@ -905,15 +903,15 @@ function vendorOptionLabel(v: string) {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 12px;
+  gap: 4px;
+  padding: 4px 12px;
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
   font-size: 12px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 
@@ -987,7 +985,7 @@ function vendorOptionLabel(v: string) {
   align-items: center;
   justify-content: center;
   border-radius: 4px;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
 }
 
 .popup-close:hover {
@@ -1079,7 +1077,7 @@ function vendorOptionLabel(v: string) {
   color: var(--text-secondary);
   font-size: 11px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 
@@ -1097,7 +1095,7 @@ function vendorOptionLabel(v: string) {
   border: 1px solid var(--border);
   font-size: 11px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 
@@ -1142,11 +1140,11 @@ function vendorOptionLabel(v: string) {
 .test-btn,
 .close-btn {
   flex: 1;
-  padding: 6px 12px;
+  padding: 4px 12px;
   border-radius: 4px;
   font-size: 12px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out);
   border: 1px solid var(--border);
 }
 
@@ -1173,8 +1171,8 @@ function vendorOptionLabel(v: string) {
 .cache-stats {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 12px;
+  gap: 4px;
+  padding: 4px 12px;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--bg);
@@ -1226,7 +1224,7 @@ function vendorOptionLabel(v: string) {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 4px 12px;
   border-radius: 6px;
   font-size: 12px;
   line-height: 1.5;
@@ -1279,7 +1277,7 @@ function vendorOptionLabel(v: string) {
 .swim-lanes {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   margin-top: 12px;
   min-width: 0;
   width: 100%;
@@ -1293,8 +1291,8 @@ function vendorOptionLabel(v: string) {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  padding: 48px 20px;
+  gap: 8px;
+  padding: 48px 16px;
   text-align: center;
   color: var(--muted);
   font-size: 13px;

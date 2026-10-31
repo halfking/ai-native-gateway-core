@@ -319,7 +319,7 @@ const deploySeqReasonText = () => {
 }
 
 .account-sheet__row-label {
-  font-size: 15px;
+  font-size: 13px;
 }
 
 .account-sheet__seq {
@@ -356,7 +356,7 @@ const deploySeqReasonText = () => {
   border: 0;
   color: inherit;
   font: inherit;
-  font-size: 15px;
+  font-size: 14px;
   text-align: start;
   cursor: pointer;
 }

@@ -128,6 +128,25 @@ if (process.argv.includes('--update-baseline')) {
   process.exit(0)
 }
 
+// ★★ R87 轮（★ 掏空验证查出来的真洞）：★ 基线**不可用** ⇒ 必须红。
+//
+// ★ 为什么必须有：★ 下面两条棘轮都是「实测值 > 基线值 ⇒ 升高了」
+// ⇒ ⇒ 基线字段一旦缺失，`baseline.nonTokenElevation` 就是 `undefined`
+// ⇒ ⇒ `0 > undefined` 恒假 ⇒ ⇒ **棘轮静默失效**⇒ ⇒ 而门照样报「✅ PASS」
+// ⇒ ⇒ **假绿**（★ 而「掏空基线 / 删掉基线字段」正是绕过这道门最省事的办法）。
+// ★ ⇒ ⇒ 基线不可用 ⇒ 必须红（★ 红的理由要说清「棘轮没有上限」）。
+//
+// ★ `--update-baseline` 分支在上面就 return 了 ⇒ ⇒ 这里红**不会**挡住「重建基线」。
+const baselineUsable =
+  typeof baseline?.nonTokenElevation === 'number' &&
+  typeof baseline?.distinctElevationValues === 'number'
+if (!baselineUsable) {
+  console.error('❌ 基线缺失或非法：scripts/design-elevation-baseline.json')
+  console.error('   ⇒ 棘轮没有上限 ⇒ ⇒ 这道门此刻等于没设门槛 ⇒ ⇒ 必须红。')
+  console.error('   修法：node scripts/design-elevation-guard.mjs --update-baseline')
+  process.exit(1)
+}
+
 if (process.argv.includes('--json')) {
   console.log(
     JSON.stringify(

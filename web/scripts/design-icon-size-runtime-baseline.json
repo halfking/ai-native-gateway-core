@@ -1,0 +1,30 @@
+{
+  "metric": "zeroSized = 该页**可见渲染树里**渲染尺寸为 0 的图标数（不得上升；0 = 图标等于不存在 ⇒ 硬闸必须为 0）；minSide = 该页可见图标的最小边长（px，附记，不参与判定）",
+  "zeroSized": {
+    "/": 0,
+    "/free-pool": 0,
+    "/model-pricing": 0,
+    "/providers": 0,
+    "/request-logs": 0,
+    "/keys": 0,
+    "/admin/proxy": 0,
+    "/models": 0
+  },
+  "updated": "2026-10-27",
+  "history": [
+    {
+      "updated": "2026-10-27",
+      "note": "第 28 增量（图标必须有尺寸）建立基线。★ 建基线**之前**用同一把尺实测 8 页：/ = 2、/request-logs = 1、其余 6 页 = 0。★ 其中 /request-logs 那 1 处经复核是**假阳性**（探针当时还没有「隐藏子树」这一条 ⇒ 还没打开的下拉菜单里的图标被算进来 ⇒ 它本来就该是 0×0）⇒ ★ 真实修前值 = **2 处**，都在首页：「刷新数据」按钮（刷新数据的唯一入口，用户看到的是一个空方块）与「图例」开关。★ 修法是**系统级兜底**而非逐处补丁：style.css 加 `--kx-icon-size: 1em` 令牌 + `:where(svg:not([width]):not([height]))` 规则（`:where()` 特异性恒为 0 ⇒ 任何既有规则都压得住它 ⇒ 只影响当前是 0×0 的那些）。★ 修完实测 8 页全 0 ⇒ 基线定在 0（棘轮起点，只许降不许升）。",
+      "zeroSized": {
+        "/": 2,
+        "/free-pool": 0,
+        "/model-pricing": 0,
+        "/providers": 0,
+        "/request-logs": 1,
+        "/keys": 0,
+        "/admin/proxy": 0,
+        "/models": 0
+      }
+    }
+  ]
+}

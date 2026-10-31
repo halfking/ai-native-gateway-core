@@ -88,8 +88,8 @@ function actionLabel(action?: string): string {
 .decisions {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 4px;
+  padding: 8px 8px;
   border: 1px solid var(--kx-border);
   border-radius: 12px;
   background: var(--kx-surface);
@@ -132,7 +132,7 @@ function actionLabel(action?: string): string {
 
 .decisions__stage {
   min-width: 62px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 999px;
   font-size: 11px;
   text-align: center;

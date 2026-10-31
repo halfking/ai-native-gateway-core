@@ -71,6 +71,9 @@ func TestStreamChatWithPendingCapture_CommittedTimeoutFrameCarriesDoneAndRootFie
 
 	body := &hangingBody{
 		data: []byte("data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n"),
+		// ★ 2026-10-30 耗时治理轮：hangingBody 的阻塞改成由 unblock 通道解除
+		//   （Close 关掉它）⇒ 本构造点必须给通道，否则 Read 不阻塞、测试语义变。
+		unblock: make(chan struct{}),
 	}
 	resp := &http.Response{
 		Body:    body,

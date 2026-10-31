@@ -22,10 +22,15 @@ import type { ActionEvent } from '../../composables/liveStreamStore'
 import type { PanelEntry } from '../../composables/useLiveTopology'
 import RequestDetailView from './RequestDetailView.vue'
 
-defineProps<{
-  entry: PanelEntry
-  decisions: ActionEvent[]
-}>()
+withDefaults(
+  defineProps<{
+    entry: PanelEntry
+    decisions: ActionEvent[]
+    /** 浮层锚在哪一侧的角落（跟随点击的那一列：左栏点击锚左下、右栏锚右下）。 */
+    side?: 'left' | 'right'
+  }>(),
+  { side: 'right' },
+)
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -36,7 +41,7 @@ const { t } = useI18n()
 </script>
 
 <template>
-  <section class="zoom" role="region" :aria-label="t('liveTopology.zoom.title')">
+  <section class="zoom" :class="{ 'zoom--left': side === 'left' }" role="region" :aria-label="t('liveTopology.zoom.title')">
     <header class="zoom__head">
       <span class="zoom__title">{{ t('liveTopology.zoom.title') }}</span>
       <span class="zoom__actions">
@@ -72,18 +77,24 @@ const { t } = useI18n()
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-radius: 12px;
   background: color-mix(in srgb, var(--kx-surface) 97%, transparent);
   box-shadow: var(--kx-shadow-md);
   overflow-y: auto;
 }
 
+/* 左栏形态：锚到本列左下角（与右栏的右下锚互为镜像 —— 浮层长在点击侧）。 */
+.zoom--left {
+  right: auto;
+  left: 12px;
+}
+
 .zoom__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 4px;
 }
 
 .zoom__title {
@@ -95,7 +106,7 @@ const { t } = useI18n()
 .zoom__actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .zoom__open {

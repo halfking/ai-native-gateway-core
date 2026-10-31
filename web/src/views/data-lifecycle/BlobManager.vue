@@ -194,7 +194,7 @@ onMounted(load)
 .blob-table-wrap { overflow-x: auto; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .data-table th, .data-table td {
-  padding: 8px 10px;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--border);
   text-align: left;
 }
@@ -206,7 +206,7 @@ onMounted(load)
 .code {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
-  padding: 2px 6px;
+  padding: 2px 4px;
   background: var(--bg-subtle);
   border-radius: 4px;
   color: var(--accent-h);
@@ -218,7 +218,7 @@ onMounted(load)
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 160px; }
 .field label { font-size: 12px; color: var(--muted); }
 .field input, .field select {
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -238,7 +238,7 @@ onMounted(load)
 .preview-row .highlight { color: var(--warning); font-weight: 600; }
 .preview-warn {
   margin-top: 8px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--warning-soft);
   border: 1px solid var(--warning);
   color: var(--warning);
@@ -248,8 +248,8 @@ onMounted(load)
 
 .form-actions { display: flex; gap: 8px; }
 
-.btn { padding: 6px 14px; border-radius: 6px; border: 1px solid transparent; font-size: 13px; cursor: pointer; }
-.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn { padding: 4px 12px; border-radius: 6px; border: 1px solid transparent; font-size: 13px; cursor: pointer; }
+.btn-sm { padding: 4px 8px; font-size: 12px; }
 .btn-primary { background: var(--accent); color: var(--on-primary); }
 .btn-primary:hover:not(:disabled) { background: var(--accent-h); }
 .btn-danger { background: var(--danger); color: var(--on-primary); }

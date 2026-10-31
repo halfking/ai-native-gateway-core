@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // TurnsListView — 多维层级会话工作台（项目/用户/客户端/API Key + 总结资产化）
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { surfaceError } from '../i18n/errorSurface'
 import { useRouter } from 'vue-router'
 import {
@@ -8,7 +9,7 @@ import {
   extractSessionToMemora,
 } from '../api/memora'
 import { fetchSessionTurnsTree, type SessionTurnTreeItem } from '../api/sessionTurnsTree'
-import { triggerInstantSummary } from '../api/sessions_v2'
+import { triggerInstantSummary, isRecordingUnavailable } from '../api/sessions_v2'
 import {
   listTurnsFilterOptions,
   listTurnsSessions,
@@ -28,6 +29,7 @@ import {
 import { CaretRight } from '@element-plus/icons-vue'
 
 const router = useRouter()
+const { t } = useI18n()
 const loading = ref(false)
 const loadingMore = ref(false)
 const loaded = ref(false)
@@ -228,7 +230,12 @@ async function resummarize(session: TurnsSessionGroup) {
       [session.session_id]: refreshed ? '已触发重新归纳' : '已触发重新归纳，但新归纳没取回来（当前显示的是旧内容）',
     }
   } catch (cause) {
-    assetMsg.value = { ...assetMsg.value, [session.session_id]: surfaceError(cause, { key: 'common.feedback.sessionSummarizeFailed' }) }
+    // W1.3：consent=off ⇒ 409 recording_unavailable。说「录制未开启」，
+    // 不说「归纳失败」——重试修不了租户开关，也不把英文后端原样当原因挂上。
+    const msg = isRecordingUnavailable(cause)
+      ? t('requestDetail.bodyStatus.consentOffInline')
+      : surfaceError(cause, { key: 'common.feedback.sessionSummarizeFailed' })
+    assetMsg.value = { ...assetMsg.value, [session.session_id]: msg }
   } finally {
     summaryBusy.value = { ...summaryBusy.value, [session.session_id]: false }
   }
@@ -432,19 +439,19 @@ onBeforeUnmount(() => controller?.abort())
 .batch-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; padding: 8px 12px; border-radius: 6px; background: var(--primary-soft); color: var(--accent); }
 .error-banner { display: flex; justify-content: space-between; gap: 12px; align-items: center; background: var(--danger-soft); border: 1px solid var(--danger); border-radius: 6px; padding: 12px; margin-bottom: 16px; color: var(--danger); }
 .list { display: flex; flex-direction: column; gap: 12px; }
-.session-skeleton { display: grid; gap: 10px; }
+.session-skeleton { display: grid; gap: 8px; }
 .skeleton-card { height: 150px; border-radius: 8px; background: var(--surface-secondary); animation: turns-pulse 1.2s ease-in-out infinite alternate; }
 @keyframes turns-pulse { from { opacity: .55; } to { opacity: 1; } }
 .group-card { border: 1px solid var(--border); border-radius: 8px; background: var(--surface-primary); overflow: hidden; }
-.group-header, .task-header { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 16px; cursor: pointer; text-align: left; border: 0; background: var(--surface-secondary); color: var(--text-primary); }
-.task-header { padding: 6px 8px; background: transparent; }
+.group-header, .task-header { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 16px; cursor: pointer; text-align: left; border: 0; background: var(--surface-secondary); color: var(--text-primary); }
+.task-header { padding: 4px 8px; background: transparent; }
 .group-header:hover, .task-header:hover { background: var(--bg-hover); }
-.group-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
-.task-sessions { display: flex; flex-direction: column; gap: 10px; }
-.task-sessions.nested { padding-left: 18px; }
-.caret { display: inline-block; transition: transform .15s; color: var(--text-muted); }
+.group-body { padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+.task-sessions { display: flex; flex-direction: column; gap: 8px; }
+.task-sessions.nested { padding-left: 16px; }
+.caret { display: inline-block; transition: transform .15s var(--kx-motion-ease-out); color: var(--text-muted); }
 .caret.open { transform: rotate(90deg); }
-.badge { padding: 2px 6px; border-radius: 4px; font-size: 11px; background: var(--surface-secondary); color: var(--text-secondary); }
+.badge { padding: 2px 4px; border-radius: 4px; font-size: 11px; background: var(--surface-secondary); color: var(--text-secondary); }
 .badge.cost { background: var(--warning-soft); color: var(--warning); }
 .empty { text-align: center; color: var(--text-secondary); padding: 24px 16px; }
 .load-more { display: flex; justify-content: center; margin-top: 12px; }
@@ -453,4 +460,10 @@ onBeforeUnmount(() => controller?.abort())
 .btn-secondary { background: var(--surface-primary); color: var(--text-primary); border: 1px solid var(--border); }
 .btn-secondary:disabled, .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 768px) { .turns-list-view { padding: 12px; } }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .caret { transition: none; }
+}
 </style>

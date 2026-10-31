@@ -30,6 +30,8 @@ const props = defineProps<{ sessionId: string }>()
 const emit = defineEmits<{
   openRequest: [payload: { requestId: string; turnNumber: number }]
   showDigest: [payload: { turnNumber: number }]
+  /** W1.3：列表响应带的会话正文录制同意态；后端旧版本缺字段时发 undefined。 */
+  recordingConsent: [consent: boolean | undefined]
 }>()
 
 const { t } = useI18n()
@@ -66,6 +68,7 @@ async function load(reset = true) {
     turns.value = reset ? r.turns : [...turns.value, ...r.turns]
     hasMore.value = r.has_more
     nextCursor.value = r.next_cursor || ''
+    emit('recordingConsent', r.recording_consent)
     loaded.value = true
   } catch (e) {
     error.value =
@@ -298,8 +301,8 @@ function errorText(e: SessionObsApiError | null): string {
 .stt-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 .stt-title {
   font-weight: 600;
@@ -317,7 +320,7 @@ function errorText(e: SessionObsApiError | null): string {
   margin-left: auto;
   flex-shrink: 0;
   font-size: 12px;
-  padding: 3px 10px;
+  padding: 3px 8px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   background: var(--kx-surface);
@@ -337,7 +340,7 @@ function errorText(e: SessionObsApiError | null): string {
 .stt-skeleton {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 .stt-skeleton-card {
   height: 44px;
@@ -355,7 +358,7 @@ function errorText(e: SessionObsApiError | null): string {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border: 1px solid var(--kx-danger);
   border-radius: 6px;
   background: var(--kx-danger-soft);
@@ -367,7 +370,7 @@ function errorText(e: SessionObsApiError | null): string {
 }
 .stt-retry {
   font-size: 12px;
-  padding: 3px 10px;
+  padding: 3px 8px;
   border: 1px solid var(--kx-danger);
   border-radius: 6px;
   background: var(--kx-surface);
@@ -383,7 +386,7 @@ function errorText(e: SessionObsApiError | null): string {
   font-size: 13px;
 }
 .stt-body-missing {
-  margin: 0 0 10px;
+  margin: 0 0 8px;
   padding: 8px 12px;
   border-radius: 6px;
   font-size: 12px;
@@ -396,17 +399,17 @@ function errorText(e: SessionObsApiError | null): string {
 .stt-timeline {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 .stt-turn {
   border: 1px solid var(--kx-border);
   border-radius: 6px;
-  padding: 8px 10px;
+  padding: 8px 8px;
 }
 .stt-turn-main {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .stt-turn-main--clickable {
@@ -424,7 +427,7 @@ function errorText(e: SessionObsApiError | null): string {
   text-decoration: underline;
 }
 .stt-digest-btn {
-  margin-top: 6px;
+  margin-top: 4px;
   border: 1px solid var(--kx-border);
   border-radius: 10px;
   background: var(--kx-surface);
@@ -470,7 +473,7 @@ function errorText(e: SessionObsApiError | null): string {
 }
 .stt-status--sm {
   font-size: 11px;
-  padding: 0 6px;
+  padding: 0 4px;
 }
 .stt-status--ok {
   background: var(--kx-success-soft);
@@ -505,10 +508,10 @@ function errorText(e: SessionObsApiError | null): string {
 
 /* 子请求树 */
 .stt-children {
-  margin-top: 6px;
-  padding-left: 18px;
+  margin-top: 4px;
+  padding-left: 16px;
   border-left: 2px solid var(--kx-border);
-  margin-left: 14px;
+  margin-left: 12px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -527,7 +530,7 @@ function errorText(e: SessionObsApiError | null): string {
   display: inline-block;
   font-size: 11px;
   font-weight: 600;
-  padding: 0 6px;
+  padding: 0 4px;
   border-radius: 4px;
   min-width: 20px;
   text-align: center;
@@ -551,7 +554,7 @@ function errorText(e: SessionObsApiError | null): string {
 .stt-more {
   display: flex;
   justify-content: center;
-  padding: 6px 0 0;
+  padding: 4px 0 0;
 }
 .stt-more-btn {
   font-size: 13px;

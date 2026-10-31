@@ -23,6 +23,24 @@ type PolicyBlockError struct {
 	RuleID string
 	// Reason 是人类可读的原因短语。
 	Reason string
+	// Path 是被拦载荷的位置（tool JSON 路径，如 $.command）。2026-10-28
+	// 拦截审核轮：与 Digest 一起构成「这一次拦截」的定位信息。
+	Path string
+	// Digest 是被拦载荷的摘要（security/sanitize.EgressPayloadDigest 的输出）。
+	// 管理面据它在审核队列里对这一次载荷精确放行；空串表示该路径没有
+	// 可绑定的载荷（如纯文本 lane 的规则级拦截）。
+	Digest string
+	// Evidence 是被拦内容的**有界摘录**（原始会话内容），2026-10-29 输出
+	// 合规误报轮补。
+	//
+	// ★ 它是**审核面的输入**，不是客户端可见内容：客户端拿到的仍是
+	// rule/reason/field/request_id（见 domains/streaming 的
+	// policyBlockClientMessage）。摘录由拦截器在**拦截那一刻**裁好并传上来，
+	// 管理面落进**证据表**（带 7 天 TTL）——审核员据此判断「这次拦得对不对」。
+	//
+	// ★ 不进错误信封：PolicyBlockError 会被日志/审计行引用，载荷原文不该
+	// 出现在那些地方。
+	Evidence string
 }
 
 func (e *PolicyBlockError) Error() string {

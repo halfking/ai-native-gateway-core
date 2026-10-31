@@ -144,8 +144,16 @@ func (h *Handler) handleCredentialStateQuery(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if h.stateManager == nil || !h.stateManager.Enabled() {
-		writeStateServiceUnavailable(w)
+	if h.stateManager == nil {
+		// 503 的主路径：URSM v2 authoritative 模式下 legacy credentialstate
+		// 有意不接线（cmd/gateway/main.go，spec §10 Step 5 C-1：v2 是唯一
+		// 状态权威）。响应体必须说明原因与替代读数面，否则每次都会被当成
+		// 接线缺陷重新排查一遍（2026-10-27 审计实证）。
+		http.Error(w, "credential live-state service not wired: legacy credentialstate is disabled by design in URSM v2 authoritative mode (read node_probe_state / /api/admin/probe endpoints instead)", http.StatusServiceUnavailable)
+		return
+	}
+	if !h.stateManager.Enabled() {
+		http.Error(w, "credential live-state service disabled", http.StatusServiceUnavailable)
 		return
 	}
 

@@ -11,6 +11,10 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/loopback"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 )
 
 // buildQuestionPrompt 把一道选择题构造成发给模型的 prompt。
@@ -222,7 +226,11 @@ type GatewayModelInvoker struct {
 // timeout: HTTP客户端超时，0则使用默认30秒
 func NewGatewayModelInvoker(baseURL, apiKey string, timeout time.Duration) *GatewayModelInvoker {
 	if baseURL == "" {
-		baseURL = "http://localhost:8787" // 默认本地网关
+		// 2026-10-29 (24h 审计第 7 轮): 8787 是从未存在的历史端口（见
+		// bg/model_quality_worker.go 同日注释）。invoker 的 URL 拼法在
+		// InvokeModel 里统一剥尾再补 /v1（允许带或不带 /v1 的 baseURL），
+		// loopback.GatewayBase() 不带路径 ⇒ 两种形态都正确。
+		baseURL = loopback.GatewayBase()
 	}
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -254,7 +262,11 @@ func (g *GatewayModelInvoker) InvokeModel(ctx context.Context, provider string, 
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
-		"max_tokens":  50,  // 质量测试只需要简短回答
+		// 2026-10-30（211 实测）：50 对推理模型必然不足 —— reasoning 把预算
+		// 吃光 ⇒ content 空 ⇒ 50 题全错（accuracy=0 / grade=F，error 为空）。
+		// 与 providercap.ProbePingMaxTokens=1024（R151/R152 轮）同根因同修法：
+		// 「质量测试只需要简短回答」的前提是模型不先思考。
+		"max_tokens":  providercap.ProbePingMaxTokens,
 		"temperature": 0.1, // 低温度保证稳定性
 		"stream":      false,
 	}
@@ -264,8 +276,10 @@ func (g *GatewayModelInvoker) InvokeModel(ctx context.Context, provider string, 
 		return "", 0, time.Since(startTime), fmt.Errorf("marshal request: %w", err)
 	}
 
-	// 构造请求URL
-	url := g.baseURL + "/v1/chat/completions"
+	// 构造请求URL（2026-10-30 改走 upstreamurl.Build 归一化：settings 里
+	// model_quality.base_url 可能带 /v1 之外的版本段，硬拼会产出
+	// /vN/v1/... 双前缀；与直连调用器同一把尺，SSoT 单一实现）
+	url := upstreamurl.Build(g.baseURL, upstreamurl.EpChatCompletions)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return "", 0, time.Since(startTime), fmt.Errorf("create request: %w", err)
@@ -345,7 +359,8 @@ func (d *DirectNodeInvoker) InvokeModel(ctx context.Context, node CredentialNode
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
-		"max_tokens":  50,
+		// 同上：推理模型 50 不够（211 实测 deepseek-v4-flash 两家全 0 分）。
+		"max_tokens":  providercap.ProbePingMaxTokens,
 		"temperature": 0.1,
 		"stream":      false,
 	}
@@ -354,7 +369,13 @@ func (d *DirectNodeInvoker) InvokeModel(ctx context.Context, node CredentialNode
 		return "", 0, time.Since(startTime), fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := strings.TrimRight(node.BaseURL, "/") + "/v1/chat/completions"
+	// 2026-10-30 (24h 审计第 7 轮)：走 upstreamurl.Build 归一化——
+	// 211 的 providers.base_url 注册时自带 API 前缀（sensenova/nvidia 的
+	// /v1、zhipu 的 /api/coding/paas/v4），硬拼 "/v1/chat/completions"
+	// 产出 /v1/v1/... 与 /v4/v1/... ⇒ 211 实测 per-node IQ 首轮 365/365
+	// 全 fail（连真实流量正常的 zhipu/nvidia 也挂）。upstreamurl 是
+	// 上游 URL 构造的唯一事实源（SSoT），网关自己的上游调用全走它。
+	url := upstreamurl.Build(node.BaseURL, upstreamurl.EpChatCompletions)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return "", 0, time.Since(startTime), fmt.Errorf("create request: %w", err)

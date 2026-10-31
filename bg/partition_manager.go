@@ -53,7 +53,16 @@ const DefaultRetentionWindow = 8 * time.Hour
 
 // promoteCycleTimeout bounds one promote scheduler cycle so a large backlog
 // cannot starve partition creation and cleanup workers.
-const promoteCycleTimeout = 5 * time.Minute
+const promoteCycleTimeout = 10 * time.Minute
+
+// promoteBatchBudget bounds ONE promote batch (one transaction: advisory lock +
+// set_config + SET LOCAL + the function call). 2026-10-30 R184：252 实测
+// session_bodies 的 promote 单批 500 行（~17MB TOAST 拷贝）在慢宿主上要
+// 35~90s（EXPLAIN ANALYZE：Insert 节点 35.7s / 页写 ~8ms，随 load 波动），
+// 60s（2026-09-22 轮按当时负载定的值）在最忙的窗口装不下 ⇒ 每批必死回滚。
+// 150s 与 batch=500（session_bodies_hot 专用键，见 resolvePromoteConfig）
+// 配对：单批装得下、周期预算（10min）仍能容 4 批。
+const promoteBatchBudget = 150 * time.Second
 
 // promoteCycleMaxBatches bounds the number of database batches processed by a
 // single cycle. The next cycle resumes from the remaining hot-table rows.
@@ -68,7 +77,25 @@ const providerErrorCleanupInterval = time.Hour
 //
 // Per-table promote batch sizes can be overridden via settings_kv:
 //   - lifecycle.promote_batch_size (default 5000)
+//   - lifecycle.session_bodies_hot_promote_batch_size (default 500)
 const promoteBatchSize = 5000
+
+// sessionBodiesPromoteBatchSize is the batch cap for
+// session_bodies_hot → monthly partitions (2026-10-30 R184, 252 SQL 日志审计轮).
+//
+// ★ 252 活锁的根因 = **单批物理成本 > Go/SQL 双侧预算**，批大小是成本的分母：
+//   5000 行（default 键 fallback）× ~34KB/行（jsonb 五列 TOAST）≈ 169MB 拷贝，
+//   且叶子分区带全套 7 条索引 ⇒ 写放大后单批实测 6~15 分钟量级，60s 预算
+//   （2026-09-22 轮的 SET LOCAL + ctx）必死 ⇒ 整批回滚 ⇒ 每 tick 重试同一批
+//   = 活锁（252 实测 hot 积压 33h / 10,765 行、24h 窗被杀+被取消 56 次）。
+//   批收到 **500**（≈17MB/批）后单批实测 ~35-90s（随宿主 load 波动），
+//   与预算 promoteBatchBudget（150s）配对装得下。
+//   ★ 500 也是 v1 正文链当年取的值（R16 fact 85「TOAST 重行防爆量」）——890
+//   退役 v1 链时这个知识跟着丢了，会话族 promote 落 default 分支拿到 5000。
+//   ★ 诚实记录：本轮先误判过两层（「批太大收 500 就好」→ 500 仍 182s；
+//   「叶子零索引造了 925 heal」→ 那是量具 join 错误的假缺陷，叶子一直有
+//   全套 7 索引，误建索引已全数 DROP）——925 撤销，本条与预算抬升是终态。
+const sessionBodiesPromoteBatchSize = 500
 
 // PartitionManager automatically creates next month's partition,
 // archives old partitions to columnar storage, continuously migrates
@@ -1314,7 +1341,7 @@ func (pm *PartitionManager) cleanupOldModelProbeRuns(ctx context.Context) {
 	defer cancel()
 
 	tag, err := pm.db.Exec(timeoutCtx,
-		"DELETE FROM model_probe_runs_hot WHERE created_at < now() - ($1 || ' days')::interval",
+		"DELETE FROM model_probe_runs_hot WHERE created_at < now() - make_interval(days => $1::int)",
 		retentionDays)
 	if err != nil {
 		slog.Error("partition_manager: model_probe_runs hot cleanup failed",
@@ -1345,7 +1372,7 @@ func (pm *PartitionManager) cleanupOldNodeProbeRuns(ctx context.Context) {
 	defer cancel()
 
 	tag, err := pm.db.Exec(timeoutCtx,
-		"DELETE FROM node_probe_runs WHERE started_at < now() - ($1 || ' days')::interval",
+		"DELETE FROM node_probe_runs WHERE started_at < now() - make_interval(days => $1::int)",
 		retentionDays)
 	if err != nil {
 		slog.Error("partition_manager: node_probe_runs cleanup failed",
@@ -1375,7 +1402,7 @@ func (pm *PartitionManager) cleanupOldRequestContextAttrs(ctx context.Context) {
 	defer cancel()
 
 	tag, err := pm.db.Exec(timeoutCtx,
-		"DELETE FROM request_context_attrs WHERE ts < now() - ($1 || ' days')::interval",
+		"DELETE FROM request_context_attrs WHERE ts < now() - make_interval(days => $1::int)",
 		retentionDays)
 	if err != nil {
 		slog.Error("partition_manager: request_context_attrs cleanup failed",
@@ -1412,7 +1439,7 @@ func (pm *PartitionManager) cleanupOldRequestStatsMinute(ctx context.Context) {
 		"request_stats_error_drill_minute",
 	} {
 		tag, err := pm.db.Exec(timeoutCtx,
-			"DELETE FROM "+table+" WHERE bucket < now() - ($1 || ' days')::interval",
+			"DELETE FROM "+table+" WHERE bucket < now() - make_interval(days => $1::int)",
 			retentionDays)
 		if err != nil {
 			slog.Error("partition_manager: request_stats cleanup failed",
@@ -1441,7 +1468,7 @@ func (pm *PartitionManager) cleanupOldRuntimeMetrics(ctx context.Context) {
 	defer cancel()
 
 	tag, err := pm.db.Exec(timeoutCtx,
-		"DELETE FROM runtime_metrics WHERE timestamp < now() - ($1 || ' days')::interval",
+		"DELETE FROM runtime_metrics WHERE timestamp < now() - make_interval(days => $1::int)",
 		retentionDays)
 	if err != nil {
 		slog.Error("partition_manager: runtime_metrics cleanup failed",
@@ -1469,7 +1496,7 @@ func (pm *PartitionManager) cleanupOldRuntimeAlertEvents(ctx context.Context) {
 	defer cancel()
 
 	tag, err := pm.db.Exec(timeoutCtx,
-		"DELETE FROM runtime_alert_events WHERE detected_at < now() - ($1 || ' days')::interval",
+		"DELETE FROM runtime_alert_events WHERE detected_at < now() - make_interval(days => $1::int)",
 		retentionDays)
 	if err != nil {
 		slog.Error("partition_manager: runtime_alert_events cleanup failed",
@@ -1910,7 +1937,7 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 				break
 			}
 			batchStart := time.Now() // 2026-08-29 P2: track duration
-			timeoutCtx, cancel := context.WithTimeout(cycleCtx, 60*time.Second)
+			timeoutCtx, cancel := context.WithTimeout(cycleCtx, promoteBatchBudget)
 			tx, err := pm.db.Begin(timeoutCtx)
 			if err != nil {
 				cancel()
@@ -1973,8 +2000,13 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 			// 重试同一批形成活锁，252 日志 21 分钟窗口 1 次实锤）。
 			// SET LOCAL 抬到与 Go 预算一致，事务结束自动还原，pooled
 			// 连接不保留。
+			// 2026-10-30 R184：预算 60s→promoteBatchBudget（150s）。252
+			// 实测批 500 行 TOAST 拷贝在慢宿主上 35~90s（页写 ~8ms 随
+			// load 波动），60s 装不下 ⇒ 每批必死（活锁的另一半根因；
+			// 索引缺失见 925）。SET LOCAL 与 Go ctx 同值，谁先到都是
+			// 「本批失败、下个 tick 重试」的同一语义。
 			if _, err := tx.Exec(timeoutCtx,
-				"SET LOCAL statement_timeout = '60s'"); err != nil {
+				"SET LOCAL statement_timeout = '150s'"); err != nil {
 				tx.Rollback(timeoutCtx)
 				cancel()
 				recordPromoteDuration(s.label, time.Since(batchStart).Seconds())
@@ -2345,6 +2377,28 @@ func resolvePromoteConfig(label string) (time.Duration, int) {
 			batchSize = 50_000
 		}
 		return retention, batchSize
+	case "session_bodies_hot":
+		// 2026-10-30 R184（252 SQL 日志审计轮）：正文表是 TOAST 重行族，
+		// 批大小是「行宽」的函数而不是行数的函数 —— 批 5000 在该表上是
+		// ~169MB/批的拷贝（60s 预算搬不完 ⇒ 整批回滚活锁，252 实测
+		// hot 积压 33h / 10,374 行）。保留期语义与 default 完全一致
+		// （lifecycle.hot_retention_hours），只把批换成专用键 +
+		// 500 行默认（v1 链 890 退役时丢失的取值，见
+		// sessionBodiesPromoteBatchSize 注释）。键已注册
+		// settings/spec_lifecycle.go（Default 与此处 fallback 逐字对齐）。
+		hours := settingsGetPlatformInt("lifecycle.hot_retention_hours", int(DefaultRetentionWindow.Hours()))
+		retention := time.Duration(hours) * time.Hour
+		if retention < time.Hour {
+			retention = time.Hour
+		}
+		batchSize := settingsGetPlatformInt("lifecycle.session_bodies_hot_promote_batch_size", sessionBodiesPromoteBatchSize)
+		if batchSize < 50 {
+			batchSize = 50
+		}
+		if batchSize > 50_000 {
+			batchSize = 50_000
+		}
+		return retention, batchSize
 	default:
 		hours := settingsGetPlatformInt("lifecycle.hot_retention_hours", int(DefaultRetentionWindow.Hours()))
 		retention := time.Duration(hours) * time.Hour
@@ -2397,7 +2451,7 @@ func (pm *PartitionManager) cleanupOldProviderErrorDetails(ctx context.Context) 
 		return tx.Exec(timeoutCtx,
 			`DELETE FROM provider_error_details
 			 WHERE resolved = true
-			 AND updated_at < now() - ($1 || ' days')::interval`,
+			 AND updated_at < now() - make_interval(days => $1::int)`,
 			retentionDays)
 	})
 	if err != nil {
@@ -2441,7 +2495,7 @@ func (pm *PartitionManager) cleanupOldSupplierErrorStats(ctx context.Context) {
 	tag, err := pm.db.Exec(timeoutCtx,
 		`DELETE FROM supplier_error_stats
 		 WHERE granularity = 'minute'
-		   AND stat_time < now() - ($1 || ' days')::interval`,
+		   AND stat_time < now() - make_interval(days => $1::int)`,
 		retentionDays)
 	if err != nil {
 		slog.Error("partition_manager: supplier_error_stats cleanup failed",
@@ -2478,7 +2532,7 @@ func (pm *PartitionManager) cleanupOldRoutingFeedbackLog(ctx context.Context) {
 
 	tag, err := pm.db.Exec(timeoutCtx,
 		`DELETE FROM routing_feedback_log
-		 WHERE created_at < now() - ($1 || ' days')::interval`,
+		 WHERE created_at < now() - make_interval(days => $1::int)`,
 		retentionDays)
 	if err != nil {
 		// 42P01 (table missing, e.g. migration 670 not applied yet) is the
@@ -2514,7 +2568,7 @@ func (pm *PartitionManager) cleanupOldRoutingOptimizationMetrics(ctx context.Con
 
 	tag, err := pm.db.Exec(timeoutCtx,
 		`DELETE FROM routing_optimization_metrics
-		 WHERE time_bucket < now() - ($1 || ' days')::interval`,
+		 WHERE time_bucket < now() - make_interval(days => $1::int)`,
 		retentionDays)
 	if err != nil {
 		slog.Debug("partition_manager: routing_optimization_metrics cleanup skipped",
@@ -2595,7 +2649,7 @@ func (pm *PartitionManager) cleanupOldAnalysisEvents(ctx context.Context) {
 	total := int64(0)
 	for round := 0; round < 10; round++ {
 		n := pm.deleteTerminalRowsBatched(ctx, "analysis_events",
-			"processed_at IS NOT NULL AND occurred_at < now() - ($1 || ' days')::interval",
+			"processed_at IS NOT NULL AND occurred_at < now() - make_interval(days => $1::int)",
 			retentionDays, batchLimit)
 		total += n
 		if n < batchLimit {
@@ -2626,7 +2680,7 @@ func (pm *PartitionManager) cleanupOldStatsEventInboxTerminal(ctx context.Contex
 	total := int64(0)
 	for round := 0; round < 10; round++ {
 		n := pm.deleteTerminalRowsBatched(ctx, "stats_event_inbox",
-			"processing_status IN ('processed','dead_letter') AND occurred_at < now() - ($1 || ' days')::interval",
+			"processing_status IN ('processed','dead_letter') AND occurred_at < now() - make_interval(days => $1::int)",
 			retentionDays, batchLimit)
 		total += n
 		if n < batchLimit {

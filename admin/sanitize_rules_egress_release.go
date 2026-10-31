@@ -31,11 +31,11 @@ import (
 //   - 只有 **super_admin** 能写放行表：租户管理员只能读自己租户的那几条。
 //     （与本文件既有的角色口径一致：tenant_admin 只放行 events 读+复核。）
 //
-// ## 持久化
+// ## 持久化（2026-10-29 更新）
 //
-// 放行表是**进程内**的（与硬阻断清单同一层）。跨重启/多副本的持久化需要
-// 一张新表 + 启动迁移，**本轮不做**（编号待定，避免与并行会话的迁移编号冲突）。
-// ⇒ 这个端点的语义是「本次进程生命周期内的放行」，UI 上必须写明这一点。
+// 放行表已落库（迁移 917 的 sanitize_egress_releases）：授予/撤销写穿透
+// （进程内 + DB），启动时由 InstallReviewPersistence 装载——跨重启存活。
+// source=review 的行由审核批准产生（带 7 天过期），manual 的行由本端点产生。
 
 // handleEgressReleases 处理放行表的读/写。
 //
@@ -84,17 +84,23 @@ func (h *Handler) handleEgressReleases(w http.ResponseWriter, r *http.Request, a
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err := sanitizerules.AddEgressRelease(release); err != nil {
+		if release.Source == "" {
+			release.Source = "manual"
+		}
+		// 2026-10-29 持久化轮：放行写穿透（进程内 + DB）。管理员手动授予默认
+		// 不过期；要给时限就在 body 里带 expires_at。
+		if err := sanitizerules.AddEgressReleasePersistent(r.Context(), release); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"message":      "egress release granted",
-			"tenant_id":    release.TenantID,
-			"scope":        release.Scope,
-			"rule":         release.Rule,
-			"approved_by":  release.ApprovedBy,
-			"process_only": true,
+			"message":     "egress release granted",
+			"tenant_id":   release.TenantID,
+			"scope":       release.Scope,
+			"rule":        release.Rule,
+			"approved_by": release.ApprovedBy,
+			"expires_at":  release.ExpiresAt,
+			"source":      release.Source,
 		})
 	case http.MethodDelete:
 		if !super {
@@ -110,7 +116,9 @@ func (h *Handler) handleEgressReleases(w http.ResponseWriter, r *http.Request, a
 			writeError(w, http.StatusBadRequest, "tenant_id, scope and rule are required")
 			return
 		}
-		removed := sanitizerules.RemoveEgressRelease(tenant, scope, rule, digest)
+		// 2026-10-29 持久化轮：撤销写穿透（进程内 + DB；digest 为空删该键下
+		// 全部摘要粒度的行）。
+		removed := sanitizerules.RemoveEgressReleasePersistent(r.Context(), tenant, scope, rule, digest)
 		if !removed {
 			writeError(w, http.StatusNotFound, "no such egress release")
 			return

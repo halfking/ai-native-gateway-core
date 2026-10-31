@@ -113,9 +113,35 @@ verify_public_web'''
     def test_fail_closed_call_sites(self):
         stage = source[source.index('# 5.5 --no-frontend'):source.index('# 6. verify')]
         self.assertIn('normalize_release_web_permissions "$version" ||', stage)
-        gate = source.index('if ! verify_public_web; then')
-        mark = source.index('if ! host_mark_verified', gate)
-        self.assertIn('_bluegreen_abort', source[gate:mark])
+        # 逐门穷举（2026-10-27）：legacy canary / legacy host / 蓝绿 三道
+        # verify_public_web 门各自必须 fail-closed（_bluegreen_abort 或 exit 1），
+        # 不许验证失败后落进 mark_verified。原来只锚定「文件里第一道门」，
+        # legacy 门（无蓝绿候选态 ⇒ 打印可粘贴回滚命令 + exit 1，同样 fail-closed）
+        # 插到蓝绿门前之后，那个锚点就指错了对象 ⇒ 假红。
+        def gate_blocks(src):
+            lines = src.splitlines()
+            blocks = []
+            for idx, line in enumerate(lines):
+                if not re.match(r'^\s*if ! verify_public_web; then$', line):
+                    continue
+                depth, body = 0, []
+                for l in lines[idx:]:
+                    body.append(l)
+                    if re.match(r'^\s*if\b', l):
+                        depth += 1
+                    elif re.match(r'^\s*fi\s*$', l):
+                        depth -= 1
+                        if depth == 0:
+                            break
+                blocks.append('\n'.join(body))
+            return blocks
+        blocks = gate_blocks(source)
+        self.assertEqual(len(blocks), 3, 'expected 3 verify_public_web gates: legacy canary, legacy host, blue-green')
+        for block in blocks:
+            self.assertTrue('_bluegreen_abort' in block or 'exit 1' in block,
+                            'verify_public_web gate not fail-closed:\n' + block)
+        # 蓝绿门必须真正回滚上游（legacy 门没有候选态，exit 1 即已闭环）。
+        self.assertTrue(any('_bluegreen_abort' in b for b in blocks))
 
 unittest.main(argv=['deploy_web_surface'], verbosity=2)
 PY

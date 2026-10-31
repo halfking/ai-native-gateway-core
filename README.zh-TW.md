@@ -17,7 +17,7 @@
 AI Native Gateway 是一個為 AI Agent 與「vibe coding」時代打造的**開源、自託管、AI 原生 LLM 閘道**。它遠不止轉發請求：它對流經企業的每一枚 Token 進行**分類、路由、治理、稽核與計費**。
 
 - **協定歸一**：相容 OpenAI、Anthropic、Gemini 與 Responses API——一個端點存取所有模型
-- **智慧雙層路由**：L1 選模型（任務分類 → 6 維評分），L2 選憑證（Tier 回退 → 計費輪次 → P2C 評分 → 執行 / 熔斷）
+- **智慧雙層路由**：L1 選模型（任務分類 → 8 維評分），L2 選憑證（Tier 回退 → 計費輪次 → P2C 評分 → 執行 / 熔斷）
 - **工作階段治理**：黏性工作階段、全文工作階段回放、自動提示詞壓縮與 4 檔資料生命週期——對話本身（而非僅單次請求）就是一等管理物件
 - **多租戶**：以 PostgreSQL RLS 在 90+ 張表上強制租戶隔離，並提供按租戶配額、計量與 MaaS 計費
 - **憑證管理**：多憑證池，具備指紋偽裝、自適應探測與自動熔斷
@@ -104,17 +104,17 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | 路徑 | 職責 |
 |------|------|
 | `cmd/gateway/` | 組合根——單一二進位生產入口（資料面 + 控制面） |
-| `domains/` | 68 個 DDD 領域——`streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
+| `domains/` | 69 個 DDD 領域——`streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
 | `admin/` + `web/` | 管理 REST API + Vue 3 + TypeScript SPA（Element Plus、ECharts） |
 | `web-mobile/` | 行動端前端（Vue 3 + TypeScript）——第二生產前端；部署要求先建置 `dist/` |
 | `bg/` | 背景工作者——探測、生命週期清理、統計聚合、分區維護 |
 | `storage/` | 雙模式儲存工廠（`full`：PG+Redis / `lite`：SQLite+檔案+行程內 KV） |
 | `internal/` | 橫切基礎設施——IR、vendor 欄位剝離、工作階段鏡像、outbox、遙測… |
-| `sql/migrations/` + `db/migrations/` | 冪等遷移（啟動系列目前 907） |
+| `sql/migrations/` + `db/migrations/` | 冪等遷移（啟動系列目前 927） |
 | `installer/` | 獨立跨平台安裝器 / 升級器模組 |
 | `scripts/`、`deploy/` | 建置、部署、鏡像與驗證工具 |
 
-規模快照（2026-10-22 程式碼掃描 @31466a01d）：`cmd/` 下共 **~5,680 個 Go 檔案 · 3,333 個測試檔案 · 1,119 個遷移 SQL · 68 個領域套件 · 44 個二進位**（檔案數不含 `vendor/` 與 `installer/`；遷移 SQL 為 `sql/migrations/` 全量；二進位依 `go list` 的 main 套件計）。
+規模快照（2026-10-31 程式碼掃描 @495a1c758）：`cmd/` 下共 **~6,138 個 Go 檔案 · 3,661 個測試檔案 · 1,180 個遷移 SQL · 69 個領域套件 · 49 個二進位**（檔案數不含 `vendor/` 與 `installer/`；遷移 SQL 為 `sql/migrations/` 全量；二進位依 `go list` 的 main 套件計）。
 
 **深入閱讀**
 
@@ -162,7 +162,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 ### 路由全景 — 雙層路由全面可觀測
 
 ![路由全景](docs/assets/screenshots/routing-panorama.png)
-*L1 模型選擇（任務分類 → 6 維評分 → Profile 鎖定）+ L2 憑證選擇（模型解析 → Tier 回退 → 計費輪次 → P2C 評分 → 執行 / 熔斷）。任務×模型熱力圖回答「什麼任務該用什麼模型」；Sankey 流向圖展示 14,000+ 即時請求的最終去向（任務 → 模型 → 供應商）*
+*L1 模型選擇（任務分類 → 8 維評分 → Profile 鎖定）+ L2 憑證選擇（模型解析 → Tier 回退 → 計費輪次 → P2C 評分 → 執行 / 熔斷）。任務×模型熱力圖回答「什麼任務該用什麼模型」；Sankey 流向圖展示 14,000+ 即時請求的最終去向（任務 → 模型 → 供應商）*
 
 ### 憑證監控 — 多來源 × 多憑證健康度
 
@@ -298,7 +298,7 @@ GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe .
 | 5. 目錄結構 | 完整 | 完整（db/data 與 redis/data 目錄仍會建立但不使用） |
 | 6. `compose.yml` | 3 個服務 | **剝離 `kx-citus` + `kx-redis`**；gateway 移除 `depends_on` 與 PG/Redis env |
 | 7. 啟動容器 | 3 個容器 | **僅 `kx-llm-gateway-go`** |
-| 8. 資料庫初始化 | 等待 PG ready + `InitSchema`（450+ 個啟動遷移） | **跳過**（SQLite 自動建表） |
+| 8. 資料庫初始化 | 等待 PG ready + `InitSchema`（590+ 個啟動遷移） | **跳過**（SQLite 自動建表） |
 | 9. 健康檢查 | 5 項全檢 | 僅容器 + `/healthz`；PG/Redis/Schema 在報告中強制顯示 ✅ |
 
 **新增 install flags**

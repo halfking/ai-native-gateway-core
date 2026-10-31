@@ -101,7 +101,7 @@ function handleTileClick(requestId: string) {
 /* Right-anchored + no move/absolute-leave: prevents whole-lane shake on insert */
 .swim-tile-enter-active,
 .swim-tile-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity 0.2s var(--kx-motion-ease-out);
 }
 
 .swim-tile-enter-from,

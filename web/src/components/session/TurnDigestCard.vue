@@ -105,14 +105,14 @@ function eventPillClass(event: TurnDigestEvent): string {
 
 <style scoped>
 .tdc { background: var(--kx-surface); border: 1px solid var(--kx-border); border-radius: 8px; padding: 12px 16px; color: var(--kx-text); }
-.tdc-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 12px; color: var(--kx-muted); }
+.tdc-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; color: var(--kx-muted); }
 .tdc-turn-no { color: var(--kx-primary); font-weight: 600; }
 .tdc-stat strong { color: var(--kx-text); }
 .tdc-loading, .tdc-fallback { padding: 24px; text-align: center; color: var(--kx-muted); white-space: pre-wrap; word-break: break-word; }
-.tdc-section { border-top: 1px dashed var(--kx-border); padding: 10px 0 4px; }
-.tdc-section-label { font-size: 12px; font-weight: 600; color: var(--kx-primary); margin-bottom: 6px; }
+.tdc-section { border-top: 1px dashed var(--kx-border); padding: 8px 0 4px; }
+.tdc-section-label { font-size: 12px; font-weight: 600; color: var(--kx-primary); margin-bottom: 4px; }
 .tdc-user { color: var(--kx-primary); } .tdc-assistant { color: var(--kx-success); }
 .tdc-section-body { font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
-.tdc-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--kx-muted); }
-.tdc-events { list-style: none; padding: 0; margin: 0; display: grid; gap: 5px; } .tdc-events li { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; }
+.tdc-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 12px; color: var(--kx-muted); }
+.tdc-events { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; } .tdc-events li { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; }
 </style>

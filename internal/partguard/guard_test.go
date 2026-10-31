@@ -43,6 +43,14 @@ var allowedParentDML = []struct {
 	Count  int
 	Reason string
 }{
+	// ★ 2026-10-28 两处并行改动（★ 分支审计轮 wip/02 合入 与 r1041 各登了一份**同 3 条**：
+	// ★ recording_consent.go / session_trash.go × session_bodies 与 sessions）
+	// ★ ⇒ ⇒ 合并后按「**同一 (file, table) 只许一行**」去重（★ 保留已推送复核过的那份）
+	// ★ ⇒ ⇒ 保留文末那组（★ 理由更完整、且带行号）。
+	// ★★ r1043 轮补充的**为什么必须去重**（★ 本门自己也报出了「白名单重复登记」）：
+	// ★ ★ 本门要求**条数**相等（★ 若只比集合，第二处会被第一处吸收掉 ⇒ 重复项查不出来）
+	// ★ ★ ⇒ ⇒ ★★ 登记必须**一条**配一个**含条数**的 Count
+	// ★ ★ ⇒ ★★ 重复登记会让实际条数与期望对不上 ⇒ ⇒ 门报红。
 	{"admin/session_turns_v2.go", "sessions", 1,
 		"会话摘要/标题回写。代码自带分区 pin 绕行（partition_date = MAX(...))，注释自认「Partitioned sessions table: UPDATE ... ORDER BY/LIMIT is invalid in PostgreSQL」；改 hot 需要先有 v2 摘要投影列，R78 登记为待裁决。"},
 	{"bg/opslog_trimmer.go", "candidate_failure_logs", 1,
@@ -59,8 +67,8 @@ var allowedParentDML = []struct {
 		"同上族，但**这条是 R43 轮 L4 补的第三族表腿**：重建只写 turns（partition_date=CURRENT_DATE），而 817 视图的 join 键含 partition_date ⇒ 上一轮遗留的存活旧行永不再匹配、同时留下孤儿行。只删 turns 那一面关不掉这个闭环，故必须扫 details 父表。一次性手工工具、R78 同族待裁决。"},
 	{"db/db.go", "session_bodies", 1,
 		"promote 函数内的 reconciled CTE：父表 UNIQUE(tenant_id,request_id,partition_date) 与 hot 的 ON CONFLICT (id,partition_date) 冲突，毒丸行会卡死 hot 窗口，故 promote 期间必须回写父表。与 R75 的 columns 冲突同源，是「promote 期间写父表」被引入不变量的根因。"},
-	{"domains/session/v2/session_aggregator.go", "session_turns", 1,
-		"聚合 claim（claimAggregateTurn）：把 aggregate_applied_at 置 NOW 以抢占该轮聚合。unified 视图中分区副本为权威，故必须先 claim 父表。"},
+	{"domains/session/v2/session_aggregator.go", "session_turns", 2,
+		"聚合 claim（claimAggregateTurn）：把 aggregate_applied_at 置 NOW 以抢占该轮聚合。unified 视图中分区副本为权威，故必须先 claim 父表。★ 第二条是 2026-10-27（R169）新暴露的**动态**腿：`UPDATE `+table+` SET task_type = COALESCE(NULLIF(task_type,''), $3)`，table 遍历 {public.session_turns_hot, public.session_turns}（:484-485）⇒ 此前门看不见它（表名在变量里），本轮改造后可见。"},
 	{"domains/session/v2/session_aggregator.go", "sessions", 2,
 		"会话元数据状态机：CloseSession 置 status/closed_at，以及带 COALESCE 的字段合并更新（经 sessionAdvisoryLockSQL 串行）。"},
 	{"domains/session/v2/session_request_status_backfill.go", "session_turns", 1,
@@ -75,6 +83,38 @@ var allowedParentDML = []struct {
 		"标题投影的条件提交（WITH changed AS (UPDATE ...) 取 RETURNING）与清除标题；两处均带 partition_date = MAX(...) pin，注释指向与 admin/session_turns_v2.go 同一手写绕行模式。"},
 	{"internal/trace/trace.go", "session_turns", 1,
 		"trace_events 回写的**第二条腿**（df9a213de 退役 request_logs v1 双写族时引入）：先打 session_turns_hot，命中 0 行才回退分区父表。回退腿是必需的——FlushToPG 的退避重试链跨 1.2s+5s+5s+5s（domains/streaming/handler.go:2146），期间 session_turns_hot→月分区的晋级若已完成，只写 hot 会让 trace_events 永久丢失（Redis key 仅在 rowsAffected>0 时才删，见 shouldDeleteTraceAfterFlush:536）。拓扑佐证：session_turns 是月分区父表（session_turns_2026_09 等），而 session_turns_hot 是 706b 用 LIKE ... INCLUDING ALL 建的**独立表**（非 PARTITION OF），故父表这条腿只能命中已晋级行，两腿互补不重叠。与 domains/session/v2/session_request_status_backfill.go 同构（写面必须覆盖 hot 之外的分区行）。df9a213de 的验证清单跑了 internal/trace 但未跑 partguard，本门因此漏红，本条为补登。"},
+
+	// ── 2026-10-27（R169）：动态表名父表写 —— 门改造后第一次可见的一批 ──────
+	// 下面 7 条全部是「目标表名在运行时决定」的父表写（`UPDATE `+tbl+` / `+"`DELETE FROM `+tbl+`"）。
+	// 改造前本门**看不见它们** ⇒ 门是绿的，而红线已被违反。
+	// 其中 4 条在**每请求热路径**上（turn_writer / abandoned_turn / final_success_turn / session_aggregator）。
+	{"bg/partition_manager.go", "stats_event_inbox", 1,
+		"★ 分区父表 stats_event_inbox 的行级 TTL 批删（deleteTerminalRowsBatched，:2572）。★★ 门头注释（R78 起）自那时起就写着「bg/partition_manager.go 对分区父表 stats_event_inbox 直接 DELETE」——但表名是**形参**（\"DELETE FROM \"+table+…）⇒ 字面量扫描器看不见 ⇒ 这条登记项在本次改造前**根本不存在**，而门一直是绿的。门头与门的能力长期不一致，本条把两者对齐。"},
+	{"domains/session/v2/session_digest_backfill.go", "session_turns", 1,
+		"★ digest 回填的**第二条腿**：hot 命中 0 行时回退分区父表（execDigestUpdate 的 \"public.session_turns\" 实参，:436/:457）。与 internal/trace/trace.go 同构（写面必须覆盖 hot 之外的分区行）——否则 hot→月分区的晋级窗口里搬走的行回填不到，digest 会永久为空。"},
+	{"domains/session/v2/test_helpers.go", "session_bodies", 1,
+		"测试清理助手（**不是** _test.go，编译进包）：`DELETE FROM `+table+`，table 遍历 public.sessions / session_bodies / session_turns / session_turn_logs（:46-51）。不是请求路径，但仍是父表写 ⇒ 按红线登记。"},
+	{"domains/session/v2/test_helpers.go", "session_turns", 1,
+		"同上（同一处循环的 session_turns 腿）。"},
+	{"domains/session/v2/test_helpers.go", "sessions", 1,
+		"同上（同一处循环的 sessions 腿）。"},
+	{"domains/session/v2/turn_writer.go", "session_turns", 1,
+		"★ 每个 turn 落库后的**第二跳**（回填 compression_applied / compression_strategy / compression_meta / compression_tokens_saved）：`UPDATE `+table+`，table 遍历 {public.session_turns_hot, public.session_turns}（:689-691）。写在事务内、每请求必走 ⇒ 父表一旦列存化，这条腿会被引擎直接拒绝。"},
+	{"internal/sessionv2mirror/abandoned_turn.go", "session_turns", 1,
+		"★ 每个**失败**请求的 abandoned 标记：`UPDATE `+tbl+` SET is_abandoned = TRUE`，tbl 遍历 {hot, parent}（:211-212）。"},
+	{"internal/sessionv2mirror/final_success_turn.go", "session_turns", 1,
+		"★ 每个**成功**请求的 final 标记：`UPDATE `+tbl+` t SET is_final_success = TRUE`，tbl 遍历 {hot, parent}（:234）。这是四条热路径动态父表写里调用频次最高的一条。"},
+
+	// ── 2026-10-28（r1041）：分支 02（录制同意 + 回收站）引入的父表写 ────────
+	// ★ 下面两条都是「删除必须【两腿】」形态：★ 只删 hot 会漏掉
+	// ★ 【已从 hot 晋级到月分区】的行 ⇒ ⇒ 删除语义不完整。
+	// ★ 与 internal/trace/trace.go 同构（写面必须覆盖 hot 之外的分区行）。
+	{"admin/session_trash.go", "session_bodies", 1,
+		"★ 回收站「移入回收站」路径的第二腿：先从 unified 视图搬进 session_bodies_trash，再删 hot 与**分区父表**各一份（:121-122）。★ 删父表这一腿是必需的 —— hot 与月分区是两套存储，hot 删干净但父表留着 ⇒ 同一 session 的正文在两处可见 ⇒ 「回收站」语义破。"},
+	{"admin/session_trash.go", "sessions", 2,
+		"★ 回收站把会话标记为 deleted（:124）与恢复为 active（:192）—— 两处成对。★ sessions 是**分区父表**，且本仓既有登记（admin/session_turns_v2.go / cmd/gateway/turn_logs_aggregator.go / domains/session/v2/session_aggregator.go / internal/titlestore/store.go）都已在写它 ⇒ 本条是同一族的新站点，登记而不改代码。★ 门要求**条数**也相等（★ 只比集合的话，第二处会被第一处吸收掉 ⇒ 这就是「同文件同表再加一条」被抓的机制）。"},
+	{"admin/recording_consent.go", "session_bodies", 1,
+		"★ 关闭录制同意时的正文清空（:139-140）：hot 与**分区父表**各删一份。★ 与 admin/session_trash.go 同构 —— 关闭录制必须真的清掉正文，而正文分布在 hot + 月分区两处 ⇒ 只删 hot 会让「已关闭录制」名存实亡（★ 且这正是「默认关闭录制」的隐私承诺所在）。"},
 }
 
 type pair struct {
@@ -133,6 +173,131 @@ func TestNoParentTableDMLBeyondKnown(t *testing.T) {
 		t.Errorf("白名单登记项已失效（%d 项）——代码已改而登记未跟，下一个人会误以为该文件已合规：\n  %s",
 			len(stale), strings.Join(stale, "\n  "))
 	}
+}
+
+// allowedDynamicDML 是**当前已知**的「目标表名在运行时决定」的 DML 站点集合。
+//
+// 为什么要这张表（allowedParentDML 只管一半）：
+//
+// allowedParentDML 登记的是「**已被归属到父表**」的动态站点。但动态站点还有
+// 另一半——**归属不出来**的那些：表名来自框架清单（internal/dbx 的 CRUD
+// 构造器）、来自配置、来自远端参数。它们今天没有违反红线，可它们正是
+// 「下一个父表写」的藏身处：只要有人把某个动态目标改成父表、而归属仍然解析
+// 不出来，红线就再次被绕过且门不会红。
+//
+// ⇒ 这张表的要求是：**每一处动态 DML 站点都必须登记**，新增站点 ⇒ 门红；
+// 登记项失效（站点被改写成字面量或删掉）⇒ 门也红（否则下一个人会以为
+// 「这个文件已经没有动态写了」）。
+//
+// ★ 为什么按 (文件, 语句形态) 计数而不是按行号：行号会随任何编辑漂移，
+//
+//	登记项就会变成日常噪声；站点数量才是稳定的性质。
+var allowedDynamicDML = []struct {
+	File   string
+	Stmt   string
+	Count  int
+	Reason string
+}{
+	{"bg/partition_manager.go", "DELETE", 2,
+		"两处动态 DELETE：:1415 清理 request_stats_minute 族（普通表），:2572 deleteTerminalRowsBatched（表名由调用方给 ⇒ 归属到父表 stats_event_inbox，已在 allowedParentDML 登记）。两者都不是分区父表的**直接**写，但表名在运行时决定 ⇒ 必须登记。"},
+	{"domains/session/v2/session_aggregator.go", "UPDATE", 1,
+		"task_type 回填（:485），表名来自 {hot, parent} 遍历 ⇒ 归属到父表 session_turns（已在 allowedParentDML 登记）。"},
+	{"domains/session/v2/session_digest_backfill.go", "UPDATE", 1,
+		"digest 回填（:457），表名来自调用点实参 ⇒ 归属到父表 session_turns（已在 allowedParentDML 登记）。"},
+	{"domains/session/v2/test_helpers.go", "DELETE", 1,
+		"测试清理助手（:54），表名遍历 {sessions, session_bodies, session_turns, session_turn_logs} ⇒ 三张父表已在 allowedParentDML 登记。"},
+	{"domains/session/v2/turn_writer.go", "UPDATE", 1,
+		"compression_* 回填（:691），表名来自 {hot, parent} 遍历 ⇒ 归属到父表 session_turns（已在 allowedParentDML 登记）。"},
+	{"domains/stats/minute_flush.go", "DELETE", 1,
+		"分钟统计表 TTL 清理（:113），表名遍历 minute_flush.go:105-111 的分钟表清单 ⇒ 全是普通表，归属不到父表。"},
+	{"internal/dbx/crud.go", "UPDATE", 2,
+		"dbx 通用 CRUD 构造器（:210 update / :245 软删），表名来自 manifest + quoteTriple 的返回值 ⇒ 静态不可解析，归属不到任何父表。★ 这是本仓**最可能藏住下一个父表写**的位置：manifest 里加一张分区父表 ⇒ 门看不见 ⇒ 需要人盯。"},
+	{"internal/sessionv2mirror/abandoned_turn.go", "UPDATE", 1,
+		"abandoned 标记（:212），表名来自 {hot, parent} 遍历 ⇒ 归属到父表 session_turns（已在 allowedParentDML 登记）。"},
+	{"internal/sessionv2mirror/final_success_turn.go", "UPDATE", 1,
+		"final 标记（:234），表名来自 {hot, parent} 遍历 ⇒ 归属到父表 session_turns（已在 allowedParentDML 登记）。"},
+}
+
+// TestNoUnregisteredDynamicDML 要求**每一处动态 DML 站点都被登记**。
+//
+// 这道门与 TestNoParentTableDMLBeyondKnown 是互补的两条：
+//   - 前者管「已经归属到父表的动态写」（红线：更新/删除只能在 hot 表）；
+//   - 本道管「动态写本身」（红线之外的一条更弱的纪律：动态目标必须可见）。
+//
+// 为什么需要后者：动态目标**不可静态判定**这件事，意味着「今天没违反红线」
+// 不等于「明天也不会」。把每一处动态站点登记下来，等于把「将来可能被绕过」
+// 的地方变成**有名有姓的清单**，而不是靠下一次有人想起来去翻代码。
+func TestNoUnregisteredDynamicDML(t *testing.T) {
+	root := repoRoot(t)
+	sites, err := CollectDynamicSites(root)
+	if err != nil {
+		t.Fatalf("scan dynamic sites: %v", err)
+	}
+
+	// 覆盖下限：集合相等判据在空集合上恒真 ⇒ 必须自带下限（实测 11 处）。
+	const minSites = 8
+	if len(sites) < minSites {
+		t.Fatalf("只扫到 %d 处动态 DML 站点（下限 %d）：扫描范围疑似失效，"+
+			"此时「集合相等」会与空集合同步为真而安静通过", len(sites), minSites)
+	}
+
+	type pair struct {
+		file string
+		stmt string
+	}
+	got := map[pair]int{}
+	for _, s := range sites {
+		got[pair{s.File, s.Stmt}]++
+	}
+	want := map[pair]int{}
+	for _, a := range allowedDynamicDML {
+		p := pair{a.File, a.Stmt}
+		if _, dup := want[p]; dup {
+			t.Errorf("动态站点白名单重复登记 %s / %s", a.File, a.Stmt)
+		}
+		want[p] = a.Count
+		if len([]rune(a.Reason)) < 20 {
+			t.Errorf("%s / %s 的登记理由过短（%d 字），等于没写：%q",
+				a.File, a.Stmt, len([]rune(a.Reason)), a.Reason)
+		}
+	}
+
+	var extra, stale []string
+	for p, n := range got {
+		w, ok := want[p]
+		switch {
+		case !ok:
+			extra = append(extra, fmt.Sprintf("%s / %s（%d 处）", p.file, p.stmt, n))
+		case n != w:
+			extra = append(extra, fmt.Sprintf("%s / %s 处数 %d≠登记的 %d", p.file, p.stmt, n, w))
+		}
+	}
+	for p := range want {
+		if _, ok := got[p]; !ok {
+			stale = append(stale, p.file+" / "+p.stmt)
+		}
+	}
+	sort.Strings(extra)
+	sort.Strings(stale)
+
+	if len(extra) > 0 {
+		t.Errorf("发现未登记的动态 DML 站点（%d 项）——表名在运行时决定 ⇒ "+
+			"「不写分区父表」这条红线在这里是**看不见**的，请登记或改写：\n  %s",
+			len(extra), strings.Join(extra, "\n  "))
+	}
+	if len(stale) > 0 {
+		t.Errorf("动态站点登记项已失效（%d 项）——站点已改写或删除而登记未跟，"+
+			"下一个人会误以为该文件已没有动态写：\n  %s",
+			len(stale), strings.Join(stale, "\n  "))
+	}
+	var attributed int
+	for _, s := range sites {
+		if len(s.Tables) > 0 {
+			attributed++
+		}
+	}
+	t.Logf("动态 DML 站点 %d 处（其中 %d 处已归属到分区父表）已全部登记",
+		len(sites), attributed)
 }
 
 // sqliteBacked 是**排除**项。若它变成死代码（SQLite 侧不再有同名表

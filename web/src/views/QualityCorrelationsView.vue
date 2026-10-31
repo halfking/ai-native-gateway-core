@@ -301,7 +301,7 @@ onMounted(load)
 h1 { margin: 0 0 8px; font-size: 24px; }
 h2 {
   margin: 0 0 12px;
-  font-size: 18px;
+  font-size: 20px;
   border-bottom: 1px solid var(--border);
   padding-bottom: 8px;
 }
@@ -310,10 +310,10 @@ h2 {
   background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 20px;
+  padding: 16px;
   margin-bottom: 16px;
 }
-.filter-card { padding: 16px 20px; }
+.filter-card { padding: 16px 16px; }
 .filter-bar {
   display: flex;
   gap: 16px;
@@ -323,7 +323,7 @@ h2 {
 .filter-bar label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 13px;
   color: var(--muted);
 }
@@ -339,7 +339,7 @@ h2 {
   min-width: 140px;
 }
 .filter-bar button {
-  padding: 6px 14px;
+  padding: 4px 12px;
   background: var(--accent);
   color: var(--on-primary);
   border: none;
@@ -363,13 +363,13 @@ h2 {
 .qc-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .qc-table th {
   text-align: left;
-  padding: 8px 10px;
+  padding: 8px 8px;
   background: var(--bg);
   border-bottom: 1px solid var(--bg);
   color: var(--muted);
   font-weight: 500;
 }
-.qc-table td { padding: 8px 10px; border-bottom: 1px solid var(--bg); }
+.qc-table td { padding: 8px 8px; border-bottom: 1px solid var(--bg); }
 .tag {
   font-family: 'SF Mono', Menlo, monospace;
   font-size: 11px;
@@ -408,7 +408,7 @@ h2 {
   font-weight: 600;
 }
 .insight-correlation {
-  padding: 3px 10px;
+  padding: 3px 8px;
   border-radius: 4px;
   color: var(--on-primary);
   font-size: 12px;

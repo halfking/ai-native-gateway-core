@@ -241,5 +241,23 @@ export default {
     typeTopup: "Paquete de recarga"
   },
 
-
+  bills: {
+    title: 'Facturas mensuales y cupones',
+    refresh: 'Actualizar',
+    exportCsv: 'Exportar CSV',
+    listTitle: 'Facturas mensuales',
+    emptyNoResult: 'Aún no hay facturas mensuales emitidas',
+    colPeriod: 'Periodo',
+    colCredits: 'Créditos',
+    colRequests: 'Solicitudes',
+    colAmount: 'Importe',
+    colStatus: 'Estado',
+    couponTitle: 'Activar cupón',
+    couponPlaceholder: 'Código de cupón',
+    couponActivate: 'Activar',
+    couponOk: 'Se acreditaron {n} créditos ({code})',
+    couponFailed: 'No se pudo activar el cupón. Revise el código e inténtelo de nuevo',
+    loadFailed: 'No se pudieron cargar las facturas. Inténtelo de nuevo',
+    exportFailed: 'No se pudo exportar el CSV. Inténtelo de nuevo',
+  },
 }

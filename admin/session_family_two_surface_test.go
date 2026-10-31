@@ -107,6 +107,52 @@ var sessionFamilyBareParentReaders = map[string]string{
 	"domains/session/v2/turn_writer.go": "MAX(turn_no) 热优先序贯：hot 臂在前，" +
 		"父表臂是「hot 无行才查」的晋升回退（两条独立 SQL，跨语句配对，逐串判看不见）；" +
 		"promote 按 ts 序 + 顾问锁串行写保证最新 turn 恒在 hot，回退臂覆盖全晋升会话。",
+	// R172：会话族轮次读点的**两臂直查** helper（冲突读回 / GetTurn / ListTurns）。
+	// 父表名出现 **2 处**，但**两处都不是「只读父表」**：
+	//  1. **父表腿** —— 与 `public.session_turns_hot` 腿同处一条 `UNION ALL`
+	//     语句（两面齐全 ⇒ 不漏读 _hot；父表落后 hot 约 8.7 小时这条约束满足）；
+	//  2. **反连接里的 `archived` 引用** —— 它只**过滤**（NOT EXISTS），
+	//     `SELECT 1` 不投影任何列 ⇒ 不是数据来源。
+	// ★ 逐字面量判据看不见第 1 条的两面配对：hot 腿、parent 腿、anti-join
+	//   分处**三个不同的字符串常量**，而判定单位是「一条字面量」
+	//   ⇒ 与 db/request_logs_view_schema.go、admin/turns_filter_options.go
+	//   是同一条盲区（门头注释已写明）。
+	// 正确性凭据：① admin/session_family_turns_reads_test.go 的
+	// TestSessionFamilyTurnsReadsBothFaces 直接断言**产物 SQL**里两面同时出现、
+	// 且反连接是「只过滤不投影」形状；
+	// ② domains/session/v2/turn_writer_family_reads_test.go 把**产品自己发出的
+	// 那条 SQL**与线上视图形态放在同一条语句、同一个快照里逐行对拍
+	// （本地真库整族 2,758 行双向 EXCEPT ALL 差集 0/0；252 生产逐读点 0/0）。
+	"internal/sessionfamily/turns_reads.go": "R172 两臂直查 helper：hot 腿与父表腿同处一条 " +
+		"UNION ALL（两面齐全），反连接对父表的引用只过滤不投影；" +
+		"三条腿分处不同字符串常量 ⇒ 逐字面量判据看不见两面配对。" +
+		"正面证明见 admin/session_family_turns_reads_test.go 的 " +
+		"TestSessionFamilyTurnsReadsBothFaces；等价性见 " +
+		"domains/session/v2/turn_writer_family_reads_test.go（真库逐行对拍）。",
+	// ★★ r1043 轮（2026-10-28）：★ 下面这两条**已撤**（★ 登记过期）。
+	// ★ 起因：★ 上游在 `relationUsedAsSource` 里给「DELETE FROM <父表>」加了排除
+	// ★ （★ DELETE 是写不是读 ⇒ 排除本身是对的）⇒ ⇒ ★ 但**同一次改动里**
+	// ★ ★★ 又把 admin 的这两个文件登记进本表 ⇒ ⇒ ★★ 排除让它们不再命中本门
+	// ★ ★★ ⇒ ⇒ 本表里这两条**当场就过期了**（★ 本门的「登记已失效」判定
+	// ★ ★★ 如实报了出来 ⇒ ★★ 这是本门有牙的证据）。
+	// ★ ★★ 撤登记后，★ 这两处的「删除必须覆盖两面」由**真实存在**的那道门管：
+	// ★ ★★ admin/session_family_delete_two_surface_test.go
+	// ★ ★★ （★ 逐条断「父表 DELETE ↔ 同 WHERE 的 hot DELETE」成对）。
+	// ★ ★★ ★★ 此前这条注释引用的 `repair_two_surface_test.go` 指的是
+	// ★ ★★ `cmd/tools/validate_sessions_v2/` 下的那一份 ⇒ ★★ 它**只覆盖那个工具**
+	// ★ ★★ （★ 实测：★ 只有 ExecuteRepair 那两条测试）⇒ ★★ **完全没覆盖 admin 侧**
+	// ★ ★★ ⇒ ⇒ ★★ 排除的理由当时是**假**的 ⇒ ⇒ ⇒ 本轮补上了真正的那道门。
+	// ★★ 合并对拍（r1044）：★ 上游一侧同样撤了这两条登记（★ 结论一致），★ 但其依据
+	// ★ ★ 是「由 internal/partguard 的 allowedParentDML 白名单管（r1041 版三条已登记）」
+	// ★ ★ + 「repair_two_surface_test.go 的逐条断言」⇒ ⇒ ★★ **两处依据都不足以覆盖
+	// ★ ★ admin 侧**：★ partguard 的白名单答的是「**允许**写吗」，★ **不答**「两面
+	// ★ ★ **成对**吗」（★ 那正是 admin/session_family_delete_two_surface_test.go 的事）；
+	// ★ ★ repair_two_surface_test.go 在 cmd/tools/validate_sessions_v2/ 下 ⇒ ★ 只覆盖
+	// ★ ★ 那个修复工具 ⇒ ⇒ ★★ 上游的依据里**唯一真正覆盖 admin 侧的两面 DELETE**的，
+	// ★ ★ 仍然只有本轮新立的那道门 ⇒ ⇒ ★★ 本条以**本轮的门**为准。
+	// ★★ 另采上游一条**属实**的补充：★ 「DELETE FROM 不算读」这条排除本身是有
+	// ★ ★ 正反对照的（★ TestBareParentReadIgnoresPairedDelete，★ 在**本文件**）
+	// ★ ★ ⇒ ★★ 排除的**行为**是验过的 ⇒ ★★ 缺的只是**覆盖面**，不是排除本身。
 }
 
 var sessionFamilyParents = []string{"session_turns", "session_bodies", "session_turn_details"}
@@ -306,6 +352,22 @@ func relationUsedAsSource(flat, rel string) bool {
 		pre := strings.TrimRight(flat[:abs], " \t\n")
 		for _, kw := range []string{"FROM", "JOIN", "INTO", "UPDATE"} {
 			if len(pre) >= len(kw) && strings.EqualFold(pre[len(pre)-len(kw):], kw) {
+				// ★ DELETE FROM parent 不是「读」（2026-10-28 分支审计轮）：
+				//   wip/02 的 session_trash.go / recording_consent.go 用
+				//   「DELETE FROM hot + DELETE FROM 父表」的双面删习语 ⇒ 被本门当裸读误伤。
+				//   真读法必须走合并视图（trash 的 INSERT..SELECT 就走 session_bodies_unified）。
+				// ★ ★★ r1043 轮修正：★ 这条排除的**依据原先是假的** ——
+				// ★ ★★ 注释当时指的是 `repair_two_surface_test.go`，★ 而那一道
+				// ★ ★★ （cmd/tools/validate_sessions_v2/ 下）**只覆盖那个修复工具**，
+				// ★ ★★ **完全没覆盖 admin 侧** ⇒ ⇒ ★★ 排除一旦生效，admin 侧的
+				// ★ ★★ 两面 DELETE 覆盖就**无人断言**。
+				// ★ ⇒ ⇒ 现由**真实存在**的那道门管：
+				// ★     admin/session_family_delete_two_surface_test.go
+				// ★   （★ 逐条断「父表 DELETE ↔ 同 WHERE 的 hot DELETE」成对）。
+				// ★ ★★ 本门只管读。
+				if kw == "FROM" && endsWithWord(strings.TrimRight(pre[:len(pre)-len(kw)], " \t\n"), "DELETE") {
+					break
+				}
 				return true
 			}
 		}
@@ -327,6 +389,34 @@ func occurrencesOf(flat, sub string) []int {
 
 func isIdentChar(c byte) bool {
 	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// endsWithWord reports whether s ends with `word` as a complete identifier
+// (preceded by a non-identifier char or at string start).
+func endsWithWord(s, word string) bool {
+	if len(s) < len(word) || !strings.EqualFold(s[len(s)-len(word):], word) {
+		return false
+	}
+	boundary := len(s) == len(word) || !isIdentChar(s[len(s)-len(word)-1])
+	return boundary
+}
+
+// TestBareParentReadIgnoresPairedDelete 2026-10-28 分支审计轮的反向+正向对照：
+// 双面 DELETE 的父表腿不算裸读；真读法（SELECT / INSERT..SELECT）仍要红。
+func TestBareParentReadIgnoresPairedDelete(t *testing.T) {
+	pairedDelete := `DELETE FROM public.session_bodies_hot WHERE tenant_id = $1;
+	                 DELETE FROM public.session_bodies WHERE tenant_id = $1`
+	if hits := bareParentReadsIn(pairedDelete); len(hits) != 0 {
+		t.Fatalf("双面 DELETE 的父表腿被当裸读误伤：%v", hits)
+	}
+	bareSelect := `SELECT body FROM public.session_bodies WHERE tenant_id = $1`
+	if hits := bareParentReadsIn(bareSelect); len(hits) != 1 {
+		t.Fatalf("裸父表 SELECT 应被本门判红，实测 %d 处", len(hits))
+	}
+	insertSelect := `INSERT INTO public.session_bodies_trash SELECT * FROM public.session_bodies WHERE tenant_id = $1`
+	if hits := bareParentReadsIn(insertSelect); len(hits) != 1 {
+		t.Fatalf("INSERT..SELECT 裸父表读应被本门判红，实测 %d 处", len(hits))
+	}
 }
 
 func hasSQLKeywordBefore(pre string) bool {

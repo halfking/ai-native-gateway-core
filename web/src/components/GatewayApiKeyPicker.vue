@@ -70,15 +70,15 @@ function goKeys(action?: string) {
 
 <style scoped>
 .key-picker {
-  padding: 16px 18px;
+  padding: 16px 16px;
   margin-bottom: 12px;
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .key-picker__title {
-  margin: 0 0 6px;
-  font-size: 15px;
+  margin: 0 0 4px;
+  font-size: 16px;
 }
 
 .key-picker__hint {
@@ -102,7 +102,7 @@ function goKeys(action?: string) {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg);

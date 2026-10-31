@@ -133,7 +133,19 @@ func TestRedisStoreLearningTTLWindow(t *testing.T) {
 	if got := s.LearnedParams(ctx, LearnedKey{ProviderID: 7, OutboundModel: "grok-4.6", ActualWire: "openai-chat"}); len(got) != 1 {
 		t.Fatalf("fresh rule should apply: %v", got)
 	}
-	// 超过 learnedTTL 后规则过期。
+	// 2026-10-29：默认 TTL 收到 1h（用户要求时效 1 小时、定期再探测）——
+	// 钉住边界：59 分钟仍生效，61 分钟过期。LLM_GATEWAY_REQPROBE_LEARNED_TTL
+	// 覆盖生效性由 learnedTTL 的 sync.OnceValue 解析保证（同进程无法翻转，
+	// 与 nativepair off 开关同款限制，不在此重复子进程验证）。
+	s.nowFn = func() time.Time { return base.Add(59 * time.Minute) }
+	if got := s.LearnedParams(ctx, LearnedKey{ProviderID: 7, OutboundModel: "grok-4.6", ActualWire: "openai-chat"}); len(got) != 1 {
+		t.Fatalf("rule inside 1h window should still apply: %v", got)
+	}
+	s.nowFn = func() time.Time { return base.Add(61 * time.Minute) }
+	if got := s.LearnedParams(ctx, LearnedKey{ProviderID: 7, OutboundModel: "grok-4.6", ActualWire: "openai-chat"}); len(got) != 0 {
+		t.Fatalf("rule beyond 1h default TTL still applies: %v", got)
+	}
+	// 超过 learnedTTL 后规则过期（远端口径，兼容任意更大配置）。
 	s.nowFn = func() time.Time { return base.Add(25 * time.Hour) }
 	if got := s.LearnedParams(ctx, LearnedKey{ProviderID: 7, OutboundModel: "grok-4.6", ActualWire: "openai-chat"}); len(got) != 0 {
 		t.Fatalf("expired rule still applies: %v", got)

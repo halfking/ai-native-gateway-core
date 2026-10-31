@@ -44,6 +44,27 @@
   "unsupported_feature": {
     "other": "The selected model does not support this request format or modality."
   },
+  "modality_mismatch": {
+    "other": "Model '{{.Model}}' does not accept {{.Modality}} input. This request contains {{.Modality}} content, but the model is registered as {{.RegisteredModality}}-only. Send a text-only request to this model, or route the request to a model that supports {{.Modality}}."
+  },
+  "modality_vision": {
+    "other": "image"
+  },
+  "modality_audio": {
+    "other": "audio"
+  },
+  "modality_video": {
+    "other": "video"
+  },
+  "modality_image": {
+    "other": "image generation"
+  },
+  "modality_multimodal": {
+    "other": "multimodal"
+  },
+  "modality_text": {
+    "other": "text"
+  },
   "model_deprecated": {
     "other": "The requested model has been permanently removed (end-of-life) by the upstream provider."
   },

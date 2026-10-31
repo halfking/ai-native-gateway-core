@@ -105,21 +105,21 @@ function onKeydown(e: KeyboardEvent) {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px 12px 12px;
+  padding: 8px 12px 12px;
   border-top: 1px solid var(--kx-border, var(--border));
 }
 
 .composer__toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
 .composer__model {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 12px;
   color: var(--kx-muted, var(--muted));
 }
@@ -137,13 +137,13 @@ function onKeydown(e: KeyboardEvent) {
 
 .composer__row {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: flex-end;
 }
 
 .composer__input {
   flex: 1;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-radius: 8px;
   border: 1px solid var(--kx-border, var(--border));
   background: var(--kx-bg, var(--bg));

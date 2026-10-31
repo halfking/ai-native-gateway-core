@@ -211,7 +211,15 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 	if hasMore && len(items) > 0 {
 		next, _ = encodeCursor(cursorPayload{TenantID: tenantID, SessionID: sessionID, TurnNo: items[len(items)-1].TurnNo, TS: time.Now()}, []byte(secret))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "turns": items, "count": len(items), "has_more": hasMore, "next_cursor": next, "source": "v2"})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id":        sessionID,
+		"turns":             items,
+		"count":             len(items),
+		"has_more":          hasMore,
+		"next_cursor":       next,
+		"source":            "v2",
+		"recording_consent": settings.RecordingConsentEnabled(tenantID),
+	})
 }
 
 func totalChildRequests(items []TurnListItem) int {

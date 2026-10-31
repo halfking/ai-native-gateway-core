@@ -5,6 +5,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -42,6 +43,13 @@ type patternDefinition struct {
 	Kind   string   `yaml:"kind"`
 	Scopes []string `yaml:"scopes"`
 	Action string   `yaml:"action"`
+	// Description 是这条规则的中文说明（判什么形状、命中意味着什么）。
+	//
+	// ★ 2026-10-29 输出合规误报轮：★ YAML 里**一直写着** description，★ 而
+	// 装载器**没有读它** ⇒ ★★ 说明在装载时就被丢掉了 ⇒ ★★ 管理面「规则说明」
+	// 永远是空的 ⇒ ★★ 运维「看不懂这条规则在判什么」⇒ ★★ 误报只能靠猜。
+	// ⇒ 现在读它，并登记进规则说明目录（sanitizerules.RegisterRuleDescription）。
+	Description string `yaml:"description"`
 }
 
 // NewPatternDetectorFromFile loads the shared sensitive-pattern configuration.
@@ -153,6 +161,7 @@ func parsePatternConfig(data []byte) ([]patternEntry, error) {
 				group:          pattern.Group,
 				vendorKeyShape: vendorKeyShape,
 				id:             category.name + "." + name, kind: kind, scopes: scopes, action: action,
+				description: strings.TrimSpace(pattern.Description),
 			})
 		}
 	}

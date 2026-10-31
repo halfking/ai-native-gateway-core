@@ -21,6 +21,7 @@ export default {
     yes: 'はい',
     no: 'いいえ',
     retry: '再試行',
+    more: 'その他',
   },
   status: {
     enabled: '有効',

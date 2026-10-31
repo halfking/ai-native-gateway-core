@@ -209,7 +209,7 @@ onMounted(load)
 .page-header-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 .channel-select {
   padding: 4px 8px;
@@ -228,16 +228,16 @@ onMounted(load)
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 16px;
-  padding: 20px;
+  padding: 16px;
   margin-bottom: 24px;
 }
 .wallet-label {
   font-size: 12px;
   color: var(--muted);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .wallet-value {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--text);
 }
@@ -245,7 +245,7 @@ onMounted(load)
   color: var(--accent-h);
 }
 .section-title {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   margin: 0 0 12px;
   color: var(--text);
@@ -254,10 +254,10 @@ onMounted(load)
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 16px;
-  margin-bottom: 28px;
+  margin-bottom: 24px;
 }
 .pricing-card {
-  padding: 20px;
+  padding: 16px;
   text-align: center;
   display: flex;
   flex-direction: column;
@@ -274,7 +274,7 @@ onMounted(load)
 }
 .pricing-price { margin: 4px 0; }
 .price-num {
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--accent-h);
 }
@@ -297,7 +297,7 @@ onMounted(load)
 .tenant-badge {
   display: inline-flex;
   align-items: center;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;

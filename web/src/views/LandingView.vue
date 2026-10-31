@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router'
 import ServiceLandingPage from '../components/ServiceLandingPage.vue'
 import { localeArray } from '../i18n'
 import { SITE_LOGO_SIZE } from '../config/brand'
-import { detectTheme, logoSrc } from '../theme'
+import { currentTheme, detectTheme, logoSrc } from '../theme'
 
 const { t, tm } = useI18n()
 const router = useRouter()
@@ -14,7 +14,7 @@ let logoObserver: MutationObserver | null = null
 
 onMounted(() => {
   brandLogo.value = logoSrc(detectTheme())
-  logoObserver = new MutationObserver(() => { brandLogo.value = logoSrc(detectTheme()) })
+  logoObserver = new MutationObserver(() => { brandLogo.value = logoSrc(currentTheme()) })
   logoObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 })
 onUnmounted(() => logoObserver?.disconnect())
@@ -22,46 +22,44 @@ onUnmounted(() => logoObserver?.disconnect())
 // ⚠ 数组型语言包键不能经 t() 取（见 i18n.ts 的 localeArray() 注释）
 const heroPoints = localeArray<string[]>('landing.heroPoints')
 
+// ★ 2026-10-28 第 36 增量：这里原来每张特性卡都写死了 `icon: '01'` … `icon: '08'`。
+// ⇒ ★ 它们是**死数据**：`LandingFeature` 类型里没有 `icon` 字段，
+//   `ServiceLandingPage` 的模板也只渲染 title / badge / description ⇒ 压根不上屏。
+// ⇒ ★ 留着它有两个坏处：① 它是 craft-floor 明禁的「01/02 装饰序号」；
+//   ② 哪天有人把它接回模板，界面上就会冒出装饰序号。
+// ⇒ 删掉（V11b 那条判据就是为它们加的）。
 const features = computed(() => [
   {
-    icon: '01',
     title: t('landing.features.smartRouting.title'),
     description: t('landing.features.smartRouting.description'),
   },
   {
-    icon: '02',
     title: t('landing.features.safety.title'),
     description: t('landing.features.safety.description'),
     badge: t('landing.features.safety.badge'),
   },
   {
-    icon: '03',
     title: t('landing.features.cache.title'),
     description: t('landing.features.cache.description'),
   },
   {
-    icon: '04',
     title: t('landing.features.agent.title'),
     description: t('landing.features.agent.description'),
     badge: t('landing.features.agent.badge'),
   },
   {
-    icon: '05',
     title: t('landing.features.observability.title'),
     description: t('landing.features.observability.description'),
   },
   {
-    icon: '06',
     title: t('landing.features.billing.title'),
     description: t('landing.features.billing.description'),
   },
   {
-    icon: '07',
     title: t('landing.features.multiProtocol.title'),
     description: t('landing.features.multiProtocol.description'),
   },
   {
-    icon: '08',
     title: t('landing.features.multiTenant.title'),
     description: t('landing.features.multiTenant.description'),
   },
@@ -163,7 +161,7 @@ function openLogin() {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-start;
-  gap: 14px;
+  gap: 12px;
   margin-top: 16px;
 }
 
@@ -188,12 +186,12 @@ function openLogin() {
 }
 
 .llmgo-roadmap__head {
-  margin-bottom: 18px;
+  margin-bottom: 16px;
   text-align: left;
 }
 
 .llmgo-roadmap__head h2 {
-  margin: 8px 0 6px;
+  margin: 8px 0 4px;
   font-family: var(--kx-font-sans);
   font-size: clamp(1.4rem, 2.4vw, 1.75rem);
   letter-spacing: -0.03em;
@@ -222,7 +220,7 @@ function openLogin() {
   display: grid;
   grid-template-columns: 88px minmax(0, 1fr);
   gap: 4px 16px;
-  padding: 16px 18px;
+  padding: 16px 16px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface-elevated);
@@ -233,7 +231,7 @@ function openLogin() {
   grid-row: span 2;
   align-self: start;
   width: fit-content;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 6px;
   font-size: 12px;
   font-weight: 700;
@@ -258,7 +256,7 @@ function openLogin() {
 @media (max-width: 640px) {
   .llmgo-roadmap__list li {
     grid-template-columns: 1fr;
-    gap: 6px;
+    gap: 4px;
   }
 
   .llmgo-roadmap__phase {

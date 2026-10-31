@@ -461,7 +461,7 @@ func (e *Executor) recordExecutionStart(
 		INSERT INTO session_module_executions_hot (
 			gw_session_id, tenant_id, module_name, module_version,
 			status, cache_key, ttl_seconds, expires_at
-		) VALUES ($1, $2, $3, $4, 'running', $5, $6, NOW() + ($6 || ' seconds')::INTERVAL)
+		) VALUES ($1, $2, $3, $4, 'running', $5, $6, NOW() + make_interval(secs => $6::int))
 		RETURNING execution_id
 	`
 

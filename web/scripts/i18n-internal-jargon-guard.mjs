@@ -104,6 +104,14 @@ const regress = []
 if (metrics.findings > (baseline.count ?? Infinity)) regress.push(`命中条目 ${metrics.findings} > 基线 ${baseline.count}`)
 if (metrics.distinctIdentifiers > (baseline.distinctIdentifiers ?? Infinity)) regress.push(`命中标识符 ${metrics.distinctIdentifiers} > 基线 ${baseline.distinctIdentifiers}`)
 
+// ★★ 棘轮基线【缺失或非法】⇒ ⇒ 棘轮没有上限 ⇒ ⇒ 这道门此刻等于没设门槛 ⇒ ⇒ 必须红。
+// ★ 与 `copy-quality-audit.mjs` / `design-elevation-guard.mjs` 同族修法（★ 三处基线洞是同一类）。
+// ★ 为什么这里更要紧：★ 本门的基线是**唯一**的棘轮（★ `if (findings.length)` 那条红线只兜「命中数」，
+// ★ 兜不住「基线上限被谁调高」⇒ ⇒ 基线一空，棘轮整个静默失效，而门照样打「✅ PASS」。
+const baselineUsable =
+  typeof baseline?.count === 'number' &&
+  typeof baseline?.distinctIdentifiers === 'number'
+
 if (argv.includes('--list')) {
   console.log(`命中标识符 ${byId.size} 个 / 条目 ${findings.length} 条\n`)
   for (const [id, list] of [...byId.entries()].sort((a, b) => b[1].length - a[1].length)) {
@@ -121,12 +129,13 @@ if (argv.includes('--json')) {
   console.log(JSON.stringify({
     metrics,
     baseline,
+    baselineUsable,
     regress,
     witnessBad,
     findings,
     byIdentifier: Object.fromEntries([...byId.entries()].map(([k, v]) => [k, v.length])),
   }, null, 2))
-  process.exit(regress.length || witnessBad.length ? 1 : 0)
+  process.exit(regress.length || witnessBad.length || !baselineUsable ? 1 : 0)
 }
 
 if (argv.includes('--update-baseline')) {
@@ -146,6 +155,13 @@ if (argv.includes('--update-baseline')) {
 }
 
 // ── 人读报告 ────────────────────────────────────────────────────────────
+// ★ ★ `--update-baseline` 分支在上面就 return 了 ⇒ ⇒ 这里红**不会**挡住「重建基线」。
+if (!baselineUsable) {
+  console.error('❌ 基线缺失或非法：scripts/i18n-internal-jargon-baseline.json')
+  console.error('   ⇒ 棘轮没有上限 ⇒ ⇒ 这道门此刻等于没设门槛 ⇒ ⇒ 必须红。')
+  console.error('   修法：node scripts/i18n-internal-jargon-guard.mjs --update-baseline')
+  process.exit(1)
+}
 console.log(`读数：命中标识符 ${metrics.distinctIdentifiers} 个 · 命中条目 ${metrics.findings} 条`)
 console.log(`基线：条目 ≤ ${baseline.count} · 标识符 ≤ ${baseline.distinctIdentifiers}`)
 if (witnessBad.length) {

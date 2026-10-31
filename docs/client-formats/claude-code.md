@@ -4,6 +4,30 @@
 
 Claude Code 是 Anthropic 的官方命令行 Agent，**直接走 Anthropic Messages 协议**（不是 OpenAI 兼容模式）。
 
+## 识别信号（2026-10-29 线材核实补章）
+
+本文档此前**没有 UA 章节**，而 Claude Code 真实线材形态与工具集可被其它
+Claude Code 分支（如 ZCode 3.x）完整共享 ⇒ 识别必须锚定以下 UA / 头信号，
+**不得用工具名识别**（分支共享 `Agent/Bash/Edit/Read/…` 同一工具集）：
+
+| 信号 | 线材实态 | 说明 |
+|------|---------|------|
+| `User-Agent: claude-cli/{version} (external, cli)` | **主识别信号** | 例：`claude-cli/2.1.75 (external, cli)`、`claude-cli/2.1.300 (external, sdk-cli)` |
+| `anthropic-beta: claude-code-20250219,…` | **强信号** | Anthropic 自家的 Claude Code 命名空间 beta 旗标；普通 Anthropic SDK 不会带 |
+| `x-app: cli` | 辅助 | 与上两者共现；单独不作为判据 |
+| 系统提示词 `You are Claude Code, Anthropic's official CLI for Claude.` | 语义信号 | 第三链路（统计侧），nativepair 判定不消费 |
+
+来源：Anthropic OAuth 流实测（社区[实测帖](https://www.reddit.com/r/ClaudeAI/comments/1sboykj/til_anthropics_rate_limit_pool_for_oauth_tokens)）、
+[pi-cc-compat 兼容层](https://pi.dev/packages/pi-cc-compat) 的完整头清单、
+Claude Code [自定义 API 文档](https://api.foo/docs/en/claude-code-custom-api)。
+
+网关两张 UA 识别表（`domains/streaming/client_fingerprint.go` 的
+`extractClientType` 与 `telemetry/request_metadata.go` 的
+`ExtractAgentNameFromRequest`）均已登记 `claude-cli`（经
+`clienttype.HasToken` 双边界匹配）与 `claude-code-` beta 旗标
+（streaming 表）。未登记前的后果：RISK-6 加的 claude-code↔claude
+原生对在 header/UA 首选路径上**永不命中**（AGENTS.md ㊸ 轮登记的 RISK-7）。
+
 ## 入站格式
 
 完全符合 [anthropic-sdk.md](anthropic-sdk.md) 中描述的 Anthropic Messages API。

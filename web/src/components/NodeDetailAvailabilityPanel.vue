@@ -185,16 +185,16 @@ const groups = computed(() => {
 </template>
 
 <style scoped>
-.nd-avail-loading, .nd-avail-empty { padding: 28px; text-align: center; color: var(--kx-muted); font-size: 12px; }
-.nd-avail-group { border: 1px solid var(--kx-border); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
-.nd-avail-group h3 { margin: 0 0 10px; font-size: 14px; }
+.nd-avail-loading, .nd-avail-empty { padding: 24px; text-align: center; color: var(--kx-muted); font-size: 12px; }
+.nd-avail-group { border: 1px solid var(--kx-border); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.nd-avail-group h3 { margin: 0 0 8px; font-size: 14px; }
 .nd-avail-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.nd-avail-row { border: 1px solid var(--kx-border); border-radius: 6px; padding: 8px 10px; }
+.nd-avail-row { border: 1px solid var(--kx-border); border-radius: 6px; padding: 8px 8px; }
 .nd-avail-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
 .nd-avail-label { font-size: 12px; font-weight: 600; }
 .nd-avail-value { font-size: 12px; }
 .nd-avail-meta { margin-top: 4px; font-size: 11px; color: var(--kx-muted); display: grid; gap: 2px; }
-.nd-avail-meta code { font-size: 10px; }
+.nd-avail-meta code { font-size: 11px; }
 .sev-ok { color: var(--kx-success); }
 .sev-warn { color: var(--kx-warning); }
 .sev-danger { color: var(--kx-danger); }

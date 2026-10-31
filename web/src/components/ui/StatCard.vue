@@ -76,7 +76,7 @@ withDefaults(defineProps<{
 .app-stat-card__label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 .app-stat-card--success .app-stat-card__label::before,
 .app-stat-card--warning .app-stat-card__label::before,
@@ -107,10 +107,12 @@ withDefaults(defineProps<{
   margin-top: 2px;
 }
 
-/* 小屏：非紧凑卡数值从 24px 收敛到 18px，长数字不撑破单列布局 */
+/* 小屏：非紧凑卡数值从 24px 收敛到 16px，长数字不撑破单列布局
+ * （★ 2026-10-27 第 23 增量：原为 18px —— 18 不在 DESIGN.md §4 的角色阶上，
+ *   且降档阶梯被打断（24 → 20 → 18 里 18 与 20 不可区分）⇒ 收到下一档 16px。） */
 @media (max-width: 480px) {
   .app-stat-card:not(.stat-card--compact) .app-stat-card__value {
-    font-size: 18px;
+    font-size: 16px;
   }
 }
 </style>

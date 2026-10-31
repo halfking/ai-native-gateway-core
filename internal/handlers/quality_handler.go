@@ -68,6 +68,12 @@ type QualityScores struct {
 	Performance    float64 `json:"performance"`
 	Stability      float64 `json:"stability"`
 	CostEfficiency float64 `json:"cost_efficiency"`
+	// Credibility（2026-10-29）：模型可信度 —— 供应商给的**是不是它声称的那个
+	// 模型**（domains/modelcredibility 的判定分，0-100）。
+	//
+	// ★ 指针而不是值：NULL = 没测过。写成 0 会让前端把「没测」显示成
+	// 「可信度 0 分」（0 分在质量语境里读作极差）。
+	Credibility *float64 `json:"credibility"`
 }
 
 // RankingItem 排行榜项
@@ -252,6 +258,8 @@ SELECT
     network_score AS performance_score,
     stability_score,
     cost_accuracy_score AS cost_efficiency_score,
+    -- 2026-10-29: 模型可信度。NULL 保留为 NULL（没测过 ≠ 0 分）。
+    credibility_score,
     created_at AS updated_at
 FROM provider_profile_daily
 WHERE provider_id = $1
@@ -283,6 +291,7 @@ ORDER BY profile_date DESC, total_score DESC
 			&scores.Performance,
 			&scores.Stability,
 			&scores.CostEfficiency,
+			&scores.Credibility,
 			&m.CalculatedAt,
 		)
 		if err != nil {

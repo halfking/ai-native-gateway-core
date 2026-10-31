@@ -442,7 +442,7 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 16px;
   align-items: flex-start;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .ua-page__header h1 { margin: 0 0 8px; font-size: 24px; }
 .ua-page__header p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
@@ -462,7 +462,7 @@ onMounted(async () => {
    暗色主题用相同 token，--kx-* 已是暗色变体，无需重写。 */
 .ua-region {
   border-radius: 12px;
-  padding: 14px;
+  padding: 12px;
   border: 1px solid var(--kx-border, var(--border));
   background: var(--kx-surface, var(--card));
 }
@@ -492,7 +492,7 @@ onMounted(async () => {
   box-shadow: none;
 }
 .ua-region :deep(.el-card__header) {
-  padding: 0 0 10px;
+  padding: 0 0 8px;
   border-bottom: 1px solid color-mix(in srgb, var(--kx-border, var(--border)) 60%, transparent);
   margin-bottom: 12px;
 }

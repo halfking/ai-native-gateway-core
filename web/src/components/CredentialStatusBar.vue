@@ -21,7 +21,7 @@ const label = computed(() => props.labels?.[state.value] ?? credentialDisplaySta
 </template>
 
 <style scoped>
-.credential-status-bar { display: inline-flex; align-items: center; gap: .35rem; font-size: .8rem; font-weight: 600; }
+.credential-status-bar { display: inline-flex; align-items: center; gap: 4px; font-size: .8rem; font-weight: 600; }
 .dot { width: .5rem; height: .5rem; border-radius: 50%; background: currentColor; }
 .state-active { color: var(--success); }
 .state-cooling, .state-rate_limited { color: var(--warning); }

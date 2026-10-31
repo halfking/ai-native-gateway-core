@@ -1622,30 +1622,118 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   baseline 刻意保留（718 先例：fresh-install 链建出→本条删掉）。
 			//   dbinit:no-transaction（DROP INDEX CONCURRENTLY）。
 			"908_route_incident_events_type_created_drop.sql",
-		//   909：给 session_summaries 的三列（session_key / title / primary_model）
-		//   补 GIN trigram 索引。★ 修的是 admin 会话搜索（catalogSearchSQL）
-		//   对 868,711 行做三列 OR 的 `%q%` ILIKE ⇒ Parallel Seq Scan
-		//   ⇒ 252 生产实测 Execution Time = 40,415.968 ms（40.4 秒）
-		//   ⇒ 而调用点 ctx 超时只有 2 秒 ⇒ ★★ 每次都超时 ⇒ 静默返回「没搜到」。
-		//   ★ Go 侧同步把谓词改成裸列（title ILIKE），★ 因为 PG 的表达式索引
-		//   匹配是逐字的 ⇒ COALESCE(title,'') ILIKE 用不上裸列索引。
-		//   dbinit:no-transaction（CREATE INDEX CONCURRENTLY）。
-		"909_session_summaries_search_trgm_indexes.sql",
-		// ★ R166（迁移 910）：routing_analytics_source 父表腿从 LATERAL
-		//   逐行回定位换成「普通 LEFT JOIN + partition_date 日界下推」
-		//   ⇒ details 侧执行期分区裁剪 + Hash Join 可选，消掉 ~2.75 万次/刷新
-		//   的逐行探针（252 实测整计划 buffers 147K → 52K，-64%）。
-		//   ★ 口径逐行等价（窗口内父表腿双向 EXCEPT ALL 0/0 @66,838 行；
-		//     ukey 唯一键 + 错位行 0 实测）。
-		//   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（保留 OID ⇒ matview 依赖不动，
-		//     下一次 REFRESH 自动采用新定义 ⇒ **不需要重建 matview**）。
-		"910_routing_analytics_source_hashjoin.sql",
-		// 911：本地音频（ASR/TTS）供应商 catalog 三条目（whisper-cpp /
-		//   whisper-cpp-large / macos-say），2026-10-26 多模态标准接口轮。
-		//   ★ 合并时与上游 R166 的迁移 910 撞号 ⇒ 本条让位改为 911。
-		//   纯 INSERT ON CONFLICT，幂等；不 seed providers 行（运营经
-		//   admin API 创建，catalog kind='local' 自动建占位凭据）。
-		"911_local_audio_catalog.sql",
+			//   909：给 session_summaries 的三列（session_key / title / primary_model）
+			//   补 GIN trigram 索引。★ 修的是 admin 会话搜索（catalogSearchSQL）
+			//   对 868,711 行做三列 OR 的 `%q%` ILIKE ⇒ Parallel Seq Scan
+			//   ⇒ 252 生产实测 Execution Time = 40,415.968 ms（40.4 秒）
+			//   ⇒ 而调用点 ctx 超时只有 2 秒 ⇒ ★★ 每次都超时 ⇒ 静默返回「没搜到」。
+			//   ★ Go 侧同步把谓词改成裸列（title ILIKE），★ 因为 PG 的表达式索引
+			//   匹配是逐字的 ⇒ COALESCE(title,'') ILIKE 用不上裸列索引。
+			//   dbinit:no-transaction（CREATE INDEX CONCURRENTLY）。
+			"909_session_summaries_search_trgm_indexes.sql",
+			// ★ R166（迁移 910）：routing_analytics_source 父表腿从 LATERAL
+			//   逐行回定位换成「普通 LEFT JOIN + partition_date 日界下推」
+			//   ⇒ details 侧执行期分区裁剪 + Hash Join 可选，消掉 ~2.75 万次/刷新
+			//   的逐行探针（252 实测整计划 buffers 147K → 52K，-64%）。
+			//   ★ 口径逐行等价（窗口内父表腿双向 EXCEPT ALL 0/0 @66,838 行；
+			//     ukey 唯一键 + 错位行 0 实测）。
+			//   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（保留 OID ⇒ matview 依赖不动，
+			//     下一次 REFRESH 自动采用新定义 ⇒ **不需要重建 matview**）。
+			"910_routing_analytics_source_hashjoin.sql",
+			// 911：本地音频（ASR/TTS）供应商 catalog 三条目（whisper-cpp /
+			//   whisper-cpp-large / macos-say），2026-10-26 多模态标准接口轮。
+			//   ★ 合并时与上游 R166 的迁移 910 撞号 ⇒ 本条让位改为 911。
+			//   纯 INSERT ON CONFLICT，幂等；不 seed providers 行（运营经
+			//   admin API 创建，catalog kind='local' 自动建占位凭据）。
+			"911_local_audio_catalog.sql",
+			// 912：W1.5 session_bodies trash + session_hidden（录制同意轮）
+			"912_session_recording_trash.sql",
+			// 913: monthly bills + coupons + invoice placeholder (pkg 07).
+			"913_maas_monthly_bills_coupons.sql",
+			// 914: 补回会话族 origin_stage 的 DB 级 CHECK。
+			// v1 族退役时那条 origin_stage 的 DB 级约束一起消失了，会话族从未重建
+			// ⇒ session_turns / session_turns_hot 上**无任何约束**
+			// ⇒ 「探针流量排除」只剩 Go 侧闸门，DB 级兜底消失。
+			// 允许集 = internal/probekind.ValidStages()（8 个探针 stage + 'business'）；
+			// 现役约束名 session_turns_origin_stage_check（父表）
+			// / session_turns_hot_origin_stage_check（hot 表）。
+			"914_session_turns_origin_stage_check.sql",
+			// 915: recent_cache_hit_rate — P1-B-③（audit 2026-10-28 §4）路由侧
+			//   prompt-cache 亲和信号。(credential, model) 最近 N 条业务行的
+			//   token 加权 cache_read/prompt 占比，形态与探针排除同 428 的
+			//   recent_success_rate。纯 CREATE OR REPLACE FUNCTION，幂等，
+			//   零 DDL 风险；评分侧把 NULL/低样本当「无信号 → 中性」fail-open。
+			"915_recent_cache_hit_rate.sql",
+			// 916: 会话族 api_key_id **归一表达式**的 (CASE, ts DESC) 索引。
+			// ★ 缺口本体（R177 轮，252 生产只读实测）：按 api_key 过滤会话的读点
+			//   （admin/usage.go:841-859，7 天窗）实测「窗口内 75,449 行全读、
+			//   丢掉 37,825 行」，一次读点 220,401 块 ⇒ **一半的行是白读的**。
+			// ★ 为什么 906 那条部分索引承不住：它的**键是 (session_id, turn_no DESC)**，
+			//   api_key_id 只在**谓词**里 ⇒ 它承的是「按 session_id 找轮次」。
+			// ★ 为什么必须是【表达式索引】：canonical 视图把 api_key_id 投影成
+			//   CASE WHEN api_key_id ~ '^[0-9]+$' THEN api_key_id::bigint END
+			//   （唯一真值源 db/request_logs_view_schema.go 的 SessionFamilyAPIKeyIDExpr）
+			//   ⇒ 普通 btree 用不上；**部分索引也用不上**（PG 的谓词蕴含是语法的）。
+			// ★ 含 CREATE INDEX CONCURRENTLY ⇒ 本文件带 dbinit:no-transaction 标记（首行），
+			//   applySQL 据此不加 --single-transaction（887/888/729 同款）。
+			"916_session_turns_api_key_ts_index.sql",
+			// 917: 拦截审核/放行/硬阻断状态的持久化表（拦截持久化轮，2026-10-29）。
+			//   纯新增三表 + 索引，全部 IF NOT EXISTS ⇒ 幂等、零锁面风险。
+			"917_sanitize_block_reviews.sql",
+			// ★ 919（R176 轮）：P11 第二期 —— slot_daily.active_minutes + 填充函数升级
+			//   （巡检 base_active 走汇总表的落点）。无 CONCURRENTLY ⇒ 事务通道。
+			//   ★ 让号记录：初拟 917，push 前 fetch 实测 origin 已被并行会话
+			//   「拦截审核与放行落库」（ddd762e7a）占用 ⇒ 重取 919/920。
+			"919_ursm_slot_daily_active_minutes.sql",
+			// ★ 920（R176 轮）：node_probe_runs (credential_id, completed_at) 覆盖索引
+			//   （INV-4 双模型探测成功门的 24h 关联子查询，252 实测 549 次/天 慢+取消）。
+			//   ★ 含 CREATE INDEX CONCURRENTLY ⇒ 首行 dbinit:no-transaction 标记。
+			"920_node_probe_runs_cred_completed_idx.sql",
+			// ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台 —— 审核单追加
+			//   session_id / label 四件套 + 证据表 sanitize_block_evidence（原始
+			//   会话内容的有界摘录，7 天 TTL）+ 放行来源扩 'auto_label'。
+			"921_sanitize_block_workbench.sql",
+			// ★ 922（2026-10-29 模型可信度轮）：模型可信度（防掺水）体系 ——
+			//   provider_model_credibility（当前判定）+ provider_model_credibility_runs
+			//   （判定历史）+ 补齐 provider_quality_profiles 的 reliability_score /
+			//   calculated_at（435 遗漏 ⇒ 全新安装缺列 ⇒ internal/quality INSERT 42703）。
+			//   纯新增两表 + 幂等补列，全部 IF NOT EXISTS ⇒ 无 CONCURRENTLY，走事务通道。
+			"922_model_credibility.sql",
+			// ★ 923（2026-10-29 记账补齐轮）：把 900~920 这 20 条迁移补登记进
+			//   public.schema_migrations（人读台账）—— ★ **只补记账，不改 schema**。
+			//   缺口本体：两个台账记的不是同一段 —— 部署通道的权威台账
+			//   public.gateway_db_revision_sequences 里 900~920 全在（本地真库实测
+			//   287 行），而给人读的 public.schema_migrations 只到 899（74 行）
+			//   ⇒ 运维读它会把「已应用」误判成「待应用」。
+			//   ★ 为什么排在这里：它是**记账**动作，必须排在 900~920 全部投递之后
+			//   （排在前面会给还没投递的库写上「已应用」的假账）；
+			//   ★ 幂等：ON CONFLICT (version) DO NOTHING（version 上有主键），
+			//     重复执行不写重行、也不覆盖运维手改过的 description；
+			//   ★ 纯 DML ⇒ 不拿强锁、无 CONCURRENTLY ⇒ 走事务通道。
+			"923_schema_migrations_ledger_backfill.sql",
+			// ★ 924（2026-10-30 R184 轮）：credential_probe_queue
+			//   (probe_command, tenant_id, credential_id, raw_model, created_at)
+			//   复合索引，承接 integrity_probe_planner 的 NOT EXISTS 反连接
+			//   （252 实测 132 次/24h 1,369.7s 恒定在榜、单次 15,455 buffers 全量
+			//   过队、产出恒 0 行）。★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带
+			//   dbinit:no-transaction 标记 ⇒ applySQL 走非事务通道。
+			"924_credential_probe_queue_command_key_idx.sql",
+			// ★ 926（2026-10-30 输出合规审计轮；★ 让号记录：925 曾被
+			//   session_bodies 叶 TRP 索引 heal 占用后撤销，db-changelog 留有
+			//   记录 ⇒ 按「后到者取下一个空闲号」取 926）：拦截审核单区分
+			//   「降级放行」与「硬阻断」—— sanitize_block_reviews 末尾追加
+			//   degraded BOOLEAN（921 把守卫缓冲越界的降级放行也登记成 pending
+			//   拦截单 ⇒ 211 实测 24h 内 226/226 条全是降级单灌爆审核面），
+			//   并回填 builtin.guard.% 存量行。
+			"926_sanitize_block_review_degraded.sql",
+			// ★ 927（2026-10-31 12h 审计轮）：routing_policy 单例化 ——
+			//   去重（每 tenant_id 只留一行；内容不一致 ⇒ 报错不猜）
+			//   + UNIQUE (tenant_id) 约束 ⇒ ★ 02-seed.sql 的 ON CONFLICT
+			//   DO NOTHING 第一次真正生效 ⇒ 后续安装不再堆重复行
+			//   （★ 根因：表无任何唯一约束 ⇒ 每次安装插一行 id=1
+			//   ⇒ 211 生产已堆到 4 行 ⇒ CROSS JOIN 把 targets 放大 4 倍）。
+			//   ★ 含 DELETE + ADD CONSTRAINT ⇒ 自带 lock_timeout / statement_timeout。
+			"927_routing_policy_singleton_unique.sql",
 		},
 	}
 }

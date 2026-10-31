@@ -22,6 +22,9 @@ export default {
     source: {
       memory: '本機記憶體',
       file: '本機檔案',
+      requestLogs: '請求帳本',
+      sessionTurns: '會話輪次',
+      liveStream: '即時串流',
     },
     labels: {
       requestId: '請求 ID',
@@ -201,6 +204,9 @@ export default {
     unavailableBody: '這些輪次沒有採集到正文（該功能對它們未開啟，或該輪本來就沒有內容）。摘要、指標與 token 用量不受影響。',
     affectedTurns: '涉及輪次：{list}',
     dismiss: '知道了',
+    consentOffTitle: '會話正文錄製未開啟',
+    consentOffBody: '該租戶未開啟會話正文錄製：輪次正文、摘要與取證內容不可用；token 用量與計費不受影響。如需記錄正文，請由管理員為該租戶開啟。',
+    consentOffInline: '會話正文錄製未開啟，正文與摘要不可用',
 
   },
 }

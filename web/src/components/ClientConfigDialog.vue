@@ -603,16 +603,16 @@ function goManageFeatured() {
   align-items: center;
   gap: 8px;
   font-weight: 600;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .drawer-body-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 20px;
+  padding: 16px 16px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
   min-height: 0;
 }
 
@@ -664,7 +664,7 @@ function goManageFeatured() {
 
 .badge {
   font-size: 11px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
 }
 
@@ -680,18 +680,18 @@ function goManageFeatured() {
 
 .os-tabs {
   display: flex;
-  gap: 6px;
+  gap: 4px;
 }
 
 .os-tab {
-  padding: 5px 14px;
+  padding: 4px 12px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: none;
   color: var(--muted);
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
 }
 
 .os-tab.active {
@@ -708,7 +708,7 @@ function goManageFeatured() {
 .scope-radios {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .radio-label {
@@ -723,8 +723,8 @@ function goManageFeatured() {
 .model-preview {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 10px 12px;
+  gap: 4px;
+  padding: 8px 12px;
   background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border-radius: 6px;
   align-items: center;
@@ -771,7 +771,7 @@ function goManageFeatured() {
 .all-models-toolbar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   padding: 8px 12px;
   background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border-bottom: 1px solid var(--border);
@@ -815,7 +815,7 @@ function goManageFeatured() {
 }
 
 .models-loading {
-  padding: 20px;
+  padding: 16px;
   text-align: center;
   font-size: 13px;
   color: var(--muted);
@@ -835,7 +835,7 @@ function goManageFeatured() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 12px;
+  padding: 4px 12px;
   background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
@@ -859,7 +859,7 @@ function goManageFeatured() {
   font-size: 11px;
   color: var(--muted);
   background: color-mix(in srgb, var(--kx-text) 4%, transparent);
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 8px;
 }
 
@@ -873,12 +873,12 @@ function goManageFeatured() {
 .model-check-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
+  gap: 4px;
+  padding: 4px 8px;
   cursor: pointer;
   font-size: 12px;
   border-radius: 4px;
-  transition: background 0.1s;
+  transition: background 0.1s var(--kx-motion-ease-out);
 }
 
 .model-check-item:hover {
@@ -894,7 +894,7 @@ function goManageFeatured() {
 .model-check-name {
   color: var(--text);
   font-family: ui-monospace, 'SF Mono', Menlo, monospace;
-  font-size: 11.5px;
+  font-size: 11px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -912,8 +912,8 @@ function goManageFeatured() {
   background: var(--card);
   border-top: 1px solid var(--border);
   margin: 8px -20px -16px -20px;
-  padding-left: 20px;
-  padding-right: 20px;
+  padding-left: 16px;
+  padding-right: 16px;
   z-index: 5;
 }
 
@@ -952,7 +952,7 @@ function goManageFeatured() {
 }
 
 .tab-btn {
-  padding: 6px 14px;
+  padding: 4px 12px;
   border: none;
   background: none;
   color: var(--muted);
@@ -960,7 +960,7 @@ function goManageFeatured() {
   cursor: pointer;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
-  transition: all 0.15s;
+  transition: color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out), border-bottom 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), outline 0.15s var(--kx-motion-ease-out);
 }
 
 .tab-btn.active {
@@ -971,7 +971,7 @@ function goManageFeatured() {
 .tab-content {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .code-preview {
@@ -979,7 +979,7 @@ function goManageFeatured() {
   color: var(--surface-secondary);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 14px;
+  padding: 12px;
   font-size: 12px;
   line-height: 1.6;
   overflow-x: auto;
@@ -1000,7 +1000,7 @@ function goManageFeatured() {
 .result-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .action-hint {
@@ -1052,7 +1052,7 @@ function goManageFeatured() {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 4px 12px;
   background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
@@ -1089,7 +1089,7 @@ function goManageFeatured() {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  padding: 16px;
 }
 
 .modal-panel {
@@ -1106,12 +1106,12 @@ function goManageFeatured() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 18px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
 
 .modal-body {
-  padding: 16px 18px;
+  padding: 16px 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1122,7 +1122,7 @@ function goManageFeatured() {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  padding: 12px 18px;
+  padding: 12px 16px;
   border-top: 1px solid var(--border);
 }
 
@@ -1140,7 +1140,7 @@ function goManageFeatured() {
 
 .form-input {
   width: 100%;
-  padding: 8px 10px;
+  padding: 8px 8px;
   background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border: 1px solid var(--border);
   border-radius: 6px;

@@ -8,6 +8,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -345,5 +346,165 @@ func TestPipelineTimedRetryFlow(t *testing.T) {
 	}
 	if got := f.forwardCalls[1]; got != 2 {
 		t.Fatalf("forward calls = %d, want 2 (fail then timed retry)", got)
+	}
+}
+
+// ===== P0-C (audit 2026-10-28 §4): retry budget + backoff jitter =====
+
+// TestApplyRetryJitterBoundaries pins the ±20% envelope under the
+// deterministic seam; identical boundaries to the survival layer
+// (survival_jitter_test.go), because both delegate to one implementation.
+func TestApplyRetryJitterBoundaries(t *testing.T) {
+	defer SetRetryJitterEnabled(true)
+	SetRetryJitterEnabled(true)
+	d := 10 * time.Second
+	cases := []struct {
+		r    float64
+		want time.Duration
+	}{
+		{0, 8 * time.Second},
+		{0.5, 10 * time.Second},
+		{1, 12 * time.Second},
+	}
+	for _, c := range cases {
+		if got := ApplyRetryJitter(d, func() float64 { return c.r }); got != c.want {
+			t.Fatalf("ApplyRetryJitter(10s, r=%v) = %v, want %v", c.r, got, c.want)
+		}
+	}
+	// Disabled ⇒ pass-through byte-identical to the pre-P0-C timeline.
+	SetRetryJitterEnabled(false)
+	if got := ApplyRetryJitter(d, func() float64 { return 0 }); got != d {
+		t.Fatalf("jitter disabled must pass through unchanged, got %v", got)
+	}
+	SetRetryJitterEnabled(true)
+	// Degenerate inputs never jitter.
+	if got := ApplyRetryJitter(0, nil); got != 0 {
+		t.Fatalf("0 must pass through, got %v", got)
+	}
+	if got := ApplyRetryJitter(-time.Second, nil); got != -time.Second {
+		t.Fatalf("negative must pass through, got %v", got)
+	}
+	// Randomized: within [0.8d, 1.2d], and the sample set actually spreads
+	// (a constant function would pass the bounds check but defeat the goal).
+	low, high := time.Duration(1<<62), time.Duration(0)
+	for i := 0; i < 200; i++ {
+		j := ApplyRetryJitter(d, nil)
+		if j < 8*time.Second || j > 12*time.Second {
+			t.Fatalf("jitter out of envelope: %v", j)
+		}
+		if j < low {
+			low = j
+		}
+		if j > high {
+			high = j
+		}
+	}
+	if high-low < time.Second {
+		t.Fatalf("jitter did not spread: min=%v max=%v", low, high)
+	}
+}
+
+// TestApplyRetryJitterParityWithSurvival pins the formula on the dispatch
+// side: the ungated core is the only jitter implementation, and the gated
+// entry differs from it ONLY by the config gate (the survival layer
+// delegates to the same core — see TestApplyBackoffJitterBoundaries).
+func TestApplyRetryJitterParityWithSurvival(t *testing.T) {
+	defer SetRetryJitterEnabled(true)
+	SetRetryJitterEnabled(true)
+	for _, r := range []float64{0, 0.25, 0.5, 0.75, 1} {
+		seam := func() float64 { return r }
+		for _, d := range []time.Duration{5 * time.Second, 37 * time.Second, 120 * time.Second} {
+			always := ApplyRetryJitterAlways(d, seam)
+			gated := ApplyRetryJitter(d, seam)
+			if gated != always {
+				t.Fatalf("gated must equal the ungated core while enabled: r=%v d=%v", r, d)
+			}
+			want := time.Duration(float64(d) * (1 + 0.2*(2*r-1)))
+			if always != want {
+				t.Fatalf("formula drift: r=%v d=%v got=%v want=%v", r, d, always, want)
+			}
+		}
+	}
+}
+
+// TestRetryBudgetShadowVsEnforce drives observeRetryBudget through a real
+// pipeline: shadow counts without refusing; enforce refuses and the mover
+// falls through to the sibling ladder.
+func TestRetryBudgetShadowVsEnforce(t *testing.T) {
+	f := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{"gpt4": {cred(1, ModeConcurrency, 5)}},
+		forwardFn: func(ctx context.Context, qr *QueuedRequest, c CredentialRef) ForwardOutcome {
+			return ForwardOutcome{Err: errors.New("timeout"), ErrorKind: "timeout"}
+		},
+		forwardCalls: map[int]int{},
+	}
+	p := f.pipeline()
+	sched := p.NewDefaultRetryScheduler()
+	defer sched.Close()
+	p.SetRetryScheduler(sched)
+
+	// Force the budget to bite: percent 0 would disable; instead put parked
+	// items above the floor by shrinking the floor via Reload.
+	cfg := DefaultConfig()
+	cfg.RetryBudgetPercent = 25
+	cfg.RetryBudgetFloor = 0 // budget = active×25% + 0
+	p.Reload(cfg)
+
+	// No in-flight, 3 parked ⇒ budget = 0 ⇒ every admission must exceed.
+	qr1 := NewQueuedRequest("rb1", "t", "gpt4", context.Background(), "payload")
+	qr2 := NewQueuedRequest("rb2", "t", "gpt4", context.Background(), "payload")
+	qr3 := NewQueuedRequest("rb3", "t", "gpt4", context.Background(), "payload")
+	for _, qr := range []*QueuedRequest{qr1, qr2, qr3} {
+		if !sched.Schedule(qr, time.Now().Add(time.Minute)) {
+			t.Fatal("precondition: scheduler must accept")
+		}
+	}
+	if p.inFlight.Load() != 0 {
+		t.Fatalf("precondition: inFlight = %d, want 0", p.inFlight.Load())
+	}
+
+	// Shadow (default config Reload kept enforce=false… wait, Reload above
+	// kept cfg.RetryBudgetEnforce=false): count only.
+	if !p.observeRetryBudget(qr1) {
+		t.Fatal("shadow mode must not refuse")
+	}
+
+	// Enforce: refuse while over budget.
+	cfg.RetryBudgetEnforce = true
+	p.Reload(cfg)
+	if p.observeRetryBudget(qr2) {
+		t.Fatal("enforce mode must refuse when parked ≥ budget")
+	}
+
+	// Under budget ⇒ allow: raise the floor so budget > parked.
+	cfg.RetryBudgetFloor = 10
+	p.Reload(cfg)
+	if !p.observeRetryBudget(qr3) {
+		t.Fatal("enforce mode must allow when parked < budget")
+	}
+
+	// Percent 0 disables the budget entirely, even in enforce.
+	cfg.RetryBudgetPercent = 0
+	p.Reload(cfg)
+	if !p.observeRetryBudget(qr1) {
+		t.Fatal("percent 0 must disable the budget")
+	}
+}
+
+// TestReloadAppliesJitterGate pins the config→gate wiring: Reload carries
+// RetryJitterEnabled into the package-level gate (and DefaultConfig turns
+// jitter ON — the P0-C default).
+func TestReloadAppliesJitterGate(t *testing.T) {
+	defer SetRetryJitterEnabled(true)
+	p := NewPipeline(Deps{})
+	defer p.Stop()
+	if !RetryJitterEnabled() {
+		t.Fatal("DefaultConfig must enable jitter")
+	}
+	cfg := DefaultConfig()
+	cfg.RetryJitterEnabled = false
+	p.Reload(cfg)
+	if RetryJitterEnabled() {
+		t.Fatal("Reload must propagate RetryJitterEnabled=false")
 	}
 }

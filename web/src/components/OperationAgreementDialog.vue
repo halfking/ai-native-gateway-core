@@ -133,12 +133,12 @@ function cancelDialog() {
 
 <style scoped>
 .agree-intro { margin: 0 0 12px; line-height: 1.6; color: var(--text); }
-.agree-list { margin: 0 0 12px; padding-left: 1.25rem; color: var(--text); line-height: 1.65; }
+.agree-list { margin: 0 0 12px; padding-left: 16px; color: var(--text); line-height: 1.65; }
 .agree-note { margin: 0 0 16px; font-size: 13px; color: var(--muted); line-height: 1.6; }
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 </style>

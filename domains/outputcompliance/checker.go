@@ -135,6 +135,12 @@ type ComplianceIssue struct {
 	// 「因为什么规则被拦」，没有规则名的拦截理由对客户端不可用。
 	RuleID     string `json:"rule_id,omitempty"`
 	Description string `json:"description"`
+	// Digest 是被拦载荷的摘要（security/sanitize.EgressPayloadDigest 的输出：
+	// sha256(ruleID + path + value)）。2026-10-28 拦截审核轮：拦截那一刻记下
+	// 摘要，管理面据此对**这一次**的具体载荷放行（重试即放行），而不是只能
+	// 整条规则开/关。摘要不含原文（不可逆），与「payload preview 不进日志」
+	// 的纪律一致。
+	Digest string `json:"digest,omitempty"`
 	// ExceptionMatched 为 true 表示命中身份感知例外规则（不会被脱敏/阻断）。
 	ExceptionMatched bool `json:"exception_matched,omitempty"`
 	// DetectOnly 为 true 表示「只检出、不改写客户端可见文本」。
@@ -682,11 +688,11 @@ func (c *Checker) detectInternalIP(output string, policy *Policy) []ComplianceIs
 // 判定按**类型名**而不是按规则名——DB 里的 pattern_type 由运维写，
 // 规则名（pattern_name）各部署叫法不同，类型名才是稳定的语义轴。
 func isAddressPIIType(piiType string) bool {
-	switch strings.ToLower(strings.TrimSpace(piiType)) {
-	case "ip", "ip_address", "ipv6", "server_ip", "internal_ip", "address", "domain", "hostname":
-		return true
-	}
-	return false
+	// r1038b（2026-10-27）：口径收进 domains/sanitizerules 的**唯一**一份
+	// （此前与 security/sanitize 的 scopedType 各写一份且已漂移）。
+	// ★ 清单里**故意没有** `url`：URL 能携带凭据（?token=…），整类豁免等于
+	// 给查询串里的令牌开后门；也没有 `custom`：运维显式自定义的规则要遮。
+	return sanitizerules.IsAddressFamilyType(piiType)
 }
 
 // shouldCheckPIIType 判断是否检查某类 PII

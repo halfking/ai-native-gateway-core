@@ -125,7 +125,7 @@ function credentialLabel(id: number): string {
 }
 .hero {
   margin: 0 0 16px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border: 1px solid var(--border, var(--kx-border));
   border-radius: 8px;
   background: var(--bg-subtle, var(--kx-bg));
@@ -133,7 +133,7 @@ function credentialLabel(id: number): string {
 .hero-axis {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   font-size: 11px;
   color: var(--muted, var(--kx-muted));
   font-variant-numeric: tabular-nums;
@@ -150,7 +150,7 @@ function credentialLabel(id: number): string {
 }
 .stage-table th,
 .stage-table td {
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border, var(--kx-border));
   text-align: left;
 }
@@ -167,8 +167,8 @@ function credentialLabel(id: number): string {
   border-radius: 2px;
 }
 .tag {
-  font-size: 10px;
-  padding: 1px 6px;
+  font-size: 11px;
+  padding: 1px 4px;
   border: 1px solid var(--border, var(--kx-border));
   border-radius: 999px;
   background: var(--bg-card, var(--kx-surface));
@@ -190,8 +190,8 @@ function credentialLabel(id: number): string {
 .attempt-row {
   display: grid;
   grid-template-columns: 40px minmax(0, 1fr) 90px 100px auto;
-  gap: 10px;
-  padding: 4px 6px;
+  gap: 8px;
+  padding: 4px 4px;
   border: 1px solid transparent;
   border-radius: 4px;
   background: var(--bg-subtle, var(--kx-bg));

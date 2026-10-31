@@ -134,7 +134,7 @@ onMounted(load)
     </div>
 
     <div class="filter-bar">
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <div style="display:flex;gap:4px;flex-wrap:wrap">
         <button
           v-for="option in tierOptions" :key="option.value"
           class="btn btn-sm"
@@ -147,7 +147,7 @@ onMounted(load)
       <input v-model="search" placeholder="搜索提供商…" style="max-width:220px" />
     </div>
 
-    <ActiveFilterChips :chips="activeFilterChips" style="margin-bottom:20px" />
+    <ActiveFilterChips :chips="activeFilterChips" style="margin-bottom:16px" />
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
     <div v-if="loading" class="empty">加载中…</div>
@@ -195,7 +195,7 @@ onMounted(load)
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   flex-wrap: wrap;
 }
 .tier-count {
@@ -205,9 +205,9 @@ onMounted(load)
 .catalog-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 14px;
+  gap: 12px;
 }
-.catalog-card { display: flex; flex-direction: column; gap: 10px; }
+.catalog-card { display: flex; flex-direction: column; gap: 8px; }
 .card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
 .card-name { font-size: 14px; font-weight: 600; }
 .card-name-en { font-size: 11px; color: var(--muted); }
@@ -219,7 +219,7 @@ onMounted(load)
    改用项目已有的次级表面 --bg-subtle，标签在两套皮肤下都贴合。 */
 .model-tag {
   display: inline-block;
-  padding: 1px 7px;
+  padding: 1px 8px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 4px;

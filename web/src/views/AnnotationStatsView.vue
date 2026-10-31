@@ -165,25 +165,25 @@ onMounted(load)
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 0.5rem;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
 .panel-title {
-  font-size: 0.9375rem;
+  font-size: 16px;
   font-weight: 600;
 }
 
 .stats-container {
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
-  margin-top: 0.75rem;
+  gap: 16px;
+  margin-top: 12px;
 }
 
 .stats-section h3 {
-  margin: 0 0 0.5rem 0;
-  font-size: 1rem;
+  margin: 0 0 8px 0;
+  font-size: 16px;
   font-weight: 600;
 }
 
@@ -194,17 +194,17 @@ onMounted(load)
 
 .data-table th {
   text-align: left;
-  padding: 0.6rem 0.8rem;
+  padding: 8px 12px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   font-weight: 600;
-  font-size: 0.8125rem;
+  font-size: 13px;
 }
 
 .data-table td {
-  padding: 0.6rem 0.8rem;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
-  font-size: 0.875rem;
+  font-size: 14px;
 }
 
 .data-table tbody tr:hover {
@@ -233,9 +233,9 @@ onMounted(load)
 }
 
 .badge {
-  padding: 0.25rem 0.5rem;
+  padding: 4px 8px;
   border-radius: 3px;
-  font-size: 0.75rem;
+  font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
 }
@@ -262,6 +262,6 @@ onMounted(load)
   height: 100%;
   background: linear-gradient(90deg, var(--accent), var(--probe-cyan));
   border-radius: 4px;
-  transition: width 0.3s ease;
+  transition: width 0.3s var(--kx-motion-ease-out);
 }
 </style>

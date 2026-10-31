@@ -401,7 +401,7 @@ onBeforeUnmount(() => {
   width: v-bind(width);
   max-width: 90vw;
   border-inline-start: 1px solid var(--border);
-  animation: app-drawer-slide-in 0.2s ease-out;
+  animation: app-drawer-slide-in 0.2s var(--kx-motion-ease-out);
 }
 
 /* bottom sheet：全宽 + max-height 90dvh（fallback 90vh）+ 顶部把手 */
@@ -413,7 +413,7 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--border);
   border-radius: 16px 16px 0 0;
   padding-bottom: env(safe-area-inset-bottom);
-  animation: app-drawer-slide-up 0.2s ease-out;
+  animation: app-drawer-slide-up 0.2s var(--kx-motion-ease-out);
 }
 
 .app-drawer__grip {
@@ -445,7 +445,7 @@ onBeforeUnmount(() => {
 }
 /* 松手后的回弹 / 退场：200ms，规范 12 §5 的「层进出 200–300ms」下界 */
 .app-drawer__panel--settling {
-  transition: transform 200ms ease-out;
+  transition: transform 200ms var(--kx-motion-ease-out);
   animation: none !important;
   user-select: none;
 }
@@ -466,7 +466,7 @@ onBeforeUnmount(() => {
 }
 .app-drawer__header .app-drawer__title {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
 }
 .app-drawer__close {

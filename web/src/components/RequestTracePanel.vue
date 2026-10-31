@@ -542,7 +542,7 @@ onUnmounted(() => {
 .trace-panel-title .rid {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 3px;
@@ -556,12 +556,12 @@ onUnmounted(() => {
 
 .trace-panel-actions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
 }
 
 .trace-panel-body {
-  padding: 10px 12px;
+  padding: 8px 12px;
   max-height: 360px;
   overflow-y: auto;
 }
@@ -570,7 +570,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 8px;
   min-height: 120px;
   color: var(--muted);
   font-size: 12px;
@@ -593,13 +593,13 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   text-align: center;
-  padding: 18px 12px;
+  padding: 16px 12px;
   color: var(--muted);
   font-size: 12px;
 }
 .trace-empty .empty-icon {
   font-size: 28px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   opacity: 0.55;
 }
 .trace-empty h4 {
@@ -613,7 +613,7 @@ onUnmounted(() => {
 }
 .empty-hints {
   list-style: none;
-  padding: 6px 10px;
+  padding: 4px 8px;
   margin: 0;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -629,16 +629,16 @@ onUnmounted(() => {
 }
 .empty-hints li::before {
   content: '·';
-  margin-right: 6px;
+  margin-right: 4px;
   color: var(--warning);
 }
 
 /* 错误条 — 暗色背景, 仅左边 2px 细条 + 文字色变化, 严禁亮红填充 */
 .trace-error {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   align-items: flex-start;
-  padding: 8px 10px;
+  padding: 8px 8px;
   margin: 4px 0;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -651,13 +651,13 @@ onUnmounted(() => {
 /* 摘要条 — 暗色, 纯文字 + 小 chip, 无亮色背景 */
 .trace-summary {
   display: flex;
-  gap: 18px;
+  gap: 16px;
   flex-wrap: wrap;
-  padding: 6px 8px;
+  padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   font-size: 12px;
 }
 .summary-item {
@@ -666,7 +666,7 @@ onUnmounted(() => {
   gap: 1px;
 }
 .summary-item .label {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   letter-spacing: 0.01em;
 }
@@ -680,8 +680,8 @@ onUnmounted(() => {
 }
 .source-pill {
   display: inline-block;
-  padding: 1px 6px;
-  font-size: 10px;
+  padding: 1px 4px;
+  font-size: 11px;
   border-radius: 8px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
@@ -694,11 +694,11 @@ onUnmounted(() => {
   padding: 0;
   margin: 0;
   border-left: 1px solid var(--border);
-  margin-left: 10px;
+  margin-left: 8px;
 }
 .timeline-item {
   position: relative;
-  padding: 2px 0 2px 18px;
+  padding: 2px 0 2px 16px;
 }
 .timeline-item::before {
   content: '';
@@ -717,10 +717,10 @@ onUnmounted(() => {
 .timeline-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   background: transparent;
   border: 1px solid transparent;
-  padding: 4px 6px;
+  padding: 4px 4px;
   border-radius: 4px;
   cursor: pointer;
   width: 100%;
@@ -743,7 +743,7 @@ onUnmounted(() => {
   height: 18px;
   border-radius: 50%;
   color: var(--bg);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   flex-shrink: 0;
 }
@@ -759,8 +759,8 @@ onUnmounted(() => {
   color: var(--text);
 }
 .timeline-row .module {
-  font-size: 10px;
-  padding: 0 5px;
+  font-size: 11px;
+  padding: 0 4px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 3px;
@@ -768,7 +768,7 @@ onUnmounted(() => {
 }
 .timeline-row .duration {
   font-family: ui-monospace, monospace;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   margin-left: auto;
 }
@@ -776,30 +776,30 @@ onUnmounted(() => {
   margin-left: 4px;
   font-size: 10px;
   color: var(--muted);
-  transition: transform 0.15s;
+  transition: transform 0.15s var(--kx-motion-ease-out);
 }
 .timeline-row .caret.open {
   transform: rotate(180deg);
 }
 
 .timeline-body {
-  padding: 4px 6px 8px 8px;
+  padding: 4px 4px 8px 8px;
   font-size: 11px;
 }
 .muted { color: var(--muted); }
-.small { font-size: 10px; margin-bottom: 4px; }
+.small { font-size: 11px; margin-bottom: 4px; }
 
 /* 错误行 — 暗色背景, 仅左侧 2px 细条, 严禁亮红填充 */
 .error-line {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   background: var(--bg);
   border: 1px solid var(--border);
   border: 1px solid var(--danger);
   color: var(--text);
   padding: 4px 8px;
   border-radius: 3px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   font-size: 11px;
 }
 
@@ -810,7 +810,7 @@ onUnmounted(() => {
   margin-top: 4px;
 }
 .kv-table td {
-  padding: 3px 6px;
+  padding: 3px 4px;
   border-bottom: 1px dashed var(--border);
   vertical-align: top;
 }
@@ -830,8 +830,8 @@ onUnmounted(() => {
 
 /* snapshot — 暗色背景, 仅左侧 2px 细条, 严禁亮黄填充 */
 .snapshot {
-  margin-top: 6px;
-  padding: 6px 10px;
+  margin-top: 4px;
+  padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border: 1px solid var(--warning);
@@ -845,7 +845,7 @@ onUnmounted(() => {
 }
 .snapshot-row {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   padding: 1px 0;
 }
 .snapshot-row .label {
@@ -855,12 +855,12 @@ onUnmounted(() => {
 }
 .danger-pill {
   display: inline-block;
-  padding: 0 5px;
+  padding: 0 4px;
   background: var(--bg-subtle);
   border: 1px solid var(--danger);
   color: var(--danger);
   border-radius: 3px;
-  font-size: 9px;
+  font-size: 11px;
   margin-left: 4px;
 }
 .failure-hint {
@@ -878,7 +878,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 12px;
+  padding: 4px 12px;
   border-bottom: 1px solid var(--border);
 }
 .ai-panel-header h4 {
@@ -901,7 +901,7 @@ onUnmounted(() => {
 .ai-label textarea {
   border: 1px solid var(--border);
   border-radius: 3px;
-  padding: 5px 7px;
+  padding: 4px 8px;
   background: var(--bg);
   color: var(--text);
   font-family: inherit;
@@ -910,14 +910,14 @@ onUnmounted(() => {
 }
 .ai-actions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   margin-bottom: 8px;
 }
 .ai-result {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-top: 6px;
+  margin-top: 4px;
 }
 .ai-result-header {
   display: flex;
@@ -930,7 +930,7 @@ onUnmounted(() => {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 3px;
-  padding: 8px 10px;
+  padding: 8px 8px;
   font-size: 11px;
   font-family: ui-monospace, monospace;
   white-space: pre-wrap;
@@ -945,4 +945,10 @@ onUnmounted(() => {
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
    尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
 .ai-panel-header .btn > svg { width: 12px; height: 12px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .timeline-row .caret { transition: none; }
+}
 </style>

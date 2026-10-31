@@ -143,7 +143,7 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		// before the /v1/messages handler — whose extractBearerToken has
 		// honored x-api-key since 2026-06-26 — ever sees the request
 		// (observed 2026-09-21: claude-cli 401s on 154, zero rows in
-		// _request_logs_hot).
+		// session_turns_hot).
 		//
 		// ★ 2026-10-26（Gemini 原生认证修复轮）：本门此前**只认两种形态**
 		// （Authorization Bearer + x-api-key），而厂方标准文档写明的 Gemini

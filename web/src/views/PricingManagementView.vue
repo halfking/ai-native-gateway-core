@@ -17,34 +17,45 @@
     </div>
     <div v-if="globalMsg" class="alert" :class="globalMsgOk ? 'alert-success' : 'alert-danger'" style="margin-bottom:12px">{{ globalMsg }}</div>
 
+    <!--
+      2026-10-28 第 32 增量（hero-metric 模板轮）：原来这里是 7 个同尺寸盒子并排，
+      每格 = 24px **主色**巨数字 + 12px 小标签 —— 即 impeccable craft-floor
+      「The hero-metric template: big number, small label, supporting stats, accent」
+      点名的模板，也是 DESIGN.md §6 明禁的「巨型数字 + 小标签 + 辅助统计 + 强调色」
+      当 hero 指标模板、且明写「不是四个数字并排」。
+      ⇒ 改成「标签 → 值」的行：一行一个事实，数字回到正文级的字号与颜色；
+        覆盖率那一格的语义状态落在**值位**（软填充 + 文字颜色 + 文字本身，
+        DESIGN.md §3：状态不能只靠颜色区分）。
+      ★ 刻意不给行加底色或四边描边 —— 只有下边框的**行**不是卡片（§6「卡片是懒容器」）。
+    -->
     <div class="pm-summary" v-if="summary">
-      <div class="stat-card">
-        <div class="stat-val">{{ summary.total_offers }}</div>
-        <div class="stat-label">总 Offer</div>
+      <div class="pm-metric">
+        <span class="pm-metric__label">总 Offer</span>
+        <span class="pm-metric__value">{{ summary.total_offers }}</span>
       </div>
-      <div class="stat-card">
-        <div class="stat-val">{{ summary.priced_in }}</div>
-        <div class="stat-label">已定价（输入）</div>
+      <div class="pm-metric">
+        <span class="pm-metric__label">已定价（输入）</span>
+        <span class="pm-metric__value">{{ summary.priced_in }}</span>
       </div>
-      <div class="stat-card">
-        <div class="stat-val">{{ summary.priced_out }}</div>
-        <div class="stat-label">已定价（输出）</div>
+      <div class="pm-metric">
+        <span class="pm-metric__label">已定价（输出）</span>
+        <span class="pm-metric__value">{{ summary.priced_out }}</span>
       </div>
-      <div class="stat-card">
-        <div class="stat-val">{{ summary.cny_offers }}</div>
-        <div class="stat-label">CNY</div>
+      <div class="pm-metric">
+        <span class="pm-metric__label">CNY</span>
+        <span class="pm-metric__value">{{ summary.cny_offers }}</span>
       </div>
-      <div class="stat-card">
-        <div class="stat-val">{{ summary.usd_offers }}</div>
-        <div class="stat-label">USD</div>
+      <div class="pm-metric">
+        <span class="pm-metric__label">USD</span>
+        <span class="pm-metric__value">{{ summary.usd_offers }}</span>
       </div>
-      <div class="stat-card">
-        <div class="stat-val">{{ summary.free_offers }}</div>
-        <div class="stat-label">免费</div>
+      <div class="pm-metric">
+        <span class="pm-metric__label">免费</span>
+        <span class="pm-metric__value">{{ summary.free_offers }}</span>
       </div>
-      <div class="stat-card" :class="coverageClass">
-        <div class="stat-val">{{ coveragePct }}%</div>
-        <div class="stat-label">覆盖率 ({{ summary.canonical_covered }}/{{ summary.total_canonical }})</div>
+      <div class="pm-metric">
+        <span class="pm-metric__label">覆盖率 ({{ summary.canonical_covered }}/{{ summary.total_canonical }})</span>
+        <span class="pm-metric__value" :class="coverageClass">{{ coveragePct }}%</span>
       </div>
     </div>
 
@@ -625,9 +636,9 @@ const coveragePct = computed(() => {
 })
 
 const coverageClass = computed(() => {
-  if (coveragePct.value >= 90) return 'stat-card-good'
-  if (coveragePct.value >= 50) return 'stat-card-warn'
-  return 'stat-card-bad'
+  if (coveragePct.value >= 90) return 'pm-metric__value--good'
+  if (coveragePct.value >= 50) return 'pm-metric__value--warn'
+  return 'pm-metric__value--bad'
 })
 
 // Helper to lookup credential label by id (uses already-fetched providers list)
@@ -1140,33 +1151,65 @@ onMounted(fetchData)
  * 之前硬编码了 Catppuccin Mocha 暗色调（#1e1e2e / #2a2a3e / #cba6f7 等），
  * 浅色皮肤下显示为「大量暗色块」。现在改用 --card / --border / --muted / --accent 等。
  */
-.pricing-management { padding: 20px; color: var(--text); }
+.pricing-management { padding: 16px; color: var(--text); }
 .pm-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .pm-header h2 { margin: 0; color: var(--text); }
 .pm-actions { display: flex; gap: 8px; }
-.pm-summary { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-.stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 20px; min-width: 100px; text-align: center; }
-.stat-card-good { border-color: var(--success); }
-.stat-card-warn { border-color: var(--warning); }
-.stat-card-bad { border-color: var(--danger); }
-.stat-val { font-size: 24px; font-weight: 700; color: var(--accent-h); }
-.stat-label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+/* ── 摘要区（第 32 增量：从「7 个主色巨数字盒子并排」改成「标签 → 值」的行）──
+ * 原来：`.stat-card` 七格并排，每格 24px 主色巨数字 + 12px 小标签
+ *       —— 即 craft-floor 点名的 hero-metric 模板（DESIGN.md §6 明禁）。
+ * 现在：一行一个事实，标签在左、值在右；值回到正文级字号，
+ *       覆盖率那格的语义状态落在值位（软填充 + 文字颜色 + 文字本身）。
+ * ★ 四列、列优先填充 ⇒ 2 + 2 + 2 + 1：每对「标签 → 值」约 330px 宽，
+ *   标签与值不会被拉到半个屏幕那么远（值班台是拿来对着读的，不是拿来欣赏的）。 */
+.pm-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-flow: column;
+  grid-template-rows: repeat(2, auto);
+  gap: 0 var(--space-6);
+  margin-bottom: var(--space-4);
+}
+.pm-metric {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--border-muted);
+  font-size: var(--text-sm);
+}
+.pm-metric__label { color: var(--muted); }
+.pm-metric__value {
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* 状态值：软填充 + 语义色文字（颜色之外还有形状与文字本身 ⇒ 状态不只靠颜色区分） */
+.pm-metric__value--good { color: var(--success); background: var(--success-soft); border-radius: 4px; padding: 0 var(--space-1); }
+.pm-metric__value--warn { color: var(--warning); background: var(--warning-soft); border-radius: 4px; padding: 0 var(--space-1); }
+.pm-metric__value--bad  { color: var(--danger);  background: var(--danger-soft);  border-radius: 4px; padding: 0 var(--space-1); }
+@media (max-width: 768px) {
+  .pm-summary { grid-template-columns: minmax(0, 1fr); grid-auto-flow: row; grid-template-rows: none; gap: 0; }
+}
 
 /* Coverage by credential */
 .pm-coverage { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
 .pm-coverage h3 { margin: 0 0 12px 0; font-size: 14px; color: var(--text); }
-.cov-row { display: grid; grid-template-columns: 200px 1fr 200px; gap: 12px; align-items: center; margin-bottom: 6px; font-size: 12px; }
+.cov-row { display: grid; grid-template-columns: 200px 1fr 200px; gap: 12px; align-items: center; margin-bottom: 4px; font-size: 12px; }
 .cov-name { color: var(--text); font-weight: 500; }
 .cov-bar { background: var(--bg-subtle); height: 16px; border-radius: 4px; overflow: hidden; border: 1px solid var(--border); }
-.cov-fill { height: 100%; transition: width 0.3s; }
+.cov-fill { height: 100%; transition: width 0.3s var(--kx-motion-ease-out); }
 .cov-stats { color: var(--muted); text-align: right; }
-.cov-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+.cov-tag { display: inline-block; margin-left: 4px; padding: 1px 4px; border-radius: 3px; font-size: 11px; font-weight: 600; }
 .cov-tag-tp { background: var(--bg-hover); color: var(--warning); }
 
 /* Filters */
 .pm-filters { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
 .filter-group { flex: 1; min-width: 150px; }
-.filter-input, .filter-select { width: 100%; padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 13px; }
+.filter-input, .filter-select { width: 100%; padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 13px; }
 .filter-select { cursor: pointer; }
 
 /* Tabs */
@@ -1181,13 +1224,13 @@ onMounted(fetchData)
 .drawer-title { margin: 0; color: var(--text); font-size: 16px; }
 .drawer-body { flex: 1; overflow-y: auto; }
 .tree-family { margin-bottom: 4px; }
-.tree-family-header { cursor: pointer; padding: 6px 8px; border-radius: 4px; display: flex; align-items: center; gap: 8px; }
+.tree-family-header { cursor: pointer; padding: 4px 8px; border-radius: 4px; display: flex; align-items: center; gap: 8px; }
 .tree-family-header:hover { background: var(--bg-hover); }
-.arrow { font-size: 10px; transition: transform 0.2s; }
+.arrow { font-size: 11px; transition: transform 0.2s var(--kx-motion-ease-out); }
 .arrow.open { transform: rotate(90deg); }
 .family-name { font-weight: 600; color: var(--accent-h); }
 .family-meta { font-size: 11px; color: var(--muted); }
-.tree-offers { margin-left: 20px; }
+.tree-offers { margin-left: 16px; }
 .tree-offer { padding: 4px 8px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); }
 .tree-offer:hover { background: var(--bg-hover); }
 .tree-offer.selected { background: var(--bg-secondary); border: 1px solid var(--accent); }
@@ -1215,7 +1258,7 @@ onMounted(fetchData)
 .param-val.ok { color: var(--success); }
 .form-group { margin-bottom: 12px; }
 .form-group label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-.form-group input, .form-group select { width: 100%; padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); }
+.form-group input, .form-group select { width: 100%; padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); }
 .detail-balance { margin: 12px 0; padding: 8px; background: var(--bg-subtle); border-radius: 4px; font-size: 13px; color: var(--text); }
 .form-actions { margin-top: 16px; display: flex; gap: 8px; align-items: center; }
 .save-msg { font-size: 13px; }
@@ -1227,7 +1270,7 @@ onMounted(fetchData)
 .pm-table th { background: var(--bg-subtle); padding: 8px 12px; text-align: left; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .pm-table th.sortable { cursor: pointer; }
 .pm-table th.sortable:hover { color: var(--accent-h); }
-.pm-table td { padding: 6px 12px; border-bottom: 1px solid var(--border); color: var(--text); }
+.pm-table td { padding: 4px 12px; border-bottom: 1px solid var(--border); color: var(--text); }
 .pm-table tr:hover { background: var(--bg-hover); }
 .pm-table tr.selected { background: var(--bg-secondary); }
 .pm-table .model-name { color: var(--accent-h); font-weight: 600; }
@@ -1255,7 +1298,7 @@ onMounted(fetchData)
 .pagination-info {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   color: var(--muted);
   font-size: 12px;
   flex-wrap: nowrap;
@@ -1279,16 +1322,16 @@ onMounted(fetchData)
 }
 
 /* Buttons (scoped — 与 style.css .btn 解耦以便覆盖到此处作用域) */
-.pm-actions .btn { padding: 6px 14px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); cursor: pointer; font-size: 13px; }
+.pm-actions .btn { padding: 4px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); cursor: pointer; font-size: 13px; }
 .pm-actions .btn:hover { background: var(--bg-hover); }
 .pm-actions .btn-primary { background: var(--accent); color: var(--on-primary); border-color: var(--accent); }
 .pm-actions .btn-primary:hover { background: var(--accent-h); }
 .pm-actions .btn-success { background: var(--success); color: var(--on-primary); border-color: var(--success); }
 .pm-actions .btn-success:hover { background: color-mix(in srgb, var(--success) 88%, var(--kx-text)); }
-.pm-actions .btn-sm { padding: 4px 10px; font-size: 12px; }
-.pm-actions .btn-xs { padding: 2px 6px; font-size: 11px; }
+.pm-actions .btn-sm { padding: 4px 8px; font-size: 12px; }
+.pm-actions .btn-xs { padding: 2px 4px; font-size: 11px; }
 /* 页面其他位置的按钮也覆盖（form-actions 等） */
-.form-actions .btn { padding: 6px 14px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); cursor: pointer; font-size: 13px; }
+.form-actions .btn { padding: 4px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); cursor: pointer; font-size: 13px; }
 .form-actions .btn:hover { background: var(--bg-hover); }
 .form-actions .btn-primary { background: var(--accent); color: var(--on-primary); border-color: var(--accent); }
 .form-actions .btn-primary:hover { background: var(--accent-h); }
@@ -1297,21 +1340,27 @@ onMounted(fetchData)
 .modal h3 { margin-top: 0; color: var(--text); }
 .modal { background: var(--card); color: var(--text); }
 .batch-pricing-modal { width: min(700px, 100%); max-height: 90vh; overflow-y: auto; background: var(--card); color: var(--text); }
-.batch-offers { margin: 12px 0; border: 1px solid var(--border); border-radius: 6px; padding: 10px; max-height: 240px; overflow-y: auto; }
+.batch-offers { margin: 12px 0; border: 1px solid var(--border); border-radius: 6px; padding: 8px; max-height: 240px; overflow-y: auto; }
 .batch-offers h4 { margin: 0 0 8px; font-size: 13px; color: var(--accent-h); }
-.batch-offer-select-all { margin-bottom: 6px; font-size: 13px; color: var(--text); }
+.batch-offer-select-all { margin-bottom: 4px; font-size: 13px; color: var(--text); }
 .batch-offer-list { display: flex; flex-direction: column; gap: 4px; }
-.batch-offer-row { padding: 4px 6px; border-radius: 4px; color: var(--text); }
+.batch-offer-row { padding: 4px 4px; border-radius: 4px; color: var(--text); }
 .batch-offer-row:hover { background: var(--bg-hover); }
 .batch-offer-row.selected { background: var(--bg-secondary); }
 .batch-offer-label { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--text); }
 .offer-price-mini { color: var(--warning); font-size: 12px; margin-left: auto; }
 .batch-pricing-form { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
-.batch-pricing-form h4 { margin: 0 0 10px; font-size: 13px; color: var(--accent-h); }
-.batch-pricing-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.batch-pricing-form h4 { margin: 0 0 8px; font-size: 13px; color: var(--accent-h); }
+.batch-pricing-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
 @media (max-width: 768px) { .batch-pricing-grid { grid-template-columns: 1fr 1fr; } }
 .alert-success { background: var(--success-soft); border: 1px solid var(--success); color: var(--success); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
 .alert-danger { background: var(--danger-soft); border: 1px solid var(--danger); color: var(--danger); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
 .inherit-details { max-height: 300px; overflow-y: auto; margin: 12px 0; }
 .inherit-row { padding: 4px 0; font-size: 13px; color: var(--muted); }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .arrow { transition: none; }
+}
 </style>

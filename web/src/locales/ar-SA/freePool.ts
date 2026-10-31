@@ -200,7 +200,6 @@ export default {
   bridgeOAuth: "ربط OAuth",
   importEnv: "استيراد مفتاح متغير البيئة",
   discover: "تعلم وتسجيل تلقائي",
-  quickEntry: "إدخال سريع",
   notLoaded: "لم يتم التحميل",
   loading: "جارٍ التحميل…",
   p95Latency: "زمن الاستجابة P95",

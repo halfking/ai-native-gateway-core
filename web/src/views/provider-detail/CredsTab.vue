@@ -1066,12 +1066,12 @@ function onTagsInput(ev: Event) {
           <div>
             <h3 style="margin:0">{{ selected.label || pd('creds.drawerTitle', { id: selected.id }) }}</h3>
             <div class="drawer-sub">{{ pd('creds.rowMeta', { id: selected.id, trust: selected.trust_level }) }}</div>
-            <div class="drawer-header-meta" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+            <div class="drawer-header-meta" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px;align-items:center">
               <span class="badge" :class="routingScopeBadge(selected.routing_scope)">{{ routingScopeLabel(selected.routing_scope) }}</span>
               <span class="badge" :class="healthBadge(selected.health_status)">{{ healthLabel(selected.health_status) }}</span>
               <span class="cell-muted">{{ selected.lifecycle_status }}</span>
             </div>
-            <div class="drawer-tabs" style="margin-top:10px;display:flex;gap:6px">
+            <div class="drawer-tabs" style="margin-top:8px;display:flex;gap:4px">
               <button type="button" class="btn btn-sm" :class="drawerTab === 'info' ? 'btn-primary' : 'btn-ghost'" @click="drawerTab = 'info'">{{ pd('creds.drawerTabInfo') }}</button>
               <button type="button" class="btn btn-sm" :class="drawerTab === 'models' ? 'btn-primary' : 'btn-ghost'" @click="drawerTab = 'models'">{{ pd('creds.drawerTabModels') }}</button>
             </div>
@@ -1092,7 +1092,7 @@ function onTagsInput(ev: Event) {
             <div class="drawer-section-title">{{ pd('creds.drawerSectionBasic') }}</div>
             <label class="field-label">{{ pd('creds.drawerFieldLabel') }}</label>
             <input v-model="selected.label" class="field-input" :disabled="!canManageCreds" />
-            <label class="field-label" style="margin-top:6px">{{ pd('creds.drawerFieldApiKey') || 'API Key' }}</label>
+            <label class="field-label" style="margin-top:4px">{{ pd('creds.drawerFieldApiKey') || 'API Key' }}</label>
             <div class="drawer-key-wrap">
               <CredentialKeyField
                 :provider-id="provider.id"
@@ -1114,7 +1114,7 @@ function onTagsInput(ev: Event) {
               <div v-else-if="!probeModelOptions.length" class="cell-sub" style="margin-top:4px">
                 {{ pd('creds.apiKeyRotateHintNoBinding') }}
               </div>
-              <div class="btn-row" style="margin-top:6px">
+              <div class="btn-row" style="margin-top:4px">
                 <button
                   class="btn btn-sm btn-ghost"
                   type="button"
@@ -1251,7 +1251,7 @@ function onTagsInput(ev: Event) {
               />
               <div v-if="!probeModelHasOptions" class="cell-sub">{{ pd('creds.probeModelNoBindingsHint') }}</div>
             </template>
-            <code v-if="selected.default_probe_model" class="mono-sm" style="margin-top:6px;display:block">{{ selected.default_probe_model }}</code>
+            <code v-if="selected.default_probe_model" class="mono-sm" style="margin-top:4px;display:block">{{ selected.default_probe_model }}</code>
             <span v-else class="cell-muted">{{ pd('creds.probeModelUnset') }}</span>
             <div class="cell-sub">{{ sourceLabel(selected.default_probe_model_source) }}</div>
             <div v-if="canManageCreds" class="btn-row">
@@ -1359,7 +1359,7 @@ function onTagsInput(ev: Event) {
                 v-if="canManageCreds"
                 class="btn btn-ghost btn-sm"
                 type="button"
-                style="padding:2px 6px"
+                style="padding:2px 4px"
                 :disabled="refreshingBalance[selected.id]"
                 :title="pr('credential.row.balanceRefreshTooltip')"
                 @click="refreshBalance"
@@ -1421,7 +1421,7 @@ function onTagsInput(ev: Event) {
                 <div v-else class="cell-muted">{{ pd('creds.planQuotaNone') }}</div>
               </div>
             </div>
-            <div class="cell-sub" style="margin-top:6px">{{ pd('creds.floorHint') }}</div>
+            <div class="cell-sub" style="margin-top:4px">{{ pd('creds.floorHint') }}</div>
           </details>
 
           <details class="drawer-section drawer-section--collapsible">
@@ -1617,7 +1617,7 @@ function onTagsInput(ev: Event) {
   word-break: break-all;
 }
 .drawer-key {
-  margin-top: 6px;
+  margin-top: 4px;
   padding: 8px;
   background: var(--bg-subtle);
   border-radius: 4px;
@@ -1644,7 +1644,7 @@ function onTagsInput(ev: Event) {
 }
 .field-input {
   width: 100%;
-  padding: 8px 10px;
+  padding: 8px 8px;
   font-size: 13px;
   background: var(--card);
   border: 1px solid var(--border);
@@ -1672,14 +1672,14 @@ function onTagsInput(ev: Event) {
 .info-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 6px;
+  gap: 8px;
+  margin-bottom: 4px;
 }
 .btn-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 8px;
 }
 .btn-row--end {
   justify-content: flex-end;
@@ -1705,7 +1705,7 @@ function onTagsInput(ev: Event) {
   list-style: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   user-select: none;
 }
 .drawer-section--collapsible > summary.drawer-section-title::-webkit-details-marker {
@@ -1715,7 +1715,7 @@ function onTagsInput(ev: Event) {
   content: '▸';
   font-size: 11px;
   color: var(--muted);
-  transition: transform 0.15s ease;
+  transition: transform 0.15s var(--kx-motion-ease-out);
 }
 .drawer-section--collapsible[open] > summary.drawer-section-title::before {
   content: '▾';
@@ -1752,4 +1752,10 @@ function onTagsInput(ev: Event) {
    element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .btn.btn-ghost.btn-sm > svg { width: 12px; height: 12px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .drawer-section--collapsible > summary.drawer-section-title::before { transition: none; }
+}
 </style>

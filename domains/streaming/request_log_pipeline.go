@@ -235,7 +235,10 @@ type RequestLogContext struct {
 
 	// R52：body-marker 识别结果 memo（resolved 置位后不再重复全 body
 	// JSON 扫描；识别不出同样置位避免每次 refreshMeta 重扫）。
+	// bodyMarkerHadBody（2026-10-29）：memo 是否在【有 body】时得出结论；
+	// 空 body 下的空结论不终判，body 到达后重算一次（见 refreshMeta）。
 	bodyMarkerResolved bool
+	bodyMarkerHadBody  bool
 	bodyMarker         string
 }
 
@@ -736,8 +739,14 @@ func (c *RequestLogContext) refreshMeta() {
 	// 只有弱名（unknown / 通用 HTTP 客户端库）才被 body 证据覆盖——与
 	// shouldOverrideWithBodyMarker 的语义一致。识别结果 memo 一次（识别
 	// 不出也置位），避免每次 refreshMeta 重复全 body JSON 扫描。
-	if !c.bodyMarkerResolved {
+	// 2026-10-29 identification round: responses/messages 主流程现在是
+	// SetKey（auth 后，Body 尚未缓冲）→ EnsureCaptured（body 读后）两段
+	// refreshMeta；若首次 memo 在空 body 上置位，metadata.* 标记将永久
+	// 失检。memo 因此 body 感知：空 body 下置位的空结论，在 body 到达后
+	// 重算一次（chat 路径首跑即有 body，行为不变）。
+	if !c.bodyMarkerResolved || (!c.bodyMarkerHadBody && len(c.Body) > 0) {
 		c.bodyMarkerResolved = true
+		c.bodyMarkerHadBody = len(c.Body) > 0
 		if len(c.Body) > 0 {
 			c.bodyMarker = agenttelemetry.ExtractClientTypeFromBody(c.Body, c.Request.Header.Get("X-Code-Session-Id"))
 		} else if c.Request != nil && c.Request.Header.Get("X-Code-Session-Id") != "" {

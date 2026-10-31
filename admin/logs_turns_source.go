@@ -54,14 +54,99 @@ import (
 //  3. S4 停写（storage.request_logs_write_enabled=false）的活跃漏写
 //     阻断已解除，但灰度期间仍须保留 734 视图的 v1 冻结分支——它是
 //     当前月热数据与在线列表 last_request_id 的唯一读路径。
+//
+// ★★★★★ R181 轮**再订正**（★★ 本段第 1 条的前提已被推翻，★★ 别再引用它）：★★★★
+//
+//	★ 那条「原生源会少 27.6% 的行」的理由，**前提是「v1 还在」**。
+//	  迁移 890 把 canonical 视图的第三臂（冻结 v1 体）去掉之后，视图
+//	  **本身就是**会话族两臂体（session_turns_hot ∪ session_turns + 734
+//	  details 层）⇒ ⇒ **视图与原生源返回同样的行** ⇒ ⇒ 「视图 vs 原生源」
+//	  这个区分**已经没有对象**。
+//	★★ 这是**实测**，不是推断：★ 本地真库逐行对拍 ⇒ view 2,810 行 /
+//	  native 2,810 行 / native-only = 0 / view-only = 0（2026-10-29）。
+//	  ★★ 252 生产库同口径对拍读数见审计档 `docs/audit/2026-10-29-R181-…`。
+//	★★ 而且它是**结构性的**：两者的 FROM/JOIN 逐字相同，唯一差别是视图那版
+//	  带 `::text` 冗余转型（varchar→text 是恒等）⇒ ⇒ 行集必然相同，
+//	  **与数据量无关** ⇒ ⇒ 不用再担心「小库看不出来」。
+//	★★ 守卫 `admin/session_view_dependency_risk_test.go` 在 2026-10-20（迁移
+//	  890 那轮）**已经把不变式**从「必须留在视图上」换成「读的源必须覆盖
+//	  会话族的两条腿（hot ∪ 母表）」⇒ ⇒ 本轮**不是推翻守卫**，
+//	  ★ 是**把守卫早已更新的结论落到列表路径上** ★
+//	★★ 于是本开关现在的**真实作用范围**收窄为：★ **详情路径**的形态选择
+//	  （详情按 request_id 反查 ⇒ 视图形态即够用 ⇒ 不需要裁剪 ⇒ 保持默认视图）；
+//	  ★ **列表路径**走**带分区键下界的原生形态**（见
+//	  `logsSourceFromSQLWindowed`）—— ★★ 因为 canonical 视图的 118 列投影
+//	  被冻结（R37 定案「118 列同名同序不许改」）⇒ ⇒ 视图**不可能**暴露
+//	  partition_date ⇒ ⇒ **分区裁剪在视图形态下不可达** ⇒ ⇒ 列表路径要
+//	  拿到裁剪，就只能走原生形态 ★★
 const nativeTurnsReadSetting = "storage.admin_logs_native_turns_read"
 
-// logsSourceFromSQL returns the aliased FROM-source for the logs list/detail
+// logsSourceFromSQL returns the aliased FROM-source for the logs **detail**
 // queries: view-backed (default) or native session-turn family (S3 波1 灰度).
 // Both shapes expose the same 113-column contract under alias `rl`.
+//
+// ★★ R181 轮订正（本段上方那段「27.6% 缺口」的理由**已被推翻**）：★★
+// ★ 那条理由的**前提是「v1 还在」**。迁移 890 把 canonical 视图的第三臂
+//
+//	（冻结 v1 体）去掉之后，视图**本身就是**会话族两臂体
+//	（session_turns_hot ∪ session_turns + 734 details 层）⇒ ⇒ **视图与原生源
+//	返回同样的行** ⇒ ⇒ 「视图 vs 原生源」这个区分**已经没有对象**。
+//
+// ★★ 这不是推断，是**实测**：★ 本地真库逐行对拍 ⇒ view 2,810 行 / native 2,810 行
+//
+//	/ native-only = 0 / view-only = 0；★ 252 生产库同口径对拍见审计档。
+//
+// ★★ 而且它是**结构性的**：两者的 FROM/JOIN 逐字相同，唯一差别是视图那版带
+//
+//	`::text` 冗余转型（varchar→text 是恒等）⇒ ⇒ 行集必然相同，**与数据量无关**。
+//
+// ★★ 同一结论已写进守卫 `admin/session_view_dependency_risk_test.go`
+//
+//	（2026-10-20 迁移 890 那轮就已把不变式从「必须留在视图上」换成
+//	「读的源必须覆盖会话族的两条腿」）⇒ ⇒ 本轮不是推翻守卫，是**把守卫早
+//	已更新的结论落到列表路径上** ★
+//
+// ★★ 另有一条**独立**理由让列表路径**必须**走原生形态：★★
+//
+//	canonical 视图的 **118 列投影被冻结**（R37 定案「118 列同名同序不许改」，
+//	见 admin/canonical_read_points_registry_test.go:228）⇒ ⇒ 视图**不可能**
+//	暴露 partition_date ⇒ ⇒ **分区裁剪在视图形态下不可达** ⇒ ⇒ 列表路径要
+//	拿到裁剪，就只能用**原生形态 + 带分区键谓词**（见 logsSourceFromSQLWindowed）。
 func logsSourceFromSQL() string {
 	if settings.GetPlatformBool(nativeTurnsReadSetting, false) {
 		return db.SessionFamilyTurnsSourceSQL() + " rl"
 	}
 	return "request_logs_with_current_month rl"
+}
+
+// logsSourceFromSQLWindowed returns the **带分区键下界**的 FROM 源（R181 轮新增）。
+//
+// ★ 为什么列表路径必须用它（★ 实测坐实，不是推断）：★★
+// `public.session_turns` 按 **partition_date** RANGE 分区，而读方只按 **ts**
+// 过滤 ⇒ ⇒ PG 的分区裁剪**只认分区键谓词** ⇒ ⇒ 一个 ts 窗口会命中**全部**月分区。
+// ★★ 本地真库 A/B（session_turns 有 5 个月分区 + default）：
+//
+//	只按 ts            ⇒ Append → 5 个分区全扫（2026_10 走 Seq Scan）
+//	ts + partition_date ⇒ 只剩 session_turns_2026_10
+//
+// ★★ 生产侧同形态已被台账记下：252 的 **EXPLAIN 计划形态**观测台账
+// （scripts/audit/asset/query-plan-observations.tsv）里，/api/logs 的列表语句
+// （stmt-1d7be58136）在**1 秒窗口**上 Seq Scan 了 **4 个整月分区**。
+//
+// ★★★ R182 轮订正（★★ 事实性错误 ★★★）：★★ 这份台账**不是**
+// ★ `pg_stat_statements` 的统计快照（★ 生成器是 cmd/tools/query_plan_form，
+// ★ 走 EXPLAIN、不带 ANALYZE）⇒ ⇒ 它记的是**计划形态**，不是执行期统计。
+//
+// ★ 为什么不走视图形态：★ 视图的 118 列投影被冻结（R37）⇒ ⇒ 视图无法暴露
+//
+//	partition_date ⇒ ⇒ 视图形态**拿不到裁剪** ⇒ ⇒ 列表路径只能走原生形态。
+//	★★ 走原生形态**不丢行**：★ 890 之后视图本身就是两臂体 ⇒ ⇒ 行集相同
+//	（见 logsSourceFromSQL 上面的 R181 订正）★★
+//
+// ★ pdFrom / pdTo 是**参数占位符**（形如 "$1" / "$2"）⇒ ⇒ 由调用方决定编号
+//
+//	⇒ ⇒ 本函数不感知参数位置；上界/下界的**取值**由
+//	`sessionPartitionDateBounds`（admin/session_partition_bounds.go）折算。
+func logsSourceFromSQLWindowed(pdFrom, pdTo string) string {
+	return db.SessionFamilyTurnsSourceWindowedSQL(pdFrom, pdTo) + " rl"
 }

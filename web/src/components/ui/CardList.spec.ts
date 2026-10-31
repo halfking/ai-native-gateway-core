@@ -237,8 +237,19 @@ describe('CardList：空动作容器不占位', () => {
   it('间距挂在子元素上，容器自身不带 margin-top', () => {
     expect(cardListSource).toMatch(/\.card__actions\s*\{[^}]*\}/)
     const container = cardListSource.match(/\.card__actions\s*\{([^}]*)\}/)![1]!
-    expect(container, '容器自身不该再带 margin-top（空容器会白吃 10px）').not.toContain('margin-top')
-    expect(cardListSource).toMatch(/\.card__actions\s*>\s*\*\s*\{[^}]*margin-top:\s*10px;/)
+    expect(container, '容器自身不该再带 margin-top（空容器会白吃这段间距）').not.toContain('margin-top')
+    // ★ 第 24 增量：断言的是**契约**（间距挂在子元素上），不是某个像素。
+    //   值会随间距阶演进（原 10px ⇒ 收敛到阶上的 8px）⇒ 钉死像素的断言会在
+    //   **每一次**合法的间距收敛后失效 ⇒ 改为断言「子元素带 margin-top」+「该值在间距阶上」
+    //   （DESIGN.md §2：`--kx-space-1..9`）⇒ 契约更稳、约束更强。
+    const child = cardListSource.match(/\.card__actions\s*>\s*\*\s*\{([^}]*)\}/)?.[1]
+    expect(child, '子元素必须自己带 margin-top').toBeTruthy()
+    const mt = child!.match(/margin-top:\s*(\d+(?:\.\d+)?)px;/)
+    expect(mt, '子元素的 margin-top 必须是像素值').toBeTruthy()
+    expect(
+      [4, 8, 12, 16, 24, 32, 40, 48, 64],
+      '这段间距必须落在间距阶上（否则源码门 design-spacing-scale:check 会报红）',
+    ).toContain(Number(mt![1]))
   })
 
   it('`#actions` 槽传进来时容器就渲染（容器不是按内容条件渲染的）', () => {

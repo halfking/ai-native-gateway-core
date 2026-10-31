@@ -6,6 +6,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createI18n } from 'vue-i18n'
+import { ApiError } from '../../api/_core'
 import type { TurnDetail } from '../../api/sessions_v2'
 import TurnDigestDrawer from './TurnDigestDrawer.vue'
 
@@ -71,6 +72,11 @@ const i18n = createI18n({
         openAttachment: '下载附件',
         openingAttachment: '正在打开…',
         openAttachmentFailed: '附件打开失败',
+      },
+      requestDetail: {
+        bodyStatus: {
+          consentOffInline: '会话正文录制未开启，正文与摘要不可用',
+        },
       },
     },
   },
@@ -199,6 +205,37 @@ describe('TurnDigestDrawer', () => {
     const alert = w.find('[role="alert"]')
     expect(alert.exists()).toBe(true)
     expect(alert.text()).toContain('turn unavailable')
+  })
+
+  // W1.3（24h 审计第 7 轮遗留）：consent=off ⇒ 409 + recording_unavailable。
+  // 这是租户开关的中性状态：专属空态、无重试按钮、不进红色错误横幅
+  //（英文后端 detail 也不许原样上屏）。
+  it('renders the consent-off state instead of an error for 409 recording_unavailable', async () => {
+    getSessionTurnMock.mockRejectedValue(
+      new ApiError(409, 'session body recording is off for this tenant', 'recording_unavailable'),
+    )
+    const w = mountDrawer()
+    await flushPromises()
+
+    const state = w.find('[data-testid="tdd-consent-off"]')
+    expect(state.exists()).toBe(true)
+    expect(state.text()).toContain('会话正文录制未开启')
+    // 英文后端原文不许上屏；也不给「重试」——开关不在本页，重试必然再红。
+    expect(state.text()).not.toContain('session body recording')
+    expect(w.find('[data-testid="tdd-error"]').exists()).toBe(false)
+    expect(w.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  // 409 但 code 不同（例如并发写冲突）⇒ 必须照旧走错误横幅，不许被
+  // consent 分支吞掉。
+  it('keeps ordinary 409s in the error banner', async () => {
+    getSessionTurnMock.mockRejectedValue(new ApiError(409, 'stale revision', 'stale_revision'))
+    const w = mountDrawer()
+    await flushPromises()
+
+    expect(w.find('[data-testid="tdd-consent-off"]').exists()).toBe(false)
+    expect(w.find('[data-testid="tdd-error"]').exists()).toBe(true)
+    expect(w.find('[data-testid="tdd-error"]').text()).toContain('stale revision')
   })
 
   it('offers a retry button when the initial fetch fails', async () => {

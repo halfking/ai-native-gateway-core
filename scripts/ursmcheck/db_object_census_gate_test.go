@@ -83,7 +83,96 @@ var dbObjGapRatchet = map[string]int{
 	"local": 56,
 	"fresh": 49,
 	"252":   56,
-	"211":   62,
+	// ★★ 211：62 → 49（★ R178 轮：★ 211 的底账原来是 10-26 的旧快照 ⇒ ★★
+	// ★★ 刷新后 211 实际多部署了 13 条索引 ⇒ ★ 真缺口 62 → 49）★★
+	// ★★ ⇒ 按 R161 审计档 §棘轮 的纪律「每次修复后手工下调基线」★ ★★
+	"211": 49,
+}
+
+// ★★★ R178：★「待部署豁免」的【结算边界】★ —— ★★ 棘轮从「计 missing」改成「只计真缺口」。
+//
+// ★★★ 为什么要改（★ 本轮真踩到的一个结构性缺陷）：
+// ★★★ 新增一条迁移 ⇒ ★ 它声明的对象在【还没部署到】的环境里**必然**是 missing
+// ★★★ ⇒ ★ 计数型棘轮把它当成「有人在别处挖了坑」⇒ ★★ 红。
+// ★★★ ⇒ ⇒ 于是这道门**结构性地**挡住了「加一条迁移」这件事 ⇒ ⇒ 唯一的出路是抬基线
+// ★★★ ⇒ ⇒ 而抬基线正是仓内明令禁止的（R161 审计档 §「棘轮」行：
+// ★★★ 「★★ 调高基线的理由必须是『检测器变准』而不是『新增了未修的缺口』」）。
+//
+// ★★★ 口径（★ 三条【同时】成立才算「待部署」，★ 否则一律当真缺口）：
+//
+//	① 迁移号 > dbObjGapRatchetEpoch（★ 在途：★ 还没结算）
+//	② 该迁移在安装器清单里【可达】（★ 不可达 ⇒ 它永远不会被应用 ⇒ 那是【永久缺口】）
+//	③ 该迁移声明的对象在目标环境里【一个都不存在】（★ ⇒ 该环境【还没应用过】它）
+//
+// ★★★ 判据 ③ 为什么够用：★ 一条迁移的对象要么全在、要么全不在
+// ★★★ （★ 迁移在事务里跑，★ 失败即回滚；★ CONCURRENTLY 迁移则要么建完、要么没建）
+// ★★★ ⇒ ⇒ 「全不在」= 「没应用过」⇒ ⇒ 缺口是【待部署】而不是【被谁删了】。
+//
+// ★★★ epoch 的作用是【给在途的东西一个期限】：★ epoch 之上的迁移暂时豁免
+// ★★★ ⇒ ★ 下一轮把 epoch 抬上去（★ 即「它该落地了」）⇒ ★ 它的缺口若还在 ⇒ ★★ 门红。
+var dbObjGapRatchetEpoch = 914
+
+// dbObjGapFacts 判定「真缺口 / 待部署」所需的三份事实（★ 全部来自已有资产，★ 不新增台账）。
+type dbObjGapFacts struct {
+	// migObjects：★ 迁移号 → 该迁移声明的全部索引名。
+	migObjects map[string][]string
+	// present：★ 环境 → 该环境【现存的索引名集合】。
+	present map[string]map[string]bool
+	// reachable：★ 索引名 → 它的创建迁移是否登记进安装器清单。
+	reachable map[string]bool
+}
+
+// dbObjGapKind 判定某环境里某条期望索引的缺口属于「真缺口」还是「待部署」。
+//
+// ★ 返回 "hole"（★ 计入棘轮）或 "pending"（★ 豁免，★ 但仍留在台账里）。
+func (f dbObjGapFacts) dbObjGapKind(migNo, index, env string) string {
+	n, err := strconv.Atoi(migNo)
+	if err != nil || n <= dbObjGapRatchetEpoch {
+		return "hole" // ★ 迁移号不认得、或已结算 ⇒ 一律当真缺口（★ 保守）
+	}
+	if !f.reachable[index] {
+		return "hole" // ★ 创建迁移不可达 ⇒ 它永远不会被应用 ⇒ 永久缺口
+	}
+	for _, sib := range f.migObjects[migNo] {
+		if f.present[env][sib] {
+			// ★★ 该迁移在这个环境【已经应用过】⇒ ⇒ 缺的那些是真缺口（★ 迁移建了、谁删了）
+			return "hole"
+		}
+	}
+	return "pending"
+}
+
+// dbObjGapFactsLoad 读三份仓内事实。
+func dbObjGapFactsLoad(t *testing.T) dbObjGapFacts {
+	t.Helper()
+	f := dbObjGapFacts{
+		migObjects: map[string][]string{},
+		present:    map[string]map[string]bool{},
+		reachable:  map[string]bool{},
+	}
+	// ① 缺口台账：★ 迁移号 → 该迁移声明的全部索引。
+	for _, r := range dbObjDataLines(t, dbObjRepoPath(t, dbObjLedgerRel)) {
+		if len(r) != dbObjLedgerCols {
+			t.Fatalf("ledger row malformed: %v", r)
+		}
+		f.migObjects[r[0]] = append(f.migObjects[r[0]], r[1])
+	}
+	// ② 对象底账：★ 环境 → 现存索引名。
+	for env, st := range dbObjParseCensus(t, dbObjRepoPath(t, dbObjCensusRel)) {
+		set := map[string]bool{}
+		for name := range st.idx {
+			set[name] = true
+		}
+		f.present[env] = set
+	}
+	// ③ 可达性台账：★ 索引 → 它的创建迁移是否登记进安装器。
+	for _, r := range dbObjDataLines(t, dbObjRepoPath(t, dbObjReachRel)) {
+		if len(r) != dbObjReachCols {
+			t.Fatalf("reachability row malformed: %v", r)
+		}
+		f.reachable[r[0]] = (r[4] == "yes")
+	}
+	return f
 }
 
 // ─────────────────────────── 读文件 ───────────────────────────
@@ -1067,20 +1156,28 @@ func TestDbObjectClassifierStates(t *testing.T) {
 func TestDbObjectProductionGapRatchet(t *testing.T) {
 	rows := dbObjDataLines(t, dbObjRepoPath(t, dbObjLedgerRel))
 	envs := []string{"local", "fresh", "252", "211"}
+	facts := dbObjGapFactsLoad(t)
+	// ★★★ R178：★ 棘轮只数【真缺口】⇒ ★ 「还没部署到该环境」的缺口单独记为 pending。
 	gaps := map[string]int{}
+	pending := map[string]int{}
 	for _, r := range rows {
 		if len(r) != dbObjLedgerCols {
 			t.Fatalf("ledger row malformed: %v", r)
 		}
 		for i, env := range envs {
-			if r[3+i] == "missing" {
-				gaps[env]++
+			if r[3+i] != "missing" {
+				continue
 			}
+			if facts.dbObjGapKind(r[0], r[1], env) == "pending" {
+				pending[env]++
+				continue
+			}
+			gaps[env]++
 		}
 	}
 	for env, baseline := range dbObjGapRatchet {
 		if gaps[env] > baseline {
-			t.Errorf("★ gap ratchet broken: env %s has %d gaps, baseline %d (★ 只许下降)",
+			t.Errorf("★ gap ratchet broken: env %s has %d real gaps, baseline %d (★ 只许下降)",
 				env, gaps[env], baseline)
 		}
 	}
@@ -1105,8 +1202,88 @@ func TestDbObjectProductionGapRatchet(t *testing.T) {
 				r[1], r[severityCol], want)
 		}
 	}
-	t.Logf("gaps by env: %v (baseline %v)", gaps, dbObjGapRatchet)
+	// ★★★ R178：★ 豁免必须【可证伪】⇒ ★ 每一格 pending 都要说得出理由（★ 否则它就是白名单）。
+	// ★★★ 且 pending 只能出现在【在途迁移】上 ⇒ ★ 已结算的迁移一律是真缺口。
+	for _, r := range rows {
+		for i, env := range envs {
+			if r[3+i] != "missing" {
+				continue
+			}
+			if facts.dbObjGapKind(r[0], r[1], env) != "pending" {
+				continue
+			}
+			n, err := strconv.Atoi(r[0])
+			if err != nil || n <= dbObjGapRatchetEpoch {
+				t.Errorf("index %q is pending in %s but migration %s is not newer than epoch %d",
+					r[1], env, r[0], dbObjGapRatchetEpoch)
+			}
+			if !facts.reachable[r[1]] {
+				t.Errorf("index %q is pending in %s but its creator migration is unreachable", r[1], env)
+			}
+		}
+	}
+	t.Logf("real gaps by env: %v (baseline %v); pending by env: %v",
+		gaps, dbObjGapRatchet, pending)
 }
+
+// ─────────────────────── G6b：★ 缺口分类器的自证（★ 合成用例） ───────────────────────
+
+// TestDbObjGapKindSynthetic —— ★★ 判据是本轮新立的 ⇒ ⇒ 必须有【不依赖线上数据】的自证。
+//
+// ★ 四条判据各配一个用例：★ epoch 边界 · 不可达 · 已应用过 · 全新在途。
+func TestDbObjGapKindSynthetic(t *testing.T) {
+	f := dbObjGapFacts{
+		migObjects: map[string][]string{
+			"915": {"idx_new_a", "idx_new_b"},
+			"913": {"idx_old_a"},
+		},
+		present: map[string]map[string]bool{
+			"252": {"idx_old_a": true},
+			"211": {"idx_old_a": true},
+		},
+		reachable: map[string]bool{
+			"idx_new_a": true,
+			"idx_new_b": true,
+			"idx_old_a": true,
+		},
+	}
+	cases := []struct {
+		name string
+		mig  string
+		idx  string
+		env  string
+		want string
+	}{
+		{"在途迁移 + 全缺 + 可达 ⇒ 待部署", "915", "idx_new_a", "252", "pending"},
+		{"同迁移的兄弟对象也全缺 ⇒ 仍是待部署", "915", "idx_new_b", "211", "pending"},
+		{"已结算迁移 ⇒ 真缺口", "913", "idx_old_a", "252", "hole"},
+		{"迁移号不可解析 ⇒ 保守当真缺口", "abc", "idx_old_a", "252", "hole"},
+	}
+	for _, c := range cases {
+		if got := f.dbObjGapKind(c.mig, c.idx, c.env); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
+	}
+
+	// ★★ 反向对照（★ 变异臂的合成版）：★ 把创建迁移改成【不可达】
+	// ★★ ⇒ ⇒ 在途迁移的缺口【不再豁免】⇒ ⇒ 变成真缺口。
+	f2 := f
+	f2.reachable = map[string]bool{"idx_new_a": false, "idx_new_b": false, "idx_old_a": true}
+	if got := f2.dbObjGapKind("915", "idx_new_a", "252"); got != "hole" {
+		t.Errorf("★ unreachable creator must not be exempt: got %q want hole", got)
+	}
+	// ★★ 反向对照二：★ 同迁移的【兄弟对象已存在】⇒ ⇒ 该环境【应用过】这条迁移
+	// ★★ ⇒ ⇒ 缺的那些是真缺口（★ 迁移建了、谁删了）。
+	f3 := f
+	f3.present = map[string]map[string]bool{
+		"252": {"idx_new_b": true},
+		"211": {"idx_old_a": true},
+	}
+	if got := f3.dbObjGapKind("915", "idx_new_a", "252"); got != "hole" {
+		t.Errorf("★ partially applied migration must count as a real gap: got %q want hole", got)
+	}
+}
+
 
 // ─────────────────────────── 审计档与台账的一致性 ───────────────────────────
 
@@ -1119,12 +1296,20 @@ func TestDbObjectAuditDocQuotesTheLedger(t *testing.T) {
 	text := string(raw)
 	rows := dbObjDataLines(t, dbObjRepoPath(t, dbObjLedgerRel))
 	envs := []string{"local", "fresh", "252", "211"}
+	// ★★★ R178：★ 文档引用的缺口数必须与【棘轮用的同一个口径】⇒ ★ 真缺口（★ 不含待部署）。
+	// ★★★ ⇒ ★ 否则同一份台账会同时有两种数（★ raw missing 与 real gaps）
+	// ★★★ ⇒ ★ 审计档与门各说各的 ⇒ ★★ 那比没有还糟。
+	facts := dbObjGapFactsLoad(t)
 	gaps := map[string]int{}
 	for _, r := range rows {
 		for i, env := range envs {
-			if r[3+i] == "missing" {
-				gaps[env]++
+			if r[3+i] != "missing" {
+				continue
 			}
+			if facts.dbObjGapKind(r[0], r[1], env) == "pending" {
+				continue
+			}
+			gaps[env]++
 		}
 	}
 	// ★ 审计档必须写出每环境的缺口数（★ 数字与台账一致 ⇒ 文档不会悄悄过期）

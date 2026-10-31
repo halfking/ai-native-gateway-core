@@ -41,6 +41,7 @@ export default {
     performance: 'Performance',
     stability: 'Stability',
     costEfficiency: 'Cost efficiency',
+    credibility: 'Credibilidad del modelo',
     updatedAt: 'Updated at',
     requestStats: 'Request stats',
     totalRequests: 'Total requests',

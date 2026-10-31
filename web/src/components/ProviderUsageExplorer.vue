@@ -425,7 +425,7 @@ watch(() => props.timeQuery, () => {
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
-  padding: 16px 20px;
+  padding: 16px 16px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -449,7 +449,7 @@ watch(() => props.timeQuery, () => {
 
 .pue-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1.3;
 }
 
@@ -499,7 +499,7 @@ watch(() => props.timeQuery, () => {
 }
 
 .pue-toolbar {
-  padding: 12px 20px 0;
+  padding: 12px 16px 0;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -510,7 +510,7 @@ watch(() => props.timeQuery, () => {
   display: inline-flex;
   align-self: flex-start;
   font-size: 12px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 999px;
   border: 1px solid var(--border);
   color: var(--text-muted);
@@ -526,7 +526,7 @@ watch(() => props.timeQuery, () => {
 
 .pue-search {
   width: 100%;
-  padding: 9px 12px;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);
@@ -536,7 +536,7 @@ watch(() => props.timeQuery, () => {
 .pue-list {
   flex: 1;
   overflow: auto;
-  padding: 12px 20px 20px;
+  padding: 12px 16px 16px;
 }
 
 .pue-table {
@@ -547,7 +547,7 @@ watch(() => props.timeQuery, () => {
 
 .pue-table th,
 .pue-table td {
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   text-align: left;
 }
@@ -576,7 +576,7 @@ watch(() => props.timeQuery, () => {
 .pue-empty {
   text-align: center;
   color: var(--text-muted);
-  padding: 48px 20px;
+  padding: 48px 16px;
 }
 
 .pue-detail {
@@ -586,10 +586,10 @@ watch(() => props.timeQuery, () => {
 .pue-detail-inner {
   flex: 1;
   overflow: auto;
-  padding: 16px 20px 24px;
+  padding: 16px 16px 24px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 .muted {
@@ -600,13 +600,13 @@ watch(() => props.timeQuery, () => {
 .pue-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .stat {
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -614,7 +614,7 @@ watch(() => props.timeQuery, () => {
 }
 
 .stat strong {
-  font-size: 17px;
+  font-size: 16px;
 }
 
 .pue-period-tabs {
@@ -624,7 +624,7 @@ watch(() => props.timeQuery, () => {
 
 .pue-period-tabs button {
   font-size: 12px;
-  padding: 5px 12px;
+  padding: 4px 12px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: transparent;
@@ -665,7 +665,7 @@ watch(() => props.timeQuery, () => {
 
 .btn-secondary {
   font-size: 12px;
-  padding: 7px 12px;
+  padding: 8px 12px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg-subtle);
@@ -675,7 +675,7 @@ watch(() => props.timeQuery, () => {
 
 .pue-fade-enter-active,
 .pue-fade-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity 0.2s var(--kx-motion-ease-out);
 }
 
 .pue-fade-enter-from,
@@ -684,11 +684,11 @@ watch(() => props.timeQuery, () => {
 }
 
 .pue-slide-enter-active {
-  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform 0.28s var(--kx-motion-ease-out);
 }
 
 .pue-slide-leave-active {
-  transition: transform 0.22s ease-in;
+  transition: transform 0.22s var(--kx-motion-ease-out);
 }
 
 .pue-slide-enter-from,
@@ -698,7 +698,7 @@ watch(() => props.timeQuery, () => {
 
 .pue-pane-enter-active,
 .pue-pane-leave-active {
-  transition: opacity 0.18s ease, transform 0.18s ease;
+  transition: opacity 0.18s var(--kx-motion-ease-out), transform 0.18s var(--kx-motion-ease-out);
 }
 
 .pue-pane-enter-from {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // same historical exemption as messages.go
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 )
 
 // messages_count_tokens.go (2026-09-21)
@@ -24,6 +25,29 @@ import (
 //
 // 认证与 /v1/messages 同语义: Bearer 优先、x-api-key 兜底(extractBearerToken
 // 自 2026-06-26 起支持), keyVerifier 的静态精确匹配与 sk-* 透传验证同样生效。
+//
+// ★★ 2026-10-30（ingressguard P2 缺口收口轮）：补 RPM 限流。
+// 218 号查出本端点「既无配额闸也无 RPM 限流」，并登记成 P2 缺口
+// （internal/ingressguard/ingress_surface_test.go 的 registry：RateLimit=gateNone，
+//  理由「单请求可读至 128MB 且无频率上限 ⇒ P2 缺口，待裁决是否补」）。
+// ⇒ 本轮**补** RPM 闸，理由与 2026-10-29 的 Gemini :countTokens 轮同源：
+//
+//  1. ★ **本面消耗网关自身算力**：它要读整个 body（最多 128MB，handler.go:72 的
+//     maxBodySize）再做一次 Anthropic 形状解析与 token 估算 ⇒ 网关的 CPU/内存
+//     开销由调用方触发 ⇒ **有频率上限才是对的**。
+//  2. ★ **不存在「已计一次」的那一跳**：与 summarize/transform 的「刻意不消耗
+//     RPM」不同——那三个面的 LLM 步骤经环回 chat 面携带同一把 key，那一跳已计
+//     一次 ⇒ 再计即双计；而本面**不产生任何上游调用** ⇒ 没有那一跳 ⇒ 按同路由
+//     族其他动作的口径计一次，是唯一自洽的选择。
+//  3. ★ **同级对照**：/v1/messages（messages.go:444）有 RPM 闸；本端点是它的
+//     同族面 ⇒ 「同级有、自己没有」不是偶然。
+//
+// ★ 为什么用 529 而不是 429：本端点属 Anthropic 面，**同路由族的 /v1/messages
+// 在被限流时回 529**（messages.go:462）⇒ 沿用同族口径，避免同一把 key 在
+// /v1/messages 与 /v1/messages/count_tokens 上收到两种限流状态码。
+//
+// ★ 为什么 429 之外还要写限流响应头（writeRateLimitHeaders）：与 /v1/messages
+// 同款 ⇒ 客户端能读到 Retry-After / 剩余额度，而不是只看到一个错误信封。
 type CountTokensHandler struct {
 	chatHandler *ChatHandler
 }
@@ -41,13 +65,18 @@ func (h *CountTokensHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// keyInfo 供 RPM 闸使用（checkGatewayRateLimit 需要它算配额）。
+	// ★ lite 模式（DB 校验器不可用）下它为 nil，而该闸对 nil keyInfo 是 Skipped
+	//   （与 ChatHandler、ChatHandler 侧的同名闸同口径）。
+	var keyInfo *authentication.KeyInfo
 	if h.chatHandler != nil && h.chatHandler.keyVerifier != nil && h.chatHandler.keyVerifier.Enabled() {
 		rawKey := extractBearerToken(r)
 		if rawKey == "" {
 			writeAnthropicError(w, http.StatusUnauthorized, "authentication_error", "Missing API key")
 			return
 		}
-		if _, verifyErr := h.chatHandler.keyVerifier.Verify(r.Context(), rawKey); verifyErr != nil {
+		verified, verifyErr := h.chatHandler.keyVerifier.Verify(r.Context(), rawKey)
+		if verifyErr != nil {
 			if _, ok := verifyErr.(*authentication.InvalidKeyError); ok {
 				writeAnthropicError(w, http.StatusUnauthorized, "authentication_error", "Invalid or expired API key")
 				return
@@ -55,6 +84,28 @@ func (h *CountTokensHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("count_tokens: key verification RPC failed", "error", verifyErr)
 			writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "Authentication service temporarily unavailable")
 			return
+		}
+		keyInfo = verified
+	}
+
+	// ★ RPM 闸（2026-10-30 补上，见本文件头 §「补 RPM 限流」的完整理由）：
+	// 与同路由族的 /v1/messages 同一把尺（checkGatewayRateLimit）。
+	//
+	// ★ 闸位放在【鉴权之后、读 body 之前】——这是它真正的意义所在：
+	//   被限流的请求**不会**再去读那最多 128MB 的 body ⇒ 限流 thereby 限制了
+	//   网关自己的算力与内存开销 ⇒ 若把闸放在读 body 之后，被拒的请求已经
+	//   付掉了全部读取成本，限流就只剩了个「拒绝」语义、挡不住消耗。
+	if h.chatHandler != nil {
+		rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, false))
+		if !rlOutcome.Skipped {
+			writeRateLimitHeaders(w, rlOutcome)
+			if rlOutcome.Blocked {
+				recordGatewayRateLimitRejection(rlOutcome)
+				ratelimit.MarkGatewaySharedKeyRateLimit(w)
+				// 529 与同路由族的 /v1/messages 同口径（messages.go:462）。
+				writeAnthropicError(w, 529, "rate_limit_error", "Rate limit exceeded. Please wait and retry.")
+				return
+			}
 		}
 	}
 

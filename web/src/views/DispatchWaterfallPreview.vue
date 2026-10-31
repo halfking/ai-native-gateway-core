@@ -53,8 +53,8 @@ const requests: WaterfallRequest[] = [
 </template>
 
 <style scoped>
-.preview { padding: 16px 20px; color: var(--kx-text); background: var(--kx-bg); min-height: 100%; }
+.preview { padding: 16px 16px; color: var(--kx-text); background: var(--kx-bg); min-height: 100%; }
 h1 { font-size: 20px; margin: 0; }
-h2 { font-size: 14px; margin: 20px 0 8px; }
+h2 { font-size: 14px; margin: 16px 0 8px; }
 .sub { margin: 4px 0 16px; color: var(--kx-muted); font-size: 13px; }
 </style>

@@ -194,17 +194,17 @@ function itemLabel(item: ResolvedItem): string {
   align-items: center;
   justify-content: space-between;
   gap: var(--kx-space-2);
-  padding: 10px var(--kx-space-2);
+  padding: 8px var(--kx-space-2);
   border: 0;
   border-radius: 8px;
   background: transparent;
   color: var(--kx-muted, var(--muted));
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.02em;
   cursor: pointer;
   font-family: inherit;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
 }
 .app-nav-drawer__group-header:hover {
   background: var(--kx-primary-soft, var(--bg-subtle));
@@ -215,7 +215,7 @@ function itemLabel(item: ResolvedItem): string {
 }
 
 .app-nav-drawer__chevron {
-  transition: transform 0.15s ease;
+  transition: transform 0.15s var(--kx-motion-ease-out);
 }
 .app-nav-drawer__chevron--open {
   transform: rotate(180deg);
@@ -236,24 +236,24 @@ function itemLabel(item: ResolvedItem): string {
 .app-nav-drawer__item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 11px var(--kx-space-2);
+  gap: 8px;
+  padding: 12px var(--kx-space-2);
   border: 0;
   border-radius: 8px;
   background: transparent;
   color: var(--kx-text, var(--text));
-  font-size: 13.5px;
+  font-size: 13px;
   text-decoration: none;
   cursor: pointer;
   font-family: inherit;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
 }
 /* 2026-09-21: 导航项计数徽标（格式异常监控等）。 */
 .app-nav-drawer__badge {
   margin-left: auto;
   min-width: 20px;
   height: 18px;
-  padding: 0 6px;
+  padding: 0 4px;
   border-radius: 999px;
   background: var(--danger-bg);
   border: 1px solid var(--danger-bd);
@@ -283,5 +283,11 @@ function itemLabel(item: ResolvedItem): string {
   text-align: center;
   font-size: 14px;
   flex-shrink: 0;
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .app-nav-drawer__chevron { transition: none; }
 }
 </style>

@@ -256,16 +256,16 @@ async function probeAll() {
 </template>
 
 <style scoped>
-.om-toolbar { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 10px; }
+.om-toolbar { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 8px; }
 .om-toolbar h3 { margin: 0; font-size: 14px; }
 .om-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .om-hint, .nd-muted { font-size: 12px; color: var(--kx-muted); }
-.om-reason { display: grid; gap: 5px; font-size: 12px; max-width: 560px; margin-bottom: 10px; }
-.om-reason input { box-sizing: border-box; width: 100%; padding: 7px; border: 1px solid var(--kx-border); border-radius: 5px; background: var(--kx-bg); color: inherit; }
+.om-reason { display: grid; gap: 4px; font-size: 12px; max-width: 560px; margin-bottom: 8px; }
+.om-reason input { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid var(--kx-border); border-radius: 5px; background: var(--kx-bg); color: inherit; }
 .om-table-wrap { overflow: auto; }
 .om-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-.om-table th, .om-table td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--kx-border); vertical-align: top; }
-.om-sub { color: var(--kx-muted); margin-top: 2px; font-size: 10px; overflow-wrap: anywhere; }
+.om-table th, .om-table td { text-align: left; padding: 8px 4px; border-bottom: 1px solid var(--kx-border); vertical-align: top; }
+.om-sub { color: var(--kx-muted); margin-top: 2px; font-size: 11px; overflow-wrap: anywhere; }
 .om-row-actions { display: flex; gap: 4px; flex-wrap: wrap; }
 .is-ok { color: var(--kx-success); }
 .is-warn { color: var(--kx-warning); }

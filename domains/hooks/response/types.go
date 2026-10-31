@@ -19,7 +19,11 @@ type InterceptRequest struct {
 	CallerOwner    string // Authenticated key owner (V3-A01); empty means data owner unknown → conservative redaction.
 	ClientProtocol string // "openai-chat" / "anthropic-messages" / "openai-responses" / "openai-completions"; empty means unknown protocol lane.
 	ClientModel    string
-	ResponseBody   []byte
+	// ClientType 是客户端类型（streaming.extractClientType 的输出，如
+	// "zcode"/"claude-code"；拦截持久化轮 2026-10-29：审核记录用它展示
+	// 「哪个客户端被拦了」。空 = 未知）。
+	ClientType    string
+	ResponseBody  []byte
 	TokensUsed     int
 	ContextWindow  int
 	MessageCount   int
@@ -81,7 +85,9 @@ type StreamMeta struct {
 	CallerOwner    string // Authenticated key owner (V3-A01); empty means data owner unknown → conservative redaction.
 	ClientProtocol string // "openai-chat" / "anthropic-messages" / "openai-responses" / "openai-completions"; empty means unknown protocol lane.
 	ClientModel    string
-	ContextWindow  int
+	// ClientType 同 InterceptRequest.ClientType：审核记录的客户端维度。
+	ClientType    string
+	ContextWindow int
 	MessageCount   int
 	TokensUsed     int
 	ChunkIndex     int

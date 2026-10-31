@@ -50,8 +50,14 @@ describe('App.vue：compact 路由转场（12 §7）', () => {
     expect(offending, `page-fade 规则里出现禁动属性：${offending.join(' | ')}`).toEqual([])
   })
 
-  it('时长 160ms 且 easing 固定 ease（与 web-mobile 对齐，超过 250ms 即手感拖沓）', () => {
-    expect(source).toMatch(/transition:\s*opacity 160ms ease/)
+  it('时长 160ms 且缓动是那条指数减速曲线（超过 250ms 即手感拖沓）', () => {
+    // ★ 2026-10-27 第 26 增量（状态过渡必须以指数减速到达）：缓动从 `ease` 改成
+    //   `var(--kx-motion-ease-out)` —— `ease` 是 cubic-bezier(0.25,0.1,0.25,1)，y1=0.1
+    //   ⇒ **慢起手** ⇒ 看起来像机器在启动；指数减速是「起步即快、末尾减速」⇒ 像人一把按到位。
+    //   ★ 原注释里的「与 web-mobile 对齐」**不再成立**：移动端是 Material 设计体系
+    //   （缓动族是 cubic-bezier(0.2, 0, 0, 1)）⇒ 两端各用自己的判据，不是同一条曲线。
+    //     详见 `scripts/design-motion-decisions.json` 的 notDone。
+    expect(source).toMatch(/transition:\s*opacity 160ms var\(--kx-motion-ease-out\)/)
   })
 
   it('prefers-reduced-motion 下转场取消（12 §4 契约）', () => {

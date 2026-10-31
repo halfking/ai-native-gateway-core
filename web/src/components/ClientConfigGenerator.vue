@@ -52,11 +52,11 @@ function openDialog(tool: ToolId) {
   background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 14px 16px;
+  padding: 12px 16px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  transition: border-color 0.15s;
+  gap: 8px;
+  transition: border-color 0.15s var(--kx-motion-ease-out);
 }
 
 .tool-card:hover {
@@ -66,7 +66,7 @@ function openDialog(tool: ToolId) {
 .tool-card-header {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: 8px;
 }
 
 .tool-icon {

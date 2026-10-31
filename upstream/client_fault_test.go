@@ -17,6 +17,7 @@ package upstream
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -135,17 +136,32 @@ func TestDo_UpstreamCleanCloseWithoutResponse(t *testing.T) {
 // 代理先收到请求再 DNS 解析；保留 TLD 在代理侧同样 NXDOMAIN，但代理会以
 // 502 Bad Gateway 响应，让真实 dial 失败被遮蔽。用裸 net.Dialer 显式
 // 走 direct，断言路径可重复。
+//
+// ★ 负载加固（24h 审计第 7 轮遗留）：旧预算 dialer 5s / client 10s 在全量
+// 并发下会被 CPU 饥饿拖穿 —— resolver 还没返回 NXDOMAIN，deadline 先到，
+// 错误以 context.DeadlineExceeded 形态出现 ⇒ ClassifyError 的
+// DeadlineExceeded 分支（先于 DNSError 分支，生产语义有意如此）判成
+// KindTimeout ⇒ 断言偶发红。修法是抬高两个上限让解析有时间完成
+// （NXDOMAIN 本身是毫秒级；上限只兜病态情形），而不是改分类顺序 ——
+// 「解析超时按 timeout 分类」在生产的故障转移语义里是对的。
+//
+// ★ 环境依赖的诚实边界（2026-10-31 批判式审计）：本机 resolver 是 sinkhole
+// 形态（R32-U1 EOF skip 命中）⇒ KindNetwork 主断言在这类主机上**不可证**
+// ——本测试只是「能跑真解析的环境」的集成证据。结构化分类语义的确定性
+// 证据由 stub 传输层测试（TestDo_WrappedDNSErrorClassifiesNetwork，不碰
+// DNS）与 errorsx 分类钉子（TestClassifyError_StructuralDNSErrorIsNetwork）
+// 承担；本测试红/绿都不构成那两道的替代。
 func TestDo_DNSFailureReservedTLD(t *testing.T) {
 	client := NewWithRetries(0)
 	directClient := &http.Client{
 		Transport: &http.Transport{
 			Proxy: nil, // 强制直连，不走 HTTP_PROXY/HTTPS_PROXY
 			DialContext: (&net.Dialer{
-				Timeout:   5 * time.Second,
+				Timeout:   30 * time.Second,
 				KeepAlive: 30 * time.Second,
 			}).DialContext,
 		},
-		Timeout: 10 * time.Second,
+		Timeout: 60 * time.Second,
 	}
 	resp, uErr := client.DoWithHTTPClient(newFaultRequest(t, "http://llm-gateway-fault-test.invalid/v1/chat"), directClient)
 
@@ -159,7 +175,41 @@ func TestDo_DNSFailureReservedTLD(t *testing.T) {
 	if uErr.Kind == KindTransient && strings.Contains(strings.ToLower(uErr.Error()), "eof") {
 		t.Skipf("local resolver sinks reserved TLDs into connection EOF; DNS-failure classification not exercisable on this host (kind=%s)", uErr.Kind)
 	}
+	// 解析在预算内仍没完成（本机负载病态 / resolver 挂起）⇒ DeadlineExceeded
+	// 先于 DNSError 到达分类器，判 KindTimeout。这与生产语义一致、且不是
+	// 本测试要钉的分类面 ⇒ 显式跳过并说明，不伪装成通过也不误报红。
+	if uErr.Kind == KindTimeout {
+		t.Skipf("resolver did not finish within the raised budget (30s dial / 60s client); DNS-failure classification not exercisable under this load (kind=%s, err=%v)", uErr.Kind, uErr.Error())
+	}
 	assert.Equal(t, KindNetwork, uErr.Kind, "DNS failure must classify as network")
+}
+
+// dnsStubTripper 是确定性 DNS 故障注入：不碰 resolver，直接从传输层返回
+// 包装过的 *net.DNSError——与真实 dial 失败在 ClassifyError 眼里同构
+//（它分类的就是这个 error 值）。让 DNS 分类语义在 sinkhole 主机上也可证。
+type dnsStubTripper struct{}
+
+func (dnsStubTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf(
+		`Post "http://llm-gateway-fault-test.invalid/v1/chat": dial tcp: lookup llm-gateway-fault-test.invalid: %w`,
+		&net.DNSError{Err: "no such host", Name: "llm-gateway-fault-test.invalid", IsNotFound: true})
+}
+
+// TestDo_WrappedDNSErrorClassifiesNetwork — 结构化 DNSError 从传输层一路
+// 传播到分类出口的确定性证据（2026-10-31 批判式审计补）：TestDo_DNSFailureReservedTLD
+// 在 sinkhole/慢 resolver 主机上会 skip ⇒ 集成证据缺位；本测试与
+// errorsx 的分类钉子合起来构成不依赖环境的完整链（transport → Do → classify）。
+func TestDo_WrappedDNSErrorClassifiesNetwork(t *testing.T) {
+	client := NewWithRetries(0)
+	stubClient := &http.Client{Transport: dnsStubTripper{}, Timeout: 5 * time.Second}
+	resp, uErr := client.DoWithHTTPClient(newFaultRequest(t, "http://llm-gateway-fault-test.invalid/v1/chat"), stubClient)
+
+	require.Nil(t, resp)
+	require.NotNil(t, uErr)
+	assert.Equal(t, KindNetwork, uErr.Kind,
+		"transport-returned wrapped *net.DNSError must classify KindNetwork (no resolver involved)")
+	assert.True(t, errorsx.IsRetryable(uErr.Kind),
+		"DNS failure must surface a retryable kind, got %s (%s)", uErr.Kind, uErr.Message)
 }
 
 // TestDo_TLSUntrustedCertificate 真实 TLS：自签名证书被默认 transport 拒绝。
@@ -296,18 +346,31 @@ func TestFaultInjectionNoGoroutineLeak(t *testing.T) {
 	}()
 
 	client := NewWithRetries(0)
-	targets := []string{
-		"http://" + refusedAddr + "/v1/chat",            // refused
-		"http://" + resetAddr + "/v1/chat",              // reset
-		"http://llm-gateway-fault-test.invalid/v1/chat", // DNS
+	// DNS 臂用确定性 stub 传输层（2026-10-31 批判式审计）：真实 .invalid 解析
+	// 在负载/慢 resolver 下每次可能拖 30s×7 次，而泄漏判据只需要「请求以
+	// 错误终态结束」⇒ 换成不碰 resolver 的包装 DNSError，语义等价、耗时恒定。
+	stubClient := &http.Client{Transport: dnsStubTripper{}, Timeout: 5 * time.Second}
+	targets := []struct {
+		url    string
+		client *http.Client
+	}{
+		{"http://" + refusedAddr + "/v1/chat", nil},  // refused（默认池）
+		{"http://" + resetAddr + "/v1/chat", nil},    // reset（默认池）
+		{"http://llm-gateway-fault-test.invalid/v1/chat", stubClient}, // DNS（stub，不碰 resolver）
 	}
 	runRound := func() {
 		for _, target := range targets {
-			resp, uErr := client.Do(newFaultRequest(t, target))
+			var resp *http.Response
+			var uErr *Error
+			if target.client != nil {
+				resp, uErr = client.DoWithHTTPClient(newFaultRequest(t, target.url), target.client)
+			} else {
+				resp, uErr = client.Do(newFaultRequest(t, target.url))
+			}
 			if resp != nil {
 				_ = resp.Body.Close()
 			}
-			require.NotNil(t, uErr, "fault target %s must fail", target)
+			require.NotNil(t, uErr, "fault target %s must fail", target.url)
 		}
 	}
 

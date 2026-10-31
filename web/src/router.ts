@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { store, isDefaultTenant } from './store'
 import { throttledFetch } from './api/_core'
 import { showOpsPlatform } from './config/edition'
+import { waitForAuthHydration } from './router/authHydration'
 import { locationFromInternalPath } from './utils/safeRedirect'
 
 // Critical views loaded immediately (login, home, layout)
@@ -45,6 +46,7 @@ const CompressionView = () => import('./views/CompressionView.vue')
 const DataLifecycleView = () => import('./views/DataLifecycleView.vue')
 const SettingsView = () => import('./views/SettingsView.vue')
 const MaaSAccountView = () => import('./views/tenant/MaaSAccountView.vue')
+const MaaSBillsView = () => import('./views/tenant/MaaSBillsView.vue')
 const MaaSPricingView = () => import('./views/tenant/MaaSPricingView.vue')
 const MaaSUsageView = () => import('./views/tenant/MaaSUsageView.vue')
 const MaaSOrderView = () => import('./views/tenant/MaaSOrderView.vue')
@@ -54,6 +56,7 @@ const ProbeHealthDetailView = () => import('./views/ProbeHealthDetailView.vue')
 const AgentRegistryView = () => import('./views/AgentRegistryView.vue')
 const FormatAnomaliesView = () => import('./views/FormatAnomaliesView.vue')
 const ModelIntegrityView = () => import('./views/ModelIntegrityView.vue')
+const ModelCredibilityView = () => import('./views/ModelCredibilityView.vue')
 const ModulesView = () => import('./views/ModulesView.vue')
 const PromptInjectionSettingsView = () => import('./views/PromptInjectionSettingsView.vue')
 const ApprovalConfigView = () => import('./views/ApprovalConfigView.vue')
@@ -254,6 +257,7 @@ export const router = createRouter({
     { path: '/audit-logs',        component: AuditLogView,         meta: { requiresSuper: true } },
     { path: '/format-anomalies',  component: FormatAnomaliesView,  meta: { requiresSuper: true } },
     { path: '/model-integrity',  component: ModelIntegrityView,   meta: { requiresSuper: true } },
+    { path: '/model-credibility', component: ModelCredibilityView, meta: { requiresSuper: true } },
 
     // Platform ops only (super_admin + default tenant)
     { path: '/users',              component: UsersView },
@@ -264,6 +268,7 @@ export const router = createRouter({
     // Tenant portal (non-default tenant self-service; admin uses ?tenant=code)
     { path: '/tenant/models',      component: TenantModelsView },
     { path: '/tenant/account',     component: MaaSAccountView },
+    { path: '/tenant/bills',       component: MaaSBillsView },
     { path: '/tenant/pricing',     component: MaaSPricingView },
     { path: '/tenant/orders/:id',  component: MaaSOrderView },
     { path: '/tenant/usage',       component: MaaSUsageView },
@@ -446,19 +451,17 @@ router.beforeEach(async (to) => {
     // 加超时上限：若 auth 始终未就绪（接口挂掉 / 竞态），30ms 轮询会永远
     // 卡住、Promise 永不 resolve，导航死锁。超过阈值则 fail-open 放行，
     // 由后续 isAuthed() 检查兜底（未登录走 login 流程），不再无限轮询。
-    const AUTH_HYDRATE_MAX_WAIT_MS = 10_000
-    const startedAt = Date.now()
-    return new Promise<void>((resolve) => {
-      const check = () => {
-        if (store.authHydrated && store.userInfo && store.userInfo.id) {
-          resolve()
-        } else if (Date.now() - startedAt >= AUTH_HYDRATE_MAX_WAIT_MS) {
-          resolve()
-        } else {
-          setTimeout(check, 30)
-        }
-      }
-      check()
+    //
+    // ★ 2026-10-28（R176 实测修正）：等的是「**auth 探测 settle**」，
+    //   **不再要求 userInfo.id**。旧判据把「访客」（永远没有 userInfo）
+    //   判成「永远不就绪」⇒ 唯一出口是 10 秒上限
+    //   ⇒ **每个访客页面都白等满 10 秒才渲染正文**
+    //   （实测：/forbidden 10131ms、/bootstrap 10108ms、/customer/update-activate 10116ms；
+    //     而这些页面 DOMContentLoaded 只要 90ms、FCP 只要 100ms —— 慢的不是渲染，是等）。
+    //   登录态不受影响（登录后 userInfo 在位 ⇒ 立即放行）。
+    //   判据与等待循环已抽到 ./router/authHydration（可单测）。
+    return waitForAuthHydration({
+      snapshot: () => ({ authHydrated: store.authHydrated, userInfo: store.userInfo }),
     })
   }
   // 1. Auth check — unauthenticated users land on home, not full-page login

@@ -103,7 +103,8 @@ type PipelineStage struct {
 
 // RequestPipeline 请求管道
 type RequestPipeline struct {
-	stages []*PipelineStage
+	stages        []*PipelineStage
+	handlerLookup TaskHandlerLookup // 可选；TaskBus 注册期 V2 对拍用
 }
 
 // NewRequestPipeline 创建一个新的空 Pipeline
@@ -113,11 +114,24 @@ func NewRequestPipeline() *RequestPipeline {
 	}
 }
 
+// SetHandlerLookup 注入 TaskType→Handler 查找表（AddStage 的 V2 验证依赖它）。
+// 必须在添加任何 TaskBus stage 之前调用。
+func (p *RequestPipeline) SetHandlerLookup(lookup TaskHandlerLookup) {
+	if p == nil {
+		return
+	}
+	p.handlerLookup = lookup
+}
+
 // AddStage 添加一个阶段到 Pipeline 末尾。
 // 注意：阶段按添加顺序执行，不重新排序。
+// 注册期验证 V1/V2/V5 失败 ⇒ panic（启动失败，错误含规则号）。
 func (p *RequestPipeline) AddStage(stage *PipelineStage) {
 	if stage == nil {
 		return
+	}
+	if err := ValidateStage(stage, p.handlerLookup); err != nil {
+		panic(fmt.Sprintf("pipeline.AddStage: %v", err))
 	}
 	p.stages = append(p.stages, stage)
 }

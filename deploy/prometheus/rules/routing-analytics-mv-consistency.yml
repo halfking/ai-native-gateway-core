@@ -88,7 +88,11 @@ groups:
             
             **紧急操作**：
             1. 查看 PostgreSQL 日志
-            2. 检查 request_logs_with_current_month_without_customer_id 基表可用性
+            2. 检查 routing_analytics_source 基视图可用性：
+               SELECT to_regclass('routing_analytics_source') IS NOT NULL AS source_exists;
+               （`routing_analytics_7d` 的真实来源就是它 = `session_turns_hot` ∪
+                `session_turns`；v1 时代那张「去掉 customer_id」的中间视图已随
+                迁移 890 **物理删除** ⇒ 照旧名去查会 42P01）
             3. 验证 migration 632 是否完整应用
           runbook_url: "https://docs.example.com/mv-consistency#check-errors"
       

@@ -2,6 +2,19 @@ import { req, type RequestOptions } from './_core'
 
 // credential-monitor.ts — credential monitoring, sliding window, and manual promotion/demotion
 
+// SlidingWindowSource 是滑动窗口响应的 `source` 字段取值集合。
+//
+// ★ R182 轮新增（★ 这是一个**前端 ↔ 后端字面量契约**，不是随手写的联合）：★
+//   后端 `admin/credential_monitor.go` 的取值只有两个：
+//     · "redis"        —— 主腿（Redis 记录器）
+//     · "session_turns" —— 回退腿（★ 2026-10-24 起；读面早已是会话族）
+//   ⇒ ⇒ 本联合必须与后端**逐字相等** ⇒ ⇒ 由
+//   `web/src/api/__tests__/credentialMonitorSourceContract.test.ts` 钉住。
+//   ★ 历史教训：旧联合写的是 `'redis' | 'request_logs'` ⇒ 后端**永不可能**产出
+//   'request_logs' ⇒ 抽屉把 session_turns 的数据错标成 "request_logs"
+//   ⇒ ★ **退役表的旧名直接上屏** ⇒ ★ 那道门就是为了钉死这一类漂移。
+export type SlidingWindowSource = 'redis' | 'session_turns'
+
 export interface CredentialMonitorSummary {
   id: number
   provider_id: number
@@ -163,7 +176,13 @@ export function getSlidingWindow(credentialId: number, model: string, minutes = 
     credential_id: number
     model: string
     window_minutes: number
-    source: 'redis' | 'request_logs'
+    // ★ R182 轮修正：★ 后端 `admin/credential_monitor.go` 的回退腿在 2026-10-24
+    //   起产出的是 **"session_turns"**（读面早已是会话族）⇒ ⇒ 旧联合里的
+    //   'request_logs' 是**后端永不可能产出**的值 ⇒ ⇒ 它让抽屉把
+    //   session_turns 的数据错标成 "request_logs"（★ 退役表的旧名上屏）。
+    // ★ 由 web/src/api/__tests__/credentialMonitorSourceContract.test.ts 钉住
+    //   （前端联合必须与后端字面量集合逐字相等）。
+    source: SlidingWindowSource
     entries: CallEntry[]
     stats: {
       total: number
@@ -186,7 +205,7 @@ export type SlidingWindowBatchOptions = {
 export type SlidingWindowBatchResult = {
   credential_id: number
   model: string
-  source?: 'redis' | 'request_logs'
+  source?: SlidingWindowSource
   stats?: {
     total: number
     success: number

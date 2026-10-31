@@ -5,9 +5,13 @@
       <p class="description">{{ t('sessions.promptInjectionFull.subtitle') }}</p>
     </div>
 
+    <!-- 2026-10-28 第 31 增量：原来是 type="border-card" ——
+         Element Plus 会把 tab 容器画成一张**白卡**（底色 + 描边 + 圆角），
+         而 rule-card 就在它里面 ⇒ 卡片套卡片（DESIGN.md §6「卡片套卡片永远不对」）。
+         ⇒ 改回默认 tab：内容区不再是一张卡，rule-card 直接落在页面底上。
+         ★ 全仓只有这一处用 type="border-card"。 -->
     <el-tabs
       v-model="activeTab"
-      type="border-card"
       class="settings-tabs"
     >
       <!-- Tab 1: 策略（折叠嵌入配置面板） -->
@@ -590,7 +594,7 @@
             layout="total, sizes, prev, pager, next, jumper"
             @current-change="loadDetections"
             @size-change="loadDetections"
-            style="margin-top: 20px"
+            style="margin-top: 16px"
           />
         </el-card>
       </el-tab-pane>
@@ -1284,13 +1288,13 @@ onMounted(async () => {
 </script>
 
 <style scoped lang="scss">
-.prompt-injection-settings { padding: 20px; }
+.prompt-injection-settings { padding: 16px; }
 .settings-header {
   margin-bottom: 24px;
   h2 { margin: 0 0 8px 0; font-size: 24px; }
   .description { color: var(--muted); margin: 0; }
 }
-.settings-tabs :deep(.el-tabs__header) { margin-bottom: 20px; }
+.settings-tabs :deep(.el-tabs__header) { margin-bottom: 16px; }
 .section-card {
   margin-bottom: 20px;
   .card-header { display: flex; justify-content: space-between; align-items: center; }
@@ -1303,7 +1307,7 @@ onMounted(async () => {
   p { margin: 4px 0; }
   .meta { font-size: 12px; }
 }
-.state { color: var(--muted); padding: 20px 0; text-align: center; }
+.state { color: var(--muted); padding: 16px 0; text-align: center; }
 .whitelist-tags { margin-top: 8px; }
 .category-filter {
   margin-bottom: 16px;
@@ -1332,9 +1336,18 @@ onMounted(async () => {
 }
 .quick-link-card {
   cursor: pointer; text-align: center; padding: 20px;
-  transition: all 0.3s;
+  transition: transform 0.3s var(--kx-motion-ease-out), box-shadow 0.3s var(--kx-motion-ease-out);
   &:hover { transform: translateY(-4px); box-shadow: var(--kx-shadow-sm); }
   h3 { margin: 12px 0 8px; font-size: 16px; }
   p { color: var(--muted); font-size: 14px; margin: 0; }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .quick-link-card {
+    transition-property: box-shadow;
+  }
+  .quick-link-card:hover { transform: none; }
 }
 </style>

@@ -3,7 +3,7 @@
 # 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
 # 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
 #       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
-appId: ${BASE_URL}
+url: ${BASE_URL}
 ---
 - launchApp
 - runFlow:
@@ -16,7 +16,9 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/admin/usage"
 - extendedWaitUntil:
-    visible: '成本归因'
+    # ★ 真实渲染的是「成本对比」（locale compare.title）；
+    #   「成本归因」只是 UsageCost.vue:434 的一行 HTML 注释 ⇒ 抄注释当断言会永远红。
+    visible: '成本对比'
     timeout: 20000
 - evalScript: "${output.ms__admin_usage = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
@@ -184,7 +186,9 @@ appId: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/admin/reconciliation"
 - extendedWaitUntil:
-    visible: '按供应商'
+    # ★ 对帐页的真实标题是「供应商对帐」（locale reports.providerView）；
+    #   '按供应商' 是用量成本页的维度标签，在这页不存在。
+    visible: '供应商对帐'
     timeout: 20000
 - evalScript: "${output.ms__admin_reconciliation = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:

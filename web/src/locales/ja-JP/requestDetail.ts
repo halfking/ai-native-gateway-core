@@ -22,6 +22,9 @@ export default {
     source: {
       memory: 'メモリ内',
       file: 'ローカルファイル',
+      requestLogs: 'リクエスト台帳',
+      sessionTurns: 'セッションターン',
+      liveStream: 'ライブストリーム',
     },
     labels: {
       requestId: 'リクエスト ID',
@@ -202,6 +205,9 @@ export default {
     unavailableBody: 'これらのターンでは本文が取得されていませんでした（機能が無効、または該当ターンに内容がありませんでした）。サマリー・指標・トークン使用量には影響しません。',
     affectedTurns: '対象のターン: {list}',
     dismiss: 'OK',
+    consentOffTitle: 'セッション本文の記録が無効です',
+    consentOffBody: 'このテナントではセッション本文の記録が無効のため、ターンの本文・サマリー・証跡の内容は取得できません。トークン使用量と課金には影響しません。本文の記録が必要な場合は、管理者に依頼してこのテナントで有効にしてください。',
+    consentOffInline: 'セッション本文の記録が無効のため、本文とサマリーは取得できません',
 
   },
 }

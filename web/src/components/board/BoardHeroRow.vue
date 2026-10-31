@@ -148,7 +148,13 @@ function fmtTokensCompact(n: number | undefined) {
         <span>{{ t('dashboard.board.heroCreditsEq', { n: fmt(summary.total_credits_charged) }) }}</span>
       </div>
     </div>
-    <div class="hero-card hero-card--highlight">
+    <!--
+      2026-10-28 第 32 增量：原来这格带一个「高亮」修饰类（主色描边 + 主色内发光），
+      用来把「总积分」标成整排的主角。那是**装饰性强调** —— 信息量上它没有多说什么：
+      标签写着「总积分」，副行写着它的口径（降级时则明说「这个数没算出来」）。
+      ⇒ 拿掉高亮样式，让这一排回到「四格同形的小标签 + 数值 + 口径」。
+    -->
+    <div class="hero-card">
       <div class="hero-card__label">{{ t('dashboard.v2.totalCredits') }}</div>
       <!--
         降级时**不显示 0**：那是「没算出来」，不是「消耗为 0」。
@@ -180,24 +186,32 @@ function fmtTokensCompact(n: number | undefined) {
   font-size: 12px;
   line-height: 1.5;
   color: var(--warning);
-  padding: 8px 10px;
+  padding: 8px 8px;
   border: 1px solid var(--warning);
   border-radius: 6px;
 }
 .hero-card {
   position: relative;
   overflow: hidden;
-  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, var(--card)), var(--card) 65%);
+  /* 2026-10-28 第 32 增量（hero-metric 模板轮）：原来这层卡底是一道
+   * **主色微染渐变**，另有一张「高亮卡」带主色描边 + 主色内发光。
+   * 那是 impeccable craft-floor 点名的 hero-metric 模板里的「accent」要素：
+   * 「大数字 + 小标签 + 辅助统计 + 强调色」。⇒ 装饰性强调拿掉。
+   * ★ 保留：24px 的数值（与仓内已批准的 StatCard / stat-overview-card 同档）、
+   *   每格的辅助统计（成功率 / 错误数 / 输入输出 / 积分口径 = 指标要有语境）、
+   *   状态语义色（success / danger）、以及那条真的 16 桶趋势线。
+   * ⇒ 改完之后，这一排与 StatCard 是**同一个形态**：
+   *   「小标签 + 正常数值 + 口径说明」，不是「主角大数字」。
+   * ★★ 注释里**不写**被禁声明的字面形态（★ 仓内纪律：注释里不许写样例，
+   *   否则源码守卫会把注释当成真违规）。
+   */
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 14px 16px 12px;
-}
-.hero-card--highlight {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent) inset;
+  padding: 12px 16px 12px;
 }
 .hero-card__label {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text-muted);
   font-weight: 600;
 }
@@ -209,11 +223,11 @@ function fmtTokensCompact(n: number | undefined) {
   letter-spacing: -0.01em;
 }
 .hero-card__sub {
-  margin-top: 6px;
-  font-size: 11.5px;
+  margin-top: 4px;
+  font-size: 11px;
   color: var(--text-muted);
   display: flex;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .hero-card__sub b {
@@ -230,7 +244,7 @@ function fmtTokensCompact(n: number | undefined) {
   border: 0;
   background: transparent;
   color: var(--accent);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   padding: 0;

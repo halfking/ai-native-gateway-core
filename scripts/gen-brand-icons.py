@@ -3,11 +3,26 @@
 """
 llm-gateway-go 品牌图标生成器 —— 开轩 logo 的项目化变体。
 
+## 2026-10-28 修正：头部 logo 改为**经典资产直通**（pass-through）
+此前本脚本用分位秩重映射自造"青蓝变体"，实测产出两处偏差（相对
+开轩设计系统 kx-design 的 canonical 资产）：
+1. **墨迹只占画布 ~12%**：render_icon 把 glyph 先 paste 到 4× 超采样画布
+   再缩回，而 recolored_logo 的 thumbnail() 只缩不放，源墨迹 bbox
+   （496×601）到不了 0.66 目标 ⇒ 60px 展示位上实际图形只有 ~8px；
+2. **暗色变体仍是深蓝墨**：DARK_RANK_STOPS 映射出的墨迹与亮色版几乎
+   不可分，暗色页头上是一团看不清的深色（kx-design 的暗色经典版是
+   冰蓝亮墨 #c0d0f0 族）。
+⇒ 头部 logo（logo-icon.png / logo-icon-dark.png）改为直接复用
+  kx-design canonical 资产的**字节级拷贝**（已 vendor 进 brand/），
+  文件名不变（auth 白名单硬编码，见下）。经典版几何：透明底、
+  墨迹占画布 48%w×59%h，亮=深海军蓝墨 / 暗=冰蓝亮墨。
+favicon 瓦片（render_tile）不受影响，仍按原管线生成。
+
 ## 为什么是"变体"而不是直接复用 AI Work Mess 那套
 两个项目同属开轩品牌，**造型必须一致**（同一枚开轩 logo），否则会出现
 "网关和移动端不是一家"的割裂感。但每个项目的气质不同，所以只改色、不改形：
 
-  AI Work Mess : 深靛蓝 → 兰紫 → 破晓金（金为主，金＝价值与光）
+  AI Work Mess : 深靛蓝 → 兰紫 → 破晓金（金为主，金＝价值）
   llm-gateway  : 深靛蓝 → 青蓝 → 冰白青（青为主，青＝链路与传输）
 
 ## 与 AI Work Mess 生成器的两处关键差异（都是本项目的硬约束）
@@ -32,24 +47,14 @@ from PIL import Image, ImageDraw
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 BRAND = os.path.join(ROOT, "brand")
 
-# ── 亮色变体：青蓝链路色 ────────────────────────────────────────────────
-LIGHT_BG_A = np.array([0x1E, 0x3A, 0x5F], dtype=float)  # 深海军蓝（暗色主题页头衬底）
+# ── 亮色变体：青蓝链路色（favicon 瓦片用：墨迹映射 + 底衬）──────────────
+LIGHT_BG_A = np.array([0x1E, 0x3A, 0x5F], dtype=float)  # 深海军蓝瓦片底衬
 LIGHT_BG_B = np.array([0x14, 0x2A, 0x4A], dtype=float)
 LIGHT_RANK_STOPS = [
     (0.00, (18, 38, 78)),    # 深水
     (0.30, (37, 99, 178)),   # 链路蓝
     (0.64, (86, 190, 233)),  # 传输青
     (1.00, (198, 240, 255)), # 冰白高光：数据通路的"抵达"
-]
-
-# ── 暗色变体：亮底反相，用于暗色主题 ──────────────────────────────────
-DARK_BG_A = np.array([0xF2, 0xF7, 0xFC], dtype=float)   # 亮底
-DARK_BG_B = np.array([0xDF, 0xEA, 0xF5], dtype=float)
-DARK_RANK_STOPS = [
-    (0.00, (10, 26, 56)),
-    (0.30, (30, 84, 156)),
-    (0.64, (96, 186, 226)),
-    (1.00, (232, 250, 255)),
 ]
 
 GLYPH_RATIO = 0.66
@@ -99,25 +104,6 @@ def recolored_logo(out_size: int, stops, lut: np.ndarray) -> Image.Image:
     return img
 
 
-def render_icon(size: int, stops, bg_a, bg_b, *, round_mask: bool = False,
-                ss: int = SS, transparent: bool = False) -> Image.Image:
-    """透明底的开轩 logo（web 头部 logo 用，保留页面底色）。"""
-    lut = _rank_lut(stops)
-    glyph = recolored_logo(int(size * GLYPH_RATIO), stops, lut)
-    T = size * ss
-    canvas = Image.new("RGBA", (T, T), (0, 0, 0, 0))
-    gx, gy = (T - glyph.width) // 2, int((T - glyph.height) / 2 - T * 0.02)
-    canvas.paste(glyph, (gx, gy), glyph)
-    out = canvas.resize((size, size), Image.LANCZOS)
-    if transparent or not round_mask:
-        return out
-    m = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(m).ellipse([0, 0, size - 1, size - 1], fill=255)
-    masked = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    masked.paste(out, (0, 0), m)
-    return masked
-
-
 def render_tile(size: int, stops, bg_a, bg_b, *, square: bool = False, ss: int = SS) -> Image.Image:
     """带底衬的方/圆图标（favicon 用）。"""
     lut = _rank_lut(stops)
@@ -148,11 +134,18 @@ def main():
     if not os.path.isdir(BRAND):
         raise SystemExit(f"缺少 brand/ 源目录: {BRAND}")
 
-    # 头部 logo：透明底，沿用现有 1024² 尺寸与文件名（被 auth 白名单硬编码）
-    save(render_icon(1024, LIGHT_RANK_STOPS, LIGHT_BG_A, LIGHT_BG_B),
-         os.path.join(ROOT, "web", "public", "logo-icon.png"))
-    save(render_icon(1024, DARK_RANK_STOPS, DARK_BG_A, DARK_BG_B),
-         os.path.join(ROOT, "web", "public", "logo-icon-dark.png"))
+    # 头部 logo：kx-design canonical 经典资产直通（2026-10-28 修正，
+    # 见文件头说明）。文件名不变——被 auth 白名单硬编码。
+    for name in ("logo-icon.png", "logo-icon-dark.png"):
+        src = os.path.join(BRAND, name)
+        if not os.path.isfile(src):
+            raise SystemExit(f"缺少经典资产: {src}")
+        with open(src, "rb") as f:
+            data = f.read()
+        dst = os.path.join(ROOT, "web", "public", name)
+        with open(dst, "wb") as f:
+            f.write(data)
+        print(f"  copied brand/{name} -> {os.path.relpath(dst, ROOT)} ({len(data)} bytes)")
 
     # favicon：512² 全幅不透明方块。现有资源是 RGB 无 alpha，
     # 浏览器会按页面底色给圆角留白；改成带 alpha 的圆角砖反而会让

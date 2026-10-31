@@ -179,7 +179,7 @@ onMounted(() => {
   gap: 8px;
   width: 100%;
   min-height: 36px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-subtle);
@@ -227,7 +227,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
 .pp-title {
@@ -252,7 +252,7 @@ onMounted(() => {
   border-radius: var(--radius);
   background: var(--bg);
   color: var(--text);
-  padding: 8px 10px;
+  padding: 8px 8px;
 }
 .pp-body {
   flex: 1;
@@ -279,7 +279,7 @@ onMounted(() => {
   border-radius: 10px;
   background: var(--bg);
   color: var(--text);
-  padding: 10px 12px;
+  padding: 8px 12px;
   text-align: left;
   cursor: pointer;
 }

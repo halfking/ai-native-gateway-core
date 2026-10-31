@@ -65,7 +65,7 @@ type hollowEntry struct {
 	// ★★ 「人工审计」的那一段仍然写在 Reason 里 ⇒ ⇒ 两者合起来才是完整理由。
 }
 
-// hollowMechKinds 是【机械可核断言】的封闭词表（★ R86 轮新增）。
+// hollowMechKinds 是【机械可核断言】的封闭词表（★ R86 轮新增；★ R87 轮扩容）。
 //
 // ★★ 为什么要有它（R86 轮，承接 §19.25.19.10 优先级 1 ②）：
 //
@@ -76,10 +76,27 @@ type hollowEntry struct {
 //	  ② **人工审计段**（Reason）：★ 只能靠人读 ⇒ ⇒ 如实标注，不假装能机检。
 //
 // ★ 词表刻意**短**（★ 只实现真在用的）⇒ ⇒ 每一条都有真实用例 ⇒ 不留空转机制。
+//
+// ★★ R87 轮扩容的两条（★ 承接 §19.25.19.10 优先级 1 ②）：
+//
+//	★ **`reader-red-on-missing`** —— 「读方在【登记册文件**不在**】时必须红」
+//	  ⇒ ⇒ 它比 `rows=0` **强得多**：
+//	    · `rows=0` 只说「它现在恰好是 0 行」⇒ ⇒ 明天它长出一行 ⇒ ⇒ 理由就过期了
+//	    · `reader-red-on-missing` 说「**这个文件本身是承重的**」
+//	      ⇒ ⇒ 文件一消失，读方立刻红 ⇒ ⇒ 事实源丢了不会被静默放过
+//	  ⇒ ⇒ 用例：`scripts/ursmcheck/cjk_var_sites.tsv`
+//	    （★ 它的读方 `TestCJKVarExpansionNoNewSites` 在登记册**读不到**时 `t.Fatalf`）。
+//	★ **`reader-red-on-hollow`** —— 「读方在【**掏空版**】下必须红」
+//	  ⇒ ⇒ 这是**最强**的一条：★ 它直接断言「掏空这份登记册 ⇒ 门会抓到」
+//	  ⇒ ⇒ 用例：**结构化登记册那一侧**（★ `structured-registry-census.json` 的
+//	    `hollow_mode` + `red_signal` ⇒ ⇒ 每条登记册都跑这条）⇒ ⇒ 与本词表**同源**
+//	    ⇒ ⇒ 两侧的词表不会漂。
 var hollowMechKinds = map[string]bool{
-	"rows=0":         true, // ★ 该登记册当前 0 数据行（★ 「掏空 = 空操作」这类理由的骨架）
-	"reader-green":   true, // ★ 该条目指定的读方在【基线】是绿的（★ 两向判据类理由的骨架）
-	"no-code-reader": true, // ★ 仓内（除文档与本清单外）没有任何被追踪文件提及该路径
+	"rows=0":                true, // ★ 该登记册当前 0 数据行（★ 「掏空 = 空操作」这类理由的骨架）
+	"reader-green":          true, // ★ 该条目指定的读方在【基线】是绿的（★ 两向判据类理由的骨架）
+	"no-code-reader":        true, // ★ 仓内（除文档与本清单外）没有任何被追踪文件提及该路径
+	"reader-red-on-missing": true, // ★★ R87 轮：★ 读方在【登记册文件不在】时必须红
+	"reader-red-on-hollow":  true, // ★★ R87 轮：★ 读方在【掏空版】下必须红（★ 结构化侧的主力断言）
 }
 
 // hollowMechKindList 返回词表的稳定排序列表（★ 只用于报错信息）。
@@ -249,7 +266,7 @@ func goBinDir() string {
 //	     「open xxx.tsv: no such file or directory」⇒ 假红）。
 //	  ② **-test.count=1**（★ 禁用测试结果缓存 ⇒ 与原 `-count=1` 同义）。
 func runHollowReader(kind, spec string, root string, timeout time.Duration) (int, string, error) {
-	return runHollowReaderOverlay(kind, spec, root, timeout, "")
+	return runHollowReaderOverlay(kind, spec, root, timeout, "", "")
 }
 
 // runHollowReaderOverlay 是【带 overlay 的读方】（★ R86 轮新增，★ 负控臂用）。
@@ -260,7 +277,15 @@ func runHollowReader(kind, spec string, root string, timeout time.Duration) (int
 // ★★ 并行会话在同一个 checkout 里跑全套时，不会编译到一个「被改瞎的」包）。
 //
 // ★ overlay 为空 ⇒ 与 runHollowReader **完全等价**（★ 同一个实现，只是没有 overlay）。
-func runHollowReaderOverlay(kind, spec string, root string, timeout time.Duration, overlay string) (int, string, error) {
+//
+// ★★ contentKey（R87 轮新增，★ 非 `.tsv` 登记册掏空门用）：
+// ★ 读方**在运行时**读登记册 ⇒ 掏空落盘后立刻生效 ⇒ contentKey 可以是空串。
+// ★ 但**读方把登记册编译进二进制**时（★ Go 的 `//go:embed`）⇒ ⇒ 掏空落盘后
+// ★ **旧二进制里的内容不变** ⇒ ⇒ 读方会跑到「没被掏空」的内容 ⇒ ⇒ 分类会误成
+// ★ 「仍绿」⇒ ⇒ **假绿**。
+// ★ ⇒ ⇒ contentKey 必须带上「被掏空文件的指纹」⇒ ⇒ 二进制缓存键因此不同
+// ★ ⇒ ⇒ 掏空后会**重新编译** ⇒ ⇒ `go:embed` 的内容跟着变。
+func runHollowReaderOverlay(kind, spec string, root string, timeout time.Duration, overlay string, contentKey string) (int, string, error) {
 	goBin := "go"
 	if p, err := exec.LookPath("go"); err == nil {
 		goBin = p
@@ -277,15 +302,73 @@ func runHollowReaderOverlay(kind, spec string, root string, timeout time.Duratio
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 			return -1, "", fmt.Errorf("gotest 规格格式错（要 <pkg>|<TestName>）：%q", spec)
 		}
+		// ★★ 关键（R87 轮）：★ 包目录不存在 ⇒ 必须**报错**⇒ ⇒ 不能让它落进
+		// ★★ `go test <不存在的包>`（★ 那会打印一句错误并**退出码非 0**⇒ ⇒
+		// ★★ 分类器会把它判成「red-caught」⇒ ⇒ **假的有牙**）。
+		// ★★ 理由同 vitest 臂：★ 「读方没跑起来」必须与「读方跑了并且绿」**可区分**。
+		if _, err := os.Stat(hollowPkgDir(parts[0], root)); err != nil {
+			return -1, "", fmt.Errorf("gotest 读方的包目录不存在（%s）：%v", parts[0], err)
+		}
 		// ★ 优先走【预编译二进制】（★ 每个包只编译一次）；编译不了就回落到
 		//   原来的 `go test` 形态（★ 语义完全相同，只是慢）。
-		if bin, binDir, binErr := hollowTestBinaryOverlay(goBin, parts[0], root, timeout, overlay); binErr == nil {
+		if bin, binDir, binErr := hollowTestBinaryOverlay(goBin, parts[0], root, timeout, overlay, contentKey); binErr == nil {
 			cmd = exec.Command(bin, "-test.run", "^"+parts[1]+"$", "-test.count=1")
 			// ★ cwd = 包目录（★ 复刻 `go test` 的语义；★ 不是仓根！）
 			cmdDir = binDir
 		} else {
 			cmd = exec.Command(goBin, "test", parts[0], "-run", "^"+parts[1]+"$", "-count=1")
 		}
+	case "node":
+		// ★ 规格 = `<脚本路径，相对仓根>`（★ 如 `web/scripts/i18n-empty-state-guard.mjs`）。
+		//
+		// ★★ cwd 的定法（R87 轮）：★ **离脚本最近的、含 `package.json` 的祖先目录**
+		//   ⇒ ⇒ `web/scripts/*.mjs` ⇒ cwd = `web/`（★ 与 `npm run` 的语义一致）
+		//   ⇒ ⇒ 仓根没有 `package.json` ⇒ 兜底回仓根。
+		//   ★★ 为什么不能固定成仓根：★ `web/scripts/color-baseline-stale.mjs` 用
+		//   `process.cwd()` 推算 `scripts/color-token-audit.mjs` 的位置 ⇒ ⇒
+		//   cwd 必须是 `web/` ⇒ ⇒ 否则读方会因「找不到文件」而红 ⇒ ⇒ **假红**。
+		if strings.TrimSpace(spec) == "" {
+			return -1, "", fmt.Errorf("node 规格格式错（要 <脚本路径，相对仓根>）")
+		}
+		scriptAbs := filepath.Join(root, spec)
+		if _, err := os.Stat(scriptAbs); err != nil {
+			return -1, "", fmt.Errorf("node 读方脚本不存在（%s）：%v", spec, err)
+		}
+		nodeBin := "node"
+		if p, err := exec.LookPath("node"); err == nil {
+			nodeBin = p
+		}
+		cmd = exec.Command(nodeBin, scriptAbs)
+		cmdDir = hollowNearestPackageRoot(root, spec)
+	case "vitest":
+		// ★ 规格 = `<测试文件路径，相对仓根>`（★ 如 `web/src/i18n/localeKeyParity.test.ts`）。
+		//
+		// ★★ 用**仓内**的 vitest（`node_modules/.bin/vitest`）⇒ ⇒ 不走 npx ⇒ ⇒
+		//   不会联网、不会临时下载 ⇒ ⇒ 读数的确定性更高。
+		// ★★ cwd = 离测试文件最近的、含 `package.json` 的祖先目录（★ = `web/`）
+		//   ⇒ ⇒ 测试文件参数用**相对 cwd** 的路径（★ 与 `npm test` 的语义一致）。
+		if strings.TrimSpace(spec) == "" {
+			return -1, "", fmt.Errorf("vitest 规格格式错（要 <测试文件路径，相对仓根>）")
+		}
+		pkgRoot := hollowNearestPackageRoot(root, spec)
+		bin := filepath.Join(pkgRoot, "node_modules", ".bin", "vitest")
+		if _, err := os.Stat(bin); err != nil {
+			return -1, "", fmt.Errorf("vitest 读方找不到 vitest 可执行文件（%s）：%v\n★ 先在 %s 装依赖", bin, err, pkgRoot)
+		}
+		testAbs := filepath.Join(root, spec)
+		if _, err := os.Stat(testAbs); err != nil {
+			// ★★ 关键（R87 轮）：★ 测试文件不存在 ⇒ 必须**报错**⇒ ⇒ 不能让它跑成
+			// ★★ 「No test files found」那种**非零退出**⇒ ⇒ 更不能让它变成**退出码 0**。
+			// ★★ 理由：★ 「读方没跑起来」与「读方跑了并且绿」在退出码上**不可区分**
+			// ★★ ⇒ ⇒ 负控臂的「still-green」结论就可能是**假警报**（★ 探针压根没跑）。
+			return -1, "", fmt.Errorf("vitest 读方的测试文件不存在（%s）：%v", spec, err)
+		}
+		rel, err := filepath.Rel(pkgRoot, testAbs)
+		if err != nil {
+			return -1, "", fmt.Errorf("vitest 规格路径换算失败（%s）：%v", spec, err)
+		}
+		cmd = exec.Command(bin, "run", rel)
+		cmdDir = pkgRoot
 	case "shell":
 		// ★ shell:<command> ⇒ `bash -c <command>`（cwd = 仓根）
 		//   ⇒ 允许写任意命令（★ 例如 `cd installer && go test ...`：
@@ -295,11 +378,10 @@ func runHollowReaderOverlay(kind, spec string, root string, timeout time.Duratio
 		return -1, "", fmt.Errorf("未知 reader_kind：%q", kind)
 	}
 	cmd.Dir = cmdDir
-	cmd.Env = append(os.Environ(),
-		"GIT_TERMINAL_PROMPT=0",
-		// ★ 把 go 放进 PATH（★ shell 读方可能自己调 go）
-		"PATH="+goBinDir()+string(os.PathListSeparator)+os.Getenv("PATH"),
-	)
+	// ★★ r1046：★ 用 `hollowBuildEnv`（★ 而不是裸 `os.Environ()`）
+	// ★★ ⇒ ⇒ 它会把 `GOCACHE` **覆盖**成掏空门的**专用目录**
+	// ★★ ⇒ ⇒ 子构建不再往用户的全局缓存里塞「随树变化而失效」的一次性产物。
+	cmd.Env = hollowBuildEnv(root)
 	out, err := runWithTimeout(cmd, timeout)
 	code := 0
 	if err != nil {
@@ -325,7 +407,7 @@ var (
 //	所以直接跑二进制时 cwd 必须复刻成同一个目录，否则仓内那些用相对路径读
 //	同目录台账的门会「open xxx.tsv: no such file」⇒ 假红。
 func hollowTestBinary(goBin, pkg, root string, timeout time.Duration) (string, string, error) {
-	return hollowTestBinaryOverlay(goBin, pkg, root, timeout, "")
+	return hollowTestBinaryOverlay(goBin, pkg, root, timeout, "", "")
 }
 
 // hollowTestBinaryOverlay 是【带 overlay 的测试二进制编译】（★ R86 轮新增）。
@@ -335,12 +417,20 @@ func hollowTestBinary(goBin, pkg, root string, timeout time.Duration) (string, s
 //
 // ★ 缓存键必须**带上 overlay**（★ 否则「改瞎的二进制」会被缓存下来，
 // ★★ 后面那条【未改瞎】的读方就会跑到一个被改瞎的二进制上 ⇒ ⇒ 结论会串）。
-func hollowTestBinaryOverlay(goBin, pkg, root string, timeout time.Duration, overlay string) (string, string, error) {
+//
+// ★★ R87 轮新增：★ 缓存键还必须**带上 contentKey**（★ 被掏空文件的指纹）
+// ★★ ⇒ 因为 Go 的 `//go:embed` 在**编译期**把文件内容嵌进二进制
+// ★★ ⇒ ⇒ 掏空落盘后，**旧二进制里仍是原内容** ⇒ ⇒ 读方会误成「仍绿」⇒ ⇒ **假绿**。
+// ★★ ⇒ ⇒ 指纹一变 ⇒ 缓存键变 ⇒ **重新编译** ⇒ ⇒ 嵌入内容跟着变。
+func hollowTestBinaryOverlay(goBin, pkg, root string, timeout time.Duration, overlay string, contentKey string) (string, string, error) {
 	hollowBinMu.Lock()
 	defer hollowBinMu.Unlock()
 	cacheKey := pkg
 	if overlay != "" {
 		cacheKey = pkg + "|overlay:" + overlay
+	}
+	if contentKey != "" {
+		cacheKey += "|content:" + contentKey
 	}
 	if p, ok := hollowBinCache[cacheKey]; ok {
 		return p, hollowPkgDir(pkg, root), nil
@@ -349,6 +439,15 @@ func hollowTestBinaryOverlay(goBin, pkg, root string, timeout time.Duration, ove
 	if err != nil {
 		return "", "", err
 	}
+	// ★★ R87 轮收尾：★ **登记**这个临时目录 ⇒ ⇒ 跑完由 `TestMain` 统一删掉。
+	//
+	// ★ 为什么必须登记：★ 原实现**只创建、从不删除** ⇒ ⇒ 每次跑泄漏一批
+	// ★ （★ 一个二进制 ~74 MB ⇒ ⇒ 35 条目 × 2 变体 ⇒ ⇒ **单次跑 GB 级**）
+	// ⇒ ⇒ ⇒ 实测本机 tmp 里堆了 **224 个 ＝ 8.6 GB** ⇒ ⇒ ⇒ 把每用户 tmp 配额撑爆
+	// ⇒ ⇒ ⇒ ⇒ 然后门里要写临时文件的门就报 **`no space left on device`** ⇒ ⇒ ⇒
+	// ⇒ ⇒ ⇒ ★★ **红的原因不指向真正的原因**（★ 真正的原因是磁盘，不是门有洞）。
+	// ★ 详见 `scripts/ursmcheck/hollowout_bin_cleanup_test.go`。
+	registerHollowBinTmpDir(tmpDir)
 	bin := filepath.Join(tmpDir, "testbin")
 	args := []string{"test", "-c", "-o", bin}
 	if overlay != "" {
@@ -357,8 +456,12 @@ func hollowTestBinaryOverlay(goBin, pkg, root string, timeout time.Duration, ove
 	args = append(args, pkg)
 	build := exec.Command(goBin, args...)
 	build.Dir = root
-	build.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0",
-		"PATH="+goBinDir()+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// ★★ r1046：★ 用 `hollowBuildEnv`（★ 而不是裸 `os.Environ()`）
+	// ★★ ⇒ ⇒ 它会把 `GOCACHE` **覆盖**成掏空门的**专用目录**
+	// ★★ ⇒ ⇒ **子构建**不再往用户的全局缓存里塞「随树变化而失效」的一次性产物
+	// ★★ ⇒ ⇒ ★ 依据：★ 实测每个新树状态 ⇒ 这道门往全局缓存里塞 **~1.3 GB**
+	// ★★ ⇒ ⇒ ★ 而那些条目在树再变之后**永远不会再被命中** ⇒ ⇒ 事实上的垃圾。
+	build.Env = hollowBuildEnv(root)
 	if out, err := runWithTimeout(build, timeout); err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return "", "", fmt.Errorf("编译 %s 的测试二进制失败：%v\n%s", pkg, err, tailLines(string(out), 10))
@@ -371,6 +474,36 @@ func hollowTestBinaryOverlay(goBin, pkg, root string, timeout time.Duration, ove
 // ★ 清单里的 pkg 都是相对仓库根的 "./xxx/" 形态。
 func hollowPkgDir(pkg, root string) string {
 	return filepath.Join(root, strings.TrimPrefix(pkg, "./"))
+}
+
+// hollowNearestPackageRoot 返回「离 rel 最近的、含 `package.json` 的祖先目录」的绝对路径。
+//
+// ★★ 为什么需要它（R87 轮，★ 非 `.tsv` 登记册掏空门）：
+//
+//	★ `web/` 下的门（node 脚本 / vitest 测试）**都在 `web/` 里跑**
+//	  （★ `npm run` 的语义：cwd = 包目录）
+//	⇒ ⇒ 读方里那些 `resolve(process.cwd(), 'scripts/…')` 的路径推算才对
+//	⇒ ⇒ 固定成仓根会让读方「找不到文件」⇒ ⇒ **假红**。
+//
+// ★★ 为什么用「最近的含 package.json 的祖先」而不是写死 `web/`：
+//
+//	★ 写死 `web/` ⇒ 仓里再加一个前端包（★ `web-mobile/` 已经是第二个）⇒ ⇒
+//	  新的读方就会在错误的 cwd 里跑 ⇒ ⇒ 假红 ⇒ ⇒ **判据依赖了当前目录布局**。
+//	⇒ ⇒ 「最近的含 package.json 的祖先」是**机械可算**的 ⇒ ⇒ 布局变了也不用改判据。
+//
+// ★ 兜底：找不到 `package.json` ⇒ 回仓根（★ 仓根没有 package.json ⇒ 但 Go 读方不在这里用）。
+func hollowNearestPackageRoot(root, rel string) string {
+	dir := filepath.Dir(filepath.Join(root, rel))
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "package.json")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return root
+		}
+		dir = parent
+	}
 }
 
 // ── ★★ 崩溃安全的还原（2026-10-24 12h 审计轮） ───────────────────────────
@@ -567,6 +700,24 @@ func hollowVerifyEntry(t *testing.T, root string, e hollowEntry, kind, spec stri
 // ★ 去验证「门能不能发现『读方被改瞎了』」。
 func hollowVerifyEntryOverlay(t *testing.T, root string, e hollowEntry, kind, spec, overlay string) (hollowOutcome, string) {
 	t.Helper()
+
+	// ★★ R87 轮收尾：★ 拿【整仓掏空锁】⇒ ⇒ 同一时刻只允许一个掏空跑变异工作树。
+	//
+	// ★ 为什么必须有：★ 本函数会**真的把登记册写空**（下面第 ④ 步）
+	// ⇒ ⇒ 而并行会话常在同一个 checkout 上跑 `go test ./...`（★ 它把本包也跑了）
+	// ⇒ ⇒ 两个掏空跑会同时动同一批文件 ⇒ ⇒ 竞态有三种结局：
+	//   ① A 的掏空被 B 的自愈预检**抹掉**⇒ ⇒ A 在【原文】上读到绿 ⇒ ⇒ **A 误判成 still-green**；
+	//   ② B 把 A 的**掏空版**当成了原文备份 ⇒ ⇒ B 收尾「还原」⇒ ⇒ **台账被永久留在掏空态**；
+	//   ③ 两者交错 ⇒ ⇒ 还原后 md5 对不上 ⇒ ⇒ 门红（★ 这一种反而是好的）。
+	// ★ ⇒ ⇒ 跨进程互斥是唯一的根治办法。
+	// ★ 拿不到锁 ⇒ **红**（★ 不跳过）⇒ ⇒ 「跳过」在退出码上与「跑了 0 条」不可区分。
+	releaseLock, _, err := lockHollowoutShared(root, hollowoutLockWait)
+	if err != nil {
+		t.Fatalf("★ 拿不到整仓掏空锁 ⇒ ⇒ 本条**不判定**（★ 不能跳过：★「跳过」与「跑了 0 条」"+
+			"在退出码上不可区分）：%v", err)
+	}
+	defer releaseLock()
+
 	abs := filepath.Join(root, e.Path)
 	orig, err := os.ReadFile(abs)
 	if err != nil {
@@ -592,7 +743,7 @@ func hollowVerifyEntryOverlay(t *testing.T, root string, e hollowEntry, kind, sp
 	}
 
 	// ★ ③ 基线：读方必须绿（否则不可判定）
-	code, out, err := runHollowReaderOverlay(kind, spec, root, 600*time.Second, overlay)
+	code, out, err := runHollowReaderOverlay(kind, spec, root, 600*time.Second, overlay, "")
 	if err != nil {
 		t.Fatalf("跑基线读方失败（%s %s）：%v", kind, spec, err)
 	}
@@ -628,7 +779,7 @@ func hollowVerifyEntryOverlay(t *testing.T, root string, e hollowEntry, kind, sp
 			t.Errorf("还原后 md5 不符（%s）：期望 %s，实际 %s", e.Path, origMD5, got)
 		}
 	}()
-	code, out, err = runHollowReaderOverlay(kind, spec, root, 600*time.Second, overlay)
+	code, out, err = runHollowReaderOverlay(kind, spec, root, 600*time.Second, overlay, "")
 	if err != nil {
 		t.Fatalf("跑掏空版读方失败：%v", err)
 	}
@@ -786,6 +937,69 @@ func TestTsvHollowoutExceptionMechanicsHold(t *testing.T) {
 						t.Errorf("%s：例外的机械段声明「no-code-reader」，实测有 %d 个仓内（文档外）引用者：\n  %s\n"+
 							"★ ⇒ ⇒ 理由已过期（★ 要么它其实有读方 ⇒ 登记成 expect=red；要么改理由）",
 							e.Path, len(hits), strings.Join(hits, "\n  "))
+					}
+				case "reader-red-on-missing":
+					// ★★ R87 轮新增：★ 「读方在【登记册文件不在】时必须红」。
+					//
+					// ★★ 为什么这条**比 `rows=0` 强**：★ `rows=0` 只说「它现在恰好是 0 行」
+					// ⇒ ⇒ 明天长出一行 ⇒ ⇒ 理由就过期；★ 而这一条说「**文件本身是承重的**」
+					// ⇒ ⇒ 文件一消失读方立刻红 ⇒ ⇒ 事实源丢了不会被静默放过。
+					//
+					// ★★ 落盘安全：★ 文件是**已跟踪**的 ⇒ ⇒ 先备份、再**移走**、跑读方、还原
+					// ★★ ⇒ 还原后校验 md5（★ 承本线纪律：★ 备份必须在变异**之前**做）。
+					if e.ReaderKind == "" || e.ReaderKind == "none" || e.ReaderSpec == "" || e.ReaderSpec == "-" {
+						t.Errorf("%s：例外的机械段声明「reader-red-on-missing」，但该条目没有读方 ⇒ 声明无效", e.Path)
+						continue
+					}
+					abs := filepath.Join(root, e.Path)
+					orig, err := os.ReadFile(abs)
+					if err != nil {
+						t.Fatalf("读 %s 失败：%v", e.Path, err)
+					}
+					origMD5 := md5Of(orig)
+					backup := hollowBackupPath(abs)
+					if err := os.WriteFile(backup, orig, 0o644); err != nil {
+						t.Fatalf("写备份失败（%s）：%v", backup, err)
+					}
+					if err := os.Remove(abs); err != nil {
+						t.Fatalf("移走登记册失败：%v", err)
+					}
+					code, out, runErr := runHollowReader(e.ReaderKind, e.ReaderSpec, root, 600*time.Second)
+					// ★ 还原（★ 无论跑方成功与否都要还原 ⇒ ⇒ 写死在同一条路径上）。
+					restoreErr := restoreHollowBackup(abs)
+					back, readErr := os.ReadFile(abs)
+					switch {
+					case restoreErr != nil:
+						t.Errorf("%s：还原失败：%v", e.Path, restoreErr)
+					case readErr != nil:
+						t.Errorf("%s：还原后读不回：%v", e.Path, readErr)
+					case md5Of(back) != origMD5:
+						t.Errorf("%s：还原后 md5 不符（期望 %s，实际 %s）", e.Path, origMD5, md5Of(back))
+					}
+					if runErr != nil {
+						t.Errorf("%s：例外的机械段声明「reader-red-on-missing」，但**跑不起来**读方：%v\n"+
+							"★ ⇒ ⇒ 声明无效（★ 「跑不起来」与「绿」必须可区分 ⇒ ★ 见 TestStructuredRegistryHarnessDistinguishesNotRunFromGreen）",
+							e.Path, runErr)
+						continue
+					}
+					if code == 0 {
+						t.Errorf("%s：例外的机械段声明「reader-red-on-missing」，实测读方在【登记册文件不在】时**仍然绿**（exit=0）⇒ ⇒ "+
+							"★ 这份登记册**丢了都不会有人发现**⇒ ⇒ 理由已过期\n%s", e.Path, tailLines(out, 20))
+					}
+				case "reader-red-on-hollow":
+					// ★★ R87 轮新增：★ 「读方在【掏空版】下必须红」。
+					//
+					// ★★ 这是**最强**的一条机械断言：★ 它直接断言「掏空这份登记册 ⇒ 门会抓到」
+					// ⇒ ⇒ 复用**同一条**行为判据（`hollowVerifyEntry`）⇒ ⇒ 两边口径同源。
+					if e.ReaderKind == "" || e.ReaderKind == "none" || e.ReaderSpec == "" || e.ReaderSpec == "-" {
+						t.Errorf("%s：例外的机械段声明「reader-red-on-hollow」，但该条目没有读方 ⇒ 声明无效", e.Path)
+						continue
+					}
+					outcome, detail := hollowVerifyEntry(t, root, e, e.ReaderKind, e.ReaderSpec)
+					if outcome != outcomeRedCaught {
+						t.Errorf("%s：例外的机械段声明「reader-red-on-hollow」，实测掏空后分类是 %s（期望 red-caught）⇒ ⇒ "+
+							"★ 声明已过期（★ 要么它其实适用「掏空 ⇒ 红」⇒ 登记成 expect=red；要么改理由）\n%s",
+							e.Path, outcome, detail)
 					}
 				default:
 					t.Errorf("%s：未知的机械断言 %q", e.Path, kind)

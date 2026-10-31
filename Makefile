@@ -38,8 +38,8 @@ test: ## 全量单元测试（CI 默认入口）
 	$(GO) test ./... -count=1 -timeout=300s
 
 .PHONY: test-short
-test-short: ## 短模式，跳过 -short=false 的测试
-	$(GO) test ./... -count=1 -short -timeout=120s
+test-short: ## 短模式，跳过 -short=false 的测试（scripts/ursmcheck 静态门包已超出本通道预算，走 guards-ursmcheck / verify.sh）
+	$(GO) test $$( $(GO) list ./... | grep -v '^github.com/kaixuan/llm-gateway-go/scripts/ursmcheck$$' ) -count=1 -short -timeout=120s
 
 # ── 审计守卫（R69）────────────────────────────────────────────────────
 #
@@ -116,7 +116,25 @@ test-short: ## 短模式，跳过 -short=false 的测试
 #   ⇒ ⇒ 仓库里一直没有任何人真正看到过绿色的审计门。
 #   ⇒ ⇒ 这是本轮挖到的最刺眼的一条**流程闭环**断裂：**门写了、没接线，
 #      而接线的那道门自己也是红的 ⇒ 没人发现。**
-GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./internal/clockguard ./internal/stopguard ./internal/testguard ./sql/schema ./internal/rewrite ./internal/routeorder ./internal/requestobserver ./domains/credential ./domains/authentication ./internal/extpointledger ./domains/hooks/response ./middleware
+# ★★★ 2026-10-28（R175 轮）★★ 补登 **`./sql/migrations/startup`**。
+#
+#   背景：★ 该包有 **~160 个迁移契约测试文件**（migration_NNN_test.go 一族），
+#   ★ 而它此前**不在** GUARD_PACKAGES / GUARD_PACKAGES_SLOW **任何一栏** ⇒
+#   ⇒ `make guards-fast`（★ CI 的 audit-guards job 跑的就是它）**从不执行它** ⇒
+#   ⇒ **本轮新增的 914 门（10 道断言）在 CI 上一次都不会跑** ⇒
+#   ⇒ ★★ **「一门没人跑的守卫是文档，不是门」**（★ 本文件上方 R69 的判词，★ 原话）。
+#
+#   ★ 为什么此前一直没人发现：★ 仓内**有**一道门在管这件事
+#   （scripts/ursmcheck/audit_guard_registration_test.go，★ 「门写了却没人跑 ⇒ CI 红」）
+#   —— ★ 但它的判据是**显式标记**：★ 门文件自己声明 `AUDIT-GUARD:` ⇒
+#   ⇒ **它所在的包必须被登记进 GUARD_PACKAGES / GUARD_PACKAGES_SLOW** ⇒
+#   ⇒ ★★ 未经声明的门**连「我该被登记」这件事都不知道** ⇒ ⇒ 只能靠**人**发现。
+#
+#   ★ 本轮处置（两处缺一不可）：★ ① 门文件头加 `AUDIT-GUARD:` 声明；
+#   ★ ② 此处补登该包 ⇒ ★★ 让那句承诺**可被机器验证**。
+#
+#   ★ 成本：★ 本地实测该包 **11.5s** 全绿 ⇒ ★ 在快门 120s/包的预算内 ⇒ ★ **净收益**。
+GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./internal/clockguard ./internal/stopguard ./internal/testguard ./sql/schema ./sql/migrations/startup ./internal/rewrite ./internal/routeorder ./internal/requestobserver ./domains/credential ./domains/authentication ./internal/extpointledger ./domains/hooks/response ./middleware
 
 # ★★★ 2026-10-22 12h 审计轮：./scripts/ursmcheck 此前**不在任何强制执行路径**上。
 #
@@ -128,6 +146,12 @@ GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows .
 #     不需要改 workflow。
 #   ⇒ 登记进 GUARD_PACKAGES_SLOW ⇒ scripts/checks/guards-sync.sh 的双向检查
 #     同样覆盖它（漏登记/登记错了会红）。
+# ★★ 2026-10-30 r1050 轮：**「94 个」是 2026-10-22 那轮的历史读数**（★ 当时确实
+#   是 94 个）⇒ ★★ **它早已不是当前值**：★ 实测当前 `scripts/ursmcheck/*.go`
+#   = **165** 个（★ 磁盘与 `git ls-files` 逐项一致 ⇒ 口径确定）。
+#   ⇒ ★★ **同一个 165 与 r1049 轮的「165」是不同集合**：★ 那 165 指
+#   ★ 「调用编译型 go 子命令的 `.sh`/`.py` 脚本数」，★ 这 165 指「门文件数」
+#   ⇒ ★★ **撞号不是同一件事** ⇒ ★★ 引用时必须写清口径，否则会互串。
 # ★★★ 2026-10-24 magpie 对齐轮 §3.17：**补登记 `./admin`**（P2-2 薄壳门所在包）。
 #
 #   为什么此前不登记：★ 原判断是「admin 套件 65.8s ⇒ 逼近快门 120s 上限 ⇒
@@ -148,8 +172,27 @@ GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows .
 GUARD_PACKAGES_SLOW := ./scripts/ursmcheck ./admin
 
 .PHONY: guards
-guards: guards-installer guards-ursmcheck guards-shell ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门）
+guards: guards-installer guards-ursmcheck guards-shell guards-deploy ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门 + 切流锁两门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
+
+# ── 切流锁契约门 + 跨仓对拍门 ───────────────────────────────────────────────
+#
+# ★ 2026-10-28（r1039 后续轮 · 第三轮）：★ §507 的教训「**门没有调用方 = 声明
+#   不是门**」—— tests/deploy_switch_lock_contract_test.sh（20 条不变量）与
+#   tests/deploy_switch_lock_parity_test.sh（跨仓对拍）自 2026-10-27 起
+#   **没有任何 Make / CI 调用方** ⇒ ⇒ 只有「人恰好记得跑」时它们才跑。
+#   ⇒ ⇒ 这里给它们一个调用方（★ 前两轮的判据成果由此才真正【承重】）。
+# ★ 缺件时的行为（★ 两条门都遵守「本次没跑」纪律，**不**伪装成通过）：
+#   · 跨仓对拍门缺仓外共享部署库 ⇒ 明确 SKIP（不输出 ALL PASS）；
+#   · 契约门的 flock 形态臂缺 python3（真语义假 flock 需要 fcntl）⇒ 明确 SKIP 那一段。
+.PHONY: guards-deploy
+guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，不伪装成通过）
+	@bash tests/deploy_switch_lock_contract_test.sh
+	@bash tests/deploy_switch_lock_parity_test.sh
+
+.PHONY: guards-win-baseline
+guards-win-baseline: ## Windows 全量测试基线门（bash scripts/guards/check-win-test-baseline.sh <日志>；无参=自跑全量，约 10 分钟）
+	@bash scripts/guards/check-win-test-baseline.sh $(WIN_TEST_LOG)
 
 # ★★★ 2026-10-24 magpie 对齐轮 §3.17：**在跑的 CI 载体专用 target**。
 #
@@ -207,10 +250,27 @@ guards-fast: guards-installer guards-shell ## 运行**CI 预算内**的审计守
 guards-shell: ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描面含未跟踪文件，比 Go 门宽）
 	@bash scripts/guards/check-shell-fullwidth-var.sh
 
-# scripts/ursmcheck 的 94 个门文件（≈5~6 分钟，比主门慢一个量级 ⇒ 独立 timeout）
+# scripts/ursmcheck 的 166 个门文件（比主门慢一个量级 ⇒ 独立 timeout）
+# ★★ 2026-10-28 r1044 轮：慢门预算由 900s 提到 **1800s**（★ 与 verify.sh 的
+#   ★ 全量测试腿**同一档** ⇒ ★★ 两处必须同步改）。
+#   依据：★ 仓内自记该包实测 **840.111s / timeout 900s**（⇒ 当时余量只剩 ~60s，
+#   ★ 见 scripts/ursmcheck/shell_fullwidth_var_gate_test.go）；★ 该轮隔离实测
+#   ★ **1011.711s**（★ load 26.8/30.2/36.4 ⇒ 上界）⇒ ★★ **越过了 900s** ⇒ ⇒
+#   ★★ 超时被 SIGKILL ⇒ ★★ `testing` 的 panic 在 alarm goroutine 里 ⇒ 其它 goroutine
+#   ★★ 的 `defer` 不执行 ⇒ ★★ **被跟踪的台账静默留空** ⇒ ⇒ 预算必须给足。
+# ★★ 2026-10-30 r1050 轮：**回填当前实测数**（★ r1044 轮 §六-⑤ 登记的
+#   「每轮结束前重新量一次慢门包的耗时并更新预算注释里的实测数」⇒ ★★ 预算与实测
+#   的差就是余量 ⇒ ★★ **注释里的读数会自己过期** ⇒ 必须有人回填）。
+#   本轮实测（`make guards-ursmcheck`，HEAD 5a4150440）：★ **1122.817s**
+#   （load 6.32/5.12/3.47 ⇒ ★ 负载远低于 1011.711s 那次的 26.8/30.2/36.4）
+#   ⇒ ★★★ **在更轻的负载下反而更慢** ⇒ ⇒ **不是负载抬高的上界，是包真的变重了**
+#   （★ 上游 10 个提交里 `installer/internal/dbinit/runner.go` 改 194 行、
+#   ★ 多个台账 TSV 大改 ⇒ 门要重算的比值更大）。
+#   ⇒ ★★ 余量由「~1.8x」收窄到 **1800/1122.817 ≈ 1.60x** ⇒ ★★ **仍然够用**
+#   （⇒ 预算不必再提；★ 但余量已非「宽松」，下一轮若继续变重需重新评估）。
 .PHONY: guards-ursmcheck
-guards-ursmcheck: ## scripts/ursmcheck 全量门（94 个门文件；CI 上此前从未执行过）
-	$(GO) test $(GUARD_PACKAGES_SLOW) -count=1 -timeout=900s
+guards-ursmcheck: ## scripts/ursmcheck 全量门（166 个门文件；CI 上此前从未执行过）
+	$(GO) test $(GUARD_PACKAGES_SLOW) -count=1 -timeout=1800s
 
 # R48-B1 后续（R48 报告 §五-3）：installer 是独立 go.mod，根目录
 # `go test ./...` 永远不跑它的门——tsv 派生清单缺 831 的红因此在

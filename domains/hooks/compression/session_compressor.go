@@ -940,8 +940,9 @@ func (sc *SessionCompressor) updateCache(
 	// newState here would poison the V1 cache with a LastCompressedAt=now
 	// entry that has no SummaryMarker / ToolsHash — and the next request
 	// that falls back to V1 would read this corrupted state. V2 owns its
-	// own write side (session_bodies via the DualWriter); the two caches
-	// must stay independent.
+	// own write side (session_bodies via the session-family writer
+	// v2.SessionWriterV2 → v2.SessionBodiesWriter); the two caches must
+	// stay independent.
 	if fromV2 {
 		return
 	}

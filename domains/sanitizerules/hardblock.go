@@ -247,3 +247,43 @@ func LoadHardBlockAllowsFromEnv() ([]HardBlockAllow, error) {
 	SetHardBlockAllows(merged)
 	return merged, nil
 }
+
+// AddHardBlockAllow 向进程级清单追加一条 `scope:rule`（幂等：已存在即 no-op）。
+// 校验走 ParseHardBlockAllows（egress 只接受逐条内建规则的 r1039 限制在此生效）。
+//
+// 2026-10-29 拦截持久化轮：单条规则的「同步开启」入口；落库由调用方
+// SaveHardBlockStatePersistent 完成（本函数只动进程内清单）。
+func AddHardBlockAllow(scope, rule string) error {
+	adds, err := ParseHardBlockAllows(scope + ":" + rule)
+	if err != nil {
+		return err
+	}
+	current := HardBlockAllows()
+	for _, a := range current {
+		if a == adds[0] {
+			return nil
+		}
+	}
+	SetHardBlockAllows(append(current, adds[0]))
+	return nil
+}
+
+// RemoveHardBlockAllow 从进程级清单移除一条精确 `scope:rule`，返回是否命中。
+// 只删**精确同形**条目：`output:*` 由 "output:*" 删除，不影响逐条规则；
+// 前缀族同理（管理面展示的就是清单本身，删的是看得见的那一行）。
+func RemoveHardBlockAllow(scope, rule string) bool {
+	current := HardBlockAllows()
+	out := make([]HardBlockAllow, 0, len(current))
+	removed := false
+	for _, a := range current {
+		if a.Scope == scope && a.Rule == rule {
+			removed = true
+			continue
+		}
+		out = append(out, a)
+	}
+	if removed {
+		SetHardBlockAllows(out)
+	}
+	return removed
+}

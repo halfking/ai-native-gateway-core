@@ -270,7 +270,7 @@ onMounted(load)
 .cb { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
 .table { border-collapse: collapse; }
 .table th, .table td {
-  padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border);
+  padding: 8px 8px; text-align: left; border-bottom: 1px solid var(--border);
   font-size: 13px;
 }
 .table th { color: var(--muted); font-weight: 500; }
@@ -283,7 +283,7 @@ onMounted(load)
 .audit-section summary {
   cursor: pointer; font-size: 13px; color: var(--muted); padding: 8px 0;
 }
-.btn { padding: 6px 12px; border: 1px solid var(--border); background: var(--card);
+.btn { padding: 4px 12px; border: 1px solid var(--border); background: var(--card);
   border-radius: 4px; cursor: pointer; font-size: 13px; }
 .btn:hover { background: color-mix(in srgb, var(--accent) 06%, transparent); }
 .btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
@@ -301,7 +301,7 @@ onMounted(load)
 .form-row { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
 .form-row label { font-size: 13px; min-width: 110px; }
 .form-row input {
-  flex: 1; padding: 6px 10px; border: 1px solid var(--border);
+  flex: 1; padding: 4px 8px; border: 1px solid var(--border);
   background: var(--bg); color: var(--text); border-radius: 4px; font-size: 13px;
 }
 .check-result { font-size: 12px; color: var(--muted); padding: 4px 0; }

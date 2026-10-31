@@ -28,6 +28,19 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'home.title', requiresAuth: true },
   },
   {
+    // 实时页（2026-10-29）。移动端自己的观察形态：topology 区间统计 +
+    // journey queues 实时请求 + live-stream Hub 脚注（LiveView.vue 头注有
+    // 为什么不是桌面 /live 的 SSE 拓扑 —— 壳内 EventSource 无 cookie）。
+    // ★ admin 档（三条腿全部 admin(...) 注册）⇒ meta 不设 requiresRole；
+    //   桌面 /live 只要求登录，本档位与后端一致。
+    // ⚠️ 桌面 /live 与本路由**同名不同 SPA**：/m/ 内导航到 /live 落在本页，
+    //   手机直开站点根 /live 才是桌面窄屏形态（302 分流只认站点根）。
+    path: '/live',
+    name: 'live',
+    component: () => import('@/views/LiveView.vue'),
+    meta: { titleKey: 'live.title', requiresAuth: true },
+  },
+  {
     // 批 150：`hyper-wiring.ts` 在角色不匹配时跳到这里。
     //   meta.titleKey 复用 `common.pageDenied` ⇒ document.title 不会泄露真页面名。
     path: '/restricted',

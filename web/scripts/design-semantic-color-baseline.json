@@ -1,0 +1,12 @@
+{
+  "metric": "tintedGroupContainers = 底色/边框色里现场混入裸颜色令牌、且直接包含 ≥2 个可交互控件的容器数（状态载体豁免：容器自身带状态词；语义底色令牌 --success-bg 等不算「现场混入」）",
+  "tintedGroupContainers": 0,
+  "updated": "2026-10-27",
+  "history": [
+    {
+      "tintedGroupContainers": 0,
+      "updated": "2026-10-27",
+      "reason": "第 21 增量（颜色只承载语义，不承载分组）建门时的实测基线：先把 8 处装饰性着色清干净（LiveRequestStreamV2.vue 的 dimension/mode/request-type 三组 + 筛选组的告警色），再把 2 处合法状态（verification-code-box 的绿、rollback-confirm 的橙）登记豁免 ⇒ 实测 0 ⇒ 基线直接建在 0。这是**新建**指标，不是从旧值降下来的 —— 门本身（findings > 0 ⇒ exit 1）是硬闸，基线是防止判据被改松后读数回升的棘轮。"
+    }
+  ]
+}

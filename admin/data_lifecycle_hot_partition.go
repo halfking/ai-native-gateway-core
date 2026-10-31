@@ -14,8 +14,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-
-	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 var partitionNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*_[0-9]{4}_[0-9]{2}$`)
@@ -28,16 +26,34 @@ var retiredV1HotTables = map[string]struct{}{
 
 // promoteHotRetiredReason reports why a manual promote of table is refused, or
 // "" when the table is not part of the retired v1 family.
+//
+// 2026-10-29（★ 方向修正）：旧实现是「退役开关**关**着 ⇒ 拒绝；开着 ⇒ 放行」。
+// 那个方向是反的 —— 三条实测事实：
+//
+//	① 890 把 v1 族**物理删除**了：`_request_logs_hot` /
+//	   `_request_logs_bodies_hot` 连同它们的 promote 函数
+//	   （promote_request_logs_hot_to_partition /
+//	   promote_request_logs_bodies_hot_to_partition）一并 DROP
+//	   ⇒ 旧实现的「放行」放行的是一次**必然 42P01/42883 的调用**。
+//	② 自动侧对同一个族**无条件**退役：bg/partition_manager.go 的
+//	   v1LifecycleRetired() 恒返回 true，且 ensure/promote 清单里这两条
+//	   已被移除 ⇒ 手动侧「放行」与自动侧「拒绝」**自相矛盾**。
+//	③ storage.request_logs_write_enabled 在 890 之后**不再决定这个族
+//	   是否存在**（PG 侧 v1 写分支已随 890 整段删除；它现在只影响 lite
+//	   模式的 SQLite request_logs 表）⇒ 用它当放行条件，等于让一个
+//	   不相干的设置去决定一个已被删除的族能否被维护。
+//
+// ⇒ 现在：退役族**无条件**拒绝。手动侧与自动侧方向一致，拒绝理由
+//
+//	说的是真实原因（族已被物理删除），而不是某个设置的状态。
 func promoteHotRetiredReason(table string) string {
 	if _, retired := retiredV1HotTables[table]; !retired {
 		return ""
 	}
-	if settings.RequestLogsWriteEnabled() {
-		return "" // writes re-enabled: the family is live again, allow the promote
-	}
 	return table + " belongs to the retired request_logs family " +
-		"(storage.request_logs_write_enabled=false, renamed by migration 860); " +
-		"hot promotion is disabled for it — the automatic lifecycle job is gated the same way"
+		"(physically dropped by migration 890 — the table and its promote function " +
+		"no longer exist); hot promotion is disabled for it — the automatic lifecycle " +
+		"job is gated the same way"
 }
 
 // rejectRetiredV1Promote writes the refusal response for a retired v1 hot
@@ -53,40 +69,22 @@ func rejectRetiredV1Promote(w http.ResponseWriter, table string) bool {
 	return true
 }
 
-// hotReclaimHint returns the operator hint for reclaiming disk space after a hot
-// promote drained a retired v1 table, or "" when table is not part of that family.
+// ★ hotReclaimHint 已于 2026-10-29 删除（连同它的调用点与
+// admin/data_lifecycle_hot_partition_reclaim_hint_test.go）。
 //
-// 2026-10-18 (§97): the previous hint was inline and said
-// "…对 _request_logs_hot 执行 VACUUM FULL 以回收磁盘空间". Three defects, all
-// confirmed against the production catalog (details in the runbook §97):
+// 它原本只在「退役 v1 族被 promote 排空之后」给运维一条
+// 「TRUNCATE 才能归还 TOAST 空间」的提示。而退役族现在被
+// promoteHotRetiredReason **无条件**拒绝（方向修正见上）⇒
+// 退役族永远走不到「排空之后」⇒ 这条提示**恒不可达**。
 //
-//  1. It named only _request_logs_hot (59 MB) and never _request_logs_bodies_hot
-//     (291 MB) — i.e. it pointed at the table holding 15% of the reclaimable space.
-//  2. It was unreachable in exactly the state it exists for. promoteHotRetiredReason
-//     fails the job before any batch runs while writes are disabled, so
-//     TotalMigrated can never exceed 0 on the retired family. The hint only ever
-//     appears after writes are re-enabled — the one state where nobody needs it.
-//  3. It attributed the space to "TOAST 尚未释放" while naming an operation whose
-//     TOAST behaviour is not what the measurement shows. Measured on 2026-10-18:
-//     _request_logs_bodies_hot is count(*)=0 with heap 0 bytes, its TOAST holds 0
-//     chunks at 99.6% free space, and the TOAST btree has 29,299 of 29,302 pages
-//     marked deleted — after a same-day VACUUM of both the parent and the TOAST.
-//     A plain VACUUM demonstrably returns none of it, and only TRUNCATE rewrites
-//     the TOAST relation itself.
+// 为什么不能把它泛化到在位族：提示的内容是「TRUNCATE 该表」，
+// 而 TRUNCATE 会销毁该表全部行 —— 在位族有活跃写入，泛化等于给
+// 运维一把指向活数据的枪（原 §97 审计明确禁止过这件事，测试
+// TestHotReclaimHintStaysSilentForNonRetiredTables 钉的就是它）。
 //
-// We deliberately do NOT assert what VACUUM FULL does to a TOAST table: the audit
-// found no authoritative source settling it, and the recommendation does not
-// depend on the answer — TRUNCATE is unconditionally correct here because the
-// family is write-gated and both tables measure count(*)=0.
-func hotReclaimHint(table string) string {
-	if _, retired := retiredV1HotTables[table]; !retired {
-		return ""
-	}
-	return "已迁移数据，但磁盘空间尚未释放：" + table +
-		" 的剩余占用在 TOAST 与索引页上，普通 VACUUM 只把它们标为可复用、不归还给操作系统。" +
-		"请在【存储总览】页面对该表执行 TRUNCATE（前提：count(*) = 0），" +
-		"只有 TRUNCATE 会连同 TOAST 表一起重写。"
-}
+// 留着一段恒不可达的提示 = 在代码里留一句谎话（§97 审计自己已经
+// 记录过它「只在该出现的状态之外出现」这个不对称）。故删除。
+// §97 的知识（TOAST 空间只有 TRUNCATE 会归还）保留在审计档里。
 
 func validPartitionName(name string) bool {
 	return partitionNamePattern.MatchString(name) && !strings.HasSuffix(name, "_hot")
@@ -531,11 +529,9 @@ func (h *Handler) runHotPromoteJobWithDB(ctx context.Context, job *HotPromoteJob
 				"total_migrated", job.TotalMigrated,
 				"batches", job.BatchesExecuted,
 				"duration_seconds", job.DurationSeconds)
-			if job.TotalMigrated > 0 {
-				if hint := hotReclaimHint(job.TableName); hint != "" {
-					job.Warning = hint
-				}
-			}
+			// ★ 2026-10-29：原此处会挂一条 hotReclaimHint 的「TRUNCATE 归还
+			//   TOAST 空间」提示。该提示只对退役族有意义，而退役族现在被
+			//   promoteHotRetiredReason 无条件拒绝 ⇒ 恒不可达 ⇒ 已随函数删除。
 			return
 		}
 

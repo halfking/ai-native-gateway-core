@@ -1139,36 +1139,64 @@ func writeSummarizeJSON(w http.ResponseWriter, requestID string, v any) {
 // chat 面携带同一把调用方 key，那一跳已计一次限流；这里再计一次会把一次
 // 逻辑调用算成两次 RPM。直连打爆本面最终仍被环回 chat 步的同一把 key
 // 限流拦住，不产生绕过。
+//
+// ★ 错误信封用 OpenAI 形状（writeErrorJSON）；Gemini 原生的 :countTokens
+// 需要厂商形状 ⇒ 走 authenticateNoRPMWith 注入自己的写者 ⇒ **鉴权判定
+// 只有这一份实现**，错误信封形状才允许按协议分叉。
 func authenticateNoRPM(kv SummarizeKeyVerifier, w http.ResponseWriter, r *http.Request, requestID string) (*authentication.KeyInfo, bool) {
+	return authenticateNoRPMWith(kv, w, r, requestID, func(w http.ResponseWriter, status int, requestID, msg, errType, code string) {
+		writeErrorJSON(w, status, requestID, msg, errType, code)
+	})
+}
+
+// authenticateNoRPMWith 是 authenticateNoRPM 的**可注入错误信封**版本。
+//
+// ★ 为什么需要它：同一个「校验 key + 键状态 + 预算」的判定，被两个协议族
+// 共用——OpenAI 形状的 refine/analyze/summarize，以及厂商原生形状的 Gemini
+// :countTokens（docs/vendor-formats/gemini.md 的错误信封是
+// {"error":{"code","message","status"}}，没有 OpenAI 的 type/code 字段）。
+//
+// ⇒ **判定逻辑只写一份**（本函数），**信封形状按协议注入** ⇒ 不会出现
+// 「两处鉴权各自演化」的同一句话两份。
+//
+// ★ RPM：仍然**不消耗**——本函数服务的是「本地计算面」（不调上游或经环回
+// 复用同一把 key 的一次上游调用），刻意单计的口径见 authenticateNoRPM 的注释。
+func authenticateNoRPMWith(
+	kv SummarizeKeyVerifier,
+	w http.ResponseWriter,
+	r *http.Request,
+	requestID string,
+	writeErr func(w http.ResponseWriter, status int, requestID, msg, errType, code string),
+) (*authentication.KeyInfo, bool) {
 	if kv == nil || !kv.Enabled() {
 		return nil, true
 	}
 	rawKey := extractBearerToken(r)
 	if rawKey == "" {
-		writeErrorJSON(w, http.StatusUnauthorized, requestID, "Missing API key", "authentication_error", "missing_key")
+		writeErr(w, http.StatusUnauthorized, requestID, "Missing API key", "authentication_error", "missing_key")
 		return nil, false
 	}
 	keyInfo, err := kv.Verify(r.Context(), rawKey)
 	if err != nil {
 		w.Header().Set("WWW-Authenticate", "Bearer")
-		writeErrorJSON(w, http.StatusUnauthorized, requestID, "Invalid or expired API key", "authentication_error", "invalid_key")
+		writeErr(w, http.StatusUnauthorized, requestID, "Invalid or expired API key", "authentication_error", "invalid_key")
 		return nil, false
 	}
 	if keyInfo.Status == "throttled" {
 		ratelimit.MarkGatewaySharedKeyRateLimit(w)
-		writeErrorJSON(w, http.StatusTooManyRequests, requestID, "API key throttled", "rate_limit_error", "key_throttled")
+		writeErr(w, http.StatusTooManyRequests, requestID, "API key throttled", "rate_limit_error", "key_throttled")
 		return nil, false
 	}
 	if err := kv.CheckBudget(r.Context(), keyInfo.ID); err != nil {
 		if _, exceeded := err.(*authentication.BudgetExceededError); exceeded {
-			writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Budget exhausted", "insufficient_quota", "budget_exhausted")
+			writeErr(w, http.StatusPaymentRequired, requestID, "Budget exhausted", "insufficient_quota", "budget_exhausted")
 			return nil, false
 		}
 		slog.Error("summarize/transform budget check failed, failing closed",
 			"request_id", requestID,
 			"key_id", keyInfo.ID,
 			"error", err)
-		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "Budget check temporarily unavailable", "server_error", "budget_unavailable")
+		writeErr(w, http.StatusServiceUnavailable, requestID, "Budget check temporarily unavailable", "server_error", "budget_unavailable")
 		return nil, false
 	}
 	return keyInfo, true

@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
+# ★★ r1048 轮（★ 2026-10-29）：★ 本脚本在【宿主】上编译 Go ⇒ ⇒ 子进程会往 Go 的
+# ★★ 构建缓存里写产物 ⇒ ⇒ 而那个缓存默认是【用户那个全局的】⇒ ⇒ 必须指向【专用缓存】
+# ★★ （★ 目录约定与 6 GB 上限见 `scripts/lib/gocache.sh`；★ 理由与实测读数见
+# ★★ `internal/gocache` 的包注释 ⇒ ⇒ ★★ 实测：★ **单包** `go test ./admin/` 就要
+# ★★ **846 MB** ⇒ ⇒ ★★ 体积由【传递依赖闭包】决定 ⇒ ⇒ ★★ 按「编译范围」分层不成立）。
+# ★★ 【失败安全】：★ 找不到共享入口 ⇒ ⇒ **不设 GOCACHE**（★ 宁可漏隔离 ⇒ ⇒ 也不要把
+# ★★ GOCACHE 设成垃圾值 ⇒ ⇒ 那会让 go 直接报错 ⇒ ⇒ 把脚本弄坏）。
+__gocache_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || __gocache_dir=""
+while [ -n "$__gocache_dir" ] && [ ! -f "$__gocache_dir/scripts/lib/gocache.sh" ] && [ "$__gocache_dir" != "/" ]; do
+  __gocache_dir="$(dirname "$__gocache_dir")"
+done
+if [ -n "$__gocache_dir" ] && [ -f "$__gocache_dir/scripts/lib/gocache.sh" ]; then
+  . "$__gocache_dir/scripts/lib/gocache.sh"
+  gocache_use script
+fi
 # measure-factsource-cost-matrix.sh —— 「切事实源」的**二维**代价表实测（可复跑脚本）
 #
 # 2026-10-21（R90 轮）入仓。由来：§19.20.35 只量了「切事实源」的一半（变量集），
@@ -640,7 +655,13 @@ PW="$(docker exec "$PG_CONTAINER" printenv POSTGRES_PASSWORD 2>/dev/null | head 
 if [ -z "$PW" ]; then say "!! 取不到 POSTGRES_PASSWORD"; exit 1; fi
 
 BASE_ENV=(PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" GOPATH="${GOPATH:-$HOME/go}"
-          GOCACHE="${GOCACHE:-$HOME/.cache/go-build}" GOMODCACHE="${GOMODCACHE:-$HOME/go/pkg/mod}"
+          # ★★ r1048 轮（★ 2026-10-29）：★★ 这一段用 `env -i` 起 go test ⇒ ⇒ ★★ `env -i`
+          # ★★ **会清空环境** ⇒ ⇒ ★★ ⇒ 顶部那个 `export GOCACHE` **被抹掉** ⇒ ⇒ ★★ ⇒
+          # ★★ ⇒ 隔离会**失效**，而「文件里设了 GOCACHE」这个判据**照样绿** ⇒ ⇒ ★★ ⇒
+          # ★★ ⇒ 所以必须**显式把它带进这个 env 数组**（★ 「设了」≠「用上了」）。
+          # ★★ ⇒ ★★ 这里带的是**前导块已经设好的那个专用目录**（★ 原样带出 ⇒ ★★ 无条件
+          # ★★ ⇒ ★★ ⇒ 不会回落用用户全局缓存）。
+          GOCACHE="$GOCACHE" GOMODCACHE="${GOMODCACHE:-$HOME/go/pkg/mod}"
           GOPROXY="${GOPROXY:-off}" GOFLAGS="${GOFLAGS:-}" GOTOOLCHAIN="${GOTOOLCHAIN:-local}")
 
 mk_db() {

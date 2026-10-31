@@ -776,7 +776,7 @@ func (s *Summarizer) syncCanonicalSessionTitle(ctx context.Context, tenantID, se
 		  AND tenant_id = $2
 		  AND success = TRUE
 		  AND COALESCE(is_auto_request, FALSE) = FALSE
-		ORDER BY ts DESC, id DESC
+		ORDER BY ts DESC, request_id DESC
 		LIMIT 1
 	`, sessionKey, tenantID).Scan(&taskID); err != nil {
 		return fmt.Errorf("resolve title task: %w", err)

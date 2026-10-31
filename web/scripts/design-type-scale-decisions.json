@@ -1,0 +1,195 @@
+{
+  "note": "语义平局档的裁决表（2026-10-27 · 第 23 增量）。键 = `<原字号 px>|<完整选择器>`（例：`15px|.card-title`），值 = 目标字号 px（数字，无单位）。★ 键里带原字号 ⇒ 裁决**只对那一档原值生效**，不是「按类名统一」—— 见 roleAlignmentAbandoned。",
+  "basis": [
+    "DESIGN.md §4 Typography 的角色用途表（唯一事实源）：",
+    "  --kx-text-2xs 11 = 元信息、表头副行；--kx-text-xs 12 = 标签、徽标、辅助说明；",
+    "  --kx-text-sm 13 = 次级正文、表格单元；--kx-text-md 14 = 正文基准；",
+    "  --kx-text-lg 16 = 小节标题；--kx-text-xl 20 = 区块标题；",
+    "  --kx-text-2xl 24 = 页面标题、关键数字；--kx-text-3xl 30 = 落地页 H2；--kx-text-4xl 38 = 落地页 H1。",
+    "impeccable skill/reference/typeset.md：「Do repeated roles stay identical across screens and states.」",
+    "同角色在全仓的**多数实现**（先例）；共享组件（如 StatCard.vue）里的取值优先。",
+    "★ 「mini / stat-mini / mini-stat」这一族小数字统一收进 16px；「stat-value / summary-total / amount」这一族关键数字统一收进 24px。"
+  ],
+  "decisions": {
+    "15px|.top-bar-head h2": 16,
+    "15px|.card-title": 16,
+    "15px|.chart-title": 16,
+    "15px|.panel-title": 16,
+    "15px|.dialog-title": 16,
+    "15px|.key-picker__title": 16,
+    "15px|.lsfd-title": 16,
+    "15px|.nd-dialog h4": 16,
+    "15px|.nm-modal-header h3": 16,
+    "15px|.channel-title": 16,
+    "15px|.pub-page__sub": 14,
+    "15px|.kx-landing__feature h3": 16,
+    "15px|.mini-card__value": 16,
+    "15px|.drawer__head h3": 16,
+    "15px|.status-label": 12,
+    "15px|.smart-drawer-head h3": 16,
+    "15px|.account-sheet__row-label": 13,
+    "15px|.account-sheet__action": 14,
+    "15px|.session-title": 16,
+    "15px|.app-drawer__header .app-drawer__title": 16,
+    "15px|.modal-panel h3": 16,
+    "15px|.detail-section h4": 16,
+    "15px|.btn-large": 14,
+    "15px|.timeline-title": 16,
+    "15px|.drawer-header h3": 16,
+    "15px|.top-bar h1": 24,
+    "15px|.section-heading": 16,
+    "15px|.guide-section h4": 16,
+    "15px|.key-info-title": 16,
+    "15px|.filter-card .card-header h3": 16,
+    "15px|.section h4": 16,
+    "15px|.integ-title": 16,
+    "15px|.tab-btn": 14,
+    "15px|.no-model-hint__title": 16,
+    "15px|.maas-shortcuts h3": 16,
+    "15px|h3": 16,
+    "15px|.table-name": 13,
+    "15px|.stat-value": 14,
+    "15px|.section-header h3": 16,
+    "15px|.section-title": 16,
+    "18px|h2": 20,
+    "18px|.page-header h2": 20,
+    "18px|.modal-title": 16,
+    "18px|.section-header h2": 20,
+    "18px|.stat-mini__value": 16,
+    "18px|.header h2": 20,
+    "18px|.fp-stat-num": 16,
+    "18px|.nd-header h2": 20,
+    "18px|.pue-title": 16,
+    "18px|.ssd-title": 16,
+    "18px|.stat-value": 24,
+    "18px|.signal-value": 16,
+    "18px|.banner-value": 16,
+    "18px|.app-page-header__title": 24,
+    "18px|.app-stat-card:not(.stat-card--compact) .app-stat-card__value": 24,
+    "18px|.card h2": 20,
+    "18px|.page-title": 24,
+    "18px|.live-topology__title": 16,
+    "18px|.modal-header h3": 16,
+    "18px|.summary-total": 24,
+    "18px|.detail-title": 16,
+    "18px|.rdp__title": 16,
+    "18px|.header-left h3": 16,
+    "18px|.mini-stat .v": 16,
+    "18px|.stat-val": 16,
+    "18px|.detail-title-block h3": 16,
+    "18px|.ute__title": 16,
+    "18px|.modal-content h3": 16,
+    "18px|.order-product": 14,
+    "18px|.amount": 24,
+    "22px|.stat-value": 24,
+    "22px|.mini-kpi__value": 24,
+    "22px|.columnar-stat .stat-value": 24,
+    "22px|.wallet-value": 24,
+    "22px|.header-main h1": 24,
+    "20px|.stat-value": 24,
+    "26px|.stat-value": 24,
+    "28px|.stat-value": 24,
+    "32px|.stat-value": 24,
+    "28px|.page-header h1": 24,
+    "28px|.compare-value": 24,
+    "28px|.big-value": 24,
+    "28px|.price-num": 24,
+    "28px|.view-header h2": 24
+  },
+  "manualIconExemptions": {
+    "note": "自动推导（模板证据）认不出「字形（emoji）」形态：`<span class=\"x-icon\">{{ emoji }}</span>`。这一类是**装饰字形**，font-size 是图标尺寸 ⇒ 登记豁免 + witness。",
+    "entries": [
+      {
+        "class": "tool-icon",
+        "file": "components/ClientConfigGenerator.vue",
+        "witness": "21: <span class=\"tool-icon\">{{ tool.icon }}</span>"
+      },
+      {
+        "class": "guide-icon",
+        "file": "views/ExamplesView.vue",
+        "witness": "323: <span class=\"guide-title\"><span class=\"guide-icon\">{{ g.icon }}</span> {{ g.name }}</span>"
+      },
+      {
+        "class": "card-icon",
+        "file": "views/ModulesView.vue",
+        "witness": "442: <div class=\"card-icon\">{{ mod.icon }}</div>"
+      },
+      {
+        "class": "detail-icon",
+        "file": "views/ModulesView.vue",
+        "witness": "479: <span class=\"detail-icon\">{{ selectedModule.icon }}</span>"
+      },
+      {
+        "class": "fp-cell-icon",
+        "file": "components/FpSlotVisualizer.vue",
+        "witness": "92: <div class=\"fp-cell-icon\"></div>（8px 实心圆点，非文字）"
+      }
+    ]
+  },
+  "deadCss": {
+    "note": "class 在**模板**里 0 引用 ⇒ 这条规则是死 CSS（用户看不到）⇒ 修法是**删掉整条规则**，不是改字号。",
+    "entries": [
+      {
+        "class": "swim-lane__emergency-btn",
+        "file": "components/SwimLane.vue",
+        "line": 412
+      },
+      {
+        "class": "empty-state__icon",
+        "file": "views/DashboardViewV2.vue",
+        "line": 513
+      },
+      {
+        "class": "dep-jump",
+        "file": "views/ModulesView.vue",
+        "line": 1422
+      },
+      {
+        "class": "module-ref-badge",
+        "file": "views/ModulesView.vue",
+        "line": 2043
+      },
+      {
+        "class": "cand-chip",
+        "file": "views/RoutingDashboardView.vue",
+        "line": 2127
+      }
+    ]
+  },
+  "remToPx": {
+    "note": "rem 写法是「同一阶的两份真值」（仓内令牌层全是 px，根字号固定 16px）⇒ 全部换成 px，**数值逐字不变**（零视觉变化）。",
+    "rule": "rem × 16 ⇒ px；换算后若不在角色阶上，则按同一套裁决表处理"
+  },
+  "roleAlignmentAbandoned": {
+    "note": "★ 本轮**放弃**「按类名做角色对齐」这条路，理由是一个实测反例：**同名 ≠ 同角色**。",
+    "evidence": [
+      "`.stat-val`：views/PricingManagementView.vue:1152 是 24px 的 stat-card 主数字（配 12px 标签、min-width 100px 的卡片）；",
+      "  而 views/WorkTypesView.vue:1085 是 18px 的紧凑统计（配 9px 标签）⇒ **同一个类名、两个角色、两个合理的字号**。",
+      "`.stat-value`：views/data-lifecycle/HotPartitionManager.vue:1013 是 14px 紧凑统计（配 11px 标签）；",
+      "  而 components/ui/StatCard.vue:113 是 24px 的 KPI 主数字 ⇒ 同上。",
+      "⇒ ★★ **「同名即同角色」是假的** ⇒ 按类名做角色对齐会把紧凑排版撑成大 KPI（或把 KPI 压小）。",
+      "★ ⇒ 本轮只做「值在阶上 + 写法收进 px」；「同一角色取值一致」属**语义**问题，",
+      "  源码层判不出来（第 20 增量的同族教训）⇒ 留给运行时尺与后续立项。"
+    ]
+  },
+  "noteExtra": "★ 「关键数字」在 DESIGN.md §4 里的档是 --kx-text-2xl = 24px；30px（3xl）是「落地页 H2」那一档 ⇒ 全仓的「大数字」都收进 24，不新增 30 这一档。",
+  "decisionsOverriddenByMediaRule": {
+    "note": "★ 这两条裁决**没有进最终迁移清单** —— 因为它们落在 @media 里（响应式降档），按 §5.2 的媒体规则「取阶上且 ≤ 原值的最大档」处理（18px → 16px），而不是按类名对齐到 24px（小屏反而变大）。⇒ 裁决簿里保留它们，是为了**记下「为什么不这样改」**，避免后人以为漏改。",
+    "entries": [
+      {
+        "key": "18px|.stat-value",
+        "file": "components/analytics/DashboardStatsRow.vue",
+        "line": 230,
+        "context": "@media (max-width: 480px) 的响应式降档（基准 24px ⇒ 1440px 档 20px ⇒ 480px 档 18px）",
+        "actual": "改为 16px（媒体规则：阶上且 ≤ 原值的最大档）"
+      },
+      {
+        "key": "18px|.app-stat-card:not(.stat-card--compact) .app-stat-card__value",
+        "file": "components/ui/StatCard.vue",
+        "line": 112,
+        "context": "@media (max-width: 480px) 的响应式降档",
+        "actual": "改为 16px（媒体规则：阶上且 ≤ 原值的最大档）"
+      }
+    ]
+  }
+}

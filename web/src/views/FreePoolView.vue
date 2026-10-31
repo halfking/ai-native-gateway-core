@@ -36,6 +36,7 @@ import { useActionMessage } from '../composables/useActionMessage'
 import PageHeader from '../components/ui/PageHeader.vue'
 import StatsRow from '../components/ui/StatsRow.vue'
 import StatCard from '../components/ui/StatCard.vue'
+import ActionOverflowMenu from '../components/ui/ActionOverflowMenu.vue'
 import { CaretBottom, CaretTop, Check, Key, Reading } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
@@ -268,6 +269,36 @@ async function runImportEnv() {
   } finally {
     syncing.value = false
   }
+}
+
+// ★ 2026-10-27 第 25 增量（动作区必须可扫读）：页头动作区从 9 个并列按钮
+//   收到 4 个可见动作 —— ① 明面只留「刷新 / 写入 DB 凭据 / 添加 Provider」
+//   ② 5 个低频动作收进「更多」溢出菜单（入口可见、项有标签 ⇒ 仍可被找到）
+//   ③ 删掉「快速录入」：它与页面自己的 tab「注册助手」指向同一个视图
+//      （`activeTab = 'assistant'`）⇒ 真冗余；三个表单各自的底栏本来就有
+//      「关闭」按钮 ⇒ 关闭能力没有丢。
+//   ⇒ 页头不再是一排等重的药丸。
+const overflowItems = computed(() => [
+  {
+    key: 'bootstrap',
+    label: syncing.value ? t('freePool.bootstrapSyncing') : t('freePool.bootstrap'),
+    disabled: loading.value || syncing.value,
+  },
+  { key: 'bridge', label: t('freePool.bridgeOAuth'), disabled: loading.value || syncing.value },
+  { key: 'importEnv', label: t('freePool.importEnv'), disabled: loading.value || syncing.value },
+  { key: 'discover', label: t('freePool.discover'), disabled: loading.value || syncing.value },
+  {
+    key: 'bulk',
+    label: showBulkForm.value ? t('freePool.collapseBulk') : t('freePool.bulkPool'),
+  },
+])
+
+function onOverflowSelect(key: string) {
+  if (key === 'bootstrap') void runBootstrap()
+  else if (key === 'bridge') void runBridgeOAuth()
+  else if (key === 'importEnv') void runImportEnv()
+  else if (key === 'discover') void runDiscover()
+  else if (key === 'bulk') showBulkForm.value = !showBulkForm.value
 }
 
 function useTemplate(tpl: FreePoolCatalogEntry) {
@@ -706,46 +737,32 @@ onUnmounted(() => {
           {{ fetchedAt ? freshnessLabel : t('freePool.notLoaded') }}
         </span>
         <button class="btn btn-ghost" type="button" @click="load" :disabled="loading || syncing">{{ t('freePool.refresh') }}</button>
-        <button class="btn btn-ghost" type="button" @click="runBootstrap" :disabled="loading || syncing">
-          {{ syncing ? t('freePool.bootstrapSyncing') : t('freePool.bootstrap') }}
-        </button>
-        <button class="btn btn-ghost" type="button" @click="runBridgeOAuth" :disabled="loading || syncing">
-          {{ t('freePool.bridgeOAuth') }}
-        </button>
-        <button class="btn btn-ghost" type="button" @click="runImportEnv" :disabled="loading || syncing">
-          {{ t('freePool.importEnv') }}
-        </button>
-        <button class="btn btn-ghost" type="button" @click="runDiscover" :disabled="loading || syncing">
-          {{ t('freePool.discover') }}
-        </button>
-        <button class="btn btn-primary" type="button" @click="activeTab = 'assistant'; showKeyForm = false; showAddForm = false">
-          {{ t('freePool.quickEntry') }}
-        </button>
-        <button class="btn btn-primary" type="button" @click="showKeyForm = !showKeyForm">
+        <button class="btn" type="button" @click="showKeyForm = !showKeyForm">
           {{ showKeyForm ? t('freePool.hideKeyForm') : t('freePool.showKeyForm') }}
         </button>
-        <button class="btn btn-primary" type="button" @click="showAddForm = !showAddForm">
+        <button class="btn" type="button" @click="showAddForm = !showAddForm">
           {{ showAddForm ? t('freePool.hideKeyForm') : t('freePool.showAddForm') }}
         </button>
-        <button class="btn btn-primary" type="button" @click="showBulkForm = !showBulkForm">
-          {{ showBulkForm ? t('freePool.collapseBulk') : t('freePool.bulkPool') }}
-        </button>
+        <!-- ★ 第 25 增量：低频动作收进「更多」（5 项：一键建设 / OAuth 桥接 /
+             导入环境变量 Key / 自动学习并注册 / 多 Key 批量池化）。
+             ★ 「快速录入」已删：它与本页 tab「注册助手」指向同一个视图。 -->
+        <ActionOverflowMenu :items="overflowItems" @select="onOverflowSelect" />
       </div>
       </template>
     </PageHeader>
-    <p style="color:var(--muted);margin-bottom:20px">{{ t('freePool.page.desc') }}</p>
+    <p style="color:var(--muted);margin-bottom:16px">{{ t('freePool.page.desc') }}</p>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
     <div v-if="message" class="alert alert-success">{{ message }}</div>
 
-    <StatsRow v-if="poolData" style="margin-bottom:20px">
+    <StatsRow v-if="poolData" style="margin-bottom:16px">
       <StatCard :label="t('freePool.stats.routableModels')" :value="poolData.stats.routable_models" tone="success" :sub="`/ ${poolData.stats.free_models} offer`" />
       <StatCard :label="t('freePool.stats.availableProviders')" :value="poolData.stats.available_providers" tone="success" :sub="`/ ${poolData.stats.total_providers}`" />
       <StatCard :label="t('freePool.stats.templatesLinked')" :value="poolData.stats.catalog_registered" :sub="`/ ${poolData.stats.catalog_templates} ${t('freePool.stats.templatesUnit')}`" />
       <StatCard :label="t('freePool.stats.templateModels')" :value="catalogSummary.templateModels" :sub="t('freePool.stats.catalogKnown')" />
     </StatsRow>
 
-    <div v-if="showKeyForm" class="card" style="margin-bottom:20px">
+    <div v-if="showKeyForm" class="card" style="margin-bottom:16px">
       <h3 style="margin-top:0">{{ t('freePool.keyForm.title') }}</h3>
       <p class="cell-muted" style="margin:0 0 12px">{{ t('freePool.keyForm.desc') }}</p>
       <div class="form-grid">
@@ -788,7 +805,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-if="showAddForm" class="card" style="margin-bottom:20px">
+    <div v-if="showAddForm" class="card" style="margin-bottom:16px">
       <h3 style="margin-top:0">{{ t('freePool.providerForm.title') }}</h3>
       <div class="form-grid">
         <div class="form-item">
@@ -846,7 +863,7 @@ onUnmounted(() => {
     </div>
 
     <!-- P2 (2026-08-11): bulk multi-key pooling form -->
-    <div v-if="showBulkForm" class="card" style="margin-bottom:20px">
+    <div v-if="showBulkForm" class="card" style="margin-bottom:16px">
       <h3 style="margin-top:0">{{ t('freePool.bulkPool') }}</h3>
       <p class="cell-muted" style="margin:0 0 12px">{{ t('freePool.bulkPoolDesc') }}</p>
       <div class="form-grid">
@@ -1072,7 +1089,10 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div class="card platform-hub">
+        <!-- 2026-10-28 第 31 增量：原来是 <div class="card platform-hub"> ——
+             一张白卡里套着 15 张 platform-card（DESIGN.md §6「卡片套卡片永远不对」）。
+             ⇒ 外层降级为「标题 + 内容区」，platform-card 直接落在页面底上。 -->
+        <div class="platform-hub">
           <div class="section-header">
             <div>
               <h3 style="margin:0">{{ t('freePool.assistant.hubTitle') }}</h3>
@@ -1105,7 +1125,7 @@ onUnmounted(() => {
                 </span>
               </div>
               <div class="cell-muted">{{ categoryLabel(p.category) }} · {{ p.difficulty }}</div>
-              <code class="model-code" style="display:block;margin:6px 0">{{ p.base_url }}</code>
+              <code class="model-code" style="display:block;margin:4px 0">{{ p.base_url }}</code>
               <p v-if="p.notes" class="cell-muted" style="margin:0 0 8px">{{ p.notes }}</p>
               <div v-if="p.models_hint" class="cell-muted">{{ t('freePool.assistant.modelsLabel') }} {{ p.models_hint }}</div>
               <div v-if="p.tags && p.tags.length" class="tag-row">
@@ -1123,7 +1143,7 @@ onUnmounted(() => {
               </div>
             </div>
           </div>
-          <div v-if="signupHub?.workflow?.length" style="margin-top:20px">
+          <div v-if="signupHub?.workflow?.length" style="margin-top:16px">
             <h4 style="margin-bottom:8px">{{ t('freePool.assistant.recommendedWorkflow') }}</h4>
             <ol class="guide-steps">
               <li v-for="step in signupHub.workflow" :key="step.step">
@@ -1489,12 +1509,12 @@ onUnmounted(() => {
   font-size: 12px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
+  gap: 4px;
+  padding: 4px 8px;
 }
 .chevron {
   font-size: 10px;
-  transition: transform 0.2s;
+  transition: transform 0.2s var(--kx-motion-ease-out);
 }
 
 .tab-bar { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -1502,11 +1522,11 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   background: var(--bg-subtle, var(--card));
   color: var(--text);
-  padding: 8px 14px;
+  padding: 8px 12px;
   border-radius: 8px;
   cursor: pointer;
   font-size: 13px;
-  transition: background .15s, color .15s;
+  transition: background .15s var(--kx-motion-ease-out), color .15s var(--kx-motion-ease-out);
 }
 .tab-btn:hover:not(.active) {
   border-color: var(--accent);
@@ -1529,7 +1549,7 @@ onUnmounted(() => {
 .search-input { max-width: 280px; min-width: 200px; }
 
 .model-code { font-size: 12px; font-weight: 600; color: var(--accent-h); }
-.model-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.model-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 .model-tag {
   display: inline-block;
   font-size: 11px;
@@ -1589,12 +1609,12 @@ onUnmounted(() => {
   margin-bottom: 8px;
 }
 .guide-steps {
-  margin: 8px 0 8px 18px;
+  margin: 8px 0 8px 16px;
   font-size: 12px;
   color: var(--text);
 }
 .guide-steps-detail {
-  margin: 0 0 0 20px;
+  margin: 0 0 0 16px;
   padding: 0;
 }
 .guide-steps-detail li {
@@ -1652,19 +1672,19 @@ onUnmounted(() => {
 .platform-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
+  gap: 4px;
+  margin-top: 8px;
 }
 .hub-filters {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
 }
-.btn-sm { font-size: 12px; padding: 4px 10px; }
-.tag-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.btn-sm { font-size: 12px; padding: 4px 8px; }
+.tag-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .probe-box {
   margin-top: 12px;
-  padding: 10px;
+  padding: 8px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--bg);
@@ -1679,7 +1699,7 @@ onUnmounted(() => {
 .temp-email-box {
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 10px;
+  padding: 8px;
   background: var(--bg-subtle, var(--bg));
 }
 .temp-row {
@@ -1687,7 +1707,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .temp-row code { font-size: 12px; word-break: break-all; }
 .inbox-list {
@@ -1709,7 +1729,7 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   flex-wrap: wrap;
 }
 .inbox-intro {
@@ -1751,7 +1771,7 @@ onUnmounted(() => {
   outline-offset: 2px;
   border-color: var(--accent);
 }
-.tool-links { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tool-links { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 
 .guide-panel-wrapper {
   margin-top: 24px;
@@ -1768,7 +1788,7 @@ onUnmounted(() => {
   background: var(--card);
   border: none;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out);
 }
 .guide-panel-toggle:hover {
   background: var(--bg-subtle, var(--bg));
@@ -1783,7 +1803,7 @@ onUnmounted(() => {
   font-size: 24px;
 }
 .guide-panel-content {
-  padding: 20px;
+  padding: 16px;
   background: var(--bg-subtle, var(--bg));
   border-top: 1px solid var(--border);
 }
@@ -1795,7 +1815,7 @@ onUnmounted(() => {
 }
 .guide-section h4 {
   margin: 0 0 12px;
-  font-size: 15px;
+  font-size: 16px;
   color: var(--text);
 }
 .troubleshooting-list {
@@ -1818,9 +1838,9 @@ onUnmounted(() => {
 .freshness-badge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 11px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--bg-subtle, var(--card));
@@ -1839,7 +1859,7 @@ onUnmounted(() => {
 .fresh-stale { color: var(--danger); border-color: var(--danger-bd); }
 /* Live pulse: briefly highlights when an SSE event arrives. */
 .live-pulse {
-  animation: livePulse 0.6s ease-out;
+  animation: livePulse 0.6s var(--kx-motion-ease-out);
   border-color: var(--accent);
   color: var(--accent-h);
 }
@@ -1861,7 +1881,7 @@ onUnmounted(() => {
 .qbar-fill {
   height: 100%;
   border-radius: 9px 0 0 9px;
-  transition: width 0.4s ease;
+  transition: width 0.4s var(--kx-motion-ease-out);
 }
 .qbar-ok .qbar-fill { background: var(--success-bd); }
 .qbar-mid .qbar-fill { background: var(--warning-bd); }
@@ -1874,19 +1894,19 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text);
   text-shadow: 0 0 2px var(--bg);
 }
-.qbar-reset { font-size: 10px; margin-top: 3px; }
+.qbar-reset { font-size: 11px; margin-top: 3px; }
 
 /* Health pills — success rate + latency. */
 .health-cell { min-width: 120px; }
 .health-row { display: flex; gap: 4px; flex-wrap: wrap; }
 .health-pill {
-  font-size: 10px;
-  padding: 2px 6px;
+  font-size: 11px;
+  padding: 2px 4px;
   border-radius: 4px;
   background: var(--neutral-bg);
   color: var(--text);
@@ -1895,18 +1915,18 @@ onUnmounted(() => {
 .hp-ok { color: var(--success); background: var(--success-bg); border-color: var(--success-bd); }
 .hp-bad { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-bd); }
 .hp-mid { color: var(--warning); background: var(--warning-bg); border-color: var(--warning-bd); }
-.fail-streak { color: var(--danger); font-size: 10px; margin-top: 3px; }
-.cooling-tag { color: var(--warning); font-size: 10px; margin-top: 2px; }
+.fail-streak { color: var(--danger); font-size: 11px; margin-top: 3px; }
+.cooling-tag { color: var(--warning); font-size: 11px; margin-top: 2px; }
 .quota-cell { min-width: 130px; }
 
 /* P2 (2026-08-11): multi-key pooling badge — shown when a credential pools
    more than one key for rotation (amplifies one account's free quota). */
 .key-count-badge {
   display: inline-block;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
-  padding: 1px 7px;
-  margin-left: 6px;
+  padding: 1px 8px;
+  margin-left: 4px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 15%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
@@ -1927,4 +1947,10 @@ onUnmounted(() => {
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
 .btn.btn-ghost.btn-sm > svg { width: 11px; height: 11px; }
 .chevron > svg { width: 10px; height: 10px; }
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .chevron { transition: none; }
+}
 </style>

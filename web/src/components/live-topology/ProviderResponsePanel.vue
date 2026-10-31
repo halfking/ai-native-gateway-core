@@ -11,7 +11,8 @@ import { useI18n } from 'vue-i18n'
 import type { PanelEntry } from '../../composables/useLiveTopology'
 import { clientDisplayName } from '../../lib/liveTopologyGraph'
 import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
-import { CaretLeft, CaretRight, FullScreen, TopRight } from '@element-plus/icons-vue'
+import { useNewArrivals } from '../../composables/useNewArrivals'
+import { CaretLeft, CaretRight, FullScreen, TopRight, ArrowRight } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   responses: PanelEntry[]
@@ -82,6 +83,9 @@ function tokens(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
   return value >= 1000 ? `${(value / 1000).toFixed(1)}K tok` : `${value} tok`
 }
+
+/** 新到达的响应行做入场动画（只有新行动，见 useNewArrivals 注释）。 */
+const { fresh: freshIds } = useNewArrivals(() => props.responses.map((r) => r.requestId))
 </script>
 
 <template>
@@ -92,7 +96,7 @@ function tokens(value: number | null | undefined): string {
     </header>
     <ul ref="listRef" class="pp__list" data-testid="provider-response-list">
       <li v-for="entry in pagedResponses" :key="entry.requestId">
-        <div class="pp__row" :class="[statusClass(entry.status), { 'is-active': entry.requestId === activeRequestId, 'is-probe': entry.isProbe }]">
+        <div class="pp__row" :class="[statusClass(entry.status), { 'is-active': entry.requestId === activeRequestId, 'is-probe': entry.isProbe, 'is-new': freshIds.has(entry.requestId) }]">
           <button type="button" class="pp__main" @click="emit('zoom', entry)">
             <span class="pp__line">
               <span class="pp__time">{{ clock(entry.ts) }}</span>
@@ -100,7 +104,18 @@ function tokens(value: number | null | undefined): string {
               <span class="pp__latency">{{ latency(entry.latencyMs) }}</span>
             </span>
             <span class="pp__line pp__line--sub">
-              <span class="pp__model">{{ entry.model }}</span>
+              <!-- auto 请求：点名 auto，最终模型由网关按任务选出（与左侧面板同款表达）。 -->
+              <span class="pp__model">
+                <template v-if="entry.isAuto">
+                  <span
+                    class="pp__auto-chip"
+                    :data-testid="`pp-auto-chip-${entry.requestId}`"
+                    :title="entry.taskType ? `${t('liveTopology.panel.autoChip')} · ${entry.taskType}` : t('liveTopology.panel.autoChip')"
+                  >auto</span>
+                  <ArrowRight class="pp__auto-arrow" aria-hidden="true" />
+                </template>
+                <span class="pp__model-name">{{ entry.model }}</span>
+              </span>
               <span class="pp__tokens">{{ tokens(entry.tokens) }}</span>
             </span>
             <span v-if="entry.errorKind" class="pp__error">{{ entry.errorKind }}</span>
@@ -153,7 +168,7 @@ function tokens(value: number | null | undefined): string {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  padding: 8px 6px;
+  padding: 8px 4px;
   border: 1px solid var(--kx-border);
   border-radius: 12px;
   background: var(--kx-surface);
@@ -164,8 +179,8 @@ function tokens(value: number | null | undefined): string {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 6px;
-  padding: 0 4px 6px;
+  gap: 4px;
+  padding: 0 4px 4px;
   border-bottom: 1px solid var(--kx-border);
 }
 
@@ -175,7 +190,7 @@ function tokens(value: number | null | undefined): string {
 }
 
 .pp__hint {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-muted);
 }
 
@@ -228,7 +243,7 @@ function tokens(value: number | null | undefined): string {
   flex-direction: column;
   gap: 1px;
   min-width: 0;
-  padding: 5px 6px;
+  padding: 4px 4px;
   border: 0;
   background: transparent;
   cursor: pointer;
@@ -262,17 +277,54 @@ function tokens(value: number | null | undefined): string {
   text-overflow: ellipsis;
 }
 
+/* auto 请求「auto → 最终模型」前缀（2026-10-28 选路层轮，与左侧面板同款）。
+   箭头用 SVG（按钮位禁 → 字形，V3）；裸 <svg viewBox> 显式定尺寸。 */
+.pp__model {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.pp__auto-chip {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--kx-primary);
+  border: 1px solid color-mix(in srgb, var(--kx-primary) 45%, var(--kx-border));
+  background: color-mix(in srgb, var(--kx-surface) 82%, transparent);
+}
+
+.pp__auto-arrow {
+  flex: none;
+  color: var(--kx-muted);
+}
+
+.pp__auto-arrow > svg {
+  width: 10px;
+  height: 10px;
+}
+
+.pp__model-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .pp__tokens {
   font-variant-numeric: tabular-nums;
 }
 
 .pp__error {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-danger);
 }
 
 .pp__page {
-  padding: 0 5px;
+  padding: 0 4px;
   border: 0;
   background: transparent;
   color: var(--kx-muted);
@@ -285,7 +337,7 @@ function tokens(value: number | null | undefined): string {
 }
 
 .pp__zoom {
-  padding: 0 7px;
+  padding: 0 8px;
   border: 0;
   background: transparent;
   color: var(--kx-muted);
@@ -309,14 +361,14 @@ function tokens(value: number | null | undefined): string {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 5px 4px 0;
+  padding: 4px 4px 0;
   border-top: 1px solid var(--kx-border);
 }
 
 .pp__page-btn {
   min-width: 22px;
   height: 20px;
-  padding: 0 6px;
+  padding: 0 4px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   background: transparent;
@@ -332,10 +384,27 @@ function tokens(value: number | null | undefined): string {
 }
 
 .pp__page-info {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--kx-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* 新响应到达：只有新出现的行做入场（useNewArrivals 保证旧行不动；
+   与左面板 cp-row-in 同款语义、独立命名 —— motion 裁决簿按 name 记账）。 */
+.pp__row.is-new {
+  animation: pp-row-in 0.3s var(--kx-motion-ease-out);
+}
+
+@keyframes pp-row-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pp__row.is-new {
+    animation: none;
+  }
 }
 
 /* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
@@ -345,4 +414,13 @@ function tokens(value: number | null | undefined): string {
 .pp__open > svg { width: 11px; height: 11px; }
 .pp__zoom > svg { width: 12px; height: 12px; }
 .pp__page-btn > svg { width: 10px; height: 10px; }
+
+/* ── 手机（≤768，2026-10-28 手机观察轮）：行是触控目标 ──
+   同 ClientRequestPanel：行高 44px、加宽 ↗ / ⤢ 按钮命中区。 */
+@media (max-width: 768px) {
+  .pp__row { min-height: 44px; }
+
+  .pp__page,
+  .pp__zoom { padding: 0 8px; }
+}
 </style>

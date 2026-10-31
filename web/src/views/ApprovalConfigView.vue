@@ -222,7 +222,7 @@ onMounted(() => {
 
 <style scoped>
 .approval-config-view {
-  padding: 20px;
+  padding: 16px;
   color: var(--text-primary);
 }
 
@@ -235,7 +235,7 @@ onMounted(() => {
 
 .page-header h1 {
   margin: 0 0 8px;
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -286,11 +286,11 @@ onMounted(() => {
   gap: 24px;
 }
 
+/* 2026-10-28 第 31 增量（DESIGN.md §6「卡片套卡片永远不对」）：
+   原来这是一个白盒，里面装着 channel-card ⇒ 降级为「标题 + 内容区」：
+   去表面，间距改用 margin；下面的 setting-item / channel-card 自己成为卡面。 */
 .section {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 20px;
+  margin-bottom: 24px;
 }
 
 .section-header {
@@ -299,7 +299,7 @@ onMounted(() => {
 
 .section-header h2 {
   margin: 0 0 4px;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -312,7 +312,7 @@ onMounted(() => {
 
 .settings-grid {
   display: grid;
-  gap: 20px;
+  gap: 16px;
 }
 
 .setting-item {
@@ -321,7 +321,7 @@ onMounted(() => {
   gap: 16px;
   align-items: center;
   padding: 16px;
-  background: var(--bg);
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: 6px;
 }
@@ -363,7 +363,7 @@ onMounted(() => {
   height: 24px;
   background: var(--border);
   border-radius: 12px;
-  transition: background 0.2s;
+  transition: background 0.2s var(--kx-motion-ease-out);
   flex-shrink: 0;
 }
 
@@ -376,7 +376,7 @@ onMounted(() => {
   height: 20px;
   background: white;
   border-radius: 50%;
-  transition: transform 0.2s;
+  transition: transform 0.2s var(--kx-motion-ease-out);
 }
 
 .switch-input:checked + .switch-track {
@@ -429,7 +429,7 @@ onMounted(() => {
 .bottom-actions {
   display: flex;
   justify-content: center;
-  padding: 20px 0;
+  padding: 16px 0;
 }
 
 .btn {
@@ -438,13 +438,13 @@ onMounted(() => {
   font-size: 14px;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: all 0.2s;
+  transition: opacity 0.2s var(--kx-motion-ease-out), background 0.2s var(--kx-motion-ease-out), color 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out), box-shadow 0.2s var(--kx-motion-ease-out), transform 0.2s var(--kx-motion-ease-out), outline-offset 0.2s var(--kx-motion-ease-out);
   font-weight: 500;
 }
 
 .btn-large {
   padding: 12px 24px;
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .btn-primary {
@@ -475,6 +475,15 @@ onMounted(() => {
   .form-input {
     width: 100%;
     min-width: 0;
+  }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .switch-track::after { transition: none; }
+  .btn {
+    transition-property: opacity, background, color, border-color, box-shadow, outline-offset;
   }
 }
 </style>

@@ -1,0 +1,1803 @@
+{
+  "_comment": [
+    "★ R179 轮：canonical 视图读点的**形态册**（机器抽取，★ 非手抄）。",
+    "★ 每个形态带【真实 SQL】+【参数角色】⇒ 实测工具按角色取真实值再 EXPLAIN。",
+    "★ dynamic=true 的形态含 fmt 占位（%s/%d）⇒ ★ 静态不可知 ⇒ 实测须先解析 helper。",
+    "★ source_files = 本册的【来源快照】（★ 受影响文件清单）⇒ 漂移校验按它重放。"
+  ],
+  "source_files": [
+    "admin/compression_stats.go",
+    "admin/credential_monitor.go",
+    "admin/credential_monitor_heatmap.go",
+    "admin/credential_success_rate.go",
+    "admin/data_lifecycle.go",
+    "admin/diagnostics_credential.go",
+    "admin/live_stream_sse.go",
+    "admin/memora_handlers.go",
+    "admin/model_routing_diagnostic.go",
+    "admin/model_status.go",
+    "admin/no_topic_session.go",
+    "admin/probe_history.go",
+    "admin/provider_models.go",
+    "admin/route_incidents.go",
+    "admin/session_analytics_breakdown.go",
+    "admin/session_analytics_timeseries.go",
+    "admin/swim_lane_init.go",
+    "admin/tenants.go",
+    "admin/top_problems.go",
+    "admin/topology_clients_today.go",
+    "admin/topology_window_stats.go",
+    "admin/usage.go",
+    "admin/usage_credits.go",
+    "admin/usage_enhanced.go",
+    "admin/usage_trend_series.go",
+    "admin/work_types.go",
+    "bg/daily_probe_audit.go",
+    "bg/integrity_fingerprint_drift.go",
+    "bg/passive_probe_listener.go",
+    "bg/stats_minute_rollup.go",
+    "bg/stats_minute_rollup_retire.go",
+    "db/probe_views_unified.go",
+    "domains/routeincident/store.go",
+    "domains/sessionsummary/summarizer.go",
+    "internal/collector/gateway_adapters.go",
+    "internal/quality/minute_aggregator.go",
+    "maas/usage.go"
+  ],
+  "source_files_digest": "9809f051fcdd",
+  "shapes": [
+    {
+      "shape_id": "compression_stats-dd0e70a936",
+      "file": "admin/compression_stats.go",
+      "line": 285,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT\n\t\t\tCOALESCE(token_band, '') AS band,\n\t\t\tCOUNT(*) AS cnt\n\t\tFROM request_logs_with_current_month\n\t\tWHERE ts >= $1 AND ts <= $2\n\t\t  AND ($3 OR success)",
+      "sql_filter_cols": [
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
+        },
+        {
+          "index": 2,
+          "column": "ts",
+          "op": "<"
+        }
+      ]
+    },
+    {
+      "shape_id": "credential_monitor-7bc855af6c",
+      "file": "admin/credential_monitor.go",
+      "line": 422,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "COALESCE((\n\t\t\t\tSELECT json_agg(row_to_json(t))\n\t\t\t\tFROM (\n\t\t\t\t\tSELECT\n\t\t\t\t\t\tmo.raw_model_name,\n\t\t\t\t\t\tCOALESCE(mo.available, TRUE) AS offer_available,\n\t\t\t\t\t\tmo.unavailable_reason AS offer_unavailable_reason,\n\t\t\t\t\t\tCOALESCE(cmb.available, TRUE) AS binding_available,\n\t\t\t\t\t\tcmb.unavailable_reason AS binding_unavailable_reason,\n\t\t\t\t\t\tCOALESCE(mps.state, 'unknown') AS probe_state,\n\t\t\t\t\t\tmps.last_status AS probe_last_status,\n\t\t\t\t\t\tmps.last_attempt_at AS probe_last_attempt_at,\n\t\t\t\t\t\trsr.rate   AS recent_success_rate,\n\t\t\t\t\t\tCOALESCE(rsr.samples, 0) AS recent_samples,\n\t\t\t\t\t\t-- 🆕 2026-06-23: P95 (bg_rollup 优先, live_recent 兜底)\n\t\t\t\t\t\tCOALESCE(cmi.p95_latency_ms, live.p95_live) AS p95_latency_ms,\n\t\t\t\t\t\tlive.avg_live AS avg_latency_ms,\n\t\t\t\t\t\tCASE\n\t\t\t\t\t\t\tWHEN cmi.p95_latency_ms IS NOT NULL THEN 'bg_rollup'\n\t\t\t\t\t\t\tWHEN live.p95_live IS NOT NULL THEN 'live_recent'\n\t\t\t\t\t\t\tELSE 'no_data'\n\t\t\t\t\t\tEND AS p95_source,\n\t\t\t\t\t\t-- DataSource: live (24h 内被调用过) / declared (从未调用)\n\t\t\t\t\t\tCASE WHEN ch.last_called_at IS NOT NULL THEN 'live' ELSE 'declared' END AS data_source,\n\t\t\t\t\t\tch.last_called_at AS last_used_at,\n\t\t\t\t\t\tCOALESCE(ch.total_calls, 0) AS total_calls\n\t\t\t\t\tFROM model_offers mo\n\t\t\t\t\tLEFT JOIN credential_model_bindings cmb\n\t\t\t\t\t\tON cmb.credential_id = mo.credential_id\n\t\t\t\t\t   AND cmb.provider_model_id = (SELECT id FROM provider_models pm WHERE pm.raw_model_name = mo.raw_model_name AND pm.provider_id = c.provider_id LIMIT 1)\n\t\t\t\t\tLEFT JOIN v_node_probe_state_compat mps\n\t\t\t\t\t\tON mps.credential_id = mo.credential_id\n\t\t\t\t\t   AND mps.raw_model_name = mo.raw_model_name\n\t\t\t\t\t-- P95: bg rollup (5min bucket, latest 1) - main hot path\n\t\t\t\t\t\tLEFT JOIN LATERAL (\n\t\t\t\t\t\t\tSELECT p95_latency_ms, bucket\n\t\t\t\t\t\t\tFROM credential_model_index_with_current_month\n\t\t\t\t\t\t\tWHERE credential_id = c.id AND raw_model = mo.raw_model_name\n\t\t\t\t\t\t\tORDER BY bucket DESC LIMIT 1\n\t\t\t\t\t\t) cmi ON true\n\t\t\t\t\t\t-- Aggregate the live fallback once per credential instead of once per model.\n\t\t\t\t\t\tLEFT JOIN LATERAL (\n\t\t\t\t\t\t\tSELECT\n\t\t\t\t\t\t\t\tlower(COALESCE(outbound_model, client_model)) AS canonical_raw_name,\n\t\t\t\t\t\t\t\tpercentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::int AS p95_live,\n\t\t\t\t\t\t\t\tAVG(latency_ms)::int AS avg_live\n\t\t\t\t\t\t\tFROM request_logs_with_current_month\n\t\t\t\t\t\t\tWHERE credential_id = c.id\n\t\t\t\t\t\t\t  AND ts > NOW() - INTERVAL '3 hours'\n\t\t\t\t\t\t\t  AND latency_ms IS NOT NULL\n\t\t\t\t\t\t\tGROUP BY lower(COALESCE(outbound_model, client_model))\n\t\t\t\t\t\t) live ON live.canonical_raw_name = mo.canonical_raw_name\n\t\t\t\t\t-- 🆕 2026-06-23: last_used + total_calls (24h credential_model_call_history).\n\t\t\t\t\t-- 184 host system postgres 真实表 schema (2026-06-24 实查, migration 033):\n\t\t\t\t\t--   credential_id, raw_model, window_start, total_calls, success_calls,\n\t\t\t\t\t--   failed_calls, avg_latency_ms, p95_latency_ms, p99_latency_ms,\n\t\t\t\t\t--   error_rate_limit_count, error_quota_count, error_concurrent_count,\n\t\t\t\t\t--   error_network_count, error_auth_count, error_other_count,\n\t\t\t\t\t--   avg_concurrent, peak_concurrent\n\t\t\t\t\t-- 注意:\n\t\t\t\t\t--   - 用 raw_model 不用 raw_model_name (列名是 raw_model)\n\t\t\t\t\t--   - 1min bucket 聚合表 (window_start + total_calls 直接 SUM)\n\t\t\t\t\t--   - hotfix #2 误以为 per-call 表 (用 ts + COUNT(*)), 改回原设计\n\t\t\t\t\tLEFT JOIN LATERAL (\n\t\t\t\t\t\tSELECT MAX(window_start) AS last_called_at, SUM(total_calls) AS total_calls\n\t\t\t\t\t\tFROM credential_model_call_history\n\t\t\t\t\t\tWHERE credential_id = c.id\n\t\t\t\t\t\t  AND raw_model = mo.raw_model_name\n\t\t\t\t\t\t  AND window_start > NOW() - INTERVAL '24 hours'\n\t\t\t\t\t) ch ON true\n\t\t\t\t\tCROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr\n\t\t\t\t\tWHERE mo.credential_id = c.id\n\t\t\t\t\tORDER BY COALESCE(rsr.samples, 0) DESC, mo.raw_model_name\n\t\t\t\t) t\n\t\t\t\t), '[]'::json) AS models",
+      "sql_filter_cols": [
+        "raw_model_name",
+        "provider_id",
+        "credential_id",
+        "raw_model",
+        "ts",
+        "latency_ms",
+        "window_start"
+      ],
+      "sql_order_cols": "bucket DESC,raw_model,window_start,total_calls,success_calls,avg_latency_ms,p95_latency_ms,p99_latency_ms,error_quota_count,error_concurrent_count,error_auth_count,error_other_count,raw_model_name",
+      "param_roles": []
+    },
+    {
+      "shape_id": "credential_monitor-a94e69a17b",
+      "file": "admin/credential_monitor.go",
+      "line": 546,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "COALESCE((SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE rl.credential_id = c.id), 0)",
+      "sql_filter_cols": [
+        "credential_id"
+      ],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "credential_monitor-5a8b44c6ae",
+      "file": "admin/credential_monitor.go",
+      "line": 947,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT COUNT(*) FROM request_logs_with_current_month",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "credential_monitor-3a939c015f",
+      "file": "admin/credential_monitor.go",
+      "line": 1040,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT COALESCE(request_id, ''), EXTRACT(EPOCH FROM ts)::bigint * 1000,\n\t\t       success, COALESCE(latency_ms, 0), COALESCE(error_kind, '')\n\t\tFROM request_logs_with_current_month\n\t\tWHERE credential_id = $1\n\t\t  -- case-insensitive: 会话腿的 outbound_model can differ in case\n\t\t  -- from model_offers.raw_model_name (e.g. \"MiniMax-M3\" vs \"minimax-m3\"),\n\t\t  -- so a plain = misses most rows.\n\t\t  AND lower(COALESCE(outbound_model, client_model)) = lower($2)\n\t\tAND ts > NOW() - make_interval(mins => $3::int)\n\t\t  -- 2026-10-16 audit #153: tenant isolation. Empty $5 (super_admin /\n\t\t  -- admin_key / unauth probe) means \"see all tenants\"; otherwise the\n\t\t  -- view's tenant_id must match. Without this any caller holding a\n\t\t  -- valid credential_id would read every other tenant's call timeline.\n\t\t  AND ($5 = '' OR tenant_id = $5)\n\t\tORDER BY ts DESC\n\t\tLIMIT $4",
+      "sql_filter_cols": [
+        "credential_id"
+      ],
+      "sql_order_cols": "ts DESC",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "credential_id",
+          "op": "="
+        }
+      ]
+    },
+    {
+      "shape_id": "credential_monitor_heatmap-d84c300ddd",
+      "file": "admin/credential_monitor_heatmap.go",
+      "line": 366,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "WITH base AS (\n\t\t\tSELECT\n\t\t\t\trl.credential_id,\n\t\t\t\tlower(COALESCE(rl.outbound_model, rl.client_model)) AS raw_model_name,\n\t\t\t\tto_timestamp(floor(EXTRACT(EPOCH FROM rl.ts) / %[1]d) * %[1]d) AS time_bucket,\n\t\t\t\trl.success,\n\t\t\t\trl.latency_ms,\n\t\t\t\trl.error_kind,\n\t\t\t\trl.request_id,\n\t\t\t\trl.ts\n\t\t\tFROM request_logs_with_current_month rl\n\t\t\tJOIN credentials c ON c.id = rl.credential_id\n\t\t\tWHERE %[2]s\n\t\t),\n\t\tbucket_stats AS (\n\t\t\tSELECT\n\t\t\t\tcredential_id,\n\t\t\t\traw_model_name,\n\t\t\t\ttime_bucket,\n\t\t\t\tCOUNT(*) AS total_requests,\n\t\t\t\tCOUNT(*) FILTER (WHERE success) AS success_count,\n\t\t\t\tCOUNT(*) FILTER (WHERE NOT success) AS failed_count,\n\t\t\t\tROUND(CAST(COUNT(*) FILTER (WHERE success) AS numeric) / NULLIF(COUNT(*), 0), 4) AS success_rate,\n\t\t\t\tROUND(AVG(latency_ms))::int AS avg_latency_ms,\n\t\t\t\tpercentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::int AS p95_latency_ms\n\t\t\tFROM base\n\t\t\tGROUP BY credential_id, raw_model_name, time_bucket\n\t\t),\n\t\terror_counts AS (\n\t\t\tSELECT\n\t\t\t\tcredential_id,\n\t\t\t\traw_model_name,\n\t\t\t\ttime_bucket,\n\t\t\t\terror_kind,\n\t\t\t\tCOUNT(*) AS error_count\n\t\t\tFROM base\n\t\t\tWHERE NOT success AND error_kind IS NOT NULL\n\t\t\tGROUP BY credential_id, raw_model_name, time_bucket, error_kind\n\t\t),\n\t\terror_agg AS (\n\t\t\tSELECT\n\t\t\t\tcredential_id,\n\t\t\t\traw_model_name,\n\t\t\t\ttime_bucket,\n\t\t\t\tjsonb_object_agg(error_kind, error_count) AS error_distribution\n\t\t\tFROM error_counts\n\t\t\tGROUP BY credential_id, raw_model_name, time_bucket\n\t\t),\n\t\tfailed_samples AS (\n\t\t\tSELECT\n\t\t\t\tcredential_id,\n\t\t\t\traw_model_name,\n\t\t\t\ttime_bucket,\n\t\t\t\tARRAY(\n\t\t\t\t\tSELECT request_id\n\t\t\t\t\tFROM base b2\n\t\t\t\t\tWHERE b2.credential_id = b.credential_id\n\t\t\t\t\t  AND b2.raw_model_name = b.raw_model_name\n\t\t\t\t\t  AND b2.time_bucket = b.time_bucket\n\t\t\t\t\t  AND NOT b2.success\n\t\t\t\t\tORDER BY b2.ts DESC\n\t\t\t\t\tLIMIT 10\n\t\t\t\t) AS sample_request_ids\n\t\t\tFROM base b\n\t\t\tWHERE NOT success\n\t\t\tGROUP BY credential_id, raw_model_name, time_bucket\n\t\t)\n\t\tSELECT\n\t\t\tc.id AS credential_id,\n\t\t\tCOALESCE(c.label, '') AS label,\n\t\t\tCOALESCE(p.display_name, p.catalog_code, '') AS provider_name,\n\t\t\tbs.raw_model_name,\n\t\t\tbs.time_bucket,\n\t\t\tbs.total_requests,\n\t\t\tbs.success_count,\n\t\t\tbs.failed_count,\n\t\t\tbs.success_rate,\n\t\t\tbs.avg_latency_ms,\n\t\t\tbs.p95_latency_ms,\n\t\t\tCOALESCE(ea.error_distribution, '{}'::jsonb) AS error_distribution,\n\t\t\tCOALESCE(fs.sample_request_ids, ARRAY[]::text[]) AS sample_request_ids\n\t\tFROM bucket_stats bs\n\t\tJOIN credentials c ON c.id = bs.credential_id\n\t\tLEFT JOIN providers p ON p.id = c.provider_id\n\t\tLEFT JOIN error_agg ea\n\t\t\tON ea.credential_id = bs.credential_id\n\t\t\tAND ea.raw_model_name = bs.raw_model_name\n\t\t\tAND ea.time_bucket = bs.time_bucket\n\t\tLEFT JOIN failed_samples fs\n\t\t\tON fs.credential_id = bs.credential_id\n\t\t\tAND fs.raw_model_name = bs.raw_model_name\n\t\t\tAND fs.time_bucket = bs.time_bucket\n\t\tORDER BY c.id, bs.raw_model_name, bs.time_bucket",
+      "sql_filter_cols": [
+        "error_kind",
+        "credential_id",
+        "raw_model_name",
+        "time_bucket"
+      ],
+      "sql_order_cols": "raw_model_name,time_bucket,error_kind,ts DESC,id",
+      "param_roles": []
+    },
+    {
+      "shape_id": "credential_success_rate-371d3731fb",
+      "file": "admin/credential_success_rate.go",
+      "line": 37,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT\n\t\t\tc.id AS credential_id,\n\t\t\tc.label AS credential_label,\n\t\t\tmo.raw_model_name,\n\t\t\trsr.rate AS recent_rate,\n\t\t\trsr.samples AS recent_samples,\n\t\t\tv.is_routable,\n\t\t\t(rsr.samples >= 20 AND COALESCE(rsr.rate, 1.0) < 0.5) AS below_threshold,\n\t\t\t(SELECT MIN(ts) FROM request_logs_with_current_month rl\n\t\t\t WHERE rl.credential_id = c.id\n\t\t\t   -- 2026-07-14: compare against lowercase canonical_raw_name.\n\t\t\t   AND lower(COALESCE(rl.outbound_model, rl.client_model)) = mo.canonical_raw_name\n\t\t\t   AND rl.ts > NOW() - INTERVAL '3 hours'\n\t\t\t) AS oldest_request_time\n\t\tFROM model_offers mo\n\t\tJOIN credentials c ON c.id = mo.credential_id\n\t\tJOIN providers p ON p.id = c.provider_id\n\t\tLEFT JOIN v_routable_credential_models v\n\t\t       ON v.credential_id = mo.credential_id\n\t\t      AND v.raw_model_name = mo.raw_model_name\n\t\tCROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50, 3) AS rsr\n\t\tWHERE p.tenant_id = $1\n\t\tORDER BY c.id, mo.raw_model_name",
+      "sql_filter_cols": [
+        "credential_id",
+        "ts",
+        "tenant_id"
+      ],
+      "sql_order_cols": "id,raw_model_name",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "tenant_id",
+          "op": "="
+        }
+      ]
+    },
+    {
+      "shape_id": "data_lifecycle-5a8b44c6ae",
+      "file": "admin/data_lifecycle.go",
+      "line": 103,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT COUNT(*) FROM request_logs_with_current_month",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "data_lifecycle-cf5df662cc",
+      "file": "admin/data_lifecycle.go",
+      "line": 241,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": ") AS compressed\n\t\tFROM request_logs_with_current_month rl\n\t\tWHERE rl.ts > NOW() - INTERVAL '7 days'",
+      "sql_filter_cols": [
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "data_lifecycle-13d7a685b5",
+      "file": "admin/data_lifecycle.go",
+      "line": 477,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "-- 2026-10-20（迁移 890）：v1 族退役 ⇒ 尺寸源与分母都换成会话族母表。\n\t\t-- pg_total_relation_size 对分区父表返回 0（父表自身无存储），v1 母表\n\t\t-- 当年同理 ⇒ 换源前后这个估算值**逐字相同**。\n\t\tSELECT \n\t\t\tCOUNT(*) AS affected_rows,\n\t\t\t(pg_total_relation_size('session_turns') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM session_turns), 0))::bigint AS freed_bytes,\n\t\t\tpg_size_pretty((pg_total_relation_size('session_turns') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM session_turns), 0))::bigint) AS freed_human\n\t\tFROM request_logs_with_current_month",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "diagnostics_credential-f18d358987",
+      "file": "admin/diagnostics_credential.go",
+      "line": 150,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT request_id, client_model, ts, error_kind, COALESCE(request_status::text,''), provider_id\n\t\tFROM request_logs_with_current_month\n\t\tWHERE credential_id = $1 AND lower(COALESCE(request_status, '')) = 'failure'\n\t\t  AND ts > now() - make_interval(mins => $2::int)\n\t\tORDER BY ts DESC LIMIT 20",
+      "sql_filter_cols": [
+        "credential_id",
+        "ts"
+      ],
+      "sql_order_cols": "ts DESC",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "credential_id",
+          "op": "="
+        },
+        {
+          "index": 2,
+          "column": "ts",
+          "op": ">"
+        }
+      ]
+    },
+    {
+      "shape_id": "live_stream_sse-9ef0a7b25d",
+      "file": "admin/live_stream_sse.go",
+      "line": 2691,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT rl.request_id,\n\t\t       rl.ts,\n\t\t       COALESCE(NULLIF(rl.tenant_id, ''), 'default') AS tenant_id,\n\t\t       COALESCE(NULLIF(rl.gw_session_id, ''), '') AS gw_session_id,\n\t\t       COALESCE(NULLIF(mc.canonical_name, ''), NULLIF(rl.client_model, ''), rl.outbound_model, '') AS model,\n\t\t       COALESCE(mc.canonical_name, '') AS canonical_name,\n\t\t       COALESCE(NULLIF(p.display_name, ''), NULLIF(p.catalog_code, ''), NULLIF(p.code, ''), '') AS provider_code,\n\t\t       COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status,\n\t\t       rl.latency_ms,\n\t\t       rl.prompt_tokens,\n\t\t       rl.completion_tokens,\n\t\t       rl.total_tokens,\n\t\t       rl.cache_read_tokens,\n\t\t       rl.cache_write_tokens,\n\t\t       rl.cost_usd::float8,\n\t\t       rl.error_kind,\n\t\t       COALESCE(rl.credential_id, 0) AS credential_id,\n\t\t       COALESCE(c.label, '') AS credential_label\n\t\tFROM request_logs_with_current_month rl\n\t\tLEFT JOIN credentials c ON c.id = rl.credential_id\n\t\tLEFT JOIN providers p ON p.id = COALESCE(c.provider_id, rl.provider_id)\n\t\tLEFT JOIN models_canonical mc ON mc.id = rl.canonical_id\n\t\tWHERE rl.ts >= NOW() - INTERVAL '1 hour'",
+      "sql_filter_cols": [
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "live_stream_sse-f43ed3036f",
+      "file": "admin/live_stream_sse.go",
+      "line": 2831,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT request_id, request_status\n\t\tFROM request_logs_with_current_month\n\t\tWHERE request_id = ANY($1)\n\t\t  AND COALESCE(request_status, '') NOT IN ('', 'in_progress')",
+      "sql_filter_cols": [
+        "request_id"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "request_id",
+          "op": "="
+        }
+      ]
+    },
+    {
+      "shape_id": "memora_handlers-db0bb123cd",
+      "file": "admin/memora_handlers.go",
+      "line": 511,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": true,
+      "sql": "WITH base AS (\n\t\t\tSELECT\n\t\t\t\tCOALESCE(NULLIF(TRIM(gw_task_id), ''), NULL) AS task_id,\n\t\t\t\tCOALESCE(NULLIF(TRIM(gw_session_id), ''), NULL) AS session_id,\n\t\t\t\tts,\n\t\t\t\trequest_status,\n\t\t\t\tclient_model,\n\t\t\t\tapi_key_id,\n\t\t\t\tCOALESCE(NULLIF(TRIM(api_key_prefix), ''), NULL) AS api_key_prefix,\n\t\t\t\tCOALESCE(NULLIF(TRIM(api_key_owner_user), ''), NULL) AS api_key_owner_user,\n\t\t\t\tCOALESCE(NULLIF(TRIM(application_code), ''), NULL) AS application_code\n\t\t\tFROM request_logs_with_current_month\n\t\t\t%s\n\t\t),\n\t\ttopic_sessions AS (\n\t\t\tSELECT\n\t\t\t\ttask_id,\n\t\t\t\tsession_id,\n\t\t\t\tCOUNT(*) AS request_count,\n\t\t\t\tCOUNT(*) FILTER (WHERE request_status = 'success') AS ok_count,\n\t\t\t\tCOUNT(*) FILTER (WHERE request_status = 'failure') AS fail_count,\n\t\t\t\tCOUNT(*) FILTER (WHERE request_status = 'rate_limited') AS rate_limited_count,\n\t\t\t\tMIN(ts) AS first_activity,\n\t\t\t\tMAX(ts) AS last_activity,\n\t\t\t\t(SELECT client_model FROM base b2 WHERE b2.task_id = base.task_id ORDER BY b2.ts DESC LIMIT 1) AS latest_model,\n\t\t\t\t(SELECT api_key_prefix FROM base b2 WHERE b2.task_id = base.task_id LIMIT 1) AS api_key_prefix,\n\t\t\t\t(SELECT api_key_owner_user FROM base b2 WHERE b2.task_id = base.task_id LIMIT 1) AS api_key_owner_user,\n\t\t\t\t(SELECT application_code FROM base b2 WHERE b2.task_id = base.task_id LIMIT 1) AS application_code,\n\t\t\t\t(SELECT api_key_id FROM base b2 WHERE b2.task_id = base.task_id AND b2.api_key_id IS NOT NULL LIMIT 1) AS api_key_id,\n\t\t\t\tFALSE AS no_topic,\n\t\t\t\tNULL::text AS no_topic_label,\n\t\t\t\tNULL::timestamptz AS hour_start\n\t\t\tFROM base\n\t\t\tWHERE task_id IS NOT NULL\n\t\t\tGROUP BY task_id, session_id\n\t\t),\n\t\tno_topic_sessions AS (\n\t\t\tSELECT\n\t\t\t\tNULL::text AS task_id,\n\t\t\t\tNULL::text AS session_id,\n\t\t\t\tCOUNT(*) AS request_count,\n\t\t\t\tCOUNT(*) FILTER (WHERE request_status = 'success') AS ok_count,\n\t\t\t\tCOUNT(*) FILTER (WHERE request_status = 'failure') AS fail_count,\n\t\t\t\tCOUNT(*) FILTER (WHERE request_status = 'rate_limited') AS rate_limited_count,\n\t\t\t\tMIN(ts) AS first_activity,\n\t\t\t\tMAX(ts) AS last_activity,\n\t\t\t\t(SELECT client_model FROM base b2 WHERE b2.task_id IS NULL AND b2.api_key_prefix IS NOT DISTINCT FROM base.api_key_prefix ORDER BY b2.ts DESC LIMIT 1) AS latest_model,\n\t\t\t\tapi_key_prefix,\n\t\t\t\tapi_key_owner_user,\n\t\t\t\tapplication_code,\n\t\t\t\tNULL::bigint AS api_key_id,\n\t\t\t\tTRUE AS no_topic,\n\t\t\t\tCONCAT(\n\t\t\t\t\tCOALESCE(api_key_prefix, '[空]'), ' @ ',\n\t\t\t\t\tDATE_TRUNC('hour', MIN(ts))::text, '~',\n\t\t\t\t\t(DATE_TRUNC('hour', MIN(ts)) + (CASE WHEN $%d = 1 THEN interval '1 hour' WHEN $%d = 2 THEN interval '2 hours' ELSE interval '6 hours' END))::text\n\t\t\t\t) AS no_topic_label,\n\t\t\t\tDATE_TRUNC('hour', MIN(ts)) AS hour_start\n\t\t\tFROM base\n\t\t\tWHERE task_id IS NULL AND api_key_prefix IS NOT NULL\n\t\t\tGROUP BY api_key_prefix, api_key_owner_user, application_code, DATE_TRUNC('hour', ts)\n\t\t)\n\t\tSELECT * FROM topic_sessions\n\t\tUNION ALL\n\t\tSELECT * FROM no_topic_sessions\n\t\tORDER BY first_activity DESC\n\t\tLIMIT $%d",
+      "sql_filter_cols": [
+        "request_status",
+        "task_id",
+        "api_key_id",
+        "api_key_prefix"
+      ],
+      "sql_order_cols": "ts DESC,first_activity DESC",
+      "param_roles": []
+    },
+    {
+      "shape_id": "memora_handlers-903b3d60a2",
+      "file": "admin/memora_handlers.go",
+      "line": 628,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT\n\t\t\tCOUNT(*),\n\t\t\t(SELECT client_model FROM request_logs_with_current_month",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "memora_handlers-14399babb9",
+      "file": "admin/memora_handlers.go",
+      "line": 631,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "ORDER BY ts DESC LIMIT 1)\n\t\tFROM request_logs_with_current_month",
+      "sql_filter_cols": [],
+      "sql_order_cols": "ts DESC",
+      "param_roles": []
+    },
+    {
+      "shape_id": "memora_handlers-888f0f643d",
+      "file": "admin/memora_handlers.go",
+      "line": 792,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT\n\t\t\trl.ts,\n\t\t\trl.request_id,\n\t\t\trl.client_model,\n\t\t\trl.outbound_model,\n\t\t\trl.request_preview,\n\t\t\trl.response_preview,\n\t\t\tCOALESCE(rb.request_body::text, '') AS request_body,\n\t\t\tCOALESCE(rb.response_body::text, '') AS response_body,\n\t\t\trl.prompt_tokens,\n\t\t\trl.completion_tokens,\n\t\t\trl.latency_ms,\n\t\t\trl.cost_usd,\n\t\t\trl.request_status,\n\t\t\trl.error_kind,\n\t\t\trl.work_type,\n\t\t\trl.request_mode,\n\t\t\trl.gw_session_id\n\t\tFROM request_logs_with_current_month rl\n\t\tLEFT JOIN",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "model_routing_diagnostic-ec18620a42",
+      "file": "admin/model_routing_diagnostic.go",
+      "line": 54,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "WITH target AS (\n\t\t\tSELECT cmb.id AS binding_id, cmb.credential_id, pm.provider_id,\n\t\t\t\tp.display_name AS provider_name, c.label AS credential_label,\n\t\t\t\tpm.raw_model_name, v.is_routable, v.unavailable_reason,\n\t\t\t\tCOALESCE(cmb.manual_priority, 99) AS manual_priority,\n\t\t\t\trsr.rate AS recent_success_rate, rsr.samples AS recent_samples\n\t\t\tFROM credential_model_bindings cmb\n\t\t\tJOIN provider_models pm ON pm.id = cmb.provider_model_id\n\t\t\tJOIN providers p ON p.id = pm.provider_id\n\t\t\tJOIN credentials c ON c.id = cmb.credential_id\n\t\t\tJOIN v_routable_credential_models v ON v.binding_id = cmb.id\n\t\t\tCROSS JOIN LATERAL recent_success_rate(cmb.credential_id, pm.raw_model_name, 50) rsr\n\t\t\tWHERE lower(pm.raw_model_name) = lower($1)\n\t\t\t   OR lower(COALESCE(pm.standardized_name, '')) = lower($1)\n\t\t\t   OR EXISTS (\n\t\t\t\t\tSELECT 1 FROM model_name_mapping mnm\n\t\t\t\t\tWHERE lower(mnm.raw_model_name) = lower(pm.raw_model_name)\n\t\t\t\t\t  AND lower(mnm.standardized_name) = lower($1)\n\t\t\t\t)\n\t\t\t   OR EXISTS (\n\t\t\t\t\tSELECT 1 FROM model_aliases ma\n\t\t\t\t\tWHERE ma.canonical_id = pm.canonical_id\n\t\t\t\t\t  AND lower(ma.raw_name) = lower($1)\n\t\t\t\t\t  AND COALESCE(ma.status, 'active') = 'active'\n\t\t\t\t)\n\t\t\t   OR EXISTS (\n\t\t\t\t\tSELECT 1 FROM models_canonical mc\n\t\t\t\t\tWHERE mc.id = pm.canonical_id\n\t\t\t\t\t  AND lower(mc.canonical_name) = lower($1)\n\t\t\t\t)\n\t\t), request_stats AS (\n\t\t\tSELECT credential_id,\n\t\t\t\tCOUNT(*)::int AS requests_24h,\n\t\t\t\tAVG(success::int)::float8 AS success_rate_24h,\n\t\t\t\tPERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms)::int AS p95_latency_ms,\n\t\t\t\tPERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY stream_first_chunk_ms)::int AS p95_first_chunk_ms,\n\t\t\t\tCOUNT(*) FILTER (WHERE error_kind IN ('timeout', 'stream_timeout', 'network'))::int AS timeout_count,\n\t\t\t\tCOUNT(*) FILTER (WHERE error_kind = 'empty_response')::int AS empty_response_count,\n\t\t\t\tCOUNT(*) FILTER (WHERE error_kind IN ('quota', 'quota_balance', 'quota_periodic', 'quota_permanent'))::int AS quota_failure_count\n\t\t\tFROM request_logs_with_current_month\n\t\t\tWHERE (\n\t\t\t\t\tlower(COALESCE(NULLIF(outbound_model, ''), '')) = lower($1)\n\t\t\t\t OR lower(COALESCE(NULLIF(client_model, ''), '')) = lower($1)\n\t\t\t\t OR lower(COALESCE(NULLIF(canonical_model, ''), '')) = lower($1)\n\t\t\t\t)\n\t\t\t  AND ts > $2\n\t\t\tGROUP BY credential_id\n\t\t)\n\t\tSELECT t.binding_id, t.credential_id, t.provider_id, t.provider_name, t.credential_label,\n\t\t\tt.raw_model_name, t.is_routable, t.unavailable_reason, t.manual_priority,\n\t\t\tt.recent_samples, t.recent_success_rate, COALESCE(rs.requests_24h, 0),\n\t\t\trs.success_rate_24h, rs.p95_latency_ms, rs.p95_first_chunk_ms,\n\t\t\tCOALESCE(rs.timeout_count, 0), COALESCE(rs.empty_response_count, 0),\n\t\t\tCOALESCE(rs.quota_failure_count, 0), npr.direct_ok, npr.gateway_ok,\n\t\t\tCOALESCE(npr.direct_err_code, npr.gateway_err_code), npr.started_at\n\t\tFROM target t\n\t\tLEFT JOIN request_stats rs ON rs.credential_id = t.credential_id\n\t\tLEFT JOIN LATERAL (\n\t\t\tSELECT direct_ok, gateway_ok, direct_err_code, gateway_err_code, started_at\n\t\t\tFROM node_probe_runs\n\t\t\tWHERE credential_id = t.credential_id AND lower(raw_model_name) = lower(t.raw_model_name)\n\t\t\tORDER BY started_at DESC LIMIT 1\n\t\t) npr ON TRUE\n\t\tORDER BY t.manual_priority, t.credential_id",
+      "sql_filter_cols": [
+        "canonical_id",
+        "id",
+        "error_kind",
+        "ts",
+        "credential_id"
+      ],
+      "sql_order_cols": "credential_id,provider_id,provider_name,credential_label,raw_model_name,is_routable,unavailable_reason,manual_priority,recent_samples,recent_success_rate,success_rate_24h,p95_latency_ms,p95_first_chunk_ms,direct_ok,gateway_ok,direct_err_code,gateway_err_code,started_at DESC",
+      "param_roles": [
+        {
+          "index": 2,
+          "column": "ts",
+          "op": ">"
+        }
+      ]
+    },
+    {
+      "shape_id": "model_status-483d612c7b",
+      "file": "admin/model_status.go",
+      "line": 260,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT COALESCE(NULLIF(TRIM(client_model), ''), '(unknown)') AS model_name,\n\t\t       COUNT(*)::int AS total,\n\t\t       COUNT(*) FILTER (WHERE success IS TRUE)::int AS success_n,\n\t\t       COALESCE(SUM(latency_ms) FILTER (WHERE success IS TRUE AND latency_ms IS NOT NULL), 0)::float8 AS latency_sum,\n\t\t       COUNT(*) FILTER (WHERE success IS TRUE AND latency_ms IS NOT NULL)::int AS latency_n\n\t\t  FROM request_logs_with_current_month\n\t\t WHERE ts >= $1\n\t\t   AND client_model IS NOT NULL\n\t\t   AND TRIM(client_model) <> ''\n\t\t GROUP BY 1",
+      "sql_filter_cols": [
+        "success",
+        "latency_ms",
+        "ts",
+        "client_model"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
+        }
+      ]
+    },
+    {
+      "shape_id": "model_status-99a585edd9",
+      "file": "admin/model_status.go",
+      "line": 289,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT COALESCE(NULLIF(TRIM(client_model), ''), '(unknown)') AS model_name,\n\t\t       date_trunc('hour', ts) AS hour_bucket,\n\t\t       COUNT(*)::int AS total,\n\t\t       COUNT(*) FILTER (WHERE success IS TRUE)::int AS success_n\n\t\t  FROM request_logs_with_current_month\n\t\t WHERE ts >= $1\n\t\t   AND client_model IS NOT NULL\n\t\t   AND TRIM(client_model) <> ''\n\t\t GROUP BY 1, 2",
+      "sql_filter_cols": [
+        "success",
+        "ts",
+        "client_model"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
+        }
+      ]
+    },
+    {
+      "shape_id": "no_topic_session-888f0f643d",
+      "file": "admin/no_topic_session.go",
+      "line": 137,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT\n\t\t\trl.ts, rl.request_id, rl.client_model, rl.outbound_model,\n\t\t\trl.request_preview, rl.response_preview,\n\t\t\tCOALESCE(rb.request_body::text, '') AS request_body,\n\t\t\tCOALESCE(rb.response_body::text, '') AS response_body,\n\t\t\trl.prompt_tokens, rl.completion_tokens, rl.latency_ms,\n\t\t\trl.cost_usd, rl.request_status, rl.error_kind,\n\t\t\trl.work_type, rl.request_mode, rl.gw_session_id\n\t\tFROM request_logs_with_current_month rl\n\t\tLEFT JOIN",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "no_topic_session-0eb02164dc",
+      "file": "admin/no_topic_session.go",
+      "line": 319,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "AS request_status,\n\t\t       rl.error_kind, rl.client_model\n\t\tFROM request_logs_with_current_month rl\n\t\tLEFT JOIN",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "no_topic_session-5a8b44c6ae",
+      "file": "admin/no_topic_session.go",
+      "line": 535,
+      "occurrence_count": 2,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT api_key_id, tenant_id FROM request_logs_with_current_month",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "probe_history-3ea8d800fe",
+      "file": "admin/probe_history.go",
+      "line": 451,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "WITH active_failures AS (\n\t\t\tSELECT raw_model_name,\n\t\t\t       COUNT(DISTINCT credential_id) AS creds_affected,\n\t\t\t       COUNT(*) AS total_failures,\n\t\t\t       MAX(started_at) AS last_failed_at,\n\t\t\t       MIN(COALESCE(direct_err_code, 'unknown')) AS sample_error_code\n\t\t\tFROM node_probe_runs\n\t\t\tWHERE direct_ok = FALSE\n\t\t\t  AND started_at > NOW() - INTERVAL '6 hours'\n\t\t\tGROUP BY raw_model_name\n\t\t),\n\t\tpassive_failures AS (\n\t\t\tSELECT raw_model_name,\n\t\t\t       COUNT(DISTINCT credential_id) AS creds_affected,\n\t\t\t       SUM(consecutive_count) AS total_failures,\n\t\t\t       MAX(last_seen_at) AS last_failed_at,\n\t\t\t       MIN(error_kind) AS sample_error_code\n\t\t\tFROM passive_probe_state\n\t\t\tWHERE error_kind IN (\n\t\t\t    'model_not_found', 'quota_periodic', 'quota_balance',\n\t\t\t    'quota_permanent', 'rate_limit', 'auth', 'auth_revoked', 'upstream_down'\n\t\t\t)\n\t\t\t  AND (in_reviewing = TRUE OR final_marked_at > NOW() - INTERVAL '6 hours')\n\t\t\t  AND last_seen_at > NOW() - INTERVAL '6 hours'\n\t\t\tGROUP BY raw_model_name\n\t\t),\n\t\trequest_log_failures AS (\n\t\t\tSELECT outbound_model AS raw_model_name,\n\t\t\t       COUNT(DISTINCT credential_id) AS creds_affected,\n\t\t\t       COUNT(*) AS total_failures,\n\t\t\t       MAX(ts) AS last_failed_at,\n\t\t\t       MIN(failure_detail_code) AS sample_error_code\n\t\t\tFROM request_logs_with_current_month\n\t\t\tWHERE lower(COALESCE(request_status, '')) = 'failure'\n\t\t\t  AND error_kind IN (\n\t\t\t    'model_not_found', 'quota', 'quota_periodic', 'quota_balance',\n\t\t\t    'quota_permanent', 'rate_limit', 'auth', 'auth_revoked', 'upstream_down'\n\t\t\t  )\n\t\t\t  AND ts > NOW() - INTERVAL '6 hours'\n\t\t\t  AND credential_id IS NOT NULL\n\t\t\t  AND outbound_model IS NOT NULL\n\t\t\tGROUP BY outbound_model\n\t\t),\n\t\tall_failures AS (\n\t\t\tSELECT 'active_probe' AS source, raw_model_name, creds_affected,\n\t\t\t       total_failures, last_failed_at, sample_error_code\n\t\t\tFROM active_failures\n\t\t\tUNION ALL\n\t\t\tSELECT 'passive_probe' AS source, raw_model_name, creds_affected,\n\t\t\t       total_failures, last_failed_at, sample_error_code\n\t\t\tFROM passive_failures\n\t\t\tUNION ALL\n\t\t\tSELECT 'session_turns' AS source, raw_model_name, creds_affected,\n\t\t\t       total_failures, last_failed_at, sample_error_code\n\t\t\tFROM request_log_failures\n\t\t),\n\t\taggregated AS (\n\t\t\tSELECT\n\t\t\t    raw_model_name,\n\t\t\t    SUM(creds_affected) AS creds_affected,\n\t\t\t    SUM(total_failures) AS total_failures,\n\t\t\t    MAX(last_failed_at) AS last_failed_at,\n\t\t\t    MIN(sample_error_code) AS sample_error_code,\n\t\t\t    COALESCE(SUM(CASE WHEN source = 'active_probe' THEN total_failures ELSE 0 END), 0) AS active_probe_count,\n\t\t\t    COALESCE(SUM(CASE WHEN source = 'passive_probe' THEN total_failures ELSE 0 END), 0) AS passive_probe_count,\n\t\t\t    COALESCE(SUM(CASE WHEN source = 'session_turns' THEN total_failures ELSE 0 END), 0) AS request_logs_count\n\t\t\tFROM all_failures\n\t\t\tGROUP BY raw_model_name\n\t\t)\n\t\tSELECT\n\t\t    agg.raw_model_name,\n\t\t    agg.creds_affected,\n\t\t    agg.total_failures,\n\t\t    agg.last_failed_at,\n\t\t    agg.sample_error_code,\n\t\t    agg.active_probe_count,\n\t\t    agg.passive_probe_count,\n\t\t    agg.request_logs_count,\n\t\t    COALESCE(EXISTS(\n\t\t        SELECT 1 FROM passive_probe_state pps\n\t\t        WHERE pps.raw_model_name = agg.raw_model_name\n\t\t          AND pps.in_reviewing = TRUE\n\t\t    ), FALSE) AS in_reviewing,\n\t\t    mc.canonical_name\n\t\tFROM aggregated agg\n\t\tLEFT JOIN LATERAL (\n\t\t    SELECT mc.canonical_name\n\t\t    FROM model_aliases ma\n\t\t    JOIN models_canonical mc ON mc.id = ma.canonical_id\n\t\t    -- 2026-07-14: model_aliases.raw_name is persisted lowercase.\n\t\t    WHERE ma.raw_name = lower(agg.raw_model_name)\n\t\t    LIMIT 1\n\t\t) mc ON TRUE\n\t\tORDER BY agg.total_failures DESC, agg.last_failed_at DESC\n\t\tLIMIT $1",
+      "sql_filter_cols": [
+        "direct_ok",
+        "started_at",
+        "error_kind",
+        "last_seen_at",
+        "ts",
+        "credential_id",
+        "outbound_model",
+        "raw_model_name",
+        "in_reviewing",
+        "raw_name"
+      ],
+      "sql_order_cols": "total_failures DESC,last_failed_at DESC",
+      "param_roles": []
+    },
+    {
+      "shape_id": "provider_models-1b642bdc46",
+      "file": "admin/provider_models.go",
+      "line": 446,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": true,
+      "sql": "SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE %s",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "provider_models-664fa44960",
+      "file": "admin/provider_models.go",
+      "line": 453,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": true,
+      "sql": "SELECT rl.ts, rl.request_id, rl.credential_id,\n\t\t       rl.client_model, rl.outbound_model,\n\t\t       rl.success, rl.error_kind,\n\t\t       rl.prompt_tokens, rl.completion_tokens, rl.total_tokens,\n\t\t       rl.cost_usd::float8, rl.latency_ms\n\t\tFROM request_logs_with_current_month rl\n\t\tWHERE %s\n\t\tORDER BY rl.ts DESC\n\t\tLIMIT $%d OFFSET $%d",
+      "sql_filter_cols": [],
+      "sql_order_cols": "ts DESC",
+      "param_roles": []
+    },
+    {
+      "shape_id": "route_incidents-95175a5162",
+      "file": "admin/route_incidents.go",
+      "line": 586,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT rl.error_kind, rl.failure_stage, rl.request_id\n\t\tFROM request_logs_with_current_month rl\n\t\tWHERE rl.tenant_id = $1\n\t\t  AND rl.request_status = 'failure'\n\t\t  AND rl.ts >= $2\n\t\t  AND (rl.outbound_model = $3 OR rl.client_model = $3)\n\t\t  AND COALESCE(rl.provider_id, 0) = COALESCE($4, 0)\n\t\t  AND COALESCE(rl.credential_id, 0) = COALESCE($5, 0)\n\t\tORDER BY rl.ts DESC\n\t\tLIMIT 32",
+      "sql_filter_cols": [
+        "tenant_id",
+        "request_status",
+        "ts"
+      ],
+      "sql_order_cols": "ts DESC",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "tenant_id",
+          "op": "="
+        },
+        {
+          "index": 2,
+          "column": "ts",
+          "op": ">"
+        }
+      ]
+    },
+    {
+      "shape_id": "session_analytics_breakdown-cb4aba5ac8",
+      "file": "admin/session_analytics_breakdown.go",
+      "line": 256,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "WITH model_agg AS (\n\t\t\tSELECT\n\t\t\t\tCOALESCE(NULLIF(TRIM(rl.outbound_model), ''), '<unknown>') AS model,\n\t\t\t\tCOUNT(*) AS request_count,\n\t\t\t\tCOUNT(DISTINCT rl.gw_session_id) AS session_count,\n\t\t\t\tCOALESCE(SUM(rl.cost_usd), 0) AS total_cost_usd,\n\t\t\t\tCOALESCE(SUM(rl.prompt_tokens + rl.completion_tokens), 0) AS total_tokens,\n\t\t\t\tCOALESCE(AVG(rl.latency_ms), 0) AS avg_latency_ms,\n\t\t\t\tCOUNT(*) FILTER (WHERE rl.request_status = 'failure') AS error_count\n\t\t\tFROM request_logs_with_current_month rl",
+      "sql_filter_cols": [
+        "request_status"
+      ],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "session_analytics_breakdown-790d98b986",
+      "file": "admin/session_analytics_breakdown.go",
+      "line": 305,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "WITH provider_agg AS (\n\t\t\tSELECT\n\t\t\t\tCOALESCE(rl.provider_id::text, 'unknown') AS provider,\n\t\t\t\tCOUNT(*) AS request_count,\n\t\t\t\tCOUNT(DISTINCT rl.gw_session_id) AS session_count,\n\t\t\t\tCOALESCE(SUM(rl.cost_usd), 0) AS total_cost_usd,\n\t\t\t\tCOALESCE(SUM(rl.prompt_tokens + rl.completion_tokens), 0) AS total_tokens,\n\t\t\t\tCOALESCE(AVG(rl.latency_ms), 0) AS avg_latency_ms,\n\t\t\t\tCOUNT(*) FILTER (WHERE rl.request_status = 'failure') AS error_count\n\t\t\tFROM request_logs_with_current_month rl",
+      "sql_filter_cols": [
+        "request_status"
+      ],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "session_analytics_timeseries-2e1da4bbf5",
+      "file": "admin/session_analytics_timeseries.go",
+      "line": 183,
+      "occurrence_count": 2,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT\n\t\t\tdate_trunc($1, rl.ts)::date AS date,\n\t\t\tCOUNT(DISTINCT rl.gw_session_id) AS session_count,\n\t\t\tCOUNT(*) AS request_count,\n\t\t\tSUM(CASE WHEN rl.success THEN 1 ELSE 0 END) AS success_count,\n\t\t\tSUM(CASE WHEN lower(COALESCE(rl.request_status, '')) = 'failure' THEN 1 ELSE 0 END) AS error_count,\n\t\tSUM(COALESCE(rl.cost_usd, 0)) AS total_cost_usd,\n\t\tSUM(COALESCE(rl.prompt_tokens, 0) + COALESCE(rl.completion_tokens, 0)) AS total_tokens,\n\t\tCOUNT(DISTINCT rl.end_user_id) AS distinct_users\n\tFROM request_logs_with_current_month rl\n\tWHERE rl.ts >= $2 AND rl.ts < $3",
+      "sql_filter_cols": [
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 2,
+          "column": "ts",
+          "op": ">"
+        },
+        {
+          "index": 3,
+          "column": "ts",
+          "op": "<"
+        }
+      ]
+    },
+    {
+      "shape_id": "session_analytics_timeseries-840ec4f5c0",
+      "file": "admin/session_analytics_timeseries.go",
+      "line": 331,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT\n\t\t\tdate_trunc($1, rl.ts)::date AS date,\n\t\t\tpercentile_cont(0.5) WITHIN GROUP (ORDER BY rl.latency_ms)::int AS p50_latency_ms,\n\t\tpercentile_cont(0.9) WITHIN GROUP (ORDER BY rl.latency_ms)::int AS p90_latency_ms,\n\t\tpercentile_cont(0.99) WITHIN GROUP (ORDER BY rl.latency_ms)::int AS p99_latency_ms,\n\t\tMAX(rl.latency_ms) AS max_latency_ms,\n\t\tAVG(rl.latency_ms)::int AS avg_latency_ms,\n\t\tCOALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY rl.stream_first_chunk_ms)::int, 0) AS stream_first_chunk_p50_ms\n\tFROM request_logs_with_current_month rl\n\tWHERE rl.ts >= $2 AND rl.ts < $3 AND rl.latency_ms IS NOT NULL",
+      "sql_filter_cols": [
+        "ts",
+        "latency_ms"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 2,
+          "column": "ts",
+          "op": ">"
+        },
+        {
+          "index": 3,
+          "column": "ts",
+          "op": "<"
+        }
+      ]
+    },
+    {
+      "shape_id": "swim_lane_init-b32f4f5f13",
+      "file": "admin/swim_lane_init.go",
+      "line": 111,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT\n\t\t\trl.request_id,\n\t\t\trl.ts,\n\t\t\tCOALESCE(NULLIF(rl.client_model, ''), mc.canonical_name, rl.outbound_model, 'unknown') AS model,\n\t\t\tCOALESCE(NULLIF(mf.vendor, ''), COALESCE(rl.client_model, ''), 'unknown') AS vendor,\n\t\t\tCOALESCE(NULLIF(p.display_name, ''), NULLIF(p.catalog_code, ''), p.code, 'unknown') AS provider,\n\t\t\tCOALESCE(rl.request_status, '') AS status,\n\t\t\tCOALESCE(rl.error_kind, '') AS error_kind,\n\t\t\tCOALESCE(rl.latency_ms, 0) AS latency_ms,\n\t\t\tCOALESCE(rl.cost_usd, 0) AS cost_usd,\n\t\t\tCOALESCE(rl.prompt_tokens, 0) AS prompt_tokens,\n\t\t\tCOALESCE(rl.completion_tokens, 0) AS completion_tokens\n\t\tFROM request_logs_with_current_month rl\n\t\tLEFT JOIN models_canonical mc ON mc.id = rl.canonical_id\n\t\tLEFT JOIN model_families   mf ON mf.id = mc.family\n\t\tLEFT JOIN credentials      c  ON c.id  = rl.credential_id\n\t\tLEFT JOIN providers        p  ON p.id  = c.provider_id\n\t\tWHERE rl.ts >= $1",
+      "sql_filter_cols": [
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
+        }
+      ]
+    },
+    {
+      "shape_id": "tenants-f741c6818f",
+      "file": "admin/tenants.go",
+      "line": 311,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT tenant_id,\n\t\t       COUNT(*)::bigint,\n\t\t       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)::bigint,\n\t\t       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint,\n\t\t       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8\n\t\tFROM request_logs_with_current_month\n\t\tWHERE tenant_id = ANY($1)\n\t\t  AND ts >= now() - INTERVAL '7 days'\n\t\tGROUP BY tenant_id",
+      "sql_filter_cols": [
+        "tenant_id",
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "tenant_id",
+          "op": "="
+        }
+      ]
+    },
+    {
+      "shape_id": "tenants-643eda89d5",
+      "file": "admin/tenants.go",
+      "line": 503,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT COUNT(*)::bigint,\n\t\t       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)::bigint,\n\t\t       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint,\n\t\t       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8\n\t\tFROM request_logs_with_current_month\n\t\tWHERE tenant_id = $1 AND ts >= now() - INTERVAL '7 days'",
+      "sql_filter_cols": [
+        "tenant_id",
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "tenant_id",
+          "op": "="
+        }
+      ]
+    },
+    {
+      "shape_id": "top_problems-3461470f2b",
+      "file": "admin/top_problems.go",
+      "line": 37,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "request_logs_with_current_month",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "top_problems-895618708c",
+      "file": "admin/top_problems.go",
+      "line": 182,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT\n  rl.credential_id,\n  COALESCE(c.label, '') AS label,\n  COUNT(*) AS request_count,\n  COUNT(*) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE) AS failure_count,\n  CASE WHEN COUNT(*) > 0\n       THEN (COUNT(*) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE))::float8 / COUNT(*)::float8\n       ELSE 0\n  END AS failure_rate,\n  COALESCE(MODE() WITHIN GROUP (ORDER BY rl.error_kind) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE), '') AS top_failure_kind,\n  COALESCE(MODE() WITHIN GROUP (ORDER BY rl.failure_detail_code) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE), '') AS top_failure_detail\nFROM request_logs_with_current_month rl\nLEFT JOIN credentials c ON c.id = rl.credential_id\nWHERE rl.ts >= $1 AND rl.ts <= $2\n  AND rl.credential_id IS NOT NULL\nGROUP BY rl.credential_id, c.label\nHAVING COUNT(*) >= $4\nORDER BY failure_count DESC,\n         (COUNT(*) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE))::float8 / COUNT(*) DESC\nLIMIT $3",
+      "sql_filter_cols": [
+        "ts",
+        "credential_id"
+      ],
+      "sql_order_cols": "failure_count DESC",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
+        },
+        {
+          "index": 2,
+          "column": "ts",
+          "op": "<"
+        }
+      ]
+    },
+    {
+      "shape_id": "top_problems-f13a678ffe",
+      "file": "admin/top_problems.go",
+      "line": 227,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT\n  rl.client_model,\n  COUNT(*) AS request_count,\n  COUNT(*) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE) AS failure_count,\n  CASE WHEN COUNT(*) > 0\n       THEN (COUNT(*) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE))::float8 / COUNT(*)::float8\n       ELSE 0\n  END AS failure_rate,\n  COALESCE(MODE() WITHIN GROUP (ORDER BY rl.error_kind) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE), '') AS top_failure_kind,\n  COALESCE(MODE() WITHIN GROUP (ORDER BY rl.failure_detail_code) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE), '') AS top_failure_detail\nFROM request_logs_with_current_month rl\nWHERE rl.ts >= $1 AND rl.ts <= $2\n  AND rl.client_model IS NOT NULL AND rl.client_model != ''\nGROUP BY rl.client_model\nHAVING COUNT(*) >= $4\nORDER BY failure_count DESC,\n         (COUNT(*) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE))::float8 / COUNT(*) DESC\nLIMIT $3",
+      "sql_filter_cols": [
+        "ts",
+        "client_model"
+      ],
+      "sql_order_cols": "failure_count DESC",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
+        },
+        {
+          "index": 2,
+          "column": "ts",
+          "op": "<"
+        }
+      ]
+    },
+    {
+      "shape_id": "topology_clients_today-3330a325de",
+      "file": "admin/topology_clients_today.go",
+      "line": 97,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "WITH base AS (\n\tSELECT COALESCE(NULLIF(rl.agent_name, ''), NULLIF(rl.client_profile, ''),\n\t                NULLIF(rl.client_protocol, ''),\n\t                LEFT(NULLIF(rl.identity_hash, ''), 8), 'unknown') AS client_key,\n\t       COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status,\n\t       rl.prompt_tokens, rl.completion_tokens, rl.total_tokens,\n\t       rl.cache_read_tokens, rl.cache_write_tokens,\n\t       rl.credits_charged, rl.cost_usd\n\tFROM request_logs_with_current_month rl\n\tWHERE rl.ts >= $1::timestamptz\n\t  AND ($3::timestamptz IS NULL OR rl.ts <= $3::timestamptz)\n\t  AND ($2::text = '' OR rl.tenant_id = $2)\n)\nSELECT client_key,\n       COUNT(*)::bigint                                AS requests,\n       COUNT(*) FILTER (WHERE status = 'success')::bigint      AS success,\n       COUNT(*) FILTER (WHERE status = 'failure')::bigint      AS failure,\n       COUNT(*) FILTER (WHERE status = 'rate_limited')::bigint AS rate_limited,\n       COALESCE(SUM(prompt_tokens),0)::bigint      AS prompt_tokens,\n       COALESCE(SUM(completion_tokens),0)::bigint  AS completion_tokens,\n       COALESCE(SUM(cache_read_tokens),0)::bigint  AS cache_read_tokens,\n       COALESCE(SUM(cache_write_tokens),0)::bigint AS cache_write_tokens,\n       COALESCE(SUM(total_tokens),0)::bigint       AS total_tokens,\n       COALESCE(SUM(credits_charged),0)::bigint    AS credits_charged,\n       COALESCE(SUM(cost_usd),0)::float8           AS cost_usd\nFROM base\nGROUP BY client_key\nORDER BY requests DESC, client_key\nLIMIT $4",
+      "sql_filter_cols": [
+        "ts",
+        "status"
+      ],
+      "sql_order_cols": "requests DESC,client_key",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
+        }
+      ]
+    },
+    {
+      "shape_id": "topology_window_stats-a5549d01e5",
+      "file": "admin/topology_window_stats.go",
+      "line": 71,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "WITH base AS (\n\tSELECT COALESCE(p.id, 0)                       AS provider_id,\n\t       COALESCE(p.catalog_code, '')            AS catalog_code,\n\t       COALESCE(NULLIF(p.display_name, ''), '') AS display_name,\n\t       COALESCE(p.enabled, FALSE)              AS enabled,\n\t       COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status,\n\t       -- ★ status 表达式 = requestLogsStatusExpr（逐字内联，见该常量注释）\n\t       rl.prompt_tokens, rl.completion_tokens, rl.total_tokens,\n\t       rl.cache_read_tokens, rl.cache_write_tokens,\n\t       rl.credits_charged, rl.cost_usd\n\tFROM request_logs_with_current_month rl\n\tLEFT JOIN credentials c ON c.id = rl.credential_id\n\tLEFT JOIN providers p ON p.id = COALESCE(c.provider_id, rl.provider_id)\n\tWHERE rl.ts >= $1::timestamptz\n\t  AND ($2::text = '' OR rl.tenant_id = $2)\n)\nSELECT provider_id, catalog_code, display_name, enabled,\n       COUNT(*)::bigint                                AS requests,\n       COUNT(*) FILTER (WHERE status = 'success')::bigint      AS success,\n       COUNT(*) FILTER (WHERE status = 'failure')::bigint      AS failure,\n       COUNT(*) FILTER (WHERE status = 'rate_limited')::bigint AS rate_limited,\n       COALESCE(SUM(prompt_tokens),0)::bigint      AS prompt_tokens,\n       COALESCE(SUM(completion_tokens),0)::bigint  AS completion_tokens,\n       COALESCE(SUM(cache_read_tokens),0)::bigint  AS cache_read_tokens,\n       COALESCE(SUM(cache_write_tokens),0)::bigint AS cache_write_tokens,\n       COALESCE(SUM(total_tokens),0)::bigint       AS total_tokens,\n       COALESCE(SUM(credits_charged),0)::bigint    AS credits_charged,\n       COALESCE(SUM(cost_usd),0)::float8           AS cost_usd,\n       NULL::timestamptz                           AS watermark\nFROM base\nGROUP BY provider_id, catalog_code, display_name, enabled\nORDER BY requests DESC, provider_id\nLIMIT $3",
+      "sql_filter_cols": [
+        "ts",
+        "status"
+      ],
+      "sql_order_cols": "requests DESC,provider_id",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
+        }
+      ]
+    },
+    {
+      "shape_id": "topology_window_stats-63de1235bc",
+      "file": "admin/topology_window_stats.go",
+      "line": 113,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "WITH base AS (\n\tSELECT COALESCE(mc.id, 0)                        AS canonical_id,\n\t       COALESCE(NULLIF(mc.canonical_name, ''), '') AS canonical_name,\n\t       COALESCE(NULLIF(rl.client_model, ''), '')   AS raw_model_name,\n\t       COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status,\n\t       -- ★ status 表达式 = requestLogsStatusExpr（逐字内联，见该常量注释）\n\t       rl.prompt_tokens, rl.completion_tokens, rl.total_tokens,\n\t       rl.cache_read_tokens, rl.cache_write_tokens,\n\t       rl.credits_charged, rl.cost_usd\n\tFROM request_logs_with_current_month rl\n\tLEFT JOIN models_canonical mc ON mc.id = rl.canonical_id\n\tWHERE rl.ts >= $1::timestamptz\n\t  AND ($2::text = '' OR rl.tenant_id = $2)\n)\nSELECT canonical_id,\n       COALESCE(MAX(canonical_name), '')                    AS canonical_name,\n       COALESCE(MAX(NULLIF(raw_model_name, '')), '')        AS raw_model_name,\n       COUNT(*)::bigint                                AS requests,\n       COUNT(*) FILTER (WHERE status = 'success')::bigint      AS success,\n       COUNT(*) FILTER (WHERE status = 'failure')::bigint      AS failure,\n       COUNT(*) FILTER (WHERE status = 'rate_limited')::bigint AS rate_limited,\n       COALESCE(SUM(prompt_tokens),0)::bigint      AS prompt_tokens,\n       COALESCE(SUM(completion_tokens),0)::bigint  AS completion_tokens,\n       COALESCE(SUM(cache_read_tokens),0)::bigint  AS cache_read_tokens,\n       COALESCE(SUM(cache_write_tokens),0)::bigint AS cache_write_tokens,\n       COALESCE(SUM(total_tokens),0)::bigint       AS total_tokens,\n       COALESCE(SUM(credits_charged),0)::bigint    AS credits_charged,\n       COALESCE(SUM(cost_usd),0)::float8           AS cost_usd,\n       NULL::timestamptz                           AS watermark\nFROM base\nGROUP BY canonical_id,\n         CASE WHEN canonical_id = 0 THEN COALESCE(raw_model_name, '') ELSE '' END\nORDER BY requests DESC, canonical_id, raw_model_name\nLIMIT $3",
+      "sql_filter_cols": [
+        "ts",
+        "status"
+      ],
+      "sql_order_cols": "requests DESC,canonical_id,raw_model_name",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
+        }
+      ]
+    },
+    {
+      "shape_id": "usage-fac0c8ab96",
+      "file": "admin/usage.go",
+      "line": 841,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT\n\t\t\tCOUNT(*) FILTER (WHERE COALESCE(failure_stage, '') = 'gateway'\n\t\t\t\tOR COALESCE(failure_detail_code, '') LIKE 'gw_%'),\n\t\t\tCOUNT(*) FILTER (WHERE COALESCE(failure_stage, '') = 'upstream'\n\t\t\t\tOR (NOT success AND COALESCE(failure_stage, '') = '' AND provider_id IS NOT NULL AND COALESCE(request_status, '') <> 'rate_limited')),\n\t\t\tCOALESCE((\n\t\t\t\tSELECT MAX(bucket_count) FROM (\n\t\t\t\t\tSELECT COUNT(*) AS bucket_count\n\t\t\t\t\t  FROM request_logs_with_current_month rl2\n\t\t\t\t\t WHERE rl2.api_key_id = $1\n\t\t\t\t\t   AND rl2.ts >= $2 AND rl2.ts < $3\n\t\t\t\t\t GROUP BY date_trunc('hour', rl2.ts)\n\t\t\t\t\t        + (FLOOR(EXTRACT(minute FROM rl2.ts) / 5) * INTERVAL '5 minutes')\n\t\t\t\t) peaks\n\t\t\t), 0)\n\t\tFROM request_logs_with_current_month\n\t\tWHERE api_key_id = $1 AND ts >= $2 AND ts < $3",
+      "sql_filter_cols": [
+        "api_key_id",
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "api_key_id",
+          "op": "="
+        },
+        {
+          "index": 2,
+          "column": "ts",
+          "op": ">"
+        },
+        {
+          "index": 3,
+          "column": "ts",
+          "op": "<"
+        }
+      ]
+    },
+    {
+      "shape_id": "usage-ecc57218c4",
+      "file": "admin/usage.go",
+      "line": 1135,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT\n\t\t\tdate_trunc('hour', ts)\n\t\t\t\t+ (FLOOR(EXTRACT(minute FROM ts) / 5) * INTERVAL '5 minutes') AS bucket,\n\t\t\tCOUNT(*) AS requests,\n\t\t\tCOUNT(*) FILTER (WHERE success) AS success_count,\n\t\t\tCOUNT(*) FILTER (WHERE request_status = 'failure') AS failure_count,\n\t\t\tCOUNT(*) FILTER (\n\t\t\t\tWHERE COALESCE(failure_stage, '') = 'gateway'\n\t\t\t\t   OR COALESCE(failure_detail_code, '') LIKE 'gw_%'\n\t\t\t) AS gateway_rejected,\n\t\t\tCOUNT(*) FILTER (WHERE COALESCE(failure_stage, '') = 'upstream') AS upstream_failed\n\t\tFROM request_logs_with_current_month\n\t\tWHERE api_key_id = $1 AND ts >= $2 AND ts < $3\n\t\tGROUP BY 1\n\t\tORDER BY 1",
+      "sql_filter_cols": [
+        "request_status",
+        "api_key_id",
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "api_key_id",
+          "op": "="
+        },
+        {
+          "index": 2,
+          "column": "ts",
+          "op": ">"
+        },
+        {
+          "index": 3,
+          "column": "ts",
+          "op": "<"
+        }
+      ]
+    },
+    {
+      "shape_id": "usage_credits-e1251bbcfa",
+      "file": "admin/usage_credits.go",
+      "line": 143,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "request_logs_with_current_month AS r",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "usage_enhanced-7fb7e08985",
+      "file": "admin/usage_enhanced.go",
+      "line": 123,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "request_logs_with_current_month rl",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "usage_trend_series-3461470f2b",
+      "file": "admin/usage_trend_series.go",
+      "line": 161,
+      "occurrence_count": 3,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "request_logs_with_current_month",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "work_types-7d8c37999c",
+      "file": "admin/work_types.go",
+      "line": 293,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT COALESCE(work_type, 'unknown'), COUNT(*)\n\t\tFROM request_logs_with_current_month\n\t\tWHERE ts >= NOW() - INTERVAL '24 hours'\n\t\t  AND work_type IS NOT NULL AND work_type <> ''\n\t\t  AND (\n\t\t    is_auto_request = TRUE\n\t\t    OR (is_auto_request IS NOT TRUE AND",
+      "sql_filter_cols": [
+        "ts",
+        "work_type"
+      ],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "work_types-d5d1df46c9",
+      "file": "admin/work_types.go",
+      "line": 340,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": true,
+      "sql": "SELECT %s, COUNT(*)\n\t\tFROM request_logs_with_current_month\n\t\tWHERE ts >= NOW() - INTERVAL '24 hours'\n\t\t  AND (\n\t\t    is_auto_request = TRUE\n\t\t    OR (is_auto_request IS NOT TRUE AND %s)\n\t\t  )%s%s\n\t\tGROUP BY (%s)",
+      "sql_filter_cols": [
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "work_types-5d062e8be6",
+      "file": "admin/work_types.go",
+      "line": 381,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "THEN 1 ELSE 0 END), 0)\n\t\tFROM request_logs_with_current_month\n\t\tWHERE ts >= NOW() - INTERVAL '24 hours'",
+      "sql_filter_cols": [
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "work_types-6865e73b11",
+      "file": "admin/work_types.go",
+      "line": 443,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT COALESCE(NULLIF(outbound_model, ''), client_model, canonical_model) AS m, COUNT(*) AS c\n\t\tFROM request_logs_with_current_month\n\t\tWHERE ts >= NOW() - INTERVAL '24 hours'\n\t\t  AND COALESCE(NULLIF(outbound_model, ''), client_model, canonical_model) IS NOT NULL\n\t\t  AND (\n\t\t    is_auto_request = TRUE\n\t\t    OR (is_auto_request IS NOT TRUE AND",
+      "sql_filter_cols": [
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "daily_probe_audit-4090e07bdd",
+      "file": "bg/daily_probe_audit.go",
+      "line": 118,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "WITH used AS (\n\t\t\tSELECT rl.credential_id AS id, pm.raw_model_name, MAX(rl.ts) AS last_used_at\n\t\t\tFROM request_logs_with_current_month rl\n\t\t\tJOIN credential_model_bindings cmb ON cmb.credential_id = rl.credential_id\n\t\t\tJOIN provider_models pm ON pm.id = cmb.provider_model_id\n\t\t\tWHERE rl.ts >= now() -",
+      "sql_filter_cols": [
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "integrity_fingerprint_drift-e5571295ab",
+      "file": "bg/integrity_fingerprint_drift.go",
+      "line": 259,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "WITH business AS (\n\t\t    SELECT credential_id, raw_model_name, system_fingerprint, ts\n\t\t    FROM request_logs_with_current_month\n\t\t    WHERE ts > NOW() - ($1::int * INTERVAL '1 day')\n\t\t      AND system_fingerprint IS NOT NULL\n\t\t      AND credential_id IS NOT NULL\n\t\t      AND raw_model_name IS NOT NULL\n\t\t      AND COALESCE(is_auto_request, false) = false\n\t\t      AND (task_type IS NULL OR task_type NOT IN\n\t\t          ('self_check','node_probe','active_probe','integrity_probe','credential_selfcheck'))\n\t\t),\n\t\tbaseline_window AS (\n\t\t    SELECT credential_id, raw_model_name, system_fingerprint, ts\n\t\t    FROM business\n\t\t    WHERE ts <= NOW() - ($3::int * INTERVAL '1 day')\n\t\t),\n\t\tcurrent_window AS (\n\t\t    SELECT credential_id, raw_model_name, system_fingerprint\n\t\t    FROM business\n\t\t    WHERE ts > NOW() - ($3::int * INTERVAL '1 day')\n\t\t),\n\t\tbaseline_counts AS (\n\t\t    SELECT credential_id, raw_model_name, system_fingerprint, COUNT(*) AS n\n\t\t    FROM baseline_window\n\t\t    GROUP BY credential_id, raw_model_name, system_fingerprint\n\t\t),\n\t\tcurrent_counts AS (\n\t\t    SELECT credential_id, raw_model_name, system_fingerprint, COUNT(*) AS n\n\t\t    FROM current_window\n\t\t    GROUP BY credential_id, raw_model_name, system_fingerprint\n\t\t),\n\t\tbaseline_top AS (\n\t\t    SELECT credential_id, raw_model_name,\n\t\t           (ARRAY_AGG(system_fingerprint ORDER BY n DESC))[1] AS fp,\n\t\t           MAX(n) AS top_n, SUM(n) AS total\n\t\t    FROM baseline_counts\n\t\t    GROUP BY credential_id, raw_model_name\n\t\t),\n\t\tcurrent_top AS (\n\t\t    SELECT credential_id, raw_model_name,\n\t\t           (ARRAY_AGG(system_fingerprint ORDER BY n DESC))[1] AS fp,\n\t\t           MAX(n) AS top_n, SUM(n) AS total\n\t\t    FROM current_counts\n\t\t    GROUP BY credential_id, raw_model_name\n\t\t),\n\t\tjoined AS (\n\t\t    SELECT\n\t\t        b.credential_id, b.raw_model_name,\n\t\t        b.fp   AS baseline_fp,\n\t\t        c.fp   AS current_fp,\n\t\t        b.top_n  AS baseline_top,\n\t\t        b.total AS baseline_total,\n\t\t        c.top_n  AS current_top,\n\t\t        c.total AS current_total\n\t\t    FROM baseline_top b\n\t\t    JOIN current_top c\n\t\t      ON c.credential_id = b.credential_id\n\t\t     AND c.raw_model_name = b.raw_model_name\n\t\t    WHERE b.total >= $2 AND c.total >= $2\n\t\t      AND (b.top_n::float / b.total::float) >= $4\n\t\t      AND (c.top_n::float / c.total::float) >= $4\n\t\t)\n\tSELECT j.credential_id, j.raw_model_name, j.baseline_fp, j.current_fp,\n\t\t       j.baseline_top, j.baseline_total, j.current_top, j.current_total\n\tFROM joined j",
+      "sql_filter_cols": [
+        "ts",
+        "system_fingerprint",
+        "credential_id",
+        "raw_model_name",
+        "total"
+      ],
+      "sql_order_cols": "raw_model_name,baseline_fp,current_fp,baseline_top,baseline_total,current_top",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
+        },
+        {
+          "index": 2,
+          "column": "total",
+          "op": ">"
+        },
+        {
+          "index": 3,
+          "column": "ts",
+          "op": "<"
+        }
+      ]
+    },
+    {
+      "shape_id": "passive_probe_listener-c6fa80f347",
+      "file": "bg/passive_probe_listener.go",
+      "line": 112,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "UPDATE passive_probe_state pps\n\t\tSET consecutive_count = 0\n\t\tFROM (\n\t\t\tSELECT DISTINCT credential_id, COALESCE(outbound_model, client_model) AS raw_model_name\n\t\t\t-- 2026-09-10 minimax-prod-v2 incident: the bare _request_logs\n\t\t\t-- parent only holds cold rows (max(ts) was a full day stale on\n\t\t\t-- 154), so recent successes were invisible and \"consecutive\"\n\t\t\t-- streaks never reset. pollNewErrors already reads the\n\t\t\t-- current-month surface; every recent-window read must too.\n\t\t\t-- R50: probe traffic excluded (dual-arm) — the passive listener\n\t\t\t-- profiles BUSINESS traffic; probe rows would both arm and\n\t\t\t-- reset streaks for models probes touch.\n\t\t\tFROM request_logs_with_current_month rl\n\t\t\tWHERE",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "passive_probe_listener-e1426e9b42",
+      "file": "bg/passive_probe_listener.go",
+      "line": 170,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "INSERT INTO passive_probe_state\n\t\t    (credential_id, raw_model_name, error_kind,\n\t\t     consecutive_count, total_recent_count, window_total_count,\n\t\t     first_seen_at, last_seen_at, last_response_body_preview)\n\t\tSELECT\n\t\t    rl.credential_id,\n\t\t    COALESCE(rl.outbound_model, rl.client_model) AS raw_model_name,\n\t\t    rl.error_kind,\n\t\t    COUNT(*), COUNT(*), 0,\n\t\t    MIN(rl.ts), NOW(),\n\t\t    LEFT(COALESCE(MAX(COALESCE(rb.response_body::text, '')), ''), 200)\n\t\tFROM request_logs_with_current_month rl\n\t\tLEFT JOIN",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "passive_probe_listener-0c29ad76fd",
+      "file": "bg/passive_probe_listener.go",
+      "line": 218,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "UPDATE passive_probe_state pps\n\t\tSET window_total_count = COALESCE(win.total, 0)\n\t\tFROM (\n\t\t    SELECT credential_id,\n\t\t           COALESCE(outbound_model, client_model) AS raw_model_name,\n\t\t           COUNT(*) AS total\n\t\t    -- 2026-09-10: same cold-parent staleness as resetCountersOnSuccess —\n\t\t    -- recent traffic lives in _request_logs_hot, which only the\n\t\t    -- current-month surface exposes.\n\t\t    -- R50: probe traffic excluded so the error_rate denominator is\n\t\t    -- business traffic only (consistent with Step 1 above).\n\t\t    FROM request_logs_with_current_month rl\n\t\t    WHERE rl.ts > NOW() - INTERVAL '5 minutes'\n\t\t      AND",
+      "sql_filter_cols": [
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "passive_probe_listener-fb32b8c78c",
+      "file": "bg/passive_probe_listener.go",
+      "line": 405,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT COUNT(*) FROM request_logs_with_current_month\n\t\t\tWHERE credential_id = $1\n\t\t\t  AND LOWER(COALESCE(outbound_model, client_model)) = LOWER($2)\n\t\t\t  AND success = TRUE\n\t\t\t  AND ts > NOW() - INTERVAL '6 minutes'",
+      "sql_filter_cols": [
+        "credential_id",
+        "success",
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "credential_id",
+          "op": "="
+        }
+      ]
+    },
+    {
+      "shape_id": "stats_minute_rollup-edadeb821d",
+      "file": "bg/stats_minute_rollup.go",
+      "line": 271,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "), 0)::bigint,\n\t\t\tCOALESCE(SUM(r.cost_usd), 0),\n\t\t\tCOALESCE(SUM(r.latency_ms), 0)::bigint\n\t\tFROM request_logs_with_current_month r\n\t\tWHERE r.request_status IN ('success', 'failure', 'rate_limited')\n\t\t  AND r.ts >= $1 AND r.ts <= $2\n\t\t  AND",
+      "sql_filter_cols": [
+        "request_status",
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
+        },
+        {
+          "index": 2,
+          "column": "ts",
+          "op": "<"
+        }
+      ]
+    },
+    {
+      "shape_id": "stats_minute_rollup-f35858c498",
+      "file": "bg/stats_minute_rollup.go",
+      "line": 320,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "), 0)::bigint,\n\t\t\t\tCOALESCE(SUM(r.cost_usd), 0)\n\t\t\tFROM request_logs_with_current_month r\n\t\t\tWHERE r.request_status IN ('success', 'failure', 'rate_limited')\n\t\t\t  AND r.ts >= $1 AND r.ts <= $2\n\t\t\t  AND ($3 <> 'error_kind' OR r.request_status = 'failure')\n\t\t\t  AND",
+      "sql_filter_cols": [
+        "request_status",
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
+        },
+        {
+          "index": 2,
+          "column": "ts",
+          "op": "<"
+        }
+      ]
+    },
+    {
+      "shape_id": "stats_minute_rollup-cb02789a9e",
+      "file": "bg/stats_minute_rollup.go",
+      "line": 340,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "INSERT INTO request_stats_error_drill_minute (\n\t\t\tbucket, tenant_id, error_kind, model_name, provider_id, client_profile, requests\n\t\t)\n\t\tSELECT\n\t\t\tdate_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',\n\t\t\tCOALESCE(NULLIF(r.tenant_id, ''), 'default'),\n\t\t\tCOALESCE(NULLIF(r.error_kind, ''), '__unknown__'),\n\t\t\tCOALESCE(NULLIF(r.outbound_model, ''), NULLIF(r.client_model, ''), ''),\n\t\t\tCOALESCE(r.provider_id, 0),\n\t\t\tCOALESCE(NULLIF(r.client_profile, ''), ''),\n\t\t\tCOUNT(*)::bigint\n\t\tFROM request_logs_with_current_month r\n\t\tWHERE r.request_status = 'failure'\n\t\t  AND r.ts >= $1 AND r.ts <= $2\n\t\t  AND",
+      "sql_filter_cols": [
+        "request_status",
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "ts",
+          "op": ">"
+        },
+        {
+          "index": 2,
+          "column": "ts",
+          "op": "<"
+        }
+      ]
+    },
+    {
+      "shape_id": "stats_minute_rollup_retire-6ef9841aac",
+      "file": "bg/stats_minute_rollup_retire.go",
+      "line": 21,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "DELETE FROM request_stats_minute AS m\nWHERE m.bucket >= date_trunc('minute', $1::timestamptz)\n  AND m.bucket < date_trunc('minute', $2::timestamptz)\n  AND NOT EXISTS (\n    SELECT 1\n    FROM request_logs_with_current_month AS r\n    WHERE r.request_status IN ('success', 'failure', 'rate_limited')\n      AND r.ts >= $1\n      AND r.ts < date_trunc('minute', $2::timestamptz)\n      AND date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' = m.bucket\n      AND COALESCE(NULLIF(r.tenant_id, ''), 'default') = m.tenant_id\n      AND COALESCE(r.provider_id, 0) = m.provider_id\n      AND COALESCE(r.canonical_id, 0) = m.canonical_id\n      AND",
+      "sql_filter_cols": [
+        "bucket",
+        "request_status",
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "bucket",
+          "op": ">"
+        },
+        {
+          "index": 2,
+          "column": "bucket",
+          "op": "<"
+        }
+      ]
+    },
+    {
+      "shape_id": "stats_minute_rollup_retire-82a8714af1",
+      "file": "bg/stats_minute_rollup_retire.go",
+      "line": 78,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "DELETE FROM request_stats_dim_minute AS m\nWHERE m.bucket >= date_trunc('minute', $1::timestamptz)\n  AND m.bucket < date_trunc('minute', $2::timestamptz)\n  AND m.dim_type = $3\n  AND NOT EXISTS (\n    SELECT 1\n    FROM request_logs_with_current_month AS r\n    WHERE r.request_status IN ('success', 'failure', 'rate_limited')\n      AND ($3 <> 'error_kind' OR r.request_status = 'failure')\n      AND r.ts >= $1\n      AND r.ts < date_trunc('minute', $2::timestamptz)\n      AND date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' = m.bucket\n      AND COALESCE(NULLIF(r.tenant_id, ''), 'default') = m.tenant_id\n      AND",
+      "sql_filter_cols": [
+        "bucket",
+        "dim_type",
+        "request_status",
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "bucket",
+          "op": ">"
+        },
+        {
+          "index": 2,
+          "column": "bucket",
+          "op": "<"
+        },
+        {
+          "index": 3,
+          "column": "dim_type",
+          "op": "="
+        }
+      ]
+    },
+    {
+      "shape_id": "stats_minute_rollup_retire-fad6268b82",
+      "file": "bg/stats_minute_rollup_retire.go",
+      "line": 102,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "DELETE FROM request_stats_error_drill_minute AS m\nWHERE m.bucket >= date_trunc('minute', $1::timestamptz)\n  AND m.bucket < date_trunc('minute', $2::timestamptz)\n  AND NOT EXISTS (\n    SELECT 1\n    FROM request_logs_with_current_month AS r\n    WHERE r.request_status = 'failure'\n      AND r.ts >= $1\n      AND r.ts < date_trunc('minute', $2::timestamptz)\n      AND date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' = m.bucket\n      AND COALESCE(NULLIF(r.tenant_id, ''), 'default') = m.tenant_id\n      AND COALESCE(NULLIF(r.error_kind, ''), '__unknown__') = m.error_kind\n      AND COALESCE(NULLIF(r.outbound_model, ''), NULLIF(r.client_model, ''), '') = m.model_name\n      AND COALESCE(r.provider_id, 0) = m.provider_id\n      AND COALESCE(NULLIF(r.client_profile, ''), '') = m.client_profile\n      AND",
+      "sql_filter_cols": [
+        "bucket",
+        "request_status",
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "bucket",
+          "op": ">"
+        },
+        {
+          "index": 2,
+          "column": "bucket",
+          "op": "<"
+        }
+      ]
+    },
+    {
+      "shape_id": "probe_views_unified-48de602ab8",
+      "file": "db/probe_views_unified.go",
+      "line": 88,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": ";\n\n\t\tCREATE OR REPLACE VIEW v_model_health_dashboard AS\n\t\tWITH real24 AS (\n\t\t    -- 真实请求 24h 反馈(排除探测流量):请求结果影响节点状态的展示闭环。\n\t\t    -- 单次聚合后按 (credential, model) JOIN,避免逐行 LATERAL 扫分区。\n\t\t    SELECT\n\t\t        rl.credential_id,\n\t\t        lower(COALESCE(rl.outbound_model, rl.client_model)) AS model_name,\n\t\t        COUNT(*) FILTER (WHERE rl.success) AS ok_24h,\n\t\t        COUNT(*) FILTER (WHERE NOT rl.success) AS fail_24h,\n\t\t        MAX(rl.ts) AS last_real_request_at\n\t\t    FROM request_logs_with_current_month rl\n\t\t    WHERE rl.ts > NOW() - INTERVAL '24 hours'\n\t\t      AND COALESCE(rl.task_type, '') <> 'probe_triggered'\n\t\t      AND NOT ('probe' = ANY(rl.quality_flags))\n\t\t    GROUP BY rl.credential_id, lower(COALESCE(rl.outbound_model, rl.client_model))\n\t\t),\n\t\tmodel_stats AS (\n\t\t    SELECT\n\t\t        mps.raw_model_name,\n\t\t        mps.raw_model_name as outbound_model_name,\n\t\t        'openai-completions' as protocol,\n\t\t        p.display_name as provider_name,\n\n\t\t        COUNT(*) as total_credentials,\n\t\t        COUNT(*) FILTER (WHERE mps.state IN ('healthy_confirmed', 'healthy')) as healthy_count,\n\t\t        COUNT(*) FILTER (WHERE mps.state = 'suspicious') as suspicious_count,\n\t\t        COUNT(*) FILTER (WHERE mps.state IN ('failing', 'recovering', 'broken_confirmed')) as failing_count,\n\t\t        COUNT(*) FILTER (WHERE mps.state = 'probing') as probing_count,\n\n\t\t        SUM(CASE WHEN mps.consecutive_failures >= 3 THEN 1 ELSE 0 END) as urgent_count,\n\t\t        COUNT(*) FILTER (WHERE mps.state = 'suspicious') as suspicious_priority_count,\n\t\t        COUNT(*) FILTER (WHERE mps.state IN ('failing', 'recovering', 'broken_confirmed')) as failing_priority_count,\n\t\t        COUNT(*) FILTER (WHERE mps.state = 'healthy_confirmed') as watchdog_count,\n\n\t\t        AVG(CASE WHEN mps.total_attempts > 0\n\t\t            THEN mps.consecutive_successes::float / mps.total_attempts * 100\n\t\t            ELSE NULL END) as avg_success_rate_7d,\n\t\t        AVG(EXTRACT(EPOCH FROM (mps.next_retry_at - NOW())) / 3600) as avg_verification_hours,\n\t\t        AVG(mps.consecutive_successes) as avg_consecutive_successes,\n\n\t\t        COALESCE(SUM(real24.ok_24h), 0) as total_real_success_24h,\n\t\t        COALESCE(SUM(real24.fail_24h), 0) as total_real_failure_24h,\n\n\t\t        MAX(mps.last_attempt_at) as last_verified_at,\n\t\t        MAX(real24.last_real_request_at) as last_real_request_at,\n\t\t        MIN(mps.next_retry_at) as next_probe_at,\n\n\t\t        SUM(CASE WHEN mps.state IN ('failing', 'recovering', 'broken_confirmed')\n\t\t                  AND mps.consecutive_failures >= 3\n\t\t             THEN 1 ELSE 0 END) as critical_nodes,\n\n\t\t        COUNT(*) FILTER (\n\t\t            WHERE mps.next_retry_at <= NOW() + INTERVAL '5 minutes'\n\t\t              AND mps.state != 'probing'\n\t\t              AND mps.paused = FALSE\n\t\t        ) as pending_probes_5min\n\n\t\t    FROM v_node_probe_state_compat mps\n\t\t    JOIN credentials c ON c.id = mps.credential_id\n\t\t    JOIN providers p ON p.id = c.provider_id\n\t\t    LEFT JOIN real24\n\t\t      ON real24.credential_id = mps.credential_id\n\t\t     AND real24.model_name = lower(mps.raw_model_name)\n\t\t    WHERE COALESCE(c.status, 'active') = 'active'\n\t\t      AND COALESCE(c.lifecycle_status, 'active') = 'active'\n\t\t      AND COALESCE(c.manual_disabled, FALSE) = FALSE\n\t\t    GROUP BY mps.raw_model_name, p.display_name\n\t\t)\n\t\tSELECT\n\t\t    0 as provider_model_id,\n\t\t    raw_model_name,\n\t\t    outbound_model_name,\n\t\t    protocol,\n\t\t    provider_name,\n\t\t    total_credentials,\n\t\t    healthy_count,\n\t\t    suspicious_count,\n\t\t    failing_count,\n\t\t    probing_count,\n\t\t    ROUND(healthy_count * 100.0 / NULLIF(total_credentials, 0), 1) as healthy_percentage,\n\t\t    ROUND(failing_count * 100.0 / NULLIF(total_credentials, 0), 1) as failing_percentage,\n\t\t    urgent_count,\n\t\t    suspicious_priority_count,\n\t\t    failing_priority_count,\n\t\t    watchdog_count,\n\t\t    ROUND(avg_success_rate_7d::numeric, 2) as avg_success_rate_7d,\n\t\t    ROUND(avg_verification_hours::numeric, 1) as avg_verification_hours,\n\t\t    ROUND(avg_consecutive_successes::numeric, 1) as avg_consecutive_successes,\n\t\t    total_real_success_24h,\n\t\t    total_real_failure_24h,\n\t\t    CASE\n\t\t        WHEN (total_real_success_24h + total_real_failure_24h) > 0\n\t\t        THEN ROUND((total_real_success_24h * 100.0 / (total_real_success_24h + total_real_failure_24h))::numeric, 2)\n\t\t        ELSE NULL\n\t\t    END as real_success_rate_24h,\n\t\t    last_verified_at,\n\t\t    last_real_request_at,\n\t\t    next_probe_at,\n\t\t    critical_nodes,\n\t\t    pending_probes_5min,\n\t\t    CASE\n\t\t        WHEN critical_nodes > 0 THEN 'critical'\n\t\t        WHEN ROUND(failing_count * 100.0 / NULLIF(total_credentials, 0), 1) > 20 THEN 'warning'\n\t\t        WHEN ROUND(failing_count * 100.0 / NULLIF(total_credentials, 0), 1) > 10 THEN 'degraded'\n\t\t        WHEN ROUND(healthy_count * 100.0 / NULLIF(total_credentials, 0), 1) >= 90 THEN 'healthy'\n\t\t        ELSE 'normal'\n\t\t    END as overall_health\n\t\tFROM model_stats\n\t\tORDER BY\n\t\t    CASE\n\t\t        WHEN critical_nodes > 0 THEN 1\n\t\t        WHEN urgent_count > 0 THEN 2\n\t\t        WHEN ROUND(failing_count * 100.0 / NULLIF(total_credentials, 0), 1) > 20 THEN 3\n\t\t        ELSE 4\n\t\t    END,\n\t\t    total_credentials DESC,\n\t\t    raw_model_name;\n\n\t\tCREATE OR REPLACE VIEW v_probe_queue_snapshot AS\n\t\tSELECT\n\t\t    sub.probe_priority,\n\t\t    sub.state,\n\t\t    COUNT(*) as queue_size,\n\t\t    COUNT(*) FILTER (WHERE sub.next_retry_at <= NOW()) as ready_now,\n\t\t    COUNT(*) FILTER (WHERE sub.next_retry_at <= NOW() + INTERVAL '1 minute') as ready_1min,\n\t\t    COUNT(*) FILTER (WHERE sub.next_retry_at <= NOW() + INTERVAL '5 minutes') as ready_5min,\n\t\t    MIN(sub.next_retry_at) as earliest_retry_at,\n\t\t    MAX(sub.next_retry_at) as latest_retry_at,\n\t\t    AVG(EXTRACT(EPOCH FROM (NOW() - sub.last_attempt_at))) as avg_wait_seconds,\n\t\t    MAX(EXTRACT(EPOCH FROM (NOW() - sub.last_attempt_at))) as max_wait_seconds\n\t\tFROM (\n\t\t    SELECT\n\t\t    CASE\n\t\t        WHEN mps.consecutive_failures >= 3 THEN 'urgent'\n\t\t        WHEN mps.state = 'suspicious' THEN 'suspicious'\n\t\t        WHEN mps.state = 'broken_confirmed' THEN 'failing'\n\t\t        ELSE NULL\n\t\t    END as probe_priority,\n\t\t        mps.state,\n\t\t        mps.next_retry_at,\n\t\t        mps.last_attempt_at\n\t\t    FROM v_node_probe_state_compat mps\n\t\t    JOIN credentials c ON c.id = mps.credential_id\n\t\t    WHERE mps.state IN ('suspicious', 'broken_confirmed')\n\t\t      AND mps.paused = FALSE\n\t\t      AND COALESCE(c.status, 'active') = 'active'\n\t\t      AND COALESCE(c.lifecycle_status, 'active') = 'active'\n\t\t      AND COALESCE(c.manual_disabled, FALSE) = FALSE\n\t\t) sub\n\t\tGROUP BY sub.probe_priority, sub.state\n\t\tORDER BY\n\t\t    CASE\n\t\t        WHEN sub.probe_priority = 'urgent' THEN 1\n\t\t        WHEN sub.probe_priority = 'suspicious' THEN 2\n\t\t        WHEN sub.probe_priority = 'failing' THEN 3\n\t\t        WHEN sub.probe_priority = 'watchdog' THEN 4\n\t\t        ELSE 5\n\t\t    END,\n\t\t    sub.state;\n\n\t\tCREATE OR REPLACE VIEW v_model_priority_details AS\n\t\tSELECT\n\t\t    mps.raw_model_name,\n\t\t    mps.raw_model_name as outbound_model_name,\n\t\t    CASE\n\t\t        WHEN mps.consecutive_failures >= 3 THEN 'urgent'\n\t\t        WHEN mps.state = 'suspicious' THEN 'suspicious'\n\t\t        WHEN mps.state = 'broken_confirmed' THEN 'failing'\n\t\t        ELSE 'watchdog'\n\t\t    END as probe_priority,\n\t\t    mps.state,\n\t\t    c.id as credential_id,\n\t\t    c.label as credential_label,\n\t\t    p.display_name as provider_name,\n\t\t    mps.last_attempt_at as last_verified_at,\n\t\t    mps.next_retry_at,\n\t\t    mps.updated_at as marked_suspicious_at,\n\t\t    CASE WHEN mps.in_flight_until > NOW() THEN mps.in_flight_until END as probing_started_at,\n\t\t    mps.consecutive_successes,\n\t\t    mps.consecutive_failures,\n\t\t    0 as consecutive_watchdog_successes,\n\t\t    CASE WHEN mps.total_attempts > 0\n\t\t         THEN mps.consecutive_successes::float / mps.total_attempts * 100\n\t\t         ELSE NULL END as success_rate_7d,\n\t\t    (mps.next_retry_at - NOW()) as verification_interval,\n\t\t    0 as real_success_24h,\n\t\t    0 as real_failure_24h,\n\t\t    mps.last_attempt_at as last_real_request_at,\n\t\t    mps.last_err_detail as last_unavailable_reason,\n\t\t    mps.last_status as last_err_code,\n\t\t    CASE\n\t\t        WHEN mps.next_retry_at <= NOW() THEN 'ready'\n\t\t        WHEN mps.next_retry_at <= NOW() + INTERVAL '1 minute' THEN '<1min'\n\t\t        WHEN mps.next_retry_at <= NOW() + INTERVAL '5 minutes' THEN '<5min'\n\t\t        WHEN mps.next_retry_at <= NOW() + INTERVAL '1 hour' THEN '<1h'\n\t\t        ELSE '>1h'\n\t\t    END as retry_in,\n\t\t    EXTRACT(EPOCH FROM (NOW() - mps.updated_at)) / 60 as state_duration_minutes\n\t\tFROM v_node_probe_state_compat mps\n\t\tJOIN credentials c ON c.id = mps.credential_id\n\t\tJOIN providers p ON p.id = c.provider_id\n\t\tWHERE COALESCE(c.status, 'active') = 'active'\n\t\t  AND COALESCE(c.lifecycle_status, 'active') = 'active'\n\t\t  AND COALESCE(c.manual_disabled, FALSE) = FALSE\n\t\tORDER BY\n\t\t    mps.raw_model_name,\n\t\t    CASE\n\t\t        WHEN mps.consecutive_failures >= 3 THEN 1\n\t\t        WHEN mps.state = 'suspicious' THEN 2\n\t\t        WHEN mps.state = 'broken_confirmed' THEN 3\n\t\t        ELSE 4\n\t\t    END,\n\t\t    c.id;\n\n\t\tCREATE OR REPLACE VIEW v_probe_system_health AS\n\t\tSELECT\n\t\t    (SELECT COUNT(*) FROM v_node_probe_state_compat) as total_nodes,\n\t\t    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state IN ('healthy_confirmed', 'healthy')) as healthy_nodes,\n\t\t    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state IN ('failing', 'broken_confirmed')) as failing_nodes,\n\t\t    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state = 'suspicious') as suspicious_nodes,\n\t\t    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state = 'probing') as probing_nodes,\n\t\t    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE consecutive_failures >= 3) as urgent_queue_size,\n\t\t    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state = 'suspicious') as suspicious_queue_size,\n\t\t    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state IN ('failing', 'broken_confirmed')) as failing_queue_size,\n\t\t    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state = 'healthy_confirmed') as watchdog_queue_size,\n\t\t    (SELECT COUNT(*) FROM v_node_probe_state_compat\n\t\t     WHERE next_retry_at <= NOW() AND state != 'probing' AND paused = FALSE) as ready_probes,\n\t\t    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state = 'probing') as current_probing,\n\t\t    (SELECT COUNT(DISTINCT credential_id) FROM v_node_probe_state_compat\n\t\t     WHERE state = 'probing') as credentials_being_probed,\n\t\t    (SELECT ROUND(AVG(CASE WHEN total_attempts > 0\n\t\t                           THEN consecutive_successes::float / total_attempts * 100\n\t\t                           ELSE NULL END)::numeric, 2)\n\t\t     FROM v_node_probe_state_compat) as avg_success_rate_7d,\n\t\t    (SELECT MAX(last_attempt_at) FROM v_node_probe_state_compat) as last_probe_at,\n\t\t    (SELECT MAX(last_state_change_at) FROM v_node_probe_state_compat) as last_real_request_at,\n\t\t    (SELECT COALESCE(SUM(ok_24h), 0) FROM (\n\t\t         SELECT COUNT(*) FILTER (WHERE rl.success) AS ok_24h\n\t\t         FROM request_logs_with_current_month rl\n\t\t         WHERE rl.ts > NOW() - INTERVAL '24 hours'\n\t\t           AND COALESCE(rl.task_type, '') <> 'probe_triggered'\n\t\t           AND NOT ('probe' = ANY(rl.quality_flags))\n\t\t     ) s) as total_real_success_24h,\n\t\t    (SELECT COALESCE(SUM(fail_24h), 0) FROM (\n\t\t         SELECT COUNT(*) FILTER (WHERE NOT rl.success) AS fail_24h\n\t\t         FROM request_logs_with_current_month rl\n\t\t         WHERE rl.ts > NOW() - INTERVAL '24 hours'\n\t\t           AND COALESCE(rl.task_type, '') <> 'probe_triggered'\n\t\t           AND NOT ('probe' = ANY(rl.quality_flags))\n\t\t     ) s) as total_real_failure_24h,\n\t\t    (SELECT COUNT(*) FROM v_node_probe_state_compat\n\t\t     WHERE state IN ('failing', 'broken_confirmed')\n\t\t       AND consecutive_failures >= 5) as critical_nodes,\n\t\t    (SELECT COUNT(*) FROM v_node_probe_state_compat\n\t\t     WHERE next_retry_at <= NOW() + INTERVAL '5 minutes'\n\t\t       AND state != 'probing' AND paused = FALSE) as pending_probes_5min,\n\t\t    NOW() as snapshot_at;\n\n\t\tCREATE OR REPLACE VIEW v_model_availability_timeline AS\n\t\tSELECT\n\t\t    npr.raw_model_name,\n\t\t    npr.raw_model_name as outbound_model_name,\n\t\t    DATE_TRUNC('hour', npr.started_at) as hour_bucket,\n\t\t    COUNT(*) as total_probes,\n\t\t    COUNT(*) FILTER (WHERE npr.direct_ok) as successful_probes,\n\t\t    COUNT(*) FILTER (WHERE NOT npr.direct_ok) as failed_probes,\n\t\t    ROUND((COUNT(*) FILTER (WHERE npr.direct_ok) * 100.0 / COUNT(*))::numeric, 2) as success_rate,\n\t\t    AVG(npr.direct_latency_ms) FILTER (WHERE npr.direct_ok) as avg_latency_ms,\n\t\t    COUNT(DISTINCT npr.credential_id) as probed_credentials,\n\t\t    COUNT(DISTINCT npr.credential_id) FILTER (WHERE npr.direct_ok) as successful_credentials,\n\t\t    COUNT(DISTINCT npr.credential_id) FILTER (WHERE NOT npr.direct_ok) as failed_credentials\n\t\tFROM node_probe_runs npr\n\t\tWHERE npr.started_at >= NOW() - INTERVAL '24 hours'\n\t\tGROUP BY npr.raw_model_name, DATE_TRUNC('hour', npr.started_at)\n\t\tORDER BY npr.raw_model_name, hour_bucket DESC;\n\n\t\tCREATE OR REPLACE FUNCTION get_model_state_summary(p_raw_model_name TEXT)\n\t\tRETURNS TABLE (\n\t\t    state TEXT,\n\t\t    priority TEXT,\n\t\t    count BIGINT,\n\t\t    avg_success_rate NUMERIC,\n\t\t    next_probe_in_seconds INTEGER\n\t\t)\n\t\tLANGUAGE SQL\n\t\tSTABLE\n\t\tAS $$\n\t\t    SELECT\n\t\t        sub.state::TEXT,\n\t\t        sub.priority::TEXT,\n\t\t        COUNT(*) as count,\n\t\t        ROUND(AVG(CASE WHEN sub.total_attempts > 0\n\t\t                       THEN sub.consecutive_successes::float / sub.total_attempts * 100\n\t\t                       ELSE NULL END)::numeric, 2) as avg_success_rate,\n\t\t        EXTRACT(EPOCH FROM MIN(sub.next_retry_at - NOW()))::INTEGER as next_probe_in_seconds\n\t\t    FROM (\n\t\t        SELECT\n\t\t            mps.state,\n\t\t            mps.consecutive_successes,\n\t\t            mps.total_attempts,\n\t\t            mps.next_retry_at,\n\t\t            CASE\n\t\t                WHEN mps.consecutive_failures >= 3 THEN 'urgent'\n\t\t                WHEN mps.state = 'suspicious' THEN 'suspicious'\n\t\t                WHEN mps.state = 'broken_confirmed' THEN 'failing'\n\t\t                ELSE 'watchdog'\n\t\t            END as priority\n\t\t        FROM v_node_probe_state_compat mps\n\t\t        JOIN credentials c ON c.id = mps.credential_id\n\t\t        WHERE mps.raw_model_name = p_raw_model_name\n\t\t          AND COALESCE(c.status, 'active') = 'active'\n\t\t          AND COALESCE(c.lifecycle_status, 'active') = 'active'\n\t\t          AND COALESCE(c.manual_disabled, FALSE) = FALSE\n\t\t    ) sub\n\t\t    GROUP BY sub.state, sub.priority\n\t\t    ORDER BY\n\t\t        CASE sub.priority\n\t\t            WHEN 'urgent' THEN 1\n\t\t            WHEN 'suspicious' THEN 2\n\t\t            WHEN 'failing' THEN 3\n\t\t            WHEN 'watchdog' THEN 4\n\t\t            ELSE 5\n\t\t        END,\n\t\t        sub.state;\n\t\t$$;",
+      "sql_filter_cols": [
+        "ts",
+        "state",
+        "next_retry_at",
+        "paused",
+        "consecutive_failures",
+        "started_at",
+        "raw_model_name"
+      ],
+      "sql_order_cols": "total_credentials DESC,state,next_retry_at,consecutive_successes,consecutive_failures,total_attempts,raw_model_name",
+      "param_roles": []
+    },
+    {
+      "shape_id": "store-8d1c49941d",
+      "file": "domains/routeincident/store.go",
+      "line": 700,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "WITH buckets AS (\n\t\t\tSELECT date_trunc('minute', rl.ts) - (EXTRACT(MINUTE FROM rl.ts)::int % 5) * INTERVAL '1 minute' AS bucket,\n\t\t\t       rl.success, rl.latency_ms, rl.request_status\n\t\t\tFROM request_logs_with_current_month rl\n\t\t\tWHERE rl.tenant_id = $1\n\t\t\t  AND rl.ts >= NOW() - INTERVAL '24 hours'\n\t\t\t  AND (rl.canonical_id = $2 OR rl.outbound_model = $3 OR rl.client_model = $3)\n\t\t\t  AND COALESCE(rl.provider_id, 0) = COALESCE($4, 0)\n\t\t\t  AND COALESCE(rl.credential_id, 0) = COALESCE($5, 0)\n\t\t)\n\t\tSELECT bucket,\n\t\t       COUNT(*) AS requests,\n\t\t       COUNT(*) FILTER (WHERE lower(COALESCE(request_status, '')) = 'failure') AS errors,\n\t\t       AVG(latency_ms)::float8 AS avg_latency,\n\t\t       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms)::float8 AS p99_latency\n\t\tFROM buckets\n\t\tGROUP BY bucket\n\t\tORDER BY bucket ASC",
+      "sql_filter_cols": [
+        "tenant_id",
+        "ts"
+      ],
+      "sql_order_cols": "bucket ASC",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "tenant_id",
+          "op": "="
+        }
+      ]
+    },
+    {
+      "shape_id": "summarizer-888f0f643d",
+      "file": "domains/sessionsummary/summarizer.go",
+      "line": 644,
+      "occurrence_count": 2,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT\n\t\t\trl.request_id,\n\t\t\tCOALESCE(rb.request_body->>'role', 'user') as role,\n\t\t\tCOALESCE(rb.request_body->'messages'->-1->>'content', '') as content,\n\t\t\trl.outbound_model,\n\t\t\trl.ts\n\t\tFROM request_logs_with_current_month rl\n\t\tLEFT JOIN",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "summarizer-380d5598e3",
+      "file": "domains/sessionsummary/summarizer.go",
+      "line": 772,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT COALESCE(NULLIF(TRIM(gw_task_id), ''), 'auto')\n\t\tFROM request_logs_with_current_month\n\t\tWHERE gw_session_id = $1\n\t\t  AND tenant_id = $2\n\t\t  AND success = TRUE\n\t\t  AND COALESCE(is_auto_request, FALSE) = FALSE\n\t\tORDER BY ts DESC, request_id DESC\n\t\tLIMIT 1",
+      "sql_filter_cols": [
+        "gw_session_id",
+        "tenant_id",
+        "success"
+      ],
+      "sql_order_cols": "ts DESC,request_id DESC",
+      "param_roles": [
+        {
+          "index": 1,
+          "column": "gw_session_id",
+          "op": "="
+        },
+        {
+          "index": 2,
+          "column": "tenant_id",
+          "op": "="
+        }
+      ]
+    },
+    {
+      "shape_id": "gateway_adapters-42196c3b74",
+      "file": "internal/collector/gateway_adapters.go",
+      "line": 46,
+      "occurrence_count": 2,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT\n\t\t\tCOALESCE(COUNT(*), 0)::float8 / 300.0 AS tps,\n\t\t\tCOALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms), 0) AS p50,\n\t\t\tCOALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms), 0) AS p99,\n\t\t\tCOALESCE(AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END), 0) AS success_pct,\n\t\t\tCOALESCE(COUNT(DISTINCT tenant_id), 0) AS tenant_count\n\t\tFROM request_logs_with_current_month\n\t\tWHERE ts >= NOW() - INTERVAL '5 minutes'",
+      "sql_filter_cols": [
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "gateway_adapters-1c3c8e2713",
+      "file": "internal/collector/gateway_adapters.go",
+      "line": 60,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "SELECT COALESCE(NULLIF(outbound_model, ''), client_model) AS model_name, COUNT(*)::bigint\n\t\tFROM request_logs_with_current_month\n\t\tWHERE ts >= NOW() - INTERVAL '5 minutes'\n\t\t  AND COALESCE(NULLIF(outbound_model, ''), client_model, '') <> ''\n\t\tGROUP BY 1\n\t\tORDER BY 2 DESC\n\t\tLIMIT 20",
+      "sql_filter_cols": [
+        "ts"
+      ],
+      "sql_order_cols": "",
+      "param_roles": []
+    },
+    {
+      "shape_id": "minute_aggregator-cc45110db6",
+      "file": "internal/quality/minute_aggregator.go",
+      "line": 17,
+      "occurrence_count": 1,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "INSERT INTO provider_metrics_minute (\n    provider_id, model_name, endpoint, bucket,\n    total_requests, successful_requests,\n    error_5xx, error_4xx, error_timeout, error_other,\n    latency_sum, latency_min, latency_max,\n    latency_p50, latency_p95, latency_p99,\n    ttft_sum, ttft_p95,\n    total_input_tokens, total_output_tokens, total_cost\n)\nSELECT\n    provider_id,\n    COALESCE(NULLIF(outbound_model, ''), NULLIF(client_model, ''), 'unknown') AS model_name,\n    'unknown' AS endpoint,\n    date_trunc('minute', ts) AS bucket,\n    COUNT(*) AS total_requests,\n    COUNT(*) FILTER (WHERE upstream_status_code BETWEEN 200 AND 299 OR (upstream_status_code IS NULL AND success)) AS successful_requests,\n    COUNT(*) FILTER (WHERE upstream_status_code BETWEEN 500 AND 599) AS error_5xx,\n    COUNT(*) FILTER (WHERE upstream_status_code BETWEEN 400 AND 499) AS error_4xx,\n    COUNT(*) FILTER (WHERE error_kind = 'timeout') AS error_timeout,\n    COUNT(*) FILTER (WHERE (upstream_status_code IS NOT NULL AND upstream_status_code NOT BETWEEN 200 AND 599 AND error_kind <> 'timeout')\n                       OR (upstream_status_code IS NULL AND NOT success AND COALESCE(error_kind, '') <> 'timeout')) AS error_other,\n    SUM(COALESCE(latency_ms, 0))::BIGINT AS latency_sum,\n    MIN(latency_ms) AS latency_min,\n    MAX(latency_ms) AS latency_max,\n    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latency_ms) AS latency_p50,\n    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms) AS latency_p95,\n    PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms) AS latency_p99,\n    SUM(COALESCE(stream_first_chunk_ms, 0))::BIGINT AS ttft_sum,\n    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY stream_first_chunk_ms) FILTER (WHERE stream_first_chunk_ms IS NOT NULL) AS ttft_p95,\n    SUM(COALESCE(prompt_tokens, 0))::BIGINT AS total_input_tokens,\n    SUM(COALESCE(completion_tokens, 0))::BIGINT AS total_output_tokens,\n    SUM(COALESCE(cost_usd, 0)) AS total_cost\n-- 2026-10-13 S3 波 2（停写切换）：源 _request_logs_hot → canonical 视图。\n-- 停写后新流量只落 session_turns；视图会话臂 provider_id 依赖 734 details\n-- 特征层，缺 details 行的轮次被下方 provider_id IS NOT NULL 谓词排除\n-- （登记：分钟聚合对新流量的覆盖随 details 覆盖率走）。全部 12 个表达式\n-- 在 118 列契约内；1 分钟窗的视图扫描成本可忽略。\nFROM request_logs_with_current_month\nWHERE ts >= date_trunc('minute', NOW() - INTERVAL '1 minute')\n  AND ts < date_trunc('minute', NOW())\n  AND provider_id IS NOT NULL\n  AND provider_id > 0\nGROUP BY provider_id, COALESCE(NULLIF(outbound_model, ''), NULLIF(client_model, ''), 'unknown'), date_trunc('minute', ts)\nON CONFLICT (provider_id, model_name, endpoint, bucket) DO UPDATE SET\n    total_requests = EXCLUDED.total_requests,\n    successful_requests = EXCLUDED.successful_requests,\n    error_5xx = EXCLUDED.error_5xx,\n    error_4xx = EXCLUDED.error_4xx,\n    error_timeout = EXCLUDED.error_timeout,\n    error_other = EXCLUDED.error_other,\n    latency_sum = EXCLUDED.latency_sum,\n    latency_min = EXCLUDED.latency_min,\n    latency_max = EXCLUDED.latency_max,\n    latency_p50 = EXCLUDED.latency_p50,\n    latency_p95 = EXCLUDED.latency_p95,\n    latency_p99 = EXCLUDED.latency_p99,\n    ttft_sum = EXCLUDED.ttft_sum,\n    ttft_p95 = EXCLUDED.ttft_p95,\n    total_input_tokens = EXCLUDED.total_input_tokens,\n    total_output_tokens = EXCLUDED.total_output_tokens,\n    total_cost = EXCLUDED.total_cost;",
+      "sql_filter_cols": [
+        "upstream_status_code",
+        "error_kind",
+        "stream_first_chunk_ms",
+        "ts",
+        "provider_id"
+      ],
+      "sql_order_cols": "model_name,endpoint",
+      "param_roles": []
+    },
+    {
+      "shape_id": "usage-e1251bbcfa",
+      "file": "maas/usage.go",
+      "line": 66,
+      "occurrence_count": 2,
+      "file_count": 1,
+      "dynamic": false,
+      "sql": "request_logs_with_current_month AS r",
+      "sql_filter_cols": [],
+      "sql_order_cols": "",
+      "param_roles": []
+    }
+  ],
+  "points": [
+    {
+      "file": "admin/compression_stats.go",
+      "line": 285,
+      "shape_id": "compression_stats-dd0e70a936",
+      "sql_digest": "SELECT COALESCE(token_band, '') AS band, COUNT(*) AS cnt FROM request_logs_with_current_month WHERE ts >= $1 AND ts <= $2 AND ($3 OR success)"
+    },
+    {
+      "file": "admin/credential_monitor.go",
+      "line": 422,
+      "shape_id": "credential_monitor-7bc855af6c",
+      "sql_digest": "COALESCE(( SELECT json_agg(row_to_json(t)) FROM ( SELECT mo.raw_model_name, COALESCE(mo.available, TRUE) AS offer_available, mo.unavailable_reason AS offer_unavailable_reason, COALESCE(cmb.available, TRUE) AS binding_available, cmb.unavailable_reason AS binding_unavailable_reason, COALESCE(mps.state, 'unknown') AS probe_state, mps.last_status AS probe_last_status, mps.last_attempt_at AS probe_last"
+    },
+    {
+      "file": "admin/credential_monitor.go",
+      "line": 546,
+      "shape_id": "credential_monitor-a94e69a17b",
+      "sql_digest": "COALESCE((SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE rl.credential_id = c.id), 0)"
+    },
+    {
+      "file": "admin/credential_monitor.go",
+      "line": 947,
+      "shape_id": "credential_monitor-5a8b44c6ae",
+      "sql_digest": "SELECT COUNT(*) FROM request_logs_with_current_month"
+    },
+    {
+      "file": "admin/credential_monitor.go",
+      "line": 1040,
+      "shape_id": "credential_monitor-3a939c015f",
+      "sql_digest": "SELECT COALESCE(request_id, ''), EXTRACT(EPOCH FROM ts)::bigint * 1000, success, COALESCE(latency_ms, 0), COALESCE(error_kind, '') FROM request_logs_with_current_month WHERE credential_id = $1 -- case-insensitive: 会话腿的 outbound_model can differ in case -- from model_offers.raw_model_name (e.g. \"MiniMax-M3\" vs \"minimax-m3\"), -- so a plain = misses most rows. AND lower(COALESCE(outbound_model, clien"
+    },
+    {
+      "file": "admin/credential_monitor_heatmap.go",
+      "line": 366,
+      "shape_id": "credential_monitor_heatmap-d84c300ddd",
+      "sql_digest": "WITH base AS ( SELECT rl.credential_id, lower(COALESCE(rl.outbound_model, rl.client_model)) AS raw_model_name, to_timestamp(floor(EXTRACT(EPOCH FROM rl.ts) / %[1]d) * %[1]d) AS time_bucket, rl.success, rl.latency_ms, rl.error_kind, rl.request_id, rl.ts FROM request_logs_with_current_month rl JOIN credentials c ON c.id = rl.credential_id WHERE %[2]s ), bucket_stats AS ( SELECT credential_id, raw_mo"
+    },
+    {
+      "file": "admin/credential_success_rate.go",
+      "line": 37,
+      "shape_id": "credential_success_rate-371d3731fb",
+      "sql_digest": "SELECT c.id AS credential_id, c.label AS credential_label, mo.raw_model_name, rsr.rate AS recent_rate, rsr.samples AS recent_samples, v.is_routable, (rsr.samples >= 20 AND COALESCE(rsr.rate, 1.0) < 0.5) AS below_threshold, (SELECT MIN(ts) FROM request_logs_with_current_month rl WHERE rl.credential_id = c.id -- 2026-07-14: compare against lowercase canonical_raw_name. AND lower(COALESCE(rl.outbound"
+    },
+    {
+      "file": "admin/data_lifecycle.go",
+      "line": 103,
+      "shape_id": "data_lifecycle-5a8b44c6ae",
+      "sql_digest": "SELECT COUNT(*) FROM request_logs_with_current_month"
+    },
+    {
+      "file": "admin/data_lifecycle.go",
+      "line": 241,
+      "shape_id": "data_lifecycle-cf5df662cc",
+      "sql_digest": ") AS compressed FROM request_logs_with_current_month rl WHERE rl.ts > NOW() - INTERVAL '7 days'"
+    },
+    {
+      "file": "admin/data_lifecycle.go",
+      "line": 477,
+      "shape_id": "data_lifecycle-13d7a685b5",
+      "sql_digest": "-- 2026-10-20（迁移 890）：v1 族退役 ⇒ 尺寸源与分母都换成会话族母表。 -- pg_total_relation_size 对分区父表返回 0（父表自身无存储），v1 母表 -- 当年同理 ⇒ 换源前后这个估算值**逐字相同**。 SELECT COUNT(*) AS affected_rows, (pg_total_relation_size('session_turns') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM session_turns), 0))::bigint AS freed_bytes, pg_size_pretty((pg_total_relation_size('session_turns') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) F"
+    },
+    {
+      "file": "admin/diagnostics_credential.go",
+      "line": 150,
+      "shape_id": "diagnostics_credential-f18d358987",
+      "sql_digest": "SELECT request_id, client_model, ts, error_kind, COALESCE(request_status::text,''), provider_id FROM request_logs_with_current_month WHERE credential_id = $1 AND lower(COALESCE(request_status, '')) = 'failure' AND ts > now() - make_interval(mins => $2::int) ORDER BY ts DESC LIMIT 20"
+    },
+    {
+      "file": "admin/live_stream_sse.go",
+      "line": 2691,
+      "shape_id": "live_stream_sse-9ef0a7b25d",
+      "sql_digest": "SELECT rl.request_id, rl.ts, COALESCE(NULLIF(rl.tenant_id, ''), 'default') AS tenant_id, COALESCE(NULLIF(rl.gw_session_id, ''), '') AS gw_session_id, COALESCE(NULLIF(mc.canonical_name, ''), NULLIF(rl.client_model, ''), rl.outbound_model, '') AS model, COALESCE(mc.canonical_name, '') AS canonical_name, COALESCE(NULLIF(p.display_name, ''), NULLIF(p.catalog_code, ''), NULLIF(p.code, ''), '') AS provi"
+    },
+    {
+      "file": "admin/live_stream_sse.go",
+      "line": 2831,
+      "shape_id": "live_stream_sse-f43ed3036f",
+      "sql_digest": "SELECT request_id, request_status FROM request_logs_with_current_month WHERE request_id = ANY($1) AND COALESCE(request_status, '') NOT IN ('', 'in_progress')"
+    },
+    {
+      "file": "admin/memora_handlers.go",
+      "line": 511,
+      "shape_id": "memora_handlers-db0bb123cd",
+      "sql_digest": "WITH base AS ( SELECT COALESCE(NULLIF(TRIM(gw_task_id), ''), NULL) AS task_id, COALESCE(NULLIF(TRIM(gw_session_id), ''), NULL) AS session_id, ts, request_status, client_model, api_key_id, COALESCE(NULLIF(TRIM(api_key_prefix), ''), NULL) AS api_key_prefix, COALESCE(NULLIF(TRIM(api_key_owner_user), ''), NULL) AS api_key_owner_user, COALESCE(NULLIF(TRIM(application_code), ''), NULL) AS application_co"
+    },
+    {
+      "file": "admin/memora_handlers.go",
+      "line": 628,
+      "shape_id": "memora_handlers-903b3d60a2",
+      "sql_digest": "SELECT COUNT(*), (SELECT client_model FROM request_logs_with_current_month"
+    },
+    {
+      "file": "admin/memora_handlers.go",
+      "line": 631,
+      "shape_id": "memora_handlers-14399babb9",
+      "sql_digest": "ORDER BY ts DESC LIMIT 1) FROM request_logs_with_current_month"
+    },
+    {
+      "file": "admin/memora_handlers.go",
+      "line": 792,
+      "shape_id": "memora_handlers-888f0f643d",
+      "sql_digest": "SELECT rl.ts, rl.request_id, rl.client_model, rl.outbound_model, rl.request_preview, rl.response_preview, COALESCE(rb.request_body::text, '') AS request_body, COALESCE(rb.response_body::text, '') AS response_body, rl.prompt_tokens, rl.completion_tokens, rl.latency_ms, rl.cost_usd, rl.request_status, rl.error_kind, rl.work_type, rl.request_mode, rl.gw_session_id FROM request_logs_with_current_month"
+    },
+    {
+      "file": "admin/model_routing_diagnostic.go",
+      "line": 54,
+      "shape_id": "model_routing_diagnostic-ec18620a42",
+      "sql_digest": "WITH target AS ( SELECT cmb.id AS binding_id, cmb.credential_id, pm.provider_id, p.display_name AS provider_name, c.label AS credential_label, pm.raw_model_name, v.is_routable, v.unavailable_reason, COALESCE(cmb.manual_priority, 99) AS manual_priority, rsr.rate AS recent_success_rate, rsr.samples AS recent_samples FROM credential_model_bindings cmb JOIN provider_models pm ON pm.id = cmb.provider_m"
+    },
+    {
+      "file": "admin/model_status.go",
+      "line": 260,
+      "shape_id": "model_status-483d612c7b",
+      "sql_digest": "SELECT COALESCE(NULLIF(TRIM(client_model), ''), '(unknown)') AS model_name, COUNT(*)::int AS total, COUNT(*) FILTER (WHERE success IS TRUE)::int AS success_n, COALESCE(SUM(latency_ms) FILTER (WHERE success IS TRUE AND latency_ms IS NOT NULL), 0)::float8 AS latency_sum, COUNT(*) FILTER (WHERE success IS TRUE AND latency_ms IS NOT NULL)::int AS latency_n FROM request_logs_with_current_month WHERE ts"
+    },
+    {
+      "file": "admin/model_status.go",
+      "line": 289,
+      "shape_id": "model_status-99a585edd9",
+      "sql_digest": "SELECT COALESCE(NULLIF(TRIM(client_model), ''), '(unknown)') AS model_name, date_trunc('hour', ts) AS hour_bucket, COUNT(*)::int AS total, COUNT(*) FILTER (WHERE success IS TRUE)::int AS success_n FROM request_logs_with_current_month WHERE ts >= $1 AND client_model IS NOT NULL AND TRIM(client_model) <> '' GROUP BY 1, 2"
+    },
+    {
+      "file": "admin/no_topic_session.go",
+      "line": 137,
+      "shape_id": "no_topic_session-888f0f643d",
+      "sql_digest": "SELECT rl.ts, rl.request_id, rl.client_model, rl.outbound_model, rl.request_preview, rl.response_preview, COALESCE(rb.request_body::text, '') AS request_body, COALESCE(rb.response_body::text, '') AS response_body, rl.prompt_tokens, rl.completion_tokens, rl.latency_ms, rl.cost_usd, rl.request_status, rl.error_kind, rl.work_type, rl.request_mode, rl.gw_session_id FROM request_logs_with_current_month"
+    },
+    {
+      "file": "admin/no_topic_session.go",
+      "line": 319,
+      "shape_id": "no_topic_session-0eb02164dc",
+      "sql_digest": "AS request_status, rl.error_kind, rl.client_model FROM request_logs_with_current_month rl LEFT JOIN"
+    },
+    {
+      "file": "admin/no_topic_session.go",
+      "line": 535,
+      "shape_id": "no_topic_session-5a8b44c6ae",
+      "sql_digest": "SELECT api_key_id, tenant_id FROM request_logs_with_current_month"
+    },
+    {
+      "file": "admin/no_topic_session.go",
+      "line": 557,
+      "shape_id": "no_topic_session-5a8b44c6ae",
+      "sql_digest": "SELECT api_key_id, tenant_id FROM request_logs_with_current_month"
+    },
+    {
+      "file": "admin/probe_history.go",
+      "line": 451,
+      "shape_id": "probe_history-3ea8d800fe",
+      "sql_digest": "WITH active_failures AS ( SELECT raw_model_name, COUNT(DISTINCT credential_id) AS creds_affected, COUNT(*) AS total_failures, MAX(started_at) AS last_failed_at, MIN(COALESCE(direct_err_code, 'unknown')) AS sample_error_code FROM node_probe_runs WHERE direct_ok = FALSE AND started_at > NOW() - INTERVAL '6 hours' GROUP BY raw_model_name ), passive_failures AS ( SELECT raw_model_name, COUNT(DISTINCT "
+    },
+    {
+      "file": "admin/provider_models.go",
+      "line": 446,
+      "shape_id": "provider_models-1b642bdc46",
+      "sql_digest": "SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE %s"
+    },
+    {
+      "file": "admin/provider_models.go",
+      "line": 453,
+      "shape_id": "provider_models-664fa44960",
+      "sql_digest": "SELECT rl.ts, rl.request_id, rl.credential_id, rl.client_model, rl.outbound_model, rl.success, rl.error_kind, rl.prompt_tokens, rl.completion_tokens, rl.total_tokens, rl.cost_usd::float8, rl.latency_ms FROM request_logs_with_current_month rl WHERE %s ORDER BY rl.ts DESC LIMIT $%d OFFSET $%d"
+    },
+    {
+      "file": "admin/route_incidents.go",
+      "line": 586,
+      "shape_id": "route_incidents-95175a5162",
+      "sql_digest": "SELECT rl.error_kind, rl.failure_stage, rl.request_id FROM request_logs_with_current_month rl WHERE rl.tenant_id = $1 AND rl.request_status = 'failure' AND rl.ts >= $2 AND (rl.outbound_model = $3 OR rl.client_model = $3) AND COALESCE(rl.provider_id, 0) = COALESCE($4, 0) AND COALESCE(rl.credential_id, 0) = COALESCE($5, 0) ORDER BY rl.ts DESC LIMIT 32"
+    },
+    {
+      "file": "admin/session_analytics_breakdown.go",
+      "line": 256,
+      "shape_id": "session_analytics_breakdown-cb4aba5ac8",
+      "sql_digest": "WITH model_agg AS ( SELECT COALESCE(NULLIF(TRIM(rl.outbound_model), ''), '<unknown>') AS model, COUNT(*) AS request_count, COUNT(DISTINCT rl.gw_session_id) AS session_count, COALESCE(SUM(rl.cost_usd), 0) AS total_cost_usd, COALESCE(SUM(rl.prompt_tokens + rl.completion_tokens), 0) AS total_tokens, COALESCE(AVG(rl.latency_ms), 0) AS avg_latency_ms, COUNT(*) FILTER (WHERE rl.request_status = 'failure"
+    },
+    {
+      "file": "admin/session_analytics_breakdown.go",
+      "line": 305,
+      "shape_id": "session_analytics_breakdown-790d98b986",
+      "sql_digest": "WITH provider_agg AS ( SELECT COALESCE(rl.provider_id::text, 'unknown') AS provider, COUNT(*) AS request_count, COUNT(DISTINCT rl.gw_session_id) AS session_count, COALESCE(SUM(rl.cost_usd), 0) AS total_cost_usd, COALESCE(SUM(rl.prompt_tokens + rl.completion_tokens), 0) AS total_tokens, COALESCE(AVG(rl.latency_ms), 0) AS avg_latency_ms, COUNT(*) FILTER (WHERE rl.request_status = 'failure') AS error"
+    },
+    {
+      "file": "admin/session_analytics_timeseries.go",
+      "line": 183,
+      "shape_id": "session_analytics_timeseries-2e1da4bbf5",
+      "sql_digest": "SELECT date_trunc($1, rl.ts)::date AS date, COUNT(DISTINCT rl.gw_session_id) AS session_count, COUNT(*) AS request_count, SUM(CASE WHEN rl.success THEN 1 ELSE 0 END) AS success_count, SUM(CASE WHEN lower(COALESCE(rl.request_status, '')) = 'failure' THEN 1 ELSE 0 END) AS error_count, SUM(COALESCE(rl.cost_usd, 0)) AS total_cost_usd, SUM(COALESCE(rl.prompt_tokens, 0) + COALESCE(rl.completion_tokens, "
+    },
+    {
+      "file": "admin/session_analytics_timeseries.go",
+      "line": 255,
+      "shape_id": "session_analytics_timeseries-2e1da4bbf5",
+      "sql_digest": "SELECT date_trunc($1, rl.ts)::date AS date, COUNT(DISTINCT rl.gw_session_id) AS session_count, COUNT(*) AS request_count, SUM(CASE WHEN rl.success THEN 1 ELSE 0 END) AS success_count, SUM(CASE WHEN lower(COALESCE(rl.request_status, '')) = 'failure' THEN 1 ELSE 0 END) AS error_count, SUM(COALESCE(rl.cost_usd, 0)) AS total_cost_usd, SUM(COALESCE(rl.prompt_tokens, 0) + COALESCE(rl.completion_tokens, "
+    },
+    {
+      "file": "admin/session_analytics_timeseries.go",
+      "line": 331,
+      "shape_id": "session_analytics_timeseries-840ec4f5c0",
+      "sql_digest": "SELECT date_trunc($1, rl.ts)::date AS date, percentile_cont(0.5) WITHIN GROUP (ORDER BY rl.latency_ms)::int AS p50_latency_ms, percentile_cont(0.9) WITHIN GROUP (ORDER BY rl.latency_ms)::int AS p90_latency_ms, percentile_cont(0.99) WITHIN GROUP (ORDER BY rl.latency_ms)::int AS p99_latency_ms, MAX(rl.latency_ms) AS max_latency_ms, AVG(rl.latency_ms)::int AS avg_latency_ms, COALESCE(percentile_cont("
+    },
+    {
+      "file": "admin/swim_lane_init.go",
+      "line": 111,
+      "shape_id": "swim_lane_init-b32f4f5f13",
+      "sql_digest": "SELECT rl.request_id, rl.ts, COALESCE(NULLIF(rl.client_model, ''), mc.canonical_name, rl.outbound_model, 'unknown') AS model, COALESCE(NULLIF(mf.vendor, ''), COALESCE(rl.client_model, ''), 'unknown') AS vendor, COALESCE(NULLIF(p.display_name, ''), NULLIF(p.catalog_code, ''), p.code, 'unknown') AS provider, COALESCE(rl.request_status, '') AS status, COALESCE(rl.error_kind, '') AS error_kind, COALES"
+    },
+    {
+      "file": "admin/tenants.go",
+      "line": 311,
+      "shape_id": "tenants-f741c6818f",
+      "sql_digest": "SELECT tenant_id, COUNT(*)::bigint, COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)::bigint, COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint, COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8 FROM request_logs_with_current_month WHERE tenant_id = ANY($1) AND ts >= now() - INTERVAL '7 days' GROUP BY tenant_id"
+    },
+    {
+      "file": "admin/tenants.go",
+      "line": 503,
+      "shape_id": "tenants-643eda89d5",
+      "sql_digest": "SELECT COUNT(*)::bigint, COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)::bigint, COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint, COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8 FROM request_logs_with_current_month WHERE tenant_id = $1 AND ts >= now() - INTERVAL '7 days'"
+    },
+    {
+      "file": "admin/top_problems.go",
+      "line": 37,
+      "shape_id": "top_problems-3461470f2b",
+      "sql_digest": "request_logs_with_current_month"
+    },
+    {
+      "file": "admin/top_problems.go",
+      "line": 182,
+      "shape_id": "top_problems-895618708c",
+      "sql_digest": "SELECT rl.credential_id, COALESCE(c.label, '') AS label, COUNT(*) AS request_count, COUNT(*) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE) AS failure_count, CASE WHEN COUNT(*) > 0 THEN (COUNT(*) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE))::float8 / COUNT(*)::float8 ELSE 0 END AS failure_rate, COALESCE(MODE() WITHIN GROUP (ORDER BY rl.error_kind) FILTER (WHERE COALESCE(rl.success, FALS"
+    },
+    {
+      "file": "admin/top_problems.go",
+      "line": 227,
+      "shape_id": "top_problems-f13a678ffe",
+      "sql_digest": "SELECT rl.client_model, COUNT(*) AS request_count, COUNT(*) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE) AS failure_count, CASE WHEN COUNT(*) > 0 THEN (COUNT(*) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE))::float8 / COUNT(*)::float8 ELSE 0 END AS failure_rate, COALESCE(MODE() WITHIN GROUP (ORDER BY rl.error_kind) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE), '') AS top_failure_k"
+    },
+    {
+      "file": "admin/topology_clients_today.go",
+      "line": 97,
+      "shape_id": "topology_clients_today-3330a325de",
+      "sql_digest": "WITH base AS ( SELECT COALESCE(NULLIF(rl.agent_name, ''), NULLIF(rl.client_profile, ''), NULLIF(rl.client_protocol, ''), LEFT(NULLIF(rl.identity_hash, ''), 8), 'unknown') AS client_key, COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status, rl.prompt_tokens, rl.completion_tokens, rl.total_tokens, rl.cach"
+    },
+    {
+      "file": "admin/topology_window_stats.go",
+      "line": 71,
+      "shape_id": "topology_window_stats-a5549d01e5",
+      "sql_digest": "WITH base AS ( SELECT COALESCE(p.id, 0) AS provider_id, COALESCE(p.catalog_code, '') AS catalog_code, COALESCE(NULLIF(p.display_name, ''), '') AS display_name, COALESCE(p.enabled, FALSE) AS enabled, COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status, -- ★ status 表达式 = requestLogsStatusExpr（逐字内联，见该常量注释"
+    },
+    {
+      "file": "admin/topology_window_stats.go",
+      "line": 113,
+      "shape_id": "topology_window_stats-63de1235bc",
+      "sql_digest": "WITH base AS ( SELECT COALESCE(mc.id, 0) AS canonical_id, COALESCE(NULLIF(mc.canonical_name, ''), '') AS canonical_name, COALESCE(NULLIF(rl.client_model, ''), '') AS raw_model_name, COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status, -- ★ status 表达式 = requestLogsStatusExpr（逐字内联，见该常量注释） rl.prompt_token"
+    },
+    {
+      "file": "admin/usage.go",
+      "line": 841,
+      "shape_id": "usage-fac0c8ab96",
+      "sql_digest": "SELECT COUNT(*) FILTER (WHERE COALESCE(failure_stage, '') = 'gateway' OR COALESCE(failure_detail_code, '') LIKE 'gw_%'), COUNT(*) FILTER (WHERE COALESCE(failure_stage, '') = 'upstream' OR (NOT success AND COALESCE(failure_stage, '') = '' AND provider_id IS NOT NULL AND COALESCE(request_status, '') <> 'rate_limited')), COALESCE(( SELECT MAX(bucket_count) FROM ( SELECT COUNT(*) AS bucket_count FROM "
+    },
+    {
+      "file": "admin/usage.go",
+      "line": 1135,
+      "shape_id": "usage-ecc57218c4",
+      "sql_digest": "SELECT date_trunc('hour', ts) + (FLOOR(EXTRACT(minute FROM ts) / 5) * INTERVAL '5 minutes') AS bucket, COUNT(*) AS requests, COUNT(*) FILTER (WHERE success) AS success_count, COUNT(*) FILTER (WHERE request_status = 'failure') AS failure_count, COUNT(*) FILTER ( WHERE COALESCE(failure_stage, '') = 'gateway' OR COALESCE(failure_detail_code, '') LIKE 'gw_%' ) AS gateway_rejected, COUNT(*) FILTER (WHE"
+    },
+    {
+      "file": "admin/usage_credits.go",
+      "line": 143,
+      "shape_id": "usage_credits-e1251bbcfa",
+      "sql_digest": "request_logs_with_current_month AS r"
+    },
+    {
+      "file": "admin/usage_enhanced.go",
+      "line": 123,
+      "shape_id": "usage_enhanced-7fb7e08985",
+      "sql_digest": "request_logs_with_current_month rl"
+    },
+    {
+      "file": "admin/usage_trend_series.go",
+      "line": 161,
+      "shape_id": "usage_trend_series-3461470f2b",
+      "sql_digest": "request_logs_with_current_month"
+    },
+    {
+      "file": "admin/usage_trend_series.go",
+      "line": 192,
+      "shape_id": "usage_trend_series-3461470f2b",
+      "sql_digest": "request_logs_with_current_month"
+    },
+    {
+      "file": "admin/usage_trend_series.go",
+      "line": 270,
+      "shape_id": "usage_trend_series-3461470f2b",
+      "sql_digest": "request_logs_with_current_month"
+    },
+    {
+      "file": "admin/work_types.go",
+      "line": 293,
+      "shape_id": "work_types-7d8c37999c",
+      "sql_digest": "SELECT COALESCE(work_type, 'unknown'), COUNT(*) FROM request_logs_with_current_month WHERE ts >= NOW() - INTERVAL '24 hours' AND work_type IS NOT NULL AND work_type <> '' AND ( is_auto_request = TRUE OR (is_auto_request IS NOT TRUE AND"
+    },
+    {
+      "file": "admin/work_types.go",
+      "line": 340,
+      "shape_id": "work_types-d5d1df46c9",
+      "sql_digest": "SELECT %s, COUNT(*) FROM request_logs_with_current_month WHERE ts >= NOW() - INTERVAL '24 hours' AND ( is_auto_request = TRUE OR (is_auto_request IS NOT TRUE AND %s) )%s%s GROUP BY (%s)"
+    },
+    {
+      "file": "admin/work_types.go",
+      "line": 381,
+      "shape_id": "work_types-5d062e8be6",
+      "sql_digest": "THEN 1 ELSE 0 END), 0) FROM request_logs_with_current_month WHERE ts >= NOW() - INTERVAL '24 hours'"
+    },
+    {
+      "file": "admin/work_types.go",
+      "line": 443,
+      "shape_id": "work_types-6865e73b11",
+      "sql_digest": "SELECT COALESCE(NULLIF(outbound_model, ''), client_model, canonical_model) AS m, COUNT(*) AS c FROM request_logs_with_current_month WHERE ts >= NOW() - INTERVAL '24 hours' AND COALESCE(NULLIF(outbound_model, ''), client_model, canonical_model) IS NOT NULL AND ( is_auto_request = TRUE OR (is_auto_request IS NOT TRUE AND"
+    },
+    {
+      "file": "bg/daily_probe_audit.go",
+      "line": 118,
+      "shape_id": "daily_probe_audit-4090e07bdd",
+      "sql_digest": "WITH used AS ( SELECT rl.credential_id AS id, pm.raw_model_name, MAX(rl.ts) AS last_used_at FROM request_logs_with_current_month rl JOIN credential_model_bindings cmb ON cmb.credential_id = rl.credential_id JOIN provider_models pm ON pm.id = cmb.provider_model_id WHERE rl.ts >= now() -"
+    },
+    {
+      "file": "bg/integrity_fingerprint_drift.go",
+      "line": 259,
+      "shape_id": "integrity_fingerprint_drift-e5571295ab",
+      "sql_digest": "WITH business AS ( SELECT credential_id, raw_model_name, system_fingerprint, ts FROM request_logs_with_current_month WHERE ts > NOW() - ($1::int * INTERVAL '1 day') AND system_fingerprint IS NOT NULL AND credential_id IS NOT NULL AND raw_model_name IS NOT NULL AND COALESCE(is_auto_request, false) = false AND (task_type IS NULL OR task_type NOT IN ('self_check','node_probe','active_probe','integrit"
+    },
+    {
+      "file": "bg/passive_probe_listener.go",
+      "line": 112,
+      "shape_id": "passive_probe_listener-c6fa80f347",
+      "sql_digest": "UPDATE passive_probe_state pps SET consecutive_count = 0 FROM ( SELECT DISTINCT credential_id, COALESCE(outbound_model, client_model) AS raw_model_name -- 2026-09-10 minimax-prod-v2 incident: the bare _request_logs -- parent only holds cold rows (max(ts) was a full day stale on -- 154), so recent successes were invisible and \"consecutive\" -- streaks never reset. pollNewErrors already reads the -- "
+    },
+    {
+      "file": "bg/passive_probe_listener.go",
+      "line": 170,
+      "shape_id": "passive_probe_listener-e1426e9b42",
+      "sql_digest": "INSERT INTO passive_probe_state (credential_id, raw_model_name, error_kind, consecutive_count, total_recent_count, window_total_count, first_seen_at, last_seen_at, last_response_body_preview) SELECT rl.credential_id, COALESCE(rl.outbound_model, rl.client_model) AS raw_model_name, rl.error_kind, COUNT(*), COUNT(*), 0, MIN(rl.ts), NOW(), LEFT(COALESCE(MAX(COALESCE(rb.response_body::text, '')), ''), "
+    },
+    {
+      "file": "bg/passive_probe_listener.go",
+      "line": 218,
+      "shape_id": "passive_probe_listener-0c29ad76fd",
+      "sql_digest": "UPDATE passive_probe_state pps SET window_total_count = COALESCE(win.total, 0) FROM ( SELECT credential_id, COALESCE(outbound_model, client_model) AS raw_model_name, COUNT(*) AS total -- 2026-09-10: same cold-parent staleness as resetCountersOnSuccess — -- recent traffic lives in _request_logs_hot, which only the -- current-month surface exposes. -- R50: probe traffic excluded so the error_rate de"
+    },
+    {
+      "file": "bg/passive_probe_listener.go",
+      "line": 405,
+      "shape_id": "passive_probe_listener-fb32b8c78c",
+      "sql_digest": "SELECT COUNT(*) FROM request_logs_with_current_month WHERE credential_id = $1 AND LOWER(COALESCE(outbound_model, client_model)) = LOWER($2) AND success = TRUE AND ts > NOW() - INTERVAL '6 minutes'"
+    },
+    {
+      "file": "bg/stats_minute_rollup.go",
+      "line": 271,
+      "shape_id": "stats_minute_rollup-edadeb821d",
+      "sql_digest": "), 0)::bigint, COALESCE(SUM(r.cost_usd), 0), COALESCE(SUM(r.latency_ms), 0)::bigint FROM request_logs_with_current_month r WHERE r.request_status IN ('success', 'failure', 'rate_limited') AND r.ts >= $1 AND r.ts <= $2 AND"
+    },
+    {
+      "file": "bg/stats_minute_rollup.go",
+      "line": 320,
+      "shape_id": "stats_minute_rollup-f35858c498",
+      "sql_digest": "), 0)::bigint, COALESCE(SUM(r.cost_usd), 0) FROM request_logs_with_current_month r WHERE r.request_status IN ('success', 'failure', 'rate_limited') AND r.ts >= $1 AND r.ts <= $2 AND ($3 <> 'error_kind' OR r.request_status = 'failure') AND"
+    },
+    {
+      "file": "bg/stats_minute_rollup.go",
+      "line": 340,
+      "shape_id": "stats_minute_rollup-cb02789a9e",
+      "sql_digest": "INSERT INTO request_stats_error_drill_minute ( bucket, tenant_id, error_kind, model_name, provider_id, client_profile, requests ) SELECT date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC', COALESCE(NULLIF(r.tenant_id, ''), 'default'), COALESCE(NULLIF(r.error_kind, ''), '__unknown__'), COALESCE(NULLIF(r.outbound_model, ''), NULLIF(r.client_model, ''), ''), COALESCE(r.provider_id, 0), "
+    },
+    {
+      "file": "bg/stats_minute_rollup_retire.go",
+      "line": 21,
+      "shape_id": "stats_minute_rollup_retire-6ef9841aac",
+      "sql_digest": "DELETE FROM request_stats_minute AS m WHERE m.bucket >= date_trunc('minute', $1::timestamptz) AND m.bucket < date_trunc('minute', $2::timestamptz) AND NOT EXISTS ( SELECT 1 FROM request_logs_with_current_month AS r WHERE r.request_status IN ('success', 'failure', 'rate_limited') AND r.ts >= $1 AND r.ts < date_trunc('minute', $2::timestamptz) AND date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIM"
+    },
+    {
+      "file": "bg/stats_minute_rollup_retire.go",
+      "line": 78,
+      "shape_id": "stats_minute_rollup_retire-82a8714af1",
+      "sql_digest": "DELETE FROM request_stats_dim_minute AS m WHERE m.bucket >= date_trunc('minute', $1::timestamptz) AND m.bucket < date_trunc('minute', $2::timestamptz) AND m.dim_type = $3 AND NOT EXISTS ( SELECT 1 FROM request_logs_with_current_month AS r WHERE r.request_status IN ('success', 'failure', 'rate_limited') AND ($3 <> 'error_kind' OR r.request_status = 'failure') AND r.ts >= $1 AND r.ts < date_trunc('m"
+    },
+    {
+      "file": "bg/stats_minute_rollup_retire.go",
+      "line": 102,
+      "shape_id": "stats_minute_rollup_retire-fad6268b82",
+      "sql_digest": "DELETE FROM request_stats_error_drill_minute AS m WHERE m.bucket >= date_trunc('minute', $1::timestamptz) AND m.bucket < date_trunc('minute', $2::timestamptz) AND NOT EXISTS ( SELECT 1 FROM request_logs_with_current_month AS r WHERE r.request_status = 'failure' AND r.ts >= $1 AND r.ts < date_trunc('minute', $2::timestamptz) AND date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' = m.b"
+    },
+    {
+      "file": "db/probe_views_unified.go",
+      "line": 88,
+      "shape_id": "probe_views_unified-48de602ab8",
+      "sql_digest": "; CREATE OR REPLACE VIEW v_model_health_dashboard AS WITH real24 AS ( -- 真实请求 24h 反馈(排除探测流量):请求结果影响节点状态的展示闭环。 -- 单次聚合后按 (credential, model) JOIN,避免逐行 LATERAL 扫分区。 SELECT rl.credential_id, lower(COALESCE(rl.outbound_model, rl.client_model)) AS model_name, COUNT(*) FILTER (WHERE rl.success) AS ok_24h, COUNT(*) FILTER (WHERE NOT rl.success) AS fail_24h, MAX(rl.ts) AS last_real_request_at FROM request"
+    },
+    {
+      "file": "domains/routeincident/store.go",
+      "line": 700,
+      "shape_id": "store-8d1c49941d",
+      "sql_digest": "WITH buckets AS ( SELECT date_trunc('minute', rl.ts) - (EXTRACT(MINUTE FROM rl.ts)::int % 5) * INTERVAL '1 minute' AS bucket, rl.success, rl.latency_ms, rl.request_status FROM request_logs_with_current_month rl WHERE rl.tenant_id = $1 AND rl.ts >= NOW() - INTERVAL '24 hours' AND (rl.canonical_id = $2 OR rl.outbound_model = $3 OR rl.client_model = $3) AND COALESCE(rl.provider_id, 0) = COALESCE($4, "
+    },
+    {
+      "file": "domains/sessionsummary/summarizer.go",
+      "line": 644,
+      "shape_id": "summarizer-888f0f643d",
+      "sql_digest": "SELECT rl.request_id, COALESCE(rb.request_body->>'role', 'user') as role, COALESCE(rb.request_body->'messages'->-1->>'content', '') as content, rl.outbound_model, rl.ts FROM request_logs_with_current_month rl LEFT JOIN"
+    },
+    {
+      "file": "domains/sessionsummary/summarizer.go",
+      "line": 689,
+      "shape_id": "summarizer-888f0f643d",
+      "sql_digest": "SELECT rl.request_id, COALESCE(rb.request_body->>'role', 'user') as role, COALESCE(rb.request_body->'messages'->-1->>'content', '') as content, rl.outbound_model, rl.ts FROM request_logs_with_current_month rl LEFT JOIN"
+    },
+    {
+      "file": "domains/sessionsummary/summarizer.go",
+      "line": 772,
+      "shape_id": "summarizer-380d5598e3",
+      "sql_digest": "SELECT COALESCE(NULLIF(TRIM(gw_task_id), ''), 'auto') FROM request_logs_with_current_month WHERE gw_session_id = $1 AND tenant_id = $2 AND success = TRUE AND COALESCE(is_auto_request, FALSE) = FALSE ORDER BY ts DESC, request_id DESC LIMIT 1"
+    },
+    {
+      "file": "internal/collector/gateway_adapters.go",
+      "line": 46,
+      "shape_id": "gateway_adapters-42196c3b74",
+      "sql_digest": "SELECT COALESCE(COUNT(*), 0)::float8 / 300.0 AS tps, COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms), 0) AS p50, COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms), 0) AS p99, COALESCE(AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END), 0) AS success_pct, COALESCE(COUNT(DISTINCT tenant_id), 0) AS tenant_count FROM request_logs_with_current_month WHERE ts >= NOW() - INTERV"
+    },
+    {
+      "file": "internal/collector/gateway_adapters.go",
+      "line": 91,
+      "shape_id": "gateway_adapters-42196c3b74",
+      "sql_digest": "SELECT COALESCE(COUNT(*), 0)::float8 / 300.0 AS tps, COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms), 0) AS p50, COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms), 0) AS p99, COALESCE(AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END), 0) AS success_pct, COALESCE(COUNT(DISTINCT tenant_id), 0) AS tenant_count FROM request_logs_with_current_month WHERE ts >= NOW() - INTERV"
+    },
+    {
+      "file": "internal/collector/gateway_adapters.go",
+      "line": 60,
+      "shape_id": "gateway_adapters-1c3c8e2713",
+      "sql_digest": "SELECT COALESCE(NULLIF(outbound_model, ''), client_model) AS model_name, COUNT(*)::bigint FROM request_logs_with_current_month WHERE ts >= NOW() - INTERVAL '5 minutes' AND COALESCE(NULLIF(outbound_model, ''), client_model, '') <> '' GROUP BY 1 ORDER BY 2 DESC LIMIT 20"
+    },
+    {
+      "file": "internal/quality/minute_aggregator.go",
+      "line": 17,
+      "shape_id": "minute_aggregator-cc45110db6",
+      "sql_digest": "INSERT INTO provider_metrics_minute ( provider_id, model_name, endpoint, bucket, total_requests, successful_requests, error_5xx, error_4xx, error_timeout, error_other, latency_sum, latency_min, latency_max, latency_p50, latency_p95, latency_p99, ttft_sum, ttft_p95, total_input_tokens, total_output_tokens, total_cost ) SELECT provider_id, COALESCE(NULLIF(outbound_model, ''), NULLIF(client_model, ''"
+    },
+    {
+      "file": "maas/usage.go",
+      "line": 66,
+      "shape_id": "usage-e1251bbcfa",
+      "sql_digest": "request_logs_with_current_month AS r"
+    },
+    {
+      "file": "maas/usage.go",
+      "line": 87,
+      "shape_id": "usage-e1251bbcfa",
+      "sql_digest": "request_logs_with_current_month AS r"
+    }
+  ]
+}

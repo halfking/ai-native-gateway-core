@@ -1,0 +1,55 @@
+{
+  "_comment": [
+    "Windows 全量测试基线（2026-10-29 审计轮落档，接门 scripts/guards/check-win-test-baseline.sh）",
+    "来源: go test ./... (GOFLAGS=-p=2, Windows Git Bash) 实测失败集 + 逐包复跑稳定性核对",
+    "判据: 实测失败 - baseline = 新增失败 ⇒ 红; baseline - 实测 = 可收紧(棘轮只降不升) ⇒ 提示",
+    "环境类: symlink 特权 / 路径分隔符 \\ vs / / exit 9009 工具缺失 / 计时精度 / LAN 组播",
+    "包级干扰类: admin / bg 在全量并行跑时包级 FAIL(无具名失败), 单包复跑 ok ⇒ 记为包级 baseline",
+    "2026-10-30 24h 审计轮收紧（棘轮只降不升）：移除 autoroute 计时精度 1 条（NoopCaller 加 1ms Delay）、address_family 未登记面 1 条（BuiltinHardBlockAll 登记为 not-a-decision）、cmd/gateway 5 条（internal/registration 幽灵 import 修复后 R75 解释器验真 + §143.83/84 门 ToSlash 归一）。均附证据于当轮提交。"
+  ],
+  "packages": {
+    "cmd/gateway": [
+      "TestCleanupWithExactCutoffTime",
+      "TestInitAttachmentStorage_DefaultIsFilesystem",
+      "TestInitStorageModeFullHotZoneRootNotDir",
+      "TestInitStorageModeFullHotZoneRootNotDir/symlink_root_degrades_to_legacy",
+      "TestScanPluginsCurrentShadowsFlat",
+      "TestScanPluginsPrefersCurrentSymlink"
+    ],
+    "discovery": [
+      "TestDiscoverGateways"
+    ],
+    "domains/attachments": [
+      "TestDeleteOlderThanHasNoProductionCallerYet",
+      "TestIRTransformer_StoresBase64AndReplacesWithGatewayURL",
+      "TestRequestAttachmentsDeleteIsCentralized",
+      "TestSafeJoin_DirectoryTraversal"
+    ],
+    "domains/credential": [
+      "TestRedisRPMLimiterConcurrent",
+      "TestRedisRPMLimiterMultiInstance",
+      "TestRedisRPMMultiGateway"
+    ],
+    "domains/dbdegradation": [
+      "TestFileWriter_Basic",
+      "TestFileWriter_DirectoryPermissions",
+      "TestFileWriter_Retry"
+    ],
+    "domains/nodestatecache": [
+      "TestSelectP99Under1ms"
+    ],
+    "domains/routeincident": [
+      "TestEventRetentionWorkerHasNoProductionCallerYet"
+    ],
+    "domains/sanitizerules": [
+      "TestEventRetentionKeepsRecentlyAggregatedEntry"
+    ],
+    "domains/sessionstate": [
+      "TestSessionStateMachine_Metrics"
+    ]
+  },
+  "package_level": [
+    "admin",
+    "bg"
+  ]
+}

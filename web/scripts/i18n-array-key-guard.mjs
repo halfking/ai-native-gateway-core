@@ -126,7 +126,9 @@ async function main() {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const p = join(dir, e.name)
       if (e.isDirectory()) { walk(p); continue }
-      if (!/\.(vue|ts)$/.test(e.name) || p.includes('/locales/')) continue
+      // Windows join 产生反斜杠 ⇒ '/locales/' 永不命中 ⇒ locale 文件被当源码扫
+      // （与 src/i18n/scanner.ts 的 toSlash 同一课）。
+      if (!/\.(vue|ts)$/.test(e.name) || p.replace(/\\/g, '/').includes('/locales/')) continue
       const src = readFileSync(p, 'utf8')
       for (const h of findArrayConsumption(src, arrayKeys)) lines.push({ file: p.replace(ROOT + '/', ''), ...h })
     }

@@ -241,5 +241,23 @@ export default {
     typeTopup: "Forfait de rechargement"
   },
 
-
+  bills: {
+    title: 'Factures mensuelles et coupons',
+    refresh: 'Actualiser',
+    exportCsv: 'Exporter CSV',
+    listTitle: 'Factures mensuelles',
+    emptyNoResult: 'Aucune facture mensuelle émise pour le moment',
+    colPeriod: 'Période',
+    colCredits: 'Crédits',
+    colRequests: 'Requêtes',
+    colAmount: 'Montant',
+    colStatus: 'Statut',
+    couponTitle: 'Activer un coupon',
+    couponPlaceholder: 'Code coupon',
+    couponActivate: 'Activer',
+    couponOk: '{n} crédits crédités ({code})',
+    couponFailed: "Le coupon n'a pas pu être activé. Vérifiez le code et réessayez",
+    loadFailed: 'Impossible de charger les factures. Veuillez réessayer',
+    exportFailed: "Impossible d'exporter le CSV. Veuillez réessayer",
+  },
 }

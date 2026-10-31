@@ -263,7 +263,7 @@ onMounted(load)
 .page-header-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .page-desc {
@@ -295,7 +295,7 @@ onMounted(load)
 }
 .filter-bar__input,
 .filter-bar__select {
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -332,10 +332,10 @@ onMounted(load)
   padding: 0;
 }
 .card-title {
-  padding: 14px 16px 10px;
+  padding: 12px 16px 8px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--accent) 4%, transparent);
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
 }
 .card-title .hint {
@@ -408,7 +408,7 @@ onMounted(load)
 .tenant-badge {
   display: inline-flex;
   align-items: center;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;

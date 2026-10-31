@@ -77,7 +77,8 @@ func TestSessionBodiesWriter_OutboundBody_RoundTrip(t *testing.T) {
 
 	// And read via the builder the compressor actually uses — proving the
 	// data written by the write path is consumable by the read path. This
-	// is the integration contract between DualWriter and SessionCompressor.
+	// is the integration contract between the session-family write path
+	// (SessionBodiesWriter) and SessionCompressor.
 	builder := NewOutboundBuilder(NewTurnReader(pool))
 	bodyJSON, err := builder.BuildLatestOutbound(ctx, tenantID, sessionID)
 	require.NoError(t, err)

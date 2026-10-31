@@ -496,7 +496,7 @@ onBeforeUnmount(() => {
             </div>
             <div v-if="detail.tags && Object.keys(detail.tags).length" style="margin-bottom:12px">
               <strong style="font-size:12px">Tags:</strong>
-              <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">
+              <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">
                 <span
                   v-for="(value, key) in detail.tags"
                   :key="key"
@@ -511,7 +511,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </template>
-        <div v-else-if="detailError" style="color:var(--danger);padding:20px">{{ detailError }}</div>
+        <div v-else-if="detailError" style="color:var(--danger);padding:16px">{{ detailError }}</div>
       </div>
     </div>
 
@@ -596,12 +596,12 @@ onBeforeUnmount(() => {
 .stats-grid { margin-bottom: 12px; }
 .stats-row {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .stat-card {
   flex: 1 1 120px;
-  padding: 10px 14px;
+  padding: 8px 12px;
   background: var(--surface-1, color-mix(in srgb, var(--kx-text) 4%, transparent));
   border: 1px solid var(--border, color-mix(in srgb, var(--kx-text) 4%, transparent));
   border-radius: 8px;
@@ -612,7 +612,7 @@ onBeforeUnmount(() => {
   letter-spacing: 0.5px;
 }
 .stat-value {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 600;
   margin-top: 4px;
 }
@@ -621,10 +621,10 @@ onBeforeUnmount(() => {
 
 .neighbors-body { padding: 8px 0; }
 .neighbors-meta { font-size: 12px; opacity: 0.7; margin: 0 0 12px; }
-.neighbors-section { margin-bottom: 14px; }
+.neighbors-section { margin-bottom: 12px; }
 .neighbors-section h4 {
   font-size: 13px;
-  margin: 0 0 6px;
+  margin: 0 0 4px;
   opacity: 0.85;
 }
 .neighbor-list { list-style: none; padding: 0; margin: 0; }
@@ -632,7 +632,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border, color-mix(in srgb, var(--kx-text) 4%, transparent));
   font-size: 13px;
 }
@@ -651,8 +651,8 @@ onBeforeUnmount(() => {
 .kind-agent        { background: var(--warning-bd); color: var(--warning); }
 
 .metadata-block {
-  margin: 6px 0 0;
-  padding: 10px 12px;
+  margin: 4px 0 0;
+  padding: 8px 12px;
   background: var(--surface-secondary, color-mix(in srgb, var(--kx-text) 4%, transparent));
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -666,7 +666,7 @@ onBeforeUnmount(() => {
 
 .agent-row {
   cursor: pointer;
-  transition: background 0.1s ease;
+  transition: background 0.1s var(--kx-motion-ease-out);
 }
 .agent-row:hover {
   background: color-mix(in srgb, var(--accent) 6%, transparent);

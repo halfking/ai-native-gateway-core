@@ -102,7 +102,7 @@ watch(
   align-items: center;
   justify-content: center;
   z-index: 1000;
-  padding: 1rem;
+  padding: 16px;
 }
 /* 2026-09-29 暗色修复（与 ServiceLandingPage.vue 同根因）：背景原为 var(--on-primary)，
    而 --on-primary → --kx-text-on-primary → #ffffff 在明暗两套皮肤里都是同一个纯白。
@@ -110,16 +110,16 @@ watch(
 .dialog-content {
   background: var(--card);
   border-radius: 12px;
-  padding: 1.5rem;
+  padding: 24px;
   max-width: 540px;
   width: 100%;
   box-shadow: var(--kx-shadow-md);
   color: var(--kx-text);
 }
-.dialog-content h2 { margin: 0 0 1rem; font-size: 1.15rem; }
+.dialog-content h2 { margin: 0 0 16px; font-size: 20px; }
 .agree-intro, .agree-note { color: var(--kx-muted); font-size: 13px; line-height: 1.6; }
-.agree-list { margin: 0 0 1rem; padding-left: 1.2rem; color: var(--kx-text); font-size: 13px; line-height: 1.7; }
-.agree-checkbox { display: flex; gap: 8px; align-items: flex-start; margin: 14px 0; font-size: 13px; }
+.agree-list { margin: 0 0 16px; padding-left: 16px; color: var(--kx-text); font-size: 13px; line-height: 1.7; }
+.agree-checkbox { display: flex; gap: 8px; align-items: flex-start; margin: 12px 0; font-size: 13px; }
 .agree-checkbox input { margin-top: 3px; }
-.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 </style>

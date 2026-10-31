@@ -550,7 +550,7 @@ onMounted(() => {
 
 <style scoped>
 .usage-cost-view {
-  padding: 20px;
+  padding: 16px;
 }
 
 .page-header {
@@ -573,7 +573,7 @@ onMounted(() => {
 }
 
 .btn {
-  padding: 6px 12px;
+  padding: 4px 12px;
   border-radius: 6px;
   font-size: 13px;
   font-weight: 500;
@@ -581,7 +581,7 @@ onMounted(() => {
   border: 1px solid var(--border);
   background: var(--card);
   color: var(--text);
-  transition: all 0.2s;
+  transition: opacity 0.2s var(--kx-motion-ease-out), background 0.2s var(--kx-motion-ease-out), color 0.2s var(--kx-motion-ease-out), border-color 0.2s var(--kx-motion-ease-out), box-shadow 0.2s var(--kx-motion-ease-out), transform 0.2s var(--kx-motion-ease-out), outline-offset 0.2s var(--kx-motion-ease-out);
 }
 
 .btn:hover:not(:disabled) {
@@ -649,7 +649,7 @@ onMounted(() => {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 20px;
+  padding: 16px;
 }
 
 /* 对比卡片 */
@@ -665,7 +665,7 @@ onMounted(() => {
 .compare-period-selector {
   display: flex;
   gap: 16px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   padding-bottom: 16px;
   border-bottom: 1px solid var(--border);
 }
@@ -705,10 +705,10 @@ onMounted(() => {
 }
 
 .compare-value {
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--text);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .compare-meta {
@@ -720,7 +720,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .trend-up {
@@ -737,11 +737,11 @@ onMounted(() => {
 
 .badge {
   display: inline-block;
-  padding: 2px 6px;
+  padding: 2px 4px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
-  margin-left: 6px;
+  margin-left: 4px;
 }
 
 .badge-warning {
@@ -799,7 +799,7 @@ onMounted(() => {
 
 .cost-table th,
 .cost-table td {
-  padding: 10px 12px;
+  padding: 8px 12px;
   text-align: left;
   border-bottom: 1px solid var(--border);
 }
@@ -854,7 +854,7 @@ onMounted(() => {
   font-size: 24px;
   font-weight: 700;
   color: var(--text);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .cache-value--green {
@@ -890,6 +890,14 @@ onMounted(() => {
 @media (max-width: 768px) {
   .cache-grid {
     grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition-property: opacity, background, color, border-color, box-shadow, outline-offset;
   }
 }
 </style>

@@ -1,0 +1,77 @@
+{
+  "schema_version": 2,
+  "plugin_id": "hello",
+  "display_name": "Hello Plugin",
+  "plugin_version": "0.1.0",
+  "build_seq": 1,
+  "channel": "dev",
+  "api": "^1",
+  "essential": true,
+  "requires": [],
+  "provides": ["demo.hello"],
+  "defaults": {
+    "greeting": "hello",
+    "times": 1,
+    "enabled": true
+  },
+  "settings_schema": {
+    "type": "object",
+    "x-order": ["greeting", "times", "enabled"],
+    "properties": {
+      "greeting": {
+        "type": "string",
+        "title_key": "plugin.hello.greeting",
+        "description_key": "plugin.hello.greetingDesc",
+        "default": "hello"
+      },
+      "times": {
+        "type": "integer",
+        "title_key": "plugin.hello.times",
+        "enum": [1, 2, 3],
+        "minimum": 1,
+        "maximum": 3,
+        "default": 1
+      },
+      "enabled": {
+        "type": "boolean",
+        "title_key": "plugin.hello.enabled",
+        "default": true
+      }
+    }
+  },
+  "client_assets": ["web/index.html", "web/i18n.js"],
+  "gateway_compatibility": {
+    "min_version": "0.0.0",
+    "max_version": "",
+    "api_contract": "gateway-plugin-v2"
+  },
+  "runtime": {
+    "entrypoint": "bin/hello",
+    "protocol": "http-unix-socket",
+    "health_path": "/plugin/healthz",
+    "handshake_path": "/plugin/handshake",
+    "shutdown_grace_seconds": 5
+  },
+  "capabilities": [],
+  "pages": [
+    {
+      "path": "settings",
+      "type": "settings",
+      "nav": {
+        "group": "plugins",
+        "label_key": "plugin.hello.navSettings",
+        "order": 900
+      }
+    }
+  ],
+  "web": {
+    "mount": "iframe",
+    "base_path": "/plugins/hello/",
+    "entry": "web/index.html"
+  },
+  "activation": {
+    "module_key": "hello",
+    "license_required": false,
+    "license": { "mode": "open" }
+  }
+}

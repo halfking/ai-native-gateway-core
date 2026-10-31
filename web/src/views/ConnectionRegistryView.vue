@@ -422,7 +422,7 @@ const closedCardFields = computed<CardField[]>(() => [
 .cr-filter-input {
   flex: 1;
   min-width: 200px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   font-size: 12px;
@@ -431,7 +431,7 @@ const closedCardFields = computed<CardField[]>(() => [
 }
 
 .cr-search-btn {
-  padding: 6px 12px;
+  padding: 4px 12px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   background: var(--kx-primary);
@@ -465,7 +465,7 @@ const closedCardFields = computed<CardField[]>(() => [
 .cr-chip {
   display: inline-flex;
   align-items: center;
-  padding: 2px 10px;
+  padding: 2px 8px;
   border-radius: 999px;
   font-size: 12px;
 }
@@ -477,7 +477,7 @@ const closedCardFields = computed<CardField[]>(() => [
   border: 1px solid var(--kx-border);
   border-radius: 8px;
   background: var(--kx-surface);
-  padding: 10px 12px;
+  padding: 8px 12px;
 }
 
 .cr-section-head {
@@ -507,7 +507,7 @@ const closedCardFields = computed<CardField[]>(() => [
 
 .cr-table th,
 .cr-table td {
-  padding: 6px 8px;
+  padding: 4px 8px;
   text-align: left;
   border-bottom: 1px solid var(--kx-border);
 }
@@ -526,7 +526,7 @@ const closedCardFields = computed<CardField[]>(() => [
  */
 .cr-action {
   min-height: 48px;
-  padding: 0 10px;
+  padding: 0 8px;
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   font: inherit;
@@ -552,7 +552,7 @@ const closedCardFields = computed<CardField[]>(() => [
 .cr-skeleton {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .cr-skeleton-card {

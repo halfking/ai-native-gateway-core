@@ -929,7 +929,7 @@ onUnmounted(() => {
 .filter-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
@@ -942,9 +942,9 @@ onUnmounted(() => {
 }
 
 .active-count {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 2px 7px;
+  padding: 2px 8px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 15%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
@@ -1049,7 +1049,7 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 60px;
+  padding: 64px;
   text-align: center;
   color: var(--muted);
 }
@@ -1099,7 +1099,7 @@ onUnmounted(() => {
   position: sticky;
   left: 0;
   z-index: 4;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--muted);
   text-align: left;
@@ -1108,7 +1108,7 @@ onUnmounted(() => {
 }
 
 .axis-cell {
-  font-size: 9px;
+  font-size: 11px;
   font-family: ui-monospace, monospace;
   color: var(--muted);
   text-align: center;
@@ -1127,7 +1127,7 @@ onUnmounted(() => {
   z-index: 2;
   background: var(--bg-subtle, var(--card));
   text-align: left;
-  padding: 5px 8px;
+  padding: 4px 8px;
   cursor: pointer;
   border-bottom: 1px solid var(--border);
 }
@@ -1168,7 +1168,7 @@ onUnmounted(() => {
 }
 
 .model-label code {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 400;
 }
 
@@ -1178,7 +1178,7 @@ onUnmounted(() => {
   margin-left: 4px;
   padding: 0 4px;
   border-radius: 3px;
-  font-size: 9px;
+  font-size: 11px;
   line-height: 14px;
   vertical-align: middle;
   white-space: nowrap;
@@ -1194,7 +1194,7 @@ onUnmounted(() => {
   padding: 0;
   border-radius: 2px;
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: opacity 0.15s var(--kx-motion-ease-out);
   overflow: hidden;
 }
 
@@ -1224,7 +1224,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   height: 100%;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   font-family: ui-monospace, monospace;
   color: rgba(15, 23, 42, 0.82);
@@ -1303,7 +1303,7 @@ onUnmounted(() => {
 
 .drawer-header h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .drawer-body {
@@ -1324,7 +1324,7 @@ onUnmounted(() => {
 .detail-row {
   display: flex;
   justify-content: space-between;
-  padding: 6px 0;
+  padding: 4px 0;
   border-bottom: 1px solid var(--border);
   font-size: 12px;
 }

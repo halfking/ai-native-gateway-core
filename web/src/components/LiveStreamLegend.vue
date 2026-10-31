@@ -116,7 +116,7 @@ function handleClick(key: string) {
 <style scoped>
 .legend-container {
   margin-top: 12px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -145,7 +145,7 @@ function handleClick(key: string) {
 
 .legend-toggle__count {
   min-width: 18px;
-  padding: 2px 5px;
+  padding: 2px 4px;
   border-radius: 9px;
   background: var(--accent);
   color: var(--bg);
@@ -154,7 +154,7 @@ function handleClick(key: string) {
 }
 
 .legend-row {
-  margin-top: 10px;
+  margin-top: 8px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -189,7 +189,7 @@ function handleClick(key: string) {
 .legend-item {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   padding: 4px 8px;
   border-radius: 4px;
   font-size: 12px;
@@ -197,7 +197,7 @@ function handleClick(key: string) {
   border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out);
   white-space: nowrap;
 }
 
@@ -219,7 +219,7 @@ function handleClick(key: string) {
 
 .legend-item--status {
   cursor: default;
-  padding: 3px 6px;
+  padding: 3px 4px;
 }
 
 .legend-swatch {
@@ -315,11 +315,11 @@ function handleClick(key: string) {
 
 @media (max-width: 768px) {
   .legend-section {
-    gap: 6px;
+    gap: 4px;
   }
 
   .legend-item {
-    padding: 3px 6px;
+    padding: 3px 4px;
     font-size: 11px;
   }
 

@@ -233,7 +233,7 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 	if !c.managed() && label != "" && secretCredentialField(label) && text != "" && !isMarker && !isPlaceholderCredentialValue(label, text) && secretFieldBlockAllowed() &&
 		!egressReleaseAllowed(ctx, secretFieldRuleID, label, text) {
 		marker := RedactionMarker(TypeSecret)
-		return &outputcompliance.ComplianceResult{Blocked: true, RedactedOutput: marker, Issues: []outputcompliance.ComplianceIssue{{Type: "sensitive", Subtype: "credential", Content: marker, Severity: 8, RuleID: secretFieldRuleID}}}, nil
+		return &outputcompliance.ComplianceResult{Blocked: true, RedactedOutput: marker, Issues: []outputcompliance.ComplianceIssue{{Type: "sensitive", Subtype: "credential", Content: marker, Severity: 8, RuleID: secretFieldRuleID, Digest: EgressPayloadDigest(secretFieldRuleID, label, text)}}}, nil
 	}
 	return c.Check(ctx, tenant, text)
 }
@@ -259,7 +259,7 @@ func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, valu
 		// 的占位值会把同轮全部合法调用一并掐断。
 		if _, marker := ParsePlaceholder(value); !c.managed() && secretCredentialField(label) && value != "" && !marker && !isPlaceholderCredentialValue(label, value) && secretFieldBlockAllowed() &&
 			!egressReleaseAllowed(ctx, secretFieldRuleID, path, value) {
-			setToolIssueRule(issue, "credential", path, secretFieldRuleID)
+			setToolIssueRule(issue, "credential", path, secretFieldRuleID, value)
 			return true, nil
 		}
 		document := bytes.TrimSpace([]byte(value))
@@ -368,7 +368,7 @@ func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, valu
 			if scopedType(fragment.Type) || fragment.Type == TypeEmail {
 				reason = "egress_destination"
 			}
-			setToolIssueRule(issue, reason, path, fragment.RuleID)
+			setToolIssueRule(issue, reason, path, fragmentRuleID(fragment), value)
 			return true, nil
 		}
 		// 2026-10-11：ScopeEgress 只匹配 IP 字面量规则，域名形式的外传目的地
@@ -393,7 +393,7 @@ func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, valu
 		if !c.managed() && hasPublicHostDestination(value) &&
 			sanitizerules.HardBlockAllowed("egress", networkDestinationRuleID) &&
 			!egressReleaseAllowed(ctx, networkDestinationRuleID, path, value) {
-			setToolIssueRule(issue, "egress_destination", path, networkDestinationRuleID)
+			setToolIssueRule(issue, "egress_destination", path, networkDestinationRuleID, value)
 			return true, nil
 		}
 		// 方向规则对托管/非托管**都**生效：它不在规则快照里，而是代码级的
@@ -416,7 +416,7 @@ func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, valu
 				c.observe(ctx, sink, "exempted")
 			} else {
 				c.observe(ctx, sink, "block")
-				setToolIssueRule(issue, "egress_destination", path, egressSinkRuleID)
+				setToolIssueRule(issue, "egress_destination", path, egressSinkRuleID, value)
 				return true, nil
 			}
 		}
@@ -424,8 +424,10 @@ func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, valu
 	case map[string]any:
 		// r1024：身份族与密码族都保持「非字符串形状 fail-closed」（畸形形状是
 		// 绕过手法，与值是否机密无关）；只有字符串明文按族分流（见上）。
+		// 非字符串形状没有可摘要的载荷值 ⇒ Digest 为空（审核批准时退化为
+		// 该租户该规则的整条放行）。
 		if credentialField(label) && secretFieldBlockAllowed() {
-			setToolIssueRule(issue, "credential", path, secretFieldRuleID)
+			setToolIssueRule(issue, "credential", path, secretFieldRuleID, "")
 			return true, nil
 		}
 		for key, child := range value {
@@ -439,7 +441,7 @@ func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, valu
 		}
 	case json.Number, bool:
 		if credentialField(label) && secretFieldBlockAllowed() {
-			setToolIssueRule(issue, "credential", path, secretFieldRuleID)
+			setToolIssueRule(issue, "credential", path, secretFieldRuleID, "")
 			return true, nil
 		}
 		return false, nil
@@ -541,16 +543,24 @@ func egressReleaseAllowed(ctx context.Context, ruleID, path, value string) bool 
 
 // setToolIssue records rule and schema location, never the rejected value.
 func setToolIssue(issue *outputcompliance.ComplianceIssue, reason, path string) {
-	setToolIssueRule(issue, reason, path, "")
+	setToolIssueRule(issue, reason, path, "", "")
 }
 
-// setToolIssueRule 同 setToolIssue，但带上规则 ID。
+// setToolIssueRule 同 setToolIssue，但带上规则 ID 与被拦载荷。
 //
 // owner 口径（2026-10-20）：「就算是被拦截，应该在中断时反馈给客户因为什么
 // 规则被拦截，不要搞空响应」——规则名是这句话里唯一可机器消费的部分。
-func setToolIssueRule(issue *outputcompliance.ComplianceIssue, reason, path, ruleID string) {
+//
+// 2026-10-28 拦截审核轮：value 用于计算载荷摘要（issue.Digest）。摘要的
+// 键与 egressReleaseAllowed 的放行判定**逐字节一致**（同一 ruleID、同一
+// path、同一 value），否则审核批准后的放行接不上同一次拦截。
+func setToolIssueRule(issue *outputcompliance.ComplianceIssue, reason, path, ruleID, value string) {
 	if issue != nil {
-		*issue = outputcompliance.ComplianceIssue{Type: "sensitive", Subtype: reason, Location: path, Content: RedactionMarker(TypeSecret), Severity: 8, Score: 1, RuleID: ruleID}
+		digest := ""
+		if ruleID != "" && value != "" {
+			digest = EgressPayloadDigest(ruleID, path, value)
+		}
+		*issue = outputcompliance.ComplianceIssue{Type: "sensitive", Subtype: reason, Location: path, Content: RedactionMarker(TypeSecret), Severity: 8, Score: 1, RuleID: ruleID, Digest: digest}
 	}
 }
 
@@ -708,7 +718,15 @@ func (c *outputSensitiveChecker) Check(ctx context.Context, tenant string, text 
 	if len(spans) == 0 {
 		return result, nil
 	}
-	block := c.action == OutputBlock && !c.managed()
+	// 2026-10-28 拦截审核轮：非托管路径的 OutputBlock 此前**完全绕过**硬阻断
+	// 清单（`block := action == OutputBlock && !managed()`）——部署设了
+	// LLM_GATEWAY_SANITIZE_OUTPUT_ACTION=block 且规则管理器不可用（fallback
+	// 检测器）时，正文里出现任何一个敏感片段（一个 email 就够）就整条响应
+	// output_policy_blocked，r1037「默认不硬阻断」的 owner 裁决在这条路上
+	// 从未生效。托管路径的 ErrRuleBlocked 早就过清单（detector.go 的
+	// HardBlockAllowed 判定），这里补齐同一条底线：非托管要拦，也必须清单
+	// 显式开（scope=output），否则降级为遮蔽。
+	block := c.action == OutputBlock && !c.managed() && anyOutputFragmentMayBlock(fragments)
 	var safe strings.Builder
 	last := 0
 	for _, span := range spans {
@@ -729,4 +747,18 @@ func (c *outputSensitiveChecker) observe(ctx context.Context, f SensitiveFragmen
 	if d, ok := c.sanitizer.detector.(*PatternDetector); ok {
 		d.observeFragment(ctx, f, action)
 	}
+}
+
+// anyOutputFragmentMayBlock 报告文本 lane 的命中里是否有任何一条规则的
+// 硬阻断被清单显式打开（scope=output）。
+//
+// 与 fragmentMayBlock（egress scope）同一口径，只是 scope 不同：文本 lane
+// 的 OutputBlock 语义是「输出正文里的敏感值是否终止整条响应」。
+func anyOutputFragmentMayBlock(fragments []SensitiveFragment) bool {
+	for _, fragment := range fragments {
+		if sanitizerules.HardBlockAllowed("output", fragmentRuleID(fragment)) {
+			return true
+		}
+	}
+	return false
 }

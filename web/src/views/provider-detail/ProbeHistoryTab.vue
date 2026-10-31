@@ -273,7 +273,7 @@ watch(stateFilter, load)
   flex-wrap: wrap;
   align-items: baseline;
   gap: 8px 16px;
-  padding: 10px 14px;
+  padding: 8px 12px;
   border-radius: var(--radius);
   font-size: 13px;
   background: color-mix(in srgb, var(--accent) 8%, transparent);
@@ -312,9 +312,9 @@ watch(stateFilter, load)
 .probe-section > summary::before {
   content: '▶';
   display: inline-block;
-  margin-right: 6px;
-  transition: transform 0.15s;
-  font-size: 10px;
+  margin-right: 4px;
+  transition: transform 0.15s var(--kx-motion-ease-out);
+  font-size: 11px;
   color: var(--muted);
 }
 
@@ -374,7 +374,7 @@ watch(stateFilter, load)
 .counter {
   display: inline-block;
   min-width: 28px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
   font-size: 12px;
   font-weight: 600;
@@ -390,5 +390,11 @@ watch(stateFilter, load)
 .counter-fail {
   background: var(--danger-bg);
   color: var(--danger);
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .probe-section > summary::before { transition: none; }
 }
 </style>

@@ -1,0 +1,924 @@
+{
+  "note": "第 26 增量（状态过渡必须以指数减速到达）的裁决簿。★ 键 = `<相对文件>|<选择器>|<属性>`（**不带行号**：行号会随文件改动漂移 ⇒ 用行号当键的门是「行号错的门」，比没有门更坏）。",
+  "basis": [
+    "impeccable skill/reference/animate.md「Timing and easing」：",
+    "  \"Use natural deceleration such as `cubic-bezier(0.16, 1, 0.3, 1)` for confident arrivals; do not use bounce or elastic curves by reflex. Long feedback feels like latency.\"",
+    "  \"Avoid casually animating layout-driving properties such as `width`, `height`, `top`, `left`, and margins; use FLIP, transforms, or grid techniques when appropriate.\"",
+    "  \"Every web animation needs a `prefers-reduced-motion` path with an intentional alternative. ... Reduced motion means fewer and gentler animations, not disabling all motion; feedback that confirms an action should remain legible.\"",
+    "  时长表：100–150ms 反馈 / 150–300ms 例行状态变化 / 300–500ms 浮层与视图过渡 / 500–800ms 刻意编排的焦点入场",
+    "impeccable skill/reference/craft-floor.md Motion 段：",
+    "  \"one authored moment, not scattered effects and not one identical entrance on every section. Exponential ease-out from an already-visible default. Reach past transform and opacity: blur, backdrop-filter, clip-path, mask, and shadow belong to the palette when they stay smooth.\"",
+    "仓内 DESIGN.md §8「Do」已列「尊重 prefers-reduced-motion」；本轮把它落成可执行判据（M4）。"
+  ],
+  "transitionAll": {
+    "note": "M2 裁决：`transition: all` 展开成**状态变体实际会改**的具名属性。★ 为什么不「删掉局部的、让全局接管」：局部 `.btn` 的 `:disabled` 改 `opacity`，而全局 `.btn` 那份过渡不含 `opacity` ⇒ 删掉会**丢动画** ⇒ 选「并集展开」（无损）。",
+    "entries": [
+      {
+        "key": "components/ApprovalRules.vue|.rule-card",
+        "file": "components/ApprovalRules.vue",
+        "selector": ".rule-card",
+        "properties": [
+          "opacity",
+          "border-color"
+        ],
+        "witness": "状态变体：.rule-card.disabled / .rule-card:hover / .rule-card.disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/ApprovalRules.vue|.btn-icon",
+        "file": "components/ApprovalRules.vue",
+        "selector": ".btn-icon",
+        "properties": [
+          "background",
+          "color",
+          "border-color",
+          "opacity"
+        ],
+        "witness": "状态变体：.btn-icon:hover:not(:disabled) / .btn-icon.active / .btn-icon:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/ApprovalRules.vue|.btn",
+        "file": "components/ApprovalRules.vue",
+        "selector": ".btn",
+        "properties": [
+          "opacity",
+          "background",
+          "color",
+          "border-color",
+          "box-shadow",
+          "transform",
+          "outline-offset"
+        ],
+        "witness": "状态变体：.btn:disabled / .btn:hover / .btn:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/ApproverManager.vue|.approver-card",
+        "file": "components/ApproverManager.vue",
+        "selector": ".approver-card",
+        "properties": [
+          "opacity",
+          "border-color"
+        ],
+        "witness": "状态变体：.approver-card.disabled / .approver-card:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/ApproverManager.vue|.btn-icon",
+        "file": "components/ApproverManager.vue",
+        "selector": ".btn-icon",
+        "properties": [
+          "background",
+          "color",
+          "border-color",
+          "opacity"
+        ],
+        "witness": "状态变体：.btn-icon:hover:not(:disabled) / .btn-icon.active / .btn-icon:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/ApproverManager.vue|.btn",
+        "file": "components/ApproverManager.vue",
+        "selector": ".btn",
+        "properties": [
+          "opacity",
+          "background",
+          "color",
+          "border-color",
+          "box-shadow",
+          "transform",
+          "outline-offset"
+        ],
+        "witness": "状态变体：.btn:disabled / .btn:hover / .btn:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/ClientConfigDialog.vue|.os-tab",
+        "file": "components/ClientConfigDialog.vue",
+        "selector": ".os-tab",
+        "properties": [
+          "background",
+          "border-color",
+          "color"
+        ],
+        "witness": "状态变体：.os-tab.active",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/ClientConfigDialog.vue|.tab-btn",
+        "file": "components/ClientConfigDialog.vue",
+        "selector": ".tab-btn",
+        "properties": [
+          "color",
+          "background",
+          "border-bottom",
+          "border-color",
+          "outline"
+        ],
+        "witness": "状态变体：.tab-btn.active / .tabs .tab-btn:hover / .tabs .tab-btn.active",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/EmergencyDiagnosticModal.vue|.modal-close",
+        "file": "components/EmergencyDiagnosticModal.vue",
+        "selector": ".modal-close",
+        "properties": [
+          "background",
+          "color"
+        ],
+        "witness": "状态变体：.modal-close:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/EmergencyDiagnosticModal.vue|.btn",
+        "file": "components/EmergencyDiagnosticModal.vue",
+        "selector": ".btn",
+        "properties": [
+          "opacity",
+          "background",
+          "color",
+          "border-color",
+          "box-shadow",
+          "transform",
+          "outline-offset"
+        ],
+        "witness": "状态变体：.btn:disabled / .btn:hover / .btn:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/LiveRequestStreamV2.vue|.control-btn",
+        "file": "components/LiveRequestStreamV2.vue",
+        "selector": ".control-btn",
+        "properties": [
+          "background",
+          "border-color"
+        ],
+        "witness": "状态变体：.control-btn:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/LiveRequestStreamV2.vue|.filter-btn",
+        "file": "components/LiveRequestStreamV2.vue",
+        "selector": ".filter-btn",
+        "properties": [
+          "background",
+          "border-color"
+        ],
+        "witness": "状态变体：.filter-btn:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/LiveRequestStreamV2.vue|.filter-model-picker",
+        "file": "components/LiveRequestStreamV2.vue",
+        "selector": ".filter-model-picker",
+        "properties": [
+          "border-color"
+        ],
+        "witness": "状态变体：.filter-model-picker:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/LiveRequestStreamV2.vue|.clear-filters-btn",
+        "file": "components/LiveRequestStreamV2.vue",
+        "selector": ".clear-filters-btn",
+        "properties": [
+          "background",
+          "border-color"
+        ],
+        "witness": "状态变体：.clear-filters-btn:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/LiveRequestStreamV2.vue|.connection-status",
+        "file": "components/LiveRequestStreamV2.vue",
+        "selector": ".connection-status",
+        "properties": [
+          "background",
+          "border-color"
+        ],
+        "witness": "状态变体：.connection-status:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/LiveRequestStreamV2.vue|.popup-close",
+        "file": "components/LiveRequestStreamV2.vue",
+        "selector": ".popup-close",
+        "properties": [
+          "background",
+          "color"
+        ],
+        "witness": "状态变体：.popup-close:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/LiveRequestStreamV2.vue|.edit-btn",
+        "file": "components/LiveRequestStreamV2.vue",
+        "selector": ".edit-btn",
+        "properties": [
+          "background",
+          "border-color",
+          "color"
+        ],
+        "witness": "状态变体：.edit-btn:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/LiveRequestStreamV2.vue|.save-btn,\n.reset-btn,\n.cancel-btn",
+        "file": "components/LiveRequestStreamV2.vue",
+        "selector": ".save-btn,\n.reset-btn,\n.cancel-btn",
+        "properties": [
+          "background"
+        ],
+        "witness": "状态变体：.save-btn:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/LiveRequestStreamV2.vue|.test-btn,\n.close-btn",
+        "file": "components/LiveRequestStreamV2.vue",
+        "selector": ".test-btn,\n.close-btn",
+        "properties": [
+          "background",
+          "border-color"
+        ],
+        "witness": "状态变体：.test-btn:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/LiveStreamLegend.vue|.legend-item",
+        "file": "components/LiveStreamLegend.vue",
+        "selector": ".legend-item",
+        "properties": [
+          "background",
+          "border-color",
+          "color"
+        ],
+        "witness": "状态变体：.legend-item:not(.legend-item--status):hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/NotificationChannels.vue|.btn",
+        "file": "components/NotificationChannels.vue",
+        "selector": ".btn",
+        "properties": [
+          "opacity",
+          "background",
+          "color",
+          "border-color",
+          "box-shadow",
+          "transform",
+          "outline-offset"
+        ],
+        "witness": "状态变体：.btn:disabled / .btn:hover / .btn:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/RouteIncidentDrawer.vue|.action-grid__btn",
+        "file": "components/RouteIncidentDrawer.vue",
+        "selector": ".action-grid__btn",
+        "properties": [
+          "border-color",
+          "opacity"
+        ],
+        "witness": "状态变体：.action-grid__btn:hover:not(:disabled) / .action-grid__btn:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/SegTabs.vue|.seg-tab",
+        "file": "components/SegTabs.vue",
+        "selector": ".seg-tab",
+        "properties": [
+          "color",
+          "background",
+          "box-shadow"
+        ],
+        "witness": "状态变体：.seg-tab:hover / .seg-tab.active / .seg-tab:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/StatsDrawer.vue|.drawer-tab",
+        "file": "components/StatsDrawer.vue",
+        "selector": ".drawer-tab",
+        "properties": [
+          "background",
+          "border-color"
+        ],
+        "witness": "状态变体：.drawer-tab:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/StatsDrawer.vue|.drawer-close",
+        "file": "components/StatsDrawer.vue",
+        "selector": ".drawer-close",
+        "properties": [
+          "background",
+          "border-color",
+          "color"
+        ],
+        "witness": "状态变体：.drawer-close:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "components/SwimLane.vue|.swim-lane__diagnose",
+        "file": "components/SwimLane.vue",
+        "selector": ".swim-lane__diagnose",
+        "properties": [
+          "border-color",
+          "background",
+          "opacity"
+        ],
+        "witness": "状态变体：.swim-lane__diagnose:hover:not(:disabled) / .swim-lane__diagnose:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/ApprovalConfigView.vue|.btn",
+        "file": "views/ApprovalConfigView.vue",
+        "selector": ".btn",
+        "properties": [
+          "opacity",
+          "background",
+          "color",
+          "border-color",
+          "box-shadow",
+          "transform",
+          "outline-offset"
+        ],
+        "witness": "状态变体：.btn:disabled / .btn:hover / .btn:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/ApprovalDetailView.vue|.btn",
+        "file": "views/ApprovalDetailView.vue",
+        "selector": ".btn",
+        "properties": [
+          "opacity",
+          "background",
+          "color",
+          "border-color",
+          "box-shadow",
+          "transform",
+          "outline-offset"
+        ],
+        "witness": "状态变体：.btn:disabled / .btn:hover / .btn:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/ApprovalListView.vue|.btn",
+        "file": "views/ApprovalListView.vue",
+        "selector": ".btn",
+        "properties": [
+          "opacity",
+          "background",
+          "color",
+          "border-color",
+          "box-shadow",
+          "transform",
+          "outline-offset"
+        ],
+        "witness": "状态变体：.btn:disabled / .btn:hover / .btn:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/CompressionView.vue|.tab-btn",
+        "file": "views/CompressionView.vue",
+        "selector": ".tab-btn",
+        "properties": [
+          "color",
+          "background",
+          "border-bottom",
+          "border-color",
+          "outline"
+        ],
+        "witness": "状态变体：.tab-btn.active / .tabs .tab-btn:hover / .tabs .tab-btn.active",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/DashboardViewV2.vue|.tab-btn",
+        "file": "views/DashboardViewV2.vue",
+        "selector": ".tab-btn",
+        "properties": [
+          "color",
+          "background",
+          "border-bottom",
+          "border-color",
+          "outline"
+        ],
+        "witness": "状态变体：.tab-btn.active / .tabs .tab-btn:hover / .tabs .tab-btn.active",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/DashboardViewV2.vue|.quick-btn",
+        "file": "views/DashboardViewV2.vue",
+        "selector": ".quick-btn",
+        "properties": [
+          "background",
+          "border-color",
+          "opacity"
+        ],
+        "witness": "状态变体：.quick-btn:hover:not(:disabled) / .quick-btn:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/DashboardViewV2.vue|.btn-refresh",
+        "file": "views/DashboardViewV2.vue",
+        "selector": ".btn-refresh",
+        "properties": [
+          "background",
+          "border-color",
+          "opacity",
+          "color"
+        ],
+        "witness": "状态变体：.btn-refresh:hover:not(:disabled) / .btn-refresh:disabled / .btn-refresh:hover:not(:disabled)",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/DashboardViewV2.vue|.stat-mini",
+        "file": "views/DashboardViewV2.vue",
+        "selector": ".stat-mini",
+        "properties": [
+          "border-color",
+          "box-shadow"
+        ],
+        "witness": "状态变体：.stat-mini:hover / .stat-mini:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/DataLifecycleView.vue|.tab",
+        "file": "views/DataLifecycleView.vue",
+        "selector": ".tab",
+        "properties": [
+          "color",
+          "border-bottom-color",
+          "background"
+        ],
+        "witness": "状态变体：.tab:hover / .tab.active / .tab:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/DataLifecycleView.vue|.btn",
+        "file": "views/DataLifecycleView.vue",
+        "selector": ".btn",
+        "properties": [
+          "opacity",
+          "background",
+          "color",
+          "border-color",
+          "box-shadow",
+          "transform",
+          "outline-offset"
+        ],
+        "witness": "状态变体：.btn:disabled / .btn:hover / .btn:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/KeysView.vue|.status-tab",
+        "file": "views/KeysView.vue",
+        "selector": ".status-tab",
+        "properties": [
+          "border-color",
+          "transform",
+          "background",
+          "color"
+        ],
+        "witness": "状态变体：.status-tab:hover / .status-tab.active",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/OutputComplianceView.vue|.tab-btn",
+        "file": "views/OutputComplianceView.vue",
+        "selector": ".tab-btn",
+        "properties": [
+          "color",
+          "background",
+          "border-bottom",
+          "border-color",
+          "outline"
+        ],
+        "witness": "状态变体：.tab-btn.active / .tabs .tab-btn:hover / .tabs .tab-btn.active",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/OutputComplianceView.vue|.btn-primary,\n.btn-secondary",
+        "file": "views/OutputComplianceView.vue",
+        "selector": ".btn-primary,\n.btn-secondary",
+        "properties": [
+          "background",
+          "opacity",
+          "border-color",
+          "transform",
+          "color"
+        ],
+        "witness": "状态变体：.btn-primary:hover / .btn-primary:hover / .btn-primary:hover:not(:disabled)",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/PromptInjectionSettingsView.vue|.quick-link-card",
+        "file": "views/PromptInjectionSettingsView.vue",
+        "selector": ".quick-link-card",
+        "properties": [
+          "transform",
+          "box-shadow"
+        ],
+        "witness": "状态变体：.quick-link-card:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/ProvidersView.vue|.filter-tab",
+        "file": "views/ProvidersView.vue",
+        "selector": ".filter-tab",
+        "properties": [
+          "color",
+          "background"
+        ],
+        "witness": "状态变体：.filter-tab:hover / .filter-tab.active",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/ProxyView.vue|.tabs button",
+        "file": "views/ProxyView.vue",
+        "selector": ".tabs button",
+        "properties": [
+          "color",
+          "border-bottom-color"
+        ],
+        "witness": "状态变体：.tabs .tab-btn:hover / .tabs .tab-btn.active / .tabs button:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/ProxyView.vue|.btn-primary,\n.btn-secondary,\n.btn-small,\n.btn-danger",
+        "file": "views/ProxyView.vue",
+        "selector": ".btn-primary,\n.btn-secondary,\n.btn-small,\n.btn-danger",
+        "properties": [
+          "background",
+          "opacity",
+          "border-color",
+          "transform",
+          "color"
+        ],
+        "witness": "状态变体：.btn-primary:hover / .btn-primary:hover / .btn-primary:hover:not(:disabled)",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/RoutingDashboardView.vue|.seg-tab",
+        "file": "views/RoutingDashboardView.vue",
+        "selector": ".seg-tab",
+        "properties": [
+          "color",
+          "background",
+          "box-shadow"
+        ],
+        "witness": "状态变体：.seg-tab:hover / .seg-tab.active / .seg-tab:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/RoutingDashboardView.vue|.task-pill",
+        "file": "views/RoutingDashboardView.vue",
+        "selector": ".task-pill",
+        "properties": [
+          "border-color",
+          "background"
+        ],
+        "witness": "状态变体：.task-pill:hover / .task-pill.active / .task-pill:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/RoutingOverviewView.vue|.task-pill",
+        "file": "views/RoutingOverviewView.vue",
+        "selector": ".task-pill",
+        "properties": [
+          "border-color",
+          "background"
+        ],
+        "witness": "状态变体：.task-pill:hover / .task-pill.active / .task-pill:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/TenantDashboardView.vue|.tab-btn",
+        "file": "views/TenantDashboardView.vue",
+        "selector": ".tab-btn",
+        "properties": [
+          "color",
+          "background",
+          "border-bottom",
+          "border-color",
+          "outline"
+        ],
+        "witness": "状态变体：.tab-btn.active / .tabs .tab-btn:hover / .tabs .tab-btn.active",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/TenantDashboardView.vue|.btn-refresh",
+        "file": "views/TenantDashboardView.vue",
+        "selector": ".btn-refresh",
+        "properties": [
+          "background",
+          "border-color",
+          "opacity",
+          "color"
+        ],
+        "witness": "状态变体：.btn-refresh:hover:not(:disabled) / .btn-refresh:disabled / .btn-refresh:hover:not(:disabled)",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/TenantDashboardView.vue|.stat-mini",
+        "file": "views/TenantDashboardView.vue",
+        "selector": ".stat-mini",
+        "properties": [
+          "border-color",
+          "box-shadow"
+        ],
+        "witness": "状态变体：.stat-mini:hover / .stat-mini:hover",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/admin/UsageCost.vue|.btn",
+        "file": "views/admin/UsageCost.vue",
+        "selector": ".btn",
+        "properties": [
+          "opacity",
+          "background",
+          "color",
+          "border-color",
+          "box-shadow",
+          "transform",
+          "outline-offset"
+        ],
+        "witness": "状态变体：.btn:disabled / .btn:hover / .btn:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/data-lifecycle/HotPartitionManager.vue|.hot-table-card",
+        "file": "views/data-lifecycle/HotPartitionManager.vue",
+        "selector": ".hot-table-card",
+        "properties": [
+          "background",
+          "border-color",
+          "box-shadow"
+        ],
+        "witness": "状态变体：.hot-table-card.migrating",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/data-lifecycle/HotPartitionManager.vue|.btn",
+        "file": "views/data-lifecycle/HotPartitionManager.vue",
+        "selector": ".btn",
+        "properties": [
+          "opacity",
+          "background",
+          "color",
+          "border-color",
+          "box-shadow",
+          "transform",
+          "outline-offset"
+        ],
+        "witness": "状态变体：.btn:disabled / .btn:hover / .btn:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      },
+      {
+        "key": "views/data-lifecycle/StorageOverview.vue|.btn-xs",
+        "file": "views/data-lifecycle/StorageOverview.vue",
+        "selector": ".btn-xs",
+        "properties": [
+          "opacity"
+        ],
+        "witness": "状态变体：.btn-xs:disabled",
+        "reason": "`transition: all` 把 width / height / top / left 一并拖进来（impeccable animate.md:71「Avoid casually animating layout-driving properties」）⇒ 改成状态变体真正会改的具名属性"
+      }
+    ]
+  },
+  "layoutDriven": {
+    "note": "M3 裁决：数据条把宽度/高度当作**数据的编码** ⇒ 登记豁免。★ 门会核对「登记条数 == 命中条数」⇒ 代码改了而登记没改 ⇒ 门报漂移。",
+    "entries": [
+      {
+        "key": "components/QueuePerspectivePanel.vue|.qp-node-card-wrap|width",
+        "file": "components/QueuePerspectivePanel.vue",
+        "selector": ".qp-node-card-wrap",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.qp-node-card-wrap 是进度条 / 占比条）"
+      },
+      {
+        "key": "components/SixDimScoreBar.vue|.dim-bar-fill|width",
+        "file": "components/SixDimScoreBar.vue",
+        "selector": ".dim-bar-fill",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.dim-bar-fill 是进度条 / 占比条）"
+      },
+      {
+        "key": "components/analytics/CredentialFunnel.vue|.funnel-bar|width",
+        "file": "components/analytics/CredentialFunnel.vue",
+        "selector": ".funnel-bar",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.funnel-bar 是进度条 / 占比条）"
+      },
+      {
+        "key": "components/ui/BarCell.vue|.bar-cell__fill|width",
+        "file": "components/ui/BarCell.vue",
+        "selector": ".bar-cell__fill",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.bar-cell__fill 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/AnnotationStatsView.vue|.bar-fill|width",
+        "file": "views/AnnotationStatsView.vue",
+        "selector": ".bar-fill",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.bar-fill 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/CompressionView.vue|.bar-fill|width",
+        "file": "views/CompressionView.vue",
+        "selector": ".bar-fill",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.bar-fill 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/CompressionView.vue|.rate-bar|height",
+        "file": "views/CompressionView.vue",
+        "selector": ".rate-bar",
+        "property": "height",
+        "reason": "数据条：高度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 height 由数据绑定（.rate-bar 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/DataLifecycleView.vue|.tenant-bar-fill|width",
+        "file": "views/DataLifecycleView.vue",
+        "selector": ".tenant-bar-fill",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.tenant-bar-fill 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/FreePoolView.vue|.qbar-fill|width",
+        "file": "views/FreePoolView.vue",
+        "selector": ".qbar-fill",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.qbar-fill 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/PricingManagementView.vue|.cov-fill|width",
+        "file": "views/PricingManagementView.vue",
+        "selector": ".cov-fill",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.cov-fill 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/SelfCheckPanel.vue|.error-bar-fill|width",
+        "file": "views/SelfCheckPanel.vue",
+        "selector": ".error-bar-fill",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.error-bar-fill 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/SelfCheckPanel.vue|.trend-bar|height",
+        "file": "views/SelfCheckPanel.vue",
+        "selector": ".trend-bar",
+        "property": "height",
+        "reason": "数据条：高度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 height 由数据绑定（.trend-bar 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/StorageMigrationStateView.vue|.sms-progress-bar|width",
+        "file": "views/StorageMigrationStateView.vue",
+        "selector": ".sms-progress-bar",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.sms-progress-bar 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/data-lifecycle/DegradationRecovery.vue|.progress div|width",
+        "file": "views/data-lifecycle/DegradationRecovery.vue",
+        "selector": ".progress div",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.progress div 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/data-lifecycle/FilesystemMaintenance.vue|.disk-bar-fill|width",
+        "file": "views/data-lifecycle/FilesystemMaintenance.vue",
+        "selector": ".disk-bar-fill",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.disk-bar-fill 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/data-lifecycle/HotPartitionManager.vue|.progress-fill|width",
+        "file": "views/data-lifecycle/HotPartitionManager.vue",
+        "selector": ".progress-fill",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.progress-fill 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/data-lifecycle/HotPartitionManager.vue|.mini-progress-fill|width",
+        "file": "views/data-lifecycle/HotPartitionManager.vue",
+        "selector": ".mini-progress-fill",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.mini-progress-fill 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/data-lifecycle/StorageConfig.vue|.usage-bar-fill|width",
+        "file": "views/data-lifecycle/StorageConfig.vue",
+        "selector": ".usage-bar-fill",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.usage-bar-fill 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/data-lifecycle/StorageConfig.vue|.migration-bar-fill|width",
+        "file": "views/data-lifecycle/StorageConfig.vue",
+        "selector": ".migration-bar-fill",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.migration-bar-fill 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/data-lifecycle/StorageOverview.vue|.bar-seg|width",
+        "file": "views/data-lifecycle/StorageOverview.vue",
+        "selector": ".bar-seg",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.bar-seg 是进度条 / 占比条）"
+      },
+      {
+        "key": "views/data-lifecycle/StorageOverview.vue|.pct-fill|width",
+        "file": "views/data-lifecycle/StorageOverview.vue",
+        "selector": ".pct-fill",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（animate.md:71 的例外：值本身就是数据时，宽度是唯一诚实的表达 ⇒ 改 transform 会让数值失真）",
+        "witness": "该元素的 width 由数据绑定（.pct-fill 是进度条 / 占比条）"
+      },
+      {
+        "key": "components/live-topology/StatsPanel.vue|.stats__share|width",
+        "file": "components/live-topology/StatsPanel.vue",
+        "selector": ".stats__share",
+        "property": "width",
+        "reason": "数据条：宽度**就是数据的编码**（与 ProviderTodayRail .rail__bar 同款先例 —— 客户端/供应商/模型占比条，width = share*100%）；轮询刷新时平滑移动让「占比变了」可感知",
+        "witness": "该元素的 width 由数据绑定（:style width = Math.round((item.share||0)*100)% ）"
+      }
+    ]
+  },
+  "entrances": {
+    "note": "M6 裁决：一次性入场动效的登记册（craft-floor「one authored moment, **not scattered effects**」）。★ 新增入场必须先在这里登记并写明理由 ⇒ 门会挡住「随手加一个淡入」。",
+    "entries": [
+      {
+        "name": "request-tile-panel-in",
+        "file": "components/RequestTile.vue",
+        "reason": "请求详情里的子面板展开：空间关系要看得见（面板从父卡片里长出来）"
+      },
+      {
+        "name": "kx-landing-enter",
+        "file": "components/ServiceLandingPage.vue",
+        "reason": "落地页 hero 与特性区的入场：落地页是唯一「值得编排一次」的面"
+      },
+      {
+        "name": "fade-in",
+        "file": "components/StatsDrawer.vue",
+        "reason": "统计抽屉内容淡入：抽屉打开后内容分层出现，避免一大块糊上来"
+      },
+      {
+        "name": "pane-fade-in",
+        "file": "components/credential-monitor/CredentialDetailDrawer.vue",
+        "reason": "凭据详情抽屉左右分栏的淡入：让「分栏」这件事被看见"
+      },
+      {
+        "name": "app-topbar-dropdown-enter",
+        "file": "components/shell/AppTopbar.vue",
+        "reason": "顶栏下拉：菜单从按钮下方展开，空间关系要连续"
+      },
+      {
+        "name": "user-menu-enter",
+        "file": "components/shell/UserMenuDropdown.vue",
+        "reason": "用户菜单：同样，从头像下方展开"
+      },
+      {
+        "name": "action-overflow-enter",
+        "file": "components/ui/ActionOverflowMenu.vue",
+        "reason": "「更多」溢出菜单：从触发器下方展开，空间关系要连续"
+      },
+      {
+        "name": "cp-row-in",
+        "file": "components/live-topology/ClientRequestPanel.vue",
+        "reason": "/live 左面板新请求行入场：只有新到达的行动（useNewArrivals 判定），一条新请求在列表里「长出来」的空间关系要看得见 —— 实时流页面的核心信息就是「有新东西到达」"
+      },
+      {
+        "name": "pp-row-in",
+        "file": "components/live-topology/ProviderResponsePanel.vue",
+        "reason": "/live 右面板新响应行入场：与 cp-row-in 同款语义（响应侧到达的镜像表达）；独立命名保持裁决簿按 name 记账的口径"
+      }
+    ]
+  },
+  "notDone": [
+    "★ **web-mobile/ 未纳入本门**：移动端是 Material 设计体系（缓动族是 `cubic-bezier(0.2, 0, 0, 1)`），把桌面的曲线套过去会破坏它自己的手感 ⇒ 移动端需要**独立判据**，不是放宽桌面判据。",
+    "★ **无限循环动画的缓动不判**（pulse / shimmer / spin 是呼吸节律，不是「到达」）⇒ 判它等于把呼吸改成到位。"
+  ]
+}

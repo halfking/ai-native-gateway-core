@@ -78,7 +78,7 @@ function reasonText(row: unknown): string {
 
 <style scoped>
 .sub {
-  margin-left: 6px;
+  margin-left: 4px;
   color: var(--text-muted, var(--el-text-color-secondary));
   font-size: 12px;
   font-weight: 400;
@@ -89,7 +89,7 @@ function reasonText(row: unknown): string {
 .chip-badge {
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 0 6px;
+  padding: 0 4px;
   font-size: 11px;
   color: var(--text-muted, var(--el-text-color-secondary));
 }

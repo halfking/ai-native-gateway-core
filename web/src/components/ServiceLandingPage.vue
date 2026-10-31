@@ -193,7 +193,7 @@ const railPoints = computed(() => props.heroPoints)
   margin: 0;
   padding: clamp(36px, 5vw, 64px) var(--landing-pad-x) clamp(40px, 5vw, 72px);
   box-sizing: border-box;
-  animation: kx-landing-enter 0.45s ease both;
+  animation: kx-landing-enter 0.45s var(--kx-motion-ease-out) both;
 }
 
 .kx-landing__hero-copy {
@@ -207,7 +207,7 @@ const railPoints = computed(() => props.heroPoints)
   display: inline-flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 22px;
+  margin-bottom: 24px;
 }
 .kx-landing__brand-mark {
   width: 60px;
@@ -227,11 +227,8 @@ const railPoints = computed(() => props.heroPoints)
 .kx-landing__brand-logo {
   width: 60px;
   height: 60px;
-  border-radius: 12px;
   object-fit: contain;
   flex-shrink: 0;
-  background: var(--surface-elevated);
-  box-shadow: var(--kx-shadow-sm);
 }
 .kx-landing__brand-text {
   min-width: 0;
@@ -250,7 +247,7 @@ const railPoints = computed(() => props.heroPoints)
 .kx-landing__title {
   /* 上方留白多于下方：标题自己扛重量，上面不再挂 kicker / eyebrow 小标签
      （craft-floor 硬禁：「没有哪份 brief 能把它赎回来」）。 */
-  margin: 0 0 14px;
+  margin: 0 0 12px;
   font-family: var(--landing-display);
   font-size: clamp(2.2rem, 5vw, 3.6rem);
   font-weight: 700;
@@ -274,8 +271,8 @@ const railPoints = computed(() => props.heroPoints)
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-start;
-  gap: 14px;
-  margin-top: 28px;
+  gap: 12px;
+  margin-top: 24px;
 }
 
 .kx-landing__cta,
@@ -285,12 +282,12 @@ const railPoints = computed(() => props.heroPoints)
   justify-content: center;
   gap: 8px;
   min-height: 44px;
-  padding: 0 18px;
+  padding: 0 16px;
   border-radius: var(--radius);
   font-size: 14px;
   font-weight: 600;
   text-decoration: none;
-  transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease;
+  transition: transform 0.16s var(--kx-motion-ease-out), background 0.16s var(--kx-motion-ease-out), border-color 0.16s var(--kx-motion-ease-out);
 }
 .kx-landing__cta {
   border: 0;
@@ -318,7 +315,7 @@ const railPoints = computed(() => props.heroPoints)
   display: flex;
   align-items: center;
   min-height: 260px;
-  padding-left: 22px;
+  padding-left: 24px;
   border-left: 1px solid var(--landing-border);
 }
 .kx-landing__rail-list {
@@ -327,14 +324,14 @@ const railPoints = computed(() => props.heroPoints)
   padding: 0;
   width: 100%;
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 .kx-landing__rail-item {
   position: relative;
   font-size: 14px;
   line-height: 1.5;
   color: var(--landing-text);
-  padding-left: 18px;
+  padding-left: 16px;
 }
 /* 每个短语前一个小方点：形状是「这是列表项」的第二信号，
    不靠颜色区分。 */
@@ -358,16 +355,16 @@ const railPoints = computed(() => props.heroPoints)
   margin: 0;
   box-sizing: border-box;
   text-align: left;
-  animation: kx-landing-enter 0.5s ease both;
+  animation: kx-landing-enter 0.5s var(--kx-motion-ease-out) both;
   animation-delay: 0.06s;
 }
 
 .kx-landing__section-head {
-  margin-bottom: 22px;
+  margin-bottom: 24px;
   text-align: left;
 }
 .kx-landing__section-title {
-  margin: 0 0 6px;
+  margin: 0 0 4px;
   font-family: var(--landing-display);
   font-size: clamp(1.4rem, 2.4vw, 1.75rem);
   font-weight: 700;
@@ -392,7 +389,7 @@ const railPoints = computed(() => props.heroPoints)
   border-top: 1px solid var(--landing-border);
 }
 .kx-landing__feature {
-  padding: 22px 0 24px;
+  padding: 24px 0 24px;
   border-bottom: 1px solid var(--landing-border);
   text-align: left;
 }
@@ -400,18 +397,18 @@ const railPoints = computed(() => props.heroPoints)
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 0 6px;
+  margin: 0 0 4px;
 }
 .kx-landing__feature h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   letter-spacing: -0.01em;
   text-align: left;
 }
 .kx-landing__badge {
   flex-shrink: 0;
-  padding: 2px 7px;
+  padding: 2px 8px;
   border-radius: 6px;
   font-size: 11px;
   font-weight: 600;
@@ -429,7 +426,7 @@ const railPoints = computed(() => props.heroPoints)
 .kx-landing__adv-flow {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 28px 40px;
+  gap: 24px 40px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -438,8 +435,8 @@ const railPoints = computed(() => props.heroPoints)
 }
 .kx-landing__adv-item {
   display: grid;
-  gap: 6px;
-  padding: 22px 0 24px;
+  gap: 4px;
+  padding: 24px 0 24px;
   text-align: left;
 }
 .kx-landing__adv-item strong {
@@ -455,7 +452,7 @@ const railPoints = computed(() => props.heroPoints)
 
 .kx-landing__footer {
   margin-top: auto;
-  padding: 22px var(--landing-pad-x) 28px;
+  padding: 24px var(--landing-pad-x) 24px;
   border-top: 1px solid var(--landing-border);
   text-align: left;
   width: 100%;
@@ -476,13 +473,13 @@ const railPoints = computed(() => props.heroPoints)
 @media (max-width: 1024px) {
   .kx-landing__hero {
     grid-template-columns: 1fr;
-    gap: 28px;
+    gap: 24px;
     min-height: auto;
-    padding-top: 28px;
+    padding-top: 24px;
   }
   .kx-landing__rail {
     min-height: 0;
-    padding-left: 18px;
+    padding-left: 16px;
   }
 }
 
@@ -490,8 +487,8 @@ const railPoints = computed(() => props.heroPoints)
    无问题），此档仅做间距/装饰微调，不改布局结构。 */
 @media (max-width: 768px) {
   .kx-landing__hero {
-    gap: 20px;
-    padding-top: 20px;
+    gap: 16px;
+    padding-top: 16px;
   }
 }
 
@@ -501,5 +498,18 @@ const railPoints = computed(() => props.heroPoints)
   .kx-landing__advantages {
     animation: none !important;
   }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .kx-landing__cta {
+    transition-property: background, border-color;
+  }
+  .kx-landing__cta-secondary:hover { transform: none; }
+  .kx-landing__cta-secondary {
+    transition-property: background, border-color;
+  }
+  .kx-landing__cta-secondary:hover { transform: none; }
 }
 </style>

@@ -437,7 +437,7 @@ onUnmounted(() => {
 }
 .page-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 24px;
   font-weight: 600;
   color: var(--text);
 }
@@ -452,7 +452,7 @@ onUnmounted(() => {
   flex-wrap: wrap;
 }
 .tab {
-  padding: 10px 18px;
+  padding: 8px 16px;
   background: transparent;
   border: none;
   border-bottom: 2px solid transparent;
@@ -460,7 +460,7 @@ onUnmounted(() => {
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s var(--kx-motion-ease-out), border-bottom-color 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out);
   position: relative;
   bottom: -1px;
 }
@@ -471,10 +471,10 @@ onUnmounted(() => {
 }
 .tab-badge {
   display: inline-block;
-  margin-left: 6px;
-  padding: 1px 6px;
+  margin-left: 4px;
+  padding: 1px 4px;
   border-radius: 8px;
-  font-size: 10px;
+  font-size: 11px;
   background: color-mix(in srgb, var(--accent) 20%, transparent);
   color: var(--accent-h);
 }
@@ -502,8 +502,8 @@ onUnmounted(() => {
 .stat-card.segment-cold { border-color: var(--accent); }
 .stat-card.segment-expired { border-color: var(--danger); }
 
-.stat-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-.stat-value { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+.stat-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.stat-value { font-size: 24px; font-weight: 700; color: var(--text); margin-bottom: 4px; font-variant-numeric: tabular-nums; }
 .stat-meta { font-size: 11px; color: var(--muted); }
 .stat-percent { color: var(--muted); margin-left: 4px; }
 
@@ -521,7 +521,7 @@ onUnmounted(() => {
   color: var(--text);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
@@ -532,14 +532,14 @@ onUnmounted(() => {
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .data-table th {
   text-align: left;
-  padding: 8px 10px;
+  padding: 8px 8px;
   color: var(--muted);
   font-weight: 500;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 .data-table td {
-  padding: 8px 10px;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--border);
   color: var(--text);
   font-variant-numeric: tabular-nums;
@@ -563,7 +563,7 @@ onUnmounted(() => {
 .form-label { font-size: 13px; color: var(--muted); white-space: nowrap; min-width: 70px; }
 .form-select, .form-input {
   flex: 1;
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -573,8 +573,8 @@ onUnmounted(() => {
 .form-select:focus, .form-input:focus { outline: none; border-color: var(--accent); }
 .form-actions { display: flex; gap: 8px; margin-top: 4px; }
 
-.btn { padding: 6px 14px; border-radius: 6px; border: 1px solid transparent; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s; }
-.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn { padding: 4px 12px; border-radius: 6px; border: 1px solid transparent; font-size: 13px; font-weight: 500; cursor: pointer; transition: opacity 0.15s var(--kx-motion-ease-out), background 0.15s var(--kx-motion-ease-out), color 0.15s var(--kx-motion-ease-out), border-color 0.15s var(--kx-motion-ease-out), box-shadow 0.15s var(--kx-motion-ease-out), transform 0.15s var(--kx-motion-ease-out), outline-offset 0.15s var(--kx-motion-ease-out); }
+.btn-sm { padding: 4px 8px; font-size: 12px; }
 .btn-primary { background: var(--accent); color: var(--on-primary); }
 .btn-primary:hover:not(:disabled) { background: var(--accent-h); }
 .btn-ghost { background: transparent; border-color: var(--border); color: var(--text); }
@@ -588,14 +588,14 @@ onUnmounted(() => {
   border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
   border-radius: 6px;
 }
-.preview-item { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 13px; }
+.preview-item { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 13px; }
 .preview-item:last-child { margin-bottom: 0; }
 .preview-label { color: var(--muted); }
 .preview-value { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
 .preview-value.highlight { color: var(--warning); font-weight: 600; }
 .preview-warning {
   margin-top: 8px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--warning-soft);
   border: 1px solid var(--warning);
   color: var(--warning);
@@ -607,7 +607,7 @@ onUnmounted(() => {
 .tenant-code {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 12px;
-  padding: 2px 6px;
+  padding: 2px 4px;
   background: var(--bg-subtle);
   border-radius: 4px;
   color: var(--accent-h);
@@ -630,7 +630,7 @@ onUnmounted(() => {
     color-mix(in srgb, var(--accent) 50%, transparent),
     color-mix(in srgb, var(--accent) 80%, transparent)
   );
-  transition: width 0.3s;
+  transition: width 0.3s var(--kx-motion-ease-out);
 }
 .tenant-bar-text {
   position: absolute;
@@ -648,5 +648,13 @@ onUnmounted(() => {
   .stats-row { grid-template-columns: repeat(2, 1fr); }
   .charts-row { grid-template-columns: 1fr; }
   .form-row-dates { grid-template-columns: 1fr; }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition-property: opacity, background, color, border-color, box-shadow, outline-offset;
+  }
 }
 </style>

@@ -252,5 +252,25 @@ export default {
     ledgerTotalHint: '最近 {limit} 条 consume 记录：{count} 笔',
   },
 
-  // 扁平键（供 Vue 组件直接使用）
+  // 扁平键（供 Vue 组件直接使用）,
+
+  bills: {
+    title: '月账单与优惠券',
+    refresh: '刷新',
+    exportCsv: '导出 CSV',
+    listTitle: '月度账单',
+    emptyNoResult: '还没有已出账的月账单',
+    colPeriod: '账期',
+    colCredits: '积分',
+    colRequests: '请求数',
+    colAmount: '金额',
+    colStatus: '状态',
+    couponTitle: '激活优惠券',
+    couponPlaceholder: '输入券码',
+    couponActivate: '激活',
+    couponOk: '已入账 {n} 积分（{code}）',
+    couponFailed: '优惠券没能激活，请核对券码后重试',
+    loadFailed: '月账单没能加载出来，请重试',
+    exportFailed: '账单 CSV 没能导出，请重试',
+  },
 }

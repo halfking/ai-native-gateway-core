@@ -159,13 +159,13 @@ function goBack() {
       </div>
     </div>
 
-    <el-alert v-if="errorMessage" type="error" :closable="false" style="margin-bottom: 20px;">
+    <el-alert v-if="errorMessage" type="error" :closable="false" style="margin-bottom: 16px;">
       {{ errorMessage }}
     </el-alert>
 
     <div v-if="data">
       <!-- 统计卡片 -->
-      <el-row :gutter="16" style="margin-bottom: 20px;">
+      <el-row :gutter="16" style="margin-bottom: 16px;">
         <el-col :span="6">
           <el-card shadow="hover">
             <div class="stat-item">
@@ -205,7 +205,7 @@ function goBack() {
       </el-row>
 
       <!-- 成本趋势图 -->
-      <el-card shadow="hover" style="margin-bottom: 20px;">
+      <el-card shadow="hover" style="margin-bottom: 16px;">
         <template #header>
           <span>{{ t('sessions.taskAnalytics.costTrend') }}</span>
         </template>
@@ -279,14 +279,14 @@ function goBack() {
 
 <style scoped>
 .task-analytics-view {
-  padding: 20px;
+  padding: 16px;
 }
 
 .page-header {
   display: flex;
   align-items: center;
   gap: 16px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .page-header h2 {
@@ -307,13 +307,13 @@ function goBack() {
 }
 
 .stat-value {
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 600;
   color: var(--text);
 }
 
 :deep(.el-card__header) {
-  padding: 12px 20px;
+  padding: 12px 16px;
   font-weight: 500;
 }
 </style>

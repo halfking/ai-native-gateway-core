@@ -194,12 +194,12 @@ const changeClass = (change: number, isNegative: boolean) => {
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 16px;
   width: 100%;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .stat-card {
   height: 100%;
   cursor: default;
-  transition: transform 0.2s;
+  transition: transform 0.2s var(--kx-motion-ease-out);
   background: var(--card, var(--on-primary));
   border: 1px solid var(--border, var(--surface-secondary));
   border-radius: 10px;
@@ -227,6 +227,13 @@ const changeClass = (change: number, isNegative: boolean) => {
   .dashboard-stats-row { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
   .stat-content { gap: 8px; }
   .stat-icon { width: 40px; height: 40px; }
-  .stat-value { font-size: 18px; }
+  .stat-value { font-size: 16px; }
+}
+
+/* 2026-10-27 第 26 增量：空间移动的 reduced-motion 路径（impeccable animate.md:77）。
+   颜色 / 透明度反馈保留（那是「有意义的状态变化」），只把**空间移动**停下来。 */
+@media (prefers-reduced-motion: reduce) {
+  .stat-card { transition: none; }
+  .stat-card:hover { transform: none; }
 }
 </style>

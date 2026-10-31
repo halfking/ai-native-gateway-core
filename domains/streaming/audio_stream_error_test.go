@@ -80,7 +80,7 @@ func TestTranscribeStreamErrorNoFailover(t *testing.T) {
 	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{
 		mkCand(first.URL, "xiaomi", "mimo-v2.5-asr"),
 		mkCand(second.URL, "zhipu", "glm-asr"),
-	}}, upstream.New())
+	}}, upstream.NewWithRetries(0))
 
 	var emitted []string
 	_, err := svc.Transcribe(context.Background(), TranscribeRequest{
@@ -124,7 +124,7 @@ func TestAudioConcurrencyGate(t *testing.T) {
 		Routable: true, APIKey: "sk-test",
 	}
 	cand.AvailabilityState = "ready"
-	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.New())
+	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.NewWithRetries(0))
 
 	// 占满全部槽位（每个阻塞在上游）。
 	for i := 0; i < maxConcurrentAudioOps; i++ {

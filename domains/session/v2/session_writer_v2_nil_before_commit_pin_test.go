@@ -112,9 +112,11 @@ func TestWriteNeverReturnsNilBeforeCommit(t *testing.T) {
 // TestAppendTurnInLockedTxNeverReturnsZeroNil 钉住更深一层的不变量。
 //
 // §9.249.3 的排除依赖这一点：appendTurnInLockedTx 的 8 个 return 里，
-// `RowsAffected()==0` 分支**必须**在 session_turns_with_current_month 查到行
+// `RowsAffected()==0` 分支**必须**在会话族里查到行
 // （查不到会 `return 0, fmt.Errorf("read existing turn_no: %w", err)`），
-// 而该视图 = session_turns_hot ∪ session_turns，正好覆盖 S4 门检查的两面
+// 而那个源 = session_turns_hot ∪ session_turns（**R172 起是两臂直查**，
+// 不再经会话族视图 session_turns_with_current_month；等价性论证见
+// internal/sessionfamily/turns_reads.go），正好覆盖 S4 门检查的两面
 // ⇒ 「返回 (0, nil)」就等于「告诉调用方写成功了，但库里没有 turn」。
 func TestAppendTurnInLockedTxNeverReturnsZeroNil(t *testing.T) {
 	fset := token.NewFileSet()

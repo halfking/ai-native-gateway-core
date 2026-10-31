@@ -241,5 +241,23 @@ export default {
     typeTopup: "チャージパッケージ"
   },
 
-
+  bills: {
+    title: '月次請求とクーポン',
+    refresh: '更新',
+    exportCsv: 'CSV を書き出す',
+    listTitle: '月次請求書',
+    emptyNoResult: 'まだ発行済みの月次請求はありません',
+    colPeriod: '期間',
+    colCredits: 'クレジット',
+    colRequests: 'リクエスト',
+    colAmount: '金額',
+    colStatus: '状態',
+    couponTitle: 'クーポンを有効化',
+    couponPlaceholder: 'クーポンコード',
+    couponActivate: '有効化',
+    couponOk: '{n} クレジットを入金しました（{code}）',
+    couponFailed: 'クーポンを有効化できませんでした。コードを確認して再試行してください',
+    loadFailed: '月次請求を読み込めませんでした。再試行してください',
+    exportFailed: 'CSV を書き出せませんでした。再試行してください',
+  },
 }

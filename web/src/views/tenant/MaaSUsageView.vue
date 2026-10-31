@@ -412,7 +412,7 @@ const ledgerCardFields = computed<CardField[]>(() => [
 .page-header-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .limit-select {
@@ -432,7 +432,7 @@ const ledgerCardFields = computed<CardField[]>(() => [
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .stat-card {
   padding: 16px;
@@ -441,10 +441,10 @@ const ledgerCardFields = computed<CardField[]>(() => [
 .stat-label {
   font-size: 12px;
   color: var(--muted);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .stat-value {
-  font-size: 26px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--text);
 }
@@ -464,7 +464,7 @@ const ledgerCardFields = computed<CardField[]>(() => [
 .stat-hint {
   font-size: 11px;
   color: var(--muted);
-  margin-top: 6px;
+  margin-top: 4px;
 }
 .chart-card {
   padding: 16px;
@@ -478,7 +478,7 @@ const ledgerCardFields = computed<CardField[]>(() => [
 .card-title .hint {
   font-size: 11px;
   font-weight: 400;
-  margin-left: 6px;
+  margin-left: 4px;
 }
 .trend-grid {
   display: grid;
@@ -513,7 +513,7 @@ const ledgerCardFields = computed<CardField[]>(() => [
 .trend-bar.credits { background: var(--accent); }
 .trend-bar.requests { background: var(--success); }
 .trend-date {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   margin-top: 4px;
 }
@@ -605,7 +605,7 @@ const ledgerCardFields = computed<CardField[]>(() => [
 .tenant-badge {
   display: inline-flex;
   align-items: center;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;

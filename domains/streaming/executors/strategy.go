@@ -3,6 +3,7 @@ package executors
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -23,6 +24,87 @@ type StrategyInput struct {
 	// calculateLoadScore 优先读此 map 替代每候选 Info()，把 n×2 次写锁降为
 	// 1 次。为 nil/缺 key 时回退 Info()，向后兼容旧 StrategyInput 构造面。
 	StickySnapshot map[int]StickyLoadInfo
+	// SuccessRatePoolStats (P1-A, 2026-10-28 两层路由审计 G3)：filterHealth
+	// 之后整个候选池的成功率池统计（均值/平均绝对偏差/池深）。离群是【池】的
+	// 属性不是单候选的属性 ⇒ 必须在池级算一次再随上下文下发，而不是在每个
+	// 候选的 calculateLoadScore 里各算一遍。nil = 未接线（维度关闭，行为与
+	// 接线前逐字节一致）。
+	SuccessRatePoolStats *SuccessRatePoolStats
+	// MaxCandidates 是本次请求的候选总数上限（routing.max_candidates 热加载）。
+	//
+	// ★ 2026-10-31 12h 审计轮 P2-2：★ 此前该上限是在 planByTier **内部**读的
+	//   ⇒ ★ planByTier 变成一个**会做 I/O** 的函数（settings 读 settings_kv
+	//   ⇒ 一次 SELECT）⇒ ★ 它既不再是纯函数，★ 又在一次请求里被读 1~2 次
+	//   （round1 / round2 各一次）⇒ ★ 每请求多 1~2 次无缓存 DB 往返。
+	//   ⇒ ★ 修法与 SuccessRatePoolStats 同一形状：★★ 在**请求边界**
+	//   （planCandidates）读一次，再随上下文下发 ⇒ ★ planByTier 回到纯函数，
+	//   ★ 每请求只读一次。
+	//   ★ 0 = 未提供（调用方没接线）⇒ planByTier 回退到自带的热加载读数，
+	//   ★ 保证既有测试调用面（8 处直接构造 StrategyInput）行为不变。
+	MaxCandidates int
+}
+
+// SuccessRatePoolStats 是 P1-A 离群判定的池级统计（Envoy success-rate
+// ejection 的池深护栏版）。Mean/MAD 覆盖「有 RecentSuccessRate 且 samples
+// ≥ MinSamples」的候选；Depth 是该合格样本数（不是全池大小——两个有数据的
+// 候选不构成有统计意义的池）。
+type SuccessRatePoolStats struct {
+	Mean  float64
+	MAD   float64 // 平均绝对偏差（mean absolute deviation）
+	Depth int     // 合格样本数（samples ≥ MinSamples 的候选数）
+}
+
+// 离群判据常量（audit 2026-10-28 §4 P1-A）：均值 − 3×MAD 以下、样本 ≥30、
+// 池深 ≥3。池深护栏是本仓版对 Envoy ejection 的关键修正——浅池里「离群」
+// 只是噪声（两个节点一好一坏，坏的天然离群 1.5×MAD+）。
+const (
+	outlierMinSamples = 30
+	outlierMinDepth   = 3
+	outlierMADFactor  = 3.0
+	// outlierPenaltyStep 是 P1-A 第一步的固定强惩罚（审计档「loadScore+0.5」
+	// 的实现形态：composite 的量纲是无权重小和，0.5 是质量项默认权重 0.2 的
+	// 2.5 倍，足以把慢性病节点压出首跳，但不参与硬弹出）。
+	outlierPenaltyStep = 0.5
+)
+
+// ComputeSuccessRatePoolStats 从候选池算成功率池统计。无合格样本时返回 nil
+//（调用方置 nil ⇒ 维度关闭）。
+func ComputeSuccessRatePoolStats(cands []provider.Candidate) *SuccessRatePoolStats {
+	rates := make([]float64, 0, len(cands))
+	for i := range cands {
+		if cands[i].RecentSuccessRate != nil && cands[i].RecentSamples >= outlierMinSamples {
+			rates = append(rates, *cands[i].RecentSuccessRate)
+		}
+	}
+	if len(rates) < outlierMinDepth {
+		return nil
+	}
+	var sum float64
+	for _, v := range rates {
+		sum += v
+	}
+	mean := sum / float64(len(rates))
+	var devSum float64
+	for _, v := range rates {
+		devSum += math.Abs(v - mean)
+	}
+	return &SuccessRatePoolStats{Mean: mean, MAD: devSum / float64(len(rates)), Depth: len(rates)}
+}
+
+// successRateOutlierPenalty 判定单个候选是否为池内成功率离群（慢性病：
+// 成功率低但无连败 ⇒ NodeState/breaker 的判死面永远抓不到它），离群 ⇒
+// 固定强惩罚 outlierPenaltyStep。stats 为 nil / 池深不足 / 候选无合格样本 ⇒ 0。
+func successRateOutlierPenalty(c provider.Candidate, stats *SuccessRatePoolStats) float64 {
+	if stats == nil || stats.Depth < outlierMinDepth {
+		return 0
+	}
+	if c.RecentSuccessRate == nil || c.RecentSamples < outlierMinSamples {
+		return 0
+	}
+	if *c.RecentSuccessRate <= stats.Mean-outlierMADFactor*stats.MAD {
+		return outlierPenaltyStep
+	}
+	return 0
 }
 
 // Strategy 是 omni-ref2 GW-03 的窄路由策略接口。

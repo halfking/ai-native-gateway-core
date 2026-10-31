@@ -320,9 +320,14 @@ func inQuote(s string, off int) bool {
 //
 // 这不是洁癖，是被本门自己的第一次运行打脸打出来的：bg/shared_pick.go 的
 // PickProbeModelForCredential 里，`origin_stage` **只**出现在 SQL 字面量内部的一行
-// `-- R50 dual-arm exclusion, frozen-view variant (R49 自纠 S1：origin_stage 不在
-// 113 列契约…)` 注释中——那句话正是在解释「origin_stage 不能用」。剥掉 Go 注释
-// 不够，SQL 自带注释，而字面量被整体 unquote 后注释就变成了可匹配文本。
+// `-- R50 dual-arm exclusion (R49 自纠 S1：本读面有 quality_flags、无 origin_stage
+// ⇒ 只能用 quality_flags 变体) …` 注释中——那句话正是在解释「origin_stage 不能用」。
+// 剥掉 Go 注释不够，SQL 自带注释，而字面量被整体 unquote 后注释就变成了可匹配文本。
+//
+// ★ R170 更新：bg/shared_pick.go 已改读会话族窄投影（不再提 canonical 视图），
+// 那条 SQL 注释的措辞也随之改写（现在说的是「本读面有 quality_flags、无
+// origin_stage」）。★ 本门**不依赖**被引用的原文逐字 —— 它依赖的是
+// 「`origin_stage` 只出现在 SQL 注释里」这个**事实**；措辞变了事实没变。
 //
 // 已知不完美：`--` 出现在 SQL 字符串字面量内部时会被多剥一点。对本门而言这是安全
 // 方向（宁可少报不可误报），因为真缺陷的列引用必然在可执行文本里，不在字符串里。

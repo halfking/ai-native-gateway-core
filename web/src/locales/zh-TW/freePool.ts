@@ -200,7 +200,6 @@ export default {
   bridgeOAuth: "OAuth 橋接",
   importEnv: "匯入環境變數 Key",
   discover: "自動學習並註冊",
-  quickEntry: "快速輸入",
   notLoaded: "尚未載入",
   loading: "載入中…",
   p95Latency: "P95 延遲",

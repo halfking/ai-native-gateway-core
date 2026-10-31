@@ -146,17 +146,17 @@ const isEmpty = computed(() =>
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  font-size: 10px;
+  font-size: 11px;
 }
 .heatmap-table th,
 .heatmap-table td {
   border: 1px solid var(--border);
-  padding: 3px 5px;
+  padding: 3px 4px;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
 .corner {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--muted);
   background: var(--bg-subtle);
   min-width: 100px;
@@ -165,7 +165,7 @@ const isEmpty = computed(() =>
 /* Row header (model name) — allow up to 220px so a long model name like
  * "minimaxai/minimax-m2.7" is readable; CSS ellipsis handles overflow. */
 .col-head {
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 500;
   color: var(--muted);
   background: var(--bg-subtle);
@@ -175,7 +175,7 @@ const isEmpty = computed(() =>
   white-space: nowrap;
 }
 .row-head {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   color: var(--text);
   background: var(--bg-subtle);
@@ -190,7 +190,7 @@ const isEmpty = computed(() =>
 }
 .heat-cell {
   min-width: 44px;
-  transition: background 0.12s;
+  transition: background 0.12s var(--kx-motion-ease-out);
 }
 .heat-cell.clickable { cursor: pointer; }
 .heat-cell.clickable:hover {

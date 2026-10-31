@@ -333,7 +333,7 @@ function fieldTone(row: T, f: CardField): CardTone | undefined {
 
 .card__badge {
   font-size: 11px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 4px;
   background: var(--kx-bg);
   color: var(--kx-muted);
@@ -343,8 +343,8 @@ function fieldTone(row: T, f: CardField): CardTone | undefined {
   display: flex;
   align-items: baseline;
   justify-content: flex-end;
-  gap: 6px;
-  margin: 10px 0 0;
+  gap: 4px;
+  margin: 8px 0 0;
 }
 
 .card__primary[data-align='start'] {
@@ -369,8 +369,8 @@ function fieldTone(row: T, f: CardField): CardTone | undefined {
 .card__fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 10px;
-  margin: 10px 0 0;
+  gap: 4px 8px;
+  margin: 8px 0 0;
 }
 
 .card__field {
@@ -416,7 +416,7 @@ function fieldTone(row: T, f: CardField): CardTone | undefined {
  *   于是永远不命中。改挂子元素后，空容器高度为 0、也不吃间距。
  */
 .card__actions > * {
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 /* 卡片内动作按钮的触控下限（新增 Android 控件基线） */

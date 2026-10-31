@@ -31,7 +31,7 @@ import AppAccountSheet from './components/shell/AppAccountSheet.vue'
 import { useWindowClass, getWindowClass } from './composables/useWindowClass'
 import { installHyper, navigation, type NavigationScope } from './lib/shell/hyper'
 import { navDrawerOpen } from './composables/useAppNav'
-import { detectTheme, logoSrc } from './theme'
+import { currentTheme, detectTheme, logoSrc } from './theme'
 import { SITE_LOGO_SIZE, SITE_TITLE_LINE_ONE } from './config/brand'
 import { useLoginModal } from './composables/useLoginModal'
 import { onMaintainAvailabilityChange, probeMaintainAvailable } from './config/edition'
@@ -57,7 +57,7 @@ const isHydrating = computed(() => !store.authHydrated)
 const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey || store.userInfo))
 const brandLogo = ref(logoSrc(detectTheme()))
 const logoObserver = typeof MutationObserver !== 'undefined'
-  ? new MutationObserver(() => { brandLogo.value = logoSrc(detectTheme()) })
+  ? new MutationObserver(() => { brandLogo.value = logoSrc(currentTheme()) })
   : null
 let stopMaintainAvailabilityWatch: (() => void) | null = null
 
@@ -408,7 +408,7 @@ async function handleChangePasswordSuccess() {
  */
 .page-fade-enter-active,
 .page-fade-leave-active {
-  transition: opacity 160ms ease;
+  transition: opacity 160ms var(--kx-motion-ease-out);
 }
 .page-fade-enter-from,
 .page-fade-leave-to {
@@ -440,7 +440,7 @@ async function handleChangePasswordSuccess() {
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: auth-spin 0.8s linear infinite;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 .auth-loading-text {
   letter-spacing: 0.05em;
@@ -474,7 +474,7 @@ async function handleChangePasswordSuccess() {
 
 .header-alert {
   margin: 0;
-  padding: 6px 10px;
+  padding: 4px 8px;
   font-size: 12px;
 }
 
@@ -528,7 +528,7 @@ async function handleChangePasswordSuccess() {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 14px;
+  gap: 4px 12px;
   flex: 1;
   min-width: 0;
   margin-inline-start: 12px;
@@ -550,7 +550,7 @@ async function handleChangePasswordSuccess() {
   font-weight: 600;
   text-decoration: none;
   white-space: nowrap;
-  transition: color 0.15s ease;
+  transition: color 0.15s var(--kx-motion-ease-out);
 }
 
 .guest-nav a:hover {
@@ -560,7 +560,7 @@ async function handleChangePasswordSuccess() {
 .guest-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   font-size: 14px;
   font-weight: 700;
   color: var(--text);

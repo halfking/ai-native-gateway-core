@@ -72,11 +72,12 @@ const (
 // classified identically to the built-in fallback — the production detector
 // and the fallback must not drift apart on this decision.
 func scopedType(typ SensitiveType) bool {
-	switch typ {
-	case TypeServerIP, TypeInternalIP, typeServerIPv6:
-		return true
-	}
-	return false
+	// r1038b（2026-10-27）：口径收进 domains/sanitizerules 的**唯一**一份
+	// （此前这里与 outputcompliance 的 isAddressPIIType 各写一份，已经漂移：
+	// 那边多出 ip/address/domain/hostname，这边没有 ⇒ 同一个类型在两个面
+	// 得到相反待遇 —— 一条 domain 类型的规则在合规面「只检出不遮蔽」，
+	// 在脱敏面却照遮）。两面必须同口径。
+	return sanitizerules.IsAddressFamilyType(string(typ))
 }
 
 // typeServerIPv6 mirrors the `server_ipv6` YAML rule name. It is not a
@@ -99,6 +100,11 @@ type patternEntry struct {
 	id, kind, action string
 	scopes           []DetectionScope
 	exemptions       []string
+	// description 是这条规则的中文说明（来自 YAML 的 description 字段）。
+	//
+	// ★ 2026-10-29 输出合规误报轮：★ YAML 里写着说明，★ 装载器原先**没读**
+	// ⇒ ★★ 说明在装载时丢掉 ⇒ ★★ 管理面「规则说明」永远是空的。
+	description string
 }
 
 // PatternDetector 基于正则模式匹配的检测器
