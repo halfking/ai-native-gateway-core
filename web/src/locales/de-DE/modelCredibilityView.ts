@@ -79,6 +79,8 @@ export default {
     capability_peer_sample_too_small: 'Zu wenige Vergleichsknoten für dieses Modell',
     identity_probe_failed: 'Die Identitätssonde ist fehlgeschlagen',
     identity_probe_empty_response: 'Die Identitätssonde hat keine Antwort erhalten',
+    identity_passive_mismatch: 'In echtem Datenverkehr ist eine Modellabweichung aufgefallen (passiver Hinweis)',
+    consistency_passive_drift: 'In echtem Datenverkehr ist eine Fingerabdruckänderung aufgefallen (passiver Hinweis)',
   },
 
   detail: {

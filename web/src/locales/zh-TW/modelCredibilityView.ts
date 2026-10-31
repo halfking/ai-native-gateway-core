@@ -76,6 +76,8 @@ export default {
     capability_peer_sample_too_small: '同款模型的對照樣本不足',
     identity_probe_failed: '身分探測請求失敗',
     identity_probe_empty_response: '身分探測沒有得到回答',
+    identity_passive_mismatch: '真實流量裡出現過模型不一致（被動證據）',
+    consistency_passive_drift: '真實流量裡出現過指紋漂移（被動證據）',
   },
 
   detail: {

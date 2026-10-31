@@ -15,14 +15,12 @@ import { Warning } from '@element-plus/icons-vue'
 import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime } from '../utils/datetime'
 import {
-  getModelCredibilityCatalog,
   getModelCredibilityDetail,
   getModelCredibilityHistory,
   getModelCredibilityList,
   triggerModelCredibilityScan,
   triggerModelCredibilityScanAll,
   type CredibilityVerdict,
-  type ModelCredibilityCatalogRow,
   type ModelCredibilityDetail,
   type ModelCredibilityRow,
   type ModelCredibilityRun,
@@ -31,7 +29,6 @@ import {
 const { t } = useI18n()
 
 const rows = ref<ModelCredibilityRow[]>([])
-const catalog = ref<ModelCredibilityCatalogRow[]>([])
 const loading = ref(false)
 const scanning = ref(false)
 const error = ref<string | null>(null)
@@ -121,6 +118,8 @@ function anomalyLabel(key: string): string {
     capability_peer_sample_too_small: t('modelCredibilityView.anomaly.capability_peer_sample_too_small'),
     identity_probe_failed: t('modelCredibilityView.anomaly.identity_probe_failed'),
     identity_probe_empty_response: t('modelCredibilityView.anomaly.identity_probe_empty_response'),
+    identity_passive_mismatch: t('modelCredibilityView.anomaly.identity_passive_mismatch'),
+    consistency_passive_drift: t('modelCredibilityView.anomaly.consistency_passive_drift'),
   }
   return map[key] || key
 }
@@ -173,14 +172,11 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const params: Record<string, any> = { limit: 500 }
+    const params: Record<string, string> = { limit: '500' }
     if (verdictFilter.value) params.verdict = verdictFilter.value
-    const [list, cat] = await Promise.all([
-      getModelCredibilityList(params),
-      getModelCredibilityCatalog(),
-    ])
-    rows.value = list
-    catalog.value = cat
+    // ★ 只拉列表（2026-10-31 审计轮收口）：catalog 拉下来从未渲染过，
+    // 白付一次聚合查询 ⇒ 删除死消费。接口本身保留（/catalog 是合法 API 面）。
+    rows.value = await getModelCredibilityList(params)
   } catch (err) {
     error.value = surfaceError(err, { key: 'modelCredibilityView.error.loadFailed' })
   } finally {

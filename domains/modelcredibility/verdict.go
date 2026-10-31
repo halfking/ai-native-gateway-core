@@ -24,8 +24,8 @@ import (
 
 // Config 是判定参数。
 type Config struct {
-	PeerParity    PeerParityConfig
-	Calibration   CalibrationConfig
+	PeerParity  PeerParityConfig
+	Calibration CalibrationConfig
 	// SignatureDriftTolerance 是 prompt token 计数漂移的噪声容差。
 	// ≤ 该值算稳定；超过则按漂移幅度扣分。
 	SignatureDriftTolerance int
@@ -70,20 +70,20 @@ type Config struct {
 //     "claude-3-5-sonnet"），光看名字定不了性 ⇒ 必须与能力维度合看。
 func DefaultConfig() Config {
 	return Config{
-		PeerParity:               DefaultPeerParityConfig(),
-		Calibration:              DefaultCalibrationConfig(),
-		SignatureDriftTolerance:  2,
-		SignatureDriftSevere:     15,
-		VerifiedMinScore:         85,
-		VerifiedMinDimensions:    2,
-		DilutedCapabilityScore:   50,
-		SuspectCapabilityScore:   85,
-		DilutedIdentityScore:     30,
-		SuspectIdentityScore:     70,
-		DilutedConsistencyScore:  30,
-		SuspectConsistencyScore:  70,
-		SuspectReferenceScore:    70,
-		VerifiedConsecutiveRuns:  2,
+		PeerParity:              DefaultPeerParityConfig(),
+		Calibration:             DefaultCalibrationConfig(),
+		SignatureDriftTolerance: 2,
+		SignatureDriftSevere:    15,
+		VerifiedMinScore:        85,
+		VerifiedMinDimensions:   2,
+		DilutedCapabilityScore:  50,
+		SuspectCapabilityScore:  85,
+		DilutedIdentityScore:    30,
+		SuspectIdentityScore:    70,
+		DilutedConsistencyScore: 30,
+		SuspectConsistencyScore: 70,
+		SuspectReferenceScore:   70,
+		VerifiedConsecutiveRuns: 2,
 	}
 }
 
@@ -93,11 +93,19 @@ type Previous struct {
 	HasPromptTokens   bool
 	SystemFingerprint string
 	ReportedModel     string
-	// Verdict 是上一次判定的结论（用于 verified 的连续共识）。
+	// Verdict 是上一次判定的**最终落盘**结论。
+	//
+	// ★ 注意它与 VerifiedStreak 不是同一件事的两种说法：共识未满的轮次
+	// 落盘的 verdict 是 unknown（consensus_pending），但那一轮的原始判定
+	// 其实是「达标」⇒ streak 延续与否必须同时看 ConsensusPending，
+	// 只看 Verdict == verified 会把 streak 永远掐死在 1（verified 永不可达）。
 	Verdict Verdict
-	// VerifiedStreak 是截至上一次为止「连续 verified 建议」的轮数。
+	// VerifiedStreak 是上一轮 evidence 里记的原始 streak（本轮之前的连续达标轮数）。
 	VerifiedStreak int
-	MeasuredAt     time.Time
+	// ConsensusPending=true 表示上一轮原始判定达标但共识未满
+	// （evidence.consensus_pending）—— streak 在这一轮并没有断。
+	ConsensusPending bool
+	MeasuredAt       time.Time
 }
 
 // Input 是判定的全部输入。
@@ -290,16 +298,28 @@ func Evaluate(in Input, cfg Config) Result {
 
 	// verified 连续共识（见 Config.VerifiedConsecutiveRuns）。
 	//
-	// ★ streak 的口径：上一轮**最终落盘**的 verdict 是 verified ⇒ streak+1；
-	// 否则 streak 重置为 1（本轮是 streak 的第一轮）。注意上一轮落盘的
-	// verified 本身可能已经是「共识满」的结果——streak 只增不减地延续，
-	// 不需要回溯历史（runs 表有全史，但 streak 一个数就够，不用查表）。
+	// ★ streak 的口径：上一轮的**原始判定**达标（最终落盘 verified，
+	// 或原始达标但因共识未满以 unknown 落盘的 consensus_pending）⇒ streak+1；
+	// 否则 streak 重置为 1（本轮是 streak 的第一轮）。
+	//
+	// ★★ 为什么必须看 ConsensusPending 而不只是 Verdict == verified（本仓
+	// 2026-10-31 审计轮修复的死锁）：共识未满的轮次落盘 verdict 是 unknown
+	// ⇒ 下一轮 LoadPrevious 读到的 Verdict 永远不是 verified ⇒
+	// streak 永远重置为 1 ⇒ VerifiedConsecutiveRuns≥2 时 verified 在生产上
+	// **不可达**（旧测试喂的 Previous{Verdict: verified, streak:1} 这个
+	// 前置态不可能由真实落盘产生）。consensus_streak 本身就存在 evidence
+	// 里，LoadPrevious 把它带出来即可。
 	if res.Verdict == VerdictVerified {
 		streak := 1
-		if in.Previous != nil && in.Previous.Verdict == VerdictVerified {
-			streak = in.Previous.VerifiedStreak + 1
-			if streak <= 0 {
-				streak = 2
+		if in.Previous != nil {
+			prevOK := in.Previous.Verdict == VerdictVerified || in.Previous.ConsensusPending
+			if prevOK {
+				streak = in.Previous.VerifiedStreak + 1
+				if streak <= 1 {
+					// 上一轮是 consensus_pending：它的 evidence 里 streak 是
+					// 原始达标轮数（≥1）。读不到（=0）时按上一轮已是第 1 轮算。
+					streak = 2
+				}
 			}
 		}
 		need := cfg.VerifiedConsecutiveRuns

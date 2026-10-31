@@ -211,7 +211,8 @@ func (s *Store) LoadPrevious(ctx context.Context, credentialID int64, rawModelNa
 	}
 	const q = `
 		SELECT prompt_token_signature, system_fingerprint, reported_model, measured_at,
-		       COALESCE(verdict,''), COALESCE((evidence->>'consensus_streak')::int, 0)
+		       COALESCE(verdict,''), COALESCE((evidence->>'consensus_streak')::int, 0),
+		       COALESCE((evidence->>'consensus_pending')::boolean, FALSE)
 		FROM provider_model_credibility
 		WHERE tenant_id = 'default'
 		  AND credential_id = $1
@@ -221,15 +222,20 @@ func (s *Store) LoadPrevious(ctx context.Context, credentialID int64, rawModelNa
 	var measuredAt *time.Time
 	var prevVerdict string
 	var streak int
+	var consensusPending bool
 	err := s.db.QueryRow(ctx, q, credentialID, rawModelName).
-		Scan(&sig, &fp, &model, &measuredAt, &prevVerdict, &streak)
+		Scan(&sig, &fp, &model, &measuredAt, &prevVerdict, &streak, &consensusPending)
 	if err != nil {
 		if isNoRows(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("query previous verdict: %w", err)
 	}
-	prev := &Previous{Verdict: Verdict(prevVerdict), VerifiedStreak: streak}
+	prev := &Previous{
+		Verdict:          Verdict(prevVerdict),
+		VerifiedStreak:   streak,
+		ConsensusPending: consensusPending,
+	}
 	if sig != nil {
 		prev.PromptTokens = *sig
 		prev.HasPromptTokens = true
@@ -670,19 +676,39 @@ type ProviderModelScore struct {
 // ★ 取「该供应商该模型下**最差**的凭据」而不是平均：
 // 掺水是「这家供应商在卖这个模型时至少有一条线是假的」——
 // 平均会把掺水的那条线稀释掉（3 条好线 + 1 条掺水线 ⇒ 平均看不出问题）。
-// 但也要给「样本数」与「结论」一起写下去，让消费方知道这是最差值。
+//
+// ★★ 分数与结论必须取自**同一行**（2026-10-31 审计轮修复）：原实现
+// MIN(credibility_score) 与 MIN(verdict) 各自独立聚合，可能来自不同的
+// 凭据行 —— 例如两条线 (diluted, 88) 与 (unknown, 40)，MIN 分数=40
+// 配上 MIN 字典序结论=diluted ⇒ 「40 分的 diluted」，凭空造出一个
+// 数据里不存在的组合。迁移 922 的注释契约是「取最差**那条凭据**的结论」。
+// ⇒ DISTINCT ON 每组取一行：先按结论严重度（VerdictRank 语义，SQL 侧
+//
+//	CASE 显式枚举——不依赖字典序巧合）、再按分数升序，命中的就是
+//	最差凭据的完整判定。
+//
+// ★ 样本数仍是全组计数（多少条凭据参与），它与「哪一行最差」正交。
 func (s *Store) RollupProviderModel(ctx context.Context) ([]ProviderModelScore, error) {
 	if s.db == nil {
 		return nil, fmt.Errorf("store: db pool is nil")
 	}
 	const q = `
-		SELECT provider_id, raw_model_name,
-		       MIN(credibility_score)::float8,
-		       COUNT(*),
-		       MIN(verdict)
+		SELECT DISTINCT ON (provider_id, raw_model_name)
+		       provider_id, raw_model_name,
+		       credibility_score::float8,
+		       count(*) OVER (PARTITION BY provider_id, raw_model_name) AS sample_count,
+		       verdict
 		FROM provider_model_credibility
 		WHERE tenant_id = 'default' AND credibility_score IS NOT NULL
-		GROUP BY provider_id, raw_model_name`
+		ORDER BY provider_id, raw_model_name,
+		         CASE verdict
+		             WHEN 'diluted'   THEN 0
+		             WHEN 'suspected' THEN 1
+		             WHEN 'unknown'   THEN 2
+		             WHEN 'verified'  THEN 3
+		             ELSE 2
+		         END ASC,
+		         credibility_score ASC`
 	rows, err := s.db.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("query provider model rollup: %w", err)

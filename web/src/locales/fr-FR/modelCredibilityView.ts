@@ -79,6 +79,8 @@ export default {
     capability_peer_sample_too_small: 'Trop peu de nœuds de comparaison pour ce modèle',
     identity_probe_failed: 'La sonde d’identité a échoué',
     identity_probe_empty_response: 'La sonde d’identité n’a reçu aucune réponse',
+    identity_passive_mismatch: 'Un modèle non conforme est apparu dans le trafic réel (preuve passive)',
+    consistency_passive_drift: 'Une dérive d’empreinte est apparue dans le trafic réel (preuve passive)',
   },
 
   detail: {

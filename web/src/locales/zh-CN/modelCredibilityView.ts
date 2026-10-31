@@ -80,6 +80,8 @@ export default {
     capability_peer_sample_too_small: '同款模型的对照样本不足',
     identity_probe_failed: '身份探测请求失败',
     identity_probe_empty_response: '身份探测没有得到回答',
+    identity_passive_mismatch: '真实流量里出现过模型不一致（被动证据）',
+    consistency_passive_drift: '真实流量里出现过指纹漂移（被动证据）',
   },
 
   detail: {
