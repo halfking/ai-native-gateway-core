@@ -55,10 +55,16 @@ func catalogSet(codes ...string) map[string]bool {
 }
 
 // pairRules 内置映射表。clientType 须已按 clienttype.Normalize 归一。
+//
+// homeCatalog 取值与 internal/paramreg.catalogToDialect 同源（原厂码 +
+// 已登记别名）：**catalog code 是供应商目录里的供应商码**，不是模型名里的
+// 厂商前缀——"minimaxai/minimax-m2.7" 的 "minimaxai" 是模型名宿主前缀
+// （由 Match 剥掉），不是 catalog code。2026-10-31 审计轮据此删掉了两个
+// 凭想象添加、目录空间里并不存在的码（minimaxai / deepseek-ai）。
 var pairRules = []pairRule{
 	{"zcode", "glm", catalogSet("zhipu", "glm", "bigmodel", "zai")},
-	{"minimax-code", "minimax", catalogSet("minimax", "minimaxai")},
-	{"deepseek-code", "deepseek", catalogSet("deepseek", "deepseek-ai")},
+	{"minimax-code", "minimax", catalogSet("minimax")},
+	{"deepseek-code", "deepseek", catalogSet("deepseek")},
 	// RISK-6（2026-10-29）：Claude Code↔Claude 原厂对。claude-code 说
 	// anthropic-messages 协议，主路径走 executor_anthropic.go（Q4 直传，
 	// 无协议转换）；模型名族 claude-*（宿主前缀形态 anthropic/claude-…

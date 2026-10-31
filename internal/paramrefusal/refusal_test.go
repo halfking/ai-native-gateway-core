@@ -72,6 +72,12 @@ func TestKeyIsolation(t *testing.T) {
 }
 
 func TestTTLExpiry(t *testing.T) {
+	// 2026-10-31 审计轮：进程内记忆与 Redis 学习是同一语义的两份存储，
+	// 默认有效期必须一致（1h）。本断言钉住默认值本身——TTL 边界断言用
+	// fieldTTL() 跟着生效值走，默认值变了它不会红（那是它的盲区）。
+	if defaultFieldTTL != time.Hour {
+		t.Fatalf("defaultFieldTTL = %v, want 1h (must match reqprobe learned TTL default)", defaultFieldTTL)
+	}
 	s := newTestStore()
 	base := s.nowFn()
 	s.Remember(36, "grok-4.6", "openai-responses", "metadata", "service_tier")
@@ -79,12 +85,12 @@ func TestTTLExpiry(t *testing.T) {
 		t.Fatalf("Len = %d, want 1", s.Len())
 	}
 	// TTL 内。
-	s.nowFn = func() time.Time { return base.Add(fieldTTL - time.Minute) }
+	s.nowFn = func() time.Time { return base.Add(fieldTTL() - time.Minute) }
 	if got := s.StrippableFields(36, "grok-4.6", "openai-responses"); len(got) != 2 {
 		t.Fatalf("within TTL = %v, want both fields", got)
 	}
 	// TTL 外：读路径懒清理，键随最后一个字段一起消失。
-	s.nowFn = func() time.Time { return base.Add(fieldTTL + time.Minute) }
+	s.nowFn = func() time.Time { return base.Add(fieldTTL() + time.Minute) }
 	if got := s.StrippableFields(36, "grok-4.6", "openai-responses"); got != nil {
 		t.Fatalf("after TTL = %v, want nil", got)
 	}
@@ -101,7 +107,7 @@ func TestSlidingRenewal(t *testing.T) {
 	s.nowFn = func() time.Time { return base.Add(23 * time.Hour) }
 	s.Remember(36, "grok-4.6", "openai-responses", "metadata")
 	// 原到期点（首次 +24h）已过，但滑动续期让它活到 23h+24h。
-	s.nowFn = func() time.Time { return base.Add(fieldTTL + time.Hour) }
+	s.nowFn = func() time.Time { return base.Add(fieldTTL() + time.Hour) }
 	if got := s.StrippableFields(36, "grok-4.6", "openai-responses"); len(got) != 1 {
 		t.Fatalf("sliding renewal failed: %v", got)
 	}
@@ -113,7 +119,7 @@ func TestSweepClearsExpiredEntries(t *testing.T) {
 	s.Remember(1, "m1", "w1", "metadata")
 	s.Remember(2, "m2", "w2", "service_tier")
 	// 越过 TTL + sweepInterval（sweepLocked 由 Remember/Len 触发）。
-	s.nowFn = func() time.Time { return base.Add(fieldTTL + 2*sweepInterval) }
+	s.nowFn = func() time.Time { return base.Add(fieldTTL() + 2*sweepInterval) }
 	s.Remember(3, "m3", "w3", "logprobs")
 	if s.Len() != 1 {
 		t.Fatalf("Len after sweep = %d, want 1 (only the fresh key)", s.Len())

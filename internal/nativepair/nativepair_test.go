@@ -1,6 +1,10 @@
 package nativepair
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
+)
 
 func TestMatch_BuiltinPairs(t *testing.T) {
 	cases := []struct {
@@ -62,5 +66,29 @@ func TestMatch_BuiltinPairs(t *testing.T) {
 		if got := Match(tc.client, tc.catalog, tc.model); got != tc.want {
 			t.Errorf("Match(%q, %q, %q) = %v, want %v", tc.client, tc.catalog, tc.model, got, tc.want)
 		}
+	}
+}
+
+// TestHomeCatalogAlignsWithParamreg（2026-10-31 审计轮）：每条原厂对的
+// homeCatalog 必须是「供应商目录里真实存在的 catalog code」，且与
+// internal/paramreg 的 catalog→方言映射同源。
+//
+// 审计轮抓到的真实缺陷：本表曾凭想象写入 "minimaxai" / "deepseek-ai"
+// ——它们是**模型名里的厂商宿主前缀**（"minimaxai/minimax-m2.7"），不是
+// catalog code；目录空间里没有这两个码 ⇒ 配置看起来成立、实际永不命中。
+// 本断言把「每个原厂码都必须被 paramreg 认识」钉死，新增凭想象的码必红。
+func TestHomeCatalogAlignsWithParamreg(t *testing.T) {
+	for _, rule := range pairRules {
+		for code := range rule.homeCatalog {
+			if paramreg.DialectForCatalogCode(code) == paramreg.DialectUnknown {
+				t.Errorf("rule %q/%q: catalog code %q is not a known catalog code "+
+					"(paramreg SSOT) — model-name vendor prefixes (e.g. \"minimaxai/\") are not catalog codes",
+					rule.client, rule.modelPrefix, code)
+			}
+		}
+	}
+	// 反向自证：已知的原厂码必须命中（否则断言可能恒真）。
+	if paramreg.DialectForCatalogCode("zhipu") == paramreg.DialectUnknown {
+		t.Fatalf("paramreg no longer knows zhipu — the SSOT assertion above may be vacuous")
 	}
 }

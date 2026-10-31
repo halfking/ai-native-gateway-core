@@ -12,20 +12,40 @@
 //   - 黑名单（model/messages/tools 等核心字段）优先于一切：核心字段被点名
 //     也绝不剔除、绝不记忆、绝不重试。
 //
-// 进程内记忆：多实例各自学习（文档已认可），重启清零，24h TTL 滑动续期。
+// 进程内记忆：多实例各自学习（文档已认可），重启清零，TTL 滑动续期。
 package paramrefusal
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
-// fieldTTL 是单条记忆的存活时长；同一字段再次被拒会刷新时间戳（滑动续期
-// ——持续被拒的字段保持热记忆，静默字段自然过期）。
-const fieldTTL = 24 * time.Hour
+// defaultFieldTTL 是单条记忆的存活时长；同一字段再次被拒会刷新时间戳
+// （滑动续期——持续被拒的字段保持热记忆，静默字段自然过期）。
+//
+// 2026-10-31 审计轮：本包是 Redis 学习（internal/reqprobe）的**进程内同义
+// 机制**——同一语义（"这个字段上游发不得"）存两份，TTL却是两套（Redis侧
+// 2026-10-29 已随运营要求收到 1h，本包仍是 24h）⇒ 同一份语义两种有效期，
+// 且 24h 这一侧**不重新探测**（上游后来支持了该参数也照样被剥 24h）。
+// 现统一：默认 1h，可用 LLM_GATEWAY_REQPROBE_LEARNED_TTL 覆盖（与 Redis
+// 侧同名同义——两份记忆同生共死，不允许一个1h 一个 24h）。
+const defaultFieldTTL = time.Hour
+
+// fieldTTL 读取生效值（进程内缓存一次）。非法/空值回退默认。
+var fieldTTL = sync.OnceValue(func() time.Duration {
+	v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REQPROBE_LEARNED_TTL"))
+	if v == "" {
+		return defaultFieldTTL
+	}
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return d
+	}
+	return defaultFieldTTL
+})
 
 // sweepInterval 是整表清理的最小间隔：Remember 每次都做懒清理代价过高，
 // 但也不等读者撞上过期条目才清（StrippableFields 读路径同样懒清）。
@@ -123,7 +143,7 @@ func (s *Store) StrippableFields(providerID int, model, wire string) []string {
 	}
 	var out []string
 	for f, at := range m {
-		if now.Sub(at) >= fieldTTL {
+		if now.Sub(at) >= fieldTTL() {
 			delete(m, f)
 			continue
 		}
@@ -157,7 +177,7 @@ func (s *Store) sweepLocked(now time.Time) {
 	s.lastSweep = now
 	for k, m := range s.fields {
 		for f, at := range m {
-			if now.Sub(at) >= fieldTTL {
+			if now.Sub(at) >= fieldTTL() {
 				delete(m, f)
 			}
 		}

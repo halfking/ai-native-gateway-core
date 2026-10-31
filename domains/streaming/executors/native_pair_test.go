@@ -479,4 +479,10 @@ func TestNvidiaHostIncident_LearnedStripsApply(t *testing.T) {
 	if _, present := obj["messages"]; !present {
 		t.Fatalf("learned strip lost core field messages:\n%s", out)
 	}
+	// ★ 剥参不得误伤：reasoning_effort 是 nvidia 接受的 chat 线标准字段
+	// （事故现场「剥完 reasoning/enable_thinking 后 200」即此字段仍在），
+	// 剥掉它等于把思考意图一并丢掉（静默降级）。
+	if obj["reasoning_effort"] != "max" {
+		t.Fatalf("learned strip removed reasoning_effort (thinking intent silently lost):\n%s", out)
+	}
 }
