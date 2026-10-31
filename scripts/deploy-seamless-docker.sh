@@ -2383,20 +2383,78 @@ if [[ -f "$DD_REPO_ROOT/version.json" ]]; then
   #   的另一个路径**）且 python 只传了 2 个参数却读 sys.argv[3] ⇒ IndexError
   #   被 `|| warn` 吞掉 ⇒ 版本戳实际从未被改写。
   if [[ -n "${DD_BUILD_SHA:-}" ]]; then
-    python3 - "$DD_GW_DATA_ROOT/version/$DD_CANDIDATE_SLOT.json" "$DD_BUILD_SHA" "$DD_TARGET" <<'PY' \
+    # ★ 2026-10-31（211 部署验证轮）：补 build_seq 递增。
+    #   原改写只更新 sha/date/target/version 四字段 ⇒ build_seq 永远停留在
+    #   种子（仓库 version.json）里那次 systemd/本地部署留下的旧值 ⇒ 10-29
+    #   之后所有 211 部署 /version 的 build_seq 恒为 2910（槽 a=9a0c71c3 与
+    #   槽 b=28e0076e 两轮部署同读数实证）。docker 路径不调 bump-version.sh
+    #   （它会改写三个被 git 跟踪的版本产物 ⇒ 弄脏共享 checkout，见上方
+    #   2026-10-23 注），所以 seq 的递增必须落在这个**槽位副本**上。
+    #   语义与 bump-version.sh 对齐：base = max(种子, 对侧槽, 机器级 floor) + 1，
+    #   floor 先落盘（只增不减，json 写崩也不复用旧号）；floor 故障降级为
+    #   无 floor 模式——撞号防护失效但不阻塞部署。
+    python3 - "$DD_GW_DATA_ROOT/version/$DD_CANDIDATE_SLOT.json" "$DD_BUILD_SHA" "$DD_TARGET" \
+      "$DD_GW_DATA_ROOT/version/$DD_ACTIVE_SLOT.json" \
+      "${LLM_GATEWAY_BUILD_SEQ_FLOOR_DIR:-$HOME/.llm-gateway-go}/build_seq.floor" <<'PY' \
       || warn "version.json 改写失败，沿用仓库原戳"
-import json, sys, time
-path, sha, target = sys.argv[1], sys.argv[2], sys.argv[3]
+import json, os, sys, time
+path, sha, target, other, floor_file = sys.argv[1:6]
+
+def read_seq(p, as_json):
+    try:
+        if as_json:
+            return int(json.load(open(p)).get("build_seq") or 0)
+        return int(open(p).read().strip() or 0)
+    except Exception:
+        return 0
+
+base = max(read_seq(path, True), read_seq(other, True), read_seq(floor_file, False))
+new_seq = base + 1
+
+# floor 持锁段只有 read/compute/write 三步毫秒级；mkdir 原子锁 + 60s 崩溃接管，
+# 有界等待后降级（同 bump-version.sh：防护失效不阻塞部署）。
+hold = floor_file + ".hold"
+got_hold = False
+deadline = time.time() + 3
+while True:
+    try:
+        os.makedirs(os.path.dirname(floor_file), exist_ok=True)
+        os.mkdir(hold)
+        got_hold = True
+        break
+    except FileExistsError:
+        try:
+            if time.time() - os.path.getmtime(hold) > 60:
+                import shutil
+                shutil.rmtree(hold, ignore_errors=True)
+                continue
+        except OSError:
+            pass
+        if time.time() > deadline:
+            sys.stderr.write("deploy: build_seq floor 锁等待超时，降级无 floor 模式\n")
+            break
+        time.sleep(0.05)
+if got_hold:
+    try:
+        with open(floor_file, "w") as f:
+            f.write("%d\n" % new_seq)
+    except Exception:
+        sys.stderr.write("deploy: build_seq floor 不可写，降级无 floor 模式\n")
+    finally:
+        import shutil
+        shutil.rmtree(hold, ignore_errors=True)
+
 v = json.load(open(path))
 date = time.strftime("%Y%m%d")
-v.update(git_sha=sha, build_date=date, target=target,
+v.update(git_sha=sha, build_date=date, target=target, build_seq=new_seq,
          version="%s-%s-%s-%s" % (v.get("git_tag", "dev"), sha, date, target))
 json.dump(v, open(path, "w"), indent=2)
+print("build_seq bumped: %d -> %d (base=seed/other-slot/floor max)" % (base, new_seq))
 PY
   fi
   chown 65532:65532 "$DD_GW_DATA_ROOT/version/$DD_CANDIDATE_SLOT.json" 2>/dev/null || true
   GW_MOUNTS+=( -v "${DD_GW_DATA_ROOT}/version/$DD_CANDIDATE_SLOT.json:/app/version.json:ro" )
-  log "版本元数据种子: version.json（$(python3 -c "import json;print(json.load(open('$DD_GW_DATA_ROOT/version/$DD_CANDIDATE_SLOT.json')).get('version','?'))" 2>/dev/null || echo '?')）"
+  log "版本元数据种子: version.json（$(python3 -c "import json;v=json.load(open('$DD_GW_DATA_ROOT/version/$DD_CANDIDATE_SLOT.json'));print(v.get('version','?'),'build_seq='+str(v.get('build_seq','?')))" 2>/dev/null || echo '?')）"
 else
   echo "warning: $DD_REPO_ROOT/version.json 缺失，/version 将显示 dev/unknown" >&2
 fi
