@@ -118,20 +118,40 @@ func validatePublish(cfg Config, actor, comment string, rollback int64) error {
 	return nil
 }
 func (s *MemoryStore) RecordEvent(ctx context.Context, event Event, limit int) error {
-	e, err := prepareEvent(event)
-	if err != nil {
-		return err
+	return s.RecordEvents(ctx, []Event{event}, limit)
+}
+
+// RecordEvents 批量落库（BatchEventStore 快路径）：同批同指纹归并为
+// count += n，保留清理每批一次。count+1 / last_seen 语义与单事件路径一致。
+func (s *MemoryStore) RecordEvents(ctx context.Context, events []Event, limit int) error {
+	if len(events) == 0 {
+		return nil
+	}
+	prepared := make([]Event, 0, len(events))
+	var invalidErr error
+	for _, raw := range events {
+		e, err := prepareEvent(raw)
+		if err != nil {
+			invalidErr = err
+			continue
+		}
+		prepared = append(prepared, e)
+	}
+	if len(prepared) == 0 {
+		return invalidErr
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err = ctx.Err(); err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if old, ok := s.events[e.Fingerprint]; ok {
-		old.Count++
-		old.LastSeen = e.LastSeen
-		s.events[e.Fingerprint] = old
-	} else {
+	for _, e := range prepared {
+		if old, ok := s.events[e.Fingerprint]; ok {
+			old.Count++
+			old.LastSeen = e.LastSeen
+			s.events[e.Fingerprint] = old
+			continue
+		}
 		s.nextEvent++
 		e.ID = s.nextEvent
 		s.events[e.Fingerprint] = e

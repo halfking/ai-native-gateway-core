@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -223,10 +224,39 @@ func scanEvent(row rowScanner) (Event, error) {
 	}
 	return e, nil
 }
-func (s *PostgresStore) RecordEvent(ctx context.Context, event Event, limit int) error {
-	e, err := prepareEvent(event)
-	if err != nil {
-		return err
+// RecordEvents 将一批事件合并为一个事务落库（BatchEventStore 快路径）。
+//
+// 2026-10-31 24h 审计第 12 轮：单事件路径 = BEGIN + advisory lock + upsert +
+// retention DELETE + COMMIT 五次往返/事件；输出合规把规则命中面扩到每个响应后
+// 生产峰值 ~5 条/秒逼近单 worker 逐条写的排水速率 ⇒ 有界队列持续满、审计
+// 事件成批丢弃。批路径把锁与保留清理每批只付一次。每条事件的 count+1 语义
+// 不变：同批同指纹先归并为 count += n（单条 INSERT ... ON CONFLICT 在同一
+// 语句里对同一键命中两次会报 "cannot affect row a second time"）。
+func (s *PostgresStore) RecordEvents(ctx context.Context, events []Event, limit int) error {
+	if len(events) == 0 {
+		return nil
+	}
+	var invalidErr error
+	merged := make(map[string]*Event, len(events))
+	order := make([]string, 0, len(events))
+	for _, raw := range events {
+		e, err := prepareEvent(raw)
+		if err != nil {
+			// Record 入队前已校验过一次；这里是纵深防御。部分无效时跳过
+			// 继续写其余，全部无效时返回校验错误（与单事件路径同语义）。
+			invalidErr = err
+			continue
+		}
+		if existing, ok := merged[e.Fingerprint]; ok {
+			existing.Count++
+			continue
+		}
+		cp := e
+		merged[e.Fingerprint] = &cp
+		order = append(order, e.Fingerprint)
+	}
+	if len(order) == 0 {
+		return invalidErr
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -238,8 +268,31 @@ func (s *PostgresStore) RecordEvent(ctx context.Context, event Event, limit int)
 	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(741968280105)`); err != nil {
 		return storeError("event retention lock", err)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO sanitize_rule_events(fingerprint,tenant_id,rule_id,version,phase,action,sample_masked,first_seen,last_seen,sensitive_type,field_kind) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10) ON CONFLICT(fingerprint) DO UPDATE SET count=sanitize_rule_events.count+1,last_seen=EXCLUDED.last_seen`, e.Fingerprint, e.TenantID, e.RuleID, e.Version, e.Phase, e.Action, e.SampleMasked, e.LastSeen, e.Type, e.Field)
-	if err != nil {
+	fingerprints := make([]string, len(order))
+	tenants := make([]string, len(order))
+	ruleIDs := make([]string, len(order))
+	versions := make([]int64, len(order))
+	phases := make([]string, len(order))
+	actions := make([]string, len(order))
+	samples := make([]string, len(order))
+	firstSeens := make([]time.Time, len(order))
+	lastSeens := make([]time.Time, len(order))
+	sTypes := make([]string, len(order))
+	kinds := make([]string, len(order))
+	counts := make([]int64, len(order))
+	for i, fp := range order {
+		e := merged[fp]
+		fingerprints[i], tenants[i], ruleIDs[i], versions[i] = e.Fingerprint, e.TenantID, e.RuleID, e.Version
+		phases[i], actions[i], samples[i] = e.Phase, e.Action, e.SampleMasked
+		firstSeens[i], lastSeens[i], sTypes[i], kinds[i], counts[i] = e.FirstSeen, e.LastSeen, e.Type, e.Field, e.Count
+	}
+	if _, err = tx.ExecContext(ctx, `
+		INSERT INTO sanitize_rule_events(fingerprint,tenant_id,rule_id,version,phase,action,sample_masked,first_seen,last_seen,sensitive_type,field_kind,count)
+		SELECT fp,tenant,rule,version,phase,action,sample,first_seen,last_seen,stype,fkind,n FROM unnest(
+		  $1::text[],$2::text[],$3::text[],$4::bigint[],$5::text[],$6::text[],$7::text[],$8::timestamptz[],$9::timestamptz[],$10::text[],$11::text[],$12::bigint[]
+		) AS t(fp,tenant,rule,version,phase,action,sample,first_seen,last_seen,stype,fkind,n)
+		ON CONFLICT(fingerprint) DO UPDATE SET count=sanitize_rule_events.count+EXCLUDED.count,last_seen=EXCLUDED.last_seen`,
+		fingerprints, tenants, ruleIDs, versions, phases, actions, samples, firstSeens, lastSeens, sTypes, kinds, counts); err != nil {
 		return storeError("event write", err)
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM sanitize_rule_events WHERE id IN (SELECT id FROM sanitize_rule_events ORDER BY last_seen DESC,id DESC OFFSET $1)`, retentionLimit(limit)); err != nil {
@@ -249,6 +302,10 @@ func (s *PostgresStore) RecordEvent(ctx context.Context, event Event, limit int)
 		return storeError("event commit", err)
 	}
 	return nil
+}
+
+func (s *PostgresStore) RecordEvent(ctx context.Context, event Event, limit int) error {
+	return s.RecordEvents(ctx, []Event{event}, limit)
 }
 func (s *PostgresStore) ListEvents(ctx context.Context, f EventFilter) ([]Event, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+eventColumns+` FROM sanitize_rule_events WHERE ($1='' OR tenant_id=$1) AND ($2='' OR status=$2) AND ($3='' OR action=$3) ORDER BY last_seen DESC,id DESC LIMIT $4`, f.TenantID, f.Status, f.Action, boundedLimit(f.Limit))

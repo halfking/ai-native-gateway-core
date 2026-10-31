@@ -137,5 +137,20 @@ type Options struct {
 	EventLimit     func() int
 	Notifications  Notifications
 	OnError        func(error)
+	// QueueSize bounds the audit metadata backlog. The default (4096) absorbs
+	// production bursts; see BatchEventStore for why the backlog can grow.
 	QueueSize      int
+}
+
+// BatchEventStore is the optional fast path for audit persistence: one
+// transaction per drain cycle instead of one per event. Stores that do not
+// implement it keep the legacy per-event behavior (RecordEvent), so external
+// implementations and test spies stay valid without changes.
+//
+// 2026-10-31 24h 审计第 12 轮：输出合规把规则命中面扩到每个响应后，事件生产
+// （211 实测峰值 ~5 条/秒）逼近单 worker「每事件一个事务」的排水速率
+// （BEGIN + advisory lock + upsert + retention DELETE + COMMIT 五次往返/条）
+// ⇒ 有界队列持续满、审计事件成批丢弃。批路径把锁与保留清理每批只付一次。
+type BatchEventStore interface {
+	RecordEvents(ctx context.Context, events []Event, limit int) error
 }

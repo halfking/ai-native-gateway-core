@@ -25,8 +25,10 @@ type Manager struct {
 	queue     chan Event
 	errors    chan string
 	dropped   atomic.Int64
-	running   atomic.Bool
-	stopped   atomic.Bool
+	// lastQueueFullReport 是 queue-full WARN 的节流戳（unix nanos；0 = 未报过）。
+	lastQueueFullReport atomic.Int64
+	running             atomic.Bool
+	stopped             atomic.Bool
 }
 
 func NewManager(store Store, fallback Config, opts Options) (*Manager, error) {
@@ -59,7 +61,10 @@ func NewManager(store Store, fallback Config, opts Options) (*Manager, error) {
 	}
 	size := opts.QueueSize
 	if size <= 0 {
-		size = 256
+		// 2026-10-31 24h 审计第 12 轮：256 → 4096。输出合规上线后生产峰值
+		// ~5 条/秒，256 的余量在单轮排水抖动下不到一分钟就灌满 ⇒ 审计事件
+		// 成批丢弃。4096 ≈ 13 分钟的峰值生产量，内存开销可忽略。
+		size = 4096
 	}
 	if size > 10000 {
 		size = 10000
@@ -214,10 +219,28 @@ func (m *Manager) Record(ctx context.Context, e Event) bool {
 	case m.queue <- clean:
 		return true
 	default:
-		m.dropped.Add(1)
-		m.queueError("sanitize rule audit queue full")
+		total := m.dropped.Add(1)
+		m.reportQueueFull(total)
 		return false
 	}
+}
+
+// queueFullReportInterval 抑制「每丢一条就告警一条」的自我刷屏：丢事件本身
+// 已经是审计损失，再用同频 WARN 淹没告警面是第二次损失（211 实测 44250 条
+// WARN/3h ≈ 同额事件被丢，把其它告警全部挤出视野）。改为至多 30s 一条，
+// 且消息带上累计 dropped_total —— 幅度进告警面，而不是只留翻日志才知道。
+const queueFullReportInterval = 30 * time.Second
+
+func (m *Manager) reportQueueFull(total int64) {
+	now := time.Now().UnixNano()
+	last := m.lastQueueFullReport.Load()
+	if last != 0 && now-last < int64(queueFullReportInterval) {
+		return
+	}
+	if !m.lastQueueFullReport.CompareAndSwap(last, now) {
+		return
+	}
+	m.queueError(fmt.Sprintf("sanitize rule audit queue full: dropped_total=%d (throttled to one line per %s)", total, queueFullReportInterval))
 }
 func (m *Manager) queueError(message string) {
 	select {
@@ -255,6 +278,99 @@ func (m *Manager) writeEvent(ctx context.Context, e Event) {
 	}
 	if err := m.store.RecordEvent(ctx, e, limit); err != nil {
 		m.report("sanitize rule audit write failed")
+	}
+}
+
+// auditBatchSize / auditBatchLinger：每轮排水最多合并多少条、为等突发在队列
+// 空时最多逗留多久。审计数据不要求低延迟，逗留换事务次数的下降（211 生产
+// 峰值下每批 10~50 条 ⇒ 每批锁/保留清理只付一次）。
+const (
+	auditBatchSize   = 128
+	auditBatchLinger = 100 * time.Millisecond
+)
+
+// collectBatch 从队列继续收事件凑批。linger=false（停机排水）只收当前已在
+// 队列里的，不追加等待 —— 停机预算（2s）是硬的；linger=true 时队列暂时空
+// 也最多等 auditBatchLinger，让突发流量合并进同一事务。
+func (m *Manager) collectBatch(first Event, linger bool) []Event {
+	batch := append(make([]Event, 0, auditBatchSize), first)
+	for len(batch) < auditBatchSize {
+		if !linger {
+			select {
+			case e := <-m.queue:
+				batch = append(batch, e)
+				continue
+			default:
+			}
+			return batch
+		}
+		timer := time.NewTimer(auditBatchLinger)
+		select {
+		case e := <-m.queue:
+			timer.Stop()
+			batch = append(batch, e)
+		case <-timer.C:
+			return batch
+		}
+	}
+	return batch
+}
+
+// writeBatch 写一批审计事件：batcher 存在时整批一个事务（一次 settings 读、
+// 一次保留清理），否则退回逐条 —— 外部 Store 实现与测试 spy 未实现
+// BatchEventStore 时行为与旧版完全一致。
+func (m *Manager) writeBatch(ctx context.Context, batcher BatchEventStore, batch []Event) {
+	if len(batch) == 0 {
+		return
+	}
+	if batcher == nil {
+		for _, e := range batch {
+			m.writeEvent(ctx, e)
+		}
+		return
+	}
+	if m.opts.AuditEnabled != nil && !m.opts.AuditEnabled() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	limit := 10000
+	if m.opts.EventLimit != nil {
+		limit = m.opts.EventLimit()
+	}
+	if err := batcher.RecordEvents(ctx, batch, limit); err != nil {
+		m.report("sanitize rule audit write failed")
+	}
+}
+
+func (m *Manager) auditWorker(ctx context.Context) {
+	batcher, canBatch := m.store.(BatchEventStore)
+	flush := func(writeCtx context.Context, first Event, linger bool) {
+		if canBatch {
+			m.writeBatch(writeCtx, batcher, m.collectBatch(first, linger))
+			return
+		}
+		m.writeEvent(writeCtx, first)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			drainCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			for {
+				select {
+				case e := <-m.queue:
+					flush(drainCtx, e, false)
+					if drainCtx.Err() != nil {
+						return
+					}
+				default:
+					return
+				}
+			}
+		case e := <-m.queue:
+			flush(ctx, e, true)
+		}
 	}
 }
 
@@ -319,28 +435,6 @@ func (m *Manager) Run(ctx context.Context) {
 			_ = m.Refresh(ctx)
 			subscribe()
 			timer.Reset(m.pollInterval())
-		}
-	}
-}
-func (m *Manager) auditWorker(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			drainCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			for {
-				select {
-				case e := <-m.queue:
-					m.writeEvent(drainCtx, e)
-					if drainCtx.Err() != nil {
-						return
-					}
-				default:
-					return
-				}
-			}
-		case e := <-m.queue:
-			m.writeEvent(ctx, e)
 		}
 	}
 }
