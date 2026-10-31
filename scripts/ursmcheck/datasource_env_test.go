@@ -47,83 +47,92 @@ const (
 	gateRunnerPath    = "../../scripts/audit/run-integration-gate.sh"
 )
 
-// datasourceEnvExemptions：**不进**事实源的名字，每个都必须写明理由。
+// builtinEnvExemptions：字面量豁免族（非 DSN 名 / 特殊接线名），每个都必须写明理由。
+//
+// ★ **dsn_exclusive 族不在这里**——它已抽成共享台账
+//   `scripts/audit/dsn_exclusive_registry.tsv`（2026-11-01 结构项收口，48h 轮遗留 2）：
+//   本门与 sql/schema 集成门（destructiveGuardedDB / dedicatedSessionDB 两条非注入车道）
+//   读**同一份文件**。要新增「专用破坏型 DSN」豁免，改 TSV，不改这里——
+//   sql/schema 的对账门会要求它的两条非注入车道之一同步登记，单向改动必然报红。
 //
 // 门会强制「豁免表里的理由非空」且「豁免表与事实源不相交」，
 // ⇒ 豁免表不会变成「什么都往里塞」的垃圾桶。
-var datasourceEnvExemptions = map[string]string{
+var builtinEnvExemptions = map[string]string{
 	"TEST_REDIS_URL":           "Redis DSN —— 把 PG DSN 指过去比留空更糟（官方 runner 自述）",
 	"NETBIRD_API_URL":          "HTTP API 端点，不是 DSN",
 	"XIAOMI_BASE_URL":          "HTTP base URL，不是 DSN",
 	"WA877_ALLOW_ANY_DSN":      "是「允许任意 DSN」的开关，不是 DSN 本身",
 	"TEST_TENANT_DATABASE_URL": "必须指向**独立的、不可绕过 RLS 的租户角色**（官方 runner 现场建）⇒ 不能与通用 DSN 同值",
-	// ★★ R81 轮新增：与上面 TEST_TENANT_DATABASE_URL **同族**（dsn_exclusive）。
-	//
-	// ★ 它为什么必须豁免（而不进事实源）：trace-retirement 那条腿做的是
-	//   **破坏性清理**（删表/改 schema）⇒ 它只能跑在自己的隔离库上 ——
-	//   产品侧自己的守卫要求 DSN 指向**名为 trace_retirement* 的库**
-	//   （或显式授权的本地 54318 schema）。
-	//   ⇒ 与通用 DSN 同值 = 让破坏性清理打到共享库上。
-	//   ⇒ 而事实源与官方 runner 给的**恰恰就是通用 DSN** ⇒ ⇒
-	//   产品守卫会正确地拒绝它 ⇒ ⇒ 门禁得到 4 条**假红**（红的原因不是产品缺陷）。
-	//   ⇒ 不进事实源 ⇒ 那条腿改走它本来就设计好的 t.Skip 分支。
-	"TRACE_RETIREMENT_TEST_DSN": "破坏性 trace-retirement 腿的专用 DSN：必须指向名为 trace_retirement* 的隔离库（或显式授权的本地 54318 schema）⇒ 不能与通用 DSN 同值",
-	// 2026-10-31 实施包审计 §8：07 月账单真库 e2e 的专用 DSN（maas/bills_realdb_test.go）。
-	// 与 TRACE_RETIREMENT_TEST_DSN 同族（dsn_exclusive）：会写 maas_monthly_bills 并建删测试租户，
-	// 测试本身要求库名以 _test 结尾（否则 Fatal）⇒ 不能与通用 DSN 同值 ⇒ 不进事实源。
-	// 未设置时该腿 t.Skip（设计如此，不是静默死腿）；设置了但库名不合规则显式 Fatal。
-	"TEST_MAAS_BILLS_DATABASE_URL": "maas 月账单真库 e2e 的专用 DSN：会写 maas_* 并删测试租户 ⇒ 必须指向 _test 结尾的一次性库 ⇒ 不能与通用 DSN 同值",
-	// ★★ R85 轮新增：与 TRACE_RETIREMENT_TEST_DSN **同族**（dsn_exclusive）。
-	//
-	// ★ 它为什么必须豁免（而不进事实源）：canonical fixture 除主库外**还要连第二个库**
-	//   `identity_shadow`（admin/shared_principal_realdb_test.go:113）⇒ 它本来就只能
-	//   指向「本地联调专用库」。
-	// ⇒ 与通用 DSN 同值 = 把「连本地库」的前提给了一个通用库。
-	// ⇒ 产品侧自己的守卫会正确地拒绝它（授权开关 GATEWAY_CANONICAL_TEST_LOCAL_ONLY
-	//   未开 ⇒ t.Fatal）⇒ ⇒ 事实源默认注入它，只会把「靶子不对」显示成红。
-	// ⇒ 不进事实源 ⇒ 那条腿改走它本来就设计好的 t.Skip 分支（dsn == "" ⇒ Skip）。
-	// ★ ★ 与「把 t.Fatal 改成 t.Skip」是**两件事**：守卫一个字都不用改 ——
-	//   「没配 ⇒ Skip」与「配了但没授权 ⇒ Fatal」是**互补的两条边界**，
-	//   而 t.Fatal 那一侧是**安全拒绝**（不是「跑不起来」）⇒ 改成 SKIP 会把安全拒绝降级成静默跳过。
-	// ★ 授权开关本身（GATEWAY_CANONICAL_TEST_LOCAL_ONLY，dangerous 类）**绝不由事实源打开**
-	//   ⇒ 门禁不能替人授予「连本地库」的权限。
-	"GATEWAY_CANONICAL_TEST_DSN": "canonical fixture 的专用 DSN：还要连第二个库 `identity_shadow` ⇒ 只能指向「本地联调专用库」⇒ 不能与通用 DSN 同值",
-	// ★★ R86 轮新增：四个新实例（③④⑤⑥）—— **「事实源给了通用 DSN，但这条腿一定拒绝它」**。
-	//
-	// ★ 这一族的判别形态与上面两条**不同**：
-	//   TRACE_RETIREMENT_TEST_DSN / GATEWAY_CANONICAL_TEST_DSN 是「**腿自己会拒绝**」
-	//   （守卫要求特定库名/额外授权）⇒ 事实源注入它只会得到假红或死腿。
-	//   R86 轮把这条判据**做成了机器可判的门**（(事实源导出名 × 消费腿) 靶子错配探测器），
-	//   豁免表就是那张门的台账入口。
-	//
-	// ★ LLM_GATEWAY_FEATURE_STATS_TEST_DSN（死腿）：
-	//   setupTestDB 会 TRUNCATE 三张表，库名守卫只放行 itgate|scratch|test|tmp|bench|pg_
-	//   ⇒ 通用 DSN（llm_gateway）必被拒绝 ⇒ 事实源档下这条腿**从来没跑过**。
-	//   ⇒ 移出事实源零覆盖损失（移出前死、移出后也死；差别只是不再给一个用不了的值）。
-	"LLM_GATEWAY_FEATURE_STATS_TEST_DSN": "feature-stats 破坏性腿的专用 DSN：TRUNCATE 三张表 + 库名守卫只放行一次性库 ⇒ 通用 DSN 必被拒绝 ⇒ 事实源注入它只会造出一条死腿",
-	// ★ TEST_SESSION_INGEST_DATABASE_URL（假红）：
-	//   守卫要求库名以 _test 结尾且 TEST_SESSION_INGEST_ISOLATED=1，随后 DROP SCHEMA public CASCADE
-	//   ⇒ 通用 DSN 不满足 ⇒ t.Fatal（响亮假红）⇒ 移出后改走它设计好的 t.Skip 分支。
-	"TEST_SESSION_INGEST_DATABASE_URL": "session-ingest 夹具的专用 DSN：必须指向 *_test 一次性库且配 TEST_SESSION_INGEST_ISOLATED=1，否则守卫 t.Fatal ⇒ 通用 DSN 必被拒绝 ⇒ 事实源注入它只会造出假红",
-	// ★ GUARD_IT_DSN（数据事故级）：
-	//   bg/balance_floor_guard_integration_test.go 在建池后裸 TRUNCATE credentials, providers CASCADE
-	//   ⇒ 文件头明写「本测试绝不写线上 llm_gateway 库」⇒ 契约此前**只写在注释里，代码里没有**
-	//   ⇒ R86 轮补了库名守卫，并把本名字移出事实源。
-	"GUARD_IT_DSN": "balance-floor 集成腿的专用 DSN：TRUNCATE credentials, providers CASCADE ⇒ 必须指向一次性 scratch 库（文件头已写明）⇒ 不能与通用 DSN 同值",
-	// ★ ROUTEINCIDENT_IT_DSN（污染级）：
-	//   会 CREATE TABLE route_incidents（715 表形）在目标库 ⇒ 文件头写明 Cleanup: DROP DATABASE llm_routeincident_it
-	//   ⇒ 同族：必须指向一次性库 ⇒ 不能与通用 DSN 同值。
-	"ROUTEINCIDENT_IT_DSN": "routeincident 集成腿的专用 DSN：会在目标库建 route_incidents 表（715 表形）⇒ 必须指向一次性库 ⇒ 不能与通用 DSN 同值",
-	// ★ REPORT_E2E_TEST_DATABASE_URL（R86 轮**新建**的名字）：
-	//   原本这条腿读的是**共享名** TEST_DATABASE_URL / TEST_DB_URL
-	//   ⇒ 而事实源把这两个名字都指向产品库 ⇒ 该腿在事实源档下必然 t.Fatal（假红）。
-	//   ⇒ R86 轮给它换成**专用名**（共享名无法只服务这一条破坏性腿）
-	//   ⇒ 守卫语义**一字未改**（非 scratch 库仍然 t.Fatal）。
-	"REPORT_E2E_TEST_DATABASE_URL": "reportrollup 破坏性 E2E 的专用 DSN：会 DELETE report_snapshots / usage_facts ⇒ 必须指向一次性 scratch 库 ⇒ 不能与通用 DSN 同值（R86 轮把共享名 TEST_DATABASE_URL/TEST_DB_URL 拆成专用名）",
-	// ★ TEST_SESSION_SETTINGS_DATABASE_URL（R86 轮**第七例**，由「读形态守卫」判据挖出）：
-	//   守卫要求库名以 _test 结尾**且** TEST_SESSION_INGEST_ISOLATED=1（隔离开关），
-	//   随后 DROP SCHEMA public CASCADE ⇒ 通用 DSN 两个条件都不满足 ⇒ t.Fatal（假红）。
-	"TEST_SESSION_SETTINGS_DATABASE_URL": "session-settings 夹具的专用 DSN：守卫要求 *_test 库 + 隔离开关，随后 DROP SCHEMA public CASCADE ⇒ 通用 DSN 必被拒绝 ⇒ 事实源注入它只会造出假红",
+}
+
+// dsnExclusiveRegistryPath 共享 dsn_exclusive 台账的路径（相对本包的测试 cwd）。
+const dsnExclusiveRegistryPath = "../../scripts/audit/dsn_exclusive_registry.tsv"
+
+// loadDsnExclusiveRegistry 解析共享台账。
+//
+// 牙齿（台账本体坏了必须响，不能退化成「没有豁免」的面）：
+// 文件缺失 / 行格式坏（必须 name<TAB>reason 两列）/ 名字形状不对 /
+// 重名 / 理由空白 / 行数下限 ⇒ t.Fatal。
+// 行数下限挡两种腐化：台账被清空（对账变恒红面）与解析器失效（对账变恒绿门）。
+func loadDsnExclusiveRegistry(t *testing.T) map[string]string {
+	t.Helper()
+	raw, err := os.ReadFile(dsnExclusiveRegistryPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", dsnExclusiveRegistryPath, err)
+	}
+	m := map[string]string{}
+	for i, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		name, reason, ok := strings.Cut(trimmed, "\t")
+		if !ok || !reDSNNameValue.MatchString(name) || strings.TrimSpace(reason) == "" || strings.ContainsAny(reason, "\t") {
+			t.Fatalf("%s:%d 格式坏：应为 name<TAB>reason 两列，name 为大写蛇形，reason 非空且不含 TAB（got %q）",
+				dsnExclusiveRegistryPath, i+1, trimmed)
+		}
+		if _, dup := m[name]; dup {
+			t.Fatalf("%s:%d 名字 %q 重复 —— 共享台账一个名字只许一行", dsnExclusiveRegistryPath, i+1, name)
+		}
+		m[name] = strings.TrimSpace(reason)
+	}
+	if len(m) < 5 {
+		t.Fatalf("%s 只解析出 %d 行 —— 台账被清空或解析器失效；恒空的对账等于没有对账",
+			dsnExclusiveRegistryPath, len(m))
+	}
+	return m
+}
+
+// datasourceEnvExemptions 返回生效豁免集 = 字面量族 ∪ 共享 dsn_exclusive 台账。
+// 所有消费方（覆盖门 / runner 回退检查 / 未覆盖判负）都经这里取，
+// ⇒ TSV 的一行自动享受「与事实源不相交 + 理由非空」两条既有纪律。
+func datasourceEnvExemptions(t *testing.T) map[string]string {
+	t.Helper()
+	m := make(map[string]string, len(builtinEnvExemptions)+16)
+	for k, v := range builtinEnvExemptions {
+		m[k] = v
+	}
+	for k, v := range loadDsnExclusiveRegistry(t) {
+		m[k] = v
+	}
+	return m
+}
+
+// ── 门 1.5：共享 dsn_exclusive 台账本体（加载牙齿 + 与事实源不相交）────────────
+
+func TestDsnExclusiveRegistrySharedSpine(t *testing.T) {
+	m := loadDsnExclusiveRegistry(t)
+	declared := parseDatasourceEnvExports(t, datasourceEnvPath)
+	declaredSet := map[string]bool{}
+	for _, n := range declared {
+		declaredSet[n] = true
+	}
+	for name := range m {
+		if declaredSet[name] {
+			t.Errorf("共享台账里的 %q 同时出现在事实源 %s 里 —— dsn_exclusive 的定义就是绝不进事实源",
+				name, datasourceEnvPath)
+		}
+	}
 }
 
 // ── 匹配器（纯函数，可被自检直接调用）──────────────────────────────────────────
@@ -356,9 +365,10 @@ func TestRealDBLegsUseDeclaredDSNEnvNames(t *testing.T) {
 	if len(declared) == 0 {
 		t.Fatalf("%s 里一个 export 都没有 —— 解析器失效（门会恒绿）", datasourceEnvPath)
 	}
+	exemptions := datasourceEnvExemptions(t)
 
 	// 豁免表与事实源必须不相交，且每个豁免都要写理由。
-	for name, why := range datasourceEnvExemptions {
+	for name, why := range exemptions {
 		if declaredSet[name] {
 			t.Errorf("名字 %q 同时出现在事实源与豁免表里 —— 豁免表会变成垃圾桶（理由：%s）", name, why)
 		}
@@ -369,7 +379,7 @@ func TestRealDBLegsUseDeclaredDSNEnvNames(t *testing.T) {
 
 	// 官方 runner 的 env 块不许从事实源里消失（权威清单不许回退）。
 	for _, n := range parseGateRunnerEnvExports(t, gateRunnerPath) {
-		if !declaredSet[n] && datasourceEnvExemptions[n] == "" {
+		if !declaredSet[n] && exemptions[n] == "" {
 			t.Errorf("官方 runner %s 导出 %q，但事实源 %s 里没有它 ⇒ 权威清单回退了",
 				gateRunnerPath, n, datasourceEnvPath)
 		}
@@ -422,7 +432,7 @@ func TestRealDBLegsUseDeclaredDSNEnvNames(t *testing.T) {
 
 	var uncovered []string
 	for name, files := range used {
-		if declaredSet[name] || datasourceEnvExemptions[name] != "" {
+		if declaredSet[name] || exemptions[name] != "" {
 			continue
 		}
 		sort.Strings(files)
@@ -433,8 +443,18 @@ func TestRealDBLegsUseDeclaredDSNEnvNames(t *testing.T) {
 		t.Errorf("真库腿认的 DSN 变量 %q 不在事实源 %s 里 ⇒ 跑真库腿时会静默 SKIP（go test 把 SKIP 算成绿）",
 			u, datasourceEnvPath)
 	}
+	// ★ 共享 dsn_exclusive 台账的死条目棘轮：TSV 里的名字必须仍被仓内某条
+	//   真库腿读取（与门 2「事实源不得有死条目」同方向的腐化防护）。
+	//   否则删掉 fixture 而忘删台账时，共享台账会变成垃圾桶，
+	//   且 sql/schema 侧的「TSV ⊆ 非注入车道」对账会被迫长期假红或被迫放宽。
+	for name := range loadDsnExclusiveRegistry(t) {
+		if len(used[name]) == 0 {
+			t.Errorf("共享 dsn_exclusive 台账里的 %q 仓内没有任何真库腿读它 ⇒ 死条目，应从 %s 删除",
+				name, dsnExclusiveRegistryPath)
+		}
+	}
 	t.Logf("扫到 %d 个打开 PG 的测试文件、%d 个 DSN 类变量名；事实源导出 %d 个、豁免 %d 个、未覆盖 %d 个",
-		pgFiles, len(used), len(declared), len(datasourceEnvExemptions), len(uncovered))
+		pgFiles, len(used), len(declared), len(exemptions), len(uncovered))
 }
 
 // ── 门 2：事实源不得有死条目（清单会腐化）────────────────────────────────────

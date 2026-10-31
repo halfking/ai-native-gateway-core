@@ -1,0 +1,22 @@
+# dsn_exclusive 台账（共享事实源）—— 两侧门读同一份文件，2026-11-01 结构项收口（48h 轮遗留 2）。
+#
+# 消费方：
+#   ① scripts/ursmcheck/datasource_env_test.go —— 真库腿 DSN 覆盖门：本表名字一律不进
+#      scripts/audit/datasource_env.sh（事实源），并要求仓内仍有真库腿读它（死条目棘轮）。
+#   ② sql/schema/integration_gate_test.go —— 集成门：本表名字一律不吃 $GATE_URL 注入，
+#      必须在两条「非注入车道」之一登记（destructiveGuardedDB 自守卫破坏型 /
+#      dedicatedSessionDB 专用 runner）。
+#
+# 增删条目必须两侧语义同改：任何一侧单动都会被另一侧的对账门报红（双向对账，
+# 2026-10-31 TEST_MAAS_BILLS_DATABASE_URL 第三次反向报红的结构收口）。
+#
+# 格式：name<TAB>reason（每行两列；reason 内不许出现 TAB；# 开头的行为注释）
+TRACE_RETIREMENT_TEST_DSN	破坏性 trace-retirement 腿的专用 DSN：守卫要求库名为 trace_retirement*（或显式授权的本地 54318 schema）⇒ 不能与通用 DSN 同值，否则破坏性清理会打到共享库
+TEST_MAAS_BILLS_DATABASE_URL	maas 月账单真库 e2e 的专用 DSN：会写 maas_monthly_bills 并建删测试租户，守卫要求库名以 _test 结尾（否则 Fatal）⇒ 不能与通用 DSN 同值
+GATEWAY_CANONICAL_TEST_DSN	canonical fixture 的专用 DSN：除主库外还要连第二个库 identity_shadow，守卫要求本地联调专用库 + 授权开关 ⇒ 不能与通用 DSN 同值
+LLM_GATEWAY_FEATURE_STATS_TEST_DSN	feature-stats 破坏性腿的专用 DSN：setupTestDB 会 TRUNCATE 三张表且库名守卫只放行一次性库 ⇒ 通用 DSN 必被拒绝，注入它只会造出一条死腿
+TEST_SESSION_INGEST_DATABASE_URL	session-ingest 夹具的专用 DSN：守卫要求 *_test 一次性库且 TEST_SESSION_INGEST_ISOLATED=1，随后 DROP SCHEMA public CASCADE ⇒ 通用 DSN 必被拒绝（响亮假红）
+GUARD_IT_DSN	balance-floor 集成腿的专用 DSN：建池后裸 TRUNCATE credentials, providers CASCADE ⇒ 必须指向一次性 scratch 库，不能与通用 DSN 同值
+ROUTEINCIDENT_IT_DSN	routeincident 集成腿的专用 DSN：会在目标库建 route_incidents 表（715 表形）⇒ 必须指向一次性库，不能与通用 DSN 同值
+REPORT_E2E_TEST_DATABASE_URL	reportrollup 破坏性 E2E 的专用 DSN：会 DELETE report_snapshots / usage_facts，守卫要求一次性 scratch 库 + 授权开关 ⇒ 不能与通用 DSN 同值（R86 轮从共享名拆出的专用名）
+TEST_SESSION_SETTINGS_DATABASE_URL	session-settings 夹具的专用 DSN：守卫要求库名以 _test 结尾且 TEST_SESSION_INGEST_ISOLATED=1，随后 DROP SCHEMA public CASCADE ⇒ 通用 DSN 必被拒绝（响亮假红）

@@ -153,32 +153,68 @@ func TestGateInjectsEveryDBCredentialName(t *testing.T) {
 	}
 }
 
-// TestDestructiveDSNsRegisteredDsnExclusiveInURSM 把两份 dsn_exclusive 台账对上：
-// 本门按「自守卫破坏型」注册的每个 DSN，必须同时在 ursmcheck 的
-// datasourceEnvExemptions 里登记（事实源那一侧的同一主张）。
+// TestDestructiveDBsRegisteredInSharedDsnExclusiveTSV 把本门的「非注入车道」与
+// 共享 dsn_exclusive 台账双向对上（2026-11-01 结构项收口，48h 轮遗留 2）。
 //
-// 2026-10-31 的红走了另一个方向：TEST_MAAS_BILLS_DATABASE_URL 只在 ursmcheck
-// 登记了 dsn_exclusive，本门不认识它 ⇒ 上面的注入断言要求 harness 把它接到
-// $GATE_URL —— 恰是 R86 那次「门对形状判得对、台账记错边」的第三次重演。
-// 本测试钉住的是便宜的比对方向（本门 ⊆ ursmcheck）；反方向要靠共享数据文件
-// 才能免语义判断地自动化，已在 48h 审计档登记为结构项。
-func TestDestructiveDSNsRegisteredDsnExclusiveInURSM(t *testing.T) {
-	data, err := os.ReadFile("../../scripts/ursmcheck/datasource_env_test.go")
+// 共享台账 = scripts/audit/dsn_exclusive_registry.tsv（dsn_exclusive 族的唯一事实源，
+// ursmcheck 的覆盖门读同一份文件）。本门断言两个方向：
+//
+//	(a) set(destructiveGuardedDB) ⊆ 台账 —— 本门注册的每个自守卫破坏型 DSN
+//	    都必须在共享台账上登记（「不吃 $GATE_URL」这一主张的台账面）；
+//	(b) 台账 ∩ DB-DSN 形状 ⊆ lanes —— 本门扫描器会扫到的名字必须落在本门两条
+//	    非注入车道之一（destructiveGuardedDB 自守卫破坏型 / dedicatedSessionDB
+//	    专用 runner），否则 TestGateInjectsEveryDBCredentialName 会对它**反向
+//	    要求 $GATE_URL 注入**。形状判定与主门扫描器共用同一份
+//	    isDBCredentialEnvName：台账里 `_DSN` 后缀的五条（TRACE_RETIREMENT_TEST_DSN
+//	    等）不在形状表里 ⇒ 对主门不可见、无需车道；**形状表一旦扩到 `_DSN`，
+//	    本条当场报红并强制补车道**——形状规则与台账的耦合被显式钉住。
+//
+// 2026-10-31 的红走了 (b) 的缺失方向：TEST_MAAS_BILLS_DATABASE_URL 只在 ursmcheck
+// 登记了 dsn_exclusive，本门不认识它 ⇒ 注入断言要求 harness 把它接到 $GATE_URL ——
+// 恰是 R86 那次「门对形状判得对、台账记错边」的第三次重演。
+// 旧版本测试读 ursmcheck 的 Go 源码做单向正则（(a) 的便宜方向）；反方向因
+// ursmcheck 豁免表里混着非 DSN 名字而无法免语义判断地自动化。共享 TSV 把
+// dsn_exclusive 族抽成独立文件之后，双向都成了纯集合运算。
+func TestDestructiveDBsRegisteredInSharedDsnExclusiveTSV(t *testing.T) {
+	const registryPath = "../../scripts/audit/dsn_exclusive_registry.tsv"
+	data, err := os.ReadFile(registryPath)
 	if err != nil {
-		t.Fatalf("read ursmcheck registry: %v", err)
+		t.Fatalf("read shared dsn_exclusive registry: %v", err)
 	}
-	registered := map[string]bool{}
-	for _, m := range regexp.MustCompile(`(?m)^\t"([A-Z][A-Z0-9_]+)":`).FindAllStringSubmatch(string(data), -1) {
-		registered[m[1]] = true
+	shared := map[string]bool{}
+	for i, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		name, _, ok := strings.Cut(trimmed, "\t")
+		if !ok || !regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`).MatchString(name) {
+			t.Fatalf("%s:%d 格式坏：应为 name<TAB>reason 两列（got %q）", registryPath, i+1, trimmed)
+		}
+		shared[name] = true
 	}
-	if len(registered) == 0 {
-		t.Fatal("ursmcheck 豁免表解析出 0 个条目 —— 解析器失效或文件结构变了；" +
+	if len(shared) == 0 {
+		t.Fatal("共享 dsn_exclusive 台账解析出 0 个条目 —— 解析器失效或文件被清空；" +
 			"恒返回空的守卫等于没有守卫")
 	}
+	inLane := func(name string) bool {
+		if _, ok := destructiveGuardedDB[name]; ok {
+			return true
+		}
+		_, ok := dedicatedSessionDB(name)
+		return ok
+	}
 	for name := range destructiveGuardedDB {
-		if !registered[name] {
-			t.Errorf("%s 在本门按自守卫破坏型注册，但 ursmcheck 的 datasourceEnvExemptions 没有它："+
-				"两份 dsn_exclusive 台账各说各话，读哪份都不完整", name)
+		if !shared[name] {
+			t.Errorf("%s 在本门按自守卫破坏型注册，但共享台账 %s 没有它："+
+				"两份 dsn_exclusive 台账各说各话，读哪份都不完整", name, registryPath)
+		}
+	}
+	for name := range shared {
+		if isDBCredentialEnvName(name) && !inLane(name) {
+			t.Errorf("共享台账 %s 里的 %s 是 DB-DSN 形状（主门扫描器会扫到它），"+
+				"但两条非注入车道（destructiveGuardedDB / dedicatedSessionDB）都没有登记 ⇒ "+
+				"主门会反向要求 $GATE_URL 注入——R86『台账记错边』形态复发", registryPath, name)
 		}
 	}
 }
@@ -200,6 +236,19 @@ func TestDestructiveDSNsRegisteredDsnExclusiveInURSM(t *testing.T) {
 //     []string{"TEST_AUDIT_ISOLATED_DB_URL", "TEST_PG_DSN", ...}` and then
 //     calls getenv(env) — so a scan of call arguments alone misses it. Any
 //     quoted ALL-CAPS literal in a file that contains an env lookup counts.
+// isDBCredentialEnvName 判「这个名字是否会被本门扫描器当 DB-DSN」。
+// ★ 包级函数（2026-11-01 从 dbCredentialNamesInRepo 的闭包抽出）：共享台账
+//   对账门（TestDestructiveDBsRegisteredInSharedDsnExclusiveTSV）必须与主门
+//   用**同一把形状尺**——两处各写一份，形状表漂移时对账门不会跟着变。
+func isDBCredentialEnvName(n string) bool {
+	for _, s := range []string{"_DATABASE_URL", "_DB_URL", "_PG_URL", "_ISOLATED_DB_URL"} {
+		if strings.HasSuffix(n, s) {
+			return true
+		}
+	}
+	return n == "DATABASE_URL" || n == "TEST_PG_DSN"
+}
+
 func dbCredentialNamesInRepo(t *testing.T) ([]string, error) {
 	t.Helper()
 	root := "../.."
@@ -207,14 +256,7 @@ func dbCredentialNamesInRepo(t *testing.T) ([]string, error) {
 	callRe := regexp.MustCompile(`(?:os\.Getenv|os\.LookupEnv|getenv|getenvImpl)\s*\(`)
 	argRe := regexp.MustCompile(`(?:os\.Getenv|os\.LookupEnv|getenv|getenvImpl)\(\s*"([A-Z][A-Z0-9_]*)"`)
 	litRe := regexp.MustCompile(`"([A-Z][A-Z0-9_]{3,})"`)
-	isDBName := func(n string) bool {
-		for _, s := range []string{"_DATABASE_URL", "_DB_URL", "_PG_URL", "_ISOLATED_DB_URL"} {
-			if strings.HasSuffix(n, s) {
-				return true
-			}
-		}
-		return n == "DATABASE_URL" || n == "TEST_PG_DSN"
-	}
+	isDBName := isDBCredentialEnvName
 	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // unreadable path (permission, race with a build) — skip
