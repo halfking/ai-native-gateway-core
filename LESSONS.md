@@ -28407,3 +28407,5 @@ prefix/suffix 预览。
 registry「GLM 7 档」实证补笔）；nvidia 直探被组织级 429 挡死时，生产 reqanom
 台账是合法替代证据源（四天 param=reasoning 连证）；volcano coding 端点
 CodingPlan 订阅失效 + normal 端点 key 401 = 两腿凭据皆死（处置属运维）。
+
+## §608 ·（取号：fetch 实测 origin/main 最高 §607、§606 为并行在途预留 ⇒ 连号取 §608）/live 两步交互第六次上报轮：线上取证 + 量具盲区（goal · 2026-11-01）—— ★★★★ **「第六次上报」先假设站点是对的**：五档视口 × 左右两栏 × 行顶/行中真浏览器全绿后，唯一存活解释是「长驻标签页跑旧 JS」（SSE 保活 ⇒ 旧页面永不自愈；deploy-seq 自愈只存在于新代码里，**旧 JS 无法运行新自愈**——任何服务端手段都够不到一个不执行新逻辑的标签页）；★★★★ **量具先 scrollIntoView 再量几何 = 把「用户看不见」洗成绿**（视口外 2000px 的浮层也判 PASS）⇒ 几何断言必须零滚动补偿量「点完不滚」的形态，量具的补偿动作会替产品遮丑；★★★ 「点行 = 看得见摘要」要靠 App 侧 scrollIntoView({block:'nearest'}) 保底变成结构成立（nearest 已可见时 no-op，不打扰健康布局）；★★★ 单测里 App 代码不要 document.querySelector 全局找自己的浮层（@vue/test-utils 挂游离 DOM 恒空）⇒ 模板引用双赢家；★ jsdom 24 仍不实现 scrollIntoView ⇒ setup.ts 沿 matchMedia 桩先例补能力桩

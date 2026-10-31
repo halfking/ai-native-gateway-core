@@ -335,4 +335,30 @@ describe('LiveTopologyView 展示诚实性（本轮审计修复）', () => {
 
     openSpy.mockRestore()
   })
+
+  it('★ 浮层出现即滚入视野：点行 → scrollIntoView({block:"nearest"})（2026-11-01 量具盲区轮）', async () => {
+    // 浮层锚在列的 bottom 角；「列高=内容高」的布局形态下锚点可能离点击点
+    // 很远 —— 用户点行了却看不见摘要（连报 6 轮的「旧行为」体感来源之一）。
+    // 这条判据把「点行 = 看得见摘要」钉成行为事实：浮层一出现就必须滚入视野。
+    testApi.setRequests([
+      { ts: nowIso(), request_id: 'r-zoom-scroll', status: 'success', provider_code: 'deepseek', credential_id: 7, agent_name: 'claude-code' },
+    ])
+    const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
+    const { wrapper } = await mountView()
+
+    expect(scrollSpy).not.toHaveBeenCalled()
+    await wrapper.get('.cp__item').trigger('click')
+    expect(wrapper.find('.zoom').exists()).toBe(true)
+    // ★ nearest：已可见时是 no-op —— 不许把用户已经摆好的滚动位置拽走。
+    expect(scrollSpy).toHaveBeenCalledWith({ block: 'nearest' })
+
+    // ✕ 关闭 → 再点另一行：重新滚入（浮层是 v-if 重建的，每次都要保证可见）。
+    scrollSpy.mockClear()
+    await wrapper.get('.zoom__close').trigger('click')
+    await wrapper.get('.cp__item').trigger('click')
+    expect(wrapper.find('.zoom').exists()).toBe(true)
+    expect(scrollSpy).toHaveBeenCalledWith({ block: 'nearest' })
+
+    scrollSpy.mockRestore()
+  })
 })

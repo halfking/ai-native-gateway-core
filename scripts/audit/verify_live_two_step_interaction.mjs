@@ -6,6 +6,10 @@
 //          ★★★ 且浮层**几何可读**（高 ≥ GEOM_MIN_PX，头部在滚入视野后可见）——
 //          ★★★ 几何断言是本轮的核心教训：1280×800 下浮层曾塌成 16px 一条缝，
 //          ★★★ 行为断言全绿而用户实际"看不见摘要"（连报 5 轮的根因）。
+//   L1b/R1b（2026-11-01 盲区轮）：先滚列表、点【中部行】⇒ 浮层**不做任何滚动
+//          补偿**即在视野内（visibleRatio ≥ 0.5）—— 旧几何断言先 scrollIntoView
+//          再量，视口外的浮层也判绿；用户要的是「点完不滚就可见」。
+//          配套 App 侧 LiveTopologyView 的浮层 scrollIntoView({block:'nearest'}) 保底。
 //   L2/R2  浮层「查看全景」⇒ 新窗 /request-detail/:id（受信点击，见坑 b）；
 //   L3/R3  行尾 ↗ ⇒ 新窗 /request-detail/:id（10-18 owner 要求的有意直达入口）；
 //   C0     全程 console 无错误。
@@ -298,15 +302,19 @@ async function runViewport({ w, h, label }, session) {
         await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
       }
     };
-    /** 浮层几何（滚入视野后量 —— 用户就是滚过去看的）。 */
+    /** 浮层几何（★ 不做任何滚动补偿 —— 2026-11-01 盲区轮）。
+     *  旧版这里先 head.scrollIntoView() 再量 ⇒ 浮层哪怕渲染在视口外 2000px
+     *  也判绿，而用户的体感是「点了什么都没弹出」（连报 6 轮的体感来源）。
+     *  用户要的是【点完不滚就可见】，断言就量【点完不滚的几何】。 */
     const zoomGeometry = () => evalJs(`(() => {
       const z = document.querySelector('.zoom');
       if (!z) return null;
-      const head = z.querySelector('.zoom__head');
-      head?.scrollIntoView({ block: 'nearest' });
       const r = z.getBoundingClientRect();
+      const visible = Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
+      const head = z.querySelector('.zoom__head');
       const hr = head?.getBoundingClientRect();
       return { w: Math.round(r.width), h: Math.round(r.height),
+               visibleRatio: r.height > 0 ? +(visible / r.height).toFixed(2) : 0,
                headVisible: !!hr && hr.width > 0 && hr.bottom > 0 && hr.top < innerHeight,
                rows: z.querySelectorAll('.zoom__row').length };
     })()`);
@@ -330,9 +338,24 @@ async function runViewport({ w, h, label }, session) {
     }
     {
       const g = await zoomGeometry();
-      check(`L1 [${label}] 浮层几何可读（h ≥ ${GEOM_MIN_PX}）`, !!g && g.h >= GEOM_MIN_PX && g.rows > 0,
+      check(`L1 [${label}] 浮层几何可读（h ≥ ${GEOM_MIN_PX} 且不滚动可见）`, !!g && g.h >= GEOM_MIN_PX && g.visibleRatio >= 0.5 && g.rows > 0,
         g ? JSON.stringify(g) : 'no zoom');
       await shot('zoom-left');
+    }
+    // L1b（2026-11-01 盲区轮）：用户是先滚列表再点行的 —— 点【中部行】后
+    // 浮层必须仍在视野内（App 侧 scrollIntoView 保底，nearest=可见时 no-op）。
+    {
+      await evalJs(`(() => { const items=[...document.querySelectorAll('.cp__item')]; items[Math.min(24, items.length-1)]?.scrollIntoView({block:'center'}); })()`);
+      await sleep(300);
+      const mid = await evalJs(`(() => { const items=[...document.querySelectorAll('.cp__item')]; const el=items[Math.min(24, items.length-1)]; const r=el.getBoundingClientRect(); return { x: r.x + r.width/2, y: r.y + r.height/2, n: items.length }; })()`);
+      for (const type of ['mousePressed', 'mouseReleased']) {
+        await cdp.send('Input.dispatchMouseEvent', { type, x: mid.x, y: mid.y, button: 'left', clickCount: 1 });
+      }
+      await sleep(1200);
+      const g = await zoomGeometry();
+      check(`L1b [${label}] 滚动后点中部行(#24/${mid.n}) → 浮层不滚动即在视野内`, !!g && g.h >= GEOM_MIN_PX && g.visibleRatio >= 0.5 && g.rows > 0,
+        g ? JSON.stringify(g) : 'no zoom');
+      await shot('zoom-left-mid');
     }
     await trustedClick('.zoom [data-testid="zoom-open-page"]');
     check(`L2 [${label}] 浮层「查看全景」→ 新窗 /request-detail/:id`,
@@ -360,9 +383,23 @@ async function runViewport({ w, h, label }, session) {
       }
       {
         const g = await zoomGeometry();
-        check(`R1 [${label}] 浮层几何可读（h ≥ ${GEOM_MIN_PX}）`, !!g && g.h >= GEOM_MIN_PX && g.rows > 0,
+        check(`R1 [${label}] 浮层几何可读（h ≥ ${GEOM_MIN_PX} 且不滚动可见）`, !!g && g.h >= GEOM_MIN_PX && g.visibleRatio >= 0.5 && g.rows > 0,
           g ? JSON.stringify(g) : 'no zoom');
         await shot('zoom-right');
+      }
+      // R1b：与 L1b 同口径（右栏中部行）。
+      {
+        await evalJs(`(() => { const items=[...document.querySelectorAll('.pp__main')]; items[Math.min(24, items.length-1)]?.scrollIntoView({block:'center'}); })()`);
+        await sleep(300);
+        const mid = await evalJs(`(() => { const items=[...document.querySelectorAll('.pp__main')]; const el=items[Math.min(24, items.length-1)]; const r=el.getBoundingClientRect(); return { x: r.x + r.width/2, y: r.y + r.height/2, n: items.length }; })()`);
+        for (const type of ['mousePressed', 'mouseReleased']) {
+          await cdp.send('Input.dispatchMouseEvent', { type, x: mid.x, y: mid.y, button: 'left', clickCount: 1 });
+        }
+        await sleep(1200);
+        const g = await zoomGeometry();
+        check(`R1b [${label}] 滚动后点中部行(#24/${mid.n}) → 浮层不滚动即在视野内`, !!g && g.h >= GEOM_MIN_PX && g.visibleRatio >= 0.5 && g.rows > 0,
+          g ? JSON.stringify(g) : 'no zoom');
+        await shot('zoom-right-mid');
       }
       await trustedClick('.zoom [data-testid="zoom-open-page"]');
       check(`R2 [${label}] 浮层「查看全景」→ 新窗 /request-detail/:id`,
