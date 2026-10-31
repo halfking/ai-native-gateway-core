@@ -16,43 +16,43 @@ func TestScoreIdentity(t *testing.T) {
 		wantAnomalies []string
 	}{
 		{
-			name: "exact match → 100",
-			requested: "claude-sonnet-4-5",
-			reported:  "claude-sonnet-4-5",
+			name:         "exact match → 100",
+			requested:    "claude-sonnet-4-5",
+			reported:     "claude-sonnet-4-5",
 			wantMeasured: true, wantScore: 100,
 		},
 		{
-			name: "case / separator variants → 100",
-			requested: "Claude-Sonnet-4.5",
-			reported:  "claude-sonnet-4-5",
+			name:         "case / separator variants → 100",
+			requested:    "Claude-Sonnet-4.5",
+			reported:     "claude-sonnet-4-5",
 			wantMeasured: true, wantScore: 100,
 		},
 		{
-			name: "date snapshot suffix → 90 (same model, version snapshot)",
-			requested: "gpt-5",
-			reported:  "gpt-5-2025-08-07",
+			name:         "date snapshot suffix → 90 (same model, version snapshot)",
+			requested:    "gpt-5",
+			reported:     "gpt-5-2025-08-07",
 			wantMeasured: true, wantScore: 90,
 			wantAnomalies: []string{AnomalyIdentityMismatch},
 		},
 		{
-			name: "same family, different model → 50 (Sonnet→Haiku shape)",
-			requested: "claude-sonnet-4-5",
-			reported:  "claude-3-5-haiku",
+			name:         "same family, different model → 50 (Sonnet→Haiku shape)",
+			requested:    "claude-sonnet-4-5",
+			reported:     "claude-3-5-haiku",
 			wantMeasured: true, wantScore: 50,
 			wantAnomalies: []string{AnomalyIdentityMismatch},
 		},
 		{
-			name: "cross family → 10 (asked Claude, got GPT)",
-			requested: "claude-sonnet-4-5",
-			reported:  "gpt-4o",
+			name:         "cross family → 10 (asked Claude, got GPT)",
+			requested:    "claude-sonnet-4-5",
+			reported:     "gpt-4o",
 			wantMeasured: true, wantScore: 10,
 			wantAnomalies: []string{AnomalyFamilyMismatch, AnomalyIdentityMismatch},
 		},
 		{
-			name: "no reported model → not measured",
-			requested: "claude-sonnet-4-5",
-			reported:  "",
-			wantMeasured: false,
+			name:          "no reported model → not measured",
+			requested:     "claude-sonnet-4-5",
+			reported:      "",
+			wantMeasured:  false,
 			wantAnomalies: []string{AnomalyIdentityAbsent},
 		},
 	}
@@ -135,29 +135,29 @@ func TestScoreCapability(t *testing.T) {
 		},
 	}
 	cases := []struct {
-		name        string
-		accuracy    float64
-		peer        PeerReference
+		name         string
+		accuracy     float64
+		peer         PeerReference
 		wantMeasured bool
 		wantVerdict  Verdict
 	}{
 		{
-			name: "at peer best → healthy",
+			name:     "at peer best → healthy",
 			accuracy: 80, peer: peer,
 			wantMeasured: true, wantVerdict: VerdictVerified,
 		},
 		{
-			name: "far below peer best → diluted",
+			name:     "far below peer best → diluted",
 			accuracy: 40, peer: peer,
 			wantMeasured: true, wantVerdict: VerdictDiluted,
 		},
 		{
-			name: "no measurement → not measured",
+			name:     "no measurement → not measured",
 			accuracy: 0, peer: peer,
 			wantMeasured: false,
 		},
 		{
-			name: "single-provider peer set → not usable (same backend behind every credential)",
+			name:     "single-provider peer set → not usable (same backend behind every credential)",
 			accuracy: 40,
 			peer: PeerReference{Samples: []PeerSample{
 				{CredentialID: 1, ProviderID: 10, Accuracy: 80},
@@ -166,7 +166,7 @@ func TestScoreCapability(t *testing.T) {
 			wantMeasured: false,
 		},
 		{
-			name: "gap within noise band → measured and treated as parity",
+			name:     "gap within noise band → measured and treated as parity",
 			accuracy: 76, peer: peer,
 			wantMeasured: true, wantVerdict: VerdictVerified,
 		},
@@ -213,21 +213,21 @@ func TestScoreConsistency(t *testing.T) {
 			wantMeasured: false,
 		},
 		{
-			name: "identical signature → 100",
-			prev: &Previous{HasPromptTokens: true, PromptTokens: 20},
-			obs:  Observed{HasUsage: true, PromptTokens: 20},
+			name:         "identical signature → 100",
+			prev:         &Previous{HasPromptTokens: true, PromptTokens: 20},
+			obs:          Observed{HasUsage: true, PromptTokens: 20},
 			wantMeasured: true, wantScore: 100,
 		},
 		{
-			name: "small delta within tolerance → 100",
-			prev: &Previous{HasPromptTokens: true, PromptTokens: 20},
-			obs:  Observed{HasUsage: true, PromptTokens: 22},
+			name:         "small delta within tolerance → 100",
+			prev:         &Previous{HasPromptTokens: true, PromptTokens: 20},
+			obs:          Observed{HasUsage: true, PromptTokens: 22},
 			wantMeasured: true, wantScore: 100,
 		},
 		{
-			name: "severe drift → 0",
-			prev: &Previous{HasPromptTokens: true, PromptTokens: 20},
-			obs:  Observed{HasUsage: true, PromptTokens: 60},
+			name:         "severe drift → 0",
+			prev:         &Previous{HasPromptTokens: true, PromptTokens: 20},
+			obs:          Observed{HasUsage: true, PromptTokens: 60},
 			wantMeasured: true, wantScore: 0,
 			wantDrift: true,
 		},
@@ -448,10 +448,10 @@ func TestScoreOrNull(t *testing.T) {
 func TestEvaluateProbeFailureKeepsOtherDimensions(t *testing.T) {
 	cfg := DefaultConfig()
 	in := Input{
-		Target:    NodeTarget{RawModelName: "claude-sonnet-4-5"},
-		Observed:  Observed{HTTPStatus: 500},
-		ProbeErr:  errProbeFailed,
-		Accuracy:  80,
+		Target:      NodeTarget{RawModelName: "claude-sonnet-4-5"},
+		Observed:    Observed{HTTPStatus: 500},
+		ProbeErr:    errProbeFailed,
+		Accuracy:    80,
 		HasAccuracy: true,
 		Peer: PeerReference{Samples: []PeerSample{
 			{CredentialID: 1, ProviderID: 10, ProviderName: "official", Accuracy: 80},
@@ -584,22 +584,56 @@ func TestVerifiedConsensus(t *testing.T) {
 			t.Fatalf("evidence = %v, want pending with streak 1", res.Evidence)
 		}
 	})
-	t.Run("second consecutive clean run → verified", func(t *testing.T) {
-		res := Evaluate(clean(&Previous{Verdict: VerdictVerified, VerifiedStreak: 1}), cfg)
+	// ★★ 生产唯一真实路径（2026-10-31 审计轮修复）：共识未满的轮次落盘
+	// verdict=unknown + evidence.consensus_pending=true ⇒ 下一轮 Previous
+	// 必须从这一形态把 streak 接续下去。旧测试喂的
+	// Previous{Verdict: verified, streak:1} 在生产上不可能出现
+	// （streak=1 的轮必然以 unknown 落盘）⇒ 那条断言永远测不到死锁。
+	t.Run("second clean run after a pending round → verified (real persistence shape)", func(t *testing.T) {
+		prev := &Previous{
+			Verdict:          VerdictUnknown, // 落盘形态：共识未满以 unknown 收场
+			VerifiedStreak:   1,              // evidence.consensus_streak = 1
+			ConsensusPending: true,           // evidence.consensus_pending = true
+		}
+		res := Evaluate(clean(prev), cfg)
 		if res.Verdict != VerdictVerified {
-			t.Fatalf("verdict = %s, want verified (streak 2/2)", res.Verdict)
+			t.Fatalf("verdict = %s, want verified (streak 2/2 continued through pending)", res.Verdict)
 		}
 		if res.Evidence["consensus_streak"] != 2 {
 			t.Errorf("streak = %v, want 2", res.Evidence["consensus_streak"])
 		}
 	})
-	t.Run("streak resets after a bad run", func(t *testing.T) {
-		// 上一轮 verified 但上一轮 streak 只有 1（它自己也是 pending 出来的
-		// unknown —— 不可能；verified 落盘必然 streak>=K。这里验证 streak>1
-		// 的延续：连续第 3 轮仍 verified。
+	t.Run("streak does NOT continue from a plain unknown round", func(t *testing.T) {
+		// 上一轮是「真 unknown」（例如探测失败/维度缺失，没有 consensus_pending）
+		// ⇒ streak 必须从 1 重新起算，本轮仍只能落 pending。
+		prev := &Previous{Verdict: VerdictUnknown, VerifiedStreak: 1, ConsensusPending: false}
+		res := Evaluate(clean(prev), cfg)
+		if res.Verdict != VerdictUnknown {
+			t.Fatalf("verdict = %s, want unknown (streak restarted at 1)", res.Verdict)
+		}
+		if res.Evidence["consensus_streak"] != 1 || res.Evidence["consensus_pending"] != true {
+			t.Fatalf("evidence = %v, want pending with streak 1", res.Evidence)
+		}
+	})
+	t.Run("streak continues past a verified round", func(t *testing.T) {
+		// 上一轮已满共识落盘 verified（streak=2）⇒ 本轮仍达标 ⇒ streak=3。
 		res := Evaluate(clean(&Previous{Verdict: VerdictVerified, VerifiedStreak: 2}), cfg)
 		if res.Verdict != VerdictVerified || res.Evidence["consensus_streak"] != 3 {
 			t.Fatalf("verdict=%s streak=%v, want verified/3", res.Verdict, res.Evidence["consensus_streak"])
+		}
+	})
+	t.Run("pending chain reaches K=3 on the third round", func(t *testing.T) {
+		cfg3 := DefaultConfig()
+		cfg3.VerifiedConsecutiveRuns = 3
+		// 第 2 轮：接第 1 轮的 pending（streak 1→2，仍不满 3 ⇒ pending）。
+		res2 := Evaluate(clean(&Previous{Verdict: VerdictUnknown, VerifiedStreak: 1, ConsensusPending: true}), cfg3)
+		if res2.Verdict != VerdictUnknown || res2.Evidence["consensus_streak"] != 2 {
+			t.Fatalf("round2: verdict=%s streak=%v, want unknown/2", res2.Verdict, res2.Evidence["consensus_streak"])
+		}
+		// 第 3 轮：接第 2 轮的 pending（streak 2→3 ⇒ verified）。
+		res3 := Evaluate(clean(&Previous{Verdict: VerdictUnknown, VerifiedStreak: 2, ConsensusPending: true}), cfg3)
+		if res3.Verdict != VerdictVerified || res3.Evidence["consensus_streak"] != 3 {
+			t.Fatalf("round3: verdict=%s streak=%v, want verified/3", res3.Verdict, res3.Evidence["consensus_streak"])
 		}
 	})
 }

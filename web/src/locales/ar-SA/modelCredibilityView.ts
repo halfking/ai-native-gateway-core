@@ -78,6 +78,8 @@ export default {
     capability_peer_sample_too_small: 'عدد العقد المرجعية لهذا النموذج قليل جدًا',
     identity_probe_failed: 'فشل طلب فحص الهوية',
     identity_probe_empty_response: 'لم يعِد فحص الهوية بأي إجابة',
+    identity_passive_mismatch: 'ظهور عدم تطابق في النموذج ضمن حركة المرور الفعلية (دليل سلبي)',
+    consistency_passive_drift: 'ظهور انحراف في البصمة ضمن حركة المرور الفعلية (دليل سلبي)',
   },
 
   detail: {

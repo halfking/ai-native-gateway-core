@@ -78,6 +78,8 @@ export default {
     capability_peer_sample_too_small: '同名モデルの比較対象ノードが不足している',
     identity_probe_failed: '同一性プローブのリクエストが失敗した',
     identity_probe_empty_response: '同一性プローブが応答を得られなかった',
+    identity_passive_mismatch: '実際のトラフィックでモデル不一致が検出された（受動的証拠）',
+    consistency_passive_drift: '実際のトラフィックでフィンガープリントの変化が検出された（受動的証拠）',
   },
 
   detail: {

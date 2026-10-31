@@ -28222,3 +28222,64 @@ enable_thinking），真实 ZCode 请求体还有 reasoning_effort ⇒ 断言「
 ★ **同族**：★ [[共享工作树提交纪律]] · ★ [[211 部署必须钉 LLM_GATEWAY_ROOT]] · ★ [[周期性 24h 审计 goal 格式]]
 
 ★ **证据**：2026-10-31/11-01 llm-gateway-go —— 审计档 `docs/audit/2026-11-01-24h审计轮-放大类闭案推进与dsn_exclusive共享台账.md`；提交 `e619cef44`（TSV 共享台账 + 双向对账 + 快照重生成）；基线全量 test-short 351 包全绿（钉 73c8c8fd5 worktree）+ 终态树全量复测见审计档 §6；变异臂 4/4 检出还原 md5 逐字一致；211 部分窗 SQL 读数（4 行启动探针 lt10min=0/0）与 15 绑定 × 8 闸逐条归因表见审计档 §2/§4。
+
+## §604 · 模型可信度（防掺水）审计轮（2026-11-01 · llm-gateway-go）—— ★★★★ **单测构造的前置态必须是「落盘方真的会写出的形态」**；★★★★ **跨层字段必须有真库往返腿**；★★★ **多列独立聚合 = 可能拼出数据里不存在的组合**；★★ **同写回面的两条触发路径必须共享防误写过滤**；★ 新增异常常量的同一次提交要带上消费面
+> 审计对象＝模型可信度体系（domains/modelcredibility 四维判定 + bg worker + admin 6 端点 +
+> 迁移 922 + 管理端页）。四项修复：① **verified 连续共识门死锁**——streak 延续条件读
+> 「上一轮最终落盘 verdict」，而共识未满的轮落盘的是 unknown(evidence.consensus_pending=true)
+> ⇒ streak 永远重置为 1 ⇒ VerifiedConsecutiveRuns=2 时 **verified 生产上不可达**；既有测试
+> 喂的 `Previous{Verdict: verified, streak:1}` 这个前置态不可能由真实落盘产生（streak=1 的轮
+> 必然以 unknown 收场）⇒ 那条断言永远测不到死锁。修法：Previous 增 ConsensusPending
+> （LoadPrevious 从 evidence 带出）+ 延续条件改「verified 或 pending」。
+> ⇒ ★★★★ **变异臂 B 的教训**：把 consensus_pending 从 LoadPrevious 摘掉 ⇒ **单元测试全绿**
+> （单测直接构造 Previous，不走 LoadPrevious）⇒ 补 SaveResult→LoadPrevious→Evaluate
+> 全链真库腿后同款变异当场红。⇒ ② **rollup 不同源**：`MIN(score)`+`MIN(verdict)` 各自独立
+> 聚合 ⇒ 拼出「20 分配 diluted」的数据里不存在的组合（迁移 922 注释契约是「最差**那条凭据**
+> 的结论」）；MIN(verdict) 字典序恰与严重度同序是**巧合不是契约** ⇒ 修法 DISTINCT ON 整行取
+> （SQL 侧显式 CASE 枚举严重度）。⇒ ③ ScanNode 单点触发 rollup 传 nil ⇒ 全量重写历史残留行
+> （ScanAll 注释自己防的坑，单点路径没对齐）。⇒ ④ 被动信号两异常键缺前端映射与 8 语种
+> （命中即裸上屏 snake_case）+ catalog 拉取后从未渲染（死消费：API 面保留、消费面收口）。
+> 读数：build/vet/admin(98.9s)/bg(34.2s)/modelcredibility 全绿 + 迁移 922 门 4/4 +
+> vue-tsc 0 错 + vitest i18n 106 用例 + i18n 五道门 PASS + build rc=0；
+> **变异臂 3/3 检出**（共识门退回 / 读端摘字段 / MIN 聚合退回），真库腿 = 本地一次性 PG17
+> （`TEST_PG_CONTRACTS_ISOLATED=1` + `*_test` 库守卫，测毕 DROP）。审计档
+> `docs/audit/2026-11-01-模型可信度审计轮-共识门死锁与rollup同源.md`。
+
+★ **通用式一（★★★★）——单测构造的前置态必须是「落盘方真的会写出的形态」**：测「A 轮的输出
+能否被 B 轮接住」这类链路判据时，A 轮的输出形态必须取自**落盘方的真实写法**，不是「语义上
+等价」的手造结构（verified 落盘必然 streak≥K，`{verified, streak:1}` 语义看着对、生产永不出现
+⇒ 断言恒过、死锁潜伏两轮）。
+**How to apply**：写链路断言前先回答「这个输入值是哪行代码写出来的」；答不出生产者的前置态
+一律按「自证式测试」处理，改成从真实落盘函数走一遍拿形态。
+
+★ **通用式二（★★★★）——跨层字段必须有真库往返腿**：单元测试直接构造内存对象 ⇒ **不走
+读端** ⇒ 「读端少读一个字段」的变异它们结构性测不到（本轮变异臂 B 实测全绿）；只有
+「写→真库→读→再用」的端到端腿能让读端断言长牙。
+**How to apply**：凡是「写入方塞进 evidence/jsonb/扩展列、读取方 SELECT 带出」的字段，
+至少一条真库（或等价往返）测试钉住读出形态；集成测试的隔离与守卫照搬
+bg/provider_error_aggregator_integration_test.go（`TEST_PG_CONTRACTS_ISOLATED=1` + 库名
+`*_test` 后缀硬校验）。
+
+★ **通用式三（★★★）——多列独立聚合可能拼出数据里不存在的组合**：`MIN(a)` 与 `MIN(b)`
+各自取各自的最小 ⇒ 组合行可能任何一行都不是；「取最差那条」语义必须 `DISTINCT ON` 整行取
+（或窗口函数），且排序键用显式 CASE 枚举，**字典序对齐是巧合不是契约**。
+**How to apply**：聚合多列语义成「一条记录」时，逐列问「这一列的最值来自哪一行」；答案不是
+同一行 ⇒ 重写成整行选取。
+
+★ **通用式四（★★）——同一写回面的两条触发路径必须共享防误写过滤**：定时路径加了
+「只写本轮扫到的行」的过滤，手动单点路径传 nil 退回全量 ⇒ 防误写在第二条路径上失效。
+**How to apply**：给写回面加过滤参数时 grep 全部调用点逐一对齐；「单点/手动/管理面触发」
+是漏对齐的高发位。
+
+★ **通用式五（★）——新增异常常量的同一次提交要带上消费面**：后端新增 Anomaly 常量而
+前端映射表与语言包没跟上 ⇒ 命中时用户裸看 snake_case（内部标识泄漏族，§431 同族）；
+「拉了数据但没渲染」是死消费——API 面保留、消费面收口，别让每次刷新白付一次聚合查询。
+**How to apply**：加 `Anomaly*`/状态常量时同步 grep 前端 `anomalyLabel` 类映射与
+8 语种键；新端点先确认有真实渲染方再接进 load()。
+
+★ **同族**：★ [[共享工作树提交纪律]] · ★ [[web-i18n-value-ratchet-traps]] ·
+★ §599（`_windows` 文件名 = GOOS 约束）
+
+★ **证据**：2026-11-01 llm-gateway-go —— 审计档
+`docs/audit/2026-11-01-模型可信度审计轮-共识门死锁与rollup同源.md`；变异臂 3/3 检出
+（每臂还原 md5 逐字一致）；真库腿 = 本地一次性 PG17（credibility_rollup_test，测毕 DROP）。

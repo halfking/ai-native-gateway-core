@@ -79,6 +79,8 @@ export default {
     capability_peer_sample_too_small: 'Too few comparison nodes for this model',
     identity_probe_failed: 'The identity probe request failed',
     identity_probe_empty_response: 'The identity probe got no answer',
+    identity_passive_mismatch: 'A model mismatch showed up in real traffic (passive evidence)',
+    consistency_passive_drift: 'A fingerprint drift showed up in real traffic (passive evidence)',
   },
 
   detail: {

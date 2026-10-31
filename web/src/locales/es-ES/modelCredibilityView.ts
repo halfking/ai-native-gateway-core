@@ -79,6 +79,8 @@ export default {
     capability_peer_sample_too_small: 'Muy pocos nodos de comparación para este modelo',
     identity_probe_failed: 'La sonda de identidad falló',
     identity_probe_empty_response: 'La sonda de identidad no recibió respuesta',
+    identity_passive_mismatch: 'Se detectó una discrepancia de modelo en tráfico real (evidencia pasiva)',
+    consistency_passive_drift: 'Se detectó un cambio de huella en tráfico real (evidencia pasiva)',
   },
 
   detail: {

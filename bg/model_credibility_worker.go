@@ -257,8 +257,11 @@ func (w *ModelCredibilityWorker) ScanNode(ctx context.Context, credentialID int6
 		return nil, err
 	}
 	// ★ 同 ScanAll：汇总用独立 ctx（单点 trigger 的请求 ctx 取消不应连带取消落库）。
+	// ★ 传该节点自己的 target（2026-10-31 审计轮修复）：传 nil 会走全量路径，
+	// 把判定表里所有历史残留行（已下线/已移出特色清单的模型）原样重写一遍
+	// —— 正是 ScanAll 注释里防的那个坑，单点触发不该放大到全量。
 	rollupCtx, rollupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	if _, err := scanner.Store.WriteProviderQualityProfiles(rollupCtx, nil); err != nil {
+	if _, err := scanner.Store.WriteProviderQualityProfiles(rollupCtx, []modelcredibility.NodeTarget{*target}); err != nil {
 		slog.Warn("model credibility: write provider quality profiles failed", "error", err)
 	}
 	rollupCancel()
