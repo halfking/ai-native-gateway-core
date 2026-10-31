@@ -109,8 +109,10 @@ type Instance struct {
 	Error        string    `json:"error"`
 	// DroppedEvents surfaces the cumulative count of audit events rejected by a
 	// full queue (2026-10-31 211: 44250 dropped / 3h was only discoverable by
-	// reading logs). Filled by Manager.Status; Heartbeat ignores it.
-	DroppedEvents int64 `json:"dropped_events,omitempty"`
+	// reading logs). Filled by Manager.Status; Heartbeat ignores it. No
+	// omitempty: an explicit 0 proves the counter is wired (absence on old
+	// binaries is ambiguous with a silent zero).
+	DroppedEvents int64 `json:"dropped_events"`
 }
 
 // Store never creates schema. Provision SchemaSQL using the existing migration path.
