@@ -264,13 +264,13 @@ func (s *RedisStore) LearnedParams(ctx context.Context, key LearnedKey) []string
 	if err != nil {
 		return nil
 	}
-	cutoff := s.nowFn().Add(-learnedTTL())
+	now := s.nowFn()
 	set := map[string]bool{}
 	for _, rec := range all {
 		if rec.Trigger != TriggerParamRejected || rec.Resolved || rec.Param == "" {
 			continue
 		}
-		if rec.RecoveredCount == 0 || rec.LastSeen.Before(cutoff) {
+		if rec.RecoveredCount == 0 || rec.LastSeen.Before(now.Add(-learnedWindow(&rec))) {
 			continue
 		}
 		if rec.ProviderID != key.ProviderID ||

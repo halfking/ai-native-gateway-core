@@ -124,6 +124,37 @@ func restoreExtensions(out map[string]any, req *InternalRequest, targetProtocol 
 			}
 		}
 
+		// 参数兼容静态化轮（2026-11-01）：chat 线出站的顶层 reasoning 对象
+		// 裁决。四腿实机矩阵（docs/audit/2026-11-01-参数兼容静态化轮-
+		// 跨端点reasoning实证.md）：nvidia 硬 400（registry RejectedBy）/
+		// zhipu·Ark 静默忽略（意图会无声丢失，翻译成 reasoning_effort）/
+		// OpenRouter 原生生效（保留对象；双表达同发时对象内 effort 让位，
+		// 旋钮保留——冲突值 400 类被静态消除）。Decide 看不到出站 body
+		// 状态（out 是否已有 reasoning_effort）也没有方言翻译粒度，
+		// 与 thinking/stream_options 特例同款模式收在这里。
+		if key == "reasoning" && targetProtocol == ProtocolOpenAIChat {
+			_, hasUnderscoreEffort := out["reasoning_effort"]
+			outKey, outVal, action, lossReason := paramreg.ReasoningObjectChatDecision(val, hasUnderscoreEffort, dst)
+			switch action {
+			case paramreg.ActionSkip:
+				continue
+			case paramreg.ActionDrop:
+				ReportProtocolLoss("", key, req.SourceProtocol, targetProtocol, lossReason,
+					"top-level reasoning object dropped by target-dialect policy on the openai-chat wire",
+					map[string]any{
+						"source_dialect": string(src),
+						"target_dialect": string(dst),
+					})
+				continue
+			case paramreg.ActionRestore:
+				if _, exists := out[outKey]; exists {
+					continue
+				}
+				out[outKey] = preservedRawValue(outVal)
+				continue
+			}
+		}
+
 		// r1026（2026-10-13）：stream_options 是 openai-chat 线格式专属参数，
 		// Responses / Anthropic / Gemini 线格式均无此字段。chat 入向的
 		// stream_options.include_usage（AI-SDK 流式恒发）经 KindPortable 透传

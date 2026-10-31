@@ -73,7 +73,16 @@ var specs = []FieldSpec{
 		Note: "Chat Completions 顶层；Responses 嵌在 text.verbosity"},
 	{Name: "web_search_options", Kind: KindIRHandled, IRPath: "WebSearchOptions"},
 	{Name: "prompt_cache_key", Kind: KindIRHandled, IRPath: "PromptCacheKey",
-		Note: "Codex CLI 依赖此字段做缓存命中，丢弃会显著抬升成本"},
+		// 2026-11-01（参数兼容静态化轮）：nvidia NIM 对该字段硬 400
+		// 「Validation: Unsupported parameter(s): `prompt_cache_key`」
+		// （生产 reqanom 台账 2026-10-29/30 z-ai/glm-5.3-flash 两条）。
+		// chat 入向该字段被 parse_openai 消费进 IR（不在 Extensions），
+		// serialize_openai 无方言门控恒发射 ⇒ RejectedBy 对主线不生效，
+		// 仍由 reqprobe 学习剥参兜底（TTL 退避后频次受控）；登记在此
+		// 供跨协议入向（anthropic/gemini 客户端的 Extensions 腿）与
+		// 序列化侧方言门控立项（遗留卡）引用。
+		RejectedBy: []Dialect{DialectNVIDIA},
+		Note:       "Codex CLI 依赖此字段做缓存命中，丢弃会显著抬升成本。nvidia NIM 硬 400（2026-10 生产台账），主线由 reqprobe 兜底"},
 	{Name: "safety_identifier", Kind: KindIRHandled, IRPath: "SafetyIdentifier"},
 	{Name: "truncation", Kind: KindIRHandled, IRPath: "Truncation"},
 	{Name: "previous_response_id", Kind: KindIRHandled, IRPath: "PreviousResponseID"},
@@ -209,7 +218,26 @@ var specs = []FieldSpec{
 	{Name: "reasoning_effort", Kind: KindIRHandled, IRPath: "Reasoning.Effort",
 		Note: "枚举各厂商不一致：DeepSeek low|high|max / GLM 7 档 / Grok none|low|medium|high / Ark minimal|low|medium|high。须按目标能力收窄"},
 	{Name: "reasoning", Kind: KindIRHandled, IRPath: "Reasoning",
-		Note: "OpenAI Responses {effort,summary,context,mode}；OpenRouter {effort,max_tokens,exclude,enabled}，其中 effort 与 max_tokens 互斥"},
+		// 2026-11-01（参数兼容静态化轮，跨端点实证 docs/audit/
+		// 2026-11-01-参数兼容静态化轮-跨端点reasoning实证.md）：顶层
+		// reasoning 对象在 openai-chat 线格式上的三种上游行为——
+		//   ① nvidia NIM 硬 400「Unsupported parameter(s): `reasoning`」
+		//     （生产 reqanom 台账 2026-10-28~31 连日复发）→ RejectedBy；
+		//   ② zhipu(glm-5.3)/Ark(glm-5-2) 宽容解析但**静默忽略**（对象形态
+		//     effort=minimal 与基线无异；reasoning_effort=minimal 确定性归零
+		//     思考）→ 意图会无声丢失，由 extensions_restore 的 chat 腿
+		//     翻译（ReasoningObjectChatDecision）补 reasoning_effort；
+		//   ③ OpenRouter **原生接受且真生效**（对象 effort 高/低档带可分辨；
+		//     双表达同发 200、冲突值 400「…are both provided with
+		//     conflicting values」）→ 对象原样保留（exclude/max_tokens/
+		//     enabled 旋钮仅此方言有意义）。
+		// Kind 必须维持 IRHandled：IRHandledFields 驱动 TransportIR 侧
+		// isStandardField（fields.go），改 Kind 会把 reasoning 移出该
+		// 集合、改变 ExtensionsBag 提取面。chat 线的方言裁决在
+		// extensions_restore 特例（thinking/stream_options 同款模式），
+		// 经本行 RejectedBy 做硬拒第一优先级。
+		RejectedBy: []Dialect{DialectNVIDIA},
+		Note:       "OpenAI Responses {effort,summary,context,mode}；OpenRouter {effort,max_tokens,exclude,enabled}，其中 effort 与 max_tokens 互斥。chat 线上 nvidia 硬 400 / zhipu·Ark 静默忽略 / OpenRouter 原生生效（2026-11-01 四腿实证）"},
 	{Name: "thinking", Kind: KindTranslatable, IRPath: "Thinking/Reasoning",
 		Translate: translateThinking,
 		// r1021（2026-10-13，grok-4.6/vapeur.ai 实测）：客户端带
@@ -234,7 +262,7 @@ var specs = []FieldSpec{
 		// 维持硬拒。
 		RejectedBy: []Dialect{DialectMistral,
 			DialectOpenRouter, DialectVLLM, DialectOllama, DialectGemini,
-			DialectQwen},
+			DialectQwen, DialectNVIDIA},
 		RejectedByUnknown: true,
 		Note:              "取值分歧：Anthropic enabled|adaptive|disabled / DeepSeek·GLM·Kimi enabled|disabled / Ark 多 auto / MiniMax 仅 adaptive|disabled（无 enabled；2026-09 起上游拒收 enabled，硬 400）"},
 
@@ -250,6 +278,12 @@ var specs = []FieldSpec{
 		// llmgw:reqanom 三条），拒绝理由同 r1021 的 thinking：qwen/vllm
 		// 专属旋钮不是未登记字段，不适用 fail-open。qwen 意图经
 		// thinking 翻译路径（extensions_restore 按协议提升）保留。
+		// 2026-11-01（参数兼容静态化轮）：DialectNVIDIA 进 RejectedBy——
+		// 该方言登记后 dst 不再落 Unknown，RejectedByUnknown 对它失效；
+		// nvidia NIM 硬 400「Unsupported parameter(s): `enable_thinking`」
+		// 有生产台账实证（2026-10-28/29 两条），不补登记会把 unknown-relay
+		// 时代已裁剪的字段重新放进 nvidia 请求体（回归）。
+		RejectedBy:        []Dialect{DialectNVIDIA},
 		RejectedByUnknown: true,
 		Note:              "Qwen 顶层布尔；开源权重模型带 thinking 时只能流式调用。P5 完成前须 Portable"},
 	{Name: "thinking_budget", Kind: KindPortable,

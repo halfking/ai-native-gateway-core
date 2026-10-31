@@ -56,6 +56,14 @@ const (
 	DialectOpenRouter Dialect = "openrouter"
 	DialectVLLM       Dialect = "vllm"
 	DialectOllama     Dialect = "ollama"
+	// DialectNVIDIA（2026-11-01 参数兼容静态化轮）：NVIDIA NIM
+	// (integrate.api.nvidia.com) 是 openai-chat 线格式上带 pydantic 严格
+	// 校验器的厂商方言——未登记前 catalog "nvidia" 落 DialectUnknown
+	// fail-open，thinking/enable_thinking/reasoning/prompt_cache_key 全靠
+	// reqprobe 4xx 剥参学习兜底（每个 TTL 窗口一轮 400 往返）。登记后
+	// r1021 级硬拒字段按方言裁剪。注册动机与四天生产台账证据见
+	// registry.go 各字段 RejectedBy 注释。
+	DialectNVIDIA Dialect = "nvidia"
 )
 
 // AllDialects 是全部已建模方言，供测试与 admin 展示使用。
@@ -63,7 +71,7 @@ var AllDialects = []Dialect{
 	DialectOpenAIChat, DialectResponses, DialectAnthropic, DialectGemini,
 	DialectDeepSeek, DialectQwen, DialectGLM, DialectMiniMax, DialectKimi,
 	DialectArk, DialectGrok, DialectMistral, DialectOpenRouter, DialectVLLM,
-	DialectOllama,
+	DialectOllama, DialectNVIDIA,
 }
 
 // baseProtocol 把厂商方言映射回其底层线格式。
@@ -82,6 +90,7 @@ var baseProtocol = map[Dialect]Dialect{
 	DialectOpenRouter: DialectOpenAIChat,
 	DialectVLLM:       DialectOpenAIChat,
 	DialectOllama:     DialectOpenAIChat,
+	DialectNVIDIA:     DialectOpenAIChat,
 }
 
 // BaseProtocol 返回方言的底层线格式。一等协议方言返回自身。
@@ -137,6 +146,12 @@ var catalogToDialect = map[string]Dialect{
 	"openrouter": DialectOpenRouter,
 	"vllm":       DialectVLLM,
 	"ollama":     DialectOllama,
+	// "nvidia"（2026-11-01 参数兼容静态化轮）：NVIDIA NIM 严格校验器方言。
+	// 未登记前 catalog "nvidia" 恒落 DialectUnknown，r1021 级硬拒字段
+	// （thinking/reasoning/enable_thinking）只能靠 reqprobe 每 TTL 窗口
+	// 一轮 400 剥参兜底（llm_gateway reqanom 台账 2026-10-28~31 连日
+	// 复发实证）。catalog code 单一取值（providers 表 id=18）。
+	"nvidia": DialectNVIDIA,
 }
 
 // DialectForCatalogCode 把 provider catalog code 解析为方言。

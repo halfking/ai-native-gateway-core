@@ -146,3 +146,98 @@ func TranslateThinkingForProtocol(value json.RawMessage, protocol string) (strin
 	}
 	return "", nil, false
 }
+
+// reasoningEffortTranslateDialects 是「reasoning_effort 下划线形态实证生效」
+// 的 openai-chat 方言集合（2026-11-01 参数兼容静态化轮四腿实机矩阵，
+// docs/audit/2026-11-01-参数兼容静态化轮-跨端点reasoning实证.md §二）：
+//   - GLM（zhipu glm-5.3 coding 端点）：low/high 档带 3 倍可分辨，
+//     minimal 200 生效（rt 201 vs low 带 132~489 vs high 带 814~2365）；
+//   - Ark（volcengine glm-5-2）：minimal 确定性归零（rt=0 三连），
+//     low/high 带 1071~1692；
+//   - DeepSeek / Grok：registry reasoning_effort 行登记的枚举厂商
+//     （值域由 paramguard fixReasoningEffort 按能力表出站钳制）；
+//   - OpenAIChat（openai/azure 原厂）：reasoning_effort 是 o 系列的
+//     规范拼写。
+//
+// 不在集合内的方言（MiniMax/Kimi/Qwen/Mistral/VLLM/Ollama）维持对象
+// 原样透传——它们对对象的静默忽略是既有语义，翻译面若枚举未证实反而
+// 可能引入新 400（今天 200 的请求不能变红）。
+var reasoningEffortTranslateDialects = map[Dialect]bool{
+	DialectGLM:        true,
+	DialectArk:        true,
+	DialectDeepSeek:   true,
+	DialectGrok:       true,
+	DialectOpenAIChat: true,
+}
+
+// ReasoningObjectChatDecision 裁决 openai-chat 出站 body 上的顶层
+// reasoning 对象（extensions_restore 特例，2026-11-01 参数兼容静态化轮）。
+//
+// 背景：parse_openai 不消费对象形态（只认 reasoning_effort），chat 入向
+// 的对象落 Extensions 后按 Decide（KindIRHandled、无 Dialects）原样还原
+// ——于是 nvidia 吃 400、zhipu/Ark 把思考意图无声吞掉、OpenRouter 上
+// 双表达冲突值直接 400。四腿实机矩阵给出三条静态事实：
+//
+//  1. reasoning_effort 下划线在全部四腿都生效（nvidia 集成层面接受、
+//     zhipu/Ark 档带可分辨、OpenRouter 与对象形态等效）——「双表达同发
+//     只保留下划线」四腿皆安全（任务问题 2 的结论，无供应商只认对象）；
+//  2. 顶层对象在 chat 线**不是普遍被拒**：nvidia 硬 400（registry
+//     RejectedBy 第一优先级裁决）、zhipu/Ark 宽容解析但静默忽略、
+//     OpenRouter 原生接受且真生效（任务问题 1 的结论）；
+//  3. 对象可以携带下划线表达不了的旋钮（OpenRouter 的 exclude /
+//     max_tokens / enabled）⇒ 双表达同发时只剥对象内 effort、保留旋钮，
+//     既消除 OpenRouter 冲突 400 又不丢语义。
+//
+// outHasUnderscoreEffort 报告出站 body 是否已有 IR 序列化器渲染的
+// reasoning_effort（客户端下划线经 parse_openai 进 IR.Reasoning 后由
+// serialize_openai 发射）。返回 (outKey, outVal, action, lossReason)：
+//   - ActionSkip：静默跳过（双表达且对象 effort-only——语义已由下划线承载）
+//   - ActionRestore：outKey/outVal 写入出站 body
+//   - ActionDrop：上报 loss（lossReason 进 ReportProtocolLoss 的 reason）
+func ReasoningObjectChatDecision(value json.RawMessage, outHasUnderscoreEffort bool, dst Dialect) (string, json.RawMessage, RestoreAction, string) {
+	// 硬拒第一优先级：registry reasoning 行的 RejectedBy（nvidia NIM
+	// 「Unsupported parameter(s): `reasoning`」生产台账 2026-10-28~31）。
+	if spec := Lookup("reasoning"); spec != nil && spec.rejects(dst) {
+		return "", nil, ActionDrop, "rejected_by_target_dialect"
+	}
+
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(value, &obj); err != nil {
+		obj = nil
+	}
+	effortRaw, hasEffort := obj["effort"]
+
+	// 双表达同发：对象内 effort 恒让位（事实 1）。剥掉 effort 后剩旋钮
+	// 则保留旋钮对象（事实 3），剩空则整对象静态收口。
+	if outHasUnderscoreEffort && hasEffort {
+		delete(obj, "effort")
+		if len(obj) == 0 {
+			return "", nil, ActionSkip, ""
+		}
+		out, err := json.Marshal(obj)
+		if err != nil {
+			return "", nil, ActionSkip, ""
+		}
+		return "reasoning", out, ActionRestore, ""
+	}
+
+	// 无下划线：对象是 effort 意图的唯一载体。翻译方言集把 effort 提升为
+	// reasoning_effort（zhipu/Ark 否则静默吞意图；值域由 paramguard 按目标
+	// 能力钳制）；effort 表达不了的（旋钮-only / 非对象标量）按 loss 上报
+	// ——这些方言集成员对对象形态没有可用语义，静默透传只是「假装成功」。
+	// 保留方言集（OpenRouter 原生 / Unknown fail-open / 其余未证实方言）
+	// 原样透传，维持今日语义零回归。
+	if reasoningEffortTranslateDialects[dst] {
+		if hasEffort {
+			var effort string
+			if err := json.Unmarshal(effortRaw, &effort); err == nil && effort != "" {
+				if enc, err := json.Marshal(effort); err == nil {
+					return "reasoning_effort", enc, ActionRestore, ""
+				}
+			}
+			return "", nil, ActionDrop, "reasoning_object_effort_not_expressible"
+		}
+		return "", nil, ActionDrop, "reasoning_object_not_expressible"
+	}
+	return "reasoning", value, ActionRestore, ""
+}
