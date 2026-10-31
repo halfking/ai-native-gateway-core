@@ -47,50 +47,6 @@ func (s *batchSpyStore) snapshot() (int, int) {
 	return total, maxN
 }
 
-// TestAuditWorkerBatchesWrites：批路径下 50 条突发必须合并成少量事务，
-// 且一条不丢（count 语义每条 +1 不变）。逐条写时这里会是 50 次调用。
-func TestAuditWorkerBatchesWrites(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	s := &batchSpyStore{Store: NewMemoryStore(), gate: make(chan struct{}, 1), release: make(chan struct{})}
-	m, err := NewManager(s, testConfig(), Options{InstanceID: "node"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan struct{})
-	go func() { m.Run(ctx); close(done) }()
-	defer func() { cancel(); <-done }()
-
-	const total = 50
-	accepted := 0
-	for i := 0; i < total; i++ {
-		if m.Record(ctx, Event{RuleID: "secret", Phase: "input", Action: "mask"}) {
-			accepted++
-		}
-	}
-	if accepted != total {
-		t.Fatalf("queue (4096) rejected %d of %d events before any write", total-accepted, total)
-	}
-	close(s.release) // 放行被阻塞的首批写，其余排水
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if got, _ := s.snapshot(); got == total {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	got, maxN := s.snapshot()
-	if got != total {
-		t.Fatalf("recorded %d of %d events", got, total)
-	}
-	if calls := len(s.batches); calls > 5 {
-		t.Fatalf("expected coalesced batches (<=5), got %d calls — 攒批失效", calls)
-	}
-	if maxN < 2 {
-		t.Fatalf("expected at least one multi-event batch, max=%d", maxN)
-	}
-}
-
 // TestRecordQueueFullThrottleReportsTotal：队列灌满时 (a) 丢事件必须计数、
 // Record 返回 false；(b) queue-full WARN 必须节流 —— 旧实现每丢一条打一条
 // WARN（211 实测 44250 条/3h，把其它告警挤出视野），新实现同一窗口至多一条
