@@ -4,6 +4,45 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-01 24h 审计轮：放大类闭案推进（tick 未到）+ dsn_exclusive 共享台账 + all-0-candidates 闭卡**
+> （goal 会话，2026-10-31 23:22 起）：★ 承接 48h 轮全部遗留。⇒ ★★ **② 优先收口：闭案判据
+> 物理 未到**——`automation-43481e79`（明晚 23:30）runCount=0 未执行；自己跑同款 lag 分桶
+> SQL：新槽 `llm-gateway-211-a`（StartedAt=10-31 20:59:40+08）窗口内仅 **4 行启动探针
+> lt10min=0/0** ✓，但**启动探针 ≠ 24h tick**（判据=11-01 20:59 未到），本轮**不写闭案**、自动化
+> 原样保留（fire 时 tick 已过 2.5h）；近 24h 分布与 48h 档逐字一致零新增。⇒ ★★★★
+> **③ dsn_exclusive 结构项落地（`e619cef44`）**：共享台账
+> `scripts/audit/dsn_exclusive_registry.tsv`（9 条 name⇥reason），ursmcheck 字面量豁免缩成
+> 5 条 + `loadDsnExclusiveRegistry` 装载牙齿 + 门 1 **死条目棘轮**（TSV 名字仓内零真库腿
+> 引用 ⇒ 红）；sql/schema 旧单向正则重写为 `TestDestructiveDBsRegisteredInSharedDsnExclusiveTSV`
+> **双向对账**：(a) destructiveGuardedDB ⊆ TSV；(b) **TSV ∩ 扫描器形状 ⊆ 两车道并集**
+> （destructiveGuardedDB ∪ dedicatedSessionDB）——★ 第一版「TSV ⊆ lanes」全量断言被
+> 5 条 `_DSN` 后缀名字打红：主门形状表（抽包级 `isDBCredentialEnvName` 共用）不含
+> `_DSN` ⇒ 它们对主门不可见从未需要车道；形状表扩到 `_DSN` 时对账门强制补车道。
+> **变异臂 4/4 检出**（删行两侧红/删文件两侧装载器红/摘注册表条目车道对账红/假行
+> 死条目棘轮红），还原 md5 逐字一致。⇒ ★★★★ **④ all-0-candidates 闭卡**：「~8 条
+> available=t」是**目录属性不是路由判据**——`v_routable_credential_models.is_routable`
+> 折叠 8 道闸（含 node_probe_state 冷却窗），15 绑定逐条归因后**能进 DB 候选层仅 3 条**
+> （cred 3/49/50）；「4 候选」= 事故窗视图闸时变输出，**无候选上限（SQL 无 LIMIT）、
+> 无 URSM 截断** ⇒ 整池真红 fail-fast 正确，原卡预评估的语义变更**前提不成立无需提案**；
+> 观测面可选改进（属主裁决）：DB 层排除原因进日志。⇒ ★★★★ **① guards 抓到并修正一处
+> 上游真红**：`TestAdminRoutesSnapshotMatchesGenerator`（快照 1519 vs 生成器 1524）——
+> `426393659` 改 admin/handler.go 未重生成快照 ⇒ 该门只在 ursmcheck（test-short 排除的
+> 慢包）⇒ **红潜伏了半天直到第一次跑 guards**；按生成器口径重生成（290 行 file:line
+> 对齐，行数 598 不变）。test-short 351 包全绿（钉 73c8c8fd5 worktree；坑：worktree 里
+> make 的 PATH 要显式 export `~/sdk/go/bin`，首跑 RC=127）；ursmcheck 全包 ~894.8s ⇒
+> **自设 580s 超时把 hollowout 慢门掐成假红，超时口径必须用 Makefile 的 1800s**。
+> ⇒ ★★ **⑤ 三台本轮不重部署（偏离固定流程，理由入档）**：`git diff 28e0076ef..HEAD`
+> 实证**服务端代码零增量**（只新增独立工具/文档/deploy-seamless-docker.sh）；211 重部署
+> 会把 tick 锚点推迟一天砸掉闭案（**部署决策的输入还有「有没有以进程生命期为锚的验收
+> 在飞」**）；245/154 重部署为纯搅动；`merge-base --is-ancestor` 实证 926 已在运行树
+> （旧「待部署」账已消解）。巡检：245/154 槽位 active（2922/2923-28e0076e）、无窗口分支、
+> **154 acc-nginx 仍 Restarting 登记不擅动**。⇒ ★ 并行会话中途落盘（domains/streaming
+> 3 文件 + menu-config.json，后自己提交为 9485f53bc/d12ebe07b/3c4f9d522 并推送，
+> **LESSONS §601 被其占用 ⇒ 本轮取 §602**）；全量读数分两档：基线在钉住 worktree、
+> 主 checkout 只跑定向门并标注。⇒ 用户侧动作两项不代做：245 alertmanager webhook 静默 +
+> kb-importer 工具坏转义盲插。⇒ 审计档
+> `docs/audit/2026-11-01-24h审计轮-放大类闭案推进与dsn_exclusive共享台账.md`；
+> 通用式见 `LESSONS.md` **§603**（7 条）。
 > **2026-10-31 48h 审计轮：集成门 maas DSN 注册修复 + 满窗复测 + 日志慢SQL审计**
 > （goal 会话）：★ 承接第 12 轮 §5 遗留。⇒ ★★★★ **① 共享 checkout 上「全量测试绿」必须先
 > 回答「测的是哪棵树」**：合并 5 提交后 make test-short 首跑 2 红（sql/schema 集成门真红 +
