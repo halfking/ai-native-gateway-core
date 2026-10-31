@@ -28343,3 +28343,67 @@ main」间是否同源也要实证（`git log 运行树..HEAD -- <file>` 为空 
 PUT 后读回 enabled=true source=db + settings_kv prev_value=false +
 211-b 容器日志 `output_check_switch_changed`；sanitize_rule_events A/B 读数见审计档 §4；
 漏网路径行号复核（984/987 + output_sensitive.go:209-210）与运行树同源判据见审计档 §6。
+
+## §607 ·（取号：fetch 实测 origin/main 最高 §605、本地并行 WIP 在途占 §606 ⇒ 连号取 §607）2026-11-01 参数兼容静态化轮：跨端点 reasoning 实证 + DialectNVIDIA 登记 + reqprobe 退避（goal · 2026-11-01）—— ★★★★★ **「上游不拒」≠「上游接受」：宽容解析的静默忽略会把客户端意图无声吞掉**，比 400 更隐蔽（400 至少会被 reqprobe 学到、剥参、留台账；200-但-忽略什么都不留）；★★★★ **双表达裁决的判据是「哪边处处生效」，且必须找确定性读数**（reasoning_effort=minimal 归零思考 0/0/0 是判据；单跑 token 计数噪声大到把 high 判成 low）；★★★★ **给 catalog 登记新方言的那一刻，RejectedByUnknown 族字段要逐条重审**（dst 从 Unknown 变 named 的语义迁移会把已裁剪字段悄悄放回请求体）；★★★ **改共享 Kind 元数据前先枚举派生集合的消费方**；★★★ **固定 TTL 的再探测成本落在真实用户请求上**（低流量腿受害最大）⇒ 退避优于静态分级表；★★ **凭据解密有合法同源路径**（生产库密文 + 仓内 DecryptAny + 本地临时文件），实机判读不必等用户递 key
+
+★ **通用式一（★★★★★）——「上游不拒」≠「上游接受」**：chat 线顶层
+`reasoning` 对象在四条腿上呈三种行为——nvidia NIM 硬 400（严格校验器，点名
+参数）；**zhipu/方舟 200-但-静默忽略**（对象形态 `effort:minimal` 与无参数基线
+无异、思考照常——对象被宽容解析后丢弃）；OpenRouter 原生接受且真生效
+（free 腿基线思考打满 4096 tokens，两种拼写都能压到 ~340）。若按「拒/不拒」
+二值化做静态裁剪，zhipu/方舟会被误判为「接受」，客户端的思考意图从此无声
+丢失且无任何台账可见。★ **How to apply**：给参数行为分类必须三值
+（硬拒 / 静默忽略 / 原生生效），判据用**档位分辨**（minimal vs high 的确定性
+读数），不是单次 200/400；静默忽略族的修法是**翻译**（提升成该方言认的
+拼写），不是裁剪也不是透传。
+
+★ **通用式二（★★★★）——双表达裁决找确定性判据**：「客户端同时发
+`reasoning{effort:E}` 与 `reasoning_effort=E`，只留后者安全吗」的回答靠
+「谁赢」的实机分辨：方舟腿 `reasoning_effort=minimal` 把思考**确定性归零**
+（reasoning_tokens=0/0/0）⇒ 冲突臂（对象 high + 下划线 minimal）测出 0/0/0
+= 下划线赢，一次判读顶 zhipu 腿的三次重复采样（zhipu 档带有 3~5 倍差但
+服务端动态思考噪声大，2/3 判读才敢下结论）。单跑一次 token 计数就把
+high 判成 low 的险情在本轮真实发生过（object_low 3114 > object_high 2462）。
+★ **How to apply**：参数效果判读先找**归零/打满**级别的确定性哨兵值，找不
+到才退回重复采样带比较；「噪声大到结论反转」本身就是「判据不够硬」的信号。
+
+★ **通用式三（★★★★）——登记新方言 ⇒ 重审 RejectedByUnknown 族**：给
+`catalogToDialect` 加 "nvidia" 后，所有 `RejectedByUnknown: true` 的字段
+（thinking / enable_thinking）对该方言的 `rejects()` 从 true 翻成 false——
+unknown-relay 时代被裁剪的字段会**悄悄回到请求体里**（nvidia NIM 400）。修法
+是把每个该族字段显式补进 `RejectedBy`（必须有该方言的硬 400 实证才补——
+本轮两条都有生产台账）。⇒ 反向同理：**摘掉一个方言的登记**会让 RejectedBy
+列表里的名字失活、退回 fail-open。★ **How to apply**：catalogToDialect 的
+每次增删，grep 一遍 `RejectedByUnknown` 全部持有人，逐条问「这个方言该不该
+接这个字段」；测试钉在 `rejects(named)==true` 上（变异臂 M2/M2b 靶）。
+
+★ **通用式四（★★★）——共享 Kind 元数据的派生消费方**：`reasoning` 的
+Kind 若从 IRHandled 改成 Translatable，`IRHandledFields()` 随之缩水 →
+TransportIR 侧 `isStandardField("reasoning")` 翻 false → ExtensionsBag
+提取面改变。生产虽未启用 TRANSPORT_IR（实测 0），仍按零风险原则维持 Kind、
+把方言裁决收进 extensions_restore 特例（thinking/stream_options 同款模式）。
+★ **How to apply**：动 registry 的 Kind/枚举前 `grep IRHandledFields`
+（及一切 `sync.OnceValue(参数reg.*)` 派生缓存）数清消费方，一条都不能漏。
+
+★ **通用式五（★★★）——固定 TTL 的探测成本形状**：学习式兜底「过期重探测」
+的成本不是均摊的——窗口一过，**下一个真实用户请求**就是探测器（400+剥参
+重试，时延翻倍、计入上游 4xx）；窗口内流量越低，探测占比越高。静态分级表
+（per-provider TTL）需要人工维护且与「上游某天支持了要尽快发现」冲突；
+**指数退避**（每次再探测证实仍被拒 → 窗口翻倍、封顶 16×、按指纹含 Day
+自然日重置）让被反复证实的拒绝指数降频、同时保留 base 窗口的再确认语义。
+★ **How to apply**：凡「每窗口付一次成本的再确认机制」，先问「成本落在谁
+头上」——落在真实请求上的，退避优于固定窗口，也优于需要养护的静态分级。
+
+★ **通用式六（★★）——凭据解密的合法同源路径**：实机对照上游行为需要真
+key 时，从生产库 `secret_ciphertext` 取信封、用**仓内同一个**
+`secret.DecryptAny` + 容器 env 双密钥本地解密（一次性工具 + 权限 600 临时
+文件 + 全程不回显），与网关运行时同源 ⇒ 解密成功即格式可信。比等用户递
+key 快，比猜格式稳。★ **How to apply**：解密器 import 仓内 secret 包而非
+自实现 crypto；key/明文只进 /tmp 且 chmod 600；转录与提交物里只留
+prefix/suffix 预览。
+
+★ **本轮事实补充**：OpenRouter 双表达冲突是**端点级**校验（欠费 402 账户上
+仍 400 = 校验先于计费）；zhipu `reasoning_effort=minimal` 接受且生效（
+registry「GLM 7 档」实证补笔）；nvidia 直探被组织级 429 挡死时，生产 reqanom
+台账是合法替代证据源（四天 param=reasoning 连证）；volcano coding 端点
+CodingPlan 订阅失效 + normal 端点 key 401 = 两腿凭据皆死（处置属运维）。

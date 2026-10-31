@@ -151,3 +151,30 @@ func TestRedisStoreLearningTTLWindow(t *testing.T) {
 		t.Fatalf("expired rule still applies: %v", got)
 	}
 }
+
+// TestRedisStoreLearningBackoffWindow（2026-11-01 参数兼容静态化轮）：钉
+// RedisStore.LearnedParams 的退避接线——cutoff 必须用 learnedWindow（按
+// RecoveredCount 指数放宽），不是固定 learnedTTL()。变异臂：redis.go 侧
+// cutoff 退回固定 learnedTTL() ⇒ RC=3/3h 臂红（固定 1h 窗口下已过期）。
+func TestRedisStoreLearningBackoffWindow(t *testing.T) {
+	s, _ := newTestRedisStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 11, 1, 8, 0, 0, 0, time.Local)
+	s.nowFn = func() time.Time { return base }
+	key := LearnedKey{ProviderID: 18, OutboundModel: "z-ai/glm-5.3-flash", ActualWire: "openai-completions"}
+	if _, err := s.Upsert(ctx, Record{ProviderID: 18, ProviderCode: "nvidia", OutboundModel: "z-ai/glm-5.3-flash",
+		Protocol: "openai-completions", Trigger: TriggerParamRejected, Param: "reasoning", HTTPStatus: 400,
+		RecoveredCount: 3}); err != nil {
+		t.Fatal(err)
+	}
+	// 直接校时到 3h 后：RC=3 ⇒ 窗口 4h ⇒ 仍应学习（退避接线生效）。
+	s.nowFn = func() time.Time { return base.Add(3 * time.Hour) }
+	if got := s.LearnedParams(ctx, key); len(got) != 1 {
+		t.Fatalf("RC=3 at +3h should stay learned under 4h backoff window: %v", got)
+	}
+	// 5h 后：越过 4h 窗口 ⇒ 过期。
+	s.nowFn = func() time.Time { return base.Add(5 * time.Hour) }
+	if got := s.LearnedParams(ctx, key); len(got) != 0 {
+		t.Fatalf("RC=3 at +5h should expire (4h backoff window): %v", got)
+	}
+}

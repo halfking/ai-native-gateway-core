@@ -4,6 +4,44 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-01 参数兼容静态化轮：跨端点 reasoning 实证 + DialectNVIDIA 登记 + reqprobe 退避**
+> （goal 会话）：★ 承接 nvidia 直通事故轮（learnedTTL 1h）与 r1021 教义。
+> ⇒ ★★★★ **四腿实机矩阵（OpenRouter/zhipu/方舟/nvidia，凭据自 211 生产库
+> 本地解密）**：(1) **「chat 线顶层 reasoning 对象普遍被拒」不成立——三行为并存**：
+> nvidia NIM 硬 400「Unsupported parameter(s): \`reasoning\`」（直探被组织级 429 挡，
+> 证据取 reqanom 台账四天连证）；**zhipu/方舟 200-但-静默忽略**（对象形态
+> effort=minimal 与基线无异=被吞；意图无声丢失比 400 更隐蔽）；OpenRouter
+> **原生生效**（free 腿基线思考打满 4096，两种拼写都压到 ~340=都生效）。
+> (2) **「双表达只留下划线」成立**：四腿全部认 reasoning_effort，**没有只认
+> 对象的供应商**；OpenRouter 双表达冲突值端点级 400（欠费 402 账户上仍 400=
+> 校验先于计费），同值 200；zhipu/方舟冲突 200 且**下划线赢**（方舟判据是
+> 确定性的：reasoning_effort=minimal 归零思考 0/0/0，冲突臂 0/0/0）。
+> ⇒ ★★★★ **r1021 登记落地**：新 `DialectNVIDIA`（catalog "nvidia" 登记前恒
+> Unknown fail-open）+ `reasoning` 行 RejectedBy[NVIDIA] + **thinking/
+> enable_thinking 补 NVIDIA**（★ 方言登记后 dst 不再是 Unknown，RejectedByUnknown
+> 对它失效——不补会把 unknown-relay 时代已裁剪的字段重新放进 nvidia 请求体，
+> 这是加方言时的隐藏回归面）+ `ReasoningObjectChatDecision`（chat 线特例：
+> 硬拒查 registry/双表达剥对象内 effort 留旋钮（exclude/max_tokens 仅
+> OpenRouter 有意义）/无下划线时翻译方言集 {GLM,Ark,DeepSeek,Grok,OpenAIChat}
+> 把对象提升成 reasoning_effort——zhipu/方舟否则静默吞意图；值域由 paramguard
+> 出站钳制兜底）。**Kind 保持 IRHandled 不改 Translatable**：IRHandledFields
+> 驱动 TransportIR 侧 isStandardField（211 实测 TRANSPORT_IR 未启用，仍按
+> 零风险原则）。⇒ ★★ **TTL 复核：不做 (provider,model) 静态分级表**
+> （LearnedKey 本就是该粒度；静态表需人工维护不自适应）⇒ **指数退避**：
+> learnedWindow = base × 2^(RecoveredCount−1)，上限
+> LLM_GATEWAY_REQPROBE_LEARNED_TTL_BACKOFF_MAX 步（默认 4=16×，0=关），
+> memory/redis 两 cutoff 同换；被反复证实的拒绝探测频率指数下降
+> （nvidia glm ≈5 次/3h → ≈5 次/天档），指纹含 Day 退避自然日重置。
+> ⇒ ★ **变异臂 9/9 检出**（registry 三行/翻译集/特例整块/下划线探测/退避指数/
+> memory+redis cutoff），还原 md5 逐字一致；三包 + paramguard + transformation +
+> executors 全绿。⇒ ★ **实测坑**：volcano coding 端点 CodingPlan 订阅失效 +
+> normal 端点 key 401（两腿凭据皆死，方舟腿用 cred 11 打 /api/v3 替代，处置属
+> 运维）；OpenRouter free 档仅 agentic harness 可用（403 拦截）；zhipu
+> reasoning_effort=minimal 枚举接受且生效（GLM「7 档」实证补笔）；
+> prompt_cache_key 的 serialize 侧方言门控留卡（chat 入向进 IR 恒发射，
+> RejectedBy 对主线不生效）。
+> ⇒ 审计档 `docs/audit/2026-11-01-参数兼容静态化轮-跨端点reasoning实证.md`；
+> 通用式见 `LESSONS.md` **§607**（§606 被并行会话在途占用，取号 provenance 在节首）。
 > **2026-11-01 输出合规总开关启用轮：管理面 PUT 热加载 + 验收④漏网路径登记**
 > （goal 会话）：★ 生产 `sanitize.output_check_enabled` 已由 false 经**管理面 PUT**
 > 置 **true**（02:43:52；`PUT /api/admin/sanitize-rules/output-check`，super_admin）——

@@ -43,6 +43,18 @@ import (
 // LLM_GATEWAY_REQPROBE_LEARNED_TTL 覆盖（Go duration，如 30m / 2h；非法
 // 值回退默认）。过期的代价是每个 (provider, model, wire) 每窗口多吃一跳
 // 400 剥参重试——换取参数兼容状态的持续再确认。
+//
+// 2026-11-01（参数兼容静态化轮 TTL 复核）：固定窗口对「低流量腿」的代价
+// 不成比例——窗口一过，**下一个真实用户请求**就成了探测器（400+剥参重试，
+// 时延翻倍并计入上游 4xx）。nvidia glm 生产实测每个固定窗口稳定复现
+// （reqanom 台账 2026-10-31 param=reasoning occ=5）。分级裁决：**不引入
+// 按 (provider, model) 的静态分级表**——LearnedKey 本就是
+// (providerID, outboundModel, actualWire) 粒度，静态表需要人工维护且
+// 无法自适应；改为**指数退避**：同一参数族每次「再探测后仍被拒且剥参
+// 成功」（RecoveredCount+1）就把下一窗口翻倍，上限
+// LLM_GATEWAY_REQPROBE_LEARNED_TTL_BACKOFF_MAX（步数，默认 4 ⇒ 最大 16×；
+// 0 = 关闭退避、恢复固定窗口语义）。被反复证实的拒绝探测频率指数下降，
+// 而上游一旦开始接受该参数，首轮窗口（base TTL）内就会重新发现。
 const defaultLearnedTTL = time.Hour
 
 var learnedTTL = sync.OnceValue(func() time.Duration {
@@ -55,6 +67,53 @@ var learnedTTL = sync.OnceValue(func() time.Duration {
 	}
 	return defaultLearnedTTL
 })
+
+// learnedBackoffMaxSteps 是退避步数上限（窗口 = base TTL × 2^步）。
+// env LLM_GATEWAY_REQPROBE_LEARNED_TTL_BACKOFF_MAX；0 关闭退避。上限 10
+// 硬封顶（2^10=1024×，防止 env 手滑把窗口推到年级）。
+const learnedBackoffHardCap = 10
+
+var learnedBackoffMaxSteps = sync.OnceValue(func() int {
+	v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REQPROBE_LEARNED_TTL_BACKOFF_MAX"))
+	if v == "" {
+		return 4
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 4
+	}
+	if n > learnedBackoffHardCap {
+		return learnedBackoffHardCap
+	}
+	return n
+})
+
+// learnedWindow 返回一条记录当前的学习有效窗口：base TTL 指数退避
+// （2026-11-01，见 learnedTTL 注释）。RecoveredCount 是该参数族当日
+// 「剥参重试成功」次数，第 k 次再探测成功后的窗口为 base × 2^(k-1)
+// （首次成功仍是 base，从第二次起翻倍）。退避关闭或 RecoveredCount≤1
+// 时恒等于 base TTL。
+func learnedWindow(rec *Record) time.Duration {
+	return learnedWindowWithSteps(rec, learnedBackoffMaxSteps())
+}
+
+// learnedWindowWithSteps 是退避窗口的纯函数形态（steps=0 即固定窗口），
+// 单测可不经 env 直接钉边界。
+func learnedWindowWithSteps(rec *Record, steps int) time.Duration {
+	base := learnedTTL()
+	if steps <= 0 || rec == nil || rec.RecoveredCount <= 1 {
+		return base
+	}
+	shift := rec.RecoveredCount - 1
+	if shift > steps {
+		shift = steps
+	}
+	window := base
+	for i := 0; i < shift; i++ {
+		window *= 2
+	}
+	return window
+}
 
 // MemoryMaxRecords 是内存实现的最大指纹数（lite 模式防膨胀上限）。
 const MemoryMaxRecords = 5000

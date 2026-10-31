@@ -178,7 +178,7 @@ func (m *MemoryStore) LearnedParams(_ context.Context, key LearnedKey) []string 
 	if !key.valid() {
 		return nil
 	}
-	cutoff := m.nowFn().Add(-learnedTTL())
+	now := m.nowFn()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	set := map[string]bool{}
@@ -187,7 +187,7 @@ func (m *MemoryStore) LearnedParams(_ context.Context, key LearnedKey) []string 
 		if rec.Trigger != TriggerParamRejected || rec.Resolved || rec.Param == "" {
 			continue
 		}
-		if rec.RecoveredCount == 0 || rec.LastSeen.Before(cutoff) {
+		if rec.RecoveredCount == 0 || rec.LastSeen.Before(now.Add(-learnedWindow(&rec))) {
 			continue
 		}
 		if rec.ProviderID != key.ProviderID ||
