@@ -16,7 +16,13 @@
 - guards 慢腿口径教训：ursmcheck 全包实测 ~894.8s（worktree 1800s 口径），自设 `-timeout=580s` 会把 `TestStructuredRegistryHollowoutReadersRejectEmptyRegistry`（子进程密集型）掐成假红 panic——**慢守卫包的超时必须用 Makefile 口径（1800s）**，自设超时的「红」先对照已知全量口径再定性。
 - worktree `web/` 先 `pnpm install --frozen-lockfile`（PNPM_RC=0，2.9s）再 `make guards`。
 - ★ 读数分两档注记：**基线全量读数（test-short 351 绿 + guards 抓红）在钉 `73c8c8fd5` 的干净 worktree 取得**；主 checkout 在本轮中段出现**并行会话 WIP**（`domains/streaming/` 3 文件 + 2，后由并行会话自己提交为 `9485f53bc`/`d12ebe07b`/`3c4f9d522` 并推送）⇒ 主 checkout 只跑定向门验证（§3/§5.2），如实标注。终态树（含并行 3 提交 + 本轮 `e619cef44`）的**全量复测**在 worktree@`e619cef44` 上重跑，读数见 §6。
-- ★ 本轮读数有效性注记：全量读数全部在钉住提交的干净 worktree 上取得；主 checkout 在本轮中段出现**并行会话 WIP**（`domains/streaming/{messages,request_meta,responses,native_pair_test}.go` + `web/public/menu-config.json` 5 文件，非本轮改动，不碰不还原）⇒ 主 checkout 上只跑了受影响两包的定向验证（§3），并如实标注「跑在含并行 WIP 的树上」。
+- ★ 本轮读数有效性注记：全量读数全部在钉住提交的干净 worktree 上取得；主 checkout 在本轮中段出现**并行会话 WIP**（`domains/streaming/` 3 文件 + 2，后由并行会话自己提交为 `9485f53bc`/`d12ebe07b`/`3c4f9d522` 并推送）⇒ 主 checkout 只跑定向门验证（§3/§5.2），如实标注。终态树全量复测见 §1.1/§6。
+
+### 1.1 终态树（`e619cef44`）复测的两处读数
+
+- **test-short：350 ok + 1 抖动**（`TestCheckGatewayRateLimit_StaticDataPlaneKeySkipsSharedRPM`，29.83s，判据=「两条进队协程只给 1ms 进队窗口后第三条必须被拒」）。**定性：负载抖动假红，非回归**——隔离重跑 `-count=3` 全绿 0.044s；两树间该路径生产代码零差异（diff 只 +11 行 `native_pair_test.go` 测试夹具）；失败发生时本机同时跑着 guards 慢腿 + 变异臂双 ursmcheck 全仓扫。**不擅动别人的时序测试**（1ms 窗口是它的设计），登记为「负载下已知的时序敏感点」。
+- **guards 再抓一处红（本轮自己引入的）**：`TestTsvHollowoutInventoryCoversEveryTsv`——仓内有**元清点门**「每份 `.tsv` 必须在 `tsv_hollowout_inventory.tsv` 登记读方并回答『掏空 ⇒ 读方红不红』」，新共享台账没登记 ⇒ 红。修法（`0d2b62454`）：登记 reader=ursmcheck 装载牙齿测试（行数下限 ⇒ 掏空必红）——**正是变异臂 M2 已证明的性质**；§595「清单本身也是清单」的又一实例：新增数据文件 = 新增登记册 ⇒ 元门必然来找你。
+- LESSONS 节号：并行识别轮批判审计已占 §602（已上 origin）⇒ 本轮按让位纪律取 **§603**；合并时 LESSONS 尾部双方新节按号序共存（临时 worktree 合并推送法——本地合并被并行未跟踪文件挡住）。
 
 ## §2 四步② 优先收口：放大类闭案（tick 未到，自动化保持）
 
@@ -26,7 +32,8 @@
   - total **4 行**（全部 20:59:42–53 的启动探针）：cred 4 `deepseek-v4-pro`（404）/ cred 8 `z-ai/glm-5.3`（410）/ cred 19 `deepseek-ai/deepseek-v4.1-flash`（429）/ cred 49 `deepseek-v4-pro`（404）；
   - **lt10min = 0 行 / 0 对** ✓；10-60min / 1-4h / ≥4h 桶全 0（窗内尚无第二轮）。
 - 近 24h 对照（10-30 20:59 → 10-31 20:59）：小时分布与 48h 档 §2.3 **逐字一致**（30/3/115/17/15/29/39/1/16/45），零新增异常；20 时尾桶 7 行 = 旧槽尾 3 行 + 新槽启动探针 4 行。
-- **判定的诚实边界**：闭案判据是「**当前槽 24h tick**（11-01 ~20:59）dup=0」——启动探针 ≠ 24h tick（第 12 轮原文判据）。tick 明晚才打，**本轮不写「放大类闭案」**；部分窗干净如实入档，终验由 `automation-43481e79`（明晚 23:30，tick 后 2.5h，无需等待循环）执行。启动探针目标数 30→16→4 的逐轮收缩与本轮归因：探针调度按「last_run+间隔到期」挑靶，19 时重开轮刚扫过大部 ⇒ 到期靶自然少；与放大类无关（lt10min=0）。
+- **判定的诚实边界**：闭案判据是「**当前槽 24h tick**（11-01 ~20:59）dup=0」——启动探针 ≠ 24h tick（第 12 轮原文判据）。tick 明晚才打，**本轮不写「放大类闭案」**；部分窗干净如实入档，终验由 `automation-43481e79`（明晚 23:30，tick 后 2.5h，无需等待循环）执行。
+- **启动探针只有 4 行的代码实证**（不是异常）：`bg/quality_node_source.go` 挑靶 SQL 带两级到期窗排除——`minInterval` 窗内有过 success 的对被 NOT EXISTS 排除、`failedInterval` 冷却窗内有过 failed/partial 的对被独立排除；20:59 起跑时 19 时重开轮的 45 行（40 failed）**全在失败冷却窗内** ⇒ 只剩 4 对到期。启动探针目标数 30→16→4 的收缩=前几轮扫靶后到期集自然变小，与放大类无关（lt10min=0/0）。
 
 ## §3 四步③ dsn_exclusive 结构项：共享台账（TSV）落地
 
@@ -83,7 +90,16 @@
 
 ## §6 提交与读数汇总
 
-（读数回填节——见 §5 表）
+| 项 | 读数 | 判定 |
+|---|---|---|
+| 基线 test-short（钉 `73c8c8fd5`） | **351 包全绿 TS_RC=0** | ✓ |
+| 基线 guards（同树） | **抓到快照漂移真红**（`TestAdminRoutesSnapshotMatchesGenerator`，上游 `426393659` 带入）+ admin 102.7s ok | 红 → 本轮修 |
+| ursmcheck 全包口径 | ~894.8s（1800s Makefile 口径）；自设 580s 掐死 hollowout 慢门 ⇒ 假红 | 口径登记 |
+| 终态 test-short（`e619cef44`） | 350 ok + 1 负载抖动（隔离 ×3 全绿 0.044s，路径零生产差异） | 抖动定性，非回归 |
+| 终态 guards（`2d0e0aeb6` 重跑） | **GUARDS_RC=0 全绿**：ursmcheck 601.8s ok / admin 84.7s ok / 全部快速守卫包 ok（含 guards-deploy 两门） | ✓ |
+| 定向门（主 checkout，含并行 WIP 树） | vet ✓ / build ✓ / 快照三门 ✓ / 台账双向门 ✓ / 覆盖门族 ✓ / hollowout 清点两判据 ✓ | ✓ |
+| 变异臂 | **4/4 检出**（M1 删行/M2 删文件/M3 摘注册表/M4 假行），还原 md5 逐字一致 | ✓ |
+| 提交 | `e619cef44`（TSV+对账+快照）→ `0d2b62454`（hollowout 登记）→ `78eda617c`（文档+LESSONS §603）→ `2d0e0aeb6`（合并 origin，§602/§603 共存） | 已推送 |
 
 ## §7 遗留与移交
 

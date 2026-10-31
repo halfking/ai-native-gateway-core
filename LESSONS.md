@@ -28219,6 +28219,9 @@ enable_thinking），真实 ZCode 请求体还有 reasoning_effort ⇒ 断言「
 ★ **通用式六（★★）——自设测试超时低于已知全量口径，会把慢测试掐成假红**：ursmcheck 全包实测 ~894.8s（含子进程密集的 hollowout 门），自设 `-timeout=580s` ⇒ `TestStructuredRegistryHollowoutReadersRejectEmptyRegistry` 被掐死 panic ⇒ 假红。**超时口径必须用 Makefile 的 1800s**；「量具超时」先对照已知全量口径再定性（★ 同族：[[量具挂起是读不到不是读到 0]]）。
 ★ **通用式七（★）——worktree 里 make 的 PATH**：make 内部用 /bin/sh，继承的是 env 不是交互 shell 的别名/补丁 ⇒ 首跑 `go: command not found` RC=127；显式 `export PATH="$HOME/sdk/go/bin:$PATH"` 后重跑。pnpm 同理（nvm 路径不在 make 的 env 里）。
 
+★ **通用式八（★★）——新增数据文件 = 新增登记册 ⇒ 仓内的元清点门必然来找你**：新共享台账没跑几天就被 `TestTsvHollowoutInventoryCoversEveryTsv` 抓到「有 1 份 `.tsv` 没在 `tsv_hollowout_inventory.tsv` 登记」——该元门要求每份登记册写明**读方**并回答「**掏空它 ⇒ 读方红不红**」（expect=red 会被行为判据真的掏空跑读方）。本轮变异臂 M2（删文件两侧红）恰好就是登记要填的答案 ⇒ 登记零犹豫。★ 同族：§595「清单本身也是清单」——你新增的每一份事实源，都会被「管事实源的门」当成新成员点名。
+**How to apply**：新增任何 `.tsv`/`.json` 登记册，先查同类的元清点门（hollowout inventory / baseline registry / contract ledger），把「读方 + 掏空行为」当场登记；登记的 expect 答案用变异臂实证，不靠推理。
+
 ★ **同族**：★ [[共享工作树提交纪律]] · ★ [[211 部署必须钉 LLM_GATEWAY_ROOT]] · ★ [[周期性 24h 审计 goal 格式]]
 
 ★ **证据**：2026-10-31/11-01 llm-gateway-go —— 审计档 `docs/audit/2026-11-01-24h审计轮-放大类闭案推进与dsn_exclusive共享台账.md`；提交 `e619cef44`（TSV 共享台账 + 双向对账 + 快照重生成）；基线全量 test-short 351 包全绿（钉 73c8c8fd5 worktree）+ 终态树全量复测见审计档 §6；变异臂 4/4 检出还原 md5 逐字一致；211 部分窗 SQL 读数（4 行启动探针 lt10min=0/0）与 15 绑定 × 8 闸逐条归因表见审计档 §2/§4。

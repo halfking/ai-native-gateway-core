@@ -19,7 +19,10 @@
 > 5 条 `_DSN` 后缀名字打红：主门形状表（抽包级 `isDBCredentialEnvName` 共用）不含
 > `_DSN` ⇒ 它们对主门不可见从未需要车道；形状表扩到 `_DSN` 时对账门强制补车道。
 > **变异臂 4/4 检出**（删行两侧红/删文件两侧装载器红/摘注册表条目车道对账红/假行
-> 死条目棘轮红），还原 md5 逐字一致。⇒ ★★★★ **④ all-0-candidates 闭卡**：「~8 条
+> 死条目棘轮红），还原 md5 逐字一致。⇒ ★★ **元清点门反抓本轮**：guards 终态树首跑
+> `TestTsvHollowoutInventoryCoversEveryTsv` 报新台账未登记 `tsv_hollowout_inventory.tsv`
+> ⇒ 登记读方+掏空行为（`0d2b62454`，答案恰是变异臂 M2 实测）——新增数据文件 = 新增
+> 登记册 ⇒ 元门必然点名（§595 同族）。⇒ ★★★★ **④ all-0-candidates 闭卡**：「~8 条
 > available=t」是**目录属性不是路由判据**——`v_routable_credential_models.is_routable`
 > 折叠 8 道闸（含 node_probe_state 冷却窗），15 绑定逐条归因后**能进 DB 候选层仅 3 条**
 > （cred 3/49/50）；「4 候选」= 事故窗视图闸时变输出，**无候选上限（SQL 无 LIMIT）、
@@ -42,7 +45,7 @@
 > 主 checkout 只跑定向门并标注。⇒ 用户侧动作两项不代做：245 alertmanager webhook 静默 +
 > kb-importer 工具坏转义盲插。⇒ 审计档
 > `docs/audit/2026-11-01-24h审计轮-放大类闭案推进与dsn_exclusive共享台账.md`；
-> 通用式见 `LESSONS.md` **§603**（7 条）。
+> 通用式见 `LESSONS.md` **§603**（8 条）。
 > **2026-10-31 48h 审计轮：集成门 maas DSN 注册修复 + 满窗复测 + 日志慢SQL审计**
 > （goal 会话）：★ 承接第 12 轮 §5 遗留。⇒ ★★★★ **① 共享 checkout 上「全量测试绿」必须先
 > 回答「测的是哪棵树」**：合并 5 提交后 make test-short 首跑 2 红（sql/schema 集成门真红 +
