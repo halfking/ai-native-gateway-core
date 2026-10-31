@@ -4179,4 +4179,15 @@ checkout 或当时目录状态确有变化（同日 `~/sdk/bash5` 确被清过�
 > ⇒ ★★ **同族缺口登记不修**：Gemini 入口（`/v1beta/models/`、`/v1/models/`）整条无识别链、
 > 也不写侧表 ⇒ **从不出现在「空名」统计里**（是没记录，不是识别成功）⇒ 211 侧表 48h 按协议
 > 分布实测 Gemini 协议行 0 条 ⇒ 当前零流量 ⇒ 登记为待办（接线需新建整条日志写入路径）。
+> ⇒ ★★★★ **修复 4（本轮最实质，★ 生产实测坐实）**：失败行的系统提示词兜底**根本没跑**
+> —— 部署后真实流量实测：**同一请求成功行落 `agent_name=zcode`、失败行落
+> `agent_name=go-client`**。根因：`meta.SystemPrompt` **只在 `EnsureCaptured()` 里生产**，
+> `refreshMeta()` 只消费它 ⇒ responses/messages 的失败行构建器
+> `recordFailedRequestWithKey` **只调 `refreshMeta()`** ⇒ 兜底链最后一环没有输入。
+> 对照 chat 路径失败行走 `captureAndEmitFailure` → **已调 `EnsureCaptured()`**
+> （211 读数：chat 失败行 2248 条全部带 `prompt_tokens`）⇒ 两条路径本来就不对齐。
+> ⇒ 修复：失败行构建器改调 `EnsureCaptured()`（body 已在 ctx 上，不重读请求）。
+> ⇒ ★★ **教训**：**「同一兜底在成功路径生效、在失败路径失效」是可观测的**（同一请求两行
+> 落库值不同），比「全都不识别」更难发现；**失败行是运维最常看的行** ⇒ 只在成功路径
+> 生效的识别，排障价值趋近于零 ⇒ **凡有兜底链的字段，逐条路径核销「兜底的输入由谁生产」**。
 > ⇒ 审计档 §5b（含变异验证读数）；通用式见 `LESSONS.md` **§602**（7 条）。

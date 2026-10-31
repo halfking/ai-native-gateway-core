@@ -240,6 +240,57 @@ func TestNonChatHandlersFillClientModel(t *testing.T) {
 	}
 }
 
+// TestFailureRowsRunSystemPromptFallback pins the failure-path repair.
+//
+// A failure row is built by recordFailedRequestWithKey, which creates a FRESH
+// RequestLogContext. refreshMeta only re-runs the header chain against
+// meta.SystemPrompt — it never PRODUCES that field; only EnsureCaptured
+// extracts it from the buffered body. So before the fix, failure rows had an
+// empty SystemPrompt ⇒ the system-prompt identification fallback never ran
+// ⇒ clients that only self-identify in the prompt landed as the weak generic
+// name on exactly the rows an operator inspects when a request breaks.
+//
+// Measured on 211 before the fix: the same request produced agent_name=zcode
+// on the success row and agent_name=go-client on the failure row.
+//
+// Layer ① (behaviour): EnsureCaptured produces the SystemPrompt that the
+// fallback consumes.
+func TestFailureRowsRunSystemPromptFallback(t *testing.T) {
+	body := `{"model":"glm-5.3-flash","instructions":"You are ZCode, an interactive coding agent"}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	r.Header.Set("User-Agent", "Go-http-client/1.1")
+
+	ch := NewChatHandler(credential.NewManager(), credential.NewLimiter(), nil, nil, nil, nil)
+	c := ch.NewRequestLogContext(r, "failure-ident", time.Now())
+	c.SetKey(&authentication.KeyInfo{ID: 4242, TenantID: "tenant-ident"})
+	c.Body = []byte(body)
+	c.EnsureCaptured()
+
+	if c.meta.SystemPrompt == "" {
+		t.Fatal("EnsureCaptured did not produce meta.SystemPrompt — the system-prompt fallback has no input")
+	}
+	attrs := BuildContextAttrsEntry(c, c.KeyInfo, &c.meta, r.Context())
+	if attrs == nil || attrs.AgentName == nil {
+		t.Fatal("agent_name empty on the failure path")
+	}
+	if *attrs.AgentName != "zcode" {
+		t.Fatalf("agent_name = %q, want %q", *attrs.AgentName, "zcode")
+	}
+}
+
+// TestFailedRequestBuilderCapturesSystemPrompt pins layer ② (wiring): the
+// failure-row builder must call EnsureCaptured.
+//
+// It must not call refreshMeta alone — refreshMeta consumes meta.SystemPrompt
+// but never produces it, so a builder that only calls refreshMeta silently
+// disables the whole system-prompt fallback on failure rows.
+func TestFailedRequestBuilderCapturesSystemPrompt(t *testing.T) {
+	calls := goFileCallShapes(t, filepath.Join(".", "handler.go"))
+	if !calls["EnsureCaptured()"] {
+		t.Error("handler.go never calls EnsureCaptured() — the system-prompt fallback has no input on failure rows")
+	}
+}
+
 // TestReadRequestBodyRestoreKeepsBodyReReadable pins the body-restoration
 // repair.
 //

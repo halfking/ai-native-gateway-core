@@ -7761,7 +7761,19 @@ func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboun
 		} else if gw := r.Header.Get("X-Client-Request-Id"); gw != "" {
 			ctx.ClientRequestID = gw
 		}
-		ctx.refreshMeta()
+		// 2026-11-01 audit (agent identification round): EnsureCaptured, not
+		// refreshMeta. refreshMeta only re-runs the header chain against
+		// meta.SystemPrompt — it never PRODUCES that field (only EnsureCaptured
+		// extracts it from the buffered body). So a failure row built here had
+		// an empty SystemPrompt ⇒ the system-prompt identification fallback
+		// never ran ⇒ clients that only self-identify in the prompt landed as
+		// the weak generic name ("go-client") on exactly the rows an operator
+		// inspects when a request breaks.
+		//
+		// The body is already set on ctx (the caller passes requestBody), so
+		// EnsureCaptured's ensureRequestBodyBuffered returns early and does not
+		// re-read the request.
+		ctx.EnsureCaptured()
 	}
 	ctx.EmitFailure(errCode, errMessage, providerID, credentialID)
 }

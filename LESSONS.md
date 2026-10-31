@@ -28181,4 +28181,18 @@ enable_thinking），真实 ZCode 请求体还有 reasoning_effort ⇒ 断言「
 > ⇒ ★★ **同族结构缺口登记不修**：Gemini 入口（`/v1beta/models/`、`/v1/models/`）整条**没有**
 > 识别链也不写侧表 ⇒ 它**从不出现在「空名」统计里**（不是识别成功，是根本没记录）⇒
 > 211 侧表 48h 按协议分布实测 Gemini 协议行 **0 条** ⇒ 当前零流量，不是本轮缺口 ⇒ 登记。
+> ⇒ ★★★★ **兜底链的「输入由谁生产」要逐路径核销（★ 本轮最实质的发现，★ 生产实测坐实）**：
+> 部署后真实流量实测：**同一请求、同一 UA、同一系统提示词，成功行落
+> `agent_name=zcode`，失败行落 `agent_name=go-client`** ⇒ 根因不在 body拿不拿得到，
+> 而在 **`meta.SystemPrompt` 只在 `EnsureCaptured()` 里生产、`refreshMeta()` 只消费它**
+> ⇒ responses/messages 的失败行构建器 `recordFailedRequestWithKey` **只调了
+> `refreshMeta()`** ⇒ 兜底链最后一环没有输入 ⇒ 弱名留在失败行上 ⇒ 对照 chat 路径的
+> 失败行走 `captureAndEmitFailure` → **已调 `EnsureCaptured()`**（211 生产读数：
+> chat 失败行 2248 条**全部**带 `prompt_tokens` = EnsureCaptured 确实跑过）⇒
+> **两条路径本来就不对齐** ⇒ 修复 = 失败行构建器改调 `EnsureCaptured()`（body 已在 ctx 上，
+> 不重读请求）⇒ 顺带的 token 估算副作用**与 chat 既有行为一致**（不是新语义）。
+> ⇒ ★★★ **「同一兜底在成功路径生效、在失败路径失效」是可观测的**：表现是**同一请求两行
+> 落库值不同**（成功行有名字、失败行只有弱名）⇒ 它比「全都不识别」**更难发现** ⇒
+> ★★ **失败行是运维最常看的行** ⇒ **只在成功路径生效的识别，其排障价值趋近于零** ⇒
+> ★★ 凡有兜底链的字段，必须**逐条路径**核销「兜底的输入由谁生产」。
 > ⇒ 审计档 `docs/audit/2026-10-29-智能体识别与IP落库轮-非chat路径识别链接线.md` §5b。
