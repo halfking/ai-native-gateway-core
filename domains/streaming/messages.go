@@ -243,7 +243,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	bodyBytes, err := readRequestBody(r.Context(), r.Body, maxBodySize)
+	bodyBytes, err := readRequestBodyRestore(r, maxBodySize)
 	if err != nil {
 		if len(bodyBytes) > 0 {
 			attemptRequestBody = bodyBytes
@@ -274,6 +274,19 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	// this path the fallback never saw the body ⇒ empty agent_name.
 	logCtx.Body = bodyBytes
 	logCtx.EnsureCaptured()
+	// ★ 2026-10-29 audit: EnsureCaptured's ensureRequestBodyBuffered returns
+	// early when c.Body is already filled ⇒ c.ClientModel stays empty on this
+	// path (the chat path gets it from the same call) ⇒ client_model on the
+	// main log row showed blank for /v1/messages traffic. Fill it here with
+	// the same "<unknown>" fallback the chat path applies.
+	if logCtx.ClientModel == "" {
+		if len(bodyBytes) > 0 {
+			logCtx.SetClientModel(extractModelFromBody(bodyBytes))
+		}
+		if logCtx.ClientModel == "" {
+			logCtx.SetClientModel("<unknown>")
+		}
+	}
 	if prov := buildOutboundProvenance(r, nil); len(prov) > 0 {
 		logCtx.OutboundProvenance = prov
 	}

@@ -261,7 +261,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		rt.Emit(state.EventAuthed)
 	}
 
-	bodyBytes, err := readRequestBody(r.Context(), r.Body, maxBodySize)
+	bodyBytes, err := readRequestBodyRestore(r, maxBodySize)
 	if err != nil {
 		if len(bodyBytes) > 0 {
 			attemptRequestBody = bodyBytes
@@ -287,13 +287,28 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	// 2026-10-29 identification round: mirror the chat path's
 	// EnsureCaptured — extract the system prompt from the buffered body
 	// and run the shared identification chain (UA tokens → body marker →
-	// system-prompt self-identification). readRequestBody above already
+	// system-prompt self-identification). readRequestBodyRestore above
 	// restored r.Body, and pre-setting logCtx.Body keeps EnsureCaptured
 	// from re-reading it; without this the agent fallback never saw the
 	// body, so clients that only self-identify in the prompt (ZCode /
 	// MiniMax Code "You are Mavis…") landed as empty agent_name.
 	logCtx.Body = bodyBytes
 	logCtx.EnsureCaptured()
+	// ★ 2026-10-29 audit: EnsureCaptured's ensureRequestBodyBuffered returns
+	// early when c.Body is already filled ⇒ c.ClientModel stays empty on this
+	// path (the chat path gets it from the same call). client_model on the
+	// main log row therefore showed blank for /v1/responses traffic. The
+	// bytes are in hand, so fill it here — same "<unknown>" fallback the chat
+	// path applies (a body with no "model" field must be distinguishable
+	// from an absent body).
+	if logCtx.ClientModel == "" {
+		if len(bodyBytes) > 0 {
+			logCtx.SetClientModel(extractModelFromBody(bodyBytes))
+		}
+		if logCtx.ClientModel == "" {
+			logCtx.SetClientModel("<unknown>")
+		}
+	}
 	if prov := buildOutboundProvenance(r, nil); len(prov) > 0 {
 		logCtx.OutboundProvenance = prov
 	}

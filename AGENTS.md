@@ -4155,3 +4155,28 @@ checkout 或当时目录状态确有变化（同日 `~/sdk/bash5` 确被清过�
 
 
 > [2026-10-31 归档] 历史审计轮次（2026-10-11 起全部"# 追加"轮次报告）已移至仓库根目录 `AGENTS-archive-20261031.md`。后续轮次报告请追加到该归档文件；AGENTS.md 只保留维护者交接的当前状态。原因：AGENTS.md 会整体注入每次请求的上下文，超窗口导致所有请求失败。
+> **2026-11-01 智能体识别与 IP 落库轮的批判式审计轮**（goal 会话）：审计对象＝上一批
+> （88e277974）改动**与其文档断言**。落库验证正确，但**缺三样**：一处真缺陷（失败路径丢
+> body）、一处真副作用（client_model 空）、**一整层回归门**。
+> ⇒ ★★ **修复 1（真缺陷）**：`readRequestBody` 消费 body **不复原**（只有 `bufferRequestBody`
+> 复原）⇒ responses/messages 里 `captureAttemptBody` 拿到空 ⇒ **系统提示词兜底恰好在
+> 运维最需要的失败行上失效** ⇒ 新增 `readRequestBodyRestore(r, limit)`（读后复原；
+> **读失败/超限不复原**——残缺字节流不能当完整 body 重放）⇒ 两处 handler 改用它。
+> ⇒ ★★ **修复 2（真副作用）**：`EnsureCaptured`→`ensureRequestBodyBuffered` 在 Body 已非空
+> 时提前 return ⇒ **顺带跳过模型提取** ⇒ 上一批的「预填 Body」使 `client_model` 恒空 ⇒
+> 两处 handler 显式补 `SetClientModel(extractModelFromBody(bodyBytes))` + `"<unknown>"` 兜底。
+> ⇒ ★★★ **修复 3（回归门，本轮最重要）**：新增
+> `domains/streaming/identification_nonchat_test.go`——行为层（`BuildContextAttrsEntry`：
+> 弱 UA + 系统提示词自报 ⇒ zcode/minimax-code；强 UA pi ⇒强名不被兜底覆盖）+ 接线层
+> （**AST 级**断言两个 handler 各调 `SetKey(ki)` 与 `EnsureCaptured()`）。
+> ⇒ ★★★★ **第一版接线门用 `strings.Contains` ⇒ 变异验证时仍全绿**（注释里还留着同样
+> 字符串）⇒ 改 `go/ast`（注释对 AST 不可见）⇒同一变异红 4 处 ⇒ **断言形状含首参**
+> （`SetKey(ki)` 而非 `SetKey`：文件里另有 rate-limit 分支的 `SetKey(keyInfo)`）。
+> ⇒ ★★ **订正上一批文档的错误断言**：「turn_no 权威口径在 ROW_NUMBER 派生」**不属实**
+> （全仓 `row_number()` 仅 `admin/annotation_handler.go:390` 一处且无关）⇒ 真况：
+> `SetTurnNo` 无调用方 ⇒ 侧表 `request_context_attrs.turn_no` 恒 NULL **属实**；但
+> **会话轮 turn_no 正常**（权威在会话写手 MAX+1，211 实测 4063 行 turn_no=1）。
+> ⇒ ★★ **同族缺口登记不修**：Gemini 入口（`/v1beta/models/`、`/v1/models/`）整条无识别链、
+> 也不写侧表 ⇒ **从不出现在「空名」统计里**（是没记录，不是识别成功）⇒ 211 侧表 48h 按协议
+> 分布实测 Gemini 协议行 0 条 ⇒ 当前零流量 ⇒ 登记为待办（接线需新建整条日志写入路径）。
+> ⇒ 审计档 §5b（含变异验证读数）；通用式见 `LESSONS.md` **§602**（7 条）。

@@ -169,6 +169,32 @@ func bufferRequestBody(r *http.Request, limit int) ([]byte, error) {
 	return buf, err
 }
 
+// readRequestBodyRestore is readRequestBody + body restoration.
+//
+// 2026-10-29 audit (agent identification round): readRequestBody consumes the
+// body and does NOT restore it (only bufferRequestBody does). The responses /
+// messages handlers call readRequestBody directly, so every later attempt to
+// re-read the body — captureAttemptBody on the failure paths — got an empty
+// buffer, which silently disabled the system-prompt identification fallback
+// exactly on the failure rows (the rows an operator inspects when a request
+// breaks). Restoring the bytes here keeps the failure paths able to identify
+// the client. It is byte-identical to bufferRequestBody minus the "capture
+// only" semantics: the caller already owns the bytes.
+//
+// Note: the restore is skipped when the read failed or the body exceeded the
+// limit — in both cases the byte stream is incomplete and must not be replayed
+// as if it were the whole body.
+func readRequestBodyRestore(r *http.Request, limit int) ([]byte, error) {
+	if r == nil || r.Body == nil {
+		return nil, nil
+	}
+	buf, err := readRequestBody(r.Context(), r.Body, limit)
+	if err == nil && len(buf) <= limit {
+		r.Body = io.NopCloser(bytes.NewReader(buf))
+	}
+	return buf, err
+}
+
 func readRequestBody(ctx context.Context, body io.ReadCloser, limit int) ([]byte, error) {
 	if body == nil {
 		return nil, nil
