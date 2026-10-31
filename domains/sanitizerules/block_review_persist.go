@@ -80,6 +80,12 @@ type ReviewPersistence interface {
 	// 读面没有租户条件 ⇒ ★★ 候选跨租户泄漏 ⇒ ★★ 归因被别家数据带偏）★★
 	// ⇒ ★★ 空集合必须 fail-closed（返回空）★★。
 	ListEgressRuleEventsInWindowDB(ctx context.Context, tenantIDs []string, from, to time.Time, limit int) ([]EgressRuleEventInWindow, error)
+	// ListEgressRuleEventsForWindowsDB **逐单**取候选规则（★ 2026-10-31 拦截
+	// 归因轮 ★）：★ 一次往返（LATERAL + unnest），**逐单预算** ★
+	// ⇒ ★★ 「整批一个窗口 + 一个全局 LIMIT」会把跨时段的批次打成「无候选 +
+	// 整批截断」★★ ⇒ ★★ 读时归因对历史空白单整体失效 ★★。
+	// ★ 返回按窗口 Index 归组；★★ 租户门 fail-closed（空租户集合 ⇒ 空结果）★★。
+	ListEgressRuleEventsForWindowsDB(ctx context.Context, tenantIDs []string, windows []EgressRuleEventWindow, perWindowLimit int) (map[int][]EgressRuleEventInWindow, error)
 	// InsertBlockReviewEvidence 落一条证据摘录（有界、带 TTL）。
 	InsertBlockReviewEvidence(ctx context.Context, e BlockReviewEvidence) error
 	// ListBlockReviewEvidenceDB 按审核单 ID 批量取证据摘录。

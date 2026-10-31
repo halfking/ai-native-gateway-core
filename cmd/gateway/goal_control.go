@@ -365,8 +365,18 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	// 用同一 *sql.DB 构造 checker；ownerFn 从 session_dim 查询 dataOwner +
 	// 从最新 request_log 的 api_key_owner_user 取 callerOwner。
 	// db 为 nil 时 buildOutputComplianceInterceptor 返回 nil，链自动跳过。
+	//
+	// ★ 2026-10-31 拦截归因轮：ocEnabled **不再**用 `len(interceptors) > 3` 判 ★
+	// —— ★ 那条判据**恒假**（这条切片最多 3 个：goal + audit + oc；SmartSaniGuard
+	// 的两个拦截器是**之后**由 installSmartSaniGuard 装到链上的，不在这条切片里）★★
+	// ⇒ ★★ 启动日志恒打 `output_compliance_enabled=false` ⇒ ★★ 运维据此读成
+	// 「输出合规没开」★★ ⇒ ★★ 而同一份启动日志里明明有
+	// 「output compliance guard configured pending_max_bytes=1048576」★★
+	// ⇒ ⇒ **两处读数互相矛盾**，而矛盾的那一处（false）更显眼 ⇒ ⇒ 必须修。
+	ocEnabled := false
 	if ocHook := buildOutputComplianceInterceptor(db); ocHook != nil {
 		interceptors = append(interceptors, ocHook)
+		ocEnabled = true
 	}
 
 	// SmartSaniGuard 的输入/输出接入已迁移到 installSmartSaniGuard
@@ -386,7 +396,9 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	chatHandler.SetGoalOutcomeObserver(goalHandoffTrigger)
 
 	handoffEnabled := handoffCfg.Enabled
-	ocEnabled := len(interceptors) > 3
+	// ★ ocEnabled 在 7b 处按「输出合规拦截器是否装上」判定（见那里的注释：
+	// ★ 旧判据 len(interceptors) > 3 恒假 ⇒ 启动日志恒打 false ⇒ 与同一份
+	// ★ 日志里的「output compliance guard configured」互相矛盾 ★）。
 	slog.Info("goal_control: interceptors installed",
 		"goal_enabled", goalCfg.Enabled,
 		"detection_mode", goalCfg.DetectionMode,

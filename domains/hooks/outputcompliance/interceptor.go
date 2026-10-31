@@ -361,7 +361,17 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 			"error", err, "session_id", req.SessionID)
 		metrics.OutputGateFailClosedErrorsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateSourceTransformError).Inc()
 		metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathBody).Inc()
-		return &response.InterceptResult{ShouldBlock: true, Action: "output_compliance_block"}, nil
+		// ★ 2026-10-31 拦截归因轮：fail-closed 也**必须能说出是哪一种失败**
+		// （★ 此前这条路径不带任何元数据 ⇒ 审核单 rule/reason/evidence 全空
+		// ⇒ 审核员判不了「拦得对不对」★）⇒ 给它自己的合成规则名。
+		return &response.InterceptResult{
+			ShouldBlock: true,
+			Action:      "output_compliance_block",
+			Metadata: map[string]interface{}{
+				"policy_rule":   GuardCheckFailedRuleID,
+				"policy_reason": policyBlockErrorReason("output policy check failed on response body", GuardCheckFailedRuleID, ""),
+			},
+		}, nil
 	}
 	if blocked {
 		metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathBody).Inc()

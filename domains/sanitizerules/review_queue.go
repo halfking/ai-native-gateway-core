@@ -450,6 +450,14 @@ func grantReviewRelease(ctx context.Context, p ReviewPersistence, entry BlockRev
 		// 非放行可表达的 scope：只置状态（「已人工看过」）。
 		return nil
 	}
+	// ★ 2026-10-31 拦截归因轮：合成守卫规则（builtin.guard.*）**不是内容规则**
+	// ⇒ 放行它对业务**没有意义**（守卫类失败靠容量/形态/上游可用性解决，
+	// 不靠「这条规则对这个租户不再拦」）⇒ ⇒ 不写放行行 ★★
+	// （★ 写了就是一条**死行**：放行读面只按内容规则匹配，永远匹配不上 ★★）。
+	// ⇒ 与 maybeAutoRelax 的同一口径（★ 它也显式跳过该前缀 ★）。
+	if strings.HasPrefix(entry.Rule, "builtin.guard.") {
+		return nil
+	}
 	release := EgressRelease{
 		TenantID:   entry.TenantID,
 		Scope:      "egress",

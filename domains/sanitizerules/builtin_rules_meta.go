@@ -53,6 +53,49 @@ var builtinRuleDescriptions = map[string]BuiltinRuleInfo{
 		Description: "检测「密码族字段（password/passwd/pwd/secret/token/api_key/authorization 等）携带非占位符明文值」。" +
 			"身份族字段（username/account）不在此列（r1024：身份不是机密）；模型自造的占位拼写（PLACEHOLDER/<...> 等）也放行（r1024b）。",
 	},
+	// ★★ 守卫侧失败（2026-10-31 拦截归因轮）★★
+	//
+	// ★ 这些 ID **不是内容规则**：★ 它们表示「输出守卫没能完成判定 ⇒
+	// fail-closed 终止回合」⇒ ⇒ 审核员看到它们时**不该**去改规则表达式
+	//（改了也不会让它不再触发）⇒ ⇒ 要改的是**容量 / 形态 / 上游可用性** ★。
+	//
+	// ★ 为什么必须逐条登记（★ 此前这些 ID **不在本表** ★）：★ 审核单的
+	// 「规则语义」行取自本表 ⇒ ★ 取不到就退化成一句
+	// 「（托管规则，表达式与适用范围见规则配置）」⇒ ★★ 那是指向**错误事实源**
+	// 的提示（这些根本不是托管规则）★★ ⇒ ★★ 审核员会去托管规则里找一条
+	// 永远找不到的规则 ★★。
+	"builtin.guard.capacity_exceeded": {
+		Name: "守卫待检缓冲越界（非规则命中）",
+		Description: "响应正文太长，输出守卫的待检缓冲（出厂 1 MiB）装不下 ⇒ **不是任何内容规则命中**，而是基础设施容量问题。" +
+			"默认（release）会降级放行并留痕，响应已送达客户端；只有严格模式（LLM_GATEWAY_OUTPUT_GUARD_CAP_MODE=block）才会终止回合。" +
+			"处置方向：调大 LLM_GATEWAY_OUTPUT_GUARD_PENDING_MAX_BYTES（注意 2026-10-02 存储审计定的 1 MiB wire cap 契约），不是改规则表达式。",
+	},
+	"builtin.guard.no_request_state": {
+		Name: "守卫缺少请求态（无法跨帧检查）",
+		Description: "这一帧没有可用的请求态 ⇒ 输出守卫无法做跨帧检查 ⇒ 无法证明这段输出安全 ⇒ fail-closed 终止回合。" +
+			"**不是内容规则命中**。处置方向：查请求态为何缺失（生产写者必须填 StreamMeta.State），不是改规则表达式。",
+	},
+	"builtin.guard.rewrite_refused": {
+		Name: "守卫拒绝改写不可改写的工具参数",
+		Description: "这段工具参数命中了需脱敏的规则，但该 lane **不允许安全改写**（已签名 / 敏感字段）⇒ " +
+			"既不能漏检放行、也不能改写 ⇒ fail-closed 终止回合。**不是内容规则命中**，也不是误报判定依据。" +
+			"处置方向：让该 lane 的脱敏可行（可改写形态），或对该客户端/租户做规则级放行。",
+	},
+	"builtin.guard.redact_invalid": {
+		Name: "脱敏结果不是合法 JSON",
+		Description: "工具参数脱敏后**不再是合法 JSON** ⇒ 不能把坏参数交给客户端（会打断工具调用）⇒ fail-closed 终止回合。" +
+			"**不是内容规则命中**。处置方向：修脱敏规则/掩码形态（改写要保持 JSON 合法），不是放宽拦截。",
+	},
+	"builtin.guard.check_failed": {
+		Name: "合规检查器失败（判不出合规性）",
+		Description: "检查器报错或返回空结果 ⇒ 判不出这段内容是否合规 ⇒ fail-closed 终止回合。**不是内容规则命中**。" +
+			"处置方向：查检查器错误（DB / 规则快照 / 上游），不是改规则表达式。",
+	},
+	"builtin.guard.frame_encode_failed": {
+		Name: "帧改写后无法重新编码",
+		Description: "改写后的帧无法重新序列化（JSON 编码失败）⇒ 不能把半成品帧发给客户端 ⇒ fail-closed 终止回合。" +
+			"**不是内容规则命中**。处置方向：查帧结构与序列化，不是改规则表达式。",
+	},
 }
 
 // builtinRuleName 返回内建规则的短展示名；未知 ID 返回空串（前端退化显示 ID）。
