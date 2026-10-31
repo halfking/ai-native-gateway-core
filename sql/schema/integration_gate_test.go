@@ -108,9 +108,9 @@ func TestGateInjectsEveryDBCredentialName(t *testing.T) {
 		}
 		// dsn_exclusive that guards itself: injecting the populated gate
 		// database is forbidden, and the fixture has to keep guarding.
-		if spec, ok := destructiveGuardedDB[name]; ok {
+		if fixture, ok := destructiveGuardedDB[name]; ok {
 			src := sessionStorageGateSources(t, sessionDBContract{}, act)
-			for _, problem := range destructiveGuardedDBProblems(name, spec, src) {
+			for _, problem := range destructiveGuardedDBProblems(name, fixture, src) {
 				t.Errorf("%s 事实源注入检查：%s", name, problem)
 			}
 			continue
@@ -149,6 +149,36 @@ func TestGateInjectsEveryDBCredentialName(t *testing.T) {
 		if !contains(names, m[1]) {
 			t.Errorf("harness 注入了 %s=$TENANT_DSN，但仓内没有任何文件读它；"+
 				"请删掉，或确认它确实是新增的读取点", m[1])
+		}
+	}
+}
+
+// TestDestructiveDSNsRegisteredDsnExclusiveInURSM 把两份 dsn_exclusive 台账对上：
+// 本门按「自守卫破坏型」注册的每个 DSN，必须同时在 ursmcheck 的
+// datasourceEnvExemptions 里登记（事实源那一侧的同一主张）。
+//
+// 2026-10-31 的红走了另一个方向：TEST_MAAS_BILLS_DATABASE_URL 只在 ursmcheck
+// 登记了 dsn_exclusive，本门不认识它 ⇒ 上面的注入断言要求 harness 把它接到
+// $GATE_URL —— 恰是 R86 那次「门对形状判得对、台账记错边」的第三次重演。
+// 本测试钉住的是便宜的比对方向（本门 ⊆ ursmcheck）；反方向要靠共享数据文件
+// 才能免语义判断地自动化，已在 48h 审计档登记为结构项。
+func TestDestructiveDSNsRegisteredDsnExclusiveInURSM(t *testing.T) {
+	data, err := os.ReadFile("../../scripts/ursmcheck/datasource_env_test.go")
+	if err != nil {
+		t.Fatalf("read ursmcheck registry: %v", err)
+	}
+	registered := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^\t"([A-Z][A-Z0-9_]+)":`).FindAllStringSubmatch(string(data), -1) {
+		registered[m[1]] = true
+	}
+	if len(registered) == 0 {
+		t.Fatal("ursmcheck 豁免表解析出 0 个条目 —— 解析器失效或文件结构变了；" +
+			"恒返回空的守卫等于没有守卫")
+	}
+	for name := range destructiveGuardedDB {
+		if !registered[name] {
+			t.Errorf("%s 在本门按自守卫破坏型注册，但 ursmcheck 的 datasourceEnvExemptions 没有它："+
+				"两份 dsn_exclusive 台账各说各话，读哪份都不完整", name)
 		}
 	}
 }
