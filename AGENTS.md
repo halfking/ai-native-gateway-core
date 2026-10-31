@@ -3,7 +3,36 @@
 > 适用：未来任何 cold-start 切到本仓库的助手会话（不区分会话身份）。
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
-> 原文件关于「go/brew/docker 全部缺失」的判断已被实测推翻，见下。
+> 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-10-31 维护轮：双仓同步 + 927 台账漏登修复**（会话
+> `mvs_0a20a52276a24605b7ea29823d70169b`）：★ 承接 12h 审计第 1 轮（`fd3d243d5`）
+> 新增的迁移 **927**（routing_policy 单例化）⇒ ★ **它从未进 `docs/db-changelog.md`**
+> ⇒ ⇒ ⇒ `internal/sqlguard` 的迁移连续性门（`TestMigrationRegistryStaysContinuous`）
+> **判红**（★ 窗口锚点取**磁盘侧最大编号** ⇒927 恰在近邻窗口 [908, 927] 内 ⇒ ⇒ **真红**，
+> ★ 且 **pristine HEAD 上同样红** ⇒ **不是回归**）⇒ ⇒ ★ 机器核验：927 的**五点同步全在**
+> （embeddata 副本逐字节一致 / main.go 的 go:embed + 映射 / runner.go StartupFiles /
+> 通道腿 files=() / TSV 第 327 位）⇒ ⇒ ★★ **唯独台账这一面漏了** ⇒ ⇒ ⇒ ★★ 而
+> LESSONS §290 那份「六个点位」清单**本身也不含台账** ⇒ ⇒ ⇒ 清单漏掉的面没人会提醒你。
+> ⇒ ★ **修法**：台账补一行（sha = **文件实测值**）＋ 新增
+> `sql/migrations/startup/migration_927_routing_policy_singleton_unique_test.go`
+> （★ 七处登记点**逐点断言且每点恰好出现一次** ＋ 台账 sha 实测 ＋ 语义面）⇒ ⇒ ★
+> 四臂变异台全检出（★ 含「守卫原样保留、只挪到 BEGIN 之前 ⇒ 门报**落在事务块外**」）。
+> ⇒ ★★ **★ 本轮测得一条 handover 级事实（★ 原文未记 ⇒ 别再重复排查）**：
+> ⇒ ★★ **`make test`（全量口径）当前【结构性地不可能全绿】** —— ★ `scripts/ursmcheck`
+> 属 `GUARD_PACKAGES_SLOW`，★ 本轮实测 `make guards-ursmcheck` 需 **407.8s**
+> （★ Makefile 另记有机器实测1122.8s）而 `make test` 给 **300s** ⇒ ⇒ ★★ **它必然超时
+> panic** ⇒ ⇒ ⇒ ★★ **CI 从不跑 `make test`**（★跑的是 `make test-short` 本轮 **rc=0 /
+> 2m55s** ＋ `make guards`）⇒ ⇒ ⇒ ★★ ⇒ **别把这条超时当回归上报，也别擅自改
+> `make test` 的口径**（★ 审计轮已把「CI 有无否决权」登记为**属主待决**项 P3-4）。
+> ⇒ ★ **另一条既有红**：`make guards-deploy` 与 `tests/*.sh` 的 **7 套**
+> （★ deploy_lock / deploy_switch_lock_contract / deploy_via_identity_gates_iso /
+> deploy_local_contract / deploy_rollback / deploy_ssh_retry / session_storage_audit_gate）
+> ⇒ ⇒ ★★ 根因 = **工具沙箱对「脚本内嵌套的 mavis-trash 调用」拒绝删除**
+> （★ 同一调用在工具顶层直调**成功**）⇒ ⇒ ★★ **同工作区 A/B（不含本轮改动）逐条同样红**
+> ⇒ ⇒ ★★ **既有环境红、非回归** ⇒ ★ 前 4 套本仓 AGENTS.md 早已登记。
+> ⇒ ★ **双仓同步**：codeup `855c1ffe4`（★ 本地 HEAD 一致）+ github 树移植 `e6621be21d`
+> （★ tree `e7f1f48efe6b` 两仓相同、★ `diff --stat` 为空、★ 镜像原始历史一条不丢）。
+> ⇒ 通用式见 `LESSONS.md` **§595**（3 条）。
 > **2026-10-30 第 15 增量：耗时治理 + count_tokens 限流收口轮**（会话
 > `mvs_bebea3efc1bd4fee824da9780c6ddce2`）：★ 承接 `docs/audit/2026-10-29-Gemini-countTokens诚实实现轮.md`
 > §9 登记的三项（转发上游那一支 / Anthropic count_tokens 无 RPM 缺口 / streaming 耗时逼近余量）。
