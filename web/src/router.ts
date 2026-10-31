@@ -210,8 +210,12 @@ export const router = createRouter({
     // 权限与 /dashboard 同级（requiresAuth），租户管理员进入即按会话租户收窄。
     { path: '/live',               component: LiveTopologyView, meta: { requiresAuth: true } },
     // 2026-10-18: 请求详情**全页**（owner 要求：面板可整页打开某条请求的
-    // 详情）。从 /live 左右面板的 ↗ 进入，非导航项（navCoverage 按孤儿登记）；
-    // 数据来自实时滚动窗口，直链/刷新时可能已滚出（页面如实说明，不冒充空详情）。
+    // 详情）。非导航项（navCoverage 按孤儿登记）；数据来自实时滚动窗口，
+    // 直链/刷新时可能已滚出（页面如实说明，不冒充空详情）。
+    // ★ 2026-10-31 注释订正：/live 左右面板的行内入口早已不走本路由 ——
+    //   点行弹摘要浮层（RequestZoomPanel），「查看全景」/行尾 ↗ 走
+    //   openRequestDetailPage → /request-detail/:id（RequestDetailFullscreenView）。
+    //   本路由目前无仓内调用方（保留：直链兼容，删路由属产品裁决）。
     { path: '/live/request/:requestId', component: RequestDetailPage, meta: { requiresAuth: true } },
 
     // super_admin only — providers, catalog, free pool, tenants, audit logs
