@@ -28048,3 +28048,15 @@ transaction block）+ `&&` 短路让后续 `$D` 未赋值打空路径——**每
 ★ **同族**：★ [[量具口径比事实源窄 ⇒ 伪绿]] · ★ [[变异臂的「红」也有两种读法]] · ★ [[「0 丢弃」是判据分化的输出不是机器静默]] · ★ [[部署判据=候选集合对拍，不预设 WARN=0]]
 
 ★ **证据**：2026-10-31 llm-gateway-go——`d953b55e3`（攒批本体：manager drainBatch + BatchEventWriter + Postgres/Memory RecordEvents + count 进 INSERT + Status 露 dropped）+ `7eb19712d`（去 omitempty）推 origin/main；测试 9 例新增；**变异臂 6/6 检出、还原 md5 逐字一致**；sanitizerules/security/sanitize/admin/outputcompliance 四包绿 + `-race` 绿；211 部署 d953b55e3 槽 b 接管（干净 worktree + LLM_GATEWAY_ROOT 钉根），`queue full` 0、事件落库实证、候选集合对拍四臂全 PASS；AGENTS 归档拆分字节级三重核对无丢失。审计档 `docs/audit/2026-10-31-第11轮遗留收口轮-sanitize审计攒批与resolver部署判据.md`。
+
+## §597 · 三台部署轮（245/154/211 全量上 7eddace4，2026-10-31）—— ★★★★ **「修好取数面」会让此前被熔断掩盖的上游病灶现形——修复后新出现的失败不是回归**；★★★ **部署暴露的 error 要先用旧账定时间戳再定性**；★★★ **每台部署后产物必脏，换台前不还原 ⇒ 下一台构建 -dirty**；★★ 部署脚本 rc 必须取自脚本本体而不是外层 echo
+
+★ **场景**：三台部署后验证发现 245 的 glm-5.3-flash 走「空响应→failover→耗尽」——而旧二进制时代该形态 **0 出现**。定性链：delta（37004018..7eddace4）里 **executor 零改动**，只有 provider 可选信号 fail-open（§596 前身 dfcb1bc36：chr() 缺失 42883 曾把候选查询打熔断 ⇒ 全量 500）⇒ **旧二进制根本建不出候选列表**（熔断挡住），新二进制按设计放行 ⇒ 流量第一次真实打到那批上游 ⇒ 上游自身的空响应暴露。⇒ ★★★★ **fail-open 类修复的部署判据必须预期「病灶现形」：修的是取数面，取到的是真实世界的病**——把现形的失败当回归去回滚，等于把熔断当健康。⇒ ★★ 验证法：同健康面换模型对照（minimax-m2.7-highspeed 两台真实 200）+ 旧 unit 日志时间戳（该形态旧账 0 条**且旧代码路径根本到不了上游**）。
+
+★ **通用式一（★★★）——部署后的 error 三条都有「旧账时间戳」**：partition ensure timeout（usage_ledger 2026-12，round-11 已登记的 245 既有形态）/ credential 83 `parse "http://{host}:{port}"` 模板未填（10-30 旧二进制同错，2h 周期）/ credential 99012 解密失败 + maintain-api healthz 503（b 容器 48h 旧账同族）⇒ **定性顺序 = 先查旧行二进制窗口有没有同族，再谈回归**；数据缺陷（模板凭据、解密失败）登记属主处置，不擅自改生产凭据数据。
+
+★ **通用式二（★★★）——部署产物脏文件清单固定五件**：VERSION / docs/db-changelog.md / version.json / web/public/menu-config.json / web/public/version.json ⇒ **每台部署完成立刻 `git checkout -- .`（确认无在途手工改动后）再部署下一台**，否则下一台的构建 sha 带 `-dirty`（10-18 旧坑的机械防）。
+
+★ **同族**：★ [[上线是持续状态会被并行部署没收]] · ★ [[「门绿」与「用户看到的行为」]] · ★ [[fail-open 是语义裁决不是实现细节]] · ★ [[阴性结论也要当缺陷一样复核]]
+
+★ **证据**：2026-10-31 三台全量上 7eddace4——245 `2.5.9-7eddace4-20261031-2911`（8781 active，公网 vhost 实证新 build，minimax-m2.7-highspeed 真实 200）/ 154 `2.5.9-7eddace4-20261031-2912`（8781 active，真实 200）/ 211 `2.5.8-7eddace4-20261031-211`（槽 a 接管，生产流量 15min 16 笔 success）；三台 queue full=0 / 歧义 WARN=0 / **dropped_events:0 显式上屏（7eb19712d 生效）**；`make test-short` RC=0（CI 口径全量）。**观察登记（属主确认项）**：245 与 154 的 `LLM_GATEWAY_DATABASE_URL` 同指 `172.16.2.210:5432/llm_gateway`（第三台 PG；两台部署的迁移由锁契约协调成功，功能全通）——是否为有意的共享控制面，属主裁决。
