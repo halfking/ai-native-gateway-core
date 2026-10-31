@@ -17,7 +17,7 @@
 AI Native Gateway is an **open-source, self-hosted, AI-native LLM gateway** built for the era of AI agents and "vibe coding". It does far more than forward requests: it **classifies, routes, governs, audits, and bills** every token that flows through your organization.
 
 - **Protocol Normalization**: OpenAI, Anthropic, Gemini, and Responses API compatibility — one endpoint for every model
-- **Intelligent Two-Layer Routing**: L1 picks the model (task classification → 8-dimension scoring), L2 picks the credential (tier fallback → billing round → P2C scoring → execute / circuit-break)
+- **Intelligent Two-Layer Routing**: L1 picks the model (task classification → 4-dimension channel-quality scoring), L2 picks the credential (tier fallback → billing round → P2C scoring → execute / circuit-break)
 - **Session Governance**: sticky sessions, full-content session replay, automatic prompt compression, and 4-tier data lifecycle — the conversation, not just the request, is a first-class managed object
 - **Multi-Tenancy**: PostgreSQL RLS-enforced tenant isolation on 90+ tables, with per-tenant quotas, metering, and MaaS billing
 - **Credential Management**: multi-credential pools with fingerprint disguise, adaptive probing, and automatic circuit-breaking
@@ -162,7 +162,7 @@ All modules below are shipped and running in the k3s production deployment. Scre
 ### Routing Panorama — Two-Layer Routing, Fully Observable
 
 ![Routing Panorama](docs/assets/screenshots/routing-panorama.png)
-*L1 model selection (task classification → 8-dimension scoring → profile lock) + L2 credential selection (model resolution → tier fallback → billing round → P2C scoring → execute / circuit-break). Task×model heatmap answers "which model for which task"; Sankey flow shows the final destination of 14,000+ live requests (task → model → provider)*
+*L1 model selection (task classification → 4-dimension channel-quality scoring → profile lock) + L2 credential selection (model resolution → tier fallback → billing round → P2C scoring → execute / circuit-break). Task×model heatmap answers "which model for which task"; Sankey flow shows the final destination of 14,000+ live requests (task → model → provider)*
 
 ### Credential Monitor — Multi-Source × Multi-Credential Health
 

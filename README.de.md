@@ -17,7 +17,7 @@
 AI Native Gateway ist ein **Open-Source-, self-hosted-, AI-nativer LLM-Gateway**, gebaut für das Zeitalter von KI-Agenten und „Vibe Coding“. Es tut weit mehr, als Anfragen weiterzuleiten: Es **klassifiziert, routet, steuert, auditiert und abrechnet** jedes Token, das durch Ihre Organisation fließt.
 
 - **Protokoll-Normalisierung**: OpenAI-, Anthropic-, Gemini- und Responses-API-Kompatibilität — ein Endpunkt für jedes Modell
-- **Intelligentes Zwei-Schichten-Routing**: L1 wählt das Modell (Task-Klassifikation → 8-Dimensionen-Scoring), L2 wählt das Credential (Tier-Fallback → Billing-Runde → P2C-Scoring → Execute / Circuit-Break)
+- **Intelligentes Zwei-Schichten-Routing**: L1 wählt das Modell (Task-Klassifikation → 4-Dimensionen-Kanalqualitäts-Scoring), L2 wählt das Credential (Tier-Fallback → Billing-Runde → P2C-Scoring → Execute / Circuit-Break)
 - **Session-Governance**: Sticky Sessions, vollständiges Session-Replay, automatische Prompt-Kompression und 4-stufiger Datenlebenszyklus — das Gespräch, nicht nur der Request, ist ein First-Class-Objekt
 - **Multi-Tenancy**: Durch PostgreSQL-RLS erzwungene Tenant-Isolation auf 90+ Tabellen, mit Tenant-spezifischen Quotas, Metering und MaaS-Billing
 - **Credential-Management**: Multi-Credential-Pools mit Fingerprint-Tarnung, adaptivem Probing und automatischem Circuit-Breaking
@@ -162,7 +162,7 @@ Alle unten gezeigten Module sind ausgeliefert und laufen im k3s-Produktionsdeplo
 ### Routing-Panorama — Zwei-Schichten-Routing, voll beobachtbar
 
 ![Routing Panorama](docs/assets/screenshots/routing-panorama.png)
-*L1-Modellwahl (Task-Klassifikation → 8-Dimensionen-Scoring → Profil-Lock) + L2-Credential-Wahl (Modell-Auflösung → Tier-Fallback → Billing-Runde → P2C-Scoring → Execute / Circuit-Break). Die Task×Modell-Heatmap beantwortet „welches Modell für welchen Task“; der Sankey-Flow zeigt das endgültige Ziel von 14.000+ Live-Requests (Task → Modell → Provider)*
+*L1-Modellwahl (Task-Klassifikation → 4-Dimensionen-Kanalqualitäts-Scoring → Profil-Lock) + L2-Credential-Wahl (Modell-Auflösung → Tier-Fallback → Billing-Runde → P2C-Scoring → Execute / Circuit-Break). Die Task×Modell-Heatmap beantwortet „welches Modell für welchen Task“; der Sankey-Flow zeigt das endgültige Ziel von 14.000+ Live-Requests (Task → Modell → Provider)*
 
 ### Credential-Monitor — Multi-Source × Multi-Credential-Health
 

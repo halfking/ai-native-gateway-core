@@ -121,7 +121,7 @@ graph TB
     PARSE --> SESSION["会话指派 assignGatewaySession<br/>（详见会话生命周期文档 §2）"]
     SESSION --> SEC["安全钩子<br/>promptinjection / outputcompliance / secretmask"]
     SEC --> AUTO{"model=auto?"}
-    AUTO -->|"是"| L1["L1 自动选模型<br/>任务分类 + 8 维评分<br/>(autoroute/, AUTO_ENABLE_V2 默认 false)"]
+    AUTO -->|"是"| L1["L1 自动选模型<br/>任务分类 + 4 维通道质量评分<br/>(autoroute/, AUTO_USE_CHANNEL_QUALITY_ROUTING 默认 true)"]
     AUTO -->|"否，显式 model"| L2IN["模型解析 / models_canonical"]
     L1 --> RES
     L2IN --> RES["资源准备<br/>语义缓存检查 / 提示词压缩(上下文 ~80% 触发) / 附件"]
@@ -160,9 +160,9 @@ graph TB
 graph TB
     subgraph L1["L1 模型选择（model=auto 时）"]
         CLS["Prompt 任务分类<br/>classifier.go 8 类 / classifier_v3.go 10 类<br/>(flag auto_v3_enhanced_classification)"]
-        SCORE8["8 维评分<br/>价格 / 速度 / 稳定性 / 匹配度 / 压力 / 上下文适配 / 版本新旧度 / 优势匹配"]
+        SCORE4["4 维通道质量评分<br/>意图匹配 / 价格 / 通道质量 / 可靠性"]
         LOCK["Profile 锁定<br/>显式 model 参数绕过 L1"]
-        CLS --> SCORE8 --> PICK["选定目标模型"]
+        CLS --> SCORE4 --> PICK["选定目标模型"]
         LOCK -.->|"bypass"| PICK
     end
 
