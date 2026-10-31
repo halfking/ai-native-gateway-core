@@ -422,8 +422,12 @@ func TestNvidiaHostIncident_LearnedStripsApply(t *testing.T) {
 	// 事故错误文案（211 生产 2026-10-29 00:04–01:32Z 实测原文）必须能被
 	// Diagnose 判为 param_rejected 并点名 reasoning。
 	incidentBody := []byte(`{"message":"Validation: Unsupported parameter(s): ` + "`reasoning`" + `","type":"Bad Request","code":400}`)
+	// 事故请求体的思考参数形态：ZCode 同时发 Responses 形状的 reasoning
+	// 对象与 chat 形状的 reasoning_effort（10-28 审计档记录的出站体原文：
+	// reasoning={"effort":"max"} + reasoning_effort="max" + enable_thinking
+	// + thinking）。nvidia 拒前者、接受后者 ⇒ 剥参必须只剥被点名的那一个。
 	outbound := []byte(`{"model":"z-ai/glm-5.3-flash","messages":[{"role":"user","content":"hi"}],` +
-		`"reasoning":{"effort":"max"},"enable_thinking":true}`)
+		`"reasoning":{"effort":"max"},"reasoning_effort":"max","enable_thinking":true}`)
 	diag, ok := reqprobe.Diagnose(reqprobe.Input{
 		HTTPStatus:   400,
 		ErrorBody:    incidentBody,
