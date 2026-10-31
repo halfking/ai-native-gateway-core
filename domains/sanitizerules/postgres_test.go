@@ -192,6 +192,42 @@ func TestPostgresIntegrationVersionEventsAndManagers(t *testing.T) {
 	}
 }
 
+// TestPostgresRecordEventsBatch：批路径（unnest 多行 upsert）的真库语义。
+// 2026-10-31 24h 审计第 12 轮 —— 三个必须钉住的点：
+//  1. 同批同指纹归并为一次 count += n（单语句对同一冲突键命中两次会报
+//     "cannot affect row a second time"，归并是正确性前提不是优化）；
+//  2. 新行按 n 落地、冲突行 count 累加，与逐条路径的 count+1 等价；
+//  3. 全部无效的批次返回校验错误（与单事件路径同语义）。
+func TestPostgresRecordEventsBatch(t *testing.T) {
+	s := integrationStore(t)
+	ctx := context.Background()
+	secret := Event{TenantID: "tenant-a", RuleID: "secret", Phase: "input", Action: "mask"}
+	other := Event{TenantID: "tenant-a", RuleID: "other", Phase: "output", Action: "log"}
+	if err := s.RecordEvents(ctx, []Event{secret, secret, other}, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordEvents(ctx, []Event{secret, other, other}, 100); err != nil {
+		t.Fatal(err)
+	}
+	events, err := s.ListEvents(ctx, EventFilter{TenantID: "tenant-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int64{}
+	for _, ev := range events {
+		counts[ev.RuleID] = ev.Count
+	}
+	if counts["secret"] != 3 {
+		t.Fatalf("secret count = %d, want 3 (同批 2 条归并落地 + 冲突 1)", counts["secret"])
+	}
+	if counts["other"] != 3 {
+		t.Fatalf("other count = %d, want 3 (同批 1 条落地 + 冲突批归并 2)", counts["other"])
+	}
+	if err := s.RecordEvents(ctx, []Event{{RuleID: "x", Phase: "nope", Action: "mask"}}, 100); err == nil {
+		t.Fatal("all-invalid batch must return the validation error")
+	}
+}
+
 func TestPostgresSchemaReplayRollbackAndReviewTransaction(t *testing.T) {
 	s := integrationStore(t)
 	ctx := context.Background()

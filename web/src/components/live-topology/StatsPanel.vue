@@ -68,8 +68,12 @@ const { t } = useI18n()
 type StatsInterval = '5m' | '1h' | 'day'
 
 const interval = ref<StatsInterval>('day')
-/** 折叠只收明细两组；总量行常驻（见文件头）。 */
-const collapsed = ref(false)
+/** 折叠只收明细三组；总量行常驻（见文件头）。
+ *  ★ 窄视口（<1440，两栏/单列布局）默认收起（2026-10-31 收口轮）：明细三组
+ *  在该宽度下高 ~450px，是浮层塌缩轮的挤占源头（主区只剩 90px ⇒ 栅格行
+ *  塌 0 ⇒ 摘要浮层缩成一条缝）。只定**初始默认** —— 用户点开关之后的
+ *  开/收由用户说了算，不随 resize 重置；宽屏（≥1440）维持展开不变。 */
+const collapsed = ref(typeof window !== 'undefined' && window.innerWidth < 1440)
 
 const clientsData = ref<TopologyClientsToday | null>(null)
 const providersData = ref<TopologyProvidersToday | null>(null)

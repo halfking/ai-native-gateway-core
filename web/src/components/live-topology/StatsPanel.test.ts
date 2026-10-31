@@ -92,8 +92,21 @@ function modelItem(over: Record<string, unknown> = {}) {
 //   是测试自己 —— 泄漏治理对量具同样生效。
 const mountedWrappers: VueWrapper[] = []
 
+/** 窄视口（<1440）默认收起明细（见 StatsPanel.vue collapsed 注释）—— 本文件
+ *  既有判据都以「桌面展开态」为基线 ⇒ 挂载前把 innerWidth 钉在宽视口，
+ *  setup() 读完后立刻还原；窄默认另有专测（不靠本辅助）。 */
+function withDesktopWidth<T>(fn: () => T): T {
+  const prev = window.innerWidth
+  Object.defineProperty(window, 'innerWidth', { value: 1600, configurable: true })
+  try {
+    return fn()
+  } finally {
+    Object.defineProperty(window, 'innerWidth', { value: prev, configurable: true })
+  }
+}
+
 function mountPanel(props: PanelProps = {}) {
-  const w = mount(StatsPanel, { props: props as never, global: { plugins: [i18n] } })
+  const w = withDesktopWidth(() => mount(StatsPanel, { props: props as never, global: { plugins: [i18n] } }))
   mountedWrappers.push(w)
   return w
 }
@@ -211,6 +224,28 @@ describe('StatsPanel 总量行（常驻）', () => {
 
     await w.find('[data-testid="stats-toggle"]').trigger('click')
     expect(w.find('[data-testid="stats-group-providers"]').exists()).toBe(true)
+  })
+
+  it('★ 窄视口（<1440）默认收起明细：总量行常驻，点开关展开恢复（2026-10-31 收口轮）', async () => {
+    mockedProviders.mockResolvedValue({
+      day_utc: '2026-10-28',
+      totals: totals({ requests: 10, success: 9 }),
+      items: [providerItem()],
+    })
+    // 不经 withDesktopWidth —— 让 setup() 读到窄宽度（jsdom 默认 1024 即窄）。
+    const w = mount(StatsPanel, { props: {} as never, global: { plugins: [i18n] } })
+    mountedWrappers.push(w)
+    await flushPromises()
+    // 初始即收起：明细组不存在，总量行与开关仍在
+    expect(w.find('[data-testid="stats-group-providers"]').exists()).toBe(false)
+    expect(w.find('[data-testid="stats-group-clients"]').exists()).toBe(false)
+    expect(w.find('[data-testid="stats-totals"]').exists()).toBe(true)
+    expect(w.find('[data-testid="stats-toggle"]').attributes('aria-expanded')).toBe('false')
+
+    // 用户点开关 ⇒ 展开（默认值只管初始态，不锁用户）
+    await w.find('[data-testid="stats-toggle"]').trigger('click')
+    expect(w.find('[data-testid="stats-group-providers"]').exists()).toBe(true)
+    expect(w.find('[data-testid="stats-toggle"]').attributes('aria-expanded')).toBe('true')
   })
 
   it('供应商组 degraded：总量行渲染「不可用」，不是 0 表；模型组独立', async () => {

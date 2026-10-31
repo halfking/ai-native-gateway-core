@@ -1,8 +1,10 @@
 package modelbinding
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -127,6 +129,93 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// captureLogs 把默认 slog 换成 Debug 级 buffer handler 并登记恢复。
+// 2026-10-31 24h 审计第 12 轮：第 11 轮立项卡落地的降噪门槛（特异性胜出 ⇒
+// Debug 静默、仅同分 WARN）此前只有选择结果断言、没有日志行为断言 ——
+// 门槛被改坏（同分也静默 / 永远静默 / 永远 WARN）时测试全绿，
+// 而 211 的告警面要么刷屏要么真歧义漏报。日志行为就是本门槛的交付物。
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	original := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(original) })
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	return &buf
+}
+
+func TestResolveRawBinding_LogBehavior(t *testing.T) {
+	tests := []struct {
+		name        string
+		results     []string
+		request     string
+		wantDebug   string // 命中该 Debug 消息（空 = 不要求）
+		wantWarn    string // 命中该 WARN 消息（空 = 不得出现任何 WARN）
+		forbidWarn  bool
+	}{
+		{
+			// 特异性胜出（rank1 < rank3）⇒ Debug 留痕、零 WARN —— glm 族
+			// 「每成功请求一条」刷屏的消音判据本体。
+			name:      "specificity winner is silent (debug only)",
+			results:   []string{"", "z-ai/glm-5.3-flash\x1f1\x1ez-ai/glm-5.3\x1f3"},
+			request:   "glm-5.3-flash",
+			wantDebug: "resolved by specificity ranking",
+			wantWarn:  "",
+			forbidWarn: true,
+		},
+		{
+			// 真同分（两绑定经同一变体命中，rank 相等）⇒ 维持 WARN。
+			name:       "rank tie keeps ambiguity WARN",
+			results:    []string{"", "m-a\x1f2\x1em-b\x1f2"},
+			request:    "some-model",
+			wantDebug:  "",
+			wantWarn:   "ambiguous normalized model binding",
+			forbidWarn: false,
+		},
+		{
+			// rank 段缺失（异常 wire）⇒ 按「不比任何人特异」⇒ WARN 路径。
+			name:       "missing rank keeps ambiguity WARN",
+			results:    []string{"", "m-a\x1em-b"},
+			request:    "some-model",
+			wantDebug:  "",
+			wantWarn:   "ambiguous normalized model binding",
+			forbidWarn: false,
+		},
+		{
+			// exact 同名多绑定 ⇒ 语义不动（2026-09-06 P0.3），仍 WARN。
+			name:       "exact ambiguity still warns",
+			results:    []string{"alpha\x1fbeta"},
+			request:    "alpha",
+			wantDebug:  "",
+			wantWarn:   "ambiguous exact model binding",
+			forbidWarn: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := captureLogs(t)
+			db := &fakeDB{results: tt.results}
+			got, err := ResolveRawBinding(context.Background(), db, 19, tt.request)
+			if err != nil {
+				t.Fatalf("ResolveRawBinding() error = %v", err)
+			}
+			if got == "" {
+				t.Fatalf("ResolveRawBinding() = empty")
+			}
+			logs := buf.String()
+			if tt.forbidWarn && strings.Contains(logs, "level=WARN") {
+				t.Fatalf("expected zero WARN for %q, got:\n%s", tt.request, logs)
+			}
+			if tt.wantDebug != "" && !strings.Contains(logs, tt.wantDebug) {
+				t.Fatalf("expected debug log %q, got:\n%s", tt.wantDebug, logs)
+			}
+			if tt.wantWarn != "" && !strings.Contains(logs, tt.wantWarn) {
+				t.Fatalf("expected warn log %q, got:\n%s", tt.wantWarn, logs)
+			}
+		})
+	}
 }
 
 // querySpyDB 捕获收到的 SQL 文本（fakeDB 只收参数不收文本 ⇒ 排序子句被

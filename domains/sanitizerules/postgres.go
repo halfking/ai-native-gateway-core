@@ -14,6 +14,7 @@ import (
 type PostgresStore struct{ db *sql.DB }
 
 func NewPostgresStore(db *sql.DB) *PostgresStore { return &PostgresStore{db: db} }
+
 // storeError 把底层错误洗成「sanitize rule <操作> failed」。
 //
 // ★ 2026-10-29（输出合规误报轮）：**清洗不能把根因一起洗掉**。洗涤前的
@@ -222,6 +223,76 @@ func scanEvent(row rowScanner) (Event, error) {
 		e.ReviewedAt = &reviewed.Time
 	}
 	return e, nil
+}
+
+// RecordEvents persists a whole audit batch in one transaction: one advisory
+// lock, one multi-row upsert, one retention pass. Events may repeat a
+// fingerprint; they are aggregated first so ON CONFLICT touches each row
+// exactly once and the per-event count semantics survive the batch (count +=
+// hits, last_seen = newest hit; first_seen only lands on a fresh INSERT).
+func (s *PostgresStore) RecordEvents(ctx context.Context, events []Event, limit int) error {
+	if len(events) == 0 {
+		return nil
+	}
+	agg := make(map[string]Event, len(events))
+	order := make([]string, 0, len(events))
+	for _, raw := range events {
+		e, err := prepareEvent(raw)
+		if err != nil {
+			return storeError("event write", err)
+		}
+		if prev, ok := agg[e.Fingerprint]; ok {
+			prev.Count += e.Count
+			if e.LastSeen.After(prev.LastSeen) {
+				prev.LastSeen = e.LastSeen
+			}
+			if e.FirstSeen.Before(prev.FirstSeen) {
+				prev.FirstSeen = e.FirstSeen
+			}
+			agg[e.Fingerprint] = prev
+			continue
+		}
+		agg[e.Fingerprint] = e
+		order = append(order, e.Fingerprint)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return storeError("event write", err)
+	}
+	defer tx.Rollback()
+	// Serialize the bounded-retention update across instances. Requests never wait
+	// here: Manager owns a finite background queue and a context-bound worker.
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(741968280105)`); err != nil {
+		return storeError("event retention lock", err)
+	}
+	var sb strings.Builder
+	// count must be an INSERT column carrying the aggregated hit total: it
+	// defaults to 1, so a merged fingerprint of k events in one batch would
+	// otherwise land as count=1 (fresh) or count+1 (conflict) and lose k-1 hits.
+	sb.WriteString(`INSERT INTO sanitize_rule_events(fingerprint,tenant_id,rule_id,version,phase,action,sample_masked,first_seen,last_seen,sensitive_type,field_kind,count) VALUES `)
+	args := make([]any, 0, len(order)*12)
+	for i, fp := range order {
+		e := agg[fp]
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		base := i * 12
+		fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)", base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10, base+11, base+12)
+		args = append(args, e.Fingerprint, e.TenantID, e.RuleID, e.Version, e.Phase, e.Action, e.SampleMasked, e.FirstSeen, e.LastSeen, e.Type, e.Field, e.Count)
+	}
+	// count accumulates by the aggregated hit total, not by a constant 1 — a
+	// merged fingerprint of k events must land as count+k.
+	sb.WriteString(` ON CONFLICT(fingerprint) DO UPDATE SET count=sanitize_rule_events.count+EXCLUDED.count,last_seen=EXCLUDED.last_seen`)
+	if _, err = tx.ExecContext(ctx, sb.String(), args...); err != nil {
+		return storeError("event write", err)
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM sanitize_rule_events WHERE id IN (SELECT id FROM sanitize_rule_events ORDER BY last_seen DESC,id DESC OFFSET $1)`, retentionLimit(limit)); err != nil {
+		return storeError("event retention", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return storeError("event commit", err)
+	}
+	return nil
 }
 func (s *PostgresStore) RecordEvent(ctx context.Context, event Event, limit int) error {
 	e, err := prepareEvent(event)

@@ -107,6 +107,12 @@ type Instance struct {
 	LastSeen     time.Time `json:"last_seen"`
 	LastRefresh  time.Time `json:"last_refresh"`
 	Error        string    `json:"error"`
+	// DroppedEvents surfaces the cumulative count of audit events rejected by a
+	// full queue (2026-10-31 211: 44250 dropped / 3h was only discoverable by
+	// reading logs). Filled by Manager.Status; Heartbeat ignores it. No
+	// omitempty: an explicit 0 proves the counter is wired (absence on old
+	// binaries is ambiguous with a silent zero).
+	DroppedEvents int64 `json:"dropped_events"`
 }
 
 // Store never creates schema. Provision SchemaSQL using the existing migration path.
@@ -123,6 +129,18 @@ type Store interface {
 	Heartbeat(context.Context, Instance) error
 	ListInstances(context.Context) ([]Instance, error)
 }
+
+// BatchEventWriter is an optional Store capability. The audit worker drains its
+// queue in batches; stores implementing this interface persist a whole batch in
+// one transaction (one advisory-lock acquisition, one multi-row upsert, one
+// retention pass) instead of paying the per-event transaction cost. 2026-10-31
+// 211: production hit rates (observeRule fires per matched rule) outran the
+// single-row path, the bounded queue stayed full and 44250 audit events were
+// dropped in 3h. Managers fall back to per-event RecordEvent when a store does
+// not implement this interface.
+type BatchEventWriter interface {
+	RecordEvents(ctx context.Context, events []Event, limit int) error
+}
 type Notifications interface {
 	Publish(context.Context, int64) error
 	Subscribe(context.Context) (<-chan int64, error)
@@ -137,5 +155,7 @@ type Options struct {
 	EventLimit     func() int
 	Notifications  Notifications
 	OnError        func(error)
-	QueueSize      int
+	// QueueSize bounds the audit metadata backlog. The default (4096) absorbs
+	// production bursts; see BatchEventWriter for why the backlog can grow.
+	QueueSize int
 }

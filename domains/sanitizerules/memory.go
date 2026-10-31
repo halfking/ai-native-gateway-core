@@ -118,23 +118,53 @@ func validatePublish(cfg Config, actor, comment string, rollback int64) error {
 	return nil
 }
 func (s *MemoryStore) RecordEvent(ctx context.Context, event Event, limit int) error {
-	e, err := prepareEvent(event)
-	if err != nil {
-		return err
+	return s.RecordEvents(ctx, []Event{event}, limit)
+}
+
+// RecordEvents is the batch twin of RecordEvent: duplicate fingerprints are
+// aggregated first (count += hits, last_seen = newest) so the upsert keeps the
+// per-event count semantics, then one retention pass bounds the map.
+func (s *MemoryStore) RecordEvents(ctx context.Context, events []Event, limit int) error {
+	if len(events) == 0 {
+		return nil
+	}
+	agg := make(map[string]Event, len(events))
+	order := make([]string, 0, len(events))
+	for _, raw := range events {
+		e, err := prepareEvent(raw)
+		if err != nil {
+			return err
+		}
+		if prev, ok := agg[e.Fingerprint]; ok {
+			prev.Count += e.Count
+			if e.LastSeen.After(prev.LastSeen) {
+				prev.LastSeen = e.LastSeen
+			}
+			if e.FirstSeen.Before(prev.FirstSeen) {
+				prev.FirstSeen = e.FirstSeen
+			}
+			agg[e.Fingerprint] = prev
+			continue
+		}
+		agg[e.Fingerprint] = e
+		order = append(order, e.Fingerprint)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err = ctx.Err(); err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if old, ok := s.events[e.Fingerprint]; ok {
-		old.Count++
-		old.LastSeen = e.LastSeen
-		s.events[e.Fingerprint] = old
-	} else {
-		s.nextEvent++
-		e.ID = s.nextEvent
-		s.events[e.Fingerprint] = e
+	for _, fp := range order {
+		e := agg[fp]
+		if old, ok := s.events[fp]; ok {
+			old.Count += e.Count
+			old.LastSeen = e.LastSeen
+			s.events[fp] = old
+		} else {
+			s.nextEvent++
+			e.ID = s.nextEvent
+			s.events[fp] = e
+		}
 	}
 	for len(s.events) > retentionLimit(limit) {
 		var oldest string
