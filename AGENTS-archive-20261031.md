@@ -12760,3 +12760,72 @@ outputcompliance / sql/migrations/startup / installer(dbinit) 全绿（新增 12
 > ⇒ 审计档第 9 轮 §11；通用式见 `LESSONS.md` **§590**（四条：WARN 归零先问负荷在不在 /
 > 上线是持续状态会被并行部署没收 / 注释里的否定词让整文件判据假绿 /
 > 判死判活的测试要能在没有该环境特征的主机上跑）。
+
+## ㊿ R185 轮（2026-10-31）· nvidia 直通事故轮的批判式审计轮（★★★ 「码」必须来自事实源的码空间；★★ 同一语义两份记忆不许两套有效期；★★ 「剥参」必须断言「不误伤」；★★ 短窗口只能证明「没坏」，稳态读数才证明「收敛」）
+
+> **本轮定位**：2026-10-29「nvidia 直通事故轮」的**批判式审计**（goal 会话）——
+> 先在 211 生产上复核该轮修复的实际效果，再审代码，修正三处真缺陷，同步文档，
+> 提交并合入主分支推送。
+> ⇒ ★★ **生产复核（211 当前部署 779c3e5d，含 10-29 修复）**：
+> ⇒① Redis 学到的 `reasoning` 拒绝次数/日：**886**（10-29 两条指纹 493+393）
+> → **23**（10-30）→ **5**（10-31）⇒ 收敛两个数量级；
+> ⇒ ② nvidia 腿上游400：事故期 5 分钟 36 次 → 现在 3 小时 **5 次**，且 5 次
+> **全部**是 TTL 到期后的再探测（设计内「不停探测」代价）；
+> ⇒ ③ 「applying learned param strips」：事故期 13 次且**只剥 prompt_cache_key**
+> → 现在3 小时 **360 次剥 reasoning** ⇒ 学习预剥离真正在首发前生效；
+> ⇒ ④ ★ **出站体原始日志（firehose base64 解码）逐键统计**：zhipu 真原厂对
+> **仍带全套** `enable_thinking/reasoning/reasoning_effort/thinking` ⇒ 厂商
+> 感知闸门依赖的 `cand.CatalogCode` 在运行时确实被填充（本次改动**最大**的
+> 回归风险点，已用生产证据排除）；nvidia 腿出站体**已无 `reasoning`**、
+> `reasoning_effort` 保留 ⇒ 剥参只剥被点名的那一个；
+> ⇒ ⑤ 当日 nvidia 腿 21 条终态失败**全部不是** param_rejected 族
+> （stream_timeout/stream_error/provider_error/transient）⇒ 用户报的那类 400
+> 已从终态面消失；全库无**新增** param_rejected 族 ⇒ 未把失败面扩散到别的
+> 供应商。
+> ⇒ ★★★ **审计发现1（真缺陷·配置层哑规则）**：nativepair 原厂码表里的
+> "minimaxai" / "deepseek-ai" 是**模型名里的厂商宿主前缀**（"minimaxai/
+> minimax-m2.7"），**不是 catalog code**（211 `provider_catalog` 与
+> `internal/paramreg.catalogToDialect` 都没有）⇒ 配置看起来成立、实际永不
+> 命中。修：与 paramreg SSOT 对齐（glm→{zhipu,glm,bigmodel,zai}、
+> minimax→{minimax}、deepseek→{deepseek}、claude→{anthropic}）+ 新增
+> `TestHomeCatalogAlignsWithParamreg`（每个原厂码必须被 paramreg 认识），
+> **变异臂**：放回凭想象的码 ⇒ 红 ⇒ 还原后 md5 逐字一致。
+> ⇒ ★★★ **审计发现 2（真缺陷·语义自相矛盾）**：`internal/paramrefusal`
+> （进程内）与 `internal/reqprobe`（Redis）是**同一语义两份记忆**（"这个字段
+> 上游发不得"），TTL 却一套 1h（10-29 按运营要求收的）一套写死 24h ⇒ 24h
+> 那侧**不重新探测**（上游后来支持了也照样被剥 24h），直接违反「时效 1 小时、
+> 失效再探测」。修：进程内记忆读同一 env（`LLM_GATEWAY_REQPROBE_LEARNED_TTL`，
+> 默认 1h），两份记忆同生共死；生产影响实测 0（211 `paramrefusal retry`
+> 从未触发）但语义不再矛盾。
+> ⇒ ★★★ **审计发现 3（真缺陷·测试盲区）**：事故回归测试只断言被点名参数被剥，
+> **没断言 `reasoning_effort` 仍在** —— 而它正是 nvidia 接受的 chat 线标准
+> 字段，剥掉它 = 思考意图静默丢失且请求照常 200（无 400 可查）。补断言当场
+> 暴露夹具与真实请求体不符（真实形态是两个形状同发）⇒ 夹具一并改。
+> ⇒ ★ **附带**：`LLM_GATEWAY_REQPROBE_LEARNED_TTL` 此前只在代码里，
+> `envs.samples/02-gateway-features.env.sample` 无从查 ⇒ 补登记。
+> ⇒ ★ **审计中查过但不改**：① 剥参写路径 `StripParamsForWire` 收集**全部**
+> 命中键（只有只读谓词 `StrippableParamsForWire` 首次命中即返回）——我最初
+> 误读了这两个同名近邻函数；② `volcengine-coding`（方舟 coding，托管 8 个 glm
+> 模型）**维持不进**原厂集：进/不进都不丢思考意图（`reasoning_effort` 承载
+> 意图且方舟真机七档实证接受），不进则 `thinking`/`enable_thinking` 走
+> r1021 政策被裁（对未知方言更安全），要进需单列证据；③ 空 catalog 中继
+> （211 有 42 个）从「直通」改「非直通」是**改进**（10-29 验证档 §10.1 登记的
+> 「第三方宿主+厂商参数」正是这个洞），10-30 有一条空 catalog 的
+> `glm-5.3-flash reasoning` 拒绝记录（1 次）⇒ 学习即时兜住；④ **`reasoning`
+> 静态翻译成 `reasoning_effort` 本轮不做**：那是跨供应商行为变更，对「只认
+> reasoning 不认 reasoning_effort」的供应商会造成**静默思考意图丢失**（本仓
+> 最忌的伤害类），学习机制已把代价压到每腿每小时一跳 400；若要静态化需先取
+> 跨端点实证并按 r1021 教义登记。
+> ⇒ ★ **读数**：干净 worktree（避开并行会话 WIP 造成的
+> `domains/streaming/request_meta.go` 语法错）`go build ./...` ✔；
+> `go test ./domains/streaming/... ./internal/...` 全绿；新增/修订测试：
+> `TestHomeCatalogAlignsWithParamreg`（含变异臂）、`TestNvidiaHostIncident_
+> LearnedStripsApply`（补「不误伤」断言 + 真实夹具）、
+> `TestRedisStoreLearningTTLWindow`（59min/61min 边界）、
+> `TestTTLExpiry`（进程内默认 1h 断言）。
+> ⇒ **提交**：`9485f53bc`（审计修正）+ 夹具修正提交；**合入主分支并推送**
+> origin/main。
+> ⇒ 审计档 `docs/audit/2026-10-29-nvidia直通事故轮-参数兼容学习闭环.md`
+> §8（2026-10-31 审计轮：生产复核表 + 三处修正 + 「查过不改」表）；
+> 通用式见 `LESSONS.md` **§601**（取号：fetch 实测 origin 最高 §600 ⇒ 跨号
+> 取 §601）；本轮前置的 10-29 修复见 §558 与审计档 §1~§7。
