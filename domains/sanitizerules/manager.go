@@ -26,6 +26,8 @@ type Manager struct {
 	errors    chan string
 	dropped   atomic.Int64
 	// lastQueueFullReport 是 queue-full WARN 的节流戳（unix nanos；0 = 未报过）。
+	// 2026-10-31 24h 审计第 12 轮：批路径修的是「丢事件」，这条修的是丢事件
+	// 发生时的告警风暴本身（211 实测 44250 WARN/3h 把其它告警挤出视野）。
 	lastQueueFullReport atomic.Int64
 	running             atomic.Bool
 	stopped             atomic.Bool
@@ -61,9 +63,9 @@ func NewManager(store Store, fallback Config, opts Options) (*Manager, error) {
 	}
 	size := opts.QueueSize
 	if size <= 0 {
-		// 2026-10-31 24h 审计第 12 轮：256 → 4096。输出合规上线后生产峰值
-		// ~5 条/秒，256 的余量在单轮排水抖动下不到一分钟就灌满 ⇒ 审计事件
-		// 成批丢弃。4096 ≈ 13 分钟的峰值生产量，内存开销可忽略。
+		// 2026-10-31 24h 审计第 12 轮：256 → 4096。批路径（BatchEventWriter）
+		// 已把排水速率提上来，4096 是给「上游 DB 抖动 + 命中风暴」同时发生的
+		// 突发余量（≈13 分钟峰值生产量），内存开销可忽略；上限 10000 不变。
 		size = 4096
 	}
 	if size > 10000 {
@@ -87,7 +89,13 @@ func (m *Manager) Pin(ctx context.Context) context.Context {
 	}
 	return context.WithValue(ctx, snapshotKey{}, m.Current())
 }
-func (m *Manager) Status() Instance { m.statusMu.Lock(); defer m.statusMu.Unlock(); return m.status }
+func (m *Manager) Status() Instance {
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+	inst := m.status
+	inst.DroppedEvents = m.dropped.Load()
+	return inst
+}
 func (m *Manager) report(message string) {
 	if m.opts.OnError != nil {
 		m.opts.OnError(errors.New(message))
@@ -229,6 +237,7 @@ func (m *Manager) Record(ctx context.Context, e Event) bool {
 // 已经是审计损失，再用同频 WARN 淹没告警面是第二次损失（211 实测 44250 条
 // WARN/3h ≈ 同额事件被丢，把其它告警全部挤出视野）。改为至多 30s 一条，
 // 且消息带上累计 dropped_total —— 幅度进告警面，而不是只留翻日志才知道。
+// 累计计数的管理面出口是 Status().DroppedEvents（第 11 轮遗留收口轮已接）。
 const queueFullReportInterval = 30 * time.Second
 
 func (m *Manager) reportQueueFull(total int64) {
@@ -264,6 +273,15 @@ func (m *Manager) pollInterval() time.Duration {
 	}
 	return d
 }
+
+// auditWriteBatchSize bounds how many queued audit events one background write
+// persists per store call. 2026-10-31 211: per-hit observeRule producers outran
+// the per-event transaction path (advisory lock + upsert + retention DELETE per
+// event), the bounded queue stayed full for hours and 44250 audit events were
+// dropped in 3h. Batching restores the drain rate without touching the request
+// path or the persistence semantics.
+const auditWriteBatchSize = 128
+
 func (m *Manager) writeEvent(ctx context.Context, e Event) {
 	// Settings can read the database. They belong to this bounded background
 	// worker; Record must never wait on a settings query in the request path.
@@ -281,55 +299,27 @@ func (m *Manager) writeEvent(ctx context.Context, e Event) {
 	}
 }
 
-// auditBatchSize / auditBatchLinger：每轮排水最多合并多少条、为等突发在队列
-// 空时最多逗留多久。审计数据不要求低延迟，逗留换事务次数的下降（211 生产
-// 峰值下每批 10~50 条 ⇒ 每批锁/保留清理只付一次）。
-const (
-	auditBatchSize   = 128
-	auditBatchLinger = 100 * time.Millisecond
-)
-
-// collectBatch 从队列继续收事件凑批。linger=false（停机排水）只收当前已在
-// 队列里的，不追加等待 —— 停机预算（2s）是硬的；linger=true 时队列暂时空
-// 也最多等 auditBatchLinger，让突发流量合并进同一事务。
-func (m *Manager) collectBatch(first Event, linger bool) []Event {
-	batch := append(make([]Event, 0, auditBatchSize), first)
-	for len(batch) < auditBatchSize {
-		if !linger {
-			select {
-			case e := <-m.queue:
-				batch = append(batch, e)
-				continue
-			default:
-			}
-			return batch
-		}
-		timer := time.NewTimer(auditBatchLinger)
-		select {
-		case e := <-m.queue:
-			timer.Stop()
-			batch = append(batch, e)
-		case <-timer.C:
-			return batch
-		}
-	}
-	return batch
-}
-
-// writeBatch 写一批审计事件：batcher 存在时整批一个事务（一次 settings 读、
-// 一次保留清理），否则退回逐条 —— 外部 Store 实现与测试 spy 未实现
-// BatchEventStore 时行为与旧版完全一致。
-func (m *Manager) writeBatch(ctx context.Context, batcher BatchEventStore, batch []Event) {
+// writeBatch persists a drained batch in one store call. Stores implementing
+// BatchEventWriter take the whole batch in one transaction; the fallback keeps
+// the historical per-event path so third-party Store implementations keep
+// working. The live audit switch filters per event, matching writeEvent: a
+// disabled switch discards already-queued events at write time.
+func (m *Manager) writeBatch(ctx context.Context, batch []Event) {
 	if len(batch) == 0 {
 		return
 	}
-	if batcher == nil {
-		for _, e := range batch {
-			m.writeEvent(ctx, e)
-		}
+	if len(batch) == 1 {
+		m.writeEvent(ctx, batch[0])
 		return
 	}
-	if m.opts.AuditEnabled != nil && !m.opts.AuditEnabled() {
+	events := make([]Event, 0, len(batch))
+	for _, e := range batch {
+		if m.opts.AuditEnabled != nil && !m.opts.AuditEnabled() {
+			continue
+		}
+		events = append(events, e)
+	}
+	if len(events) == 0 {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -338,40 +328,35 @@ func (m *Manager) writeBatch(ctx context.Context, batcher BatchEventStore, batch
 	if m.opts.EventLimit != nil {
 		limit = m.opts.EventLimit()
 	}
-	if err := batcher.RecordEvents(ctx, batch, limit); err != nil {
-		m.report("sanitize rule audit write failed")
+	if writer, ok := m.store.(BatchEventWriter); ok {
+		if err := writer.RecordEvents(ctx, events, limit); err != nil {
+			m.report("sanitize rule audit write failed")
+		}
+		return
+	}
+	for _, e := range events {
+		if err := m.store.RecordEvent(ctx, e, limit); err != nil {
+			m.report("sanitize rule audit write failed")
+		}
 	}
 }
 
-func (m *Manager) auditWorker(ctx context.Context) {
-	batcher, canBatch := m.store.(BatchEventStore)
-	flush := func(writeCtx context.Context, first Event, linger bool) {
-		if canBatch {
-			m.writeBatch(writeCtx, batcher, m.collectBatch(first, linger))
-			return
-		}
-		m.writeEvent(writeCtx, first)
-	}
-	for {
+// drainBatch takes the already-dequeued event plus whatever else is ready in
+// the queue without ever blocking: under flood each cycle drains a full batch,
+// under sparse traffic it returns immediately with a single event (the old
+// single-event shape, zero added latency).
+func (m *Manager) drainBatch(first Event) []Event {
+	batch := make([]Event, 0, auditWriteBatchSize)
+	batch = append(batch, first)
+	for len(batch) < auditWriteBatchSize {
 		select {
-		case <-ctx.Done():
-			drainCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			for {
-				select {
-				case e := <-m.queue:
-					flush(drainCtx, e, false)
-					if drainCtx.Err() != nil {
-						return
-					}
-				default:
-					return
-				}
-			}
 		case e := <-m.queue:
-			flush(ctx, e, true)
+			batch = append(batch, e)
+		default:
+			return batch
 		}
 	}
+	return batch
 }
 
 // Run owns background polling and bounded audit writes until cancellation. Audit
@@ -435,6 +420,28 @@ func (m *Manager) Run(ctx context.Context) {
 			_ = m.Refresh(ctx)
 			subscribe()
 			timer.Reset(m.pollInterval())
+		}
+	}
+}
+func (m *Manager) auditWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			drainCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			for {
+				select {
+				case e := <-m.queue:
+					m.writeBatch(drainCtx, m.drainBatch(e))
+					if drainCtx.Err() != nil {
+						return
+					}
+				default:
+					return
+				}
+			}
+		case e := <-m.queue:
+			m.writeBatch(ctx, m.drainBatch(e))
 		}
 	}
 }

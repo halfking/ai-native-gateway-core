@@ -83,10 +83,7 @@ func (h *Handler) handleSanitizeRules(w http.ResponseWriter, r *http.Request) {
 		snap := h.sanitizeRuleManager.Current()
 		// ★ 2026-10-29 输出合规误报轮：★ 补上规则**说明**（★ 事实源 = YAML +
 		// 内建目录；★ 历史规则快照里没有说明 ⇒ 不补的话管理面只能显示规则 ID）。
-		// ★ 2026-10-31 24h 审计第 12 轮：补 dropped_events —— 有界队列灌满时
-		// 事件被丢，此前只能靠翻日志发现（dropped 计数零消费方）。审计完整性
-		// 的数字必须上管理面，而不是藏在 DroppedEvents() 一个无调用点的导出方法里。
-		writeJSON(w, 200, map[string]any{"version": snap.Version, "config": sanitizerules.ApplyRuleDescriptions(snap.Config()), "config_digest": snap.ConfigDigest, "status": h.sanitizeRuleManager.Status(), "dropped_events": h.sanitizeRuleManager.DroppedEvents()})
+		writeJSON(w, 200, map[string]any{"version": snap.Version, "config": sanitizerules.ApplyRuleDescriptions(snap.Config()), "config_digest": snap.ConfigDigest, "status": h.sanitizeRuleManager.Status()})
 	case "/validate":
 		if !sanitizeRuleMethod(w, r, http.MethodPost) {
 			return

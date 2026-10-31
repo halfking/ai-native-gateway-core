@@ -107,6 +107,12 @@ type Instance struct {
 	LastSeen     time.Time `json:"last_seen"`
 	LastRefresh  time.Time `json:"last_refresh"`
 	Error        string    `json:"error"`
+	// DroppedEvents surfaces the cumulative count of audit events rejected by a
+	// full queue (2026-10-31 211: 44250 dropped / 3h was only discoverable by
+	// reading logs). Filled by Manager.Status; Heartbeat ignores it. No
+	// omitempty: an explicit 0 proves the counter is wired (absence on old
+	// binaries is ambiguous with a silent zero).
+	DroppedEvents int64 `json:"dropped_events"`
 }
 
 // Store never creates schema. Provision SchemaSQL using the existing migration path.
@@ -123,6 +129,18 @@ type Store interface {
 	Heartbeat(context.Context, Instance) error
 	ListInstances(context.Context) ([]Instance, error)
 }
+
+// BatchEventWriter is an optional Store capability. The audit worker drains its
+// queue in batches; stores implementing this interface persist a whole batch in
+// one transaction (one advisory-lock acquisition, one multi-row upsert, one
+// retention pass) instead of paying the per-event transaction cost. 2026-10-31
+// 211: production hit rates (observeRule fires per matched rule) outran the
+// single-row path, the bounded queue stayed full and 44250 audit events were
+// dropped in 3h. Managers fall back to per-event RecordEvent when a store does
+// not implement this interface.
+type BatchEventWriter interface {
+	RecordEvents(ctx context.Context, events []Event, limit int) error
+}
 type Notifications interface {
 	Publish(context.Context, int64) error
 	Subscribe(context.Context) (<-chan int64, error)
@@ -138,19 +156,6 @@ type Options struct {
 	Notifications  Notifications
 	OnError        func(error)
 	// QueueSize bounds the audit metadata backlog. The default (4096) absorbs
-	// production bursts; see BatchEventStore for why the backlog can grow.
-	QueueSize      int
-}
-
-// BatchEventStore is the optional fast path for audit persistence: one
-// transaction per drain cycle instead of one per event. Stores that do not
-// implement it keep the legacy per-event behavior (RecordEvent), so external
-// implementations and test spies stay valid without changes.
-//
-// 2026-10-31 24h 审计第 12 轮：输出合规把规则命中面扩到每个响应后，事件生产
-// （211 实测峰值 ~5 条/秒）逼近单 worker「每事件一个事务」的排水速率
-// （BEGIN + advisory lock + upsert + retention DELETE + COMMIT 五次往返/条）
-// ⇒ 有界队列持续满、审计事件成批丢弃。批路径把锁与保留清理每批只付一次。
-type BatchEventStore interface {
-	RecordEvents(ctx context.Context, events []Event, limit int) error
+	// production bursts; see BatchEventWriter for why the backlog can grow.
+	QueueSize int
 }

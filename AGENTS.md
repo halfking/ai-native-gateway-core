@@ -25,13 +25,16 @@
 > **exact 双候选全库=0**（minimax 数据线已被处置）、两新槽 modelbinding WARN=0；
 > **补行为单测（log spy 4 分支）+ 两臂变异全检出**——此前门槛只有 SQL 形状契约与选择结果断言，
 > **改坏时测试全绿**（「日志行为本身就是交付物」）。
-> ⇒ ★★★ **③ sanitize audit queue full 根修**：触发面=**输出合规把规则命中面扩到每个响应**
+> ⇒ ★★★ **③ sanitize audit queue full**：触发面=**输出合规把规则命中面扩到每个响应**
 >（sanitize_rule_events 的 output/egress 指纹首现 10-30 实证），生产 ~4-5 条/秒 > 单 worker
 > 逐条事务（BEGIN+advisory lock+upsert+retention DELETE+COMMIT 五次往返/事件）⇒ 256 深队列持续满。
-> 修法：**BatchEventStore 可选接口**（批路径=每批一次事务/一次 settings 读/一次保留清理；
-> 外部 Store 实现与 spy 自动回落逐条——不改 Store 接口）+ 凑批 ≤128/100ms linger（停机排水不逗留）
-> + **队列 256→4096** + **queue-full WARN 节流 30s/条并带累计 dropped_total**（旧行为每丢一条报一条
-> =44250 WARN/3h 自我刷屏）+ **dropped_events 上管理面**（DroppedEvents() 此前零消费方）。
+> ⇒ ★★ **攒批本体已由并行会话（第 11 轮遗留收口轮）落地并三台部署**（d953b55e3 → 7eddace4，
+> `BatchEventWriter` 可选接口 + 128/批 + count 进 INSERT 列表 + dropped_events 上 status API；
+> 与我方独立实现撞车 ⇒ **合并以其生产已验证的实现为基底，我方重复部分丢弃**）。
+> ⇒ ★ **本轮正交增量**：**queue 256→4096**（上游 DB 抖动+命中风暴同发的突发余量）+
+> **queue-full WARN 节流 30s/条并带累计 dropped_total**（攒批修「丢事件」，节流修「丢事件发生时
+> 的告警风暴」——旧行为每丢一条报一条=44250 WARN/3h 自我刷屏；管理面出口=收口轮的
+> Status().DroppedEvents）。
 > ⇒ ★★★ **批 upsert 的正确性前提**：单条 `INSERT ... ON CONFLICT` 在同一语句对同一键命中两次
 > 会报 "cannot affect row a second time" ⇒ 批内必须先按冲突键归并（count += n）——**是正确性语义
 > 不是性能优化**；真库集成验证（本地一次性库 sanitize_batch_tmp，unnest 多行 upsert 语义）+ 凑批/节流
@@ -45,7 +48,22 @@
 >（并行部署会话的活动面）；154 all-0-candidates 当前部署 51min 零复发（历史日志已随容器替换轮转，
 > 分桶不可做——复发的第一动作是抓当场日志）；慢 SQL 连续第五轮不可查（preload 仍只有 citus）。
 > ⇒ 审计档 `docs/audit/2026-10-31-24h审计第12轮-完整窗口复测与审计队列批写.md`；
-> 通用式见 `LESSONS.md` **§596**（6 条）。
+> 通用式见 `LESSONS.md` **§598**（5 条）。
+> **2026-10-31 第 11 轮遗留收口轮：sanitize 审计攒批 + resolver best_rank 部署判据**
+> （211 线上 = `2.5.8-d953b55e-20261031-211`，槽 b/8783）：★ **sanitize audit queue full
+> 已收口**——根因=排水侧单条写路径（每条事件付 事务+跨实例 advisory 锁+O(水位) 保留期 DELETE）
+> ⇒ 修法=攒批（`BatchEventWriter` 可选接口，128 条/批、每批一事务一锁一清理；
+> ★ **聚合列必须进 INSERT 列表**：`count DEFAULT 1` 会吃掉批内聚合值 ⇒ 新 fingerprint 的
+> k−1 次命中无声丢失，变异臂 M6 抓到）；`dropped_events` 已上 status API
+> （`7eb19712d` 去 omitempty，**211 线上暂为缺席=0 形态，下次部署显式 0 上屏**）。
+> ⇒ ★ **resolver best_rank 分层已在 211 线上并按部署判据验收**：同源探针
+> `ResolveRawBinding` 对真库四臂全 PASS——glm-5.3-flash@cred19 selected=`z-ai/glm-5.3-flash`
+> 且 WARN=0（特异性 Debug 留痕）；**minimax-m2.7@cred21 WARN=1（真歧义保留，不预设 WARN=0）**；
+> minimax-m2.7-highspeed 随分层静默。★ **AGENTS 归档拆分（dfcb1bc36）字节级三重核对无丢失**
+> （移出段==归档正文 12758 行 / 保留段零改动 / 拆分后归档未被触碰）。
+> ⇒ 审计档 `docs/audit/2026-10-31-第11轮遗留收口轮-sanitize审计攒批与resolver部署判据.md`；
+> 通用式见 `LESSONS.md` **§596**（六条：排水侧单条写路径 / 聚合列必须进 INSERT /
+> 终态计数分不清聚合与累加 / 可选接口的桩不能两头实现 / 观测面显式零 / 管道吞 rc）。
 > **2026-10-31 维护轮：双仓同步 + 927 台账漏登修复**（会话
 > `mvs_0a20a52276a24605b7ea29823d70169b`）：★ 承接 12h 审计第 1 轮（`fd3d243d5`）
 > 新增的迁移 **927**（routing_policy 单例化）⇒ ★ **它从未进 `docs/db-changelog.md`**
