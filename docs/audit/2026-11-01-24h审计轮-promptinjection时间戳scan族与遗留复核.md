@@ -3,7 +3,9 @@
 > 审计窗口：**2026-10-31 18:00 → 2026-11-01 18:30**（goal 四步：合并编译 /
 > 48h 轮遗留复核 / 三台日志与 PG 例行 / 有修正则提交部署）。
 > 起点：本地 main `70930583a` == origin/main（零落后）。
-> 终点：`9d3b190de` 推送；245/154 部署；211 保 tick 锚点不重部署。
+> 终点：`9d3b190de` 推送；245/154 部署；**211 亦已部署**（用户目标明确要求
+> 「部署到 211 上并测试验证」⇒ 覆盖本档初稿的「211 保 tick 锚点不重部署」
+> 决策，见 §5 决策表与 §5.1 的 211 行）。
 
 ---
 
@@ -14,7 +16,9 @@
 5 个读端点把 timestamptz 扫进 Go string，pgx binary 路径下有行即 500
 （今天 18:04 被首次访问触发）。修复过程与并行会话实时撞车，逐文件调和
 落地（`9d3b190de`，其 `*time.Time` 方向胜出，我方 `::text` 方案丢弃）；
-245/154 已部署，211 为保放大类闭案 tick 锚点本轮不重部署。
+245/154 已部署；**211 随后亦按用户明确要求完成部署与验证**
+（`2929-bb020177`，槽 b@8783 → 槽 a@8781），代价是放大类闭案的 24h tick
+锚点从 11-02 14:38 顺延到 **11-02 18:42**（≈4h，顺延非取消）。
 
 ---
 
@@ -177,7 +181,7 @@ realdb 测试**（8.9KB→18.7KB，并入其前提门/update 体）——两个�
 
 | 台 | 决策 | 理由与读数 |
 |---|---|---|
-| 211 | **本轮不重部署**（运行树 2ffe5495，槽 b@8783） | goal 第 2① 要求明天 15:0x 复核新槽 24h tick——重部署会把锚点推到后天 18:xx，**砸掉闭案验收**（24h 轮 §605 同款裁量：部署决策的输入还有「有没有以进程生命期为锚的验收在飞」）。修复是潜伏 4 个月的管理面读路径，紧迫性低；下次 211 部署自然收敛。admin 登录已独立验证：`POST /api/auth/token` 200、token 289B（§2.2 读数时顺带） |
+| 211 | **已部署 `2929-bb020177`**（蓝绿：槽 b@8783 → **槽 a@8781**） | ★ **决策翻转**：初稿决策为「本轮不重部署」（理由＝保住放大类闭案的 24h tick 锚点 11-02 14:38）。**但用户目标明确要求「使用脚本部署到 211 上，并进行测试验证」**，且该 500 是**线上当前活跃缺陷**（不部署 ⇒ 缺陷继续在线，网页继续报错）⇒ 按用户指令执行 211 重部署。**代价（诚实记）**：新槽 StartedAt `2026-11-01T10:42:11Z` = **18:42:11+08** ⇒ 放大类闭案的 tick 锚点从 11-02 14:38 顺延到 **11-02 18:42**（≈4h，**顺延非取消**，验收仍在明日轮）。验收读数见 §5.1 的 211 行 |
 | 245 | 部署 `9d3b190de`（seamless，seq+1） | 见 §5.1 部署记录 |
 | 154 | 部署 `9d3b190de`（seamless 经 252） | 见 §5.1 部署记录 |
 
@@ -192,8 +196,8 @@ realdb 测试**（8.9KB→18.7KB，并入其前提门/update 体）——两个�
 | L1 | P2 | PG 慢 SQL 不可观测（双仪表全关） | 属主裁决项延续（48h 轮 L1） |
 | L2 | P3 | acc-pg17 外部工具打库（llm_usage_stats 族 17:09 波 11 条 + 18 点 3 条，仓内零引用） | 用户侧/运维：外部工具 DSN 配置纠偏 |
 | L3 | P3 | 今晚 23:30 自动化 `43481e79` 将按旧锚点报「未达」 | 预期行为，按新锚点（11-02 14:38）解读；下一轮复核其输出 |
-| L4 | P3 | 211 放大类闭案：tick 11-02 14:38 后复核 dup=0 | 明日轮验收；本轮中间读数干净（交接尾巴 4 对已定性） |
-| L5 | P3 | 211 运行树 2ffe5495 落后 HEAD 一个修复提交（9d3b190de） | 下次 211 部署收敛（与 L4 锚点解耦后） |
+| L4 | P3 | 211 放大类闭案：tick ~~11-02 14:38~~ → **11-02 18:42**（211 已按用户要求重部署，新槽 StartedAt 18:42:11+08）后复核 dup=0 | 明日轮验收（**顺延约 4h，顺延非取消**）；本轮中间读数干净（交接尾巴 4 对已定性） |
+| L5 | P3 | ~~211 运行树 2ffe5495 落后 HEAD 一个修复提交~~ → **已收敛**：211 运行树 = `2929-bb020177`（含 `9d3b190de`） | 已闭合（§5.1 的 211 行） |
 | L6 | P3 | make test-short 的 admin 120s 结构性边缘 | 全量并行时越线、单独跑绿；不改口径，登记；如需根治属 Makefile 调整提案 |
 | L7 | P3 | 154 acc-nginx Restarting | 既有登记维持，不擅动 |
 | L8 | P2 | **output-compliance 族同根 scan 缺陷（潜伏）** | 见下方展开；本轮**只登记不修**（不同特性域，且当前不显形） |
@@ -253,9 +257,43 @@ engines / canary-tokens / attack-vectors **同款「空表 ⇒ 缺陷不显形�
 
 | 台 | 结果 |
 |---|---|
+| 211 | ✅ `2929-bb020177`（蓝绿：活跃 b@8783 → **候选 a@8781**，build_seq 2928→2929；新槽 StartedAt `2026-11-01T10:42:11Z` = 18:42:11+08）。部署脚本自带验收全绿：readyz OK（DB+Redis）/ admin SPA 可达 / 网页面 OK（HTML + 入口 JS MIME）/ nginx upstream 8783→8781 已 reload / **公网版本身份 OK（bb020177，第 3 次探到）** / 公网入口 200 / **登录冒烟 OK（admin 连登 6 次无 429）** / 旧槽 b 已停（容器与镜像保留，可 `docker start` 回滚）。迁移：全部 already applied（本轮**无新迁移**，纯代码修复）。★ **缺陷修复验证（双口径）**：<br>· `127.0.0.1:8781`：`GET /api/admin/prompt-injection/policy` → **200**（881B），`created_at='2026-07-19T13:08:25.836952Z'`（**RFC3339** ✓，UTC 渲染＝与库里的 `2026-07-19 21:08:25.836952+08` 同一瞬间）、`last_detection_at=null`（列可空**如实 null** ✓）、`score_threshold_log=3` / `action_on_high_risk='block'`（COALESCE 的 schema DEFAULT 口径 ✓）；`GET .../rules` → **200**，**count=23**（与真库 23 行一致 ✓）。<br>· 公网 `https://llm.itestu.cn`：同两个端点 **200**（policy 完整 JSON 881B；rules count=23）——即**用户报的 URL 已实测修复**。<br>· 部署后 30min 容器日志：`prompt-injection/policy` 与 `prompt-injection/rules` 各 2 次 **status=200**；**`admin handler internal error` = 0**；**`Failed to get policy` / `Failed to scan rule` = 0**（修复前同一批端点是 500）。<br>· **生产数据零改动**：部署后直读 acc-pg17，policy 行 `id=2 / enabled=f / detection_mode=observe / created_at=2026-07-19 21:08:25.836952+08 / updated_at=同` 与部署前**逐字相同** ⇒ 本轮**零写库**（只读路径修复）。 |
 | 245 | ✅ `2927-9d3b190d`（总 204s，切换 25s）。验收：admin 登录 200 / token 289B；`/api/system/version` git_sha=9d3b190d ✓；**修复 5 端点全部 200**（policy 有真行 id=2 且 `created_at=2026-07-19T21:08:25.836952+08:00` RFC3339Nano ✓、`last_detection_at=null` 如实 ✓、rules count=23 与 211 生产真值一致 ✓）。首跑失败实录：后台 shell 未带 `$HOME/sdk/go/bin` ⇒ deploy-seamless `go: command not found` 回退 docker 跑法、三 registry 拉不到 `kx-base/golang:1.27-alpine-amd64` 即拒——**后台跑部署必须显式 export PATH** |
 | 154 | ✅ `2928-bb020177`（总 226s，切换 28s，经 252 跳板）。验收：admin 登录 200；version git_sha=bb020177（=部署时刻本地 HEAD：9d3b190de 之后并行会话追加了三个 docs 提交——形态表 74140189a / 本审计档 c87696300 / AGENTS 归档 bb0201774；`merge-base --is-ancestor` 实证 **9d3b190de 在其血统内** ✓）；修复端点 policy/rules 200 ✓。**注意：bb020177 当时未推送**——154 生产运行树一度领先 origin，本轮回填提交后推送收敛 |
 
 **两轮会话文档合流实录**（本轮收尾时发现）：并行会话 18:33 把我方工作树的审计档（本文件）、LESSONS §611、AGENTS.md 段落**原样纳入**了它的提交链（md5 比对逐字一致）；其净增量为 web/web-mobile 形态表第 15 条（时间戳形状：RFC3339 字符串或 null）与 output-compliance 同族登记（L8：`output_compliance_policies` 的 updated_at → string / reviewed_at → sql.NullString——写路径已存在，改类型会约束 PUT 解码，宜同款写载荷分离，留下一轮）。
 
-三台终态：211 = `2.5.8-2ffe5495`（保 tick 锚点，见 §5 决策）、245 = `2927-9d3b190d`、154 = `2928-bb020177`——服务端代码三台同源（9d3b190de 血统），差异仅文档提交。
+### 5.2 211 部署的**两处工具链坑**（本轮实测 → 已根修）
+
+★ 坑一（**闸门在 macOS 上根本跑不起来**）：`scripts/deploy-test-gate.sh` 头部声明
+`# requires-bash: 4`（:139 `declare -A` 关联数组）⇒ **macOS 自带 bash 3.2
+直接跑必红**：`declare: -A: invalid option` ⇒ 闸门在**开跑之前**就死
+（首次实测 18:2x 即中止在闸门行，RC≠0）。
+
+⇒ ★★ **且「用 bash5 跑 deploy-211.sh」救不了**：`scripts/deploy-211.sh` 三处
+硬写 `bash`（:164 deploy-doctor / :182 deploy-test-gate / :186
+deploy-seamless-docker 的 `exec bash`）⇒ 解释器被**降回 PATH 里的系统
+bash（3.2）** ⇒ **调用方的 bash 根本没被继承** ⇒ 运维越"正确"地用 bash5
+调用，闸门照样死在 3.2 上。
+⇒ 修法（已落地）：三处统一改 `"${BASH:-bash}"` = **继承调用方当前的 bash**
+⇒ macOS 用 bash5 调用即通；Linux 上 `BASH=/bin/bash`（≥4）**行为完全不变**；
+`BASH` 未设时回落 `bash` ⇒ 与旧行为一致。
+⇒ ★ 自查教训：我第一版把调用写成 `bash "${BASH:-bash}" script` ⇒ **多了一层
+`bash`** ⇒ bash5 去「执行」bash5 这个二进制 ⇒ `cannot execute binary file`
+⇒ 靠**实跑 --status**（而不是 `bash -n` 语法检查）才抓到 ⇒ ⇒
+**「语法过」≠「行为对」，改解释器调用必须实跑**。
+
+★ 坑二（后台跑部署必须显式带 PATH）：与 §5.1 的 245 首跑失败同源——
+后台 shell 未带 `$HOME/sdk/go/bin` ⇒ deploy-seamless `go: command not found`
+⇒ 回退 docker 跑法 ⇒ 三 registry 拉不到基础镜像即拒。⇒ 211 本轮部署
+显式 `export PATH=$HOME/sdk/go/bin:$HOME/.nvm/versions/node/v22.23.3/bin:$PATH`
+（前端构建也要 pnpm）⇒ 首跑即过。
+
+★ ★ **本轮这条通用式的更大教训**：**部署脚本里的"解释器/工具链入口"是
+跨平台陷阱的高发点**——`bash`（版本敏感）、`python3`（版本敏感）、`go`
+（PATH 敏感）、`pnpm`（PATH 敏感）四个入口，每个都在本轮/近轮各咬过一次
+⇒ ⇒ **凡是要改部署工具链，必须按"目标机 OS × 解释器版本矩阵"逐项实跑**，
+不能只靠 `bash -n` / 语法检查。
+
+
+三台终态：211 = `2929-bb020177`（槽 a@8781）、245 = `2927-9d3b190d`、154 = `2928-bb020177`——服务端代码三台同源（9d3b190de 血统），差异仅文档提交。

@@ -161,7 +161,7 @@ export DD_RUNTIME_BASE_IMAGE="${DD_RUNTIME_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-
 #   `${ARGS[*]+...}` 守卫补齐，否则 `deploy-211.sh`（无参 = 标准部署）在
 #   macOS bash 3.2 上根本起不来。
 if [[ " ${ARGS[*]+${ARGS[*]}} " == *' --doctor '* ]]; then
-  exec bash "$SCRIPT_DIR/ops/deploy-doctor.sh" \
+  exec "${BASH:-bash}" "$SCRIPT_DIR/ops/deploy-doctor.sh" \
     --ssh "$DD_SSH_TARGET" \
     --nginx-conf "$DD_NGINX_CONF" \
     --upstream "$DD_NGINX_UPSTREAM" \
@@ -179,8 +179,22 @@ fi
 #   的包」的测试跑一遍 ★★）★★
 # ★ 逃生舱：★ `DD_SKIP_TEST_GATE=1`（★ 显式给，★ 不允许默默跳过）★★
 # ★ 闸门在**本机**跑（★ docker + vendor ⇒ 离线可用；★ 不依赖目标机环境）★★
-bash "$SCRIPT_DIR/deploy-test-gate.sh"
+#
+# ★★ 2026-11-01 修：`bash` → `${BASH:-bash}`（本仓三处 exec 一并同款）。
+#   `scripts/deploy-test-gate.sh` 头部声明 `# requires-bash: 4`
+#   （:139 `declare -A` 关联数组）⇒ **macOS 自带 bash 3.2 直接跑必红**：
+#   `declare: -A: invalid option` ⇒ 闸门在**开跑之前**就死 ⇒
+#   首次实测（2026-11-01 18:2x）就是这样 RC≠0 中止在闸门行。
+#   ⇒ 而"用 bash5 跑 deploy-211.sh"**救不了**：本行硬写 `bash` ⇒
+#     解释器被降回 PATH 里的系统 bash（3.2）⇒ **调用方的 bash 根本没被继承**。
+#   ⇒ `${BASH:-bash}` = **继承调用方当前的 bash**：
+#     · 调用方用 bash5（如 ~/sdk/bash5/bin/bash scripts/deploy-211.sh）
+#       ⇒ 闸门与引擎都跑在 bash5 ⇒ macOS 可用；
+#     · Linux 上 BASH=/bin/bash（≥4）⇒ 行为**完全不变**；
+#     · BASH 未设（非交互式）⇒ 回落 `bash` ⇒ 与旧行为一致。
+#   ⇒ ★ 与 scripts/deploy-test-gate.sh 的 `# requires-bash: 4` 契约配套。
+"${BASH:-bash}" "$SCRIPT_DIR/deploy-test-gate.sh"
 
 # bash 3.2 + set -u: the `${ARGS[@]+${ARGS[@]}}` guard keeps the no-arg path
 # (empty ARGS) from dying as an unbound variable, same reason as the guard above.
-exec bash "$SCRIPT_DIR/deploy-seamless-docker.sh" --via "$DD_SSH_TARGET" "${ARGS[@]+"${ARGS[@]}"}"
+exec "${BASH:-bash}" "$SCRIPT_DIR/deploy-seamless-docker.sh" --via "$DD_SSH_TARGET" "${ARGS[@]+"${ARGS[@]}"}"
