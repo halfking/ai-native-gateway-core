@@ -4,6 +4,28 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-01 12 小时内修订审计轮：ursmcheck 整包红根修 + 工具/脚本三处「宣称能力与实现不符」**
+> （goal 会话，审计窗口 10-31 19:10 → 11-01 07:20、34 提交）：★ 窗口内业务逻辑达标，但
+> **P0：`c82fa475c` 新增的 modelcredibility 真库契约腿直接消费事实源统一下发的
+> `TEST_DATABASE_URL` 而按库名做决定（`current_database()` `_test` 后缀守卫）⇒ 必然拒绝
+> ⇒ `scripts/ursmcheck` 整包报红（基线绿 / HEAD 红），连带掏空门「不可判定」——
+> `cf8bf8d1e` 提交信息自称「guards 全绿」，该读数在其写下时即不成立** ⇒ 修法照
+> maas/bills 既有形态：腿改专用名 `TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL` +
+> 双车道登记（`dsn_exclusive_registry.tsv` + `session_storage_gate_test.go` 的
+> `destructiveGuardedDB`）+ `make test-pg-contracts` 补入口（★「写了腿」≠「门在那里」）。
+> ⇒ ★★ **P1 三处工具缺陷**：① `backfill-session-opened` 只读 hot 表（8h 排水后历史
+> 会话漏 10/13=77%，漏的恰是它要补发的 ⇒ 改两臂并读 hot ∪ parent，PG17 实跑 3→13
+> 与全历史真值逐字相等）；② 同工具 `--from/--to` 窗口作用在 turn 行而非会话级
+> （跨窗口会话 occurred_at 取错 ⇒ DISTINCT ON 取全局最早、窗口谓词移外层）；③
+> `deploy-seamless-docker.sh` 的 build_seq floor **锁不保护读**（锁外读+锁内写不是
+> 临界区，6 路并发全撞 101 ⇒ 读移进锁内 + `except OSError` 降级不崩，修后 101..106 全异）。
+> ⇒ ★ **P2**：`stream_compliance.go` event 路径裸 error 换与 lane 路同款 `PolicyBlockError`
+> （「先补形态表再改码」的前置条件在登记时就已满足——形态表按形态枚举，第二个调用点
+> 天然落在表外）+ `verdict_order_test.go` 把 VerdictRank 与 SQL CASE 次序互相钉住
+> （断言同序而非相等，两侧数字方向刻意相反）+ 掏空门条目表述收窄到本门实际覆盖侧；
+> `security/sanitize/output_sensitive.go:209-210` **登记保留未修**（形态不同类，需补 Issue 另修）。
+> ⇒ **menu-config.json 是构建产物不纳入本轮提交**。审计档
+> `docs/12小时内修订审计-2026-11-01-0720.md`；通用式见 `LESSONS.md` **§609**（8 条）。
 > **2026-11-01 参数兼容静态化轮：跨端点 reasoning 实证 + DialectNVIDIA 登记 + reqprobe 退避**
 > （goal 会话）：★ 承接 nvidia 直通事故轮（learnedTTL 1h）与 r1021 教义。
 > ⇒ ★★★★ **四腿实机矩阵（OpenRouter/zhipu/方舟/nvidia，凭据自 211 生产库

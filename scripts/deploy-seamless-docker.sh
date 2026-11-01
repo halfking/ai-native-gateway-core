@@ -2408,11 +2408,17 @@ def read_seq(p, as_json):
     except Exception:
         return 0
 
-base = max(read_seq(path, True), read_seq(other, True), read_seq(floor_file, False))
-new_seq = base + 1
-
 # floor 持锁段只有 read/compute/write 三步毫秒级；mkdir 原子锁 + 60s 崩溃接管，
 # 有界等待后降级（同 bump-version.sh：防护失效不阻塞部署）。
+#
+# ★ 2026-11-01（12h 审计轮）：**读必须在锁内**。
+#   原实现把 `base = max(read_seq(...))` + `new_seq = base + 1` 放在**拿锁之前**
+#   ⇒ 读-改-写被拆成「锁外读 + 锁内写」⇒ 不是临界区 ⇒ N 个并发部署全部读到
+#   同一个旧 floor、算出同一个 new_seq、写出同一个 floor ⇒ **撞号**
+#   （实测：6 路并发全部拿到 build_seq 101，floor 仍是 101）。
+#   ⇒ 修法：把 floor 的**读**也移进锁内（种子/对侧槽的读留在锁外无妨——
+#   它们不是共享计数器，floor 才是唯一需要串行化的那个）。
+#   ⇒ 照 scripts/bump-version.sh 的形态（先 acquire 再 read）走。
 hold = floor_file + ".hold"
 got_hold = False
 deadline = time.time() + 3
@@ -2434,22 +2440,39 @@ while True:
             sys.stderr.write("deploy: build_seq floor 锁等待超时，降级无 floor 模式\n")
             break
         time.sleep(0.05)
+    except OSError as e:
+        # ★ 目录不可写等非「已存在」类失败 ⇒ 走「无 floor 模式」降级，
+        # 而不是让整个 python 块崩掉（崩掉 ⇒ 连 version.json 的 sha/date 都不改写）。
+        sys.stderr.write("deploy: build_seq floor 锁不可用（%s），降级无 floor 模式\n" % e)
+        break
+
 if got_hold:
     try:
+        # ★ 锁内读 floor —— 这是本轮修的关键（原来在锁外）。
+        floor_seq = read_seq(floor_file, False)
+        base = max(read_seq(path, True), read_seq(other, True), floor_seq)
+        new_seq = base + 1
         with open(floor_file, "w") as f:
             f.write("%d\n" % new_seq)
-    except Exception:
-        sys.stderr.write("deploy: build_seq floor 不可写，降级无 floor 模式\n")
+    except Exception as e:
+        sys.stderr.write("deploy: build_seq floor 不可写（%s），降级无 floor 模式\n" % e)
+        # 降级路径仍要算一个号（无 floor 语义：与 bump-version.sh 的 else 分支一致）。
+        base = max(read_seq(path, True), read_seq(other, True))
+        new_seq = base + 1
     finally:
         import shutil
         shutil.rmtree(hold, ignore_errors=True)
+else:
+    # 无 floor 模式（锁拿不到 / 锁不可用）：退化为「种子与对侧槽的最大值 + 1」。
+    base = max(read_seq(path, True), read_seq(other, True))
+    new_seq = base + 1
 
 v = json.load(open(path))
 date = time.strftime("%Y%m%d")
 v.update(git_sha=sha, build_date=date, target=target, build_seq=new_seq,
          version="%s-%s-%s-%s" % (v.get("git_tag", "dev"), sha, date, target))
 json.dump(v, open(path, "w"), indent=2)
-print("build_seq bumped: %d -> %d (base=seed/other-slot/floor max)" % (base, new_seq))
+print("build_seq bumped: %d -> %d (base=seed/other-slot/floor max, floor=%s)" % (base, new_seq, "locked" if got_hold else "degraded"))
 PY
   fi
   chown 65532:65532 "$DD_GW_DATA_ROOT/version/$DD_CANDIDATE_SLOT.json" 2>/dev/null || true

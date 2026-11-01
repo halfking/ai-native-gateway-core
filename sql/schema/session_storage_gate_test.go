@@ -66,6 +66,31 @@ var destructiveGuardedDB = map[string]destructiveFixture{
 		path:  "maas/bills_realdb_test.go",
 		guard: maasBillsGuardProblems,
 	},
+	// 2026-11-01（12h 审计轮）：modelcredibility rollup 真库契约腿
+	// （domains/modelcredibility/store_rollup_integration_test.go）。
+	// 该腿的守卫形态与 maas 同款：current_database() 的 `_test` 后缀检查 ⇒
+	// 事实源统一下发的 TEST_DATABASE_URL（产品库 llm_gateway）必被拒绝 ⇒
+	// 必须用专用名 TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL（已登记进
+	// scripts/audit/dsn_exclusive_registry.tsv）。此处登记为「非注入车道」
+	// 是为了不让本门的扫描器反向要求 `TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL="$GATE_URL"`。
+	"TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL": {
+		path:  "domains/modelcredibility/store_rollup_integration_test.go",
+		guard: modelCredibilityRollupGuardProblems,
+	},
+}
+
+// modelCredibilityRollupGuardProblems 断言 modelcredibility rollup 真库腿的
+// 自守卫仍然有牙（照 maasBillsGuardProblems 的形态）。
+func modelCredibilityRollupGuardProblems(body string) []string {
+	var problems []string
+	require := func(ok bool, property string) {
+		if !ok {
+			problems = append(problems, property)
+		}
+	}
+	require(strings.Contains(body, `HasSuffix(database, "_test")`), "destructive _test-suffix guard")
+	require(strings.Contains(body, `t.Fatalf("refusing mutating PostgreSQL contract test`), "guard fails loudly instead of skipping")
+	return problems
 }
 
 // reportRollupGuardProblems 断言 reportrollup fixture 的自守卫仍然有牙。

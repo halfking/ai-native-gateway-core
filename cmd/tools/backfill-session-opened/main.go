@@ -9,12 +9,17 @@
 // Design (2026-10-31, audit §8.2):
 //   - Source of truth for "which sessions exist" = public.session_turns_hot
 //     (and its parent public.session_turns), grouped by (tenant_id, session_id).
+//     ★ 2026-11-01（12h 审计轮）：这条口径现在是**真的**——原实现只读 hot 表，
+//     而 hot 表 8 小时后被排水到父表 ⇒ 历史会话根本不在候选源里（实测 13 个
+//     会话只捞到 3 个）。修正见下面候选查询的两臂并读注释。
 //   - A session is a candidate iff no row in outbox_events has
 //     event_type='session.opened.v1' and aggregate_id=session_id.
 //   - user_id is derived like the live path (sessionOpenedUserID): end_user_id
 //     when present, else api_key_id, else "unknown".
 //   - occurred_at is taken from the earliest turn's ts (not now()), so ASM
 //     ordering stays chronological.
+//     ★ 2026-11-01 修正：取的是该会话的**全局最早** turn（窗口谓词作用在
+//     会话级，不是 turn 行级）——否则跨窗口会话的 occurred_at 会错位。
 //
 // This tool does NOT dispatch events. After backfill, run outbox-dlq-replay
 // (or wait for the dispatcher) to deliver them.
@@ -65,6 +70,35 @@ func main() {
 	// Build the candidate query. We group by (tenant_id, session_id) and pick
 	// the earliest turn's ts + user derivation. NOT EXISTS against outbox_events
 	// keeps already-opened sessions out.
+	//
+	// ★ 2026-11-01（12h 审计轮）：两条口径修正。
+	//
+	// ① **两侧并读**（原来只读 hot 表）：`session_turns_hot` 是**独立堆写表**，
+	//	冷行由 `promote_session_turns_hot_to_partition` 搬走（DELETE hot +
+	//	INSERT parent，单语句 CTE 原子）⇒ 保留期一过（生产 8h，见
+	//	`lifecycle.hot_retention_hours` / `bg/partition_manager.go` 的
+	//	`promote_session_turns_hot_to_partition` 常态调度）⇒ **历史会话根本不在
+	//	hot 表里** ⇒ 只读 hot 的工具在生产上捞不到它要补发的历史会话
+	//	（实测：13 个会话里只捞到 3 个，漏掉的 10 个全在父表）。
+	//	⇒ 改用仓内 canonical 形态（`internal/sessionfamily/exists_by_key.go` 的
+	//	`ExistsByKeySQL` 同款两臂 UNION ALL），**不依赖视图**——视图
+	//	`session_turns_with_current_month` 不投影 `end_user_id`/`api_key_id`，
+	//	而本工具的 user_id 派生要用这两列 ⇒ 必须显式两臂并读。
+	//
+	// ② **窗口谓词作用在会话级**（原来作用在 turn 行级）：原来
+	//	`WHERE ts >= $1 AND ts < $2` 先过滤 **turn 行**，`DISTINCT ON` 再在
+	//	过滤后的集合里取最早 ⇒ 一个「窗口之前开始、窗口之内有后续 turn」的
+	//	会话，其 `occurred_at` 会变成**窗口内那个 turn** 的时间，而不是会话
+	//	真正的开始时间 ⇒ 补发的事件时间线错位（实测：真开始 2026-08-15 的
+	//	会话被写成 2026-09-10）。
+	//	⇒ 改为：先按 (tenant_id, session_id) 取该会话的**全局最早 turn**
+	//	（DISTINCT ON 不带窗口谓词），外层再对 `occurred_at` 施加窗口过滤
+	//	⇒ 窗口语义变成「会话整体落在窗内」。
+	//
+	// ③ `NOT EXISTS` 的反连接也按两侧分别下推（与 ② 同理）：
+	//	若只在 hot 侧查「是否已有 opened 事件」，父表里已有的 opened 事件
+	//	会被漏判 ⇒ 同一会话可能被重复补发（幂等键 event_id 相同 ⇒ INSERT
+	//	会被 ON CONFLICT DO NOTHING 吞掉，但 `skipped` 计数会失真）。
 	q := `
 		SELECT s.tenant_id, s.session_id, s.user_id, s.occurred_at
 		FROM (
@@ -72,17 +106,23 @@ func main() {
 				tenant_id, session_id,
 				COALESCE(NULLIF(end_user_id, ''), NULLIF(CAST(api_key_id AS text), ''), 'unknown') AS user_id,
 				ts AS occurred_at
-			FROM session_turns_hot
-			WHERE ($1::timestamptz IS NULL OR ts >= $1)
-			  AND ($2::timestamptz IS NULL OR ts < $2)
+			FROM (
+				SELECT tenant_id, session_id, end_user_id, api_key_id, ts
+				FROM session_turns_hot
+				UNION ALL
+				SELECT tenant_id, session_id, end_user_id, api_key_id, ts
+				FROM session_turns
+			) all_turns
 			ORDER BY tenant_id, session_id, ts ASC
 		) s
-		WHERE NOT EXISTS (
+		WHERE ($1::timestamptz IS NULL OR s.occurred_at >= $1)
+		  AND ($2::timestamptz IS NULL OR s.occurred_at < $2)
+		  AND NOT EXISTS (
 			SELECT 1 FROM outbox_events o
 			WHERE o.event_type = 'session.opened.v1'
 			  AND o.aggregate_id = s.session_id
 			  AND o.tenant_id = s.tenant_id
-		)
+		  )
 		ORDER BY s.occurred_at ASC
 		LIMIT $3
 	`
