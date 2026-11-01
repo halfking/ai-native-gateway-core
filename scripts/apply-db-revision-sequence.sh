@@ -2505,6 +2505,9 @@ files=(
   #   把 targets 放大 4 倍。★ 本迁移让那个 ON CONFLICT 第一次真正生效。
   #   ★ 含 DELETE 回填 ⇒ 自带 lock_timeout / statement_timeout ⇒ 走事务通道。
   "$ROOT_DIR/sql/migrations/startup/927_routing_policy_singleton_unique.sql"
+  # ★ 928（2026-11-02）：探测流量物理隔离车道 —— session_turns_probe_hot +
+  #   request_stats_probe_minute。写路径由 LLM_GATEWAY_PROBE_LANE_PHYSICAL 门控。
+  "$ROOT_DIR/sql/migrations/startup/928_probe_traffic_physical_lane.sql"
 )
 
 
@@ -3021,6 +3024,8 @@ ledger_artifact_probe "926_sanitize_block_review_degraded.sql" \
 #   ⇒ 'routing_policy_tenant_id_key' 与 public.routing_policy 都在 927 文件里。
 ledger_artifact_probe "927_routing_policy_singleton_unique.sql" \
   "EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'routing_policy_tenant_id_key' AND conrelid = 'public.routing_policy'::regclass)"
+ledger_artifact_probe "928_probe_traffic_physical_lane.sql" \
+  "EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'session_turns_probe_hot' AND c.relkind = 'r')"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

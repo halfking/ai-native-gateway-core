@@ -1332,6 +1332,14 @@ var routingPolicySingletonUnique927 []byte
 //go:embed embeddata/startup/927_routing_policy_singleton_unique.down.sql
 var routingPolicySingletonUnique927Down []byte
 
+// ★ 928（2026-11-02 探测物理隔离方案）：探测流水热表 + 探测分钟聚合表。
+//   写路径由 LLM_GATEWAY_PROBE_LANE_PHYSICAL 门控；本迁移只建表。
+//go:embed embeddata/startup/928_probe_traffic_physical_lane.sql
+var probeTrafficPhysicalLane928 []byte
+
+//go:embed embeddata/startup/928_probe_traffic_physical_lane.down.sql
+var probeTrafficPhysicalLane928Down []byte
+
 // ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
 //   - sanitize_block_reviews 追加 session_id / label / label_comment /
 //     labeled_by / labeled_at（末尾追加，既有列序不变）；
@@ -1767,6 +1775,9 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 927（2026-10-31 12h 审计轮）：routing_policy 单例化（去重 + UNIQUE (tenant_id)）。
 	"startup/927_routing_policy_singleton_unique.sql":                              routingPolicySingletonUnique927,
 	"startup/927_routing_policy_singleton_unique.down.sql":                         routingPolicySingletonUnique927Down,
+	// ★ 928（2026-11-02）：探测流量物理隔离车道（session_turns_probe_hot + request_stats_probe_minute）。
+	"startup/928_probe_traffic_physical_lane.sql":                                  probeTrafficPhysicalLane928,
+	"startup/928_probe_traffic_physical_lane.down.sql":                             probeTrafficPhysicalLane928Down,
 	"startup/915_recent_cache_hit_rate.sql":                                       recentCacheHitRate915,
 	"startup/915_recent_cache_hit_rate.down.sql":                                  recentCacheHitRate915Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,

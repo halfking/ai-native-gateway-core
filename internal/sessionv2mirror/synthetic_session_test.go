@@ -9,6 +9,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
+	"github.com/kaixuan/llm-gateway-go/internal/probelane"
 )
 
 func TestSyntheticSessionID_ProbeKind(t *testing.T) {
@@ -170,27 +171,41 @@ func TestPersistHook_SkipsProbeSyntheticSession(t *testing.T) {
 	}
 }
 
-// 跳过判据不误伤：探针标记但挂真实会话头的条目（有 GwSessionID）照常入链。
-func TestPersistHook_ProbeWithRealSessionStillMirrored(t *testing.T) {
-	var got *v2.ProcessedRequest
-	writer := captureWriterV2{fn: func(req *v2.ProcessedRequest) { got = req }}
-	hook := PersistHook(writer)
-	withShadowFlags(t, func() {
-		hook(&telemetry.RequestLogEntry{
-			RequestID:    "req-probe-with-session",
-			Success:      true,
-			GwSessionID:  strPtr("gw_real_session"),
-			OriginStage:  strPtr("node_probe"),
-			TaskType:     strPtr("probe_triggered"),
-			CredentialID: func() *int { v := 7; return &v }(),
-		})
+// 有会话头的探测：物理车道关时仍进业务 mirror（历史兼容）；开时整条跳过。
+func TestPersistHook_ProbeWithRealSessionLaneAware(t *testing.T) {
+	entry := &telemetry.RequestLogEntry{
+		RequestID:    "req-probe-with-session",
+		Success:      true,
+		GwSessionID:  strPtr("gw_real_session"),
+		OriginStage:  strPtr("node_probe"),
+		TaskType:     strPtr("probe_triggered"),
+		CredentialID: func() *int { v := 7; return &v }(),
+	}
+
+	t.Run("physical_off_still_mirrored", func(t *testing.T) {
+		probelane.SetPhysicalEnabledForTest(false)
+		defer probelane.ResetPhysicalOverrideForTest()
+		var got *v2.ProcessedRequest
+		hook := PersistHook(captureWriterV2{fn: func(req *v2.ProcessedRequest) { got = req }})
+		withShadowFlags(t, func() { hook(entry) })
+		if got == nil {
+			t.Fatal("flag off: session-headed probe must still mirror to business turns")
+		}
+		if got.SessionID != "gw_real_session" {
+			t.Fatalf("SessionID = %q, want gw_real_session", got.SessionID)
+		}
 	})
-	if got == nil {
-		t.Fatal("session-headed probe entry must NOT be skipped (synthetic-only criterion)")
-	}
-	if got.SessionID != "gw_real_session" {
-		t.Fatalf("SessionID = %q, want gw_real_session", got.SessionID)
-	}
+
+	t.Run("physical_on_skipped", func(t *testing.T) {
+		probelane.SetPhysicalEnabledForTest(true)
+		defer probelane.ResetPhysicalOverrideForTest()
+		called := 0
+		hook := PersistHook(captureWriterV2{fn: func(*v2.ProcessedRequest) { called++ }})
+		withShadowFlags(t, func() { hook(entry) })
+		if called != 0 {
+			t.Fatalf("flag on: session-headed probe must not enter business mirror, got %d writes", called)
+		}
+	})
 }
 
 // 非终态无会话条目（in_progress 占位）仍不入链——合成路径共享终态闸门。

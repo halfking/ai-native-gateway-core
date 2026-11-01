@@ -7,6 +7,13 @@ import { req } from '../api/_core'
 import { resolveRouting } from '../api/routing'
 import { getDecisions } from '../api/routing'
 import { getRequestLogs } from '../api/logs'
+import {
+  getProbeLaneRequests,
+  probeLaneRowToDisplay,
+  resolveProbeLaneSource,
+  type ProbeLaneRequestRow,
+  type ProbeLaneSource,
+} from '../api/probe-lane'
 import { getSlidingWindow } from '../api/credential-monitor'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { store } from '../store'
@@ -275,14 +282,73 @@ interface RequestLog {
   cost_currency: string | null
 }
 const requestLogs = ref<RequestLog[]>([])
+// ★ 2026-11-02：探测流水有**两个来源**，必须都读（不是一个替代另一个）：
+//   · 探测车道端点（/api/admin/probe/lane/requests）—— 车道开启时的**当前**探测；
+//   · 历史 lane=probe（/api/logs）—— 车道**未**开启时探测仍在业务表里。
+//   车道开启时历史端点只剩隔离开启前的老行；车道未开启时车道端点必然为空。
+//   ⇒ 合并展示，并用 laneSource 标注来源（页面据此提示「当前 / 历史」）。
+const laneSource = ref<ProbeLaneSource>('none')
+
+/**
+ * 把探测车道的一行映射成页面用的 RequestLog 形态。
+ *
+ * ★ 口径差异（都刻意）：
+ *   · credential_id：车道表里是 **text**（业务表也是 TEXT，见
+ *     migration 526/707），而页面 RequestLog.credential_id 声明为 number
+ *     ⇒ 这里保留为 string，由 credentialDisplayName 之外的展示位兜底；
+ *   · request_status：车道表没有该列（存的是 success / status_code）
+ *     ⇒ 由 success 派生 success / failure；
+ *   · cost_usd：探测**不计费**（方案 §2 第 3 条）⇒ 恒 null，
+ *     页面显示「—」而不是编一个 0（0 会被读成「花了 0 块」，是假信息）。
+ */
+function probeLaneRowToRequestLog(row: ProbeLaneRequestRow): RequestLog {
+  const d = probeLaneRowToDisplay(row)
+  return {
+    ts: d.ts,
+    request_id: d.request_id,
+    success: d.success,
+    request_status: d.request_status,
+    latency_ms: d.latency_ms,
+    error_kind: d.error_kind,
+    credential_id: null,
+    credential_label: d.credential_label,
+    provider_name: null,
+    prompt_tokens: d.prompt_tokens,
+    completion_tokens: d.completion_tokens,
+    cost_usd: null,
+    cost_currency: null,
+  }
+}
 
 async function loadLogs() {
+  // 车道端点：当前探测流水（车道未开时 rows 为空）。
+  let laneRows: ProbeLaneRequestRow[] = []
+  let laneEnabled = false
+  try {
+    const lane = await getProbeLaneRequests({ limit: 100 })
+    laneRows = lane.rows || []
+    laneEnabled = !!lane.lane_enabled
+  } catch {
+    // 端点不可用（老版本后端 / 未接线）⇒ 静默回落读历史行，不让页面整个挂掉。
+    laneRows = []
+  }
+
+  if (laneRows.length > 0) {
+    requestLogs.value = laneRows.map(probeLaneRowToRequestLog)
+    laneSource.value = resolveProbeLaneSource(laneRows.length, laneEnabled)
+    return
+  }
+
+  // 历史行：业务表上的探测行（车道未开时这是**唯一**来源）。
   const data = await getRequestLogs({
     model: modelName.value,
     page_size: 100,
     chrono: true,
+    lane: 'probe',
   })
   requestLogs.value = (data.items || []) as RequestLog[]
+  // lane_enabled 为 false ⇒ 车道未开 ⇒ 现在看到的全是历史行（探测在业务表里）。
+  laneSource.value = resolveProbeLaneSource(0, laneEnabled)
 }
 
 // ── Tab: 探活操作 ─────────────────────────────────────────────────────────
@@ -661,6 +727,14 @@ onMounted(() => {
       </div>
 
       <div v-else-if="activeTab === 'logs'">
+        <!--
+          ★ 2026-11-02：标注流水来源。
+            探测流量有两个来源：物理隔离车道（当前）/ 业务表历史探测行（历史）。
+            不标注的话，运维会把「车道未开 ⇒ 只看得到历史行」读成「最近没有探测」。
+        -->
+        <div v-if="requestLogs.length > 0 && laneSource === 'historical'" class="muted-text small" style="margin-bottom: 8px">
+          {{ $t('common.feedback.probeLaneHistoricalHint') }}
+        </div>
         <EmptyState v-if="requestLogs.length === 0" text="暂无请求记录" />
         <div v-else style="overflow-x:auto">
           <table class="data-table">

@@ -457,6 +457,7 @@ if [[ -n "$VIA" ]]; then
             DD_BASE_REGISTRY DD_GO_BASE_IMAGE DD_RUNTIME_BASE_IMAGE \
             DD_ALLOW_STALE_WEB DD_PUBLIC_PROBE_IP DD_ADMIN_USER DD_ADMIN_PASSWORD \
             DD_SKIP_LOGIN_SMOKE LLM_GATEWAY_HARD_BLOCK_RULES \
+            LLM_GATEWAY_PROBE_LANE_PHYSICAL \
             LLM_GATEWAY_AUTO_TITLE_ENABLED LLM_GATEWAY_AUTO_SUMMARY_ENABLED \
             LLMGatewayAutoLLMEndpoint LLMGatewayAutoLLMApiKey LLMGatewayAutoLLMModel \
             LLMGatewayAutoLLMTimeout LLMGatewayAutoLLMMaxTokens LLM_GW_TEST_MODE_TOKEN; do
@@ -1909,6 +1910,16 @@ if [[ -n "$TRUSTED_PROXY_CIDRS" && ! "$TRUSTED_PROXY_CIDRS" =~ ^[0-9a-fA-F:.,/]+
   TRUSTED_PROXY_CIDRS=""
 fi
 
+# ── 探测物理隔离车道（2026-11-02）────────────────────────────────────
+# 取值优先级同 HARD_BLOCK：部署机环境变量 > gateway.env 上次值 > 不设（关）。
+PROBE_LANE_PHYSICAL="${LLM_GATEWAY_PROBE_LANE_PHYSICAL:-}"
+if [[ -z "$PROBE_LANE_PHYSICAL" && -f "$ENV_FILE" ]]; then
+  PROBE_LANE_PHYSICAL="$(sed -nE 's/^(export )?LLM_GATEWAY_PROBE_LANE_PHYSICAL=(.*)$/\2/p' "$ENV_FILE" | tail -1)"
+  PROBE_LANE_PHYSICAL="${PROBE_LANE_PHYSICAL%\'}"; PROBE_LANE_PHYSICAL="${PROBE_LANE_PHYSICAL#\'}"
+  PROBE_LANE_PHYSICAL="${PROBE_LANE_PHYSICAL%\"}"; PROBE_LANE_PHYSICAL="${PROBE_LANE_PHYSICAL#\"}"
+fi
+LLM_GATEWAY_PROBE_LANE_PHYSICAL="$PROBE_LANE_PHYSICAL"
+
 # ── 网关 → ASM 事件投递开关（2026-10-21）──────────────────────────────
 # 网关把 outbox 事件投给 ai-session-manager，需要**两个开关同时非空**：
 #   ASM_INTERNAL_ENDPOINT                    —— ASM 的 /internal/v1/events 地址
@@ -2070,6 +2081,10 @@ dd_autollm_env "$ENV_FILE"
     [[ -n "${LLMGatewayAutoLLMMaxTokens:-}" ]] && printf 'export LLMGatewayAutoLLMMaxTokens=%q\n' "$LLMGatewayAutoLLMMaxTokens"
   fi
   [[ -n "${LLM_GW_TEST_MODE_TOKEN:-}" ]] && printf 'export LLM_GW_TEST_MODE_TOKEN=%q\n' "$LLM_GW_TEST_MODE_TOKEN"
+  # 2026-11-02 探测物理隔离：跨部署保留；默认不写 = 关（与 probelane.PhysicalEnabled 一致）。
+  if [[ -n "${LLM_GATEWAY_PROBE_LANE_PHYSICAL:-}" ]]; then
+    printf 'export LLM_GATEWAY_PROBE_LANE_PHYSICAL=%q\n' "$LLM_GATEWAY_PROBE_LANE_PHYSICAL"
+  fi
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 # ── GATEWAY-ENV-WRITE:END ──
@@ -2099,6 +2114,12 @@ if [[ -n "$HARD_BLOCK_RULES" ]]; then
   log "硬阻断清单 LLM_GATEWAY_HARD_BLOCK_RULES=${HARD_BLOCK_RULES}"
 else
   log "硬阻断清单未配置 → 用网关内置默认（只有 input 允许硬阻断，egress/output 不终止回合）"
+fi
+if [[ -n "${LLM_GATEWAY_PROBE_LANE_PHYSICAL:-}" ]]; then
+  GW_ENV+=( -e "LLM_GATEWAY_PROBE_LANE_PHYSICAL=${LLM_GATEWAY_PROBE_LANE_PHYSICAL}" )
+  log "探测物理隔离 LLM_GATEWAY_PROBE_LANE_PHYSICAL=${LLM_GATEWAY_PROBE_LANE_PHYSICAL}"
+else
+  log "探测物理隔离未配置 → 关（探测仍写业务表；DDL 928 可已建表）"
 fi
 # 可信代理网段（2026-10-29 客户端识别轮）：空值不注入 ⇒ 网关回落 loopback-only。
 if [[ -n "$TRUSTED_PROXY_CIDRS" ]]; then

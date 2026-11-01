@@ -14,7 +14,7 @@ import (
 //
 // PersistHook's returned closure is a series of early returns, and every return
 // before the write is dispatched is a request that will not exist in the
-// session family. Today there are SIX of them, in two different kinds:
+// session family. Today there are SEVEN of them, in two different kinds:
 //
 //	policy exclusions — by design, permanent for their whole category:
 //	  A  !entry.Success && !isTerminalFailure(entry)
@@ -22,6 +22,8 @@ import (
 //	     on request_id and cannot be updated, so mirroring a placeholder would
 //	     permanently record success=false and drop the later success
 //	     enrichment.
+//	  B0 probelane.ShouldIsolate(...)
+//	     2026-11-02 探测物理隔离：车道开启时全部探测不进业务 session_turns。
 //	  B  IsProbeSyntheticSession(entry)
 //	     probe / self-check traffic; the facts stay on the v1 face by design.
 //	  C  !synthetic && telemetry.IsInternalAutoEntry(entry)
@@ -38,7 +40,7 @@ import (
 // A's accepted set is pinned by terminal_failure_gate_test.go. B and C have
 // their predicates pinned by synthetic_session_test.go and
 // internal_traffic_gate_test.go. What NOBODY pinned is the ENUMERATION — that
-// the set is exactly these six and nothing else.
+// the set is exactly these seven and nothing else.
 //
 // # WHY THE ENUMERATION, AND NOT JUST THE POLICY ONES
 //
@@ -105,8 +107,10 @@ func TestMirrorExclusionSetIsRegistered(t *testing.T) {
 			"D 空指针防护：不是覆盖面决策"},
 		{"isTerminalFailure(entry)", "策略",
 			"A 非终态占位：in_progress 行在会话族永远没有孪生（§9.93：V2 按 request_id 幂等且不可更新）"},
+		{"probelane.ShouldIsolate(", "策略",
+			"B0 探测物理隔离车道：LLM_GATEWAY_PROBE_LANE_PHYSICAL 开启时全部探测不进业务 session_turns"},
 		{"IsProbeSyntheticSession(entry)", "策略",
-			"B 探针合成会话：探针/自检流量按设计不镜像，事实留在 v1 面"},
+			"B 探针合成会话：无会话头探针按设计不镜像（车道关闭时仍生效）"},
 		{"IsInternalAutoEntry(entry)", "策略",
 			"C 内部回环：网关内部标题/摘要生成回环不是用户 turn。注意 !synthetic 条件——" +
 				"无会话头的回环仍会镜像成 system 会话，所以这条比标签看起来窄得多"},

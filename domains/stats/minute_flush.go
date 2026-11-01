@@ -42,6 +42,48 @@ func flushMinuteRows(
 	return tx.Commit(ctx)
 }
 
+func flushProbeMinuteRows(ctx context.Context, db *pgxpool.Pool, main map[string]*MinuteRow) error {
+	if len(main) == 0 || db == nil {
+		return nil
+	}
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	for _, row := range main {
+		if err := upsertProbeMinuteRow(ctx, tx, row); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func upsertProbeMinuteRow(ctx context.Context, tx pgx.Tx, row *MinuteRow) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO request_stats_probe_minute (
+			bucket, tenant_id, provider_id, canonical_id,
+			requests, success_count, failure_count,
+			prompt_tokens, completion_tokens, total_tokens,
+			credits_charged, cost_usd, latency_ms_sum
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		ON CONFLICT (bucket, tenant_id, provider_id, canonical_id) DO UPDATE SET
+			requests = request_stats_probe_minute.requests + EXCLUDED.requests,
+			success_count = request_stats_probe_minute.success_count + EXCLUDED.success_count,
+			failure_count = request_stats_probe_minute.failure_count + EXCLUDED.failure_count,
+			prompt_tokens = request_stats_probe_minute.prompt_tokens + EXCLUDED.prompt_tokens,
+			completion_tokens = request_stats_probe_minute.completion_tokens + EXCLUDED.completion_tokens,
+			total_tokens = request_stats_probe_minute.total_tokens + EXCLUDED.total_tokens,
+			credits_charged = request_stats_probe_minute.credits_charged + EXCLUDED.credits_charged,
+			cost_usd = request_stats_probe_minute.cost_usd + EXCLUDED.cost_usd,
+			latency_ms_sum = request_stats_probe_minute.latency_ms_sum + EXCLUDED.latency_ms_sum
+	`, row.Bucket, row.TenantID, row.ProviderID, row.CanonicalID,
+		row.Requests, row.SuccessCount, row.FailureCount,
+		row.PromptTokens, row.CompletionTokens, row.TotalTokens,
+		row.CreditsCharged, row.CostUSD, row.LatencyMsSum)
+	return err
+}
+
 func upsertMinuteRow(ctx context.Context, tx pgx.Tx, row *MinuteRow) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO request_stats_minute (

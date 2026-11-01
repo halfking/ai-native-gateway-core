@@ -1734,6 +1734,8 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ⇒ 211 生产已堆到 4 行 ⇒ CROSS JOIN 把 targets 放大 4 倍）。
 			//   ★ 含 DELETE + ADD CONSTRAINT ⇒ 自带 lock_timeout / statement_timeout。
 			"927_routing_policy_singleton_unique.sql",
+			// ★ 928（2026-11-02）：探测流量物理隔离车道（热表 + 分钟聚合；写路径另由 env 门控）。
+			"928_probe_traffic_physical_lane.sql",
 		},
 	}
 }

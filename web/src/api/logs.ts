@@ -257,6 +257,9 @@ export function getRequestLogs(params: {
   chrono?: boolean
   page?: number
   page_size?: number
+  /** 默认业务面（服务端排除探测）；运维探测页传 'probe' 或 include_probe */
+  lane?: 'business' | 'probe' | 'all'
+  include_probe?: boolean
 } = {}) {
   const qs = new URLSearchParams()
   if (params.api_key_id != null) qs.set('api_key_id', String(params.api_key_id))
@@ -278,6 +281,8 @@ export function getRequestLogs(params: {
   if (params.chrono) qs.set('chrono', '1')
   if (params.page != null) qs.set('page', String(params.page))
   if (params.page_size != null) qs.set('page_size', String(params.page_size))
+  if (params.lane) qs.set('lane', params.lane)
+  if (params.include_probe) qs.set('include_probe', '1')
   const s = qs.toString()
   return req<RequestLogsResponse>('GET', `/api/logs${s ? '?' + s : ''}`)
 }

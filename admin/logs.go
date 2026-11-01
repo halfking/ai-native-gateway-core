@@ -624,6 +624,13 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		addFilter("rl.request_class = $%d", requestClass)
 	}
 
+	// 2026-11-02 探测隔离：列表默认只业务（排除 origin_stage∈ProbeStages 等）。
+	// include_probe=1 / lane=all 显式全量；lane=probe 仅探测（运维页）。
+	lane := strings.ToLower(strings.TrimSpace(queryString(r, "lane")))
+	if pred := resolveLogsTrafficLanePredicate(lane, queryBool(r, "include_probe"), "rl"); pred != "" {
+		clauses = append(clauses, pred)
+	}
+
 	hasTaskFilter := strings.TrimSpace(queryString(r, "gw_task_id")) != ""
 	hasSessionFilter := strings.TrimSpace(queryString(r, "gw_session_id")) != ""
 	chrono := queryString(r, "chrono") == "1" || hasTaskFilter || hasSessionFilter
