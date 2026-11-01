@@ -4,6 +4,46 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-01 24h 审计轮：prompt-injection 时间戳 scan 族根修 + 48h 遗留三项复核**
+> （goal 会话，17:56 起）：★ 48h 轮遗留全绿——① 新槽 tick（11-02 14:38+08）
+> **未到不写闭案**，中间读数干净：lt10min 4 对全部落在 14:38–14:48 =
+> **部署交接尾巴**（旧槽 a 活到 14:38:35 的最后探针 × 新槽启动序列，14:48 后
+> 零新增）；17 时 263 行全失败 = **每日 6h anomaly 全池扫荡的正常一拍**
+> （05/11/17/23 时节律，昨日同拍 257 行，每目标仅 1 行非放大，404/410 存量
+> 下线模型族）；② dropped_events 全 166 实例**零增长**；③ sanitize audit
+> queue full WARN=**0** 零复发（grep "queue.*full" 的 12 条命中全是
+> probe_necessity INFO——正则误匹配）。⇒ ★★★★ **本轮真缺陷（潜伏 4 个月）**：
+> prompt-injection 管理面 5 读端点（policy/rules/engines/canary/vectors）把
+> 11 个 timestamptz 列 scan 进 Go string——**pgx v5 prepared-statement 对
+> timestamptz 回 binary 格式，*string 只放行 text/varchar ⇒ 有行即 500**；
+> handler 起源 06-29 + 表行 06-30 起 + 页面 4 个月无人访问（三证考古）⇒
+> 自上线即坏，今日 18:04 首次访问触发。⇒ ★★★★ **与并行会话实时撞车零通信
+> 调和**：我方 18:0x 落 `::text` 投影修复 + 隔离 schema 真库腿 → 并行会话
+> 18:19 落 `*time.Time` 方向测试三件套（AST 门明文禁 `时间戳列::text`）
+> → 双方通过文件系统互相看见：**并行版 handler 修法胜出**（::text 产出
+> PG 文本格式非 RFC3339 移动端解析不了 + 可空列 NULL::text 扫非指针 string
+> 仍 500；*time.Time + RFC3339Nano + PUT 写载荷分离才是正解）、**我方
+> 隔离 schema 真库腿骨架胜出**（并行版并入其前提门/update 体成 7 子测试）、
+> 静态门独立成文件（字段指针/禁::text/RFC3339 JSON 三门，空库不假绿）⇒
+> `9d3b190de`（+793/−41）调和提交已推送；变异臂 2/2（字段回退 string ⇒
+> 编译红；投影回退 ::text ⇒ AST 门红）还原 md5 一致。⇒ ★ 部署：**211 本轮
+> 不重部署**（重部署会把放大类闭案 tick 锚点从 11-02 14:38 推到后天——
+> goal 第 2① 的验收以进程生命期为锚，运行树 2ffe5495 落后一个修复提交
+> 登记下轮收敛）；245/154 部署 9d3b190de（★ 部署坑实录：后台 shell 必须
+> `export PATH=$HOME/sdk/go/bin` 否则 deploy-seamless `go: command not found`
+> 回退 docker 跑法而三 registry 拉不到镜像即拒——**首跑失败形态**）。
+> ⇒ ★ 例行审计：211 ERROR 411 全归因（探针 503 族 359 + executor 上游 44 +
+> **admin 6=本轮缺陷** + provider 2）；245/154 零错误；**acc-pg17（网关库）
+> 14 条错误仓内零引用 ⇒ 全部外部工具打错 DSN**（llm_usage_stats 族
+> 17:09 波 11 条 + prompt_injection_attack_vectors/output_compliance_keywords
+> 18 点 3 条——注意本仓查的是不带前缀的 injection_attack_vectors）；
+> ssh "Connection closed" 坑：**245/154/252 别名全走 25022，直连 IP 默认
+> 22 被立即关闭**。⇒ ★ make test-short 的 **admin 120s 结构性边缘**：三跑
+> 同位置超时（120.1-120.3s）+ 单独三跑全绿（103-106s）= 边缘定性非回归
+> （admin -short 基线 104s 对 timeout=120s 只剩 16s 余量，全量并行被抢
+> CPU 即越线；勿当回归上报，勿擅自改口径）。⇒ 审计档
+> `docs/audit/2026-11-01-24h审计轮-promptinjection时间戳scan族与遗留复核.md`；
+> 通用式见 `LESSONS.md` **§611**。
 > **2026-11-01 48h 审计轮：12h 修订 WIP 调和落地 + 三台部署**
 > （goal 会话，14:14 起）：★ 承接 0310 会话未提交 WIP（其审计档
 > `docs/12小时内修订审计-2026-11-01-0310.md` §6 自称已落地，但代码从未提交——
