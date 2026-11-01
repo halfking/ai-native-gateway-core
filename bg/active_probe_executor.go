@@ -551,8 +551,12 @@ func (e *ActiveProbeExecutor) RunGateway(ctx context.Context, target *ProbeTarge
 	// 探测（gateway 轮端点固定 /chat/completions，对应 openai-completions
 	// 协议形态的探针体）。gateway 轮仅细化证据不上梯子（probe_service.go
 	// success=direct.ok），此改动不影响可用性判据。
-	body := directProbeBody(target.RawModel, "openai-completions")
-	endpoint := e.gatewayURL + "/chat/completions"
+	//
+	// 2026-11-02 embedding 轮：端点随模态一起换（embedding ⇒ /embeddings），
+	// 否则网关面把 chat 形态打给 embedding 模型必然 400 —— 同一族事故。
+	shape := probeShapeFor(target.RawModel, "openai-completions")
+	body := shape.body
+	endpoint := upstreamurl.Build(e.gatewayURL, shape.endpoint)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
 	if err != nil {
 		return &ProbeResult{Status: ProbeStatusFailed, ErrCode: "request_build", ErrMsg: err.Error(), StartedAt: start, CompletedAt: time.Now(), Target: derefTarget(target), RequestURL: endpoint, RequestBody: body}

@@ -405,12 +405,78 @@ func (d *Detector) DetectAndLog(ctx context.Context, tenantID, requestID, sessio
 	return result, nil
 }
 
+// ── 可空列的 COALESCE 形态（2026-11-02 12h 审计轮 R4）────────────────────
+//
+// ★ 这些表的可空列**在 schema 里没有 NOT NULL**，而本文件的扫描目标是 Go 的
+//   **非指针** string/int/bool ⇒ 一行 NULL 就让 Scan 报
+//   "cannot scan NULL into *string" ⇒ 整条读路径报错。
+//
+//   2026-11-01 的 24h 审计轮（9d3b190de）修的是**管理面**那一侧的同一族
+//   （admin/prompt_injection_handler.go），**热路径检测器**这一侧原样留着
+//   ⇒ 「同一语义只修了一半」（LESSONS §606：同一 fail-closed 语义在仓内出现
+//   两次就只转了一次 ⇒ 另一条路径上仍是空白单）。
+//
+//   后果比管理面更重：管理面是 500（页面报错）；检测器这里是
+//   `loadRules()` 返回 err ⇒ **规则集加载失败** ⇒ 提示词注入检测**静默失效**
+//   （不是报错，是不检测）。
+//
+//   修法与 admin 侧同源：**可空列一律 COALESCE 成该列的 schema DEFAULT**。
+//   指针列（llm_engine_id → *int）不 COALESCE —— NULL 由指针如实表达。
+//
+//   门：domains/promptinjection/null_hardening_test.go 把每张表的
+//   「可空列 → 期望的 COALESCE 默认值」列成表并逐条断言 ⇒ 以后加列忘了
+//   COALESCE，门会红。
+
+// detectorRuleSelectCols：规则集读取的投影列。
+//
+// 可空列（按 sql/objects/tables/prompt_injection_rules.sql）：
+// description（**无 DEFAULT** ⇒ 任何未显式赋值的新行都是 NULL）、
+// enabled（DEFAULT true）、case_sensitive（DEFAULT false）、
+// category_new（DEFAULT NULL）、action_override（DEFAULT NULL）、
+// tags（DEFAULT NULL）。
+const detectorRuleSelectCols = `id, rule_name, rule_type, category, COALESCE(category_new::text, ''),
+			pattern, COALESCE(description, ''), severity, COALESCE(enabled, true),
+			COALESCE(case_sensitive, false),
+			COALESCE(action_override::text, ''), COALESCE(tags, '{}')`
+
+// detectorPolicySelectCols：租户策略读取的投影列。
+//
+// 可空列（按 sql/objects/tables/prompt_injection_policies.sql）：enabled、
+// detection_mode、enable_basic_rules、enable_advanced_rules、
+// enable_heuristics、enable_ml_model、score_threshold_log/warn/sanitize/block、
+// action_on_low_risk/medium_risk/high_risk —— 全部带 DEFAULT，无 NOT NULL。
+const detectorPolicySelectCols = `tenant_id, COALESCE(enabled, true),
+		COALESCE(detection_mode, 'observe'),
+		COALESCE(enable_basic_rules, true), COALESCE(enable_advanced_rules, true),
+		COALESCE(enable_heuristics, true), COALESCE(enable_ml_model, false),
+		COALESCE(enable_llm_detection, true),
+		COALESCE(enable_canary_detection, true), COALESCE(enable_vector_similarity, false),
+		llm_engine_id, COALESCE(content_replacement_strategy, 'llm_rewrite'),
+		COALESCE(max_input_length, 50000), COALESCE(auto_learn_enabled, false),
+		COALESCE(detection_timeout_ms, 5000),
+		COALESCE(score_threshold_log, 3), COALESCE(score_threshold_warn, 6),
+		COALESCE(score_threshold_sanitize, 8), COALESCE(score_threshold_block, 10),
+		COALESCE(action_on_low_risk, 'log'), COALESCE(action_on_medium_risk, 'warn'),
+		COALESCE(action_on_high_risk, 'block')`
+
+// detectorSeverityActionSelectCols：严重度动作矩阵的投影列。
+//
+// 可空列（按 sql/objects/tables/severity_action_matrix.sql）：
+// observe_action / enforce_action（DEFAULT 'log' / 'block'）、
+// require_approval、approval_timeout_minutes、notify_on_detect、
+// affect_session_health、session_health_penalty、
+// terminate_session_on_repeat、repeat_threshold。
+const detectorSeverityActionSelectCols = `severity_level, COALESCE(observe_action::text, 'log'),
+		COALESCE(enforce_action::text, 'block'),
+		COALESCE(require_approval, false), COALESCE(approval_timeout_minutes, 0),
+		COALESCE(notify_on_detect, false), COALESCE(notify_channels, '[]'),
+		COALESCE(affect_session_health, true), COALESCE(session_health_penalty, 10),
+		COALESCE(terminate_session_on_repeat, false), COALESCE(repeat_threshold, 3)`
+
 // loadRules 从数据库加载规则
 func (d *Detector) loadRules() error {
 	query := `
-		SELECT id, rule_name, rule_type, category, COALESCE(category_new::text, ''),
-			pattern, description, severity, enabled, case_sensitive,
-			COALESCE(action_override::text, ''), COALESCE(tags, '{}')
+		SELECT ` + detectorRuleSelectCols + `
 		FROM prompt_injection_rules
 		WHERE enabled = true
 		ORDER BY severity DESC
@@ -530,15 +596,7 @@ func (d *Detector) detectWithRules(input string, rules []*Rule) []MatchedRule {
 
 // getPolicy 获取租户策略
 func (d *Detector) getPolicy(ctx context.Context, tenantID string) (*Policy, error) {
-	query := `SELECT tenant_id, enabled, detection_mode, enable_basic_rules, enable_advanced_rules,
-		enable_heuristics, enable_ml_model, COALESCE(enable_llm_detection, true),
-		COALESCE(enable_canary_detection, true), COALESCE(enable_vector_similarity, false),
-		llm_engine_id, COALESCE(content_replacement_strategy, 'llm_rewrite'),
-		COALESCE(max_input_length, 50000), COALESCE(auto_learn_enabled, false),
-		COALESCE(detection_timeout_ms, 5000),
-		score_threshold_log, score_threshold_warn,
-		score_threshold_sanitize, score_threshold_block, action_on_low_risk,
-		action_on_medium_risk, action_on_high_risk
+	query := `SELECT ` + detectorPolicySelectCols + `
 		FROM prompt_injection_policies WHERE tenant_id = $1`
 
 	policy := &Policy{}
@@ -585,11 +643,7 @@ func (d *Detector) getPolicy(ctx context.Context, tenantID string) (*Policy, err
 
 // getSeverityAction 获取严重等级动作配置
 func (d *Detector) getSeverityAction(ctx context.Context, tenantID, riskLevel string) (*SeverityAction, error) {
-	query := `SELECT severity_level, observe_action::text, enforce_action::text,
-		require_approval, approval_timeout_minutes,
-		notify_on_detect, COALESCE(notify_channels, '[]'),
-		affect_session_health, session_health_penalty,
-		terminate_session_on_repeat, repeat_threshold
+	query := `SELECT ` + detectorSeverityActionSelectCols + `
 		FROM severity_action_matrix WHERE tenant_id = $1 AND severity_level = $2`
 
 	sa := &SeverityAction{}

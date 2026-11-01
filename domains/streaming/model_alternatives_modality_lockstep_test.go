@@ -61,9 +61,16 @@ import (
 func TestAlternativesSQL_LockstepWithModalityAccepts(t *testing.T) {
 	sqlText := alternativesSQL
 
-	// 全放行臂（$5='' / $5='text'）没有 COALESCE 接受集、不走下面的臂解析，
+	// 全放行臂（$5=''）没有 COALESCE 接受集、不走下面的臂解析，
 	// 存在性用锚点单独锁死：删除或改名 ⇒ 这里红，而不是静默改变过滤面。
-	for _, frag := range []string{"$5 = ''", "OR $5 = 'text'"} {
+	//
+	// ★ 2026-11-02（211 生产事故）：$5='text' 那条臂从「全放行」收窄成
+	// **排除臂**（唯独不接 embedding）⇒ 锚点从 "OR $5 = 'text'" 收紧到整条
+	// 排除臂的原文（只锚前半截 ⇒ 「把 <> 改成 =」这种放宽变异检不出来）。
+	for _, frag := range []string{
+		"$5 = ''",
+		"$5 = 'text' AND COALESCE(mc.modality, 'text') <> 'embedding'",
+	} {
 		if !strings.Contains(sqlText, frag) {
 			t.Fatalf("alternativesSQL 模态过滤块缺全放行臂锚点 %q —— 判据结构变了，本测试的对拍表必须跟着重写", frag)
 		}
@@ -137,7 +144,7 @@ func TestAlternativesSQL_LockstepWithModalityAccepts(t *testing.T) {
 				if regN == "" {
 					regN = "text"
 				}
-				sqlV := arm.AcceptsFor(req)[regN]
+				sqlV := arm.Admits(regN, req)
 				goV := provider.ModalityAccepts(reg, req)
 				if sqlV != goV {
 					t.Errorf("alternativesSQL 模态臂 [%s] 对 (登记=%q, 请求=%q) 判 %v，Go 判据 ModalityAccepts 判 %v —— 唯一片段与 Go 判据漂移",
@@ -203,8 +210,10 @@ func countModalityArmOccurrences(sqlText string) int {
 // 反诱饵判据——未来注释或新增 SQL 片段若真的形似到能被解析，这里先红。
 func TestAlternativesSQL_ModalityArmsShape(t *testing.T) {
 	arms := testutil.ParseModalityAcceptArms(alternativesSQL, "$5")
-	if len(arms.Arms) != 3 {
-		t.Fatalf("alternativesSQL 模态过滤臂 %d 条（期望 3：vision/audio/video 联合臂 + multimodal 臂 + image 臂）—— 新增/删除臂必须同步 provider.ModalityAccepts 与对拍域", len(arms.Arms))
+	// ★ 2026-11-02（211 生产事故）：臂数从 3 变 4——多出来的是**文本请求的
+	// 排除臂**（接一切登记模态，唯独不接 embedding）。
+	if len(arms.Arms) != 4 {
+		t.Fatalf("alternativesSQL 模态过滤臂 %d 条（期望 4：vision/audio/video 联合臂 + multimodal 臂 + image 臂 + 文本排除臂）—— 新增/删除臂必须同步 provider.ModalityAccepts 与对拍域", len(arms.Arms))
 	}
 	if !arms.HasExactFallback {
 		t.Fatalf("alternativesSQL 缺【兜底精确臂】（COALESCE(mc.modality,'text') = $5）—— ★ 闭世界形态会让未知请求值的建议列表静默变空，且与 ①（开世界）语义相反 ⇒ 必须补齐")

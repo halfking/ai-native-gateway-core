@@ -205,6 +205,16 @@ var taskActionForKind = map[errorsx.ErrorKind]TaskAction{
 	// Client-determined terminal.
 	errorsx.KindCanceled:  TaskActionFailTerminal,
 	errorsx.KindClientBug: TaskActionFailTerminal,
+	// 2026-11-02：上游拒收但无法再归因的 4xx。
+	//
+	// 本表也是**闭集**：未登记的 kind 会落到 centralActionForTask 的
+	// `unmapped_kind:` ⇒ TaskActionFailClosed（见 attempt_outcome.go 的
+	// `action, mapped := taskActionForKind[kind]`）。登记为 RetryNow 而不是
+	// FailTerminal，是为了**保留跨凭据故障转移**：这类 4xx 可能是这一把钥匙
+	// 的权限/档位问题，兄弟凭据可能能服务同一个模型（生产实测：943 个在册
+	// 模型里 366 个由 ≥2 个凭据服务）。而「不惩罚节点」由 errorsx 的归责
+	// 矩阵（PenaltyNone）与 IsRequestSideError 各闸门负责，与本表无关。
+	errorsx.KindRequestRejected: TaskActionRetryNow,
 }
 
 // AggregateTaskOutcome folds one AttemptResult into a TaskDecision.

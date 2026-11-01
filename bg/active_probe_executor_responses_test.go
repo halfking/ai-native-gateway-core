@@ -169,7 +169,7 @@ func TestProbeWithRetry_ResponsesWireShape(t *testing.T) {
 // node_probe 直连轮（probeDirect）的同款分发：openai-responses 走
 // /v1/responses + Responses 载荷；openai-completions / anthropic 行为不变。
 func TestDirectProbe_ResponsesDispatch(t *testing.T) {
-	if got := directProbeEndpoint("https://api.vapeur.ai/v1", "openai-responses"); got != "https://api.vapeur.ai/v1/responses" {
+	if got := directProbeEndpoint("https://api.vapeur.ai/v1", "gpt-5.6-terra", "openai-responses"); got != "https://api.vapeur.ai/v1/responses" {
 		t.Fatalf("directProbeEndpoint = %q", got)
 	}
 	var payload map[string]any
@@ -184,10 +184,10 @@ func TestDirectProbe_ResponsesDispatch(t *testing.T) {
 		t.Fatalf("max_output_tokens = %#v, want >= 16", payload["max_output_tokens"])
 	}
 	// 既有行为钉住：chat / anthropic 不变
-	if got := directProbeEndpoint("https://apigpt.cc", "openai-completions"); got != "https://apigpt.cc/v1/chat/completions" {
+	if got := directProbeEndpoint("https://apigpt.cc", "some-chat-model", "openai-completions"); got != "https://apigpt.cc/v1/chat/completions" {
 		t.Fatalf("chat endpoint drifted: %q", got)
 	}
-	if got := directProbeEndpoint("https://apiclaude.cc", "anthropic-messages"); got != "https://apiclaude.cc/v1/messages" {
+	if got := directProbeEndpoint("https://apiclaude.cc", "claude-sonnet-4", "anthropic-messages"); got != "https://apiclaude.cc/v1/messages" {
 		t.Fatalf("anthropic endpoint drifted: %q", got)
 	}
 }

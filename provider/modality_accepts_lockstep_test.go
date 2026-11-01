@@ -82,8 +82,11 @@ func TestModalityAccepts_LockstepWithCandidateSQL(t *testing.T) {
 
 	// 臂的存在性先锁死（一条臂被改名/删除 ⇒ 这里红，而不是静默兜底通过）。
 	for _, frag := range []string{
-		"$3 = ''",                            // 无模态过滤：全放行
-		"$3 = 'text'",                        // 文本请求：全放行
+		"$3 = ''", // 无模态过滤：全放行
+		// ★ 2026-11-02（211 生产事故）：文本臂是一条【排除臂】——接一切登记
+		// 模态，唯独不接 embedding。锚点从 "$3 = 'text'" 收紧到整条排除臂的
+		// 原文：只锚前半截的话，「把 <> 改成 =」这种**放宽**变异检不出来。
+		"$3 = 'text' AND COALESCE(mc.modality, 'text') <> 'embedding'",
 		"COALESCE(mc.modality, 'text') = $3", // 兜底精确臂（末位）
 	} {
 		if !strings.Contains(sqlText, frag) {
@@ -199,11 +202,33 @@ func providerRequestModalities() []string {
 //	要么是死代码。
 func TestModalityAccepts_LockstepArmsShape(t *testing.T) {
 	arms := testutil.ParseModalityAcceptArms(stripSQLComments(candidateQuerySQLBase()), "$3")
-	if len(arms.Arms) != 3 {
-		t.Fatalf("带接受集的显式臂 %d 条（期望 3：vision/audio/video 联合臂 + multimodal 臂 + image 臂）—— 新增/删除臂必须同步 ModalityAccepts 与对拍表", len(arms.Arms))
+	// ★ 2026-11-02（211 生产事故）：臂数从 3 变 4——多出来的是**文本请求的
+	// 排除臂**（接一切登记模态，唯独不接 embedding）。
+	// 三条带接受集的显式臂：vision/audio/video 联合臂 + multimodal 臂 + image 臂；
+	// 一条排除臂：文本臂；外加一条兜底精确臂。
+	if len(arms.Arms) != 4 {
+		t.Fatalf("解析出的臂 %d 条（期望 4：vision/audio/video 联合臂 + multimodal 臂 + image 臂 + 文本排除臂）—— 新增/删除臂必须同步 ModalityAccepts 与对拍表", len(arms.Arms))
 	}
 	if !arms.HasExactFallback {
 		t.Fatalf("接受臂缺【兜底精确臂】（COALESCE(mc.modality,'text') = $3）—— ★ 承重：/v1/embeddings 靠它命中登记为 'embedding' 的行 ⇒ 缺了它嵌入请求零候选 ⇒ 功能事故")
+	}
+	// ★ 排除臂必须真的排除掉 embedding（而不是解析器把它当成了空接受集 ⇒
+	//   「全拒」）。这一格是本次事故的那一格，必须被钉住。
+	textArm := -1
+	for i, a := range arms.Arms {
+		if a.Covers("text") {
+			textArm = i
+			break
+		}
+	}
+	if textArm < 0 {
+		t.Fatalf("没有解析出文本请求臂 —— 判据结构变了，本测试的对拍表必须跟着重写")
+	}
+	if arms.Arms[textArm].Admits("embedding", "text") {
+		t.Fatalf("文本请求臂没有排除 embedding 登记模态 —— ★ 这正是 211 生产事故的那一格：chat 端点携带 embedding 模型 ⇒ 上游 400 ⇒ 绑定翻红 ⇒ /v1/embeddings 对所有租户 503")
+	}
+	if !arms.Arms[textArm].Admits("text", "text") {
+		t.Fatalf("文本请求臂把普通文本登记模态也拒了 —— 判据收窄过头，所有文本请求都会零候选")
 	}
 }
 
@@ -248,6 +273,13 @@ func TestModalityAccepts_LockstepGateModalityListMatchesArms(t *testing.T) {
 		for _, req := range a.Reqs {
 			if req == "image" {
 				continue // image 走专用臂，gate 不覆盖 image（既有设计，见函数注释）
+			}
+			// ★ 2026-11-02：文本臂是**排除臂**（唯独不接 embedding），它谈的
+			// 是「文本模态」而不是媒体模态。gate 的排除面是「实测这个模型看不见
+			// 媒体」，文本没有读级概念 ⇒ gate 结构上不覆盖 text ⇒ text 不进
+			// 「臂内媒体模态」这个分母（不是豁免，是事实）。
+			if req == "text" {
+				continue
 			}
 			mediaInArms[req] = true
 		}

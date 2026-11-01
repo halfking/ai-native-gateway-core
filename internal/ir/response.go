@@ -406,6 +406,12 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 					} `json:"function"`
 				} `json:"tool_calls"`
 				ReasoningContent string `json:"reasoning_content"`
+				// Ollama /v1 OpenAI-compat dialect: the same trace is
+				// carried under the shorter name `reasoning`. Kept as a
+				// RawMessage so an object-valued `reasoning` (Responses
+				// style config echo) cannot break the whole parse.
+				// See reasoning_alias.go.
+				ReasoningAlias json.RawMessage `json:"reasoning"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -568,6 +574,9 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 
 		if choice.Message.ReasoningContent != "" {
 			ir.ReasoningContent = choice.Message.ReasoningContent
+		} else if alias := reasoningAliasString(choice.Message.ReasoningAlias); alias != "" {
+			// Ollama /v1 dialect: `reasoning` instead of `reasoning_content`.
+			ir.ReasoningContent = alias
 		}
 
 		// Parse content

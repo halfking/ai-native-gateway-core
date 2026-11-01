@@ -150,6 +150,13 @@ func credentialProbeText(parts []credentialProbeContent) bool {
 // 本函数——通过共享入口把 deliverability 语义降级成了 liveness，bg 包
 // 4 条 model 探针测试当场翻红，教训：**改共享判据前先枚举全部消费方**。
 func credentialProbeHasOutput(protocol string, body []byte) bool {
+	// 2026-11-02 embedding 探针轮：embeddings 形态有自己的响应壳
+	// （{"object":"list","data":[{"embedding":[...]}]}），既没有 choices 也没有
+	// output/content 键 ⇒ 走下面的 ClassifyBody 只会拿到 FormatUnknown。
+	// 单开一支，不混进 chat/messages/responses 的语义。
+	if protocol == "embeddings" {
+		return embeddingsProbeHasOutput(body)
+	}
 	format, empty := emptyoutcome.ClassifyBody(body)
 	want := map[string]emptyoutcome.Format{"chat": emptyoutcome.FormatChat,
 		"messages": emptyoutcome.FormatAnthropic, "responses": emptyoutcome.FormatResponses}[protocol]
@@ -219,6 +226,50 @@ func credentialProbeHasOutput(protocol string, body []byte) bool {
 				(item.Type == "function_call" && item.Name != "") {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// embeddingsProbeHasOutput 判定一个 embeddings 形态的探针响应是否真的带回了
+// 向量。OpenAI 兼容的 embeddings 响应壳是：
+//
+//	{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,…]}],
+//	 "model":"…","usage":{"prompt_tokens":1,"total_tokens":1}}
+//
+// 判据（与 chat 臂同口径「有没有拿到用户可用的东西」）：
+//   - 顶层不是 error；
+//   - object 为空或 "list"（别的 object 说明这不是 embeddings 响应）；
+//   - data 里至少有一条 embedding 是**非空数值数组**。
+//
+// 空数组 `[]` 不算（上游可能回 200 但没算出向量）。
+// 2026-11-02 随 embedding 探针形态分发一同落地：探针改走 /embeddings 之后，
+// 响应不再是 chat 壳，必须有自己的「有没有产出」判据，否则探针永远判
+// inconclusive（既不判活也不判死）。
+func embeddingsProbeHasOutput(body []byte) bool {
+	if len(body) == 0 || !json.Valid(body) {
+		return false
+	}
+	var envelope struct {
+		Error  json.RawMessage `json:"error"`
+		Object string          `json:"object"`
+		Data   []struct {
+			Embedding json.RawMessage `json:"embedding"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &envelope) != nil {
+		return false
+	}
+	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
+		return false
+	}
+	if envelope.Object != "" && envelope.Object != "list" {
+		return false
+	}
+	for _, item := range envelope.Data {
+		var vec []float64
+		if json.Unmarshal(item.Embedding, &vec) == nil && len(vec) > 0 {
+			return true
 		}
 	}
 	return false

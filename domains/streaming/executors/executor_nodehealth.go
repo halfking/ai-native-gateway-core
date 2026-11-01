@@ -489,7 +489,12 @@ func (e *Executor) writeProtocolCredentialStateOnError(params *ExecParams, ctx c
 }
 
 func nodeHealthErrorKind(kind errorsx.ErrorKind) nodehealth.ErrorKind {
-	if errorsx.IsClientBug(kind) || errorsx.IsContentFilter(kind) || kind == errorsx.KindContextLength || kind == errorsx.KindCanceled {
+	// 2026-11-02：请求侧错误族一律映射成 ErrorKindRequest ⇒ reducer 的
+	// effectsFor 直接返回 nil ⇒ 不写绑定、不写凭据不可用、不记熔断、
+	// 不更新 URSM、不排探针、**且不累计 consecutive_failures**。
+	// 这一条是本轮事故里「3 连败 ⇒ 整凭据 cooling」那条链的断点。
+	// （IsRequestSideError ⊇ IsClientBug，故既有行为不变。）
+	if errorsx.IsRequestSideError(kind) || errorsx.IsContentFilter(kind) || kind == errorsx.KindContextLength || kind == errorsx.KindCanceled {
 		return nodehealth.ErrorKindRequest
 	}
 	switch kind {

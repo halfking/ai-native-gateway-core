@@ -51,8 +51,8 @@ func TestNodeProbeDirectPersistsNativeResponsesVerdict(t *testing.T) {
 			worker := NewNodeProbeWorker(nil, nil, nil, "", srv.URL, nil, 0)
 			worker.probeClient = srv.Client()
 			worker.SetResponsesCapabilitySink(sink)
-			worker.resolveDirectTargetFn = func(context.Context, int, string) (string, string, string, string, int, error) {
-				return "sk-test", "claude-sonnet-5", srv.URL, "openai-responses", 36, nil
+			worker.resolveDirectTargetFn = func(context.Context, int, string) (string, string, string, string, int, string, error) {
+				return "sk-test", "claude-sonnet-5", srv.URL, "openai-responses", 36, "", nil
 			}
 
 			result := worker.probeDirect(t.Context(), 126, "claude-sonnet-5")

@@ -244,7 +244,11 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 				Role             string          `json:"role"`
 				Content          json.RawMessage `json:"content"`
 				ReasoningContent string          `json:"reasoning_content"`
-				ToolCalls        json.RawMessage `json:"tool_calls"`
+				// Ollama /v1 OpenAI-compat dialect: same trace, shorter
+				// field name. RawMessage so an object-valued `reasoning`
+				// cannot break the whole parse. See reasoning_alias.go.
+				ReasoningAlias json.RawMessage `json:"reasoning"`
+				ToolCalls      json.RawMessage `json:"tool_calls"`
 				// audit-stream-multimodal (2026-07-13): OpenAI audio output delta
 				Audio json.RawMessage `json:"audio"`
 			} `json:"delta"`
@@ -366,17 +370,24 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 		delta := choice.Delta
 
 		content := normalizeOpenAIStreamContent(delta.Content)
+		// Ollama /v1 dialect: the trace arrives as `reasoning` rather than
+		// `reasoning_content`. `reasoning_content` wins when both are
+		// present (standard OpenAI dialect takes precedence).
+		reasoning := delta.ReasoningContent
+		if reasoning == "" {
+			reasoning = reasoningAliasString(delta.ReasoningAlias)
+		}
 		chunk.Type = ChunkTypeDelta
 		chunk.Delta = &StreamDelta{
 			Role:             delta.Role,
 			Content:          content,
-			ReasoningContent: delta.ReasoningContent,
+			ReasoningContent: reasoning,
 		}
 		// Determine delta type for cross-protocol routing
 		switch {
 		case delta.Audio != nil && string(delta.Audio) != "null":
 			chunk.Delta.DeltaType = "audio"
-		case delta.ReasoningContent != "":
+		case reasoning != "":
 			chunk.Delta.DeltaType = "reasoning"
 		case content != "":
 			chunk.Delta.DeltaType = "text"

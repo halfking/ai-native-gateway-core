@@ -26,6 +26,8 @@ var allErrorKinds = []errorsx.ErrorKind{
 	errorsx.KindUpstreamDown,
 	errorsx.KindCanceled,
 	errorsx.KindClientBug,
+	// 2026-11-02：上游拒收但无任何裁决的 4xx（请求侧错误族）。
+	errorsx.KindRequestRejected,
 	errorsx.KindConcurrent,
 	errorsx.KindAuthRevoked,
 	errorsx.KindQuotaPeriodic,
@@ -59,6 +61,12 @@ func TestAggregateTaskOutcomeExhaustiveKindMatrix(t *testing.T) {
 		{errorsx.KindEmptyResponse, TaskActionRetryNow},
 		{errorsx.KindAuth, TaskActionRetryNow},
 		{errorsx.KindStreamTimeout, TaskActionRetryNow},
+		// 2026-11-02：上游拒收但无任何裁决 ⇒ 请求侧错误。不惩罚节点
+		// （errorsx 的归责矩阵 PenaltyNone + IsRequestSideError 各闸门负责），
+		// 但**保留跨凭据故障转移**：这类 4xx 可能是这一把钥匙的权限/档位
+		// 问题，兄弟凭据可能能服务同一个模型（生产实测：943 个在册模型里
+		// 366 个由 ≥2 个凭据服务）。⇒ 刷新候选后重试，而不是终态失败。
+		{errorsx.KindRequestRejected, TaskActionRetryNow},
 		// wait-for-recovery (quota window / provider down / no capacity)
 		{errorsx.KindRateLimit, TaskActionWaitRecovery},
 		{errorsx.KindQuota, TaskActionWaitRecovery},

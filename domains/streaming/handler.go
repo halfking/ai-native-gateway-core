@@ -9443,15 +9443,30 @@ func (h *ChatHandler) diagnoseModalityMismatch(
 	if h == nil || h.provider == nil {
 		return nil
 	}
-	// A text request is never excluded by the modality gate, so there is
-	// nothing to diagnose — and the resolver must not be consulted for it.
+	// ★ 2026-11-02（211 生产事故 · embedding 投毒链）：文本请求**也会**被
+	// 模态门排除（排除的是登记为 embedding 的模型），所以「文本请求没有
+	// 什么可诊断」这句话已经过期——见下面的粗筛分支。
 	//
 	// ★ Normalise before comparing: the modality string reaches here from
 	// request-body detection and from caller-supplied values, and "TEXT" or
 	// " text " must not slip past the guard into a diagnosis that says
 	// "this model cannot read your images" for a request that carried none.
 	normalized := strings.ToLower(strings.TrimSpace(requestModality))
-	if normalized == "" || normalized == modalityText {
+	if normalized == "" {
+		return nil
+	}
+	if normalized == modalityText && !textRequestMayTargetEmbeddingModel(clientModel) {
+		// ★ 2026-11-02（211 生产事故 · embedding 投毒链）：文本请求现在**也**
+		// 可能被模态门排除——被排除的是登记为 embedding 的模型。
+		//
+		// 但绝大多数零候选的文本请求与模态无关（模型名写错 / 租户范围 /
+		// 探针状态）⇒ 先用**本地**名字规则粗筛，只在「名字看着像 embedding
+		// 模型」时才付那次 800ms 有界的诊断查询。
+		//
+		// ★ 粗筛只影响**错误质量**（400 还是 503），绝不影响**是否放行**：
+		//   路由侧的模态门（provider/modality_accept.go 的唯一片段）已经独立
+		//   地把 embedding 登记模型挡在候选之外 ⇒ 上游不会被调用 ⇒ 绑定不会被
+		//   翻红 ⇒ 别的租户不会被连坐。
 		return nil
 	}
 	mismatch, err := h.provider.ModelModalityMismatch(ctx, clientModel, clientProfile, tenantID, requestModality)
@@ -9464,6 +9479,31 @@ func (h *ChatHandler) diagnoseModalityMismatch(
 		return nil
 	}
 	return mismatch
+}
+
+// textRequestMayTargetEmbeddingModel 粗筛「这个文本请求会不会是在打一个
+// embedding 模型」。
+//
+// ★★ 它**不是裁决**，只是一道「值不值得跑诊断」的闸：
+//
+//	· 判据的权威来源是 models_canonical.modality（登记模态），由
+//	  provider.ModelModalityMismatch 查库得出；
+//	· 这里只用**本地**的名字规则（modelname.InferModality）判断要不要付
+//	  那次 800ms 有界的诊断查询。
+//
+// ⇒ 粗筛**漏判**（别名里不含 embedding 字样）⇒ 少给一次 400，仍给 503
+//   （一个诚实、可重试的答复），**不会**误伤任何请求；
+// ⇒ 粗筛**误判**（名字像 embedding 但登记模态是 text）⇒ 多跑一次诊断
+//   查询，结论仍由 DB 说了算（不是 mismatch ⇒ 照旧 503）。
+//
+// ⇒ 换句话说：粗筛最多让错误信息**不够精确**，它**永远**不能决定放行与否
+//   ——放行与否由路由侧的模态门（provider/modality_accept.go 的唯一片段）
+//   独立决定。
+func textRequestMayTargetEmbeddingModel(clientModel string) bool {
+	if strings.TrimSpace(clientModel) == "" {
+		return false
+	}
+	return modelname.InferModality(clientModel) == "embedding"
 }
 
 // writeModalityMismatchError writes the 400 response for a request whose

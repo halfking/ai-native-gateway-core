@@ -20,7 +20,7 @@ import "strings"
 // ★ 判据的形态（登记模态 R × 请求模态 P，R 为空按 'text' 归一）：
 //
 //	P = ''            →放行（无模态过滤）
-//	P = 'text'        → 放行
+//	P = 'text'        → 放行，**但排除 R = 'embedding'**（见下）
 //	P ∈ {vision,audio,video} → R ∈ {P, 'multimodal'}
 //	P = 'multimodal'  → R = 'multimodal'
 //	P = 'image'       → R ∈ {'image', 'vision', 'multimodal'}
@@ -54,7 +54,28 @@ func ModalityAccepts(registeredModality, requestedModality string) bool {
 		// for a request the router never filtered.
 		return true
 	case "text":
-		return true
+		// ★★ 2026-11-02（211 生产事故 · embedding 模型投毒链）：文本请求
+		// **不接**登记为 embedding 的模型。
+		//
+		// 事故链（生产日志逐环可查，request_id=c5a038a96333aeb002c8f9824d4cdb5b）：
+		//
+		//	外部客户端把 embedding 模型名塞进 POST /v1/chat/completions
+		//	⇒ 路由器把该 embedding 绑定选成候选（文本请求此前放行一切登记模态）
+		//	⇒ 网关按 **chat 形态** 转发到 Ollama 的 /v1/chat/completions
+		//	⇒ 上游 400（"qwen3-embedding:0.6b" does not support chat），连试三次
+		//	⇒ 该 (凭据,模型) 绑定被翻红（avail=false，5 分钟冷却）
+		//	⇒ **/v1/embeddings 对所有租户 503**（no_candidates / db_empty）
+		//	⇒ 探针队列行被退避到 6 小时（next_run_at=07:30）⇒ 绑定只能等自动恢复。
+		//
+		// ⇒ 必须在**候选解析层**就与 embedding 登记模型绝缘：等上游 400 之后再
+		//   补救，那时绑定已经翻红，别的租户已经被连坐，而这条请求本身也必然
+		//   失败（embedding 模型本来就不接 chat）⇒ 提前拒绝是零损失。
+		//
+		// ★ 为什么排除的是「登记模态 = embedding」而不是「模型名里含 embed」：
+		//   判据的权威来源是 models_canonical.modality（登记模态），不是名字。
+		//   名字推断（modelname.InferModality）只在本包之外的**诊断粗筛**里
+		//   用来省一次 DB 往返，绝不参与裁决。
+		return registeredModality != "embedding"
 	case "multimodal":
 		return registeredModality == "multimodal"
 	case "image":
@@ -102,11 +123,17 @@ var ModalityRequestModalities = []string{
 // ★形态（$MODALITY 是占位符 token，渲染时替换成调用方的参数号）：
 //
 //	$MODALITY = ''
-//	OR $MODALITY = 'text'
+//	OR ($MODALITY = 'text' AND COALESCE(mc.modality, 'text') <> 'embedding')
 //	OR ($MODALITY IN ('vision', 'audio', 'video') AND COALESCE(mc.modality, 'text') IN ($MODALITY, 'multimodal'))
 //	OR ($MODALITY = 'multimodal' AND COALESCE(mc.modality, 'text') = 'multimodal')
 //	OR ($MODALITY = 'image' AND COALESCE(mc.modality, 'text') IN ('image', 'vision', 'multimodal'))
 //	OR COALESCE(mc.modality, 'text') = $MODALITY
+//
+// ★★ 文本臂是一条【排除臂】（2026-11-02，211 生产事故）：文本请求接一切
+//
+//	登记模态，**唯独不接 embedding**。
+//	⇒ 它在解析层是一种新形状（「排除集」而不是「接受集」）：tests/testutil 的
+//	  共享解析器为此新增了排除臂的识别，两道锁步门随之逐格对拍。
 //
 // ★ 这段 SQL 与上面的 Go 判据是**同一份规则的两个投影**，必须永远同义。
 //
@@ -133,7 +160,12 @@ var ModalityRequestModalities = []string{
 //	raw string 用 tab，streaming 的用空格）⇒ 片段自带中性缩进，两边都好读。
 const modalityAcceptArmsTemplate = `
     $MODALITY = ''
-    OR $MODALITY = 'text'
+    -- ★ 2026-11-02（211 生产事故）：文本请求**不接**登记为 embedding 的模型。
+    -- 事故链与理由见 ModalityAccepts 的注释（chat 端点携带 embedding 模型 ⇒
+    -- 上游 400 ⇒ 绑定翻红 ⇒ /v1/embeddings 对所有租户 503）。
+    -- ★ 用【排除】而不是【枚举】：将来 CHECK 约束新增任何登记模态，文本请求
+    --   都自动接得上；枚举式接受集会在新增模态的那天静默漏掉它。
+    OR ($MODALITY = 'text' AND COALESCE(mc.modality, 'text') <> 'embedding')
     -- 2026-10-26：vision/audio/video 三种媒体请求都放行
     -- multimodal 登记的模型。video 此前缺席（只有精确
     -- mc.modality = 'video' 一条臂）⇒ 任何带视频块的

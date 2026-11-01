@@ -311,7 +311,7 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 			e.ErrorKind == string(errorsx.KindTransient) ||
 			e.ErrorKind == string(errorsx.KindUpstreamOverloaded) ||
 			e.ErrorKind == string(errorsx.KindEmptyResponse) ||
-			errorsx.IsClientBug(errorsx.ErrorKind(e.ErrorKind)) {
+			errorsx.IsRequestSideError(errorsx.ErrorKind(e.ErrorKind)) {
 			continue
 		}
 		total++

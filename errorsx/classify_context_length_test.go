@@ -19,19 +19,22 @@ func TestClassifyErrorWithBody_ContextLength(t *testing.T) {
 		{"413-with-context-body", 413, `{"error":{"message":"context_length_exceeded"}}`, KindContextLength},
 		{"422-status", 422, `{"error":"context_length_exceeded"}`, KindContextLength},
 		// Negative cases
-		// "rate limit exceeded" matches the concurrentOverloadRe pattern
-		// ("limit" + "exceed") before reaching the status-code branch, so
-		// it gets KindTransient — this is pre-existing behaviour, not
-		// something the context-length addition changed.
-		{"400-not-context", 400, `{"error":{"message":"rate limit exceeded"}}`, KindTransient},
+		// "rate limit exceeded" 此前被本测试注释描述成「命中
+		// concurrentOverloadRe ⇒ KindTransient」——那是**陈旧注释**：该正则
+		// 要求 concurrent/too many/rpm/tpm/slow down 等词形，并不匹配
+		// "rate limit exceeded"。它一直走的是**状态兜底**。
+		// 2026-11-02：状态兜底从 KindTransient 改为 KindRequestRejected
+		// （上游 4xx 且无任何模型级/凭据级裁决 ⇒ 请求侧错误，不惩罚节点）。
+		// 本用例的真实意图是「**不是** context_length」，该意图不变。
+		{"400-not-context", 400, `{"error":{"message":"rate limit exceeded"}}`, KindRequestRejected},
 		{"401", 401, `{"error":"unauthorized"}`, KindAuth},
 		// 5xx status codes always map to KindUpstreamDown, regardless of
 		// the body. 413 with a non-context body falls through to the
-		// generic 4xx path which is KindTransient.
+		// generic 4xx path which is now KindRequestRejected.
 		{"500", 500, `internal error`, KindUpstreamDown},
-		// Status 400 but body does NOT look like context length
-		{"400-generic", 400, `{"error":{"message":"bad request"}}`, KindTransient},
-		{"413-generic", 413, `{"error":"payload too large"}`, KindTransient},
+		// Status 400/413 but body does NOT look like context length
+		{"400-generic", 400, `{"error":{"message":"bad request"}}`, KindRequestRejected},
+		{"413-generic", 413, `{"error":"payload too large"}`, KindRequestRejected},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

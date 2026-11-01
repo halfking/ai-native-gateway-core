@@ -40,13 +40,16 @@ func TestErrorKindToHTTPStatusContract(t *testing.T) {
 		KindStreamTimeout: http.StatusGatewayTimeout,
 
 		// 502 — transport / everything else
-		KindNetwork:             http.StatusBadGateway,
-		KindUpstreamDown:        http.StatusBadGateway,
-		KindTransient:           http.StatusBadGateway,
-		KindAuth:                http.StatusBadGateway, // coarse default — see doc
-		KindAuthRevoked:         http.StatusBadGateway,
-		KindCanceled:            http.StatusBadGateway,
-		KindClientBug:           http.StatusBadGateway,
+		KindNetwork:      http.StatusBadGateway,
+		KindUpstreamDown: http.StatusBadGateway,
+		KindTransient:    http.StatusBadGateway,
+		KindAuth:         http.StatusBadGateway, // coarse default — see doc
+		KindAuthRevoked:  http.StatusBadGateway,
+		KindCanceled:     http.StatusBadGateway,
+		KindClientBug:    http.StatusBadGateway,
+		// 2026-11-02：request_rejected 与 client_bug 同族（请求侧错误），
+		// 同样走 502 粗粒度默认——上游 4xx 的正文由执行器决定是否透传。
+		KindRequestRejected:     http.StatusBadGateway,
 		KindModelNotFound:       http.StatusBadGateway,
 		KindModelDeprecated:     http.StatusBadGateway,
 		KindContextLength:       http.StatusBadGateway,
@@ -84,6 +87,8 @@ func TestErrorKindToHTTPStatusContract_AllKindsCovered(t *testing.T) {
 	declared := []ErrorKind{
 		KindTransient, KindTimeout, KindNetwork, KindRateLimit, KindAuth,
 		KindQuota, KindUpstreamDown, KindCanceled, KindClientBug, KindConcurrent,
+		// 2026-11-02：新增 kind 必须登记（漏登记 ⇒ 本轮测试红）。
+		KindRequestRejected,
 		KindAuthRevoked, KindQuotaPeriodic, KindQuotaBalance, KindQuotaPermanent,
 		KindModelNotFound, KindStreamTimeout, KindToolCallIdMismatch,
 		KindContextLength, KindUnsupportedFeature, KindModelDeprecated,

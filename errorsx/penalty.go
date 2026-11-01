@@ -49,6 +49,9 @@ func AllErrorKinds() []ErrorKind {
 		KindUpstreamDown,
 		KindCanceled,
 		KindClientBug,
+		// 2026-11-02：上游拒收但无法再归因的 4xx（请求侧错误族）。
+		// 与 KindClientBug 同判——见 kind 声明处的事故链说明。
+		KindRequestRejected,
 		KindConcurrent,
 		KindAuthRevoked,
 		KindQuotaPeriodic,
@@ -87,6 +90,21 @@ func PenaltyOf(kind ErrorKind) Penalty {
 		KindContentFilter, KindUnsupportedFeature, KindConversion,
 		KindCanceled, KindCircuitOpen, KindFpSlotSaturated:
 		// circuit_open / fp_slot_saturated 是网关侧状态，再记一次冷却无意义。
+		return Penalty{Target: PenaltyNone}
+
+	// —— 不罚：上游拒收但无法进一步归因的 4xx（2026-11-02）——
+	//
+	// ★ 这条是本轮事故的**放大器**判据：上游 400 此前落 KindTransient ⇒
+	//   PenaltyBinding ⇒ 3 连败后 EffectSetCredentialUnavailable ⇒
+	//   整个凭据（其下全部 binding、全部租户）被置 cooling
+	//   （生产实测：一条客户端错单让 /v1/embeddings 对所有租户 503）。
+	//
+	//   归因口径：上游回了 4xx 且错误体里没有任何模型级/凭据级/配额级/
+	//   限流级裁决 ⇒ 证据指向**这次请求**，不指向节点。节点健康不该因此
+	//   冷却、绑定不该因此翻红、探针不该因此扇出。
+	//   注意：这只改**归责**，不改「什么算失败」——请求仍然失败，
+	//   且仍允许换一个兄弟候选（action_policy 的 request_rejected 分支）。
+	case KindRequestRejected:
 		return Penalty{Target: PenaltyNone}
 
 	// —— 不罚：首字节超时（magpie 的 slow）——

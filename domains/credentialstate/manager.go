@@ -279,7 +279,12 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	// 1. 用户取消（KindCanceled）：用户主动取消请求，不是凭据问题
 	// 2. 客户端错误（IsClientBug）：包括 model_not_found, tool_call_id_mismatch, unsupported_feature
 	//    这些是客户端使用问题，不应惩罚凭据
-	if errKind == errorsx.KindCanceled || errorsx.IsClientBug(errKind) {
+	// 3. request_rejected（2026-11-02）：上游拒收但错误体里没有模型级/凭据级/
+	//    配额级裁决 ⇒ 证据指向这次请求，不指向凭据。不早退的话，这条失败会
+	//    累计进 consecutive_fails，并在 3 连败后把凭据置 cooling；更糟的是
+	//    probeImmediately 集合含 KindTransient，会**立刻**扇出一次主动探针
+	//    ——探针去问上游「你健康吗」，而上游的答复是「你这条请求我不收」。
+	if errKind == errorsx.KindCanceled || errorsx.IsRequestSideError(errKind) {
 		return
 	}
 

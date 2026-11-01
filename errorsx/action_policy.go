@@ -347,6 +347,30 @@ func DecideNextAction(ctx DecisionContext) ActionDecision {
 	}
 
 	switch ctx.Kind {
+	case KindRequestRejected:
+		// 上游拒收了这个请求，而错误体里没有任何模型级/凭据级/配额级/限流级
+		// 裁决 ⇒ 证据指向**这次请求**，不指向节点（2026-11-02 事故的放大器段）。
+		//
+		// 本分支的三个「不」与一个「要」：
+		//   · 不盲重试同一节点——同一 body 必然再败（IsRetryable 也不含本 kind，
+		//     executor 根本不会构造 retryableError）；
+		//   · 不写任何共享节点健康状态——RecordProviderFailure /
+		//     RecordCredentialFailure / RecordCredentialState / EnqueueProbe
+		//     全部保持 false ⇒ 凭据不冷却、熔断不计数、绑定不翻红、
+		//     探针不扇出（归责见 errorsx.PenaltyOf → PenaltyNone）。
+		//   · 要**换一个兄弟候选**：400/413/422 可能是**这一把钥匙**的权限或
+		//     参数档位问题，兄弟凭据可能能服务同一个模型。生产实测（211，
+		//     2026-11-02）：943 个在册模型里 198 个由 ≥4 个凭据服务、366 个
+		//     由 ≥2 个凭据服务 ⇒ 跨凭据故障转移有实质价值，不能因 4xx 关掉。
+		//     没有兄弟候选时（HasAlternateNode=false）由下面的收尾逻辑降级为
+		//     fail-terminal，语义仍是「这次请求失败」。
+		base.Action = ActionSwitchNode
+		base.ReasonCode = "upstream_request_rejected"
+		if ctx.RemainingAttempts <= 0 {
+			// 没有下一次尝试的预算 ⇒ 这次请求到此为止（语义仍是「失败」）。
+			base.Action = ActionFailTerminal
+			base.ReasonCode = "no_attempt_budget:" + base.ReasonCode
+		}
 	case KindAuth:
 		base.Action = ActionSwitchNode
 		base.ReasonCode = "credential_auth_failed"
