@@ -143,6 +143,50 @@ func (h *PromptInjectionHandler) RegisterRoutes(mux *http.ServeMux) {
 
 // ==================== 策略配置 ====================
 
+// ★★★ 本族的**扫描形态**（2026-11-01 生产 500 根修）
+//
+// 生产实读（211 / llm-gateway-211-b）：
+//
+//	ERROR admin handler internal error op="Failed to get policy"
+//	  caller=prompt_injection_handler.go:241
+//	  err="can't scan into dest[31] (col: created_at): cannot scan timestamptz
+//	       (OID 1184) in binary format into *string"
+//	ERROR admin handler internal error op="Failed to scan rule"
+//	  caller=prompt_injection_handler.go:503
+//	  err="can't scan into dest[14] (col: created_at): cannot scan timestamptz
+//	       (OID 1184) in binary format into *string"
+//
+// ⇒ **根因不是 SQL 形状，是 pgx 的扫描计划**：
+// pgx v5 的 TimestamptzCodec.PreferredFormat() == BinaryFormatCode，
+// 而 pgtype.Map.planScan 对 **BinaryFormatCode** 的 `*string` 目标**只放行
+// TextOID / VarcharOID** ⇒ 把 timestamptz 扫进 Go 的 string 必然报
+// "cannot scan timestamptz (OID 1184) in binary format into *string"。
+//
+// ⇒ ⇒ **凡是把 timestamptz 列投影成 Go string 的读路径都会 500**，
+// 与「列存不存在」「有没有行」无关：只要**有行且该列非 NULL** 就炸。
+// 空表时命中 ErrNoRows 分支（返回默认对象）⇒ **看起来是好的**，
+// 这正是 canary-tokens / engines / attack-vectors 这几条读路径长期
+// 没被发现的原因（生产库里它们都是 0 行）。
+//
+// ⇒ 修法一（时间戳）：**扫描目标一律是 *time.Time**（列可空 ⇒ 指针）。
+//   · pgx 的 TryPointerPointerScanPlan 会把 `**time.Time` 拆成
+//     `*time.Time` 再交给 TimestamptzCodec ⇒ NULL 给 nil、非 NULL 给值，
+//     **不再有任何扫描错误**；
+//   · JSON 侧仍是**字符串**（RFC3339Nano），前端 `new Date()` 可解析 ⇒
+//     **线上契约不变**（同文件的 detections.detected_at 早就是这个形态）。
+//   · ★ 为什么不用 `::text` 变通：PG 的 text 输出是
+//     "2026-07-19 21:08:25.836952+08"——**空格分隔、没有 'T'**，
+//     **不是 RFC3339** ⇒ 移动端 `Date.parse()`（web-mobile 的
+//     relativeTime 就用它）在 Safari/iOS 上返回 NaN ⇒ 页面退化成显示
+//     原始文本；且可空列 ::text 得到 NULL ⇒ 扫进 Go 的非指针 string 会报
+//     "cannot scan NULL into *string" ⇒ 又是一条 500。
+//
+// ⇒ 修法二（其余可空列）：本族 5 张表的列**大多没有 NOT NULL 约束**
+//   （只有 DEFAULT）⇒ 把可空列扫进 Go 的**非指针**标量（bool/int/string）
+//   同样会 500（"cannot scan NULL into *bool" 等）。
+//   ⇒ 投影侧统一 COALESCE 成**该列的 schema DEFAULT** ⇒
+//     **有值的行零变化，NULL 的行从 500 变成一个语义正确的值**。
+
 // PromptInjectionPolicy 策略配置
 type PromptInjectionPolicy struct {
 	ID                     int      `json:"id"`
@@ -175,9 +219,11 @@ type PromptInjectionPolicy struct {
 	NotificationEmail      string   `json:"notification_email"`
 	TotalDetections        int      `json:"total_detections"`
 	TotalBlocks            int      `json:"total_blocks"`
-	LastDetectionAt        *string  `json:"last_detection_at"`
-	CreatedAt              string   `json:"created_at"`
-	UpdatedAt              string   `json:"updated_at"`
+	// 时间戳列：扫进 *time.Time（不是 string）—— 理由见「本族的扫描形态」。
+	// JSON 侧仍是字符串（RFC3339Nano）或 null ⇒ 线上契约不变。
+	LastDetectionAt *time.Time `json:"last_detection_at"`
+	CreatedAt       *time.Time `json:"created_at"`
+	UpdatedAt       *time.Time `json:"updated_at"`
 }
 
 func (h *PromptInjectionHandler) handlePolicy(w http.ResponseWriter, r *http.Request) {
@@ -194,18 +240,23 @@ func (h *PromptInjectionHandler) handlePolicy(w http.ResponseWriter, r *http.Req
 func (h *PromptInjectionHandler) getPolicy(w http.ResponseWriter, r *http.Request) {
 	tenantID := GetTenantID(r)
 
-	query := `SELECT id, tenant_id, enabled, detection_mode,
-		enable_basic_rules, enable_advanced_rules, enable_heuristics, enable_ml_model,
+	query := `SELECT id, tenant_id, COALESCE(enabled, true), COALESCE(detection_mode, 'observe'),
+		COALESCE(enable_basic_rules, true), COALESCE(enable_advanced_rules, true),
+		COALESCE(enable_heuristics, true), COALESCE(enable_ml_model, false),
 		COALESCE(enable_llm_detection, true), COALESCE(enable_canary_detection, true),
 		COALESCE(enable_vector_similarity, false), llm_engine_id,
 		COALESCE(content_replacement_strategy, 'llm_rewrite'),
 		COALESCE(max_input_length, 50000), COALESCE(auto_learn_enabled, false),
 		COALESCE(detection_timeout_ms, 5000),
-		score_threshold_log, score_threshold_warn, score_threshold_sanitize, score_threshold_block,
-		action_on_low_risk, action_on_medium_risk, action_on_high_risk,
+		COALESCE(score_threshold_log, 3), COALESCE(score_threshold_warn, 6),
+		COALESCE(score_threshold_sanitize, 8), COALESCE(score_threshold_block, 10),
+		COALESCE(action_on_low_risk, 'log'), COALESCE(action_on_medium_risk, 'warn'),
+		COALESCE(action_on_high_risk, 'block'),
 		COALESCE(whitelist_patterns, '{}'), COALESCE(whitelist_users, '{}'),
-		notify_on_detection, COALESCE(notification_webhook, ''), COALESCE(notification_email, ''),
-		total_detections, total_blocks, last_detection_at, created_at, updated_at
+		COALESCE(notify_on_detection, false), COALESCE(notification_webhook, ''),
+		COALESCE(notification_email, ''),
+		COALESCE(total_detections, 0), COALESCE(total_blocks, 0),
+		last_detection_at, created_at, updated_at
 		FROM prompt_injection_policies WHERE tenant_id = $1`
 
 	policy := &PromptInjectionPolicy{}
@@ -245,11 +296,53 @@ func (h *PromptInjectionHandler) getPolicy(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, policy)
 }
 
+// PromptInjectionPolicyUpdate 是 **PUT /api/admin/prompt-injection/policy**
+// 的**写载荷**。
+//
+// ★ 为什么不直接复用 PromptInjectionPolicy（响应结构体）：
+// 响应体里有 6 个**只读**字段（id / total_detections / total_blocks /
+// created_at / updated_at / last_detection_at），写路径一个都不用；
+// 而其中三个是 timestamptz ⇒ JSON 解码只认 RFC3339 ⇒
+// 「客户端把 GET 响应原样 PUT 回来」这种**最常见**的调用方式，
+// 只要时间戳不是 RFC3339（比如 PG 的文本格式
+// "2026-07-19 21:08:25.836952+08"）就会在**解码期**整包 400。
+// ⇒ 写载荷与响应结构体**分离**：写路径压根不碰时间戳 ⇒ 零解码脆弱性。
+//
+// （与 PromptInjectionRulePatch 同一思路：读投影 ≠ 写载荷。）
+type PromptInjectionPolicyUpdate struct {
+	Enabled                bool     `json:"enabled"`
+	DetectionMode          string   `json:"detection_mode"`
+	EnableBasicRules       bool     `json:"enable_basic_rules"`
+	EnableAdvancedRules    bool     `json:"enable_advanced_rules"`
+	EnableHeuristics       bool     `json:"enable_heuristics"`
+	EnableMLModel          bool     `json:"enable_ml_model"`
+	EnableLLMDetection     bool     `json:"enable_llm_detection"`
+	EnableCanaryDetection  bool     `json:"enable_canary_detection"`
+	EnableVectorSimilarity bool     `json:"enable_vector_similarity"`
+	LLMEngineID            *int     `json:"llm_engine_id"`
+	ContentReplacement     string   `json:"content_replacement_strategy"`
+	MaxInputLength         int      `json:"max_input_length"`
+	AutoLearnEnabled       bool     `json:"auto_learn_enabled"`
+	DetectionTimeoutMs     int      `json:"detection_timeout_ms"`
+	ScoreThresholdLog      int      `json:"score_threshold_log"`
+	ScoreThresholdWarn     int      `json:"score_threshold_warn"`
+	ScoreThresholdSanitize int      `json:"score_threshold_sanitize"`
+	ScoreThresholdBlock    int      `json:"score_threshold_block"`
+	ActionOnLowRisk        string   `json:"action_on_low_risk"`
+	ActionOnMediumRisk     string   `json:"action_on_medium_risk"`
+	ActionOnHighRisk       string   `json:"action_on_high_risk"`
+	WhitelistPatterns      []string `json:"whitelist_patterns"`
+	WhitelistUsers         []string `json:"whitelist_users"`
+	NotifyOnDetection      bool     `json:"notify_on_detection"`
+	NotificationWebhook    string   `json:"notification_webhook"`
+	NotificationEmail      string   `json:"notification_email"`
+}
+
 func (h *PromptInjectionHandler) updatePolicy(w http.ResponseWriter, r *http.Request) {
 	tenantID := GetTenantID(r)
 	adminUser := authEmail(r)
 
-	var req PromptInjectionPolicy
+	var req PromptInjectionPolicyUpdate
 	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
@@ -330,8 +423,9 @@ type PromptInjectionRule struct {
 	ActionOverride string   `json:"action_override"`
 	Tags           []string `json:"tags"`
 	Examples       []string `json:"examples"`
-	CreatedAt      string   `json:"created_at"`
-	UpdatedAt      string   `json:"updated_at"`
+	// 时间戳列：扫进 *time.Time（不是 string）—— 理由见「本族的扫描形态」。
+	CreatedAt *time.Time `json:"created_at"`
+	UpdatedAt *time.Time `json:"updated_at"`
 }
 
 // PromptInjectionRulePatch 是 PUT /rules/{id} 的**部分更新**载荷。
@@ -360,8 +454,14 @@ type PromptInjectionRulePatch struct {
 // 抽成常量是为了让「详情」端点与「列表」端点返回**同一形状**——
 // 否则前端详情页会拿到比列表少的字段（例如 false_positive_rate 在 DB 里存在，
 // 但两个端点都没投影它；这是有意的：不在结构体里的列不进 API 契约）。
+//
+// ★ 可空列一律 COALESCE 成**该列的 schema DEFAULT**（详见「本族的扫描形态」）：
+// description / enabled / case_sensitive 这三列在库里都**没有 NOT NULL**，
+// 扫进 Go 的非指针 string/bool 时，NULL 会报 "cannot scan NULL into *string"
+// ⇒ 又是一条 500（真库 23 行恰好全非 NULL ⇒ 只有夹具能钉住这条）。
+// 时间戳列**不** COALESCE：它们扫进 *time.Time，NULL 由指针如实表达。
 const promptInjectionRuleSelectCols = `id, rule_name, rule_type, category, COALESCE(category_new::text, ''),
-	pattern, description, severity, enabled, case_sensitive,
+	pattern, COALESCE(description, ''), severity, COALESCE(enabled, true), COALESCE(case_sensitive, false),
 	COALESCE(is_system, true), COALESCE(action_override::text, ''),
 	COALESCE(tags, '{}'), COALESCE(examples, '{}'),
 	created_at, updated_at`
@@ -896,9 +996,10 @@ type LLMEngine struct {
 	TotalDetections  int     `json:"total_detections"`
 	AvgLatencyMs     float64 `json:"avg_latency_ms"`
 	ErrorCount       int     `json:"error_count"`
-	LastCalledAt     *string `json:"last_called_at"`
-	CreatedAt        string  `json:"created_at"`
-	UpdatedAt        string  `json:"updated_at"`
+	// 时间戳列：扫进 *time.Time（不是 string）—— 理由见「本族的扫描形态」。
+	LastCalledAt *time.Time `json:"last_called_at"`
+	CreatedAt    *time.Time `json:"created_at"`
+	UpdatedAt    *time.Time `json:"updated_at"`
 }
 
 func (h *PromptInjectionHandler) handleEngines(w http.ResponseWriter, r *http.Request) {
@@ -946,9 +1047,11 @@ func (h *PromptInjectionHandler) listEngines(w http.ResponseWriter, r *http.Requ
 	rows, err := h.pool.Query(r.Context(),
 		`SELECT e.id, e.tenant_id, e.engine_name, COALESCE(e.description, ''),
 			e.model_canonical_id, COALESCE(m.canonical_name, ''),
-			e.credential_id, e.temperature, e.max_tokens, e.timeout_ms, e.max_retries,
-			e.system_prompt, e.detection_prompt, e.priority, e.enabled,
-			e.total_calls, e.total_detections, e.avg_latency_ms, e.error_count,
+			e.credential_id, COALESCE(e.temperature, 0.1), COALESCE(e.max_tokens, 512),
+			COALESCE(e.timeout_ms, 3000), COALESCE(e.max_retries, 1),
+			e.system_prompt, e.detection_prompt, COALESCE(e.priority, 0), COALESCE(e.enabled, true),
+			COALESCE(e.total_calls, 0), COALESCE(e.total_detections, 0), COALESCE(e.avg_latency_ms, 0),
+			COALESCE(e.error_count, 0),
 			e.last_called_at, e.created_at, e.updated_at
 		FROM prompt_injection_llm_engines e
 		LEFT JOIN models_canonical m ON e.model_canonical_id = m.id
@@ -987,9 +1090,11 @@ func (h *PromptInjectionHandler) getEngine(w http.ResponseWriter, r *http.Reques
 	err := h.pool.QueryRow(r.Context(),
 		`SELECT e.id, e.tenant_id, e.engine_name, COALESCE(e.description, ''),
 			e.model_canonical_id, COALESCE(m.canonical_name, ''),
-			e.credential_id, e.temperature, e.max_tokens, e.timeout_ms, e.max_retries,
-			e.system_prompt, e.detection_prompt, e.priority, e.enabled,
-			e.total_calls, e.total_detections, e.avg_latency_ms, e.error_count,
+			e.credential_id, COALESCE(e.temperature, 0.1), COALESCE(e.max_tokens, 512),
+			COALESCE(e.timeout_ms, 3000), COALESCE(e.max_retries, 1),
+			e.system_prompt, e.detection_prompt, COALESCE(e.priority, 0), COALESCE(e.enabled, true),
+			COALESCE(e.total_calls, 0), COALESCE(e.total_detections, 0), COALESCE(e.avg_latency_ms, 0),
+			COALESCE(e.error_count, 0),
 			e.last_called_at, e.created_at, e.updated_at
 		FROM prompt_injection_llm_engines e
 		LEFT JOIN models_canonical m ON e.model_canonical_id = m.id
@@ -1234,20 +1339,24 @@ func (h *PromptInjectionHandler) handleSeverityMatrix(w http.ResponseWriter, r *
 // ==================== Canary Token 管理 ====================
 
 type CanaryToken struct {
-	ID            int     `json:"id"`
-	TenantID      string  `json:"tenant_id"`
-	TokenValue    string  `json:"token_value"`
-	TokenType     string  `json:"token_type"`
-	TokenName     string  `json:"token_name"`
-	Description   string  `json:"description"`
-	LeakAction    string  `json:"leak_action"`
-	NotifyOnLeak  bool    `json:"notify_on_leak"`
-	Active        bool    `json:"active"`
-	ExpiresAt     *string `json:"expires_at"`
-	TimesInjected int     `json:"times_injected"`
-	TimesLeaked   int     `json:"times_leaked"`
-	LastLeakedAt  *string `json:"last_leaked_at"`
-	CreatedAt     string  `json:"created_at"`
+	ID           int    `json:"id"`
+	TenantID     string `json:"tenant_id"`
+	TokenValue   string `json:"token_value"`
+	TokenType    string `json:"token_type"`
+	TokenName    string `json:"token_name"`
+	Description  string `json:"description"`
+	LeakAction   string `json:"leak_action"`
+	NotifyOnLeak bool   `json:"notify_on_leak"`
+	Active       bool   `json:"active"`
+	// 时间戳列：扫进 *time.Time（不是 string）—— 理由见「本族的扫描形态」。
+	// ★ ExpiresAt 同时是**写路径**的列（POST/PUT 落库）：*time.Time 让
+	//   pgx 直接发 timestamptz 二进制 ⇒ 不再靠 PG 做文本转型，
+	//   且入参只认 RFC3339（不合法的值在解码期就 400，而不是落库时 500）。
+	ExpiresAt     *time.Time `json:"expires_at"`
+	TimesInjected int        `json:"times_injected"`
+	TimesLeaked   int        `json:"times_leaked"`
+	LastLeakedAt  *time.Time `json:"last_leaked_at"`
+	CreatedAt     *time.Time `json:"created_at"`
 }
 
 func (h *PromptInjectionHandler) handleCanaryTokens(w http.ResponseWriter, r *http.Request) {
@@ -1286,9 +1395,10 @@ func (h *PromptInjectionHandler) listCanaryTokens(w http.ResponseWriter, r *http
 	tenantID := GetTenantID(r)
 
 	rows, err := h.pool.Query(r.Context(),
-		`SELECT id, tenant_id, token_value, token_type, COALESCE(token_name, ''),
-			COALESCE(description, ''), leak_action::text, notify_on_leak,
-			active, expires_at, times_injected, times_leaked, last_leaked_at, created_at
+		`SELECT id, tenant_id, token_value, COALESCE(token_type, 'uuid'), COALESCE(token_name, ''),
+			COALESCE(description, ''), COALESCE(leak_action::text, 'block'), COALESCE(notify_on_leak, true),
+			COALESCE(active, true), expires_at, COALESCE(times_injected, 0), COALESCE(times_leaked, 0),
+			last_leaked_at, created_at
 		FROM canary_tokens WHERE tenant_id = $1 ORDER BY created_at DESC`, tenantID)
 	if err != nil {
 		writeInternalErrStr(w, "Failed to list tokens", err)
@@ -1398,8 +1508,18 @@ type AttackVector struct {
 	Severity   int      `json:"severity"`
 	Source     string   `json:"source"`
 	RequestID  string   `json:"request_id"`
-	DetectedAt *string  `json:"detected_at"`
-	CreatedAt  string   `json:"created_at"`
+	// 时间戳列：扫进 *time.Time（不是 string）—— 理由见「本族的扫描形态」。
+	//
+	// ★ 这里原先是 `detected_at::text, created_at::text` + Go string：
+	//   ① PG 的 text 输出是 `2026-07-19 21:08:25.836952+08`——**空格分隔、
+	//      没有 'T'**，**不是 RFC3339** ⇒ 移动端 `Date.parse()`（
+	//      web-mobile 的 relativeTime 就用它）在 Safari/iOS 上返回 NaN
+	//      ⇒ 页面退化成显示原始文本；
+	//   ② created_at 可空 ⇒ `::text` 得到 NULL ⇒ 扫进 Go 的非指针 string
+	//      会报 "cannot scan NULL into *string" ⇒ 又是一条 500。
+	//   ⇒ 直接取原生 timestamptz，格式统一成 RFC3339Nano（与本族其它端点一致）。
+	DetectedAt *time.Time `json:"detected_at"`
+	CreatedAt  *time.Time `json:"created_at"`
 }
 
 func (h *PromptInjectionHandler) handleAttackVectors(w http.ResponseWriter, r *http.Request) {
