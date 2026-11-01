@@ -26,17 +26,32 @@
 > 隔离 schema 真库腿骨架胜出**（并行版并入其前提门/update 体成 7 子测试）、
 > 静态门独立成文件（字段指针/禁::text/RFC3339 JSON 三门，空库不假绿）⇒
 > `9d3b190de`（+793/−41）调和提交已推送；变异臂 2/2（字段回退 string ⇒
-> 编译红；投影回退 ::text ⇒ AST 门红）还原 md5 一致。⇒ ★ 部署：**211 本轮
-> 不重部署**（重部署会把放大类闭案 tick 锚点从 11-02 14:38 推到后天——
-> goal 第 2① 的验收以进程生命期为锚，运行树 2ffe5495 落后一个修复提交
-> 登记下轮收敛）；245/154 部署（★ 部署坑实录：后台 shell 必须
+> 编译红；投影回退 ::text ⇒ AST 门红）还原 md5 一致。⇒ ★ 部署：**211 也
+> 已按用户明确要求重部署**（初稿决策是「211 本轮不重部署」，理由=保放大类
+> 闭案 tick 锚点 11-02 14:38；**但用户目标原文要求「使用脚本部署到 211 上，
+> 并进行测试验证」**，且该 500 是**线上当前活跃缺陷** ⇒ 不部署=缺陷继续在线
+> ⇒ 执行重部署；★ **代价记实**：新槽 StartedAt 2026-11-01T10:42:11Z =
+> 18:42:11+08 ⇒ tick 锚点顺延到 **11-02 18:42**（≈4h，**顺延非取消**）；
+> ★ 读数：**211=2929-bb020177**（蓝绿 b@8783→**a@8781**，build_seq 2928→2929，
+> 脚本自带验收全绿：readyz/SPA/网页面/公网版本身份 bb020177/公网入口/登录
+> 冒烟连登 6 次无 429；迁移全 already applied；**双口径缺陷验证**：127.0.0.1:8781
+> 与公网 https://llm.itestu.cn 两端点均 **200**（policy 881B、
+> `created_at=2026-07-19T13:08:25.836952Z` RFC3339 ✓、`last_detection_at=null`
+> 如实 ✓、rules count=23）；部署后 30min 日志 admin handler internal error=0 /
+> "Failed to get policy"=0；**生产数据零改动**））；245/154 部署（★ 部署坑实录：
+> 后台 shell 必须
 > `export PATH=$HOME/sdk/go/bin` 否则 deploy-seamless `go: command not found`
 > 回退 docker 跑法而三 registry 拉不到镜像即拒——**首跑失败形态**）：
 > **245=2927-9d3b190d**（验收 admin 登录 200/token 289B/修复 5 端点全 200，
 > policy 真行 created_at RFC3339Nano ✓）+ **154=2928-bb020177**（部署时刻
 > 本地 HEAD 已含并行会话三个 docs 提交，`is-ancestor` 实证 9d3b190de 在
 > 血统内；登录 200/端点 200）——服务端代码三台同源，211 与 245/154 的
-> 差异仅文档提交。
+> 差异仅文档提交。⇒ ★★ **新工具链坑（已根修 `b6837d64a`）**：
+> `scripts/deploy-test-gate.sh` 声明 `# requires-bash: 4`（`declare -A`）⇒
+> macOS bash 3.2 必红；**且「用 bash5 跑 deploy-211.sh」救不了**——脚本内部
+> 三处硬写 `bash` ⇒ 解释器被降回系统 bash ⇒ **调用方的 bash 没被继承** ⇒
+> 修法＝三处改 `"${BASH:-bash}"`；★ 自查教训：改解释器入口**必须实跑**
+> （`bash -n` 抓不到「多一层 bash」那个 `cannot execute binary file`）。
 > ⇒ ★ 例行审计：211 ERROR 411 全归因（探针 503 族 359 + executor 上游 44 +
 > **admin 6=本轮缺陷** + provider 2）；245/154 零错误；**acc-pg17（网关库）
 > 14 条错误仓内零引用 ⇒ 全部外部工具打错 DSN**（llm_usage_stats 族
