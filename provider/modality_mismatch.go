@@ -75,10 +75,21 @@ func (c *Client) ModelModalityMismatch(ctx context.Context, model, profile, tena
 		return nil, nil
 	}
 	requestModality = strings.TrimSpace(strings.ToLower(requestModality))
-	if requestModality == "" || requestModality == "text" {
-		// A text request is never excluded by the modality gate.
+	if requestModality == "" {
+		// An empty request modality means "no modality filter" — nothing is
+		// excluded by the gate, so there is nothing to diagnose.
 		return nil, nil
 	}
+	// ★ 2026-11-02（211 生产事故 · embedding 投毒链）：文本请求**也会**被
+	// 模态门排除——被排除的是登记为 'embedding' 的模型（chat 端点携带
+	// embedding 模型 ⇒ 上游 400 ⇒ 绑定翻红 ⇒ /v1/embeddings 对所有租户 503）。
+	// ⇒ 文本请求必须继续往下走（ModalityAccepts 的 text 臂已经表达了这条
+	//   排除）：否则这类请求只会拿到一个**没有原因**的 503，客户端会无限重试
+	//   ——而它重试的每一个字节都注定失败。
+	//
+	// ★ 成本：这条诊断是一次 800ms 有界的 DB 查询，它**只在零候选路径**上
+	//   跑（见 domains/streaming/handler.go 的 diagnoseModalityMismatch，
+	//   那里先用名字规则粗筛，普通文本模型不会触发这次查询）。
 	lookup := modelname.CanonicalizeClientModel(model)
 	if lookup == "" {
 		return nil, nil

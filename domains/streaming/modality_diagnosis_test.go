@@ -70,7 +70,9 @@ func TestTextRequest_DetectedAsText(t *testing.T) {
 // The comparison is table-driven over every (registered, requested) pair, so
 // a new modality added to one side without the other fails here.
 func TestModalityMismatch_MatchesRouterGate(t *testing.T) {
-	registered := []string{"text", "multimodal", "vision", "audio", "video", "image"}
+	// ★ 2026-11-02（211 生产事故）：登记侧加上 'embedding' —— 文本请求臂现在
+	// 唯独不接它，这一格必须被对拍盯住。
+	registered := []string{"text", "multimodal", "vision", "audio", "video", "image", "embedding"}
 	requested := []string{"text", "vision", "audio", "video", "image", "multimodal"}
 
 	for _, reg := range registered {
@@ -100,7 +102,10 @@ func routerAcceptsModality(registered, requested string) bool {
 	case "":
 		return true
 	case "text":
-		return true
+		// ★ 2026-11-02（211 生产事故）：文本请求接一切登记模态，唯独不接
+		// embedding（chat 端点携带 embedding 模型 ⇒ 上游 400 ⇒ 绑定翻红
+		// ⇒ /v1/embeddings 对所有租户 503）。
+		return registered != "embedding"
 	case "multimodal":
 		return registered == "multimodal"
 	case "image":
@@ -113,9 +118,11 @@ func routerAcceptsModality(registered, requested string) bool {
 // TestModalityMismatch_OnlyForMediaRequests pins the guard that keeps the
 // new branch away from text requests.
 //
-// A text request must never be reported as a modality mismatch: for text,
-// every model in the catalog qualifies, and a mismatch diagnosis would send
-// the user chasing a nonexistent problem.
+// ★ 2026-11-02（211 生产事故）**收窄了这条前提**：文本请求现在**也可能**
+// 被模态门排除——被排除的是登记为 embedding 的模型（chat 端点携带 embedding
+// 模型 ⇒ 上游 400 ⇒ 绑定翻红 ⇒ /v1/embeddings 对所有租户 503）。
+// ⇒ 文本请求对**普通**模型（含登记为 text 的）仍然一律可接；只有登记为
+// embedding 的模型接不了文本请求。
 func TestModalityMismatch_OnlyForMediaRequests(t *testing.T) {
 	for _, mod := range []string{"", "text"} {
 		if provider.ModalityAccepts("text", mod) != true {
@@ -126,6 +133,10 @@ func TestModalityMismatch_OnlyForMediaRequests(t *testing.T) {
 		if provider.ModalityAccepts("text", mod) != false {
 			t.Errorf("a %q request must NOT be acceptable to a text-only model", mod)
 		}
+	}
+	// ★ 文本请求不接 embedding 登记模态——这一格就是事故本身。
+	if provider.ModalityAccepts("embedding", "text") != false {
+		t.Errorf("a %q request must NOT be acceptable to an embedding model —— ★ 211 生产事故：chat 端点携带 embedding 模型 ⇒ 上游 400 ⇒ 绑定翻红 ⇒ /v1/embeddings 对所有租户 503", "text")
 	}
 }
 

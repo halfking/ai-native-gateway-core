@@ -14,7 +14,7 @@ import (
 //
 //	provider/candidate_query_sql_base admits a request when
 //	    $3 = ''                       → everything
-//	    $3 = 'text'                   → everything
+//	    $3 = 'text'                   → everything EXCEPT modality='embedding'
 //	    $3 = 'multimodal'             → modality = 'multimodal'
 //	    $3 = 'image'                  → modality IN ('image','vision','multimodal')
 //	    $3 IN ('vision','audio','video') → modality IN ($3,'multimodal')
@@ -40,6 +40,17 @@ func TestModalityAccepts_PinsTheAcceptanceTable(t *testing.T) {
 		{"multimodal", "text", true},
 		{"vision", "text", true},
 		{"", "text", true},
+
+		// ★ 2026-11-02（211 生产事故 · embedding 投毒链）：文本请求**不接**
+		// 登记为 embedding 的模型。
+		//
+		// 事故链：外部客户端把 embedding 模型名塞进 POST /v1/chat/completions
+		// ⇒ 路由器把它选成候选 ⇒ 网关按 chat 形态转发 ⇒ 上游 400
+		// （"does not support chat"）×3 ⇒ 绑定被翻红（avail=false）
+		// ⇒ /v1/embeddings 对**所有租户** 503。
+		//
+		// ⇒ 文本请求必须在候选解析层就与 embedding 登记模型绝缘。
+		{"embedding", "text", false},
 
 		// An empty request modality means "no filter" — the router admits
 		// everything, so the diagnosis must not call it a mismatch.

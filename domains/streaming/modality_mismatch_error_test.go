@@ -185,7 +185,11 @@ func TestWriteModalityMismatchError_SupportedModalitiesGolden(t *testing.T) {
 //	· R=multimodal 那行**不含** 'embedding'（兜底精确臂：只接同名登记的行）
 //	  —— 一张「multimodal 接一切」的表会多出 'embedding' ⇒ 被这里抓住；
 //	· R=embedding 那行**含** 'embedding'（登记为 embedding 的模型确实接
-//	  嵌入请求）—— 一张「默认只有 text」的表会漏掉它 ⇒ 被这里抓住。
+//	  嵌入请求）—— 一张「默认只有 text」的表会漏掉它 ⇒ 被这里抓住；
+//	· ★ 2026-11-02（211 生产事故）：R=embedding 那行**不含** 'text' ——
+//	  文本请求不接 embedding 登记模态（chat 端点携带 embedding 模型 ⇒
+//	  上游 400 ⇒ 绑定翻红 ⇒ /v1/embeddings 对所有租户 503）⇒ 一张
+//	  「embedding 也接文本」的表会多出 'text' ⇒ 被这里抓住。
 func TestSupportedModalitiesFor(t *testing.T) {
 	cases := []struct {
 		registered string
@@ -197,7 +201,7 @@ func TestSupportedModalitiesFor(t *testing.T) {
 		{"audio", []string{"text", "audio"}},
 		{"video", []string{"text", "video"}},
 		{"image", []string{"text", "image"}},
-		{"embedding", []string{"text", "embedding"}},
+		{"embedding", []string{"embedding"}},
 		{"", []string{"text"}},
 	}
 	for _, tc := range cases {
@@ -248,10 +252,14 @@ func TestSupportedModalitiesFor_IsDerivedNotTabulated(t *testing.T) {
 	}
 
 	// 负控 ③：登记=embedding 时 'embedding' 必须出现（反向：默认只给 text
-	// 的手写表会漏掉它）。
+	// 的手写表会漏掉它），而 'text' 必须**不出现**。
+	//
+	// ★ 2026-11-02（211 生产事故 · embedding 投毒链）：文本请求不接 embedding
+	// 登记模态（chat 端点携带 embedding 模型 ⇒ 上游 400 ⇒ 绑定翻红 ⇒
+	// /v1/embeddings 对所有租户 503）⇒ 发布清单里也不能再承诺 text。
 	got = filterSupportedModalities("embedding", []string{"text", "embedding"})
-	if len(got) != 2 || got[0] != "text" || got[1] != "embedding" {
-		t.Fatalf("登记=embedding 时清单 = %v, want [text embedding] —— ★ 登记为 embedding 的模型确实接嵌入请求（判据的兜底精确臂）", got)
+	if len(got) != 1 || got[0] != "embedding" {
+		t.Fatalf("登记=embedding 时清单 = %v, want [embedding] —— ★ 登记为 embedding 的模型接嵌入请求（判据的兜底精确臂），但**不接**文本请求（211 生产事故：上游 400 ⇒ 绑定翻红 ⇒ 全租户 503）", got)
 	}
 }
 
