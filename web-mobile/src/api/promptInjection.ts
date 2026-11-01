@@ -99,6 +99,31 @@ import { req, type RequestOptions } from './client'
 //       （VARCHAR + CHECK），取值只有 low/medium/high/critical 四个 ——
 //       **同一个概念在两张表里一个是数字、一个是单词**。
 //
+// ⚠️⚠️⚠️ 第十五条：**时间戳字段的形状**（2026-11-01 生产 500 根修后定型）
+//
+// (15) ★★★★★ 本族所有**时间戳字段**都是 **RFC3339 字符串或 null**，
+//      **不是** PG 的 text 输出。
+//      · 受影响字段：`policy.{created_at,updated_at,last_detection_at}`、
+//        `rules.{created_at,updated_at}`、
+//        `engines.{created_at,updated_at,last_called_at}`、
+//        `canary-tokens.{created_at,expires_at,last_leaked_at}`、
+//        `attack-vectors.{created_at,detected_at}`。
+//      · 形状＝`string`（列非 NULL 时）或 `null`（列可空且为空时）。
+//      ★ **可空列一律如实给 null**，不编造 1970、也不给空串。
+//      · 后端实现：Go 侧扫进 `*time.Time`（不是 string）⇒ pgx 以**二进制**
+//        格式回 timestamptz，扫进 string 会报
+//        "cannot scan timestamptz (OID 1184) in binary format into *string"
+//        ⇒ 端点 500（2026-11-01 线上实证：`/api/admin/prompt-injection/policy`
+//        与 `/rules` 自 2026-06-29 上线起**有行即 500**，潜伏 4 个月）。
+//      ★ **不要**用 `::text` 变通：PG 的 text 输出是
+//        "2026-07-19 21:08:25.836952+08"——**空格分隔、没有 'T'**，
+//        **不是 RFC3339** ⇒ `Date.parse()` 在 Safari/iOS 上返回 NaN
+//        ⇒ 本文件的 `relativeTime()` 会退化成显示原始文本。
+//      · `canary-tokens.expires_at` 出现在**写**路径上（POST/PUT）⇒
+//        入参也只认 RFC3339（不合法的值在解码期就 400，不是落库时 500）。
+//      · `policy` 的 PUT 载荷**不含**任何时间戳字段（写载荷与响应结构体
+//        分离）⇒ 客户端把 GET 响应原样 PUT 回来**不会**因时间戳格式而 400。
+//
 // 以下两个常量**照抄** schema 的 enum/CHECK，不是猜的：
 //   · public.injection_category（15 个值）——`rules.category_new` 与
 //     `detections.categories` 都是它。
@@ -293,7 +318,8 @@ export interface AttackVector {
   request_id: string
   /** ★ 键一定存在，值可能 `null`。见坑 12。 */
   detected_at: string | null
-  created_at: string
+  /** ★ 键一定存在，值可能 `null`（列可空）。见坑 15。 */
+  created_at: string | null
 }
 
 export interface AttackVectorsResponse {
@@ -354,8 +380,9 @@ export interface InjectionRule {
   action_override: string
   tags: string[]
   examples: string[]
-  created_at: string
-  updated_at: string
+  /** ★ 键一定存在，值可能 `null`（列可空）。见坑 15。 */
+  created_at: string | null
+  updated_at: string | null
 }
 
 export interface InjectionRulesResponse {
@@ -429,8 +456,9 @@ export interface InjectionEngine {
   error_count: number
   /** ★ 键一定存在，值可能 `null`。 */
   last_called_at: string | null
-  created_at: string
-  updated_at: string
+  /** ★ 键一定存在，值可能 `null`（列可空）。见坑 15。 */
+  created_at: string | null
+  updated_at: string | null
 }
 
 export interface InjectionEnginesResponse {
@@ -506,7 +534,8 @@ export interface CanaryToken {
   times_leaked: number
   /** ★ 键一定存在，值可能 `null`。 */
   last_leaked_at: string | null
-  created_at: string
+  /** ★ 键一定存在，值可能 `null`（列可空）。见坑 15。 */
+  created_at: string | null
 }
 
 export interface CanaryTokensResponse {

@@ -12,6 +12,33 @@ import { req } from './_core'
 //
 // Keep this file in sync with admin/prompt_injection_handler.go.
 // Backend columns are declared in sql/migrations/startup/{315,364}_prompt_injection_*.sql.
+//
+// ---------------------------------------------------------------------------
+// Timestamp fields — RFC3339 strings or null (2026-11-01)
+//
+// Every timestamp field of this family is a **RFC3339 string**, or `null`
+// when the (nullable) column is empty:
+//
+//   policy        created_at / updated_at / last_detection_at
+//   rules         created_at / updated_at
+//   engines       created_at / updated_at / last_called_at
+//   canary-tokens created_at / expires_at / last_leaked_at
+//   attack-vectors created_at / detected_at
+//
+// Nullable columns report `null` — never a fabricated 1970 epoch.
+//
+// The backend scans these columns into `*time.Time` (not `string`): pgx
+// returns timestamptz in **binary** format, and a binary timestamptz
+// cannot be scanned into a Go string ("cannot scan timestamptz (OID 1184)
+// in binary format into *string") ⇒ the endpoint returns 500 as soon as a
+// row exists. The JSON wire shape is unchanged: still a string.
+//
+// Do not "fix" this by casting to `::text` in SQL: PG's text output is
+// "2026-07-19 21:08:25.836952+08" — space separated, no 'T' — which is
+// **not** RFC3339 and fails `Date.parse()` on Safari/iOS.
+//
+// `PUT /api/admin/prompt-injection/policy` takes a **write payload without
+// any timestamp field**, so echoing a GET response back is always safe.
 
 // ---------------------------------------------------------------------------
 // Constants — risk categories
@@ -62,8 +89,10 @@ export interface PromptInjectionRule {
   action_override: string
   tags: string[]
   examples: string[]
-  created_at: string
-  updated_at: string
+  /** ★ 键一定存在，值可能 `null`（DB 列可空）。RFC3339 字符串。 */
+  created_at: string | null
+  /** ★ 键一定存在，值可能 `null`（DB 列可空）。RFC3339 字符串。 */
+  updated_at: string | null
 }
 
 export interface PromptInjectionPolicy {
@@ -98,8 +127,9 @@ export interface PromptInjectionPolicy {
   total_detections: number
   total_blocks: number
   last_detection_at: string | null
-  created_at: string
-  updated_at: string
+  /** ★ 键一定存在，值可能 `null`（DB 列可空）。RFC3339 字符串。 */
+  created_at: string | null
+  updated_at: string | null
 }
 
 export interface PromptInjectionRuleListResponse {
@@ -229,8 +259,8 @@ export interface LLMEngine {
   avg_latency_ms?: number
   error_count?: number
   last_called_at?: string | null
-  created_at?: string
-  updated_at?: string
+  created_at?: string | null
+  updated_at?: string | null
 }
 export interface CreateEngineInput {
   engine_name: string
@@ -276,7 +306,7 @@ export interface CanaryToken {
   times_injected?: number
   times_leaked?: number
   last_leaked_at?: string | null
-  created_at?: string
+  created_at?: string | null
 }
 export interface CreateCanaryInput {
   token_name?: string
