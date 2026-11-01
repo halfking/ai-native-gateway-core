@@ -194,7 +194,7 @@ type NodeProbeWorker struct {
 	capabilitySink ResponsesCapabilitySink
 	// resolveDirectTargetFn is the deterministic test seam for the upstream
 	// target lookup; production leaves it nil and uses the database resolver.
-	resolveDirectTargetFn func(ctx context.Context, credID int, model string) (plain, outboundModel, baseURL, protocol string, providerID int, err error)
+	resolveDirectTargetFn func(ctx context.Context, credID int, model string) (plain, outboundModel, baseURL, protocol string, providerID int, modality string, err error)
 	loadStateFn           func(context.Context, int, string) (nodeProbeStateRow, error)
 	// tenantResolver looks up the tenant ID for a credential. Production
 	// wires it to credentials.tenant_id via (*pgxpool.Pool).QueryRow; tests
@@ -2916,7 +2916,7 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	if w.resolveDirectTargetFn != nil {
 		resolveTarget = w.resolveDirectTargetFn
 	}
-	plain, outboundModel, baseURL, protocol, providerID, err := resolveTarget(ctx, credID, model)
+	plain, outboundModel, baseURL, protocol, providerID, modality, err := resolveTarget(ctx, credID, model)
 	if err != nil {
 		r.errCode = "endpoint_build"
 		r.errDetail = fmt.Sprintf("build endpoint failed: %s (cred_id=%d, model=%s)", err.Error(), credID, model)
@@ -2926,13 +2926,15 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	r.outboundModel = outboundModel
 	// Use the outbound name for the upstream body; fall back to the raw name
 	// passed in (matches active_probe_executor.go's OutboundModel→RawModel
-	// fallback) so providers without a distinct outbound_model_name still work.
+	// fallback) so providers whose outbound_model_name differs from
+	// raw_model_name still work.
 	bodyModel := outboundModel
 	if bodyModel == "" {
 		bodyModel = model
 	}
-	endpoint := directProbeEndpoint(baseURL, protocol)
-	body := directProbeBody(bodyModel, protocol)
+	shape := probeShapeForModality(bodyModel, protocol, modality)
+	endpoint := upstreamurl.Build(baseURL, shape.endpoint)
+	body := shape.body
 
 	// 2026-07-16: 记录请求详情
 	r.requestURL = endpoint
@@ -2996,7 +2998,7 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	responsesProbe := probeDescriptorFor(protocol).ChatProbeEndpoint == upstreamurl.EpResponses
 
 	response, readErr := readCredentialProbeBody(resp.Body)
-	setNodeProbeResponse(&r, nodeProbeWireFormat(protocol), response, readErr)
+	setNodeProbeResponse(&r, shape.wire, response, readErr)
 	if r.ok || r.observationOnly {
 		if responsesProbe && readErr == nil && responsesProbeProtocolEvidence(response) {
 			r.supportsResponses = boolEvidence(true)
@@ -3207,7 +3209,7 @@ func classifyProbeNetworkError(err error) (errCode string, timedOut bool) {
 	return "network_error", false
 }
 
-func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, model string) (string, string, string, string, int, error) {
+func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, model string) (string, string, string, string, int, string, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var (
@@ -3216,22 +3218,29 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		baseURL       string
 		protocol      string
 		providerID    int
+		// modality 是 models_canonical.modality（权威模态）。2026-11-02
+		// embedding 探针轮新增：探针的形态分发要按**权威**模态走，不能只看
+		// 模型名——bge-* 这类名字里没有 embedding 字样的模型名推断会漏判，
+		// 于是拿 chat 形态去探 ⇒ 上游 400 ⇒ binding 被探死。
+		modality string
 	)
 	err := w.db.QueryRow(queryCtx, `
 		SELECT c.secret_ciphertext,
 		       COALESCE(NULLIF(pm.outbound_model_name, ''), pm.raw_model_name, ''),
-		       p.base_url, COALESCE(p.protocol, 'openai-completions'), p.id
+		       p.base_url, COALESCE(p.protocol, 'openai-completions'), p.id,
+		       COALESCE(mc.modality, '')
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
 		WHERE c.id = $1 AND pm.raw_model_name = $2
 		  AND c.status IN ('active', 'cooling', 'degraded')
 		  AND c.lifecycle_status = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE AND p.manual_disabled = FALSE
 		LIMIT 1
-	`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol, &providerID)
+	`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol, &providerID, &modality)
 	if err != nil {
 		// 2026-08-18 fix (glm-5.2 outage): the strict gates above conflate
 		// "no binding row" (a config problem) with "credential currently
@@ -3250,16 +3259,18 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		looseErr = w.db.QueryRow(queryCtx, `
 			SELECT c.secret_ciphertext,
 			       COALESCE(NULLIF(pm.outbound_model_name, ''), pm.raw_model_name, ''),
-			       p.base_url, COALESCE(p.protocol, 'openai-completions'), p.id
+			       p.base_url, COALESCE(p.protocol, 'openai-completions'), p.id,
+			       COALESCE(mc.modality, '')
 			FROM credentials c
 			JOIN providers p ON p.id = c.provider_id
 			JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
 			JOIN provider_models pm ON pm.id = cmb.provider_model_id
+			LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
 			WHERE c.id = $1 AND pm.raw_model_name = $2
 			  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 			  AND p.enabled = TRUE AND p.manual_disabled = FALSE
 			LIMIT 1
-		`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol, &providerID)
+		`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol, &providerID, &modality)
 		if looseErr == nil {
 			slog.Info("node_probe_worker: probing credential despite non-active status flags",
 				"credential_id", credID, "model", model,
@@ -3279,16 +3290,16 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		// cred/model so the worker (and runOne's isMissingBindingErr
 		// short-circuit) can disambiguate from real upstream errors.
 		if err.Error() == "no rows in result set" {
-			return "", "", "", "", 0, fmt.Errorf("no rows in result set: credential_id=%d has no enabled+unlocked credential_model_bindings for raw_model_name=%q (check cmb.available, p.enabled, p.manual_disabled, c.status, c.lifecycle_status)", credID, model)
+			return "", "", "", "", 0, "", fmt.Errorf("no rows in result set: credential_id=%d has no enabled+unlocked credential_model_bindings for raw_model_name=%q (check cmb.available, p.enabled, p.manual_disabled, c.status, c.lifecycle_status)", credID, model)
 		}
-		return "", "", "", "", 0, err
+		return "", "", "", "", 0, "", err
 	}
 	s := string(ciphertext)
 	if !secret.IsV1Envelope(s) {
-		return "", "", "", "", 0, fmt.Errorf("unsupported secret format")
+		return "", "", "", "", 0, "", fmt.Errorf("unsupported secret format")
 	}
 	if w.keyring == nil {
-		return "", "", "", "", 0, fmt.Errorf("keyring not configured")
+		return "", "", "", "", 0, "", fmt.Errorf("keyring not configured")
 	}
 	// 2026-07-15 P0 fix: previously this called DecryptAESGCM directly,
 	// which only handles v1:<kid>:<b64> envelopes with a non-legacy kid.
@@ -3326,12 +3337,97 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 			"envelope_kid", decryptEnvelopeKid(s),
 			"envelope_len", len(s),
 			"error", err.Error())
-		return "", "", "", "", 0, fmt.Errorf("decrypt: %w", err)
+		return "", "", "", "", 0, "", fmt.Errorf("decrypt: %w", err)
 	}
 	// Decrypt succeeded — this instance's key config is coherent with the
 	// DB's envelopes, so clear the instance-level decrypt circuit.
 	w.resetDecryptFailures()
-	return string(pt), outboundModel, baseURL, protocol, providerID, nil
+	return string(pt), outboundModel, baseURL, protocol, providerID, modality, nil
+}
+
+// probeShape 是「某个模型的一次探针」在**线上**用的完整线形：上游端点、
+// 请求体、以及校验响应时用的 wire 形态标签。
+//
+// 端点与 body 必须由同一处分发：2026-11-02 的 embedding 探针事故正是
+// 「body 换了、端点没换」造成的（body 走 embeddings 形态而端点仍打
+// /chat/completions ⇒ 上游 404/400）。把三者收在一个结构体里，
+// directProbeEndpoint / directProbeBody / 各调用点就不会再各自漂移。
+type probeShape struct {
+	// endpoint 是上游端点（相对 baseURL 的版本化路径由 upstreamurl.Build 处理）。
+	endpoint upstreamurl.Endpoint
+	// body 是请求体。
+	body string
+	// wire 是响应校验用的形态标签：chat / messages / responses / embeddings。
+	wire string
+}
+
+// probeShapeFor 按「协议 + 模型模态」分发探针线形。
+//
+// 2026-11-02（embedding 探针轮）：embedding 模型此前拿的是 **chat** 探针形态
+// （一条 user 消息 + 端点 /chat/completions）。Ollama 的 chat 端点对 embedding
+// 模型直接回 **HTTP 400**（"does not support chat"）⇒ 探针把「探针形态用错」
+// 误记成「上游不健康」⇒ updateBindingAvailability 把这个 binding 写成
+// available=FALSE / unavailable_reason='probe_http_400' ⇒ 5 分钟内
+// /v1/embeddings 对**所有租户**返 503。
+//
+// 实测（211 部署，provider 19 = 本机 ollama，model qwen3-embedding:0.6b，
+// 2026-11-02 01:24:16）：一次 /v1/chat/completions 误请求触发的同步探针
+// 就是这次「探死」的元凶 —— 探针形态用错 ⇒ 上游 400 ⇒ binding 被判死。
+//
+// 与 2026-10-03 音频端点轮同族：那一轮把 audio 模型的探针形态换掉了，
+// 但**没有覆盖 embedding**。⇒ embedding 模型必须走 embeddings 端点 +
+// embeddings 形态 body（body 由 directProbeBody 一并给出）。
+//
+// 注意：audio 模型的 body 也换（input_audio / assistant 消息），但端点仍是
+// chat/completions（小米 mimo 的 ASR/TTS 都在 chat 端点上）——所以 audio 只
+// 换 body 不换端点，embedding 两者都换。
+func probeShapeFor(model, protocol string) probeShape {
+	return probeShapeForModality(model, protocol, "")
+}
+
+// probeShapeForModality 是 probeShapeFor 的**权威模态版**。
+//
+// modality 传空时退回按模型名推断（modelname.InferModality）；传非空时，
+// **只有** "embedding" / "audio" 这两个**正向**模态才覆盖名推断的结果。
+// 理由（口径）：
+//
+//   - 权威来源是 models_canonical.modality（探针的 JOIN 本来就带着这张表，
+//     取它不额外花一次查询）。它带 modality_source：'manual' 是最高层的手工
+//     覆盖，'inferred'/'semantic' 是机器推导——所以对**正向**模态（embedding /
+//     audio）直接采信它。
+//   - 'text' 不覆盖名推断：provider_models.modality 这一列在实测里是**陈旧**
+//     （211 部署：qwen3-embedding:* 的 provider_models.modality 仍是 'text'，
+//     而 models_canonical.modality 已是 'embedding'）。若让 'text' 覆盖名
+//     推断，embedding 模型会重新落回 chat 形态 ⇒ 把 2026-11-02 那个事故
+//     原样带回来。'text' 是「没有正向信号」，不是「显式否定」。
+//   - 名推断仍作为兜底：覆盖 bge-* 这类**名字里没有 embedding 字样**但 DB
+//     里 modality 为空/陈旧的模型。
+func probeShapeForModality(model, protocol, modality string) probeShape {
+	desc := probeDescriptorFor(protocol)
+	shape := probeShape{
+		endpoint: desc.ChatProbeEndpoint,
+		body:     directProbeBodyForModality(model, protocol, modality),
+		wire:     nodeProbeWireFormat(protocol),
+	}
+	if desc.ChatProbeEndpoint != upstreamurl.EpChatCompletions {
+		return shape
+	}
+	switch effectiveProbeModality(model, modality) {
+	case "embedding":
+		shape.endpoint = upstreamurl.EpEmbeddings
+		shape.wire = "embeddings"
+	}
+	return shape
+}
+
+// effectiveProbeModality 合并「DB 权威模态」与「名推断模态」，口径见
+// probeShapeForModality 的注释：DB 的正向模态优先，DB 说 text/空则用名推断。
+func effectiveProbeModality(model, modality string) string {
+	switch strings.ToLower(strings.TrimSpace(modality)) {
+	case "embedding", "audio":
+		return strings.ToLower(strings.TrimSpace(modality))
+	}
+	return modelname.InferModality(model)
 }
 
 // directProbeEndpoint/directProbeBody 按 nodelist 直连探针的协议分发。
@@ -3356,8 +3452,11 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 //     反而 400）。TTS 输出会多耗一次合成，用 3 个字把成本压到最小。
 //   - audio-chat（gpt-4o-audio 系）：ASR 形态（input_audio）同样是其
 //     原生输入，统一走 ASR 分支。
-func directProbeEndpoint(baseURL, protocol string) string {
-	return upstreamurl.Build(baseURL, probeDescriptorFor(protocol).ChatProbeEndpoint)
+//
+// 2026-11-02 embedding 轮：embedding 模型的探针形态分发（端点与 body 都换，
+// 见 probeShapeFor 的事故记录）。
+func directProbeEndpoint(baseURL, model, protocol string) string {
+	return upstreamurl.Build(baseURL, probeShapeFor(model, protocol).endpoint)
 }
 
 // probeTinyWAVB64 是 400ms 8kHz 8bit 单声道静音 WAV 的 base64：44 字节头 +
@@ -3416,10 +3515,18 @@ func ttsProbeShapeName(model string) bool {
 }
 
 func directProbeBody(model, protocol string) string {
+	return directProbeBodyForModality(model, protocol, "")
+}
+
+// directProbeBodyForModality 是 directProbeBody 的**权威模态版**（口径见
+// probeShapeForModality）：modality 非空且为正向模态（embedding / audio）时，
+// 以它为准决定探针形态，否则退回按模型名推断。
+func directProbeBodyForModality(model, protocol, modality string) string {
 	desc := probeDescriptorFor(protocol)
+	probeModality := effectiveProbeModality(model, modality)
 	// 音频模型探针形态仅在 chat 探针端点上分发；responses 端点的探针
 	// 形态（{"input"}）对音频模型同样成立，维持原状。
-	if desc.ChatProbeEndpoint == upstreamurl.EpChatCompletions && modelname.InferModality(model) == "audio" {
+	if desc.ChatProbeEndpoint == upstreamurl.EpChatCompletions && probeModality == "audio" {
 		if ttsProbeShapeName(model) {
 			body, _ := json.Marshal(map[string]any{
 				"model":      model,
@@ -3440,6 +3547,17 @@ func directProbeBody(model, protocol string) string {
 				}},
 			}},
 			"max_tokens": 32,
+		})
+		return string(body)
+	}
+	// 2026-11-02 embedding 轮：embedding 模型的探针形态是 embeddings 形态
+	// （{"model","input"}），端点由 probeShapeFor 一并换成 /embeddings。
+	// 这里发 chat 形态 ⇒ Ollama 直接 400 ⇒ binding 被探死（见 probeShapeFor
+	// 的事故记录）。
+	if desc.ChatProbeEndpoint == upstreamurl.EpChatCompletions && probeModality == "embedding" {
+		body, _ := json.Marshal(map[string]any{
+			"model": model,
+			"input": "ping",
 		})
 		return string(body)
 	}
@@ -3635,6 +3753,36 @@ func (w *NodeProbeWorker) updateObservedState(ctx context.Context, credID int, m
 //
 // Named return for the same defer-mutates-the-return-slot reason as
 // probeDirect (P1 fix, 2026-09-26).
+// probeModalityFor 读 (credential, raw_model) 的**权威**模态
+// （models_canonical.modality）。gateway 轮用它决定探针形态（embedding ⇒
+// /embeddings）；直连轮的 resolveDirectTarget 在同一条 JOIN 里顺带取到了这个
+// 值，不需要额外查询。
+//
+// 取不到（DB 不可用 / 没有行 / 该模型没有 canonical 行）时返回 ""，由
+// effectiveProbeModality 退回按模型名推断——**探针形态永远有一个兜底**，
+// 不会因为这一次查询失败就把形态判错。
+func (w *NodeProbeWorker) probeModalityFor(ctx context.Context, credID int, model string) string {
+	if w == nil || w.db == nil {
+		return ""
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var modality string
+	err := w.db.QueryRow(queryCtx, `
+		SELECT COALESCE(mc.modality, '')
+		FROM provider_models pm
+		JOIN credential_model_bindings cmb
+		  ON cmb.provider_model_id = pm.id AND cmb.credential_id = $1
+		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
+		WHERE pm.raw_model_name = $2
+		LIMIT 1
+	`, credID, model).Scan(&modality)
+	if err != nil {
+		return ""
+	}
+	return modality
+}
+
 func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model string) (r nodeProbeRoundResult) {
 	r = nodeProbeRoundResult{errCode: "none"}
 	// 与 probeDirect 相同的失败出口收口（2026-09-25）；2026-09-26 起用 gateway
@@ -3651,8 +3799,12 @@ func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model st
 	// node_probe_state（last_err_code=http_5xx），与 direct 轮一起把节点
 	// 压进冷却。复用 directProbeBody（openai-completions 形态 = 网关面）
 	// 后，audio 模型自动换成 input_audio / assistant 消息形态。
-	body := directProbeBody(model, "openai-completions")
-	endpoint := w.baseURL + "/chat/completions"
+	//
+	// 2026-11-02 embedding 轮：端点也随模态换（embedding ⇒ /embeddings），
+	// 否则网关面同样把 chat 形态打给 embedding 模型并拿 400。
+	shape := probeShapeForModality(model, "openai-completions", w.probeModalityFor(ctx, credID, model))
+	body := shape.body
+	endpoint := upstreamurl.Build(w.baseURL, shape.endpoint)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
 	if err != nil {
 		r.errCode = "request_build"
@@ -3690,7 +3842,7 @@ func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model st
 	defer resp.Body.Close()
 	r.httpStatus = resp.StatusCode
 	response, readErr := readCredentialProbeBody(resp.Body)
-	setNodeProbeResponse(&r, "chat", response, readErr)
+	setNodeProbeResponse(&r, shape.wire, response, readErr)
 	return r
 }
 

@@ -86,10 +86,10 @@ func TestNodeProbeBackoffLadder(t *testing.T) {
 }
 
 func TestDirectProbeEndpointUsesAnthropicMessages(t *testing.T) {
-	if got := directProbeEndpoint("https://apiclaude.cc", "anthropic-messages"); got != "https://apiclaude.cc/v1/messages" {
+	if got := directProbeEndpoint("https://apiclaude.cc", "claude-sonnet-4", "anthropic-messages"); got != "https://apiclaude.cc/v1/messages" {
 		t.Fatalf("endpoint = %q", got)
 	}
-	if got := directProbeEndpoint("https://token.sensenova.cn/v1", "openai-completions"); got != "https://token.sensenova.cn/v1/chat/completions" {
+	if got := directProbeEndpoint("https://token.sensenova.cn/v1", "some-chat-model", "openai-completions"); got != "https://token.sensenova.cn/v1/chat/completions" {
 		t.Fatalf("endpoint = %q", got)
 	}
 }

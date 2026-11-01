@@ -18,8 +18,8 @@ func responseValidationWorker(t *testing.T, server *httptest.Server, protocol st
 	w := NewNodeProbeWorker(nil, nil, nil, "test-key", server.URL+"/v1", nil, 0)
 	w.auditDB = nil // avoid a typed nil pool inside the optional audit interface
 	w.client, w.probeClient = server.Client(), server.Client()
-	w.resolveDirectTargetFn = func(context.Context, int, string) (string, string, string, string, int, error) {
-		return "test-key", "test-model", server.URL, protocol, 7, nil
+	w.resolveDirectTargetFn = func(context.Context, int, string) (string, string, string, string, int, string, error) {
+		return "test-key", "test-model", server.URL, protocol, 7, "", nil
 	}
 	return w
 }
@@ -194,8 +194,8 @@ func TestNodeProbeUnreadableBodyPreservesHTTPFailure(t *testing.T) {
 					})}
 					w := NewNodeProbeWorker(nil, nil, nil, "test-key", "https://provider.invalid", nil, 0)
 					w.client, w.probeClient = client, client
-					w.resolveDirectTargetFn = func(context.Context, int, string) (string, string, string, string, int, error) {
-						return "test-key", "test-model", "https://provider.invalid", protocol, 7, nil
+					w.resolveDirectTargetFn = func(context.Context, int, string) (string, string, string, string, int, string, error) {
+						return "test-key", "test-model", "https://provider.invalid", protocol, 7, "", nil
 					}
 					for _, r := range []nodeProbeRoundResult{w.probeDirect(t.Context(), 1, "test"), w.probeGateway(t.Context(), 1, "test")} {
 						if r.ok || r.observationOnly != (status == 200) || r.httpStatus != status {
