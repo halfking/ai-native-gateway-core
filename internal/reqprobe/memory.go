@@ -64,6 +64,10 @@ func (m *MemoryStore) Upsert(_ context.Context, rec Record) (Record, error) {
 		if rec.RecoveredCount > e.RecoveredCount {
 			e.RecoveredCount = rec.RecoveredCount
 		}
+		// ★ 退避计数（2026-11-01 12h 审计 P1-3）：独立于 RecoveredCount 的
+		//   「再探测次数」。必须在覆盖 LastSeen **之前**算——它要读旧的
+		//   LastSeen 与旧窗口，判定「这次是不是再探测」。
+		e.BackoffCount = mergeBackoffCount(e, rec, rec.LastSeen)
 		e.LastSeen = rec.LastSeen
 		if rec.LastRequestID != "" {
 			e.LastRequestID = rec.LastRequestID
@@ -76,6 +80,8 @@ func (m *MemoryStore) Upsert(_ context.Context, rec Record) (Record, error) {
 	m.seq++
 	rec.ID = m.seq
 	rec.Occurrences = max(rec.Occurrences, 1)
+	// 首次落库的退避计数（首见即学习 ⇒ 1 ⇒ 窗口 = base TTL）。
+	rec.BackoffCount = mergeBackoffCount(nil, rec, rec.LastSeen)
 	el := m.order.PushBack(&memEntry{rec: rec})
 	m.byFP[rec.Fingerprint] = el
 	for m.order.Len() > MemoryMaxRecords {
