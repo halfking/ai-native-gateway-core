@@ -96,6 +96,14 @@ const (
 	GuardCheckFailedRuleID = "builtin.guard.check_failed"
 	// GuardFrameEncodeRuleID：帧在改写后**无法重新编码**（JSON 序列化失败）⇒ 阻断。
 	GuardFrameEncodeRuleID = "builtin.guard.frame_encode_failed"
+	// GuardToolJSONInvalidRuleID：**工具参数本身**就不是合法 JSON ⇒ 无法按 JSON
+	// 解析出结构 ⇒ 无法在结构上做脱敏/判定 ⇒ fail-closed 阻断。
+	//
+	// ★ 与 GuardRedactInvalidRuleID 是**两种不同的形态**，不许合并 ★：
+	// 前者是「**脱敏之后**结果坏了」（脱敏规则/掩码形态的问题），
+	// 本条是「**脱敏之前**输入就坏了」（上游客户端发了非法 JSON 工具参数）。
+	// ★ 处置方向不同 ⇒ 合成规则名也必须不同，否则审核员会被指向错误的处置面 ★。
+	GuardToolJSONInvalidRuleID = "builtin.guard.tool_json_invalid"
 )
 
 // defaultMaxCompliancePendingBytes 是待检缓冲上限的出厂值（1 MiB）。

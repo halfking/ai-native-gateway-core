@@ -207,7 +207,34 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 	_, isMarker := ParsePlaceholder(text)
 	if toolName, isToolJSON := parseToolJSONLabel(label); isToolJSON {
 		if !json.Valid([]byte(text)) {
-			return &outputcompliance.ComplianceResult{Blocked: true}, nil
+			// ★ 2026-11-01 12h 审计轮：此前这里返回 `Blocked: true` **不带 Issues**
+			// ⇒ ⇒ 派生规则名的 policyRuleFromIssues 拿不到任何 RuleID ⇒ ⇒
+			// ⇒ 落到客户端/审核面的 rule_id 是**空串** ⇒ ⇒ 审核单只有一句
+			// ⇒ 「未知原因的拦截」，审核员既说不出是哪条规则、也拿不到载荷摘要
+			// ⇒ ⇒ **归因面在这条路径上等于没生效** ★★。
+			//
+			// ★ 处置方向：「工具参数本身不是合法 JSON」是**上游/协议适配**的问题，
+			// ★ 不是规则表达式太宽 ⇒ ★ 合成规则名必须能把它和「脱敏结果不是合法
+			// ★ JSON」（builtin.guard.redact_invalid）区分开 ★。
+			//
+			// ★ 摘要（Digest）留空：EgressPayloadDigest 是 sha256(ruleID+path+value)，
+			// ★ 而本条的值**不是合法 JSON**（无法按结构定位到某个路径）⇒ 给出摘要
+			// ★ 只会造出一个「谁也放行不了」的键（管理面据此精确放行这一次载荷）★★
+			// ⇒ 不给摘要比给一个假摘要诚实 ★。
+			return &outputcompliance.ComplianceResult{
+				Blocked: true,
+				Issues: []outputcompliance.ComplianceIssue{{
+					Type:        "sensitive",
+					Subtype:     "tool_json_invalid",
+					Severity:    8,
+					Location:    "$",
+					Content:     RedactionMarker(TypeSecret),
+					Score:       1,
+					Redacted:    true,
+					RuleID:      compliancehook.GuardToolJSONInvalidRuleID,
+					Description: "工具参数不是合法 JSON，无法在结构上做脱敏/判定 ⇒ fail-closed 阻断（非内容规则命中）",
+				}},
+			}, nil
 		}
 		decoder := json.NewDecoder(bytes.NewReader([]byte(text)))
 		decoder.UseNumber()

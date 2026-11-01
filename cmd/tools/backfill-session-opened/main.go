@@ -3,7 +3,7 @@
 // predating the terminal-path补发 fix, or rows whose opener was lost).
 //
 // Default mode is DRY-RUN: it only prints the candidate count and a sample.
-// Pass --execute to perform the inserts. Inserts are idempotent (ON CONFLICT
+// Pass --execute to perform inserts. Inserts are idempotent (ON CONFLICT
 // DO NOTHING on event_id), so re-running is safe.
 //
 // Design (2026-10-31, audit §8.2):
@@ -23,6 +23,12 @@
 //
 // This tool does NOT dispatch events. After backfill, run outbox-dlq-replay
 // (or wait for the dispatcher) to deliver them.
+//
+// ★ 2026-11-01 12h 审计轮（0310 档 §3.5；数据源/窗口语义两修由并行 0720 轮
+// 先落为 38dbec6c9，本层取两边并集）：补发工具的**失败面**——失败不计数 /
+// 退出码恒 0 / 单一 10 分钟 ctx 同时覆盖候选查询与全部 INSERT（--limit 10000
+// 时插入阶段可能整体 deadline 且失败被吞 ⇒ 静默零产出）。⇒ 查询与写入各有
+// 独立预算、写入按块提交事务（每块独立 ctx）、失败按块计数、failed>0 时非零退出。
 package main
 
 import (
@@ -40,6 +46,23 @@ import (
 	_ "github.com/lib/pq"
 )
 
+// insertChunkSize 是每个事务里提交的候选会话数。
+//
+// ★ 为什么分块提交而不是逐条 autocommit（2026-11-01 12h 审计轮）★：
+// 逐条 INSERT = 每条一次往返 ⇒ --limit 10000 就是 10000 次网络往返 ⇒
+// 在生产库上极易把写入阶段的预算耗尽 ⇒ 而预算耗尽的表现是「context deadline
+// exceeded」逐条刷屏 ⇒ 失败又没被计数 ⇒ **静默零产出**。
+// 分块事务把往返数降下来，且**一块失败只丢一块**（不是整批 10000 条）。
+const insertChunkSize = 200
+
+// cand 是一个待补发的会话候选。
+type cand struct {
+	tenantID   string
+	sessionID  string
+	userID     string
+	occurredAt time.Time
+}
+
 func main() {
 	dsn := flag.String("dsn", os.Getenv("DATABASE_URL"), "PostgreSQL DSN (default: $DATABASE_URL)")
 	fromRaw := flag.String("from", "", "only sessions whose earliest turn ts >= this RFC3339 UTC time")
@@ -55,15 +78,25 @@ func main() {
 	if *limit < 1 || *limit > 10000 {
 		log.Fatal("--limit must be in [1,10000]")
 	}
+	// ★ 执行模式要求 --from（2026-11-01 12h 审计轮）★：
+	// session_turns 是**按 partition_date 分区**的大表，而本工具按 ts 过滤
+	// ⇒ 分区裁剪**不保证生效** ⇒ 不限定范围就是一次全历史扫描 + 排序
+	// ⇒ ⇒ 对生产库是高代价操作。⇒ 强制操作者显式给出时间下界。
+	if *execute && strings.TrimSpace(*fromRaw) == "" {
+		log.Fatal("--execute requires --from <RFC3339 UTC>: session_turns is a monthly-partitioned table filtered on ts, " +
+			"so an unbounded scan is a full-history sort on the production database. Scope the run explicitly.")
+	}
 
 	db, err := sql.Open("postgres", *dsn)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
+	// 查询阶段与写入阶段各有独立预算（2026-11-01 12h 审计轮）：单一 ctx 会把
+	// 候选查询的耗时算进写入预算里 ⇒ --limit 大时插入阶段整体 deadline。
+	queryCtx, cancelQuery := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancelQuery()
+	if err := db.PingContext(queryCtx); err != nil {
 		log.Fatalf("ping db: %v", err)
 	}
 
@@ -142,18 +175,12 @@ func main() {
 		toPtr = t.UTC()
 	}
 
-	rows, err := db.QueryContext(ctx, q, fromPtr, toPtr, *limit)
+	rows, err := db.QueryContext(queryCtx, q, fromPtr, toPtr, *limit)
 	if err != nil {
 		log.Fatalf("candidate query: %v", err)
 	}
 	defer rows.Close()
 
-	type cand struct {
-		tenantID   string
-		sessionID  string
-		userID     string
-		occurredAt time.Time
-	}
 	var collected []cand
 	for rows.Next() {
 		var c cand
@@ -183,10 +210,51 @@ func main() {
 		return
 	}
 
-	inserted, skipped := 0, 0
-	for _, c := range collected {
+	inserted, skipped, failed := 0, 0, 0
+	for start := 0; start < len(collected); start += insertChunkSize {
+		end := start + insertChunkSize
+		if end > len(collected) {
+			end = len(collected)
+		}
+		chunk := collected[start:end]
+		chunkInserted, chunkSkipped, chunkFailed := insertChunk(db, chunk)
+		inserted += chunkInserted
+		skipped += chunkSkipped
+		failed += chunkFailed
+	}
+
+	// ★ 失败必须出现在收尾行里（2026-11-01 12h 审计轮）★：原来的收尾行只有
+	// inserted / skipped ⇒ 失败既不在数字里、也不影响退出码 ⇒ "done" 一行
+	// 看起来像「全部成功」。⇒ 现在三段计数齐发，failed>0 时非零退出。
+	fmt.Printf("done: inserted=%d skipped_already_present=%d failed=%d (candidates=%d)\n",
+		inserted, skipped, failed, len(collected))
+	if failed > 0 {
+		log.Fatalf("backfill incomplete: %d of %d candidates failed; re-run is safe (inserts are idempotent)", failed, len(collected))
+	}
+}
+
+// insertChunk 在**一个事务**里提交一块候选，失败时按块计失败。
+//
+// ★ 2026-11-01 12h 审计轮：失败计数是本函数存在的理由 ★
+// ——逐条 autocommit 的写法里，任何一条失败都会被 log.Printf 吞掉，
+// 而收尾数字看不见它 ⇒ 工具可以「打印成功但实际一条没写进去」。
+// 注意：块内单条失败只丢那一条（continue），**commit 失败才整块回滚**——
+// 失败面收窄到「真正写不进去的那几条」，而不是「同块的 200 条」。
+func insertChunk(db *sql.DB, chunk []cand) (inserted, skipped, failed int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Printf("begin chunk failed (%d candidates): %v", len(chunk), err)
+		return 0, 0, len(chunk)
+	}
+	defer tx.Rollback()
+
+	for _, c := range chunk {
 		env, err := outbox.BuildSessionOpenedEventV1(c.tenantID, c.sessionID, c.userID)
 		if err != nil {
+			failed++
 			log.Printf("build event failed tenant=%s session=%s: %v", c.tenantID, c.sessionID, err)
 			continue
 		}
@@ -195,10 +263,11 @@ func main() {
 
 		payloadJSON, err := marshalPayload(env)
 		if err != nil {
+			failed++
 			log.Printf("marshal payload tenant=%s session=%s: %v", c.tenantID, c.sessionID, err)
 			continue
 		}
-		tag, err := db.ExecContext(ctx, `
+		tag, err := tx.ExecContext(ctx, `
 			INSERT INTO outbox_events (
 				event_id, event_type, schema_version, tenant_id,
 				aggregate_id, aggregate_version, occurred_at, payload, status
@@ -210,6 +279,7 @@ func main() {
 			string(payloadJSON),
 		)
 		if err != nil {
+			failed++
 			log.Printf("insert failed tenant=%s session=%s: %v", c.tenantID, c.sessionID, err)
 			continue
 		}
@@ -220,7 +290,12 @@ func main() {
 			inserted++
 		}
 	}
-	fmt.Printf("done: inserted=%d skipped_already_present=%d\n", inserted, skipped)
+	if err := tx.Commit(); err != nil {
+		// 提交失败 ⇒ 整块的写入都没落库（事务回滚）⇒ 按整块计失败。
+		log.Printf("commit chunk failed (%d candidates): %v", len(chunk), err)
+		return 0, 0, len(chunk)
+	}
+	return inserted, skipped, failed
 }
 
 func marshalPayload(env outbox.EventEnvelope) ([]byte, error) {

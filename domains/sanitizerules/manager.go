@@ -258,7 +258,10 @@ func (m *Manager) queueError(message string) {
 	}
 }
 
-// DroppedEvents reports metadata records rejected by the full audit queue.
+// DroppedEvents reports audit events that were lost: the ones the full audit
+// queue rejected, plus the ones whose write failed (2026-11-01 12h audit
+// round — a failed batch write used to lose up to auditWriteBatchSize
+// events with no counter anywhere).
 func (m *Manager) DroppedEvents() int64 { return m.dropped.Load() }
 func (m *Manager) pollInterval() time.Duration {
 	d := 30 * time.Second
@@ -330,13 +333,35 @@ func (m *Manager) writeBatch(ctx context.Context, batch []Event) {
 	}
 	if writer, ok := m.store.(BatchEventWriter); ok {
 		if err := writer.RecordEvents(ctx, events, limit); err != nil {
-			m.report("sanitize rule audit write failed")
+			// ★ 2026-11-01 12h 审计轮：批写把「一次写失败」的爆炸半径从**单条**
+			// ★ 放大到了**整批（≤ auditWriteBatchSize = 128 条）** —— 而批写这一轮
+			// ★ 本来就是**为了修「丢事件」**加的 ⇒ ⇒ **失败路径比成功路径更需要
+			// ★ 退路** ⇒ ⇒ 退回逐条写：只有真正写不进去的那几条会丢，其余照常
+			// ★ 落库 ★。
+			//
+			// ★ 退路用**独立**的 ctx（不继承上面那个可能已耗尽的批写 ctx）★。
+			m.report(fmt.Sprintf("sanitize rule audit batch write failed (%d events), falling back to per-event writes: %v", len(events), err))
+			m.writeEventsIndividually(context.WithoutCancel(ctx), events, limit)
 		}
 		return
 	}
+	m.writeEventsIndividually(ctx, events, limit)
+}
+
+// writeEventsIndividually 逐条落库（批写不可用时的常态路径 / 批写失败后的退路）。
+//
+// ★ 2026-11-01 12h 审计轮：写失败的那几条**计入 dropped** ★
+//
+// ★ 为什么必须计数（★ 而不只是打一条日志 ★）：★ 管理面的 DroppedEvents 必须
+// ★ 能反映**全部**审计事件损失，而不只是「队列满」那一种 ★★ ⇒ ★★ 否则「写失败」
+// ★★ 这条路径丢的事件在管理面上**完全不可见** —— ★★ 它比队列满更隐蔽：队列满
+// ★★ 有节流 WARN + 累计计数，写失败此前只有一条**静态串**（没有数量、没有错误
+// ★★ 内容）★★ ⇒ ★★ 操作者既不知道丢了多少、也不知道丢在哪 ★★。
+func (m *Manager) writeEventsIndividually(ctx context.Context, events []Event, limit int) {
 	for _, e := range events {
 		if err := m.store.RecordEvent(ctx, e, limit); err != nil {
-			m.report("sanitize rule audit write failed")
+			m.dropped.Add(1)
+			m.report(fmt.Sprintf("sanitize rule audit write failed: %v", err))
 		}
 	}
 }

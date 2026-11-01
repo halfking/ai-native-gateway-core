@@ -96,6 +96,19 @@ var builtinRuleDescriptions = map[string]BuiltinRuleInfo{
 		Description: "改写后的帧无法重新序列化（JSON 编码失败）⇒ 不能把半成品帧发给客户端 ⇒ fail-closed 终止回合。" +
 			"**不是内容规则命中**。处置方向：查帧结构与序列化，不是改规则表达式。",
 	},
+	// ★ 2026-11-01 12h 审计轮：补登记「工具参数本身不是合法 JSON」这条形态。
+	//
+	// ★ 为什么必须单列（★ 而不能并进 builtin.guard.redact_invalid ★）：
+	// ★ redact_invalid 说的是「**脱敏之后**结果不是合法 JSON」（脱敏规则/掩码
+	// ★ 形态的问题）★；本条说的是「**脱敏之前**上游给的工具参数就不是合法
+	// ★ JSON」（客户端/上游发了坏参数）★ ⇒ ★ 处置方向完全相反 ★ ⇒ ★ 合成规则
+	// ★ 名必须能区分 ★，否则审核员会被指向错误的处置面 ★。
+	"builtin.guard.tool_json_invalid": {
+		Name: "工具参数不是合法 JSON",
+		Description: "这段工具参数**本身**就不是合法 JSON ⇒ 无法按 JSON 解析出结构 ⇒ 无法在结构上做脱敏/判定 ⇒ fail-closed 终止回合。" +
+			"**不是内容规则命中**（这条路径根本没有走到规则判定）。" +
+			"处置方向：查上游客户端/协议适配为何发出非法 JSON 的工具参数，不是改规则表达式、也不是改脱敏掩码。",
+	},
 }
 
 // builtinRuleName 返回内建规则的短展示名；未知 ID 返回空串（前端退化显示 ID）。

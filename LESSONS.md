@@ -28344,6 +28344,89 @@ PUT 后读回 enabled=true source=db + settings_kv prev_value=false +
 211-b 容器日志 `output_check_switch_changed`；sanitize_rule_events A/B 读数见审计档 §4；
 漏网路径行号复核（984/987 + output_sensitive.go:209-210）与运行树同源判据见审计档 §6。
 
+## §606 ·（取号：fetch 实测 origin/main 最高 §605 ⇒ 本节连号取 §606）2026-11-01 12h 审计轮：同语义只修一半 + 批写失败面放大 + 暂存区当历史源（goal · 2026-11-01）—— ★★★★★ **「修了主路径、漏了旁路」**：同一 fail-closed 语义在仓内出现两次就只转了一次 ⇒ 另一条路径上的审核单仍是空白单；★★★★ **「批量优化」必须同时收窄失败面**：把 N 次写并成 1 次 ⇒ 失败路径的损失面同步放大 N 倍（批写是为了修「丢事件」而加的，失败路径却比原来更糟）；★★★★ **计数器名字承诺的范围 = 实现统计的范围**；★★★ **暂存区不能当历史真相源**（会被 promote 抽干的表）；★★★ **工具的收尾行必须能回答「是否与预期一致」**（失败计数 + 非零退出码）；★★ **文档里的「and X」要去 SQL 里数一遍**
+
+★ **通用式一（★★★★★）——「修了主路径、漏了旁路」**：2026-10-31 拦截归因轮把守卫侧
+fail-closed 的两条分支改成自带 `PolicyBlockError`（RuleID/Reason/Path/Evidence），
+但**只改了多片段路径**（`releaseCheckedFrames` 的 parts 循环），**单事件路径**
+（`inspectSSEFrame`）里语义完全相同的两条分支仍返回**裸 error**；另有一条
+（`output_sensitive.go` 的「工具参数不是合法 JSON」）返回 `Blocked: true` 却**不带
+任何 Issue** ⇒ 派生规则名的 `policyRuleFromIssues` 拿不到 RuleID ⇒ 落到审核面的
+rule_id 是**空串**。⇒ **每一次 fail-closed 阻断都会产出一条审核单** ⇒ 裸 error ⇒
+审核单只有「未知原因」⇒ 审核员既说不出因为什么、也拿不到被拦的那段内容 ⇒
+**「拦得对不对」无从判断**。★ 这正是 211 生产实测「24 条审核单 rule_id 全空」的
+**机制本身**——上一轮只修了多片段那半边。★ **How to apply**：改 fail-closed 分支
+时，先**搜出同一语义在仓内出现几次**（`errors.New` / `Blocked: true` / `Issues: nil`
+三处都算），出现几次就转几次；**形态表登记与代码转换要逐条对齐**，少一条就有半边
+空白单。合成规则名要**逐条不同**且**各有展示说明**（形态表 = 审核面的事实源）。
+
+★ **通用式二（★★★★）——「批量优化」必须同时收窄失败面**：`c6ad22f74` 把审计事件落库
+从「逐条事务」改成「每批一条事务」（128 条/批），根因是 211 实测 3 小时丢 44250 条
+——**逐条路径排水速率跟不上 per-hit 生产速率**，方向完全正确。但**失败路径没同步
+收窄**：`RecordEvents` 失败 ⇒ 只打一条静态串 ⇒ **整批 ≤128 条一起消失** ⇒ 而
+**修复前逐条路径一次失败只丢 1 条** ⇒ **批写把失败爆炸半径放大了 128 倍**；且失败
+**不计数**（`DroppedEvents` 只统计队列满 ⇒ 管理面**完全看不见**写失败丢的那批）、
+**不退回逐条写**、上报**无细节且无节流**（与同轮刚治理的 queue-full 告警风暴是**同
+一条告警面**，DB 抖动时两条路径同时触发 ⇒ 风暴治理只覆盖了一半）。
+★ **How to apply**：任何「把 N 次写并成 1 次」的改动，问三个问题——**① 失败时是丢 1 条
+还是丢 N 条？② 有没有逐条退路？③ 损失被计数了吗？** 三问任一为否 ⇒ 这个改动
+**在成功路径上是赚的、在失败路径上是亏的**，而失败路径恰恰是它被引入时想修的那条。
+
+★ **通用式三（★★★★）——计数器名字承诺的范围 = 实现统计的范围**：`DroppedEvents`
+叫「丢了多少条」却只统计「队列满」那一种 ⇒ 写失败丢的那批在管理面上**完全不可见**
+（比队列满更隐蔽：队列满有节流 WARN + 累计计数，写失败只有一条静态串、没有数量、
+没有错误内容）。★ **How to apply**：给计数器写契约时按**名字**写（「丢了多少」而不是
+「队列满丢了多少」），并**逐条枚举所有会让事件消失的路径**（队列满 / 写失败 / 校验
+拒绝 / 开关关闭 / 批内丢弃），确保**每条都在计数范围内**；契约文档与实现同一次提交
+改，不留「名字宽、实现窄」的缝。
+
+★ **通用式四（★★★）——暂存区不能当历史真相源**：`backfill-session-opened`（专门补
+**历史** `session.opened.v1` 事件）的候选查询只扫 `session_turns_hot`。但仓内
+`internal/sessionfamily/turns_reads.go:41` 逐字记载：`promote_session_turns_hot_to_partition`
+是「**DELETE FROM session_turns_hot … INSERT INTO session_turns …**」的**单语句**
+⇒ **hot 是会被抽干的暂存区**（行被搬进 `session_turns` 的月分区后从 hot 删除）
+⇒ hot 里只剩**尚未晋级**的近期 turn ⇒ **一个补历史的工具几乎必然对真正需要补的
+历史会话视而不见**。★ 工具自己的文档还写着「Source of truth … = `session_turns_hot`
+(**and its parent `session_turns`)**」⇒ **文档承诺两个源、SQL 只用一个**，而**错的是
+实现那半**。★ **How to apply**：给工具选源表时问一句「**它会被搬走吗**」——
+会被搬走的表只覆盖「还没搬走的那些」；文档里出现「and X」时，**去 SQL 里数一遍**。
+
+★ **通用式五（★★★）——工具的收尾行必须能回答「是否与预期一致」**：补发工具对每类
+失败（build / marshal / insert）只 `log.Printf` 后 `continue`，收尾行只打印
+`inserted` / `skipped` ⇒ **失败既不在数字里、也不影响退出码（exit 0）**
+⇒ 工具可以打印「`done: inserted=100`」而实际 **9999 条全失败** ⇒
+「执行结果是否与预期一致」这个问题**工具自己回答不了**。叠加另两处：**单一 10 分钟
+ctx** 同时覆盖候选查询与全部 INSERT（`--limit 10000` 时插入阶段可能整体 deadline
+⇒ 失败又被「不计数」吞掉 ⇒ **静默零产出**）+ **逐条 autocommit**（10000 次往返）。
+★ **How to apply**：任何写数据的工具，收尾行必须有 **failed 计数**、失败必须有
+**非零退出码**；查询与写入**各有独立预算**；写入**分块提交**（失败按块回滚 ⇒
+一次失败只丢一块）；生产写工具还要有**扫描面护栏**（本轮：`--execute` 强制 `--from`
+—— `session_turns` 是月分区大表而过滤键是 `ts` ⇒ 分区裁剪**不保证生效**）。
+
+★ **通用式六（★★）——本轮**排除**的疑似缺陷也要留证据**（免得下一轮重查）：批写 SQL
+参数数 = 128×12 = 1536 ⇒ 远低于 PostgreSQL 的 65535 ✔；`structuralType`/
+`structuralField` 是**封闭词表**映射 ⇒ **幂等** ⇒ `prepareEvent` 二次调用**指纹不变** ✔；
+`Manager.Record` 入队前已 `prepareEvent` ⇒ 批内 `prepareEvent` **不会失败**
+⇒「单条坏事件毒死整批」**当前不可达**（保留为防御性项）；`outbox_events` 有
+`idx_outbox_events_aggregate (tenant_id, aggregate_id, aggregate_version)` ⇒ 补发工具的
+`NOT EXISTS` 关联**有索引支撑** ✔；`707_session_turns_s1a.sql` 给 `session_turns` 与
+`session_turns_hot` **都**加了 `api_key_id` + `end_user_id` ⇒ 补发工具的列引用**有效** ✔；
+逐单窗口的 `Index` **随窗口对象一起穿过过滤**、`windowIndexes/los/his` 三者同序
+⇒ **idx⇔lo⇔hi 对齐** ✔。★ **How to apply**：证伪一个疑似缺陷时，把**判据**写进档里
+（列/索引/常量/迁移号），下一轮就不必重查。
+
+★ **同族**：★ [[共享工作树提交纪律]] · ★ [[周期性 24h 审计 goal 格式]] · ★ [[变异台是测试有牙齿的唯一证据]]
+
+★ **证据**：2026-11-01 llm-gateway-go —— 审计档
+`docs/12小时内修订审计-2026-11-01-0310.md`；六个目录 fast-forward 读数（落后 74/74/74/74/74/0）
+与 `ls-remote --heads` 裁决（六个仓只有 `main`；`github/main` 的 codeup 快照 `07a5ac941`
+已是 `origin/main` 祖先 ⇒ 不并）；落地 5 项 P1（单事件路径两条裸 error → `PolicyBlockError`、
+`output_sensitive` 的 `Blocked` 补带 `RuleID` 的 Issue、新形态 `builtin.guard.tool_json_invalid`
+登记进形态表、批写失败退回逐条写 + 失败计入 `dropped`、补发工具两源并集 + 失败计数 +
+非零退出 + 分块事务 + `--from` 护栏）；新增 11 个回归用例；**变异台 3/3 检出**
+（M1 裸 error / M2 RuleID 置空 / M3 批写不退回），还原后 `go build ./...` 与四个包
+全量测试全绿。
+
 ## §607 ·（取号：fetch 实测 origin/main 最高 §605、本地并行 WIP 在途占 §606 ⇒ 连号取 §607）2026-11-01 参数兼容静态化轮：跨端点 reasoning 实证 + DialectNVIDIA 登记 + reqprobe 退避（goal · 2026-11-01）—— ★★★★★ **「上游不拒」≠「上游接受」：宽容解析的静默忽略会把客户端意图无声吞掉**，比 400 更隐蔽（400 至少会被 reqprobe 学到、剥参、留台账；200-但-忽略什么都不留）；★★★★ **双表达裁决的判据是「哪边处处生效」，且必须找确定性读数**（reasoning_effort=minimal 归零思考 0/0/0 是判据；单跑 token 计数噪声大到把 high 判成 low）；★★★★ **给 catalog 登记新方言的那一刻，RejectedByUnknown 族字段要逐条重审**（dst 从 Unknown 变 named 的语义迁移会把已裁剪字段悄悄放回请求体）；★★★ **改共享 Kind 元数据前先枚举派生集合的消费方**；★★★ **固定 TTL 的再探测成本落在真实用户请求上**（低流量腿受害最大）⇒ 退避优于静态分级表；★★ **凭据解密有合法同源路径**（生产库密文 + 仓内 DecryptAny + 本地临时文件），实机判读不必等用户递 key
 
 ★ **通用式一（★★★★★）——「上游不拒」≠「上游接受」**：chat 线顶层

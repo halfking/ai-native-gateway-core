@@ -107,11 +107,17 @@ type Instance struct {
 	LastSeen     time.Time `json:"last_seen"`
 	LastRefresh  time.Time `json:"last_refresh"`
 	Error        string    `json:"error"`
-	// DroppedEvents surfaces the cumulative count of audit events rejected by a
-	// full queue (2026-10-31 211: 44250 dropped / 3h was only discoverable by
-	// reading logs). Filled by Manager.Status; Heartbeat ignores it. No
-	// omitempty: an explicit 0 proves the counter is wired (absence on old
-	// binaries is ambiguous with a silent zero).
+	// DroppedEvents surfaces the cumulative count of audit events that were
+	// **lost** — rejected by a full queue (2026-10-31 211: 44250 dropped / 3h
+	// was only discoverable by reading logs) **and** events whose write failed
+	// (2026-11-01 12h audit round: a failed batch write used to drop up to
+	// auditWriteBatchSize events silently, with no count anywhere).
+	//
+	// The counter therefore answers "how many audit events did we lose", not
+	// "how many did the queue reject" — a management plane that reports only
+	// the queue-full subset understates the loss. Filled by Manager.Status;
+	// Heartbeat ignores it. No omitempty: an explicit 0 proves the counter is
+	// wired (absence on old binaries is ambiguous with a silent zero).
 	DroppedEvents int64 `json:"dropped_events"`
 }
 
