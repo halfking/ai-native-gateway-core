@@ -37,6 +37,7 @@ export default {
     operationFailed: '操作没能完成，请重试',
     loading: '加载中…',
     unknownReason: '没拿到错误详情',
+    probeLaneHistoricalHint: '探测流量物理隔离车道未开启，当前展示的是隔离前的历史探测记录。',
     saveFailedWithReason: '保存失败：{reason}。请重试',
     operationFailedWithReason: '操作失败：{reason}。请重试',
     testFailedWithReason: '测试失败：{reason}。请重试',

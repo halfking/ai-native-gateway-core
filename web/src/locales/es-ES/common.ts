@@ -37,6 +37,7 @@ export default {
     operationFailed: 'No se pudo completar la operación. Vuelva a intentarlo.',
     loading: 'Cargando…',
     unknownReason: 'No se obtuvo el detalle del error',
+    probeLaneHistoricalHint: 'El carril de aislamiento físico del tráfico de sondeo no está activo; estos son registros históricos de sondeo anteriores al aislamiento.',
     saveFailedWithReason: 'No se pudo guardar: {reason}. Vuelva a intentarlo.',
     operationFailedWithReason: 'No se pudo completar la operación: {reason}. Vuelva a intentarlo.',
     testFailedWithReason: 'No se pudo completar la prueba: {reason}. Vuelva a intentarlo.',

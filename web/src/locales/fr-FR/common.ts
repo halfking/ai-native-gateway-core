@@ -38,6 +38,7 @@ export default {
     operationFailed: 'L’opération n’a pas pu aboutir. Veuillez réessayer.',
     loading: 'Chargement…',
     unknownReason: 'Impossible d’obtenir le détail de l’erreur.',
+    probeLaneHistoricalHint: 'La voie d\'isolation physique du trafic de sonde n\'est pas active ; il s\'agit des enregistrements de sonde historiques d\'avant l\'isolation.',
     saveFailedWithReason: 'Échec de l’enregistrement : {reason}. Veuillez réessayer.',
     operationFailedWithReason: 'Échec de l’opération : {reason}. Veuillez réessayer.',
     testFailedWithReason: 'Échec du test : {reason}. Veuillez réessayer.',

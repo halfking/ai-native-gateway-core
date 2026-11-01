@@ -38,6 +38,7 @@ export default {
     operationFailed: '操作を完了できませんでした。再試行してください。',
     loading: '読み込み中…',
     unknownReason: 'エラーの詳細を取得できませんでした',
+    probeLaneHistoricalHint: 'プローブトラフィックの物理分離レーンは未有効です。分離前の履歴プローブ記録を表示しています。',
     saveFailedWithReason: '保存に失敗しました：{reason}。再試行してください。',
     operationFailedWithReason: '操作に失敗しました：{reason}。再試行してください。',
     testFailedWithReason: 'テストに失敗しました：{reason}。再試行してください。',
