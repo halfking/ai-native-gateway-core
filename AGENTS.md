@@ -4,6 +4,31 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-01 48h 审计轮：12h 修订 WIP 调和落地 + 三台部署**
+> （goal 会话，14:14 起）：★ 承接 0310 会话未提交 WIP（其审计档
+> `docs/12小时内修订审计-2026-11-01-0310.md` §6 自称已落地，但代码从未提交——
+> 其间并行会话把**子集**落为 `38dbec6c9`）。⇒ ★★★★ **撞车调和逐文件 best-of-both**：
+> backfill 查询语义取 origin 版（会话级窗口+两源并读——0310 版仍是 turn 行级窗口，
+> 正是 0720 轮修掉的缺陷）、backfill 写入路径取 0310 版（分块事务 200/块+failed 计数
+> +非零退出+独立预算+`--execute` 强制 `--from`，origin 版没修失败面）、
+> `tool_json_invalid` 形态族（常量/形态表/`output_sensitive` Issues）与批写退路+计数
+> 为 0310 独有净新增。⇒ ★★★★ **合并假绿实录**：`git merge origin/main` 对
+> `internal/ir/extensions_restore.go` 自动合并成功但**语义错误**——本地
+> `ccd3fb006`（树==e3babdddb）的 reasoning 循环内特例与 `7feb23b5b` 的「阶段 1
+> 确定性快照」重构落在不同文本区 ⇒ 3-way 两份都保留 ⇒ 确定性回归会复活 ⇒ 判据：
+> **origin 侧已重构过的文件，合并后对 origin 的 diff 必须为空**。⇒ ★ 分支治理复核
+> 零未合并分支（origin/local/github 各仅 main；父仓全部分支 is-ancestor）；/tmp/lg-verify
+> 遗留 worktree 已清。⇒ ★ 日志审计三台：211（07b521d8）458 ERROR/8h 全为上游可用性族
+> （探针 503 stream_interrupted/429/all-0-candidates×2 fail-fast，无本仓缺陷）；PG 无本仓
+> 可归因错误，外部噪声=kxuser 不存在角色探测 11/24h+外部工具手搓 SQL（`LIKE %llm%` 裸写）；
+> 245/154（28e0076e）0 ERROR；慢 SQL 仍不可观测（log_min_duration_statement=-1，
+> 48h 轮已登记待决）。⇒ ★★ **容器日志时区坑**：docker logs 时间戳是容器 TZ（UTC），
+> 「日志停在 8h 前」先对时区再下结论；本仓日志级别是裸词 ` ERROR `/` WARN `（不是
+> `level=error`），量具口径错 ⇒ 全零假读数。⇒ 读数：go build/vet ✅、四包+test-short
+> 351 包全绿（TS_RC=0）、10 新回归用例 PASS、变异台 3/3（RuleID 置空/去 dropped.Add/
+> 去 failed++），还原 md5 一致。⇒ 部署：211/245/154 三台（见审计档 §6）。
+> ⇒ 审计档 `docs/audit/2026-11-01-48h审计轮-12h修订WIP调和落地与三台部署.md`；
+> 通用式见 `LESSONS.md` **§610**。
 > **2026-11-01 12 小时内修订审计轮：ursmcheck 整包红根修 + 工具/脚本三处「宣称能力与实现不符」**
 > （goal 会话，审计窗口 10-31 19:10 → 11-01 07:20、34 提交）：★ 窗口内业务逻辑达标，但
 > **P0：`c82fa475c` 新增的 modelcredibility 真库契约腿直接消费事实源统一下发的
