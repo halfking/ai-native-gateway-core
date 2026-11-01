@@ -368,9 +368,26 @@ func TestExecuteOpenAIReqProbeModeMismatchRecordsWithoutFallback(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for persistent 404")
 	}
-	// 非流式 responses 客户端不可安全回退 → 不重试。
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("calls = %d, want 2 (mnf-free ladder; no mode fallback for non-stream responses client)", got)
+	// 非流式 responses 客户端不可安全回退 → **不做模式回退**。
+	//
+	// 2026-11-02（12h 审计轮 R1'，裸 404 归入请求侧族）：调用序列由 2 次
+	// 变 1 次。★ 那多出来的一次**从来不是模式回退**——模式回退的条件是
+	//   diag.Trigger==TriggerModeMismatch && diag.SuggestMode=="chat" &&
+	//   (nativeNonStream||nativeStream) && !probe.modeTried &&
+	//   (params.IsStream || params.ClientProtocol != "openai-responses" ||
+	//    params.SuppressSuccessWrite)
+	// 本用例 ClientProtocol=="openai-responses"、非流式、
+	// SuppressSuccessWrite==false ⇒ 模式回退**从不触发**；那一次是
+	// **generic 重试梯子**——裸 404 此前落 KindTransient ⇒ IsRetryable=true
+	// ⇒ executor 构造 retryableError ⇒ 同节点再打一次。
+	// 而那正是 2026-11-02 生产事故里「同节点盲重试」同款的那一跳
+	// （411 生产证据：attempt_index 1→2→3、同节点相隔 6s/11s）。
+	// ⇒ 404 归入 KindRequestRejected（IsRetryable=false）后，盲重试消失。
+	// ★ 本用例自己的注释（「不可安全回退 → 不重试」）此前与断言（want 2）
+	//   是**互相矛盾**的：注释说的「不重试」指的是模式回退，断言量的却是
+	//   generic 梯子的那次盲重试。现在断言与注释终于一致。
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls = %d, want 1 (请求侧错误不盲重试；模式回退对非流式 responses 客户端不安全，不触发)", got)
 	}
 	recs := waitForReqProbeRecord(t, store, 1)
 	if recs[0].Trigger != reqprobe.TriggerModeMismatch || recs[0].SuggestMode != "chat" {

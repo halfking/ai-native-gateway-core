@@ -995,7 +995,21 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 	if resp == nil {
 		return KindUpstreamDown
 	}
-	return ClassifyResponseStatus(resp)
+	// 2026-11-02（12h 审计轮 R2）：本分支此前直接调 ClassifyResponseStatus，
+	// 与 ClassifyErrorWithBody 的状态兜底**不是同一张表** ⇒ 同一个 (status)
+	// 在两条分类路径上会分叉（400：这条路径给 transient，那条路径给
+	// request_rejected）。
+	//
+	// 当前**没有**生产调用方把 4xx 传进来（upstream/client.go:327 对
+	// status<500 直接 return，不进本分支；本仓其余 ClassifyError 调用方
+	// 一律传 nil resp）⇒ 这是**潜伏**分叉而非在线缺陷。但潜伏分叉正是
+	// §609 说的「注释比实现宽」那一类静默无操作：将来有人给 ClassifyError
+	// 补一个带 resp 的调用点，就会把旧口径悄悄带回来。
+	//
+	// 改成委托给 ClassifyErrorWithBody(status, nil)：正文为空 ⇒ 正文形态
+	// 正则整段跳过 ⇒ 走的正是 ClassifyErrorWithBody 的状态兜底 ⇒ 两个
+	// 分类器对同一状态码**不可能**再分叉。
+	return ClassifyErrorWithBody(resp.StatusCode, nil)
 }
 
 // HTTPStatusForKind is the canonical ErrorKind → HTTP status mapping for
@@ -1266,7 +1280,7 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		return KindTimeout
 	case 405, 406, 409, 411, 412, 415, 416, 417, 418, 421, 423, 424, 425, 426, 428, 431:
 		return KindUnsupportedFeature
-	case 400, 413, 422:
+	case 400, 404, 413, 414, 422:
 		// 2026-11-02：走到这里意味着**所有** body 形态正则都没命中——
 		// 没有上下文超限、没有内容审核、没有模型下线/不存在、没有配额耗尽、
 		// 没有限流、没有点名参数被拒。上游只说了「这个请求我不收」。
@@ -1278,10 +1292,43 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		// （2026-11-02 生产事故：一个客户端的错单让 /v1/embeddings 对所有
 		// 租户 503）。⇒ 归入 KindRequestRejected。
 		//
-		// 仍保留 404 / 401 / 402 / 408 / 429 / 410 的既有口径：
-		// 404=模型级(model_not_found)、401/403=凭据级(auth)、402=配额、
-		// 408=超时、429=限流、410=裸 410 走 transient 以便换兄弟凭据
-		// （2026-08-05 决议：不能因为它终态就跳过跨凭据故障转移）。
+		// 2026-11-02（12h 审计轮 R1）补 414：414 URI Too Long 是**纯粹**
+		// 的「这次请求太长」——与节点健康、凭据配额、模型能力都无关，同一
+		// body 重打必然再败。此前它落到状态兜底 ⇒ 与 400 同款的放大器链
+		// 仍然可达（IsRetryable=true ⇒ 盲重试 3 次 + 5 分钟拉黑）。
+		//
+		// 2026-11-02（12h 审计轮 R1'，据生产证据）补 404：裸 404（正文不
+		// 匹配任何形态正则）此前同样落状态兜底 ⇒ 同一条放大链。生产证据
+		// （211 candidate_failure_logs，45 天窗口，见
+		// docs/audit/2026-11-02-上游4xx被记成节点不健康-下一轮修复项.md §六）：
+		//   · 404 + error_kind='transient' 共 **20 行 / 6 个 (凭据,模型) 对 /
+		//     7 次独立事件**，涉及的对**全部是 embedding 模型**；
+		//   · attempt_index 呈 1→2→3，同一 (凭据,模型) 的三次时间戳相隔
+		//     **6s / 11s** ⇒ **同节点盲重试实测坐实**（不是跨凭据故障转移）；
+		//   · 三种正文形态（`404 page not found` /
+		//     `Function id … is not found` /
+		//     `openai_error bad_response_status_code`）**全部是确定性、
+		//     绑定级**失败，**没有一个**是「节点临时抖动」；
+		//   · 那 6 对的 consecutive_failures 已到 19～27，仍每 ~2 小时重探。
+		// ⇒ 「二义性在于归到哪个绑定级桶，不在于要不要按 transient 处理」：
+		//   无论读作「模型不被该凭据提供」还是「端点路径错」，两者都**排除**
+		//   transient（transient 恰恰是「节点临时故障」）。⇒ 归请求侧。
+		// ★ 归到哪个**绑定级**桶（该对该不该长期冷却）留待下一轮裁决——
+		//   本轮先断掉放大器（盲重试 / http_5xx 误标 / 整凭据 cooling），
+		//   并保留跨凭据故障转移（ActionSwitchNode）。
+		//
+		// 仍保留 401 / 402 / 408 / 429 的既有口径：401/403=凭据级(auth)、
+		// 402=配额、408=超时、429=限流。
+		//
+		// ★ 410 的既有口径（2026-08-05 决议：裸 410 走 transient 以便换兄弟
+		//   凭据）**本轮不动**——该决议的**目的**（跨凭据故障转移）在
+		//   KindRequestRejected 下同样成立（ActionSwitchNode），但把一个
+		//   有日期决议的状态码改口径需要它自己的生产证据（404 有，410 没有）
+		//   ⇒ 登记为下一轮项。
+		// ★ 裸 407 / 419 / 420 / 427 / 430 / 432..499 仍落状态兜底
+		//   （KindTransient）——**逐条复核过的显式决定，不是漏网**：
+		//   门禁 errorsx/classify_4xx_matrix_test.go 把 400..499 每一格
+		//   的裁决钉成矩阵，任何一格改动都必须同步改门禁（附理由）。
 		return KindRequestRejected
 	}
 	return ClassifyResponseStatus(&http.Response{StatusCode: status})

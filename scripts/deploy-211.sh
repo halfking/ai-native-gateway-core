@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# requires-bash: 4
+# ↑ 本脚本调起的 scripts/deploy-test-gate.sh 声明 `# requires-bash: 4`
+#   （内部用 `declare -A` 关联数组）；macOS 自带 bash 3.2 不支持
+#   ⇒ 本脚本在最前面做版本前置检查并给出可执行的下一步（见下方 R6 注记）。
 # =====================================================================
 # scripts/deploy-211.sh — 211 Docker 形态蓝绿部署的**薄外壳**
 # =====================================================================
@@ -36,7 +40,7 @@
 #   bash scripts/deploy-211.sh --stop          # 停掉两个槽（容器保留可 start）
 #   bash scripts/deploy-211.sh --redis-db 9    # 引擎参数原样转发
 #   bash scripts/deploy-211.sh --dry-run       # 打印目标合同 JSON
-#   bash scripts/deploy-211.sh --force         # 211 部署无部署锁：接受但无操作
+#   bash scripts/deploy-211.sh --force         # 接受但**无操作**（引擎不认 --force；见下方 R7 注记）
 #
 # 前端: **不需要手工预构建**。引擎在**部署机**侧（--via 分支）先跑
 #   scripts/lib/node-pm.sh 的包管理器决策 → 必要时按 lockfile 装依赖 →
@@ -59,6 +63,39 @@
 # =====================================================================
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ── bash 版本前置检查（2026-11-02 12h 审计轮 R6）────────────────────────
+#
+# 本脚本与它调起的 scripts/deploy-test-gate.sh 都要求 bash ≥ 4：
+# 闸门文件头声明 `# requires-bash: 4`，内部第 139-140 行用 `declare -A`
+# 关联数组。macOS 自带的 /bin/bash 是 **3.2** ⇒ `declare -A` 必报
+# `declare: -A: invalid option`。
+#
+# ★ 为什么必须**在这里**拦，而不是让闸门自己报：
+#   `${BASH:-bash}` 继承调用方的解释器，这解决了「用 bash5 跑 deploy-211.sh
+#   却把闸门降回系统 bash」那个问题；但**调用方自己**用文档写的
+#   `bash scripts/deploy-211.sh` 启动时，$BASH 就是 /bin/bash（3.2）
+#   ⇒ 继承下来还是 3.2 ⇒ 闸门在**开跑之前**就死在一行 `declare -A` 上
+#   ⇒ 报错来自**另一个脚本**、不提示「用 bash5 跑」⇒ 运维看到的是一个
+#   看不懂的错误（2026-11-01 18:2x 首次实测就是这样 RC≠0 中止在闸门行）。
+#
+#   ⇒ 在最前面拦一次，给出**可执行的下一步**（本机 bash5 的真实路径）。
+#
+# 退出码 78（EX_CONFIG）：配置错误，与「闸门测试红」的退出码区分开。
+if (( BASH_VERSINFO[0] < 4 )); then
+  cat >&2 <<EOF
+[deploy-211] 需要 bash >= 4，当前是 ${BASH_VERSION:-未知}（${BASH:-bash}）
+
+  原因：scripts/deploy-test-gate.sh 声明 \`# requires-bash: 4\`，内部用
+  \`declare -A\` 关联数组；bash 3.2（macOS 自带 /bin/bash）不支持它。
+
+  macOS 上的正确用法（用本机已装的 bash5）：
+    ~/sdk/bash5/bin/bash scripts/deploy-211.sh [args...]
+
+  Linux 上 /bin/bash 已 >= 4，直接 bash scripts/deploy-211.sh 即可。
+EOF
+  exit 78
+fi
 
 # 蓝绿两槽的固定发布端口：**必须在这里定义**（而不是等到下面的「主机信息」块）——
 # 因为 `--dry-run` 的合同 JSON 在参数分派段就要打印这两个端口
@@ -109,9 +146,26 @@ if (( ${#ARGS[@]} > 0 )); then
 fi
 
 if [[ $FORCE_UNLOCK -eq 1 ]]; then
-  # 家族口径里 --force = 恢复并重建部署锁；211 引擎无部署锁（每次部署整体
-  # rm -rf 重建目标树），卡死场景直接重跑即可，故接受但无操作，明说不静默。
-  echo "[deploy-211] 211 docker 部署无部署锁，--force 无需也无效（忽略）" >&2
+  # ★ 订正（2026-11-02 12h 审计轮 R7）：本段原先写的是「211 部署无部署锁
+  # ……接受但无操作」——**那句话与事实相反**：
+  #   · 引擎**确实**拿每目标本地部署锁（scripts/deploy-lib/lock.sh:112
+  #     ⇒ \${LOCK_TMP_ROOT}/kx-llm-gateway-deploy-<target>.lock；
+  #     scripts/deploy-seamless-docker.sh:494 lock_acquire_local）；
+  #   · 而引擎**没有任何 --force 处理**（deploy-seamless-docker.sh 里
+  #     "force" 零命中）⇒ --force 到不了引擎（这里就被 extract_force_unlock
+  #     剥掉了）⇒ 它**既不能**恢复、也**不能**重建任何锁。
+  #   ⇒ 陈旧的 mkdir 形态锁（macOS 无 flock(1)，SIGKILL 会留下目录）
+  #     会让 211 部署以 rc=75 卡住，而运维被告知的「--force 无需也无效」
+  #     恰好让人以为「没有锁这回事」⇒ 排查方向被带偏。
+  #
+  # 本轮只**把话说对**（引擎侧的 --force 接线是另一件事，已登记为待修项）：
+  echo "[deploy-211] --force 被忽略：211 部署**有**每目标本地锁" >&2
+  echo "[deploy-211]   （\${LOCK_TMP_ROOT:-/tmp}/kx-llm-gateway-deploy-211.lock；" >&2
+  echo "[deploy-211]     LOCK_TMP_ROOT 由 scripts/deploy-lib/lock.sh:179 默认为 /tmp），" >&2
+  echo "[deploy-211]   但引擎没有 --force 处理 ⇒ 它既不能恢复也不能重建锁。" >&2
+  echo "[deploy-211]   若部署卡在 rc=75（锁未释放，多为上一次被 SIGKILL）：" >&2
+  echo "[deploy-211]     rm -rf /tmp/kx-llm-gateway-deploy-211.lock" >&2
+  echo "[deploy-211]   确认没有在跑的部署进程后再删。" >&2
 fi
 
 # 透传健康探针超时：与 deploy-154/245 同一族标准（PROBE_TIMEOUT_SECS）。
