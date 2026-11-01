@@ -29,9 +29,14 @@
 > 编译红；投影回退 ::text ⇒ AST 门红）还原 md5 一致。⇒ ★ 部署：**211 本轮
 > 不重部署**（重部署会把放大类闭案 tick 锚点从 11-02 14:38 推到后天——
 > goal 第 2① 的验收以进程生命期为锚，运行树 2ffe5495 落后一个修复提交
-> 登记下轮收敛）；245/154 部署 9d3b190de（★ 部署坑实录：后台 shell 必须
+> 登记下轮收敛）；245/154 部署（★ 部署坑实录：后台 shell 必须
 > `export PATH=$HOME/sdk/go/bin` 否则 deploy-seamless `go: command not found`
-> 回退 docker 跑法而三 registry 拉不到镜像即拒——**首跑失败形态**）。
+> 回退 docker 跑法而三 registry 拉不到镜像即拒——**首跑失败形态**）：
+> **245=2927-9d3b190d**（验收 admin 登录 200/token 289B/修复 5 端点全 200，
+> policy 真行 created_at RFC3339Nano ✓）+ **154=2928-bb020177**（部署时刻
+> 本地 HEAD 已含并行会话三个 docs 提交，`is-ancestor` 实证 9d3b190de 在
+> 血统内；登录 200/端点 200）——服务端代码三台同源，211 与 245/154 的
+> 差异仅文档提交。
 > ⇒ ★ 例行审计：211 ERROR 411 全归因（探针 503 族 359 + executor 上游 44 +
 > **admin 6=本轮缺陷** + provider 2）；245/154 零错误；**acc-pg17（网关库）
 > 14 条错误仓内零引用 ⇒ 全部外部工具打错 DSN**（llm_usage_stats 族

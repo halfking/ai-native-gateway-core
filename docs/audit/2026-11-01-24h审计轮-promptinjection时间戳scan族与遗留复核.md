@@ -249,6 +249,13 @@ engines / canary-tokens / attack-vectors **同款「空表 ⇒ 缺陷不显形�
 
 ---
 
-## 5.1 部署记录回填
+## 5.1 部署记录（回填）
 
-（本轮 245/154 部署完成后回填）
+| 台 | 结果 |
+|---|---|
+| 245 | ✅ `2927-9d3b190d`（总 204s，切换 25s）。验收：admin 登录 200 / token 289B；`/api/system/version` git_sha=9d3b190d ✓；**修复 5 端点全部 200**（policy 有真行 id=2 且 `created_at=2026-07-19T21:08:25.836952+08:00` RFC3339Nano ✓、`last_detection_at=null` 如实 ✓、rules count=23 与 211 生产真值一致 ✓）。首跑失败实录：后台 shell 未带 `$HOME/sdk/go/bin` ⇒ deploy-seamless `go: command not found` 回退 docker 跑法、三 registry 拉不到 `kx-base/golang:1.27-alpine-amd64` 即拒——**后台跑部署必须显式 export PATH** |
+| 154 | ✅ `2928-bb020177`（总 226s，切换 28s，经 252 跳板）。验收：admin 登录 200；version git_sha=bb020177（=部署时刻本地 HEAD：9d3b190de 之后并行会话追加了三个 docs 提交——形态表 74140189a / 本审计档 c87696300 / AGENTS 归档 bb0201774；`merge-base --is-ancestor` 实证 **9d3b190de 在其血统内** ✓）；修复端点 policy/rules 200 ✓。**注意：bb020177 当时未推送**——154 生产运行树一度领先 origin，本轮回填提交后推送收敛 |
+
+**两轮会话文档合流实录**（本轮收尾时发现）：并行会话 18:33 把我方工作树的审计档（本文件）、LESSONS §611、AGENTS.md 段落**原样纳入**了它的提交链（md5 比对逐字一致）；其净增量为 web/web-mobile 形态表第 15 条（时间戳形状：RFC3339 字符串或 null）与 output-compliance 同族登记（L8：`output_compliance_policies` 的 updated_at → string / reviewed_at → sql.NullString——写路径已存在，改类型会约束 PUT 解码，宜同款写载荷分离，留下一轮）。
+
+三台终态：211 = `2.5.8-2ffe5495`（保 tick 锚点，见 §5 决策）、245 = `2927-9d3b190d`、154 = `2928-bb020177`——服务端代码三台同源（9d3b190de 血统），差异仅文档提交。
