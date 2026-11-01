@@ -753,12 +753,32 @@ else
   bad "--via 未转发 DD_BUILD_SHA，远端无 .git 只能沿用他人版本戳"
 fi
 if command -v python3 >/dev/null 2>&1; then
-  sed -n '/^import json, sys, time$/,/^json.dump(v, open(path, "w"), indent=2)$/p' "$SCRIPT" > "$TMP/vstamp.py"
-  printf '{"version":"2.5.8-76e185e7-20261015-2661","git_tag":"2.5.8","git_sha":"76e185e7","build_seq":2661}\n' > "$TMP/v.json"
-  # 三个参数：路径 / sha / target（target 决定版本串后缀，引擎主机无关）
-  python3 "$TMP/vstamp.py" "$TMP/v.json" "75bf327a" "211" >/dev/null 2>&1
-  _vs="$(python3 -c 'import json,sys;v=json.load(open(sys.argv[1]));print(v["git_sha"], v["version"].split("-")[1], v["version"].endswith("-211"), v.get("target"))' "$TMP/v.json" 2>/dev/null)"
-  check "种子 version.json 按构建提交号改写（sha/version 后缀 -211）" "75bf327a 75bf327a True 211" "$_vs"
+  # ★ 2026-11-01：抽取锚点与 argv 契约**两条都要跟引擎同步** ——
+  #   ① 锚点漂移：引擎的 import 行在 779c3e5d5（2026-10-31 build_seq 冻结根修）
+  #      里加了 os ⇒ 旧锚点 `^import json, sys, time$` **一行都抽不出来** ⇒
+  #      python 拿空脚本空跑（rc=0）⇒ 断言拿**没被改写**的种子去比 ⇒
+  #      报出来的是「版本戳没改写」，而真因是「门没测到东西」。
+  #   ② argv 契约漂移：引擎现在收 5 个参数
+  #      （path / sha / target / 对侧槽版本戳 / 机器级 build_seq floor）⇒
+  #      旧调用只传 3 个 ⇒ 即便抽出来也是 ValueError（不是断言红，是空跑）。
+  # ⇒ 只修锚点仍是红；两条都修才真正测到「版本戳按构建提交号改写」。
+  sed -n '/^import json, os, sys, time$/,/^json.dump(v, open(path, "w"), indent=2)$/p' "$SCRIPT" > "$TMP/vstamp.py"
+  # ★★★ 量具自证：抽取为空 ⇒ 锚点又漂了 ⇒ **响亮报红并说清根因**，
+  #   不许静默空跑（★ 旧实现的失败形态把根因藏在断言值里 ⇒ 漂了 10 天没人认领）。
+  #   argv 契约不一致 ⇒ 同样响亮（引擎改了参数个数/顺序，门没跟上）。
+  if [[ ! -s "$TMP/vstamp.py" ]]; then
+    bad "版本戳改写脚本抽取为空 —— 引擎 python 块的 sed 锚点漂移（门测不到东西）"
+  elif ! grep -qE '^path, sha, target, other, floor_file = sys\.argv\[1:6\]$' "$TMP/vstamp.py"; then
+    bad "版本戳改写脚本的 argv 契约与门不一致（引擎改过参数个数/顺序，门没跟上）"
+  else
+    printf '{"version":"2.5.8-76e185e7-20261015-2661","git_tag":"2.5.8","git_sha":"76e185e7","build_seq":2661}\n' > "$TMP/v.json"
+    # ★ 五个参数：路径 / sha / target / 对侧槽版本戳 / 机器级 build_seq floor。
+    #   floor 必须指向临时目录 —— 门不得写真实的 ~/.llm-gateway-go/build_seq.floor
+    #   （它只增不减，门去写会污染部署机的计数器）。
+    python3 "$TMP/vstamp.py" "$TMP/v.json" "75bf327a" "211" "$TMP/v_other.json" "$TMP/build_seq.floor" >/dev/null 2>&1
+    _vs="$(python3 -c 'import json,sys;v=json.load(open(sys.argv[1]));print(v["git_sha"], v["version"].split("-")[1], v["version"].endswith("-211"), v.get("target"))' "$TMP/v.json" 2>/dev/null)"
+    check "种子 version.json 按构建提交号改写（sha/version 后缀 -211）" "75bf327a 75bf327a True 211" "$_vs"
+  fi
 else
   printf '  SKIP 版本戳改写行为（本机无 python3）\n'
 fi
