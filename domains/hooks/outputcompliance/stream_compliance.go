@@ -981,10 +981,28 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 		}
 		if shouldRedact && result.RedactedOutput != "" && result.RedactedOutput != original {
 			if field.immutable || (it.mandatory && (isToolArgumentLane(field.lane) || field.label != "")) {
-				return nil, errors.New("cannot safely rewrite signed or sensitive tool stream event")
+				// ★ 2026-11-01（12h 审计轮）：这条**事件**路径此前是裸 error
+				// ⇒ 审核单 rule/reason/evidence 全空 ⇒ 审核员判不了「拦得对不对」。
+				// ⇒ 形态表（docs/audit/2026-10-31-拦截归因轮…§3 的 F1 表）已收录
+				//   rewrite_refused / redact_invalid 两个形态，且**同形态的 lane
+				//   路径**（releaseCheckedFrames）已按它们归因 ⇒ ⇒ 本处补齐，
+				//   两处调用点口径一致（不再出现「同一形态在 lane 路有归因、
+				//   在 event 路没有」）。
+				return nil, &errorsx.PolicyBlockError{
+					RuleID: GuardRewriteRefusedRuleID,
+					Reason: policyBlockErrorReason("output policy refused to rewrite a signed or sensitive tool stream event", GuardRewriteRefusedRuleID, field.lane),
+					Path:   field.lane,
+					// ★ 摘录：审核员要看「当时判的是哪段内容」⇒ 有界摘录随错误上送。
+					Evidence: boundedPolicyEvidence(original),
+				}
 			}
 			if isToolJSONLabel(field.label) && json.Valid([]byte(original)) && !json.Valid([]byte(result.RedactedOutput)) {
-				return nil, errors.New("redacted tool arguments are invalid JSON")
+				return nil, &errorsx.PolicyBlockError{
+					RuleID:   GuardRedactInvalidRuleID,
+					Reason:   policyBlockErrorReason("output policy produced invalid JSON for redacted tool arguments", GuardRedactInvalidRuleID, field.lane),
+					Path:     field.lane,
+					Evidence: boundedPolicyEvidence(original),
+				}
 			}
 			field.set(result.RedactedOutput)
 			checked.changed = true

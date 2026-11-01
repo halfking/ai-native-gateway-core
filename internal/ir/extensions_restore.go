@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 
@@ -82,6 +83,38 @@ func restoreExtensions(out map[string]any, req *InternalRequest, targetProtocol 
 	src := paramreg.DialectForProtocol(req.SourceProtocol)
 	dst := resolveTargetDialect(req, targetProtocol)
 
+	// ══ 阶段 1：确定性快照（2026-11-01 12h 审计 P1-1）══════════════════════
+	//
+	// Extensions 是 Go map ⇒ 迭代顺序随机（Go 规范）。而下面这几个键会互相
+	// 影响「出站 body 是否已带 reasoning_effort / reasoning」：
+	//
+	//   · Extensions["reasoning_effort"] → 通用还原会写 out["reasoning_effort"]
+	//   · Extensions["thinking"]         → Unknown 特例 / Grok·Responses 通用
+	//                                      翻译会写 out["reasoning_effort"]
+	//                                      或 out["reasoning"]
+	//   · Extensions["reasoning"]        → 下面的 reasoning 特例会写
+	//                                      out["reasoning_effort"] 或 out["reasoning"]
+	//
+	// 旧实现把「出站是否已有下划线」这个探测放在 map 循环体内 ⇒ 同一请求
+	// 出站 body 随迭代序变化：HEAD 实测 300 次出站出现 245/55 混合（基线
+	// 300/300 恒定 ⇒ 本窗口引入的确定性回归），且 OpenRouter「对象内 effort
+	// 与 reasoning_effort 同发」的冲突 400 只被消掉 78~80%（实测 3 次
+	// 复跑 80.2% / 79.3% / 78.5%）。
+	//
+	// 修法（三处，缺一不可）：
+	//   ① 探测全部提到循环前 —— 读快照，不再读可变的 out；
+	//   ② 特例键固定排序（reasoning 在 thinking 之前）；
+	//   ③ 通用路径按键名排序迭代 —— 两个来源写同一个出站键时也有确定胜者。
+	_, outHasUnderscore := out["reasoning_effort"]
+	_, outHasReasoning := out["reasoning"]
+	_, extHasUnderscore := req.Extensions["reasoning_effort"]
+	_, extHasReasoning := req.Extensions["reasoning"]
+	// 对象内 effort（客户端显式表达的思考强度；对象是唯一载体时由它承载）。
+	objectEffort := reasoningObjectEffort(req.Extensions["reasoning"])
+	// 客户端**显式**表达的下划线 effort：IR 渲染的 或 Extensions 自带的。
+	// （Extensions 自带的那份由通用路径写回 out，故也算「出站已带」。）
+	explicitUnderscore := outHasUnderscore || extHasUnderscore
+
 	// thinking 翻译轮（2026-10-13）：unknown-relay（DialectUnknown）上
 	// thinking 的 RejectedByUnknown 裁剪改为**按目标协议翻译**——这里独有
 	// 协议信息（Decide/Translate 只有方言粒度）。数据矩阵（Vapeur 全模型
@@ -92,18 +125,23 @@ func restoreExtensions(out map[string]any, req *InternalRequest, targetProtocol 
 	// （reqprobe 剥参兜底从「每次两跳」变「零跳」），宽容后端思考意图保留。
 	// IR 已渲染 effort（reasoning/reasoning_effort 在 out）时不覆盖——
 	// 客户端显式 effort 优先于 thinking 值换算。
+	//
+	// ★ 2026-11-01（12h 审计 P1-1）：守卫从「探测可变的 out」改为读阶段 1
+	//   快照，并把「Extensions 自带下划线」与「对象内 effort」两个显式来源
+	//   纳入 —— 客户端显式 effort 优先于 thinking 换算（上一段的既有语义），
+	//   且判定不再随 map 迭代序变化。
 	translateUnknownThinking := func(val json.RawMessage) (string, json.RawMessage, bool) {
 		if dst != paramreg.DialectUnknown {
 			return "", nil, false
 		}
 		switch targetProtocol {
 		case ProtocolOpenAIResponses:
-			if _, exists := out["reasoning"]; exists {
+			if outHasReasoning || extHasReasoning {
 				return "", nil, false
 			}
 			return paramreg.TranslateThinkingForProtocol(val, "responses")
 		case ProtocolOpenAIChat:
-			if _, exists := out["reasoning_effort"]; exists {
+			if explicitUnderscore || objectEffort != "" {
 				return "", nil, false
 			}
 			return paramreg.TranslateThinkingForProtocol(val, "openai-chat")
@@ -111,48 +149,82 @@ func restoreExtensions(out map[string]any, req *InternalRequest, targetProtocol 
 		return "", nil, false
 	}
 
-	for key, val := range req.Extensions {
-		if _, exists := out[key]; exists {
-			// IR 序列化器已经输出了这个键，不覆盖。
-			continue
-		}
-
-		if key == "thinking" {
-			if outKey, outVal, ok := translateUnknownThinking(val); ok {
-				out[outKey] = preservedRawValue(outVal)
-				continue
-			}
-		}
-
-		// 参数兼容静态化轮（2026-11-01）：chat 线出站的顶层 reasoning 对象
-		// 裁决。四腿实机矩阵（docs/audit/2026-11-01-参数兼容静态化轮-
-		// 跨端点reasoning实证.md）：nvidia 硬 400（registry RejectedBy）/
-		// zhipu·Ark 静默忽略（意图会无声丢失，翻译成 reasoning_effort）/
-		// OpenRouter 原生生效（保留对象；双表达同发时对象内 effort 让位，
-		// 旋钮保留——冲突值 400 类被静态消除）。Decide 看不到出站 body
-		// 状态（out 是否已有 reasoning_effort）也没有方言翻译粒度，
-		// 与 thinking/stream_options 特例同款模式收在这里。
-		if key == "reasoning" && targetProtocol == ProtocolOpenAIChat {
-			_, hasUnderscoreEffort := out["reasoning_effort"]
-			outKey, outVal, action, lossReason := paramreg.ReasoningObjectChatDecision(val, hasUnderscoreEffort, dst)
+	// ══ 阶段 2a：reasoning 特例（固定排在 thinking 特例之前）════════════════
+	//
+	// 参数兼容静态化轮（2026-11-01）：chat 线出站的顶层 reasoning 对象
+	// 裁决。四腿实机矩阵（docs/audit/2026-11-01-参数兼容静态化轮-
+	// 跨端点reasoning实证.md）：nvidia 硬 400（registry RejectedBy）/
+	// zhipu·Ark 静默忽略（意图会无声丢失，翻译成 reasoning_effort）/
+	// OpenRouter 原生生效（保留对象；双表达同发时对象内 effort 让位，
+	// 旋钮保留——冲突值 400 类被静态消除）。Decide 看不到出站 body
+	// 状态（out 是否已有 reasoning_effort）也没有方言翻译粒度，
+	// 与 thinking/stream_options 特例同款模式收在这里。
+	//
+	// 排在 thinking 特例之前的理由：客户端显式 effort（对象内 effort）
+	// 优先于 thinking 换算（上一段的既有语义）——否则 thinking 换算出的
+	// 值会顶掉客户端显式表达的强度。
+	reasoningHandled := false
+	if extHasReasoning && targetProtocol == ProtocolOpenAIChat {
+		if _, exists := out["reasoning"]; exists {
+			// IR 序列化器已经输出该键 ⇒ 不覆盖（与旧循环首行同语义）。
+			reasoningHandled = true
+		} else {
+			outKey, outVal, action, lossReason := paramreg.ReasoningObjectChatDecision(
+				req.Extensions["reasoning"], explicitUnderscore, dst)
 			switch action {
 			case paramreg.ActionSkip:
-				continue
+				reasoningHandled = true
 			case paramreg.ActionDrop:
-				ReportProtocolLoss("", key, req.SourceProtocol, targetProtocol, lossReason,
+				ReportProtocolLoss("", "reasoning", req.SourceProtocol, targetProtocol, lossReason,
 					"top-level reasoning object dropped by target-dialect policy on the openai-chat wire",
 					map[string]any{
 						"source_dialect": string(src),
 						"target_dialect": string(dst),
 					})
-				continue
+				reasoningHandled = true
 			case paramreg.ActionRestore:
-				if _, exists := out[outKey]; exists {
-					continue
+				if _, exists := out[outKey]; !exists {
+					out[outKey] = preservedRawValue(outVal)
 				}
-				out[outKey] = preservedRawValue(outVal)
-				continue
+				reasoningHandled = true
 			}
+		}
+	}
+
+	// ══ 阶段 2b：thinking 特例 ═══════════════════════════════════════════════
+	thinkingHandled := false
+	if rawThinking, ok := req.Extensions["thinking"]; ok {
+		if _, exists := out["thinking"]; exists {
+			// IR 序列化器已经输出该键 ⇒ 不覆盖（与旧循环首行同语义）。
+			thinkingHandled = true
+		} else if outKey, outVal, ok := translateUnknownThinking(rawThinking); ok {
+			out[outKey] = preservedRawValue(outVal)
+			thinkingHandled = true
+		}
+	}
+
+	// ══ 阶段 3：通用还原 ═══════════════════════════════════════════════════
+	//
+	// ★ 键名排序迭代：两个不同的 Extensions 键可能映射到同一个出站键
+	//   （例：thinking→reasoning_effort 与 reasoning_effort→reasoning_effort）
+	//   ⇒ 旧实现「先到先得」由随机迭代序决定 ⇒ 同样不可复现。排序后胜者
+	//   确定（键名字典序），且与「显式 > 换算」的语义一致
+	//   （reasoning_effort 先于 thinking）。
+	extKeys := make([]string, 0, len(req.Extensions))
+	for key := range req.Extensions {
+		extKeys = append(extKeys, key)
+	}
+	sort.Strings(extKeys)
+
+	for _, key := range extKeys {
+		val := req.Extensions[key]
+		if _, exists := out[key]; exists {
+			// IR 序列化器已经输出了这个键，不覆盖。
+			continue
+		}
+		if (key == "reasoning" && reasoningHandled) || (key == "thinking" && thinkingHandled) {
+			// 阶段 2 已按固定顺序裁决过 ⇒ 不再走通用路径。
+			continue
 		}
 
 		// r1026（2026-10-13）：stream_options 是 openai-chat 线格式专属参数，
@@ -218,6 +290,30 @@ func restoreExtensions(out map[string]any, req *InternalRequest, targetProtocol 
 			// IR 已处理该字段，序列化器负责输出。不是丢失，不上报。
 		}
 	}
+}
+
+// reasoningObjectEffort 取出顶层 reasoning 对象里的 effort 档位。
+//
+// 用途（2026-11-01 12h 审计 P1-1）：判定「客户端是否显式表达了思考强度」。
+// 非对象 / 无 effort / effort 非字符串 / 空串 ⇒ 返回 ""（视作「对象不携带
+// effort」）——调用方据此决定「对象内 effort 是否优先于 thinking 换算」。
+func reasoningObjectEffort(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+	effortRaw, ok := obj["effort"]
+	if !ok {
+		return ""
+	}
+	var effort string
+	if err := json.Unmarshal(effortRaw, &effort); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(effort)
 }
 
 // resolveTargetDialect 推导目标方言。

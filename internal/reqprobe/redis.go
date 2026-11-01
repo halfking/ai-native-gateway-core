@@ -76,6 +76,9 @@ func (s *RedisStore) Upsert(ctx context.Context, rec Record) (Record, error) {
 			if old.RecoveredCount > rec.RecoveredCount {
 				rec.RecoveredCount = old.RecoveredCount
 			}
+			// ★ 退避计数（2026-11-01 12h 审计 P1-3）：与 MemoryStore 同语义。
+			//   用旧记录的 LastSeen 与旧窗口判定「这次是不是再探测」。
+			rec.BackoffCount = mergeBackoffCount(&old, rec, rec.LastSeen)
 			rec.FirstSeen = old.FirstSeen
 			if old.Resolved && !rec.Resolved {
 				// 已解决的指纹再次出现：重新翻开（未解决），运维需要
@@ -92,6 +95,8 @@ func (s *RedisStore) Upsert(ctx context.Context, rec Record) (Record, error) {
 		if rec.Occurrences < 1 {
 			rec.Occurrences = 1
 		}
+		// 首次落库的退避计数（首见即学习 ⇒ 1 ⇒ 窗口 = base TTL）。
+		rec.BackoffCount = mergeBackoffCount(nil, rec, rec.LastSeen)
 	}
 	rec.Occurrences = max(rec.Occurrences, 1)
 

@@ -20,3 +20,4 @@ GUARD_IT_DSN	balance-floor 集成腿的专用 DSN：建池后裸 TRUNCATE creden
 ROUTEINCIDENT_IT_DSN	routeincident 集成腿的专用 DSN：会在目标库建 route_incidents 表（715 表形）⇒ 必须指向一次性库，不能与通用 DSN 同值
 REPORT_E2E_TEST_DATABASE_URL	reportrollup 破坏性 E2E 的专用 DSN：会 DELETE report_snapshots / usage_facts，守卫要求一次性 scratch 库 + 授权开关 ⇒ 不能与通用 DSN 同值（R86 轮从共享名拆出的专用名）
 TEST_SESSION_SETTINGS_DATABASE_URL	session-settings 夹具的专用 DSN：守卫要求库名以 _test 结尾且 TEST_SESSION_INGEST_ISOLATED=1，随后 DROP SCHEMA public CASCADE ⇒ 通用 DSN 必被拒绝（响亮假红）
+TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL	modelcredibility rollup 真库契约腿的专用 DSN：守卫是 current_database() 的 _test 后缀检查（配置了不含 _test 的库名 ⇒ Fatal）⇒ 事实源统一下发的 TEST_DATABASE_URL 指向产品库 llm_gateway 必被拒绝 ⇒ 必须指向一次性 *_test 库（2026-11-01 12h 审计轮：该腿原用 TEST_DATABASE_URL ⇒ 门 TestDatasourceEnvTargetGuardNoUnregisteredMismatch 整包报红，基线绿/HEAD 红的回归已修）

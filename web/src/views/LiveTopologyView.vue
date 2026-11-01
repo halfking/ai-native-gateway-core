@@ -21,7 +21,7 @@
 // **关键约束**：图、头部统计面板、左右两栏必须收敛到同一个
 // 过滤子集，否则用户会看到「图里没有、右栏却有」的矛盾画面。
 
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, type ComponentPublicInstance } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElOption, ElSelect } from 'element-plus'
@@ -54,6 +54,8 @@ const selectedRequestId = ref<string | null>(null)
  *  弹在左栏、点右栏请求 → 弹在右栏 —— 摘要跟着点击侧走，不跨屏搬运。 */
 const zoomEntry = ref<PanelEntry | null>(null)
 const zoomSide = ref<'left' | 'right'>('right')
+/** 摘要浮层组件引用（左右两处共用一名：两处 v-if 互斥，同时最多存在一个）。 */
+const zoomPanelRef = ref<ComponentPublicInstance | null>(null)
 const highlightEdges = ref<string[]>([])
 const spawns = ref<ParticleSpawn[]>([])
 /** 点网关模块 → 高亮该格（纯视觉聚焦，不改变过滤子集）。 */
@@ -237,6 +239,17 @@ function onZoomRequest(entry: PanelEntry, side: 'left' | 'right') {
   zoomSide.value = side
   onSelectRequest(entry.requestId)
 }
+
+/** 浮层出现后保证它落在视野内（2026-11-01 量具盲区轮）。浮层锚在列的
+ *  bottom 角；在「列高=内容高」的布局形态（如 <1024 整页滚动档的某些
+ *  窗口形状）下，锚点可能离点击点很远 —— 用户点行了却「什么都没弹出」。
+ *  block:'nearest' 在已可见时是 no-op，不打扰健康的桌面布局；
+ *  这条是把「点行 = 看得见摘要」从偶然成立变成结构成立。 */
+watch(zoomEntry, async (entry) => {
+  if (!entry) return
+  await nextTick()
+  ;(zoomPanelRef.value?.$el as HTMLElement | undefined)?.scrollIntoView({ block: 'nearest' })
+})
 
 /** 「查看全景」（浮层按钮 / 面板行 ↗）：全页详情开新窗。
  *  与站内其余入口（RequestLogsView / DashboardViewV2 / DispatchWaterfallView …）
@@ -437,6 +450,7 @@ function onSelectModel(model: string) {
              靠 .live-topology__left 的 position:relative 当定位基准。 -->
         <RequestZoomPanel
           v-if="zoomEntry && zoomSide === 'left'"
+          ref="zoomPanelRef"
           side="left"
           :entry="zoomEntry"
           :decisions="zoomDecisions"
@@ -476,6 +490,7 @@ function onSelectModel(model: string) {
              定位靠本列的 position:relative 当定位基准（丢了基准会退到视口盖满整屏）。 -->
         <RequestZoomPanel
           v-if="zoomEntry && zoomSide === 'right'"
+          ref="zoomPanelRef"
           :entry="zoomEntry"
           :decisions="zoomDecisions"
           @close="zoomEntry = null"

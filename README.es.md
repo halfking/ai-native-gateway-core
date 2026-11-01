@@ -17,7 +17,7 @@
 AI Native Gateway es una **pasarela LLM nativa de IA, de código abierto y autoalojada**, construida para la era de los agentes de IA y el «vibe coding». Hace mucho más que reenviar peticiones: **clasifica, enruta, gobierna, audita y factura** cada token que fluye por su organización.
 
 - **Normalización de protocolos**: compatibilidad con OpenAI, Anthropic, Gemini y Responses API — un único punto de acceso para todos los modelos
-- **Enrutado inteligente de dos capas**: L1 elige el modelo (clasificación de tareas → scoring de 8 dimensiones), L2 elige la credencial (fallback de tier → ronda de facturación → scoring P2C → ejecutar / abrir circuito)
+- **Enrutado inteligente de dos capas**: L1 elige el modelo (clasificación de tareas → scoring de 4 dimensiones (calidad de canal)), L2 elige la credencial (fallback de tier → ronda de facturación → scoring P2C → ejecutar / abrir circuito)
 - **Gobernanza de sesión**: sesiones sticky (persistentes), replay de sesión con contenido completo, compresión automática de prompts y ciclo de vida de datos de 4 niveles — la conversación, y no solo la petición, es un objeto gestionado de primer nivel
 - **Multi-tenancy**: aislamiento de tenants mediante RLS de PostgreSQL en 90+ tablas, con cuotas, medición y facturación MaaS por tenant
 - **Gestión de credenciales**: pools multi-credencial con disfraz de huella digital, sondeo adaptativo y apertura automática del circuito
@@ -162,7 +162,7 @@ Todos los módulos siguientes están entregados y funcionando en el despliegue d
 ### Panorama de enrutado — enrutado de dos capas, totalmente observable
 
 ![Routing Panorama](docs/assets/screenshots/routing-panorama.png)
-*Selección de modelo L1 (clasificación de tareas → scoring de 8 dimensiones → bloqueo de perfil) + selección de credencial L2 (resolución de modelo → fallback de tier → ronda de facturación → scoring P2C → ejecutar / abrir circuito). El mapa de calor tarea×modelo responde «qué modelo para qué tarea»; el flujo Sankey muestra el destino final de 14,000+ peticiones en vivo (tarea → modelo → proveedor)*
+*Selección de modelo L1 (clasificación de tareas → scoring de 4 dimensiones (calidad de canal) → bloqueo de perfil) + selección de credencial L2 (resolución de modelo → fallback de tier → ronda de facturación → scoring P2C → ejecutar / abrir circuito). El mapa de calor tarea×modelo responde «qué modelo para qué tarea»; el flujo Sankey muestra el destino final de 14,000+ peticiones en vivo (tarea → modelo → proveedor)*
 
 ### Monitor de credenciales — salud multi-fuente × multi-credencial
 

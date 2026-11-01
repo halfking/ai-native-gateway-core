@@ -66,6 +66,7 @@ TEST_REDIS_ADDR	component	Redis 地址（host:port），绝不能填 PG DSN
 TEST_REDIS_URL	component	Redis 连接串，绝不能填 PG DSN
 TEST_SESSION_INGEST_DATABASE_URL	dsn_exclusive	session-ingest 夹具的专用 DSN：守卫要求库名以 _test 结尾且配 TEST_SESSION_INGEST_ISOLATED=1，随后 DROP SCHEMA public CASCADE ⇒ 通用 DSN 必被拒绝（假红）⇒ 不能与通用 DSN 同值（R86 轮移出事实源）
 TEST_MAAS_BILLS_DATABASE_URL	dsn_exclusive	maas 月账单真库 e2e 的专用 DSN：会写 maas_monthly_bills / maas_credit_consumption_buckets 并建删测试租户 ⇒ 必须指向 _test 结尾的一次性库，库名不合规即 Fatal ⇒ 不能与通用 DSN 同值，故不进事实源（2026-10-31 实施包审计 §8 新增）
+TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL	dsn_exclusive	modelcredibility rollup 真库腿的专用 DSN：守卫按 current_database() 断言库名以 _test 结尾（不合规即 Fatal）且该腿会写 provider_model_credibility ⇒ 必须指向一次性 *_test 库 ⇒ 与通用 DSN 同值必被守卫拒绝（假红）⇒ 不能与通用 DSN 同值，故不进事实源（2026-11-01 12h 审计 P0 修复引入）
 TEST_SESSION_INGEST_ISOLATED	isolation	隔离声明：该腿允许对隔离库做 schema 变更；必须与 DSN 成对设置，不能默认开
 TEST_SESSION_INGEST_PG_CONTAINER	component	PG 容器标识（testcontainers 实例名）
 TEST_SESSION_INGEST_RECONCILE_SQL	component	对账 SQL 文件路径（夹具覆盖）

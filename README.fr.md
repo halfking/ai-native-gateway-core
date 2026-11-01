@@ -17,7 +17,7 @@
 AI Native Gateway est une **passerelle LLM open source, auto-hébergée et nativement IA**, conçue pour l’ère des agents IA et du « vibe coding ». Elle fait bien plus que relayer des requêtes : elle **classe, route, gouverne, audite et facture** chaque token qui traverse votre organisation.
 
 - **Normalisation des protocoles** : compatibilité OpenAI, Anthropic, Gemini et Responses API — un seul endpoint pour tous les modèles
-- **Routage intelligent à deux couches** : L1 choisit le modèle (classification de tâche → scoring à 8 dimensions), L2 choisit le credential (repli de palier → tour de facturation → scoring P2C → exécuter / couper)
+- **Routage intelligent à deux couches** : L1 choisit le modèle (classification de tâche → scoring à 4 dimensions (qualité de canal)), L2 choisit le credential (repli de palier → tour de facturation → scoring P2C → exécuter / couper)
 - **Gouvernance de session** : sessions collantes, replay de session au contenu complet, compression automatique de prompt et cycle de vie des données en 4 niveaux — la conversation, et pas seulement la requête, est un objet managé de premier rang
 - **Multi-tenant** : isolation des tenants imposée par RLS PostgreSQL sur 90+ tables, avec quotas, metering et facturation MaaS par tenant
 - **Gestion des credentials** : pools multi-credentials avec déguisement d’empreinte, sonde adaptive et coupure automatique (disjoncteur)
@@ -162,7 +162,7 @@ Tous les modules ci-dessous sont livrés et tournent dans le déploiement de pro
 ### Panorama de routage — routage à deux couches, entièrement observable
 
 ![Routing Panorama](docs/assets/screenshots/routing-panorama.png)
-*Sélection du modèle L1 (classification de tâche → scoring à 8 dimensions → verrou de profil) + sélection du credential L2 (résolution du modèle → repli de palier → tour de facturation → scoring P2C → exécuter / couper). La heatmap tâche × modèle répond à « quel modèle pour quelle tâche » ; le flux Sankey montre la destination finale de 14 000+ requêtes live (tâche → modèle → fournisseur)*
+*Sélection du modèle L1 (classification de tâche → scoring à 4 dimensions (qualité de canal) → verrou de profil) + sélection du credential L2 (résolution du modèle → repli de palier → tour de facturation → scoring P2C → exécuter / couper). La heatmap tâche × modèle répond à « quel modèle pour quelle tâche » ; le flux Sankey montre la destination finale de 14 000+ requêtes live (tâche → modèle → fournisseur)*
 
 ### Moniteur de credentials — santé multi-sources × multi-credentials
 

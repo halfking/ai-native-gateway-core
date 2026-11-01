@@ -331,6 +331,15 @@ test-pg-contracts: ## 隔离 PostgreSQL 合约门禁（需要两个专用、低�
 	@test "$${TEST_DATABASE_URL}" != "$${TEST_TENANT_DATABASE_URL}" || (echo "separate writer and tenant DSNs are required" && exit 1)
 	TEST_PG_CONTRACTS_ISOLATED=1 $(GO) test -tags=integration ./bg -run '^TestProviderErrorAggregatorRealPG$$' -count=1 -v -timeout=90s
 	TEST_PG_CONTRACTS_ISOLATED=1 $(GO) test -tags=integration ./domains/requestjourney -run '^TestJournalSnapshotReceiptRealPG$$' -count=1 -v -timeout=90s
+	# ★ 2026-11-01（12h 审计轮）：modelcredibility 的 rollup 真库契约腿
+	#   （分数与结论必须取自同一行 —— 纯单测拼不出 SQL 聚合行为）。
+	#   ★ 这条腿此前**没有任何入口** ⇒ 按本仓自己的纪律（「写了脚本」不等于
+	#   「门在那里」——一个没人知道的命令等于没有命令」）等于门不存在。
+	#   ★ 用**专用变量**（已登记 scripts/audit/dsn_exclusive_registry.tsv）：
+	#   事实源统一下发的 TEST_DATABASE_URL 指向产品库，这条腿的 `_test` 后缀
+	#   守卫必然 Fatal ⇒ 必须指向一次性 *_test 库。
+	@test -n "$${TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL}" || (echo "TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL is required (dedicated *_test database)" && exit 1)
+	TEST_PG_CONTRACTS_ISOLATED=1 $(GO) test -tags=integration ./domains/modelcredibility -run '^Test(RollupProviderModelRealPG|ConsensusStreakSurvivesPersistence)$$' -count=1 -v -timeout=90s
 
 # 真库判据（bg/*_realdb_test.go 一族）的显式运行入口，与 test-rls 同族。
 #

@@ -9,10 +9,19 @@ package modelcredibility
 // 旧实现 MIN(score) + MIN(verdict) 各自独立聚合，会拼出数据里不存在的
 // 组合（如 40 分配 diluted）——纯单测拼不出 SQL 聚合行为，必须真库。
 //
-// 运行方式（照搬 bg/provider_error_aggregator_integration_test.go 的隔离规矩）：
+// 运行方式（照搬 maas/bills_realdb_test.go 的专用变量规矩）：
 //
-//	TEST_PG_CONTRACTS_ISOLATED=1 TEST_DATABASE_URL=..._test 库 \
+//	TEST_PG_CONTRACTS_ISOLATED=1 TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL=..._test 库 \
 //	  go test -tags=integration ./domains/modelcredibility -run TestRollupProviderModelRealPG
+//
+// ★ 为什么用**专用变量**而不是事实源统一下发的 TEST_DATABASE_URL（2026-11-01 12h 审计轮）：
+//
+//	事实源 scripts/audit/datasource_env.sh 下发的 TEST_DATABASE_URL 指向**产品库**
+//	（库名 llm_gateway）⇒ 这条腿的 `current_database()` + `_test` 后缀守卫**必然 Fatal**
+//	⇒ 门 `TestDatasourceEnvTargetGuardNoUnregisteredMismatch`（判据：事实源承载的名字被
+//	一条「按库名做决定」的腿真读 ⇒ 事实源给的值这条腿一定会拒绝）**整包报红**。
+//	⇒ 与 maas 月账单 e2e（TEST_MAAS_BILLS_DATABASE_URL）同款处置：
+//	专用名 + 登记 scripts/audit/dsn_exclusive_registry.tsv + sql/schema 车道登记。
 //
 // 前置：目标 *_test 库已应用迁移 922（provider_model_credibility）。
 
@@ -32,9 +41,9 @@ func openRollupIntegrationPool(t *testing.T) *pgxpool.Pool {
 	if os.Getenv("TEST_PG_CONTRACTS_ISOLATED") != "1" {
 		t.Skip("TEST_PG_CONTRACTS_ISOLATED=1 is required; this test mutates an isolated PostgreSQL database")
 	}
-	dsn := os.Getenv("TEST_DATABASE_URL")
+	dsn := os.Getenv("TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL")
 	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL is not set; skipping PostgreSQL contract test")
+		t.Skip("TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL is not set; skipping PostgreSQL contract test")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

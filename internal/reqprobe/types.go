@@ -51,10 +51,16 @@ import (
 // 按 (provider, model) 的静态分级表**——LearnedKey 本就是
 // (providerID, outboundModel, actualWire) 粒度，静态表需要人工维护且
 // 无法自适应；改为**指数退避**：同一参数族每次「再探测后仍被拒且剥参
-// 成功」（RecoveredCount+1）就把下一窗口翻倍，上限
+// 成功」（BackoffCount+1）就把下一窗口翻倍，上限
 // LLM_GATEWAY_REQPROBE_LEARNED_TTL_BACKOFF_MAX（步数，默认 4 ⇒ 最大 16×；
 // 0 = 关闭退避、恢复固定窗口语义）。被反复证实的拒绝探测频率指数下降，
 // 而上游一旦开始接受该参数，首轮窗口（base TTL）内就会重新发现。
+//
+// ★ 2026-11-01（12h 审计 P1-3）：退避基数**不能**用 RecoveredCount ——
+//   那是布尔语义（「学过没有」，store 层刻意取 max 而非累加），生产路径
+//   上恒 ≤ 1 ⇒ 拿它当步数基数会让退避**永不生效**（实测：生产写入口
+//   连写 5 次仍为 1 ⇒ 退避窗口恒等于 base）。改用独立的 BackoffCount，
+//   由 store 在「再探测」时推导，见 mergeBackoffCount。
 const defaultLearnedTTL = time.Hour
 
 var learnedTTL = sync.OnceValue(func() time.Duration {
@@ -89,10 +95,10 @@ var learnedBackoffMaxSteps = sync.OnceValue(func() int {
 })
 
 // learnedWindow 返回一条记录当前的学习有效窗口：base TTL 指数退避
-// （2026-11-01，见 learnedTTL 注释）。RecoveredCount 是该参数族当日
-// 「剥参重试成功」次数，第 k 次再探测成功后的窗口为 base × 2^(k-1)
-// （首次成功仍是 base，从第二次起翻倍）。退避关闭或 RecoveredCount≤1
-// 时恒等于 base TTL。
+// （2026-11-01，见 learnedTTL 注释）。BackoffCount 是该参数族当日被
+// 「再探测」的次数，第 k 次再探测后的窗口为 base × 2^(k-1)（首次学习
+// 仍是 base，从第二次起翻倍）。退避关闭或 BackoffCount≤1 时恒等于
+// base TTL。
 func learnedWindow(rec *Record) time.Duration {
 	return learnedWindowWithSteps(rec, learnedBackoffMaxSteps())
 }
@@ -101,10 +107,10 @@ func learnedWindow(rec *Record) time.Duration {
 // 单测可不经 env 直接钉边界。
 func learnedWindowWithSteps(rec *Record, steps int) time.Duration {
 	base := learnedTTL()
-	if steps <= 0 || rec == nil || rec.RecoveredCount <= 1 {
+	if steps <= 0 || rec == nil || rec.BackoffCount <= 1 {
 		return base
 	}
-	shift := rec.RecoveredCount - 1
+	shift := rec.BackoffCount - 1
 	if shift > steps {
 		shift = steps
 	}
@@ -113,6 +119,39 @@ func learnedWindowWithSteps(rec *Record, steps int) time.Duration {
 		window *= 2
 	}
 	return window
+}
+
+// mergeBackoffCount 合并「再探测次数」（退避窗口的基数）。
+//
+// 语义（2026-11-01 12h 审计 P1-3 修复）：
+//
+//   - 首次学习事件（剥参成功 / 拒绝即学习）⇒ 1（窗口 = base TTL）
+//   - 旧记录距上次见到已超过**它自己的**窗口（= 这次是「再探测」）且本次
+//     仍是学习事件 ⇒ +1（窗口 base × 2^(k-1)）
+//   - 窗口内到达的事件 ⇒ 不变（窗口内的连续拒绝**不是**再探测）
+//
+// 为什么必须独立于 RecoveredCount：RecoveredCount 是布尔语义（「学过
+// 没有」；store 层刻意取 max 而非累加，见 memory.go 的 P0-B 注释），
+// 生产写路径上恒 ≤ 1 ⇒ 拿它当退避基数会让退避永不生效（实测：连写 5 次
+// 仍为 1 ⇒ 窗口恒等于 base ⇒ 退避能力形同虚设）。
+//
+// 直写语义：调用方显式给了 BackoffCount ⇒ 以它为准（运维回填 / 单测钉
+// 边界）；否则按上面的「再探测」规则推导。
+func mergeBackoffCount(old *Record, incoming Record, now time.Time) int {
+	if incoming.BackoffCount > 0 {
+		return incoming.BackoffCount
+	}
+	learning := incoming.RecoveredCount > 0
+	if old == nil || old.BackoffCount == 0 {
+		if learning {
+			return 1
+		}
+		return 0
+	}
+	if learning && old.LastSeen.Before(now.Add(-learnedWindow(old))) {
+		return old.BackoffCount + 1
+	}
+	return old.BackoffCount
 }
 
 // MemoryMaxRecords 是内存实现的最大指纹数（lite 模式防膨胀上限）。
@@ -165,7 +204,14 @@ type Record struct {
 	// Occurrences 是该指纹今天的出现次数。
 	Occurrences int `json:"occurrences"`
 	// RecoveredCount 是"剔除参数/切换模式后重试成功"的次数。
-	RecoveredCount  int        `json:"recovered_count"`
+	RecoveredCount int `json:"recovered_count"`
+	// BackoffCount 是该参数族当日被「再探测」的次数 —— 退避窗口的基数。
+	//
+	// ★ 2026-11-01（12h 审计 P1-3）：它**不能**复用 RecoveredCount ——
+	//   后者是布尔语义（「学过没有」），生产写路径上恒 ≤ 1 ⇒ 拿它当退避
+	//   步数基数会让退避永不生效。本字段由 store 在合并时按「再探测」
+	//   规则推导（见 mergeBackoffCount），窗口 = base × 2^(k-1)。
+	BackoffCount    int        `json:"backoff_count,omitempty"`
 	FirstSeen       time.Time  `json:"first_seen"`
 	LastSeen        time.Time  `json:"last_seen"`
 	LastRequestID   string     `json:"last_request_id,omitempty"`
