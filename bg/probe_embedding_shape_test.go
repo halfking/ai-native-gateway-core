@@ -168,6 +168,20 @@ func TestEmbeddingsProbeHasOutput(t *testing.T) {
 			want: true,
 		},
 		{
+			// The REAL upstream body (2026-11-02, POST
+			// http://192.168.31.30:11434/v1/embeddings
+			// {"model":"qwen3-embedding:0.6b","input":"ping"} ⇒ HTTP 200),
+			// captured verbatim minus the 1024-float payload.
+			//
+			// The OLD chat-shaped probe against the same upstream returns
+			// HTTP 400 {"error":{"message":"\"qwen3-embedding:0.6b\" does
+			// not support chat"}} — the exact error that used to evict the
+			// binding for all tenants.
+			name: "real upstream embeddings body",
+			body: `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[-0.012907062,-0.049695797,-0.016070671,-0.057238195,0.06134437]}],"model":"qwen3-embedding:0.6b","usage":{"total_tokens":1}}`,
+			want: true,
+		},
+		{
 			name: "empty embedding array",
 			body: `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[]}]}`,
 			want: false,
