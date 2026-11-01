@@ -26,14 +26,33 @@ const (
 	// originate from the caller's protocol (e.g. echoing a stale
 	// tool_call_id). Distinct from KindCanceled so the error_kind
 	// taxonomy can keep cancel and bug separately countable.
-	KindClientBug      ErrorKind = "client_bug"
-	KindConcurrent     ErrorKind = "concurrent"
-	KindAuthRevoked    ErrorKind = "auth_revoked"
-	KindQuotaPeriodic  ErrorKind = "quota_periodic"
-	KindQuotaBalance   ErrorKind = "quota_balance"
-	KindQuotaPermanent ErrorKind = "quota_permanent"
-	KindModelNotFound  ErrorKind = "model_not_found"
-	KindStreamTimeout  ErrorKind = "stream_timeout"
+	KindClientBug ErrorKind = "client_bug"
+	// KindRequestRejected（2026-11-02）覆盖「上游回了 4xx，但错误体里**没有**
+	// 任何凭据级 / 配额级 / 限流级 / 超时级 / 模型级裁决」的形态——也就是
+	// 「上游拒收了这个请求，而我们无法再往下归因」的请求侧错误
+	// （仓内既有的 param_rejected 族的同族兄弟）。
+	//
+	// 2026-11-02（llm.itestu.cn 生产事故的**放大器**段）：这类 400/413/422
+	// 此前落到 ClassifyResponseStatus 的 default ⇒ KindTransient ⇒ 连锁：
+	//  ① IsRetryable(KindTransient)=true ⇒ 同一 body 被盲重试 3 次；
+	//  ② transientSuppressErrorCode 把 (凭据,模型) 按 "http_5xx" 写进
+	//     node_probe_state（last_direct_ok=FALSE + next_retry_at=+5min）
+	//     ⇒ 这一对被踢出候选池；
+	//  ③ node-health reducer 累计到 3 连败 ⇒ EffectSetCredentialUnavailable
+	//     ⇒ **整个凭据**（其下全部 binding、全部租户）被置 cooling。
+	// 一条客户端错单 ⇒ 全租户 503（生产实测：/v1/embeddings 对所有租户 503）。
+	//
+	// 口径（与 2026-10-17「推理不是 assistant 答案 ⇒ 必须 failover」同族）：
+	// 本 kind 只改**归因**，不改「什么算失败」——请求仍然失败。
+	// 判据入口见 IsRequestSideError。
+	KindRequestRejected ErrorKind = "request_rejected"
+	KindConcurrent      ErrorKind = "concurrent"
+	KindAuthRevoked     ErrorKind = "auth_revoked"
+	KindQuotaPeriodic   ErrorKind = "quota_periodic"
+	KindQuotaBalance    ErrorKind = "quota_balance"
+	KindQuotaPermanent  ErrorKind = "quota_permanent"
+	KindModelNotFound   ErrorKind = "model_not_found"
+	KindStreamTimeout   ErrorKind = "stream_timeout"
 	// KindToolCallIdMismatch: client echoed a tool_call_id that the
 	// upstream did not recognise. The most common cause is the agent
 	// framework losing the id field during streaming accumulation of
@@ -1247,6 +1266,23 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		return KindTimeout
 	case 405, 406, 409, 411, 412, 415, 416, 417, 418, 421, 423, 424, 425, 426, 428, 431:
 		return KindUnsupportedFeature
+	case 400, 413, 422:
+		// 2026-11-02：走到这里意味着**所有** body 形态正则都没命中——
+		// 没有上下文超限、没有内容审核、没有模型下线/不存在、没有配额耗尽、
+		// 没有限流、没有点名参数被拒。上游只说了「这个请求我不收」。
+		//
+		// 这类 4xx 是**请求侧**证据：同一 body 重打必然再败，而节点本身健康。
+		// 此前它落到 ClassifyResponseStatus 的 default（KindTransient），
+		// 于是被当成「上游临时故障」⇒ 盲重试 3 次 + 把 (凭据,模型) 按
+		// http_5xx 拉黑 5 分钟 + 3 连败后把**整个凭据**置 cooling
+		// （2026-11-02 生产事故：一个客户端的错单让 /v1/embeddings 对所有
+		// 租户 503）。⇒ 归入 KindRequestRejected。
+		//
+		// 仍保留 404 / 401 / 402 / 408 / 429 / 410 的既有口径：
+		// 404=模型级(model_not_found)、401/403=凭据级(auth)、402=配额、
+		// 408=超时、429=限流、410=裸 410 走 transient 以便换兄弟凭据
+		// （2026-08-05 决议：不能因为它终态就跳过跨凭据故障转移）。
+		return KindRequestRejected
 	}
 	return ClassifyResponseStatus(&http.Response{StatusCode: status})
 }
@@ -1664,6 +1700,25 @@ func IsClientBug(kind ErrorKind) bool {
 	default:
 		return false
 	}
+}
+
+// IsRequestSideError reports whether the failure describes **THIS request**
+// (its content / shape / contract) rather than the node's health.
+//
+// 这是「共享节点健康状态写入」的**唯一判据入口**（2026-11-02 起）：
+// 凭据冷却、熔断计数、绑定翻红、URSM 失败记录、探针扇出这几处闸门都必须
+// 问它。凡是「这次失败与节点健康无关」的新 kind，都必须登记到这里。
+//
+// 与 IsClientBug 的分工：
+//   - IsClientBug =「客户端自己的 bug」（client_bug / tool_call_id_mismatch /
+//     unsupported_feature / canceled）——客户端明确犯了错；
+//   - IsRequestSideError = 上面这一族 **加上** request_rejected（上游拒收，
+//     但证据不足以再往下归因）。它**不**改变「上游 4xx 的正文是否原样透传给
+//     客户端」这一行为（那仍由 IsClientBug 决定，见 executor_ollama.go /
+//     executor_gemini.go 的回写分支）——透传与否是**客户端体验**问题，
+//     是否惩罚节点是**归因**问题，两者必须分开。
+func IsRequestSideError(kind ErrorKind) bool {
+	return IsClientBug(kind) || kind == KindRequestRejected
 }
 
 func isBrokenPipeMessage(msg string) bool {

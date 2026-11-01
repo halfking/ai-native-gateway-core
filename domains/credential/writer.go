@@ -459,7 +459,10 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_model_deprecated", recoverAt, detail)
 	case errorsx.KindContextLength, errorsx.KindUnsupportedFeature,
 		errorsx.KindToolCallIdMismatch, errorsx.KindClientBug,
-		errorsx.KindContentFilter, errorsx.KindCanceled:
+		errorsx.KindContentFilter, errorsx.KindCanceled,
+		// 2026-11-02：上游拒收但无法再归因的 4xx —— 与 client_bug 同族，
+		// 同样只描述这次请求，绝不冷却绑定、绝不改凭据状态。
+		errorsx.KindRequestRejected:
 		// Request shape, context-window, capability, tool-history, and
 		// content-policy rejections describe this request, not credential
 		// health. They must never cool a binding or change credential state.

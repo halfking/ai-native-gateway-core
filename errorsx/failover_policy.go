@@ -96,7 +96,10 @@ func DecideFailover(status int, body []byte, retryAfterHeader string, clientOrig
 		decision.EnqueueProbe = true
 		decision.ProbeFanout = DefaultProbeFanout
 		decision.ReasonCode = "upstream_transient_failure"
-	case KindModelNotFound, KindModelDeprecated, KindUnsupportedFeature, KindContextLength, KindContentFilter, KindToolCallIdMismatch, KindClientBug:
+	case KindModelNotFound, KindModelDeprecated, KindUnsupportedFeature, KindContextLength, KindContentFilter, KindToolCallIdMismatch, KindClientBug,
+		// 2026-11-02：上游拒收但无法再归因的 4xx —— 与 client_bug 同族：
+		// 不扇出探针（探针查不出客户端的错误），不扣节点。
+		KindRequestRejected:
 		// P0-C：client_bug / shape 族 PenaltyNone → ScopeNone（不再 ScopeModel）。
 		// 探针仍不入队（同 2026-09-18 flap 修复）。
 		decision.EnqueueProbe = false

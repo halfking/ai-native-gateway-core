@@ -222,10 +222,17 @@ func TestExecuteOpenAIReqProbeStripFailsStillErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when strip retry also fails")
 	}
-	// 调用序列：①首发 400 → 剔除重试；②剔除后仍 400（transient 梯子
-	// 再盲重试一次，既有行为）；③盲重试仍 400 → 终端记录。
-	if got := calls.Load(); got != 3 {
-		t.Fatalf("upstream calls = %d, want 3", got)
+	// 调用序列（2026-11-02 更新）：①首发 400 → 剔除重试；②剔除后仍 400
+	// ⇒ **终态**（错误照常上抛，终端记录 recovered=false）。
+	//
+	// 旧序列是 3 次：②之后还有一次「transient 梯子盲重试」——同一个已剔除
+	// 的 body 再打同一节点，必然再败，纯属浪费，而且那一次失败还会给
+	// node-health 的连败计数加料（2026-11-02 事故里那 3 次盲重试刚好凑满
+	// 3 连败阈值 ⇒ 整凭据 cooling ⇒ 全租户 503）。
+	// 本轮把「上游 4xx 且无任何裁决」归入 KindRequestRejected ⇒
+	// errorsx.IsRetryable=false ⇒ 同节点盲重试消失，序列变成 2 次。
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("upstream calls = %d, want 2 (首发 + 剔除重试；不再有同节点盲重试)", got)
 	}
 	recs := waitForReqProbeRecord(t, store, 1)
 	if recs[0].RecoveredCount != 0 || recs[0].Occurrences != 1 {

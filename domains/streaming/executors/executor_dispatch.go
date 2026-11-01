@@ -1228,7 +1228,8 @@ func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candida
 }
 
 func dispatchFailureIsCredentialHealthy(kind errorsx.ErrorKind, modelNotFound bool) bool {
-	return modelNotFound || errorsx.IsClientBug(kind) ||
+	// 2026-11-02：IsRequestSideError ⊇ IsClientBug —— 请求侧错误族不扣凭据健康。
+	return modelNotFound || errorsx.IsRequestSideError(kind) ||
 		errorsx.IsContentFilter(kind) || kind == errorsx.KindContextLength
 }
 

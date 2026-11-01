@@ -130,6 +130,13 @@ func isCentralPolicyKind(kind errorsx.ErrorKind) bool {
 	case errorsx.KindTransient, errorsx.KindTimeout, errorsx.KindNetwork,
 		errorsx.KindRateLimit, errorsx.KindAuth, errorsx.KindQuota,
 		errorsx.KindUpstreamDown, errorsx.KindCanceled, errorsx.KindClientBug,
+		// 2026-11-02：request_rejected 必须登记在这里。
+		//
+		// 本函数是**闭集**：不在表里的 kind 会被下面的
+		// `kind = errorsx.KindTransient` **重写**——而 KindTransient 正是
+		// 2026-11-02 事故的放大器形态（盲重试 + 把 (凭据,模型) 按 http_5xx
+		// 拉黑 5 分钟 + 3 连败后整凭据 cooling）。漏登记 ⇒ 本轮修复静默失效。
+		errorsx.KindRequestRejected,
 		errorsx.KindConcurrent, errorsx.KindAuthRevoked, errorsx.KindQuotaPeriodic,
 		errorsx.KindQuotaBalance, errorsx.KindQuotaPermanent, errorsx.KindModelNotFound,
 		errorsx.KindStreamTimeout, errorsx.KindToolCallIdMismatch, errorsx.KindContextLength,

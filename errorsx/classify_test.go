@@ -584,9 +584,15 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 		// 2026-07-08: 422 removed from protocol-4xx switch. A bare
 		// "unprocessable entity" body does not match any known pattern
 		// (modelNotFoundRe, unsupportedFeatureRe, contentFilterRe,
-		// contextLengthRe), so it falls through to ClassifyResponseStatus
-		// → default KindTransient.
-		{"422_unprocessable_generic_now_transient", 422, `unprocessable entity`, KindTransient},
+		// contextLengthRe), so it falls through to the generic 4xx path.
+		// 2026-11-02: that generic path now yields KindRequestRejected
+		// instead of KindTransient — a bare 4xx carries no model-level /
+		// credential-level verdict, so it is a **request-side** error
+		// (no node penalty, no pair suppression, no probe fan-out), while
+		// cross-credential failover is preserved via the action policy.
+		// The 2026-07-08 intent (don't masquerade as unsupported_feature,
+		// which has its own dedicated handling channel) still holds.
+		{"422_unprocessable_generic_now_request_rejected", 422, `unprocessable entity`, KindRequestRejected},
 		// 422 with a content-filter body is KindContentFilter (not
 		// KindUnsupportedFeature) — the body pattern takes priority.
 		{"422_content_filter_new_sensitive", 422, `{"type":"error","error":{"type":"unprocessable_entity_error","message":"input new_sensitive (1026)","http_code":"422"}}`, KindContentFilter},

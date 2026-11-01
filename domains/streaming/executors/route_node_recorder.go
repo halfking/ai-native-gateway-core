@@ -73,5 +73,7 @@ func isTransientRouteNodeFailure(kind errorsx.ErrorKind) bool {
 		kind == errorsx.KindUpstreamOverloaded {
 		return true
 	}
-	return errorsx.IsClientBug(kind)
+	// 2026-11-02：请求侧错误族（IsRequestSideError ⊇ IsClientBug）不是
+	// 「路由节点故障」——上游拒收这次请求，不能记成该节点的失败样本。
+	return errorsx.IsRequestSideError(kind)
 }
