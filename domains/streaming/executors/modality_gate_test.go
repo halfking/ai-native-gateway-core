@@ -201,3 +201,47 @@ func TestDispatchCandidatesForModel_NoModalityKeepsLegacyPath(t *testing.T) {
 		t.Fatalf("候选数 = %d, want 2（阴性对照：老路径原样返回）", len(got))
 	}
 }
+
+// TestProductionProviderSupportsModalityFiltering 钉住生产接线。
+//
+// ★ 执行器的候选再解析在**有模态**时依赖 provider 暴露
+// GetCandidatesByModality。生产接线是
+// `routingExec.Provider = provider.NewClient()`（cmd/gateway/main.go）。
+// ⇒ 若哪天它被换成不暴露该方法的包装类型，那两条再解析路径会**静默降级**
+//
+//	（dispatch 换替代模型悄悄不换了、探针后刷新退回原候选），只在日志里留
+//	一行 warning ⇒ 没有编译期信号、没有测试期信号。
+//
+// ⇒ executor.go 里有一条同源的**编译期断言**（`var _ modalityProviderResolver
+// = (*provider.Client)(nil)`）；本测试是它的可读版本：把「为什么必须这样」
+// 写在门里，而不是只留一行断言。
+func TestProductionProviderSupportsModalityFiltering(t *testing.T) {
+	var client any = &provider.Client{}
+	if _, ok := client.(modalityProviderResolver); !ok {
+		t.Fatal("*provider.Client 不实现 modalityProviderResolver ⇒ 生产上的候选再解析会静默降级：dispatch 换替代模型悄悄不换了、探针后刷新退回原候选")
+	}
+}
+
+// TestDispatchCandidatesForModel_BlindProviderDoesNotSwitchUnfiltered 是
+// F11 的「静默降级」阴性对照：provider 过滤不了模态时，换替代模型的候选
+// 解析必须**拿不到候选**，而不是退回无过滤的查询。
+//
+// ★ 与 refresh 那条同源：退回无过滤的查询正是把 embedding 绑定塞回 chat
+// 请求的那条路（上游 400 ⇒ 绑定翻红 ⇒ 事故同族）。
+func TestDispatchCandidatesForModel_BlindProviderDoesNotSwitchUnfiltered(t *testing.T) {
+	blind := &modalityBlindProvider{}
+	executor := &Executor{Provider: blind}
+	dctx := &dispatchCtx{
+		initialModel: "initial",
+		params:       modalityGateParams("text"),
+	}
+
+	got := executor.dispatchCandidatesForModel(context.Background(), dctx, "alternate")
+
+	if blind.plainCalls != 0 {
+		t.Errorf("GetCandidates 被调用 %d 次 ⇒ provider 过滤不了模态时仍然退回了无过滤查询", blind.plainCalls)
+	}
+	if len(got) != 0 {
+		t.Fatalf("候选 = %+v, want 空（宁可不换模型，也不换成一个模态不对的模型）", got)
+	}
+}

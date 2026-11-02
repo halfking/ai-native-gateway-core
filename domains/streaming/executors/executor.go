@@ -74,6 +74,17 @@ type modalityProviderResolver interface {
 	GetCandidatesByModality(ctx context.Context, model, profile, tenantID, modality string) ([]provider.Candidate, *provider.Policy, error)
 }
 
+// ★ 生产接线锁（2026-11-02，第五轮）：执行器的候选再解析在**有模态**时
+// 依赖 provider 暴露 GetCandidatesByModality（provider/client.go 的
+// GetCandidatesByModality）。生产接线是 `routingExec.Provider = providerClient`
+// （cmd/gateway/main.go，*provider.Client）⇒ 满足本接口。
+//
+// ⇒ 这条断言把「满足」变成**编译期事实**：哪天有人把 provider 换成不暴露
+// 该方法的包装类型，编译直接失败；否则那条路径会**静默降级**——
+// dispatch 换替代模型拿不到候选（悄悄不换模型了）、探针后刷新退回原候选，
+// 两处都只在日志里留一行 warning，没有任何编译期或测试期的信号。
+var _ modalityProviderResolver = (*provider.Client)(nil)
+
 type probeCandidateResolver interface {
 	GetProbeCandidates(ctx context.Context, model, profile, tenantID string) ([]provider.Candidate, error)
 }
