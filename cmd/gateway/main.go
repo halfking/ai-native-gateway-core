@@ -117,6 +117,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
+	"github.com/kaixuan/llm-gateway-go/internal/probelane"
 	"github.com/kaixuan/llm-gateway-go/internal/providers/mock"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
 	"github.com/kaixuan/llm-gateway-go/internal/registration"
@@ -5664,8 +5665,21 @@ func main() {
 			// parallel with the scanner, which made a retry double-count a
 			// bucket. Keep the type available for a future event projection,
 			// but do not wire it into the live request path.
+			//
+			// ★ 2026-11-02：探测分钟表的生产写入者是
+			// bg.StatsMinuteRollup（stats_minute_probe_rollup.go），不是
+			// domains/stats.MinuteAccumulator（后者全仓无 New* 调用方）。
 			statsMinuteRollup = bg.NewStatsMinuteRollup(dbConn.Pool())
 			statsMinuteRollup.Start(context.Background())
+			// 物理车道开启时启动期校验探测族表存在，避免 PersistTurn 全失败却
+			// 只打一条 error、下游 hooks 静默不发（12h 审计 §六 P1-3）。
+			if err := probelane.AssertWithQueryRow(context.Background(), func(ctx context.Context, sql string, args ...any) probelane.DBRow {
+				return dbConn.Pool().QueryRow(ctx, sql, args...)
+			}); err != nil {
+				slog.Error("probelane lane table check failed", "error", err)
+				// fail-loud but do not abort boot: flag may be set ahead of a
+				// rolling migration; operators still see ERROR and can fix.
+			}
 			// 探测排除的历史回填（superAdmin 端点）：
 			// POST /api/admin/dashboard/rollup/rebuild
 			// 游标只前进，已聚合的分钟不会被重算，存量脏数据只能靠它修正。

@@ -14,13 +14,20 @@ import (
 const flushInterval = 30 * time.Second
 
 // MinuteAccumulator buffers per-minute dashboard stats and flushes to PostgreSQL.
+//
+// ★ 2026-11-02 审计钉死：本类型在生产**未接线**（cmd/gateway 注释写明
+// 「Keep the type available for a future event projection, but do not wire
+// it into the live request path」；全仓无 NewMinuteAccumulator 调用方）。
+// 生产分钟表写入者 = bg.StatsMinuteRollup（业务臂 + 探测臂
+// stats_minute_probe_rollup.go）。probeMain 分流保留仅供若将来复活本累加器
+// 时与 rollup 同口径；**不要**把「这里有探测分流」读成「生产在写探测分钟表」。
 type MinuteAccumulator struct {
 	db        *pgxpool.Pool
 	mu        sync.Mutex
 	main      map[string]*MinuteRow
 	dims      map[string]*DimRow
 	drills    map[string]*ErrorDrillRow
-	probeMain map[string]*MinuteRow // request_stats_probe_minute when physical lane on
+	probeMain map[string]*MinuteRow // dead unless NewMinuteAccumulator is wired
 	cancel    context.CancelFunc
 	done      chan struct{}
 }
