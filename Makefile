@@ -172,7 +172,7 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 GUARD_PACKAGES_SLOW := ./scripts/ursmcheck ./admin
 
 .PHONY: guards
-guards: guards-installer guards-ursmcheck guards-shell guards-deploy ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门 + 切流锁两门）
+guards: guards-installer guards-ursmcheck guards-shell guards-deploy guards-audit-ledger ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门 + 切流锁两门 + 跨文档登记册门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
 
 # ── 切流锁契约门 + 跨仓对拍门 ───────────────────────────────────────────────
@@ -191,6 +191,25 @@ guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，
 	@bash tests/deploy_switch_lock_parity_test.sh
 	@bash tests/deploy_test_gate_contract_test.sh
 	@bash tests/deploy_force_lock_recovery_test.sh
+
+# ── 跨文档登记册一致性门 ─────────────────────────────────────────────────
+#
+# ★ 2026-11-02 第二十二轮：仓里有**两份**审计档，各带一份**登记册**：
+#   · docs/audit/2026-11-02-上游4xx被记成节点不健康-下一轮修复项.md（主档）
+#   · docs/12小时内修订审计-2026-11-02-0350.md（兄弟档）
+#   ⇒ **一份更新了、另一份没更新** = **静默分叉**：后来者照着旧登记册会把
+#     **已闭合**的项重新开一遍（而那项的「重新实现」往往会把后来者引回
+#     被否过的方向）⇒ ⇒ 两份登记册必须在**状态**上互相对拍。
+# ★ 本门判据：主档标闭合 ⇒ 兄弟档不得仍写「❌ 登记」、该行必须带闭合标记、
+#   该行不得整行消失；兄弟档 §六 每项必须带状态标记、头部声明项数不得与
+#   §六 脱节、条目数不得少于棘轮下限；「仍开」集合两档必须**双向等价**。
+# ★ **有调用方**：挂在 `guards` 与 `guards-fast` 两处 —— `guards-fast` 是
+#   codeup Flow（.workflow/main-verify.yml）里**唯一**被调用的守卫入口 ⇒
+#   本门因此在真正在跑的 CI 里会被执行（§507「门没有调用方 = 声明不是门」）。
+#   实测约 0.1s、零外部依赖、bash 3.2 可跑（无 bash4 特性）。
+.PHONY: guards-audit-ledger
+guards-audit-ledger: ## 跨文档登记册一致性门（两份审计档的登记项状态必须一致）
+	@bash tests/audit_ledger_consistency_test.sh
 
 .PHONY: guards-win-baseline
 guards-win-baseline: ## Windows 全量测试基线门（bash scripts/guards/check-win-test-baseline.sh <日志>；无参=自跑全量，约 10 分钟）
@@ -218,7 +237,7 @@ guards-win-baseline: ## Windows 全量测试基线门（bash scripts/guards/chec
 #
 #   ⇒ 新增这个 target 的意义：让「登记进 GUARD_PACKAGES」这件事**真的有 CI 在跑**。
 .PHONY: guards-fast
-guards-fast: guards-installer guards-shell ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门；不含 ursmcheck 慢门）
+guards-fast: guards-installer guards-shell guards-audit-ledger ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门 + 跨文档登记册门；不含 ursmcheck 慢门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
 
 # scripts/guards/check-shell-fullwidth-var.sh —— 「裸 $VAR 紧跟非 ASCII 字节」门。
