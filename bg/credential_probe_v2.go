@@ -951,6 +951,24 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 			providercap.WarnBlocked("probe_v2.chat", probeURL, reason)
 			return false, "egress blocked: " + reason
 		}
+		// 2026-11-02（模态权威源轮）：**探针模型是 embedding 时不能发 chat
+		// 形态** —— 上游必然 400（Ollama 实测 "does not support chat"）⇒
+		// classifyProbeFailure 的 default 分支 ⇒ 整凭据 unreachable ⇒ 该凭据
+		// 上所有模型 503。⇒ 探针形态按权威模态选（models_canonical.modality）。
+		//
+		// ★ 只有 chat 端点的 provider 走这一支：messages / responses 协议
+		//   本身与模态无关（上游按协议分发），保持既有口径。
+		if desc.ChatProbeEndpoint == upstreamurl.EpChatCompletions {
+			modality := c.probeModelModality(ctx, s.ID, s.DefaultProbeModel)
+			if credentialProbeUsesEmbeddings(s.DefaultProbeModel, modality, s.ProviderProtocol) {
+				embURL := upstreamurl.EmbeddingsURL(strings.TrimRight(s.BaseURL, "/"))
+				if blocked, reason := providercap.EgressBlocked(embURL); blocked {
+					providercap.WarnBlocked("probe_v2.embeddings", embURL, reason)
+					return false, "egress blocked: " + reason
+				}
+				return c.miniEmbedding(ctx, httpClient, s.APIKey, s.DefaultProbeModel, embURL)
+			}
+		}
 		if desc.ChatProbeEndpoint == upstreamurl.EpResponses {
 			ok, errMsg, respStatus, _ := c.miniResponses(ctx, httpClient, s.APIKey, s.DefaultProbeModel, probeURL)
 			if ok {
@@ -1082,6 +1100,108 @@ func extractStatusCode(s string) (int, bool) {
 		return code, true
 	}
 	return 0, false
+}
+
+// miniEmbedding sends a single-shot /v1/embeddings request with the
+// embeddings-native {"model","input"} shape.
+//
+// 2026-11-02（模态权威源轮）：凭据级探针此前**只有 chat 形态**——
+// 对 embedding 探针模型（credentials.default_probe_model 指向 embedding
+// 模型，或它为空而 fallbackProbeModel 取到字典序最小的绑定模型）发
+// {"model","messages"} ⇒ 上游 400 ⇒ classifyProbeFailure 的 default 分支
+// ⇒ HealthStatus/AvailabilityState="unreachable" + 5 分钟 recover ⇒
+// **整凭据不可路由 ⇒ 该凭据上所有模型 503**（与 2026-11-02 事故同一族）。
+//
+// ⇒ 凭据探针也要能按模态选形态，否则一个 embedding-only 凭据会被自己的
+// 探针判死。回包用 **embeddings 的 wire** 校验（credential_probe_response_validation.go
+// 的 embeddings 臂——此前这条臂**没有任何调用方**）。
+func (c *CredentialProbeV2) miniEmbedding(ctx context.Context, httpClient *http.Client, apiKey, model, embeddingsURL string) (bool, string) {
+	bodyJSON, _ := json.Marshal(map[string]any{
+		"model": model,
+		"input": "ping",
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", embeddingsURL, bytes.NewReader(bodyJSON))
+	if err != nil {
+		return false, "build embeddings request: " + err.Error()
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return false, "embeddings unreachable: " + err.Error()
+	}
+	//nolint:errcheck // best-effort close
+	defer resp.Body.Close()
+	body, readErr := readCredentialProbeBody(resp.Body)
+	if readErr != nil {
+		return false, credentialProbeReadFailure("embeddings", resp.StatusCode, readErr)
+	}
+	if resp.StatusCode == 200 {
+		if credentialProbeHasOutput("embeddings", body) {
+			return true, ""
+		}
+		return false, "embeddings probe response invalid: assistant_output_missing"
+	}
+	if resp.StatusCode == 404 && probeutil.IsEndpointIDRequiredError(string(body)) {
+		return false, fmt.Sprintf("%s: %s", probeutil.EndpointIDRequiredErrCode, truncateBody(body))
+	}
+	return false, credentialProbeHTTPFailure("embeddings", resp.StatusCode, body)
+}
+
+// credentialProbeUsesEmbeddings 决定凭据级探针 step2 是否改用 embeddings
+// 形态（POST /embeddings + {"model","input"}）。
+//
+// 2026-11-02（模态权威源轮）：凭据探针此前**只有 chat 形态** ⇒ 对 embedding
+// 探针模型必然 400 ⇒ classifyProbeFailure 的 default 分支 ⇒ 整凭据
+// unreachable ⇒ 该凭据上所有模型 503（F27）。
+//
+// 口径：
+//
+//	· 只有 chat 端点的 provider 走这一支（messages / responses 协议本身
+//	  与模态无关，上游按协议分发）；
+//	· 模态取**权威源**（models_canonical.modality），零值时退回名推断
+//	  （effectiveProbeModality）——探针形态永远有兜底。
+func credentialProbeUsesEmbeddings(probeModel, modality, protocol string) bool {
+	desc := probeDescriptorFor(protocol)
+	if desc.ChatProbeEndpoint != upstreamurl.EpChatCompletions {
+		return false
+	}
+	return effectiveProbeModality(probeModel, modality) == "embedding"
+}
+
+// probeModelModality 返回 (凭据, 模型) 的**权威**模态
+// （models_canonical.modality）。
+//
+// 2026-11-02（模态权威源轮）：凭据级探针此前只会发 chat 形态 ⇒ embedding
+// 探针模型必然 400 ⇒ 整凭据被判 unreachable（该凭据上所有模型 503）。
+// 口径与直连腿（bg/node_probe.go 的 probeModalityFor）同源：
+// **只认正向模态**（embedding / audio）；'text'/空 ⇒ 退回名推断
+// （effectiveProbeModality），探针形态永远有兜底。
+//
+// 取不到（DB 不可用 / 没有行 / 没有 canonical 行）⇒ 返回 ""，由调用方按
+// 名推断兜底，不会因为这一次查询失败就把形态判错。
+func (c *CredentialProbeV2) probeModelModality(ctx context.Context, credID int, model string) string {
+	if c == nil || c.db == nil || strings.TrimSpace(model) == "" {
+		return ""
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var modality string
+	err := c.db.QueryRow(queryCtx, `
+		SELECT COALESCE(mc.modality, '')
+		FROM provider_models pm
+		JOIN credential_model_bindings cmb
+		  ON cmb.provider_model_id = pm.id AND cmb.credential_id = $1
+		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
+		WHERE pm.raw_model_name = $2
+		LIMIT 1
+	`, credID, model).Scan(&modality)
+	if err != nil {
+		return ""
+	}
+	return modality
 }
 
 func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Client, apiKey, model, chatURL string, maxTokens int) (bool, string) {
@@ -1326,6 +1446,27 @@ func classifyProbeFailure(errMsg string) probeResult {
 		pr.HealthError = errMsg
 		pr.StateReasonCode = "model_binding_error"
 		pr.BindingOnly = true
+	case isProbeRequestRejection(errMsg):
+		// 2026-11-02（模态权威源轮 / F27）：上游在**生成通道**上回了
+		// 请求侧/绑定级 4xx（400/404/413/414/422）⇒ 证据指向**这条探针
+		// 请求**（探针形态与该模型不匹配）或**这一对模型**，**不指向凭据**。
+		//
+		// ★ 此前这些码落 default 分支 ⇒ HealthStatus/AvailabilityState =
+		//   "unreachable" + 5 分钟 recover ⇒ writeHealth 改**凭据级**状态 ⇒
+		//   **整凭据不可路由 ⇒ 该凭据上所有模型对所有租户 503**（实测形态：
+		//   embedding 探针模型被自己的 chat 探针打成 400）。
+		//
+		// ★ 处置口径与 2026-11-02 事故的裁决同族：上游 4xx 不进「节点/凭据
+		//   不健康」阶梯。⇒ 只记观察，不改凭据状态、不翻绑定
+		//   （ObservationOnly ⇒ writeHealth 只写观测行）。
+		//
+		// ★ 凭据级证据仍然优先：正文像 key 无效/吊销（probeKeyFailureRe）
+		//   的走上面的鉴权分支——部分中转用 400 报「Incorrect API key」。
+		pr.HealthStatus = "warning"
+		pr.AvailabilityState = "ready"
+		pr.HealthError = errMsg
+		pr.StateReasonCode = "probe_request_rejected"
+		pr.ObservationOnly = true
 	default:
 		pr.HealthStatus = "unreachable"
 		pr.AvailabilityState = "unreachable"
@@ -1340,8 +1481,17 @@ func classifyProbeFailure(errMsg string) probeResult {
 
 // Only parse our leading error envelope, never status-like numbers/prefixes in
 // provider prose, request IDs or JSON. Legacy combined auth remains fail-closed.
-var generationProbeStatusRe = regexp.MustCompile(`^(?:(?:chat|messages|responses) unreachable \(after [0-9]+ attempts\): )?(?:chat|messages|responses) status ([0-9]{3}):`)
-var credentialProbeStatusRe = regexp.MustCompile(`^(?:(?:chat|messages|responses|models endpoint) unreachable \(after [0-9]+ attempts\): )?(?:(?:chat|messages|responses) )?status ([0-9]{3}):`)
+// 2026-11-02（模态权威源轮）：生成通道增加 **embeddings** —— 凭据探针在
+// 探针模型是 embedding 时改用 embeddings 形态（miniEmbedding）。
+// ★ 它是**生成通道**（与 chat/messages/responses 同级）：「这个端点不收
+//
+//	这条探针」不构成凭据级证据。
+//
+// ★ /v1/models 通道（models endpoint）**不是**生成通道：provider 拒绝为
+//
+//	该账号枚举任何模型 = 凭据级（鉴权吊销 / scope 撤销）⇒ 前缀要求保留。
+var generationProbeStatusRe = regexp.MustCompile(`^(?:(?:chat|messages|responses|embeddings) unreachable \(after [0-9]+ attempts\): )?(?:chat|messages|responses|embeddings) status ([0-9]{3}):`)
+var credentialProbeStatusRe = regexp.MustCompile(`^(?:(?:chat|messages|responses|embeddings|models endpoint) unreachable \(after [0-9]+ attempts\): )?(?:(?:chat|messages|responses|embeddings) )?status ([0-9]{3}):`)
 var credentialProbeLegacyStatusRe = regexp.MustCompile(`^(?:(?:chat|messages|responses|models endpoint) unreachable \(after [0-9]+ attempts\): )?([0-9]{3})(?: |:)`)
 
 func credentialProbeFailureStatus(errMsg string) (int, bool) {
@@ -1422,6 +1572,60 @@ func isPerModelChatFailure(errMsg string) bool {
 	}
 	return false
 }
+
+// isProbeRequestRejection 识别「上游拒收这条探针请求」形态：状态码是
+// 请求侧 4xx（400/413/414/422），且**只在生成通道上**
+// （chat / messages / responses / embeddings 前缀）。
+//
+// ★ 为什么要求生成通道前缀：/v1/models 通道的同形报文是**凭据级**——
+//
+//	provider 拒绝为该账号枚举任何模型（鉴权吊销 / scope 撤销），必须走
+//	凭据级分支（见 chatProbeStatusCode 的注释）。
+//
+// ★ 凭据级证据优先：正文像 key 无效/吊销的（部分中转用 400 报
+//
+//	"Incorrect API key provided"）不算请求侧拒绝。
+//
+// ★ embeddings 通道的 404 也归这里：这个端点不提供 embeddings，只说明
+//
+//	「这一对/这个端点不提供」，**不**说明该凭据的其它模型也不可用
+//	⇒ 不得摘掉整凭据。★ chat 通道的裸 404 **不在**这里：既有裁决是
+//	凭据级（端点路径错 ⇒ 该凭据上所有模型都探不通），行为不动。
+func isProbeRequestRejection(errMsg string) bool {
+	if probeKeyFailureRe.MatchString(errMsg) || probeAuthBodyRe.MatchString(errMsg) {
+		return false
+	}
+	switch chatProbeStatusCode(errMsg) {
+	case 400, 413, 414, 422:
+		return true
+	case 404:
+		if m := probeChannelRe.FindStringSubmatch(errMsg); m != nil {
+			return m[1] == "embeddings"
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+// probeAuthBodyRe 认出「凭据级证据」的正文措辞。
+//
+// ★ 为什么单开一条：部分中转用 **400** 报「Incorrect API key provided」
+//
+//	（OpenAI 的规范措辞），而仓内的 probeKeyFailureRe 只认
+//	invalid/revoked/expired/disabled/suspended 族 ⇒ 「incorrect」那一支
+//	漏掉。⇒ 400 + 这类正文必须仍然走**凭据级**分支（auth_failed），
+//	不能因为状态码是 4xx 就当请求侧放过。
+//
+// ★ 只在本文件的这一个判据里使用（不改 probeKeyFailureRe）：把全局的
+//
+//	鉴权词表扩大会改变 403 的既有裁决（isPerModelChatFailure 依赖它），
+//	那是另一条口径，不在本轮范围内。
+var probeAuthBodyRe = regexp.MustCompile(`(?i)(incorrect|invalid|wrong)[_ -]?(api[_ -]?)?key|api[_ -]?key[_ -]?(is[_ -]?)?(incorrect|invalid|wrong)`)
+
+// probeChannelRe 从报文里取生成通道名（chat / messages / responses /
+// embeddings）。用于区分「同一状态码在不同通道上的语义不同」。
+var probeChannelRe = regexp.MustCompile(`\b(chat|messages|responses|embeddings) status [0-9]{3}:`)
 
 // chatProbeStatusCode extracts the HTTP status code embedded by this
 // package's own probe callers ("chat unreachable (after 3 attempts):

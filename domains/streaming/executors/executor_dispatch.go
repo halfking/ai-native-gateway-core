@@ -1229,7 +1229,11 @@ func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candida
 
 func dispatchFailureIsCredentialHealthy(kind errorsx.ErrorKind, modelNotFound bool) bool {
 	// 2026-11-02：IsRequestSideError ⊇ IsClientBug —— 请求侧错误族不扣凭据健康。
+	//
+	// 2026-11-02（4xx 归因族收口轮）：model_unavailable 是**绑定级**证据
+	// （上游不提供这一对）⇒ 账号本身健康 ⇒ 与 model_not_found 同判。
 	return modelNotFound || errorsx.IsRequestSideError(kind) ||
+		kind == errorsx.KindModelUnavailable ||
 		errorsx.IsContentFilter(kind) || kind == errorsx.KindContextLength
 }
 

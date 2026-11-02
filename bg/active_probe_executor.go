@@ -64,6 +64,17 @@ type ProbeTarget struct {
 	BaseURL       string
 	Protocol      string
 	APIKey        string // already decrypted
+	// Modality 是 models_canonical.modality（**权威**模态）。
+	//
+	// 2026-11-02（模态权威源轮）：此前 gateway 轮（RunGateway）的探针形态
+	// 只从**模型名**推导（modelname.InferModality）⇒ 名字里没有 embedding
+	// 字样的 embedding 模型（bge-m3 / e5-large / m3e-base …）仍拿 chat 形态
+	// ⇒ 打 /v1/chat/completions ⇒ 上游 400 ⇒ **健康**绑定被记 http_400，
+	// 且直连腿（同一对）与网关腿给出**相反**结论。
+	//
+	// 零值（""）⇒ 退回按模型名推断（effectiveProbeModality 的既有兜底），
+	// 探针形态永远有一个兜底，不会因为取不到权威模态就把形态判错。
+	Modality string
 }
 
 // ProbeCommand is the common execution contract for synchronous and queued
@@ -236,6 +247,11 @@ func (e *ActiveProbeExecutor) LoadTarget(ctx context.Context, credID int, model 
 		ciphertext     []byte
 		lifecycle      string
 		manualDisabled bool
+		// modality 是 models_canonical.modality（权威模态）。
+		// 2026-11-02（模态权威源轮）：这条 JOIN 本来就带着 provider_models，
+		// 顺带 LEFT JOIN models_canonical 取权威模态**不额外花一次查询**
+		// （口径与直连腿 resolveDirectTarget 同源，见 bg/node_probe.go）。
+		modality string
 	)
 	err := e.db.QueryRow(queryCtx, `
 		SELECT c.provider_id,
@@ -244,14 +260,16 @@ func (e *ActiveProbeExecutor) LoadTarget(ctx context.Context, credID int, model 
 		       COALESCE(p.protocol, 'openai-completions'),
 		       c.secret_ciphertext,
 		       COALESCE(c.lifecycle_status, ''),
-		       COALESCE(c.manual_disabled, FALSE)
+		       COALESCE(c.manual_disabled, FALSE),
+		       COALESCE(mc.modality, '')
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
 		WHERE c.id = $1 AND pm.raw_model_name = $2
 		LIMIT 1
-	`, credID, model).Scan(&providerID, &outboundModel, &baseURL, &protocol, &ciphertext, &lifecycle, &manualDisabled)
+	`, credID, model).Scan(&providerID, &outboundModel, &baseURL, &protocol, &ciphertext, &lifecycle, &manualDisabled, &modality)
 	if err != nil {
 		return nil, fmt.Errorf("load target: %w", err)
 	}
@@ -278,6 +296,7 @@ func (e *ActiveProbeExecutor) LoadTarget(ctx context.Context, credID int, model 
 		BaseURL:       baseURL,
 		Protocol:      protocol,
 		APIKey:        plain,
+		Modality:      modality,
 	}, nil
 }
 
@@ -554,7 +573,13 @@ func (e *ActiveProbeExecutor) RunGateway(ctx context.Context, target *ProbeTarge
 	//
 	// 2026-11-02 embedding 轮：端点随模态一起换（embedding ⇒ /embeddings），
 	// 否则网关面把 chat 形态打给 embedding 模型必然 400 —— 同一族事故。
-	shape := probeShapeFor(target.RawModel, "openai-completions")
+	//
+	// 2026-11-02（模态权威源轮）：模态取 **权威源**
+	// （target.Modality = models_canonical.modality），不再只靠模型名推断 ⇒
+	// bge-m3 / e5-large / m3e-base 这类名字里没有 embedding 字样的 embedding
+	// 模型也拿 embedding 形态（直连腿与网关腿对同一对给出**一致**结论）。
+	// 零值时退回名推断（effectiveProbeModality 的兜底）。
+	shape := probeShapeForModality(target.RawModel, "openai-completions", target.Modality)
 	body := shape.body
 	endpoint := upstreamurl.Build(e.gatewayURL, shape.endpoint)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
@@ -585,7 +610,7 @@ func (e *ActiveProbeExecutor) RunGateway(ctx context.Context, target *ProbeTarge
 	defer resp.Body.Close()
 	respBuf, readErr := readCredentialProbeBody(resp.Body)
 	respBody := string(respBuf)
-	parsed := classifyProbeHTTPResponse(resp.StatusCode, respBuf, readErr, latency, "chat")
+	parsed := classifyProbeHTTPResponse(resp.StatusCode, respBuf, readErr, latency, shape.wire)
 	status := ProbeStatusHTTP4xx
 	switch parsed.status {
 	case "ok":

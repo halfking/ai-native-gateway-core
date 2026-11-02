@@ -28,6 +28,8 @@ var allErrorKinds = []errorsx.ErrorKind{
 	errorsx.KindClientBug,
 	// 2026-11-02：上游拒收但无任何裁决的 4xx（请求侧错误族）。
 	errorsx.KindRequestRejected,
+	// 2026-11-02（4xx 归因族收口轮）：裸 404 = 「上游不提供这一对」（绑定级）。
+	errorsx.KindModelUnavailable,
 	errorsx.KindConcurrent,
 	errorsx.KindAuthRevoked,
 	errorsx.KindQuotaPeriodic,
@@ -67,6 +69,11 @@ func TestAggregateTaskOutcomeExhaustiveKindMatrix(t *testing.T) {
 		// 问题，兄弟凭据可能能服务同一个模型（生产实测：943 个在册模型里
 		// 366 个由 ≥2 个凭据服务）。⇒ 刷新候选后重试，而不是终态失败。
 		{errorsx.KindRequestRejected, TaskActionRetryNow},
+		// 2026-11-02（4xx 归因族收口轮）：裸 404 = 「上游不提供这一对」。
+		// 与请求侧族同判（RetryNow）——**保留跨凭据故障转移**：兄弟凭据
+		// 可能能服务同一个模型；与请求侧族的区别在**归责**（本 kind 写
+		// 绑定级冷却，请求侧族什么都不写），不在任务级动作。
+		{errorsx.KindModelUnavailable, TaskActionRetryNow},
 		// wait-for-recovery (quota window / provider down / no capacity)
 		{errorsx.KindRateLimit, TaskActionWaitRecovery},
 		{errorsx.KindQuota, TaskActionWaitRecovery},

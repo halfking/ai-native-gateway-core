@@ -371,6 +371,29 @@ func DecideNextAction(ctx DecisionContext) ActionDecision {
 			base.Action = ActionFailTerminal
 			base.ReasonCode = "no_attempt_budget:" + base.ReasonCode
 		}
+	case KindModelUnavailable:
+		// 上游确定性地不提供这一对 (凭据,模型)（裸 404：账号里没有这个模型，
+		// 或这个凭据的端点路径配错）。证据指向**这一对**，不指向账号。
+		//
+		// 本分支的三个「不」与一个「要」：
+		//   · 不盲重试同一节点——同一对必然再败（IsRetryable 也不含本 kind）；
+		//   · 不记凭据失败、**不改凭据状态**——RecordCredentialFailure /
+		//     RecordCredentialState 保持 false ⇒ 账号不冷却、熔断不计数；
+		//   · 不扇出探针——EnqueueProbe 保持 false（绑定级冷却由绑定级阶梯
+		//     与探针自愈承担，不需要在请求路径上立刻扇出）；
+		//   · 要**换一个兄弟候选**：404 可能是**这一把钥匙**的权限/档位问题，
+		//     兄弟凭据可能能服务同一个模型（生产实测：943 个在册模型里 366 个
+		//     由 ≥2 个凭据服务、198 个由 ≥4 个服务）⇒ 跨凭据故障转移有实质
+		//     价值，不能因 404 关掉（这正是不能复用终态 KindModelNotFound 的原因）。
+		//     没有兄弟候选时（HasAlternateNode=false）由下面的收尾逻辑降级为
+		//     fail-terminal，语义仍是「这次请求失败」。
+		base.Action = ActionSwitchNode
+		base.ReasonCode = "upstream_model_unavailable"
+		if ctx.RemainingAttempts <= 0 {
+			// 没有下一次尝试的预算 ⇒ 这次请求到此为止（语义仍是「失败」）。
+			base.Action = ActionFailTerminal
+			base.ReasonCode = "no_attempt_budget:" + base.ReasonCode
+		}
 	case KindAuth:
 		base.Action = ActionSwitchNode
 		base.ReasonCode = "credential_auth_failed"

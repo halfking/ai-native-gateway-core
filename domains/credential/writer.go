@@ -446,6 +446,18 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		// (≤6h cap) stays the authoritative self-heal for a mistaken
 		// escalation. Tiers are settings-hot-reloadable.
 		return w.writeModelNotFoundTiered(ctx, credentialID, rawModel, detail)
+	case errorsx.KindModelUnavailable:
+		// 2026-11-02（4xx 归因族收口轮）：裸 404 = 「上游确定性地不提供这一对
+		// (凭据,模型)」（账号里没有这个模型 / 这个凭据的端点路径配错）。
+		// 证据指向**这一对**，不指向账号 ⇒ 只冷却这一对（cmb.available=FALSE
+		// + unavailable_reason='auto_model_unavailable'），**不**碰
+		// credentials.availability_state（同 writeModelLevelFailureOnly 的理由：
+		// 动账号会把该凭据上其它模型一起摘掉）。
+		//
+		// 与 KindModelNotFound 的区别在**动作**而非归责桶：model_not_found 是
+		// 终态（放弃跨凭据故障转移），本 kind 保留故障转移（兄弟凭据可能能
+		// 服务同一个模型）。
+		return w.writeModelUnavailableTiered(ctx, credentialID, rawModel, detail)
 	case errorsx.KindModelDeprecated:
 		// 2026-08-05 fix: upstream has permanently end-of-lifed the model
 		// (HTTP 410 Gone + "end of life" body, or 404/422 "has been
@@ -606,7 +618,51 @@ func (w *Writer) writeModelNotFoundTiered(
 	rawModel string,
 	detail *string,
 ) error {
-	const reason = "auto_model_not_found"
+	return w.writeModelServedTiered(ctx, credentialID, rawModel, detail, "auto_model_not_found")
+}
+
+// writeModelUnavailableTiered applies the same per-binding tier ladder to the
+// "model_unavailable" verdict (2026-11-02, 4xx 归因族收口轮).
+//
+// It is a **distinct reason**, not the same string as auto_model_not_found,
+// because the escalation arm of writeModelServedTiered only extends a cooling
+// window whose current reason is the *same* reason:
+//
+//	OR (cmb.available = FALSE AND cmb.unavailable_reason = $1)
+//
+// ⇒ a pair cooled as model_not_found is neither re-cooled nor escalated by a
+// model_unavailable hit, and vice versa. The two verdicts stay distinguishable
+// in credential_model_bindings.unavailable_reason (operator-visible).
+func (w *Writer) writeModelUnavailableTiered(
+	ctx context.Context,
+	credentialID int,
+	rawModel string,
+	detail *string,
+) error {
+	return w.writeModelServedTiered(ctx, credentialID, rawModel, detail, "auto_model_unavailable")
+}
+
+// writeModelServedTiered applies the Wave-2 three-tier MNF semantics
+// (audit C4): initialRecoverAt for bindings that are not currently cooled,
+// sustainedRecoverAt for bindings already cooling with the *same* reason
+// (a second request-path 404 inside the first cooling window). The
+// available=TRUE guard of writeModelLevelFailureOnly is relaxed for exactly
+// that same-reason cooled arm so the escalation write can land;
+// manual/admin-protected bindings stay untouched in both arms, and no other
+// reason's cooling is extended or overwritten.
+//
+// The tier durations are shared with the model_not_found ladder on purpose:
+// both verdicts mean "this upstream does not serve this (credential, model)
+// pair", so the "first hit = short tier, second hit inside the window =
+// sustained tier" shape is identical, and the probe ladder stays the
+// authoritative self-heal for a mistaken escalation.
+func (w *Writer) writeModelServedTiered(
+	ctx context.Context,
+	credentialID int,
+	rawModel string,
+	detail *string,
+	reason string,
+) error {
 	now := time.Now().UTC()
 	initialRecoverAt := now.Add(time.Duration(settings.ModelNotFoundInitialCooldownSeconds()) * time.Second)
 	sustainedRecoverAt := now.Add(time.Duration(settings.ModelNotFoundSustainedCooldownSeconds()) * time.Second)

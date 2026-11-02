@@ -397,6 +397,14 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 		errKind == errorsx.KindAuthRevoked ||
 		errKind == errorsx.KindModelNotFound ||
 		errKind == errorsx.KindModelDeprecated ||
+		// 2026-11-02（4xx 归因族收口轮）：裸 404 = 「上游不提供这一对」。
+		// 与 model_not_found 同族处理（标记 broken + 15 分钟探测间隔），
+		// 但**不**进 probeImmediately 集合：上游已经说了「我不提供它」，
+		// 立刻再探一次只是再打一次必然失败的请求。
+		//
+		// ★ 这一条的粒度是 (凭据, 模型)（key := m.cacheKey(credID, model)），
+		//   **不是**账号 ⇒ 兄弟模型不受影响。
+		errKind == errorsx.KindModelUnavailable ||
 		errKind == errorsx.KindQuotaPermanent
 
 	if isPermanent && state.ConsecutiveFails >= 2 {

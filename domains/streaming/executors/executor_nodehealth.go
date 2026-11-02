@@ -467,6 +467,16 @@ func (e *Executor) recordProtocolCircuitFailure(params *ExecParams, providerID, 
 	if errorsx.PenaltyOf(kind).Target == errorsx.PenaltyNone {
 		return
 	}
+	// 2026-11-02（4xx 归因族收口轮）：**绑定级**证据不进**账号级**断路器。
+	//
+	// ★ 断路器按 provider+credential 记账 ⇒ 一次绑定级失败连坐该凭据上的
+	//   **全部**模型 ⇒ 3 次即整凭据熔断 ⇒ 全租户 503（2026-11-02 事故本体）。
+	//   model_unavailable 的语义是「上游不提供这一对」⇒ 账号本身健康
+	//   ⇒ 只写这一对的冷却（credential.Writer 的绑定级分级桶），
+	//   断路器不得计数。
+	if kind == errorsx.KindModelUnavailable {
+		return
+	}
 	if params != nil && params.DispatchAttempt {
 		return
 	}
@@ -510,6 +520,13 @@ func nodeHealthErrorKind(kind errorsx.ErrorKind) nodehealth.ErrorKind {
 		return nodehealth.ErrorKindQuota
 	case errorsx.KindModelNotFound, errorsx.KindModelDeprecated:
 		return nodehealth.ErrorKindModelBinding
+	case errorsx.KindModelUnavailable:
+		// 2026-11-02（4xx 归因族收口轮）：裸 404 = 「上游不提供这一对」。
+		// 归**绑定级**（与 model_binding 同族）⇒ reducer 只写这一对，
+		// **不**记熔断、**不**置账号 cooling、**不**累计账号连败；
+		// 同时**不**落请求侧（ErrorKindRequest）——落请求侧会一个字节的
+		// 绑定级状态都不写，缺口留给探针阶梯（§六.7 登记的那个缺口）。
+		return nodehealth.ErrorKindModelUnavailable
 	case errorsx.KindEmptyResponse:
 		return nodehealth.ErrorKindEmptyResponse
 	default:
@@ -531,6 +548,8 @@ func errorKindFromNodeHealth(kind nodehealth.ErrorKind) errorsx.ErrorKind {
 		return errorsx.KindQuotaPermanent
 	case nodehealth.ErrorKindModelBinding:
 		return errorsx.KindModelNotFound
+	case nodehealth.ErrorKindModelUnavailable:
+		return errorsx.KindModelUnavailable
 	case nodehealth.ErrorKindEmptyResponse:
 		return errorsx.KindEmptyResponse
 	case nodehealth.ErrorKindRequest:

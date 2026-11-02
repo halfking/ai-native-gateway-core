@@ -46,13 +46,43 @@ const (
 	// 本 kind 只改**归因**，不改「什么算失败」——请求仍然失败。
 	// 判据入口见 IsRequestSideError。
 	KindRequestRejected ErrorKind = "request_rejected"
-	KindConcurrent      ErrorKind = "concurrent"
-	KindAuthRevoked     ErrorKind = "auth_revoked"
-	KindQuotaPeriodic   ErrorKind = "quota_periodic"
-	KindQuotaBalance    ErrorKind = "quota_balance"
-	KindQuotaPermanent  ErrorKind = "quota_permanent"
-	KindModelNotFound   ErrorKind = "model_not_found"
-	KindStreamTimeout   ErrorKind = "stream_timeout"
+	// KindModelUnavailable（2026-11-02，4xx 归因族收口轮）覆盖「上游确定性地
+	// **不提供**这个 (凭据,模型) 对」——即正文不匹配任何模型级/弃用级裁决的
+	// **裸 404**（status=404 且正文无裁决）。
+	//
+	// 为什么它既不是请求侧、也不是 transient：
+	//   裸 404 只有两种读法，而**两种都排除**「这次请求不合法」：
+	//     ① 「这个账号/部署里没有这个模型」⇒ 这一对 (凭据,模型) 不可用；
+	//     ② 「这个凭据的端点路径配错了」⇒ 这一对 (凭据,模型) 不可用。
+	//   两种读法的正确处置**都在绑定级**（只冷却这一对，不动账号）。
+	//   「二义性在于归到哪个绑定级桶，不在于要不要按 transient 处理」。
+	//
+	// 生产证据（211 candidate_failure_logs，45 天窗口，见
+	// docs/audit/2026-11-02-上游4xx被记成节点不健康-下一轮修复项.md §六）：
+	//   · 404 + error_kind='transient' 共 **20 行 / 6 个 (凭据,模型) 对 /
+	//     7 次独立事件**；attempt_index 呈 1→2→3 且同一对三次时间戳相隔
+	//     6s/11s ⇒ **同节点盲重试实测坐实**；
+	//   · 三种正文形态（`404 page not found` /
+	//     `Function id … is not found` /
+	//     `openai_error bad_response_status_code`）**全部是确定性、绑定级**
+	//     失败，没有一个是「节点临时抖动」；
+	//   · 那 6 对里 5 对至今 last_direct_ok=false / last_err_code='http_404'
+	//     / consecutive_failures 9~21，仍被探针阶梯反复重探（2026-11-02 复核）。
+	//
+	// 为什么**不复用** KindModelNotFound：它在 terminalActionKind 里 ⇒ 终态
+	// 失败 ⇒ **放弃跨凭据故障转移**。而 404 可能是**这一把钥匙**的权限/档位
+	// 问题，兄弟凭据能服务同一个模型（211 实测：943 个在册模型里 366 个由
+	// ≥2 个凭据服务、198 个由 ≥4 个服务）⇒ 必须保留跨凭据故障转移。
+	//
+	// 口径：只改**归因与阶梯**，不改「什么算失败」——请求仍然失败。
+	KindModelUnavailable ErrorKind = "model_unavailable"
+	KindConcurrent       ErrorKind = "concurrent"
+	KindAuthRevoked      ErrorKind = "auth_revoked"
+	KindQuotaPeriodic    ErrorKind = "quota_periodic"
+	KindQuotaBalance     ErrorKind = "quota_balance"
+	KindQuotaPermanent   ErrorKind = "quota_permanent"
+	KindModelNotFound    ErrorKind = "model_not_found"
+	KindStreamTimeout    ErrorKind = "stream_timeout"
 	// KindToolCallIdMismatch: client echoed a tool_call_id that the
 	// upstream did not recognise. The most common cause is the agent
 	// framework losing the id field during streaming accumulation of
@@ -754,6 +784,36 @@ var concurrentOverloadCJKRe = regexp.MustCompile(
 // or provider, so this is a transient upstream failure, not a client 400.
 var degradedFunctionRe = regexp.MustCompile(`(?i)degraded function cannot be invoked`)
 
+// isRequestRejectionStatus reports whether the status code means "the upstream
+// rejected this request" — the status family that must never enter the
+// "node is unhealthy" ladder.
+//
+// The set is exactly the request-side / binding-side part of the 4xx matrix
+// (see classify_4xx_matrix_test.go):
+//
+//	400 / 413 / 414 / 422 ⇒ KindRequestRejected（请求侧：证据指向这次请求）
+//	404                   ⇒ KindModelUnavailable（绑定级：证据指向这一对）
+//
+// ★ 401 / 403 / 402 are deliberately NOT here: those are credential-level
+//
+//	verdicts (auth / quota) and their body rules (budgetExceededRe) run on
+//	their own status gates. Excluding them keeps a 403 carrying an
+//	overload-shaped body from being re-interpreted as an auth failure.
+//
+// ★ 429 is deliberately NOT here: 429 is the canonical capacity signal, and
+//
+//	the whole rate-limit family keys on it.
+//
+// ★ 5xx is deliberately NOT here: 5xx is a node/upstream fault.
+func isRequestRejectionStatus(status int) bool {
+	switch status {
+	case 400, 404, 413, 414, 422:
+		return true
+	default:
+		return false
+	}
+}
+
 // overloadKindForStatus splits an overload-shaped body into the two
 // distinct kinds by HTTP status. Both body classifiers must agree, so
 // the rule lives here rather than being duplicated.
@@ -1132,7 +1192,30 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		// the overload signal exactly, so we route those bodies to
 		// KindConcurrent here and let non-"并发" quota bodies (with the
 		// optional time-period word) reach the budget check below.
-		if concurrentOverloadCJKRe.Match(body) {
+		// 2026-11-02（4xx 归因族收口轮）：并发/过载正文规则**不在请求侧
+		// 状态族上生效**。
+		//
+		// ★ 为什么：这两个规则此前**没有状态门** ⇒ 一个 4xx 正文只要带
+		//   「too many requests / rate limit / 稍后重试 / 并发过大」就落
+		//   KindConcurrent ⇒ 节点侧罚则（绑定被拉黑 5 分钟 + URSM 记失败 +
+		//   credentialhealth 降级 + nodehealth 连败累计）⇒ **3 连败后整凭据
+		//   cooling** ⇒ 全租户 503。这正是 2026-11-02 事故的放大链，只是
+		//   换了一副正文面孔（§5.4.1 / F3 登记的「语义相近的两种正文得到
+		//   相反处置」）。
+		//
+		// ★ 口径依据：**状态码是上游对「这次请求」的裁决**。4xx = 上游拒收
+		//   了这次请求 ⇒ 按事故教训（§三 ①：上游 4xx 不得进入「节点不健康」
+		//   阶梯）不得罚节点。429 / 5xx 才是容量/节点级信号，规则照旧。
+		//
+		// ★ 与 §5.4.1「新增正文规则映射到 KindRateLimit」的关系：那条建议
+		//   的方向**与事故教训相悖**——KindRateLimit 会把 (凭据,模型) 按
+		//   http_429 拉黑并参与连败累计 ⇒ 把放大器的两条腿放回来。本轮取
+		//   **保守方向**（不惩罚节点），并让它对**所有** 4xx 正文形态一致。
+		//
+		// ★ 生产证据（211 candidate_failure_logs，45 天窗口）：4xx 正文里
+		//   含 rate limit / too many requests / rate_limit 的行数 = **0**
+		//   ⇒ 本门不改变任何在网行为，只是把一条**敞着的**放大链关上。
+		if !isRequestRejectionStatus(status) && concurrentOverloadCJKRe.Match(body) {
 			return overloadKindForStatus(status)
 		}
 
@@ -1151,7 +1234,7 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 			return KindQuotaPermanent
 		}
 
-		if concurrentOverloadRe.Match(body) {
+		if !isRequestRejectionStatus(status) && concurrentOverloadRe.Match(body) {
 			return overloadKindForStatus(status)
 		}
 		// KindModelDeprecated (2026-08-05 P0): upstream permanently removed /
@@ -1280,7 +1363,7 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		return KindTimeout
 	case 405, 406, 409, 411, 412, 415, 416, 417, 418, 421, 423, 424, 425, 426, 428, 431:
 		return KindUnsupportedFeature
-	case 400, 404, 413, 414, 422:
+	case 400, 413, 414, 422:
 		// 2026-11-02：走到这里意味着**所有** body 形态正则都没命中——
 		// 没有上下文超限、没有内容审核、没有模型下线/不存在、没有配额耗尽、
 		// 没有限流、没有点名参数被拒。上游只说了「这个请求我不收」。
@@ -1297,12 +1380,12 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		// body 重打必然再败。此前它落到状态兜底 ⇒ 与 400 同款的放大器链
 		// 仍然可达（IsRetryable=true ⇒ 盲重试 3 次 + 5 分钟拉黑）。
 		//
-		// 2026-11-02（12h 审计轮 R1'，据生产证据）补 404：裸 404（正文不
-		// 匹配任何形态正则）此前同样落状态兜底 ⇒ 同一条放大链。生产证据
-		// （211 candidate_failure_logs，45 天窗口，见
-		// docs/audit/2026-11-02-上游4xx被记成节点不健康-下一轮修复项.md §六）：
+		// 2026-11-02（12h 审计轮 R1'，据生产证据）补 404 的**中间结论**：
+		//   裸 404 此前同样落状态兜底 ⇒ 同一条放大链。生产证据
+		//   （211 candidate_failure_logs，45 天窗口，见
+		//   docs/audit/2026-11-02-上游4xx被记成节点不健康-下一轮修复项.md §六）：
 		//   · 404 + error_kind='transient' 共 **20 行 / 6 个 (凭据,模型) 对 /
-		//     7 次独立事件**，涉及的对**全部是 embedding 模型**；
+		//     7 次独立事件**，涉及的对全部是 embedding / 多模态模型；
 		//   · attempt_index 呈 1→2→3，同一 (凭据,模型) 的三次时间戳相隔
 		//     **6s / 11s** ⇒ **同节点盲重试实测坐实**（不是跨凭据故障转移）；
 		//   · 三种正文形态（`404 page not found` /
@@ -1312,10 +1395,9 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		//   · 那 6 对的 consecutive_failures 已到 19～27，仍每 ~2 小时重探。
 		// ⇒ 「二义性在于归到哪个绑定级桶，不在于要不要按 transient 处理」：
 		//   无论读作「模型不被该凭据提供」还是「端点路径错」，两者都**排除**
-		//   transient（transient 恰恰是「节点临时故障」）。⇒ 归请求侧。
-		// ★ 归到哪个**绑定级**桶（该对该不该长期冷却）留待下一轮裁决——
-		//   本轮先断掉放大器（盲重试 / http_5xx 误标 / 整凭据 cooling），
-		//   并保留跨凭据故障转移（ActionSwitchNode）。
+		//   transient（transient 恰恰是「节点临时故障」）。
+		// ★★ 2026-11-02（4xx 归因族收口轮）：404 **不**留在请求侧，而是归到
+		//   **绑定级**的 KindModelUnavailable —— 见下面的 case 404。
 		//
 		// 仍保留 401 / 402 / 408 / 429 的既有口径：401/403=凭据级(auth)、
 		// 402=配额、408=超时、429=限流。
@@ -1330,6 +1412,28 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		//   门禁 errorsx/classify_4xx_matrix_test.go 把 400..499 每一格
 		//   的裁决钉成矩阵，任何一格改动都必须同步改门禁（附理由）。
 		return KindRequestRejected
+	case 404:
+		// 2026-11-02（4xx 归因族收口轮）：裸 404 归**绑定级**证据。
+		//
+		// ★ 为什么不是请求侧（KindRequestRejected）：请求侧意味着「证据指向
+		//   这次请求，不指向节点」⇒ 不写任何共享状态。裸 404 不满足这条：
+		//   它的两种读法（账号里没有这个模型 / 这个凭据的端点路径配错）
+		//   **都指向这一对 (凭据,模型)**，都排除「请求本身不合法」。
+		//   证据（见上面那段生产取证）：6 对全是确定性、绑定级失败。
+		//
+		// ★ 为什么不是 transient：transient 的语义是「节点临时故障」，
+		//   而这两种读法**都不是**临时故障；按 transient 处理会同时踩中
+		//   放大器的三件套（盲重试 ×3 / http_5xx 错标签 / 3 连败整凭据 cooling）。
+		//
+		// ★ 为什么不是 KindModelNotFound：那是**终态**语义（terminalActionKind）
+		//   ⇒ 放弃跨凭据故障转移 ⇒ 兄弟凭据本来能服务同一个模型时也被判死。
+		//   本 kind **保留**跨凭据故障转移（ActionSwitchNode）。
+		//
+		// ★ 处置（阶梯）：只冷却**这一对** (凭据,模型)（绑定级），**不**动
+		//   账号（凭据级 cooling / 熔断都不触发），并由探针阶梯负责自愈。
+		//   这正是 §六.7 登记的那个缺口：「请求侧族不写任何绑定级抑制 ⇒
+		//   该对不再被请求路径拉黑」——对 400 成立（那是请求侧），对 404 不成立。
+		return KindModelUnavailable
 	}
 	return ClassifyResponseStatus(&http.Response{StatusCode: status})
 }

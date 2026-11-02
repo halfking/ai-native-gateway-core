@@ -1058,6 +1058,12 @@ func isRetriableError(err error) bool {
 			return true
 		}
 
+		// 2026-11-02（4xx 归因族收口轮）：裸 404 = 「上游不提供这一对」。
+		// 与 model_not_found 同判——兄弟凭据可能能服务同一个模型 ⇒ 可重试。
+		if kind == errorsx.KindModelUnavailable {
+			return true
+		}
+
 		// Concurrency limit exceeded (transient)
 		if kind == errorsx.KindConcurrent {
 			return true

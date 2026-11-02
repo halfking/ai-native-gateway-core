@@ -52,6 +52,10 @@ func AllErrorKinds() []ErrorKind {
 		// 2026-11-02：上游拒收但无法再归因的 4xx（请求侧错误族）。
 		// 与 KindClientBug 同判——见 kind 声明处的事故链说明。
 		KindRequestRejected,
+		// 2026-11-02（4xx 归因族收口轮）：绑定级证据——「上游不提供这一对」。
+		// 归责落在 (凭据,模型)，**不**落账号（见 KindModelUnavailable 的
+		// kind 声明与 PenaltyOf 的分支）。
+		KindModelUnavailable,
 		KindConcurrent,
 		KindAuthRevoked,
 		KindQuotaPeriodic,
@@ -106,6 +110,21 @@ func PenaltyOf(kind ErrorKind) Penalty {
 	//   且仍允许换一个兄弟候选（action_policy 的 request_rejected 分支）。
 	case KindRequestRejected:
 		return Penalty{Target: PenaltyNone}
+
+	// —— 绑定级：上游确定性地不提供这一对 (凭据,模型) ——
+	//
+	// ★ 2026-11-02（4xx 归因族收口轮）：裸 404 的两种读法（账号里没有这个
+	//   模型 / 这个凭据的端点路径配错）**都**指向这一对，都不指向账号 ⇒
+	//   归责落在**绑定级**，与 KindModelNotFound / KindModelDeprecated 同桶。
+	//
+	// ★ 与请求侧族（KindRequestRejected → PenaltyNone）的分界：
+	//   请求侧 = 「证据指向这次请求」⇒ 一个字节的共享状态都不写；
+	//   本 kind = 「证据指向这一对」⇒ 写这一对的冷却，**不**写账号。
+	//
+	// ★ Fuse 保持 false：本 kind **不**进熔断语义（熔断是账号级），
+	//   且必须保留跨凭据故障转移（兄弟凭据可能能服务同一个模型）。
+	case KindModelUnavailable:
+		return Penalty{Target: PenaltyBinding}
 
 	// —— 不罚：首字节超时（magpie 的 slow）——
 	//

@@ -442,3 +442,72 @@ func TestWriteOnError_ModelNotFound_TieredCooldown(t *testing.T) {
 		t.Fatalf("tiered MNF SQL shape not matched: %v", err)
 	}
 }
+
+// TestWriteOnError_ModelUnavailable_TieredCooldown pins the binding-level
+// bucket for the "model_unavailable" verdict (2026-11-02, 4xx 归因族收口轮).
+//
+// The verdict means "this upstream deterministically does not serve this
+// (credential, model) pair" — a bare 404 whose body carries no model-level
+// verdict. The disposition must be:
+//
+//  1. **Binding scope**: credential_model_bindings (the production router's
+//     source of truth via v_routable_credential_models) — NOT
+//     credentials.availability_state. Writing the credential state would
+//     take every sibling model on that credential out of routing, which is
+//     the 2026-11-02 incident's blast radius ("all tenants 503").
+//  2. **Same tier ladder** as model_not_found: first hit = initial tier,
+//     a second hit inside that window = sustained tier, with the probe
+//     ladder as the authoritative self-heal.
+//
+// ★ The reason string is asserted here because it is the **ownership** mark
+//
+//	of the binding: writeModelServedTiered's escalation arm only extends a
+//	cooling window whose current reason is the *same* reason
+//	(`OR (cmb.available = FALSE AND cmb.unavailable_reason = $1)`).
+//	Sharing the string with model_not_found would make the two verdicts
+//	indistinguishable in credential_model_bindings.unavailable_reason and let
+//	one escalate the other's cooling window.
+func TestWriteOnError_ModelUnavailable_TieredCooldown(t *testing.T) {
+	mockDB := newSQLOnlyMock()
+	defer mockDB.Close()
+	expectRawBindingResolution(mockDB, 42, "some-model", "some-model")
+
+	tieredPattern := `UPDATE credential_model_bindings cmb SET .* ` +
+		`WHEN cmb.available = FALSE THEN \$::timestamptz ELSE \$::timestamptz END.* ` +
+		`OR \(cmb.available = FALSE AND cmb.unavailable_reason = \$\)`
+	mockDB.ExpectExec(tieredPattern).
+		WithArgs("auto_model_unavailable", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	w := &Writer{dbPool: mockDB}
+	err := w.WriteOnError(context.Background(), 42, "some-model", Failure{Kind: errorsx.KindModelUnavailable})
+	if err != nil {
+		t.Fatalf("WriteOnError: %v", err)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Fatalf("tiered model_unavailable SQL shape not matched: %v", err)
+	}
+}
+
+// TestWriteOnError_ModelUnavailableDoesNotTouchCredentialState pins the
+// blast-radius invariant: the binding-level verdict must never write
+// credentials.availability_state.
+func TestWriteOnError_ModelUnavailableDoesNotTouchCredentialState(t *testing.T) {
+	mockDB := newSQLOnlyMock()
+	defer mockDB.Close()
+	expectRawBindingResolution(mockDB, 42, "some-model", "some-model")
+
+	// Only the cmb UPDATE is expected. If the writer ever adds a
+	// credentials UPDATE for this kind, pgxmock fails on the unexpected call.
+	mockDB.ExpectExec(`UPDATE credential_model_bindings cmb`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	w := &Writer{dbPool: mockDB}
+	if err := w.WriteOnError(context.Background(), 42, "some-model", Failure{Kind: errorsx.KindModelUnavailable}); err != nil {
+		t.Fatalf("WriteOnError: %v", err)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Fatalf("model_unavailable wrote unexpected state: %v", err)
+	}
+}

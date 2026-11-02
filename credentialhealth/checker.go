@@ -137,7 +137,14 @@ func defaultKindThresholds() map[string]KindThreshold {
 		"upstream_overloaded":   {FailureThreshold: 0.90, MinSampleSize: 8, DegradedCooldown: 15 * time.Minute},
 		"model_not_found":       {FailureThreshold: 1.0, MinSampleSize: 1, DegradedCooldown: 24 * time.Hour},
 		"model_deprecated":      {FailureThreshold: 1.0, MinSampleSize: 1, DegradedCooldown: 24 * time.Hour},
-		"unsupported_feature":   {FailureThreshold: 1.0, MinSampleSize: 1, DegradedCooldown: 24 * time.Hour},
+		// 2026-11-02（4xx 归因族收口轮）：model_unavailable = 裸 404
+		// 「上游不提供这一对」。与 model_not_found 同档（单个样本即定性、
+		// 24 小时冷却）——两者都是**确定性**的绑定级失效，不是抖动。
+		// ★ markDegraded 写的是 (credential, model) 绑定
+		//   （credential_model_bindings.available=FALSE），**不是**账号 ⇒
+		//   同一凭据上的兄弟模型不受影响。
+		"model_unavailable":   {FailureThreshold: 1.0, MinSampleSize: 1, DegradedCooldown: 24 * time.Hour},
+		"unsupported_feature": {FailureThreshold: 1.0, MinSampleSize: 1, DegradedCooldown: 24 * time.Hour},
 	}
 }
 

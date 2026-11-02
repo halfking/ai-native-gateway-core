@@ -57,12 +57,33 @@ var wantByStatus = map[int]ErrorKind{
 	401: KindAuth,            // 鉴权：凭据级
 	402: KindQuota,           // 余额/配额：凭据级
 	403: KindAuth,            // 鉴权：凭据级
-	404: KindRequestRejected, // 裸 404：请求侧（2026-11-02 R1'，据生产证据）
 	408: KindTimeout,         // 上游超时
 	413: KindRequestRejected, // 载荷过大：请求侧
 	414: KindRequestRejected, // URI 过长：请求侧（2026-11-02 R1）
 	422: KindRequestRejected, // 不可处理实体：请求侧
 	429: KindRateLimit,       // 限流：节点级
+}
+
+// bindingScopedStatuses：仓内显式映射为「**绑定级**」的 4xx。
+//
+// 这一族的语义是「上游确定性地**不提供**这个 (凭据,模型) 对」⇒
+//
+//	· 只冷却这一对（credential_model_bindings.available=FALSE）；
+//	· **不**动账号（凭据级 cooling / 熔断都不触发）；
+//	· **保留**跨凭据故障转移（兄弟凭据可能能服务同一个模型）。
+//
+// ★ 与请求侧族（wantByStatus 里的 KindRequestRejected）的分界：
+//
+//	请求侧 = 「证据指向这次请求」⇒ 一个字节的共享状态都不写；
+//	绑定级 = 「证据指向这一对」⇒ 写这一对的冷却，不写账号。
+//
+// ★ 与协议/能力族（protocol4xxStatuses）的分界：
+//
+//	协议族是**终态**语义（terminalActionKind）⇒ 放弃跨凭据故障转移；
+//	绑定级**保留**故障转移 —— 这是「不能复用 KindModelNotFound」的原因
+//	（KindModelNotFound 在 terminalActionKind 里）。
+var bindingScopedStatuses = []int{
+	404, // 裸 404：账号里没有这个模型 / 端点路径配错（2026-11-02 收口轮）
 }
 
 // transientAllowlist：**显式承认**落状态兜底（KindTransient）的 4xx。
@@ -123,10 +144,12 @@ var protocol4xxStatuses = []int{
 // TestClassifyStatusMatrix4xxIsFullyDecided 是本门的主体。
 //
 // 判据：400..499 的**每一格**都必须能被本文件解释——
-//   · 在 wantByStatus 里 ⇒ 必须等于登记值；
-//   · 在 protocol4xxStatuses 里 ⇒ 必须等于 KindUnsupportedFeature；
-//   · 在 transientAllowlist 里 ⇒ 必须等于 KindTransient 且理由非空；
-//   · 都不在 ⇒ **门红**（这一格是漏网的兜底 ⇒ 它落进放大器链）。
+//
+//	· 在 wantByStatus 里 ⇒ 必须等于登记值；
+//	· 在 bindingScopedStatuses 里 ⇒ 必须等于 KindModelUnavailable；
+//	· 在 protocol4xxStatuses 里 ⇒ 必须等于 KindUnsupportedFeature；
+//	· 在 transientAllowlist 里 ⇒ 必须等于 KindTransient 且理由非空；
+//	· 都不在 ⇒ **门红**（这一格是漏网的兜底 ⇒ 它落进放大器链）。
 func TestClassifyStatusMatrix4xxIsFullyDecided(t *testing.T) {
 	for status := 400; status <= 499; status++ {
 		got := ClassifyErrorWithBody(status, nil)
@@ -135,6 +158,14 @@ func TestClassifyStatusMatrix4xxIsFullyDecided(t *testing.T) {
 			if got != want {
 				t.Errorf("4xx 状态码 %d：ClassifyErrorWithBody(%d, nil) = %q，want %q",
 					status, status, got, want)
+			}
+			continue
+		}
+
+		if containsInt(bindingScopedStatuses, status) {
+			if got != KindModelUnavailable {
+				t.Errorf("4xx 状态码 %d：ClassifyErrorWithBody(%d, nil) = %q，want %q（绑定级）",
+					status, status, got, KindModelUnavailable)
 			}
 			continue
 		}
@@ -202,9 +233,10 @@ func TestClassifyStatusMatrix4xxNoStaleAllowlistEntries(t *testing.T) {
 
 // TestClassifyStatusMatrix4xxRequestSideIsNotRetryable 钉住请求侧族的
 // **放大器三件套**：请求侧错误不得
-//   ① IsRetryable（⇒ 同节点盲重试）；
-//   ② 落 transientSuppressErrorCode 的抑制码（⇒ (凭据,模型) 被拉黑 5 分钟）；
-//   ③ 落 PenaltyOf 的绑定级罚（⇒ 3 连败后整凭据 cooling）。
+//
+//	① IsRetryable（⇒ 同节点盲重试）；
+//	② 落 transientSuppressErrorCode 的抑制码（⇒ (凭据,模型) 被拉黑 5 分钟）；
+//	③ 落 PenaltyOf 的绑定级罚（⇒ 3 连败后整凭据 cooling）。
 //
 // 这三条是 2026-11-02 事故的完整放大链；任何一条被打开，事故就会回来。
 func TestClassifyStatusMatrix4xxRequestSideIsNotRetryable(t *testing.T) {
@@ -262,6 +294,59 @@ func TestClassifyErrorRespBranchKeepsNon4xxVerdicts(t *testing.T) {
 		got := ClassifyError(nil, &http.Response{StatusCode: tc.status})
 		if got != tc.want {
 			t.Errorf("ClassifyError(resp %d) = %q，want %q", tc.status, got, tc.want)
+		}
+	}
+}
+
+// TestClassifyStatusMatrix4xxBindingScopedIsNotAmplified 钉「绑定级」族的
+// **反放大器**性质。绑定级是第三类处置（既不是请求侧、也不是节点临时故障），
+// 它必须同时满足下面五条，任何一条被打开都会把事故的某一环带回来：
+//
+//	① IsRetryable = false            ⇒ 同节点盲重试（同一对必然再败）；
+//	② IsRequestSideError = false     ⇒ 它**要**写绑定级状态（落请求侧就一个
+//	                                    字节的绑定级状态都不写，缺口留给探针阶梯）；
+//	③ PenaltyOf = PenaltyBinding     ⇒ 只罚这一对，**不**罚账号
+//	                                    （PenaltyCredential ⇒ 整凭据 cooling
+//	                                    ⇒ 全租户 503，那是事故本体）；
+//	④ 非终态                        ⇒ 跨凭据故障转移必须保留
+//	                                    （terminalActionKind ⇒ 放弃转移）；
+//	⑤ DecideNextAction = switch_node ⇒ 真的换一个兄弟候选。
+func TestClassifyStatusMatrix4xxBindingScopedIsNotAmplified(t *testing.T) {
+	for _, status := range bindingScopedStatuses {
+		kind := ClassifyErrorWithBody(status, nil)
+		if kind != KindModelUnavailable {
+			t.Errorf("4xx %d：分类结果是 %q，want %q（绑定级）", status, kind, KindModelUnavailable)
+			continue
+		}
+		if IsRetryable(kind) {
+			t.Errorf("4xx %d（%q）：IsRetryable = true ⇒ 同节点盲重试会被重新打开", status, kind)
+		}
+		if IsRequestSideError(kind) {
+			t.Errorf("4xx %d（%q）：IsRequestSideError = true ⇒ 绑定级处置被降级成请求侧，"+
+				"该对不会被拉黑（§六.7 登记的缺口原样回来）", status, kind)
+		}
+		if got := PenaltyOf(kind).Target; got != PenaltyBinding {
+			t.Errorf("4xx %d（%q）：PenaltyOf = %q，want %q（只罚这一对，"+
+				"罚账号会连坐兄弟模型 ⇒ 全租户 503）", status, kind, got, PenaltyBinding)
+		}
+		if PenaltyOf(kind).Fuse {
+			t.Errorf("4xx %d（%q）：PenaltyOf.Fuse = true ⇒ 会进账号级熔断语义", status, kind)
+		}
+		if terminalActionKind(kind) {
+			t.Errorf("4xx %d（%q）：terminalActionKind = true ⇒ 放弃跨凭据故障转移，"+
+				"兄弟凭据本来能服务同一个模型时也被判死", status, kind)
+		}
+		decision := DecideNextAction(DecisionContext{
+			Kind:              kind,
+			HasAlternateNode:  true,
+			RemainingAttempts: 2,
+		})
+		if decision.Action != ActionSwitchNode {
+			t.Errorf("4xx %d（%q）：DecideNextAction = %q（reason %q），want %q",
+				status, kind, decision.Action, decision.ReasonCode, ActionSwitchNode)
+		}
+		if decision.RecordCredentialFailure || decision.RecordCredentialState {
+			t.Errorf("4xx %d（%q）：DecideNextAction 记了凭据失败/凭据状态 ⇒ 账号被连坐", status, kind)
 		}
 	}
 }

@@ -105,6 +105,14 @@ func DecideFailover(status int, body []byte, retryAfterHeader string, clientOrig
 		decision.EnqueueProbe = false
 		decision.FrontendWait = 0
 		decision.ReasonCode = "model_or_request_not_eligible"
+	case KindModelUnavailable:
+		// 2026-11-02（4xx 归因族收口轮）：裸 404 = 「上游不提供这一对」。
+		// Scope 来自 PenaltyOf ⇒ ScopeModel（**绑定级**，不动账号）；
+		// 不扇出探针——上游已经说了「我不提供它」，立刻再探只是再打一次
+		// 必然失败的请求（绑定级恢复由绑定级阶梯 + 探针阶梯负责）。
+		decision.EnqueueProbe = false
+		decision.FrontendWait = 0
+		decision.ReasonCode = "model_unavailable_binding_scoped"
 	default:
 		if pen.Target == PenaltyNone {
 			decision.EnqueueProbe = false

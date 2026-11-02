@@ -215,6 +215,13 @@ var taskActionForKind = map[errorsx.ErrorKind]TaskAction{
 	// 模型里 366 个由 ≥2 个凭据服务）。而「不惩罚节点」由 errorsx 的归责
 	// 矩阵（PenaltyNone）与 IsRequestSideError 各闸门负责，与本表无关。
 	errorsx.KindRequestRejected: TaskActionRetryNow,
+	// 2026-11-02（4xx 归因族收口轮）：裸 404 = 「上游不提供这一对」。
+	// 与 KindRequestRejected 同样登记为 RetryNow 而不是 FailTerminal，
+	// 因为**跨凭据故障转移必须保留**（404 可能是这一把钥匙的权限/档位问题，
+	// 兄弟凭据可能能服务同一个模型）；与请求侧族的区别在**归责**——
+	// 本 kind 写**绑定级**冷却（PenaltyBinding），请求侧族一个字节的共享
+	// 状态都不写（PenaltyNone）。
+	errorsx.KindModelUnavailable: TaskActionRetryNow,
 }
 
 // AggregateTaskOutcome folds one AttemptResult into a TaskDecision.

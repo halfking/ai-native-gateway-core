@@ -2062,7 +2062,10 @@ func kindDiagnosticRank(kind errorsx.ErrorKind) int {
 	switch {
 	case errorsx.IsCredentialFatal(kind):
 		return 3
-	case kind == errorsx.KindModelNotFound, kind == errorsx.KindModelDeprecated:
+	case kind == errorsx.KindModelNotFound, kind == errorsx.KindModelDeprecated,
+		// 2026-11-02（4xx 归因族收口轮）：model_unavailable 同属「模型级
+		// 裁决」——它比一条泛化的上游失败更能解释这次请求为什么失败。
+		kind == errorsx.KindModelUnavailable:
 		return 2
 	case kind == errorsx.KindContextLength,
 		kind == errorsx.KindContentFilter,

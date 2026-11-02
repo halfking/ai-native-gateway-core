@@ -34,6 +34,14 @@ const (
 	ErrorKindAuth         ErrorKind = "auth"
 	ErrorKindQuota        ErrorKind = "quota"
 	ErrorKindModelBinding ErrorKind = "model_binding"
+	// ErrorKindModelUnavailable is a binding-scoped failure that is NOT
+	// "the model does not exist" (which is terminal and skips cross-credential
+	// failover). It means "this upstream deterministically does not serve this
+	// (credential, model) pair" — e.g. a bare 404 whose body carries no
+	// model-level verdict. Like ErrorKindModelBinding it invalidates only the
+	// pair and never feeds the credential-wide circuit; unlike it, the
+	// request may still fail over to a sibling credential.
+	ErrorKindModelUnavailable ErrorKind = "model_unavailable"
 	// ErrorKindEmptyResponse is a binding-scoped quality signal. It is recorded
 	// in URSM for routing penalties but cannot escalate a credential-wide circuit
 	// or availability state.
@@ -477,7 +485,7 @@ func isPermanent(kind ErrorKind) bool {
 // circuit, so model-a going missing must not affect model-b availability
 // on the same credential.
 func isBindingScoped(kind ErrorKind) bool {
-	return kind == ErrorKindModelBinding
+	return kind == ErrorKindModelBinding || kind == ErrorKindModelUnavailable
 }
 
 func (o Observation) validate() error {

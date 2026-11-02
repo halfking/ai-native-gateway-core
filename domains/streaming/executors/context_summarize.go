@@ -80,7 +80,11 @@ func shouldHeuristicCompact(status int, kind errorsx.ErrorKind, bodyLen int, con
 	}
 	if kind == errorsx.KindConcurrent ||
 		kind == errorsx.KindModelNotFound ||
-		kind == errorsx.KindModelDeprecated {
+		kind == errorsx.KindModelDeprecated ||
+		// 2026-11-02（4xx 归因族收口轮）：裸 404 = 「上游不提供这一对」，
+		// 与上下文长度毫无关系 ⇒ 不得触发启发式压缩（压缩一次就是多打一次
+		// 必然失败的请求）。
+		kind == errorsx.KindModelUnavailable {
 		return false
 	}
 	// 413 Request Entity Too Large is a strong signal of context length issue.
