@@ -770,6 +770,26 @@ class LedgerBleed(Exception):
         self.errors = errors
 
 
+class LedgerShape(Exception):
+    """★ 台账**形状**坏了：某行的列数与**表头**不符。
+
+    ★★ 为什么必须拒写（★ 2026-11-03 第三十轮实测）：
+      `read_ledger` 用 `ln.split("\t")` 切列 ⇒ ★ **列数多出来的行**（reason/evidence 里
+      手写了一个 tab）⇒ ⇒ `zip(LEDGER_COLS, cols)` 会**静默丢掉多出来的列**
+      ⇒ ⇒ ★★ **那一行的 verdict/reason/evidence 整体错位** ⇒ ⇒ **台账被静默写坏**；
+      ★★ 而**列数不够**的行 ⇒ ⇒ 被 `continue` **静默丢弃** ⇒ ⇒ **那一行的人工裁决凭空消失**。
+      ⇒ ⇒ ★ 两者都**不报错** ⇒ ⇒ ★ 「台账读不出错」不等于「台账是对的」
+      ⇒ ⇒ ★ 所以这里**按表头列数严格校验**，形状不对 ⇒ **拒绝写出**（exit 3）。
+
+    ★ ★ 与 `LedgerBleed` 是**同族但不同轴**：那一条管「裁决串味（语义）」，
+      这一条管「形状（结构）」⇒ ⇒ ★ 两边都过 ⇒ 台账才可信。
+    """
+
+    def __init__(self, errors):
+        super(LedgerShape, self).__init__("台账形状异常：%d 处" % len(errors))
+        self.errors = errors
+
+
 def _int(s, default=0):
     try:
         return int(str(s).strip())
@@ -792,13 +812,25 @@ def read_ledger(path):
     if not path or not os.path.exists(path):
         return by_key, by_fp, by_line
     rows = []
+    # ★★ 第三十轮新增：**按【表头】的列数严格校验每一行**（★ 见 LedgerShape 的说明）
+    shape_errors = []
+    expected_cols = None
     with open(path, "r", encoding="utf-8") as f:
-        for ln in f:
+        for lineno, ln in enumerate(f, 1):
             ln = ln.rstrip("\n")
             if not ln.strip() or ln.startswith("#"):
                 continue
             cols = ln.split("\t")
             if cols[0] == "file":
+                expected_cols = len(cols)
+                continue
+            if expected_cols is not None and len(cols) != expected_cols:
+                shape_errors.append(
+                    "★ %s:%d 的列数 = %d，表头是 %d 列 ⇒ %s"
+                    % (path, lineno, len(cols), expected_cols,
+                       ("多出来的 tab 会让字段**静默错位** ⇒ 裁决被改坏"
+                        if len(cols) > expected_cols
+                        else "列数不足 ⇒ 该行会被**静默丢弃** ⇒ 人工裁决凭空消失")))
                 continue
             if len(cols) >= len(LEDGER_COLS):
                 fields = dict(zip(LEDGER_COLS, cols))
@@ -810,6 +842,8 @@ def read_ledger(path):
             if not fields.get("fingerprint", "").strip():
                 continue
             rows.append(fields)
+    if shape_errors:
+        raise LedgerShape(shape_errors)
     grp = {}
     for r in rows:
         grp.setdefault((r["file"], r["fingerprint"]), []).append(r)
@@ -1172,6 +1206,13 @@ def main():
             print("✗ ★ 裁决串味自检失败 ⇒ 台账不可信 ⇒ **拒绝写出**：")
             for x in e.errors[:20]:
                 print("    %s" % x)
+            return 3
+        except LedgerShape as e:
+            print("✗ ★ 台账**形状**自检失败 ⇒ 台账不可信 ⇒ **拒绝写出**：")
+            for x in e.errors[:20]:
+                print("    %s" % x)
+            print("    ★ 典型成因：reason / evidence 里手写了一个 **tab**（或整行被截断）")
+            print("    ★ 修法：把那行里的 tab 换掉（或删掉多余列），再重跑本工具")
             return 3
         with open(args.ledger, "w", encoding="utf-8") as f:
             f.write("# SIGPIPE 竞态面 · 逐条裁决台账（由 scripts/audit/measure-pipefail-race-surface.py 生成）\n")
