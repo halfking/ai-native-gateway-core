@@ -119,6 +119,21 @@ func TestHeavyDDLModernMigrationsDeclareMeasuredBudget(t *testing.T) {
 		// 索引重建量级，应按 761 先例抬预算——豁免不是永久许可。
 		"917": "applied；字节冻结；新功能表无大存量（sanitize_block_reviews 等 3 表 + 索引）",
 		"921": "applied；字节冻结；新功能表无大存量（evidence 表 + reviews 补索引）",
+		// 928：探测流量物理隔离车道（2026-11-02）。形态同 912/913 ——
+		// 本迁移的三个 CREATE INDEX 全部建在**本文件刚 CREATE 的空表**
+		// session_turns_probe_hot 上（无存量可扫），分钟表
+		// request_stats_probe_minute 的 PK 落在同文件新建的空表上。
+		// ★ 实测（211 PG17.10，2026-11-02）：全新空库跑完整脚本墙钟 0.276s；
+		// 最坏形态（表已存在 + 灌 50 万存量行 + 索引缺失，迫使
+		// CREATE INDEX 真去扫存量）三索引分别 109.9ms / 140.8ms / 142.6ms、
+		// 分钟表建表 4.6ms ⇒ 合计 < 0.5s，与 5min 预算差三个数量级。
+		// ⇒ 豁免的是「判据误命中」（本门按 CREATE INDEX 字面判全表扫描），
+		//    不是「没量过就拍预算」——量过，且按 761 先例的**数量级**判断：
+		//    存量上限就是本迁移自己建的空表，抬到 10min 也不会让它更安全，
+		//    只会给后人一个「这张表有百万级存量」的错觉。
+		// ★ 字节已冻结：211 台账 content_sha256=31bec328e87f207f… 与磁盘一致，
+		//   改字节会走 content replay 通道并连锁 break（见 914 教训）。
+		"928": "applied(211)；字节冻结；索引建在同文件新建的空表上（无存量扫描）；实测 0.276s/空库、<0.5s/50 万存量形态",
 	}
 		// 全表扫描类 DDL 的形态。
 		validateRe := regexp.MustCompile(`(?i)VALIDATE\s+CONSTRAINT`)

@@ -67,6 +67,11 @@ type IntegrityFingerprintDrift struct {
 	driftDetected atomic.Uint64
 	skippedTicks  atomic.Uint64
 
+	// onDriftRecorded is an optional hook fired after a fingerprint_drift
+	// event is committed (C 方案 → model credibility ScanNode). Must be
+	// non-blocking. Set via SetCredibilityOnDrift.
+	onDriftRecorded func(credentialID int64, rawModel string)
+
 	// probeDone/probeEmpty memoize the one-shot fingerprint existence probe
 	// (2026-09-25 audit round 8, D11). The probe itself is a partition-
 	// pruned scan and can take tens of seconds on a cold, fingerprint-less
@@ -75,6 +80,14 @@ type IntegrityFingerprintDrift struct {
 	// the moment real fingerprint traffic shows up.
 	probeDone  bool
 	probeEmpty bool
+}
+
+// SetCredibilityOnDrift wires the post-commit hook for credibility auto-scan.
+func (w *IntegrityFingerprintDrift) SetCredibilityOnDrift(fn func(credentialID int64, rawModel string)) {
+	if w == nil {
+		return
+	}
+	w.onDriftRecorded = fn
 }
 
 // NewIntegrityFingerprintDrift constructs a worker. Default values
@@ -450,6 +463,9 @@ func (w *IntegrityFingerprintDrift) scanDrift(ctx context.Context) error {
 		slog.Info("integrity_fingerprint_drift: transition recorded",
 			"credential_id", p.credID, "model", p.rawModel,
 			"baseline_fp", p.baselineFP, "current_fp", p.currentFP)
+		if w.onDriftRecorded != nil {
+			w.onDriftRecorded(p.credID, p.rawModel)
+		}
 	}
 	return nil
 }

@@ -14,6 +14,7 @@ import { computed, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { PanelEntry } from '../../composables/useLiveTopology'
 import { clientDisplayName } from '../../lib/liveTopologyGraph'
+import { isIdleMarker } from '../../lib/liveStreamIdle'
 import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
 import { useNewArrivals } from '../../composables/useNewArrivals'
 import { CaretLeft, CaretRight, TopRight, ArrowRight } from '@element-plus/icons-vue'
@@ -69,16 +70,24 @@ function displayName(client: string): string {
 /** 表头计数 = 请求明细总数（与分页器的「共 N 条」同源；聚合摘要已上移头部）。 */
 const headerCount = computed(() => String(props.requests.length))
 
-function statusClass(status: string): string {
-  switch (status) {
+function statusClass(entry: PanelEntry): string {
+  if (isIdleMarker(entry)) return 'is-idle'
+  switch (entry.status) {
     case 'success':
       return 'is-success'
     case 'failure':
     case 'rate_limited':
       return 'is-failure'
+    case 'idle':
+      return 'is-idle'
     default:
       return 'is-in-progress'
   }
+}
+
+function idleOrErrorLabel(entry: PanelEntry): string | null {
+  if (isIdleMarker(entry)) return t('liveTopology.panel.idleLane')
+  return entry.errorKind || null
 }
 
 function clock(ts: string): string {
@@ -106,13 +115,13 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
       <li v-for="entry in pagedRequests" :key="entry.requestId">
         <div
           class="cp__row"
-          :class="[statusClass(entry.status), { 'is-active': entry.requestId === activeRequestId, 'is-probe': entry.isProbe, 'is-new': freshIds.has(entry.requestId) }]"
+          :class="[statusClass(entry), { 'is-active': entry.requestId === activeRequestId, 'is-probe': entry.isProbe && !isIdleMarker(entry), 'is-new': freshIds.has(entry.requestId) }]"
         >
           <button type="button" class="cp__item" @click="onItem(entry)">
             <span class="cp__line">
               <span class="cp__time">{{ clock(entry.ts) }}</span>
               <span class="cp__client">{{ displayName(entry.client) }}</span>
-              <span class="cp__latency">{{ latency(entry.latencyMs) }}</span>
+              <span class="cp__latency">{{ isIdleMarker(entry) ? '—' : latency(entry.latencyMs) }}</span>
             </span>
             <span class="cp__line cp__line--sub">
               <!-- auto 请求：点名的是 auto，最终模型由网关按任务选出 —— 面板上
@@ -131,9 +140,13 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
               </span>
               <span class="cp__provider">{{ entry.provider }}</span>
             </span>
-            <span v-if="entry.errorKind" class="cp__error">{{ entry.errorKind }}</span>
+            <span
+              v-if="idleOrErrorLabel(entry)"
+              :class="isIdleMarker(entry) ? 'cp__idle' : 'cp__error'"
+            >{{ idleOrErrorLabel(entry) }}</span>
           </button>
           <button
+            v-if="!isIdleMarker(entry)"
             type="button"
             class="cp__open"
             :data-testid="`client-open-page-${entry.requestId}`"
@@ -230,6 +243,11 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
 
 .cp__row.is-in-progress {
   border-color: var(--kx-primary);
+}
+
+.cp__row.is-idle {
+  border-color: var(--kx-border, var(--muted));
+  opacity: 0.85;
 }
 
 /* 探测流量：与普通请求区分开（探针失败不该被当成真实业务故障看）。
@@ -343,6 +361,11 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.cp__idle {
+  color: var(--kx-text-muted, var(--muted));
+  font-size: var(--kx-font-sm, 12px);
 }
 
 .cp__error {

@@ -53,6 +53,7 @@ export default {
     inProgress: 'In progress',
     failure: 'Failure',
     rateLimited: 'Rate limited',
+    idle: 'خامل',
     clear: 'Clear filters',
     showProbe: 'إظهار طلبات الفحص',
     showInvalid: 'إظهار العُقد غير الصالحة',
@@ -174,6 +175,8 @@ export default {
     page: 'صفحة {page}/{pages}',
     total: 'الإجمالي {n}',
     autoChip: 'طلب العميل auto؛ اختار البوابة النموذج النهائي حسب المهمة',
+    idleLane: 'خامل',
+    idleLaneHint: 'لا توجد حركة عمل حديثة على هذا المسار؛ نبضة خمول وليست طلباً فاشلاً',
   },
   zoom: {
     title: 'تفاصيل الطلب',
@@ -196,6 +199,7 @@ export default {
     yes: 'نعم',
     no: 'لا',
     error: 'خطأ',
+    idleNote: 'ملاحظة',
   },
   page: {
     back: 'العودة إلى الطوبولوجيا',

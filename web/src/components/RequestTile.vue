@@ -11,6 +11,7 @@ import {
   VENDOR_COLORS,
   calculateFontSize,
   truncateText,
+  isIdleTile,
 } from '../types/swimlane'
 import { errorKindLabel, statusBarColor, statusSemanticLabel } from '../composables/liveStreamDisplay'
 import { useReactiveStatusColor } from '../composables/useStatusColor'
@@ -77,9 +78,9 @@ const probeBadgeTooltip = computed(() => {
   }
   return labels[probeOrigin.value] || t('dashboard.liveStream.probeGeneric')
 })
-const isIdle = computed(() => props.tile.status === 'idle')
-const isInProgress = computed(() => props.tile.status === 'in_progress')
-const isFailure = computed(() => props.tile.status === 'failure')
+const isIdle = computed(() => isIdleTile(props.tile))
+const isInProgress = computed(() => props.tile.status === 'in_progress' && !isIdle.value)
+const isFailure = computed(() => props.tile.status === 'failure' && !isIdle.value)
 
 const credentialId = computed(() => {
   void requestCredentialRevision.value

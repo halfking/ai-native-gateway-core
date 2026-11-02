@@ -11,7 +11,7 @@
  * 设计约束：颜色只用 var(--kx-*)。
  */
 import { onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import OnlineSessionsPanel from './OnlineSessionsPanel.vue'
 import SessionCatalogPanel from './SessionCatalogPanel.vue'
@@ -121,25 +121,34 @@ function closeDigest() {
 <template>
   <div class="sdp" data-testid="session-drilldown-panel">
     <template v-if="!selectedSessionId">
-      <div class="sdp-mode" role="tablist">
-        <button
-          type="button"
-          class="sdp-mode-btn"
-          :class="{ 'sdp-mode-btn--active': listMode === 'online' }"
-          data-testid="slist-online"
-          @click="setListMode('online')"
+      <div class="sdp-mode-row">
+        <div class="sdp-mode" role="tablist">
+          <button
+            type="button"
+            class="sdp-mode-btn"
+            :class="{ 'sdp-mode-btn--active': listMode === 'online' }"
+            data-testid="slist-online"
+            @click="setListMode('online')"
+          >
+            {{ t('sessions.catalog.online') }}
+          </button>
+          <button
+            type="button"
+            class="sdp-mode-btn"
+            :class="{ 'sdp-mode-btn--active': listMode === 'catalog' }"
+            data-testid="slist-catalog"
+            @click="setListMode('catalog')"
+          >
+            {{ t('sessions.catalog.directory') }}
+          </button>
+        </div>
+        <RouterLink
+          class="sdp-probe-link"
+          data-testid="drilldown-probe-link"
+          to="/probe-health/detail"
         >
-          {{ t('sessions.catalog.online') }}
-        </button>
-        <button
-          type="button"
-          class="sdp-mode-btn"
-          :class="{ 'sdp-mode-btn--active': listMode === 'catalog' }"
-          data-testid="slist-catalog"
-          @click="setListMode('catalog')"
-        >
-          {{ t('sessions.catalog.directory') }}
-        </button>
+          {{ t('sessions.stats.probeTrafficLink') }}
+        </RouterLink>
       </div>
       <OnlineSessionsPanel v-if="listMode === 'online'" @select="openSession" />
       <SessionCatalogPanel v-else @select="openSession" />
@@ -174,6 +183,19 @@ function closeDigest() {
 <style scoped>
 .sdp {
   margin-bottom: 16px;
+}
+.sdp-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.sdp-probe-link {
+  font-size: 12px;
+  color: var(--kx-accent, var(--accent));
+  text-decoration: underline;
 }
 .sdp-mode {
   display: inline-flex;

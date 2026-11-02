@@ -92,9 +92,17 @@ var probeBudgetResponsesLegFiles = map[string]string{
 var probeBudgetBareLiteralExceptions = map[string]string{
 	// 音频（TTS）探针：max_tokens 约束的是【音频分段】，与【文本正文长度】无关
 	// ⇒ 不适用推理模型的正文预算下限。
-	"bg/node_probe.go|directProbeBody|#1|32": "音频（TTS）探针：max_tokens 约束的是【音频分段】，与【文本正文长度】无关 ⇒ 不适用推理模型的正文预算下限。",
+	//
+	// ★ 锚点从 directProbeBody 迁到 directProbeBodyForModality：2026-11-02
+	//   embedding 轮把 directProbeBody 改成薄封装（它现在只调
+	//   directProbeBodyForModality(model, protocol, "")），两个音频分支连同
+	//   它们的 "max_tokens": 32 一起搬进了后者 ⇒ ★ 锚点不跟着搬 ⇒ 台账条目
+	//   失配（门红：「台账陈旧或锚点写错」）+ 新函数里的位点裸奔（门红：
+	//   「裸字面量」）。⇒ ★ 台账锚点是「函数名 + 函数内序号」，★ 函数搬家
+	//   就必须搬锚点 —— 门是这个漂移的探测器，不是障碍。
+	"bg/node_probe.go|directProbeBodyForModality|#1|32": "音频（TTS）探针：max_tokens 约束的是【音频分段】，与【文本正文长度】无关 ⇒ 不适用推理模型的正文预算下限。",
 	// 音频输入探针：同上。
-	"bg/node_probe.go|directProbeBody|#2|32": "音频输入探针：max_tokens 约束的是【音频分段】，与【文本正文长度】无关 ⇒ 不适用推理模型的正文预算下限。",
+	"bg/node_probe.go|directProbeBodyForModality|#2|32": "音频输入探针：max_tokens 约束的是【音频分段】，与【文本正文长度】无关 ⇒ 不适用推理模型的正文预算下限。",
 	// 工具调用探针：请求体要求模型「调用工具」⇒ max_tokens 的语义是
 	// 「工具调用的参数长度」，不是「正文长度」⇒ 不适用推理模型的正文预算下限。
 	"bg/credential_selfcheck.go|isSelfcheckRateLimit|#2|64": "工具调用探针体（要求模型只调用 get_current_time）⇒ max_tokens 约束的是【工具调用参数】长度，与正文长度无关 ⇒ 不适用推理模型的正文预算下限。",

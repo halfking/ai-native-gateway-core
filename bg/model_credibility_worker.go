@@ -80,6 +80,11 @@ type ModelCredibilityWorker struct {
 	running bool
 	stopCh  chan struct{}
 	doneCh  chan struct{}
+
+	// probe-success trigger state (B 方案，见 credibility_on_probe_success.go)
+	probeSuccessOnce     sync.Once
+	probeSuccessMu       sync.Mutex
+	probeSuccessInflight map[string]struct{}
 }
 
 // NewModelCredibilityWorker 创建 worker。
@@ -208,6 +213,7 @@ func (w *ModelCredibilityWorker) ScanAll(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("discover credibility targets: %w", err)
 	}
+	targets = w.filterTrustedSkipTargets(targets)
 	if len(targets) == 0 {
 		slog.Info("model credibility scan: no eligible targets")
 		return 0, nil
@@ -242,7 +248,32 @@ func (w *ModelCredibilityWorker) ScanAll(ctx context.Context) (int, error) {
 	return len(results), nil
 }
 
+// filterTrustedSkipTargets drops auto-scan targets on the trusted list.
+// Manual ScanNode does NOT call this — operators can always force a check.
+func (w *ModelCredibilityWorker) filterTrustedSkipTargets(in []modelcredibility.NodeTarget) []modelcredibility.NodeTarget {
+	entries := loadTrustedSkipEntries()
+	if len(entries) == 0 || len(in) == 0 {
+		return in
+	}
+	out := make([]modelcredibility.NodeTarget, 0, len(in))
+	skipped := 0
+	for _, t := range in {
+		prov := t.CatalogCode
+		if isTrustedSkip(prov, t.RawModelName, entries) {
+			skipped++
+			continue
+		}
+		out = append(out, t)
+	}
+	if skipped > 0 {
+		slog.Info("model credibility scan: trusted_skip filtered targets",
+			"skipped", skipped, "remaining", len(out))
+	}
+	return out
+}
+
 // ScanNode 扫描单个节点（admin API 的「立即检测」按钮）。
+// ★ 不受 featured scope / trusted_skip 限制 —— 人工触发可查任意绑定。
 func (w *ModelCredibilityWorker) ScanNode(ctx context.Context, credentialID int64, rawModelName string) (*modelcredibility.Result, error) {
 	if w.db == nil {
 		return nil, fmt.Errorf("model credibility worker: db pool is nil")

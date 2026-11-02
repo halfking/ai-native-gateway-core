@@ -37,6 +37,7 @@ export default {
     operationFailed: 'تعذّر إتمام العملية. أعد المحاولة.',
     loading: 'جاري التحميل…',
     unknownReason: 'لم يتم الحصول على تفاصيل الخطأ',
+    probeLaneHistoricalHint: 'مسار العزل المادي لحركة استكشاف المسار غير مفعّل؛ هذه سجلات استكشاف تاريخية قبل العزل.',
     saveFailedWithReason: 'فشل الحفظ: {reason}. أعد المحاولة.',
     operationFailedWithReason: 'فشلت العملية: {reason}. أعد المحاولة.',
     testFailedWithReason: 'فشل الاختبار: {reason}. أعد المحاولة.',

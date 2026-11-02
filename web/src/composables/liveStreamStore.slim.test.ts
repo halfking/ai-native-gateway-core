@@ -16,8 +16,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   __testing,
   __resetStreamDimsForTest,
+  __resetStreamWantProbeForTest,
   acquireLiveStream,
   setLiveStreamDimsQuery,
+  setLiveStreamWantProbe,
   ENDPOINT,
 } from './liveStreamStore'
 import type { LiveStreamLanePatch, LiveStreamTileDelta } from './liveStreamStore'
@@ -157,6 +159,11 @@ describe('mergeTileDelta (slim wire)', () => {
 describe('slim URL plumbing', () => {
   beforeEach(() => {
     __resetStreamDimsForTest()
+    __resetStreamWantProbeForTest()
+  })
+  afterEach(() => {
+    __resetStreamDimsForTest()
+    __resetStreamWantProbeForTest()
   })
 
   it('keeps the endpoint unchanged (params ride the query string)', () => {
@@ -197,6 +204,40 @@ describe('slim URL plumbing', () => {
       expect(new URLSearchParams(secondQ).get('slim')).toBe('1')
       // '' subscription is queue mode: the param must be PRESENT and empty.
       expect(new URLSearchParams(secondQ).get('dims')).toBe('')
+    } finally {
+      release()
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('★ U3：勾选探测后 URL 带 probe=1 并重连一次', () => {
+    class FakeEventSource {
+      static urls: string[] = []
+      url: string
+      constructor(url: string) {
+        this.url = url
+        FakeEventSource.urls.push(url)
+      }
+      close() {}
+      addEventListener() {}
+      removeEventListener() {}
+    }
+    vi.stubGlobal('EventSource', FakeEventSource)
+    vi.useFakeTimers()
+    const release = acquireLiveStream()
+    try {
+      const firstQ = FakeEventSource.urls[0]?.split('?')[1] ?? ''
+      expect(new URLSearchParams(firstQ).get('probe')).toBeNull()
+
+      setLiveStreamWantProbe(true)
+      setLiveStreamWantProbe(true) // idempotent — no extra reconnect
+      expect(__testing.streamWantProbe()).toBe(true)
+      vi.advanceTimersByTime(500)
+      expect(FakeEventSource.urls).toHaveLength(2)
+      const secondQ = FakeEventSource.urls[1].split('?')[1] ?? ''
+      expect(new URLSearchParams(secondQ).get('probe')).toBe('1')
+      expect(new URLSearchParams(secondQ).get('slim')).toBe('1')
     } finally {
       release()
       vi.useRealTimers()

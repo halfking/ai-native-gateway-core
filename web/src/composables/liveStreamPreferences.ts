@@ -76,7 +76,8 @@ const QUEUE_STATUS_BUCKET_VALUES: QueueStatusBucket[] = ['active', 'degraded', '
 
 function defaultFilters(): LiveStreamFilterPreferences {
   return {
-    requestTypes: ['business', 'probe'],
+    // 2026-11-02 探测隔离：默认只显示业务请求（与 Live Topology showProbe=false 对齐）
+    requestTypes: ['business'],
     statuses: [],
     models: [],
     providers: [],

@@ -292,6 +292,14 @@ export function useRequestDetailLoader() {
   const outboundBody = computed(
     () => unified.value?.bodies?.outbound_body ?? log.value?.outbound_body ?? null,
   )
+  // ★ 2026-11-02：正文可用性 / 录制同意状态 / 正文来源（前端要区分
+  //   「这条请求本来没正文」与「租户没开录制同意 ⇒ 正文压根没落库」）。
+  //   ★ 后端统一详情已透出这三个信号（meta.body_status / recording_consent /
+  //   meta.body_source）；此前前端联合类型里没有 body_status ⇒ 信号被静默丢掉
+  //   ⇒ 「对话」页把「未落库」显示成「无消息」（错的量具）。
+  const bodyStatus = computed(() => unified.value?.meta?.body_status ?? undefined)
+  const recordingConsent = computed(() => unified.value?.recording_consent)
+  const bodySource = computed(() => unified.value?.source)
   const attempts = computed((): RequestDetailAttempt[] => mergeRequestAttempts(
     journey.value,
     waterfall.value?.attempts,
@@ -629,6 +637,9 @@ export function useRequestDetailLoader() {
     requestBody,
     responseBody,
     outboundBody,
+    bodyStatus,
+    recordingConsent,
+    bodySource,
     bodiesLoading,
     bodiesLoaded,
     waterfallLoading,

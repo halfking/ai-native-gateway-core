@@ -30,6 +30,7 @@ import { redisHealthyRef as redisHealthy, redisErrorRef as redisError, liveDataR
 import { useLiveTopology, type PanelEntry } from '../composables/useLiveTopology'
 import { clientKeyOf, modelKeyOf, providerNodeKeyOf } from '../lib/liveTopologyGraph'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
+import { isIdleMarker } from '../lib/liveStreamIdle'
 import TopologyCanvas from '../components/live-topology/TopologyCanvas.vue'
 import ClientRequestPanel from '../components/live-topology/ClientRequestPanel.vue'
 import ProviderResponsePanel from '../components/live-topology/ProviderResponsePanel.vue'
@@ -235,9 +236,11 @@ function onSelectRequest(requestId: string) {
  * 组件 —— 面板不知道自己在屏幕哪边，知道的是布局）。
  */
 function onZoomRequest(entry: PanelEntry, side: 'left' | 'right') {
+  // Idle heartbeats have no request detail — still allow muted zoom summary,
+  // but never navigate as if this were a real request id.
   zoomEntry.value = entry
   zoomSide.value = side
-  onSelectRequest(entry.requestId)
+  if (!isIdleMarker(entry)) onSelectRequest(entry.requestId)
 }
 
 /** 浮层出现后保证它落在视野内（2026-11-01 量具盲区轮）。浮层锚在列的
@@ -255,7 +258,7 @@ watch(zoomEntry, async (entry) => {
  *  与站内其余入口（RequestLogsView / DashboardViewV2 / DispatchWaterfallView …）
  *  共用同一个 openRequestDetailPage。 */
 function onOpenPage(entry: PanelEntry) {
-  if (!entry.requestId) return
+  if (!entry.requestId || isIdleMarker(entry)) return
   openRequestDetailPage(entry.requestId, undefined, router)
 }
 

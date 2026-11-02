@@ -130,6 +130,8 @@ export default {
     mediaHint: '含媒體 {count}',
     toolCall: '工具呼叫:',
     noMessages: '(無訊息)',
+    // ★ 2026-11-02：正文没落库时的中性空态（不是「无消息」）。
+    bodyUnavailable: '該請求沒有採集到正文（正文未落庫，不代表該請求沒有對話）',
     assistantReply: '[助理回覆]',
     collapse: '收合',
     expand: '展開',

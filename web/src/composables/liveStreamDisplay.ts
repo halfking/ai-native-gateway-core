@@ -1,4 +1,5 @@
 import { formatTimeOnly } from '../utils/datetime'
+import { isIdleMarker, isNoTrafficErrorKind } from '../lib/liveStreamIdle'
 
 // liveStreamDisplay — UI helpers for the swim lane.
 //
@@ -93,6 +94,8 @@ export function statusCategory(
   status: string | undefined | null,
   errorKind: string | undefined | null,
 ): StatusCategory {
+  // Idle heartbeats carry error_kind=no_traffic_* but are not failures.
+  if (status === 'idle' || isNoTrafficErrorKind(errorKind)) return 'success'
   if (status === 'success') return 'success'
   if (status === 'in_progress') return 'in_progress'
   if (status !== 'failure') return 'failure_other'
@@ -137,6 +140,8 @@ export function errorKindLabel(errorKind: string | undefined | null): string {
   if (!errorKind) return ''
   const k = errorKind.trim().toLowerCase()
   if (!k) return ''
+  // Idle heartbeat tiers — never classify as a failure glyph.
+  if (isNoTrafficErrorKind(k)) return 'idle'
   // Priority-ordered classification. The first matching rule wins.
   // "upstream_*" prefixes bump a timeout/rate/auth/not-found into
   // the upstream_5xx bucket because they describe server-side failure
@@ -166,12 +171,16 @@ export function errorKindLabel(errorKind: string | undefined | null): string {
 export function errorKindBg(errorKind: string | undefined | null): string {
   if (!errorKind) return 'transparent'
   const k = errorKind.toLowerCase()
+  if (isNoTrafficErrorKind(k)) return 'transparent'
   if (/(timeout|disconnect|network|reset|eof|cancel)/.test(k)) return 'var(--warning-bd)'
   if (/(5xx|server|upstream|provider|overloaded|backend|internal)/.test(k)) return 'color-mix(in srgb, var(--danger) 14%, transparent)'
   if (/(4xx|auth|unauthor|forbidden|quota|rate|billing|payment|invalid)/.test(k)) return 'var(--warning-bd)'
   if (/(not_found|model_not|\brout|no_route|resolve|policy|missing)/.test(k)) return 'color-mix(in srgb, var(--purple) 22%, transparent)'
   return 'color-mix(in srgb, var(--danger) 14%, transparent)'
 }
+
+/** Re-export for callers that already import from this module. */
+export { isIdleMarker, isNoTrafficErrorKind }
 
 /**
  * Format a date as HH:MM using the active locale.

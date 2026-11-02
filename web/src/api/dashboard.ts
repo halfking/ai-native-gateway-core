@@ -166,6 +166,16 @@ export interface SessionOverviewData {
     closed_count: number
   }>
 
+  /** KPI ↔ turns 对拍；degraded 时面板必须提示，不得假绿 */
+  turns_alignment?: {
+    summary_requests: number
+    turns_count: number
+    abs_delta: number
+    degraded: boolean
+    threshold_pct: number
+    message?: string
+  }
+
   // 时间戳
   generated_at: string
   period_start: string

@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // LocatorRetryConfig carries the L3 DB read-your-writes retry policy from
@@ -72,6 +73,26 @@ func (h *Handler) SetRequestDetailStore(store *requestdetail.Store, retry ...Loc
 	h.requestDetailLocator = locator
 }
 
+// SetHotzoneBodySource wires the **兜底**正文源（本地热区请求侧镜像）。
+//
+// ★ 为什么需要（2026-11-02 chat tab 空态根修）：PG 会话族正文的写入受
+//   录制同意开关门控 ⇒ 同意关闭时一行正文都不落库 ⇒ 统一详情 bodies 为空
+//   ⇒ 前端「对话」页全空；而热区镜像里**同一批请求的正文仍在磁盘上**。
+//   ⇒ 本源只在 PG 三件套全空时补位，PG 有值时绝不覆盖。
+//
+// ★ requestsDir 是 H3 镜像子树根（{HotZone.Dir}/requests）；为空 ⇒ 不回源
+//   （未装配热区 / 镜像关闭的环境保持原行为）。
+func (h *Handler) SetHotzoneBodySource(requestsDir string) {
+	if h.requestDetailLocator == nil {
+		return
+	}
+	reader, ok := h.requestDetailLocator.Bodies.(*pgBodyReader)
+	if !ok || reader == nil {
+		return
+	}
+	reader.hotzone = NewHotzoneBodySource(requestsDir)
+}
+
 type bodyFetcher interface {
 	fetchRequestBodies(ctx context.Context, requestID string) (requestBody, responseBody any, err error)
 }
@@ -83,6 +104,11 @@ type queryRower interface {
 type pgBodyReader struct {
 	db    queryRower
 	fetch bodyFetcher
+	// hotzone 是**兜底**正文源（本地热区请求侧镜像）。nil ⇒ 不回源。
+	//
+	// ★ 只在 PG 会话族三件套**全空**时才用（见 ReadSessionTurnsBodies）——
+	//   PG 有正文时热区镜像绝不参与 ⇒ 回源不会覆盖权威载荷。
+	hotzone *HotzoneBodySource
 }
 
 func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID string, omitBody bool) (requestdetail.Bodies, requestdetail.Meta, error) {
@@ -121,7 +147,7 @@ func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID stri
 	// with no captured response). Fill only missing fields from session_turns;
 	// never replace fields that are already present in the bodies store.
 	if len(bodies.RequestBody) == 0 || len(bodies.ResponseBody) == 0 || len(bodies.OutboundBody) == 0 {
-		if sessionBodies, _, sessionErr := r.ReadSessionTurnsBodies(ctx, canonicalRequestID, false); sessionErr == nil {
+		if sessionBodies, sessionMeta, sessionErr := r.ReadSessionTurnsBodies(ctx, canonicalRequestID, false); sessionErr == nil {
 			if len(bodies.RequestBody) == 0 {
 				bodies.RequestBody = sessionBodies.RequestBody
 			}
@@ -130,6 +156,11 @@ func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID stri
 			}
 			if len(bodies.OutboundBody) == 0 {
 				bodies.OutboundBody = sessionBodies.OutboundBody
+			}
+			// ★ 正文可能来自**兜底回源**（热区镜像）⇒ 来源必须跟着搬过来，
+			//   否则 Detail.Source 会谎称「request_logs」而正文其实来自磁盘镜像。
+			if sessionMeta.BodySource != "" {
+				meta.BodySource = sessionMeta.BodySource
 			}
 		} else if !errors.Is(sessionErr, requestdetail.ErrNotFound) {
 			// A request-log body is already usable; session recovery is an
@@ -301,6 +332,7 @@ func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID str
 		outboundBody  []byte
 		model         sql.NullString
 		latencyMs     sql.NullInt32
+		turnTs        sql.NullTime
 	)
 	// 2026-08-28 (audit follow-up): session_turns already joins on
 	// tenant_id; for restricted lookups, pin t.tenant_id to the caller's scope
@@ -332,12 +364,12 @@ func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID str
 	err := r.db.QueryRow(ctx, `
 		SELECT t.session_id, t.turn_no, t.tenant_id,
 		       `+bodyColumns+`,
-		       t.model, t.latency_ms
+		       t.model, t.latency_ms, t.ts
 		  FROM public.session_turns_with_current_month t`+bodyJoin+`
 		 WHERE t.request_id = $1`+tenantClause+`
 		 ORDER BY t.ts DESC NULLS LAST
 		 LIMIT 1
-	`, args...).Scan(&sessionID, &turnNo, &tenantID, &requestDelta, &responseDelta, &outboundBody, &model, &latencyMs)
+	`, args...).Scan(&sessionID, &turnNo, &tenantID, &requestDelta, &responseDelta, &outboundBody, &model, &latencyMs, &turnTs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return requestdetail.Bodies{}, requestdetail.Meta{}, requestdetail.ErrNotFound
 	}
@@ -377,6 +409,39 @@ func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID str
 		RequestBody:  json.RawMessage(requestDelta),
 		ResponseBody: json.RawMessage(responseDelta),
 		OutboundBody: json.RawMessage(outboundBody),
+	}
+	// 正文来源默认是 PG 会话族。
+	meta.BodySource = requestdetail.SourceSessionTurns
+	// ★★ 兜底回源：热区镜像（2026-11-02 chat tab 空态根修）。
+	//
+	// PG 会话族正文的写入**受录制同意门控**（domains/session/v2/bodies_writer.go）：
+	// 同意关闭 ⇒ 一行不写 ⇒ 三件套全空 ⇒ 前端「对话」页四个页签全空，
+	// 而**同一批请求的正文在热区镜像里仍然存在**（H3 镜像不受该门控）。
+	// ⇒ PG 全空时用镜像补位；PG 有值时**绝不**用镜像覆盖（权威载荷优先）。
+	//
+	// ★ ★ 回源**也受同一个同意门控**：录制同意关闭的租户，「正文不可用」
+	//   是它的产品语义（回放/摘要/取证一律 recording_unavailable）⇒
+	//   镜像里有正文也不许在详情接口吐出来 ⇒ 否则同意开关对详情面形同虚设。
+	//   ⇒ 这里只在【该租户已开启录制同意】时回源。
+	//
+	// ★ 只在 !omitBody 时回源：omitBody 是元数据快路径，不该付磁盘 IO。
+	if !omitBody && len(bodies.RequestBody) == 0 && len(bodies.ResponseBody) == 0 && len(bodies.OutboundBody) == 0 &&
+		r.hotzone != nil && settings.RecordingConsentEnabled(tenantID) {
+		var at time.Time
+		if turnTs.Valid {
+			at = turnTs.Time
+		}
+		if hb, ok, hzErr := r.hotzone.Lookup(tenantID, requestID, at); hzErr != nil {
+			// 回源失败**不是**详情失败：正文缺失只降级为 body_status=unavailable。
+			slog.WarnContext(ctx, "requestdetail: hotzone mirror fallback failed",
+				"request_id", requestID, "tenant_id", tenantID, "error", hzErr)
+		} else if ok {
+			bodies = hb
+			meta.BodySource = requestdetail.SourceHotzoneMirror
+			// 正文有了 ⇒ body_status 必须重算（否则仍停在 unavailable ⇒ 前端
+			// 会把「有正文」也显示成「正文未落库」——又一处错的量具）。
+			meta.BodyStatus = classifyBodyStatus(hb.RequestBody, hb.ResponseBody, hb.OutboundBody)
+		}
 	}
 	return bodies, meta, nil
 }
@@ -420,6 +485,12 @@ func (h *Handler) handleUnifiedRequestDetail(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "invalid request id")
 		return
 	}
+	// Idle heartbeat tiles are Redis markers (idle-*), not persisted requests.
+	// Reject before locator so deep links do not 404-spin as "missing detail".
+	if isIdleMarkerRequestID(requestID) {
+		writeError(w, http.StatusBadRequest, "idle_marker: not a persisted request")
+		return
+	}
 	omitBody := r.URL.Query().Get("omit_body") == "1" || r.URL.Query().Get("omit_body") == "true"
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -429,17 +500,24 @@ func (h *Handler) handleUnifiedRequestDetail(w http.ResponseWriter, r *http.Requ
 	})
 	detail, err := h.requestDetailLocator.Get(ctx, requestID, omitBody)
 	if errors.Is(err, requestdetail.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "request detail not found")
-		return
-	}
-	if errors.Is(err, requestdetail.ErrBodyTooLarge) {
+		probeDetail, probeErr := h.loadProbeLaneDetail(ctx, requestID)
+		if probeErr == nil && probeDetail != nil {
+			detail = probeDetail
+		} else if probeErr != nil && !errors.Is(probeErr, requestdetail.ErrNotFound) {
+			slog.Error("probe lane detail lookup failed", "request_id", requestID, "error", probeErr)
+			writeError(w, http.StatusInternalServerError, "failed to load request detail")
+			return
+		} else {
+			writeError(w, http.StatusNotFound, "request detail not found")
+			return
+		}
+	} else if errors.Is(err, requestdetail.ErrBodyTooLarge) {
 		// 2026-08-29 (audit follow-up): a body that exceeds MaxBodyFileSize
 		// is a request-level constraint violation, not a server failure.
 		// Mapping to 500 misleads operators and clients; 413 is correct.
 		writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds 10MB limit")
 		return
-	}
-	if err != nil {
+	} else if err != nil {
 		slog.Error("request detail lookup failed", "request_id", requestID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to load request detail")
 		return
@@ -460,5 +538,11 @@ func (h *Handler) handleUnifiedRequestDetail(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
+	// ★ 录制同意状态随详情一起给出（2026-11-02 chat tab 空态根修）：
+	//   「正文为空」有 ①本来就没正文 ②租户没开录制同意 两种成因，
+	//   只给 body_status=unavailable 时前端只能显示「无消息」⇒ 把 ② 读成 ①。
+	//   ⇒ 与会话族三路列表同口径同字段名（session_recording_consent 的租户级值）。
+	consent := settings.RecordingConsentEnabled(detail.Meta.TenantID)
+	detail.RecordingConsent = &consent
 	writeJSON(w, http.StatusOK, detail)
 }

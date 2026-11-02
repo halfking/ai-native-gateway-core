@@ -1734,6 +1734,15 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ⇒ 211 生产已堆到 4 行 ⇒ CROSS JOIN 把 targets 放大 4 倍）。
 			//   ★ 含 DELETE + ADD CONSTRAINT ⇒ 自带 lock_timeout / statement_timeout。
 			"927_routing_policy_singleton_unique.sql",
+			// ★ 928（2026-11-02）：探测流量物理隔离车道（热表 + 分钟聚合；写路径另由 env 门控）。
+			"928_probe_traffic_physical_lane.sql",
+			// ★ 929（2026-11-02 12h 审计轮 P1）：self_check_runs.error_type 的
+			//   CHECK 闭集补齐 —— 与 errorsx.ErrorKind 闭集对齐。
+			//   ★ 缺口本体：上游给 errorsx 加了 6 个新 kind（request_rejected 等），
+			//     而 CHECK 的字面量清单没跟着长 ⇒ 写侧写的就是 kind 名 ⇒
+			//     finalizeRun 的 UPDATE 被 23514 拒绝 ⇒ 整条回滚 ⇒ run 行半写。
+			//   ★ 只重建约束，不改数据；自带 BEGIN/COMMIT + SET LOCAL 锁守卫。
+			"929_self_check_error_type_kind_closure.sql",
 		},
 	}
 }

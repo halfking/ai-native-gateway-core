@@ -51,6 +51,7 @@ export default {
     inProgress: 'En curso',
     failure: 'Fallida',
     rateLimited: 'Limitada',
+    idle: 'Inactivo',
     clear: 'Limpiar filtros',
     showProbe: 'Mostrar sondeos',
     showInvalid: 'Mostrar nodos no válidos',
@@ -172,6 +173,8 @@ export default {
     page: 'Página {page}/{pages}',
     total: '{n} en total',
     autoChip: 'El cliente pidió auto; la pasarela eligió el modelo final según la tarea',
+    idleLane: 'Inactivo',
+    idleLaneHint: 'Sin tráfico de negocio reciente en este carril: latido de inactividad, no un fallo',
   },
   zoom: {
     title: 'Detalle de la solicitud',
@@ -194,6 +197,7 @@ export default {
     yes: 'Sí',
     no: 'No',
     error: 'Error',
+    idleNote: 'Nota',
   },
   page: {
     back: 'Volver a la topología',

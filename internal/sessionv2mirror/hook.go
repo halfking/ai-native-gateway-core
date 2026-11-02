@@ -24,6 +24,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/session/v2"
+	"github.com/kaixuan/llm-gateway-go/internal/probelane"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -83,12 +84,24 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 			return
 		}
 
+		// ★ 2026-11-02 探测物理隔离：车道开启时全部探测（含 self_check /
+		// 有会话头）不进业务 session_turns；落点改由 telemetry →
+		// session_turns_probe_hot。
+		if entry != nil && probelane.ShouldIsolate(
+			strVal(entry.OriginStage),
+			strVal(entry.TaskType),
+			entry.QualityFlags,
+			strVal(entry.OriginActor),
+		) {
+			return
+		}
+
 		// R51 教训落地（R60 S2-F4，154 复审 §四.5）：无会话头的探针产出不进
 		// mirror——它们合成 sys:probe:* 系统会话后集中打 advisory lock，实测
 		// 失败噪声 ~115/min（99.6% 为该类）。判据是探针专有强特征（无会话头
 		// + origin/task_type 探针标记，见 IsProbeSyntheticSession 注释），不
-		// 误伤真实用户会话；探针事实仍留在 _request_logs/v1 面。与 replay.go
-		// 的 gate parity 共用本谓词。
+		// 误伤真实用户会话。与 replay.go 的 gate parity 共用本谓词。
+		// （物理车道关闭时仍走本分支；开启时已在上方 ShouldIsolateEntry 返回。）
 		if IsProbeSyntheticSession(entry) {
 			return
 		}
@@ -1251,6 +1264,18 @@ func EligibleForTurnMirrorPolicy(entry *telemetry.RequestLogEntry) bool {
 		return false
 	}
 	if !entry.Success && !isTerminalFailure(entry) {
+		return false
+	}
+	// Same physical-lane gate as PersistHook: isolated probes land in
+	// session_turns_probe_hot and must NOT become data-horizon canaries
+	// (otherwise mature canaries look "missing" from business session_turns
+	// and raise a false stale banner).
+	if probelane.ShouldIsolate(
+		strVal(entry.OriginStage),
+		strVal(entry.TaskType),
+		entry.QualityFlags,
+		strVal(entry.OriginActor),
+	) {
 		return false
 	}
 	if IsProbeSyntheticSession(entry) {

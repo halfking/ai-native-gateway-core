@@ -624,6 +624,14 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		addFilter("rl.request_class = $%d", requestClass)
 	}
 
+	// 2026-11-02 探测隔离：列表默认只业务（排除 origin_stage∈ProbeStages 等）。
+	// include_probe=1 / lane=all 显式全量；lane=probe|probe_history 仅业务表
+	// 历史探测（U4：与 /api/admin/probe/lane/requests 的「当前」语义分层）。
+	lane := strings.ToLower(strings.TrimSpace(queryString(r, "lane")))
+	if pred := resolveLogsTrafficLanePredicate(lane, queryBool(r, "include_probe"), "rl"); pred != "" {
+		clauses = append(clauses, pred)
+	}
+
 	hasTaskFilter := strings.TrimSpace(queryString(r, "gw_task_id")) != ""
 	hasSessionFilter := strings.TrimSpace(queryString(r, "gw_session_id")) != ""
 	chrono := queryString(r, "chrono") == "1" || hasTaskFilter || hasSessionFilter
@@ -861,11 +869,18 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("admin listLogs completed with partial scan failures", "scan_err_count", scanErrCount, "items_returned", len(items), "count", count)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	// U4：lane=probe|probe_history 读的是业务表历史探测行 ⇒ 响应显式标
+	// source=history + lane=probe_history，避免与探测车道「当前」端点混淆。
+	resp := map[string]any{
 		"items":     items,
 		"count":     count,
 		"aggregate": agg,
-	})
+	}
+	if isLogsProbeHistoryLane(lane) {
+		resp["source"] = "history"
+		resp["lane"] = "probe_history"
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {

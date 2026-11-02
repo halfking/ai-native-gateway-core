@@ -31,6 +31,27 @@ const (
 	//   不是物理表名 —— 物理表早已是会话族。
 	SourceRequestLogs  Source = "request_logs"
 	SourceSessionTurns Source = "session_turns"
+	// SourceProbeLane — metadata recovered from session_turns_probe_hot after
+	// physical probe isolation. Narrow row (no full PG bodies); body fields
+	// stay empty with an explicit warning so the UI does not treat this as a
+	// silent 404.
+	SourceProbeLane Source = "probe_lane"
+	// ★★ SourceHotzoneMirror —— 本地热区请求侧镜像（H3 RequestMirror）回源。
+	//
+	// ★ 为什么需要它（2026-11-02 chat tab 空态根修）：
+	//   PG 会话族正文（session_bodies）的写入**受录制同意开关门控**
+	//   （domains/session/v2/bodies_writer.go 的 RecordingConsentAllowsWrite），
+	//   同意关闭时**一行都不写** ⇒ 统一详情读面拿到的是
+	//   body_status=unavailable + bodies={} ⇒ 前端「对话」页四个角色页签全空。
+	//   而**热区镜像不受该门控**（H3 镜像是 fire-and-forget 的落盘副本），
+	//   ⇒ 同一批请求的正文**在磁盘上仍然存在** ⇒ 回源能把它们救回来。
+	//
+	// ★ 与 H3 原设计（2026-09-24 §3-H3.3「读路径不参与 L3 回源」）的关系：
+	//   原决策的理由是「避免文件缺失导致详情 404 的语义分裂」——那是把镜像当
+	//   **主**读源时的顾虑。本 Source 是**兜底**：PG 有正文时绝不用它，
+	//   PG 没正文时才补位 ⇒ 文件缺失只会让 body_status 停在 unavailable，
+	//   **不会**把详情变成 404 ⇒ 原顾虑不成立。
+	SourceHotzoneMirror Source = "hotzone_mirror"
 )
 
 // Persistence classifies whether the request has been written to DB yet.
@@ -85,6 +106,14 @@ type Meta struct {
 	LatencyMs   *int    `json:"latency_ms,omitempty"`
 	TurnNumber  *int    `json:"turn_number,omitempty"`
 	BodyStatus  string  `json:"body_status,omitempty"`
+	// BodySource 报告**正文载荷本身**来自哪一层（"session_turns" = PG 会话族；
+	// "hotzone_mirror" = 本地热区镜像回源）。
+	//
+	// ★ 与 Detail.Source 的分工：Detail.Source 描述「这条详情从哪个读面解析出来的」，
+	// BodySource 描述「正文是哪一层给的」——兜底回源时两者会不同。
+	// ★ 之所以挂在 Meta 上（而不是 reader 的可变字段）：reader 是**并发共享**的
+	// （admin handler 只有一个），把「本次读到的来源」放进共享可变字段 = 数据竞争。
+	BodySource Source `json:"body_source,omitempty"`
 }
 
 // Detail is the unified admin detail payload.
@@ -94,6 +123,17 @@ type Detail struct {
 	Meta        Meta        `json:"meta"`
 	Bodies      *Bodies     `json:"bodies,omitempty"`
 	Warning     string      `json:"warning,omitempty"`
+	// RecordingConsent 报告该租户当前的**会话正文录制同意**状态。
+	//
+	// ★ 为什么统一详情要带这个字段（2026-11-02 chat tab 空态根修）：
+	//   「正文为空」有两种完全不同的成因 ——
+	//   ① 该请求本来就没有正文（正常的空态）；
+	//   ② 该租户**没开录制同意**，正文压根没落库（开关态）。
+	//   只给 body_status=unavailable 时，前端只能显示「无消息」⇒
+	//   把 ② 读成 ① ⇒ **错的量具比没量具危险**。
+	//   ⇒ 与会话族三路列表（admin/session_turns_v2.go 等）同口径同字段名，
+	//   前端用同一把尺判「录制未开启」。
+	RecordingConsent *bool `json:"recording_consent,omitempty"`
 }
 
 // filePayload is the on-disk JSON shape (filename = request_id.json).

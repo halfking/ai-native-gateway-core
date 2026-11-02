@@ -131,20 +131,33 @@ type docEvidence struct {
 //   handler.go:1603-1608 的 6 条路由）又把 main.go 推了 7 行 ⇒ Recovery 7900 /
 //   Logging 注释 7902-7909 / maintain 注释 7891-7896 / SecurityHeaders 7918。
 //   三面同钉（本表 · request-surface.md · 认证表 A1）。
+//
+// ★★ **第七次重钉（2026-11-02 验证轮）**：探测物理隔离车道那几轮（12f34ff30 /
+// 9773e9266 / caa1c5f32 / a440cba9e）往 main.go 插的行 ⇒ 相对上次重钉链整体
+// +83：Recovery 7983 / Logging 注释 7985-7992 / maintain 注释 7974-7979 /
+// Auth 7998 / SecurityHeaders 8001。三面同钉（本表 · request-surface.md ·
+// 认证表 A1）。
+// ⇒ ★ 第七次了：★ 「行号会漂」是**常态**而非偶发 ⇒ ⇒ 每轮动 main.go 的
+// 中间件链，**必须回头重钉这三处**（本门 C1/C7/C8 会当场红给你看）。
+// ⇒ ★★ **本轮踩到的坑（留给下一轮）**：★ 重钉时**共享工作树里还有并行会话未提交
+//   的 main.go 改动（+9 行）** ⇒ 若按**工作树**的行号钉，则本对拍表在**本提交的
+//   干净树**里对不上 ⇒ **提交后门会红** ⇒ ⇒ ★★ **行号类产物必须按「将要提交的
+//   那棵树」生成，不能按共享工作树生成**（路由快照同理）⇒ 判据：**共享仓里「派生产物」
+//   的一致性基准是提交树，不是工作树**。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 7891, to: 7918,
+		file: "cmd/gateway/main.go", from: 7974, to: 8001,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 7902, to: 7909,
+		file: "cmd/gateway/main.go", from: 7985, to: 7992,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 7891, to: 7896,
+		file: "cmd/gateway/main.go", from: 7974, to: 7979,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},
