@@ -405,6 +405,30 @@ var registry = []surface{
 		RateLimitWhy: "同上：纯查询面",
 	},
 	{
+		// ★ 2026-11-03（12h 审计 P1-4 补登）：userscript capture 摄取面
+		// （187ec7ead 引入的 /v1/userscript/captures）此前**漏登记** ⇒
+		// TestIngressSurfaceRegistryCoversEveryRoute 在 main 上就红
+		// （pristine origin/main 复现：「1 个未登记：[/v1/userscript/captures]」）。
+		//
+		// Plane 判定：**摄取面**（写入 capture 三表族 + 同事务写 outbox 事件），
+		// **不调上游** ⇒ 按本表的二分类落 planeControl（不要求对闸表态）。
+		// ★ 但「不要求表态」≠「没有闸」⇒ 这里仍把两道闸的现状**显式写出来**，
+		//   好让下一个接手的人一眼看到「这个新公开面目前没有 RPM 限流」。
+		Plane:       planeControl,
+		Routes:      []string{"/v1/userscript/captures"},
+		HandlerVars: []string{"captureHandler"},
+		File:        "../../internal/userscriptcapture/handler.go",
+		Budget:      gateNone,
+		RateLimit:   gateNone,
+		BudgetWhy:   "摄取面不调上游、不消耗上游额度 ⇒ 无累计配额闸（现状如此）",
+		RateLimitWhy: "★ 现状：**没有 RPM 限流**（main.go 的 mux 是裸 http.ServeMux，" +
+			"无全局限流中间件；handler 内也没有 checkGatewayRateLimit）。" +
+			"⇒ 现有保护是三道：① Bearer api key（数据面 KeyVerifier → tenant）；" +
+			"② HMAC 三头（timestamp ±5m + nonce 防重放）；③ 载荷上限（envelope 2MiB / " +
+			"批次 1..100 条 / 单条 content ≤100000B）。" +
+			"⇒ RPM 限流是**待补项**（补上后把本行改成 gateOwn 并删掉本理由）",
+	},
+	{
 		Plane:        planeControl,
 		Routes:       []string{"/v1/hosted-tasks", "/v1/hosted-tasks/"},
 		HandlerVars:  []string{"htHandler"},

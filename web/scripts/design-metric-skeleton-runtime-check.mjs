@@ -71,8 +71,11 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { localDate, mergeRatchetBaseline } from './lib/baseline-ratchet.mjs'
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASELINE = join(ROOT, 'scripts', 'design-metric-skeleton-runtime-baseline.json')
+
 
 const CHROME_CANDIDATES = [
   process.env.CHROME_PATH,
@@ -953,31 +956,29 @@ if (argv.includes('--update-baseline')) {
   //   ★★ nested-card 用 `min(旧值, 实测值)`、action-density 用「写回前拒绝放松方向」、
   //   ★★ hero-metric 用 `min` ⇒ ★★ 本尺是这一族里**唯一**没守住的那个）。
   //   ★★ **新页按实测值登记** —— ★ 新页必须被棘轮看见（★ 与 nested-card 同款形态）。
-  const nextCounts = {}
-  const keptHigher = []
-  for (const p of report.pages) {
-    const old = prev.bareMetricCards?.[p.page]
-    if (typeof old === 'number' && Number.isFinite(old)) {
-      if (p.skeletonCards > old) {
-        nextCounts[p.page] = old
-        keptHigher.push(
-          `${p.page}：实测 ${p.skeletonCards} > 基线旧值 ${old} ⇒ **保持旧值 ${old}**（棘轮不许升）`,
-        )
-        continue
-      }
-      nextCounts[p.page] = p.skeletonCards
-      continue
-    }
-    nextCounts[p.page] = p.skeletonCards
-  }
+  // ★★ 2026-11-03（12h 审计 P2-3）：写回口径抽到**共用纯函数**
+  //   （web/scripts/lib/baseline-ratchet.mjs）⇒ 与 nested-card 尺**逐字同源**，
+  //   且首次**有门**覆盖语义（web/src/baseline-ratchet.test.ts）。
+  //   口径三条：① 棘轮 min(旧值,实测值)；② 新页按实测登记；
+  //   ③ **未量到的页保留旧条目**（「没量到」≠「已删除」⇒ 删条目=悄悄摘约束）。
+  const measuredCounts = {}
+  for (const p of report.pages) measuredCounts[p.page] = p.skeletonCards
+  const { next: nextCounts, keptHigher: keptHigherRaw, preserved, added } =
+    mergeRatchetBaseline(prev.bareMetricCards ?? {}, measuredCounts)
+  const keptHigher = keptHigherRaw.map(
+    (k) =>
+      `${k.page}：实测 ${k.measured} > 基线旧值 ${k.kept} ⇒ **保持旧值 ${k.kept}**（棘轮不许升）`,
+  )
   // ★★ note 必须是**动态**的（★ 静态模板会让两次重建的记录一模一样 ⇒ 看不出「上限从 12 降到 0」
   //   ⇒ 变更史就失去了意义；★ nested-card 尺的头注释已记这条纪律）。
   const sumOf = (obj) => Object.values(obj ?? {}).reduce((s, n) => s + (Number(n) || 0), 0)
   const prevTotal = sumOf(prev.bareMetricCards)
   const nextTotal = sumOf(nextCounts)
   const direction = prevTotal > nextTotal ? '下降' : prevTotal < nextTotal ? '上升' : '持平'
-  const added = Object.keys(nextCounts).filter((k) => !(k in (prev.bareMetricCards ?? {})))
-  const today = new Date().toISOString().slice(0, 10)
+  // ★★ 2026-11-03（12h 审计 P2-2）：**本地日期**，不是 UTC。
+  //   `toISOString()` 是 UTC ⇒ 在 UTC+8 的 00:00–08:00 之间，审计日期会被
+  //   写成**前一天** ⇒ 变更史出现错日期（且与「今天」对不上）。
+  const today = localDate()
   const next = {
     metric:
       'bareMetricCards = 该页落在「同尺寸同构的裸指标卡网格」里的卡片数（棘轮：不得上升）。★ 硬闸另算：一页里 >= ' +
@@ -993,6 +994,9 @@ if (argv.includes('--update-baseline')) {
         note:
           `★ 本次重建（${today}）：新登记 ${added.length} 页` +
           (added.length ? `（${added.join('、')}）` : '') +
+          (preserved.length
+            ? `；★ 保留未量到的 ${preserved.length} 页基线（本次没量到 ≠ 已删除）`
+            : '；★ 本次没有「未量到」的旧条目') +
           `；★ 上限合计 ${prevTotal} → ${nextTotal}（${direction}）；` +
           (keptHigher.length
             ? '★ 本次重建时有页试图调高 ⇒ 已按棘轮保持旧值：' + keptHigher.join('；') + '。'

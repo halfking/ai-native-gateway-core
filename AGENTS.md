@@ -4,6 +4,41 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-03 12h 修订审计轮：origin/main 带红测（CI 载体一条单测都不跑）+ 摄取端点数据竞争 + session.closed.v1 跨租户污染 + 基线写回同族两洞**
+> （goal 会话）：审计窗口 2026-11-02 19:05 → 2026-11-03 07:35，窗口内 15 提交。
+> ⇒ ★★★★ **P0：`origin/main` 带着一条红测**，pristine worktree 复现
+> （`domains/analysis/sessionpush` 的 `TestDeliverRecordsReconciliationCounters`：
+> `success/provisional = 0, want 1`）。根因两段：① 合并机器人把**别的会话的在制品**
+> 代为落盘（`c9859fc6c`），那条快照**自落地起就没绿过**——测试构造的 `Result` 没有
+> 可沉淀内容，`BuildPayload` 的 `HasLandableContent()` 前置闸直接判 `ok=false` ⇒
+> 推送根本不会发生 ⇒ 计数恒 0；② **仓内唯一 CI 载体 `.workflow/main-verify.yml`
+> 只跑 `make guards-fast`（静态自证门），一条单元测试都不跑**，完整门禁
+> `verify.sh`（含 `go test ./...`）是**本地手工**执行的 ⇒ ★★ 「代码进 main」与
+> 「门跑过」之间**没有强制连接** ⇒ 判据：审计「门跑过吗」要问**谁在 push 路径上
+> 自动跑了它**。
+> ⇒ ★★★★ **P1-1：请求路径上的惰性初始化写回共享字段 = 数据竞争**
+> （`internal/userscriptcapture/handler.go`：进程级单例 + 每请求一 goroutine ⇒
+> `-race` 当场报 `WARNING: DATA RACE`，读 :116 / 写 :117）；同族附带
+> `SessionExists` 在 `db` 为 nil 时**空接口调用 = nil 解引用 panic**（请求线程直接炸）。
+> ⇒ ★★★★ **P1-2：`session.closed.v1` 的租户解析没有租户约束 ⇒ 跨租户污染**
+> （`public.sessions` 按月分区、唯一键 `UNIQUE (session_id, partition_date)` ⇒
+> **session_id 不是全局唯一** ⇒ `WHERE session_id=$1 LIMIT 1` 无 `ORDER BY` 返回
+> **任意一行** ⇒ 事件挂到别的租户名下；仓内其余每一处都带 `tenant_id` ⇒ 孤例即指纹）。
+> ⇒ ★★★★ **P1-3：sessionpush 对账口径**——注释承诺「禁用期直接可读」，实现却把
+> 「禁用」与「空载荷」都记 `skipped`、`dispatched` 只在启用态计数 ⇒ 兑现不了；
+> 且该门断言用**进程级全局计数器的绝对值** ⇒ 同包另一测试也调 `Deliver` ⇒ 不可复现。
+> ⇒ ★★★ **P2：基线写回同族三洞**——① 只从本次量到的页构造新基线 ⇒ **没量到的页
+> 被当成「已删除」** ⇒ 那几页的棘轮约束被悄悄摘掉；② 审计日期用 `toISOString()`
+> （UTC）⇒ UTC+8 凌晨写成**前一天**；③ **写回口径此前没有任何门覆盖**、两把尺各写
+> 一份 ⇒ 本轮抽 `web/scripts/lib/baseline-ratchet.mjs` + `web/src/baseline-ratchet.test.ts`。
+> ⇒ ★★ **本轮改动**：`sessionpush.go`（口径分档）、`push_metric_test.go`（修绿+增量断言）、
+> `internal/userscriptcapture/{handler,store}.go` + `handler_race_test.go`、
+> `admin/session_closed_outbox.go` + `session_closed_outbox_test.go`、
+> 两把基线尺 + 新共用纯函数 + 新 vitest 门。
+> ⇒ ★★ **未修并已登记**：`pg_test_env_registry` / `pipefail_race_ledger` / 931 迁移
+> DDL 预算三条既有红（需改已应用迁移或补原会话裁决）；双写桥 `OnEventSent` 同步在事务内
+> 的耗时回压；cookie Domain 由请求 Host 推导且作用域放大到 `*.itestu.cn`；nonce 缓存
+> 全扫 O(n)。审计档：`docs/12小时内修订审计-2026-11-03-0735.md`；通用式见 §621。
 > **2026-11-03 /live 两步交互 idle 心跳行占位修正轮：左右面板死入口根修 + 量具 X1/X2 与不可判定分码**
 > （goal 会话）：★ 承接 owner 指令「/live 左右两侧请求的点击逻辑应像旧版本：
 > 点击弹摘要 → 再点『查看全景』才开新窗，检查修正后提交并推送」。
