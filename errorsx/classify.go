@@ -1679,7 +1679,33 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		// the overload signal exactly, so we route those bodies to
 		// KindConcurrent here and let non-"并发" quota bodies (with the
 		// optional time-period word) reach the budget check below.
-		if concurrentOverloadCJKRe.Match(body) {
+		//
+		// ★ 2026-11-02（F-A 修）：本分类器的并发/过载正文规则必须与
+		//   ClassifyErrorWithBody **逐字同门** ——`!isRequestRejectionStatus(status)`。
+		//
+		// ★ 为什么（审计档 §八·F-A）：4xx 归因族收口轮只给 `ClassifyErrorWithBody`
+		//   加了门（见该函数 1218 / 1237 行），**漏了本分类器** ⇒ 同一个
+		//   (status, body) 在两个分类器上**分叉**：
+		//   400/404/413/414/422 + 并发正文 ⇒ 本分类器返回 KindConcurrent
+		//   （**节点侧罚则**：绑定拉黑 5 分钟 + URSM 记失败 +
+		//   credentialhealth 降级 + nodehealth 连败累计 ⇒ 3 连败整凭据 cooling）
+		//   而 ClassifyErrorWithBody 返回 KindRequestRejected / KindModelUnavailable
+		//   （请求侧 / 绑定级）⇒ **违反本轮「4xx 正文不得落节点侧罚则」的
+		//   既定不变量**，且违反仓内「两个分类器不得在同一 (status, body) 上
+		//   分叉」的纪律（V20 / R30 锁步）。
+		//
+		// ★ 口径依据：与 ClassifyErrorWithBody 同一条——**状态码是上游对
+		//   「这次请求」的裁决**；4xx = 上游拒收了这次请求 ⇒ 按事故教训
+		//   （§三 ①：上游 4xx 不得进入「节点不健康」阶梯）不得罚节点。
+		//   429 / 5xx 才是容量/节点级信号，规则照旧（阴性对照见本轮门禁：
+		//   429 → KindConcurrent、500 → KindUpstreamOverloaded）。
+		//
+		// ★ 为什么现在补（潜伏 ≠ 不存在）：本函数的**生产**调用点只有 2 处
+		//   （executor_chat.go:1673 / executor_anthropic.go:1266），且都只与
+		//   KindModelNotFound / KindModelDeprecated 比较 ⇒ 今天**不**触发罚则；
+		//   但本函数是**公开分类器**，任何新调用点接上就是一条敞着的放大链
+		//   ⇒ 门必须在这里，不依赖调用点自律。
+		if !isRequestRejectionStatus(status) && concurrentOverloadCJKRe.Match(body) {
 			return overloadKindForStatus(status)
 		}
 		// 2026-08-20 P0 fix: budget check (402/403/429 only) precedes the
@@ -1696,7 +1722,10 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 			}
 			return KindQuotaPermanent
 		}
-		if concurrentOverloadRe.Match(body) {
+		// ★ 2026-11-02（F-A 修）：与 ClassifyErrorWithBody 的 1237 行**逐字同门**。
+		//   理由见本函数上面那段 F-A 说明：漏门会让 400/404/413/414/422 + 并发正文
+		//   在两个分类器上分叉（一个判节点罚则、一个判请求侧/绑定级）。
+		if !isRequestRejectionStatus(status) && concurrentOverloadRe.Match(body) {
 			return overloadKindForStatus(status)
 		}
 		// KindModelDeprecated: see ClassifyErrorWithBody. Checked before
