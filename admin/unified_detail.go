@@ -76,12 +76,14 @@ func (h *Handler) SetRequestDetailStore(store *requestdetail.Store, retry ...Loc
 // SetHotzoneBodySource wires the **兜底**正文源（本地热区请求侧镜像）。
 //
 // ★ 为什么需要（2026-11-02 chat tab 空态根修）：PG 会话族正文的写入受
-//   录制同意开关门控 ⇒ 同意关闭时一行正文都不落库 ⇒ 统一详情 bodies 为空
-//   ⇒ 前端「对话」页全空；而热区镜像里**同一批请求的正文仍在磁盘上**。
-//   ⇒ 本源只在 PG 三件套全空时补位，PG 有值时绝不覆盖。
+//
+//	录制同意开关门控 ⇒ 同意关闭时一行正文都不落库 ⇒ 统一详情 bodies 为空
+//	⇒ 前端「对话」页全空；而热区镜像里**同一批请求的正文仍在磁盘上**。
+//	⇒ 本源只在 PG 三件套全空时补位，PG 有值时绝不覆盖。
 //
 // ★ requestsDir 是 H3 镜像子树根（{HotZone.Dir}/requests）；为空 ⇒ 不回源
-//   （未装配热区 / 镜像关闭的环境保持原行为）。
+//
+//	（未装配热区 / 镜像关闭的环境保持原行为）。
 func (h *Handler) SetHotzoneBodySource(requestsDir string) {
 	if h.requestDetailLocator == nil {
 		return

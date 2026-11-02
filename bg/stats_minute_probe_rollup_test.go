@@ -19,7 +19,8 @@ import (
 // TestProbeMinuteRollupArmIsWired 钉住探测臂接在**生产** rollup 上。
 //
 // ★ 判据不是「文件存在」，而是「rollupWindow 里真的调用了它」——
-//   文件在但没接线，和文件不存在是同一种故障。
+//
+//	文件在但没接线，和文件不存在是同一种故障。
 func TestProbeMinuteRollupArmIsWired(t *testing.T) {
 	raw, err := os.ReadFile("stats_minute_rollup.go")
 	if err != nil {
@@ -36,10 +37,10 @@ func TestProbeMinuteRollupArmIsWired(t *testing.T) {
 		rest = rest[:end]
 	}
 	if !strings.Contains(rest, "w.rollupProbe(") {
-		t.Error("rollupWindow 没有调用 rollupProbe —— 探测分钟聚合不会产数据\n"+
-			"  ★ 生产里业务分钟表的真实写入者是 bg.StatsMinuteRollup\n"+
-			"    （cmd/gateway/main.go 实例化并 Start）—— 它扫业务视图，\n"+
-			"    视图里没有探测行（车道开启后探测不进业务表）\n"+
+		t.Error("rollupWindow 没有调用 rollupProbe —— 探测分钟聚合不会产数据\n" +
+			"  ★ 生产里业务分钟表的真实写入者是 bg.StatsMinuteRollup\n" +
+			"    （cmd/gateway/main.go 实例化并 Start）—— 它扫业务视图，\n" +
+			"    视图里没有探测行（车道开启后探测不进业务表）\n" +
 			"    ⇒ 不在这里加探测臂，request_stats_probe_minute 恒空。")
 	}
 	if !strings.Contains(rest, "w.retireProbeMinutes(") {
@@ -51,8 +52,9 @@ func TestProbeMinuteRollupArmIsWired(t *testing.T) {
 // TestProbeRollupIsReplaceNotAccumulate 钉住探测臂用**整桶替换**语义。
 //
 // ★ 为什么这条重要：同一分钟被重复 rollup（重试 / RebuildRangeStats）
-//   不会重复计数。若写成累加式（+ EXCLUDED），重试一次数字就翻倍。
-//   ⇒ 这是「可重入」的唯一保证。
+//
+//	不会重复计数。若写成累加式（+ EXCLUDED），重试一次数字就翻倍。
+//	⇒ 这是「可重入」的唯一保证。
 func TestProbeRollupIsReplaceNotAccumulate(t *testing.T) {
 	raw, err := os.ReadFile("stats_minute_probe_rollup.go")
 	if err != nil {
@@ -114,9 +116,10 @@ func TestProbeRollupReadsProbeLaneTable(t *testing.T) {
 // TestProbeRollupGuardedByLaneSwitch 钉住探测臂受车道开关门控。
 //
 // ★ 为什么这条重要：车道**关闭**时探测流量仍在业务表里，由业务臂的排除
-//   谓词处理（bg/probe_policy.go 的 ProbeTrafficExclusionPredicateView）。
-//   若探测臂无条件执行 ⇒ 同一批探测流量既被业务臂排除、又被探测臂统计
-//   ⇒ 两个口径同时存在且不一致。
+//
+//	谓词处理（bg/probe_policy.go 的 ProbeTrafficExclusionPredicateView）。
+//	若探测臂无条件执行 ⇒ 同一批探测流量既被业务臂排除、又被探测臂统计
+//	⇒ 两个口径同时存在且不一致。
 func TestProbeRollupGuardedByLaneSwitch(t *testing.T) {
 	raw, err := os.ReadFile("stats_minute_probe_rollup.go")
 	if err != nil {

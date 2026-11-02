@@ -20,17 +20,18 @@ import (
 // TestProbeLaneReadEndpointRegistered 钉住读侧端点已挂载。
 //
 // ★ 为什么这条要钉：审计发现过「写侧有、读侧无」的形态（探测被物理隔离
-//   出去后运维无路可查）⇒ 读侧一旦没挂上，探测流量就成了一进不出的黑洞，
-//   而且**没有任何门会红**（表在、写入在、编译在，只有「读不到」这件事
-//   没有量具）。本门就是那个量具。
+//
+//	出去后运维无路可查）⇒ 读侧一旦没挂上，探测流量就成了一进不出的黑洞，
+//	而且**没有任何门会红**（表在、写入在、编译在，只有「读不到」这件事
+//	没有量具）。本门就是那个量具。
 func TestProbeLaneReadEndpointRegistered(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("probe_dashboard.go"))
 	if err != nil {
 		t.Fatalf("read probe_dashboard.go: %v", err)
 	}
 	if !strings.Contains(string(raw), `"/api/admin/probe/lane/requests"`) {
-		t.Error("探测车道读侧端点未注册：/api/admin/probe/lane/requests\n"+
-			"  物理隔离开启时探测流量写进 session_turns_probe_hot ⇒ 必须有读侧，\n"+
+		t.Error("探测车道读侧端点未注册：/api/admin/probe/lane/requests\n" +
+			"  物理隔离开启时探测流量写进 session_turns_probe_hot ⇒ 必须有读侧，\n" +
 			"  否则探测流量成一进不出的黑洞（表在、写在、编译在，只有读不到）")
 	}
 	if _, err := os.Stat("probe_lane_read.go"); err != nil {
@@ -41,10 +42,11 @@ func TestProbeLaneReadEndpointRegistered(t *testing.T) {
 // TestProbeLaneQueryDoesNotDependOnFrozenBusinessReadFace 钉住读侧与业务读面解耦。
 //
 // ★ 为什么这条要钉：admin 的 /api/logs 读面走 session_turns 两臂原生投影，
-//   其 118 列投影被冻结（R37）、视图不暴露 partition_date ⇒ 分区裁剪只能
-//   靠原生形态 + 分区键谓词；请求列表还 LEFT JOIN api_keys。
-//   探测族是**窄列 25 列、无 session_id / partition_date** ⇒ 一旦有人
-//   "图省事"把它塞进 /api/logs 的源，会撞上冻结契约。
+//
+//	其 118 列投影被冻结（R37）、视图不暴露 partition_date ⇒ 分区裁剪只能
+//	靠原生形态 + 分区键谓词；请求列表还 LEFT JOIN api_keys。
+//	探测族是**窄列 25 列、无 session_id / partition_date** ⇒ 一旦有人
+//	"图省事"把它塞进 /api/logs 的源，会撞上冻结契约。
 func TestProbeLaneQueryDoesNotDependOnFrozenBusinessReadFace(t *testing.T) {
 	raw, err := os.ReadFile("probe_lane_read.go")
 	if err != nil {
@@ -60,10 +62,10 @@ func TestProbeLaneQueryDoesNotDependOnFrozenBusinessReadFace(t *testing.T) {
 	code := stripGoComments(body)
 
 	forbidden := []string{
-		"api_keys",                      // 业务读面的 JOIN 面
+		"api_keys",                        // 业务读面的 JOIN 面
 		"request_logs_with_current_month", // 业务读面的视图源
-		"partition_date",                // 会话族分区键（探测族没有这列）
-		"session_turns ",                // 会话族父表（探测族是独立表）
+		"partition_date",                  // 会话族分区键（探测族没有这列）
+		"session_turns ",                  // 会话族父表（探测族是独立表）
 	}
 	for _, f := range forbidden {
 		if strings.Contains(code, f) {
@@ -85,13 +87,15 @@ func TestProbeLaneQueryDoesNotDependOnFrozenBusinessReadFace(t *testing.T) {
 // TestProbeLaneLiveQueueKeyMatchesWriteSide 钉住 Redis 读侧的队列键与写侧**同源**。
 //
 // ★ 为什么这条要钉：探测 tile 的写侧在 liveRequestQueueKeys 里拼键
-//   （llmgw:live:probe:main / 租户 llmgw:live:tenant:<id>:probe:main），
-//   读侧在 ReplayLane 里拼键。两处各写一份后缀拼法 ⇒ 必然漂移 ⇒
-//   探测 tile 写进 A 队列、读从 B 队列 ⇒ **探测在实时流里一进不出**
-//   （表在、写在、编译在、连测试都绿，只有「取不到」这件事没量具）。
+//
+//	（llmgw:live:probe:main / 租户 llmgw:live:tenant:<id>:probe:main），
+//	读侧在 ReplayLane 里拼键。两处各写一份后缀拼法 ⇒ 必然漂移 ⇒
+//	探测 tile 写进 A 队列、读从 B 队列 ⇒ **探测在实时流里一进不出**
+//	（表在、写在、编译在、连测试都绿，只有「取不到」这件事没量具）。
 //
 // ★ 判据：读侧必须调用 probelane.RedisSuffixProbe（后缀拼法的 SSOT），
-//   而**不是**自己手写 "probe:main" 字面量。
+//
+//	而**不是**自己手写 "probe:main" 字面量。
 func TestProbeLaneLiveQueueKeyMatchesWriteSide(t *testing.T) {
 	raw, err := os.ReadFile("live_stream_redis_store.go")
 	if err != nil {
@@ -109,8 +113,8 @@ func TestProbeLaneLiveQueueKeyMatchesWriteSide(t *testing.T) {
 		replayBody = replayBody[:next]
 	}
 	if !strings.Contains(replayBody, "probelane.RedisSuffixProbe(") {
-		t.Error("ReplayLane 必须用 probelane.RedisSuffixProbe 拼租户队列后缀（SSOT）\n"+
-			"  写侧 liveRequestQueueKeys 用的是同一个函数；两处各写一份字面量必然漂移\n"+
+		t.Error("ReplayLane 必须用 probelane.RedisSuffixProbe 拼租户队列后缀（SSOT）\n" +
+			"  写侧 liveRequestQueueKeys 用的是同一个函数；两处各写一份字面量必然漂移\n" +
 			"  ⇒ 探测 tile 写进 A 队列、读从 B 队列 ⇒ 探测在实时流里一进不出")
 	}
 
@@ -143,9 +147,10 @@ func TestProbeLaneLiveReadEndpointRegistered(t *testing.T) {
 // TestProbeLaneMinuteStatsReadSideExists 钉住探测分钟聚合表的读侧存在。
 //
 // ★ 为什么这条要钉：request_stats_probe_minute 是 request_stats_minute 的
-//   平行表；业务看板只读业务表 ⇒ 隔离开启后探测的 QPS / 成功率在看板上
-//   **完全不可见**（探测被分流出去，看板看不到业务表以外的东西）。
-//   ⇒ 运维无法回答「探测还活着吗」—— 而这正是物理隔离最该回答的问题。
+//
+//	平行表；业务看板只读业务表 ⇒ 隔离开启后探测的 QPS / 成功率在看板上
+//	**完全不可见**（探测被分流出去，看板看不到业务表以外的东西）。
+//	⇒ 运维无法回答「探测还活着吗」—— 而这正是物理隔离最该回答的问题。
 func TestProbeLaneMinuteStatsReadSideExists(t *testing.T) {
 	reg, err := os.ReadFile(filepath.Join("probe_dashboard.go"))
 	if err != nil {
@@ -176,8 +181,9 @@ func TestProbeLaneMinuteStatsReadSideExists(t *testing.T) {
 // TestProbeLaneReadReportsLaneEnabled 钉住 lane_enabled 随响应回传。
 //
 // ★ 为什么这条要钉：车道开关**默认关** ⇒ session_turns_probe_hot 恒为空。
-//   若响应不区分「车道没开」与「车道开了但最近没探测」，运维查得 0 行
-//   就会得出「没有探测发生」的错误结论（真相是：探测流量在业务表里）。
+//
+//	若响应不区分「车道没开」与「车道开了但最近没探测」，运维查得 0 行
+//	就会得出「没有探测发生」的错误结论（真相是：探测流量在业务表里）。
 func TestProbeLaneReadReportsLaneEnabled(t *testing.T) {
 	raw, err := os.ReadFile("probe_lane_read.go")
 	if err != nil {

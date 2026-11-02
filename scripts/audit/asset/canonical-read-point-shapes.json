@@ -243,7 +243,7 @@
     {
       "shape_id": "live_stream_sse-9ef0a7b25d",
       "file": "admin/live_stream_sse.go",
-      "line": 2718,
+      "line": 2719,
       "occurrence_count": 1,
       "file_count": 1,
       "dynamic": false,
@@ -257,7 +257,7 @@
     {
       "shape_id": "live_stream_sse-f43ed3036f",
       "file": "admin/live_stream_sse.go",
-      "line": 2858,
+      "line": 2859,
       "occurrence_count": 1,
       "file_count": 1,
       "dynamic": false,
@@ -1411,13 +1411,13 @@
     },
     {
       "file": "admin/live_stream_sse.go",
-      "line": 2718,
+      "line": 2719,
       "shape_id": "live_stream_sse-9ef0a7b25d",
       "sql_digest": "SELECT rl.request_id, rl.ts, COALESCE(NULLIF(rl.tenant_id, ''), 'default') AS tenant_id, COALESCE(NULLIF(rl.gw_session_id, ''), '') AS gw_session_id, COALESCE(NULLIF(mc.canonical_name, ''), NULLIF(rl.client_model, ''), rl.outbound_model, '') AS model, COALESCE(mc.canonical_name, '') AS canonical_name, COALESCE(NULLIF(p.display_name, ''), NULLIF(p.catalog_code, ''), NULLIF(p.code, ''), '') AS provi"
     },
     {
       "file": "admin/live_stream_sse.go",
-      "line": 2858,
+      "line": 2859,
       "shape_id": "live_stream_sse-f43ed3036f",
       "sql_digest": "SELECT request_id, request_status FROM request_logs_with_current_month WHERE request_id = ANY($1) AND COALESCE(request_status, '') NOT IN ('', 'in_progress')"
     },

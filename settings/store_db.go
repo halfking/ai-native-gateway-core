@@ -15,11 +15,12 @@ import (
 // poolDB is the minimal PG surface StoreDB uses.
 //
 // ★ 为什么要抽成接口（2026-11-02）：租户级写路径的 42P10（生产库没有
-//   (tenant_id, key) 唯一约束 ⇒ ON CONFLICT 必炸）之所以能一路漏到生产，
-//   根因之一就是**这条写路径在默认测试里没有任何可执行的判据**
-//   （仓内的 settings DB 测试要么是 //go:build integration 的真库腿，
-//   要么根本不碰写路径）⇒ ★ 抽出接口后单测可以注入 pgxmock，
-//   写路径就能被钉住（见 store_db_tenant_test.go）。
+//
+//	(tenant_id, key) 唯一约束 ⇒ ON CONFLICT 必炸）之所以能一路漏到生产，
+//	根因之一就是**这条写路径在默认测试里没有任何可执行的判据**
+//	（仓内的 settings DB 测试要么是 //go:build integration 的真库腿，
+//	要么根本不碰写路径）⇒ ★ 抽出接口后单测可以注入 pgxmock，
+//	写路径就能被钉住（见 store_db_tenant_test.go）。
 //
 // ★ 三个方法与 *pgxpool.Pool / pgxmock 的签名逐字一致 ⇒ 生产路径零行为变更。
 type poolDB interface {
@@ -189,26 +190,28 @@ func (s *StoreDB) GetTenant(tenantID, key string) (jsonRawMessage, error) {
 //	    且 tenant_settings_kv 在 211 上**一行都没有**（从没成功写进过一行）。
 //
 // ★ 修法：**与平台级 Set 完全同款**的「先 UPDATE，未命中再 INSERT」形态
-//   （同文件上方的 Set 已经是这个写法，注释原文「Try UPDATE first; if no
-//   row matched, INSERT」）⇒ 不再依赖那条并不存在的唯一约束 ⇒
-//   ★ 与平台级写法同源 ⇒ 一把尺一份实现。
-//   ★ 不改 schema：补约束要走新迁移 + 基线 + 对象台账刷新（体量大、
-//     跨环境），而写路径本就不需要它 ⇒ 先让写路径活起来。
-//   ★ 语义保持：UPDATE 分支仍然回填 prev_value / prev_updated_at（回滚按钮
-//     与 prev_value 审计依赖它），INSERT 分支返回 nil（无旧值）。
+//
+//	（同文件上方的 Set 已经是这个写法，注释原文「Try UPDATE first; if no
+//	row matched, INSERT」）⇒ 不再依赖那条并不存在的唯一约束 ⇒
+//	★ 与平台级写法同源 ⇒ 一把尺一份实现。
+//	★ 不改 schema：补约束要走新迁移 + 基线 + 对象台账刷新（体量大、
+//	  跨环境），而写路径本就不需要它 ⇒ 先让写路径活起来。
+//	★ 语义保持：UPDATE 分支仍然回填 prev_value / prev_updated_at（回滚按钮
+//	  与 prev_value 审计依赖它），INSERT 分支返回 nil（无旧值）。
 //
 // ★★ 2026-11-02 加固：并发写同一 (tenant_id, key) ⇒ **重复行**。
-//   ★ 上面的「先 UPDATE 再 INSERT」只在**单写者**前提下等价于 ON CONFLICT。
-//     而 tenant_settings_kv 上**没有**唯一约束可依赖 ⇒ 两个并发写者可以
-//     各自 UPDATE 未命中、然后各自 INSERT ⇒ 落两行同 key 的行。
-//   ★ 后果是**静默**的：读侧 GetTenant 用 QueryRow 取首行、ListTenant 用
-//     map 覆盖（后者取到后写的）⇒ 哪一行胜出取决于物理顺序 ⇒ 可能读到
-//     旧值。而本键控制的正是「会话正文录制同意」⇒ 一旦读到旧值 ⇒
-//     正文又停止落库 ⇒ **本次修复的孪生缺陷**（且更难诊断）。
-//   ★ 修法：**事务 + 事务级咨询锁**（pg_advisory_xact_lock），按
-//     (tenant_id, key) 串行化 ⇒ 并发写变成排队写 ⇒ 恒等「先 UPDATE 再
-//     INSERT」的语义。**不改 schema**（补唯一约束要走新迁移 + 基线 +
-//     对象台账刷新，体量大且跨环境）；咨询锁是纯运行时手段。
+//
+//	★ 上面的「先 UPDATE 再 INSERT」只在**单写者**前提下等价于 ON CONFLICT。
+//	  而 tenant_settings_kv 上**没有**唯一约束可依赖 ⇒ 两个并发写者可以
+//	  各自 UPDATE 未命中、然后各自 INSERT ⇒ 落两行同 key 的行。
+//	★ 后果是**静默**的：读侧 GetTenant 用 QueryRow 取首行、ListTenant 用
+//	  map 覆盖（后者取到后写的）⇒ 哪一行胜出取决于物理顺序 ⇒ 可能读到
+//	  旧值。而本键控制的正是「会话正文录制同意」⇒ 一旦读到旧值 ⇒
+//	  正文又停止落库 ⇒ **本次修复的孪生缺陷**（且更难诊断）。
+//	★ 修法：**事务 + 事务级咨询锁**（pg_advisory_xact_lock），按
+//	  (tenant_id, key) 串行化 ⇒ 并发写变成排队写 ⇒ 恒等「先 UPDATE 再
+//	  INSERT」的语义。**不改 schema**（补唯一约束要走新迁移 + 基线 +
+//	  对象台账刷新，体量大且跨环境）；咨询锁是纯运行时手段。
 func (s *StoreDB) SetTenant(tenantID, key string, value any) (jsonRawMessage, error) {
 	spec := Global.Spec(key)
 	if spec == nil {

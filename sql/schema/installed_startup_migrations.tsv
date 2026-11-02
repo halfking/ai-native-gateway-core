@@ -345,3 +345,7 @@
 327	927_routing_policy_singleton_unique.sql
 328	928_probe_traffic_physical_lane.sql
 329	929_self_check_error_type_kind_closure.sql
+330	930_self_check_error_type_kind_closure_model_unavailable.sql
+331	931_userscript_capture_family.sql
+332	932_outbox_events_fresh_install.sql
+333	933_task_events.sql

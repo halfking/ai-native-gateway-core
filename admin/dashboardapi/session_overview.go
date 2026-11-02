@@ -204,14 +204,14 @@ func (h *SessionOverviewHandler) HandleSessionOverview(w http.ResponseWriter, r 
 	// 错误语义保持：哪段死都带段名报 500（dashboardStatsStageError，
 	// 类型定义在包级，见 SessionOverviewHandler 前）；turns 对拍 soft-fail。
 	var (
-		aggregates  *sessionSummaryAggregates
-		prevCost    float64
-		modelUsage  []ModelUsageItem
-		topClients  []ClientRankItem
-		topTasks    []TaskRankItem
-		costTrend   []CostTrendPoint
-		sessTrend   []SessionTrendPoint
-		turnsCount  int64
+		aggregates   *sessionSummaryAggregates
+		prevCost     float64
+		modelUsage   []ModelUsageItem
+		topClients   []ClientRankItem
+		topTasks     []TaskRankItem
+		costTrend    []CostTrendPoint
+		sessTrend    []SessionTrendPoint
+		turnsCount   int64
 		turnsCountOK bool
 	)
 	g, gctx := errgroup.WithContext(ctx)

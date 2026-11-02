@@ -17,30 +17,30 @@ type Execer interface {
 // Defined here (not telemetry.RequestLogEntry) so this package stays a leaf
 // and cannot form an import cycle with domains/hooks/observability/telemetry.
 type Turn struct {
-	RequestID         string
-	TS                time.Time
-	TenantID          string
-	CredentialID      *string
-	RawModelName      string
-	ClientModel       *string
-	OutboundModel     *string
-	Success           bool
-	StatusCode        *int
-	ErrorKind         *string
-	LatencyMs         *int
-	PromptTokens      *int
-	CompletionTokens  *int
-	TotalTokens       *int
-	OriginStage       *string
-	OriginActor       *string
-	TaskType          *string
-	APIKeyID          *string
-	ProviderID        *int
-	ClientIP          *string
-	RequestPreview    *string
-	GwSessionID       *string
-	AgentName         *string
-	QualityFlags      []string
+	RequestID        string
+	TS               time.Time
+	TenantID         string
+	CredentialID     *string
+	RawModelName     string
+	ClientModel      *string
+	OutboundModel    *string
+	Success          bool
+	StatusCode       *int
+	ErrorKind        *string
+	LatencyMs        *int
+	PromptTokens     *int
+	CompletionTokens *int
+	TotalTokens      *int
+	OriginStage      *string
+	OriginActor      *string
+	TaskType         *string
+	APIKeyID         *string
+	ProviderID       *int
+	ClientIP         *string
+	RequestPreview   *string
+	GwSessionID      *string
+	AgentName        *string
+	QualityFlags     []string
 }
 
 // PersistTurn upserts one probe-lane row into session_turns_probe_hot.

@@ -114,9 +114,10 @@ func TestSetTenantRollsBackWhenInsertFails(t *testing.T) {
 // TestSetTenantDoesNotUseOnConflict 钉住「不再依赖 (tenant_id, key) 唯一约束」：
 //
 // ★ 为什么要有这道形态门：pgxmock 只能证明【当前这条 SQL】能跑通，
-//   证明不了「以后有人把它改回 ON CONFLICT 也不会立刻变红」——
-//   ★ 而**生产库根本没有那条约束** ⇒ 改回去就是 42P10 ⇒
-//   ⇒ 必须有一道形状门把这件事钉住（否则回归会静静地在生产上炸）。
+//
+//	证明不了「以后有人把它改回 ON CONFLICT 也不会立刻变红」——
+//	★ 而**生产库根本没有那条约束** ⇒ 改回去就是 42P10 ⇒
+//	⇒ 必须有一道形状门把这件事钉住（否则回归会静静地在生产上炸）。
 func TestSetTenantDoesNotUseOnConflict(t *testing.T) {
 	src, err := os.ReadFile("store_db.go")
 	require.NoError(t, err)
@@ -136,11 +137,14 @@ func TestSetTenantDoesNotUseOnConflict(t *testing.T) {
 // TestSetTenantSerializesSameKeyWrites 钉住「并发同 key 写 ⇒ 串行化」。
 //
 // ★ 病：无唯一约束时，「先 UPDATE 未命中 ⇒ 再 INSERT」在**两个并发写者**下
-//   会各插一行 ⇒ 同 key 两行 ⇒ 读侧取哪行取决于物理顺序 ⇒ 可能读到旧值。
-//   ★ 本键控制的正是「会话正文录制同意」⇒ 读到旧值 ⇒ 正文又停止落库
-//     ⇒ 本次修复的**孪生缺陷**（且更难诊断：写返回 200、读却是旧值）。
+//
+//	会各插一行 ⇒ 同 key 两行 ⇒ 读侧取哪行取决于物理顺序 ⇒ 可能读到旧值。
+//	★ 本键控制的正是「会话正文录制同意」⇒ 读到旧值 ⇒ 正文又停止落库
+//	  ⇒ 本次修复的**孪生缺陷**（且更难诊断：写返回 200、读却是旧值）。
+//
 // ★ 钉法：① 形状门 —— 咨询锁语句必须存在且**出现在写语句之前**；
-//   ② pgxmock 的**顺序断言**（见上面两条腿）—— 锁不在写之前就会红。
+//
+//	② pgxmock 的**顺序断言**（见上面两条腿）—— 锁不在写之前就会红。
 func TestSetTenantSerializesSameKeyWrites(t *testing.T) {
 	src, err := os.ReadFile("store_db.go")
 	require.NoError(t, err)

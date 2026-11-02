@@ -98,13 +98,16 @@ func requiredErrorTypeLiterals() []string {
 // **配对**方括号区间 [regionStart, regionEnd) 及其中的全部单引号字面量。
 //
 // ★ 为什么不能用「正则扫全文引号」：守卫数组本身就含全集 ⇒ 全文扫会让
-//   窄约束也判绿。⇒ 范围必须钉在具体语句的 ARRAY 里。
-// ★ 单引号按 SQL 规则处理：`''` 是转义的单引号，不是结束符。
+//
+//	窄约束也判绿。⇒ 范围必须钉在具体语句的 ARRAY 里。
+//
+// ★ 单引号按 SQL 规则处理：`”` 是转义的单引号，不是结束符。
 // ★ 返回**区间**而不只是字面量集：变异自检必须能在**指定区间内**做替换
-//   —— 同一份 SQL 里同一个字面量出现两次（守卫数组 + CHECK 数组），
-//   `strings.Replace(..., 1)` 取第一处 ⇒ 若不钉区间就会改到另一个数组
-//   ⇒ 变异「看起来生效」实则测的是另一条腿（★ 本轮第一次写变异自检
-//   就是被自己的自检这么抓住的）。
+//
+//	—— 同一份 SQL 里同一个字面量出现两次（守卫数组 + CHECK 数组），
+//	`strings.Replace(..., 1)` 取第一处 ⇒ 若不钉区间就会改到另一个数组
+//	⇒ 变异「看起来生效」实则测的是另一条腿（★ 本轮第一次写变异自检
+//	就是被自己的自检这么抓住的）。
 func scanSQLArrayRegion(text string, start int) (int, int, map[string]bool, bool) {
 	upper := strings.ToUpper(text)
 	if start < 0 || start > len(text) {
@@ -217,7 +220,8 @@ func guardArrayRegion(t *testing.T, clean string) (int, int, map[string]bool) {
 // removeLiteralInRegion 在 text 的 [regionStart, regionEnd) 区间内删掉一个字面量。
 //
 // ★ 区间是必需的：同一个字面量在守卫数组与 CHECK 数组里各出现一次，
-//   全文 `Replace(..., 1)` 取第一处 ⇒ 改到的是**另一个数组**。
+//
+//	全文 `Replace(..., 1)` 取第一处 ⇒ 改到的是**另一个数组**。
 func removeLiteralInRegion(text string, regionStart, regionEnd int, literal string) (string, bool) {
 	region := text[regionStart:regionEnd]
 	target := "'" + literal + "',"
@@ -258,9 +262,10 @@ func registeredStartupMigrations(t *testing.T) []string {
 // lastConstraintDefiner 返回安装顺序里**最后一个**重建该 CHECK 的迁移的文件名。
 //
 // ★ 扫描时正文优先读 **embeddata**（installer 真正执行的那份），canonical 为备：
-//   清单里有两份只存在于 embeddata 的文件（session_turns_hot_bootstrap.sql /
-//   600_outbound_body_to_bodies_hot.sql）⇒ 只读 canonical 会漏掉它们
-//   ⇒ 「最后一个 definer」的判定就不完整。
+//
+//	清单里有两份只存在于 embeddata 的文件（session_turns_hot_bootstrap.sql /
+//	600_outbound_body_to_bodies_hot.sql）⇒ 只读 canonical 会漏掉它们
+//	⇒ 「最后一个 definer」的判定就不完整。
 func lastConstraintDefiner(t *testing.T) string {
 	t.Helper()
 	var (
@@ -401,9 +406,10 @@ func TestSelfCheckErrorTypeConstraintCoversErrorKindClosure(t *testing.T) {
 // TestSelfCheckErrorTypeCanonicalObjectCoversErrorKindClosure 钉正典目录。
 //
 // ★ 正典目录（sql/objects/tables/）是这张表 DDL 的 SSOT 文档形态。
-//   本轮实测：它此前记的是**窄集 7 值**（http_000/502/503/504/timeout/
-//   upstream_fail/none），而迁移与线上实际生效的是**宽集** ⇒ 两份文档
-//   互相矛盾 ⇒ 后人照正典目录推演会得出「只允许 7 种错误」的错结论。
+//
+//	本轮实测：它此前记的是**窄集 7 值**（http_000/502/503/504/timeout/
+//	upstream_fail/none），而迁移与线上实际生效的是**宽集** ⇒ 两份文档
+//	互相矛盾 ⇒ 后人照正典目录推演会得出「只允许 7 种错误」的错结论。
 func TestSelfCheckErrorTypeCanonicalObjectCoversErrorKindClosure(t *testing.T) {
 	raw, err := os.ReadFile(errorTypeCanonicalObject)
 	if err != nil {
@@ -467,9 +473,12 @@ func TestSelfCheckErrorTypeLiteralExtractorIgnoresCommentedLiterals(t *testing.T
 // TestSelfCheckErrorTypeClosureGateHasTeeth 是**变异自检**。
 //
 // ★ 纪律：断言「判据转红」+「转红时点名被拆的那一项」，
-//   而不是断言「进程非零」（rc=127 之类「脚本没跑成」也非零）。
+//
+//	而不是断言「进程非零」（rc=127 之类「脚本没跑成」也非零）。
+//
 // ★ 并且先断言「变异真的改变了提取结果」——
-//   否则「变异没生效」会被误当成「门有牙」。
+//
+//	否则「变异没生效」会被误当成「门有牙」。
 func TestSelfCheckErrorTypeClosureGateHasTeeth(t *testing.T) {
 	const victim = "request_rejected"
 

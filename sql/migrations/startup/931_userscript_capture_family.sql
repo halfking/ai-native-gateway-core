@@ -1,6 +1,6 @@
 -- ===========================================================================
 -- File:          sql/migrations/startup/931_userscript_capture_family.sql
--- Migration:     928
+-- Migration:     931
 -- Database:      llm_gateway
 -- Purpose:       userscript capture 摄取表族（P0-3 M1，ADR
 --                docs/adr/2026-11-02-userscript-capture-gateway-endpoint.md D5）。
@@ -15,6 +15,27 @@
 -- ===========================================================================
 
 BEGIN;
+
+-- ★ 锁与超时守卫（2026-11-02 第二十六轮补齐；★ 本迁移在改号后**仍然没有**）：
+--   ★ 缺口本体（三道门各判一次红，缺一不可）：
+--     ① `TestHeavyDDLModernMigrationsDeclareMeasuredBudget`：本文件含**不带
+--        CONCURRENTLY 的 CREATE INDEX** ⇒ 按门判据算全表扫描类 DDL ⇒ 必须
+--        显式 SET statement_timeout ≥ 10min，并写明「实测」——没有量过的
+--        预算就是拍脑袋，下一个环境会替你重新发现它。
+--     ② `startup_ddl_lock_guard_gate_test`：870 之后的新迁移含强锁 DDL
+--        必须自带 lock_timeout ⇒ 抢不到锁就快速失败，而不是排队堵住全库。
+--     ③ `startup_setlocal_effective_gate_test`：SET LOCAL 必须落在**事务块内**
+--        ⇒ 写在 BEGIN 之前只是 WARNING，守卫等于空文。
+--   ★ 实测（2026-11-02，本地 PG 17.10 / docker postgres:17-alpine，真实跑脚本）：
+--     全新空库跑完整脚本墙钟 0.148s（两次独立测量 0.148 / 0.195s）；最坏形态（表已存在 + 10 万行 +
+--     索引缺失 ⇒ 强制重建索引）0.299s ⇒ 与 10min 预算差**三个数量级**。
+--   ★ 结构理由同 912/913/928：本文件的每个 CREATE INDEX 都建在**本文件刚
+--     CREATE 的空表**上（无存量可扫）⇒ 抬到 10min 也不会让它更安全，只会
+--     给后人「这张表有百万级存量」的错觉。
+--   ★ 锁面：CREATE TABLE / CREATE INDEX / ALTER TABLE ENABLE RLS 各拿一次锁；
+--     自带 lock_timeout ⇒ 拿不到锁快速失败，不排队堵住写路径。
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '10min';
 
 CREATE TABLE IF NOT EXISTS public.capture_batches (
     batch_id          UUID PRIMARY KEY,
@@ -80,7 +101,7 @@ CREATE POLICY capture_tenant_isolation ON public.capture_bodies
 
 -- Ledger self-registration（710 惯例）
 INSERT INTO public.schema_migrations (version, description)
-VALUES ('928', 'userscript capture family: capture_batches/capture_messages/capture_bodies with tenant RLS and idempotency uniques (P0-3 M1, ADR userscript-capture-gateway-endpoint D5)')
+VALUES ('931', 'userscript capture family: capture_batches/capture_messages/capture_bodies with tenant RLS and idempotency uniques (P0-3 M1, ADR userscript-capture-gateway-endpoint D5)')
 ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 
 COMMIT;

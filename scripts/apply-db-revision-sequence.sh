@@ -2518,6 +2518,37 @@ files=(
   #     status='running' 的半写态（审计与发布都不执行）。
   #   ★ 只重建约束，不改数据；自带 BEGIN/COMMIT ⇒ 走事务通道。
   "$ROOT_DIR/sql/migrations/startup/929_self_check_error_type_kind_closure.sql"
+  # ★ 930（第二十五轮）：CHECK 闭集**再补齐** —— 加入 model_unavailable
+  #   （本仓 4xx 归因轮引入的第 33 个 kind；929 按当时 32 kind 写死）。
+  #   ★ 缺口本体：写侧 bg/credential_selfcheck.go 写的正是 kind 名 ⇒
+  #     写 model_unavailable 时 finalizeRun 的 UPDATE 被 23514 拒绝 ⇒
+  #     整条回滚 ⇒ self_check run 行停在 status='running' 的半写态。
+  #   ★ 同样是**新迁移**而不是改 929 的字节（929 已在 211 应用、字节冻结）。
+  "$ROOT_DIR/sql/migrations/startup/930_self_check_error_type_kind_closure_model_unavailable.sql"
+  # ★ 931（2026-11-02 第二十六轮补登记）：userscript capture 摄取表族（三表 + 租户 RLS + 幂等唯一约束）。
+  #   ★ 缺口本体：改号（928/929/930 → 931/932/933）时**只改了文件名**，
+  #     这三条**从未进过部署通道的 files=()** ⇒ 211 部署会静默跳过它们
+  #     ⇒ 表不会被建 ⇒ 功能照样 42P01（★ 没有门能抓这条：探针覆盖面门
+  #     只要求 900~929，93x 不在范围内 ⇒ 静默缺失复发点）。
+  #   ★ 自带 BEGIN/COMMIT + SET LOCAL lock_timeout/statement_timeout
+  #     ⇒ 走事务通道，锁面有守卫。
+  "$ROOT_DIR/sql/migrations/startup/931_userscript_capture_family.sql"
+  # ★ 932（2026-11-02 第二十六轮补登记）：fresh-install 链补齐 outbox_events（211 手工 V357 从未入链 ⇒ 全新安装必缺）。
+  #   ★ 缺口本体：改号（928/929/930 → 931/932/933）时**只改了文件名**，
+  #     这三条**从未进过部署通道的 files=()** ⇒ 211 部署会静默跳过它们
+  #     ⇒ 表不会被建 ⇒ 功能照样 42P01（★ 没有门能抓这条：探针覆盖面门
+  #     只要求 900~929，93x 不在范围内 ⇒ 静默缺失复发点）。
+  #   ★ 自带 BEGIN/COMMIT + SET LOCAL lock_timeout/statement_timeout
+  #     ⇒ 走事务通道，锁面有守卫。
+  "$ROOT_DIR/sql/migrations/startup/932_outbox_events_fresh_install.sql"
+  # ★ 933（2026-11-02 第二十六轮补登记）：taskbus 的 task_events 表（幂等入队 + pending/failed 可 claim 索引）。
+  #   ★ 缺口本体：改号（928/929/930 → 931/932/933）时**只改了文件名**，
+  #     这三条**从未进过部署通道的 files=()** ⇒ 211 部署会静默跳过它们
+  #     ⇒ 表不会被建 ⇒ 功能照样 42P01（★ 没有门能抓这条：探针覆盖面门
+  #     只要求 900~929，93x 不在范围内 ⇒ 静默缺失复发点）。
+  #   ★ 自带 BEGIN/COMMIT + SET LOCAL lock_timeout/statement_timeout
+  #     ⇒ 走事务通道，锁面有守卫。
+  "$ROOT_DIR/sql/migrations/startup/933_task_events.sql"
 )
 
 
@@ -3044,6 +3075,29 @@ ledger_artifact_probe "928_probe_traffic_physical_lane.sql" \
 #      那 6 个 kind 名都在 929 文件里。
 ledger_artifact_probe "929_self_check_error_type_kind_closure.sql" \
   "EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'self_check_runs_error_type_check' AND conrelid = 'public.self_check_runs'::regclass AND position('request_rejected' in pg_get_constraintdef(oid)) > 0 AND position('circuit_open' in pg_get_constraintdef(oid)) > 0 AND position('fp_slot_saturated' in pg_get_constraintdef(oid)) > 0 AND position('first_byte_timeout' in pg_get_constraintdef(oid)) > 0 AND position('reply_loop' in pg_get_constraintdef(oid)) > 0 AND position('account_restricted' in pg_get_constraintdef(oid)) > 0)"
+# ★ 930（第二十五轮）：产物 = 该 CHECK 已覆盖 model_unavailable。
+#   ★ 探针点名 model_unavailable —— 少它一个都判失败
+#   （只看「约束在不在」会被一个 929 时代的窄集骗过）。
+#   ★ 联动契约：探针行里所有 public.x / 'x' 字面量必须在迁移文件文本中出现
+#   ⇒ 'self_check_runs_error_type_check' / public.self_check_runs /
+#      'model_unavailable' 都在 930 文件里。
+ledger_artifact_probe "930_self_check_error_type_kind_closure_model_unavailable.sql" \
+  "EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'self_check_runs_error_type_check' AND conrelid = 'public.self_check_runs'::regclass AND position('model_unavailable' in pg_get_constraintdef(oid)) > 0)"
+# ★ 931（第二十六轮补登记）：产物 = 本迁移建的表确实在库里。
+#   ★ 判据逐字取自迁移体内的对象名（产物名保真契约要求探针里的
+#     public.X / 'X' 字面量必须真实出现在迁移文件里）。
+ledger_artifact_probe "931_userscript_capture_family.sql" \
+  "to_regclass('public.capture_batches') IS NOT NULL AND to_regclass('public.capture_messages') IS NOT NULL AND to_regclass('public.capture_bodies') IS NOT NULL"
+# ★ 932（第二十六轮补登记）：产物 = 本迁移建的表确实在库里。
+#   ★ 判据逐字取自迁移体内的对象名（产物名保真契约要求探针里的
+#     public.X / 'X' 字面量必须真实出现在迁移文件里）。
+ledger_artifact_probe "932_outbox_events_fresh_install.sql" \
+  "to_regclass('public.outbox_events') IS NOT NULL"
+# ★ 933（第二十六轮补登记）：产物 = 本迁移建的表确实在库里。
+#   ★ 判据逐字取自迁移体内的对象名（产物名保真契约要求探针里的
+#     public.X / 'X' 字面量必须真实出现在迁移文件里）。
+ledger_artifact_probe "933_task_events.sql" \
+  "to_regclass('public.task_events') IS NOT NULL"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

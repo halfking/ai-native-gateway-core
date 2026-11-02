@@ -41,11 +41,11 @@ func loadProbeLaneDetailFromQuerier(ctx context.Context, db probeLaneDetailQueri
 		return nil, requestdetail.ErrNotFound
 	}
 	var (
-		rid, tenantID                      string
-		success                            bool
-		clientModel, outboundModel         *string
-		latencyMs                          *int
-		gwSessionID, preview               *string
+		rid, tenantID              string
+		success                    bool
+		clientModel, outboundModel *string
+		latencyMs                  *int
+		gwSessionID, preview       *string
 	)
 	err := db.QueryRow(ctx, `
 		SELECT request_id, tenant_id, success,
