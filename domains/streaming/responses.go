@@ -828,8 +828,14 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			DispatchAllowProviderChange: dispatchAllowProviderChange,
 			DispatchAllowModelChange:    dispatchAllowModelChange,
 			DispatchModelAlternatives:   dispatchModelAlternatives,
-			AuditBuilder:                auditBuilder,
-			Capture:                     streamCapture,
+			// ★ F11（2026-11-02）：/v1/responses 会带 dispatch 的替代模型
+			// 列表（auto-route 换模态），而替代模型的候选解析在执行器里发生
+			// ⇒ 模态必须一起带过去，否则那次解析走的是无模态过滤的查询 ⇒
+			// 登记为 embedding 的绑定会被选成替代模型 ⇒ 上游 400 ⇒ 绑定翻红
+			// ⇒ 与 2026-11-02 事故同族。
+			RequestModality: requestModality,
+			AuditBuilder:    auditBuilder,
+			Capture:         streamCapture,
 
 			ToolsRequested: responsesHasTools(&reqBody),
 			// StreamWrapper intentionally unset. The executor routes via

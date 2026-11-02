@@ -4843,12 +4843,12 @@ func (h *ChatHandler) serveWithExecutor(
 				}
 				return &id
 			}(),
-			DispatchRequestModality: requestModality,
-			AuditBuilder:            auditBuilder,
-			Capture:                 streamCapture,
-			ToolsRequested:          requestHasTools(bodyBytes),
-			SessionKey:              sessionKey,
-			StickyKey:               stickyKey,
+			RequestModality: requestModality,
+			AuditBuilder:    auditBuilder,
+			Capture:         streamCapture,
+			ToolsRequested:  requestHasTools(bodyBytes),
+			SessionKey:      sessionKey,
+			StickyKey:       stickyKey,
 			KeyID: func() int {
 				if keyInfo != nil {
 					return keyInfo.ID
@@ -5322,7 +5322,10 @@ goalRetryLoopDone:
 			// Re-resolve candidates for nextModel. Without this the executor
 			// would try to route nextModel through the exhausted model's
 			// credentials → guaranteed failure.
-			fbCandidates, fbPolicy, _, fbErr := resolveCandidatesForRequest(
+			// ★ F11：模态必须取**这次解析**自己的返回值——候选是用 upstreamBody
+			// 解析的（可能与原始 body 的模态不同，例如附件被改写），带外层那个
+			// 模态会让执行器按另一道模态去复核这批候选。
+			fbCandidates, fbPolicy, fbModality, fbErr := resolveCandidatesForRequest(
 				r.Context(), h.provider, nextModel,
 				clientID.Fingerprint.ClientProfile, tenantID, upstreamBody,
 			)
@@ -5340,6 +5343,9 @@ goalRetryLoopDone:
 						"from", clientModel,
 						"to", nextModel,
 					)
+					// ★ F11：模型级回退换了模型，但**请求没换** ⇒ 模态必须跟着带过去，
+					// 否则执行器里后续的候选再解析（探针后刷新 / dispatch 换模型）
+					// 会退回到无模态过滤的查询。
 					fallbackResult, fallbackErr := h.executor.Execute(&executors.ExecParams{
 						W:                  w,
 						R:                  r,
@@ -5355,6 +5361,7 @@ goalRetryLoopDone:
 						Resolution:         nil, // stale; executor resolves per-candidate
 						Candidates:         fbCandidates,
 						Policy:             fbPolicy,
+						RequestModality:    fbModality,
 						AuditBuilder:       auditBuilder,
 						Capture:            streamCapture,
 						ToolsRequested:     requestHasTools(rewritten),

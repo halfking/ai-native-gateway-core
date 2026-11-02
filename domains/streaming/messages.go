@@ -818,16 +818,21 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			// params.Transform + cand.RawModel, so we deliberately pass
 			// clientModel here (instead of explicitOutbound / outboundForLog)
 			// to avoid leaking the FIRST candidate's model into retries.
-			OutboundModel:  clientModel,
-			ClientID:       clientID,
-			Transform:      txResult,
-			Resolution:     modelResolution,
-			Candidates:     candidates,
-			Policy:         policy,
-			AuditBuilder:   auditBuilder,
-			Capture:        streamCapture,
-			ToolsRequested: len(reqBody.Tools) > 0,
-			StickyKey:      buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
+			OutboundModel: clientModel,
+			ClientID:      clientID,
+			Transform:     txResult,
+			Resolution:    modelResolution,
+			Candidates:    candidates,
+			Policy:        policy,
+			// ★ F11（2026-11-02）：模态必须带进执行器——执行器里后续的候选再解析
+			// （探针后刷新 / dispatch 换模型）都靠它过模态门；漏带 ⇒ 那些解析退回
+			// 无模态过滤的查询 ⇒ 登记为其它模态的绑定会被塞回本次请求 ⇒ 上游 400
+			// ⇒ 绑定翻红 ⇒ 与 2026-11-02 事故同族。
+			RequestModality: requestModality,
+			AuditBuilder:    auditBuilder,
+			Capture:         streamCapture,
+			ToolsRequested:  len(reqBody.Tools) > 0,
+			StickyKey:       buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
 			KeyID: func() int {
 				if keyInfo != nil {
 					return keyInfo.ID

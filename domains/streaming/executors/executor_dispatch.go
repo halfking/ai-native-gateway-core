@@ -647,17 +647,16 @@ func (e *Executor) dispatchCandidatesForModel(ctx context.Context, d *dispatchCt
 		policy *provider.Policy
 		err    error
 	)
-	if d.params.DispatchRequestModality != "" {
-		resolver, ok := e.Provider.(modalityProviderResolver)
-		if !ok {
-			return nil
-		}
-		cands, policy, err = resolver.GetCandidatesByModality(ctx, model,
-			d.params.ClientID.Fingerprint.ClientProfile, d.params.TenantID, d.params.DispatchRequestModality)
-	} else {
-		cands, policy, err = e.Provider.GetCandidates(ctx, model,
-			d.params.ClientID.Fingerprint.ClientProfile, d.params.TenantID)
-	}
+	// ★ F11：换替代模型时的候选解析**必须过请求模态门**。此前这里在
+	// DispatchRequestModality 为空时走无模态过滤的 GetCandidates（$3=''
+	// ⇒ 全放行）⇒ 登记为其它模态的绑定（典型：embedding）会被选成替代
+	// 模型 ⇒ 上游 400 ⇒ 该绑定翻红 ⇒ 与 2026-11-02 事故同族。
+	//
+	// ★ 模态为空的唯一合法含义是「本次请求没有模态概念」（模态接受判据的
+	// 全放行臂）；有模态时 provider 过滤不了 ⇒ 宁可不换模型，也不换成一个
+	// 模态不对的模型。
+	cands, policy, err = e.resolveCandidatesByModality(ctx, model,
+		d.params.ClientID.Fingerprint.ClientProfile, d.params.TenantID, d.params.RequestModality)
 	if err != nil || len(cands) == 0 {
 		slog.Warn("dispatch: alternate model candidate resolve failed",
 			"request_id", d.params.RequestID, "model", model, "error", err)

@@ -1490,10 +1490,25 @@ type ExecParams struct {
 	DispatchAutoProfile       string
 	DispatchAutoWorkType      string
 	DispatchAutoSignals       autoroute.ClassificationSignals
-	// DispatchRequestModality is the modality detected by the handler when it
-	// resolved the initial candidates. Dispatch V2 reuses it when lazily resolving
-	// candidates for an alternate model.
-	DispatchRequestModality string
+	// RequestModality is the modality detected by the handler when it resolved
+	// the initial candidates (domains/streaming.resolveCandidatesForRequest →
+	// detectRequestModality). It is the **single authoritative carrier** of the
+	// request modality for the whole request lifecycle.
+	//
+	// ★ 2026-11-02（F10/F11，上游 4xx 事故同族）：执行器里**每一次**重新解析
+	// 候选都必须复用它。此前两处走的是**无模态过滤**的 GetCandidates
+	// （$3='' ⇒ 全放行）：
+	//
+	//	① dispatchCandidatesForModel —— dispatch 换替代模型时的候选解析；
+	//	② refreshedCandidatesAfterProbe —— 同步探针恢复节点后的候选刷新。
+	//
+	// ⇒ 登记为其它模态的绑定（典型：embedding）会被塞回本次 chat 请求 ⇒
+	// 上游 400 ⇒ 该 (凭据,模型) 绑定翻红 ⇒ 与 2026-11-02 事故同族
+	// （/v1/embeddings 对所有租户 503）。
+	//
+	// 空值 = 不做模态过滤（模态接受判据的 "$3='' ⇒ 全放行" 臂）：给不携带
+	// 模态概念的旧调用方留后路。
+	RequestModality string
 	// DispatchDueAt schedules future execution (v6 G-Ⅱ, 定时请求). Zero =
 	// immediate. Populated from the X-Gw-Due-At request header by the
 	// handler; the pipeline parks the request in its due heap until the
@@ -3086,22 +3101,60 @@ func candidateRawModel(candidate provider.Candidate) string {
 	return candidate.RawModel
 }
 
+// errModalityResolverUnavailable is returned when a request carries a
+// modality but the configured provider cannot filter candidates by modality.
+//
+// ★ 2026-11-02（F10/F11）：此时**不**退回无模态过滤的查询——那正是把
+// embedding 绑定塞回 chat 请求的那条路（上游 400 ⇒ 绑定翻红 ⇒ 事故同族）。
+// 调用方拿到 nil 候选后各自退回「已经过模态门的那一份候选」。
+var errModalityResolverUnavailable = errors.New("provider resolver does not support modality filtering")
+
+// resolveCandidatesByModality re-resolves the candidate set for model under
+// the request's modality.
+//
+// ★ 单一入口（2026-11-02，F10/F11）：执行器里每一次候选再解析都走这里，
+// 于是「给初始候选上过门的那道模态」也一定给后续候选上过门——此前两处
+// 各走各的（无模态过滤的 GetCandidates），于是模态门只管了第一段路。
+//
+//   - modality == "" ⇒ 无过滤的 GetCandidates（模态接受判据的
+//     "$3 为空 ⇒ 全放行" 臂）：不携带模态概念的旧调用方行为不变。
+//   - modality != "" ⇒ GetCandidatesByModality；provider 不能按模态过滤时
+//     返回错误而不是无过滤的候选集（见 errModalityResolverUnavailable）。
+func (e *Executor) resolveCandidatesByModality(ctx context.Context, model, profile, tenantID, modality string) ([]provider.Candidate, *provider.Policy, error) {
+	if e == nil || e.Provider == nil {
+		return nil, nil, fmt.Errorf("provider resolver not configured")
+	}
+	if modality == "" {
+		cands, policy, err := e.Provider.GetCandidates(ctx, model, profile, tenantID)
+		return cands, policy, err
+	}
+	resolver, ok := e.Provider.(modalityProviderResolver)
+	if !ok {
+		return nil, nil, errModalityResolverUnavailable
+	}
+	return resolver.GetCandidatesByModality(ctx, model, profile, tenantID, modality)
+}
+
 func (e *Executor) refreshedCandidatesAfterProbe(params *ExecParams) []provider.Candidate {
 	if e == nil || e.Provider == nil || params == nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(params.R.Context(), 500*time.Millisecond)
 	defer cancel()
-	candidates, _, err := e.Provider.GetCandidates(
-		ctx,
+	// ★ F10：刷新必须与初始候选解析**用同一个模态**。此前这里走无模态过滤
+	// 的 GetCandidates ⇒ 登记为其它模态的绑定（典型：embedding）会被塞回
+	// 本次 chat 请求 ⇒ 上游 400 ⇒ 该绑定翻红 ⇒ 与 2026-11-02 事故同族。
+	// 解析不出候选时返回 nil，调用方退回 params.Candidates（那份已经过模态门）。
+	candidates, _, err := e.resolveCandidatesByModality(ctx,
 		params.ClientModel,
 		params.ClientID.Fingerprint.ClientProfile,
 		params.TenantID,
-	)
+		params.RequestModality)
 	if err != nil {
 		slog.Warn("executor: refreshed candidates after probe failed",
 			"model", params.ClientModel,
 			"tenant_id", params.TenantID,
+			"modality", params.RequestModality,
 			"error", err)
 		return nil
 	}
@@ -3109,6 +3162,7 @@ func (e *Executor) refreshedCandidatesAfterProbe(params *ExecParams) []provider.
 	slog.Info("executor: refreshed candidates after probe",
 		"model", params.ClientModel,
 		"tenant_id", params.TenantID,
+		"modality", params.RequestModality,
 		"is_stream", params.IsStream,
 		"candidates", len(candidates))
 	return candidates

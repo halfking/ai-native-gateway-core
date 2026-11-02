@@ -95,7 +95,11 @@ func (r *DurableAttemptRunnerImpl) Run(ctx context.Context, task *durable.Task, 
 	if profile == "" && ki.DefaultClientProfile != nil {
 		profile = *ki.DefaultClientProfile
 	}
-	cands, policy, _, err := resolveCandidatesForRequest(ctx, r.resolver, snapshot.ClientModel, profile, ki.TenantID, snapshot.NormalizedBody)
+	// ★ F11（2026-11-02）：模态必须带进执行器——执行器里后续的候选再解析
+	// （探针后刷新 / dispatch 换模型）都靠它过模态门。此前这里把模态丢掉了
+	// （`_`），于是后台续跑的执行器拿不到模态 ⇒ 那两次解析走无模态过滤的
+	// 查询 ⇒ 登记为其它模态的绑定会被塞回本次请求 ⇒ 上游 400 ⇒ 绑定翻红。
+	cands, policy, requestModality, err := resolveCandidatesForRequest(ctx, r.resolver, snapshot.ClientModel, profile, ki.TenantID, snapshot.NormalizedBody)
 	if err != nil || len(cands) == 0 {
 		kind := errorsx.KindNoAvailableChannel
 		if err != nil {
@@ -137,6 +141,7 @@ func (r *DurableAttemptRunnerImpl) Run(ctx context.Context, task *durable.Task, 
 		AppID:                &appID,
 		ApiKeyID:             &keyID,
 		ToolsRequested:       snapshot.ToolsRequested,
+		RequestModality:      requestModality,
 	}
 	if streamRecorder != nil {
 		params.W = streamRecorder
