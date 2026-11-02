@@ -24,12 +24,35 @@ R96 轮实测出一个真缺陷：`printf … | grep -q` + `set -o pipefail`
 | 3 | **时序** | ✔ 可判 | 同一作用域内，管道行号 > 启用行号 |
 | 4 | **消费者早退性** | ✔ 可判 | `grep -q` / `head -c` / `head -n` / `read` / `awk … exit` |
 | 5 | **输入形态** | ✘ 需实测 | 有无行边界（无换行的巨型单行 ⇒ `grep` 读到 EOF 才判 ⇒ **不早退**） |
-| 6 | **写端量级** | ✘ 需实测 | 决定是否进入「翻转概率斜坡」（≤32 KiB 确定不翻 / ≈64 KiB 真随机 / ≥128 KiB 确定翻） |
+| 6 | **写端量级**（★ 已拆成 6a/6b，见下） | ✘ 需实测 | 决定是否进入「翻转概率斜坡」（★ **不是二分**：实测边界内不翻转 / > 边界**不保证**翻转） |
 | 7 | **退出码的用途** | ✔ 可判 | `judgment`（退出码作判据）/ `value`（取值）/ `bare`（裸管道） |
 
 ★ 轴 5、6 **静态不可判** ⇒ 这正是「必须逐条人工裁决」的原因。
 ★ 轴 7 与 R66 轮的「判别型 vs 兜底型」同族：**只有退出码参与语义判断的管道，
   SIGPIPE 才会把「结论」翻掉**；取值用的管道危害形态不同（`set -e` 下是意外中止）。
+
+## ★★★ 轴 6 拆成**两个量**（第三十一轮，§28.18.8 登记项 1 ⇒ 本轮落地）
+
+★ ★★ 第**三十**轮实测把「管道缓冲 65,536 B」这个**单一**说法推翻成**两个量**
+⇒ ⇒ **同一个 65,536 B 数字，在两种形态下是两种东西**：
+
+★ ★★ **统一判据（★ 四族实测全部被这一条解释）**：
+① ★ **谁被杀** = **紧邻消费者的那个阶段**（消费者早退 ⇒ 关闭读端 ⇒ 它的写端挨 EPIPE）
+② ★ **阈值** = **被杀者的写入粒度**
+
+| 谁被杀 | 判据量 | 阈值（行式 vs 块写） | Linux 实测 | macOS 实测 |
+|---|---|---|---|---|
+| ★ **写端**（写端**直连**消费者） | **写端总量** | 块写命令 ⇒ **管道容量 ≈ 64 KiB** | 65,536 B → 0/5 翻转、85,831 B → 1/5、173,831 B → 4/5 | 65,536 B → 0/5、85,831 B → 5/5 |
+| ★ **写端**（但写端**本身**是 `grep`） | **写端总量** | 行式小写 ⇒ **`PIPE_BUF`** | （同 `PIPE_BUF` 档） | |
+| ★★ **中间段**（消费者前面还有管道段） | **中间段的输出体量** | 写 `grep` ⇒ **`PIPE_BUF`**；写 `cat`/`zcat` ⇒ **管道容量** | `grep` 中间段：4,096 B → 0/5、**4,200 B → 5/5**；`cat` 中间段：65,520 B → 0/5、98,280 B → 5/5 | `grep`：16,384 B → 0/5、**32,768 B → 5/5**；`cat`：65,520 B → 0/5、173,820 B → 5/5 |
+
+★ ★★ **两条纪律（第三十一轮复测后写死）**：
+1. ★ **禁止二分措辞**：翻转是**竞态 ⇒ 概率型**（实测每点 5 次）⇒
+   「≤ 边界**确定**不翻转 / > 边界**确定**翻转」这种二分**一律不成立**
+   ⇒ 台账里凡是引阈值，必须写成「**实测边界内**不翻转 / > 边界**不保证**翻转」。
+2. ★ **阈值必须带平台**：★ 同一形态在两平台的边界可差 **16 倍**
+   （行式档：Linux 4,096 B vs 块写档 64 KiB = 16×）⇒ ⇒ **本机（macOS）量的阈值
+   不能用来判生产（211 = Linux）**。
 
 ## ★ 轴 1 的三个坑（本轮实测踩出来的）
 
@@ -423,6 +446,79 @@ RE_ECHO_VAR = re.compile(r"\b(echo|printf)\b[^|]*\$")
 RE_ECHO_LITERAL = re.compile(r"(^|[;&|(\s])(echo|printf)\b")
 
 
+# ── ★★★ 轴 6 的拆分：判据量 + 适用阈值（第三十一轮，§28.18.8 登记项 1）─────
+# ★ 这四个短码是**机器可读**的 ⇒ 门按它逐行核对台账措辞（⇒ 措辞与形态漂移 ⇒ 门红）。
+CRIT_A = "写端总量/管道容量"            # A 类：`grep -q`/`grep -m` ⇒ 杀的是**写端**
+CRIT_C = "写端总量/管道容量"            # C 类：`head`/`awk-exit` **直连**写端 ⇒ 杀的是**写端**
+CRIT_B_GREP = "中间段匹配输出/PIPE_BUF"   # B 类 + 中间段是 grep ⇒ 杀的是**中间段**（行式小写）
+CRIT_B_BULK = "中间段输出体量/管道容量"    # B 类 + 中间段是块写命令 ⇒ 杀的是**中间段**
+CRIT_A_GREP = "写端总量/PIPE_BUF"         # ★ 写端**本身**是行式命令（grep）⇒ 阈值也降档
+CRIT_C_GREP = "写端总量/PIPE_BUF"         # ★ 同上（head/awk 直连，但写端是 grep）
+CRIT_UNKNOWN = "跨行管道/未知"            # ★ 写端侧在上一行 ⇒ **判据量看不出来** ⇒ 不猜
+# ★ ★★ 实测读数（第三十一轮，★ 每点 5 次重复；★ 负载已同时记录）：
+#   A 类（写端总量）：Linux 65,536 B → 0/5 翻转、85,831 B → 1/5、173,831 B → 4/5；
+#                     macOS 65,536 B → 0/5、85,831 B → 5/5
+#   C 类（写端总量）：Linux 65,520 B → 0/5、85,800 B → 5/5；macOS 65,520 B → 0/5、131,040 B → 3/5
+#   B 类（中间段=grep，判据量=匹配输出）：Linux 4,096 B → 0/5、**4,200 B → 5/5**（≈`PIPE_BUF`）；
+#                     macOS 16,384 B → 0/5、**32,768 B → 5/5**
+#   B 类（中间段=cat，判据量=透传体量）：Linux 65,520 B → 0/5、85,800 B → 1/5、98,280 B → 5/5；
+#                     macOS 65,520 B → 0/5、131,040 B → 2/5、173,820 B → 5/5
+# ⇒ ⇒ ★★ **翻转是「竞态 ⇒ 概率型」** ⇒ 「≤ 边界**确定**不翻转 / > 边界**确定**翻转」
+#      这个二分在实测上**两个方向都不成立**（Linux 87,943 / 107,831 / 131,072 B 实测 0/5 翻转）。
+RE_SINGLE_PIPE = re.compile(r"(?<!\|)\|(?!\|)")
+
+
+def mask_quotes(ln):
+    """★ 把**引号内**的字符替换成空格（★ 长度不变 ⇒ 下标对得上）。
+
+    ★ 为什么需要：管道行里常有**字面量管道**（`cut -d'|'`、`grep -E "a|b"`）
+    ⇒ ★ 若不屏蔽，就会把「引号里的 |」当成管道段 ⇒ **形态分类错**。
+    """
+    out = list(ln)
+    i, n = 0, len(ln)
+    while i < n:
+        c = ln[i]
+        if c == "'":
+            j = ln.find("'", i + 1)
+            j = n - 1 if j < 0 else j
+            for k in range(i, j + 1):
+                out[k] = " "
+            i = j + 1
+        elif c == '"':
+            j = i + 1
+            while j < n:
+                if ln[j] == "\\":
+                    j += 2
+                    continue
+                if ln[j] == '"':
+                    break
+                j += 1
+            j = min(j, n - 1)
+            for k in range(i, j + 1):
+                out[k] = " "
+            i = j + 1
+        else:
+            i += 1
+    return "".join(out)
+
+
+def middle_stage_of(ln, consumer_start):
+    """★ 取「早退消费者的**前一段**」文本（★ 没有 ⇒ 返回 None ⇒ 直连写端）。
+
+    ★ 只认**单个**管道（`|`）⇒ `||`（逻辑或）不算管道段（★ 与 RE_PIPE_CONSUMER 同口径）。
+    ★ ★ 管道位置在**屏蔽引号后**的文本里找（★ 否则 `cut -d'|'` 会被误判成管道段）。
+    """
+    masked = mask_quotes(ln)
+    head = masked[:consumer_start]
+    last = None
+    for m in RE_SINGLE_PIPE.finditer(head):
+        last = m
+    if last is None:
+        return None
+    seg = ln[last.end():consumer_start].strip()
+    return seg or None
+
+
 def writer_volume_hint(writer):
     """静态启发：写端输出量级。返回 bounded / unbounded / unknown。
 
@@ -451,10 +547,41 @@ def writer_volume_hint(writer):
     return "unknown"
 
 
+def criterion_of(kind, middle_stage, writer=""):
+    """★ 第三十一轮：算出这一行的「**判据量**」与「**适用阈值**」。
+
+    ★★ 为什么要有这个函数（§28.18.8 登记项 1：把轴 6 拆成两个量）：
+      ⇒ 台账原来到处写「管道缓冲 65,536 B」这**一个**数字，
+        但第三十/三十一轮实测证明：**同一个 65,536 B，在两种形态下是两种东西**。
+
+    ★ ★★ **统一判据（★ 四族实测都能被这一条解释）**：
+
+      ① ★ **谁被杀** = **紧邻消费者的那个阶段**
+         （消费者 `grep -q`/`head`/`awk` 早退 ⇒ 关闭读端 ⇒ 它的写端挨 EPIPE）
+         ⇒ 写端**直连**消费者 ⇒ 杀的是**写端**（判据量 = 写端总量）
+         ⇒ 写端前面**还有管道段** ⇒ 杀的是**中间段**（判据量 = 中间段输出体量）
+      ② ★ **阈值** = **被杀者的写入粒度**
+         ⇒ 被杀者是**行式小写**命令（`grep`：一行一次 write）⇒ 总输出 ≤ `PIPE_BUF`
+           时**一次原子写**就写完了 ⇒ 写者先退出 ⇒ **不翻转**
+           ⇒ ★ 阈值 = **`PIPE_BUF`**（Linux **4,096 B** / macOS ≈16–32 KiB）
+         ⇒ 被杀者是**块写**命令（`cat`/`curl`/`echo`：一次 write 写一大块）
+           ⇒ 写满管道容量（Linux 64 KiB）才阻塞 ⇒ ★ 阈值 = **管道容量**
+
+    ★ ⇒ ★★ **判据与阈值是两个独立维度**（★ §28.18.8 的表把它们绑在「形态类」上
+      ⇒ 那是简化 ⇒ ★ 本轮按「谁被杀 × 它的写入粒度」重新分档）。
+    ★ ⇒ 返回值用 `/` 分隔的**机器可读**短码 ⇒ 门按它逐行核对台账措辞。
+    """
+    victim = middle_stage if middle_stage else writer
+    line_wise = bool(re.search(r"\bgrep\b", victim or ""))
+    if middle_stage:
+        return CRIT_B_GREP if line_wise else CRIT_B_BULK
+    return CRIT_A_GREP if line_wise else CRIT_A
+
+
 class Site(object):
     __slots__ = ("path", "line", "scope", "consumer", "kind", "writer", "pf_line",
                  "pf_scope", "after_pf", "usage", "usage_basis", "volume",
-                 "full_line", "dropped_by_scope")
+                 "full_line", "dropped_by_scope", "middle", "criterion")
 
     def __init__(self, **kw):
         for k in self.__slots__:
@@ -509,6 +636,17 @@ def scan_file(path, rel):
             real_covered = bool(top_on) and not top_off
             dropped_by_scope = real_covered and not after_pf
             writer = ln[: m.start()].strip()
+            # ★★★ 第三十一轮：算出「判据量 + 适用阈值」（★ 轴 6 拆成两个量）
+            #   ⇒ ★ 中间段要先**屏蔽引号**再找管道（★ 否则 `cut -d'|'` 会被误判）。
+            middle = middle_stage_of(ln, m.start())
+            # ★★ 第三十一轮抓到的**第三个量具真缺陷**（★ 本轮自己撞出来的）：
+            #   ★ **跨行管道**（`\` 续行）时，**写端侧在上一行** ⇒ 本行的写端文本是**空的**
+            #   ⇒ ⇒ **判据量根本看不出来** ⇒ ★ 绝不能**猜**成「写端总量」
+            #     （★ 猜错的代价 = 把 PIPE_BUF 档误写成管道容量档 ⇒ 阈值错 16 倍）。
+            #   ⇒ ⇒ 这里老实标成「未知」，★ 由**门**要求这类行必须人工判读并写明。
+            invisible_writer = False
+            if not writer and i >= 2 and lines[i - 2].rstrip().endswith("\\"):
+                invisible_writer = True
             # ★★ 2026-11-03 第二十九轮：usage 轴要看到「管道之后」与「续行」里的
             #   `||`/`&&` ⇒ ⇒ 传入**消费者尾部**与**下一物理行**。
             nxt = lines[i] if i < len(lines) else ""
@@ -517,7 +655,9 @@ def scan_file(path, rel):
                               kind=kind, writer=writer, pf_line=pf_line,
                               pf_scope=sc, after_pf=after_pf, usage=usage,
                               usage_basis=basis, volume=writer_volume_hint(writer),
-                              full_line=ln.strip(),
+                              full_line=ln.strip(), middle=middle,
+                              criterion=(CRIT_UNKNOWN if invisible_writer
+                                         else criterion_of(kind, middle, writer)),
                               dropped_by_scope=dropped_by_scope))
     return sites, (len(pf_on), len(pf_off))
 
@@ -640,13 +780,19 @@ LEDGER_HEADER = "\t".join(LEDGER_COLS)
 LEDGER_OLD_FIELDS = ("file", "line", "scope", "kind", "usage", "volume",
                      "writer", "verdict", "reason", "evidence", "owner",
                      "fingerprint")
-# ★ 候选集 TSV 列（12 列）★ **物理行**粒度（与台账同粒度 ⇒ 键集可比）
+# ★ 候选集 TSV 列（13 列）★ **物理行**粒度（与台账同粒度 ⇒ 键集可比）
+# ★★★ 第三十一轮：**末尾追加** `criterion` 列（★ 判据量 + 适用阈值）
+#   ⇒ ★★ **追加在末尾**（而不是插在中间）⇒ ★ **fingerprint 仍在 cols[11]**
+#     ⇒ ⇒ ★ 门与裁决脚本的**列索引零漂移**（★ 台账也**不需要**改列数
+#     ⇒ ⇒ ⇒ ★ **台账是人工裁决的 SSOT ⇒ 不做 schema 迁移**（★ 迁移风险 ≫ 收益）
+#   ⇒ ★ 台账侧对应的「分列两个量」写在每行的 reason/evidence 里（★ 由门逐行核对）。
 CAND_COLS = ("file", "line", "occ", "scope", "kind", "usage", "volume",
-             "consumer", "writer", "pf_line", "full_line", "fingerprint")
+             "consumer", "writer", "pf_line", "full_line", "fingerprint",
+             "criterion")
 CAND_HEADER = "\t".join(CAND_COLS)
 # ★ 末列是 fingerprint ⇒ 前面各列的索引不变（门与裁决脚本都依赖这一点）
 VALID_VERDICTS = {
-    "benign-bounded",   # 写端输出确定有界（读码/实测确认 < 32 KiB）⇒ 不进入概率斜坡
+    "benign-bounded",   # 写端输出有界（读码/实测确认远低于翻转边界）⇒ 不进入概率翻转区
     "benign-if-bounded",  # ★ 条件性 benign：写端体量是运行时事实（如变量写端）
     "benign-value",     # 取值用：退出码被命令替换丢弃
     "benign-bare",      # 裸管道：退出码不参与语义判断（`set -e` 下最多意外中止）
@@ -687,11 +833,14 @@ def auto_verdict(site):
                 "待实测写端体量")
     if site.volume == "bounded":
         return ("benign-bounded",
-                "写端是短输出命令（读码/实测确认）⇒ 不进入概率斜坡",
+                "写端是短输出命令（读码/实测确认）⇒ 实测量级远低于翻转边界 ⇒ "
+                "不进入概率翻转区",
                 "写端是短输出命令族（docker ps --format / psql -At / redis-cli ping / "
                 "pg_isready / launchctl list / crontab -l / git ls-files / "
                 "curl -f -s / systemctl list-unit-files / go list -deps）⇒ "
-                "实测样例 ≤ 6,032 B < 65,536 B")
+                "实测样例 ≤ 6,032 B ≪ 管道容量 64 KiB"
+                "（★ 平台相关：linux/debian:bookworm-slim 与 macOS/darwin25.6.0 "
+                "实测同量级；★ 翻转是概率型 ⇒ 只能说「实测边界内不翻转」）")
     return ("pending", "写端体量未知 ⇒ 需读码/实测裁决", "待裁决")
 
 
@@ -1180,17 +1329,18 @@ def main():
               % (len(dropped) - 40))
 
     # ★ 候选集 TSV = **物理行**粒度（与台账同粒度 ⇒ 键集可比）
-    #   列：file line occ scope kind usage volume consumer writer pf_line full_line fingerprint
+    #   列：file line occ scope kind usage volume consumer writer pf_line full_line fingerprint criterion
     lines = [CAND_HEADER]
     for key, sites in groups:
         s0 = sites[0]
         kinds = sorted(set(x.kind for x in sites))
         cons = sorted(set(x.consumer.strip() for x in sites))
-        lines.append("%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s" % (
+        lines.append("%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s" % (
             key[0], key[1], occ[key], s0.scope, "+".join(kinds), s0.usage, s0.volume,
             "|".join(cons).replace("\t", " "),
             s0.writer.replace("\t", " ")[-100:], s0.pf_line,
-            s0.full_line.replace("\t", " ")[:160], fingerprint(s0)))
+            s0.full_line.replace("\t", " ")[:160], fingerprint(s0),
+            s0.criterion))
     out = "\n".join(lines) + "\n"
     if args.out == "-":
         sys.stdout.write(out)

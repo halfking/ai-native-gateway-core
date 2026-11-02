@@ -127,6 +127,9 @@ func r97RepoRootErr() (string, error) {
 type r97Scan struct {
 	cands   map[string]bool     // 候选集键集
 	carried map[string][]string // 重生成台账：key → 列切片
+	// ★★★ 第三十一轮：候选集**末列** `criterion`（★ 判据量 + 适用阈值）。
+	// ★ 它由**量具**算（★ 不是门自己重算 ⇒ 零漂移）⇒ 新门据此逐行核对台账措辞。
+	crit map[string]string // 候选集键 → criterion
 }
 
 var r97ScanOnce sync.Once
@@ -196,6 +199,7 @@ func r97ScanRun() (r97Scan, error) {
 	}
 	defer f.Close()
 	cands := map[string]bool{}
+	crit := map[string]string{}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
 	first := true
@@ -212,8 +216,8 @@ func r97ScanRun() (r97Scan, error) {
 			continue
 		}
 		cols := strings.Split(line, "\t")
-		if len(cols) < 12 {
-			return r97Scan{}, fmt.Errorf("候选集行列数 = %d，不足 12（末列必须是 fingerprint）：%q", len(cols), line)
+		if len(cols) < 13 {
+			return r97Scan{}, fmt.Errorf("候选集行列数 = %d，不足 13（★ 第 13 列必须是 criterion ⇒ 量具与门同版本）：%q", len(cols), line)
 		}
 		// ★★★ 主键 = (file, fingerprint, occ)。
 		//
@@ -231,6 +235,7 @@ func r97ScanRun() (r97Scan, error) {
 			return r97Scan{}, fmt.Errorf("★ 候选集主键重复：%q ⇒ 主键不唯一 ⇒ 键方案已退化", key)
 		}
 		cands[key] = true
+		crit[key] = cols[12]
 	}
 	if err := sc.Err(); err != nil {
 		return r97Scan{}, fmt.Errorf("读候选集出错：%v", err)
@@ -272,7 +277,7 @@ func r97ScanRun() (r97Scan, error) {
 	if len(carried) == 0 {
 		return r97Scan{}, fmt.Errorf("★ 重生成台账为空 ⇒ 拒绝出结论")
 	}
-	return r97Scan{cands: cands, carried: carried}, nil
+	return r97Scan{cands: cands, carried: carried, crit: crit}, nil
 }
 
 // r97Ledger 读台账 ⇒ key → 列切片。
