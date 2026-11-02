@@ -105,11 +105,13 @@ import (
 //	KindContentFilter：它们落 ErrorKindRequest ⇒ effectsFor 直接返回
 //	nil（不写绑定、不记熔断、不累计连败）。
 func nodePenaltyKindSet() map[ErrorKind]bool {
-	return map[ErrorKind]bool{
-		KindConcurrent:         true,
-		KindUpstreamOverloaded: true,
-		KindRateLimit:          true,
+	out := make(map[ErrorKind]bool)
+	for _, kind := range AllErrorKinds() {
+		if IsNodeFaultPenalty(kind) {
+			out[kind] = true
+		}
 	}
+	return out
 }
 
 // lockstepBodyCorpus 是本门使用的正文语料。
@@ -140,6 +142,16 @@ func lockstepBodyCorpus() []string {
 		`{"code":"unsupported_value"}`,
 		"content filter triggered",
 		"context length exceeded",
+		// ★ 2026-11-02（第十三轮 · F-E）：截断流信号 ——
+		//   「eof without done」是**只存在于 ClassifyResponseBody** 的那条
+		//   正文规则（ClassifyErrorWithBody 没有）⇒ 它是两个分类器
+		//   **可能分叉**的已知来源 ⇒ 语料里没有它，门 1 就**永远看不到**
+		//   那一族分叉 —— 这正是第十一轮独立复核发现的那条漏法
+		//   （语料缺 ⇒ 门绿）。
+		"eof without done",
+		"unexpected eof",
+		"stream closed before done",
+		"premature close",
 	}
 }
 
@@ -160,18 +172,19 @@ func requestSideStatusFamily() []int {
 //	本门在 400..599 全状态码 × 全语料上断言同一性质 ⇒ 任何**未来**的
 //	分叉（新增规则、漏门、改门）只要方向是「正文分类器更狠」就会被抓住。
 func TestClassifyDualClassifier_PenaltyMonotonicity(t *testing.T) {
-	penalty := nodePenaltyKindSet()
 	bodies := lockstepBodyCorpus()
 	for status := 400; status <= 599; status++ {
 		for _, body := range bodies {
 			rb := ClassifyResponseBody(status, []byte(body))
-			if !penalty[rb] {
-				continue // 前提不成立（正文分类器没判罚则）⇒ 单调性约束不适用
-			}
 			wb := ClassifyErrorWithBody(status, []byte(body))
-			if wb != rb {
-				t.Errorf("双分类器分叉：status=%d body=%q\n  ClassifyResponseBody  = %s（节点侧罚则）\n  ClassifyErrorWithBody = %s\n  ★ 违反：正文分类器不得比状态+正文分类器更狠（罚则单调性）",
-					status, body, rb, wb)
+			// ★ 判据是**严重度序**（请求侧 < 绑定级 < 凭据级），不是「相等」。
+			//   理由：两个分类器**结构上**就不同 —— ClassifyErrorWithBody 有
+			//   状态兜底（400/404/… 各有裁决），ClassifyResponseBody 没有
+			//   （不命中就返回 ""）⇒ 「相等」不是它们之间可成立的不变量。
+			//   真正的不变量是**正文分类器不得更狠**。
+			if SeverityOf(rb) > SeverityOf(wb) {
+				t.Errorf("双分类器分叉（正文分类器更狠）：status=%d body=%q\n  ClassifyResponseBody  = %s（严重度 %d）\n  ClassifyErrorWithBody = %s（严重度 %d）\n  ★ 违反：正文分类器不得比状态+正文分类器更狠（罚则单调性）",
+					status, body, rb, SeverityOf(rb), wb, SeverityOf(wb))
 			}
 		}
 	}
@@ -186,6 +199,12 @@ func TestClassifyDualClassifier_PenaltyMonotonicity(t *testing.T) {
 // ★ 断言的是**两个**分类器，不是一个 ⇒ 这正是 F-A 漏掉的那一半。
 func TestClassifyDualClassifier_RequestSideStatusNeverPenalizes(t *testing.T) {
 	penalty := nodePenaltyKindSet()
+	// ★ 恒绿护栏（第十三轮）：派生的「落凭据级罚则」集合**不得为空**
+	//   —— 否则「把判据写坏 ⇒ 集合为空 ⇒ 本门什么都不查」就能蒙混过关。
+	//   （这正是第七轮那版手写 3 项清单的老毛病：清单一改小，门就变弱。）
+	if len(penalty) == 0 {
+		t.Fatal("派生的凭据级罚则集合是空的 ⇒ 本门会退化成「什么都不查」⇒ 必须显式登记")
+	}
 	overloadBodies := []string{
 		"Too many requests. Please try again later.",
 		"并发过大，达到上限，请稍后重试",
@@ -452,4 +471,61 @@ func renderNode(fset *token.FileSet, n ast.Node) string {
 	//nolint:errcheck // 渲染失败时返回空串即可（门会因"缺门"而红，不会误绿）
 	_ = printer.Fprint(&sb, fset, n)
 	return sb.String()
+}
+
+// ── 门 6：截断流规则的状态门（第十三轮）───────────────────────────────
+
+// TestClassifyDualClassifier_TruncationRuleIsStatusGated 钉门 6：
+// 「eof without done」（上游流被截断）这条正文规则**只存在于
+// ClassifyResponseBody** ⇒ 它是「两分类器可能分叉」的**唯一已知来源**
+// ⇒ 必须有一道门钉住它的状态门。
+//
+// ★ 两条断言缺一不可：
+// ① 请求侧 / 绑定级状态族上，两个分类器都**不得**落凭据级罚则
+// （否则正文分类器比状态分类器更狠 ⇒ 违反 V20 / R30）；
+// ② 5xx 上截断信号**必须仍然生效** —— 否则这道门会把「把这条规则
+// 整个关掉」也判成合格（那是把工具变成另一种缺陷）。
+func TestClassifyDualClassifier_TruncationRuleIsStatusGated(t *testing.T) {
+	truncationBodies := []string{
+		"eof without done",
+		"unexpected eof",
+		"stream closed before done",
+		"premature close",
+	}
+	// ★ 语料护栏（第十三轮）：主语料里**必须**含截断流正文 ——
+	//   否则门 1（严重度序）永远看不到这一族分叉，而门 6 用的是自己的
+	//   语料 ⇒ 两道门都绿 ⇒ 这条漏法复发（第十一轮复核发现的那一条）。
+	corpusHasTruncation := false
+	for _, body := range lockstepBodyCorpus() {
+		for _, trunc := range truncationBodies {
+			if body == trunc {
+				corpusHasTruncation = true
+			}
+		}
+	}
+	if !corpusHasTruncation {
+		t.Error("主语料里没有截断流正文 ⇒ 门 1 看不到这一族分叉 ⇒ 必须把 eof 形态加进 lockstepBodyCorpus")
+	}
+
+	for _, status := range requestSideStatusFamily() {
+		for _, body := range truncationBodies {
+			rb := ClassifyResponseBody(status, []byte(body))
+			if SeverityOf(rb) == SeverityCredential {
+				t.Errorf("请求侧/绑定级状态族落了凭据级罚则：status=%d body=%q ClassifyResponseBody=%s（%s）",
+					status, body, rb, rb)
+			}
+			wb := ClassifyErrorWithBody(status, []byte(body))
+			if SeverityOf(wb) == SeverityCredential {
+				t.Errorf("请求侧/绑定级状态族落了凭据级罚则：status=%d body=%q ClassifyErrorWithBody=%s",
+					status, body, wb)
+			}
+		}
+	}
+	for _, status := range []int{500, 502, 503} {
+		body := "eof without done"
+		if got := ClassifyResponseBody(status, []byte(body)); got != KindStreamTimeout {
+			t.Errorf("5xx 上截断信号失效：status=%d body=%q ClassifyResponseBody=%s, want %s",
+				status, body, got, KindStreamTimeout)
+		}
+	}
 }

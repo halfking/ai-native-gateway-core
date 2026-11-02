@@ -178,6 +178,75 @@ func PenaltyOf(kind ErrorKind) Penalty {
 	}
 }
 
+// ── 第十三轮（2026-11-02 · F-E）：归责**严重度**的三档判据 ─────────────
+//
+// ★ 为什么要有它：第七轮那道「两分类器锁步」的门（门 1）断言的是
+//   「**正文分类器不得比状态分类器更狠**」⇒ 要判「更狠」，就必须有
+//   一个**可比较**的严重度标尺。
+//   ⇒ 而那版门禁用的是**手写的 3 项清单**（concurrent / upstream_overloaded
+//     / rate_limit）⇒ 它的覆盖面与它自己的注释（"落节点侧罚则的 kind 集合"）
+//     **不一致** ⇒ 第十一轮复核发现的 `stream_timeout` 一族分叉**逃过全部
+//     5 道门**（详见审计档 §十六）。
+//
+// ★ 这三档与 nodehealth 的归责**一一对应**（权威在
+//   domains/streaming/executors/executor_nodehealth.go 的 nodeHealthErrorKind
+//   + domains/nodehealth/reducer.go 的 isBindingScoped）：
+//
+//	请求侧（什么都不写）  ⇒ nodehealth.ErrorKindRequest ⇒ effectsFor 返回 nil
+//	绑定级（只冷却这一对）⇒ ErrorKindModelBinding / ErrorKindModelUnavailable
+//	凭据级（整凭据冷却）  ⇒ 其余全部 ⇒ 连败到阈值 ⇒ 整凭据 cooling + 熔断
+//
+// ★ 本文件是**镜像**：errorsx 包无法 import executors / nodehealth
+//   （那是它们的反向依赖）⇒ 漂移风险由**交叉门**钉死：
+//   domains/streaming/executors/nodefault_penalty_parity_test.go 断言本处
+//   的判据与实现**逐 kind 一致**。
+
+// PenaltySeverity 是归责的严重度档位（数值越大越重）。
+type PenaltySeverity int
+
+const (
+	// SeverityNone：证据不足 / 未登记 ⇒ 不产生任何罚则。
+	SeverityNone PenaltySeverity = iota
+	// SeverityRequestSide：证据指向**这次请求** ⇒ 什么都不写。
+	SeverityRequestSide
+	// SeverityBinding：证据指向**这一对 (凭据,模型)** ⇒ 只冷却这一对。
+	SeverityBinding
+	// SeverityCredential：证据指向**凭据 / 节点** ⇒ 凭据级冷却 + 熔断。
+	SeverityCredential
+)
+
+// SeverityOf 返回该 kind 的归责严重度。
+//
+// ★ 与 nodehealth 的映射同源：
+//   - nodeHealthErrorKind 的第一道门把请求侧族（IsRequestSideError ∪
+//     内容过滤 ∪ context_length ∪ canceled）映射成 ErrorKindRequest
+//     ⇒ effectsFor 直接返回 nil（不写绑定、不记熔断、不累计连败）；
+//   - ErrorKindModelBinding / ErrorKindModelUnavailable ⇒ 绑定级；
+//   - 其余 ⇒ 凭据级。
+func SeverityOf(kind ErrorKind) PenaltySeverity {
+	if kind == "" {
+		// 未登记的 kind（正文分类器「无命中」时的返回值）⇒ 不产生罚则。
+		return SeverityNone
+	}
+	if IsRequestSideError(kind) || IsContentFilter(kind) ||
+		kind == KindContextLength || kind == KindCanceled {
+		return SeverityRequestSide
+	}
+	switch kind {
+	case KindModelNotFound, KindModelDeprecated, KindModelUnavailable:
+		return SeverityBinding
+	}
+	return SeverityCredential
+}
+
+// IsNodeFaultPenalty reports whether the kind's evidence points at the
+// **node / credential**（⇒ 凭据级罚则），as opposed to the request
+// (⇒ 请求侧，什么都不写) or this (credential, model) pair
+// (⇒ 绑定级，只冷却这一对）。
+func IsNodeFaultPenalty(kind ErrorKind) bool {
+	return SeverityOf(kind) == SeverityCredential
+}
+
 // FailoverScopeOf 把 PenaltyTarget 映射到既有 FailoverScope（兼容 DecideFailover）。
 func FailoverScopeOf(p Penalty) FailoverScope {
 	switch p.Target {
