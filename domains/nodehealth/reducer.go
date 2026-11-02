@@ -42,6 +42,16 @@ const (
 	// pair and never feeds the credential-wide circuit; unlike it, the
 	// request may still fail over to a sibling credential.
 	ErrorKindModelUnavailable ErrorKind = "model_unavailable"
+	// ErrorKindNoAvailableChannel is "no backend can serve this" — but the
+	// 归责 level depends on the upstream status, because the two variants
+	// point at different layers:
+	//
+	//	4xx: the credential does not serve this (model, path) — 绑定级
+	//	5xx: the relay group has no channel at all — 凭据级
+	//
+	// See isBindingScoped for the full rationale and the production
+	// evidence (211, 2026-10-13, credential 63 / claude-haiku-5-5).
+	ErrorKindNoAvailableChannel ErrorKind = "no_available_channel"
 	// ErrorKindEmptyResponse is a binding-scoped quality signal. It is recorded
 	// in URSM for routing penalties but cannot escalate a credential-wide circuit
 	// or availability state.
@@ -430,7 +440,7 @@ func effectsFor(observation Observation, decision Decision) []Effect {
 	}
 
 	effects = append(effects, Effect{Kind: EffectUpdateURSM})
-	if isBindingScoped(observation.ErrorKind) {
+	if isBindingScoped(observation) {
 		// A binding-scoped error invalidates only the (credential, model)
 		// binding. The credential-wide circuit and availability stay
 		// untouched: sibling models on the same credential keep serving.
@@ -484,8 +494,39 @@ func isPermanent(kind ErrorKind) bool {
 // failures are quarantined per node and never feed the credential-wide
 // circuit, so model-a going missing must not affect model-b availability
 // on the same credential.
-func isBindingScoped(kind ErrorKind) bool {
-	return kind == ErrorKindModelBinding || kind == ErrorKindModelUnavailable
+//
+// ★ 2026-11-02（第九轮 · F-B）：本函数**多了 HTTP 状态这一维**，因为
+// 「无可用后端」有两种**证据指向不同层**的事实，必须分开：
+//
+//	4xx 的「无可用后端」——例如中转的
+//	  "No enterprise provider is available for this request path: POST
+//	   /v1/messages. Required model: claude-haiku-5-5; model series: claude."
+//	  ⇒ 证据指向**这一对 (凭据,模型)**（这个凭据在这条路径上不提供这个
+//	  模型系列）⇒ **绑定级**：只冷却这一对，兄弟模型照常服务，
+//	  且**保留跨凭据故障转移**（兄弟凭据可能服务同一个模型）。
+//	5xx 的「无可用后端」——例如中转分组的
+//	  "No available channel for model X under group Y (distributor)"
+//	  ⇒ 证据指向**中转整体**（这个分组暂时没有可用通道）⇒ **凭据级**：
+//	  连败到阈值就熔断该凭据，这是**既有且正确**的处置。
+//
+// ★ 改动前两者都落 `ErrorKindUpstream` ⇒ 都不绑定级 ⇒ **4xx 那一支会
+// 连坐该凭据上的全部模型**（3 连败 ⇒ 整凭据 cooling ⇒ 全租户 503）。
+// 这与规则自己的注释相悖：errorsx/classify.go 的 noEnterpriseProviderRe
+// 写明「KindNoAvailableChannel means fail over to a sibling
+// credential/model, **not** blind same-node retries that park a healthy
+// node」⇒ 它明确不要「park 一个健康节点」，而旧归责恰恰 park 了整个凭据。
+//
+// ★ 判据用**上游状态码**（Observation.HTTPStatus，由 executor 的
+// dispatchHTTPStatus 从 *upstream.Error.StatusCode 取）⇒ 400..499 绑定级，
+// 5xx / 未知（0）凭据级。
+func isBindingScoped(observation Observation) bool {
+	switch observation.ErrorKind {
+	case ErrorKindModelBinding, ErrorKindModelUnavailable:
+		return true
+	case ErrorKindNoAvailableChannel:
+		return observation.HTTPStatus >= 400 && observation.HTTPStatus < 500
+	}
+	return false
 }
 
 func (o Observation) validate() error {

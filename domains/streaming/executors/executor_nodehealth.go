@@ -520,6 +520,20 @@ func nodeHealthErrorKind(kind errorsx.ErrorKind) nodehealth.ErrorKind {
 		return nodehealth.ErrorKindQuota
 	case errorsx.KindModelNotFound, errorsx.KindModelDeprecated:
 		return nodehealth.ErrorKindModelBinding
+	case errorsx.KindNoAvailableChannel:
+		// 2026-11-02（第九轮 · F-B）：「无可用后端」**不是**单一档位——
+		// 归责层级取决于上游状态码：
+		//   4xx（中转的 "No enterprise provider is available for this request
+		//   path: POST /v1/messages … model series: claude."）⇒ 证据指向
+		//   **这一对 (凭据,模型)** ⇒ 绑定级（只冷却这一对、保留跨凭据转移）；
+		//   5xx（中转分组的 "No available channel for model X under group Y"）
+		//   ⇒ 证据指向**中转整体** ⇒ 凭据级（连败到阈值就熔断该凭据）。
+		// ★ 判据在 nodehealth.reducer 的 isBindingScoped 里（它能拿到
+		//   Observation.HTTPStatus）；这里只负责**把 kind 传到那一档**，
+		//   不要在这里塌成 ErrorKindUpstream —— 塌了就再也分不出 4xx/5xx。
+		//   理由见 docs/audit/2026-11-02-上游4xx被记成节点不健康-下一轮修复项.md
+		//   §十.6（F-B 登记）与 §十二（本轮实施记录）。
+		return nodehealth.ErrorKindNoAvailableChannel
 	case errorsx.KindModelUnavailable:
 		// 2026-11-02（4xx 归因族收口轮）：裸 404 = 「上游不提供这一对」。
 		// 归**绑定级**（与 model_binding 同族）⇒ reducer 只写这一对，
@@ -548,6 +562,12 @@ func errorKindFromNodeHealth(kind nodehealth.ErrorKind) errorsx.ErrorKind {
 		return errorsx.KindQuotaPermanent
 	case nodehealth.ErrorKindModelBinding:
 		return errorsx.KindModelNotFound
+	case nodehealth.ErrorKindNoAvailableChannel:
+		// 2026-11-02（第九轮 · F-B）：与 nodeHealthErrorKind 对称回写。
+		// ★ 回写的是 **no_available_channel**，不是 model_not_found ——
+		//   写进 credential.Writer 的是 reason='auto_no_available_channel'
+		//   （绑定级冷却），不是「模型不存在」那套终态语义。
+		return errorsx.KindNoAvailableChannel
 	case nodehealth.ErrorKindModelUnavailable:
 		return errorsx.KindModelUnavailable
 	case nodehealth.ErrorKindEmptyResponse:
