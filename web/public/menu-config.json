@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-11-02T01:01:22.536Z",
+  "exported_at": "2026-11-02T13:42:03.877Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -163,20 +163,12 @@
           "pluginScope": "*"
         },
         {
-          "path": "/free-pool",
-          "labelKey": "nav.item.freePool",
+          "path": "https://freellm.itestu.cn",
+          "labelKey": "nav.item.freellm",
           "icon": "🎁",
           "super": true,
           "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
-        },
-        {
-          "path": "/free-discovery",
-          "labelKey": "nav.item.freeDiscovery",
-          "icon": "🔍",
-          "super": true,
-          "hideForTenant": true,
+          "external": true,
           "tenantScope": "default",
           "pluginScope": "*"
         }
