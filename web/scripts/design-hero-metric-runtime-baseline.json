@@ -411,6 +411,9 @@
     },
     "/admin/prompt-injection?tab=stats": {
       "wallCount": 0
+    },
+    "/model-credibility": {
+      "wallCount": 0
     }
   },
   "updated": "2026-10-28",
@@ -431,6 +434,13 @@
       "pages": 137,
       "measuredPages": 135,
       "note": "写回值 = min(旧值, 实测值)；★ 本次只实测了 135 页（子集运行）⇒ 其余 2 页**未参与写回**（它们的值原样保留）。"
+    },
+    {
+      "at": "2026-10-28",
+      "change": "基线更新（只许降）",
+      "pages": 138,
+      "measuredPages": 138,
+      "note": "写回值 = min(旧值, 实测值)"
     }
   ]
 }
