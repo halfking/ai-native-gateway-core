@@ -227,4 +227,45 @@ assert_contains "$post_line" '"port": "8783"' 'the switch registered the wrong p
 del_line=$(grep '"method": "DELETE"' "$record" | tail -1) || die 'switch did not drop the stale registration'
 assert_contains "$del_line" '"port": "8781"' 'the switch did not drop the stale port'
 
+# ---- 场景⑥：★「导出的量」必须真的能到远端（转发白名单）------------------
+# ★ 为什么要有这条：--via 的转发是**显式白名单**（引擎里的 for _v in ...），
+#   不是「导出全部 DD_*」⇒ 部署机 export 了，远端**收不到** ⇒ 远端只能吃引擎
+#   自己的默认。实测（2026-11-03）：deploy-211.sh 导出了 DD_GOACOS_*，
+#   而白名单里没有 ⇒ 唯独 DD_GOACOS_ENV 没有默认兜底 ⇒ 注册实例的 metadata
+#   会少 env 键 ⇒ **改动在真实路径上没完全生效**。
+#   ⇒ 这里把「导出的 DD_GOACOS_* ⊆ 转发白名单」锁死。
+deploy_211="${DEPLOY_211:-$self/deploy-211.sh}"
+[[ -f "$deploy_211" ]] || die "missing $deploy_211"
+
+forward_block=$(awk '
+  /for _v in / {buf=""; collecting=1}
+  collecting {buf = buf $0 "\n"}
+  collecting && /; do/ {
+    if (buf ~ /DD_TARGET/) {printf "%s", buf; exit}
+    collecting=0
+  }
+' "$engine") || true
+[[ -n "$forward_block" ]] || die 'cannot locate the --via forward list in the engine'
+forwarded=$(printf '%s' "$forward_block" | grep -oE '\bDD_[A-Z0-9_]+' | sort -u)
+
+exported=$(grep -oE 'export[[:space:]]+(DD_GOACOS_[A-Z0-9_]+)=' "$deploy_211" \
+  | sed -E 's/export[[:space:]]+//; s/=$//' | sort -u)
+[[ -n "$exported" ]] || die 'no DD_GOACOS_* exported by deploy-211.sh (parser broke?)'
+
+for v in $exported; do
+  printf '%s\n' "$forwarded" | grep -qx "$v" \
+    || die "$v is exported by deploy-211.sh but NOT in the engine's --via forward list => it never reaches the remote"
+done
+
+# 反向：引擎读的每个 DD_GOACOS_*，要么在转发清单里、要么在块内自带 :- 兜底
+read_names=$(printf '%s' "$register_block" | grep -oE '\bDD_GOACOS_[A-Z0-9_]+' | sort -u)
+[[ -n "$read_names" ]] || die 'the register block reads no DD_GOACOS_* (parser broke?)'
+for v in $read_names; do
+  if printf '%s\n' "$forwarded" | grep -qx "$v"; then
+    continue
+  fi
+  printf '%s' "$register_block" | grep -q "${v}:-" \
+    || die "$v is read by dd_register_goacos but is neither forwarded nor given a :- fallback => it silently resolves empty on the remote"
+done
+
 echo "OK goacos register contract holds"

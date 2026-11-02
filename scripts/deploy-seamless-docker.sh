@@ -463,6 +463,14 @@ if [[ -n "$VIA" ]]; then
   #   「上一轮种子还在」判定 ⇒ **部署直接 die**；configs 则是静默回落内置
   #   脱敏集（sensitive_patterns.yaml 没种进去）。⇒ 一律**不转发**，
   #   让远端按自己的 DD_REPO_ROOT 重算。
+  # ★ DD_GOACOS_* **必须**在这份清单里（2026-11-03 补）：
+  #   切流时「同步登记注册表」由 dd_switch_upstream → dd_register_goacos 完成，
+  #   而它读的就是这几个量。**不转发 ⇒ 远端拿到的只是引擎默认**：
+  #   地址 / IP / 服务名 / 命名空间 / 分组恰好都有兜底（IP 还能退到 DD_HOST，
+  #   而 DD_HOST 在清单里）⇒ **唯独 DD_GOACOS_ENV 没有兜底** ⇒ 注册实例的
+  #   metadata 会少 `env` 键（消费方不按它过滤 ⇒ 不致命，但形状与编排台自己
+  #   注册的条目不一致）。⇒ 门：scripts/deploy-seamless-goacos_test.sh 断言
+  #   deploy-211.sh 导出的**每个** DD_GOACOS_* 都在这份转发清单里。
   _dd_fwd=""
   for _v in DD_TARGET DD_HOST DD_STATE_DIR DD_REMOTE_ROOT DD_NETWORK \
             DD_SLOT_A_PORT DD_SLOT_B_PORT DD_CONTAINER_PREFIX DD_IMAGE \
@@ -475,7 +483,9 @@ if [[ -n "$VIA" ]]; then
             LLM_GATEWAY_PROBE_LANE_PHYSICAL \
             LLM_GATEWAY_AUTO_TITLE_ENABLED LLM_GATEWAY_AUTO_SUMMARY_ENABLED \
             LLMGatewayAutoLLMEndpoint LLMGatewayAutoLLMApiKey LLMGatewayAutoLLMModel \
-            LLMGatewayAutoLLMTimeout LLMGatewayAutoLLMMaxTokens LLM_GW_TEST_MODE_TOKEN; do
+            LLMGatewayAutoLLMTimeout LLMGatewayAutoLLMMaxTokens LLM_GW_TEST_MODE_TOKEN \
+            DD_GOACOS_ADDR DD_GOACOS_IP DD_GOACOS_SERVICE DD_GOACOS_NAMESPACE \
+            DD_GOACOS_GROUP DD_GOACOS_ENV; do
     if [[ -n "${!_v+x}" ]]; then _dd_fwd+=" ${_v}='${!_v}'"; fi
   done
   _dd_args="${DD_ARGS[@]+"${DD_ARGS[@]}"}"
