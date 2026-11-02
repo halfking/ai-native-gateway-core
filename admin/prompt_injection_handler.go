@@ -52,7 +52,7 @@ const promptInjectionDetectionsSelectCols = `SELECT id, tenant_id, request_id, C
 		` + promptinjection.RiskLevelSQLExpr + ` AS risk_level,
 		COALESCE(rule_name, '') AS matched_rules,
 		COALESCE(array_length(categories, 1), 0) AS matched_rules_count,
-		action_taken, blocked, COALESCE(evidence_text, '') AS evidence_text,
+		action_taken, COALESCE(blocked, false) AS blocked, COALESCE(evidence_text, '') AS evidence_text,
 		COALESCE(categories::text[], '{}'::text[]), llm_confidence, COALESCE(llm_reason, ''),
 		COALESCE(canary_token_leaked, ''), COALESCE(approval_id, ''),
 		COALESCE(replaced_content, ''), COALESCE(client_ip, ''), COALESCE(user_agent, '')
@@ -1359,6 +1359,84 @@ type CanaryToken struct {
 	CreatedAt     *time.Time `json:"created_at"`
 }
 
+// CanaryTokenUpdate 是 POST/PUT canary token 的**写载荷**。
+//
+// ★ 为什么不复用 CanaryToken（响应结构体）：
+// 响应体里有 5 个**只读**字段（id / times_injected / times_leaked /
+// last_leaked_at / created_at），写路径一个都不用；而其中三个是 timestamptz
+// ⇒ JSON 解码只认 RFC3339 ⇒ 「客户端把 GET 响应原样 POST 回来」这种
+// **最常见**的调用方式，只要时间戳不是 RFC3339（比如 PG 的文本格式
+// "2026-07-19 21:08:25.836952+08"）就会在**解码期**整包 400。
+// ⇒ 写载荷与响应结构体**分离**：写路径只碰**可写**的列
+// （与 PromptInjectionPolicyUpdate 同一思路：读投影 ≠ 写载荷）。
+//
+// ★ expires_at 用 **string** 而不是 *time.Time：
+// 它**是**可写列，但第三方 / curl 客户端常直接抄 PG 或控制台里的文本写法
+// （"2026-12-31" / "2026-12-31 23:59:59+08"）⇒ 由 parseFlexibleTimestamp
+// 显式接受多种写法。★ 此前这条路径是 **PG 侧**做文本转的 ⇒ 写载荷与响应
+// 结构体分离之后，不能把这份兼容弄丢（否则是「分离」引入的回归）。
+type CanaryTokenUpdate struct {
+	TokenValue   string  `json:"token_value"`
+	TokenType    string  `json:"token_type"`
+	TokenName    string  `json:"token_name"`
+	Description  string  `json:"description"`
+	LeakAction   string  `json:"leak_action"`
+	NotifyOnLeak bool    `json:"notify_on_leak"`
+	Active       bool    `json:"active"`
+	ExpiresAt    *string `json:"expires_at"`
+}
+
+// flexibleTimestampLayouts 是**写路径**接受的时间戳写法（按顺序试）。
+//
+// ★ 依据：PG 的 text 输出形态（空格分隔、没有 'T'）与 RFC3339 各占一半，
+// 第三方客户端与控制台抄来的值两种都有 ⇒ 写路径必须两种都收。
+// ★ 读路径**不**放宽：响应侧仍是 RFC3339（前端 new Date() 要能解析，
+// 见 TestPromptInjectionTimestampJSONIsRFC3339）。
+var flexibleTimestampLayouts = []string{
+	time.RFC3339Nano,
+	time.RFC3339,
+	"2006-01-02 15:04:05.999999-07",
+	"2006-01-02 15:04:05-07",
+	"2006-01-02 15:04:05.999999",
+	"2006-01-02 15:04:05",
+	"2006-01-02",
+}
+
+// parseFlexibleTimestamp 把**写路径**的时间戳文本解析成 time.Time。
+//
+// ★ 空串 ⇒ 零值（调用方按「不设过期时间」处理），不是错误。
+// ★ 解析不出来 ⇒ 明确报错（带支持的写法），而不是悄悄落一个错的时刻。
+func parseFlexibleTimestamp(raw string) (time.Time, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}, nil
+	}
+	for _, layout := range flexibleTimestampLayouts {
+		if ts, err := time.Parse(layout, trimmed); err == nil {
+			return ts, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf(
+		"无法解析时间戳 %q（支持的写法：RFC3339，或 PG 文本格式，如 2026-12-31 / 2026-12-31 23:59:59+08）",
+		trimmed)
+}
+
+// expiresAtOrNil 把写载荷里的 expires_at 解析成可入库的值。
+// 空串 / 缺省 ⇒ nil（落库 NULL = 不过期）。
+func expiresAtOrNil(raw *string) (*time.Time, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	ts, err := parseFlexibleTimestamp(*raw)
+	if err != nil {
+		return nil, err
+	}
+	if ts.IsZero() {
+		return nil, nil
+	}
+	return &ts, nil
+}
+
 func (h *PromptInjectionHandler) handleCanaryTokens(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -1430,9 +1508,17 @@ func (h *PromptInjectionHandler) createCanaryToken(w http.ResponseWriter, r *htt
 	tenantID := GetTenantID(r)
 	adminUser := authEmail(r)
 
-	var req CanaryToken
+	var req CanaryTokenUpdate
 	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
+		return
+	}
+
+	// ★ expires_at 是**可写**的时间戳：解析失败要**明确**回 400，
+	// 不能悄悄落一个错的时刻（此前这条路径由 PG 侧做文本转型）。
+	expiresAt, err := expiresAtOrNil(req.ExpiresAt)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -1446,9 +1532,9 @@ func (h *PromptInjectionHandler) createCanaryToken(w http.ResponseWriter, r *htt
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`
 
 	var tokenID int
-	err := h.pool.QueryRow(r.Context(), query,
+	err = h.pool.QueryRow(r.Context(), query,
 		tenantID, tokenValue, req.TokenType, req.TokenName, req.Description,
-		req.LeakAction, req.NotifyOnLeak, req.Active, req.ExpiresAt, adminUser,
+		req.LeakAction, req.NotifyOnLeak, req.Active, expiresAt, adminUser,
 	).Scan(&tokenID)
 
 	if err != nil {
@@ -1460,15 +1546,21 @@ func (h *PromptInjectionHandler) createCanaryToken(w http.ResponseWriter, r *htt
 }
 
 func (h *PromptInjectionHandler) updateCanaryToken(w http.ResponseWriter, r *http.Request, tokenID string) {
-	var req CanaryToken
+	var req CanaryTokenUpdate
 	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
 		return
 	}
 
-	_, err := h.pool.Exec(r.Context(),
+	expiresAt, err := expiresAtOrNil(req.ExpiresAt)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	_, err = h.pool.Exec(r.Context(),
 		`UPDATE canary_tokens SET token_name=$1, description=$2, leak_action=$3, notify_on_leak=$4, active=$5, expires_at=$6 WHERE id=$7`,
-		req.TokenName, req.Description, req.LeakAction, req.NotifyOnLeak, req.Active, req.ExpiresAt, tokenID)
+		req.TokenName, req.Description, req.LeakAction, req.NotifyOnLeak, req.Active, expiresAt, tokenID)
 
 	if err != nil {
 		writeInternalErrStr(w, "Failed to update token", err)

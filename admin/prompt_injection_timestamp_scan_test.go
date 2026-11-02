@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -80,6 +81,13 @@ func TestPromptInjectionTimestampFieldsAreTimePointers(t *testing.T) {
 			[]string{"ExpiresAt", "LastLeakedAt", "CreatedAt"}},
 		{"AttackVector", AttackVector{},
 			[]string{"DetectedAt", "CreatedAt"}},
+		// ★ 2026-11-02 第十七轮（F-18）：此前这道门钉了 5 个结构体，
+		//   **漏了** PromptInjectionDetection —— 而它的 DetectedAt 正是
+		//   「可空 timestamptz 扫进非指针字段」那一族的成员
+		//   （schema：detected_at timestamp with time zone DEFAULT now()，
+		//   **无 NOT NULL**）⇒ 漏掉它，就等于漏掉这条引信。
+		{"PromptInjectionDetection", PromptInjectionDetection{},
+			[]string{"DetectedAt"}},
 	}
 
 	for _, c := range cases {
@@ -188,20 +196,79 @@ func TestPromptInjectionPolicyWritePayloadHasNoTimestampFields(t *testing.T) {
 //	② 可空列 ::text 得到 NULL ⇒ 扫进 Go 的非指针 string 会报
 //	   "cannot scan NULL into *string" ⇒ 又是一条 500。
 func TestPromptInjectionHandlerHasNoTextCastOnTimestampColumns(t *testing.T) {
-	path := "prompt_injection_handler.go"
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, nil, 0)
-	if err != nil {
-		t.Fatalf("parse %s: %v", path, err)
-	}
-
 	timestampCols := []string{
 		"created_at", "updated_at", "detected_at", "last_detection_at",
 		"last_called_at", "last_leaked_at", "expires_at",
 	}
 	bad := map[string]bool{}
 
+	// ★ 2026-11-02 第十七轮（F-18）：此前这道门**只扫一个文件**
+	//   （prompt_injection_handler.go）⇒ 同一**族**的别的文件写
+	//   「时间戳列 ::text」是**隐形的**。
+	//   ⇒ 扫描范围从「一个文件」扩到「**prompt-injection 族**的全部文件」
+	//   （由表名判定，而不是手写文件清单 ⇒ 加了新文件也不会漏）。
+	//
+	// ★ 为什么**不是**「整个 admin 包」：admin 包里另有两处时间戳列用
+	//   ::text 投影（admin/routing.go 的 credentials.expires_at 等、
+	//   admin/auto_route.go 的 v_task_model_ranking.last_sampled_at 等），
+	//   它们的 Go 字段**本来就是 string**、值**刻意**是 PG 文本渲染
+	//   ⇒ 那是**另一族**（JSON 契约层的问题：PG 文本不是 RFC3339，
+	//   移动端 Date.parse 会返回 NaN），已单独登记为新发现，
+	//   不在本门（判据是「timestamptz 列不许 ::text 变通」）的口径内。
+	fset := token.NewFileSet()
+	for _, path := range adminProductionGoFiles(t) {
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		if !fileTouchesPromptInjectionTables(file) {
+			continue
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			val, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				return true
+			}
+			lower := strings.ToLower(val)
+			for _, col := range timestampCols {
+				if strings.Contains(lower, col+"::text") {
+					bad[col+"::text"] = true
+				}
+			}
+			return true
+		})
+	}
+
+	for pattern := range bad {
+		t.Errorf("admin 包里出现了「时间戳列 %s」变通写法 —— "+
+			"它产出的是 PG 文本格式（不是 RFC3339，移动端解析不了），"+
+			"且可空列会撞 \"cannot scan NULL into *string\" ⇒ 500", pattern)
+	}
+}
+
+// promptInjectionFamilyTables 是「prompt-injection 族」的表名。
+//
+// ★ 判定用**表名**而不是手写文件清单 ⇒ 新加一个读这些表的文件时，
+//
+//	门自动覆盖它（不必记得改清单）。
+var promptInjectionFamilyTables = []string{
+	"prompt_injection_",
+	"canary_tokens",
+	"severity_action_matrix",
+	"attack_vectors",
+}
+
+// fileTouchesPromptInjectionTables 判断某个文件是否查询了 prompt-injection 族。
+func fileTouchesPromptInjectionTables(file *ast.File) bool {
+	found := false
 	ast.Inspect(file, func(n ast.Node) bool {
+		if found {
+			return false
+		}
 		lit, ok := n.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
 			return true
@@ -211,17 +278,36 @@ func TestPromptInjectionHandlerHasNoTextCastOnTimestampColumns(t *testing.T) {
 			return true
 		}
 		lower := strings.ToLower(val)
-		for _, col := range timestampCols {
-			if strings.Contains(lower, col+"::text") {
-				bad[col+"::text"] = true
+		for _, table := range promptInjectionFamilyTables {
+			if strings.Contains(lower, table) {
+				found = true
+				return false
 			}
 		}
 		return true
 	})
+	return found
+}
 
-	for pattern := range bad {
-		t.Errorf("handler 里出现了「时间戳列 %s」变通写法 —— "+
-			"它产出的是 PG 文本格式（不是 RFC3339，移动端解析不了），"+
-			"且可空列会撞 \"cannot scan NULL into *string\" ⇒ 500", pattern)
+// adminProductionGoFiles 列出 admin 包里的**非测试** .go 文件。
+//
+// ★ 恒绿护栏：目录读空了 ⇒ 门会扫不到任何东西 ⇒ 必须报出来。
+func adminProductionGoFiles(t *testing.T) []string {
+	t.Helper()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("读取 admin 包目录失败：%v", err)
 	}
+	var out []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		t.Fatal("admin 包目录下没有非测试 .go 文件 ⇒ 扫描范围写错了，门会恒绿")
+	}
+	return out
 }
