@@ -54,19 +54,11 @@ import "testing"
 // 上下文取「有兄弟候选 + 还有尝试预算 + 同节点重试预算为 0」⇒ 走到
 // kind switch 里的最终动作。
 
-// recoveryProjectionExcludedKinds 是**显式登记的排除集**：这些 kind 的
-// 策略动作是「换一个兄弟候选」，但**客户端重试无用**，所以不告诉客户端
-// 「可重试」。
-//
-// ★ 每个条目**必须**写明理由——这是「有意排除」与「忘了登记」的分界线。
-var recoveryProjectionExcludedKinds = map[ErrorKind]string{
-	// 请求侧语义错误（400/413/422）：重发**同一个请求**必然再败 ⇒
-	// 客户端重试无用（网关自己已经换过兄弟候选了）。
-	KindRequestRejected: "请求侧语义错误：重发同一请求必然再败 ⇒ 客户端重试无用",
-	// 凭据级不可用（401/403）：网关换的是**凭据**不是请求；重试只会把
-	// 无效的 key 再打一遍 ⇒ 客户端重试无用（该修的是凭据）。
-	KindAuth: "凭据级不可用：网关换的是凭据不是请求 ⇒ 客户端重试只会重打无效 key",
-}
+// ★ 2026-11-02（第十二轮）：排除集**已搬进生产代码**
+//   （errorsx/recovery_projection.go 的 recoveryProjectionExcludedKinds）
+//   ⇒ 本文件**不再**持有自己的副本 ⇒ 门禁读的是**生产的那一份**，
+//   且该表带**排除资格判据**（recoveryProjectionExclusionEligible）⇒
+//   往表里加一行并不能放行一个不符合资格的 kind。
 
 // policyActionForKind 驱动真实策略，返回该 kind 在「有兄弟候选 + 还有
 // 尝试预算」下的处置动作。
@@ -93,7 +85,7 @@ func TestRecoveryProjectionClosedSet_SwitchNodeKindsMustBeClientRetryable(t *tes
 		if EffectiveRetryable(kind) {
 			continue
 		}
-		if reason, excluded := recoveryProjectionExcludedKinds[kind]; excluded {
+		if reason, excluded := RecoveryProjectionExclusionReason(kind); excluded {
 			if reason == "" {
 				t.Errorf("%s 在排除集里但**没写理由** ⇒ 排除必须是显式承认的决定", kind)
 			}
@@ -128,12 +120,18 @@ func TestRecoveryProjectionClosedSet_ClientRetryableMustBeRecoverableAction(t *t
 }
 
 // TestRecoveryProjectionClosedSet_ExclusionSetIsExplicit 是门 C：排除集
-// 必须非空、每条必须带理由、且**不得**包含本该可重试的 kind。
+// 必须非空、每条必须带理由、**必须符合排除资格**、且**不得**包含本该
+// 可重试的 kind。
+//
+// ★ 2026-11-02（第十二轮）：排除集已搬进**生产代码**，本门读的是生产的
+//
+//	那一份（errorsx/recovery_projection.go 的 recoveryProjectionExcludedKinds）。
 func TestRecoveryProjectionClosedSet_ExclusionSetIsExplicit(t *testing.T) {
 	if len(recoveryProjectionExcludedKinds) == 0 {
 		t.Fatal("排除集是空的 ⇒ 这道门会退化成「什么都能排除」⇒ 必须显式登记")
 	}
-	for kind, reason := range recoveryProjectionExcludedKinds {
+	for _, kind := range RecoveryProjectionExcludedKinds() {
+		reason, _ := recoveryProjectionExclusionReasonIn(recoveryProjectionExcludedKinds, kind)
 		if reason == "" {
 			t.Errorf("%s 在排除集里但没写理由", kind)
 		}
@@ -142,6 +140,60 @@ func TestRecoveryProjectionClosedSet_ExclusionSetIsExplicit(t *testing.T) {
 		}
 		if terminalActionKind(kind) {
 			t.Errorf("%s 是**终态** kind ⇒ 它根本不会走到 ActionSwitchNode ⇒ 放进排除集没有意义（排除集只登记「网关会换候选但客户端不该重试」的 kind）", kind)
+		}
+		if !recoveryProjectionExclusionEligible(kind) {
+			t.Errorf("%s 在排除集里，但**不符合排除资格**（既不是请求侧语义错误、也不是凭据级不可用）⇒ "+
+				"排除资格判据只对这两类开放 ⇒ 绑定级 kind 被排除正是 F-1 那一类缺陷", kind)
+		}
+	}
+}
+
+// TestRecoveryProjectionClosedSet_EveryExclusionIsJustified 是**门 D**
+// （第十二轮起改成**逐 kind**）：排除集里的**每一个**条目都必须通过
+// 四道独立断言 ——
+//
+//	① 它确实落在「网关会换兄弟候选」那一族（否则「排除」没有对象）；
+//	② 它有**非空理由**（排除必须是显式承认的决定）；
+//	③ 它**符合排除资格**（请求侧语义错误 / 凭据级不可用）；
+//	④ 它的**投影行为**确实是「终态 + 客户端不可重试」。
+//
+// ★ 为什么必须逐 kind：第八轮那版门 D 只查 `model_unavailable` 一个 kind
+//
+//	⇒ 其余每一个 kind 都可以「往排除集里加一行」蒙混过关。
+func TestRecoveryProjectionClosedSet_EveryExclusionIsJustified(t *testing.T) {
+	excluded := RecoveryProjectionExcludedKinds()
+	if len(excluded) == 0 {
+		t.Fatal("排除集是空的 ⇒ 逐 kind 断言失去对象")
+	}
+	for _, kind := range excluded {
+		// ① 它是「网关会换兄弟候选」的 kind ⇒ 排除有对象。
+		if policyActionForKind(kind) != ActionSwitchNode {
+			t.Errorf("%s 的策略动作是 %q，不是 ActionSwitchNode ⇒ 它不属于「网关会换候选但客户端不该重试」这一族，放进排除集没有意义",
+				kind, policyActionForKind(kind))
+		}
+		// ② 非空理由。
+		reason, ok := RecoveryProjectionExclusionReason(kind)
+		if !ok {
+			t.Errorf("%s 被登记进排除集，但访问器**不认** ⇒ 理由为空或不符合排除资格", kind)
+			continue
+		}
+		if reason == "" {
+			t.Errorf("%s 在排除集里但没写理由", kind)
+		}
+		// ③ 符合排除资格。
+		if !recoveryProjectionExclusionEligible(kind) {
+			t.Errorf("%s 不符合排除资格（既不是请求侧语义错误、也不是凭据级不可用）", kind)
+		}
+		// ④ 投影行为：终态 + 客户端不可重试（**行为级**）。
+		p := ProjectRecovery(kind)
+		if p.CandidateFailover || p.TransparentResume {
+			t.Errorf("%s 的投影带着候选故障转移/透明续跑 ⇒ 它不该在排除集里（projection=%+v）", kind, p)
+		}
+		if p.EffectiveAction != RecoveryActionTerminal || p.Reason != "not_recoverable" {
+			t.Errorf("%s 的投影不是「终态 + not_recoverable」⇒ 排除集与投影口径矛盾（projection=%+v）", kind, p)
+		}
+		if EffectiveRetryable(kind) {
+			t.Errorf("%s 被告知客户端可重试 ⇒ 与排除集矛盾", kind)
 		}
 	}
 }
@@ -160,7 +212,7 @@ func TestRecoveryProjectionClosedSet_HasTeeth(t *testing.T) {
 			policyActionForKind(KindModelUnavailable))
 	}
 	// 它**必须**落在可重试一侧（而不是被排除集放行）。
-	if _, excluded := recoveryProjectionExcludedKinds[KindModelUnavailable]; excluded {
+	if _, excluded := RecoveryProjectionExclusionReason(KindModelUnavailable); excluded {
 		t.Fatal("KindModelUnavailable 被登记进排除集 ⇒ 它必须是可重试一侧（404 = 绑定级 ⇒ 客户端重试有意义）")
 	}
 	if !EffectiveRetryable(KindModelUnavailable) {
@@ -169,5 +221,37 @@ func TestRecoveryProjectionClosedSet_HasTeeth(t *testing.T) {
 	// 恒绿护栏：可重试一侧必须**非空**，否则「什么都没登记」也会绿。
 	if !EffectiveRetryable(KindEmptyResponse) || !EffectiveRetryable(KindNoAvailableChannel) {
 		t.Fatal("既有的两个候选故障转移 kind 失效 ⇒ 门的前提被破坏")
+	}
+}
+
+// TestRecoveryProjectionClosedSet_ExclusionEligibilityIsEnforced 是**门 E**
+// （第十二轮新增）：**排除资格判据真的被施加**，而不仅仅是写在注释里。
+//
+// ★ 这道门直接堵住第八轮那版门禁的漏法：往（当时的）测试内 map 里加一行
+//   - 一句非空理由，就能对**任意** kind 放行。
+//     ⇒ 现在即使有人往**生产**登记表里塞一个不合格的 kind，
+//     recoveryProjectionExclusionReasonIn 也会**拒绝**它
+//     ⇒ 门 A 随即对它变红。
+func TestRecoveryProjectionClosedSet_ExclusionEligibilityIsEnforced(t *testing.T) {
+	// 判据本身：绑定级 kind **不得**具备排除资格。
+	for _, kind := range []ErrorKind{KindModelUnavailable, KindModelNotFound, KindModelDeprecated} {
+		if recoveryProjectionExclusionEligible(kind) {
+			t.Errorf("%s 是绑定级 kind，却被判成「可排除」⇒ 排除资格判据被放宽了 ⇒ "+
+				"F-1 那一类缺陷（绑定级 kind 被告知客户端不可重试）失去结构性防线", kind)
+		}
+	}
+	// 接线：**假登记表**里塞一个不合格的 kind ⇒ 查找必须拒绝它。
+	fake := []recoveryProjectionExclusion{
+		{kind: KindModelUnavailable, reason: "随便写一句理由"},
+	}
+	if reason, ok := recoveryProjectionExclusionReasonIn(fake, KindModelUnavailable); ok {
+		t.Fatalf("不合格的 kind 被放行了（reason=%q）⇒ 排除资格判据**没有**被施加 ⇒ "+
+			"往生产登记表里加一行就能对任意 kind 放行", reason)
+	}
+	// 接线：合格的两个 kind 仍然被放行（判据没有过严）。
+	for _, kind := range []ErrorKind{KindRequestRejected, KindAuth} {
+		if _, ok := recoveryProjectionExclusionReasonIn(recoveryProjectionExcludedKinds, kind); !ok {
+			t.Errorf("%s 符合排除资格却被访问器拒绝 ⇒ 判据过严", kind)
+		}
 	}
 }
