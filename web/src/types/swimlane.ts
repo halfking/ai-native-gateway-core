@@ -237,7 +237,11 @@ export function createIdleTile(): RequestTile {
   }
 }
 
-// 判断是否为空闲块
+// 判断是否为空闲块（与 web/src/lib/liveStreamIdle.ts 同口径）
 export function isIdleTile(tile: RequestTile): boolean {
-  return tile.status === 'idle' || tile.request_id.startsWith('idle-')
+  return (
+    tile.status === 'idle' ||
+    tile.request_id.startsWith('idle-') ||
+    (!!tile.error_kind && /^no_traffic/i.test(tile.error_kind))
+  )
 }

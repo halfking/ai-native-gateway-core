@@ -31,6 +31,11 @@ const (
 	//   不是物理表名 —— 物理表早已是会话族。
 	SourceRequestLogs  Source = "request_logs"
 	SourceSessionTurns Source = "session_turns"
+	// SourceProbeLane — metadata recovered from session_turns_probe_hot after
+	// physical probe isolation. Narrow row (no full PG bodies); body fields
+	// stay empty with an explicit warning so the UI does not treat this as a
+	// silent 404.
+	SourceProbeLane Source = "probe_lane"
 	// ★★ SourceHotzoneMirror —— 本地热区请求侧镜像（H3 RequestMirror）回源。
 	//
 	// ★ 为什么需要它（2026-11-02 chat tab 空态根修）：

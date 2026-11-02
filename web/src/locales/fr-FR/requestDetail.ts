@@ -131,7 +131,7 @@ export default {
     toolCall: 'Appels d\'outils :',
     noMessages: '(aucun message)',
     // ★ 2026-11-02：正文没落库时的中性空态（不是「无消息」）。
-    bodyUnavailable: 'Aucun corps n’a été capturé pour cette requête (corps non persisté — cela ne signifie pas qu’il n’y avait pas de conversation)',
+    bodyUnavailable: 'Aucun corps n’a été capturé pour cette requête (corps non persisté; cela ne signifie pas qu’il n’y avait pas de conversation)',
     assistantReply: '[réponse de l\'assistant]',
     collapse: 'Replier',
     expand: 'Déplier',

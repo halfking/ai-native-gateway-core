@@ -10,6 +10,7 @@ import { computed, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { PanelEntry } from '../../composables/useLiveTopology'
 import { clientDisplayName } from '../../lib/liveTopologyGraph'
+import { isIdleMarker } from '../../lib/liveStreamIdle'
 import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
 import { useNewArrivals } from '../../composables/useNewArrivals'
 import { CaretLeft, CaretRight, FullScreen, TopRight, ArrowRight } from '@element-plus/icons-vue'
@@ -55,16 +56,24 @@ function nextPage() {
   if (page.value < pageCount.value) page.value += 1
 }
 
-function statusClass(status: string): string {
-  switch (status) {
+function statusClass(entry: PanelEntry): string {
+  if (isIdleMarker(entry)) return 'is-idle'
+  switch (entry.status) {
     case 'success':
       return 'is-success'
     case 'failure':
     case 'rate_limited':
       return 'is-failure'
+    case 'idle':
+      return 'is-idle'
     default:
       return 'is-in-progress'
   }
+}
+
+function idleOrErrorLabel(entry: PanelEntry): string | null {
+  if (isIdleMarker(entry)) return t('liveTopology.panel.idleLane')
+  return entry.errorKind || null
 }
 
 function clock(ts: string): string {
@@ -96,12 +105,12 @@ const { fresh: freshIds } = useNewArrivals(() => props.responses.map((r) => r.re
     </header>
     <ul ref="listRef" class="pp__list" data-testid="provider-response-list">
       <li v-for="entry in pagedResponses" :key="entry.requestId">
-        <div class="pp__row" :class="[statusClass(entry.status), { 'is-active': entry.requestId === activeRequestId, 'is-probe': entry.isProbe, 'is-new': freshIds.has(entry.requestId) }]">
+        <div class="pp__row" :class="[statusClass(entry), { 'is-active': entry.requestId === activeRequestId, 'is-probe': entry.isProbe && !isIdleMarker(entry), 'is-new': freshIds.has(entry.requestId) }]">
           <button type="button" class="pp__main" @click="emit('zoom', entry)">
             <span class="pp__line">
               <span class="pp__time">{{ clock(entry.ts) }}</span>
               <span class="pp__provider">{{ entry.provider }}</span>
-              <span class="pp__latency">{{ latency(entry.latencyMs) }}</span>
+              <span class="pp__latency">{{ isIdleMarker(entry) ? '—' : latency(entry.latencyMs) }}</span>
             </span>
             <span class="pp__line pp__line--sub">
               <!-- auto 请求：点名 auto，最终模型由网关按任务选出（与左侧面板同款表达）。 -->
@@ -116,11 +125,15 @@ const { fresh: freshIds } = useNewArrivals(() => props.responses.map((r) => r.re
                 </template>
                 <span class="pp__model-name">{{ entry.model }}</span>
               </span>
-              <span class="pp__tokens">{{ tokens(entry.tokens) }}</span>
+              <span class="pp__tokens">{{ isIdleMarker(entry) ? '—' : tokens(entry.tokens) }}</span>
             </span>
-            <span v-if="entry.errorKind" class="pp__error">{{ entry.errorKind }}</span>
+            <span
+              v-if="idleOrErrorLabel(entry)"
+              :class="isIdleMarker(entry) ? 'pp__idle' : 'pp__error'"
+            >{{ idleOrErrorLabel(entry) }}</span>
           </button>
           <button
+            v-if="!isIdleMarker(entry)"
             type="button"
             class="pp__page"
             :data-testid="`provider-open-page-${entry.requestId}`"
@@ -221,6 +234,11 @@ const { fresh: freshIds } = useNewArrivals(() => props.responses.map((r) => r.re
   border-color: var(--kx-danger);
 }
 
+.pp__row.is-idle {
+  border-color: var(--kx-border, var(--muted));
+  opacity: 0.85;
+}
+
 .pp__row.is-in-progress {
   border-color: var(--kx-primary);
 }
@@ -316,6 +334,11 @@ const { fresh: freshIds } = useNewArrivals(() => props.responses.map((r) => r.re
 
 .pp__tokens {
   font-variant-numeric: tabular-nums;
+}
+
+.pp__idle {
+  color: var(--kx-text-muted, var(--muted));
+  font-size: var(--kx-font-sm, 12px);
 }
 
 .pp__error {

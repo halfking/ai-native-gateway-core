@@ -51,6 +51,7 @@ export default {
     inProgress: '進行中',
     failure: '失敗',
     rateLimited: 'レート制限',
+    idle: 'アイドル',
     clear: 'フィルタ解除',
     showProbe: 'プローブを表示',
     showInvalid: '無効ノードを表示',
@@ -172,6 +173,8 @@ export default {
     page: '{page}/{pages} ページ',
     total: '全 {n} 件',
     autoChip: 'クライアントは auto を指定：最終モデルはゲートウェイがタスクに応じて選択',
+    idleLane: 'アイドル',
+    idleLaneHint: 'このレーンに最近の業務トラフィックはありません。失敗ではなくアイドル心拍です',
   },
   zoom: {
     title: 'リクエスト詳細',
@@ -194,6 +197,7 @@ export default {
     yes: 'はい',
     no: 'いいえ',
     error: 'エラー',
+    idleNote: '説明',
   },
   page: {
     back: 'トポロジーへ戻る',

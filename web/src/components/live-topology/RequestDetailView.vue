@@ -16,6 +16,7 @@ import { useI18n } from 'vue-i18n'
 import type { ActionEvent } from '../../composables/liveStreamStore'
 import type { PanelEntry } from '../../composables/useLiveTopology'
 import { clientDisplayName } from '../../lib/liveTopologyGraph'
+import { isIdleMarker } from '../../lib/liveStreamIdle'
 
 const props = defineProps<{
   entry: PanelEntry
@@ -26,22 +27,29 @@ const { t } = useI18n()
 
 const rows = computed(() => {
   const e = props.entry
+  const idle = isIdleMarker(e)
   return [
     { key: 'requestId', label: t('liveTopology.zoom.requestId'), value: e.requestId || '—' },
     { key: 'time', label: t('liveTopology.zoom.time'), value: e.ts },
-    { key: 'client', label: t('liveTopology.zoom.client'), value: clientLabel(e.client) },
-    { key: 'protocol', label: t('liveTopology.zoom.protocol'), value: e.clientProtocol || '—' },
+    { key: 'client', label: t('liveTopology.zoom.client'), value: idle ? t('liveTopology.panel.idleLane') : clientLabel(e.client) },
+    { key: 'protocol', label: t('liveTopology.zoom.protocol'), value: idle ? '—' : (e.clientProtocol || '—') },
     { key: 'provider', label: t('liveTopology.zoom.provider'), value: e.provider },
     { key: 'node', label: t('liveTopology.zoom.node'), value: e.nodeId || '—' },
     { key: 'model', label: t('liveTopology.zoom.model'), value: modelValue(e) },
-    { key: 'status', label: t('liveTopology.zoom.status'), value: statusLabel(e.status || 'in_progress') },
-    { key: 'latency', label: t('liveTopology.zoom.latency'), value: typeof e.latencyMs === 'number' ? `${e.latencyMs} ms` : '—' },
-    { key: 'tokens', label: t('liveTopology.zoom.tokens'), value: `${fmt(e.promptTokens)} / ${fmt(e.completionTokens)} / ${fmt(e.tokens)}` },
-    { key: 'cost', label: t('liveTopology.zoom.cost'), value: typeof e.costUsd === 'number' ? `$${e.costUsd.toFixed(4)}` : '—' },
-    { key: 'session', label: t('liveTopology.zoom.session'), value: e.sessionId || '—' },
-    { key: 'taskType', label: t('liveTopology.zoom.taskType'), value: e.requestType || '—' },
-    { key: 'probe', label: t('liveTopology.zoom.probe'), value: e.isProbe ? t('liveTopology.zoom.yes') : t('liveTopology.zoom.no') },
-    { key: 'error', label: t('liveTopology.zoom.error'), value: e.errorKind ? `${e.errorKind}${e.failureStage ? ` (${e.failureStage})` : ''}` : '—' },
+    { key: 'status', label: t('liveTopology.zoom.status'), value: idle ? t('liveTopology.filter.idle') : statusLabel(e.status || 'in_progress') },
+    { key: 'latency', label: t('liveTopology.zoom.latency'), value: idle ? '—' : (typeof e.latencyMs === 'number' ? `${e.latencyMs} ms` : '—') },
+    { key: 'tokens', label: t('liveTopology.zoom.tokens'), value: idle ? '—' : `${fmt(e.promptTokens)} / ${fmt(e.completionTokens)} / ${fmt(e.tokens)}` },
+    { key: 'cost', label: t('liveTopology.zoom.cost'), value: idle ? '—' : (typeof e.costUsd === 'number' ? `$${e.costUsd.toFixed(4)}` : '—') },
+    { key: 'session', label: t('liveTopology.zoom.session'), value: idle ? '—' : (e.sessionId || '—') },
+    { key: 'taskType', label: t('liveTopology.zoom.taskType'), value: idle ? '—' : (e.requestType || '—') },
+    { key: 'probe', label: t('liveTopology.zoom.probe'), value: idle ? '—' : (e.isProbe ? t('liveTopology.zoom.yes') : t('liveTopology.zoom.no')) },
+    {
+      key: 'error',
+      label: idle ? t('liveTopology.zoom.idleNote') : t('liveTopology.zoom.error'),
+      value: idle
+        ? t('liveTopology.panel.idleLaneHint')
+        : (e.errorKind ? `${e.errorKind}${e.failureStage ? ` (${e.failureStage})` : ''}` : '—'),
+    },
   ]
 })
 
@@ -88,6 +96,7 @@ function statusLabel(status: string): string {
     in_progress: 'inProgress',
     failure: 'failure',
     rate_limited: 'rateLimited',
+    idle: 'idle',
   }
   const mapped = key[status]
   return mapped ? t(`liveTopology.filter.${mapped}`) : status

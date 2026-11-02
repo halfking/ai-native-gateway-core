@@ -51,6 +51,7 @@ export default {
     inProgress: '進行中',
     failure: '失敗',
     rateLimited: '限流',
+    idle: '空閒',
     clear: '清空篩選',
     showProbe: '顯示探測請求',
     showInvalid: '顯示無效節點',
@@ -172,6 +173,8 @@ export default {
     page: '第 {page}/{pages} 頁',
     total: '共 {n} 筆',
     autoChip: '客戶端請求 auto，最終模型由閘道按任務選出',
+    idleLane: '空閒',
+    idleLaneHint: '此泳道近期無業務流量，這是空閒心跳，不是失敗請求',
   },
   zoom: {
     title: '請求詳情',
@@ -194,6 +197,7 @@ export default {
     yes: '是',
     no: '否',
     error: '錯誤',
+    idleNote: '說明',
   },
   page: {
     back: '返回拓撲',

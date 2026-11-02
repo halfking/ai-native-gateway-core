@@ -131,7 +131,7 @@ export default {
     toolCall: 'Tool calls:',
     noMessages: '(no messages)',
     // ★ 2026-11-02：正文没落库时的中性空态（不是「无消息」）。
-    bodyUnavailable: 'No body was captured for this request (body not persisted — this does not mean the request had no conversation)',
+    bodyUnavailable: 'No body was captured for this request (body not persisted; this does not mean the request had no conversation)',
     assistantReply: '[assistant reply]',
     collapse: 'Collapse',
     expand: 'Expand',

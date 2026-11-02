@@ -1266,6 +1266,18 @@ func EligibleForTurnMirrorPolicy(entry *telemetry.RequestLogEntry) bool {
 	if !entry.Success && !isTerminalFailure(entry) {
 		return false
 	}
+	// Same physical-lane gate as PersistHook: isolated probes land in
+	// session_turns_probe_hot and must NOT become data-horizon canaries
+	// (otherwise mature canaries look "missing" from business session_turns
+	// and raise a false stale banner).
+	if probelane.ShouldIsolate(
+		strVal(entry.OriginStage),
+		strVal(entry.TaskType),
+		entry.QualityFlags,
+		strVal(entry.OriginActor),
+	) {
+		return false
+	}
 	if IsProbeSyntheticSession(entry) {
 		return false
 	}
