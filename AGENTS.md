@@ -4,6 +4,50 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-02 双仓同步轮：探测车道启动检查的闸门缺口根修 + 双仓树移植同步**
+> （cron 同步轮，09:07 起）：★ 上游拉取 `origin/main` `c692992e3`→`fa631a405`
+> （+2 提交 `9aa973e56`/`fa631a405`）**可快进**（零冲突）；读数：`go build ./...`
+> rc=0（仅 vendor `go-m1cpu` 的 cgo 折叠告警，与本仓无关）+ `go vet ./...`
+> 根模块与 `installer/` 双 rc=0 + `make test-short` **353 包全绿 TS_RC=0 零 FAIL**
+> + 审计守卫七包全绿 + `bash scripts/checks/guards-sync.sh` rc=0（8 条「不以 guard
+> 结尾」是设计内告警）+ `scripts/scan-secrets.sh --mode=normal --tracked-only`
+> **BLOCK=0**（4 条 WARN＝测试夹具占位串；脚本口径 `warn ⇒ exit 0`）+ `tests/*.sh`
+> 全量 **47 套 43 PASS / 4 FAIL** ⇒ 4 红（`deploy_local_contract_test` /
+> `deploy_rollback_test` / `deploy_ssh_retry_test` / `session_storage_audit_gate`）
+> 经**同工作区 `git stash push -u` A/B 在 pristine 上游树 `fa631a405` 上复现同样 4 红**
+> ⇒ **既有环境红，本轮零新增红**（★ 用 stash 不用 worktree：deploy 类套件在 worktree 里
+> 因 `scripts/deploy-lib/*` 悬空符号链接产生**误导性失败**；★ pop 后四文件 md5 与
+> stash 前逐字一致；**本机另有的两笔他人 stash 原样保留**）。
+> ⇒ ★★★★ **本轮真缺陷（上游 `9aa973e56` 引入）**：探测车道**启动期表存在性检查**
+> （`probelane.AssertWithQueryRow`）被写在 `if !bgDataPlaneOnly {` 闸门**内**，而它
+> 守护的探测**写路径**（telemetry → `probelane.PersistTurn`）的可达性由
+> `telemetryClient.SetDB(dbConn.Pool())` 决定、那处**只看 dbConn 不看
+> bgDataPlaneOnly** ⇒ **data-plane-only 实例（245 用 `bgDataPlaneOnly=true`）写路径
+> 照跑、检查一次不跑** ⇒ 「flag 开 + 迁移 928 未上」在 245 上**静默失败**
+> （每条探测都失败、只留一条 error、下游 hooks 哑）＝ 正是这个检查要防的那个面。
+> ⇒ ★ **修法**：检查**移出 `!bgDataPlaneOnly` 闸门**（仍在 `dbConn.Enabled()` 块内
+> + `dbConn.Pool() != nil` 守卫）⇒ 修后 **AST 祖先链实测零 `bgDataPlaneOnly` 引用**
+> （临时探针打印）。⇒ ★★ **门禁用 AST 判据而非文本拼写**（新增
+> `cmd/gateway/probelane_boot_check_wiring_guard_test.go`）：**反向拼写
+> `if bgDataPlaneOnly { } else { <检查> }` 时被搜的串根本不出现**（同 autoroute
+> 停摆族）⇒ 改判**每层 `IfStmt.Cond`/`ForStmt.Cond`/`SwitchStmt.Tag` 是否引用该
+> 标识符**，并同时钉住写路径的 `telemetryClient.SetDB`（两处必须同时与运行模式
+> 无关，否则耦合悄悄腐化）；★ **变异臂 2/2 检出**（CONTROL 绿 / M1 挪回闸门内红 /
+> M2 反向拼写红；★ **M1 第一版被生成器写坏成编译失败 ⇒ 编译失败 ≠ 判据红**，补
+> 「变异体先 `go build` 通过」前置后重生成；还原 md5 逐字一致）。
+> ⇒ ★ **gofmt 实测口径**：本仓 11279 个 .go 里 **540 个非 gofmt-clean** ⇒
+> **gofmt 不是本仓的门** ⇒ 只修自己动过的 `cmd/gateway/main.go`（上游加
+> `probelane` import 造成的 import 注释对齐漂移），**不做全仓改写**（避免与并行
+> 会话产生无关 diff 面）。
+> ⇒ ★ 双仓同步：codeup/github 两条历史**互相独立**（merge-base 停在 10-07；codeup
+> 侧 3345 提交 github 侧没有、github 侧 13503 提交 codeup 侧没有）⇒ **`git merge`
+> 合不动** ⇒ 走**树移植**（`commit-tree <origin/main^{tree}> -p <github/main>`，父提交
+> 取镜像侧原 tip ⇒ 镜像原始历史一条不丢；`sync-to-github.sh` 的 filter-repo 与
+> 「保留原始历史」**互斥**，仅作 `--dry-run` 诊断）⇒ 验收口径＝**两仓 main 的
+> tree SHA 必须相同** + `git diff --stat origin/main github/main` 为空 +
+> `git ls-remote` 对拍远端真值。
+> ⇒ 审计档 `docs/audit/2026-11-02-双仓同步轮-探测启动检查闸门缺口.md`；
+> 通用式见 `LESSONS.md` **§616**。
 > **2026-11-01 24h 审计轮：prompt-injection 时间戳 scan 族根修 + 48h 遗留三项复核**
 > （goal 会话，17:56 起）：★ 48h 轮遗留全绿——① 新槽 tick（11-02 14:38+08）
 > **未到不写闭案**，中间读数干净：lt10min 4 对全部落在 14:38–14:48 =

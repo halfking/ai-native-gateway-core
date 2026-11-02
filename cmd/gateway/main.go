@@ -70,15 +70,15 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/hostedtask"
-	"github.com/kaixuan/llm-gateway-go/domains/integration"     //nolint:depguard // clientprofile worker wiring
+	"github.com/kaixuan/llm-gateway-go/domains/integration"      //nolint:depguard // clientprofile worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/modelcredibility" // 模型可信度（防掺水）worker 扫描面
-	"github.com/kaixuan/llm-gateway-go/domains/modelquality"      //nolint:depguard // 模型质量监控
-	"github.com/kaixuan/llm-gateway-go/domains/notification"    //nolint:depguard // 审批通知器
-	"github.com/kaixuan/llm-gateway-go/domains/providerprofile" //nolint:depguard // 供应商画像告警 handler (AlertType)
-	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"    //nolint:depguard // P1 proactive upstream quota prefetch
-	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"   //nolint:depguard // in-flight request content store
-	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"  //nolint:depguard // request lifecycle observation
-	"github.com/kaixuan/llm-gateway-go/domains/routeincident"   //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
+	"github.com/kaixuan/llm-gateway-go/domains/modelquality"     //nolint:depguard // 模型质量监控
+	"github.com/kaixuan/llm-gateway-go/domains/notification"     //nolint:depguard // 审批通知器
+	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"  //nolint:depguard // 供应商画像告警 handler (AlertType)
+	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"     //nolint:depguard // P1 proactive upstream quota prefetch
+	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"    //nolint:depguard // in-flight request content store
+	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"   //nolint:depguard // request lifecycle observation
+	"github.com/kaixuan/llm-gateway-go/domains/routeincident"    //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/security" //nolint:depguard // 2026-10-18 topology plugins source（v2Deps.SecurityRegistry 类型）
 	"github.com/kaixuan/llm-gateway-go/domains/session"  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -5652,6 +5652,28 @@ func main() {
 			slog.Info("ip blocklist admin wired")
 		}
 
+		// 物理车道开启时启动期校验探测族表存在，避免 PersistTurn 全失败却
+		// 只打一条 error、下游 hooks 静默不发（12h 审计 §六 P1-3）。
+		//
+		// ★ 2026-11-02：本检查**必须在 !bgDataPlaneOnly 闸门之外**。
+		//   探测分流写路径（telemetry → probelane.PersistTurn）由
+		//   telemetryClient.SetDB(dbConn.Pool()) 决定是否可达，而那处
+		//   **只看 dbConn**，不看 bgDataPlaneOnly ⇒ 245 这类
+		//   data-plane-only 实例同样会走探测写路径（见 cmd/gateway/
+		//   probelane_boot_check_wiring_guard_test.go）。
+		//   若把检查留在 full-only 闸门内：245 开了 flag 又缺迁移 928 时，
+		//   PersistTurn 每条探测都失败、只留一条 error 日志、下游 hooks 静默
+		//   —— 正是本检查要防的那种静默失败面。
+		if dbConn.Pool() != nil {
+			if err := probelane.AssertWithQueryRow(context.Background(), func(ctx context.Context, sql string, args ...any) probelane.DBRow {
+				return dbConn.Pool().QueryRow(ctx, sql, args...)
+			}); err != nil {
+				slog.Error("probelane lane table check failed", "error", err)
+				// fail-loud but do not abort boot: flag may be set ahead of a
+				// rolling migration; operators still see ERROR and can fix.
+			}
+		}
+
 		// Weekly rollup + auto-tune suggester require writes to
 		// credentials/audit; only run in "full" mode.
 		slog.Info("CHECKPOINT: before bgDataPlaneOnly check for weekly/auto-tune", "bgDataPlaneOnly", bgDataPlaneOnly)
@@ -5671,15 +5693,6 @@ func main() {
 			// domains/stats.MinuteAccumulator（后者全仓无 New* 调用方）。
 			statsMinuteRollup = bg.NewStatsMinuteRollup(dbConn.Pool())
 			statsMinuteRollup.Start(context.Background())
-			// 物理车道开启时启动期校验探测族表存在，避免 PersistTurn 全失败却
-			// 只打一条 error、下游 hooks 静默不发（12h 审计 §六 P1-3）。
-			if err := probelane.AssertWithQueryRow(context.Background(), func(ctx context.Context, sql string, args ...any) probelane.DBRow {
-				return dbConn.Pool().QueryRow(ctx, sql, args...)
-			}); err != nil {
-				slog.Error("probelane lane table check failed", "error", err)
-				// fail-loud but do not abort boot: flag may be set ahead of a
-				// rolling migration; operators still see ERROR and can fix.
-			}
 			// 探测排除的历史回填（superAdmin 端点）：
 			// POST /api/admin/dashboard/rollup/rebuild
 			// 游标只前进，已聚合的分钟不会被重算，存量脏数据只能靠它修正。
