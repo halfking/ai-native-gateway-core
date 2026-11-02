@@ -88,8 +88,17 @@ func (c *Client) ModelModalityMismatch(ctx context.Context, model, profile, tena
 	//   ——而它重试的每一个字节都注定失败。
 	//
 	// ★ 成本：这条诊断是一次 800ms 有界的 DB 查询，它**只在零候选路径**上
-	//   跑（见 domains/streaming/handler.go 的 diagnoseModalityMismatch，
-	//   那里先用名字规则粗筛，普通文本模型不会触发这次查询）。
+	//   跑（见 domains/streaming/handler.go 的 diagnoseModalityMismatch）。
+	//   2026-11-02（第八轮 · F-4 订正）：此前这段注释说「那里先用名字规则
+	//   粗筛，普通文本模型不会触发这次查询」——**那个粗筛已经被删掉了**
+	//   （2026-11-02 第三轮 d8bd4abb3：粗筛只贡献错误答案、不省时间，
+	//   EXPLAIN ANALYZE 实测「查库粗筛 3.34ms vs 完整诊断 3.86ms」）⇒
+	//   现在**每一次**零候选请求都会跑这次查询（文本请求也跑）。
+	//   ⇒ 成本口径必须按「无条件」算，不能按「名字粗筛后才跑」算。
+	//   ★ 真正的边界是**上游那道早退**：handler.go 的零候选路径先用
+	//     `provider.ModelKnown` 挡掉「这个模型压根不在册」（⇒ 400
+	//     invalid_model，不进本查询）⇒ 本查询只对「**在册但当下不可路由**」
+	//     的模型跑。
 	lookup := modelname.CanonicalizeClientModel(model)
 	if lookup == "" {
 		return nil, nil

@@ -9458,7 +9458,14 @@ func (h *ChatHandler) diagnoseModalityMismatch(
 	}
 	// ★ 2026-11-02（211 生产事故 · embedding 投毒链）：文本请求**也会**被
 	// 模态门排除（排除的是登记为 embedding 的模型），所以「文本请求没有
-	// 什么可诊断」这句话已经过期——见下面的粗筛分支。
+	// 什么可诊断」这句话已经过期——判决权归登记模态（models_canonical）。
+	//
+	// ★ 2026-11-02（第八轮 · F-4 订正）：此前这段注释写「见下面的粗筛分支」，
+	//   但**那个名字粗筛分支已经被删掉了**（2026-11-02 第三轮 d8bd4abb3：
+	//   粗筛只贡献错误答案、不省时间）⇒ 现在**文本请求也总是**查库，
+	//   由登记模态裁决。⇒ 读这段注释的人不要再假设「文本请求不进这次查询」。
+	//   ★ 唯一的早退在上面那道：`provider.ModelKnown` 挡掉「压根不在册的
+	//     模型」（⇒ 400 invalid_model，不进本函数）。
 	//
 	// ★ Normalise before comparing: the modality string reaches here from
 	// request-body detection and from caller-supplied values, and "TEXT" or

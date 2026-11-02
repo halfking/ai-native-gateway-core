@@ -139,7 +139,11 @@ func (h *ChatHandler) shouldTryOmniFree(clientModel string) bool {
 //     返回 (nil, nil, "", false, nil) — 表示 OmniFree 不负责, 由调用方降级.
 //  2. 从 free_resource_catalog 中读取当前租户启用的 (provider_code, model_id) 集合.
 //  3. 对 catalog 中的每个 model_id, 并行 (errgroup) 调用 provider.Client
-//     .GetCandidates 取得完整可执行的 provider.Candidate 池.
+//     .GetCandidatesByModality 取得完整可执行的 provider.Candidate 池.
+//     （2026-11-02 第八轮 · F-5 订正：此前这里写的是 .GetCandidates，
+//     但 round 4 审计修复后代码已改成 GetCandidatesByModality ——
+//     modality 在 :180 由 detectRequestModality 算出并在 :223 传进去，
+//     否则 vision/audio/video 请求会被按纯文本模型解析。）
 //  4. 合并去重, 交给 VirtualFactory.BuildFromCandidates 做过滤/排序.
 //
 // round 3 audit H5: 改用 errgroup 把 for-loop 内串行 GetCandidates 改成

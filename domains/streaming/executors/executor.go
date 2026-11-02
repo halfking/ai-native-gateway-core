@@ -3785,7 +3785,19 @@ func shouldWriteCredentialState(kind errorsx.ErrorKind) bool {
 		errorsx.KindQuota, errorsx.KindQuotaPeriodic, errorsx.KindQuotaBalance, errorsx.KindQuotaPermanent,
 		errorsx.KindConcurrent, errorsx.KindRateLimit,
 		errorsx.KindStreamTimeout, errorsx.KindModelNotFound, errorsx.KindModelDeprecated,
-		errorsx.KindNoAvailableChannel:
+		// 2026-11-02（第八轮 · F-3）：裸 404（KindModelUnavailable）= 绑定级证据
+		// ⇒ 写**这一对 (凭据,模型)** 的冷却，不动账号。
+		// ★ 本列表此前**漏了它**，而它的两个兄弟（KindModelNotFound /
+		//   KindModelDeprecated）都在 ⇒ 两个通往
+		//   credential.Writer.WriteOnError 的门对同一个 kind 意见不一致。
+		// ★ 为什么现在补是安全的：credential.Writer 里本来就有它的专用分支
+		//   （domains/credential/writer.go 的 writeModelUnavailableTiered
+		//   → reason='auto_model_unavailable'）⇒ 本门补上后，写入的是
+		//   **它本来该写的那份**；而生产上这条同步路径今天不可达
+		//   （dispatch_v2 是唯一 Execute 路径，且写凭据状态的分支对
+		//   DispatchAttempt 早退）⇒ 本次补齐**不改变任何在网行为**，
+		//   只是让两个门不再互相矛盾。
+		errorsx.KindNoAvailableChannel, errorsx.KindModelUnavailable:
 		return true
 	default:
 		return false
