@@ -300,11 +300,58 @@ def strip_quoted(s):
     return "".join(out)
 
 
-def classify_usage(line, pipe_start):
+def cmd_tail(text):
+    """取「**同一条命令**」在 text 里的尾部：遇到**未加引号的** `;` 就停。
+
+    ★ 为什么必须有这个边界（2026-11-03 第二十九轮）：
+      shell 的 AND-OR 列表（`a | b || c`）以 `;` 结束 ⇒ `;` 之后的 `||`/`&&`
+      属于**另一条命令** ⇒ ⇒ 若不设边界，会把「别人的退出码」算到这条管道头上
+      ⇒ ⇒ ★ 这是**假阳性**方向，必须避免（★ 宁可漏判也不能误判）。
+    """
+    s = strip_quoted(text)
+    idx = s.find(";")
+    return s if idx < 0 else s[:idx]
+
+
+def classify_usage(line, pipe_start, post="", next_line=""):
     """返回 (用途, 依据片段)。
 
     用途取值：judgment（退出码作判据）/ value（取值）/ bare（裸管道）。
     ★ 判断前先剥引号（引号里的 `||`/`&&` 不是运算符）。
+
+    ★★★ 2026-11-03 第二十九轮：**「消费退出码」有三处位置，全都要看**：
+      ① 管道**之前**的前缀（既有判据：`if … | …`、`cmd && cmd | …`）
+      ② 同一条命令**尾部**（管道**之后**）：★ `cmd | grep -q X || fail "..."`
+         ⇒ 退出码**参与控制流**（fail-closed 方向）
+      ③ **续行**：当前行以 `\` 结尾 ⇒ 下一物理行是**同一条命令**
+         ⇒ ★ `cmd | grep -q X \` + `|| fail "..."` ⇒ 同上
+
+    ⇒ ★★ **漏掉 ②③ 的后果**（★ 本轮实测的缺陷本体）：
+      这些行的退出码**明明参与控制流**，却被判成 `bare`
+      ⇒ ⇒ 自动初稿给出「**退出码不参与语义判断**」这个**假前提**
+      ⇒ ⇒ 而假前提会被后来人当成「体量与本判据无关」的依据 ⇒ ⇒ **门被弄瞎**。
+      ⇒ ★★★ **规模实测（★ 用本文件自己的函数做「新旧口径对照探针」量出来的
+      ——★ 不是用外部脚本量的）**：
+      ★ 全仓扫描 735 个脚本 / 733 处管道消费者 site：
+
+      | 量 | 读数 |
+      |---|---|
+      | ② 命中（同行尾部有 `||`/`&&`） | **102 处** |
+      | ③ 命中（真续行的下一行有 `||`/`&&`） | **15 处**（②③ 无交集） |
+      | ⇒ ②③ 合计命中 | 117 处 |
+      | － 其中**赋值上下文**（`x="$(cmd \| …)"` ⇒ `value` 规则**优先**） | －54 处 ⇒ **不翻转**（正确） |
+      | － 其中 ① 管道**前**的前缀已覆盖（已是 `judgment`） | －1 处 ⇒ **不翻转**（正确） |
+      | ⇒ ★ **实际 usage 翻转**（`bare`→`judgment`） | ★ **62 处** |
+      | ⇒ · 落在**候选集内**（`after_pf=True` ⇒ 进台账 ⇒ ★ **真实爆炸半径**） | ★ **44 处** |
+      | ⇒ · 落在**候选集外**（被作用域口径丢弃 ⇒ 本工具已印为「静默丢弃」） | 18 处 |
+
+      ⇒ ⇒ ★★ **台账层面的爆炸半径 = 44**（与变异臂实测的「缺 44 + 多 44」独立吻合）。
+      ⇒ ⇒ ★★ **两个曾经登记过的数都是错的**：
+      ★ 「**23 行**」（§28.15.5）—— 探针读的是台账 `writer` 列，不是源码行；
+      ★ 「**58 + 15 = 73 行**」（本轮早先的草稿）—— 用外部剥注释器量的是「**命中数**」，
+        **不是**「usage **实际翻转**数」⇒ ⇒ ★ **命中 ≠ 翻转**（赋值上下文会吃掉 54 处）。
+      ⇒ ⇒ ★ **纪律第三次兑现**：「我量出来的数」本身也要被重新测量 ——
+        ★ 而且**本轮自己草稿里的数也是错的** ⇒ ⇒ ★ 量具里**连 docstring 都得写实测值**。
     """
     pre = line[:pipe_start]
     pre_raw = pre
@@ -320,6 +367,15 @@ def classify_usage(line, pipe_start):
         return "value", stripped[:40]
     if RE_AND_OR.search(pre_nq):
         return "judgment", stripped[:40]
+    # ★★ ② 同一条命令的**尾部**（管道之后）的 `||` / `&&`
+    tail = cmd_tail(post)
+    if RE_AND_OR.search(tail):
+        return "judgment", (stripped + " … " + tail.strip())[:40]
+    # ★★ ③ 续行里的 `||` / `&&`（★ 只有**真续行**才算：管道行以 `\` 结尾）
+    if line.rstrip().endswith("\\") and next_line:
+        cont = cmd_tail(next_line)
+        if RE_AND_OR.search(cont):
+            return "judgment", (stripped + " ⏎ " + cont.strip())[:40]
     return "bare", stripped[:40]
 
 
@@ -453,7 +509,10 @@ def scan_file(path, rel):
             real_covered = bool(top_on) and not top_off
             dropped_by_scope = real_covered and not after_pf
             writer = ln[: m.start()].strip()
-            usage, basis = classify_usage(ln, m.start())
+            # ★★ 2026-11-03 第二十九轮：usage 轴要看到「管道之后」与「续行」里的
+            #   `||`/`&&` ⇒ ⇒ 传入**消费者尾部**与**下一物理行**。
+            nxt = lines[i] if i < len(lines) else ""
+            usage, basis = classify_usage(ln, m.start(), ln[m.end():], nxt)
             sites.append(Site(path=rel, line=i, scope=sc, consumer=m.group("c").strip(),
                               kind=kind, writer=writer, pf_line=pf_line,
                               pf_scope=sc, after_pf=after_pf, usage=usage,
