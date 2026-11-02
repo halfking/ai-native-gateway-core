@@ -4,6 +4,123 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-02 模型列表口径线上验证轮：生产端到端七口径实证 + 全量套件 8 门红收口 + merge 吞掉轮次记录的发现**
+> （会话 `mvs_3819385bca0f43d7bf0c059acb269bda`，承接 `96a781507`）：★ 用户指令
+> 「结合当前树做测试验证 → 修正发现的问题 → 提交并推送」。⇒ ★★★ **验证结论：口径实现
+> 正确，本轮零改业务逻辑**；改的全是**派生台账/快照/对拍表**的漂移（四类）。
+> ⇒ ★★★★ **生产端到端实证（211，build `6d535ad2`＝当前 HEAD，`96a781507` 是其祖先 ⇒
+>   线上确实含本功能）**：默认 `/v1/models` → **20**（特色）；`?scope=featured` → 20；
+>   `?scope=all` → **89**（全量）；`?all=true` → 89；`?scope=bogus` → **400**
+>   `invalid_scope`；`/v1beta/models`（Gemini 原生形状）→ 20，`?scope=all` → 89；
+>   线上 `http_request` 日志逐条对上（响应体 1918B/8450B/133B/14630B）。
+> ⇒ ★★★★ **生产真库对拍（`acc-pg17/llm_gateway`，SQL 从 Go 常量导出非手抄）**：
+>   精选 **20 ⊆ 全量 89**（差集为空）；★ **「全量口径没被改窄」的证明方式**＝把同一份
+>   SQL 剥掉 CTE 与谓词（= 改动前原查询）在**同库同刻**跑 ⇒ 89 vs 89 **逐条 diff 为空**。
+>   生产 `routing_policy.featured_models`（tenant default）**31 项**，其中 **11 项当前
+>   无可路由模型** ⇒ 31−11=20 与精选口径条数逐字吻合（谓词没漏配也没多出）；
+>   生产 `settings_kv` **无 `models.*` 行** ⇒ 默认走代码内文档默认 `featured`（不是碰巧配对）。
+> ⇒ ★★★ **「模型数」是每分钟都变的活事实**：验证期间全量口径 **88→89**
+>   （`deepseek-v4-flash` 转为可路由），精选口径全程稳定 20 ⇒ 报告里的模型数**必须带时刻**。
+> ⇒ ★★★★ **全量套件 8 门红的归因与修法（★ 一律从 SSOT 重新生成，不手改产物）**：
+>   ① **admin 路由快照**（生成器 601 vs 快照 598）：真实新增 3 条探针车道路由
+>   （`admin/probe_dashboard.go:1918/1921/1924`）、消失为空 ⇒ `extract-admin-routes.sh
+>   --update-snapshot`；② **DB 对象普查三份台账**（Go 侧反解 858 vs 工具侧 855，差迁移 928
+>   的 3 个 `idx_session_turns_probe_hot_*`）⇒ `db-object-census.py expect/reconcile/
+>   reachability`（重生成前先跑 `selftest`＝50 checks/0 failures；**三份各只多 3 行，
+>   其余逐字未变**）；③ **探针内容预算例外台账**：`directProbeBody` 被改成薄封装
+>   （只调 `directProbeBodyForModality`）⇒ 两个 `"max_tokens": 32` 位点**搬家** ⇒
+>   「台账命中不到位点」红 + 「新位点裸奔」红**是同一个漂移的两个面** ⇒ 搬锚点（序号
+>   #1/#2 不变，序号是「函数内」的）；④ **请求面文档三面行号**（探测车道那几轮往
+>   `main.go` 插了 83 行 ⇒ 链整体 +83：Recovery 7983 / Auth 7998 / SecurityHeaders 8001 /
+>   Logging 注释 7985-7992 / maintain 注释 7974-7979）⇒ **本表 · 设计页 · 认证表 A1
+>   必须同钉**（该门已记**七次**重钉史）。
+> ⇒ ★★★★ **归因方法（两段）**：pristine 基线 `git worktree add --detach /tmp/lg-base-96
+>   96a781507^` 复跑同 8 门 ⇒ **全绿** ⇒ 本轮改动**零引入**（红来自并行会话后续提交
+>   `12f34ff30`/`9773e9266`/`caa1c5f32`/`1ba00f0ac` 改 `main.go`/`bg/node_probe.go`）。
+> ⇒ ★★ **超时口径**：`go test ./...` 默认 10m，而仓内自记 `scripts/ursmcheck` 实测
+>   **~840s** ⇒ 默认口径**必成假红** ⇒ 复跑慢门用 Makefile 口径 `-timeout=1800s`。
+> ⇒ ★★★★ **新发现：merge 会静默吞掉手写轮次记录 ⇒「代码在」≠「记录在」**：本轮发现
+>   **下面那条 2026-10-29 的条目在 `origin/main` 里零命中**（代码、审计档、LESSONS §557
+>   都在）⇒ 丢失点是 **`1d1108a53 merge(R180)`**（合并时该文件取了另一侧版本 ⇒ 整块记录
+>   被吞）⇒ ★ 判据：**共享仓 merge 后必须自查「我的轮次标题还在不在」**
+>   （`git show origin/main:AGENTS.md | grep -c "<标题>"`，本轮读数 **0**）——它**不报错、
+>   不影响构建与测试** ⇒ ⇒ 根治要**给记录文件本身加门**。
+> ⇒ ★★ **本轮明确没做（别重复排查）**：① Gemini/OpenAI 的 **retrieve 端点**仍只有 list
+>   （`handler_gemini.go` 只认 `:generateContent`/`:streamGenerateContent`/`:countTokens`）
+>   ——两套形状一个数据源，**要么一起设计要么都不做**，等 owner 定夺；② ★ **`cmd/gateway-v2`
+>   有第二套 `/v1/models`**（数据源是 `ProviderStore`、**无 scope 口径**）⇒ **验证本功能
+>   不要打 `:8782`**（本地冒烟 `scripts/local-r112-smoke.sh` 打的正是它）——生产只跑
+>   `cmd/gateway`（`Dockerfile:54`）；③ 「部分精选模型不可路由」的**缺失可见化**未做
+>   （生产 31 配 11 缺，客户端无从得知缺哪 11 项；下轮做但**不得复制活度门**，建议走
+>   `v_routable_credential_models` 视图）；④ `models.list_scope` 的**热加载生产验证**未做
+>   （需写生产设置行）。
+> ⇒ 审计档 `docs/audit/2026-11-02-模型列表口径线上验证与门红收口.md`；
+> 通用式见 `LESSONS.md` **§617**。
+> **2026-10-29 第 40 增量：模型列表口径改造（默认只列特色模型）+ Gemini 认证核验**（会话
+> `mvs_3819385bca0f43d7bf0c059acb269bda`）：★ 承接 owner 指令两件事 —— ①「网关对外的模型
+> 列表 API，默认只输出特色模型，全量需要加参数才输出」；②「网关对 gemini 的适配好像有些
+> 问题，请检查原厂文档，检查认证相关的信息是否正确」。
+> ⇒ ★★★ **开工前的重大更正（别重复排查）**：本轮开工时读到的 `AGENTS.md` 快照是
+>   **2026-10-25 的树**；期间并行会话已把 Gemini 原生认证与原生模型列表落地
+>   （`0eff161c6` / `659ad160b`，`internal/auth/clientkey.go` + `models.go:ServeGeminiModels`）
+>   ⇒ **「Gemini 认证没做」是过期结论**。★ **开工前必须读当前树，不是读快照**。
+> ⇒ ★ **Part 1（模型列表口径）**：新文件 `domains/streaming/models_scope.go`；`/v1/models`
+>   与 `/v1beta/models` **默认只列特色模型**（`routing_policy.featured_models`，tenant
+>   `default` —— 全仓既有的一等概念：autoroute 的 FeaturedBonus / bg/shared_pick.go 的
+>   featured 优先 / alternativesSQL 的 tier-2 / admin 的精选过滤，四处同源）；全量需显式
+>   **`?scope=all`**（或 `?all=true`）。★ 口径优先级 = **请求参数 > 运维默认**；
+>   新增热加载设置 **`models.list_scope`**（`TypeEnum{featured,all}`，默认 `featured`）
+>   = **逃生舱**（改它即可无发版回到全量；与 r1027 的 `models.list_only_routable` 同款形状
+>   —— 公开契约的默认值变更必须可无发版回退）。
+> ⇒ ★★★ **本轮最值钱的一处**：精选过滤做成**同一个查询里的布尔参数 `$1`**（不是第二份
+>   SQL 常量 ⇒ 十几条活度门只存在一份）；★ 但**两处坑** —— (a) 匹配**三种名字形态**
+>   （canonical / raw / standardized）：`bg/shared_pick.go` 解析 featured 时认的是供应商侧
+>   名字 ⇒ 只认 canonical 会让「路由当特色、发现当不存在」的模型被藏起来；
+>   (b) ★★ **PostgreSQL 的 set-returning function 在 target list 里先于 LIMIT 展开**
+>   ⇒ `SELECT LOWER(unnest(featured_models)) ... LIMIT 1` 只返回**数组第一个元素** ⇒
+>   精选过滤静默只认一个模型，而**纯文本判据钉不住**（两种写法都含 unnest 与 LIMIT）
+>   ⇒ 改写成两个 CTE（policy 先钉行、featured 再展开数组）+ 真库判据直问「CTE 产出几个名字」=3。
+> ⇒ ★ **两个发现查询都带同一份过滤**（scope 与活度源正交，翻活度开关不得顺带改变公布范围）。
+> ⇒ ★ **安全降级**：精选口径筛不出模型（清单为空 / 精选模型当前全不可路由）⇒ **退回全量
+>   + WARN**，不是交空清单（发现端点回空会打断所有读它的客户端）；**缓存按口径分槽**
+>   （`ModelsHandler.stale` map）⇒ 口径进了查询，缓存只有一格会**静默少报模型**。
+> ⇒ ★ **非法 scope 报 400**（不静默回落）：客户端要全量却拿到精选（或反之）会**静默**得出
+>   错误结论。
+> ⇒ ★ **Part 2（Gemini 认证核验）**：★ 厂方原文实读留证 —— Gemini API reference：「**All
+>   requests to the Gemini API must include a `x-goog-api-key` header**」；OpenAI 兼容文档：
+>   兼容端点鉴权是 `Authorization: Bearer`。⇒ **入向**（`internal/auth.ExtractClientKey`：
+>   Bearer → `x-api-key` → `x-goog-api-key` → `?key=`，`?key=` 仅在 Gemini 原生路径生效）
+>   **正确**；⇒ **出向**（走厂方 OpenAI 兼容端点 `.../v1beta/openai`，executor 统一
+>   `Authorization: Bearer`）**正确**。★ **入向收三种、出向用 Bearer 不是不一致，是两个端点的
+>   厂方契约本来就不同**。
+> ⇒ ★★ **本轮实际修掉的一处**：`docs/vendor-formats/gemini.md` 的认证说明**漏了厂方强制的
+>   `x-goog-api-key` 头形态**（只写了 query string / Bearer 两种；同仓
+>   `docs/QUICK_REFERENCE.md` 的 Gemini 示例用的恰是这个头 ⇒ 仓内两份文档彼此不自洽）
+>   ⇒ 已订正并补齐「模型列表」一节（原生形状 + scope 口径）。
+> ⇒ ★ **顺带修掉的一处**：`154-production-release-checklist` 把「`/v1/models` 模型数与 245
+>   同级（685）」当**部署放行标准** ⇒ 默认口径改 featured 后该读数必然变小 ⇒ 按原文判会
+>   读成「掉模型」而误回滚 ⇒ 已改为**两口径分列**（默认 vs `?scope=all`）。
+> ⇒ ★ **验证**：真库判据（Postgres 17 隔离容器；夹具走仓 SSOT `internal/schemaobj.Table`
+>   不手抄 DDL；样本**每条只验一件事**：canonical 命中 / 供应商侧名命中 / 不精选 / 精选但
+>   凭据已死）⇒ 默认 2 条、`?scope=all` 3 条、筛空退回 3 条、CTE 产出 3 个名字；
+>   ★ **变异臂三臂全红**（M1 CTE 改一行 / M2 删供应商侧名匹配 / M3 删回退 ⇒ 三处都精确报红）
+>   且还原后源文件 **md5 逐字一致**；`go build ./...` ✓；`gofmt`+`golangci-lint fmt`
+>   本轮文件 **0 差异**、`golangci-lint run` **0 命中**；
+>   `go test ./domains/streaming/ ./settings/ ./cmd/gateway/ ./internal/ingressguard/ ./maas/`
+>   **全绿**；顺手清掉 `models.go` 的死函数 `writeDBFailure`（0 调用方，且调的是旧签名的
+>   `lastGoodEntries()`）。
+> ⇒ ★ **本轮明确没做**：web 前端（其 `/v1/models` 引用全是**上游供应商**目录发现，非网关
+>   自己的发现端点）；`/api/maas/models`（租户价目目录，另一套东西）；`GET /v1/models/{model}`
+>   与 `/v1beta/models/{model}` 的 retrieve（本轮未加，需两套形状一个数据源一起设计）；
+>   **多租户精选清单**（`featured_models` 表结构按租户，但全仓一律读 `default`，本轮沿用）。
+> ⇒ 审计档 `docs/audit/2026-10-29-模型列表口径与Gemini认证核验.md`；
+>   通用式见 `LESSONS.md` **§557**（★ 取号记录：初取 §545 / AGENTS.md 初取「第 37 增量」
+>   —— **推送前实测 `origin/main` 已被并行会话占用**（AGENTS「第 37 增量」= 拦截持久化与规则
+>   管理轮；LESSONS §545 已存在）⇒ 按「**后到者取下一个空闲号**」让号 ⇒ **§556 / 第 39 增量**
+>   （★ 实测当时上游最大节号 §555、最大增量号「第 38 增量」）—— ★★ **再次让号**：合入前上游
+>   又推进（§556 = r1048 轮 / 第 39 增量 = Gemini `countTokens` 诚实实现轮）⇒ 再让 ⇒
+>   **§557 / 第 40 增量**（★ 实测当时上游最大节号 §556、最大增量号「第 39 增量」）。
+
 > **2026-11-02 双仓同步轮：探测车道启动检查的闸门缺口根修 + 双仓树移植同步**
 > （cron 同步轮，09:07 起）：★ 上游拉取 `origin/main` `c692992e3`→`fa631a405`
 > （+2 提交 `9aa973e56`/`fa631a405`）**可快进**（零冲突）；读数：`go build ./...`
