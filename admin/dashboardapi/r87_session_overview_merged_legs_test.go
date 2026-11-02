@@ -196,7 +196,7 @@ func TestR87_MergedTrendsKeepEveryMetric(t *testing.T) {
 	body := r87FuncBody(t, src, "func (h *SessionOverviewHandler) querySessionTrends(")
 
 	needles := []string{
-		"DATE(first_request_at) as date",
+		"DATE(first_request_at)::text as date",
 		"COALESCE(SUM(total_cost_usd), 0) as cost",
 		"COUNT(*) as sessions",
 		"COALESCE(SUM(request_count), 0) as requests",
@@ -229,15 +229,19 @@ func TestR87_SessionSummariesScanPointsCapped(t *testing.T) {
 	}
 }
 
-// TestR87_OverviewRunsSixConcurrentLegs：编排段必须是 6 段并行（合并后）。
-func TestR87_OverviewRunsSixConcurrentLegs(t *testing.T) {
+// TestR87_OverviewRunsSevenConcurrentLegs：编排段必须是 7 段并行
+// （R87 合并后 6 段 + turns 对拍腿；对拍腿读 session_turns 族，不扫 session_summaries）。
+func TestR87_OverviewRunsSevenConcurrentLegs(t *testing.T) {
 	src := r87ReadSource(t)
 	body := r87FuncBody(t, src, "func (h *SessionOverviewHandler) HandleSessionOverview(")
 	got := strings.Count(body, "g.Go(func() error {")
-	if got != 6 {
-		t.Errorf("HandleSessionOverview 的并行段数 = %d，期望 6（合并后 9→6）", got)
+	if got != 7 {
+		t.Errorf("HandleSessionOverview 的并行段数 = %d，期望 7（R87 六段 + turns 对拍）", got)
 	}
-	// 每段失败都要带段名（错误语义保持）
+	if !strings.Contains(body, "queryBusinessTurnsCount") {
+		t.Error("缺少 turns 对拍腿 queryBusinessTurnsCount")
+	}
+	// 每段失败都要带段名（错误语义保持）—— turns 腿是 soft-fail，不走 stage error
 	if !strings.Contains(body, "dashboardStatsStageError{") {
 		t.Error("并行段失败时没有带段名的 dashboardStatsStageError —— 错误语义被削弱")
 	}

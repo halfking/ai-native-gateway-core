@@ -6,6 +6,7 @@
 
 | 文件 | 类型 | 状态 | 最后修改 |
 |---|---|---|---|
+| `probe-traffic-physical-isolation-plan-2026-11-02.md` | md | draft | 2026-11-02 |
 | `数据库处理框架方案.md` | md | active | 2026-08-27 |
 | `governance/candidate-failure-logs-252-governance-2026-08-17.md` | md | active | 2026-08-18 |
 | `migrations/r1.13-security-config.md` | md | active | 2026-07-22 |

@@ -54,7 +54,7 @@ func TestCaptureE2EInProcess(t *testing.T) {
 	// 迁移 ledger 表由基线建；一次性库先补最小形（realdb 测试同款）。
 	mustExec(`CREATE TABLE IF NOT EXISTS public.schema_migrations (
 		version TEXT PRIMARY KEY, description TEXT NOT NULL DEFAULT '')`)
-	migration, _ := os.ReadFile("../../sql/migrations/startup/928_userscript_capture_family.sql")
+	migration, _ := os.ReadFile("../../sql/migrations/startup/931_userscript_capture_family.sql")
 	mustExec(string(migration))
 	mustExec(`CREATE TABLE IF NOT EXISTS public.outbox_events (
 		id BIGSERIAL PRIMARY KEY, event_id TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL,

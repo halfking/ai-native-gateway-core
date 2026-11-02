@@ -1,5 +1,5 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/930_task_events.sql
+-- File:          sql/migrations/startup/933_task_events.sql
 -- Migration:     930
 -- Purpose:       taskbus 的 task_events 表（P1-1 S1 后半，ADR
 --                docs/adr/2026-11-02-outbox-consolidation-via-taskbus.md）。
@@ -7,7 +7,7 @@
 --                复刻 MemoryStore：pending/failed 且 next_retry_at 到期可
 --                claim；sent/dlq 是终态（回收窗口的基准 = completed_at）。
 --
--- Down: 930_task_events.down.sql
+-- Down: 933_task_events.down.sql
 -- ===========================================================================
 
 BEGIN;

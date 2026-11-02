@@ -34,6 +34,7 @@ export default {
     usageTrends: "用量趨勢分析",
     pricing: "成本價格",
     modelPricing: "定價管理",
+    freellm: 'FreeLLM 免費模型',
     freePool: "免費資源",
     freeDiscovery: "免費發現",
     tenants: "租戶管理",

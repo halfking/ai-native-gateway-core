@@ -68,7 +68,7 @@ func TestCapturePersistRealDB(t *testing.T) {
 	}
 
 	// 建表：直接执行迁移 928 正本（真库验证迁移本身可跑）。
-	migration, err := os.ReadFile("../../sql/migrations/startup/928_userscript_capture_family.sql")
+	migration, err := os.ReadFile("../../sql/migrations/startup/931_userscript_capture_family.sql")
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}

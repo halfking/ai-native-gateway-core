@@ -130,6 +130,8 @@ export default {
     mediaHint: 'وسائط {count}',
     toolCall: 'استدعاءات الأدوات:',
     noMessages: '(لا توجد رسائل)',
+    // ★ 2026-11-02：正文没落库时的中性空态（不是「无消息」）。
+    bodyUnavailable: 'لم يتم التقاط نص الطلب (لم يتم حفظ النص — هذا لا يعني أن الطلب لم يحتوِ على محادثة)',
     assistantReply: '[رد المساعد]',
     collapse: 'طي',
     expand: 'توسيع',

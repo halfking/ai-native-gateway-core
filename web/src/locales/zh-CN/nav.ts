@@ -44,6 +44,7 @@ export default {
     storageAndLogConfig: '存储与日志配置',
     pricing: '成本价格',
     modelPricing: '定价管理',
+    freellm: 'FreeLLM 免费模型',
     freePool: '免费资源',
     freeDiscovery: '免费发现',
     tenants: '租户管理',

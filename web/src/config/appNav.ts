@@ -153,8 +153,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/admin/usage-trends', labelKey: 'nav.item.usageTrends', icon: '📈', super: true, hideForTenant: true },
       { path: '/pricing', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true },
       { path: '/model-pricing', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true },
-      { path: '/free-pool', labelKey: 'nav.item.freePool', icon: '🎁', super: true, hideForTenant: true },
-      { path: '/free-discovery', labelKey: 'nav.item.freeDiscovery', icon: '🔍', super: true, hideForTenant: true },
+      // 2026-11-02 S0：免费资源/免费发现归档 → 外链 freellm.itestu.cn（统一走网关会话 auth_request）
+      { path: 'https://freellm.itestu.cn', labelKey: 'nav.item.freellm', icon: '🎁', super: true, hideForTenant: true, external: true },
     ],
   },
   {

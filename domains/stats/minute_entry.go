@@ -131,6 +131,8 @@ func FromTelemetryEntry(entry *telemetry.RequestLogEntry, ts time.Time) (
 	// Probe traffic is not user traffic. Counting it here is what made the
 	// dashboard's 总请求数 include health checks and the 成功率 read as a
 	// meaningless number, because probes fail far more often than real calls.
+	// ★ 2026-11-02：物理隔离开启时，探测改走 FromProbeTelemetryEntry →
+	// request_stats_probe_minute，本函数仍对探测返回 ok=false。
 	if IsProbeTraffic(entry) {
 		return main, nil, nil, false
 	}
@@ -292,4 +294,49 @@ func itoa(n int64) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+// FromProbeTelemetryEntry builds the probe-lane minute row.
+// Only returns ok when the entry is probe traffic (inverse of FromTelemetryEntry's skip).
+func FromProbeTelemetryEntry(entry *telemetry.RequestLogEntry, ts time.Time) (main MinuteRow, ok bool) {
+	if entry == nil || entry.Op == telemetry.RequestLogInsert {
+		return main, false
+	}
+	if !IsProbeTraffic(entry) {
+		return main, false
+	}
+	status := ""
+	if entry.RequestStatus != nil {
+		status = *entry.RequestStatus
+	}
+	if status != telemetry.RequestStatusSuccess &&
+		status != telemetry.RequestStatusFailure &&
+		status != telemetry.RequestStatusRateLimited {
+		return main, false
+	}
+	tenantID := entry.TenantID
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	prompt := int64(derefInt(entry.PromptTokens))
+	completion := int64(derefInt(entry.CompletionTokens))
+	main = MinuteRow{
+		Bucket:           ts.UTC().Truncate(time.Minute),
+		TenantID:         tenantID,
+		ProviderID:       int64(derefInt(entry.ProviderID)),
+		CanonicalID:      int64(derefInt(entry.CanonicalID)),
+		Requests:         1,
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		TotalTokens:      prompt + completion,
+		CreditsCharged:   creditsFromEntry(entry),
+		CostUSD:          derefFloat(entry.CostUSD),
+		LatencyMsSum:     int64(derefInt(entry.LatencyMs)),
+	}
+	if status == telemetry.RequestStatusSuccess {
+		main.SuccessCount = 1
+	} else if status == telemetry.RequestStatusFailure {
+		main.FailureCount = 1
+	}
+	return main, true
 }

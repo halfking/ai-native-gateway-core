@@ -30,7 +30,7 @@ func newSQLStore(t *testing.T) *SQLStore {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	migration, err := os.ReadFile("../../sql/migrations/startup/930_task_events.sql")
+	migration, err := os.ReadFile("../../sql/migrations/startup/933_task_events.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

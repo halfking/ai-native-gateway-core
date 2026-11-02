@@ -51,6 +51,7 @@ export default {
     inProgress: '进行中',
     failure: '失败',
     rateLimited: '限流',
+    idle: '空闲',
     clear: '清空过滤',
     showProbe: '显示探测请求',
     showInvalid: '显示无效节点',
@@ -174,6 +175,8 @@ export default {
     page: '第 {page}/{pages} 页',
     total: '共 {n} 条',
     autoChip: '客户端请求 auto，最终模型由网关按任务选出',
+    idleLane: '空闲',
+    idleLaneHint: '该泳道近期无业务流量，这是空闲心跳，不是失败请求',
   },
   zoom: {
     title: '请求详情',
@@ -196,6 +199,7 @@ export default {
     yes: '是',
     no: '否',
     error: '错误',
+    idleNote: '说明',
   },
   page: {
     back: '返回拓扑',

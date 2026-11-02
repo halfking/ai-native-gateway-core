@@ -73,15 +73,15 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/hostedtask"
-	"github.com/kaixuan/llm-gateway-go/domains/integration"     //nolint:depguard // clientprofile worker wiring
+	"github.com/kaixuan/llm-gateway-go/domains/integration"      //nolint:depguard // clientprofile worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/modelcredibility" // 模型可信度（防掺水）worker 扫描面
-	"github.com/kaixuan/llm-gateway-go/domains/modelquality"      //nolint:depguard // 模型质量监控
-	"github.com/kaixuan/llm-gateway-go/domains/notification"    //nolint:depguard // 审批通知器
-	"github.com/kaixuan/llm-gateway-go/domains/providerprofile" //nolint:depguard // 供应商画像告警 handler (AlertType)
-	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"    //nolint:depguard // P1 proactive upstream quota prefetch
-	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"   //nolint:depguard // in-flight request content store
-	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"  //nolint:depguard // request lifecycle observation
-	"github.com/kaixuan/llm-gateway-go/domains/routeincident"   //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
+	"github.com/kaixuan/llm-gateway-go/domains/modelquality"     //nolint:depguard // 模型质量监控
+	"github.com/kaixuan/llm-gateway-go/domains/notification"     //nolint:depguard // 审批通知器
+	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"  //nolint:depguard // 供应商画像告警 handler (AlertType)
+	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"     //nolint:depguard // P1 proactive upstream quota prefetch
+	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"    //nolint:depguard // in-flight request content store
+	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"   //nolint:depguard // request lifecycle observation
+	"github.com/kaixuan/llm-gateway-go/domains/routeincident"    //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/security" //nolint:depguard // 2026-10-18 topology plugins source（v2Deps.SecurityRegistry 类型）
 	"github.com/kaixuan/llm-gateway-go/domains/session"  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -121,6 +121,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
 	"github.com/kaixuan/llm-gateway-go/internal/taskbus"
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
+	"github.com/kaixuan/llm-gateway-go/internal/probelane"
 	"github.com/kaixuan/llm-gateway-go/internal/providers/mock"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
 	"github.com/kaixuan/llm-gateway-go/internal/registration"
@@ -3583,6 +3584,15 @@ func main() {
 				Count: detailDBRetryCount,
 				Delay: detailDBRetryDelay,
 			})
+			// 2026-11-02：统一详情的**兜底**正文源（本地热区请求侧镜像）。
+			// PG 会话族正文受录制同意门控 ⇒ 同意关闭时 bodies 为空 ⇒
+			// 前端「对话」页全空；镜像里同一批请求的正文仍在磁盘上 ⇒ 补位。
+			// 未装配热区/镜像关闭时 requestsDir 为空 ⇒ 不回源（原行为不变）。
+			if mirrorDir := storageRt.requestMirrorDir(); mirrorDir != "" {
+				adminHandler.SetHotzoneBodySource(mirrorDir)
+				slog.Info("request detail hotzone mirror fallback wired",
+					"requests_dir", mirrorDir)
+			}
 			slog.Info("request detail content store wired", "dir", detailDir, "ttl", detailTTL, "max_entries", detailMaxEntries,
 				"db_retry_count", detailDBRetryCount, "db_retry_delay", detailDBRetryDelay,
 				"live_stream_reader", fpSlotRedis != nil)
@@ -4777,6 +4787,14 @@ func main() {
 						modelQualityWorker.TriggerNodeIQTest(credID, rawModel)
 					}
 				})
+				// 2026-11-02 B：探活成功 → 独立可信度扫描（冷却/featured 闸在
+				// NotifyProbeSuccess）。闭包捕获后赋值的 modelCredibilityWorker；
+				// ★ 不挂 MarkNodeProbeHealthy —— 业务成功路径高频会烧标定预算。
+				nodeProbeWorker.SetModelCredibilityTrigger(func(credID int, rawModel string) {
+					if modelCredibilityWorker != nil {
+						modelCredibilityWorker.NotifyProbeSuccess(int64(credID), rawModel, "node_probe_success")
+					}
+				})
 				// 2026-07-17: 同步探测 hold 模式开关。env LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE
 				// 取值 "0"/"false"/"off" 即关闭（默认开启）。关闭时 executor 走原 fire-and-forget
 				// 路径，503 立即返回。该 kill-switch 用于紧急回滚，无需重新打包。
@@ -5032,6 +5050,12 @@ func main() {
 			nodeProbeWorker.SetModelQualityTrigger(func(credID int, rawModel string, consec int) {
 				if modelQualityWorker != nil {
 					modelQualityWorker.TriggerNodeIQTest(credID, rawModel)
+				}
+			})
+			// 2026-11-02 B：与主路径同款探活成功 → 可信度钩子。
+			nodeProbeWorker.SetModelCredibilityTrigger(func(credID int, rawModel string) {
+				if modelCredibilityWorker != nil {
+					modelCredibilityWorker.NotifyProbeSuccess(int64(credID), rawModel, "node_probe_success")
 				}
 			})
 			// 2026-08-13: mirror the unified-queue wiring for the authoritative
@@ -5692,6 +5716,28 @@ func main() {
 			slog.Info("ip blocklist admin wired")
 		}
 
+		// 物理车道开启时启动期校验探测族表存在，避免 PersistTurn 全失败却
+		// 只打一条 error、下游 hooks 静默不发（12h 审计 §六 P1-3）。
+		//
+		// ★ 2026-11-02：本检查**必须在 !bgDataPlaneOnly 闸门之外**。
+		//   探测分流写路径（telemetry → probelane.PersistTurn）由
+		//   telemetryClient.SetDB(dbConn.Pool()) 决定是否可达，而那处
+		//   **只看 dbConn**，不看 bgDataPlaneOnly ⇒ 245 这类
+		//   data-plane-only 实例同样会走探测写路径（见 cmd/gateway/
+		//   probelane_boot_check_wiring_guard_test.go）。
+		//   若把检查留在 full-only 闸门内：245 开了 flag 又缺迁移 928 时，
+		//   PersistTurn 每条探测都失败、只留一条 error 日志、下游 hooks 静默
+		//   —— 正是本检查要防的那种静默失败面。
+		if dbConn.Pool() != nil {
+			if err := probelane.AssertWithQueryRow(context.Background(), func(ctx context.Context, sql string, args ...any) probelane.DBRow {
+				return dbConn.Pool().QueryRow(ctx, sql, args...)
+			}); err != nil {
+				slog.Error("probelane lane table check failed", "error", err)
+				// fail-loud but do not abort boot: flag may be set ahead of a
+				// rolling migration; operators still see ERROR and can fix.
+			}
+		}
+
 		// Weekly rollup + auto-tune suggester require writes to
 		// credentials/audit; only run in "full" mode.
 		slog.Info("CHECKPOINT: before bgDataPlaneOnly check for weekly/auto-tune", "bgDataPlaneOnly", bgDataPlaneOnly)
@@ -5705,6 +5751,10 @@ func main() {
 			// parallel with the scanner, which made a retry double-count a
 			// bucket. Keep the type available for a future event projection,
 			// but do not wire it into the live request path.
+			//
+			// ★ 2026-11-02：探测分钟表的生产写入者是
+			// bg.StatsMinuteRollup（stats_minute_probe_rollup.go），不是
+			// domains/stats.MinuteAccumulator（后者全仓无 New* 调用方）。
 			statsMinuteRollup = bg.NewStatsMinuteRollup(dbConn.Pool())
 			statsMinuteRollup.Start(context.Background())
 			// 探测排除的历史回填（superAdmin 端点）：
@@ -7703,7 +7753,32 @@ func main() {
 					dbConn.Pool(),
 					integrity.LoadSampleRatioFromEnv(0.1),
 				)
-				integrityDetector := integrity.NewDetector(integrityRecorder)
+				// C 方案：采样前挂钩 —— high/critical model_mismatch 即使被
+				// sampleRatio 丢行，仍异步触发独立可信度 ScanNode。
+				// 闭包捕获后赋值的 modelCredibilityWorker（本节前已构造）。
+				integrityNotify := &integrity.NotifyRecorder{
+					Inner: integrityRecorder,
+					Notify: func(ev integrity.Event) {
+						if modelCredibilityWorker == nil || ev.CredentialID == nil {
+							return
+						}
+						model := strings.TrimSpace(ev.RawModel)
+						if model == "" {
+							model = strings.TrimSpace(ev.OutboundModel)
+						}
+						if model == "" {
+							return
+						}
+						modelCredibilityWorker.NotifyIntegrityAnomaly(
+							int64(*ev.CredentialID),
+							model,
+							ev.ProviderCode,
+							string(ev.AnomalyType),
+							"integrity_live",
+						)
+					},
+				}
+				integrityDetector := integrity.NewDetector(integrityNotify)
 				integrityAdapter := integrity.NewExecutorAdapter(integrityDetector)
 				routingExec.IntegrityDetector = integrityAdapter
 				chatHandler.SetIntegrityDetector(integrityAdapter)
@@ -7716,6 +7791,14 @@ func main() {
 				// integrity_probe / credential_selfcheck) is filtered
 				// out of the sample.
 				fpd := bg.NewIntegrityFingerprintDrift(dbConn.Pool())
+				fpd.SetCredibilityOnDrift(func(credID int64, rawModel string) {
+					if modelCredibilityWorker == nil {
+						return
+					}
+					modelCredibilityWorker.NotifyIntegrityAnomaly(
+						credID, rawModel, "", "fingerprint_drift", "integrity_fp_drift",
+					)
+				})
 				fpd.Start(context.Background())
 				integrityDriftWorker = fpd
 

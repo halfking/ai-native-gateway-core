@@ -1332,23 +1332,45 @@ var routingPolicySingletonUnique927 []byte
 //go:embed embeddata/startup/927_routing_policy_singleton_unique.down.sql
 var routingPolicySingletonUnique927Down []byte
 
-//go:embed embeddata/startup/928_userscript_capture_family.sql
-var userscriptCaptureFamily928 []byte
+// ★ 928（2026-11-02 探测物理隔离方案）：探测流水热表 + 探测分钟聚合表。
+//   写路径由 LLM_GATEWAY_PROBE_LANE_PHYSICAL 门控；本迁移只建表。
+//go:embed embeddata/startup/928_probe_traffic_physical_lane.sql
+var probeTrafficPhysicalLane928 []byte
 
-//go:embed embeddata/startup/928_userscript_capture_family.down.sql
-var userscriptCaptureFamily928Down []byte
+//go:embed embeddata/startup/928_probe_traffic_physical_lane.down.sql
+var probeTrafficPhysicalLane928Down []byte
 
-//go:embed embeddata/startup/929_outbox_events_fresh_install.sql
-var outboxEventsFreshInstall929 []byte
+// ★ 929（2026-11-02 12h 审计轮 P1）：self_check_runs.error_type 的 CHECK
+//   闭集补齐 —— 与 errorsx.ErrorKind 闭集对齐。
+//   ★ 缺口本体：上游 9 提交给 errorsx 加了 6 个新 kind
+//     （request_rejected / circuit_open / fp_slot_saturated /
+//      first_byte_timeout / reply_loop / account_restricted），
+//     而 CHECK 的字面量清单没跟着长 ⇒ 写侧 bg/credential_selfcheck.go:844
+//     写的正是 kind 名 ⇒ finalizeRun 的 UPDATE 被 23514 拒绝 ⇒
+//     **整条 UPDATE 回滚** ⇒ self_check run 行停在 status='running' 的半写态。
+//   ★ 本迁移只重建该 CHECK，不改任何数据。
+//go:embed embeddata/startup/929_self_check_error_type_kind_closure.sql
+var selfCheckErrorTypeKindClosure929 []byte
 
-//go:embed embeddata/startup/929_outbox_events_fresh_install.down.sql
-var outboxEventsFreshInstall929Down []byte
+//go:embed embeddata/startup/929_self_check_error_type_kind_closure.down.sql
+var selfCheckErrorTypeKindClosure929Down []byte
+//go:embed embeddata/startup/931_userscript_capture_family.sql
+var userscriptCaptureFamily931 []byte
 
-//go:embed embeddata/startup/930_task_events.sql
-var taskEvents930 []byte
+//go:embed embeddata/startup/931_userscript_capture_family.down.sql
+var userscriptCaptureFamily931Down []byte
 
-//go:embed embeddata/startup/930_task_events.down.sql
-var taskEvents930Down []byte
+//go:embed embeddata/startup/932_outbox_events_fresh_install.sql
+var outboxEventsFreshInstall932 []byte
+
+//go:embed embeddata/startup/932_outbox_events_fresh_install.down.sql
+var outboxEventsFreshInstall932Down []byte
+
+//go:embed embeddata/startup/933_task_events.sql
+var taskEvents933 []byte
+
+//go:embed embeddata/startup/933_task_events.down.sql
+var taskEvents933Down []byte
 
 // ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
 //   - sanitize_block_reviews 追加 session_id / label / label_comment /
@@ -1784,13 +1806,20 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/926_sanitize_block_review_degraded.down.sql":                          sanitizeBlockReviewDegraded926Down,
 	// ★ 927（2026-10-31 12h 审计轮）：routing_policy 单例化（去重 + UNIQUE (tenant_id)）。
 	"startup/927_routing_policy_singleton_unique.sql":                              routingPolicySingletonUnique927,
-	"startup/928_userscript_capture_family.sql":                                   userscriptCaptureFamily928,
-	"startup/928_userscript_capture_family.down.sql":                              userscriptCaptureFamily928Down,
-	"startup/929_outbox_events_fresh_install.sql":                                 outboxEventsFreshInstall929,
-	"startup/929_outbox_events_fresh_install.down.sql":                            outboxEventsFreshInstall929Down,
-	"startup/930_task_events.sql":                                                 taskEvents930,
-	"startup/930_task_events.down.sql":                                            taskEvents930Down,
+	"startup/931_userscript_capture_family.sql":                                   userscriptCaptureFamily931,
+	"startup/931_userscript_capture_family.down.sql":                              userscriptCaptureFamily931Down,
+	"startup/932_outbox_events_fresh_install.sql":                                 outboxEventsFreshInstall932,
+	"startup/932_outbox_events_fresh_install.down.sql":                            outboxEventsFreshInstall932Down,
+	"startup/933_task_events.sql":                                                 taskEvents933,
+	"startup/933_task_events.down.sql":                                            taskEvents933Down,
 	"startup/927_routing_policy_singleton_unique.down.sql":                         routingPolicySingletonUnique927Down,
+	// ★ 928（2026-11-02）：探测流量物理隔离车道（session_turns_probe_hot + request_stats_probe_minute）。
+	"startup/928_probe_traffic_physical_lane.sql":                                  probeTrafficPhysicalLane928,
+	"startup/928_probe_traffic_physical_lane.down.sql":                             probeTrafficPhysicalLane928Down,
+	// ★ 929（2026-11-02 12h 审计轮 P1）：self_check_runs.error_type CHECK 闭集补齐
+	//   （errorsx.ErrorKind 闭集 32 kind + 5 个 worker 专用字面量）。
+	"startup/929_self_check_error_type_kind_closure.sql":                           selfCheckErrorTypeKindClosure929,
+	"startup/929_self_check_error_type_kind_closure.down.sql":                      selfCheckErrorTypeKindClosure929Down,
 	"startup/915_recent_cache_hit_rate.sql":                                       recentCacheHitRate915,
 	"startup/915_recent_cache_hit_rate.down.sql":                                  recentCacheHitRate915Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,

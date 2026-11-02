@@ -642,6 +642,12 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// 2026-07-14: switched from columnar-partition strategy to pure-hot-table.
 	pm.cleanupOldModelProbeRuns(ctx)
 
+	// 2b. 2026-11-02 (U1)：探测物理隔离族 TTL。session_turns_probe_hot /
+	// request_stats_probe_minute 无分区、此前全仓零 DELETE ⇒ 单调增长。
+	// 默认 14d（lifecycle.session_turns_probe_hot_ttl_days）。retireProbeMinutes
+	// 只退役「桶已无源」的分钟行，不处理源流水过期 —— 本步才是源面清理。
+	pm.cleanupOldProbeLaneTables(ctx)
+
 	// 3. 2026-07-13: credential_model_index 7-day TTL cleanup.
 	// The SQL function `cleanup_old_credential_model_index()` deletes
 	// `credential_model_index` rows older than 7 days. The dedup change

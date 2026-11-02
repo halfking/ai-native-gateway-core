@@ -13,6 +13,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/kaixuan/llm-gateway-go/internal/probelane"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -770,19 +771,35 @@ func liveStreamQueueKeepLimit(key string) int {
 
 func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 	tenantID = normalizeLiveStreamTenant(tenantID)
+	// ★ 2026-11-02 探测物理隔离：探测 tile 写入独立 Redis 键空间，不进业务 main。
+	probeLane := req.IsProbe && probelane.PhysicalEnabled()
+	mainKey := liveStreamMainKey
+	dimPrefix := liveStreamDimPrefix
+	statPrefix := liveStreamStatPrefix
+	tenantKey := func(suffix string) string {
+		if probeLane {
+			return tenantLiveStreamKey(tenantID, probelane.RedisSuffixProbe(suffix))
+		}
+		return tenantLiveStreamKey(tenantID, suffix)
+	}
+	if probeLane {
+		mainKey = "llmgw:live:probe:main"
+		dimPrefix = "llmgw:live:probe:dim:"
+		statPrefix = "llmgw:live:probe:status:"
+	}
 	keys := []string{
-		liveStreamMainKey,
-		tenantLiveStreamKey(tenantID, "main"),
-		liveStreamStatPrefix + emptyAs(req.Status, "in_progress"),
-		tenantLiveStreamKey(tenantID, "status:"+emptyAs(req.Status, "in_progress")),
+		mainKey,
+		tenantKey("main"),
+		statPrefix + emptyAs(req.Status, "in_progress"),
+		tenantKey("status:"+emptyAs(req.Status, "in_progress")),
 	}
 	// Only add dimension keys when the dimension value is present and valid
 	// Use resolveVendorForRequest to get the resolved vendor through the full fallback chain
 	vendor := resolveVendorForRequest(req)
 	if vendor != "" && vendor != "__unknown__" && vendor != "other" {
 		keys = append(keys,
-			liveStreamDimPrefix+"vendor:"+vendor,
-			tenantLiveStreamKey(tenantID, "dim:vendor:"+vendor),
+			dimPrefix+"vendor:"+vendor,
+			tenantKey("dim:vendor:"+vendor),
 		)
 	} else {
 		slog.Debug("live stream: vendor dimension skipped",
@@ -795,8 +812,8 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 	// 无凭据身份的请求（如鉴权/路由前置失败）不出现在凭据维度。
 	if credKey := liveStreamCredentialKey(req); credKey != "" {
 		keys = append(keys,
-			liveStreamDimPrefix+"credential:"+credKey,
-			tenantLiveStreamKey(tenantID, "dim:credential:"+credKey),
+			dimPrefix+"credential:"+credKey,
+			tenantKey("dim:credential:"+credKey),
 		)
 	} else {
 		slog.Debug("live stream: credential dimension skipped",
@@ -806,8 +823,8 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 	}
 	if req.ProviderCode != "" && req.ProviderCode != "unknown" {
 		keys = append(keys,
-			liveStreamDimPrefix+"provider:"+req.ProviderCode,
-			tenantLiveStreamKey(tenantID, "dim:provider:"+req.ProviderCode),
+			dimPrefix+"provider:"+req.ProviderCode,
+			tenantKey("dim:provider:"+req.ProviderCode),
 		)
 	} else {
 		slog.Debug("live stream: provider dimension skipped",
@@ -827,8 +844,8 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 	modelKey := normalizeModelKey(emptyAs(req.CanonicalName, req.Model))
 	if modelKey != "" && modelKey != "unknown" {
 		keys = append(keys,
-			liveStreamDimPrefix+"model:"+modelKey,
-			tenantLiveStreamKey(tenantID, "dim:model:"+modelKey),
+			dimPrefix+"model:"+modelKey,
+			tenantKey("dim:model:"+modelKey),
 		)
 	} else {
 		slog.Debug("live stream: model dimension skipped",
@@ -842,7 +859,23 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 // Replay fetches the most recent N requests from the main queue in
 // ascending timestamp order. Returns empty slice (not error) when
 // Redis is unavailable.
+//
+// ★ 2026-11-02 探测物理隔离：新增 lane 参数。探测 tile 被分流到独立键空间
+// （llmgw:live:probe:main / llmgw:live:tenant:<id>:probe:main，见
+// liveRequestQueueKeys）⇒ 读业务 main 队列**读不到探测 tile** ⇒
+// 隔离开启后探测在实时流里成了一进不出的黑洞。
+// ★ 详情 hash 键**不分流**（llmgw:live:req:<id> 与租户 req:<id> 都无条件写）
+// ⇒ 只需切队列键，详情解析逻辑完全复用。
+//
+// lane 取值：
+//   - "business"（默认）：业务 main 队列（历史行为不变）
+//   - "probe"：探测 main 队列
 func (s *LiveStreamRedisStore) Replay(ctx context.Context, tenantID string, isSuper bool, limit int) ([]LiveRequest, error) {
+	return s.ReplayLane(ctx, tenantID, isSuper, limit, "business")
+}
+
+// ReplayLane is Replay with an explicit traffic lane.
+func (s *LiveStreamRedisStore) ReplayLane(ctx context.Context, tenantID string, isSuper bool, limit int, lane string) ([]LiveRequest, error) {
 	if s == nil || s.rdb == nil {
 		return nil, nil
 	}
@@ -850,9 +883,19 @@ func (s *LiveStreamRedisStore) Replay(ctx context.Context, tenantID string, isSu
 		limit = liveStreamReplayLimit
 	}
 
+	// ★ 队列键按 lane 选；租户键用 probelane.RedisSuffixProbe 拼出
+	//   "probe:main" ⇒ 与 liveRequestQueueKeys 的写侧**逐字同源**
+	//   （两处各写一份后缀拼法必然漂移 ⇒ 探测 tile 写进 A 队列、读从 B 队列）。
 	key := liveStreamMainKey
+	if lane == "probe" {
+		key = "llmgw:live:probe:main"
+	}
 	if !isSuper && tenantID != "" {
-		key = tenantLiveStreamKey(normalizeLiveStreamTenant(tenantID), "main")
+		suffix := "main"
+		if lane == "probe" {
+			suffix = probelane.RedisSuffixProbe("main")
+		}
+		key = tenantLiveStreamKey(normalizeLiveStreamTenant(tenantID), suffix)
 	}
 
 	// Fetch last N request ids (ZREVRANGE returns DESC, so we reverse later)

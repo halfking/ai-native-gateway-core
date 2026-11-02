@@ -78,6 +78,8 @@ export const REQUEST_DETAIL_SOURCES = [
   'live_stream',
   'request_logs',
   'session_turns',
+  // ★ 2026-11-02：本地热区请求侧镜像兜底回源（后端 SourceHotzoneMirror）。
+  'hotzone_mirror',
 ] as const
 export type RequestDetailSource = (typeof REQUEST_DETAIL_SOURCES)[number]
 

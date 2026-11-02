@@ -301,6 +301,18 @@ func SQLActorList() string {
 	return strings.Join(quoted, ", ")
 }
 
+// SQLStageList 把 ProbeStages 渲染成 SQL IN 列表：'a', 'b', 'c'。
+//
+// 给 analytics / 读面「排除探测 stage」谓词用 —— 禁止再手写一份 stage 字面量
+// （admin/analytics.go 的 businessRequestFilterStages 曾与本集各写一份）。
+func SQLStageList() string {
+	quoted := make([]string, 0, len(ProbeStages))
+	for _, s := range ProbeStages {
+		quoted = append(quoted, "'"+s+"'")
+	}
+	return strings.Join(quoted, ", ")
+}
+
 func contains(list []string, v string) bool {
 	for _, item := range list {
 		if item == v {

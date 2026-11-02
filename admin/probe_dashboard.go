@@ -1911,6 +1911,17 @@ func (h *Handler) RegisterProbeDashboardRoutes(mux *http.ServeMux, adminWrap fun
 	mux.HandleFunc("/api/admin/probe/cache-state", adminWrap(h.handleProbeCacheState))
 	mux.HandleFunc("/api/admin/probe/cache-rebuild", adminWrap(h.handleProbeCacheRebuild))
 	mux.HandleFunc("/api/admin/probe/cache-keys", adminWrap(h.handleProbeCacheKeys))
+	// 2026-11-02：探测流量物理隔离车道的读侧 —— 读 session_turns_probe_hot
+	// （物理隔离开启时探测流量的落点）。此前该表只有写没有读，探测被分流出去
+	// 后运维无路可查。独立端点，刻意不并进 /api/logs（业务读面的 118 列冻结
+	// 与分区裁剪契约，见 admin/logs_turns_source.go）。
+	mux.HandleFunc("/api/admin/probe/lane/requests", adminWrap(h.handleProbeLaneRequests))
+	// 2026-11-02：实时流 Redis 探测键空间的读侧（llmgw:live:probe:*）。
+	// 隔离开启时探测 tile 写进独立键空间 ⇒ 读业务 main 队列读不到 ⇒ 一进不出。
+	mux.HandleFunc("/api/admin/probe/lane/live", adminWrap(h.handleProbeLaneLiveRequests))
+	// 2026-11-02：探测分钟聚合表的读侧（request_stats_probe_minute）。
+	// 业务看板读 request_stats_minute ⇒ 隔离开启后探测的 QPS/成功率在看板上不可见。
+	mux.HandleFunc("/api/admin/probe/lane/stats", adminWrap(h.handleProbeLaneMinuteStats))
 	// 2026-08-11: self-check / node-probe queue SSE stream (自检 tab). Mounted
 	// conditionally so a gateway without the hub wired (e.g. tests) does not
 	// expose a nil-handler route.

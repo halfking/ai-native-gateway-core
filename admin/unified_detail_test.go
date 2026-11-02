@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
 	"github.com/pashagolub/pgxmock/v4"
@@ -113,8 +114,8 @@ func TestPGBodyReaderFillsPartialBodiesFromSessionTurns(t *testing.T) {
 	mock.ExpectQuery(`(?s)SELECT t.session_id, t.turn_no,.*FROM public.session_turns_with_current_month t`).
 		WithArgs("req-partial").
 		WillReturnRows(pgxmock.NewRows([]string{
-			"session_id", "turn_no", "tenant_id", "request_delta", "response_delta", "outbound_body", "model", "latency_ms",
-		}).AddRow("session-1", 1, "default", []byte(`{"messages":["from-session"]}`), []byte(`{"choices":[{"message":{"content":"reply"}}]}`), []byte(`{"messages":["from-session"]}`), "model", 10))
+			"session_id", "turn_no", "tenant_id", "request_delta", "response_delta", "outbound_body", "model", "latency_ms", "ts",
+		}).AddRow("session-1", 1, "default", []byte(`{"messages":["from-session"]}`), []byte(`{"choices":[{"message":{"content":"reply"}}]}`), []byte(`{"messages":["from-session"]}`), "model", 10, time.Now()))
 
 	reader := &pgBodyReader{db: mock, fetch: bodyFetcherFunc(func(context.Context, string) (any, any, error) {
 		return `{"messages":["from-logs"]}`, nil, nil
@@ -159,11 +160,13 @@ func TestReadSessionTurnsBodiesOmitBodyReturnsMetadata(t *testing.T) {
 	require.NoError(t, err)
 	defer mock.Close()
 
-	mock.ExpectQuery(`(?s)SELECT t.session_id, t.turn_no, t.tenant_id,\s+NULL::text, NULL::text, NULL::text,\s+t.model, t.latency_ms\s+FROM public.session_turns_with_current_month t\s+WHERE t.request_id = \$1`).
+	// ★ 2026-11-02：投影多了 t.ts —— 热区镜像兜底回源要用请求时刻定位
+	//   {mirror}/requests/{tenant}/{UTC 日}/{rid}.*.json.gz 的日期目录。
+	mock.ExpectQuery(`(?s)SELECT t.session_id, t.turn_no, t.tenant_id,\s+NULL::text, NULL::text, NULL::text,\s+t.model, t.latency_ms, t.ts\s+FROM public.session_turns_with_current_month t\s+WHERE t.request_id = \$1`).
 		WithArgs("req-session-only").
 		WillReturnRows(pgxmock.NewRows([]string{
-			"session_id", "turn_no", "tenant_id", "request_delta", "response_delta", "outbound_body", "model", "latency_ms",
-		}).AddRow("session-1", 3, "tenant-a", nil, nil, nil, "model-a", 15))
+			"session_id", "turn_no", "tenant_id", "request_delta", "response_delta", "outbound_body", "model", "latency_ms", "ts",
+		}).AddRow("session-1", 3, "tenant-a", nil, nil, nil, "model-a", 15, time.Now()))
 
 	reader := &pgBodyReader{db: mock}
 	bodies, meta, err := reader.ReadSessionTurnsBodies(context.Background(), "req-session-only", true)

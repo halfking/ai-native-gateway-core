@@ -514,9 +514,13 @@ function buildUrl(endpoint: string): string {
   // an empty value subscribes to NO dimension (queue-mode UIs) — the param
   // must therefore be sent even when empty, and omitted entirely when the UI
   // never expressed a preference.
+  //
+  // Probe lane (2026-11-02 U2/U3): ?probe=1 显式订探测频道。默认不带 ⇒
+  // 后端网络层不下发探测 tile（不只靠前端 requestTypes 过滤）。
   const sep = endpoint.includes('?') ? '&' : '?'
   let url = `${endpoint}${sep}slim=1`
   if (streamDimsQuery !== null) url += `&dims=${encodeURIComponent(streamDimsQuery)}`
+  if (streamWantProbe) url += '&probe=1'
   return url
 }
 
@@ -556,6 +560,37 @@ export function __resetStreamDimsForTest() {
   if (dimsReconnectTimer) {
     clearTimeout(dimsReconnectTimer)
     dimsReconnectTimer = null
+  }
+}
+
+// ── probe lane subscription (U2/U3) ───────────────────────────────────────
+// Default false = business channel only. Toggling the dashboard「探测」
+// filter calls setLiveStreamWantProbe(true) so EventSource reconnects with
+// ?probe=1 and the backend merges the probe Redis lane into initial_data.
+let streamWantProbe = false
+let probeReconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * Declare whether this client wants the probe traffic channel.
+ * Debounced reconnect mirrors setLiveStreamDimsQuery.
+ */
+export function setLiveStreamWantProbe(want: boolean) {
+  if (want === streamWantProbe) return
+  streamWantProbe = want
+  if (refCount <= 0 || !es) return
+  if (probeReconnectTimer) clearTimeout(probeReconnectTimer)
+  probeReconnectTimer = setTimeout(() => {
+    probeReconnectTimer = null
+    reconnectStream()
+  }, 300)
+}
+
+/** @internal test-only */
+export function __resetStreamWantProbeForTest() {
+  streamWantProbe = false
+  if (probeReconnectTimer) {
+    clearTimeout(probeReconnectTimer)
+    probeReconnectTimer = null
   }
 }
 
@@ -1826,6 +1861,7 @@ export const __testing = {
   // Slim wire (2026-10-27): URL/subscription hooks for the bandwidth tests.
   buildUrl,
   streamDimsQuery: () => streamDimsQuery,
+  streamWantProbe: () => streamWantProbe,
   mergeSnapshotFromServer,
   mergeLaneList,
   mergeTilesById,

@@ -4,6 +4,236 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-02 第 36 增量补交轮：hero-metric 门的验收收尾（三道红全部定性 + 基线补登 + census 口径订正）**
+> （会话 `mvs_49b32e49a4b94018a9c4998e83b66678`，承接第 36 增量
+> `43ea986a3` ＋ merge `5d10c6fc2`）：★ 那一笔的 commit message 明写「32 门清单与 Go 掏空门在
+> 下一个提交回填」⇒ ★★★ **本笔就是那个回填提交**（★ 只补记，★ 不改判据立场）。
+> ⇒ ★★★★ **验收读数（★ 树 = 补交时的 `origin/main` `7c3632e7c`）**：
+> ★ **hero-metric 运行时尺：138 页 / 0 处墙 / 0 violations / 0 unresolved / 0 errors / rc=0**
+> （★ origin 显式钉 `http://localhost:5202`）· ★ **`vue-tsc --noEmit` rc=0** ·
+> ★ **`vitest run` rc=1 · 4 条红（★ 全部上游引入 ⇒ 本轮零新增）** · ★ **`vite build` rc=0** ·
+> ★ **登记册普查门 PASS（0.04s）** · ★ **6 份浏览器尺基线 md5 跑前跑后逐字一致**（★ 掏空门自愈）。
+> ⇒ ★★★★ **★★ 另有一组「上游引入」的 vitest 红（★ 4 条，★ 本轮零新增，★ A/B 决定性）**：
+> ★ 在上游 `7c3632e7c` 的**父树** `7748d3bc8` 上复跑同一套 vitest ⇒ **✅ 全绿（289 文件 / 2986 测试）**
+> ⇒ ★★ 那 4 条红**全部由上游 `7c3632e7c` 引入** ⇒ ★★ 逐条根因是同一个族
+> （★ **上游自己新加的东西没配套齐**）：★ ① 后端加了 `SourceProbeLane = "probe_lane"`
+> ★ 而**前端联合没加** ⇒ 契约门判红（★ 这道门的作用正在此处）· ★ ② 上游新加的
+> `liveStreamIdle.test.ts` 断言 `upstream_timeout → 'failure_timeout'`，
+> ★ 而 `statusCategory` 的正则**故意**把带 `upstream_` 前缀的 timeout 排除在超时之外
+> （★ ⇒ 落到 `failure_5xx`）⇒ **测试与实现的意图相反** · ★ ③④ 上游给 **9 个语种**加了
+> 文案 ⇒ 「值 = 英文原文」条数上升 ⇒ i18n 值质量棘轮被突破（★ 棘轮只许降 ⇒ 必然红）
+> ⇒ ★★ **这 4 条属【上游那笔的收尾工作面】⇒ 本轮不代改**（★ 登记在此，★ 交上游裁决）。
+> ⇒ ★★★★ **交接单点名的三道红，全部定性完毕（★ 其中两条的猜测被证伪）**：
+> ★ ① **hero-metric —— ★ 是真红，但不是「dev server 挂掉的基础设施抖动」**（★ 交接单的猜测**不成立**）：
+> ★ ★★ 真因＝**上游 `f7446c911` 给 `web/src/router.ts` 加了 `/model-credibility`**
+> ★ ⇒ **门派生的页面清单 137 → 138 ⇒ 基线里没有这一页 ⇒ 门判红 `HERO-METRIC-BASELINE-MISSING`**
+> ★ ⇒ ★★ **这正是那道门该有的行为**（★ 新页进清单、基线没跟上 ⇒ 不许读成「通过」）
+> ★ ⇒ ★★ 修法＝**跑门自带的 `--update-baseline`（★ 从 SSOT 重新生成、不手改产物）**
+> ★ ⇒ ★★ **diff = `+10 / −0` 纯追加**（★ 新增 1 个页条目 + 1 条 history；★ **已有 137 页的计数
+> ★ 一个都没动** ⇒ 写回值 = `min(旧值, 实测值)` ⇒ **棘轮没被放松**）⇒ ★★ 复跑 **rc=0**。
+> ★ ② **`design-spacing-scale:check` ⇒ 现绿**（★ 读数：离阶 0（0 个文件）· rem 写法 0）；
+> ★ ③ **`design-motion:check` ⇒ 现绿**（★ 读数：动效声明 367 处 · 八项不合规全 0）
+> ★ ⇒ ★★ **交接单「这两道红疑似合并带进来的远端改动」的猜测被证伪**：★ 它们既不是本轮引入、
+> ★ 也不是合并带进来，★ 而是**上游自己在这两轮之间修绿的**。
+> ⇒ ★★★★ **另两笔 Go 侧红，全部零新增红（★ A/B 取证）**：★ ① **canonical 读点 TSV 漂移**
+> ★ （★ 上游往 `bg/integrity_fingerprint_drift.go` / `bg/stats_minute_rollup.go` **插行**
+> ★ ⇒ 行号从 259/271 平移到 272/283 ⇒ ★ 「生成侧动了、产物侧没重新生成」⇒ ★ 与并行会话那轮
+> ★ 「四类派生台账漂移」**同一形态** ⇒ ★★ 上游已用 `f74842452` 重落地收口 ⇒ ★ 补交轮实测
+> ★ TSV = 272、JSON = 272、实际行 = 273 ⇒ **漂移已闭合**）；★ ② **copy-quality 棘轮突破**
+> ★ （★ 上游 `a440cba9e` 给 `web/src/locales/{en-US,fr-FR}/requestDetail.ts:134` 加了带
+> ★ **em-dash** 的文案 ⇒ ★★ **A/B：在 `6d535ad2d` 上复跑同门 ⇒ ✅ PASS** ⇒ 上游引入）；
+> ★ ③ `post-surface-ledger.tsv`（★ 589 ≠ 591）⇒ ★★ **在第 36 增量原始树 `5d10c6fc2` 上同样红
+> ★ ⇒ 既有红**。
+> ⇒ ★★★★ **★ 诚实边界（★ 两条，别把读数当全绿引用）**：★ ① **补交轮的指标格分母是 31（8 页有格）**，
+> ★ 而第 36 增量 §7.1 记的是 **110（26 页有格）** ⇒ ★★ 差异来自**本地后端降级**
+> ★ （★ `:8782` 跑的是 build_seq 2717 / build_date 20261017 的**旧二进制**，★ 其
+> ★ `POST /api/auth/token` 返回 `database not configured` ⇒ ★ 靠后端数据才渲染的那类格
+> ★ 整批没渲染）⇒ ★★ **分母不可比 ⇒ 读数不可比** ⇒ ★★ **「分母 110」不能用补交轮的读数复核**；
+> ★ ② **补交轮没有重跑整张 32 门清单** ⇒ ★★ **「32 门全绿」本轮没测过，不许这样写**。
+> ⇒ ★★★ **登记册 `scripts/ursmcheck/structured-registry-census.json` 的条数口径**：
+> ★ 第 36 增量代码那笔提交时是 **54 条** ⇒ `fa1a09558`（补记）**55 条** ⇒
+> ★ ★★ **上游 `1f3fc5840` 再 +1（`scripts/guards/win-test-baseline.json` 补登记）⇒ 补交时实测
+> ★ 56 条** ⇒ ★★ **本笔的注记按 56 条落**（★ ★ 交接单预测的「55 条」**已过期**，★ 差在
+> ★ 上游那一笔）⇒ ★★ **AGENTS 侧与 commit message 都按实测的 56 条写**（★ 莫写成 54/55）。
+> ★ 通用式见 `LESSONS.md` **§522**（★ 十七条通式）；★ 审计档
+> ★ `docs/audit/2026-10-28-第36增量-hero-metric覆盖面轮.md` §1 / §7.3 / §7.4。
+> **2026-11-02 模型列表口径线上验证轮：生产端到端七口径实证 + 全量套件 8 门红收口 + merge 吞掉轮次记录的发现**
+> （会话 `mvs_3819385bca0f43d7bf0c059acb269bda`，承接 `96a781507`）：★ 用户指令
+> 「结合当前树做测试验证 → 修正发现的问题 → 提交并推送」。⇒ ★★★ **验证结论：口径实现
+> 正确，本轮零改业务逻辑**；改的全是**派生台账/快照/对拍表**的漂移（四类）。
+> ⇒ ★★★★ **生产端到端实证（211，build `6d535ad2`＝当前 HEAD，`96a781507` 是其祖先 ⇒
+>   线上确实含本功能）**：默认 `/v1/models` → **20**（特色）；`?scope=featured` → 20；
+>   `?scope=all` → **89**（全量）；`?all=true` → 89；`?scope=bogus` → **400**
+>   `invalid_scope`；`/v1beta/models`（Gemini 原生形状）→ 20，`?scope=all` → 89；
+>   线上 `http_request` 日志逐条对上（响应体 1918B/8450B/133B/14630B）。
+> ⇒ ★★★★ **生产真库对拍（`acc-pg17/llm_gateway`，SQL 从 Go 常量导出非手抄）**：
+>   精选 **20 ⊆ 全量 89**（差集为空）；★ **「全量口径没被改窄」的证明方式**＝把同一份
+>   SQL 剥掉 CTE 与谓词（= 改动前原查询）在**同库同刻**跑 ⇒ 89 vs 89 **逐条 diff 为空**。
+>   生产 `routing_policy.featured_models`（tenant default）**31 项**，其中 **11 项当前
+>   无可路由模型** ⇒ 31−11=20 与精选口径条数逐字吻合（谓词没漏配也没多出）；
+>   生产 `settings_kv` **无 `models.*` 行** ⇒ 默认走代码内文档默认 `featured`（不是碰巧配对）。
+> ⇒ ★★★ **「模型数」是每分钟都变的活事实**：验证期间全量口径 **88→89**
+>   （`deepseek-v4-flash` 转为可路由），精选口径全程稳定 20 ⇒ 报告里的模型数**必须带时刻**。
+> ⇒ ★★★★ **全量套件门红的归因与修法（★ 一律从 SSOT 重新生成，不手改产物）**：
+>   ① **admin 路由快照**（生成器 601 vs 快照 598）：真实新增 3 条探针车道路由
+>   （`admin/probe_dashboard.go:1918/1921/1924`）、消失为空 ⇒ `extract-admin-routes.sh
+>   --update-snapshot`；② **DB 对象普查三份台账**（Go 侧反解 858 vs 工具侧 855，差迁移 928
+>   的 3 个 `idx_session_turns_probe_hot_*`）⇒ `db-object-census.py expect/reconcile/
+>   reachability`（重生成前先跑 `selftest`＝50 checks/0 failures；**三份各只多 3 行，
+>   其余逐字未变**）；③ **探针内容预算例外台账**：`directProbeBody` 被改成薄封装
+>   （只调 `directProbeBodyForModality`）⇒ 两个 `"max_tokens": 32` 位点**搬家** ⇒
+>   「台账命中不到位点」红 + 「新位点裸奔」红**是同一个漂移的两个面** ⇒ 搬锚点（序号
+>   #1/#2 不变，序号是「函数内」的）；④ **请求面文档三面行号**（探测车道那几轮往
+>   `main.go` 插的行 ⇒ **已提交部分**链整体 **+74**：Recovery 7974 / Auth 7989 /
+>   SecurityHeaders 7992 / Logging 注释 7976-7983 / maintain 注释 7965-7970）
+>   ⇒ **本表 · 设计页 · 认证表 A1 必须同钉**（该门已记**七次**重钉史）；
+>   ⑤ **canonical 读点三份产物**（`check-canonical-read-point-views.py`）：`e4faccbc5`
+>   改了 `bg/stats_minute_rollup.go`/`admin/live_stream_sse.go`/
+>   `bg/integrity_fingerprint_drift.go` ⇒ 读点行号平移 ⇒ **形态键/SQL 摘要/列全不变、
+>   只有 file:line 变** ⇒ `extract-canonical-read-point-shapes.py` 重生成（差异恰好 24 行、
+>   逐条只有行号）。
+> ⇒ ★★★★ **归因方法（两段）**：pristine 基线 `git worktree add --detach /tmp/lg-base-96
+>   96a781507^` 复跑同 8 门 ⇒ **全绿** ⇒ 本轮改动**零引入**（红来自并行会话后续提交
+>   `12f34ff30`/`9773e9266`/`caa1c5f32`/`1ba00f0ac`/`e4faccbc5` 改 `main.go`/
+>   `bg/node_probe.go`/`bg/stats_minute_rollup.go` 等）。
+> ⇒ ★★ **两条流程教训（本轮代价真实）**：★ **(一) 派生产物必须按「提交树」生成，不是按
+>   共享工作树** —— 工作树里有并行会话**未提交的 `main.go` 改动（+9 行）** ⇒ 按工作树
+>   生成的行号类产物在**我的提交树**里对不上 ⇒ **提交后门必红**（且是在别人提交之后才
+>   红 ⇒ 极难归因）⇒ 正确做法＝在 `git worktree add --detach <base> HEAD` 里生成 ⇒ 拷回
+>   提交 ⇒ ★★ **在干净树里复跑门**才算数；★ 附带一次真实竞态：并行会话把本轮已重生成
+>   的三份 DB 对象台账**重写回了旧版** ⇒ **共享工作树里的产物随时可能被另一会话覆盖
+>   ⇒ 生成完要尽快提交**。★ **(二)「失败清单」的长度受输出截断影响** ⇒ 我据第一次
+>   全量跑（输出裁到 40 行）写下「8 门红」，真实是**九类**（第五类的长 diff 恰好被裁掉）
+>   ⇒ ★★ **断言「只有 N 个红」之前必须先证明读数没被截断**（被截断的读数不是阴性结论，
+>   是「没看到」）。
+> ⇒ ★★ **超时口径**：`go test ./...` 默认 10m，而仓内自记 `scripts/ursmcheck` 实测
+>   **~840s** ⇒ 默认口径**必成假红** ⇒ 复跑慢门用 Makefile 口径 `-timeout=1800s`。
+> ⇒ ★★★★ **新发现：merge 会静默吞掉手写轮次记录 ⇒「代码在」≠「记录在」**：本轮发现
+>   **下面那条 2026-10-29 的条目在 `origin/main` 里零命中**（代码、审计档、LESSONS §557
+>   都在）⇒ 丢失点是 **`1d1108a53 merge(R180)`**（合并时该文件取了另一侧版本 ⇒ 整块记录
+>   被吞）⇒ ★ 判据：**共享仓 merge 后必须自查「我的轮次标题还在不在」**
+>   （`git show origin/main:AGENTS.md | grep -c "<标题>"`，本轮读数 **0**）——它**不报错、
+>   不影响构建与测试** ⇒ ⇒ 根治要**给记录文件本身加门**。
+> ⇒ ★★ **本轮明确没做（别重复排查）**：① Gemini/OpenAI 的 **retrieve 端点**仍只有 list
+>   （`handler_gemini.go` 只认 `:generateContent`/`:streamGenerateContent`/`:countTokens`）
+>   ——两套形状一个数据源，**要么一起设计要么都不做**，等 owner 定夺；② ★ **`cmd/gateway-v2`
+>   有第二套 `/v1/models`**（数据源是 `ProviderStore`、**无 scope 口径**）⇒ **验证本功能
+>   不要打 `:8782`**（本地冒烟 `scripts/local-r112-smoke.sh` 打的正是它）——生产只跑
+>   `cmd/gateway`（`Dockerfile:54`）；③ 「部分精选模型不可路由」的**缺失可见化**未做
+>   （生产 31 配 11 缺，客户端无从得知缺哪 11 项；下轮做但**不得复制活度门**，建议走
+>   `v_routable_credential_models` 视图）；④ `models.list_scope` 的**热加载生产验证**未做
+>   （需写生产设置行）。
+> ⇒ 审计档 `docs/audit/2026-11-02-模型列表口径线上验证与门红收口.md`；
+> 通用式见 `LESSONS.md` **§617**。
+> **2026-10-29 第 40 增量：模型列表口径改造（默认只列特色模型）+ Gemini 认证核验**（会话
+> `mvs_3819385bca0f43d7bf0c059acb269bda`）：★ 承接 owner 指令两件事 —— ①「网关对外的模型
+> 列表 API，默认只输出特色模型，全量需要加参数才输出」；②「网关对 gemini 的适配好像有些
+> 问题，请检查原厂文档，检查认证相关的信息是否正确」。
+> ⇒ ★★★ **开工前的重大更正（别重复排查）**：本轮开工时读到的 `AGENTS.md` 快照是
+>   **2026-10-25 的树**；期间并行会话已把 Gemini 原生认证与原生模型列表落地
+>   （`0eff161c6` / `659ad160b`，`internal/auth/clientkey.go` + `models.go:ServeGeminiModels`）
+>   ⇒ **「Gemini 认证没做」是过期结论**。★ **开工前必须读当前树，不是读快照**。
+> ⇒ ★ **Part 1（模型列表口径）**：新文件 `domains/streaming/models_scope.go`；`/v1/models`
+>   与 `/v1beta/models` **默认只列特色模型**（`routing_policy.featured_models`，tenant
+>   `default` —— 全仓既有的一等概念：autoroute 的 FeaturedBonus / bg/shared_pick.go 的
+>   featured 优先 / alternativesSQL 的 tier-2 / admin 的精选过滤，四处同源）；全量需显式
+>   **`?scope=all`**（或 `?all=true`）。★ 口径优先级 = **请求参数 > 运维默认**；
+>   新增热加载设置 **`models.list_scope`**（`TypeEnum{featured,all}`，默认 `featured`）
+>   = **逃生舱**（改它即可无发版回到全量；与 r1027 的 `models.list_only_routable` 同款形状
+>   —— 公开契约的默认值变更必须可无发版回退）。
+> ⇒ ★★★ **本轮最值钱的一处**：精选过滤做成**同一个查询里的布尔参数 `$1`**（不是第二份
+>   SQL 常量 ⇒ 十几条活度门只存在一份）；★ 但**两处坑** —— (a) 匹配**三种名字形态**
+>   （canonical / raw / standardized）：`bg/shared_pick.go` 解析 featured 时认的是供应商侧
+>   名字 ⇒ 只认 canonical 会让「路由当特色、发现当不存在」的模型被藏起来；
+>   (b) ★★ **PostgreSQL 的 set-returning function 在 target list 里先于 LIMIT 展开**
+>   ⇒ `SELECT LOWER(unnest(featured_models)) ... LIMIT 1` 只返回**数组第一个元素** ⇒
+>   精选过滤静默只认一个模型，而**纯文本判据钉不住**（两种写法都含 unnest 与 LIMIT）
+>   ⇒ 改写成两个 CTE（policy 先钉行、featured 再展开数组）+ 真库判据直问「CTE 产出几个名字」=3。
+> ⇒ ★ **两个发现查询都带同一份过滤**（scope 与活度源正交，翻活度开关不得顺带改变公布范围）。
+> ⇒ ★ **安全降级**：精选口径筛不出模型（清单为空 / 精选模型当前全不可路由）⇒ **退回全量
+>   + WARN**，不是交空清单（发现端点回空会打断所有读它的客户端）；**缓存按口径分槽**
+>   （`ModelsHandler.stale` map）⇒ 口径进了查询，缓存只有一格会**静默少报模型**。
+> ⇒ ★ **非法 scope 报 400**（不静默回落）：客户端要全量却拿到精选（或反之）会**静默**得出
+>   错误结论。
+> ⇒ ★ **Part 2（Gemini 认证核验）**：★ 厂方原文实读留证 —— Gemini API reference：「**All
+>   requests to the Gemini API must include a `x-goog-api-key` header**」；OpenAI 兼容文档：
+>   兼容端点鉴权是 `Authorization: Bearer`。⇒ **入向**（`internal/auth.ExtractClientKey`：
+>   Bearer → `x-api-key` → `x-goog-api-key` → `?key=`，`?key=` 仅在 Gemini 原生路径生效）
+>   **正确**；⇒ **出向**（走厂方 OpenAI 兼容端点 `.../v1beta/openai`，executor 统一
+>   `Authorization: Bearer`）**正确**。★ **入向收三种、出向用 Bearer 不是不一致，是两个端点的
+>   厂方契约本来就不同**。
+> ⇒ ★★ **本轮实际修掉的一处**：`docs/vendor-formats/gemini.md` 的认证说明**漏了厂方强制的
+>   `x-goog-api-key` 头形态**（只写了 query string / Bearer 两种；同仓
+>   `docs/QUICK_REFERENCE.md` 的 Gemini 示例用的恰是这个头 ⇒ 仓内两份文档彼此不自洽）
+>   ⇒ 已订正并补齐「模型列表」一节（原生形状 + scope 口径）。
+> ⇒ ★ **顺带修掉的一处**：`154-production-release-checklist` 把「`/v1/models` 模型数与 245
+>   同级（685）」当**部署放行标准** ⇒ 默认口径改 featured 后该读数必然变小 ⇒ 按原文判会
+>   读成「掉模型」而误回滚 ⇒ 已改为**两口径分列**（默认 vs `?scope=all`）。
+> ⇒ ★ **验证**：真库判据（Postgres 17 隔离容器；夹具走仓 SSOT `internal/schemaobj.Table`
+>   不手抄 DDL；样本**每条只验一件事**：canonical 命中 / 供应商侧名命中 / 不精选 / 精选但
+>   凭据已死）⇒ 默认 2 条、`?scope=all` 3 条、筛空退回 3 条、CTE 产出 3 个名字；
+>   ★ **变异臂三臂全红**（M1 CTE 改一行 / M2 删供应商侧名匹配 / M3 删回退 ⇒ 三处都精确报红）
+>   且还原后源文件 **md5 逐字一致**；`go build ./...` ✓；`gofmt`+`golangci-lint fmt`
+>   本轮文件 **0 差异**、`golangci-lint run` **0 命中**；
+>   `go test ./domains/streaming/ ./settings/ ./cmd/gateway/ ./internal/ingressguard/ ./maas/`
+>   **全绿**；顺手清掉 `models.go` 的死函数 `writeDBFailure`（0 调用方，且调的是旧签名的
+>   `lastGoodEntries()`）。
+> ⇒ ★ **本轮明确没做**：web 前端（其 `/v1/models` 引用全是**上游供应商**目录发现，非网关
+>   自己的发现端点）；`/api/maas/models`（租户价目目录，另一套东西）；`GET /v1/models/{model}`
+>   与 `/v1beta/models/{model}` 的 retrieve（本轮未加，需两套形状一个数据源一起设计）；
+>   **多租户精选清单**（`featured_models` 表结构按租户，但全仓一律读 `default`，本轮沿用）。
+> ⇒ 审计档 `docs/audit/2026-10-29-模型列表口径与Gemini认证核验.md`；
+>   通用式见 `LESSONS.md` **§557**（★ 取号记录：初取 §545 / AGENTS.md 初取「第 37 增量」
+>   —— **推送前实测 `origin/main` 已被并行会话占用**（AGENTS「第 37 增量」= 拦截持久化与规则
+>   管理轮；LESSONS §545 已存在）⇒ 按「**后到者取下一个空闲号**」让号 ⇒ **§556 / 第 39 增量**
+>   （★ 实测当时上游最大节号 §555、最大增量号「第 38 增量」）—— ★★ **再次让号**：合入前上游
+>   又推进（§556 = r1048 轮 / 第 39 增量 = Gemini `countTokens` 诚实实现轮）⇒ 再让 ⇒
+>   **§557 / 第 40 增量**（★ 实测当时上游最大节号 §556、最大增量号「第 39 增量」）。
+
+> **2026-11-02 双仓同步轮：探测车道启动检查的闸门缺口根修 + 双仓树移植同步**
+> （cron 同步轮，09:07 起）：★ 上游拉取 `origin/main` `c692992e3`→`fa631a405`
+> （+2 提交 `9aa973e56`/`fa631a405`）**可快进**（零冲突）；读数：`go build ./...`
+> rc=0（仅 vendor `go-m1cpu` 的 cgo 折叠告警，与本仓无关）+ `go vet ./...`
+> 根模块与 `installer/` 双 rc=0 + `make test-short` **353 包全绿 TS_RC=0 零 FAIL**
+> + 审计守卫七包全绿 + `bash scripts/checks/guards-sync.sh` rc=0（8 条「不以 guard
+> 结尾」是设计内告警）+ `scripts/scan-secrets.sh --mode=normal --tracked-only`
+> **BLOCK=0**（4 条 WARN＝测试夹具占位串；脚本口径 `warn ⇒ exit 0`）+ `tests/*.sh`
+> 全量 **47 套 43 PASS / 4 FAIL** ⇒ 4 红（`deploy_local_contract_test` /
+> `deploy_rollback_test` / `deploy_ssh_retry_test` / `session_storage_audit_gate`）
+> 经**同工作区 `git stash push -u` A/B 在 pristine 上游树 `fa631a405` 上复现同样 4 红**
+> ⇒ **既有环境红，本轮零新增红**（★ 用 stash 不用 worktree：deploy 类套件在 worktree 里
+> 因 `scripts/deploy-lib/*` 悬空符号链接产生**误导性失败**；★ pop 后四文件 md5 与
+> stash 前逐字一致；**本机另有的两笔他人 stash 原样保留**）。
+> ⇒ ★★★★ **本轮真缺陷（上游 `9aa973e56` 引入）**：探测车道**启动期表存在性检查**
+> （`probelane.AssertWithQueryRow`）被写在 `if !bgDataPlaneOnly {` 闸门**内**，而它
+> 守护的探测**写路径**（telemetry → `probelane.PersistTurn`）的可达性由
+> `telemetryClient.SetDB(dbConn.Pool())` 决定、那处**只看 dbConn 不看
+> bgDataPlaneOnly** ⇒ **data-plane-only 实例（245 用 `bgDataPlaneOnly=true`）写路径
+> 照跑、检查一次不跑** ⇒ 「flag 开 + 迁移 928 未上」在 245 上**静默失败**
+> （每条探测都失败、只留一条 error、下游 hooks 哑）＝ 正是这个检查要防的那个面。
+> ⇒ ★ **修法**：检查**移出 `!bgDataPlaneOnly` 闸门**（仍在 `dbConn.Enabled()` 块内
+> + `dbConn.Pool() != nil` 守卫）⇒ 修后 **AST 祖先链实测零 `bgDataPlaneOnly` 引用**
+> （临时探针打印）。⇒ ★★ **门禁用 AST 判据而非文本拼写**（新增
+> `cmd/gateway/probelane_boot_check_wiring_guard_test.go`）：**反向拼写
+> `if bgDataPlaneOnly { } else { <检查> }` 时被搜的串根本不出现**（同 autoroute
+> 停摆族）⇒ 改判**每层 `IfStmt.Cond`/`ForStmt.Cond`/`SwitchStmt.Tag` 是否引用该
+> 标识符**，并同时钉住写路径的 `telemetryClient.SetDB`（两处必须同时与运行模式
+> 无关，否则耦合悄悄腐化）；★ **变异臂 2/2 检出**（CONTROL 绿 / M1 挪回闸门内红 /
+> M2 反向拼写红；★ **M1 第一版被生成器写坏成编译失败 ⇒ 编译失败 ≠ 判据红**，补
+> 「变异体先 `go build` 通过」前置后重生成；还原 md5 逐字一致）。
+> ⇒ ★ **gofmt 实测口径**：本仓 11279 个 .go 里 **540 个非 gofmt-clean** ⇒
+> **gofmt 不是本仓的门** ⇒ 只修自己动过的 `cmd/gateway/main.go`（上游加
+> `probelane` import 造成的 import 注释对齐漂移），**不做全仓改写**（避免与并行
+> 会话产生无关 diff 面）。
+> ⇒ ★ 双仓同步：codeup/github 两条历史**互相独立**（merge-base 停在 10-07；codeup
+> 侧 3345 提交 github 侧没有、github 侧 13503 提交 codeup 侧没有）⇒ **`git merge`
+> 合不动** ⇒ 走**树移植**（`commit-tree <origin/main^{tree}> -p <github/main>`，父提交
+> 取镜像侧原 tip ⇒ 镜像原始历史一条不丢；`sync-to-github.sh` 的 filter-repo 与
+> 「保留原始历史」**互斥**，仅作 `--dry-run` 诊断）⇒ 验收口径＝**两仓 main 的
+> tree SHA 必须相同** + `git diff --stat origin/main github/main` 为空 +
+> `git ls-remote` 对拍远端真值。
+> ⇒ 审计档 `docs/audit/2026-11-02-双仓同步轮-探测启动检查闸门缺口.md`；
+> 通用式见 `LESSONS.md` **§616**。
 > **2026-11-01 24h 审计轮：prompt-injection 时间戳 scan 族根修 + 48h 遗留三项复核**
 > （goal 会话，17:56 起）：★ 48h 轮遗留全绿——① 新槽 tick（11-02 14:38+08）
 > **未到不写闭案**，中间读数干净：lt10min 4 对全部落在 14:38–14:48 =

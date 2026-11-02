@@ -27,6 +27,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/internal/probekind"
 )
 
 // SpecifiedModelTaskKey is the synthetic task_type label used to bucket
@@ -159,17 +161,13 @@ func buildMatrixQuery(rowDim, metric string) (string, error) {
 	`, rowExpr, colExpr, metricExpr, rowNullFilter, colExpr, businessRequestFilter(""), rowExpr, colExpr), nil
 }
 
-// businessRequestFilterStages lists every origin_stage value that marks a
-// synthetic (non-business) request: the three current workers plus the legacy
-// probe stages kept valid by the additive CHECK constraint. Keep in sync with
-// domains/streaming/context_attrs.go isProbeOriginStage and the
-// routingAnalyticsMVSQL WHERE clause in db/db.go.
-const businessRequestFilterStages = "'self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual'"
-
 // businessRequestFilter returns the shared predicate used by routing
 // analytics to exclude self-check/probe traffic while retaining historical
 // rows whose origin_stage was never populated. alias is optional (for joined
 // queries, e.g. "rl").
+//
+// origin_stage 排除集来自 internal/probekind.SQLStageList()（SSOT）——
+// 2026-11-02 探测隔离方案：禁止再手写一份 stage 字面量。
 func businessRequestFilter(alias string) string {
 	prefix := ""
 	if alias != "" {
@@ -177,7 +175,46 @@ func businessRequestFilter(alias string) string {
 	}
 	return fmt.Sprintf(`COALESCE(%sorigin_stage, '') NOT IN (%s)
 		  AND COALESCE(%stask_type, '') <> 'probe_triggered'
-		  AND COALESCE(%srequest_id, '') NOT LIKE 'probe-%%'`, prefix, businessRequestFilterStages, prefix, prefix)
+		  AND COALESCE(%srequest_id, '') NOT LIKE 'probe-%%'`, prefix, probekind.SQLStageList(), prefix, prefix)
+}
+
+// probeRequestFilter 是 businessRequestFilter 的对偶：只保留探测标记行。
+//
+// ★ 2026-11-02 U4：本谓词只作用于**业务表**（rl = session_turns_hot ∪
+// session_turns）。物理隔离开启后，**新**探测在 session_turns_probe_hot，
+// 必须走 /api/admin/probe/lane/requests。因此 /api/logs?lane=probe（及
+// 别名 probe_history）读到的永远是隔离开启**前**留在业务表上的历史行
+// —— 响应必须标 source=history（见 listLogs），不得被误读成「当前探测」。
+func probeRequestFilter(alias string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	return fmt.Sprintf(`(COALESCE(%sorigin_stage, '') IN (%s)
+		  OR COALESCE(%stask_type, '') = 'probe_triggered'
+		  OR COALESCE(%srequest_id, '') LIKE 'probe-%%')`, prefix, probekind.SQLStageList(), prefix, prefix)
+}
+
+// isLogsProbeHistoryLane reports whether the lane param selects the
+// business-table historical probe view (U4). Accepts both the legacy
+// name "probe" and the explicit alias "probe_history".
+func isLogsProbeHistoryLane(lane string) bool {
+	return lane == "probe" || lane == "probe_history"
+}
+
+// resolveLogsTrafficLanePredicate 决定请求列表默认业务隔离谓词。
+//
+//	lane=all 或 includeProbe → 不加谓词（显式全量）
+//	lane=probe / probe_history → 仅业务表上的历史探测行（见 probeRequestFilter）
+//	其余（含空 / business）→ 默认排除探测（历史兜底；物理分表后新探测本就不在业务表）
+func resolveLogsTrafficLanePredicate(lane string, includeProbe bool, alias string) string {
+	if includeProbe || lane == "all" {
+		return ""
+	}
+	if isLogsProbeHistoryLane(lane) {
+		return probeRequestFilter(alias)
+	}
+	return businessRequestFilter(alias)
 }
 
 // effectiveTaskExpr returns the SQL expression that produces the row

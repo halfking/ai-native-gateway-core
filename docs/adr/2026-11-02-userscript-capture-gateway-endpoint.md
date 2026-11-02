@@ -57,7 +57,7 @@ ASM /internal/v1/events（既有 HMAC batch ingress）
 ### D5 存储：新表族（迁移 928，三表 + RLS）
 
 ```sql
--- 928_userscript_capture_family.sql（示意，落地时对齐 890 后的建表惯例：
+-- 931_userscript_capture_family.sql（示意，落地时对齐 890 后的建表惯例：
 -- tenant_id 首列 + RLS USING (tenant_id = current_setting('app.current_tenant', true)::TEXT)）
 CREATE TABLE public.capture_batches (
     batch_id         UUID PRIMARY KEY,

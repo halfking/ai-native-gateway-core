@@ -2,11 +2,16 @@
 /**
  * SessionStatsPanel — 首页 stats tab 会话基础统计总览
  * KPI / 趋势对齐 session_summaries + days；细分块复用已拉的 perf/error。
+ *
+ * 2026-11-02：与看板共用天数；消费 data-horizon；turns 对拍 degraded；
+ * 探测流量入口；perf/error 标明模块执行宇宙。
  */
-import { computed } from 'vue'
+import { computed, inject, watch, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { Plus, Minus, Money, CircleCheck } from '@element-plus/icons-vue'
 import { useDashboard } from '../composables/useDashboard'
+import { useDataHorizon } from '../composables/useDataHorizon'
 import { formatDateTime } from '../utils/datetime'
 import DashboardStatsRow, { type DashboardStats } from './analytics/DashboardStatsRow.vue'
 import SessionTrendChart from './analytics/SessionTrendChart.vue'
@@ -15,10 +20,18 @@ import SessionStatsSignals from './analytics/SessionStatsSignals.vue'
 import SessionStatsRankings from './analytics/SessionStatsRankings.vue'
 import type { TrendDataPoint } from './analytics/SessionTrendChart.vue'
 
-
-// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
 import { ElIcon } from 'element-plus'
 const { t } = useI18n()
+const router = useRouter()
+
+const boardState = inject<{
+  days: Ref<number>
+} | null>('dashboardBoard', null)
+
+const boardDays = computed(() => {
+  const n = boardState?.days?.value
+  return typeof n === 'number' && n > 0 ? n : null
+})
 
 const {
   loading,
@@ -32,7 +45,25 @@ const {
   refresh,
   changeDays,
   days,
-} = useDashboard({ autoRefresh: true, refreshInterval: 5 * 60 * 1000, defaultDays: 30 })
+} = useDashboard({
+  autoRefresh: true,
+  refreshInterval: 5 * 60 * 1000,
+  // 与看板同源：有 board days 时用它，否则默认 7（不再静默 30）
+  defaultDays: boardDays.value ?? 7,
+})
+
+watch(
+  boardDays,
+  (next) => {
+    if (next == null || next === days.value) return
+    void changeDays(next)
+  },
+  { immediate: true },
+)
+
+const { state: horizonState } = useDataHorizon()
+const showHorizonHint = computed(() => horizonState.value === 'stale' || horizonState.value === 'failed')
+const turnsDegraded = computed(() => overview.value?.turns_alignment?.degraded === true)
 
 const dashboardStats = computed<DashboardStats>(() => {
   const ov = overview.value
@@ -114,6 +145,10 @@ function onDaysClick(next: number) {
   if (days.value === next) return
   changeDays(next)
 }
+
+function openProbeTraffic() {
+  void router.push({ path: '/probe-health/detail' })
+}
 </script>
 
 <template>
@@ -123,6 +158,29 @@ function onDaysClick(next: number) {
       <button type="button" class="alert-retry" :disabled="loading" @click="refresh">
         {{ t('sessions.stats.retry') }}
       </button>
+    </div>
+
+    <div
+      v-if="showHorizonHint"
+      class="alert alert-warn"
+      role="status"
+      data-testid="stats-horizon-hint"
+    >
+      {{ t('sessions.stats.dataHorizonStale') }}
+    </div>
+
+    <div
+      v-if="turnsDegraded"
+      class="alert alert-warn"
+      role="status"
+      data-testid="stats-turns-degraded"
+    >
+      {{ t('sessions.stats.turnsAlignmentDegraded') }}
+      <span v-if="overview?.turns_alignment" class="alert-meta">
+        (summaries={{ overview.turns_alignment.summary_requests.toLocaleString() }}
+        · turns={{ overview.turns_alignment.turns_count.toLocaleString() }}
+        · Δ={{ overview.turns_alignment.abs_delta.toLocaleString() }})
+      </span>
     </div>
 
     <div :class="{ 'session-stats-panel--has-error': error, 'session-stats-panel--loading': loading }">
@@ -139,6 +197,9 @@ function onDaysClick(next: number) {
               · {{ t('sessions.stats.avgDailyNew') }}: {{ trendSummary.avg_daily_new?.toFixed(1) ?? '—' }}
             </template>
           </span>
+          <button type="button" class="probe-link" data-testid="stats-probe-link" @click="openProbeTraffic">
+            {{ t('sessions.stats.probeTrafficLink') }}
+          </button>
         </div>
         <div class="days-switch" role="group">
           <button type="button" class="days-btn" :class="{ 'days-btn--active': days === 7 }" @click="onDaysClick(7)">
@@ -249,10 +310,24 @@ function onDaysClick(next: number) {
 .panel-toolbar__meta { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .meta-text, .period-banner { font-size: 12px; color: var(--muted, var(--text-secondary)); }
 .period-banner { color: var(--text, var(--text)); }
+.probe-link {
+  align-self: flex-start;
+  margin-top: 4px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 12px;
+  color: var(--accent, var(--accent));
+  cursor: pointer;
+  text-decoration: underline;
+}
 .days-switch { display: inline-flex; border: 1px solid var(--border, var(--border)); border-radius: 6px; overflow: hidden; }
 .days-btn { border: 0; background: transparent; padding: 4px 12px; font-size: 13px; cursor: pointer; color: var(--muted, var(--muted)); }
 .days-btn--active { background: var(--accent, var(--accent)); color: var(--on-primary); }
-.alert { display: flex; align-items: center; gap: 12px; padding: 12px 16px; margin-bottom: 16px; border-radius: 6px; background: var(--danger-bg); border: 1px solid var(--danger-bd); color: var(--danger); }
+.alert { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 16px; margin-bottom: 16px; border-radius: 6px; }
+.alert-danger { background: var(--danger-bg); border: 1px solid var(--danger-bd); color: var(--danger); }
+.alert-warn { background: var(--warning-bg, var(--kx-warning-bg, var(--surface-secondary))); border: 1px solid var(--warning-bd, var(--kx-warning-border, var(--border))); color: var(--warning, var(--kx-warning, var(--text))); }
+.alert-meta { font-size: 12px; opacity: 0.85; }
 .alert-retry { padding: 4px 12px; border: 1px solid var(--danger-bd); border-radius: 4px; background: white; cursor: pointer; }
 .secondary-kpi-row {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

@@ -37,6 +37,7 @@ export default {
     operationFailed: 'The operation could not be completed. Please retry.',
     loading: 'Loading…',
     unknownReason: 'No error details received',
+    probeLaneHistoricalHint: 'The probe traffic physical isolation lane is off; these are historical probe records from before isolation.',
     saveFailedWithReason: 'Save failed: {reason}. Please retry.',
     operationFailedWithReason: 'Operation failed: {reason}. Please retry.',
     testFailedWithReason: 'Test failed: {reason}. Please retry.',

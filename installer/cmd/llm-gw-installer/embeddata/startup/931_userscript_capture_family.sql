@@ -1,5 +1,5 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/928_userscript_capture_family.sql
+-- File:          sql/migrations/startup/931_userscript_capture_family.sql
 -- Migration:     928
 -- Database:      llm_gateway
 -- Purpose:       userscript capture 摄取表族（P0-3 M1，ADR
@@ -11,7 +11,7 @@
 -- 幂等：capture_messages 的 (tenant_id, idempotency_key) 唯一约束是
 --       重试去重收敛点；同批次重放命中唯一冲突即计 duplicate。
 --
--- Down: 928_userscript_capture_family.down.sql
+-- Down: 931_userscript_capture_family.down.sql
 -- ===========================================================================
 
 BEGIN;

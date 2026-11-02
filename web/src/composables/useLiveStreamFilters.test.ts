@@ -68,36 +68,39 @@ describe('useLiveStreamFilters', () => {
     expect(saved.filters.providers).toEqual(['provider-a'])
   })
 
-  it('initializes with empty filters (show all)', () => {
+  it('initializes with business-only request type (probe hidden by default)', () => {
     const lanes = ref<SwimLane[]>([])
     const filters = useLiveStreamFilters({ lanes })
 
-    expect(filters.requestTypeFilter.value.size).toBe(2) // business + probe
+    expect(filters.requestTypeFilter.value.size).toBe(1)
+    expect(filters.requestTypeFilter.value.has('business')).toBe(true)
     expect(filters.statusFilter.value.size).toBe(0)
     expect(filters.modelFilter.value.size).toBe(0)
     expect(filters.providerFilter.value.size).toBe(0)
     expect(filters.vendorFilter.value.size).toBe(0)
     expect(filters.agentFilter.value.size).toBe(0)
-    expect(filters.activeFilterCount.value).toBe(0)
   })
 
-  it('toggleRequestType deselects one type but never leaves empty', () => {
+  it('toggleRequestType can enable probe; never leaves empty', () => {
     const lanes = ref<SwimLane[]>([])
     const filters = useLiveStreamFilters({ lanes })
 
-    expect(filters.requestTypeFilter.value.size).toBe(2)
+    expect(filters.requestTypeFilter.value.size).toBe(1)
+    expect(filters.activeFilterCount.value).toBe(1) // business-only counts as filtered
 
+    // cannot clear the sole selected type
     filters.toggleRequestType('business')
-    expect(filters.requestTypeFilter.value.has('probe')).toBe(true)
-    expect(filters.requestTypeFilter.value.has('business')).toBe(false)
-    expect(filters.activeFilterCount.value).toBe(1)
-
-    filters.toggleRequestType('probe')
+    expect(filters.requestTypeFilter.value.has('business')).toBe(true)
     expect(filters.requestTypeFilter.value.size).toBe(1)
 
-    filters.toggleRequestType('business')
+    filters.toggleRequestType('probe')
     expect(filters.requestTypeFilter.value.size).toBe(2)
     expect(filters.activeFilterCount.value).toBe(0)
+
+    filters.toggleRequestType('probe')
+    expect(filters.requestTypeFilter.value.has('business')).toBe(true)
+    expect(filters.requestTypeFilter.value.has('probe')).toBe(false)
+    expect(filters.activeFilterCount.value).toBe(1)
   })
 
   it('applyStatusFilter updates statusFilter', () => {
@@ -107,7 +110,8 @@ describe('useLiveStreamFilters', () => {
     filters.applyStatusFilter(['success', 'error'])
     expect(filters.statusFilter.value.size).toBe(2)
     expect(filters.statusFilterSelected.value).toEqual(['success', 'error'])
-    expect(filters.activeFilterCount.value).toBe(2)
+    // business-only request type (+1) + two status values (+2)
+    expect(filters.activeFilterCount.value).toBe(3)
   })
 
   it('applyModelFilter case-insensitive normalization', () => {
@@ -178,11 +182,14 @@ describe('useLiveStreamFilters', () => {
     ])
     const filters = useLiveStreamFilters({ lanes })
 
+    // default business-only hides the probe tile
+    expect(filters.filteredLanes.value[0].requests.map((r) => r.request_id)).toEqual(['r1', 'r3'])
+
+    filters.toggleRequestType('probe')
     expect(filters.filteredLanes.value[0].requests.length).toBe(3)
 
     filters.toggleRequestType('business')
-    expect(filters.filteredLanes.value[0].requests.length).toBe(1)
-    expect(filters.filteredLanes.value[0].requests[0].request_id).toBe('r2')
+    expect(filters.filteredLanes.value[0].requests.map((r) => r.request_id)).toEqual(['r2'])
   })
 
   it('filteredLanes filters by status', () => {
@@ -308,15 +315,16 @@ describe('useLiveStreamFilters', () => {
     const lanes = ref<SwimLane[]>([])
     const filters = useLiveStreamFilters({ lanes })
 
-    expect(filters.activeFilterCount.value).toBe(0)
-
-    filters.toggleRequestType('business')
+    // default business-only already counts as one active filter
     expect(filters.activeFilterCount.value).toBe(1)
 
-    filters.applyStatusFilter(['success', 'error'])
-    expect(filters.activeFilterCount.value).toBe(3)
+    filters.toggleRequestType('probe') // now both types → request-type filter inactive
+    expect(filters.activeFilterCount.value).toBe(0)
+
+    filters.applyStatusFilter(['success', 'error']) // +2 status values
+    expect(filters.activeFilterCount.value).toBe(2)
 
     filters.applyModelFilter(['gpt-4'])
-    expect(filters.activeFilterCount.value).toBe(4)
+    expect(filters.activeFilterCount.value).toBe(3)
   })
 })

@@ -148,6 +148,18 @@ func (w *StatsMinuteRollup) rollupWindow(ctx context.Context, since, until time.
 	if err := w.rollupMain(ctx, since, until, creditsExpr); err != nil {
 		return err
 	}
+	// ★ 2026-11-02 探测臂：探测分钟聚合的**真实**写入路径。
+	//   探测流量在车道开启时不在业务表 ⇒ 业务臂的排除谓词看不到它们
+	//   ⇒ 必须有一条独立的臂把它们汇进 request_stats_probe_minute。
+	//   （原先这条臂挂在 domains/stats.MinuteAccumulator 上，而那个
+	//   累加器全仓无实例化点 ⇒ 探测分钟表生产恒空。）
+	//   失败不阻断业务臂（业务 KPI 优先），但必须响亮。
+	if err := w.rollupProbe(ctx, since, until); err != nil {
+		logProbeRollupError("rollup_probe", err)
+	}
+	if err := w.retireProbeMinutes(ctx, since); err != nil {
+		logProbeRollupError("retire_probe_minutes", err)
+	}
 	return w.rollupDims(ctx, since, until, creditsExpr)
 }
 

@@ -68,6 +68,7 @@ const (
 	EnvSecretKey    = "LLM_GATEWAY_SECRET_KEY"    // JWT 回退密钥
 	EnvCursorHMAC   = "CURSOR_HMAC_SECRET"        // 在线会话分页 cursor 签名密钥
 	EnvCookieSecure = "LLM_GATEWAY_COOKIE_SECURE" // cookie Secure flag 覆盖
+	EnvCookieDomain = "LLM_GATEWAY_COOKIE_DOMAIN" // cookie Domain 覆盖（空=关闭；未设则 .itestu.cn 启发式）
 	EnvJWTExpiry    = "LLM_GATEWAY_JWT_EXPIRY"    // JWT TTL 覆写
 	EnvDeployEnv    = "LLM_GATEWAY_ENV"           // 部署环境 (production → fail-closed)
 	EnvCORSOrigins  = "LLM_GATEWAY_CORS_ORIGINS"  // 跨域源 allowlist

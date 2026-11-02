@@ -810,6 +810,17 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "read", Columns: []string{"client_model:detail", "client_profile:detail", "error_kind:base", "outbound_model:base", "provider_id:detail", "request_status:expr", "tenant_id:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: true, ExemptReason: exemptAuditOrToolingFace, Note: "离线分钟汇总（读视图只为把窗口内的行汇进汇总表）；本读点读 client_model:detail,client_profile:detail,error_kind:base,outbound_model:base,provider_id:detail,request_status:expr,tenant_id:base,ts:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
 		},
 	},
+	// 2026-11-02：探测分钟聚合臂（bg/stats_minute_probe_rollup.go）。
+	// 该文件**只在注释里**提到 canonical 视图名（解释「为什么业务臂的排除
+	// 谓词在车道开启后看不到探测行」）；它的实际读点是**探测族表**
+	// session_turns_probe_hot ⇒ 本文件**没有** canonical 读点。
+	"bg/stats_minute_probe_rollup.go": {
+		Form:         formCommentOrStringOnly,
+		Class:        classNoRead,
+		Exempt:       true,
+		ExemptReason: exemptNoReadPoint,
+		Note:         "探测分钟聚合臂：实际读点是探测族表 session_turns_probe_hot；canonical 视图名只出现在注释里（解释业务臂为何看不到探测行）⇒ 本文件无 canonical 读点",
+	},
 	"bg/stats_minute_rollup_retire.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,

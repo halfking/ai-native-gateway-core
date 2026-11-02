@@ -1,12 +1,12 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/929_outbox_events_fresh_install.sql
+-- File:          sql/migrations/startup/932_outbox_events_fresh_install.sql
 -- Migration:     929
 -- Purpose:       fresh-install 链补齐 outbox_events（P0-3 live E2E 抓到的
 --                真实缺口）：该表在 211 是部署后手工补建的（V357，应用侧
 --                DDL），从未进入 installer 登记序 ⇒ 全新安装的库没有它，
 --                outbox dispatcher 与 userscript capture 的同事务事件写入
 --                全部 42P01。幂等：已有环境（211/252）no-op。
--- Down: 929_outbox_events_fresh_install.down.sql（只删本迁移登记，不删表）
+-- Down: 932_outbox_events_fresh_install.down.sql（只删本迁移登记，不删表）
 -- ===========================================================================
 
 BEGIN;

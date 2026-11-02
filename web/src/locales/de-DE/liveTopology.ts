@@ -51,6 +51,7 @@ export default {
     inProgress: 'In Arbeit',
     failure: 'Fehler',
     rateLimited: 'Rate-Limit',
+    idle: 'Leerlauf',
     clear: 'Filter zurücksetzen',
     showProbe: 'Probe-Anfragen zeigen',
     showInvalid: 'Ungültige Knoten zeigen',
@@ -172,6 +173,8 @@ export default {
     page: 'Seite {page}/{pages}',
     total: '{n} gesamt',
     autoChip: 'Client forderte auto; das Gateway wählte das endgültige Modell nach Aufgabe',
+    idleLane: 'Leerlauf',
+    idleLaneHint: 'Keine kürzlichen Geschäftsanfragen auf dieser Spur; Leerlauf-Heartbeat, kein Fehler',
   },
   zoom: {
     title: 'Anfragendetails',
@@ -194,6 +197,7 @@ export default {
     yes: 'Ja',
     no: 'Nein',
     error: 'Fehler',
+    idleNote: 'Hinweis',
   },
   page: {
     back: 'Zurück zur Topologie',

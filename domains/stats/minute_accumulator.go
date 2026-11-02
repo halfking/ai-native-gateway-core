@@ -8,28 +8,38 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/internal/probelane"
 )
 
 const flushInterval = 30 * time.Second
 
 // MinuteAccumulator buffers per-minute dashboard stats and flushes to PostgreSQL.
+//
+// ★ 2026-11-02 审计钉死：本类型在生产**未接线**（cmd/gateway 注释写明
+// 「Keep the type available for a future event projection, but do not wire
+// it into the live request path」；全仓无 NewMinuteAccumulator 调用方）。
+// 生产分钟表写入者 = bg.StatsMinuteRollup（业务臂 + 探测臂
+// stats_minute_probe_rollup.go）。probeMain 分流保留仅供若将来复活本累加器
+// 时与 rollup 同口径；**不要**把「这里有探测分流」读成「生产在写探测分钟表」。
 type MinuteAccumulator struct {
-	db     *pgxpool.Pool
-	mu     sync.Mutex
-	main   map[string]*MinuteRow
-	dims   map[string]*DimRow
-	drills map[string]*ErrorDrillRow
-	cancel context.CancelFunc
-	done   chan struct{}
+	db        *pgxpool.Pool
+	mu        sync.Mutex
+	main      map[string]*MinuteRow
+	dims      map[string]*DimRow
+	drills    map[string]*ErrorDrillRow
+	probeMain map[string]*MinuteRow // dead unless NewMinuteAccumulator is wired
+	cancel    context.CancelFunc
+	done      chan struct{}
 }
 
 func NewMinuteAccumulator(db *pgxpool.Pool) *MinuteAccumulator {
 	return &MinuteAccumulator{
-		db:     db,
-		main:   make(map[string]*MinuteRow),
-		dims:   make(map[string]*DimRow),
-		drills: make(map[string]*ErrorDrillRow),
-		done:   make(chan struct{}),
+		db:        db,
+		main:      make(map[string]*MinuteRow),
+		dims:      make(map[string]*DimRow),
+		drills:    make(map[string]*ErrorDrillRow),
+		probeMain: make(map[string]*MinuteRow),
+		done:      make(chan struct{}),
 	}
 }
 
@@ -64,7 +74,21 @@ func (a *MinuteAccumulator) loop(ctx context.Context) {
 
 // Record ingests a completed request log entry (call from onPersisted hook).
 func (a *MinuteAccumulator) Record(entry *telemetry.RequestLogEntry) {
-	main, dims, drills, ok := FromTelemetryEntry(entry, time.Now().UTC())
+	now := time.Now().UTC()
+	if IsProbeTraffic(entry) {
+		if !probelane.PhysicalEnabled() {
+			return
+		}
+		main, ok := FromProbeTelemetryEntry(entry, now)
+		if !ok {
+			return
+		}
+		a.mu.Lock()
+		mergeMinuteRow(a.probeMain, mainKey(main), &main)
+		a.mu.Unlock()
+		return
+	}
+	main, dims, drills, ok := FromTelemetryEntry(entry, now)
 	if !ok {
 		return
 	}
@@ -138,16 +162,18 @@ func mergeDrillRow(m map[string]*ErrorDrillRow, key string, row *ErrorDrillRow) 
 
 func (a *MinuteAccumulator) flush(ctx context.Context) {
 	a.mu.Lock()
-	if len(a.main) == 0 && len(a.dims) == 0 && len(a.drills) == 0 {
+	if len(a.main) == 0 && len(a.dims) == 0 && len(a.drills) == 0 && len(a.probeMain) == 0 {
 		a.mu.Unlock()
 		return
 	}
 	main := a.main
 	dims := a.dims
 	drills := a.drills
+	probeMain := a.probeMain
 	a.main = make(map[string]*MinuteRow)
 	a.dims = make(map[string]*DimRow)
 	a.drills = make(map[string]*ErrorDrillRow)
+	a.probeMain = make(map[string]*MinuteRow)
 	a.mu.Unlock()
 
 	if a.db == nil {
@@ -157,5 +183,8 @@ func (a *MinuteAccumulator) flush(ctx context.Context) {
 	defer cancel()
 	if err := flushMinuteRows(flushCtx, a.db, main, dims, drills); err != nil {
 		slog.Warn("stats minute flush failed", "error", err)
+	}
+	if err := flushProbeMinuteRows(flushCtx, a.db, probeMain); err != nil {
+		slog.Warn("stats probe minute flush failed", "error", err)
 	}
 }
