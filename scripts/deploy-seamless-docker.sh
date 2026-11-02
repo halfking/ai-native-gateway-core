@@ -463,6 +463,14 @@ if [[ -n "$VIA" ]]; then
   #   「上一轮种子还在」判定 ⇒ **部署直接 die**；configs 则是静默回落内置
   #   脱敏集（sensitive_patterns.yaml 没种进去）。⇒ 一律**不转发**，
   #   让远端按自己的 DD_REPO_ROOT 重算。
+  # ★ DD_GOACOS_* **必须**在这份清单里（2026-11-03 补）：
+  #   切流时「同步登记注册表」由 dd_switch_upstream → dd_register_goacos 完成，
+  #   而它读的就是这几个量。**不转发 ⇒ 远端拿到的只是引擎默认**：
+  #   地址 / IP / 服务名 / 命名空间 / 分组恰好都有兜底（IP 还能退到 DD_HOST，
+  #   而 DD_HOST 在清单里）⇒ **唯独 DD_GOACOS_ENV 没有兜底** ⇒ 注册实例的
+  #   metadata 会少 `env` 键（消费方不按它过滤 ⇒ 不致命，但形状与编排台自己
+  #   注册的条目不一致）。⇒ 门：scripts/deploy-seamless-goacos_test.sh 断言
+  #   deploy-211.sh 导出的**每个** DD_GOACOS_* 都在这份转发清单里。
   _dd_fwd=""
   for _v in DD_TARGET DD_HOST DD_STATE_DIR DD_REMOTE_ROOT DD_NETWORK \
             DD_SLOT_A_PORT DD_SLOT_B_PORT DD_CONTAINER_PREFIX DD_IMAGE \
@@ -475,7 +483,9 @@ if [[ -n "$VIA" ]]; then
             LLM_GATEWAY_PROBE_LANE_PHYSICAL \
             LLM_GATEWAY_AUTO_TITLE_ENABLED LLM_GATEWAY_AUTO_SUMMARY_ENABLED \
             LLMGatewayAutoLLMEndpoint LLMGatewayAutoLLMApiKey LLMGatewayAutoLLMModel \
-            LLMGatewayAutoLLMTimeout LLMGatewayAutoLLMMaxTokens LLM_GW_TEST_MODE_TOKEN; do
+            LLMGatewayAutoLLMTimeout LLMGatewayAutoLLMMaxTokens LLM_GW_TEST_MODE_TOKEN \
+            DD_GOACOS_ADDR DD_GOACOS_IP DD_GOACOS_SERVICE DD_GOACOS_NAMESPACE \
+            DD_GOACOS_GROUP DD_GOACOS_ENV; do
     if [[ -n "${!_v+x}" ]]; then _dd_fwd+=" ${_v}='${!_v}'"; fi
   done
   _dd_args="${DD_ARGS[@]+"${DD_ARGS[@]}"}"
@@ -1454,6 +1464,108 @@ dd_upstream_port() {
   python3 "$_helper" --conf "$_conf" --upstream "$DD_NGINX_UPSTREAM" 2>/dev/null
 }
 
+# GOACOS-REGISTER:BEGIN
+# dd_register_goacos <端口> —— 把「当前活跃槽的发布口」写进 goacos 注册表，
+# 并注销同服务下**旧槽**的那条登记。
+#
+# ★ 为什么必须与 upstream 切换**同一个动作**完成：
+#   goacos 记的是「此刻发布在哪」；而蓝绿切换只改 nginx upstream
+#   ⇒ 切换后注册表仍留着**旧槽**的口（实测 2026-11-02：槽位 a 的 8781 已下线、
+#   槽位 b 的 8783 在服务，而注册表仍写 8781 ⇒ 编排台把**活着的**网关报成不健康，
+#   假阴性）。⇒ 由同一个动作改 ⇒ 不会再漂。
+#
+# ★ **不因登记失败而让切流失败**：此刻 nginx 已 reload，切流本身已经生效，
+#   因为登记失败就回退更危险（流量已经在新槽上）⇒ 只 warn 并保留现场。
+# ★ **地址取 DD_GOACOS_IP，缺省取 DD_HOST**（211 的消费方地址；容器发布口是
+#   0.0.0.0，不能直接当注册地址）。两者都空 ⇒ 跳过并 warn（消费方将读到旧端口）。
+dd_register_goacos() {
+  local _port="$1"
+  local _addr="${DD_GOACOS_ADDR:-http://127.0.0.1:8848}"
+  local _ip="${DD_GOACOS_IP:-${DD_HOST:-}}"
+  local _svc="${DD_GOACOS_SERVICE:-llm-gateway}"
+  local _ns="${DD_GOACOS_NAMESPACE:-wm-deploy}"
+  local _grp="${DD_GOACOS_GROUP:-DEFAULT_GROUP}"
+  local _env="${DD_GOACOS_ENV:-}"
+  [[ -n "$_port" ]] || { warn "goacos 登记：端口为空，跳过"; return 0; }
+  [[ -n "$_ip" ]] || { warn "goacos 登记：DD_GOACOS_IP / DD_HOST 皆空，跳过（消费方将读到旧端口）"; return 0; }
+  python3 - "$_addr" "$_ip" "$_port" "$_svc" "$_ns" "$_grp" "$_env" <<'PY'
+import json, sys, urllib.parse, urllib.request
+
+addr, ip, port, svc, ns, grp, env = sys.argv[1:8]
+port = int(port)
+base = addr.rstrip("/")
+
+
+def get(path, params):
+    url = base + path + "?" + urllib.parse.urlencode(params)
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="GET"), timeout=8) as r:
+            return r.status, r.read().decode(errors="replace")
+    except Exception as exc:  # noqa: BLE001
+        return 0, str(exc)
+
+
+def post(path, params):
+    url = base + path
+    data = urllib.parse.urlencode({k: str(v) for k, v in params.items()}).encode()
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return r.status, r.read().decode(errors="replace")
+    except Exception as exc:  # noqa: BLE001
+        return 0, str(exc)
+
+
+def delete(path, params):
+    # goacos（Go net/http）只从 **query string** 读 DELETE 的参数 ⇒ 必须放 URL。
+    url = base + path + "?" + urllib.parse.urlencode(params)
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="DELETE"), timeout=8) as r:
+            return r.status, r.read().decode(errors="replace")
+    except Exception as exc:  # noqa: BLE001
+        return 0, str(exc)
+
+
+st, body = get("/nacos/v1/ns/instance/list",
+               {"serviceName": svc, "namespaceId": ns, "groupName": grp})
+try:
+    hosts = ((json.loads(body) or {}).get("data") or {}).get("hosts") or []
+except Exception:  # noqa: BLE001
+    hosts = []
+stale = []
+for h in hosts:
+    if not isinstance(h, dict):
+        continue
+    try:
+        hip, hport = str(h.get("ip")), int(h.get("port") or 0)
+    except Exception:  # noqa: BLE001
+        continue
+    if hip == ip and hport and hport != port:
+        stale.append((hip, hport))
+
+metadata = {"service_id": svc, "health_path": "/healthz"}
+if env:
+    metadata["env"] = env
+st, body = post("/nacos/v1/ns/instance",
+                {"ip": ip, "port": port, "serviceName": svc, "namespaceId": ns,
+                 "groupName": grp, "ephemeral": "false",
+                 "metadata": json.dumps(metadata, ensure_ascii=False)})
+if st not in (200, 201):
+    print(f"REGISTER-FAIL {st} {body[:160]}", file=sys.stderr)
+    sys.exit(2)
+for hip, hport in stale:
+    st, body = delete("/nacos/v1/ns/instance",
+                      {"ip": hip, "port": hport, "serviceName": svc, "namespaceId": ns,
+                       "groupName": grp, "ephemeral": "false"})
+    if st not in (200, 204):
+        print(f"DEREGISTER-FAIL {st} {body[:160]}", file=sys.stderr)
+        sys.exit(3)
+print(f"OK registered {ip}:{port} stale_removed={stale}")
+PY
+}
+# GOACOS-REGISTER:END
+
 # dd_switch_upstream <端口> —— 把 upstream 主 server 行改到 <端口> 并 reload。
 # 幂等：已经是该端口时不动文件（仍会 reload，nginx 平滑重载不中断连接）。
 #
@@ -1487,6 +1599,14 @@ dd_switch_upstream() {
     if nginx -t >/dev/null 2>&1; then
       if nginx -s reload >/dev/null 2>&1; then
         log "nginx upstream ${DD_NGINX_UPSTREAM} → 127.0.0.1:${_port}（已 reload）"
+        # ★ **切流与注册表必须同进退**：注册表记的是「此刻发布在哪」，
+        #   切换后若留着旧槽的口，消费方（编排台）会把活着的服务读成不健康。
+        #   ⇒ 这里跟着 upstream 一起改；失败只 warn（nginx 已 reload，此刻回退更危险）。
+        if dd_register_goacos "$_port"; then
+          log "goacos 注册表已指向 127.0.0.1:${_port}（${DD_GOACOS_SERVICE:-llm-gateway}）"
+        else
+          warn "goacos 注册表更新失败（端口 ${_port}）—— 消费方可能仍读到旧端口，需手工重登记"
+        fi
         return 0
       fi
       warn "nginx reload 失败（配置已改，需手工 reload）"
