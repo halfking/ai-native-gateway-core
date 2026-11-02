@@ -53,6 +53,8 @@ const KNOWN_ORPHANS: Record<string, string> = {
   '/routing': '纯 redirect 路由（→ /routing-v2?tab=resolve），无 component；供旧书签兼容，不占菜单项',
   '/maintain/:pathMatch(.*)*': 'ai-native-maintain SPA 的同源子路径兜底；由 appNav 的 external 入口整体进入，非单条菜单项',
   '/:pathMatch(.*)*': 'vue-router 404 兜底路由，匹配一切未命中路径；按设计永不可从菜单到达',
+  '/free-pool': '2026-11-02 S0 归档：菜单改指 https://freellm.itestu.cn；路由暂留深链/回滚',
+  '/free-discovery': '2026-11-02 S0 归档：菜单改指 https://freellm.itestu.cn；路由暂留深链/回滚',
   '/catalog': '遗留目录页，appNav 无对应项；R85 未确认是否仍有消费者',
   '/customer/activate': '租户门户独立入口（customer 域），与控制台菜单是两套导航',
   '/customer/agreement': '租户门户独立入口（customer 域），与控制台菜单是两套导航',

@@ -32,12 +32,40 @@ func cookieSecure(r *http.Request) bool {
 	return true
 }
 
+// cookieDomain returns the Domain attribute for the session cookie so that
+// sibling hosts under the same eTLD+1 (e.g. freellm.itestu.cn auth_request
+// against llm.itestu.cn session) can share llmgw_session.
+//
+// Precedence:
+//  1. LLM_GATEWAY_COOKIE_DOMAIN env (explicit override; empty string disables)
+//  2. If request Host ends with .itestu.cn → ".itestu.cn"
+//  3. Otherwise "" (host-only cookie; historical default)
+func cookieDomain(r *http.Request) string {
+	if v, ok := os.LookupEnv("LLM_GATEWAY_COOKIE_DOMAIN"); ok {
+		return strings.TrimSpace(v)
+	}
+	if r == nil {
+		return ""
+	}
+	host := r.Host
+	if host == "" {
+		return ""
+	}
+	h := strings.SplitN(host, ":", 2)[0]
+	h = strings.ToLower(strings.TrimSuffix(h, "."))
+	if strings.HasSuffix(h, ".itestu.cn") || h == "itestu.cn" {
+		return ".itestu.cn"
+	}
+	return ""
+}
+
 // clearSessionCookie expires the session cookie (MaxAge=-1) on the client.
 func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    "",
 		Path:     "/",
+		Domain:   cookieDomain(r),
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   cookieSecure(r),
@@ -59,6 +87,7 @@ func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expi
 		Name:     CookieName,
 		Value:    token,
 		Path:     CookiePath,
+		Domain:   cookieDomain(r),
 		MaxAge:   maxAge,
 		Expires:  expiresAt,
 		HttpOnly: true,
@@ -89,9 +118,10 @@ func setSessionCookieRemember(w http.ResponseWriter, r *http.Request, token stri
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:  CookieName,
-		Value: token,
-		Path:  CookiePath,
+		Name:   CookieName,
+		Value:  token,
+		Path:   CookiePath,
+		Domain: cookieDomain(r),
 		// MaxAge=0 → 不输出 Max-Age 属性；Expires 保持零值 → 不输出 Expires。
 		// 两者都没有 = 会话级 cookie，浏览器退出即失效。
 		HttpOnly: true,

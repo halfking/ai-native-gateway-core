@@ -43,6 +43,7 @@ export default {
     storageAndLogConfig: 'Storage & Log Config',
     pricing: 'Cost Pricing',
     modelPricing: 'Pricing Management',
+    freellm: 'FreeLLM',
     freePool: 'Free Resources',
     freeDiscovery: 'Free Discovery',
     tenants: 'Tenant Management',
