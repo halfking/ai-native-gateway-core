@@ -343,3 +343,6 @@
 325	924_credential_probe_queue_command_key_idx.sql
 326	926_sanitize_block_review_degraded.sql
 327	927_routing_policy_singleton_unique.sql
+328	928_probe_traffic_physical_lane.sql
+329	929_self_check_error_type_kind_closure.sql
+330	930_self_check_error_type_kind_closure_model_unavailable.sql

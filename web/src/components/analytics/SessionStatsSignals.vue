@@ -33,7 +33,10 @@ function formatMs(ms: number) {
       <p v-else class="empty-hint">{{ t('sessions.stats.pipelineLatencyEmpty') }}</p>
     </div>
     <div class="detail-card">
-      <div class="detail-card__header">{{ t('sessions.stats.errorSummary') }}</div>
+      <div class="detail-card__header">
+        {{ t('sessions.stats.errorSummary') }}
+        <span class="detail-card__hint">{{ t('sessions.stats.errorSummaryHint') }}</span>
+      </div>
       <template v-if="errors && (errors.total_errors > 0 || errors.error_rate > 0)">
         <div class="signal-metrics">
           <div>

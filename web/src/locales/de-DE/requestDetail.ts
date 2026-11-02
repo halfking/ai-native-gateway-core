@@ -130,6 +130,8 @@ export default {
     mediaHint: 'Medien {count}',
     toolCall: 'Tool-Aufrufe:',
     noMessages: '(keine Nachrichten)',
+    // ★ 2026-11-02：正文没落库时的中性空态（不是「无消息」）。
+    bodyUnavailable: 'Für diese Anfrage wurde kein Body erfasst (Body nicht gespeichert – das bedeutet nicht, dass die Anfrage kein Gespräch hatte)',
     assistantReply: '[Assistentenantwort]',
     collapse: 'Einklappen',
     expand: 'Ausklappen',

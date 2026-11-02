@@ -6,7 +6,7 @@
 //
 // 行为契约：
 //  1. 所有过滤器默认为空（显示全部）
-//  2. 请求类型过滤器默认 ['business', 'probe'] 全选（显示全部）
+//  2. 请求类型过滤器默认 ['business']（2026-11-02 与拓扑对齐；探测需显式勾选）
 //  3. 模型过滤器 case-insensitive（标准化为小写）
 //  4. 客户端过滤器全小写匹配（SSE 已保证 lowercase）
 //  5. filteredLanes computed 返回过滤后泳道（空泳道自动移除）
@@ -16,10 +16,11 @@
 //  - 导出/导入过滤器配置（快速切换预设）
 //  - 过滤器历史记录（撤销/重做）
 
-import { ref, computed, type Ref, type ComputedRef } from 'vue'
+import { ref, computed, watch, type Ref, type ComputedRef } from 'vue'
 import type { LiveStatus, LiveModelCategory } from './useLiveStream'
 import type { SwimLane } from '../types/swimlane'
 import { readLiveStreamPreferences, writeLiveStreamPreferences } from './liveStreamPreferences'
+import { setLiveStreamWantProbe } from './liveStreamStore'
 
 export interface LiveStreamFiltersOptions {
   /** 泳道数据源（来自 useSwimLane 的 lanes） */
@@ -61,6 +62,16 @@ export function useLiveStreamFilters(options: LiveStreamFiltersOptions) {
     requestTypeFilter.value = next
     persistFilter('requestTypes', Array.from(next))
   }
+
+  // U3：勾选「探测」⇒ EventSource 带 ?probe=1 重连，后端才订探测频道。
+  // 只改 requestTypes 而不订流 ⇒ 隔离开启后探测 tile 永远进不了业务 SSE。
+  watch(
+    requestTypeFilter,
+    (types) => {
+      setLiveStreamWantProbe(types.has('probe'))
+    },
+    { immediate: true, deep: true },
+  )
 
   // ========== Apply 函数（弹窗选择后应用） ==========
   function applyStatusFilter(selected: string[]) {

@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
+	"github.com/kaixuan/llm-gateway-go/internal/probelane"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	filestore "github.com/kaixuan/llm-gateway-go/storage/file"
@@ -1339,6 +1340,22 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	totalTokens := total(entry.PromptTokens, entry.CompletionTokens)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	// §9.51：进程内指纹 arm 必须与持久化写入解耦——它记录的是「本实例见过带
+	// 指纹的请求」，不是「值落进了哪张表」。探测物理隔离早退前也必须先 arm
+	// （与业务路径共用这一处调用点，指纹门只认两处 insert/update）。
+	observeSystemFingerprint(entry)
+
+	// ★ 2026-11-02 探测物理隔离：探测不进业务 usage_ledger_hot / api_keys，
+	// 改写 session_turns_probe_hot（表由迁移 928 建；开关默认关）。
+	if shouldIsolateProbeEntry(entry) {
+		if err := probelane.PersistTurn(ctx, db, probeLaneTurn(entry)); err != nil {
+			return err
+		}
+		entry.SessionV2WriteRequired = false
+		return nil
+	}
+
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return err
@@ -1350,12 +1367,6 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	// （storage.request_logs_write_enabled）在本函数**不再门控任何 PG 写入**；
 	// 会话族（sessionv2mirror）成为唯一 SSOT ⇒ 会话写入**恒为必需**。
 	entry.SessionV2WriteRequired = true
-
-	// §9.51：进程内指纹 arm 必须与持久化写入解耦——它记录的是「本实例见过带
-	// 指纹的请求」，不是「值落进了哪张表」。此前 arm 落在 v1 的落列函数里，
-	// 会被停写门一起关掉（详见 observeSystemFingerprint）。
-	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 写入分支整段删除后，这里已无门控。
-	observeSystemFingerprint(entry)
 
 	// INSERT directly targets usage_ledger_hot (the canonical write
 	// target per the 2026-07 data-lifecycle architecture). UPDATE-heavy
@@ -1596,6 +1607,19 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	totalTokens := total(entry.PromptTokens, entry.CompletionTokens)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	// §9.51：指纹 arm 与 insert 同款——探测物理隔离早退前也要先 arm。
+	observeSystemFingerprint(entry)
+
+	// ★ 2026-11-02 探测物理隔离：终态更新同样只写探测热表，不改业务账本。
+	if shouldIsolateProbeEntry(entry) {
+		if err := probelane.PersistTurn(ctx, db, probeLaneTurn(entry)); err != nil {
+			return err
+		}
+		entry.SessionV2WriteRequired = false
+		return nil
+	}
+
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return err
@@ -1607,12 +1631,6 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	// （storage.request_logs_write_enabled）在本函数**不再门控任何 PG 写入**；
 	// 会话族（sessionv2mirror）成为唯一 SSOT ⇒ 会话写入**恒为必需**。
 	entry.SessionV2WriteRequired = true
-
-	// §9.51：进程内指纹 arm 必须与持久化写入解耦——它记录的是「本实例见过带
-	// 指纹的请求」，不是「值落进了哪张表」。此前 arm 落在 v1 的落列函数里，
-	// 会被停写门一起关掉（详见 observeSystemFingerprint）。
-	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 写入分支整段删除后，这里已无门控。
-	observeSystemFingerprint(entry)
 
 	// 审计 §9.93：此处原有的 `if requestLogEntryTerminal(entry) { settleAbandonedTurn(...) }`
 	// 整段已删除。`settleAbandonedTurn` 的函数体是空实现——它被调用、被注释

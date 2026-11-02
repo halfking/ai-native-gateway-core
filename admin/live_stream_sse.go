@@ -422,11 +422,11 @@ type LiveRequest struct {
 	//   组装不是压缩，排除（211 全量实测 0 条，排除是语义性的不是凑数）。
 	// in_progress 预投影帧可能尚未携带（logCtx 后补）——optional 字段，
 	// 缺省渲染成「未知」，禁止用零值冒充。
-	ClientModel    string `json:"client_model,omitempty"`
-	IsAutoRequest  bool   `json:"is_auto_request,omitempty"`
-	TaskType       string `json:"task_type,omitempty"`
-	TokenBand      string `json:"token_band,omitempty"`
-	Compressed     bool   `json:"compressed,omitempty"`
+	ClientModel   string `json:"client_model,omitempty"`
+	IsAutoRequest bool   `json:"is_auto_request,omitempty"`
+	TaskType      string `json:"task_type,omitempty"`
+	TokenBand     string `json:"token_band,omitempty"`
+	Compressed    bool   `json:"compressed,omitempty"`
 }
 
 // LiveStreamConfig controls hub behaviour. Zero values are safe and
@@ -509,8 +509,12 @@ type liveStreamClient struct {
 	// clients keep the exact pre-slim wire.
 	slim bool
 	dims map[string]bool
-	writeMu  sync.Mutex
-	closed   bool
+	// wantProbe (2026-11-02 U2): ?probe=1 / ?lanes=…,probe 显式订探测频道。
+	// 默认 false ⇒ 初始回放与实时 fan-out 都不下发 IsProbe tile（网络层
+	// 隔离；前端 requestTypes 过滤不再是唯一闸门）。
+	wantProbe bool
+	writeMu   sync.Mutex
+	closed    bool
 	// Only queue_snapshot/node_update use this bounded, per-connection cache.
 	// Protected by writeMu; a new connection always receives its first state.
 	periodicState map[string][sha256.Size]byte
@@ -584,7 +588,7 @@ type LiveStreamSSEHub struct {
 	// 改为最小刷新间隔 (默认 2s, env LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_MIN_INTERVAL):
 	// 在窗口内复用上一次成功的 delta (delta 缓存), 不重复跑 Redis pipeline.
 	lastSnapshotAtMu    sync.RWMutex
-	lastSnapshotAt      map[string]time.Time        // key = scope.cacheKey
+	lastSnapshotAt      map[string]time.Time       // key = scope.cacheKey
 	lastDeltaByScope    map[string]*scopeDeltaPair // 上次成功的 delta 缓存 (供节流命中时复用; legacy + slim 双格式)
 	lastDeltaMu         sync.RWMutex
 	snapshotMinInterval time.Duration // 最小刷新间隔; 0 禁用节流
@@ -1127,7 +1131,9 @@ func (h *LiveStreamSSEHub) computeScopeDeltas(ctx context.Context, tenantID stri
 		return scopeDeltaPair{}
 	}
 	if snapshot == nil || snapshot.Summary.Total == 0 {
-		if items, replayErr := h.replay(ctx, scope.tenantID, scope.isSuper, h.cfg.InitialReplayLimit); replayErr == nil && len(items) > 0 {
+		// Scope delta 走业务频道（wantProbe=false）：探测 tile 只经显式
+		// ?probe=1 连接的初始回放 / request fan-out 下发，不进泳道 delta。
+		if items, replayErr := h.replay(ctx, scope.tenantID, scope.isSuper, h.cfg.InitialReplayLimit, false); replayErr == nil && len(items) > 0 {
 			snapshot = BuildLiveStreamSnapshot(items)
 		} else if replayErr != nil {
 			slog.Warn("live stream scope replay fallback failed",
@@ -2079,13 +2085,10 @@ func (h *LiveStreamSSEHub) fanOutScope(scope liveStreamScope, env LiveStreamEnve
 	// 2026-10-27 (slim): snapshot_refresh honours each client's ?dims=
 	// subscription — a queue-mode client subscribed to no dimension must not
 	// receive a multi-megabyte all-dimension snapshot every 30 minutes.
-	// Serialise once per distinct (slim, dims) shape.
+	// Serialise once per distinct (slim, dims, wantProbe) shape.
 	payloads := make(map[string][]byte, 2)
 	for _, c := range clients {
-		key := "legacy"
-		if c.slim || c.dims != nil {
-			key = "slim|" + liveStreamDimsKey(c.dims)
-		}
+		key := fanOutScopePayloadKey(c)
 		if _, done := payloads[key]; done {
 			continue
 		}
@@ -2093,6 +2096,7 @@ func (h *LiveStreamSSEHub) fanOutScope(scope liveStreamScope, env LiveStreamEnve
 		if c.dims != nil && variant.Snapshot != nil {
 			variant.Snapshot = filterSnapshotForDims(variant.Snapshot, c.dims)
 		}
+		variant.Snapshot = filterSnapshotByProbeSub(variant.Snapshot, c.wantProbe)
 		data, err := json.Marshal(variant)
 		if err != nil {
 			slog.Warn("live stream scoped marshal failed", "err", err.Error())
@@ -2102,10 +2106,7 @@ func (h *LiveStreamSSEHub) fanOutScope(scope liveStreamScope, env LiveStreamEnve
 	}
 
 	for _, c := range clients {
-		key := "legacy"
-		if c.slim || c.dims != nil {
-			key = "slim|" + liveStreamDimsKey(c.dims)
-		}
+		key := fanOutScopePayloadKey(c)
 		data := payloads[key]
 		if len(data) == 0 {
 			continue
@@ -2117,6 +2118,12 @@ func (h *LiveStreamSSEHub) fanOutScope(scope liveStreamScope, env LiveStreamEnve
 }
 
 func (h *LiveStreamSSEHub) shouldDeliver(c *liveStreamClient, env LiveStreamEnvelope) bool {
+	// 2026-11-02 U2：探测 tile 只下发给显式订了探测频道的连接。
+	// 必须在 isSuper 短路之前判定 —— 否则超管默认连接仍会被探测刷屏，
+	// 「默认只订业务」在网络层不成立。
+	if env.Request != nil && env.Request.IsProbe && !c.wantProbe {
+		return false
+	}
 	if c.isSuper {
 		return true
 	}
@@ -2572,6 +2579,7 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 	if dims, present := parseLiveStreamDims(r); present {
 		client.dims = dims
 	}
+	client.wantProbe = parseLiveStreamWantProbe(r)
 	// Register with interruptible sends: when the hub run-loop is wedged
 	// (slow clients blocking fan-out) or shutting down, a blocking send here
 	// would leak the request goroutine and its socket.
@@ -2593,7 +2601,7 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 	// empty. Omitting an empty replay lets a previous user's singleton state
 	// survive indefinitely because there is no later frame that means "clear".
 	initialHealth := h.checkRedisHealth()
-	items, replayErr := h.replay(r.Context(), tenantID, isSuper, h.cfg.InitialReplayLimit)
+	items, replayErr := h.replay(r.Context(), tenantID, isSuper, h.cfg.InitialReplayLimit, client.wantProbe)
 	if replayErr != nil {
 		slog.Warn("live stream initial replay failed", "err", replayErr.Error())
 		// Do not claim an authoritative empty replay on read failure. The
@@ -2618,6 +2626,9 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 		// initial frame too — a queue-mode client (dims=) must not receive a
 		// multi-megabyte all-dimension snapshot on every page load.
 		snapshot = filterSnapshotForDims(snapshot, client.dims)
+		// 2026-11-02 U2: 未订探测频道时剥掉 snapshot 里的探测 tile（业务
+		// dim 队列在 flag 关闭时仍可能混有 is_probe）。
+		snapshot = filterSnapshotByProbeSub(snapshot, client.wantProbe)
 		queue := h.queueSnapshot()
 		nodes := h.nodeStatusSnapshot()
 		data, mErr := json.Marshal(LiveStreamEnvelope{
@@ -2659,14 +2670,31 @@ func (h *LiveStreamSSEHub) HandleTriggerSnapshot(w http.ResponseWriter, r *http.
 
 // replay loads the most recent N requests. ASC order so the client
 // renders them left-to-right.
-func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper bool, limit int) ([]LiveRequest, error) {
+//
+// wantProbe 控制是否纳入探测频道：
+//
+//	· false → 剥掉 IsProbe（业务频道默认）
+//	· true + PhysicalEnabled → 另 ReplayLane("probe") 并按 ts 合并
+//	· true + flag 关 → 业务队列里本就有 is_probe 行，保留即可
+func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper bool, limit int, wantProbe bool) ([]LiveRequest, error) {
 	if h.store != nil {
 		items, err := h.store.Replay(ctx, tenantID, isSuper, limit)
-		if err == nil && len(items) > 0 {
-			// 2026-08-26: Redis 回放可能含有卡死的 in_progress tile（forwarder
-			// 丢弃 persisted 终态 / Record 锁失败等遗留路径）。用 DB
-			// _request_logs 的终态覆盖一次，让卡住 tile 在初始帧即被纠正。
-			return h.overlayTerminalStatuses(ctx, items), nil
+		if err == nil {
+			if wantProbe && probeLanePhysicalOn() {
+				if probeItems, pErr := h.store.ReplayLane(ctx, tenantID, isSuper, limit, "probe"); pErr == nil {
+					items = mergeLiveRequestsByTs(items, probeItems)
+				} else {
+					slog.Debug("live stream probe lane replay failed", "err", pErr.Error())
+				}
+			}
+			items = filterLiveRequestsByProbeSub(items, wantProbe)
+			if len(items) > 0 {
+				// 2026-08-26: Redis 回放可能含有卡死的 in_progress tile（forwarder
+				// 丢弃 persisted 终态 / Record 锁失败等遗留路径）。用 DB
+				// _request_logs 的终态覆盖一次，让卡住 tile 在初始帧即被纠正。
+				return h.overlayTerminalStatuses(ctx, items), nil
+			}
+			return items, nil
 		}
 		if err != nil {
 			slog.Debug("live stream redis replay failed", "err", err.Error())
@@ -2769,7 +2797,7 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("live stream replay: iterate rows: %w", err)
 	}
-	return out, nil
+	return filterLiveRequestsByProbeSub(out, wantProbe), nil
 }
 
 // liveStreamTerminalOverlayMinAge 只覆盖"明显卡住"的进行中 tile：正常 LLM

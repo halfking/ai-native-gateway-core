@@ -65,6 +65,10 @@ type SessionOverviewResponse struct {
 	CostTrend    []CostTrendPoint    `json:"cost_trend"`
 	SessionTrend []SessionTrendPoint `json:"session_trend"`
 
+	// TurnsAlignment 对拍 session_summaries.request_count 合计与业务 turns 行数。
+	// degraded=true 时前端必须显式提示，不得当假绿 KPI。
+	TurnsAlignment *TurnsAlignment `json:"turns_alignment,omitempty"`
+
 	// 时间戳
 	GeneratedAt time.Time `json:"generated_at"`
 	PeriodStart time.Time `json:"period_start"`
@@ -194,18 +198,21 @@ func (h *SessionOverviewHandler) HandleSessionOverview(w http.ResponseWriter, r 
 	// 9 段并发 ⇒ 27 个并行 worker 抢 max_worker_processes=8 的槽 ⇒ 互相抢 CPU。
 	// 合并口径不变的四条标量腿（总会话/健康/合规/成本 → 1 次扫描）与两条趋势腿
 	// （成本趋势/会话趋势 → 1 次扫描）⇒ 9 段降到 6 段，session_summaries 扫描 6→3 次。
+	// 2026-11-02：再加 turns 对拍腿（读 session_turns 族，不扫 session_summaries）⇒ 7 段。
 	// **墙钟仍由两条 join 腿（top clients / top tasks）决定** —— 它们各自要把
 	// 90 万行的 session_dim 整表哈希，SQL 层候选已被实测否证（见审计档）。
 	// 错误语义保持：哪段死都带段名报 500（dashboardStatsStageError，
-	// 类型定义在包级，见 SessionOverviewHandler 前）。
+	// 类型定义在包级，见 SessionOverviewHandler 前）；turns 对拍 soft-fail。
 	var (
-		aggregates *sessionSummaryAggregates
-		prevCost   float64
-		modelUsage []ModelUsageItem
-		topClients []ClientRankItem
-		topTasks   []TaskRankItem
-		costTrend  []CostTrendPoint
-		sessTrend  []SessionTrendPoint
+		aggregates   *sessionSummaryAggregates
+		prevCost     float64
+		modelUsage   []ModelUsageItem
+		topClients   []ClientRankItem
+		topTasks     []TaskRankItem
+		costTrend    []CostTrendPoint
+		sessTrend    []SessionTrendPoint
+		turnsCount   int64
+		turnsCountOK bool
 	)
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
@@ -250,6 +257,17 @@ func (h *SessionOverviewHandler) HandleSessionOverview(w http.ResponseWriter, r 
 		}
 		return nil
 	})
+	// Turns 对拍腿：失败不拖垮整段 overview（KPI 仍可用），但前端会看到
+	// turns_alignment 缺席 —— 比假绿「对齐」更诚实。
+	g.Go(func() error {
+		n, err := h.queryBusinessTurnsCount(gctx, params)
+		if err != nil {
+			return nil
+		}
+		turnsCount = n
+		turnsCountOK = true
+		return nil
+	})
 	if err := g.Wait(); err != nil {
 		apiStatus = "error"
 		var se dashboardStatsStageError
@@ -270,6 +288,12 @@ func (h *SessionOverviewHandler) HandleSessionOverview(w http.ResponseWriter, r 
 	}
 	sessionTrend := sessTrend
 
+	var alignment *TurnsAlignment
+	if turnsCountOK && costStats != nil {
+		a := evaluateTurnsAlignment(costStats.TotalRequests, turnsCount)
+		alignment = &a
+	}
+
 	// 构建响应
 	now := time.Now()
 	periodEnd := now
@@ -288,6 +312,7 @@ func (h *SessionOverviewHandler) HandleSessionOverview(w http.ResponseWriter, r 
 		TopTasks:           topTasks,
 		CostTrend:          costTrend,
 		SessionTrend:       sessionTrend,
+		TurnsAlignment:     alignment,
 		GeneratedAt:        now,
 		PeriodStart:        periodStart,
 		PeriodEnd:          periodEnd,
@@ -670,9 +695,10 @@ func (h *SessionOverviewHandler) querySessionTrends(ctx context.Context, params 
 	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
+	// DATE(...) is OID 1082 binary; pgx v5 refuses *string ⇒ cast to text.
 	query := fmt.Sprintf(`
 		SELECT
-			DATE(first_request_at) as date,
+			DATE(first_request_at)::text as date,
 			COALESCE(SUM(total_cost_usd), 0) as cost,
 			COUNT(*) as sessions,
 			COALESCE(SUM(request_count), 0) as requests,

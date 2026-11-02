@@ -51,6 +51,7 @@ export default {
     inProgress: 'In progress',
     failure: 'Failure',
     rateLimited: 'Rate limited',
+    idle: 'Idle',
     clear: 'Clear filters',
     showProbe: 'Show probe requests',
     showInvalid: 'Show invalid nodes',
@@ -172,6 +173,8 @@ export default {
     page: 'Page {page}/{pages}',
     total: '{n} total',
     autoChip: 'Client asked for auto; the gateway picked the final model by task',
+    idleLane: 'Idle',
+    idleLaneHint: 'No recent business traffic on this lane; idle heartbeat, not a failed request',
   },
   zoom: {
     title: 'Request detail',
@@ -194,6 +197,7 @@ export default {
     yes: 'Yes',
     no: 'No',
     error: 'Error',
+    idleNote: 'Note',
   },
   page: {
     back: 'Back to topology',

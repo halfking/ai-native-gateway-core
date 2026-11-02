@@ -181,6 +181,10 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 			Persistence: PersistencePersisted,
 			Meta:        meta,
 		}
+		// ★ 读面是 request_logs，但正文可能来自兜底回源（热区镜像）⇒ 说真话。
+		if meta.BodySource != "" {
+			d.Source = meta.BodySource
+		}
 		if !omitBody {
 			b := bodies
 			d.Bodies = &b
@@ -205,6 +209,12 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 			Source:      SourceSessionTurns,
 			Persistence: PersistencePersisted,
 			Meta:        mergeMeta(requestLogsMeta, sessionMeta),
+		}
+		// ★ 正文来源可能与读面不同（2026-11-02）：PG 会话族正文缺失时，
+		//   读面会**兜底回源**本地热区镜像（hotzone_mirror）⇒
+		//   Detail.Source 必须说真话（前端据此提示「正文来自本地镜像」）。
+		if sessionMeta.BodySource != "" {
+			d.Source = sessionMeta.BodySource
 		}
 		if !omitBody {
 			b := bodies
@@ -317,6 +327,11 @@ func mergeMeta(base, overlay Meta) Meta {
 	// the wire meta.body_status could only ever be absent or "unavailable".
 	if overlay.BodyStatus != "" {
 		out.BodyStatus = overlay.BodyStatus
+	}
+	// BodySource 同理：兜底回源时 overlay 才带值 ⇒ 合并后必须跟着搬过来，
+	// 否则合并出的 Meta 会谎称「正文来自 PG 会话族」。
+	if overlay.BodySource != "" {
+		out.BodySource = overlay.BodySource
 	}
 	return out
 }

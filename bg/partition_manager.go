@@ -84,17 +84,18 @@ const promoteBatchSize = 5000
 // session_bodies_hot → monthly partitions (2026-10-30 R184, 252 SQL 日志审计轮).
 //
 // ★ 252 活锁的根因 = **单批物理成本 > Go/SQL 双侧预算**，批大小是成本的分母：
-//   5000 行（default 键 fallback）× ~34KB/行（jsonb 五列 TOAST）≈ 169MB 拷贝，
-//   且叶子分区带全套 7 条索引 ⇒ 写放大后单批实测 6~15 分钟量级，60s 预算
-//   （2026-09-22 轮的 SET LOCAL + ctx）必死 ⇒ 整批回滚 ⇒ 每 tick 重试同一批
-//   = 活锁（252 实测 hot 积压 33h / 10,765 行、24h 窗被杀+被取消 56 次）。
-//   批收到 **500**（≈17MB/批）后单批实测 ~35-90s（随宿主 load 波动），
-//   与预算 promoteBatchBudget（150s）配对装得下。
-//   ★ 500 也是 v1 正文链当年取的值（R16 fact 85「TOAST 重行防爆量」）——890
-//   退役 v1 链时这个知识跟着丢了，会话族 promote 落 default 分支拿到 5000。
-//   ★ 诚实记录：本轮先误判过两层（「批太大收 500 就好」→ 500 仍 182s；
-//   「叶子零索引造了 925 heal」→ 那是量具 join 错误的假缺陷，叶子一直有
-//   全套 7 索引，误建索引已全数 DROP）——925 撤销，本条与预算抬升是终态。
+//
+//	5000 行（default 键 fallback）× ~34KB/行（jsonb 五列 TOAST）≈ 169MB 拷贝，
+//	且叶子分区带全套 7 条索引 ⇒ 写放大后单批实测 6~15 分钟量级，60s 预算
+//	（2026-09-22 轮的 SET LOCAL + ctx）必死 ⇒ 整批回滚 ⇒ 每 tick 重试同一批
+//	= 活锁（252 实测 hot 积压 33h / 10,765 行、24h 窗被杀+被取消 56 次）。
+//	批收到 **500**（≈17MB/批）后单批实测 ~35-90s（随宿主 load 波动），
+//	与预算 promoteBatchBudget（150s）配对装得下。
+//	★ 500 也是 v1 正文链当年取的值（R16 fact 85「TOAST 重行防爆量」）——890
+//	退役 v1 链时这个知识跟着丢了，会话族 promote 落 default 分支拿到 5000。
+//	★ 诚实记录：本轮先误判过两层（「批太大收 500 就好」→ 500 仍 182s；
+//	「叶子零索引造了 925 heal」→ 那是量具 join 错误的假缺陷，叶子一直有
+//	全套 7 索引，误建索引已全数 DROP）——925 撤销，本条与预算抬升是终态。
 const sessionBodiesPromoteBatchSize = 500
 
 // PartitionManager automatically creates next month's partition,
@@ -642,6 +643,12 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// 2026-07-14: switched from columnar-partition strategy to pure-hot-table.
 	pm.cleanupOldModelProbeRuns(ctx)
 
+	// 2b. 2026-11-02 (U1)：探测物理隔离族 TTL。session_turns_probe_hot /
+	// request_stats_probe_minute 无分区、此前全仓零 DELETE ⇒ 单调增长。
+	// 默认 14d（lifecycle.session_turns_probe_hot_ttl_days）。retireProbeMinutes
+	// 只退役「桶已无源」的分钟行，不处理源流水过期 —— 本步才是源面清理。
+	pm.cleanupOldProbeLaneTables(ctx)
+
 	// 3. 2026-07-13: credential_model_index 7-day TTL cleanup.
 	// The SQL function `cleanup_old_credential_model_index()` deletes
 	// `credential_model_index` rows older than 7 days. The dedup change
@@ -1166,7 +1173,8 @@ func (pm *PartitionManager) dropOldStatePartitions(ctx context.Context, s archiv
 // dailyStateDropLockKey 是按日分区 DROP 的跨实例互斥 advisory lock 键。
 //
 // ★ 与快照族的 632_2026_10_14 **刻意用不同键**（两族互不干扰，
-//   否则两族会互相「让位」，一个族的锁会把另一个族的回收饿死）。
+//
+//	否则两族会互相「让位」，一个族的锁会把另一个族的回收饿死）。
 const dailyStateDropLockKey int64 = 632_2026_10_21
 
 // dropOldDailyStatePartitions 按【日】粒度回收「整天已过去」的分区。
@@ -1187,6 +1195,7 @@ const dailyStateDropLockKey int64 = 632_2026_10_21
 //	⇒ TTL 仍是唯一的语义来源（「保多少天」由配置决定）
 //
 // ★ 计数诚实：**不用** `DROP TABLE IF EXISTS` —— 对端实例删过时它同样「成功」
+//
 //	⇒ 计数被虚增（这正是 retention_partition.go 里已登记的教训）
 //	⇒ 改用 42P01（对象不存在）归类为「跳过」。
 func (pm *PartitionManager) dropOldDailyStatePartitions(ctx context.Context, parent string, days int) (int64, error) {

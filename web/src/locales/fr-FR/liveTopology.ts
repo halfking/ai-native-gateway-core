@@ -51,6 +51,7 @@ export default {
     inProgress: 'En cours',
     failure: 'Échec',
     rateLimited: 'Limité',
+    idle: 'Inactif',
     clear: 'Réinitialiser les filtres',
     showProbe: 'Afficher les sondes',
     showInvalid: 'Afficher les nœuds invalides',
@@ -172,6 +173,8 @@ export default {
     page: 'Page {page}/{pages}',
     total: '{n} au total',
     autoChip: 'Le client a demandé auto ; la passerelle a choisi le modèle final selon la tâche',
+    idleLane: 'Inactif',
+    idleLaneHint: 'Pas de trafic métier récent sur cette voie; battement d’inactivité, pas un échec',
   },
   zoom: {
     title: 'Détail de la requête',
@@ -194,6 +197,7 @@ export default {
     yes: 'Oui',
     no: 'Non',
     error: 'Erreur',
+    idleNote: 'Note',
   },
   page: {
     back: 'Retour à la topologie',

@@ -41,6 +41,7 @@ const {
   metaLoading, metaError, log, unified, sessionSnap, sessionId,
   requestBody, responseBody, outboundBody, waterfallLoading, waterfallError,
   waterfall, attempts, loadMeta, onSectionNeed, dispose,
+  bodyStatus, recordingConsent,
 } = loader
 
 const requestId = computed(() => String(route.params.requestId || '').trim())
@@ -280,6 +281,8 @@ const snapDurationMs = computed(() => {
           :attempts="attempts"
           :waterfall-loading="waterfallLoading"
           :waterfall-error="waterfallError"
+          :body-status="bodyStatus"
+          :recording-consent="recordingConsent"
           @goto="gotoSection"
         />
       </div>

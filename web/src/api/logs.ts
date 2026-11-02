@@ -197,6 +197,13 @@ export interface RequestLogsResponse {
   items: RequestLogRow[]
   count: number
   aggregate?: RequestLogsAggregate
+  /**
+   * U4：`lane=probe|probe_history` 时服务端回 `source=history` ——
+   * 读的是业务表上隔离开启前的历史探测行，不是探测车道当前流水。
+   */
+  source?: 'history'
+  /** 与 source=history 同发；显式别名，避免把 lane=probe 误读成「当前」。 */
+  lane?: 'probe_history'
 }
 
 export interface SessionSummaryMeta {
@@ -257,6 +264,13 @@ export function getRequestLogs(params: {
   chrono?: boolean
   page?: number
   page_size?: number
+  /**
+   * 默认业务面（服务端排除探测）。
+   * · `probe` / `probe_history`：业务表历史探测行（响应带 source=history）
+   * · 当前探测流水请用 `/api/admin/probe/lane/requests`（见 probe-lane.ts）
+   */
+  lane?: 'business' | 'probe' | 'probe_history' | 'all'
+  include_probe?: boolean
 } = {}) {
   const qs = new URLSearchParams()
   if (params.api_key_id != null) qs.set('api_key_id', String(params.api_key_id))
@@ -278,6 +292,8 @@ export function getRequestLogs(params: {
   if (params.chrono) qs.set('chrono', '1')
   if (params.page != null) qs.set('page', String(params.page))
   if (params.page_size != null) qs.set('page_size', String(params.page_size))
+  if (params.lane) qs.set('lane', params.lane)
+  if (params.include_probe) qs.set('include_probe', '1')
   const s = qs.toString()
   return req<RequestLogsResponse>('GET', `/api/logs${s ? '?' + s : ''}`)
 }

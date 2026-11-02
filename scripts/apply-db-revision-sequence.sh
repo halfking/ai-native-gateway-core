@@ -2505,6 +2505,26 @@ files=(
   #   把 targets 放大 4 倍。★ 本迁移让那个 ON CONFLICT 第一次真正生效。
   #   ★ 含 DELETE 回填 ⇒ 自带 lock_timeout / statement_timeout ⇒ 走事务通道。
   "$ROOT_DIR/sql/migrations/startup/927_routing_policy_singleton_unique.sql"
+  # ★ 928（2026-11-02）：探测流量物理隔离车道 —— session_turns_probe_hot +
+  #   request_stats_probe_minute。写路径由 LLM_GATEWAY_PROBE_LANE_PHYSICAL 门控。
+  "$ROOT_DIR/sql/migrations/startup/928_probe_traffic_physical_lane.sql"
+  # ★ 929（2026-11-02 12h 审计轮 P1）：self_check_runs.error_type 的 CHECK 闭集
+  #   补齐 —— 与 errorsx.ErrorKind 闭集对齐（32 kind + 5 个 worker 专用字面量）。
+  #   ★ 缺口本体：上游给 errorsx 加了 6 个新 kind（request_rejected /
+  #     circuit_open / fp_slot_saturated / first_byte_timeout / reply_loop /
+  #     account_restricted），CHECK 的字面量清单没跟着长 ⇒ 写侧
+  #     bg/credential_selfcheck.go:844 写的正是 kind 名 ⇒ finalizeRun 的
+  #     UPDATE 被 23514 拒绝 ⇒ 整条回滚 ⇒ self_check run 行停在
+  #     status='running' 的半写态（审计与发布都不执行）。
+  #   ★ 只重建约束，不改数据；自带 BEGIN/COMMIT ⇒ 走事务通道。
+  "$ROOT_DIR/sql/migrations/startup/929_self_check_error_type_kind_closure.sql"
+  # ★ 930（第二十五轮）：CHECK 闭集**再补齐** —— 加入 model_unavailable
+  #   （本仓 4xx 归因轮引入的第 33 个 kind；929 按当时 32 kind 写死）。
+  #   ★ 缺口本体：写侧 bg/credential_selfcheck.go 写的正是 kind 名 ⇒
+  #     写 model_unavailable 时 finalizeRun 的 UPDATE 被 23514 拒绝 ⇒
+  #     整条回滚 ⇒ self_check run 行停在 status='running' 的半写态。
+  #   ★ 同样是**新迁移**而不是改 929 的字节（929 已在 211 应用、字节冻结）。
+  "$ROOT_DIR/sql/migrations/startup/930_self_check_error_type_kind_closure_model_unavailable.sql"
 )
 
 
@@ -3021,6 +3041,24 @@ ledger_artifact_probe "926_sanitize_block_review_degraded.sql" \
 #   ⇒ 'routing_policy_tenant_id_key' 与 public.routing_policy 都在 927 文件里。
 ledger_artifact_probe "927_routing_policy_singleton_unique.sql" \
   "EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'routing_policy_tenant_id_key' AND conrelid = 'public.routing_policy'::regclass)"
+ledger_artifact_probe "928_probe_traffic_physical_lane.sql" \
+  "EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'session_turns_probe_hot' AND c.relkind = 'r')"
+# ★ 929（12h 审计轮 P1）：产物 = self_check_runs 的 error_type CHECK 已覆盖
+#   errorsx 全闭集。★ 探针逐个点名 6 个「此前不在闭集里」的 kind ——
+#   少一个都判失败（只看约束「在不在」会被一个窄集骗过）。
+#   ★ 联动契约：探针行里所有 public.x / 'x' 字面量必须在迁移文件文本中出现
+#   ⇒ 'self_check_runs_error_type_check' / public.self_check_runs /
+#      那 6 个 kind 名都在 929 文件里。
+ledger_artifact_probe "929_self_check_error_type_kind_closure.sql" \
+  "EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'self_check_runs_error_type_check' AND conrelid = 'public.self_check_runs'::regclass AND position('request_rejected' in pg_get_constraintdef(oid)) > 0 AND position('circuit_open' in pg_get_constraintdef(oid)) > 0 AND position('fp_slot_saturated' in pg_get_constraintdef(oid)) > 0 AND position('first_byte_timeout' in pg_get_constraintdef(oid)) > 0 AND position('reply_loop' in pg_get_constraintdef(oid)) > 0 AND position('account_restricted' in pg_get_constraintdef(oid)) > 0)"
+# ★ 930（第二十五轮）：产物 = 该 CHECK 已覆盖 model_unavailable。
+#   ★ 探针点名 model_unavailable —— 少它一个都判失败
+#   （只看「约束在不在」会被一个 929 时代的窄集骗过）。
+#   ★ 联动契约：探针行里所有 public.x / 'x' 字面量必须在迁移文件文本中出现
+#   ⇒ 'self_check_runs_error_type_check' / public.self_check_runs /
+#      'model_unavailable' 都在 930 文件里。
+ledger_artifact_probe "930_self_check_error_type_kind_closure_model_unavailable.sql" \
+  "EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'self_check_runs_error_type_check' AND conrelid = 'public.self_check_runs'::regclass AND position('model_unavailable' in pg_get_constraintdef(oid)) > 0)"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

@@ -38,6 +38,7 @@ export default {
     operationFailed: 'Vorgang fehlgeschlagen. Bitte erneut versuchen.',
     loading: 'Wird geladen…',
     unknownReason: 'Keine Fehlerdetails erhalten',
+    probeLaneHistoricalHint: 'Die physische Trennspur für Probe-Traffic ist nicht aktiv; dies sind historische Probe-Aufzeichnungen vor der Trennung.',
     saveFailedWithReason: 'Speichern fehlgeschlagen: {reason}. Bitte erneut versuchen.',
     operationFailedWithReason: 'Vorgang fehlgeschlagen: {reason}. Bitte erneut versuchen.',
     testFailedWithReason: 'Test fehlgeschlagen: {reason}. Bitte erneut versuchen.',
