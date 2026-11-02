@@ -14,7 +14,7 @@ import (
 // 对 json-word（KindClientBug / ErrorKindRequest）不冷却。
 
 func TestP0CNodeHealthRequestKindMapsToClientBug(t *testing.T) {
-	got := errorKindFromNodeHealth(nodehealth.ErrorKindRequest)
+	got := errorKindFromNodeHealth(nodehealth.ErrorKindRequest, 400)
 	if got != errorsx.KindClientBug {
 		t.Fatalf("errorKindFromNodeHealth(Request) = %s, want client_bug (round-trip)", got)
 	}
@@ -22,7 +22,7 @@ func TestP0CNodeHealthRequestKindMapsToClientBug(t *testing.T) {
 		t.Fatalf("PenaltyOf(%s) = %v, want none", got, errorsx.PenaltyOf(got))
 	}
 	// 前提在场：其它 kind 不塌成 client_bug。
-	if errorKindFromNodeHealth(nodehealth.ErrorKindNetwork) != errorsx.KindNetwork {
+	if errorKindFromNodeHealth(nodehealth.ErrorKindNetwork, 500) != errorsx.KindNetwork {
 		t.Fatal("network mapping regress")
 	}
 }

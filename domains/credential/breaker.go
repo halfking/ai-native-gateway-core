@@ -67,6 +67,7 @@ var (
 	KindUpstreamOverloaded = errorsx.KindUpstreamOverloaded
 	KindStreamTimeout      = errorsx.KindStreamTimeout
 	KindConcurrent         = errorsx.KindConcurrent
+	KindNoAvailableChannel = errorsx.KindNoAvailableChannel
 )
 
 const (
@@ -135,6 +136,14 @@ var defaultPolicies = map[ErrorKind]CoolingPolicy{
 	// still punishes a relay that stays overloaded across many rounds.
 	errorsx.KindUpstreamOverloaded: {InitialCooling: 30 * time.Second, MaxCooling: 5 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
 	KindStreamTimeout:              {InitialCooling: 30 * time.Second, MaxCooling: 30 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	// 2026-11-02（第十一轮 · F-C）：登记「无可用后端」这一档。
+	// ★ 它此前**不在**本表里 ⇒ RecordFailure 走 `policy = b.coolingPolicy`
+	//   那条兜底（= 构造时的 defaultPolicy = defaultPolicies[KindTransient]
+	//   = 60s）⇒ 付费档恰好不差，但那是**碰巧**，不是登记。
+	// ★ 档位取「瞬时」族同值（60s）：这一档的**凭据级**语义是「中转分组
+	//   暂时没有通道」⇒ 瞬时 ⇒ 与 KindTransient 同档。
+	//   （绑定级那一支走 credential.Writer 的绑定级冷却，不经过本表。）
+	errorsx.KindNoAvailableChannel: {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
 	// 2026-07-24: Concurrent 从 5分钟 改为 2分钟，减少多轮对话中的长时间中断
 	errorsx.KindConcurrent: {InitialCooling: 2 * time.Minute, MaxCooling: 2 * time.Minute, RecoveryType: RecoveryAuto, ShrinkFactor: 0.5},
 }
@@ -167,6 +176,11 @@ var freeTierPolicies = map[ErrorKind]CoolingPolicy{
 	errorsx.KindConcurrent:         {InitialCooling: 5 * time.Second, MaxCooling: 5 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
 	errorsx.KindUpstreamDown:       {InitialCooling: 15 * time.Second, MaxCooling: 5 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
 	errorsx.KindUpstreamOverloaded: {InitialCooling: 15 * time.Second, MaxCooling: 2 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
+	// 2026-11-02（第十一轮 · F-C）：登记「无可用后端」这一档 —— 此前**不在**
+	// 本表里 ⇒ 免费档会落到 defaultPolicies 的 60s（而不是 15s）⇒
+	// 免费额度被白扔 4 倍时间，正是 245 free-capacity plan 要防的事。
+	// 档位取「瞬时」族同值（15s）：凭据级语义是「中转暂时没有通道」。
+	errorsx.KindNoAvailableChannel: {InitialCooling: 15 * time.Second, MaxCooling: 15 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
 	// KindRateLimit 已剔除（Wave 1 A4，同 defaultPolicies 注）。
 }
 
@@ -388,6 +402,12 @@ var transientFamily = map[ErrorKind]bool{
 	KindTimeout:       true,
 	KindNetwork:       true,
 	KindStreamTimeout: true,
+	// 2026-11-02（第十一轮 · F-C）：登记「无可用后端」这一档 —— 此前**不在**
+	// 本表里 ⇒ 它与 transient/timeout/network 交替出现时会被判成「族变化」
+	// ⇒ consecutive 被清零 ⇒ 熔断要多一次失败才跳（breaker.go 的族变化清零
+	// 那段注释说的正是「族变化就清零会导致永远达不到降级阈值」）。
+	// 语义：凭据级的「中转暂时没有通道」与瞬时族同族。
+	KindNoAvailableChannel: true,
 }
 
 // MarkFreeTier switches this breaker onto the freeTierPolicies cooling

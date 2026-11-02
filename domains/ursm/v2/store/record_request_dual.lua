@@ -67,6 +67,12 @@ local transient_kinds = {
   upstream_down = true,
   empty_response = true,
   transient = true,
+  -- 2026-11-02 (round 11 / F-C): "no_available_channel" joins the transient
+  -- family -- its credential-scoped meaning is "the relay has no channel for
+  -- this model right now", i.e. the flaky-but-usable free supply this
+  -- carve-out protects. Without it a free credential was hard-disabled after
+  -- 3 consecutive failures (round 9 regression).
+  no_available_channel = true,
 }
 local free_transient = (billing_mode == "free") and (transient_kinds[err_kind] == true)
 

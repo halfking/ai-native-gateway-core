@@ -41,12 +41,18 @@ type RecordOutcome struct {
 	FailStreakLimit int // Failures before disabling (default 3)
 	// BillingMode (2026-08-10): when "free", record_request.lua tolerates
 	// transient error kinds (rate_limit/timeout/stream_timeout/
-	// upstream_down/empty_response/transient) — fail_streak still
-	// accumulates but the node is not hard-disabled. (The old
-	// soft-demote twin in domains/ursm/v2/reducer was deleted — zero
-	// importers, AUDIT_24H B2a; this Lua script is the authoritative
+	// upstream_down/empty_response/transient/no_available_channel) —
+	// fail_streak still accumulates but the node is not hard-disabled.
+	// (The old soft-demote twin in domains/ursm/v2/reducer was deleted —
+	// zero importers, AUDIT_24H B2a; this Lua script is the authoritative
 	// implementation.) Empty/non-"free" values keep the pre-existing
 	// hard-disable behavior for all other billing modes.
+	//
+	// 2026-11-02 (round 11 / F-C): no_available_channel joined this set —
+	// its credential-scoped meaning is "the relay group has no channel for
+	// this model right now", i.e. exactly the flaky-but-usable free supply
+	// the carve-out is meant to protect. Without it, a free credential was
+	// hard-disabled after 3 consecutive no_available_channel failures.
 	BillingMode string
 	// HealthStatus (会话优化 v4 T5 / P1-5): optional rich health enum
 	// (api.HealthStatus*). Empty or out-of-vocabulary values leave the

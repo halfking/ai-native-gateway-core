@@ -51,9 +51,9 @@ func TestNodeHealthErrorKindNoAvailableChannel(t *testing.T) {
 // 若回写成 KindModelNotFound，就会被记成「模型不存在」那套**终态**语义
 // （与实际不符，且会把升级臂与 model_not_found 串扰起来）。
 func TestErrorKindFromNodeHealthNoAvailableChannel(t *testing.T) {
-	got := errorKindFromNodeHealth(nodehealth.ErrorKindNoAvailableChannel)
+	got := errorKindFromNodeHealth(nodehealth.ErrorKindNoAvailableChannel, 400)
 	if got != errorsx.KindNoAvailableChannel {
-		t.Fatalf("errorKindFromNodeHealth(ErrorKindNoAvailableChannel) = %q, want %q",
+		t.Fatalf("errorKindFromNodeHealth(ErrorKindNoAvailableChannel, 400) = %q, want %q",
 			got, errorsx.KindNoAvailableChannel)
 	}
 	if got == errorsx.KindModelNotFound {
@@ -65,9 +65,11 @@ func TestErrorKindFromNodeHealthNoAvailableChannel(t *testing.T) {
 
 // TestNodeHealthKindRoundTripNoAvailableChannel 钉**往返一致**。
 func TestNodeHealthKindRoundTripNoAvailableChannel(t *testing.T) {
-	rt := errorKindFromNodeHealth(nodeHealthErrorKind(errorsx.KindNoAvailableChannel))
+	// ★ 往返要带**状态码**：4xx（绑定级）那一支才回写 KindNoAvailableChannel
+	//   （第十一轮 · F-C 起的分档回写，见下面的 scope split 门）。
+	rt := errorKindFromNodeHealth(nodeHealthErrorKind(errorsx.KindNoAvailableChannel), 400)
 	if rt != errorsx.KindNoAvailableChannel {
-		t.Fatalf("往返 nodeHealthErrorKind → errorKindFromNodeHealth = %q, want %q",
+		t.Fatalf("往返 nodeHealthErrorKind → errorKindFromNodeHealth(400) = %q, want %q",
 			rt, errorsx.KindNoAvailableChannel)
 	}
 }

@@ -184,7 +184,7 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 	if e == nil {
 		return nil
 	}
-	kind := errorKindFromNodeHealth(decision.ErrorKind)
+	kind := errorKindFromNodeHealth(decision.ErrorKind, decision.HTTPStatus)
 	// A named model rejection is binding evidence even when upstream
 	// classification fell through to ErrorKindUpstream. The reducer intentionally
 	// remains classification-only and may emit the full third-failure effect set;
@@ -286,7 +286,7 @@ func (e *Executor) applyNodeHealthPersist(ctx context.Context, decision nodeheal
 	if _, modelScoped := errorsx.ModelScopedRejection([]byte(decision.ErrorDetail)); modelScoped {
 		return
 	}
-	kind := errorKindFromNodeHealth(decision.ErrorKind)
+	kind := errorKindFromNodeHealth(decision.ErrorKind, decision.HTTPStatus)
 	e.StateObserver.UpdateOnFailure(ctx, int(decision.Node.CredentialID), decision.Node.Model, kind, decision.RequestID, decision.Node.TenantID, decision.BillingMode)
 }
 
@@ -353,7 +353,7 @@ func ursmOutcomeFromDecision(decision nodehealth.Decision, kind credential.Error
 }
 
 func (e *Executor) applyNodeHealthDegradeEffect(ctx context.Context, decision nodehealth.Decision, effect nodehealth.Effect, errs *[]error) {
-	kind := errorKindFromNodeHealth(decision.ErrorKind)
+	kind := errorKindFromNodeHealth(decision.ErrorKind, decision.HTTPStatus)
 	switch effect.Kind {
 	case nodehealth.EffectSetBindingUnavailable:
 		if state := e.nodeHealthStateWriter(); state != nil && state.Enabled() {
@@ -548,7 +548,33 @@ func nodeHealthErrorKind(kind errorsx.ErrorKind) nodehealth.ErrorKind {
 	}
 }
 
-func errorKindFromNodeHealth(kind nodehealth.ErrorKind) errorsx.ErrorKind {
+// errorKindFromNodeHealth 把 nodehealth 的归一化档位翻译回 errorsx 的 kind。
+// 它是**写回路径**的唯一入口（credential.Writer / credentialstate /
+// URSM v2 / 断路器都读这一个值）⇒ 下游那几处「按 kind 字符串分档」的闭集
+// 必须覆盖它可能产出的每一个字符串。
+//
+// ★ 2026-11-02（第十一轮 · F-C）：**「无可用后端」这一档必须按归责层级分写**。
+//
+// 同一个 nodehealth kind（ErrorKindNoAvailableChannel）在两个状态码下代表
+// **两种相反**的下游处置：
+// 4xx（中转 "No enterprise provider is available for this request path"）
+// ⇒ **绑定级 + 确定性**：这一对 (凭据,模型) 确定不提供 ⇒ 冷却要**长**
+// （绑定级 15min，credential.Writer 里这一档本就有的档位）
+// 5xx（中转 "No available channel for model X under group Y"）
+// ⇒ **凭据级 + 瞬时**：中转分组暂时没有通道 ⇒ 冷却要**短**（30s）
+//
+// ★ 单一 kind 字符串**表达不了**这两种相反的策略 ⇒ 必须按 HTTPStatus 分流。
+// 第九轮（§十二）把它统一回写成 no_available_channel ⇒ 下游**按字符串分档**
+// 的闭集全部没有登记这一档 ⇒ 连带四处行为漂移（审计档 §十四.2）。
+// 本轮把 5xx/未知 那一支**逐字回落**到第九轮之前的 KindTransient ⇒
+// URSM 免费档容忍、断路器 freeTierPolicies/transientFamily、
+// credentialstate 首次失败即探、凭据级 30s 冷却 —— 全部恢复。
+//
+// httpStatus 取自 nodehealth.Decision.HTTPStatus（reducer 从 Observation
+// 透传，而 Observation.HTTPStatus 由 executor 的 dispatchHTTPStatus 从
+// *upstream.Error.StatusCode 取）⇒ 与 reducer 里 isBindingScoped 的分档
+// **同源**（同一个状态码、同一个判据）。
+func errorKindFromNodeHealth(kind nodehealth.ErrorKind, httpStatus int) errorsx.ErrorKind {
 	switch kind {
 	case nodehealth.ErrorKindNetwork:
 		return errorsx.KindNetwork
@@ -563,11 +589,16 @@ func errorKindFromNodeHealth(kind nodehealth.ErrorKind) errorsx.ErrorKind {
 	case nodehealth.ErrorKindModelBinding:
 		return errorsx.KindModelNotFound
 	case nodehealth.ErrorKindNoAvailableChannel:
-		// 2026-11-02（第九轮 · F-B）：与 nodeHealthErrorKind 对称回写。
-		// ★ 回写的是 **no_available_channel**，不是 model_not_found ——
-		//   写进 credential.Writer 的是 reason='auto_no_available_channel'
-		//   （绑定级冷却），不是「模型不存在」那套终态语义。
-		return errorsx.KindNoAvailableChannel
+		// 2026-11-02（第十一轮 · F-C）：按归责层级分写（理由见上）。
+		// ★ 4xx ⇒ 绑定级证据（确定性）⇒ 用专属 kind：写进 credential.Writer
+		//   的是 reason='auto_no_available_channel'（绑定级 15min 冷却），
+		//   不是「模型不存在」那套终态语义。
+		// ★ 5xx / 状态码未知(0) ⇒ 凭据级证据（中转整体暂时无通道）⇒ **瞬时**
+		//   语义 ⇒ 落 KindTransient（与第九轮之前**逐字一致**）。
+		if httpStatus >= 400 && httpStatus < 500 {
+			return errorsx.KindNoAvailableChannel
+		}
+		return errorsx.KindTransient
 	case nodehealth.ErrorKindModelUnavailable:
 		return errorsx.KindModelUnavailable
 	case nodehealth.ErrorKindEmptyResponse:
