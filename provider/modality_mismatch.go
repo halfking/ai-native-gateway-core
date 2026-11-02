@@ -75,7 +75,7 @@ func (c *Client) ModelModalityMismatch(ctx context.Context, model, profile, tena
 		return nil, nil
 	}
 	requestModality = strings.TrimSpace(strings.ToLower(requestModality))
-	if requestModality == "" {
+	if !modalityDiagnosisQueryNeeded(requestModality) {
 		// An empty request modality means "no modality filter" — nothing is
 		// excluded by the gate, so there is nothing to diagnose.
 		return nil, nil
@@ -122,20 +122,90 @@ func (c *Client) ModelModalityMismatch(ctx context.Context, model, profile, tena
 	if err != nil {
 		return nil, err
 	}
+	return modalityMismatchDecision(registeredModality, requestModality, canonicalModel, routableIgnoringModality), nil
+}
+
+// modalityDiagnosisQueryNeeded says whether the diagnosis query has to run
+// for a request modality.
+//
+// ★ 它**只**回答「这次诊断值不值得查库」，不回答「是不是模态问题」
+// （那是 modalityMismatchDecision 的事）——两条线必须分开：
+// 一条线管成本，一条线管判决。
+//
+// ★ 唯一合法的早退是「请求没有模态概念」（模态为空 ⇒ 模态门没排除任何东西
+// ⇒ 没有东西可诊断）。**文本请求必须查库**：文本臂恰恰**排除**登记为
+// embedding 的模型（2026-11-02，211 生产事故 · embedding 投毒链）⇒
+// chat + embedding 这一次零候选**就是**模态问题 ⇒ 不查库就永远给不出
+// 400 modality_mismatch，客户端只会拿到一个没有原因的 503 然后无限重试。
+//
+// ★ 这条判据单独成为一函数，是为了让它**可单测**：2026-11-02 之前
+// provider/modality_mismatch_test.go 里有一条门，它的注释断言
+// 「文本请求从不被模态门排除，所以诊断连数据库都不该进」——
+// ★★ 那个前提是**假的**（文本臂恰恰排除 embedding），而且那条门**没有真的
+// 测早退**（它用的是 dbPool == nil 的 client，走的是另一道早退）
+// ⇒ 「text 早退」这件事从头到尾没被验过，却有一条绿门站在那儿 ⇒
+// 它会**引导**后来者去实现那个早退，而实现之后**它仍然是绿的**。
+// ⇒ 现在这条判据被显式化并逐值钉死（provider/modality_mismatch_test.go
+// 的 TestModalityDiagnosisQueryNeeded），任何「text 不查库」的改法当场红。
+func modalityDiagnosisQueryNeeded(requestModality string) bool {
+	return strings.TrimSpace(strings.ToLower(requestModality)) != ""
+}
+
+// modalityMismatchDecision 是「零候选是不是模态造成的」这条判决的**唯一实现**。
+//
+// ★ 为什么把它从 ModelModalityMismatch 里抽出来（2026-11-02 第十四轮 · F-16）：
+//
+// 判决的三个输入里，只有 registeredModality / routableIgnoringModality 需要查库。
+// 判决**本身**是纯函数 ⇒ 它可以在**不接数据库**的情况下被逐格钉死。
+// 在此之前它长在查询函数里，于是「判决表」只能靠真实数据库来验（realdb 测试，
+// 没有 TEST_DATABASE_URL 时整条跳过）⇒ 本地永远验不到。
+//
+// ★ 2026-11-02 之前 provider/modality_mismatch_test.go 里有这样一条门：
+// 「TestModelModalityMismatch_ShortCircuitsOnText」——
+// 它的注释断言「文本请求从不被模态门排除，所以诊断连数据库都不该进」。
+// ★★ 那个前提在 2026-11-02（211 生产事故 · embedding 投毒链）之后是**假的**：
+// 文本臂恰恰**排除**登记为 embedding 的模型（ModalityAccepts 的 text 臂）。
+// 而且这条门**并没有真的测早退**——它用的是 `&Client{}`（dbPool == nil），
+// 走的是 `!c.Enabled() || c.dbPool == nil` 那道**另一个**早退，
+// 于是「text 早退」这件事从头到尾没被验过，只是名字和注释在讲它。
+// ⇒ 一条前提为假、且测的不是它自称的东西的门：它会**误导**后来者去实现
+// 那个 text 早退（那会让 chat + embedding ⇒ 无原因的 503，事故链复活），
+// 而且实现之后**它仍然是绿的**。
+//
+// ⇒ 抽出纯函数后，判决表可以在 provider 包内逐格钉死（不需要数据库），
+// 「text 早退」这个已经被推翻的前提也有了明确的落点：判决表里写着
+// (登记=embedding, 请求=text) ⇒ **有诊断**。
+//
+// ★ 判决的形状（与抽取前逐字一致）：
+// 请求模态为空 ⇒ 无诊断（没有模态概念，没有东西可诊断）
+// 忽略模态过滤后不可路由 ⇒ 无诊断（压根没绑定 ⇒ 是「暂时没东西可路由」）
+// 判据说它能服务这个模态 ⇒ 无诊断（被别的原因排除：探针判决、租户范围…）
+// 否则 ⇒ 模态不匹配（登记模态服务不了本次请求）
+//
+// ★ 注意第 2 条与第 3 条**顺序不能换**：先判「可路由」再判「能不能服务」，
+// 否则一个压根没有绑定的模型会被说成「模态不对」——那是把客户端指向
+// 一个它根本改不了的原因（客户端会改成纯文本请求，然后继续失败）。
+func modalityMismatchDecision(registeredModality, requestModality, canonicalModel string, routableIgnoringModality bool) *ModalityMismatch {
+	// 归一（与 ModelModalityMismatch 里那次同源、同处）：诊断返回给客户端的
+	// RequestedModality 必须是归一后的令牌（"TEXT" / " text " ⇒ "text"）。
+	requestModality = strings.TrimSpace(strings.ToLower(requestModality))
+	if requestModality == "" {
+		return nil
+	}
 	if !routableIgnoringModality {
 		// The model has no live binding at all — nothing to do with modality.
-		return nil, nil
+		return nil
 	}
 	if ModalityAccepts(registeredModality, requestModality) {
 		// The model could serve this modality; it was excluded for some other
 		// reason (probe verdict, tenant scope, ...). Not a modality mismatch.
-		return nil, nil
+		return nil
 	}
 	return &ModalityMismatch{
 		RequestedModality:  requestModality,
 		RegisteredModality: registeredModality,
 		CanonicalModel:     canonicalModel,
-	}, nil
+	}
 }
 
 // ★模态接受判据的实现**不在本文件**：它与判据的 SQL 形态同源，住在
