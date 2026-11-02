@@ -2,8 +2,11 @@ package ir
 
 import "encoding/json"
 
-// reasoningAliasField is the **Ollama OpenAI-compat** name for the thinking
-// trace.
+// 本文件处理 **Ollama OpenAI-compat** 方言里 thinking trace 的名字与取值。
+//
+// ★ Ollama 用的那个名字是 `reasoning`（OpenAI 标准方言用 `reasoning_content`）。
+//   2026-11-02 第十六轮（F-9 死代码清理）把同名常量 `reasoningAliasField`
+//   删掉了：它零引用 ⇒ 取值直接走 reasoningAliasString 的实参。
 //
 // OpenAI's Chat Completions dialect carries the trace in
 // `choices[].message.reasoning_content` (non-stream) and
@@ -26,8 +29,20 @@ import "encoding/json"
 //
 // Consequences of the gap (before this file existed):
 //
-//  1. The thinking trace never reached the client. A caller asking a
-//     reasoning model got an answer with neither content nor reasoning.
+//  1. ★★ 订正（2026-11-02 第十六轮 · F-8）：原文写的是「The thinking trace
+//     never reached the client」——**这句话只对 Anthropic 腿成立**，对
+//     OpenAI 腿**不成立**：
+//     · OpenAI 腿把**上游原始 body / 原始 SSE 行**原样转发给客户端
+//       （domains/streaming/executors/executor_chat.go 的
+//       params.W.Write(respBody)；domains/streaming/stream.go 的
+//       writeClientLine）⇒ trace 从来没有从**客户端的视野**里消失过。
+//     · ⇒ alias 改的是**网关内部视图**（IR）：读 `reasoning_content` 的
+//       OpenAI SDK 客户端仍然看不到 trace（上游给的名字是 `reasoning`），
+//       而**走 IR 的 Responses 桥**收益为真（IR 看得见 trace）。
+//     · Anthropic 腿**仍然丢**（非流式序列化不读 IR 的 ReasoningContent，
+//       流式桥读的是原始 wire key `reasoning_content`）⇒ 那是兄弟档 F7，
+//       本轮**未修**（它要的是产品侧裁决：是否承诺向 Anthropic 客户端
+//       恢复转发）。
 //  2. `usage.completion_tokens_details.reasoning_tokens` is absent for
 //     Ollama, so `emptyoutcome.InspectEmptyBody` could only attribute the
 //     empty answer via criterion ① (finish_reason == "length").
@@ -77,7 +92,6 @@ import "encoding/json"
 // `{"reasoning":{"effort":"high"}}`) does not make the whole envelope fail
 // to unmarshal — a plain `string` field would abort the parse of the entire
 // response.
-const reasoningAliasField = "reasoning"
 
 // reasoningAliasString extracts a reasoning trace from a raw JSON value that
 // may be either a string (Ollama /v1 dialect — the trace) or an object

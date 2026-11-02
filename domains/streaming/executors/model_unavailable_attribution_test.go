@@ -101,17 +101,3 @@ func TestIsTransientRouteNodeFailureModelUnavailable(t *testing.T) {
 			"请求侧错误不得记成路由节点失败样本（节点其实是健康的）")
 	}
 }
-
-// TestDispatchFailureIsCredentialHealthyModelUnavailable 钉「账号仍然健康」。
-//
-// model_unavailable 是**绑定级**证据：这一对不可用，账号本身健康
-// ⇒ 与 model_not_found 同判（不扣凭据健康）。
-func TestDispatchFailureIsCredentialHealthyModelUnavailable(t *testing.T) {
-	if !dispatchFailureIsCredentialHealthy(errorsx.KindModelUnavailable, false) {
-		t.Fatal("dispatchFailureIsCredentialHealthy(KindModelUnavailable) = false, want true —— " +
-			"绑定级证据不指向账号，扣凭据健康会连坐兄弟模型")
-	}
-	if dispatchFailureIsCredentialHealthy(errorsx.KindTransient, false) {
-		t.Fatal("dispatchFailureIsCredentialHealthy(KindTransient) = true, want false（既有行为不得变）")
-	}
-}

@@ -105,14 +105,3 @@ func TestIsTransientRouteNodeFailureRequestRejected(t *testing.T) {
 		t.Fatal("isTransientRouteNodeFailure(KindAuth) = true, want false（鉴权失败必须记节点失败）")
 	}
 }
-
-// TestDispatchFailureIsCredentialHealthyRequestRejected 钉「凭据仍然健康」：
-// 请求侧拒绝不构成凭据级证据。
-func TestDispatchFailureIsCredentialHealthyRequestRejected(t *testing.T) {
-	if !dispatchFailureIsCredentialHealthy(errorsx.KindRequestRejected, false) {
-		t.Fatal("dispatchFailureIsCredentialHealthy(KindRequestRejected) = false, want true")
-	}
-	if dispatchFailureIsCredentialHealthy(errorsx.KindTransient, false) {
-		t.Fatal("dispatchFailureIsCredentialHealthy(KindTransient) = true, want false（既有行为不得变）")
-	}
-}

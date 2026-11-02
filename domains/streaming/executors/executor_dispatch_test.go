@@ -178,30 +178,6 @@ func (attemptCapRecommender) RecommendModelAlternatives(_ context.Context, req a
 	return append([]string(nil), req.PreferredModels...), nil
 }
 
-func TestDispatchFailureIsCredentialHealthy(t *testing.T) {
-	cases := []struct {
-		kind          errorsx.ErrorKind
-		modelNotFound bool
-		want          bool
-	}{
-		{kind: errorsx.KindClientBug, want: true},
-		{kind: errorsx.KindToolCallIdMismatch, want: true},
-		{kind: errorsx.KindContentFilter, want: true},
-		{kind: errorsx.KindContextLength, want: true},
-		{kind: errorsx.KindModelNotFound, modelNotFound: true, want: true},
-		{kind: errorsx.KindAuth, want: false},
-		{kind: errorsx.KindQuotaPeriodic, want: false},
-		{kind: errorsx.KindUpstreamDown, want: false},
-	}
-	for _, tc := range cases {
-		t.Run(string(tc.kind), func(t *testing.T) {
-			if got := dispatchFailureIsCredentialHealthy(tc.kind, tc.modelNotFound); got != tc.want {
-				t.Fatalf("dispatchFailureIsCredentialHealthy(%q, %v) = %v, want %v", tc.kind, tc.modelNotFound, got, tc.want)
-			}
-		})
-	}
-}
-
 type dispatchHealthCapture struct {
 	mu        sync.Mutex
 	decisions []nodehealth.Decision

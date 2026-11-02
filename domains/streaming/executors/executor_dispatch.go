@@ -1226,16 +1226,6 @@ func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candida
 	return kind
 }
 
-func dispatchFailureIsCredentialHealthy(kind errorsx.ErrorKind, modelNotFound bool) bool {
-	// 2026-11-02：IsRequestSideError ⊇ IsClientBug —— 请求侧错误族不扣凭据健康。
-	//
-	// 2026-11-02（4xx 归因族收口轮）：model_unavailable 是**绑定级**证据
-	// （上游不提供这一对）⇒ 账号本身健康 ⇒ 与 model_not_found 同判。
-	return modelNotFound || errorsx.IsRequestSideError(kind) ||
-		kind == errorsx.KindModelUnavailable ||
-		errorsx.IsContentFilter(kind) || kind == errorsx.KindContextLength
-}
-
 // estimatePromptTokens returns a rough pre-send token estimate for tpm pacing.
 // It reuses the same chars/3.5 heuristic the auto_route path applies, so the
 // tpm governor charges an approximation of the real prompt size instead of a

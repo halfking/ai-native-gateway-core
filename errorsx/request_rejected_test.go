@@ -200,9 +200,6 @@ func TestDecideNextActionRequestRejected(t *testing.T) {
 	if d.RecordProviderFailure {
 		t.Error("RecordProviderFailure = true, want false（不得记 provider 失败）")
 	}
-	if d.EnqueueProbe {
-		t.Error("EnqueueProbe = true, want false（探针查不出客户端的错误）")
-	}
 	if d.RecordCredentialFailure {
 		t.Error("RecordCredentialFailure = true, want false")
 	}
@@ -235,28 +232,6 @@ func TestDecideNextActionRequestRejected(t *testing.T) {
 	})
 	if noBudget.Action != ActionFailTerminal {
 		t.Fatalf("action without attempt budget = %q, want %q", noBudget.Action, ActionFailTerminal)
-	}
-}
-
-// TestDecideFailoverRequestRejected 钉 failover 裁决层与动作层一致：不扇出
-// 探针、不扩范围。
-//
-// 注：DecideFailover 目前生产未接线（只在 errorsx 包内被测），但它是
-// 「归责 → 动作」这条链的**书面契约**，与 DecideNextAction 必须同口径，
-// 否则将来接线时会把老口径带回来。
-func TestDecideFailoverRequestRejected(t *testing.T) {
-	d := DecideFailover(http.StatusBadRequest, []byte(ollamaDoesNotSupportChatBody), "", false)
-	if d.EnqueueProbe {
-		t.Error("EnqueueProbe = true, want false")
-	}
-	if d.ProbeFanout != 0 {
-		t.Errorf("ProbeFanout = %d, want 0", d.ProbeFanout)
-	}
-	if d.Scope != ScopeNone {
-		t.Errorf("Scope = %q, want %q", d.Scope, ScopeNone)
-	}
-	if d.Permanent || d.Fuse {
-		t.Errorf("decision = %+v, want Fuse=false Permanent=false", d)
 	}
 }
 

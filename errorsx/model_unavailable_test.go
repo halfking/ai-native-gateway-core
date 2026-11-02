@@ -160,9 +160,6 @@ func TestModelUnavailableKeepsCrossCredentialFailover(t *testing.T) {
 	if decision.RecordCredentialState {
 		t.Error("RecordCredentialState = true ⇒ 账号状态被改写")
 	}
-	if decision.EnqueueProbe {
-		t.Error("EnqueueProbe = true ⇒ 上游已经说了「我不提供它」，立刻再探只是再打一次必然失败的请求")
-	}
 }
 
 // TestModelUnavailableWithoutAlternateNodeFailsTerminal 钉收尾：

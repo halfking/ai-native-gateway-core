@@ -1,11 +1,29 @@
 package errorsx
 
-import (
-	"net/http"
-	"strconv"
-	"strings"
-	"time"
-)
+import "time"
+
+// failover_policy.go —— 2026-11-02 第十六轮（F-4 死代码清理）之后的**存活**部分。
+//
+// ★ 本文件在第十六轮之前还住着 DecideFailover / FailoverDecision /
+//   IsUpstreamAuthFailure 与四个冷却常量（DefaultRateLimitCooldown /
+//   DefaultTransientCooldown / DefaultFrontendWait / DefaultProbeFanout）。
+//   它们**全部生产零引用**（只在 errorsx 包内被测）⇒ 从第四轮起它们就是
+//   「按同口径维护着的死代码」：
+//
+//	维护它们是为了「将来接线时不带回头的老口径」，但代价是**每一次**改归责
+//	矩阵都要同步改一份没人用的分支——第十一轮（F-C）踩的就是这个坑：
+//	「回写 kind 必须逐点核对所有按 kind 字符串分档的消费点」，而这份死代码
+//	本身就是其中之一（它按 kind 分档决定扇不扇出探针）。
+//	⇒ 第七轮登记为死代码，第十六轮删除。
+//
+// ★ 留下的只有**活**的那部分：
+//   · FailoverScope —— FailoverScopeOf（penalty.go）的返回类型；
+//   · DefaultOverloadRetryDelay —— domains/streaming/executors/executor_chat.go
+//     的过载退避默认值。
+//
+// ★ 「死代码不得回来」由 errorsx/dead_code_absent_test.go 钉住。
+// ★ 另有一处**注册表漏登记**的死代码同轮删除：IsUpstreamAuthFailure
+//   （生产零引用，只被 errorsx 自己的测试引用）。
 
 // FailoverScope describes how much of the candidate pool an upstream failure
 // should remove synchronously from the current request.
@@ -17,128 +35,5 @@ const (
 	ScopeCredential FailoverScope = "credential"
 )
 
-// FailoverDecision is the side-effect-free result of classifying one upstream
-// response. State writers and probe queues consume this contract separately.
-type FailoverDecision struct {
-	Kind         ErrorKind
-	Scope        FailoverScope
-	Fuse         bool
-	Permanent    bool
-	RetryAfter   time.Duration
-	EnqueueProbe bool
-	ProbeFanout  int
-	FrontendWait time.Duration
-	ReasonCode   string
-}
-
-const (
-	DefaultRateLimitCooldown  = 30 * time.Second
-	DefaultTransientCooldown  = 2 * time.Second
-	DefaultOverloadRetryDelay = 5 * time.Second
-	DefaultFrontendWait       = 100 * time.Millisecond
-	DefaultProbeFanout        = 3
-)
-
-// DecideFailover maps an upstream response to synchronous routing actions.
-// clientOrigin must be false for provider responses; a client-originated 401
-// must never eject an account from the shared pool.
-func DecideFailover(status int, body []byte, retryAfterHeader string, clientOrigin bool) FailoverDecision {
-	kind := ClassifyErrorWithBody(status, body)
-	decision := FailoverDecision{
-		Kind:         kind,
-		Scope:        ScopeNone,
-		RetryAfter:   DefaultTransientCooldown,
-		FrontendWait: DefaultFrontendWait,
-		ReasonCode:   string(kind),
-	}
-	if clientOrigin {
-		decision.Kind = KindAuth
-		decision.ReasonCode = "client_auth_failure"
-		return decision
-	}
-
-	// P0-C：Scope / Fuse / Permanent 一律来自 PenaltyOf（归责矩阵 SSOT）。
-	// EnqueueProbe / RetryAfter / ReasonCode 仍按 kind 细分（探针策略与归责正交）。
-	pen := PenaltyOf(kind)
-	decision.Scope = FailoverScopeOf(pen)
-	decision.Fuse = pen.Fuse
-	decision.Permanent = pen.Permanent
-
-	switch kind {
-	case KindAuth, KindAuthRevoked:
-		decision.EnqueueProbe = false
-		decision.ReasonCode = "credential_auth_failed"
-	case KindQuotaPermanent, KindQuotaPeriodic, KindQuotaBalance, KindQuota:
-		decision.EnqueueProbe = false
-		decision.ReasonCode = "credential_quota_exhausted"
-	case KindRateLimit:
-		decision.RetryAfter = parseRetryAfter(retryAfterHeader, DefaultRateLimitCooldown)
-		decision.EnqueueProbe = true
-		decision.ProbeFanout = 1
-		decision.ReasonCode = "credential_rate_limited"
-	case KindConcurrent:
-		decision.RetryAfter = 5 * time.Second
-		decision.EnqueueProbe = true
-		decision.ProbeFanout = DefaultProbeFanout
-		decision.ReasonCode = "provider_concurrent_overload"
-	case KindUpstreamOverloaded:
-		decision.RetryAfter = parseRetryAfter(retryAfterHeader, DefaultOverloadRetryDelay)
-		decision.EnqueueProbe = true
-		decision.ProbeFanout = 1
-		decision.ReasonCode = "provider_upstream_overloaded"
-	case KindNoAvailableChannel:
-		decision.RetryAfter = 15 * time.Minute
-		decision.EnqueueProbe = true
-		decision.ProbeFanout = 1
-		decision.FrontendWait = 0
-		decision.ReasonCode = "no_available_channel"
-	case KindTransient, KindTimeout, KindNetwork, KindUpstreamDown, KindStreamTimeout:
-		decision.EnqueueProbe = true
-		decision.ProbeFanout = DefaultProbeFanout
-		decision.ReasonCode = "upstream_transient_failure"
-	case KindModelNotFound, KindModelDeprecated, KindUnsupportedFeature, KindContextLength, KindContentFilter, KindToolCallIdMismatch, KindClientBug,
-		// 2026-11-02：上游拒收但无法再归因的 4xx —— 与 client_bug 同族：
-		// 不扇出探针（探针查不出客户端的错误），不扣节点。
-		KindRequestRejected:
-		// P0-C：client_bug / shape 族 PenaltyNone → ScopeNone（不再 ScopeModel）。
-		// 探针仍不入队（同 2026-09-18 flap 修复）。
-		decision.EnqueueProbe = false
-		decision.FrontendWait = 0
-		decision.ReasonCode = "model_or_request_not_eligible"
-	case KindModelUnavailable:
-		// 2026-11-02（4xx 归因族收口轮）：裸 404 = 「上游不提供这一对」。
-		// Scope 来自 PenaltyOf ⇒ ScopeModel（**绑定级**，不动账号）；
-		// 不扇出探针——上游已经说了「我不提供它」，立刻再探只是再打一次
-		// 必然失败的请求（绑定级恢复由绑定级阶梯 + 探针阶梯负责）。
-		decision.EnqueueProbe = false
-		decision.FrontendWait = 0
-		decision.ReasonCode = "model_unavailable_binding_scoped"
-	default:
-		if pen.Target == PenaltyNone {
-			decision.EnqueueProbe = false
-			decision.FrontendWait = 0
-		} else {
-			decision.EnqueueProbe = true
-			decision.ProbeFanout = DefaultProbeFanout
-		}
-	}
-	return decision
-}
-
-func parseRetryAfter(value string, fallback time.Duration) time.Duration {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return fallback
-	}
-	seconds, err := strconv.Atoi(value)
-	if err != nil || seconds < 0 {
-		return fallback
-	}
-	return time.Duration(seconds) * time.Second
-}
-
-// IsUpstreamAuthFailure keeps the provider/client boundary explicit for callers
-// that receive a net/http response before the body classifier runs.
-func IsUpstreamAuthFailure(status int, clientOrigin bool) bool {
-	return !clientOrigin && (status == http.StatusUnauthorized || status == http.StatusForbidden)
-}
+// DefaultOverloadRetryDelay 是上游过载（KindUpstreamOverloaded）时的默认退避。
+const DefaultOverloadRetryDelay = 5 * time.Second

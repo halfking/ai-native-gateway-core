@@ -60,21 +60,20 @@ func TestDecideNextActionCommittedAndCanceledPrecedence(t *testing.T) {
 
 func TestDecideNextActionNetworkAndWaitPolicies(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		ctx   DecisionContext
-		want  NextAction
-		wait  time.Duration
-		probe bool
+		name string
+		ctx  DecisionContext
+		want NextAction
+		wait time.Duration
 	}{
 		{
 			name: "network retries on same node first",
 			ctx:  DecisionContext{Kind: KindNetwork, MaxSameNodeRetries: 2, RemainingAttempts: 3},
-			want: ActionRetrySameNode, probe: true,
+			want: ActionRetrySameNode,
 		},
 		{
 			name: "rate limit waits",
 			ctx:  DecisionContext{Kind: KindRateLimit, RetryAfter: 7 * time.Second, RemainingAttempts: 3},
-			want: ActionWaitRecovery, wait: 7 * time.Second, probe: true,
+			want: ActionWaitRecovery, wait: 7 * time.Second,
 		},
 		{
 			name: "terminal request error",
@@ -89,9 +88,6 @@ func TestDecideNextActionNetworkAndWaitPolicies(t *testing.T) {
 			}
 			if tc.wait > 0 && got.RetryAfter != tc.wait {
 				t.Fatalf("retry_after = %s, want %s", got.RetryAfter, tc.wait)
-			}
-			if got.EnqueueProbe != tc.probe {
-				t.Fatalf("enqueue_probe = %v, want %v", got.EnqueueProbe, tc.probe)
 			}
 		})
 	}

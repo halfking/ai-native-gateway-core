@@ -6,7 +6,7 @@ package errorsx
 // 绑定冷却。请求内容/形状/客户端契约错误不罚节点；模型级拒绝只罚
 // (credential, model)；账号级证据才罚凭据。
 //
-// DecideFailover 的 Scope/Fuse/Permanent 已接线 PenaltyOf；credential.Writer
+// Scope/Fuse/Permanent 由 PenaltyOf 统一给出；credential.Writer
 // 的 WriteOnError / SetCredentialUnavailable / coolingDuration 对
 // PenaltyNone 短路（不写冷却）；Breaker.RecordFailure 同样以 PenaltyNone
 // 为前置短路（json-word / context_length 等不冷却）。P0-4 rest 分级
@@ -247,7 +247,7 @@ func IsNodeFaultPenalty(kind ErrorKind) bool {
 	return SeverityOf(kind) == SeverityCredential
 }
 
-// FailoverScopeOf 把 PenaltyTarget 映射到既有 FailoverScope（兼容 DecideFailover）。
+// FailoverScopeOf 把 PenaltyTarget 映射到 FailoverScope。
 func FailoverScopeOf(p Penalty) FailoverScope {
 	switch p.Target {
 	case PenaltyNone:

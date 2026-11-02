@@ -144,7 +144,6 @@ type ActionDecision struct {
 	RecordProviderFailure     bool
 	RecordCredentialFailure   bool
 	RecordCredentialState     bool
-	EnqueueProbe              bool
 
 	RequestID      string
 	TenantID       string
@@ -327,7 +326,6 @@ func DecideNextAction(ctx DecisionContext) ActionDecision {
 		base.PreserveClientConnection = true
 		base.RequiresUncommittedOutput = true
 		base.RecordProviderFailure = true
-		base.EnqueueProbe = true
 		if !base.LoopDetected && effectiveRetryCount < ctx.MaxSameNodeRetries && ctx.RemainingAttempts > 0 {
 			base.Action = ActionRetrySameNode
 			base.ReasonCode = "precommit_transient_retry"
@@ -416,7 +414,6 @@ func DecideNextAction(ctx DecisionContext) ActionDecision {
 		base.Action = ActionWaitRecovery
 		base.ReasonCode = string(ctx.Kind)
 		base.RecordProviderFailure = true
-		base.EnqueueProbe = true
 		base.PreserveClientConnection = true
 		base.RetryAfter = ctx.RetryAfter
 		if base.RetryAfter <= 0 {

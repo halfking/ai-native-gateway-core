@@ -26,10 +26,20 @@ func TestPenaltyOfClosedSet(t *testing.T) {
 	}
 }
 
-func TestPenaltyOfClientBugIsNone(t *testing.T) {
+// TestPenaltyOfRequestSideFamilyIsNone 钉「请求侧错误族不罚任何人」。
+//
+// ★ 2026-11-02 第十六轮（F-4 死代码清理）：这条契约原先只由**死代码**的
+// 测试守着（TestDecideFailoverClientBugScopeNone /
+// TestDecideFailoverRequestRejected —— 测的是生产零引用的
+// errorsx.DecideFailover）⇒ 死代码一删，契约就没人守了。
+// ⇒ 契约**搬到活的那一层**（PenaltyOf + FailoverScopeOf）来守。
+func TestPenaltyOfRequestSideFamilyIsNone(t *testing.T) {
 	for _, k := range []ErrorKind{
 		KindClientBug, KindToolCallIdMismatch, KindContextLength,
 		KindContentFilter, KindUnsupportedFeature, KindConversion,
+		// 请求侧错误族（上游回了 4xx，但错误体里没有更细的归因）：
+		// 不罚、不冷却、绑定不翻红、探针不扇出。
+		KindRequestRejected,
 	} {
 		p := PenaltyOf(k)
 		if p.Target != PenaltyNone {
@@ -55,19 +65,5 @@ func TestPenaltyOfModelNotFoundIsBinding(t *testing.T) {
 	}
 	if FailoverScopeOf(p) != ScopeModel {
 		t.Fatalf("scope = %q, want credential_model", FailoverScopeOf(p))
-	}
-}
-
-func TestDecideFailoverClientBugScopeNone(t *testing.T) {
-	// P0-C 回归：请求形状 400 不再 ScopeModel（避免级联冷却语义混淆）。
-	got := DecideFailover(400, []byte(`{"type":"error","error":{"type":"bad_request_error","message":"invalid params, invalid thinking.type: \"enabled\" (allowed: adaptive, disabled) (2013)","http_code":"400"}}`), "", false)
-	if got.Kind != KindClientBug {
-		t.Fatalf("kind = %q, want client_bug", got.Kind)
-	}
-	if got.Scope != ScopeNone {
-		t.Fatalf("scope = %q, want none (P0-C PenaltyOf)", got.Scope)
-	}
-	if got.EnqueueProbe {
-		t.Fatal("client_bug must not enqueue probe")
 	}
 }
