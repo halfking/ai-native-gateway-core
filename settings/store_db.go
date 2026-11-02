@@ -8,20 +8,47 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// poolDB is the minimal PG surface StoreDB uses.
+//
+// ★ 为什么要抽成接口（2026-11-02）：租户级写路径的 42P10（生产库没有
+//   (tenant_id, key) 唯一约束 ⇒ ON CONFLICT 必炸）之所以能一路漏到生产，
+//   根因之一就是**这条写路径在默认测试里没有任何可执行的判据**
+//   （仓内的 settings DB 测试要么是 //go:build integration 的真库腿，
+//   要么根本不碰写路径）⇒ ★ 抽出接口后单测可以注入 pgxmock，
+//   写路径就能被钉住（见 store_db_tenant_test.go）。
+//
+// ★ 三个方法与 *pgxpool.Pool / pgxmock 的签名逐字一致 ⇒ 生产路径零行为变更。
+type poolDB interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
 
 // StoreDB persists settings to settings_kv / tenant_settings_kv.
 // It is the write side of the priority chain (DB > env > default).
 type StoreDB struct {
-	pool *pgxpool.Pool
+	pool poolDB
 }
 
 // NewStoreDB wires the backend to a PG connection pool.
 func NewStoreDB(pool *pgxpool.Pool) *StoreDB { return &StoreDB{pool: pool} }
 
+// newStoreDBForTest wires the backend to an arbitrary poolDB（单测注入 mock）。
+func newStoreDBForTest(db poolDB) *StoreDB { return &StoreDB{pool: db} }
+
 // Pool returns the underlying pool. Useful for tests and clean-up tasks.
-func (s *StoreDB) Pool() *pgxpool.Pool { return s.pool }
+// Returns nil when the store was wired to a mock (test-only).
+func (s *StoreDB) Pool() *pgxpool.Pool {
+	if p, ok := s.pool.(*pgxpool.Pool); ok {
+		return p
+	}
+	return nil
+}
 
 // settingsQueryTimeout 是 StoreDB 单条查询的超时上限。Get 走的是无 ctx
 // 的读路径（Global.EffectiveValue → 60s sweep 等热路径），DB 挂起时调用方
@@ -143,6 +170,32 @@ func (s *StoreDB) GetTenant(tenantID, key string) (jsonRawMessage, error) {
 }
 
 // SetTenant writes a tenant-scoped value.
+//
+// ★★ 2026-11-02（chat tab 空态根修链的一环）：本函数原先用
+//
+//	INSERT ... ON CONFLICT (tenant_id, key) DO UPDATE
+//
+//	⇒ ★ 它要求 tenant_settings_kv 上**存在** (tenant_id, key) 唯一约束；
+//	  而【生产库（211 / 252 共享库）与全新建库基线 sql/schema/01-schema.sql
+//	  都没有这条约束】（迁移 022 声明了 PRIMARY KEY，但基线是从缺约束的库
+//	  dump 出来的，dump 又把缺口固化回基线）⇒ ⇒ 每次租户级设置写入都
+//	  **42P10**（there is no unique or exclusion constraint matching the
+//	  ON CONFLICT specification）⇒ ⇒ **所有租户级设置写入全废**，
+//	  其中就包括「会话正文录制同意」开关 ⇒ ⇒ 录制同意永远关着 ⇒
+//	  ⇒ 会话正文永不落库 ⇒ ⇒ 前端「对话」页四个角色页签全空。
+//	  ★ 实测证据（211 生产，2026-11-02）：PUT /api/admin/tenants/default/
+//	    recording-consent {"consent":true} → HTTP 500
+//	    err="upsert tenant setting: ERROR: ... (SQLSTATE 42P10)"；
+//	    且 tenant_settings_kv 在 211 上**一行都没有**（从没成功写进过一行）。
+//
+// ★ 修法：**与平台级 Set 完全同款**的「先 UPDATE，未命中再 INSERT」形态
+//   （同文件上方的 Set 已经是这个写法，注释原文「Try UPDATE first; if no
+//   row matched, INSERT」）⇒ 不再依赖那条并不存在的唯一约束 ⇒
+//   ★ 与平台级写法同源 ⇒ 一把尺一份实现。
+//   ★ 不改 schema：补约束要走新迁移 + 基线 + 对象台账刷新（体量大、
+//     跨环境），而写路径本就不需要它 ⇒ 先让写路径活起来。
+//   ★ 语义保持：UPDATE 分支仍然回填 prev_value / prev_updated_at（回滚按钮
+//     与 prev_value 审计依赖它），INSERT 分支返回 nil（无旧值）。
 func (s *StoreDB) SetTenant(tenantID, key string, value any) (jsonRawMessage, error) {
 	spec := Global.Spec(key)
 	if spec == nil {
@@ -157,22 +210,28 @@ func (s *StoreDB) SetTenant(tenantID, key string, value any) (jsonRawMessage, er
 	newValStr := string(newVal)
 	var oldVal []byte
 	err = s.pool.QueryRow(context.Background(), `
-		INSERT INTO tenant_settings_kv (tenant_id, key, value, value_type, category, updated_at)
-		VALUES ($1, $2, $3::jsonb, $4, $5, now())
-		ON CONFLICT (tenant_id, key) DO UPDATE
-		  SET value = EXCLUDED.value,
-		      value_type = EXCLUDED.value_type,
-		      category = EXCLUDED.category,
-		      updated_at = now(),
-		      prev_value = tenant_settings_kv.value,
-		      prev_updated_at = tenant_settings_kv.updated_at
+		UPDATE tenant_settings_kv
+		   SET value = $3::jsonb,
+		       value_type = $4,
+		       category = $5,
+		       updated_at = now(),
+		       prev_value = value, prev_updated_at = updated_at
+		 WHERE tenant_id = $1 AND key = $2
 		RETURNING prev_value
 	`, tenantID, key, newValStr, valueType, category).Scan(&oldVal)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
+	if err == pgx.ErrNoRows {
+		// No existing row → INSERT（同平台级 Set 的形态）。
+		_, err = s.pool.Exec(context.Background(), `
+			INSERT INTO tenant_settings_kv (tenant_id, key, value, value_type, category, updated_at)
+			VALUES ($1, $2, $3::jsonb, $4, $5, now())
+		`, tenantID, key, newValStr, valueType, category)
+		if err != nil {
+			return nil, fmt.Errorf("insert: %w", err)
 		}
-		return nil, fmt.Errorf("upsert tenant setting: %w", err)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("update: %w", err)
 	}
 	return oldVal, nil
 }

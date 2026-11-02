@@ -130,6 +130,8 @@ export default {
     mediaHint: 'メディア {count} 件',
     toolCall: 'ツール呼び出し:',
     noMessages: '(メッセージなし)',
+    // ★ 2026-11-02：正文没落库时的中性空态（不是「无消息」）。
+    bodyUnavailable: 'このリクエストでは本文が取得されていません（本文が保存されていません＝会話がなかったわけではありません）',
     assistantReply: '[アシスタントの返信]',
     collapse: '折りたたむ',
     expand: '展開',

@@ -130,6 +130,8 @@ export default {
     mediaHint: 'Multimedia {count}',
     toolCall: 'Llamadas a herramientas:',
     noMessages: '(sin mensajes)',
+    // ★ 2026-11-02：正文没落库时的中性空态（不是「无消息」）。
+    bodyUnavailable: 'No se capturó ningún cuerpo para esta solicitud (cuerpo no persistido; no significa que la solicitud no tuviera conversación)',
     assistantReply: '[respuesta del asistente]',
     collapse: 'Contraer',
     expand: 'Expandir',

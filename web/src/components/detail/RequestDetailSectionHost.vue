@@ -25,6 +25,10 @@ defineProps<{
   attempts: WaterfallAttempt[]
   waterfallLoading: boolean
   waterfallError: string
+  /** 正文可用性（后端 meta.body_status）—— 空态说真话用。 */
+  bodyStatus?: 'available' | 'unavailable'
+  /** 该租户的会话正文录制同意状态。 */
+  recordingConsent?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -47,6 +51,8 @@ const emit = defineEmits<{
       v-else-if="section === 'chat'"
       :body="requestBody"
       :response-body="responseBody"
+      :body-status="bodyStatus"
+      :recording-consent="recordingConsent"
     />
     <RequestWaterfallPanel
       v-else-if="section === 'waterfall'"

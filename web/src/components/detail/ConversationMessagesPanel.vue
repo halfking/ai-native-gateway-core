@@ -20,6 +20,16 @@ const props = defineProps<{
   emptyHint?: string
   /** When set, lock the role filter (used by session SyncPane facets). */
   lockedRole?: RoleFilter
+  /**
+   * ★ 2026-11-02：正文可用性（后端 meta.body_status）。
+   *   'unavailable' ⇒ 正文**没落库**（不是「这条请求没消息」）⇒
+   *   空态必须说真话，不能显示「无消息」。
+   */
+  bodyStatus?: 'available' | 'unavailable'
+  /**
+   * ★ 该租户的会话正文录制同意状态。false = 正文压根没落库。
+   */
+  recordingConsent?: boolean
 }>()
 
 const roleFilter = ref<RoleFilter>('all')
@@ -47,6 +57,10 @@ const allMedia = computed(() => extractMultimodalFromBody(props.body))
 const replyText = computed(() =>
   props.responseBody == null ? '' : extractAssistantReply(props.responseBody),
 )
+
+// ★ 2026-11-02：正文**没落库**（body_status=unavailable）与「这条请求没有消息」
+//   是两件不同的事 ⇒ 空态必须分开说，否则把「未落库」读成「无对话」＝错的量具。
+const bodyUnavailable = computed(() => props.bodyStatus === 'unavailable')
 
 const replyPreview = computed(() => previewText(replyText.value || t('requestDetail.conversation.noReply')))
 
@@ -137,9 +151,28 @@ function roleTone(role: unknown): string {
         </div>
       </div>
     </template>
+    <!-- ★ 2026-11-02 空态说真话：正文没落库 ≠ 这条请求没有对话。
+         ★ 此前一律显示「(无消息)」⇒ 把「正文未落库」读成「没有对话」＝错的量具
+           （本次报障：overview 有 token/预览，chat 四个页签全空）。 -->
+    <div
+      v-else-if="bodyUnavailable"
+      class="body-status"
+      role="status"
+      data-testid="conversation-body-unavailable"
+    >
+      <template v-if="recordingConsent === false">
+        <div class="body-status-title">{{ t('requestDetail.bodyStatus.consentOffTitle') }}</div>
+        <div class="body-status-body">{{ t('requestDetail.bodyStatus.consentOffBody') }}</div>
+      </template>
+      <template v-else>
+        <div class="body-status-body">{{ t('requestDetail.conversation.bodyUnavailable') }}</div>
+      </template>
+    </div>
     <div v-else class="text-muted">{{ emptyHint || t('requestDetail.conversation.noMessages') }}</div>
 
-    <section v-if="responseBody !== undefined" class="reply-block msg-block--assistant" data-testid="chat-reply">
+    <!-- 正文没落库时**不**渲染 assistant 回复块：否则会显示「(无回复)」，
+         读起来像「模型没回」，而真相是「响应正文压根没采到」。 -->
+    <section v-if="responseBody !== undefined && !bodyUnavailable" class="reply-block msg-block--assistant" data-testid="chat-reply">
       <div class="msg-role" :style="{ color: roleColor('assistant') }">{{ t('requestDetail.conversation.assistantReply') }}</div>
       <pre class="msg-pre" :class="{ 'msg-pre--expanded': replyExpanded }">{{ replyExpanded ? (replyText || t('requestDetail.conversation.noReply')) : replyPreview.text }}</pre>
       <button
@@ -196,6 +229,15 @@ function roleTone(role: unknown): string {
   background: color-mix(in srgb, var(--kx-success) 7%, transparent);
 }
 .text-muted { color: var(--muted); font-size: 13px; }
+.body-status {
+  margin-bottom: 12px;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle, var(--surface-secondary));
+}
+.body-status-title { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+.body-status-body { font-size: 12px; line-height: 1.45; color: var(--muted); }
 .ph-badge {
   display: inline;
   padding: 0 4px;

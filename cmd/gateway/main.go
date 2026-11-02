@@ -3543,6 +3543,15 @@ func main() {
 				Count: detailDBRetryCount,
 				Delay: detailDBRetryDelay,
 			})
+			// 2026-11-02：统一详情的**兜底**正文源（本地热区请求侧镜像）。
+			// PG 会话族正文受录制同意门控 ⇒ 同意关闭时 bodies 为空 ⇒
+			// 前端「对话」页全空；镜像里同一批请求的正文仍在磁盘上 ⇒ 补位。
+			// 未装配热区/镜像关闭时 requestsDir 为空 ⇒ 不回源（原行为不变）。
+			if mirrorDir := storageRt.requestMirrorDir(); mirrorDir != "" {
+				adminHandler.SetHotzoneBodySource(mirrorDir)
+				slog.Info("request detail hotzone mirror fallback wired",
+					"requests_dir", mirrorDir)
+			}
 			slog.Info("request detail content store wired", "dir", detailDir, "ttl", detailTTL, "max_entries", detailMaxEntries,
 				"db_retry_count", detailDBRetryCount, "db_retry_delay", detailDBRetryDelay,
 				"live_stream_reader", fpSlotRedis != nil)
