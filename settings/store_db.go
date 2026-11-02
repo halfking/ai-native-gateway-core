@@ -196,6 +196,19 @@ func (s *StoreDB) GetTenant(tenantID, key string) (jsonRawMessage, error) {
 //     跨环境），而写路径本就不需要它 ⇒ 先让写路径活起来。
 //   ★ 语义保持：UPDATE 分支仍然回填 prev_value / prev_updated_at（回滚按钮
 //     与 prev_value 审计依赖它），INSERT 分支返回 nil（无旧值）。
+//
+// ★★ 2026-11-02 加固：并发写同一 (tenant_id, key) ⇒ **重复行**。
+//   ★ 上面的「先 UPDATE 再 INSERT」只在**单写者**前提下等价于 ON CONFLICT。
+//     而 tenant_settings_kv 上**没有**唯一约束可依赖 ⇒ 两个并发写者可以
+//     各自 UPDATE 未命中、然后各自 INSERT ⇒ 落两行同 key 的行。
+//   ★ 后果是**静默**的：读侧 GetTenant 用 QueryRow 取首行、ListTenant 用
+//     map 覆盖（后者取到后写的）⇒ 哪一行胜出取决于物理顺序 ⇒ 可能读到
+//     旧值。而本键控制的正是「会话正文录制同意」⇒ 一旦读到旧值 ⇒
+//     正文又停止落库 ⇒ **本次修复的孪生缺陷**（且更难诊断）。
+//   ★ 修法：**事务 + 事务级咨询锁**（pg_advisory_xact_lock），按
+//     (tenant_id, key) 串行化 ⇒ 并发写变成排队写 ⇒ 恒等「先 UPDATE 再
+//     INSERT」的语义。**不改 schema**（补唯一约束要走新迁移 + 基线 +
+//     对象台账刷新，体量大且跨环境）；咨询锁是纯运行时手段。
 func (s *StoreDB) SetTenant(tenantID, key string, value any) (jsonRawMessage, error) {
 	spec := Global.Spec(key)
 	if spec == nil {
@@ -208,8 +221,23 @@ func (s *StoreDB) SetTenant(tenantID, key string, value any) (jsonRawMessage, er
 		return nil, fmt.Errorf("marshal: %w", err)
 	}
 	newValStr := string(newVal)
+	ctx := context.Background()
+
+	// ★ 事务 + 事务级咨询锁：把同一 (tenant_id, key) 的并发写串行化。
+	//   （无唯一约束 ⇒ 必须自己保证「同一 key 至多一行」的语义）
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`,
+		"tenant_settings_kv:"+tenantID+":"+key); err != nil {
+		return nil, fmt.Errorf("lock: %w", err)
+	}
+
 	var oldVal []byte
-	err = s.pool.QueryRow(context.Background(), `
+	err = tx.QueryRow(ctx, `
 		UPDATE tenant_settings_kv
 		   SET value = $3::jsonb,
 		       value_type = $4,
@@ -221,17 +249,22 @@ func (s *StoreDB) SetTenant(tenantID, key string, value any) (jsonRawMessage, er
 	`, tenantID, key, newValStr, valueType, category).Scan(&oldVal)
 	if err == pgx.ErrNoRows {
 		// No existing row → INSERT（同平台级 Set 的形态）。
-		_, err = s.pool.Exec(context.Background(), `
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO tenant_settings_kv (tenant_id, key, value, value_type, category, updated_at)
 			VALUES ($1, $2, $3::jsonb, $4, $5, now())
-		`, tenantID, key, newValStr, valueType, category)
-		if err != nil {
+		`, tenantID, key, newValStr, valueType, category); err != nil {
 			return nil, fmt.Errorf("insert: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("commit: %w", err)
 		}
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("update: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
 	}
 	return oldVal, nil
 }
