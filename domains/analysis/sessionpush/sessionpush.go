@@ -80,6 +80,9 @@
 package sessionpush
 
 import (
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+
 	"context"
 	"log/slog"
 	"strings"
@@ -310,18 +313,64 @@ func BuildPayload(in Input, projectID string) (memclient.SessionAnalysisPayload,
 func Deliver(ctx context.Context, in Input) {
 	target := Current()
 	if target == nil || target.Disabled() {
+		RecordPushDispatch("skipped", pushKind(in))
 		return
 	}
+	RecordPushDispatch("dispatched", pushKind(in))
 	payload, ok := BuildPayload(in, target.ProjectID())
 	if !ok {
+		RecordPushDispatch("skipped", pushKind(in))
 		return
 	}
 	if err := target.Push(ctx, payload); err != nil {
+		RecordPushDispatch("failed", pushKind(in))
 		slog.Warn("session analysis push to memora failed (suppressed)",
 			"tenant_id", in.TenantID,
 			"session_id", in.SessionID,
 			"analysis_kind", payload.AnalysisKind,
 			"status", payload.Status,
 			"error", err.Error())
+		return
 	}
+	RecordPushDispatch("success", pushKind(in))
 }
+
+// ── 对账口径（P1-2①，会话治理方案 2026-11）──────────────────────────────
+//
+// 「扩全量」的验收问题是覆盖率：网关产出了多少结构化分析、多少被推出、
+// 多少失败。两个产出点（provisional=请求到达钩子 / final=会话关闭钩子）
+// 已覆盖全量会话生命周期，缺的是**可对账的计数**。四个计数器：
+//
+//	gateway_sessionpush_dispatch_total{status,kind}
+//	    status ∈ dispatched|success|failed|skipped ；kind ∈ provisional|final
+//	  dispatched：Deliver 被调用（含禁用态暗跳，便于算覆盖率分母差）
+//	  success/failed：推送结果
+//	  skipped：BuildPayload 判定不推（如 Result 空）
+//
+// 对账口径：网关侧分母 = session_analysis_metadata 行数（store.go:47 唯一键
+// 三元组），分子 = success_total；差值 = 推送器禁用期 + failed —— 两者都
+// 应能从这组计数直接读出。
+var (
+	pushDispatchTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_sessionpush_dispatch_total",
+			Help: "Session analysis push lifecycle: dispatched/success/failed/skipped by kind (P1-2 reconciliation)",
+		},
+		[]string{"status", "kind"},
+	)
+)
+
+// pushKind 派生计数标签：Status（provisional/final）优先，空则取
+// result.Status，再空归 "unknown"。
+func pushKind(in Input) string {
+	if s := strings.TrimSpace(in.Status); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(in.Result.Status); s != "" {
+		return s
+	}
+	return "unknown"
+}
+
+// RecordPushDispatch 供 Deliver 与产出点记录计数（导出给测试断言复用）。
+func RecordPushDispatch(status, kind string) { pushDispatchTotal.WithLabelValues(status, kind).Inc() }

@@ -197,7 +197,7 @@ old fact retirement: DONE（迁移 890，2026-10-20：v1 族整体 DROP）
 ### 5.3 迁移体系事实
 
 - `db.ApplyMigrations` = Go 代码幂等 ensure\*（~89 函数）+ 嵌入式数字 SQL（`db/migrations/`，最新 365_goal_client_signal.sql）。
-- 运维 SQL 在 `sql/migrations/`：`startup/`（数字序列活跃，最新 **927**_routing_policy_singleton_unique；关键节点：765 bodies 列存化、733/734 + 801/802 details 特征层及配套 drain/index、800 provider endpoint protocols、860 v1 族改名 `_request_logs`、890 v1 族整体 DROP、909 summaries trgm；installer embeddata 有镜像副本需同步）+ `domain/`（93 枚）+ local/manual/operations/test。
+- 运维 SQL 在 `sql/migrations/`：`startup/`（数字序列活跃，最新 **933**_task_events（2026-11-02 撞号重编后序列：928_probe_traffic_physical_lane / 929_self_check_error_type_kind_closure / 931_userscript_capture_family / 932_outbox_events_fresh_install / 933_task_events；此前 927_routing_policy_singleton_unique）；关键节点：765 bodies 列存化、733/734 + 801/802 details 特征层及配套 drain/index、800 provider endpoint protocols、860 v1 族改名 `_request_logs`、890 v1 族整体 DROP、909 summaries trgm；installer embeddata 有镜像副本需同步）+ `domain/`（93 枚）+ local/manual/operations/test。
 - `gateway migrate` 子命令零停机迁移旁路（main.go:189）。
 
 ---
