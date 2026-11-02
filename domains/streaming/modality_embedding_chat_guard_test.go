@@ -2,6 +2,10 @@ package streaming
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -33,14 +37,18 @@ import (
 // 本文件钉关口②，以及「粗筛不得让普通文本模型多付一次 DB 查询」这条成本约束。
 
 // embeddingGuardResolver 记录 ModelModalityMismatch 被调用了几次。
+//
+// ★ reportMismatch=false 用来模拟「登记模态不是 embedding」的库结论 ⇒
+// 阴性对照：判决必须由库给出，handler 不得按名字自己下判断。
 type embeddingGuardResolver struct {
 	modalityMismatchResolver
-	calls int
+	calls          int
+	reportMismatch bool
 }
 
 func (r *embeddingGuardResolver) ModelModalityMismatch(_ context.Context, model, _, _, requestModality string) (*provider.ModalityMismatch, error) {
 	r.calls++
-	if requestModality == modalityText {
+	if r.reportMismatch && requestModality == modalityText {
 		// 模拟真库结论：登记模态是 embedding ⇒ 文本请求与它不匹配。
 		return &provider.ModalityMismatch{
 			RequestedModality:  modalityText,
@@ -54,7 +62,7 @@ func (r *embeddingGuardResolver) ModelModalityMismatch(_ context.Context, model,
 // TestDiagnoseModalityMismatch_TextRequestOnEmbeddingModel 钉关口②：
 // 文本请求打 embedding 模型时，诊断必须被触发。
 func TestDiagnoseModalityMismatch_TextRequestOnEmbeddingModel(t *testing.T) {
-	res := &embeddingGuardResolver{}
+	res := &embeddingGuardResolver{reportMismatch: true}
 	h := &ChatHandler{provider: res}
 
 	m := h.diagnoseModalityMismatch(context.Background(), "qwen3-embedding:0.6b", "", "default", modalityText)
@@ -69,11 +77,20 @@ func TestDiagnoseModalityMismatch_TextRequestOnEmbeddingModel(t *testing.T) {
 	}
 }
 
-// TestDiagnoseModalityMismatch_TextRequestOnOrdinaryModel 钉成本约束：
-// 普通文本模型的零候选**不该**触发那次 800ms 有界的诊断查询。
+// TestDiagnoseModalityMismatch_TextRequestOnOrdinaryModel 钉「判决权归登记模态」。
 //
-// ⇒ 绝大多数零候选的文本请求与模态无关（模型名写错 / 租户范围 / 探针状态），
-// 它们必须继续走「零候选即 503」的既有路径，不该多付一次 DB 往返。
+// ★★ 2026-11-02 第六轮（F12）改写了这条口径：此前这里断言「普通文本模型
+// **不该**触发那次诊断查询」（一道名字粗筛守着）。那条口径本身是错的：
+//
+//	· 粗筛用**名字**猜登记模态 ⇒ 名字不含 embed 字样的 embedding 模型
+//	  （bge-m3 / nemotron-3-embed-1b / nemotron-3.5-embed-*）永远漏判 ⇒
+//	  客户端拿 503 ⇒ 无限重试（211 实测 21 天 522 次注定失败的请求）；
+//	· 粗筛也没买到性能：实测（211，EXPLAIN ANALYZE）「查库的粗筛」3.34ms、
+//	  完整诊断 3.86ms ⇒ 两者等价 ⇒ 粗筛只贡献了错误答案。
+//
+// ⇒ 现在判决 100% 由登记模态（provider.ModelModalityMismatch 查库）给出：
+// **跑它的次数变多，结论一个字节都没变**——普通文本模型仍然拿到「不是模态
+// 问题」⇒ 仍然走「零候选即 503」的既有路径。
 func TestDiagnoseModalityMismatch_TextRequestOnOrdinaryModel(t *testing.T) {
 	res := &embeddingGuardResolver{}
 	h := &ChatHandler{provider: res}
@@ -82,37 +99,101 @@ func TestDiagnoseModalityMismatch_TextRequestOnOrdinaryModel(t *testing.T) {
 	if !m.IsZero() {
 		t.Fatalf("普通文本模型的零候选被判成了模态不匹配：%+v", m)
 	}
-	if res.calls != 0 {
-		t.Errorf("ModelModalityMismatch 被调用 %d 次, want 0 —— 普通文本模型不该为一次零候选多付 DB 查询", res.calls)
+	if res.calls != 1 {
+		t.Errorf("ModelModalityMismatch 被调用 %d 次, want 1 —— 判决权必须归登记模态（权威源），不得由名字规则代答", res.calls)
 	}
 }
 
-// TestTextRequestMayTargetEmbeddingModel 钉粗筛本身。
+// TestDiagnoseModalityMismatch_TextRequestOnEmbeddingModelNameHeuristicMisses
+// 是 F12 的回归钉：**名字规则认不出来**的 embedding 模型，诊断也必须被触发。
 //
-// ★ 粗筛**不是裁决**：它只决定「值不值得跑诊断」。漏判 ⇒ 少给一次 400、
-// 仍给 503（诚实）；误判 ⇒ 多跑一次查询，结论仍由 DB 说了算。
-func TestTextRequestMayTargetEmbeddingModel(t *testing.T) {
+// ★ 这四个名字是 211 生产登记在册、且**被生产流量打中过**的 embedding 模型
+// （modelname.InferModality 对它们一律返回 "text" ⇒ 旧粗筛全部漏判）：
+//
+//	bge-m3 / nemotron-3-embed-1b / nemotron-3.5-embed-1b / nemotron-3.5-embed-8b
+//
+// ⇒ 修之前它们拿到的是没有原因的 503（客户端无限重试）；修之后必须拿到
+// 可据以行动的 400。
+func TestDiagnoseModalityMismatch_TextRequestOnEmbeddingModelNameHeuristicMisses(t *testing.T) {
 	for _, name := range []string{
-		"qwen3-embedding:0.6b",
-		"qwen3-embedding:8b",
-		"text-embedding-3",
-		"bge-m3-embedding",
+		"bge-m3",
+		"nemotron-3-embed-1b",
+		"nemotron-3.5-embed-1b",
+		"nemotron-3.5-embed-8b",
+		"bge_m3", // 别名形态：同样漏判（旧粗筛只认名字）
 	} {
-		if !textRequestMayTargetEmbeddingModel(name) {
-			t.Errorf("粗筛没认出 %q 是 embedding 模型 —— 这类请求会拿到无原因的 503 而不是 400", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			res := &embeddingGuardResolver{reportMismatch: true}
+			h := &ChatHandler{provider: res}
+
+			m := h.diagnoseModalityMismatch(context.Background(), name, "", "default", modalityText)
+			if m.IsZero() {
+				t.Fatalf("%q（登记为 embedding）没有拿到模态不匹配诊断 ⇒ 客户端只会拿到一个没有原因的 503，然后无限重试", name)
+			}
+			if res.calls != 1 {
+				t.Errorf("ModelModalityMismatch 被调用 %d 次, want 1 —— 名字规则漏判时也必须由登记模态来判", res.calls)
+			}
+		})
 	}
-	for _, name := range []string{
-		"qwen3.5:4b",
-		"qwen2.5:7b",
-		"gpt-4o",
-		"claude-3-5-sonnet",
-		"glm-5.3",
-		"",
-	} {
-		if textRequestMayTargetEmbeddingModel(name) {
-			t.Errorf("粗筛把 %q 当成了 embedding 模型 —— 普通文本模型会被多带一次 DB 查询", name)
+}
+
+// TestDiagnoseModalityMismatch_VerdictComesFromRegistry 是阴性对照：
+// 判决**不是** handler 自己按名字下的——resolver 说不是，就不是。
+//
+// ★ 没有这条对照，一个「看到名字里有 embed 就判不匹配」的退化实现也能让
+// 上面那条 F12 回归钉全绿。
+func TestDiagnoseModalityMismatch_VerdictComesFromRegistry(t *testing.T) {
+	res := &embeddingGuardResolver{reportMismatch: false}
+	h := &ChatHandler{provider: res}
+
+	m := h.diagnoseModalityMismatch(context.Background(), "qwen3-embedding:0.6b", "", "default", modalityText)
+	if !m.IsZero() {
+		t.Fatalf("登记模态说不是模态问题，handler 却自己判成了不匹配：%+v", m)
+	}
+	if res.calls != 1 {
+		t.Errorf("ModelModalityMismatch 被调用 %d 次, want 1", res.calls)
+	}
+}
+
+// TestModalityDiagnosisDoesNotUseNameInference 钉「名字推断不参与裁决」。
+//
+// ★ 这是 §四.1 的口径在代码层的落点：诊断路径**不得**再调用
+// modelname.InferModality（名字推断）。名字推断只允许出现在
+// 「注册/播种」这类一次性动作里，绝不能出现在「判决」路径上——
+// 名字推断对 bge-m3 / nemotron-3-embed-1b 这类模型一律返回 "text"
+// （生产在册、且被生产流量打中过），用它守判决 ⇒ 客户端拿 503 ⇒ 无限重试。
+//
+// ⇒ 用**结构**（源码里不许再出现这个调用）而不是行为来钉：行为钉不住
+// 「下一次有人又把名字推断塞回来」这件事。
+func TestModalityDiagnosisDoesNotUseNameInference(t *testing.T) {
+	fset := token.NewFileSet()
+	for _, name := range productionGoFiles(t) {
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("读取 %s 失败：%v", name, err)
 		}
+		parsed, err := parser.ParseFile(fset, name, src, parser.ParseComments)
+		if err != nil {
+			t.Fatalf("解析 %s 失败：%v", name, err)
+		}
+		ast.Inspect(parsed, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			pkg, ok := sel.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if pkg.Name == "modelname" && sel.Sel.Name == "InferModality" {
+				t.Errorf("%s: 调用了 modelname.InferModality ⇒ 名字推断回到了判决路径 ⇒ 「名字不含 embed 字样的 embedding 模型」又会拿不到诊断 ⇒ 客户端拿 503 ⇒ 无限重试", name)
+			}
+			return true
+		})
 	}
 }
 

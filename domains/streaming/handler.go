@@ -9468,20 +9468,28 @@ func (h *ChatHandler) diagnoseModalityMismatch(
 	if normalized == "" {
 		return nil
 	}
-	if normalized == modalityText && !textRequestMayTargetEmbeddingModel(clientModel) {
-		// ★ 2026-11-02（211 生产事故 · embedding 投毒链）：文本请求现在**也**
-		// 可能被模态门排除——被排除的是登记为 embedding 的模型。
-		//
-		// 但绝大多数零候选的文本请求与模态无关（模型名写错 / 租户范围 /
-		// 探针状态）⇒ 先用**本地**名字规则粗筛，只在「名字看着像 embedding
-		// 模型」时才付那次 800ms 有界的诊断查询。
-		//
-		// ★ 粗筛只影响**错误质量**（400 还是 503），绝不影响**是否放行**：
-		//   路由侧的模态门（provider/modality_accept.go 的唯一片段）已经独立
-		//   地把 embedding 登记模型挡在候选之外 ⇒ 上游不会被调用 ⇒ 绑定不会被
-		//   翻红 ⇒ 别的租户不会被连坐。
-		return nil
-	}
+	// ★ 2026-11-02 第六轮（F12）：这里**不再**用名字规则粗筛。
+	//
+	// 此前对文本请求有一道粗筛（modelname.InferModality 认名字）⇒ 只有
+	// 「名字看着像 embedding」的模型才会跑诊断 ⇒ 名字不含 embed 字样的
+	// embedding 模型（bge-m3、nemotron-3-embed-1b、nemotron-3.5-embed-* …）
+	// 永远拿不到诊断 ⇒ 客户端拿到**没有原因的 503** ⇒ 它会无限重试，而它
+	// 重试的每一个字节都注定失败。
+	//
+	// 生产实测（211，21 天窗口）：这四个模型名贡献了 **522 次**注定失败的
+	// 请求，全部按 503 答复（同期 `qwen3-embedding:0.6b` 这种名字被认得出的
+	// 拿到的是可据以行动的 400 modality_mismatch）。
+	//
+	// ★ 为什么直接去掉粗筛，而不是把它改成「查库」：实测（211，EXPLAIN
+	// ANALYZE）两条查询的代价几乎一样——「查库的粗筛」3.34ms、完整诊断
+	// 3.86ms ⇒ 粗筛没买到任何性能，只买到了**错误答案**。
+	// ⇒ 判决权 100% 交给登记模态（权威源），名字推断不再参与这条路径
+	// （与 §四.1 的口径一致：名字推断绝不参与裁决）。
+	//
+	// ★ 粗筛的移除**不改变**任何判决：判决本来就由
+	// provider.ModelModalityMismatch 计算（登记模态 + 「忽略模态过滤后是否
+	// 可路由」两件事必须同时成立），粗筛只决定「跑不跑它」。⇒ 现在跑它的
+	// 次数变多，但**结论**一个字节都没变。
 	mismatch, err := h.provider.ModelModalityMismatch(ctx, clientModel, clientProfile, tenantID, requestModality)
 	if err != nil {
 		slog.WarnContext(ctx, "modality diagnosis failed; falling back to plain no_candidate",
@@ -9491,32 +9499,19 @@ func (h *ChatHandler) diagnoseModalityMismatch(
 	if mismatch.IsZero() {
 		return nil
 	}
-	return mismatch
-}
-
-// textRequestMayTargetEmbeddingModel 粗筛「这个文本请求会不会是在打一个
-// embedding 模型」。
-//
-// ★★ 它**不是裁决**，只是一道「值不值得跑诊断」的闸：
-//
-//	· 判据的权威来源是 models_canonical.modality（登记模态），由
-//	  provider.ModelModalityMismatch 查库得出；
-//	· 这里只用**本地**的名字规则（modelname.InferModality）判断要不要付
-//	  那次 800ms 有界的诊断查询。
-//
-// ⇒ 粗筛**漏判**（别名里不含 embedding 字样）⇒ 少给一次 400，仍给 503
-//   （一个诚实、可重试的答复），**不会**误伤任何请求；
-// ⇒ 粗筛**误判**（名字像 embedding 但登记模态是 text）⇒ 多跑一次诊断
-//   查询，结论仍由 DB 说了算（不是 mismatch ⇒ 照旧 503）。
-//
-// ⇒ 换句话说：粗筛最多让错误信息**不够精确**，它**永远**不能决定放行与否
-//   ——放行与否由路由侧的模态门（provider/modality_accept.go 的唯一片段）
-//   独立决定。
-func textRequestMayTargetEmbeddingModel(clientModel string) bool {
-	if strings.TrimSpace(clientModel) == "" {
-		return false
+	// ★ 判决必须**关于本次请求的模态**。
+	//
+	// 去掉名字粗筛之后，文本请求也会去问 resolver ⇒ resolver 报回来的判决
+	// 可能是**别的模态**的判决（陈旧结果 / 串台）。若照单全收，一次文本请求
+	// 可能被告知「你的请求没有图片能力」——那比 503 更糟（它把服务端的问题
+	// 说成了客户端的问题）。
+	//
+	// ⇒ 只接受 RequestedModality 与本次请求一致（规范化后相等）的判决；
+	// 其余一律忽略 ⇒ 退回「零候选即 503」的既有路径。
+	if strings.ToLower(strings.TrimSpace(mismatch.RequestedModality)) != normalized {
+		return nil
 	}
-	return modelname.InferModality(clientModel) == "embedding"
+	return mismatch
 }
 
 // writeModalityMismatchError writes the 400 response for a request whose

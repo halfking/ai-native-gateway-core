@@ -92,21 +92,28 @@ func TestHandlerZeroCandidates_ModalityMismatchWiring(t *testing.T) {
 // TestDiagnoseModalityMismatch_TextRequestIsNotDiagnosed is the negative
 // control on the same entry point.
 //
-// ★ A text request against the same model must NOT be diagnosed: the
-// handler's guard checks requestModality != "" && != text. If that guard
-// were widened, every text-only failure would be misreported as "this
-// model cannot read your images" — a message with no images in it, which
-// is worse than no message at all.
+// ★ A text request against the same model must NOT be diagnosed as a
+// **vision** mismatch: "this model cannot read your images" for a request
+// that carried no images is worse than no message at all.
 //
-//	It also pins that the resolver is NOT consulted for a text request: the
-//	diagnosis must not reach the database on the common path.
+// ★★ 2026-11-02 第六轮（F12）改写了这条口径：此前 resolver 对文本请求
+// **根本不会被问**（一道名字粗筛守着），所以「拿到一份关于 vision 的判决」
+// 这件事不可能发生 ⇒ 这条用例当时只钉「不被问」。
+//
+// ⇒ 现在文本请求**会**去问 resolver（这正是 F12 的修复：登记为 embedding
+// 的模型必须能被诊断出来）⇒ 「拿到一份关于**别的模态**的判决」变成可能
+// （陈旧结果 / 串台）⇒ handler 必须**核对判决的模态**，对不上就忽略
+// （diagnoseModalityMismatch 里的 RequestedModality 一致性闸）。
+// ⇒ 这条用例现在钉的正是那道闸：resolver 报 vision 判决时，文本请求必须
+// 拿不到诊断。
 func TestDiagnoseModalityMismatch_TextRequestIsNotDiagnosed(t *testing.T) {
 	h := &ChatHandler{
 		provider: &modalityMismatchResolver{
 			known: true,
 			mismatch: &provider.ModalityMismatch{
-				// Even if the resolver WOULD report a mismatch, the
-				// entry point must not ask it to for a text request.
+				// The resolver reports a mismatch about a DIFFERENT
+				// modality than the request. The handler must not
+				// adopt it — the request was text.
 				RequestedModality:  "vision",
 				RegisteredModality: "text",
 			},
