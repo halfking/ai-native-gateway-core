@@ -54,7 +54,7 @@ ASM /internal/v1/events（既有 HMAC batch ingress）
 - 读取端：扩展 `admin/body_resolver.go` 的 `parseControlledBodyRef` 认 `internal://capture/` 前缀，从 `capture_bodies` 取正文；认证/租户校验沿用现有 service JWT（scope `session:read`）路径，跨租户 ref 由归属校验拒绝（ASM FetchBody 契约第 3 条不变）。
 - ASM 侧零改动即可消费（它把 ref 当不透明路径参数）。
 
-### D5 存储：新表族（迁移 928，三表 + RLS）
+### D5 存储：新表族（迁移 931——原编 928，与远端 928_probe 撞号后重编，三表 + RLS）
 
 ```sql
 -- 931_userscript_capture_family.sql（示意，落地时对齐 890 后的建表惯例：

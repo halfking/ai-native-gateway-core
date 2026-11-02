@@ -37,7 +37,7 @@
 
 | 步 | 内容 | 前置/门禁 | 回滚 |
 |---|---|---|---|
-| **S1 双写期**（本轮已完成执行体） | a) asm.event.v1 真实 handler 在位（✓）；b) 迁移 928 建 `task_events` 表 + SQL Store（列形态按 doc.go：idempotency_key UNIQUE/status/attempts/next_retry_at/last_error/CompletedAt）；c) O1 Dispatcher 旁挂投影器：dispatch 成功后镜像 Enqueue asm.event.v1（**默认关**，env `TASKBUS_ASM_BRIDGE=1` 灰度） | SQL Store 单测 + realdb 集成（复刻 store_memory 语义：claim/mark/reclaim）；投影器幂等（event_id 即 idempotency_key） | 关 env 即回 O1 单轨 |
+| **S1 双写期**（本轮已完成执行体） | a) asm.event.v1 真实 handler 在位（✓）；b) 迁移 933 建 `task_events` 表（原编 930，与远端撞号后重编） + SQL Store（列形态按 doc.go：idempotency_key UNIQUE/status/attempts/next_retry_at/last_error/CompletedAt）；c) O1 Dispatcher 旁挂投影器：dispatch 成功后镜像 Enqueue asm.event.v1（**默认关**，env `TASKBUS_ASM_BRIDGE=1` 灰度） | SQL Store 单测 + realdb 集成（复刻 store_memory 语义：claim/mark/reclaim）；投影器幂等（event_id 即 idempotency_key） | 关 env 即回 O1 单轨 |
 | **S2 桥接期** | 新流量（session.closed.v1 等新事件类型）**只写 task_events**；存量类型双写；对账报表：两表按 event_id 比对 7 天 | S1 灰度一周 DLQ 占比无回归；ASM 侧 event_id 幂等已验证（34,183 积压重投演练可作压力证据） | 新类型切回 outbox_events 写入（builder 不变） |
 | **S3 切读+迁 O2/O3** | O1 Dispatcher 停新事件消费只消化存量；sessionv2mirror/aggregate 改登记 task_events（mirror.replay.v1 / aggregate.update.v1），reaper 退役 | O2/O3 各自回填语义测试平移到 taskbus Store；每迁移一个域跑一周对账 | reaper 代码保留一版可回切 |
 | **S4 停写+归档** | outbox_events 停写归档；O4 durable 任务族迁移评估（独立决策点）；HTTPDeliverer 保留为 asm.event.v1 handler 的执行体（依赖方向消除：handler 直持） | 存量清零 + 归档核对（数量/校验和） | 从归档恢复表（DDL down 保留） |
@@ -47,7 +47,7 @@
 1. task_events 的 DLQ 查询/重投运维面（O1 现有 dlq 工具平移成本 vs 新建 admin 视图）。
 2. O4 durable 是否最终并入（建议：若 S3 后 taskbus 无生产事故一季，并入；否则维持 2+1 长期）。
 3. 背压熔断（O1 的 bpPausedUntil）平移到 taskbus Dispatcher 的批语义（当前 taskbus 无批级熔断）——S1 SQL Store 时一并设计。
-4. 迁移号：928 是否预留（P0-3 ADR 已占 928 为 capture 表族——两 ADR 需协调错峰：本文建议 task_events 用 **930**）。
+4. 迁移号：928 是否预留（P0-3 ADR 已占 928 为 capture 表族——两 ADR 需协调错峰：本文原建议 task_events 用 930；落地时三方撞号，实际编为 **933**，capture 表族实编 931）。
 
 ## 6. 与本仓文档的关系
 
