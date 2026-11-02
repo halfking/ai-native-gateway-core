@@ -32,7 +32,7 @@ export default {
     usageTrends: "اتجاهات الاستخدام",
     pricing: "تكلفة التسعير",
     modelPricing: "إدارة التسعير",
-    freellm: "FreeLLM",
+    freellm: "FreeLLM نماذج مجانية",
     freePool: "الموارد المجانية",
     freeDiscovery: "اكتشاف الموارد المجانية",
     tenants: "إدارة المستأجرين",

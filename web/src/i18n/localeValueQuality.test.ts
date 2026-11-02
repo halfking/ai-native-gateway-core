@@ -17,6 +17,9 @@
 //   （产品名、'OK'、'HTTP 500' 等）⇒ 存量数字是**上界**，不是缺陷精确条数。
 //   棘轮方向（不增）对这些上界依然成立。
 
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   ALL_LOCALES,
@@ -27,7 +30,9 @@ import {
   buildBaseline,
   measureAll,
   readBaseline,
+  writeBaseline,
 } from './localeValueQuality'
+import { localDateStamp } from './localDate'
 
 // ⚠️ 超时给到 120s：门要扫完 `src/**`（6000+ 引用）并加载 8 个语种的 locale 模块
 //   （vm 求值），实测单次 20~40s。measureAll 已带缓存 ⇒ 整个文件只量一次。
@@ -202,5 +207,53 @@ describe('i18n 值质量（键在、值没翻）', { timeout: 120_000 }, () => {
     expect(Object.keys(draft.cjkInNonCjkLocaleAllKeys).sort()).toEqual(
       ALL_LOCALES.filter((l) => !CJK_NATIVE_LOCALES.has(l)).sort(),
     )
+  })
+})
+
+// ── 2026-11-03 第二十八轮：baseline 写入出口本身的门 ────────────────────────
+//
+// ★ 三条门守的是**写 baseline 的那个出口**（`--update-baseline`）：
+//   ① 它是**唯一**能把数字固化进门槛的出口 ⇒ 它的行为必须可被机器验证；
+//   ② 它**只许降不许升**（纪律）⇒ 但降额时**不许毁掉纪律自己的证据**
+//      （★ 实测：原实现 `{ ...current }` 会把 `baselineRaiseReason` 整个丢掉
+//        ⇒ 十余轮抬升理由的编年史在一次合法降额后变成空串）；
+//   ③ 它写的 `updated` 必须是**本地日期**（★ UTC 日期在本地凌晨会写成前一天）。
+describe('baseline 写入出口（--update-baseline）', { timeout: 120_000 }, () => {
+  it('★ 降额不得丢弃人工治理字段（baselineRaiseReason）—— 唯一合法出口不许毁掉纪律的证据', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'i18n-baseline-'))
+    const file = join(dir, 'localeValueBaseline.json')
+    const reason = '★ 自证用理由：治理记录必须原样留存'
+    const seed = readBaseline()
+    expect(seed).not.toBeNull()
+    writeFileSync(
+      file,
+      JSON.stringify({ ...seed!, baselineRaiseReason: reason }, null, 2),
+      'utf8',
+    )
+    const { byLocale, byLocaleAllKeys } = measureAll()
+    const draft = buildBaseline(byLocale, byLocaleAllKeys)
+    // ★ 草稿与文件里的基线逐项相等（不是升高）⇒ writeBaseline 不得抛错
+    writeBaseline(draft, file)
+    const after = JSON.parse(readFileSync(file, 'utf8'))
+    expect(after.baselineRaiseReason).toBe(reason)
+  })
+
+  it('★ 仓内 baseline 必须带非空的抬升理由（否则「谁抬的、为什么抬」的记录已丢）', () => {
+    const seed = readBaseline()
+    expect(seed).not.toBeNull()
+    expect(typeof seed!.baselineRaiseReason).toBe('string')
+    expect((seed!.baselineRaiseReason ?? '').trim().length).toBeGreaterThan(0)
+  })
+
+  it('★ updated 必须是本地日期（UTC 日期在本地凌晨会写成前一天）', () => {
+    // ★ 用**本地构造**的 Date ⇒ 断言与机器时区无关
+    const d = new Date(2026, 10, 3, 0, 30) // 本地 2026-11-03 00:30
+    expect(localDateStamp(d)).toBe('2026-11-03')
+    // ★ 在非 UTC 时区，旧的 toISOString 写法会写成 UTC 的前一天 ⇒ 必须不同
+    const utcStamp = d.toISOString().slice(0, 10)
+    if (utcStamp !== '2026-11-03') {
+      expect(localDateStamp(d)).not.toBe(utcStamp)
+    }
+    expect(localDateStamp(new Date(2026, 0, 5, 12, 0))).toBe('2026-01-05')
   })
 })

@@ -18,7 +18,7 @@ import { req } from './_core'
 // ★ 联合必须**写在同一行**：契约门 web/src/api/source-contract.test.ts 的
 //   unionMembers 提取器按 `export type X = <单行>` 取成员（多行写法取不全）⇒
 //   拆行会让门误判「桌面端漏值」。
-export type DetailSource = 'memory' | 'file' | 'live_stream' | 'request_logs' | 'session_turns' | 'hotzone_mirror'
+export type DetailSource = 'memory' | 'file' | 'live_stream' | 'request_logs' | 'session_turns' | 'hotzone_mirror' | 'probe_lane'
 export type DetailPersistence = 'in_flight' | 'persisted'
 
 export interface UnifiedDetailMeta {

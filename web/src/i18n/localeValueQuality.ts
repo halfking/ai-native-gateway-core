@@ -70,6 +70,8 @@ import { fileURLToPath } from 'node:url'
 //   Node 的 ESM 解析**不认**无扩展名的相对导入（vitest 认）⇒ 不带扩展名会让
 //   `npm run i18n:locale-value:check` 直接 ERR_MODULE_NOT_FOUND。
 import { loadLocale, scanAll, collectLeafKeys } from './scanner.ts'
+// ★ 本地日期戳（2026-11-03 第二十八轮）：见 src/i18n/localDate.ts 的理由。
+import { localDateStamp } from './localDate.ts'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -459,11 +461,17 @@ export interface Baseline {
    *   ⇒ 拉丁语种这一项的目标值是 **0**（硬闸，不是棘轮存量）。
    */
   cjkInNonCjkLocaleAllKeys: Record<string, number>
+  /**
+   * 人工抬基线的**逐条理由**（治理记录，★ 不是指标）。
+   * ★ 纪律：「调高必须人工显式改 JSON 并写明理由」⇒ 本字段就是那条纪律的证据
+   * ⇒ ⇒ `writeBaseline` 必须**原样保留**它（★ 2026-11-03 实测：原实现会静默丢弃）。
+   */
+  baselineRaiseReason?: string
 }
 
-export function readBaseline(): Baseline | null {
+export function readBaseline(file: string = BASELINE_FILE): Baseline | null {
   try {
-    return JSON.parse(readFileSync(BASELINE_FILE, 'utf8')) as Baseline
+    return JSON.parse(readFileSync(file, 'utf8')) as Baseline
   } catch {
     return null
   }
@@ -473,9 +481,13 @@ export function readBaseline(): Baseline | null {
  * 写 baseline。**只许降不许升**：任何一项会升高都抛错。
  * 降基线是「把已修好的部分从门槛里划掉」，升基线是「把新缺陷合法化」——
  * 后者必须人工显式改 JSON，并在 commit 消息里写明理由。
+ *
+ * ★ `file` 参数只为**可测**而存在（照 `i18n-shared-dead-count.mjs` 的先例）：
+ *   写 baseline 是**唯一**能把数字固化进门槛的出口 ⇒ ⇒ 它的行为必须能被
+ *   「往临时文件里写一遍」验证 ⇒ ⇒ 否则「它会不会毁掉治理记录」只能靠人记。
  */
-export function writeBaseline(current: Baseline): Baseline {
-  const prev = readBaseline()
+export function writeBaseline(current: Baseline, file: string = BASELINE_FILE): Baseline {
+  const prev = readBaseline(file)
   if (prev) {
     const raises: string[] = []
     if (current.enUSCjk > prev.enUSCjk) {
@@ -509,8 +521,22 @@ export function writeBaseline(current: Baseline): Baseline {
       )
     }
   }
-  const next: Baseline = { ...current, updated: new Date().toISOString().slice(0, 10) }
-  writeFileSync(BASELINE_FILE, JSON.stringify(next, null, 2) + '\n', 'utf8')
+  // ★★★ **保留人工治理字段**（★ 2026-11-03 第二十八轮修）：
+  //   `baselineRaiseReason` 记录**每一次人工抬基线的逐条理由**
+  //   （纪律：「调高必须人工显式改 JSON 并写明理由」⇒ 理由是这条纪律的证据）。
+  //   ★ 原实现是 `{ ...current }` ⇒ `current` 由 `buildBaseline` 构造、
+  //   **不含**这个字段 ⇒ ⇒ ★ **每一次合法降额都会静默把它整个丢掉**
+  //   ⇒ ⇒ 实证：2026-11-03 本轮跑 `--update-baseline` 后，
+  //   该字段从「十余轮抬升理由的完整编年史」变成**空字符串**。
+  //   ⇒ ⇒ 修法：**先铺旧文件、再用实测值覆盖** ⇒ 量具自己管的指标被实测值覆盖，
+  //   而它**不认识**的治理字段原样留存。
+  //   ⇒ ⇒ ★ 纪律的推论：**「唯一合法的降额出口」不许毁掉纪律自己的证据**。
+  const next: Baseline = {
+    ...(prev ?? {}),
+    ...current,
+    updated: localDateStamp(),
+  }
+  writeFileSync(file, JSON.stringify(next, null, 2) + '\n', 'utf8')
   return next
 }
 
@@ -547,7 +573,7 @@ export function buildBaseline(
       '(conservative: also counts legitimate zh-Hant/zh-JP homographs ⇒ an indicator, not an exact defect count); ' +
       'cjkInNonCjkLocaleAllKeys = ALL keys, values containing CJK in non-CJK locales ' +
       '(catches dynamically-resolved keys the referenced-key population cannot see)',
-    updated: new Date().toISOString().slice(0, 10),
+    updated: localDateStamp(),
     enUSCjk,
     untranslated,
     cjkInNonCjkLocale,

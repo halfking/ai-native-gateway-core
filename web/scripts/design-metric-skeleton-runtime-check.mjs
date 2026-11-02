@@ -946,27 +946,67 @@ if (jsonArg) writeFileSync(jsonArg.slice(7), JSON.stringify({ ...report, reading
 
 if (argv.includes('--update-baseline')) {
   const prev = baseline ?? { bareMetricCards: {} }
+  // ★★ 2026-11-02（第 41 增量）：写回值 = min(旧值, 实测值) ⇒ **棘轮只许降不许升**。
+  //   ★★ 原实现是**整份覆盖**（`Object.fromEntries(report.pages.map(...))`）⇒ ★★ 于是
+  //   ★★ 任何一次「补登一个新页面」都会把**其它每一页**的基线一并改成实测值 ⇒ ★★ 若
+  //   ★★ 某页实测恰好升高 ⇒ ★★ 棘轮被**悄悄放松** ⇒ ★★ 门被弄瞎（★ 同族：icon-size 与
+  //   ★★ nested-card 用 `min(旧值, 实测值)`、action-density 用「写回前拒绝放松方向」、
+  //   ★★ hero-metric 用 `min` ⇒ ★★ 本尺是这一族里**唯一**没守住的那个）。
+  //   ★★ **新页按实测值登记** —— ★ 新页必须被棘轮看见（★ 与 nested-card 同款形态）。
+  const nextCounts = {}
+  const keptHigher = []
+  for (const p of report.pages) {
+    const old = prev.bareMetricCards?.[p.page]
+    if (typeof old === 'number' && Number.isFinite(old)) {
+      if (p.skeletonCards > old) {
+        nextCounts[p.page] = old
+        keptHigher.push(
+          `${p.page}：实测 ${p.skeletonCards} > 基线旧值 ${old} ⇒ **保持旧值 ${old}**（棘轮不许升）`,
+        )
+        continue
+      }
+      nextCounts[p.page] = p.skeletonCards
+      continue
+    }
+    nextCounts[p.page] = p.skeletonCards
+  }
+  // ★★ note 必须是**动态**的（★ 静态模板会让两次重建的记录一模一样 ⇒ 看不出「上限从 12 降到 0」
+  //   ⇒ 变更史就失去了意义；★ nested-card 尺的头注释已记这条纪律）。
+  const sumOf = (obj) => Object.values(obj ?? {}).reduce((s, n) => s + (Number(n) || 0), 0)
+  const prevTotal = sumOf(prev.bareMetricCards)
+  const nextTotal = sumOf(nextCounts)
+  const direction = prevTotal > nextTotal ? '下降' : prevTotal < nextTotal ? '上升' : '持平'
+  const added = Object.keys(nextCounts).filter((k) => !(k in (prev.bareMetricCards ?? {})))
+  const today = new Date().toISOString().slice(0, 10)
   const next = {
     metric:
       'bareMetricCards = 该页落在「同尺寸同构的裸指标卡网格」里的卡片数（棘轮：不得上升）。★ 硬闸另算：一页里 >= ' +
       String(PAGE_SKELETON_MIN_GROUPS) +
-      ' 组这样的网格 ⇒ 这页把指标卡网格当成了页面骨架 ⇒ 判红（与基线无关）。',
-    bareMetricCards: Object.fromEntries(report.pages.map((p) => [p.page, p.skeletonCards])),
-    updated: '2026-10-28',
+      ' 组这样的网格 ⇒ 这页把指标卡网格当成了页面骨架 ⇒ 判红（与基线无关）。' +
+      '★ 重建基线（--update-baseline）写回的值 = min(旧值, 实测值) ⇒ 只许降不许升；新页按实测值登记。',
+    bareMetricCards: nextCounts,
+    updated: today,
     history: [
       ...(prev.history ?? []),
       {
-        updated: '2026-10-28',
+        updated: today,
         note:
-          '第 30 增量建立基线。★ 建基线之前用同一把尺实测全量 88 条静态路由：' +
-          '/admin/ops-overview = 3 组 / 12 张（中心实例 / 故障 / 运行时指标）⇒ 唯一的页面级违规；' +
-          '其余 13 页各有 1 组（4~6 张）⇒ 抬头摘要条，控制台惯例，棘轮钉住不降不许升。★ 修法是【把指标卡网格改成 label → value 行 + 补语境】，不是换皮。',
-        bareMetricCards: Object.fromEntries(report.pages.map((p) => [p.page, p.skeletonCards])),
+          `★ 本次重建（${today}）：新登记 ${added.length} 页` +
+          (added.length ? `（${added.join('、')}）` : '') +
+          `；★ 上限合计 ${prevTotal} → ${nextTotal}（${direction}）；` +
+          (keptHigher.length
+            ? '★ 本次重建时有页试图调高 ⇒ 已按棘轮保持旧值：' + keptHigher.join('；') + '。'
+            : '★ 本次重建没有页试图调高。'),
+        bareMetricCards: nextCounts,
       },
     ],
   }
   writeFileSync(BASELINE, JSON.stringify(next, null, 2) + '\n')
   console.log(`\n✔ 基线已更新 → ${BASELINE}`)
+  if (keptHigher.length) {
+    console.log('★ 棘轮保护（这些页的基线没有被调高）：')
+    for (const k of keptHigher) console.log('  · ' + k)
+  }
 }
 
 const measured = report.pages.length

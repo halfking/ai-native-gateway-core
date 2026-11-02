@@ -32,7 +32,7 @@ export default {
     usageTrends: "使用量トレンド",
     pricing: "コスト価格",
     modelPricing: "価格管理",
-    freellm: "FreeLLM",
+    freellm: "FreeLLM 無料モデル",
     freePool: "無料リソース",
     freeDiscovery: "無料リソース発見",
     tenants: "テナント管理",

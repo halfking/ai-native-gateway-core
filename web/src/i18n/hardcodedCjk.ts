@@ -35,6 +35,8 @@
 //   - src/i18n/hardcoded_cjk.baseline.test.ts（pnpm test 强制执行）
 //   - scripts/cjk-decompose.mjs（只读诊断；其自证 A 把本实现钉死在 CLI 输出上）
 
+// ★ 本地日期戳（2026-11-03 第二十八轮）：见 src/i18n/localDate.ts 的理由。
+import { localDateStamp } from './localDate.ts'
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -444,7 +446,7 @@ export function writeBaseline(count: number): Baseline {
     metric:
       'CJK runs after stripping parser-detected comments; src/**/*.{vue,ts,tsx,js,mjs}; excludes src/locales, src/i18n, *.test/spec',
     count,
-    updated: new Date().toISOString().slice(0, 10),
+    updated: localDateStamp(),
   }
   writeFileSync(BASELINE_FILE, JSON.stringify(baseline, null, 2) + '\n', 'utf8')
   return baseline

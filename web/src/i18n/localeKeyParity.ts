@@ -47,6 +47,8 @@
 //   - src/i18n/localeKeyParity.test.ts（门，`pnpm test` 强制执行）
 //   - scripts/i18n-key-parity-count.mjs（CLI：`npm run i18n:key-parity:check`）
 
+// ★ 本地日期戳（2026-11-03 第二十八轮）：见 src/i18n/localDate.ts 的理由。
+import { localDateStamp } from './localDate.ts'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { scanAll } from './scanner.ts'
@@ -361,7 +363,7 @@ export function writeKeyParityBaseline(current: KeyParityBaseline): KeyParityBas
       )
     }
   }
-  const next: KeyParityBaseline = { ...current, updated: new Date().toISOString().slice(0, 10) }
+  const next: KeyParityBaseline = { ...current, updated: localDateStamp() }
   writeFileSync(BASELINE_FILE, JSON.stringify(next, null, 2) + '\n', 'utf8')
   return next
 }
@@ -374,7 +376,7 @@ export function buildKeyParityBaseline(report: KeyParityReport): KeyParityBaseli
       '(helper-prefix resolved) ∪ template candidates (prefix+suffix match); ' +
       'hard gate = every reachable key exists in all 8 locales; ' +
       'ratchet = per-locale missing-vs-union count + asymmetric key count',
-    updated: new Date().toISOString().slice(0, 10),
+    updated: localDateStamp(),
     missingVsUnion: { ...report.missingVsUnion },
     asymmetricKeys: report.asymmetricKeys,
   }
