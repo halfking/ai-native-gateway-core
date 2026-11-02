@@ -12,7 +12,14 @@
 //          配套 App 侧 LiveTopologyView 的浮层 scrollIntoView({block:'nearest'}) 保底。
 //   L2/R2  浮层「查看全景」⇒ 新窗 /request-detail/:id（受信点击，见坑 b）；
 //   L3/R3  行尾 ↗ ⇒ 新窗 /request-detail/:id（10-18 owner 要求的有意直达入口）；
+//   X1/X2（2026-11-03 idle 心跳轮）：idle 心跳不是请求行 —— 后端 idle_marker
+//          本是「泳道安静」瓦片，生产 2944 曾把它渲染成可点请求行：点行弹灰态
+//          摘要、「查看全景」被 onOpenPage 守卫吞掉、行尾 ↗ 也不存在 ⇒ 两步交互
+//          对大半可见行失效（owner 11-03 报的根因）。X1 = 心跳行数必须为 0；
+//          X2 = 有心跳信号时必须以非交互灰态指示条承载（可见、无 button）。
 //   C0     全程 console 无错误。
+//   不可判定（exit 3）：窗口内没有真实请求行（全部为空闲心跳/无流量）——
+//          两步交互无从验起。这是「窗口无业务流量」，不是门红。
 //   默认视口 1440x900（≥1440 三栏健康基线）+ 1280x800（两栏塌缩受害视口）。
 //
 // 用法（登录三通道，任选其一）：
@@ -261,11 +268,28 @@ async function runViewport({ w, h, label }, session) {
       }
       return n;
     };
-    /** 新载 /live（探针流量可见）并等条目就绪 —— 用于脱离深滚动态。 */
+    /** 真实请求行数：行的 ↗ 按钮存在 = 有请求详情可开。idle 心跳行（2026-11-03
+     *  前）渲染成行但没有 ↗ —— 用 ↗ 区分「能走两步交互的行」。 */
+    const realLeftRows = () => evalJs(
+      `[...document.querySelectorAll('.cp__row')].filter((r) => r.querySelector('[data-testid^="client-open-page-"]')).length`,
+    );
+    /** 等真实请求行出现（SSE 实时到达；窗口纯空闲时超时返回 0 ⇒ 上层判不可判定）。 */
+    const waitRealRows = async () => {
+      const t = Date.now();
+      let n = 0;
+      while (Date.now() - t < ROW_WAIT_MS) {
+        n = await realLeftRows();
+        if (n > 0) break;
+        await sleep(2000);
+      }
+      return n;
+    };
+    /** 新载 /live（探针流量可见）并等条目就绪 —— 用于脱离深滚动态。
+     *  等的是**真实**请求行（心跳行验不了两步交互）。 */
     const openFreshLive = async () => {
       await cdp.send('Page.navigate', { url: `${BASE}/live?probe=1` });
       await sleep(2000);
-      return waitRows();
+      return waitRealRows();
     };
     await cdp.send('Page.navigate', { url: `${BASE}/live?probe=1` });
     await sleep(4000);
@@ -273,6 +297,30 @@ async function runViewport({ w, h, label }, session) {
     check(`L0 [${label}] 左栏出现请求条目`, rows > 0, `rows=${rows}`);
     if (!rows) { cdp.close(); return 1; }
     const rightRows = await evalJs(`document.querySelectorAll('.pp__main').length`);
+
+    // X1/X2（2026-11-03 idle 心跳轮）：先于心跳/真实门跑 —— 心跳占行这件事
+    // 本身就是要抓的回归，不能被「无真实流量」的不可判定提前截走。
+    const idleRowCount = await evalJs(`document.querySelectorAll('.cp__row.is-idle, .pp__row.is-idle').length`);
+    const stripInfo = await evalJs(`(() => ['client-idle-strip', 'provider-idle-strip'].map((s) => {
+      const el = document.querySelector('[data-testid="' + s + '"]');
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { s, h: Math.round(r.height), buttons: el.querySelectorAll('button').length };
+    }).filter(Boolean))()`);
+    check(`X1 [${label}] idle 心跳不得渲染成请求行`, idleRowCount === 0,
+      idleRowCount > 0 ? `idleRows=${idleRowCount}（心跳被当成了请求行）` : '0 idle rows');
+    if (idleRowCount > 0 || stripInfo.length > 0) {
+      check(`X2 [${label}] 泳道安静 = 非交互灰态指示条（可见、无按钮）`,
+        stripInfo.length > 0 && stripInfo.every((x) => x.h > 0 && x.buttons === 0),
+        JSON.stringify(stripInfo));
+    }
+    const realRows = await waitRealRows();
+    if (!realRows) {
+      // throw 而非 die：process.exit 会跳过本函数的 finally（Chrome/临时 profile
+      // 清理）—— AGENTS「门被中止时 finally 没跑」教训家族；main().catch 收到后
+      // 以 exit 3（量具自身失败/不可判定）收场。
+      throw new Error(`不可判定：窗口内无真实请求行（idle 心跳行 ${idleRowCount} 行）——两步交互无从验起。这是「窗口无业务流量」，不是门红`);
+    }
 
     const countZoom = () => evalJs(`document.querySelectorAll('.zoom').length`);
     const currentPath = () => evalJs('location.pathname + location.search');
@@ -401,7 +449,9 @@ async function runViewport({ w, h, label }, session) {
     {
       await evalJs(`document.querySelector('.zoom .zoom__close')?.click()`);
       await sleep(400);
-      const midExpr = `(() => { const items=[...document.querySelectorAll('.cp__item')]; return items[Math.min(24, items.length-1)]; })()`;
+      // 中部行只在**真实请求行**里挑（idle 心跳行没有 ↗、验不了两步流；
+      // 2026-11-03 轮：旧版挑到心跳行 ⇒ L1b/L2/L3 三连假红）。
+      const midExpr = `(() => { const items=[...document.querySelectorAll('.cp__row')].filter((r) => r.querySelector('[data-testid^="client-open-page-"]')).map((r) => r.querySelector('.cp__item')).filter(Boolean); return items[Math.min(24, items.length-1)] ?? null; })()`;
       const midId = await evalJs(`(() => { const el=(${midExpr}); const row=el.closest('.cp__row'); const btn=row?.querySelector('[data-testid^="client-open-page-"]'); return btn ? btn.dataset.testid.slice('client-open-page-'.length) : ''; })()`);
       await evalJs(`(${midExpr})?.scrollIntoView({block:'center'})`);
       await sleep(300);
@@ -457,7 +507,8 @@ async function runViewport({ w, h, label }, session) {
       {
         await evalJs(`document.querySelector('.zoom .zoom__close')?.click()`);
         await sleep(400);
-        const midExpr = `(() => { const items=[...document.querySelectorAll('.pp__main')]; return items[Math.min(24, items.length-1)]; })()`;
+        // 与 L1b 同口径：中部行只在真实请求行里挑（见 L1b 注释）。
+        const midExpr = `(() => { const items=[...document.querySelectorAll('.pp__row')].filter((r) => r.querySelector('[data-testid^="provider-open-page-"]')).map((r) => r.querySelector('.pp__main')).filter(Boolean); return items[Math.min(24, items.length-1)] ?? null; })()`;
         const midId = await evalJs(`(() => { const el=(${midExpr}); const row=el.closest('.pp__row'); const btn=row?.querySelector('[data-testid^="provider-open-page-"]'); return btn ? btn.dataset.testid.slice('provider-open-page-'.length) : ''; })()`);
         await evalJs(`(${midExpr})?.scrollIntoView({block:'center'})`);
         await sleep(300);
@@ -482,8 +533,9 @@ async function runViewport({ w, h, label }, session) {
       if (!(await openFreshLive())) {
         check(`R3 [${label}] 行尾 ↗ → 新窗 /request-detail/:id（有意直达入口）`, false, 'reload 后无条目');
       } else {
-        // 右栏条目独立轮询（waitRows 只等左栏；新载页面右栏到达可能稍晚）。
-        let rr = await evalJs(`document.querySelectorAll('.pp__main').length`);
+        // 右栏条目独立轮询（新载页面右栏到达可能稍晚）；等的是**真实**行
+        // （心跳行没有 ↗，点了也是 FATAL）。
+        let rr = await evalJs(`[...document.querySelectorAll('.pp__row')].filter((r) => r.querySelector('[data-testid^="provider-open-page-"]')).length`);
         for (let i = 0; i < 20 && !rr; i++) { await sleep(2000); rr = await evalJs(`document.querySelectorAll('.pp__main').length`); }
         if (!rr) {
           check(`R3 [${label}] 行尾 ↗ → 新窗 /request-detail/:id（有意直达入口）`, false, 'reload 后右栏无条目');

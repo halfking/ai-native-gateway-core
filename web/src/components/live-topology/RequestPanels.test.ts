@@ -437,3 +437,98 @@ describe('RequestDetailView', () => {
   })
 })
 
+describe('两面板与 idle 心跳行（2026-11-03 两步交互轮）', () => {
+  // 后端 idle_marker 瓦片（admin/live_stream_sse.go，每分钟对安静泳道注入）
+  // 经泳道层转成 PanelEntry：status=idle + error_kind=no_traffic_* +
+  // request_id=idle-…（三种身份形态见 lib/liveStreamIdle.ts）。这里按
+  // 第一形态构造 —— isIdleMarker 的形状判定归 liveStreamIdle.test.ts 管，
+  // 本组钉的是**面板**的处置：心跳不是请求，不得渲染成可点行。
+  const idle = (over: Partial<PanelEntry> = {}): PanelEntry =>
+    entry({
+      requestId: 'idle-global-vendor-ab12cd34',
+      status: 'idle',
+      errorKind: 'no_traffic_1min',
+      latencyMs: null,
+      tokens: null,
+      ...over,
+    })
+
+  it('★ 左栏不把 idle 心跳渲染成请求行（点行 = 两步交互第一步，心跳没有详情可开）', () => {
+    const wrapper = mount(ClientRequestPanel, {
+      props: {
+        requests: [entry(), idle(), idle({ requestId: 'idle-global-vendor-ef56gh78', client: 'claude-code' })],
+      },
+      global: { plugins: [i18n] },
+    })
+    // 真实请求照常成行；心跳一行都不许有
+    expect(wrapper.findAll('.cp__item')).toHaveLength(1)
+    expect(wrapper.findAll('.cp__row.is-idle')).toHaveLength(0)
+    // 计数与分页同源过滤：心跳不进「共 N 条」（N=1 不是 3）
+    expect(wrapper.get('[data-testid="client-request-count"]').text().trim()).toBe('1')
+    expect(wrapper.get('.cp__page-info').text()).toContain('1')
+  })
+
+  it('★ 左栏把泳道安静收敛为一条非交互灰态指示条（去重、无 button、不产生点击事件）', async () => {
+    const wrapper = mount(ClientRequestPanel, {
+      props: {
+        requests: [
+          idle({ client: 'claude-code' }),
+          idle({ requestId: 'idle-global-vendor-ef56gh78', client: 'claude-code' }), // 同泳道重复心跳
+          idle({ requestId: 'idle-global-vendor-ab77aa00', client: 'go-client' }),
+        ],
+      },
+      global: { plugins: [i18n] },
+    })
+    const strip = wrapper.get('[data-testid="client-idle-strip"]')
+    expect(strip.text()).toContain('空闲') // 复用 idleLane 键，不是新文案
+    expect(strip.text()).toContain('Claude Code')
+    expect(strip.text()).toContain('Go Client')
+    expect(strip.findAll('button')).toHaveLength(0)
+    await strip.trigger('click')
+    expect(wrapper.emitted('zoom')).toBeUndefined()
+    expect(wrapper.emitted('select-request')).toBeUndefined()
+    expect(wrapper.emitted('open-page')).toBeUndefined()
+  })
+
+  it('★ 全为心跳时：左栏空态 + 指示条，不再是一整页可点的心跳行', () => {
+    const wrapper = mount(ClientRequestPanel, {
+      props: { requests: [idle(), idle({ requestId: 'idle-global-vendor-ef56gh78' })] },
+      global: { plugins: [i18n] },
+    })
+    expect(wrapper.findAll('.cp__item')).toHaveLength(0)
+    expect(wrapper.text()).toContain('窗口内暂无请求')
+    expect(wrapper.find('[data-testid="client-idle-strip"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="client-request-pager"]').exists()).toBe(false)
+  })
+
+  it('★ 右栏同款：心跳不渲染成响应行，泳道名进指示条', () => {
+    const wrapper = mount(ProviderResponsePanel, {
+      props: {
+        responses: [
+          entry({ requestId: 'r-1' }),
+          idle(),
+          idle({ requestId: 'idle-global-vendor-ef56gh78', provider: '商汤-3' }),
+        ],
+      },
+      global: { plugins: [i18n] },
+    })
+    expect(wrapper.findAll('.pp__row')).toHaveLength(1)
+    expect(wrapper.findAll('.pp__row.is-idle')).toHaveLength(0)
+    const strip = wrapper.get('[data-testid="provider-idle-strip"]')
+    expect(strip.text()).toContain('商汤-3')
+    expect(strip.findAll('button')).toHaveLength(0)
+  })
+
+  it('★ 心跳混入不挤掉真实请求的两步出口：行尾 ↗ 与点行照常 emit', async () => {
+    const wrapper = mount(ClientRequestPanel, {
+      props: { requests: [idle(), entry()] },
+      global: { plugins: [i18n] },
+    })
+    await wrapper.get('.cp__item').trigger('click')
+    expect(wrapper.emitted('zoom')?.[0]?.[0]).toMatchObject({ requestId: 'r-1' })
+    expect(wrapper.emitted('select-request')?.[0]).toEqual(['r-1'])
+    await wrapper.get('.cp__open').trigger('click')
+    expect(wrapper.emitted('open-page')?.[0]?.[0]).toMatchObject({ requestId: 'r-1' })
+  })
+})
+

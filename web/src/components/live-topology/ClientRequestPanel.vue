@@ -32,11 +32,39 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
+/** idle 心跳不是请求：**不进请求行列表**（2026-11-03 两步交互轮）。
+ *  点行 = 两步交互的第一步（弹摘要 →「查看全景」开新窗），而 idle 心跳没有
+ *  请求详情可开 —— 把它渲染成可点行等于给用户一个死入口（点行弹灰态摘要、
+ *  「查看全景」被守卫吞掉、行尾 ↗ 也没有）；低流量时段心跳行还会把真实
+ *  请求整页顶掉（owner 11-03 报的正是这个）。泳道的「安静」语义收敛到
+ *  列表上方的一条**非交互**灰态指示条（见模板），语义与后端 idle_marker
+ *  的「泳道瓦片」定位对齐。 */
+const realRequests = computed(() => props.requests.filter((e) => !isIdleMarker(e)))
+
+/** 泳道空闲指示：泳道名（易读名）去重 + 最新一次心跳时刻。 */
+const idleLanes = computed(() => {
+  const lanes = new Map<string, string>()
+  let latest = ''
+  for (const e of props.requests) {
+    if (!isIdleMarker(e)) continue
+    if (!lanes.has(e.client)) lanes.set(e.client, displayName(e.client))
+    if (e.ts > latest) latest = e.ts
+  }
+  const names = [...lanes.values()]
+  const shown = names.slice(0, 4).join(' · ')
+  const rest = names.length - Math.min(4, names.length)
+  return {
+    count: names.length,
+    label: rest > 0 ? `${shown} · +${rest}` : shown,
+    latest,
+  }
+})
+
 const page = ref(1)
-const pageCount = computed(() => Math.max(1, Math.ceil(props.requests.length / PANEL_PAGE_SIZE)))
+const pageCount = computed(() => Math.max(1, Math.ceil(realRequests.value.length / PANEL_PAGE_SIZE)))
 /** 当前页条目（最新在前 ⇒ 第 1 页 = 最新 50 条）。 */
 const pagedRequests = computed(() =>
-  props.requests.slice((page.value - 1) * PANEL_PAGE_SIZE, page.value * PANEL_PAGE_SIZE),
+  realRequests.value.slice((page.value - 1) * PANEL_PAGE_SIZE, page.value * PANEL_PAGE_SIZE),
 )
 /** 数据更新导致页数收缩时，把越界的当前页收回最后一页。 */
 watch(pageCount, (pages) => {
@@ -67,8 +95,9 @@ function displayName(client: string): string {
   return clientDisplayName(client)
 }
 
-/** 表头计数 = 请求明细总数（与分页器的「共 N 条」同源；聚合摘要已上移头部）。 */
-const headerCount = computed(() => String(props.requests.length))
+/** 表头计数 = 请求明细总数（与分页器的「共 N 条」同源；聚合摘要已上移头部）。
+ *  idle 心跳不是请求，不进这个数（与行列表同源过滤）。 */
+const headerCount = computed(() => String(realRequests.value.length))
 
 function statusClass(entry: PanelEntry): string {
   if (isIdleMarker(entry)) return 'is-idle'
@@ -100,8 +129,9 @@ function latency(value: number | null | undefined): string {
   return value >= 1000 ? `${(value / 1000).toFixed(2)}s` : `${Math.round(value)}ms`
 }
 
-/** 新到达的请求行做入场动画（只有新行动，见 useNewArrivals 注释）。 */
-const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.requestId))
+/** 新到达的请求行做入场动画（只有新行动，见 useNewArrivals 注释）。
+ *  心跳行不入列 ⇒ 也不会借「新到达」反复触发入场动画。 */
+const { fresh: freshIds } = useNewArrivals(() => realRequests.value.map((r) => r.requestId))
 </script>
 
 <template>
@@ -110,6 +140,19 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
       <span class="cp__title">{{ t('liveTopology.panel.clients') }}</span>
       <span class="cp__count" data-testid="client-request-count">{{ headerCount }}</span>
     </header>
+
+    <!-- 泳道空闲指示条（非交互）：心跳不是请求，不进行列表 —— 语义见
+         script 侧 realRequests 注释。整个条目没有任何 click 绑定。 -->
+    <div
+      v-if="idleLanes.count"
+      class="cp__idle-strip"
+      data-testid="client-idle-strip"
+      :title="t('liveTopology.panel.idleLaneHint')"
+    >
+      <span class="cp__idle-tag">{{ t('liveTopology.panel.idleLane') }}</span>
+      <span class="cp__idle-names">{{ idleLanes.label }}</span>
+      <span v-if="idleLanes.latest" class="cp__idle-time">{{ clock(idleLanes.latest) }}</span>
+    </div>
 
     <ul ref="listRef" class="cp__list" data-testid="client-request-list">
       <li v-for="entry in pagedRequests" :key="entry.requestId">
@@ -157,9 +200,9 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
         </div>
       </li>
     </ul>
-    <p v-if="!requests.length" class="cp__empty">{{ t('liveTopology.panel.empty') }}</p>
+    <p v-if="!realRequests.length" class="cp__empty">{{ t('liveTopology.panel.empty') }}</p>
 
-    <footer v-if="requests.length" class="cp__pager" data-testid="client-request-pager">
+    <footer v-if="realRequests.length" class="cp__pager" data-testid="client-request-pager">
       <button
         type="button"
         class="cp__page-btn"
@@ -167,7 +210,7 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
         data-testid="client-page-prev"
         @click="prevPage"
       ><CaretLeft /></button>
-      <span class="cp__page-info">{{ t('liveTopology.panel.page', { page, pages: pageCount }) }} · {{ t('liveTopology.panel.total', { n: requests.length }) }}</span>
+      <span class="cp__page-info">{{ t('liveTopology.panel.page', { page, pages: pageCount }) }} · {{ t('liveTopology.panel.total', { n: realRequests.length }) }}</span>
       <button
         type="button"
         class="cp__page-btn"
@@ -208,6 +251,39 @@ const { fresh: freshIds } = useNewArrivals(() => props.requests.map((r) => r.req
 .cp__count {
   font-size: 11px;
   color: var(--kx-muted);
+}
+
+/* 泳道空闲指示条：非交互灰态（虚线描边 = 「不是请求行」的家族语义，
+   与探测行的虚线描边同源）。 */
+.cp__idle-strip {
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  gap: 6px;
+  margin: 4px 4px 0;
+  padding: 3px 6px;
+  border: 1px dashed var(--kx-border);
+  border-radius: 7px;
+  font-size: 11px;
+  color: var(--kx-text-muted, var(--muted));
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.cp__idle-tag {
+  flex: none;
+}
+
+.cp__idle-names {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cp__idle-time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
 }
 
 .cp__list {
