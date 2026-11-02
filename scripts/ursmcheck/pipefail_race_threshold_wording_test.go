@@ -73,7 +73,7 @@ var r31CriterionRe = regexp.MustCompile(`判据量\s*=\s*\*\*(.+?)\*\*`)
 // ★★ 与量具的 CRIT_* 一一对应（★ 改一处必须改两处 ⇒ 门会校验）。
 var r31ExpectedQty = map[string]string{
 	"写端总量/管道容量":        "写端总量",
-	"写端总量/PIPE_BUF":    "写端总量",
+	"写端匹配输出/PIPE_BUF":  "写端匹配输出",
 	"中间段匹配输出/PIPE_BUF": "中间段的匹配输出体量",
 	"中间段输出体量/管道容量":     "中间段的输出体量",
 }

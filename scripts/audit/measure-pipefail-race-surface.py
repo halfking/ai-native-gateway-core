@@ -452,8 +452,8 @@ CRIT_A = "写端总量/管道容量"            # A 类：`grep -q`/`grep -m` �
 CRIT_C = "写端总量/管道容量"            # C 类：`head`/`awk-exit` **直连**写端 ⇒ 杀的是**写端**
 CRIT_B_GREP = "中间段匹配输出/PIPE_BUF"   # B 类 + 中间段是 grep ⇒ 杀的是**中间段**（行式小写）
 CRIT_B_BULK = "中间段输出体量/管道容量"    # B 类 + 中间段是块写命令 ⇒ 杀的是**中间段**
-CRIT_A_GREP = "写端总量/PIPE_BUF"         # ★ 写端**本身**是行式命令（grep）⇒ 阈值也降档
-CRIT_C_GREP = "写端总量/PIPE_BUF"         # ★ 同上（head/awk 直连，但写端是 grep）
+CRIT_A_GREP = "写端匹配输出/PIPE_BUF"      # ★ 写端**本身**是行式命令（grep）⇒ 阈值也降档
+CRIT_C_GREP = "写端匹配输出/PIPE_BUF"      # ★ 同上（head/awk 直连，但写端是 grep）
 CRIT_UNKNOWN = "跨行管道/未知"            # ★ 写端侧在上一行 ⇒ **判据量看不出来** ⇒ 不猜
 # ★ ★★ 实测读数（第三十一轮，★ 每点 5 次重复；★ 负载已同时记录）：
 #   A 类（写端总量）：Linux 65,536 B → 0/5 翻转、85,831 B → 1/5、173,831 B → 4/5；
