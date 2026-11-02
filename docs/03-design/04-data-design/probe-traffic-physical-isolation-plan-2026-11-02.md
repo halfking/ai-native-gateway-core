@@ -1,28 +1,23 @@
 # 探测流量与生产请求物理隔离 — 操作方案
 
 > 日期：2026-11-02  
-> 状态：**代码已合入 main；211 待本轮批判审计后重部署开 flag**（2026-11-02 08:56 批判审计）。  
->   **事实（08:56 实测）**：211 现役 `2.5.9-157a5777`（build_seq 2936）——  
->   **不含** `feat(probe-lane)`（`12f34ff30` 非祖先）⇒ env 无
->   `LLM_GATEWAY_PROBE_LANE_PHYSICAL`；近 6h 业务 hot 探测行 382；
->   `session_turns_probe_hot` 仍仅 1 行（01:53 临时启用遗留）。  
->   **代码面（origin/main）**：P1 DDL928 + P2 写分叉 + P3 读侧三端点 +
->   泳道默认 business + `/api/logs` 默认排除探测 + 12h 审计修复
->   （markers 口径 / rollup 真接线 / 死代码门）已在树内。  
->   **本轮补丁**：启动期 `AssertLaneTablesReady`；`MinuteAccumulator` 死路径门；
->   changelog 928 改为 applied。  
->   **仍属主/下一轮**：U1 TTL 清理；U2/U3 SSE 订阅侧；U4 lane=probe 语义改名；
->   MinuteAccumulator 是否删除 vs 复活（产品裁决）。  
+> 状态：**211 已开 flag 并验收**（2026-11-02 09:06+08；提交 `9aa973e56`）。  
+>   **生产读数**：`2.5.9-9aa973e5` / build_seq 2937 / 槽 a@8781 /
+>   `LLM_GATEWAY_PROBE_LANE_PHYSICAL=1`；切流后 `probe_hot` 1→4、
+>   业务 hot 近 3min 探测行=0（09:02:54 一条为蓝绿旧槽尾巴）。  
+>   **代码**：P1–P3 读侧 + P2 写分叉 + 启动表门 + 死路径门已在 main。  
+>   **仍属主/下一轮**：U1 TTL；U2/U3 SSE 订阅；U4 lane 命名；
+>   MinuteAccumulator 删 vs 复活。  
 > 范围：会话族请求流水、分钟统计、实时流 Redis、请求列表/实时拓扑/泳道前端、usage_ledger、api_keys  
-> 修订：07:40 订正状态失真；08:56 批判审计对齐「代码已合 ≠ 生产已开」
+> 修订：07:40 订正假验收；08:56 批判审计；09:06 部署验收闭案
 
 ---
 
 ## 0. 一句话结论
 
-**代码目标态**（main）：写路径可按 `LLM_GATEWAY_PROBE_LANE_PHYSICAL` 分叉到探测族表/缓存；读侧默认业务；探测有独立读端点。  
-**生产现状（211 @ 08:56）**：仍跑旧树 + flag 关 ⇒ **行为上仍是「同表打标 + 读侧排除」**（近 6h 业务 hot 仍有大量探测行）。  
-开启 flag 且部署含 `12f34ff30+` 的树之后，才进入物理隔离运行态。
+**运行态（211 @ 09:06）**：物理隔离已开（flag=1 + `9aa973e5` 树）。  
+新探测进 `session_turns_probe_hot`；业务 hot 窗口内探测新行归零（蓝绿切流尾巴除外）。  
+读侧默认业务；探测运维走 `/api/admin/probe/lane/*`。
 
 ---
 
