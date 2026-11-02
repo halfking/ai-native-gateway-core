@@ -71,10 +71,21 @@ stages:
             #
             # ★ 为什么是 `guards-fast` 而不是 `make guards`：
             #   `make guards` 含 slow 门（scripts/ursmcheck，126 个门文件）
-            #   ⇒ 4 核 Linux 实测 **767s（13 分钟）**，且依赖 python3/bash 工具链
-            #   ⇒ 超出本 job 的常规预算，且在精简镜像里会因缺 python3 而红。
+            #   ⇒ 4 核 Linux 实测 **767s（13 分钟）** ⇒ 超出本 job 的常规预算。
             #   ⇒ 慢门留在本地 `make guards` 与官方门 `verify.sh` 的 `go test ./...`。
             #   快门实测（4 核 Linux）：116s 墙钟，最慢单包 14.3s ⇒ 预算内。
+            #
+            # ★ 2026-11-02 第二十四轮修正一处**过期读数**（★ 读数自己会过期，
+            #   必须有人回填 —— 同 Makefile 里那条纪律）：
+            #   「在精简镜像里会因缺 python3 而红」—— ★ **不准确**：
+            #   仓内自己的门消息写的是「★ 请装 Python 3（★ CI 镜像自带）」，
+            #   且**本 job 的下一步就在跑 `python3 -c`** ⇒ 缺的是**时间**不是工具。
+            # ★ 本轮快门新增 `guards-gate-scripts`（13 条门脚本门，实测单条
+            #   0–14s、合计 ≈48s）⇒ 快门墙钟按实测回填为 **72–93s**（macOS 两次，
+            #   **已含**新增部分）⇒ 4 核 Linux 的新读数待 CI 复测。
+            # ★ 与此同时，**切流状态机门（实测 ≈270s）被有意排除在快门之外**
+            #   （单列 `make guards-deploy-state-machine`，只进 `make guards`
+            #     与 `verify.sh`）—— ★ ≈270s ≫ 快门预算 ⇒ 塞进来会撑爆预算。
             #
             # ★ 判据写在这条 **非注释行**上是有意的：
             #   `scripts/ursmcheck/ci_carrier_truth_test.go` 的 C3 判据要求

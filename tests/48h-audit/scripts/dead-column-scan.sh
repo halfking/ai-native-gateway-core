@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
+# requires-bash: 4
 # tests/48h-audit/scripts/dead-column-scan.sh
+#
+# ★ 2026-11-02 第二十四轮：本脚本用了 ${v^}/${v,,} 大小写展开（bash 4+）⇒
+#   运行前提是 bash ≥ 4（macOS 自带的是 3.2）⇒ 把它写成**可检查的事实**
+#   （原先它只存在于某个人脑子里 ⇒ 而本门（sql/schema 的 bash 前置声明门）
+#   在第二十四轮之前**根本不扫 tests/ 树** ⇒ 没有任何门会响）。
 #
 # 「死契约列」扫描：找出**有 DDL、有写入、有数据，但没有任何消费方**的数据库列。
 #

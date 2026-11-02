@@ -29,6 +29,24 @@
 
 set -uo pipefail
 
+# ★ 2026-11-02 第二十四轮：**可执行版本守卫**。
+# 本脚本自己**没有**用 bash 4+ 特性（逐文件判据看不出问题）⇒ 但它 source 的
+# tests/lib/fake-remote-host.sh 用了 `declare -A`（关联数组，bash 4+）
+# ⇒ ⇒ ★ **间接**需要 bash ≥ 4 ⇒ macOS 自带 bash 3.2 直接崩成
+#   cryptic 的 `declare: -A: invalid option`（★ 本轮实测）。
+# ⇒ 而这条门**从来没有任何调用方** ⇒ 它**从提交那天起就没跑过** ⇒
+#   「它是不是红的」没人知道（★ 本轮第一次在 bash 3.2 下跑：就是上面那行 cryptic）。
+# ⇒ 在做任何事之前先给出**可执行的**提示，而不是让使用者去猜。
+if [[ -z "${BASH_VERSINFO[0]:-}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+  printf '%s\n' \
+    "FATAL: 本门需要 bash >= 4（source 的 tests/lib/fake-remote-host.sh 用了 declare -A 关联数组）；当前是 ${BASH_VERSION:-unknown}。" >&2
+  printf '%s\n' \
+    "  macOS 自带 bash 是 3.2 ⇒ 请用 'brew install bash' 后的 /opt/homebrew/bin/bash，" >&2
+  printf '%s\n' \
+    "  或用 ~/sdk/bash5/bin/bash 运行；★ 本门是**离线**的（fake host，不需要网络与目标机）。" >&2
+  exit 64
+fi
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/tests/lib/fake-remote-host.sh"
 

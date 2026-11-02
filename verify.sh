@@ -220,6 +220,39 @@ go test ./... -count=1 -timeout=1800s
 # 契约（冷读一致性/跨实例一致性/V2 元数据配对）的唯一观测器，带 -tags=integration
 # 且需要一次性回环 Redis+PG——上面的 `go test ./...` 从不编译它们，此前无任何入口
 # 真实执行；首次执行即抓到真缺陷（F3）。缺少依赖或观测到不一致均拒绝发布。
+# 2026-11-02（第二十四轮）：★ 把**从未被运行过**的门接进强制路径。
+# ★ 这批门此前**没有任何调用方** ⇒ 按本仓纪律「门没有调用方 = 声明不是门」，
+#   它们只是文件；★ 其中两条已经**坏掉或红着**，而没人知道：
+#   · tests/session_storage_audit_gate_test.sh 依赖 ripgrep（CI 精简镜像没有）
+#     ⇒ 本文件此前在**任何**没有 ripgrep 的环境上都是红的；
+#   · tests/deploy_seamless_state_machine_test.sh 间接需要 bash ≥ 4
+#     ⇒ macOS 自带 bash 3.2 下 cryptic 崩 ⇒ 本轮补了可执行守卫
+#     （读 BASH_VERSINFO + 明确指引 + exit 64 ⇒ 从 cryptic 崩变成可执行地拒绝）
+#     ⇒ ★ 它**已接线**（本文件 + `make guards`），但**不进 CI 快门**：
+#       实测 **270s** 而 CI 快门预算是 **116s**（见 .workflow/main-verify.yml）
+#       ⇒ 与仓里既有的慢门（guards-ursmcheck 1122s）处理方式一致。
+# ★ 下面这 **12** 条全部**零外部依赖**（实测单条 **0–14s**、macOS bash 3.2 全绿）
+#   ⇒ 可安全进 CI 快门。
+echo "[verify] orphan gate scripts brought back into the mandatory path (12 fast gates)"
+bash tests/audit_154_wrapper_test.sh
+bash tests/credential_script_contract_test.sh
+bash tests/deploy_seamless_mobile_surface_test.sh
+bash tests/selfcheck_diagnostics_contract_test.sh
+bash tests/bump_version_collision_test.sh
+bash tests/deploy_blue_green_contract_test.sh
+bash tests/deploy_lock_test.sh
+bash tests/deploy_port_rotation_test.sh
+bash tests/deploy_promotion_test.sh
+bash tests/deploy_readiness_contract_test.sh
+bash tests/deploy_sops_test.sh
+bash tests/deploy_local_contract_test.sh
+
+# ★ 切流状态机门（慢门，实测 270s ⇒ 不进 CI 快门，只在官方门与 make guards 上跑）。
+#   经 scripts/run-bash4-gate.sh：找得到 bash ≥ 4 ⇒ 真跑；找不到 ⇒ 显式 SKIP
+#   （rc=0，**不伪装成通过**）。
+echo "[verify] deploy seamless state machine gate (slow gate, via bash4 wrapper)"
+bash scripts/run-bash4-gate.sh tests/deploy_seamless_state_machine_test.sh
+
 echo "[verify] session storage audit gate decision contracts"
 bash tests/session_storage_audit_gate_test.sh
 echo "[verify] session storage audit integration suite (required coherence)"

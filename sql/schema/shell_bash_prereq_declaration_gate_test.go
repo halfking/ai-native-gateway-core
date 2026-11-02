@@ -81,7 +81,22 @@ var bashPrereqDeclaredRE = regexp.MustCompile(`(?im)^\s*#\s*requires-bash\s*:\s*
 var bashPrereqGuardRE = regexp.MustCompile(`BASH_VERSINFO`)
 
 // bashPrereqScanRoots 是本门扫描的根目录（相对仓根）。
-var bashPrereqScanRoots = []string{"scripts", "deploy"}
+//
+// ★ 2026-11-02 第二十四轮：**加上 "tests"**。
+// 原口径只有 scripts + deploy ⇒ ★ **`tests/` 树从来不在门的扫描面里**
+// ⇒ 那里的脚本可以**无声明地**用 bash 4+ 特性 ⇒ 而没有任何门会响。
+// ★ 实测证据（本轮抓到的两件事）：
+//
+//	① `tests/lib/fake-remote-host.sh:108` 用 `declare -A`（关联数组）
+//	   ⇒ macOS 自带 bash 3.2 直接崩成 cryptic 的 `declare: -A: invalid option`；
+//	   它的唯一消费者 `tests/deploy_seamless_state_machine_test.sh` 因此
+//	   **从来跑不起来** ⇒ 一条从未被运行过的门。
+//	② ★ 更隐蔽的一层：`tests/deploy_seamless_state_machine_test.sh` **自己**
+//	   没有用 bash4 特性（逐文件判据看不出问题）⇒ 它是**通过 source 一个
+//	   bash4 文件**而间接需要 bash ≥ 4 的 ⇒ ★ **逐文件判据抓不到这种耦合**
+//	   ⇒ 所以除了把 tests/ 纳入扫描面，**消费者入口还得自带可执行守卫**
+//	   （见该脚本本轮新增的守卫）。
+var bashPrereqScanRoots = []string{"scripts", "deploy", "tests"}
 
 // bashPrereqShellScripts 返回扫描面内的全部 .sh（排除 ursmcheck 的 Go 测试目录）。
 func bashPrereqShellScripts(t *testing.T) []shellScript {
@@ -149,6 +164,130 @@ func bashPrereqViolations(t *testing.T) []string {
 		}
 	}
 	return out
+}
+
+// bashPrereqSourceRE 匹配 `source <path>` / `. <path>` 语句（取被 source 的路径）。
+var bashPrereqSourceRE = regexp.MustCompile(`(?m)^\s*(?:source|\.)\s+["']?([^\s"';]+)`)
+
+// usesBash4OnlyFeature 判断脚本（剥注释后）是否真的用了 bash 4+ 特性。
+func usesBash4OnlyFeature(code string) (string, int, bool) {
+	for _, feat := range bash4OnlyFeatures {
+		loc := feat.re.FindStringIndex(code)
+		if loc == nil {
+			continue
+		}
+		return feat.name, 1 + strings.Count(code[:loc[0]], "\n"), true
+	}
+	return "", 0, false
+}
+
+// bashPrereqCouplingViolations 返回「**间接**需要 bash ≥ 4」的脚本：
+// 它自己不用 bash4 特性（逐文件判据看不出问题），但它 **source** 了一个
+// 用 bash4 特性的文件。
+//
+// ★ 为什么必须单独判（第二十四轮的实测）：
+//
+//	tests/deploy_seamless_state_machine_test.sh 自己**不用** bash4 特性
+//	⇒ 逐文件判据判它「合规」⇒ 但它 source 的
+//	tests/lib/fake-remote-host.sh 用了 `declare -A`
+//	⇒ ⇒ **间接**需要 bash ≥ 4 ⇒ macOS 自带 bash 3.2 下 cryptic 崩
+//	⇒ 而这条门**从来没有任何调用方** ⇒ 它坏了也没人知道。
+//
+// ⇒ 判据：凡是被 source 的文件用了 bash4 特性，**source 方**也必须
+// 有声明或可执行守卫（否则运行时会以 cryptic 的方式失败，而不是可执行地拒绝）。
+func bashPrereqCouplingViolations(t *testing.T) []string {
+	t.Helper()
+	scripts := bashPrereqShellScripts(t)
+
+	// 索引：**仓内相对路径（rel）** → 该脚本是否用了 bash4 特性 / 用的哪个特性
+	//
+	// ★ 配对方式是**仓内相对路径后缀**（见下面的 strings.HasSuffix(token, cand.rel)）：
+	//   被 source 的路径通常写成 "$REPO_ROOT/tests/lib/xxx.sh"
+	//   ⇒ 用**仓内 rel 后缀**就能精确对上，且不会把仓里同名的两份文件配错。
+	//
+	// ★ 为什么不按 base name 配对（★ 这一段是本判据被变异臂改了两版的记录）：
+	//   ① 第一版把键存成 rel、却用 base 去查 ⇒ 永远查不到
+	//      ⇒ 判据**恒绿**、没有牙 ⇒ 被变异臂当场抓出来；
+	//   ② 第二版改成按 base 配对 ⇒ 又变成**误报**（仓里有
+	//      scripts/deploy-lib.legacy/targets.sh 与别的 targets.sh）；
+	//   ③ 最终落在 rel 后缀精确配对上（既不恒绿、也不误报）。
+	usesBash4 := map[string]bool{}
+	bash4FeatureByRel := map[string]string{}
+	for _, s := range scripts {
+		raw, err := os.ReadFile(s.path)
+		if err != nil {
+			t.Fatalf("读 %s 失败：%v", s.rel, err)
+		}
+		code := stripShellComments(string(raw))
+		if name, _, ok := usesBash4OnlyFeature(code); ok {
+			usesBash4[s.rel] = true
+			bash4FeatureByRel[s.rel] = name
+		}
+	}
+
+	var out []string
+	for _, s := range scripts {
+		raw, err := os.ReadFile(s.path)
+		if err != nil {
+			t.Fatalf("读 %s 失败：%v", s.rel, err)
+		}
+		text := string(raw)
+		if bashPrereqDeclaredRE.MatchString(text) || bashPrereqGuardRE.MatchString(text) {
+			continue
+		}
+		// ★ 在**原始文本**上逐行找 source 语句（不能用 stripShellComments 的
+		//   输出：它会把**双引号内的字面文本**丢掉 ⇒ 被 source 的路径恰好在
+		//   引号里 ⇒ 路径被剥掉 ⇒ 判据永远看不见 ⇒ ★ 第一版恒绿、没有牙）。
+		//   ⇒ 改为：逐行取**整行注释**（首个非空白字符是 #）跳过，其余行做正则匹配。
+		for _, line := range strings.Split(text, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "#") {
+				continue
+			}
+			for _, m := range bashPrereqSourceRE.FindAllStringSubmatch(line, -1) {
+				if len(m) < 2 {
+					continue
+				}
+				token := m[1]
+				// ★ 按**仓内相对路径后缀**精确配对（★ 不能按 base name：
+				//   仓里有多份同名文件（scripts/deploy-lib.legacy/targets.sh 与
+				//   别的 targets.sh）⇒ 按 base 配对会**误报**）。
+				// ★ 解不开就**跳过、不猜**：例如
+				//   `source "$AIAN_DEPLOY_LIB/targets.sh"` 指向的是**仓外**的共享
+				//   部署库（scripts/deploy-lib 是指向仓外的符号链接 ⇒ 门看不到）
+				//   ⇒ 无法判定 ⇒ 不报（★ 门不猜，是本仓一贯纪律）。
+				matched := ""
+				for _, cand := range scripts {
+					if !usesBash4[cand.rel] {
+						continue
+					}
+					if strings.HasSuffix(token, cand.rel) {
+						matched = cand.rel
+						break
+					}
+				}
+				if matched == "" {
+					continue
+				}
+				out = append(out, s.rel+" source 了 "+matched+"（用了 "+bash4FeatureByRel[matched]+
+					" ⇒ 需要 bash ≥ 4）—— 但**自己没有声明也没有可执行守卫** ⇒ "+
+					"它会以 cryptic 的方式失败（而不是可执行地拒绝）")
+				break
+			}
+		}
+	}
+	return out
+}
+
+// TestBash4SourceCouplingIsDeclared 钉住「间接需要 bash ≥ 4」这一族。
+func TestBash4SourceCouplingIsDeclared(t *testing.T) {
+	violations := bashPrereqCouplingViolations(t)
+	if len(violations) > 0 {
+		for _, v := range violations {
+			t.Errorf("%s", v)
+		}
+		t.Fatalf("有 %d 个脚本**间接**需要 bash ≥ 4（source 了用 bash4 特性的文件）"+
+			"却没有自己的声明/守卫", len(violations))
+	}
 }
 
 // itoa 是最小化的整数转字符串（避免为一个门引入 strconv 的 import 噪声）。

@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
+# requires-bash: 4
 # tests/lib/fake-remote-host.sh — offline harness for deploy-seamless.sh
+#
+# ★ 2026-11-02 第二十四轮：本文件用 declare -A 关联数组（bash 4+）⇒ 运行前提
+#   是 bash ≥ 4（macOS 自带 3.2 ⇒ 直接崩成 cryptic 的 `declare: -A: invalid option`）。
+#   ⇒ 声明化 + **消费者入口**（tests/deploy_seamless_state_machine_test.sh）
+#     自带可执行守卫（★ 逐文件的判据抓不到「source 一个 bash4 文件」这种耦合）。
 #
 # Provides:
 #   * A per-test fake host directory $H mirroring the 245 target layout

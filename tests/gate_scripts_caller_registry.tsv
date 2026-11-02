@@ -1,0 +1,58 @@
+# tests/gate_scripts_caller_registry.tsv — 「门脚本调用方」豁免表
+#
+# ★ 2026-11-02 第二十四轮。
+#
+# # 这张表是什么
+#
+# 本仓的纪律：**「门没有调用方 = 声明不是门」**（LESSONS §507 / R69 / R89-*）。
+# ⇒ 仓里每一个门脚本都**应当**有可执行调用方；做不到的（需要外部基础设施、
+#   需要分钟级编译、需要 ssh/生产目标…）**逐条登记在这里并写明原因**。
+# ⇒ 由 tests/gate_scripts_caller_registry_test.sh 守住：
+#   · 新增一个门却没接调用方 ⇒ 门红（★ 本表没列它）；
+#   · 表里的某条**已经**接上调用方了 ⇒ 门红（★ 必须从这里删掉 ⇒ 棘轮）；
+#   · 表里有幽灵条目（磁盘上不存在）⇒ 门红；
+#   · 表里有条目没写原因 ⇒ 门红。
+#
+# # 口径
+#
+#   · 「可执行调用方」= 这些文件里**非注释行**出现了该脚本的**文件名**：
+#       Makefile · 仓库根级 *.sh（含 verify.sh）· .workflow/*.yml ·
+#       .github/workflows/*.yml · scripts/**.sh · tests/*.sh
+#     ★ **剥离注释行**（首个非空白字符是 # 的行不算）⇒ 注释里的「见 xxx.sh」
+#     不算调用方（★ 这与 ci_carrier_truth_test.go 的 C3 同口径：
+#     「注释里写 make guards 不算」）。
+#   · 「需要外部依赖」的门**不进 CI 快门**，但它们**仍然是门** ⇒ 登记在册，
+#     人工触发时按文档执行。
+#
+# # 本表受三条约束（★ 口径必须与 tests/gate_scripts_caller_registry_test.sh 一致）
+#
+#   ① **接线维度是棘轮**：表里某条一旦有了可执行调用方，就必须从这里删掉（AC-2）
+#      ⇒ 「接线了就删」是硬要求。
+#   ② **总数有上限**（AC-5，当前 ≤ 15）⇒ 接得上的门应当被接线，而不是被豁免
+#      ⇒ 本表不是无限膨胀的垃圾场。
+#   ③ **依赖 ripgrep 的门只能以「人工触发」形态存在**（AC-6）：它必须登记在
+#      本表并写明原因 ⇒ ★ 这是本表**允许新增**的唯一一类行。
+#
+#   ★ 另有一条**不变量**：**表里的条目与可执行调用方互斥**
+#     （既登记又接线 ⇒ AC-2 报红）⇒ 这不是 bug，是设计：
+#     ripgrep 是 CI 精简镜像里没有的 ⇒ 依赖它的门**跑不了 CI**
+#     ⇒ 它必须**不接线**、只以「人工触发」形态存在。
+#
+#   ★ 上表头曾自称「行数是棘轮：只允许变少，不许变多」——★ 与门实际执行的
+#     约束**不一致**（门执行的是 ①②③，不是单一的「不许变多」）⇒ 口径改成
+#     与判据对齐（★ 本仓纪律：门禁判据必须与它自称的一致）。
+#
+# path<TAB>reason
+tests/deploy_credential_decrypt_verify_test.sh	需真实网络端点（curl 打真实地址）⇒ 离线 CI 跑不了
+tests/deploy_host_autoinstall_test.sh	需真 PG/Redis（opt-in：DL_AUTOINSTALL_TEST=1，真实源码构建，分钟级）
+tests/deploy_network_test.sh	需 ssh（真实主机连通性）
+tests/deploy_nocgo_build_test.sh	在宿主上编译 Go（缓存 846MB 量级）⇒ 分钟级，不进 CI 快门预算
+tests/deploy_rollback_test.sh	需 ssh（真实主机回滚）
+tests/deploy_seamless_postcondition_test.sh	需 docker + 真 PG（镜像与库都要在）
+tests/deploy_ssh_retry_test.sh	需 ssh（真实重试退避）
+tests/deploy_via_identity_gates_iso_test.sh	需 ssh + 生产目标机
+tests/env_injector_test.sh	在宿主上编译 Go（缓存 846MB 量级）⇒ 分钟级，不进 CI 快门预算
+tests/migration_ledger_gate_test.sh	需 ssh（台账在目标机上）
+tests/rotate_credentials_test.sh	在宿主上编译 Go（缓存 846MB 量级）⇒ 分钟级，不进 CI 快门预算
+tests/unified_probe_status_views_test.sh	需真 PG（读视图的实时数据）
+tests/ursm_root_migration_runner_test.sh	需真 PG（跑迁移）

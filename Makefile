@@ -172,7 +172,7 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 GUARD_PACKAGES_SLOW := ./scripts/ursmcheck ./admin
 
 .PHONY: guards
-guards: guards-installer guards-ursmcheck guards-shell guards-deploy guards-audit-ledger ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门 + 切流锁两门 + 跨文档登记册门）
+guards: guards-installer guards-ursmcheck guards-shell guards-deploy guards-deploy-state-machine guards-audit-ledger guards-gate-scripts ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + 跨文档登记册门 + 门脚本接线门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
 
 # ── 切流锁契约门 + 跨仓对拍门 ───────────────────────────────────────────────
@@ -191,6 +191,67 @@ guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，
 	@bash tests/deploy_switch_lock_parity_test.sh
 	@bash tests/deploy_test_gate_contract_test.sh
 	@bash tests/deploy_force_lock_recovery_test.sh
+
+# ── 门脚本接线门（把「从未被运行过」的门接进强制路径）──────────────────
+#
+# ★ 2026-11-02 第二十四轮：★ 实测全仓门脚本（tests/*.sh + scripts/checks/*.sh +
+#   scripts/guards/*.sh）**接线前 56** 个，其中：
+#     · 32 个有**可执行**调用方；
+#     · 20 个**只在文档里被提及**（人工触发）⇒ 按「门没有调用方 = 声明不是门」，
+#       它们不是门；
+#     · ★ **4 个连文档都没有** ⇒ 完全隐形 ⇒ 其中两条**已经坏掉/红着**：
+#         · tests/session_storage_audit_gate_test.sh 依赖 ripgrep
+#           （CI 精简镜像没有）⇒ verify.sh **一直是红的**；
+#         · tests/deploy_seamless_state_machine_test.sh 间接需要 bash ≥ 4
+#           ⇒ macOS 自带 bash 3.2 下 cryptic 崩。
+# ⇒ 本轮把其中 **13 条**接进强制路径：
+#   · **12 条快的**（实测单条 0–14s、零外部依赖）⇒ verify.sh **与**本 target；
+#   · **1 条慢的**（tests/deploy_seamless_state_machine_test.sh，实测 **≈270s**）
+#     ⇒ 单列一个 target（见下），进 `make guards` 与 verify.sh，
+#     ★ **不进 guards-fast** ⇒ 理由见该 target 的注释。
+# ⇒ 余下未接线的**逐条登记**在 tests/gate_scripts_caller_registry.tsv
+#   （含原因）⇒ 由 tests/gate_scripts_caller_registry_test.sh 守住：
+#   新增的门若没有调用方 ⇒ 门红；已接线的必须从登记表里删掉 ⇒ 棘轮。
+# ⇒ ★ 接线后再测：57 个门（+1 = 登记册门自己）⇒ 44 个有调用方、13 个没有
+#   ⇒ 这 13 个**全部已登记** ⇒ **0 个隐形**。
+.PHONY: guards-gate-scripts
+guards-gate-scripts: ## 门脚本接线门（12 条快门 + 登记册门，防新增隐形门）
+	@bash tests/audit_154_wrapper_test.sh
+	@bash tests/credential_script_contract_test.sh
+	@bash tests/deploy_seamless_mobile_surface_test.sh
+	@bash tests/selfcheck_diagnostics_contract_test.sh
+	@bash tests/bump_version_collision_test.sh
+	@bash tests/deploy_blue_green_contract_test.sh
+	@bash tests/deploy_lock_test.sh
+	@bash tests/deploy_port_rotation_test.sh
+	@bash tests/deploy_promotion_test.sh
+	@bash tests/deploy_readiness_contract_test.sh
+	@bash tests/deploy_sops_test.sh
+	@bash tests/deploy_local_contract_test.sh
+	@bash tests/gate_scripts_caller_registry_test.sh
+
+# ── 切流状态机门（★ 慢门：实测 ≈270s ⇒ 不进 CI 快门）─────────────────────
+#
+# ★ 2026-11-02 第二十四轮：这条门是本轮抓到的**第二条「从未被运行过」的门**。
+#   它自己不用 bash4 特性，但 source 的 tests/lib/fake-remote-host.sh 用
+#   `declare -A` ⇒ **间接**需要 bash ≥ 4 ⇒ macOS 自带 bash 3.2 下 cryptic 崩
+#   （`declare: -A: invalid option`）⇒ ★ 加上「它没有任何调用方」⇒ 坏了没人知道。
+# ⇒ 本轮给它补了**可执行守卫**（读 BASH_VERSINFO + 明确指引 + exit 64）
+#   ⇒ macOS 上从 cryptic 崩变成可执行地拒绝。
+#
+# ★ ★ 为什么**单独成一个 target**，且**不进 guards-fast**：
+#   实测（macOS，含 bash5 包装器）**≈270s**（265s / 272s 两次）⇒ 而 CI 快门的预算是 **116s**
+#   （见 .workflow/main-verify.yml 的实测注释）⇒ ⇒ 把它塞进 guards-fast
+#   会把 CI 预算撑到 **3 倍以上** ⇒ ⇒ **不进快门**。
+#   ⇒ 这与仓里既有的慢门处理**完全一致**（guards-ursmcheck 实测 1122s，
+#     同样只进 `make guards` 与 verify.sh，不进 guards-fast）。
+#   ⇒ ★ 它**有**可执行调用方（make guards / verify.sh）⇒ 按本仓纪律
+#     「门没有调用方 = 声明不是门」，它**是门**，不是文件。
+#   ⇒ 包装器 scripts/run-bash4-gate.sh：找得到 bash ≥ 4 ⇒ 真跑；
+#     找不到 ⇒ **显式 SKIP**（rc=0，不伪装成通过）。
+.PHONY: guards-deploy-state-machine
+guards-deploy-state-machine: ## 切流状态机门（慢门，实测 ≈270s ⇒ 只进 make guards 与 verify.sh）
+	@bash scripts/run-bash4-gate.sh tests/deploy_seamless_state_machine_test.sh
 
 # ── 跨文档登记册一致性门 ─────────────────────────────────────────────────
 #
@@ -237,7 +298,7 @@ guards-win-baseline: ## Windows 全量测试基线门（bash scripts/guards/chec
 #
 #   ⇒ 新增这个 target 的意义：让「登记进 GUARD_PACKAGES」这件事**真的有 CI 在跑**。
 .PHONY: guards-fast
-guards-fast: guards-installer guards-shell guards-audit-ledger ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门 + 跨文档登记册门；不含 ursmcheck 慢门）
+guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scripts ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门 + 跨文档登记册门 + 门脚本接线门；不含 ursmcheck 慢门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
 
 # scripts/guards/check-shell-fullwidth-var.sh —— 「裸 $VAR 紧跟非 ASCII 字节」门。

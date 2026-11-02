@@ -1,5 +1,9 @@
 #!/bin/bash
+# requires-bash: 4
 # tests/local/scenarios/01-baseline.sh
+#
+# ★ 2026-11-02 第二十四轮：本脚本用了 declare -A 关联数组（bash 4+）⇒
+#   运行前提是 bash ≥ 4 ⇒ 声明化（本门此前不扫 tests/ 树 ⇒ 从来没人查）。
 #
 # 01 - 基线验证：所有 kill-switch = OFF（默认），业务应 200 OK 通过率 ≥ 99%。
 #
