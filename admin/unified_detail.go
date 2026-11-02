@@ -485,12 +485,6 @@ func (h *Handler) handleUnifiedRequestDetail(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "invalid request id")
 		return
 	}
-	// Idle heartbeat tiles are Redis markers (idle-*), not persisted requests.
-	// Reject before locator so deep links do not 404-spin as "missing detail".
-	if isIdleMarkerRequestID(requestID) {
-		writeError(w, http.StatusBadRequest, "idle_marker: not a persisted request")
-		return
-	}
 	omitBody := r.URL.Query().Get("omit_body") == "1" || r.URL.Query().Get("omit_body") == "true"
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -500,24 +494,17 @@ func (h *Handler) handleUnifiedRequestDetail(w http.ResponseWriter, r *http.Requ
 	})
 	detail, err := h.requestDetailLocator.Get(ctx, requestID, omitBody)
 	if errors.Is(err, requestdetail.ErrNotFound) {
-		probeDetail, probeErr := h.loadProbeLaneDetail(ctx, requestID)
-		if probeErr == nil && probeDetail != nil {
-			detail = probeDetail
-		} else if probeErr != nil && !errors.Is(probeErr, requestdetail.ErrNotFound) {
-			slog.Error("probe lane detail lookup failed", "request_id", requestID, "error", probeErr)
-			writeError(w, http.StatusInternalServerError, "failed to load request detail")
-			return
-		} else {
-			writeError(w, http.StatusNotFound, "request detail not found")
-			return
-		}
-	} else if errors.Is(err, requestdetail.ErrBodyTooLarge) {
+		writeError(w, http.StatusNotFound, "request detail not found")
+		return
+	}
+	if errors.Is(err, requestdetail.ErrBodyTooLarge) {
 		// 2026-08-29 (audit follow-up): a body that exceeds MaxBodyFileSize
 		// is a request-level constraint violation, not a server failure.
 		// Mapping to 500 misleads operators and clients; 413 is correct.
 		writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds 10MB limit")
 		return
-	} else if err != nil {
+	}
+	if err != nil {
 		slog.Error("request detail lookup failed", "request_id", requestID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to load request detail")
 		return
