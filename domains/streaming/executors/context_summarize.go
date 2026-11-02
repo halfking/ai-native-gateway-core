@@ -148,7 +148,22 @@ func (e *Executor) pickCompactionCandidates(ctx context.Context, profile string)
 	minWindow := defaultCompactionMinWindow
 	var out []provider.Candidate
 	for _, model := range compactionModelsFromEnv() {
-		cands, _, err := e.Provider.GetCandidates(ctx, model, profile, "")
+		// ★ 2026-11-02（第十轮 · F-32）：压缩摘要链的候选解析也**必须过模态门**。
+		//
+		// 压缩请求是**纯文本**的摘要调用（chat 形态）⇒ 模态固定为 "text"。
+		// 此前走无模态过滤的 GetCandidates ⇒ 登记为 embedding 的绑定会被塞进
+		// 压缩请求 ⇒ 上游 400（"does not support chat"）⇒ **压缩静默失败**。
+		// ★ 这一条**不是放大器**（§9.6 已核实）：压缩链不写绑定/节点状态
+		//   （doCompactionUpstream 无 WriteOnError / nodehealth 调用）⇒ 失败只
+		//   让自己这次压缩失败（链上有下一个候选兜底）⇒ 不连坐、不翻红。
+		//   但它是**功能坏的**：压缩模型名被误配成 embedding 登记绑定时，压缩
+		//   静默失败 ⇒ 请求带着超长历史打回客户端。
+		//
+		// 口径与请求路径一致：「text 只排除 embedding」（vision/audio 仍放行）
+		// ⇒ 风险极低。
+		// ★ provider 过滤不了模态时**不退回**无过滤查询（与第五轮同一个原则）
+		//   ⇒ 该模型没有候选 ⇒ 压缩链退到下一个模型。
+		cands, _, err := e.resolveCandidatesByModality(ctx, model, profile, "", "text")
 		if err != nil {
 			slog.Debug("compaction: resolve candidates failed", "model", model, "error", err)
 			continue
