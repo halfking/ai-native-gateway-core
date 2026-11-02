@@ -2518,6 +2518,28 @@ files=(
   #     status='running' 的半写态（审计与发布都不执行）。
   #   ★ 只重建约束，不改数据；自带 BEGIN/COMMIT ⇒ 走事务通道。
   "$ROOT_DIR/sql/migrations/startup/929_self_check_error_type_kind_closure.sql"
+  # ★ 931（2026-11-02 12h 审计轮 P0-3 M1）：userscript capture 摄取表族 ——
+  #   capture_batches / capture_messages / capture_bodies 三张表（ADR
+  #   docs/adr/2026-11-02-userscript-capture-gateway-endpoint.md D5）。
+  #   ★ 缺口本体：此前只有 installer 腿（StartupFiles），**从未**进本通道
+  #   ⇒ 升级库上三张表一个都没有 ⇒ 摄取端点写入全 42P01。
+  #   ★ 幂等收敛点 = capture_messages 的 (tenant_id, idempotency_key) 唯一约束
+  #   （同批次重放命中唯一冲突即计 duplicate）；自带 BEGIN/COMMIT ⇒ 走事务通道。
+  "$ROOT_DIR/sql/migrations/startup/931_userscript_capture_family.sql"
+  # ★ 932（2026-11-02 12h 审计轮 P0-3）：fresh-install 链补齐 outbox_events ——
+  #   该表在 211 是部署后**手工补建**的（V357，应用侧 DDL），**从未**进过
+  #   installer 登记序 ⇒ 全新安装的库没有它 ⇒ outbox dispatcher 与
+  #   userscript capture 的同事务事件写入全部 42P01。
+  #   ★ 幂等：已有环境（211/252）no-op（CREATE TABLE IF NOT EXISTS）。
+  #   ★ down 迁移只删本迁移登记、不删表（表是既有环境的手工产物）。
+  "$ROOT_DIR/sql/migrations/startup/932_outbox_events_fresh_install.sql"
+  # ★ 933（2026-11-02 12h 审计轮 P1-1 S1 后半）：taskbus 的 task_events 表
+  #   （ADR docs/adr/2026-11-02-outbox-consolidation-via-taskbus.md）。
+  #   ★ 列语义复刻 MemoryStore：pending/failed 且 next_retry_at 到期可 claim；
+  #   sent/dlq 是终态（回收窗口的基准 = completed_at）。
+  #   ★ 幂等收敛点 = uq_task_events_idem UNIQUE (task_type, idempotency_key)；
+  #   状态 CHECK 闭集 = pending/failed/dlq/sent 四值。
+  "$ROOT_DIR/sql/migrations/startup/933_task_events.sql"
 )
 
 
@@ -3044,6 +3066,17 @@ ledger_artifact_probe "928_probe_traffic_physical_lane.sql" \
 #      那 6 个 kind 名都在 929 文件里。
 ledger_artifact_probe "929_self_check_error_type_kind_closure.sql" \
   "EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'self_check_runs_error_type_check' AND conrelid = 'public.self_check_runs'::regclass AND position('request_rejected' in pg_get_constraintdef(oid)) > 0 AND position('circuit_open' in pg_get_constraintdef(oid)) > 0 AND position('fp_slot_saturated' in pg_get_constraintdef(oid)) > 0 AND position('first_byte_timeout' in pg_get_constraintdef(oid)) > 0 AND position('reply_loop' in pg_get_constraintdef(oid)) > 0 AND position('account_restricted' in pg_get_constraintdef(oid)) > 0)"
+# ★ 931（12h 审计轮 P0-3 M1）：产物 = userscript capture 三张表全部就位。
+#   ★ 联动契约：探针行里所有 public.x / 'x' 字面量必须在迁移文件文本中出现
+#   ⇒ 三个表名都在 931 文件里。
+ledger_artifact_probe "931_userscript_capture_family.sql" \
+  "EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'capture_batches' AND c.relkind = 'r') AND EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'capture_messages' AND c.relkind = 'r') AND EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'capture_bodies' AND c.relkind = 'r')"
+# ★ 932（12h 审计轮 P0-3）：产物 = outbox_events 表就位（fresh-install 补齐）。
+ledger_artifact_probe "932_outbox_events_fresh_install.sql" \
+  "EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'outbox_events' AND c.relkind = 'r')"
+# ★ 933（12h 审计轮 P1-1 S1 后半）：产物 = taskbus 的 task_events 表就位。
+ledger_artifact_probe "933_task_events.sql" \
+  "EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'task_events' AND c.relkind = 'r')"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

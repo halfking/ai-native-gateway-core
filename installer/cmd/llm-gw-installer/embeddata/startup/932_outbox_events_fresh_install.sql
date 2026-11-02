@@ -1,6 +1,6 @@
 -- ===========================================================================
 -- File:          sql/migrations/startup/932_outbox_events_fresh_install.sql
--- Migration:     929
+-- Migration:     932
 -- Purpose:       fresh-install 链补齐 outbox_events（P0-3 live E2E 抓到的
 --                真实缺口）：该表在 211 是部署后手工补建的（V357，应用侧
 --                DDL），从未进入 installer 登记序 ⇒ 全新安装的库没有它，
@@ -10,6 +10,13 @@
 -- ===========================================================================
 
 BEGIN;
+
+-- ★ 锁守卫（§44 纪律，871+ 强锁 DDL 迁移必带）：本迁移 CREATE TABLE /
+--   CREATE INDEX 拿强锁 ⇒ 等锁期间会堵住全库 ⇒ 拿不到锁就快速失败。
+--   ★ SET LOCAL 只在事务块内生效 ⇒ 必须落在 BEGIN/COMMIT 里（写在事务块外
+--   只是 WARNING、守卫是空文 —— 928 起的 SET LOCAL 有效性门）。
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '60s';
 
 CREATE TABLE IF NOT EXISTS public.outbox_events (
     id BIGSERIAL PRIMARY KEY,
@@ -32,7 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_outbox_events_status_retry
     ON public.outbox_events (status, next_retry_at);
 
 INSERT INTO public.schema_migrations (version, description)
-VALUES ('929', 'fresh-install gap: create outbox_events if absent (hand-applied on 211 as V357, never registered in the installer chain; P0-3 live E2E caught it)')
+VALUES ('932', 'fresh-install gap: create outbox_events if absent (hand-applied on 211 as V357, never registered in the installer chain; P0-3 live E2E caught it)')
 ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 
 COMMIT;

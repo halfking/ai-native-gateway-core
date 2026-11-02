@@ -1,6 +1,6 @@
 -- ===========================================================================
 -- File:          sql/migrations/startup/931_userscript_capture_family.sql
--- Migration:     928
+-- Migration:     931
 -- Database:      llm_gateway
 -- Purpose:       userscript capture 摄取表族（P0-3 M1，ADR
 --                docs/adr/2026-11-02-userscript-capture-gateway-endpoint.md D5）。
@@ -15,6 +15,13 @@
 -- ===========================================================================
 
 BEGIN;
+
+-- ★ 锁守卫（§44 纪律，871+ 强锁 DDL 迁移必带）：本迁移 CREATE TABLE /
+--   CREATE INDEX 拿强锁 ⇒ 等锁期间会堵住全库 ⇒ 拿不到锁就快速失败，
+--   不排队堵写路径。★ SET LOCAL 只在事务块内生效 ⇒ 必须落在 BEGIN/COMMIT 里
+--   （写在事务块外只是 WARNING、守卫是空文 —— 928 起的 SET LOCAL 有效性门）。
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '60s';
 
 CREATE TABLE IF NOT EXISTS public.capture_batches (
     batch_id          UUID PRIMARY KEY,
@@ -80,7 +87,7 @@ CREATE POLICY capture_tenant_isolation ON public.capture_bodies
 
 -- Ledger self-registration（710 惯例）
 INSERT INTO public.schema_migrations (version, description)
-VALUES ('928', 'userscript capture family: capture_batches/capture_messages/capture_bodies with tenant RLS and idempotency uniques (P0-3 M1, ADR userscript-capture-gateway-endpoint D5)')
+VALUES ('931', 'userscript capture family: capture_batches/capture_messages/capture_bodies with tenant RLS and idempotency uniques (P0-3 M1, ADR userscript-capture-gateway-endpoint D5)')
 ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 
 COMMIT;

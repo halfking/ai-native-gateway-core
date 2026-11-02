@@ -1,6 +1,6 @@
 -- ===========================================================================
 -- File:          sql/migrations/startup/933_task_events.sql
--- Migration:     930
+-- Migration:     933
 -- Purpose:       taskbus 的 task_events 表（P1-1 S1 后半，ADR
 --                docs/adr/2026-11-02-outbox-consolidation-via-taskbus.md）。
 --                目标表形态与 internal/taskbus/doc.go 的规划一致；列语义
@@ -11,6 +11,13 @@
 -- ===========================================================================
 
 BEGIN;
+
+-- ★ 锁守卫（§44 纪律，871+ 强锁 DDL 迁移必带）：本迁移 CREATE TABLE /
+--   CREATE INDEX 拿强锁 ⇒ 等锁期间会堵住全库 ⇒ 拿不到锁就快速失败。
+--   ★ SET LOCAL 只在事务块内生效 ⇒ 必须落在 BEGIN/COMMIT 里（写在事务块外
+--   只是 WARNING、守卫是空文 —— 928 起的 SET LOCAL 有效性门）。
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '60s';
 
 CREATE TABLE IF NOT EXISTS public.task_events (
     id              BIGSERIAL PRIMARY KEY,
@@ -34,7 +41,7 @@ CREATE INDEX IF NOT EXISTS idx_task_events_claim
     WHERE status IN ('pending','failed');
 
 INSERT INTO public.schema_migrations (version, description)
-VALUES ('930', 'taskbus task_events table (P1-1 S1: idempotent enqueue via (task_type,idempotency_key) unique, claim index on pending/failed + next_retry_at, completed_at as retention base)')
+VALUES ('933', 'taskbus task_events table (P1-1 S1: idempotent enqueue via (task_type,idempotency_key) unique, claim index on pending/failed + next_retry_at, completed_at as retention base)')
 ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 
 COMMIT;
