@@ -155,10 +155,10 @@ const retireProbeMinutesStatement = `
 // retireProbeMinutes removes probe minute buckets that no longer have
 // underlying probe rows.
 //
-// ★ 边界声明：这张表**无 TTL 清理作业**（审计 D5 登记为已知限制）——
-//   本函数只处理「桶已无源数据」的退役，不处理「源数据本身过期」。
-//   ⇒ 探测流量停止后，这张表会**停在**最后一次有数据的桶上，不再增长。
-//   真正的 TTL 清理是后续工作（见方案文档 §1.3 已登记未落地项）。
+// ★ 边界声明：本函数只处理「桶已无源数据」的退役。
+//   源流水 / 分钟表本身的 TTL 由 PartitionManager.cleanupOldProbeLaneTables
+//   承担（U1，lifecycle.session_turns_probe_hot_ttl_days，默认 14d）。
+//   ⇒ 探测流量停止后，retire 让无源桶消失；过期源行由 TTL 作业删除。
 func (w *StatsMinuteRollup) retireProbeMinutes(ctx context.Context, since time.Time) error {
 	if w == nil || w.db == nil {
 		return nil

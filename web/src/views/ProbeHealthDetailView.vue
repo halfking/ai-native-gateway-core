@@ -340,15 +340,20 @@ async function loadLogs() {
   }
 
   // 历史行：业务表上的探测行（车道未开时这是**唯一**来源）。
+  // U4：显式 lane=probe_history；服务端回 source=history 作为对拍。
   const data = await getRequestLogs({
     model: modelName.value,
     page_size: 100,
     chrono: true,
-    lane: 'probe',
+    lane: 'probe_history',
   })
   requestLogs.value = (data.items || []) as RequestLog[]
-  // lane_enabled 为 false ⇒ 车道未开 ⇒ 现在看到的全是历史行（探测在业务表里）。
-  laneSource.value = resolveProbeLaneSource(0, laneEnabled)
+  if (data.source === 'history' || data.lane === 'probe_history') {
+    laneSource.value = 'historical'
+  } else {
+    // lane_enabled 为 false ⇒ 车道未开 ⇒ 现在看到的全是历史行（探测在业务表里）。
+    laneSource.value = resolveProbeLaneSource(0, laneEnabled)
+  }
 }
 
 // ── Tab: 探活操作 ─────────────────────────────────────────────────────────

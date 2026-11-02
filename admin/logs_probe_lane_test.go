@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -29,6 +30,19 @@ func TestResolveLogsTrafficLanePredicateProbeOnly(t *testing.T) {
 	if strings.Contains(got, "NOT IN") {
 		t.Fatalf("lane=probe must not use NOT IN: %s", got)
 	}
+	gotAlias := resolveLogsTrafficLanePredicate("probe_history", false, "rl")
+	if gotAlias != got {
+		t.Fatalf("lane=probe_history must equal lane=probe\n got: %s\nwant: %s", gotAlias, got)
+	}
+}
+
+func TestIsLogsProbeHistoryLane(t *testing.T) {
+	if !isLogsProbeHistoryLane("probe") || !isLogsProbeHistoryLane("probe_history") {
+		t.Fatal("probe and probe_history must both be history lanes")
+	}
+	if isLogsProbeHistoryLane("business") || isLogsProbeHistoryLane("all") || isLogsProbeHistoryLane("") {
+		t.Fatal("business/all/empty must not be history lanes")
+	}
 }
 
 func TestResolveLogsTrafficLanePredicateAllOrInclude(t *testing.T) {
@@ -40,5 +54,24 @@ func TestResolveLogsTrafficLanePredicateAllOrInclude(t *testing.T) {
 	}
 	if got := resolveLogsTrafficLanePredicate("probe", true, "rl"); got != "" {
 		t.Fatalf("include_probe overrides lane=probe, got %q", got)
+	}
+}
+
+func TestListLogsProbeHistorySourceTagInSource(t *testing.T) {
+	// 钉住 listLogs 对历史探测 lane 回写 source/lane 的接线（字符串门：
+	// 行为单测需真库；此处防「响应标签被误删」）。
+	src, err := os.ReadFile("logs.go")
+	if err != nil {
+		t.Fatalf("read logs.go: %v", err)
+	}
+	body := string(src)
+	if !strings.Contains(body, `resp["source"] = "history"`) {
+		t.Error("listLogs must tag source=history for probe history lane")
+	}
+	if !strings.Contains(body, `resp["lane"] = "probe_history"`) {
+		t.Error("listLogs must echo lane=probe_history for probe history lane")
+	}
+	if !strings.Contains(body, "isLogsProbeHistoryLane(lane)") {
+		t.Error("listLogs must gate the history tag on isLogsProbeHistoryLane")
 	}
 }

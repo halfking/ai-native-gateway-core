@@ -249,6 +249,12 @@ type NodeProbeWorker struct {
 	// for a node whose probe has failed repeatedly (suspicious-action trigger).
 	// nil = disabled. Set via SetModelQualityTrigger.
 	modelQualityTrigger func(credentialID int, rawModel string, consecutiveFailures int)
+	// modelCredibilityTrigger (2026-11-02 B) fires after a successful probe.
+	// Independent of the liveness request: the callback should enqueue a
+	// separate credibility ScanNode (throttled). Must NOT hang off
+	// MarkNodeProbeHealthy (business success is high-frequency).
+	// nil = disabled. Set via SetModelCredibilityTrigger.
+	modelCredibilityTrigger func(credentialID int, rawModel string)
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -511,6 +517,14 @@ func (w *NodeProbeWorker) SetCircuitRecovery(fn func(providerID, credentialID in
 func (w *NodeProbeWorker) SetModelQualityTrigger(fn func(credentialID int, rawModel string, consecutiveFailures int)) {
 	if w != nil {
 		w.modelQualityTrigger = fn
+	}
+}
+
+// SetModelCredibilityTrigger wires the probe-success → credibility hook (B).
+// The callback must be non-blocking (NotifyProbeSuccess is).
+func (w *NodeProbeWorker) SetModelCredibilityTrigger(fn func(credentialID int, rawModel string)) {
+	if w != nil {
+		w.modelCredibilityTrigger = fn
 	}
 }
 
@@ -2656,6 +2670,11 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 					"credential_id", credID, "model", model, "error", err)
 			}
 			bgCancel()
+		}
+		// 2026-11-02 B：探活成功 → 独立可信度扫描（另发标定请求，不复用本轮
+		// 探活体）。冷却 / featured / inflight 闸在 NotifyProbeSuccess 内。
+		if w.modelCredibilityTrigger != nil {
+			w.modelCredibilityTrigger(credID, model)
 		}
 	} else {
 		// 2026-07-15 P0 fix (B-series cascade follow-up): the previous

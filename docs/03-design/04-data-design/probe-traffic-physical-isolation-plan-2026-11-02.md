@@ -6,10 +6,11 @@
 >   `LLM_GATEWAY_PROBE_LANE_PHYSICAL=1`；切流后 `probe_hot` 1→4、
 >   业务 hot 近 3min 探测行=0（09:02:54 一条为蓝绿旧槽尾巴）。  
 >   **代码**：P1–P3 读侧 + P2 写分叉 + 启动表门 + 死路径门已在 main。  
->   **仍属主/下一轮**：U1 TTL；U2/U3 SSE 订阅；U4 lane 命名；
->   MinuteAccumulator 删 vs 复活。  
+>   **本轮收口（未部署）**：U1 TTL 清理作业；U2/U3 SSE `?probe=1` + 前端订流；
+>   U4 `lane=probe_history` + `source=history`。  
+>   **仍属主**：MinuteAccumulator 删 vs 复活；F25/F26 embedding 探针形态；245/154 flag。  
 > 范围：会话族请求流水、分钟统计、实时流 Redis、请求列表/实时拓扑/泳道前端、usage_ledger、api_keys  
-> 修订：07:40 订正假验收；08:56 批判审计；09:06 部署验收闭案
+> 修订：07:40 订正假验收；08:56 批判审计；09:06 部署验收闭案；09:20 U1–U4 收口
 
 ---
 
@@ -62,14 +63,13 @@ R175 审计遗留（`docs/audit/2026-10-29-R175-…md` §7）：
 
 | # | 未落地项 | 现状 | 后果 | 归属 |
 |---|---|---|---|---|
-| U1 | **探测族 TTL / 清理作业** | `session_turns_probe_hot`（928 建）**无 TTL、无分区、无清理作业**；全仓无对它的 DELETE/TRUNCATE | 该表**单调增长**。方案 §0 原写「热表 + 短 TTL 为终态」，`sql/objects/tables/session_turns_probe_hot.sql` 注释亦称「TTL 由后续清理作业管」——**该清理作业尚未存在** | 属主待定（建议随存量清理作业一并落地） |
-| U2 | **SSE 频道分离（P3 剩余）** | 探测 tile 已分流到 `llmgw:live:probe:*` 键空间（写侧完成），但 SSE **订阅侧**未分离；读侧已补独立端点 `/api/admin/probe/lane/live` | 探测 tile 不会进业务 SSE 频道（写侧已断），但前端「订阅探测频道」这条路径未做 | P3 剩余项 |
-| U3 | **前端探测订阅切换（P3 剩余）** | `liveStreamPreferences` 默认已从 `['business','probe']` 收敛为 `['business']`（**默认隐藏**已达成）；但「显式打开才订探测频道」的网络层行为未验证 | 前端只能「不显示」，不能「订阅探测流」 | P3 剩余项 |
-| U4 | **`/api/logs?lane=probe` 的语义分层** | 该参数读的是**业务表**上的历史探测行（`admin/analytics.go` 的 `probeRequestFilter` 注释自陈「物理分表开启前读业务表上的历史探测行」） | 车道开启后，**新**探测只能从 `/api/admin/probe/lane/requests` 读；`lane=probe` 读到的永远是隔离开启**前**的历史行 ⇒ UI 上必须区分「历史」与「当前」 | 本轮已补独立端点，UI 分层待做 |
+| U1 | **探测族 TTL / 清理作业** | ✅ `bg/partition_manager_probe_lane_ttl.go`：`cleanupOldProbeLaneTables` 清 `session_turns_probe_hot` + `request_stats_probe_minute`（默认 14d，`lifecycle.session_turns_probe_hot_ttl_days`） | 接线在 `archiveOldPartitionsIfNeeded`；夹取 [1,90]；门在 `partition_manager_probe_lane_ttl_test.go` | 已落地（待部署） |
+| U2 | **SSE 频道分离（P3 剩余）** | ✅ `?probe=1` / `?lanes=…,probe`；未订 ⇒ `shouldDeliver` 丢弃 IsProbe；订了且 flag 开 ⇒ `ReplayLane("probe")` 合并进初始回放 | `admin/live_stream_probe_lane.go` + sse 接线 | 已落地（待部署） |
+| U3 | **前端探测订阅切换（P3 剩余）** | ✅ `setLiveStreamWantProbe` → URL `&probe=1` 重连；`useLiveStreamFilters` watch `requestTypes` 驱动 | `liveStreamStore.slim.test.ts` 钉 probe=1 | 已落地（待部署） |
+| U4 | **`/api/logs?lane=probe` 的语义分层** | ✅ 接受 `probe_history` 别名；响应标 `source=history` + `lane=probe_history`；运维页改走别名并对拍 | 当前探测仍走 `/api/admin/probe/lane/requests` | 已落地（待部署） |
 
-★ U1 的诚实边界：本轮落地的 `bg/stats_minute_probe_rollup.go` 的 `retireProbeMinutes`
-只处理「桶已无源数据」的**退役**，**不处理「源数据本身过期」** ⇒ 探测流量停止后，
-`request_stats_probe_minute` 会停在最后一次有数据的桶上，不再增长（**不增长**≠**会清理**）。
+★ U1 边界拆分：`retireProbeMinutes` 仍只做「桶已无源」的**退役**；源流水 / 分钟表
+过期行由 `cleanupOldProbeLaneTables`（默认 14d）删除。两者互补，不是互相替代。
 
 ---
 

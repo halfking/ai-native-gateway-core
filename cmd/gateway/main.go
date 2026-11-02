@@ -4737,6 +4737,14 @@ func main() {
 						modelQualityWorker.TriggerNodeIQTest(credID, rawModel)
 					}
 				})
+				// 2026-11-02 B：探活成功 → 独立可信度扫描（冷却/featured 闸在
+				// NotifyProbeSuccess）。闭包捕获后赋值的 modelCredibilityWorker；
+				// ★ 不挂 MarkNodeProbeHealthy —— 业务成功路径高频会烧标定预算。
+				nodeProbeWorker.SetModelCredibilityTrigger(func(credID int, rawModel string) {
+					if modelCredibilityWorker != nil {
+						modelCredibilityWorker.NotifyProbeSuccess(int64(credID), rawModel, "node_probe_success")
+					}
+				})
 				// 2026-07-17: 同步探测 hold 模式开关。env LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE
 				// 取值 "0"/"false"/"off" 即关闭（默认开启）。关闭时 executor 走原 fire-and-forget
 				// 路径，503 立即返回。该 kill-switch 用于紧急回滚，无需重新打包。
@@ -4992,6 +5000,12 @@ func main() {
 			nodeProbeWorker.SetModelQualityTrigger(func(credID int, rawModel string, consec int) {
 				if modelQualityWorker != nil {
 					modelQualityWorker.TriggerNodeIQTest(credID, rawModel)
+				}
+			})
+			// 2026-11-02 B：与主路径同款探活成功 → 可信度钩子。
+			nodeProbeWorker.SetModelCredibilityTrigger(func(credID int, rawModel string) {
+				if modelCredibilityWorker != nil {
+					modelCredibilityWorker.NotifyProbeSuccess(int64(credID), rawModel, "node_probe_success")
 				}
 			})
 			// 2026-08-13: mirror the unified-queue wiring for the authoritative
@@ -7644,7 +7658,32 @@ func main() {
 					dbConn.Pool(),
 					integrity.LoadSampleRatioFromEnv(0.1),
 				)
-				integrityDetector := integrity.NewDetector(integrityRecorder)
+				// C 方案：采样前挂钩 —— high/critical model_mismatch 即使被
+				// sampleRatio 丢行，仍异步触发独立可信度 ScanNode。
+				// 闭包捕获后赋值的 modelCredibilityWorker（本节前已构造）。
+				integrityNotify := &integrity.NotifyRecorder{
+					Inner: integrityRecorder,
+					Notify: func(ev integrity.Event) {
+						if modelCredibilityWorker == nil || ev.CredentialID == nil {
+							return
+						}
+						model := strings.TrimSpace(ev.RawModel)
+						if model == "" {
+							model = strings.TrimSpace(ev.OutboundModel)
+						}
+						if model == "" {
+							return
+						}
+						modelCredibilityWorker.NotifyIntegrityAnomaly(
+							int64(*ev.CredentialID),
+							model,
+							ev.ProviderCode,
+							string(ev.AnomalyType),
+							"integrity_live",
+						)
+					},
+				}
+				integrityDetector := integrity.NewDetector(integrityNotify)
 				integrityAdapter := integrity.NewExecutorAdapter(integrityDetector)
 				routingExec.IntegrityDetector = integrityAdapter
 				chatHandler.SetIntegrityDetector(integrityAdapter)
@@ -7657,6 +7696,14 @@ func main() {
 				// integrity_probe / credential_selfcheck) is filtered
 				// out of the sample.
 				fpd := bg.NewIntegrityFingerprintDrift(dbConn.Pool())
+				fpd.SetCredibilityOnDrift(func(credID int64, rawModel string) {
+					if modelCredibilityWorker == nil {
+						return
+					}
+					modelCredibilityWorker.NotifyIntegrityAnomaly(
+						credID, rawModel, "", "fingerprint_drift", "integrity_fp_drift",
+					)
+				})
 				fpd.Start(context.Background())
 				integrityDriftWorker = fpd
 

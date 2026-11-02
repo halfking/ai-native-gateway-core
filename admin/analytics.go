@@ -179,7 +179,12 @@ func businessRequestFilter(alias string) string {
 }
 
 // probeRequestFilter 是 businessRequestFilter 的对偶：只保留探测标记行。
-// 用于 /api/logs?lane=probe（物理分表开启前读业务表上的历史探测行）。
+//
+// ★ 2026-11-02 U4：本谓词只作用于**业务表**（rl = session_turns_hot ∪
+// session_turns）。物理隔离开启后，**新**探测在 session_turns_probe_hot，
+// 必须走 /api/admin/probe/lane/requests。因此 /api/logs?lane=probe（及
+// 别名 probe_history）读到的永远是隔离开启**前**留在业务表上的历史行
+// —— 响应必须标 source=history（见 listLogs），不得被误读成「当前探测」。
 func probeRequestFilter(alias string) string {
 	prefix := ""
 	if alias != "" {
@@ -190,16 +195,23 @@ func probeRequestFilter(alias string) string {
 		  OR COALESCE(%srequest_id, '') LIKE 'probe-%%')`, prefix, probekind.SQLStageList(), prefix, prefix)
 }
 
+// isLogsProbeHistoryLane reports whether the lane param selects the
+// business-table historical probe view (U4). Accepts both the legacy
+// name "probe" and the explicit alias "probe_history".
+func isLogsProbeHistoryLane(lane string) bool {
+	return lane == "probe" || lane == "probe_history"
+}
+
 // resolveLogsTrafficLanePredicate 决定请求列表默认业务隔离谓词。
 //
 //	lane=all 或 includeProbe → 不加谓词（显式全量）
-//	lane=probe → 仅探测
+//	lane=probe / probe_history → 仅业务表上的历史探测行（见 probeRequestFilter）
 //	其余（含空 / business）→ 默认排除探测（历史兜底；物理分表后新探测本就不在业务表）
 func resolveLogsTrafficLanePredicate(lane string, includeProbe bool, alias string) string {
 	if includeProbe || lane == "all" {
 		return ""
 	}
-	if lane == "probe" {
+	if isLogsProbeHistoryLane(lane) {
 		return probeRequestFilter(alias)
 	}
 	return businessRequestFilter(alias)

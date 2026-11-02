@@ -11,6 +11,10 @@
 --   **不写** session_turns / session_turns_hot / usage_ledger_hot；
 --   开关关闭（默认）时本表恒为空，探测流量仍走业务表。
 --   ⇒ 读本表前必须确认开关状态，否则会把「空表」误读成「探测没发生」。
+--
+-- ★ TTL：bg.PartitionManager.cleanupOldProbeLaneTables（默认 14 天，
+--   lifecycle.session_turns_probe_hot_ttl_days 热加载）。无月分区、以热表
+--   + 短 TTL 为终态（方案 §0）。
 
 CREATE TABLE public.session_turns_probe_hot (
     request_id         text PRIMARY KEY,
