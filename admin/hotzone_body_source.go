@@ -47,9 +47,10 @@ import (
 // hotzoneMirrorMaxScanDays 限定「扫租户日目录找正文」时最多回看多少天。
 //
 // ★ 为什么要有这个扫描兜底：镜像的日期目录取的是**投递时刻**（UTC 日历日），
-//   而调用方给的 at 通常是**请求时间戳** —— 两者在跨日/时钟漂移时可能不同。
-//   ⇒ 先按 at 的日期精确命中（常见路径，零扫描），命中不了再有限扫描最近的
-//   若干日目录（兜底）。扫描**有界**（默认 32 天）⇒ 不会在超大目录上做无界 IO。
+//
+//	而调用方给的 at 通常是**请求时间戳** —— 两者在跨日/时钟漂移时可能不同。
+//	⇒ 先按 at 的日期精确命中（常见路径，零扫描），命中不了再有限扫描最近的
+//	若干日目录（兜底）。扫描**有界**（默认 32 天）⇒ 不会在超大目录上做无界 IO。
 const hotzoneMirrorMaxScanDays = 32
 
 // HotzoneBodySource 从本地热区请求侧镜像读回请求/响应正文。
@@ -86,7 +87,8 @@ func (s *HotzoneBodySource) RequestsDir() string {
 //
 // 返回值：(bodies, 命中?, 错误)。命中为 false 时 bodies 为零值。
 // ★ 只在**三件套全空**时才算命中（有 req 没 resp 也算命中 —— 前端要能分别
-//   展示请求侧与响应侧；"有请求无响应"是正常形态，例如失败流）。
+//
+//	展示请求侧与响应侧；"有请求无响应"是正常形态，例如失败流）。
 func (s *HotzoneBodySource) Lookup(tenantID, requestID string, at time.Time) (requestdetail.Bodies, bool, error) {
 	if s == nil || s.requestsDir == "" {
 		return requestdetail.Bodies{}, false, nil

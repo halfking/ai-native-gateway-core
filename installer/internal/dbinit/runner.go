@@ -1743,6 +1743,17 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//     finalizeRun 的 UPDATE 被 23514 拒绝 ⇒ 整条回滚 ⇒ run 行半写。
 			//   ★ 只重建约束，不改数据；自带 BEGIN/COMMIT + SET LOCAL 锁守卫。
 			"929_self_check_error_type_kind_closure.sql",
+			// ★ 930（2026-11-02 第二十五轮）：CHECK 闭集**再补齐** ——
+			//   加入 model_unavailable（本仓 4xx 归因轮引入的新 kind）。
+			//   ★ 缺口本体：929 的闭集是按当时的 32 kind 写死的，而本仓后来
+			//     加了第 33 个 kind ⇒ 929 的 CHECK 落后 ⇒ 写侧写该 kind 时
+			//     finalizeRun 的 UPDATE 被 23514 拒绝 ⇒ run 行半写。
+			//   ★ 之前没人发现：929 的闭集交叉门当时**只在 211 生产机上**、
+			//     不在仓库里 ⇒ 本仓引入新 kind 时无人守 ⇒ ★ 把 211 的工作
+			//     取回仓库后，那道门当场抓到了这个缺口。
+			//   ★ 同样是**新迁移**而非改 929 的字节（929 已在 211 应用、
+			//     字节冻结，content_sha256 进台账）。
+			"930_self_check_error_type_kind_closure_model_unavailable.sql",
 			// 931（P0-3 M1）：userscript capture 三表族（ADR
 			// userscript-capture-gateway-endpoint D5）。含 RLS 策略与
 			// 幂等唯一约束；down 提供对称复原。

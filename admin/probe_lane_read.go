@@ -55,31 +55,31 @@ import (
 //
 // 字段名与该表列名一一对应；可空列用指针表达（nil = SQL NULL）。
 type ProbeLaneRequestRow struct {
-	RequestID        string     `json:"request_id"`
-	TS               time.Time  `json:"ts"`
-	TenantID         string     `json:"tenant_id"`
-	CredentialID     *string    `json:"credential_id,omitempty"`
-	RawModelName     *string    `json:"raw_model_name,omitempty"`
-	ClientModel      *string    `json:"client_model,omitempty"`
-	OutboundModel    *string    `json:"outbound_model,omitempty"`
-	Success          bool       `json:"success"`
-	StatusCode       *int       `json:"status_code,omitempty"`
-	ErrorKind        *string    `json:"error_kind,omitempty"`
-	LatencyMs        *int       `json:"latency_ms,omitempty"`
-	PromptTokens     *int       `json:"prompt_tokens,omitempty"`
-	CompletionTokens *int       `json:"completion_tokens,omitempty"`
-	TotalTokens      *int       `json:"total_tokens,omitempty"`
-	OriginStage      *string    `json:"origin_stage,omitempty"`
-	OriginActor      *string    `json:"origin_actor,omitempty"`
-	TaskType         *string    `json:"task_type,omitempty"`
-	APIKeyID         *string    `json:"api_key_id,omitempty"`
-	ProviderID       *int       `json:"provider_id,omitempty"`
-	ClientIP         *string    `json:"client_ip,omitempty"`
-	RequestPreview   *string    `json:"request_preview,omitempty"`
-	GwSessionID      *string    `json:"gw_session_id,omitempty"`
-	AgentName        *string    `json:"agent_name,omitempty"`
-	QualityFlags     []string   `json:"quality_flags,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
+	RequestID        string    `json:"request_id"`
+	TS               time.Time `json:"ts"`
+	TenantID         string    `json:"tenant_id"`
+	CredentialID     *string   `json:"credential_id,omitempty"`
+	RawModelName     *string   `json:"raw_model_name,omitempty"`
+	ClientModel      *string   `json:"client_model,omitempty"`
+	OutboundModel    *string   `json:"outbound_model,omitempty"`
+	Success          bool      `json:"success"`
+	StatusCode       *int      `json:"status_code,omitempty"`
+	ErrorKind        *string   `json:"error_kind,omitempty"`
+	LatencyMs        *int      `json:"latency_ms,omitempty"`
+	PromptTokens     *int      `json:"prompt_tokens,omitempty"`
+	CompletionTokens *int      `json:"completion_tokens,omitempty"`
+	TotalTokens      *int      `json:"total_tokens,omitempty"`
+	OriginStage      *string   `json:"origin_stage,omitempty"`
+	OriginActor      *string   `json:"origin_actor,omitempty"`
+	TaskType         *string   `json:"task_type,omitempty"`
+	APIKeyID         *string   `json:"api_key_id,omitempty"`
+	ProviderID       *int      `json:"provider_id,omitempty"`
+	ClientIP         *string   `json:"client_ip,omitempty"`
+	RequestPreview   *string   `json:"request_preview,omitempty"`
+	GwSessionID      *string   `json:"gw_session_id,omitempty"`
+	AgentName        *string   `json:"agent_name,omitempty"`
+	QualityFlags     []string  `json:"quality_flags,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 // probeLaneRequestLimitMax 是 limit 参数的上限。
@@ -103,9 +103,10 @@ const probeLaneDefaultWindow = 24 * time.Hour
 // 返回 {"rows": [...], "total": N, "lane_enabled": bool}。
 //
 // ★ lane_enabled 显式回传：隔离开关**默认关** ⇒ 表恒为空 ⇒
-//   「查到 0 行」有两种完全不同的含义（车道没开 / 车道开了但最近没探测）。
-//   不回传这个字段，运维会把「0 行」读成「没有探测发生」——而真相是
-//   车道没开时探测流量**根本不在这张表里**（它在业务表里）。
+//
+//	「查到 0 行」有两种完全不同的含义（车道没开 / 车道开了但最近没探测）。
+//	不回传这个字段，运维会把「0 行」读成「没有探测发生」——而真相是
+//	车道没开时探测流量**根本不在这张表里**（它在业务表里）。
 func (h *Handler) handleProbeLaneRequests(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -177,11 +178,14 @@ func (h *Handler) handleProbeLaneRequests(w http.ResponseWriter, r *http.Request
 // 读侧的第二半：实时流 Redis 的探测键空间。
 //
 // ★ 为什么需要它：物理隔离开启时探测 tile 写进独立键空间
-//   （llmgw:live:probe:* / llmgw:live:tenant:<id>:probe:*，见
-//   admin/live_stream_redis_store.go 的 liveRequestQueueKeys）⇒
-//   读业务 main 队列**读不到探测 tile** ⇒ 探测在实时流里一进不出。
+//
+//	（llmgw:live:probe:* / llmgw:live:tenant:<id>:probe:*，见
+//	admin/live_stream_redis_store.go 的 liveRequestQueueKeys）⇒
+//	读业务 main 队列**读不到探测 tile** ⇒ 探测在实时流里一进不出。
+//
 // ★ 详情 hash 键**不分流**（llmgw:live:req:<id> 与租户 req:<id> 无条件写）
-//   ⇒ 只需切队列键，详情解析完全复用（LiveStreamRedisStore.ReplayLane）。
+//
+//	⇒ 只需切队列键，详情解析完全复用（LiveStreamRedisStore.ReplayLane）。
 //
 // Query params:
 //   - tenant_id 可选（租户视角必填；超管可省略读全局）
@@ -236,13 +240,15 @@ func (h *Handler) handleProbeLaneLiveRequests(w http.ResponseWriter, r *http.Req
 // 读侧第三半：探测分钟聚合表 request_stats_probe_minute。
 //
 // ★ 为什么需要它：它是 request_stats_minute 的**平行表**（同形状、同键
-//   (bucket, tenant_id, provider_id, canonical_id)），业务看板读的是业务表
-//   ⇒ 隔离开启后探测的 QPS / 成功率**在看板上完全看不到**（探测流量被
-//   分流出去，而看板只读业务表）⇒ 运维无法回答「探测还活着吗」。
+//
+//	(bucket, tenant_id, provider_id, canonical_id)），业务看板读的是业务表
+//	⇒ 隔离开启后探测的 QPS / 成功率**在看板上完全看不到**（探测流量被
+//	分流出去，而看板只读业务表）⇒ 运维无法回答「探测还活着吗」。
 //
 // ★ 口径：本端点返回的 requests / success_count / failure_count /
-//   latency_ms_sum 与业务表同义（同一套列、同一个键）⇒ 两者可直接对比。
-//   但**不可**与业务表相加（那是两种流量，物理隔离的目的正是分开）。
+//
+//	latency_ms_sum 与业务表同义（同一套列、同一个键）⇒ 两者可直接对比。
+//	但**不可**与业务表相加（那是两种流量，物理隔离的目的正是分开）。
 func (h *Handler) handleProbeLaneMinuteStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -349,11 +355,13 @@ func queryProbeLaneMinuteStats(
 // queryProbeLaneRequests reads rows from session_turns_probe_hot.
 //
 // ★ 谓词只带 ts 窗口 + 可选 tenant/stage ⇒ 与业务读面**完全解耦**
-//   （不 JOIN api_keys、不依赖视图列序、不碰 partition_date 冻结契约）。
+//
+//	（不 JOIN api_keys、不依赖视图列序、不碰 partition_date 冻结契约）。
 //
 // ★ 时间列用 ts（不是 created_at）：ts 是请求发生时间，
-//   created_at 是行落库时间（默认 now()）⇒ 运维按「请求发生在什么时候」
-//   查时用 ts 才准。
+//
+//	created_at 是行落库时间（默认 now()）⇒ 运维按「请求发生在什么时候」
+//	查时用 ts 才准。
 func queryProbeLaneRequests(
 	ctx context.Context,
 	db *pgxpool.Pool,

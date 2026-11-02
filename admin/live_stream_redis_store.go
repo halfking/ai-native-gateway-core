@@ -791,7 +791,7 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 		mainKey,
 		tenantKey("main"),
 		statPrefix + emptyAs(req.Status, "in_progress"),
-		tenantKey("status:"+emptyAs(req.Status, "in_progress")),
+		tenantKey("status:" + emptyAs(req.Status, "in_progress")),
 	}
 	// Only add dimension keys when the dimension value is present and valid
 	// Use resolveVendorForRequest to get the resolved vendor through the full fallback chain

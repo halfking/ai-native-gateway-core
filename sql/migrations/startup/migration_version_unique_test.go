@@ -135,11 +135,11 @@ func TestHeavyDDLModernMigrationsDeclareMeasuredBudget(t *testing.T) {
 		//   改字节会走 content replay 通道并连锁 break（见 914 教训）。
 		"928": "applied(211)；字节冻结；索引建在同文件新建的空表上（无存量扫描）；实测 0.276s/空库、<0.5s/50 万存量形态",
 	}
-		// 全表扫描类 DDL 的形态。
-		validateRe := regexp.MustCompile(`(?i)VALIDATE\s+CONSTRAINT`)
-		indexRe := regexp.MustCompile(`(?i)CREATE\s+(UNIQUE\s+)?INDEX`)
-		concurrentlyRe := regexp.MustCompile(`(?i)CONCURRENTLY`)
-		timeoutRe := regexp.MustCompile(`(?i)SET\s+(?:LOCAL\s+)?statement_timeout\s*=\s*'([^']+)'`)
+	// 全表扫描类 DDL 的形态。
+	validateRe := regexp.MustCompile(`(?i)VALIDATE\s+CONSTRAINT`)
+	indexRe := regexp.MustCompile(`(?i)CREATE\s+(UNIQUE\s+)?INDEX`)
+	concurrentlyRe := regexp.MustCompile(`(?i)CONCURRENTLY`)
+	timeoutRe := regexp.MustCompile(`(?i)SET\s+(?:LOCAL\s+)?statement_timeout\s*=\s*'([^']+)'`)
 
 	for _, entry := range entries {
 		name := entry.Name()

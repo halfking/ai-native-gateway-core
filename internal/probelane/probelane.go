@@ -78,22 +78,25 @@ func IsProbeEntry(originStage, taskType string, qualityFlags []string, originAct
 // 且 Go 臂的累加值会把探测流量永久混进业务看板 KPI。
 //
 // ⇒ 修法：**写侧与 stats 两臂同口径**（markers-only）。
-//   不改 stats 端 —— SQL 臂的 113 列视图**读不到 origin_stage**，
-//   给它加 stage 臂会制造**新的**两臂不一致（见 probekind.IsProbeMarkers
-//   的注释：两臂必须用同一套标记才能对同一行给出一致判定）。
+//
+//	不改 stats 端 —— SQL 臂的 113 列视图**读不到 origin_stage**，
+//	给它加 stage 臂会制造**新的**两臂不一致（见 probekind.IsProbeMarkers
+//	的注释：两臂必须用同一套标记才能对同一行给出一致判定）。
 //
 // ★ 为什么 markers-only 不会漏掉真实探测流量：
-//   internal/probekind.Writers 是「哪个 actor 写哪种 stage」的规范表，
-//   其**每一个 actor**都被 IsProbeMarkers 的 actor 白名单覆盖
-//   （ProbeActors 由 Writers 派生）⇒ 真实探测写入者必然留下 marker
-//   ⇒ markers-only 判定覆盖全部真实写入者。
-//   完整判定多认出的「stage-only」形态只出现在 origin_stage 残留而
-//   actor/task_type/quality_flags 全丢的退化行上——那种行本就不该
-//   被算成业务流量，但它同样不该进探测族表（两臂认不出它 ⇒
-//   它留在业务表里由 stats 正常处理，行为与车道关闭时一致）。
+//
+//	internal/probekind.Writers 是「哪个 actor 写哪种 stage」的规范表，
+//	其**每一个 actor**都被 IsProbeMarkers 的 actor 白名单覆盖
+//	（ProbeActors 由 Writers 派生）⇒ 真实探测写入者必然留下 marker
+//	⇒ markers-only 判定覆盖全部真实写入者。
+//	完整判定多认出的「stage-only」形态只出现在 origin_stage 残留而
+//	actor/task_type/quality_flags 全丢的退化行上——那种行本就不该
+//	被算成业务流量，但它同样不该进探测族表（两臂认不出它 ⇒
+//	它留在业务表里由 stats 正常处理，行为与车道关闭时一致）。
 //
 // ⇒ 判据（可证伪）：车道开启时，进探测族表的行集合 == stats 两臂
-//   判为探测的行的集合。三处判定同源于 probekind，无第二份名单。
+//
+//	判为探测的行的集合。三处判定同源于 probekind，无第二份名单。
 func ShouldIsolate(originStage, taskType string, qualityFlags []string, originActor string) bool {
 	if !PhysicalEnabled() {
 		return false

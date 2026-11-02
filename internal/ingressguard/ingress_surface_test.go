@@ -14,13 +14,14 @@
 // 只把现状**钉成可执行登记表**。
 //
 // ★ 2026-10-30（ingressguard P2 缺口收口轮）：上面那条 P2 缺口**已补**
-//   —— `/v1/messages/count_tokens` 现在**自带 RPM 闸**
-//   （messages_count_tokens.go 的 checkGatewayRateLimit，闸位在鉴权之后、
-//    读 body 之前 ⇒ 被限流的请求不读那 128MB 的 body）。
-//   ⇒ 本包的职责不变（仍不改行为、只钉现状），但**现状本身变了** ⇒
-//   登记册里那一条的 RateLimit 由 gateNone 翻成 gateOwn。
-//   ★ 依据：2026-10-29 的 Gemini :countTokens 轮把同一个缺口登记成 P2 时，
-//     明写「新端点不应再制造同一个缺口的第二个实例」⇒ 那个缺口就是本条。
+//
+//	—— `/v1/messages/count_tokens` 现在**自带 RPM 闸**
+//	（messages_count_tokens.go 的 checkGatewayRateLimit，闸位在鉴权之后、
+//	 读 body 之前 ⇒ 被限流的请求不读那 128MB 的 body）。
+//	⇒ 本包的职责不变（仍不改行为、只钉现状），但**现状本身变了** ⇒
+//	登记册里那一条的 RateLimit 由 gateNone 翻成 gateOwn。
+//	★ 依据：2026-10-29 的 Gemini :countTokens 轮把同一个缺口登记成 P2 时，
+//	  明写「新端点不应再制造同一个缺口的第二个实例」⇒ 那个缺口就是本条。
 //
 // ── 为什么要单独建包，而不是把门放进 domains/streaming ──────────────────
 // 217 号留下的顺位是「先把 domains/streaming 纳入 GUARD_PACKAGES 再加覆盖面门」。
@@ -34,37 +35,39 @@
 //	⇒ 登记它 = 给 CI 埋一个**只在慢机器上才炸**的雷。
 //
 // ★★ 2026-10-30（耗时治理轮）：**这段读数已过期，且当时的问题比记录的更严重**。
-//   本轮实测（同一台机器，Go 1.27.2 darwin/arm64）：
 //
-//	全包                    → **ok 163.561s**（不是 106s ⇒ 期间涨了 57s）
-//	`-short`（make test-short 的口径，-timeout=120s）→ **120.249s 超时 panic**
-//	`-race`（make test-race-core 的口径，-timeout=600s）→ ok 260.384s
+//	  本轮实测（同一台机器，Go 1.27.2 darwin/arm64）：
 //
-//   ⇒ ★★★ **「余量只剩 13.5 秒」这个判断在 218 号写下时就已经过期了**：
-//   真正的读数是**已经越过预算**（-short 口径直接 panic）⇒ 那时
-//   `make test-short` 就是**红的**，而 `make test-short` 是
-//   `.github/workflows/sessionforensics-ci.yml:42` 的调用方。
-//   ⇒ ★★★ **教训：「余量还剩多少」是【一个会漂的读数】，不是事实** ——
-//   上一轮写在注释里的数字，在下一轮代码变动后就已经不成立了，
-//   而注释**不会自己失效** ⇒ ⇒ ★ 读数必须**定期重测**，否则它就是一句
-//   看起来很可信的假话（与 §9.5「口径要写在代码里，不能只写在注释里」同源）。
+//		全包                    → **ok 163.561s**（不是 106s ⇒ 期间涨了 57s）
+//		`-short`（make test-short 的口径，-timeout=120s）→ **120.249s 超时 panic**
+//		`-race`（make test-race-core 的口径，-timeout=600s）→ ok 260.384s
 //
-//   本轮的处置（把耗时从 163.6s 降到 59.2s，详见 §「耗时治理轮」）：
-//   · 32 处测试用 `upstream.New()`（maxRetries=2 + 5s/10s 退避），
-//     而**生产用 `upstream.NewWithRetries(0)`**（cmd/gateway/main.go:828）
-//     ⇒ 测试构造的是一个**生产不存在的客户端** ⇒ 每次 5xx 都要白等 15s。
-//   · `hangingBody.Close()` 不解除 `Read` 的阻塞 ⇒ 超时门即使设成 1s，
-//     测试仍要等满 sleep 时长。
+//	  ⇒ ★★★ **「余量只剩 13.5 秒」这个判断在 218 号写下时就已经过期了**：
+//	  真正的读数是**已经越过预算**（-short 口径直接 panic）⇒ 那时
+//	  `make test-short` 就是**红的**，而 `make test-short` 是
+//	  `.github/workflows/sessionforensics-ci.yml:42` 的调用方。
+//	  ⇒ ★★★ **教训：「余量还剩多少」是【一个会漂的读数】，不是事实** ——
+//	  上一轮写在注释里的数字，在下一轮代码变动后就已经不成立了，
+//	  而注释**不会自己失效** ⇒ ⇒ ★ 读数必须**定期重测**，否则它就是一句
+//	  看起来很可信的假话（与 §9.5「口径要写在代码里，不能只写在注释里」同源）。
+//
+//	  本轮的处置（把耗时从 163.6s 降到 59.2s，详见 §「耗时治理轮」）：
+//	  · 32 处测试用 `upstream.New()`（maxRetries=2 + 5s/10s 退避），
+//	    而**生产用 `upstream.NewWithRetries(0)`**（cmd/gateway/main.go:828）
+//	    ⇒ 测试构造的是一个**生产不存在的客户端** ⇒ 每次 5xx 都要白等 15s。
+//	  · `hangingBody.Close()` 不解除 `Read` 的阻塞 ⇒ 超时门即使设成 1s，
+//	    测试仍要等满 sleep 时长。
 //
 // 所以本包刻意**不导入 domains/streaming**：它只做**静态文本判据**
 // （读 cmd/gateway/main.go 的路由注册 + 各 handler 源文件里锚点字符串的出现次数），
 // 因此编译与运行都是毫秒级，可以安全进 CI。
 //
 // ★ 2026-10-30 复测（治理后）：全包 **ok 59.2s**、`-short` 口径在 120s 内通过
-//   ⇒ 余量从「已经越界」变成 **~60s** ⇒ ★ 但**本包仍不导入它**：
-//   导入一个 59s 的包会让这道本该「毫秒级」的守卫变成 CI 里最慢的一步，
-//   而它本来就不需要被导入（静态判据足够）⇒ ★ 治理的目的是**消除红灯**，
-//   不是把它搬进 GUARD_PACKAGES。
+//
+//	⇒ 余量从「已经越界」变成 **~60s** ⇒ ★ 但**本包仍不导入它**：
+//	导入一个 59s 的包会让这道本该「毫秒级」的守卫变成 CI 里最慢的一步，
+//	而它本来就不需要被导入（静态判据足够）⇒ ★ 治理的目的是**消除红灯**，
+//	不是把它搬进 GUARD_PACKAGES。
 //
 // ── 本门是「契约钉桩」，不是「检测活缺陷」──
 // 它断言的是**现状**（含缺口）。缺口被如实登记，所以现在**是绿的**；
@@ -433,6 +436,38 @@ var registry = []surface{
 		RateLimit:    gateNone,
 		BudgetWhy:    "只确认提案并切换会话，不调上游 ⇒ 无累计配额闸",
 		RateLimitWhy: "不调上游；防重放/防刷由领域内 cooldown + handoff 预算承担（见本条注释），RPM 限流不是它的保护手段",
+	},
+	{
+		// ★ 2026-11-02 第二十六轮补登记：/v1/userscript/captures（P0-3 M1，
+		// ADR userscript-capture-gateway-endpoint）。
+		//
+		// ★ 为什么本条是「补登记」而不是「新功能」：这条路由是并行会话那 22 个
+		//   提交加进 main.go 的，而 ingressguard 的登记表**没有跟着登记**
+		//   ⇒ 本门当场判红（「新增的 /v1 数据面没有登记进 ingressguard.registry
+		//   （1 个未登记）：[/v1/userscript/captures]」）⇒ ⇒ **「忘了登记」
+		//   正是这道门要拦的东西**，它拦住了。
+		//
+		// 归类：控制面（planeControl）。它是**摄取**端点 —— 请求体落
+		//   capture_batches / capture_messages / capture_bodies 三表，
+		//   并在**同一事务**里写 outbox_events；**全程不调上游、不消耗额度**
+		//   ⇒ 无累计配额闸是合理的（与 control 面惯例一致）。
+		//
+		// 限流：注册行是**裸的** `mux.Handle("/v1/userscript/captures", captureHandler)`
+		//   ⇒ 没有任何 RPM 包装 ⇒ 登记为「无」并写明理由：
+		//   ★ 该端点**仅在 `LLM_GATEWAY_USERSCRIPT_CAPTURE_SECRET` 非空时才挂载**
+		//     （未配置 = 能力不可用，userscript 停发并保留本地队列 —— 契约行为要求）
+		//     ⇒ 默认部署下暴露面为 **0**；
+		//   ★ 它的防重放靠 **HMAC**（internal/userscriptcapture/hmac.go）而不是限流。
+		// ⇒ ⇒ 若日后给它加了 RPM 限流，这里必须同步改成 gateOwn（★ 本门会核对
+		//   「登记表里的声明」与「代码里的锚点」是否一致）。
+		Plane:        planeControl,
+		Routes:       []string{"/v1/userscript/captures"},
+		HandlerVars:  []string{"captureHandler"},
+		File:         "../../internal/userscriptcapture/handler.go",
+		Budget:       gateNone,
+		RateLimit:    gateNone,
+		BudgetWhy:    "摄取端点：不调上游、不消耗额度（正文落 capture_* 表 + 同事务写 outbox）⇒ 无累计配额闸",
+		RateLimitWhy: "注册行无 RPM 包装；防重放靠 HMAC（internal/userscriptcapture/hmac.go），且仅在 LLM_GATEWAY_USERSCRIPT_CAPTURE_SECRET 非空时才挂载（默认暴露面为 0）",
 	},
 }
 

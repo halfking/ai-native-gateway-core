@@ -114,7 +114,8 @@ const rollupProbeStatement = `
 // count the same traffic twice under two different definitions.
 //
 // ★ 错误不吞：返回给调用方，让 rollupWindow 的失败语义（游标不前进 ⇒
-//   重试收敛）与业务臂保持一致。
+//
+//	重试收敛）与业务臂保持一致。
 func (w *StatsMinuteRollup) rollupProbe(ctx context.Context, since, until time.Time) error {
 	if w == nil || w.db == nil {
 		return nil
@@ -133,14 +134,16 @@ func (w *StatsMinuteRollup) rollupProbe(ctx context.Context, since, until time.T
 // longer produces.
 //
 // ★ 为什么业务臂有 retire、探测臂也要有：rollup 是**整桶替换**，但只替换
-//   **本次窗口**覆盖到的键。窗口推进后，早期那些「曾经有探测流量、现在
-//   没有」的桶会**永远留在表里**（业务臂的 retireClosedDims 就是干这个的，
-//   见 stats_minute_rollup_retire.go）。
-//   ⇒ 不做 retire ⇒ 探测分钟表会累积**已消失的探测桶**，读侧算出的
-//   「探测 QPS」会虚高。
+//
+//	**本次窗口**覆盖到的键。窗口推进后，早期那些「曾经有探测流量、现在
+//	没有」的桶会**永远留在表里**（业务臂的 retireClosedDims 就是干这个的，
+//	见 stats_minute_rollup_retire.go）。
+//	⇒ 不做 retire ⇒ 探测分钟表会累积**已消失的探测桶**，读侧算出的
+//	「探测 QPS」会虚高。
 //
 // ★ 保守实现：只删「窗口之前、且窗口内没有任何探测流量」的桶。
-//   用 NOT EXISTS 判「同键在窗口内仍有行」比逐键比对便宜，且天然幂等。
+//
+//	用 NOT EXISTS 判「同键在窗口内仍有行」比逐键比对便宜，且天然幂等。
 const retireProbeMinutesStatement = `
 	DELETE FROM request_stats_probe_minute m
 	WHERE m.bucket < $1
@@ -156,9 +159,10 @@ const retireProbeMinutesStatement = `
 // underlying probe rows.
 //
 // ★ 边界声明：本函数只处理「桶已无源数据」的退役。
-//   源流水 / 分钟表本身的 TTL 由 PartitionManager.cleanupOldProbeLaneTables
-//   承担（U1，lifecycle.session_turns_probe_hot_ttl_days，默认 14d）。
-//   ⇒ 探测流量停止后，retire 让无源桶消失；过期源行由 TTL 作业删除。
+//
+//	源流水 / 分钟表本身的 TTL 由 PartitionManager.cleanupOldProbeLaneTables
+//	承担（U1，lifecycle.session_turns_probe_hot_ttl_days，默认 14d）。
+//	⇒ 探测流量停止后，retire 让无源桶消失；过期源行由 TTL 作业删除。
 func (w *StatsMinuteRollup) retireProbeMinutes(ctx context.Context, since time.Time) error {
 	if w == nil || w.db == nil {
 		return nil
@@ -176,9 +180,10 @@ func (w *StatsMinuteRollup) retireProbeMinutes(ctx context.Context, since time.T
 // business arm.
 //
 // ★ 为什么探测臂失败不阻断业务臂：业务分钟表是**用户可见的 KPI**，
-//   探测分钟表是**运维可见的辅助面**。让一个辅助面的写入失败拖垮业务
-//   KPI 的刷新，是把可选性的东西变成必需性的东西。
-//   ⇒ 但必须**响亮**：只吞不响 = 下次读侧看到 0 行时无人知道原因。
+//
+//	探测分钟表是**运维可见的辅助面**。让一个辅助面的写入失败拖垮业务
+//	KPI 的刷新，是把可选性的东西变成必需性的东西。
+//	⇒ 但必须**响亮**：只吞不响 = 下次读侧看到 0 行时无人知道原因。
 func logProbeRollupError(op string, err error) {
 	slog.Error("stats probe rollup failed", "op", op, "error", err)
 }

@@ -32,7 +32,7 @@ import (
 
 const (
 	defaultProbeSuccessCooldownHours = 6
-	defaultProbeSuccessRecheckHours = 1
+	defaultProbeSuccessRecheckHours  = 1
 )
 
 // NotifyProbeSuccess schedules an independent credibility ScanNode after a

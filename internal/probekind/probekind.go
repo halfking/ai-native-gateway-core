@@ -5,10 +5,10 @@
 // 2026-10-23 审计（会话 mvs_64ddb526ee11405aae54d67e7c4d6161）定位到：
 // 仓内有 **4 处**独立代码决定一个请求算不算探测，历史上**没有同源**：
 //
-//	1. DB CHECK 闸门       middleware/origin_mw.go       isValidOriginStage
-//	2. 侧表 is_probe 列    domains/streaming/context_attrs.go isProbeOriginStage
-//	3. 实时拓扑 dashboard  admin/probe_request_info.go    extractProbeInfo
-//	4. stats/board 排除    domains/stats/minute_entry.go  IsProbeTraffic
+//  1. DB CHECK 闸门       middleware/origin_mw.go       isValidOriginStage
+//  2. 侧表 is_probe 列    domains/streaming/context_attrs.go isProbeOriginStage
+//  3. 实时拓扑 dashboard  admin/probe_request_info.go    extractProbeInfo
+//  4. stats/board 排除    domains/stats/minute_entry.go  IsProbeTraffic
 //
 // 4 处各自维护一份清单 ⇒ 漂移。已实证的一次漂移：
 // `systemOwnerFallbackStage`（middleware）把 self-check-worker /
@@ -25,12 +25,14 @@
 // # 两条硬约束（本包是 stdlib-only 的原因）
 //
 // ① **不得依赖 domains/hooks/observability/telemetry**。telemetry 在
-//    middleware / domains / admin 的下层，被它依赖会把分类逻辑拖进依赖图
-//    的底层，让"哪一层定义探测"这个问题再次散开。本包只吃基本类型，
-//    调用方自己拆字段。
+//
+//	middleware / domains / admin 的下层，被它依赖会把分类逻辑拖进依赖图
+//	的底层，让"哪一层定义探测"这个问题再次散开。本包只吃基本类型，
+//	调用方自己拆字段。
 //
 // ② **不得依赖 bg**。bg import domains/stats，domains/stats 要用本包，
-//    本包再 import bg 就是循环。
+//
+//	本包再 import bg 就是循环。
 //
 // # 一致性由测试保证，不由注释保证
 //
@@ -84,14 +86,14 @@ import (
 // 它们从来写不进 DB（middleware/origin_mw.go 的 isValidOriginStage 闸门
 // 会挡掉），是死防御代码。2026-10-23 已从 dashboard 侧删除。
 var ProbeStages = []string{
-	"self_check",   // 自检 / 凭据自检 / 模型质量打分 / mock 探针
-	"node_probe",   // 节点探针 / 主动探测服务
+	"self_check",    // 自检 / 凭据自检 / 模型质量打分 / mock 探针
+	"node_probe",    // 节点探针 / 主动探测服务
 	"system_health", // 系统健康监控（本仓无写入点，见上方订正）
-	"probe_direct", // legacy 主动探测
-	"probe_v2",     // v2 主动探测
-	"model_probe",  // 模型探针
+	"probe_direct",  // legacy 主动探测
+	"probe_v2",      // v2 主动探测
+	"model_probe",   // 模型探针
 	"passive_probe", // 被动探针监听
-	"manual",       // 手动触发
+	"manual",        // 手动触发
 }
 
 // Writer 描述一个探测写入者。
@@ -277,14 +279,19 @@ func ValidStages() []string {
 // ★ 2026-10-28（R175 轮）订正：本注释此前写的是「能落进
 // `_request_logs.origin_stage`」且「DB CHECK（migration 341）用的就是这份集合」
 // ——**两处都指错了**：
-//   ① `_request_logs` 已随 890 的 v1 族退役**真删除** ⇒ 该表不存在；
-//   ② v1 族的 `request_logs_origin_stage_check` 随那次 DROP 一起消失，
-//      会话族**从未重建** ⇒ 那段时间 DB 侧**根本没有 CHECK**。
+//
+//	① `_request_logs` 已随 890 的 v1 族退役**真删除** ⇒ 该表不存在；
+//	② v1 族的 `request_logs_origin_stage_check` 随那次 DROP 一起消失，
+//	   会话族**从未重建** ⇒ 那段时间 DB 侧**根本没有 CHECK**。
+//
 // ⇒ 现在的 DB CHECK 是**迁移 914** 建的：
-//   sql/migrations/startup/914_session_turns_origin_stage_check.sql
-//   （父表 session_turns + hot 表 session_turns_hot 两侧，允许集 = ValidStages()）。
+//
+//	sql/migrations/startup/914_session_turns_origin_stage_check.sql
+//	（父表 session_turns + hot 表 session_turns_hot 两侧，允许集 = ValidStages()）。
+//
 // ⇒ 两边由 sql/migrations/startup/migration_914_session_turns_origin_stage_check_test.go
-//   逐项对拍：改 ValidStages() 必须同步改那条迁移，否则门会红。
+//
+//	逐项对拍：改 ValidStages() 必须同步改那条迁移，否则门会红。
 func IsValidStage(stage string) bool {
 	return contains(ValidStages(), stage)
 }

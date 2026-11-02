@@ -422,11 +422,11 @@ type LiveRequest struct {
 	//   组装不是压缩，排除（211 全量实测 0 条，排除是语义性的不是凑数）。
 	// in_progress 预投影帧可能尚未携带（logCtx 后补）——optional 字段，
 	// 缺省渲染成「未知」，禁止用零值冒充。
-	ClientModel    string `json:"client_model,omitempty"`
-	IsAutoRequest  bool   `json:"is_auto_request,omitempty"`
-	TaskType       string `json:"task_type,omitempty"`
-	TokenBand      string `json:"token_band,omitempty"`
-	Compressed     bool   `json:"compressed,omitempty"`
+	ClientModel   string `json:"client_model,omitempty"`
+	IsAutoRequest bool   `json:"is_auto_request,omitempty"`
+	TaskType      string `json:"task_type,omitempty"`
+	TokenBand     string `json:"token_band,omitempty"`
+	Compressed    bool   `json:"compressed,omitempty"`
 }
 
 // LiveStreamConfig controls hub behaviour. Zero values are safe and
@@ -588,7 +588,7 @@ type LiveStreamSSEHub struct {
 	// 改为最小刷新间隔 (默认 2s, env LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_MIN_INTERVAL):
 	// 在窗口内复用上一次成功的 delta (delta 缓存), 不重复跑 Redis pipeline.
 	lastSnapshotAtMu    sync.RWMutex
-	lastSnapshotAt      map[string]time.Time        // key = scope.cacheKey
+	lastSnapshotAt      map[string]time.Time       // key = scope.cacheKey
 	lastDeltaByScope    map[string]*scopeDeltaPair // 上次成功的 delta 缓存 (供节流命中时复用; legacy + slim 双格式)
 	lastDeltaMu         sync.RWMutex
 	snapshotMinInterval time.Duration // 最小刷新间隔; 0 禁用节流
@@ -2672,9 +2672,10 @@ func (h *LiveStreamSSEHub) HandleTriggerSnapshot(w http.ResponseWriter, r *http.
 // renders them left-to-right.
 //
 // wantProbe 控制是否纳入探测频道：
-//   · false → 剥掉 IsProbe（业务频道默认）
-//   · true + PhysicalEnabled → 另 ReplayLane("probe") 并按 ts 合并
-//   · true + flag 关 → 业务队列里本就有 is_probe 行，保留即可
+//
+//	· false → 剥掉 IsProbe（业务频道默认）
+//	· true + PhysicalEnabled → 另 ReplayLane("probe") 并按 ts 合并
+//	· true + flag 关 → 业务队列里本就有 is_probe 行，保留即可
 func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper bool, limit int, wantProbe bool) ([]LiveRequest, error) {
 	if h.store != nil {
 		items, err := h.store.Replay(ctx, tenantID, isSuper, limit)

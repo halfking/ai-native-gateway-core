@@ -72,7 +72,7 @@ func TestAssertLaneTablesReadyOK(t *testing.T) {
 	a := "public.session_turns_probe_hot"
 	b := "public.request_stats_probe_minute"
 	db := stubDB{tables: map[string]*string{
-		"public.session_turns_probe_hot":     &a,
+		"public.session_turns_probe_hot":    &a,
 		"public.request_stats_probe_minute": &b,
 	}}
 	if err := AssertLaneTablesReady(context.Background(), db); err != nil {

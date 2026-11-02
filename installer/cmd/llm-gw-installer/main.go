@@ -1159,27 +1159,36 @@ var inspectorStatsPartialIndexes904Down []byte
 // 905（2026-10-24，R92 稀有过滤 500@30s 轮）：给 public.session_turns
 // （分区父表）与 public.session_turns_hot 补两条 **model 维度复合索引**。
 // ★ 病灶（252 生产只读实测，2026-10-24）：GET /api/admin/turns/sessions
-//   带 `?model=` 时**恒 500@30s**（角色级 statement_timeout=30s）。
-//   ★ build 2841（R90 的两腿 EXISTS 已上线）直连 REPEAT=3 实测：
-//     ?limit=20                       200 200 200   0.878 0.155 0.111 s
-//     ?limit=20&api_key_id=105        200 200 200   9.576 0.216 0.151 s
-//     ?limit=20&model=deepseek-ai%2F…  500 500 500  30.008 30.007 30.018 s
-//     ?limit=20&provider=14           200 200 200   0.358 0.100 0.080 s
-//     ?limit=20&status_code=500       200 200 200   0.554 0.181 0.153 s
-//   ⇒ ★★ R90「四条全修」的结论被证伪：只有 model 那条仍 500。
+//
+//	带 `?model=` 时**恒 500@30s**（角色级 statement_timeout=30s）。
+//	★ build 2841（R90 的两腿 EXISTS 已上线）直连 REPEAT=3 实测：
+//	  ?limit=20                       200 200 200   0.878 0.155 0.111 s
+//	  ?limit=20&api_key_id=105        200 200 200   9.576 0.216 0.151 s
+//	  ?limit=20&model=deepseek-ai%2F…  500 500 500  30.008 30.007 30.018 s
+//	  ?limit=20&provider=14           200 200 200   0.358 0.100 0.080 s
+//	  ?limit=20&status_code=500       200 200 200   0.554 0.181 0.153 s
+//	⇒ ★★ R90「四条全修」的结论被证伪：只有 model 那条仍 500。
+//
 // ★ 真因不是「形状」而是**稀有过滤值 ⇒ 外层会话深扫**：该 model 命中
-//   458 轮 / **30 个会话**，而 public.sessions 有 441,112 个会话；
-//   列表是 `ORDER BY s.updated_at DESC LIMIT 21` ⇒ 必须扫到凑够 21 行
-//   ⇒ EXPLAIN 实测外层 Rows Removed by Filter: 72,455 + 277,899 = 350,354。
+//
+//	458 轮 / **30 个会话**，而 public.sessions 有 441,112 个会话；
+//	列表是 `ORDER BY s.updated_at DESC LIMIT 21` ⇒ 必须扫到凑够 21 行
+//	⇒ EXPLAIN 实测外层 Rows Removed by Filter: 72,455 + 277,899 = 350,354。
+//
 // ★ 修复效果（事务内建索引 + EXPLAIN ANALYZE + ROLLBACK，生产零持久变更）：
-//   model（稀有） 30,008 ms → **8.0 ms**；provider='14' 358 ms → **48.6 ms**。
+//
+//	model（稀有） 30,008 ms → **8.0 ms**；provider='14' 358 ms → **48.6 ms**。
+//
 // ★ 只给 model 建索引：provider n_distinct=20、status_code n_distinct=8
-//   ⇒ **没有选择性** ⇒ 给它们建索引会让规划器更倾向「轮次驱动 + 大哈希构建」
-//   ⇒ 实测退化到 **10,080 ms**。
+//
+//	⇒ **没有选择性** ⇒ 给它们建索引会让规划器更倾向「轮次驱动 + 大哈希构建」
+//	⇒ 实测退化到 **10,080 ms**。
+//
 // ★ 分区父表不支持 CREATE INDEX CONCURRENTLY ⇒ 用普通 CREATE INDEX；
-//   仍不用 CONCURRENTLY（startup 迁移默认在事务里跑）。
-//   实测构建时长 18,512 ms（父表）+ 28 ms（hot）⇒ ★ 这 ~18.5 秒里
-//   session_turns 的写入被 SHARE 锁阻塞 ⇒ 落在低峰窗口。
+//
+//	仍不用 CONCURRENTLY（startup 迁移默认在事务里跑）。
+//	实测构建时长 18,512 ms（父表）+ 28 ms（hot）⇒ ★ 这 ~18.5 秒里
+//	session_turns 的写入被 SHARE 锁阻塞 ⇒ 落在低峰窗口。
 //
 //go:embed embeddata/startup/905_turns_session_model_index.sql
 var turnsSessionModelIndex905 []byte
@@ -1215,6 +1224,7 @@ var routingAnalyticsSourceHashJoin910 []byte
 
 //go:embed embeddata/startup/910_routing_analytics_source_hashjoin.down.sql
 var routingAnalyticsSourceHashJoin910Down []byte
+
 // 908（2026-10-24，R147 存储效率续轮）：删除 route_incident_events 的
 // 零消费方索引 idx_route_incident_events_type_created (event_type,
 // created_at DESC)。★ 判决链：全仓 Go 代码无任何 event_type 谓词查询本表；
@@ -1259,6 +1269,7 @@ var sessionTurnsOriginStageCheck914Down []byte
 
 // ★ 916（R178 轮）：会话族 api_key_id **归一表达式**的 (CASE, ts DESC) 索引。
 // ★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带 dbinit:no-transaction 标记 ⇒ applySQL 不加 --single-transaction。
+//
 //go:embed embeddata/startup/916_session_turns_api_key_ts_index.sql
 var sessionTurnsAPIKeyTSIndex916 []byte
 
@@ -1267,6 +1278,7 @@ var sessionTurnsAPIKeyTSIndex916Down []byte
 
 // ★ 917（拦截持久化轮，2026-10-29）：输出策略拦截审核记录 / 放行表 / 硬阻断
 // 清单管理面状态的持久化表。全部幂等（CREATE TABLE/INDEX IF NOT EXISTS）。
+//
 //go:embed embeddata/startup/917_sanitize_block_reviews.sql
 var sanitizeBlockReviews917 []byte
 
@@ -1274,8 +1286,10 @@ var sanitizeBlockReviews917 []byte
 var sanitizeBlockReviews917Down []byte
 
 // ★ 919（R176 轮；让号记录：初拟 917，被上方拦截持久化轮占用 ⇒ 重取 919/920）：
-//   ursm_snapshot_slot_daily 补 active_minutes 列，填充函数升级为同步产出它；
-//   巡检 base_active 基线由此也能走汇总表。无 CONCURRENTLY ⇒ 默认 --single-transaction 通道。
+//
+//	ursm_snapshot_slot_daily 补 active_minutes 列，填充函数升级为同步产出它；
+//	巡检 base_active 基线由此也能走汇总表。无 CONCURRENTLY ⇒ 默认 --single-transaction 通道。
+//
 //go:embed embeddata/startup/919_ursm_slot_daily_active_minutes.sql
 var ursmSlotDailyActiveMinutes919 []byte
 
@@ -1283,8 +1297,10 @@ var ursmSlotDailyActiveMinutes919 []byte
 var ursmSlotDailyActiveMinutes919Down []byte
 
 // ★ 920（R176 轮）：node_probe_runs 的 (credential_id, completed_at) 覆盖索引，
-//   承接 INV-4「双模型探测成功门」的 24h 关联子查询（252 实测 549 次/天 慢+取消）。
-//   ★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带 dbinit:no-transaction 标记 ⇒ applySQL 不加 --single-transaction。
+//
+//	承接 INV-4「双模型探测成功门」的 24h 关联子查询（252 实测 549 次/天 慢+取消）。
+//	★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带 dbinit:no-transaction 标记 ⇒ applySQL 不加 --single-transaction。
+//
 //go:embed embeddata/startup/920_node_probe_runs_cred_completed_idx.sql
 var nodeProbeRunsCredCompletedIdx920 []byte
 
@@ -1292,10 +1308,12 @@ var nodeProbeRunsCredCompletedIdx920 []byte
 var nodeProbeRunsCredCompletedIdx920Down []byte
 
 // ★ 924（2026-10-30 R184 轮）：credential_probe_queue 的
-//   (probe_command, tenant_id, credential_id, raw_model, created_at) 复合索引，
-//   承接 integrity_probe_planner「未决完整性事件 → 入队去重」反连接
-//   （252 实测 132 次/1,370s 恒定在榜、单次 15,455 buffers 全量过队、产出 0 行）。
-//   ★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带 dbinit:no-transaction 标记 ⇒ applySQL 不加 --single-transaction。
+//
+//	(probe_command, tenant_id, credential_id, raw_model, created_at) 复合索引，
+//	承接 integrity_probe_planner「未决完整性事件 → 入队去重」反连接
+//	（252 实测 132 次/1,370s 恒定在榜、单次 15,455 buffers 全量过队、产出 0 行）。
+//	★ 含 CREATE INDEX CONCURRENTLY ⇒ 文件首行带 dbinit:no-transaction 标记 ⇒ applySQL 不加 --single-transaction。
+//
 //go:embed embeddata/startup/924_credential_probe_queue_command_key_idx.sql
 var credentialProbeQueueCommandKeyIdx924 []byte
 
@@ -1306,14 +1324,15 @@ var credentialProbeQueueCommandKeyIdx924Down []byte
 //   - sanitize_block_reviews 末尾追加 degraded BOOLEAN NOT NULL DEFAULT false
 //     （★ 末尾追加 ⇒ 既有列序不变 ⇒ blockReviewColumns 的 scan 对应关系不破）；
 //   - 回填 builtin.guard.% 存量行（守卫合成哨兵 ⇒ 降级放行，不是硬阻断）。
-//   ★ 幂等：ADD COLUMN IF NOT EXISTS + NOT degraded 守卫 ⇒ 重复执行不写重行。
-//   ★ 本条是「五点同步」的第 2 点（go:embed 变量 + embeddedSQLFiles 映射）——
+//     ★ 幂等：ADD COLUMN IF NOT EXISTS + NOT degraded 守卫 ⇒ 重复执行不写重行。
+//     ★ 本条是「五点同步」的第 2 点（go:embed 变量 + embeddedSQLFiles 映射）——
 //     ★★ 2026-10-31 12h 审计轮 P0-1：926 此前只做了 embeddata 副本 + StartupFiles
 //     ★★ + 通道腿，**漏了本点** ⇒ setupSQLDir() 物化不出该文件 ⇒
 //     ★★ dbinit.Runner.applySQL 在 926 处「file not found」⇒ **全新安装/升级在 926 中断**
 //     ★★ ⇒ degraded 列不存在 ⇒ 新代码的 INSERT ... degraded / WHERE NOT degraded
 //     ★★ 全部 42703（列不存在）⇒ 硬阻断留痕丢失 + insights 503 + 待审徽标静默变 0。
 //     ★★ 与 AGENTS.md 记载的 #851（851：只做 installer 漏 main.go）**同型复发**。
+//
 //go:embed embeddata/startup/926_sanitize_block_review_degraded.sql
 var sanitizeBlockReviewDegraded926 []byte
 
@@ -1325,7 +1344,8 @@ var sanitizeBlockReviewDegraded926Down []byte
 //   - 加 UNIQUE (tenant_id) 约束 ⇒ ★ 02-seed.sql 的 ON CONFLICT DO NOTHING
 //     **第一次真正生效** ⇒ 后续安装不再堆重复行（★ 根因闭环，
 //     ★ 而不是消费侧那两条 SELECT DISTINCT 的自保）。
-//   ★ 含 DELETE 回填 + ADD CONSTRAINT ⇒ 自带 lock_timeout / statement_timeout。
+//     ★ 含 DELETE 回填 + ADD CONSTRAINT ⇒ 自带 lock_timeout / statement_timeout。
+//
 //go:embed embeddata/startup/927_routing_policy_singleton_unique.sql
 var routingPolicySingletonUnique927 []byte
 
@@ -1333,7 +1353,9 @@ var routingPolicySingletonUnique927 []byte
 var routingPolicySingletonUnique927Down []byte
 
 // ★ 928（2026-11-02 探测物理隔离方案）：探测流水热表 + 探测分钟聚合表。
-//   写路径由 LLM_GATEWAY_PROBE_LANE_PHYSICAL 门控；本迁移只建表。
+//
+//	写路径由 LLM_GATEWAY_PROBE_LANE_PHYSICAL 门控；本迁移只建表。
+//
 //go:embed embeddata/startup/928_probe_traffic_physical_lane.sql
 var probeTrafficPhysicalLane928 []byte
 
@@ -1341,19 +1363,36 @@ var probeTrafficPhysicalLane928 []byte
 var probeTrafficPhysicalLane928Down []byte
 
 // ★ 929（2026-11-02 12h 审计轮 P1）：self_check_runs.error_type 的 CHECK
-//   闭集补齐 —— 与 errorsx.ErrorKind 闭集对齐。
-//   ★ 缺口本体：上游 9 提交给 errorsx 加了 6 个新 kind
-//     （request_rejected / circuit_open / fp_slot_saturated /
-//      first_byte_timeout / reply_loop / account_restricted），
-//     而 CHECK 的字面量清单没跟着长 ⇒ 写侧 bg/credential_selfcheck.go:844
-//     写的正是 kind 名 ⇒ finalizeRun 的 UPDATE 被 23514 拒绝 ⇒
-//     **整条 UPDATE 回滚** ⇒ self_check run 行停在 status='running' 的半写态。
-//   ★ 本迁移只重建该 CHECK，不改任何数据。
+//
+//	闭集补齐 —— 与 errorsx.ErrorKind 闭集对齐。
+//	★ 缺口本体：上游 9 提交给 errorsx 加了 6 个新 kind
+//	  （request_rejected / circuit_open / fp_slot_saturated /
+//	   first_byte_timeout / reply_loop / account_restricted），
+//	  而 CHECK 的字面量清单没跟着长 ⇒ 写侧 bg/credential_selfcheck.go:844
+//	  写的正是 kind 名 ⇒ finalizeRun 的 UPDATE 被 23514 拒绝 ⇒
+//	  **整条 UPDATE 回滚** ⇒ self_check run 行停在 status='running' 的半写态。
+//	★ 本迁移只重建该 CHECK，不改任何数据。
+//
 //go:embed embeddata/startup/929_self_check_error_type_kind_closure.sql
 var selfCheckErrorTypeKindClosure929 []byte
 
 //go:embed embeddata/startup/929_self_check_error_type_kind_closure.down.sql
 var selfCheckErrorTypeKindClosure929Down []byte
+
+// ★ 930（2026-11-02 第二十五轮）：self_check_runs.error_type CHECK 闭集**再补齐**
+//
+//	—— 加入 model_unavailable（本仓 4xx 归因轮引入的第 33 个 kind）。
+//	★ 缺口本体：929 的闭集按当时的 32 kind 写死，而本仓后来加了 model_unavailable
+//	  ⇒ 929 的 CHECK 落后 ⇒ 写侧写该 kind 时 finalizeRun 的 UPDATE 被 23514 拒绝
+//	  ⇒ run 行半写（status='running' / error_type=NULL）。
+//	★ 本迁移只重建该 CHECK，不改任何数据。
+//
+//go:embed embeddata/startup/930_self_check_error_type_kind_closure_model_unavailable.sql
+var selfCheckErrorTypeKindClosureModelUnavailable930 []byte
+
+//go:embed embeddata/startup/930_self_check_error_type_kind_closure_model_unavailable.down.sql
+var selfCheckErrorTypeKindClosureModelUnavailable930Down []byte
+
 //go:embed embeddata/startup/931_userscript_capture_family.sql
 var userscriptCaptureFamily931 []byte
 
@@ -1378,6 +1417,7 @@ var taskEvents933Down []byte
 //   - 新表 sanitize_block_evidence：被拦内容的**有界摘录**（原始会话内容），
 //     带 7 天 TTL（★ 单独一张表 ⇒ 917 的「审核记录表不含载荷原文」契约不破）；
 //   - sanitize_egress_releases.source 的 CHECK 扩一个取值 'auto_label'。
+//
 //go:embed embeddata/startup/921_sanitize_block_workbench.sql
 var sanitizeBlockWorkbench921 []byte
 
@@ -1385,10 +1425,12 @@ var sanitizeBlockWorkbench921 []byte
 var sanitizeBlockWorkbench921Down []byte
 
 // ★ 922（2026-10-29 模型可信度轮）：模型可信度（防掺水）体系的两张新表
-//   —— provider_model_credibility（当前判定）+ provider_model_credibility_runs
-//   （判定历史）；顺带补齐 provider_quality_profiles 的 reliability_score /
-//   calculated_at 两列（migration 435 遗漏、pg_dump 基线里有 ⇒ 只跑迁移的
-//   全新安装会缺列，internal/quality 的 INSERT 会 42703）。
+//
+//	—— provider_model_credibility（当前判定）+ provider_model_credibility_runs
+//	（判定历史）；顺带补齐 provider_quality_profiles 的 reliability_score /
+//	calculated_at 两列（migration 435 遗漏、pg_dump 基线里有 ⇒ 只跑迁移的
+//	全新安装会缺列，internal/quality 的 INSERT 会 42703）。
+//
 //go:embed embeddata/startup/922_model_credibility.sql
 var modelCredibility922 []byte
 
@@ -1396,13 +1438,16 @@ var modelCredibility922 []byte
 var modelCredibility922Down []byte
 
 // ★ 923（2026-10-29 记账补齐轮）：把 900~920 这 20 条迁移补登记进
-//   public.schema_migrations（人读台账）—— 只补记账，不改任何 schema 对象。
-//   ★ 幂等：ON CONFLICT (version) DO NOTHING ⇒ 重复执行不写重行。
+//
+//	public.schema_migrations（人读台账）—— 只补记账，不改任何 schema 对象。
+//	★ 幂等：ON CONFLICT (version) DO NOTHING ⇒ 重复执行不写重行。
+//
 //go:embed embeddata/startup/923_schema_migrations_ledger_backfill.sql
 var schemaMigrationsLedgerBackfill923 []byte
 
 //go:embed embeddata/startup/923_schema_migrations_ledger_backfill.down.sql
 var schemaMigrationsLedgerBackfill923Down []byte
+
 //go:embed embeddata/startup/915_recent_cache_hit_rate.sql
 var recentCacheHitRate915 []byte
 
@@ -1760,81 +1805,85 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/901_usage_ledger_api_key_id_ts_idx.sql":                                 usageLedgerApiKeyIdTsIdx901,
 	"startup/902_stats_event_dedup_pkey_include.sql":                                 statsEventDedupPkeyInclude902,
 	"startup/902_stats_event_dedup_pkey_include.down.sql":                            statsEventDedupPkeyInclude902Down,
-	"startup/903_sessions_updated_at_session_id_index.sql":                          sessionsUpdatedAtSessionIdIndex903,
-	"startup/903_sessions_updated_at_session_id_index.down.sql":                     sessionsUpdatedAtSessionIdIndex903Down,
-	"startup/904_inspector_stats_partial_indexes.sql":                              inspectorStatsPartialIndexes904,
-	"startup/904_inspector_stats_partial_indexes.down.sql":                         inspectorStatsPartialIndexes904Down,
-	"startup/905_turns_session_model_index.sql":                                    turnsSessionModelIndex905,
-	"startup/905_turns_session_model_index.down.sql":                               turnsSessionModelIndex905Down,
-	"startup/906_turns_api_key_numeric_partial_index.sql":                     turnsApiKeyNumericPartialIndex906,
-	"startup/906_turns_api_key_numeric_partial_index.down.sql":                turnsApiKeyNumericPartialIndex906Down,
-	"startup/907_routing_analytics_source_lateral.sql":                    routingAnalyticsSourceLateral907,
-	"startup/907_routing_analytics_source_lateral.down.sql":               routingAnalyticsSourceLateral907Down,
-	"startup/910_routing_analytics_source_hashjoin.sql":                   routingAnalyticsSourceHashJoin910,
-	"startup/910_routing_analytics_source_hashjoin.down.sql":              routingAnalyticsSourceHashJoin910Down,
+	"startup/903_sessions_updated_at_session_id_index.sql":                           sessionsUpdatedAtSessionIdIndex903,
+	"startup/903_sessions_updated_at_session_id_index.down.sql":                      sessionsUpdatedAtSessionIdIndex903Down,
+	"startup/904_inspector_stats_partial_indexes.sql":                                inspectorStatsPartialIndexes904,
+	"startup/904_inspector_stats_partial_indexes.down.sql":                           inspectorStatsPartialIndexes904Down,
+	"startup/905_turns_session_model_index.sql":                                      turnsSessionModelIndex905,
+	"startup/905_turns_session_model_index.down.sql":                                 turnsSessionModelIndex905Down,
+	"startup/906_turns_api_key_numeric_partial_index.sql":                            turnsApiKeyNumericPartialIndex906,
+	"startup/906_turns_api_key_numeric_partial_index.down.sql":                       turnsApiKeyNumericPartialIndex906Down,
+	"startup/907_routing_analytics_source_lateral.sql":                               routingAnalyticsSourceLateral907,
+	"startup/907_routing_analytics_source_lateral.down.sql":                          routingAnalyticsSourceLateral907Down,
+	"startup/910_routing_analytics_source_hashjoin.sql":                              routingAnalyticsSourceHashJoin910,
+	"startup/910_routing_analytics_source_hashjoin.down.sql":                         routingAnalyticsSourceHashJoin910Down,
 	"startup/908_route_incident_events_type_created_drop.sql":                        routeIncidentEventTypeCreatedDrop908,
 	"startup/908_route_incident_events_type_created_drop.down.sql":                   routeIncidentEventTypeCreatedDrop908Down,
-	"startup/909_session_summaries_search_trgm_indexes.sql":                        sessionSummariesSearchTrgmIndexes909,
-	"startup/909_session_summaries_search_trgm_indexes.down.sql":                   sessionSummariesSearchTrgmIndexes909Down,
-	"startup/911_local_audio_catalog.sql":                                          localAudioCatalog911,
-	"startup/912_session_recording_trash.sql":                                      sessionRecordingTrash912,
-	"startup/912_session_recording_trash.down.sql":                                 sessionRecordingTrash912Down,
-	"startup/913_maas_monthly_bills_coupons.sql":                                   maasMonthlyBillsCoupons913,
-	"startup/913_maas_monthly_bills_coupons.down.sql":                              maasMonthlyBillsCoupons913Down,
-	"startup/914_session_turns_origin_stage_check.sql":                            sessionTurnsOriginStageCheck914,
-	"startup/914_session_turns_origin_stage_check.down.sql":                       sessionTurnsOriginStageCheck914Down,
-	"startup/916_session_turns_api_key_ts_index.sql":                              sessionTurnsAPIKeyTSIndex916,
-	"startup/916_session_turns_api_key_ts_index.down.sql":                         sessionTurnsAPIKeyTSIndex916Down,
-	"startup/917_sanitize_block_reviews.sql":                                      sanitizeBlockReviews917,
-	"startup/917_sanitize_block_reviews.down.sql":                                 sanitizeBlockReviews917Down,
-	"startup/919_ursm_slot_daily_active_minutes.sql":                              ursmSlotDailyActiveMinutes919,
-	"startup/919_ursm_slot_daily_active_minutes.down.sql":                         ursmSlotDailyActiveMinutes919Down,
-	"startup/920_node_probe_runs_cred_completed_idx.sql":                          nodeProbeRunsCredCompletedIdx920,
-	"startup/920_node_probe_runs_cred_completed_idx.down.sql":                     nodeProbeRunsCredCompletedIdx920Down,
-	"startup/921_sanitize_block_workbench.sql":                                    sanitizeBlockWorkbench921,
-	"startup/921_sanitize_block_workbench.down.sql":                               sanitizeBlockWorkbench921Down,
-	"startup/922_model_credibility.sql":                                           modelCredibility922,
-	"startup/922_model_credibility.down.sql":                                      modelCredibility922Down,
-	"startup/923_schema_migrations_ledger_backfill.sql":                           schemaMigrationsLedgerBackfill923,
-	"startup/923_schema_migrations_ledger_backfill.down.sql":                      schemaMigrationsLedgerBackfill923Down,
-	"startup/924_credential_probe_queue_command_key_idx.sql":                      credentialProbeQueueCommandKeyIdx924,
-	"startup/924_credential_probe_queue_command_key_idx.down.sql":                 credentialProbeQueueCommandKeyIdx924Down,
+	"startup/909_session_summaries_search_trgm_indexes.sql":                          sessionSummariesSearchTrgmIndexes909,
+	"startup/909_session_summaries_search_trgm_indexes.down.sql":                     sessionSummariesSearchTrgmIndexes909Down,
+	"startup/911_local_audio_catalog.sql":                                            localAudioCatalog911,
+	"startup/912_session_recording_trash.sql":                                        sessionRecordingTrash912,
+	"startup/912_session_recording_trash.down.sql":                                   sessionRecordingTrash912Down,
+	"startup/913_maas_monthly_bills_coupons.sql":                                     maasMonthlyBillsCoupons913,
+	"startup/913_maas_monthly_bills_coupons.down.sql":                                maasMonthlyBillsCoupons913Down,
+	"startup/914_session_turns_origin_stage_check.sql":                               sessionTurnsOriginStageCheck914,
+	"startup/914_session_turns_origin_stage_check.down.sql":                          sessionTurnsOriginStageCheck914Down,
+	"startup/916_session_turns_api_key_ts_index.sql":                                 sessionTurnsAPIKeyTSIndex916,
+	"startup/916_session_turns_api_key_ts_index.down.sql":                            sessionTurnsAPIKeyTSIndex916Down,
+	"startup/917_sanitize_block_reviews.sql":                                         sanitizeBlockReviews917,
+	"startup/917_sanitize_block_reviews.down.sql":                                    sanitizeBlockReviews917Down,
+	"startup/919_ursm_slot_daily_active_minutes.sql":                                 ursmSlotDailyActiveMinutes919,
+	"startup/919_ursm_slot_daily_active_minutes.down.sql":                            ursmSlotDailyActiveMinutes919Down,
+	"startup/920_node_probe_runs_cred_completed_idx.sql":                             nodeProbeRunsCredCompletedIdx920,
+	"startup/920_node_probe_runs_cred_completed_idx.down.sql":                        nodeProbeRunsCredCompletedIdx920Down,
+	"startup/921_sanitize_block_workbench.sql":                                       sanitizeBlockWorkbench921,
+	"startup/921_sanitize_block_workbench.down.sql":                                  sanitizeBlockWorkbench921Down,
+	"startup/922_model_credibility.sql":                                              modelCredibility922,
+	"startup/922_model_credibility.down.sql":                                         modelCredibility922Down,
+	"startup/923_schema_migrations_ledger_backfill.sql":                              schemaMigrationsLedgerBackfill923,
+	"startup/923_schema_migrations_ledger_backfill.down.sql":                         schemaMigrationsLedgerBackfill923Down,
+	"startup/924_credential_probe_queue_command_key_idx.sql":                         credentialProbeQueueCommandKeyIdx924,
+	"startup/924_credential_probe_queue_command_key_idx.down.sql":                    credentialProbeQueueCommandKeyIdx924Down,
 	// ★ 926（2026-10-30 输出合规审计轮）：补登记 —— 此前漏了本映射项，
 	//   ⇒ setupSQLDir() 物化不出 926 ⇒ 安装器在 926 处 file not found。
 	//   ★ 见上方 go:embed 处的 P0-1 说明（五点同步的第 2 点）。
-	"startup/926_sanitize_block_review_degraded.sql":                               sanitizeBlockReviewDegraded926,
-	"startup/926_sanitize_block_review_degraded.down.sql":                          sanitizeBlockReviewDegraded926Down,
+	"startup/926_sanitize_block_review_degraded.sql":      sanitizeBlockReviewDegraded926,
+	"startup/926_sanitize_block_review_degraded.down.sql": sanitizeBlockReviewDegraded926Down,
 	// ★ 927（2026-10-31 12h 审计轮）：routing_policy 单例化（去重 + UNIQUE (tenant_id)）。
-	"startup/927_routing_policy_singleton_unique.sql":                              routingPolicySingletonUnique927,
-	"startup/931_userscript_capture_family.sql":                                   userscriptCaptureFamily931,
-	"startup/931_userscript_capture_family.down.sql":                              userscriptCaptureFamily931Down,
-	"startup/932_outbox_events_fresh_install.sql":                                 outboxEventsFreshInstall932,
-	"startup/932_outbox_events_fresh_install.down.sql":                            outboxEventsFreshInstall932Down,
-	"startup/933_task_events.sql":                                                 taskEvents933,
-	"startup/933_task_events.down.sql":                                            taskEvents933Down,
-	"startup/927_routing_policy_singleton_unique.down.sql":                         routingPolicySingletonUnique927Down,
+	"startup/927_routing_policy_singleton_unique.sql":      routingPolicySingletonUnique927,
+	"startup/931_userscript_capture_family.sql":            userscriptCaptureFamily931,
+	"startup/931_userscript_capture_family.down.sql":       userscriptCaptureFamily931Down,
+	"startup/932_outbox_events_fresh_install.sql":          outboxEventsFreshInstall932,
+	"startup/932_outbox_events_fresh_install.down.sql":     outboxEventsFreshInstall932Down,
+	"startup/933_task_events.sql":                          taskEvents933,
+	"startup/933_task_events.down.sql":                     taskEvents933Down,
+	"startup/927_routing_policy_singleton_unique.down.sql": routingPolicySingletonUnique927Down,
 	// ★ 928（2026-11-02）：探测流量物理隔离车道（session_turns_probe_hot + request_stats_probe_minute）。
-	"startup/928_probe_traffic_physical_lane.sql":                                  probeTrafficPhysicalLane928,
-	"startup/928_probe_traffic_physical_lane.down.sql":                             probeTrafficPhysicalLane928Down,
+	"startup/928_probe_traffic_physical_lane.sql":      probeTrafficPhysicalLane928,
+	"startup/928_probe_traffic_physical_lane.down.sql": probeTrafficPhysicalLane928Down,
 	// ★ 929（2026-11-02 12h 审计轮 P1）：self_check_runs.error_type CHECK 闭集补齐
 	//   （errorsx.ErrorKind 闭集 32 kind + 5 个 worker 专用字面量）。
-	"startup/929_self_check_error_type_kind_closure.sql":                           selfCheckErrorTypeKindClosure929,
-	"startup/929_self_check_error_type_kind_closure.down.sql":                      selfCheckErrorTypeKindClosure929Down,
-	"startup/915_recent_cache_hit_rate.sql":                                       recentCacheHitRate915,
-	"startup/915_recent_cache_hit_rate.down.sql":                                  recentCacheHitRate915Down,
-	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
-	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
-	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,
-	"startup/490_credential_probe_queue_runtime_columns.sql":                         credentialProbeQueueRuntimeColumns490,
-	"startup/853_credential_probe_queue_automatic.sql":                               credentialProbeQueueAutomatic853,
-	"startup/854_session_turns_advisory_lock_key.sql":                                sessionTurnsAdvisoryLockKey854,
-	"startup/855_session_analytics_time_window.sql":                                  sessionAnalyticsTimeWindow855,
-	"startup/857_analyze_columnar_staleness_gate.sql":                                analyzeColumnarStalenessGate857,
-	"startup/858_request_logs_final_success_gsid_idx.sql":                            requestLogsFinalSuccessGsidIdx858,
-	"startup/829_bodies_columnar_rollback.sql":                                       bodiesColumnarRollback829,
-	"startup/835_modality_verify_probe_ledger.sql":                                   modalityVerifyProbeLedger835,
-	"startup/834_supplier_errors_base_tables.sql":                                    supplierErrorsBaseTables834,
-	"startup/836_supplier_errors_heap_reassert.sql":                                  supplierErrorsHeapReassert836,
+	"startup/929_self_check_error_type_kind_closure.sql":      selfCheckErrorTypeKindClosure929,
+	"startup/929_self_check_error_type_kind_closure.down.sql": selfCheckErrorTypeKindClosure929Down,
+	// ★ 930（2026-11-02 第二十五轮）：CHECK 闭集再补齐 —— 加入 model_unavailable
+	//   （errorsx.ErrorKind 闭集 33 kind + 5 个 worker 专用字面量）。
+	"startup/930_self_check_error_type_kind_closure_model_unavailable.sql":      selfCheckErrorTypeKindClosureModelUnavailable930,
+	"startup/930_self_check_error_type_kind_closure_model_unavailable.down.sql": selfCheckErrorTypeKindClosureModelUnavailable930Down,
+	"startup/915_recent_cache_hit_rate.sql":                                     recentCacheHitRate915,
+	"startup/915_recent_cache_hit_rate.down.sql":                                recentCacheHitRate915Down,
+	"startup/859_tighten_pii_phone_intl_regex.sql":                              tightenPiiPhoneIntlRegex859,
+	"startup/852_models_canonical_column_set_reconcile.sql":                     modelsCanonicalColumnSetReconcile852,
+	"startup/489_credential_probe_queue_startup_backfill.sql":                   credentialProbeQueueStartupBackfill489,
+	"startup/490_credential_probe_queue_runtime_columns.sql":                    credentialProbeQueueRuntimeColumns490,
+	"startup/853_credential_probe_queue_automatic.sql":                          credentialProbeQueueAutomatic853,
+	"startup/854_session_turns_advisory_lock_key.sql":                           sessionTurnsAdvisoryLockKey854,
+	"startup/855_session_analytics_time_window.sql":                             sessionAnalyticsTimeWindow855,
+	"startup/857_analyze_columnar_staleness_gate.sql":                           analyzeColumnarStalenessGate857,
+	"startup/858_request_logs_final_success_gsid_idx.sql":                       requestLogsFinalSuccessGsidIdx858,
+	"startup/829_bodies_columnar_rollback.sql":                                  bodiesColumnarRollback829,
+	"startup/835_modality_verify_probe_ledger.sql":                              modalityVerifyProbeLedger835,
+	"startup/834_supplier_errors_base_tables.sql":                               supplierErrorsBaseTables834,
+	"startup/836_supplier_errors_heap_reassert.sql":                             supplierErrorsHeapReassert836,
 }
 
 // 临时存放 embed SQL 的目录（运行时写入）

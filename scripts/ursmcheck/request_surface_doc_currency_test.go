@@ -110,27 +110,34 @@ type docEvidence struct {
 // ★★ **页面上每一处 `file:line` 引用都必须在表里**（C1 会核对覆盖面）。
 //
 // ★★★ **第三次重钉（2026-10-27 03:4x 合并轮）**：★ 中间件链的行号又漂了
-//   —— `7725-7743` → **`7758-7776`**（★ **整体 +33 行**：本仓多模态/元数据
-//   两轮往 `cmd/gateway/main.go` 里插了 33 行 ⇒ Recovery 7758 / Logging 注释
-//   7760-7767 / maintain 注释 7749-7754 / Auth 7773 / SecurityHeaders 7776）。
-//   ⇒ ★ **同一次漂移的三个面必须一起改**，否则门会红：
-//   ① **本对拍表**（门的事实源）；② `docs/subsystems/request-surface.md`（被守页面，
-//      C1 要求**精确相等**不是「区间重叠」⇒ 差一行就红）；
-//   ③ **认证表**（审计档 §3.18.3 的 A1 行，C8 要求与本表**精确相等**）。
-//   ⇒ ★★ **漂移史**：`7724-7740` → `7725-7743` → `7758-7776`（★ 三次里有
-//   ★★ 两次是**别的会话**改 `main.go` 带的 ⇒ ⇒ 「行号会漂」不是偶发，
-//   ★★ 是**常态** ⇒ ⇒ 每次动 `main.go` 的中间件链，**必须回头重钉这三处**）。
+//
+//	—— `7725-7743` → **`7758-7776`**（★ **整体 +33 行**：本仓多模态/元数据
+//	两轮往 `cmd/gateway/main.go` 里插了 33 行 ⇒ Recovery 7758 / Logging 注释
+//	7760-7767 / maintain 注释 7749-7754 / Auth 7773 / SecurityHeaders 7776）。
+//	⇒ ★ **同一次漂移的三个面必须一起改**，否则门会红：
+//	① **本对拍表**（门的事实源）；② `docs/subsystems/request-surface.md`（被守页面，
+//	   C1 要求**精确相等**不是「区间重叠」⇒ 差一行就红）；
+//	③ **认证表**（审计档 §3.18.3 的 A1 行，C8 要求与本表**精确相等**）。
+//	⇒ ★★ **漂移史**：`7724-7740` → `7725-7743` → `7758-7776`（★ 三次里有
+//	★★ 两次是**别的会话**改 `main.go` 带的 ⇒ ⇒ 「行号会漂」不是偶发，
+//	★★ 是**常态** ⇒ ⇒ 每次动 `main.go` 的中间件链，**必须回头重钉这三处**）。
+//
 // ★★ **第四次重钉（2026-10-28 分支审计轮）**：wip/01~07 合并往 main.go 插了 30 行
-//   （sessionid/taskbus/billing 装配）⇒ 链整体 +30：Recovery 7800 / Logging 注释
-//   7802-7809 / maintain 注释 7791-7796 / SecurityHeaders 7818；main_pipeline.go
-//   启动日志 1112 → 1123、v2pipe- 合成块 749-758 → 755-768。三面已同钉。
+//
+//	（sessionid/taskbus/billing 装配）⇒ 链整体 +30：Recovery 7800 / Logging 注释
+//	7802-7809 / maintain 注释 7791-7796 / SecurityHeaders 7818；main_pipeline.go
+//	启动日志 1112 → 1123、v2pipe- 合成块 749-758 → 755-768。三面已同钉。
+//
 // ★★ **第五次重钉（2026-10-30 24h 审计第 8 轮）**：origin 又有并行会话改 main.go
-//   ⇒ 链整体再漂：Recovery 7893 / Logging 注释 7895-7902 / maintain 注释 7884-7889 /
-//   SecurityHeaders 7911。三面（本表 · 设计页 · 认证表 A1）同钉。
+//
+//	⇒ 链整体再漂：Recovery 7893 / Logging 注释 7895-7902 / maintain 注释 7884-7889 /
+//	SecurityHeaders 7911。三面（本表 · 设计页 · 认证表 A1）同钉。
+//
 // ★★ **第六次重钉（2026-10-30 同轮晚些）**：并行会话（model-credibility catalog 端点
-//   handler.go:1603-1608 的 6 条路由）又把 main.go 推了 7 行 ⇒ Recovery 7900 /
-//   Logging 注释 7902-7909 / maintain 注释 7891-7896 / SecurityHeaders 7918。
-//   三面同钉（本表 · request-surface.md · 认证表 A1）。
+//
+//	handler.go:1603-1608 的 6 条路由）又把 main.go 推了 7 行 ⇒ Recovery 7900 /
+//	Logging 注释 7902-7909 / maintain 注释 7891-7896 / SecurityHeaders 7918。
+//	三面同钉（本表 · request-surface.md · 认证表 A1）。
 //
 // ★★ **第七次重钉（2026-11-02 验证轮）**：探测物理隔离车道那几轮（12f34ff30 /
 // 9773e9266 / caa1c5f32 / a440cba9e）往 main.go 插的行 ⇒ 相对上次重钉链整体
@@ -139,25 +146,38 @@ type docEvidence struct {
 // 认证表 A1）。
 // ⇒ ★ 第七次了：★ 「行号会漂」是**常态**而非偶发 ⇒ ⇒ 每轮动 main.go 的
 // 中间件链，**必须回头重钉这三处**（本门 C1/C7/C8 会当场红给你看）。
+//
+// ★★ **第八次重钉（2026-11-02 第二十六轮）**：★ 并行会话那 22 个提交
+//
+//	（userscript capture 端点 / outbox×taskbus 归并 / freellm SSO cookie 域 等）
+//	往 main.go 插的行 ⇒ 链整体 **+73**：Recovery **8056** / Logging 注释
+//	**8058-8065** / maintain 注释 **8047-8052** / Auth **8071** /
+//	SecurityHeaders **8074**。三面同钉（本表 · request-surface.md · 认证表 A1）。
+// ⇒ ★★ 本次重钉的**归因**（★ 为什么要写下来）：★ 这 +73 行**不是**本轮改的，
+//	是**并行会话的提交**带进来的 ⇒ ★★ 「门红了」的第一现场在**他们的提交**上，
+//	不是在这轮合并上 ⇒ ⇒ ★ 归因必须靠**在未改动的新 main 树上复跑同一道门**
+//	来判（★ 本轮实测：新 main 树上该门同样红 ⇒ 归因成立）。
+
 // ⇒ ★★ **本轮踩到的坑（留给下一轮）**：★ 重钉时**共享工作树里还有并行会话未提交
-//   的 main.go 改动（+9 行）** ⇒ 若按**工作树**的行号钉，则本对拍表在**本提交的
-//   干净树**里对不上 ⇒ **提交后门会红** ⇒ ⇒ ★★ **行号类产物必须按「将要提交的
-//   那棵树」生成，不能按共享工作树生成**（路由快照同理）⇒ 判据：**共享仓里「派生产物」
-//   的一致性基准是提交树，不是工作树**。
+//
+//	的 main.go 改动（+9 行）** ⇒ 若按**工作树**的行号钉，则本对拍表在**本提交的
+//	干净树**里对不上 ⇒ **提交后门会红** ⇒ ⇒ ★★ **行号类产物必须按「将要提交的
+//	那棵树」生成，不能按共享工作树生成**（路由快照同理）⇒ 判据：**共享仓里「派生产物」
+//	的一致性基准是提交树，不是工作树**。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 7974, to: 8001,
+		file: "cmd/gateway/main.go", from: 8047, to: 8074,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 7985, to: 7992,
+		file: "cmd/gateway/main.go", from: 8058, to: 8065,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 7974, to: 7979,
+		file: "cmd/gateway/main.go", from: 8047, to: 8052,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},

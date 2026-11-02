@@ -546,7 +546,9 @@ func (r *storageRuntime) startHotZoneTrimmer(ctx context.Context, hzCfg *config.
 // requestMirrorDir 返回 H3 请求侧镜像子树根（{HotZone.Dir}/requests）。
 //
 // ★ 读面用途（2026-11-02 chat tab 空态根修）：统一详情在 PG 会话族正文
-//   缺失（录制同意关闭 ⇒ 一行不写）时，用它**兜底回源**正文。
+//
+//	缺失（录制同意关闭 ⇒ 一行不写）时，用它**兜底回源**正文。
+//
 // ★ 未装配热区 / 镜像关闭（RequestMirrorEnabled=false）时返回 "" ⇒ 读面跳过回源。
 func (r *storageRuntime) requestMirrorDir() string {
 	if r == nil || r.requestMirror == nil {
