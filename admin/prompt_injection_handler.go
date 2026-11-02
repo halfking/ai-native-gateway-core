@@ -1604,9 +1604,17 @@ type AttackVector struct {
 	//
 	// ★ 这里原先是 `detected_at::text, created_at::text` + Go string：
 	//   ① PG 的 text 输出是 `2026-07-19 21:08:25.836952+08`——**空格分隔、
-	//      没有 'T'**，**不是 RFC3339** ⇒ 移动端 `Date.parse()`（
-	//      web-mobile 的 relativeTime 就用它）在 Safari/iOS 上返回 NaN
-	//      ⇒ 页面退化成显示原始文本；
+	//      没有 'T'**，**不是 RFC3339** ⇒ 落在 ECMAScript 的
+	//      Date Time String Format **之外** ⇒ 能不能解析取决于引擎的
+	//      **宽松解析器**。
+	//      ★ 口径订正（2026-11-02 实测）：原文写的是「在 Safari/iOS 上
+	//        返回 NaN」——**这一条没有依据**：实测 node v22（V8）与
+	//        osascript -l JavaScript（JSC，与 iOS Safari 同引擎）
+	//        **都能解析**这个精确串。⇒ 那条说法（连同 9d3b190de 的
+	//        原始注释）在此订正；真实理由是**格式不在规范内**，
+	//        而不是「某个引擎会拒绝它」。
+	//      ⇒ 统一的修法是**别产出 PG 文本**：直接取原生 timestamptz，
+	//        格式统一成 RFC3339Nano（与本族其它端点一致）。
 	//   ② created_at 可空 ⇒ `::text` 得到 NULL ⇒ 扫进 Go 的非指针 string
 	//      会报 "cannot scan NULL into *string" ⇒ 又是一条 500。
 	//   ⇒ 直接取原生 timestamptz，格式统一成 RFC3339Nano（与本族其它端点一致）。

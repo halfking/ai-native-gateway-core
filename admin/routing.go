@@ -327,13 +327,13 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				c.status AS credential_status,
 				c.lifecycle_status,
 				c.availability_state,
-				c.availability_recover_at::text,
+				c.availability_recover_at,
 				c.quota_state,
-				c.quota_recover_at::text,
+				c.quota_recover_at,
 				c.concurrency_limit,
 				c.effective_concurrency,
-				c.effective_at::text,
-				c.expires_at::text,
+				c.effective_at,
+				c.expires_at,
 				(c.effective_at IS NULL OR c.effective_at <= now())
 					AND (c.expires_at IS NULL OR c.expires_at > now()) AS credential_in_effect,
 				c.balance_usd::float8,
@@ -360,7 +360,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				-- NOT enter the v_routable_credential_models.is_routable
 				-- conjunction (internal/routeguard forbids exactly that).
 				COALESCE(c.circuit_state, 'closed') AS circuit_state,
-				c.cooling_until::text AS cooling_until,
+				c.cooling_until,
 				v.is_routable,
 				v.unavailable_reason
 			FROM v_routable_credential_models v
@@ -419,7 +419,14 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		var isRoutable bool
 		var unavailableReason *string
 		var circuitState string
-		var coolingUntil *string
+		// ★ 2026-11-02 第十八轮（F-33）：这五个时间戳列原先是
+		//   `::text` 投影 ⇒ 落进响应的是 **PG 文本**（"2026-11-02 08:00:00+08"），
+		//   而**同一个响应里** URSM 路径给出的 cooling_until 是 **RFC3339**
+		//   ⇒ 同一个 JSON key 两种格式，取决于走哪条路。
+		//   ⇒ 取原生 timestamptz（驱动给 time.Time），再统一经
+		//   normalizeTimestamp 归一成 RFC3339。
+		var availRecoverAt, quotaRecoverAt, effectiveAt, expiresAt *time.Time
+		var coolingUntil *time.Time
 
 		// Slimmed scan (2026-07-24): cmb.available / consecutive_failures /
 		// success_rate / p95_latency_ms are no longer in the SELECT — they are
@@ -431,9 +438,9 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(
 			&c.ProviderID, &c.ProviderName, &c.CatalogCode, &c.Protocol, &c.BaseURL,
 			&c.ProviderEnabled, &c.CredentialID, &c.TenantID, &c.CredentialLabel, &c.CredentialStatus,
-			&c.LifecycleStatus, &c.AvailabilityState, &c.AvailabilityRecoverAt,
-			&c.QuotaState, &c.QuotaRecoverAt, &c.ConcurrencyLimit, &c.EffectiveConcurrency,
-			&c.EffectiveAt, &c.ExpiresAt, &c.CredentialInEffect, &c.BalanceUSD,
+			&c.LifecycleStatus, &c.AvailabilityState, &availRecoverAt,
+			&c.QuotaState, &quotaRecoverAt, &c.ConcurrencyLimit, &c.EffectiveConcurrency,
+			&effectiveAt, &expiresAt, &c.CredentialInEffect, &c.BalanceUSD,
 			&c.Tier, &c.Weight,
 			&c.ManualPriority, &c.Priority, &c.StreamMode, &c.ActiveSessions, &c.BillingMode,
 
@@ -446,12 +453,18 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			warnRowSkip("routing.resolve", err)
 			continue
 		}
+		// 统一归一成 RFC3339（UTC、秒精度）——口径见 helpers.go 的
+		// normalizeTimestamp。
+		c.AvailabilityRecoverAt = normalizeTimestamp(availRecoverAt)
+		c.QuotaRecoverAt = normalizeTimestamp(quotaRecoverAt)
+		c.EffectiveAt = normalizeTimestamp(effectiveAt)
+		c.ExpiresAt = normalizeTimestamp(expiresAt)
 		// Stash the credential-level breaker mirror on the unexported fields.
 		// The exported CircuitState/CoolingUntil are (re)written from the URSM
 		// NodeView by resolveRuntimeDefaults/applyURSMOverlay, so the
 		// credential gate re-applies these afterwards (applyCredentialCircuitGate).
 		c.dbCircuitState = circuitState
-		c.dbCoolingUntil = coolingUntil
+		c.dbCoolingUntil = normalizeTimestamp(coolingUntil)
 		// Keep database eligibility separate from the authoritative runtime
 		// decision. The resolve endpoint is diagnostic and must not imply that
 		// a SQL-routable row is request-routable when URSM has no node view.

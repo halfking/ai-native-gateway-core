@@ -1218,8 +1218,12 @@ type affinityRankingRow struct {
 	AvgCostUSD        float64 `json:"avg_cost_usd,omitempty"`
 	AvgHealth         float64 `json:"avg_health,omitempty"`
 	CurrentlyRoutable bool    `json:"currently_routable"`
-	LastSampledAt     string  `json:"last_sampled_at,omitempty"`
-	UpdatedAt         string  `json:"updated_at,omitempty"`
+	// ★ 2026-11-02 第十八轮（F-34）：原先是 `COALESCE(last_sampled_at::text, '')`
+	//   ⇒ 落进 JSON 的是 **PG 文本**（"2026-11-02 08:00:00+08"），不是 RFC3339。
+	//   ⇒ 取原生 timestamptz，经 normalizeTimestamp 归一成 RFC3339；
+	//   指针 + omitempty ⇒ NULL 时**键缺省**（与原先空串 + omitempty 同形）。
+	LastSampledAt *string `json:"last_sampled_at,omitempty"`
+	UpdatedAt     *string `json:"updated_at,omitempty"`
 }
 
 // HandleAffinityRanking returns the learned task→model ranking.
@@ -1267,7 +1271,7 @@ func (h *AutoRouteHandlers) HandleAffinityRanking(w http.ResponseWriter, r *http
 			       COALESCE(avg_reward, 0), COALESCE(ema_reward, 0),
 			       avg_latency_ms, COALESCE(avg_cost_usd, 0),
 			       COALESCE(avg_health, 0), currently_routable,
-			       COALESCE(last_sampled_at::text, ''), COALESCE(updated_at::text, '')
+			       last_sampled_at, updated_at
 			FROM v_task_model_ranking
 			WHERE task_type = $1
 			  AND ($2 = '' OR profile = $2)
@@ -1284,6 +1288,9 @@ func (h *AutoRouteHandlers) HandleAffinityRanking(w http.ResponseWriter, r *http
 	out := make([]affinityRankingRow, 0, limit)
 	for rows.Next() {
 		var r affinityRankingRow
+		// ★ 2026-11-02 第十八轮（F-34）：时间戳列取原生 timestamptz，
+		//   再统一经 normalizeTimestamp 归一成 RFC3339。
+		var lastSampledAt, updatedAt *time.Time
 		if err := rows.Scan(
 			&r.TaskType, &r.Profile, &r.TenantID, &r.Rank,
 			&r.CanonicalID, &r.CanonicalModel,
@@ -1292,11 +1299,13 @@ func (h *AutoRouteHandlers) HandleAffinityRanking(w http.ResponseWriter, r *http
 			&r.AvgReward, &r.EMAReward,
 			&r.AvgLatencyMs, &r.AvgCostUSD,
 			&r.AvgHealth, &r.CurrentlyRoutable,
-			&r.LastSampledAt, &r.UpdatedAt,
+			&lastSampledAt, &updatedAt,
 		); err != nil {
 			writeAutoRouteInternalErr(w, err)
 			return
 		}
+		r.LastSampledAt = normalizeTimestamp(lastSampledAt)
+		r.UpdatedAt = normalizeTimestamp(updatedAt)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -1346,7 +1355,7 @@ func (h *AutoRouteHandlers) handleAffinitySelections(w http.ResponseWriter, r *h
 			       composite_score, affinity_score, affinity_applied, explore,
 			       fallback_used,
 			       success, latency_ms, cost_usd, reward, reward_source,
-			       ts::text, settled_at::text
+			       ts, settled_at
 				FROM auto_route_selections_all
 				WHERE session_id = $1
 			ORDER BY ts DESC
@@ -1377,23 +1386,30 @@ func (h *AutoRouteHandlers) handleAffinitySelections(w http.ResponseWriter, r *h
 		CostUSD         *float64 `json:"cost_usd"`
 		Reward          *float64 `json:"reward"`
 		RewardSource    *string  `json:"reward_source"`
-		TS              string   `json:"ts"`
-		SettledAt       string   `json:"settled_at,omitempty"`
+		// ★ 2026-11-02 第十八轮（F-34）：原先是 `ts::text` / `settled_at::text`
+		//   ⇒ 落进 JSON 的是 **PG 文本**，不是 RFC3339。
+		//   ⇒ 取原生 timestamptz，经 normalizeTimestamp 归一成 RFC3339。
+		TS        *string `json:"ts"`
+		SettledAt *string `json:"settled_at,omitempty"`
 	}
 	out := make([]selRow, 0, limit)
 	for rows.Next() {
 		var x selRow
+		// ★ 第十八轮（F-34）：时间戳列取原生 timestamptz 再归一。
+		var ts, settledAt *time.Time
 		if err := rows.Scan(
 			&x.RequestID, &x.TaskType, &x.Profile, &x.Classifier,
 			&x.Confidence, &x.CanonicalID, &x.ChosenModel, &x.CandidateRank,
 			&x.CompositeScore, &x.AffinityScore, &x.AffinityApplied, &x.Explore,
 			&x.FallbackUsed,
 			&x.Success, &x.LatencyMs, &x.CostUSD, &x.Reward, &x.RewardSource,
-			&x.TS, &x.SettledAt,
+			&ts, &settledAt,
 		); err != nil {
 			writeAutoRouteInternalErr(w, err)
 			return
 		}
+		x.TS = normalizeTimestamp(ts)
+		x.SettledAt = normalizeTimestamp(settledAt)
 		out = append(out, x)
 	}
 	if err := rows.Err(); err != nil {
