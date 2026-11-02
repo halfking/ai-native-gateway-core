@@ -94,12 +94,89 @@ FALLBACK_PACKAGES=(
 log() { printf '[test-gate] %s\n' "$*" >&2; }
 die() { printf '[test-gate] FAIL: %s\n' "$*" >&2; exit 1; }
 
+# ── 参数处理（★ 2026-11-02 第十九轮 F-23）──────────────────────────────
+#
+# ★ 为什么必须有：此前本脚本**不处理任何参数** ⇒ `bash scripts/deploy-test-gate.sh
+#   --help` 会**跑全量闸门**（本机 go 跑 8 包 ≈ 3.6 分钟；无 go 时还会拉起
+#   docker）⇒ 运维想看用法，却拿到一次完整的部署前测试。
+#   ★ **未知参数**同样如此 ⇒ 静默跑全量，连报错都没有。
+usage() {
+  cat <<'EOF'
+用法:
+  bash scripts/deploy-test-gate.sh                      # 按 diff 选包跑测试
+  DD_SKIP_TEST_GATE=1 bash scripts/deploy-test-gate.sh  # 显式跳过闸门
+选项:
+  -h, --help    打印本用法并退出（**不跑任何测试**）
+退出码:
+  0  闸门通过 / --help
+  1  闸门失败（有新红 / 缺结果行 / 跑不起来）
+  2  参数错误
+EOF
+}
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  '')
+    ;;
+  *)
+    printf '[test-gate] FAIL: 未知参数: %s\n' "$1" >&2
+    usage
+    exit 2
+    ;;
+esac
+
+cd "$REPO_ROOT"
+
+# ── 清扫上一次被 SIGKILL 留下的基线 worktree（★ 第十九轮 F-22）─────────
+#
+# ★ 为什么需要：基线树是 `git worktree add --detach` 建的，**只在 EXIT trap
+#   里移除** ⇒ 被 SIGKILL（OOM / kill -9）打断时 trap 不跑 ⇒
+#   `.git/worktrees/<name>` 的**管理记录永久残留** ⇒ 一次一次累积
+#   （`git worktree list` 越来越长、临时目录越堆越多）。
+#   ★ 而 `git worktree prune` **救不了**：SIGKILL 时 mktemp 目录**也还在**
+#   ⇒ prune 的判据是「工作目录已消失」⇒ 它认为这个 worktree 还活着。
+#   ⇒ 修法：给本闸门的临时目录一个**可识别的名字前缀**
+#   （llm-gateway-test-gate.）⇒ 下次启动时按这个前缀精确清扫。
+#   ★ 只扫**本闸门自己**留下的（按名字前缀）⇒ 不碰任何别人的 worktree。
+sweep_stale_gate_worktrees() {
+  local common wt_root d target dir
+  common="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+  [[ -n "$common" ]] || return 0
+  case "$common" in
+    /*) ;;
+    *) common="$REPO_ROOT/$common" ;;
+  esac
+  wt_root="$common/worktrees"
+  [[ -d "$wt_root" ]] || return 0
+  for d in "$wt_root"/*; do
+    [[ -d "$d" ]] || continue
+    target=""
+    if [[ -f "$d/gitdir" ]]; then
+      target="$(sed -n 's|^gitdir: ||p' "$d/gitdir" 2>/dev/null | head -1 || true)"
+    fi
+    case "$target" in
+      *llm-gateway-test-gate.*) ;;
+      *) continue ;;
+    esac
+    dir="$(dirname "$target")"
+    log "★ 清扫上一次被 SIGKILL 留下的基线 worktree：$dir ★"
+    git worktree remove --force "$dir" >/dev/null 2>&1 || true
+    rm -rf "$dir" >/dev/null 2>&1 || true
+    rm -rf "$d" >/dev/null 2>&1 || true
+  done
+  # ★ **不**调 `git worktree prune`：它清的是「**任何**工作目录已消失的
+  #   worktree 记录」（不只本闸门的）⇒ 作用域超出本门的意图。
+  #   本门只按**名字前缀**精确清扫自己那一份。
+  return 0
+}
+sweep_stale_gate_worktrees
+
 if [[ "${DD_SKIP_TEST_GATE:-0}" == "1" ]]; then
   log "★ 闸门被显式跳过（DD_SKIP_TEST_GATE=1）★ —— 这次上线**没有**测试证据"
   exit 0
 fi
-
-cd "$REPO_ROOT"
 
 # ── 选包：改动触及的目录（只留有 _test.go 的） ──────────────────────────
 changed_files="$({
@@ -160,7 +237,9 @@ if [[ ${#nested_modules[@]} -gt 0 ]]; then
 fi
 
 # ── 工作目录与清理 ────────────────────────────────────────────────────
-workdir="$(mktemp -d)"
+# ★ 目录名带**可识别前缀**（llm-gateway-test-gate.）⇒ SIGKILL 残留能被
+#   下次启动的 sweep_stale_gate_worktrees 精确识别并清扫（F-22）。
+workdir="$(mktemp -d "${TMPDIR:-/tmp}/llm-gateway-test-gate.XXXXXX")"
 base_tree=""
 cleanup() {
   if [[ -n "$base_tree" && -d "$base_tree" ]]; then

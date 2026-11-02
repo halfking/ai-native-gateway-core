@@ -189,6 +189,7 @@ guards: guards-installer guards-ursmcheck guards-shell guards-deploy ## 运行�
 guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，不伪装成通过）
 	@bash tests/deploy_switch_lock_contract_test.sh
 	@bash tests/deploy_switch_lock_parity_test.sh
+	@bash tests/deploy_test_gate_contract_test.sh
 
 .PHONY: guards-win-baseline
 guards-win-baseline: ## Windows 全量测试基线门（bash scripts/guards/check-win-test-baseline.sh <日志>；无参=自跑全量，约 10 分钟）
