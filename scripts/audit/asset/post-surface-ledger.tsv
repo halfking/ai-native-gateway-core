@@ -8,6 +8,7 @@
 #gen_append	2026-10-29 审计轮 —— 补 3 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 589 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 6 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 592 行逐字保留，含人工改判）
 #gen_append	2026-11-02 审计轮 —— 补 3 条探测车道读侧路由（★ 无探测观测 ⇒ 裁决按静态分级推导）+ 按刷新后的路由清单对齐 file:line（★ 既有 598 行的 class/bucket/verdict 逐字保留）
+#gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 601 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /_gateway/plugin/v1/analytics/{type}	GET	cmd/gateway/plugin_canon_init.go:204	unknown				not-probed-unresolved	★ 静态分级：解析不出
@@ -603,6 +604,7 @@
 /v1/sessions/	ANY	cmd/gateway/main.go:7083	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/summarize	ANY	cmd/gateway/main.go:6979	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/summarize/title	ANY	cmd/gateway/main.go:6980	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/userscript/captures	ANY	cmd/gateway/main.go:7016	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/videos/generations	ANY	cmd/gateway/main.go:6988	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1beta/models	ANY	cmd/gateway/main.go:7018	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /v1beta/models/	ANY	cmd/gateway/main.go:7001	unknown				not-probed-unresolved	★ 静态分级：解析不出

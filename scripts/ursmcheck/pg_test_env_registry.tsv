@@ -23,6 +23,7 @@ KEEP_SLOG	component	保留 slog 调试文件（布尔），不选库
 LAUNCHER_E2E_GATEWAY_IMAGE	component	镜像名（E2E 用的 gateway 镜像），不是库
 LAUNCHER_TEST_MOCK_IMAGE	component	镜像名（mock backend），不是库
 LLM_GATEWAY_API_KEY	component	外部服务 API key，与真库腿无关
+LLM_GATEWAY_COOKIE_DOMAIN	component	认证 cookie 域覆盖（功能配置，非连库参数）：测试用它断言「env 覆盖胜过主机名启发式」⇒ 与「连哪个库」无关 ⇒ 事实源不必导出
 LLM_GATEWAY_ENABLE_LEGACY_SELFCHECK	component	特性开关：打开旧版自检
 LLM_GATEWAY_FEATURE_STATS_TEST_DSN	dsn_exclusive	feature-stats 破坏性腿的专用 DSN：TRUNCATE 三张表 + 库名守卫只放行 itgate|scratch|test|tmp|bench|pg_ ⇒ 通用 DSN（llm_gateway）必被拒绝 ⇒ 事实源注入它只是一条死腿 ⇒ 不能与通用 DSN 同值（R86 轮移出事实源）
 LLM_GATEWAY_FIX_ROLE_ALTERNATION	component	特性开关：角色轮转修复

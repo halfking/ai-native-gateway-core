@@ -33,6 +33,7 @@ export default {
     usageTrends: "Tendencias de uso",
     pricing: "Precios de coste",
     modelPricing: "Gestión de precios",
+    freellm: "FreeLLM",
     freePool: "Pool gratuito",
     freeDiscovery: "Descubrimiento gratuito",
     tenants: "Inquilinos",

@@ -46,6 +46,21 @@ var rawSessionHeaderBaseline = map[string]int{
 // rawSessionHeaderExempt 不计入棘轮的文件，每条须有理由。
 var rawSessionHeaderExempt = map[string]string{
 	"domains/memory/task_id.go": "TaskID 派生，不是会话身份（执行日志 01 · A7 禁改）",
+	// ★ 2026-11-02 第二十六轮补登记：internal/userscriptcapture/handler.go（M3）。
+	//
+	// ★ 为什么它**不是**「第二真值」：那一处直读只做**存在性校验** ——
+	//   读客户端带来的会话 id，去问「这个会话存不存在」，存在才给 ack 回
+	//   canonical_session 标注，不存在就静默不标注（防伪造标注）。
+	//   ⇒ 它**不解析**会话身份、不派生 gw_ id、不写任何身份字段
+	//   ⇒ 与「会话身份只有一处真值」这条纪律不冲突。
+	// ★ 为什么**不能**改走 internal/sessionid（棘轮注释里的「修复方向」）——
+	//   那条路**不等价**：`SanitizeGwHeader` 只接受 `gw_`/`gt_`/`gs_` 前缀
+	//   （裸 id 一律丢弃），而 userscript 的头**可能来自任意页面**
+	//   （M3 注释原话）⇒ 改写会把「裸 id → 查库 → 不存在 → 不标注」这条
+	//   既有语义改成「裸 id → 被丢弃 → 连查都不查」⇒ 改它就是改行为。
+	// ⇒ ⇒ 登记为豁免，并写明理由（★ 豁免不是永久许可：若该端点将来要
+	//   **解析**会话身份而不是**校验**存在性，必须改经 sessionid 并撤销本条）。
+	"internal/userscriptcapture/handler.go": "M3 存在性校验：只判「会话存不存在」（防伪造 canonical_session 标注），不解析身份 ⇒ 非第二真值；改走 sessionid 不等价（SanitizeGwHeader 丢弃裸 id，而该头可能来自任意页面）⇒ 登记豁免",
 }
 
 var rawSessionHeaderRe = regexp.MustCompile(`Header\.Get\(\s*"X-(Gw-)?Session-Id"\s*\)|Header\["X-(Gw-)?Session-Id"\]`)
