@@ -29,6 +29,14 @@
 #     ⑦ 切流成功 ⇒ 停旧槽容器（保留镜像 tag，人工可回滚）
 #     任一步失败 ⇒ abort：删候选槽、切回 upstream、旧槽继续服务
 #
+# ── 引擎参数（usage() 打印的就是本段）──────────────────────────────────
+#   --via HOST            目标机（ssh 别名/地址）；不传 = 本机模式
+#   --force               ★ 恢复**陈旧**的每目标本地部署锁（默认**关**）
+#                         ★ 活着的持有者一律**不硬抢**；只处理已死的持有者
+#                         ★ 只在**部署机侧**生效（锁也在部署机侧）
+#   --status/--probe-only/--stop   非部署模式（不部署、不取锁）
+#   --redis-db N          固定 redis db
+#
 # ── 主机无关：所有主机信息由**薄外壳**用环境变量注入 ──────────────────────
 #   引擎自身不含任何具体主机名。新增一台 Docker 形态的主机 = 写一个薄外壳
 #   （如 scripts/deploy-211.sh）设置下列变量后 exec 本引擎，无需复制引擎。
@@ -362,6 +370,11 @@ usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
 MODE=deploy
 VIA=""
 FORCE_REDIS_DB=""
+# ★ 2026-11-02 第二十轮（F-21）：--force = 恢复**陈旧**的每目标本地锁。
+#   ★ 默认关（0）⇒ **不传 --force 的既有调用方行为逐字不变** ⇒ 本文件是
+#     共享部署引擎（192.168.31.32 的自动化在用）⇒ 这一点是硬约束。
+#   ★ 本地锁在**部署机侧**获取（见下方部署锁段）⇒ 恢复也必须在同一台机器上做。
+FORCE_LOCK_RECOVER=0
 # 转发给远端引擎的参数（--via 本身不转发：远端是本机模式执行）。
 # ★ 2026-10-20 修：原实现在参数循环里 shift 完再用 `$*` 转发 ⇒ `$*` 恒为空
 #   ⇒ `--redis-db 9` 从未到达远端引擎（外壳文档里还写着能传）。
@@ -374,6 +387,8 @@ while [[ $# -gt 0 ]]; do
     --stop)       MODE=stop; DD_ARGS+=(--stop); shift ;;
     --redis-db)   FORCE_REDIS_DB="${2:?--redis-db N}"; DD_ARGS+=(--redis-db "$FORCE_REDIS_DB"); shift 2 ;;
     --via)        VIA="${2:?--via HOST}"; shift 2 ;;
+    # ★ --force **不转发**给远端（它是**部署机侧**的本地锁恢复，不是远端动作）。
+    --force)      FORCE_LOCK_RECOVER=1; shift ;;
     -h|--help)    usage; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
@@ -491,6 +506,16 @@ if [[ -n "$VIA" ]]; then
     # shellcheck source=/dev/null
     source "$AIAN_DEPLOY_LIB/lock.sh"
     LOCK_LOCAL_TARGET="$DD_TARGET"
+    # ★ 2026-11-02 第二十轮（F-21）：--force ⇒ 先恢复**陈旧**的本地锁再获取。
+    #   ★ 默认关 ⇒ 不传 --force 时下面这一行**不执行** ⇒ 与改动前逐字同行为。
+    #   ★ 顺序是硬的：**先恢复、后获取** —— 反过来的话，恢复会把刚拿到的锁拆掉。
+    #   ★ lock_recover_local 内部**只**在持有者已死（或可判定为部署进程）时才
+    #   动手；活的持有者一律拒删（返回非 0 ⇒ 这里 die，不硬抢）。
+    if [[ "${FORCE_LOCK_RECOVER:-0}" == "1" ]]; then
+      log "--force：尝试恢复陈旧的 ${DD_TARGET} 本地锁…"
+      lock_recover_local "$DD_TARGET" 1 \
+        || die "--force：恢复陈旧锁失败（活着的持有者一律不硬抢；请等它跑完，或确认无存活部署进程后手工处理）"
+    fi
     if ! lock_acquire_local; then
       die "另一个 ${DD_TARGET} 部署正在本机进行（锁：${LOCK_LOCAL_DIR}）。并发会话请等待其完成；确认无存活部署进程后可 rm -rf 该锁目录重试（勿在对方运行时硬抢）"
     fi

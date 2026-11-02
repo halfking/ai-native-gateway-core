@@ -151,21 +151,20 @@ if [[ $FORCE_UNLOCK -eq 1 ]]; then
   #   · 引擎**确实**拿每目标本地部署锁（scripts/deploy-lib/lock.sh:112
   #     ⇒ \${LOCK_TMP_ROOT}/kx-llm-gateway-deploy-<target>.lock；
   #     scripts/deploy-seamless-docker.sh:494 lock_acquire_local）；
-  #   · 而引擎**没有任何 --force 处理**（deploy-seamless-docker.sh 里
-  #     "force" 零命中）⇒ --force 到不了引擎（这里就被 extract_force_unlock
-  #     剥掉了）⇒ 它**既不能**恢复、也**不能**重建任何锁。
+  #   · 而引擎此前**没有任何 --force 处理** ⇒ --force 到不了引擎
+  #     （这里就被 extract_force_unlock 剥掉了）⇒ 它**既不能**恢复、也**不能**
+  #     重建任何锁。
   #   ⇒ 陈旧的 mkdir 形态锁（macOS 无 flock(1)，SIGKILL 会留下目录）
   #     会让 211 部署以 rc=75 卡住，而运维被告知的「--force 无需也无效」
   #     恰好让人以为「没有锁这回事」⇒ 排查方向被带偏。
   #
-  # 本轮只**把话说对**（引擎侧的 --force 接线是另一件事，已登记为待修项）：
-  echo "[deploy-211] --force 被忽略：211 部署**有**每目标本地锁" >&2
-  echo "[deploy-211]   （\${LOCK_TMP_ROOT:-/tmp}/kx-llm-gateway-deploy-211.lock；" >&2
-  echo "[deploy-211]     LOCK_TMP_ROOT 由 scripts/deploy-lib/lock.sh:179 默认为 /tmp），" >&2
-  echo "[deploy-211]   但引擎没有 --force 处理 ⇒ 它既不能恢复也不能重建锁。" >&2
-  echo "[deploy-211]   若部署卡在 rc=75（锁未释放，多为上一次被 SIGKILL）：" >&2
-  echo "[deploy-211]     rm -rf /tmp/kx-llm-gateway-deploy-211.lock" >&2
-  echo "[deploy-211]   确认没有在跑的部署进程后再删。" >&2
+  # ★ 第二十轮（F-21）修法：与 154/245 **同款**（deploy-154.sh:70-72）
+  #   —— extract_force_unlock 只负责**剥掉**（免得引擎报 unknown argument），
+  #   由本外壳**加回** --force 转交引擎，由引擎在**部署机侧**恢复陈旧锁。
+  #   ⇒ 引擎侧新增的 --force **默认关** ⇒ 不传时行为与改动前**逐字相同**。
+  ARGS+=(--force)
+  echo "[deploy-211] --force：已转交引擎（恢复陈旧的 211 本地部署锁；活的持有者一律不硬抢）" >&2
+  echo "[deploy-211]   （\${LOCK_TMP_ROOT:-/tmp}/kx-llm-gateway-deploy-211.lock）" >&2
 fi
 
 # 透传健康探针超时：与 deploy-154/245 同一族标准（PROBE_TIMEOUT_SECS）。
