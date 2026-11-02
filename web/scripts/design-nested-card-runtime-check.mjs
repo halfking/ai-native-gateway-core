@@ -866,11 +866,11 @@ if (wantUpdate) {
       '（事实源「卡片套卡片永远不对」没有「当页面骨架」那种限定语 ⇒ 元素级禁令）。' +
       '★ 重建基线（--update-baseline）写回的值 = min(旧值, 实测值) ⇒ 只许降不许升。',
     nestedCards: nextCounts,
-    updated: '2026-10-28',
+    updated: new Date().toISOString().slice(0, 10),
     history: [
       ...(prev.history ?? []),
       {
-        updated: '2026-10-28',
+        updated: new Date().toISOString().slice(0, 10),
         note:
           '第 31 增量重建基线。★ 上限合计 ' + prevTotal + ' → ' + nextTotal + '（' + direction + '）。' +
           '★ 判据：卡面 = 有底色 ∧ 四边**可见**描边 ∧ 圆角>0 ∧ 内边距和>=8 ∧ 非药丸 ∧ 非交互控件；' +

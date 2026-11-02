@@ -197,7 +197,7 @@ export default {
     yes: 'Oui',
     no: 'Non',
     error: 'Erreur',
-    idleNote: 'Note',
+    idleNote: 'Remarque',
   },
   page: {
     back: 'Retour à la topologie',

@@ -34,6 +34,7 @@ export default {
     usageTrends: "Tendances d'utilisation",
     pricing: "Tarification des coûts",
     modelPricing: "Gestion des tarifs",
+    freellm: "FreeLLM modèles gratuits",
     freePool: "Pool gratuit",
     freeDiscovery: "Découverte gratuite",
     tenants: "Locataires",

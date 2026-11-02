@@ -147,6 +147,16 @@ for (const m of routerSrc.matchAll(/const\s+([A-Za-z0-9_]+)\s*=\s*\(\)\s*=>\s*im
 const routerPaths = [...new Set([...routerSrc.matchAll(/path:\s*'([^']+)'/g)].map(m => m[1]))]
 const navPaths = [...new Set([...navSrc.matchAll(/path:\s*'([^']+)'/g)].map(m => m[1]))]
 
+/**
+ * 菜单项里的**绝对 URL**形态（`http://` / `https://` 开头）。
+ *
+ * ★ 它用来把「跨站外链」从「站内死链」里分出去：★ vue-router 的 path 恒以
+ *   「/」开头 ⇒ ★ 绝对 URL 按定义不是站内路由 ⇒ ★ 它落不到 router 是**设计**，
+ *   ★ 不是死链。★★ 判据是**形态**（scheme 前缀）而不是「某条具体 URL」——
+ *   ★★ 这样站内死链（path 拼错）仍然会被判红。
+ */
+const ABSOLUTE_URL_RE = /^https?:\/\//i
+
 /** 路径字面量 → 路由模式。分级：精确 > 参数归一 > 前缀（取最长）。 */
 function resolveRoute(literal: string): string | undefined {
   const b = base(literal)
@@ -234,7 +244,17 @@ describe('菜单可达性守卫（R85-C）', () => {
   })
 
   it('菜单项无死链：每个 nav path 都能落到某个 router 路径', () => {
+    // ★★ 2026-11-02：本条要判的是**站内**死链。★★ 菜单里可以有**绝对 URL 外链**
+    //   （★ 2026-11-02 S0 归档：免费资源/免费发现 → https://freellm.itestu.cn，
+    //   ★ appNav.ts:157 的 path 字段直接放外链 URL）⇒ ★★ 而 vue-router 的 path
+    //   ★★ **恒以「/」开头** ⇒ ★★ 绝对 URL **按定义**不可能是站内路由 ⇒ ★★ 对它
+    //   ★★ 「落不到 router」**不是死链**，而是「它本来就不在站内」⇒ ★★ 不参与本条。
+    //   ★★ **排除条件是形态判据（scheme 前缀），不是具体某条 URL** ⇒ ★★ 站内死链
+    //   ★★ 仍会被判红（★ 变异验证：把该外链改回站内假路径 ⇒ ★ 本条立即红）。
+    //   ★★ **诚实边界**：外链的**可达性**（URL 是否有效）**不归本门管** ——
+    //   ★★ 单元测试做网络检查既慢又不稳 ⇒ ★★ 那需要另一道门 / 另一类工具。
     const dead = navPaths.filter(p => {
+      if (ABSOLUTE_URL_RE.test(p)) return false
       const b = base(p)
       return !routerPaths.some(r => {
         const rb = base(r)
