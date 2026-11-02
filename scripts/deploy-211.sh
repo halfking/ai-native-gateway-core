@@ -197,6 +197,18 @@ export DD_PG_USER="${DD_PG_USER:-llm_gateway}"
 export DD_REDIS_DB_START="${DD_REDIS_DB_START:-15}"
 export DD_REDIS_DB_END="${DD_REDIS_DB_END:-0}"
 
+# ★ goacos（服务注册表）—— 切流时**同步**登记活跃槽的发布口。
+#   注册表记的是「此刻发布在哪」；只切 nginx upstream 会让注册表留着旧槽的口
+#   ⇒ 消费方（编排台 /api/verify）把活着的网关读成不健康（实测 2026-11-02 的假阴性）。
+#   ⇒ 由引擎的 dd_switch_upstream 一并完成（见 deploy-seamless-docker.sh 的 GOACOS-REGISTER 块）。
+#   ★ DD_GOACOS_IP 用**消费方地址**（211 的 LAN 口），不是容器的 0.0.0.0 发布口。
+export DD_GOACOS_ADDR="${DD_GOACOS_ADDR:-http://127.0.0.1:8848}"
+export DD_GOACOS_IP="${DD_GOACOS_IP:-${DD_HOST:-192.168.31.211}}"
+export DD_GOACOS_SERVICE="${DD_GOACOS_SERVICE:-llm-gateway}"
+export DD_GOACOS_NAMESPACE="${DD_GOACOS_NAMESPACE:-wm-deploy}"
+export DD_GOACOS_GROUP="${DD_GOACOS_GROUP:-DEFAULT_GROUP}"
+export DD_GOACOS_ENV="${DD_GOACOS_ENV:-lab-211}"
+
 # 211 直连 docker.io 不通；基础镜像权威仓是 registry-211.itestu.cn（方案 42）。
 # 入口显式钉默认值，经 --via 转发到远端，避免引擎静默回落 docker.io。
 export DD_BASE_REGISTRY="${DD_BASE_REGISTRY:-registry-211.itestu.cn}"
