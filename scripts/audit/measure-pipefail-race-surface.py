@@ -466,6 +466,18 @@ CRIT_UNKNOWN = "跨行管道/未知"            # ★ 写端侧在上一行 ⇒ 
 # ⇒ ⇒ ★★ **翻转是「竞态 ⇒ 概率型」** ⇒ 「≤ 边界**确定**不翻转 / > 边界**确定**翻转」
 #      这个二分在实测上**两个方向都不成立**（Linux 87,943 / 107,831 / 131,072 B 实测 0/5 翻转）。
 RE_SINGLE_PIPE = re.compile(r"(?<!\|)\|(?!\|)")
+# ★★★ 第三十二轮：形态 A 的两个结构判据（★ **不依赖** RE_PIPE_CONSUMER 那条贪婪正则
+#   ⇒ ★ 探测器的读数才可信 ⇒ ★ 第一版探测器就是栽在这条正则的贪婪上）
+RE_SINGLE_PIPE_END = re.compile(r"(?<!\|)\|(?!\|)\s*$")
+RE_CONSUMER_AT_START = re.compile(
+    r"^\s*(?P<c>"
+    r"grep\b[^\n|]*"
+    r"|head\b[^\n|]*"
+    r"|read\b[^\n|]*"
+    r"|awk\b[^\n|]*"
+    r"|tail\b[^\n|]*"
+    r"|sed\b[^\n|]*"
+    r")")
 
 
 def mask_quotes(ln):
@@ -613,52 +625,86 @@ def scan_file(path, rel):
 
     # 轴 4 + 3：管道处
     sites = []
+
+    def mk_site(i, ln, m, kind, writer_override=None, invisible=False):
+        """★ 建一个 site（★ 两条检测路径**共用** ⇒ ★ 口径零漂移）。"""
+        sc = scopes.get(i, "<top>")
+        # 同作用域内，pipefail 是否已启用（且之后未被关闭）
+        on_before = [pl for pl, ps in pf_on if ps == sc and pl < i]
+        off_after = [pl for pl, ps in pf_off if ps == sc and on_before and pl > max(on_before)]
+        pf_line = max(on_before) if on_before else 0
+        after_pf = bool(on_before) and not off_after
+        # ★★ R103 轮：把【被作用域模型静默丢弃】的点标出来（★ 只标不改）
+        #   ★ 真实 shell 语义：`set -o pipefail` 是**进程级**选项 ⇒ **函数体继承**
+        #     ⇒ 顶层的 pipefail 对函数体内的管道点**是生效**的
+        #   ★ 本量具口径（after_pf）：要求 pipefail 的作用域与 site 的作用域**完全相同**
+        #     ⇒ ⇒ 函数体里的管道点 after_pf=False ⇒ **不进候选集** ⇒ 静默丢弃
+        #   ⇒ 这里只统计 + 打印，**不改 after_pf 的判定** ⇒ 候选集/台账/门零影响
+        top_on = [pl for pl, ps in pf_on if ps == "<top>" and pl < i]
+        top_off = [pl for pl, ps in pf_off
+                   if ps == "<top>" and top_on and pl > max(top_on)]
+        real_covered = bool(top_on) and not top_off
+        dropped_by_scope = real_covered and not after_pf
+        writer = writer_override if writer_override is not None else ln[: m.start()].strip()
+        # ★★★ 第三十一轮：算出「判据量 + 适用阈值」（★ 轴 6 拆成两个量）
+        #   ⇒ ★ 中间段要先**屏蔽引号**再找管道（★ 否则 `cut -d'|'` 会被误判）。
+        middle = middle_stage_of(ln, m.start())
+        # ★★ 第三十一轮抓到的**第三个量具真缺陷**（★ 本轮自己撞出来的）：
+        #   ★ **跨行管道**（`\` 续行）时，**写端侧在上一行** ⇒ 本行的写端文本是**空的**
+        #   ⇒ ⇒ **判据量根本看不出来** ⇒ ★ 绝不能**猜**成「写端总量」
+        #     （★ 猜错的代价 = 把 PIPE_BUF 档误写成管道容量档 ⇒ 阈值错 16 倍）。
+        #   ⇒ ⇒ 这里老实标成「未知」，★ 由**门**要求这类行必须人工判读并写明。
+        invisible_writer = False
+        if not writer and i >= 2 and lines[i - 2].rstrip().endswith("\\"):
+            invisible_writer = True
+        if invisible:
+            invisible_writer = True
+        # ★★ 2026-11-03 第二十九轮：usage 轴要看到「管道之后」与「续行」里的
+        #   `||`/`&&` ⇒ ⇒ 传入**消费者尾部**与**下一物理行**。
+        nxt = lines[i] if i < len(lines) else ""
+        usage, basis = classify_usage(ln, m.start(), ln[m.end():], nxt)
+        return Site(path=rel, line=i, scope=sc, consumer=m.group("c").strip(),
+                    kind=kind, writer=writer, pf_line=pf_line,
+                    pf_scope=sc, after_pf=after_pf, usage=usage,
+                    usage_basis=basis, volume=writer_volume_hint(writer),
+                    full_line=ln.strip(), middle=middle,
+                    criterion=(CRIT_UNKNOWN if invisible_writer
+                               else criterion_of(kind, middle, writer)),
+                    dropped_by_scope=dropped_by_scope)
+
     for i, ln in enumerate(lines, 1):
         for m in RE_PIPE_CONSUMER.finditer(ln):
             early, kind = consumer_kind(m.group("c"))
             if not early:
                 continue
-            sc = scopes.get(i, "<top>")
-            # 同作用域内，pipefail 是否已启用（且之后未被关闭）
-            on_before = [pl for pl, ps in pf_on if ps == sc and pl < i]
-            off_after = [pl for pl, ps in pf_off if ps == sc and on_before and pl > max(on_before)]
-            pf_line = max(on_before) if on_before else 0
-            after_pf = bool(on_before) and not off_after
-            # ★★ R103 轮：把【被作用域模型静默丢弃】的点标出来（★ 只标不改）
-            #   ★ 真实 shell 语义：`set -o pipefail` 是**进程级**选项 ⇒ **函数体继承**
-            #     ⇒ 顶层的 pipefail 对函数体内的管道点**是生效**的
-            #   ★ 本量具口径（after_pf）：要求 pipefail 的作用域与 site 的作用域**完全相同**
-            #     ⇒ ⇒ 函数体里的管道点 after_pf=False ⇒ **不进候选集** ⇒ 静默丢弃
-            #   ⇒ 这里只统计 + 打印，**不改 after_pf 的判定** ⇒ 候选集/台账/门零影响
-            top_on = [pl for pl, ps in pf_on if ps == "<top>" and pl < i]
-            top_off = [pl for pl, ps in pf_off
-                       if ps == "<top>" and top_on and pl > max(top_on)]
-            real_covered = bool(top_on) and not top_off
-            dropped_by_scope = real_covered and not after_pf
-            writer = ln[: m.start()].strip()
-            # ★★★ 第三十一轮：算出「判据量 + 适用阈值」（★ 轴 6 拆成两个量）
-            #   ⇒ ★ 中间段要先**屏蔽引号**再找管道（★ 否则 `cut -d'|'` 会被误判）。
-            middle = middle_stage_of(ln, m.start())
-            # ★★ 第三十一轮抓到的**第三个量具真缺陷**（★ 本轮自己撞出来的）：
-            #   ★ **跨行管道**（`\` 续行）时，**写端侧在上一行** ⇒ 本行的写端文本是**空的**
-            #   ⇒ ⇒ **判据量根本看不出来** ⇒ ★ 绝不能**猜**成「写端总量」
-            #     （★ 猜错的代价 = 把 PIPE_BUF 档误写成管道容量档 ⇒ 阈值错 16 倍）。
-            #   ⇒ ⇒ 这里老实标成「未知」，★ 由**门**要求这类行必须人工判读并写明。
-            invisible_writer = False
-            if not writer and i >= 2 and lines[i - 2].rstrip().endswith("\\"):
-                invisible_writer = True
-            # ★★ 2026-11-03 第二十九轮：usage 轴要看到「管道之后」与「续行」里的
-            #   `||`/`&&` ⇒ ⇒ 传入**消费者尾部**与**下一物理行**。
-            nxt = lines[i] if i < len(lines) else ""
-            usage, basis = classify_usage(ln, m.start(), ln[m.end():], nxt)
-            sites.append(Site(path=rel, line=i, scope=sc, consumer=m.group("c").strip(),
-                              kind=kind, writer=writer, pf_line=pf_line,
-                              pf_scope=sc, after_pf=after_pf, usage=usage,
-                              usage_basis=basis, volume=writer_volume_hint(writer),
-                              full_line=ln.strip(), middle=middle,
-                              criterion=(CRIT_UNKNOWN if invisible_writer
-                                         else criterion_of(kind, middle, writer)),
-                              dropped_by_scope=dropped_by_scope))
+            sites.append(mk_site(i, ln, m, kind))
+
+    # ★★★ 第三十二轮：补上「形态 A」的**检测盲区**
+    #   ★ 形态 A = ★ **管道在上一行末尾**（且带续行反斜杠）+ ★ **消费者在下一行开头**
+    #     + ★ **消费者自己那一行没有管道符号** ⇒ ⇒ 物理行扫描**完全看不见**这条管道。
+    #   ★ ★ 实测（§28.19.8 登记项 ③）：★ 全仓 **1 处**
+    #     （`scripts/ab-test-snapshot.sh:32`：`ssh … | \` ⏎ `grep -E … | \` ⏎ `head -50`）
+    #   ★ ★★ 而那 1 处**在函数内** ⇒ ★ 作用域模型（顶层 pipefail ≠ 函数作用域）会丢弃它
+    #     ⇒ ⇒ **候选集零影响**（★ ★★ 不是靠推理定的，是靠「改完重跑、读数不变」定的）。
+    #   ⇒ ★ 所以本条修正的价值是：★ **给未来的同形态代码补上探测能力**，而不是修历史债。
+    for i, ln in enumerate(lines, 1):
+        if i < 2:
+            continue
+        prev = lines[i - 2].rstrip()
+        if not prev.endswith("\\"):
+            continue
+        prev = prev[:-1].rstrip()
+        if not RE_SINGLE_PIPE_END.search(prev):
+            continue
+        if RE_SINGLE_PIPE.search(ln):
+            continue          # ★ 消费者自己那行有管道 ⇒ 形态 B ⇒ 第一轮已扫到
+        m2 = RE_CONSUMER_AT_START.search(ln)
+        if not m2:
+            continue
+        early, kind = consumer_kind(m2.group("c"))
+        if not early:
+            continue
+        sites.append(mk_site(i, ln, m2, kind, writer_override=prev, invisible=True))
     return sites, (len(pf_on), len(pf_off))
 
 
@@ -697,6 +743,11 @@ FIXTURES = {
     "fx_comment_only.sh": (0, False),  # 注释里提到         ← 剥注释
     "fx_no_pipefail.sh": (0, False),   # 没有 pipefail
     "fx_after_disable.sh": (0, False), # 启用后又关闭
+    # ★★★ 第三十二轮：**形态 A**（★ 管道在上一行末尾、消费者在下一行开头、
+    #   且消费者自己那一行**没有管道符号** ⇒ 物理行扫描看不见它）
+    #   ⇒ ★ 这条夹具是「形态 A 修复」的**牙齿**：★ 删掉那段检测 ⇒ 自检命中 0 ≠ 1
+    #   ⇒ ⇒ ★ 自检失败 ⇒ exit 3 ⇒ **门红** ⇒ ⇒ ★ 这条路径从此**可观测、可变异守卫**
+    "fx_continuation_pipe.sh": (1, True),
 }
 
 
@@ -721,6 +772,10 @@ def selfcheck():
                 f.write("set -eu\nprintf 'x\\n' | grep -q x\n")
             elif name == "fx_after_disable.sh":
                 f.write("set -o pipefail\nset +o pipefail\nprintf 'x\\n' | grep -q x\n")
+            elif name == "fx_continuation_pipe.sh":
+                # ★ 形态 A：★ 管道在上一行末尾（带续行反斜杠）、消费者在下一行开头、
+                #   且**消费者自己那一行没有管道符号** ⇒ ★ 物理行扫描看不见这条管道
+                f.write("set -o pipefail\nprintf 'x\\n' | \\\n  grep -q x\n")
     ok = True
     for name, (exp_hits, exp_on) in FIXTURES.items():
         sites, pf = scan_file(os.path.join(tmp, name), name)

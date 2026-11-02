@@ -631,6 +631,44 @@ func TestPipefailRaceToolMutationM5SilencesBleedCheck(t *testing.T) {
 	}
 }
 
+// TestPipefailRaceToolMutationM6BreaksContinuationScan：摘掉「形态 A」的检测
+//
+//	（★ 管道在上一行末尾、消费者在下一行开头、且消费者自己那行**没有管道符号**）。
+//
+// ★★★ 为什么这条变异**必须存在**（★ 第三十二轮的核心）：
+//
+//	★ 那条修复路径在当前仓库里**可观测性为零** —— ★ 它命中的唯一一处
+//	（`scripts/ab-test-snapshot.sh:32`）因**作用域模型**被丢弃 ⇒ ⇒ **候选集逐字节不变**
+//	⇒ ⇒ ★ 若没有夹具，★ 删掉这段检测 ⇒ **没有任何门会红** ⇒ ⇒ 门会**假装自己有牙**。
+//	⇒ ⇒ ★ 所以必须有**注入夹具**（`fx_continuation_pipe.sh`）把这条路径钉住。
+//
+//	⇒ ★ 形态：摘掉检测 ⇒ 夹具命中数 1 → 0 ⇒ ★ **量具自检失败 ⇒ exit 3 ⇒ 拒绝出读数**。
+func TestPipefailRaceToolMutationM6BreaksContinuationScan(t *testing.T) {
+	fx := r98NewFixture(t)
+	tool := r98MutateTool(t, []r98Mut{{
+		name: "M6",
+		old: "    for i, ln in enumerate(lines, 1):\n" +
+			"        if i < 2:\n" +
+			"            continue\n" +
+			"        prev = lines[i - 2].rstrip()\n" +
+			"        if not prev.endswith(\"\\\\\"):\n" +
+			"            continue",
+		new: "    for i, ln in enumerate(lines, 1):\n" +
+			"        if True:  # MUTATED：形态 A 的检测被摘掉\n" +
+			"            continue\n" +
+			"        prev = lines[i - 2].rstrip()\n" +
+			"        if not prev.endswith(\"\\\\\"):\n" +
+			"            continue",
+	}})
+	code, _ := r98RunTool(t, tool, fx, fx.writeLedger(t, "m6", r98LedgerDiverse(fx)), "m6")
+	if code == 0 {
+		t.Fatalf("★ 变异 M6 的前提不成立：量具退出码 = 0（期望 ≠ 0 ⇒ 注入夹具 fx_continuation_pipe.sh " +
+			"的命中数应当掉到 0 ⇒ 量具自检应当失败 ⇒ 工具拒绝出读数）⇒ 这个变异没有复现" +
+			"「形态 A 检测被摘掉 ⇒ 无人察觉」那个形态")
+	}
+	t.Logf("✔ 变异 M6 被抓住：量具退出码 = %d（★ 形态 A 的检测被摘掉 ⇒ 注入夹具自检失败 ⇒ 拒绝出读数）", code)
+}
+
 // TestPipefailRaceToolMutationAnchorsStayUnique：变异锚点必须**逐字唯一**。
 // ★ 这条是「变异套件自己的自检」：锚点一旦不唯一（有人改了量具的措辞），
 //
@@ -662,6 +700,15 @@ func TestPipefailRaceToolMutationAnchorsStayUnique(t *testing.T) {
 		{
 			name: "M5",
 			old:  "    if bleed_errors:\n        raise LedgerBleed(bleed_errors)",
+		},
+		{
+			name: "M6",
+			old: "    for i, ln in enumerate(lines, 1):\n" +
+				"        if i < 2:\n" +
+				"            continue\n" +
+				"        prev = lines[i - 2].rstrip()\n" +
+				"        if not prev.endswith(\"\\\\\"):\n" +
+				"            continue",
 		},
 	}
 	for _, m := range anchors {
