@@ -37,11 +37,13 @@ func TestQuotaRecoveryBodyResetWins(t *testing.T) {
 func TestQuotaRecoveryBodyResetRelativeDuration(t *testing.T) {
 	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
 	got := inferQuotaRecoveryAtNow("resets in 2h 30min", 0, now)
-	// 相对时长由 ParseQuotaResetAt 以墙钟 now 解析（包装器固定 time.Now()），
-	// 注入时钟对它无效 ⇒ 用墙钟容差断言（恢复点 = 墙钟 + 2h30m，±5min）。
-	want := time.Now().Add(2*time.Hour + 30*time.Minute)
-	if delta := got.at.Sub(want); delta < -5*time.Minute || delta > 5*time.Minute {
-		t.Fatalf("relative reset = %s want ~%s (wall clock ±5m)", got.at, want)
+	// ★ 第二十三轮：相对时长**也**按**注入时钟**解析（包装器不再写死
+	// time.Now()）⇒ 恢复点 = 注入时钟 + 2h30m，**逐字相等**
+	// ⇒ 这条断言从此**与墙钟无关**（旧写法需要墙钟 ±5min 容差，正是
+	// 「同一条链上混两个时钟」的外溢症状）。
+	want := now.Add(2*time.Hour + 30*time.Minute)
+	if !got.at.Equal(want) {
+		t.Fatalf("relative reset = %s want %s (injected clock + 2h30m)", got.at, want)
 	}
 	if got.source != quotaSourceBodyReset {
 		t.Fatalf("source = %s want body_reset", got.source)

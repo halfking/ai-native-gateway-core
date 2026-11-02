@@ -862,7 +862,7 @@ const maxQuotaRetryAfterTrust = 8 * 24 * time.Hour
 
 func inferQuotaRecoveryAtNow(detail string, retryAfter time.Duration, nowArg time.Time) quotaRecovery {
 	// 来源 1：body 词表的 reset 时间（最精确的证据，优先）。
-	if t, ok := parseQuotaResetTimestamp(detail); ok {
+	if t, ok := parseQuotaResetTimestamp(detail, nowArg); ok {
 		return quotaRecovery{at: t.UTC(), source: quotaSourceBodyReset}
 	}
 	// 来源 2：Retry-After 头（quota 类此前不消费；8d 信任上限）。
@@ -889,7 +889,7 @@ func quotaRecoverySuffix(detail string, r quotaRecovery) *string {
 
 func inferQuotaRecoverAtNow(detail string, nowArg time.Time) time.Time {
 	now := nowArg.UTC()
-	if t, ok := parseQuotaResetTimestamp(detail); ok {
+	if t, ok := parseQuotaResetTimestamp(detail, nowArg); ok {
 		return t.UTC()
 	}
 	if fiveHourWindowRe.MatchString(detail) {
@@ -913,8 +913,21 @@ func inferQuotaRecoverAtNow(detail string, nowArg time.Time) time.Time {
 // 单一重置解析器）。旧实现只扫 YYYY-MM-DD HH:MM:SS 且一律按 UTC 解释，
 // 会把「北京时间」文案算错；新解析器覆盖相对时长 / 中英文 / \uXXXX /
 // 时区提示。无命中时返回 false，由 inferQuotaRecoverAtNow 走日界启发式。
-func parseQuotaResetTimestamp(detail string) (time.Time, bool) {
-	return errorsx.ParseQuotaResetAt([]byte(detail), time.Now())
+//
+// ★★ 2026-11-02 第二十三轮：参考时钟**必须由调用方传入**，不许在这里写死
+// time.Now()。
+// 旧实现在这里写死墙钟 ⇒ 同一条恢复点推导链上**混了两个时钟**：
+// 来源 1（body 词表）用墙钟、来源 2（Retry-After）与来源 3（窗口启发式）
+// 用注入时钟。
+// ① 生产侧：两个调用点传的本来就是 time.Now() ⇒ **行为不变**。
+// ② 测试侧：注入时钟**对来源 1 无效** ⇒ 想断言「绝对时间戳胜出」就**只能**
+// 写死一个绝对日期 ⇒ 而写死的日期**一旦被墙钟越过就会必然转红**
+// （实测：domains/credential 的 TestQuotaRecoveryBodyResetWins 自
+// 2026-11-02 09:33 UTC 起必然转红 —— 墙钟越过了它写死的 08:00 那一刻；
+// 解析器只接受**未来**的绝对时间戳：lead > 0 && lead <= maxQuotaResetLead）。
+// ⇒ 现在时钟自上而下**同一口**，绝对与相对两条分支都跟着注入时钟走。
+func parseQuotaResetTimestamp(detail string, now time.Time) (time.Time, bool) {
+	return errorsx.ParseQuotaResetAt([]byte(detail), now)
 }
 
 func midnightUTC(t time.Time) time.Time {
