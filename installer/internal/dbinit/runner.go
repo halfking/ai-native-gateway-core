@@ -1734,6 +1734,16 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ⇒ 211 生产已堆到 4 行 ⇒ CROSS JOIN 把 targets 放大 4 倍）。
 			//   ★ 含 DELETE + ADD CONSTRAINT ⇒ 自带 lock_timeout / statement_timeout。
 			"927_routing_policy_singleton_unique.sql",
+			// 928（P0-3 M1）：userscript capture 三表族（ADR
+			// userscript-capture-gateway-endpoint D5）。含 RLS 策略与
+			// 幂等唯一约束；down 提供对称复原。
+			"928_userscript_capture_family.sql",
+			// 929：fresh-install 链补 outbox_events（211 手工 V357 从未入链，
+			// P0-3 live E2E 实测 42P01；幂等，已有环境 no-op）。
+			"929_outbox_events_fresh_install.sql",
+			// 930（P1-1 S1）：taskbus 的 task_events 表（ADR
+			// outbox-consolidation-via-taskbus 目标表形态）。
+			"930_task_events.sql",
 		},
 	}
 }

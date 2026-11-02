@@ -37,6 +37,7 @@ type Dispatcher struct {
 	maxAttempts  int           // Max retry attempts before DLQ (default: 5)
 	deliverer    *HTTPDeliverer
 	logger       *slog.Logger
+	onEventSent  func(env EventEnvelope)
 
 	// lastGaugeAt throttles updateGaugeMetrics: the two COUNT(*) probes run
 	// on the dispatch goroutine, so polling them every 5s cycle doubles the
@@ -64,6 +65,11 @@ type DispatcherConfig struct {
 	HMACSecret   string
 	PollInterval time.Duration
 	MaxAttempts  int
+	// OnEventSent（P1-1 S1 灰度双写桥）：每条事件投递成功后回调（带完整
+	// envelope）。用于把 outbox 流量镜像 Enqueue 到 taskbus task_events
+	//（TASKBUS_ASM_BRIDGE 门控，装配在 cmd/gateway）。nil = 无桥。
+	// 回调失败只 log（双写是灰度观测面，不回压主投递路径）。
+	OnEventSent func(env EventEnvelope)
 	// HTTPTimeout bounds each ASM POST. Defaults to 10s. A dedicated client
 	// (rather than http.DefaultClient, which has no timeout) prevents a single
 	// stalled ASM connection from blocking the serial dispatch loop forever.
@@ -105,6 +111,7 @@ func NewDispatcher(cfg DispatcherConfig) *Dispatcher {
 
 	httpClient := &http.Client{Timeout: cfg.HTTPTimeout}
 	return &Dispatcher{
+		onEventSent: cfg.OnEventSent,
 		db:           cfg.DB,
 		asmEndpoint:  cfg.ASMEndpoint,
 		hmacSecret:   cfg.HMACSecret,
@@ -361,6 +368,9 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) (dispatchOutcome, error) {
 
 	d.logger.Info("dispatch succeeded", "event_id", eventID, "attempts", attempts+1)
 	RecordEventSent()
+	if d.onEventSent != nil {
+		d.onEventSent(env) // 灰度双写桥（P1-1 S1）；失败只 log 不回压
+	}
 	d.markSent(ctx, tx, id)
 	if err := tx.Commit(); err != nil {
 		return dispatchOutcomeNone, fmt.Errorf("commit (sent mark): %w", err)

@@ -61,6 +61,52 @@ func BuildSessionOpenedEventV1(tenantID, sessionID, userID string) (EventEnvelop
 	}, nil
 }
 
+// BuildSessionClosedEventV1 constructs the durable session.closed.v1 event
+// (会话治理方案 2026-11 P0-2：让 ASM 投影能把会话终态化为 closed).
+//
+// event_id is derived only from tenantID and sessionID so repeated close
+// signals for the same session collapse into one outbox row (ON CONFLICT DO
+// NOTHING) — at-least-once emission stays side-effect-idempotent.
+//
+// 当前信号源：显式停止（admin serveStopSession）。TTL 过期没有可靠的即时
+// 信号（Redis 过期回调未接线），idle-close 不在本事件范围内 —— ASM 投影
+// 侧如需 idle 推导应基于 completed 事件的 last_activity 自行判定。
+func BuildSessionClosedEventV1(tenantID, sessionID, reason string) (EventEnvelope, error) {
+	if tenantID == "" {
+		return EventEnvelope{}, fmt.Errorf("outbox.BuildSessionClosedEventV1: tenant_id is required")
+	}
+	if sessionID == "" {
+		return EventEnvelope{}, fmt.Errorf("outbox.BuildSessionClosedEventV1: session_id is required")
+	}
+	if reason == "" {
+		reason = "unspecified"
+	}
+
+	hashInput := tenantID + "\x00" + sessionID
+	digest := sha256.Sum256([]byte(hashInput))
+	eventID := "evt-session-closed-" + hex.EncodeToString(digest[:8])
+	now := time.Now().UTC()
+
+	return EventEnvelope{
+		EventID:          eventID,
+		EventType:        "session.closed.v1",
+		SchemaVersion:    1,
+		TenantID:         tenantID,
+		AggregateID:      sessionID,
+		AggregateVersion: 2,
+		OccurredAt:       now,
+		Payload: map[string]any{
+			"session_id":    sessionID,
+			"reason":        reason,
+			"closed_at":     now.Format(time.RFC3339Nano),
+			"source_system": "gateway",
+		},
+		SessionID:     sessionID,
+		CorrelationID: sessionID,
+		SourceSystem:  "gateway",
+	}, nil
+}
+//
 // BuildRequestCompletedEventV3 constructs a request.completed.v1 event whose
 // wire rendering validates against gateway-event-schema-v1.json.
 //
@@ -172,4 +218,86 @@ func FormatCostUSD(costUSD *float64) string {
 		return "0"
 	}
 	return strconv.FormatFloat(*costUSD, 'f', -1, 64)
+}
+
+// BuildUserscriptCapturedEventV1 constructs the durable
+// userscript.captured.v1 event (P0-3 M2, ADR D6). event_id is derived
+// deterministically from (tenant, batch_id) so re-persisting the same batch
+// is a no-op (ON CONFLICT DO NOTHING on the outbox side).
+//
+// payload carries batch header + per-message header metadata WITH body_ref
+// but WITHOUT content — bodies stay gateway-owned; ASM consumes only
+// locators (contracts/userscript-capture.md body_ref 约定).
+func BuildUserscriptCapturedEventV1(
+	tenantID, batchID, sourceSystem, clientSessionKey, correlationID, endUserID string,
+	messages []CapturedMessageHeader,
+) (EventEnvelope, error) {
+	if tenantID == "" {
+		return EventEnvelope{}, fmt.Errorf("outbox.BuildUserscriptCapturedEventV1: tenant_id is required")
+	}
+	if batchID == "" {
+		return EventEnvelope{}, fmt.Errorf("outbox.BuildUserscriptCapturedEventV1: batch_id is required")
+	}
+	if len(messages) == 0 {
+		return EventEnvelope{}, fmt.Errorf("outbox.BuildUserscriptCapturedEventV1: messages must be non-empty")
+	}
+
+	hashInput := tenantID + "\x00userscript.captured.v1\x00" + batchID
+	digest := sha256.Sum256([]byte(hashInput))
+	eventID := "evt-capture-" + hex.EncodeToString(digest[:8])
+	now := time.Now().UTC()
+
+	msgs := make([]map[string]any, 0, len(messages))
+	for _, m := range messages {
+		msgs = append(msgs, map[string]any{
+			"source_conversation_id": m.SourceConversationID,
+			"source_message_id":      m.SourceMessageID,
+			"parent_message_id":      m.ParentMessageID,
+			"sequence":               m.Sequence,
+			"content_revision":       m.ContentRevision,
+			"role":                   m.Role,
+			"occurred_at":            m.OccurredAt.Format(time.RFC3339Nano),
+			"idempotency_key":        m.IdempotencyKey,
+			"body_ref":               m.BodyRef,
+		})
+	}
+
+	payload := map[string]any{
+		"batch_id":           batchID,
+		"source_system":      sourceSystem,
+		"client_session_key": clientSessionKey,
+		"schema_version":     "1.0",
+		"end_user_id":        endUserID,
+		"messages":           msgs,
+	}
+	if correlationID != "" {
+		payload["correlation_id"] = correlationID
+	}
+
+	return EventEnvelope{
+		EventID:       eventID,
+		EventType:     "userscript.captured.v1",
+		SchemaVersion: 1,
+		TenantID:      tenantID,
+		AggregateID:   batchID,
+		OccurredAt:    now,
+		Payload:       payload,
+		SessionID:     "",
+		CorrelationID: correlationID,
+		SourceSystem:  "gateway",
+	}, nil
+}
+
+// CapturedMessageHeader is the per-message metadata carried by
+// userscript.captured.v1 (no content — body stays behind body_ref).
+type CapturedMessageHeader struct {
+	SourceConversationID string
+	SourceMessageID      string
+	ParentMessageID      string
+	Sequence             int64
+	ContentRevision      int
+	Role                 string
+	OccurredAt           time.Time
+	IdempotencyKey       string
+	BodyRef              string
 }

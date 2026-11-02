@@ -108,7 +108,7 @@ HTTP/SSE (h2c 同端口 HTTP/1.1+2, main.go:7201)
   -> FP slot / 并发信号量 / RPM 资源门
   -> upstream.Client(0 内部重试) + pool(identity-bound)
   -> IR/protocol 转换 + vendorstrip + SSE 回写
-  -> telemetry request_logs + WAL + requestjourney 观测 (+V2 shadow persist + ASM outbox)
+  -> telemetry session_turns_hot 落库 + WAL + requestjourney 观测 (+会话族派生写 + ASM outbox)
 ```
 
 可选旁路（均默认 OFF，属 `PARALLEL`/`SHADOW`）：v2 Hook Pipeline 包装（`main.go:6240-6266`）、`/v2/*` 平行路由组、`internal/streamretry` pre-stream 重试包装（与 request_survival 互斥）。
@@ -174,28 +174,30 @@ Router -> URSM v2 authoritative -> Redis/Lua state -> PostgreSQL persistence/aud
 
 | 对象 | 当前状态 | 说明 |
 |---|---|---|
-| `request_logs_hot` / usage ledger | `CURRENT` | 请求元数据、用量、审计和派生链路主要 durable 入口。分区体系 + 归档/热区/列存（765 起 bodies 月分区列存化，56.6× 压缩；764 tenant+ts 分区索引）。 |
+| `session_turns` 族（canonical） | `CURRENT` | **唯一请求事实源**（迁移 890，2026-10-20）。TurnWriter/BodiesWriter/Aggregator/MemoraWriter/DetailsWriter boot 接线（`session_v2_init.go`）；写入口 = telemetry 持久化同事务 `session_turns_hot` + onPersisted 派生链（turns/bodies/aggregate/turn_logs/session_dim）。flag `sessions_v2.enabled && shadow_write` 仍热更门控（**历史命名**，语义已是"会话族写入开关"；PG 模式 `SessionV2WriteRequired` 无条件置 true，`session_write_safety.go`）。`internal/sessionv2mirror` outbox 负责回填/replay 补偿。 |
+| usage ledger（`usage_ledger_hot`） | `CURRENT` | 计费事实写入口（telemetry 同路径 INSERT）。 |
+| 兼容视图 `request_logs_with_current_month` | `CURRENT` | 迁移 890 后为会话两臂 `session_turns_hot ∪ session_turns`（LEFT JOIN details 层），118 列投影与旧体逐字相同 ⇒ 约 40 个读方零改动。**视图名保留 request_logs 仅作兼容**，其背后已无 v1 表。 |
+| v1 `_request_logs` 族 | `RETIRED` | 2026-10-13 停写（S3 波 2），2026-10-20 迁移 890 整体 DROP（表/分区/hot/序列/v1-only 视图与分区管理函数）。PG 模式已无 v1 写面；Lite 模式 SQLite `request_logs` 仍在（`lite_telemetry_sink.go`）。 |
 | request WAL | `CURRENT/PARTIAL` | 同步 INSERT + 异步批量 UPDATE；非完整不可变事件历史。 |
 | telemetry queue/fallback | `CURRENT/PARTIAL` | 队列满可同步落库；内存 fallback 不能替代 durable outbox。 |
-| `gateway.session_*` / V2 writer | `PARALLEL/SHADOW` | V1 主写（失败即请求失败）、V2 影子写（fail-open），flag `sessions_v2.enabled && shadow_write` 热更（`session_v2_init.go`）。`internal/sessionv2mirror` 负责回填/replay。 |
-| `request_logs` legacy session/summary paths | `CURRENT` | 仍是 canonical session/message/body 事实与兼容读取来源。 |
 | Gateway -> ASM outbox | `CURRENT/PARTIAL` | 事件构造器现役为 `BuildRequestCompletedEventV3`（GW-1.2 schema，注意位于 `event_builder_v1.go`）；legacy V1/V2 构造器仅测试引用。依赖 endpoint/secret 配置，缺配置不派发。 |
 
 **Outbox 模式现存 4 套实现**（`PARALLEL`，见 P-08）：`durable/pending_outbox.go`+`settlement_outbox.go`（任务存储自有）、`internal/outbox/`（ASM 事件投递）、`internal/sessionv2mirror/outbox.go`（V2 镜像回填）。语义（幂等/重放/签名）各自为政，收敛为债务。
 
-### 5.2 Session V2 的准确边界
+### 5.2 Session V2 的准确边界（迁移 890 后）
 
 ```text
-schema + writer + cache + shadow persistence: CURRENT/SHADOW
-primary read + canonical ownership + old fact retirement: MIGRATION-GATE
+schema + writer + cache + persistence: CURRENT（唯一事实源）
+primary read + canonical ownership: CURRENT（V2 读路径已切，session_list_v2/session_detail_v2）
+old fact retirement: DONE（迁移 890，2026-10-20：v1 族整体 DROP）
 ```
 
-切换治理：`dual_read_validator.go` 行级对账，**7 天零漂移门禁**通过后才允许翻主读。切换前至少需要：body/turn 完整率、hash/tenant 对账、backfill、dual-read、replay、attachment authorization、真实 RLS、跨仓 E2E、观察期和 rollback drill。
+切换历史：原计划的 `dual_read_validator.go` 行级对账 + 7 天零漂移门禁已随 890 **退役**——v1 族被 DROP 后没有"另一侧"可对账，validator 如实返回 `V1Retired=true / ZeroDriftEvaluable=false`（零差异与"没做对账"显式区分）。现补偿/回滚手段 = 会话族自身 mirror outbox（迁移 712）+ aggregate outbox 重放 + DB 备份恢复。
 
 ### 5.3 迁移体系事实
 
 - `db.ApplyMigrations` = Go 代码幂等 ensure\*（~89 函数）+ 嵌入式数字 SQL（`db/migrations/`，最新 365_goal_client_signal.sql）。
-- 运维 SQL 在 `sql/migrations/`：`startup/`（数字序列 7xx 活跃，最新 **765**_bodies_columnar_storage（request_logs_bodies 月分区列存化），另有预留段 800_provider_endpoint_protocols/801_session_turn_details_duplicate_drain/802_session_turn_details_gw_task_id_index；下一枚规划 766，installer embeddata 有镜像副本需同步）+ `domain/`（93 枚）+ local/manual/operations/test。
+- 运维 SQL 在 `sql/migrations/`：`startup/`（数字序列活跃，最新 **927**_routing_policy_singleton_unique；关键节点：765 bodies 列存化、733/734 + 801/802 details 特征层及配套 drain/index、800 provider endpoint protocols、860 v1 族改名 `_request_logs`、890 v1 族整体 DROP、909 summaries trgm；installer embeddata 有镜像副本需同步）+ `domain/`（93 枚）+ local/manual/operations/test。
 - `gateway migrate` 子命令零停机迁移旁路（main.go:189）。
 
 ---
@@ -228,7 +230,7 @@ primary read + canonical ownership + old fact retirement: MIGRATION-GATE
 1. `/api/quality/*`、独立 quality service 的认证、tenant scope、RLS 与 canonical data source。
 2. legacy admin 默认密码、DB 不可用时 data-plane auth 降级、长期 query-token JWT 的 fail-closed 边界。
 3. Maintain 的 tenant policy、FORCE RLS、least-privilege role 与真实 PostgreSQL negative tests。
-4. Session V2 shadow persistence 的 durable compensation、reconciliation、backfill、replay 与 rollback 门禁（7 天零漂移 dual-read）。
+4. ~~Session V2 shadow persistence 的 durable compensation、reconciliation、backfill、replay 与 rollback 门禁~~ **已达成并超出**（v1 族随 890 退役，mirror/aggregate outbox 补偿链就位）。后续关注转向：ASM 事件全覆盖（`session.opened.v1` 等生命周期事件仍有缺口，见会话治理融合优化方案 P0-2）与会话族 outbox replay 演练常态化。
 5. ASM 候选 migration、context secret、DLQ unique constraint、body fetch failure 可靠性审查。
 6. h2c 最终 handler 必须包装包含 Maintain proxy/static 的 final handler。
 
@@ -261,7 +263,7 @@ primary read + canonical ownership + old fact retirement: MIGRATION-GATE
 | P-01 | cmd/gateway(v1 主用) vs cmd/gateway-v2 + /v2/* + v1 包装桥（三重 v2 暴露面） | 演示/灰度 | 低（显式 OFF）但认知成本高 |
 | P-02 | legacy 探测 5 worker vs 新 3 worker | 新版默认接管 | legacy 对象仍装配注入 |
 | P-03 | autoroute decision/classifier/scoring 三代 | **双活**（v1 默认） | 高：v2 内部回退 v1，组合爆炸 |
-| P-04 | Session V1 主写 vs V2 影子写 | 迁移中 | 高：门禁未过，schema 漂移风险 |
+| P-04 | ~~Session V1 主写 vs V2 影子写~~ | **已收敛**（迁移 890：v1 族 DROP，会话族唯一 canonical，2026-10-20） | 已消除 |
 | P-05 | outbox 事件构造器 V1/V2/V3 | V3 接管 | V1/V2 死构造器待删 |
 | P-06 | URSM key 三代 schema | 迁移中 | k2 迁移 NO-GO |
 | P-07 | admin vs control CQRS 半迁移 | 迁移中 | 同资源写命令分居两包 |
@@ -278,7 +280,7 @@ primary read + canonical ownership + old fact retirement: MIGRATION-GATE
 | 能力 | Gateway | ASM | Maintain |
 |---|---|---|---|
 | Provider 调用、流式执行、路由、限流、成本执行 | Owner | 仅消费事实 | 不实现 |
-| Canonical request/session/body | Owner，切换前保持旧事实源 | 投影/分析，不保存完整正文 | 不实现 |
+| Canonical request/session/body | Owner（会话族，迁移 890 后唯一事实源；118 列兼容视图供旧读方） | 投影/分析，不保存完整正文 | 不实现 |
 | 会话分析、审批、任务、审计投影 | 产生事件/兼容读取 | Owner | 不实现 |
 | License、artifact、activation、upgrade | compatibility/consumer | 插件消费者 | Owner |
 | MCP/A2A/Fusion transport/execution | 未来 Owner | 只消费 metadata/task facts | 不实现 |

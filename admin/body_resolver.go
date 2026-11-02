@@ -13,6 +13,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	dbpkg "github.com/kaixuan/llm-gateway-go/db"
+	"github.com/kaixuan/llm-gateway-go/internal/userscriptcapture"
 )
 
 const (
@@ -147,6 +148,14 @@ func (h *Handler) handleControlledBody(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ref := r.PathValue("body_ref")
+
+	// P0-3 M2：capture 命名空间（internal://capture/{uuid}）——userscript
+	// 捕获正文从 capture_bodies 取（归属校验在查询的 tenant 过滤）。
+	if userscriptcapture.IsCaptureBodyRef(ref) {
+		h.serveCaptureBody(w, r, ref, claims.TenantID)
+		return
+	}
+
 	parsed, ok := parseControlledBodyRef(ref)
 	if !ok || h.bodyDB == nil {
 		writeControlledBodyError(w, http.StatusNotFound)
@@ -181,6 +190,29 @@ func (h *Handler) handleControlledBody(w http.ResponseWriter, r *http.Request) {
 		Content:     content,
 		ContentType: "text/plain",
 		OccurredAt:  occurredAt.UTC().Format(time.RFC3339Nano),
+	})
+}
+
+// serveCaptureBody 服务 capture 正文读取（与既有路径同认证面：
+// service JWT + scope session:read；跨租户 ref 一律 404）。
+func (h *Handler) serveCaptureBody(w http.ResponseWriter, r *http.Request, ref, tenantID string) {
+	if h.bodyDB == nil {
+		writeControlledBodyError(w, http.StatusNotFound)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	row, err := userscriptcapture.LookupCaptureBody(ctx, h.bodyDB, ref, tenantID)
+	if err != nil {
+		writeControlledBodyError(w, http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, controlledBodyResponse{
+		BodyRef:     ref,
+		Role:        row.Role,
+		Content:     row.Content,
+		ContentType: row.ContentType,
+		OccurredAt:  row.CreatedAt.UTC().Format(time.RFC3339Nano),
 	})
 }
 

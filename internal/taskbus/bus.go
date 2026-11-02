@@ -24,10 +24,13 @@ func NewBus(store Store, registry *Registry) *Bus {
 	return &Bus{Store: store, Registry: registry, Dispatcher: d}
 }
 
-// NewDemoBus 本波示范：MemoryStore + ASM 租户登记（cache handler 由调用方再挂）。
+// NewDemoBus 本波示范：MemoryStore + ASM 租户占位登记（cache handler 由
+// 调用方再挂）。生产形态用 NewBus + RegisterASMTenant(r, deliverer)
+// 登记真实投递（deliverer = outbox.NewHTTPDeliverer(...)，配置与
+// outbox Dispatcher 同源）——见 asm_event_handler.go。
 func NewDemoBus() *Bus {
 	r := NewRegistry()
-	RegisterASMTenant(r)
+	RegisterASMTenantPlaceholder(r)
 	return NewBus(NewMemoryStore(), r)
 }
 

@@ -303,6 +303,10 @@ func (h *Handler) serveStopSession(w http.ResponseWriter, r *http.Request, sessi
 	if h.sessionDBWriter != nil {
 		h.sessionDBWriter.FlushSession(ctxFn(r), sessionID)
 	}
+	// 会话治理方案 2026-11 P0-2：显式停止即发布 session.closed.v1（fail-open，
+	// 异步；ASM 投影据此终态化）。idle/TTL 关闭不在本事件范围，见
+	// internal/outbox.BuildSessionClosedEventV1 的信号源说明。
+	publishSessionClosedAsync(h.db, sessionID, reason)
 	if auth := GetAuthContext(r); auth != nil {
 		h.auditLog(auth.Username, "session.stop", "session", 0, map[string]any{"session_id": sessionID, "reason": reason})
 	}

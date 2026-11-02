@@ -56,7 +56,10 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/approval"                            //nolint:depguard // D1: approval config management
 	"github.com/kaixuan/llm-gateway-go/domains/assets"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/authentication"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/jackc/pgx/v5"
+
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/internal/userscriptcapture"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/autocombo"                           //nolint:depguard // OmniFree virtual auto/* routing
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"                     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -116,6 +119,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
+	"github.com/kaixuan/llm-gateway-go/internal/taskbus"
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
 	"github.com/kaixuan/llm-gateway-go/internal/providers/mock"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
@@ -201,6 +205,20 @@ func retentionSource(cfg persist.SnapshotRetentionConfig) string {
 		return "env-invalid-fell-back-to-default"
 	}
 	return "unset-fell-back-to-default"
+}
+
+// keyVerifierAdapter 把数据面 KeyVerifier 窄化为 capture 身份层接口
+//（api key → tenant；Verify 的完整 KeyInfo 此处只取 TenantID）。
+type keyVerifierAdapter struct {
+	kv *authentication.KeyVerifier
+}
+
+func (a keyVerifierAdapter) VerifyKeyTenant(rawKey string) (string, bool) {
+	info, err := a.kv.Verify(context.Background(), rawKey)
+	if err != nil || info == nil || !info.StatusValid() {
+		return "", false
+	}
+	return info.TenantID, true
 }
 
 func main() {
@@ -648,7 +666,7 @@ func main() {
 		} else {
 			dispatcherCtx, cancel := context.WithCancel(context.Background())
 			outboxDispatcherStop = cancel
-			dispatcher := outbox.NewDispatcher(outbox.DispatcherConfig{
+			dispatcherCfg := outbox.DispatcherConfig{
 				DB:           dbConn.Stdlib(),
 				ASMEndpoint:  asmEndpoint,
 				HMACSecret:   hmacSecret,
@@ -656,7 +674,30 @@ func main() {
 				MaxAttempts:  positiveIntEnv("OUTBOX_MAX_ATTEMPTS", 5),
 				HTTPTimeout:  positiveDurationEnv("OUTBOX_HTTP_TIMEOUT", 10*time.Second),
 				Logger:       slog.Default(),
-			})
+			}
+			// P1-1 S1 灰度双写桥（TASKBUS_ASM_BRIDGE=1，默认关）：outbox
+			// 每投递成功一条 asm 事件，镜像 Enqueue 一条 asm.event.v1 任务
+			// 到 task_events（SQLStore）。event_id 即 idempotency_key ⇒
+			// 天然幂等；桥失败只 log，绝不回压主投递。对账口径：两表按
+			// event_id 比对（ADR outbox-consolidation S1→S2 门禁）。
+			if os.Getenv("TASKBUS_ASM_BRIDGE") == "1" {
+				bridgePool := dbConn.Pool()
+				bridgeStore := taskbus.NewSQLStore(bridgePool)
+				dispatcherCfg.OnEventSent = func(env outbox.EventEnvelope) {
+					payload, err := json.Marshal(env)
+					if err != nil {
+						slog.Warn("taskbus bridge: marshal failed", "error", err)
+						return
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+					defer cancel()
+					if _, err := bridgeStore.Enqueue(ctx, taskbus.TaskTypeASMEventV1, env.EventID, env.SchemaVersion, payload); err != nil {
+						slog.Warn("taskbus bridge: enqueue failed (non-blocking)", "event_id", env.EventID, "error", err)
+					}
+				}
+				slog.Info("taskbus asm bridge enabled (dual-write to task_events)")
+			}
+			dispatcher := outbox.NewDispatcher(dispatcherCfg)
 			go func() {
 				if err := dispatcher.Start(dispatcherCtx); err != nil && err != context.Canceled {
 					slog.Error("outbox dispatcher stopped unexpectedly", "error", err)
@@ -6892,6 +6933,38 @@ func main() {
 			"base_delay_ms", srCfg.BaseDelayMs,
 			"max_delay_ms", srCfg.MaxDelayMs,
 			"keepalive_interval", srCfg.KeepaliveInterval)
+	}
+
+	// P0-3 M1 userscript capture 摄取（ADR userscript-capture-gateway-endpoint）：
+	// LLM_GATEWAY_USERSCRIPT_CAPTURE_SECRET 非空才挂（未配置=能力不可用，
+	// userscript 停发保留本地队列——契约行为要求）。身份层复用数据面
+	// keyVerifier（Bearer api key → tenant）。
+	if capSecret := os.Getenv("LLM_GATEWAY_USERSCRIPT_CAPTURE_SECRET"); capSecret != "" && dbConn != nil {
+		captureHandler := userscriptcapture.NewHandler(userscriptcapture.HandlerConfig{
+			Secret: capSecret,
+			Keys: keyVerifierAdapter{kv: keyVerifier},
+			Store: userscriptcapture.NewStore(userscriptcapture.PoolBeginner(dbConn.Pool().Begin)),
+			// M2：同事务写 userscript.captured.v1（payload string 化喂
+			// jsonb——SimpleProtocol 下 []byte 必炸，同 telemetry R11 注记）。
+			OutboxWriter: func(ctx context.Context, tx pgx.Tx, envelope outbox.EventEnvelope) error {
+				payloadJSON, err := json.Marshal(envelope.Payload)
+				if err != nil {
+					return err
+				}
+				_, err = tx.Exec(ctx, `
+					INSERT INTO outbox_events (
+						event_id, event_type, schema_version, tenant_id,
+						aggregate_id, aggregate_version, occurred_at, payload, status
+					) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending')
+					ON CONFLICT (event_id) DO NOTHING`,
+					envelope.EventID, envelope.EventType, envelope.SchemaVersion,
+					envelope.TenantID, envelope.AggregateID, envelope.AggregateVersion,
+					envelope.OccurredAt, string(payloadJSON))
+				return err
+			},
+		})
+		mux.Handle("/v1/userscript/captures", captureHandler)
+		slog.Info("userscript capture endpoint enabled", "path", "/v1/userscript/captures")
 	}
 
 	mux.Handle("/v1/chat/completions", chatRouteHandler)

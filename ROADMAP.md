@@ -12,6 +12,7 @@ This roadmap outlines current capabilities, near-term plans, and long-term explo
 - Intelligent routing with sticky sessions
 - Token-based rate limiting and quota management
 - Request/response audit trail with OTel/Prometheus integration
+- Session V2 canonical fact store: session_turns family (turn-level history + bodies + aggregates); v1 request_logs family retired by migration 890 (2026-10), compatible 118-column view preserved for readers
 - Vue.js admin console (embedded SPA)
 
 ### Deployment & Operations ✅
@@ -69,7 +70,6 @@ These are research and exploration areas. No timeline or commitment to delivery.
 - Context fusion across multiple tools
 
 ### Advanced Features Under Research 🔬
-- Session V2 ownership migration (currently shadow mode)
 - Operator pattern for Kubernetes (CRD-based deployment)
 - Fusion routing (multi-model consensus)
 - On-premise model support (Ollama, vLLM)
@@ -111,4 +111,4 @@ Priority is determined by:
 - 🚧 Actively being developed or planned for next release
 - 🔬 Research/exploration phase, no delivery commitment
 
-Last updated: 2026-09-06
+Last updated: 2026-11-02

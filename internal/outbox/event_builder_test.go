@@ -372,3 +372,82 @@ func TestBuildRequestCompletedEvent_IDSeparation(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildSessionClosedEventV1_DeterministicAndValid(t *testing.T) {
+	envelope, err := BuildSessionClosedEventV1("tenant-123", "session-abc", "admin_stop")
+	if err != nil {
+		t.Fatalf("BuildSessionClosedEventV1 failed: %v", err)
+	}
+	retry, err := BuildSessionClosedEventV1("tenant-123", "session-abc", "admin_stop")
+	if err != nil {
+		t.Fatalf("BuildSessionClosedEventV1 retry failed: %v", err)
+	}
+	if envelope.EventID != retry.EventID {
+		t.Fatalf("event IDs differ across retries: %q vs %q", envelope.EventID, retry.EventID)
+	}
+	if !strings.HasPrefix(envelope.EventID, "evt-session-closed-") {
+		t.Errorf("event ID = %q, want session-closed prefix", envelope.EventID)
+	}
+	if len(envelope.EventID) > 255 {
+		t.Errorf("event ID length = %d, exceeds DB-safe limit", len(envelope.EventID))
+	}
+	if envelope.EventType != "session.closed.v1" {
+		t.Errorf("event type = %q, want session.closed.v1", envelope.EventType)
+	}
+	if envelope.TenantID != "tenant-123" || envelope.AggregateID != "session-abc" || envelope.SessionID != "session-abc" {
+		t.Errorf("envelope identity not populated: tenant=%q aggregate=%q session=%q", envelope.TenantID, envelope.AggregateID, envelope.SessionID)
+	}
+	if envelope.SourceSystem != "gateway" || envelope.CorrelationID != "session-abc" {
+		t.Errorf("v1 envelope fields not populated: source=%q correlation=%q", envelope.SourceSystem, envelope.CorrelationID)
+	}
+	if got := envelope.Payload["reason"]; got != "admin_stop" {
+		t.Errorf("payload reason = %v, want admin_stop", got)
+	}
+	if got, _ := envelope.Payload["closed_at"].(string); got == "" {
+		t.Error("payload closed_at is empty")
+	}
+
+	// 同一会话的 closed 与 opened 的 event_id 必须不同（两个不同事件）。
+	opened, err := BuildSessionOpenedEventV1("tenant-123", "session-abc", "42")
+	if err != nil {
+		t.Fatalf("BuildSessionOpenedEventV1 failed: %v", err)
+	}
+	if envelope.EventID == opened.EventID {
+		t.Fatalf("closed event id %q collides with opened event id", envelope.EventID)
+	}
+
+	wire, err := RenderWireEnvelope(envelope)
+	if err != nil {
+		t.Fatalf("RenderWireEnvelope failed: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(wire, &parsed); err != nil {
+		t.Fatalf("unmarshal wire envelope: %v", err)
+	}
+	if parsed["type"] != "session.closed.v1" {
+		t.Errorf("wire type = %v, want session.closed.v1", parsed["type"])
+	}
+	if parsed["schema_version"] != "1.0" {
+		t.Errorf("wire schema_version = %v, want 1.0", parsed["schema_version"])
+	}
+}
+
+func TestBuildSessionClosedEventV1_DefaultReasonAndRequiredFields(t *testing.T) {
+	envelope, err := BuildSessionClosedEventV1("tenant-1", "session-1", "")
+	if err != nil {
+		t.Fatalf("BuildSessionClosedEventV1 with empty reason failed: %v", err)
+	}
+	if got := envelope.Payload["reason"]; got != "unspecified" {
+		t.Errorf("payload reason = %v, want unspecified default", got)
+	}
+	for name, args := range map[string][2]string{
+		"missing tenant":  {"", "session-1"},
+		"missing session": {"tenant-1", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := BuildSessionClosedEventV1(args[0], args[1], "r"); err == nil {
+				t.Fatal("expected required-field error")
+			}
+		})
+	}
+}

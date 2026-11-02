@@ -1332,6 +1332,24 @@ var routingPolicySingletonUnique927 []byte
 //go:embed embeddata/startup/927_routing_policy_singleton_unique.down.sql
 var routingPolicySingletonUnique927Down []byte
 
+//go:embed embeddata/startup/928_userscript_capture_family.sql
+var userscriptCaptureFamily928 []byte
+
+//go:embed embeddata/startup/928_userscript_capture_family.down.sql
+var userscriptCaptureFamily928Down []byte
+
+//go:embed embeddata/startup/929_outbox_events_fresh_install.sql
+var outboxEventsFreshInstall929 []byte
+
+//go:embed embeddata/startup/929_outbox_events_fresh_install.down.sql
+var outboxEventsFreshInstall929Down []byte
+
+//go:embed embeddata/startup/930_task_events.sql
+var taskEvents930 []byte
+
+//go:embed embeddata/startup/930_task_events.down.sql
+var taskEvents930Down []byte
+
 // ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
 //   - sanitize_block_reviews 追加 session_id / label / label_comment /
 //     labeled_by / labeled_at（末尾追加，既有列序不变）；
@@ -1766,6 +1784,12 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/926_sanitize_block_review_degraded.down.sql":                          sanitizeBlockReviewDegraded926Down,
 	// ★ 927（2026-10-31 12h 审计轮）：routing_policy 单例化（去重 + UNIQUE (tenant_id)）。
 	"startup/927_routing_policy_singleton_unique.sql":                              routingPolicySingletonUnique927,
+	"startup/928_userscript_capture_family.sql":                                   userscriptCaptureFamily928,
+	"startup/928_userscript_capture_family.down.sql":                              userscriptCaptureFamily928Down,
+	"startup/929_outbox_events_fresh_install.sql":                                 outboxEventsFreshInstall929,
+	"startup/929_outbox_events_fresh_install.down.sql":                            outboxEventsFreshInstall929Down,
+	"startup/930_task_events.sql":                                                 taskEvents930,
+	"startup/930_task_events.down.sql":                                            taskEvents930Down,
 	"startup/927_routing_policy_singleton_unique.down.sql":                         routingPolicySingletonUnique927Down,
 	"startup/915_recent_cache_hit_rate.sql":                                       recentCacheHitRate915,
 	"startup/915_recent_cache_hit_rate.down.sql":                                  recentCacheHitRate915Down,
