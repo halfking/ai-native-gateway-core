@@ -31,7 +31,7 @@ package ursm_test
 //	★ **复述型副本一旦过期，就必须带闭合标记**（⇒ 读者一眼看出「这条已经变了」）
 //	★ **规范源（§28.23）覆盖全部登记项**（⇒ 判定「过期」有唯一依据）
 //
-// # ★★ 判据（7 条）
+// # ★★ 判据（8 条）
 //
 //	C1 ★ **抽取器非空（防假绿）**：★ 规范源必须存在且条目 ≥ 15；
 //	   ★ 且已知漂移面必须被认出来（F13 / F28 / F29 / F30 / F4 / F5 / F9
@@ -53,6 +53,11 @@ package ursm_test
 //	   ⇒ ★ 代价（★ 明写）：★ **空闲编号不许以编号形态出现在正文里**
 //	     （★ 「下一个空闲编号是 X」这种前瞻 ⇒ ★ 会被本门判红
 //	     ⇒ ★ ★ **空闲编号不是登记项、⇒ 不许以编号形态出现** ⇒ 要写就写数量）
+//	C8 ★★★ **定义点 ↔ 规范源 的指回**（★ 第三十八轮新增）：★ 正文的
+//	   **定义点**（★ 某个号在正文里被「定义」的那一节）★ **必须**能被规范源
+//	   那一行**指回** ⇒ ⇒ ★ 「**同号不同义**」（★ 撞号）从此**有机械护栏**
+//	   ⇒ ★ ★ 与 C7 **互补**：★ C7 抓「**缺登记**」、★ C8 抓「**撞号**」
+//	   （★ 撞号的两边**归一后都是已登记的号** ⇒ ★ C7 看不见它）
 //	C6 ★★ **反向对照 + 合成夹具**：★
 //
 //	★ (a) **反向对照**：★ 真实文档必须 **0 条违例**（⇒ 门不是恒红）
@@ -61,6 +66,8 @@ package ursm_test
 //	  ⇒ ★★ 且**先验语义有效性**：★ 摘完之后那一行确实**不再**含闭合标记
 //	     （★ 本轮实测踩过的坑：★ 只摘**半个** `~~` ⇒ 尾部 `~~` 还在 ⇒ 语义没变
 //	     ⇒ 门还是绿的 ⇒ ⇒ **弱变异 = 假牙**）
+//	★ (c) ★ **C8 的夹具**（★ 第三十八轮）：★ 把规范源那一行的 § 引用改成别的节
+//	  ⇒ ★ 门**必须**报出违例、且必须以 **C8**（★ Section=定义点）点名那一项
 //
 // # ★ 为什么「摘标记」而不是「改状态」
 //
@@ -80,6 +87,16 @@ package ursm_test
 //	★ ★★ 但 **C7 管整档**（★ 第三十七轮）：★ C7 扫**全档正文**
 //	  ⇒ ⇒ ★ 4 层级小节里的编号**也**必须登记（★ 「缺登记」没有护栏的那一半，
 //	    ★ 就是在这些地方漏的）
+//	★ ★★ **C8 管「定义点」**（★ 第三十八轮）：★ 2/3 层级标题的**主语位**里
+//	  出现的编号 ⇒ ★ 规范源那一行必须**指回**它
+//	  ⇒ ★★ **C8 的已知盲区（★ 明写）**：
+//	    ★ ① ★ **只在标题的「主语位」判**：★ 标题里**顺带一提**的编号
+//	      （★ 例：§10.6「本轮**未**动的登记项：F-B（…）」⇒ F-B 的主语不是 F-B）
+//	      ⇒ ★ 不判（★ 否则会把「同一件事在两处被提到」误判成撞号）
+//	    ★ ② ★ 规范源引的节与定义点**必须有祖先关系**才算指回 ⇒ ★ 若规范源
+//	      引的是**完全无关**的节 ⇒ ★ 判红（★ 这正是撞号的形态）
+//	    ★ ③ ★ ★ **只在主档内判**：★ 兄弟档 §三 的行**不参与**定义点判定
+//	      ⇒ ★ 跨文档的撞号仍要靠**跨文档门**（★ 它比的是状态、★ 不是指向）
 //
 // # ★★ 字母族（F-A … F-E）的**形状约定**
 //
@@ -175,10 +192,11 @@ type regSection struct {
 
 // canonEntry 是规范源里的一行（★ 一行一项）。
 type canonEntry struct {
-	Key    string // F-项用归一编号（如 F13）；非 F 项用原文（如 §四.2）
-	Raw    string // 第一格原文
-	Status string // "closed" | "open" | "intentional"
-	Line   int
+	Key      string // F-项用归一编号（如 F13）；非 F 项用原文（如 §四.2）
+	Raw      string // 第一格原文
+	Evidence string // 依据列（★ 第三十八轮新增：★ C8 要拿它里面的 § 引用）
+	Status   string // "closed" | "open" | "intentional"
+	Line     int
 }
 
 // regViolation 是门报出的一条违例。
@@ -485,10 +503,11 @@ func regCanonical(lines []string) []canonEntry {
 				continue
 			}
 			out = append(out, canonEntry{
-				Key:    key,
-				Raw:    raw,
-				Status: classifyStatus(statusCell),
-				Line:   r.Line,
+				Key:      key,
+				Raw:      raw,
+				Evidence: evidenceOf(r),
+				Status:   classifyStatus(statusCell),
+				Line:     r.Line,
 			})
 		}
 	}
@@ -509,6 +528,233 @@ func classifyStatus(cell string) string {
 		return "open"
 	}
 	return "mixed"
+}
+
+// ── 判据 C8 的量具：★ 节号归一 ＋ 定义点抽取 ─────────────────────────────
+
+// regDefHeadRe 匹配 **2/3/4 层级**的小节标题（★ 定义点只取 2/3 层级）。
+//
+// ★ 注意与 regHeadingRe 的区别：★ regHeadingRe 只认 3/4 层级（★ 那是
+// ★ 「登记项小节」的判定口径）；★ C8 要的是**定义点**，★ 它在 2/3 层级里。
+var regDefHeadRe = regexp.MustCompile(`^(#{2,4})\s+(.*)$`)
+
+// regSecNumRe 匹配**标题开头**的节号（★ 阿拉伯数字或中文数字）。
+//
+// ★ 例：`## 十九、实施记录…` → 十九 ／ `### 11.2 F-35（Medium）：…` → 11.2
+var regSecNumRe = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)*|[零一二三四五六七八九十]+(?:\.[0-9]+)*)\s*[、.．]?\s*`)
+
+// regSecRefRe 匹配正文里的 **§ 节引用**。
+var regSecRefRe = regexp.MustCompile(`§\s*([0-9]+(?:\.[0-9]+)*|[零一二三四五六七八九十]+(?:\.[0-9]+)*)`)
+
+// regCNDigits 是中文数字的字面值。
+var regCNDigits = map[rune]int{'零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
+
+// regChineseNum 把「十一」「二十」「二十四」这类中文数字转成整数。
+//
+// ★ 只覆盖 1–99（★ 本档的节号最多到二十四、★ 再加 §28.x）。
+func regChineseNum(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	if allASCIIDigits(s) {
+		n, err := strconv.Atoi(s)
+		return n, err == nil
+	}
+	r := []rune(s)
+	idx := -1
+	for i, c := range r {
+		if c == '十' {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		if len(r) == 1 {
+			v, ok := regCNDigits[r[0]]
+			return v, ok
+		}
+		return 0, false
+	}
+	tens := 10
+	if idx > 0 {
+		if idx != 1 {
+			return 0, false
+		}
+		v, ok := regCNDigits[r[0]]
+		if !ok {
+			return 0, false
+		}
+		tens = v * 10
+	}
+	ones := 0
+	if idx+1 < len(r) {
+		if idx+2 != len(r) {
+			return 0, false
+		}
+		v, ok := regCNDigits[r[idx+1]]
+		if !ok {
+			return 0, false
+		}
+		ones = v
+	}
+	return tens + ones, true
+}
+
+func allASCIIDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !isASCIIDigit(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// regNormSec 把节号**归一**（★ 中文数字 → 阿拉伯，★ 便于两边比对）。
+//
+// ★ 例：「§十一.2」⇒ 11.2 ／ 「§二十四」⇒ 24 ／ 「§9.1」⇒ 9.1
+func regNormSec(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "§")
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	parts := strings.Split(s, ".")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p == "" {
+			return ""
+		}
+		if allASCIIDigits(p) {
+			out = append(out, p)
+			continue
+		}
+		n, ok := regChineseNum(p)
+		if !ok {
+			return ""
+		}
+		out = append(out, strconv.Itoa(n))
+	}
+	return strings.Join(out, ".")
+}
+
+// regSecRefs 抽出一段文本里的 **§ 节引用**（★ 归一后的节号，★ 去重排序）。
+func regSecRefs(text string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range regSecRefRe.FindAllStringSubmatch(text, -1) {
+		n := regNormSec(m[1])
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// regSecCovered 判断某节与 refs 是否**互相覆盖**（★ 祖先关系，★ 双向）。
+//
+// ★ 为什么是**双向**（★ 第三十八轮实测）：
+//
+//	★ 规范源引的可能是**子节**（★ 例：F16 引「§20.2」）
+//	★ 而标题是**父节**（★ 例：「## 二十、实施记录（… F-16 …）」⇒ §20）
+//	⇒ ⇒ 只认「祖先覆盖后代」会把这**判成不相交** ⇒ ★ 假阳性
+//	★ ⇒ 所以：**任一方是另一方的祖先**即算覆盖
+func regSecCovered(sec string, refs []string) bool {
+	for _, r := range refs {
+		if sec == r || strings.HasPrefix(sec, r+".") || strings.HasPrefix(r, sec+".") {
+			return true
+		}
+	}
+	return false
+}
+
+// regDefPoint 是正文的**定义点**：★ 一个 2/3 层级的小节标题，★ 其「节号之后、
+// 第一个冒号之前」那一段里带着登记项编号 ⇒ ⇒ 那一节就是该编号的**定义处**。
+type regDefPoint struct {
+	Line int
+	Sec  string
+	IDs  []string
+	Head string
+}
+
+// regDefPoints 抽出全部**定义点**。
+//
+// ★ 口径（★ 明写，★ 避免「以为管住了」）：
+//
+//	★ **3 层级标题**：★ 取「节号之后、★ **第一个冒号之前**」那一段里的编号
+//	  （★ 例：「### 11.2 F-35（Medium）：…」⇒ §11.2 的**主语**是 F-35）
+//	★ **2 层级标题**：★ 取「★ 第一个冒号之后、★ 破折号之前」那一段里的编号
+//	  （★ 例：「## 十七、实施记录（… 第十四轮：F-16 —— 模态不匹配判决表可单测…）」
+//	    ⇒ §17 的**主语**是 F-16）
+//	★ **不要**：标题里**顺带一提**的编号（★ 例：「### 10.6 本轮**未**动的登记项：
+//	  F-B（4xx 上其它落节点侧的正文规则）」⇒ F-B 在**副标题**里、★ 不是主语
+//	  ⇒ ★ 那一节的 F-B 其实是**第十二轮**登记的那一条 ⇒ ★ 不能按本节判）
+//	★ **不要**：4 层级标题（★ §28.x 的轮次记录区 ⇒ 那是**叙述**，不是定义）
+//
+// ★★ 这套口径是**实测出来的**（★ 第三十八轮）：★ 候选口径有三套
+//
+//	★ ①「整段标题都算」⇒ ★ 在**当前（正确）**文档上就报 **4 条假阳性**
+//	  （★ 例：§7.3 / §10.6 里的顺带一提）
+//	★ ②「冒号之前」⇒ ★ 只认 3 层级 ⇒ ★ 漏掉 §十七 那一族撞号
+//	★ ③ ★ **本口径**（★ 3 层级取冒号前、★ 2 层级取冒号后破折号前）
+//	  ⇒ ★ 当前文档 **0 条**、★ 旧文档点名 **5 处真撞号**（★ 两族全命中）
+func regDefPoints(lines []string) []regDefPoint {
+	var out []regDefPoint
+	for i, l := range lines {
+		m := regDefHeadRe.FindStringSubmatch(l)
+		if m == nil {
+			continue
+		}
+		if len(m[1]) == 4 {
+			continue // ★ 4 层级 = 轮次记录区
+		}
+		text := m[2]
+		sm := regSecNumRe.FindStringSubmatch(text)
+		if sm == nil {
+			continue
+		}
+		sec := regNormSec(sm[1])
+		if sec == "" {
+			continue
+		}
+		rest := text[len(sm[0]):]
+		var seg string
+		if len(m[1]) == 3 {
+			seg = rest
+			if p := strings.IndexAny(seg, "：:"); p >= 0 {
+				seg = seg[:p]
+			}
+		} else {
+			// ★ 2 层级：★ 冒号之后、破折号之前
+			seg = ""
+			if p := strings.Index(rest, "："); p >= 0 {
+				seg = rest[p+1:]
+			}
+			if p := strings.Index(seg, "——"); p >= 0 {
+				seg = seg[:p]
+			}
+		}
+		ids := extractRegIDs(seg)
+		if len(ids) == 0 {
+			continue
+		}
+		out = append(out, regDefPoint{Line: i + 1, Sec: sec, IDs: ids, Head: text})
+	}
+	return out
+}
+
+// evidenceOf 取一行的**依据列**（★ 规范源表的第 3 格）。
+func evidenceOf(r regRow) string {
+	if len(r.Cells) < 3 {
+		return ""
+	}
+	return r.Cells[2]
 }
 
 func containsAny(s string, words []string) bool {
@@ -605,6 +851,48 @@ func checkRegistry(lines []string) []regViolation {
 				vs = append(vs, regViolation{Section: "整档", Line: i + 1, ID: id,
 					Reason: "★ 整档出现的这个编号**不在规范源**里 ⇒ ★ 「缺登记」没有唯一依据（★ 第三十六轮教训：★ 缺登记是过期登记的另一半）"})
 			}
+		}
+	}
+
+	// ── C8：★★ 定义点 ↔ 规范源 的**指回**（★ 第三十八轮新增）──────────────
+	//
+	// ★★ 为什么需要它：★ 第三十七轮实测出「**同号不同义**」（★ 撞号）：
+	// ★   主档 §十一 的 `F-1`～`F-5` 与兄弟档的 `F1`～`F5` 是**不同的两件事**，
+	// ★   而 C7（整档 id ⊆ 规范源 id）**看不见**它（★ 归一后都是已登记的号）
+	// ⇒ ⇒ 所以判据必须落在「**这个号在正文里被定义在哪一节**」上：
+	// ★★★ **规范源那一行必须指回那个定义点**
+	// ⇒ ★ 指不回去 ⇒ ★ 说明这个号在正文里被当成了**另一件事** ⇒ ★ **撞号**
+	//
+	// ★★ 口径（★ 明写）：
+	//   ★ 定义点 = 2/3 层级标题、★ 且「节号之后、第一个冒号之前」那段里带编号
+	//   ★ 「指回」= 规范源依据列里**有**一个 § 引用，★ 它**等于**该定义点
+	//     或**是它的祖先**（★ 例：依据列引「第九轮（§九）」⇒ 覆盖 §9.1）
+	//   ★ 4 层级标题（§28.x 轮次记录区）**不是**定义点（★ 那是叙述）
+	//
+	// ★★ ★★ **上一版设计被实测推翻过（★ 记下来，★ 免得下一个人重做）：★★
+	//   ★ 第一版想把「**依据列的代码 token**」当指纹、★ 比对两边的交集
+	//   ★ ⇒ ★ **在当前（正确）文档上就报出 92 条假阳性**
+	//   ★ ⇒ ★ 原因：★ 规范源的依据列只是**摘要**、★ 不是全部证据
+	//   ★   （★ 例：兄弟档的 F4 覆盖**两条**死代码、★ 而规范源只引了其中一条）
+	//   ★ ⇒ ★ ⇒ **token 交集这条路不成立**（★ 先量具再读数：★ 量具把它否了）
+	canonByKey := map[string]canonEntry{}
+	for _, c := range canon {
+		canonByKey[c.Key] = c
+	}
+	for _, dp := range regDefPoints(lines) {
+		for _, id := range dp.IDs {
+			c, ok := canonByKey[id]
+			if !ok {
+				continue // ★ C7 已经报「不在规范源里」了
+			}
+			refs := regSecRefs(c.Evidence)
+			if regSecCovered(dp.Sec, refs) {
+				continue
+			}
+			vs = append(vs, regViolation{Section: "定义点", Line: dp.Line, ID: id,
+				Reason: "★ 正文 §" + dp.Sec + " 把这个号**定义**在这里 ⇒ ★ 而规范源那一行（★ L" +
+					strconv.Itoa(c.Line) + "）**没有指回**这一节（★ 它引的是：" + regSecRefList(refs) +
+					"）⇒ ⇒ ★ **同号不同义**：★ 这个号在正文里被当成了另一件事 ⇒ ★ 撞号"})
 		}
 	}
 
@@ -721,6 +1009,32 @@ func containsID(text, id string) bool {
 	return strings.Contains(text, id)
 }
 
+// regSecRefList 把节号引用渲染成可读的一串（★ 供违例说明用）。
+func regSecRefList(refs []string) string {
+	if len(refs) == 0 {
+		return "（无）"
+	}
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, "§"+r)
+	}
+	return strings.Join(out, " / ")
+}
+
+// regBreakCoveringRef 把一行里**第一个**覆盖 target 的 § 引用改成 "§99.99"。
+//
+// ★ 用于**合成夹具**：★ 把规范源那一行的指向改掉 ⇒ ★ 那个定义点就指不回去了。
+func regBreakCoveringRef(line, target string) (string, bool) {
+	for _, m := range regSecRefRe.FindAllStringSubmatchIndex(line, -1) {
+		n := regNormSec(line[m[2]:m[3]])
+		if n == "" || !regSecCovered(target, []string{n}) {
+			continue
+		}
+		return line[:m[0]] + "§99.99" + line[m[1]:], true
+	}
+	return line, false
+}
+
 // ── 门 ──────────────────────────────────────────────────────────────────
 
 func repoRootRegistrySync(t *testing.T) string {
@@ -732,12 +1046,19 @@ func repoRootRegistrySync(t *testing.T) string {
 	return root
 }
 
+// readAuditDocLines 读主审计档（★ 可用 `AUDIT_MAIN_DOC` 覆盖路径）。
+//
+// ★ 环境覆盖的用处（★ 第三十八轮新增）：★ 让「★ 拿新门去测**真实旧文档**」
+// ★ 这件事**一条命令**就能复现（★ 与跨文档 bash 门的 `AUDIT_MAIN_DOC` 同口径）。
 func readAuditDocLines(t *testing.T) []string {
 	t.Helper()
 	p := filepath.Join(repoRootRegistrySync(t), regAuditDocRelPath)
+	if v := strings.TrimSpace(os.Getenv("AUDIT_MAIN_DOC")); v != "" {
+		p = v
+	}
 	b, err := os.ReadFile(p)
 	if err != nil {
-		t.Fatalf("读审计档失败：%v", err)
+		t.Fatalf("读审计档失败（%s）：%v", p, err)
 	}
 	return strings.Split(string(b), "\n")
 }
@@ -1010,5 +1331,96 @@ func TestAuditRegistryTableSyncLetterFamilyShape(t *testing.T) {
 		if !found[want] {
 			t.Errorf("★★ **约定漂移**：★ 真实文档里认不出字母族 %s（★ 字母族必须写成 F-A 形态）", want)
 		}
+	}
+}
+
+// TestAuditRegistryTableSyncDefinitionPointBacklink 是 **C8** 的牙齿检验
+// （★ 第三十八轮新增）。
+//
+// ★ C8 的主张：★ 正文的**定义点**（★ 某个号在正文里被「定义」的那一节）
+// ★ 必须能被**规范源那一行指回** ⇒ ⇒ ★ 「**同号不同义**」（★ 撞号）从此
+// ★ **有机械护栏**，★ 而不再只靠人工对拍
+//
+// ★ 三步（★ 顺序不能换）：
+//
+//	① **反向对照**：★ 真实文档 ⇒ 0 条违例（门不是恒红）
+//	② **合成夹具**：★ 把规范源那一行的 § 引用改成别的节
+//	  ⇒ ★ 门**必须**报出违例、且必须**点名那个编号**
+//	③ ★★ **语义有效性**：★ 注入之后那个定义点确实**指不回去了**
+//	  （★ 否则就是**弱变异** ⇒ 门测不出东西）
+func TestAuditRegistryTableSyncDefinitionPointBacklink(t *testing.T) {
+	lines := readAuditDocLines(t)
+
+	// ① 反向对照
+	if vs := checkRegistry(lines); len(vs) != 0 {
+		t.Fatalf("反向对照失败：真实文档本该 0 条违例，实际 %d 条（第一条：%s）", len(vs), vs[0].String())
+	}
+
+	// ② 挑一个定义点（★ 用规范源里有 § 引用的那些，★ 否则改不动）
+	canon := regCanonical(lines)
+	byKey := map[string]canonEntry{}
+	for _, c := range canon {
+		byKey[c.Key] = c
+	}
+	type target struct {
+		dp  regDefPoint
+		id  string
+		sec string
+	}
+	var targets []target
+	for _, dp := range regDefPoints(lines) {
+		for _, id := range dp.IDs {
+			c, ok := byKey[id]
+			if !ok {
+				continue
+			}
+			if len(regSecRefs(c.Evidence)) == 0 {
+				continue // ★ 规范源那行一个 § 引用都没有 ⇒ 夹具无从下手
+			}
+			targets = append(targets, target{dp: dp, id: id, sec: dp.Sec})
+		}
+	}
+	if len(targets) == 0 {
+		t.Fatalf("★ 找不到可注入的定义点 ⇒ 夹具无法构造（★ 这是**门自己坏了**，★ 不是文档的问题）")
+	}
+	tg := targets[0]
+
+	// ③ 注入：★ 把规范源那一行里**覆盖该定义点**的 § 引用改掉
+	canonLine := byKey[tg.id].Line
+	mut := append([]string(nil), lines...)
+	broken, ok := regBreakCoveringRef(mut[canonLine-1], tg.sec)
+	if !ok {
+		t.Fatalf("★ 注入失败：★ 规范源 L%d 里没有覆盖 §%s 的 § 引用（★ 夹具构造错了）", canonLine, tg.sec)
+	}
+	mut[canonLine-1] = broken
+
+	// ③ 语义有效性：★ 注入后那个定义点确实**指不回去了**
+	// ★ ★ 且那一行**仍然**有 § 引用（★ 否则就是「整行删掉」的弱变异）
+	newRefs := regSecRefs(mut[canonLine-1])
+	if len(newRefs) == 0 {
+		t.Fatalf("★★ **弱变异**：★ 注入后规范源那行一个 § 引用都没有了 ⇒ 语义没变 ⇒ 门测不出东西")
+	}
+	if regSecCovered(tg.sec, newRefs) {
+		t.Fatalf("★★ **弱变异**：★ 注入后 §%s 仍被覆盖 ⇒ 语义没变 ⇒ 门测不出东西", tg.sec)
+	}
+	// ★ ★ 且定义点本身**没动**（★ 只改了规范源那一行）
+	if mut[tg.dp.Line-1] != lines[tg.dp.Line-1] {
+		t.Fatalf("★★ 夹具改错了地方：★ 定义点那行被动了")
+	}
+
+	// ② 门必须抓到，★ 且必须是 **C8** 那一条（★ Section == "定义点"）
+	vs := checkRegistry(mut)
+	if len(vs) == 0 {
+		t.Fatalf("★★ **探测器坏了**：★ 合成夹具（§%s 的定义点指不回去了）**没有**被门抓住", tg.sec)
+	}
+	hit := false
+	for _, v := range vs {
+		if v.ID == tg.id && v.Section == "定义点" {
+			hit = true
+			break
+		}
+	}
+	if !hit {
+		t.Fatalf("★★ 门报出了违例，但**没有**以 C8（Section=定义点）点名 %s（★ 报的是：%v）", tg.id, vs)
 	}
 }
