@@ -429,6 +429,9 @@ var registry = []surface{
 			"⇒ 现有保护是三道：① Bearer api key（数据面 KeyVerifier → tenant）；" +
 			"② HMAC 三头（timestamp ±5m + nonce 防重放）；③ 载荷上限（envelope 2MiB / " +
 			"批次 1..100 条 / 单条 content ≤100000B）。" +
+			"★ 该端点**仅在 LLM_GATEWAY_USERSCRIPT_CAPTURE_SECRET 非空时才挂载**" +
+			"（未配置 = 能力不可用，userscript 停发并保留本地队列 ⇒ 契约行为要求）" +
+			"⇒ 默认部署下**暴露面为 0**。" +
 			"⇒ RPM 限流是**待补项**（补上后把本行改成 gateOwn 并删掉本理由）",
 	},
 	{
@@ -460,38 +463,6 @@ var registry = []surface{
 		RateLimit:    gateNone,
 		BudgetWhy:    "只确认提案并切换会话，不调上游 ⇒ 无累计配额闸",
 		RateLimitWhy: "不调上游；防重放/防刷由领域内 cooldown + handoff 预算承担（见本条注释），RPM 限流不是它的保护手段",
-	},
-	{
-		// ★ 2026-11-02 第二十六轮补登记：/v1/userscript/captures（P0-3 M1，
-		// ADR userscript-capture-gateway-endpoint）。
-		//
-		// ★ 为什么本条是「补登记」而不是「新功能」：这条路由是并行会话那 22 个
-		//   提交加进 main.go 的，而 ingressguard 的登记表**没有跟着登记**
-		//   ⇒ 本门当场判红（「新增的 /v1 数据面没有登记进 ingressguard.registry
-		//   （1 个未登记）：[/v1/userscript/captures]」）⇒ ⇒ **「忘了登记」
-		//   正是这道门要拦的东西**，它拦住了。
-		//
-		// 归类：控制面（planeControl）。它是**摄取**端点 —— 请求体落
-		//   capture_batches / capture_messages / capture_bodies 三表，
-		//   并在**同一事务**里写 outbox_events；**全程不调上游、不消耗额度**
-		//   ⇒ 无累计配额闸是合理的（与 control 面惯例一致）。
-		//
-		// 限流：注册行是**裸的** `mux.Handle("/v1/userscript/captures", captureHandler)`
-		//   ⇒ 没有任何 RPM 包装 ⇒ 登记为「无」并写明理由：
-		//   ★ 该端点**仅在 `LLM_GATEWAY_USERSCRIPT_CAPTURE_SECRET` 非空时才挂载**
-		//     （未配置 = 能力不可用，userscript 停发并保留本地队列 —— 契约行为要求）
-		//     ⇒ 默认部署下暴露面为 **0**；
-		//   ★ 它的防重放靠 **HMAC**（internal/userscriptcapture/hmac.go）而不是限流。
-		// ⇒ ⇒ 若日后给它加了 RPM 限流，这里必须同步改成 gateOwn（★ 本门会核对
-		//   「登记表里的声明」与「代码里的锚点」是否一致）。
-		Plane:        planeControl,
-		Routes:       []string{"/v1/userscript/captures"},
-		HandlerVars:  []string{"captureHandler"},
-		File:         "../../internal/userscriptcapture/handler.go",
-		Budget:       gateNone,
-		RateLimit:    gateNone,
-		BudgetWhy:    "摄取端点：不调上游、不消耗额度（正文落 capture_* 表 + 同事务写 outbox）⇒ 无累计配额闸",
-		RateLimitWhy: "注册行无 RPM 包装；防重放靠 HMAC（internal/userscriptcapture/hmac.go），且仅在 LLM_GATEWAY_USERSCRIPT_CAPTURE_SECRET 非空时才挂载（默认暴露面为 0）",
 	},
 }
 
