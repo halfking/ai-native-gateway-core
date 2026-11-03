@@ -53,6 +53,13 @@ type MintSpec struct {
 	Audience string // resource-server audience; must be non-empty
 	TTL      time.Duration
 	Issuer   string // optional override; defaults to IssuerLLMGateway
+
+	// Extra carries claims the resource server needs but the shared claim
+	// vocabulary does not name (e.g. `username` / `email` for a dashboard
+	// that has to map an identity onto a local account). They are merged into
+	// the token's top level, and a key that collides with a standard claim
+	// is dropped — the standard claim wins.
+	Extra map[string]any
 }
 
 // MintCrossIssuerToken signs a JWT using the cross-project shared secret
@@ -97,6 +104,19 @@ func MintCrossIssuerToken(spec MintSpec) (string, error) {
 		TenantID: spec.TenantID,
 		Roles:    spec.Roles,
 		Scope:    spec.Scope,
+	}
+
+	// Pass-through claims (username / email / …) ride along in Extra. The
+	// signer drops any key that collides with a standard claim, so a caller
+	// cannot overwrite iss/sub/aud by smuggling them through Extra.
+	for k, v := range spec.Extra {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		if claims.Extra == nil {
+			claims.Extra = map[string]any{}
+		}
+		claims.Extra[k] = v
 	}
 
 	return token.SignHS256(token.Issuer{Name: issuerName, Secret: secret}, claims, spec.TTL)

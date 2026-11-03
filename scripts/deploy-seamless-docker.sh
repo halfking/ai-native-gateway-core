@@ -2159,6 +2159,43 @@ dd_autollm_env() {
 dd_asm_event_env "$ENV_FILE"
 dd_auto_generator_env "$ENV_FILE"
 dd_autollm_env "$ENV_FILE"
+dd_identity_env "$ENV_FILE"
+
+# ── IDENTITY-ENV-BLOCK:BEGIN ──
+# 2026-11-03 身份网接入：网关要把「单点登录票据」签给兄弟服务（FreeLLM API），
+# 就必须持有身份网的共享密钥 IDENTITY_SHARED_SECRET —— 没有它，
+# /api/auth/app-token 会 fail-closed（503），兄弟服务拿不到票据。
+#
+# 为什么这一段单列一个块：env 文件**每次部署都被重写** ⇒ 只在部署机 export
+# 一次，下一次部署就没了 ⇒ 「开关开了但下次部署静默失效」是一个**看不见**的
+# 故障（与 ASM 开关同一类）。取值优先级同 ASM 开关：
+#   部署机环境变量 > env 文件里上次落下的值 > 不设（不签发票据）。
+# ★ 密钥不进日志；只有「配了没配」进日志。
+dd_identity_env() {
+  local env_file="${1:-$ENV_FILE}"
+  IDENTITY_SHARED_SECRET="${IDENTITY_SHARED_SECRET:-}"
+  IDENTITY_ISSUER_ALLOWLIST="${IDENTITY_ISSUER_ALLOWLIST:-}"
+  FREELLMAPI_PUBLIC_URL="${FREELLMAPI_PUBLIC_URL:-}"
+  if [[ -f "$env_file" ]]; then
+    if [[ -z "$IDENTITY_SHARED_SECRET" ]]; then
+      IDENTITY_SHARED_SECRET="$(sed -nE 's/^(export )?IDENTITY_SHARED_SECRET=(.*)$/\2/p' "$env_file" | tail -1)"
+    fi
+    if [[ -z "$IDENTITY_ISSUER_ALLOWLIST" ]]; then
+      IDENTITY_ISSUER_ALLOWLIST="$(sed -nE 's/^(export )?IDENTITY_ISSUER_ALLOWLIST=(.*)$/\2/p' "$env_file" | tail -1)"
+    fi
+    if [[ -z "$FREELLMAPI_PUBLIC_URL" ]]; then
+      FREELLMAPI_PUBLIC_URL="$(sed -nE 's/^(export )?FREELLMAPI_PUBLIC_URL=(.*)$/\2/p' "$env_file" | tail -1)"
+    fi
+    # 去掉 shell 引号形态（bash %q 对空串会写成 ''，对含空格的值会加反斜杠）。
+    IDENTITY_SHARED_SECRET="${IDENTITY_SHARED_SECRET%\'}"; IDENTITY_SHARED_SECRET="${IDENTITY_SHARED_SECRET#\'}"
+    IDENTITY_SHARED_SECRET="${IDENTITY_SHARED_SECRET%\"}"; IDENTITY_SHARED_SECRET="${IDENTITY_SHARED_SECRET#\"}"
+    IDENTITY_ISSUER_ALLOWLIST="${IDENTITY_ISSUER_ALLOWLIST%\'}"; IDENTITY_ISSUER_ALLOWLIST="${IDENTITY_ISSUER_ALLOWLIST#\'}"
+    IDENTITY_ISSUER_ALLOWLIST="${IDENTITY_ISSUER_ALLOWLIST%\"}"; IDENTITY_ISSUER_ALLOWLIST="${IDENTITY_ISSUER_ALLOWLIST#\"}"
+    FREELLMAPI_PUBLIC_URL="${FREELLMAPI_PUBLIC_URL%\'}"; FREELLMAPI_PUBLIC_URL="${FREELLMAPI_PUBLIC_URL#\'}"
+    FREELLMAPI_PUBLIC_URL="${FREELLMAPI_PUBLIC_URL%\"}"; FREELLMAPI_PUBLIC_URL="${FREELLMAPI_PUBLIC_URL#\"}"
+  fi
+}
+# ── IDENTITY-ENV-BLOCK:END ──
 
 # ── GATEWAY-ENV-WRITE:BEGIN ──
 {
@@ -2230,6 +2267,16 @@ dd_autollm_env "$ENV_FILE"
   if [[ -n "${LLM_GATEWAY_PROBE_LANE_PHYSICAL:-}" ]]; then
     printf 'export LLM_GATEWAY_PROBE_LANE_PHYSICAL=%q\n' "$LLM_GATEWAY_PROBE_LANE_PHYSICAL"
   fi
+  # 2026-11-03 身份网：共享密钥跨部署保留（不配 = 网关不签发票据，兄弟服务免登不可用）。
+  if [[ -n "${IDENTITY_SHARED_SECRET:-}" ]]; then
+    printf 'export IDENTITY_SHARED_SECRET=%q\n' "$IDENTITY_SHARED_SECRET"
+  fi
+  if [[ -n "${IDENTITY_ISSUER_ALLOWLIST:-}" ]]; then
+    printf 'export IDENTITY_ISSUER_ALLOWLIST=%q\n' "$IDENTITY_ISSUER_ALLOWLIST"
+  fi
+  if [[ -n "${FREELLMAPI_PUBLIC_URL:-}" ]]; then
+    printf 'export FREELLMAPI_PUBLIC_URL=%q\n' "$FREELLMAPI_PUBLIC_URL"
+  fi
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 # ── GATEWAY-ENV-WRITE:END ──
@@ -2297,6 +2344,23 @@ else
   log "ASM 总结委托未配置（LLM_GATEWAY_ASM_BASE_URL 为空）—— 长文本总结恒走网关管线"
 fi
 # ── ASM-ENV-INJECT:END ──
+
+# ── IDENTITY-ENV-INJECT:BEGIN ──
+# 身份网共享密钥：注入后网关才能为兄弟服务签发单点登录票据。
+# ★ 密钥不进日志（只记「配了没配」）。
+if [[ -n "${IDENTITY_SHARED_SECRET:-}" ]]; then
+  GW_ENV+=( -e "IDENTITY_SHARED_SECRET=${IDENTITY_SHARED_SECRET}" )
+  if [[ -n "${IDENTITY_ISSUER_ALLOWLIST:-}" ]]; then
+    GW_ENV+=( -e "IDENTITY_ISSUER_ALLOWLIST=${IDENTITY_ISSUER_ALLOWLIST}" )
+  fi
+  if [[ -n "${FREELLMAPI_PUBLIC_URL:-}" ]]; then
+    GW_ENV+=( -e "FREELLMAPI_PUBLIC_URL=${FREELLMAPI_PUBLIC_URL}" )
+  fi
+  log "身份网共享密钥已配置 → 网关可签发兄弟服务单点登录票据（值不打印）"
+else
+  log "身份网共享密钥未配置 → /api/auth/app-token 返回 503，兄弟服务免登不可用"
+fi
+# ── IDENTITY-ENV-INJECT:END ──
 
 # ── AUTO-GENERATOR-INJECT:BEGIN ──
 for setting in "${AUTO_GENERATOR_ENV[@]+"${AUTO_GENERATOR_ENV[@]}"}"; do
