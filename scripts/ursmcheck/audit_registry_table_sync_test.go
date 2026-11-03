@@ -154,6 +154,24 @@ const (
 	regJudgedBaseline = 25
 )
 
+// ★ ★★ C10 的两条**判据面棘轮**（★ 第四十五轮新增、★ 实测基线）──────
+//
+// ★ ★★ 为什么要有它们（★ 与 C9 同款理由）：★ C10 的判据面在某些改动下会**悄悄变小**
+//
+//	★ 例：★ 有人把「登记项表」的口径改窄（★ 或把某张表从表头改掉）⇒ ★ 门判到的行少了
+//	★ ⇒ ⇒ ★★ 而**没人会喊** ⇒ ★★ 所以用**两条棘轮**把判据面钉在纸面上。
+//
+// ★ ★★ 口径（★ 实测值、★ 第四十五轮量具跑全档）：
+//
+//	★ regC10RowBaseline    = 「登记项表」的**表体行数**（★ 被判的面）
+//	★ regC10LabelBaseline  = 首格里的 **§ 标签数**（★ C10-b 真正判的那一面）
+const (
+	// regC10RowBaseline 是 C10 判到的表体行数下限。
+	regC10RowBaseline = 46
+	// regC10LabelBaseline 是 C10-b 判到的「§ 标签」数下限。
+	regC10LabelBaseline = 12
+)
+
 // regClosedMarkers 是「这一行已经承认它闭合了」的措辞。
 //
 // ★ 用在**副本**上：★ 副本必须靠它们向读者表明「这条的状态已经变了」。
@@ -814,6 +832,243 @@ func regCoverageCounts(lines []string, canon []canonEntry) (orphan int, judged i
 	return orphan, judged
 }
 
+// ── C10 的量具：★ 表 / 行 ─────────────────────────────────────────────────
+//
+// ★ ★★ 本节的三个量具（★ `regIsSepRow` / `regIsHeaderRow` / `regTables`）
+// ★ ★★ 都是**第四十五轮实测踩出来的**（★ 记在这里、★ 免得下一个人重做）：
+//
+//	★ ① **分隔行必须专门判**：★ `splitRowCells == nil` 对【分隔行】与【空行】**都成立**
+//	  ⇒ ★★ 那个口径分不出「表头下面那行分隔线」
+//	★ ② **表头 = 分隔行的【上一行】**：★ ★ 而**不能**用「下一行不是表格行 ⇒ 本行是表头」
+//	  ⇒ ★★ 那个口径会把**表格的末行**（★ 它的下一行是空行）误判成表头 ⇒ ★★ **整行被吃掉**
+//	  ⇒ ★★ ★ 本轮**实测踩了两次**才把它逼出来
+
+// regIsSepRow 判断这一行是不是表格的**分隔行**（★ `|---|---|`）。
+func regIsSepRow(l string) bool {
+	t := strings.TrimSpace(l)
+	if !strings.HasPrefix(t, "|") || !strings.HasSuffix(t, "|") || len(t) < 2 {
+		return false
+	}
+	for _, c := range strings.Split(t[1:len(t)-1], "|") {
+		if strings.Trim(c, "-: ") != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// regIsHeaderRow 判断第 i 行是不是**表头行**。
+//
+// ★ ★ 口径（★ 第四十五轮实测）：★ **分隔行的上一行**才是表头。
+func regIsHeaderRow(lines []string, i int) bool {
+	if i+1 >= len(lines) {
+		return false
+	}
+	if splitRowCells(lines[i]) == nil {
+		return false // ★ 本行不是表格行
+	}
+	return regIsSepRow(lines[i+1]) // ★ 下一行【是分隔行】⇒ 本行是表头
+}
+
+// regTable 是文档里的一张表（★ C10 的判据面单位）。
+type regTable struct {
+	Line     int      // 表头行号（1-based）
+	SecHead  string   // 最近的**任意**层级标题（★ 去井号）
+	SecLevel int      // 该标题的层级
+	Header   []string // 表头格
+	Rows     []regRow // 表体行（★ 已排除表头行与分隔行）
+}
+
+// regTables 抽出文档里全部的表（★ 代码块感知）。
+//
+// ★ 代码块感知（★ 与 `woSplitSections` 同口径）：★ 围栏内的行不算表。
+func regTables(lines []string) []regTable {
+	var out []regTable
+	inCode := false
+	secHead, secLevel := "", 0
+	for i := 0; i < len(lines); i++ {
+		l := lines[i]
+		if strings.HasPrefix(strings.TrimSpace(l), "```") {
+			inCode = !inCode
+			continue
+		}
+		if inCode {
+			continue
+		}
+		if anyHeadingRe.MatchString(l) {
+			secHead = strings.TrimSpace(strings.TrimLeft(l, "#"))
+			secLevel = len(l) - len(strings.TrimLeft(l, "#"))
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimSpace(l), "|") {
+			continue
+		}
+		cells := splitRowCells(l)
+		if cells == nil {
+			continue
+		}
+		if !regIsHeaderRow(lines, i) {
+			continue
+		}
+		t := regTable{Line: i + 1, SecHead: secHead, SecLevel: secLevel, Header: cells}
+		for j := i + 1; j < len(lines); j++ {
+			s2 := strings.TrimSpace(lines[j])
+			if strings.HasPrefix(s2, "```") || !strings.HasPrefix(s2, "|") {
+				break
+			}
+			if regIsSepRow(lines[j]) {
+				continue // ★ 分隔行是**结构**、★ 不是数据行 ⇒ ★ 跳过、★ 不 break
+			}
+			c2 := splitRowCells(lines[j])
+			if c2 == nil {
+				break
+			}
+			t.Rows = append(t.Rows, regRow{Line: j + 1, Text: lines[j], Cells: c2, IsTbl: true})
+		}
+		out = append(out, t)
+		// ★ 跳过已吃掉的表体（★ 下一轮从「表的结束处」继续）
+		i = t.Line + len(t.Rows) - 1
+	}
+	return out
+}
+
+// regIsRegistryTable 判断这张表是不是「登记项表」（★ C10 的判据面）。
+//
+// ★ ★★ 口径（★ 明写、★ 避免「以为管住了」）：
+//
+//	① **3 层级**且标题含「登记项」⇒ ★ 算（★ 与 `regSections` 的 history / panorama **逐字一致**）
+//	② **4 层级**（★ 轮次记录区）⇒ ★ 只认 ★ **表头首格含「登记项」**的表
+//	   （★ 例：§28.21 的表头是「§7.6 登记项」⇒ 算；★ 而 §28.20.4 的表头是
+//	    「项 \| 读数」⇒ ★ **不算** —— ★ 那是**测量表**、★ 不是登记项表）
+//	③ **规范源表**（★ §28.23）⇒ ★ **不算**（★ 它就是登记册本身）
+func regIsRegistryTable(t regTable) bool {
+	if strings.Contains(t.SecHead, "规范源") && strings.Contains(t.SecHead, "现状总表") {
+		return false
+	}
+	if !strings.Contains(t.SecHead, "登记项") {
+		return false
+	}
+	if t.SecLevel == 3 {
+		return true
+	}
+	if t.SecLevel == 4 {
+		return len(t.Header) > 0 && strings.Contains(t.Header[0], "登记项")
+	}
+	return false
+}
+
+// regC10Violations 跑 **C10** 的全部判据（★ 纯函数：★ 只吃行数组）。
+//
+// ★ ★★ C10 ＝ 「★ **登记** ⇒ 必须**有编号**」＝ C7 的**反向半边**（★ 第四十五轮新增）：
+//
+//	★ C7（★ 第三十六/三十七轮）＝「★ **编号** ⇒ 必须**登记**」
+//	★ ⇒ ⇒ ★★ C10 ＝「★ **登记** ⇒ 必须**有编号**」⇒ ★★ ⇒ ★★ **⇒ 两条合起来才把「编号」闭死**
+//
+// ★ ★★ 判据面（★ 明写）：★ 「登记项表」的**表体行首格**（★ 那是**登记项标签**的位置）
+//
+//	★ ⇒ ★★ **为什么只认首格**（★ 第四十五轮实测）：★ 同一个表里、★ § 引用出现在第 2/3 格时
+//	  是**出处 / 依据**（★ 例：「★ 12h 审计轮 P3-12」那一列）⇒ ★★ 不是标签
+//	  ⇒ ★★ ⇒ ★★ **全档首格含 § 的表体行【本轮改动前】共 24 行**、★ 其中**只有 10 行在登记项表里**
+//	  ⇒ ★★ ⇒ ★★ （★ 其余 14 行是别的表的**出处列**）⇒ ★★ **落在整行上会误报一片**（★ 实测过）
+func regC10Violations(lines []string, canon []canonEntry) []regViolation {
+	var vs []regViolation
+
+	// ★ 规范源里「依据列引了 §X」⇒ 「§X 对应哪个登记项编号」的索引
+	byRef := map[string][]string{}
+	for _, c := range canon {
+		if c.Key == "" {
+			continue
+		}
+		for _, ref := range regSecRefs(c.Evidence) {
+			byRef[ref] = append(byRef[ref], c.Key)
+		}
+	}
+
+	tables := regTables(lines)
+	nChecked := 0
+	nLabeled := 0
+	for _, t := range tables {
+		if !regIsRegistryTable(t) {
+			continue
+		}
+		// ★ 全景表的第一列混着**对外可见动作**（★ 部署 211 / push origin/main）
+		//   ⇒ ★ 它们不是 F-编号族的登记项 ⇒ ★ **C10-a 不管全景表**
+		panorama := strings.Contains(t.SecHead, "全景")
+		for _, r := range t.Rows {
+			if len(r.Cells) == 0 {
+				continue
+			}
+			first := r.Cells[0]
+			ids := extractRegIDs(first)
+			refs := regSecRefs(first)
+			nChecked++
+
+			// ── C10-a：★ 首格是登记项标签 ⇒ 必须有编号 ─────────────────
+			//
+			// ★ ★★ 口径（★ 第四十五轮端到端实测逼出来的）：★ 这里**不 continue**
+			//
+			//	★ 因为 ★ `continue` 会让**这一行不再被 C10-b 判**、★ 也不计入 nLabeled
+			//	★ ⇒ ⇒ ★★ 于是「★ 一行缺号」会**连带**把 C10-c 的棘轮打红
+			//	★ ⇒ ⇒ ★★ 而那是**两条判据互相污染**（★ 实测：摘掉一个号 ⇒ C10-a 与
+			//	  C10-c **同时**报 ⇒ ★★ 读者会以为判据面空了、★ 而其实只是查出一个缺陷）
+			if !panorama && len(ids) == 0 {
+				if !strings.HasPrefix(first, "`") {
+					vs = append(vs, regViolation{Section: t.SecHead, Line: r.Line, ID: "-",
+						Reason: "★ **C10-a**：★ 这一行是一笔登记（★ 首格就是登记项标签）、★ 而它**没有编号**" +
+							"⇒ ★ 「过期」没有唯一依据（★ 第四十五轮实测：★ 全档有 8 行是这个形状）"})
+				}
+				// ★ **测量行**（★ 量的是代码符号、不是登记项）⇒ ★ 不报 C10-a
+			}
+
+			// ── C10-b：★ 首格里的每个 § 标签 ⇒ 必须解析到**带号**的规范源行 ──
+			for _, ref := range refs {
+				nLabeled++
+				keys := byRef[ref]
+				if len(keys) == 0 {
+					vs = append(vs, regViolation{Section: t.SecHead, Line: r.Line, ID: "-",
+						Reason: "★ **C10-b**：★ 首格把 §" + ref + " 当作**登记项标签**、★ 而规范源里" +
+							"**没有任何一行**的依据列引它 ⇒ ★ 它没有编号 ⇒ ★ 「过期」没有唯一依据"})
+					continue
+				}
+				hit := false
+				for _, k := range keys {
+					if containsID(first, k) {
+						hit = true
+						break
+					}
+				}
+				if !hit {
+					vs = append(vs, regViolation{Section: t.SecHead, Line: r.Line, ID: "-",
+						Reason: "★ **C10-b**：★ 首格把 §" + ref + " 当作登记项标签、★ 规范源里对应的编号是 " +
+							strings.Join(keys, " / ") + "、★ 而它**没有出现在这个首格里**" +
+							"⇒ ★ 「有号的旁边藏着没号的」（★ 全景表那一行就是这个形状）"})
+				}
+			}
+		}
+	}
+
+	// ── C10-c：★ 防假绿（★ 判据面不许悄悄空掉）────────────────────────
+	if nChecked < regC10RowBaseline {
+		vs = append(vs, regViolation{Section: "判据面", Line: 0, ID: "-",
+			Reason: "★ **C10-c**：★ C10 判到的表体行只有 " + strconv.Itoa(nChecked) + " 行 < " +
+				strconv.Itoa(regC10RowBaseline) + "（★ 第四十五轮实测基线）⇒ ★ 判据面在缩小 ⇒ 门恒绿 = 形同虚设"})
+	}
+	if nLabeled < regC10LabelBaseline {
+		vs = append(vs, regViolation{Section: "判据面", Line: 0, ID: "-",
+			Reason: "★ **C10-c**：★ C10-b 判到的「§ 标签」只有 " + strconv.Itoa(nLabeled) + " 个 < " +
+				strconv.Itoa(regC10LabelBaseline) + "（★ 第四十五轮实测基线）⇒ ★ 「§ 标签 ⇒ 必须带号」" +
+				"这一面空了 ⇒ 门恒绿 = 形同虚设"})
+	}
+
+	sort.Slice(vs, func(i, j int) bool {
+		if vs[i].Section != vs[j].Section {
+			return vs[i].Section < vs[j].Section
+		}
+		return vs[i].Line < vs[j].Line
+	})
+	return vs
+}
+
 // ── 门的主体 ───────────────────────────────────────────────────────────
 
 // checkRegistry 跑全部判据，★ 返回违例列表（★ 空 ⇒ 绿）。
@@ -967,6 +1222,9 @@ func checkRegistry(lines []string) []regViolation {
 			Reason: "★ C8 的判据面只有 " + strconv.Itoa(judged) + " 条 < " +
 				strconv.Itoa(regJudgedBaseline) + "（★ 第四十四轮实测基线）⇒ ★ 「撞号」护栏在缩小 ⇒ ★ 兄弟档登记的编号有一半以上没有护栏"})
 	}
+
+	// ── C10：★★ 「★ 登记 ⇒ 必须有编号」＝ C7 的反向半边（★ 第四十五轮新增）──
+	vs = append(vs, regC10Violations(lines, canon)...)
 
 	// ── C3：历史登记项小节的复述行 ──
 	for _, sec := range secs {
@@ -1249,6 +1507,116 @@ func TestAuditRegistryTableSyncHasTeeth(t *testing.T) {
 	if !found {
 		t.Fatalf("★★ 门报出了违例，但**没有点名**注入的登记项 %s（★ 报的是：%v）", targetID, vs)
 	}
+}
+
+// TestAuditRegistryTableSyncC10HasTeeth 是 **C10** 的**牙齿检验**。
+//
+// ★ ★★ 两步（★ 顺序不能换）：
+//
+//	① **反向对照**：★ 真实文档 ⇒ C10 违例 **0** 条（★ 门不是恒红）
+//	② **合成夹具**：★ 在**内存副本**上把一行登记项标签的**编号摘掉**
+//	   ⇒ ★ C10 **必须**报出违例、★ 且必须点名**那一行**
+//
+// ★ ★★ 为什么选「★ 摘编号」当变异（★ 而不是「★ 删一行」）：
+//
+//	★ ★ 「★ 摘编号」造出的正是**第四十五轮修的那个缺陷的原型**
+//	★ （★ ★ 原型 = 「★ 拿 § 节号当登记项标签、★ 却没给它编号」）
+//	★ ⇒ ⇒ ★★ 所以这一条夹具**等于**把修掉的那个 bug 原样放回去
+func TestAuditRegistryTableSyncC10HasTeeth(t *testing.T) {
+	lines := readAuditDocLines(t)
+
+	// ① 反向对照
+	if vs := regC10Violations(lines, regCanonical(lines)); len(vs) != 0 {
+		t.Fatalf("反向对照失败：真实文档本该 0 条 C10 违例，实际 %d 条（第一条：%s）", len(vs), vs[0].String())
+	}
+
+	// ② 合成夹具：★ 找一行「首格同时有编号和 § 标签」的登记项行
+	targetLine := -1
+	for _, tb := range regTables(lines) {
+		if !regIsRegistryTable(tb) {
+			continue
+		}
+		for _, r := range tb.Rows {
+			if len(r.Cells) == 0 {
+				continue
+			}
+			first := r.Cells[0]
+			if len(extractRegIDs(first)) == 0 {
+				continue
+			}
+			if len(regSecRefs(first)) == 0 {
+				continue
+			}
+			targetLine = r.Line
+			break
+		}
+		if targetLine >= 0 {
+			break
+		}
+	}
+	if targetLine < 0 {
+		t.Fatalf("★ 找不到可注入的登记项行 ⇒ 夹具无法构造（★ 这是**门自己坏了**，★ 不是文档的问题）")
+	}
+
+	mut := append([]string(nil), lines...)
+	mut[targetLine-1] = regStripIDFromFirstCell(mut[targetLine-1])
+	if mut[targetLine-1] == lines[targetLine-1] {
+		t.Fatalf("★ 注入没有改变任何东西 ⇒ 夹具构造错了")
+	}
+
+	// ③ 语义有效性：★ 摘完之后首格**确实**没有编号了、★ 而 § 标签**还在**
+	newCells := splitRowCells(mut[targetLine-1])
+	if len(newCells) == 0 {
+		t.Fatalf("★ 注入后不是表格行")
+	}
+	if len(extractRegIDs(newCells[0])) != 0 {
+		t.Fatalf("★★ **弱变异**：★ 注入后首格仍含编号 ⇒ 语义没变 ⇒ 门测不出东西")
+	}
+	if len(regSecRefs(newCells[0])) == 0 {
+		t.Fatalf("★★ **弱变异**：★ 注入后首格连 § 标签都没了 ⇒ 测的不是 C10")
+	}
+
+	// ④ 门必须抓到
+	vs := regC10Violations(mut, regCanonical(mut))
+	if len(vs) == 0 {
+		t.Fatalf("★★ **探测器坏了**：★ 合成夹具（摘掉首格的编号）**没有**被 C10 抓住")
+	}
+	found := false
+	for _, v := range vs {
+		if v.Line == targetLine {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("★★ C10 报出了违例，但**没有点名**注入的那一行 L%d（★ 报的是：%v）", targetLine, vs)
+	}
+}
+
+// regStripIDFromFirstCell 把一行表格行的**首格**里的编号摘掉（★ 用于合成夹具）。
+//
+// ★ ★★ 摘的是**带粗体标记**的整段（★ `**F24**` ⇒ 摘成空）⇒ ★ 不会留下 `****` 这种垃圾。
+func regStripIDFromFirstCell(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "|") || !strings.HasSuffix(trimmed, "|") {
+		return line
+	}
+	inner := trimmed[1 : len(trimmed)-1]
+	cells := strings.Split(inner, "|")
+	if len(cells) == 0 {
+		return line
+	}
+	first := cells[0]
+	ids := extractRegIDs(first)
+	if len(ids) == 0 {
+		return line
+	}
+	for _, id := range ids {
+		first = strings.ReplaceAll(first, "**"+id+"**", "")
+		first = strings.ReplaceAll(first, id, "")
+	}
+	cells[0] = first
+	return "|" + strings.Join(cells, "|") + "|"
 }
 
 // stripAllClosedMarkers 把一行里的闭合标记全部摘掉（★ 用于合成夹具）。
