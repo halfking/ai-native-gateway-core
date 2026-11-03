@@ -2,6 +2,7 @@ export default {
   collapseSidebar: "Réduire la barre latérale",
   expandSidebar: "Développer la barre latérale",
   group: {
+    operations: 'Gestion opérationnelle',
     tenantPortal: "Mes services",
     modelsRouting: "Modèles et routage",
     tenantUsers: "Locataires et utilisateurs",
@@ -13,6 +14,7 @@ export default {
     opsplatform: "Centre des opérations"
   },
   item: {
+    operationsOverview: 'Vue d\'ensemble opérationnelle',
     activateAction: 'Activer',
     activateActionTip: 'Allez activer cette instance',
     liveTopology: 'Topologie temps réel',

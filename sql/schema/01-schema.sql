@@ -3340,13 +3340,16 @@ BEGIN
     DELETE FROM public.credit_ledger_hot h USING batch b
     WHERE h.id = b.id
     RETURNING h.id, h.tenant_id, h.entry_type, h.amount, h.balance_after,
-      h.ref_type, h.ref_id, h.note, h.created_at, h.pool
+      h.ref_type, h.ref_id, h.note, h.created_at, h.pool,
+      h.owner_user, h.campaign_id, h.detail
   ), inserted AS (
     INSERT INTO public.credit_ledger (
       id, tenant_id, entry_type, amount, balance_after,
-      ref_type, ref_id, note, created_at, pool)
+      ref_type, ref_id, note, created_at, pool,
+      owner_user, campaign_id, detail)
     SELECT id, tenant_id, entry_type, amount, balance_after,
-      ref_type, ref_id, note, created_at, pool
+      ref_type, ref_id, note, created_at, pool,
+      owner_user, campaign_id, detail
     FROM moved_rows
     RETURNING id
   ) SELECT count(*) INTO moved FROM inserted;
@@ -7078,7 +7081,10 @@ CREATE TABLE public.credit_ledger (
     ref_id character varying,
     note text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    pool character varying
+    pool character varying,
+    owner_user character varying(128) DEFAULT ''::character varying NOT NULL,
+    campaign_id bigint,
+    detail jsonb DEFAULT '{}'::jsonb NOT NULL
 )
 PARTITION BY RANGE (created_at);
 
@@ -7154,7 +7160,10 @@ CREATE TABLE public.credit_ledger_hot (
     ref_id character varying,
     note text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    pool character varying
+    pool character varying,
+    owner_user character varying(128) DEFAULT ''::character varying NOT NULL,
+    campaign_id bigint,
+    detail jsonb DEFAULT '{}'::jsonb NOT NULL
 )
 WITH (fillfactor='90', autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
@@ -7201,7 +7210,7 @@ ALTER SEQUENCE public.credit_ledger_id_seq OWNED BY public.credit_ledger_old.id;
 -- Name: credit_ledger_with_current_month; Type: VIEW; Schema: public; Owner: -
 --
 
-CREATE VIEW public.credit_ledger_with_current_month AS
+CREATE VIEW public.credit_ledger_with_current_month WITH (security_invoker='true') AS
  SELECT credit_ledger_hot.id,
     credit_ledger_hot.tenant_id,
     credit_ledger_hot.entry_type,
@@ -7211,7 +7220,11 @@ CREATE VIEW public.credit_ledger_with_current_month AS
     credit_ledger_hot.ref_id,
     credit_ledger_hot.note,
     credit_ledger_hot.created_at,
-    credit_ledger_hot.pool
+    credit_ledger_hot.pool,
+    credit_ledger_hot.owner_user,
+    credit_ledger_hot.campaign_id,
+    credit_ledger_hot.detail,
+    'hot'::text AS source_arm
    FROM public.credit_ledger_hot
 UNION ALL
  SELECT credit_ledger.id,
@@ -7223,7 +7236,11 @@ UNION ALL
     credit_ledger.ref_id,
     credit_ledger.note,
     credit_ledger.created_at,
-    credit_ledger.pool
+    credit_ledger.pool,
+    credit_ledger.owner_user,
+    credit_ledger.campaign_id,
+    credit_ledger.detail,
+    'partition'::text AS source_arm
    FROM public.credit_ledger;
 
 
@@ -9425,6 +9442,66 @@ CREATE SEQUENCE public.memories_id_seq
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
+
+
+--
+-- Name: market_price_reference; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.market_price_reference (
+    canonical_name text NOT NULL,
+    dimension text DEFAULT 'standard'::text NOT NULL,
+    currency text DEFAULT 'USD'::text NOT NULL,
+    canonical_id bigint,
+    vendor_list_in_per_1m numeric(14,6),
+    vendor_list_out_per_1m numeric(14,6),
+    vendor_platform_id text DEFAULT ''::text NOT NULL,
+    vendor_vendor text DEFAULT ''::text NOT NULL,
+    market_min_in_per_1m numeric(14,6),
+    market_min_out_per_1m numeric(14,6),
+    market_min_platform_id text DEFAULT ''::text NOT NULL,
+    market_min_platform_count integer DEFAULT 0 NOT NULL,
+    market_min_cny_in_per_1m numeric(14,6),
+    market_min_cny_out_per_1m numeric(14,6),
+    fx_rate numeric(12,6),
+    source_run_date date NOT NULL,
+    source_confidence char(1) DEFAULT 'A'::bpchar NOT NULL,
+    source_url text DEFAULT ''::text NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    PRIMARY KEY (canonical_name, dimension)
+);
+
+
+--
+-- Name: market_price_reference_sync; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.market_price_reference_sync (
+    id bigint NOT NULL,
+    run_date date NOT NULL,
+    source_platforms integer DEFAULT 0 NOT NULL,
+    source_rows integer DEFAULT 0 NOT NULL,
+    landed_rows integer DEFAULT 0 NOT NULL,
+    rejected_rows integer DEFAULT 0 NOT NULL,
+    conflicts jsonb DEFAULT '[]'::jsonb NOT NULL,
+    detail jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: market_price_reference_sync_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.market_price_reference_sync_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.market_price_reference_sync_id_seq OWNED BY public.market_price_reference_sync.id;
 
 
 --
@@ -12105,6 +12182,76 @@ COMMENT ON COLUMN public.provider_quality_profiles.reliability_score IS 'L3 可�
 --
 
 COMMENT ON COLUMN public.provider_quality_profiles.calculated_at IS '计算时间';
+
+
+--
+-- Name: promotion_campaigns; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.promotion_campaigns (
+    id bigint NOT NULL,
+    code character varying(64) NOT NULL,
+    name character varying(128) NOT NULL,
+    description text DEFAULT ''::text NOT NULL,
+    benefit_type character varying(32) DEFAULT 'credits'::character varying NOT NULL,
+    benefit_value jsonb DEFAULT '{}'::jsonb NOT NULL,
+    status character varying(16) DEFAULT 'draft'::character varying NOT NULL,
+    starts_at timestamp with time zone,
+    ends_at timestamp with time zone,
+    max_redemptions_per_tenant integer DEFAULT 1 NOT NULL,
+    total_budget_credits bigint DEFAULT 0 NOT NULL,
+    granted_credits bigint DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT promotion_campaigns_benefit_type_check CHECK (((benefit_type)::text = ANY (ARRAY[('credits'::character varying)::text, ('discount'::character varying)::text, ('gift'::character varying)::text]))),
+    CONSTRAINT promotion_campaigns_status_check CHECK (((status)::text = ANY (ARRAY[('draft'::character varying)::text, ('active'::character varying)::text, ('paused'::character varying)::text, ('ended'::character varying)::text])))
+);
+
+
+--
+-- Name: promotion_campaigns_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.promotion_campaigns_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.promotion_campaigns_id_seq OWNED BY public.promotion_campaigns.id;
+
+
+--
+-- Name: promotion_redemptions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.promotion_redemptions (
+    id bigint NOT NULL,
+    campaign_id bigint NOT NULL,
+    tenant_id character varying NOT NULL,
+    owner_user character varying(128) DEFAULT ''::character varying NOT NULL,
+    order_id bigint,
+    benefit jsonb DEFAULT '{}'::jsonb NOT NULL,
+    credits_granted bigint DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: promotion_redemptions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.promotion_redemptions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.promotion_redemptions_id_seq OWNED BY public.promotion_redemptions.id;
 
 
 --
@@ -16828,7 +16975,17 @@ CREATE TABLE public.subscription_plans (
     sort_order integer DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT subscription_plans_tier_check CHECK (((tier)::text = ANY (ARRAY[('basic'::character varying)::text, ('pro'::character varying)::text, ('max'::character varying)::text])))
+    billing_period character varying(16) DEFAULT 'monthly'::character varying NOT NULL,
+    quota_credits bigint DEFAULT 0 NOT NULL,
+    overage_price_cents integer DEFAULT 0 NOT NULL,
+    overage_allowed boolean DEFAULT true NOT NULL,
+    effective_from timestamp with time zone,
+    effective_to timestamp with time zone,
+    auto_renew boolean DEFAULT true NOT NULL,
+    concurrency_limit integer DEFAULT 0 NOT NULL,
+    sla character varying(128) DEFAULT ''::character varying NOT NULL,
+    CONSTRAINT subscription_plans_tier_check CHECK (((tier)::text = ANY (ARRAY[('basic'::character varying)::text, ('pro'::character varying)::text, ('max'::character varying)::text]))),
+    CONSTRAINT subscription_plans_billing_period_check CHECK (((billing_period)::text = ANY (ARRAY[('monthly'::character varying)::text, ('quarterly'::character varying)::text, ('yearly'::character varying)::text])))
 );
 
 
@@ -16850,6 +17007,38 @@ CREATE SEQUENCE public.subscription_plans_id_seq
 --
 
 ALTER SEQUENCE public.subscription_plans_id_seq OWNED BY public.subscription_plans.id;
+
+
+--
+-- Name: subscription_plan_entitlements; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.subscription_plan_entitlements (
+    plan_id integer NOT NULL,
+    canonical_id bigint NOT NULL,
+    included_credits bigint DEFAULT 0 NOT NULL,
+    overage_multiplier numeric(8,4) DEFAULT 1.0 NOT NULL,
+    notes text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT subscription_plan_entitlements_overage_positive CHECK ((overage_multiplier >= (0)::numeric))
+);
+
+
+--
+-- Name: subscription_plan_entitlements_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscription_plan_entitlements
+    ADD CONSTRAINT subscription_plan_entitlements_pkey PRIMARY KEY (plan_id, canonical_id);
+
+
+--
+-- Name: subscription_plan_entitlements_plan_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscription_plan_entitlements
+    ADD CONSTRAINT subscription_plan_entitlements_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES public.subscription_plans(id) ON DELETE CASCADE;
 
 
 --
@@ -17268,6 +17457,69 @@ ALTER TABLE public.task_default_routing ALTER COLUMN id ADD GENERATED ALWAYS AS 
     NO MINVALUE
     NO MAXVALUE
     CACHE 1
+);
+
+
+--
+-- Name: supplier_market_position; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.supplier_market_position (
+    credential_id bigint NOT NULL,
+    provider_model_id bigint NOT NULL,
+    canonical_name text NOT NULL,
+    currency text DEFAULT 'USD'::text NOT NULL,
+    supplier_in_per_1m numeric(14,6),
+    supplier_out_per_1m numeric(14,6),
+    discount_vs_vendor numeric(10,4),
+    vendor_ref_in_per_1m numeric(14,6),
+    vendor_ref_out_per_1m numeric(14,6),
+    market_position numeric(10,4),
+    market_ref_in_per_1m numeric(14,6),
+    market_ref_out_per_1m numeric(14,6),
+    market_ref_platform_id text DEFAULT ''::text NOT NULL,
+    market_ref_platform_count integer DEFAULT 0 NOT NULL,
+    price_confidence text DEFAULT 'unknown'::text NOT NULL,
+    market_advantage_score numeric(6,2),
+    computed_at timestamp with time zone DEFAULT now() NOT NULL,
+    PRIMARY KEY (credential_id, provider_model_id)
+);
+
+
+--
+-- Name: tenant_budgets; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.tenant_budgets (
+    tenant_id character varying NOT NULL,
+    monthly_budget_cents bigint DEFAULT 0 NOT NULL,
+    balance_alert_threshold numeric(5,2) DEFAULT 0.20 NOT NULL,
+    quota_alert_threshold numeric(5,2) DEFAULT 0.80 NOT NULL,
+    notify_channels jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT tenant_budgets_thresholds_check CHECK ((balance_alert_threshold >= (0)::numeric AND balance_alert_threshold <= (1)::numeric AND quota_alert_threshold >= (0)::numeric AND quota_alert_threshold <= (1)::numeric))
+);
+
+
+--
+-- Name: tenant_model_rates; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.tenant_model_rates (
+    tenant_id character varying NOT NULL,
+    canonical_id bigint NOT NULL,
+    effective_from timestamp with time zone DEFAULT now() NOT NULL,
+    effective_to timestamp with time zone,
+    credits_per_1m_in bigint DEFAULT 0 NOT NULL,
+    credits_per_1m_out bigint DEFAULT 0 NOT NULL,
+    credits_per_1m_cache_in bigint DEFAULT 0 NOT NULL,
+    credits_per_1m_cache_out bigint DEFAULT 0 NOT NULL,
+    discount_pct numeric(5,2) DEFAULT 0 NOT NULL,
+    notes text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT tenant_model_rates_discount_range_check CHECK ((discount_pct >= (0)::numeric AND discount_pct <= (100)::numeric))
 );
 
 
@@ -17945,6 +18197,10 @@ CREATE TABLE public.topup_packages (
     sort_order integer DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    bonus_credits bigint DEFAULT 0 NOT NULL,
+    effective_from timestamp with time zone,
+    effective_to timestamp with time zone,
+    first_time_only boolean DEFAULT false NOT NULL,
     CONSTRAINT topup_packages_tier_check CHECK (((tier)::text = ANY (ARRAY[('small'::character varying)::text, ('medium'::character varying)::text, ('large'::character varying)::text])))
 );
 
@@ -22461,6 +22717,62 @@ ALTER TABLE ONLY public.tenant_credit_wallets
 
 
 --
+-- Name: tenant_budgets tenant_budgets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tenant_budgets
+    ADD CONSTRAINT tenant_budgets_pkey PRIMARY KEY (tenant_id);
+
+
+--
+-- Name: tenant_model_rates tenant_model_rates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tenant_model_rates
+    ADD CONSTRAINT tenant_model_rates_pkey PRIMARY KEY (tenant_id, canonical_id, effective_from);
+
+
+--
+-- Name: market_price_reference_sync market_price_reference_sync_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_price_reference_sync
+    ADD CONSTRAINT market_price_reference_sync_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: promotion_campaigns promotion_campaigns_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.promotion_campaigns
+    ADD CONSTRAINT promotion_campaigns_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: promotion_campaigns promotion_campaigns_code_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.promotion_campaigns
+    ADD CONSTRAINT promotion_campaigns_code_key UNIQUE (code);
+
+
+--
+-- Name: promotion_redemptions promotion_redemptions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.promotion_redemptions
+    ADD CONSTRAINT promotion_redemptions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: promotion_redemptions promotion_redemptions_campaign_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.promotion_redemptions
+    ADD CONSTRAINT promotion_redemptions_campaign_id_fkey FOREIGN KEY (campaign_id) REFERENCES public.promotion_campaigns(id);
+
+
+--
 -- Name: tenant_model_policies tenant_model_policies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -22841,6 +23153,69 @@ CREATE INDEX credential_model_index_hot_updated_at_idx ON public.credential_mode
 --
 
 CREATE INDEX idx_credit_ledger_part_created ON ONLY public.credit_ledger USING btree (created_at);
+
+
+--
+-- Name: idx_credit_ledger_owner; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_credit_ledger_owner ON ONLY public.credit_ledger USING btree (tenant_id, owner_user, created_at DESC);
+
+
+--
+-- Name: idx_credit_ledger_hot_owner; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_credit_ledger_hot_owner ON public.credit_ledger_hot USING btree (tenant_id, owner_user, created_at DESC);
+
+
+--
+-- Name: idx_mpr_vendor; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mpr_vendor ON public.market_price_reference USING btree (vendor_vendor, source_run_date DESC);
+
+
+--
+-- Name: idx_mpr_market; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mpr_market ON public.market_price_reference USING btree (market_min_platform_id, source_run_date DESC);
+
+
+--
+-- Name: uq_mpr_canonical_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_mpr_canonical_id ON public.market_price_reference USING btree (canonical_id, dimension) WHERE canonical_id IS NOT NULL;
+
+
+--
+-- Name: idx_smp_canon; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_smp_canon ON public.supplier_market_position USING btree (canonical_name);
+
+
+--
+-- Name: idx_smp_conf; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_smp_conf ON public.supplier_market_position USING btree (price_confidence);
+
+
+--
+-- Name: idx_promotion_redemptions_campaign; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_promotion_redemptions_campaign ON public.promotion_redemptions USING btree (campaign_id, created_at DESC);
+
+
+--
+-- Name: idx_promotion_redemptions_tenant; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_promotion_redemptions_tenant ON public.promotion_redemptions USING btree (tenant_id, created_at DESC);
 
 
 --
@@ -29937,6 +30312,30 @@ CREATE POLICY super_admin_intent_aggregates ON public.intent_aggregates USING ((
 ALTER TABLE public.tenant_credit_wallets ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: credit_ledger_hot; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.credit_ledger_hot ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: promotion_redemptions; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.promotion_redemptions ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: tenant_budgets; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.tenant_budgets ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: tenant_model_rates; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.tenant_model_rates ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: agent_relationships tenant_isolation_agent_relationships; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -30026,6 +30425,34 @@ CREATE POLICY tenant_isolation_credit_ledger ON public.credit_ledger USING (((te
 --
 
 CREATE POLICY tenant_isolation_credit_ledger ON public.credit_ledger_old USING (((tenant_id)::text = public.get_current_tenant()));
+
+
+--
+-- Name: credit_ledger_hot tenant_isolation_credit_ledger_hot; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY tenant_isolation_credit_ledger_hot ON public.credit_ledger_hot USING (((tenant_id)::text = public.get_current_tenant()));
+
+
+--
+-- Name: promotion_redemptions tenant_isolation_promotion_redemptions; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY tenant_isolation_promotion_redemptions ON public.promotion_redemptions USING (((tenant_id)::text = public.get_current_tenant()));
+
+
+--
+-- Name: tenant_budgets tenant_isolation_tenant_budgets; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY tenant_isolation_tenant_budgets ON public.tenant_budgets USING (((tenant_id)::text = public.get_current_tenant()));
+
+
+--
+-- Name: tenant_model_rates tenant_isolation_tenant_model_rates; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY tenant_isolation_tenant_model_rates ON public.tenant_model_rates USING (((tenant_id)::text = public.get_current_tenant()));
 
 
 --

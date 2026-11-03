@@ -43,6 +43,7 @@ func TestScore_Balanced(t *testing.T) {
 func TestScore_FreeModel(t *testing.T) {
 	c := Candidate{
 		CanonicalName:     "free-model",
+		BillingMode:       "free",
 		UnitPriceInPer1M:  0,
 		UnitPriceOutPer1M: 0,
 		SuccessRate:       0.9,

@@ -79,7 +79,6 @@ const KNOWN_ORPHANS: Record<string, string> = {
   //   **无任何站内入口**、且都不在 appNav.ts ⇒ 判为「菜单外深链页」。
   //   与 /admin/usage-enhanced 同族：菜单归属待产品确认后挂载，
   //   本轮只登记契约，**不擅自改菜单**（改菜单 = 改产品信息架构）。
-  '/admin/board-operational': '运营面板（批 158c，独立详细页）：router 自证「后端 tenant 隔离未落实、admin 档 endpoint」；全仓无站内入口 ⇒ admin 档独立深链页，菜单归属待产品确认后挂载',
   '/admin/ops-overview': '运维总览（批 158e，12 路 payload 卡片布局）：router 自证「与 appNav 的 maintain SPA 平级、web/ 内部独立深链」；super_admin 档，菜单归属待产品确认后挂载',
   '/admin/subscription-tiers': '订阅层级（批 200）：P5 跨仓 license-authority 独立服务、nginx 反代 /api/admin/tiers；与控制台菜单是两套导航，不由 appNav 承载',
   '/admin/request-actions/:id': '请求动作时间线（批 203，Redis LIST by request_id）：super_admin 档带参深链页（:id），全仓无站内入口 ⇒ 独立深链，菜单归属待产品确认后挂载',

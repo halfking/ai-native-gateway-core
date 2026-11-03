@@ -2,6 +2,7 @@ export default {
   collapseSidebar: "Seitenleiste einklappen",
   expandSidebar: "Seitenleiste ausklappen",
   group: {
+    operations: 'Betrieb & Abrechnung',
     tenantPortal: "Meine Dienste",
     modelsRouting: "Modelle & Routing",
     tenantUsers: "Mandanten & Benutzer",
@@ -13,6 +14,7 @@ export default {
     opsplatform: "Ops-Zentrum"
   },
   item: {
+    operationsOverview: 'Betriebsübersicht',
     activateAction: 'Aktivieren',
     activateActionTip: 'Diese Instanz aktivieren',
     liveTopology: 'Live-Topologie',

@@ -3,6 +3,8 @@ package autoroute
 import (
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 // Candidate is the per-credential × per-model snapshot consumed by Score().
@@ -30,7 +32,7 @@ type Candidate struct {
 	// ruler. Empty (= zero value) means USD — old snapshots score unchanged.
 	Currency      string
 	ContextWindow int
-	Tags              []string // e.g. ["reasoning", "code", "agent"]
+	Tags          []string // e.g. ["reasoning", "code", "agent"]
 	// 新增（需求 #4）：标准模型能力字段
 	ReleasedAt  *time.Time // 发布日期，用于 version_recency 评分
 	Strengths   []string   // 优势方向，用于 strength_match 评分
@@ -240,10 +242,26 @@ func Score(c Candidate, sigs ClassificationSignals, task TaskType, profile Profi
 //	ratio 0.5 (half of P75) → 100
 //	ratio 1.0 (at P75)     → 50
 //	ratio 1.5 (50% more)   → 0
+//
+// AF-15（2026-11-03 审计裁定，W5-T1）：「没有价格」不能一刀切当最便宜。
+// 按 billing_mode 分档：
+//   - round-1（free/token_plan/code_plan/agent_plan/monthly，钱已付、边际
+//     成本≈0）⇒ 维持优待 100 —— 与 executors calculateCostPenalty 的
+//     round-1 → 0 惩罚在两层语义一致，现状不动；
+//   - 其余（per_token/token/... 按量）且 blended<=0（0/0 或价未知）⇒
+//     **中性**：P75 有值给 50（= 一位恰好 priced-at-P75 的候选会拿的分），
+//     P75 也缺失（整池无价格信号）给 80（沿用下方「no baseline → middle」
+//     既有约定）。此前的 `blended <= 0 → 100` 让按量未知价在 v1/v2/
+//     simplified 三代评分里全部排到「最便宜」，而 executors 同一子集给
+//     最大惩罚 1.0 —— 同一候选两层判定相反。
 func scorePrice(c Candidate, costCtx CostContext) float64 {
 	blended := c.UnitPriceInPer1M + c.UnitPriceOutPer1M
 	if blended <= 0 {
-		return 100 // free or unknown
+		if provider.BillingRound(c.BillingMode) == 1 {
+			return 100 // free or plan-billed: zero marginal cost is real
+		}
+		// round-2 with unknown/zero price: neutral (see AF-15 note above).
+		return priceSignalAbsentNeutral(costCtx)
 	}
 	if costCtx.PriceP75 <= 0 {
 		return 80 // no baseline → assume middle
@@ -257,6 +275,19 @@ func scorePrice(c Candidate, costCtx CostContext) float64 {
 		score = 100
 	}
 	return score
+}
+
+// priceSignalAbsentNeutral returns the neutral price score for a round-2
+// candidate with no price signal (AF-15): the score a P75-priced peer would
+// get (50), or the established "no baseline" middle (80) when the pool has
+// no price data at all. Shared by scorePrice (v1) and
+// scorePriceByCostContext (v2/simplified) so the three scoring generations
+// stay on one ruler.
+func priceSignalAbsentNeutral(costCtx CostContext) float64 {
+	if costCtx.PriceP75 <= 0 {
+		return 80
+	}
+	return 50
 }
 
 // scoreSpeed normalises latency against the cohort worst P95.

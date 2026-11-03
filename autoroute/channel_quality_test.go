@@ -125,9 +125,10 @@ func TestScoreChannelQuality_FreeAndUnreliable(t *testing.T) {
 		t.Errorf("free+aggregator+low success: got %.2f, want %.2f", got, wantBase+wantDelta)
 	}
 
-	// 价格全 0 也算免费
+	// 价格全 0 且 billing_mode=free ⇒ 仍走免费通道（-25）
 	freeZeroPrice := Candidate{
 		ProviderCategory:  "third_party_relay",
+		BillingMode:       "free",
 		UnitPriceInPer1M:  0,
 		UnitPriceOutPer1M: 0,
 		SuccessRate:       0.85,
@@ -136,6 +137,18 @@ func TestScoreChannelQuality_FreeAndUnreliable(t *testing.T) {
 	wantBase2 := 50.0
 	if got2 != wantBase2-25.0 {
 		t.Errorf("free zero price: got %.2f, want %.2f", got2, wantBase2-25.0)
+	}
+
+	// AF-15（W5-T1）：round-2 按量 + 0/0 价（=价未知）不再算免费 ⇒ 不吃 -25
+	unknownPaygZero := Candidate{
+		ProviderCategory:  "third_party_relay",
+		BillingMode:       "per_token",
+		UnitPriceInPer1M:  0,
+		UnitPriceOutPer1M: 0,
+		SuccessRate:       0.85,
+	}
+	if got3 := scoreChannelQuality(unknownPaygZero); got3 != wantBase2 {
+		t.Errorf("round-2 zero-price (unknown) must not take the free-channel bonus: got %.2f, want %.2f", got3, wantBase2)
 	}
 }
 
@@ -195,7 +208,10 @@ func TestDeriveIsFree(t *testing.T) {
 		{"billing_mode_code_plan", Candidate{BillingMode: "code_plan"}, true},
 		{"billing_mode_monthly", Candidate{BillingMode: "monthly"}, true},
 		{"cost_tier_free", Candidate{CostTier: "free"}, true},
-		{"price_zero", Candidate{UnitPriceInPer1M: 0, UnitPriceOutPer1M: 0}, true},
+		// AF-15（W5-T1）语义收窄：0/0 价格不再意味着免费 —— round-2 按量的
+		// 0/0 更可能是「价未知」（实测 141 条空价绑定），标免费会白拿 -25。
+		{"price_zero_round2_unknown", Candidate{UnitPriceInPer1M: 0, UnitPriceOutPer1M: 0}, false},
+		{"price_zero_with_free_mode", Candidate{BillingMode: "free", UnitPriceInPer1M: 0, UnitPriceOutPer1M: 0}, true},
 		{"pay_as_you_go", Candidate{BillingMode: "token", UnitPriceInPer1M: 1, UnitPriceOutPer1M: 2}, false},
 		{"paid_default", Candidate{UnitPriceInPer1M: 5, UnitPriceOutPer1M: 15}, false},
 	}

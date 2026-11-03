@@ -30,6 +30,7 @@ package maas
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -125,19 +126,23 @@ func (s *Service) ChargeRequestMultimodal(ctx context.Context, tenantID, request
 // time (Service.ResolveCurrentMultiplier), applies it to the charge, and
 // stamps the SAME value into the telemetry rows — charge and audit trail
 // cannot disagree. A multiplier <= 0 is treated as 1.0.
-func (s *Service) ChargeRequestMultimodalWithMultiplier(ctx context.Context, tenantID, requestID, canonicalName string, usage TokenUsage, rateMultiplier float64) (int64, float64, error) {
+//
+// 2026-11-04（运营计费 P0）：新增 ownerUser 形参 —— 请求归属用户
+// （api_key_owner_user 同源）随扣费写进 credit_ledger.owner_user，
+// 让「我的请求/我的费用」能对上底账。空串 = 归属未知（历史路径）。
+func (s *Service) ChargeRequestMultimodalWithMultiplier(ctx context.Context, tenantID, ownerUser, requestID, canonicalName string, usage TokenUsage, rateMultiplier float64) (int64, float64, error) {
 	if rateMultiplier <= 0 {
 		rateMultiplier = 1.0
 	}
-	amount, err := s.chargeTokensWithMultiplier(ctx, tenantID, requestID, canonicalName, usage, rateMultiplier)
+	amount, err := s.chargeTokensWithMultiplier(ctx, tenantID, ownerUser, requestID, canonicalName, usage, rateMultiplier)
 	return amount, rateMultiplier, err
 }
 
 func (s *Service) chargeTokens(ctx context.Context, tenantID, requestID, canonicalName string, usage TokenUsage) (int64, error) {
-	return s.chargeTokensWithMultiplier(ctx, tenantID, requestID, canonicalName, usage, 1.0)
+	return s.chargeTokensWithMultiplier(ctx, tenantID, "", requestID, canonicalName, usage, 1.0)
 }
 
-func (s *Service) chargeTokensWithMultiplier(ctx context.Context, tenantID, requestID, canonicalName string, usage TokenUsage, rateMultiplier float64) (int64, error) {
+func (s *Service) chargeTokensWithMultiplier(ctx context.Context, tenantID, ownerUser, requestID, canonicalName string, usage TokenUsage, rateMultiplier float64) (int64, error) {
 	if !s.Enabled() || tenantID == "" || tenantID == "default" {
 		return 0, nil
 	}
@@ -170,6 +175,10 @@ func (s *Service) chargeTokensWithMultiplier(ctx context.Context, tenantID, requ
 	}
 
 	remaining := amount
+	// 2026-11-04（运营计费 P0，可解释账单五因子）：detail 随 consume 流水
+	// 落 credit_ledger.detail —— {rate_in, rate_out, tokens, discount,
+	// rate_multiplier}，让「我为什么被扣这些积分」能对到行。
+	ledgerDetail := ledgerDetailJSON(rates, settings.GlobalDiscount, rateMultiplier, usage)
 	subID, quota, err := s.activeSubscriptionQuota(ctx, tx, tenantID)
 	if err != nil {
 		return 0, err
@@ -185,7 +194,7 @@ func (s *Service) chargeTokensWithMultiplier(ctx context.Context, tenantID, requ
 			if err != nil {
 				return 0, err
 			}
-			if err := s.writeLedger(ctx, tx, tenantID, "consume", -use, string(PoolSubscription), "request", requestID, ""); err != nil {
+			if err := s.writeLedgerDetail(ctx, tx, tenantID, "consume", -use, string(PoolSubscription), "request", requestID, "", ownerUser, 0, ledgerDetail); err != nil {
 				return 0, err
 			}
 			remaining -= use
@@ -205,7 +214,7 @@ func (s *Service) chargeTokensWithMultiplier(ctx context.Context, tenantID, requ
 		if useGranted > 0 {
 			granted -= useGranted
 			remaining -= useGranted
-			if err := s.writeLedger(ctx, tx, tenantID, "consume", -useGranted, string(PoolGranted), "request", requestID, ""); err != nil {
+			if err := s.writeLedgerDetail(ctx, tx, tenantID, "consume", -useGranted, string(PoolGranted), "request", requestID, "", ownerUser, 0, ledgerDetail); err != nil {
 				return 0, err
 			}
 		}
@@ -215,7 +224,7 @@ func (s *Service) chargeTokensWithMultiplier(ctx context.Context, tenantID, requ
 			return 0, &InsufficientCreditsError{TenantID: tenantID, Required: amount, Available: quota + granted + purchased}
 		}
 		purchased -= remaining
-		if err := s.writeLedger(ctx, tx, tenantID, "consume", -remaining, string(PoolPurchased), "request", requestID, ""); err != nil {
+		if err := s.writeLedgerDetail(ctx, tx, tenantID, "consume", -remaining, string(PoolPurchased), "request", requestID, "", ownerUser, 0, ledgerDetail); err != nil {
 			return 0, err
 		}
 	}
@@ -640,7 +649,7 @@ func (s *Service) ListLedger(ctx context.Context, tenantID string, limit int) ([
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, entry_type, amount, balance_after, pool, ref_type, ref_id, note, created_at
-		FROM credit_ledger
+		FROM credit_ledger_with_current_month
 		WHERE tenant_id = $1
 		ORDER BY created_at DESC
 		LIMIT $2
@@ -666,10 +675,28 @@ func (s *Service) writeLedger(ctx context.Context, tx pgx.Tx, tenantID, entryTyp
 		SELECT COALESCE(granted_balance, 0) + COALESCE(purchased_balance, 0)
 		FROM tenant_credit_wallets WHERE tenant_id = $1
 	`, tenantID).Scan(&balance)
-	return s.writeLedgerWithBalance(ctx, tx, tenantID, entryType, amount, balance, pool, refType, refID, note)
+	return s.writeLedgerDetail(ctx, tx, tenantID, entryType, amount, pool, refType, refID, note, "", 0, nil)
+}
+
+// writeLedgerDetail is the 935-shaped ledger writer: owner_user / campaign_id
+// / detail (可解释账单五因子) ride alongside the legacy columns. The three
+// extras are all optional — empty owner, 0 campaign and nil detail reproduce
+// the pre-935 row shape exactly. Balance is read from the wallet at call
+// time (legacy writeLedger semantics).
+func (s *Service) writeLedgerDetail(ctx context.Context, tx pgx.Tx, tenantID, entryType string, amount int64, pool, refType, refID, note, ownerUser string, campaignID int64, detail []byte) error {
+	var balance int64
+	_ = tx.QueryRow(ctx, `
+		SELECT COALESCE(granted_balance, 0) + COALESCE(purchased_balance, 0)
+		FROM tenant_credit_wallets WHERE tenant_id = $1
+	`, tenantID).Scan(&balance)
+	return s.writeLedgerWithBalanceDetail(ctx, tx, tenantID, entryType, amount, balance, pool, refType, refID, note, ownerUser, campaignID, detail)
 }
 
 func (s *Service) writeLedgerWithBalance(ctx context.Context, tx pgx.Tx, tenantID, entryType string, amount, balanceAfter int64, pool, refType, refID, note string) error {
+	return s.writeLedgerWithBalanceDetail(ctx, tx, tenantID, entryType, amount, balanceAfter, pool, refType, refID, note, "", 0, nil)
+}
+
+func (s *Service) writeLedgerWithBalanceDetail(ctx context.Context, tx pgx.Tx, tenantID, entryType string, amount, balanceAfter int64, pool, refType, refID, note, ownerUser string, campaignID int64, detail []byte) error {
 	var refTypeVal, refIDVal *string
 	if refType != "" {
 		refTypeVal = &refType
@@ -681,15 +708,46 @@ func (s *Service) writeLedgerWithBalance(ctx context.Context, tx pgx.Tx, tenantI
 	if pool != "" {
 		poolVal = &pool
 	}
+	var campaignIDVal *int64
+	if campaignID > 0 {
+		campaignIDVal = &campaignID
+	}
+	if len(detail) == 0 {
+		detail = []byte("{}")
+	}
 	// INSERT directly targets credit_ledger_hot (the canonical write
 	// target per the 2026-07 data-lifecycle architecture — never the
 	// parent table, which would let PG auto-route rows into monthly
 	// partitions that cannot be UPDATEd/DELETEd later).
 	_, err := tx.Exec(ctx, `
-		INSERT INTO credit_ledger_hot (tenant_id, entry_type, amount, balance_after, pool, ref_type, ref_id, note)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, tenantID, entryType, amount, balanceAfter, poolVal, refTypeVal, refIDVal, note)
+		INSERT INTO credit_ledger_hot (tenant_id, entry_type, amount, balance_after, pool, ref_type, ref_id, note, owner_user, campaign_id, detail)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	`, tenantID, entryType, amount, balanceAfter, poolVal, refTypeVal, refIDVal, note, ownerUser, campaignIDVal, detail)
 	return err
+}
+
+// ledgerDetailJSON builds the explainable-bill detail payload
+// {rate_in, rate_out, tokens, discount, rate_multiplier} (总体设计 §2.4).
+func ledgerDetailJSON(rates ModelRateValues, globalDiscount, rateMultiplier float64, usage TokenUsage) []byte {
+	if rateMultiplier <= 0 {
+		rateMultiplier = 1.0
+	}
+	buf, err := json.Marshal(map[string]any{
+		"rate_in":  rates.In,
+		"rate_out": rates.Out,
+		"tokens": map[string]int{
+			"prompt":      usage.PromptTokens,
+			"completion":  usage.CompletionTokens,
+			"cache_read":  usage.CacheReadTokens,
+			"cache_write": usage.CacheWriteTokens,
+		},
+		"discount":        globalDiscount,
+		"rate_multiplier": rateMultiplier,
+	})
+	if err != nil {
+		return nil
+	}
+	return buf
 }
 
 // AdjustCredits adds credits to purchased_balance (super_admin manual top-up).

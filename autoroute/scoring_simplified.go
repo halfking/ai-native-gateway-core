@@ -3,6 +3,8 @@ package autoroute
 import (
 	"sort"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 // scoring_simplified.go — 简化评分与通道质量评分。
@@ -40,9 +42,11 @@ func clamp01to100(v float64) float64 {
 // deriveIsFree 推导 IsFree 字段（与 SQL 中的 CASE WHEN 保持一致）：
 //   - billing_mode 在 free 类（free / token_plan / code_plan / agent_plan / monthly）
 //   - cost_tier 标记为 free
-//   - 价格为 0（in + out 都为 0）
 //
-// 三者满足其一即视为免费。保守取 TRUE，避免漏判。
+// AF-15（W5-T1）语义收窄：「价格为 0 ⇒ 免费」这一臂已删除 —— round-2
+// 按量候选的 0/0 更可能是「价未知」（实测 2328 条绑定中 141 条空价），
+// 把它标成 is_free 会让它在 channelQuality 里白拿免费通道 -25 分。
+// 真免费的判定收敛到 billing_mode 与 cost_tier 两个有出处的信号。
 func deriveIsFree(c Candidate) bool {
 	if c.IsFree {
 		return true
@@ -52,9 +56,6 @@ func deriveIsFree(c Candidate) bool {
 		return true
 	}
 	if strings.EqualFold(strings.TrimSpace(c.CostTier), "free") {
-		return true
-	}
-	if c.UnitPriceInPer1M == 0 && c.UnitPriceOutPer1M == 0 {
 		return true
 	}
 	return false
@@ -258,7 +259,13 @@ func clampCorrection(v float64) float64 {
 func scorePriceByCostContext(c Candidate, costCtx CostContext) float64 {
 	blended := c.UnitPriceInPer1M + c.UnitPriceOutPer1M
 	if blended <= 0 {
-		return 100
+		// AF-15（W5-T1）：与 scorePrice(v1) 同口径 —— round-1 计费模式
+		// （套餐/免费池，边际成本≈0）维持优待 100；round-2 按量且价未知
+		// 给中性（50 / 无池信号 80），不再当「最便宜」。
+		if provider.BillingRound(c.BillingMode) == 1 {
+			return 100
+		}
+		return priceSignalAbsentNeutral(costCtx)
 	}
 	if costCtx.PriceP75 <= 0 {
 		return 80

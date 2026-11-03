@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,17 +15,17 @@ import (
 
 // Coupon is a redeemable credit voucher.
 type Coupon struct {
-	ID               int64      `json:"id"`
-	Code             string     `json:"code"`
-	CreditsAmount    int64      `json:"credits_amount"`
-	MaxRedemptions   int        `json:"max_redemptions"`
-	RedemptionCount  int        `json:"redemption_count"`
-	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
-	Status           string     `json:"status"`
-	Note             string     `json:"note"`
-	CreatedBy        string     `json:"created_by"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	ID              int64      `json:"id"`
+	Code            string     `json:"code"`
+	CreditsAmount   int64      `json:"credits_amount"`
+	MaxRedemptions  int        `json:"max_redemptions"`
+	RedemptionCount int        `json:"redemption_count"`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+	Status          string     `json:"status"`
+	Note            string     `json:"note"`
+	CreatedBy       string     `json:"created_by"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // CouponRedemption records one successful activation.
@@ -238,7 +239,9 @@ func (s *Service) ActivateCoupon(ctx context.Context, tenantID, code string) (Co
 		return CouponRedemption{}, err
 	}
 	note := fmt.Sprintf("coupon %s", c.Code)
-	if err := s.writeLedgerWithBalance(ctx, tx, tenantID, "adjust", c.CreditsAmount, balance, string(PoolGranted), "coupon", fmt.Sprintf("%d", c.ID), note); err != nil {
+	// 935 可解释账单：券来源记进 detail（coupon_id 可对回 maas_coupons）。
+	couponDetail, _ := json.Marshal(map[string]any{"coupon_id": c.ID, "coupon_code": c.Code})
+	if err := s.writeLedgerWithBalanceDetail(ctx, tx, tenantID, "adjust", c.CreditsAmount, balance, string(PoolGranted), "coupon", fmt.Sprintf("%d", c.ID), note, "", 0, couponDetail); err != nil {
 		return CouponRedemption{}, err
 	}
 

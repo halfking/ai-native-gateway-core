@@ -117,15 +117,32 @@ export function resolveNavItemActivation(
 }
 
 export const NAV_GROUPS: NavGroup[] = [
+  // 2026-11-04 W1-T1（运营管理与价格计费体系，总体设计 §2.6 / AF-2/AF-5 修订）：
+  // 「运营管理」组 —— 一节两态（租户看「我的服务」消费面，平台看「运营工具」
+  // 设定面）。组 id `operations`（/ops/* 前缀已被 opsplatform 占用 ⇒ AF-2）；
+  // tenant-portal 组退役（A-13），其 5 项原 path 迁入（收藏链接不断）；
+  // /pricing、/model-pricing、/admin/reconciliation 自 models-routing 迁入
+  // （path 一律不变）；/admin/board-operational 收编为运营总览并同步移出
+  // navCoverage KNOWN_ORPHANS（AF-5；⚠ 后端 tenant 隔离遗留面仍以 super-only
+  // 门控兜底，RLS 化改造登记待办）。
   {
-    id: 'tenant-portal',
-    labelKey: 'nav.group.tenantPortal',
+    id: 'operations',
+    labelKey: 'nav.group.operations',
     items: [
+      // ── 我的服务（非 default 租户可见）──
       { path: '/tenant/models', labelKey: 'nav.item.tenantModels', icon: '🤖', tenantOnly: true },
-      { path: '/tenant/account', labelKey: 'nav.item.tenantAccount', icon: '💰', tenantOnly: true },
       { path: '/tenant/pricing', labelKey: 'nav.item.tenantPricing', icon: '💳', tenantOnly: true },
       { path: '/tenant/usage', labelKey: 'nav.item.tenantUsage', icon: '📉', tenantOnly: true },
       { path: '/tenant/bills', labelKey: 'nav.item.tenantBills', icon: '🧾', tenantOnly: true },
+      { path: '/tenant/account', labelKey: 'nav.item.tenantAccount', icon: '💰', tenantOnly: true },
+      // ── 运营工具（平台可见）──
+      { path: '/admin/board-operational', labelKey: 'nav.item.operationsOverview', icon: '🧭', super: true, hideForTenant: true },
+      { path: '/pricing', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true },
+      { path: '/model-pricing', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true },
+      // 结算与对账：页面内含 provider/internal 双视角页签（ReconciliationReport.vue
+      // view === 'internal'）⇒ tenant-users 组的 ?view=internal 独立菜单项删除
+      // （防双入口，W1-T3）；此处直开默认 provider 视角。
+      { path: '/admin/reconciliation', labelKey: 'nav.item.reconciliation', icon: '🧾', super: true, hideForTenant: true },
     ],
   },
   {
@@ -146,13 +163,12 @@ export const NAV_GROUPS: NavGroup[] = [
       // 2026-09-26 审计轮 F1：对账报表落地轮漏挂菜单入口（只能手敲 URL），
       // 本项 = 供应商结算对帐（goal #2）。页面内含 provider/internal 双视角
       // 切换；结算报表（internal 视角）入口见「租户用户」组同名项。
-      { path: '/admin/reconciliation', labelKey: 'nav.item.reconciliation', icon: '🧾', super: true, hideForTenant: true },
       // 2026-10-02 看板轮：全页用量趋势分析（按模型分线 + 供应商/租户/API Key/
       // 模型/指标过滤）。看板「用量趋势」卡时间范围右侧「更多」按钮跳同一页；
       // 路由 meta 仅 requiresAuth（服务端按角色收租户范围），菜单入口超管可见。
       { path: '/admin/usage-trends', labelKey: 'nav.item.usageTrends', icon: '📈', super: true, hideForTenant: true },
-      { path: '/pricing', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true },
-      { path: '/model-pricing', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true },
+      // 2026-11-04 W1-T1：/pricing、/model-pricing、/admin/reconciliation 迁入
+      // 「运营管理」组（operations，见上）—— path 不变，仅组归属变化。
       // 2026-11-02 S0：免费资源/免费发现归档 → 外链 freellm.itestu.cn（统一走网关会话 auth_request）
       { path: 'https://freellm.itestu.cn', labelKey: 'nav.item.freellm', icon: '🎁', super: true, hideForTenant: true, external: true },
     ],
@@ -166,12 +182,9 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/keys', labelKey: 'nav.item.keys', icon: '🔑' },
       { path: '/key-applications', labelKey: 'nav.item.keyApplications', icon: '📬', super: true, hideForTenant: true },
       { path: '/audit-logs', labelKey: 'nav.item.auditLogs', icon: '📋', super: true, hideForTenant: true },
-      // 2026-09-26 审计轮 F1：租户结算报表（goal #1）入口，直开 internal
-      // 视角（按租户/人员/模型分组 + 积分/内部价口径）。当前后端
-      // /api/admin/report-rollup/* 仍 superAdmin-only——非超管租户侧自助
-      // 查看自身租户报表需独立鉴权轮（设计文档 §11 G2 登记），故先以
-      // super 门控挂载，不虚标已对租户开放。
-      { path: '/admin/reconciliation?view=internal', labelKey: 'nav.item.settlementReport', icon: '📑', super: true, hideForTenant: true },
+      // 2026-11-04 W1-T3：结算报表独立菜单项删除 —— /admin/reconciliation
+      // 页内已有 provider/internal 双视角页签，双入口防重（原入口并入
+      // 「运营管理」组的结算与对账一项）。
     ],
   },
   {

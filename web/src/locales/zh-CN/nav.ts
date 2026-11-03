@@ -5,6 +5,7 @@ export default {
   expandSidebar: '展开侧边栏',
 
   group: {
+    operations: '运营管理',
     tenantPortal: '我的服务',
     modelsRouting: '模型与路由',
     tenantUsers: '租户用户',
@@ -17,6 +18,7 @@ export default {
   },
 
   item: {
+    operationsOverview: '运营总览',
     liveTopology: '实时拓扑',
     overview: '总览',
     tenantModels: '标准模型',

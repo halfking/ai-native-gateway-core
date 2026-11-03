@@ -30,13 +30,16 @@ BEGIN
     DELETE FROM public.credit_ledger_hot h USING batch b
     WHERE h.id = b.id
     RETURNING h.id, h.tenant_id, h.entry_type, h.amount, h.balance_after,
-      h.ref_type, h.ref_id, h.note, h.created_at, h.pool
+      h.ref_type, h.ref_id, h.note, h.created_at, h.pool,
+      h.owner_user, h.campaign_id, h.detail
   ), inserted AS (
     INSERT INTO public.credit_ledger (
       id, tenant_id, entry_type, amount, balance_after,
-      ref_type, ref_id, note, created_at, pool)
+      ref_type, ref_id, note, created_at, pool,
+      owner_user, campaign_id, detail)
     SELECT id, tenant_id, entry_type, amount, balance_after,
-      ref_type, ref_id, note, created_at, pool
+      ref_type, ref_id, note, created_at, pool,
+      owner_user, campaign_id, detail
     FROM moved_rows
     RETURNING id
   ) SELECT count(*) INTO moved FROM inserted;

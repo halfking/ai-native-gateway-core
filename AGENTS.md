@@ -4,6 +4,37 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-04 第 45 增量：运营管理与价格计费体系 P0/P1 实施轮——迁移 934–941 ＋ 流水闭环 ＋ AF-1/AF-15 修复 ＋ operations 菜单 ＋ 211/245/154 部署**
+> （goal 会话，承接第 44 增量设计档）：★ 用户目标＝「按设计档完成实施 → 脚本部署 211 测试验证 → 通过后部署 245 与 154」。
+> ⇒ ★ **W2-T0 真库重测（211 `acc-pg17/llm_gateway`）推翻 AF-3 主假设**：`credit_ledger_hot` **也是 0 行**
+> ⇒ 「量具假象」不成立；真因＝`chargeTokensWithMultiplier` 的 `tenantID=="default"` 跳过门
+> ＋ 生产 24,114 条请求（24h）**全部 default 租户** ⇒ **计费从未发生**（AF-11/12 观测闭合）。
+> 另实测：RLS 51 条、钱包 9 行（4 非零）、`model_credit_rates` 0、cents=0.01/CNY、`request_logs` 父表生产不存在（分区+视图布局）。
+> ⇒ ★★ **迁移 934–941 全部落库（up+down 各 8 条，六面登记＋第 7 面 `docs/db-changelog.md`）**：
+> 934 商业补列（plans+9/topup+4）· **935 流水三列两表同改 ＋ hot 补 RLS（实测 relrowsecurity=f）＋ promote 函数重铸 10→13 列
+> （698 版硬编码列清单⇒不重铸=新列 promote 边界静默丢）＋ 两臂读视图扩列+security_invoker（实施时定夺：扩既有
+> `credit_ledger_with_current_month`，Go 零消费方的存量视图，不建重复的第二视图）** · 936 套餐按模型额度 ·
+> 937 活动族（redemptions RLS）· 938 租户预算 · 939 租户分层价 · 940 市场三表（AF-8 canonical_id 解析列）·
+> 941 供应商视图末尾追加 7 列（C2 币种可比才算/C3 四档镜像健康门口径）。
+> 派生台账三份重生成 **863→872**（selftest 50/0 先行）；admin-routes 604→610；post-surface +6。
+> ⇒ ★★ **代码修复**：① **AF-15 零价分档**（v1 `scorePrice` + v2/simplified 共用函数 + is_free SQL/Go 双侧收窄
+> ——round-1 五模式维持优待、round-2 未知价中性（P75 锚定 50/无池信号 80）；executors 不动（A-4 待影子））＋
+> 四门测试（三代 v1≡v2 逐位一致 + 三方向变异臂）；② **AF-1 毛利口径**（`consumption_detail` 经
+> `CNYToUSDFX`；A/B=7.2× 与设计档逐字吻合，现网流水 0 ⇒ 修复零扰动）；③ **流水扩参**（`writeLedgerWithBalanceDetail`
+> 11 参收口 + 七写点逐个过 + 五因子 detail `{rate_in,rate_out,tokens,discount,rate_multiplier}` + ownerUser 贯通
+> handler `keyOwner`；`ListLedger`/对账 C 侧改两臂视图）。
+> ⇒ ★ **W1 菜单重组**：`operations` 组（一节两态）＋ tenant-portal 退役（5 项原 path 迁入）＋
+> `/pricing`、`/model-pricing`、`/admin/reconciliation` 迁组（path 不变）＋ **board-operational 收编并移出
+> KNOWN_ORPHANS**（AF-5；隔离遗留面以 super-only 兜底登记）＋ 结算双入口删除（页内已有双视角页签）＋
+> i18n 8 语种 +2 键。**W3 后端**：`/api/maas/my/{usage,requests,bills/,budget}` ＋ `/api/maas/campaigns*`
+> （owner 收窄 A-11：JWT 用户强制本人、super 可显式越权、legacy key 全租户；活动兑现 campaign_id 双写）。
+> ⇒ ★ 验收读数：`go build`/`vet` rc=0；maas/autoroute/admin/streaming/sql/.../ursmcheck(关键门)/installer **全绿**；
+> `vue-tsc` rc=0；`vitest` **291 文件/3005 passed**；`vite build` ✓；navCoverage 6/6；i18n 四门 PASS。
+> **踩过的门（全转绿）**：db-changelog 近邻窗口门（第 7 面）· embeddata 逐字节门（改 canonical 后忘重拷 935）·
+> ursmcheck 600s 假红（口径必须 1800s）· reachability 漏 `--columns` 制造假漂移（3 条存量行误翻 installer-bug，
+> 工具参数静默降级是假漂移制造机）。实施档
+> `docs/audit/2026-11-04-运营管理与价格计费体系-P0P1实施轮-迁移934-941与流水闭环与AF修复.md`；
+> 通用式见 `LESSONS.md` **§627**。
 > **2026-11-03 第 44 增量：两规划合并审计 +「运营管理/价格计费」总体设计与实施规划（规划轮 · 零业务逻辑改动）＋ AGENTS.md 第二批分档归档**
 > （goal 会话）：★ 用户目标＝「根据《模型价格情报-供应商评分-路由参数与运营营销方案》与《运营管理子菜单与用户计费体系设计》
 > 两档**做审计**，形成**完备设计方案**，再**规划实施**，落成文档」。

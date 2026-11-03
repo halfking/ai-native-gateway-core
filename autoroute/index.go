@@ -570,14 +570,15 @@ SELECT
     -- 保留 LEFT 是为了兼容历史脏数据。
     COALESCE(p.category, '')  AS provider_category,
     COALESCE(p.kind, 'cloud') AS provider_kind,
-    -- IsFree 派生：满足以下任一即视为免费（与 deriveIsFree() 一致）
+    -- IsFree 派生（941 轮 AF-15 语义收窄，与 deriveIsFree() 一致）：
     --   - billing_mode 在 free 类
     --   - cost_tier='free'（来自 models_canonical）
-    --   - 价格为 0（in + out 都为 0）
+    --   ★ 旧第三臂「价格为 0 ⇒ 免费」已删：round-2 按量候选的 0/0 更可能
+    --     是价未知（实测 141 条空价绑定）⇒ 标 is_free 会让它白拿免费通道
+    --     优惠。真免费收敛到 billing_mode / cost_tier 两个有出处的信号。
     CASE
       WHEN LOWER(COALESCE(cmi.billing_mode, '')) IN ('free','token_plan','code_plan','agent_plan','monthly')
         OR LOWER(COALESCE(mc.cost_tier, '')) = 'free'
-        OR (COALESCE(cmi.unit_price_in_per_1m, 0) + COALESCE(cmi.unit_price_out_per_1m, 0)) = 0
       THEN TRUE ELSE FALSE
     END AS is_free,
     -- CHANNEL_QUALITY_ROUTING: models_canonical.cost_tier 也单独加载

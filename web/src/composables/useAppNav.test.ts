@@ -87,7 +87,14 @@ describe('useAppNav', () => {
     const w = mountNav()
     const nav = w.vm.nav as ReturnType<typeof useAppNav>
     const ids = nav.navGroups.value.map((g) => g.id)
-    expect(ids).toContain('tenant-portal') // tenantOnly 分组
+    // 2026-11-04 W1-T1：tenant-portal 组退役并入 operations（A-13）——
+    // 租户门户视角现在看到的是 operations 组的「我的服务」5 项。
+    expect(ids).toContain('operations') // tenantOnly 项迁入的新组
+    const operations = nav.navGroups.value.find((g) => g.id === 'operations')
+    expect(operations).toBeTruthy()
+    expect(operations!.items.map(({ item }) => item.path)).toEqual([
+      '/tenant/models', '/tenant/pricing', '/tenant/usage', '/tenant/bills', '/tenant/account',
+    ])
     expect(ids).not.toContain('opsplatform') // 全部 super 项 → 组被过滤
     const tenantUsers = nav.navGroups.value.find((g) => g.id === 'tenant-users')
     expect(tenantUsers).toBeTruthy()

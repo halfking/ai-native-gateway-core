@@ -2,6 +2,7 @@ export default {
   collapseSidebar: "طي الشريط الجانبي",
   expandSidebar: "توسيع الشريط الجانبي",
   group: {
+    operations: 'إدارة العمليات',
     tenantPortal: "خدماتي",
     modelsRouting: "النماذج والتوجيه",
     tenantUsers: "مستخدمو المستأجر",
@@ -13,6 +14,7 @@ export default {
     opsplatform: "مركز العمليات"
   },
   item: {
+    operationsOverview: 'نظرة عامة على العمليات',
     liveTopology: 'الطبولوجية المباشرة',
     overview: "نظرة عامة",
     tenantModels: "النماذج القياسية",

@@ -35,6 +35,7 @@ func (h *Handler) registerMaasRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/maas/usage/summary", h.admin(h.handleMaasUsageSummary))
 
 	h.registerMaasBillingRoutes(mux)
+	h.registerMaasMyRoutes(mux)
 }
 
 func (h *Handler) maasSvc() *maas.Service {

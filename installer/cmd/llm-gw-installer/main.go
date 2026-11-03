@@ -1412,6 +1412,56 @@ var taskEvents933 []byte
 //go:embed embeddata/startup/933_task_events.down.sql
 var taskEvents933Down []byte
 
+// ★ 934–941（2026-11-04 运营管理与价格计费体系 P0/P1 数据地基）：
+//   商业骨架补列 + credit_ledger 三列两表同改 + 活动/预算/租户价/市场情报族。
+//go:embed embeddata/startup/934_subscription_plan_commerce_columns.sql
+var subscriptionPlanCommerceColumns934 []byte
+
+//go:embed embeddata/startup/934_subscription_plan_commerce_columns.down.sql
+var subscriptionPlanCommerceColumns934Down []byte
+
+//go:embed embeddata/startup/935_credit_ledger_owner_campaign_detail.sql
+var creditLedgerOwnerCampaignDetail935 []byte
+
+//go:embed embeddata/startup/935_credit_ledger_owner_campaign_detail.down.sql
+var creditLedgerOwnerCampaignDetail935Down []byte
+
+//go:embed embeddata/startup/936_subscription_plan_entitlements.sql
+var subscriptionPlanEntitlements936 []byte
+
+//go:embed embeddata/startup/936_subscription_plan_entitlements.down.sql
+var subscriptionPlanEntitlements936Down []byte
+
+//go:embed embeddata/startup/937_promotion_campaigns.sql
+var promotionCampaigns937 []byte
+
+//go:embed embeddata/startup/937_promotion_campaigns.down.sql
+var promotionCampaigns937Down []byte
+
+//go:embed embeddata/startup/938_tenant_budgets.sql
+var tenantBudgets938 []byte
+
+//go:embed embeddata/startup/938_tenant_budgets.down.sql
+var tenantBudgets938Down []byte
+
+//go:embed embeddata/startup/939_tenant_model_rates.sql
+var tenantModelRates939 []byte
+
+//go:embed embeddata/startup/939_tenant_model_rates.down.sql
+var tenantModelRates939Down []byte
+
+//go:embed embeddata/startup/940_market_price_reference_family.sql
+var marketPriceReferenceFamily940 []byte
+
+//go:embed embeddata/startup/940_market_price_reference_family.down.sql
+var marketPriceReferenceFamily940Down []byte
+
+//go:embed embeddata/startup/941_supplier_view_market_columns.sql
+var supplierViewMarketColumns941 []byte
+
+//go:embed embeddata/startup/941_supplier_view_market_columns.down.sql
+var supplierViewMarketColumns941Down []byte
+
 // ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
 //   - sanitize_block_reviews 追加 session_id / label / label_comment /
 //     labeled_by / labeled_at（末尾追加，既有列序不变）；
@@ -1858,6 +1908,23 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/932_outbox_events_fresh_install.down.sql":     outboxEventsFreshInstall932Down,
 	"startup/933_task_events.sql":                          taskEvents933,
 	"startup/933_task_events.down.sql":                     taskEvents933Down,
+	// ★ 934–941（2026-11-04 运营管理与价格计费体系）。
+	"startup/934_subscription_plan_commerce_columns.sql":      subscriptionPlanCommerceColumns934,
+	"startup/934_subscription_plan_commerce_columns.down.sql": subscriptionPlanCommerceColumns934Down,
+	"startup/935_credit_ledger_owner_campaign_detail.sql":      creditLedgerOwnerCampaignDetail935,
+	"startup/935_credit_ledger_owner_campaign_detail.down.sql": creditLedgerOwnerCampaignDetail935Down,
+	"startup/936_subscription_plan_entitlements.sql":           subscriptionPlanEntitlements936,
+	"startup/936_subscription_plan_entitlements.down.sql":      subscriptionPlanEntitlements936Down,
+	"startup/937_promotion_campaigns.sql":                      promotionCampaigns937,
+	"startup/937_promotion_campaigns.down.sql":                 promotionCampaigns937Down,
+	"startup/938_tenant_budgets.sql":                           tenantBudgets938,
+	"startup/938_tenant_budgets.down.sql":                      tenantBudgets938Down,
+	"startup/939_tenant_model_rates.sql":                       tenantModelRates939,
+	"startup/939_tenant_model_rates.down.sql":                  tenantModelRates939Down,
+	"startup/940_market_price_reference_family.sql":            marketPriceReferenceFamily940,
+	"startup/940_market_price_reference_family.down.sql":       marketPriceReferenceFamily940Down,
+	"startup/941_supplier_view_market_columns.sql":             supplierViewMarketColumns941,
+	"startup/941_supplier_view_market_columns.down.sql":        supplierViewMarketColumns941Down,
 	"startup/927_routing_policy_singleton_unique.down.sql": routingPolicySingletonUnique927Down,
 	// ★ 928（2026-11-02）：探测流量物理隔离车道（session_turns_probe_hot + request_stats_probe_minute）。
 	"startup/928_probe_traffic_physical_lane.sql":      probeTrafficPhysicalLane928,

@@ -240,6 +240,15 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"错误处理未变：源不可用时仍是 `return ConsumptionDetail{}, fmt.Errorf(...)`" +
 			"（consumption_detail.go:100-103）⇒ **响亮失败**（500），不是空分组。",
 	},
+	"maas/my_usage.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "同一套 requestLogsSource(days)（usage.go:66-71，现恒返回 canonical 视图），" +
+			"QueryMyRequests 的 totals 与 rows 两处 `FROM `+logsTable+`（owner 收窄的「我的请求」分页 + 窗口汇总，2026-11-04 运营计费 P0 新增）。" +
+			"owner 过滤走 COALESCE(api_key_owner_user,'')=$n，天窗 ClampMyRequestsDays 上限 31。",
+		Consequence: "用户自助「我的请求」API（/api/maas/my/requests，admin JWT + owner 收窄 A-11）。" +
+			"退役后果与 maas/usage.go 同族：canonical 视图退场时本查询随切换层一起失效" +
+			"（切换层是唯一表名来源，无第二处字面量）⇒ 响亮 500，不静默空集。",
+	},
 	"maas/credit_buckets.go": {
 		Verdict: verdictCanonicalOnly,
 		Via: "同一套 requestLogsSource(days)（usage.go:66-71，现恒返回 canonical 视图），" +
@@ -1580,7 +1589,13 @@ var documentedSnapshot = bucketSnapshot{
 	//   的 1 处会话族窗口拼接（SessionFamilyTurnsSourceWindowedSQL，按审核单
 	//   时刻推月份边界）⇒ 方向 = 变大 =「把看不见变成看得见」⇒ 已补登记
 	//   indirectSiteAssessments 判定（Via 机制 + 退役后果）。
-	TotalSites: 157,
+	// ★ 2026-11-04（运营计费 P0 实施轮）：157 → 159（canonical 63 → 64 文件 /
+	//   131 → 133 处；unresolved 14/26 与两个 v1 桶逐字未动）。
+	//   成因：maas/my_usage.go 新增 2 处 requestLogsSource 拼接（owner 收窄的
+	//   「我的请求」totals + rows 两查询）⇒ 方向 = 变大 =「把看不见变成看得见」
+	//   ＋ 新增读方文件，已逐站点登记 indirectSiteAssessments（Via 机制 +
+	//   退役后果）⇒ 无桶变小 ⇒ 按本文件自己的规则改数字。
+	TotalSites: 159,
 	V1Files:    0,
 	V1Sites:    0,
 	// ★ v1 臂桶**归零**：不是「推导器坏了」，是**没有任何视图还有 v1 臂**。
@@ -1598,8 +1613,8 @@ var documentedSnapshot = bucketSnapshot{
 	// 且豁免要过三道可证伪的腿：切换迁移存在 / 在启动链里 / 排在 v1 退役之前）。
 	V1ArmFiles: 0,
 	V1ArmSites: 0,
-	CanonFiles: 63,
-	CanonSites: 131,
+	CanonFiles: 64,
+	CanonSites: 133,
 	UnresFiles: 14,
 	UnresSites: 26,
 }
