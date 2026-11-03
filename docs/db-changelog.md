@@ -10612,3 +10612,22 @@ Recording-consent body retention is independent of request_logs TTL.
 | 939 | `939_tenant_model_rates.sql` | `059c7e5330bf84129751a94f0b38d2d88135f954f66365228b135293f3d53301` | prepared（2026-11-04 P0/P1 实施轮；**待部署**）—— tenant_model_rates：租户分层零售价（币种无关积分价，PK(tenant,canonical,effective_from)，discount_pct CHECK 0..100）；租户 RLS。回退链 tenant_model_rates → model_credit_rates(manual) → 全局默认。 |
 | 940 | `940_market_price_reference_family.sql` | `3e66aea79a21d1d7bbeb87a06cd0d4d0ea6e9b81c1c7c955b55be4263067fd1e` | prepared（2026-11-04 P0/P1 实施轮；**待部署**）—— 市场情报三表（《价格档》§5.1 + AF-8 修订）：market_price_reference（P1 原厂刊例 + P2 市场最低（排除我方平台）+ fx 快照，PK(canonical_name,dimension)，**canonical_id 解析列 + 部分唯一索引**）、supplier_market_position（C1/C2/C3 每日重算，PK 引 bindings UNIQUE 键 AF-7）、market_price_reference_sync（同步台账：源=落地+拒绝）。全部平台表不加 RLS。 |
 | 941 | `941_supplier_view_market_columns.sql` | `0fca8c5d4e266dbd527fa49c6055f3350a3aee2d6b541f43ead432b203f8112e` | prepared（2026-11-04 P0/P1 实施轮；**待部署**）—— v_supplier_price_vs_baseline **末尾追加** 7 列（market_ref_currency/in/out/platform_id/platform_count + market_position C2 + price_confidence C3 四档）；844 纪律逐字沿用（既有 26 列不动、第二 LATERAL dedup canonical_id 优先、币种不可比 ⇒ NULL 不隐式折算）。C3 口径镜像 offer_price_looks_like_placeholder。down 恢复 844 版 26 列定义。 |
+## 2026-11-03T19:40:55Z — deploy 245 build_seq 2929 (bac2be17)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 928 | `928_probe_traffic_physical_lane.sql` | `31bec328e87f207f273f8dfb17ac65a77b5c1e5a208976d74ff985257b5b3eac` | applied+verified |
+| 929 | `929_self_check_error_type_kind_closure.sql` | `ff398683aa296ca915ef96d79617df70045033df0d88bf38b8fc5a4de7738d6e` | applied+verified |
+| 930 | `930_self_check_error_type_kind_closure_model_unavailable.sql` | `7fc8d28b3524e46b33252a6dcfc91fb03d5d2ce677af6d43407da7bcadfda72d` | applied+verified |
+| 931 | `931_userscript_capture_family.sql` | `d3cb5f8fc5050ce789f76274fc638cf1058bd2fc6ff49dbb088ba6cb6af62247` | applied+verified |
+| 932 | `932_outbox_events_fresh_install.sql` | `50126e44c5a0aedbef251957b84465f074738d3ae1e50ec540ed3a729b66b3a6` | applied+verified |
+| 933 | `933_task_events.sql` | `a266861b4f8ef5e855697c52cc19a8b71b209a398670637d1cbd3293c68fa11b` | applied+verified |
+| 934 | `934_subscription_plan_commerce_columns.sql` | `9bd27a397de7408bb89786c522e164f2e0fcb2685e4578dc4cd9ad3328e4dddb` | applied+verified |
+| 935 | `935_credit_ledger_owner_campaign_detail.sql` | `db5035f903e1a05c8a9814b7f1a1de130a9d330e3edd26ec03258320bb0421eb` | applied+verified |
+| 936 | `936_subscription_plan_entitlements.sql` | `8f867c324a1c1cca6e2b406a687fdd9b7c282cbea5eb460d9a5e252058c0a066` | applied+verified |
+| 937 | `937_promotion_campaigns.sql` | `4b3278ddeb49e6036744a578cdf9ae33d5062959bc9911d42cd90c8e7914d31b` | applied+verified |
+| 938 | `938_tenant_budgets.sql` | `1865773b3049c780e25595075cf7ffd05b528e5c2a1cbd4769dc2019b4f841ce` | applied+verified |
+| 939 | `939_tenant_model_rates.sql` | `059c7e5330bf84129751a94f0b38d2d88135f954f66365228b135293f3d53301` | applied+verified |
+| 940 | `940_market_price_reference_family.sql` | `3e66aea79a21d1d7bbeb87a06cd0d4d0ea6e9b81c1c7c955b55be4263067fd1e` | applied+verified |
+| 941 | `941_supplier_view_market_columns.sql` | `0fca8c5d4e266dbd527fa49c6055f3350a3aee2d6b541f43ead432b203f8112e` | applied+verified |
+
