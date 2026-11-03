@@ -84,6 +84,9 @@ func PlatformSpecs() []*Spec {
 	out = append(out, RoutingPlanSpecs()...)
 	// 2026-10-21 R72f: URSM v2 平台级设置（键此前只存在于读方 ⇒ 写不进去）。
 	out = append(out, UrsmSpecs()...)
+	// 2026-11-02: P1-2③ memora 上下文预热注入灰度开关
+	//（memory.prewarm.enabled / tenant_allowlist，读者 internal/memoraprewarm）。
+	out = append(out, MemoryPrewarmSpecs()...)
 	return out
 }
 
