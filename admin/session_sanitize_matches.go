@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -163,7 +164,14 @@ func (h *Handler) resolveSessionTenant(ctx context.Context, r *http.Request, ses
 	// 镜像链启用之前的历史窗口随 v1 表一起消失，那批会话在会话族里本来就
 	// 查不到行（与其它读端一致），只能落到下面的 callerTenant 兜底。
 	if h.db != nil {
-		if tenant := h.lookupSessionTenant(ctx, sessionID); tenant != "" {
+		// F-5（2026-11-04 审计）：非 super 调用方是租户作用域 ⇒ 解析查询
+		// 直接加 tenant_id 等值约束（撞名候选在查询层不可见）；super 是
+		// 跨租户管理面 ⇒ DISTINCT 枚举 + 撞名放弃（WARN），不猜行。
+		lookupScope := ""
+		if !IsSuperAdminOrLegacy(r) {
+			lookupScope = callerTenant
+		}
+		if tenant := h.lookupSessionTenant(ctx, sessionID, lookupScope); tenant != "" {
 			if !IsSuperAdminOrLegacy(r) && tenant != callerTenant {
 				return "", errSanitizeAccessDenied
 			}
@@ -179,8 +187,56 @@ func (h *Handler) resolveSessionTenant(ctx context.Context, r *http.Request, ses
 	return callerTenant, nil
 }
 
+// sessionTenantScopedSQL / sessionTenantDistinctSQL —— lookupSessionTenant
+// 的两条查询体（F-5，2026-11-04 审计）。
+//
+// ★ session_id 不是全局唯一（public.sessions 与 session 族唯一键都是
+// (session_id, 分区/租户内维度)，跨租户可撞名，生产成立过一次）⇒ 旧口径
+// 「按 session_id 取 ORDER BY ts DESC LIMIT 1」在撞名时返回任意一行 ⇒
+// 非超管租户可能被误拒、super 面可能把归属解析到撞名的另一家。
+// 两档口径（与 session_closed_outbox 的 DISTINCT + pickSessionTenant
+// 三档判定同族）：
+//   - 租户作用域调用方 ⇒ 等值约束到本租户，撞名候选在查询层不可见；
+//   - super 跨租户管理面 ⇒ DISTINCT 枚举，恰一候选才采用，撞名放弃解析。
+const sessionTenantScopedSQL = `
+		SELECT tenant_id FROM (
+			SELECT tenant_id, ts FROM session_turns_hot WHERE session_id = $1 AND tenant_id = $2
+			UNION ALL
+			SELECT tenant_id, ts FROM session_turns WHERE session_id = $1 AND tenant_id = $2
+		) session_rows
+		ORDER BY ts DESC
+		LIMIT 1`
+
+const sessionTenantDistinctSQL = `
+		SELECT DISTINCT tenant_id FROM (
+			SELECT tenant_id FROM session_turns_hot WHERE session_id = $1
+			UNION ALL
+			SELECT tenant_id FROM session_turns WHERE session_id = $1
+		) session_rows`
+
+// pickSanitizeSessionTenant 从候选租户集合解析 sanitize-matches 视角的归属
+// （纯函数 ⇒ 可单测；返回 "" = 放弃解析）。
+//   - tenantScope != ""：只认本租户候选（scoped 查询的兜底过滤）；
+//   - tenantScope == ""（跨租户管理面）：恰一候选 ⇒ 采用；0 候选 ⇒ ""
+//     （会话未落库，调用方走既有兜底）；>1 候选 ⇒ ""（跨租户撞名，
+//     与 session_closed_outbox.pickSessionTenant 同款「不猜」判定的只读版）。
+func pickSanitizeSessionTenant(candidates []string, tenantScope string) string {
+	if tenantScope != "" {
+		for _, c := range candidates {
+			if c == tenantScope {
+				return c
+			}
+		}
+		return ""
+	}
+	if len(candidates) == 1 {
+		return strings.TrimSpace(candidates[0])
+	}
+	return ""
+}
+
 // lookupSessionTenant 解析会话归属租户：查 session 族唯一事实源。
-// 返回 "" 表示会话族里没有该会话。
+// 返回 "" 表示「解析不出」（会话族无行，或跨租户撞名时主动放弃）。
 //
 // session_turns_hot 是独立堆表、session_turns 是按月分区的母表，只读单腿会漏掉
 // 尚未 promote 的近期行 —— 与 734 视图体的 hot ∪ parent 形态同构。
@@ -189,27 +245,45 @@ func (h *Handler) resolveSessionTenant(ctx context.Context, r *http.Request, ses
 // RLS 姿态与当年的 v1 查询一致：两表都带 tenant_isolation +
 // super_admin_bypass 策略（430/725），因此这里不改变可见性语义，只改变
 // 「哪张表提供事实」。
-func (h *Handler) lookupSessionTenant(ctx context.Context, sessionID string) string {
+func (h *Handler) lookupSessionTenant(ctx context.Context, sessionID, tenantScope string) string {
 	if h.db == nil || sessionID == "" {
 		return ""
 	}
-	var tenant string
-	err := h.db.QueryRow(ctx, `
-		SELECT tenant_id FROM (
-			SELECT tenant_id, ts FROM session_turns_hot WHERE session_id = $1
-			UNION ALL
-			SELECT tenant_id, ts FROM session_turns WHERE session_id = $1
-		) session_rows
-		ORDER BY ts DESC
-		LIMIT 1`, sessionID).Scan(&tenant)
-	if err == nil && tenant != "" {
-		return tenant
+	if tenantScope != "" {
+		var tenant string
+		err := h.db.QueryRow(ctx, sessionTenantScopedSQL, sessionID, tenantScope).Scan(&tenant)
+		if err == nil && tenant != "" {
+			return tenant
+		}
+		// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的镜像链启用之前的
+		// v1 兜底腿删除。那段历史窗口的会话随 v1 表一起消失，在会话族里
+		// 本来就查不到行（上面那条 UNION ALL 已经是唯一事实源），因此这里
+		// 返回空租户而不是去别处找一个已经不存在的关系。
+		return ""
 	}
-	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的镜像链启用之前的
-	// v1 兜底腿删除。那段历史窗口的会话随 v1 表一起消失，在会话族里
-	// 本来就查不到行（上面那条 UNION ALL 已经是唯一事实源），因此这里
-	// 返回空租户而不是去别处找一个已经不存在的关系。
-	return ""
+	rows, err := h.db.Query(ctx, sessionTenantDistinctSQL, sessionID)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+	var candidates []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return ""
+		}
+		candidates = append(candidates, t)
+	}
+	if err := rows.Err(); err != nil {
+		return ""
+	}
+	tenant := pickSanitizeSessionTenant(candidates, tenantScope)
+	if tenant == "" && len(candidates) > 1 {
+		slog.Warn("session tenant lookup ambiguous across tenants, refusing to guess",
+			"session_id", sessionID,
+			"candidate_tenants", candidates)
+	}
+	return tenant
 }
 
 func (h *Handler) loadOutboundBodySnippet(ctx context.Context, requestID string) string {

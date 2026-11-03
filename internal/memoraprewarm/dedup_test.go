@@ -98,7 +98,7 @@ func TestSessionDedupConcurrentSingleWinner(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			if d.claim("same-session", time.Now()) {
+			if d.claim("t", "same-session", time.Now()) {
 				mu.Lock()
 				winners++
 				mu.Unlock()
@@ -116,7 +116,7 @@ func TestSessionDedupMemoryBounded(t *testing.T) {
 	const max = 32
 	d := newSessionDedup(time.Hour, max)
 	for i := 0; i < max*20; i++ {
-		d.claim(fmt.Sprintf("sess-%d", i), time.Now())
+		d.claim("", fmt.Sprintf("sess-%d", i), time.Now())
 	}
 	if got := d.size(); got > max {
 		t.Fatalf("dedup table must stay bounded, size=%d max=%d", got, max)
@@ -126,13 +126,13 @@ func TestSessionDedupMemoryBounded(t *testing.T) {
 // 6) TTL 过期后允许重新抢占（session id 被复用时不永久冻结）。
 func TestSessionDedupTTLExpiry(t *testing.T) {
 	d := newSessionDedup(50*time.Millisecond, 10)
-	if !d.claim("s", time.Now()) {
+	if !d.claim("", "s", time.Now()) {
 		t.Fatal("first claim must win")
 	}
-	if d.claim("s", time.Now()) {
+	if d.claim("", "s", time.Now()) {
 		t.Fatal("claim within TTL must lose")
 	}
-	if !d.claim("s", time.Now().Add(time.Second)) {
+	if !d.claim("", "s", time.Now().Add(time.Second)) {
 		t.Fatal("claim after TTL must win again")
 	}
 }
@@ -175,5 +175,55 @@ func TestEmptyQueryNotCountedAsRequested(t *testing.T) {
 	time.Sleep(80 * time.Millisecond)
 	if got := testutil.ToFloat64(prewarmTotal.WithLabelValues(OutcomeRequested)); got != before {
 		t.Fatalf("empty query must not count as requested, %v -> %v", before, got)
+	}
+}
+
+// 10) 两租户自报**同一个**会话串 ⇒ 互不抑制（F-2：去重键必须带租户作用域）。
+//
+// ★ 修前：键是裸 sessionID，而 session ID 来自客户端自报头 X-Gw-Session-Id
+//
+//	（gw_/gt_/gs_ 前缀的任意串）⇒ 租户 B 与租户 A 撞同一自报串时，B 的
+//	预热被 A 的坑静默抑制整整一个 TTL（24h）。
+func TestApplySameSessionIDAcrossTenantsNotSuppressed(t *testing.T) {
+	c := &fakeClient{ok: true, payload: []byte(`{"items":[{"content":"x"}]}`)}
+	w := &fakeWriter{}
+	g := NewGate()
+	g.Set(true, nil)
+	wr := NewWiring(c, w, newFakeReader(), g, nil)
+	body := []byte(`{"messages":[{"role":"user","content":"首问"}]}`)
+
+	wr.Apply(context.Background(), "tenant-a", "gw_shared-session", body)
+	waitFor(t, func() bool { return c.calls.Load() >= 1 })
+
+	// 租户 B 自报同一会话串：裸键形态下这里会被静默抑制。
+	wr.Apply(context.Background(), "tenant-b", "gw_shared-session", body)
+	waitFor(t, func() bool { return c.calls.Load() >= 2 })
+
+	// 同租户的重复请求仍被抑制（去重本身没有被拼租户破坏）。
+	wr.Apply(context.Background(), "tenant-a", "gw_shared-session", body)
+	time.Sleep(80 * time.Millisecond)
+	if got := c.calls.Load(); got != 2 {
+		t.Fatalf("same-tenant repeat must stay suppressed, calls=%d", got)
+	}
+	if got := w.calls.Load(); got != 2 {
+		t.Fatalf("both tenants must side-write once each, writes=%d", got)
+	}
+}
+
+// 11) tenant 为空 ⇒ 维持裸 sessionID 键（单租户部署行为与键空间不变）。
+func TestSessionDedupEmptyTenantKeepsBareKey(t *testing.T) {
+	d := newSessionDedup(time.Hour, 100)
+	if !d.claim("", "sess-x", time.Now()) {
+		t.Fatal("first bare-key claim must win")
+	}
+	if d.claim("", "sess-x", time.Now()) {
+		t.Fatal("bare-key repeat (empty tenant) must be suppressed — unchanged behavior")
+	}
+	// 裸键坑与租户坑互不相干：租户键是另一条目，不被裸键抑制。
+	if !d.claim("tenant-t", "sess-x", time.Now()) {
+		t.Fatal("tenant-scoped claim must not be suppressed by the bare key")
+	}
+	if got := d.size(); got != 2 {
+		t.Fatalf("bare key and tenant key must be distinct entries, size=%d", got)
 	}
 }

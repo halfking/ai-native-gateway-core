@@ -70,10 +70,14 @@ func (h *AudioTranscriptionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 			req.Profile = *keyInfo.DefaultClientProfile
 		}
 	}
+	// F-4（2026-11-04 审计）：扣费 owner 与遥测 api_key_owner_user 同源
+	// （keyMetaFromKeyInfo，与 handler.go 主链取 keyOwner 同一函数）；
+	// authenticate 关闭 key 校验时 keyInfo 为 nil → owner 空串=归属未知。
+	_, keyOwner, _ := keyMetaFromKeyInfo(keyInfo)
 	req.RequestID = requestID
 
 	if req.Stream {
-		h.serveStream(w, r, requestID, req)
+		h.serveStream(w, r, requestID, req, keyOwner)
 		return
 	}
 
@@ -82,13 +86,14 @@ func (h *AudioTranscriptionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		writeAudioError(w, requestID, terr)
 		return
 	}
-	h.svc.chargeTranscription(r.Context(), req.TenantID, requestID, req.Model, res.DurationSeconds)
+	h.svc.chargeTranscription(r.Context(), req.TenantID, keyOwner, requestID, req.Model, res.DurationSeconds)
 	writeTranscriptionResult(w, requestID, req.Model, res, req.ResponseFormat)
 }
 
 // serveStream handles stream=true: SSE with transcript.text.delta /
 // transcript.text.done events (OpenAI + zhipu-compatible naming).
-func (h *AudioTranscriptionsHandler) serveStream(w http.ResponseWriter, r *http.Request, requestID string, req *TranscribeRequest) {
+// ownerUser 同 ServeHTTP 主路径：鉴权 KeyInfo 的 owner，随成功扣费入台账。
+func (h *AudioTranscriptionsHandler) serveStream(w http.ResponseWriter, r *http.Request, requestID string, req *TranscribeRequest, ownerUser string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeErrorJSON(w, http.StatusInternalServerError, requestID, "Streaming unsupported by connection", "server_error", "stream_unsupported")
@@ -131,7 +136,7 @@ func (h *AudioTranscriptionsHandler) serveStream(w http.ResponseWriter, r *http.
 		flusher.Flush()
 		return
 	}
-	h.svc.chargeTranscription(r.Context(), req.TenantID, requestID, req.Model, res.DurationSeconds)
+	h.svc.chargeTranscription(r.Context(), req.TenantID, ownerUser, requestID, req.Model, res.DurationSeconds)
 	writeEvent("transcript.transport", map[string]string{"type": "transcript.transport", "transport": res.Transport})
 	// 同 P2-1：流式路径的响应头已随 WriteHeader(200) 发出，IgnoredParams
 	// 只能走事件（与 transport 同理）。未知事件名按 SSE 规范忽略。

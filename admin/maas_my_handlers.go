@@ -20,26 +20,30 @@ import (
 	"github.com/kaixuan/llm-gateway-go/maas"
 )
 
-// myOwnerScope resolves the owner filter for the /my/* surface.
-// Returns (ownerUser, true) when the caller is narrowed to self.
-func myOwnerScope(r *http.Request) (string, bool) {
+// myOwnerScope resolves the owner filter for the /my/* surface: the
+// username to narrow to, or "" for an unfiltered (full-tenant) view.
+func myOwnerScope(r *http.Request) string {
 	auth := GetAuthContext(r)
 	if auth == nil {
-		return "", false
+		// 未认证态：不应到达 —— /my/* 全部挂在 h.admin()（AdminMiddleware）
+		// 之后，无身份请求在中间件就被 401。防御性兜底保持与 legacy 同口径
+		// （不收窄），但语义是「没有身份」，不是「服务账号」。
+		return ""
 	}
-	// legacy admin_key：无身份 ⇒ 全租户（不收窄）。
+	// legacy admin_key（认证了但非 JWT / 无 username）：服务账号 ⇒
+	// 全租户视图（不收窄）。
 	if !auth.IsJWT || strings.TrimSpace(auth.Username) == "" {
-		return "", false
+		return ""
 	}
 	// super_admin 可显式越权查他人（管理员全租户判定面）。
 	if auth.Role == "super_admin" {
 		if v := strings.TrimSpace(r.URL.Query().Get("owner_user")); v != "" {
-			return v, false
+			return v
 		}
-		return auth.Username, false // 默认仍看自己，但未强制
+		return auth.Username // 默认仍看自己，但未强制
 	}
 	// 其余 JWT 用户：强制本人（成员仅本人，A-11）。
-	return auth.Username, true
+	return auth.Username
 }
 
 func (h *Handler) handleMaasMyUsage(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +62,7 @@ func (h *Handler) handleMaasMyUsage(w http.ResponseWriter, r *http.Request) {
 			days = n
 		}
 	}
-	ownerUser, _ := myOwnerScope(r)
+	ownerUser := myOwnerScope(r)
 	tenantID := GetTenantID(r)
 	detail, err := svc.QueryConsumptionDetail(r.Context(), tenantID, ownerUser, days)
 	if err != nil {
@@ -96,7 +100,7 @@ func (h *Handler) handleMaasMyRequests(w http.ResponseWriter, r *http.Request) {
 			pageSize = n
 		}
 	}
-	ownerUser, _ := myOwnerScope(r)
+	ownerUser := myOwnerScope(r)
 	pageData, err := svc.QueryMyRequests(r.Context(), GetTenantID(r), ownerUser, days, strings.TrimSpace(q.Get("model")), page, pageSize)
 	if err != nil {
 		writeInternalErr(w, "internal error (see server logs)", err)

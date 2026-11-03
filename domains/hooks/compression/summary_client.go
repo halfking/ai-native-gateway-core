@@ -37,6 +37,15 @@ func (a *summaryClientAdapter) Complete(ctx context.Context, prompt string, opts
 
 	candidates, err := getSummaryCandidates(ctx, a.deps.Provider, cfg.Model, a.profile, a.tenantID)
 	if err != nil {
+		// ★ F-1（2026-11-04）：候选解析失败（含模态门拒绝：provider 过滤不了
+		// 模态、或该模型在 text 模态下没有候选）⇒ 摘要降级（上层跳过摘要或退
+		// 机械裁剪）。这里必须留一条可观测日志，不得静默——否则压缩质量降级
+		// 无从归因（与下方 T12 的"error swallowed"是同一教训）。
+		slog.Warn("summary: resolve candidates failed",
+			"model", cfg.Model,
+			"tenant_id", a.tenantID,
+			"error", err,
+		)
 		return "", err
 	}
 	// T13 (audit 2026-08-27 §6.4): 累积所有候选错误，把首个 wrap 进 final error
@@ -82,13 +91,15 @@ func (a *summaryClientAdapter) Complete(ctx context.Context, prompt string, opts
 	return "", fmt.Errorf("summary: all candidates failed for model %s", cfg.Model)
 }
 
+// getSummaryCandidates resolves the candidate set for one summary model.
+//
+// ★ 2026-11-04（F-1，40bbe7a54 同族第二处）：摘要请求是**纯文本的 chat 形态
+// 调用** ⇒ 候选解析固定走 text 模态门。此前这里走无模态过滤的
+// GetCandidates/GetCandidatesForTenant ⇒ 登记为 embedding 的绑定会被发 chat
+// 形状请求 ⇒ 上游 400 ⇒ 摘要静默失败。tenantID 继续透传（租户路由策略仍生效，
+// 只是现在从 GetCandidatesByModality 的参数走）。
 func getSummaryCandidates(ctx context.Context, provider ProviderClient, model, profile, tenantID string) ([]ProviderCandidate, error) {
-	if tenantAware, ok := provider.(interface {
-		GetCandidatesForTenant(context.Context, string, string, string) ([]ProviderCandidate, error)
-	}); ok {
-		return tenantAware.GetCandidatesForTenant(ctx, model, profile, tenantID)
-	}
-	return provider.GetCandidates(ctx, model, profile)
+	return resolveCandidatesByModality(ctx, provider, model, profile, tenantID, modalityText)
 }
 
 func completeSummaryCandidate(ctx context.Context, cand *ProviderCandidate, prompt string, cfg summarymodel.CompletionConfig) (string, error) {

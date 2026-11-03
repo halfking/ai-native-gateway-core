@@ -4,6 +4,19 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-04 第 46 增量：48 小时修订审计轮——5 组并行只读取证（含 211 真库活体复核）＋ 12 项修复落地 ＋ 两道新机器门**
+> （goal 会话，`docs/全面审计v3/2026-11-04/`）：★ 用户目标＝「对 48 小时内的修正进行审计……编写架构设计与审计检测文档保存到 docs/全面审计v3，制定详细执行方案后审计执行」。
+> ⇒ ★ **开工对齐**：工作树 5 文件在途＝245 部署 build_seq 2929 部署侧效应 ⇒ 按先例（版本戳随轮收敛）先收敛入库清树（`3b2b4c996`）。
+> ⇒ ★★★ **承重论断独立复核 14 项全部成立**（运营计费 934-941 六面/AF-1 FX 口径/AF-15 三代一把尺/W3 owner 收窄/memoraprewarm 有界 dedup/session.closed.v1 歧义拒绝/分类器锁步门/恢复投影排除集/无可用后端归责分写/W1 菜单/i18n——**A 组含 211 真库只读活体**：934-941 全 applied、936 自愈 PK 实存、视图 security_invoker=true、embeddata 逐字节）；
+> ⚠ 实施档两处措辞被订正：AF-1「单测」实为纸面算术（maas 无落地单测）、`pg_policies` 「51+5」实为 **55=51+4**。
+> ⇒ ★★★★ **本轮真缺陷头部三条**：① **F-1【Medium】hooks/compression 第二压缩链未过模态门**（`compaction.go:393`+`summary_client.go:87-93` 无过滤 `GetCandidates`，默认启用装配，`40bbe7a54` 只修了 executors 侧副本、登记 0 处提及 ⇒ **「同族第二处未登记」实证**；embedding 绑定同名 ⇒ chat 形状 400 ⇒ 压缩静默失败）；
+> ② **F-5【Low-Medium】session_sanitize_matches 租户解析器与已修 outbox bug 同形**（撞名同族全仓残留 6 处，修有归责后果 2 处：sanitize 视图挂错租户＋output_compliance owner 子查询归属错租户；其余登记）；
+> ③ **F-7【跨仓】SSO 票据无 jti/一次性＋token 进 URL**（TTL 5min/白名单/fail-closed 缓解在，验证端在 FreeLLMAPI ⇒ 网关单方面加无效 ⇒ 待裁决）。
+> ⇒ ★★ **12 项修复**（6 修复代理两波、共享树零文件冲突）：压缩模态门（接口编译期锁＋解析失败不退回无过滤）· memoraprewarm dedup 键带租户＋panic 补记终态＋**漏斗求和闭合测试**（B 组指出的求和断言缺口）· 音频车道 owner 贯通（`keyMetaFromKeyInfo` 同源）· sanitize 两档口径（scoped 谓词/super DISTINCT 歧义拒绝）· SSO 签发审计（seam 先例照抄）· scoring 注释对齐 AF-15 · **继承 F-11** myOwnerScope 死 bool 删除＋auth 分支显式 · **继承 F-2 延伸** 活动对账 HTTP 面（`GET /api/admin/maas/campaign-reconciliation` super-only，balanced 判全量，admin-routes 610→611＋post-surface +1 两台账重生成）。
+> ⇒ ★★ **两道新机器门（均带变异臂＋还原 md5 对拍）**：**menu-config 反向同步门**（`web/src/config/menuConfigSync.test.ts`：导出件≡appNav.ts 逐组逐项逐字段，忽略 exported_at，388fe0bd6 修漂移时欠的门）＋ **FK→PK/UNIQUE 静态门**（`scripts/ursmcheck/fk_target_key_gate_test.go`：词法净化器＋三语句形态解析，覆盖判据=列集精确相等（PG 真实语义），基线 403 表/498 键/59 FK ⇒ **3 条真缺口全为「运行期 $$ DO 块自愈」形态**（936/612/825）逐条豁免＋双向棘轮＋旗舰案例可见性断言；包已登记 Makefile GUARD_PACKAGES_SLOW 无需额外接线）。
+> ⇒ ★ 验收读数：`go build`/`vet`（9 包）rc=0；memoraprewarm **-race** ok 2.859s；compression 族＋session_replay＋streaming/audio＋admin/maas/autoroute/gateway 定向＋ursmcheck（AdminRoutes/PostSurface/FkTarget）全绿；web vitest src/config **60/60**＋vue-tsc rc=0；gofmt 改动文件仅 2 处**既有漂移**（与 HEAD 的 gofmt diff 逐字节相同 ⇒ 零新增）。
+> ⇒ ★ **共享树 6 代理协作实录（§618 族新例）**：逐文件划界零冲突；两次 vet 假红均系他人在途半成品（收敛后复测 rc=0）；**一次 `git checkout --` 误伤自愈**（变异臂还原时把自己未提交改动一并抹回 ⇒ 按上下文重做＋md5 对拍一致）⇒ **共享树上做变异臂禁止用 `git checkout`，恢复必须无条件执行＋md5 对拍**。
+> ⇒ 审计档 `docs/全面审计v3/2026-11-04/{01-审计方案,02-审计发现与缺陷台账,03-修复与验证记录}.md`；README 流水已追加。**明确没做**：SSO jti（跨仓）、N2/N4/N5 展示面同族残留、N6 唯一键设计层（需迁移）、936 down 补 PK（字节冻结，下触顺带）、部署（指令止于推送）。
 > **2026-11-04 第 45 增量：运营管理与价格计费体系 P0/P1 实施轮——迁移 934–941 ＋ 流水闭环 ＋ AF-1/AF-15 修复 ＋ operations 菜单 ＋ 211/245/154 部署**
 > （goal 会话，承接第 44 增量设计档）：★ 用户目标＝「按设计档完成实施 → 脚本部署 211 测试验证 → 通过后部署 245 与 154」。
 > ⇒ ★ **W2-T0 真库重测（211 `acc-pg17/llm_gateway`）推翻 AF-3 主假设**：`credit_ledger_hot` **也是 0 行**

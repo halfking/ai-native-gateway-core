@@ -61,22 +61,42 @@ func newSessionDedup(ttl time.Duration, max int) *sessionDedup {
 	return &sessionDedup{seen: make(map[string]time.Time), ttl: ttl, max: max}
 }
 
+// dedupKey 构造去重键：租户可用时以「租户|会话」为键。
+//
+// ★ 为什么拼租户：session ID 来自客户端自报头 X-Gw-Session-Id（gw_/gt_/gs_
+// 前缀的任意串，见 domains/streaming/handler.go 的 sanitizeGwSessionHeader）
+// ⇒ 两个租户完全可能自报**同一个**会话串。裸 sessionID 作键时，先到租户
+// 占坑、后到租户的预热被静默抑制整整一个 TTL（24h）⇒ 键必须带租户作用域。
+// 租户为空（拿不到租户的调用方/单租户部署）⇒ 维持裸 sessionID 键——
+// 单租户部署的键空间与行为都保持改动前不变。
+func dedupKey(tenantID, sessionID string) string {
+	if tenantID == "" {
+		return sessionID
+	}
+	return tenantID + "|" + sessionID
+}
+
 // claim 抢占本会话的预热权。
 //
 // 语义：**首次返回 true**（本次调用应当发起预热）；TTL 内的重复调用返回
 // false（⇒ 跳过）。同一会话的并发调用中**恰好一个**返回 true。
 //
+// ★ 去重作用域是「租户 × 会话」（见 dedupKey）：跨租户的同名自报会话串
+//
+//	互不抑制。
+//
 // nil 接收者 ⇒ 恒 true（不装配去重表 ⇒ 退化成旧行为；装配面保证非 nil）。
-func (d *sessionDedup) claim(sessionID string, now time.Time) bool {
+func (d *sessionDedup) claim(tenantID, sessionID string, now time.Time) bool {
 	if d == nil || sessionID == "" {
 		return true
 	}
+	key := dedupKey(tenantID, sessionID)
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if at, ok := d.seen[sessionID]; ok && now.Sub(at) < d.ttl {
+	if at, ok := d.seen[key]; ok && now.Sub(at) < d.ttl {
 		return false // TTL 内已预热 ⇒ 跳过（ADR §5：每会话至多一次）
 	}
-	d.seen[sessionID] = now
+	d.seen[key] = now
 	if len(d.seen) > d.max {
 		d.evictLocked(now)
 	}

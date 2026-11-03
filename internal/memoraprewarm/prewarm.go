@@ -139,6 +139,11 @@ func Trigger(client Client, writer RedisSideWriter, gate *Gate, logger *slog.Log
 		defer func() {
 			// G3：预热 panic 也绝不波及网关进程。
 			if r := recover(); r != nil {
+				// ★ panic 也必须记终态（unavailable 兜底）：recover 只写日志
+				//   会让这一轮在漏斗里悬空——requested 已计、四终态都没记
+				//   ⇒ hit+miss+timeout+unavailable 求和永远对不上 requested
+				//   （漏斗泄漏一格）。
+				RecordPrewarm(OutcomeUnavailable)
 				logger.Warn("memora prewarm panicked (suppressed)", "session_id", sessionID, "panic", fmt.Sprint(r))
 			}
 		}()

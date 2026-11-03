@@ -66,11 +66,52 @@ type MemoraClient interface {
 	SmartSearch(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error)
 }
 
-// ProviderClient is the subset of *provider.Client that pickCompactionCandidates
-// needs. Same rationale as MemoraClient — interface for testability.
+// ProviderClient is the subset of *provider.Client that the compaction /
+// summary candidate resolution needs. Same rationale as MemoraClient —
+// interface for testability.
+//
+// ★ 2026-11-04（F-1，40bbe7a54 同族第二处）：接口必须暴露按模态过滤的候选
+// 解析。压缩/摘要都是**纯文本的 chat 形态调用** ⇒ 候选解析固定走 text 模态
+// 门（见 resolveCandidatesByModality）；把接口方法做成**必需**而不是可选断言，
+// 是为了让「provider 不支持模态过滤」在接线期就编译失败，而不是运行期静默
+// 降级成无过滤查询（那正是把 embedding 绑定塞回 chat 请求的路）。
 type ProviderClient interface {
 	Enabled() bool
 	GetCandidates(ctx context.Context, model, profile string) ([]ProviderCandidate, error)
+	// GetCandidatesByModality returns candidates whose canonical model
+	// registration accepts the requested modality (provider.Client's SQL
+	// arms are the authority). tenantID keeps tenant routing policy flowing
+	// through the filtered query.
+	GetCandidatesByModality(ctx context.Context, model, profile, tenantID, modality string) ([]ProviderCandidate, error)
+}
+
+// modalityText is the fixed request modality for every candidate resolution
+// in this package: compaction and summary are both pure-text chat-shaped
+// calls, never embedding/media requests.
+const modalityText = "text"
+
+// resolveCandidatesByModality is the single entry point for candidate
+// resolution in this package — mirrors executors.Executor.resolveCandidatesByModality
+// so both halves of the compression chain obey the same gate.
+//
+//   - modality == "" ⇒ 无过滤的 GetCandidates（保留 getSummaryCandidates 的
+//     原语义：租户感知的 provider 走 GetCandidatesForTenant，否则退
+//     GetCandidates）。本包当前没有 "" 调用方（压缩/摘要固定 text），保留该臂
+//     纯粹为了不锚断「无模态概念调用方」的旧路径。
+//   - modality != "" ⇒ GetCandidatesByModality；provider 侧过滤不了模态时
+//     （接线 adapter 返回错误）**不退回**无过滤查询——那条路会把登记为
+//     embedding 的绑定塞回 chat 形态请求 ⇒ 上游 400 ⇒ 压缩静默失败。
+//     调用方拿到错误 ⇒ 该模型没有候选 ⇒ 退下一个压缩模型 / 降级机械裁剪。
+func resolveCandidatesByModality(ctx context.Context, provider ProviderClient, model, profile, tenantID, modality string) ([]ProviderCandidate, error) {
+	if modality == "" {
+		if tenantAware, ok := provider.(interface {
+			GetCandidatesForTenant(context.Context, string, string, string) ([]ProviderCandidate, error)
+		}); ok {
+			return tenantAware.GetCandidatesForTenant(ctx, model, profile, tenantID)
+		}
+		return provider.GetCandidates(ctx, model, profile)
+	}
+	return provider.GetCandidatesByModality(ctx, model, profile, tenantID, modality)
 }
 
 // ProviderCandidate is the minimal candidate shape pickCompactionCandidates
@@ -390,9 +431,15 @@ func pickCompactionCandidates(ctx context.Context, deps *Dependencies, profile s
 	minWindow := defaultCompactionMinWindow
 	var out []ProviderCandidate
 	for _, model := range compactionModelsFromEnv() {
-		cands, err := deps.Provider.GetCandidates(ctx, model, profile)
+		// ★ 2026-11-04（F-1，40bbe7a54 同族第二处）：压缩候选解析也**必须过模态门**。
+		// 压缩请求是纯文本的摘要调用（chat 形态）⇒ 模态固定 "text"；此前走无模态
+		// 过滤的 GetCandidates ⇒ 登记为 embedding 的绑定会被塞进压缩请求 ⇒ 上游
+		// 400（"does not support chat"）⇒ 压缩静默失败退机械裁剪。
+		// 口径与 executors 侧一致：「text 只排除 embedding」。tenantID 传 ""（与
+		// 旧 GetCandidates 行为相同：provider 侧回落 default 租户）。
+		cands, err := resolveCandidatesByModality(ctx, deps.Provider, model, profile, "", modalityText)
 		if err != nil {
-			slog.Debug("compaction: resolve candidates failed", "model", model, "error", err)
+			slog.Debug("compaction: resolve candidates failed", "model", model, "modality", modalityText, "error", err)
 			continue
 		}
 		added := 0

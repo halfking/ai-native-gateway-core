@@ -260,13 +260,28 @@ func (m *MockProviderClient) GetCandidates(_ context.Context, _, _ string) ([]co
 	if m.GetErr != nil {
 		return nil, m.GetErr
 	}
+	return m.availableCandidates(), nil
+}
+
+// GetCandidatesByModality satisfies the F-1 (2026-11-04) modality gate on
+// compression.ProviderClient. 回放 mock 不建模 models_canonical.modality 登记
+// （ProviderCandidate 也没有模态字段）⇒ 视夹具里的候选清单为**已经过模态门**
+// 的集合：任意请求模态都返回同一份可用候选。
+func (m *MockProviderClient) GetCandidatesByModality(_ context.Context, _, _, _, _ string) ([]compression.ProviderCandidate, error) {
+	if m.GetErr != nil {
+		return nil, m.GetErr
+	}
+	return m.availableCandidates(), nil
+}
+
+func (m *MockProviderClient) availableCandidates() []compression.ProviderCandidate {
 	out := make([]compression.ProviderCandidate, 0, len(m.Candidates))
 	for _, c := range m.Candidates {
 		if c.Available {
 			out = append(out, c)
 		}
 	}
-	return out, nil
+	return out
 }
 
 // ── ReplayLLMResponder ─────────────────────────────────────────────────────────

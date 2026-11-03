@@ -74,7 +74,7 @@ func (w *Wiring) Apply(ctx context.Context, tenantID, sessionID string, body []b
 		//   时本次调用什么也做不了 ⇒ 若先抢占就会白白消耗掉本会话那一次
 		//   预热机会 ⇒ 后续带正常 prompt 的请求反而拿不到预热。
 		query := ExtractQueryFromBody(body)
-		if query != "" && w.dedup.claim(sessionID, time.Now()) {
+		if query != "" && w.dedup.claim(tenantID, sessionID, time.Now()) {
 			Trigger(w.client, w.writer, w.gate, w.logger, tenantID, sessionID, query, w.ttl)
 		}
 	}

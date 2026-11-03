@@ -241,7 +241,9 @@ func clampCorrection(v float64) float64 {
 // PriceScore。这是 doc 16 §5-D 的统一实现（替换旧的 `(1000-avgCost)/10`）：
 //
 //	blended = unit_price_in + unit_price_out  (1:1 input/output)
-//	if blended <= 0                  → 100 (free 或未知 → 最优)
+//	blended <= 0（AF-15 分档，见下方实现内注）：
+//	  round-1（free/套餐）      → 100（钱已付、边际成本≈0 → 维持优待）
+//	  round-2（按量、价未知）   → 中性：池内 P75 有值给 50，无价格信号给 80
 //	if costCtx.PriceP75 <= 0         → 80  (无 cohort 基线 → 中性)
 //	ratio = blended / PriceP75
 //	score = clamp(100 * (1.5 - ratio), 0, 100)
@@ -256,6 +258,9 @@ func clampCorrection(v float64) float64 {
 // §5-F 混币种：当前 CostContext 假设 cohort 单币种，HasMixedPrices 字段
 // 仍为占位。CNY/USD 同 cohort 评分的修复需要先在 Candidate 上加
 // BillingCurrency 字段并引入 FX 注入（与 §5-F 一起处理）。
+//
+// AF-15 行为钉子（round-1 优待 / round-2 中性 / 与 v1 逐位一致）：
+// autoroute/scoring_af15_zero_price_test.go。
 func scorePriceByCostContext(c Candidate, costCtx CostContext) float64 {
 	blended := c.UnitPriceInPer1M + c.UnitPriceOutPer1M
 	if blended <= 0 {

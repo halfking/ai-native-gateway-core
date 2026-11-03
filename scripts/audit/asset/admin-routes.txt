@@ -1,4 +1,4 @@
-# admin-routes.txt —— 仓内路由清单快照 | 本文件由 scripts/audit/extract-admin-routes.sh 生成，不要手改 | 口径：源码里 mux.HandleFunc/mux.Handle 的字面量首参（path<TAB>method<TAB>file:line；method=ANY 表示源码无方法前缀；口径与已知偏差见生成器头部注释）| 数据行数=610
+# admin-routes.txt —— 仓内路由清单快照 | 本文件由 scripts/audit/extract-admin-routes.sh 生成，不要手改 | 口径：源码里 mux.HandleFunc/mux.Handle 的字面量首参（path<TAB>method<TAB>file:line；method=ANY 表示源码无方法前缀；口径与已知偏差见生成器头部注释）| 数据行数=611
 /	ANY	cmd/gateway/main.go:7294
 /	ANY	cmd/gateway/main.go:7297
 /_gateway/plugin/v1/analytics/{type}	GET	cmd/gateway/plugin_canon_init.go:204
@@ -155,6 +155,7 @@
 /api/admin/logs/stats	ANY	admin/handler.go:1252
 /api/admin/maas/bills/issue	ANY	admin/maas_bills_handlers.go:13
 /api/admin/maas/bills/reconcile	ANY	admin/maas_bills_handlers.go:14
+/api/admin/maas/campaign-reconciliation	ANY	admin/maas_campaign_reconcile_handler.go:121
 /api/admin/maas/coupons	ANY	admin/maas_bills_handlers.go:12
 /api/admin/maas/model-rates	ANY	admin/maas_handlers.go:18
 /api/admin/maas/model-rates/	ANY	admin/maas_handlers.go:19
@@ -437,17 +438,17 @@
 /api/maas/account	ANY	admin/maas_handlers.go:31
 /api/maas/bills	ANY	admin/maas_bills_handlers.go:16
 /api/maas/bills/export	ANY	admin/maas_bills_handlers.go:17
-/api/maas/campaigns	ANY	admin/maas_my_handlers.go:250
-/api/maas/campaigns/	ANY	admin/maas_my_handlers.go:251
+/api/maas/campaigns	ANY	admin/maas_my_handlers.go:254
+/api/maas/campaigns/	ANY	admin/maas_my_handlers.go:255
 /api/maas/coupons/activate	ANY	admin/maas_bills_handlers.go:18
 /api/maas/coupons/redemptions	ANY	admin/maas_bills_handlers.go:19
 /api/maas/invoices	ANY	admin/maas_bills_handlers.go:20
 /api/maas/ledger	ANY	admin/maas_handlers.go:32
 /api/maas/models	ANY	admin/maas_handlers.go:27
-/api/maas/my/bills/	ANY	admin/maas_my_handlers.go:248
-/api/maas/my/budget	ANY	admin/maas_my_handlers.go:249
-/api/maas/my/requests	ANY	admin/maas_my_handlers.go:247
-/api/maas/my/usage	ANY	admin/maas_my_handlers.go:246
+/api/maas/my/bills/	ANY	admin/maas_my_handlers.go:252
+/api/maas/my/budget	ANY	admin/maas_my_handlers.go:253
+/api/maas/my/requests	ANY	admin/maas_my_handlers.go:251
+/api/maas/my/usage	ANY	admin/maas_my_handlers.go:250
 /api/maas/orders	ANY	admin/maas_handlers.go:33
 /api/maas/orders/	ANY	admin/maas_handlers.go:34
 /api/maas/plans	ANY	admin/maas_handlers.go:28

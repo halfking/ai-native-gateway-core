@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/pkg/identity"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // Application single sign-on.
@@ -62,6 +64,7 @@ const appTokenTTL = 5 * time.Minute
 // GET /api/auth/app-token?app=freellmapi
 //
 // Response:
+//
 //	{"app":"freellmapi","audience":"freellmapi-api","token":"<jwt>",
 //	 "expires_at":"...","url":"https://freellm.itestu.cn/sso?token=<jwt>"}
 //
@@ -144,6 +147,13 @@ func (h *Handler) handleAppToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A minted ticket is a credential the sibling service will exchange for
+	// an identity, so every successful issuance leaves a settings_audit row
+	// (F-6). The failure paths above are read-only rejections and are not
+	// recorded. Best-effort, like every settings.WriteAudit caller: an audit
+	// failure must never block the sign-on it is describing.
+	appTokenAuditWriter(r.Context(), h.db, appTokenAuditEntry(r, auth, app))
+
 	expiresAt := time.Now().Add(appTokenTTL)
 	payload := map[string]any{
 		"app":        app.Code,
@@ -160,6 +170,33 @@ func (h *Handler) handleAppToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-LLMGW-App-Token", token)
 	w.Header().Set("X-LLMGW-App-Audience", app.Audience)
 	writeJSON(w, http.StatusOK, payload)
+}
+
+// appTokenAuditWriter is the test seam for mint audit rows; production uses
+// settings.WriteAudit. (Unit tests cannot inject a *pgxpool.Pool into
+// Handler.db, same reason authRevocationProbe is a seam.)
+var appTokenAuditWriter = settings.WriteAudit
+
+// appTokenAuditEntry builds the settings_audit row for one successful mint:
+// the actor lands in the operator columns, the target app in setting_key
+// (the audience is the security boundary), tenant in tenant_id, and the
+// numeric user_id in new_value JSON. Action "mint" is new vocabulary for the
+// free-text action column (settings-kv uses update/rollback/delete).
+func appTokenAuditEntry(r *http.Request, auth *AuthContext, app appAudience) settings.AuditEntry {
+	user, role, ip := authIdentity(r)
+	detail, err := json.Marshal(map[string]any{"user_id": auth.UserID})
+	if err != nil {
+		detail = nil
+	}
+	return settings.AuditEntry{
+		SettingKey:   "app_token:" + app.Audience,
+		TenantID:     auth.TenantID,
+		Action:       "mint",
+		NewValue:     detail,
+		OperatorUser: user,
+		OperatorRole: role,
+		ClientIP:     ip,
+	}
 }
 
 // userEmail reads the authenticated user's email. A read failure is not

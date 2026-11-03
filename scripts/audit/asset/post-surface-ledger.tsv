@@ -12,6 +12,7 @@
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 602 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 603 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 6 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 604 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 610 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /_gateway/plugin/v1/analytics/{type}	GET	cmd/gateway/plugin_canon_init.go:204	unknown				not-probed-unresolved	★ 静态分级：解析不出
@@ -168,6 +169,7 @@
 /api/admin/logs/stats	ANY	admin/handler.go:1246	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/maas/bills/issue	ANY	admin/maas_bills_handlers.go:13	write				not-probed-writes	★ 源码确证 write：POST-only（:64 method guard）出账 ⇒ 静态分级器判 read 是调用链盲区（R159 §10.2 同族反例）⇒ 按 handler 源码改判；真探测待 cookie+护栏条件
 /api/admin/maas/bills/reconcile	ANY	admin/maas_bills_handlers.go:14	read				not-probed-not-reached	★ GET-only（:108）对账读点；静态分级 read 与源码一致；未真探测
+/api/admin/maas/campaign-reconciliation	ANY	admin/maas_campaign_reconcile_handler.go:121	read				not-probed-not-reached	★ GET-only（:86 method guard）活动额对账读点（super-only）；静态分级 read 与源码一致；未真探测
 /api/admin/maas/coupons	ANY	admin/maas_bills_handlers.go:12	write				not-probed-writes	★ 源码确证 mixed：GET 列表（:29）+ POST CreateCoupon（:43 落库写）⇒ 按 write 记（保守）；静态分级器判 read 是盲区
 /api/admin/maas/model-rates	ANY	admin/maas_handlers.go:18	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/maas/model-rates/	ANY	admin/maas_handlers.go:19	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用

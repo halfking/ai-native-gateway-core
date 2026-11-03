@@ -177,25 +177,14 @@ func lookupOwners(ctx context.Context, db *sql.DB, sessionID, tenantID string) (
 	}
 	// 一行两列：dataOwner 直接取 session_dim；callerOwner 取会话族 details 族
 	// 里最近一轮（turn_no 最大）的 api_key_owner_user。
-	row := db.QueryRowContext(ctx, `
-		SELECT sd.owner_user,
-		       (SELECT x.api_key_owner_user
-		          FROM (
-		              SELECT api_key_owner_user, turn_no
-		                FROM public.session_turn_details_hot
-		               WHERE session_id = $1
-		              UNION ALL
-		              SELECT api_key_owner_user, turn_no
-		                FROM public.session_turn_details
-		               WHERE session_id = $1
-		          ) x
-		         ORDER BY x.turn_no DESC
-		         LIMIT 1)
-		FROM session_dim sd
-		WHERE sd.gw_session_id = $1
-		  AND ($2 = '' OR sd.tenant_id = $2)
-		LIMIT 1
-	`, sessionID, tenantID)
+	//
+	// N3（2026-11-04 审计）：内层子查询此前只按 session_id 过滤 —— session_id
+	// 不是全局唯一（跨租户可撞名，生产成立过一次），撞名时「最近一轮」可能
+	// 取到别的租户的行 ⇒ api_key_owner_user 归属错租户。补与外层一致的
+	// 租户谓词（同一 $2 参数，$2='' 不过滤的既有语义在子查询内逐字复刻）：
+	// 已知租户时 callerOwner 只会来自同租户的轮次行；未知租户（$2=''）时
+	// 维持原语义不过滤。
+	row := db.QueryRowContext(ctx, lookupOwnersSQL, sessionID, tenantID)
 	var data, caller sql.NullString
 	if err := row.Scan(&data, &caller); err != nil {
 		// session_dim 行不存在或查询出错 → 保守空值（owner 规则：空 ⇒ 脱敏）
@@ -203,6 +192,30 @@ func lookupOwners(ctx context.Context, db *sql.DB, sessionID, tenantID string) (
 	}
 	return caller.String, data.String
 }
+
+// lookupOwnersSQL 是 lookupOwners 的查询体（N3，2026-11-04 审计后形状；
+// 提成常量供 SQL 形状门钉住：内层两臂必须带与外层一致的租户谓词）。
+const lookupOwnersSQL = `
+		SELECT sd.owner_user,
+		       (SELECT x.api_key_owner_user
+		          FROM (
+		              SELECT api_key_owner_user, turn_no
+		                FROM public.session_turn_details_hot
+		               WHERE session_id = $1
+		                 AND ($2 = '' OR tenant_id = $2)
+		              UNION ALL
+		              SELECT api_key_owner_user, turn_no
+		                FROM public.session_turn_details
+		               WHERE session_id = $1
+		                 AND ($2 = '' OR tenant_id = $2)
+		          ) x
+		         ORDER BY x.turn_no DESC
+		         LIMIT 1)
+		FROM session_dim sd
+		WHERE sd.gw_session_id = $1
+		  AND ($2 = '' OR sd.tenant_id = $2)
+		LIMIT 1
+	`
 
 // makeOwnerLookup returns the write-time (callerOwner, dataOwner) lookup
 // matching streaming.RedactOwnerContextFunc (BuildRedactBodyFn path).
