@@ -9,6 +9,8 @@
 #gen_append	2026-10-29 审计轮 —— 补 6 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 592 行逐字保留，含人工改判）
 #gen_append	2026-11-02 审计轮 —— 补 3 条探测车道读侧路由（★ 无探测观测 ⇒ 裁决按静态分级推导）+ 按刷新后的路由清单对齐 file:line（★ 既有 598 行的 class/bucket/verdict 逐字保留）
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 601 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 602 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 603 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /_gateway/plugin/v1/analytics/{type}	GET	cmd/gateway/plugin_canon_init.go:204	unknown				not-probed-unresolved	★ 静态分级：解析不出
@@ -313,6 +315,7 @@
 /api/admin/sessions/{id}/turns	ANY	admin/handler.go:1317	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/settings	ANY	admin/settings.go:24	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/settings/	ANY	admin/settings.go:25	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/shadow-reconciliation	ANY	admin/handler.go:1018	external				not-probed-external	★ 静态分级：出网调用
 /api/admin/stats	ANY	admin/handler.go:1166	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/stats/	ANY	admin/handler.go:1167	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/storage/config	ANY	admin/handler.go:1238	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
@@ -366,6 +369,7 @@
 /api/agents/health	ANY	cmd/gateway/main.go:7832	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/agents/stats	ANY	cmd/gateway/main.go:7831	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/attachments/	ANY	admin/handler.go:1414	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/auth/app-token	ANY	admin/handler.go:1012	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/auth/captcha	ANY	admin/handler.go:1000	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/auth/change-password	ANY	admin/handler.go:1009	write	400-guard			not-probed-writes	★ 静态分级：写库
 /api/auth/logout	ANY	admin/handler.go:996	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
