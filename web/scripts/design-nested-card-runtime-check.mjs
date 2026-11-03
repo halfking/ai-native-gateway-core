@@ -87,12 +87,10 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-
-import { localDate, mergeRatchetBaseline } from './lib/baseline-ratchet.mjs'
+import { localDateStamp } from './lib/local-date.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASELINE = join(ROOT, 'scripts', 'design-nested-card-runtime-baseline.json')
-
 
 const CHROME_CANDIDATES = [
   process.env.CHROME_PATH,
@@ -830,6 +828,19 @@ if (findings.length) {
   for (const f of findings) console.log(`  ✘ ${f.page}  ${f.containerCls}  ▸  ${f.cardCls}`)
 }
 
+// ★★ 2026-11-03（12h 审计 D3）★★ **零页测量 ⇒ 绝不写基线**（★ 判据必须在**写**之前）。
+//   ★ 原顺序是「**先写回、后判未测量**」⇒ ⇒ 浏览器驱动失败但 `report.pages` 为空时，
+//   ★ `--update-baseline` **仍会写出一份空/残缺的基线**，然后才 `exit 3`。
+//   ★ ⇒ 「没量到」与「已删除」在写回路径上被当成同一件事 ⇒ ⇒ 必须**先判、后写**。
+//   ★ 与 D2 同族：★ **缺失 ≠ 未变** —— 没量到的页**不该**被当成「已被删除」。
+const measured = report.pages.length
+if (!measured) {
+  console.log('\n⏭ 一页都没量到 ⇒ **未测量**（不是通过）')
+  if (argv.includes('--update-baseline')) {
+    console.log('★ **未测量 ⇒ 不写基线**（★ 否则「没量到」会被当成「已删除」⇒ 那些页的棘轮约束被悄悄摘掉）')
+  }
+  process.exit(3)
+}
 if (wantUpdate) {
   const prev = baselineEarly ?? { nestedCards: {} }
   const prevCounts = (prev && typeof prev === 'object' && prev.nestedCards) ? prev.nestedCards : {}
@@ -841,19 +852,27 @@ if (wantUpdate) {
   //   ★★ （★ 这一段第一版写反了：`old > now` 时保留旧的高值 ⇒ 那是「只许升不许降」，
   //     恰好把棘轮做反了 ⇒ ★ 真仓变异臂 M6 当场把它抓出来 ⇒ 见审计档 §6.4。）
   //   ★ 新页按实测值登记 —— 新页必须被棘轮看见。
-  // ★★ 2026-11-03（12h 审计 P2-3）：写回口径抽到**共用纯函数**
-  //   （web/scripts/lib/baseline-ratchet.mjs）⇒ 与 metric-skeleton 尺
-  //   **逐字同源**，且首次**有门**覆盖语义（web/src/baseline-ratchet.test.ts）。
-  //   口径三条：① 棘轮 min(旧值,实测值)；② 新页按实测登记；
-  //   ③ **未量到的页保留旧条目**（「没量到」≠「已删除」⇒ 删条目=悄悄摘约束）。
-  const { next: nextCounts, keptHigher: keptHigherRaw, preserved } = mergeRatchetBaseline(
-    prevCounts ?? {},
-    measuredCounts ?? {},
-  )
-  const keptHigher = keptHigherRaw.map(
-    (k) =>
-      `${k.page}：实测 ${k.measured} > 基线旧值 ${k.kept} ⇒ **保持旧值 ${k.kept}**（棘轮不许升）`,
-  )
+  // ★★ 2026-11-03（12h 审计 D2）**先铺旧、再覆盖新的** —— ★ 与 metric-skeleton 同款修法：
+  //   ★ 原实现 `const nextCounts = {}` ⇒ **只遍历本次量到的页** ⇒ ⇒ 任何一次以
+  //   ★ `--pages=` 子集运行的写回，会把**未量到的页**的基线条目**静默删除**
+  //   ★ ⇒ ⇒ 那些页的棘轮约束凭空消失 ⇒ ⇒ 而 `pagesMatchBaseline`（单向）
+  //   ★ **兜不住**这一形态 ⇒ ⇒ 删除这一事实永远不会被判红。
+  //   ★ 判据：★ **缺失 ≠ 未变**（★ 产物里没出现的条目，不等于产物里没有约束）。
+  const nextCounts = { ...(prevCounts ?? {}) }
+  const keptHigher = []
+  for (const [page, now] of Object.entries(measuredCounts)) {
+    const old = prevCounts[page]
+    if (typeof old === 'number' && Number.isFinite(old)) {
+      if (now > old) {
+        nextCounts[page] = old
+        keptHigher.push(`${page}：实测 ${now} > 基线旧值 ${old} ⇒ **保持旧值 ${old}**（棘轮不许升）`)
+        continue
+      }
+      nextCounts[page] = now
+      continue
+    }
+    nextCounts[page] = now
+  }
   // ★★ note 必须是**动态**的（★ 静态模板会让两次重建的记录一模一样 ⇒
   //   看不出「上限从 111 降到 0」⇒ 变更史就失去了意义）。
   const sumOf = (obj) =>
@@ -867,19 +886,17 @@ if (wantUpdate) {
       '（事实源「卡片套卡片永远不对」没有「当页面骨架」那种限定语 ⇒ 元素级禁令）。' +
       '★ 重建基线（--update-baseline）写回的值 = min(旧值, 实测值) ⇒ 只许降不许升。',
     nestedCards: nextCounts,
-    updated: localDate(),
+    // ★★ 2026-11-03（12h 审计 D2）：本地日期，不是 toISOString() 的 UTC 日期
+    updated: localDateStamp(),
     history: [
       ...(prev.history ?? []),
       {
-        updated: localDate(),
+        updated: localDateStamp(),
         note:
-          '★ 本次重建基线。★ 上限合计 ' + prevTotal + ' → ' + nextTotal + '（' + direction + '）。' +
+          '第 31 增量重建基线。★ 上限合计 ' + prevTotal + ' → ' + nextTotal + '（' + direction + '）。' +
           '★ 判据：卡面 = 有底色 ∧ 四边**可见**描边 ∧ 圆角>0 ∧ 内边距和>=8 ∧ 非药丸 ∧ 非交互控件；' +
           '外层盒子 = 卡面 ∧ 宽>=120 ∧ 高>=48；内层卡 = 卡面 ∧ class 名含 card 词 ∧ 宽>=120 ∧ 高>=24。' +
           '★ 修法是【把外层那个懒容器降级成「标题 + 内容区」】⇒ 内层卡直接落在页面底上，不是换皮。' +
-          (preserved.length
-            ? '★ 保留本次未量到的 ' + preserved.length + ' 页基线（没量到 ≠ 已删除 ⇒ 删条目=悄悄摘约束）。'
-            : '★ 本次没有「未量到」的旧条目。') +
           (keptHigher.length
             ? '★ 本次重建时有页试图调高 ⇒ 已按棘轮保持旧值：' + keptHigher.join('；') + '。'
             : '★ 本次重建没有页试图调高。'),
@@ -920,11 +937,6 @@ if (!pagesMatch) {
 
 if (jsonArg) writeFileSync(jsonArg.slice(7), JSON.stringify({ ...report, readings }, null, 2))
 
-const measured = report.pages.length
-if (!measured) {
-  console.log('\n⏭ 一页都没量到 ⇒ **未测量**（不是通过）')
-  process.exit(3)
-}
 if (findings.length || regressions.length || !usable || !pagesMatch) process.exit(1)
 // ★ 成功文案必须精确（★ 门的输出也是门的契约）。
 const nestedPages = report.pages.filter((p) => p.isNested).length

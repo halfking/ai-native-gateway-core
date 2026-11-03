@@ -54,7 +54,7 @@ func (h *Handler) handleShadowReconciliation(w http.ResponseWriter, r *http.Requ
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "build upstream request: "+err.Error())
+		writeInternalErr(w, "shadow reconciliation: build upstream request failed", err)
 		return
 	}
 	// 透传排障关联头；不带网关 admin 凭据——ASM 内网面按 NetworkPolicy
