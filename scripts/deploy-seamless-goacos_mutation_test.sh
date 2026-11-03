@@ -97,15 +97,15 @@ assert_not_hung() {
 assert_red_with() {
   local name="$1" expect="$2" out="$3"
   [[ "$RC" != "0" ]] \
-    || die "$1：变异后判据门仍然**绿**（退出码 0）⇒ 这条断言没有牙（期望红字：$expect）"
+    || die "$1：变异后判据门仍然**绿**（退出码 0）⇒ 这条断言没有牙（期望红字：${expect}）"
   grep -qF "$expect" "$out" \
-    || die "$1：判据门红了，但红字不是期望的那条（期望包含：$expect）"
+    || die "$1：判据门红了，但红字不是期望的那条（期望包含：${expect}）"
 }
 
 # ---- ① 基线：真实引擎必须绿 ----------------------------------------------
 run_bounded "$engine" "$tmp/base.out"
 assert_not_hung "基线"
-[[ "$RC" == "0" ]] || die "基线：真实引擎下判据门不是绿的（退出码 $RC）—— 门本身坏了"
+[[ "$RC" == "0" ]] || die "基线：真实引擎下判据门不是绿的（退出码 ${RC}）—— 门本身坏了"
 grep -q "OK goacos register contract holds" "$tmp/base.out" \
   || die "基线：判据门没有输出 OK goacos register contract holds"
 echo "PASS ① 基线：真实引擎 ⇒ 绿（退出码 0，限时内）"
