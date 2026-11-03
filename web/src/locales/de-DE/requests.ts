@@ -136,7 +136,6 @@ export default {
   delta_append: 'Delta anhängen',
   estimatedNote: 'Geschätzt (Upstream hat keine Nutzungsdaten zurückgegeben; lokal anhand von Zeichen- und Wortheuristiken geschätzt)',
   expand: 'Ausklappen ▼',
-  length: 'Längengrenze erreicht',
   llmReported: 'Vom LLM gemeldet',
   llm_summary: 'LLM-Zusammenfassung',
   mechanical_trim: 'Mechanisches Trimmen',

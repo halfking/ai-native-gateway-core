@@ -6,9 +6,12 @@
 --   （http_000/502/503/504 + timeout/upstream_fail/none），而迁移 644 起的
 --   **宽集**才是线上实际生效的形态 ⇒ 两份文档互相矛盾 ⇒ 后人照本文件推演
 --   会得出「error_type 只允许 7 种取值」的错误结论。
---   ★ 本文件现与 `sql/migrations/startup/929_self_check_error_type_kind_closure.sql`
---   对齐：errorsx.ErrorKind 全闭集（32 kind）+ worker 专用字面量（5 个）
+--   ★ 本文件现与 `sql/migrations/startup/930_self_check_error_type_kind_closure_model_unavailable.sql`
+--   对齐：errorsx.ErrorKind 全闭集（**33 kind**）+ worker 专用字面量（5 个）
 --     + 历史 http_* 诊断值（用 LIKE 'http_%' 通配，不再逐个枚举）。
+--   ★ 2026-11-03 同步轮订正：930 又补了 `model_unavailable`
+--     （errorsx 加 `KindModelUnavailable` 的那一笔 `4fe043dc3` 比 929 的落地
+--     晚 5 小时 ⇒ 闭集少 1 项）⇒ 本文件同步从 37 项长到 38 项。
 --   ★ 交叉门（改本文件或加新 kind 时会红）：
 --     sql/migrations/startup/migration_929_error_type_closure_test.go
 --   ★ 写点对照（决定哪些字面量必须在场）：
@@ -40,7 +43,7 @@ CREATE TABLE public.self_check_runs (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     selection_strategy text DEFAULT 'most_used'::text,
     attempted_models jsonb DEFAULT '[]'::jsonb,
-    CONSTRAINT self_check_runs_error_type_check CHECK (((error_type IS NULL) OR (error_type ~~ 'http_%'::text) OR (error_type = ANY (ARRAY['account_restricted'::text, 'auth'::text, 'auth_revoked'::text, 'canceled'::text, 'circuit_open'::text, 'client_bug'::text, 'concurrent'::text, 'content_filter'::text, 'context_length_exceeded'::text, 'conversion_error'::text, 'empty_response'::text, 'first_byte_timeout'::text, 'fp_slot_saturated'::text, 'internal'::text, 'model_deprecated'::text, 'model_not_found'::text, 'network'::text, 'no_available_channel'::text, 'none'::text, 'parse_error'::text, 'quota'::text, 'quota_balance'::text, 'quota_periodic'::text, 'quota_permanent'::text, 'rate_limit'::text, 'reply_loop'::text, 'request_rejected'::text, 'stream_timeout'::text, 'timeout'::text, 'tool_call_id_mismatch'::text, 'transient'::text, 'unattributed'::text, 'upstream_context_loss'::text, 'upstream_down'::text, 'upstream_fail'::text, 'upstream_overloaded'::text, 'unsupported_feature'::text])))),
+    CONSTRAINT self_check_runs_error_type_check CHECK (((error_type IS NULL) OR (error_type ~~ 'http_%'::text) OR (error_type = ANY (ARRAY['account_restricted'::text, 'auth'::text, 'auth_revoked'::text, 'canceled'::text, 'circuit_open'::text, 'client_bug'::text, 'concurrent'::text, 'content_filter'::text, 'context_length_exceeded'::text, 'conversion_error'::text, 'empty_response'::text, 'first_byte_timeout'::text, 'fp_slot_saturated'::text, 'internal'::text, 'model_deprecated'::text, 'model_not_found'::text, 'model_unavailable'::text, 'network'::text, 'no_available_channel'::text, 'none'::text, 'parse_error'::text, 'quota'::text, 'quota_balance'::text, 'quota_periodic'::text, 'quota_permanent'::text, 'rate_limit'::text, 'reply_loop'::text, 'request_rejected'::text, 'stream_timeout'::text, 'timeout'::text, 'tool_call_id_mismatch'::text, 'transient'::text, 'unattributed'::text, 'upstream_context_loss'::text, 'upstream_down'::text, 'upstream_fail'::text, 'upstream_overloaded'::text, 'unsupported_feature'::text])))),
     CONSTRAINT self_check_runs_selection_strategy_check CHECK (((selection_strategy IS NULL) OR (selection_strategy ~~ 'most_used'::text) OR (selection_strategy ~~ 'fallback_%'::text) OR (selection_strategy = 'random'::text))),
     CONSTRAINT self_check_runs_status_check CHECK ((status = ANY (ARRAY['running'::text, 'success'::text, 'partial'::text, 'failed'::text, 'retrying'::text])))
 );

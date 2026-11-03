@@ -1743,6 +1743,15 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//     finalizeRun 的 UPDATE 被 23514 拒绝 ⇒ 整条回滚 ⇒ run 行半写。
 			//   ★ 只重建约束，不改数据；自带 BEGIN/COMMIT + SET LOCAL 锁守卫。
 			"929_self_check_error_type_kind_closure.sql",
+			// ★ 930（2026-11-03 同步轮）：self_check_runs.error_type 的 CHECK
+			//   闭集再补一个 kind —— `model_unavailable`。
+			//   ★ 缺口本体：errorsx 加 `KindModelUnavailable` 的那一笔
+			//     （`4fe043dc3`，2026-11-02 12:23）比 929 的落地（07:47）
+			//     晚 5 小时 ⇒ CHECK 闭集少 1 项（37 → 38）。
+			//   ★ 写侧写的就是 kind 名 ⇒ finalizeRun 的 UPDATE 被 23514 拒绝
+			//     ⇒ 整条回滚 ⇒ self_check run 行停在 status='running' 的半写态。
+			//   ★ 只重建约束，不改数据；自带 BEGIN/COMMIT + SET LOCAL 锁守卫。
+			"930_self_check_error_type_kind_closure_model_unavailable.sql",
 			// 931（P0-3 M1）：userscript capture 三表族（ADR
 			// userscript-capture-gateway-endpoint D5）。含 RLS 策略与
 			// 幂等唯一约束；down 提供对称复原。

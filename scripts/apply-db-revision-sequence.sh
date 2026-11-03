@@ -2518,6 +2518,15 @@ files=(
   #     status='running' 的半写态（审计与发布都不执行）。
   #   ★ 只重建约束，不改数据；自带 BEGIN/COMMIT ⇒ 走事务通道。
   "$ROOT_DIR/sql/migrations/startup/929_self_check_error_type_kind_closure.sql"
+  # ★ 930（2026-11-03 同步轮）：self_check_runs.error_type 的 CHECK 闭集再补
+  #   一个 kind —— `model_unavailable`（38 项 = 33 kind + 5 worker 专用字面量）。
+  #   ★ 缺口本体：errorsx 加 `KindModelUnavailable` 的那一笔（`4fe043dc3`，
+  #     2026-11-02 12:23）比 929 的落地（07:47）晚 5 小时 ⇒ CHECK 闭集少 1 项。
+  #   ★ 写侧 bg/credential_selfcheck.go:844 写的正是 kind 名 ⇒ finalizeRun
+  #     的 UPDATE 被 23514 拒绝 ⇒ 整条回滚 ⇒ self_check run 行停在
+  #     status='running' 的半写态（审计与发布都不执行）。
+  #   ★ 只重建约束，不改数据；自带 BEGIN/COMMIT ⇒ 走事务通道。
+  "$ROOT_DIR/sql/migrations/startup/930_self_check_error_type_kind_closure_model_unavailable.sql"
   # ★ 931（2026-11-02 12h 审计轮 P0-3 M1）：userscript capture 摄取表族 ——
   #   capture_batches / capture_messages / capture_bodies 三张表（ADR
   #   docs/adr/2026-11-02-userscript-capture-gateway-endpoint.md D5）。
@@ -3069,6 +3078,18 @@ ledger_artifact_probe "929_self_check_error_type_kind_closure.sql" \
 # ★ 931（12h 审计轮 P0-3 M1）：产物 = userscript capture 三张表全部就位。
 #   ★ 联动契约：探针行里所有 public.x / 'x' 字面量必须在迁移文件文本中出现
 #   ⇒ 三个表名都在 931 文件里。
+# ★ 930（2026-11-03 同步轮）：产物 = self_check_runs 的 error_type CHECK 已覆盖
+#   errorsx 全闭集（33 kind + 5 worker 专用字面量 = 38 项）。
+#   ★ 探针**逐个点名 38 个必需字面量** —— 少一个都判失败。
+#     ⇒ 只点 'model_unavailable'（本轮新增的那一个）会被一个**窄集**骗过
+#     ⇒ ★ 与 929 探针同一条纪律（929 自己的注释就写着「只看约束『在不在』
+#       会被一个窄集骗过」）⇒ ★ 既然本迁移重建的是**整份**闭集，探针就该
+#       点**整份**闭集 ⇒ 窄集实现当场被抓住。
+#   ★ 联动契约：探针行里所有 public.x / 'x' 字面量必须在迁移文件文本中出现
+#   ⇒ 'self_check_runs_error_type_check' / public.self_check_runs /
+#      那 38 个字面量名都在 930 文件里。
+ledger_artifact_probe "930_self_check_error_type_kind_closure_model_unavailable.sql" \
+  "EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'self_check_runs_error_type_check' AND conrelid = 'public.self_check_runs'::regclass AND position('transient' in pg_get_constraintdef(oid)) > 0 AND position('timeout' in pg_get_constraintdef(oid)) > 0 AND position('network' in pg_get_constraintdef(oid)) > 0 AND position('rate_limit' in pg_get_constraintdef(oid)) > 0 AND position('auth' in pg_get_constraintdef(oid)) > 0 AND position('quota' in pg_get_constraintdef(oid)) > 0 AND position('upstream_down' in pg_get_constraintdef(oid)) > 0 AND position('canceled' in pg_get_constraintdef(oid)) > 0 AND position('client_bug' in pg_get_constraintdef(oid)) > 0 AND position('request_rejected' in pg_get_constraintdef(oid)) > 0 AND position('model_unavailable' in pg_get_constraintdef(oid)) > 0 AND position('concurrent' in pg_get_constraintdef(oid)) > 0 AND position('auth_revoked' in pg_get_constraintdef(oid)) > 0 AND position('quota_periodic' in pg_get_constraintdef(oid)) > 0 AND position('quota_balance' in pg_get_constraintdef(oid)) > 0 AND position('quota_permanent' in pg_get_constraintdef(oid)) > 0 AND position('model_not_found' in pg_get_constraintdef(oid)) > 0 AND position('stream_timeout' in pg_get_constraintdef(oid)) > 0 AND position('tool_call_id_mismatch' in pg_get_constraintdef(oid)) > 0 AND position('context_length_exceeded' in pg_get_constraintdef(oid)) > 0 AND position('unsupported_feature' in pg_get_constraintdef(oid)) > 0 AND position('model_deprecated' in pg_get_constraintdef(oid)) > 0 AND position('content_filter' in pg_get_constraintdef(oid)) > 0 AND position('empty_response' in pg_get_constraintdef(oid)) > 0 AND position('conversion_error' in pg_get_constraintdef(oid)) > 0 AND position('upstream_context_loss' in pg_get_constraintdef(oid)) > 0 AND position('upstream_overloaded' in pg_get_constraintdef(oid)) > 0 AND position('no_available_channel' in pg_get_constraintdef(oid)) > 0 AND position('circuit_open' in pg_get_constraintdef(oid)) > 0 AND position('fp_slot_saturated' in pg_get_constraintdef(oid)) > 0 AND position('first_byte_timeout' in pg_get_constraintdef(oid)) > 0 AND position('reply_loop' in pg_get_constraintdef(oid)) > 0 AND position('account_restricted' in pg_get_constraintdef(oid)) > 0 AND position('none' in pg_get_constraintdef(oid)) > 0 AND position('internal' in pg_get_constraintdef(oid)) > 0 AND position('parse_error' in pg_get_constraintdef(oid)) > 0 AND position('unattributed' in pg_get_constraintdef(oid)) > 0 AND position('upstream_fail' in pg_get_constraintdef(oid)) > 0)"
 ledger_artifact_probe "931_userscript_capture_family.sql" \
   "EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'capture_batches' AND c.relkind = 'r') AND EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'capture_messages' AND c.relkind = 'r') AND EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'capture_bodies' AND c.relkind = 'r')"
 # ★ 932（12h 审计轮 P0-3）：产物 = outbox_events 表就位（fresh-install 补齐）。

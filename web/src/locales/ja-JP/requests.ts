@@ -138,7 +138,6 @@ export default {
   delta_append: "デルタ追加",
   estimatedNote: "推定値（アップストリームが usage を返さなかったため、文字/単語のヒューリスティックでローカル推定しています）",
   expand: "開く ▼",
-  length: '达到长度上限',
   llmReported: "LLM 申告値",
   llm_summary: "LLM 要約",
   mechanical_trim: "機械的トリミング",

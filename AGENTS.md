@@ -4,6 +4,147 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-03 同步轮（cron）：GitHub 出网全断的取道 + `error_type` 闭集第二次漂移（930）+ 211 `--force` 锁恢复未接线**
+> （cron 会话 `mvs_c3e5ed67422c47dab8f0e0a601c37451`）：本轮任务＝拉最新 → 修问题 →
+> 编译测试 → 提交并同步 codeup + github（两仓 main 的树一致）。
+> ⇒ ★★★★ **P0（运维阻塞，本轮最大的成本）：`git fetch github` 失败**，
+> `github/main` 落后本地 **3406** 提交、落后方向另有 **13504** 笔本地没有的历史
+> ⇒ ⇒ **本机的出网链路全断**，逐层实测如下（★ 每一层都取机器读数，不靠猜）：
+> ① **DNS**：`github.com` → `198.18.0.74`（fake-ip 段）⇒ 流量走 Clash Verge 的
+>    TUN（`utun4`，gVisor 栈，`auto-route` 开）。
+> ② **代理实例有三套**：Clash Verge 服务核心 `7890`（mihomo，root）、
+>    network-switch `7894`、xray SOCKS `19989` ⇒ ⇒ **三套全部对 github 返回 `000`**。
+> ③ **Clash Verge 的 anytls 节点全死**，mihomo 日志逐条点名：
+>    `[TCP] dial 节点选择 (match Match/) … error: failed to create session:
+>    dial tcp 64.178.123.33:5771: i/o timeout` ⇒ ★★ **两个不同的死法**
+>    （**用隔离实例复跑才分得清**，在同一实例上它们都只表现为「超时」）：
+>    - `64.178.123.33:5771`（现役配置）：**TCP 连上但 anytls 握手 EOF** ⇒ **password 过期**；
+>    - `64.178.123.12:5771`（旧配置）：**TCP connect 超时** ⇒ **地址不可达**。
+>    ⇒ ⇒ ★ **换节点不解决问题；缺的是「订阅刷新」**。
+>    ⚠ ★★ **量具陷阱**：`nc -z` 在本机**不可信** —— TUN 的 gVisor 栈会**本地 accept**
+>    ⇒ 任何 `nc -z` 都报 `OPEN`，**连死掉的节点也报 OPEN** ⇒ 判「端口通不通」
+>    必须看 mihomo 自己的 dial 结果，不能看 `nc`。
+> ④ **订阅端点**：`api.efanyunapi.com` / `0b96e976-….com` 两个都取不到（它们自己
+>    也走 TUN ⇒ 撞同一堵墙）；只有 `115.29.212.252:8080/subscribe` 通（国内 IP ⇒
+>    `GEOIP,CN` ⇒ DIRECT）⇒ ⇒ 该订阅里只有两个 vless-reality 节点（Exit-56/Exit-252）。
+> ⑤ **252 的 vless 隧道「握手成功但不转发」**：xray 日志 `tunneling request to
+>    tcp:github.com:443 via 115.29.212.252:443` 之后**没有任何回包**，连 `baidu`
+>    也不通 ⇒ ⇒ **服务端出口本身坏了**，不是客户端参数问题（★ 其 uuid 其实是对的
+>    —— xray 的键名是 `id` 不是 `uuid`，第一眼看 `uuid` 会误判成「没配 uuid」）。
+> ⇒ ★★★ **★★ 本轮可用的取道（实测）**：用户自己的服务器里 **`115`
+>   （101.37.209.115）能直连 GitHub** —— `ssh 115 'curl -sI -m 12 https://github.com'`
+>   ⇒ `GH=200`（`252`/`211` 同样通）⇒ ⇒ **`ssh -N -D 19995 115` 建 SOCKS 隧道**，
+>   再让 git 走它：
+>   ```bash
+>   ssh -N -D 19995 -o BatchMode=yes -o ExitOnForwardFailure=yes 115 &
+>   export GIT_SSH_COMMAND="ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:19995 %h %p' -o BatchMode=yes"
+>   git ls-remote github        # ⇒ 读得出 refs/heads/main
+>   ```
+>   ⇒ ★★ **判据：「本机出网断」时，别去修代理，先找一条还能用的机器出网**
+>   （SSH 动态端口转发是标准手段）⇒ ★★ 与「阴性结论要当缺陷一样复核」同族：
+>   ★ **「GitHub 不可达」这个否定性结论的第一版是错的** —— 真因＝**本地代理链全断**，
+>   不是 GitHub 封了本机 ⇒ ⇒ ★★ **否定性结论要问「它的前提（出网链路）自己通吗」**。
+> ⇒ ★★★★ **P1（本轮修，跨仓）：`tests/deploy_force_lock_recovery_test.sh` 是红**
+>   ——**根因不是测试写错，是它自己的 commit 没改它要测的那处代码**：
+>   `6f245a9f3`（2026-11-02 17:04，message 明写「**锁库加 211**」）新增了这条测试
+>   + `deploy-211.sh`/`deploy-seamless-docker.sh` 的 `--force` 接线，
+>   **但 `git show --stat 6f245a9f3` 的文件清单里没有 `scripts/deploy-lib/lock.sh`**
+>   ⇒ ⇒ 引擎侧白名单仍是 `{154,245}` ⇒ `lock_recover_local 211 1` 直接
+>   `rc=2 / ERROR: invalid lock target: 211` ⇒ ⇒ ★★ **运维的 `--force` 依然到不了
+>   「恢复陈旧锁」这一步**（`deploy-211.sh` 把 `--force` 转交引擎后，引擎在白名单
+>   这一关就拒掉）⇒ ⇒ 211 部署卡在 rc=75 时**仍只能手工删锁目录** ⇒ ★★ 这正是
+>   那条测试要防的链 ⇒ 修法＝`lock.sh` 的 `lock_recover_local` 白名单加 `211`
+>   （★ 放行 211 **不放宽别的边界**：target 仍是**路径推导**的 ⇒ 跨 target 仍然
+>   结构上不可能误删）⇒ ★★ **该文件在父仓 `ai-native-tools`（`deploy-lib` 是软链
+>   SSOT，不在本仓）** ⇒ 见下方「跨仓落点」。
+> ⇒ ★★★★ **P2（本轮修）：`self_check_runs.error_type` 的 CHECK 闭集第二次漂移**
+>   —— 新增 startup 迁移 **930**（`930_self_check_error_type_kind_closure_model_unavailable.sql`）：
+>   `errorsx.KindModelUnavailable`（`model_unavailable`）是 `4fe043dc3`
+>   （**2026-11-02 12:23:59**）加的，比 929 的落地（**07:47:48**）**晚 5 小时**
+>   ⇒ ⇒ CHECK 闭集少 1 项 ⇒ 写侧 `bg/credential_selfcheck.go:844` 写的正是 kind 名
+>   ⇒ `finalizeRun`（`:896`）的 UPDATE 被 DB 以 **23514** 拒绝 ⇒ **整条回滚**
+>   ⇒ run 行停在 `status='running'` 的**半写态** ⇒ 审计与发布都不执行
+>   ⇒ ★★ **这次自检在系统里根本没发生过，但调度器以为发生过**。
+>   ⇒ ★★ 闭集 **37 → 38** 项（kind 32 → **33** + worker 专用 5）⇒ 修法＝**新增一条
+>   迁移**（★ 929 的字节已冻结在台账里 ⇒ 改它会走 content replay 通道并连锁 break）
+>   ⇒ ★★ **元教训比迁移本身更值钱**：929 的交叉门**抓到了**这次漂移（当场红）
+>   ⇒ 但 ★★ **门只报警不施救** —— 门说「新增一条迁移」，**迁移要人来写**
+>   ⇒ ⇒ ★★ **「加一个 kind」的系统成本 = 一次跨仓的人工动作**，而它**每次都会晚**
+>   ⇒ ⇒ **每加一个 kind 都要预留一次「新增迁移」的跨仓动作**。
+> ⇒ ★★ **本轮另外收口的六条（★ 全部是「上游已停手那一片」或「**本仓自己的上一轮**引入」的**>   ⇒ ⇒ ★★ **判据同 §619**：**「红要收口」不是按红的数量或新旧决定，是按「谁还在动那片」决定**
+>   ⇒ ⇒ 本轮逐条量了每片目录自 `187ec7ead` 以来的改动量）：
+>   ① **P1-1：`self_check_runs.error_type` 闭集** ⇒ 新迁移 930（见上）。
+>   ② **P1-2：`lifecycle.session_turns_probe_hot_ttl_days` 是孤儿 settings 键**
+>      （运行期在读、但从未 Register 成 spec ⇒ `settings.Global.Spec(key)` 返回 nil
+>      ⇒ `GetPlatformInt` 直接回退 fallback ⇒ ★★ **往 `settings_kv` 里写这个键
+>      完全无效**，静默无效不报错）⇒ 补 spec（`settings/spec_lifecycle.go`：
+>      TypeInt / ScopePlatform / **Default 14 与读方 fallback 对齐** / Min·Max 1..90
+>      **与代码 clamp 同档** ⇒ 两侧夹取口径一致）。
+>   ③ **P1-3：`session_id` 直读棘轮**（`TestSessionIDRawHeaderRatchet`）——
+>      上游 `187ec7ead` 给 `internal/userscriptcapture/handler.go` 加了
+>      `X-Gw-Session-Id` 直读 ⇒ 门红 ⇒ ★★ **但不能改经 `internal/sessionid`**：
+>      那层的 `SanitizeGwHeader` **要求 `gw_`/`gt_`/`gs_` 前缀**
+>      ⇒ userscript 侧发来的**裸 uuid**会被判非法 ⇒ ★★ **改走 SSOT = 静默丢掉
+>      这批会话的 `ack.CanonicalSession` 标注** ⇒ ⇒ 那不是重构，是**行为变更**
+>      ⇒ ⇒ 按门自己给的第二条路：**登记豁免 + 写明理由**。
+>   ④ **P1-4：派生台账漂移三件套**（**全部从 SSOT 重新生成，不手改产物**）：
+>      - `scripts/audit/asset/admin-routes.txt`：`extract-admin-routes.sh --update-snapshot`
+>        ⇒ **602 条**（生成器 602 vs 快照 601 ⇒ ★ **是上一轮自己的 `admin/` 改动带的**）；
+>      - `scripts/audit/asset/db-object-expect.tsv`：`db-object-census.py expect`
+>        ⇒ **863 行**（差的那 5 个索引 `idx_capture_batches_tenant` /
+>        `idx_capture_messages_batch` / `idx_capture_messages_conversation` /
+>        `idx_outbox_events_status_retry` / `idx_task_events_claim` ⇒ **正是迁移
+>        931/932/933 带来的** ⇒ ★★ 与上一轮登记的读数**逐字一致** ⇒ 确认是既有漂移）；
+>      - `db-object-gap-ledger.tsv`（`reconcile`）+ `installer-reachability.tsv`
+>        （`reachability`）⇒ 同为 863 行 ⇒ ★ **重生成前先跑 `selftest` ＝
+>        50 checks / 0 failures**（本轮已实证）⇒ ★★ 三份产物**各只多 5 行**，
+>        **其余逐字未变** ⇒ 棘轮没被放松。
+>        ⇒ ★★ **第四份派生台账（`post-surface-ledger.tsv`）是本轮**被自己的改动带出来的**：
+>        admin-routes 从 601 重铸到 602 之后，POST 面台账的行数对不上了
+>        （`TestPostSurfaceLedgerCoversEveryRoute`：台账 601 ≠ 路由清单 602）⇒
+>        ⇒ ★★ **那 1 条缺的正是 `/v1/userscript/captures`**（迁移 931 的摄取端点，
+>        上游 `187ec7ead` 加的）⇒ ⇒ ★★ **旧状态是「行数相等但内容没覆盖」**
+>        （门只比行数 ⇒ 绿而内容缺）⇒ ⇒ ★ **重新生成把这条隐形缺口显性化了**
+>        ⇒ ⇒ 修法 ＝ 跑仓内既有的补齐器 `scripts/audit/post-surface-ledger-refresh.py
+>        --apply`（★ **只追加不重写既有行** ⇒ 既有 601 行逐字保留，含人工改判）
+>        ⇒ 补进 1 条 + 1 行 `#gen_append` 标记 ⇒ 台账 602 行 ⇒ 门绿。
+>        ⇒ ★★ 附带一条：**「比行数」的门在两边同时漂时会互相抵消** ⇒ ⇒ 改用
+>        「从 SSOT 重生成」的口径 ⇒ 才能让「内容缺」显形。
+>   ⑤ **P1-5：请求面文档三面同钉（第八次重钉）**——`cmd/gateway/main.go` 的
+>      中间件链相对第七次再漂 **+73** ⇒ Recovery **8056** / Logging 注释
+>      **8058-8065** / maintain 注释 **8047-8052** / Auth **8071** /
+>      SecurityHeaders **8074**（链本体 **8047-8074**）⇒ ★ **三面同钉**
+>      （本对拍表 · `docs/subsystems/request-surface.md` · magpie 审计档 §3.18.3
+>      认证表 A1 行）⇒ ★★ 这已是**第八次重钉** ⇒ 「行号会漂」是**常态**。
+>   ⑥ **P1-6：两条前端棘轮** —— ★★ **两条都是「修根因、不碰基线」**：
+>      - `i18n-shared-dead-baseline.json`（共有死键数 0 → 1）：那 1 个键是
+>        **`requests.length`**（8 语种共有、**全仓 0 引用**：无字面引用、无动态
+>        拼接）⇒ ★ **删掉 8 个语种里的这个键**（不是调基线！★ 调基线 ＝ 把门弄瞎）
+>        ⇒ 计数回到 0 ✓；
+>      - `design-spacing-scale-decisions.json`（离阶间距 0 → 4）：那 4 处全是
+>        ★★ **上一轮自己引入的 idle 指示条 CSS**（`.cp__idle-strip` /
+>        `.pp__idle-strip` 的 `gap: 6px` 与 `padding: 3px 6px`）⇒ ★ 按尺自己的
+>        修法「收到就近的间距阶值（平局取下界）」⇒ **6px → 4px** ⇒ 离阶回到 0 ✓
+>        ⇒ ★★ **这正是「红要收口不是按新旧决定」的正面例子**：两条红的引入者
+>        **都是本仓上一轮**，且都是**机械可判**的（一个删键、一个改两个数）。
+> ⇒ ★★★ **既有红的分类（本轮逐条定性，别再重复排查）**：
+>   | 套件 | rc | 定性 |
+>   |---|---|---|
+>   | `deploy_force_lock_recovery_test.sh` | 1 | **真缺陷** ⇒ 本轮已修（跨仓，见上） |
+>   | `deploy_local_contract_test.sh` | 1 | **环境红**：本机 harness 把删除动作接管成 `mavis-trash` ⇒ `lock_release_build` 的递归删目录被拒 ⇒ 锁目录留在 ⇒ 断言红（★ 代码路径正确；复现见 `mavis-trash: failed to move … errno 2 (-2700)`） |
+>   | `deploy_rollback_test.sh` | 64 | **环境红**（同族：`mavis-trash` 保护路径） |
+>   | `deploy_ssh_retry_test.sh` | 1 | **环境红**（缺注入 SSH key ⇒ `SSH_RETRY_KEY_ARGS: 未绑定的变量`） |
+>   | `session_storage_audit_gate.sh` | 1 | **环境红**（要 docker + `-tags=integration` 真库） |
+>   | `sql/migrations/startup` 的 `931` DDL 预算 | 红 | **待实测裁决**：要按目标环境最大表**实测**再抬 `statement_timeout` ⇒ ★ 本轮**不拍数**（★ 拍 120s ⇒ 245 部署中止是仓内反例）⇒ 沿用上一轮登记 |
+>   | `bg` / `cmd/gateway` / `storage` / `storage/factory` / `storage/sqlite` / `tests/integration` | 红 | **cgo=0 宿主必然红**（`verify.sh` 已登记名单；SQLite 驱动按设计 panic） |
+> ⇒ ★★ **跨仓落点（本轮明确没做）**：930 的 SQL 改动全在本仓；但 **P1 的 `lock.sh`
+>   在父仓 `ai-native-tools`**（`scripts/deploy-lib` 是软链 ⇒ 真身在
+>   `ai-native-tools/deploy/deploy-lib/`）⇒ ⇒ ★★ **本轮只在父仓工作树里改了那一行**
+>   （⇒ 本仓那条红已转绿），**没有在父仓提交** ⇒ ★★ 理由：父仓工作树当前处在
+>   **「`deploy-lib/` → `deploy/deploy-lib/` 软链搬迁未提交」的半迁移态**
+>   （`git status` 显示 35 个文件「已删除」，搬迁自 2026-11-01 00:39 起未落盘）
+>   ⇒ ★★ 在这种状态下提交父仓 = **抢别的会话的产物**（§618 族的竞态纪律）
+>   ⇒ ⇒ **待父仓那笔搬迁落地后，把这一行并进去**。
 > **2026-11-03 12h 修订审计轮：origin/main 带红测（CI 载体一条单测都不跑）+ 摄取端点数据竞争 + session.closed.v1 跨租户污染 + 基线写回同族两洞**
 > （goal 会话）：审计窗口 2026-11-02 19:05 → 2026-11-03 07:35，窗口内 15 提交。
 > ⇒ ★★★★ **P0：`origin/main` 带着一条红测**，pristine worktree 复现

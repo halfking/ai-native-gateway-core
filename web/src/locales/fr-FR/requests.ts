@@ -136,7 +136,6 @@ export default {
   delta_append: 'Ajout delta',
   estimatedNote: 'Estimé (l\'amont n\'a pas renvoyé d\'usage: heuristique locale par car./mot)',
   expand: 'Déplier ▼',
-  length: 'Limite de longueur atteinte',
   llmReported: 'Rapporté par LLM',
   llm_summary: 'Résumé LLM',
   mechanical_trim: 'Découpage mécanique',

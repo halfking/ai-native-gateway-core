@@ -138,7 +138,6 @@ export default {
   delta_append: '增量拼接',
   estimatedNote: '估算值（上游未返回 usage，本地按字元/單字啟發式估算）',
   expand: '展開 ▼',
-  length: '达到长度上限',
   llmReported: 'LLM 返回值',
   llm_summary: 'LLM 摘要',
   mechanical_trim: '機械裁剪',

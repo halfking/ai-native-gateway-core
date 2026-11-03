@@ -1354,6 +1354,19 @@ var selfCheckErrorTypeKindClosure929 []byte
 
 //go:embed embeddata/startup/929_self_check_error_type_kind_closure.down.sql
 var selfCheckErrorTypeKindClosure929Down []byte
+
+// ★ 930（2026-11-03 同步轮）：self_check_runs.error_type 的 CHECK 闭集再补
+//   一个 kind —— `model_unavailable`。
+//   ★ 缺口本体：errorsx 加 `KindModelUnavailable` 的那一笔（`4fe043dc3`，
+//     2026-11-02 12:23）比 929 的落地（07:47）晚 5 小时 ⇒ CHECK 闭集少 1 项。
+//   ★ 写侧写的就是 kind 名 ⇒ finalizeRun 的 UPDATE 被 23514 拒绝 ⇒ 整条回滚
+//     ⇒ self_check run 行停在 status='running' 的半写态。
+//   ★ 本迁移只重建该 CHECK，不改任何数据。
+//go:embed embeddata/startup/930_self_check_error_type_kind_closure_model_unavailable.sql
+var selfCheckErrorTypeKindClosureModelUnavailable930 []byte
+
+//go:embed embeddata/startup/930_self_check_error_type_kind_closure_model_unavailable.down.sql
+var selfCheckErrorTypeKindClosureModelUnavailable930Down []byte
 //go:embed embeddata/startup/931_userscript_capture_family.sql
 var userscriptCaptureFamily931 []byte
 
@@ -1820,6 +1833,8 @@ var embeddedSQLFiles = map[string][]byte{
 	//   （errorsx.ErrorKind 闭集 32 kind + 5 个 worker 专用字面量）。
 	"startup/929_self_check_error_type_kind_closure.sql":                           selfCheckErrorTypeKindClosure929,
 	"startup/929_self_check_error_type_kind_closure.down.sql":                      selfCheckErrorTypeKindClosure929Down,
+	"startup/930_self_check_error_type_kind_closure_model_unavailable.sql":         selfCheckErrorTypeKindClosureModelUnavailable930,
+	"startup/930_self_check_error_type_kind_closure_model_unavailable.down.sql":    selfCheckErrorTypeKindClosureModelUnavailable930Down,
 	"startup/915_recent_cache_hit_rate.sql":                                       recentCacheHitRate915,
 	"startup/915_recent_cache_hit_rate.down.sql":                                  recentCacheHitRate915Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,

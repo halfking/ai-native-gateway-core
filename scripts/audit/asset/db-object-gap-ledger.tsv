@@ -5,8 +5,8 @@
 # ★   ★★ retired-by-column-drop = ★ 索引的键列在本环境已被 DROP COLUMN 删掉
 # ★   ★★ ⇒ PG 自动删掉了那个索引 ⇒ ⇒ 它【不是】缺口（★ 假缺口的第三种来源）
 # ★ verdict：complete | gap　　severity：none | prod-full-gap | prod-partial-gap | local-only-gap | fresh-only-gap | new-install-gap
-# ★ generated_at=2026-11-02T03:57:32+00:00
-# ★ expected=858 envs=local,fresh,252,211 gaps_by_env={"211": 49, "252": 56, "fresh": 49, "local": 57} production_gaps=64
+# ★ generated_at=2026-11-03T01:43:33+00:00
+# ★ expected=863 envs=local,fresh,252,211 gaps_by_env={"211": 50, "252": 57, "fresh": 49, "local": 57} production_gaps=65
 -1	idx_provider_models_canonical_raw_name	provider_models	present	present	present	present	complete	none
 -1	idx_request_logs_hot_auto_task_ts	request_logs_hot	retired	retired	retired	retired	complete	none
 -1	idx_request_logs_hot_gw_session_id	request_logs_hot	retired	retired	retired	retired	complete	none
@@ -865,3 +865,8 @@
 928	idx_session_turns_probe_hot_stage_ts	session_turns_probe_hot	retired	retired	retired	retired	complete	none
 928	idx_session_turns_probe_hot_tenant_ts	session_turns_probe_hot	retired	retired	retired	retired	complete	none
 928	idx_session_turns_probe_hot_ts	session_turns_probe_hot	retired	retired	retired	retired	complete	none
+931	idx_capture_batches_tenant	capture_batches	retired	retired	retired	retired	complete	none
+931	idx_capture_messages_batch	capture_messages	retired	retired	retired	retired	complete	none
+931	idx_capture_messages_conversation	capture_messages	retired	retired	retired	retired	complete	none
+932	idx_outbox_events_status_retry	outbox_events	retired	retired	missing	missing	gap	prod-full-gap
+933	idx_task_events_claim	task_events	retired	retired	retired	retired	complete	none

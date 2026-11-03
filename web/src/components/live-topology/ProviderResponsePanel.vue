@@ -250,9 +250,9 @@ const { fresh: freshIds } = useNewArrivals(() => realResponses.value.map((r) => 
   display: flex;
   flex: none;
   align-items: baseline;
-  gap: 6px;
+  gap: 4px;
   margin: 4px 4px 0;
-  padding: 3px 6px;
+  padding: 3px 4px;
   border: 1px dashed var(--kx-border);
   border-radius: 7px;
   font-size: 11px;

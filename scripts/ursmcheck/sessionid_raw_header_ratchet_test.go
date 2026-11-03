@@ -46,6 +46,14 @@ var rawSessionHeaderBaseline = map[string]int{
 // rawSessionHeaderExempt 不计入棘轮的文件，每条须有理由。
 var rawSessionHeaderExempt = map[string]string{
 	"domains/memory/task_id.go": "TaskID 派生，不是会话身份（执行日志 01 · A7 禁改）",
+	// ★ 2026-11-03 同步轮登记：摄取端点的「canonical 会话存在性校验」要按
+	//   **调用方给的原值**查（`h.store.SessionExists(ctx, tenant, sid)`）。
+	//   ★ 为何不能改经 internal/sessionid：那一层的 `SanitizeGwHeader`
+	//   **要求 gw_/gt_/gs_ 前缀**（`internal/sessionid/sanitize.go:38`）
+	//   ⇒ userscript 侧发来的**裸 uuid**会被判成非法 ⇒ 走 SSOT 等于
+	//   **静默丢掉这批会话的 ack 标注**（`ack.CanonicalSession` 不再回填）
+	//   ⇒ ⇒ 那是**行为变更**，不是重构 ⇒ ⇒ 留在原地直读 + 登记豁免。
+	"internal/userscriptcapture/handler.go": "存在性校验要按调用方给的原值查（userscript 侧未必是 gw_ 前缀）；走 internal/sessionid 会被 SanitizeGwHeader 按前缀拒掉 ⇒ 改走 SSOT 会静默改变 ack 标注行为",
 }
 
 var rawSessionHeaderRe = regexp.MustCompile(`Header\.Get\(\s*"X-(Gw-)?Session-Id"\s*\)|Header\["X-(Gw-)?Session-Id"\]`)
