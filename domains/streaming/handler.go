@@ -7157,7 +7157,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			// charge and the audit trail cannot disagree.
 			chargeStart := eventAt
 			multiplier := h.maasSvc.ResolveCurrentMultiplier(chargeCtx, chargeStart)
-			charged, stampedMultiplier, err := h.maasSvc.ChargeRequestMultimodalWithMultiplier(chargeCtx, keyInfo.TenantID, evt.RequestID, canonical, maas.TokenUsage{
+			charged, stampedMultiplier, err := h.maasSvc.ChargeRequestMultimodalWithMultiplier(chargeCtx, keyInfo.TenantID, keyOwner, evt.RequestID, canonical, maas.TokenUsage{
 				PromptTokens:     pt,
 				CompletionTokens: ct,
 				CacheReadTokens:  crt,

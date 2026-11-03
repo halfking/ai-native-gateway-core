@@ -20,7 +20,7 @@
 
 ### 2.1 HTTP 中间件链（外向内）
 
-`cmd/gateway/main.go:8047-8074`：
+`cmd/gateway/main.go:8084-8102`：
 
 ```
 Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → Tracing
@@ -30,9 +30,9 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 两处顺序是踩坑后改的，有注释自陈：
 
 - **Logging 必须在 Auth 之外** —— 否则 401 不落日志，客户端拿 `X-Request-Id` 去查命中 0 次
-  （`cmd/gateway/main.go:8058-8065`）。
+  （`cmd/gateway/main.go:8086-8093`）。
 - **maintain/mobile 必须组合在链内**（`publicSurface`）—— 否则运维面不带安全响应头
-  （`cmd/gateway/main.go:8047-8052`）。
+  （`cmd/gateway/main.go:8075-8080`）。
 
 ### 2.2 数据面：v1（生产默认）与 v2（默认关）
 
@@ -55,7 +55,7 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 
 | 机制 | 位置 | 裁决 | 生产 | 阶段 |
 |---|---|---|---|---|
-| HTTP 中间件链 | `middleware/` + `cmd/gateway/main.go:8047-8074` | **主链** | ✅ | — |
+| HTTP 中间件链 | `middleware/` + `cmd/gateway/main.go:8084-8102` | **主链** | ✅ | — |
 | Request Pipeline | `domains/pipeline/` | **骨架**（阶段词表的唯一事实源，16 个 phase） | ❌（v2 默认关） | — |
 | `HookRegistry` | `domains/hooks/registry.go:36` | **判死** | ❌（生产零调用方） | — |
 | Hook 阶段词表（5 个旧名） | `domains/hooks/types.go:13-23` | **别名视图** | ❌ | 映射到骨架的同名 phase |

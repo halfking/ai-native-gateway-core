@@ -80,14 +80,26 @@ func TestDoc16_PriceScore_P75Discrimination(t *testing.T) {
 // （单免费候选）PriceScore 退化为中性 80 而非钳制到 100/0。
 func TestDoc16_PriceScore_NoBaseline(t *testing.T) {
 	zeroCtx := CostContext{} // PriceP75 == 0
-	free := Candidate{UnitPriceInPer1M: 0, UnitPriceOutPer1M: 0}
+	// AF-15（W5-T1）：真免费候选必须带 free 类 billing_mode（生产索引里
+	// free 池就是这么标的）；round-2 按量的 0/0 现在走中性而不是优待。
+	free := Candidate{UnitPriceInPer1M: 0, UnitPriceOutPer1M: 0, BillingMode: "free"}
 	if got := scorePriceByCostContext(free, zeroCtx); got != 100 {
 		t.Errorf("free candidate with no baseline: got %.2f, want 100", got)
+	}
+	// round-2 按量 + 价未知 + 池无信号 ⇒ 中性 80（不再冒充最便宜）。
+	unknownPayg := Candidate{UnitPriceInPer1M: 0, UnitPriceOutPer1M: 0, BillingMode: "per_token"}
+	if got := scorePriceByCostContext(unknownPayg, zeroCtx); got != 80 {
+		t.Errorf("round-2 unknown-price candidate with no baseline: got %.2f, want 80 (AF-15 neutral)", got)
 	}
 
 	paid := Candidate{UnitPriceInPer1M: 50, UnitPriceOutPer1M: 50}
 	if got := scorePriceByCostContext(paid, zeroCtx); got != 80 {
 		t.Errorf("paid candidate with no baseline: got %.2f, want 80 (neutral)", got)
+	}
+	// round-2 价未知但池有信号 ⇒ 中性 50（= P75 同价的候选会拿的分）。
+	signalCtx := CostContext{PriceP75: 500}
+	if got := scorePriceByCostContext(unknownPayg, signalCtx); got != 50 {
+		t.Errorf("round-2 unknown-price candidate with P75=500: got %.2f, want 50 (AF-15 neutral)", got)
 	}
 }
 
@@ -166,7 +178,7 @@ func TestDoc16_PriceScore_FreeCandidateDominates(t *testing.T) {
 	// cohort 中等价位（blended=300, 500, 700），PriceP75 约 500（n=3,
 	// p=0.75 → rank=ceil(2.25)=3 → 700）。free candidate 仍在 P75
 	// 之外且 blended==0 → 100；paid3=700 == P75 → 50；paid1=300 显著低于 P75。
-	free := Candidate{UnitPriceInPer1M: 0, UnitPriceOutPer1M: 0}
+	free := Candidate{UnitPriceInPer1M: 0, UnitPriceOutPer1M: 0, BillingMode: "free"}
 	paid1 := Candidate{UnitPriceInPer1M: 150, UnitPriceOutPer1M: 150} // 300
 	paid2 := Candidate{UnitPriceInPer1M: 250, UnitPriceOutPer1M: 250} // 500
 	paid3 := Candidate{UnitPriceInPer1M: 350, UnitPriceOutPer1M: 350} // 700

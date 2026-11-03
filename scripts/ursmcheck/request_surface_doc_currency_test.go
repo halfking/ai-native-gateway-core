@@ -172,18 +172,18 @@ type docEvidence struct {
 //	的一致性基准是提交树，不是工作树**。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 8047, to: 8074,
+		file: "cmd/gateway/main.go", from: 8084, to: 8102,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8058, to: 8065,
+		file: "cmd/gateway/main.go", from: 8086, to: 8093,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8047, to: 8052,
+		file: "cmd/gateway/main.go", from: 8075, to: 8080,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},

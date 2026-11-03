@@ -9,12 +9,12 @@ import (
 // TripartiteReading is the three-way reconciliation snapshot for one period.
 // A = consumption buckets · B = monthly bill · C = credit_ledger consume abs sum.
 type TripartiteReading struct {
-	TenantID       string `json:"tenant_id"`
-	PeriodYM       string `json:"period_ym"`
-	BucketCredits  int64  `json:"bucket_credits"`
-	BillCredits    int64  `json:"bill_credits"`
-	LedgerConsume  int64  `json:"ledger_consume_abs"`
-	BucketsMatchBill bool `json:"buckets_match_bill"`
+	TenantID         string `json:"tenant_id"`
+	PeriodYM         string `json:"period_ym"`
+	BucketCredits    int64  `json:"bucket_credits"`
+	BillCredits      int64  `json:"bill_credits"`
+	LedgerConsume    int64  `json:"ledger_consume_abs"`
+	BucketsMatchBill bool   `json:"buckets_match_bill"`
 }
 
 // ReconcileTripartite compares buckets vs bill vs ledger consume for a period.
@@ -42,9 +42,11 @@ func (s *Service) ReconcileTripartite(ctx context.Context, tenantID, periodYM st
 		billCredits = -1 // missing bill
 	}
 	var ledgerAbs int64
+	// AF-3（2026-11-03 审计）：C 侧此前只读父表 ⇒ 提升滞后窗口内的 hot 行
+	// 系统性漏计，LedgerConsume 不可信 ⇒ 改两臂并读视图（hot ∪ 分区）。
 	_ = s.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(ABS(amount)), 0)::bigint
-		  FROM credit_ledger
+		  FROM credit_ledger_with_current_month
 		 WHERE tenant_id = $1
 		   AND entry_type = 'consume'
 		   AND created_at >= $2 AND created_at < $3

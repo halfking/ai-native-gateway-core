@@ -2,6 +2,7 @@ export default {
   collapseSidebar: "サイドバーを折りたたむ",
   expandSidebar: "サイドバーを展開",
   group: {
+    operations: '運営管理',
     tenantPortal: "マイサービス",
     modelsRouting: "モデルとルーティング",
     tenantUsers: "テナントユーザー",
@@ -13,6 +14,7 @@ export default {
     opsplatform: "運用保守センター"
   },
   item: {
+    operationsOverview: '運営サマリー',
     liveTopology: "リアルタイムトポロジ",
     overview: "概要",
     tenantModels: "標準モデル",

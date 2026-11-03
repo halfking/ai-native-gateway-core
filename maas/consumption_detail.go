@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"time"
 )
 
@@ -54,7 +56,8 @@ func (s *Service) QueryConsumptionDetail(ctx context.Context, tenantID, ownerUse
 	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	var centsPerCredit float64
-	if err := s.pool.QueryRow(queryCtx, `SELECT cents_per_credit::float8 FROM maas_settings WHERE id = 1`).Scan(&centsPerCredit); err != nil {
+	var billCurrency string
+	if err := s.pool.QueryRow(queryCtx, `SELECT cents_per_credit::float8, COALESCE(currency_display, 'CNY') FROM maas_settings WHERE id = 1`).Scan(&centsPerCredit, &billCurrency); err != nil {
 		return ConsumptionDetail{}, fmt.Errorf("load credit conversion: %w", err)
 	}
 
@@ -113,7 +116,16 @@ func (s *Service) QueryConsumptionDetail(ctx context.Context, tenantID, ownerUse
 			&row.CancelledBilledRequests); err != nil {
 			return ConsumptionDetail{}, fmt.Errorf("scan consumption detail: %w", err)
 		}
-		row.TenantRevenueUSD = float64(row.CreditsCharged) * centsPerCredit / 100
+		// AF-1（2026-11-03 审计裁定 A-14）：cents_per_credit 的语义钉死为
+		// 「分/积分（账单币种的分）」—— 这里此前把它当美分直除 100 折 USD，
+		// 而 bills.go 同值当 CNY 分记账单金额 ⇒ GrossMarginUSD 混币种
+		// （currency=CNY 时毛利虚大约 7.2 倍）。修法：先折账单币种元，
+		// CNY 再除记账锚点 FX 折 USD；USD 币种直除不变。
+		revenueBillMajor := float64(row.CreditsCharged) * centsPerCredit / 100
+		row.TenantRevenueUSD = revenueBillMajor
+		if strings.EqualFold(billCurrency, "CNY") {
+			row.TenantRevenueUSD = revenueBillMajor / settings.CNYToUSDFX
+		}
 		row.GrossMarginUSD = row.TenantRevenueUSD - row.UpstreamCostUSD
 		if row.TenantRevenueUSD != 0 {
 			row.GrossMarginRate = row.GrossMarginUSD / row.TenantRevenueUSD

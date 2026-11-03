@@ -11,6 +11,7 @@
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 601 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 602 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 603 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 6 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 604 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /_gateway/plugin/v1/analytics/{type}	GET	cmd/gateway/plugin_canon_init.go:204	unknown				not-probed-unresolved	★ 静态分级：解析不出
@@ -449,11 +450,17 @@
 /api/maas/account	ANY	admin/maas_handlers.go:31	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/maas/bills	ANY	admin/maas_bills_handlers.go:16	read				not-probed-not-reached	★ GET-only（:132）租户月账单列表；未真探测
 /api/maas/bills/export	ANY	admin/maas_bills_handlers.go:17	read				not-probed-not-reached	★ GET-only（:161）CSV 导出；未真探测
+/api/maas/campaigns	ANY	admin/maas_my_handlers.go:250	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/maas/campaigns/	ANY	admin/maas_my_handlers.go:251	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/maas/coupons/activate	ANY	admin/maas_bills_handlers.go:18	write				not-probed-writes	★ 源码确证 write：POST-only（:188）ActivateCoupon 落积分 ⇒ 静态分级器判 read 是盲区（空 body POST 会 400 但语义是写）
 /api/maas/coupons/redemptions	ANY	admin/maas_bills_handlers.go:19	read				not-probed-not-reached	★ GET-only（:218）兑换记录列表；未真探测
 /api/maas/invoices	ANY	admin/maas_bills_handlers.go:20	write				not-probed-writes	★ 源码确证 write：POST-only（:247）CreateInvoicePlaceholder 落占位行（202 Accepted）
 /api/maas/ledger	ANY	admin/maas_handlers.go:32	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/maas/models	ANY	admin/maas_handlers.go:27	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/maas/my/bills/	ANY	admin/maas_my_handlers.go:248	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/maas/my/budget	ANY	admin/maas_my_handlers.go:249	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/maas/my/requests	ANY	admin/maas_my_handlers.go:247	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/maas/my/usage	ANY	admin/maas_my_handlers.go:246	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/maas/orders	ANY	admin/maas_handlers.go:33	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/maas/orders/	ANY	admin/maas_handlers.go:34	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/maas/plans	ANY	admin/maas_handlers.go:28	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用

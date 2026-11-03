@@ -2,6 +2,7 @@ export default {
   collapseSidebar: "Contraer barra lateral",
   expandSidebar: "Expandir barra lateral",
   group: {
+    operations: 'Gestión operativa',
     tenantPortal: "Mis servicios",
     modelsRouting: "Modelos y enrutamiento",
     tenantUsers: "Inquilinos y usuarios",
@@ -13,6 +14,7 @@ export default {
     opsplatform: "Centro de operaciones"
   },
   item: {
+    operationsOverview: 'Resumen operativo',
     activateAction: 'Activar',
     liveTopology: 'Topología en vivo',
     overview: "Resumen",

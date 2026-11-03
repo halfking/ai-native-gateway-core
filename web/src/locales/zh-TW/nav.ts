@@ -2,6 +2,7 @@ export default {
   collapseSidebar: "摺疊側邊欄",
   expandSidebar: "展開側邊欄",
   group: {
+    operations: '營運管理',
     tenantPortal: "我的服務",
     modelsRouting: "模型與路由",
     tenantUsers: "租戶使用者",
@@ -13,6 +14,7 @@ export default {
     opsplatform: "維運平台"
   },
   item: {
+    operationsOverview: '營運總覽',
     activateAction: '啟用',
     activateActionTip: '前往啟用本機',
     liveTopology: "即時拓撲",

@@ -349,3 +349,11 @@
 331	931_userscript_capture_family.sql
 332	932_outbox_events_fresh_install.sql
 333	933_task_events.sql
+334	934_subscription_plan_commerce_columns.sql
+335	935_credit_ledger_owner_campaign_detail.sql
+336	936_subscription_plan_entitlements.sql
+337	937_promotion_campaigns.sql
+338	938_tenant_budgets.sql
+339	939_tenant_model_rates.sql
+340	940_market_price_reference_family.sql
+341	941_supplier_view_market_columns.sql

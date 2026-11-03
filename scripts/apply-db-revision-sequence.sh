@@ -2551,6 +2551,20 @@ files=(
   #   ★ 自带 BEGIN/COMMIT + SET LOCAL lock_timeout/statement_timeout
   #     ⇒ 走事务通道，锁面有守卫。
   "$ROOT_DIR/sql/migrations/startup/933_task_events.sql"
+  # ★ 934–941（2026-11-04 运营管理与价格计费体系 P0/P1 数据地基）：
+  #   商业骨架补列（934）+ credit_ledger 三列两表同改/两臂读视图/promote
+  #   重铸（935）+ 套餐额度（936）/活动族（937）/租户预算（938）/租户分层价
+  #   （939）/市场情报三表（940）/供应商视图市场列（941）。
+  #   ★ 自带 BEGIN/COMMIT + SET LOCAL lock_timeout/statement_timeout
+  #     ⇒ 走事务通道，锁面有守卫。
+  "$ROOT_DIR/sql/migrations/startup/934_subscription_plan_commerce_columns.sql"
+  "$ROOT_DIR/sql/migrations/startup/935_credit_ledger_owner_campaign_detail.sql"
+  "$ROOT_DIR/sql/migrations/startup/936_subscription_plan_entitlements.sql"
+  "$ROOT_DIR/sql/migrations/startup/937_promotion_campaigns.sql"
+  "$ROOT_DIR/sql/migrations/startup/938_tenant_budgets.sql"
+  "$ROOT_DIR/sql/migrations/startup/939_tenant_model_rates.sql"
+  "$ROOT_DIR/sql/migrations/startup/940_market_price_reference_family.sql"
+  "$ROOT_DIR/sql/migrations/startup/941_supplier_view_market_columns.sql"
 )
 
 
@@ -2755,7 +2769,11 @@ intentional_function_chains=(
   # sql/objects/ canonical (byte-identical to 688's live body, verified
   # per-function) plus the Asia/Shanghai pin. 698 must stay the later entry.
   'promote_tool_usage_stats_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
-  'promote_credit_ledger_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
+  # 935（2026-11-04 运营计费 P0）再重定义 promote_credit_ledger_hot_to_partition：
+  # credit_ledger / credit_ledger_hot 两表各 +3 列（owner_user/campaign_id/detail），
+  # 搬运清单 10 → 13 列（698 版硬编码列清单 ⇒ 不重铸 = 新列在 promote 边界静默丢）。
+  # 链序 = 659 → 698 → 935，**935 必须是最后一项**——它是活库里应有的最终体。
+  'promote_credit_ledger_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|935_credit_ledger_owner_campaign_detail.sql|'
   'promote_request_logs_bodies_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
   # 739 (R56) re-derives the body on top of 698 adding rate_multiplier to the
   # three explicit column lists; 739 must stay the later entry.

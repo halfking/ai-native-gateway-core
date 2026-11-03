@@ -68,8 +68,9 @@ func TestRecommendByModality_FreeModelScoresHighOnPrice(t *testing.T) {
 	idx := &Index{}
 	idx.mu.Lock()
 	idx.entries = []Candidate{
-		// free model (price 0) should get price score 100
-		{CanonicalName: "free-embed", RawModel: "free-embed", Modality: "embedding",
+		// free model (price 0 + free billing mode) should get price score 100
+		// （AF-15：免费语义收窄后，夹具按生产索引形态带 billing_mode=free）
+		{CanonicalName: "free-embed", RawModel: "free-embed", Modality: "embedding", BillingMode: "free",
 			SuccessRate: 0.95, P95LatencyMs: 100, UnitPriceInPer1M: 0, UnitPriceOutPer1M: 0},
 	}
 	idx.mu.Unlock()

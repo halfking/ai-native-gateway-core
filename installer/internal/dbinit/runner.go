@@ -1762,6 +1762,18 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 933（P1-1 S1）：taskbus 的 task_events 表（ADR
 			// outbox-consolidation-via-taskbus 目标表形态）。
 			"933_task_events.sql",
+			// 934–941（2026-11-04 运营管理与价格计费体系 P0/P1 数据地基）：
+			// 商业骨架补列（934）、credit_ledger 三列两表同改 + 两臂读视图
+			// （935）、套餐按模型额度（936）、活动族（937）、租户预算（938）、
+			// 租户分层价（939）、市场情报三表（940）、供应商视图市场列（941）。
+			"934_subscription_plan_commerce_columns.sql",
+			"935_credit_ledger_owner_campaign_detail.sql",
+			"936_subscription_plan_entitlements.sql",
+			"937_promotion_campaigns.sql",
+			"938_tenant_budgets.sql",
+			"939_tenant_model_rates.sql",
+			"940_market_price_reference_family.sql",
+			"941_supplier_view_market_columns.sql",
 		},
 	}
 }

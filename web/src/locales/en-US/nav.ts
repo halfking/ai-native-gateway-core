@@ -4,6 +4,7 @@ export default {
   expandSidebar: 'Expand Sidebar',
 
   group: {
+    operations: 'Operations',
     tenantPortal: 'My Services',
     modelsRouting: 'Models & Routing',
     tenantUsers: 'Tenants & Users',
@@ -16,6 +17,7 @@ export default {
   },
 
   item: {
+    operationsOverview: 'Operations Overview',
     liveTopology: 'Live Topology',
     overview: 'Overview',
     tenantModels: 'Standard Models',
