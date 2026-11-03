@@ -1530,7 +1530,15 @@ def delete(path, params):
 st, body = get("/nacos/v1/ns/instance/list",
                {"serviceName": svc, "namespaceId": ns, "groupName": grp})
 try:
-    hosts = ((json.loads(body) or {}).get("data") or {}).get("hosts") or []
+    # ★ 2026-11-03 实测修：goacos v1 的 /ns/instance/list 把 hosts 放在**顶层**
+    #   （{"name":…,"hosts":[…]}），不是 data.hosts ⇒ 原解析恒得空列表 ⇒
+    #   **陈旧条目永远识别不到** ⇒ 契约②「注销旧槽登记」在真注册表上是死的
+    #   （实测：登记 8781 后 8783 仍在，且 stale_removed=[]）。
+    #   ⇒ 先读顶层 hosts，再回落 data.hosts（兼容其它实现的嵌套形状）。
+    _doc = json.loads(body) or {}
+    hosts = _doc.get("hosts") or []
+    if not hosts and isinstance(_doc.get("data"), dict):
+        hosts = _doc["data"].get("hosts") or []
 except Exception:  # noqa: BLE001
     hosts = []
 stale = []

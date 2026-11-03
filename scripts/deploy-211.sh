@@ -202,7 +202,12 @@ export DD_REDIS_DB_END="${DD_REDIS_DB_END:-0}"
 #   ⇒ 消费方（编排台 /api/verify）把活着的网关读成不健康（实测 2026-11-02 的假阴性）。
 #   ⇒ 由引擎的 dd_switch_upstream 一并完成（见 deploy-seamless-docker.sh 的 GOACOS-REGISTER 块）。
 #   ★ DD_GOACOS_IP 用**消费方地址**（211 的 LAN 口），不是容器的 0.0.0.0 发布口。
-export DD_GOACOS_ADDR="${DD_GOACOS_ADDR:-http://127.0.0.1:8848}"
+# ★ 2026-11-03 实测修：默认地址**不能是 loopback**。211 的 goacos 容器把 8848
+#   发布在可路由地址 100.106.67.198 上（`docker inspect goacos` 的 HostIp），
+#   **不在 127.0.0.1 上** ⇒ 旧默认 http://127.0.0.1:8848 连不上 ⇒ 每次部署的
+#   「切流 ⇒ 同步登记注册表」都**静默失败**（引擎只 warn）⇒ 注册表仍指着已停的
+#   旧槽口 ⇒ 消费方把活着的网关读成不健康（引擎注释里记的 2026-11-02 假阴性）。
+export DD_GOACOS_ADDR="${DD_GOACOS_ADDR:-http://100.106.67.198:8848}"
 export DD_GOACOS_IP="${DD_GOACOS_IP:-${DD_HOST:-192.168.31.211}}"
 export DD_GOACOS_SERVICE="${DD_GOACOS_SERVICE:-llm-gateway}"
 export DD_GOACOS_NAMESPACE="${DD_GOACOS_NAMESPACE:-wm-deploy}"

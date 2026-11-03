@@ -33,7 +33,7 @@ register_block=$(block GOACOS-REGISTER) || die 'missing GOACOS-REGISTER block'
 
 # ---- 本地 HTTP 桩：冒充 goacos，记录收到的请求 ---------------------------
 cat > "$tmp/stub.py" <<'PY'
-import json, sys, threading
+import json, os, sys, threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -53,7 +53,25 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         self._record("GET", q)
-        body = json.dumps({"data": {"hosts": STALE}}).encode()
+        # ★ 形状必须与**真 goacos** 一致：v1 的 /ns/instance/list 把 hosts 放在
+        #   **顶层**（{"name":…,"hosts":[…]}）。旧桩返回 {"data":{"hosts":…}} ⇒
+        #   门测的是一个服务器从不返回的形状 ⇒ 真机上的解析错误测不出来
+        #   （2026-11-03 实测：真注册表顶层形状 ⇒ 引擎解析恒空 ⇒ 旧条目不注销）。
+        # 形状开关：**文件**优先（argv[3]），其次环境变量 STUB_SHAPE。
+        # ★ 用文件而不是环境变量 ⇒ 同一个桩、同一个端口就能切形状 ⇒ 场景④b
+        #   不需要再起第二个服务（本机起第二个后台服务会出现「进程活着但没监听」）。
+        shape = ""
+        if len(sys.argv) > 3:
+            try:
+                with open(sys.argv[3], encoding="utf-8") as fh:
+                    shape = fh.read().strip()
+            except OSError:
+                shape = ""
+        shape = shape or os.environ.get("STUB_SHAPE", "")
+        if shape == "nested":
+            body = json.dumps({"data": {"hosts": STALE}}).encode()
+        else:
+            body = json.dumps({"name": "DEFAULT_GROUP@@llm-gateway", "hosts": STALE}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -94,7 +112,7 @@ PY
 )
 record="$tmp/requests.jsonl"
 : > "$record"
-python3 "$tmp/stub.py" "$port" "$record" &
+python3 "$tmp/stub.py" "$port" "$record" "$tmp/shape" &
 stub_pid=$!
 for _ in $(seq 1 50); do
   if python3 - "$port" <<'PY' 2>/dev/null
@@ -161,6 +179,34 @@ run_case 8783 >/dev/null 2>&1
 rc=$?
 set -e
 [[ "$rc" != "0" ]] || die 'unreachable registry must return non-zero'
+
+# ---- 场景④b：嵌套形状（data.hosts）也必须被读出来 ------------------------
+# 引擎的回落分支：先读顶层 hosts，再读 data.hosts ⇒ 两种实现都兼容。
+# ★ 这条用例是为了锁住「引擎支持两种形状」，不是为了证明真服务器是哪种
+#   （真服务器是**顶层**形状，见场景① 的桩）。
+# ★ 用**同一个桩**（写形状文件切换）⇒ 不用再起一个服务。
+printf 'nested' > "$tmp/shape"
+# ★ 场景④ 把 DD_GOACOS_ADDR 指向了不可达地址（127.0.0.1:1），恢复点在场景⑤ ⇒
+#   本场景必须先指回桩的真实端口，否则连的是那个死地址。
+export DD_GOACOS_ADDR="http://127.0.0.1:$port"
+: > "$record"
+out=$(run_case 8783) || die "nested-shape register failed: $out"
+del_lines=$(grep -c '"method": "DELETE"' "$record" || true)
+assert_equal "$del_lines" "1" 'nested shape: stale DELETE must still happen'
+del_line=$(grep '"method": "DELETE"' "$record" | tail -1)
+assert_contains "$del_line" '"port": "8781"' 'nested shape: DELETE did not target the stale port'
+printf 'flat' > "$tmp/shape"
+
+# ---- 场景④c：211 外壳的默认注册地址**不得是 loopback** -------------------
+# ★ 锁住 211 的事实：goacos 发布在可路由地址（100.106.67.198:8848），不在
+#   127.0.0.1 ⇒ 外壳默认若回到 loopback，每次部署的登记都会静默失败。
+wrapper="$self/deploy-211.sh"
+[[ -f "$wrapper" ]] || die "missing wrapper: $wrapper"
+addr_default=$(grep -E '^export DD_GOACOS_ADDR=' "$wrapper" | head -1)
+[[ -n "$addr_default" ]] || die 'wrapper does not export DD_GOACOS_ADDR'
+case "$addr_default" in
+  *127.0.0.1*) die "wrapper DD_GOACOS_ADDR default is loopback; 211's goacos listens on a routable address" ;;
+esac
 
 # ---- 场景⑤：★「切流 ⇒ 注册表跟着变」这条**接线**必须成立 ----------------
 # 只测块不够：块对了但没被切流路径调用，等于没修。
