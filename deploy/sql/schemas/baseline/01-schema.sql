@@ -7122,7 +7122,10 @@ CREATE TABLE public.credit_ledger_2026_07 (
     ref_id character varying,
     note text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    pool character varying
+    pool character varying,
+    owner_user character varying(128) DEFAULT ''::character varying NOT NULL,
+    campaign_id bigint,
+    detail jsonb DEFAULT '{}'::jsonb NOT NULL
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
@@ -7141,7 +7144,10 @@ CREATE TABLE public.credit_ledger_2026_08 (
     ref_id character varying,
     note text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    pool character varying
+    pool character varying,
+    owner_user character varying(128) DEFAULT ''::character varying NOT NULL,
+    campaign_id bigint,
+    detail jsonb DEFAULT '{}'::jsonb NOT NULL
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
@@ -16987,6 +16993,15 @@ CREATE TABLE public.subscription_plans (
     CONSTRAINT subscription_plans_tier_check CHECK (((tier)::text = ANY (ARRAY[('basic'::character varying)::text, ('pro'::character varying)::text, ('max'::character varying)::text]))),
     CONSTRAINT subscription_plans_billing_period_check CHECK (((billing_period)::text = ANY (ARRAY[('monthly'::character varying)::text, ('quarterly'::character varying)::text, ('yearly'::character varying)::text])))
 );
+
+
+--
+--
+-- Name: subscription_plans_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscription_plans
+    ADD CONSTRAINT subscription_plans_pkey PRIMARY KEY (id);
 
 
 --

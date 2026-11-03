@@ -207,9 +207,17 @@ type FileWriterInterface interface {
 	Close() error
 }
 
+// DefaultTTL 是会话 hash 的**兜底 TTL**（NewManager 收到 0 时用它）。
+//
+// ★ 2026-11-04 12h 审计轮（B-2）：本常量原先是内联字面量 `7 * 24 * time.Hour`，
+//   而 memoraprewarm 的旁路写也需要「与会话 hash 相同」的 TTL ⇒
+//   ⇒ 两者一旦各自写不同的值，就会出现「谁后 EXPIRE 谁赢」的竞态
+//   ⇒ ⇒ 提到包级导出，成为**两边共用的同一个真值**。
+const DefaultTTL = 7 * 24 * time.Hour
+
 func NewManager(redisClient *RedisClient, ttl time.Duration) *Manager {
 	if ttl == 0 {
-		ttl = 7 * 24 * time.Hour
+		ttl = DefaultTTL
 	}
 	m := &Manager{redis: redisClient, ttl: ttl}
 	m.degradedMode.Store(false)

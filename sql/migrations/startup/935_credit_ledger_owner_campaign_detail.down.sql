@@ -72,7 +72,10 @@ END;
 $$;
 
 DROP POLICY IF EXISTS tenant_isolation_credit_ledger_hot ON public.credit_ledger_hot;
-ALTER TABLE public.credit_ledger_hot NO ROW LEVEL SECURITY;
+    -- ★ 2026-11-04 12h 审计轮：PostgreSQL **没有** `NO ROW LEVEL SECURITY` 这个子句
+    --   （合法形态只有 ENABLE / DISABLE ROW LEVEL SECURITY）⇒ 原写法是**语法错误**
+    --   ⇒ 整个 BEGIN/COMMIT 事务回滚 ⇒ 该 down 迁移**从未真正执行过**。
+ALTER TABLE public.credit_ledger_hot DISABLE ROW LEVEL SECURITY;
 DROP INDEX IF EXISTS public.idx_credit_ledger_hot_owner;
 DROP INDEX IF EXISTS public.idx_credit_ledger_owner;
 ALTER TABLE public.credit_ledger_hot

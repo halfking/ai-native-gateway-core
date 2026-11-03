@@ -254,7 +254,13 @@ func (s *Service) GetMonthlyBill(ctx context.Context, tenantID string, billID in
 		&b.Status, &b.IssuedAt, &b.Note, &b.CreatedAt, &b.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return MonthlyBill{}, fmt.Errorf("bill not found")
+		// ★★ 用 %w 保住 errors.Is 链：本仓 admin 层的 `writeLookupErr` 是按
+		//   `errors.Is(err, pgx.ErrNoRows)` 判「查不到 ⇒ 404」的
+		//   （admin/aggregate_read_guard.go）。原先这里用 `fmt.Errorf("bill not found")`
+		//   把哨兵**换成了普通字符串** ⇒ errors.Is 恒 false ⇒
+		//   「账单不存在」被当成读失败 ⇒ 500 而不是 404。
+		//   ⇒ ★ 错误文案前綴保持 "bill not found" 不变（只多带一段原始错误）。
+		return MonthlyBill{}, fmt.Errorf("bill not found: %w", err)
 	}
 	return b, err
 }

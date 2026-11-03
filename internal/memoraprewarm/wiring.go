@@ -15,9 +15,23 @@ import (
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
-// DefaultSessionTTL 是旁路字段的兜底 TTL（会话 hash 自身由 session.Manager
-// 心跳续期，本值只兜 memora_context 悬挂）。
-const DefaultSessionTTL = 24 * time.Hour
+// DefaultSessionTTL 是**兜底**的会话 hash TTL。
+//
+// ★★ 2026-11-04 12h 审计轮（B-2）★★：本常量原先是 24h，而它被用作
+//   **旁路写的 EXPIRE 值**——而 Redis 的 EXPIRE 是**key 级**的
+//   ⇒ 旁路写把会话 hash（session:{id}，**同一个 key**）的 TTL
+//   **整个覆盖**成了 24h ⇒ 而会话 hash 自己的 TTL 由 session.Manager
+//   用 `cfg.SessionTTLHours`（默认 **72h**）续期
+//   ⇒ ⇒ 会话状态（标题/标签/注解/设备/api-key 绑定…）在 24h 而不是 72h 被丢弃
+//   ⇒ ⇒ 静默截短了一个**有意调过的**保留期旋钮。
+//
+// ⇒ 修法：**旁路写必须用与会话 hash 完全相同的 TTL** ⇒
+//   装配层（cmd/gateway/main.go）把 `sessionTTL` 传进来，
+//   两边的 EXPIRE 写**同一个值** ⇒ 「谁后写谁赢」的竞态**自动消失**。
+//
+// ★ 本常量只是「调用方没传」时的兜底，**与 config 的默认值对齐**；
+//   生产路径一定走构造参数（main.go 传 cfg.SessionTTLHours 算出的值）。
+const DefaultSessionTTL = 72 * time.Hour
 
 // GateSyncInterval 是 settings → Gate 的同步周期（灰度开关热更生效上界）。
 // settings 读走 DB，不进数据面——由本 goroutine 独承担。
@@ -42,13 +56,22 @@ type Wiring struct {
 
 // NewWiring 构造。client/writer/reader/gate 任一为 nil ⇒ 对应半边 no-op
 // （全部 nil = 未装配，等价于不挂 Wiring）。
-func NewWiring(client Client, writer RedisSideWriter, reader RedisSideReader, gate *Gate, logger *slog.Logger) *Wiring {
+//
+// ★★ sessionTTL（B-2）：**必须**传「会话 hash 自己的 TTL」
+//   （cmd/gateway/main.go 用 cfg.SessionTTLHours 算出来的那一个）。
+//   ⇒ 旁路写的 EXPIRE 与 session.Manager 的 EXPIRE 写**同一个值**
+//   ⇒ ⇒ 两边谁先谁后都无所谓，**不会**互相截短保留期。
+//   ⇒ ≤0 时回落到 DefaultSessionTTL（仅兜底，生产路径不会走到）。
+func NewWiring(client Client, writer RedisSideWriter, reader RedisSideReader, gate *Gate, logger *slog.Logger, sessionTTL time.Duration) *Wiring {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if sessionTTL <= 0 {
+		sessionTTL = DefaultSessionTTL
+	}
 	return &Wiring{
 		client: client, writer: writer, reader: reader, gate: gate,
-		logger: logger, ttl: DefaultSessionTTL,
+		logger: logger, ttl: sessionTTL,
 		dedup: newSessionDedup(DefaultDedupTTL, DefaultDedupMaxSessions),
 	}
 }

@@ -28,6 +28,15 @@ package ursm_test
 // # 数据源（纯静态解析，不连真库）
 //
 //   - 基线三件：sql/schema/00-prereqs.sql / 01-schema.sql / 02-seed.sql
+//
+// # 与同域姊妹门的分工（2026-11-04 合并调和，5be6b2f0e 同日各建一门）
+//
+// sql/schema/fk_target_unique_constraint_gate_test.go（并行会话建）守的是
+// **全新安装基线**域：基线是整体一个单元、排在任何迁移之前 ⇒ 它额外守
+// 「FK 目标表必须在基线内」＋「ATTACH PARTITION 子表列覆盖父表」。
+// 本门守的是**基线＋已注册迁移链的终态**：迁移里新加的 FK（含迁移间
+// 先表后键的时序）只有这里看得见。两门判据 A（FK 覆盖）形状相同、
+// 数据源分工如上 ⇒ 改判据时**两门一起看**，不要让同判据平行漂移。
 //   - **已注册**的 startup 迁移链：sql/schema/installed_startup_migrations.tsv
 //     （该 TSV 由 runner.go 的 StartupFiles 生成、被 startup_manifest_test
 //     逐条钉住 ⇒ 是注册链的 SSOT）。**不注册的迁移文件不解析**：目录里有
@@ -603,12 +612,13 @@ CREATE UNIQUE INDEX parent_a_code_key ON public.parent_a USING btree (code);
 // ★★ 这些缺口的共同形态：修复键的语句在 `$$` 动态 SQL（幂等 DO 块）里，
 //
 //	静态口径刻意不可见（见文件头「刻意不解析的东西」）。
+//
+// ★★ 棘轮闭合史：`subscription_plan_entitlements(plan_id)->subscription_plans(id)`
+// 曾因 936 DO 块自愈在此豁免（f2af856c1）；并行会话 5be6b2f0e（同日）把
+// subscription_plans_pkey 补进了基线三份副本（全新安装 42803 中止的修复）⇒
+// 静态缺口消失 ⇒ 按双向棘轮「缺口消失必须删豁免」**自动摘除**（门当场红、
+// 按红修）—— 这正是棘轮设计的行为，不是判据放松。
 var exemptedFkTargetGaps = map[string]string{
-	// f2af856c1（2026-11-04）：211 真库 subscription_plans 无主键（基线 dump
-	// 形态，只有 code UNIQUE）⇒ 本 FK 以 42870 拒绝、936 部署中止；修复 =
-	// 936 文件内幂等 DO 块补 subscription_plans_pkey（本门静态不可见）。
-	// 基线 01-schema.sql 字节已冻结（改动走 content replay）⇒ 豁免静态缺口。
-	"subscription_plan_entitlements(plan_id)->subscription_plans(id)": "936 幂等 DO 块在运行期补 subscription_plans_pkey（f2af856c1，42870 部署中止的修复本体）；基线 dump 缺 PK 是历史形态，改基线字节会触发 content replay ⇒ 静态豁免",
 	// 612 同文件先执行幂等 DO 块（10-20 行）补 credential_model_bindings_pkey，
 	// 再建 credential_model_capabilities 表 ⇒ 运行期 FK 必然成立。
 	"credential_model_capabilities(credential_model_binding_id)->credential_model_bindings(id)": "612 同文件幂等 DO 块先补 credential_model_bindings_pkey 再建本表（静态口径看不到 $$ 内的键）⇒ 运行期自愈",
@@ -747,17 +757,26 @@ func TestFkTargetsHaveKeyableConstraint(t *testing.T) {
 		t.Fatalf("解析出的 FK 数仅 %d（历史量级 ~59）—— 解析器疑似腐化", len(p.fks))
 	}
 
-	// 头号案例必须可见：f2af856c1 修的那个形状必须仍被解析器抓到并被豁免。
+	// 头号案例必须可见：612 修的那个形状必须仍被解析器抓到并被豁免。
 	// （否则解析器悄悄变瞎、豁免表变成死重，门对同族新缺陷的牙就没了。）
-	headline := "subscription_plan_entitlements(plan_id)->subscription_plans(id)"
+	// ⚠ 原旗舰案例（936 的 subscription_plan_entitlements）的静态缺口已被
+	// 5be6b2f0e 补基线主键消除 ⇒ 旗舰换到仍豁免中的 612 形状。
+	headline := "credential_model_capabilities(credential_model_binding_id)->credential_model_bindings(id)"
 	foundHeadline := false
+	foundExempted := false
 	for _, fk := range p.fks {
 		if fkGateFKID(fk) == headline {
 			foundHeadline = true
+			if _, ok := exemptedFkTargetGaps[headline]; ok {
+				foundExempted = true
+			}
 		}
 	}
 	if !foundHeadline {
 		t.Fatalf("旗舰案例 %s 未被解析器抓到 —— FK 提取腐化，豁免表正在空转", headline)
+	}
+	if !foundExempted {
+		t.Fatalf("旗舰案例 %s 未被豁免表登记 —— 豁免表与静态缺口失配", headline)
 	}
 
 	violations := fkGateViolations(p)
