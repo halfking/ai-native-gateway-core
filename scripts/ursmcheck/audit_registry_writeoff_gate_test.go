@@ -169,7 +169,20 @@ func woSecNum(heading string) string {
 //	★ ⇒ ⇒ 而「★ 写了标记却忘了写编号」**不会被漏掉**：★ 那一节就没有有效标记
 //	  ⇒ ⇒ **W1 照样红**
 func woIsMarkerLine(text string) bool {
-	return strings.Contains(text, woMarkerTag) && len(extractRegIDs(text)) > 0
+	if !strings.Contains(text, woMarkerTag) || len(extractRegIDs(text)) == 0 {
+		return false
+	}
+	// ★★★ 第三要素（★ 第四十四轮补的）：★ **必须带一个状态词**。
+	//
+	// ★ 为什么（★ 本轮实测踩到的**第二类自指坑**）：★ §28.34.5 里有一句**散文**
+	//   「★ 本轮把 `F49` 的**登记语句**写进 §28.34 ⇒ ⇒ **销账门当场要求同一节里有销账标记**」
+	//   ⇒ ⇒ 它**同时**含「销账标记」这个词**和**一个编号 `F49`
+	//   ⇒ ⇒ ⇒ **被误判成了一条销账标记** ⇒ ⇒ 门报「★ 它所在的小节一个登记点都没有」
+	//   ⇒ ⇒ ⇒ 而它**根本不是标记**、★ 只是一句在**谈论**标记的话
+	//   ⇒ ⇒ ★★ **⇒ 口径收紧成三要素**：★ 「★ 有这个词 ＋ 有编号 ＋ 有状态词」
+	//   ⇒ ⇒ ★★ ⇒ 而**真的**销账标记**三者齐备**（★ 11 条实测全部齐备）⇒ ⇒ 判据面不受影响
+	st := classifyStatus(text)
+	return st == "closed" || st == "intentional" || st == "open"
 }
 
 // woQuoted 判断 text 中第 i 个字符是否落在「」之内。
@@ -489,9 +502,16 @@ func TestAuditRegistryWriteoffGate(t *testing.T) {
 	// ★★★ 判据面基线（★ 本轮实测值）：★★
 	//   ★ 这些数字是「★ 本门到底管着多大一片」的**可见读数**
 	//   ★ ⇒ 词表或标记写法一旦变了、★ 它们会立刻动 ⇒ ★ 不会「悄悄少管一片」
+	//
+	// ★★★ 第四十四轮订正：★ 下限从 **48** 提到 **54** ⇒ ★★ 原因有二：
+	//   ★ ① ★ **48 那个数本身是错的**：★ 第四十三轮写的「48」是【F-数字族】口径
+	//     ⇒ ★★ 而本门（★ 与 `regCanonical` / ★ `xdCanon` 同口径）数的是【全部 F-编号项】
+	//     ⇒ ★★ **两个口径恒差 5** ⇒ ⇒ ★★ 真实值第四十三轮末是 **53**、★ 现在是 **54**
+	//   ★ ② ★ ⇒ ★★ 这个下限因此变成**棘轮**：★ 删一行规范源 ⇒ ★ 门红 ⇒ ★
+	//     ★ 要改它必须**同时**在本档（★ §28.34）写清理由
 	canon := regCanonical(lines)
-	if len(canon) < 48 {
-		t.Errorf("规范源条目数 %d < 48（★ 第四十三轮实测值）⇒ 抽取器退化了", len(canon))
+	if len(canon) < 54 {
+		t.Errorf("规范源条目数 %d < 54（★ 第四十四轮实测值）⇒ 抽取器退化了、★ 或规范源被删了行（★ 棘轮：★ 改它必须写清理由）", len(canon))
 	}
 	secs := woSplitSections(lines)
 	code := woCodeFlags(lines)

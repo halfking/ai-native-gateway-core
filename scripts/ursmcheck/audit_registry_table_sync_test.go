@@ -138,6 +138,22 @@ var regIntentionalStatus = []string{"有意如此"}
 // regOpenStatus 是「仍开」。
 var regOpenStatus = []string{"仍开"}
 
+// ★ ★★ 第四十四轮新增：C8 / C9 的判据面基线（★ 棘轮）。
+//
+// ★ ★★ 为什么要有它（★ 第四十四轮实测）：★ C8（★ 第三十八轮建的「撞号」护栏）
+// ★ **只判有定义点的编号** ⇒ ★★ 实测它的判据面 = **25/54** ⇒ ★★ 也就是说
+// ★★ 兄弟档登记的 **32** 个编号里 **19 个**在「撞号」这件事上**完全无护栏**
+// ⇒ ⇒ ★★ 而那个缺口**原本是隐形的** ⇒ ⇒ ★★ 所以用**两条棘轮**把它钉在纸面上：
+// ★ ① 孤儿数不许变大 ★ ② 被判数不许变小。
+//
+// ★ ★★ 基线值改动的规矩：★ 改它必须**同时**在本档（★ §28.34）写清理由。
+const (
+	// regOrphanBaseline 是「规范源里【没有定义点】的行数」的上限。
+	regOrphanBaseline = 29
+	// regJudgedBaseline 是「C8 判得到的行数」的下限。
+	regJudgedBaseline = 25
+)
+
 // regClosedMarkers 是「这一行已经承认它闭合了」的措辞。
 //
 // ★ 用在**副本**上：★ 副本必须靠它们向读者表明「这条的状态已经变了」。
@@ -766,6 +782,38 @@ func containsAny(s string, words []string) bool {
 	return false
 }
 
+// regCoverageCounts 算「★ 规范源里有定义点 / 没有定义点」这两条数（★ C9 的量具）。
+//
+// ★★ 为什么抽成独立函数（★ 第四十四轮补）：★ 让**测试**能把这两个数**打印出来**
+//
+//	⇒ ⇒ ★ 文档 §28.34.2 里写的那几个读数（★ 「54 条 / 判得到 25 / 孤儿 29」）
+//	★★ **从此可被机器复算**（★ `go test ./scripts/ursmcheck/ -run TestAuditRegistryTableSync -v`）
+//	★★ ⇒ ⇒ **而不是只靠「文档里写着」**（★ 那正是本轮订正掉的那类缺陷）
+//
+// ★ 口径（★ 与 C9 判据**逐字一致**、★ 不许各算各的）：
+//
+//	★ 定义点 = `regDefPoints` 的口径（★ 2/3 层级标题的主语位）
+//	★ ⇒ ★★ **不是**「表格行首格」⇒ ★ 那个口径会被**规范源表自身**污染 ⇒ ⇒ 自指的万能定义点
+func regCoverageCounts(lines []string, canon []canonEntry) (orphan int, judged int) {
+	withDef := map[string]bool{}
+	for _, dp := range regDefPoints(lines) {
+		for _, id := range dp.IDs {
+			withDef[id] = true
+		}
+	}
+	for _, c := range canon {
+		if c.Key == "" {
+			continue
+		}
+		if withDef[c.Key] {
+			judged++
+		} else {
+			orphan++
+		}
+	}
+	return orphan, judged
+}
+
 // ── 门的主体 ───────────────────────────────────────────────────────────
 
 // checkRegistry 跑全部判据，★ 返回违例列表（★ 空 ⇒ 绿）。
@@ -894,6 +942,30 @@ func checkRegistry(lines []string) []regViolation {
 					strconv.Itoa(c.Line) + "）**没有指回**这一节（★ 它引的是：" + regSecRefList(refs) +
 					"）⇒ ⇒ ★ **同号不同义**：★ 这个号在正文里被当成了另一件事 ⇒ ★ 撞号"})
 		}
+	}
+
+	// ── C9：★★ 规范源里【没有定义点】的行数不许悄悄变大（★ 第四十四轮新增）──
+	//
+	// ★★ 为什么需要它（★ 第四十四轮实测）：
+	//   ★ C8（★ 第三十八轮建的「撞号」护栏）**只判有定义点的编号**
+	//   ★ ⇒ ★★ 实测它的判据面 = **25/54** ⇒ ★★ 而兄弟档登记的 **32** 个编号里
+	//   ★★ **19 个**在正文里**没有定义点** ⇒ ⇒ ★★ **它们在「撞号」这件事上完全无护栏**
+	//   ★ ⇒ ⇒ ★★ 而这个缺口**原本是隐形的**（★ 没人知道 C8 判不到它们）
+	//   ★ ⇒ ⇒ ★★ 所以：★ 把「孤儿面」变成**可数的**、★ 并用棘轮挡住它变大
+	//
+	// ★ 口径（★ 明写）：★ 定义点 = `regDefPoints` 的口径（★ 2/3 层级标题的主语位）
+	//   ★ ★★ 而**不是**「表格行首格」⇒ ★ 因为量具实测那个口径会被**规范源表自身**污染
+	//   ★ ★★ ⇒ ⇒ 「定义点」退化成**自指的万能定义点** ⇒ ⇒ 信号被摧毁（★ §28.34）
+	orphan, judged := regCoverageCounts(lines, canon)
+	if orphan > regOrphanBaseline {
+		vs = append(vs, regViolation{Section: "规范源", Line: 0, ID: "-",
+			Reason: "★ 规范源里【没有定义点】的行数 " + strconv.Itoa(orphan) + " > " +
+				strconv.Itoa(regOrphanBaseline) + "（★ 第四十四轮实测基线）⇒ ★ 「孤儿面」变大了 ⇒ ★ 这些行 C8 判不到（★ 撞号 / 漂移对它们无护栏）⇒ ★ 要么给它们补定义点、★ 要么显式更新基线并写清理由"})
+	}
+	if judged < regJudgedBaseline {
+		vs = append(vs, regViolation{Section: "规范源", Line: 0, ID: "-",
+			Reason: "★ C8 的判据面只有 " + strconv.Itoa(judged) + " 条 < " +
+				strconv.Itoa(regJudgedBaseline) + "（★ 第四十四轮实测基线）⇒ ★ 「撞号」护栏在缩小 ⇒ ★ 兄弟档登记的编号有一半以上没有护栏"})
 	}
 
 	// ── C3：历史登记项小节的复述行 ──
@@ -1073,6 +1145,16 @@ func TestAuditRegistryTableSync(t *testing.T) {
 			t.Errorf("  - %s", v.String())
 		}
 	}
+
+	// ★ ★★ 把 C9 的几个数**打印出来**（★ 第四十四轮新增）：★
+	//   ★ 文档 §28.34.2 里写的读数（★ 「★ 规范源 54 条 / ★ 判得到 25 / ★ 孤儿 29」）
+	//   ★ ★★ **从此可被机器复算**、★ 而不必只信「文档里写着」
+	//   ★ ⇒ ★⇒ 下一轮的人只要跑这一条命令就能核对自己的数（★ 口径不统一时立刻看出来）
+	canon := regCanonical(lines)
+	orphan, judged := regCoverageCounts(lines, canon)
+	t.Logf("★ C9 读数：★ 规范源条目 **%d**（★ 全部 F-编号项口径）｜★ 判得到 **%d**｜★ 孤儿 **%d**"+
+		"（★ 棘轮：★ 孤儿 ≤ %d、★ 被判 ≥ %d）",
+		len(canon), judged, orphan, regOrphanBaseline, regJudgedBaseline)
 }
 
 // TestAuditRegistryTableSyncHasTeeth 是本门的**牙齿检验**。

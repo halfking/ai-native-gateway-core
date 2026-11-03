@@ -89,6 +89,12 @@ const (
 	xdUnknown     = "" // ⇒ 状态格里的词**不在规范词表**内
 )
 
+// ★ 第四十四轮新增：★ X5 的判据面基线（★ 棘轮）。
+//
+// ★ X5 只认兄弟档**明确标注**的「主档 §X」⇒ ⇒ 实测判据面 = **25** 个编号
+// （★ 兄弟档 §三 共 32 行、★ 其中 6 行没引节号、★ 1 行只引了裸 §四.2 ⇒ ★ 不判）。
+const xdX5SurfaceBaseline = 25
+
 // xdClosedWords 是「已做完」的状态词（★ 四个都算闭合，★ 词表必须完整）。
 var xdClosedWords = []string{"已闭合", "已关闭", "已实施", "已落地"}
 
@@ -183,6 +189,14 @@ type xdEntry struct {
 	Line  int
 	Class string
 	Raw   string // 状态格原文（★ 报违例时要给人看）
+	// Evidence 是规范源那一行的**依据列**原文（★ 第四十四轮新增）。
+	//
+	// ★ ★★ 为什么必须单独存（★ 第四十四轮踩到）：★ `Raw` 存的是**状态格**
+	//   （★ 规范源表用 `strings.Split(ln, "|")` ⇒ **没有剥掉首尾管道** ⇒
+	//   ★ ⇒ 下标整体偏移一位 ⇒ cells[2] 是状态、cells[3] 才是依据列）
+	// ⇒ ⇒ ★ 若拿 `Raw` 当依据列用（★ 本轮第一版 X5 就是这么写的）⇒
+	// ⇒ ⇒ **每一行都会报「依据列引的是 §（无）」** ⇒ ⇒ 门恒红（★ 25 条）
+	Evidence string
 }
 
 type xdViolation struct {
@@ -236,7 +250,11 @@ func xdCanon(lines []string) (map[string]xdEntry, int) {
 			continue
 		}
 		raw := strings.TrimSpace(cells[2])
-		out[ids[0]] = xdEntry{Where: "规范源", Line: i + 1, Class: xdClassOf(raw), Raw: raw}
+		ev := ""
+		if len(cells) > 3 {
+			ev = strings.TrimSpace(cells[3])
+		}
+		out[ids[0]] = xdEntry{Where: "规范源", Line: i + 1, Class: xdClassOf(raw), Raw: raw, Evidence: ev}
 	}
 	return out, start + 1
 }
@@ -312,6 +330,31 @@ func xdSib6(lines []string) map[string][]xdEntry {
 	return out
 }
 
+// ── 判据 X5 的量具：★ 「★ 主档 §X」这种**明确标注**的节引用 ──────────────
+
+// xdMainDocRefRe 匹配**明确标注为主档**的节引用。
+//
+// ★★ 为什么只认「主档 §X」（★ 而不认裸「§X」）：★ 兄弟档里的裸「§X」
+// **默认指兄弟档自己的小节** ⇒ ⇒ 拿它跟主档比就是**比错了对象**。
+// ★ ⇒ ⇒ 只认带「主档」二字的那种 ⇒ ⇒ 口径窄、★ 但**每一处都比对同一边**。
+var xdMainDocRefRe = regexp.MustCompile(`主档\s*§\s*([0-9]+(?:\.[0-9]+)*|[零一二三四五六七八九十]+(?:\.[0-9]+)*)`)
+
+// xdMainDocRefs 抽出文本里明确标注为「主档 §X」的节号（★ 归一后、★ 去重排序）。
+func xdMainDocRefs(text string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range xdMainDocRefRe.FindAllStringSubmatch(text, -1) {
+		n := regNormSec(m[1])
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // ── 判据 ────────────────────────────────────────────────────────────────
 
 // xdCheck 是全部判据的实现（★ 纯函数：★ 只吃行数组 ⇒ 合成夹具可在内存副本上跑）。
@@ -329,7 +372,7 @@ func xdCheck(mainLines, sibLines []string) []xdViolation {
 	}
 	if len(canon) < 30 {
 		vs = append(vs, xdViolation{Where: "规范源", Line: canonLine, ID: "-",
-			Why: "★ 规范源条目数 " + strconv.Itoa(len(canon)) + " < 30 ⇒ 抽取器可能退化了（★ 第三十六轮实测值 = 39）"})
+			Why: "★ 规范源条目数 " + strconv.Itoa(len(canon)) + " < 30 ⇒ 抽取器可能退化了（★ 第三十六轮建这道门时定的下限；★ ★★ **第四十四轮实测值 = 54** ⇒ ★ 原写的那句「实测值 = 39」是【F-数字族】口径、★ 本轮已订正）"})
 	}
 	// ★ 已知漂移面必须被认出来（★ 抽取器的牙齿检验）
 	for _, id := range []string{"F13", "F28", "F29", "F30", "F31", "F24"} {
@@ -390,6 +433,51 @@ func xdCheck(mainLines, sibLines []string) []xdViolation {
 		for _, e := range es {
 			compare(id, e)
 		}
+	}
+
+	// ── X5：★★ 跨档「★ 同号 ⇒ 两档指向的【主档小节】必须一致」─────────────
+	//
+	// ★★ 为什么需要它（★ 第四十四轮实测）：
+	//   ★ §28.27.7 登记的「撞号」要求「★ 同号两边的**章节位置**必须能对上」
+	//   ★ ⇒ ★★ 而 X3/X4 只比**状态类**、★ **并不比位置**
+	//   ★ ⇒ ★★ ⇒ 跨档「同号不同事」在**位置**这一维**此前没有任何护栏**
+	//   ★ ⇒ ⇒ ★★ 本判据把它补上（★ 口径：★ 只认兄弟档**明确标注**的「主档 §X」）
+	//   ★ ⇒ ⇒ ★★ 而它之所以能成立，★ 是因为本轮把规范源里
+	//   ★★ **依据列【不带任何 § 引用】的 6 行**做了**自足化**（★ 第四十四轮）
+	nX5 := 0
+	for id, e := range s3 {
+		c, ok := canon[id]
+		if !ok {
+			continue // ★ X2 已经报过
+		}
+		sibRefs := xdMainDocRefs(e.Raw)
+		if len(sibRefs) == 0 {
+			continue // ★ ★ 兄弟档没引主档节号 ⇒ ★ 本判据**不判**它（★ 口径边界）
+		}
+		nX5++
+		mainRefs := regSecRefs(c.Evidence)
+		hit := false
+		for _, s := range sibRefs {
+			if regSecCovered(s, mainRefs) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			vs = append(vs, xdViolation{Where: "兄弟档§三", Line: e.Line, ID: id,
+				Why: "★ 兄弟档这一行把 " + id + " 定位在主档 §" + strings.Join(sibRefs, " / ") +
+					"，★ 而规范源那一行的依据列引的是 §" + regSecRefList(mainRefs) +
+					" ⇒ ★ 两档指向的不是同一处 ⇒ ★ 同号不同义（★ 撞号）"})
+		}
+	}
+	if nX5 == 0 {
+		vs = append(vs, xdViolation{Where: "判据面", Line: 0, ID: "-",
+			Why: "★ X5 一个编号都判不到 ⇒ ★ 抽取器退化了 ⇒ 门恒绿 = 形同虚设"})
+	}
+	if nX5 < xdX5SurfaceBaseline {
+		vs = append(vs, xdViolation{Where: "判据面", Line: 0, ID: "-",
+			Why: "★ X5 的判据面只有 " + strconv.Itoa(nX5) + " 个编号 < " +
+				strconv.Itoa(xdX5SurfaceBaseline) + "（★ 第四十四轮实测基线）⇒ ★ 有人把「主档 §X」的引用改没了 ⇒ ★ 判据面在缩小"})
 	}
 
 	sort.Slice(vs, func(i, j int) bool {
@@ -453,16 +541,45 @@ func TestAuditCrossDocStateSync(t *testing.T) {
 			t.Errorf("  - %s", v.String())
 		}
 	}
+
+	// ★ ★★ 把 X5 的判据面**打印出来**（★ 第四十四轮新增）：★
+	//   ★ 同登记门那道一样 —— ★ 文档 §28.34.2 里写的读数**可被机器复算**
+	//   ★ ⇒ ★⇒ 「★ X5 判得到多少个 / ★ 有多少个在撞号上完全无护栏」不再是「隐形」
+	canon, _ := xdCanon(mainLines)
+	s3 := xdSib3(sibLines)
+	withDef := map[string]bool{}
+	for _, dp := range regDefPoints(mainLines) {
+		for _, id := range dp.IDs {
+			withDef[id] = true
+		}
+	}
+	nMainRef, nNoDef := 0, 0
+	for _, id := range xdSortedKeys(s3) {
+		if len(xdMainDocRefs(s3[id].Raw)) > 0 {
+			nMainRef++
+		}
+		if !withDef[id] {
+			nNoDef++
+		}
+	}
+	pct := 0.0
+	if len(s3) > 0 {
+		pct = 100 * float64(nNoDef) / float64(len(s3))
+	}
+	t.Logf("★ X5 读数：★ 规范源条目 **%d**｜★ 兄弟档 §三 编号 **%d**｜★ X5 判据面 **%d**"+
+		"｜★ 其中在主档无定义点（★ 撞号上无护栏）**%d**（★ **%d/%d = %.0f%%**）",
+		len(canon), len(s3), nMainRef, nNoDef, nNoDef, len(s3), pct)
 }
 
 // TestAuditCrossDocStateSyncHasTeeth 是本门的**牙齿检验**。
 //
-// ★ 四步（★ 顺序不能换）：
+// ★ 五步（★ 顺序不能换）：
 //
 //	① **反向对照**：★ 真实文档 ⇒ 0 条违例（门不是恒红）
 //	② **词表牙齿检验**：★ 6 个规范词必须各自映到正确的类
 //	③ **合成夹具**：★ 把兄弟档某一行**改回旧词** ⇒ 门必须报出违例并点名
 //	④ ★★ **语义有效性**：★ 改完之后那一行确实**不再**含规范词
+//	⑤ ★★ **X5 的牙齿检验**（★ 第四十四轮新增）：★ 把规范源的依据列改成无关节号
 func TestAuditCrossDocStateSyncHasTeeth(t *testing.T) {
 	mainLines := xdReadLines(t, xdMainDocRelPath)
 	sibLines := xdReadLines(t, xdSibDocRelPath)
@@ -541,5 +658,58 @@ func TestAuditCrossDocStateSyncHasTeeth(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("★★ 门报出了违例，但**没有点名**注入的登记项 %s（★ 报的是：%v）", targetID, vs)
+	}
+
+	// ── ⑤ ★★ X5 的牙齿检验（★ 第四十四轮新增）────────────────────────────
+	//
+	// ★ 手法：★ 在**主档的内存副本**上、★ 把规范源那一行的**依据列**改成
+	// ★ 一个与兄弟档所指**无关**的节号（★ `§99.99`）
+	// ⇒ ⇒ ★ 兄弟档说它在 §28.21、★ 规范源说它在 §99.99 ⇒ ⇒ 两档指向不同处
+	// ⇒ ⇒ ★ 门必须报出「★ 两档指向的不是同一处」并点名那个编号
+	{
+		canon2, _ := xdCanon(mainLines)
+		s3b := xdSib3(sibLines)
+		x5ID, x5Line, x5Sec := "", 0, ""
+		for _, id := range xdSortedKeys(s3b) {
+			refs := xdMainDocRefs(s3b[id].Raw)
+			if len(refs) == 0 {
+				continue
+			}
+			c, ok := canon2[id]
+			if !ok {
+				continue
+			}
+			if len(regSecRefs(c.Evidence)) == 0 {
+				continue
+			}
+			x5ID, x5Line, x5Sec = id, c.Line, refs[0]
+			break
+		}
+		if x5ID == "" {
+			t.Fatalf("★ 找不到可注入的 X5 样本 ⇒ 夹具无法构造（★ 这是**门自己坏了**，★ 不是文档的问题）")
+		}
+		mut2 := append([]string(nil), mainLines...)
+		cells2 := strings.Split(mut2[x5Line-1], "|")
+		if len(cells2) < 5 {
+			t.Fatalf("★ 注入目标行不是规范源表行 ⇒ 夹具构造错了")
+		}
+		cells2[3] = " ★ §99.99 "
+		mut2[x5Line-1] = strings.Join(cells2, "|")
+
+		// ★ 语义有效性：★ 注入后那一行的依据列确实**不再**引原来的节
+		if strings.Contains(strings.Split(mut2[x5Line-1], "|")[3], x5Sec) {
+			t.Fatalf("★★ **弱变异**：★ 注入后依据列仍引着 %s ⇒ 语义没变 ⇒ 门测不出东西", x5Sec)
+		}
+		vs2 := xdCheck(mut2, sibLines)
+		x5Found := false
+		for _, v := range vs2 {
+			if v.ID == x5ID && strings.Contains(v.Why, "两档指向的不是同一处") {
+				x5Found = true
+				break
+			}
+		}
+		if !x5Found {
+			t.Fatalf("★★ **X5 没牙**：★ 把规范源 %s 的依据列改成 §99.99（★ 兄弟档指的是主档 §%s）⇒ 门没有报出「两档指向的不是同一处」（★ 违例 %d 条：%v）", x5ID, x5Sec, len(vs2), vs2)
+		}
 	}
 }
