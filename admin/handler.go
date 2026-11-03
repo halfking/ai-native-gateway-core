@@ -1010,6 +1010,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/users", admin(h.handleUsers))
 	mux.HandleFunc("/api/admin/audit-logs", h.superAdmin(h.handleListAuditLogs))
 	mux.HandleFunc("/api/admin/format-anomaly-summary", h.superAdmin(h.handleFormatAnomalySummary))
+	// P1-4：ASM 影子对账报表转发（internal/shadow report；ASM_INTERNAL_ENDPOINT 未配 ⇒ 503）。
+	mux.HandleFunc("/api/admin/shadow-reconciliation", h.superAdmin(h.handleShadowReconciliation))
 	// 扩展点台账（P2-2）：静态裁决表 + 运行期计数合并的一行一机制视图。
 	// ★ superAdmin：这是内部运维视图（暴露「哪些扩展点活着、哪些是死的」）。
 	mux.HandleFunc("/api/admin/extension-points", h.superAdmin(h.handleExtensionPoints))

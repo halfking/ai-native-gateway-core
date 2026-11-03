@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -143,5 +144,25 @@ func TestValidSessionWriteConfigExamplesAreActuallyAccepted(t *testing.T) {
 					"Lite 模式的真修法是写 SQLite request_logs 表的 v1 开关")
 			}
 		})
+	}
+}
+
+// lite（无 DB）下 settings registry 禁用 ⇒ GetPlatformBool 恒回 default，
+// env 通道不可达——校验器必须直读 [Lite] 正解行广告的那个 env，否则
+// DEPLOY_START 的 lite 起动永远被拒（2026-11-03 实测抓到的真断裂）。
+func TestLiteEnvFallbackWithoutRegistry(t *testing.T) {
+	previous := settings.Global
+	settings.Global = nil // registry disabled（lite 形态）
+	t.Cleanup(func() { settings.Global = previous })
+
+	t.Setenv(settings.EnvNameAuto(settings.KeyRequestLogsWriteEnabled), "true")
+	if err := validateSessionWriteSafety(false); err != nil {
+		t.Fatalf("lite + env v1=true must pass without registry: %v", err)
+	}
+
+	t.Setenv(settings.EnvNameAuto(settings.KeyRequestLogsWriteEnabled), "false")
+	err := validateSessionWriteSafety(false)
+	if !errors.Is(err, settings.ErrNoRequestWriteSource) {
+		t.Fatalf("lite + env v1=false must still be rejected, got %v", err)
 	}
 }

@@ -33,9 +33,12 @@ func TestDeliverRecordsReconciliationCounters(t *testing.T) {
 	defer srv.Close()
 	target := fakePushTarget{url: srv.URL, project: "p1"}
 	Set(target)
+	// Result 需含可落内容（HasLandableContent：Title/Summary/Outcome/KeyPoints
+	// 至少其一）——空壳 Result 会被 BuildPayload 判 skipped。
 	in := Input{TenantID: "t", SessionID: "s", Status: "provisional",
 		Result: sessionmeta.Result{SchemaVersion: "session-analysis/v1",
-			AnalysisKind: sessionmeta.AnalysisKind, Status: "provisional", InputHash: "h1"}}
+			AnalysisKind: sessionmeta.AnalysisKind, Status: "provisional",
+			InputHash: "h1", Title: "会话标题"}}
 	Deliver(context.Background(), in)
 	if got := testutil.ToFloat64(pushDispatchTotal.WithLabelValues("dispatched", "provisional")); got != 1 {
 		t.Fatalf("dispatched/provisional = %v, want 1", got)
