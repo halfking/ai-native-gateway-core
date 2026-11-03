@@ -96,7 +96,10 @@ func (c *PrewarmHTTPClient) Prewarm(ctx context.Context, tenantID, sessionID, qu
 		RecordPrewarm(OutcomeUnavailable)
 		return nil, false
 	}
-	RecordPrewarm(OutcomeHit)
+	// ★ 不在这里记 hit：五态口径里「hit：旁路写成功（有注入可用）」
+	//   ⇒ 记它的时点是**旁路写成功之后**（由 Trigger 记）。
+	//   在这里记会把「HTTP 200 但旁路写失败」也算成 hit ⇒ hit 虚高、
+	//   漏斗对不上（有注入可用 ≠ HTTP 200）。
 	return payload, true
 }
 
@@ -119,11 +122,19 @@ func Trigger(client Client, writer RedisSideWriter, gate *Gate, logger *slog.Log
 	if gate != nil && !gate.Allowed(tenantID) {
 		return // 灰度门外（或开关关）：连 goroutine 都不启动
 	}
-	RecordPrewarm(OutcomeRequested)
 	query := truncateRunes(strings.TrimSpace(firstPrompt), DefaultQueryRunes)
 	if query == "" {
+		// ★ 空 query ⇒ 本次调用什么也做不了（不召回、不写、不注入）⇒
+		//   **压根没发起预热** ⇒ 不计 requested。
+		//   理由：requested 是「真发起了预热」的分母；若把没发起的也计进去，
+		//   requested 就永远大于 hit+miss+timeout+unavailable 之和 ⇒
+		//   漏斗不闭合。
+		//   ★ 五态标签集是 ADR §2 钉死的（requested|hit|miss|timeout|
+		//     unavailable）⇒ 这里**不新增**第 6 个态来装「空 query」，
+		//     而是让「没发起」不进入漏斗。
 		return
 	}
+	RecordPrewarm(OutcomeRequested)
 	go func() {
 		defer func() {
 			// G3：预热 panic 也绝不波及网关进程。
@@ -135,14 +146,23 @@ func Trigger(client Client, writer RedisSideWriter, gate *Gate, logger *slog.Log
 		defer cancel()
 		payload, ok := client.Prewarm(ctx, tenantID, sessionID, query)
 		if !ok {
-			return
+			return // 客户端已按 miss|timeout|unavailable 记过态
 		}
 		wctx, wcancel := context.WithTimeout(context.Background(), DefaultWriteTimeout)
 		defer wcancel()
 		if err := writer.WriteMemoraContext(wctx, sessionID, payload, sessionTTL); err != nil {
+			// ★ 旁路写失败**必须**记态：五态口径写明「timeout：800ms 预算内
+			//   未完成（HTTP 或写超时）」⇒ 写超时属 timeout、其余属
+			//   unavailable。原先此路径只写日志不记指标 ⇒ 写失败在指标上
+			//   完全不可见 ⇒ requested 与各终态对不上、漏斗不闭合。
+			RecordPrewarm(ClassifyWriteError(err))
 			logger.Warn("memora prewarm side-write failed (non-blocking)",
 				"session_id", sessionID, "error", err)
+			return
 		}
+		// ★ hit 的时点：旁路写成功 ⇒ 确有注入可用（口径「hit：旁路写成功
+		//   （有注入可用）」）。
+		RecordPrewarm(OutcomeHit)
 	}()
 }
 
@@ -168,14 +188,24 @@ type RedisWriter struct {
 func NewRedisWriter(client *redis.Client) *RedisWriter { return &RedisWriter{client: client} }
 
 // WriteMemoraContext implements RedisSideWriter.
+//
+// ★ HSET 与 EXPIRE 必须在**一个事务**里（TxPipeline ⇒ MULTI/EXEC）：
+//
+//	两条独立命令时，首请求场景下 session:{id} 尚不存在 ⇒ HSET 造出一个
+//	**没有 TTL** 的 key；若进程在两条命令之间崩溃/连接中断 ⇒ 该 key 永久
+//	驻留 ⇒ Redis 内存单调增长（key 泄漏）。
+//	放进同一事务 ⇒ 「建 key」与「设 TTL」要么都成、要么都不成 ⇒ 不存在
+//	「有 key 没 TTL」的中间态。
 func (w *RedisWriter) WriteMemoraContext(ctx context.Context, sessionID string, payload []byte, ttl time.Duration) error {
 	if w == nil || w.client == nil {
 		return errors.New("prewarm: nil redis writer")
 	}
-	if _, err := w.client.HSet(ctx, "session:"+sessionID, map[string]any{
-		FieldName: string(payload),
-	}).Result(); err != nil {
+	key := "session:" + sessionID
+	pipe := w.client.TxPipeline()
+	pipe.HSet(ctx, key, map[string]any{FieldName: string(payload)})
+	pipe.Expire(ctx, key, ttl)
+	if _, err := pipe.Exec(ctx); err != nil {
 		return err
 	}
-	return w.client.Expire(ctx, "session:"+sessionID, ttl).Err()
+	return nil
 }

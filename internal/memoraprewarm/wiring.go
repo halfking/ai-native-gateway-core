@@ -31,6 +31,13 @@ type Wiring struct {
 	gate   *Gate
 	logger *slog.Logger
 	ttl    time.Duration
+	// dedup 实现 ADR §5 的「预热每会话至多一次（首请求）」。
+	//
+	// ★ 为什么必须有它：Apply 是**每请求**入口。若这里每请求都触发一次
+	//   预热 ⇒ 一个会话的第 2..N 个请求各起一个 goroutine、各打一次
+	//   ASM、各做一次 Redis 旁路写 ⇒ 写放大与 goroutine 放大都随会话
+	//   长度线性增长 ⇒ 直接违反 ADR §5「无新增热路径成本」。
+	dedup *sessionDedup
 }
 
 // NewWiring 构造。client/writer/reader/gate 任一为 nil ⇒ 对应半边 no-op
@@ -39,7 +46,11 @@ func NewWiring(client Client, writer RedisSideWriter, reader RedisSideReader, ga
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Wiring{client: client, writer: writer, reader: reader, gate: gate, logger: logger, ttl: DefaultSessionTTL}
+	return &Wiring{
+		client: client, writer: writer, reader: reader, gate: gate,
+		logger: logger, ttl: DefaultSessionTTL,
+		dedup: newSessionDedup(DefaultDedupTTL, DefaultDedupMaxSessions),
+	}
 }
 
 // Apply 是数据面每请求入口：①门内租户触发预热（fire-and-forget，请求
@@ -55,7 +66,17 @@ func (w *Wiring) Apply(ctx context.Context, tenantID, sessionID string, body []b
 		return body, false
 	}
 	if w.client != nil && w.writer != nil && sessionID != "" {
-		Trigger(w.client, w.writer, w.gate, w.logger, tenantID, sessionID, ExtractQueryFromBody(body), w.ttl)
+		// ★ ADR §5：预热**每会话至多一次**。先用去重表抢占本会话的预热权，
+		//   抢不到 ⇒ 本会话已预热过 ⇒ 跳过（不再起 goroutine、不再打 ASM、
+		//   不再旁路写）。同一会话的并发请求只有**一个**赢家。
+		//
+		// ★ 为什么先取 query 再抢占：query 为空（无 user 消息/纯非文本块）
+		//   时本次调用什么也做不了 ⇒ 若先抢占就会白白消耗掉本会话那一次
+		//   预热机会 ⇒ 后续带正常 prompt 的请求反而拿不到预热。
+		query := ExtractQueryFromBody(body)
+		if query != "" && w.dedup.claim(sessionID, time.Now()) {
+			Trigger(w.client, w.writer, w.gate, w.logger, tenantID, sessionID, query, w.ttl)
+		}
 	}
 	injection := ReadAndRender(ctx, w.reader, sessionID)
 	if injection == "" {

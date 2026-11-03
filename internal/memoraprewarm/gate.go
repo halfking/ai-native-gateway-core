@@ -124,3 +124,23 @@ func isTimeoutErr(err error) bool {
 		strings.Contains(msg, "Client.Timeout") ||
 		strings.Contains(msg, "timeout")
 }
+
+// ClassifyWriteError 把**旁路写**失败映射到五态。
+//
+// ★ 与 ClassifyOutcome 同族但独立：写侧没有 HTTP 状态码，只有 error。
+//
+//	口径同 ADR §2「timeout：800ms 预算内未完成（HTTP 或写超时）」⇒
+//	写超时归 timeout、其余（连接失败、鉴权失败等）归 unavailable。
+//
+// ★ 存在的理由：写失败原先**只写日志不记指标** ⇒ 「有注入可用」的 hit
+//
+//	与「写失败」在指标上不可区分 ⇒ 漏斗对不上。
+func ClassifyWriteError(err error) string {
+	if err == nil {
+		return OutcomeHit
+	}
+	if isTimeoutErr(err) {
+		return OutcomeTimeout
+	}
+	return OutcomeUnavailable
+}
