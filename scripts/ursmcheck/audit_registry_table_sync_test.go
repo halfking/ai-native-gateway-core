@@ -224,8 +224,12 @@ func extractRegIDs(text string) []string {
 	return out
 }
 
-// regIDPattern 是归一后允许的编号形状：F + 数字，或 F + 单个大写字母（F-B）。
-var regIDPattern = regexp.MustCompile(`^F([0-9]+|B)$`)
+// regIDPattern 是归一后允许的编号形状：F + 数字，或 F + 单个大写字母。
+//
+// ★ 第三十六轮修：★ 旧版只允许 `F([0-9]+|B)` ⇒ ★ **F-A / F-C / F-D / F-E**
+// （★ 主档第七 / 十一 / 十二 / 十三轮各自的**轮次局部编号**）**在门里根本不存在**
+// ⇒ ⇒ 「抽取器看不见 ⇒ 门恒绿」⇒ ★ 现在一视同仁。
+var regIDPattern = regexp.MustCompile(`^F([0-9]+|[A-Z])$`)
 
 func isASCIILetter(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')

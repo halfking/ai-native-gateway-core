@@ -152,6 +152,17 @@ scripts/verify-local-deployment.sh	312	verify_l3_functional	var-write	judgment	b
 scripts/verify-local-deployment.sh	351	verify_l3_functional	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$INDEX_RESPONSE" | grep -qE '<html|<!DOCTYPE'; then
 sql/migrations/timeout-optimization/run_migrations.sh	195	verify_migrations	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "${exists}" | grep -q "t"; then
 sql/migrations/timeout-optimization/run_migrations.sh	210	verify_migrations	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "${exists}" | grep -q "t"; then
+tests/audit_ledger_consistency_test.sh	146	extract_sib6	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s\n' "$line" | grep -qE '^[0-9]+\. ' || continue
+tests/audit_ledger_consistency_test.sh	189	run_checks	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$canon_closed" | grep -qx "$id"; then
+tests/audit_ledger_consistency_test.sh	201	run_checks	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$canon_closed" | grep -qx "$id"; then
+tests/audit_ledger_consistency_test.sh	208	run_checks	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$canon_intent" | grep -qx "$id"; then
+tests/audit_ledger_consistency_test.sh	214	run_checks	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$canon_open" | grep -qx "F7"; then
+tests/audit_ledger_consistency_test.sh	225	run_checks	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s\n' "$sib_ids" | grep -qx "$id" || continue
+tests/audit_ledger_consistency_test.sh	264	run_checks	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$line" | grep -qE '★ \*\*(已闭合|已关闭|已实施|已落地|有意如此|仍开)\*\*'; then
+tests/audit_ledger_consistency_test.sh	269	run_checks	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$line" | grep -qE '★ \*\*仍开\*\*'; then
+tests/audit_ledger_consistency_test.sh	286	run_checks	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$canon_open" | grep -qx "$oid"; then
+tests/audit_ledger_consistency_test.sh	293	run_checks	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s\n' "$sib_ids" | grep -qx "$oid" || continue
+tests/audit_ledger_consistency_test.sh	294	run_checks	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' $sib_open_ids | grep -qx "$oid"; then
 tests/deploy_nocgo_build_test.sh	164	test_cgo_only_package_fails_nocgo	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$err" | grep -q "sqlite3"; then
 tests/deploy_nocgo_build_test.sh	198	test_nocgo_dep_graph_no_sqlite3	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s\n' "$deps" | grep -q "github.com/mattn/go-sqlite3"; then
 tests/deploy_nocgo_build_test.sh	216	test_nocgo_dep_graph_no_sqlite3	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$deps" | grep -q "github.com/kaixuan/llm-gateway-go/storage/sqlite"; then
