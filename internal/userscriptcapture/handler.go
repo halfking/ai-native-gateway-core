@@ -113,10 +113,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 随 ack 返回——纯浏览器批次的关联缺口由这一跳闭合；不存在的
 	// 会话静默不标注（userscript 的头可能来自任意页面，不报错）。
 	if sid := strings.TrimSpace(r.Header.Get("X-Gw-Session-Id")); sid != "" {
-		if h.sessionExists == nil {
-			h.sessionExists = h.store.SessionExists
+		// ★ 只读局部变量，不写回共享字段：Handler 是进程级单例
+		//   （main 装配后挂 mux，net/http 每请求一 goroutine）⇒ 把
+		//   惰性初始化写在请求路径上就是对同一字段的并发读改写
+		//   ⇒ 数据竞争（-race 可复现，见 handler_race_test.go）。
+		exists := h.sessionExists
+		if exists == nil && h.store != nil {
+			exists = h.store.SessionExists
 		}
-		if h.sessionExists(r.Context(), tenantID, sid) {
+		if exists != nil && exists(r.Context(), tenantID, sid) {
 			ack.CanonicalSession = sid
 		}
 	}

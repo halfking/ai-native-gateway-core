@@ -168,5 +168,14 @@ func LifecycleSpecs() []*Spec {
 		{Key: "lifecycle.session_project_backfill_batches", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(10000), Default: 50, DangerLevel: Warning, HotReload: true, Description: "project_dim 回填单轮最大批数", DescriptionLong: "project_dim 回填 worker 单轮最多跑多少批。读方：bg/project_backfill_worker.go:167（fallback 50）。★ 代码侧另有 ≥1 的安全下限。", Unit: "批"},
 		{Key: "lifecycle.stats_event_inbox_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 7, DangerLevel: Warning, HotReload: true, Description: "stats_event_inbox 保留天数", DescriptionLong: "stats_event_inbox 的保留天数。读方：bg/partition_manager.go（fallback 7）。", Unit: "天"},
 		{Key: "lifecycle.supplier_error_stats_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 30, DangerLevel: Warning, HotReload: true, Description: "supplier_error_stats 保留天数", DescriptionLong: "supplier_error_stats 的保留天数。读方：bg/partition_manager.go（fallback 30）。", Unit: "天"},
+		// ★ 2026-11-03 同步轮补登（孤儿键）：`lifecycle.session_turns_probe_hot_ttl_days`
+		//   此前**运行期在读、但从未 Register 成 spec** ⇒ `settings.Global.Spec(key)`
+		//   返回 nil ⇒ `GetPlatformInt` 直接回退 fallback ⇒ ★★ **往 settings_kv
+		//   里写这个键完全无效**（静默无效，不报错）⇒ 补 spec。
+		//   ★ 读方：bg/partition_manager_probe_lane_ttl.go:55（fallback 14）
+		//   ⇒ Default 与读方 fallback 对齐（14）；Min/Max 与读方 clamp 同档
+		//   （bg/partition_manager_probe_lane_ttl.go:31-32 ⇒ 1..90）⇒
+		//   ★ 两侧夹取口径一致 ⇒ spec 越界值与代码 clamp 不会打架。
+		{Key: "lifecycle.session_turns_probe_hot_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(90), Default: 14, DangerLevel: Warning, HotReload: true, Description: "探测物理隔离热表保留天数", DescriptionLong: "session_turns_probe_hot 与 request_stats_probe_minute 共用的 TTL（探测分钟表是流水的派生面，源清了派生也应清）。读方：bg/partition_manager_probe_lane_ttl.go:55（fallback 14）。代码侧 clamp 到 1..90（bg/partition_manager_probe_lane_ttl.go:31-32）⇒ 0/负值会清空整表，故下限为 1。", Unit: "天"},
 	}
 }

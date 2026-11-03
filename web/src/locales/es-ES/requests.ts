@@ -134,7 +134,6 @@ export default {
   delta_append: 'Anexado incremental',
   estimatedNote: 'Valor estimado (el upstream no devolvió el uso; se estima localmente con heurísticas de caracteres o palabras)',
   expand: 'Expandir ▼',
-  length: 'Límite de longitud alcanzado',
   llmReported: 'Devuelto por el LLM',
   llm_summary: 'Resumen LLM',
   mechanical_trim: 'Recorte mecánico',

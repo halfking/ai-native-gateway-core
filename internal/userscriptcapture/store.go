@@ -162,6 +162,12 @@ func derefString(p *string) string {
 //（public.sessions，430 建）。M3：capture 响应 canonical_session 标注
 // 的前提——不存在的会话不标注（防伪造标注）。
 func (s *Store) SessionExists(ctx context.Context, tenantID, sessionID string) bool {
+	// ★ 装配缺失（store 未注入 / db 为 nil）时返回 false 而不是 panic：
+	//   这条路径由 HTTP 请求线程直接调用 ⇒ nil 解引用会让整个请求
+	//   以 panic 收场（net/http 只把它降级成 500 + 连接中断）。
+	if s == nil || s.db == nil {
+		return false
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return false

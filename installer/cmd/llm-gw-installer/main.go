@@ -1379,12 +1379,13 @@ var selfCheckErrorTypeKindClosure929 []byte
 //go:embed embeddata/startup/929_self_check_error_type_kind_closure.down.sql
 var selfCheckErrorTypeKindClosure929Down []byte
 
-// ★ 930（2026-11-02 第二十五轮）：self_check_runs.error_type CHECK 闭集**再补齐**
+// ★ 930（2026-11-03 同步轮）：self_check_runs.error_type 的 CHECK 闭集再补
 //
-//	—— 加入 model_unavailable（本仓 4xx 归因轮引入的第 33 个 kind）。
-//	★ 缺口本体：929 的闭集按当时的 32 kind 写死，而本仓后来加了 model_unavailable
-//	  ⇒ 929 的 CHECK 落后 ⇒ 写侧写该 kind 时 finalizeRun 的 UPDATE 被 23514 拒绝
-//	  ⇒ run 行半写（status='running' / error_type=NULL）。
+//	一个 kind —— `model_unavailable`。
+//	★ 缺口本体：errorsx 加 `KindModelUnavailable` 的那一笔（`4fe043dc3`，
+//	  2026-11-02 12:23）比 929 的落地（07:47）晚 5 小时 ⇒ CHECK 闭集少 1 项。
+//	★ 写侧写的就是 kind 名 ⇒ finalizeRun 的 UPDATE 被 23514 拒绝 ⇒ 整条回滚
+//	  ⇒ self_check run 行停在 status='running' 的半写态。
 //	★ 本迁移只重建该 CHECK，不改任何数据。
 //
 //go:embed embeddata/startup/930_self_check_error_type_kind_closure_model_unavailable.sql
@@ -1863,10 +1864,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/928_probe_traffic_physical_lane.down.sql": probeTrafficPhysicalLane928Down,
 	// ★ 929（2026-11-02 12h 审计轮 P1）：self_check_runs.error_type CHECK 闭集补齐
 	//   （errorsx.ErrorKind 闭集 32 kind + 5 个 worker 专用字面量）。
-	"startup/929_self_check_error_type_kind_closure.sql":      selfCheckErrorTypeKindClosure929,
-	"startup/929_self_check_error_type_kind_closure.down.sql": selfCheckErrorTypeKindClosure929Down,
-	// ★ 930（2026-11-02 第二十五轮）：CHECK 闭集再补齐 —— 加入 model_unavailable
-	//   （errorsx.ErrorKind 闭集 33 kind + 5 个 worker 专用字面量）。
+	"startup/929_self_check_error_type_kind_closure.sql":                        selfCheckErrorTypeKindClosure929,
+	"startup/929_self_check_error_type_kind_closure.down.sql":                   selfCheckErrorTypeKindClosure929Down,
 	"startup/930_self_check_error_type_kind_closure_model_unavailable.sql":      selfCheckErrorTypeKindClosureModelUnavailable930,
 	"startup/930_self_check_error_type_kind_closure_model_unavailable.down.sql": selfCheckErrorTypeKindClosureModelUnavailable930Down,
 	"startup/915_recent_cache_hit_rate.sql":                                     recentCacheHitRate915,

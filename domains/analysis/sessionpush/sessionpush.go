@@ -311,19 +311,23 @@ func BuildPayload(in Input, projectID string) (memclient.SessionAnalysisPayload,
 //
 //	（这条链跑在网关的正常请求路径上 —— memora 宕机不能变成用户请求失败。）
 func Deliver(ctx context.Context, in Input) {
+	kind := pushKind(in)
+	// ★ 每次 Deliver 调用都计 dispatched（覆盖率分母，含禁用态暗跳）。
+	RecordPushDispatch("dispatched", kind)
 	target := Current()
 	if target == nil || target.Disabled() {
-		RecordPushDispatch("skipped", pushKind(in))
+		// 推送器禁用期：单独一档 ⇒ 运维能**直接**读出禁用时长/量。
+		RecordPushDispatch("disabled", kind)
 		return
 	}
-	RecordPushDispatch("dispatched", pushKind(in))
 	payload, ok := BuildPayload(in, target.ProjectID())
 	if !ok {
-		RecordPushDispatch("skipped", pushKind(in))
+		// 无可沉淀内容（BuildPayload 判定不推，如 Result 空）。
+		RecordPushDispatch("skipped", kind)
 		return
 	}
 	if err := target.Push(ctx, payload); err != nil {
-		RecordPushDispatch("failed", pushKind(in))
+		RecordPushDispatch("failed", kind)
 		slog.Warn("session analysis push to memora failed (suppressed)",
 			"tenant_id", in.TenantID,
 			"session_id", in.SessionID,
@@ -332,29 +336,40 @@ func Deliver(ctx context.Context, in Input) {
 			"error", err.Error())
 		return
 	}
-	RecordPushDispatch("success", pushKind(in))
+	RecordPushDispatch("success", kind)
 }
 
 // ── 对账口径（P1-2①，会话治理方案 2026-11）──────────────────────────────
 //
 // 「扩全量」的验收问题是覆盖率：网关产出了多少结构化分析、多少被推出、
 // 多少失败。两个产出点（provisional=请求到达钩子 / final=会话关闭钩子）
-// 已覆盖全量会话生命周期，缺的是**可对账的计数**。四个计数器：
+// 已覆盖全量会话生命周期，缺的是**可对账的计数**。一组计数器：
 //
 //	gateway_sessionpush_dispatch_total{status,kind}
-//	    status ∈ dispatched|success|failed|skipped ；kind ∈ provisional|final
-//	  dispatched：Deliver 被调用（含禁用态暗跳，便于算覆盖率分母差）
-//	  success/failed：推送结果
-//	  skipped：BuildPayload 判定不推（如 Result 空）
+//	    status ∈ dispatched|success|failed|skipped|disabled
+//	    kind   ∈ provisional|final|unknown
 //
-// 对账口径：网关侧分母 = session_analysis_metadata 行数（store.go:47 唯一键
-// 三元组），分子 = success_total；差值 = 推送器禁用期 + failed —— 两者都
-// 应能从这组计数直接读出。
+//	  dispatched：Deliver 被调用（**每次调用都计**，含禁用态暗跳）＝覆盖率分母
+//	  success：推送成功
+//	  failed：推送失败
+//	  skipped：BuildPayload 判定无可沉淀内容（如 Result 空）
+//	  disabled：推送器禁用态（未配置/显式关闭）
+//
+// 对账口径（2026-11-03 12h 审计 P1-3 收口）：
+//   分母 = session_analysis_metadata 行数（store.go:47 唯一键三元组）
+//   分子 = success_total
+//   差值 = disabled_total + failed_total + skipped_total
+//   ⇒ 三项都**直接**从各自的状态档读出，无需再做减法推导。
+//
+// ★ 修正记录：旧实现把「禁用」与「空载荷」都记在 skipped 一档、且
+//   dispatched 只在启用态计数 ⇒ 文档承诺的「禁用期直接可读」无法兑现
+//   （要靠 dispatched−success−failed 反推），且 dispatched ≠ Deliver
+//   调用次数。现在禁用独立成 disabled 档、dispatched 覆盖全部调用。
 var (
 	pushDispatchTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gateway_sessionpush_dispatch_total",
-			Help: "Session analysis push lifecycle: dispatched/success/failed/skipped by kind (P1-2 reconciliation)",
+			Help: "Session analysis push lifecycle: dispatched/success/failed/skipped/disabled by kind (P1-2 reconciliation)",
 		},
 		[]string{"status", "kind"},
 	)

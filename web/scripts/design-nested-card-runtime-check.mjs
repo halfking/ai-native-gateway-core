@@ -88,8 +88,11 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { localDate, mergeRatchetBaseline } from './lib/baseline-ratchet.mjs'
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASELINE = join(ROOT, 'scripts', 'design-nested-card-runtime-baseline.json')
+
 
 const CHROME_CANDIDATES = [
   process.env.CHROME_PATH,
@@ -838,21 +841,19 @@ if (wantUpdate) {
   //   ★★ （★ 这一段第一版写反了：`old > now` 时保留旧的高值 ⇒ 那是「只许升不许降」，
   //     恰好把棘轮做反了 ⇒ ★ 真仓变异臂 M6 当场把它抓出来 ⇒ 见审计档 §6.4。）
   //   ★ 新页按实测值登记 —— 新页必须被棘轮看见。
-  const nextCounts = {}
-  const keptHigher = []
-  for (const [page, now] of Object.entries(measuredCounts)) {
-    const old = prevCounts[page]
-    if (typeof old === 'number' && Number.isFinite(old)) {
-      if (now > old) {
-        nextCounts[page] = old
-        keptHigher.push(`${page}：实测 ${now} > 基线旧值 ${old} ⇒ **保持旧值 ${old}**（棘轮不许升）`)
-        continue
-      }
-      nextCounts[page] = now
-      continue
-    }
-    nextCounts[page] = now
-  }
+  // ★★ 2026-11-03（12h 审计 P2-3）：写回口径抽到**共用纯函数**
+  //   （web/scripts/lib/baseline-ratchet.mjs）⇒ 与 metric-skeleton 尺
+  //   **逐字同源**，且首次**有门**覆盖语义（web/src/baseline-ratchet.test.ts）。
+  //   口径三条：① 棘轮 min(旧值,实测值)；② 新页按实测登记；
+  //   ③ **未量到的页保留旧条目**（「没量到」≠「已删除」⇒ 删条目=悄悄摘约束）。
+  const { next: nextCounts, keptHigher: keptHigherRaw, preserved } = mergeRatchetBaseline(
+    prevCounts ?? {},
+    measuredCounts ?? {},
+  )
+  const keptHigher = keptHigherRaw.map(
+    (k) =>
+      `${k.page}：实测 ${k.measured} > 基线旧值 ${k.kept} ⇒ **保持旧值 ${k.kept}**（棘轮不许升）`,
+  )
   // ★★ note 必须是**动态**的（★ 静态模板会让两次重建的记录一模一样 ⇒
   //   看不出「上限从 111 降到 0」⇒ 变更史就失去了意义）。
   const sumOf = (obj) =>
@@ -866,16 +867,19 @@ if (wantUpdate) {
       '（事实源「卡片套卡片永远不对」没有「当页面骨架」那种限定语 ⇒ 元素级禁令）。' +
       '★ 重建基线（--update-baseline）写回的值 = min(旧值, 实测值) ⇒ 只许降不许升。',
     nestedCards: nextCounts,
-    updated: new Date().toISOString().slice(0, 10),
+    updated: localDate(),
     history: [
       ...(prev.history ?? []),
       {
-        updated: new Date().toISOString().slice(0, 10),
+        updated: localDate(),
         note:
-          '第 31 增量重建基线。★ 上限合计 ' + prevTotal + ' → ' + nextTotal + '（' + direction + '）。' +
+          '★ 本次重建基线。★ 上限合计 ' + prevTotal + ' → ' + nextTotal + '（' + direction + '）。' +
           '★ 判据：卡面 = 有底色 ∧ 四边**可见**描边 ∧ 圆角>0 ∧ 内边距和>=8 ∧ 非药丸 ∧ 非交互控件；' +
           '外层盒子 = 卡面 ∧ 宽>=120 ∧ 高>=48；内层卡 = 卡面 ∧ class 名含 card 词 ∧ 宽>=120 ∧ 高>=24。' +
           '★ 修法是【把外层那个懒容器降级成「标题 + 内容区」】⇒ 内层卡直接落在页面底上，不是换皮。' +
+          (preserved.length
+            ? '★ 保留本次未量到的 ' + preserved.length + ' 页基线（没量到 ≠ 已删除 ⇒ 删条目=悄悄摘约束）。'
+            : '★ 本次没有「未量到」的旧条目。') +
           (keptHigher.length
             ? '★ 本次重建时有页试图调高 ⇒ 已按棘轮保持旧值：' + keptHigher.join('；') + '。'
             : '★ 本次重建没有页试图调高。'),

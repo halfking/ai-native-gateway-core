@@ -134,7 +134,6 @@ export default {
   delta_append: 'Delta append',
   estimatedNote: 'Estimated (upstream did not return usage; estimated locally by character/word heuristics)',
   expand: 'Expand ▼',
-  length: 'Reached the length limit',
   llmReported: 'LLM reported',
   llm_summary: 'LLM summary',
   mechanical_trim: 'Mechanical trim',

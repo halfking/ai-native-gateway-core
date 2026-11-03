@@ -2518,20 +2518,22 @@ files=(
   #     status='running' 的半写态（审计与发布都不执行）。
   #   ★ 只重建约束，不改数据；自带 BEGIN/COMMIT ⇒ 走事务通道。
   "$ROOT_DIR/sql/migrations/startup/929_self_check_error_type_kind_closure.sql"
-  # ★ 930（第二十五轮）：CHECK 闭集**再补齐** —— 加入 model_unavailable
-  #   （本仓 4xx 归因轮引入的第 33 个 kind；929 按当时 32 kind 写死）。
-  #   ★ 缺口本体：写侧 bg/credential_selfcheck.go 写的正是 kind 名 ⇒
-  #     写 model_unavailable 时 finalizeRun 的 UPDATE 被 23514 拒绝 ⇒
-  #     整条回滚 ⇒ self_check run 行停在 status='running' 的半写态。
-  #   ★ 同样是**新迁移**而不是改 929 的字节（929 已在 211 应用、字节冻结）。
+  # ★ 930（2026-11-03 同步轮）：self_check_runs.error_type 的 CHECK 闭集再补
+  #   一个 kind —— `model_unavailable`（38 项 = 33 kind + 5 worker 专用字面量）。
+  #   ★ 缺口本体：errorsx 加 `KindModelUnavailable` 的那一笔（`4fe043dc3`，
+  #     2026-11-02 12:23）比 929 的落地（07:47）晚 5 小时 ⇒ CHECK 闭集少 1 项。
+  #   ★ 写侧 bg/credential_selfcheck.go:844 写的正是 kind 名 ⇒ finalizeRun
+  #     的 UPDATE 被 23514 拒绝 ⇒ 整条回滚 ⇒ self_check run 行停在
+  #     status='running' 的半写态（审计与发布都不执行）。
+  #   ★ 只重建约束，不改数据；自带 BEGIN/COMMIT ⇒ 走事务通道。
   "$ROOT_DIR/sql/migrations/startup/930_self_check_error_type_kind_closure_model_unavailable.sql"
-  # ★ 931（2026-11-02 第二十六轮补登记）：userscript capture 摄取表族（三表 + 租户 RLS + 幂等唯一约束）。
-  #   ★ 缺口本体：改号（928/929/930 → 931/932/933）时**只改了文件名**，
-  #     这三条**从未进过部署通道的 files=()** ⇒ 211 部署会静默跳过它们
-  #     ⇒ 表不会被建 ⇒ 功能照样 42P01（★ 没有门能抓这条：探针覆盖面门
-  #     只要求 900~929，93x 不在范围内 ⇒ 静默缺失复发点）。
-  #   ★ 自带 BEGIN/COMMIT + SET LOCAL lock_timeout/statement_timeout
-  #     ⇒ 走事务通道，锁面有守卫。
+  # ★ 931（2026-11-02 12h 审计轮 P0-3 M1）：userscript capture 摄取表族 ——
+  #   capture_batches / capture_messages / capture_bodies 三张表（ADR
+  #   docs/adr/2026-11-02-userscript-capture-gateway-endpoint.md D5）。
+  #   ★ 缺口本体：此前只有 installer 腿（StartupFiles），**从未**进本通道
+  #   ⇒ 升级库上三张表一个都没有 ⇒ 摄取端点写入全 42P01。
+  #   ★ 幂等收敛点 = capture_messages 的 (tenant_id, idempotency_key) 唯一约束
+  #   （同批次重放命中唯一冲突即计 duplicate）；自带 BEGIN/COMMIT ⇒ 走事务通道。
   "$ROOT_DIR/sql/migrations/startup/931_userscript_capture_family.sql"
   # ★ 932（2026-11-02 第二十六轮补登记）：fresh-install 链补齐 outbox_events（211 手工 V357 从未入链 ⇒ 全新安装必缺）。
   #   ★ 缺口本体：改号（928/929/930 → 931/932/933）时**只改了文件名**，
@@ -3079,13 +3081,19 @@ ledger_artifact_probe "929_self_check_error_type_kind_closure.sql" \
 #   ★ 探针点名 model_unavailable —— 少它一个都判失败
 #   （只看「约束在不在」会被一个 929 时代的窄集骗过）。
 #   ★ 联动契约：探针行里所有 public.x / 'x' 字面量必须在迁移文件文本中出现
+#   ⇒ 三个表名都在 931 文件里。
+# ★ 930（2026-11-03 同步轮）：产物 = self_check_runs 的 error_type CHECK 已覆盖
+#   errorsx 全闭集（33 kind + 5 worker 专用字面量 = 38 项）。
+#   ★ 探针**逐个点名 38 个必需字面量** —— 少一个都判失败。
+#     ⇒ 只点 'model_unavailable'（本轮新增的那一个）会被一个**窄集**骗过
+#     ⇒ ★ 与 929 探针同一条纪律（929 自己的注释就写着「只看约束『在不在』
+#       会被一个窄集骗过」）⇒ ★ 既然本迁移重建的是**整份**闭集，探针就该
+#       点**整份**闭集 ⇒ 窄集实现当场被抓住。
+#   ★ 联动契约：探针行里所有 public.x / 'x' 字面量必须在迁移文件文本中出现
 #   ⇒ 'self_check_runs_error_type_check' / public.self_check_runs /
-#      'model_unavailable' 都在 930 文件里。
+#      那 38 个字面量名都在 930 文件里。
 ledger_artifact_probe "930_self_check_error_type_kind_closure_model_unavailable.sql" \
-  "EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'self_check_runs_error_type_check' AND conrelid = 'public.self_check_runs'::regclass AND position('model_unavailable' in pg_get_constraintdef(oid)) > 0)"
-# ★ 931（第二十六轮补登记）：产物 = 本迁移建的表确实在库里。
-#   ★ 判据逐字取自迁移体内的对象名（产物名保真契约要求探针里的
-#     public.X / 'X' 字面量必须真实出现在迁移文件里）。
+  "EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'self_check_runs_error_type_check' AND conrelid = 'public.self_check_runs'::regclass AND position('transient' in pg_get_constraintdef(oid)) > 0 AND position('timeout' in pg_get_constraintdef(oid)) > 0 AND position('network' in pg_get_constraintdef(oid)) > 0 AND position('rate_limit' in pg_get_constraintdef(oid)) > 0 AND position('auth' in pg_get_constraintdef(oid)) > 0 AND position('quota' in pg_get_constraintdef(oid)) > 0 AND position('upstream_down' in pg_get_constraintdef(oid)) > 0 AND position('canceled' in pg_get_constraintdef(oid)) > 0 AND position('client_bug' in pg_get_constraintdef(oid)) > 0 AND position('request_rejected' in pg_get_constraintdef(oid)) > 0 AND position('model_unavailable' in pg_get_constraintdef(oid)) > 0 AND position('concurrent' in pg_get_constraintdef(oid)) > 0 AND position('auth_revoked' in pg_get_constraintdef(oid)) > 0 AND position('quota_periodic' in pg_get_constraintdef(oid)) > 0 AND position('quota_balance' in pg_get_constraintdef(oid)) > 0 AND position('quota_permanent' in pg_get_constraintdef(oid)) > 0 AND position('model_not_found' in pg_get_constraintdef(oid)) > 0 AND position('stream_timeout' in pg_get_constraintdef(oid)) > 0 AND position('tool_call_id_mismatch' in pg_get_constraintdef(oid)) > 0 AND position('context_length_exceeded' in pg_get_constraintdef(oid)) > 0 AND position('unsupported_feature' in pg_get_constraintdef(oid)) > 0 AND position('model_deprecated' in pg_get_constraintdef(oid)) > 0 AND position('content_filter' in pg_get_constraintdef(oid)) > 0 AND position('empty_response' in pg_get_constraintdef(oid)) > 0 AND position('conversion_error' in pg_get_constraintdef(oid)) > 0 AND position('upstream_context_loss' in pg_get_constraintdef(oid)) > 0 AND position('upstream_overloaded' in pg_get_constraintdef(oid)) > 0 AND position('no_available_channel' in pg_get_constraintdef(oid)) > 0 AND position('circuit_open' in pg_get_constraintdef(oid)) > 0 AND position('fp_slot_saturated' in pg_get_constraintdef(oid)) > 0 AND position('first_byte_timeout' in pg_get_constraintdef(oid)) > 0 AND position('reply_loop' in pg_get_constraintdef(oid)) > 0 AND position('account_restricted' in pg_get_constraintdef(oid)) > 0 AND position('none' in pg_get_constraintdef(oid)) > 0 AND position('internal' in pg_get_constraintdef(oid)) > 0 AND position('parse_error' in pg_get_constraintdef(oid)) > 0 AND position('unattributed' in pg_get_constraintdef(oid)) > 0 AND position('upstream_fail' in pg_get_constraintdef(oid)) > 0)"
 ledger_artifact_probe "931_userscript_capture_family.sql" \
   "to_regclass('public.capture_batches') IS NOT NULL AND to_regclass('public.capture_messages') IS NOT NULL AND to_regclass('public.capture_bodies') IS NOT NULL"
 # ★ 932（第二十六轮补登记）：产物 = 本迁移建的表确实在库里。

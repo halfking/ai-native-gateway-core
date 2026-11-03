@@ -146,7 +146,6 @@ export default {
   delta_append: 'إلحاق تدريجي',
   estimatedNote: 'قيمة مقدرة (المنبع لم يرجع usage، يتم التقدير محليًا حسب الأحرف/الكلمات)',
   expand: 'توسيع ▼',
-  length: 'تم بلوغ الحد الأقصى للطول',
   llmReported: 'القيمة المرجعة من LLM',
   llm_summary: 'ملخص LLM',
   mechanical_trim: 'تشذيب آلي',

@@ -1006,6 +1006,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	admin := h.admin
 	// JWT-authenticated routes (JWT or admin key)
 	mux.HandleFunc("/api/auth/me", admin(h.handleAuthMe))
+	// Single sign-on ticket for a sibling service (FreeLLM API, …). The
+	// gateway owns the identity, so it mints a short-lived, audience-scoped
+	// JWT the peer verifies with the shared identity secret.
+	mux.HandleFunc("/api/auth/app-token", admin(h.handleAppToken))
 	mux.HandleFunc("/api/auth/change-password", admin(h.handleChangePassword))
 	mux.HandleFunc("/api/users", admin(h.handleUsers))
 	mux.HandleFunc("/api/admin/audit-logs", h.superAdmin(h.handleListAuditLogs))

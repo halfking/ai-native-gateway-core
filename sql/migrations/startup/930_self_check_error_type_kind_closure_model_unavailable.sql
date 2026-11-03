@@ -1,30 +1,38 @@
--- 930: self_check_runs.error_type 的 CHECK 闭集**再补齐** —— 加入 model_unavailable。
+-- 930: self_check_runs.error_type 的 CHECK 闭集再补一个 kind —— `model_unavailable`。
 --
--- 缺口本体（2026-11-02 第二十五轮，**合并 211 生产树时暴露**）：
---   ① `errorsx.AllErrorKinds()` 闭集现在是 **33** 个 kind；
---   ② `929_self_check_error_type_kind_closure.sql`（**已在 211 生产应用**、
---      字节冻结）的 CHECK 字面量集只有 **32** 个 kind
---      ⇒ ★ **缺 `model_unavailable`**；
---   ③ `model_unavailable` 是**本仓**引入的新 kind（4xx 归因轮：上游 4xx
---      归入「请求侧/模型不可用」族，见主档 §六/§七）⇒ 写侧
---      `bg/credential_selfcheck.go` 的 finalizeRun 写的**就是 kind 名**
---      ⇒ 一旦上游 4xx 落到 `model_unavailable`，UPDATE 被 DB 以 **23514** 拒绝
---      ⇒ **整条 UPDATE 回滚** ⇒ run 行停在 status='running' / error_type=NULL
---      的**半写态**，且 auditToSystemProbeRuns 与 publishSelfcheck 都不执行。
+-- 缺口本体（2026-11-03 同步轮，本轮实测）：
+--   ① `errorsx.AllErrorKinds()` 闭集现在是 **33** 个 kind（929 落地时是 32）；
+--   ② 929（`929_self_check_error_type_kind_closure.sql`）把 CHECK 闭集对齐到
+--      **37** 项（32 kind + 5 个 worker 专用字面量）⇒ 闭集少 **1** 项：
+--      `model_unavailable`；
+--   ③ 少的那一项是 **2026-11-02 12:23:59** 的提交 `4fe043dc3`
+--      （"fix(4xx|probe): 裸 404 归「绑定级」处置 …"）加的
+--      `errorsx.KindModelUnavailable` ⇒ ★★ **比 929 的落地（07:47:48）晚 5 小时**
+--      ⇒ ⇒ **同一个「镜像面没跟上」家族的第二次复发**（第一次是 929 补的 6 个）；
+--   ④ 写侧写的就是 kind 名（`bg/credential_selfcheck.go:844`：
+--      `r.ErrType = string(errorsx.ClassifyErrorWithBody(resp.StatusCode, body))`）
+--      ⇒ 一旦上游 4xx 落到 `model_unavailable`，`finalizeRun` 的 UPDATE 被 DB 以
+--      **23514** 拒绝 ⇒ **整条 UPDATE 回滚** ⇒ run 行停在
+--      `status='running'` / `error_type=NULL` / `completed_at=NULL` 的**半写态**
+--      ⇒ `auditToSystemProbeRuns` 与 `publishSelfcheck` 都不执行
+--      ⇒ ★ **这次自检在系统里根本没发生过**，但调度器以为发生过。
 --
--- ★ 为什么之前没人发现：**929 的闭集交叉门
---   （sql/migrations/startup/migration_929_error_type_closure_test.go）
---   只存在于 211 生产机上，没在仓库里** ⇒ 本仓引入新 kind 时，
---   那道门**不在本地、也不在 CI 上** ⇒ 闭集与 kind 集合的漂移**无人守**。
---   ⇒ 本轮把 211 的工作取回仓库后，那道门**当场抓到了这个缺口**
---   ⇒ ★ 这就是「门必须住在能跑的地方」这条纪律的直接收益。
+-- ★★ 本迁移存在的意义（与 929 同族，但要强调**复发**这一面）：
+--   929 的门 `sql/migrations/startup/migration_929_error_type_closure_test.go`
+--   判据是「闭集对拍」（`errorsx.AllErrorKinds()` ⊆ DB CHECK 字面量集）
+--   ⇒ ★ **门抓到了**（它当场红 ⇒ 就是本轮的发现）⇒ ★★ 但**门只报警不施救**：
+--   门说「新增一条 startup 迁移重建该 CHECK」，**迁移要人来写** ⇒ ⇒
+--   ⇒ ★ **「加一个 kind」的系统成本 = 一次跨仓的人工动作** ⇒ 而这道动作
+--     **每次都会晚**（上游加 kind 的那一笔不会顺手改已冻结的迁移字节）⇒
+--     ⇒ ★★ ⇒ **「门能抓到」不等于「门会自动修好」** ⇒ ⇒ 这是本仓的**结构性
+--     成本**，不是某一次的手滑 ⇒ ⇒ 判据：**每加一个 kind 都要预留一次
+--     「新增迁移」的跨仓动作**（本条就是那笔动作的第一次执行记录）。
 --
--- 修法：新增一条 startup 迁移**重建**该 CHECK，把**当前**闭集整份纳入
---   （33 kind + 5 个 worker 专用字面量 = **38** 个必需字面量）。
---   ★ 为何不改 929 的字节：929 已在 211 应用且字节冻结（content_sha256 进台账）
---     ⇒ 改字节会走 content replay 通道并连锁 break（见 914/928 教训）。
---   ★ 为何不挑几个补：下一个新 kind 会重犯同一个错 ⇒ 闭集必须由
---     `errorsx.AllErrorKinds()` 驱动 ⇒ 由同一道交叉门钉死。
+-- ★ 为何是**新迁移**而不是改 929 的字节：929 已进部署台账（content_sha256）
+--   ⇒ 改字节会走 content replay 通道并连锁 break（914/928 教训）⇒ 同 929 的处置。
+--
+-- 修法：重建该 CHECK，把 errorsx kind 闭集**整份**纳入（33 kind），
+--   并保留 `http_%` 通配（旧装机的历史诊断值仍可读）⇒ 合计 **38** 项。
 --
 -- 幂等：先读 `pg_get_constraintdef`，若已覆盖全部 38 个必需字面量 ⇒ 直接跳过。
 --   可重入 ⇒ 重复执行不重建约束。
@@ -43,21 +51,20 @@ DO $do$
 DECLARE
     -- ★ 本数组 = errorsx.AllErrorKinds()（**33** 个 kind）
     --   ∪ worker 专用字面量（5 个，**不是** kind，是 self-check worker 直接写的字符串）
-    --   = **38** 个必需字面量。
+    --   = **38** 个必需字面量（929 的 37 项 + 本次新增的 'model_unavailable'）。
     -- ★ 跨门（migration_929_error_type_closure_test.go）会把本数组
     --   与下方 CHECK 里的 ARRAY 逐项对拍，并要求两者都 ⊇ errorsx 闭集。
     v_required text[] := ARRAY[
-        -- —— errorsx kind 闭集（33）——
         'transient', 'timeout', 'network', 'rate_limit', 'auth', 'quota',
         'upstream_down', 'canceled', 'client_bug', 'request_rejected',
-        'model_unavailable',
-        'concurrent', 'auth_revoked', 'quota_periodic', 'quota_balance',
-        'quota_permanent', 'model_not_found', 'stream_timeout',
-        'tool_call_id_mismatch', 'context_length_exceeded', 'unsupported_feature',
-        'model_deprecated', 'content_filter', 'empty_response', 'conversion_error',
-        'upstream_context_loss', 'upstream_overloaded', 'no_available_channel',
-        'circuit_open', 'fp_slot_saturated', 'first_byte_timeout', 'reply_loop',
-        'account_restricted',
+        'model_unavailable', 'concurrent', 'auth_revoked',
+        'quota_periodic', 'quota_balance', 'quota_permanent',
+        'model_not_found', 'stream_timeout', 'tool_call_id_mismatch',
+        'context_length_exceeded', 'unsupported_feature',
+        'model_deprecated', 'content_filter', 'empty_response',
+        'conversion_error', 'upstream_context_loss', 'upstream_overloaded',
+        'no_available_channel', 'circuit_open', 'fp_slot_saturated',
+        'first_byte_timeout', 'reply_loop', 'account_restricted',
         -- —— worker 专用字面量（5）：不在 errorsx 闭集里，但 worker 直接写 ——
         --    'none'          （bg/self_check_worker.go:550 / credential_selfcheck.go:388）
         --    'internal'      （bg/self_check_worker.go:634 / credential_selfcheck.go:813）
@@ -108,18 +115,21 @@ BEGIN
             OR error_type LIKE 'http_%'
             OR error_type = ANY (ARRAY[
                 -- —— errorsx kind 闭集（33）：运行时写侧写的就是这些名字 ——
-                'transient', 'timeout', 'network', 'rate_limit', 'auth', 'quota',
-                'upstream_down', 'canceled', 'client_bug', 'request_rejected',
-                'model_unavailable',
-                'concurrent', 'auth_revoked', 'quota_periodic', 'quota_balance',
+                'transient', 'timeout', 'network', 'rate_limit', 'auth',
+                'quota', 'upstream_down', 'canceled', 'client_bug',
+                'request_rejected', 'model_unavailable', 'concurrent',
+                'auth_revoked', 'quota_periodic', 'quota_balance',
                 'quota_permanent', 'model_not_found', 'stream_timeout',
-                'tool_call_id_mismatch', 'context_length_exceeded', 'unsupported_feature',
-                'model_deprecated', 'content_filter', 'empty_response', 'conversion_error',
-                'upstream_context_loss', 'upstream_overloaded', 'no_available_channel',
-                'circuit_open', 'fp_slot_saturated', 'first_byte_timeout', 'reply_loop',
+                'tool_call_id_mismatch', 'context_length_exceeded',
+                'unsupported_feature', 'model_deprecated',
+                'content_filter', 'empty_response', 'conversion_error',
+                'upstream_context_loss', 'upstream_overloaded',
+                'no_available_channel', 'circuit_open',
+                'fp_slot_saturated', 'first_byte_timeout', 'reply_loop',
                 'account_restricted',
                 -- —— worker 专用字面量（5）——
-                'none', 'internal', 'parse_error', 'unattributed', 'upstream_fail'
+                'none', 'internal', 'parse_error', 'unattributed',
+                'upstream_fail'
             ])
         ) NOT VALID;
 
