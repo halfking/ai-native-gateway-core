@@ -1,3 +1,10 @@
 # Installer binaries — built locally, never tracked（锚定模块根，避免误伤 cmd/ 同名源码目录）
 /llm-gw-installer
 /llm-launcher
+# ★ 2026-11-03（12h 审计 A14）：`go build ./cmd/e2e-bootstrap/` 会把可执行文件
+#   落在**模块根**（installer/），而不是 cmd/ 同名目录下 ⇒ 此前 `/e2e-bootstrap`
+#   **不在**本文件里 ⇒ ⇒ 187ec7ead 把一个 2.9MB 的 darwin/arm64 Mach-O
+#   **编译产物**提交进了仓库（⇒ ① 平台专用 ⇒ linux/amd64 上不可执行；
+#   ⇒ ② 内容与源码可能不同步 ⇒ 无法 review；③ 仓内纪律明写「构建产物不入仓」）。
+#   ⇒ 纪律：★ **凡是 `installer/` 模块根下的可执行文件，都是构建产物，一律不入仓**。
+/e2e-bootstrap

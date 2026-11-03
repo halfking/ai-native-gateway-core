@@ -92,12 +92,51 @@ ALTER TABLE public.capture_batches ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.capture_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.capture_bodies ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY capture_tenant_isolation ON public.capture_batches
-    USING (tenant_id = current_setting('app.current_tenant', true)::TEXT);
-CREATE POLICY capture_tenant_isolation ON public.capture_messages
-    USING (tenant_id = current_setting('app.current_tenant', true)::TEXT);
-CREATE POLICY capture_tenant_isolation ON public.capture_bodies
-    USING (tenant_id = current_setting('app.current_tenant', true)::TEXT);
+-- ★★ 2026-11-03（12h 审计 C6）★★ **三条 policy 必须幂等**。
+--   ★ PostgreSQL **没有** `CREATE POLICY IF NOT EXISTS` ⇒ ⇒ 裸 CREATE POLICY 重跑必报
+--   ★ `policy "capture_tenant_isolation" for table "capture_batches" already exists`。
+--   ★ 而这不是理论风险 —— ★ **两条通道用的是两本不同的账**：
+--     ① installer 腿把 931 跑在**新装库**上，登记进 `public.schema_migrations`；
+--     ② 升级通道 `scripts/apply-db-revision-sequence.sh` 的账是
+--        `public.gateway_db_revision_sequences`（**另一本**）⇒ ⇒ 新装库走第一次
+--        升级通道时，**账里没有 931 的行** ⇒ ⇒ 通道会**再跑一遍 931** ⇒ ⇒
+--        ⇒ 撞上裸 CREATE POLICY ⇒ ⇒ psql 带 `ON_ERROR_STOP=1` ⇒ ⇒
+--        ⇒ **整条部署序列中止**（`set -euo pipefail` ⇒ 直接 exit）。
+--   ★ ⇒ 修法：把三条 CREATE POLICY 包进 `DO $$ … IF NOT EXISTS … $$`（查 pg_policies）。
+--   ★ 幂等：已存在 ⇒ 跳过（且**不动**既有 policy 的定义）；不存在 ⇒ 建。
+--   ★ ★ 顺带把台账探针的处置文案改对：**非幂等迁移**的补救动作必须不同
+--   ★ （本迁移此前不可重放 ⇒ 照着「删台账行再重放」做必然失败）。
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'public'
+          AND tablename = 'capture_batches'
+          AND policyname = 'capture_tenant_isolation'
+    ) THEN
+        CREATE POLICY capture_tenant_isolation ON public.capture_batches
+            USING (tenant_id = current_setting('app.current_tenant', true)::TEXT);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'public'
+          AND tablename = 'capture_messages'
+          AND policyname = 'capture_tenant_isolation'
+    ) THEN
+        CREATE POLICY capture_tenant_isolation ON public.capture_messages
+            USING (tenant_id = current_setting('app.current_tenant', true)::TEXT);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'public'
+          AND tablename = 'capture_bodies'
+          AND policyname = 'capture_tenant_isolation'
+    ) THEN
+        CREATE POLICY capture_tenant_isolation ON public.capture_bodies
+            USING (tenant_id = current_setting('app.current_tenant', true)::TEXT);
+    END IF;
+END
+$$;
 
 -- Ledger self-registration（710 惯例）
 INSERT INTO public.schema_migrations (version, description)

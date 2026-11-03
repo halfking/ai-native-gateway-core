@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { readFileSync } from 'fs'
+import { dirname, resolve } from 'path'
+import { fileURLToPath } from 'url'
 import {
   fetchRequestDetail,
   unwrapRequestDetail,
@@ -207,14 +210,36 @@ describe('★★★★★★ omit_body 只认 1 / true', () => {
 
 // ────────────────────────────────────────────────────────────────────────
 describe('★★★★★ source / persistence 字面量', () => {
-  it('★★★★★ 五个 source 全在（内存/落盘/实时流/审计表/轮次表）', () => {
-    expect([...REQUEST_DETAIL_SOURCES]).toEqual([
-      'memory',
-      'file',
-      'live_stream',
-      'request_logs',
-      'session_turns',
-    ])
+  it('★★★★★ 移动端的 source 集合与后端**逐字相等**（★ 不再硬编码子集）', () => {
+    // ★★ 2026-11-03（12h 审计 D1/D7）：本断言此前**硬编码 5 个值**，而后端
+    //   已产出 6~7 个 ⇒ ★ `a440cba9e` 加 `hotzone_mirror` 时只改了源文件、没改
+    //   同文件旁的断言 ⇒ ★ 这条单测**恒红**，且它在**官方 CI 路径上**
+    //   （`.github/workflows/verify-ci.yml` → `verify.sh --web` → `pm_run test
+    //   web-mobile`）⇒ ★ 但桌面端那轮的验收读数只覆盖 `web/`（两个独立 vitest
+    //   根）⇒ ★ **漏检**。
+    // ★★ 修法：**不再硬编码** ⇒ 改成读**后端真值**（domains/requestdetail/types.go）
+    //   逐字对拍 ⇒ ★ 这样「后端加一个值」必然让移动端红 ⇒ ★ **失败方向正确**，
+    //   且**不会**再出现「改了后端忘了改客户端断言」的静默漂移。
+    const backend = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), '../../../domains/requestdetail/types.go'),
+      'utf8',
+    )
+    const backendSources = new Set<string>()
+    // ★ 提取器与桌面端契约门（web/src/api/source-contract.test.ts 的
+    //   `declaredSourceLiterals`）**逐字同款** ⇒ 两边对同一份后端源码取同一组字面量
+    //   ⇒ ★ 不会出现「两边提取器不同 ⇒ 一边绿一边红」的诡异分歧。
+    for (const m of backend.matchAll(/\bSource\s*=\s*"([^"]+)"/g)) backendSources.add(m[1]!)
+    expect(backendSources.size, '★ 没从后端解析出任何 source 字面量 ⇒ 判据本身坏了').toBeGreaterThan(0)
+
+    const mobile = [...REQUEST_DETAIL_SOURCES]
+    expect(
+      mobile.filter((v) => !backendSources.has(v)),
+      '★ 移动端有后端【永不产出】的 source ⇒ 那是个假分支',
+    ).toEqual([])
+    expect(
+      [...backendSources].filter((v) => !mobile.includes(v)),
+      '★ ★ 后端能产出 source，但移动端联合里没有 ⇒ ★ 移动端会把它落进兜底分支 ⇒ ★ 裸串上屏',
+    ).toEqual([])
   })
 
   it('★★★★★ 两个 persistence 值', () => {

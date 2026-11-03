@@ -71,7 +71,19 @@ import { req, type RequestOptions } from './client'
 
 // ── 字面量（照抄，不是猜的） ──────────────────────────────────────────────
 
-/** ★ `Source` 的全部 5 个值（domains/requestdetail/types.go:12-18）。 */
+/**
+ * ★ `Source` 的**全部 7 个值**（domains/requestdetail/types.go:12-54）。
+ *
+ * ★★ 2026-11-03（12h 审计 D1/D7）：本常量此前**停在 6 个** ⇒ 漏了 `probe_lane`
+ *   ⇒ 后端能产出的 `probe_lane` 落进移动端的兜底分支（`web-mobile/src/views/
+ *   RequestDetailView.vue:199` 原样渲染 `{{ detail.source }}` ⇒ 裸串上屏）。
+ *   ⇒ ★ 根因不是「忘了加一个值」，而是**契约门只做单向**：
+ *   `web/src/api/source-contract.test.ts` 的 ①b 只断言「移动 ⊆ 桌面」，
+ *   **没有**断言「后端 ⊆ 移动」⇒ 漂移的那一侧（移动端）永远没人管。
+ *   ⇒ ★ 修法分三层：① 本常量补齐到与后端**逐字相等**；
+ *   ② 移动端自己的单测（`requestDetail.test.ts`）不再硬编码子集；
+ *   ③ 契约门加一条**反向**断言（后端 ⊆ 移动）⇒ 让它**不再复发**。
+ */
 export const REQUEST_DETAIL_SOURCES = [
   'memory',
   'file',
@@ -80,6 +92,9 @@ export const REQUEST_DETAIL_SOURCES = [
   'session_turns',
   // ★ 2026-11-02：本地热区请求侧镜像兜底回源（后端 SourceHotzoneMirror）。
   'hotzone_mirror',
+  // ★ 2026-11-03（12h 审计 D7）：后端探测车道（后端 SourceProbeLane，
+  //   domains/requestdetail/types.go:38）—— 此前移动端漏了这个值。
+  'probe_lane',
 ] as const
 export type RequestDetailSource = (typeof REQUEST_DETAIL_SOURCES)[number]
 

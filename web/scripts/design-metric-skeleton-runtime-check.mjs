@@ -70,12 +70,10 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-
-import { localDate, mergeRatchetBaseline } from './lib/baseline-ratchet.mjs'
+import { localDateStamp } from './lib/local-date.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASELINE = join(ROOT, 'scripts', 'design-metric-skeleton-runtime-baseline.json')
-
 
 const CHROME_CANDIDATES = [
   process.env.CHROME_PATH,
@@ -947,6 +945,19 @@ if (!pagesMatch) {
 
 if (jsonArg) writeFileSync(jsonArg.slice(7), JSON.stringify({ ...report, readings }, null, 2))
 
+// ★★ 2026-11-03（12h 审计 D3）★★ **零页测量 ⇒ 绝不写基线**（★ 判据必须在**写**之前）。
+//   ★ 原顺序是「**先写回、后判未测量**」⇒ ⇒ 浏览器驱动失败但 `report.pages` 为空时，
+//   ★ `--update-baseline` **仍会写出一份空/残缺的基线**，然后才 `exit 3`。
+//   ★ ⇒ 「没量到」与「已删除」在写回路径上被当成同一件事 ⇒ ⇒ 必须**先判、后写**。
+//   ★ 与 D2 同族：★ **缺失 ≠ 未变** —— 没量到的页**不该**被当成「已被删除」。
+const measured = report.pages.length
+if (!measured) {
+  console.log('\n⏭ 一页都没量到 ⇒ **未测量**（不是通过）')
+  if (argv.includes('--update-baseline')) {
+    console.log('★ **未测量 ⇒ 不写基线**（★ 否则「没量到」会被当成「已删除」⇒ 那些页的棘轮约束被悄悄摘掉）')
+  }
+  process.exit(3)
+}
 if (argv.includes('--update-baseline')) {
   const prev = baseline ?? { bareMetricCards: {} }
   // ★★ 2026-11-02（第 41 增量）：写回值 = min(旧值, 实测值) ⇒ **棘轮只许降不许升**。
@@ -956,29 +967,42 @@ if (argv.includes('--update-baseline')) {
   //   ★★ nested-card 用 `min(旧值, 实测值)`、action-density 用「写回前拒绝放松方向」、
   //   ★★ hero-metric 用 `min` ⇒ ★★ 本尺是这一族里**唯一**没守住的那个）。
   //   ★★ **新页按实测值登记** —— ★ 新页必须被棘轮看见（★ 与 nested-card 同款形态）。
-  // ★★ 2026-11-03（12h 审计 P2-3）：写回口径抽到**共用纯函数**
-  //   （web/scripts/lib/baseline-ratchet.mjs）⇒ 与 nested-card 尺**逐字同源**，
-  //   且首次**有门**覆盖语义（web/src/baseline-ratchet.test.ts）。
-  //   口径三条：① 棘轮 min(旧值,实测值)；② 新页按实测登记；
-  //   ③ **未量到的页保留旧条目**（「没量到」≠「已删除」⇒ 删条目=悄悄摘约束）。
-  const measuredCounts = {}
-  for (const p of report.pages) measuredCounts[p.page] = p.skeletonCards
-  const { next: nextCounts, keptHigher: keptHigherRaw, preserved, added } =
-    mergeRatchetBaseline(prev.bareMetricCards ?? {}, measuredCounts)
-  const keptHigher = keptHigherRaw.map(
-    (k) =>
-      `${k.page}：实测 ${k.measured} > 基线旧值 ${k.kept} ⇒ **保持旧值 ${k.kept}**（棘轮不许升）`,
-  )
+  // ★★ 2026-11-03（12h 审计 D2）**先铺旧、再覆盖新的** —— ★ 这一步是**必需的**，
+  //   不是可选的：
+  //   ★ 原实现是 `const nextCounts = {}` ⇒ **只遍历本次量到的页** ⇒ ⇒ 任何一次
+  //   ★ 以 `--pages=` 子集运行的写回，会把**未量到的页**的基线条目**静默删除**
+  //   ★ ⇒ ⇒ 那些页的棘轮约束**凭空消失** ⇒ ⇒ 再也没有任何东西约束它们。
+  //   ★ 而且**门兜不住**：`pagesMatchBaseline`（本尺第 343 行）是**单向**检查
+  //   ★ （`measured.every(p => known.has(p))`）⇒ 它只兜「量到基线里没有的页」
+  //   ★ ⇒ **兜不住「基线里有、这次没量到的页」** ⇒ ⇒ 删除这一事实永远不会被判红。
+  //   ★ 判据：★ **缺失 ≠ 未变**（★ 产物里没出现的条目，不等于产物里没有约束）。
+  const nextCounts = { ...(prev.bareMetricCards ?? {}) }
+  const keptHigher = []
+  for (const p of report.pages) {
+    const old = prev.bareMetricCards?.[p.page]
+    if (typeof old === 'number' && Number.isFinite(old)) {
+      if (p.skeletonCards > old) {
+        nextCounts[p.page] = old
+        keptHigher.push(
+          `${p.page}：实测 ${p.skeletonCards} > 基线旧值 ${old} ⇒ **保持旧值 ${old}**（棘轮不许升）`,
+        )
+        continue
+      }
+      nextCounts[p.page] = p.skeletonCards
+      continue
+    }
+    nextCounts[p.page] = p.skeletonCards
+  }
   // ★★ note 必须是**动态**的（★ 静态模板会让两次重建的记录一模一样 ⇒ 看不出「上限从 12 降到 0」
   //   ⇒ 变更史就失去了意义；★ nested-card 尺的头注释已记这条纪律）。
   const sumOf = (obj) => Object.values(obj ?? {}).reduce((s, n) => s + (Number(n) || 0), 0)
   const prevTotal = sumOf(prev.bareMetricCards)
   const nextTotal = sumOf(nextCounts)
   const direction = prevTotal > nextTotal ? '下降' : prevTotal < nextTotal ? '上升' : '持平'
-  // ★★ 2026-11-03（12h 审计 P2-2）：**本地日期**，不是 UTC。
-  //   `toISOString()` 是 UTC ⇒ 在 UTC+8 的 00:00–08:00 之间，审计日期会被
-  //   写成**前一天** ⇒ 变更史出现错日期（且与「今天」对不上）。
-  const today = localDate()
+  const added = Object.keys(nextCounts).filter((k) => !(k in (prev.bareMetricCards ?? {})))
+  // ★★ 2026-11-03（12h 审计 D2）：**本地日期**，不是 `toISOString()` 的 UTC 日期
+  //   ★ （UTC+8 的本地 00:00–08:00 之间跑写回 ⇒ UTC 日期会早一天 ⇒ 基线自称昨天）。
+  const today = localDateStamp()
   const next = {
     metric:
       'bareMetricCards = 该页落在「同尺寸同构的裸指标卡网格」里的卡片数（棘轮：不得上升）。★ 硬闸另算：一页里 >= ' +
@@ -994,9 +1018,6 @@ if (argv.includes('--update-baseline')) {
         note:
           `★ 本次重建（${today}）：新登记 ${added.length} 页` +
           (added.length ? `（${added.join('、')}）` : '') +
-          (preserved.length
-            ? `；★ 保留未量到的 ${preserved.length} 页基线（本次没量到 ≠ 已删除）`
-            : '；★ 本次没有「未量到」的旧条目') +
           `；★ 上限合计 ${prevTotal} → ${nextTotal}（${direction}）；` +
           (keptHigher.length
             ? '★ 本次重建时有页试图调高 ⇒ 已按棘轮保持旧值：' + keptHigher.join('；') + '。'
@@ -1013,11 +1034,6 @@ if (argv.includes('--update-baseline')) {
   }
 }
 
-const measured = report.pages.length
-if (!measured) {
-  console.log('\n⏭ 一页都没量到 ⇒ **未测量**（不是通过）')
-  process.exit(3)
-}
 if (findings.length || regressions.length || !usable || !pagesMatch) process.exit(1)
 // ★ 成功文案必须精确（★ 门的输出也是门的契约）：★ 这里说的是
 //   「没有一页把指标卡网格当成骨架」⇒ ★ **不是**「一个裸指标网格都没有」

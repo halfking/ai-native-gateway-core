@@ -161,6 +161,28 @@ describe('域② 统一请求详情：source 前端联合 ↔ 后端字面量', 
     }
   })
 
+  it('①c ★★ 移动端**不得落后于后端**（★ 补上这条**反向**判据，★ 根因修复）', () => {
+    // ★★ 2026-11-03（12h 审计 D7）：①b 只断言「移动 ⊆ 桌面」⇒ ★ **单向**。
+    //   ⇒ 而**漂移的那一侧恰恰是移动端**（后端加一个 source ⇒ 桌面端补上 ⇒
+    //   移动端漏了）⇒ ★ ①b 永远绿 ⇒ ★ 没人管 ⇒ ★ 后端能产出的 `probe_lane`
+    //   在移动端落进兜底分支（`web-mobile/src/views/RequestDetailView.vue:199`
+    //   原样渲染 `{{ detail.source }}` ⇒ ★ 裸串上屏）。
+    //   ⇒ ★ **修法不是补一个值**（那只能治这一次）⇒ ★ 而是**把反向判据补上**。
+    const backend = declaredSourceLiterals(read(RD_BACKEND))
+    const mobile = read('web-mobile/src/api/requestDetail.ts')
+    const m = mobile.match(/REQUEST_DETAIL_SOURCES\s*=\s*\[([\s\S]*?)\]/)
+    expect(m, '★ 没找到移动端 REQUEST_DETAIL_SOURCES').toBeTruthy()
+    const mobileValues = new Set<string>()
+    for (const mm of m![1].matchAll(/'([^']+)'/g)) mobileValues.add(mm[1])
+    expect(backend.size, '★ 后端字面量集合为空 ⇒ 提取器坏了 ⇒ 门判红').toBeGreaterThan(0)
+    for (const v of backend) {
+      expect(
+        mobileValues.has(v),
+        `★ ★ 后端能产出 source="${v}"，但**移动端**联合里没有 ⇒ ★ 移动端会把它落进兜底分支 ⇒ ★ 裸串上屏`,
+      ).toBe(true)
+    }
+  })
+
   it('② 渲染侧不得把退役表名当文案上屏', () => {
     const panel = stripComments(read(RD_PANEL))
     for (const name of RETIRED_NAMES) {

@@ -60,17 +60,39 @@ func cookieDomain(r *http.Request) string {
 }
 
 // clearSessionCookie expires the session cookie (MaxAge=-1) on the client.
+//
+// ★★ 2026-11-03（12h 审计 C9）：**必须同时清「域作用域」与「host-only 作用域」两份**。
+//
+//	★ 背景：本仓把 `llmgw_session` 的作用域从 **host-only**（domain=llm.itestu.cn）
+//	★ 改成了 **domain cookie**（Domain=.itestu.cn）⇒ ⇒ 而 cookie 的身份键是
+//	★ **name + domain + path** ⇒ ⇒ 两种作用域是 cookie jar 里的**两个不同的键**
+//	★ ⇒ ⇒ 升级前签发的 **host-only** 那条**不受**只带 `Domain=.itestu.cn` 的删除
+//	★ 指令影响 ⇒ ⇒ 用户点了「退出登录」之后，`r.Cookie("llmgw_session")`
+//	★ **仍能取到旧 token** ⇒ ⇒ **会话未失效**。
+//	★ ⇒ 修法：**两条删除指令都发**（一条带 Domain、一条不带 Domain）。
+//	★ ★ 诚实边界：host-only 那条**只在升级前签发过的会话里存在** ⇒ ⇒ 本条是
+//	★ **升级期的一次性兼容**；新签发的 cookie 一律带 Domain ⇒ ⇒ 只发一条即可。
+//	★ 但两条都发是**幂等且零成本**的 ⇒ ⇒ 没有理由只发一条。
 func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
+	domain := cookieDomain(r)
+	base := http.Cookie{
 		Name:     CookieName,
 		Value:    "",
 		Path:     "/",
-		Domain:   cookieDomain(r),
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   cookieSecure(r),
 		SameSite: http.SameSiteStrictMode,
-	})
+	}
+	// ① 域作用域（★ 仅当本部署**确实在用**域作用域时才发 ⇒ 否则它与②是同一条，
+	//    发两条等价的删除指令只是噪音）。
+	if domain != "" {
+		withDomain := base
+		withDomain.Domain = domain
+		http.SetCookie(w, &withDomain)
+	}
+	// ② host-only 作用域（★ 升级前签发的存量会话用的就是这一把钥匙 ⇒ 必须清）。
+	http.SetCookie(w, &base)
 }
 
 // setSessionCookie writes the JWT as an HttpOnly+Secure+SameSite=Strict cookie.

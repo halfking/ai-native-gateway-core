@@ -56,6 +56,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { localDateStamp } from './lib/local-date.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASELINE = join(ROOT, 'scripts', 'design-icon-size-runtime-baseline.json')
@@ -624,13 +625,32 @@ if (!pagesMatch) {
 
 if (jsonArg) writeFileSync(jsonArg.slice(7), JSON.stringify({ ...report, readings }, null, 2))
 
+// ★★ 2026-11-03（12h 审计 D3）★★ **零页测量 ⇒ 绝不写基线**（★ 判据必须在**写**之前）。
+//   ★ 原顺序是「**先写回、后判未测量**」⇒ ⇒ 浏览器驱动失败但 `report.pages` 为空时，
+//   ★ `--update-baseline` **仍会写出一份空/残缺的基线**，然后才 `exit 3`。
+//   ★ ⇒ 「没量到」与「已删除」在写回路径上被当成同一件事 ⇒ ⇒ 必须**先判、后写**。
+//   ★ 与 D2 同族：★ **缺失 ≠ 未变** —— 没量到的页**不该**被当成「已被删除」。
+const measured = report.pages.length
+if (!measured) {
+  console.log('\n⏭ 一页都没量到 ⇒ **未测量**（不是通过）')
+  if (argv.includes('--update-baseline')) {
+    console.log('★ **未测量 ⇒ 不写基线**（★ 否则「没量到」会被当成「已删除」⇒ 那些页的棘轮约束被悄悄摘掉）')
+  }
+  process.exit(3)
+}
 if (argv.includes('--update-baseline')) {
   const prev = baseline ?? { zeroSized: {} }
   // ★★ 2026-10-29：写回值**只许降不许升**（★ 与两个兄弟读方同款）。
   //   本基线是**上限型**（zeroSized = 该页零尺寸图标数，不得上升）⇒
   //   已有的页取「旧值与实测值里的较小者」⇒ **重建基线这条路也放松不了棘轮**。
   //   ⇒ ★ 此前这里直接写实测值 ⇒ 一次误操作就能把棘轮放松 ⇒ 修掉。
-  const zeroSized = {}
+  // ★★ 2026-11-03（12h 审计 D2）**先铺旧、再覆盖新的** —— ★ 与兄弟尺同款修法：
+  //   ★ 原实现 `const zeroSized = {}` ⇒ **只遍历本次量到的页** ⇒ ⇒ 任何一次以
+  //   ★ `--pages=` 子集运行的写回，会把**未量到的页**的基线条目**静默删除**
+  //   ★ ⇒ ⇒ 那些页的棘轮约束凭空消失 ⇒ ⇒ 而页集检查是**单向**的
+  //   ★ ⇒ **兜不住**「基线里有、这次没量到的页」⇒ ⇒ 删除永远不会被判红。
+  //   ★ 判据：★ **缺失 ≠ 未变**（★ 产物里没出现的条目，不等于产物里没有约束）。
+  const zeroSized = { ...(prev.zeroSized ?? {}) }
   for (const p of report.pages) {
     const old = prev.zeroSized?.[p.page]
     const fresh = p.zeroSized
@@ -640,13 +660,18 @@ if (argv.includes('--update-baseline')) {
     metric:
       'zeroSized = 该页渲染尺寸为 0 的图标数（不得上升；0 = 看不见 ⇒ 必须为 0）；minSide = 该页图标的最小边长（px，附记）',
     zeroSized,
-    updated: '2026-10-27',
+    // ★★ 2026-11-03（12h 审计 D2）：此前这里是**硬编码常量** `'2026-10-27'`
+    //   ⇒ ⇒ 每次写回都记成 2026-10-27 ⇒ ⇒ 派生产物的 provenance 时间**恒为错**。
+    updated: localDateStamp(),
     history: [
       ...(prev.history ?? []),
       {
-        updated: '2026-10-27',
+        updated: localDateStamp(),
         note: '第 28 增量建立基线（人工降基线：先修掉首页 2 处 0×0，再把基线定到实测值）',
-        zeroSized: Object.fromEntries(report.pages.map((p) => [p.page, p.zeroSized])),
+        // ★★ 2026-11-03（12h 审计 D2）：此处此前是
+        //   `Object.fromEntries(report.pages.map(...))` ⇒ **只含本次量到的页**
+        //   ⇒ ⇒ history 快照同样会**丢页** ⇒ ⇒ 改为用合并后的全量映射。
+        zeroSized,
       },
     ],
   }
@@ -654,11 +679,6 @@ if (argv.includes('--update-baseline')) {
   console.log(`\n✔ 基线已更新 → ${BASELINE}`)
 }
 
-const measured = report.pages.length
-if (!measured) {
-  console.log('\n⏭ 一页都没量到 ⇒ **未测量**（不是通过）')
-  process.exit(3)
-}
 // ★ 退出码 = 违例 | 棘轮突破 | 基线不可用 | 页面集不匹配 —— 任一非空都判红。
 //   ★ 「基线不可用」必须红：★ 否则「把基线删掉」就是让门变绿的后门
 //   （★ 仓内 `design-spacing-scale-runtime-baseline.json` 的登记条目记过这个坑）。
