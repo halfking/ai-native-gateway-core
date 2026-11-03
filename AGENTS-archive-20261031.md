@@ -12829,3 +12829,64 @@ outputcompliance / sql/migrations/startup / installer(dbinit) 全绿（新增 12
 > §8（2026-10-31 审计轮：生产复核表 + 三处修正 + 「查过不改」表）；
 > 通用式见 `LESSONS.md` **§601**（取号：fetch 实测 origin 最高 §600 ⇒ 跨号
 > 取 §601）；本轮前置的 10-29 修复见 §558 与审计档 §1~§7。
+
+---
+
+> **2026-11-03 兄弟应用单点登录接入轮（goal 会话）**：把 FreeLLMAPI（自建多供应商
+> 聚合器）并入网关链路 **智能体 → llm-gateway-go → FreeLLMAPI**，并让「登录网关」
+> 等价于「登录 FreeLLMAPI」。
+> ⇒ ★★ **认证走既有跨项目身份契约**（`pkg/identity` = identity-go 多签发方：
+> HS256 共享密钥 + issuer 白名单 + **audience 隔离**）。FreeLLMAPI 定位为**纯验证方**
+> （不发自己的用户 issuer），因此**不需要**改共享白名单（`asm` 的先例）。
+> ⇒ ★★ **新增 `GET /api/auth/app-token?app=freellmapi`**（`admin/app_token.go`）：
+> 为已登录用户签发**短时（5 分钟）、受众隔离**的 JWT（iss=llm-gateway,
+> aud=freellmapi-api），并把票据同时放进 `X-LLMGW-App-Token` 响应头 ⇒ 反向代理的
+> `auth_request` 可直接取用。**无共享密钥 ⇒ 503 fail-closed**（无兜底签发路径）。
+> ⇒ ★★ **`pkg/identity/minting.go` 的 `MintSpec` 增 `Extra`**：透传 username/email
+> 等非标准声明（与标准声明同名时由标准声明覆盖 —— 签发器丢弃冲突键）。
+> ⇒ ★★★ **部署侧：共享密钥必须跨部署存活**（`IDENTITY_SHARED_SECRET` 等三个变量），
+> 否则「今天能免登、明天静默失效」。新增 `IDENTITY-ENV-BLOCK/INJECT`
+> （取值优先级同 ASM 开关：部署机环境变量 > env 文件上次值 > 不设）。
+> ⇒ ★★★★ **本轮实测到两个真缺陷（都不是「写错了」，是「门没盖到」或「顺序错了」）**：
+> ① **函数定义排在调用点之后** ⇒ 211 蓝绿部署在**最后一步**炸掉
+>    （`dd_identity_env: command not found`；镜像已推、容器未切）⇒ ★ **原判据门抽块
+>    单跑，恰恰看不到这个顺序问题** ⇒ 门补场景①b（断言定义行号 < 调用行号）。
+> ② ★★ **bash 在 UTF-8 locale 下把全角括号并进变量名**（`$DEF_LINE）` ⇒ 变成一个
+>    从未赋值的变量 ⇒ `set -u` 报「未绑定的变量」⇒ ⇒ **凡变量紧邻中文标点，一律用
+>    `${VAR}` 定界**。
+> ⇒ ★★★ **另一处既有缺陷（本轮撞上，未修，已登记）**：`provider_catalog.code`
+> 在 211 生产库上**没有唯一约束**（只有 `idx_provider_catalog_free_tier` 这个部分索引）
+> ⇒ 而 `registerFreeProviderWithCtx` 用 `ON CONFLICT (code) DO UPDATE`
+> ⇒ ⇒ **`/api/free-pool/bulk-register` 这条登记路径对任何供应商都是坏的**
+> （实测报 `42P10 there is no unique or exclusion constraint matching the ON
+> CONFLICT specification`）。⇒ ⇒ **「把 X 注册成供应商」不要走这条路**：改走
+> provider 控制台（`providers` 表有 `UNIQUE (tenant_id, code)`，可用）。
+> ⇒ ★★ **211 实测（部署 + 验证读数）**：网关版本 `2.5.9-82ecb06f-20261103-211`，
+> **槽 a 接管**（8781，旧槽 b 已停、可 `docker start` 回滚）；FreeLLMAPI 换成自建镜像
+> `freellmapi:halfking-d3ff0042`（数据卷沿用）。
+> ⇒ ★★★ **免登链路三态全部实测**：
+>   ① 无任何会话 → 302 到 `https://llm.itestu.cn/?login=1&redirect=…`（边缘既有门闸）；
+>   ② 只带网关会话 → **2 次跳转 → 200 仪表盘 HTML**，Cookie 罐出现 `flm_session`
+>      （即「打开域名即落在已登录的应用内」）；
+>   ③ 两个 Cookie 齐 → `/api/models` 200、`/api/auth/status` 返回
+>      `authenticated:true, email:admin@gateway.local`（网关用户自动开户）。
+>   ⇒ ★ 网关前端**早已有**外链入口 `https://freellm.itestu.cn`（2026-11-02 S0 加的，
+>   8 个语言都已本地化）⇒ 本轮之后，**点那个入口不再看到登录表单**。
+> ⇒ ★★ **推理链路实测**：网关 → FreeLLMAPI → 上游 ovh 贯通
+>   （`llama-3.3-70b` 返回内容，`_routed_via.platform=ovh`）；另两个模型失败是
+>   **FreeLLMAPI 自己上游当时不可用**（aihorde 无人服务 / ovh 候选耗尽），不是链路问题
+>   ⇒ ★ **「模型不可用」与「链路不通」要分开读**（看 `_routed_via` 与 FreeLLMAPI 侧日志）。
+> ⇒ ★★ **供应商登记早已存在**（此前会话建的）：provider `95302`（code=freellm,
+>   base_url=http://freellmapi:3001/v1）+ credential `99023`（freellm-unified,
+>   active/ready/trusted）+ **285 条模型绑定**（237 个为其独有）⇒ `test-now` 实测
+>   healthy（8ms）⇒ **凭据当前有效**。
+> ⇒ ★ **一个未闭合的运维项**：本次部署的 goacos 注册表更新失败（连接被拒）⇒
+>   **消费方可能仍读到旧端口 8783**，需手工重登记（部署日志里已 WARN）。
+> ⇒ ★★ **客户端识别与适配方案**（用户明确要的第三件事）：全文见
+>   `docs/freellmapi-integration/client-detection-adaptation-plan.md`（1018 行）。
+>   实测 74 条 UA ⇒ **46 条真分歧**（网关独识 20 / FreeLLMAPI 独识 23 / 同名不同值 3）；
+>   ★★ **修正了任务前提**：FreeLLMAPI 的 `classifyClientAgent` **不驱动任何请求行为**
+>   （只进日志看板），它真正的「按客户端适配」是**按 API key** ⇒ 风险面在网关侧。
+>   ⇒ 方案结论：**网关持有权威目录**（做决策的一侧才配当权威）、**识别一次 + 随请求
+>   透传**（新增出站头，**不复用** `X-Gw-Client-Type` —— 那个语义是客户端可控声明）、
+>   **G7「两侧对同一份向量逐条相等」**才是能抓住「各自与契约一致但彼此不等」的门。
