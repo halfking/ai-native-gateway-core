@@ -49,6 +49,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/auth"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
+	"github.com/kaixuan/llm-gateway-go/internal/memoraprewarm"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionid"
@@ -1271,6 +1272,13 @@ type ChatHandler struct {
 	cacheInjector     *session.CacheInjector
 	promptCacheInject bool
 
+	// memoraPrewarm (P1-2③ W3) fires the memora context prewarm for
+	// gate-on tenants and appends a bounded (≤2KB) memory block to the
+	// last user message. nil disables (requests forward unchanged — the
+	// control group is byte-identical to the unwired path). See
+	// docs/adr/2026-11-02-memory-prewarm-injection.md.
+	memoraPrewarm *memoraprewarm.Wiring
+
 	// metaToolInterceptor (Phase 2, 2026-06-20) handles meta-tool calls
 
 	// anomalyRecorder (2026-06-28) tracks response format anomalies to detect
@@ -1680,6 +1688,12 @@ func (h *ChatHandler) SetCacheInjector(ci *session.CacheInjector) {
 // Read once at startup from LLM_GATEWAY_PROMPT_CACHE_INJECT (default "0").
 func (h *ChatHandler) SetPromptCacheInject(on bool) {
 	h.promptCacheInject = on
+}
+
+// SetMemoraPrewarm wires the memora context prewarm + bounded injection
+// (P1-2③ W3). nil (default) keeps the data plane byte-identical to unwired.
+func (h *ChatHandler) SetMemoraPrewarm(w *memoraprewarm.Wiring) {
+	h.memoraPrewarm = w
 }
 
 // SetMetaToolInterceptor wires the Phase 2 meta-tool interceptor.
@@ -4483,6 +4497,24 @@ func (h *ChatHandler) serveWithExecutor(
 		cand := candidates[0]
 		if inj, ierr := h.cacheInjector.InjectCacheParams(r.Context(), gwSessionID, bodyBytes, &cand); ierr == nil && len(inj) > 0 {
 			guarded, regressed := compression.NeverWorse(bodyBytes, inj, compression.GuardStageInject)
+			if !regressed {
+				bodyBytes = guarded
+			}
+		}
+	}
+
+	// ── memora context prewarm + injection (P1-2③ W3) ──────────────────────
+	// Gate-on tenants only: fires the async prewarm (request N warms for
+	// N+1) and appends the bounded memory block to the last user message.
+	// Fail-open end to end — closed gate / empty read / unrecognized shape
+	// all leave bodyBytes unchanged (control group = unwired path).
+	if h.memoraPrewarm != nil && gwSessionID != "" {
+		tenantForPrewarm := "default"
+		if keyInfo != nil && keyInfo.TenantID != "" {
+			tenantForPrewarm = keyInfo.TenantID
+		}
+		if newBody, injected := h.memoraPrewarm.Apply(r.Context(), tenantForPrewarm, gwSessionID, bodyBytes); injected {
+			guarded, regressed := compression.NeverWorse(bodyBytes, newBody, compression.GuardStageInject)
 			if !regressed {
 				bodyBytes = guarded
 			}

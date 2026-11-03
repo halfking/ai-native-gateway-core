@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -22,6 +23,15 @@ var sessionWritePGEnabled bool
 func validateSessionWriteSafety(pgEnabled bool) error {
 	sessionWritePGEnabled = pgEnabled
 	v1 := settings.RequestLogsWriteEnabled()
+	if !pgEnabled && !v1 {
+		// ★ lite（无 DB）：settings registry 禁用（main.go "registry
+		// disabled (no DB)"）⇒ GetPlatformBool 恒回 default ⇒ EffectiveValue
+		// 的 env 通道整个不可达。[Lite] 正解行广告的正是本 env——校验器
+		// 直读它，否则广告的是一个永远走不通的修法（2026-11-03
+		// DEPLOY_START 实测抓到：env 已设仍被拒）。PG 模式 registry 在位，
+		// DB > env 链正常，不走此直读。
+		v1 = os.Getenv(settings.EnvNameAuto(settings.KeyRequestLogsWriteEnabled)) == "true"
+	}
 	if err := settings.ValidateSessionWriteState(v1,
 		settings.GetPlatformBool("sessions_v2.enabled", false),
 		settings.GetPlatformBool("sessions_v2.shadow_write", false)); err != nil {
@@ -60,16 +70,18 @@ func validateSessionWriteSafety(pgEnabled bool) error {
 //	  是**做不到**的修法。
 //
 // ⇒ 现在：提示按形态给。PG 模式只给会话族那一条真修法；Lite 模式只给
-//   SQLite request_logs 那一条（lite 的 SQLite 表确实还在，
-//   cmd/gateway/lite_telemetry_sink.go 按同一个键写它）。
+//
+//	SQLite request_logs 那一条（lite 的 SQLite 表确实还在，
+//	cmd/gateway/lite_telemetry_sink.go 按同一个键写它）。
 //
 // 判定依据是**事实**而不是偏好：
-//   · PG 侧 v1 写分支整段删除（domains/hooks/observability/telemetry/client.go，
-//     890 一轮）+ 890 物理删掉整个 v1 族 ⇒ PG 模式无 v1 写面；
-//   · storage/sqlite/schema.go 仍建 request_logs 表，lite sink 按同一个键
-//     写它 ⇒ Lite 模式有 v1 写面；
-//   · PG 模式的会话事实写入恒为必需（entry.SessionV2WriteRequired 在 PG
-//     持久化路径上**无条件**置 true）⇒ 「V2-only」是 PG 模式的真修法。
+//
+//	· PG 侧 v1 写分支整段删除（domains/hooks/observability/telemetry/client.go，
+//	  890 一轮）+ 890 物理删掉整个 v1 族 ⇒ PG 模式无 v1 写面；
+//	· storage/sqlite/schema.go 仍建 request_logs 表，lite sink 按同一个键
+//	  写它 ⇒ Lite 模式有 v1 写面；
+//	· PG 模式的会话事实写入恒为必需（entry.SessionV2WriteRequired 在 PG
+//	  持久化路径上**无条件**置 true）⇒ 「V2-only」是 PG 模式的真修法。
 //
 // 形态标记用 [PG] / [Lite] 前缀：既给人看，也让守卫测试能逐条**执行**
 // 广告出来的配置（见 cmd/gateway/session_write_safety_test.go）—— 字符串

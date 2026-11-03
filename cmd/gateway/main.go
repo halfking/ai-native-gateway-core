@@ -33,6 +33,7 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/admin/distlock" // 2026-08-19 title-gen per-session distributed lock
@@ -51,15 +52,13 @@ import (
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
-	"github.com/kaixuan/llm-gateway-go/domains/analysis"                            //nolint:depguard // M3 embedding shadow adapter
-	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/approval"                            //nolint:depguard // D1: approval config management
-	"github.com/kaixuan/llm-gateway-go/domains/assets"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/jackc/pgx/v5"
+	"github.com/kaixuan/llm-gateway-go/domains/analysis"     //nolint:depguard // M3 embedding shadow adapter
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/approval"     //nolint:depguard // D1: approval config management
+	"github.com/kaixuan/llm-gateway-go/domains/assets"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
-	"github.com/kaixuan/llm-gateway-go/internal/userscriptcapture"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/autocombo"                           //nolint:depguard // OmniFree virtual auto/* routing
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"                     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -115,11 +114,11 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
+	"github.com/kaixuan/llm-gateway-go/internal/memoraprewarm"
 	"github.com/kaixuan/llm-gateway-go/internal/mockprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
-	"github.com/kaixuan/llm-gateway-go/internal/taskbus"
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
 	"github.com/kaixuan/llm-gateway-go/internal/probelane"
 	"github.com/kaixuan/llm-gateway-go/internal/providers/mock"
@@ -128,8 +127,10 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
+	"github.com/kaixuan/llm-gateway-go/internal/taskbus"
 	"github.com/kaixuan/llm-gateway-go/internal/tooloffer"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
+	"github.com/kaixuan/llm-gateway-go/internal/userscriptcapture" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/licensing"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/metatools"
@@ -209,7 +210,7 @@ func retentionSource(cfg persist.SnapshotRetentionConfig) string {
 }
 
 // keyVerifierAdapter 把数据面 KeyVerifier 窄化为 capture 身份层接口
-//（api key → tenant；Verify 的完整 KeyInfo 此处只取 TenantID）。
+// （api key → tenant；Verify 的完整 KeyInfo 此处只取 TenantID）。
 type keyVerifierAdapter struct {
 	kv *authentication.KeyVerifier
 }
@@ -6985,6 +6986,33 @@ func main() {
 			"keepalive_interval", srCfg.KeepaliveInterval)
 	}
 
+	// P1-2③ W1/W3 memora 上下文预热（ADR memory-prewarm-injection）：
+	// AI_SESSION_MANAGER_URL + ASM_PLUGIN_CONTEXT_TOKEN 双配时构造 client；
+	// Redis client 可用时构造旁路 writer 与读侧。全部就绪 ⇒ 挂载
+	// ChatHandler（预热 fire-and-forget + 门内租户注入）并启动 settings
+	// → Gate 同步（memory.prewarm.enabled/tenant_allowlist，15s 热更上界）。
+	// Gate 默认关 ⇒ 未灰度时数据面与未装配同形。
+	var prewarmClient memoraprewarm.Client
+	var prewarmWriter memoraprewarm.RedisSideWriter
+	if pc := memoraprewarm.NewPrewarmHTTPClientFromEnv(); pc != nil {
+		prewarmClient = pc
+		if redisClientForCache != nil {
+			prewarmWriter = memoraprewarm.NewRedisWriter(redisClientForCache.Client())
+		}
+		if prewarmWriter != nil {
+			prewarmGate := memoraprewarm.NewGate()
+			chatHandler.SetMemoraPrewarm(memoraprewarm.NewWiring(
+				prewarmClient, prewarmWriter,
+				memoraprewarm.NewRedisReader(redisClientForCache.Client()),
+				prewarmGate, nil))
+			go memoraprewarm.SyncGateFromSettings(context.Background(), prewarmGate, memoraprewarm.GateSyncInterval)
+			slog.Info("memora prewarm wired (chat handler mount + settings gate sync)",
+				"asm_url", os.Getenv("AI_SESSION_MANAGER_URL"))
+		} else {
+			slog.Info("memora prewarm client armed, writer missing (no redis)")
+		}
+	}
+
 	// P0-3 M1 userscript capture 摄取（ADR userscript-capture-gateway-endpoint）：
 	// LLM_GATEWAY_USERSCRIPT_CAPTURE_SECRET 非空才挂（未配置=能力不可用，
 	// userscript 停发保留本地队列——契约行为要求）。身份层复用数据面
@@ -6992,8 +7020,8 @@ func main() {
 	if capSecret := os.Getenv("LLM_GATEWAY_USERSCRIPT_CAPTURE_SECRET"); capSecret != "" && dbConn != nil {
 		captureHandler := userscriptcapture.NewHandler(userscriptcapture.HandlerConfig{
 			Secret: capSecret,
-			Keys: keyVerifierAdapter{kv: keyVerifier},
-			Store: userscriptcapture.NewStore(userscriptcapture.PoolBeginner(dbConn.Pool().Begin)),
+			Keys:   keyVerifierAdapter{kv: keyVerifier},
+			Store:  userscriptcapture.NewStore(userscriptcapture.PoolBeginner(dbConn.Pool().Begin)),
 			// M2：同事务写 userscript.captured.v1（payload string 化喂
 			// jsonb——SimpleProtocol 下 []byte 必炸，同 telemetry R11 注记）。
 			OutboxWriter: func(ctx context.Context, tx pgx.Tx, envelope outbox.EventEnvelope) error {

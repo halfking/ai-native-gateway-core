@@ -1,7 +1,7 @@
 # ADR：Userscript Capture 网关对端实施设计
 
 > 日期：2026-11-02 · 状态：PROPOSED（待评审）
-> 归属：《会话治理融合优化方案-2026-11》P0-3 · 上游契约：ai-session-manager `docs/contracts/userscript-capture.md`（PARTIAL：ASM 摄取端已实现，Gateway 对端 TARGET）
+> 归属：《会话治理融合优化方案-2026-11》P0-3 · 上游契约：ai-session-manager `docs/contracts/userscript-capture.md`（**CURRENT**，2026-11-02 订正——M1-M3 交付 + live E2E PASS 后契约已升 CURRENT；本 ADR 初编时为 PARTIAL）
 > 证据基线：ASM `internal/userscript/{ingress,types}.go`、`internal/knowledge/worker/linker.go`、网关 `admin/body_resolver.go`、`internal/outbox/event_builder_v1.go`、`internal/outbox/wire.go`（2026-11-02 源码核实）
 
 ## 0. 问题
