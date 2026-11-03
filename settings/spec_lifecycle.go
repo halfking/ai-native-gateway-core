@@ -32,6 +32,19 @@ func LifecycleSpecs() []*Spec {
 		{Key: "lifecycle.request_context_attrs_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(90), Default: 7, DangerLevel: Warning, HotReload: true, Description: "request_context_attrs 保留天数", DescriptionLong: "request_context_attrs 侧表（每业务请求一行）的 DELETE 保留天数。该表无分区，与 _request_logs 同速增长；超过此时长的行会被 cleanupOldRequestContextAttrs() 直接 DELETE。默认 7 天。", Unit: "天"},
 		// 2026-11-02 第二十五轮：探测物理隔离族（迁移 928_probe_traffic_physical_lane）的 TTL 旋钮。
 		// ★ 这条键**一直有人在读、但从来没人 Register 过** ⇒ 写 settings_kv 静默无效。
+		// ★ 2026-11-03 合并轮撞号记录（★ 本条被**两侧各自独立补过一次**）：
+		//   同步轮那边也在「孤儿键补登」区补了同名 spec（同样 Type/Scope/Min/Max/
+		//   Default=14/Unit，描述更短）⇒ 两侧落在**不同的注释块**里 ⇒ git
+		//   自动合并**不产生文本冲突** ⇒ 合并树里同一键注册了**两次** ⇒
+		//   `MustRegisterSpec` 对重复键**直接 panic** ⇒ ★★ 等于「网关开机炸」。
+		//   ⇒ 由 settings 门 TestProductionSettingsSpecsHaveUniqueKeys 抓出。
+		// ⇒ 处置：★ **只留这一条**（留在探测物理隔离族的主题组内，描述更全），
+		//   删掉尾部那条 ⇒ **语义零变化**（两侧 Type/Scope/Min/Max/Default 一致）。
+		// ⇒ ★ 教训：**「同一个孤儿键被两拨人同时补」是「文本不冲突 ⇒ 静默通过」
+		//   家族的新形态** —— 合并时只看「有没有冲突标记」不够，还要问
+		//   「两侧有没有**各自新增同一语义实体**」⇒ ⇒ 唯一键类注册表
+		//   （spec / 台账 / 索引）**必须有「唯一性」门**，否则重复注册只在
+		//   启动那一刻才炸。
 		{Key: "lifecycle.session_turns_probe_hot_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(90), Default: 14, DangerLevel: Warning, HotReload: true, Description: "探测物理隔离族热表保留天数", DescriptionLong: "session_turns_probe_hot 及其派生面 request_stats_probe_minute 的 DELETE 保留天数（两表共用同一 TTL：探测分钟表是流水的派生面，源清了派生也应清）。读方 = bg/partition_manager_probe_lane_ttl.go 的 cleanupOldProbeLaneTables（settings.GetPlatformInt(..., defaultProbeLaneTTLDays)）★ **本条的 Default 就是那个 fallback 的宿主** ⇒ 两者必须一致（14）。范围 [1,90] 与读方 clampProbeLaneTTLDays 同域（0/负值若透传会在一个 tick 清空整表）。★ 2026-11-02：探测物理隔离族此前**只存在于 211 生产机**（代码取回仓库时发现本键从未 Register 成 spec ⇒ GetPlatformInt 找不到 spec ⇒ 一直回退 fallback ⇒ 写 settings_kv 完全无效）；补本条前已确认仓内与 211 快照均无同名 spec（settings.Registry.RegisterSpec 对重复键返回错误、MustRegisterSpec 直接 panic ⇒ 重复登记会在开机时炸 ⇒ 补前必须先查）。", Unit: "天"},
 		{Key: "lifecycle.credential_probe_model_log_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 90, DangerLevel: Warning, HotReload: true, Description: "credential_probe_model_log 保留天数", DescriptionLong: "credential_probe_model_log 保留天数（列存储堆表，需通过 batch cleanup 任务）。默认 90 天。", Unit: "天"},
 		{Key: "lifecycle.request_stats_minute_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(90), Default: 14, DangerLevel: Warning, HotReload: true, Description: "request_stats_minute 系列表保留天数", DescriptionLong: "request_stats_minute / _dim_minute / _error_drill_minute 三张分钟级 rollup 表的 DELETE 保留天数。每分钟 upsert，行数随 分钟×维度基数 增长。超过此时长的行会被 cleanupOldRequestStatsMinute() 直接 DELETE。默认 14 天（request_stats_rollup_cursor 单行状态表不受影响）。", Unit: "天"},
@@ -168,14 +181,5 @@ func LifecycleSpecs() []*Spec {
 		{Key: "lifecycle.session_project_backfill_batches", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(10000), Default: 50, DangerLevel: Warning, HotReload: true, Description: "project_dim 回填单轮最大批数", DescriptionLong: "project_dim 回填 worker 单轮最多跑多少批。读方：bg/project_backfill_worker.go:167（fallback 50）。★ 代码侧另有 ≥1 的安全下限。", Unit: "批"},
 		{Key: "lifecycle.stats_event_inbox_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 7, DangerLevel: Warning, HotReload: true, Description: "stats_event_inbox 保留天数", DescriptionLong: "stats_event_inbox 的保留天数。读方：bg/partition_manager.go（fallback 7）。", Unit: "天"},
 		{Key: "lifecycle.supplier_error_stats_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 30, DangerLevel: Warning, HotReload: true, Description: "supplier_error_stats 保留天数", DescriptionLong: "supplier_error_stats 的保留天数。读方：bg/partition_manager.go（fallback 30）。", Unit: "天"},
-		// ★ 2026-11-03 同步轮补登（孤儿键）：`lifecycle.session_turns_probe_hot_ttl_days`
-		//   此前**运行期在读、但从未 Register 成 spec** ⇒ `settings.Global.Spec(key)`
-		//   返回 nil ⇒ `GetPlatformInt` 直接回退 fallback ⇒ ★★ **往 settings_kv
-		//   里写这个键完全无效**（静默无效，不报错）⇒ 补 spec。
-		//   ★ 读方：bg/partition_manager_probe_lane_ttl.go:55（fallback 14）
-		//   ⇒ Default 与读方 fallback 对齐（14）；Min/Max 与读方 clamp 同档
-		//   （bg/partition_manager_probe_lane_ttl.go:31-32 ⇒ 1..90）⇒
-		//   ★ 两侧夹取口径一致 ⇒ spec 越界值与代码 clamp 不会打架。
-		{Key: "lifecycle.session_turns_probe_hot_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(90), Default: 14, DangerLevel: Warning, HotReload: true, Description: "探测物理隔离热表保留天数", DescriptionLong: "session_turns_probe_hot 与 request_stats_probe_minute 共用的 TTL（探测分钟表是流水的派生面，源清了派生也应清）。读方：bg/partition_manager_probe_lane_ttl.go:55（fallback 14）。代码侧 clamp 到 1..90（bg/partition_manager_probe_lane_ttl.go:31-32）⇒ 0/负值会清空整表，故下限为 1。", Unit: "天"},
 	}
 }
