@@ -75,6 +75,16 @@ func (c *PrewarmHTTPClient) Prewarm(ctx context.Context, tenantID, sessionID, qu
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.baseURL+"/api/v1/memory-recall/prewarm", strings.NewReader(string(body)))
 	if err != nil {
+		// ★★ 2026-11-04 12h 审计轮（B-3）：这里原先**直接返回、不记态**
+		//   ⇒ 「requested」已由 Trigger 记下 ⇒ 而这条分支不记任何终态
+		//   ⇒ ⇒ 漏斗不闭合（requested > hit+miss+timeout+unavailable）
+		//   ⇒ ⇒ 且**没有日志** ⇒ 运维看到的只是一条永远涨的 requested。
+		//   触发条件：AI_SESSION_MANAGER_URL 含 url.Parse 拒绝的字符
+		//   （空格 / 控制字符 / 非法端口）——NewPrewarmHTTPClientFromEnv 不校验 URL。
+		//   ⇒ 归入「不可用」（配置错误 ⇒ 上游不可达）。
+		RecordPrewarm(OutcomeUnavailable)
+		slog.Warn("memory prewarm: build request failed (check AI_SESSION_MANAGER_URL)",
+			"error", err)
 		return nil, false
 	}
 	req.Header.Set("Content-Type", "application/json")

@@ -35,7 +35,7 @@ func TestApplyGateClosedPassthrough(t *testing.T) {
 	w := &fakeWriter{}
 	r := newFakeReader()
 	r.set("s1", `{"items":[{"content":"记忆"}]}`)
-	wr := NewWiring(c, w, r, NewGate(), nil) // 未 Set ⇒ 关
+	wr := NewWiring(c, w, r, NewGate(), nil, DefaultSessionTTL) // 未 Set ⇒ 关
 	body := []byte(`{"messages":[{"role":"user","content":"q"}]}`)
 	out, injected := wr.Apply(context.Background(), "t", "s1", body)
 	if injected || string(out) != string(body) {
@@ -55,7 +55,7 @@ func TestApplyGateOpenWarmsAndInjects(t *testing.T) {
 	r.set("s1", `{"items":[{"content":"用户偏好深色主题"}]}`)
 	g := NewGate()
 	g.Set(true, nil)
-	wr := NewWiring(c, w, r, g, nil)
+	wr := NewWiring(c, w, r, g, nil, DefaultSessionTTL)
 	body := []byte(`{"messages":[{"role":"system","content":"sys"},{"role":"user","content":"配色"}]}`)
 	out, injected := wr.Apply(context.Background(), "acme", "s1", body)
 	if !injected {
@@ -76,7 +76,7 @@ func TestApplyGateOpenMissNoInjection(t *testing.T) {
 	w := &fakeWriter{}
 	g := NewGate()
 	g.Set(true, nil)
-	wr := NewWiring(c, w, newFakeReader(), g, nil)
+	wr := NewWiring(c, w, newFakeReader(), g, nil, DefaultSessionTTL)
 	body := []byte(`{"messages":[{"role":"user","content":"首问"}]}`)
 	out, injected := wr.Apply(context.Background(), "t", "s-miss", body)
 	if injected || string(out) != string(body) {
@@ -92,10 +92,10 @@ func TestApplyNilSafety(t *testing.T) {
 	if out, injected := wr.Apply(context.Background(), "t", "s", body); injected || string(out) != string(body) {
 		t.Fatal("nil wiring must passthrough")
 	}
-	empty := NewWiring(nil, nil, nil, nil, nil)
+	empty := NewWiring(nil, nil, nil, nil, nil, DefaultSessionTTL)
 	g := NewGate()
 	g.Set(true, nil)
-	wired := NewWiring(&fakeClient{ok: true}, nil, newFakeReader(), g, nil)
+	wired := NewWiring(&fakeClient{ok: true}, nil, newFakeReader(), g, nil, DefaultSessionTTL)
 	_ = empty
 	if _, injected := wired.Apply(context.Background(), "t", "s", body); injected {
 		t.Fatal("nil reader must not inject")

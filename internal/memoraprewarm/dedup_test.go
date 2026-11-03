@@ -28,7 +28,7 @@ func TestApplyPrewarmsOncePerSession(t *testing.T) {
 	w := &fakeWriter{}
 	g := NewGate()
 	g.Set(true, nil)
-	wr := NewWiring(c, w, newFakeReader(), g, nil)
+	wr := NewWiring(c, w, newFakeReader(), g, nil, DefaultSessionTTL)
 	body := []byte(`{"messages":[{"role":"user","content":"首问"}]}`)
 
 	for i := 0; i < 5; i++ {
@@ -52,7 +52,7 @@ func TestApplyDistinctSessionsEachPrewarm(t *testing.T) {
 	w := &fakeWriter{}
 	g := NewGate()
 	g.Set(true, nil)
-	wr := NewWiring(c, w, newFakeReader(), g, nil)
+	wr := NewWiring(c, w, newFakeReader(), g, nil, DefaultSessionTTL)
 	body := []byte(`{"messages":[{"role":"user","content":"首问"}]}`)
 
 	for i := 0; i < 3; i++ {
@@ -71,7 +71,7 @@ func TestApplyEmptyQueryDoesNotConsumeSessionPrewarm(t *testing.T) {
 	w := &fakeWriter{}
 	g := NewGate()
 	g.Set(true, nil)
-	wr := NewWiring(c, w, newFakeReader(), g, nil)
+	wr := NewWiring(c, w, newFakeReader(), g, nil, DefaultSessionTTL)
 
 	// 无 user 消息 ⇒ query 为空 ⇒ 不预热、也不抢占。
 	emptyBody := []byte(`{"messages":[{"role":"system","content":"sys"}]}`)

@@ -1193,7 +1193,19 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-09-25: 对账报表（供应商/内部双视角区间汇总 + xlsx 双 sheet 导出
 	// + 单日手动重跑）。superAdmin——数据含全租户内部计费。
 	mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(h.handleReportRollup))
-	mux.HandleFunc("/api/admin/dashboard/operational", admin(h.handleDashboardOperational))
+	// ★★ 2026-11-04 12h 审计轮（D-1）：dashboard/operational 是平台级聚合，
+	//   三条子查询**都不按调用方租户隔离**：
+	//   · model_discovery_runs —— 硬编码 tenant_id = 'default'（别的租户）；
+	//   · credential_health_checks —— **完全没有 WHERE**（全租户合计）；
+	//   · self_check_runs —— 只按时间，**无 tenant 条件**。
+	//   ⇒ 而注册曾是 admin(...) 档 ⇒ **tenant_admin 够得着** ⇒
+	//   ⇒ 租户管理员能看到别家租户的 discovery 状态与全租户合计。
+	//   ⇒ 与同族的 ops/overview（上一行）**同一处置**：降到 superAdmin。
+	//   ★ 前端早已只对 super_admin 可见（web-mobile/src/api/dashboardBoard.ts
+	//   的文件头 + DashboardOpsView.vue 的 operationalVisible）⇒
+	//   ⇒ 降到 superAdmin **不改变任何合法用户的可见性**，只堵住
+	//     「绕过前端直接调端点」的调用方。
+	mux.HandleFunc("/api/admin/dashboard/operational", h.superAdmin(h.handleDashboardOperational))
 	mux.HandleFunc("/api/admin/dashboard/board/error-drill", admin(h.handleDashboardBoardErrorDrill))
 	// superAdmin：重写全租户的分钟聚合存量（探测排除的历史回填）。
 	mux.HandleFunc("/api/admin/dashboard/rollup/rebuild", h.superAdmin(h.handleDashboardRollupRebuild))

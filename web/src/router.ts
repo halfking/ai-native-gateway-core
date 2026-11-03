@@ -325,7 +325,7 @@ export const router = createRouter({
     { path: '/admin/usage',        component: UsageCostView, meta: { requiresSuper: true } }, // 用量成本视图 (T2.4)；R34: 与相邻 admin 路由对齐补权限 meta
     { path: '/admin/usage-trends', component: UsageTrendExplorerView, meta: { requiresAuth: true, fillViewport: true } }, // 全屏用量趋势（2026-10-02：铺满主区；模型用 ModelPicker）
     { path: '/admin/usage-enhanced', component: UsageEnhancedView, meta: { requiresSuper: true } }, // 用量增强分析（批 158b：组合 usage.ts 5 端点综合视图；同档 UsageCost 走 super_admin）
-    { path: '/admin/board-operational', component: BoardOperationalView, meta: { requiresAuth: true } }, // 运营面板（批 158c：独立详细页；⚠️ 后端 tenant 隔离未落实，admin 档 endpoint）
+    { path: '/admin/board-operational', component: BoardOperationalView, meta: { requiresSuper: true } }, // 运营面板（批 158c：独立详细页；★ 2026-11-04 12h 审计轮 D-1：后端已降为 superAdmin 档 ⇒ 前端守卫同步为 requiresSuper，与同族 ops-overview 一致）
     { path: '/admin/ops-overview', component: OpsOverviewView, meta: { requiresSuper: true } }, // 运维总览（批 158e：12 路 payload 卡片布局；与 appNav.ts:229 maintain SPA 平级，web/ 内部独立深链）
     { path: '/admin/subscription-tiers', component: SubscriptionTiersView, meta: { requiresSuper: true } }, // 订阅层级（批 200：P5 跨仓 license-authority 独立服务，nginx 反代 /api/admin/tiers）
     { path: '/admin/turns/filter-options', component: TurnsFilterOptionsView, meta: { requiresSuper: true } }, // 轮次筛选选项（批 201：API 已有 listTurnsFilterOptions，缺独立深链详细页）
