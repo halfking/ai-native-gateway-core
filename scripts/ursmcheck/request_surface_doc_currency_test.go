@@ -170,20 +170,45 @@ type docEvidence struct {
 //	干净树**里对不上 ⇒ **提交后门会红** ⇒ ⇒ ★★ **行号类产物必须按「将要提交的
 //	那棵树」生成，不能按共享工作树生成**（路由快照同理）⇒ 判据：**共享仓里「派生产物」
 //	的一致性基准是提交树，不是工作树**。
+// ★★ **第十次重钉（2026-11-04 12h 审计轮）**：★ 本轮 12h 审计的 **B-2** 修复
+//
+//	（★ 会话 hash TTL 的**唯一真值**：`sessionTTL` 只算一次、两个写点共用）
+//	在 `cmd/gateway/main.go` **顶部**插了 **+10 行** ⇒ ★ 链整体再漂 **+11**
+//	（★ 顶部 +10 / 中段搬走 `sessionTTL := ...` −1 / `NewWiring` 装配点 +2）。
+//	⇒ Recovery **8095** / Logging 注释 **8097-8104** / maintain 注释 **8086-8091** /
+//	Auth **8110** / SecurityHeaders **8113**（链本体 **8095-8113**）。
+//
+// ⇒ ★★★ **这次漂移是「自己引入」的**（★ 前九次里有几次是并行会话带的，
+//　★ 这一次不是 ⇒ ⇒ **本门红 ⇒ 就是自己动过 main.go**）⇒ ⇒ 归因更直接：
+//　★ 不用再去找并行会话，**直接按「将要提交的那棵树」重钉三面**即可。
+//
+// ⇒ ★★ **归因的实测命令**（留给下一轮直接抄）：
+//
+//	git diff <漂移前> <漂移后> -- cmd/gateway/main.go
+//
+//	★ ★ 注意：**别按工作树钉、按提交树钉**（★ 见上面「本轮踩到的坑」）。
+//
+// ★★ **第十次仍然要钉三面**（★ 少一面 ⇒ C1/C8 当场红给你看）：
+//
+//	① 本对拍表（本文件）；② `docs/subsystems/request-surface.md`（被守页面）；
+//	③ 认证表 A1（审计档 §3.18.3）。
+//
+// ⇒ ⇒ ★ **本门的有牙之处正在于此**：★ 它**当场**把「自己改了 main.go 却没重钉」
+//　抓出来 ⇒ ⇒ ★ 这不是门的缺陷，是门**在干活** ⇒ ⇒ 修法只有一个：**重钉**。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 8084, to: 8102,
+		file: "cmd/gateway/main.go", from: 8095, to: 8113,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8086, to: 8093,
+		file: "cmd/gateway/main.go", from: 8097, to: 8104,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8075, to: 8080,
+		file: "cmd/gateway/main.go", from: 8086, to: 8091,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},
