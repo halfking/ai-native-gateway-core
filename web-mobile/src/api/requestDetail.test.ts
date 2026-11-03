@@ -231,7 +231,10 @@ describe('★★★★★ source / persistence 字面量', () => {
     for (const m of backend.matchAll(/\bSource\s*=\s*"([^"]+)"/g)) backendSources.add(m[1]!)
     expect(backendSources.size, '★ 没从后端解析出任何 source 字面量 ⇒ 判据本身坏了').toBeGreaterThan(0)
 
-    const mobile = [...REQUEST_DETAIL_SOURCES]
+    // 显式放宽为 string[]：REQUEST_DETAIL_SOURCES 是 as const 字面量联合，
+    // 展开后 .includes(string) 会 TS2345（部署机 vue-tsc -b 实测 2026-11-04）。
+    // 判据不变：仍是「后端产出集合 ⊆ 移动端联合」的双向差集断言。
+    const mobile: string[] = [...REQUEST_DETAIL_SOURCES]
     expect(
       mobile.filter((v) => !backendSources.has(v)),
       '★ 移动端有后端【永不产出】的 source ⇒ 那是个假分支',
