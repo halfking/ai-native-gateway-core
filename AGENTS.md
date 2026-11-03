@@ -4,6 +4,44 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-03 第 43 增量：「运营管理」子菜单 + 用户计费体系设计（规划轮 · 零业务逻辑改动）**
+> （会话 `mvs_90cedb30ecfc440ebd00587455defbf3`，root goal 会话）：★ 用户目标＝「把运营策略（含套餐
+> 设定）、价格设定、市场价格采集、对比分析、活动/套餐/计费手段放进**新子菜单「运营管理」**；用户与
+> 租户选套餐 → 充值计费 → 结算账单；每个用户可看请求历史/充值/费用/结算；**从用户角度**分析功能需要」。
+> ⇒ ★★★ **本轮性质＝规划轮：零代码/零迁移/零页面**，产出＝设计档
+> `docs/audit/2026-11-03-运营管理子菜单与用户计费体系设计.md`（41KB）；通用式见 `LESSONS.md` **§624**
+> （★ 取号：实测最高 §623 ⇒ 连号 §624；★ 8 条通式）。★ **按上一轮约定，AGENTS.md 只留索引 ＋ 指针 ＋
+> 要点，正文全在设计档。**
+> ⇒ ★★★★ **要点①（第一判断，真库实测 `acc-pg17`/`llm_gateway`）：★ 商业骨架早已在仓里，但几乎是空的**
+> —— `subscription_plans` 3·`topup_packages` 3·`tenant_credit_wallets` 9·`billing_orders` 3·
+> `maas_monthly_bills` 3·`maas_credit_consumption_buckets` 266 ⇒★ 而 **`tenant_subscriptions` 0**、
+> **`maas_coupons` 0**、**`maas_invoice_requests` 0**、**`maas_reconciliation_findings` 0**、
+> ★★ **`model_credit_rates` 0**（⇒ 零售价不存在，全部按 `maas_settings` 全局默认
+> `base_credits_per_1m=600`/`out=1500`/`global_discount=0.82`/`cents_per_credit=0.01` 计价）、
+> ★★ **`credit_ledger` 0**（⇒ 用户侧「我花了多少」没有底账）⇒ 且 `maas_settings` 的
+> `alipay_account`/`wechat_mch_id`/`stub_qr` **全空** ⇒ ★★ **支付通道一个都没配**
+> ⇒ ⇒ ★★★ **判据：本节第一件事不是做页面，是先把「价 → 扣 → 记 → 账单 → 对账」跑通一次真实闭环**。
+> ⇒ ★★★★ **要点②（用户侧最缺的那块不需要新数据模型）**：`api_key_owner_user` 已在 `_request_logs`
+> （`sql/schema/01-schema.sql:3759`）＋ `maas/consumption_detail.go:63,91,95` 已投影/过滤/GROUP BY ＋
+> `web/src/api/maas.ts:418` 的 `getAdminMaasConsumptionDetail(tenantCode,days,ownerUser)`
+> ★★ **三层都齐，只缺「租户可见端点 ＋ 鉴权收窄」** ⇒ ⇒ 判据：**先查数据维度在不在，再决定建不建表**。
+> ⇒ ★★★★ **要点③（★ 混淆陷阱 ＋ 已核实结论）**：`/admin/subscription-tiers`（「订阅层级」）
+> **不是商业套餐** —— 实测它读 `GET /api/admin/tiers`，是 **nginx 反代的跨仓 `license-authority`
+> 独立 service**（`SubscriptionTiersView.vue:1-13` 明写「不参与授权判断」）⇒ ★ 它恰好也叫「订阅」
+> 「层级」且**也有 `price_cents`** ⇒ 最易被误当「套餐管理」而错误合并 ⇒ **必须显式分开**。
+> ⇒ ★★ **已核实**：`credit_ledger` 现有 10 列（`entry_type`/`ref_type`/`ref_id`/`pool`/`balance_after`
+> ＋ 6 分区 ＋ 已有 RLS）**够用、不重建表**，只**加三列** `owner_user`/`campaign_id`/`detail jsonb`。
+> ⇒ ★★ **实施前必读的仓内硬约束（设计档 §9 逐条列 11 条）**：① **孤儿路由门**
+> `web/src/config/navCoverage.test.ts:208-236` ⇒ **新增 router 路径必须能从菜单到达** ⇒ 新页面**一律**
+> 挂进新组 `operations`；② **i18n 8 语种**新键全写 ＋ `i18n:key-parity:check` ＋ ★
+> `i18n:shared-dead:check` 是**死键棘轮**；③ **间距尺棘轮**
+> `web/scripts/design-spacing-scale-decisions.json`；④ ★★ **租户隔离的真正载体是 RLS**（库内 **51** 条
+> `tenant_isolation_*`）⇒ **每张新租户可见的表必须带策略**；⑤ 新增表的迁移要**六面登记**。
+> ⇒ ★★ **本轮明确没做**：零代码/零迁移/零页面；未改 `appNav.ts`（菜单重组在设计档 P0-5）。
+> ⇒ ⚠ **★ 交接阻塞（下一轮必读）**：本轮落笔后 **AGENTS.md 约 523.4KB / 上限 524,288 字节 ⇒ 余量不足 1KB**
+> ⇒ ★★ **下一轮必须先做分档归档**（把旧轮正文移进 `AGENTS-archive-*.md`、AGENTS.md 只留索引行，★ 先例
+> `AGENTS-archive-20261031.md`；★ 棘轮**只降不升** ⇒ **不能调高上限续命**）⇒ ★ 且
+> `TestAgentsMdRMarkerIndexPointsAtArchive` **当前是既有红**（R186/R188 不在归档文件里）⇒ 归档时一并修。
 > **2026-11-03 第 42 增量：模型价格情报 ⇒ 供应商评分 ⇒ 路由参数 的一体化运营/营销方案（规划轮 · 零业务逻辑改动）**
 > （会话 `mvs_90cedb30ecfc440ebd00587455defbf3`，root goal 会话）：★ 用户目标＝「拉最新 →
 > 提交推送主分支 → 查模型管理与价格管理（含供应商价与内部核算价）→ 结合 `salesdecorate`
