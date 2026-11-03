@@ -2156,10 +2156,6 @@ dd_autollm_env() {
   fi
 }
 # ── AUTOLLM-ENV-BLOCK:END ──
-dd_asm_event_env "$ENV_FILE"
-dd_auto_generator_env "$ENV_FILE"
-dd_autollm_env "$ENV_FILE"
-dd_identity_env "$ENV_FILE"
 
 # ── IDENTITY-ENV-BLOCK:BEGIN ──
 # 2026-11-03 身份网接入：网关要把「单点登录票据」签给兄弟服务（FreeLLM API），
@@ -2196,6 +2192,11 @@ dd_identity_env() {
   fi
 }
 # ── IDENTITY-ENV-BLOCK:END ──
+dd_asm_event_env "$ENV_FILE"
+dd_auto_generator_env "$ENV_FILE"
+dd_autollm_env "$ENV_FILE"
+dd_identity_env "$ENV_FILE"
+
 
 # ── GATEWAY-ENV-WRITE:BEGIN ──
 {

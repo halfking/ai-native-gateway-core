@@ -60,6 +60,21 @@ else
   bad "IDENTITY-ENV-INJECT 哨兵缺失或未含 IDENTITY_SHARED_SECRET"
 fi
 
+# ── 场景①b：函数定义必须**先于**调用点 ────────────────────────────────────
+# 2026-11-03 实测事故：函数块被放在调用点之后 ⇒ 引擎在写 env 文件那一步
+# 直接 `dd_identity_env: command not found` ⇒ 整次部署在最后一步炸掉（镜像
+# 已推、容器未切）。本门原先只抽块单跑，**看不到这个顺序问题** ⇒ 这里补上。
+echo "[1b] 顺序：定义先于调用"
+DEF_LINE="$(grep -n '^dd_identity_env() {' "$ENGINE" | head -1 | cut -d: -f1)"
+CALL_LINE="$(grep -n 'dd_identity_env "\$ENV_FILE"' "$ENGINE" | head -1 | cut -d: -f1)"
+# ★ 花括号定界：bash 在 UTF-8 locale 下会把全角括号并进变量名
+#   （$DEF_LINE） ⇒ 变成一个从未赋值的变量 ⇒ set -u 直接报错。
+if [[ -n "${DEF_LINE}" && -n "${CALL_LINE}" && "${DEF_LINE}" -lt "${CALL_LINE}" ]]; then
+  ok "dd_identity_env 定义（行 ${DEF_LINE}）在调用（行 ${CALL_LINE}）之前"
+else
+  bad "dd_identity_env 定义（行 ${DEF_LINE:-无}）未早于调用（行 ${CALL_LINE:-无}）—— 引擎会在写 env 时 command not found"
+fi
+
 # ── 沙箱里跑真代码块 ─────────────────────────────────────────────────────
 run_identity_env() { # <env_file> <deployer_secret> <deployer_allowlist> <deployer_url>
   (
