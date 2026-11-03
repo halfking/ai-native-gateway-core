@@ -31,7 +31,7 @@ package ursm_test
 //	★ **复述型副本一旦过期，就必须带闭合标记**（⇒ 读者一眼看出「这条已经变了」）
 //	★ **规范源（§28.23）覆盖全部登记项**（⇒ 判定「过期」有唯一依据）
 //
-// # ★★ 判据（6 条）
+// # ★★ 判据（7 条）
 //
 //	C1 ★ **抽取器非空（防假绿）**：★ 规范源必须存在且条目 ≥ 15；
 //	   ★ 且已知漂移面必须被认出来（F13 / F28 / F29 / F30 / F4 / F5 / F9
@@ -46,6 +46,13 @@ package ursm_test
 //	   ⇒ ⇒ 「第三种状态」（有意如此）必须**写出来**，不能混进「已闭合」。
 //	C5 ★ **全景表（§23.2 / §24.6）**：★ 行里提到的编号若在规范源里是**已闭合**，
 //	   ★ 该行**必须**带闭合标记 ⇒ ⇒ **规范全景表不许停在旧状态**。
+//	C7 ★★ **整档覆盖**（★ 第三十七轮新增）：★ ★ 扫**整档**（★ 含 2 层级、
+//	   4 层级的全部正文）★ 出现的**每一个**编号，都**必须**在规范源里
+//	   ⇒ ⇒ ★ 「**缺登记**」这一半（★ 第三十六轮教训：★ 缺登记是过期登记的另一半）
+//	   从此**有机械护栏**，★ 而不再只靠「人工复核」
+//	   ⇒ ★ 代价（★ 明写）：★ **空闲编号不许以编号形态出现在正文里**
+//	     （★ 「下一个空闲编号是 X」这种前瞻 ⇒ ★ 会被本门判红
+//	     ⇒ ★ ★ **空闲编号不是登记项、⇒ 不许以编号形态出现** ⇒ 要写就写数量）
 //	C6 ★★ **反向对照 + 合成夹具**：★
 //
 //	★ (a) **反向对照**：★ 真实文档必须 **0 条违例**（⇒ 门不是恒红）
@@ -68,7 +75,21 @@ package ursm_test
 //	★ **不管**：★ ★ 只用**符号名**指代登记项的句子（★ 例：§12.8 写
 //	  `dispatchFailureIsCredentialHealthy` 而不写 F5）⇒ ⇒ **这类副本本门看不见**
 //	  ⇒ ★ 要靠人工复核发现（本轮已手工订正一处，并在此登记为**覆盖缺口**）
-//	★ **不管**：★ 4 层级标题的小节（★ §28.x 的轮次记录区）⇒ ★ 那是**叙述**，不是登记册
+//	★ **不管**（★ 仅限 C2/C3/C5）：★ 4 层级标题的小节（★ §28.x 的轮次记录区）
+//	  ⇒ ★ 那是**叙述**，不是登记册
+//	★ ★★ 但 **C7 管整档**（★ 第三十七轮）：★ C7 扫**全档正文**
+//	  ⇒ ⇒ ★ 4 层级小节里的编号**也**必须登记（★ 「缺登记」没有护栏的那一半，
+//	    ★ 就是在这些地方漏的）
+//
+// # ★★ 字母族（F-A … F-E）的**形状约定**
+//
+//	★ 登记项的字母族**必须写成 `F-A`（带连字符）**：
+//	  ① 散文里遍地是「F + 单个大写字母」（★ `fr-FR` / `FAIL` / `RFC3339` /
+//	     `FROM` / `CONFLICT` / `FORCE_LOCK`）⇒ 裸形态**不可信**
+//	  ② 本档实测：★ 字母族 **58 处全部**是 `F-A` 形态（★ FA 18 / FB 20 /
+//	     FC 6 / FD 6 / FE 8）⇒ ⇒ 收紧**零代价**（★ 收紧前后 token 差集 = {FR}）
+//	★ 由 TestAuditRegistryTableSyncLetterFamilyShape **双向证明**
+//	  （★ 假阳性侧 + 假阴性侧 + 真实文档三面）
 //
 // # ★ 为什么规范源必须是**一张表**而不是「每轮各自订正」
 //
@@ -180,6 +201,19 @@ func (v regViolation) String() string {
 // ★ 手工扫而不是用正则：★ Go 的 RE2 **没有零宽断言**（lookbehind），
 //
 //	而「PDF4」里的 F4 必须**不**被当成登记项 ⇒ 需要看前一个字符。
+//
+// ★★★ 第三十七轮修（★ 收紧**字母族**形状）：★
+//
+//	★ 散文里遍地是「F + 单个大写字母」：★ `fr-FR`（i18n 语言标签）、
+//	  `FAIL`（PASS/FAIL 读数）、`RFC3339`、`FROM`、`CONFLICT`、`FORCE_LOCK`…
+//	★ 而登记项的**字母族**（F-A … F-E）★ **一律带连字符**
+//	  （★ 本档实测：★ FA 18 / FB 20 / FC 6 / FD 6 / FE 8 处，★ **全部**是 `F-A` 形态）
+//	⇒ ⇒ 所以规则是：★ **字母族必须写成 F-A（带连字符）**；
+//	  ★ 裸的 `F`+单字母 ⇒ 一律**不是**登记项
+//
+//	★★ 实测代价（★ 量具跑整档，★ 收紧前后 token 集合差集 = {FR}）：★
+//	  ★ 只掉了 `fr-FR` 那一个假 token ⇒ ★ **零代价**
+//	  （★ 数字族 F13 / F-21 的形态**完全不受影响**）
 func extractRegIDs(text string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -192,7 +226,10 @@ func extractRegIDs(text string) []string {
 		}
 		rest := text[i:]
 		j := 1
+		// ★★★ 第三十七轮：★ 记下 F 后面**有没有连字符**（★ 字母族形状的判据）
+		hadDash := false
 		if len(rest) > 1 && (rest[1] == '-' || strings.HasPrefix(rest[1:], "–")) {
+			hadDash = true
 			j++
 			if strings.HasPrefix(rest[1:], "–") {
 				j += 2 // ★ en-dash 是 3 字节 UTF-8
@@ -206,6 +243,13 @@ func extractRegIDs(text string) []string {
 			k++
 		}
 		if k == j {
+			continue
+		}
+		// ★ 后缀 = F 之后（★ 含可选连字符）的那一段（★ 必是 ASCII 数字/大写字母）
+		suffix := rest[j:k]
+		// ★★★ 字母族**必须**带连字符（★ F-A 形态）：★
+		//   裸的 `F`+单字母 = 散文缩写（★ fr-FR / FAIL / FROM …）⇒ 不是登记项
+		if isLetterFamilySuffix(suffix) && !hadDash {
 			continue
 		}
 		tok := rest[:k]
@@ -224,11 +268,23 @@ func extractRegIDs(text string) []string {
 	return out
 }
 
+// isLetterFamilySuffix 判断后缀是不是「**单个**大写字母」（★ 字母族）。
+//
+// ★ 只有「单个」才可能是字母族：★ `AIL`（FAIL）/ `ROM`（FROM）/ `ORCE`（FORCE）
+// ⇒ 本来就被 regIDPattern 挡掉，★ 这里只是把「字母族」这条规则**写显**。
+func isLetterFamilySuffix(s string) bool {
+	return len(s) == 1 && isASCIIUpper(s[0])
+}
+
 // regIDPattern 是归一后允许的编号形状：F + 数字，或 F + 单个大写字母。
 //
 // ★ 第三十六轮修：★ 旧版只允许 `F([0-9]+|B)` ⇒ ★ **F-A / F-C / F-D / F-E**
 // （★ 主档第七 / 十一 / 十二 / 十三轮各自的**轮次局部编号**）**在门里根本不存在**
 // ⇒ ⇒ 「抽取器看不见 ⇒ 门恒绿」⇒ ★ 现在一视同仁。
+//
+// ★ 第三十七轮注：★ 这个正则**只用来判「归一后的 token 像不像编号」**
+// （★ 规范源的键是归一后的 FA / F13 …），★ **抽取入口另有更严的形状规则**
+// ⇒ 见 extractRegIDs 里的「★ 字母族必须写成 F-A」。
 var regIDPattern = regexp.MustCompile(`^F([0-9]+|[A-Z])$`)
 
 func isASCIILetter(c byte) bool {
@@ -530,6 +586,28 @@ func checkRegistry(lines []string) []regViolation {
 		}
 	}
 
+	// ── C7：★★ 整档 id ⊆ 规范源 id（★ 第三十七轮新增）────────────────
+	//
+	// ★★ C2 只扫「登记项小节」⇒ ★ **2 层级**的小节（★ 例：§十一 / §十七 /
+	//   §二十 —— 那些「## 二十、实施记录（… F-16 / F-17 / F-18 …）」）
+	//   **根本不在扫描范围内** ⇒ ★ ⇒ 「缺登记」这一半**没有机械护栏**。
+	// ★★ 而第三十七轮实测（★ 量具跑整档）：★ 撞号修完后，
+	//   **整档出现的每个编号都在规范源里**（★ 44 = 44，★ 两边完全相等）
+	//   ⇒ ⇒ ★ 这条**可以变成断言**（★ 而不必停在「人工复核」）。
+	// ★★ 口径（★ 明写，避免「以为管住了」）：
+	//   ★ 扫**整档**（★ 含 4 层级的轮次记录区：★ 它们也在用编号）
+	//   ★ ⇒ ★★ 所以**空闲编号不能以编号形态出现在正文里**
+	//     （★ 例：★ 「下一个空闲编号是 X」这种前瞻 ⇒ ★ 会被本门判红
+	//     ⇒ ★ ★ **空闲编号不是登记项、⇒ 不许以编号形态出现** ⇒ 要写就写数量）
+	for i, ln := range lines {
+		for _, id := range extractRegIDs(ln) {
+			if !canonKeys[id] {
+				vs = append(vs, regViolation{Section: "整档", Line: i + 1, ID: id,
+					Reason: "★ 整档出现的这个编号**不在规范源**里 ⇒ ★ 「缺登记」没有唯一依据（★ 第三十六轮教训：★ 缺登记是过期登记的另一半）"})
+			}
+		}
+	}
+
 	// ── C3：历史登记项小节的复述行 ──
 	for _, sec := range secs {
 		if sec.Kind != "history" {
@@ -777,4 +855,160 @@ func stripAllClosedMarkers(line string) string {
 		out = strings.ReplaceAll(out, m, "")
 	}
 	return out
+}
+
+// TestAuditRegistryTableSyncCoversWholeDoc 是 **C7** 的**牙齿检验**
+// （★ 第三十七轮新增）。
+//
+// ★ C7 的主张：★ **整档**出现的每个登记项编号，都必须在规范源里有唯一一行
+// ⇒ ⇒ ★ 「缺登记」这一半（★ 第三十六轮教训：★ 缺登记是过期登记的另一半）
+// 从此**有机械护栏**，★ 而不再只靠「人工复核」。
+//
+// ★ 三步（★ 顺序不能换）：
+//
+//	① **反向对照**：★ 真实文档 ⇒ 0 条违例（门不是恒红）
+//	② **合成夹具**：★ 在**内存副本**上让规范源某一行的依据里出现一个**没有登记**的编号
+//	   ⇒ ★ 门**必须**报出违例、且必须**点名那个编号**
+//	③ ★★ **语义有效性**：★ 注入之后那个编号确实**在整档里**、且**不在规范源里**
+func TestAuditRegistryTableSyncCoversWholeDoc(t *testing.T) {
+	lines := readAuditDocLines(t)
+
+	// ① 反向对照
+	if vs := checkRegistry(lines); len(vs) != 0 {
+		t.Fatalf("反向对照失败：真实文档本该 0 条违例，实际 %d 条（第一条：%s）", len(vs), vs[0].String())
+	}
+
+	// ② 合成夹具：★ 挑规范源里的一行，★ 在它的依据列里塞一个**未登记**的编号
+	//
+	// ★★★ 第三十七轮修（★ 夹具原本是**空转**的）：★
+	//
+	//	★ extractRegIDs 返回的是**归一后**的 token（★ `F-97` ⇒ `F97`）
+	//	★ 而原夹具拿**带连字符的原形**去比 ⇒ ★ 比对**恒不成立**
+	//	★ ⇒ 「注入前不在整档」那条先验**永远通过**（★ 假通过）
+	//	★ ⇒ 「注入后在整档里」那条**永远失败** ⇒ ★ 夹具**测不出任何东西**
+	//	★ ⇒ ★ 而这个 bug **被假阳性挡住了**：★ 反向对照（真实文档 0 违例）
+	//	★   本该先红（★ 12 条 fr-FR 假阳性）⇒ ★ ⇒ 夹具的 bug **一直没被看见**
+	//	★   ⇒ ★ 这就是「★ 门要能回答『它能不能红』」的又一条实例
+	//
+	// ★⇒ 所以现在**原形**（写进正文）与**归一形**（供比对）必须分开。
+	const ghostRaw = "F-97"
+	const ghostNorm = "F97"
+	canon := regCanonical(lines)
+	targetLine := 0
+	for _, c := range canon {
+		if c.Line > targetLine {
+			targetLine = c.Line
+		}
+	}
+	if targetLine == 0 {
+		t.Fatalf("★ 找不到规范源的行 ⇒ 夹具无法构造（★ 这是**门自己坏了**）")
+	}
+	// ★ 先验：这个编号在**注入前**既不在整档、也不在规范源里（★ 否则夹具无效）
+	// ★ ★ 用**归一形**比对（★ 归一形才是抽取器吐出来的东西）
+	for _, l := range lines {
+		for _, id := range extractRegIDs(l) {
+			if id == ghostNorm {
+				t.Fatalf("★ 注入目标编号 %s（归一形 %s）在**注入前**就出现在整档里 ⇒ 夹具无效（★ 换一个）", ghostRaw, ghostNorm)
+			}
+		}
+	}
+
+	mut := append([]string(nil), lines...)
+	mut[targetLine-1] = mut[targetLine-1] + " ★ 顺带提一句 " + ghostRaw
+
+	// ③ 语义有效性：★ 注入后它**在整档里**、且**不在规范源里**
+	foundInDoc := false
+	for _, l := range mut {
+		for _, id := range extractRegIDs(l) {
+			if id == ghostNorm {
+				foundInDoc = true
+			}
+		}
+	}
+	if !foundInDoc {
+		t.Fatalf("★★ **弱变异**：★ 注入后该编号仍不在整档里 ⇒ 语义没变 ⇒ 门测不出东西")
+	}
+	for _, c := range regCanonical(mut) {
+		if c.Key == ghostNorm {
+			t.Fatalf("★★ **弱变异**：★ 注入后该编号进了规范源 ⇒ 语义没变 ⇒ 门测不出东西")
+		}
+	}
+
+	// ② 门必须抓到，★ 且必须是 **C7** 那一条（★ Section == "整档"）
+	vs := checkRegistry(mut)
+	if len(vs) == 0 {
+		t.Fatalf("★★ **探测器坏了**：★ 合成夹具（整档里出现一个未登记的编号 %s）**没有**被门抓住", ghostRaw)
+	}
+	hitC7 := false
+	for _, v := range vs {
+		if v.ID == ghostNorm && v.Section == "整档" {
+			hitC7 = true
+			break
+		}
+	}
+	if !hitC7 {
+		t.Fatalf("★★ 门报出了违例，但**没有**以 C7（Section=整档）点名 %s（★ 报的是：%v）", ghostRaw, vs)
+	}
+}
+
+// TestAuditRegistryTableSyncLetterFamilyShape 是**字母族形状**的牙齿检验
+// （★ 第三十七轮新增）。
+//
+// ★ 它为什么必须存在：★ 第三十七轮给 C7 加判据时，★ 门把文档里 **12 处
+//
+//	`fr-FR`（★ i18n 语言标签）**误认成登记项 `FR` ⇒ 门报出 12 条**假阳性**
+//	⇒ ★ 那**不是**文档的缺陷，★ 是**探测器**的缺陷
+//	（★ 第三十六轮教训的同构：★ 「门报红」不等于「文档有病」⇒ 先分清谁有病）
+//
+// ★ 所以必须**同时**证明两件事（★ 顺序不能换，★ 只证一面＝假牙）：
+//
+//	① **假阳性侧**：★ 散文里的 `fr-FR` / `FAIL` / `RFC3339` / `FROM` /
+//	   `CONFLICT` / `BUFFERS` / `FORCE_LOCK` / `DEFAULT false` ⇒ **一个都不许**
+//	   被当成登记项
+//	② **假阴性侧**：★ 登记项的字母族 `F-A` … `F-E` ⇒ **五个都**必须被认出
+//	   （★ 否则就是「为了消掉假阳性、★ 把真编号一起消掉了」⇒ 门会恒绿）
+//	③ ★ **真实文档**：★ 五个字母族都认得出（★ 约定漂移 ⇒ 门自己红）
+func TestAuditRegistryTableSyncLetterFamilyShape(t *testing.T) {
+	// ① 假阳性侧：★ 这些都是**本档里真实出现过**的散文（★ 不是编造的）
+	prose := []string{
+		"fr-FR: 实测 1119 > 基线 1118",
+		"ar-SA / de-DE / es-ES / fr-FR / ja-JP 五个语种",
+		"门 **PASS=161 FAIL=0** / EXIT=0",
+		"★ 契约门 PASS=11 FAIL=0 ＋ 本轮新门 PASS=10 FAIL=0",
+		"显式接受 RFC3339 + PG 文本时间戳",
+		"SELECT ... FROM request_log",
+		"ON CONFLICT DO UPDATE",
+		"（ANALYZE, BUFFERS）两条查询",
+		"FORCE_LOCK_REQUESTS",
+		"boolean DEFAULT false",
+		"0xFA",
+	}
+	for _, s := range prose {
+		if ids := extractRegIDs(s); len(ids) != 0 {
+			t.Errorf("★★ **假阳性**：★ 散文 %q 被抽出登记项 %v（★ 应当一个都没有）", s, ids)
+		}
+	}
+
+	// ② 假阴性侧：★ 五个字母族必须都认得出来（★ 归一后是 FA…FE）
+	for src, want := range map[string]string{
+		"F-A": "FA", "F-B": "FB", "F-C": "FC", "F-D": "FD", "F-E": "FE",
+	} {
+		ids := extractRegIDs("登记项 " + src + " 已闭合")
+		if len(ids) != 1 || ids[0] != want {
+			t.Errorf("★★ **假阴性**：★ %s 没被抽出登记项（★ 期望 %s，实际 %v）", src, want, ids)
+		}
+	}
+
+	// ③ ★ 真实文档：★ 五个字母族都认得出（★ 约定漂移 ⇒ 门自己红）
+	found := map[string]bool{}
+	for _, l := range readAuditDocLines(t) {
+		for _, id := range extractRegIDs(l) {
+			found[id] = true
+		}
+	}
+	for _, want := range []string{"FA", "FB", "FC", "FD", "FE"} {
+		if !found[want] {
+			t.Errorf("★★ **约定漂移**：★ 真实文档里认不出字母族 %s（★ 字母族必须写成 F-A 形态）", want)
+		}
+	}
 }
