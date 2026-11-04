@@ -336,6 +336,40 @@ func TestShellFullwidthVarGateSeesUntrackedFiles(t *testing.T) {
 	}
 }
 
+// TestShellFullwidthVarGateSeesNonASCIIFileNames 验「★ 非 ASCII 文件名 ★」不被静默跳过。
+//
+// ★ 起因（★ 2026-11-04 审计轮 F-18 的【★ 同类第二处 ★】★）：
+//   shell 门原先用 `git ls-files '*.sh'`（★ 行式 ★）⇒ ★ 而 git 默认
+//   `core.quotePath=true` ⇒ ★ **非 ASCII 路径被输出成八进制转义＋双引号** ★
+//   ⇒ ★ 下一层按这个字符串去开文件 ⇒ **必然 file not found** ★
+//   ⇒ ★ ⇒ ★ **非 ASCII 文件名的 .sh 被本门【★ 静默跳过 ★】★★
+//   ⇒ ★ 而 Go 门（★ 同一个判据、★ `cjk_var_expansion_test.go:305` ★）**早就用了 `-z`** ★
+//   ⇒ ★ ⇒ ★ 「★ 两门口径一致 ★」这句话【★ 修之前只对 ASCII 文件名成立 ★】★★★
+//   ⇒ ★ 本仓实测有 **6 个以上**非 ASCII 名的 .sh（★ 如 `docs/全面测试/48h-audit/scripts/*.sh` ★）★
+//
+// ★ 为什么这条必须写成机器门：★ 「★ 自称同步、实际不同 ★」是本仓反复出现的形态
+//   （★ F-16 的候选链副本也是它 ★）⇒ ★ **口径一致只能靠机器判、不能靠注释 ★**
+func TestShellFullwidthVarGateSeesNonASCIIFileNames(t *testing.T) {
+	dir := newSyntheticShellRepo(t, map[string]string{
+		// ★ 文件名含非 ASCII、★ 且文件里有一个**真的**命中站点 ★
+		"scripts/中文目录/真站点.sh": "#!/usr/bin/env bash\necho \"X$v中Y\"\n",
+	}, map[string]string{
+		// ★ 同款、★ 但**未跟踪** ⇒ 两条口径都要覆盖 ★
+		"scripts/中文目录/未跟踪真站点.sh": "#!/usr/bin/env bash\necho \"X$v中Y\"\n",
+	})
+	rc, out := runShellGate(t, dir)
+	if rc != 1 {
+		t.Fatalf("★ 非 ASCII 文件名里的真站点没被抓到（rc=%d）⇒ 本门静默跳过它们\n%s", rc, out)
+	}
+	hits := shellGateHits(out)
+	if len(hits["scripts/中文目录/真站点.sh"]) != 1 {
+		t.Fatalf("★ 已跟踪的非 ASCII 名脚本命中不对：%v\n%s", hits, out)
+	}
+	if len(hits["scripts/中文目录/未跟踪真站点.sh"]) != 1 {
+		t.Fatalf("★ 未跟踪的非 ASCII 名脚本命中不对：%v\n%s", hits, out)
+	}
+}
+
 // TestShellFullwidthVarGateIsWired 验「门还在、还接在线上」。
 //
 // ★ 为什么把这条从「真实仓全扫」换成「接线断言」：

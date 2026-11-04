@@ -130,12 +130,22 @@ PATTERN='\$[A-Za-z_][A-Za-z0-9_]*[^ -~]'
 SCAN_SKIP_DIRS='^\.git/|^node_modules/|^vendor/|^dist/|^build/|^\.venv/|__pycache__/'
 
 scan_list() {
+  # ★ ★ F-18 同类（2026-11-04 审计轮）：★ `git ls-files` 默认 `core.quotePath=true`
+  #   ⇒ **非 ASCII 路径被输出成八进制转义＋双引号** ⇒ 本门**静默跳过**它们
+  #   ⇒ ★ 实测本仓有 **6 个以上**非 ASCII 名的 .sh（★ 如
+  #     ★ `docs/全面测试/48h-audit/scripts/*.sh` ★）⇒ ★ 而它们**本来是该被扫的** ★
+  #   ⇒ ★ ★ 而 Go 门 `scripts/ursmcheck/cjk_var_expansion_test.go:305`
+  #     ★ **早就用了 `-z`** ⇒ ★ ⇒ ★ 「★ 两门口径一致 ★」这句话
+  #     ★ **在这次修之前只对 ASCII 文件名成立 ★** ⇒ ★ 这正是本仓反复出现的
+  #     ★ 「★ 自称同步、实际不同 ★」形态（★ 见 F-16 候选链副本 ★）★★
+  #   ⇒ ★ 修法：★ 加 `-z`（★ NUL 分隔 ⇒ git 不加引号也不转义 ★）＋ 转回行
+  #     ★ （★ 与 scripts/scan-secrets.sh 同一修法、★ 同一理由 ★）
   {
-    git ls-files '*.sh'
-    git ls-files '*.bash'
-    git ls-files --others --exclude-standard '*.sh'
-    git ls-files --others --exclude-standard '*.bash'
-  } | sort -u | grep -vE "$SCAN_SKIP_DIRS"
+    git ls-files -z '*.sh'
+    git ls-files -z '*.bash'
+    git ls-files --others --exclude-standard -z '*.sh'
+    git ls-files --others --exclude-standard -z '*.bash'
+  } | tr '\0' '\n' | sort -u | grep -vE "$SCAN_SKIP_DIRS"
 }
 
 # ★ 跳过口径与 Go 门一致：整行注释 + 尾随注释 + 单引号区段
