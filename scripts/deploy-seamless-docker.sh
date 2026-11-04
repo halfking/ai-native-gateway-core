@@ -165,8 +165,54 @@ dd_exit_guard_finalize() {
 }
 
 # dd_install_exit_guard —— 装上完成标记守卫（只对 deploy 模式装）。
+# ★ 2026-11-05：守卫里**顺带释放目标机侧部署锁**（自己拿的才释放；
+#   继承自 --via 父进程的那把由父进程释放 ⇒ 不重复、不误删别人的锁）。
 dd_install_exit_guard() {
-  trap 'rc=$?; dd_exit_guard_finalize "$rc"' EXIT
+  trap 'rc=$?; dd_release_target_lock || true; dd_exit_guard_finalize "$rc"' EXIT
+}
+
+# =============================================================================
+# 目标机侧部署锁（2026-11-05 · 蓝绿并发事故轮）★ ★ ★
+# =============================================================================
+# ★★★ 为什么必须有（**实测形态**，不是假想）：
+#   2026-11-05 00:47~00:53，211 上同时跑着**两次部署**：
+#     · 00:49:18  另一次部署构建了镜像 llm-gateway-211:latest(71e4b9dd55c2)
+#     · 00:49:49  它起了**槽 b**（容器 llm-gateway-211-b）
+#     · ~00:52:50 它把 nginx upstream 切到 8783（槽 b）
+#     · 00:53:00  本次部署起了**槽 a**
+#     · 00:53:03  本次部署把 upstream 切回 8781
+#     · 00:53:14  本次部署**停掉**了另一个部署刚起、刚接流量的槽 b
+#   ⇒ 两个部署**互相切流、互相停对方的槽** ⇒ 一旦两次部署选到同一个槽位，
+#     「起候选槽」那步的 `docker rm -f <候选容器>` 会**直接删掉正在服务的那一个**
+#     ⇒ ⇒ 流量落空 = 502。
+#
+# ★ 根因：**部署锁只在部署机侧拿**——
+#   `kx-llm-gateway-deploy-<target>.lock` 建在**部署机本地**（/tmp）⇒
+#   ⇒ 它只能挡住「**同一台**部署机上的两次并发」⇒
+#   ⇒ 两台**不同**的部署机并发部署同一个目标时，两把锁在两台机器上 ⇒ **互不排斥** ⇒
+#   ⇒ 而 211 的蓝绿语义是「两个固定槽位 + 一条 upstream」⇒ ⇒ 必须有**目标机侧**的锁。
+#   ★ 154/245 的 systemd 路径**早就**有这一层（deploy-seamless.sh:488 的
+#   `lock_acquire_remote`）⇒ ★ **211 的 docker 路径是同族里唯一漏接的一处**。
+#
+# ★ 锁的落点与口径（与 154/245 同族 SSOT）：
+#   · 路径：/var/lib/llm-gateway-go/deploy.lock（**在目标机上**）
+#   · 形态：mkdir 目录锁（原子）⇒ 与 lock_acquire_remote / lock_acquire_local 同形
+#   · 谁能拿：任何要部署该目标的人 —— --via 的父进程（远端拿）或目标机直跑（本地拿）
+#
+# ★ 不自踩：--via 的父进程在目标机上拿了锁 ⇒ 子进程（目标机上的引擎）**不再拿**
+#   （否则父子互踩 = 自死锁）⇒ 用 DD_TARGET_LOCK_HELD=1 随 ssh 命令传下去。
+DD_TARGET_LOCK_PATH="${DD_REMOTE_LOCK_PATH:-/var/lib/llm-gateway-go/deploy.lock}"
+# 1 = 这把锁当前被本进程持有（或被继承）；0 = 没锁
+DD_TARGET_LOCK_HELD="${DD_TARGET_LOCK_HELD:-0}"
+# 1 = 目标机侧锁**整个关掉**（测试缝 / 显式逃生舱）⇒ 父子都不拿
+DD_TARGET_LOCK_SKIP="${DD_TARGET_LOCK_SKIP:-0}"
+# 1 = 这把锁是**本进程自己**拿的 ⇒ 释放责任在本进程（继承来的不释放）
+DD_TARGET_LOCK_OWNED=0
+dd_release_target_lock() {
+  [[ "${DD_TARGET_LOCK_OWNED:-0}" == "1" ]] || return 0
+  DD_TARGET_LOCK_OWNED=0
+  DD_TARGET_LOCK_HELD=0
+  lock_release_local >/dev/null 2>&1 || true
 }
 
 # ── 共享构建锁（2026-10-23 12h 审计轮新增）────────────────────────────
@@ -485,7 +531,7 @@ if [[ -n "$VIA" ]]; then
             LLMGatewayAutoLLMEndpoint LLMGatewayAutoLLMApiKey LLMGatewayAutoLLMModel \
             LLMGatewayAutoLLMTimeout LLMGatewayAutoLLMMaxTokens LLM_GW_TEST_MODE_TOKEN \
             DD_GOACOS_ADDR DD_GOACOS_IP DD_GOACOS_SERVICE DD_GOACOS_NAMESPACE \
-            DD_GOACOS_GROUP DD_GOACOS_ENV; do
+            DD_GOACOS_GROUP DD_GOACOS_ENV DD_REMOTE_LOCK_PATH; do
     if [[ -n "${!_v+x}" ]]; then _dd_fwd+=" ${_v}='${!_v}'"; fi
   done
   _dd_args="${DD_ARGS[@]+"${DD_ARGS[@]}"}"
@@ -495,13 +541,35 @@ if [[ -n "$VIA" ]]; then
   # （同步会 rm -rf 目标树，对「只想看一眼状态」是过大的副作用）。
   # 做法：只把引擎单文件送到目标机临时路径跑，跑完即删。
   if [[ "$MODE" != "deploy" ]]; then
-    _dd_tmp="/tmp/deploy-seamless-docker.$$.sh"
-    log "远程执行 ${MODE}（只送引擎单文件，不同步仓库）..."
+    # ★ 2026-11-05：引擎与 **upstream 判定脚本**一起投递（同一目录结构）。
+    #   根因：引擎默认从「脚本自己所在目录」找 ops/nginx-upstream-port.py ⇒
+    #   ⇒ 只送引擎单文件时那个路径在目标机上不存在 ⇒ dd_upstream_port 恒为空 ⇒
+    #   ⇒ --status 报「upstream=读不到」⇒ 活跃槽**只能**回退到状态文件 ⇒
+    #   ⇒ 而状态文件可能与 nginx 实况脱节（2026-11-05 实测：状态文件说槽 a、
+    #      upstream 实为槽 b）⇒ ⇒ 体检结论失真 ⇒ 「事实优先」的语义失效。
+    #   ⇒ ⇒ 判定脚本必须随行（每次跑用**独立目录**，避免并发时互删对方的文件）。
+    _dd_tmpdir="/tmp/dd-engine-$$"
+    _dd_tmp="${_dd_tmpdir}/deploy-seamless-docker.sh"
+    _dd_helper="${_dd_tmpdir}/ops/nginx-upstream-port.py"
+    log "远程执行 ${MODE}（送引擎 + upstream 判定脚本，不同步仓库）..."
+    ssh "$VIA" "mkdir -p '${_dd_tmpdir}/ops'" || die "在 ${VIA} 上准备临时目录失败"
     scp "$DD_REPO_ROOT/scripts/deploy-seamless-docker.sh" "$VIA:$_dd_tmp" \
       || die "引擎单文件投递到 ${VIA} 失败"
-    ssh "$VIA" "chmod +x '$_dd_tmp' && DD_BUILD_SHA=''${_dd_fwd} bash '$_dd_tmp' ${_dd_args}; rc=\$?; rm -f '$_dd_tmp'; exit \$rc"
+    scp "$DD_REPO_ROOT/scripts/ops/nginx-upstream-port.py" "$VIA:$_dd_helper" \
+      || die "upstream 判定脚本投递到 ${VIA} 失败（--status 会退化成「读不到 upstream」）"
+    ssh "$VIA" "chmod +x '$_dd_tmp' && DD_BUILD_SHA=''${_dd_fwd} bash '$_dd_tmp' ${_dd_args}; rc=\$?; rm -rf '$_dd_tmpdir'; exit \$rc"
     exit $?
   fi
+
+  # ── 目标机侧锁用的 ssh 管道（与 deploy-seamless.sh 的 remote_ssh_pipe 同形）──
+  _dd_target_ssh() { ssh "$VIA" "$1"; }
+  # 释放远端锁：只释放**自己拿的**那把（继承来的不动 ⇒ 不误删别人的锁）。
+  dd_release_target_lock_remote() {
+    [[ "${DD_TARGET_LOCK_OWNED:-0}" == "1" ]] || return 0
+    DD_TARGET_LOCK_OWNED=0
+    DD_TARGET_LOCK_HELD=0
+    lock_release_remote _dd_target_ssh "$DD_TARGET_LOCK_PATH" >/dev/null 2>&1 || true
+  }
 
   # ── 部署锁（deploy-lib lock.sh，与 deploy-seamless 同一族 SSOT）────────
   # --via 全程是部署机侧的连续 ssh 步骤（rm → tar 同步 → 清理 → 远端执行），
@@ -542,8 +610,35 @@ if [[ -n "$VIA" ]]; then
     #     并交给 dd_exit_guard_finalize 判「有没有走到完成标记」（fail-closed）。
     #   ⚠ `lock_release_local || true`：锁清理失败不能反过来盖掉原始失败码。
     #   ⚠ dd_release_build_lock || true：同上（共享构建锁的清理也不能盖掉原始码）。
-    trap 'rc=$?; lock_release_local || true; dd_release_build_lock || true; dd_exit_guard_finalize "$rc"' EXIT
+    trap 'rc=$?; lock_release_local || true; dd_release_build_lock || true; dd_release_target_lock_remote || true; dd_exit_guard_finalize "$rc"' EXIT
     log "已取得 ${DD_TARGET} 部署锁: ${LOCK_LOCAL_DIR}"
+    # ── 目标机侧部署锁（跨机器互斥；见上方「目标机侧部署锁」注释块）──────
+    #   ★ 必须在**同步仓库之前**拿：同步那步会**清空目标机上的工作树**再解包
+    #   ⇒ ⇒ 它落在**目标机的那份工作树**上 ⇒ ⇒ 两次并发部署会在同一棵树上互踩。
+    if [[ "${DD_SKIP_TARGET_LOCK:-0}" != "1" ]]; then
+      if [[ "${FORCE_LOCK_RECOVER:-0}" == "1" ]]; then
+        log "--force：尝试恢复 ${DD_TARGET} 目标机上的陈旧部署锁…"
+        lock_recover_remote _dd_target_ssh "$DD_TARGET" "$DD_TARGET_LOCK_PATH" 1 \
+          || die "--force：恢复目标机部署锁失败（活的持有者一律不硬抢；请等它跑完，或确认无存活部署进程后手工处理）"
+      fi
+      if ! lock_acquire_remote _dd_target_ssh "$DD_TARGET" "$DD_TARGET_LOCK_PATH"; then
+        die "另一个部署正在对 ${DD_TARGET} 执行远端阶段（目标机锁 ${DD_TARGET_LOCK_PATH}）—— 拒绝并发部署。
+      ★ 蓝绿是「两个固定槽位 + 一条 upstream」⇒ 两次部署同时跑会**互相切流、互相停对方的槽**
+        （其中一个甚至会被对方的「起候选槽」那步 docker rm -f 直接删掉）⇒ ⇒ 502。
+      ⇒ 等对方跑完再重试；若确认对方已死（锁里的 pid 是**部署机侧**的 pid），
+        可用 --force 重跑（本脚本只回收「持有者已死」的锁，活的一律不硬抢）。"
+      fi
+      DD_TARGET_LOCK_HELD=1
+      DD_TARGET_LOCK_OWNED=1
+      # 子进程（目标机上的引擎）**不再拿**这把锁 ⇒ 父子不自踩。
+      _dd_fwd+=" DD_TARGET_LOCK_HELD=1"
+      log "已取得目标机侧部署锁: ${DD_TARGET_LOCK_PATH}（@ ${DD_TARGET}）"
+    else
+      warn "DD_SKIP_TARGET_LOCK=1 ⇒ 本次部署**没有**目标机侧互斥保护（并发部署会互抢槽位）"
+      # 父进程不拿 ⇒ 子进程**也不能自己拿**（否则子进程会在目标机上建锁失败，
+      # 或者在真机上把「没保护」这件事悄悄变成「有保护」——两个都不对）。
+      _dd_fwd+=" DD_TARGET_LOCK_SKIP=1"
+    fi
     # ★ 共享构建锁（2026-10-23 12h 审计轮修）：与 deploy-seamless.sh（245/154
     #   systemd 路径）**同一把**（kx-llm-gateway-build.lock）。
     #   ⇒ 理由见上面 dd_release_build_lock 的注释：每目标部署锁只挡「同目标的两个
@@ -639,23 +734,51 @@ if [[ -n "$VIA" ]]; then
   # macOS bsdtar 默认把 quarantine/provenance xattr 打进 archive，GNU tar 刷屏
   # Ignoring unknown extended header；偶发半截同步 → 远端缺 scripts/（RC=127）。
   # COPYFILE_DISABLE + --no-xattrs/--no-mac-metadata（有则用）关掉资源叉/xattr。
+  # ── 同步清单（2026-11-05 效率轮：find 精确剪枝）────────────────────────
+  #   ★ 为什么不能再用 --exclude 表达这些目录（**本机实测**）：
+  #     macOS bsdtar 的 --exclude 按**路径段**匹配、**不分深度** ⇒
+  #     `--exclude=gateway` 会把 **cmd/gateway/**（主包源码，200 个跟踪文件）一起排掉
+  #     ⇒ ⇒ 构建上下文里没有主包 ⇒ 镜像里没有 cmd/gateway ⇒ 产出**不含网关**的镜像。
+  #     实测：--exclude=gateway / --exclude=./gateway / --exclude=*/gateway
+  #           **三种写法都**命中 cmd/gateway/main.go。
+  #   ⇒ ⇒ 改用 **find -path 精确剪枝**（-path 匹配**整条路径** ⇒ 不会误伤同名子目录）。
+  #   ★★ `-mindepth 1` 是**硬要求**：find 默认会把 `.`（根目录自身）也列出来 ⇒
+  #     tar -T 看到 `.` 就会**递归整棵树**（实测打出 16GB 的 tar！）⇒ ⇒ 必须剪掉根条目。
+  #   ★ 剪掉的全是**本地构建/运行残留**（实测每个都是 **0 个 git 跟踪文件**）：
+  #     logs/ run/ bin/ gateway/ llm-gateway/ gateway-v2/ quality-monitor/
+  #     .codegraph/ .audit-validation/ llm-gateway-go.linux.amd64
+  #   ★ 体量（实测）：剪枝前同步集合 **1.5GB**（远端树落盘 1.1GB）⇒ 剪枝后 ~百MB 级。
+  #   ★ 顺带修掉一个**安全问题**：run/ 里存着 admin 口令散列、active-port 等运行态，
+  #     旧口径**每次部署都往目标机传一遍** ⇒ 现在不传了。
+  #   ★ 保留（这些都是**被跟踪**的，剪掉就构建不出来）：
+  #     docs/（仓库知识）· vendor/（离线构建：go mod download 不可用时仍能构建）
+  #     sql/（迁移）· cmd/gateway/（主包源码）· web/src/ + web/dist/（前端）
+  _dd_sync_list="$(mktemp -t dd-sync-list.XXXXXX)"
+  (
+    cd "$DD_REPO_ROOT" && find . -mindepth 1 \
+      \( -name .git -o -name node_modules -o -name .build-local \
+         -o -name .codegraph -o -name codegraph -o -name .audit-validation \
+         -o -path ./logs -o -path ./run -o -path ./bin -o -path ./gateway \
+         -o -path ./llm-gateway -o -path ./gateway-v2 -o -path ./quality-monitor \
+         -o -path ./llm-gateway-go.linux.amd64 \
+         -o -name '*.log' -o -name '.env' -o -name '.env.*' \
+         -o -name '._*' -o -name '.DS_Store' \) -prune -o -print
+  ) > "$_dd_sync_list"
+  _dd_sync_count="$(wc -l < "$_dd_sync_list" | tr -d ' ')"
+  log "同步清单：${_dd_sync_count} 个条目（已剪掉本地构建/运行残留：logs/ run/ bin/ gateway/ llm-gateway/ gateway-v2/ quality-monitor/ .codegraph/ .audit-validation/）"
   _tar_create=(tar -C "$DD_REPO_ROOT")
   if [[ "$(uname -s)" == "Darwin" ]]; then
     export COPYFILE_DISABLE=1
     _tar_create+=(--no-xattrs)
     tar --help 2>&1 | grep -q -- '--no-mac-metadata' && _tar_create+=(--no-mac-metadata)
   fi
-  _tar_create+=(
-    --exclude=.git --exclude=node_modules
-    --exclude=.build-local
-    --exclude='*.log' --exclude='.env' --exclude='.env.*'
-    --exclude='._*' --exclude='.DS_Store'
-    -cf - .
-  )
+  _tar_create+=( -cf - -T "$_dd_sync_list" )
   "${_tar_create[@]}" | ssh "$VIA" "tar --no-xattrs -C '$DD_REMOTE_ROOT' -xf - && \
         find '$DD_REMOTE_ROOT' -name '._*' -type f -delete && \
         find '$DD_REMOTE_ROOT' -name '.DS_Store' -type f -delete && \
         echo '[${DD_TARGET}] 同步后 ._* 残留: '\$(find '$DD_REMOTE_ROOT' -name '._*' -type f | wc -l)"
+  # 同步清单是一次性的：用完即删（它在 /tmp 里，但清单里全是仓库路径，留着没意义）
+  rm -f "$_dd_sync_list"
   # 双保险：目标机上再扫一遍，真有残留就当场删掉，别留给下一次构建
   ssh "$VIA" "find '$DD_REMOTE_ROOT' -maxdepth 2 -name '.env*' -type f -delete; \
              echo '[${DD_TARGET}] 目标树残留 .env*: '\$(find '$DD_REMOTE_ROOT' -name '.env*' -type f | wc -l) \
@@ -703,6 +826,33 @@ fi
 #   「啥都没干」报成成功（2026-10-22 实测矩阵）。
 #   ⚠ 只对 deploy 模式装：--status / --probe-only / --stop 本来就是
 #   「看一眼」的动作，不该被「没走到完成标记」判成失败。
+# ── 目标机侧直跑（无 --via）：本机就是目标机 ⇒ 锁必须在本机拿 ────────
+#   ★ --via 形态：父进程已在目标机上拿了锁（DD_TARGET_LOCK_HELD=1）⇒ 本进程不重复拿。
+#   ★ 这段必须在 dd_install_exit_guard **之前**：守卫的 EXIT trap 负责释放本进程
+#     自己拿到的锁 ⇒ 拿了却没放进 trap ⇒ 锁泄漏 ⇒ 后续部署全被挡住。
+if [[ "$MODE" == "deploy" && "${DD_TARGET_LOCK_HELD:-0}" != "1" && "${DD_TARGET_LOCK_SKIP:-0}" != "1" ]]; then
+  _dd_lib_resolve="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deploy-lib-resolve.sh"
+  if [[ -f "$_dd_lib_resolve" ]]; then
+    # shellcheck source=deploy-lib-resolve.sh
+    source "$_dd_lib_resolve"
+  fi
+  if [[ -n "${AIAN_DEPLOY_LIB:-}" && -f "${AIAN_DEPLOY_LIB}/lock.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${AIAN_DEPLOY_LIB}/lock.sh"
+    LOCK_LOCAL_TARGET="$DD_TARGET"
+    LOCK_LOCAL_DIR="$DD_TARGET_LOCK_PATH"
+    lock_acquire_local \
+      || die "另一个部署正在本机（目标机 ${DD_TARGET}）执行部署（锁 ${DD_TARGET_LOCK_PATH}）—— 拒绝并发部署。
+      ★ 蓝绿两个槽位不能被两次部署同时操作（会互切流、互停对方的槽 ⇒ 502）。
+      ⇒ 等对方跑完再重试；若确认对方已死，可带 --force 重跑。"
+    DD_TARGET_LOCK_HELD=1
+    DD_TARGET_LOCK_OWNED=1
+    log "已取得目标机侧部署锁: ${DD_TARGET_LOCK_PATH}（本机直跑形态）"
+  else
+    warn "deploy-lib/lock.sh 不在场 ⇒ 目标机侧部署锁不可用（本次部署无跨机器互斥保护）"
+  fi
+fi
+
 if [[ "$MODE" == "deploy" ]]; then
   dd_install_exit_guard
 fi
