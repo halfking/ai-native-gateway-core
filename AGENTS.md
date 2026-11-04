@@ -22,8 +22,15 @@
 > node_probe_failed、63 quota_permanently_exhausted）、minimax-m3 0/6 ⇒ 模型改 **`minimax-m3.1-flash`**（凭据 29 唯一可路由）
 > ＋ `AGENT_DAILY_TOKENS=40000000`（分析器日耗实测 10-13M 的 ~3.2x；兼作洪水刹车）＋ runner 注册 flash ＋ 删 release compose
 > 内联 `'0'`（仓内同步，ASM `f60a93d`）＋ 今日 119.2M phantom 预扣按账实归零。验证：/status=40M ✓、**glm-5.3 自 00:47:14 归零**、
-> m3.1-flash 7/7 成功（~1.75 次/分 ≪ 凭据 29 的 30/min）。⇒ ★ 剩余挂起仅一项：**凭据分离**（专属限流 key，需 admin 凭据）；
-> ★ 新发现（登记）：freellmapi 客户端（192.168.31.35，同 key）对 4 个死模型各 ~60/min no_candidate——同族第二例，治法同为凭据分离。
+> m3.1-flash 7/7 成功（~1.75 次/分 ≪ 凭据 29 的 30/min）。
+> ⇒ ★★ **两项挂起全部收口（11-05 01:10–01:30，审计档 §3.6）**：① **熔断二进制上线**＝标准 release 流程
+> `deploy.sh deploy --apply --release 20261105-f60a93d`（★ 并行 WIP 挡住主工作树 ⇒ 干净 detach worktree 作 `--source`；
+> ★ activate() 从 `$base/config` 拷贝 ⇒ **先同步规范 config 否则下次 release 回滚修复**；免 --migrate＝schema 自 ac5421f8 零变更；
+> 熔断二进制实存＝distroless 无 shell ⇒ docker create+cp 拷出 grep 特征串）；② **凭据分离**＝铸 600s admin JWT
+> （HS256/`LLM_GATEWAY_SECRET_KEY`/user 41）走 `POST /api/keys` ⇒ **key 228 `sk-YEYaxeR****`（rpm=30）**换
+> `RUNNER_LOCAL_API_KEY` ⇒ 验证新 key 8/8 成功＋**旧冒烟 key 的 asm 流量归零**（admin 密码失效不是死路：签名密钥在容器 env）。
+> ⇒ ★ 遗留（登记）：freellmapi 自有流量仍在无限流冒烟 key 105 上、其 4 死模型 fallback 洪水仍在——属 freellmapi 仓＋105 加限流的
+> owner 裁决。
 > ⇒ ★ 通用式见 `LESSONS.md` **§631**（失败作用域决定退避载体 / 凭据用途字段不是约束 / 换模型先查配额池同族 / 0=关闭的阀门语义）。
 > **2026-11-04 报价系统 MVP 下一步方案轮（规划 · 零代码）——两轮外部调研＋本地接地把路线图变成任务卡**
 > （goal 会话）：★ 用户目标＝「结合头脑风暴文档 → 查询网络中高星项目与方案 → 结合本地代码 → 给出下一步方案及实施规划」。
