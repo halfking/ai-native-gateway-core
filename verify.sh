@@ -248,6 +248,10 @@ bash tests/deploy_sops_test.sh
 bash tests/deploy_local_contract_test.sh
 # ★ 2026-11-04（F-15）：共享部署库入口的解析/失败契约门（新增，≈0.3s）
 bash tests/shared_lib_resolution_contract_test.sh
+# ★ 2026-11-04（F-18 / F-22）：秘密扫描器「--tracked-only 枚举覆盖」行为门（新增，≈1s）
+#   ★ 它钉住的是「★ 非 ASCII / 含空格的文件名 ★」**不被静默丢弃** ★
+#   ⇒ ★ 而这条枚举分支正是两道公开仓闸门（pre-push ＋ sync-to-github）用的那一条 ★
+bash tests/scan_secrets_enumeration_contract_test.sh
 
 # ★ 切流状态机门（慢门，实测 270s ⇒ 不进 CI 快门，只在官方门与 make guards 上跑）。
 #   经 scripts/run-bash4-gate.sh：找得到 bash ≥ 4 ⇒ 真跑；找不到 ⇒ 显式 SKIP

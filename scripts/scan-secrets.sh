@@ -352,9 +352,18 @@ scan_working_tree() {
       elif [[ "$p" == "$REPO_ROOT"/* ]]; then rel_paths+=("${p#"$REPO_ROOT"/}")
       else rel_paths+=("$p"); fi
     done
-    git -C "$REPO_ROOT" ls-files -- "${rel_paths[@]}" 2>/dev/null | while IFS= read -r f; do
-      [[ -f "$REPO_ROOT/$f" ]] && echo "$REPO_ROOT/$f"
-    done > "$candidates"
+    # ★ ★ F-18（2026-11-04 审计轮）：★ `ls-files` 默认 `core.quotePath=true`
+    #   ⇒ **非 ASCII 路径被输出成八进制转义＋双引号**
+    #   ⇒ 下一行 `[[ -f "$REPO_ROOT/$f" ]]` 判假 ⇒ **静默丢弃**
+    #   ⇒ ★ 不报错、不计数、不让任何门变红 ⇒ ⇒ 「两道公开仓闸门对全树 ≈5% 的文件失明」。
+    #   ★ 修法（★ 照仓内既有惯例 `internal/relrefs/files.go:15-24` ★）：
+    #   加 `-z`（★ NUL 分隔 ⇒ git 不加引号也不转义 ★）⇒ 按 NUL 切分即可。
+    #   ★ ★ 这是「★ 量具自身的读取方式 ★」的坑：★ **它不会报错、★ 只会少读 ★★
+    #   ⇒ ⇒ 与下面 `find` 分支【★ 同一口径 ★】⇒ 两条枚举分支不再分叉。
+    git -C "$REPO_ROOT" ls-files -z -- "${rel_paths[@]}" 2>/dev/null \
+      | while IFS= read -r -d '' f; do
+          [[ -f "$REPO_ROOT/$f" ]] && echo "$REPO_ROOT/$f"
+        done > "$candidates"
   else
     find "${PATHS[@]}" -type f > "$candidates" 2>/dev/null
   fi
@@ -383,12 +392,28 @@ scan_working_tree() {
   grep -E '\.enc$' "$candidates" > "$tmpdir/encfiles" 2>/dev/null || true
   if [[ -s "$tmpdir/encfiles" ]]; then
     # SOPS envelopes must have: ENC[AES256_GCM AND "mac" AND "age"
-    local enc_files; enc_files=$(cat "$tmpdir/encfiles")
-    grep -rl 'ENC\[AES256_GCM' $enc_files 2>/dev/null > "$tmpdir/enc_sops1" || true
+    # ★ ★ F-22 衍生（2026-11-04 审计轮）：★ 原写法把文件清单**不加引号**展开
+    #   （`$enc_files` / `$(cat ...)`）⇒ ★ 路径里的空白会再切一次
+    #   ⇒ ★ 与下面 Step 7 的 `xargs` 同款盲区 ⇒ ★ 改用逐行读 + 引号包裹 ★
+    #   ⇒ ★ 不修它的话、★ 修好 Step 7 后、★ 含空白的 .enc 会【★ 扫到但认不出是 SOPS ★】
+    #   ⇒ ⇒ ★ 而 `SECRET_FILE` 规则认 `\.env(\.|$)` ⇒ ★ 它会被报成 BLOCK
+    #   ⇒ ⇒ ★ 那会让 tests/deploy_sops_test.sh 的 AC-10 假红 ⇒ ⇒ ★ 两处必须一起修 ★
+    : > "$tmpdir/enc_sops1"
+    while IFS= read -r enc_f; do
+      [[ -n "$enc_f" ]] || continue
+      grep -l 'ENC\[AES256_GCM' "$enc_f" 2>/dev/null >> "$tmpdir/enc_sops1" || true
+    done < "$tmpdir/encfiles"
     if [[ -s "$tmpdir/enc_sops1" ]]; then
-      grep -rl '"mac"' $(cat "$tmpdir/enc_sops1") 2>/dev/null > "$tmpdir/enc_sops2" || true
+      : > "$tmpdir/enc_sops2"
+      while IFS= read -r sops_f; do
+        [[ -n "$sops_f" ]] || continue
+        grep -l '"mac"' "$sops_f" 2>/dev/null >> "$tmpdir/enc_sops2" || true
+      done < "$tmpdir/enc_sops1"
       if [[ -s "$tmpdir/enc_sops2" ]]; then
-        grep -rl '"age"' $(cat "$tmpdir/enc_sops2") 2>/dev/null > "$sopsset" || true
+        while IFS= read -r sops_f; do
+          [[ -n "$sops_f" ]] || continue
+          grep -l '"age"' "$sops_f" 2>/dev/null >> "$sopsset" || true
+        done < "$tmpdir/enc_sops2"
       fi
     fi
   fi
@@ -401,6 +426,23 @@ scan_working_tree() {
   fi
 
   TOTAL_FILES_SCANNED=$(wc -l < "$scannable" 2>/dev/null | tr -d ' ')
+
+  # ★ ★ F-23（2026-11-04 审计轮）：★ 「★ 扫了 0 个文件 ★」必须【★ fail-closed ★】
+  #   ⇒ 否则「★ 什么也没扫 ★」会被报成 "✅ CLEAN" ⇒ ★ **空扫描 = 假绿 ★**
+  #   ⇒ ★ **本轮当场踩到**（★ 而这正是本仓 :347 的注释早就记下过的现象 ★）：
+  #     ★ `--paths` 会**吃掉后面所有参数** ⇒ ★ 若 `--tracked-only` 写在 `--paths` 之后
+  #     ⇒ ★ `TRACKED_ONLY` 没被设置 ⇒ ★ 枚举分支走错 ⇒ Files scanned: 0
+  #     ⇒ ★ 而门照样 rc=0 + "✅ CLEAN" ★★（★ ⇒ 一次参数顺序笔误就能让闸门失效 ★）
+  #   ⇒ ★ 与 F-18 / F-22 同族：★ **都是「★ 量具自身的读取方式 ★」⇒ 不报错、★ 只会少读 ★**
+  #   ⇒ ★ 退出码 **3** ＝ 「★ 扫描自身失败 ★」（★ 与 1＝有发现、★ 2＝参数/规则文件错、★
+  #     ★ 64＝bash 版本守卫区分开 ★）⇒ ★ 让调用方能分辨「★ 有发现 ★」与「★ 没扫到 ★」
+  if [[ "${TOTAL_FILES_SCANNED:-0}" -eq 0 ]]; then
+    echo "${RED}${BOLD}❌ SCAN FAILED: 0 files scanned${RESET}" >&2
+    echo "   → 枚举面为空 ⇒ 「CLEAN」不成立 ⇒ 按 fail-closed 处理（★ 不给绿 ★）" >&2
+    echo "   → 常见原因：--paths 吃掉了后续参数（★ --paths 之后不要再放任何开关 ★）" >&2
+    echo "   →          pathspec 没匹配到任何文件 / 枚举分支走错" >&2
+    exit 3
+  fi
 
   # ── Step 5: Filename rules (batch grep on basenames) ───────────────
   local fn_grep_args=()
@@ -476,7 +518,22 @@ scan_working_tree() {
   # Step 8 把行号当文件名、行内容当行号解析，命中被静默丢弃——不止
   # 单文件仓库会踩，主仓 14k 文件时 xargs 末批恰好剩一个文件也会漏报
   # （2026-10-08 镜像验证克隆实测 1 文件全漏）。
-  xargs grep -H -niE "${grep_args[@]}" -- < "$scannable" > "$raw_matches" 2>/dev/null || true
+  #
+  # ★ ★ F-22（2026-11-04 审计轮）：★ `xargs` 默认按【空白】切分参数
+  #   ⇒ ★ 文件名里含空白的文件被切成若干【不存在的路径】
+  #   ⇒ ★ grep 报 "No such file or directory"、★ 而 `2>/dev/null` 把错误吞掉
+  #   ⇒ ⇒ ★ **整批文件静默不扫**（★ 实测本仓有 5 个跟踪文件命中这个形态 ★）
+  #   ⇒ ★ 修法：★ 喂 NUL 分隔（★ `xargs -0` ★）⇒ 路径里的空白不再是分隔符
+  #   ⇒ ★ `tr '\n' '\0'` 把行清单转成 NUL 清单（★ 与仓内 `internal/relrefs/files.go`
+  #   ★ 的 `ls-files -z` 同一个思路：★ 用 git/文件系统的原生分隔符、★ 不用空白 ★★★）
+  #   ⇒ ★ `</dev/null`：★ 空清单时 xargs 仍会跑一次 grep（★ 无参数 ⇒ grep 读 stdin ★）
+  #   ⇒ ⇒ ★ 显式给 /dev/null ⇒ ★ 空清单 ⇒ 零输出、零挂起 ★
+  if [[ -s "$scannable" ]]; then
+    tr '\n' '\0' < "$scannable" \
+      | xargs -0 grep -H -niE "${grep_args[@]}" -- > "$raw_matches" 2>/dev/null || true
+  else
+    : > "$raw_matches"
+  fi
 
   # ── Step 8: Parse matches and attribute to rules ──────────────────
   # Pre-build bash-compatible regex arrays for zero-fork matching.

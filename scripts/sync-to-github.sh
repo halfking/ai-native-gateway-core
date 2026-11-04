@@ -140,10 +140,19 @@ baseline_arg=()
 #   会走 `#!/usr/bin/env bash` ⇒ 落回 PATH 上第一个 bash（macOS = /bin/bash 3.2）
 #   ⇒ declare -A 报错后继续跑完、打印 findings 0（假绿）。传 "$BASH" 保证
 #   子进程与父进程同一把 bash≥4。scan-secrets.sh 侧另有版本守卫兜底（fail closed）。
-"$BASH" "$scanner" --mode=strict --paths=. --tracked-only "${baseline_arg[@]}" --format=text || {
+"$BASH" "$scanner" --mode=strict --paths=. --tracked-only "${baseline_arg[@]}" --format=text
+scan_rc=$?
+if [[ $scan_rc -eq 3 ]]; then
+  # ★ ★ F-23（2026-11-04 审计轮）：★ 退出码 3 ＝ 「★ 扫描自身失败 ★」
+  #   （★ 枚举面为空、★ 什么也没扫 ★）⇒ ★ **不是「有发现」** ★
+  #   ⇒ ★ 旧写法会把它说成「Working tree has sensitive findings」
+  #   ⇒ ★ 那会让人去改**并不存在**的凭据 ⇒ ★ ⇒ 必须分开说 ★
+  echo "❌ Secret scanner failed (empty scan / 0 files scanned). Nothing was scanned — aborting." >&2
+  exit 1
+elif [[ $scan_rc -ne 0 ]]; then
   echo "❌ Working tree has sensitive findings. Clean them first." >&2
   exit 1
-}
+fi
 
 echo "━━━ Step 2/5: Validate history rewrite inputs ━━━"
 validate_replacements "$replacements" public

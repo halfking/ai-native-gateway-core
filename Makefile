@@ -222,8 +222,17 @@ guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，
 #   ⇒ ★ 护栏不对称；且旧实现对**显式** AIAN_DEPLOY_LIB **不校验** ⇒ 无效值要到
 #   source prereqs 才炸出 `No such file or directory`（rc=1），
 #   而兄弟解析器对同一输入给 rc=64 + 可执行提示 ⇒ ★ 两条解析路径语义不一致。
+#
+# ★ 2026-11-04 审计轮（F-18 / F-22）：★ 再接进 **1 条**快门
+#   （tests/scan_secrets_enumeration_contract_test.sh）⇒ 该 target 的快门数 13 → **14**。
+#   ★ 起因：★ `scripts/scan-secrets.sh` 的 `--tracked-only` 枚举分支有【★ 覆盖洞 ★】——
+#     ★ ① `git ls-files` 吃 `core.quotePath=true` ⇒ 非 ASCII 文件名被转义后丢弃（F-18）；
+#     ★ ② `xargs` 按空白切分 ⇒ 含空格的文件名被切成不存在的路径（F-22）；
+#   ⇒ ★ 两者都是【★ 静默少读、★ 不报错、★ 不计数、★ 不让任何门变红 ★】★
+#   ⇒ ★ 而这条枚举分支正是【★ 两道公开仓闸门 ★】（`.githooks/pre-push` ＋
+#     ★ `scripts/sync-to-github.sh`）★ 用的那一条 ⇒ ⇒ ★ 它失明 = 公开仓闸门失明 ★★。
 .PHONY: guards-gate-scripts
-guards-gate-scripts: ## 门脚本接线门（13 条快门 + 登记册门，防新增隐形门）
+guards-gate-scripts: ## 门脚本接线门（14 条快门 + 登记册门，防新增隐形门）
 	@bash tests/audit_154_wrapper_test.sh
 	@bash tests/credential_script_contract_test.sh
 	@bash tests/deploy_seamless_mobile_surface_test.sh
@@ -237,6 +246,7 @@ guards-gate-scripts: ## 门脚本接线门（13 条快门 + 登记册门，防�
 	@bash tests/deploy_sops_test.sh
 	@bash tests/deploy_local_contract_test.sh
 	@bash tests/shared_lib_resolution_contract_test.sh
+	@bash tests/scan_secrets_enumeration_contract_test.sh
 	@bash tests/gate_scripts_caller_registry_test.sh
 
 # ── 切流状态机门（★ 慢门：实测 ≈270s ⇒ 不进 CI 快门）─────────────────────
