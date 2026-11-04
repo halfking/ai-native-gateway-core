@@ -292,21 +292,28 @@ check_web_token_compliance() {
   if [[ ! -d web/src ]]; then
     return 0
   fi
-  local files
-  # Staged + working-tree + untracked web/src changes; covers all commit paths.
-  # *.test.ts excluded: assertion strings in tests are fixtures, not styles
-  # (same semantics as color-token-audit.mjs's own test-file skip).
-  files=$( { git diff --cached --name-only -- 'web/src/**'; \
-             git diff --name-only -- 'web/src/**'; \
-             git ls-files --others --exclude-standard -- 'web/src/**'; } \
-          | grep -E '\.(vue|ts|css)$' | grep -v '\.test\.ts$' | sort -u)
-  if [[ -z "$files" ]]; then
+  local -a file_args=()
+  local f
+  # C3（2026-11-05 审计，F-18/F-22 同族）：文件名面走 NUL 通道 ——
+  # core.quotePath 会把非 ASCII 文件名八进制转义、无引号 `$files` 展开又把
+  # 含空格名按空白切分 ⇒ 两个方向的静默漏检。三个 git 命令全部 -z 产出
+  # 原始名，过滤与去重后进数组；内容 grep 用 "${file_args[@]}" 逐名传参。
+  while IFS= read -r f; do
+    case "$f" in
+      *.test.ts) continue ;;
+      *.vue|*.ts|*.css) file_args+=("$f") ;;
+    esac
+  done < <( { git diff --cached --name-only -z -- 'web/src/**'; \
+              git diff --name-only -z -- 'web/src/**'; \
+              git ls-files -z --others --exclude-standard -- 'web/src/**'; } \
+            | tr '\0' '\n' | sort -u)
+  if [[ ${#file_args[@]} -eq 0 ]]; then
     return 0
   fi
 
   # Pattern 1: var(--token, #hex) fallback (was 1145 occurrences).
   local fallback_violations
-  fallback_violations=$(grep -nE 'var\(--[a-z-]+,\s*#[0-9a-fA-F]+\)' $files 2>/dev/null \
+  fallback_violations=$(grep -nE 'var\(--[a-z-]+,\s*#[0-9a-fA-F]+\)' "${file_args[@]}" 2>/dev/null \
                         | head -20 || true)
   if [[ -n "$fallback_violations" ]]; then
     echo "❌ var(--token, #hex) fallback patterns found (rule 12 P0):"
@@ -321,7 +328,7 @@ check_web_token_compliance() {
   # Chart configs (ECharts) require static hex; chart files use quoted strings.
   # The quoted-string exclusion prevents false positives on those.
   local css_purple_hex
-  css_purple_hex=$(grep -nE '#[0-9a-fA-F]{6}\b' $files 2>/dev/null \
+  css_purple_hex=$(grep -nE '#[0-9a-fA-F]{6}\b' "${file_args[@]}" 2>/dev/null \
                    | grep -iE '#(667eea|764ba2|8b5cf6|a78bfa|7c3aed|6366f1|5b21b6)\b' \
                    | grep -vE "['\"]#[0-9a-fA-F]+['\"]" \
                    | head -20 || true)
@@ -334,7 +341,7 @@ check_web_token_compliance() {
 
   # Pattern 3: P0 purple-family rgba() (e.g. rgba(99,102,241,...))
   local purple_rgba
-  purple_rgba=$(grep -nE 'rgba\((99,?\s*102,?\s*241|139,?\s*92,?\s*246|67,?\s*56,?\s*202|168,?\s*85,?\s*247|124,?\s*58,?\s*237)' $files 2>/dev/null \
+  purple_rgba=$(grep -nE 'rgba\((99,?\s*102,?\s*241|139,?\s*92,?\s*246|67,?\s*56,?\s*202|168,?\s*85,?\s*247|124,?\s*58,?\s*237)' "${file_args[@]}" 2>/dev/null \
                 | head -20 || true)
   if [[ -n "$purple_rgba" ]]; then
     echo "❌ P0 purple-family rgba() found (rule 12 §1):"

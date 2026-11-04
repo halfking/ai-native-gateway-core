@@ -67,7 +67,10 @@ git config core.quotePath true
 
 # ★ 夹具用的秘密：★ 命中 `LLM_APIKEY` 规则（★ `sk-` + 32 位字母数字 ★）
 #   ⇒ 不被任何白名单词豁免、★ 也不触发别的规则
-SECRET="sk-0123456789abcdef0123456789abcdef"
+#   ★ C2（2026-11-05 审计）：拼接形态——本仓门测试自己的源文件也进
+#   `--tracked-only` 扫描面，整串字面量会命中自家扫描器（空 baseline 规格
+#   = 真 BLOCK 一条）；运行时再合成，被测对象是合成仓里的文件、不受影响。
+SECRET="sk-""0123456789abcdef0123456789abcdef"
 
 F_ASCII="ascii-fixture.txt"
 F_CJK="中文夹具-密钥.txt"

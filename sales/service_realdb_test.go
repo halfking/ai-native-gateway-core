@@ -20,8 +20,10 @@ package sales
 //
 //	TEST_DATABASE_URL=postgres://... go test ./sales/ -run RealDB -count=1
 //
-// 未设置该环境变量时整体 SKIP（仓内真库判据同款）。夹具建在隔离 schema，
-// 从不写 public 业务行。
+// 未设置该环境变量时整体 SKIP（仓内真库判据同款）。夹具的迁移与种子全部
+// public. 限定（迁移字节即被测物，search_path 隔离对它们无效）——因此
+// **必须指向专用 scratch 库**（salesFixture 有 fail-closed 守卫），清理由
+// scratch 库内进行；共享/业务库会被守卫直接拒绝。
 
 import (
 	"context"
@@ -39,10 +41,11 @@ import (
 
 func realdbDSN(t *testing.T) string {
 	t.Helper()
-	for _, key := range []string{"TEST_DATABASE_URL", "LLM_GATEWAY_DATABASE_URL", "DATABASE_URL"} {
-		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-			return v
-		}
+	// A4（2026-11-05 审计）：只认显式 TEST_DATABASE_URL。此前回退读
+	// LLM_GATEWAY_DATABASE_URL/DATABASE_URL —— 那两个是应用自身的 DSN，
+	// 静默回落会把夹具（含清理 DELETE）打到业务库上。
+	if v := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")); v != "" {
+		return v
 	}
 	t.Skip("TEST_DATABASE_URL not set — real-DB gate skipped (unit gates still run)")
 	return ""
@@ -62,6 +65,42 @@ func readRepoFile(t *testing.T, rel string) string {
 //   - 迁移 940–949 从仓内文件**原样执行**（迁移字节即被测物）。
 func salesFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
+
+	// 幂等重跑（2026-11-05 真库腿实测）：前一次失败会留下 public 表
+	// （本夹具建表不带 IF NOT EXISTS、清理只删行）⇒ 先逆序 DROP 再建，
+	// 失败重跑才可继续。CASCADE 顺带走 826/940/949 的从属对象。
+	// 视图先于表 DROP（CASCADE 依赖）。
+	if _, err := pool.Exec(ctx, `DROP VIEW IF EXISTS public.v_supplier_price_vs_baseline CASCADE`); err != nil {
+		t.Fatalf("fixture drop view: %v", err)
+	}
+	for _, tbl := range []string{
+		"maas_settings", "model_baseline_price_reconciliation",
+		"sales_quote_shares", "sales_quote_approvals", "sales_quote_items",
+		"sales_quote_versions", "sales_quote_status_log", "sales_quotes",
+		"sales_demand_cards", "sales_supply_annotations",
+		"credential_model_bindings", "provider_models", "credentials",
+		"providers", "models_canonical",
+	} {
+		if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS public.`+tbl+` CASCADE`); err != nil {
+			t.Fatalf("fixture drop %s: %v", tbl, err)
+		}
+	}
+
+	// A4（2026-11-05 审计）fail-closed 守卫：本夹具的迁移与种子全部
+	// public. 限定，且清理含对 credentials/credential_model_bindings 等
+	// 共享表的 DELETE ⇒ 只允许专用 scratch 库（库名含 test/scratch/realdb），
+	// 或显式 LLM_GATEWAY_REALDB_ALLOW_ANY_DSN=1 豁免（一次性容器才可用）。
+	var dbName string
+	if err := pool.QueryRow(ctx, `SELECT current_database()`).Scan(&dbName); err != nil {
+		t.Fatalf("current_database: %v", err)
+	}
+	low := strings.ToLower(dbName)
+	if os.Getenv("LLM_GATEWAY_REALDB_ALLOW_ANY_DSN") != "1" &&
+		!strings.Contains(low, "test") && !strings.Contains(low, "scratch") && !strings.Contains(low, "realdb") {
+		t.Fatalf("TEST_DATABASE_URL must point at a dedicated scratch database (got %q) — "+
+			"this fixture truncates shared public tables on cleanup; override only for "+
+			"throwaway instances via LLM_GATEWAY_REALDB_ALLOW_ANY_DSN=1", dbName)
+	}
 
 	// 隔离 schema：本测试独占，不碰 public。
 	if _, err := pool.Exec(ctx, `CREATE SCHEMA IF NOT EXISTS sales_test_iso`); err != nil {
@@ -124,6 +163,10 @@ CREATE TABLE IF NOT EXISTS public.maas_settings (
 		t.Fatalf("fixture schema_migrations: %v", err)
 	}
 	for _, m := range []string{
+		// 826 先于 949：949 的视图引用 mc.baseline_price_currency 等
+		// baseline 列（826 引入；per-table canonical 不含它们——折叠基线
+		// 才有）。2026-11-05 审计真库腿首跑实测 42703 后补。
+		"826_model_baseline_price.sql",
 		"940_market_price_reference_family.sql",
 		"942_sales_supply_annotations.sql",
 		"943_sales_demand_cards.sql",
@@ -166,8 +209,9 @@ CREATE TABLE IF NOT EXISTS public.maas_settings (
 func seedSellable(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(ctx, `
-INSERT INTO public.providers (id) VALUES (1);
-INSERT INTO public.credentials (id, provider_id) VALUES (10, 1), (11, 1);
+INSERT INTO public.providers (id, code, display_name, protocol, base_url)
+VALUES (1, 'prov-test', '测试供应商', 'openai', 'https://provider.test/v1');
+INSERT INTO public.credentials (id, provider_id, label, fp_slot_limit) VALUES (10, 1, 'cred-10', 0), (11, 1, 'cred-11', 0);
 INSERT INTO public.provider_models (id, provider_id, raw_model_name, canonical_raw_name) VALUES
     (100, 1, 'model-a', 'model-a'),
     (101, 1, 'model-b', 'model-b'),
@@ -186,15 +230,19 @@ INSERT INTO public.credential_model_bindings
 	}
 	t.Cleanup(func() {
 		dropCtx := context.WithoutCancel(ctx)
+		// A4：清理定界到夹具自建行（防 ALLOW_ANY=1 豁免下误清共享表）；
+		// sales_* 与 schema_migrations 记账行是本夹具家族的私有面。
 		for _, stmt := range []string{
-			"DELETE FROM public.credential_model_bindings",
-			"DELETE FROM public.provider_models",
-			"DELETE FROM public.credentials",
-			"DELETE FROM public.providers",
+			"DELETE FROM public.credential_model_bindings WHERE credential_id IN (10, 11)",
+			"DELETE FROM public.provider_models WHERE id BETWEEN 100 AND 104",
+			"DELETE FROM public.credentials WHERE id IN (10, 11)",
+			"DELETE FROM public.providers WHERE id = 1",
 			"DELETE FROM public.sales_supply_annotations",
 			"DELETE FROM public.sales_demand_cards",
 			"DELETE FROM public.sales_quotes",
-			"DELETE FROM public.maas_settings",
+			"DELETE FROM public.sales_quote_shares",
+			"DELETE FROM public.maas_settings WHERE id = 1",
+			"DELETE FROM public.schema_migrations WHERE version IN ('826','940','942','943','944','945','946','947','948','949')",
 		} {
 			if _, err := pool.Exec(dropCtx, stmt); err != nil {
 				t.Errorf("cleanup seed %q: %v", stmt, err)
@@ -210,7 +258,7 @@ func TestRealDBSellableList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(func() { pool.Close() })
 	salesFixture(t, ctx, pool)
 	seedSellable(t, ctx, pool)
 
@@ -325,23 +373,23 @@ func TestRealDBQuoteLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(func() { pool.Close() })
 	salesFixture(t, ctx, pool)
 	seedSellable(t, ctx, pool)
 
 	svc := NewService(pool)
 
-	// 充值锚点给正数，避免 cents 默认分歧（无所谓具体值，单源读它）。
-	if _, err := pool.Exec(ctx, `INSERT INTO public.maas_settings (id, cents_per_credit) VALUES (1, 0.01)
+	// 充值锚点：cents_per_credit=20（分/积分，A-14 语义）⇒ 1 credit = 0.2 元
+	// ≈ $0.0278 —— 让下面这组 rate 100/200 的样本落在「政策内」窗口。
+	if _, err := pool.Exec(ctx, `INSERT INTO public.maas_settings (id, cents_per_credit) VALUES (1, 20)
 		ON CONFLICT (id) DO UPDATE SET cents_per_credit = EXCLUDED.cents_per_credit`); err != nil {
 		t.Fatalf("seed cents: %v", err)
 	}
 
-	// 成本 $140（1.0×100 + 2.0×20），卖价（credits 10/20, 折 0）= 10×100+20×20 = 1400 credits
-	// = 14 CNY = ~1.94 USD ⇒ 毛利为负且金额 < $500 且无折扣 ⇒ 但毛利下限会触发！
-	// ⇒ 用更大的量让毛利为正：成本不变、tokens 加大只会同向……
-	// ⇒ 真正的 in-policy 样本 = 卖价显著高于成本：rate 100/200 ⇒ 14000 credits
-	//    = 140 CNY ≈ 19.4 USD… 仍低于 $500（order_amount 触审线），毛利 86%+。
+	// 成本 $140（1.0×100 + 2.0×20）。卖价（credits 100/200, 折 0）：
+	// 100×100 + 200×20 = 14000 credits ⇒ ×20 分 = 2800 元 ⇒ ÷7.2 ≈ $388.9
+	// ⇒ 毛利 64% ≥ 30%、金额 < $500、零折扣 ⇒ 三维全不触发（A1 修复后的
+	// 正确算术；修复前 cents 被当元用，收入虚大 100×，本样本会错进 order_amount 触审）。
 	in := trustedQuoteInput(nil)
 	in.Items[0].RateIn = ptrF(100)
 	in.Items[0].RateOut = ptrF(200)
@@ -414,11 +462,11 @@ func TestRealDBApprovalPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(func() { pool.Close() })
 	salesFixture(t, ctx, pool)
 	seedSellable(t, ctx, pool)
 	svc := NewService(pool)
-	if _, err := pool.Exec(ctx, `INSERT INTO public.maas_settings (id, cents_per_credit) VALUES (1, 0.01)
+	if _, err := pool.Exec(ctx, `INSERT INTO public.maas_settings (id, cents_per_credit) VALUES (1, 20)
 		ON CONFLICT (id) DO UPDATE SET cents_per_credit = EXCLUDED.cents_per_credit`); err != nil {
 		t.Fatalf("seed cents: %v", err)
 	}
@@ -491,11 +539,11 @@ func TestRealDBReviseAndImmutability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(func() { pool.Close() })
 	salesFixture(t, ctx, pool)
 	seedSellable(t, ctx, pool)
 	svc := NewService(pool)
-	if _, err := pool.Exec(ctx, `INSERT INTO public.maas_settings (id, cents_per_credit) VALUES (1, 0.01)
+	if _, err := pool.Exec(ctx, `INSERT INTO public.maas_settings (id, cents_per_credit) VALUES (1, 20)
 		ON CONFLICT (id) DO UPDATE SET cents_per_credit = EXCLUDED.cents_per_credit`); err != nil {
 		t.Fatalf("seed cents: %v", err)
 	}
@@ -515,10 +563,14 @@ func TestRealDBReviseAndImmutability(t *testing.T) {
 			t.Fatalf("lifecycle step: %v", err)
 		}
 	}
-	// sent 后修订 ⇒ v2，v1 被 superseded。
+	// sent 后修订 ⇒ v2，v1 被 superseded。v2 选**不触发**红线的量
+	// （rate 60/120 × 200M/20M = 14400 credits = 2880 元 ≈ $400 < $500，
+	// 毛利 65%）——触发重审的路径单独在 TestRealDBSentReviseReapproval 验。
 	in2 := in
 	in2.Items = append([]QuoteItemInput(nil), in.Items...)
 	in2.Items[0].EstTokensIn = 200_000_000
+	in2.Items[0].RateIn = ptrF(60)
+	in2.Items[0].RateOut = ptrF(120)
 	rev, err := svc.ReviseQuote(ctx, q.ID, in2, "sales01")
 	if err != nil {
 		t.Fatalf("ReviseQuote: %v", err)
@@ -562,6 +614,84 @@ func TestRealDBReviseAndImmutability(t *testing.T) {
 	_ = v1ID
 }
 
+// TestRealDBSentReviseReapproval —— A3 修复：sent 单修订触发红线 ⇒ 回
+// pending_approval + locked + 审批行（version 钉 v2）+ 状态审计行
+// sent→pending_approval；人审通过后可再次 send（发出后的修订与首发同判）。
+func TestRealDBSentReviseReapproval(t *testing.T) {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, realdbDSN(t))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { pool.Close() })
+	salesFixture(t, ctx, pool)
+	seedSellable(t, ctx, pool)
+	svc := NewService(pool)
+	if _, err := pool.Exec(ctx, `INSERT INTO public.maas_settings (id, cents_per_credit) VALUES (1, 20)
+		ON CONFLICT (id) DO UPDATE SET cents_per_credit = EXCLUDED.cents_per_credit`); err != nil {
+		t.Fatalf("seed cents: %v", err)
+	}
+
+	in := trustedQuoteInput(nil)
+	in.Items[0].RateIn = ptrF(100)
+	in.Items[0].RateOut = ptrF(200)
+	q, err := svc.CreateQuote(ctx, in, "sales01")
+	if err != nil {
+		t.Fatalf("CreateQuote: %v", err)
+	}
+	if _, err := svc.SubmitQuote(ctx, q.ID, "sales01"); err != nil {
+		t.Fatalf("SubmitQuote: %v", err)
+	}
+	if _, err := svc.SendQuote(ctx, q.ID, "sales01"); err != nil {
+		t.Fatalf("SendQuote: %v", err)
+	}
+	// 触发修订：rate 200/400 ⇒ 28000 credits = 5600 元 ≈ $777.8 ≥ $500
+	// ⇒ order_amount 维触发（修复前：sent 后修订完全旁路审批，A3）。
+	in2 := in
+	in2.Items = append([]QuoteItemInput(nil), in.Items...)
+	in2.Items[0].RateIn = ptrF(200)
+	in2.Items[0].RateOut = ptrF(400)
+	rev, err := svc.ReviseQuote(ctx, q.ID, in2, "sales01")
+	if err != nil {
+		t.Fatalf("ReviseQuote: %v", err)
+	}
+	if rev.Status != StatusPendingApproval || !rev.Locked {
+		t.Fatalf("triggered revise on sent = %s locked=%v, want pending_approval+locked", rev.Status, rev.Locked)
+	}
+	if rev.Version == nil || rev.Version.VersionNo != 2 {
+		t.Fatalf("revised version = %+v, want v2", rev.Version)
+	}
+	// 审批行钉在 v2 且 trigger_reasons 可复算。
+	var vID int64
+	var reasons string
+	if err := pool.QueryRow(ctx, `SELECT version_id, trigger_reasons::text FROM public.sales_quote_approvals WHERE quote_id = $1 ORDER BY created_at DESC LIMIT 1`, q.ID).Scan(&vID, &reasons); err != nil {
+		t.Fatalf("read re-approval row: %v", err)
+	}
+	if vID != rev.Version.ID || !strings.Contains(reasons, "order_amount") {
+		t.Errorf("re-approval pinned to version %d reasons=%s, want v2 + order_amount", vID, reasons)
+	}
+	// 状态审计行：sent → pending_approval（转换表隐式状态机的新转换）。
+	var logCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.sales_quote_status_log
+		WHERE quote_id = $1 AND from_status='sent' AND to_status='pending_approval'`, q.ID).Scan(&logCount); err != nil {
+		t.Fatalf("count transition log: %v", err)
+	}
+	if logCount != 1 {
+		t.Errorf("sent→pending_approval log rows = %d, want 1", logCount)
+	}
+	// 人审通过 → approved → 再次 send 回到 sent。
+	if _, err := svc.DecideApproval(ctx, q.ID, "approved", "", "super01"); err != nil {
+		t.Fatalf("DecideApproval: %v", err)
+	}
+	sent, err := svc.SendQuote(ctx, q.ID, "sales01")
+	if err != nil {
+		t.Fatalf("SendQuote(after re-approval): %v", err)
+	}
+	if sent.Status != StatusSent {
+		t.Errorf("re-sent status = %s, want sent", sent.Status)
+	}
+}
+
 // TestRealDBSharePublicProjection —— token 往返 + 公开面响应体断言 +
 // 过期/撤销不可读 + 访问审计。
 func TestRealDBSharePublicProjection(t *testing.T) {
@@ -570,11 +700,11 @@ func TestRealDBSharePublicProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(func() { pool.Close() })
 	salesFixture(t, ctx, pool)
 	seedSellable(t, ctx, pool)
 	svc := NewService(pool)
-	if _, err := pool.Exec(ctx, `INSERT INTO public.maas_settings (id, cents_per_credit) VALUES (1, 0.01)
+	if _, err := pool.Exec(ctx, `INSERT INTO public.maas_settings (id, cents_per_credit) VALUES (1, 20)
 		ON CONFLICT (id) DO UPDATE SET cents_per_credit = EXCLUDED.cents_per_credit`); err != nil {
 		t.Fatalf("seed cents: %v", err)
 	}
@@ -655,10 +785,14 @@ func TestRealDBSharePublicProjection(t *testing.T) {
 	if _, err := svc.GetPublicQuote(ctx, link.Token, "1.2.3.4", "ua"); err == nil {
 		t.Errorf("revoked token must not resolve")
 	}
-	// 过期 ⇒ 不可读。
-	link2, err := svc.CreateShare(ctx, q.ID, "李四", "li@example.com", -time.Minute, "sales01")
+	// 过期 ⇒ 不可读。CreateShare 对 ttl<=0 钳到 14 天（防呆语义，
+	// 2026-11-05 真库腿实测钉出）⇒ 到期路径用直接改 expires_at 驱动。
+	link2, err := svc.CreateShare(ctx, q.ID, "李四", "li@example.com", time.Hour, "sales01")
 	if err != nil {
 		t.Fatalf("CreateShare(expired): %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE public.sales_quote_shares SET expires_at = now() - interval '1 minute' WHERE id = $1`, link2.ID); err != nil {
+		t.Fatalf("expire share: %v", err)
 	}
 	if _, err := svc.GetPublicQuote(ctx, link2.Token, "1.2.3.4", "ua"); err == nil {
 		t.Errorf("expired token must not resolve")

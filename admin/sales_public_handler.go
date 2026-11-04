@@ -12,10 +12,13 @@ package admin
 //     结构体没有这些字段，响应体断言测试再钉一层 JSON 面）。
 
 import (
+	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/internal/httpx"
+	"github.com/kaixuan/llm-gateway-go/sales"
 )
 
 // registerSalesPublicRoutes wires the single public share endpoint.
@@ -43,6 +46,11 @@ func (h *Handler) handleSalesPublicQuote(w http.ResponseWriter, r *http.Request)
 	pq, err := svc.GetPublicQuote(r.Context(), token, clientIPForAudit(r), r.UserAgent())
 	if err != nil {
 		// expired / revoked / not-found / internal ⇒ 一律 404（不泄露区分度）。
+		// A10（2026-11-05 审计）：内部错误必须落服务端日志（此前连 DB 故障
+		// 都静默吞成 404，排障无入口）；响应面对匿名调用方维持不区分。
+		if !errors.Is(err, sales.ErrNotFound) {
+			slog.Error("sales public quote resolve failed", "caller", "sales_public_handler.go", "err", err)
+		}
 		http.NotFound(w, r)
 		return
 	}

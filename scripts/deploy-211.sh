@@ -40,7 +40,7 @@
 #   bash scripts/deploy-211.sh --stop          # 停掉两个槽（容器保留可 start）
 #   bash scripts/deploy-211.sh --redis-db 9    # 引擎参数原样转发
 #   bash scripts/deploy-211.sh --dry-run       # 打印目标合同 JSON
-#   bash scripts/deploy-211.sh --force         # 接受但**无操作**（引擎不认 --force；见下方 R7 注记）
+#   bash scripts/deploy-211.sh --force         # 转交引擎：目标机锁恢复（陈旧锁判定后抢回；引擎 deploy_lib lock_recover_remote）
 #
 # 前端: **不需要手工预构建**。引擎在**部署机**侧（--via 分支）先跑
 #   scripts/lib/node-pm.sh 的包管理器决策 → 必要时按 lockfile 装依赖 →

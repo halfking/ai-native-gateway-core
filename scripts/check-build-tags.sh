@@ -70,7 +70,9 @@ PY_DISCOVER='
 import re, subprocess, collections, os, json
 GO = set("windows linux darwin freebsd netbsd openbsd dragonfly solaris illumos aix android ios js plan9 cgo race ignore".split())
 files = [x for x in subprocess.check_output(
-    ["git","ls-files","*.go",":(exclude)vendor/**"], text=True).split("\n") if x]
+    # C3（2026-11-05 审计，F-18 同族）：-z 取原始名——quotePath 会把
+    # 非 ASCII 文件名八进制转义 ⇒ split("\n") 口径下静默漏检。
+    ["git","ls-files","-z","*.go",":(exclude)vendor/**"], text=True).split("\0") if x]
 REPO = os.path.abspath(".")
 def mod_of(path):
     # 必须从**文件所在目录**向上找 go.mod（见文件头第 2 条坑）。

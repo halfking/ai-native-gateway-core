@@ -18,6 +18,10 @@
 --                ★ fx_rate：CNY 成本折 USD 用（Odoo exchange_rate 同位，
 --                  单源 settings.CNYToUSDFX）。
 --                ★ 毛利预计算落库（store=True）：revenue/cost/margin USD。
+--                ★ 2026-11-05 审计 A7 补：version_id 补 FK ON DELETE CASCADE
+--                  —— 此前头级联删版本会留下永久孤儿 items（本迁移
+--                  prepared 未应用 ⇒ 改字节合法，936 先例；同步两份基线
+--                  副本与 embeddata 逐字节重拷）。
 --
 -- Down: 946_sales_quote_items.down.sql
 -- ===========================================================================
@@ -31,7 +35,9 @@ SET LOCAL statement_timeout = '10min';
 
 CREATE TABLE IF NOT EXISTS public.sales_quote_items (
     id            bigserial PRIMARY KEY,
-    version_id    bigint NOT NULL,
+    -- A7：级联链 = 头 CASCADE → 版本 → 行快照（无 FK 会在删头时留下
+    -- 永久孤儿 items；945 down 的「逆序假设」只管迁移回放，不管生产路径）。
+    version_id    bigint NOT NULL REFERENCES public.sales_quote_versions (id) ON DELETE CASCADE,
     -- 模型（行级主体）：canon 名 + 展示名
     canonical_name text NOT NULL,
     display_name  text NOT NULL DEFAULT '',
