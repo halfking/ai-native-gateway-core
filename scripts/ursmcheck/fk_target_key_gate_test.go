@@ -555,7 +555,7 @@ CREATE TABLE public.parent_b (
     bar integer NOT NULL,
     baz text NOT NULL,
     -- PK 覆盖 (bar, baz) 与 child 的 FK 列集精确相等 ⇒ 合法
-    //（若 PK 只有 (bar)，FK→(bar,baz) 按 PG 语义同样是 42870 —— 精确覆盖口径）
+    --（若 PK 只有 (bar)，FK→(bar,baz) 按 PG 语义同样是 42870 —— 精确覆盖口径）
     CONSTRAINT parent_b_pkey PRIMARY KEY (bar, baz)
 );
 CREATE TABLE public.child (
