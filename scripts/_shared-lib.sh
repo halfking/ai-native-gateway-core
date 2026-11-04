@@ -9,6 +9,8 @@
 # （commit 22e5e3f8f 只迁了软链，这个 env 默认值当时漏改）。本机 ai-native-tools/
 # 已不存在，deploy-local.sh 在此直接以 exit 64 退出，且错误信息指向一个死路径。
 # 现在两个候选路径都试，并保持「显式 AIAN_DEPLOY_LIB 优先」的既有语义。
+# ★ 现役候选链见下方 _shared_lib_candidates() —— ★ 那里是**唯一真相** ★，
+#   ★ 本段只是历史沿革、★ 不再是规格（★ 别照着这里改 ★）。
 #
 # ★ 2026-11-04 审计轮（F-15）：★ 解析器与失败语义对齐 —— 本文件此前**不校验**
 #   显式 AIAN_DEPLOY_LIB 是否指向一个**可用的** SSOT ⇒ 显式值无效时解析阶段照样
@@ -25,6 +27,19 @@ _shared_lib_usable() {
   [[ -n "${1:-}" && -f "$1/deploy-prereqs.sh" && -f "$1/deploy-image-resolution.sh" ]]
 }
 
+# ★ 候选链的【★ 单一真相 ★】：★ 格式 = <绝对路径>|<给人看的说明标签>。
+#   ★ 解析循环与失败文案【★ 都从这一个函数取 ★】⇒ ★ 两处不可能各自写一份而漂移。
+#   ★ 【★ 为什么值得单独收口 ★】：★ 本文件此前把候选清单写在【★ 三个地方 ★】——
+#   ★   ① 候选循环、② 报错文案、③ 注释 —— ★ 而【★ 没有任何门能发现它们不一致 ★】
+#   ★   （★ 本仓那道门只查「★ 解析到哪个路径 ★」与「★ 失败语义 ★」、★ 不查文案漂移 ★）
+#   ★ ⇒ ★ 候选一改名、★ 文案还指着旧布局、★ 门照样绿 ⇒ ★ 用户照着文案去 clone 一个
+#   ★   【★ 解析器根本不会试的目录 ★】⇒ ★ 故收口到一处（★ F-16 第 ③ 步的前置件 ★）。
+_shared_lib_candidates() {
+  printf '%s\n' \
+    "$HOME/workspace/ai-native-workspace/deploy-lib|current layout" \
+    "$HOME/workspace/ai-native-tools/deploy-lib|legacy layout"
+}
+
 _resolve_aian_deploy_lib() {
   # 显式指定优先：CI / 多仓共用 SSOT 时由调用方决定。
   # ★ F-15：★ 显式值也要**校验** ⇒ 无效时返回 2（与「没找到候选」的 1 区分开），
@@ -33,13 +48,12 @@ _resolve_aian_deploy_lib() {
     _shared_lib_usable "$AIAN_DEPLOY_LIB" || return 2
     printf '%s\n' "$AIAN_DEPLOY_LIB"; return 0
   fi
-  local candidate
-  # 顺序与 scripts/deploy-lib 软链一致：先 ai-native-workspace，再兼容旧布局。
-  for candidate in \
-    "$HOME/workspace/ai-native-workspace/deploy-lib" \
-    "$HOME/workspace/ai-native-tools/deploy-lib"; do
+  local candidate _label
+  # ★ 候选链从【★ 单一真相 ★】取（★ 见 _shared_lib_candidates）⇒ ★ 顺序即那里声明的顺序。
+  while IFS='|' read -r candidate _label; do
+    [[ -n "$candidate" ]] || continue
     if _shared_lib_usable "$candidate"; then printf '%s\n' "$candidate"; return 0; fi
-  done
+  done < <(_shared_lib_candidates)
   return 1
 }
 
@@ -64,8 +78,12 @@ if [[ "$_shared_lib_resolve_rc" -ne 0 ]]; then
   else
     echo "missing AIAN_DEPLOY_LIB: no SSOT found under \$HOME/workspace/" >&2
     echo "fix: clone/create one of:" >&2
-    echo "  ~/workspace/ai-native-workspace/deploy-lib   (current layout)" >&2
-    echo "  ~/workspace/ai-native-tools/deploy-lib       (legacy layout)" >&2
+    # ★ 列出的布局【★ 与解析器实际会试的候选同源 ★】⇒ ★ 文案不可能再漂移
+    #   （★ 旧写法在这里把两个布局又写了一份 ⇒ 候选改名后文案仍指旧布局 ★）。
+    while IFS='|' read -r _shared_lib_c _shared_lib_l; do
+      [[ -n "$_shared_lib_c" ]] || continue
+      printf '  ~/%-44s  (%s)\n' "${_shared_lib_c#"$HOME/"}" "$_shared_lib_l" >&2
+    done < <(_shared_lib_candidates)
     echo "  (SSOT created 2026-09-09 per docs/deployment/UNIFICATION-PLAN-2026-09-09.md §3.1)" >&2
     echo "  or set AIAN_DEPLOY_LIB explicitly" >&2
   fi
