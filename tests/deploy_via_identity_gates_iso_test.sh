@@ -126,6 +126,14 @@ run_via() { # run_via <标签> <部署树> [额外环境: VAR=值]
     export DD_STATE_DIR="$ISO/state" DD_REMOTE_ROOT="$ISO/remote-root"
     export DD_GW_DATA_ROOT="$ISO/gwdata"
     export DD_SKIP_WEB_BUILD=1
+    # ★ 2026-11-05：隔离装置里**必须**关掉目标机侧部署锁。
+    #   原因：本 harness 的 ssh 垫片把「远端命令」**在本机执行** ⇒ 目标机锁的
+    #   远端建锁脚本会在**开发机本地**跑 ⇒ 它要建 /var/lib/llm-gateway-go/deploy.lock
+    #   ⇒ macOS 上 /var/lib 不可写 ⇒ 建锁失败 ⇒ 引擎在**身份闸之前**就 die
+    #   ⇒ ⇒ 本门要验的「号怎么流转」根本走不到 ⇒ 门会**假红**（不是被测物坏了）。
+    #   ⇒ 本门验的是**版本身份闸**，并发互斥由 tests/deploy_target_lock_concurrency_test.sh
+    #   单独守（那边有真正的变异臂）。
+    export DD_SKIP_TARGET_LOCK=1
     export ISO_SSH_LOG="$ISO/logs/$tag.ssh.log" ISO_REMOTE_BIN="$ISO/remote-bin"
     if [[ -n "$env_extra" ]]; then export "$env_extra"; fi
     bash "$tree/scripts/deploy-seamless-docker.sh" --via fake-target

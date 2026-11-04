@@ -263,7 +263,23 @@ fi
 #     · Linux 上 BASH=/bin/bash（≥4）⇒ 行为**完全不变**；
 #     · BASH 未设（非交互式）⇒ 回落 `bash` ⇒ 与旧行为一致。
 #   ⇒ ★ 与 scripts/deploy-test-gate.sh 的 `# requires-bash: 4` 契约配套。
+# ★ 2026-11-05 效率轮：非部署模式**不跑测试闸门**。
+#   闸门是「上线前」的证据（改动触及的包要绿）；而 --status / --probe-only /
+#   --stop 都是**看一眼 / 停一下**，**没有「上线」这回事** ⇒ ⇒ 白付闸门的时间。
+#   实测：闸门在 macOS 上约 86s（核心包 ./admin/ 单包 82s）⇒ 每次只读查询
+#   白等一分半。
+#   ★ 逃生舱语义不变：真正部署时仍然必跑闸门（DD_SKIP_TEST_GATE=1 才可显式跳过）。
+_DD_IS_DEPLOY=1
+for _dd_arg in ${ARGS[@]+"${ARGS[@]}"}; do
+  case "$_dd_arg" in
+    --status|--probe-only|--stop) _DD_IS_DEPLOY=0 ;;
+  esac
+done
+if [[ "$_DD_IS_DEPLOY" == "1" ]]; then
 "${BASH:-bash}" "$SCRIPT_DIR/deploy-test-gate.sh"
+else
+  echo "[deploy-211] 非部署模式（只读探测 / 停止）⇒ 跳过测试闸门（上线证据由真正部署的那次闸门负责）" >&2
+fi
 
 # bash 3.2 + set -u: the `${ARGS[@]+${ARGS[@]}}` guard keeps the no-arg path
 # (empty ARGS) from dying as an unbound variable, same reason as the guard above.
