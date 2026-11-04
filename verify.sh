@@ -231,9 +231,9 @@ go test ./... -count=1 -timeout=1800s
 #     ⇒ ★ 它**已接线**（本文件 + `make guards`），但**不进 CI 快门**：
 #       实测 **270s** 而 CI 快门预算是 **116s**（见 .workflow/main-verify.yml）
 #       ⇒ 与仓里既有的慢门（guards-ursmcheck 1122s）处理方式一致。
-# ★ 下面这 **12** 条全部**零外部依赖**（实测单条 **0–14s**、macOS bash 3.2 全绿）
+# ★ 下面这 **13** 条全部**零外部依赖**（实测单条 **0–14s**、macOS bash 3.2 全绿）
 #   ⇒ 可安全进 CI 快门。
-echo "[verify] orphan gate scripts brought back into the mandatory path (12 fast gates)"
+echo "[verify] orphan gate scripts brought back into the mandatory path (13 fast gates)"
 bash tests/audit_154_wrapper_test.sh
 bash tests/credential_script_contract_test.sh
 bash tests/deploy_seamless_mobile_surface_test.sh
@@ -246,6 +246,8 @@ bash tests/deploy_promotion_test.sh
 bash tests/deploy_readiness_contract_test.sh
 bash tests/deploy_sops_test.sh
 bash tests/deploy_local_contract_test.sh
+# ★ 2026-11-04（F-15）：共享部署库入口的解析/失败契约门（新增，≈0.3s）
+bash tests/shared_lib_resolution_contract_test.sh
 
 # ★ 切流状态机门（慢门，实测 270s ⇒ 不进 CI 快门，只在官方门与 make guards 上跑）。
 #   经 scripts/run-bash4-gate.sh：找得到 bash ≥ 4 ⇒ 真跑；找不到 ⇒ 显式 SKIP

@@ -214,8 +214,16 @@ guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，
 #   新增的门若没有调用方 ⇒ 门红；已接线的必须从登记表里删掉 ⇒ 棘轮。
 # ⇒ ★ 接线后再测：57 个门（+1 = 登记册门自己）⇒ 44 个有调用方、13 个没有
 #   ⇒ 这 13 个**全部已登记** ⇒ **0 个隐形**。
+#
+# ★ 2026-11-04 审计轮（F-15）：★ 又接进 **1 条**快门
+#   （tests/shared_lib_resolution_contract_test.sh）⇒ 该 target 的快门数 12 → **13**。
+#   ★ 起因：★ `_resolve_aian_deploy_lib` 此前**没有任何机器覆盖**
+#   （兄弟解析器 deploy-lib-resolve.sh 有 .verify-deploy-lib-resolution.sh）
+#   ⇒ ★ 护栏不对称；且旧实现对**显式** AIAN_DEPLOY_LIB **不校验** ⇒ 无效值要到
+#   source prereqs 才炸出 `No such file or directory`（rc=1），
+#   而兄弟解析器对同一输入给 rc=64 + 可执行提示 ⇒ ★ 两条解析路径语义不一致。
 .PHONY: guards-gate-scripts
-guards-gate-scripts: ## 门脚本接线门（12 条快门 + 登记册门，防新增隐形门）
+guards-gate-scripts: ## 门脚本接线门（13 条快门 + 登记册门，防新增隐形门）
 	@bash tests/audit_154_wrapper_test.sh
 	@bash tests/credential_script_contract_test.sh
 	@bash tests/deploy_seamless_mobile_surface_test.sh
@@ -228,6 +236,7 @@ guards-gate-scripts: ## 门脚本接线门（12 条快门 + 登记册门，防�
 	@bash tests/deploy_readiness_contract_test.sh
 	@bash tests/deploy_sops_test.sh
 	@bash tests/deploy_local_contract_test.sh
+	@bash tests/shared_lib_resolution_contract_test.sh
 	@bash tests/gate_scripts_caller_registry_test.sh
 
 # ── 切流状态机门（★ 慢门：实测 ≈270s ⇒ 不进 CI 快门）─────────────────────

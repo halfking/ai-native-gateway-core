@@ -83,6 +83,9 @@ stages:
             # ★ 本轮快门新增 `guards-gate-scripts`（13 条门脚本门，实测单条
             #   0–14s、合计 ≈48s）⇒ 快门墙钟按实测回填为 **72–93s**（macOS 两次，
             #   **已含**新增部分）⇒ 4 核 Linux 的新读数待 CI 复测。
+            # ★ 2026-11-04（F-15）：★ 该 target 又接进 1 条快门
+            #   （tests/shared_lib_resolution_contract_test.sh，实测 ≈0.3s）
+            #   ⇒ 门脚本门 13 → **14** 条 ⇒ ★ 墙钟预算**不受影响**（+0.3s）。
             # ★ 与此同时，**切流状态机门（实测 ≈270s）被有意排除在快门之外**
             #   （单列 `make guards-deploy-state-machine`，只进 `make guards`
             #     与 `verify.sh`）—— ★ ≈270s ≫ 快门预算 ⇒ 塞进来会撑爆预算。
