@@ -73,7 +73,7 @@ LIST="$(mktemp -t dd-prune-list.XXXXXX)"
 MUTLIST="$(mktemp -t dd-prune-mut.XXXXXX)"
 MUT="$(mktemp -d /tmp/dd-prune-mut.XXXXXX)"
 ISO_COUNT="$(mktemp -t dd-prune-count.XXXXXX)"
-trap 'rm -rf "$MUT" "$MUTLIST" "$LIST" "$CODE_ONLY" "$ISO_COUNT"' EXIT
+trap 'rm -rf "$MUT" "$MUTLIST" "$LIST" "$CODE_ONLY" "$ISO_COUNT" "$TARFILE" "$TARLIST"' EXIT
 
 # ── ① 完整性层：在真实仓库上跑引擎那段的**原样代码**────────────────────
 (
@@ -131,16 +131,101 @@ done <<'PRUNED'
 ./.audit-validation
 PRUNED
 
-# ── ④ 变异臂：把剪枝换成 `--exclude=gateway` ⇒ ① 必须变红 ──────────────
+# ── ④ 产物层：打**真 tar**（用引擎里那条真实 tar 命令）再验内容 ──────────
+#   ★ 为什么必须验**产物**而不是清单（2026-11-05 实测踩到）：
+#     `tar -T 清单` 遇到清单里的**目录条目**会**递归进去** ⇒ 清单之外的文件
+#     照样进 tar ⇒ ⇒ 剪枝规则**只在目录粒度生效**、文件粒度失效。
+#     实测：`deploy/prometheus/.env.example` 不在清单里，却仍随 tar 上了目标机
+#     ⇒ **`.env*` 会被 COPY 进镜像**（密钥面）＋ `*.log` 会进镜像（体积面）。
+#     ⇒ ⇒ 引擎侧已加 `-n`（--no-recursion）⇒ 清单 = 真产物。
+#     ⇒ ⇒ 本门必须**打真 tar**并检查它的条目，否则测的是「清单」这个**代理量**，
+#        代理量绿了而真产物带毒（本轮就是这样：清单对、产物错）。
+TARFILE="$(mktemp -t dd-prune-tar.XXXXXX)"
+TARLIST="$(mktemp -t dd-prune-tarlist.XXXXXX)"
+TARLINE="$(python3 - "$ENGINE" <<'PY'
+import re, sys
+s = open(sys.argv[1], encoding="utf-8").read()
+# 取**最后**一条 _tar_create+=( ... ) （即真正决定打包内容的那条）
+ms = re.findall(r"^\s*_tar_create\+=\(.*\)\s*$", s, re.M)
+if not ms:
+    sys.exit(3)
+print(ms[-1].strip())
+PY
+)"
+if [[ -z "$TARLINE" ]]; then
+  bad "④ 产物层：无法从引擎里提取真实 tar 命令行（门要跟着改）"
+else
+  ok "④ 已提取引擎真实 tar 命令行：${TARLINE}"
+  (
+    DD_REPO_ROOT="$REPO_ROOT"
+    _dd_sync_list="$LIST"
+    _tar_create=(tar -C "$DD_REPO_ROOT")
+    eval "$TARLINE"
+    "${_tar_create[@]}"
+  ) > "$TARFILE" 2>/dev/null
+  tar -tf "$TARFILE" 2>/dev/null | sort > "$TARLIST"
+  if [[ -s "$TARLIST" ]]; then
+    ok "④ 产物层：真 tar 打出 $(wc -l < "$TARLIST" | tr -d ' ') 个条目"
+  else
+    bad "④ 产物层：真 tar 打出 0 个条目（打包命令坏了）"
+  fi
+  # ④a 敏感/噪音文件不得进产物
+  if grep -qE '(^|/)\.env' "$TARLIST"; then
+    bad "④a 产物层：tar 里出现了 .env* 文件（会被 COPY 进镜像 ⇒ 密钥面）"
+  else
+    ok "④a 产物层：tar 里没有任何 .env* 文件"
+  fi
+  if grep -qE '\.log$|(^|/)\._[^/]*$|(^|/)\.DS_Store$' "$TARLIST"; then
+    bad "④b 产物层：tar 里出现了 .log / ._* / .DS_Store（体积面 + 脏元数据）"
+  else
+    ok "④b 产物层：tar 里没有 .log / ._* / .DS_Store"
+  fi
+  # ④c 被剪掉的残留目录不得出现在产物里
+  _leak=""
+  for d in logs run bin gateway llm-gateway gateway-v2 quality-monitor .codegraph .audit-validation; do
+    grep -qE "^(\./)?$d(/|$)" "$TARLIST" && _leak="$_leak $d"
+  done
+  if [[ -n "$_leak" ]]; then
+    bad "④c 产物层：被剪的残留目录仍进了 tar：$_leak"
+  else
+    ok "④c 产物层：被剪的残留目录确实不在 tar 里"
+  fi
+  # ④d 完整性：旧口径会带走的跟踪文件，产物里一个都不能少
+  python3 - "$TARLIST" "$REPO_ROOT" <<'PY' > "$ISO_COUNT"
+import subprocess, sys
+tar = {l.strip().lstrip("./") for l in open(sys.argv[1], encoding="utf-8") if l.strip()}
+raw = subprocess.run(["git", "ls-files", "-z"], capture_output=True, cwd=sys.argv[2]).stdout.decode("utf-8", "replace")
+tracked = {p for p in raw.split("\0") if p}
+old = set(subprocess.run(
+    ["find", ".", "(", "-name", ".git", "-o", "-name", "node_modules", "-o", "-name", ".build-local",
+     "-o", "-name", "*.log", "-o", "-name", ".env", "-o", "-name", ".env.*", "-o", "-name", "._*",
+     "-o", "-name", ".DS_Store", ")", "-prune", "-o", "-print"],
+    capture_output=True, cwd=sys.argv[2], text=True).stdout.splitlines())
+old_tracked = {t[2:] if t.startswith("./") else t for t in (old & tracked)}
+missing = sorted(old_tracked - tar)
+print(len(missing))
+for m in missing[:8]:
+    print(m)
+PY
+  _missing_cnt="$(head -1 "$ISO_COUNT" 2>/dev/null || echo 0)"
+  if [[ "${_missing_cnt:-0}" == "0" ]]; then
+    ok "④d 产物层：旧口径会带走的跟踪文件，产物里一个不缺（含 cmd/gateway 主包源码）"
+  else
+    bad "④d 产物层：产物里**少了 ${_missing_cnt} 个**旧口径会带走的跟踪文件 ⇒ 线上会构建出缺件镜像"
+    sed -n '2,9p' "$ISO_COUNT" 2>/dev/null | sed 's/^/     缺: /'
+  fi
+fi
+
+# ── ⑤ 变异臂：把剪枝换成 `--exclude=gateway` ⇒ ① 必须变红 ──────────────
 #   这是**真实踩过的坑形态**（bsdtar 按路径段匹配 ⇒ cmd/gateway 被一起排掉）。
 mkdir -p "$MUT/cmd/gateway" "$MUT/gateway"
 echo "package main" > "$MUT/cmd/gateway/main.go"
 echo "binary" > "$MUT/gateway/gateway"
 ( cd "$MUT" && tar --exclude=gateway -cf - . 2>/dev/null | tar -tf - 2>/dev/null > "$MUTLIST" )
 if grep -q "cmd/gateway/main.go" "$MUTLIST"; then
-  bad "④ 变异臂：--exclude=gateway **没有**命中 cmd/gateway（陷阱形态在本机不复现 ⇒ 门失效？）"
+  bad "⑤ 变异臂：--exclude=gateway **没有**命中 cmd/gateway（陷阱形态在本机不复现 ⇒ 门失效？）"
 else
-  ok "④ 变异臂：--exclude=gateway 确实会命中 cmd/gateway/main.go ⇒ ② 这条规则有牙（本机复现）"
+  ok "⑤ 变异臂：--exclude=gateway 确实会命中 cmd/gateway/main.go ⇒ ② 这条规则有牙（本机复现）"
 fi
 
 echo "=========================================="

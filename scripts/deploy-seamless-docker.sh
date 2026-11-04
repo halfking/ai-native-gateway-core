@@ -772,7 +772,15 @@ if [[ -n "$VIA" ]]; then
     _tar_create+=(--no-xattrs)
     tar --help 2>&1 | grep -q -- '--no-mac-metadata' && _tar_create+=(--no-mac-metadata)
   fi
-  _tar_create+=( -cf - -T "$_dd_sync_list" )
+  #   ★★ `-n`（--no-recursion）是**硬要求**（2026-11-05 实测踩到）：
+  #     `tar -T 清单` 遇到清单里的**目录条目**会**递归进去** ⇒ ⇒ 清单之外的
+  #     文件照样被打进 tar ⇒ ⇒ 剪枝规则**只在目录粒度生效**，文件粒度失效。
+  #     实测：`deploy/prometheus/.env.example` 不在清单里，却仍随 tar 上了目标机
+  #     （mtime＝worktree 检出时刻 ⇒ 是本次 tar 带过去的）。
+  #     ⇒ 后果：**`.env*` 会被 COPY 进镜像**（密钥面）＋ `*.log` 会进镜像（体积面）。
+  #     ⇒ ⇒ `-n` 让 tar **只打清单里列出的条目** ⇒ 清单 = 真产物（逐条可控）。
+  #     ⇒ 清单里已含**每个文件与每个目录**（find -print 全列）⇒ 解包后目录完整。
+  _tar_create+=( -cf - -n -T "$_dd_sync_list" )
   "${_tar_create[@]}" | ssh "$VIA" "tar --no-xattrs -C '$DD_REMOTE_ROOT' -xf - && \
         find '$DD_REMOTE_ROOT' -name '._*' -type f -delete && \
         find '$DD_REMOTE_ROOT' -name '.DS_Store' -type f -delete && \
