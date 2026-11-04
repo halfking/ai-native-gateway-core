@@ -6,9 +6,9 @@
 # ★ ★ baseline-dependent = ★ 创建迁移【不在安装器清单】⇒ 新装能拥有它只因为基线是 dump
 # ★ ★ new-install-gap    = ★ 创建迁移不可达 ⇒ ★★ 任何新装环境【必然缺】
 # ★ ★ installer-bug      = ★ 创建迁移【可达】、新装却没有 ⇒ ★★ 安装器自己有 bug
-# ★ generated_at=2026-11-03T17:02:49+00:00
-# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=342 package_up=342 rows=872
-# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 91, "reachable-and-present": 390, "unreachable-and-missing": 49}
+# ★ generated_at=2026-11-04T18:29:49+00:00
+# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=342 package_up=342 rows=885
+# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 104, "reachable-and-present": 390, "unreachable-and-missing": 49}
 idx_provider_models_canonical_raw_name	provider_models	-1	395b_dedup_provider_models_and_aliases.sql	no	local,fresh,252,211		baseline-dependent	baseline-dependent	
 idx_request_logs_hot_auto_task_ts	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
 idx_request_logs_hot_gw_session_id	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
@@ -881,3 +881,16 @@ idx_mpr_vendor	market_price_reference	940	940_market_price_reference_family.sql	
 idx_smp_canon	supplier_market_position	940	940_market_price_reference_family.sql	yes			reachable-and-legitimately-retired	none	
 idx_smp_conf	supplier_market_position	940	940_market_price_reference_family.sql	yes			reachable-and-legitimately-retired	none	
 uq_mpr_canonical_id	market_price_reference	940	940_market_price_reference_family.sql	yes			reachable-and-legitimately-retired	none	
+idx_ssa_credential	sales_supply_annotations	942	942_sales_supply_annotations.sql	no			reachable-and-legitimately-retired	none	
+idx_ssa_status	sales_supply_annotations	942	942_sales_supply_annotations.sql	no			reachable-and-legitimately-retired	none	
+idx_sdc_customer	sales_demand_cards	943	943_sales_demand_cards.sql	no			reachable-and-legitimately-retired	none	
+idx_sdc_status	sales_demand_cards	943	943_sales_demand_cards.sql	no			reachable-and-legitimately-retired	none	
+idx_sales_quotes_demand	sales_quotes	944	944_sales_quotes.sql	no			reachable-and-legitimately-retired	none	
+idx_sales_quotes_status	sales_quotes	944	944_sales_quotes.sql	no			reachable-and-legitimately-retired	none	
+idx_sqsl_quote	sales_quote_status_log	944	944_sales_quotes.sql	no			reachable-and-legitimately-retired	none	
+idx_sqv_quote	sales_quote_versions	945	945_sales_quote_versions.sql	no			reachable-and-legitimately-retired	none	
+idx_sqi_canonical	sales_quote_items	946	946_sales_quote_items.sql	no			reachable-and-legitimately-retired	none	
+idx_sqi_version	sales_quote_items	946	946_sales_quote_items.sql	no			reachable-and-legitimately-retired	none	
+idx_sqa_decision	sales_quote_approvals	947	947_sales_quote_approvals.sql	no			reachable-and-legitimately-retired	none	
+idx_sqa_quote	sales_quote_approvals	947	947_sales_quote_approvals.sql	no			reachable-and-legitimately-retired	none	
+idx_sqs_quote	sales_quote_shares	948	948_sales_quote_shares.sql	no			reachable-and-legitimately-retired	none	

@@ -2565,6 +2565,20 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/939_tenant_model_rates.sql"
   "$ROOT_DIR/sql/migrations/startup/940_market_price_reference_family.sql"
   "$ROOT_DIR/sql/migrations/startup/941_supplier_view_market_columns.sql"
+  # ★ 942–949（2026-11-05 报价系统 MVP W1，docs/audit/2026-11-04-报价系统MVP-
+  #   下一步方案与实施规划.md）：供给池登记（942）/ 需求池（943）/ 报价头+
+  #   状态迁移审计（944）/ 不可变版本+不可变触发器（945）/ 行快照（946）/
+  #   审批链（947）/ 分享 token（948）/ 供应商视图追加 binding 身份列（949）。
+  #   ★ 自带 BEGIN/COMMIT + SET LOCAL lock_timeout/statement_timeout
+  #     ⇒ 走事务通道，锁面有守卫。
+  "$ROOT_DIR/sql/migrations/startup/942_sales_supply_annotations.sql"
+  "$ROOT_DIR/sql/migrations/startup/943_sales_demand_cards.sql"
+  "$ROOT_DIR/sql/migrations/startup/944_sales_quotes.sql"
+  "$ROOT_DIR/sql/migrations/startup/945_sales_quote_versions.sql"
+  "$ROOT_DIR/sql/migrations/startup/946_sales_quote_items.sql"
+  "$ROOT_DIR/sql/migrations/startup/947_sales_quote_approvals.sql"
+  "$ROOT_DIR/sql/migrations/startup/948_sales_quote_shares.sql"
+  "$ROOT_DIR/sql/migrations/startup/949_supplier_view_binding_id.sql"
 )
 
 

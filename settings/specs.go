@@ -87,6 +87,9 @@ func PlatformSpecs() []*Spec {
 	// 2026-11-02: P1-2③ memora 上下文预热注入灰度开关
 	//（memory.prewarm.enabled / tenant_allowlist，读者 internal/memoraprewarm）。
 	out = append(out, MemoryPrewarmSpecs()...)
+	// 2026-11-05: 报价系统 MVP 红线数值（sales/quote.go 读方，
+	// DealHub 三维阈值 + 默认有效期，待裁决建议值）。
+	out = append(out, SalesSpecs()...)
 	return out
 }
 

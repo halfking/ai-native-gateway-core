@@ -13,6 +13,7 @@
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 603 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 6 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 604 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 610 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 8 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 611 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /_gateway/plugin/v1/analytics/{type}	GET	cmd/gateway/plugin_canon_init.go:204	unknown				not-probed-unresolved	★ 静态分级：解析不出
@@ -271,6 +272,13 @@
 /api/admin/routing-opt/stats	ANY	admin/handler.go:1552	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/routing/overrides	ANY	admin/auto_route.go:111	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/routing/overrides/	ANY	admin/auto_route.go:112	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/sales/approvals	ANY	admin/sales_handlers.go:44	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/sales/demand	ANY	admin/sales_handlers.go:38	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/sales/demand/	ANY	admin/sales_handlers.go:39	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/sales/quotes	ANY	admin/sales_handlers.go:41	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/sales/quotes/	ANY	admin/sales_handlers.go:42	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/sales/sellable	ANY	admin/sales_handlers.go:36	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/sales/supply	ANY	admin/sales_handlers.go:37	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/security/ip-blocklist	ANY	admin/handler.go:1201	read		500	error	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/security/ip-blocklist/	ANY	admin/handler.go:1203	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/security/ip-blocklist/reload	ANY	admin/handler.go:1202	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
@@ -492,6 +500,7 @@
 /api/proxy/subscriptions	ANY	admin/handler.go:1473	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/proxy/subscriptions/	ANY	admin/handler.go:1474	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/proxy/swap	ANY	admin/handler.go:1478	read		502	error	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/public/quote/	ANY	admin/sales_public_handler.go:23	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/quality/	ANY	cmd/gateway/main.go:7577	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/routing/audit	ANY	admin/handler.go:1336	read	decode	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/routing/available-models	ANY	admin/handler.go:1332	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用

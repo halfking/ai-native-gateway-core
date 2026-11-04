@@ -4,8 +4,8 @@
 # ★ 口径：建了 ∧ 没被后来的迁移删掉 ∧ 不是中间产物（USING INDEX 消费）
 # ★ declared_columns = ★ 建索引时的【直接键列】（★ 表达式索引保守取空）
 # ★   ⇒ ★★ 「列被 DROP ⇒ PG 级联删索引」的判据要用它
-# ★ generated_at=2026-11-03T16:59:17+00:00
-# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 872, "indexes_created": 924, "indexes_dropped_somewhere": 93, "migration_files": 611, "non_numeric_prefix_files": 13, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
+# ★ generated_at=2026-11-04T18:27:54+00:00
+# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 885, "indexes_created": 937, "indexes_dropped_somewhere": 93, "migration_files": 619, "non_numeric_prefix_files": 13, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
 -1	idx_provider_models_canonical_raw_name	provider_models	395b_dedup_provider_models_and_aliases.sql	canonical_raw_name	
 -1	idx_request_logs_hot_auto_task_ts	request_logs_hot	478p2_affinity_indexes.sql	task_type,ts	
 -1	idx_request_logs_hot_gw_session_id	request_logs_hot	478p2_affinity_indexes.sql	gw_session_id,ts	
@@ -878,3 +878,16 @@
 940	idx_smp_canon	supplier_market_position	940_market_price_reference_family.sql	canonical_name	
 940	idx_smp_conf	supplier_market_position	940_market_price_reference_family.sql	price_confidence	
 940	uq_mpr_canonical_id	market_price_reference	940_market_price_reference_family.sql	canonical_id,dimension	
+942	idx_ssa_credential	sales_supply_annotations	942_sales_supply_annotations.sql	credential_id	
+942	idx_ssa_status	sales_supply_annotations	942_sales_supply_annotations.sql	status	
+943	idx_sdc_customer	sales_demand_cards	943_sales_demand_cards.sql	customer_name	
+943	idx_sdc_status	sales_demand_cards	943_sales_demand_cards.sql	status	
+944	idx_sales_quotes_demand	sales_quotes	944_sales_quotes.sql	demand_card_id	
+944	idx_sales_quotes_status	sales_quotes	944_sales_quotes.sql	status	
+944	idx_sqsl_quote	sales_quote_status_log	944_sales_quotes.sql	quote_id,created_at	
+945	idx_sqv_quote	sales_quote_versions	945_sales_quote_versions.sql	quote_id,version_no	
+946	idx_sqi_canonical	sales_quote_items	946_sales_quote_items.sql	canonical_name	
+946	idx_sqi_version	sales_quote_items	946_sales_quote_items.sql	version_id	
+947	idx_sqa_decision	sales_quote_approvals	947_sales_quote_approvals.sql	decision,created_at	
+947	idx_sqa_quote	sales_quote_approvals	947_sales_quote_approvals.sql	quote_id	
+948	idx_sqs_quote	sales_quote_shares	948_sales_quote_shares.sql	quote_id	

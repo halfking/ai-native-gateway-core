@@ -357,3 +357,11 @@
 339	939_tenant_model_rates.sql
 340	940_market_price_reference_family.sql
 341	941_supplier_view_market_columns.sql
+342	942_sales_supply_annotations.sql
+343	943_sales_demand_cards.sql
+344	944_sales_quotes.sql
+345	945_sales_quote_versions.sql
+346	946_sales_quote_items.sql
+347	947_sales_quote_approvals.sql
+348	948_sales_quote_shares.sql
+349	949_supplier_view_binding_id.sql

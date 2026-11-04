@@ -73,6 +73,8 @@ const (
 	// / error_probe.timeout_ms（platform）分散三域，统一归入本组便于
 	// 运维一处调参。存储键名与 scope 均不变。
 	CategoryRetry Category = "retry"
+	// 2026-11-05: 报价系统 MVP 红线数值组（DealHub 三维阈值 + 默认有效期）。
+	CategorySales Category = "sales"
 )
 
 // DangerLevel gates the required role for PUT operations.

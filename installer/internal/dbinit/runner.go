@@ -1774,6 +1774,18 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"939_tenant_model_rates.sql",
 			"940_market_price_reference_family.sql",
 			"941_supplier_view_market_columns.sql",
+			// 942–949（2026-11-05 报价系统 MVP W1）：供给池登记（942）、
+			// 需求池（943）、报价头 + 状态迁移审计（944）、不可变版本 +
+			// 不可变触发器（945）、行快照（946）、审批链（947）、分享
+			// token（948）、供应商视图追加 binding 身份列（949）。
+			"942_sales_supply_annotations.sql",
+			"943_sales_demand_cards.sql",
+			"944_sales_quotes.sql",
+			"945_sales_quote_versions.sql",
+			"946_sales_quote_items.sql",
+			"947_sales_quote_approvals.sql",
+			"948_sales_quote_shares.sql",
+			"949_supplier_view_binding_id.sql",
 		},
 	}
 }

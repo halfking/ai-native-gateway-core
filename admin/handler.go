@@ -1631,7 +1631,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/api/admin/model-credibility/scan", h.superAdmin(h.handleModelCredibilityScan))
 
 		h.registerMaasRoutes(mux)
+
+		// 2026-11-05 W1：报价系统 MVP admin 面（supply/demand/quotes，
+		// 角色闸在应用层 —— 自营内部运营表，无 RLS，见 sales 包头注释）。
+		h.registerSalesRoutes(mux)
 	}
+
+	// 2026-11-05 W1-T2：报价分享的**唯一公开面**（无登录，无条件注册——
+	// 未配库时同样走 404，不向匿名调用方区分后端状态）。
+	h.registerSalesPublicRoutes(mux)
 
 	// 2026-10-21 R72f：功能能力位端点（**无条件注册** —— 理由见 admin/capabilities.go）
 	h.RegisterCapabilityRoutes(mux)
