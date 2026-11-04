@@ -18,9 +18,12 @@
 > ⇒ ★★ **修复（ASM `a9d14cd`→`56e4163`）**：分析回路加**全局熔断**（transport 错误/`upstream_unavailable` ⇒ 30s 起步翻倍
 > 10min 封顶冷却，ErrCooldown 不 claim 不调模型，Validate 通过即清零，/status 暴露 `analysis_cooldown_until`）＋
 > cooldown_test 三腿（纯单元＋一次性 PG 真库腿）＋ store_test 续跑腿白盒清熔断；**网关侧零改动**（洪水期间网关行为全部正确）。
-> ⇒ ★★ **挂起（211 主机当日失联：ping 全丢＋SSH 超时＋公网无响应，对照 .13 正常）**：① `AGENT_MODEL=minimax-m3`；
-> ② `AGENT_DAILY_TOKENS` 从 0（=关闭，budget.go 明文）恢复有限值（先量实耗取 3×；ErrBudget 优雅 Retry 15min 不丢任务）；
-> ③ 为 ASM 铸专属限流 key 替换 `RUNNER_LOCAL_API_KEY`（需 admin 凭据，已失效登记）。
+> ⇒ ★★ **211 配置修复已执行（11-05 00:52–00:57，主机恢复后）**：状态重测 glm-5.3 **18/18 全不可路由**（62 变
+> node_probe_failed、63 quota_permanently_exhausted）、minimax-m3 0/6 ⇒ 模型改 **`minimax-m3.1-flash`**（凭据 29 唯一可路由）
+> ＋ `AGENT_DAILY_TOKENS=40000000`（分析器日耗实测 10-13M 的 ~3.2x；兼作洪水刹车）＋ runner 注册 flash ＋ 删 release compose
+> 内联 `'0'`（仓内同步，ASM `f60a93d`）＋ 今日 119.2M phantom 预扣按账实归零。验证：/status=40M ✓、**glm-5.3 自 00:47:14 归零**、
+> m3.1-flash 7/7 成功（~1.75 次/分 ≪ 凭据 29 的 30/min）。⇒ ★ 剩余挂起仅一项：**凭据分离**（专属限流 key，需 admin 凭据）；
+> ★ 新发现（登记）：freellmapi 客户端（192.168.31.35，同 key）对 4 个死模型各 ~60/min no_candidate——同族第二例，治法同为凭据分离。
 > ⇒ ★ 通用式见 `LESSONS.md` **§631**（失败作用域决定退避载体 / 凭据用途字段不是约束 / 换模型先查配额池同族 / 0=关闭的阀门语义）。
 > **2026-11-04 报价系统 MVP 下一步方案轮（规划 · 零代码）——两轮外部调研＋本地接地把路线图变成任务卡**
 > （goal 会话）：★ 用户目标＝「结合头脑风暴文档 → 查询网络中高星项目与方案 → 结合本地代码 → 给出下一步方案及实施规划」。
