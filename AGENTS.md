@@ -4,6 +4,24 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-05 第 47 增量：glm-5.3 请求洪水溯源与 ASM 分析回路熔断轮（跨仓：溯源在网关库 / 修复在 ai-session-manager）**
+> （goal 会话）：★ 用户目标＝「查实 211 上大量 glm-5.3 请求（如 `045b5104e328694a78f173dc151fe0f8`）是做什么的、来源于哪里、
+> 有无必要、能否换 glm-5.3-flash」＋「修正发现的问题，提交推送」。
+> ⇒ ★★★★ **溯源结论（acc-pg17 真库 + 容器 env 逐字）**：这些请求＝**ASM 会话分析 agent**（`session-analyzer` worker → Pi
+> runner，`gw_asm_agent_<sha256>` 每物理尝试一个会话），runner 经公网入口用 **`deploy-smoke-245-20260815-160010` 冒烟 key**
+> （api_key 105，`rate_limit_rpm=0`，累计 459,529 次/$18,374.37）回调网关 ⇒ `AGENT_MODEL=glm-5.3` 钉死，而 glm-5.3 全库
+> **仅 1/14 绑定可路由**（凭据 62 智谱 coding），该凭据上游 **429 code 1310「周/月配额耗尽，2026-11-07 01:00 重置」** ＋
+> 凭据 29「1分钟最多30次**含失败次数**」⇒ 1/s（60/min）> 30/min ⇒ 自维持死循环：实测 **60 次/分钟 × 近 4 小时 = 12,668 次
+> no_candidate（99.7%）、3,260 万 prompt token 记账零产出**；job 级退避（5min/1h）拦不住 1s claim ticker 拉下一个任务。
+> ⇒ ★★★★ **「能否换 glm-5.3-flash」＝不能解本问题**：62 的 flash 腿**同账号同配额墙**（同文案同重置时刻）、99023（freellm-unified
+> free）探针时好时坏 ⇒ 健康替代＝**minimax-m3**（11 月 2,444 次 99.2% ok、独立供应商、runner 注册首模型＋worker 代码默认）。
+> ⇒ ★★ **修复（ASM `a9d14cd`→`56e4163`）**：分析回路加**全局熔断**（transport 错误/`upstream_unavailable` ⇒ 30s 起步翻倍
+> 10min 封顶冷却，ErrCooldown 不 claim 不调模型，Validate 通过即清零，/status 暴露 `analysis_cooldown_until`）＋
+> cooldown_test 三腿（纯单元＋一次性 PG 真库腿）＋ store_test 续跑腿白盒清熔断；**网关侧零改动**（洪水期间网关行为全部正确）。
+> ⇒ ★★ **挂起（211 主机当日失联：ping 全丢＋SSH 超时＋公网无响应，对照 .13 正常）**：① `AGENT_MODEL=minimax-m3`；
+> ② `AGENT_DAILY_TOKENS` 从 0（=关闭，budget.go 明文）恢复有限值（先量实耗取 3×；ErrBudget 优雅 Retry 15min 不丢任务）；
+> ③ 为 ASM 铸专属限流 key 替换 `RUNNER_LOCAL_API_KEY`（需 admin 凭据，已失效登记）。
+> ⇒ ★ 通用式见 `LESSONS.md` **§631**（失败作用域决定退避载体 / 凭据用途字段不是约束 / 换模型先查配额池同族 / 0=关闭的阀门语义）。
 > **2026-11-04 报价系统 MVP 下一步方案轮（规划 · 零代码）——两轮外部调研＋本地接地把路线图变成任务卡**
 > （goal 会话）：★ 用户目标＝「结合头脑风暴文档 → 查询网络中高星项目与方案 → 结合本地代码 → 给出下一步方案及实施规划」。
 > ⇒ ★ **产出＝`docs/audit/2026-11-04-报价系统MVP-下一步方案与实施规划.md`；通用式见 `LESSONS.md` §630**。
