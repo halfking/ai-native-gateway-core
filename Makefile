@@ -231,14 +231,33 @@ guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，
 #   ⇒ ★ 两者都是【★ 静默少读、★ 不报错、★ 不计数、★ 不让任何门变红 ★】★
 #   ⇒ ★ 而这条枚举分支正是【★ 两道公开仓闸门 ★】（`.githooks/pre-push` ＋
 #     ★ `scripts/sync-to-github.sh`）★ 用的那一条 ⇒ ⇒ ★ 它失明 = 公开仓闸门失明 ★★。
+# ★ 2026-11-05（211 蓝绿并发事故轮 + 同步效率轮）：★ 再接进 **2 条**快门
+#   （tests/deploy_target_lock_concurrency_test.sh、tests/deploy_sync_prune_contract_test.sh）
+#   ⇒ 门脚本门 14 → **16** 条。
+#   · 实测耗时 **3s / 21s**（合计 ≈24s），★ **bash 3.2 可跑**（无 bash4 特性）、
+#     零外部依赖：目标锁门用 **PATH 垫片**把 ssh/scp 换成本机执行（真引擎、真远端命令
+#     形态，但不碰真目标机）；剪枝门执行**引擎里那条真实的 find + tar 命令**。
+#   · ★ **接线是硬要求，不是形式**：新增门若没有可执行调用方 ⇒
+#     tests/gate_scripts_caller_registry_test.sh（登记册门）当场报红
+#     ⇒ 「门没有调用方 = 声明不是门」（LESSONS §507）⇒ ★ **本仓的红有时是「门本身红了」，
+#     有时是「门没接线」** —— 两者的修法完全不同，别混。
+#   · ★★ **位置有意排在 tests/deploy_local_contract_test.sh 之前**：
+#     `make` 遇红即中止 ⇒ 排在后面的门在**前面那条红着**时**根本跑不到**
+#     ⇒ ★ 「接线了却跑不到」＝ **门自称有牙实则没牙**（比没接线更坏：它让人以为被守住了）。
+#     ⇒ ★ 排位本身就是门的一部分：**先保证每条门都真的被执行过一次**。
+#     （本机实测：deploy_local_contract_test 因 agent PATH 上的 `rm` 是可恢复删除
+#      包装器、拒绝 /var/folders 沙箱外路径而红 ⇒ 换真 /bin/rm 即绿 ⇒ **量具失真**，
+#      非仓内缺陷；详见 LESSONS §633。）
 .PHONY: guards-gate-scripts
-guards-gate-scripts: ## 门脚本接线门（14 条快门 + 登记册门，防新增隐形门）
+guards-gate-scripts: ## 门脚本接线门（16 条快门 + 登记册门，防新增隐形门）
 	@bash tests/audit_154_wrapper_test.sh
 	@bash tests/credential_script_contract_test.sh
 	@bash tests/deploy_seamless_mobile_surface_test.sh
 	@bash tests/selfcheck_diagnostics_contract_test.sh
 	@bash tests/bump_version_collision_test.sh
 	@bash tests/deploy_blue_green_contract_test.sh
+	@bash tests/deploy_target_lock_concurrency_test.sh
+	@bash tests/deploy_sync_prune_contract_test.sh
 	@bash tests/deploy_lock_test.sh
 	@bash tests/deploy_port_rotation_test.sh
 	@bash tests/deploy_promotion_test.sh

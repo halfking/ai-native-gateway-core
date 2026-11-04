@@ -86,6 +86,17 @@ stages:
             # ★ 2026-11-04（F-15）：★ 该 target 又接进 1 条快门
             #   （tests/shared_lib_resolution_contract_test.sh，实测 ≈0.3s）
             #   ⇒ 门脚本门 13 → **14** 条 ⇒ ★ 墙钟预算**不受影响**（+0.3s）。
+            # ★ 2026-11-05（211 蓝绿并发事故轮 + 同步效率轮）：★ 该 target 再接进 **2 条**快门
+            #   （tests/deploy_target_lock_concurrency_test.sh 实测 ≈3s、
+            #     tests/deploy_sync_prune_contract_test.sh 实测 ≈21s）
+            #   ⇒ 门脚本门 14 → **16** 条 ⇒ ★ 墙钟预算 +≈24s（4 核 Linux 新读数待 CI 复测）。
+            #   ★ 两条门均 **bash 3.2 可跑**、零外部依赖：目标锁门用 **PATH 垫片**把
+            #     ssh/scp 换成本机执行（真引擎、真远端命令形态，不碰真目标机）；
+            #     剪枝门执行**引擎里那条真实的 find + tar 命令**并**打真产物**再验内容
+            #     ⇒ ⇒ 不给 CI 引入新环境依赖，也不把「清单」当代理量。
+            #   ★ 排位有意在 tests/deploy_local_contract_test.sh **之前**
+            #     ⇒ `make` 遇红即中止 ⇒ 排在后面的门在前面红着时**根本跑不到**
+            #     ⇒ ★「接线了却跑不到」＝ 门自称有牙实则没牙（比没接线更坏）。
             # ★ 与此同时，**切流状态机门（实测 ≈270s）被有意排除在快门之外**
             #   （单列 `make guards-deploy-state-machine`，只进 `make guards`
             #     与 `verify.sh`）—— ★ ≈270s ≫ 快门预算 ⇒ 塞进来会撑爆预算。

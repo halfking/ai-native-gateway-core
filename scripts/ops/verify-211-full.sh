@@ -16,6 +16,19 @@
 #   bash scripts/ops/verify-211-full.sh            # 期望身份 = 本仓 HEAD
 #   bash scripts/ops/verify-211-full.sh eccefdb8   # 期望身份 = 指定 sha(8位)
 #   LLM_GATEWAY_211_SSH=root@1.2.3.4 bash scripts/ops/verify-211-full.sh
+#   LLM_GATEWAY_ADMIN_PASSWORD=... bash scripts/ops/verify-211-full.sh   # 登录项需要凭据
+#
+# ★ 凭据（★ **env-only** 口径，与兄弟 scripts/ops/verify-154-full.sh /
+#   verify-245-full.sh 同源）：
+#   · 登录项（**第五段 ⑤**）需要 admin 口令 ⇒ 由**调用方**经环境变量提供：
+#       LLM_GATEWAY_ADMIN_PASSWORD（可选 LLM_GATEWAY_ADMIN_USER，默认 admin）。
+#   · ★★ 登录项在**部署机本地**对**公网入口**执行（不在 ssh 到目标机的段里做）：
+#     ⇒ 口令**只进本机 python 的 environ**，不进 ssh 命令行 ⇒ 不会出现在目标机的
+#     `ps` 进程表里（可见凭据面）⇒ 覆盖面不变（公网 = nginx ⇒ upstream ⇒ 活跃槽）。
+#   · ★ 本脚本**不内嵌任何口令默认值** ⇒ 凭据不进仓库、不进日志。
+#   · ★ 缺 LLM_GATEWAY_ADMIN_PASSWORD ⇒ ⑤ 判 **FAIL**（rc=1）而**不是**跳过：
+#     「没做成」必须能被读成「没做成」，否则量具会把自己读成绿的。
+#   · 取值来源：部署时的 LLM_GATEWAY_ADMIN_PASSWORD / DD_ADMIN_PASSWORD，或运维口令库。
 #
 # 退出码: 0 = 全绿（允许有 WARN） / 1 = 有 FAIL / 2 = 用法错 / 3 = 探针没做成
 #         （★「没做成」与「全绿」必须能区分 —— 否则不可判定会被读成通过）
@@ -347,23 +360,13 @@ else:
     except Exception as exc:  # noqa: BLE001
         fail(f"/readyz 响应不可解析：{exc}")
 
-# ── ④.4 登录 + 连登无 429 ───────────────────────────────────────────
-user = os.environ.get("LLM_GATEWAY_ADMIN_USER", "admin")
-pwd = os.environ.get("LLM_GATEWAY_ADMIN_PASSWORD", "Veritrans&9527")
-st, raw, _ = req("POST", base + "/api/auth/token", {"username": user, "password": pwd})
-if st != 200:
-    fail(f"登录 HTTP {st} body={raw[:120]!r}")
-else:
-    ok(f"登录 OK（user={user}）")
-    codes = []
-    for _ in range(6):
-        st2, _, _ = req("POST", base + "/api/auth/token", {"username": user, "password": pwd})
-        codes.append(st2)
-    if all(c == 200 for c in codes):
-        ok("连登 6 次无 429（限流桶已 Reset）")
-    else:
-        fail(f"连登出现非 200：{codes}")
-
+# ── ④.4 登录项**不在本段**做（★ 凭据不许进目标机的 argv）────────────
+# ★ 为什么挪走：★ 本段是**通过 ssh 在目标机上跑的 python** ⇒ 若把口令带进来，
+#   只能走 **ssh 命令行** ⇒ ⇒ 口令会出现在目标机的 `ps` 进程表里（可见的凭据面）
+#   ⇒ ⇒ 凭据只走「部署机本地进程环境 + 公网入口」这一条路（见第五段 ⑤）。
+# ★ 覆盖面不变：公网入口 = nginx ⇒ upstream ⇒ **当前活跃槽**（④.1/④.2 已证明
+#   upstream、账本、公网 /version 三者同侧）⇒ 对公网做登录 == 对活跃槽做登录。
+#
 # ── ④.5 网页面：SPA + 入口 JS ───────────────────────────────────────
 st, raw, hdrs = req("GET", base + "/")
 if st != 200:
@@ -437,9 +440,88 @@ print(f"小计: PASS={P} FAIL={F} WARN={W}")
 sys.exit(1 if F else 0)
 PYAPP
 
+# ── 第五段：登录面（★ 在**部署机本地**做 —— 凭据不出本地进程环境）─────
+#
+# ★ 为什么登录项单独放本地：★ 第四段是**通过 ssh 在目标机上跑的 python**
+#   ⇒ 口令若要带过去只能走 **ssh 命令行** ⇒ ⇒ 会在目标机的 `ps` 进程表里可见
+#   ⇒ ⇒ 凭据只走「本地进程环境 → 公网入口」这一条路：
+#   · 本地环境变量 `LLM_GATEWAY_ADMIN_PASSWORD` ⇒ 只进本机 python 的 environ；
+#   · 公网入口 = nginx ⇒ upstream ⇒ **当前活跃槽**（第四段已证明 upstream /
+#     账本 / 公网 /version 三者同侧）⇒ 覆盖面与「对活跃槽做登录」等价。
+# ★ 凭据口径＝**env-only**（与兄弟 scripts/ops/verify-154-full.sh /
+#   verify-245-full.sh 同源）：★ 本文件**不内嵌任何口令默认值** ⇒
+#   仓里出现过的默认值（引擎 deploy-seamless-docker.sh 的 dd_smoke_admin_login）
+#   是**既存泄漏面**，新代码再复制一份＝把泄漏面扩大。
+# ★ 缺凭据 ⇒ 判 **FAIL**（**不**判通过、**不**静默跳过）：
+#   「登录项没做成」必须与「登录项通过」区分开，否则量具会把自己读成绿的。
 echo
-if [[ ${first_rc} -ne 0 || ${app_rc} -ne 0 ]]; then
-  echo "★ 验收结论：**有 FAIL**（槽位段 rc=${first_rc}，应用段 rc=${app_rc}）"
+echo "== ⑤ 登录面（本地 → 公网入口；凭据 env-only）=="
+login_rc=0
+python3 - "$DOMAIN" <<'PYLOGIN' || login_rc=$?
+import json, os, sys, urllib.error, urllib.request
+
+domain = sys.argv[1]
+PASS = FAIL = WARN = 0
+
+
+def ok(m):
+    global PASS
+    PASS += 1
+    print("  ✓", m)
+
+
+def fail(m):
+    global FAIL
+    FAIL += 1
+    print("  ✗", m)
+
+
+def req(method, url, data=None, timeout=25):
+    body = None
+    h = {}
+    if data is not None:
+        body = json.dumps(data).encode()
+        h["Content-Type"] = "application/json"
+    r = urllib.request.Request(url, data=body, headers=h, method=method)
+    try:
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+    except Exception as exc:  # noqa: BLE001
+        return 0, str(exc).encode()
+
+
+user = os.environ.get("LLM_GATEWAY_ADMIN_USER", "admin")
+pwd = os.environ.get("LLM_GATEWAY_ADMIN_PASSWORD", "")
+if not pwd:
+    fail("未提供 LLM_GATEWAY_ADMIN_PASSWORD ⇒ 登录项**没做成**（env-only 口径，"
+         "与 verify-154-full.sh / verify-245-full.sh 同源）⇒ 判 FAIL 而非跳过："
+         "「没做成」不得被读成「通过」；凭据取值见本脚本头部用法说明")
+else:
+    base = f"https://{domain}"
+    st, _ = req("POST", base + "/api/auth/token", {"username": user, "password": pwd})
+    if st != 200:
+        fail(f"登录 HTTP {st}（入口=公网 {domain}）")
+    else:
+        ok(f"登录 OK（user={user}，入口=公网 {domain}）")
+        codes = []
+        for _ in range(6):
+            st2, _ = req("POST", base + "/api/auth/token", {"username": user, "password": pwd})
+            codes.append(st2)
+        if all(c == 200 for c in codes):
+            ok("连登 6 次无 429（限流桶已 Reset）")
+        else:
+            fail(f"连登出现非 200：{codes}")
+
+print()
+print(f"小计: PASS={PASS} FAIL={FAIL} WARN={WARN}")
+sys.exit(1 if FAIL else 0)
+PYLOGIN
+
+echo
+if [[ ${first_rc} -ne 0 || ${app_rc} -ne 0 || ${login_rc} -ne 0 ]]; then
+  echo "★ 验收结论：**有 FAIL**（槽位段 rc=${first_rc}，应用段 rc=${app_rc}，登录段 rc=${login_rc}）"
   exit 1
 fi
 echo "★ 验收结论：全绿（WARN 不阻断）"
