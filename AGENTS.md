@@ -45,7 +45,18 @@
 > `vue-tsc` rc=0；`vitest` **291 文件/3005 passed**；`vite build` ✓；navCoverage 6/6；i18n 四门 PASS。
 > **踩过的门（全转绿）**：db-changelog 近邻窗口门（第 7 面）· embeddata 逐字节门（改 canonical 后忘重拷 935）·
 > ursmcheck 600s 假红（口径必须 1800s）· reachability 漏 `--columns` 制造假漂移（3 条存量行误翻 installer-bug，
-> 工具参数静默降级是假漂移制造机）。实施档
+> 工具参数静默降级是假漂移制造机）· **clobber 链第 935 面**（promote 函数第三定义方须进 intentional_function_chains）·
+> **间接读点清单**（`maas/my_usage.go` 2 处 requestLogsSource 拼接须进 manifest_test 登记表＋快照 157→159）。
+> ⇒ ★★ **三台部署全过（211/245/154）**：211=f2af856c/2946 蓝绿 a→b；245=2929-bac2be17（14 新应用含
+> 934–941；HEAD 被并行会话推到 bac2be176，`is-ancestor` 实证我三提交在血统内）；154=2930-414a5010
+> （与 245 共库 ⇒ 无 pending）。**211 六门全过**：promote 搬运不丢列实证（hot 0/分区 1/13 列齐）、
+> campaign 双写对账 500=500、**AF-1 真库 A/B=精确 7.2×**、四新端点 200+owner 收窄生效、测试数据清理。
+> **部署途中环境缺陷两处（已收口）**：① Redis 库号漂移（db15..db8 全是网关自占残留键 ⇒ allocate 的
+> 自占识别只认 claim 库 ⇒ 假「全被占用」⇒ 清 9 死库，db6/7=asynq 他服保留）；② **936 FK 42870**
+> —— 211 的 `subscription_plans` 是基线 dump 形态（code UNIQUE 有、**主键无**）⇒ 936 幂等 DO 块补 PK
+> （prepared 未应用 ⇒ 改字节合法，`f2af856c1`）。★ **移动端构建既有红**（`requestDetail.test.ts` 的
+> as-const includes(string) TS2345，合并带入 ⇒ web 不跑 `-b` 所以本地不显形 ⇒ 211 部署引擎拦下）⇒
+> string[] 显式放宽收口（`644903c8b`）。实施档
 > `docs/audit/2026-11-04-运营管理与价格计费体系-P0P1实施轮-迁移934-941与流水闭环与AF修复.md`；
 > 通用式见 `LESSONS.md` **§627**。
 > **2026-11-03 第 44 增量：两规划合并审计 +「运营管理/价格计费」总体设计与实施规划（规划轮 · 零业务逻辑改动）＋ AGENTS.md 第二批分档归档**
