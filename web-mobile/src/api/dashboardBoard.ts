@@ -3,7 +3,7 @@ import { req, type RequestOptions } from './client'
 /**
  * dashboardBoard.ts — 看板的两条**裸 JSON** 端点（2026-10-08，第五十九批）。
  *
- * GET /api/admin/dashboard/operational          （handler.go:1068，admin 档）
+ * GET /api/admin/dashboard/operational          （★ 2026-11-04 12h 审计轮 D-1：已由 admin 档降为 **superAdmin** 档）
  * GET /api/admin/dashboard/board/error-drill     （handler.go:1069，admin 档）
  *
  * ⚠️ 这两条**不在** `admin/dashboardapi` 包里，走的是 `writeJSON` ⇒ **无信封**，
@@ -36,6 +36,12 @@ import { req, type RequestOptions } from './client'
  *   见 `DashboardOpsView.vue` 的 `operationalVisible`。
  *   ★ **这不是把后端修好了** —— 后端该加 tenant 条件，本条只是不让移动端替它兜底。
  *   ⇒ 后端修复前，任何绕过前端直接调端点的调用方仍然会拿到全租户数据。
+ *
+ *   ★★ **2026-11-04 12h 审计轮（D-1）已补上后端那一半**：该端点的注册档
+ *   **由 admin 降为 superAdmin**（admin/handler.go，与同族 ops/overview 同一处置）
+ *   ⇒ ⇒ 「绕过前端直接调端点」这条路现在也被堵住了（tenant_admin ⇒ 403）。
+ *   ⇒ ★ 载荷内部**仍是平台级聚合**（三条子查询都不按调用方租户收窄）
+ *   ⇒ 「平台运营视图」的定位成立；「按租户隔离的视图」是另一个需求，登记待办。
  */
 
 /* ═══════════════════════════════════════════════════════════════════════════

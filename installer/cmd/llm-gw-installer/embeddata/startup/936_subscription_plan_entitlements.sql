@@ -18,6 +18,24 @@ BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '10min';
 
+-- ★ 211 实测（2026-11-04 部署轮）：既有环境的 subscription_plans 是基线 dump
+--   形态 —— 有 subscription_plans_code_key（UNIQUE on code）但**没有主键**
+--   （pg_constraint contype='p' 计数 0）⇒ 本文件末尾的 FK 引用
+--   subscription_plans(id) 以 42870 拒绝 ⇒ 部署中止。
+--   ⇒ 幂等补 PK（do-nothing-if-present）——这是「FK 引用既有表」类迁移的
+--     前置自愈，不是形状改写：id 列早已存在且 NOT NULL。
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.subscription_plans'::regclass AND contype = 'p'
+  ) THEN
+    ALTER TABLE public.subscription_plans
+      ADD CONSTRAINT subscription_plans_pkey PRIMARY KEY (id);
+  END IF;
+END
+$$;
+
 CREATE TABLE IF NOT EXISTS public.subscription_plan_entitlements (
     plan_id            integer      NOT NULL REFERENCES public.subscription_plans(id) ON DELETE CASCADE,
     canonical_id       bigint       NOT NULL,

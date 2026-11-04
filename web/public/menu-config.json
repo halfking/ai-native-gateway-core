@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-11-03T03:11:10.924Z",
+  "exported_at": "2026-11-03T23:24:30.872Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -34,21 +34,13 @@
   ],
   "groups": [
     {
-      "id": "tenant-portal",
-      "labelKey": "nav.group.tenantPortal",
+      "id": "operations",
+      "labelKey": "nav.group.operations",
       "items": [
         {
           "path": "/tenant/models",
           "labelKey": "nav.item.tenantModels",
           "icon": "🤖",
-          "tenantOnly": true,
-          "tenantScope": "tenant",
-          "pluginScope": "*"
-        },
-        {
-          "path": "/tenant/account",
-          "labelKey": "nav.item.tenantAccount",
-          "icon": "💰",
           "tenantOnly": true,
           "tenantScope": "tenant",
           "pluginScope": "*"
@@ -76,9 +68,53 @@
           "tenantOnly": true,
           "tenantScope": "tenant",
           "pluginScope": "*"
+        },
+        {
+          "path": "/tenant/account",
+          "labelKey": "nav.item.tenantAccount",
+          "icon": "💰",
+          "tenantOnly": true,
+          "tenantScope": "tenant",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/admin/board-operational",
+          "labelKey": "nav.item.operationsOverview",
+          "icon": "🧭",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/pricing",
+          "labelKey": "nav.item.pricing",
+          "icon": "📉",
+          "platformOps": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/model-pricing",
+          "labelKey": "nav.item.modelPricing",
+          "icon": "💰",
+          "platformOps": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/admin/reconciliation",
+          "labelKey": "nav.item.reconciliation",
+          "icon": "🧾",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
         }
       ],
-      "tenantScope": "tenant",
+      "tenantScope": "mixed",
       "pluginScope": "*"
     },
     {
@@ -127,37 +163,10 @@
           "pluginScope": "*"
         },
         {
-          "path": "/admin/reconciliation",
-          "labelKey": "nav.item.reconciliation",
-          "icon": "🧾",
-          "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
-        },
-        {
           "path": "/admin/usage-trends",
           "labelKey": "nav.item.usageTrends",
           "icon": "📈",
           "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
-        },
-        {
-          "path": "/pricing",
-          "labelKey": "nav.item.pricing",
-          "icon": "📉",
-          "platformOps": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
-        },
-        {
-          "path": "/model-pricing",
-          "labelKey": "nav.item.modelPricing",
-          "icon": "💰",
-          "platformOps": true,
           "hideForTenant": true,
           "tenantScope": "default",
           "pluginScope": "*"
@@ -216,15 +225,6 @@
           "path": "/audit-logs",
           "labelKey": "nav.item.auditLogs",
           "icon": "📋",
-          "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
-        },
-        {
-          "path": "/admin/reconciliation?view=internal",
-          "labelKey": "nav.item.settlementReport",
-          "icon": "📑",
           "super": true,
           "hideForTenant": true,
           "tenantScope": "default",

@@ -231,11 +231,14 @@ func Score(c Candidate, sigs ClassificationSignals, task TaskType, profile Profi
 
 // scorePrice normalises cost against the cohort P75.
 //
-// Formula:
+// Formula (AF-15 semantics, see note below):
 //
 //	blended = unit_price_in + unit_price_out  (assumes 1:1 input/output)
-//	if blended == 0                  → 100 (free)
-//	if costCtx.PriceP75 == 0         → 100 (no cohort baseline)
+//	blended <= 0:
+//	  round-1 (free/plan)           → 100 (paid up front, zero marginal cost)
+//	  round-2 (per-token, no price) → neutral: 50 (at-P75 anchor) when the
+//	                                  pool has a P75, else 80 (no signal)
+//	if costCtx.PriceP75 == 0         → 80 (no cohort baseline)
 //	ratio = blended / PriceP75       (1.0 means at P75, lower better)
 //	score = max(0, min(100, 100 * (1.5 - ratio)))
 //
@@ -254,6 +257,7 @@ func Score(c Candidate, sigs ClassificationSignals, task TaskType, profile Profi
 //     既有约定）。此前的 `blended <= 0 → 100` 让按量未知价在 v1/v2/
 //     simplified 三代评分里全部排到「最便宜」，而 executors 同一子集给
 //     最大惩罚 1.0 —— 同一候选两层判定相反。
+//     行为钉子（分档 + 三代一致 + 变异臂）：autoroute/scoring_af15_zero_price_test.go。
 func scorePrice(c Candidate, costCtx CostContext) float64 {
 	blended := c.UnitPriceInPer1M + c.UnitPriceOutPer1M
 	if blended <= 0 {

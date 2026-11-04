@@ -67,6 +67,19 @@ func (s *Service) ListActiveCampaigns(ctx context.Context) ([]Campaign, error) {
 	return out, rows.Err()
 }
 
+// campaignDetailJSON 构造写入 credit_ledger.detail 的 JSON。
+//
+// ★ 必须走 json.Marshal，不能手拼字符串：手拼
+//
+//	`{"campaign_code":"`+code+`"}` 时，code 里只要有一个 `"` 或 `\`
+//	就产出**非法 JSON** ⇒ 整条 INSERT 被驱动拒（jsonb 解析失败）⇒
+//	事务回滚 ⇒ 兑现整体失败。code 是管理员可写的活动编码 ⇒ 不是
+//	不可达分支。（手拼不是 SQL 注入——参数是绑定的——但它是数据转换
+//	缺陷。）
+func campaignDetailJSON(code string) ([]byte, error) {
+	return json.Marshal(map[string]string{"campaign_code": code})
+}
+
 // CampaignRedemption is the result of redeeming one campaign.
 type CampaignRedemption struct {
 	RedemptionID   int64  `json:"redemption_id"`
@@ -155,10 +168,14 @@ func (s *Service) RedeemCampaign(ctx context.Context, code, tenantID, ownerUser 
 		return out, err
 	}
 	// ★ 双写：ledger 带 campaign_id（活动成本口径的另一半）。
+	detail, err := campaignDetailJSON(code)
+	if err != nil {
+		return out, err
+	}
 	if err := s.writeLedgerWithBalanceDetail(ctx, tx, tenantID, "adjust", credits, balance,
 		string(PoolGranted), "campaign", fmt.Sprintf("%d", campID),
 		fmt.Sprintf("campaign %s", campName), ownerUser, campID,
-		[]byte(`{"campaign_code":"`+code+`"}`)); err != nil {
+		detail); err != nil {
 		return out, err
 	}
 	var redID int64

@@ -11,8 +11,11 @@ package maas
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // MyRequestRow is one request-history row for the owner-scoped view.
@@ -68,6 +71,17 @@ func ClampMyRequestsDays(days int) int {
 	return days
 }
 
+// MaxMyRequestsPage 是「我的」请求历史的最大页码。
+//
+// ★ 为什么必须钳：分页是 **OFFSET** 分页（见 QueryMyRequests 的
+//
+//	`OFFSET (page-1)*pageSize`）⇒ OFFSET 越大，PG 要**丢弃**的行越多
+//	⇒ 成本随页码线性增长。上限只钳了 days（回看窗口）与 pageSize
+//	（每页行数），**页码本身没有上界** ⇒ `?page=1000000` 会让服务端
+//	扫过 2000 万行再丢掉 ⇒ 单请求即可把分区扫描打满（放大面）。
+//	⇒ 与 days/pageSize 同族口径：三个维度都钳。
+const MaxMyRequestsPage = 1000
+
 // QueryMyRequests reads one owner's request history with a shared filter
 // (days/model) and page/window-summary split. ownerUser 空 = 不过滤（管理面
 // 全租户视角专用；租户成员路径永远带 owner）。
@@ -83,6 +97,9 @@ func (s *Service) QueryMyRequests(ctx context.Context, tenantID, ownerUser strin
 	out.Days = days
 	if page < 1 {
 		page = 1
+	}
+	if page > MaxMyRequestsPage {
+		page = MaxMyRequestsPage
 	}
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 20
@@ -185,7 +202,12 @@ func (s *Service) GetTenantBudget(ctx context.Context, tenantID string) (TenantB
 	`, tenantID).Scan(&out.MonthlyBudgetCents, &out.BalanceAlertThreshold,
 		&out.QuotaAlertThreshold, &channels, &out.UpdatedAt)
 	if err != nil {
-		if err.Error() == "no rows in result set" {
+		// ★ 用 errors.Is 判「无行」：本仓 maas 包内的既有口径一律如此
+		//   （bills.go / coupons.go / orders.go / service.go）。原先这里
+		//   拿 err.Error() 逐字比 "no rows in result set" ⇒ 驱动换版本或
+		//   包装错误就静默变成「查不到预算」⇒ 展示层把「未配置」与
+		//   「读失败」混成同一种。
+		if errors.Is(err, pgx.ErrNoRows) {
 			return out, nil
 		}
 		return out, err

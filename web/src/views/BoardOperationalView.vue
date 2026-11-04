@@ -2,7 +2,7 @@
 // BoardOperationalView — 批 158c（2026-10-17）
 // P2 boardOperational 独立详细页：完整呈现 background_tasks + selfcheck 两块面板。
 //
-// 端点：GET /api/admin/dashboard/operational（admin 中间件）
+// 端点：GET /api/admin/dashboard/operational（★ superAdmin 中间件 —— 2026-11-04 12h 审计轮 D-1 由 admin 档降级）
 // 类型：BoardOperationalPayload（api/board.ts:77-80）
 //
 // ⚠️ 后端 tenant 隔离未落实（属主拍板，2026-10-17）

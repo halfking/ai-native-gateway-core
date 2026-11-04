@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -9,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/kaixuan/llm-gateway-go/pkg/identity"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // The app ticket is the whole single sign-on handshake on the gateway side:
@@ -160,5 +164,82 @@ func TestHandleAppToken_RejectsNonGET(t *testing.T) {
 	h.handleAppToken(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+}
+
+// stubAppTokenAuditWriter swaps the mint-audit seam and returns a restore
+// func (same shape as stubRevocationProbe): settings.WriteAudit needs a live
+// *pgxpool.Pool, which admin unit tests cannot inject into Handler.db.
+func stubAppTokenAuditWriter(fn func(context.Context, *pgxpool.Pool, settings.AuditEntry)) func() {
+	old := appTokenAuditWriter
+	appTokenAuditWriter = fn
+	return func() { appTokenAuditWriter = old }
+}
+
+// F-6: a minted ticket is a credential the peer will exchange for an
+// identity, so the success path must leave exactly one audit row naming the
+// actor, the tenant and the target app (audience).
+func TestHandleAppToken_MintWritesAuditEntry(t *testing.T) {
+	withMeshSecret(t)
+
+	var captured []settings.AuditEntry
+	defer stubAppTokenAuditWriter(func(_ context.Context, _ *pgxpool.Pool, e settings.AuditEntry) {
+		captured = append(captured, e)
+	})()
+
+	h := &Handler{}
+	rec := appTokenRequest(t, h, "freellmapi")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(captured) != 1 {
+		t.Fatalf("audit writes = %d, want exactly 1 on the success path", len(captured))
+	}
+	e := captured[0]
+	if e.SettingKey != "app_token:freellmapi-api" {
+		t.Fatalf("setting_key = %q, want app_token:freellmapi-api (target app = audience)", e.SettingKey)
+	}
+	if e.Action != "mint" {
+		t.Fatalf("action = %q, want mint", e.Action)
+	}
+	if e.TenantID != "default" {
+		t.Fatalf("tenant_id = %q, want default", e.TenantID)
+	}
+	if e.OperatorUser != "halfking" || e.OperatorRole != "super_admin" {
+		t.Fatalf("operator = %q/%q, want halfking/super_admin", e.OperatorUser, e.OperatorRole)
+	}
+	var detail struct {
+		UserID int `json:"user_id"`
+	}
+	if err := json.Unmarshal(e.NewValue, &detail); err != nil {
+		t.Fatalf("new_value = %s: %v", e.NewValue, err)
+	}
+	if detail.UserID != 7 {
+		t.Fatalf("user_id = %d, want 7", detail.UserID)
+	}
+}
+
+// The rejection paths (unknown app 404, unset shared secret 503) are
+// read-only failures: they must not produce audit rows. The success-path
+// write is pinned by TestHandleAppToken_MintWritesAuditEntry.
+func TestHandleAppToken_FailurePathsWriteNoAudit(t *testing.T) {
+	withMeshSecret(t)
+
+	var writes int
+	defer stubAppTokenAuditWriter(func(_ context.Context, _ *pgxpool.Pool, _ settings.AuditEntry) {
+		writes++
+	})()
+
+	h := &Handler{}
+	if rec := appTokenRequest(t, h, "not-an-app"); rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	t.Setenv(identity.EnvSharedSecret, "")
+	identity.ResetForTest()
+	if rec := appTokenRequest(t, h, "freellmapi"); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if writes != 0 {
+		t.Fatalf("audit writes = %d, want 0 (read-only rejections must not be recorded)", writes)
 	}
 }

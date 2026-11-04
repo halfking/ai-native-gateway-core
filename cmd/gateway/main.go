@@ -330,6 +330,16 @@ func main() {
 
 	// ── Logging ───────────────────────────────────────────────────────────
 	cfg := config.Load()
+	// ★★ 会话 hash 的 TTL（**唯一真值**，2026-11-04 12h 审计轮 B-2）：
+	//   ① session.Manager 的心跳续期（domains/session/session.go Touch）
+	//   ② memoraprewarm 旁路写的 EXPIRE（internal/memoraprewarm）
+	//   两边写的是**同一个 key**（session:{id}）⇒ Redis 的 EXPIRE 是 key 级
+	//   ⇒ ⇒ 两个值只要不一致，**后写的那个就赢** ⇒ ⇒ 会话保留期被静默截短。
+	//   ⇒ 只算一次、两个地方用同一个值 ⇒ 竞态自动消失。
+	sessionTTL := time.Duration(cfg.SessionTTLHours) * time.Hour
+	if sessionTTL == 0 {
+		sessionTTL = session.DefaultTTL // 与 session.NewManager 的兜底一致
+	}
 	// Request survival (docs/修订0811/18+19): normalize knobs after load and
 	// enforce the single-outer-retry-owner invariant at startup. Survival and
 	// the mux streamretry wrapper are mutually exclusive; survival wins and
@@ -1054,7 +1064,6 @@ func main() {
 		pingErr := pingRedisWithBootRetry(redisClient,
 			bootRetryBudgetEnv("LLM_GATEWAY_REDIS_BOOT_RETRY_SECONDS", 30*time.Second))
 		if pingErr == nil {
-			sessionTTL := time.Duration(cfg.SessionTTLHours) * time.Hour
 			pendingTTL := time.Duration(cfg.PendingTTLSeconds) * time.Second
 			sessionMgr = session.NewManager(redisClient, sessionTTL)
 			chatHandler.SetSessionGetter(sessionMgr)
@@ -7004,7 +7013,9 @@ func main() {
 			chatHandler.SetMemoraPrewarm(memoraprewarm.NewWiring(
 				prewarmClient, prewarmWriter,
 				memoraprewarm.NewRedisReader(redisClientForCache.Client()),
-				prewarmGate, nil))
+				prewarmGate, nil,
+				// ★ 旁路写的 EXPIRE 必须用**会话 hash 自己的 TTL**（B-2）
+				sessionTTL))
 			go memoraprewarm.SyncGateFromSettings(context.Background(), prewarmGate, memoraprewarm.GateSyncInterval)
 			slog.Info("memora prewarm wired (chat handler mount + settings gate sync)",
 				"asm_url", os.Getenv("AI_SESSION_MANAGER_URL"))

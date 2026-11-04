@@ -123,8 +123,9 @@ export const NAV_GROUPS: NavGroup[] = [
   // tenant-portal 组退役（A-13），其 5 项原 path 迁入（收藏链接不断）；
   // /pricing、/model-pricing、/admin/reconciliation 自 models-routing 迁入
   // （path 一律不变）；/admin/board-operational 收编为运营总览并同步移出
-  // navCoverage KNOWN_ORPHANS（AF-5；⚠ 后端 tenant 隔离遗留面仍以 super-only
-  // 门控兜底，RLS 化改造登记待办）。
+  // navCoverage KNOWN_ORPHANS（AF-5；★ 后端 tenant 隔离遗留面**已在 2026-11-04
+  // 12h 审计轮 D-1 降为 superAdmin 档**（/api/admin/dashboard/operational）⇒
+  // 这条 super-only 门控**现在才成立**；载荷内部仍是平台级聚合，RLS 化改造登记待办）。
   {
     id: 'operations',
     labelKey: 'nav.group.operations',

@@ -16,6 +16,7 @@ type fakeSummaryProvider struct {
 	candidates []ProviderCandidate
 	models     []string
 	profiles   []string
+	modalities []string
 }
 
 func (f *fakeSummaryProvider) Enabled() bool { return true }
@@ -27,6 +28,14 @@ func (f *fakeSummaryProvider) GetCandidates(ctx context.Context, model, profile 
 		return f.candidates, nil
 	}
 	return []ProviderCandidate{{RawModel: model, BaseURL: "https://example.invalid", APIKey: "key", Protocol: "openai-completions", Available: true}}, nil
+}
+
+// GetCandidatesByModality（F-1）：摘要链现在固定走模态门 ⇒ fake 的候选供给
+// 也搬到这个入口；仍然委托 GetCandidates 保持旧行为断言（models/profiles
+// 记录）不变，同时把请求到的模态记下来供门判据使用。
+func (f *fakeSummaryProvider) GetCandidatesByModality(ctx context.Context, model, profile, _ string, modality string) ([]ProviderCandidate, error) {
+	f.modalities = append(f.modalities, modality)
+	return f.GetCandidates(ctx, model, profile)
 }
 
 func TestSummaryClientAdapterRequiresModel(t *testing.T) {
@@ -172,6 +181,7 @@ func TestSummaryClientAdapterSkipsSmallContextCandidate(t *testing.T) {
 
 type fakeTenantSummaryProvider struct {
 	tenantID string
+	modality string
 }
 
 func (f *fakeTenantSummaryProvider) Enabled() bool { return true }
@@ -180,8 +190,17 @@ func (f *fakeTenantSummaryProvider) GetCandidates(ctx context.Context, model, pr
 	return nil, nil
 }
 
+// GetCandidatesForTenant 保留：resolveCandidatesByModality 的 modality=="" 臂
+// 仍走租户感知入口（无模态概念调用方的旧语义）。
 func (f *fakeTenantSummaryProvider) GetCandidatesForTenant(ctx context.Context, model, profile, tenantID string) ([]ProviderCandidate, error) {
 	f.tenantID = tenantID
+	return []ProviderCandidate{{RawModel: model, BaseURL: "https://example.invalid", APIKey: "key", Protocol: "openai-completions", Available: true}}, nil
+}
+
+// GetCandidatesByModality（F-1）：摘要链的租户透传现在从这个入口走。
+func (f *fakeTenantSummaryProvider) GetCandidatesByModality(ctx context.Context, model, profile, tenantID, modality string) ([]ProviderCandidate, error) {
+	f.tenantID = tenantID
+	f.modality = modality
 	return []ProviderCandidate{{RawModel: model, BaseURL: "https://example.invalid", APIKey: "key", Protocol: "openai-completions", Available: true}}, nil
 }
 
@@ -193,6 +212,10 @@ func TestSummaryClientAdapterUsesTenantAwareProvider(t *testing.T) {
 	}
 	if len(candidates) != 1 || provider.tenantID != "tenant-a" {
 		t.Fatalf("candidates=%v tenant=%q, want one candidate for tenant-a", candidates, provider.tenantID)
+	}
+	// F-1：摘要候选解析必须带 text 模态门，且租户照样透传。
+	if provider.modality != "text" {
+		t.Fatalf("modality = %q, want text（摘要请求是纯文本 chat 形态调用）", provider.modality)
 	}
 }
 

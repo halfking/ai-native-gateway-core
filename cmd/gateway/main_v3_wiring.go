@@ -943,6 +943,30 @@ type routingProviderResolver interface {
 	ModelKnown(ctx context.Context, model string) bool
 }
 
+// modalityProviderResolver is the optional modality-filtering capability of
+// the underlying provider resolver（provider.Client.GetCandidatesByModality，
+// provider/modality_accept.go 的 SQL 臂是判据权威）。
+type modalityProviderResolver interface {
+	GetCandidatesByModality(ctx context.Context, model, profile, tenantID, modality string) ([]provider.Candidate, *provider.Policy, error)
+}
+
+// ★ 生产接线锁（F-1，2026-11-04）：压缩/摘要依赖（NewDependenciesFromExecutor
+// → providerClientAdapter）的候选解析在模态过滤上依赖底层 resolver 暴露
+// GetCandidatesByModality。生产接线是 `routingExec.Provider = providerClient`
+// （main.go，*provider.Client）⇒ 满足本接口。这条断言把「满足」变成**编译期
+// 事实**：哪天 provider 换成不暴露该方法的包装类型，adapter 会在运行期对每个
+// 压缩模型返回 errProviderModalityUnsupported ⇒ 压缩链整体静默降级成机械
+// 裁剪 ⇒ 必须在构建期就拦住（与 executors 包的同名锁同一理由）。
+var _ modalityProviderResolver = (*provider.Client)(nil)
+
+// errProviderModalityUnsupported is returned by providerClientAdapter when
+// the wired provider resolver cannot filter candidates by modality.
+//
+// ★ F-1（2026-11-04）：此时**不**退回无过滤的 GetCandidates——那会把登记为
+// embedding 的绑定塞回 chat 形态的压缩/摘要请求（40bbe7a54 同族第二处）。
+// compression 包拿到错误 ⇒ 该模型没有候选 ⇒ 退下一个压缩模型 / 降级机械裁剪。
+var errProviderModalityUnsupported = errors.New("provider resolver does not support modality filtering")
+
 func (p providerClientAdapter) Enabled() bool {
 	if p.r == nil {
 		return false
@@ -971,6 +995,31 @@ func (p providerClientAdapter) GetCandidatesForTenant(ctx context.Context, model
 	if err != nil {
 		return nil, err
 	}
+	return convertProviderCandidates(raw), nil
+}
+
+// GetCandidatesByModality is the modality-gated candidate resolution the
+// compression/summary chain uses (F-1). 底层 resolver 不支持模态过滤时返回
+// errProviderModalityUnsupported——**绝不退回**无过滤的 GetCandidates。
+func (p providerClientAdapter) GetCandidatesByModality(ctx context.Context, model, profile, tenantID, modality string) ([]compression.ProviderCandidate, error) {
+	if p.r == nil {
+		return nil, fmt.Errorf("provider resolver nil")
+	}
+	resolver, ok := p.r.(modalityProviderResolver)
+	if !ok {
+		return nil, errProviderModalityUnsupported
+	}
+	raw, _, err := resolver.GetCandidatesByModality(ctx, model, profile, tenantID, modality)
+	if err != nil {
+		return nil, err
+	}
+	return convertProviderCandidates(raw), nil
+}
+
+// convertProviderCandidates projects provider.Candidate onto the minimal
+// shape the compression package reads (shared by the filtered and unfiltered
+// resolution paths so the two cannot drift).
+func convertProviderCandidates(raw []provider.Candidate) []compression.ProviderCandidate {
 	out := make([]compression.ProviderCandidate, 0, len(raw))
 	for i := range raw {
 		out = append(out, compression.ProviderCandidate{
@@ -984,5 +1033,5 @@ func (p providerClientAdapter) GetCandidatesForTenant(ctx context.Context, model
 			Available:     raw[i].Routable,
 		})
 	}
-	return out, nil
+	return out
 }

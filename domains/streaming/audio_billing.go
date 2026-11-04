@@ -15,10 +15,11 @@ import (
 )
 
 // audioMaasCharger is the narrow surface AudioService needs from maas.Service
-// (keeps tests free of a full Service).
+// (keeps tests free of a full Service). Uses the owner-carrying multiplier
+// variant so the audio consume ledger rows carry owner_user.
 type audioMaasCharger interface {
 	Enabled() bool
-	ChargeRequestMultimodal(ctx context.Context, tenantID, requestID, canonicalName string, usage maas.TokenUsage) (int64, error)
+	ChargeRequestMultimodalWithMultiplier(ctx context.Context, tenantID, ownerUser, requestID, canonicalName string, usage maas.TokenUsage, rateMultiplier float64) (int64, float64, error)
 }
 
 // SetMaas wires optional tenant-credit charging for audio endpoints.
@@ -31,8 +32,12 @@ func (s *AudioService) SetMaas(svc audioMaasCharger) {
 
 // chargeTranscription credits the tenant for a successful ASR call and
 // best-effort logs audio_seconds into request_logs_hot.
+// ownerUser is the api-key owner (same source as the telemetry
+// api_key_owner_user field, extracted from the authenticate() KeyInfo by the
+// caller); it rides into credit_ledger.owner_user so audio consume rows are
+// visible under /api/maas/my/*. Empty = owner unknown (legacy shape).
 // Charge / log failures never fail the client response.
-func (s *AudioService) chargeTranscription(ctx context.Context, tenantID, requestID, model string, durationSec *float64) {
+func (s *AudioService) chargeTranscription(ctx context.Context, tenantID, ownerUser, requestID, model string, durationSec *float64) {
 	if s == nil {
 		return
 	}
@@ -49,7 +54,11 @@ func (s *AudioService) chargeTranscription(ctx context.Context, tenantID, reques
 	var amount int64
 	var err error
 	if s.maas != nil && s.maas.Enabled() && tenantID != "" && tenantID != "default" {
-		amount, err = s.maas.ChargeRequestMultimodal(ctx, tenantID, requestID, model, usage)
+		// F-4（2026-11-04 审计）：走带 owner 的变体，音频 consume 流水
+		// 不再落 owner_user=''。multiplier 显式传 1.0——音频车道此前即按
+		// 隐式 1.0 计费（chargeTokens → chargeTokensWithMultiplier(1.0)），
+		// 峰谷倍数接入是独立决策，本修复不改计费金额口径。
+		amount, _, err = s.maas.ChargeRequestMultimodalWithMultiplier(ctx, tenantID, ownerUser, requestID, model, usage, 1.0)
 		if err != nil {
 			slog.Warn("audio maas charge failed",
 				"request_id", requestID,
