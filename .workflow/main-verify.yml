@@ -104,9 +104,13 @@ stages:
             #   ★ 排位有意在 tests/deploy_local_contract_test.sh **之前**
             #     ⇒ `make` 遇红即中止 ⇒ 排在后面的门在前面红着时**根本跑不到**
             #     ⇒ ★「接线了却跑不到」＝ 门自称有牙实则没牙（比没接线更坏）。
-            #   ★ 排位有意在 tests/deploy_local_contract_test.sh **之前**
-            #     ⇒ `make` 遇红即中止 ⇒ 排在后面的门在前面红着时**根本跑不到**
-            #     ⇒ ★「接线了却跑不到」＝ 门自称有牙实则没牙（比没接线更坏）。
+            # ★ 2026-11-05（245/154 部署断链轮 · 第二处）：★ 该 target 再接进 **1 条**快门
+            #   （tests/migration_retired_marker_contract_test.sh，实测 ≈2s）
+            #   ⇒ 门脚本门 17 → **18** 条 ⇒ ★ 墙钟预算 +≈2s。
+            #   ★ 起因：部署在「切换前 pending 迁移」这步中止（946 的外键指向
+            #     sales_quote_versions 不存在）⇒ 根因＝共享部署库的**退役判据**
+            #     把表头提到 superseded 的 944/945 **静默丢弃** ⇒ 本仓配一道行为门，
+            #     判据取**共享库的真实现**（共享库不可达时才回落规定口径并明说）。
             # ★ 与此同时，**切流状态机门（实测 ≈270s）被有意排除在快门之外**
             #   （单列 `make guards-deploy-state-machine`，只进 `make guards`
             #     与 `verify.sh`）—— ★ ≈270s ≫ 快门预算 ⇒ 塞进来会撑爆预算。
