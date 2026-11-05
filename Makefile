@@ -248,8 +248,27 @@ guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，
 #     （本机实测：deploy_local_contract_test 因 agent PATH 上的 `rm` 是可恢复删除
 #      包装器、拒绝 /var/folders 沙箱外路径而红 ⇒ 换真 /bin/rm 即绿 ⇒ **量具失真**，
 #      非仓内缺陷；详见 LESSONS §633。）
+#
+# ★ 2026-11-05（245/154 部署断链轮）：★ 再接进 **1 条**快门
+#   （tests/envs_resolution_contract_test.sh）⇒ 该 target 的快门数 16 → **17**。
+#   ★ 起因：★ 工作区 2026-11-04 重组（根仓 85faac2a）把 envs 仓落到
+#     ai-native-tools/deploy/envs ⇒ 245/154 部署脚本里的**两候选链**
+#     （ai-native-workspace/envs → ai-native-tools/envs）**两个都落空**
+#     ⇒ 每次部署第一步就退出（`envs SSOT loader not found: …/ai-native-workspace/
+#       envs/loader.sh` —— ★ 一条本机**从来不存在**的死路径 ⇒ 看起来像「envs 丢了」★
+#       ⇒ 实际是「默认值没跟着迁移改」）⇒ ⇒ 解析收口到 scripts/envs-resolve.sh，
+#     并给它配一道**行为门**（★ 夹具由**实现自己的候选链**推导 ⇒ 布局改名不假红 ★；
+#     ★ 变异臂已实测：旧实现 14 红 / 显式值不校验 7 红 / 文案漂移 1 红 ★）。
+#   ★ ★ 计数订正：★ 本 target 的 @bash 行实测 **18 条快门 + 1 条登记册门**（=19 行）
+#     ⇒ ★ 上面那句「16 → 17」只记**本轮增量**；★ 历史计数（12→13→14→16）漏记了
+#     后加的门 ⇒ ★ **以行数为准** ★（计数类结论：口径必须和数字一起发布）。
+#   ★ ★ **排位**：★ 本轮这条门有意排在 **tests/deploy_local_contract_test.sh 之前**
+#     ⇒ `make` 遇红即中止 ⇒ 排在后面的门在前面红着时**根本跑不到**
+#     ⇒ ★「接线了却跑不到」＝ 门自称有牙实则没牙（比没接线更坏）★。
+#     （本机实测：deploy_local_contract_test 在 agent PATH 的 `rm` 包装器下红、
+#       换真 /bin/rm 即绿 ⇒ **量具失真**、非仓内缺陷 ⇒ §633。）
 .PHONY: guards-gate-scripts
-guards-gate-scripts: ## 门脚本接线门（16 条快门 + 登记册门，防新增隐形门）
+guards-gate-scripts: ## 门脚本接线门（18 条快门 + 登记册门，防新增隐形门）
 	@bash tests/audit_154_wrapper_test.sh
 	@bash tests/credential_script_contract_test.sh
 	@bash tests/deploy_seamless_mobile_surface_test.sh
@@ -263,6 +282,7 @@ guards-gate-scripts: ## 门脚本接线门（16 条快门 + 登记册门，防�
 	@bash tests/deploy_promotion_test.sh
 	@bash tests/deploy_readiness_contract_test.sh
 	@bash tests/deploy_sops_test.sh
+	@bash tests/envs_resolution_contract_test.sh
 	@bash tests/deploy_local_contract_test.sh
 	@bash tests/shared_lib_resolution_contract_test.sh
 	@bash tests/scan_secrets_enumeration_contract_test.sh
