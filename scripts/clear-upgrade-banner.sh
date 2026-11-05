@@ -21,28 +21,18 @@ case "$TARGET" in
 esac
 
 # Load envs
-# ⚠️ 同 deploy-seamless.sh：默认值只有一个候选且无兜底，本机新布局下会指向死路径。
-# 这里与 _shared-lib.sh 保持一致的两个候选顺序。
-if [[ -z "${ENVS_ROOT:-}" ]]; then
-  for _envs_candidate in \
-    "${HOME}/workspace/ai-native-workspace/envs" \
-    "${HOME}/workspace/ai-native-tools/envs"; do
-    if [[ -f "$_envs_candidate/loader.sh" ]]; then
-      ENVS_ROOT="$_envs_candidate"
-      break
-    fi
-  done
-  ENVS_ROOT="${ENVS_ROOT:-${HOME}/workspace/ai-native-workspace/envs}"
-fi
+# ★ 2026-11-05：与 deploy-seamless.sh 同源 ⇒ 解析收口到 scripts/envs-resolve.sh
+#   （候选链的**单一真相**在那一个文件里；失败语义 rc=64 + 可执行提示）。
+#   ★ 历史包袱（留档）：此处原本内联**两候选链**（ai-native-workspace/envs →
+#     ai-native-tools/envs）且兜底默认值指向 ai-native-workspace ⇒ 工作区重组后
+#     两个候选全落空 ⇒ 报出一条本机从来不存在的死路径（看起来像「envs 丢了」）。
+# shellcheck source=envs-resolve.sh
+source "$SCRIPT_DIR/envs-resolve.sh"
 case "$TARGET" in
   245) ENV_SERVER="8.136.114.245" ;;
   154) ENV_SERVER="47.97.111.154" ;;
 esac
 
-if [[ ! -f "$ENVS_ROOT/loader.sh" ]]; then
-  echo "envs SSOT loader not found: $ENVS_ROOT/loader.sh" >&2
-  exit 1
-fi
 source "$ENVS_ROOT/loader.sh" --all --project llm-gateway-go --server "$ENV_SERVER"
 
 # SSH setup
