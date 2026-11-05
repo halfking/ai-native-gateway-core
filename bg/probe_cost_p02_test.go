@@ -5,7 +5,7 @@
 //
 // 三件事共用这一批测试：
 //  1. TestNetworkChain_LongTailSink —— 网络类 attempt 1..4 仍走
-//     5s/15s/30s/60s 短梯；attempt 5+ 沿 5m→1h→2h→6h 长尾沉底；
+//     5s/15s/30s/60s 短梯；attempt 5+ 封顶 recovery_max_backoff（默认 5m）；
 //     probe.network_chain_long_tail=false 恢复 60s 永续旧行为。
 //  2. TestRequestFailure_MinGapSkip —— 频控门接线（跳过时不入队）；
 //     gap=0 完全关闭；periodic 泵路径不受频控影响。
@@ -55,6 +55,60 @@ func withP02Settings(t *testing.T, longTail bool, minGapSeconds int) {
 	settings.Global = registry
 }
 
+// ★★ 2026-11-05（12h 审计轮 · P-10）：★ 旋钮必须是【上限】而不是【替换】，
+//
+//	★ 否则「把长尾从 5m 改回 1h/2h/6h」这件事【无法纯配置回退】⇒ 口径变更不可逆。
+//	★ 本用例把旋钮开到 21600（6h）⇒ 断言长尾**逐字**回到 2026-09-25 P0-2 的原梯。
+func withP02Backoff(t *testing.T, backoffSeconds int) {
+	t.Helper()
+	prev := settings.Global
+	t.Cleanup(func() { settings.Global = prev })
+
+	registry := settings.NewRegistry()
+	registry.RegisterBackend(settings.ScopePlatform, &probeCostSettingsBackend{store: map[string][]byte{
+		"probe.network_chain_long_tail":         []byte(boolToString(true)),
+		"probe.request_failure_min_gap_seconds": []byte(strconv.Itoa(60)),
+		"probe.recovery_max_backoff_seconds":    []byte(strconv.Itoa(backoffSeconds)),
+	}})
+	for _, spec := range settings.ProbeSpecs() {
+		registry.MustRegisterSpec(spec)
+	}
+	settings.Global = registry
+}
+
+func TestNetworkChain_BackoffKnobRestoresP02Ladder(t *testing.T) {
+	// ① 旋钮开到 21600（6h）⇒ 长尾逐字回到 P0-2 原梯 5m→1h→2h→6h
+	withP02Backoff(t, 21600)
+	cases := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{4, 60 * time.Second},
+		{5, 5 * time.Minute},
+		{6, time.Hour},
+		{7, 2 * time.Hour},
+		{8, 6 * time.Hour},
+		{9, 6 * time.Hour},
+		{50, 6 * time.Hour},
+	}
+	for _, c := range cases {
+		got := networkProbeBackoff(c.attempt)
+		if got != c.want {
+			t.Fatalf("networkProbeBackoff(%d) = %v, want %v (★ 旋钮开到 21600 ⇒ 必须回到 P0-2 原梯)",
+				c.attempt, got, c.want)
+		}
+	}
+
+	// ② 旋钮收到 300（默认）⇒ 长尾恒为 5m（2026-11-05 口径）
+	withP02Backoff(t, 300)
+	for _, attempt := range []int{5, 6, 7, 8, 9, 50} {
+		got := networkProbeBackoff(attempt)
+		if got != 5*time.Minute {
+			t.Fatalf("networkProbeBackoff(%d) = %v, want 5m (★ 旋钮 300 ⇒ 长尾封顶 5m)", attempt, got)
+		}
+	}
+}
+
 // TestNetworkChain_LongTailSink pins the P0-2 long-tail ladder for every
 // error class that rides the network/transient short chain, through both
 // entry points (kind + err-code mapping).
@@ -69,12 +123,12 @@ func TestNetworkChain_LongTailSink(t *testing.T) {
 		{2, 15 * time.Second},
 		{3, 30 * time.Second},
 		{4, 60 * time.Second},
-		{5, 5 * time.Minute},
-		{6, time.Hour},
-		{7, 2 * time.Hour},
-		{8, 6 * time.Hour},
-		{9, 6 * time.Hour}, // 封顶
-		{50, 6 * time.Hour},
+		{5, 5 * time.Minute}, // recovery SLA cap (was 5m→1h→2h→6h sink)
+		{6, 5 * time.Minute},
+		{7, 5 * time.Minute},
+		{8, 5 * time.Minute},
+		{9, 5 * time.Minute},
+		{50, 5 * time.Minute},
 	}
 	kinds := []errorsx.ErrorKind{
 		errorsx.KindNetwork, errorsx.KindTimeout, errorsx.KindTransient,
@@ -265,9 +319,10 @@ func TestRequestFailure_SubmitViaQueueDBReadFailureOpens(t *testing.T) {
 // TestProbeServiceAttemptPersistsAcrossGenerations pins the P0-2 fix for the
 // queue-task generation attempt reset (r0925 handoff 遗留 1): a freshly
 // pumped task (Attempt=1) for a pair with state.consecutive_failures=6 must
-// ladder from rung 7 (2h long-tail), not restart at 5s; the ladder position
-// survives generation death. Fail-open: an unreadable state falls back to
-// the task's own attempt.
+// keep attempt=7 (not restart at 5s); the ladder position survives generation
+// death. 2026-11-05: recoverable network long-tail holds at recovery SLA (5m)
+// instead of 1h/2h/6h. Fail-open: an unreadable state falls back to the
+// task's own attempt.
 func TestProbeServiceAttemptPersistsAcrossGenerations(t *testing.T) {
 	withP02Settings(t, true, 60)
 
@@ -299,17 +354,17 @@ func TestProbeServiceAttemptPersistsAcrossGenerations(t *testing.T) {
 		if outcome.attempt != 7 {
 			t.Fatalf("attempt = %d, want 7 (cf=6 + 1)", outcome.attempt)
 		}
-		// rung 7 of 5s→15s→30s→60s→5m→1h→2h→(6h cap)
-		assertRetryDelay(t, result.NextRunAt, before, 2*time.Hour)
+		// attempt 7 > short chain → recovery SLA cap (5m)
+		assertRetryDelay(t, result.NextRunAt, before, 5*time.Minute)
 	})
 
-	t.Run("sustained failure sinks to the 6h cap across generations", func(t *testing.T) {
+	t.Run("sustained failure holds at recovery SLA across generations", func(t *testing.T) {
 		before := time.Now()
 		result, outcome := run(3, 49, true)
 		if outcome.attempt != 50 {
 			t.Fatalf("attempt = %d, want 50", outcome.attempt)
 		}
-		assertRetryDelay(t, result.NextRunAt, before, 6*time.Hour)
+		assertRetryDelay(t, result.NextRunAt, before, 5*time.Minute)
 	})
 
 	t.Run("task attempt kept when state outranked by task counter", func(t *testing.T) {

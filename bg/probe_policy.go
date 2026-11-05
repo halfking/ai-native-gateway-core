@@ -6,7 +6,8 @@
 // 核心不变量：成功即停放（park），失败才武装（arm）。
 //   - INV-1 healthy-parked 行任何调度器不得触达；
 //   - INV-2 新失败立即重武装（NodeProbeWorker.Submit 的 ON CONFLICT 扩展）；
-//   - INV-3 周期扫描只探 3 天内（非探测流量）使用过的模型；
+//   - INV-3 周期扫描只探 24 小时内（非探测流量）使用过的模型；
+//     自动探测另要求模型 ∈ 特色清单 ∪ 近 24h 真实用量（其它仅手工）；
 //   - INV-4 同凭据 24h 内 ≥2 个不同模型探测成功 → 其它模型早停；
 //   - INV-5 周期扫描只面向有错误证据的凭据。
 //
@@ -311,9 +312,10 @@ func probeTrafficExclusionPredicateFor(family, alias string) (string, bool) {
 const probeFailureEvidenceWindowSQL = "interval '24 hours'"
 
 // probeUsageWindowInterval is the usage window for probe scoping (INV-3):
-// only models with real (non-probe) traffic on the credential within the
-// last 3 days are probeable by scheduled scans.
-const probeUsageWindowInterval = "interval '3 days'"
+// only models with real (non-probe) traffic within the last 24 hours are
+// probeable by scheduled / automatic scans. Featured models remain in scope
+// even without recent usage; everything else is manual-only.
+const probeUsageWindowInterval = "interval '24 hours'"
 
 // nodeProbeParkInterval is how far a successful probe / business success
 // parks next_retry_at. 30 days is deliberately beyond every scheduler's

@@ -197,12 +197,32 @@ func ProbeSpecs() []*Spec {
 			Category:        CategoryProbe,
 			Min:             floatPtr(1),
 			Max:             floatPtr(2160), // 90d (hot table retention)
-			Default:         72,
+			Default:         24,
 			Description:     "用量统计窗口（小时）",
-			DescriptionLong: "计算用量 Top-N 时回看的窗口长度（默认 72=3 天，2026-09-20 探测策略：与探测的 3 天使用范围对齐；统计已排除探测自身流量）。",
+			DescriptionLong: "计算用量 Top-N 时回看的窗口长度（默认 24=1 天，2026-11-05：与自动探测 INV-3「近 24h 真实用量」对齐；统计已排除探测自身流量）。",
 			Unit:            "小时",
 			DangerLevel:     Safe,
 			HotReload:       true,
+		},
+		{
+			Key:      "probe.recovery_max_backoff_seconds",
+			Type:     TypeInt,
+			Scope:    ScopePlatform,
+			Category: CategoryProbe,
+			Min:      floatPtr(60),
+			// ★ 上界取 21600（6h）＝ 2026-09-25 P0-2 长尾的最大一级
+			//   ⇒ ⇒ 把本旋钮调到 21600 就能**纯配置**回到旧口径（见下 DescriptionLong）。
+			Max:         floatPtr(21600),
+			Default:     300,
+			Description: "可恢复探测退避上限（秒）",
+			DescriptionLong: "瞬时/网络/5xx 等非永久失败的自动探测重试间隔**上限**（默认 300=5 分钟）。长尾仍是渐进的 5m→1h→2h→6h，但每一级都被削到本上限 ⇒ 默认下恒为 5 分钟，以便供应商恢复后约 5 分钟内被重新探测到。永久类（404/协议/配额固定节奏）不受此上限约束。" +
+				" ★ ★ 回退路径（纯配置、不用改代码）：★ 本旋钮调到 21600（6h）⇒ 长尾恢复成 2026-09-25 P0-2 的原梯 5m→1h→2h→6h；★ 调到 60 ⇒ 退化成短梯封顶。★ 所以这次口径变更是**可逆的**。" +
+				" ★ 代价（必须一起看）：★ 2026-09-25 P0-2 实测 60s 档滞留 45 对（connection_error/503/timeout/500），长尾化落地后 node_probe_runs ~5,000/h→~1,610/h。" +
+				" ★ 本旋钮把长尾封顶从 6h 改到默认 5m ⇒ ★ 对【持续故障的对】稳态频率由 1 次/6h 变 1 次/5m（★ 72×）⇒ 以那 45 对计 ≈ +530 次/h（★ 约合 1,610/h 基线的 +33%）。" +
+				" ★ 换来的好处：供应商恢复后 ≤5 分钟内被复检（原先最长 6h）。★ 成本敏感的部署请把本旋钮调到 3600（1h）——恢复发现慢 6 倍，探测量回到 P0-2 之后的水平。",
+			Unit:        "秒",
+			DangerLevel: Safe,
+			HotReload:   true,
 		},
 		{
 			Key:             "probe.nonfeatured_watchdog_multiplier",
@@ -255,7 +275,7 @@ func ProbeSpecs() []*Spec {
 			Category:        CategoryProbe,
 			Default:         true,
 			Description:     "网络类短梯长尾化",
-			DescriptionLong: "网络/超时/5xx 等瞬时类失败退避在走完短梯 4 步（5s→15s→30s→60s）后继续沿通用梯档位爬升（5m→1h→2h→6h 封顶），消除 60s 档永续滞留的无限重探（2026-09-25 实测 45 对滞留，全部为 connection_error/503/timeout/500）。前 4 步不动：短暂抖动（<1h）的恢复发现速度完整保留；持续宕机对的探测频率从 1 次/分钟衰减到 1 次/6h（与 auth/404 类一致，明示的取舍）。false=现行行为（短梯封顶 60s 永续）。见 docs/03-design/perf-2026-09-25-probe-cost-optimization.md §5 P0-2。",
+			DescriptionLong: "网络/超时/5xx 等瞬时类失败退避在走完短梯 4 步（5s→15s→30s→60s）后进入长尾；2026-11-05 起长尾封顶为 probe.recovery_max_backoff_seconds（默认 5 分钟），不再沉到 1h/2h/6h，以便供应商恢复后及时复检。false=短梯封顶 60s 永续。见 docs/03-design/perf-2026-09-25-probe-cost-optimization.md §5 P0-2。",
 			Unit:            "",
 			DangerLevel:     Safe,
 			HotReload:       true,

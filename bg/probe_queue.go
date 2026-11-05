@@ -428,6 +428,18 @@ func (q *ProbeQueue) Enqueue(ctx context.Context, task ProbeQueueTask) (int64, b
 		if !eligible {
 			return 0, false, fmt.Errorf("%w: credential_id=%d", ErrProbeAutomaticIneligible, task.CredentialID)
 		}
+		inScope, scopeErr := q.automaticProbeModelInScope(ctx, task.RawModel)
+		if scopeErr != nil {
+			// ★ 2026-11-05 审计修：这道门**失败开放** —— 读失败时
+			// automaticProbeModelInScope 已按「在范围内」返回 true，并把
+			// 错误原样带回供此处记审计。**不要**在这里把 scopeErr 当拒绝：
+			// 拒绝 = 把恢复探测挡在门外 = 与门的意图相反。
+			slog.Warn("probe queue: model scope check failed, allowing automatic probe",
+				"credential_id", task.CredentialID, "model", task.RawModel, "error", scopeErr)
+		}
+		if !inScope {
+			return 0, false, fmt.Errorf("%w: model=%q", ErrProbeModelOutOfAutomaticScope, task.RawModel)
+		}
 	}
 	if task.TenantID == "" {
 		task.TenantID = "default"

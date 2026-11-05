@@ -302,6 +302,20 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "automatic_probe_ineligible"},
 				fmt.Errorf("%w: credential_id=%d", ErrProbeAutomaticIneligible, task.CredentialID)
 		}
+		if s.queue != nil {
+			inScope, scopeErr := s.queue.automaticProbeModelInScope(ctx, model)
+			if scopeErr != nil {
+				// ★ 2026-11-05 审计修：失败开放（见 probe_model_scope.go）。
+				// 读失败时 automaticProbeModelInScope 已返回 inScope=true；
+				// 这里只记告警，**不**把它当拒绝 —— 拒绝会把恢复探测挡死。
+				slog.Warn("probe service: model scope check failed, allowing automatic probe",
+					"credential_id", task.CredentialID, "model", model, "error", scopeErr)
+			}
+			if !inScope {
+				return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "automatic_probe_model_out_of_scope"},
+					fmt.Errorf("%w: model=%q", ErrProbeModelOutOfAutomaticScope, model)
+			}
+		}
 	}
 	triggerKind, _ := NormalizeTriggerKind(task.Source)
 	trigger := nodeProbeTrigger{tenantID: task.TenantID, parentID: task.ParentReqID}

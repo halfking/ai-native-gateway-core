@@ -199,15 +199,14 @@ func (r *ModelProbeRunner) StartFeaturedOnly(ctx context.Context) {
 }
 
 // recoveringSweeperInterval is the sweep cadence for the recovering dead-end
-// set. 30 minutes matches broken_probe_reviver: a row the reviver flips
-// broken_confirmed → recovering is drained within one interval, and a
-// failing verify walks the consensus backoff ladder rather than the sweep
-// cadence.
-const recoveringSweeperInterval = 30 * time.Minute
+// set. 2026-11-05: 30m → 5m so a row flipped broken_confirmed → recovering
+// is re-verified within the operator recovery SLA (≈5 minutes). Failing
+// verifies still walk the consensus backoff ladder rather than this cadence.
+const recoveringSweeperInterval = 5 * time.Minute
 
 // recoveringSweepBatch bounds one sweep. Consensus verify probes are real
-// upstream requests; 10 per 30min keeps the worst-case overhead at
-// 480 requests/day fleet-wide even if every recovering row is stuck.
+// upstream requests; 10 per 5min keeps worst-case overhead bounded even if
+// every recovering row is stuck.
 const recoveringSweepBatch = 10
 
 // recoveringSweepTickBudget bounds one tick BETWEEN probes (never mid-probe —
@@ -389,7 +388,7 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 	if mult <= 1 {
 		return
 	}
-	windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 72)
+	windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 24)
 	topN := settings.GetPlatformInt("probe.featured_usage_top_n", 20)
 	if topN <= 0 {
 		topN = 0 // only static featured applies when kill-switch is on
@@ -901,12 +900,14 @@ func (r *ModelProbeRunner) featuredCycleLoop(ctx context.Context) {
 // 2026-09-20 probe-volume policy (docs/probe/2026-09-20-probe-volume-optimization.md):
 // the cycle is now error-gated. 常用模型强化自检 stays, but only for credentials
 // that actually need verification — deep-pinging every credential's featured
-// list every 15 minutes was normal-state continuous probing. Three gates:
-//   - INV-3: the model carried real (non-probe) traffic on THIS credential in
-//     the last 3 days;
+// list every 15 minutes was normal-state continuous probing. Two SQL gates
+// (+ Go-side featured filter):
 //   - INV-5: the credential has failure evidence in the last 24h;
 //   - INV-4: the credential has NOT already been re-verified by two distinct
 //     models whose latest probe run succeeded within 24h.
+// 2026-11-05: INV-3 usage EXISTS removed from this cycle — featured models are
+// always in automatic scope; Go-side globalIsFeaturedModel is the model gate.
+// Non-featured models still require 24h real usage (Enqueue/Run model scope).
 func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 	timeout, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -940,24 +941,6 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		  AND `+credentialFailureEvidenceSQL("c.id", probeFailureEvidenceWindowSQL)+`
 		  -- 2026-09-20 INV-4: two recently probe-verified models stop the pass.
 		  AND NOT `+credentialTwoProbeSuccessGateSQL("c.id")+`
-		  -- 2026-09-20 INV-3: the model must have real (non-probe) traffic on
-		  -- THIS credential within the 3-day probe scope window.
-		  AND EXISTS (
-			-- ★ 890（v1 族退役）：证据源换成会话族热腿（v1 热表已 DROP；
-			-- 窗口 3 天 ≫ hot 保留期 8h，v1 侧本来就只看得到最近 8h，
-			-- 会话族热腿的保留期同款 ⇒ 口径不变）。
-			SELECT 1 FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl
-			WHERE rl.credential_id = cmb.credential_id
-			  AND rl.ts >= now() - `+probeUsageWindowInterval+`
-			  -- 会话族没有 quality_flags ⇒ 用会话族那条探针排除谓词。
-			  AND `+fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")+`
-			  -- 腿 1 用 client_model（会话族同名同义，来自 session_turn_details）；
-			  -- 腿 2/3 用 rl.raw_model_name —— 它在会话族里就是 v1
-			  -- outbound_model 的同义列（COALESCE(outbound_model, client_model)）。
-			  AND (pm.raw_model_name = rl.client_model
-			       OR pm.raw_model_name = rl.raw_model_name
-			       OR pm.outbound_model_name = rl.raw_model_name)
-		  )
 		LIMIT $1
 	`, MaxBatchPerCycle*4 /* bound scan; Go-side globalIsFeaturedModel further filters */)
 	if err != nil {

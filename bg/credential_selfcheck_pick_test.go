@@ -210,7 +210,7 @@ func TestSelfcheckUsesSharedRecentModelSource(t *testing.T) {
 	for _, want := range []string{
 		"recentmodels.Read",
 		// 2026-09-20 探测量策略：SQL 回退窗口从 7 天对齐到 3 天使用范围
-		"interval '3 days'",
+		"interval '24 hours'",
 		// ★ 2026-10-20（迁移 890，v1 族退役）：读源换成会话族热腿 ⇒ 探针
 		// 排除谓词必须换成**会话族**那条（origin_stage + task_type +
 		// origin_actor）。会话族**没有 quality_flags** 列 ⇒ 用 v1 那条

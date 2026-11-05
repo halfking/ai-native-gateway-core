@@ -86,8 +86,8 @@ func TestProbePolicyPredicatesShape(t *testing.T) {
 	if strings.Contains(ProbeTrafficExclusionPredicateView, "origin_stage") {
 		t.Error("view predicate must not have an origin_stage arm (not in the 113-column contract)")
 	}
-	if probeUsageWindowInterval != "interval '3 days'" {
-		t.Fatalf("usage window = %q, want 3 days", probeUsageWindowInterval)
+	if probeUsageWindowInterval != "interval '24 hours'" {
+		t.Fatalf("usage window = %q, want 24 hours", probeUsageWindowInterval)
 	}
 }
 
@@ -112,7 +112,7 @@ func TestPumpDueStatesSQLErrorEvidenceGate(t *testing.T) {
 // ─── featuredCycle 三门控 ─────────────────────────────────────────────
 
 // TestFeaturedCycleErrorGated pins the 2026-09-20 re-scope of the 常用模型
-// deep-ping: 3-day per-credential usage (probe traffic excluded), credential
+// deep-ping: 24h per-credential usage (probe traffic excluded), credential
 // failure evidence, and the two-consecutive-success gate.
 //
 // ★ 2026-10-20（迁移 890，v1 族退役）：usage 证据源从 v1 热表换成**会话族热腿**，
@@ -138,22 +138,16 @@ func TestFeaturedCycleErrorGated(t *testing.T) {
 	for _, want := range []string{
 		`credentialFailureEvidenceSQL("c.id", probeFailureEvidenceWindowSQL)`,
 		`credentialTwoProbeSuccessGateSQL("c.id")`,
-		// ★ 890：usage 证据源是会话族热腿（v1 热表已 DROP）。
-		"SELECT 1 FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl",
-		"probeUsageWindowInterval",
-		// ★ 890：会话族没有 quality_flags ⇒ 必须用会话族那条谓词。
-		`fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")`,
+		"globalIsFeaturedModel",
 	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("featuredCycle SQL missing policy fragment %q", want)
+			t.Fatalf("featuredCycle missing policy fragment %q", want)
 		}
 	}
-	// 负向：不得再用 v1 物理谓词（它引用 quality_flags ⇒ 会话族 42703）。
-	// ⚠ 正向对照：上面那条会话族谓词断言。
-	// ⚠ 边界：`probeTrafficExclusionPredicateSession,` 里不含
-	// `probeTrafficExclusionPredicate,` ⇒ 不会误判。
-	if strings.Contains(body, "fmt.Sprintf(probeTrafficExclusionPredicate,") {
-		t.Error("featuredCycle 的读面是会话族，不得使用引用 quality_flags 的 v1 物理谓词")
+	// 2026-11-05: featured cycle model gate is Go-side featured only — must NOT
+	// re-impose per-credential usage EXISTS (featured models are always in scope).
+	if strings.Contains(body, "probeUsageWindowInterval") {
+		t.Error("featuredCycle must not require per-credential usage EXISTS for featured models")
 	}
 }
 
@@ -269,7 +263,7 @@ func TestProbeExclusionPredicateCallSitesR50(t *testing.T) {
 		view    int // minimum view-predicate (frozen 113-col contract) sites
 	}{
 		{"credential_selfcheck.go", 1, 0}, // recentUsageModels + selfcheckRecentFallback — session
-		{"model_probe.go", 2, 0},          // featuredCycle + watchdog — session
+		{"model_probe.go", 1, 0},          // nonfeatured watchdog — session (featuredCycle no longer usage-gated)
 		{"today_success_probe.go", 1, 0},  // recovery recheck — session
 		{"model_tier.go", 1, 0},           // Top-N usage — session
 		{"daily_probe_audit.go", 0, 1},    // 72h usage — canonical view
@@ -524,4 +518,3 @@ func TestProbeTrafficExclusionPredicateActorListsStayInLockstep(t *testing.T) {
 		t.Fatal("negative control did not flip: a narrowed actor list was accepted as canonical ⇒ this guard has no teeth")
 	}
 }
-

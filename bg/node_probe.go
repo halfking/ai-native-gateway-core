@@ -103,6 +103,14 @@ const (
 	// nodeProbeQueuePumpHoldoff advances a pumped row's next_retry_at so the
 	// same row is not re-enqueued on every tick while the queue drains it.
 	nodeProbeQueuePumpHoldoff = 45 * time.Second
+	// ★ nodeProbeClampBatch caps how many over-scheduled recoverable rows one
+	// ★ clamp pass pulls forward (★ the clamp UPDATE is bounded so its row-lock
+	// ★ footprint and duration stay predictable; ★ 2026-11-05 · P-11).
+	nodeProbeClampBatch = 200
+	// ★ nodeProbeClampTimeout is the clamp's **own** budget (★ it used to share
+	// ★ the pump's 10s context ⇒ ★ a clamp timeout cancelled the pump query too
+	// ★ ⇒ ★ the whole "enqueue due probes" round was lost; ★ 2026-11-05 · P-11).
+	nodeProbeClampTimeout = 3 * time.Second
 	// A bounded batch keeps a large outage from monopolizing the worker.
 	nodeProbeBatchSize = 8
 
@@ -1384,6 +1392,17 @@ func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
 	}
 	qCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	// 2026-11-05: pull recoverable futures that still sit beyond the recovery
+	// SLA (legacy 1h/2h/6h ladder rows) so a healthy supplier is re-checked
+	// within ~5 minutes after deploy without waiting out the old schedule.
+	// ★★ 2026-11-05（12h 审计轮 · P-11）：★ clamp **曾经与下面的泵查询共用同一个 10s qCtx**
+	//   ★ ⇒ ⇒ clamp 一旦超时/等锁，**同一个 ctx 被取消** ⇒ ⇒ 泵查询随之失败
+	//   ★ ⇒ ⇒ 整个这一轮「到期探测入队」直接丢掉（★ 症状与 2026-08-18 那次
+	//   ★   「仪表盘显示 ready probes、实际零探测」同类：★ 排空队列的那一步没跑）。
+	//   ★ ⇒ ⇒ 现在 clamp 用**自己的 ctx 与自己的预算**，泵的预算不再被它吃掉。
+	clampCtx, clampCancel := context.WithTimeout(ctx, nodeProbeClampTimeout)
+	w.clampRecoverableProbeSchedules(clampCtx)
+	clampCancel()
 	rows, err := w.db.Query(qCtx, pumpDueStatesSQL(), nodeProbeQueuePumpBatch)
 	if err != nil {
 		slog.Warn("node_probe_worker: pump due states query failed", "error", err)
@@ -1512,6 +1531,70 @@ func pumpDueStatesSQL() string {
 		  )
 		ORDER BY nps.next_retry_at
 		LIMIT $1`
+}
+
+// clampRecoverableProbeSchedulesSQL pulls next_retry_at forward when a
+// recoverable (timeout/network/5xx/429) error row is still scheduled beyond
+// the recovery SLA. Permanent parks (404/410/protocol) are left alone.
+func clampRecoverableProbeSchedulesSQL() string {
+	// ★★ 2026-11-05（12h 审计轮 · P-11）：★ 这条 UPDATE 原来**没有上界** ⇒
+	//   ★ 它要改的行数取决于表有多大 ⇒ ★ 行锁足迹与执行时长都不可预测。
+	//   ★ ⇒ 改成【CTE + LIMIT】的一批（★ 先按 next_retry_at 取最「该被拉回」的那批）。
+	//   ★ ★★ 为什么用 ctid 而不是业务列：★ node_probe_state **没有唯一键**
+	//   ★   （★ 建表迁移 402 与各 ALTER 里都没有 PK/UNIQUE ⇒ 业务列不唯一）
+	//   ★   ⇒ 用 (credential_id, raw_model_name) 做 CTE 键**可能放大**行数 ⇒ 上界失效。
+	//   ★   ⇒ ctid 是同一语句内的物理行标识 ⇒ ★ 单语句内有效 ⇒ 上界严格。
+	//   ★   （★ 若并发事务刚改过该行，ctid 变了 ⇒ 该行这一轮被跳过 ⇒ 无害。）
+	return `
+		WITH victims AS (
+			SELECT ctid
+			FROM node_probe_state
+			WHERE paused = FALSE
+			  AND next_retry_at > now() + make_interval(secs => $1)
+			  AND ` + nodeProbeErrorEvidenceSQL("node_probe_state") + `
+			  AND COALESCE(last_err_code, '') <> ''
+			  AND lower(COALESCE(last_err_code, '')) NOT LIKE '%404%'
+			  AND lower(COALESCE(last_err_code, '')) NOT LIKE '%410%'
+			  AND lower(COALESCE(last_err_code, '')) NOT IN (
+				'model_not_served', 'probe_http_404', 'http_404', 'http_410',
+				'endpoint_build', 'request_build', 'decrypt_failed'
+			  )
+			  AND (
+				lower(last_err_code) LIKE 'timeout%'
+				OR lower(last_err_code) LIKE '%network%'
+				OR lower(last_err_code) LIKE '%connection%'
+				OR lower(last_err_code) LIKE 'http_5%'
+				OR lower(last_err_code) IN ('http_429', 'rate_limit', 'upstream_down', 'empty_response')
+			  )
+			ORDER BY next_retry_at DESC
+			LIMIT $2
+		)
+		UPDATE node_probe_state s
+		SET next_retry_at = now() + make_interval(secs => $1),
+		    next_retry_seconds = $1,
+		    updated_at = now()
+		FROM victims v
+		WHERE s.ctid = v.ctid`
+}
+
+func (w *NodeProbeWorker) clampRecoverableProbeSchedules(ctx context.Context) {
+	if w == nil || w.db == nil {
+		return
+	}
+	sec := int(probeRecoveryMaxBackoff().Seconds())
+	if sec <= 0 {
+		sec = 300
+	}
+	// ★★ 一批上界（★ 防止这条 UPDATE 一次改掉整张表 ⇒ 行锁足迹与时长都可预测）。
+	tag, err := w.db.Exec(ctx, clampRecoverableProbeSchedulesSQL(), sec, nodeProbeClampBatch)
+	if err != nil {
+		slog.Debug("node_probe_worker: clamp recoverable schedules failed", "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("node_probe_worker: clamped recoverable probe schedules to recovery SLA",
+			"rows", n, "max_backoff_seconds", sec)
+	}
 }
 
 // publishProbeTask TaskType uses task.Command so node_probe / integrity_verify /

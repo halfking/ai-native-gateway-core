@@ -7,11 +7,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
-// 2026-09-26 P0-2: the network-class short ladder grew a long tail. Attempts
-// 1..4 keep the 5s/15s/30s/60s fast-discovery rungs; attempt 5+ sinks along
-// 5m→1h→2h→6h (capped) so a persistently-down upstream stops being re-probed
-// once a minute forever (see TestNetworkChain_LongTailSink for the full
-// matrix including the legacy-behavior switch).
+// 2026-09-26 P0-2 + 2026-11-05: network-class short ladder keeps 5s/15s/30s/60s
+// for attempts 1..4; attempt 5+ holds at recovery SLA (5m) so a recovered
+// upstream is re-checked within ~5 minutes (no longer sinks to 1h/2h/6h).
 func TestProbeBackoffForKindNetworkStaysShort(t *testing.T) {
 	for _, kind := range []errorsx.ErrorKind{
 		errorsx.KindNetwork, errorsx.KindTimeout, errorsx.KindTransient,
@@ -23,8 +21,8 @@ func TestProbeBackoffForKindNetworkStaysShort(t *testing.T) {
 		if got := ProbeBackoffForKind(kind, 4); got != time.Minute {
 			t.Fatalf("%s attempt 4 = %v, want 60s", kind, got)
 		}
-		if got := ProbeBackoffForKind(kind, 8); got != 6*time.Hour {
-			t.Fatalf("%s attempt 8 = %v, want long-tail cap 6h", kind, got)
+		if got := ProbeBackoffForKind(kind, 8); got != 5*time.Minute {
+			t.Fatalf("%s attempt 8 = %v, want recovery cap 5m", kind, got)
 		}
 	}
 }
@@ -39,8 +37,8 @@ func TestProbeBackoffForKindQuotaUsesFixedPolicy(t *testing.T) {
 }
 
 func TestProbeBackoffForErrCodeClassifiesTransport(t *testing.T) {
-	if got := ProbeBackoffForErrCode("network_error", 8); got != 6*time.Hour {
-		t.Fatalf("network_error = %v, want long-tail cap 6h (P0-2)", got)
+	if got := ProbeBackoffForErrCode("network_error", 8); got != 5*time.Minute {
+		t.Fatalf("network_error = %v, want recovery cap 5m", got)
 	}
 	if got := ProbeBackoffForErrCode("timeout", 3); got != 30*time.Second {
 		t.Fatalf("timeout attempt 3 = %v, want 30s", got)
@@ -60,8 +58,8 @@ func TestProbeBackoffForKindRateLimitHonoursPolicyFloor(t *testing.T) {
 	if got := ProbeBackoffForKind(errorsx.KindRateLimit, 1); got != 3*time.Minute {
 		t.Fatalf("rate_limit attempt 1 = %v, want 3m floor", got)
 	}
-	if got := ProbeBackoffForKind(errorsx.KindRateLimit, 7); got != 6*time.Hour {
-		t.Fatalf("rate_limit attempt 7 = %v, want ladder tail 6h", got)
+	if got := ProbeBackoffForKind(errorsx.KindRateLimit, 7); got != 5*time.Minute {
+		t.Fatalf("rate_limit attempt 7 = %v, want recovery cap 5m", got)
 	}
 	if got := ProbeBackoffForErrCode("http_429", 2); got != 3*time.Minute {
 		t.Fatalf("http_429 attempt 2 = %v, want 3m floor", got)

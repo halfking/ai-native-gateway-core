@@ -18,6 +18,19 @@ var NetworkProbeBackoffChain = []time.Duration{
 	60 * time.Second,
 }
 
+// probeRecoveryMaxBackoff is the operator SLA for discovering that a
+// previously-failing supplier/node is healthy again. Non-fixed recoverable
+// ladders must not schedule further out than this (default 5 minutes).
+// Permanent parks (model-not-served / protocol / auth) bypass via their
+// own early-return horizons and are unaffected.
+func probeRecoveryMaxBackoff() time.Duration {
+	sec := settings.GetPlatformInt("probe.recovery_max_backoff_seconds", 300)
+	if sec <= 0 {
+		return 5 * time.Minute
+	}
+	return time.Duration(sec) * time.Second
+}
+
 // ProbeBackoffForKind returns the next retry delay for an automatic probe.
 // Quota uses the fixed policy cadence; transport errors stay on the short
 // chain; everything else keeps the historical 7-step ladder, with the
@@ -26,12 +39,9 @@ var NetworkProbeBackoffChain = []time.Duration{
 //
 // 2026-09-26 (P0-2 短梯长尾化): the network-class short chain used to cap at
 // 60s forever — a persistently-down upstream was re-probed once a minute
-// indefinitely (2026-09-25 实测：60s 封顶档滞留 45 对，last_err_code 全部为
-// connection_error/503/timeout/500). With probe.network_chain_long_tail
-// (default on) the ladder continues on the generic chain's long tail after
-// the four short rungs: 5s→15s→30s→60s→5m→1h→2h→6h（封顶）. The first four
-// rungs are untouched, so sub-hour blip recovery discovery keeps its speed;
-// only sustained-outage pairs sink to the 6h cadence auth/404 already use.
+// indefinitely. Long-tail remains on, but 2026-11-05 caps the sink at
+// probe.recovery_max_backoff_seconds (default 5m) so healthy recovery is
+// discovered within the operator SLA instead of 1h/2h/6h.
 func ProbeBackoffForKind(kind errorsx.ErrorKind, attempt int) time.Duration {
 	policy := errorsx.AutomaticProbePolicyFor(kind)
 	if policy.Fixed && policy.Interval > 0 {
@@ -42,23 +52,44 @@ func ProbeBackoffForKind(kind errorsx.ErrorKind, attempt int) time.Duration {
 		errorsx.KindUpstreamDown, errorsx.KindStreamTimeout,
 		errorsx.KindUpstreamOverloaded, errorsx.KindEmptyResponse,
 		errorsx.KindUpstreamContextLoss:
+		// networkProbeBackoff already holds long-tail at recovery SLA (5m).
 		return networkProbeBackoff(attempt)
 	}
 	delay := ChainBackoffIndex(attempt, NodeProbeBackoffChain)
 	if policy.Enabled && policy.Interval > delay {
-		return policy.Interval
+		delay = policy.Interval
+	}
+	// Rate-limit / concurrent are recoverable supplier-side pressures: cap at
+	// the recovery SLA so a cleared 429/并发窗可在约 5 分钟内被复检。
+	// Auth/unknown (empty kind) and KindNoAvailableChannel keep their longer
+	// horizons — those are not "supplier already healthy" discovery paths.
+	switch kind {
+	case errorsx.KindRateLimit, errorsx.KindConcurrent:
+		if cap := probeRecoveryMaxBackoff(); delay > cap {
+			delay = cap
+		}
 	}
 	return delay
 }
 
 // networkProbeBackoff paces the network/transient class. Long tail on:
-// attempts 1..4 walk the short chain (5s/15s/30s/60s), attempts beyond it
-// continue on the generic chain's tail rungs (5m/1h/2h/6h, capped). Long
-// tail off: the legacy short chain capped at 60s forever.
+// attempts 1..4 walk the short chain (5s/15s/30s/60s); attempts beyond it
+// hold at the recovery SLA (default 5m) instead of sinking to 1h/2h/6h.
+// Long tail off: the legacy short chain capped at 60s forever.
 func networkProbeBackoff(attempt int) time.Duration {
 	if settings.GetPlatformBool("probe.network_chain_long_tail", true) && attempt > len(NetworkProbeBackoffChain) {
-		tail := NodeProbeBackoffChain[3:] // 5m/1h/2h/6h — generic chain minus its own 5s/30s/60s rungs
-		return ChainBackoffIndex(attempt-len(NetworkProbeBackoffChain), tail)
+		// ★★ 2026-11-05（12h 审计轮 · P-10）：★ 旋钮的语义是【上限】，★ 不是【替换】。
+		//   ★ 长尾仍是**渐进**的 5m→1h→2h→6h（★ 通用梯去掉自身 5s/30s/60s 三级），
+		//   ★ 只是每一级都被 probe.recovery_max_backoff_seconds 削到上限。
+		//   ★ ⇒ 默认 300s ⇒ 长尾恒为 5m（★ 与 2026-11-05 口径逐字一致）；
+		//   ★ ⇒ 旋钮调到 21600（6h）⇒ ★ **长尾恢复成 2026-09-25 P0-2 的原梯**（5m→1h→2h→6h）
+		//   ★   ⇒ ⇒ ★ 旧口径【纯配置可回退】，不需要改代码、不需要回滚发布。
+		tail := NodeProbeBackoffChain[3:]
+		d := ChainBackoffIndex(attempt-len(NetworkProbeBackoffChain), tail)
+		if cap := probeRecoveryMaxBackoff(); d > cap {
+			d = cap
+		}
+		return d
 	}
 	return ChainBackoffIndex(attempt, NetworkProbeBackoffChain)
 }

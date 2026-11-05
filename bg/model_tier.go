@@ -159,13 +159,12 @@ func (m *ModelTier) refresh(ctx context.Context) {
 	// model-name is COALESCE(outbound_model, client_model). GROUP BY raw_model
 	// dedupes across alias variants (audit issue #11).
 	if topN := settings.GetPlatformInt("probe.featured_usage_top_n", 20); topN > 0 {
-		// 2026-09-20 probe-volume policy: default window 72h (3 days) — the
-		// probe scoping window. Also exclude probe traffic: without the flag
-		// probes themselves fed the Top-N, keeping probed-but-unused models
-		// "featured" and deep-pinged forever (self-sustaining loop).
-		windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 72)
+		// 2026-11-05: default window 24h — aligned with INV-3 automatic probe
+		// scope. Also exclude probe traffic: without the flag probes themselves
+		// fed the Top-N, keeping probed-but-unused models "featured" forever.
+		windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 24)
 		if windowHours <= 0 {
-			windowHours = 72
+			windowHours = 24
 		}
 		if rows, err := m.db.Query(ctx, `
 			SELECT raw_model FROM (

@@ -54,6 +54,7 @@ vi.mock('../composables/liveStreamStore', async () => {
     redisHealthyRef,
     redisErrorRef,
     liveDataRevision,
+    setLiveStreamWantProbe: vi.fn(),
     // 测试侧注入口
     __test: {
       setRequests: (v: Frame[]) => (requestsRef.value = v),
@@ -508,6 +509,13 @@ describe('LiveTopologyView 数据开关（owner 2026-10-18：默认去除，开�
     const { wrapper } = await mountView()
     expect((wrapper.get('[data-testid="toggle-probe"]').get('input').element as HTMLInputElement).checked).toBe(false)
     expect((wrapper.get('[data-testid="toggle-invalid"]').get('input').element as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('★ showProbe drives setLiveStreamWantProbe (network-layer probe lane)', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/views/LiveTopologyView.vue'), 'utf8')
+    expect(source).toContain('setLiveStreamWantProbe')
+    expect(source).toMatch(/watch\(\s*\(\)\s*=>\s*topo\.filters\.value\.showProbe/)
+    expect(source).toContain('onUnmounted(() => setLiveStreamWantProbe(false))')
   })
 })
 

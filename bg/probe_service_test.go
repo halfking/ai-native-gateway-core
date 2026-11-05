@@ -185,15 +185,14 @@ func TestProbeServiceDefaultOutcomeHooksRecoverOnDirectSuccess(t *testing.T) {
 }
 
 func TestProbeServiceFailureBackoffChain(t *testing.T) {
-	// 2026-09-26 P0-2: the network-class short ladder grew a long tail —
-	// attempt 8 now sinks to the 6h cap instead of re-probing every 60s
-	// forever (was {8, time.Minute}).
+	// 2026-11-05: network long-tail holds at recovery SLA (5m) so healthy
+	// recovery is discovered quickly (was 6h sink after P0-2).
 	for _, tc := range []struct {
 		attempt int
 		want    time.Duration
 	}{
 		{1, 5 * time.Second}, {3, 30 * time.Second}, {4, time.Minute},
-		{5, 5 * time.Minute}, {8, 6 * time.Hour},
+		{5, 5 * time.Minute}, {8, 5 * time.Minute},
 	} {
 		t.Run(tc.want.String(), func(t *testing.T) {
 			service := newTestProbeService(

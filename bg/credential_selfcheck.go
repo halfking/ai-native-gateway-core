@@ -572,9 +572,9 @@ func (w *CredentialSelfcheckWorker) selfcheckFeatured(ctx context.Context, tenan
 
 // recentInUsageWindow narrows the shared seven-day Redis ranking (tenant-scoped,
 // recentmodels.TTL=7d) to models with real (non-probe) business traffic on THIS
-// credential within the 3-day probe scope window (探测量策略 INV-3). An empty
+// credential within the 24h probe scope window (探测量策略 INV-3). An empty
 // in-window result means the ranking carries nothing policy-probeable; the
-// caller then falls through to the 3-day DB fallback. Query errors fail OPEN
+// caller then falls through to the 24h DB fallback. Query errors fail OPEN
 // (ranking kept as-is) — same posture as the necessity gate: this is an
 // optimization over a verification probe already bounded to one per run.
 func (w *CredentialSelfcheckWorker) recentInUsageWindow(ctx context.Context, credentialID int, tenant string, recent []recentmodels.Entry) []recentmodels.Entry {
@@ -583,7 +583,7 @@ func (w *CredentialSelfcheckWorker) recentInUsageWindow(ctx context.Context, cre
 	}
 	used, err := w.recentUsageModels(ctx, credentialID, tenant)
 	if err != nil {
-		slog.Debug("credential_selfcheck_worker: 3-day usage filter unavailable, keeping shared ranking",
+		slog.Debug("credential_selfcheck_worker: 24h usage filter unavailable, keeping shared ranking",
 			"credential_id", credentialID, "error", err)
 		return recent
 	}
@@ -592,7 +592,7 @@ func (w *CredentialSelfcheckWorker) recentInUsageWindow(ctx context.Context, cre
 
 // recentUsageModels returns the normalized set of models with successful
 // business (non-probe) traffic on the credential within probeUsageWindowInterval
-// (3 days). Normalization matches recentmodels.Normalize so ZSET members and
+// (24 hours). Normalization matches recentmodels.Normalize so ZSET members and
 // client_model variants compare equal.
 func (w *CredentialSelfcheckWorker) recentUsageModels(ctx context.Context, credentialID int, tenant string) (map[string]struct{}, error) {
 	rows, err := w.db.Query(ctx, `
@@ -656,8 +656,8 @@ func (w *CredentialSelfcheckWorker) selfcheckRecentFallback(ctx context.Context,
 			LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
 			WHERE rl.credential_id = $1
 			  AND rl.tenant_id = $2
-			  -- 2026-09-20 probe-volume policy: 3-day usage scope (was 7 days)
-			  AND rl.ts >= now() - interval '3 days'
+			  -- 2026-11-05: 24h usage scope (INV-3; was 3 days / earlier 7 days)
+			  AND rl.ts >= now() - `+probeUsageWindowInterval+`
 			  AND rl.success = TRUE
 			  -- R50: exclusion — the probe gateway round carries no 'probe'
 			  -- flag, only the origin arm let it count as usage here.

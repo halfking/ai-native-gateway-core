@@ -48,6 +48,7 @@ vi.mock('../composables/liveStreamStore', async () => {
     redisHealthyRef,
     redisErrorRef,
     liveDataRevision,
+    setLiveStreamWantProbe: vi.fn(),
     __test: {
       setRequests: (v: Frame[]) => (requestsRef.value = v),
       setNodes: (v: Frame[]) => (nodesRef.value = v),

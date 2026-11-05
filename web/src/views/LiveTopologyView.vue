@@ -26,7 +26,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElOption, ElSelect } from 'element-plus'
 import { useLiveStream } from '../composables/useLiveStream'
-import { redisHealthyRef as redisHealthy, redisErrorRef as redisError, liveDataRevision } from '../composables/liveStreamStore'
+import { redisHealthyRef as redisHealthy, redisErrorRef as redisError, liveDataRevision, setLiveStreamWantProbe } from '../composables/liveStreamStore'
 import { useLiveTopology, type PanelEntry } from '../composables/useLiveTopology'
 import { clientKeyOf, modelKeyOf, providerNodeKeyOf } from '../lib/liveTopologyGraph'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
@@ -106,7 +106,15 @@ function syncToQuery() {
 
 watch(() => route.query, syncFromQuery, { deep: true })
 watch(topo.filters, syncToQuery, { deep: true })
+// 探测频道订阅读侧：拓扑页「显示探测」必须驱动 ?probe=1，否则物理隔离开启后
+// 探测 tile 根本不进业务 SSE；离开本页时强制退订，避免泳道页残留污染。
+watch(
+  () => topo.filters.value.showProbe,
+  (want) => setLiveStreamWantProbe(!!want),
+  { immediate: true },
+)
 onMounted(syncFromQuery)
+onUnmounted(() => setLiveStreamWantProbe(false))
 
 const connectionTone = computed(() => {
   if (connection.value === 'open') return 'is-open'
