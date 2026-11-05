@@ -10639,3 +10639,28 @@ Recording-consent body retention is independent of request_logs TTL.
 | 940 | `940_market_price_reference_family.sql` | `3e66aea79a21d1d7bbeb87a06cd0d4d0ea6e9b81c1c7c955b55be4263067fd1e` | applied+verified |
 | 941 | `941_supplier_view_market_columns.sql` | `0fca8c5d4e266dbd527fa49c6055f3350a3aee2d6b541f43ead432b203f8112e` | applied+verified |
 
+## 2026-11-05T01:56:47Z — deploy 245 build_seq 2931 (f363e2da)【★ 手工补记 · 该轮在 946 中止】
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 942 | `942_sales_supply_annotations.sql` | `a32a656511700e802e78edb43c86431132bdb6837b4fcbe421d71c467be5c687` | applied+verified |
+| 943 | `943_sales_demand_cards.sql` | `9695ff103423f9697e2a3355fe8262e12efb0a0136221c1199c2339a2ba3a105` | applied+verified |
+
+★ 为什么是**手工补记**而不是部署脚本写的：该轮在 `946_sales_quote_items.sql` 处**中止**
+（退役判据误伤 944/945 ⇒ `sales_quote_versions` 不存在 ⇒ 外键失败）⇒ 而部署脚本的
+changelog 写入发生在**全部迁移成功之后** ⇒ 942/943 虽已**应用**、且已在
+`llm_gateway_migration_checksums` 台账**记账**（实测 sha256 与仓内文件逐字节一致），
+却**没落账**到本文件 ⇒ 本条补记，避免台账与真库**分叉**。
+★ 下一轮的 2932 条目只列 944–949（本轮实际应用的那六条）——两条记录合起来才是完整台账。
+
+## 2026-11-05T02:07:13Z — deploy 245 build_seq 2932 (b17edaf9)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 944 | `944_sales_quotes.sql` | `bfb9f8a69040585ab1015638128f220c3f350c1ad191ddc08e918210e7fc1456` | applied+verified |
+| 945 | `945_sales_quote_versions.sql` | `be0cf5fed88156ae9f656939729d9ebcdd7518f9950542460e9751de5acee24c` | applied+verified |
+| 946 | `946_sales_quote_items.sql` | `c22b76ed19ba50443bd0d71db5dfeedd1086a035f67debdfd0c67c7be80565b4` | applied+verified |
+| 947 | `947_sales_quote_approvals.sql` | `7f9008dee486590bbe3223f1bc02fe060a3608978b67b4a5b92280660825d575` | applied+verified |
+| 948 | `948_sales_quote_shares.sql` | `644d8866069110d92722934228e21b8c5c3ac353d407628bf01a24461a48502f` | applied+verified |
+| 949 | `949_supplier_view_binding_id.sql` | `a377d63b79269df669a09fcc845951e6f9169e964ea2c1dad2c67be502332b80` | applied+verified |
+
