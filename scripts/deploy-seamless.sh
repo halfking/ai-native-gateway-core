@@ -54,6 +54,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
+# ★★ 解析 envs SSOT 根（loader.sh 所在目录）—— ★ 必须**在**下面 source
+#   共享部署库**之前**完成：
+#   ① deploy-lib/deploy-prereqs.sh 的 envs 检查读的是 ${ENVS_ROOT:-<默认死路径>}
+#      ⇒ ENVS_ROOT 此刻已 export ⇒ 共享库那条检查跟着我们的解析走；
+#   ② 共享库的默认值 `$HOME/workspace/ai-native-tools/envs` 在 2026-11-04 工作区
+#      重组后已不存在（envs 仓落到 deploy/envs/）⇒ 只靠共享库默认值必失败。
+#   候选链的**单一真相**在 scripts/envs-resolve.sh（失败语义 rc=64 + 可执行提示）。
+# shellcheck source=envs-resolve.sh
+source "$SCRIPT_DIR/envs-resolve.sh"
+
 # P1.1 SSOT 软链后，deploy-lib/db-changelog.sh 的 repo_root 第三级 fallback
 # （BASH_SOURCE/../..）解析到共享库目录而非本仓库，迁移 ledger 逐版本核对会因
 # canonical 文件 glob 为空而拒绝部署。这里显式钉住 resolver 的 override #1。
@@ -175,31 +185,18 @@ deploy_cleanup() {
 trap deploy_cleanup EXIT INT TERM
 
 # Load the shared envs SSOT before resolving SSH keys or target settings.
-# ⚠️ 2026-10-13：这一行原本只有一个默认值（ai-native-workspace/envs）且**没有兜底**，
-# 与同文件族 `_shared-lib.sh` 已有的「两个候选都试」不一致。
-# 后果实测：本机实际布局是 ai-native-tools/，于是每次部署都在第一步就
-# `envs SSOT loader not found: .../ai-native-workspace/envs/loader.sh` 退出，
-# 报的是一个**不存在的死路径**，看起来像「envs 丢了」，实际是默认值没跟着迁移改。
-# 修法与 _shared-lib.sh 对齐：显式 ENVS_ROOT 优先，否则新布局优先、旧布局兜底。
-if [[ -z "${ENVS_ROOT:-}" ]]; then
-  for _envs_candidate in \
-    "${HOME}/workspace/ai-native-workspace/envs" \
-    "${HOME}/workspace/ai-native-tools/envs"; do
-    if [[ -f "$_envs_candidate/loader.sh" ]]; then
-      ENVS_ROOT="$_envs_candidate"
-      break
-    fi
-  done
-  ENVS_ROOT="${ENVS_ROOT:-${HOME}/workspace/ai-native-workspace/envs}"
-fi
+# ★ 2026-11-05：ENVS_ROOT 已由 scripts/envs-resolve.sh 解析并 export（在本文件
+#   上游、source 共享部署库**之前**）⇒ 这里只负责「按目标机加载 envs」。
+#   ★ 历史包袱（留档）：这一段原本内联了一个**两候选链**
+#     （ai-native-workspace/envs → ai-native-tools/envs）且**兜底默认值**指向
+#     ai-native-workspace ⇒ 工作区重组后两个候选全落空 ⇒ 每次部署第一步就退出：
+#       ✗ envs SSOT loader not found: .../ai-native-workspace/envs/loader.sh
+#     ⇒ 报的是一条**本机从来不存在**的死路径 ⇒ 看起来像「envs 丢了」，
+#        实际是「默认值没跟着迁移改」。⇒ 现在收口到 envs-resolve.sh（单一真相）。
 case "$TARGET" in
   245) ENV_SERVER="8.136.114.245" ;;
   154) ENV_SERVER="47.97.111.154" ;;
 esac
-if [[ ! -f "$ENVS_ROOT/loader.sh" ]]; then
-  err "envs SSOT loader not found: $ENVS_ROOT/loader.sh"
-  exit 1
-fi
 # shellcheck disable=SC1090
 source "$ENVS_ROOT/loader.sh" --all --project llm-gateway-go --server "$ENV_SERVER"
 
