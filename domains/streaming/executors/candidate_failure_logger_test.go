@@ -3,6 +3,7 @@ package executors
 import (
 	"fmt"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -128,5 +129,17 @@ func TestBuildRow_SessionIDAndExplicitKind(t *testing.T) {
 		ue := &upstreampkg.Error{Kind: upstreampkg.KindRateLimit, Message: "limited", Err: fmt.Errorf("429"), StatusCode: 429}
 		row := w.buildRow("req-3", "tenant-1", "sess-3", 1, 2, "m", 0, ue, "", nil, nil, nil)
 		assert.Equal(t, "rate_limit", row.ErrorKind)
+	})
+
+	// R188 (2026-11-06 252 SQL audit): wire-supplied identity strings are
+	// outside the error-body sanitize choke point; a junk value with invalid
+	// UTF-8 must be repaired (U+FFFD) instead of 22021-ing the whole INSERT
+	// and dropping the failure row.
+	t.Run("wire-supplied junk UTF-8 is repaired, not dropped", func(t *testing.T) {
+		row := w.buildRow("req-\xe7\x9a", "tenant-1", "sess-\xe7\x9a", 7, 9, "glm-5.2\xe7\x9a", 3,
+			fmt.Errorf("connection reset by peer"), "", nil, nil, nil)
+		assert.True(t, utf8.ValidString(row.RequestID), "RequestID: %q", row.RequestID)
+		assert.True(t, utf8.ValidString(row.SessionID), "SessionID: %q", row.SessionID)
+		assert.True(t, utf8.ValidString(row.RawModelName), "RawModelName: %q", row.RawModelName)
 	})
 }

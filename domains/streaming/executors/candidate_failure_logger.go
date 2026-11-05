@@ -27,6 +27,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -200,12 +201,16 @@ func (w *CandidateFailureWriter) buildRow(
 	extraContext map[string]any,
 ) candidateFailureLog {
 	row := candidateFailureLog{
-		RequestID:    requestID,
-		TenantID:     tenantID,
-		SessionID:    sessionID,
+		// R188 (2026-11-06 252 SQL audit): request-scoped identity strings are
+		// wire-supplied and outside the error-body sanitize choke point; a
+		// broken/hostile client value with invalid UTF-8 would 22021 the whole
+		// INSERT. Repair to U+FFFD so one junk field cannot drop the row.
+		RequestID:    utf8Safe(requestID),
+		TenantID:     utf8Safe(tenantID),
+		SessionID:    utf8Safe(sessionID),
 		CredentialID: credentialID,
 		ProviderID:   providerID,
-		RawModelName: rawModelName,
+		RawModelName: utf8Safe(rawModelName),
 		AttemptIndex: attemptIndex,
 		// 2026-07-20: defensive nil-check on execErr.Error(). Callers
 		// pass typed-nil *upstream.Error via the error interface in
@@ -324,6 +329,13 @@ func statusBodyFromErr(err error) upstreamStatusBodyError {
 		}
 	}
 	return nil
+}
+
+// utf8Safe replaces invalid UTF-8 byte sequences with U+FFFD so a wire-supplied
+// identity string cannot reject the INSERT with SQLSTATE 22021 and drop the
+// whole failure row (R188, 2026-11-06 252 SQL audit).
+func utf8Safe(s string) string {
+	return strings.ToValidUTF8(s, "\uFFFD")
 }
 
 // safeErrorMessage renders an error's message without panicking on a
