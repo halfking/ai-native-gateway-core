@@ -139,7 +139,7 @@
 ★★ 且多出两条 **RESTRICTIVE** 的 `session_turns_owner_filter` / `session_turns_hot_owner_filter`）。
 ★★ ⇒ ★★ **在本地做的等价性验证不能直接代表生产** ⇒ ★ 必须到生产复核。
 ★★★ **252 的网关连接角色实测 = `llm_gateway`**（★ 两条独立证据：DSN
-`postgres://llm_gateway:***@172.16.2.210:5432/llm_gateway`；★ 进程列表 `postgres: llm_gateway llm_gateway`）
+`postgres://llm_gateway:<password>@172.16.2.210:5432/llm_gateway`；★ 进程列表 `postgres: llm_gateway llm_gateway`）
 ⇒ ★★ **== 视图属主** ⇒ ⇒ **两条路径的 RLS 上下文相同** ⇒ ⇒ **等价性成立且不依赖角色**
 ⇒ ⇒ ★★ **并被 3.2 的双角色差集 0 反向印证**（★ 若 RLS 对网关角色有过滤，两角色行数会不同）。
 

@@ -144,6 +144,10 @@ export const NAV_GROUPS: NavGroup[] = [
       // view === 'internal'）⇒ tenant-users 组的 ?view=internal 独立菜单项删除
       // （防双入口，W1-T3）；此处直开默认 provider 视角。
       { path: '/admin/reconciliation', labelKey: 'nav.item.reconciliation', icon: '🧾', super: true, hideForTenant: true },
+      // 2026-11-05 W1-T2 前端轮：报价系统 MVP 工作台（供给池/需求池/报价单；
+      // 内部运营面 requiresAuth，供给登记写权限是 super-only（应用层闸），
+      // 需求/报价动作带 owner 语义 ⇒ 菜单项不设 super 门，由服务端按角色收）。
+      { path: '/operations/sales', labelKey: 'nav.item.salesWorkbench', icon: '💼', hideForTenant: true },
     ],
   },
   {

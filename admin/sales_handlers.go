@@ -304,7 +304,14 @@ func (h *Handler) handleSalesQuoteAction(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusOK, q)
 		return
 	}
-	if r.Method != http.MethodPost {
+	// A5（2026-11-05 审计）：只读 action（versions/approvals/shares 的 GET）
+	// 接受 GET——此前统一 POST-only 把三个只读分支变成不可达死代码。
+	readOnlyAction := action == "versions" || action == "approvals" || action == "shares"
+	if r.Method == http.MethodGet && !readOnlyAction {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
@@ -372,6 +379,10 @@ func (h *Handler) handleSalesQuoteAction(w http.ResponseWriter, r *http.Request)
 		}
 		writeJSON(w, http.StatusOK, q)
 	case "versions":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
 		versions, err := svc.ListQuoteVersions(r.Context(), id)
 		if err != nil {
 			writeInternalErr(w, "internal error (see server logs)", err)
@@ -379,6 +390,10 @@ func (h *Handler) handleSalesQuoteAction(w http.ResponseWriter, r *http.Request)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": versions})
 	case "approvals":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
 		approvals, err := svc.ListApprovals(r.Context(), id)
 		if err != nil {
 			writeInternalErr(w, "internal error (see server logs)", err)
@@ -386,6 +401,10 @@ func (h *Handler) handleSalesQuoteAction(w http.ResponseWriter, r *http.Request)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": approvals})
 	case "shares":
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
 		if r.Method == http.MethodGet {
 			links, err := svc.ListShares(r.Context(), id)
 			if err != nil {

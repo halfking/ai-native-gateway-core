@@ -64,25 +64,27 @@ func (s *Service) Enabled() bool { return s != nil && s.pool != nil }
 // are scanned as numeric text and re-emitted verbatim — exact decimal
 // strings, never float round-trips (money red line).
 type SellableRow struct {
-	CredentialID       int64             `json:"credential_id"`
-	ProviderModelID    int64             `json:"provider_model_id"`
-	RawModelName       string            `json:"raw_model_name"`
-	CanonicalName      string            `json:"canonical_name"`
-	ProviderName       string            `json:"provider_name"`
-	SupplierCurrency   string            `json:"supplier_currency"`
-	BillingMode        string            `json:"billing_mode"`
-	SupplierInPer1M    *string           `json:"supplier_in_per_1m"`
-	SupplierOutPer1M   *string           `json:"supplier_out_per_1m"`
-	BaselineCurrency   *string           `json:"baseline_currency"`
-	BaselineInPer1M    *string           `json:"baseline_in_per_1m"`
-	BaselineOutPer1M   *string           `json:"baseline_out_per_1m"`
-	CurrencyComparable bool              `json:"currency_comparable"`
-	HasBaseline        bool              `json:"has_baseline"`
-	MarketRefCurrency  *string           `json:"market_ref_currency"`
-	MarketRefInPer1M   *string           `json:"market_ref_in_per_1m"`
-	MarketRefOutPer1M  *string           `json:"market_ref_out_per_1m"`
-	MarketRefPlatform  string            `json:"market_ref_platform_id"`
-	MarketRefPlatforms int               `json:"market_ref_platform_count"`
+	CredentialID       int64   `json:"credential_id"`
+	ProviderModelID    int64   `json:"provider_model_id"`
+	RawModelName       string  `json:"raw_model_name"`
+	CanonicalName      string  `json:"canonical_name"`
+	ProviderName       string  `json:"provider_name"`
+	SupplierCurrency   string  `json:"supplier_currency"`
+	BillingMode        string  `json:"billing_mode"`
+	SupplierInPer1M    *string `json:"supplier_in_per_1m"`
+	SupplierOutPer1M   *string `json:"supplier_out_per_1m"`
+	BaselineCurrency   *string `json:"baseline_currency"`
+	BaselineInPer1M    *string `json:"baseline_in_per_1m"`
+	BaselineOutPer1M   *string `json:"baseline_out_per_1m"`
+	CurrencyComparable bool    `json:"currency_comparable"`
+	HasBaseline        bool    `json:"has_baseline"`
+	MarketRefCurrency  *string `json:"market_ref_currency"`
+	MarketRefInPer1M   *string `json:"market_ref_in_per_1m"`
+	MarketRefOutPer1M  *string `json:"market_ref_out_per_1m"`
+	// A-11（2026-11-05 审计真库腿）：这两列在市场表为空（940 无同步器 =
+	// 生产现状）时全 NULL ⇒ 非指针目标把整条 ListSellable 变 500。
+	MarketRefPlatform  *string           `json:"market_ref_platform_id"`
+	MarketRefPlatforms *int              `json:"market_ref_platform_count"`
 	MarketPosition     *string           `json:"market_position"`
 	PriceConfidence    string            `json:"price_confidence"`
 	Annotation         *SupplyAnnotation `json:"annotation,omitempty"`

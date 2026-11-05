@@ -83,6 +83,7 @@ import reports from './reports'
 import usageTrend from './usageTrend'
 import hyper from './hyper'
 import routeIncidentDrawer from './routeIncidentDrawer'
+import sales from './sales'
 
 export default {
   sanitizeRules,
@@ -168,4 +169,5 @@ export default {
   reports,
   routeIncidentDrawer,
   liveTopology,
+  sales,
 }

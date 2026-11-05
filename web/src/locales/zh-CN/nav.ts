@@ -34,6 +34,7 @@ export default {
     systemMonitor: '系统自检',
     providers: '供应商',
     reconciliation: '供应商对账',
+    salesWorkbench: '报价工作台',
     settlementReport: '结算报表',
     usageTrends: '用量趋势分析',
     usageEnhanced: '用量增强分析',

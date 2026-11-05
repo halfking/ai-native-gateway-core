@@ -9511,6 +9511,309 @@ ALTER SEQUENCE public.market_price_reference_sync_id_seq OWNED BY public.market_
 
 
 --
+-- Name: sales_supply_annotations; Type: TABLE; Schema: public; Owner: -
+--
+-- 2026-11-05 报价系统 MVP（迁移 942–948 折叠，fresh-install 基线同步）。
+-- 升级环境走 sql/migrations/startup/942–949；本基线只建表，语义以迁移为准。
+
+CREATE TABLE public.sales_supply_annotations (
+    id bigint NOT NULL,
+    credential_id bigint NOT NULL,
+    provider_model_id bigint NOT NULL,
+    capacity_notes text DEFAULT ''::text NOT NULL,
+    sla_tier text DEFAULT ''::text NOT NULL,
+    valid_from date,
+    valid_until date,
+    vendor_contact text DEFAULT ''::text NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    maintainer text DEFAULT ''::text NOT NULL,
+    notes text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT sales_supply_annotations_binding_unique UNIQUE (credential_id, provider_model_id),
+    CONSTRAINT sales_supply_annotations_status_check CHECK ((status = ANY (ARRAY['active'::text, 'suspended'::text])))
+);
+
+
+--
+-- Name: sales_supply_annotations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sales_supply_annotations_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.sales_supply_annotations_id_seq OWNED BY public.sales_supply_annotations.id;
+
+
+--
+-- Name: sales_demand_cards; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sales_demand_cards (
+    id bigint NOT NULL,
+    customer_name text NOT NULL,
+    scenario text DEFAULT ''::text NOT NULL,
+    monthly_usage text DEFAULT ''::text NOT NULL,
+    budget text DEFAULT ''::text NOT NULL,
+    window_hint text DEFAULT ''::text NOT NULL,
+    status text DEFAULT 'open'::text NOT NULL,
+    claimed_by text DEFAULT ''::text NOT NULL,
+    claimed_at timestamp with time zone,
+    expires_at timestamp with time zone,
+    lost_reason text DEFAULT ''::text NOT NULL,
+    created_by text DEFAULT ''::text NOT NULL,
+    notes text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT sales_demand_cards_status_check CHECK ((status = ANY (ARRAY['open'::text, 'claimed'::text, 'quoted'::text, 'won'::text, 'lost'::text, 'closed'::text])))
+);
+
+
+--
+-- Name: sales_demand_cards_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sales_demand_cards_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.sales_demand_cards_id_seq OWNED BY public.sales_demand_cards.id;
+
+
+--
+-- Name: sales_quotes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sales_quotes (
+    id bigint NOT NULL,
+    demand_card_id bigint,
+    customer_name text NOT NULL,
+    title text DEFAULT ''::text NOT NULL,
+    status text DEFAULT 'draft'::text NOT NULL,
+    current_version_id bigint,
+    locked boolean DEFAULT false NOT NULL,
+    created_by text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT sales_quotes_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'pending_approval'::text, 'approved'::text, 'sent'::text, 'won'::text, 'lost'::text, 'superseded'::text])))
+);
+
+
+--
+-- Name: sales_quotes_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sales_quotes_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.sales_quotes_id_seq OWNED BY public.sales_quotes.id;
+
+
+--
+-- Name: sales_quote_status_log; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sales_quote_status_log (
+    id bigint NOT NULL,
+    quote_id bigint NOT NULL,
+    actor text DEFAULT ''::text NOT NULL,
+    from_status text DEFAULT ''::text NOT NULL,
+    to_status text NOT NULL,
+    reason text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: sales_quote_status_log_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sales_quote_status_log_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.sales_quote_status_log_id_seq OWNED BY public.sales_quote_status_log.id;
+
+
+--
+-- Name: sales_quote_versions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sales_quote_versions (
+    id bigint NOT NULL,
+    quote_id bigint NOT NULL,
+    version_no integer NOT NULL,
+    price_axes jsonb DEFAULT '{}'::jsonb NOT NULL,
+    price_confidence text DEFAULT 'unknown'::text NOT NULL,
+    tier text DEFAULT 'standard'::text NOT NULL,
+    fx_rate numeric(12,6) DEFAULT 7.2 NOT NULL,
+    cost_total_usd numeric(14,4) DEFAULT 0 NOT NULL,
+    sale_total_usd numeric(14,4) DEFAULT 0 NOT NULL,
+    margin_usd numeric(14,4) DEFAULT 0 NOT NULL,
+    margin_pct numeric(8,4),
+    valid_until timestamp with time zone,
+    superseded_by bigint,
+    created_by text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT sales_quote_versions_quote_version_unique UNIQUE (quote_id, version_no),
+    CONSTRAINT sales_quote_versions_tier_check CHECK ((tier = ANY (ARRAY['aggressive'::text, 'standard'::text, 'conservative'::text]))),
+    CONSTRAINT sales_quote_versions_confidence_check CHECK ((price_confidence = ANY (ARRAY['trusted'::text, 'suspect_symmetric'::text, 'empty'::text, 'unknown_currency'::text, 'unknown'::text])))
+);
+
+
+--
+-- Name: sales_quote_versions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sales_quote_versions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.sales_quote_versions_id_seq OWNED BY public.sales_quote_versions.id;
+
+
+--
+-- Name: sales_quote_items; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sales_quote_items (
+    id bigint NOT NULL,
+    version_id bigint NOT NULL,
+    canonical_name text NOT NULL,
+    display_name text DEFAULT ''::text NOT NULL,
+    est_tokens_in bigint DEFAULT 0 NOT NULL,
+    est_tokens_out bigint DEFAULT 0 NOT NULL,
+    volume_note text DEFAULT ''::text NOT NULL,
+    cost_in_per_1m numeric(14,6),
+    cost_out_per_1m numeric(14,6),
+    cost_currency text DEFAULT 'USD'::text NOT NULL,
+    rate_in numeric(14,4),
+    rate_out numeric(14,4),
+    discount_pct numeric(5,2) DEFAULT 0 NOT NULL,
+    confidence text DEFAULT 'unknown'::text NOT NULL,
+    fx_rate numeric(12,6) DEFAULT 7.2 NOT NULL,
+    revenue_usd numeric(14,4) DEFAULT 0 NOT NULL,
+    cost_usd numeric(14,4) DEFAULT 0 NOT NULL,
+    margin_usd numeric(14,4) DEFAULT 0 NOT NULL,
+    margin_pct numeric(8,4),
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT sales_quote_items_confidence_check CHECK ((confidence = ANY (ARRAY['trusted'::text, 'suspect_symmetric'::text, 'empty'::text, 'unknown_currency'::text, 'unknown'::text]))),
+    CONSTRAINT sales_quote_items_discount_range_check CHECK ((discount_pct >= (0)::numeric AND discount_pct <= (100)::numeric))
+);
+
+
+--
+-- Name: sales_quote_items_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sales_quote_items_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.sales_quote_items_id_seq OWNED BY public.sales_quote_items.id;
+
+
+--
+-- Name: sales_quote_approvals; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sales_quote_approvals (
+    id bigint NOT NULL,
+    quote_id bigint NOT NULL,
+    version_id bigint NOT NULL,
+    trigger_reasons jsonb DEFAULT '[]'::jsonb NOT NULL,
+    requested_by text DEFAULT ''::text NOT NULL,
+    decision text DEFAULT 'pending'::text NOT NULL,
+    approver text DEFAULT ''::text NOT NULL,
+    comment text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    decided_at timestamp with time zone,
+    elapsed_seconds integer,
+    CONSTRAINT sales_quote_approvals_decision_check CHECK ((decision = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text])))
+);
+
+
+--
+-- Name: sales_quote_approvals_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sales_quote_approvals_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.sales_quote_approvals_id_seq OWNED BY public.sales_quote_approvals.id;
+
+
+--
+-- Name: sales_quote_shares; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sales_quote_shares (
+    id bigint NOT NULL,
+    quote_id bigint NOT NULL,
+    version_id bigint NOT NULL,
+    contact_name text NOT NULL,
+    contact_email text DEFAULT ''::text NOT NULL,
+    token_hash text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    sent_at timestamp with time zone,
+    viewed_at timestamp with time zone,
+    opened_at timestamp with time zone,
+    view_count integer DEFAULT 0 NOT NULL,
+    detail jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_by text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT sales_quote_shares_token_unique UNIQUE (token_hash)
+);
+
+
+--
+-- Name: sales_quote_shares_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sales_quote_shares_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.sales_quote_shares_id_seq OWNED BY public.sales_quote_shares.id;
+
+
+--
 -- Name: model_aliases; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -22756,6 +23059,127 @@ ALTER TABLE ONLY public.market_price_reference_sync
 
 
 --
+-- Name: sales_supply_annotations sales_supply_annotations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+-- 2026-11-05 报价系统 MVP（942–948 折叠）。
+
+ALTER TABLE ONLY public.sales_supply_annotations
+    ADD CONSTRAINT sales_supply_annotations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sales_demand_cards sales_demand_cards_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_demand_cards
+    ADD CONSTRAINT sales_demand_cards_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sales_quotes sales_quotes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_quotes
+    ADD CONSTRAINT sales_quotes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sales_quote_status_log sales_quote_status_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_quote_status_log
+    ADD CONSTRAINT sales_quote_status_log_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sales_quote_versions sales_quote_versions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_quote_versions
+    ADD CONSTRAINT sales_quote_versions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sales_quotes sales_quotes_current_version_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_quotes
+    ADD CONSTRAINT sales_quotes_current_version_fk FOREIGN KEY (current_version_id) REFERENCES public.sales_quote_versions(id);
+
+
+--
+-- Name: sales_quote_versions sales_quote_versions_quote_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_quote_versions
+    ADD CONSTRAINT sales_quote_versions_quote_fk FOREIGN KEY (quote_id) REFERENCES public.sales_quotes(id) ON DELETE CASCADE;
+
+
+--
+-- Name: sales_quote_items sales_quote_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_quote_items
+    ADD CONSTRAINT sales_quote_items_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sales_quote_items sales_quote_items_version_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_quote_items
+    ADD CONSTRAINT sales_quote_items_version_fk FOREIGN KEY (version_id) REFERENCES public.sales_quote_versions(id) ON DELETE CASCADE;
+
+
+--
+-- Name: sales_quote_approvals sales_quote_approvals_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_quote_approvals
+    ADD CONSTRAINT sales_quote_approvals_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sales_quote_approvals sales_quote_approvals_quote_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_quote_approvals
+    ADD CONSTRAINT sales_quote_approvals_quote_fk FOREIGN KEY (quote_id) REFERENCES public.sales_quotes(id) ON DELETE CASCADE;
+
+
+--
+-- Name: sales_quote_approvals sales_quote_approvals_version_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_quote_approvals
+    ADD CONSTRAINT sales_quote_approvals_version_fk FOREIGN KEY (version_id) REFERENCES public.sales_quote_versions(id) ON DELETE CASCADE;
+
+
+--
+-- Name: sales_quote_shares sales_quote_shares_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_quote_shares
+    ADD CONSTRAINT sales_quote_shares_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sales_quote_shares sales_quote_shares_quote_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_quote_shares
+    ADD CONSTRAINT sales_quote_shares_quote_fk FOREIGN KEY (quote_id) REFERENCES public.sales_quotes(id) ON DELETE CASCADE;
+
+
+--
+-- Name: sales_quote_shares sales_quote_shares_version_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_quote_shares
+    ADD CONSTRAINT sales_quote_shares_version_fk FOREIGN KEY (version_id) REFERENCES public.sales_quote_versions(id) ON DELETE CASCADE;
+
+
+--
 -- Name: promotion_campaigns promotion_campaigns_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -23203,6 +23627,98 @@ CREATE INDEX idx_mpr_market ON public.market_price_reference USING btree (market
 --
 
 CREATE UNIQUE INDEX uq_mpr_canonical_id ON public.market_price_reference USING btree (canonical_id, dimension) WHERE canonical_id IS NOT NULL;
+
+
+--
+-- Name: idx_ssa_credential; Type: INDEX; Schema: public; Owner: -
+--
+-- 2026-11-05 报价系统 MVP（942–948 折叠）。
+
+CREATE INDEX idx_ssa_credential ON public.sales_supply_annotations USING btree (credential_id);
+
+
+--
+-- Name: idx_ssa_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ssa_status ON public.sales_supply_annotations USING btree (status);
+
+
+--
+-- Name: idx_sdc_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sdc_status ON public.sales_demand_cards USING btree (status);
+
+
+--
+-- Name: idx_sdc_customer; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sdc_customer ON public.sales_demand_cards USING btree (customer_name);
+
+
+--
+-- Name: idx_sales_quotes_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sales_quotes_status ON public.sales_quotes USING btree (status);
+
+
+--
+-- Name: idx_sales_quotes_demand; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sales_quotes_demand ON public.sales_quotes USING btree (demand_card_id);
+
+
+--
+-- Name: idx_sqsl_quote; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sqsl_quote ON public.sales_quote_status_log USING btree (quote_id, created_at);
+
+
+--
+-- Name: idx_sqv_quote; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sqv_quote ON public.sales_quote_versions USING btree (quote_id, version_no DESC);
+
+
+--
+-- Name: idx_sqi_version; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sqi_version ON public.sales_quote_items USING btree (version_id);
+
+
+--
+-- Name: idx_sqi_canonical; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sqi_canonical ON public.sales_quote_items USING btree (canonical_name);
+
+
+--
+-- Name: idx_sqa_quote; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sqa_quote ON public.sales_quote_approvals USING btree (quote_id);
+
+
+--
+-- Name: idx_sqa_decision; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sqa_decision ON public.sales_quote_approvals USING btree (decision, created_at);
+
+
+--
+-- Name: idx_sqs_quote; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sqs_quote ON public.sales_quote_shares USING btree (quote_id);
 
 
 --

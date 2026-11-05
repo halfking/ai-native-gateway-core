@@ -20,7 +20,7 @@
 
 ### 1.2 数据库连接 ✅
 
-- 连接串: `postgres://llm_gateway:***@172.16.2.210:5432/llm_gateway`
+- 连接串: `postgres://llm_gateway:<password>@172.16.2.210:5432/llm_gateway`
 - 连接到 252 服务器的 PostgreSQL 17
 - 表结构检查通过
 - 添加了缺失的列: `reliability_score`, `calculated_at`

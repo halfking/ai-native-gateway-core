@@ -485,7 +485,7 @@
 /api/proxy/subscriptions	ANY	admin/handler.go:1491
 /api/proxy/subscriptions/	ANY	admin/handler.go:1492
 /api/proxy/swap	ANY	admin/handler.go:1496
-/api/public/quote/	ANY	admin/sales_public_handler.go:23
+/api/public/quote/	ANY	admin/sales_public_handler.go:26
 /api/quality/	ANY	cmd/gateway/main.go:7689
 /api/routing/audit	ANY	admin/handler.go:1354
 /api/routing/available-models	ANY	admin/handler.go:1350

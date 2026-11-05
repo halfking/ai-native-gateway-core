@@ -31,6 +31,7 @@ export default {
     systemMonitor: "Monitoreo del sistema",
     providers: "Proveedores",
     reconciliation: "Conciliación de proveedores",
+    salesWorkbench: 'Taller comercial',
     settlementReport: "Informe de liquidación",
     usageTrends: "Tendencias de uso",
     pricing: "Precios de coste",

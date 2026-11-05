@@ -153,6 +153,11 @@ func (s *Service) centsPerCredit(ctx context.Context) float64 {
 // precomputeLines folds Decision C math per line: effective rate = ceil(rate×(1-d)),
 // revenue in credits → CNY (cents_per_credit) → USD (FX snapshot); cost folded to
 // USD (CNY cost ÷ FX; unknown currency ⇒ cost 0 + confidence unknown_currency).
+// ★ 单位语义（AF-1 裁决 A-14，2026-11-05 审计 A1）：cents_per_credit 是
+// 「**分**/积分（账单币种的分）」—— credits×cents 得**分**，再 ÷100 折元。
+// 三个同语义锚点：maas/consumption_detail.go（revenueBillMajor = credits×cents/100）、
+// maas/bills.go AmountCentsFromCredits（credits×cents = AmountCents）、
+// 01-schema 价目视图（credits×cents/100.0 = price_cny）。
 func precomputeLines(items []QuoteItemInput, fx, centsPerCredit float64) ([]QuoteItemOutput, string) {
 	out := make([]QuoteItemOutput, 0, len(items))
 	versionConfidence := "trusted"
@@ -175,7 +180,9 @@ func precomputeLines(items []QuoteItemInput, fx, centsPerCredit float64) ([]Quot
 		effIn := discounted(derefF(in.RateIn), o.DiscountPct)
 		effOut := discounted(derefF(in.RateOut), o.DiscountPct)
 		revenueCredits := effIn*float64(in.EstTokensIn)/1e6 + effOut*float64(in.EstTokensOut)/1e6
-		revenueCNY := revenueCredits * centsPerCredit
+		// A-14：cents_per_credit = 分/积分 ⇒ ×cents 得分、÷100 折元（A1 修复，
+		// 此前漏 ÷100 ⇒ 收入虚大 100×，order_amount 维恒触发、毛利下限维永不触发）。
+		revenueCNY := revenueCredits * centsPerCredit / 100
 		o.RevenueUSD = revenueCNY / fx
 
 		switch o.CostCurrency {
@@ -411,7 +418,9 @@ func derefI(i *int64) int64 {
 
 // ReviseQuote materializes a new version from new content. Allowed only in
 // draft（内容反复改 = 每次保存新版本）or sent（发出后修订 = 新版本，决议 A；
-// 审批中/待发期间禁止改内容）。
+// 审批中/待发期间禁止改内容）。sent 单修订后**强制重评三维红线**（A3 修复：
+// 触发 ⇒ 回 pending_approval + locked；不触发 ⇒ 维持 sent）——发出后的新版本
+// 与首发同判，不给「改价绕审批」留门。
 func (s *Service) ReviseQuote(ctx context.Context, quoteID int64, in QuoteInput, actor string) (*Quote, error) {
 	head, err := s.GetQuote(ctx, quoteID)
 	if err != nil {
@@ -453,17 +462,52 @@ SELECT COALESCE(MAX(version_no), 0) + 1 FROM public.sales_quote_versions WHERE q
 		quoteID).Scan(&nextNo); err != nil {
 		return nil, fmt.Errorf("sales: next version no: %w", err)
 	}
-	if _, err := s.insertQuoteVersion(ctx, tx, quoteID, nextNo, in, quoteVersionWrite{
+	newVersionID, err := s.insertQuoteVersion(ctx, tx, quoteID, nextNo, in, quoteVersionWrite{
 		items: lines, confidence: confidence,
 		costTotal: costTotal, saleTotal: saleTotal,
 		marginUSD: marginUSD, marginPct: marginPct, validUntil: validUntil,
-	}, actor); err != nil {
+	}, actor)
+	if err != nil {
 		return nil, err
 	}
-	// 修订解除冻结（sent 单修订后仍是 sent；draft 单仍是 draft）。
+	// A3（2026-11-05 审计）：sent 单修订不得旁路审批——新版本重跑 DealHub
+	// 三维（与 SubmitQuote 同一判定核 redLineVerdict）；触发 ⇒ 回
+	// pending_approval + locked，人审通过才可再次 SendQuote。未触发 ⇒ 维持 sent。
+	nextStatus := head.Status
+	locked := false
+	if head.Status == StatusSent {
+		maxDiscount := 0.0
+		for i := range lines {
+			if lines[i].DiscountPct > maxDiscount {
+				maxDiscount = lines[i].DiscountPct
+			}
+		}
+		mp := 0.0
+		if marginPct != nil {
+			mp = *marginPct
+		}
+		verdict := redLineVerdict(mp, maxDiscount, saleTotal)
+		if !verdict.AutoApprove {
+			nextStatus = StatusPendingApproval
+			locked = true
+			if _, err := tx.Exec(ctx, `
+INSERT INTO public.sales_quote_approvals (quote_id, version_id, trigger_reasons, requested_by)
+VALUES ($1, $2, $3::jsonb, $4)`,
+				quoteID, newVersionID, triggersJSON(verdict.Triggers), actor); err != nil {
+				return nil, fmt.Errorf("sales: insert revise re-approval row: %w", err)
+			}
+			if _, err := tx.Exec(ctx, `
+INSERT INTO public.sales_quote_status_log (quote_id, actor, from_status, to_status, reason)
+VALUES ($1, $2, $3, $4, $5)`,
+				quoteID, actor, StatusSent, StatusPendingApproval, triggersJSON(verdict.Triggers)); err != nil {
+				return nil, fmt.Errorf("sales: log revise re-approval transition: %w", err)
+			}
+		}
+	}
 	if _, err := tx.Exec(ctx, `
-UPDATE public.sales_quotes SET locked = false, updated_at = now() WHERE id = $1`, quoteID); err != nil {
-		return nil, fmt.Errorf("sales: unlock on revise: %w", err)
+UPDATE public.sales_quotes SET status = $2, locked = $3, updated_at = now() WHERE id = $1`,
+		quoteID, nextStatus, locked); err != nil {
+		return nil, fmt.Errorf("sales: settle head on revise: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("sales: commit revise: %w", err)
@@ -507,6 +551,13 @@ func (s *Service) EvaluateRedLines(ctx context.Context, versionID int64) (*RedLi
 			maxDiscount = it.DiscountPct
 		}
 	}
+	return redLineVerdict(marginPct, maxDiscount, v.SaleTotalUSD), nil
+}
+
+// redLineVerdict folds the DealHub three dimensions onto already-folded
+// numbers — the single judgment core shared by the DB path (EvaluateRedLines)
+// and the in-tx revise path (ReviseQuote re-review, A3 修复)。
+func redLineVerdict(marginPct, maxDiscount, saleTotal float64) *RedLineVerdict {
 	marginFloor := float64(settings.GetPlatformInt("sales.quote.margin_floor_pct", 30))
 	discountDepth := float64(settings.GetPlatformInt("sales.quote.discount_depth_pct", 10))
 	orderAmount := float64(settings.GetPlatformInt("sales.quote.order_amount_usd", 500))
@@ -514,7 +565,7 @@ func (s *Service) EvaluateRedLines(ctx context.Context, versionID int64) (*RedLi
 	verdict := &RedLineVerdict{
 		MarginPct:    marginPct,
 		MaxDiscount:  maxDiscount,
-		SaleTotalUSD: v.SaleTotalUSD,
+		SaleTotalUSD: saleTotal,
 	}
 	if marginFloor > 0 && marginPct < marginFloor {
 		verdict.Triggers = append(verdict.Triggers, RedLineTrigger{Dimension: "margin_floor", Value: marginPct, Threshold: marginFloor})
@@ -522,11 +573,11 @@ func (s *Service) EvaluateRedLines(ctx context.Context, versionID int64) (*RedLi
 	if discountDepth > 0 && maxDiscount > discountDepth {
 		verdict.Triggers = append(verdict.Triggers, RedLineTrigger{Dimension: "discount_depth", Value: maxDiscount, Threshold: discountDepth})
 	}
-	if orderAmount > 0 && v.SaleTotalUSD >= orderAmount {
-		verdict.Triggers = append(verdict.Triggers, RedLineTrigger{Dimension: "order_amount", Value: v.SaleTotalUSD, Threshold: orderAmount})
+	if orderAmount > 0 && saleTotal >= orderAmount {
+		verdict.Triggers = append(verdict.Triggers, RedLineTrigger{Dimension: "order_amount", Value: saleTotal, Threshold: orderAmount})
 	}
 	verdict.AutoApprove = len(verdict.Triggers) == 0
-	return verdict, nil
+	return verdict
 }
 
 // ── 提交 / 审批 / 发送 / 收口 ────────────────────────────────────────────
@@ -1069,6 +1120,9 @@ SELECT quote_id, version_id, expires_at, revoked_at
 	} else if time.Now().After(expiresAt) {
 		outcome = "expired"
 	}
+	// A6（2026-11-05 审计）：detail.access 截断保留**最近 20 条**——匿名可达
+	// 的行级写入必须有界（此前无限追加 = 无界增长）。取 ord 最大（最新）的
+	// 20 条，再按 ord 升序回排（保持「最新在尾」的既有约定）。
 	if _, err := s.pool.Exec(ctx, `
 UPDATE public.sales_quote_shares
    SET viewed_at = COALESCE(viewed_at, now()),
@@ -1077,9 +1131,18 @@ UPDATE public.sales_quote_shares
        detail = jsonb_set(
             COALESCE(detail, '{}'::jsonb),
             '{access}',
-            COALESCE(detail->'access', '[]'::jsonb) ||
-            to_jsonb(jsonb_build_array(
-                jsonb_build_object('at', now(), 'ip', $3, 'ua', $4, 'outcome', $2)))
+            (
+              SELECT COALESCE(jsonb_agg(entry ORDER BY ord ASC), '[]'::jsonb)
+              FROM (
+                SELECT e AS entry, ord
+                FROM jsonb_array_elements(
+                    COALESCE(detail->'access', '[]'::jsonb) || to_jsonb(jsonb_build_array(
+                        jsonb_build_object('at', now(), 'ip', $3::text, 'ua', $4::text, 'outcome', $2)))
+                ) WITH ORDINALITY AS t(e, ord)
+                ORDER BY ord DESC
+                LIMIT 20
+              ) recent
+            )
        )
  WHERE id = (
     SELECT id FROM public.sales_quote_shares WHERE token_hash = $1
@@ -1093,11 +1156,15 @@ UPDATE public.sales_quote_shares
 	if err != nil {
 		return nil, err
 	}
-	if head.Version == nil {
-		return nil, ErrNotFound
+	// A2（2026-11-05 审计）：公开面服务**分享钉住的版本**（948.version_id
+	// NOT NULL），不是头表当前版本——sent 后修订换版不得让已发出的客户
+	// 链接静默变价，且修订版未经人审前本来就不该被公开面暴露。
+	v, err := s.getQuoteVersion(ctx, versionID, true)
+	if err != nil {
+		return nil, err
 	}
-	items := make([]PublicQuoteItem, 0, len(head.Version.Items))
-	for _, it := range head.Version.Items {
+	items := make([]PublicQuoteItem, 0, len(v.Items))
+	for _, it := range v.Items {
 		items = append(items, PublicQuoteItem{
 			CanonicalName: it.CanonicalName,
 			DisplayName:   it.DisplayName,
@@ -1112,9 +1179,9 @@ UPDATE public.sales_quote_shares
 	return &PublicQuote{
 		CustomerName: head.CustomerName,
 		Title:        head.Title,
-		ValidUntil:   head.Version.ValidUntil,
-		Expired:      head.Version.Expired,
-		Tier:         head.Version.Tier,
+		ValidUntil:   v.ValidUntil,
+		Expired:      v.Expired,
+		Tier:         v.Tier,
 		Items:        items,
 	}, nil
 }

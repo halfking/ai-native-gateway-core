@@ -30,6 +30,7 @@ export default {
     systemMonitor: "システム監視",
     providers: "プロバイダー",
     reconciliation: "プロバイダー照合",
+    salesWorkbench: '営業見積ワークベンチ',
     settlementReport: "決算レポート",
     usageTrends: "使用量トレンド",
     pricing: "コスト価格",

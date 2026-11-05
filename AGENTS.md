@@ -4,6 +4,49 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-05 报价系统 MVP W1 前端轮：/operations/sales 工作台 ＋ 8 语种 i18n（第 48 增量遗留项交付）**
+> （goal 会话，`docs/audit/2026-11-05-报价系统MVP-W1前端轮.md`；通用式见 `LESSONS.md` **§635**）：
+> ★ 用户目标＝「拉最新合并 → 提交推送 → 按实施规划继续剩余任务」。开工 ff-merge
+> `1d7d8d46d`（8 提交零冲突，3 条新部署门脚本 24/9/21 全绿）；规划盘点＝W1 后端已被
+> 第 48 增量调和收口（`3c9954acb`，本会话早前后端 WIP 按先例并入）⇒ 本轮＝其 §6 W1-T2
+> 遗留前端。★ 交付＝`web/src/api/sales.ts` ＋ `SalesWorkbenchView.vue`（供给/需求/报价
+> 三页签；withheld 组单独呈现；C3 置信档逐行展示不越权阻断）＋ `/operations/sales` 路由
+> ＋ operations 菜单项（不设 super 门：写权限应用层闸）＋ 8 语种 sales.ts/nav 键/index
+> 合并 ＋ menu-config.json 重导出 ＋ 视图测试 3 判据。
+> ★★ **行为决议**：分享 token 一次性呈现（`ShareLink.token` 类型层 optional ＋ 测试断言
+> 清单取不到）／红线判定无独立端点（submit 内服务端裁决，前端只呈状态与 trigger_reasons）／
+> 前端不做 C3 提交拦截（两把尺反模式）。
+> ★★ **踩过的门（全转绿）**：element-plus 无 auto-import（显式引入 ⇒ 测试 mock 必须
+> importOriginal 部分透传）· UI 契约 B 四弹层补 max-height 滚动 · 间距尺 6px 离阶收
+> `--kx-space-2`（改值不调基线）· i18n 值质量三棘轮逐键改译（de/fr +4、zh-TW +14 ⇒ 0 新增）
+> · en-US nav 漏键被 parity 硬闸当场抓（8 语种缺一即红＝门的牙）· DefaultRow 显式断言 ×8。
+> ★ 验收读数：vue-tsc rc=0；**vitest 全量 293 文件 / 3011 passed**；vite build ✓（UI 契约
+> A/B=0）；i18n parity/shared-dead/间距尺全绿；config 门 60/60；Go 侧零改动（build rc=0、
+> sales 6 真库腿 ok 1.132s 复核零扰动）。★ 遗留不变：W0 真单（人工）、W2 同步器/看板/PDF、
+> 公开面客户版页面。
+> **2026-11-05 第 48 增量：48 小时修订审计轮（五组并行只读取证 ＋ 报价系统 MVP 调和落地 ＋ 14 项修复 ＋ 真库腿首次跑绿）**
+> （goal 会话，`docs/全面审计v3/2026-11-05/{01-审计方案,02-审计发现与缺陷台账,03-修复与验证记录}.md`；通用式见 `LESSONS.md` **§634**）：
+> ★ 用户目标＝「对 48 小时内的修正进行审计……制定详细执行方案后审计执行」。
+> ⇒ ★ 开工动作：ff-merge `f9db58cd6`（零冲突）＋ **调和落地并行会话在途 WIP**（报价系统迁移 942-949 + sales 包，
+> 中断于 11-05 02:36 无审计档 ⇒ 按先例收口：编译/vet/派生台账门全绿＋补 db-changelog 第 7 面＋gofmt ⇒ `3c9954acb` 推双仓）。
+> ⇒ ★★★ **本轮最重发现＝A1【P1】**：报价系统 `cents_per_credit` 被当**元**用（A-14 裁决钉死是**分**）⇒ 收入虚大 100×
+> （order_amount 维恒触发＝"只审例外"失效、毛利下限永不触发、945/946 快照金额全错）——**「WIP 能编译＋登记面全绿」拦不住
+> 纯算术缺陷，唯一闸＝纯单元测试**（本轮补 `TestPrecomputeLinesA14Unit`）。真库腿（sales realdb **首次跑绿 10/10**）另钉出
+> **A-11：ListSellable 扫 941 可空列非指针目标 ⇒ 市场表为空（生产 211 现状）时工作台必 500**（已修）。
+> ⇒ ★ 14 项修复全部落地并验证（A2 分享钉版 / A3 sent 修订强制重审（redLineVerdict 单一判定核）/ A4 夹具 scratch 守卫 /
+> A5 GET 死分支 / A6 匿名可达行级写入有界 / A7 946 补 FK（prepared 改字节，936 先例）/ A10 日志 / B1 基线副本 /
+> **C1+C2 秘密扫描器 BLOCK 11→0（占位符约定改写 10 行 docs，不动 baseline）/ C3 F-22 同族 / D3 / E1 台账指针**）；
+> 验证：build/vet rc=0、admin 90s/settings/sql.schema/sales 全绿、ursmcheck 关键门全绿（admin-routes 快照从 SSOT 重生成 1 行）、
+> 扫描器（钩子同参）rc=0。★ 遗留登记：A6b 限流中间件、A8 毛利分层、A9 version_no 重试、B2/C4/C5/D1（口令历史残留，建议
+> owner 轮换）/D2/D4/E3；**报价前端（/operations/sales + 8 语种）与 W0 真单＝下轮实施**。
+> **2026-11-05 第 48 增量：245/154 部署断链修复轮（goal 会话）** —— ★ 用户目标＝「检查并修正部署到 245 与 154 的脚本，完成后重新对两强主机进行部署」，报错＝`✗ envs SSOT loader not found: /Users/xutaohuang/workspace/ai-native-workspace/envs/loader.sh`。
+> ⇒ ★★★★ **断链点①（用户报的那条）＝ envs SSOT 路径漂移**：envs 仓（halfking/envs）随工作区 2026-11-04 重组（根仓 `85faac2a`：deploy-lib/ → deploy/deploy-lib/）落到 **`~/workspace/ai-native-tools/deploy/envs`**，而 `deploy-seamless.sh` / `clear-upgrade-banner.sh` 内联的**两候选链**（`ai-native-workspace/envs` → `ai-native-tools/envs`）**两个都落空** ⇒ 报的是一条本机**从来不存在**的死路径（看起来像「envs 丢了」，实际是「默认值没跟着迁移改」）。⇒ 修法＝新增 **`scripts/envs-resolve.sh`**（候选链**单一真相** + 显式 `ENVS_ROOT` **必校验**（无效 ⇒ rc=64 + 可执行提示）+ 失败文案与候选链同源）+ **在 source 共享部署库之前**解析并 export（⇒ 共享库 `deploy-prereqs.sh` 的 `${ENVS_ROOT:-<默认死路径>}` 跟着走）+ `lib/pg-instance-env.sh` 探测扩成「新布局优先」。
+> ⇒ ★★★★ **断链点②（部署推进到迁移那步才暴露）＝ 共享部署库的「迁移退役判据」把本仓迁移**静默丢弃**：判据原写法是「**前 15 行出现 superseded/deprecated 三个词就跳过**」⇒ 表头提到这些**业务词汇**的 **944_sales_quotes.sql**（状态图例含 superseded）与 **945_sales_quote_versions.sql**（含 superseded_by）被跳过 ⇒ 两张表**从未建出来** ⇒ 946 外键失败 `relation "public.sales_quote_versions" does not exist` ⇒ 部署在「切换前 pending 迁移」中止（**未切符号链接 ⇒ 线上零影响**，但 942/943 已落库）。⇒ 修法在**共享 SSOT 另一仓** `ai-native-tools:deploy/deploy-lib/db-changelog.sh`：退役 = **显式标记行**（标记词必须是注释行第一个词 + 词边界 ⇒ `superseded_by` 不算）+ **跳过打日志** + **单点真源 helper**（两处调用点同走）⇒ 误伤 4 → **0**，不改变任何现存迁移的处置。
+> ⇒ ★★ **门（两道，均已接线 Makefile + .workflow/main-verify.yml）**：`tests/envs_resolution_contract_test.sh`（25 断言；夹具由**实现自己的候选链**推导 ⇒ 布局改名不假红；变异臂：旧实现 14 红 / 显式值不校验 7 红 / 文案漂移 1 红）＋ `tests/migration_retired_marker_contract_test.sh`（8 断言；**判据取共享库的真实现** ⇒ 变异臂把 helper 还原成旧子串匹配 ⇒ 同一道门 **5 红并点名 944/945**）。
+> ⇒ ★★★ **部署读数（从**干净 worktree** 出发 ⇒ 不带上并行会话的 36 项未提交 WIP）**：**245=2932-b17edaf9**（208s/切换 27s）· **154=2933-b17edaf9**（213s/切换 20s）⇒ 主机内 `/api/system/version` ＝ seq 2932/2933 + sha b17edaf9、healthz/readyz 200、154 公网 `https://llm.kxpms.cn/api/system/version` ＝ 2933 ⇒ 迁移 **942–949 落库 6/6**、凭据解密冒烟 failed=0、admin 密码同步 200 ⇒ 版本戳收敛入库（`92446d2f3`）。
+> ⇒ ★ **门禁读数（口径必须写清谁的红）**：主树 `make guards-gate-scripts` 停在 `tests/deploy_sync_prune_contract_test.sh`（23/1，缺 `deploy/phase0/optimization.env`）⇒ 归因＝**并行会话未提交的** `scripts/deploy-seamless-docker.sh` + 该门自身在途改动（这两文件在我提交区间**未被我改过**；同一提交在干净 worktree **24/0**）⇒ **不改闸门、不动他人 WIP**；另两条 `deploy_sops_test.sh` / `scan_secrets_enumeration_contract_test.sh` 本机 **rc=64「需要 bash>=4」= 显式 skipped**；登记册门 **PASS=166 FAIL=0**。
+> ⇒ ★ **遗留（登记）**：① 主树 local `main`（`f67120923`）与 `origin/main` **分叉**（本地另有并行会话 WIP ⇒ `git merge origin/main` 被 git **中止** ⇒ 未强行处理，交由其自行合并）；② `ai-native-tools` 工作区 checkout 同样分叉（`bc460fed` vs origin `f0def7d6`）；③ `scripts/deploy-lib.legacy/db-changelog.sh`（**休眠**的历史副本）仍是旧子串判据 —— 未动（部署不加载它）。
+> ⇒ ★ **通用式见 `LESSONS.md` §636**（路径类默认值是「迁移债」/ 判据要区分「标记」与「提及」/ 跨仓修复要配跨仓的门 / 中止在切符号链接前的部署＝线上零影响但 DB 可能已部分迁移）。
 > **2026-11-05 第 47 增量：glm-5.3 请求洪水溯源与 ASM 分析回路熔断轮（跨仓：溯源在网关库 / 修复在 ai-session-manager）**
 > （goal 会话）：★ 用户目标＝「查实 211 上大量 glm-5.3 请求（如 `045b5104e328694a78f173dc151fe0f8`）是做什么的、来源于哪里、
 > 有无必要、能否换 glm-5.3-flash」＋「修正发现的问题，提交推送」。

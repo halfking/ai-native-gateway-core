@@ -30,6 +30,7 @@ export default {
     systemMonitor: "مراقبة النظام",
     providers: "المزودون",
     reconciliation: "تهوية الحسابات",
+    salesWorkbench: 'منصة المبيعات',
     settlementReport: "تقرير التسوية",
     usageTrends: "اتجاهات الاستخدام",
     pricing: "تكلفة التسعير",
