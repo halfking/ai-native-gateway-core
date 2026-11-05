@@ -72,4 +72,11 @@ export default {
   viewCount: 'Vues',
   windowHint: 'Fenêtre',
   withheldNotice: '{count} groupe(s) de modèles homonymes à prix multiples suspendus (non fiables, exclus de la liste vendable)',
+  approvals: 'Approbations',
+  approvalsTitle: 'Approbations du devis #{id}',
+  colDecision: 'Décision',
+  colDecidedBy: 'Approbateur',
+  triggerReasons: 'Raisons de déclenchement',
+  withheldReason: 'Motif de rétention',
+  withheldVariants: 'Variantes de prix (entrée/sortie /1M)',
 }

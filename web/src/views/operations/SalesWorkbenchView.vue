@@ -14,19 +14,29 @@ import {
   ElTabPane, ElTabs, ElTag,
 } from 'element-plus'
 import { useI18n } from 'vue-i18n'
+import { isSuperAdmin } from '../../store'
 import {
   closeDemandCard, claimDemandCard, createDemandCard, listDemandCards,
-  closeQuote, createQuote, createQuoteShare, decideQuote, listQuotes,
+  closeQuote, createQuote, createQuoteShare, decideQuote, listQuoteApprovals, listQuotes,
   listQuoteShares, listQuoteVersions, listSupplyAnnotations, getSalesSellable,
   sendQuote, submitQuote, upsertSupplyAnnotation,
-  type DemandCard, type Quote, type QuoteVersion, type SellableList, type ShareLink,
+  type DemandCard, type Quote, type QuoteApproval, type QuoteVersion,
+  type SellableList, type ShareLink,
 } from '../../api/sales'
 
 const { t } = useI18n()
 
+// 写权限应用层闸（2026-11-06 审计 P-5）：decide 与供给登记写后端是
+// super-only（admin/sales_handlers.go decide 内判 salesAuthRole、
+// POST supply = h.superAdmin）⇒ 前端对非 super 隐藏对应写按钮（读侧
+// 与其余 h.admin 动作不收窄），避免「必 403 的按钮」。
+const canDecide = isSuperAdmin()
+
 const tab = ref<'supply' | 'demand' | 'quotes'>('supply')
 const loading = ref(false)
 const errorText = ref('')
+// reload 无序守卫（P-11）：快速切页签时旧响应后到不得覆盖新页签状态。
+let reloadSeq = 0
 
 // ── 供给池 ──
 const sellable = ref<SellableList | null>(null)
@@ -60,20 +70,28 @@ const versionsDialogVisible = ref(false)
 const sharesDialogVisible = ref(false)
 
 async function reload() {
+  const seq = ++reloadSeq
   loading.value = true
   errorText.value = ''
   try {
     if (tab.value === 'supply') {
-      sellable.value = await getSalesSellable()
+      const r = await getSalesSellable()
+      if (seq !== reloadSeq) return
+      sellable.value = r
     } else if (tab.value === 'demand') {
-      demandCards.value = (await listDemandCards()).items
+      const r = (await listDemandCards()).items
+      if (seq !== reloadSeq) return
+      demandCards.value = r
     } else {
-      quotes.value = (await listQuotes()).items
+      const r = (await listQuotes()).items
+      if (seq !== reloadSeq) return
+      quotes.value = r
     }
   } catch (e) {
+    if (seq !== reloadSeq) return
     errorText.value = String((e as Error).message || e)
   } finally {
-    loading.value = false
+    if (seq === reloadSeq) loading.value = false
   }
 }
 
@@ -238,13 +256,13 @@ async function openShares(q: Quote) {
   }
 }
 
-async function mintShare(q: Quote) {
+async function mintShare(quoteId: number) {
   if (!shareForm.value.contact_name.trim()) {
     ElMessage.warning(t('sales.contactRequired'))
     return
   }
   try {
-    const link = await createQuoteShare(q.id, {
+    const link = await createQuoteShare(quoteId, {
       contact_name: shareForm.value.contact_name,
       contact_email: shareForm.value.contact_email,
       ttl_hours: 24 * 14,
@@ -259,7 +277,33 @@ async function mintShare(q: Quote) {
         ElMessage.info(t('sales.shareTokenShown'))
       }
     }
-    shareLinks.value = (await listQuoteShares(q.id)).items
+    shareLinks.value = (await listQuoteShares(quoteId)).items
+  } catch (e) {
+    ElMessage.error(String((e as Error).message || e))
+  }
+}
+
+// ── 审批记录（2026-11-06 审计 P-4）：trigger_reasons 是 submit 内服务端
+// 红线裁决（决议 B）的可复算快照，此前取回后零渲染 ⇒ 审批人看不到触发
+// 维度/值/阈值。这里接现成 /approvals 端点做只读呈现。
+const approvals = ref<QuoteApproval[]>([])
+const approvalsDialogVisible = ref(false)
+const approvalsQuoteId = ref<number | null>(null)
+
+function formatTriggerReasons(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) return parsed.map(String).join('；')
+    if (parsed && typeof parsed === 'object') return Object.entries(parsed).map(([k, v]) => `${k}=${String(v)}`).join('；')
+  } catch { /* 非 JSON：原样呈现 */ }
+  return raw
+}
+
+async function showApprovals(q: Quote) {
+  try {
+    approvals.value = (await listQuoteApprovals(q.id)).items
+    approvalsQuoteId.value = q.id
+    approvalsDialogVisible.value = true
   } catch (e) {
     ElMessage.error(String((e as Error).message || e))
   }
@@ -294,7 +338,22 @@ onMounted(reload)
         :closable="false"
         class="block"
       />
-      <el-table v-loading="loading" :data="filteredSellable" size="small" class="block">
+      <!-- withheld 明细（P-9）：整组扣下的模型/原因/价格变体，运营据此人工排查 -->
+      <el-table
+        v-if="sellable && sellable.withheld.length"
+        :data="sellable.withheld"
+        size="small"
+        class="block withheld-table"
+      >
+        <el-table-column prop="canonical_name" :label="t('sales.colModel')" min-width="160" />
+        <el-table-column prop="reason" :label="t('sales.withheldReason')" min-width="160" />
+        <el-table-column :label="t('sales.withheldVariants')" min-width="200">
+          <template #default="{ row }">
+            {{ (row.price_variants || []).map((v: [string | null, string | null]) => `${v[0] ?? '—'} / ${v[1] ?? '—'}`).join('；') }}
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-table v-loading="loading" :data="filteredSellable" size="small" class="block sellable-table">
         <el-table-column prop="canonical_name" :label="t('sales.colModel')" min-width="180" />
         <el-table-column prop="provider_name" :label="t('sales.colProvider')" width="120" />
         <el-table-column prop="billing_mode" :label="t('sales.colBilling')" width="110" />
@@ -318,7 +377,7 @@ onMounted(reload)
         </el-table-column>
         <el-table-column :label="t('sales.colActions')" width="100" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" @click="openAnnotate(row as unknown as { credential_id: number; provider_model_id: number; raw_model_name: string })">{{ t('sales.annotate') }}</el-button>
+            <el-button v-if="canDecide" size="small" @click="openAnnotate(row as unknown as { credential_id: number; provider_model_id: number; raw_model_name: string })">{{ t('sales.annotate') }}</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -505,16 +564,30 @@ onMounted(reload)
         <el-table-column :label="t('sales.colActions')" width="330" fixed="right">
           <template #default="{ row }">
             <el-button v-if="row.status === 'draft'" size="small" type="warning" @click="act(row as unknown as Quote, 'submit')">{{ t('sales.submit') }}</el-button>
-            <el-button v-if="row.status === 'pending_approval'" size="small" type="success" @click="decide(row as unknown as Quote, 'approved')">{{ t('sales.approve') }}</el-button>
-            <el-button v-if="row.status === 'pending_approval'" size="small" type="danger" @click="decide(row as unknown as Quote, 'rejected')">{{ t('sales.reject') }}</el-button>
+            <el-button v-if="canDecide && row.status === 'pending_approval'" size="small" type="success" @click="decide(row as unknown as Quote, 'approved')">{{ t('sales.approve') }}</el-button>
+            <el-button v-if="canDecide && row.status === 'pending_approval'" size="small" type="danger" @click="decide(row as unknown as Quote, 'rejected')">{{ t('sales.reject') }}</el-button>
             <el-button v-if="row.status === 'approved'" size="small" type="primary" @click="act(row as unknown as Quote, 'send')">{{ t('sales.send') }}</el-button>
             <el-button v-if="row.status === 'sent'" size="small" type="success" @click="act(row as unknown as Quote, 'won')">{{ t('sales.markWon') }}</el-button>
             <el-button v-if="row.status === 'sent'" size="small" type="info" @click="act(row as unknown as Quote, 'lost')">{{ t('sales.markLost') }}</el-button>
+            <el-button size="small" @click="showApprovals(row as unknown as Quote)">{{ t('sales.approvals') }}</el-button>
             <el-button size="small" @click="showVersions(row as unknown as Quote)">{{ t('sales.versions') }}</el-button>
             <el-button size="small" @click="openShares(row as unknown as Quote)">{{ t('sales.shares') }}</el-button>
           </template>
         </el-table-column>
       </el-table>
+
+      <el-dialog v-model="approvalsDialogVisible" :title="t('sales.approvalsTitle', { id: approvalsQuoteId ?? 0 })" width="640px" class="sales-dialog">
+        <el-table :data="approvals" size="small">
+          <el-table-column prop="decision" :label="t('sales.colDecision')" width="110" />
+          <el-table-column prop="approver" :label="t('sales.colDecidedBy')" width="120" />
+          <el-table-column :label="t('sales.triggerReasons')" min-width="240">
+            <template #default="{ row }">
+              {{ formatTriggerReasons(String(row.trigger_reasons || '')) || '—' }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="comment" :label="t('sales.reason')" min-width="120" />
+        </el-table>
+      </el-dialog>
 
       <el-dialog v-model="versionsDialogVisible" :title="t('sales.versionsTitle', { id: versionsQuoteId ?? 0 })" width="560px" class="sales-dialog">
         <el-table :data="versions" size="small">
@@ -545,7 +618,7 @@ onMounted(reload)
             <el-input v-model="shareForm.contact_email" style="width: 180px" />
           </el-form-item>
           <el-form-item>
-            <el-button size="small" type="primary" :disabled="versionsQuoteId === null" @click="versionsQuoteId !== null && mintShare(quotes.find((x) => x.id === versionsQuoteId)!)">
+            <el-button size="small" type="primary" :disabled="versionsQuoteId === null" @click="versionsQuoteId !== null && mintShare(versionsQuoteId)">
               {{ t('sales.mintShare') }}
             </el-button>
           </el-form-item>

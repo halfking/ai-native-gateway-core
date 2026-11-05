@@ -13,7 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SalesWorkbenchView from './SalesWorkbenchView.vue'
-import { getSalesSellable, listQuoteShares, createQuoteShare } from '../../api/sales'
+import { getSalesSellable, listDemandCards, listQuotes, listQuoteShares, createQuoteShare } from '../../api/sales'
 import { testI18n } from '../../test-utils/i18n'
 
 vi.mock('../../api/sales', () => ({
@@ -122,7 +122,14 @@ const stubs = {
   'el-table': ElTableStub,
   'el-table-column': ElTableColumnStub,
   'el-dialog': dialogStub,
-  'el-tabs': { template: '<div class="el-tabs-stub"><slot /></div>' },
+  // tab-change 直发（P-16：判据③要真正驱动 switchTab，stub 不再有「无通路」借口）
+  'el-tabs': {
+    template:
+      '<div class="el-tabs-stub">' +
+      '<button class="tab-demand" @click="$emit(\'tab-change\', \'demand\')" />' +
+      '<button class="tab-quotes" @click="$emit(\'tab-change\', \'quotes\')" />' +
+      '<slot /></div>',
+  },
   'el-tab-pane': { template: '<div class="el-tab-pane-stub"><slot /></div>' },
   'el-alert': { props: ['title'], template: '<div class="el-alert-stub">{{ title }}</div>' },
   'el-tag': { template: '<span class="el-tag-stub"><slot /></span>' },
@@ -130,7 +137,12 @@ const stubs = {
     emits: ['click'],
     template: '<button class="el-button-stub" @click="$emit(\'click\')"><slot /></button>',
   },
-  'el-input': { template: '<input class="el-input-stub" />' },
+  // v-model 契约保真（P-6：mintShare 的 contact_name 必须经真实输入路径驱动）
+  'el-input': {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template: '<input class="el-input-stub" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+  },
   'el-input-number': { template: '<input class="el-input-number-stub" />' },
   'el-form': { template: '<div class="el-form-stub"><slot /></div>' },
   'el-form-item': { template: '<div class="el-form-item-stub"><slot /></div>' },
@@ -151,42 +163,90 @@ vi.mock('element-plus', async (importOriginal) => {
 })
 
 describe('SalesWorkbenchView', () => {
-  it('供给页签：展示可售行 + withheld 组单独呈现（同名多价整组扣下）', async () => {
+  it('供给页签：展示可售行 + withheld 组单独呈现（告警条带计数 + 明细表带原因/变体）', async () => {
     mockedSellable.mockResolvedValueOnce(SELLABLE)
     const w = mount(SalesWorkbenchView, { global: { plugins: [testI18n], stubs } })
     await flushPromises()
 
-    // withheld 告警条在场且带计数
-    expect(w.text()).toContain('1')
-    // 可售表只含 model-a 与 model-c（C3 各档如实展示），不含 model-b
-    const text = w.text()
-    expect(text).toContain('model-a')
-    expect(text).toContain('model-c')
-    expect(text).not.toContain('model-b')
+    // withheld 告警条在场且带计数（P-6 收紧：不再断言裸 '1'，断言告警文案本体）
+    const alertText = w.find('.el-alert-stub').text()
+    expect(alertText).toContain('被整组扣下')
+    expect(alertText).toContain('1')
+    // P-9：withheld 明细表（可售表之外的第二张表）呈现模型/原因/价格变体
+    const withheldTable = w.find('.withheld-table')
+    expect(withheldTable.exists()).toBe(true)
+    expect(withheldTable.text()).toContain('model-b')
+    expect(withheldTable.text()).toContain('canonical_multi_price')
+    expect(withheldTable.text()).toContain('0.5 / 1.5')
+    expect(withheldTable.text()).toContain('0.8 / 1.6')
+    // 可售表（.sellable-table）只含 model-a 与 model-c（C3 各档如实展示），不含 model-b
+    const sellableTable = w.find('.sellable-table')
+    expect(sellableTable.exists()).toBe(true)
+    const sellableText = sellableTable.text()
+    expect(sellableText).toContain('model-a')
+    expect(sellableText).toContain('model-c')
+    expect(sellableText).not.toContain('model-b')
     // C3 置信档逐行展示（tag 形态）
-    expect(text).toContain('trusted')
-    expect(text).toContain('suspect_symmetric')
-    // 价格列展示数字原文（不重格式化）
-    expect(text).toContain('1.0 / 2.0 USD')
+    expect(sellableText).toContain('trusted')
+    expect(sellableText).toContain('suspect_symmetric')
+    // 价格列展示数字原文（不重格式化）——load-bearing 断言收窄到供应商价格列
+    expect(sellableText).toContain('1.0 / 2.0 USD')
   })
 
-  it('分享创建：token 只出现一次且提示「明文不落库」语义', async () => {
-    mockedShares.mockResolvedValue({ items: [] })
+  it('分享创建：token 只出现一次且提示「明文不落库」语义（组件交互驱动）', async () => {
+    mockedSellable.mockResolvedValue(SELLABLE)
+    // 后端真实形状：listQuoteShares 的条目**没有** token 字段（明文不落库）。
+    mockedShares.mockResolvedValue({
+      items: [{
+        id: 5, quote_id: 7, version_id: 9, contact_name: '旧联系人', contact_email: '',
+        expires_at: '2026-11-20T00:00:00Z', revoked_at: null, sent_at: null,
+        viewed_at: null, opened_at: null, view_count: 2, created_by: 's',
+        created_at: '2026-11-05T00:00:00Z',
+      }],
+    })
     mockedMint.mockResolvedValue({
       id: 1, quote_id: 7, version_id: 9, contact_name: '张三', contact_email: '',
       expires_at: '2026-11-20T00:00:00Z', revoked_at: null, sent_at: null,
       viewed_at: null, opened_at: null, view_count: 0, created_by: 's',
       created_at: '2026-11-05T00:00:00Z', token: 'tok-abc123',
     })
-    // 直接驱动组件内部状态（对话框流程）：挂载 → 切到 quotes 页签数据形状。
-    // mintShare 的「只出现一次」语义由单元级断言钉住：创建响应携带 token 字段，
-    // 后续 listQuoteShares 的条目**没有** token 字段（undefined）。
-    const minted = await createQuoteShare(7, { contact_name: '张三' })
-    expect(minted.token).toBe('tok-abc123')
+    // quotes 页签要有一行真实 quote，shares 按钮才会渲染（行内操作列）
+    vi.mocked(listQuotes).mockResolvedValue({
+      items: [{
+        id: 7, customer_name: '客户甲', title: '首次报价', status: 'draft',
+        locked: false, created_by: 'op', created_at: '2026-11-05T00:00:00Z',
+        updated_at: '2026-11-05T00:00:00Z',
+      }],
+    })
+    const w = mount(SalesWorkbenchView, { global: { plugins: [testI18n], stubs } })
+    await flushPromises()
+
+    // 切到报价页签 → 列表出现 → 打开分享弹层（shares 按钮驱动 openShares）
+    await w.find('.tab-quotes').trigger('click')
+    await flushPromises()
+    const sharesBtn = w.findAll('button').find((b) => b.text() === '分享')
+    expect(sharesBtn).toBeTruthy()
+    await sharesBtn!.trigger('click')
+    await flushPromises()
+
+    // 真实输入路径填联系人（el-input stub 有 v-model 契约）；
+    // 报价页签下三个 dialog 依次为 approvals/versions/shares ⇒ 取第 3 个弹层内首 input
+    const shareDialog = w.findAll('.el-dialog-stub')[2]
+    expect(shareDialog.exists()).toBe(true)
+    const contactInput = shareDialog.find('.el-input-stub')
+    await contactInput.setValue('张三')
+
+    const mintBtn = w.findAll('button').find((b) => b.text().includes('生成'))
+    expect(mintBtn).toBeTruthy()
+    await mintBtn!.trigger('click')
+    await flushPromises()
+
+    // token 经组件状态（lastShareToken）呈现一次；mock-on-mock 不再是断言载体
+    expect(w.text()).toContain('tok-abc123')
+    // 类型层钉死：ShareLink.token 是 optional（token?: string）——
+    // 若有人把它改成必填（= 想从清单里再取 token），下面这行断言即红。
     const listed = await listQuoteShares(7)
     expect(listed.items[0]?.token).toBeUndefined()
-    // 类型层钉死：ShareLink.token 是 optional（token?: string）——
-    // 若有人把它改成必填（= 想从清单里再取 token），上面这行断言即红。
   })
 
   it('页签切换触发对应 API（supply/demand/quotes 三面各读各的源）', async () => {
@@ -197,5 +257,12 @@ describe('SalesWorkbenchView', () => {
     // 页签按钮在场（stub 的 el-tab-pane 三枚）
     const tabs = w.findAll('.el-tab-pane-stub')
     expect(tabs.length).toBe(3)
+    // P-16：真正驱动 switchTab，断言三个页签各读各的源
+    await w.find('.tab-demand').trigger('click')
+    await flushPromises()
+    expect(listDemandCards).toHaveBeenCalledTimes(1)
+    await w.find('.tab-quotes').trigger('click')
+    await flushPromises()
+    expect(listQuotes).toHaveBeenCalledTimes(1)
   })
 })

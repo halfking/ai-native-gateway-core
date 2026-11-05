@@ -1051,7 +1051,8 @@ func (w *NodeProbeWorker) enqueue(ctx context.Context, task ProbeQueueTask) (int
 //   - Duplicate dedup_keys are treated as success (peer or earlier attempt
 //     already enqueued the same task) and recorded under outcome="duplicate".
 //   - 2026-09-05 noise-reduction: deterministic gate rejections
-//     (ErrProbeAutomaticIneligible / ErrProbeOutOfScope) are NOT retried.
+//     (ErrProbeAutomaticIneligible / ErrProbeOutOfScope /
+//     ErrProbeModelOutOfAutomaticScope) are NOT retried.
 //     They are evaluated from current credential/provider state at the queue
 //     boundary and cannot flip between retries, so the old retry loop only
 //     amplified one rejection into 3 WARNs + 1 ERROR per credential per pump
@@ -1159,12 +1160,22 @@ func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, pare
 		// consume the retry budget. The eligibility gate (probe_queue.go
 		// automaticTaskEligible) reads current credential/provider state and
 		// the URSM scope gate is static for the process lifetime, so neither
-		// can flip between two attempts milliseconds apart. Mirror the
-		// consumption-side branch (probe_queue_worker.go processTask: single
-		// Info + settle-as-skip) instead of 3 WARNs + 1 ERROR per credential
-		// per pump cycle. No persistSubmitFailure: a disabled credential or a
-		// disabled provider is a config state, not queue_submit_failed.
-		if errors.Is(err, ErrProbeAutomaticIneligible) || errors.Is(err, ErrProbeOutOfScope) {
+		// can flip between two attempts milliseconds apart. The model-scope
+		// gate (2026-11-05, ErrProbeModelOutOfAutomaticScope) belongs here
+		// too: featured ∪ recent-usage membership only changes on the
+		// minutes-scale tier refresh, never between retries. Omitting it made
+		// every out-of-scope model row burn 3 retries + persistSubmitFailure
+		// (stamping last_err_code=queue_submit_failed over the real backoff
+		// evidence) and the pump failure branch never advanced next_retry_at,
+		// i.e. a self-sustaining re-pump loop at one full retry cycle per
+		// 45s tick (审计 2026-11-06 P-1, glm-5.3 flood 同族).
+		// Mirror the consumption-side branch (probe_queue_worker.go
+		// processTask: single Info + settle-as-skip) instead. No
+		// persistSubmitFailure: a gate rejection is a business skip, not
+		// queue_submit_failed.
+		if errors.Is(err, ErrProbeAutomaticIneligible) ||
+			errors.Is(err, ErrProbeOutOfScope) ||
+			errors.Is(err, ErrProbeModelOutOfAutomaticScope) {
 			outcome := "skipped_out_of_scope"
 			if errors.Is(err, ErrProbeAutomaticIneligible) {
 				outcome = "skipped_ineligible"
@@ -1564,7 +1575,8 @@ func clampRecoverableProbeSchedulesSQL() string {
 				OR lower(last_err_code) LIKE '%network%'
 				OR lower(last_err_code) LIKE '%connection%'
 				OR lower(last_err_code) LIKE 'http_5%'
-				OR lower(last_err_code) IN ('http_429', 'rate_limit', 'upstream_down', 'empty_response')
+				OR lower(last_err_code) IN ('http_429', 'rate_limit', 'upstream_down', 'empty_response',
+					'dns_error', 'request_error')
 			  )
 			ORDER BY next_retry_at DESC
 			LIMIT $2

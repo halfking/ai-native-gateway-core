@@ -72,4 +72,11 @@ export default {
   viewCount: 'Aufrufe',
   windowHint: 'Zeitfenster',
   withheldNotice: '{count} gleichnamige Mehrpreis-Modellgruppe(n) zurückgehalten (nicht vertrauenswürdig, nicht verkaufbar)',
+  approvals: 'Genehmigungen',
+  approvalsTitle: 'Angebot #{id} Genehmigungsverlauf',
+  colDecision: 'Entscheidung',
+  colDecidedBy: 'Genehmiger',
+  triggerReasons: 'Auslösegründe',
+  withheldReason: 'Zurückbehaltungsgrund',
+  withheldVariants: 'Preisvarianten (ein/aus /1M)',
 }

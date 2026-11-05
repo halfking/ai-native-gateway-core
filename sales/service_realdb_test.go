@@ -28,6 +28,7 @@ package sales
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,6 +67,25 @@ func readRepoFile(t *testing.T, rel string) string {
 func salesFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 
+	// A4（2026-11-05 审计）fail-closed 守卫：本夹具的迁移与种子全部
+	// public. 限定，且清理含对 credentials/credential_model_bindings 等
+	// 共享表的 DELETE ⇒ 只允许专用 scratch 库（库名含 test/scratch/realdb），
+	// 或显式 LLM_GATEWAY_REALDB_ALLOW_ANY_DSN=1 豁免（一次性容器才可用）。
+	// ★ P-2（2026-11-06 审计）：守卫必须排在下面 DROP 循环**之前** ——
+	// 该循环无条件 DROP 15 张 public 业务表（CASCADE），守卫若在其后，
+	// DSN 误指业务库时表已先被删，t.Fatalf 为时已晚。
+	var dbName string
+	if err := pool.QueryRow(ctx, `SELECT current_database()`).Scan(&dbName); err != nil {
+		t.Fatalf("current_database: %v", err)
+	}
+	low := strings.ToLower(dbName)
+	if os.Getenv("LLM_GATEWAY_REALDB_ALLOW_ANY_DSN") != "1" &&
+		!strings.Contains(low, "test") && !strings.Contains(low, "scratch") && !strings.Contains(low, "realdb") {
+		t.Fatalf("TEST_DATABASE_URL must point at a dedicated scratch database (got %q) — "+
+			"this fixture drops/truncates shared public tables; override only for "+
+			"throwaway instances via LLM_GATEWAY_REALDB_ALLOW_ANY_DSN=1", dbName)
+	}
+
 	// 幂等重跑（2026-11-05 真库腿实测）：前一次失败会留下 public 表
 	// （本夹具建表不带 IF NOT EXISTS、清理只删行）⇒ 先逆序 DROP 再建，
 	// 失败重跑才可继续。CASCADE 顺带走 826/940/949 的从属对象。
@@ -84,22 +104,6 @@ func salesFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 		if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS public.`+tbl+` CASCADE`); err != nil {
 			t.Fatalf("fixture drop %s: %v", tbl, err)
 		}
-	}
-
-	// A4（2026-11-05 审计）fail-closed 守卫：本夹具的迁移与种子全部
-	// public. 限定，且清理含对 credentials/credential_model_bindings 等
-	// 共享表的 DELETE ⇒ 只允许专用 scratch 库（库名含 test/scratch/realdb），
-	// 或显式 LLM_GATEWAY_REALDB_ALLOW_ANY_DSN=1 豁免（一次性容器才可用）。
-	var dbName string
-	if err := pool.QueryRow(ctx, `SELECT current_database()`).Scan(&dbName); err != nil {
-		t.Fatalf("current_database: %v", err)
-	}
-	low := strings.ToLower(dbName)
-	if os.Getenv("LLM_GATEWAY_REALDB_ALLOW_ANY_DSN") != "1" &&
-		!strings.Contains(low, "test") && !strings.Contains(low, "scratch") && !strings.Contains(low, "realdb") {
-		t.Fatalf("TEST_DATABASE_URL must point at a dedicated scratch database (got %q) — "+
-			"this fixture truncates shared public tables on cleanup; override only for "+
-			"throwaway instances via LLM_GATEWAY_REALDB_ALLOW_ANY_DSN=1", dbName)
 	}
 
 	// 隔离 schema：本测试独占，不碰 public。
@@ -776,6 +780,29 @@ func TestRealDBSharePublicProjection(t *testing.T) {
 	}
 	if !strings.Contains(detail, "1.2.3.4") {
 		t.Errorf("access audit should carry ip in detail: %s", detail)
+	}
+
+	// P-12（2026-11-06 审计）：A6 的 20 条上界回归钉——首访之后灌 25 次访问，
+	// detail.access 必须恰好保留最近 20 条（1.2.3.4 + 10.0.0.0..4 共 6 条
+	// 被挤出，最旧保留条 = 10.0.0.5；jsonb_set 的 LIMIT 20 写入路径语义）。
+	for i := 0; i < 25; i++ {
+		if _, err := svc.GetPublicQuote(ctx, link.Token, fmt.Sprintf("10.0.0.%d", i), "ua"); err != nil {
+			t.Fatalf("bounded access %d: %v", i, err)
+		}
+	}
+	var accessLen int
+	var oldestKept string
+	if err := pool.QueryRow(ctx, `
+SELECT jsonb_array_length(detail->'access'),
+       detail->'access'->0->>'ip'
+  FROM public.sales_quote_shares WHERE id = $1`, link.ID).Scan(&accessLen, &oldestKept); err != nil {
+		t.Fatalf("read bounded access: %v", err)
+	}
+	if accessLen != 20 {
+		t.Errorf("detail.access must be capped at 20 entries, got %d", accessLen)
+	}
+	if oldestKept != "10.0.0.5" {
+		t.Errorf("oldest kept access entry should be the 21st-newest (10.0.0.5), got %q", oldestKept)
 	}
 
 	// 撤销 ⇒ 不可读。

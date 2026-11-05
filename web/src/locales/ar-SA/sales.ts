@@ -72,4 +72,11 @@ export default {
   viewCount: 'مرات الوصول',
   windowHint: 'الإطار الزمني',
   withheldNotice: '{count} مجموعة نماذج متشابهة متعددة الأسعار محجوزة (غير موثوقة، خارج قائمة البيع)',
+  approvals: 'الموافقات',
+  approvalsTitle: 'سجل موافقات العرض #{id}',
+  colDecision: 'القرار',
+  colDecidedBy: 'الموافق',
+  triggerReasons: 'أسباب التفعيل',
+  withheldReason: 'سبب الاحتجاز',
+  withheldVariants: 'متغيرات السعر (داخل/خارج /1M)',
 }

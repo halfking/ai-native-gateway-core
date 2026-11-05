@@ -36,8 +36,9 @@ _shared_lib_usable() {
 #   ★   【★ 解析器根本不会试的目录 ★】⇒ ★ 故收口到一处（★ F-16 第 ③ 步的前置件 ★）。
 _shared_lib_candidates() {
   printf '%s\n' \
-    "$HOME/workspace/ai-native-workspace/deploy-lib|current layout" \
-    "$HOME/workspace/ai-native-tools/deploy-lib|legacy layout"
+    "$HOME/workspace/ai-native-tools/deploy/deploy-lib|current layout (2026-11-04 重组后规范位)" \
+    "$HOME/workspace/ai-native-workspace/deploy-lib|pre-reorg layout" \
+    "$HOME/workspace/ai-native-tools/deploy-lib|compat symlink → deploy/deploy-lib"
 }
 
 _resolve_aian_deploy_lib() {

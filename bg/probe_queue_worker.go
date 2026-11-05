@@ -278,7 +278,8 @@ func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask)
 				slog.Info("probe_service skipped unnecessary task", "queue_id", task.ID, "reason", result.ReasonCode)
 				return
 			}
-			if errors.Is(err, ErrProbeOutOfScope) || errors.Is(err, ErrProbeAutomaticIneligible) {
+			if errors.Is(err, ErrProbeOutOfScope) || errors.Is(err, ErrProbeAutomaticIneligible) ||
+				errors.Is(err, ErrProbeModelOutOfAutomaticScope) {
 				slog.Info("probe_service skipped task", "queue_id", task.ID, "reason", result.ReasonCode)
 				w.complete(ctx, task, result)
 				return

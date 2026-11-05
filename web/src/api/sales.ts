@@ -39,8 +39,9 @@ export interface SellableRow {
   market_ref_currency: string | null
   market_ref_in_per_1m: string | null
   market_ref_out_per_1m: string | null
-  market_ref_platform_id: string
-  market_ref_platform_count: number
+  // 后端 service.go:86-87 为 *string/*int（可空），不是空串/0 占位。
+  market_ref_platform_id: string | null
+  market_ref_platform_count: number | null
   market_position: string | null
   price_confidence: string
   annotation?: SellableAnnotation
@@ -95,8 +96,9 @@ export interface DemandCard {
   window_hint: string
   status: string
   claimed_by: string
-  claimed_at: string | null
-  expires_at: string | null
+  // 后端 omitempty（service.go:412-413）⇒ 缺席时是 undefined 而非 null。
+  claimed_at?: string | null
+  expires_at?: string | null
   expired: boolean
   lost_reason: string
   created_by: string
@@ -269,7 +271,26 @@ export function listQuoteVersions(id: number) {
 }
 
 export function listQuoteApprovals(id: number) {
-  return req<{ items: Array<Record<string, unknown>> }>('GET', `/api/admin/sales/quotes/${id}/approvals`)
+  return req<{ items: QuoteApproval[] }>('GET', `/api/admin/sales/quotes/${id}/approvals`)
+}
+
+// QuoteApproval ↔ sales/quote.go ListApprovals 的 map 投影（quote_id /
+// version_id / trigger_reasons(jsonb::text) / requested_by / decision /
+// approver / comment / created_at / decided_at / elapsed_seconds）。
+// trigger_reasons 是三维红线判定（毛利下限/折扣深度/单笔金额）的
+// 可复算快照，submit 内服务端裁决（决议 B），前端只呈现在审批记录里。
+export interface QuoteApproval {
+  id: number
+  quote_id: number
+  version_id: number
+  trigger_reasons: string
+  requested_by: string
+  decision: string
+  approver: string
+  comment: string
+  created_at: string
+  decided_at: string | null
+  elapsed_seconds: number | null
 }
 
 export function listQuoteShares(id: number) {

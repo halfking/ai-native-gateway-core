@@ -10,7 +10,8 @@
 //     Enqueue, so permanently ineligible credentials never enter the
 //     submit retry loop;
 //  2. submitViaQueueSource must treat deterministic gate rejections
-//     (ErrProbeAutomaticIneligible / ErrProbeOutOfScope) as skip-once:
+//     (ErrProbeAutomaticIneligible / ErrProbeOutOfScope /
+//     ErrProbeModelOutOfAutomaticScope) as skip-once:
 //     exactly ONE Info log, no retry attempts, no ERROR, and a nil error
 //     so no caller re-arms or re-logs the row;
 //  3. transient enqueue failures must keep the P1.3 semantics untouched:
@@ -154,6 +155,34 @@ func TestSubmitViaQueueSourceSkipsOutOfScopeGateWithoutRetry(t *testing.T) {
 		if m.level >= slog.LevelWarn {
 			t.Fatalf("out-of-scope skip must not emit WARN/ERROR logs, got level=%s msg=%q", m.level, m.message)
 		}
+	}
+}
+
+func TestSubmitViaQueueSourceSkipsModelOutOfScopeGateWithoutRetry(t *testing.T) {
+	restore, snapshot := captureNodeProbeLogs(t)
+	defer restore()
+	w, calls := newGateTestWorker(func(int) (int64, bool, error) {
+		return 0, false, fmt.Errorf("%w: model=%q", ErrProbeModelOutOfAutomaticScope, "legacy-model")
+	})
+
+	inserted, err := w.submitViaQueueSource(9, "legacy-model", "default", "", "periodic")
+	if err != nil {
+		t.Fatalf("model-scope rejection must not surface as error, got %v", err)
+	}
+	if inserted {
+		t.Fatal("inserted must be false on model-scope skip")
+	}
+	if *calls != 1 {
+		t.Fatalf("model-scope rejection must not consume the retry budget: got %d enqueue calls, want 1", *calls)
+	}
+	msgs := enqueueMessages(snapshot())
+	for _, m := range msgs {
+		if m.level >= slog.LevelWarn {
+			t.Fatalf("model-scope skip must not emit WARN/ERROR logs, got level=%s msg=%q", m.level, m.message)
+		}
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("model-scope skip must be logged exactly once, got %d enqueue logs", len(msgs))
 	}
 }
 

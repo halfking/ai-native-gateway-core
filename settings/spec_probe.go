@@ -199,7 +199,7 @@ func ProbeSpecs() []*Spec {
 			Max:             floatPtr(2160), // 90d (hot table retention)
 			Default:         24,
 			Description:     "用量统计窗口（小时）",
-			DescriptionLong: "计算用量 Top-N 时回看的窗口长度（默认 24=1 天，2026-11-05：与自动探测 INV-3「近 24h 真实用量」对齐；统计已排除探测自身流量）。",
+			DescriptionLong: "计算用量 Top-N 时回看的窗口长度（默认 24=1 天，2026-11-05：与自动探测 INV-3「近 24h 真实用量」对齐；统计已排除探测自身流量）。★ 2026-11-06 审计口径补充：本键只影响 ModelTier.usage Top-N 统计；自动探测 model-scope 门的「真实用量」臂走会话族热腿，实际可见窗口受热腿保留期（默认 8h）约束，比本键更窄（见 bg/probe_model_scope.go P-3 注释）。",
 			Unit:            "小时",
 			DangerLevel:     Safe,
 			HotReload:       true,
@@ -219,6 +219,7 @@ func ProbeSpecs() []*Spec {
 				" ★ ★ 回退路径（纯配置、不用改代码）：★ 本旋钮调到 21600（6h）⇒ 长尾恢复成 2026-09-25 P0-2 的原梯 5m→1h→2h→6h；★ 调到 60 ⇒ 退化成短梯封顶。★ 所以这次口径变更是**可逆的**。" +
 				" ★ 代价（必须一起看）：★ 2026-09-25 P0-2 实测 60s 档滞留 45 对（connection_error/503/timeout/500），长尾化落地后 node_probe_runs ~5,000/h→~1,610/h。" +
 				" ★ 本旋钮把长尾封顶从 6h 改到默认 5m ⇒ ★ 对【持续故障的对】稳态频率由 1 次/6h 变 1 次/5m（★ 72×）⇒ 以那 45 对计 ≈ +530 次/h（★ 约合 1,610/h 基线的 +33%）。" +
+				" ★ 另一项同轮成本（2026-11-06 审计 P-8 补记）：recoveringSweeper 扫描周期由 30m 收紧到 5m ⇒ 持续故障对的最坏验证探测量上限由 480/day 升至 2,880/day（6×）；两项叠加请以 dashboard 的 node_probe_runs 频率实测为准。" +
 				" ★ 换来的好处：供应商恢复后 ≤5 分钟内被复检（原先最长 6h）。★ 成本敏感的部署请把本旋钮调到 3600（1h）——恢复发现慢 6 倍，探测量回到 P0-2 之后的水平。",
 			Unit:        "秒",
 			DangerLevel: Safe,

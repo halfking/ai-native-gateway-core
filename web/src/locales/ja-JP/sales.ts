@@ -72,4 +72,11 @@ export default {
   viewCount: '閲覧数',
   windowHint: '期間',
   withheldNotice: '同名複数価格のモデルグループ {count} 件を保留（信頼不可、販売可能リスト外）',
+  approvals: '承認履歴',
+  approvalsTitle: '見積 #{id} 承認履歴',
+  colDecision: '判定',
+  colDecidedBy: '承認者',
+  triggerReasons: '発動理由',
+  withheldReason: '保留理由',
+  withheldVariants: '価格バリアント（入/出 /1M）',
 }

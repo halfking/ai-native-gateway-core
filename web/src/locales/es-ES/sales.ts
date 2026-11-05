@@ -72,4 +72,11 @@ export default {
   viewCount: 'Vistas',
   windowHint: 'Ventana',
   withheldNotice: '{count} grupo(s) de modelos homónimos con precios múltiples retenidos (no fiables, fuera de la lista vendible)',
+  approvals: 'Aprobaciones',
+  approvalsTitle: 'Historial de aprobaciones de la cotización #{id}',
+  colDecision: 'Decisión',
+  colDecidedBy: 'Aprobador',
+  triggerReasons: 'Motivos del disparador',
+  withheldReason: 'Motivo de retención',
+  withheldVariants: 'Variantes de precio (ent/sal /1M)',
 }

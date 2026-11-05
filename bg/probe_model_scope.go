@@ -2,7 +2,14 @@
 //
 // Automatic probe model scope (2026-11-05):
 //   - Featured models (routing_policy.featured ∪ usage Top-N cache), OR
-//   - Models with real (non-probe) traffic in the last 24 hours
+//   - Models with real (non-probe) traffic visible in the session-family
+//     HOT source — effectively the hot retention window (default 8h,
+//     bg/partition_manager.go DefaultRetentionWindow). The 24h INV-3
+//     constant (probeUsageWindowInterval) only upper-bounds the predicate;
+//     the hot source is the binding constraint. ★ P-3（2026-11-06 审计）：
+//     口径如实降级并在此注明——刻意不换双腿（SessionFamilyTurnsSourceSQL），
+//     否则每次 scope 判定都变成跨分区扫描；daily_probe_audit 仍持有
+//     request_logs_with_current_month 的真 24h 口径，两者用途不同不互相冒充。
 //   - Everything else: manual probes only
 //
 // Credential/provider eligibility (automaticProbeEligibilityExistsSQL) stays
@@ -65,6 +72,9 @@ func (q *ProbeQueue) automaticProbeModelInScope(ctx context.Context, rawModel st
 // any real business traffic for the model name within the INV-3 window puts
 // it in automatic scope. Probe traffic is excluded via the session-family
 // predicate so probes cannot keep a model "in scope" forever.
+// ★ P-3（2026-11-06 审计）：实际可见窗口 = 会话族热腿保留期（默认 8h），
+// 不是名义上的 24h —— 见文件头注释；credential_selfcheck.go 同源查询
+// 已按同一口径如实注释（「v1 侧本来就只看得到最近 8h」）。
 //
 // ★ 2026-11-05 审计修（真库实测 42P03）：原先比对的 `rl.model` **不是**
 // 会话族投影里的列 —— 会话族投影只暴露 118 个 canonical 别名，其中

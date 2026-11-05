@@ -4,6 +4,32 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-06 第 49 增量：48 小时修订审计轮 —— 五组并行只读取证 ＋ 16 项修复 ＋ P1 自维持风暴止血 ＋ 真库腿 6/6**
+> （goal 会话，`docs/全面审计v3/2026-11-06/{01-审计方案,02-审计发现与缺陷台账,03-修复与验证记录}.md`；通用式见 `LESSONS.md` **§637**）：
+> ★ 用户目标＝「对 48 小时内的修正进行审计……制定详细执行方案后审计执行」。树对齐 main==origin/main
+> `b8777d9f1`；窗口 11-05 06:30 → 11-06 00:20，代码类 9 笔；审计对象＝A 报价 W1 前端（`e0ed0b6b1`，
+> 仅自验）/ B 第 48 增量 14 项修复复核（`78f07316d`）/ C probe 收窄深审（`97c9c1b21`，Cursor 协作、
+> **无审计档**）/ D 部署断链轮 / E 接缝文档遗留。
+> ★★ **本轮最重发现＝P-1【P1】**：probe 收窄的新哨兵 `ErrProbeModelOutOfAutomaticScope` 不在**两侧**
+> 确定性门白名单（`node_probe.go:1167`＋`probe_queue_worker.go:281`）⇒ scope 外存量行每 45s tick
+> 烧 3 重试＋persistSubmitFailure 覆写 last_err_code＋泵不推进 next_retry_at＝**glm-5.3 洪水同族自维持
+> 循环** ⇒ 修双侧白名单＋第三哨兵测试臂（skip 后泵推进 holdoff、指标 skipped_out_of_scope 可见）。
+> ★ **B 组修复的修复**：A4 scratch 守卫排在 15 张 DROP TABLE **之后**（P-2）⇒ 守卫前置＋实测非
+> scratch 库名立即 Fatalf 零 DDL；其余 11 项全部独立成立。★ **C 组**：P-3「近 24h 真实用量」实为
+> 热腿 8h（口径如实降级＋spec 对齐）；P-7 clamp 漏 dns_error/request_error；P-8 sweeper 6× 补记。
+> ★ **A 组前端七项**：P-4 审批明细接 /approvals（trigger_reasons 此前取回即弃）/ P-5 super-only 按钮
+> isSuperAdmin 镜像 / P-6 token 判据 mock-on-mock → 组件交互驱动（el-input stub 补 v-model 契约）/
+> P-9 withheld 明细表 / P-10 可空类型 / P-11 reload 序号守卫＋find 断言消除 / P-16 页签真驱动。
+> ★ **E/D 组**：慢SQL提案 35 列含 **7 幽灵列**（在 request_logs/session_bodies）⇒ 提案副本订正 28 列
+> ＋提示回编排台核实真实数据源；遗留 10 项维持登记（C4 由 P-14 顺带收口：_shared-lib 候选链补新布局）；
+> 跨仓 P-15＝父仓 deploy-prereqs 死默认改候选链＋本仓 envs 门断言 ⑪（§636 通用式第二次实证）；
+> D 组确认既有红 deploy_sync_prune 已转绿 24/0、父仓半迁移态已收敛；远端分支
+> docs/bank-security-profile-2026-11-06 在途不并入。
+> ★ 验收读数：build/vet rc=0；bg/settings/sales 全绿；**sales realdb 6/6**（含 A6 上界回归钉）；
+> web vitest **293 文件/3012 passed**；vue-tsc rc=0；vite build ✓；i18n 三门 26/26（+7 键 × 8 语种）；
+> guards-gate-scripts rc=0（envs 26/26、migration 8/8、shared_lib 25/25、登记册 166/0）。
+> ★ 遗留登记：P-17 指标维度 / P-18 sent 未触发修订保锁（裁决）/ P-19 /public/quote 路由（W2）/
+> P-20 CI 盲区 / P-21 历史噪音；第 48 增量遗留 A6b/A8/A9/A10后半/B2/C5/D1/D2/D4/E3 维持。
 > **2026-11-05 报价系统 MVP W1 前端轮：/operations/sales 工作台 ＋ 8 语种 i18n（第 48 增量遗留项交付）**
 > （goal 会话，`docs/audit/2026-11-05-报价系统MVP-W1前端轮.md`；通用式见 `LESSONS.md` **§635**）：
 > ★ 用户目标＝「拉最新合并 → 提交推送 → 按实施规划继续剩余任务」。开工 ff-merge

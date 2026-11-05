@@ -72,4 +72,11 @@ export default {
   viewCount: '存取次數',
   windowHint: '時間窗',
   withheldNotice: '有 {count} 組同名多價的模型被整組扣下（不可信，不進可售清單）',
+  approvals: '審批記錄',
+  approvalsTitle: '報價 #{id} 審批記錄',
+  colDecision: '決策',
+  colDecidedBy: '審批人',
+  triggerReasons: '觸發原因',
+  withheldReason: '扣下原因',
+  withheldVariants: '價格變體（入/出 /1M）',
 }

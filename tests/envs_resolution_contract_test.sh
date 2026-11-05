@@ -222,5 +222,24 @@ else
   FAIL=$((FAIL + 1)); printf 'FAIL ⑩ no-drift assertion: chain has %s entries\n' "$NCAND" >&2
 fi
 
+# ⑪（P-15，2026-11-06 审计）跨仓防回归：共享部署库 deploy-prereqs.sh 的
+#    ENVS_ROOT 回退不得再是单一死默认（旧值 `:-$HOME/workspace/ai-native-tools/envs`
+#    是 2026-11-04 重组前路径，245/154 断链同源）。父仓不可达时显式 SKIP 披露。
+_PREREQS=""
+for _cand in "$REPO_ROOT/../deploy/deploy-lib/deploy-prereqs.sh" \
+             "$REPO_ROOT/../../deploy/deploy-lib/deploy-prereqs.sh"; do
+  [[ -f "$_cand" ]] && { _PREREQS="$_cand"; break; }
+done
+if [[ -n "$_PREREQS" ]]; then
+  if grep -q 'ENVS_ROOT:-\$HOME/workspace' "$_PREREQS"; then
+    FAIL=$((FAIL + 1))
+    printf 'FAIL ⑪ deploy-prereqs.sh fell back to a single dead ENVS_ROOT default\n' >&2
+  else
+    PASS=$((PASS + 1)); printf 'OK   ⑪ deploy-prereqs.sh ENVS_ROOT fallback is chain-based (P-15)\n'
+  fi
+else
+  PASS=$((PASS + 1)); printf 'SKIP ⑪ deploy-prereqs.sh not reachable (no parent checkout)\n'
+fi
+
 printf 'envs_resolution selftest: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]

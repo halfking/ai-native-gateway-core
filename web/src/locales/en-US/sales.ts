@@ -72,4 +72,11 @@ export default {
   viewCount: 'Views',
   windowHint: 'Window',
   withheldNotice: '{count} same-name multi-price model group(s) withheld as untrusted (kept out of the sellable list)',
+  approvals: 'Approvals',
+  approvalsTitle: 'Quote #{id} approval trail',
+  colDecision: 'Decision',
+  colDecidedBy: 'Approver',
+  triggerReasons: 'Trigger reasons',
+  withheldReason: 'Withheld reason',
+  withheldVariants: 'Price variants (in/out /1M)',
 }
