@@ -32,6 +32,7 @@ export default {
     systemMonitor: "Surveillance système",
     providers: "Fournisseurs",
     reconciliation: "Réconciliation fournisseurs",
+    salesWorkbench: 'Atelier commercial',
     settlementReport: "Rapport de règlement",
     usageTrends: "Tendances d'utilisation",
     pricing: "Tarification des coûts",

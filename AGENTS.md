@@ -4,6 +4,26 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-05 报价系统 MVP W1 前端轮：/operations/sales 工作台 ＋ 8 语种 i18n（第 48 增量遗留项交付）**
+> （goal 会话，`docs/audit/2026-11-05-报价系统MVP-W1前端轮.md`；通用式见 `LESSONS.md` **§635**）：
+> ★ 用户目标＝「拉最新合并 → 提交推送 → 按实施规划继续剩余任务」。开工 ff-merge
+> `1d7d8d46d`（8 提交零冲突，3 条新部署门脚本 24/9/21 全绿）；规划盘点＝W1 后端已被
+> 第 48 增量调和收口（`3c9954acb`，本会话早前后端 WIP 按先例并入）⇒ 本轮＝其 §6 W1-T2
+> 遗留前端。★ 交付＝`web/src/api/sales.ts` ＋ `SalesWorkbenchView.vue`（供给/需求/报价
+> 三页签；withheld 组单独呈现；C3 置信档逐行展示不越权阻断）＋ `/operations/sales` 路由
+> ＋ operations 菜单项（不设 super 门：写权限应用层闸）＋ 8 语种 sales.ts/nav 键/index
+> 合并 ＋ menu-config.json 重导出 ＋ 视图测试 3 判据。
+> ★★ **行为决议**：分享 token 一次性呈现（`ShareLink.token` 类型层 optional ＋ 测试断言
+> 清单取不到）／红线判定无独立端点（submit 内服务端裁决，前端只呈状态与 trigger_reasons）／
+> 前端不做 C3 提交拦截（两把尺反模式）。
+> ★★ **踩过的门（全转绿）**：element-plus 无 auto-import（显式引入 ⇒ 测试 mock 必须
+> importOriginal 部分透传）· UI 契约 B 四弹层补 max-height 滚动 · 间距尺 6px 离阶收
+> `--kx-space-2`（改值不调基线）· i18n 值质量三棘轮逐键改译（de/fr +4、zh-TW +14 ⇒ 0 新增）
+> · en-US nav 漏键被 parity 硬闸当场抓（8 语种缺一即红＝门的牙）· DefaultRow 显式断言 ×8。
+> ★ 验收读数：vue-tsc rc=0；**vitest 全量 293 文件 / 3011 passed**；vite build ✓（UI 契约
+> A/B=0）；i18n parity/shared-dead/间距尺全绿；config 门 60/60；Go 侧零改动（build rc=0、
+> sales 6 真库腿 ok 1.132s 复核零扰动）。★ 遗留不变：W0 真单（人工）、W2 同步器/看板/PDF、
+> 公开面客户版页面。
 > **2026-11-05 第 48 增量：48 小时修订审计轮（五组并行只读取证 ＋ 报价系统 MVP 调和落地 ＋ 14 项修复 ＋ 真库腿首次跑绿）**
 > （goal 会话，`docs/全面审计v3/2026-11-05/{01-审计方案,02-审计发现与缺陷台账,03-修复与验证记录}.md`；通用式见 `LESSONS.md` **§634**）：
 > ★ 用户目标＝「对 48 小时内的修正进行审计……制定详细执行方案后审计执行」。

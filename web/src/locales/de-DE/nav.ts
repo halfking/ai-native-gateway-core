@@ -32,6 +32,7 @@ export default {
     systemMonitor: "Systemüberwachung",
     providers: "Anbieter",
     reconciliation: "Anbieterabrechnung",
+    salesWorkbench: 'Vertriebswerkbank',
     settlementReport: "Abrechnungsbericht",
     usageTrends: "Nutzungstrends",
     pricing: "Kostenpreise",

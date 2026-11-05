@@ -33,6 +33,7 @@ export default {
     systemMonitor: 'System Monitoring',
     providers: 'Providers',
     reconciliation: 'Provider Reconciliation',
+    salesWorkbench: 'Sales workbench',
     settlementReport: 'Settlement Report',
     usageTrends: 'Usage Trends',
     usageEnhanced: 'Usage Enhanced',

@@ -84,6 +84,10 @@ const RequestActionsView = () => import('./views/RequestActionsView.vue')
 // 批 204：P0 storageAndLogConfig 孤儿接前端（3 段只读摘要：storage + filesystem + log）
 const StorageAndLogConfigView = () => import('./views/StorageAndLogConfigView.vue')
 const ReconciliationReportView = () => import('./views/admin/ReconciliationReport.vue')
+// 2026-11-05 W1-T2 前端轮：报价系统 MVP 工作台（供给池/需求池/报价单三页签；
+// 后端 sales 包 942–949 + admin/sales_handlers.go；内部运营面 ⇒ requiresAuth，
+// 数据权限由应用层角色闸承载）
+const SalesWorkbenchView = () => import('./views/operations/SalesWorkbenchView.vue')
 // 2026-07-24: V2-P4 admin session detail page (dual-column turns + drawer).
 const SessionDetailView = () => import('./views/admin/SessionDetailPage.vue')
 // 2026-08-09: 跨会话轮次列表页
@@ -333,6 +337,7 @@ export const router = createRouter({
     { path: '/admin/request-actions/:id', name: 'request-actions', component: RequestActionsView, meta: { requiresSuper: true } }, // 请求动作时间线（批 203：Redis LIST by request_id；admin 档 endpoint）
     { path: '/admin/storage-and-log-config', component: StorageAndLogConfigView, meta: { requiresSuper: true } }, // 存储与日志配置（批 204：3 段只读摘要；子视图 StorageConfig/FilesystemMaintenance/LogManagement 全在 DataLifecycleView 父视图下）
     { path: '/admin/reconciliation', component: ReconciliationReportView, meta: { requiresSuper: true } }, // 对账报表（供应商/内部双视角 + Excel 导出，2026-09-25）
+    { path: '/operations/sales', component: SalesWorkbenchView, meta: { requiresAuth: true } }, // 报价系统 MVP 工作台（2026-11-05 W1-T2；供给/需求/报价三页签；内部运营面 requiresAuth，写权限应用层闸）
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表
     { path: '/admin/proxy',        component: ProxyView, meta: { requiresSuper: true } }, // 2026-08-29: 代理管理
