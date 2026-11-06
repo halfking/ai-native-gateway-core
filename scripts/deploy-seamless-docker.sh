@@ -2333,6 +2333,36 @@ dd_autollm_env() {
 # 故障（与 ASM 开关同一类）。取值优先级同 ASM 开关：
 #   部署机环境变量 > env 文件里上次落下的值 > 不设（不签发票据）。
 # ★ 密钥不进日志；只有「配了没配」进日志。
+#
+# ★★ 2026-11-07（探测轮 211 部署阻塞 · E2BIG 根修）：写侧用 `printf %q`，
+#   读侧此前只剥外层引号**不做 %q 解码** ⇒ 含空格/反斜杠的值（allowlist）每
+#   部署一次就多一层转义（`\` → `\\`），以 2ⁿ 增长 —— 2026-11-06 的 2958 部署
+#   时 64KB 尚可通过，2026-11-07 的 512KB 撞上 Linux 单参数上限
+#   MAX_ARG_STRLEN(128KB) ⇒ docker run 直接 E2BIG（Argument list too long）。
+#   ⇒ 读侧必须做 **%q 的逆变换**（eval 是唯一无损逆），并按**不动点**迭代
+#   （存量值已积了 N 层，一次解干净；上限 32 层防失控）。解码后写侧再
+#   %q 一次 ⇒ 从此读-写往返恒等（一层进一层出，不再累积）。
+_dd_unq() {
+  # _dd_unq VALUE — strip ALL accumulated printf-%q layers (2026-11-07 存量修复).
+  # 停止条件（缺一不可，防过度解码把裸值打碎——裸值含空格时再 eval 会被分词截断）：
+  #   1. 值里已无反斜杠（真值 = 运营配置的 issuer 列表，不含反斜杠）；
+  #   2. eval 失败（不是合法 %q 形态）；
+  #   3. 解码结果没有变短（说明当前层不是 %q 转义，是原始内容）。
+  local v=$1 decoded i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 \
+           17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32; do
+    case "$v" in
+      # ★ 模式里 `\*` = 字面星号；字面**单反斜杠**必须写 `\\`（quoted '\\'* 会变成
+      #   「两个字面反斜杠」，单层 %q 形态（has\ space）一个反斜杠就漏匹配）。
+      *\\*) ;;
+      *) break ;;
+    esac
+    decoded=$(eval "printf '%s' ${v}" 2>/dev/null) || break
+    (( ${#decoded} < ${#v} )) || break
+    v=$decoded
+  done
+  printf '%s' "$v"
+}
 dd_identity_env() {
   local env_file="${1:-$ENV_FILE}"
   IDENTITY_SHARED_SECRET="${IDENTITY_SHARED_SECRET:-}"
@@ -2348,6 +2378,10 @@ dd_identity_env() {
     if [[ -z "$FREELLMAPI_PUBLIC_URL" ]]; then
       FREELLMAPI_PUBLIC_URL="$(sed -nE 's/^(export )?FREELLMAPI_PUBLIC_URL=(.*)$/\2/p' "$env_file" | tail -1)"
     fi
+    # ★ 2026-11-07：先做 %q 定点解码（存量值可能积了 N 层），再剥残余引号。
+    IDENTITY_SHARED_SECRET="$(_dd_unq "$IDENTITY_SHARED_SECRET")"
+    IDENTITY_ISSUER_ALLOWLIST="$(_dd_unq "$IDENTITY_ISSUER_ALLOWLIST")"
+    FREELLMAPI_PUBLIC_URL="$(_dd_unq "$FREELLMAPI_PUBLIC_URL")"
     # 去掉 shell 引号形态（bash %q 对空串会写成 ''，对含空格的值会加反斜杠）。
     IDENTITY_SHARED_SECRET="${IDENTITY_SHARED_SECRET%\'}"; IDENTITY_SHARED_SECRET="${IDENTITY_SHARED_SECRET#\'}"
     IDENTITY_SHARED_SECRET="${IDENTITY_SHARED_SECRET%\"}"; IDENTITY_SHARED_SECRET="${IDENTITY_SHARED_SECRET#\"}"
@@ -2886,6 +2920,18 @@ fi
 # ${arr[@]+…} 惯用法：GW_WEB_ENV 可能为空（dist 全缺），bash 3.2 在 set -u 下
 # 直接 "${空数组[@]}" 会报 unbound variable
 GW_ENV+=( ${GW_WEB_ENV[@]+"${GW_WEB_ENV[@]}"} )
+
+# ── ★ 2026-11-07 env 参数尺寸守卫（E2BIG 提前失败）───────────────────────
+# Linux execve 的单参数上限 MAX_ARG_STRLEN=128KB：任何一条 `-e K=V` 超过它，
+# docker 直接 "Argument list too long"（候选槽起不来、蓝绿 abort，且报错点离
+# 真凶隔了整个 GW_ENV 组装段）。这里提前点名超限的键 ⇒ 一次给出可诊断错误。
+# 阈值取 100000（<128KB，留余量）。
+for _e in "${GW_ENV[@]+"${GW_ENV[@]}"}"; do
+  if (( ${#_e} > 100000 )); then
+    dd_fail "GW_ENV 单条参数 ${#_e} 字节超过 100KB 上限（键=${_e%%=*}…）：很可能是 env 值被逐层转义累积（%q 读-写不对称）——修值源头后重跑，不要调大本阈值硬闯 execve 上限"
+  fi
+done
+unset _e
 
 # ── 起候选槽容器（旧槽继续服务 ⇒ 零停机）────────────────────────────────
 # 候选槽占用的是**另一个端口**（槽位与端口绑定），所以两个容器可以并存；

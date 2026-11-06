@@ -10691,3 +10691,20 @@ node_probe_runs.trigger_kind 闭集），但队列侧镜像约束 `credential_pr
 本地 2946 实测：`llmgw_node_probe_queue_submission_total{source="credential_recovery",
 outcome="failed"}` 5 分钟 +151。950 以幂等 DO 块重建 CHECK（6 → 7 值），
 已有 `credential_recovery` 值时跳过；down 有意 fail-closed（在途恢复源任务存在时回退失败）。
+## 2026-11-06T18:18:08Z — deploy 245 build_seq 2949 (95fecb3d)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 950 | `950_probe_queue_source_credential_recovery.sql` | `4a258e164a0c655d1af08ad958655407fba53a8b46d63aa480e34fc297f7e0fe` | applied+verified |
+
+
+## 2026-11-07T+ — 211 部署轮补记：950 经 apply-db-revision-sequence 落库 acc-pg17
+
+★ 211 的 docker 蓝绿引擎不走 systemd 引擎的 `_deploy_pending_startup_migrations` 扫描通道，
+走 `scripts/apply-db-revision-sequence.sh` **显式清单**（原尾部 949）⇒ 首次 211 部署时 950 未重放
+（本地/245/154 已落库）。本轮把 950 登记进清单后复跑部署，实证
+`applying sql/migrations/startup/950_...` + `NOTICE: source_check rebuilt (7 values)`。
+★ 211 台账现状：schema_migrations=950 ✓；checksums 台账顶部仍为 924（该库的 checksum 面由
+systemd 引擎维护，211 侧本就只到 924 —— 两台账分工不同，非缺口，登记备考）。
+★ 同时根修部署引擎 E2BIG（IDENTITY_ISSUER_ALLOWLIST %q 读-写不对称逐层累积 512KB）：
+`_dd_unq` 深度解码 + GW_ENV 100KB 单参守卫，211 实测 allowlist 512KB → 74 字节。

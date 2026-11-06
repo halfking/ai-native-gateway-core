@@ -2579,6 +2579,11 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/947_sales_quote_approvals.sql"
   "$ROOT_DIR/sql/migrations/startup/948_sales_quote_shares.sql"
   "$ROOT_DIR/sql/migrations/startup/949_supplier_view_binding_id.sql"
+  # ★ 950（2026-11-07 凭据探测时间点规划轮）：credential_probe_queue.source
+  #   闭集补 `credential_recovery`（6→7 值，幂等 DO 块）—— F1 恢复验证探针
+  #   启用的 source 被 489/538 的队列侧 CHECK 拒绝（23514）的根修。
+  #   ★ 自带 DO 块幂等守卫（已含该值时跳过）⇒ 重复重放安全。
+  "$ROOT_DIR/sql/migrations/startup/950_probe_queue_source_credential_recovery.sql"
 )
 
 
