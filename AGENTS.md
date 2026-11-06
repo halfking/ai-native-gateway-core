@@ -29,6 +29,15 @@
 > ⇒ 取道＝启动项目自带 `llm-gateway-redis`（compose，无密码）+ `LLM_GATEWAY_REDIS_CONTAINER` 钉容器名；
 > 前端构建会把 `localeKeyParityBaseline.json` 掏空成 `{}`（`.hollowout-backup` 同族）⇒ **提交前必须
 > `git checkout` 还原**（棘轮清零=把门弄瞎）。
+> ★ **三台部署全过（95fecb3d4 推双仓后）**：本地=2948（端到端：约束 7 值、
+> `{source=credential_recovery,outcome=success}=5`、23514 零新增）→ **245=2949**（263s/切换 22s，
+> pending 迁移 950 自动应用，约束 7 值实证）→ **154=2950**（244s/切换 22s，公网 llm.kxpms.cn 同步）
+> → **211=2963**（槽 b @8783 蓝绿；**首次部署被 E2BIG 拦下**＝`IDENTITY_ISSUER_ALLOWLIST` 单参
+> 512KB 撞 MAX_ARG_STRLEN——**%q 读-写不对称逐层累积**（写侧 printf %q、读侧只剥引号不解码 ⇒
+> 2ⁿ 增长，11-06 的 64KB 尚可通过）⇒ `_dd_unq` 深度解码（211 实测 512KB→**74 字节**）+
+> GW_ENV 100KB 单参守卫（`205b6dbd7`）；**211 的 docker 引擎走 `apply-db-revision-sequence.sh`
+> 显式清单通道**（与 systemd 的 pending 扫描两条通道）⇒ 950 补清单后复跑落库实证（7 值）；
+> 登录冒烟 3×401 无 429；公网 llm.itestu.cn 2963 同步；版本戳 2963 收敛 `205b6dbd7`）。
 > **2026-11-06 /live 路由判定折叠轮（goal 会话，通用式见 `LESSONS.md` §639）**：
 > ★ 用户目标＝「/live 的『路由判定』部分要能折叠与展开 → 部署 245/154 测试 → 成功后部署 211
 > （脚本＋蓝绿）→ 提交推送」。
