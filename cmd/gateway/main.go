@@ -4970,6 +4970,13 @@ func main() {
 				// restores availability on a direct probe success; the pinned
 				// gateway round only refines the evidence.
 				if credRecovery != nil {
+					// 2026-11-07 (audit round, root-fix A): EVERY recovery path
+					// wakes the credential's parked failed probe rows (F5 was
+					// quota-only before; the hourly probe audit caught
+					// availability-recovered rows still parked 5h out).
+					if nodeProbeWorker != nil {
+						credRecovery.SetRearmFunc(nodeProbeWorker.RearmCredentialFailures)
+					}
 					credRecovery.SetProbeSubmitter(func(credID int, model string) {
 						// 2026-11-07 fix: the recovery tick passes model="" for
 						// its credential-level verification probes expecting
@@ -5223,6 +5230,10 @@ func main() {
 			// never enqueued probes (observed on 154, URSM v2 authoritative).
 			// See docs/audit/2026-09-10-selfcheck-recovery-gate-audit.md.
 			if credRecovery != nil {
+				// 2026-11-07 (audit round, root-fix A): mirror of branch-1.
+				if nodeProbeWorker != nil {
+					credRecovery.SetRearmFunc(nodeProbeWorker.RearmCredentialFailures)
+				}
 				credRecovery.SetProbeSubmitter(func(credID int, model string) {
 					// 2026-11-07 fix: mirror of the branch-1 wiring — resolve
 					// the empty-model sentinel locally (Submit drops it

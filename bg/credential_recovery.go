@@ -128,6 +128,11 @@ type CredentialRecovery struct {
 	// 2026-08-26 quota-recovery-notify fix: closes the
 	// "DB says ready but cache still excludes credential" gap.
 	onQuotaRecovered func(credID int, source string)
+	// rearmFn wakes the recovered credential's failed node_probe_state rows
+	// (NodeProbeWorker.RearmCredentialFailures). Fired from every
+	// dispatchRecoveryHooks recovery kind since 2026-11-07 — see
+	// SetRearmFunc. nil → the wake is skipped (pair rows keep their ladder).
+	rearmFn func(credID int)
 	// probeSubmitterImmediate is the *synchronous* probe-submitter
 	// fired by dispatchRecoveryHooks the moment a credential flips out
 	// of a quota-blocked / availability-blocked state. Wired from
@@ -180,6 +185,21 @@ func (r *CredentialRecovery) SetProbeSubmitter(fn func(credID int, model string)
 		return
 	}
 	r.probeSubmitter = fn
+}
+
+// SetRearmFunc wires the credential-level failure-row wake hook (typically
+// NodeProbeWorker.RearmCredentialFailures). Fired from EVERY recovery path
+// (dispatchRecoveryHooks) — not just quota recovery — so a credential that
+// recovers via availability_recover / stale_periodic_exhausted_cleanup /
+// circuit_close also gets its parked failed probe rows re-armed for the
+// pump (the F5 event-wake contract, completed 2026-11-07 after the hourly
+// probe audit caught availability-recovered rows still parked 5h out).
+// Safe to call multiple times; the latest non-nil setter wins. nil → no-op.
+func (r *CredentialRecovery) SetRearmFunc(fn func(credID int)) {
+	if fn == nil {
+		return
+	}
+	r.rearmFn = fn
 }
 
 // SetProbeSubmitterImmediate wires a *second* probe-submitter hook that
@@ -481,6 +501,21 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 						// uses the same shape).
 						r.probeSubmitter(credID, "")
 						met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "probe_submit").Inc()
+					})
+				}
+				// ★ 2026-11-07（审计轮根修 A · F5 补全）：**每一条**恢复路径都要
+				//   回拉该凭据的失败探针行。F5 此前只挂在 quota 恢复事件
+				//   （onQuotaRecovered ×4）上——availability_recover /
+				//   stale_periodic_exhausted_cleanup / circuit_close 等恢复不触发
+				//   回拉 ⇒ 恢复前被 F4 配额钉/长梯停在未来 5h+ 的失败行无人唤醒，
+				//   凭据 ok/ready 而绑定持续 unavailable（245 基线审计 R5 实证：
+				//   sensenova/glm-5.3 系行停未来 5.3h）。rearm 幂等（只动
+				//   未来排程的失败行），泵 30s 内接管验证。
+				if r.rearmFn != nil {
+					fn := r.rearmFn
+					r.dispatchProbe(func() {
+						fn(credID)
+						met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "rearm").Inc()
 					})
 				}
 			}
