@@ -2,7 +2,11 @@ package maas
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestCreditBucketsSQL ensures the upsert SQL in chargeTokens is the
@@ -168,5 +172,57 @@ func TestBackfillCreditConsumptionBuckets_Gating(t *testing.T) {
 	}
 	if rows != 0 {
 		t.Fatalf("expected 0 rows when disabled, got %d", rows)
+	}
+}
+
+// TestBucketsCoverLookback —— R189 水位短路的判定函数契约。
+// 缺陷本体：252 生产每次 boot 全量重算 90 天 × _request_logs 分区族
+// GROUP BY（quiet 20-28s），蓝绿部署日反复白烧、预算边缘频繁被杀。
+// 短路判据必须两端都查：只看尾部会把「窗头缺桶」的残表误判为完整。
+func TestBucketsCoverLookback(t *testing.T) {
+	now := time.Date(2026, 11, 7, 6, 0, 0, 0, time.UTC)
+	h := func(hoursAgo float64) *time.Time {
+		ts := now.Add(-time.Duration(hoursAgo * float64(time.Hour)))
+		return &ts
+	}
+	cases := []struct {
+		name        string
+		oldest      *time.Time
+		newest      *time.Time
+		lookbackDys int
+		want        bool
+	}{
+		{"覆盖完整 → true", h(90*24 + 30), h(1), 90, true},
+		{"空表（MIN/MAX NULL）→ false", nil, nil, 90, false},
+		{"窗头缺桶（残表只近 30 天）→ false", h(30 * 24), h(1), 90, false},
+		{"窗尾滞后（5h 未跟）→ false", h(90*24 + 30), h(5), 90, false},
+		{"窗头恰好踩线（=窗起点+24h）→ true", h(90*24 - 24), h(2), 90, true},
+		{"窗头晚于线 1h → false", h(90*24 - 25), h(1), 90, false},
+		{"快窗 1 天同理", h(25), h(1), 1, true},
+		{"快窗缺尾", h(25), h(4), 1, false},
+	}
+	for _, tc := range cases {
+		if got := bucketsCoverLookback(now, tc.oldest, tc.newest, tc.lookbackDys); got != tc.want {
+			t.Errorf("%s: got %v want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestBackfillWatermarkShortCircuitSQL —— 水位查询必须是整表 MIN/MAX 桶端点
+// （不带 lookback WHERE：窗头完整性恰恰要看窗外有没有更老的桶）。
+func TestBackfillWatermarkShortCircuitSQL(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("credit_buckets.go"))
+	if err != nil {
+		t.Fatalf("read credit_buckets.go: %v", err)
+	}
+	sql := string(src)
+	for _, w := range []string{
+		"SELECT MIN(bucket_start), MAX(bucket_start)",
+		"FROM maas_credit_consumption_buckets",
+		"bucketsCoverLookback(time.Now(), oldest, newest, lookbackDays)",
+	} {
+		if !strings.Contains(sql, w) {
+			t.Errorf("backfill watermark query missing %q", w)
+		}
 	}
 }

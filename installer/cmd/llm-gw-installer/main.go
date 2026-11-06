@@ -1464,10 +1464,10 @@ var supplierViewMarketColumns941 []byte
 //go:embed embeddata/startup/941_supplier_view_market_columns.down.sql
 var supplierViewMarketColumns941Down []byte
 
-// ★ 942–950（2026-11-05 报价系统 MVP W1 ＋ 2026-11-07 探测时间点规划轮）。
+// ★ 942–951（2026-11-05 报价系统 MVP W1 ＋ 2026-11-07 探测时间点规划轮＋R189 252 SQL 审计轮）。
 //   embeddata 副本自 W1 轮就位，但 go:embed 变量与 embeddedSQLFiles 映射
 //   漏接线（TestStartupFilesAreAllEmbedded 抓住：文件在 setupSQLDir 里缺席）
-//   ⇒ 950 增量审计轮（2026-11-07）成批补齐。
+//   ⇒ 950 增量审计轮与 R189 轮（并行）各自成批补齐后合并。
 
 //go:embed embeddata/startup/942_sales_supply_annotations.sql
 var salesSupplyAnnotations942 []byte
@@ -1522,6 +1522,12 @@ var probeQueueSourceCredentialRecovery950 []byte
 
 //go:embed embeddata/startup/950_probe_queue_source_credential_recovery.down.sql
 var probeQueueSourceCredentialRecovery950Down []byte
+
+//go:embed embeddata/startup/951_armor_judgments_created_at_idx.sql
+var armorJudgmentsCreatedAtIdx951 []byte
+
+//go:embed embeddata/startup/951_armor_judgments_created_at_idx.down.sql
+var armorJudgmentsCreatedAtIdx951Down []byte
 
 // ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
 //   - sanitize_block_reviews 追加 session_id / label / label_comment /
@@ -2006,6 +2012,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/950_probe_queue_source_credential_recovery.sql":      probeQueueSourceCredentialRecovery950,
 	"startup/950_probe_queue_source_credential_recovery.down.sql": probeQueueSourceCredentialRecovery950Down,
 	"startup/927_routing_policy_singleton_unique.down.sql":        routingPolicySingletonUnique927Down,
+	"startup/951_armor_judgments_created_at_idx.sql":              armorJudgmentsCreatedAtIdx951,
+	"startup/951_armor_judgments_created_at_idx.down.sql":         armorJudgmentsCreatedAtIdx951Down,
 	// ★ 928（2026-11-02）：探测流量物理隔离车道（session_turns_probe_hot + request_stats_probe_minute）。
 	"startup/928_probe_traffic_physical_lane.sql":      probeTrafficPhysicalLane928,
 	"startup/928_probe_traffic_physical_lane.down.sql": probeTrafficPhysicalLane928Down,

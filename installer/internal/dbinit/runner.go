@@ -1792,6 +1792,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 闭集 ⇒ 恢复验证探针提交从第一条恢复事件起被 23514 拒绝
 			// （persistSubmitFailure 再覆写真实错误证据）。
 			"950_probe_queue_source_credential_recovery.sql",
+			// 951（R189 252 SQL 审计轮，2026-11-07）：armor_judgments 补
+			// (created_at) 单列前导索引（trim 批顺扫根修，252 实测 ~13,800×）。
+			"951_armor_judgments_created_at_idx.sql",
 		},
 	}
 }
