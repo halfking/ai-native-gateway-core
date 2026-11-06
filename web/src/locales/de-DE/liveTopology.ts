@@ -96,6 +96,8 @@ export default {
     title: 'Routing-Entscheidungen',
     hint: 'Wähle rechts eine Anfrage, um das Routing zu sehen',
     empty: 'Keine Entscheidungsereignisse für diese Anfrage',
+    collapse: 'Routing-Zeitlinie einklappen',
+    expand: 'Routing-Zeitlinie ausklappen',
     stage: {
       routing: 'Routing',
       llm: 'Aufruf',

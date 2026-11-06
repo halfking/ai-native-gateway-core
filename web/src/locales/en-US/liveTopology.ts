@@ -96,6 +96,8 @@ export default {
     title: 'Routing decisions',
     hint: 'Pick a request on the right to see how it was routed',
     empty: 'No decision events for this request',
+    collapse: 'Collapse routing timeline',
+    expand: 'Expand routing timeline',
     stage: {
       routing: 'Routing',
       llm: 'Call',

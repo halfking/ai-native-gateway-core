@@ -96,6 +96,8 @@ export default {
     title: 'ルーティング判定',
     hint: '右のリクエストを選ぶと判定過程を表示します',
     empty: 'このリクエストに判定イベントはありません',
+    collapse: '判定タイムラインを閉じる',
+    expand: '判定タイムラインを開く',
     stage: {
       routing: 'ルーティング',
       llm: '呼び出し',

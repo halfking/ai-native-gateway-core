@@ -11,8 +11,9 @@
 //
 // 数据来自既有 SSE 的 request_lifecycle 帧，不新增后端。
 
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { CaretRight } from '@element-plus/icons-vue'
 import type { ActionEvent } from '../../composables/liveStreamStore'
 
 const props = defineProps<{
@@ -22,6 +23,10 @@ const props = defineProps<{
 }>()
 
 const { t } = useI18n()
+
+// 折叠态：默认展开（判定时间线是排查的主视图，收起它=隐藏用户主动要看的东西）。
+// 与 StatsPanel 的折叠同族：标题即按钮、CaretRight 旋转指示、aria-expanded 同步。
+const collapsed = ref(false)
 
 const STAGE_ORDER: Array<{ key: string; tone: string }> = [
   { key: 'routing', tone: 'is-routing' },
@@ -62,12 +67,22 @@ function actionLabel(action?: string): string {
 </script>
 
 <template>
-  <section class="decisions" aria-label="routing decisions">
+  <section class="decisions" :class="{ 'is-collapsed': collapsed }" aria-label="routing decisions">
     <header class="decisions__head">
-      <span class="decisions__title">{{ t('liveTopology.decision.title') }}</span>
+      <button
+        type="button"
+        class="decisions__toggle"
+        :aria-expanded="!collapsed"
+        :aria-label="t(collapsed ? 'liveTopology.decision.expand' : 'liveTopology.decision.collapse')"
+        data-testid="decisions-toggle"
+        @click="collapsed = !collapsed"
+      >
+        <CaretRight class="decisions__caret" :class="{ 'is-open': !collapsed }" aria-hidden="true" />
+        <span class="decisions__title">{{ t('liveTopology.decision.title') }}</span>
+      </button>
       <span class="decisions__hint">{{ hint || t('liveTopology.decision.hint') }}</span>
     </header>
-    <ol v-if="items.length" class="decisions__list">
+    <ol v-if="items.length && !collapsed" class="decisions__list">
       <li v-for="(item, index) in items" :key="`${item.seq ?? index}-${item.action ?? index}`" class="decisions__row">
         <span class="decisions__stage" :class="stageClass(item.stageKey)">{{ stageLabel(item.stageKey) }}</span>
         <span class="decisions__action">
@@ -80,7 +95,7 @@ function actionLabel(action?: string): string {
         <span v-if="item.reason" class="decisions__reason">{{ item.reason }}</span>
       </li>
     </ol>
-    <p v-else class="decisions__empty">{{ t('liveTopology.decision.empty') }}</p>
+    <p v-else-if="!collapsed" class="decisions__empty">{{ t('liveTopology.decision.empty') }}</p>
   </section>
 </template>
 
@@ -103,9 +118,48 @@ function actionLabel(action?: string): string {
   gap: 8px;
 }
 
+/* 折叠按钮（照 StatsPanel 同族：透明底、hover 亮、标题内嵌）。 */
+.decisions__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+  flex: none;
+}
+
+.decisions__toggle:hover {
+  background: var(--kx-primary-soft);
+}
+
 .decisions__title {
   font-size: var(--kx-font-md, 14px);
   color: var(--kx-text);
+}
+
+.decisions__caret {
+  flex: none;
+  color: var(--kx-muted);
+  transform: rotate(0deg);
+  transition: transform 0.15s var(--kx-motion-ease-out);
+}
+
+.decisions__caret.is-open {
+  transform: rotate(90deg);
+}
+
+.decisions__caret > svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* 折叠态：只留头部一行，高度不再吃 26vh 上限的布局空间。 */
+.decisions.is-collapsed {
+  max-height: none;
 }
 
 .decisions__hint {

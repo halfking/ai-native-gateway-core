@@ -96,6 +96,8 @@ export default {
     title: 'Decisiones de enrutamiento',
     hint: 'Elige una solicitud a la derecha para ver su enrutamiento',
     empty: 'Sin eventos de decisión para esta solicitud',
+    collapse: 'Contraer la línea de decisión',
+    expand: 'Desplegar la línea de decisión',
     stage: {
       routing: 'Enrutamiento',
       llm: 'Llamada',

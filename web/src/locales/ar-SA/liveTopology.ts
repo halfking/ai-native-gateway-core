@@ -98,6 +98,8 @@ export default {
     title: 'Routing decisions',
     hint: 'اختر طلبًا على اليمين لترى كيف تم توجيهه',
     empty: 'No decision events for this request',
+    collapse: 'طي خط القرار',
+    expand: 'توسيع خط القرار',
     stage: {
       routing: 'Routing',
       llm: 'Call',

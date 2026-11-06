@@ -96,6 +96,8 @@ export default {
     title: '路由判定',
     hint: '点右侧请求查看这条链路的判定过程',
     empty: '该请求暂无判定事件',
+    collapse: '收起判定时间线',
+    expand: '展开判定时间线',
     stage: {
       routing: '路由',
       llm: '调用',

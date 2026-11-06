@@ -96,6 +96,8 @@ export default {
     title: '路由判定',
     hint: '點右側請求查看這條鏈路的判定過程',
     empty: '該請求暫無判定事件',
+    collapse: '收起判定時間軸',
+    expand: '展開判定時間軸',
     stage: {
       routing: '路由',
       llm: '呼叫',

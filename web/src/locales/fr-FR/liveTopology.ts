@@ -96,6 +96,8 @@ export default {
     title: 'Décisions de routage',
     hint: 'Sélectionnez une requête à droite pour voir son routage',
     empty: 'Aucun événement de décision pour cette requête',
+    collapse: 'Réduire la chronologie de routage',
+    expand: 'Déplier la chronologie de routage',
     stage: {
       routing: 'Routage',
       llm: 'Appel',
