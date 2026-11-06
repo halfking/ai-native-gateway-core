@@ -56,6 +56,10 @@ export default {
     showProbe: 'プローブを表示',
     showInvalid: '無効ノードを表示',
   },
+  fullscreen: {
+    enter: '全画面表示',
+    exit: '全画面を終了',
+  },
   rail: {
     dayUtc: '{day}（UTC 日バケット）',
     watermark: 'データ基準 {time}',

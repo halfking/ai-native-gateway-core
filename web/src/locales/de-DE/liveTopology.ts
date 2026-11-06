@@ -56,6 +56,10 @@ export default {
     showProbe: 'Probe-Anfragen zeigen',
     showInvalid: 'Ungültige Knoten zeigen',
   },
+  fullscreen: {
+    enter: 'Vollbild starten',
+    exit: 'Vollbild beenden',
+  },
   rail: {
     dayUtc: '{day} (UTC-Tagesbucket)',
     watermark: 'Datenstand {time}',

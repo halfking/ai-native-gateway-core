@@ -56,6 +56,10 @@ export default {
     showProbe: 'Afficher les sondes',
     showInvalid: 'Afficher les nœuds invalides',
   },
+  fullscreen: {
+    enter: 'Plein écran',
+    exit: 'Quitter le plein écran',
+  },
   rail: {
     dayUtc: '{day} (bucket UTC du jour)',
     watermark: 'horodatage des données {time}',

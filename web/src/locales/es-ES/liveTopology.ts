@@ -56,6 +56,10 @@ export default {
     showProbe: 'Mostrar sondeos',
     showInvalid: 'Mostrar nodos no válidos',
   },
+  fullscreen: {
+    enter: 'Pantalla completa',
+    exit: 'Salir de pantalla completa',
+  },
   rail: {
     dayUtc: '{day} (bucket UTC del día)',
     watermark: 'marca de datos {time}',

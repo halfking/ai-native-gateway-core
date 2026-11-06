@@ -56,6 +56,10 @@ export default {
     showProbe: 'Show probe requests',
     showInvalid: 'Show invalid nodes',
   },
+  fullscreen: {
+    enter: 'Enter fullscreen',
+    exit: 'Exit fullscreen',
+  },
   rail: {
     dayUtc: '{day} (UTC day bucket)',
     watermark: 'data watermark {time}',

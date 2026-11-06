@@ -56,6 +56,10 @@ export default {
     showProbe: '显示探测请求',
     showInvalid: '显示无效节点',
   },
+  fullscreen: {
+    enter: '进入全屏',
+    exit: '退出全屏',
+  },
   rail: {
     dayUtc: '{day}（UTC 日桶）',
     watermark: '数据水位 {time}',

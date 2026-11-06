@@ -4,6 +4,19 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-06 /live 三栏整体全屏轮（goal 会话，`docs/audit/2026-11-06-live三栏整体全屏轮.md`）**：
+> ★ 用户目标＝「/live 加一个按钮：客户端响应＋中间实时流程图＋右侧供应商作为**一个整体**的全屏显示 →
+> 测试验证 → 先部署 245/154 验证 → 再部署 211（蓝绿）→ 管理页能打开 → 提交推送」。
+> ★ 交付＝顶栏过滤栏右端常驻「进入/退出全屏」按钮（原生 Fullscreen API 把 `.live-topology` 本体推成
+> 全屏元素：三栏＋过滤栏＋统计整体占满视口；ESC/手势退出；`fullscreenchange` 同步文案与
+> `is-fullscreen` 类；卸载摘监听＋退出）＋ 视图测试 5 判据 ＋ 8 语种 `fullscreen.enter/exit` 键
+> （★ zh-TW 用「全螢幕」措辞——直抄 zh-CN 会撞 same-as-source 棘轮）＋ **新量具
+> `scripts/audit/verify_live_fullscreen.mjs`**（CDP Chrome：FS1-6＋C0，受信点击/ESC/三栏≥200px/铺满≤2px）。
+> ★ 选原生 API 而非 CSS 覆盖层的理由：element-plus popper/overlay 挂 body 下不进自制全屏层（z-index 竞赛不可赢）。
+> ★ 验证：vue-tsc/vite build 绿；**vitest 全量 294 文件/3017 passed**；i18n 四门＋间距尺全绿；
+> 本地 preview 量具 **7/7 PASS**（三栏各 671px、全屏层 1440×900）＋截图视觉复核。
+> ⚠ 已知边界：IAB webview 不支持 Fullscreen API（Permissions check failed）⇒ 量具走 Chrome CDP（两步量具同族先例）；
+> 211 基线两步量具 2 红（L1b/L3 probe 行窗口抖动）为**存量**、与本轮无关（本轮零接触面板/浮层逻辑）。
 > **2026-11-06 第 49 增量：48 小时修订审计轮 —— 五组并行只读取证 ＋ 16 项修复 ＋ P1 自维持风暴止血 ＋ 真库腿 6/6**
 > （goal 会话，`docs/全面审计v3/2026-11-06/{01-审计方案,02-审计发现与缺陷台账,03-修复与验证记录}.md`；通用式见 `LESSONS.md` **§637**）：
 > ★ 用户目标＝「对 48 小时内的修正进行审计……制定详细执行方案后审计执行」。树对齐 main==origin/main

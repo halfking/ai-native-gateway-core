@@ -50,6 +50,37 @@ const topo = useLiveTopology()
 
 const selectedNodeId = ref<string | null>(null)
 const selectedRequestId = ref<string | null>(null)
+
+/**
+ * 三栏整体全屏（owner2026-11-06）：用原生 Fullscreen API 把
+ * .live-topology 本体推成全屏元素 —— 左中右三栏 +顶栏过滤 +
+ * 头部统计作为一个整体占满视口，用于显示更多信息。ESC /系统手势退出。
+ * 选原生 API而非 CSS覆盖层：element-plus 的 popper/overlay挂在
+ * body 下、不进任何 CSS 全屏层（z-index竞赛不可赢）；退出即恢复原布局。
+ */
+const shellRef = ref<HTMLElement | null>(null)
+const isFullscreen = ref(false)
+
+function toggleFullscreen() {
+  const el = shellRef.value
+  if (!el) return
+  if (document.fullscreenElement) {
+    void document.exitFullscreen().catch(() => {})
+  } else {
+    void el.requestFullscreen().catch(() => {})
+  }
+}
+
+// F11 /系统手势也会改全屏态：监听 fullscreenchange 同步按钮文案与
+// 全屏布局；离开页面若还在全屏，主动退出（不带全屏态回壳布局）。
+function onFullscreenChange() {
+  isFullscreen.value = document.fullscreenElement === shellRef.value
+}
+onMounted(() => document.addEventListener('fullscreenchange', onFullscreenChange))
+onUnmounted(() => {
+  document.removeEventListener('fullscreenchange', onFullscreenChange)
+  if (document.fullscreenElement) void document.exitFullscreen().catch(() => {})
+})
 /** 点行弹出的内联摘要浮层（两步交互第一步：先摘要，后全景）。
  *  side 记录浮层归属哪一列（2026-10-28 owner 口径）：点左栏请求 → 浮层
  *  弹在左栏、点右栏请求 → 弹在右栏 —— 摘要跟着点击侧走，不跨屏搬运。 */
@@ -310,7 +341,7 @@ function onSelectModel(model: string) {
 </script>
 
 <template>
-  <div class="live-topology">
+  <div ref="shellRef" class="live-topology" :class="{ 'is-fullscreen': isFullscreen }">
     <header class="live-topology__bar">
       <h2 class="live-topology__title">{{ t('liveTopology.title') }}</h2>
       <span class="live-topology__conn" :class="connectionTone">
@@ -401,6 +432,18 @@ function onSelectModel(model: string) {
 
         <button v-if="topo.activeFilterCount.value" type="button" class="live-topology__clear" @click="clearFilters">
           {{ t('liveTopology.filter.clear') }}
+        </button>
+        <!--常驻全屏按钮：与清空过滤同族，放在过滤栏右端（顶栏是三栏整体的一部分） -->
+        <button
+          type="button"
+          class="live-topology__fullscreen"
+          :data-testid="isFullscreen ? 'fullscreen-exit' : 'fullscreen-enter'"
+          :title="isFullscreen ? t('liveTopology.fullscreen.exit') : t('liveTopology.fullscreen.enter')"
+          :aria-label="isFullscreen ? t('liveTopology.fullscreen.exit') : t('liveTopology.fullscreen.enter')"
+          :aria-pressed="isFullscreen"
+          @click="toggleFullscreen"
+        >
+          {{ isFullscreen ? t('liveTopology.fullscreen.exit') : t('liveTopology.fullscreen.enter') }}
         </button>
       </div>
     </header>
@@ -671,6 +714,32 @@ function onSelectModel(model: string) {
   font-size: 11px;
   cursor: pointer;
   flex: none;
+}
+
+/*常驻全屏按钮：与「清空过滤」同族同尺寸。 */
+.live-topology__fullscreen {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--kx-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--kx-text);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: none;
+}
+
+/*全屏态：:fullscreen 的宽高由 UA钉死(100%);高度交给内部栅格收进视口,
+ 并补全屏层背景(透明会把两侧留成黑边)。 */
+.live-topology:fullscreen {
+  height: 100%;
+  overflow: auto;
+  background: var(--bg, var(--kx-surface, #fff));
+}
+
+.live-topology.is-fullscreen {
+  height: 100%;
 }
 
 /* 头部区间统计面板：不参与伸缩（高度=内容），把剩余高度全部留给 body。 */

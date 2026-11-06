@@ -58,6 +58,10 @@ export default {
     showProbe: 'إظهار طلبات الفحص',
     showInvalid: 'إظهار العُقد غير الصالحة',
   },
+  fullscreen: {
+    enter: 'ملء الشاشة',
+    exit: 'الخروج من ملء الشاشة',
+  },
   rail: {
     dayUtc: '{day} (UTC day bucket)',
     watermark: 'data watermark {time}',
