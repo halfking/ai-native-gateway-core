@@ -17,6 +17,13 @@
 > 本地 preview 量具 **7/7 PASS**（三栏各 671px、全屏层 1440×900）＋截图视觉复核。
 > ⚠ 已知边界：IAB webview 不支持 Fullscreen API（Permissions check failed）⇒ 量具走 Chrome CDP（两步量具同族先例）；
 > 211 基线两步量具 2 红（L1b/L3 probe 行窗口抖动）为**存量**、与本轮无关（本轮零接触面板/浮层逻辑）。
+> ★ **三台部署全过（0bf442dd3 推双仓后）**：245=2936（215s/切换14s，healthz+readyz 200、管理页
+> /maintain/home 200、全屏 7/7＋两步 ALL PASS）→ 154=2937（171s/切换15s，公网 llm.kxpms.cn 同步，
+> 管理页 200、全屏 7/7）→ 211=2957（bash5 + LLM_GATEWAY_ROOT 钉根；槽 b→a 蓝绿；healthz/管理页 200、
+> 全屏 7/7＋两步 ALL PASS 优于基线）。★ 部署门唯一红 TestCanonicalReadPointRegistryCoversEveryMentionedFile
+> （admin）＝基线既有：扫描器只扫 .go（go/ast），本轮零 Go 改动 ⇒不可能本轮引入（登记待收口）。
+> ★ 量具沉淀：全屏量具补 mint/token 鉴权通道（245/154 管理台需登录）＋ SPA 挂载轮询（固定 sleep 会把
+> 慢载误判成缺按钮）。
 > **2026-11-06 第 49 增量：48 小时修订审计轮 —— 五组并行只读取证 ＋ 16 项修复 ＋ P1 自维持风暴止血 ＋ 真库腿 6/6**
 > （goal 会话，`docs/全面审计v3/2026-11-06/{01-审计方案,02-审计发现与缺陷台账,03-修复与验证记录}.md`；通用式见 `LESSONS.md` **§637**）：
 > ★ 用户目标＝「对 48 小时内的修正进行审计……制定详细执行方案后审计执行」。树对齐 main==origin/main

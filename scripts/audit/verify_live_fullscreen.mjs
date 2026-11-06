@@ -13,9 +13,10 @@
 // 退出码：0 全过；2 断言红；3 量具失败。
 
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHmac } from 'node:crypto';
 
 const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf('--' + k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
@@ -24,6 +25,35 @@ const CHROME = arg('chrome', '/Applications/Google Chrome.app/Contents/MacOS/Goo
 const PORT = Number(arg('port', '9335'));
 const SHOT = arg('shot', '/tmp/live_shots');
 const HEADFUL = argv.includes('--headful');
+// 登录通道（可选；管理台需要登录的部署——如 245/154——必须给其一）：
+//   --mint-secret-file FILE（与 verify_live_two_step_interaction.mjs 同构铸签）
+//   --token-file FILE（现成 llmgw_session cookie 值）
+const MINT_SECRET_FILE = arg('mint-secret-file', '');
+const TOKEN_FILE = arg('token-file', '');
+const MINT_USER_ID = Number(arg('mint-user-id', '41'));
+const MINT_TENANT = arg('mint-tenant', 'default');
+const MINT_USER = arg('mint-user', 'admin');
+const MINT_ROLE = arg('mint-role', 'super_admin');
+
+function mintToken() {
+  const secret = readFileSync(MINT_SECRET_FILE, 'utf8').trim();
+  const b64u = (buf) => Buffer.from(buf).toString('base64url');
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const claims = {
+    user_id: MINT_USER_ID, tenant_id: MINT_TENANT, username: MINT_USER, role: MINT_ROLE,
+    iss: 'llm-gateway', aud: ['llm-gateway-api'], exp: now + 3600, iat: now,
+  };
+  const unsigned = `${b64u(JSON.stringify(header))}.${b64u(JSON.stringify(claims))}`;
+  const sig = createHmac('sha256', secret).update(unsigned).digest('base64url');
+  return `${unsigned}.${sig}`;
+}
+
+async function resolveSession() {
+  if (MINT_SECRET_FILE && existsSync(MINT_SECRET_FILE)) return { cookie: mintToken() };
+  if (TOKEN_FILE && existsSync(TOKEN_FILE)) return { cookie: readFileSync(TOKEN_FILE, 'utf8').trim() };
+  return null; // 无登录通道 ⇒ 裸跑（公开页部署如 211）
+}
 
 class CDP {
   constructor(ws) {
@@ -100,10 +130,37 @@ try {
     return r.result?.value;
   };
 
+  // 登录通道（可选）：铸签/现成 cookie 注入 + 三道闸门 localStorage（同两步量具；
+  // 245/154 管理台需要登录，211 公开页可不带）
+  const session = await resolveSession();
+  if (session) {
+    const me = await fetch(`${BASE}/api/auth/me`, { headers: { Cookie: `llmgw_session=${session.cookie}` } });
+    if (!me.ok) die(`auth/me failed: HTTP ${me.status}（token 无效或过期）`);
+    const body = await me.json().catch(() => null);
+    const user = body?.user ?? null;
+    if (!user?.role || !user?.id) die('auth/me returned no usable user object');
+    console.log(`[fullscreen] 登录态就绪：${user.username} / ${user.role} / id=${user.id}`);
+    const host = new URL(BASE).hostname;
+    await cdp.send('Network.enable');
+    await cdp.send('Network.setCookie', { name: 'llmgw_session', value: session.cookie, domain: host, path: '/', secure: BASE.startsWith('https') });
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `try {
+        localStorage.setItem('llmgw_user_info', ${JSON.stringify(JSON.stringify(user))});
+        localStorage.setItem('llmgw_require_bootstrap', '0');
+      } catch (e) {}`,
+    });
+  }
+
   // 钉视口 1440x900（headless 内窗默认 800x600 ⇒ 触发 <1024 窄屏布局，三栏断言必假红）
   await cdp.send('Emulation.setDeviceMetricsOverride', { width:1440, height:900, deviceScaleFactor:1, mobile:false });
   await cdp.send('Page.navigate', { url: `${BASE}/live` });
-  await sleep(2500);
+  // 轮询等 SPA 挂载（真实站点首帧/SSE 大，固定 sleep 会把慢载误判成缺按钮）
+  let mounted = false;
+  for (let i = 0; i < 40 && !mounted; i++) {
+    await sleep(500);
+    mounted = await evalJs(`!!document.querySelector('.live-topology')`);
+  }
+  if (!mounted) die('.live-topology 未挂载（SPA 未载完或路由未到 /live）');
 
   // FS1: enter 按钮存在且可见
   const fs1 = await evalJs(`(() => {
