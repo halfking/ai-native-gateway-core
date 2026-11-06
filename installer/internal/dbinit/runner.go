@@ -1786,6 +1786,8 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"947_sales_quote_approvals.sql",
 			"948_sales_quote_shares.sql",
 			"949_supplier_view_binding_id.sql",
+			"950_probe_queue_source_credential_recovery.sql",
+			"951_armor_judgments_created_at_idx.sql",
 		},
 	}
 }

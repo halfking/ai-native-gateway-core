@@ -438,8 +438,19 @@ while IFS= read -r ref; do
     gate_fail "channel files=(...) references a migration that does not exist: ${ref} (apply-db-revision-sequence.sh exits 4 on a missing migration, so this breaks every upgrade run; if this entry is intentionally disabled, comment the line out — a commented entry is not checked)"
   fi
 done < <(grep -v '^[[:space:]]*#' "$SCRIPT" \
-         | sed -nE 's#.*\$ROOT_DIR/(sql/migrations/startup/[^"]+)"#\1#p' \
+         | sed -nE 's#.*\$ROOT_DIR/(sql/migrations/startup/[^"]+)".*#\1#p' \
          | while read -r rel; do printf '%s/%s\n' "$ROOT_DIR" "$rel"; done)
+# ★ R189（2026-11-07）：sed 加 `.*` 尾锚 —— 中间项的引号外逗号此前会残留在
+#   捕获里（`...sql,`），让存在性检查对完好文件报「does not exist」。
+#   但尾锚只是止血：**bash 数组里逗号不是分隔符，会粘进元素本身**
+#   （元素=「path.sql,」），apply-db-revision-sequence.sh 的重定义守卫
+#   对这种行 awk 打不开文件、`|| true` 静默吞掉 —— 守卫对该迁移失效。
+#   本清单的既有惯例是**无逗号**（换行即分隔）；这里显式把「引号外逗号」
+#   钉成 gate_fail，堵住回归路径（951 插行时按通用 bash 习惯写逗号，
+#   两处症状当场踩中）。
+while IFS= read -r ln; do
+  gate_fail "channel files=(...) 行尾引号外逗号（line ${ln%%:*}）：bash 数组里逗号不是分隔符，会粘进元素并让重定义守卫静默跳过该迁移 —— 删掉逗号（本清单惯例：换行即分隔）"
+done < <(grep -v '^[[:space:]]*#' "$SCRIPT" | grep -nE '^\s*"\$ROOT_DIR/sql/migrations/startup/[^"]+",[[:space:]]*$' || true)
 
 # NOTE on (2) "every migration must appear in the array": that direction is
 # **already covered** further down this file (the `canonical_files` loop around
