@@ -10691,11 +10691,19 @@ node_probe_runs.trigger_kind 闭集），但队列侧镜像约束 `credential_pr
 本地 2946 实测：`llmgw_node_probe_queue_submission_total{source="credential_recovery",
 outcome="failed"}` 5 分钟 +151。950 以幂等 DO 块重建 CHECK（6 → 7 值），
 已有 `credential_recovery` 值时跳过；down 有意 fail-closed（在途恢复源任务存在时回退失败）。
+
 ## 2026-11-06T18:18:08Z — deploy 245 build_seq 2949 (95fecb3d)
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 950 | `950_probe_queue_source_credential_recovery.sql` | `4a258e164a0c655d1af08ad958655407fba53a8b46d63aa480e34fc297f7e0fe` | applied+verified |
+
+★ **950 字节修订注记（2026-11-07 第 54 轮 24h 审计补登）**：cf1e28be9（R189）给 950 文件补
+`BEGIN; SET LOCAL lock_timeout…` 事务包裹后，工作树文件 SHA-256 =
+`221dd43da7d6b29e55ed3dcad1866343a2761a1b097a314d2ac782a0adf46986`；上表 `4a258e16…` 为
+local/245/154 各环境**应用时点**的登记值（211 重放同源）。按 929/930 条的「已应用迁移字节冻结」
+规约，改字节即触发 content replay 通道 ⇒ 下次部署若遇 checksum 不一致，须按 replay 语义复核处理，
+勿以「文件已被改」为由静默覆盖台账。
 
 
 ## 2026-11-07T+ — 211 部署轮补记：950 经 apply-db-revision-sequence 落库 acc-pg17
