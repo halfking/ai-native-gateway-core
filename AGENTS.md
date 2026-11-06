@@ -4,6 +4,25 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-06 /live 路由判定折叠轮（goal 会话，通用式见 `LESSONS.md` §639）**：
+> ★ 用户目标＝「/live 的『路由判定』部分要能折叠与展开 → 部署 245/154 测试 → 成功后部署 211
+> （脚本＋蓝绿）→ 提交推送」。
+> ★ 交付＝`RoutingDecisionTimeline.vue` 头部改 toggle 按钮（**StatsPanel 同族形态**：标题即按钮 +
+> CaretRight 旋转 + `aria-expanded` 同步 + `data-testid=decisions-toggle`）；默认展开（判定时间线是
+> 排查主视图）；折叠收掉列表与空态文案只留头部一行，canvas（flex:1）自动吃回空间；**折叠态不渲染
+> 「无判定事件」空态**（那是无数据的形态，不是收起的形态）＋ 新键 `liveTopology.decision.collapse/expand`
+> × 8 语种（ar-SA/de-DE/en-US/es-ES/fr-FR/ja-JP/zh-CN/zh-TW；fr 用 Déplier/Réduire 措辞族）＋
+> **新测试 4 判据**（默认展开/折叠恢复往返/空数据×折叠正交/i18n 键真实存在——`aria-label` 直接断言
+> 中文文案，缺键渲染字面键名当场红）。
+> ★ 验收读数：vue-tsc rc=0；**vitest 295 文件/3021 passed（+4）**；vite build ✓（web+web-mobile）；
+> i18n 四门全绿（parity/shared-dead/locale-value/主审计+CJK 棘轮 4483 持平）。
+> ★ **三台部署全过（d415e6a3 推双仓后）**：245=2940（227s/切换 19s，2939→2940）→ 154=2941（276s/
+> 切换 20s，公网 llm.kxpms.cn 同步）→ 211=2958（**bash5 + LLM_GATEWAY_ROOT 钉根**；槽 b @8783
+> 蓝绿接管，旧槽 a 保留可 docker start 回滚；公网 llm.itestu.cn 同步；登录冒烟连登 6 次无 429）。
+> ★ 三台 SPA bundle 同一产物 `index-CMn7QGm5.js` 均含 `decisions-toggle`（grep release 目录实证）。
+> ★ 211 测试闸门：admin 包 `TestCanonicalReadPointRegistryCoversEveryMentionedFile` 红＝**基线既有**
+> （闸门自动比对 origin/main 判「没有新红」；扫描器只扫 .go，本轮零 Go 改动——全屏轮同一条）。
+> ★ 版本戳收敛 `c089cd5c6` 推双仓。
 > **2026-11-06 build_seq 跨环境分歧排查＋245 补部署轮（goal 会话，通用式见 `LESSONS.md` §638）**：
 > ★ 用户目标＝「使用脚本部署到 245 与 154，前端显示编译序号 2938、211 同期却 2958，检查原因并修正」。
 > ⇒ ★★★★ **根因＝两台机器各一套机器级 floor 计数器、互不可见**：`bump-version.sh`（245/154 systemd
