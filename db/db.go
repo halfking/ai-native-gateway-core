@@ -243,6 +243,7 @@ func poolMaxConnsFromEnv(def int32) int32 {
 //	★ （MaxConnIdleTime=5min ⇒ 流量一有就长到上限再慢慢回收）。
 //
 // ★ 规则：cap = clamp(instanceMax/8, 4, 32)
+//
 //	★ 100 槽 ⇒ **12**（★ 比实测并发高一个数量级 ⇒ 吞吐无虞，★ 且给其它服务让出 ~8~18 槽）
 //	★ 1000 槽 ⇒ 125 ⇒ 仍被 32 封顶 ⇒ ★ **大集群行为完全不变**（★ 零回归面）。
 //
@@ -296,6 +297,7 @@ func poolMaxConnsEnvExplicit() bool {
 //	★ ⇒ 修法：★ **按 text 扫 + 自行 ParseInt**（★ 不依赖驱动对 SHOW 的类型推断）。
 //
 // ★★ 第二个缺陷（★ 同一轮修）：★ 第一版把探针**错误吞掉**（★ 只回 false、★ 不记 err）
+//
 //	★ ⇒ ★ 正是这个吞错让「探针失败」**看起来像网络问题**（★ 实际 PG 侧连一条拒绝日志都没有）
 //	★ ⇒ ★ 我先怀疑了 DNS、★ 又怀疑了槽位耗尽、★ 又怀疑了 URL 里未编码的 `@`
 //	★ ⇒ ★ **全是错的假设** ⇒ ★ 教训：★ **探针必须把失败原因记出来**，
@@ -6162,7 +6164,9 @@ func (d *DB) ensureProbeStateFunctionFixes(ctx context.Context) error {
 	return nil
 }
 
-// ensureNodeProbeTriggerKindSchema mirrors startup migration 538. Existing
+// ensureNodeProbeTriggerKindSchema mirrors startup migrations 538+950
+// (queue source CHECK gained `credential_recovery` in 950, 2026-11-07).
+// Existing
 // deployments may have the tables with the old CHECK definitions, while some
 // older installations may not have the tables yet; only converge constraints
 // when the corresponding table exists.
@@ -6230,13 +6234,15 @@ func (d *DB) ensureNodeProbeTriggerKindSchema(ctx context.Context) error {
 						ADD CONSTRAINT credential_probe_queue_source_check CHECK (
 							source IN (
 								'request_failure', 'periodic', 'external_async', 'admin',
-								'integrity_probe_planner', 'selfcheck'
+								'integrity_probe_planner', 'selfcheck',
+								'credential_recovery'
 							)
 						);
 				ELSIF NOT (
 					v_def LIKE '%request_failure%'   AND v_def LIKE '%periodic%'
 					AND v_def LIKE '%external_async%' AND v_def LIKE '%admin%'
 					AND v_def LIKE '%integrity_probe_planner%' AND v_def LIKE '%selfcheck%'
+					AND v_def LIKE '%credential_recovery%'
 				) THEN
 					ALTER TABLE public.credential_probe_queue
 						DROP CONSTRAINT IF EXISTS credential_probe_queue_source_check;
@@ -6244,7 +6250,8 @@ func (d *DB) ensureNodeProbeTriggerKindSchema(ctx context.Context) error {
 						ADD CONSTRAINT credential_probe_queue_source_check CHECK (
 							source IN (
 								'request_failure', 'periodic', 'external_async', 'admin',
-								'integrity_probe_planner', 'selfcheck'
+								'integrity_probe_planner', 'selfcheck',
+								'credential_recovery'
 							)
 						);
 				END IF;

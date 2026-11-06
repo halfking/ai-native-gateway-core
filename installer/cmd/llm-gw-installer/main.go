@@ -1413,7 +1413,9 @@ var taskEvents933 []byte
 var taskEvents933Down []byte
 
 // ★ 934–941（2026-11-04 运营管理与价格计费体系 P0/P1 数据地基）：
-//   商业骨架补列 + credit_ledger 三列两表同改 + 活动/预算/租户价/市场情报族。
+//
+//	商业骨架补列 + credit_ledger 三列两表同改 + 活动/预算/租户价/市场情报族。
+//
 //go:embed embeddata/startup/934_subscription_plan_commerce_columns.sql
 var subscriptionPlanCommerceColumns934 []byte
 
@@ -1461,6 +1463,65 @@ var supplierViewMarketColumns941 []byte
 
 //go:embed embeddata/startup/941_supplier_view_market_columns.down.sql
 var supplierViewMarketColumns941Down []byte
+
+// ★ 942–950（2026-11-05 报价系统 MVP W1 ＋ 2026-11-07 探测时间点规划轮）。
+//   embeddata 副本自 W1 轮就位，但 go:embed 变量与 embeddedSQLFiles 映射
+//   漏接线（TestStartupFilesAreAllEmbedded 抓住：文件在 setupSQLDir 里缺席）
+//   ⇒ 950 增量审计轮（2026-11-07）成批补齐。
+
+//go:embed embeddata/startup/942_sales_supply_annotations.sql
+var salesSupplyAnnotations942 []byte
+
+//go:embed embeddata/startup/942_sales_supply_annotations.down.sql
+var salesSupplyAnnotations942Down []byte
+
+//go:embed embeddata/startup/943_sales_demand_cards.sql
+var salesDemandCards943 []byte
+
+//go:embed embeddata/startup/943_sales_demand_cards.down.sql
+var salesDemandCards943Down []byte
+
+//go:embed embeddata/startup/944_sales_quotes.sql
+var salesQuotes944 []byte
+
+//go:embed embeddata/startup/944_sales_quotes.down.sql
+var salesQuotes944Down []byte
+
+//go:embed embeddata/startup/945_sales_quote_versions.sql
+var salesQuoteVersions945 []byte
+
+//go:embed embeddata/startup/945_sales_quote_versions.down.sql
+var salesQuoteVersions945Down []byte
+
+//go:embed embeddata/startup/946_sales_quote_items.sql
+var salesQuoteItems946 []byte
+
+//go:embed embeddata/startup/946_sales_quote_items.down.sql
+var salesQuoteItems946Down []byte
+
+//go:embed embeddata/startup/947_sales_quote_approvals.sql
+var salesQuoteApprovals947 []byte
+
+//go:embed embeddata/startup/947_sales_quote_approvals.down.sql
+var salesQuoteApprovals947Down []byte
+
+//go:embed embeddata/startup/948_sales_quote_shares.sql
+var salesQuoteShares948 []byte
+
+//go:embed embeddata/startup/948_sales_quote_shares.down.sql
+var salesQuoteShares948Down []byte
+
+//go:embed embeddata/startup/949_supplier_view_binding_id.sql
+var supplierViewBindingId949 []byte
+
+//go:embed embeddata/startup/949_supplier_view_binding_id.down.sql
+var supplierViewBindingId949Down []byte
+
+//go:embed embeddata/startup/950_probe_queue_source_credential_recovery.sql
+var probeQueueSourceCredentialRecovery950 []byte
+
+//go:embed embeddata/startup/950_probe_queue_source_credential_recovery.down.sql
+var probeQueueSourceCredentialRecovery950Down []byte
 
 // ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
 //   - sanitize_block_reviews 追加 session_id / label / label_comment /
@@ -1901,16 +1962,16 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/926_sanitize_block_review_degraded.sql":      sanitizeBlockReviewDegraded926,
 	"startup/926_sanitize_block_review_degraded.down.sql": sanitizeBlockReviewDegraded926Down,
 	// ★ 927（2026-10-31 12h 审计轮）：routing_policy 单例化（去重 + UNIQUE (tenant_id)）。
-	"startup/927_routing_policy_singleton_unique.sql":      routingPolicySingletonUnique927,
-	"startup/931_userscript_capture_family.sql":            userscriptCaptureFamily931,
-	"startup/931_userscript_capture_family.down.sql":       userscriptCaptureFamily931Down,
-	"startup/932_outbox_events_fresh_install.sql":          outboxEventsFreshInstall932,
-	"startup/932_outbox_events_fresh_install.down.sql":     outboxEventsFreshInstall932Down,
-	"startup/933_task_events.sql":                          taskEvents933,
-	"startup/933_task_events.down.sql":                     taskEvents933Down,
+	"startup/927_routing_policy_singleton_unique.sql":  routingPolicySingletonUnique927,
+	"startup/931_userscript_capture_family.sql":        userscriptCaptureFamily931,
+	"startup/931_userscript_capture_family.down.sql":   userscriptCaptureFamily931Down,
+	"startup/932_outbox_events_fresh_install.sql":      outboxEventsFreshInstall932,
+	"startup/932_outbox_events_fresh_install.down.sql": outboxEventsFreshInstall932Down,
+	"startup/933_task_events.sql":                      taskEvents933,
+	"startup/933_task_events.down.sql":                 taskEvents933Down,
 	// ★ 934–941（2026-11-04 运营管理与价格计费体系）。
-	"startup/934_subscription_plan_commerce_columns.sql":      subscriptionPlanCommerceColumns934,
-	"startup/934_subscription_plan_commerce_columns.down.sql": subscriptionPlanCommerceColumns934Down,
+	"startup/934_subscription_plan_commerce_columns.sql":       subscriptionPlanCommerceColumns934,
+	"startup/934_subscription_plan_commerce_columns.down.sql":  subscriptionPlanCommerceColumns934Down,
 	"startup/935_credit_ledger_owner_campaign_detail.sql":      creditLedgerOwnerCampaignDetail935,
 	"startup/935_credit_ledger_owner_campaign_detail.down.sql": creditLedgerOwnerCampaignDetail935Down,
 	"startup/936_subscription_plan_entitlements.sql":           subscriptionPlanEntitlements936,
@@ -1925,7 +1986,26 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/940_market_price_reference_family.down.sql":       marketPriceReferenceFamily940Down,
 	"startup/941_supplier_view_market_columns.sql":             supplierViewMarketColumns941,
 	"startup/941_supplier_view_market_columns.down.sql":        supplierViewMarketColumns941Down,
-	"startup/927_routing_policy_singleton_unique.down.sql": routingPolicySingletonUnique927Down,
+	// ★ 942–950（2026-11-05 报价系统 MVP W1 ＋ 2026-11-07 探测时间点规划轮）：embeddata 副本补映射接线。
+	"startup/942_sales_supply_annotations.sql":                    salesSupplyAnnotations942,
+	"startup/942_sales_supply_annotations.down.sql":               salesSupplyAnnotations942Down,
+	"startup/943_sales_demand_cards.sql":                          salesDemandCards943,
+	"startup/943_sales_demand_cards.down.sql":                     salesDemandCards943Down,
+	"startup/944_sales_quotes.sql":                                salesQuotes944,
+	"startup/944_sales_quotes.down.sql":                           salesQuotes944Down,
+	"startup/945_sales_quote_versions.sql":                        salesQuoteVersions945,
+	"startup/945_sales_quote_versions.down.sql":                   salesQuoteVersions945Down,
+	"startup/946_sales_quote_items.sql":                           salesQuoteItems946,
+	"startup/946_sales_quote_items.down.sql":                      salesQuoteItems946Down,
+	"startup/947_sales_quote_approvals.sql":                       salesQuoteApprovals947,
+	"startup/947_sales_quote_approvals.down.sql":                  salesQuoteApprovals947Down,
+	"startup/948_sales_quote_shares.sql":                          salesQuoteShares948,
+	"startup/948_sales_quote_shares.down.sql":                     salesQuoteShares948Down,
+	"startup/949_supplier_view_binding_id.sql":                    supplierViewBindingId949,
+	"startup/949_supplier_view_binding_id.down.sql":               supplierViewBindingId949Down,
+	"startup/950_probe_queue_source_credential_recovery.sql":      probeQueueSourceCredentialRecovery950,
+	"startup/950_probe_queue_source_credential_recovery.down.sql": probeQueueSourceCredentialRecovery950Down,
+	"startup/927_routing_policy_singleton_unique.down.sql":        routingPolicySingletonUnique927Down,
 	// ★ 928（2026-11-02）：探测流量物理隔离车道（session_turns_probe_hot + request_stats_probe_minute）。
 	"startup/928_probe_traffic_physical_lane.sql":      probeTrafficPhysicalLane928,
 	"startup/928_probe_traffic_physical_lane.down.sql": probeTrafficPhysicalLane928Down,

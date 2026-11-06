@@ -205,7 +205,18 @@ func TestLockGuardDetectorCanFire(t *testing.T) {
 // lockGuardAllowlist 是显式豁免：迁移号 → 豁免理由。
 // ⚠️ 当前为空。往里加条目必须同时写清「为什么它不需要 lock_timeout」，
 // 且该迁移仍需自己用 CONCURRENTLY 或 REPEATABLE READ 等手段处理并发。
-var lockGuardAllowlist = map[int]string{}
+//
+// 950（2026-11-07 第 50 增量审计轮补登）：DROP/ADD CONSTRAINT 各拿一次
+// ACCESS EXCLUSIVE，但字节已 checksum 冻结（211 序列通道 content_sha256
+// ＋ 245/154 引擎通道＋本地，四处已应用）⇒ 补写 SET LOCAL lock_timeout
+// = 改字节 = content replay 连锁 break（914/928/929 教训，950 头注自证）。
+// 风险面如实登记：credential_probe_queue 是探测调度表（行数 ~百），
+// 约束重建锁窗毫秒级、单语句无死锁面（950 头注「锁面」段）；新装 replay
+// 的等锁风险由表量级兜底。此后新增强锁迁移必须在事务内 SET LOCAL
+// lock_timeout —— 本豁免只对已冻结字节的历史迁移开放。
+var lockGuardAllowlist = map[int]string{
+	950: "字节已冻结（三环境+本地已应用）；表量级~百行锁窗毫秒级；见上方整段理由",
+}
 
 // TestStartupMigrationsAboveCutoffHaveLockGuard 是本门的正题。
 func TestStartupMigrationsAboveCutoffHaveLockGuard(t *testing.T) {

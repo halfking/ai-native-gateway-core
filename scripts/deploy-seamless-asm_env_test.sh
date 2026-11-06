@@ -51,6 +51,10 @@ echo "=== 判据门：deploy-seamless-asm_env_test ==="
 # ── 场景①：哨兵成对 + 函数存在 ──────────────────────────────────────────
 echo "[1] 结构：哨兵成对、函数存在"
 ASM_BLK="$(extract_block "$ENGINE" '# ── ASM-ENV-BLOCK:BEGIN ──' '# ── ASM-ENV-BLOCK:END ──')"
+# 第 50 增量 F-10/F-11：被测函数体内调用 `_dd_unq`（env 读点共用的 %q 定点解码），
+# 沙箱必须先把它定义进来 —— 否则 command substitution 返回空串，用例假红/假绿。
+_DD_UNQ_FN="$(sed -n '/^_dd_unq() {/,/^}/p' "$ENGINE")"
+if [[ -z "$_DD_UNQ_FN" ]]; then echo "✗ 引擎里提取不到 _dd_unq 函数"; exit 1; fi
 INJ_BLK="$(extract_block "$ENGINE" '# ── ASM-ENV-INJECT:BEGIN ──' '# ── ASM-ENV-INJECT:END ──')"
 if [[ -n "$ASM_BLK" && "$ASM_BLK" == *"dd_asm_event_env()"* ]]; then
   ok "ASM-ENV-BLOCK 哨兵成对且含 dd_asm_event_env()"
@@ -71,6 +75,8 @@ run_asm_env() { # <env_file> <preset_endpoint> <preset_secret> ⇒ 输出两行
     ASM_INTERNAL_ENDPOINT="$2"
     AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET="$3"
     log() { :; }
+    eval "$_DD_UNQ_FN"
+    eval "$_DD_UNQ_FN"
     eval "$ASM_BLK"
     dd_asm_event_env "$ENV_FILE"
     printf '%s\n' "$ASM_INTERNAL_ENDPOINT"
@@ -123,6 +129,7 @@ run_asm_delegate() { # <env_file> ⇒ 打印两个委托变量（与 dd_asm_even
     LLM_GATEWAY_ASM_BASE_URL=""
     LLM_GATEWAY_ASM_PLUGIN_ID=""
     log() { :; }
+    eval "$_DD_UNQ_FN"
     eval "$ASM_BLK"
     dd_asm_event_env "$ENV_FILE"
     printf '%s\n' "$LLM_GATEWAY_ASM_BASE_URL"

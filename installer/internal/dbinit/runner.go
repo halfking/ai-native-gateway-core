@@ -1786,6 +1786,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"947_sales_quote_approvals.sql",
 			"948_sales_quote_shares.sql",
 			"949_supplier_view_binding_id.sql",
+			// 950（2026-11-07 探测时间点规划轮）：credential_probe_queue
+			// source CHECK 6→7 值（补 credential_recovery）。幂等 DO 块；
+			// down 有意 fail-closed。漏登的后果＝全新安装停在 538 的 6 值
+			// 闭集 ⇒ 恢复验证探针提交从第一条恢复事件起被 23514 拒绝
+			// （persistSubmitFailure 再覆写真实错误证据）。
+			"950_probe_queue_source_credential_recovery.sql",
 		},
 	}
 }

@@ -2176,6 +2176,55 @@ DB_URL="postgres://${PG_USER_ENC}:${PG_PASS_ENC}@${PG_CONTAINER}:5432/${DD_PG_DB
 #     `export FOO=bar` 会被当成 key 叫 "export FOO" 的变量，全部设不进去；
 #   · 也不认 %q 的 shell 转义（\?、空格转义等），会把值改写坏。
 # 所以容器一律走 -e argv（引号由 bash 负责，不经任何二次解析）。
+# ── ENV-DECODE-HELPERS：env 读点共用的 %q 定点解码（第 50 增量 F-10）────────
+# 写侧 GATEWAY-ENV-WRITE 统一 `printf %q`，读侧统一 `_dd_unq` ＋ 剥残余引号。
+# 首版只给 3 个身份键接了解码；同族其余 13 个键仍是「写 %q 读不解码」⇒
+# 首轮部署就注入损坏值、此后逐层累积（审计 C4 实测 4 轮部署 31→142 字符）。
+# 本函数必须定义在**第一个读点**（HARD_BLOCK）之前 —— bash 函数先定义后调用。
+# 行为门（deploy-seamless-identity_env_test.sh / -asm_env_test.sh）的沙箱
+# 按 `^_dd_unq() {` … `^}` 单独提取本函数。
+_dd_unq() {
+  # _dd_unq VALUE — strip ALL accumulated printf-%q layers (2026-11-07 存量修复).
+  # 停止条件（缺一不可，防过度解码把裸值打碎——裸值含空格时再 eval 会被分词截断）：
+  #   1. 值里已无反斜杠（真值 = 运营配置的 issuer 列表，不含反斜杠）；
+  #   2. eval 失败（不是合法 %q 形态）；
+  #   3. 解码结果没有变短（说明当前层不是 %q 转义，是原始内容）。
+  # ★ 有损边界（第 50 增量 C1b 登记）：本函数**无法区分**「一层 %q 转义」与
+  #   「真值里本就含反斜杠」——真值 `C:\Users\test` 会被打到 `C:Userstest`、
+  #   真值 `\` 会变空串。当前值域（URL/密钥/issuer 列表）不含反斜杠 ⇒ 实务
+  #   可接受；未来若有含反斜杠的合法值，必须走别的通道（不能进 env 文件）。
+  local v=$1 decoded i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 \
+           17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32; do
+    case "$v" in
+      # ★ 模式里 `\*` = 字面星号；字面**单反斜杠**必须写 `\\`（quoted '\\'* 会变成
+      #   「两个字面反斜杠」，单层 %q 形态（has\ space）一个反斜杠就漏匹配）。
+      *\\*) ;;
+      *) break ;;
+    esac
+    # ★ 危险形态守卫（第 50 增量 F-11）：eval 是命令执行器。合法 %q 层里
+    #   `$`/反引号必带前导反斜杠 ⇒ 剥掉全部 `\$` 对之后，剩下任何未转义的
+    #   `$(`、`${`、反引号、或非 `$'` 形态的 `$`，都说明这不是合法 %q 层
+    #   （混合形态 `a\b$(touch …)` 会让 eval 当场执行命令替换——第 50 增量
+    #   审计 C1 在沙箱实测 touch 落地）⇒ 按停止条件 2 原样返回，**绝不 eval**。
+    #   （`$'…'` 是 ANSI-C 引用形：eval 只做 \n\xNN 转义、不做展开，放行——
+    #   多行/tab 值的合法 %q 层就是这个形态。）
+    local _probe=${v//\\$/} _bt _probe2
+    printf -v _bt '\140'   # 反引号（八进制 140；不在源码里裸写反引号，防脚本自身被解析成替换。
+                           # ★ %c 不能用：printf '%c' 96 取的是参数「96」的首字符 '9' —— 守卫首版实测漏判反引号形态）
+    if [[ "$_probe" == *'$('* || "$_probe" == *'${'* || "$_probe" == *"$_bt"* ]]; then
+      break
+    fi
+    _probe2=${_probe//\$\'/}
+    if [[ "$_probe2" == *'$'* ]]; then
+      break
+    fi
+    decoded=$(eval "printf '%s' ${v}" 2>/dev/null) || break
+    (( ${#decoded} < ${#v} )) || break
+    v=$decoded
+  done
+  printf '%s' "$v"
+}
 # ── 硬阻断清单（r1037，2026-10-20）─────────────────────────────────────
 # 「哪些规则允许终止回合」由 LLM_GATEWAY_HARD_BLOCK_RULES 决定（scope:rule
 # 列表，如 egress:builtin.egress_sink）。出厂默认只有 input 允许硬阻断，
@@ -2189,6 +2238,8 @@ DB_URL="postgres://${PG_USER_ENC}:${PG_PASS_ENC}@${PG_CONTAINER}:5432/${DD_PG_DB
 HARD_BLOCK_RULES="${LLM_GATEWAY_HARD_BLOCK_RULES:-}"
 if [[ -z "$HARD_BLOCK_RULES" && -f "$ENV_FILE" ]]; then
   HARD_BLOCK_RULES="$(sed -nE 's/^(export )?LLM_GATEWAY_HARD_BLOCK_RULES=(.*)$/\2/p' "$ENV_FILE" | tail -1)"
+  # ★ 第 50 增量 F-10：写侧 %q ⇒ 读侧统一先定点解码再剥引号（下同）。
+  HARD_BLOCK_RULES="$(_dd_unq "$HARD_BLOCK_RULES")"
   # 去掉 shell 引号形态（bash %q 对空串会写成 ''，对含空格的值会加反斜杠）。
   HARD_BLOCK_RULES="${HARD_BLOCK_RULES%\'}"; HARD_BLOCK_RULES="${HARD_BLOCK_RULES#\'}"
   HARD_BLOCK_RULES="${HARD_BLOCK_RULES%\"}"; HARD_BLOCK_RULES="${HARD_BLOCK_RULES#\"}"
@@ -2212,6 +2263,7 @@ fi
 TRUSTED_PROXY_CIDRS="${LLM_GATEWAY_TRUSTED_PROXY_CIDRS:-}"
 if [[ -z "$TRUSTED_PROXY_CIDRS" && -f "$ENV_FILE" ]]; then
   TRUSTED_PROXY_CIDRS="$(sed -nE 's/^(export )?LLM_GATEWAY_TRUSTED_PROXY_CIDRS=(.*)$/\2/p' "$ENV_FILE" | tail -1)"
+  TRUSTED_PROXY_CIDRS="$(_dd_unq "$TRUSTED_PROXY_CIDRS")"
   TRUSTED_PROXY_CIDRS="${TRUSTED_PROXY_CIDRS%\'}"; TRUSTED_PROXY_CIDRS="${TRUSTED_PROXY_CIDRS#\'}"
   TRUSTED_PROXY_CIDRS="${TRUSTED_PROXY_CIDRS%\"}"; TRUSTED_PROXY_CIDRS="${TRUSTED_PROXY_CIDRS#\"}"
 fi
@@ -2226,6 +2278,7 @@ fi
 PROBE_LANE_PHYSICAL="${LLM_GATEWAY_PROBE_LANE_PHYSICAL:-}"
 if [[ -z "$PROBE_LANE_PHYSICAL" && -f "$ENV_FILE" ]]; then
   PROBE_LANE_PHYSICAL="$(sed -nE 's/^(export )?LLM_GATEWAY_PROBE_LANE_PHYSICAL=(.*)$/\2/p' "$ENV_FILE" | tail -1)"
+  PROBE_LANE_PHYSICAL="$(_dd_unq "$PROBE_LANE_PHYSICAL")"
   PROBE_LANE_PHYSICAL="${PROBE_LANE_PHYSICAL%\'}"; PROBE_LANE_PHYSICAL="${PROBE_LANE_PHYSICAL#\'}"
   PROBE_LANE_PHYSICAL="${PROBE_LANE_PHYSICAL%\"}"; PROBE_LANE_PHYSICAL="${PROBE_LANE_PHYSICAL#\"}"
 fi
@@ -2268,6 +2321,12 @@ dd_asm_event_env() {
     if [[ -z "$LLM_GATEWAY_ASM_PLUGIN_ID" ]]; then
       LLM_GATEWAY_ASM_PLUGIN_ID="$(sed -nE 's/^(export )?LLM_GATEWAY_ASM_PLUGIN_ID=(.*)$/\2/p' "$env_file" | tail -1)"
     fi
+    # ★ 第 50 增量 F-10：写侧 %q ⇒ 读侧统一定点解码（HMAC 密钥含 $/空格时
+    #   不解码会「首轮即坏值 + 逐层累积」，最终被 100KB 守卫 fail-fast）。
+    ASM_INTERNAL_ENDPOINT="$(_dd_unq "$ASM_INTERNAL_ENDPOINT")"
+    ASM_EVENT_SECRET="$(_dd_unq "$ASM_EVENT_SECRET")"
+    LLM_GATEWAY_ASM_BASE_URL="$(_dd_unq "$LLM_GATEWAY_ASM_BASE_URL")"
+    LLM_GATEWAY_ASM_PLUGIN_ID="$(_dd_unq "$LLM_GATEWAY_ASM_PLUGIN_ID")"
     # 去掉 shell 引号形态（bash %q 对空串会写成 ''，对含空格的值会加反斜杠）。
     ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT%\'}"; ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT#\'}"
     ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT%\"}"; ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT#\"}"
@@ -2315,6 +2374,7 @@ dd_autollm_env() {
     for _v in LLMGatewayAutoLLMEndpoint LLMGatewayAutoLLMApiKey LLMGatewayAutoLLMModel \
               LLMGatewayAutoLLMTimeout LLMGatewayAutoLLMMaxTokens LLM_GW_TEST_MODE_TOKEN; do
       local _val="${!_v}"
+      _val="$(_dd_unq "$_val")"
       _val="${_val%\'}"; _val="${_val#\'}"
       _val="${_val%\"}"; _val="${_val#\"}"
       printf -v "$_v" '%s' "$_val"
@@ -2342,27 +2402,6 @@ dd_autollm_env() {
 #   ⇒ 读侧必须做 **%q 的逆变换**（eval 是唯一无损逆），并按**不动点**迭代
 #   （存量值已积了 N 层，一次解干净；上限 32 层防失控）。解码后写侧再
 #   %q 一次 ⇒ 从此读-写往返恒等（一层进一层出，不再累积）。
-_dd_unq() {
-  # _dd_unq VALUE — strip ALL accumulated printf-%q layers (2026-11-07 存量修复).
-  # 停止条件（缺一不可，防过度解码把裸值打碎——裸值含空格时再 eval 会被分词截断）：
-  #   1. 值里已无反斜杠（真值 = 运营配置的 issuer 列表，不含反斜杠）；
-  #   2. eval 失败（不是合法 %q 形态）；
-  #   3. 解码结果没有变短（说明当前层不是 %q 转义，是原始内容）。
-  local v=$1 decoded i
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 \
-           17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32; do
-    case "$v" in
-      # ★ 模式里 `\*` = 字面星号；字面**单反斜杠**必须写 `\\`（quoted '\\'* 会变成
-      #   「两个字面反斜杠」，单层 %q 形态（has\ space）一个反斜杠就漏匹配）。
-      *\\*) ;;
-      *) break ;;
-    esac
-    decoded=$(eval "printf '%s' ${v}" 2>/dev/null) || break
-    (( ${#decoded} < ${#v} )) || break
-    v=$decoded
-  done
-  printf '%s' "$v"
-}
 dd_identity_env() {
   local env_file="${1:-$ENV_FILE}"
   IDENTITY_SHARED_SECRET="${IDENTITY_SHARED_SECRET:-}"
@@ -2926,12 +2965,16 @@ GW_ENV+=( ${GW_WEB_ENV[@]+"${GW_WEB_ENV[@]}"} )
 # docker 直接 "Argument list too long"（候选槽起不来、蓝绿 abort，且报错点离
 # 真凶隔了整个 GW_ENV 组装段）。这里提前点名超限的键 ⇒ 一次给出可诊断错误。
 # 阈值取 100000（<128KB，留余量）。
+# ★ 计数口径＝**字节**（第 50 增量 F-12）：MAX_ARG_STRLEN 按**字节**算，而
+#   bash `${#var}` 在 UTF-8 locale 下按**字符**算 —— 5 万个中文=15 万字节
+#   仍会被 ${#}=5 万放行，守卫被绕过（审计 C3a 实测）。`wc -c` 恒为字节。
 for _e in "${GW_ENV[@]+"${GW_ENV[@]}"}"; do
-  if (( ${#_e} > 100000 )); then
-    dd_fail "GW_ENV 单条参数 ${#_e} 字节超过 100KB 上限（键=${_e%%=*}…）：很可能是 env 值被逐层转义累积（%q 读-写不对称）——修值源头后重跑，不要调大本阈值硬闯 execve 上限"
+  _e_len=$(printf '%s' "$_e" | wc -c | tr -d '[:space:]')
+  if (( _e_len > 100000 )); then
+    dd_fail "GW_ENV 单条参数 ${_e_len} 字节超过 100KB 上限（键=${_e%%=*}…）：很可能是 env 值被逐层转义累积（%q 读-写不对称）——修值源头后重跑，不要调大本阈值硬闯 execve 上限"
   fi
 done
-unset _e
+unset _e _e_len
 
 # ── 起候选槽容器（旧槽继续服务 ⇒ 零停机）────────────────────────────────
 # 候选槽占用的是**另一个端口**（槽位与端口绑定），所以两个容器可以并存；
