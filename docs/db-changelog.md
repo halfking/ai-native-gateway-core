@@ -10664,3 +10664,16 @@ changelog 写入发生在**全部迁移成功之后** ⇒ 942/943 虽已**应用
 | 948 | `948_sales_quote_shares.sql` | `644d8866069110d92722934228e21b8c5c3ac353d407628bf01a24461a48502f` | applied+verified |
 | 949 | `949_supplier_view_binding_id.sql` | `a377d63b79269df669a09fcc845951e6f9169e964ea2c1dad2c67be502332b80` | applied+verified |
 
+## 2026-11-06T00:50:00Z — deploy 245/154/211 build_seq 2934/2935/2956 (e9c9e78c)【零迁移】
+
+★ 第 49 增量（48h 修订审计轮）修复面的三台部署：**245=2934-e9c9e78c**（402s/切换 13s，
+old=2932 → new=2934，凭据冒烟 providers=14,18,13092 creds=17 failed=0）、
+**154=2935-e9c9e78c**（186s/切换 16s，old=2933 → new=2935，公网 llm.kxpms.cn 同步探到 2935）、
+**211=2956-e9c9e78c**（蓝绿槽 b 接管 @8783，登录冒烟 6 连无 429，公网 llm.itestu.cn 200）。
+**本轮零 pending 迁移**（942-949 已于 2932 轮全部落库；本轮改动全为 handler 内部行为与前端展示，
+无 schema 变更 ⇒ checksum ledger 校验通过、URSM scope 0 新应用）。
+★ **P-1 修复在役行为证据（211 真库 acc-pg17）**：部署前 `node_probe_state` 有 441 行
+`last_err_code='queue_submit_failed'` 历史戳记 + 470 行到期；新版上线 5 分钟内
+**162 次 "deterministic gate, skipped"（outcome=skipped_out_of_scope）**、
+`queue_submit_failed` **零新增**（441 → 441）、到期行 470 → 452（泵逐 tick 推进 45s holdoff）
+—— 第 47 增量 glm-5.3 同族自维持重试风暴止血生效。

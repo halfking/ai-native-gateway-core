@@ -30,6 +30,11 @@
 > guards-gate-scripts rc=0（envs 26/26、migration 8/8、shared_lib 25/25、登记册 166/0）。
 > ★ 遗留登记：P-17 指标维度 / P-18 sent 未触发修订保锁（裁决）/ P-19 /public/quote 路由（W2）/
 > P-20 CI 盲区 / P-21 历史噪音；第 48 增量遗留 A6b/A8/A9/A10后半/B2/C5/D1/D2/D4/E3 维持。
+> ★ **三台部署收口（同日部署轮）**：245=2934-e9c9e78c（402s）→ 154=2935-e9c9e78c（186s，公网
+> llm.kxpms.cn 同步）→ 211=2956-e9c9e78c（槽 b @8783，llm.itestu.cn 200）；**零 pending 迁移**；
+> ★ P-1 在役行为证据（211 真库）：441 行 queue_submit_failed 历史戳记**零新增**＋ 5 分钟 162 次
+> deterministic gate skip（outcome=skipped_out_of_scope）＋ 到期行 470→452（holdoff 推进）⇒
+> glm-5.3 同族自维持风暴止血生效；211 部署需 bash5（deploy-211.sh 要求 bash>=4，脚本自带引导）。
 > **2026-11-05 报价系统 MVP W1 前端轮：/operations/sales 工作台 ＋ 8 语种 i18n（第 48 增量遗留项交付）**
 > （goal 会话，`docs/audit/2026-11-05-报价系统MVP-W1前端轮.md`；通用式见 `LESSONS.md` **§635**）：
 > ★ 用户目标＝「拉最新合并 → 提交推送 → 按实施规划继续剩余任务」。开工 ff-merge
