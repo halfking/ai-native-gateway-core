@@ -1,9 +1,11 @@
 package bg
 
 import (
+	"context"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -158,4 +160,86 @@ func classifyProbeErrCode(code string) errorsx.ErrorKind {
 	// generic ladder. Returning an empty kind keeps the caller honest — it
 	// is not "auth", we simply have no transport evidence.
 	return ""
+}
+
+// ----------------------------------------------------------------------------
+// 配额重置点对齐退避（2026-11-07 探测时间点规划轮）
+//
+// 问题：配额用尽（周/月窗口、智谱 1310 族）的节点级探测失败按 rate_limit
+// 族梯子每 3~5 分钟复检一次，而重置点是**已知的**（failure monitor 在配额
+// 分类时写下 quota_recover_at）。对一个 7 天窗口的用尽凭据，这是 ~2000 次
+// 注定 429 的探测请求/对 —— 在「1 分钟最多 30 次含失败次数」这类上游
+// （凭据 29 形态），探测流量直接挤占业务配额；且与凭据级 BalanceQuotaProbe
+// （2min tick + 2^n due 闸封顶 1h）双流并行，节点级行是其中更密的那条。
+//
+// 修法：失败体分类为配额族且凭据带**未来**的 quota_recover_at 时，把
+// next_retry_at 钉在 recover_at + 60s（给上游时钟一点余量），用尽期内不再
+// 打节点级探测。恢复检测不降级：凭据级探测（BalanceQuotaProbe/v2）照旧
+// 负责「充值/提前重置」的发现，其成功事件触发
+// NodeProbeWorker.RearmCredentialFailures 把该凭据所有失败行拉回 now()，
+// 泵 30s 内接管验证。recover_at 缺失/已过期/过期在即 ⇒ 维持原梯子。
+// ----------------------------------------------------------------------------
+
+// quotaResetPinAfter is the grace delta past a known quota_recover_at at
+// which the pinned verification probe lands (upstream clocks lag their own
+// announced reset boundary).
+const quotaResetPinAfter = 60 * time.Second
+
+// quotaProbeHTTPStatuses are the statuses upstreams use to carry quota
+// exhaustion (payment required / forbidden-by-plan / rate-limit-with-quota-
+// body). Anything else keeps the ordinary ladder without spending a
+// classification regex on it.
+var quotaProbeHTTPStatuses = map[int]bool{
+	402: true,
+	403: true,
+	429: true,
+}
+
+// quotaResetPinDuration is the pure pin decision: land just past a future
+// reset boundary; a zero/past/boundary-imminent recover_at (within the pin
+// grace itself) is not pinnable — the ordinary ladder probes within minutes
+// anyway, and it will likely succeed at the boundary.
+func quotaResetPinDuration(recoverAt time.Time, now time.Time) (time.Duration, bool) {
+	if recoverAt.IsZero() {
+		return 0, false
+	}
+	if !recoverAt.After(now.Add(quotaResetPinAfter)) {
+		return 0, false
+	}
+	return recoverAt.Add(quotaResetPinAfter).Sub(now), true
+}
+
+// probeQuotaPinDB is the minimal DB surface the quota pin needs.
+type probeQuotaPinDB interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// quotaResetAlignedBackoff inspects a failed direct round and reports the
+// reset-aligned next retry when the pin applies. Everything else returns
+// ok=false and the caller keeps the ladder it already computed. Best-effort:
+// any DB error also returns ok=false (the ladder is the safe default; the
+// next failure retries the pin).
+func quotaResetAlignedBackoff(ctx context.Context, db probeQuotaPinDB, credID int, round nodeProbeRoundResult) (time.Duration, bool) {
+	if db == nil || credID <= 0 {
+		return 0, false
+	}
+	if !quotaProbeHTTPStatuses[round.httpStatus] {
+		return 0, false
+	}
+	kind := errorsx.ClassifyErrorWithBody(round.httpStatus, []byte(round.responseBody))
+	switch kind {
+	case errorsx.KindQuota, errorsx.KindQuotaPeriodic, errorsx.KindQuotaBalance, errorsx.KindQuotaPermanent:
+	default:
+		return 0, false
+	}
+	var recoverAt *time.Time
+	err := db.QueryRow(ctx,
+		`SELECT quota_recover_at FROM credentials WHERE id = $1`, credID).Scan(&recoverAt)
+	if err != nil {
+		return 0, false
+	}
+	if recoverAt == nil {
+		return 0, false
+	}
+	return quotaResetPinDuration(*recoverAt, time.Now())
 }

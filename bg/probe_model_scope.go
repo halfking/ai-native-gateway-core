@@ -14,6 +14,21 @@
 //
 // Credential/provider eligibility (automaticProbeEligibilityExistsSQL) stays
 // orthogonal — this gate answers "is this MODEL allowed for automatic probe".
+//
+// ★ 2026-11-07 恢复复检豁免（automaticProbeSourceBypassesModelScope）：
+//
+//	本门收紧的是**常态巡检量**（INV-3），不是恢复路径 —— 上面两处 fail-open
+//	注释已把「恢复探测不能被这道门废掉」写成设计意图，但「模型冷了」这个
+//	**正常判定结果**同样会永久卡死恢复复检：失败对被摘出路由 → 不再产生流量
+//	→ 滚出热腿窗口 → automatic 探测持续 skip → 上游恢复后状态永不更正
+//	（Catch-22）。因此两个**天然只承载恢复复检**的 source 绕过本门：
+//	  - "periodic"：仅由队列泵提交，pumpDueStatesSQL 只挑带
+//	    nodeProbeErrorEvidenceSQL（错误证据）的到期行 —— 健康停放行（INV-1）
+//	    永远进不了泵，豁免不重开常态巡检；
+//	  - "credential_recovery"：凭据/绑定级恢复事件（availability/quota 恢复、
+//	    到期绑定复验）的验证探针 —— 其目标对象本就处于不可用状态。
+//	request_failure / selfcheck 依旧过门：它们要么由真实流量触发（模型必在
+//	用量窗内），要么选点自带近窗流量条件。
 package bg
 
 import (
@@ -28,6 +43,26 @@ import (
 // ErrProbeModelOutOfAutomaticScope marks automatic probes rejected because the
 // model is neither featured nor recently used by real traffic.
 var ErrProbeModelOutOfAutomaticScope = fmt.Errorf("automatic probe model out of scope")
+
+// automaticProbeSourceBypassesModelScope reports whether an automatic probe
+// from the given source is a recovery re-verification that must not be
+// blocked by the featured ∪ recent-usage scope gate. See the file header for
+// the full rationale — the gate tightens steady-state probing (INV-3), not
+// recovery; blocking a recovery re-check of an out-of-window failed pair
+// would leave a recovered credential marked unavailable forever (the pair
+// gets no traffic while unavailable, so it can never re-enter the usage
+// window on its own).
+//
+// Keep this set closed: every entry must be a source whose rows provably
+// carry failure evidence (or target already-unavailable objects), so the
+// exemption can never re-open normal-state continuous probing (INV-1).
+func automaticProbeSourceBypassesModelScope(source string) bool {
+	switch source {
+	case "periodic", "credential_recovery":
+		return true
+	}
+	return false
+}
 
 // automaticProbeModelInScope reports whether an automatic probe may target
 // rawModel. Manual tasks never call this.
@@ -82,8 +117,9 @@ func (q *ProbeQueue) automaticProbeModelInScope(ctx context.Context, rawModel st
 // ⇒ 该 SQL 在真库上直接 `ERROR: column rl.model does not exist`
 // ⇒ 每次判定都读失败 ⇒ 这道门会把**所有**自动探测挡掉。
 // ⇒ 改用投影里**确实存在**的四个模型名列：
-//   raw_model_name（会话族口径 = COALESCE(outbound_model, client_model)）、
-//   outbound_model、client_model、canonical_model。
+//
+//	raw_model_name（会话族口径 = COALESCE(outbound_model, client_model)）、
+//	outbound_model、client_model、canonical_model。
 //
 // ★ 这道门的 SQL 必须对着**真库**验过，不能只跑字符串断言 ——
 // 本轮就是「字符串断言全绿、真库一跑就炸」。

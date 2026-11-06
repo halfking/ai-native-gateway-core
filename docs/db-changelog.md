@@ -10677,3 +10677,17 @@ old=2932 → new=2934，凭据冒烟 providers=14,18,13092 creds=17 failed=0）�
 **162 次 "deterministic gate, skipped"（outcome=skipped_out_of_scope）**、
 `queue_submit_failed` **零新增**（441 → 441）、到期行 470 → 452（泵逐 tick 推进 45s holdoff）
 —— 第 47 增量 glm-5.3 同族自维持重试风暴止血生效。
+
+## 2026-11-07 — 凭据探测时间点规划轮补迁移 950（credential_probe_queue.source 闭集 + credential_recovery）
+
+| Migration | File | Status |
+|-----------|------|--------|
+| 950 | `950_probe_queue_source_credential_recovery.sql` | 本轮新增（checksum 待各环境部署时由 changelog writer 落账） |
+
+★ 背景：F1 修复（恢复事件验证探针）启用 `source="credential_recovery"`（migration 425 起已在
+node_probe_runs.trigger_kind 闭集），但队列侧镜像约束 `credential_probe_queue_source_check`
+（489 建、538 重建）漏了该值 ⇒ 恢复事件提交被 23514 拒绝 ⇒ 3 重试烧尽 + persistSubmitFailure
+覆写 last_err_code=queue_submit_failed（P-1 同族「基础设施失败覆写真实证据」形状）。
+本地 2946 实测：`llmgw_node_probe_queue_submission_total{source="credential_recovery",
+outcome="failed"}` 5 分钟 +151。950 以幂等 DO 块重建 CHECK（6 → 7 值），
+已有 `credential_recovery` 值时跳过；down 有意 fail-closed（在途恢复源任务存在时回退失败）。

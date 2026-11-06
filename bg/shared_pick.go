@@ -2,7 +2,9 @@ package bg
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -246,4 +248,50 @@ func bindingAvailableForModel(ctx context.Context, db pickDB, credID int, model 
 		)
 	`, credID, model).Scan(&ok)
 	return err == nil && ok
+}
+
+// ResolveRecoveryProbeModel resolves the verification model for a credential
+// recovery event (2026-11-07). The recovery tick's probeSubmitter historically
+// passed model="" expecting NodeProbeWorker.Submit to pick
+// default_probe_model itself — but Submit returns silently on an empty model,
+// so every "verify right after recovery" submission was dropped on the floor.
+// The wiring now resolves the model before submitting:
+//
+//  1. credentials.default_probe_model (the operator/auto-filled pin), else
+//  2. the credential's first available binding (alphabetical, mirroring
+//     credProbeV2's fallbackProbeModel), else
+//  3. any binding (a fully-unavailable credential still deserves a probe —
+//     that is exactly the state a recovery event is verifying).
+//
+// Returns "" when the credential has no probeable model at all (no
+// default_probe_model and no bindings): callers drop the submission with a
+// warning instead of enqueueing a doomed endpoint_build probe.
+func ResolveRecoveryProbeModel(ctx context.Context, db pickDB, credID int) (string, error) {
+	if db == nil || credID <= 0 {
+		return "", nil
+	}
+	var m string
+	err := db.QueryRow(ctx,
+		`SELECT COALESCE(default_probe_model, '') FROM credentials WHERE id = $1`, credID).Scan(&m)
+	if err != nil {
+		return "", fmt.Errorf("bg.ResolveRecoveryProbeModel/default: %w", err)
+	}
+	if s := strings.TrimSpace(m); s != "" {
+		return s, nil
+	}
+	err = db.QueryRow(ctx, `
+		SELECT pm.raw_model_name
+		FROM credential_model_bindings cmb
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		WHERE cmb.credential_id = $1
+		ORDER BY COALESCE(cmb.available, FALSE) DESC, pm.raw_model_name
+		LIMIT 1
+	`, credID).Scan(&m)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("bg.ResolveRecoveryProbeModel/binding: %w", err)
+	}
+	return strings.TrimSpace(m), nil
 }

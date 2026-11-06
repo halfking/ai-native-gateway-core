@@ -103,6 +103,16 @@ const (
 	// nodeProbeQueuePumpHoldoff advances a pumped row's next_retry_at so the
 	// same row is not re-enqueued on every tick while the queue drains it.
 	nodeProbeQueuePumpHoldoff = 45 * time.Second
+	// nodeProbeScopeSkipRecheck paces the re-evaluation of a row whose probe
+	// submission was rejected by the model-scope gate (featured ∪ recent
+	// usage). The gate skip returns (false, nil), which the pump cannot
+	// distinguish from a successful enqueue and would therefore re-pick the
+	// row every 45s holdoff — a self-sustaining skip loop (the residual shape
+	// the 2026-11-06 P-1 fix stopped paying retries for). 15 minutes keeps the
+	// scope verdict fresh (a model that regains traffic or featured status is
+	// picked up by the next Submit/pump within one recheck) at 1/20th of the
+	// churn. Fresh real-traffic failures still re-arm immediately via INV-2.
+	nodeProbeScopeSkipRecheck = 15 * time.Minute
 	// ★ nodeProbeClampBatch caps how many over-scheduled recoverable rows one
 	// ★ clamp pass pulls forward (★ the clamp UPDATE is bounded so its row-lock
 	// ★ footprint and duration stay predictable; ★ 2026-11-05 · P-11).
@@ -189,8 +199,13 @@ type nodeProbeAuditDB interface {
 // "unavailable" (real requests through proxy → timeout), producing the
 // "models briefly work then 5xx" pattern.
 type NodeProbeWorker struct {
-	db             *pgxpool.Pool
-	auditDB        nodeProbeAuditDB
+	db      *pgxpool.Pool
+	auditDB nodeProbeAuditDB
+	// stateExecDB is the schedule-side Exec seam for the submission/recovery
+	// bookkeeping writes (scope-skip defer, quota-recovery re-arm). Production
+	// leaves it nil and routes through db; tests inject a mock so the
+	// schedule SQL can be exercised without a PG container.
+	stateExecDB    nodeProbeAuditDB
 	encKey         []byte
 	keyring        *secret.Keyring
 	apiKey         string
@@ -1185,6 +1200,13 @@ func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, pare
 			slog.Info("node_probe_worker: enqueue rejected by deterministic gate, skipped",
 				"credential_id", credID, "model", model, "source", source,
 				"outcome", outcome, "error", err)
+			// ★ 2026-11-07（scope skip 空转治理）：skip 返回 (false, nil)，
+			//   泵无法区分「入队成功」与「skip」，会把到期行按 45s holdoff
+			//   无限重拾 ⇒ 每行每 45s 一次 scope SQL 空转。这里把**已到期/
+			//   即将到期**的行推到 15min 后重评 scope（不动计数与错误字段
+			//   ——那是执行层的）；真实流量回来的第一发 Submit（INV-2）仍会
+			//   立即 re-arm。
+			w.deferScopeSkippedRow(ctx, credID, model)
 			return false, nil
 		}
 		if attempt == 1 {
@@ -1232,6 +1254,119 @@ func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, pare
 	)
 	return false, fmt.Errorf("enqueue probe task: exhausted %d attempts: %w",
 		nodeProbeQueueSubmitMaxAttempts, lastErr)
+}
+
+// deferScopeSkippedRow paces the scope-gate skip: push a due (or about-to-be-
+// due) row's next_retry_at out to the scope recheck horizon so the pump stops
+// re-picking it every 45s holdoff. Only the schedule moves — consecutive
+// counters, last_err_code and paused belong to the probe execution layer and
+// must not be touched by a submission-side gate verdict. Rows parked in the
+// future (healthy 30-day parks, mid-ladder schedules) are left alone.
+//
+// Best-effort: a failed UPDATE must not turn a business skip into a
+// submission error (the caller has already returned (false, nil) semantics);
+// the next pump tick re-picks the row and the loop is merely the pre-fix
+// 45s churn for one more cycle.
+// deferScopeSkippedRowSQL is the schedule-only defer for a scope-gate skip.
+// The upper bound on next_retry_at (≤ now()+horizon) is load-bearing: it must
+// never touch healthy-parked (30-day) or mid-ladder future schedules — only a
+// row that is due (or within one horizon of due) may be pushed out.
+func deferScopeSkippedRowSQL() string {
+	return `
+		UPDATE node_probe_state
+		SET next_retry_at = now() + $3::interval,
+		    updated_at = now()
+		WHERE credential_id = $1
+		  AND raw_model_name = $2
+		  AND paused = FALSE
+		  AND next_retry_at <= now() + $3::interval
+	`
+}
+
+// scheduleExec returns the Exec surface for schedule-side bookkeeping: the
+// test seam when injected, the pool otherwise.
+func (w *NodeProbeWorker) scheduleExec() nodeProbeAuditDB {
+	if w == nil {
+		return nil
+	}
+	if w.stateExecDB != nil {
+		return w.stateExecDB
+	}
+	if w.db == nil {
+		return nil
+	}
+	return w.db
+}
+
+func (w *NodeProbeWorker) deferScopeSkippedRow(ctx context.Context, credID int, model string) {
+	exec := w.scheduleExec()
+	if exec == nil {
+		return
+	}
+	if ctx == nil || ctx.Err() != nil {
+		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	tag, err := exec.Exec(runCtx, deferScopeSkippedRowSQL(),
+		credID, model, fmt.Sprintf("%d seconds", int(nodeProbeScopeSkipRecheck.Seconds())))
+	if err != nil {
+		slog.Warn("node_probe_worker: scope-skip schedule defer failed",
+			"credential_id", credID, "model", model, "error", err)
+		return
+	}
+	if tag.RowsAffected() > 0 {
+		slog.Info("node_probe_worker: scope-skipped row rescheduled for scope re-eval",
+			"credential_id", credID, "model", model,
+			"recheck_seconds", int(nodeProbeScopeSkipRecheck.Seconds()))
+	}
+}
+
+// RearmCredentialFailures wakes the failed probe rows of a credential whose
+// credential-level state just recovered (quota cleared by BalanceQuotaProbe /
+// PeriodicQuotaProbe / v2 writeHealth, availability recovered by the 30s
+// tick). The per-pair ladder — and the 2026-11-07 quota pin that parks
+// quota-failed rows at the announced recover_at — relies on this event to
+// verify recovery promptly instead of waiting out the parked horizon: the
+// next pump tick (30s) re-enqueues the rows, a direct success restores
+// bindings + view routability.
+//
+// Only scheduling moves: rows with last_direct_ok=TRUE (healthy parks) and
+// paused rows are untouched; counters/err fields stay with the execution
+// layer. Best-effort — a failed wake costs at most one ladder interval.
+// rearmCredentialFailuresSQL wakes only future-scheduled failed rows:
+// `next_retry_at > now()` bounds the write to parked/laddered rows (due rows
+// are already being picked), `last_direct_ok IS DISTINCT FROM TRUE` keeps
+// healthy parks parked, `paused = FALSE` keeps operator pauses respected.
+func rearmCredentialFailuresSQL() string {
+	return `
+		UPDATE node_probe_state
+		SET next_retry_at = now(),
+		    updated_at = now()
+		WHERE credential_id = $1
+		  AND paused = FALSE
+		  AND next_retry_at > now()
+		  AND last_direct_ok IS DISTINCT FROM TRUE
+	`
+}
+
+func (w *NodeProbeWorker) RearmCredentialFailures(credID int) {
+	exec := w.scheduleExec()
+	if exec == nil || credID <= 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	tag, err := exec.Exec(ctx, rearmCredentialFailuresSQL(), credID)
+	if err != nil {
+		slog.Warn("node_probe_worker: rearm credential failures failed",
+			"credential_id", credID, "error", err)
+		return
+	}
+	if tag.RowsAffected() > 0 {
+		slog.Info("node_probe_worker: credential recovered — failed probe rows re-armed for the pump",
+			"credential_id", credID, "rows", tag.RowsAffected())
+	}
 }
 
 // requestFailureTriggerThrottled implements the P0-2 request_failure
@@ -2811,6 +2946,11 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		backoff := probeBackoffForDirectOutcome(direct.errCode, direct.rootCause, attempt)
 		if gatewaySide {
 			backoff = nodeProbeGatewaySideRetryDelay
+		} else if d, ok := quotaResetAlignedBackoff(ctx, w.db, credID, direct); ok {
+			// ★ 2026-11-07 配额重置点对齐（与 queue 路径 probe_service.go 同款）：
+			//   配额用尽 + 已知未来 recover_at ⇒ 钉在重置点+60s，用尽期内不再
+			//   每 3~5 分钟空打；提前恢复经 RearmCredentialFailures 事件回拉。
+			backoff = d
 		}
 		logProbeRoundRootCause("direct", direct)
 		nextRetryAt := now.Add(backoff)

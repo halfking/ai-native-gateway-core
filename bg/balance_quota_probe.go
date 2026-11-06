@@ -53,10 +53,12 @@ import (
 //   - last_balance_check_at bookkeeping on credentials.balance_last_checked_at
 //     for observability and to dedupe against double-submissions.
 //   - default_probe_model fallback: when the operator hasn't set one,
-//     pick the cheapest routable model from credential_model_bindings
-//     so the probe always has a target. The probe-v2 worker still
-//     honours default_probe_model — this fallback only matters for
-//     the BalanceQuotaProbe SELECT predicate.
+//     ProbeNow picks the alphabetically-first still-routable binding from
+//     credential_model_bindings (stable across ticks — see
+//     fallbackProbeModel; the historical "cheapest" wording here was wrong,
+//     corrected 2026-11-07) so the probe always has a target. The probe-v2
+//     worker still honours default_probe_model — this fallback only matters
+//     for the BalanceQuotaProbe SELECT predicate.
 type BalanceQuotaProbe struct {
 	db             *pgxpool.Pool
 	interval       time.Duration

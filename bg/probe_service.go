@@ -516,6 +516,16 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	// featured-multiplier exemption and the audit/queue ReasonCode below.
 	errCode := direct.errCode
 	backoff := probeBackoffForDirectOutcome(direct.errCode, direct.rootCause, attempt)
+	// ★ 2026-11-07 配额重置点对齐：配额用尽且 quota_recover_at 已知在未来
+	//   ⇒ 把下一跳钉在重置点+60s，用尽期内不再每 3~5 分钟空打一次（见
+	//   probe_recovery_policy.go 头注）。提前恢复（充值/提前重置）由凭据级
+	//   BalanceQuotaProbe/v2 发现，成功事件经 RearmCredentialFailures 把本行
+	//   拉回 now()，泵 30s 内接管 —— 恢复检测 SLA 不因钉住而劣化。
+	quotaPinned := false
+	if d, ok := quotaResetAlignedBackoff(hbCtx, s.worker.db, credID, direct); ok {
+		backoff = d
+		quotaPinned = true
+	}
 	// 2026-08-13: 常用模型失败回退缩短（probe.featured_backoff_multiplier，默认
 	// 50% → 更快重试恢复）；非常用按标准 7 步链。仅影响失败后的下次重试间隔，
 	// 不降低探测深度（仍走 direct+gateway 双轮）。
@@ -528,7 +538,7 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	// protection extends to every protocol-shaped failure (contract mismatch
 	// parked at 6h by probeBackoffForDirectOutcome must not be shortened back
 	// into a churn loop).
-	if globalIsFeaturedModel(model, "") && !isModelNotServedProbeError(errCode) && direct.rootCause != ProbeRootCauseProtocol {
+	if globalIsFeaturedModel(model, "") && !isModelNotServedProbeError(errCode) && direct.rootCause != ProbeRootCauseProtocol && !quotaPinned {
 		if pct := settings.GetPlatformInt("probe.featured_backoff_multiplier", 50); pct > 0 && pct < 100 {
 			scaled := time.Duration(float64(backoff) * float64(pct) / 100.0)
 			if scaled < 5*time.Second {

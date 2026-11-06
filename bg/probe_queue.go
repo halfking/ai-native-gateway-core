@@ -428,17 +428,24 @@ func (q *ProbeQueue) Enqueue(ctx context.Context, task ProbeQueueTask) (int64, b
 		if !eligible {
 			return 0, false, fmt.Errorf("%w: credential_id=%d", ErrProbeAutomaticIneligible, task.CredentialID)
 		}
-		inScope, scopeErr := q.automaticProbeModelInScope(ctx, task.RawModel)
-		if scopeErr != nil {
-			// ★ 2026-11-05 审计修：这道门**失败开放** —— 读失败时
-			// automaticProbeModelInScope 已按「在范围内」返回 true，并把
-			// 错误原样带回供此处记审计。**不要**在这里把 scopeErr 当拒绝：
-			// 拒绝 = 把恢复探测挡在门外 = 与门的意图相反。
-			slog.Warn("probe queue: model scope check failed, allowing automatic probe",
-				"credential_id", task.CredentialID, "model", task.RawModel, "error", scopeErr)
-		}
-		if !inScope {
-			return 0, false, fmt.Errorf("%w: model=%q", ErrProbeModelOutOfAutomaticScope, task.RawModel)
+		// ★ 2026-11-07 恢复复检豁免：periodic（泵——只挑错误证据行）与
+		// credential_recovery（恢复事件验证探针——目标本就不可用）绕过本门。
+		// 否则一个滚出用量窗口的失败对会被永久 skip：失败 → 无流量 → 出窗 →
+		// 不能探 → 上游恢复了状态也永不更正（Catch-22）。见
+		// probe_model_scope.go 文件头。
+		if !automaticProbeSourceBypassesModelScope(task.Source) {
+			inScope, scopeErr := q.automaticProbeModelInScope(ctx, task.RawModel)
+			if scopeErr != nil {
+				// ★ 2026-11-05 审计修：这道门**失败开放** —— 读失败时
+				// automaticProbeModelInScope 已按「在范围内」返回 true，并把
+				// 错误原样带回供此处记审计。**不要**在这里把 scopeErr 当拒绝：
+				// 拒绝 = 把恢复探测挡在门外 = 与门的意图相反。
+				slog.Warn("probe queue: model scope check failed, allowing automatic probe",
+					"credential_id", task.CredentialID, "model", task.RawModel, "error", scopeErr)
+			}
+			if !inScope {
+				return 0, false, fmt.Errorf("%w: model=%q", ErrProbeModelOutOfAutomaticScope, task.RawModel)
+			}
 		}
 	}
 	if task.TenantID == "" {

@@ -4,6 +4,31 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-07 凭据探测时间点规划与恢复及时性轮（goal 会话，通用式见 `LESSONS.md` §640）**：
+> ★ 用户目标＝「检查凭据节点可用性检查（对象＝24h 用量模型∪特色模型；出错/用尽凭据）→ 凭据已恢复但
+> 状态不及时更正 → 规划探测时间点（节约并有效）→ 总结方案 → 模拟中断/恢复场景修正 → 本地部署 +
+> docs/全面测试 Maestro 逐域验证 → 完善测试方案 → 提交推送 → 245/154 → 211」。
+> ★ 交付（F1–F6）＝**F1** 恢复验证探针空模型静默丢弃根修（`Submit("")` 直接 return ⇒ 接线处
+> `ResolveRecoveryProbeModel`（default_probe_model→绑定回退）+ `source="credential_recovery"`）；
+> **F2** 模型范围门豁免恢复源 `{periodic, credential_recovery}`（冷模型失败对 Catch-22：失败→无流量→
+> 出窗→不能探→永不恢复；泵行天然带错误证据谓词 ⇒ INV-1 不破坏）；**F3** scope skip 推进到期行
+> 15min（45s 空转 ×20 治理）；**F4** 配额类失败（402/403/429+errorsx 配额族）且 quota_recover_at
+> 已知未来 ⇒ 钉 recover_at+60s（用尽期 0 探测，~288 次/天/对 → 重置点 1 次；绕过 featured 加速）；
+> **F5** quota 恢复事件（onQuotaRecovered 四处）追加 `RearmCredentialFailures`（re-arm 该凭据
+> last_direct_ok≠TRUE 的未来排程行 ⇒ 泵 30s 接管）；**F6** 注释如实化（cheapest→字典序）。
+> ★ **第 6 缺陷＝本轮自己引入**：`credential_recovery` 在 trigger_kind（425）合法但
+> `credential_probe_queue_source_check`（489/538）没跟上 ⇒ 23514 + persistSubmitFailure 覆写
+> （P-1 同族）⇒ **迁移 950**（幂等 DO 块 6→7 值，down fail-closed）。
+> ★ 验证＝三门 rc=0（race 全量含）；bg 9 测试/21 判据 + 变异臂 3/3；D09 域由占位**填实**
+> （business 4/data 2/stress 1/safety 3）；17 域 17/17 PASS；压测 18/19（唯一红＝已披露 s17），
+> s18/s19 强制门双绿，goroutine Δ+8。**本地 2948 终验**：constraint 7 值、
+> `{source=credential_recovery,outcome=success}=5`、23514 零新增。
+> ★ 环境读数（登记）：`deploy-local.sh` **不跑 pending startup 迁移**（那是 seamless 引擎
+> `_deploy_pending_startup_migrations` 的职责）⇒ 本地 950 手工应用+补两台账；deploy-local 从 redis
+> 容器 env 原样继承 `LLM_GATEWAY_REDIS_ADDR=nbjl-redis:6379`（网内名+NOAUTH；发现层信端口不信鉴权）
+> ⇒ 取道＝启动项目自带 `llm-gateway-redis`（compose，无密码）+ `LLM_GATEWAY_REDIS_CONTAINER` 钉容器名；
+> 前端构建会把 `localeKeyParityBaseline.json` 掏空成 `{}`（`.hollowout-backup` 同族）⇒ **提交前必须
+> `git checkout` 还原**（棘轮清零=把门弄瞎）。
 > **2026-11-06 /live 路由判定折叠轮（goal 会话，通用式见 `LESSONS.md` §639）**：
 > ★ 用户目标＝「/live 的『路由判定』部分要能折叠与展开 → 部署 245/154 测试 → 成功后部署 211
 > （脚本＋蓝绿）→ 提交推送」。

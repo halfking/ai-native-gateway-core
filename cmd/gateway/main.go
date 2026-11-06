@@ -4483,6 +4483,15 @@ func main() {
 			// matches credential_probe_v2.go's invocation.
 			credProbeV2.SetOnQuotaRecovered(func(credID int, source string) {
 				provider.InvalidateCandidateCacheForCredential(credID)
+				// 2026-11-07: quota recovered ⇒ wake this credential's failed
+				// probe rows (incl. the quota-recover_at pins) so the pump
+				// re-verifies the pairs within one tick instead of waiting out
+				// the parked horizon. Nil guard: this closure is built before
+				// the node probe worker is constructed and only fires at
+				// runtime.
+				if nodeProbeWorker != nil {
+					nodeProbeWorker.RearmCredentialFailures(credID)
+				}
 				metrics.RoutingCredentialQuotaRecoveredNotifyTotal.WithLabelValues(source).Inc()
 			})
 			slog.Info("CHECKPOINT: before credProbeV2.Start")
@@ -4857,6 +4866,13 @@ func main() {
 					// matches probe_queue_worker.go's invocation.
 					probeQueueWorker.SetOnQuotaRecovered(func(credID int, source string) {
 						provider.InvalidateCandidateCacheForCredential(credID)
+						// 2026-11-07: quota recovered ⇒ wake the credential's
+						// failed probe rows so the pump re-verifies the pairs
+						// within one tick (pairs stay view-excluded by
+						// node_probe_failed until their own probe succeeds).
+						if nodeProbeWorker != nil {
+							nodeProbeWorker.RearmCredentialFailures(credID)
+						}
 						metrics.RoutingCredentialQuotaRecoveredNotifyTotal.WithLabelValues(source).Inc()
 					})
 					slog.Info("unified probe service wired",
@@ -4955,7 +4971,31 @@ func main() {
 				// gateway round only refines the evidence.
 				if credRecovery != nil {
 					credRecovery.SetProbeSubmitter(func(credID int, model string) {
-						nodeProbeWorker.Submit(credID, model, "default", "expired-binding-recovery")
+						// 2026-11-07 fix: the recovery tick passes model="" for
+						// its credential-level verification probes expecting
+						// Submit's "let the worker decide" sentinel — but
+						// Submit returns silently on an empty model, so every
+						// recovery verification was dropped on the floor.
+						// Resolve the model here (default_probe_model → first
+						// binding) and submit under the credential_recovery
+						// source, which also bypasses the automatic model-scope
+						// gate (recovery path) and the request_failure pair
+						// throttle.
+						if strings.TrimSpace(model) == "" {
+							resolved, rerr := bg.ResolveRecoveryProbeModel(context.Background(), dbConn.Pool(), credID)
+							if rerr != nil {
+								slog.Warn("credRecovery: verification probe model resolve failed, dropping submit",
+									"credential_id", credID, "error", rerr)
+								return
+							}
+							if resolved == "" {
+								slog.Warn("credRecovery: verification probe dropped, credential has no probeable model",
+									"credential_id", credID)
+								return
+							}
+							model = resolved
+						}
+						nodeProbeWorker.SubmitWithSource(credID, model, "default", "expired-binding-recovery", "credential_recovery")
 					})
 					credRecovery.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 					// 2026-08-26 quota-recovery-notify fix: dispatch the
@@ -4966,6 +5006,12 @@ func main() {
 					// still picks a fallback node.
 					credRecovery.SetOnQuotaRecovered(func(credID int, source string) {
 						provider.InvalidateCandidateCacheForCredential(credID)
+						// 2026-11-07: quota recovered ⇒ wake the credential's
+						// failed probe rows (quota pins included) — the pump
+						// re-verifies them within one tick.
+						if nodeProbeWorker != nil {
+							nodeProbeWorker.RearmCredentialFailures(credID)
+						}
 						metrics.RoutingCredentialQuotaRecoveredNotifyTotal.WithLabelValues(source).Inc()
 					})
 					// 2026-08-26 P1-4 (landing point D): also wire the
@@ -5178,11 +5224,36 @@ func main() {
 			// See docs/audit/2026-09-10-selfcheck-recovery-gate-audit.md.
 			if credRecovery != nil {
 				credRecovery.SetProbeSubmitter(func(credID int, model string) {
-					nodeProbeWorker.Submit(credID, model, "default", "expired-binding-recovery")
+					// 2026-11-07 fix: mirror of the branch-1 wiring — resolve
+					// the empty-model sentinel locally (Submit drops it
+					// silently) and submit under the credential_recovery
+					// source (scope-gate recovery bypass, no request_failure
+					// pair throttle).
+					if strings.TrimSpace(model) == "" {
+						resolved, rerr := bg.ResolveRecoveryProbeModel(context.Background(), dbConn.Pool(), credID)
+						if rerr != nil {
+							slog.Warn("credRecovery: verification probe model resolve failed, dropping submit",
+								"credential_id", credID, "error", rerr)
+							return
+						}
+						if resolved == "" {
+							slog.Warn("credRecovery: verification probe dropped, credential has no probeable model",
+								"credential_id", credID)
+							return
+						}
+						model = resolved
+					}
+					nodeProbeWorker.SubmitWithSource(credID, model, "default", "expired-binding-recovery", "credential_recovery")
 				})
 				credRecovery.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 				credRecovery.SetOnQuotaRecovered(func(credID int, source string) {
 					provider.InvalidateCandidateCacheForCredential(credID)
+					// 2026-11-07: quota recovered ⇒ wake the credential's
+					// failed probe rows (quota pins included) — the pump
+					// re-verifies them within one tick.
+					if nodeProbeWorker != nil {
+						nodeProbeWorker.RearmCredentialFailures(credID)
+					}
 					metrics.RoutingCredentialQuotaRecoveredNotifyTotal.WithLabelValues(source).Inc()
 				})
 				if credProbeV2 != nil {
