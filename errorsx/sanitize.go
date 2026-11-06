@@ -43,6 +43,13 @@ func SanitizeErrorText(in []byte, maxBytes int) []byte {
 // RedactCredentialShapes applies the SanitizeErrorText redaction patterns
 // WITHOUT a length cap, for full-body storage paths that must preserve the
 // body while stripping credential echoes (audit round2 E-#2).
+//
+// R188 (2026-11-06 252 SQL log audit): the output is additionally guaranteed
+// valid UTF-8 — a vendor body with invalid sequences mid-string (truncated
+// CJK / non-UTF8 encoding) sailed past truncateUTF8Safe, which only guards
+// the tail cut, and made every downstream INSERT fail with SQLSTATE 22021
+// (candidate_failure_logs_hot: 9 rows lost in the 75h audit window; the
+// summarystore precedent measured 157 in 3h before its own fix).
 func RedactCredentialShapes(in []byte) []byte {
 	if len(in) == 0 {
 		return in
@@ -52,7 +59,7 @@ func RedactCredentialShapes(in []byte) []byte {
 	out = apiKeyPattern.ReplaceAllString(out, "<redacted:api_key>")
 	out = longBlobPattern.ReplaceAllString(out, "<redacted:blob>")
 	out = headerEchoPattern.ReplaceAllString(out, "$1<redacted:header>")
-	return []byte(out)
+	return []byte(strings.ToValidUTF8(out, string(utf8.RuneError)))
 }
 
 // truncateUTF8Safe cuts s to at most max bytes without splitting a UTF-8

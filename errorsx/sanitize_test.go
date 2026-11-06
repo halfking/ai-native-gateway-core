@@ -3,6 +3,7 @@ package errorsx
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSanitizeErrorText_RedactsBearerTokens(t *testing.T) {
@@ -96,5 +97,38 @@ func TestHasCredentialLeak_DetectsKnownShapes(t *testing.T) {
 				t.Errorf("HasCredentialLeak(%q) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// R188 (2026-11-06 252 SQL log audit): invalid UTF-8 sequences mid-string
+// (truncated CJK vendor bodies, 0xe7 0x9a family) sailed past
+// truncateUTF8Safe — it only guards the tail cut — and made every downstream
+// INSERT fail with SQLSTATE 22021 (candidate_failure_logs_hot: 9 rows lost in
+// the 75h window; summarystore measured 157/3h before its own fix). The
+// choke point must now guarantee valid UTF-8 output.
+func TestSanitizeErrorText_RepairsInvalidUTF8MidString(t *testing.T) {
+	// 0xe7 0x9a = first two bytes of a 3-byte CJK rune, cut mid-sequence in
+	// the MIDDLE of the payload, plus enough tail to cross the 320-byte cap.
+	bad := "前半段\xe7\x9a" + strings.Repeat("报文内容继续", 80)
+	out := SanitizeErrorText([]byte(bad), 320)
+	if !utf8.Valid(out) {
+		t.Fatalf("SanitizeErrorText output is not valid UTF-8: %q", out)
+	}
+	if len(out) > 320 {
+		t.Fatalf("cap violated: %d bytes", len(out))
+	}
+	if strings.ContainsRune(string(out), '\uFFFD') == false {
+		t.Fatalf("expected U+FFFD replacement marker, got %q", out)
+	}
+}
+
+func TestRedactCredentialShapes_RepairsInvalidUTF8(t *testing.T) {
+	in := []byte("provider said: \xe7\x9a and somebearer Bearer eyJhbGciOiJIUzI1NiJ9.secret")
+	out := RedactCredentialShapes(in)
+	if !utf8.Valid(out) {
+		t.Fatalf("RedactCredentialShapes output is not valid UTF-8: %q", out)
+	}
+	if strings.Contains(string(out), "eyJhbGciOi") {
+		t.Errorf("Bearer token leaked: %s", out)
 	}
 }
