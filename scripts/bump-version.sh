@@ -31,6 +31,12 @@
 #     checkout 共享、锁内读改写，mkdir 原子锁，flock 不可用也一样工作），把
 #     "上次本机任何 checkout 发过的 seq" 兜住。--seq 显式指定仍尊重且推进 floor。
 #     floor 不可用（HOME 无写权限等）时静默退回旧行为，不阻塞部署。
+#     ★ 跨环境序号不可比（2026-11-06 实录）：本脚本的 floor 在**部署机** HOME 下，
+#     只被 245/154（systemd 无感路径）与本地构建消费；211 的 docker 蓝绿路径
+#     （deploy-seamless-docker.sh --via）整个 seq 块跑在**目标机**上，用的是
+#     目标机 /root/.llm-gateway-go/build_seq.floor ⇒ 两套计数器互不可见，
+#     211 的号可以（且实际）远高于 245/154（当日 2957 vs 2938）——差距随 211
+#     部署频次累积，属机器级计数器的固有形状，不是丢号或落后。
 #
 # 导出变量:
 #   BUILD_VERSION / BUILD_GIT_TAG / BUILD_GIT_SHA /

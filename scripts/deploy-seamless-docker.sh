@@ -2790,6 +2790,11 @@ if [[ -f "$DD_REPO_ROOT/version.json" ]]; then
     #   语义与 bump-version.sh 对齐：base = max(种子, 对侧槽, 机器级 floor) + 1，
     #   floor 先落盘（只增不减，json 写崩也不复用旧号）；floor 故障降级为
     #   无 floor 模式——撞号防护失效但不阻塞部署。
+    #   ★ 这个 floor 在**目标机** HOME 下（本块随 --via 在远端执行），
+    #   与部署机上 bump-version.sh 的 floor 是**两套计数器** ⇒ 211 的
+    #   build_seq 与 245/154 的不可比（2026-11-06 实录：211=2957 vs
+    #   245/154=2938；差距自 10-31 build_seq 解冻（恒 2910）后随 211 更高的
+    #   部署频次累积，非丢号非落后）。
     python3 - "$DD_GW_DATA_ROOT/version/$DD_CANDIDATE_SLOT.json" "$DD_BUILD_SHA" "$DD_TARGET" \
       "$DD_GW_DATA_ROOT/version/$DD_ACTIVE_SLOT.json" \
       "${LLM_GATEWAY_BUILD_SEQ_FLOOR_DIR:-$HOME/.llm-gateway-go}/build_seq.floor" <<'PY' \
