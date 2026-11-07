@@ -147,3 +147,29 @@ func TestSuccessPathsCarryEvidenceTimestamp(t *testing.T) {
 		}
 	}
 }
+
+// S7（W9）：失败镜像必须是 upsert（非 gateway-side 失败）——否则队列模式下
+// 从未被业务触达的对永远没有 node_probe_state 行，cf 不累积、升级永不触发
+// （211 实测：凭据 35 族 cf=-1、每次恢复翻转从梯底重开一代）。
+func TestMirrorFailureUpsertsStateRow(t *testing.T) {
+	src, err := os.ReadFile("probe_service.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	if !strings.Contains(body, "INSERT INTO node_probe_state (\n\t\t\t\tcredential_id, raw_model_name,") {
+		t.Fatal("failure mirror must INSERT (upsert) so queue-mode pairs accumulate ladder memory")
+	}
+	if !strings.Contains(body, "ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET") {
+		t.Fatal("failure mirror insert must carry ON CONFLICT DO UPDATE")
+	}
+	// gateway-side 分支必须保持纯 UPDATE（不建行）——R39 语义。
+	gsUpdate := strings.Index(body, "if gatewaySide {")
+	if gsUpdate < 0 {
+		t.Fatal("gateway-side branch must remain separate")
+	}
+	segment := body[gsUpdate:]
+	if !strings.Contains(segment[:strings.Index(segment, "return\n\t}")], "UPDATE node_probe_state SET") {
+		t.Fatal("gateway-side failure branch must stay a plain UPDATE (never create rows)")
+	}
+}

@@ -1107,10 +1107,49 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 	}
 	nextRetryAt := now.Add(backoff)
 	nextSec := int(backoff.Seconds())
+	// ★ 2026-11-07（探测浪费根修轮 · W9）：失败镜像改 **upsert**（非 gateway-side
+	//   失败才建行）。原实现是纯 UPDATE —— 队列模式下没有任何写点创建
+	//   node_probe_state 行（legacy Submit 的 upsert 在队列模式不跑；
+	//   MarkNodeProbeHealthy 只在业务成功时建行）⇒ 从未被业务触达过的对
+	//   （211 实测：凭据 35 族，cf=-1）永远没有行 ⇒ cf 不累积 ⇒ attempt 恒为
+	//   任务代内计数（1..7）⇒ 持续失败升级永不触发，每次恢复事件翻转都从
+	//   梯底重开一代。gateway-side 失败保持**不建行**（R39 语义：实例的配置
+	//   问题不是对的健康信号，不该在这个共享面上留证据）。
+	if gatewaySide {
+		w.execMirrorWrite(ctx, "failure", fmt.Sprintf("%d|%s", credID, model), func() error {
+			_, err := w.db.Exec(ctx, `
+				UPDATE node_probe_state SET
+					consecutive_failures = CASE WHEN $10::boolean THEN node_probe_state.consecutive_failures ELSE $3 END,
+					consecutive_successes = 0,
+					last_attempt_at = now(),
+					next_retry_at = $4,
+					next_retry_seconds = $5,
+					last_direct_ok = $6,
+					last_gateway_ok = $7,
+					last_err_code = $8,
+					last_err_detail = $9,
+					in_flight_until = NULL,
+					updated_at = now()
+				WHERE credential_id = $1 AND raw_model_name = $2`,
+				credID, model, attempt, nextRetryAt, nextSec,
+				direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw), gatewaySide)
+			return err
+		})
+		return
+	}
 	w.execMirrorWrite(ctx, "failure", fmt.Sprintf("%d|%s", credID, model), func() error {
 		_, err := w.db.Exec(ctx, `
-			UPDATE node_probe_state SET
-				consecutive_failures = CASE WHEN $10::boolean THEN node_probe_state.consecutive_failures ELSE $3 END,
+			INSERT INTO node_probe_state (
+				credential_id, raw_model_name,
+				consecutive_failures, consecutive_successes,
+				last_attempt_at, next_retry_at, next_retry_seconds,
+				paused, in_flight_until,
+				last_direct_ok, last_gateway_ok,
+				last_err_code, last_err_detail,
+				updated_at
+			) VALUES ($1, $2, $3, 0, now(), $4, $5, FALSE, NULL, $6, $7, $8, $9, now())
+			ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+				consecutive_failures = $3,
 				consecutive_successes = 0,
 				last_attempt_at = now(),
 				next_retry_at = $4,
@@ -1120,10 +1159,9 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 				last_err_code = $8,
 				last_err_detail = $9,
 				in_flight_until = NULL,
-				updated_at = now()
-			WHERE credential_id = $1 AND raw_model_name = $2`,
+				updated_at = now()`,
 			credID, model, attempt, nextRetryAt, nextSec,
-			direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw), gatewaySide)
+			direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw))
 		return err
 	})
 }
