@@ -4,6 +4,30 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-07 Token 桶双层路由优化方案轮（规划·零代码，goal 会话，`docs/audit/2026-11-07-token桶双层路由优化方案.md`；通用式见 `LESSONS.md` **§642**）**：
+> ★ 用户目标＝「429/超限族不判死节点＋保在途＋隔时回量爬坡；结合 magpie 对比；模型+凭据=
+> token 桶定型定参进路由模型（序列逐个尝试）；auto 两层路由双模块+高速缓存计数；会话桶历史
+> 粘性/重试等待/失败换桶；客户端成功率与桶成功率双口径+质量向上 rollup。先方案＋自审计＋
+> 模拟验证，再提交推送，先不改代码」。开工 ff-merge `df2288e0cb35`（197 提交零冲突，
+> build/vet rc=0、bg+errorsx short 绿）。
+> ★ 证据底座＝211 实测（24h 12609 请求：客户端成功率 76.4%；失败 91.4%＝2710 例
+> `no_candidate "modality=text => 0 candidates"`——不是 429 漏到客户端，是**候选池被门空**；
+> 饥饿实证 kimi-k3 15 绑定→0 可路由、opus-4-8 12→0、minimax-m3 6→0；门分布
+> availability_unreachable 485/binding_unavailable 689/node_probe_failed 19…）＋ magpie 源码
+> 对比（rest/Sink/lanes/affinity/replan 五面已同构或更细，无「抄机制」级缺口）。
+> ★★ **仿真否决了直觉方案**：四策略对比（P0 现状/P1 A2+绝对 AIMD/P2 节奏校准+AIMD/
+> P3 节奏校准+相对爬坡）——P1 比 P0 还差 7.3pp（限速门把恢复容量让给饱和桶）；
+> **P2=P3 完全同数**（短冷却下窗口自重灌，爬坡形状不敏感）⇒ 保留 P0-A 相对份额爬坡、
+> 否决绝对限速准入；真杠杆＝**冷却税则改「节奏校准」**（RA∨60s 优先、只在 429 间隔<窗口
+> 且连击≥3 时升级）⇒ 亏空域 client_ok 62.8%→80.0%、免费桶 cool_time 196→125min，
+> 代价＝上游 429 噪音 43→236 次/4h（显式标价，待裁决）。
+> ★★ 诉求盘点：六件五件已有骨架（429 不进断路器/dispatch 三级梯/RetryScheduler 5s×2/
+> sticky L1-L3/is_final_success/P0-A 爬坡）；真缺口＝①A2 梯对节奏正常桶过重 ②同桶三套门
+> （cmb.available/credentialstate/node_probe_state）各自为政 ③桶无统一读模型与质量 rollup。
+> 方案＝T1 节奏校准冷却（ratebackoff.go 参数级改造）＋T-Gate BucketRegistry 影子层
+> （先合并 verdict 不合并存储）＋T4 会话桶历史环/C1 经济学转正＋T5 质量 rollup
+> （复用 supplier_error_stats 骨架不建新表）；W1–W4 分轮各带验收门；待裁决 4 条
+> （含「单次 429=3min」既有承诺变更、上游噪音可接受度）。**明确没做**：零代码零迁移零部署。
 > **2026-11-07 探测浪费与恢复及时性根修轮（goal 会话；方案档
 > `docs/audit/2026-11-07-探测浪费与恢复及时性根修轮.md`；T2 留档
 > `tests/48h-audit/reports/history/T2-2026-11-07-wasteround.md`）**：
